@@ -21,7 +21,7 @@ Agent Builder panel은 workflow를 직접 실행하지 않는다. 사용자가 P
 | --- | --- |
 | `AgentBuilderLauncher` | 우측 하단 고정 entry point |
 | `AgentBuilderChatPanel` | 대화 목록, 입력창, pending 상태, cancel control |
-| `AgentBuilderIntentModelSelector` | Header에서 active organization의 권한 확인 model/credential 조합을 provider별로 표시하고 내부 intent planner 선택을 관리. 첫 사용 가능 option을 표시 기본값으로 사용하며 선택 ID는 message request에만 포함 |
+| `AgentBuilderIntentModelSelector` | Header에서 active organization의 권한 확인 model/credential 조합을 provider별로 표시하고 내부 intent planner 선택을 관리. 첫 사용 가능 option을 표시 기본값으로 사용하며 선택 ID는 message request에만 포함. 선택 메뉴는 chat panel 가로 폭의 약 절반을 사용하고 모델 행 약 5개 높이 이후에는 내부 스크롤로 나머지 option을 표시 |
 | `AgentBuilderMessageList` | 사용자 메시지, agent response, clarification, warning 표시 |
 | `DraftPreviewSummary` | chatbot panel 안에서 생성/변경될 workflow 요약과 `도안 생성 미리보기` action 표시 |
 | `PreviewModeController` | actual editor graph와 preview graph를 분리하고 Preview Mode 진입/종료 제어 |
@@ -46,16 +46,18 @@ Answer/Output 계열 node의 output variable 목록, value selector, input/outpu
 | --- | --- |
 | `RequestContextResolver` | 인증 사용자, active organization, workflow/app scope, 권한 context 확정 |
 | `ConversationSessionService` | server-issued chat session, redaction된 사용자 message summary와 assistant response로 구성된 최근 메시지, pending request, cancel state 관리. Session은 인증 사용자, active organization, workflow/app scope, agent panel lifecycle에 묶인다 |
-| `LLMIntentExtractor` | redaction된 사용자 요청과 safe workflow node type/title/role 요약을 명시적으로 선택되고 요청마다 재검증된 permission-aware LLM runtime에 전달하고 schema-validated 의미 후보를 반환. Raw graph, node/edge id, credential, raw provider response를 구조화 결과에 포함하지 않음 |
+| `LLMIntentExtractor` | redaction된 사용자 요청, safe workflow context, `PreIntentKnowledgeContextProvider`의 bounded safe KB 후보를 명시적으로 선택되고 요청마다 재검증된 permission-aware LLM runtime에 전달하고 schema-validated 의미 후보를 반환. Raw graph, node/edge id, credential, raw provider response를 구조화 결과에 포함하지 않음 |
+| `PreIntentKnowledgeContextProvider` | 기존 Knowledge candidate resolver와 metadata ranker로 권한/readiness를 통과한 후보를 조회하고 상위 20개의 opaque handle, safe label/topics/description, runtime availability, bounded relevance만 Intent LLM에 투영 |
 | `AgentBuilderIntentModelOptionService` | Active organization의 valid credential, active chat model, verified relation, `use` permission을 결합해 ADR-0025 provider group과 결정적 model 순서 반환 |
 | `DraftLLMModelRecommender` | 같은 권한 확인 model 후보에서 provider 순서, 최신 세대, `mini` 우선, 나머지 낮은 tier 순으로 generated LLM node 기본 model id 추천. Credential은 graph에 저장하지 않고 후보가 없으면 unresolved 설정 issue 반환 |
 | `StructuredRequestBuilder` | 자연어 의미 후보를 안전한 `StructuredRequest`로 정규화 |
 | `WorkflowContextSnapshotBuilder` | graph, selected node, selected edge, existing node/edge summary 생성 |
 | `TargetResolver` | 기존 workflow 수정 target 해석 |
-| `CapabilityCatalogProvider` | ADR-0024의 공통 Workflow Node Capability Catalog를 읽고 `implemented=true`, `agent_builder_supported=true`인 node/capability allowlist와 side effect/필수 설정 정책 제공 |
+| `CapabilityCatalogProvider` | ADR-0024/0026의 공통 Workflow Node Capability Catalog v2를 읽고 `implemented=true`, `agent_builder_supported=true`인 node/capability allowlist, 제품 가용성, side effect/필수 설정, 연결 정책 제공 |
+| `IntentSemanticValidator` | Schema-valid LLM 의미 후보의 request/draft mode, workflow context, 신규 capability, target/placement와 KB candidate handle allowlist invariant를 검증하고 safe-code 1회 repair 경계를 제공 |
 | `KnowledgeRecommendationAdapterClient` | KB pending resolution을 Knowledge adapter request로 변환 |
 | `WorkflowDraftBuilder` | `StructuredRequest`와 resolver 결과를 workflow draft로 변환하고, LLM node에는 `DraftLLMModelRecommender`의 safe model id만 적용 |
-| `WorkflowDraftValidator` | schema, permission, side effect, missing config 검증 |
+| `WorkflowDraftValidator` | schema, permission, side effect, missing config와 catalog 기반 complete-graph 연결 정책을 preview/apply-save에서 동일하게 검증 |
 | `DraftLayoutOptimizer` | 기존 Workflow Editor 레이아웃 최적화 UI 버튼과 동등한 deterministic layout 로직을 apply/save 직전 draft graph에 적용하고, 저장될 node position을 확정 |
 | `WorkflowDraftApplyService` | draft metadata 조회, 권한 재확인, stale check, validation 재확인, workflow graph 저장, apply/save audit 기록. 저장 성공은 audit 기록 성공을 전제로 한다. |
 
@@ -124,7 +126,7 @@ MBA-145 MVP에서는 Knowledge Skill body/checklist를 prompt context로 직접 
 
 ## Interaction Rules
 
-- Refresh 후에는 redaction된 사용자 message summary와 assistant response를 포함한 최근 대화, pending request 상태를 복구한다.
+- Refresh 후에는 redaction된 사용자 message summary와 assistant response를 포함한 최근 대화, pending request 상태를 복구한다. Top-level preview는 최신 assistant response가 `draft_ready`이거나 최근 메시지가 없는 legacy session일 때만 보조 복구하며, 최신 응답이 `failed`, `unsupported`, `validation_failed`이면 과거 preview를 별도 draft 메시지로 추가하지 않는다.
 - 같은 workflow의 apply/save reconcile로 `app_id` metadata가 채워져도 panel을 remount하거나 대화를 초기화하지 않는다. Workflow scope 변경 또는 workflow가 없는 app-only scope 변경에서만 이전 session state를 분리한다.
 - 새 workflow apply/save 성공에서는 backend가 재결합한 동일 server session id를 새 workflow key로 이전하고 one-shot reopen marker로 panel을 다시 열어 safe conversation을 복구한다.
 - 사용자 요청, pending 상태, assistant 응답이 대화 목록에 추가되면 Agent Builder chat panel은 최신 메시지가 보이도록 대화 영역을 맨 아래로 자동 스크롤한다. KB 후보 목록 내부 스크롤은 대화 영역 스크롤과 별도로 유지한다.

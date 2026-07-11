@@ -77,9 +77,17 @@ node를 지칭한 단어는 새로 만들 capability로 다시 추가하지 않�
 `GitHub 노드 뒤에 LLM 노드를 추가해줘`는 신규 capability `llm`, target node type
 `githubNode`, `operation=insert`, `placement=after`로 구조화해야 한다.
 
-운영 message 처리 경로는 permission-aware LLM structured output으로 의미 후보를 추출해야 한다. LLM 출력은 `request_type`, `draft_mode`, 순서가 유지된 capability 후보, 지식 필요 여부와 safe topic, 기존 workflow 수정 시 target/placement 후보까지만 제공한다. LLM이 반환한 node id, edge id, credential, 임의 capability 또는 graph는 신뢰하지 않는다.
+운영 message 처리 경로는 permission-aware LLM structured output으로 의미 후보를 추출해야 한다. LLM 호출 전 [ADR-0027](../../decisions/ADR-0027-agent-builder-pre-intent-safe-kb-context.md)에 따라 권한과 retrieval-visible gate를 통과한 KB 후보를 metadata relevance로 정렬하고 상위 20개의 opaque handle, safe label/topics/description, runtime availability, bounded relevance만 safe context로 제공한다. LLM 출력은 `request_type`, `draft_mode`, 순서가 유지된 capability 후보, 지식 필요 여부와 safe topic, 관련 candidate handle, 명시적 integration의 provider/resource/operation, 기존 workflow 수정 시 target/placement 후보까지만 제공한다. LLM이 반환한 node id, edge id, credential, 임의 capability 또는 graph는 신뢰하지 않는다.
 
-LLM 의미 후보는 서버에서 다시 검증한다. 최종 schema 정규화, capability catalog allowlist, unsupported 판정, pending/missing 분리, blocking 여부, external-action risk, target node/edge 확정과 graph 생성은 deterministic normalization, `TargetResolver`, product policy를 따라야 한다. LLM 응답이 실패하거나 schema를 통과하지 못하면 정규식 기반 graph 생성으로 조용히 fallback하지 않고 safe failure로 닫는다.
+명시적인 GitHub Pull Request 요청은 provider=`github`, resource=`pull_request`, operation=`read|comment|create`로 먼저 구분한다. PR 또는 diff 조회는 `github_pr_read`, 기존 PR에 댓글이나 리뷰 결과를 등록하는 요청은 `github_pr_comment`와 일치해야 하며 불일치는 safe semantic repair 대상이다. 새 PR 생성, 열기 또는 `PR을 올려`처럼 PR 자체를 생성하는 요청은 `create`로 인식하지만 현재 실행 capability에는 포함하지 않는다. 사용자가 GitHub API의 HTTP 호출을 명시하지 않은 한 GitHub PR operation을 `http_request`로 대체하지 않으며, `create`는 `unsupported`와 안전한 미지원 사유로 종료한다.
+
+Redacted request가 GitHub와 Pull Request를 명시했는데 LLM 결과가
+`http_request`를 새 capability로 반환하고 GitHub Pull Request action을 누락하면
+backend는 `GITHUB_INTEGRATION_ACTION_REQUIRED`로 한 번 repair를 요구한다. Backend는
+이 검사에서 raw message 동사를 operation으로 변환하거나 action을 직접 추가하지
+않는다. Operation은 repair된 LLM structured output에서만 가져온다.
+
+LLM 의미 후보는 서버에서 다시 검증한다. 최종 schema 정규화, capability catalog allowlist, unsupported 판정, pending/missing 분리, blocking 여부, external-action risk, target node/edge 확정과 graph 생성은 deterministic normalization, `TargetResolver`, product policy를 따라야 한다. Schema-valid 출력도 request type, draft mode, workflow context, 신규 capability, target, placement의 semantic invariant를 통과해야 한다. Semantic invariant 위반은 safe validation code만 포함해 최대 한 번 repair하고, 두 번째 결과도 유효하지 않으면 실패로 닫는다. Provider/JSON/schema 실패는 repair 또는 정규식 기반 graph 생성으로 fallback하지 않는다.
 
 구조화 LLM runtime은 인증 사용자와 active organization 범위에서 `use` 권한과 verified model relation을 통과한 credential/model 조합만 사용할 수 있다. Client는 화면에 표시된 조합 중 하나의 `credential_id`, `model_id`를 message request에 포함하고, server는 모든 요청에서 organization, credential validity, `use` 권한, active chat model, provider 일치, verified relation을 다시 검증한다. 선택 상태는 session, draft metadata, workflow graph 또는 별도 model-selection DB column에 저장하지 않는다. Permission/runtime 차단 audit은 safe credential/model ID와 reason을 기록할 수 있다. Credential 원문과 raw provider response는 prompt, API response, draft metadata, trace, audit에 저장하지 않는다. 사용할 runtime이 없으면 `configuration_required`, LLM 호출 또는 schema validation이 실패하면 `failed`를 반환하며 부분 draft를 확정하지 않는다.
 
@@ -87,7 +95,7 @@ Model option은 provider별 최신 세대 우선, 같은 세대에서는 성능 
 
 이 순서는 intent planner header 표시 순서다. Generated workflow LLM node의 기본 model 추천은 AB-FR-009의 별도 비용 친화적 순서를 사용하며, header에서 사용자가 선택한 intent planner model을 workflow node model로 복사하지 않는다.
 
-`StructuredRequestBuilder`는 KB 후보 목록이나 KB safe metadata 목록을 입력으로 받지 않고, KB 후보를 선택하지도 않는다. 이 단계는 사용자 요청에서 어떤 지식이 필요한지(`knowledge_requirements`)와 어떤 값이 resolver로 해결되어야 하는지(`pending_resolution`)만 구조화한다.
+`StructuredRequestBuilder`는 raw KB 목록이나 runtime KB id mapping을 입력으로 받지 않고 KB를 자동 선택하지도 않는다. Intent extractor가 권한 확인된 bounded safe candidate context에서 반환한 opaque handle은 `knowledge_requirements[].suggested_candidate_handles`에 hint로만 보존한다. 이 단계는 어떤 지식이 필요한지와 어떤 값이 resolver로 해결되어야 하는지를 구조화하며, 최종 후보 순위와 선택은 Recommendation Adapter와 사용자 clarification이 결정한다.
 
 ### AB-FR-004: Pending Resolution
 
@@ -109,7 +117,7 @@ Target resolution이 완료되지 않은 기존 workflow 수정 요청은 새 en
 정상이며, draft metadata의 `workflow_id`, base graph, stale 기준도 새 workflow 생성
 scope로 기록해야 한다.
 
-사용자가 canvas edge를 선택했고 자연어가 `여기 사이에`, `이 연결에`처럼 edge 문맥을 지칭하면 `selected_edge_id`를 target resolution hint로 사용할 수 있다. `selected_edge_id`는 위치 해석 보조 정보일 뿐이며 권한, scope, organization 판단에 사용하지 않는다.
+사용자가 canvas edge를 선택했고 LLM structured edit이 `selected_edge` target을 반환하면 `selected_edge_id`를 target resolution hint로 사용할 수 있다. Backend는 해당 edge가 server-loaded workflow graph에 실제로 존재하는지 다시 확인한다. Raw message 정규식은 selected edge 사용 여부를 결정하지 않으며, `selected_edge_id`는 권한, scope, organization 판단에 사용하지 않는다.
 
 `여기`, `이 노드`, `방금 만든 노드` 같은 문맥 의존 표현은 현재 selected node 또는 대화 맥락으로 특정 가능할 때만 사용한다.
 
@@ -127,9 +135,9 @@ Agent Builder가 KB/Collection picker 또는 workflow generation proposal을 표
 
 ### AB-FR-007: KB Recommendation Adapter
 
-Agent Builder는 `StructuredRequest`의 `knowledge_requirements`와 관련 `pending_resolution`을 기반으로 KB Recommendation Adapter를 호출한다.
+Agent Builder는 pre-intent safe candidate context를 사용해 `StructuredRequest`의 `knowledge_requirements`와 관련 `pending_resolution`을 만든 뒤 KB Recommendation Adapter를 호출한다. Pre-intent 후보 조회와 post-intent recommendation은 같은 permission/readiness 경계를 사용하지만, 후자는 현재 전체 후보를 다시 조회해 최종 점수를 계산한다.
 
-KB Recommendation Adapter는 `StructuredRequestBuilder`가 만든 지식 요구와 pending slot, 그리고 Knowledge side의 `KnowledgeCandidateResolver`가 만든 server-issued safe candidate set reference를 매칭한다. Authorized safe candidate set은 client request body나 `StructuredRequestBuilder` 입력에서 오지 않는다. 같은 backend 내부 service call에서는 full authorized safe candidate set 객체를 사용할 수 있지만, HTTP 또는 serialized boundary에서는 server-issued reference만 전달한다.
+KB Recommendation Adapter는 `StructuredRequestBuilder`가 만든 지식 요구와 pending slot, 그리고 Knowledge side의 `KnowledgeCandidateResolver`가 만든 server-issued safe candidate set reference를 매칭한다. Authorized safe candidate set은 client request body에서 오지 않는다. Intent LLM에는 full candidate 객체가 아니라 상위 20개 bounded safe projection만 전달하며, 같은 backend 내부 service call에서만 full authorized safe candidate set 객체를 ranking input으로 사용할 수 있다. HTTP 또는 serialized boundary에서는 server-issued reference만 전달한다.
 
 Adapter는 raw user input 전체가 아니라 다음 안전 요약을 사용해야 한다.
 
@@ -181,7 +189,7 @@ KB 선택 clarification은 별도의 `Knowledge Base 없이 생성` option을 �
 
 Draft는 기존 workflow model/schema와 지원 capability allowlist를 따라야 한다. Agent Builder는 임의 node type, edge structure, runtime rule을 만들 수 없다.
 
-지원 capability allowlist는 [ADR-0024](../../decisions/ADR-0024-agent-builder-node-capability-catalog.md)의 공통 Workflow Node Capability Catalog를 기준으로 한다. 현재 Workflow Editor와 Workflow Engine에 모두 구현된 `startNode`, `webhookTrigger`, `scheduleTrigger`, `llmNode`, `workflowNode`, `codeNode`, `conditionNode`, `fileExtractionNode`, `variableExtractionNode`, `answerNode`, `loopNode`, `httpRequestNode`, `slackPostNode`, `templateNode`, `githubNode`, `mailNode`를 Agent Builder allowlist에 포함한다. `githubNode`는 PR 조회와 PR 댓글 등록 capability를 구분하며, 요청에 두 동작이 모두 필요하면 별도 node로 생성한다.
+지원 capability allowlist는 [ADR-0024](../../decisions/ADR-0024-agent-builder-node-capability-catalog.md)의 공통 Workflow Node Capability Catalog를 기준으로 한다. 현재 구현된 16개 node type 중 `agent_builder_supported=true`인 `startNode`, `webhookTrigger`, `scheduleTrigger`, `llmNode`, `workflowNode`, `codeNode`, `conditionNode`, `fileExtractionNode`, `variableExtractionNode`, `answerNode`, `httpRequestNode`, `slackPostNode`, `templateNode`, `githubNode`, `mailNode` 15개를 포함한다. `loopNode`는 runtime 구현 여부와 별개로 현재 제품 가용성이 비활성 상태이므로 Agent Builder allowlist와 intent capability guide에서 제외한다. `githubNode`는 현재 PR 조회와 PR 댓글 등록 capability를 구분하며, 요청에 두 동작이 모두 필요하면 별도 node로 생성한다. PR 생성 operation은 자연어 의미로는 인식하지만 runtime, editor, catalog capability가 준비되기 전까지 draft node로 materialize하지 않는다.
 
 외부 action 또는 필수 runtime 설정이 필요한 node는 draft에 포함할 수 있지만 Agent Builder가 credential, token, password, repository, channel, URL, target workflow 같은 값을 임의 생성하거나 원문으로 채우지 않는다. 해결되지 않은 값은 빈 값과 `configuration_state=unresolved`로 표시하고 node별 `configuration_issues`에 필요한 파라미터를 남긴다. 같은 type의 node가 여러 개여도 issue를 합치지 않는다. Draft 생성, Preview Mode, apply/save는 해당 node를 실행하지 않으며, 실제 실행 전 기존 editor/runtime validation과 별도 사용자 동작이 필요하다.
 
@@ -201,6 +209,11 @@ Validation은 최소한 다음을 확인해야 한다.
 - 승인 없는 외부 호출 가능성
 - expired candidate handle
 - stale workflow context
+- entry/trigger node로 들어오는 edge
+- terminal node에서 나가는 edge
+- Condition의 Default 또는 설정된 case가 아닌 source handle
+
+연결 정책은 [ADR-0026](../../decisions/ADR-0026-agent-builder-intent-and-connection-validation.md)의 catalog v2 계약을 사용해 complete candidate graph에 적용한다. Preview validation과 apply/save 재검증은 같은 backend validator를 사용하며, 연결 정책 위반 graph는 저장하지 않는다.
 
 ### AB-FR-011: Draft Preview Mode And Apply Save
 

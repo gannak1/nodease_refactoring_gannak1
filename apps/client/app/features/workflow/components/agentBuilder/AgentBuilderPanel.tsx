@@ -472,17 +472,21 @@ export function AgentBuilderPanel({
         const topLevelDraftResponse = responseFromSessionDraftPreview(
           session.draft_preview,
         );
+        const latestRestoredResponse =
+          restored.responses[restored.responses.length - 1];
+        const canRestoreTopLevelDraft =
+          !latestRestoredResponse || latestRestoredResponse.status === 'draft_ready';
         const hasRestoredDraft = restored.responses.some(
           (response) =>
             response.draft_preview?.draft_id ===
             topLevelDraftResponse?.draft_preview?.draft_id,
         );
         const restoredResponses =
-          topLevelDraftResponse && !hasRestoredDraft
+          topLevelDraftResponse && canRestoreTopLevelDraft && !hasRestoredDraft
             ? [...restored.responses, topLevelDraftResponse]
             : restored.responses;
         const restoredConversationItems =
-          topLevelDraftResponse && !hasRestoredDraft
+          topLevelDraftResponse && canRestoreTopLevelDraft && !hasRestoredDraft
             ? [
                 ...restored.conversationItems,
                 {
@@ -893,7 +897,10 @@ export function AgentBuilderPanel({
                   <ChevronDown className="h-3.5 w-3.5 shrink-0" />
                 </button>
                 {isModelMenuOpen && (
-                  <div className="absolute right-0 top-8 z-20 max-h-72 w-72 overflow-y-auto rounded-md border border-slate-200 bg-white py-1 shadow-lg">
+                  <div
+                    data-testid="agent-builder-model-menu"
+                    className="absolute right-0 top-8 z-20 max-h-[264px] w-[190px] overflow-y-auto rounded-md border border-slate-200 bg-white py-1 shadow-lg"
+                  >
                     {intentModelGroups.map((group) => (
                       <div key={group.provider_name} className="py-1">
                         <div

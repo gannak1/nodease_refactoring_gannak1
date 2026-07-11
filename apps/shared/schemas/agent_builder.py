@@ -100,6 +100,7 @@ class AgentBuilderPlannedStep(BaseModel):
 class AgentBuilderKnowledgeRequirement(BaseModel):
     requirement_id: str
     query_topics: list[str] = Field(default_factory=list)
+    suggested_candidate_handles: list[str] = Field(default_factory=list, max_length=20)
     expected_evidence_type: str = "policy_or_reference"
     required: bool = True
     target_step_ref: str | None = None

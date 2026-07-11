@@ -1428,7 +1428,7 @@ class LLMService:
         if provider_name == "openai":
             generation_match = re.search(r"gpt-(\d+)(?:\.(\d+))?", normalized)
             if generation_match is None:
-                generation_match = re.search(r"^o(\d+)", normalized)
+                generation_match = re.search(r"^o(\d+)(?:\.(\d+))?", normalized)
             if "-pro" in normalized:
                 tier = 4
             elif "-mini" in normalized:

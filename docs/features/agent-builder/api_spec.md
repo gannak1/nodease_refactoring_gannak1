@@ -24,7 +24,7 @@ Agent Builder API는 workflow draft 생성, clarification, validation, draft pre
 
 `draft_mode=new_workflow`의 `apply_and_save`가 성공하면 server는 workflow graph 저장과 같은 transaction에서 해당 draft의 session scope를 새 `saved_workflow_id`와 app으로 재결합한다. Client는 응답의 `saved_workflow_id` route로 이동할 때 기존 server-issued session id만 새 workflow storage key로 이전하며, 새 id를 만들거나 다른 scope의 session을 재사용하지 않는다.
 
-Session 조회/복구 response의 최근 메시지는 사용자 turn과 assistant response를 함께 복구할 수 있어야 한다. 사용자 turn은 redaction을 거친 `message_summary` 또는 동등한 safe content만 포함하고, assistant turn은 기존 Agent Builder message response와 같은 safe response payload를 포함한다. Legacy response-only message가 남아 있더라도 client는 이를 assistant turn으로 해석할 수 있지만, 신규 저장은 사용자 redacted turn과 assistant turn을 구분해야 한다.
+Session 조회/복구 response의 최근 메시지는 사용자 turn과 assistant response를 함께 복구할 수 있어야 한다. 사용자 turn은 redaction을 거친 `message_summary` 또는 동등한 safe content만 포함하고, assistant turn은 기존 Agent Builder message response와 같은 safe response payload를 포함한다. Legacy response-only message가 남아 있더라도 client는 이를 assistant turn으로 해석할 수 있지만, 신규 저장은 사용자 redacted turn과 assistant turn을 구분해야 한다. Top-level `draft_preview`는 해당 session의 최신 request와 `request_id`가 일치하는 ready draft에 대해서만 반환한다. 최신 request가 `failed`, `unsupported`, `validation_failed`이거나 과거 request의 draft만 남아 있으면 이전 preview를 현재 응답처럼 복구하지 않는다.
 
 ## Message Request
 
@@ -70,14 +70,25 @@ KB 후보 clarification의 `clarification_options`는 실제 선택 가능한 Kn
 
 `structured_request`는 raw secret, raw provider response, raw KB content, hidden KB/source information을 포함하지 않는다.
 
+Intent LLM request에는 backend가 현재 권한과 retrieval-visible 상태를 확인한 상위 20개 KB candidate의 `candidate_handle`, `safe_label`, `safe_topics`, `safe_description`, `runtime_availability`, `relevance_score`만 내부 safe context로 포함할 수 있다. 이 context는 public client request field가 아니며 raw KB UUID, collection/source/document/chunk identity를 포함하지 않는다.
+
 일반 message submit은 server-side `LLMIntentExtractor`의 schema-validated JSON 결과를
-`StructuredRequestBuilder`가 결정론적으로 정규화한 뒤 처리한다. 사용할 수 있는
+semantic invariant로 재검증하고 `StructuredRequestBuilder`가 결정론적으로 정규화한 뒤 처리한다. Schema-valid 결과가 request type, draft mode, workflow context, 신규 capability, target, placement 계약과 모순되면 safe validation code만으로 정확히 한 번 repair를 요청한다. 두 번째 결과도 유효하지 않으면 `INTENT_EXTRACTION_FAILED`로 종료한다. 사용할 수 있는
 permission-aware LLM runtime이 없으면 `status=configuration_required`와
 `INTENT_MODEL_ROUTE_REQUIRED`를 반환한다. Provider 호출 또는 JSON/schema validation이
 실패하면 `status=failed`와 `INTENT_EXTRACTION_FAILED`를 반환하고 partial draft를 저장하지
-않는다. 두 응답 모두 credential 원문과 raw provider response를 포함하지 않는다. KB 후보
+않으며 이 오류에는 repair를 시도하지 않는다. 모든 실패 응답과 repair prompt는 credential 원문과 raw provider response를 포함하지 않는다. KB 후보
 clarification에 대한 선택 제출은 직전 저장된 `structured_request`를 재사용하므로 동일 사용자
 요청을 다시 LLM으로 구조화하지 않는다.
+
+내부 intent extraction은 명시적 GitHub Pull Request 요청을 `integration_actions[]`의 provider=`github`, resource=`pull_request`, operation=`read|comment|create`로 분류한다. `read`와 `comment`는 각각 catalog의 `github_pr_read`, `github_pr_comment`와 일치해야 하며 불일치는 한 번의 safe semantic repair 대상이다. `create`는 의미상 인식하지만 현재 API가 materialize할 실행 capability가 아니므로 `status=unsupported`와 안전한 미지원 사유를 반환한다. 사용자가 GitHub API를 HTTP로 호출하라고 명시하지 않은 한 이 operation을 `http_request`로 대체하지 않는다. `integration_actions`는 내부 planner contract이며 client가 지정하는 권한 또는 node 생성 입력이 아니다.
+
+Redacted request가 GitHub Pull Request를 명시하고 첫 structured result가
+GitHub action 없이 `http_request`를 반환하면 server는
+`GITHUB_INTEGRATION_ACTION_REQUIRED` safe code로 정확히 한 번 repair한다. Server는
+이 과정에서 operation을 만들지 않으며, 두 번째 structured result도 provider,
+resource, operation과 capability 계약을 충족하지 못하면
+`INTENT_EXTRACTION_FAILED`로 종료한다.
 
 ## StructuredRequest Fields
 
@@ -95,12 +106,18 @@ clarification에 대한 선택 제출은 직전 저장된 `structured_request`�
 | `risk_flags` | permission, external action, secret-like input 등 risk |
 | `edit_operations` | 기존 workflow 수정 연산 목록. `operation`, `placement`, `step_refs`, `target`을 포함하며 target은 아직 해결되지 않은 자연어/selection reference를 표현 |
 
+`knowledge_requirements[].suggested_candidate_handles`는 Intent LLM이 bounded safe context에서 관련 가능성이 있다고 제안한 opaque handle 목록이다. 자동 선택이나 권한 부여가 아니며, Recommendation Adapter가 현재 후보를 다시 조회하고 사용자가 clarification에서 선택하기 전에는 runtime KB reference로 materialize하지 않는다. Prompt에 없던 handle은 `UNKNOWN_KNOWLEDGE_CANDIDATE_HANDLE` semantic validation code로 거부한다.
+
 `edit_operations[].operation`은 MVP에서 `insert`를 지원한다. `placement`는 `before`,
 `after`, `between` 중 하나이며 `step_refs`는 새로 생성할 `planned_steps`만 참조한다.
 `target.node_types`와 `target.capabilities`는 기존 graph 후보를 찾기 위한 safe semantic
 reference이고, 최종 node/edge id는 server-side `TargetResolver`가 현재 저장된 workflow
 graph에서 확정한다. Target 후보가 여러 개이면 response의 `clarification_options`에
 `type=workflow_node`, `node_id`, safe label, node type을 반환할 수 있다.
+
+`target.reference_type=selected_edge`는 같은 request의 server-validated `selected_edge_id`가 있고 해당 edge가 server-loaded graph에 존재할 때만 사용할 수 있다. Raw message regex는 이 결정을 대체하지 않는다.
+
+`validation_result.issues[].code`는 catalog connection policy 위반에 대해 `START_NODE_HAS_INCOMING_EDGE`, `TRIGGER_NODE_HAS_INCOMING_EDGE`, `TERMINAL_NODE_HAS_OUTGOING_EDGE`, `INVALID_CONDITION_SOURCE_HANDLE`을 반환할 수 있다. 같은 validator를 preview와 apply/save에서 재사용하며 위반 graph는 저장하지 않는다.
 
 ## KB Recommendation Adapter Contract
 

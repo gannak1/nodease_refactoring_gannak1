@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { AppNode } from '../../types/Nodes';
 import type { Edge, WorkflowDraftRequest } from '../../types/Workflow';
@@ -22,6 +24,53 @@ const draft = (nodes: AppNode[], edges: Edge[]): WorkflowDraftRequest => ({
 });
 
 describe('validateWorkflowGraph', () => {
+  it('matches catalog entry, terminal, and condition connection policies', () => {
+    const catalog = JSON.parse(
+      readFileSync(
+        resolve(
+          process.cwd(),
+          '../../apps/shared/config/workflow_node_catalog.json',
+        ),
+        'utf8',
+      ),
+    ) as {
+      nodes: Array<{
+        node_type: AppNode['type'];
+        connection_policy: {
+          incoming: string;
+          outgoing: string;
+          outgoing_handles: string;
+        };
+      }>;
+    };
+
+    for (const definition of catalog.nodes) {
+      if (definition.connection_policy.incoming === 'forbidden') {
+        const result = validateWorkflowGraph(
+          draft(
+            [
+              node('source', 'templateNode', 'Source'),
+              node('target', definition.node_type, 'Target'),
+            ],
+            [{ id: 'edge', source: 'source', target: 'target' }],
+          ),
+        );
+        expect(result.ok).toBe(false);
+      }
+      if (definition.connection_policy.outgoing === 'forbidden') {
+        const result = validateWorkflowGraph(
+          draft(
+            [
+              node('source', definition.node_type, 'Source'),
+              node('target', 'templateNode', 'Target'),
+            ],
+            [{ id: 'edge', source: 'source', target: 'target' }],
+          ),
+        );
+        expect(result.ok).toBe(false);
+      }
+    }
+  });
   it('blocks edges entering a start node', () => {
     const nodes = [
       node('start', 'startNode', '입력'),
@@ -46,6 +95,29 @@ describe('validateWorkflowGraph', () => {
       sourceNodeTitle: '템플릿',
       targetNodeTitle: '입력',
     });
+  });
+
+  it('blocks condition edges that use an unknown branch handle', () => {
+    const condition = {
+      ...node('condition', 'conditionNode', '조건'),
+      data: { title: '조건', cases: [{ id: 'case-1', value: 'yes' }] },
+    } as AppNode;
+    const result = validateWorkflowGraph(
+      draft(
+        [condition, node('template', 'templateNode', '템플릿')],
+        [
+          {
+            id: 'bad-condition-edge',
+            source: 'condition',
+            sourceHandle: 'missing-case',
+            target: 'template',
+          },
+        ],
+      ),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.errors[0].code).toBe('INVALID_CONDITION_SOURCE_HANDLE');
   });
 
   it('cleans edges that cannot be represented or executed', () => {

@@ -17,6 +17,7 @@ from apps.gateway.services.agent_builder_intent_service import (
     AgentBuilderIntentExtractionError,
     AgentBuilderIntentExtractor,
     AgentBuilderIntentRuntimeUnavailableError,
+    validate_intent_semantics,
 )
 from apps.gateway.services.audit_records import add_action_audit
 from apps.gateway.services.knowledge_rag_recommendation_service import (
@@ -61,6 +62,7 @@ from apps.shared.services.workflow_node_catalog import (
     agent_builder_supported_node_types,
     node_definition,
     node_type_for_capability,
+    validate_workflow_graph_connections,
 )
 from apps.shared.services.permission_audit import record_resource_permission_denied
 
@@ -1036,10 +1038,10 @@ class AgentBuilderService:
                 if selected_kb_context
                 else self._structure_request(message_request, workflow)
             )
-            effective_selected_edge_id = self._selected_edge_id_for_message(
+            effective_selected_edge_id = self._selected_edge_id_for_structured_request(
                 workflow,
                 message_request.selected_edge_id,
-                message_request.message,
+                structured,
             )
             target_resolution = self._resolve_edit_target(
                 structured,
@@ -1982,6 +1984,20 @@ class AgentBuilderService:
                         path=f"edges.{edge.get('id')}",
                     )
                 )
+        connection_messages = {
+            "START_NODE_HAS_INCOMING_EDGE": "입력 node에는 incoming edge를 연결할 수 없습니다.",
+            "TRIGGER_NODE_HAS_INCOMING_EDGE": "Trigger node에는 incoming edge를 연결할 수 없습니다.",
+            "TERMINAL_NODE_HAS_OUTGOING_EDGE": "응답 node에는 outgoing edge를 연결할 수 없습니다.",
+            "INVALID_CONDITION_SOURCE_HANDLE": "Condition edge가 존재하지 않는 분기 handle을 사용합니다.",
+        }
+        for connection_issue in validate_workflow_graph_connections(graph):
+            issues.append(
+                AgentBuilderValidationIssue(
+                    code=connection_issue.code,
+                    message=connection_messages[connection_issue.code],
+                    path=f"edges.{connection_issue.edge_id or 'unknown'}",
+                )
+            )
         if generated_node_ids:
             generated_ids = set(generated_node_ids)
             existing_ids = node_ids - generated_ids
@@ -2113,9 +2129,16 @@ class AgentBuilderService:
             raise AgentBuilderIntentRuntimeUnavailableError(
                 "Agent Builder intent extractor is not configured"
             )
+        workflow_context = self._safe_intent_workflow_context(workflow, request)
+        safe_message = _safe_summary(request.message, limit=2000)
         extraction = self.intent_extractor.extract(
-            safe_message=_safe_summary(request.message, limit=2000),
-            workflow_context=self._safe_intent_workflow_context(workflow, request),
+            safe_message=safe_message,
+            workflow_context=workflow_context,
+        )
+        validate_intent_semantics(
+            extraction,
+            workflow_context,
+            safe_message=safe_message,
         )
         return self._normalize_intent_extraction(
             extraction,
@@ -2133,6 +2156,17 @@ class AgentBuilderService:
         intent_summary = _safe_summary(extraction.intent_summary, limit=240)
         if not intent_summary:
             intent_summary = _safe_summary(request.message)
+
+        unsupported_integration_requests = []
+        if any(
+            action.provider == "github"
+            and action.resource == "pull_request"
+            and action.operation == "create"
+            for action in extraction.integration_actions
+        ):
+            unsupported_integration_requests.append(
+                "GitHub Pull Request 생성은 현재 지원되지 않습니다."
+            )
 
         requested = [
             str(capability).strip()
@@ -2167,6 +2201,7 @@ class AgentBuilderService:
         if (
             extraction.request_type == "unsupported"
             or unsupported_capabilities
+            or unsupported_integration_requests
             or not mode_matches_request
         ):
             reasons = [
@@ -2174,6 +2209,7 @@ class AgentBuilderService:
                 for reason in extraction.unsupported_requests
                 if _safe_summary(reason, limit=160)
             ]
+            reasons.extend(unsupported_integration_requests)
             if unsupported_capabilities:
                 reasons.append("지원 capability allowlist 밖의 요청이 포함되어 있습니다.")
             if not mode_matches_request:
@@ -2224,7 +2260,7 @@ class AgentBuilderService:
             normalized_capabilities.insert(answer_index, "knowledge_backed_llm")
 
         missing_information: list[str] = []
-        if draft_mode == "new_workflow":
+        if draft_mode in {"new_workflow", "replace_workflow"}:
             entries = [
                 capability
                 for capability in normalized_capabilities
@@ -2306,6 +2342,14 @@ class AgentBuilderService:
                 AgentBuilderKnowledgeRequirement(
                     requirement_id="kr_1",
                     query_topics=topics,
+                    suggested_candidate_handles=list(
+                        dict.fromkeys(
+                            handle.strip()[:255]
+                            for handle in extraction.knowledge_candidate_handles
+                            if isinstance(handle, str)
+                            and handle.strip().startswith("rec-")
+                        )
+                    )[:20],
                     expected_evidence_type="policy_or_reference",
                     required=True,
                     target_step_ref=knowledge_step_id,
@@ -2409,7 +2453,7 @@ class AgentBuilderService:
                 )
 
         return AgentBuilderStructuredRequest(
-            request_type=draft_mode,
+            request_type=extraction.request_type,
             draft_mode=draft_mode,
             intent_summary=intent_summary,
             planned_steps=planned_steps,
@@ -2887,15 +2931,18 @@ class AgentBuilderService:
             "replaced_edge_ids": replaced_edge_ids,
         }
 
-    def _selected_edge_id_for_message(
+    def _selected_edge_id_for_structured_request(
         self,
         workflow: Workflow | None,
         selected_edge_id: str | None,
-        message: str,
+        structured: AgentBuilderStructuredRequest,
     ) -> str | None:
         if not workflow or not selected_edge_id:
             return None
-        if not _message_mentions_edge_context(message):
+        if not any(
+            operation.target.reference_type == "selected_edge"
+            for operation in structured.edit_operations
+        ):
             return None
         return (
             selected_edge_id
@@ -4149,16 +4196,27 @@ class AgentBuilderService:
             .order_by(AgentBuilderDraft.created_at.desc())
             .first()
         )
+        latest_request_draft = (
+            latest_draft
+            if latest_request is not None
+            and latest_draft is not None
+            and latest_draft.request_id == latest_request.id
+            else None
+        )
         return AgentBuilderSessionResponse(
             session_id=session.id,
             workflow_id=session.workflow_id,
             app_id=session.app_id,
             status=session.status,
-            messages=self._session_messages(latest_request, latest_draft),
+            messages=self._session_messages(latest_request, latest_request_draft),
             pending_request=self._request_summary(latest_request)
             if latest_request and latest_request.status == "processing"
             else None,
-            draft_preview=self._draft_summary(latest_draft) if latest_draft else None,
+            draft_preview=(
+                self._draft_summary(latest_request_draft)
+                if latest_request_draft
+                else None
+            ),
         )
 
     def _session_messages(

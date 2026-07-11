@@ -150,6 +150,48 @@ def test_recommendation_uses_generic_label_without_raw_kb_name():
     assert "safe_label_unavailable" in recommendation.warnings
 
 
+def test_safe_intent_candidate_context_is_bounded_and_excludes_raw_identity():
+    raw_kb_id = uuid.uuid4()
+    resolver = FakeResolver(
+        KnowledgeCandidateResolution(
+            candidates=[
+                _candidate(
+                    candidate_id=raw_kb_id,
+                    safe_label="사내 인사 문서",
+                    runtime_availability="available",
+                    safe_metadata={
+                        "kb_safe_topics": ["인사", "온보딩"],
+                        "kb_safe_description": "사내 인사 정책",
+                        "raw_source_path": "/secret/hr.md",
+                        "collection_id": str(uuid.uuid4()),
+                    },
+                )
+            ]
+        )
+    )
+
+    context = _service(resolver).safe_intent_candidates_for_builder(
+        "사내 인사 문서 챗봇을 만들어줘",
+        max_candidates=20,
+    )
+
+    assert context == [
+        {
+            "candidate_handle": context[0]["candidate_handle"],
+            "safe_label": "사내 인사 문서",
+            "safe_topics": ["인사", "온보딩"],
+            "safe_description": "사내 인사 정책",
+            "runtime_availability": "available",
+            "relevance_score": context[0]["relevance_score"],
+        }
+    ]
+    serialized = str(context)
+    assert context[0]["candidate_handle"].startswith("rec-")
+    assert str(raw_kb_id) not in serialized
+    assert "/secret/hr.md" not in serialized
+    assert "collection_id" not in serialized
+
+
 def test_high_risk_domain_only_changes_recommended_options():
     resolver = FakeResolver(
         KnowledgeCandidateResolution(candidates=[_candidate(runtime_availability="available")])

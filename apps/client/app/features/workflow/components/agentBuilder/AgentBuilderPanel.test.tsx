@@ -202,6 +202,11 @@ describe('AgentBuilderPanel', () => {
       screen.getByRole('button', { name: /Agent Builder 모델: GPT-5.5 Pro/ }),
     );
 
+    expect(screen.getByTestId('agent-builder-model-menu')).toHaveClass(
+      'w-[190px]',
+      'max-h-[264px]',
+      'overflow-y-auto',
+    );
     expect(
       screen.getAllByTestId('agent-builder-model-provider').map((item) => item.textContent),
     ).toEqual(['openai', 'anthropic', 'google', 'llamaparse']);
@@ -1502,6 +1507,71 @@ describe('AgentBuilderPanel', () => {
       );
     });
   });
+
+  it.each(['failed', 'unsupported', 'validation_failed'] as const)(
+    '최신 응답이 %s이면 이전 top-level draft_preview를 복구하지 않는다',
+    async (status) => {
+      window.localStorage.setItem(
+        'agent-builder:workflow-old:app-1',
+        `session-stale-${status}`,
+      );
+      vi.mocked(agentBuilderApi.getSession).mockResolvedValue({
+        session_id: `session-stale-${status}`,
+        workflow_id: 'workflow-old',
+        app_id: 'app-1',
+        status: 'active',
+        messages: [
+          {
+            kind: 'assistant',
+            request_id: `request-latest-${status}`,
+            response: {
+              request_id: `request-latest-${status}`,
+              status,
+              structured_request: null,
+              clarification_questions: [],
+              clarification_options: [],
+              draft_preview: null,
+              validation_result: null,
+              preview_prompt: null,
+              warnings: [],
+            },
+          },
+        ],
+        pending_request: null,
+        draft_preview: {
+          draft_id: 'draft-old-http',
+          preview_graph: {
+            nodes: [node('old-http-node')],
+            edges: [],
+            viewport: { x: 0, y: 0, zoom: 1 },
+          },
+          base_graph_hash: 'old-http-hash',
+          draft_mode: 'modify_workflow',
+          node_detail_previews: [],
+          validation_result: { valid: true, issues: [] },
+          safety_notices: [],
+          configuration_issues: [],
+        },
+      });
+
+      render(
+        <AgentBuilderPanel
+          workflowId="workflow-old"
+          appId="app-1"
+          nodes={[]}
+          edges={[]}
+          hasUnsavedChanges={false}
+        />,
+      );
+
+      fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+
+      expect(await screen.findByText(status)).toBeTruthy();
+      expect(
+        screen.queryByRole('button', { name: '도안 생성 미리보기' }),
+      ).toBeNull();
+    },
+  );
 
   it('Preview Mode 중 새 요청을 보내면 이전 preview를 종료한다', async () => {
     vi.mocked(agentBuilderApi.createSession).mockResolvedValue({

@@ -158,6 +158,65 @@ class KnowledgeRAGRecommendationService:
             reason_code=None if recommendations else resolution.reason_code or "no_candidate",
         )
 
+    def safe_intent_candidates_for_builder(
+        self,
+        workflow_intent: str,
+        *,
+        max_candidates: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Return a bounded, permission-filtered KB projection for intent planning."""
+        limit = max(1, min(int(max_candidates), 20))
+        request = KnowledgeRAGRecommendationRequest(
+            workflow_intent=workflow_intent,
+            node_purpose=workflow_intent,
+            intended_execution_subject_id=self.user_id,
+            mode="auto",
+            max_recommendations=limit,
+        )
+        resolver = self.resolver or self._resolver_for_request(request)
+        try:
+            resolution = self._resolve_candidates(resolver, request, "auto_collection")
+            ranked = self._rank_candidates(resolution.candidates, request)[:limit]
+        except Exception:
+            return []
+
+        result: list[dict[str, Any]] = []
+        for candidate, score, _matched_terms, _used_signals in ranked:
+            metadata = candidate.safe_metadata or {}
+            raw_topics = metadata.get("kb_safe_topics")
+            safe_topics = []
+            if isinstance(raw_topics, (list, tuple, set)):
+                for value in raw_topics:
+                    if not isinstance(value, str):
+                        continue
+                    topic = value.strip()[:128]
+                    if topic and topic not in safe_topics:
+                        safe_topics.append(topic)
+                    if len(safe_topics) >= 10:
+                        break
+            safe_description = metadata.get("kb_safe_description")
+            result.append(
+                {
+                    "candidate_handle": self._recommendation_id(candidate),
+                    "safe_label": (
+                        candidate.safe_label.strip()[:255]
+                        if isinstance(candidate.safe_label, str)
+                        and candidate.safe_label.strip()
+                        else None
+                    ),
+                    "safe_topics": safe_topics,
+                    "safe_description": (
+                        safe_description.strip()[:500]
+                        if isinstance(safe_description, str)
+                        and safe_description.strip()
+                        else None
+                    ),
+                    "runtime_availability": candidate.runtime_availability,
+                    "relevance_score": round(max(0.0, min(score, 0.99)), 4),
+                }
+            )
+        return result
+
     def materialize_candidate_handles_for_builder(
         self,
         request: KnowledgeRAGRecommendationRequest,

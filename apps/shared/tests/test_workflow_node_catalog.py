@@ -2,6 +2,7 @@ from apps.shared.services.workflow_node_catalog import (
     agent_builder_supported_node_types,
     implemented_node_types,
     load_workflow_node_catalog,
+    validate_workflow_graph_connections,
 )
 
 
@@ -23,14 +24,15 @@ EXPECTED_IMPLEMENTED_NODE_TYPES = {
     "webhookTrigger",
     "workflowNode",
 }
+EXPECTED_AGENT_BUILDER_NODE_TYPES = EXPECTED_IMPLEMENTED_NODE_TYPES - {"loopNode"}
 
 
-def test_workflow_node_catalog_contains_every_implemented_node_in_builder_allowlist():
+def test_workflow_node_catalog_excludes_product_unavailable_nodes_from_builder_allowlist():
     catalog = load_workflow_node_catalog()
 
-    assert catalog["version"] == 1
+    assert catalog["version"] == 2
     assert implemented_node_types() == EXPECTED_IMPLEMENTED_NODE_TYPES
-    assert agent_builder_supported_node_types() == EXPECTED_IMPLEMENTED_NODE_TYPES
+    assert agent_builder_supported_node_types() == EXPECTED_AGENT_BUILDER_NODE_TYPES
 
 
 def test_workflow_node_catalog_declares_safe_generation_contract_for_every_node():
@@ -51,3 +53,51 @@ def test_workflow_node_catalog_declares_safe_generation_contract_for_every_node(
             assert set(node["required_configuration"]) <= set(
                 node.get("configuration_labels") or {}
             )
+
+
+def test_workflow_node_catalog_declares_connection_policy_for_every_node():
+    catalog = load_workflow_node_catalog()
+
+    for node in catalog["nodes"]:
+        policy = node["connection_policy"]
+        assert policy["role"] in {"entry", "intermediate", "branch", "terminal"}
+        assert policy["incoming"] in {"forbidden", "allowed", "required"}
+        assert policy["outgoing"] in {"forbidden", "allowed", "required"}
+        assert policy["outgoing_handles"] in {
+            "standard",
+            "condition_cases",
+            "unrestricted",
+        }
+
+
+def test_connection_policy_rejects_entry_terminal_and_condition_violations():
+    graph = {
+        "nodes": [
+            {"id": "start", "type": "startNode", "data": {}},
+            {"id": "answer", "type": "answerNode", "data": {}},
+            {
+                "id": "condition",
+                "type": "conditionNode",
+                "data": {"cases": [{"id": "case-1"}]},
+            },
+            {"id": "llm", "type": "llmNode", "data": {}},
+        ],
+        "edges": [
+            {"id": "into-start", "source": "llm", "target": "start"},
+            {"id": "from-answer", "source": "answer", "target": "llm"},
+            {
+                "id": "bad-condition",
+                "source": "condition",
+                "sourceHandle": "missing-case",
+                "target": "llm",
+            },
+        ],
+    }
+
+    issues = validate_workflow_graph_connections(graph)
+
+    assert {issue.code for issue in issues} == {
+        "START_NODE_HAS_INCOMING_EDGE",
+        "TERMINAL_NODE_HAS_OUTGOING_EDGE",
+        "INVALID_CONDITION_SOURCE_HANDLE",
+    }

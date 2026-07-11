@@ -628,6 +628,7 @@ def test_agent_builder_model_options_use_provider_and_performance_order(monkeypa
         option("google", "gemini-3.5-flash", "Gemini 3.5 Flash", "google"),
         option("anthropic", "claude-sonnet-5", "Claude Sonnet 5", "anthropic"),
         option("openai", "gpt-5.5-pro", "GPT-5.5 Pro", "openai"),
+        option("openai", "o4-mini", "o4 Mini", "openai"),
     ]
     monkeypatch.setattr(
         llm_service,
@@ -668,7 +669,7 @@ def test_agent_builder_model_options_use_provider_and_performance_order(monkeypa
     ]
     assert [
         item.model.model_id_for_api_call for item in groups[0].options
-    ] == ["gpt-5.5-pro", "gpt-5.5", "gpt-5.4-mini"]
+    ] == ["gpt-5.5-pro", "gpt-5.5", "gpt-5.4-mini", "o4-mini"]
     assert [
         item.model.model_id_for_api_call for item in groups[1].options
     ] == ["claude-sonnet-5", "claude-opus-4-8"]

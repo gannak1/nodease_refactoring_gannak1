@@ -13,8 +13,12 @@ from apps.gateway.services.agent_builder_service import (
 from apps.shared.schemas.agent_builder import (
     AgentBuilderApplyRequest,
     AgentBuilderApplyResponse,
+    AgentBuilderEditOperation,
+    AgentBuilderEditTargetReference,
     AgentBuilderMessageResponse,
     AgentBuilderMessageRequest,
+    AgentBuilderPlannedStep,
+    AgentBuilderStructuredRequest,
 )
 from apps.shared.schemas.knowledge import (
     KnowledgeRAGRecommendation,
@@ -722,6 +726,67 @@ def test_modify_preview_rejects_generated_component_detached_from_existing_graph
     }
 
 
+@pytest.mark.parametrize(
+    ("nodes", "edge", "expected_code"),
+    [
+        (
+            [
+                {"id": "llm", "type": "llmNode", "data": {}},
+                {"id": "start", "type": "startNode", "data": {}},
+            ],
+            {"id": "bad", "source": "llm", "target": "start"},
+            "START_NODE_HAS_INCOMING_EDGE",
+        ),
+        (
+            [
+                {"id": "llm", "type": "llmNode", "data": {}},
+                {"id": "webhook", "type": "webhookTrigger", "data": {}},
+            ],
+            {"id": "bad", "source": "llm", "target": "webhook"},
+            "TRIGGER_NODE_HAS_INCOMING_EDGE",
+        ),
+        (
+            [
+                {"id": "answer", "type": "answerNode", "data": {}},
+                {"id": "llm", "type": "llmNode", "data": {}},
+            ],
+            {"id": "bad", "source": "answer", "target": "llm"},
+            "TERMINAL_NODE_HAS_OUTGOING_EDGE",
+        ),
+        (
+            [
+                {
+                    "id": "condition",
+                    "type": "conditionNode",
+                    "data": {"cases": [{"id": "case-1"}]},
+                },
+                {"id": "llm", "type": "llmNode", "data": {}},
+            ],
+            {
+                "id": "bad",
+                "source": "condition",
+                "sourceHandle": "missing-case",
+                "target": "llm",
+            },
+            "INVALID_CONDITION_SOURCE_HANDLE",
+        ),
+    ],
+)
+def test_agent_builder_backend_rejects_invalid_connection_policy(
+    nodes, edge, expected_code
+):
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    result = svc.validate_preview_graph({"nodes": nodes, "edges": [edge]})
+
+    assert result.valid is False
+    assert expected_code in {issue.code for issue in result.issues}
+
+
 def test_modify_request_inserts_answer_node_after_existing_llm():
     workflow = SimpleNamespace(
         graph={
@@ -1073,7 +1138,7 @@ def test_github_llm_review_without_comment_intent_does_not_add_comment_node(
     assert [node["data"]["action"] for node in github_nodes] == ["get_pr"]
 
 
-def test_spaced_korean_webhook_and_github_upload_phrase_builds_two_github_nodes(
+def test_spaced_korean_webhook_and_explicit_github_comment_builds_two_github_nodes(
     monkeypatch,
 ):
     svc = AgentBuilderService(
@@ -1085,7 +1150,7 @@ def test_spaced_korean_webhook_and_github_upload_phrase_builds_two_github_nodes(
 
     structured = svc._build_structured_request(  # noqa: SLF001
         AgentBuilderMessageRequest(
-            message="웹 훅으로 받고 깃허브에서 PR을 받고 분석해서 깃허브 PR을 올리는 노드를 생성해줘"
+            message="웹 훅으로 받고 깃허브에서 PR을 받고 분석해서 깃허브 PR에 리뷰 댓글을 올리는 노드를 생성해줘"
         ),
         workflow=None,
     )
@@ -1111,7 +1176,7 @@ def test_spaced_korean_webhook_and_github_upload_phrase_builds_two_github_nodes(
     ]
 
 
-def test_submit_message_preserves_spaced_korean_github_workflow_capabilities(
+def test_submit_message_preserves_explicit_github_comment_capabilities(
     monkeypatch,
 ):
     db = FakeDb()
@@ -1157,7 +1222,7 @@ def test_submit_message_preserves_spaced_korean_github_workflow_capabilities(
     response = svc.submit_message(
         session_id,
         AgentBuilderMessageRequest(
-            message="웹 훅으로 받고 깃허브에서 PR을 받고 분석해서 깃허브 PR을 올리는 노드를 생성해줘"
+            message="웹 훅으로 받고 깃허브에서 PR을 받고 분석해서 깃허브 PR에 리뷰 댓글을 올리는 노드를 생성해줘"
         ),
     )
 
@@ -1403,7 +1468,6 @@ def test_submit_message_splices_named_existing_target_and_apply_removes_old_edge
         ("file_extraction", "fileExtractionNode"),
         ("variable_extraction", "variableExtractionNode"),
         ("answer", "answerNode"),
-        ("loop", "loopNode"),
         ("http_request", "httpRequestNode"),
         ("slack_send", "slackPostNode"),
         ("template_render", "templateNode"),
@@ -1543,6 +1607,124 @@ def test_session_message_payload_rehydrates_ready_draft_preview():
             ],
         }
     ]
+
+
+@pytest.mark.parametrize("latest_status", ["failed", "unsupported", "validation_failed"])
+def test_session_response_hides_draft_from_an_older_request(latest_status):
+    latest_request_id = uuid.uuid4()
+    graph = {
+        "nodes": [
+            {
+                "id": "http-old",
+                "type": "httpRequestNode",
+                "position": {"x": 0, "y": 0},
+                "data": {"title": "이전 HTTP 요청"},
+            }
+        ],
+        "edges": [],
+    }
+    latest_request = SimpleNamespace(
+        id=latest_request_id,
+        status=latest_status,
+        message_summary="기존 LLM 노드 뒤에 GitHub PR 생성 노드를 삽입",
+        response_payload={
+            "request_id": str(latest_request_id),
+            "status": latest_status,
+            "warnings": [],
+        },
+        created_at=None,
+    )
+    older_draft = SimpleNamespace(
+        id=uuid.uuid4(),
+        request_id=uuid.uuid4(),
+        status="ready",
+        preview_graph=graph,
+        base_graph_hash=calculate_graph_hash(graph),
+        base_workflow_updated_at=None,
+        draft_mode="modify_workflow",
+        node_detail_previews=[],
+        validation_result={"valid": True, "issues": []},
+        draft_metadata={},
+        expires_at=None,
+    )
+
+    class SessionDb(FakeDb):
+        def query(self, model):
+            if model is service_module.AgentBuilderRequest:
+                return FakeQuery(latest_request)
+            if model is service_module.AgentBuilderDraft:
+                return FakeQuery(older_draft)
+            raise AssertionError(f"unexpected model: {model}")
+
+    svc = AgentBuilderService(
+        SessionDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    response = svc._session_response(  # noqa: SLF001
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            workflow_id=uuid.uuid4(),
+            app_id=None,
+            status="active",
+        )
+    )
+
+    assert response.draft_preview is None
+    assert response.messages[-1]["response"]["status"] == latest_status
+    assert response.messages[-1]["response"].get("draft_preview") is None
+
+
+def test_session_response_restores_draft_for_the_latest_request():
+    request_id = uuid.uuid4()
+    latest_request = SimpleNamespace(
+        id=request_id,
+        status="completed",
+        message_summary="입력과 응답 노드를 만들어줘",
+        response_payload={
+            "request_id": str(request_id),
+            "status": "draft_ready",
+        },
+        created_at=None,
+    )
+    latest_draft = SimpleNamespace(
+        id=uuid.uuid4(),
+        request_id=request_id,
+        status="ready",
+        preview_graph={"nodes": [], "edges": []},
+        base_graph_hash="latest-graph",
+        base_workflow_updated_at=None,
+        draft_mode="new_workflow",
+        node_detail_previews=[],
+        validation_result={"valid": True, "issues": []},
+        draft_metadata={},
+        expires_at=None,
+    )
+
+    class SessionDb(FakeDb):
+        def query(self, model):
+            if model is service_module.AgentBuilderRequest:
+                return FakeQuery(latest_request)
+            if model is service_module.AgentBuilderDraft:
+                return FakeQuery(latest_draft)
+            raise AssertionError(f"unexpected model: {model}")
+
+    svc = AgentBuilderService(
+        SessionDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    response = svc._session_response(  # noqa: SLF001
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            workflow_id=None,
+            app_id=uuid.uuid4(),
+            status="active",
+        )
+    )
+
+    assert response.draft_preview is not None
+    assert response.draft_preview["draft_id"] == str(latest_draft.id)
 
 
 def test_agent_builder_validator_rejects_unsupported_node_type():
@@ -3273,7 +3455,7 @@ def test_agent_builder_preview_auto_layout_avoids_existing_node_overlap(monkeypa
     assert generated_positions == [{"x": 360.0, "y": 220.0}]
 
 
-def test_agent_builder_selected_edge_requires_edge_context_in_message():
+def test_agent_builder_selected_edge_uses_structured_target_without_message_regex():
     workflow = SimpleNamespace(
         graph={
             "nodes": [],
@@ -3286,19 +3468,34 @@ def test_agent_builder_selected_edge_requires_edge_context_in_message():
         organization_id=uuid.uuid4(),
     )
 
-    assert (
-        svc._selected_edge_id_for_message(  # noqa: SLF001
-            workflow,
-            "edge-start-answer",
-            "이 노드 뒤에 LLM을 추가해줘",
-        )
-        is None
+    structured = AgentBuilderStructuredRequest(
+        request_type="modify_workflow",
+        draft_mode="modify_workflow",
+        intent_summary="선택된 연결에 LLM을 추가합니다.",
+        planned_steps=[
+            AgentBuilderPlannedStep(
+                step_id="step_llm", capability="llm", purpose="LLM"
+            )
+        ],
+        required_capabilities=["llm"],
+        edit_operations=[
+            AgentBuilderEditOperation(
+                operation_id="edit_1",
+                operation="insert",
+                placement="between",
+                step_refs=["step_llm"],
+                target=AgentBuilderEditTargetReference(
+                    reference_type="selected_edge"
+                ),
+            )
+        ],
     )
+
     assert (
-        svc._selected_edge_id_for_message(  # noqa: SLF001
+        svc._selected_edge_id_for_structured_request(  # noqa: SLF001
             workflow,
             "edge-start-answer",
-            "이 연결 사이에 LLM을 추가해줘",
+            structured,
         )
         == "edge-start-answer"
     )
@@ -3482,6 +3679,80 @@ def test_agent_builder_apply_persists_optimized_layout(monkeypatch):
     assert positions["start"]["x"] < positions["agent-llm"]["x"]
     assert positions["agent-llm"]["x"] < positions["answer"]["x"]
     assert {position["y"] for position in positions.values()} == {0}
+
+
+def test_agent_builder_apply_rejects_invalid_connection_policy(monkeypatch):
+    db = FakeDb()
+    workflow_id = uuid.uuid4()
+    base_graph = {
+        "nodes": [
+            {"id": "start", "type": "startNode", "data": {}},
+            {"id": "answer", "type": "answerNode", "data": {}},
+        ],
+        "edges": [{"id": "edge-start-answer", "source": "start", "target": "answer"}],
+        "viewport": {"x": 0, "y": 0, "zoom": 1},
+    }
+    preview_graph = {
+        "nodes": [
+            *copy.deepcopy(base_graph["nodes"]),
+            {
+                "id": "agent-llm",
+                "type": "llmNode",
+                "data": {"model_id": "model-1"},
+            },
+        ],
+        "edges": [
+            *copy.deepcopy(base_graph["edges"]),
+            {"id": "edge-answer-llm", "source": "answer", "target": "agent-llm"},
+        ],
+    }
+    workflow = SimpleNamespace(
+        id=workflow_id,
+        graph=copy.deepcopy(base_graph),
+        updated_at=None,
+        app_id=uuid.uuid4(),
+        updated_by=None,
+    )
+    draft = SimpleNamespace(
+        id=uuid.uuid4(),
+        request_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+        draft_mode="modify_workflow",
+        base_graph_hash=calculate_graph_hash(base_graph),
+        base_workflow_updated_at=None,
+        preview_graph=preview_graph,
+        status="ready",
+        workflow_id=workflow_id,
+        app_id=None,
+        draft_metadata={
+            "workflow_id": str(workflow_id),
+            "generated_node_ids": ["agent-llm"],
+            "generated_edge_ids": ["edge-answer-llm"],
+        },
+        expires_at=None,
+    )
+    svc = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    monkeypatch.setattr(svc, "_draft_or_404", lambda _draft_id: draft)
+    monkeypatch.setattr(svc, "_workflow_in_active_org", lambda _workflow_id: workflow)
+    monkeypatch.setattr(service_module, "has_workflow_permission", lambda *args, **kwargs: True)
+    monkeypatch.setattr(svc, "_runtime_kb_bindings_for_apply", lambda _draft: [])
+
+    response = svc.apply_draft(
+        draft.id,
+        AgentBuilderApplyRequest(
+            action="apply_and_save",
+            client_preview_graph_hash=calculate_graph_hash(preview_graph),
+            client_latest_graph_hash=calculate_graph_hash(base_graph),
+        ),
+    )
+
+    assert response.outcome == "blocked"
+    assert response.block_reason == "DRAFT_VALIDATION_FAILED"
+    assert workflow.graph == base_graph
 
 
 def test_agent_builder_draft_without_recommended_model_stays_unresolved():

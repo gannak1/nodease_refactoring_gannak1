@@ -35,7 +35,7 @@ describe('workflow node capability catalog', () => {
     expect(sorted(Object.keys(nodeTypes))).toEqual(sorted(implementedTypes));
   });
 
-  it('currently allows every implemented node in Agent Builder', () => {
+  it('excludes product-unavailable nodes from Agent Builder', () => {
     const implementedTypes = catalog.nodes
       .filter((node) => node.implemented)
       .map((node) => node.node_type);
@@ -43,6 +43,8 @@ describe('workflow node capability catalog', () => {
       .filter((node) => node.agent_builder_supported)
       .map((node) => node.node_type);
 
-    expect(sorted(builderTypes)).toEqual(sorted(implementedTypes));
+    expect(sorted(builderTypes)).toEqual(
+      sorted(implementedTypes.filter((nodeType) => nodeType !== 'loopNode')),
+    );
   });
 });
