@@ -238,3 +238,7 @@ Example detail response:
 - `password`, `token`, `email`, `encrypted_secret` 같은 inline Mail identity/secret field가 최상위 또는 중첩 `subGraph`에 있으면 workflow 저장은 `422 mail.credential_reference_required`로 실패한다.
 - Non-null `credential_id`는 active organization의 active Mail credential이어야 하며 저장 요청자에게 `use` 권한이 있어야 한다. Organization 밖 reference는 `404`, 같은 organization의 권한 부족은 `403`으로 처리한다.
 - `credential_id=null`인 unresolved draft는 preview/apply-save를 위해 저장할 수 있지만 deployment snapshot 생성과 기존 deployment 활성화는 `422 mail.credential_reference_required`로 차단한다. Legacy snapshot runtime도 provider 연결 전에 같은 reason으로 차단한다.
+- `mailNode.processing_mode`는 `search_only | durable`이며 누락 시 `search_only`다. `durable`과 `mark_as_read=true` 조합은 `422 mail.processing_configuration_invalid`로 거부한다.
+- `gmailDraftNode` data는 `credential_id`, `configuration_state`, `processing_ref_selector`, `reply_body_selector`와 제한된 UI metadata만 허용한다.
+- `mailAcknowledgeNode` data는 `processing_ref_selector`, `required_effect_ref_selectors`와 제한된 UI metadata만 허용한다.
+- Draft/Acknowledge node에 raw provider message/draft id, recipient override, MIME, token, arbitrary status boolean이나 non-empty `parameters`가 있으면 `422 mail.processing_configuration_invalid`로 거부한다.

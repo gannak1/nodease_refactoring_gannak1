@@ -24,6 +24,8 @@ Status: Draft
 | DELETE | `/api/v1/mail/credentials/{credential_id}/permissions/users/{user_id}` | User direct 권한 회수 | `manage` 또는 manager |
 | PUT | `/api/v1/mail/credentials/{credential_id}/permissions/teams/{team_id}` | Team 권한 부여·변경 | `manage` 또는 manager |
 | DELETE | `/api/v1/mail/credentials/{credential_id}/permissions/teams/{team_id}` | Team 권한 회수 | `manage` 또는 manager |
+| POST | `/api/v1/mail/credentials/oauth/google/start` | Gmail OAuth authorization 시작 | Organization manager |
+| GET | `/api/v1/mail/credentials/oauth/google/callback` | State/PKCE 검증, Gmail credential 생성 후 safe redirect | Pending flow actor |
 
 ## Create Request
 
@@ -100,3 +102,18 @@ Permission PUT body는 `auth_state`에 `viewer`, `operator`, `builder`, `manager
 - `validation.failed`: Unknown field, null field, 빈 PATCH, 잘못된 endpoint 또는 port
 
 오류 detail에는 secret, ciphertext, email 원문, IMAP raw exception을 포함하지 않는다.
+
+## Gmail OAuth 계약
+
+`POST /oauth/google/start` body는 `credential_name`만 허용한다. Server는 인증 사용자와 active organization을 pending flow에 묶고 Google authorization URL을 반환한다. URL은 `gmail.compose` restricted scope, offline access와 명시 consent를 요청한다. Client가 organization, redirect URI, scope 또는 provider endpoint를 임의 지정할 수 없다.
+
+Callback은 server-issued state, PKCE verifier, pending flow actor와 만료를 검증한다. Google token response의 refresh/access token은 response나 redirect query에 포함하지 않는다. Refresh token과 승인 scope는 Mail credential encryption envelope에 저장하며 mailbox identity는 provider userinfo에서 검증한다. 성공 redirect에는 opaque credential id 또는 safe outcome만 허용한다.
+
+OAuth 실패는 `mail.oauth_state_invalid`, `mail.oauth_flow_expired`, `mail.oauth_token_exchange_failed`, `mail.oauth_scope_insufficient`, `mail.oauth_refresh_token_required` 중 safe code로 반환하며 provider raw response를 노출하지 않는다.
+
+## Workflow Runtime Reference 계약
+
+- `mailNode` durable output은 provider raw id 대신 opaque `processing_ref`를 반환한다.
+- `gmailDraftNode`는 `credential_id`, `processing_ref` selector와 reply body selector만 받으며 opaque `draft_ref`와 safe status를 반환한다.
+- `mailAcknowledgeNode`는 `processing_ref`와 required effect reference selector만 받는다. Client가 제출한 success boolean이나 provider id는 받지 않는다.
+- Gmail Draft와 acknowledgement는 일반 public REST mutation API로 노출하지 않고 authenticated workflow runtime에서만 수행한다.

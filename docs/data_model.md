@@ -856,6 +856,54 @@ Mailbox identity, provider/auth type과 IMAP endpoint/TLS mode는 생성 후 불
 
 `team_mail_credential_permissions`와 `user_mail_credential_permissions`는 Mail credential의 `read/use/manage`를 기존 auth state 계층으로 표현한다. Organization manager는 resource override를 가지며 runtime은 실행 직전에 동일 organization, active 상태와 `use` 권한을 다시 검사한다.
 
+`auth_type=oauth2`인 Gmail credential은 `encrypted_secret` envelope 안에 versioned OAuth secret payload를 저장한다. Refresh/access token 원문은 별도 column, workflow graph, API response, audit 또는 trace에 저장하지 않는다. IMAP app password row와 OAuth row는 동일 resource permission/lifecycle을 사용한다.
+
+#### `mail_message_processings`
+
+Mail 자동화가 같은 provider message를 중복 처리하지 않도록 logical consumer별 상태를 저장하는 operational table이다 ([ADR-0032](decisions/ADR-0032-mail-processing-gmail-draft-idempotency.md)).
+
+| 컬럼 | 타입 | 제약 |
+| --- | --- | --- |
+| id | UUID | PK, client에는 opaque processing ref로만 노출 |
+| organization_id | UUID | NOT NULL, FK→organization.id |
+| workflow_id | UUID | NOT NULL, FK→workflows.id |
+| deployment_id | UUID | NULL, FK→workflow_deployments.id (SET NULL), provenance only |
+| source_node_id | VARCHAR(255) | NOT NULL, stable logical consumer id |
+| credential_id | UUID | NOT NULL, FK→mail_credentials.id |
+| provider | VARCHAR(32) | NOT NULL |
+| message_identity_hash | VARCHAR(64) | NOT NULL, raw provider id 저장 금지 |
+| encrypted_source_reference | TEXT | NOT NULL, 최소 UID/UIDVALIDITY/RFC Message-ID reference envelope |
+| source_key_version / source_algorithm | VARCHAR | NOT NULL |
+| status | VARCHAR(32) | NOT NULL, pending/processing/ack_pending/succeeded/failed/outcome_unknown |
+| lease_owner_hash | VARCHAR(64) | NULL |
+| lease_expires_at | DATETIME | NULL |
+| attempt_count | INTEGER | NOT NULL |
+| safe_reason_code | VARCHAR(128) | NULL |
+| created_at / updated_at / completed_at | DATETIME | NOT NULL / NOT NULL / NULL |
+
+Unique key는 `(organization_id, workflow_id, source_node_id, credential_id, provider, message_identity_hash)`다. Mail body, snippet, subject, recipient와 MIME는 저장하지 않는다.
+
+#### `mail_draft_effects`
+
+Gmail Draft provider 호출의 durable admission과 결과를 저장한다. Provider 호출 전에 claim을 commit하며 결과 불명 상태는 자동 replay하지 않는다.
+
+| 컬럼 | 타입 | 제약 |
+| --- | --- | --- |
+| id | UUID | PK, client에는 opaque draft ref로만 노출 |
+| processing_id | UUID | NOT NULL, FK→mail_message_processings.id (CASCADE) |
+| node_id | VARCHAR(255) | NOT NULL |
+| operation_key_hash / input_digest | VARCHAR(64) | NOT NULL |
+| status | VARCHAR(32) | NOT NULL, pending/claimed/succeeded/failed_before_effect/outcome_unknown |
+| encrypted_draft_reference | TEXT | NULL, provider success 시 최소 draft id envelope |
+| draft_key_version / draft_algorithm | VARCHAR | NULL |
+| lease_owner_hash | VARCHAR(64) | NULL |
+| lease_expires_at | DATETIME | NULL |
+| attempt_count | INTEGER | NOT NULL |
+| safe_reason_code | VARCHAR(128) | NULL |
+| created_at / updated_at / completed_at | DATETIME | NOT NULL / NOT NULL / NULL |
+
+Unique key는 `(processing_id, node_id, operation_key_hash)`다. Reply body, MIME, raw provider response/error를 저장하지 않는다.
+
 #### `connections`
 
 외부 DB data source. 현재 user 소유이며 `organization_id`와 `created_at/updated_at`이 없다.

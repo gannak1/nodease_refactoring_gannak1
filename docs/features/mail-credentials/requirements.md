@@ -36,7 +36,23 @@ Mail credential은 organization이 관리하는 Mail provider 인증 정보를 w
 - MAIL-CRED-REQ-025: Draft와 Agent Builder preview는 unresolved Mail reference를 허용할 수 있지만 deployment snapshot 생성과 기존 deployment 활성화는 모든 Mail node의 유효한 credential reference를 요구해야 한다.
 - MAIL-CRED-REQ-026: `993` implicit TLS와 `143` STARTTLS는 모두 기본 trust store 기반 인증서 및 hostname 검증을 수행하고 connect/read timeout을 기본 10초로 제한해야 한다.
 - MAIL-CRED-REQ-027: User direct permission은 active organization membership과 비활성화되지 않은 User를 함께 잠금 확인한 뒤에만 생성하거나 갱신해야 한다.
-- MAIL-CRED-REQ-027: Gateway와 Worker는 process startup에서 Mail credential keyring 형식과 active version을 검증하고 잘못된 설정이면 요청 또는 task 소비 전에 fail-fast해야 한다.
+- MAIL-CRED-REQ-028: Gateway와 Worker는 process startup에서 Mail credential keyring 형식과 active version을 검증하고 잘못된 설정이면 요청 또는 task 소비 전에 fail-fast해야 한다.
+- MAIL-CRED-REQ-029: Gmail OAuth credential은 로그인 OAuth와 분리된 organization Mail credential이어야 하며 refresh token은 기존 versioned encryption envelope로 저장해야 한다.
+- MAIL-CRED-REQ-030: Gmail OAuth callback은 인증 사용자, active organization, manager 권한, state와 PKCE를 검증한 뒤에만 credential을 생성해야 한다.
+- MAIL-CRED-REQ-031: Gmail Draft runtime은 `use` 권한과 active/revoked 상태를 외부 호출 직전에 다시 확인하고 access token과 refresh token을 API, graph, audit, trace, log에 노출하지 않아야 한다.
+- MAIL-CRED-REQ-032: Gmail Draft adapter는 `users.drafts.create`만 허용하며 Gmail send endpoint와 arbitrary method/URL 실행 surface를 제공하지 않아야 한다.
+- MAIL-CRED-REQ-033: Durable processing identity는 organization, workflow, stable source node, credential과 provider message identity에 묶여야 하며 동일 logical consumer의 중복 실행을 하나의 processing row로 수렴해야 한다.
+- MAIL-CRED-REQ-034: IMAP sequence id 단독 사용을 금지하고 RFC Message-ID, UID/UIDVALIDITY와 provider canonical lookup을 사용해야 한다.
+- MAIL-CRED-REQ-035: Gmail Draft effect는 provider 호출 전에 durable admission을 완료하고 `succeeded`, `failed_before_effect`, `outcome_unknown`을 구분해야 한다.
+- MAIL-CRED-REQ-036: `outcome_unknown`은 자동 replay하지 않아야 한다. Provider 호출 전 실패가 확정된 경우에만 bounded retry할 수 있다.
+- MAIL-CRED-REQ-037: Terminal acknowledgement는 required effect가 모두 성공한 뒤 서버가 검증한 opaque reference를 기준으로 수행해야 한다.
+- MAIL-CRED-REQ-038: Durable Mail mode에서는 검색 node의 즉시 `mark_as_read`를 금지하고 acknowledgement node만 읽음 처리를 수행해야 한다.
+- MAIL-CRED-REQ-039: Search-only mode의 읽음 처리는 모든 선택 메시지 fetch 성공 뒤 일괄 수행하며 일부 fetch 실패 시 수행하지 않아야 한다.
+- MAIL-CRED-REQ-040: 답장 초안은 원본 Gmail thread, RFC In-Reply-To/References와 정규화된 subject를 보존해야 한다.
+- MAIL-CRED-REQ-041: Gmail 답장 MVP는 sender 한 명, text/plain UTF-8, 무첨부로 제한하고 header CR/LF/NUL과 과도한 MIME 크기를 거부해야 한다.
+- MAIL-CRED-REQ-042: Processing/effect durable row와 telemetry에는 Mail body, subject, recipient, MIME, token, raw provider id/response/error를 저장하지 않아야 한다.
+- MAIL-CRED-REQ-043: Client와 Agent Builder는 Gmail Draft credential을 자동 선택하지 않고 unresolved reference와 safe configuration issue만 생성해야 한다.
+- MAIL-CRED-REQ-044: Gmail OAuth restricted scope와 application no-send 경계는 운영 승인 및 배포 설정에서 명시적으로 검증해야 한다.
 
 ## Policies And Edge Cases
 
@@ -48,6 +64,5 @@ Mail credential은 organization이 관리하는 Mail provider 인증 정보를 w
 - Mailbox email 원문은 credential option과 audit에서 마스킹한다.
 - Credential 삭제 API는 hard delete가 아니라 revoke semantics를 사용한다.
 - Revoked credential을 다시 사용하려면 기존 row를 수정하는 대신 새 credential을 등록한다.
-- OAuth refresh/token exchange와 Gmail draft 생성은 MBA-220 범위다.
-- Message ID idempotency와 terminal acknowledgement는 MBA-217 범위다.
+- OAuth refresh/token exchange, Gmail draft 생성, Message ID idempotency와 terminal acknowledgement는 MBA-217 통합 범위다.
 - Schedule Mail 실행에 필요한 service account 또는 assigned operator 정책은 MBA-219 또는 별도 ADR에서 확정한다.

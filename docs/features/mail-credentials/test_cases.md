@@ -54,3 +54,21 @@ Status: Draft
 - MAIL-CRED-TC-040: API response, graph, audit, trace, log와 fixture에 secret/ciphertext가 없다.
 - MAIL-CRED-TC-041: 로그인 및 로그인 이후 작업/cleanup의 provider raw exception과 mailbox email 원문이 audit/trace/log에 없다.
 - MAIL-CRED-TC-042: DB 예외 문자열에 mailbox identity나 ciphertext가 포함되어도 audit metadata와 API 오류에는 안전한 error code만 남는다.
+
+## Gmail OAuth, Draft And Processing
+
+- MAIL-CRED-TC-050: OAuth start/callback은 manager, active organization, state, PKCE, expiry를 검증하고 token을 response/log에 노출하지 않는다.
+- MAIL-CRED-TC-051: Login OAuth token은 Mail credential resolver에서 사용할 수 없고 Gmail refresh token은 versioned encryption envelope로만 저장된다.
+- MAIL-CRED-TC-052: Revoked, cross-organization, `use` 권한 없는 credential은 token refresh와 Gmail 호출 전에 차단된다.
+- MAIL-CRED-TC-053: 같은 workflow/source node/credential/provider message를 동시 claim해도 processing row와 draft provider 호출은 하나다.
+- MAIL-CRED-TC-054: 다른 workflow 또는 다른 source node는 같은 provider message를 독립 logical consumer로 처리할 수 있다.
+- MAIL-CRED-TC-055: IMAP sequence id만 있는 message는 durable mode에서 거부하고 UID/UIDVALIDITY 또는 canonical provider identity를 요구한다.
+- MAIL-CRED-TC-056: Gmail Draft는 원본 thread, In-Reply-To, bounded References와 정규화된 subject를 보존한다.
+- MAIL-CRED-TC-057: Header injection, 다중 recipient, CC/BCC/reply-all, HTML, attachment와 size limit 초과는 provider 호출 전에 거부된다.
+- MAIL-CRED-TC-058: Request 전달 후 timeout/응답 유실은 `outcome_unknown`이며 duplicate delivery가 Gmail create를 다시 호출하지 않는다.
+- MAIL-CRED-TC-059: Provider 호출 전 확정 실패만 동일 operation key와 bounded backoff로 retry한다.
+- MAIL-CRED-TC-060: Draft 성공 후 required effect 또는 acknowledgement 실패는 draft를 다시 생성하지 않고 미완료 단계만 재시도한다.
+- MAIL-CRED-TC-061: Durable mode의 `mark_as_read=true`는 graph validation에서 실패하고 search-only mode는 전체 fetch 성공 후에만 일괄 ack한다.
+- MAIL-CRED-TC-062: Production adapter와 catalog에는 Gmail send endpoint/capability가 존재하지 않는다.
+- MAIL-CRED-TC-063: Processing/effect row, API, graph, audit, trace, log와 fixture에 body, MIME, token, raw provider id/response/error가 없다.
+- MAIL-CRED-TC-064: Migration은 최신 단일 head를 유지하고 기존 IMAP credential/workflow를 보존한다.

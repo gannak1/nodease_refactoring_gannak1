@@ -182,6 +182,12 @@ MBA-104 범위에서는 비용 최적화와 A/B 비교 실행을 준비하기 �
 - Agent Builder가 만든 Mail node는 `credential_id=null`, `configuration_state=unresolved`로 preview와 draft 저장이 가능하지만 실행 준비 상태로 간주하지 않는다. Deployment snapshot 생성과 기존 deployment 활성화는 최상위와 중첩 Mail node 모두 유효한 credential reference가 있어야 한다.
 - 인증 test/deployment run은 명시 user execution subject와 canonical organization을 runtime resolver에 전달한다. Resolver는 provider 연결 직전에 scope, active 상태, `use` 권한, egress target을 재검증한다. Public/schedule run은 App/workflow owner를 대체 주체로 사용하지 않으며, service account 또는 assigned operator 정책이 없으면 Mail 실행을 차단한다.
 - Credential이 없거나 revoke됐거나 권한이 회수된 경우 Mail provider 연결 전에 safe error로 fail-closed한다. Legacy inline password graph는 호환 fallback 없이 거부한다.
+- Mail node의 `processing_mode` 기본값은 기존 호환을 위한 `search_only`다. `durable` mode는 workflow/source node scoped processing row를 생성하고 opaque `processing_ref`를 출력한다.
+- Durable mode에서는 Mail node의 `mark_as_read=true`를 금지한다. `mailAcknowledgeNode`가 required effect의 durable success를 검증한 뒤에만 원본 메시지를 처리 완료한다.
+- Gmail 답장 초안은 별도 `gmailDraftNode`가 수행한다. Node는 `credential_id`, `processing_ref` selector, reply body selector만 저장하고 provider id, token, MIME 또는 recipient override를 graph에 저장하지 않는다.
+- Gmail Draft effect가 `outcome_unknown`이면 Workflow/Celery generic retry가 provider create를 자동 재호출하지 않아야 한다.
+- `mailAcknowledgeNode`는 graph dependency로 연결된 processing/effect reference를 서버에서 검증하며 client 제공 success boolean을 신뢰하지 않는다.
+- Gmail Draft 또는 Mail Acknowledge가 포함된 graph는 source Mail node가 durable mode인지와 required selector 연결을 save/deploy/runtime에서 검증한다.
 - RAG를 포함한 workflow 비교 실행이나 A/B 실행도 로그인 interactive 실행이면 동일한 execution subject와 Knowledge permission/source ACL gate를 사용하고, subject가 없으면 anonymous public-only gate를 사용한다.
 - 배포 preflight에서 client-supplied audience hint는 preview UI용이며, create/activation 경로는 deployment type과 실행 endpoint에서 audience를 서버가 다시 파생한다.
 - Private KB를 자동 실행에서 사용하려면 별도 service account 또는 assigned operator 정책이 필요하다. 이 정책이 없으면 workflow owner, deployment owner, app creator 권한으로 fallback하지 않는다.
