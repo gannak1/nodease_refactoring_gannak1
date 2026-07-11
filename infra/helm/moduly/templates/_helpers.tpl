@@ -55,9 +55,17 @@ app.kubernetes.io/instance: {{ .Release.Name }}
   Keeping the values in one chart-level block prevents the two admission
   boundaries from silently using different modes or deadlines.
 */}}
+{{- define "moduly.scheduleDispatchFingerprint" -}}
+{{- printf "v1|%v|%v|%v|%v|%v|%v|%v|%v|%v|%v|%v|%v|%v|%v" .Values.scheduleDispatch.mode .Values.scheduleDispatch.pollSeconds .Values.scheduleDispatch.occurrenceBatchSize .Values.scheduleDispatch.dispatchBatchSize .Values.scheduleDispatch.recoveryBatchSize .Values.scheduleDispatch.cleanupBatchSize .Values.scheduleDispatch.leaseSeconds .Values.scheduleDispatch.deliveryTimeoutSeconds .Values.scheduleDispatch.executionDeadlineSeconds .Values.scheduleDispatch.workflowRunVisibilityTimeoutSeconds .Values.scheduleDispatch.maxAttempts .Values.scheduleDispatch.retryBaseSeconds .Values.scheduleDispatch.retentionDays .Values.scheduleDispatch.deadLetterRetentionDays -}}
+{{- end }}
+
 {{- define "moduly.scheduleDispatchEnv" -}}
 - name: SCHEDULE_DISPATCH_MODE
   value: {{ .Values.scheduleDispatch.mode | quote }}
+- name: SCHEDULE_DISPATCH_MODE_FINGERPRINT
+  valueFrom:
+    fieldRef:
+      fieldPath: metadata.annotations['nodease.io/schedule-dispatch-fingerprint']
 - name: SCHEDULE_DISPATCH_POLL_SECONDS
   value: {{ .Values.scheduleDispatch.pollSeconds | quote }}
 - name: SCHEDULE_OCCURRENCE_BATCH_SIZE

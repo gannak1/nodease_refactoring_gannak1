@@ -15,6 +15,7 @@ spec:
       labels:
         {{- include "moduly.componentSelectorLabels" (dict "component" "worker" "context" .) | nindent 8 }}
       annotations:
+        nodease.io/schedule-dispatch-fingerprint: {{ include "moduly.scheduleDispatchFingerprint" . | quote }}
         checksum/config: {{ toYaml .Values | sha256sum }}
         checksum/secret: {{ toYaml .Values.secrets | sha256sum }}
     spec:

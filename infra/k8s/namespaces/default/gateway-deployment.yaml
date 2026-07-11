@@ -13,6 +13,8 @@ spec:
     metadata:
       labels:
         app: api-server
+      annotations:
+        nodease.io/schedule-dispatch-fingerprint: "v1|disabled|5|50|10|50|100|60|120|900|120|5|5|30|180"
     spec:
       serviceAccountName: api-server-sa # IRSA 연결
       containers:
@@ -53,6 +55,10 @@ spec:
             # Durable schedule dispatch (activate only after migration-first rollout)
             - name: SCHEDULE_DISPATCH_MODE
               value: "disabled"
+            - name: SCHEDULE_DISPATCH_MODE_FINGERPRINT
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.annotations['nodease.io/schedule-dispatch-fingerprint']
             - name: SCHEDULE_DISPATCH_POLL_SECONDS
               value: "5"
             - name: SCHEDULE_OCCURRENCE_BATCH_SIZE

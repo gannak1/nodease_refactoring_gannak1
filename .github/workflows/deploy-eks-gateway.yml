@@ -17,6 +17,10 @@ env:
   EKS_CLUSTER_NAME: moduly-cluster
   DEPLOYMENT_NAME: api-server
 
+concurrency:
+  group: production-schema-rollout
+  cancel-in-progress: false
+
 jobs:
   deploy-gateway:
     name: Build & Deploy Gateway to EKS
@@ -60,6 +64,39 @@ jobs:
     - name: Configure kubectl
       run: |
         aws eks update-kubeconfig --region $AWS_REGION --name $EKS_CLUSTER_NAME
+
+    - name: Verify shared schedule dispatch fingerprint
+      run: |
+        desired=$(sed -n 's/.*nodease.io\/schedule-dispatch-fingerprint: "\(.*\)"/\1/p' \
+          infra/k8s/namespaces/default/gateway-deployment.yaml | head -n 1)
+        if [[ -z "$desired" ]]; then
+          echo "Schedule dispatch fingerprint is missing from the manifest."
+          exit 1
+        fi
+        for deployment in api-server worker; do
+          error_file=$(mktemp)
+          if current=$(kubectl get deployment "$deployment" \
+            -o jsonpath='{.spec.template.metadata.annotations.nodease\.io/schedule-dispatch-fingerprint}' \
+            2>"$error_file"); then
+            rm -f "$error_file"
+            if [[ -z "$current" ]]; then
+              echo "Schedule dispatch fingerprint is missing from a live deployment."
+              exit 1
+            fi
+          else
+            if grep -q '(NotFound)' "$error_file" && [[ "$desired" == v1\|disabled\|* ]]; then
+              rm -f "$error_file"
+              continue
+            fi
+            rm -f "$error_file"
+            echo "Unable to verify the live schedule dispatch fingerprint."
+            exit 1
+          fi
+          if [[ "$current" != "$desired" ]]; then
+            echo "Schedule dispatch settings require the coordinated rollout workflow."
+            exit 1
+          fi
+        done
     
     # [추가] 5.5 Alembic 데이터베이스 마이그레이션 실행
     - name: Run Alembic Migration

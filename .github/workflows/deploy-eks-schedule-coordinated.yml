@@ -1,0 +1,219 @@
+name: Deploy EKS Schedule Dispatch Coordinated
+
+on:
+  workflow_dispatch:
+    inputs:
+      previous_fingerprint:
+        description: "Approved common live fingerprint before this rollout"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-2
+  EKS_CLUSTER_NAME: moduly-cluster
+
+concurrency:
+  group: production-schema-rollout
+  cancel-in-progress: false
+
+jobs:
+  coordinated-rollout:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Gateway and Worker images
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          gateway_image="$ECR_REGISTRY/moduly-gateway:$IMAGE_TAG"
+          worker_image="$ECR_REGISTRY/moduly-workflow-engine:$IMAGE_TAG"
+          docker build -t "$gateway_image" -f docker/gateway/Dockerfile .
+          docker build -t "$worker_image" -f docker/workflow_engine/Dockerfile .
+          docker push "$gateway_image"
+          docker push "$worker_image"
+          echo "gateway_image=$gateway_image" >> "$GITHUB_ENV"
+          echo "worker_image=$worker_image" >> "$GITHUB_ENV"
+
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER_NAME"
+
+      - name: Validate current and desired fingerprints
+        env:
+          PREVIOUS_FINGERPRINT: ${{ inputs.previous_fingerprint }}
+        run: |
+          gateway_desired=$(sed -n 's/.*nodease.io\/schedule-dispatch-fingerprint: "\(.*\)"/\1/p' \
+            infra/k8s/namespaces/default/gateway-deployment.yaml | head -n 1)
+          worker_desired=$(sed -n 's/.*nodease.io\/schedule-dispatch-fingerprint: "\(.*\)"/\1/p' \
+            infra/k8s/namespaces/default/worker-deployment.yaml | head -n 1)
+          if [[ -z "$gateway_desired" || "$gateway_desired" != "$worker_desired" ]]; then
+            echo "Gateway and Worker desired fingerprints must match."
+            exit 1
+          fi
+          query_deployment() {
+            deployment=$1
+            error_file=$(mktemp)
+            if output=$(kubectl get deployment "$deployment" \
+              -o jsonpath='{.spec.template.metadata.annotations.nodease\.io/schedule-dispatch-fingerprint}{"\t"}{.spec.template.spec.containers[0].image}' \
+              2>"$error_file"); then
+              rm -f "$error_file"
+              IFS=$'\t' read -r live_fingerprint live_image <<< "$output"
+              if [[ -z "$live_fingerprint" || -z "$live_image" ]]; then
+                echo "A live deployment is missing rollout identity."
+                exit 1
+              fi
+            else
+              if grep -q '(NotFound)' "$error_file" && [[ "$gateway_desired" == v1\|disabled\|* ]]; then
+                rm -f "$error_file"
+                live_fingerprint=""
+                live_image=""
+                return
+              fi
+              rm -f "$error_file"
+              echo "Unable to verify a live schedule dispatch fingerprint."
+              exit 1
+            fi
+          }
+          query_deployment api-server
+          gateway_current_fingerprint=$live_fingerprint
+          gateway_current_image=$live_image
+          query_deployment worker
+          worker_current_fingerprint=$live_fingerprint
+          worker_current_image=$live_image
+          rollout_action=$(python -m apps.shared.domain.schedule_dispatch_rollout \
+            --desired "$gateway_desired" \
+            --previous "$PREVIOUS_FINGERPRINT" \
+            --desired-gateway-image "$gateway_image" \
+            --desired-worker-image "$worker_image" \
+            --gateway-fingerprint "$gateway_current_fingerprint" \
+            --gateway-image "$gateway_current_image" \
+            --worker-fingerprint "$worker_current_fingerprint" \
+            --worker-image "$worker_current_image")
+          echo "schedule_fingerprint=$gateway_desired" >> "$GITHUB_ENV"
+          echo "schedule_rollout_action=$rollout_action" >> "$GITHUB_ENV"
+
+      - name: Run Alembic Migration
+        run: |
+          overrides=$(jq -cn --arg image "$gateway_image" '{
+            apiVersion: "v1",
+            spec: {
+              containers: [{
+                name: "alembic",
+                image: $image,
+                command: ["/bin/sh", "-c"],
+                args: ["cd /app/apps/shared && alembic upgrade head"],
+                envFrom: [
+                  {configMapRef: {name: "api-server-config"}},
+                  {secretRef: {name: "app-secrets"}}
+                ]
+              }]
+            }
+          }')
+          kubectl run alembic-coordinated-${{ github.run_id }} \
+            --image="$gateway_image" \
+            --restart=Never \
+            --attach=true \
+            --overrides="$overrides"
+          kubectl delete pod alembic-coordinated-${{ github.run_id }} --ignore-not-found=true
+
+      - name: Render commit images and apply staged rollout
+        run: |
+          gateway_name=${gateway_image%:*}
+          gateway_tag=${gateway_image##*:}
+          worker_name=${worker_image%:*}
+          worker_tag=${worker_image##*:}
+          mkdir -p /tmp/nodease-gateway /tmp/nodease-worker
+          cp infra/k8s/namespaces/default/gateway-deployment.yaml \
+            /tmp/nodease-gateway/resources.yaml
+          cp infra/k8s/namespaces/default/worker-deployment.yaml \
+            /tmp/nodease-worker/resources.yaml
+          cat > /tmp/nodease-gateway/kustomization.yaml <<EOF
+          resources:
+            - resources.yaml
+          images:
+            - name: 912894834396.dkr.ecr.ap-northeast-2.amazonaws.com/moduly-gateway
+              newName: $gateway_name
+              newTag: $gateway_tag
+          EOF
+          cat > /tmp/nodease-worker/kustomization.yaml <<EOF
+          resources:
+            - resources.yaml
+          images:
+            - name: 912894834396.dkr.ecr.ap-northeast-2.amazonaws.com/moduly-workflow-engine
+              newName: $worker_name
+              newTag: $worker_tag
+          EOF
+          kubectl kustomize /tmp/nodease-gateway > /tmp/gateway-rendered.yaml
+          kubectl kustomize /tmp/nodease-worker > /tmp/worker-rendered.yaml
+
+          apply_and_verify() {
+            manifest=$1
+            deployment=$2
+            expected_image=$3
+            kubectl apply -f "$manifest"
+            kubectl rollout status deployment/"$deployment" --timeout=10m
+            current_image=$(kubectl get deployment "$deployment" \
+              -o jsonpath='{.spec.template.spec.containers[0].image}')
+            current_fingerprint=$(kubectl get deployment "$deployment" \
+              -o jsonpath='{.spec.template.metadata.annotations.nodease\.io/schedule-dispatch-fingerprint}')
+            if [[ "$current_image" != "$expected_image" || \
+                  "$current_fingerprint" != "$schedule_fingerprint" ]]; then
+              echo "A staged rollout did not load the expected image and fingerprint."
+              exit 1
+            fi
+          }
+
+          target_mode=$(printf '%s' "$schedule_fingerprint" | cut -d'|' -f2)
+          case "$schedule_rollout_action" in
+            none)
+              ;;
+            gateway)
+              apply_and_verify /tmp/gateway-rendered.yaml api-server "$gateway_image"
+              ;;
+            worker)
+              apply_and_verify /tmp/worker-rendered.yaml worker "$worker_image"
+              ;;
+            all)
+              if [[ "$target_mode" == "claim" ]]; then
+                apply_and_verify /tmp/worker-rendered.yaml worker "$worker_image"
+                apply_and_verify /tmp/gateway-rendered.yaml api-server "$gateway_image"
+              else
+                apply_and_verify /tmp/gateway-rendered.yaml api-server "$gateway_image"
+                apply_and_verify /tmp/worker-rendered.yaml worker "$worker_image"
+              fi
+              ;;
+            *)
+              echo "Unknown schedule rollout action."
+              exit 1
+              ;;
+          esac
+
+      - name: Verify both rollouts and fingerprints
+        run: |
+          for deployment in api-server worker; do
+            current=$(kubectl get deployment "$deployment" \
+              -o jsonpath='{.spec.template.metadata.annotations.nodease\.io/schedule-dispatch-fingerprint}')
+            if [[ "$current" != "$schedule_fingerprint" ]]; then
+              echo "A rollout did not load the desired schedule dispatch fingerprint."
+              exit 1
+            fi
+          done

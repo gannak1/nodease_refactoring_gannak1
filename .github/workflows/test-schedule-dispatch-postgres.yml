@@ -1,0 +1,79 @@
+name: Test Schedule Dispatch PostgreSQL
+
+on:
+  pull_request:
+    paths:
+      - "apps/gateway/adapters/db/schedule_dispatch_repository.py"
+      - "apps/gateway/application/deployment/schedule_occurrence.py"
+      - "apps/shared/alembic/**"
+      - "apps/shared/db/models/schedule_dispatch.py"
+      - "apps/shared/tests/db/test_schedule_dispatch_disposable_postgres.py"
+      - "apps/workflow_engine/adapters/schedule_dispatch_repository.py"
+      - "apps/workflow_engine/application/schedule_dispatch.py"
+      - ".github/workflows/test-schedule-dispatch-postgres.yml"
+  push:
+    branches:
+      - dev
+    paths:
+      - "apps/gateway/adapters/db/schedule_dispatch_repository.py"
+      - "apps/gateway/application/deployment/schedule_occurrence.py"
+      - "apps/shared/alembic/**"
+      - "apps/shared/db/models/schedule_dispatch.py"
+      - "apps/shared/tests/db/test_schedule_dispatch_disposable_postgres.py"
+      - "apps/workflow_engine/adapters/schedule_dispatch_repository.py"
+      - "apps/workflow_engine/application/schedule_dispatch.py"
+      - ".github/workflows/test-schedule-dispatch-postgres.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  schedule-dispatch-postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: "5432"
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      NODEASE_DISPOSABLE_DB_MAINTENANCE_DB: postgres
+      NODEASE_RUN_DISPOSABLE_DB_TEST: "1"
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: |
+          uv sync --project apps/workflow_engine --extra dev --frozen
+          uv pip install --python apps/workflow_engine/.venv/bin/python -e apps/shared apscheduler fastapi
+
+      - name: Run migration and multi-session race evidence
+        run: >-
+          apps/workflow_engine/.venv/bin/python -m pytest
+          apps/shared/tests/db/test_schedule_dispatch_disposable_postgres.py
+          -q

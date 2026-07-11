@@ -16,6 +16,8 @@ spec:
       labels:
         app: worker
         env: dev
+      annotations:
+        nodease.io/schedule-dispatch-fingerprint: "v1|disabled|5|50|10|50|100|60|120|900|120|5|5|30|180"
     spec:
       containers:
         - name: worker
@@ -43,6 +45,10 @@ spec:
             # Durable schedule dispatch (must match the Gateway mode/settings)
             - name: SCHEDULE_DISPATCH_MODE
               value: "disabled"
+            - name: SCHEDULE_DISPATCH_MODE_FINGERPRINT
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.annotations['nodease.io/schedule-dispatch-fingerprint']
             - name: SCHEDULE_DISPATCH_POLL_SECONDS
               value: "5"
             - name: SCHEDULE_OCCURRENCE_BATCH_SIZE

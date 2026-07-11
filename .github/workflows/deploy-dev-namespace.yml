@@ -3,7 +3,7 @@ name: Deploy to Dev Namespace (Manual)
 on:
   push:
     branches:
-      - develop
+      - dev
     paths:
       - "apps/gateway/**"
       - "apps/workflow_engine/**"
@@ -37,6 +37,10 @@ env:
   EKS_CLUSTER_NAME: moduly-cluster
   NAMESPACE: dev
 
+concurrency:
+  group: deploy-dev-namespace
+  cancel-in-progress: false
+
 jobs:
   deploy-to-dev:
     name: Deploy to Dev Namespace
@@ -67,7 +71,7 @@ jobs:
 
       # 5. Gateway 이미지 빌드 & 푸시
       - name: Build and push Gateway image
-        if: github.event.inputs.services == 'gateway' || github.event.inputs.services == 'all' || github.event.inputs.services == ''
+        if: github.event.inputs.services == 'gateway' || github.event.inputs.services == 'worker' || github.event.inputs.services == 'all' || github.event.inputs.services == ''
         id: build-gateway
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -157,7 +161,7 @@ jobs:
 
       # 10. Database Migration (before any application rollout)
       - name: Run Alembic Migration
-        if: github.event.inputs.services == 'gateway' || github.event.inputs.services == 'all' || github.event.inputs.services == ''
+        if: github.event.inputs.services == 'gateway' || github.event.inputs.services == 'worker' || github.event.inputs.services == 'all' || github.event.inputs.services == ''
         run: |
           echo "Running database migration..."
 
