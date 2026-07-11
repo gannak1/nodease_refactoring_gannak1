@@ -68,6 +68,7 @@ Verified Against: TBD
 - Broker publish 전후 장애와 Worker admission 전 종료는 bounded recovery되고, admission 후 종료는 outcome unknown으로 격리되어 자동 replay되지 않는다.
 - Migration-first, disabled rollout, drain, claim activation과 역순 rollback rehearsal에서 legacy direct dispatcher와 claim dispatcher가 동시에 활성화되지 않는다.
 - Coordinated rollout이 첫 서비스 적용 뒤 실패하면 같은 commit image와 desired fingerprint를 가진 선행 서비스, 승인된 previous fingerprint를 가진 나머지 서비스 조합만 재개한다. 반대 순서, 다른 image, 임의 third fingerprint, active claim 상태의 direct settings 변경은 fail-closed한다.
+- `claim -> disabled` 직접 전환은 evaluator가 거부한다. `drain -> disabled`는 rollback preflight가 nonterminal/unreviewed outcome/active task 중 하나라도 찾거나 Celery inspection을 완료하지 못하면 두 deployment 적용 전에 중단한다.
 
 ## Migration And Persistence Tests
 
