@@ -222,12 +222,18 @@ class _MigrationOperations:
         (
             "apps.shared.alembic.versions."
             "fc0d1e2f3a45_add_schedule_workflow_run_visibility",
-            ("assert_schedule_dispatch_downgrade_is_safe",),
+            (
+                "assert_schedule_dispatch_downgrade_is_safe",
+                "assert_schedule_configuration_quarantine_downgrade_is_safe",
+            ),
         ),
         (
             "apps.shared.alembic.versions."
             "fd1e2f3a4b56_enforce_schedule_configuration_error_codes",
-            ("assert_schedule_dispatch_downgrade_is_safe",),
+            (
+                "assert_schedule_dispatch_downgrade_is_safe",
+                "assert_schedule_configuration_quarantine_downgrade_is_safe",
+            ),
         ),
     ),
 )
