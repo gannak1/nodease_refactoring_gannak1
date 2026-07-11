@@ -54,6 +54,8 @@ Status: Draft
 | ORG-TC-U024 | manager override는 active membership + manager role에만 적용되어야 한다. | suspended manager-role target의 cleanup revoke가 override conflict로 막히거나 effective manager로 계산된다. | override false, stored source 표시, effective none. |
 | ORG-TC-U025 | legacy direct `none` row는 allow source로 계산하지 않아야 한다. | none row가 effective/count allow를 높이거나 actor grant가 새 none row를 만든다. | inert row 표시/회수 가능, 신규 none은 422. |
 | ORG-TC-U026 | management reason은 durable 저장 전에 fail-closed sanitize되어야 한다. | secret/PII가 raw reason으로 저장되거나 sanitizer 실패 뒤 mutation이 commit된다. | redacted reason 또는 전체 rollback. |
+| ORG-TC-U027 | notification projection은 invitation과 Security Alert source를 섞지 않아야 한다. | `GET /notifications` item에 Security Alert가 들어가거나 summary가 invitation membership을 반환한다. | Invitation endpoint는 invited membership만, Security Alert summary는 별도 source. |
+| ORG-TC-U028 | Sidebar Security Alert badge는 open만 세야 한다. | acknowledged/resolved alert가 badge에 포함된다. | Manager summary의 open count만 badge 표시. |
 
 ## API Tests
 
@@ -113,6 +115,8 @@ Status: Draft
 | ORG-TC-A050 | Policy와 no-op의 판정 우선순위는 identity/global-state/row-id stale을 약화하지 않아야 한다. | Globally inactive 또는 manager-override target의 desired-state retry가 policy block이 되거나, membership/user-active/row-id mismatch가 no-op으로 숨겨진다. | same desired retry는 unchanged, identity/global-state/row-id mismatch는 먼저 409 stale. |
 | ORG-TC-A051 | Paginated catalog 선택은 exact team/resource source 조회로 precondition을 구성해야 한다. | Current page 밖 existing team/direct row 또는 조회 실패를 absent로 오판해 create confirm을 연다. | `teamId`/`resourceId` exact 조회 0/1 결과로 row id/auth-state 또는 absence를 구성하고 mutation에서 재검증. 조회 실패는 action disabled + 명시적 retry. |
 | ORG-TC-A052 | 404/409 이후 stale confirm payload를 다시 제출할 수 없어야 한다. | Profile을 갱신해도 열린 dialog가 이전 expected snapshot을 유지해 재제출한다. | Dialog 닫기, 최신 profile/source 조회, 사용자 재선택, 자동 재시도 없음. |
+| ORG-TC-A053 | invitation endpoint는 Security Alert payload를 반환하지 않아야 한다. | `/notifications`가 alert detail/evidence를 섞어 반환한다. | 기존 invitation response shape 유지. |
+| ORG-TC-A054 | Security Alert summary는 current organization owner/manager만 조회해야 한다. | 일반 member가 summary를 받거나 manager가 타 조직 summary를 받는다. | 403 또는 scope-safe 결과, cross-org 노출 없음. |
 
 ## E2E Tests
 
@@ -146,6 +150,10 @@ Status: Draft
 | ORG-TC-E026 | manager override target은 role 강등 전 resource control이 비활성화되어야 한다. | 무효한 revoke action을 제출할 수 있다. | disabled + server 409 방어. |
 | ORG-TC-E027 | stale actor action은 자동 재시도하지 않아야 한다. | 409 뒤 이전 payload를 다시 보내 최신 상태를 덮어쓴다. | profile refresh 후 새 confirm 필요. |
 | ORG-TC-E028 | actor action payload는 drawer snapshot precondition을 포함해야 한다. | membership id/state/role 또는 source row precondition 없이 API를 호출한다. | client test 실패/API 422. |
+| ORG-TC-E029 | manager notification overlay는 보안 알림과 조직 초대를 독립 section으로 표시해야 한다. | 한 source 실패로 전체 overlay가 사라지거나 alert item에 초대 action이 보인다. | Source별 상태와 action 분리. |
+| ORG-TC-E030 | 일반 member는 Security Alert summary를 요청하거나 badge를 보면 안 된다. | manager false인데 summary 호출/cache badge가 남는다. | Invitation만 유지, Security Alert section/badge 없음. |
+| ORG-TC-E031 | Security Alert item은 Admin deep link로 이동해야 한다. | Overlay 안에서 lifecycle mutation을 하거나 잘못된 tab으로 이동한다. | Overlay close 후 `tab=security-alerts&alertId=<uuid>` 이동. |
+| ORG-TC-E032 | active organization 전환과 manager 권한 회수는 alert cache를 제거해야 한다. | 이전 조직 badge/detail이 새 scope에 남는다. | 이전 summary 제거 후 권한 있는 새 scope만 재조회. |
 
 ## Permission Tests
 

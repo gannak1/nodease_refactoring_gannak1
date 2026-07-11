@@ -9,7 +9,7 @@ Status: Draft
 - Tenant 경계는 별도 `tenant_id` 없이 `organization_id`로 판정한다. Project boundary는 `apps`다.
 - RBAC은 `roles`/`user_roles`/polymorphic `resource_permissions` 없이 organization membership + team permission + user direct permission으로 구성한다 ([ADR-0006](decisions/ADR-0006-accept-rbac-auth-state-and-user-direct-permission.md)).
 - 감사는 `audit_logs` 단일 테이블을 canonical로 사용한다. RAG trace 전용 테이블은 만들지 않는다 ([ADR-0004](decisions/ADR-0004-audit-log-rag-trace-storage.md)).
-- Dashboard는 aggregate table/materialized view 없이 기존 run/log/usage 테이블 raw query로 시작한다.
+- Dashboard 통계는 aggregate table/materialized view 없이 기존 run/log/usage 테이블 raw query로 시작한다. Security Alert는 통계 cache가 아니라 탐지 evidence와 관리자 대응 lifecycle을 보존하는 업무 record이므로 [ADR-0028](decisions/ADR-0028-security-alert-detection-and-lifecycle.md)의 별도 target table을 사용한다.
 
 ## 도메인별 테이블
 
@@ -24,6 +24,8 @@ Status: Draft
 | Knowledge/RAG | `knowledge_bases`, `documents`, `document_chunks`, `rag_answer_runs` |
 | LLM | `llm_providers`, `llm_models`, `llm_credentials`, `llm_rel_credential_models`, `llm_usage_logs` |
 | 외부 연동 | `connections` |
+
+Security Alert target table인 `security_alerts`, `security_alert_audit_events`는 MBA-211 구현 전이므로 위 34개 현재 활성 테이블 수와 목록에 포함하지 않는다.
 
 ## 엔티티 관계
 
@@ -73,6 +75,15 @@ erDiagram
   users ||--o{ connections : owns
 ```
 
+Security Alert 목표 관계는 현재 구현 ERD와 분리한다.
+
+```mermaid
+erDiagram
+  organization ||--o{ security_alerts : scopes
+  security_alerts ||--o{ security_alert_audit_events : has_evidence
+  audit_logs ||--o{ security_alert_audit_events : supports
+```
+
 - `rag_answer_runs`와 trace/usage 테이블은 FK가 아니라 opaque `correlation_id`(application-level convention)로만 연결한다 ([ADR-0013](decisions/ADR-0013-rag-answer-trace-usage-correlation-boundary.md)). 다이어그램에 없는 이유다.
 - `apps.workflow_id`와 `workflows.app_id`는 상호 참조(순환 FK)다.
 - JSONB metadata에 id를 넣는 방식(`audit_metadata`, `meta_info` 등)은 관계가 아니라 application convention이다.
@@ -87,6 +98,8 @@ erDiagram
 | `auth_state` | DB enum이 아닌 VARCHAR(50). 허용값은 RBAC 요약의 application-level 표준을 따른다 |
 | `options`/`flags` | 조직/팀/권한 계열 테이블의 공통 확장 슬롯. `options` JSONB NOT NULL, `flags` BIGINT NOT NULL (`>= 0` CHECK) |
 | `audit_logs.status` | `success`/`failure`만 저장. 정책 결과(`pass/warn/block`)는 `audit_metadata.policy_result`에 저장 |
+| `audit_metadata.organization_id` | Security Alert 탐지 대상 audit는 생성 시점에 검증된 organization UUID를 기록. Detector가 target resource에서 역추론하지 않는다 |
+| `audit_metadata.policy_reason` | `policy.block`의 canonical `{domain}.{reason}` 원인 코드. Security Alert allowlist와 legacy mapping은 ADR-0028을 따른다 |
 | classification | `documents.meta_info.classification` metadata convention. 전용 column을 만들지 않는다 ([ADR-0007](decisions/ADR-0007-mvp2-classification-metadata-storage.md)) |
 | `correlation_id` | FK가 아닌 application-level 식별 convention. 권한/scope 판정에 사용하지 않는다 |
 | Secret | credential 원문/API key/token/`encrypted_config`·`encrypted_password` 값은 응답·로그·trace에 노출하지 않는다 |
@@ -455,6 +468,60 @@ canonical 감사 로그. action 값은 [ADR-0008](decisions/ADR-0008-audit-actio
 | audit_metadata | JSONB | NULL — policy_result, correlation_id 등 |
 
 - 검색 인덱스: occurred_at, actor_id, category, action, `(target_type, target_id)`.
+
+Security Alert 탐지 대상 audit는 추가로 다음 application contract를 만족해야 한다.
+
+- 인증된 `actor_id`, `actor_type='user'`, `category='action'`, `status='failure'`
+- 검증된 `audit_metadata.organization_id`
+- `permission.denied`의 safe target 또는 `policy.block`의 canonical `audit_metadata.policy_reason`
+- 기능 활성화 시점 이후의 `occurred_at`
+
+#### Target `security_alerts`
+
+규칙 threshold를 충족한 위험 신호와 관리자 대응 lifecycle을 보존한다. 물리 schema는 MBA-211 migration에서 확정하며, 아래는 [ADR-0028](decisions/ADR-0028-security-alert-detection-and-lifecycle.md)의 필수 논리 모델이다.
+
+| 컬럼 | 타입 | 제약/의미 |
+| --- | --- | --- |
+| id | UUID | PK |
+| organization_id | UUID | NOT NULL, FK→organization.id |
+| subject_actor_id | UUID | NOT NULL, FK 없음 — user 삭제 후에도 유지하는 historical opaque actor ref. User snapshot/email을 복사하지 않음 |
+| rule_id / rule_version | VARCHAR | NOT NULL — MVP rule과 `v1` |
+| severity | VARCHAR | NOT NULL — `medium/high` |
+| status | VARCHAR | NOT NULL — `open/acknowledged/resolved` |
+| policy_reason | VARCHAR | NULL — repeated policy block만 canonical allowlist 값 |
+| detection_key | VARCHAR | NOT NULL — organization/actor/rule/version/reason에서 만든 내부 key, API 비노출 |
+| occurrence_count | INTEGER | NOT NULL, 0 이상 |
+| first_detected_at / last_detected_at | DATETIME | NOT NULL, UTC event-time 기준 |
+| lifecycle_version | INTEGER | NOT NULL, 1 이상 — occurrence 갱신에는 증가하지 않음 |
+| acknowledged_by / acknowledged_at | UUID / DATETIME | NULL, 처리 관리자 FK→users.id (SET NULL)와 시각 |
+| resolution_type | VARCHAR | NULL — `mitigated/false_positive/accepted_risk` |
+| resolution_reason | TEXT | NULL — resolved에서 sanitized non-blank 값 |
+| resolved_by / resolved_at | UUID / DATETIME | NULL, 처리 관리자 FK→users.id (SET NULL)와 시각 |
+| created_at / updated_at | DATETIME | NOT NULL |
+
+- 같은 detection key의 `open/acknowledged` 활성 alert는 최대 하나다. PostgreSQL partial unique constraint 또는 동등한 transaction-safe 제약으로 보장한다.
+- `occurrence_count`와 `last_detected_at` 갱신은 lifecycle version을 바꾸지 않아 상태 변경과 occurrence 처리의 불필요한 충돌을 피한다.
+- Actor name/email snapshot, raw target 목록, raw audit metadata, IP/user-agent/exception/request body/secret/trace payload를 저장하지 않는다.
+- Resolved row는 삭제하거나 다시 open으로 바꾸지 않는다. 재발은 resolve 이후 새 audit만으로 threshold를 충족한 새 row다.
+- Alert retention/자동 삭제는 MVP 범위 밖이다.
+
+#### Target `security_alert_audit_events`
+
+Alert와 실제 근거 audit의 연결 및 idempotency boundary다.
+
+| 컬럼 | 타입 | 제약/의미 |
+| --- | --- | --- |
+| id | UUID | PK |
+| security_alert_id | UUID | NOT NULL, FK→security_alerts.id |
+| audit_log_id | UUID | NOT NULL, FK→audit_logs.id |
+| linked_at | DATETIME | NOT NULL |
+
+- UNIQUE `(security_alert_id, audit_log_id)`로 같은 alert에서 동일 audit의 중복 연결을 막는다.
+- 동일 audit은 서로 다른 rule alert의 근거가 될 수 있으므로 `audit_log_id` 단독 UNIQUE는 두지 않는다.
+- `occurrence_count` 갱신과 evidence insert는 같은 transaction에서 처리해 count 유실·중복을 막는다.
+- Alert 최초 row, 최초 evidence, `security_alert.detected` audit은 같은 transaction에 기록한다.
+- Generic `audit_metadata`, `before`, `after`를 evidence table에 복사하지 않는다. 조회는 연결된 `audit_logs`의 safe projection을 사용한다.
+- Reconciliation cursor의 물리 저장 방식은 MBA-212에서 결정하되 `(occurred_at, audit_log.id)`와 기능 활성화 시각을 durable하게 보존해야 한다.
 
 ### Agent Builder
 

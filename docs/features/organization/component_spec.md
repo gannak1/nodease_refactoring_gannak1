@@ -100,22 +100,28 @@ Verified Against: feature/mba-188 @ 59d1cc51
   - `apiClient.get('/organizations')`
   - `apiClient.get('/organizations/current')`
   - `notificationsApi.listNotifications()`
+  - organization owner/manager인 경우 `adminApi.getSecurityAlertSummary()`
   - `EventSource('/api/v1/notifications/stream')`
   - `nodease-active-organization-changed` window event
 
 ### NotificationOverlay
 
 - 출처: `apps/client/app/features/notifications/components/NotificationOverlay.tsx`
-- 책임: 현재 사용자의 organization 초대 알림을 표시하고 초대 수락/거절 action을 제공한다.
-- 현재 동작:
+- 책임: organization invitation과 manager-only Security Alert summary를 서로 다른 section으로 표시한다. Invitation action은 Organization feature가, Security Alert item/deep link는 [Security Alert component spec](../security-alert/component_spec.md)이 소유한다.
+- Invitation 동작:
   - Sidebar mount 시 `GET /notifications`로 초기 알림 목록을 조회한다.
   - `notifications.changed` SSE event를 받으면 `GET /notifications`를 재조회한다.
   - `organization.invitation` item만 렌더링한다.
   - 각 item은 organization 이름, organization 권한(`member`/`manager`), 초대 시각, `수락`, `거절` 버튼을 표시한다.
   - `수락`은 `POST /organizations/{organization_id}/members/me/accept`, `거절`은 `POST /organizations/{organization_id}/members/me/decline`을 호출한다.
   - 성공 후 toast를 표시하고 알림 목록을 재조회한다.
-  - 알림이 없으면 "새 알림이 없습니다." empty state를 표시한다.
-  - 읽음/안읽음, 배지 count, 알림 히스토리는 현재 구현 범위가 아니다.
+  - Invitation이 없으면 invitation section의 empty state를 표시한다.
+- Security Alert target 동작:
+  - 현재 organization owner/manager만 `/admin/security-alerts/summary`를 조회하고 `보안 알림` section과 open badge를 표시한다.
+  - Alert item은 severity, rule label, safe actor, occurrence count, 최근 시각을 표시하고 `/dashboard/admin?tab=security-alerts&alertId=<uuid>`로 이동한다.
+  - Overlay 안에서 acknowledge/resolve를 수행하지 않는다.
+  - Invitation과 Security Alert의 loading/error/empty 상태를 분리하고 한 source 실패로 다른 source를 숨기지 않는다.
+  - Security Alert에는 별도 read/unread를 만들지 않고 open status만 badge로 센다.
 
 ### AdminShell
 
@@ -377,6 +383,9 @@ Verified Against: feature/mba-188 @ 59d1cc51
   - 조회 실패 시 name을 비우고 manager flag를 false로 둔다.
 - dropdown state:
   - user footer click으로 logout dropdown을 열고 닫는다.
+- notification state:
+  - Invitation 목록과 Security Alert summary의 loading/error/data를 source별로 분리한다.
+  - manager가 아니면 Security Alert summary를 요청하거나 이전 manager scope의 badge/cache를 유지하지 않는다.
 
 ### AdminConsolePage
 
@@ -454,6 +463,8 @@ Verified Against: feature/mba-188 @ 59d1cc51
 - manager는 team summary를 볼 수 있고 `조직 접근 관리` button으로 `/dashboard/admin`에 이동한다.
 - Sidebar는 active organization changed event를 받으면 `/organizations/current`를 다시 조회한다.
 - Sidebar는 `isOrganizationManager`가 false면 `관리` nav item을 렌더링하지 않는다.
+- Sidebar는 owner/manager일 때만 Security Alert summary를 조회한다. Active organization 변경 또는 manager 권한 회수 시 이전 organization alert summary와 badge를 즉시 제거한다.
+- `notifications.changed`를 받으면 invitation 목록과, 권한이 있으면 Security Alert summary를 각각 재조회한다. Event payload를 두 source의 state로 직접 사용하지 않는다.
 
 ### Member Management
 

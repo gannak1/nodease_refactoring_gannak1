@@ -1,34 +1,33 @@
 # Admin Dashboard Requirements
 
 Status: Draft
-Related Features: auth, organization, audit-tracing, budget-management, cost-optimizer
+Related Features: auth, organization, audit-tracing, security-alert, budget-management, cost-optimizer
 
 ## Purpose
 
-이미 축적되는 `audit_logs`, `llm_usage_logs`, `workflow_runs` 데이터를 플랫폼 관리자와 감사자가 조회하는 관리자 화면을 제공한다. [PRD](../../PRD.md)의 FR-011~FR-018을 담당한다. 이 feature의 범위는 조회/집계 UI와 그 권한 경계, 권한 신청의 관리자 측 처리, 부여된 App 생성 권한 관리, audit actor에서 Organization/RBAC access-management flow로 연결하는 관리자 표면이다. Actor mutation 정책과 API는 organization/access-management 경계가 소유한다.
+이미 축적되는 `audit_logs`, `llm_usage_logs`, `workflow_runs`와 영속 Security Alert를 organization 관리자와 권한 있는 감사자가 조회하는 관리자 화면을 제공한다. [PRD](../../PRD.md)의 FR-011~FR-018을 담당한다. 이 feature의 범위는 조회/집계 UI와 그 권한 경계, 권한 신청의 관리자 측 처리, 부여된 App 생성 권한 관리, audit actor에서 Organization/RBAC access-management flow로 연결하는 관리자 표면이다. Actor mutation 정책과 API는 organization/access-management 경계, Security Alert 탐지·lifecycle·전용 API/UI 계약은 [security-alert](../security-alert/requirements.md) feature가 소유한다.
 
 권한 신청의 제출(신청자 측 차단 안내와 신청 폼)은 [organization](../organization/requirements.md) 범위(PRD FR-041)이고, workflow 예산의 설정/수정은 [budget-management](../budget-management/requirements.md) 범위(PRD FR-051)다. 이 feature는 그 결과 데이터를 조회하고 처리하는 표면이다.
 
 ## User Stories
 
-- 플랫폼 관리자로서, 누가 언제 무엇을 했는지 audit log를 검색하고 개별 기록의 상세를 확인하고 싶다.
-- 플랫폼 관리자로서, audit log의 user actor를 현재 organization member와 연결해 상태와 permission source를 확인하고 필요한 access action을 수행하고 싶다.
-- 플랫폼 관리자로서, workflow별 LLM 사용량과 비용을 확인해 비용이 큰 workflow를 찾고 싶다.
-- 플랫폼 관리자로서, 멤버의 workflow 생성/배포 권한 신청을 확인하고 승인/거절하고 싶다.
-- 플랫폼 관리자로서, 현재 App 생성 권한을 보유한 멤버를 확인하고, 더 이상 필요하지 않은 권한을 회수하고 싶다.
-- 플랫폼 관리자로서, 이번 달 조직 LLM 비용과 예산 위험 workflow 비율을 한눈에 확인하고 싶다.
+- Organization 관리자로서, 누가 언제 무엇을 했는지 audit log를 검색하고 개별 기록의 상세를 확인하고 싶다.
+- Organization 관리자로서, audit log의 user actor를 현재 organization member와 연결해 상태와 permission source를 확인하고 필요한 access action을 수행하고 싶다.
+- Organization 관리자로서, workflow별 LLM 사용량과 비용을 확인해 비용이 큰 workflow를 찾고 싶다.
+- Organization 관리자로서, 멤버의 workflow 생성/배포 권한 신청을 확인하고 승인/거절하고 싶다.
+- Organization 관리자로서, 현재 App 생성 권한을 보유한 멤버를 확인하고, 더 이상 필요하지 않은 권한을 회수하고 싶다.
+- Organization 관리자로서, 이번 달 조직 LLM 비용과 예산 위험 workflow 비율을 한눈에 확인하고 싶다.
+- Organization owner/manager로서, 반복 권한 거부와 정책 차단에서 생성된 위험 신호를 별도 보안 알림 탭에서 확인·조사·해결하고 싶다.
 - 감사자로서, 관리 권한 없이도 감사 목적의 audit 조회를 하고 싶다.
 
 ## Functional Requirements
 
 - FR-011: audit log를 행위자, action, 대상, 기간으로 검색/필터링하고, 개별 로그의 actor, action, target, status, timestamp를 상세 조회한다. action은 [ADR-0008](../../decisions/ADR-0008-audit-action-naming-standard.md)의 canonical action을 기준으로 하며, "workflow 차단" 같은 사용자 친화 라벨이 필요하면 canonical action에서 파생해 표시한다.
 - FR-012: workflow별 LLM 사용량/비용을 집계해 표시한다. 목록 기준은 organization scope 안의 App primary workflow(`apps.workflow_id`) 전체이며, 사용량 원천은 `llm_usage_logs`다. 기간 안에 usage row가 없는 workflow도 응답에 포함하고 prompt/completion tokens, `call_count`, `total_cost`는 0으로 반환한다. usage row의 `total_cost`가 NULL인 경우도 0으로 합산한다. 기본 조회 기간은 이번 달이고, 시작/끝 기간 필터를 제공한다. 목록은 비용 내림차순 정렬을 제공해 비용이 큰 workflow를 바로 찾을 수 있게 하며, 비용이 같은 row는 workflow 이름과 id로 안정적으로 정렬한다. 비용 집계 표시까지가 이 feature의 범위이며, 모델 비교/최적화 실행은 workflow 문맥의 [cost-optimizer](../cost-optimizer/requirements.md) 범위다 — 대시보드는 해당 workflow로 이동하는 진입만 제공한다.
-- FR-013 (후순위): 차단 이벤트를 비정상 접근 시도로 표시한다. 현재 데모 시나리오에서 사용하지 않으며, 구현이 완료되면 PRD 시나리오 2와 함께 복원한다. 복원 시 두 단계로 구현한다.
-  - 1단계: `permission.denied`, `auth.permission_denied` 등 차단 이벤트를 판정 로직 없이 목록으로 나열한다. 조직 scope 밖 접근은 404로 숨기고 audit을 기록하지 않으므로 목록에 포함되지 않는다 ([ADR-0010](../../decisions/ADR-0010-resource-access-403-404-policy.md)).
-  - 2단계: 관리자 페이지 기능(FR-011, FR-012, FR-014, FR-015) 구현이 완료된 뒤 횟수 임계값/패턴 기반 판정으로 고도화한다.
+- FR-013: 검증된 organization과 인증 actor가 있는 `permission.denied` 및 allowlist `policy.block`을 [ADR-0028](../../decisions/ADR-0028-security-alert-detection-and-lifecycle.md)의 versioned 규칙으로 탐지해 영속 Security Alert로 표시한다. 현재 organization owner/manager는 Sidebar open badge와 Admin Dashboard `보안 알림` 탭에서 alert, safe evidence, lifecycle을 관리한다. Audit 전용 `auditor`/`raw_auditor`는 이 권한을 얻지 않는다. 상세 요구사항은 [Security Alert requirements](../security-alert/requirements.md)가 소유한다.
 - FR-014: workflow 생성/배포 권한 신청 목록을 조회하고 승인/거절한다. 목록에는 요청자, 요청 권한, 신청 사유를 표시한다. 요청 권한의 실체는 조직 수준 App 생성 능력(`app.create`)이며, 원천은 `permission_requests` 테이블이다 ([ADR-0016](../../decisions/ADR-0016-permission-request-and-app-creation-permission.md)). 승인 시 요청된 권한이 부여되고, 신청 제출/승인/거절은 canonical action `permission_request.created`/`permission_request.approved`/`permission_request.rejected`로 audit에 기록한다 (PRD FR-042, [ADR-0008](../../decisions/ADR-0008-audit-action-naming-standard.md)).
 - FR-014 (회수 확장): 부여된 App 생성 권한(`user_app_creation_permissions` row) 보유 목록을 조회하고 개별 회수한다. 목록에는 보유자, 부여자, 부여 시각을 표시한다. 회수는 row 삭제로 표현하고 canonical action `user_app_creation_permission.deleted`로 audit에 기록한다 ([ADR-0016](../../decisions/ADR-0016-permission-request-and-app-creation-permission.md), [ADR-0008](../../decisions/ADR-0008-audit-action-naming-standard.md)). 회수된 사용자의 App 생성은 다시 `403 permission.denied`로 차단되고, 사용자는 권한을 재신청할 수 있다.
-- FR-015: 조직의 이번 달 LLM 비용 합계와 예산 위험 workflow 비율을 요약해 표시한다. 예산 사용률(당월 비용 / 예산)이 90% 이상이면 위험, 100%를 초과하면 초과로 판정한다. 부적절한 접근/행동 탐지 건수 요약은 후순위 구현 항목이다 (FR-013과 함께 복원).
+- FR-015: 조직의 이번 달 LLM 비용 합계와 예산 위험 workflow 비율을 요약해 표시한다. 예산 사용률(당월 비용 / 예산)이 90% 이상이면 위험, 100%를 초과하면 초과로 판정한다. 비용·예산 위험은 FR-013 Security Alert와 분리한다.
 - FR-016: Audit log의 user actor를 클릭하면 current organization member access drawer를 열어 membership state, organization role, team membership, App 생성 권한, workflow/Knowledge Base/LLM credential direct 및 team-inherited permission source를 조회한다. Access profile과 mutation은 organization manager 전용이며, auditor-only 사용자는 기존 audit list/detail만 사용할 수 있다 ([ADR-0023](../../decisions/ADR-0023-audit-actor-access-management-boundary.md)).
 - FR-017: Actor access drawer는 suspend/reactivate, desired role별 role set, team membership add/remove, direct permission grant/revoke, App creation grant/revoke를 항목별로 제공한다. Suspended 또는 globally deactivated target은 promotion/add/grant를 제공하지 않고 cleanup action만 허용한다. 모든 action은 confirm dialog와 optional reason을 거치고 한 요청에서 한 항목만 변경한다.
 - FR-018: Audit detail은 supported access-management target/action에 대해 target별 allowlist로 생성한 optional change summary를 표시한다. Generic raw before/after, raw payload, secret, hidden resource reference는 표시하지 않는다.
@@ -37,6 +36,7 @@ Related Features: auth, organization, audit-tracing, budget-management, cost-opt
 
 - 대시보드 조회 자체에도 서버(Gateway) 권한 판정이 필요하다 (NFR-001). audit 검색/상세(FR-011)는 audit auth_state `auditor` 이상, raw payload 접근은 `raw_auditor` 이상과 trace visibility policy를 따른다.
 - 비용/예산 요약(FR-012, FR-015)과 권한 신청 목록/승인/거절, App 생성 권한 보유 목록/회수(FR-014)는 organization owner/manager 전용이다. `auditor`/`raw_auditor`는 audit 조회(FR-011)만 접근할 수 있다.
+- Security Alert 탭, Sidebar summary, alert detail/evidence와 lifecycle mutation(FR-013)은 현재 active organization owner/manager 전용이다. Audit visibility만 있는 `auditor`/`raw_auditor`와 일반 member에게 노출하거나 API를 허용하지 않는다.
 - Actor access profile과 모든 access action(FR-016, FR-017)은 ADR-0009의 organization manager 판정을 통과한 caller 전용이다. Audit actor가 clickable user처럼 보여도 `auditor`/`raw_auditor`에게 mutation control을 노출하거나 API를 허용하지 않는다. Auditor-only admin page 노출은 기존 후순위 범위이며, MBA-188이 그 page gate를 확장하지 않는다.
 - 조회 범위는 `X-Organization-Id` 요청 organization scope 안으로 제한한다 ([ADR-0009](../../decisions/ADR-0009-active-organization-header-context.md), NFR-002).
 - audit metadata의 raw payload, secret 계열 값은 대시보드 응답에 노출하지 않는다 (NFR-004).
@@ -61,5 +61,5 @@ Related Features: auth, organization, audit-tracing, budget-management, cost-opt
 
 ## Open Questions
 
-- FR-013 2단계 고도화의 판정 기준(차단 횟수 임계값, 패턴 정의, 조회 시점 집계 vs 백그라운드 탐지) — 고도화 착수 시 결정. PRD Open Question과 연결.
+- Security Alert의 MVP 탐지 기준과 처리 방식은 ADR-0028에서 해소했다. 인증 전/IP 기반 탐지, 운영 이상과 외부 전달은 Security Alert 후속 범위다.
 - (해소) FR-015 예산 위험 workflow 비율의 분모는 활성 예산 workflow 수로 확정했다. 예산 데이터 원천과 판정 규칙은 [budget-management requirements](../budget-management/requirements.md)를 따른다.

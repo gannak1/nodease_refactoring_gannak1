@@ -254,7 +254,7 @@ Query parameter:
 }
 ```
 
-현재 구현은 별도 notification table을 만들지 않고, 현재 user의 `invited` organization membership을 알림으로 파생한다. active/suspended/removed membership은 포함하지 않는다.
+이 endpoint는 별도 invitation notification table을 만들지 않고 현재 user의 `invited` organization membership만 파생한다. Active/suspended/removed membership과 Security Alert는 포함하지 않는다. Security Alert open count와 최근 item은 owner/manager가 [Security Alert API](../security-alert/api_spec.md)의 `/api/v1/admin/security-alerts/summary`로 별도 조회한다.
 
 ### `GET /notifications/stream`
 
@@ -275,7 +275,7 @@ event: notifications.changed
 data: {}
 ```
 
-초대 생성/수락/거절 이후 현재 사용자 channel에 발행된다. 클라이언트는 event payload를 source of truth로 사용하지 않고 `GET /notifications`를 재조회한다.
+초대 생성/수락/거절 이후 현재 사용자 channel에 발행된다. Security Alert 생성·활성 alert 갱신·lifecycle 변경도 권한 있는 현재 organization manager 대상 notification 갱신을 발행할 수 있다. 클라이언트는 event payload를 source of truth로 사용하지 않고 `GET /notifications`와, 현재 owner/manager인 경우 `/api/v1/admin/security-alerts/summary`를 source별로 재조회한다. Security Alert publish 실패와 reconnect 복구 경계는 [Security Alert API spec](../security-alert/api_spec.md)이 소유한다.
 
 ### `PATCH /organizations/{organization_id}/members/{user_id}`
 

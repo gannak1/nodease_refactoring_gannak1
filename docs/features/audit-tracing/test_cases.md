@@ -27,6 +27,9 @@ Status: Draft
 - Create는 `after`, delete는 `before`, update는 양쪽 complete safe snapshot의 organization provenance가 request organization과 일치할 때만 `change_summary`를 반환한다. 한쪽 provenance가 누락되거나 다르면 null이다.
 - Audit detail allowlist metadata는 UUID/scalar/canonical enum/count type까지 검증한다. 기존 sanitized JSON `summary` 외 허용 key가 nested object이거나 malformed UUID, unknown policy/resource type 또는 boolean count면 해당 field를 생략하고 list/detail을 실패시키지 않는다.
 - Audit `auditor`/`raw_auditor`는 audit list/detail을 조회할 수 있지만 actor access profile/team-membership/resource/action API는 `403`이다.
+- Security Alert evidence API는 실제 연결된 audit만 `AuditLogSchema` 수준으로 반환하고 generic metadata/before/after/change summary를 inline 노출하지 않는다.
+- Audit `auditor`/`raw_auditor` only user는 기존 audit list/detail을 조회할 수 있어도 Security Alert list/detail/evidence/lifecycle API는 `403`이어야 한다.
+- Security Alert 최초 생성 또는 lifecycle audit insert가 실패하면 대응 alert transaction도 rollback하고, cooldown occurrence 갱신은 lifecycle audit을 추가하지 않아야 한다.
 - RAG strategy/A-B summary API는 권한 없는 문서명/ID, raw source metadata, raw prompt/completion, content preview를 반환하지 않는다.
 - RAG strategy/A-B summary API는 query rewrite 적용 여부, evidence sufficiency 결과, source tier summary를 safe field로 반환할 수 있지만 raw rewritten query와 hidden source reference를 반환하지 않는다.
 
@@ -37,6 +40,7 @@ Status: Draft
 - Cost Optimizer의 RAG 포함 비교 화면은 safe retrieval summary와 비용/latency 집계만 표시한다.
 - Organization manager가 audit actor를 정지/재활성화하면 `organization.member.update` audit의 optional reason과 safe membership before/after를 같은 audit tab에서 확인할 수 있다.
 - Direct permission revoke 후 team source가 남는 경우 audit은 direct row deletion만 기록하고 UI effective access는 remaining team source를 반영한다.
+- Security Alert detail의 evidence에서 audit detail로 이동해도 기존 organization scope와 metadata allowlist를 우회하지 않아야 한다.
 
 ## Permission Tests
 
