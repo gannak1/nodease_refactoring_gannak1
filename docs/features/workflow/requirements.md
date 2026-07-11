@@ -178,8 +178,8 @@ MBA-104 범위에서는 비용 최적화와 A/B 비교 실행을 준비하기 �
 ### Mail Credential Reference
 
 - Mail node graph는 organization-scoped Mail credential의 opaque `credential_id`만 저장한다. Email, password, token, ciphertext, provider endpoint를 graph에 직접 저장하지 않는다.
-- Workflow 저장 경계는 inline Mail secret field를 거부하고, reference가 있으면 active organization, active 상태와 저장 요청자의 `use` 권한을 검증한다.
-- Agent Builder가 만든 Mail node는 `credential_id=null`, `configuration_state=unresolved`로 preview와 저장이 가능하지만 실행 준비 상태로 간주하지 않는다.
+- Workflow 저장 경계는 최상위 graph와 모든 중첩 `subGraph.nodes`의 inline Mail secret field를 거부하고, reference가 있으면 active organization, active 상태와 저장 요청자의 `use` 권한을 검증한다. `displayNumber`와 `visibleProperties`는 제한된 UI metadata만 허용한다.
+- Agent Builder가 만든 Mail node는 `credential_id=null`, `configuration_state=unresolved`로 preview와 draft 저장이 가능하지만 실행 준비 상태로 간주하지 않는다. Deployment snapshot 생성과 기존 deployment 활성화는 최상위와 중첩 Mail node 모두 유효한 credential reference가 있어야 한다.
 - 인증 test/deployment run은 명시 user execution subject와 canonical organization을 runtime resolver에 전달한다. Resolver는 provider 연결 직전에 scope, active 상태, `use` 권한, egress target을 재검증한다. Public/schedule run은 App/workflow owner를 대체 주체로 사용하지 않으며, service account 또는 assigned operator 정책이 없으면 Mail 실행을 차단한다.
 - Credential이 없거나 revoke됐거나 권한이 회수된 경우 Mail provider 연결 전에 safe error로 fail-closed한다. Legacy inline password graph는 호환 fallback 없이 거부한다.
 - RAG를 포함한 workflow 비교 실행이나 A/B 실행도 로그인 interactive 실행이면 동일한 execution subject와 Knowledge permission/source ACL gate를 사용하고, subject가 없으면 anonymous public-only gate를 사용한다.

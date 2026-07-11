@@ -46,3 +46,8 @@ def test_mail_credential_routes_and_safe_response_schema_are_registered():
         "email_preview",
         "status",
     }
+
+    update_properties = schema["components"]["schemas"]["MailCredentialUpdate"][
+        "properties"
+    ]
+    assert set(update_properties) == {"credential_name", "secret"}

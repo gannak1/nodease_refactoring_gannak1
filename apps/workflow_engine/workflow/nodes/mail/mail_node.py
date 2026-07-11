@@ -20,6 +20,7 @@ from apps.workflow_engine.services.mail_credential_service import (
 )
 
 _jinja_env = Environment(autoescape=False)
+MAIL_IMAP_TIMEOUT_SECONDS = 10.0
 
 
 def _imap_quoted_string(value: str) -> str:
@@ -30,18 +31,38 @@ def _imap_quoted_string(value: str) -> str:
 
 
 class _PinnedIMAP4(imaplib.IMAP4):
-    def __init__(self, host: str, port: int, resolved_ip: str):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        resolved_ip: str,
+        *,
+        timeout: float,
+    ):
         self._resolved_ip = resolved_ip
-        super().__init__(host=host, port=port)
+        super().__init__(host=host, port=port, timeout=timeout)
 
     def _create_socket(self, timeout):
         return socket.create_connection((self._resolved_ip, self.port), timeout)
 
 
 class _PinnedIMAP4SSL(imaplib.IMAP4_SSL):
-    def __init__(self, host: str, port: int, resolved_ip: str):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        resolved_ip: str,
+        *,
+        ssl_context: ssl.SSLContext,
+        timeout: float,
+    ):
         self._resolved_ip = resolved_ip
-        super().__init__(host=host, port=port)
+        super().__init__(
+            host=host,
+            port=port,
+            ssl_context=ssl_context,
+            timeout=timeout,
+        )
 
     def _create_socket(self, timeout):
         raw_socket = socket.create_connection((self._resolved_ip, self.port), timeout)
@@ -160,12 +181,15 @@ class MailNode(Node[MailNodeData]):
                     credential.imap_host,
                     credential.imap_port,
                     credential.resolved_ip,
+                    ssl_context=ssl.create_default_context(),
+                    timeout=MAIL_IMAP_TIMEOUT_SECONDS,
                 )
             else:
                 mail = _PinnedIMAP4(
                     credential.imap_host,
                     credential.imap_port,
                     credential.resolved_ip,
+                    timeout=MAIL_IMAP_TIMEOUT_SECONDS,
                 )
                 mail.starttls(ssl_context=ssl.create_default_context())
 

@@ -69,9 +69,6 @@ class MailCredentialUpdate(BaseModel):
 
     credential_name: str | None = Field(default=None, min_length=1, max_length=255)
     secret: SecretStr | None = Field(default=None, min_length=1)
-    imap_host: str | None = Field(default=None, min_length=1, max_length=255)
-    imap_port: int | None = Field(default=None, ge=1, le=65535)
-    use_ssl: bool | None = None
 
     @field_validator("credential_name")
     @classmethod
@@ -81,18 +78,6 @@ class MailCredentialUpdate(BaseModel):
         stripped = value.strip()
         if not stripped:
             raise ValueError("value must not be blank")
-        return stripped
-
-    @field_validator("imap_host")
-    @classmethod
-    def validate_optional_imap_host(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        stripped = value.strip().lower()
-        if not stripped:
-            raise ValueError("value must not be blank")
-        if "://" in stripped or any(char.isspace() for char in stripped):
-            raise ValueError("imap_host must be a hostname without scheme")
         return stripped
 
     @field_validator("secret")

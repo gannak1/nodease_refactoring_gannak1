@@ -4,7 +4,14 @@
 export type FieldConfig = {
   key: string;
   label: string;
-  type?: 'text' | 'code' | 'list' | 'json' | 'variables-table' | 'input-mapping-table';
+  type?:
+    | 'text'
+    | 'code'
+    | 'list'
+    | 'json'
+    | 'variables-table'
+    | 'input-mapping-table'
+    | 'connection-status';
 };
 
 export type NodeDisplayConfig = {
@@ -140,7 +147,7 @@ export const nodeDisplayConfigs: Record<string, NodeDisplayConfig> = {
   mailNode: {
     label: 'Mail 노드 설정',
     rows: [
-      [{ key: 'credential_id', label: 'Mail Credential' }],
+      [{ key: 'credential_id', label: 'Mail Credential', type: 'connection-status' }],
       [{ key: 'referenced_variables', label: '입력변수', type: 'input-mapping-table' }],
       [
         { key: 'keyword', label: '검색 키워드' },

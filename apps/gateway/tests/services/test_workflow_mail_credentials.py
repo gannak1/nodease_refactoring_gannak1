@@ -63,6 +63,113 @@ def test_unresolved_mail_reference_can_be_saved_for_preview():
     db.query.assert_not_called()
 
 
+def test_deployment_validation_rejects_unresolved_mail_reference():
+    with pytest.raises(HTTPException) as exc:
+        WorkflowService.validate_mail_credential_references(
+            MagicMock(),
+            _request(
+                {
+                    "title": "Mail",
+                    "credential_id": None,
+                    "configuration_state": "unresolved",
+                }
+            ),
+            user_id=str(uuid.uuid4()),
+            organization_id=uuid.uuid4(),
+            require_resolved=True,
+        )
+
+    assert exc.value.status_code == 422
+    assert exc.value.detail == "mail.credential_reference_required"
+
+
+def test_draft_allows_valid_mail_ui_metadata():
+    db = MagicMock()
+
+    WorkflowService.validate_mail_credential_references(
+        db,
+        _request(
+            {
+                "title": "Mail",
+                "credential_id": None,
+                "configuration_state": "unresolved",
+                "displayNumber": 2,
+                "visibleProperties": ["credential_id", "folder", "filters"],
+            }
+        ),
+        user_id=str(uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    db.query.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "ui_metadata",
+    [
+        {"displayNumber": "synthetic-secret"},
+        {"visibleProperties": ["synthetic-secret"]},
+    ],
+)
+def test_draft_rejects_unsafe_mail_ui_metadata(ui_metadata):
+    with pytest.raises(HTTPException) as exc:
+        WorkflowService.validate_mail_credential_references(
+            MagicMock(),
+            _request(
+                {
+                    "title": "Mail",
+                    "credential_id": None,
+                    **ui_metadata,
+                }
+            ),
+            user_id=str(uuid.uuid4()),
+            organization_id=uuid.uuid4(),
+        )
+
+    assert exc.value.status_code == 422
+    assert exc.value.detail == "mail.credential_reference_required"
+
+
+def test_nested_subgraph_mail_node_rejects_inline_secret():
+    secret = "synthetic-nested-secret"
+    graph = {
+        "nodes": [
+            {
+                "id": "loop-1",
+                "type": "loopNode",
+                "data": {
+                    "subGraph": {
+                        "nodes": [
+                            {
+                                "id": "mail-nested",
+                                "type": "mailNode",
+                                "data": {
+                                    "credential_id": None,
+                                    "app_password": secret,
+                                },
+                            }
+                        ],
+                        "edges": [],
+                    }
+                },
+            }
+        ],
+        "edges": [],
+    }
+
+    with pytest.raises(HTTPException) as exc:
+        WorkflowService.validate_mail_credential_references(
+            MagicMock(),
+            graph,
+            user_id=str(uuid.uuid4()),
+            organization_id=uuid.uuid4(),
+        )
+
+    assert exc.value.status_code == 422
+    assert exc.value.detail == "mail.credential_reference_required"
+    assert secret not in str(exc.value)
+
+
 @pytest.mark.parametrize(
     "data",
     [

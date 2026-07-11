@@ -1,6 +1,7 @@
 """Mail node credential reference tests."""
 
 import imaplib
+import ssl
 import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -12,7 +13,10 @@ from apps.workflow_engine.services.mail_credential_service import (
 )
 from apps.workflow_engine.workflow.core.workflow_node_factory import NodeFactory
 from apps.workflow_engine.workflow.nodes.mail.entities import MailNodeData, MailVariable
-from apps.workflow_engine.workflow.nodes.mail.mail_node import MailNode
+from apps.workflow_engine.workflow.nodes.mail.mail_node import (
+    MAIL_IMAP_TIMEOUT_SECONDS,
+    MailNode,
+)
 
 
 @pytest.fixture
@@ -100,6 +104,11 @@ This is a test email body.
         "mailbox@example.test", "synthetic-mail-secret"
     )
     assert credential_resolver.call_count == 1
+    _, kwargs = mock_imap.call_args
+    tls_context = kwargs["ssl_context"]
+    assert tls_context.verify_mode == ssl.CERT_REQUIRED
+    assert tls_context.check_hostname is True
+    assert kwargs["timeout"] == MAIL_IMAP_TIMEOUT_SECONDS
 
 
 def test_mail_variable_substitution(
@@ -216,7 +225,12 @@ def test_port_143_negotiates_starttls_before_login(plain_imap, resolved_credenti
 
     node._connect_imap(starttls_credential)
 
+    _, kwargs = plain_imap.call_args
+    assert kwargs["timeout"] == MAIL_IMAP_TIMEOUT_SECONDS
     assert mail.method_calls[0][0] == "starttls"
+    starttls_context = mail.starttls.call_args.kwargs["ssl_context"]
+    assert starttls_context.verify_mode == ssl.CERT_REQUIRED
+    assert starttls_context.check_hostname is True
     assert mail.method_calls[1] == (
         "login",
         ("mailbox@example.test", "synthetic-mail-secret"),

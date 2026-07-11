@@ -108,6 +108,7 @@ class DeploymentService:
             graph_snapshot,
             user_id=str(user_id),
             organization_id=workflow.organization_id,
+            require_resolved=True,
         )
 
         if deployment_in.is_active:
@@ -974,6 +975,7 @@ class DeploymentService:
                 deployment.graph_snapshot,
                 user_id=str(user_id) if user_id is not None else "",
                 organization_id=getattr(app, "organization_id", None),
+                require_resolved=True,
             )
             DeploymentService._enforce_knowledge_preflight(
                 db,

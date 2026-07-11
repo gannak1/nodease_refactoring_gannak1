@@ -5,6 +5,7 @@ from apps.shared.services.credential_encryption import (
     CredentialEncryptionError,
     CredentialEncryptionService,
     EncryptedSecretEnvelope,
+    require_mail_credential_keyring_ready,
 )
 from cryptography.fernet import Fernet
 
@@ -54,3 +55,12 @@ def test_environment_keyring_encrypts_with_new_key_and_decrypts_old_key(monkeypa
     assert rotated_service.decrypt(old_envelope) == "synthetic-old-secret"
     assert new_envelope.key_version == "v2"
     assert rotated_service.decrypt(new_envelope) == "synthetic-new-secret"
+
+
+def test_mail_keyring_readiness_rejects_unknown_active_version(monkeypatch):
+    key = Fernet.generate_key().decode("utf-8")
+    monkeypatch.setenv("MAIL_CREDENTIAL_ENCRYPTION_KEYS", json.dumps({"v1": key}))
+    monkeypatch.setenv("MAIL_CREDENTIAL_ACTIVE_KEY_VERSION", "v2")
+
+    with pytest.raises(CredentialEncryptionError, match="unavailable"):
+        require_mail_credential_keyring_ready()

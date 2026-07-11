@@ -17,7 +17,7 @@ Status: Draft
 | POST | `/api/v1/mail/credentials` | Mail credential 등록 | Organization manager |
 | GET | `/api/v1/mail/credentials` | 사용 가능한 safe option 목록 | `use` 이상 또는 manager |
 | GET | `/api/v1/mail/credentials/{credential_id}` | Safe metadata 조회 | `read` 이상 또는 manager |
-| PATCH | `/api/v1/mail/credentials/{credential_id}` | 이름, endpoint 또는 secret 교체 | `manage` 또는 manager |
+| PATCH | `/api/v1/mail/credentials/{credential_id}` | 이름 또는 secret 교체 | `manage` 또는 manager |
 | DELETE | `/api/v1/mail/credentials/{credential_id}` | Credential revoke | `manage` 또는 manager |
 | GET | `/api/v1/mail/credentials/{credential_id}/permissions` | User/team 권한 목록 | `manage` 또는 manager |
 | PUT | `/api/v1/mail/credentials/{credential_id}/permissions/users/{user_id}` | User direct 권한 부여·변경 | `manage` 또는 manager |
@@ -77,11 +77,11 @@ Status: Draft
 
 ## PATCH 계약
 
-PATCH는 `credential_name`, `secret`, `imap_host`, `imap_port`, `use_ssl` 중 하나 이상을 요구한다. `email_address`, provider 또는 auth type 변경은 다른 mailbox identity로 간주하므로 새 credential 등록을 사용한다.
+PATCH는 `credential_name`, `secret` 중 하나 이상을 요구한다. `email_address`, provider, auth type, `imap_host`, `imap_port`, `use_ssl` 변경은 mailbox identity 또는 secret 전송 endpoint 변경으로 간주하므로 새 credential 등록을 사용한다. Unknown field와 null field는 `validation.failed`로 거부한다.
 
 ## Permission 계약
 
-Permission PUT body는 `auth_state`에 `viewer`, `operator`, `builder`, `manager` 중 하나만 허용한다. 기존 row가 있으면 갱신하고 없으면 생성한다. User는 active organization member, Team은 같은 organization의 active Team이어야 한다. 동시 변경은 credential row lock 안에서 직렬화한다. Revoked credential에는 신규 권한을 부여할 수 없지만 기존 권한 회수는 허용한다.
+Permission PUT body는 `auth_state`에 `viewer`, `operator`, `builder`, `manager` 중 하나만 허용한다. 기존 row가 있으면 갱신하고 없으면 생성한다. User는 active organization member이면서 비활성화되지 않은 계정이어야 하고, Team은 같은 organization의 active Team이어야 한다. User direct grant는 대상 membership과 User를 잠금 확인하고 동시 변경은 credential row lock 안에서 직렬화한다. Revoked credential에는 신규 권한을 부여할 수 없지만 기존 권한 회수는 허용한다.
 
 - `viewer`: safe detail `read`
 - `operator`: `read`, runtime `use`
@@ -97,6 +97,6 @@ Permission PUT body는 `auth_state`에 `viewer`, `operator`, `builder`, `manager
 - `mail.credential_revoked`: Revoked credential 수정 또는 신규 permission 부여 시도
 - `mail.credential_persistence_failed`: Credential 또는 canonical audit transaction 저장 실패
 - `mail.egress_target_denied`: Private/loopback/metadata target 또는 허용되지 않은 IMAP port
-- `validation.failed`: Unknown field, 빈 PATCH, 잘못된 endpoint 또는 port
+- `validation.failed`: Unknown field, null field, 빈 PATCH, 잘못된 endpoint 또는 port
 
 오류 detail에는 secret, ciphertext, email 원문, IMAP raw exception을 포함하지 않는다.

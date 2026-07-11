@@ -707,6 +707,60 @@ def test_inactive_create_rejects_mail_inline_secret_snapshot(monkeypatch):
     assert db.rows_for(WorkflowDeployment) == []
 
 
+def test_inactive_create_rejects_unresolved_mail_snapshot(monkeypatch):
+    app_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    actor_id = uuid.uuid4()
+    app = App(
+        id=app_id,
+        workflow_id=workflow_id,
+        organization_id=organization_id,
+        url_slug="app-slug",
+        auth_secret="existing-secret",
+        created_by=actor_id,
+    )
+    workflow = _row(
+        id=workflow_id,
+        organization_id=organization_id,
+        app_id=app_id,
+        created_by=actor_id,
+    )
+    db = _Db({App: [app], Workflow: [workflow]})
+    monkeypatch.setattr(
+        deployment_module, "has_workflow_permission", lambda *a, **k: True
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        DeploymentService.create_deployment(
+            db,
+            DeploymentCreate(
+                app_id=app_id,
+                graph_snapshot={
+                    "nodes": [
+                        {
+                            "id": "mail-1",
+                            "type": "mailNode",
+                            "data": {
+                                "title": "Mail",
+                                "credential_id": None,
+                                "configuration_state": "unresolved",
+                            },
+                        }
+                    ],
+                    "edges": [],
+                },
+                is_active=False,
+            ),
+            user_id=actor_id,
+            runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+        )
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail == "mail.credential_reference_required"
+    assert db.rows_for(WorkflowDeployment) == []
+
+
 def test_inactive_create_does_not_mutate_active_surface(monkeypatch):
     app_id = uuid.uuid4()
     workflow_id = uuid.uuid4()
@@ -1025,6 +1079,57 @@ def test_toggle_rejects_legacy_mail_inline_secret_before_activation(monkeypatch)
                         "title": "Mail",
                         "credential_id": None,
                         "password": "synthetic-only",
+                    },
+                }
+            ],
+            "edges": [],
+        },
+    )
+    db = _Db({App: [app], WorkflowDeployment: [deployment], Schedule: []})
+    monkeypatch.setattr(
+        DeploymentService,
+        "_enforce_knowledge_preflight",
+        lambda *a, **k: pytest.fail("Mail validation must run first"),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        DeploymentService.toggle_deployment(
+            db,
+            deployment_id,
+            _Scheduler(),
+            runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+            user_id=actor_id,
+        )
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail == "mail.credential_reference_required"
+    assert deployment.is_active is False
+
+
+def test_toggle_rejects_unresolved_mail_before_activation(monkeypatch):
+    app_id = uuid.uuid4()
+    deployment_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    actor_id = uuid.uuid4()
+    app = _row(
+        id=app_id,
+        organization_id=organization_id,
+        active_deployment_id=None,
+    )
+    deployment = _row(
+        id=deployment_id,
+        app_id=app_id,
+        type=DeploymentType.API,
+        is_active=False,
+        graph_snapshot={
+            "nodes": [
+                {
+                    "id": "mail-1",
+                    "type": "mailNode",
+                    "data": {
+                        "title": "Mail",
+                        "credential_id": None,
+                        "configuration_state": "unresolved",
                     },
                 }
             ],

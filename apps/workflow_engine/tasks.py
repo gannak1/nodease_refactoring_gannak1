@@ -19,6 +19,7 @@ from apps.shared.domain.schedule_dispatch import REASON_EXECUTION_FAILED_AFTER_A
 from apps.shared.services.schedule_dispatch_observability import (
     emit_schedule_dispatch_signal,
 )
+from apps.workflow_engine import mail_credential_startup  # noqa: F401
 from apps.workflow_engine.runtime_policy import get_deployment_runtime_policy
 from apps.workflow_engine.schedule_dispatch_settings import (
     get_schedule_dispatch_settings,

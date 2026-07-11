@@ -43,9 +43,9 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 ## Mail Credential Reference Tests
 
 - Mail node editor는 safe credential option을 표시하고 선택 시 graph에 `credential_id`만 저장한다.
-- Client node, panel, visible properties와 실행 로그 설정 요약은 email/password/token/ciphertext를 렌더링하지 않는다.
-- Workflow 저장은 inline Mail secret field, 잘못된 UUID, 다른 organization reference, revoked credential과 `use` 권한 없는 reference를 provider 호출 없이 거부한다.
-- Agent Builder가 생성한 unresolved Mail node는 preview/apply-save가 가능하지만 runtime 실행은 credential reference를 요구한다.
+- Client node, panel, visible properties와 실행 로그 설정 요약은 email/password/token/ciphertext와 credential UUID를 렌더링하지 않고 연결 상태만 표시한다.
+- Workflow 저장은 최상위와 중첩 `subGraph`의 inline Mail secret field, 잘못된 UUID, 다른 organization reference, revoked credential과 `use` 권한 없는 reference를 provider 호출 없이 거부한다. 제한된 UI metadata는 허용한다.
+- Agent Builder가 생성한 unresolved Mail node는 preview/apply-save가 가능하지만 deployment 생성·활성화와 runtime 실행은 credential reference를 요구한다.
 - Runtime은 인증 test/deployment 표면에서 canonical organization, 명시 execution subject, active 상태와 `use` 권한을 재검증한다. Public/schedule 표면은 App/workflow owner의 `user_id`로 fallback하지 않고 명시 주체가 없으면 차단한다.
 - IMAP resolver는 private/loopback/metadata target과 `143/993` 이외 포트를 거부하고, `143`에서는 로그인 전에 STARTTLS를 강제한다. DNS 검증 IP에 socket 연결을 고정하면서 TLS hostname 검증은 canonical hostname으로 수행한다.
 - Legacy inline password graph는 validation error에 secret 값을 포함하지 않고 fail-closed한다.
