@@ -7,6 +7,9 @@ Revises: fb9c0d1e2f34
 from typing import Sequence, Union
 
 import sqlalchemy as sa
+from apps.shared.alembic.schedule_dispatch_downgrade import (
+    assert_schedule_dispatch_downgrade_is_safe,
+)
 
 from alembic import op
 
@@ -33,6 +36,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    assert_schedule_dispatch_downgrade_is_safe(op.get_bind())
     op.drop_index(
         "ix_schedule_dispatch_claims_visibility_gap",
         table_name="schedule_dispatch_claims",

@@ -20,6 +20,7 @@ def assert_schedule_dispatch_downgrade_is_safe(connection) -> None:
             "SELECT EXISTS ("
             "SELECT 1 FROM schedule_dispatch_claims "
             "WHERE status IN ('pending', 'dispatching', 'enqueued', 'running') "
+            "OR workflow_run_id IS NOT NULL "
             "OR (status = 'dead_lettered' "
             "AND safe_reason_code = 'execution_outcome_unknown' "
             "AND outcome_reviewed_at IS NULL)"
@@ -28,7 +29,7 @@ def assert_schedule_dispatch_downgrade_is_safe(connection) -> None:
     ).scalar()
     if has_blocking_claim:
         raise RuntimeError(
-            "cannot downgrade schedule dispatch while active or unreviewed claims exist"
+            "cannot downgrade schedule dispatch while active, admitted, or unreviewed claims exist"
         )
 
 

@@ -21,7 +21,7 @@ from sqlalchemy.exc import OperationalError
 ROOT_DIR = Path(__file__).resolve().parents[4]
 RUN_ENV = "NODEASE_RUN_DISPOSABLE_DB_TEST"
 DB_PREFIX = "mbased_schedule_claim"
-HEAD_REVISION = "fd1e2f3a4b56"
+HEAD_REVISION = "fe2f3a4b5c67"
 PRE_CLAIM_REVISION = "fa7b8c9d0e12"
 
 

@@ -3,13 +3,13 @@ from __future__ import annotations
 import importlib
 
 import pytest
-from apps.shared.db.models.schedule import Schedule
-from apps.shared.db.models.schedule_dispatch import ScheduleDispatchClaim
-from apps.shared.db.models.workflow_run import WorkflowRun
 from apps.shared.alembic.schedule_dispatch_downgrade import (
     assert_schedule_configuration_quarantine_downgrade_is_safe,
     assert_schedule_dispatch_downgrade_is_safe,
 )
+from apps.shared.db.models.schedule import Schedule
+from apps.shared.db.models.schedule_dispatch import ScheduleDispatchClaim
+from apps.shared.db.models.workflow_run import WorkflowRun
 
 EXPECTED_CLAIM_INDEXES = {
     "ix_schedule_dispatch_claims_completed_at",
@@ -75,7 +75,7 @@ def test_workflow_run_allows_only_correlated_system_schedule_null_executor():
     assert "workflow_task_id LIKE 'schedule:%'" in sql
 
 
-def test_schedule_dispatch_migration_extends_current_single_head():
+def test_schedule_dispatch_migration_extends_pre_schedule_base_revision():
     migration = importlib.import_module(
         "apps.shared.alembic.versions.fa8b9c0d1e23_add_schedule_dispatch_claims"
     )
@@ -119,10 +119,18 @@ def test_claim_migration_downgrade_refuses_to_fabricate_system_executor():
     with pytest.raises(RuntimeError, match="system workflow runs"):
         assert_schedule_dispatch_downgrade_is_safe(_DowngradeConnection(True))
 
-    with pytest.raises(RuntimeError, match="active or unreviewed claims"):
+    with pytest.raises(RuntimeError, match="active, admitted, or unreviewed claims"):
         assert_schedule_dispatch_downgrade_is_safe(
             _DowngradeConnection(False, has_blocking_claim=True)
         )
+
+
+def test_schedule_dispatch_downgrade_guard_blocks_admitted_claim_without_run_row():
+    import inspect
+
+    source = inspect.getsource(assert_schedule_dispatch_downgrade_is_safe)
+
+    assert "workflow_run_id IS NOT NULL" in source
 
 
 def test_quarantine_downgrade_only_blocks_quarantined_schedule_rows():
@@ -173,3 +181,79 @@ def test_schedule_configuration_code_migration_extends_visibility_migration():
 
     assert migration.revision == "fd1e2f3a4b56"
     assert migration.down_revision == "fc0d1e2f3a45"
+
+
+def test_schedule_dispatch_merge_migration_joins_rebased_model_routing_head():
+    migration = importlib.import_module(
+        "apps.shared.alembic.versions."
+        "fe2f3a4b5c67_merge_schedule_dispatch_and_model_routing_heads"
+    )
+
+    assert migration.revision == "fe2f3a4b5c67"
+    assert set(migration.down_revision) == {"fd1e2f3a4b56", "fb8c9d0e1f23"}
+
+
+class _MigrationOperations:
+    def __init__(self, calls: list[str]):
+        self.calls = calls
+
+    def get_bind(self):
+        self.calls.append("get_bind")
+        return object()
+
+    def __getattr__(self, name):
+        def operation(*_args, **_kwargs):
+            self.calls.append(name)
+
+        return operation
+
+
+@pytest.mark.parametrize(
+    ("module_name", "expected_guards"),
+    (
+        (
+            "apps.shared.alembic.versions."
+            "fb9c0d1e2f34_quarantine_invalid_schedule_configuration",
+            (
+                "assert_schedule_dispatch_downgrade_is_safe",
+                "assert_schedule_configuration_quarantine_downgrade_is_safe",
+            ),
+        ),
+        (
+            "apps.shared.alembic.versions."
+            "fc0d1e2f3a45_add_schedule_workflow_run_visibility",
+            ("assert_schedule_dispatch_downgrade_is_safe",),
+        ),
+        (
+            "apps.shared.alembic.versions."
+            "fd1e2f3a4b56_enforce_schedule_configuration_error_codes",
+            ("assert_schedule_dispatch_downgrade_is_safe",),
+        ),
+    ),
+)
+def test_every_schedule_downgrade_runs_guards_before_schema_mutation(
+    monkeypatch, module_name, expected_guards
+):
+    migration = importlib.import_module(module_name)
+    calls: list[str] = []
+
+    monkeypatch.setattr(migration, "op", _MigrationOperations(calls))
+    for guard_name in expected_guards:
+        monkeypatch.setattr(
+            migration,
+            guard_name,
+            lambda _connection, name=guard_name: calls.append(name),
+        )
+
+    migration.downgrade()
+
+    first_mutation = next(
+        index
+        for index, call in enumerate(calls)
+        if call not in {"get_bind", *expected_guards}
+    )
+    assert calls[:first_mutation] == [
+        item
+        for guard in expected_guards
+        for item in ("get_bind", guard)
+    ]
