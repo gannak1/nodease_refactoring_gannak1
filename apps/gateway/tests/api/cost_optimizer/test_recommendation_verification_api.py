@@ -399,6 +399,32 @@ class TestRecommendationInlineVerificationApi:
 
         assert baseline["baseline_id"] == matching_new["baseline_id"]
 
+    def test_fr13_verified_candidate_matches_modal_apply_payload(self):
+        workflow = _workflow_with_llm_node(uuid4(), uuid4())
+        verified_candidate, _ = workflow_endpoint._cost_optimizer_candidate_from_recommendations(
+            workflow,
+            "llm-triage",
+            {
+                "recommendations": [
+                    {
+                        "parameter_key": "max_tokens",
+                        "candidate_patch": {"parameters": {"max_tokens": 800}},
+                    }
+                ]
+            },
+            ["max_tokens"],
+        )
+        modal_apply_candidate = verified_candidate.model_copy(
+            update={"label": "추천 설정 검증"}
+        )
+
+        assert workflow_endpoint._cost_optimizer_candidate_settings_match(
+            workflow_endpoint._safe_cost_optimizer_candidate_settings(
+                verified_candidate
+            ),
+            modal_apply_candidate.model_dump(mode="json"),
+        )
+
 
 class TestRecommendationVerificationIdempotency:
     def test_fr13_same_idempotency_key_replays_completed_response(self):

@@ -2861,6 +2861,12 @@ def _seed_run(
     workflow_id = WORKFLOW_IDS[workflow_key]
     app_id = APP_IDS[workflow_key]
     app = db.get(App, app_id)
+    workflow = db.get(Workflow, workflow_id)
+    node_data_by_id = {
+        node["id"]: node.get("data") or {}
+        for node in (workflow.graph or {}).get("nodes", [])
+        if isinstance(node, dict) and node.get("id")
+    }
     deployment_id = app.active_deployment_id if app else None
     finished_at = started_at + timedelta(seconds=duration)
     outputs = {"answer_text": output_text} if output_text else None
@@ -2938,7 +2944,10 @@ def _seed_run(
                 if status == RunStatus.FAILED and node_id == "llm-triage"
                 else NodeRunStatus.SUCCESS,
                 "inputs": run.inputs if node_id == "webhook-ticket" else {"previous": "redacted"},
-                "process_data": _demo_options(f"node-run-{node_prefix}-{index}"),
+                "process_data": {
+                    **_demo_options(f"node-run-{node_prefix}-{index}"),
+                    "node_options": node_data_by_id.get(node_id, {}),
+                },
                 "outputs": node_outputs,
                 "error_message": error_message if node_id == "llm-triage" else None,
                 "started_at": started_at + timedelta(milliseconds=100 * index),

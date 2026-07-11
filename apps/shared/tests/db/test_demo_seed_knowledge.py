@@ -1,5 +1,8 @@
 import gzip
 import json
+from datetime import datetime, timezone
+from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 from apps.shared.db import demo_seed
@@ -224,6 +227,55 @@ def test_ticket_ops_input_schema_matches_webhook_mappings():
             {"name": "customerTier", "type": "text", "label": "customerTier"},
         ]
     }
+
+
+def test_demo_seed_success_run_snapshots_llm_node_options(monkeypatch):
+    graph = demo_seed._ticket_ops_graph()
+    captured = []
+
+    class FakeDb:
+        def get(self, model, _row_id):
+            if model is demo_seed.App:
+                return SimpleNamespace(active_deployment_id=demo_seed._uuid(9991))
+            if model is demo_seed.Workflow:
+                return SimpleNamespace(graph=graph)
+            return None
+
+        def flush(self):
+            pass
+
+    def fake_upsert(_db, model, row_id, values):
+        captured.append((model, values))
+        return SimpleNamespace(id=row_id, **values)
+
+    monkeypatch.setattr(demo_seed, "_upsert_by_id", fake_upsert)
+
+    demo_seed._seed_run(
+        FakeDb(),
+        run_id=demo_seed._uuid(9992),
+        workflow_key="ticket_ops_warning",
+        user_key="author",
+        status=demo_seed.RunStatus.SUCCESS,
+        started_at=datetime.now(timezone.utc),
+        duration=1.0,
+        total_tokens=2,
+        total_cost=Decimal("0.001"),
+        output_text="ok",
+        model_name=demo_seed.DEMO_CHAT_MODEL,
+        prompt_tokens=1,
+        completion_tokens=1,
+        latency_ms=100,
+        node_prefix=999,
+    )
+
+    llm_run = next(
+        values
+        for model, values in captured
+        if model is demo_seed.WorkflowNodeRun and values["node_id"] == "llm-triage"
+    )
+    llm_node = next(node for node in graph["nodes"] if node["id"] == "llm-triage")
+
+    assert llm_run["process_data"]["node_options"] == llm_node["data"]
 
 
 def test_schema_readiness_reports_stale_demo_db_columns():

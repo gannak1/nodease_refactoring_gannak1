@@ -1759,7 +1759,7 @@ def _cost_optimizer_candidate_data_from_node_data(
         fallback_model_id = None
 
     return {
-        "label": "추천 적용",
+        "label": "추천 설정 검증",
         "model_id": model_id,
         "fallback_model_id": fallback_model_id,
         "auto_model_routing": node_data.get("auto_model_routing")
