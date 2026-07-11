@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from apps.shared.domain.policy_reason import (
+    LEGACY_RAG_PII_POLICY_REASON,
+    RAG_PII_POLICY_REASON,
+    SECURITY_ALERT_POLICY_REASONS,
+)
 
-RAG_PII_POLICY_REASON = "rag.pii_evidence_detected"
-LEGACY_RAG_PII_POLICY_REASON = "pii_policy_blocked"
-
-_CANONICAL_POLICY_REASONS = frozenset({RAG_PII_POLICY_REASON})
 _LEGACY_POLICY_REASON_ALIASES = {
     LEGACY_RAG_PII_POLICY_REASON: RAG_PII_POLICY_REASON,
 }
@@ -16,7 +17,10 @@ def normalize_security_alert_policy_reason(
     audit_metadata: Mapping[str, Any],
 ) -> str | None:
     policy_reason = audit_metadata.get("policy_reason")
-    if isinstance(policy_reason, str) and policy_reason in _CANONICAL_POLICY_REASONS:
+    if (
+        isinstance(policy_reason, str)
+        and policy_reason in SECURITY_ALERT_POLICY_REASONS
+    ):
         return policy_reason
 
     policy_result = audit_metadata.get("policy_result")

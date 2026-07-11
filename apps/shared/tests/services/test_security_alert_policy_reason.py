@@ -1,5 +1,7 @@
 import importlib
 
+import pytest
+
 
 def _normalizer():
     module = importlib.import_module(
@@ -35,6 +37,26 @@ def test_canonical_policy_reason_is_returned_without_mutating_metadata():
 
     assert normalized == "rag.pii_evidence_detected"
     assert metadata == {"policy_reason": "rag.pii_evidence_detected"}
+
+
+@pytest.mark.parametrize(
+    "policy_reason",
+    [
+        "access_management.self_control_forbidden",
+        "access_management.last_active_manager",
+        "access_management.manager_override_active",
+        "access_management.member_state_not_manageable",
+        "access_management.target_user_inactive",
+        "access_management.stale_state",
+    ],
+)
+def test_canonical_access_management_policy_reason_is_returned(policy_reason):
+    metadata = {"policy_reason": policy_reason}
+
+    normalized = _normalizer()(metadata)
+
+    assert normalized == policy_reason
+    assert metadata == {"policy_reason": policy_reason}
 
 
 def test_unknown_legacy_policy_reason_is_not_normalized():
