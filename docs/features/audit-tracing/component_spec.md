@@ -9,6 +9,7 @@ Verified Against: feature/mba-188 @ 59d1cc51
 
 - Audit/Tracing은 MBA-188에서 별도 screen을 만들지 않는다.
 - Organization audit list/detail과 actor management 진입 UI는 [Admin Dashboard component spec](../admin-dashboard/component_spec.md)의 `/dashboard/admin` AuditSearchTab, AuditDetailDrawer, ActorAccessDrawer가 소유한다.
+- Security Alert 목록/detail/evidence와 lifecycle UI는 [Security Alert component spec](../security-alert/component_spec.md)의 Admin Dashboard `보안 알림` 탭이 소유한다. Audit/Tracing UI는 alert 상태를 별도로 계산하거나 저장하지 않는다.
 - Organization member access semantics는 [Organization component spec](../organization/component_spec.md)이 소유한다.
 
 ## Components
@@ -37,6 +38,7 @@ Verified Against: feature/mba-188 @ 59d1cc51
 - Audit row click은 AuditDetailDrawer를 연다.
 - User actor button은 organization manager에게만 ActorAccessDrawer 진입을 제공한다.
 - Actor access mutation 성공 후 audit list/detail을 다시 조회해 canonical event를 확인할 수 있다.
+- Security Alert evidence row에서 audit detail로 이동하면 기존 AuditDetailDrawer의 권한과 allowlist를 다시 적용한다. Alert drawer는 raw audit metadata를 직접 렌더링하지 않는다.
 
 ## Accessibility
 

@@ -20,8 +20,9 @@ Verified Against: feature/mba-188 @ 59d1cc51
 | POST | `/api/v1/admin/permission-requests/{request_id}/reject` | 권한 신청 거절 (FR-014) | organization owner/manager |
 | GET | `/api/v1/admin/app-creation-permissions` | App 생성 권한 보유 목록 조회 (FR-014 회수 확장) | organization owner/manager |
 | DELETE | `/api/v1/admin/app-creation-permissions/{permission_id}` | App 생성 권한 회수 (FR-014 회수 확장) | organization owner/manager |
+| GET/POST | `/api/v1/admin/security-alerts/*` | Security Alert 검색·summary·상세·evidence·상태 변경 (FR-013) | organization owner/manager |
 
-- FR-013(후순위) 복원 시 1단계 차단 이벤트 나열은 `GET /admin/audit-logs`의 `action` 필터(`permission.denied` 등)로 처리 가능한지 먼저 검토하고, 부족하면 endpoint를 추가한다.
+- Security Alert endpoint 전체 계약은 [Security Alert API spec](../security-alert/api_spec.md)이 소유한다. Audit list/detail endpoint를 alert 상태 저장이나 threshold 조회 API로 사용하지 않는다.
 - action-style POST(`/approve`, `/reject`)는 기존 `PATCH /deployments/{id}/toggle` 같은 repo 관례를 따른다.
 
 ## Request And Response Models
@@ -148,7 +149,7 @@ Response `200`:
 ```
 
 - `budget` 블록의 판정(사용률 90% 이상 위험, 100% 초과 초과)과 `ratio`의 분모(활성 예산 workflow 수)는 [budget-management api_spec](../budget-management/api_spec.md)을 따른다. 활성 예산 workflow가 0개면 `budget`은 null이다.
-- 부적절한 접근/행동 탐지 건수 필드는 FR-013 복원 시 추가한다 (후순위).
+- Security Alert open count와 최근 alert는 `/admin/security-alerts/summary`가 제공한다. 비용/예산 `/admin/summary` 응답에 섞지 않는다.
 
 ### GET /admin/permission-requests
 

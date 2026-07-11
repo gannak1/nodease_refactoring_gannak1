@@ -16,6 +16,8 @@ Audit/Tracing feature는 별도 화면용 중복 endpoint를 만들지 않는다
 
 Actor access profile/team-membership/resource source/action은 [Organization API spec](../organization/api_spec.md)의 manager-only endpoint를 사용한다. Audit endpoint는 Organization/RBAC mutation을 수행하지 않는다.
 
+Security Alert의 검색·summary·상세·safe evidence·lifecycle API는 [Security Alert API spec](../security-alert/api_spec.md)이 소유한다. `/admin/audit-logs`는 개별 audit 조회 surface이며 alert threshold, cooldown, status의 source of truth로 사용하지 않는다.
+
 ## Request And Response Models
 
 ### `AuditLogDetailResponse`
@@ -57,6 +59,15 @@ Target/action이 allowlist에 없거나 safe field가 없으면 null을 반환�
 MBA-188 manual audit은 update에도 target별 complete safe snapshot을 저장한다. Create는 `after`, delete는 `before`, update는 `before`와 `after`의 `organization_id`/`grantee_organization_id`가 모두 request organization과 일치해야 summary를 반환한다. Historical same-organization opaque UUID는 유지할 수 있지만 current resource name/path를 resolve하지 않는다. 필요한 snapshot의 organization provenance가 없거나 다르면 null이다.
 
 `policy.block` failure event는 row 변경이 아니므로 `change_summary`가 null이다. Audit detail metadata allowlist는 `organization_id`, `request_id`, sanitized `reason`, existing safe `summary`, `target_user_id`, `requested_action`, `policy_reason`, `resource_type`, `resource_id`, `team_id`, advisory `affected_resource_source_count`다. UUID field는 유효한 UUID, count는 boolean이 아닌 0 이상 integer, string field와 resource/policy reason은 정해진 scalar/enum 값일 때만 반환한다. 기존 `summary`는 secret-like key를 재귀 제거한 JSON scalar/list/object 계약을 유지하고, 그 외 허용 key의 nested object나 잘못된 타입은 생략한다. Resource/team field는 scope를 확인한 policy block 또는 applied team action에서만 기록한다. 임의 nested request body, target name/email, expected/current snapshot은 포함하지 않는다.
+
+### Security Alert Evidence Projection
+
+`GET /api/v1/admin/security-alerts/{alert_id}/audit-logs`는 alert에 실제 연결된 audit만 기존 `AuditLogSchema` 수준의 paginated safe projection으로 반환한다.
+
+- Generic `audit_metadata`, `before`, `after`, `change_summary`를 inline 반환하지 않는다.
+- Safe하지 않은 target은 `target_type`/`target_id`를 null로 내린다.
+- 개별 audit detail은 기존 `/admin/audit-logs/{audit_log_id}` 권한과 allowlist를 다시 통과해야 한다.
+- Security Alert endpoint는 current organization owner/manager 전용이며 audit `auditor` 권한을 재사용하지 않는다.
 
 ### `AuditRecorder` application port
 

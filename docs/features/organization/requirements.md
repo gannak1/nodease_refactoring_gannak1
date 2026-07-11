@@ -1,7 +1,7 @@
 # Organization Requirements
 
 Status: Draft
-Related Features: auth, workflow, knowledge, llm-credentials, audit-tracing, admin-dashboard
+Related Features: auth, workflow, knowledge, llm-credentials, audit-tracing, admin-dashboard, security-alert
 
 ## Purpose
 
@@ -79,8 +79,9 @@ Auth는 사용자를 인증하고 signup/Google OAuth 성공 시 기본 organiza
 - ORG-REQ-051: 거절된 App 생성 권한 신청자는 재신청할 수 있어야 한다.
 - ORG-REQ-052: App 생성 권한 신청 제출/승인/거절은 `permission_request.created/approved/rejected`, 승인에 따른 실제 권한 부여는 `user_app_creation_permission.created` audit으로 기록해야 한다 ([ADR-0008](../../decisions/ADR-0008-audit-action-naming-standard.md)).
 - ORG-REQ-053: App 생성 후 배포 권한은 생성자에게 자동 부여되는 workflow manager permission으로 따라오므로, 별도 배포 권한 신청 항목을 두지 않아야 한다.
-- ORG-REQ-054: `GET /notifications`는 현재 로그인한 사용자의 invited organization membership을 `organization.invitation` 알림으로 파생해 반환해야 한다. 별도 notification table, 읽음 상태, 히스토리는 현재 구현 범위가 아니다.
-- ORG-REQ-055: `GET /notifications/stream`은 현재 로그인한 사용자 기준 SSE stream을 제공하고, organization 초대 생성/수락/거절 후 `notifications.changed` 이벤트를 발행해야 한다. 클라이언트는 이벤트 수신 시 `GET /notifications`를 재조회한다.
+- ORG-REQ-054: `GET /notifications`는 현재 로그인한 사용자의 invited organization membership을 `organization.invitation` 알림으로 파생해 반환해야 한다. 이 endpoint는 invitation source만 소유하며 별도 invitation notification table, 읽음 상태, 히스토리를 만들지 않아야 한다.
+- ORG-REQ-055: `GET /notifications/stream`은 현재 로그인한 사용자 기준 SSE stream을 제공하고, organization 초대 변경 또는 Security Alert notification projection 변경 후 `notifications.changed` 이벤트를 발행할 수 있어야 한다. Event payload는 source of truth가 아니며 클라이언트는 invitation 목록과 권한이 있는 Security Alert summary를 source별로 재조회해야 한다.
+- ORG-REQ-056: Sidebar notification overlay는 organization invitation과 Security Alert를 서로 다른 source/section으로 표시해야 한다. Security Alert section·badge·summary 요청은 현재 active organization owner/manager에게만 제공하고, 일반 member의 invitation 흐름은 그대로 유지해야 한다. 한 source의 조회 실패가 다른 source를 숨기면 안 된다. Security Alert 상세 계약은 [security-alert](../security-alert/requirements.md)이 소유한다.
 - ORG-REQ-057: Production resource permission API의 target model과 team/user permission model 선택은 중앙 resource permission registry를 사용해야 한다. Endpoint adapter가 resource별 response/audit mapping을 유지하더라도 registry에 없는 resource/grantee type이 다른 permission table로 fallback해서는 안 된다.
 - ORG-REQ-058: organization manager는 current organization member의 membership, organization role, active/inactive team membership, App 생성 권한, workflow/Knowledge Base/LLM credential direct 및 team-inherited permission source를 user 중심으로 조회할 수 있어야 한다. Profile은 team count만 포함하고 team membership/resource source 목록은 각각 paginated endpoint로 제공해야 한다. Role control은 desired `member`/`manager`별 허용 여부를 구분해야 한다.
 - ORG-REQ-059: actor access profile과 resource access source 조회는 ADR-0009의 membership-first organization manager 판정을 통과한 caller만 허용해야 한다. Audit `auditor`/`raw_auditor` 권한만으로는 조회하거나 변경할 수 없다 ([ADR-0023](../../decisions/ADR-0023-audit-actor-access-management-boundary.md)).

@@ -5,7 +5,7 @@ Related Features: auth, organization, workflow, llm-credentials, deployment, kno
 
 ## Purpose
 
-Audit와 trace는 workflow 실행, RAG retrieval, LLM 호출, permission/policy 차단, 운영 작업을 추적한다. Canonical action naming은 [ADR-0008](../../decisions/ADR-0008-audit-action-naming-standard.md)을 따르고, RAG trace 저장 경계는 [ADR-0012](../../decisions/ADR-0012-metadata-aware-hierarchical-rag-boundary.md), standalone RAG answer correlation 경계는 [ADR-0013](../../decisions/ADR-0013-rag-answer-trace-usage-correlation-boundary.md), Knowledge 통합 임시 baseline은 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)을 따른다.
+Audit와 trace는 workflow 실행, RAG retrieval, LLM 호출, permission/policy 차단, 운영 작업을 추적한다. Canonical action naming은 [ADR-0008](../../decisions/ADR-0008-audit-action-naming-standard.md)을 따르고, Security Alert eligible audit와 lifecycle 경계는 [ADR-0028](../../decisions/ADR-0028-security-alert-detection-and-lifecycle.md), 상세 기능 계약은 [security-alert](../security-alert/requirements.md)을 따른다. RAG trace 저장 경계는 [ADR-0012](../../decisions/ADR-0012-metadata-aware-hierarchical-rag-boundary.md), standalone RAG answer correlation 경계는 [ADR-0013](../../decisions/ADR-0013-rag-answer-trace-usage-correlation-boundary.md), Knowledge 통합 임시 baseline은 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)을 따른다.
 
 ## User Stories
 
@@ -13,6 +13,7 @@ Audit와 trace는 workflow 실행, RAG retrieval, LLM 호출, permission/policy 
 - 플랫폼 관리자로서, permission denied, policy block, source ACL stale, connector sync failure를 raw content 없이 추적하고 싶다.
 - 운영자로서, retention/purge, retry/dead-letter, partial result 같은 운영 이벤트를 안전한 reason code로 보고 싶다.
 - Organization manager로서, member access 관리 조치의 수행자, 대상, optional reason과 안전한 변경 전후 상태를 audit detail에서 확인하고 싶다.
+- Organization owner/manager로서, Security Alert 근거 audit를 raw metadata 없이 확인하고 alert 대응 lifecycle도 canonical audit로 추적하고 싶다.
 
 ## Functional Requirements
 
@@ -31,6 +32,10 @@ Audit와 trace는 workflow 실행, RAG retrieval, LLM 호출, permission/policy 
 - Access-management 진입점을 이유로 row-level canonical audit과 별도 aggregate action을 중복 기록하지 않는다. No-op mutation도 audit을 만들지 않는다.
 - Listener-tracked access mutation을 manual transaction audit이 소유할 때는 repository adapter가 object를 dirty/add/delete 상태로 만들기 전에 model/object/operation 단위 ownership을 등록하고 해당 listener candidate만 제외해야 한다. Ownership 등록부터 mutation/UoW flush 사이에는 query/autoflush를 허용하지 않으며 commit/rollback 뒤 suppression state를 다음 transaction으로 누출하지 않는다.
 - Scope 안 actor access policy block은 scoped organization membership을 target으로 `policy.block` + `action` category의 failure event를 기록하고 `target_user_id`, `requested_action`, machine `policy_reason`, sanitized optional `reason`과 scope가 확인된 opaque resource/team id만 저장한다. Permission 부족은 `permission.denied`를 사용하되 target scope 확인 전에는 target-aware metadata를 남기지 않는다. Validation, hidden resource, no-op은 actor access audit 대상이 아니다.
+- Security Alert 탐지 대상 `permission.denied`는 audit 생성 시점에 검증된 `audit_metadata.organization_id`와 safe target을 제공해야 한다. Detector가 resource table을 다시 조회해 organization을 추론하게 해서는 안 된다.
+- 모든 `policy.block` producer는 최상위 `audit_metadata.policy_reason`에 `{domain}.{reason}` canonical 값을 기록해야 한다. Legacy reason mapping과 Security Alert allowlist는 ADR-0028을 따른다.
+- Security Alert 최초 생성은 `security_alert.detected`, 관리자 확인·재개·해결은 `security_alert.acknowledged/reopened/resolved`로 기록해야 한다. Alert 최초 row/evidence/detected audit과 lifecycle mutation/audit은 각각 같은 transaction에 기록해야 하며 cooldown occurrence 갱신은 별도 action을 만들지 않는다.
+- Security Alert evidence는 `audit_logs` row를 연결만 하고 raw metadata/before/after를 복사하지 않아야 한다. Alert evidence API는 기존 audit allowlist를 따르는 safe projection만 반환해야 한다.
 
 ## Policies And Edge Cases
 
@@ -46,6 +51,7 @@ Audit와 trace는 workflow 실행, RAG retrieval, LLM 호출, permission/policy 
 - User-entered management reason은 JSON body로 받는다. CRLF/CR을 LF로 정규화하고 trim한 blank는 null로 바꾸며, 정규화 후 500 Unicode code point를 초과하거나 tab/LF 외 C0/C1 및 bidi override/isolate control을 포함하면 거부한다. Durable audit 전 organization 설정으로 약화할 수 없는 shared fail-closed redaction baseline으로 secret/PII pattern을 치환하고 sanitization 실패 시 raw reason이나 mutation을 저장하지 않는다. Query string이나 URL에 reason을 전달하지 않는다.
 - Actor snapshot은 historical attribution을 위해 보존할 수 있지만 target user email/name을 mutation metadata에 불필요하게 중복 저장하지 않는다.
 - 전체 sync/async/outbox audit producer 이관, retry/dead-letter 일반화, read repository 분리는 MBA-188 범위가 아니며 Linear MBA-189에서 다룬다.
+- Security Alert detector/reconciler 실패는 원래 permission/policy 판단이나 audit 저장 결과를 바꾸지 않아야 한다. 기능 활성화 이전 audit은 alert로 backfill하지 않는다.
 
 ## Open Questions
 
