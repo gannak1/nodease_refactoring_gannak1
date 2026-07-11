@@ -1964,6 +1964,44 @@ def _input_schema(variable_name: str, label: str = "입력") -> dict[str, Any]:
     return {"variables": [{"name": variable_name, "type": "text", "label": label}]}
 
 
+def _input_schema_from_graph(graph: dict[str, Any]) -> dict[str, Any] | None:
+    """배포 입력 schema가 graph의 시작 노드 계약과 어긋나지 않게 생성한다."""
+    for node in graph.get("nodes", []) if isinstance(graph, dict) else []:
+        if not isinstance(node, dict):
+            continue
+        node_data = node.get("data")
+        if not isinstance(node_data, dict):
+            continue
+
+        if node.get("type") == "startNode":
+            variables = node_data.get("variables") or []
+            normalized = [
+                {
+                    "name": variable.get("name", ""),
+                    "type": variable.get("type", "string"),
+                    "label": variable.get("label", variable.get("name", "")),
+                }
+                for variable in variables
+                if isinstance(variable, dict) and variable.get("name")
+            ]
+            return {"variables": normalized} if normalized else None
+
+        if node.get("type") == "webhookTrigger":
+            mappings = node_data.get("variable_mappings") or []
+            normalized = [
+                {
+                    "name": mapping.get("variable_name", ""),
+                    "type": "text",
+                    "label": mapping.get("label", mapping.get("variable_name", "")),
+                }
+                for mapping in mappings
+                if isinstance(mapping, dict) and mapping.get("variable_name")
+            ]
+            return {"variables": normalized} if normalized else None
+
+    return None
+
+
 def _output_schema() -> dict[str, Any]:
     return {"outputs": [{"variable": "answer_text", "label": "답변"}]}
 
@@ -2563,7 +2601,7 @@ def _upsert_app_workflow(
                 "type": deployment_type,
                 "graph_snapshot": graph,
                 "config": _demo_options(f"deployment-{key}"),
-                "input_schema": _input_schema("message", "문의"),
+                "input_schema": _input_schema_from_graph(graph),
                 "output_schema": _output_schema(),
                 "description": "최종 시연용 배포 버전",
                 "created_by": USER_IDS[owner_key],

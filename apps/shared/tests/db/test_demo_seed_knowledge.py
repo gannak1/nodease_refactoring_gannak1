@@ -237,6 +237,19 @@ def test_demo_seed_chat_models_use_gpt_5_4_family():
     }
 
 
+def test_ticket_ops_input_schema_matches_webhook_mappings():
+    graph = demo_seed._ticket_ops_graph()
+
+    schema = demo_seed._input_schema_from_graph(graph)
+
+    assert schema == {
+        "variables": [
+            {"name": "message", "type": "text", "label": "message"},
+            {"name": "customerTier", "type": "text", "label": "customerTier"},
+        ]
+    }
+
+
 def test_schema_readiness_reports_stale_demo_db_columns():
     gaps = seed_demo_script.schema_readiness_gaps(
         FakeSchemaInspector(
