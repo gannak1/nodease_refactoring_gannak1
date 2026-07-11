@@ -1,8 +1,10 @@
 import gzip
 import json
+import sys
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 from apps.shared.db import demo_seed
@@ -35,6 +37,22 @@ class FakeAlembicBind:
 class FailingSchemaInspector:
     def has_table(self, table_name):
         raise RuntimeError("secret raw database failure")
+
+
+def test_drop_existing_data_rebuilds_schema_with_alembic(monkeypatch):
+    fake_engine = MagicMock()
+    create_all = MagicMock()
+    upgrade = MagicMock()
+    monkeypatch.setattr(seed_demo_script, "engine", fake_engine)
+    monkeypatch.setattr(seed_demo_script.Base.metadata, "create_all", create_all)
+    monkeypatch.setattr(seed_demo_script.command, "upgrade", upgrade)
+
+    seed_demo_script.ensure_schema(drop_existing_data=True)
+
+    assert fake_engine.begin.call_count == 2
+    create_all.assert_not_called()
+    upgrade.assert_called_once()
+    assert upgrade.call_args.args[1] == "heads"
 
 
 def write_minimal_demo_fixture(
@@ -316,6 +334,7 @@ def test_schema_readiness_reports_stale_demo_db_columns():
     message = seed_demo_script.format_schema_readiness_error(gaps)
     assert "Base.metadata.create_all() creates missing tables but does not ALTER" in message
     assert "knowledge_bases: embedding_model, organization_id, sync_state" in message
+    assert sys.executable in message
     assert "alembic -c apps/shared/alembic.ini upgrade heads" in message
     assert "--profile demo --reset --drop-existing-data --yes" in message
 

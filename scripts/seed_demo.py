@@ -13,6 +13,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from alembic import command  # noqa: E402
 from alembic.config import Config  # noqa: E402
 from alembic.script import ScriptDirectory  # noqa: E402
 from sqlalchemy import inspect, text  # noqa: E402
@@ -170,6 +171,16 @@ def ensure_schema(*, drop_existing_data: bool = False) -> None:
             # 삭제 순서를 정할 수 없다. 전체 초기화는 로컬 public schema를 재생성한다.
             connection.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
             connection.execute(text("CREATE SCHEMA public"))
+        with engine.begin() as connection:
+            connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        config = Config(str(ROOT_DIR / "apps" / "shared" / "alembic.ini"))
+        config.set_main_option(
+            "script_location",
+            str(ROOT_DIR / "apps" / "shared" / "alembic"),
+        )
+        command.upgrade(config, "heads")
+        return
+
     with engine.begin() as connection:
         connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
     Base.metadata.create_all(bind=engine)
@@ -312,9 +323,9 @@ def format_schema_readiness_error(gaps: Mapping[str, object]) -> str:
             "",
             "Resolve with one of the following:",
             "1. Preserve local data and apply migrations:",
-            "   apps/gateway/.venv/Scripts/python.exe -m alembic -c apps/shared/alembic.ini upgrade heads",
+            f"   {sys.executable} -m alembic -c apps/shared/alembic.ini upgrade heads",
             "2. Recreate disposable local demo data:",
-            "   apps/gateway/.venv/Scripts/python.exe scripts/seed_demo.py --profile demo --reset --drop-existing-data --yes",
+            f"   {sys.executable} scripts/seed_demo.py --profile demo --reset --drop-existing-data --yes",
         ]
     )
     return "\n".join(lines)

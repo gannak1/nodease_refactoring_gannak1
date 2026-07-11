@@ -118,6 +118,56 @@ def _snapshot_counts(
         engine.dispose()
 
 
+def _insert_non_seed_app(
+    database: str,
+    config: DisposablePostgresConfig,
+) -> uuid.UUID:
+    app_id = uuid.uuid4()
+    engine = create_engine(config.database_url(database))
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO apps (
+                        id, organization_id, name, url_slug, auth_secret, created_by
+                    )
+                    SELECT
+                        :id,
+                        '10200000-0000-0000-0000-000000000100',
+                        'reset preservation check',
+                        :url_slug,
+                        auth_secret,
+                        created_by
+                    FROM apps
+                    WHERE id = '10200000-0000-0000-0000-000000000400'
+                    """
+                ),
+                {"id": app_id, "url_slug": f"reset-preservation-{app_id.hex}"},
+            )
+    finally:
+        engine.dispose()
+    return app_id
+
+
+def _app_exists(
+    database: str,
+    config: DisposablePostgresConfig,
+    app_id: uuid.UUID,
+) -> bool:
+    engine = create_engine(config.database_url(database))
+    try:
+        with engine.connect() as conn:
+            return bool(
+                conn.execute(
+                    text("SELECT EXISTS(SELECT 1 FROM apps WHERE id = :id)"),
+                    {"id": app_id},
+                ).scalar_one()
+            )
+    finally:
+        engine.dispose()
+
+
 @pytest.mark.skipif(
     os.getenv(RUN_ENV) != "1",
     reason=f"set {RUN_ENV}=1 to run disposable PostgreSQL seed smoke",
@@ -163,6 +213,7 @@ def test_demo_seed_is_idempotent_in_disposable_postgres_database():
             config=config,
         )
         seeded_counts = _snapshot_counts(database, config)
+        non_seed_app_id = _insert_non_seed_app(database, config)
 
         _run_seed_command(
             ["scripts/seed_demo.py", "--profile", "demo", "--reset"],
@@ -178,6 +229,7 @@ def test_demo_seed_is_idempotent_in_disposable_postgres_database():
         assert reset_counts["document_chunk_document_orphans"] == 0
         assert reset_counts["document_chunk_kb_orphans"] == 0
         assert reset_counts["document_kb_orphans"] == 0
+        assert _app_exists(database, config, non_seed_app_id)
     except OperationalError:
         raise pytest.fail.Exception(
             "disposable PostgreSQL is unavailable or rejected the connection; "

@@ -3758,9 +3758,6 @@ def reset_demo_data(db: Session) -> None:
         )
     ).delete(synchronize_session=False)
     db.query(Team).filter(Team.id.in_(team_ids)).delete(synchronize_session=False)
-    db.query(Organization).filter(Organization.id == ORG_ID).delete(
-        synchronize_session=False
-    )
 
     db.commit()
     seed_demo_data(db)
