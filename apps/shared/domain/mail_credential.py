@@ -22,8 +22,12 @@ MAIL_NODE_ALLOWED_DATA_FIELDS = frozenset(
         "unread_only",
         "mark_as_read",
         "referenced_variables",
+        "displayNumber",
+        "visibleProperties",
     }
 )
+
+MAIL_NODE_VISIBLE_PROPERTY_KEYS = frozenset({"credential_id", "folder", "filters"})
 
 
 class MailNodeCredentialBoundaryError(ValueError):
@@ -44,4 +48,22 @@ def validate_mail_node_credential_boundary(data: Any) -> None:
     # stay empty.
     parameters = data.get("parameters")
     if parameters not in (None, {}):
+        raise MailNodeCredentialBoundaryError()
+
+    display_number = data.get("displayNumber")
+    if display_number is not None and (
+        not isinstance(display_number, int)
+        or isinstance(display_number, bool)
+        or display_number < 1
+    ):
+        raise MailNodeCredentialBoundaryError()
+
+    visible_properties = data.get("visibleProperties")
+    if visible_properties is not None and (
+        not isinstance(visible_properties, list)
+        or any(
+            not isinstance(item, str) or item not in MAIL_NODE_VISIBLE_PROPERTY_KEYS
+            for item in visible_properties
+        )
+    ):
         raise MailNodeCredentialBoundaryError()

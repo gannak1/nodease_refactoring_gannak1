@@ -6,30 +6,22 @@ import os
 import subprocess
 import sys
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-from apps.shared.db.models.mail_credential import MailCredential
-from apps.shared.db.models.organization import Organization
-from apps.shared.db.models.team import (
-    Team,
-    TeamMailCredentialPermission,
-    UserMailCredentialPermission,
-)
-from apps.shared.db.models.user import User
 from apps.shared.tests.helpers.disposable_postgres import (
     DisposablePostgresConfig,
     DisposablePostgresConfigurationError,
     quote_disposable_database_name,
 )
-from sqlalchemy import create_engine, inspect, select, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import OperationalError
-from sqlalchemy.orm import Session
 
 ROOT_DIR = Path(__file__).resolve().parents[4]
 RUN_ENV = "NODEASE_RUN_DISPOSABLE_DB_TEST"
 DB_PREFIX = "mbased_mail_credential"
-HEAD_REVISION = "fc1d2e3f4a5b"
+MAIL_CREDENTIAL_REVISION = "fc1d2e3f4a5b"
 BASE_REVISION = "ff5c6d7e8f90"
 TABLES = {
     "mail_credentials",
@@ -101,83 +93,163 @@ def _insert_and_read_mail_permissions(
 ) -> None:
     engine = create_engine(config.database_url(database))
     try:
-        with Session(engine) as session:
+        with engine.begin() as connection:
             user_id = uuid.uuid4()
             organization_id = uuid.uuid4()
             team_id = uuid.uuid4()
             credential_id = uuid.uuid4()
-            session.add(
-                User(
-                    id=user_id,
-                    email=f"mail-migration-{user_id}@example.invalid",
-                    name="Mail Migration",
-                    social_provider="local",
-                )
+            now = datetime.now(timezone.utc)
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO users (
+                        id, email, name, social_provider, created_at, updated_at
+                    ) VALUES (
+                        :id, :email, :name, :social_provider, :created_at, :updated_at
+                    )
+                    """
+                ),
+                {
+                    "id": user_id,
+                    "email": f"mail-migration-{user_id}@example.invalid",
+                    "name": "Mail Migration",
+                    "social_provider": "local",
+                    "created_at": now,
+                    "updated_at": now,
+                },
             )
-            session.flush()
-            session.add(
-                Organization(
-                    id=organization_id,
-                    name=f"Mail Migration {organization_id}",
-                    created_by=user_id,
-                    is_active=True,
-                )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO organization (
+                        id, name, created_by, is_active, created_at, updated_at
+                    ) VALUES (
+                        :id, :name, :created_by, true, :created_at, :updated_at
+                    )
+                    """
+                ),
+                {
+                    "id": organization_id,
+                    "name": f"Mail Migration {organization_id}",
+                    "created_by": user_id,
+                    "created_at": now,
+                    "updated_at": now,
+                },
             )
-            session.flush()
-            session.add(
-                Team(
-                    id=team_id,
-                    organization_id=organization_id,
-                    name="Mail Operators",
-                    created_by=user_id,
-                    is_active=True,
-                )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO teams (
+                        id, organization_id, name, created_by, is_active,
+                        is_auto_add, created_at, updated_at
+                    ) VALUES (
+                        :id, :organization_id, :name, :created_by, true,
+                        false, :created_at, :updated_at
+                    )
+                    """
+                ),
+                {
+                    "id": team_id,
+                    "organization_id": organization_id,
+                    "name": "Mail Operators",
+                    "created_by": user_id,
+                    "created_at": now,
+                    "updated_at": now,
+                },
             )
-            session.add(
-                MailCredential(
-                    id=credential_id,
-                    organization_id=organization_id,
-                    credential_name="Operations Mail",
-                    provider="custom",
-                    email_address="mailbox@example.invalid",
-                    auth_type="app_password",
-                    imap_host="imap.example.invalid",
-                    imap_port=993,
-                    use_ssl=True,
-                    encrypted_secret="synthetic-ciphertext",
-                    encryption_key_version="v1",
-                    encryption_algorithm="fernet-v1",
-                    status="active",
-                    created_by=user_id,
-                )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO mail_credentials (
+                        id, organization_id, credential_name, provider,
+                        email_address, auth_type, imap_host, imap_port, use_ssl,
+                        encrypted_secret, encryption_key_version,
+                        encryption_algorithm, status, created_by, created_at,
+                        updated_at
+                    ) VALUES (
+                        :id, :organization_id, :credential_name, :provider,
+                        :email_address, :auth_type, :imap_host, 993, true,
+                        :encrypted_secret, :encryption_key_version,
+                        :encryption_algorithm, :status, :created_by, :created_at,
+                        :updated_at
+                    )
+                    """
+                ),
+                {
+                    "id": credential_id,
+                    "organization_id": organization_id,
+                    "credential_name": "Operations Mail",
+                    "provider": "custom",
+                    "email_address": "mailbox@example.invalid",
+                    "auth_type": "app_password",
+                    "imap_host": "imap.example.invalid",
+                    "encrypted_secret": "synthetic-ciphertext",
+                    "encryption_key_version": "v1",
+                    "encryption_algorithm": "fernet-v1",
+                    "status": "active",
+                    "created_by": user_id,
+                    "created_at": now,
+                    "updated_at": now,
+                },
             )
-            session.flush()
-            session.add_all(
-                [
-                    UserMailCredentialPermission(
-                        grantee_organization_id=organization_id,
-                        user_id=user_id,
-                        mail_credential_id=credential_id,
-                        auth_state="operator",
-                        assigned_by=user_id,
-                    ),
-                    TeamMailCredentialPermission(
-                        grantee_organization_id=organization_id,
-                        team_id=team_id,
-                        mail_credential_id=credential_id,
-                        auth_state="builder",
-                        assigned_by=user_id,
-                    ),
-                ]
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO user_mail_credential_permissions (
+                        id, grantee_organization_id, user_id, mail_credential_id,
+                        auth_state, assigned_by, assigned_at
+                    ) VALUES (
+                        :id, :organization_id, :user_id, :credential_id,
+                        'operator', :assigned_by, :assigned_at
+                    )
+                    """
+                ),
+                {
+                    "id": uuid.uuid4(),
+                    "organization_id": organization_id,
+                    "user_id": user_id,
+                    "credential_id": credential_id,
+                    "assigned_by": user_id,
+                    "assigned_at": now,
+                },
             )
-            session.commit()
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO team_mail_credential_permissions (
+                        id, grantee_organization_id, team_id, mail_credential_id,
+                        auth_state, assigned_by, assigned_at
+                    ) VALUES (
+                        :id, :organization_id, :team_id, :credential_id,
+                        'builder', :assigned_by, :assigned_at
+                    )
+                    """
+                ),
+                {
+                    "id": uuid.uuid4(),
+                    "organization_id": organization_id,
+                    "team_id": team_id,
+                    "credential_id": credential_id,
+                    "assigned_by": user_id,
+                    "assigned_at": now,
+                },
+            )
 
-            assert session.scalar(select(MailCredential.id)) == credential_id
-            assert session.scalar(select(UserMailCredentialPermission.auth_state)) == (
-                "operator"
+            assert (
+                connection.execute(text("SELECT id FROM mail_credentials")).scalar_one()
+                == credential_id
             )
-            assert session.scalar(select(TeamMailCredentialPermission.auth_state)) == (
-                "builder"
+            assert (
+                connection.execute(
+                    text("SELECT auth_state FROM user_mail_credential_permissions")
+                ).scalar_one()
+                == "operator"
+            )
+            assert (
+                connection.execute(
+                    text("SELECT auth_state FROM team_mail_credential_permissions")
+                ).scalar_one()
+                == "builder"
             )
     finally:
         engine.dispose()
@@ -209,8 +281,10 @@ def test_mail_credential_upgrade_downgrade_and_reupgrade_in_disposable_postgres(
         database_created = True
         _enable_vector_extension(database, config)
 
-        _run_alembic("upgrade", "heads", database=database, config=config)
-        assert _revision(database, config) == HEAD_REVISION
+        _run_alembic(
+            "upgrade", MAIL_CREDENTIAL_REVISION, database=database, config=config
+        )
+        assert _revision(database, config) == MAIL_CREDENTIAL_REVISION
         assert TABLES <= _table_names(database, config)
         _insert_and_read_mail_permissions(database, config)
 
@@ -218,8 +292,10 @@ def test_mail_credential_upgrade_downgrade_and_reupgrade_in_disposable_postgres(
         assert _revision(database, config) == BASE_REVISION
         assert TABLES.isdisjoint(_table_names(database, config))
 
-        _run_alembic("upgrade", "heads", database=database, config=config)
-        assert _revision(database, config) == HEAD_REVISION
+        _run_alembic(
+            "upgrade", MAIL_CREDENTIAL_REVISION, database=database, config=config
+        )
+        assert _revision(database, config) == MAIL_CREDENTIAL_REVISION
         assert TABLES <= _table_names(database, config)
     except OperationalError:
         raise pytest.fail.Exception(

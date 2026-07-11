@@ -97,3 +97,8 @@ class CredentialEncryptionService:
 
 def get_credential_encryption_service() -> CredentialEncryptionService:
     return CredentialEncryptionService.from_environment()
+
+
+def require_mail_credential_keyring_ready() -> None:
+    """Validate Mail credential keyring configuration without handling a secret."""
+    CredentialEncryptionService.from_environment()

@@ -234,6 +234,7 @@ Example detail response:
 ## Mail Node 저장 계약
 
 - Mail node data는 `credential_id: UUID | null`과 `configuration_state: resolved | unresolved`만 credential 설정으로 허용한다.
-- `password`, `token`, `email`, `encrypted_secret` 같은 inline Mail identity/secret field가 있으면 workflow 저장은 `422 mail.credential_reference_required`로 실패한다.
+- `displayNumber`와 `visibleProperties`는 정해진 형식과 값만 갖는 UI metadata로 허용한다.
+- `password`, `token`, `email`, `encrypted_secret` 같은 inline Mail identity/secret field가 최상위 또는 중첩 `subGraph`에 있으면 workflow 저장은 `422 mail.credential_reference_required`로 실패한다.
 - Non-null `credential_id`는 active organization의 active Mail credential이어야 하며 저장 요청자에게 `use` 권한이 있어야 한다. Organization 밖 reference는 `404`, 같은 organization의 권한 부족은 `403`으로 처리한다.
-- `credential_id=null`인 unresolved draft는 preview/apply-save를 위해 저장할 수 있지만 runtime에서는 provider 연결 전에 `mail.credential_reference_required`로 차단한다.
+- `credential_id=null`인 unresolved draft는 preview/apply-save를 위해 저장할 수 있지만 deployment snapshot 생성과 기존 deployment 활성화는 `422 mail.credential_reference_required`로 차단한다. Legacy snapshot runtime도 provider 연결 전에 같은 reason으로 차단한다.

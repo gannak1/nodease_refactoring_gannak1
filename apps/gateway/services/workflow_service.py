@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import Iterable, Mapping
 from typing import Any
 from uuid import UUID
 
@@ -27,6 +28,26 @@ from apps.shared.services.permissions import (
 
 
 class WorkflowService:
+    @staticmethod
+    def _iter_workflow_nodes(nodes: Iterable[Any]) -> Iterable[Any]:
+        pending = list(nodes)
+        while pending:
+            node = pending.pop()
+            yield node
+            data = (
+                node.get("data")
+                if isinstance(node, Mapping)
+                else getattr(node, "data", None)
+            )
+            if not isinstance(data, Mapping):
+                continue
+            subgraph = data.get("subGraph")
+            if not isinstance(subgraph, Mapping):
+                continue
+            nested_nodes = subgraph.get("nodes")
+            if isinstance(nested_nodes, list):
+                pending.extend(nested_nodes)
+
     @staticmethod
     def create_workflow(
         db: Session,
@@ -162,10 +183,11 @@ class WorkflowService:
     @staticmethod
     def validate_mail_credential_references(
         db: Session,
-        request: WorkflowDraftRequest,
+        request: WorkflowDraftRequest | Mapping[str, Any],
         *,
         user_id: str,
         organization_id: UUID,
+        require_resolved: bool = False,
     ) -> None:
         nodes = (
             request.nodes
@@ -174,7 +196,7 @@ class WorkflowService:
         )
         mail_nodes = [
             node
-            for node in nodes
+            for node in WorkflowService._iter_workflow_nodes(nodes)
             if (
                 getattr(node, "type", None)
                 if not isinstance(node, dict)
@@ -204,6 +226,11 @@ class WorkflowService:
             data = raw_data
             credential_value = data.get("credential_id")
             if credential_value in (None, ""):
+                if require_resolved:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="mail.credential_reference_required",
+                    )
                 continue
             try:
                 credential_id = uuid.UUID(str(credential_value))

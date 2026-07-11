@@ -239,6 +239,22 @@ def test_empty_and_null_patch_are_rejected_by_schema():
 @pytest.mark.parametrize(
     ("field_name", "value"),
     [
+        ("email_address", "other@example.test"),
+        ("provider", "custom"),
+        ("auth_type", "password"),
+        ("imap_host", "attacker.example.test"),
+        ("imap_port", 143),
+        ("use_ssl", False),
+    ],
+)
+def test_patch_rejects_mailbox_identity_and_endpoint_changes(field_name, value):
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+        MailCredentialUpdate.model_validate({field_name: value})
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
         ("email_address", "mailbox@example.test\r\nA1 NOOP"),
         ("secret", "synthetic\nA1 NOOP"),
     ],

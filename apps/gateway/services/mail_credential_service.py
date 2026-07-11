@@ -296,14 +296,6 @@ class MailCredentialService:
         self._require_active(credential)
         register_manual_audit_ownership(self.db, credential, "updated")
         updates = payload.model_dump(exclude_unset=True, exclude={"secret"})
-        if {"imap_host", "imap_port", "use_ssl"} & updates.keys():
-            host, port = self._validated_endpoint(
-                updates.get("imap_host", credential.imap_host),
-                updates.get("imap_port", credential.imap_port),
-                updates.get("use_ssl", credential.use_ssl),
-            )
-            updates["imap_host"] = host
-            updates["imap_port"] = port
         for key, value in updates.items():
             setattr(credential, key, value)
         if "secret" in payload.model_fields_set and payload.secret is not None:

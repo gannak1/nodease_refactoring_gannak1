@@ -837,6 +837,7 @@ LLM token/cost/latency 원천.
 #### `mail_credentials`
 
 Organization-scoped Mail 인증 resource다. Workflow graph에는 이 table의 opaque `id`만 저장하며 secret과 암호화 envelope는 graph, API response, audit, trace에 포함하지 않는다 ([ADR-0031](decisions/ADR-0031-mail-credential-reference-boundary.md)).
+Mailbox identity, provider/auth type과 IMAP endpoint/TLS mode는 생성 후 불변이며 변경이 필요하면 새 credential row를 등록한다. 기존 row의 PATCH는 표시 이름과 secret 교체만 허용한다.
 
 | 컬럼 | 타입 | 제약 |
 | --- | --- | --- |

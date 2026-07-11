@@ -12,10 +12,6 @@ from pathlib import Path
 from threading import Barrier, Event
 
 import pytest
-from sqlalchemy import create_engine, select, text
-from sqlalchemy.exc import IntegrityError, OperationalError
-from sqlalchemy.orm import Session
-
 from apps.gateway.adapters.audit.sqlalchemy_schedule_dispatch_audit import (
     SqlAlchemyScheduleDispatchAuditRecorder,
 )
@@ -64,6 +60,9 @@ from apps.workflow_engine.adapters.schedule_dispatch_repository import (
 from apps.workflow_engine.application.schedule_dispatch import (
     ScheduledDeploymentExecutionUseCase,
 )
+from sqlalchemy import create_engine, select, text
+from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.orm import Session
 
 ROOT_DIR = Path(__file__).resolve().parents[4]
 RUN_ENV = "NODEASE_RUN_DISPOSABLE_DB_TEST"
