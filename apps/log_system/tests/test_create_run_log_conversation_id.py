@@ -139,6 +139,9 @@ class _Query:
             return self.run
         return None
 
+    def all(self):
+        return []
+
 
 def test_update_run_finish_clears_previous_error_message(monkeypatch):
     run = WorkflowRun(
