@@ -176,10 +176,9 @@
       "connection_policy": {"role": "intermediate", "incoming": "allowed", "outgoing": "allowed", "outgoing_handles": "standard"},
       "capabilities": ["mail_search"],
       "side_effect": "external_read",
-      "required_configuration": ["credential", "email"],
+      "required_configuration": ["credential_id"],
       "configuration_labels": {
-        "credential": "Mail credential",
-        "email": "Mail account"
+        "credential_id": "Mail credential"
       }
     },
     {

@@ -20,7 +20,6 @@ const CREDENTIAL_FIELDS: Record<
     keyField: 'api_token',
     name: 'Personal Access Token',
   },
-  mailNode: { service: 'Mail', keyField: 'password', name: 'App Password' },
 };
 
 export function SettingsSidebar() {

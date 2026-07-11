@@ -1,7 +1,7 @@
 # Workflow Requirements
 
 Status: Draft
-Related Features: auth, organization, agent-builder, audit-tracing, knowledge, conversation-memory
+Related Features: auth, organization, agent-builder, audit-tracing, knowledge, mail-credentials, conversation-memory
 
 ## Purpose
 
@@ -173,7 +173,15 @@ MBA-104 범위에서는 비용 최적화와 A/B 비교 실행을 준비하기 �
 - 생성된 workflow나 Agent Builder가 만든 workflow도 일반 workflow와 동일한 organization scope, RBAC, audit, trace 정책을 따른다.
 - Workflow 실행 권한, LLM credential `use`, connector/connection 사용 권한, Knowledge KB/source ACL 권한은 서로를 대체하지 않는다.
 - Workflow-node 순환 참조, nesting depth 초과, target app/deployment unavailable 같은 복구 불가능한 graph 설정 오류는 retry 가능한 일시 장애가 아니다. Celery task는 이러한 non-retryable runtime error를 즉시 실패로 보존해야 한다.
-- Workflow runtime HTTP/GitHub/Mail node의 전체 outbound egress policy는 [ADR-0014](../../decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)의 Knowledge source collection egress boundary와 별도 gate다.
+- Workflow runtime HTTP/GitHub node의 전체 outbound egress policy는 [ADR-0014](../../decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)의 Knowledge source collection egress boundary와 별도 gate다. Mail IMAP 연결은 [ADR-0031](../../decisions/ADR-0031-mail-credential-reference-boundary.md)의 제한된 egress gate를 적용한다.
+
+### Mail Credential Reference
+
+- Mail node graph는 organization-scoped Mail credential의 opaque `credential_id`만 저장한다. Email, password, token, ciphertext, provider endpoint를 graph에 직접 저장하지 않는다.
+- Workflow 저장 경계는 inline Mail secret field를 거부하고, reference가 있으면 active organization, active 상태와 저장 요청자의 `use` 권한을 검증한다.
+- Agent Builder가 만든 Mail node는 `credential_id=null`, `configuration_state=unresolved`로 preview와 저장이 가능하지만 실행 준비 상태로 간주하지 않는다.
+- 인증 test/deployment run은 명시 user execution subject와 canonical organization을 runtime resolver에 전달한다. Resolver는 provider 연결 직전에 scope, active 상태, `use` 권한, egress target을 재검증한다. Public/schedule run은 App/workflow owner를 대체 주체로 사용하지 않으며, service account 또는 assigned operator 정책이 없으면 Mail 실행을 차단한다.
+- Credential이 없거나 revoke됐거나 권한이 회수된 경우 Mail provider 연결 전에 safe error로 fail-closed한다. Legacy inline password graph는 호환 fallback 없이 거부한다.
 - RAG를 포함한 workflow 비교 실행이나 A/B 실행도 로그인 interactive 실행이면 동일한 execution subject와 Knowledge permission/source ACL gate를 사용하고, subject가 없으면 anonymous public-only gate를 사용한다.
 - 배포 preflight에서 client-supplied audience hint는 preview UI용이며, create/activation 경로는 deployment type과 실행 endpoint에서 audience를 서버가 다시 파생한다.
 - Private KB를 자동 실행에서 사용하려면 별도 service account 또는 assigned operator 정책이 필요하다. 이 정책이 없으면 workflow owner, deployment owner, app creator 권한으로 fallback하지 않는다.

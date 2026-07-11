@@ -357,12 +357,7 @@ describe('nodeVariablePorts', () => {
       referenced_variables: [],
     });
     const mailNode = makeNode('mailNode', {
-      email: '',
-      password: '',
-      provider: 'gmail',
-      imap_server: '',
-      imap_port: 993,
-      use_ssl: true,
+      credential_id: 'mail-credential-1',
       folder: 'INBOX',
       unread_only: false,
       mark_as_read: false,

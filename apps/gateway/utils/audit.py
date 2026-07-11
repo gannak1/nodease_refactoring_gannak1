@@ -19,7 +19,7 @@ import functools
 import logging
 from typing import Optional
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 
 from apps.shared.audit.context import (
     AuditActor,
@@ -33,12 +33,23 @@ from apps.shared.db.models.user import User
 logger = logging.getLogger(__name__)
 
 
+def _safe_failure_metadata(exc: Exception) -> dict[str, str | int]:
+    code = getattr(exc, "code", None)
+    if isinstance(code, str) and code and len(code) <= 100:
+        return {"error_code": code}
+    if isinstance(exc, HTTPException):
+        return {"error_code": "http.request_failed", "status_code": exc.status_code}
+    return {"error_code": "internal.request_failed"}
+
+
 def _find_user(kwargs) -> Optional[User]:
     return next((value for value in kwargs.values() if isinstance(value, User)), None)
 
 
 def _find_request(kwargs) -> Optional[Request]:
-    return next((value for value in kwargs.values() if isinstance(value, Request)), None)
+    return next(
+        (value for value in kwargs.values() if isinstance(value, Request)), None
+    )
 
 
 def _build_actor(user: Optional[User]):
@@ -63,7 +74,12 @@ def _request_metadata(request: Optional[Request]) -> dict:
     return meta
 
 
-def audit(action: str, *, target_param: Optional[str] = None, target_type: Optional[str] = None):
+def audit(
+    action: str,
+    *,
+    target_param: Optional[str] = None,
+    target_type: Optional[str] = None,
+):
     """
     Args:
         action: 기록할 행동 타입. AuditAction 상수를 넘긴다(예: AuditAction.WORKFLOW_DEPLOY).
@@ -99,7 +115,7 @@ def audit(action: str, *, target_param: Optional[str] = None, target_type: Optio
             try:
                 result = await func(*args, **kwargs)
             except Exception as e:
-                _emit(kwargs, "failure", {"error": str(e)})
+                _emit(kwargs, "failure", _safe_failure_metadata(e))
                 raise
             else:
                 _emit(kwargs, "success")
@@ -113,7 +129,7 @@ def audit(action: str, *, target_param: Optional[str] = None, target_type: Optio
             try:
                 result = func(*args, **kwargs)
             except Exception as e:
-                _emit(kwargs, "failure", {"error": str(e)})
+                _emit(kwargs, "failure", _safe_failure_metadata(e))
                 raise
             else:
                 _emit(kwargs, "success")

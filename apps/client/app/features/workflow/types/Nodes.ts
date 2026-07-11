@@ -319,23 +319,14 @@ export interface GithubNodeData extends BaseNodeData {
 // ============================================================================
 
 // ========================= [Mail Node] ======================================
-export type EmailProvider = 'gmail' | 'naver' | 'daum' | 'outlook' | 'custom';
-
 export interface MailVariable {
   name: string;
   value_selector: string[];
 }
 
 export interface MailNodeData extends BaseNodeData {
-  // Account
-  email: string;
-  password: string;
-
-  // Server
-  provider: EmailProvider;
-  imap_server: string;
-  imap_port: number;
-  use_ssl: boolean;
+  credential_id?: string | null;
+  configuration_state?: 'resolved' | 'unresolved';
 
   // 검색 설정
   keyword?: string;

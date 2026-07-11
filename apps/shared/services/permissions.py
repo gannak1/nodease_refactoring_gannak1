@@ -3,6 +3,7 @@ from typing import Any, Optional
 
 from apps.shared.db.models.knowledge import KnowledgeBase
 from apps.shared.db.models.llm import LLMCredential
+from apps.shared.db.models.mail_credential import MailCredential
 from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.organization_membership import (
     ORGANIZATION_AUTH_MANAGER,
@@ -14,10 +15,12 @@ from apps.shared.db.models.team import (
     Team,
     TeamKnowledgePermission,
     TeamLLMPermission,
+    TeamMailCredentialPermission,
     TeamMembership,
     TeamWorkflowPermission,
     UserKnowledgePermission,
     UserLLMPermission,
+    UserMailCredentialPermission,
     UserWorkflowPermission,
 )
 from apps.shared.db.models.user import User
@@ -31,6 +34,7 @@ from apps.shared.permissions import (
     AUTH_STATE_RANK,
     knowledge_base_auth_state_allows,
     llm_credential_auth_state_allows,
+    mail_credential_auth_state_allows,
     normalize_resource_auth_state,
     stronger_resource_auth_state,
     workflow_auth_state_allows,
@@ -261,6 +265,33 @@ def _llm_credential_scope(
         return None, None
 
     return credential, credential_organization_uuid or requested_organization_uuid
+
+
+def _mail_credential_scope(
+    db: Session,
+    mail_credential_id: Any,
+    organization_id: Any = None,
+) -> tuple[Optional[MailCredential], Optional[uuid.UUID]]:
+    credential_uuid = coerce_uuid(mail_credential_id)
+    requested_organization_uuid = coerce_uuid(organization_id)
+    if credential_uuid is None:
+        return None, None
+
+    credential = (
+        db.query(MailCredential).filter(MailCredential.id == credential_uuid).first()
+    )
+    if not credential:
+        return None, None
+
+    credential_organization_uuid = coerce_uuid(credential.organization_id)
+    if credential_organization_uuid is None:
+        return None, None
+    if (
+        requested_organization_uuid is not None
+        and credential_organization_uuid != requested_organization_uuid
+    ):
+        return None, None
+    return credential, credential_organization_uuid
 
 
 def _knowledge_base_scope(
@@ -602,6 +633,76 @@ def has_llm_credential_permission(
         organization_id=organization_id,
     )
     return llm_credential_auth_state_allows(auth_state, action)
+
+
+def get_effective_mail_credential_auth_state(
+    db: Session,
+    user_id: Any,
+    mail_credential_id: Any,
+    organization_id: Any = None,
+) -> str:
+    user_uuid = coerce_uuid(user_id)
+    credential, organization_uuid = _mail_credential_scope(
+        db, mail_credential_id, organization_id
+    )
+    if user_uuid is None or credential is None or organization_uuid is None:
+        return AUTH_STATE_NONE
+
+    organization_auth_state = get_organization_auth_state(
+        db, user_uuid, organization_uuid
+    )
+    if organization_auth_state == AUTH_STATE_MANAGER:
+        return AUTH_STATE_MANAGER
+    if organization_auth_state != ORGANIZATION_AUTH_MEMBER:
+        return AUTH_STATE_NONE
+
+    team_rows = (
+        db.query(TeamMailCredentialPermission.auth_state)
+        .join(
+            TeamMembership,
+            TeamMembership.team_id == TeamMailCredentialPermission.team_id,
+        )
+        .join(Team, Team.id == TeamMailCredentialPermission.team_id)
+        .filter(
+            TeamMembership.user_id == user_uuid,
+            TeamMailCredentialPermission.mail_credential_id == credential.id,
+            Team.is_active.is_(True),
+            TeamMembership.grantee_organization_id == organization_uuid,
+            TeamMailCredentialPermission.grantee_organization_id == organization_uuid,
+            TeamMembership.grantee_organization_id
+            == TeamMailCredentialPermission.grantee_organization_id,
+            Team.organization_id == organization_uuid,
+        )
+        .all()
+    )
+    direct_rows = (
+        db.query(UserMailCredentialPermission.auth_state)
+        .filter(
+            UserMailCredentialPermission.user_id == user_uuid,
+            UserMailCredentialPermission.mail_credential_id == credential.id,
+            UserMailCredentialPermission.grantee_organization_id == organization_uuid,
+        )
+        .all()
+    )
+
+    effective_state = _strongest_auth_state(team_rows, AUTH_STATE_NONE)
+    return _strongest_auth_state(direct_rows, effective_state)
+
+
+def has_mail_credential_permission(
+    db: Session,
+    user_id: Any,
+    mail_credential_id: Any,
+    action: str,
+    organization_id: Any = None,
+) -> bool:
+    auth_state = get_effective_mail_credential_auth_state(
+        db,
+        user_id,
+        mail_credential_id,
+        organization_id=organization_id,
+    )
+    return mail_credential_auth_state_allows(auth_state, action)
 
 
 def get_effective_knowledge_base_auth_state(

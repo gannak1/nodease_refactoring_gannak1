@@ -69,6 +69,10 @@ class AuditAction:
     CREDENTIAL_CREATE = "credential.create"
     CREDENTIAL_DELETE = "credential.delete"
 
+    MAIL_CREDENTIAL_CREATE = "mail_credential.create"
+    MAIL_CREDENTIAL_UPDATE = "mail_credential.update"
+    MAIL_CREDENTIAL_REVOKE = "mail_credential.revoke"
+
     MODEL_PRICING_UPDATE = "model.pricing_update"
     LLM_CALL = "llm.call"
 

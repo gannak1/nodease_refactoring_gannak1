@@ -26,6 +26,13 @@ RESOURCE_AUTH_STATE_RANKS = {
         "builder": 3,
         "manager": 4,
     },
+    "mail_credential": {
+        "none": 0,
+        "viewer": 1,
+        "operator": 2,
+        "builder": 3,
+        "manager": 4,
+    },
     "audit": {
         "none": 0,
         "auditor": 1,
@@ -38,12 +45,14 @@ RESOURCE_AUTH_STATE_RANKS = {
 WORKFLOW_AUTH_STATE_RANK = RESOURCE_AUTH_STATE_RANKS["workflow"]
 KNOWLEDGE_AUTH_STATE_RANK = RESOURCE_AUTH_STATE_RANKS["knowledge_base"]
 LLM_AUTH_STATE_RANK = RESOURCE_AUTH_STATE_RANKS["llm_credential"]
+MAIL_AUTH_STATE_RANK = RESOURCE_AUTH_STATE_RANKS["mail_credential"]
 AUDIT_AUTH_STATE_RANK = RESOURCE_AUTH_STATE_RANKS["audit"]
 
 WORKFLOW_AUTH_STATES = set(WORKFLOW_AUTH_STATE_RANK)
 KNOWLEDGE_AUTH_STATES = set(KNOWLEDGE_AUTH_STATE_RANK)
 KNOWLEDGE_DIRECT_GRANT_AUTH_STATES = KNOWLEDGE_AUTH_STATES - {"none"}
 LLM_AUTH_STATES = set(LLM_AUTH_STATE_RANK)
+MAIL_AUTH_STATES = set(MAIL_AUTH_STATE_RANK)
 AUDIT_AUTH_STATES = set(AUDIT_AUTH_STATE_RANK)
 
 

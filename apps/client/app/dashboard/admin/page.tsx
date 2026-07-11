@@ -49,6 +49,10 @@ import {
   knowledgeApi,
   type KnowledgeBaseResponse,
 } from '@/app/features/knowledge/api/knowledgeApi';
+import {
+  mailCredentialApi,
+  type MailCredentialOption,
+} from '@/app/features/workflow/api/mailCredentialApi';
 
 type AdminTab =
   | 'members'
@@ -101,7 +105,11 @@ type LLMCredentialResponse = {
   created_at: string;
 };
 
-type ResourceType = 'workflow' | 'knowledge_base' | 'llm_credential';
+type ResourceType =
+  | 'workflow'
+  | 'knowledge_base'
+  | 'llm_credential'
+  | 'mail_credential';
 type GranteeType = 'team' | 'user';
 type ResourceAuthState = 'viewer' | 'operator' | 'builder' | 'manager';
 
@@ -201,6 +209,9 @@ export default function AdminConsolePage() {
   const [apps, setApps] = useState<AppResponse[]>([]);
   const [providers, setProviders] = useState<LLMProviderResponse[]>([]);
   const [credentials, setCredentials] = useState<LLMCredentialResponse[]>([]);
+  const [mailCredentials, setMailCredentials] = useState<
+    MailCredentialOption[]
+  >([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseResponse[]>(
     [],
   );
@@ -209,6 +220,8 @@ export default function AdminConsolePage() {
   const [knowledgePermissions, setKnowledgePermissions] =
     useState<ResourcePermissionListResponse | null>(null);
   const [credentialPermissions, setCredentialPermissions] =
+    useState<ResourcePermissionListResponse | null>(null);
+  const [mailCredentialPermissions, setMailCredentialPermissions] =
     useState<ResourcePermissionListResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -250,6 +263,7 @@ export default function AdminConsolePage() {
   const [selectedWorkflowId, setSelectedWorkflowId] = useState('');
   const [selectedKnowledgeBaseId, setSelectedKnowledgeBaseId] = useState('');
   const [selectedCredentialId, setSelectedCredentialId] = useState('');
+  const [selectedMailCredentialId, setSelectedMailCredentialId] = useState('');
   const [permissionGranteeType, setPermissionGranteeType] =
     useState<GranteeType>('team');
   const [permissionGranteeId, setPermissionGranteeId] = useState('');
@@ -298,14 +312,18 @@ export default function AdminConsolePage() {
       ? workflowPermissions
       : permissionResourceType === 'knowledge_base'
         ? knowledgePermissions
-        : credentialPermissions;
+        : permissionResourceType === 'llm_credential'
+          ? credentialPermissions
+          : mailCredentialPermissions;
 
   const permissionResourceId =
     permissionResourceType === 'workflow'
       ? selectedWorkflowId
       : permissionResourceType === 'knowledge_base'
         ? selectedKnowledgeBaseId
-        : selectedCredentialId;
+        : permissionResourceType === 'llm_credential'
+          ? selectedCredentialId
+          : selectedMailCredentialId;
 
   const activeManagerCount = useMemo(
     () =>
@@ -393,8 +411,8 @@ export default function AdminConsolePage() {
 
   const selectedTeamMemberUserIds = useMemo(
     () => (selectedTeamId ? teamMembers[selectedTeamId] || [] : []).map(
-      (member) => member.user_id,
-    ),
+        (member) => member.user_id,
+      ),
     [selectedTeamId, teamMembers],
   );
 
@@ -431,6 +449,7 @@ export default function AdminConsolePage() {
     workflowId = selectedWorkflowId,
     knowledgeBaseId = selectedKnowledgeBaseId,
     credentialId = selectedCredentialId,
+    mailCredentialId = selectedMailCredentialId,
   ) => {
     try {
       if (resourceType === 'workflow' && workflowId) {
@@ -454,14 +473,25 @@ export default function AdminConsolePage() {
         setCredentialPermissions(response.data);
         return;
       }
+      if (resourceType === 'mail_credential' && mailCredentialId) {
+        const response = await apiClient.get<ResourcePermissionListResponse>(
+          `/mail/credentials/${mailCredentialId}/permissions`,
+        );
+        setMailCredentialPermissions(response.data);
+        return;
+      }
       if (resourceType === 'workflow') setWorkflowPermissions(null);
       if (resourceType === 'knowledge_base') setKnowledgePermissions(null);
       if (resourceType === 'llm_credential') setCredentialPermissions(null);
+      if (resourceType === 'mail_credential')
+        setMailCredentialPermissions(null);
     } catch (err) {
       toast.error(getErrorMessage(err, '권한 목록을 불러오지 못했습니다.'));
       if (resourceType === 'workflow') setWorkflowPermissions(null);
       if (resourceType === 'knowledge_base') setKnowledgePermissions(null);
       if (resourceType === 'llm_credential') setCredentialPermissions(null);
+      if (resourceType === 'mail_credential')
+        setMailCredentialPermissions(null);
     }
   };
 
@@ -492,9 +522,11 @@ export default function AdminConsolePage() {
         setApps([]);
         setProviders([]);
         setCredentials([]);
+        setMailCredentials([]);
         setWorkflowPermissions(null);
         setKnowledgePermissions(null);
         setCredentialPermissions(null);
+        setMailCredentialPermissions(null);
         setKnowledgeBases([]);
         return;
       }
@@ -512,25 +544,32 @@ export default function AdminConsolePage() {
       setMembers(uniqueMembers([...defaultMembers, ...removedMembers]));
       setTeams(teamData);
 
-      const [providerData, credentialData, appData, knowledgeData] =
-        await Promise.all([
-          apiClient
-            .get<LLMProviderResponse[]>('/llm/providers')
-            .then((response) => response.data)
-            .catch(() => []),
-          apiClient
-            .get<LLMCredentialResponse[]>('/llm/credentials')
-            .then((response) => response.data)
-            .catch(() => []),
-          apiClient
-            .get<AppResponse[]>('/apps')
-            .then((response) => response.data)
-            .catch(() => []),
-          knowledgeApi.getKnowledgeBases().catch(() => []),
-        ]);
+      const [
+        providerData,
+        credentialData,
+        mailCredentialData,
+        appData,
+        knowledgeData,
+      ] = await Promise.all([
+        apiClient
+          .get<LLMProviderResponse[]>('/llm/providers')
+          .then((response) => response.data)
+          .catch(() => []),
+        apiClient
+          .get<LLMCredentialResponse[]>('/llm/credentials')
+          .then((response) => response.data)
+          .catch(() => []),
+        mailCredentialApi.listAvailable().catch(() => []),
+        apiClient
+          .get<AppResponse[]>('/apps')
+          .then((response) => response.data)
+          .catch(() => []),
+        knowledgeApi.getKnowledgeBases().catch(() => []),
+      ]);
 
       setProviders(providerData);
       setCredentials(credentialData);
+      setMailCredentials(mailCredentialData);
       setApps(appData);
       setKnowledgeBases(knowledgeData);
       const firstWorkflowId =
@@ -539,28 +578,42 @@ export default function AdminConsolePage() {
         '';
       const firstKnowledgeBaseId =
         selectedKnowledgeBaseId || knowledgeData[0]?.id || '';
-      const firstCredentialId = selectedCredentialId || credentialData[0]?.id || '';
+      const firstCredentialId =
+        selectedCredentialId || credentialData[0]?.id || '';
+      const firstMailCredentialId =
+        selectedMailCredentialId || mailCredentialData[0]?.id || '';
       setSelectedWorkflowId(firstWorkflowId);
       setSelectedKnowledgeBaseId(firstKnowledgeBaseId);
       setSelectedCredentialId(firstCredentialId);
+      setSelectedMailCredentialId(firstMailCredentialId);
       await Promise.all([
         loadPermissions(
           'workflow',
           firstWorkflowId,
           firstKnowledgeBaseId,
           firstCredentialId,
+          firstMailCredentialId,
         ),
         loadPermissions(
           'knowledge_base',
           firstWorkflowId,
           firstKnowledgeBaseId,
           firstCredentialId,
+          firstMailCredentialId,
         ),
         loadPermissions(
           'llm_credential',
           firstWorkflowId,
           firstKnowledgeBaseId,
           firstCredentialId,
+          firstMailCredentialId,
+        ),
+        loadPermissions(
+          'mail_credential',
+          firstWorkflowId,
+          firstKnowledgeBaseId,
+          firstCredentialId,
+          firstMailCredentialId,
         ),
       ]);
       await loadTeamMembers(teamData);
@@ -614,6 +667,12 @@ export default function AdminConsolePage() {
   }, [credentials, selectedCredentialId]);
 
   useEffect(() => {
+    if (!selectedMailCredentialId && mailCredentials.length > 0) {
+      setSelectedMailCredentialId(mailCredentials[0].id);
+    }
+  }, [mailCredentials, selectedMailCredentialId]);
+
+  useEffect(() => {
     if (!credentialForm.providerId && providers.length > 0) {
       setCredentialForm((prev) => ({ ...prev, providerId: providers[0].id }));
     }
@@ -643,6 +702,7 @@ export default function AdminConsolePage() {
     selectedWorkflowId,
     selectedKnowledgeBaseId,
     selectedCredentialId,
+    selectedMailCredentialId,
   ]);
 
   const refreshMembers = async () => {
@@ -803,13 +863,17 @@ export default function AdminConsolePage() {
         ? selectedWorkflowId
         : resourceType === 'knowledge_base'
           ? selectedKnowledgeBaseId
-          : selectedCredentialId;
+          : resourceType === 'llm_credential'
+            ? selectedCredentialId
+            : selectedMailCredentialId;
     const resourcePath =
       resourceType === 'workflow'
         ? `/permissions/workflows/${resourceId}`
         : resourceType === 'knowledge_base'
           ? `/permissions/knowledge-bases/${resourceId}`
-          : `/permissions/llm-credentials/${resourceId}`;
+          : resourceType === 'llm_credential'
+            ? `/permissions/llm-credentials/${resourceId}`
+            : `/mail/credentials/${resourceId}/permissions`;
     return `${resourcePath}/${granteeType}s/${granteeId}`;
   };
 
@@ -1094,6 +1158,9 @@ export default function AdminConsolePage() {
               credentials={credentials}
               selectedCredentialId={selectedCredentialId}
               onSelectedCredentialIdChange={setSelectedCredentialId}
+              mailCredentials={mailCredentials}
+              selectedMailCredentialId={selectedMailCredentialId}
+              onSelectedMailCredentialIdChange={setSelectedMailCredentialId}
               activeTeams={activeTeams}
               activeMembers={activeMembers}
               granteeType={permissionGranteeType}
@@ -1189,6 +1256,11 @@ export default function AdminConsolePage() {
                     name: item.credential_name,
                     resourceType: 'llm_credential' as const,
                   })),
+                ...mailCredentials.map((item) => ({
+                  id: item.id,
+                  name: item.credential_name,
+                  resourceType: 'mail_credential' as const,
+                })),
               ]}
               onActorAccessChanged={loadData}
             />
@@ -2027,6 +2099,9 @@ function PermissionsTab({
   credentials,
   selectedCredentialId,
   onSelectedCredentialIdChange,
+  mailCredentials,
+  selectedMailCredentialId,
+  onSelectedMailCredentialIdChange,
   activeTeams,
   activeMembers,
   granteeType,
@@ -2051,6 +2126,9 @@ function PermissionsTab({
   credentials: LLMCredentialResponse[];
   selectedCredentialId: string;
   onSelectedCredentialIdChange: (value: string) => void;
+  mailCredentials: MailCredentialOption[];
+  selectedMailCredentialId: string;
+  onSelectedMailCredentialIdChange: (value: string) => void;
   activeTeams: TeamResponse[];
   activeMembers: OrganizationMember[];
   granteeType: GranteeType;
@@ -2074,7 +2152,9 @@ function PermissionsTab({
       ? !selectedWorkflowId
       : resourceType === 'knowledge_base'
         ? !selectedKnowledgeBaseId
-        : !selectedCredentialId;
+        : resourceType === 'llm_credential'
+          ? !selectedCredentialId
+          : !selectedMailCredentialId;
   const granteeOptionsMissing =
     granteeType === 'team' ? activeTeams.length === 0 : activeMembers.length === 0;
   const resourceLabel =
@@ -2082,7 +2162,9 @@ function PermissionsTab({
       ? 'Workflow 권한'
       : resourceType === 'knowledge_base'
         ? 'Knowledge Base 권한'
-        : 'Credential 권한';
+        : resourceType === 'llm_credential'
+          ? 'LLM Credential 권한'
+          : 'Mail Credential 권한';
 
   return (
     <DashboardPanel
@@ -2105,6 +2187,7 @@ function PermissionsTab({
           <option value="workflow">Workflow</option>
           <option value="knowledge_base">Knowledge Base</option>
           <option value="llm_credential">LLM Credential</option>
+          <option value="mail_credential">Mail Credential</option>
         </select>
         {resourceType === 'workflow' ? (
           <select
@@ -2140,7 +2223,7 @@ function PermissionsTab({
               ))
             )}
           </select>
-        ) : (
+        ) : resourceType === 'llm_credential' ? (
           <select
             value={selectedCredentialId}
             onChange={(event) => onSelectedCredentialIdChange(event.target.value)}
@@ -2150,6 +2233,24 @@ function PermissionsTab({
               <option value="">선택 가능한 credential 없음</option>
             ) : (
               credentials.map((credential) => (
+                <option key={credential.id} value={credential.id}>
+                  {credential.credential_name}
+                </option>
+              ))
+            )}
+          </select>
+        ) : (
+          <select
+            value={selectedMailCredentialId}
+            onChange={(event) =>
+              onSelectedMailCredentialIdChange(event.target.value)
+            }
+            className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
+          >
+            {mailCredentials.length === 0 ? (
+              <option value="">선택 가능한 Mail credential 없음</option>
+            ) : (
+              mailCredentials.map((credential) => (
                 <option key={credential.id} value={credential.id}>
                   {credential.credential_name}
                 </option>
@@ -2372,7 +2473,7 @@ function resourcePermissionLabel(
   resourceType: ResourceType,
   state: ResourceAuthState,
 ) {
-  if (resourceType === 'llm_credential') {
+  if (resourceType === 'llm_credential' || resourceType === 'mail_credential') {
     const labels: Record<ResourceAuthState, string> = {
       viewer: 'Credential 조회 가능',
       operator: 'Credential 사용 가능',

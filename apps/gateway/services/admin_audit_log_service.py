@@ -56,7 +56,12 @@ _DETAIL_STRING_KEYS = {
     "requested_action",
     "resource_type",
 }
-_DETAIL_RESOURCE_TYPES = {"workflow", "knowledge_base", "llm_credential"}
+_DETAIL_RESOURCE_TYPES = {
+    "workflow",
+    "knowledge_base",
+    "llm_credential",
+    "mail_credential",
+}
 _DETAIL_POLICY_REASONS = {
     "access_management.self_control_forbidden",
     "access_management.last_active_manager",
@@ -79,6 +84,7 @@ _UUID_FIELDS = {
     "grantee_organization_id",
     "knowledge_base_id",
     "llm_credential_id",
+    "mail_credential_id",
     "organization_id",
     "team_id",
     "user_id",
@@ -148,9 +154,7 @@ for _resource_name, _resource_field in (
     )
     for _operation in ("created", "updated", "deleted"):
         _CHANGE_SUMMARY_SPECS[(f"{_target_type}.{_operation}", _target_type)] = (
-            {"created": "create", "updated": "update", "deleted": "delete"}[
-                _operation
-            ],
+            {"created": "create", "updated": "update", "deleted": "delete"}[_operation],
             "grantee_organization_id",
             _fields,
         )
@@ -372,9 +376,7 @@ def _detail_metadata(item: AuditLog) -> dict[str, Any]:
             detail["operation_correlation_id"] = validate_operation_correlation(
                 correlation
             )
-            detail["outcome_resolution_code"] = validate_outcome_resolution(
-                resolution
-            )
+            detail["outcome_resolution_code"] = validate_outcome_resolution(resolution)
         except (TypeError, ValueError):
             detail.pop("operation_correlation_id", None)
             detail.pop("outcome_resolution_code", None)
@@ -396,7 +398,11 @@ def _safe_detail_metadata_value(key: str, value: Any) -> Any | None:
         except (TypeError, ValueError, AttributeError):
             return None
     if key == "affected_resource_source_count":
-        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+        return (
+            value
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            else None
+        )
     if key == "policy_reason":
         return value if value in _DETAIL_POLICY_REASONS else None
     if key == "resource_type":

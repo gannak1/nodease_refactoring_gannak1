@@ -2,6 +2,9 @@
 
 import email
 import imaplib
+import socket
+import ssl
+import uuid
 from datetime import datetime
 from email.header import decode_header
 from typing import Any, Dict, List, Optional
@@ -10,8 +13,39 @@ from jinja2 import Environment
 
 from apps.workflow_engine.workflow.nodes.base.node import Node
 from apps.workflow_engine.workflow.nodes.mail.entities import MailNodeData
+from apps.shared.db.session import SessionLocal
+from apps.workflow_engine.services.mail_credential_service import (
+    MailCredentialResolver,
+    ResolvedMailCredential,
+)
 
 _jinja_env = Environment(autoescape=False)
+
+
+def _imap_quoted_string(value: str) -> str:
+    if any(character in value for character in ("\r", "\n", "\x00")):
+        raise RuntimeError("mail.search_criteria_invalid")
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+class _PinnedIMAP4(imaplib.IMAP4):
+    def __init__(self, host: str, port: int, resolved_ip: str):
+        self._resolved_ip = resolved_ip
+        super().__init__(host=host, port=port)
+
+    def _create_socket(self, timeout):
+        return socket.create_connection((self._resolved_ip, self.port), timeout)
+
+
+class _PinnedIMAP4SSL(imaplib.IMAP4_SSL):
+    def __init__(self, host: str, port: int, resolved_ip: str):
+        self._resolved_ip = resolved_ip
+        super().__init__(host=host, port=port)
+
+    def _create_socket(self, timeout):
+        raw_socket = socket.create_connection((self._resolved_ip, self.port), timeout)
+        return self.ssl_context.wrap_socket(raw_socket, server_hostname=self.host)
 
 
 def _get_nested_value(data: Any, keys: List[str]) -> Any:
@@ -46,19 +80,35 @@ class MailNode(Node[MailNodeData]):
         이메일 검색 동기 로직 (run_in_executor에서 호출됨).
         """
         data = self.data
+        if data.credential_id is None:
+            raise RuntimeError("mail.credential_reference_required")
 
         # 변수 치환
         keyword = self._render_template(data.keyword or "", inputs)
         sender = self._render_template(data.sender or "", inputs)
         subject = self._render_template(data.subject or "", inputs)
-        password = self._render_template(data.password, inputs)
+        user_id = self._required_execution_subject_uuid()
+        organization_id = self._required_context_uuid("organization_id")
+        db, should_close = self._borrow_db_session()
+        try:
+            credential = MailCredentialResolver.resolve(
+                db,
+                user_id=user_id,
+                organization_id=organization_id,
+                credential_id=data.credential_id,
+            )
+        finally:
+            if should_close:
+                db.close()
 
         # IMAP 연결
-        mail = self._connect_imap(password)
+        mail = self._connect_imap(credential)
 
         try:
             # 폴더 선택
-            mail.select(data.folder)
+            status, _ = mail.select(data.folder)
+            if status != "OK":
+                raise RuntimeError("mail.folder_select_failed")
 
             # 검색 쿼리 구성
             search_query = self._build_search_query(keyword, sender, subject)
@@ -66,7 +116,7 @@ class MailNode(Node[MailNodeData]):
             # 검색 실행
             status, messages = mail.search(None, search_query)
             if status != "OK":
-                raise RuntimeError(f"이메일 검색 실패: {status}")
+                raise RuntimeError("mail.search_failed")
 
             email_ids = messages[0].split()
 
@@ -86,29 +136,86 @@ class MailNode(Node[MailNodeData]):
                 "folder": data.folder,
             }
 
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError("mail.operation_failed") from exc
         finally:
             # 연결 종료
             try:
                 mail.close()
-            except:
+            except Exception:
                 pass
-            mail.logout()
+            try:
+                mail.logout()
+            except Exception:
+                pass
 
-    def _connect_imap(self, password: str) -> imaplib.IMAP4_SSL:
+    def _connect_imap(self, credential: ResolvedMailCredential) -> imaplib.IMAP4:
         """IMAP 서버에 연결합니다."""
+        mail: imaplib.IMAP4 | None = None
         try:
-            if self.data.use_ssl:
-                mail = imaplib.IMAP4_SSL(self.data.imap_server, self.data.imap_port)
+            if credential.use_ssl:
+                mail = _PinnedIMAP4SSL(
+                    credential.imap_host,
+                    credential.imap_port,
+                    credential.resolved_ip,
+                )
             else:
-                mail = imaplib.IMAP4(self.data.imap_server, self.data.imap_port)
+                mail = _PinnedIMAP4(
+                    credential.imap_host,
+                    credential.imap_port,
+                    credential.resolved_ip,
+                )
+                mail.starttls(ssl_context=ssl.create_default_context())
 
-            mail.login(self.data.email, password)
+            mail.login(credential.email_address, credential.secret)
             return mail
 
-        except imaplib.IMAP4.error as e:
-            raise RuntimeError(f"IMAP 로그인 실패: {str(e)}")
-        except Exception as e:
-            raise RuntimeError(f"IMAP 연결 실패: {str(e)}")
+        except imaplib.IMAP4.error as exc:
+            self._shutdown_failed_connection(mail)
+            raise RuntimeError("mail.authentication_failed") from exc
+        except Exception as exc:
+            self._shutdown_failed_connection(mail)
+            raise RuntimeError("mail.connection_failed") from exc
+
+    @staticmethod
+    def _shutdown_failed_connection(mail: imaplib.IMAP4 | None) -> None:
+        if mail is None:
+            return
+        try:
+            mail.shutdown()
+        except Exception:
+            pass
+
+    def _required_context_uuid(self, key: str) -> uuid.UUID:
+        value = self.execution_context.get(key)
+        try:
+            return uuid.UUID(str(value))
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"mail.{key}_required") from exc
+
+    def _required_execution_subject_uuid(self) -> uuid.UUID:
+        subject = self.execution_context.get("execution_subject")
+        if not isinstance(subject, dict):
+            raise RuntimeError("mail.execution_subject_required")
+        subject_type = subject.get("subject_type") or subject.get("type") or "user"
+        subject_id = subject.get("subject_id") or subject.get("id")
+        if subject_type != "user":
+            raise RuntimeError("mail.execution_subject_required")
+        try:
+            return uuid.UUID(str(subject_id))
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("mail.execution_subject_required") from exc
+
+    def _borrow_db_session(self):
+        session_factory = self.execution_context.get("db_session_factory")
+        if callable(session_factory):
+            return session_factory(), True
+        legacy_session = self.execution_context.get("db")
+        if legacy_session is not None:
+            return legacy_session, False
+        return SessionLocal(), True
 
     def _build_search_query(self, keyword: str, sender: str, subject: str) -> str:
         """IMAP 검색 쿼리를 구성합니다."""
@@ -118,13 +225,13 @@ class MailNode(Node[MailNodeData]):
             criteria.append("UNSEEN")
 
         if keyword:
-            criteria.append(f'TEXT "{keyword}"')
+            criteria.append(f"TEXT {_imap_quoted_string(keyword)}")
 
         if sender:
-            criteria.append(f'FROM "{sender}"')
+            criteria.append(f"FROM {_imap_quoted_string(sender)}")
 
         if subject:
-            criteria.append(f'SUBJECT "{subject}"')
+            criteria.append(f"SUBJECT {_imap_quoted_string(subject)}")
 
         # 날짜 필터: start_date가 없으면 기본 7일 전으로 설정
         start_date = self.data.start_date
@@ -142,9 +249,7 @@ class MailNode(Node[MailNodeData]):
                 imap_date = date_obj.strftime("%d-%b-%Y")
                 criteria.append(f"SINCE {imap_date}")
             except ValueError:
-                raise ValueError(
-                    f"잘못된 날짜 형식: {start_date}. YYYY-MM-DD 형식을 사용하세요."
-                )
+                raise RuntimeError("mail.search_criteria_invalid") from None
 
         if self.data.end_date:
             try:
@@ -157,12 +262,7 @@ class MailNode(Node[MailNodeData]):
                 imap_date = date_obj.strftime("%d-%b-%Y")
                 criteria.append(f"BEFORE {imap_date}")
             except ValueError:
-                raise ValueError(
-                    f"잘못된 날짜 형식: {self.data.end_date}. YYYY-MM-DD 형식을 사용하세요."
-                )
-                raise ValueError(
-                    f"잘못된 날짜 형식: {self.data.before_date}. YYYY-MM-DD 형식을 사용하세요."
-                )
+                raise RuntimeError("mail.search_criteria_invalid") from None
 
         return " ".join(criteria) if criteria else "ALL"
 
@@ -210,14 +310,14 @@ class MailNode(Node[MailNodeData]):
                         payload = part.get_payload(decode=True)
                         if payload:
                             body_text = payload.decode("utf-8", errors="ignore")
-                    except:
+                    except Exception:
                         pass
                 elif content_type == "text/html" and not body_html:
                     try:
                         payload = part.get_payload(decode=True)
                         if payload:
                             body_html = payload.decode("utf-8", errors="ignore")
-                    except:
+                    except Exception:
                         pass
         else:
             # 단일 파트 메시지
@@ -225,14 +325,14 @@ class MailNode(Node[MailNodeData]):
                 payload = msg.get_payload(decode=True)
                 if payload:
                     body_text = payload.decode("utf-8", errors="ignore")
-            except:
+            except Exception:
                 pass
 
         # Mark as read if requested
         if self.data.mark_as_read:
             try:
                 mail.store(email_id, "+FLAGS", "\\Seen")
-            except:
+            except Exception:
                 pass
 
         return {
@@ -262,7 +362,7 @@ class MailNode(Node[MailNodeData]):
                 else:
                     result.append(str(content))
             return "".join(result)
-        except:
+        except Exception:
             return str(header)
 
     def _render_template(self, template: Optional[str], inputs: Dict[str, Any]) -> str:

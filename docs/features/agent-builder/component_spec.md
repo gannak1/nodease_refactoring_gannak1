@@ -142,7 +142,7 @@ MBA-145 MVP에서는 Knowledge Skill body/checklist를 prompt context로 직접 
 - MVP message request는 raw client graph snapshot을 보내지 않는다. Client는 selected node/edge hint만 보내며, apply/save 단계의 preview 확인과 stale guard에는 semantic graph hash만 사용한다. Hash 계산이 불가능하면 raw graph payload fallback을 보내지 않고 apply/save를 차단한다.
 - 후속 확장에서는 검증 가능한 client graph snapshot을 draft base로 삼는 정책을 도입할 수 있으나, 그 전까지 unsaved editor graph를 agent draft base로 자동 포함하지 않는다.
 - `적용 및 저장`은 workflow graph 저장까지 수행하지만 workflow 실행, Knowledge Base retrieval, Slack 전송, workflow node credential 사용/변경, 외부 시스템 변경을 수행하지 않는다.
-- GitHub, Slack, HTTP, Mail, Workflow 같은 외부 연동 node는 draft에 포함할 수 있지만 credential과 target 설정을 자동 주입하지 않는다. 미해결 설정은 `configuration_state=unresolved`로 표시하고 Preview/Node Detail에서 읽기 전용으로 확인한다.
+- GitHub, Slack, HTTP, Mail, Workflow 같은 외부 연동 node는 draft에 포함할 수 있지만 credential과 target 설정을 자동 주입하지 않는다. Mail node는 `credential_id=null`만 생성하며 email/password/provider endpoint를 graph에 넣지 않는다. 미해결 설정은 `configuration_state=unresolved`로 표시하고 Preview/Node Detail에서 읽기 전용으로 확인한다.
 - 공통 외부 호출 차단 안내는 draft `safety_notices`에 한 번만 유지한다. 외부 연동 node의 미해결 설정은 `configuration_issues`에서 node별 표시명과 필요한 파라미터 목록으로 구분하며, 같은 type의 node가 여러 개여도 합치지 않는다. Session restore는 저장된 preview graph에서 이 목록을 다시 파생한다.
 - `적용 및 저장` 성공 시 Preview Mode를 종료하고 editor는 저장된 최신 workflow graph를 표시한다. 이 성공 상태는 backend 저장과 apply/save audit 기록 성공을 모두 통과한 경우에만 사용한다.
 - `적용 및 저장` 차단 또는 실패 시 Preview Mode를 유지하고 actual editor graph를 변경하지 않는다.

@@ -25,6 +25,7 @@ from apps.shared.db.models.team import (
     TeamMembership,
     UserKnowledgePermission,
     UserLLMPermission,
+    UserMailCredentialPermission,
     UserWorkflowPermission,
 )
 from apps.shared.db.models.user import User
@@ -268,8 +269,7 @@ def _guard_last_manager(
 ) -> None:
     if (
         not target_user_active
-        or
-        membership.membership_state != ORGANIZATION_MEMBERSHIP_ACTIVE
+        or membership.membership_state != ORGANIZATION_MEMBERSHIP_ACTIVE
         or membership.organization_auth_state != ORGANIZATION_AUTH_MANAGER
     ):
         return
@@ -295,6 +295,7 @@ def _cleanup_counts(
         "team_memberships": removed_team_memberships,
         "user_workflow_permissions": revoked_user_permissions.workflow,
         "user_llm_permissions": revoked_user_permissions.llm_credential,
+        "user_mail_credential_permissions": revoked_user_permissions.mail_credential,
         "user_app_creation_permissions": revoked_user_permissions.app_creation,
         "user_knowledge_permissions": revoked_user_permissions.knowledge_base,
         "user_audit_permissions": revoked_user_permissions.audit,
@@ -383,7 +384,9 @@ class OrganizationMemberService:
                 OrganizationMembership.organization_id == organization_id,
                 OrganizationMembership.membership_state.in_(states),
             )
-            .order_by(User.name.asc(), User.email.asc(), OrganizationMembership.id.asc())
+            .order_by(
+                User.name.asc(), User.email.asc(), OrganizationMembership.id.asc()
+            )
             .all()
         )
         return [_member_response(membership) for membership in memberships]
@@ -469,7 +472,9 @@ class OrganizationMemberService:
         if membership.membership_state == ORGANIZATION_MEMBERSHIP_ACTIVE:
             return _member_response(membership)
         if membership.membership_state != ORGANIZATION_MEMBERSHIP_INVITED:
-            raise HTTPException(status_code=409, detail="Invitation cannot be accepted.")
+            raise HTTPException(
+                status_code=409, detail="Invitation cannot be accepted."
+            )
 
         # 초대 수락은 사용자 본인만 수행하므로 manager 권한 검사를 하지 않는다.
         previous_state = membership.membership_state
@@ -503,7 +508,9 @@ class OrganizationMemberService:
         if membership is None:
             raise HTTPException(status_code=404, detail="Invitation not found.")
         if membership.membership_state != ORGANIZATION_MEMBERSHIP_INVITED:
-            raise HTTPException(status_code=409, detail="Invitation cannot be declined.")
+            raise HTTPException(
+                status_code=409, detail="Invitation cannot be declined."
+            )
 
         previous_state = membership.membership_state
         membership.membership_state = ORGANIZATION_MEMBERSHIP_REMOVED
@@ -692,6 +699,14 @@ class OrganizationMemberService:
             )
             .delete(synchronize_session=False)
         )
+        revoked_mail_permissions = (
+            db.query(UserMailCredentialPermission)
+            .filter(
+                UserMailCredentialPermission.grantee_organization_id == organization_id,
+                UserMailCredentialPermission.user_id == user_id,
+            )
+            .delete(synchronize_session=False)
+        )
         revoked_knowledge_permissions = (
             db.query(UserKnowledgePermission)
             .filter(
@@ -714,6 +729,7 @@ class OrganizationMemberService:
         revoked_user_permissions = RevokedUserPermissionCounts(
             workflow=revoked_workflow_permissions,
             llm_credential=revoked_llm_permissions,
+            mail_credential=revoked_mail_permissions,
             app_creation=revoked_app_creation_permissions,
             knowledge_base=revoked_knowledge_permissions,
             audit=0,

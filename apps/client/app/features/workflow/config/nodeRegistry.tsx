@@ -373,12 +373,7 @@ export const nodeRegistry: NodeDefinition[] = [
       'IMAP을 통해 이메일을 검색합니다 (Gmail, Naver, Daum, Outlook 등)',
     defaultData: () => ({
       title: '메일 검색',
-      email: '',
-      password: '',
-      provider: 'gmail',
-      imap_server: 'imap.gmail.com',
-      imap_port: 993,
-      use_ssl: true,
+      credential_id: null,
       folder: 'INBOX',
       max_results: 10,
       unread_only: false,

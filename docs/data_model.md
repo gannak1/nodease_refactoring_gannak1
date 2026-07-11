@@ -13,19 +13,19 @@ Status: Draft
 
 ## 도메인별 테이블
 
-현재 코드 기준 활성 테이블은 34개다. `legacy_llm_provider`, `legacy_llm_credentials`는 migration `e4956fcd7e2b`에서 DROP됐고 모델도 주석 처리돼 있다.
+현재 코드 기준 활성 테이블은 37개다. `legacy_llm_provider`, `legacy_llm_credentials`는 migration `e4956fcd7e2b`에서 DROP됐고 모델도 주석 처리돼 있다.
 
 | 도메인 | 테이블 |
 | --- | --- |
 | 사용자/조직 | `users`, `organization`, `organization_memberships`, `teams`, `team_memberships` |
-| 권한 | `team_workflow_permissions`, `team_knowledge_permissions`, `team_llm_permissions`, `team_audit_permissions`, `user_workflow_permissions`, `user_knowledge_permissions`, `user_llm_permissions` |
+| 권한 | `team_workflow_permissions`, `team_knowledge_permissions`, `team_llm_permissions`, `team_mail_credential_permissions`, `team_audit_permissions`, `user_workflow_permissions`, `user_knowledge_permissions`, `user_llm_permissions`, `user_mail_credential_permissions` |
 | 앱/워크플로우 | `apps`, `workflows`, `workflow_budgets`, `workflow_deployments`, `schedules`, `workflow_runs`, `workflow_node_runs` |
 | 추적/감사 | `trace_payloads`, `trace_payload_access_events`, `trace_redaction_policies`, `trace_retention_policies`, `trace_visibility_policies`, `audit_logs` |
 | Knowledge/RAG | `knowledge_bases`, `documents`, `document_chunks`, `rag_answer_runs` |
 | LLM | `llm_providers`, `llm_models`, `llm_credentials`, `llm_rel_credential_models`, `llm_usage_logs` |
-| 외부 연동 | `connections` |
+| 외부 연동 | `connections`, `mail_credentials` |
 
-Security Alert target table인 `security_alerts`, `security_alert_audit_events`는 MBA-211 구현 전이므로 위 34개 현재 활성 테이블 수와 목록에 포함하지 않는다.
+Security Alert target table인 `security_alerts`, `security_alert_audit_events`는 MBA-211 구현 전이므로 위 현재 활성 테이블 수와 목록에 포함하지 않는다.
 
 ## 엔티티 관계
 
@@ -37,6 +37,7 @@ erDiagram
   organization ||--o{ apps : scopes
   organization ||--o{ knowledge_bases : scopes
   organization ||--o{ llm_credentials : scopes
+  organization ||--o{ mail_credentials : scopes
   organization ||--o{ rag_answer_runs : scopes
   users ||--o{ team_memberships : joins
   teams ||--o{ team_memberships : has_members
@@ -45,9 +46,11 @@ erDiagram
   teams ||--o{ team_knowledge_permissions : grants
   teams ||--o{ team_llm_permissions : grants
   teams ||--o{ team_audit_permissions : grants
+  teams ||--o{ team_mail_credential_permissions : grants
   users ||--o{ user_workflow_permissions : direct_grant
   users ||--o{ user_knowledge_permissions : direct_grant
   users ||--o{ user_llm_permissions : direct_grant
+  users ||--o{ user_mail_credential_permissions : direct_grant
 
   apps ||--o{ workflows : has
   apps ||--o{ workflow_deployments : deploys
@@ -70,6 +73,9 @@ erDiagram
   llm_credentials ||--o{ llm_rel_credential_models : enables
   llm_models ||--o{ llm_rel_credential_models : enabled_by
   llm_credentials ||--o{ llm_usage_logs : logs
+
+  mail_credentials ||--o{ team_mail_credential_permissions : grants
+  mail_credentials ||--o{ user_mail_credential_permissions : direct_grant
 
   users ||--o{ audit_logs : acts
   users ||--o{ connections : owns
@@ -205,7 +211,7 @@ user와 organization의 직접 소속. organization scope와 manager 판정의 �
 
 #### Team permission 공통 구조
 
-`team_workflow_permissions`, `team_knowledge_permissions`, `team_llm_permissions`, `team_audit_permissions`는 대상 리소스 컬럼만 다르고 구조가 같다.
+`team_workflow_permissions`, `team_knowledge_permissions`, `team_llm_permissions`, `team_mail_credential_permissions`, `team_audit_permissions`는 대상 리소스 컬럼만 다르고 구조가 같다.
 
 | 컬럼 | 타입 | 제약 |
 | --- | --- | --- |
@@ -225,11 +231,12 @@ user와 organization의 직접 소속. organization scope와 manager 판정의 �
 | `team_workflow_permissions` | workflow_id | workflows.id | (grantee_organization_id, workflow_id, team_id) |
 | `team_knowledge_permissions` | knowledge_base_id | knowledge_bases.id | (grantee_organization_id, knowledge_base_id, team_id) |
 | `team_llm_permissions` | llm_credential_id | llm_credentials.id | (grantee_organization_id, llm_credential_id, team_id) |
+| `team_mail_credential_permissions` | mail_credential_id | (mail_credential_id, grantee_organization_id) → mail_credentials(id, organization_id) | (grantee_organization_id, mail_credential_id, team_id) |
 | `team_audit_permissions` | target_organization_id | organization.id | (grantee_organization_id, target_organization_id, team_id) |
 
 #### User direct permission 공통 구조
 
-`user_workflow_permissions`, `user_knowledge_permissions`, `user_llm_permissions`. additive allow 전용이다.
+`user_workflow_permissions`, `user_knowledge_permissions`, `user_llm_permissions`, `user_mail_credential_permissions`. additive allow 전용이다.
 
 | 컬럼 | 타입 | 제약 |
 | --- | --- | --- |
@@ -247,8 +254,9 @@ user와 organization의 직접 소속. organization scope와 manager 판정의 �
 | `user_workflow_permissions` | workflow_id | (workflow_id, grantee_organization_id) → workflows(id, organization_id) | (grantee_organization_id, user_id, workflow_id) |
 | `user_knowledge_permissions` | knowledge_base_id | (knowledge_base_id, grantee_organization_id) → knowledge_bases(id, organization_id) | (grantee_organization_id, user_id, knowledge_base_id) |
 | `user_llm_permissions` | llm_credential_id | (llm_credential_id, grantee_organization_id) → llm_credentials(id, organization_id) | (grantee_organization_id, user_id, llm_credential_id) |
+| `user_mail_credential_permissions` | mail_credential_id | (mail_credential_id, grantee_organization_id) → mail_credentials(id, organization_id) | (grantee_organization_id, user_id, mail_credential_id) |
 
-- team permission 테이블에는 `auth_state` CHECK가 없고 user direct 테이블에만 있다. legacy 값(`read/write/execute/admin`)은 application-level에서 normalize한다.
+- Mail team/user permission 테이블은 canonical `auth_state` CHECK를 적용한다. 기존 일부 team permission 테이블의 legacy 값(`read/write/execute/admin`)은 application-level에서 normalize한다.
 
 ### 앱/워크플로우
 
@@ -825,6 +833,27 @@ LLM token/cost/latency 원천.
 - RAG 전용 FK(`rag_answer_run_id`)를 추가하지 않는다. standalone answer와의 연결은 correlation convention이다.
 
 ### 외부 연동
+
+#### `mail_credentials`
+
+Organization-scoped Mail 인증 resource다. Workflow graph에는 이 table의 opaque `id`만 저장하며 secret과 암호화 envelope는 graph, API response, audit, trace에 포함하지 않는다 ([ADR-0031](decisions/ADR-0031-mail-credential-reference-boundary.md)).
+
+| 컬럼 | 타입 | 제약 |
+| --- | --- | --- |
+| id | UUID | PK |
+| organization_id | UUID | NOT NULL, FK→organization.id, UNIQUE `(id, organization_id)` |
+| credential_name | VARCHAR(255) | NOT NULL |
+| provider / auth_type | VARCHAR(50) | NOT NULL |
+| email_address | VARCHAR(320) | NOT NULL, API·audit에서는 마스킹 |
+| encrypted_secret | TEXT | NOT NULL, 응답·로그 노출 금지 |
+| encryption_key_version / encryption_algorithm | VARCHAR | NOT NULL, versioned envelope metadata |
+| imap_host / imap_port / use_ssl | VARCHAR / INTEGER / BOOLEAN | NOT NULL, runtime egress 검증 대상 |
+| status | VARCHAR(20) | NOT NULL, `active` 또는 `revoked` |
+| created_by | UUID | FK→users.id |
+| revoked_at | DATETIME | NULL |
+| created_at / updated_at | DATETIME | NOT NULL |
+
+`team_mail_credential_permissions`와 `user_mail_credential_permissions`는 Mail credential의 `read/use/manage`를 기존 auth state 계층으로 표현한다. Organization manager는 resource override를 가지며 runtime은 실행 직전에 동일 organization, active 상태와 `use` 권한을 다시 검사한다.
 
 #### `connections`
 

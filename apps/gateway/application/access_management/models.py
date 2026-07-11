@@ -7,7 +7,12 @@ from typing import Generic, Literal, TypeVar
 
 MembershipState = Literal["active", "suspended"]
 OrganizationAuthState = Literal["member", "manager"]
-ResourceType = Literal["workflow", "knowledge_base", "llm_credential"]
+ResourceType = Literal[
+    "workflow",
+    "knowledge_base",
+    "llm_credential",
+    "mail_credential",
+]
 ResourceAuthState = Literal["none", "viewer", "operator", "builder", "manager"]
 AccessActionStatus = Literal["applied", "unchanged"]
 
@@ -31,8 +36,7 @@ class MemberSnapshot:
     @property
     def manager_override(self) -> bool:
         return (
-            self.effective_access_enabled
-            and self.organization_auth_state == "manager"
+            self.effective_access_enabled and self.organization_auth_state == "manager"
         )
 
 
@@ -103,10 +107,16 @@ class InheritedResourceCounts:
     workflow: int
     knowledge_base: int
     llm_credential: int
+    mail_credential: int = 0
 
     @property
     def total(self) -> int:
-        return self.workflow + self.knowledge_base + self.llm_credential
+        return (
+            self.workflow
+            + self.knowledge_base
+            + self.llm_credential
+            + self.mail_credential
+        )
 
 
 @dataclass(frozen=True)

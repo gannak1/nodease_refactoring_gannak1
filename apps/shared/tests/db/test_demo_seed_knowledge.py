@@ -97,7 +97,9 @@ def write_minimal_demo_fixture(
 
 def test_resolve_legal_pdf_picks_latest_effective_date(tmp_path, monkeypatch):
     old_pdf = tmp_path / "채용절차의 공정화에 관한 법률(법률)(제12326호)(20140121).pdf"
-    latest_pdf = tmp_path / "채용절차의 공정화에 관한 법률(법률)(제17326호)(20200526).pdf"
+    latest_pdf = (
+        tmp_path / "채용절차의 공정화에 관한 법률(법률)(제17326호)(20200526).pdf"
+    )
     old_pdf.write_bytes(b"%PDF-1.4\n")
     latest_pdf.write_bytes(b"%PDF-1.4\n")
     monkeypatch.setattr(demo_seed, "DEMO_LEGAL_DOCS_LABOR_DIR", tmp_path)
@@ -183,9 +185,7 @@ def test_demo_fixture_rejects_wrong_embedding_dimension(tmp_path, monkeypatch):
         demo_seed._read_demo_knowledge_fixture()
 
 
-def test_demo_seed_runtime_credential_opt_in_requires_openai_key(
-    tmp_path, monkeypatch
-):
+def test_demo_seed_runtime_credential_opt_in_requires_openai_key(tmp_path, monkeypatch):
     fixture_path = tmp_path / "demo_knowledge_chunks.jsonl.gz"
     write_minimal_demo_fixture(fixture_path)
 
@@ -273,7 +273,10 @@ def test_schema_readiness_reports_stale_demo_db_columns():
     }
 
     message = seed_demo_script.format_schema_readiness_error(gaps)
-    assert "Base.metadata.create_all() creates missing tables but does not ALTER" in message
+    assert (
+        "Base.metadata.create_all() creates missing tables but does not ALTER"
+        in message
+    )
     assert "knowledge_bases: embedding_model, organization_id, sync_state" in message
     assert "alembic -c apps/shared/alembic.ini upgrade heads" in message
     assert "--profile demo --reset --drop-existing-data --yes" in message
@@ -373,11 +376,13 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_merged_hea
     safe_metadata_revision = script.get_revision("fa7c8d9e0f12")
     merged_revision = script.get_revision("ff4b5c6d7e89")
     hardened_revision = script.get_revision("ff5c6d7e8f90")
+    mail_credential_revision = script.get_revision("fc1d2e3f4a5b")
 
     assert safe_metadata_revision.down_revision == "fa7b8c9d0e12"
     assert set(merged_revision.down_revision) == {"fa7c8d9e0f12", "ff3a4b5c6d78"}
     assert hardened_revision.down_revision == "ff4b5c6d7e89"
-    assert script.get_heads() == ["ff5c6d7e8f90"]
+    assert mail_credential_revision.down_revision == "ff5c6d7e8f90"
+    assert script.get_heads() == ["fc1d2e3f4a5b"]
 
 
 def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():
@@ -444,7 +449,11 @@ def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():
     collection_permission_specs = set(
         demo_seed._demo_team_knowledge_collection_permission_specs()
     )
-    assert ("legal_public", "ai_builder_onboarding", "route") in collection_permission_specs
+    assert (
+        "legal_public",
+        "ai_builder_onboarding",
+        "route",
+    ) in collection_permission_specs
     assert (
         "internal_onboarding",
         "customer_support_ops",

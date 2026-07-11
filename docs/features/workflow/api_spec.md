@@ -230,3 +230,10 @@ Example detail response:
 - 노드 실행 기록 조회는 workflow read 권한을 따른다.
 - 실행 기록 조회는 현재 workflow graph를 변경하지 않으므로 workflow write 권한을 요구하지 않는다.
 - secret, credential 원문, raw prompt 전체 등 민감 정보는 Gateway/API의 응답 정책을 우선하며, 프론트는 표시 단계에서 추가로 allowlist 기반 렌더링을 적용한다.
+
+## Mail Node 저장 계약
+
+- Mail node data는 `credential_id: UUID | null`과 `configuration_state: resolved | unresolved`만 credential 설정으로 허용한다.
+- `password`, `token`, `email`, `encrypted_secret` 같은 inline Mail identity/secret field가 있으면 workflow 저장은 `422 mail.credential_reference_required`로 실패한다.
+- Non-null `credential_id`는 active organization의 active Mail credential이어야 하며 저장 요청자에게 `use` 권한이 있어야 한다. Organization 밖 reference는 `404`, 같은 organization의 권한 부족은 `403`으로 처리한다.
+- `credential_id=null`인 unresolved draft는 preview/apply-save를 위해 저장할 수 있지만 runtime에서는 provider 연결 전에 `mail.credential_reference_required`로 차단한다.

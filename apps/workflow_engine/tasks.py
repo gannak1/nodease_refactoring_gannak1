@@ -60,7 +60,10 @@ def record_model_routing_operational_run(self, workflow_run_id: str):
                 "workflow.model_routing.refresh_policy",
                 args=[str(policy_id), "auto_n_runs"],
             )
-        return {"status": "success", "scheduled_policy_ids": [str(item) for item in policy_ids]}
+        return {
+            "status": "success",
+            "scheduled_policy_ids": [str(item) for item in policy_ids],
+        }
     except Exception as exc:
         session.rollback()
         logger.error("[Model-Routing] run event record failed: %s", exc)
@@ -304,14 +307,15 @@ def execute_deployed_workflow(
 
         graph = deployment.graph_data
         app = session.query(App).filter(App.id == deployment.app_id).first()
-        execution_context["workflow_id"] = workflow_id
-        execution_context["app_id"] = str(deployment.app_id)
-        execution_context["deployment_id"] = str(deployment.id)
-        execution_context["workflow_version"] = deployment.version
-        if app and not execution_context.get("organization_id"):
-            execution_context["organization_id"] = (
-                str(app.organization_id) if app.organization_id else None
+        if not app:
+            raise PermanentDeploymentExecutionError(
+                f"배포 앱을 찾을 수 없습니다: {deployment.app_id}"
             )
+        execution_context = _canonical_deployment_execution_context(
+            dict(execution_context or {}),
+            deployment=deployment,
+            app=app,
+        )
 
         sync_result = {}
         try:
@@ -371,11 +375,12 @@ def execute_by_deployment(
 
     try:
         if not isinstance(execution_context, dict):
-            raise PermanentDeploymentExecutionError("실행 컨텍스트 형식이 올바르지 않습니다")
+            raise PermanentDeploymentExecutionError(
+                "실행 컨텍스트 형식이 올바르지 않습니다"
+            )
         queued_context = dict(execution_context)
         if (
-            str(queued_context.get("trigger_mode", "")).strip().lower()
-            == "schedule"
+            str(queued_context.get("trigger_mode", "")).strip().lower() == "schedule"
             and get_schedule_dispatch_settings().mode != "disabled"
         ):
             raise PermanentDeploymentExecutionError(
@@ -508,9 +513,7 @@ def _finalize_scheduled_claim(
             )
         finally:
             session.close()
-    raise NonRetryableWorkflowError(
-        "scheduled workflow finalization is unavailable"
-    )
+    raise NonRetryableWorkflowError("scheduled workflow finalization is unavailable")
 
 
 def _execute_scheduled_deployment_claim(
@@ -527,7 +530,9 @@ def _execute_scheduled_deployment_claim(
     try:
         claim_id = uuid.UUID(str(schedule_dispatch_claim_id))
     except (TypeError, ValueError):
-        raise PermanentDeploymentExecutionError("invalid schedule claim locator") from None
+        raise PermanentDeploymentExecutionError(
+            "invalid schedule claim locator"
+        ) from None
     if not task_id.startswith("schedule:"):
         raise PermanentDeploymentExecutionError("invalid schedule task identity")
 

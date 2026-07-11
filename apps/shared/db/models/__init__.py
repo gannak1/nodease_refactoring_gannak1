@@ -40,6 +40,11 @@ from apps.shared.db.models.llm import (
     LLMUsageLog,
 )
 from apps.shared.db.models.llm_node_version import LLMNodeVersion
+from apps.shared.db.models.mail_credential import (
+    MAIL_CREDENTIAL_ACTIVE,
+    MAIL_CREDENTIAL_REVOKED,
+    MailCredential,
+)
 from apps.shared.db.models.model_routing_policy import (
     LLMNodeModelRoutingPolicy,
     LLMNodeModelRoutingPolicyRunEvent,
@@ -71,12 +76,14 @@ from apps.shared.db.models.team import (
     TeamKnowledgeCollectionPermission,
     TeamKnowledgePermission,
     TeamLLMPermission,
+    TeamMailCredentialPermission,
     TeamMembership,
     TeamResourcePermissionMixin,
     TeamWorkflowPermission,
     UserKnowledgeCollectionPermission,
     UserKnowledgePermission,
     UserLLMPermission,
+    UserMailCredentialPermission,
     UserResourcePermissionMixin,
     UserWorkflowPermission,
 )
@@ -123,6 +130,9 @@ __all__ = [
     "LLMProvider",
     "LLMRelCredentialModel",
     "LLMUsageLog",
+    "MailCredential",
+    "MAIL_CREDENTIAL_ACTIVE",
+    "MAIL_CREDENTIAL_REVOKED",
     "LLMNodeVersion",
     "LLMNodeModelRoutingPolicy",
     "LLMNodeModelRoutingPolicyRunEvent",
@@ -145,10 +155,12 @@ __all__ = [
     "TeamKnowledgePermission",
     "TeamKnowledgeCollectionPermission",
     "TeamLLMPermission",
+    "TeamMailCredentialPermission",
     "TeamAuditPermission",
     "TeamWorkflowPermission",
     "UserWorkflowPermission",
     "UserLLMPermission",
+    "UserMailCredentialPermission",
     "UserKnowledgePermission",
     "UserKnowledgeCollectionPermission",
     "UserAppCreationPermission",

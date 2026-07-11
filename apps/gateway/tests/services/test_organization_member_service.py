@@ -24,6 +24,7 @@ from apps.shared.db.models.organization_membership import (
 from apps.shared.db.models.team import (
     TeamMembership,
     UserLLMPermission,
+    UserMailCredentialPermission,
     UserWorkflowPermission,
 )
 from apps.shared.db.models.user import User
@@ -270,7 +271,9 @@ def test_accept_update_guards_and_state_transitions(monkeypatch):
             manager,
             org.id,
             target.id,
-            OrganizationMemberUpdateRequest(membership_state=ORGANIZATION_MEMBERSHIP_ACTIVE),
+            OrganizationMemberUpdateRequest(
+                membership_state=ORGANIZATION_MEMBERSHIP_ACTIVE
+            ),
         )
 
     accepted = OrganizationMemberService.accept_invitation(db, target, org.id)
@@ -279,7 +282,9 @@ def test_accept_update_guards_and_state_transitions(monkeypatch):
         manager,
         org.id,
         target.id,
-        OrganizationMemberUpdateRequest(membership_state=ORGANIZATION_MEMBERSHIP_SUSPENDED),
+        OrganizationMemberUpdateRequest(
+            membership_state=ORGANIZATION_MEMBERSHIP_SUSPENDED
+        ),
     )
 
     assert forced_accept.value.status_code == 409
@@ -324,7 +329,9 @@ def test_decline_invitation_marks_removed_and_records_audit():
 def test_decline_rejects_non_invited_membership(state):
     user = _user()
     org = _organization("Acme", created_by=user.id)
-    db = _Db(users=[user], organizations=[org], memberships=[_membership(user, org, state)])
+    db = _Db(
+        users=[user], organizations=[org], memberships=[_membership(user, org, state)]
+    )
 
     with pytest.raises(HTTPException) as conflict:
         OrganizationMemberService.decline_invitation(db, user, org.id)
@@ -441,7 +448,9 @@ def test_last_manager_and_self_remove_are_blocked(monkeypatch):
             manager,
             org.id,
             manager.id,
-            OrganizationMemberUpdateRequest(organization_auth_state=ORGANIZATION_AUTH_MEMBER),
+            OrganizationMemberUpdateRequest(
+                organization_auth_state=ORGANIZATION_AUTH_MEMBER
+            ),
         )
 
     assert self_remove.value.status_code == 400
@@ -471,7 +480,9 @@ def test_last_manager_guard_blocks_demote_by_another_manager(monkeypatch):
             actor,
             org.id,
             target.id,
-            OrganizationMemberUpdateRequest(organization_auth_state=ORGANIZATION_AUTH_MEMBER),
+            OrganizationMemberUpdateRequest(
+                organization_auth_state=ORGANIZATION_AUTH_MEMBER
+            ),
         )
 
     assert last_manager.value.status_code == 409
@@ -556,11 +567,15 @@ def test_update_member_rolls_back_when_audit_add_fails(monkeypatch):
 @pytest.mark.parametrize(
     "update_request",
     [
-        OrganizationMemberUpdateRequest(membership_state=ORGANIZATION_MEMBERSHIP_ACTIVE),
+        OrganizationMemberUpdateRequest(
+            membership_state=ORGANIZATION_MEMBERSHIP_ACTIVE
+        ),
         OrganizationMemberUpdateRequest(
             membership_state=ORGANIZATION_MEMBERSHIP_SUSPENDED
         ),
-        OrganizationMemberUpdateRequest(organization_auth_state=ORGANIZATION_AUTH_MANAGER),
+        OrganizationMemberUpdateRequest(
+            organization_auth_state=ORGANIZATION_AUTH_MANAGER
+        ),
     ],
 )
 def test_removed_member_cannot_be_patched(monkeypatch, update_request):
@@ -671,6 +686,7 @@ def test_remove_member_soft_removes_and_cleans_permissions(monkeypatch):
         team_memberships=[_team_membership(org.id, target.id)],
         workflow_permissions=[_user_workflow_permission(org.id, target.id)],
         llm_permissions=[_user_llm_permission(org.id, target.id)],
+        mail_permissions=[_user_mail_permission(org.id, target.id)],
         app_creation_permissions=[_user_app_creation_permission(org.id, target.id)],
     )
     monkeypatch.setattr(
@@ -682,7 +698,9 @@ def test_remove_member_soft_removes_and_cleans_permissions(monkeypatch):
         {"ip": "127.0.0.1", "user_agent": "test-agent", "request_id": "req-test"}
     )
     try:
-        response = OrganizationMemberService.remove_member(db, manager, org.id, target.id)
+        response = OrganizationMemberService.remove_member(
+            db, manager, org.id, target.id
+        )
     finally:
         clear_current_metadata(token)
 
@@ -690,19 +708,25 @@ def test_remove_member_soft_removes_and_cleans_permissions(monkeypatch):
     assert response.removed_team_memberships == 1
     assert response.revoked_user_permissions.workflow == 1
     assert response.revoked_user_permissions.llm_credential == 1
+    assert response.revoked_user_permissions.mail_credential == 1
     assert response.revoked_user_permissions.app_creation == 1
     assert target_membership.membership_state == ORGANIZATION_MEMBERSHIP_REMOVED
     assert db.team_memberships == []
     assert db.workflow_permissions == []
     assert db.llm_permissions == []
+    assert db.mail_permissions == []
     assert db.app_creation_permissions == []
     assert _audit_actions(db) == [
         AuditAction.ORGANIZATION_MEMBER_REMOVE,
         AuditAction.PERMISSION_REVOKE,
     ]
-    assert db.audit_logs[1].audit_metadata["cleanup"][
-        "user_app_creation_permissions"
-    ] == 1
+    assert (
+        db.audit_logs[1].audit_metadata["cleanup"]["user_app_creation_permissions"] == 1
+    )
+    assert (
+        db.audit_logs[1].audit_metadata["cleanup"]["user_mail_credential_permissions"]
+        == 1
+    )
     for audit_log in db.audit_logs:
         metadata = audit_log.audit_metadata
         assert metadata["request_id"] == "req-test"
@@ -864,7 +888,9 @@ def test_remove_is_idempotent_for_already_removed(monkeypatch):
     ("scope_access", "expected_status"),
     [(True, 403), (False, 404)],
 )
-def test_manager_gate_hides_or_forbids_non_manager(monkeypatch, scope_access, expected_status):
+def test_manager_gate_hides_or_forbids_non_manager(
+    monkeypatch, scope_access, expected_status
+):
     user = _user()
     org = _organization("Acme", created_by=user.id)
     db = _Db(users=[user], organizations=[org], memberships=[])
@@ -935,6 +961,7 @@ class _Db:
         team_memberships=None,
         workflow_permissions=None,
         llm_permissions=None,
+        mail_permissions=None,
         app_creation_permissions=None,
     ):
         self.users = users or []
@@ -943,6 +970,7 @@ class _Db:
         self.team_memberships = team_memberships or []
         self.workflow_permissions = workflow_permissions or []
         self.llm_permissions = llm_permissions or []
+        self.mail_permissions = mail_permissions or []
         self.app_creation_permissions = app_creation_permissions or []
         self.audit_logs = []
         self.commits = 0
@@ -983,6 +1011,12 @@ class _Db:
             return _Query(
                 self.llm_permissions,
                 self.llm_permissions,
+                on_for_update=self._record_for_update,
+            )
+        if model is UserMailCredentialPermission:
+            return _Query(
+                self.mail_permissions,
+                self.mail_permissions,
                 on_for_update=self._record_for_update,
             )
         if model is UserAppCreationPermission:
@@ -1103,6 +1137,8 @@ def _field_value(item, field):
         "user_workflow_permissions.user_id": "user_id",
         "user_llm_permissions.grantee_organization_id": "grantee_organization_id",
         "user_llm_permissions.user_id": "user_id",
+        "user_mail_credential_permissions.grantee_organization_id": "grantee_organization_id",
+        "user_mail_credential_permissions.user_id": "user_id",
         (
             "user_app_creation_permissions.grantee_organization_id"
         ): "grantee_organization_id",
@@ -1181,6 +1217,17 @@ def _user_llm_permission(organization_id, user_id):
         grantee_organization_id=organization_id,
         user_id=user_id,
         llm_credential_id=uuid4(),
+        assigned_by=uuid4(),
+        auth_state="viewer",
+    )
+
+
+def _user_mail_permission(organization_id, user_id):
+    return UserMailCredentialPermission(
+        id=uuid4(),
+        grantee_organization_id=organization_id,
+        user_id=user_id,
+        mail_credential_id=uuid4(),
         assigned_by=uuid4(),
         auth_state="viewer",
     )

@@ -1,8 +1,6 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
-
 from apps.shared.db.models.organization_membership import (
     ORGANIZATION_AUTH_MANAGER,
     ORGANIZATION_AUTH_MEMBER,
@@ -11,6 +9,7 @@ from apps.shared.db.models.organization_membership import (
     ORGANIZATION_MEMBERSHIP_REMOVED,
     ORGANIZATION_MEMBERSHIP_SUSPENDED,
 )
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 ORGANIZATION_MEMBERSHIP_STATES = {
     ORGANIZATION_MEMBERSHIP_INVITED,
@@ -47,7 +46,9 @@ def _validate_membership_state(value: str | None) -> str | None:
 
 
 def _validate_patch_membership_state(value: str | None) -> str | None:
-    return _normalize_state(value, ORGANIZATION_PATCH_MEMBERSHIP_STATES, "membership_state")
+    return _normalize_state(
+        value, ORGANIZATION_PATCH_MEMBERSHIP_STATES, "membership_state"
+    )
 
 
 def _validate_organization_auth_state(value: str | None) -> str | None:
@@ -138,6 +139,7 @@ class OrganizationCurrentResponse(OrganizationSummaryResponse):
 class RevokedUserPermissionCounts(BaseModel):
     workflow: int = Field(default=0, ge=0)
     llm_credential: int = Field(default=0, ge=0)
+    mail_credential: int = Field(default=0, ge=0)
     app_creation: int = Field(default=0, ge=0)
     knowledge_base: int = Field(default=0, ge=0)
     audit: int = Field(default=0, ge=0)

@@ -161,6 +161,7 @@ Status: Draft
 | LLM Provider | OpenAI, Anthropic, Google 같은 외부 LLM 제공자. 호출은 `apps/shared/services/llm_client`의 자체 client 계층을 통해 수행한다. |
 | LLM Model | Provider가 제공하는 구체 모델. DB에서는 `llm_models` table을 사용한다. |
 | LLM Credential | Provider API 호출에 필요한 자격 정보. 사용자가 소유하고(`user_id`) organization scope에 속할 수 있다(`organization_id` nullable). DB에서는 `llm_credentials` table을 사용한다. secret 원문은 응답, 로그, trace에 노출하지 않는다. |
+| Mail Credential | Organization이 관리하는 Mail provider 인증 resource. Workflow graph에는 opaque `credential_id`만 저장하며 secret은 `mail_credentials`에 암호화 저장한다. 조회·사용·관리는 `read/use/manage`로 분리하고 실행 직전에 권한과 상태를 재검증한다. |
 | Credential-Model Relation | 특정 credential로 어떤 model을 사용할 수 있는지 나타내는 연결. DB에서는 `llm_rel_credential_models` table을 사용한다. |
 | LLM Usage Log | LLM 호출의 token, latency, cost 등 사용량 기록. DB에서는 `llm_usage_logs` table을 사용한다. |
 | Cost Optimizer | Workflow의 현재 모델과 후보 모델을 비교 실행해 비용 절감률과 품질 차이를 제시하는 기능이다. |

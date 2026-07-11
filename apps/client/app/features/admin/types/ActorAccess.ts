@@ -3,7 +3,8 @@ export type ActorOrganizationAuthState = 'member' | 'manager';
 export type ActorResourceType =
   | 'workflow'
   | 'knowledge_base'
-  | 'llm_credential';
+  | 'llm_credential'
+  | 'mail_credential';
 export type ActorResourceAuthState =
   | 'none'
   | 'viewer'
@@ -73,6 +74,7 @@ export type MemberTeamMembership = {
     workflow: number;
     knowledge_base: number;
     llm_credential: number;
+    mail_credential?: number;
     total: number;
   };
 };

@@ -55,6 +55,13 @@ Main generation과 Memory summary provider adapter는 LLM Credential/egress port
 
 ## Components
 
+### Mail Credential 설정
+
+- `MailNodePanel`은 active organization에서 현재 사용자가 `use`할 수 있는 safe Mail credential option을 조회해 picker로 표시한다.
+- Node data에는 `credential_id`와 `configuration_state`만 유지한다. Mailbox email, password, IMAP host/port와 provider secret 입력란은 Workflow Editor에 두지 않는다.
+- `MailNode`와 실행 로그 설정 요약은 연결 여부만 표시하며 mailbox identity나 credential secret을 렌더링하지 않는다.
+- Credential 등록·교체·revoke는 Mail Credentials API의 별도 관리 경계에서 수행한다.
+
 ### 1. 실행 편의성
 
 - `TestSidebar`

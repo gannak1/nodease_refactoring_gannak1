@@ -23,6 +23,7 @@ from apps.shared.db.models.app import App
 from apps.shared.db.models.connection import Connection
 from apps.shared.db.models.knowledge import KnowledgeBase
 from apps.shared.db.models.llm import LLMCredential
+from apps.shared.db.models.mail_credential import MailCredential
 from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.schedule import Schedule
 from apps.shared.db.models.team import (
@@ -30,10 +31,12 @@ from apps.shared.db.models.team import (
     TeamAuditPermission,
     TeamKnowledgePermission,
     TeamLLMPermission,
+    TeamMailCredentialPermission,
     TeamMembership,
     TeamWorkflowPermission,
     UserKnowledgePermission,
     UserLLMPermission,
+    UserMailCredentialPermission,
     UserWorkflowPermission,
 )
 from apps.shared.db.models.user import User
@@ -56,6 +59,7 @@ TRACKED_MODELS = {
     App: "app",
     Connection: "connection",
     LLMCredential: "credential",
+    MailCredential: "mail_credential",
     KnowledgeBase: "knowledge",
     Organization: "organization",
     Schedule: "schedule",
@@ -64,9 +68,11 @@ TRACKED_MODELS = {
     TeamWorkflowPermission: "team_workflow_permission",
     UserKnowledgePermission: "user_knowledge_permission",
     UserLLMPermission: "user_llm_permission",
+    UserMailCredentialPermission: "user_mail_credential_permission",
     UserWorkflowPermission: "user_workflow_permission",
     TeamKnowledgePermission: "team_knowledge_permission",
     TeamLLMPermission: "team_llm_permission",
+    TeamMailCredentialPermission: "team_mail_credential_permission",
     TeamAuditPermission: "team_audit_permission",
     TraceRedactionPolicy: "trace_redaction_policy",
     TraceRetentionPolicy: "trace_retention_policy",
@@ -94,6 +100,11 @@ SENSITIVE_FIELDS = {
         "username",
     },
     LLMCredential: {"encrypted_config"},
+    MailCredential: {
+        "email_address",
+        "encrypted_secret",
+        "encryption_key_version",
+    },
     KnowledgeBase: {"safe_metadata"},
     Organization: set(),
     Schedule: set(),
@@ -102,9 +113,11 @@ SENSITIVE_FIELDS = {
     TeamWorkflowPermission: set(),
     UserKnowledgePermission: set(),
     UserLLMPermission: set(),
+    UserMailCredentialPermission: set(),
     UserWorkflowPermission: set(),
     TeamKnowledgePermission: set(),
     TeamLLMPermission: set(),
+    TeamMailCredentialPermission: set(),
     TeamAuditPermission: set(),
     TraceRedactionPolicy: {"regex_rules"},
     TraceRetentionPolicy: set(),
@@ -254,7 +267,11 @@ def _after_flush(session, flush_context):
 
     actor = get_current_actor()
     if actor is not None:
-        actor_id, actor_type, snapshot = actor.actor_id, actor.actor_type, actor.snapshot
+        actor_id, actor_type, snapshot = (
+            actor.actor_id,
+            actor.actor_type,
+            actor.snapshot,
+        )
     else:
         actor_id, actor_type, snapshot = None, "system", {}
 

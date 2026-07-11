@@ -26,6 +26,7 @@ from apps.shared.audit.manual_ownership import register_manual_audit_ownership
 from apps.shared.db.models.app import App
 from apps.shared.db.models.knowledge import KnowledgeBase
 from apps.shared.db.models.llm import LLMCredential
+from apps.shared.db.models.mail_credential import MailCredential
 from apps.shared.db.models.organization_membership import (
     OrganizationMembership,
 )
@@ -33,6 +34,7 @@ from apps.shared.db.models.team import (
     Team,
     TeamKnowledgePermission,
     TeamLLMPermission,
+    TeamMailCredentialPermission,
     TeamMembership,
     TeamWorkflowPermission,
 )
@@ -154,9 +156,7 @@ class SqlAlchemyAccessManagementMutationAdapter:
         self._team = team
         self._team_membership = membership
         self._team_source_count = (
-            self._count_team_sources(organization_id, team_id)
-            if team.is_active
-            else 0
+            self._count_team_sources(organization_id, team_id) if team.is_active else 0
         )
         return LockedTeamMembership(
             team_id=team.id,
@@ -413,7 +413,9 @@ class SqlAlchemyAccessManagementMutationAdapter:
         member = self._required_member_snapshot()
         row = self._app_permission
         if row is None:
-            raise RuntimeError("App creation permission lock is required before mutation")
+            raise RuntimeError(
+                "App creation permission lock is required before mutation"
+            )
         before = _app_audit_snapshot(row)
         self.db.delete(row)
         return AppliedMutationDescriptor(
@@ -441,7 +443,11 @@ class SqlAlchemyAccessManagementMutationAdapter:
         return self._required_member_state()[2]
 
     def _required_direct_state(self):
-        if self._resource is None or self._direct_model is None or self._direct_route is None:
+        if (
+            self._resource is None
+            or self._direct_model is None
+            or self._direct_route is None
+        ):
             raise RuntimeError("Resource and direct permission locks are required")
         return self._resource, self._direct_model, self._direct_route
 
@@ -501,6 +507,11 @@ class SqlAlchemyAccessManagementMutationAdapter:
                 (TeamWorkflowPermission, Workflow, "workflow_id"),
                 (TeamKnowledgePermission, KnowledgeBase, "knowledge_base_id"),
                 (TeamLLMPermission, LLMCredential, "llm_credential_id"),
+                (
+                    TeamMailCredentialPermission,
+                    MailCredential,
+                    "mail_credential_id",
+                ),
             )
         )
 
@@ -515,12 +526,17 @@ class SqlAlchemyAccessManagementMutationAdapter:
         query = self.db.query(permission_model).join(
             resource_model,
             (resource_model.id == getattr(permission_model, resource_column))
-            & (resource_model.organization_id == permission_model.grantee_organization_id),
+            & (
+                resource_model.organization_id
+                == permission_model.grantee_organization_id
+            ),
         )
         if resource_model is KnowledgeBase:
             query = query.filter(KnowledgeBase.lifecycle_state == "active")
         if resource_model is LLMCredential:
             query = query.filter(LLMCredential.is_valid.is_(True))
+        if resource_model is MailCredential:
+            query = query.filter(MailCredential.status == "active")
         return query.filter(
             permission_model.grantee_organization_id == organization_id,
             permission_model.team_id == team_id,
@@ -583,6 +599,7 @@ def _direct_audit_snapshot(
         "workflow": "workflow_id",
         "knowledge_base": "knowledge_base_id",
         "llm_credential": "llm_credential_id",
+        "mail_credential": "mail_credential_id",
     }[resource.resource_type]
     return {
         "grantee_organization_id": member.organization_id,
@@ -597,6 +614,7 @@ def _direct_target_type(resource_type: ResourceType) -> str:
         "workflow": "user_workflow_permission",
         "knowledge_base": "user_knowledge_permission",
         "llm_credential": "user_llm_permission",
+        "mail_credential": "user_mail_credential_permission",
     }[resource_type]
 
 

@@ -427,6 +427,7 @@ def toggle_deployment(
             deployment_id,
             scheduler,
             runtime_policy=runtime_policy,
+            user_id=current_user.id,
         )
     except Exception as e:
         _record_deployment_toggle_audit(
