@@ -87,7 +87,7 @@ Functional Requirement 상태는 다음 기준으로 구분한다.
 | FR-010 | 권한 | P1 | `구현 완료` | `UI/API 권한 기반 구현, 테스트 통과` | A/B 테스트와 후보 적용은 builder 이상 권한이 있는 사용자만 수행한다. compare/apply/history API와 모델/Knowledge 후보 사용 가능성 검증이 적용됐다. |
 | FR-011 | 정책 기반 자동 모델 라우팅 | P2 | `구현 완료` | `정책 저장·terminal 운영 표본 집계·judge 갱신·품질 gate·runtime credential guard·safe metadata 구현` | LLM 노드는 policy table의 active rule set으로 실행 모델을 선택한다. target LLM node가 성공한 배포 후 운영 workflow가 terminal 상태가 된 뒤에만 표본을 중복 없이 집계하고, 설정 횟수만큼 누적되면 refresh task가 judge로 정책을 재평가한다. 검증 표본이 없는 모델이나 낮은 confidence 결과는 기존 active policy를 유지하며, judge 호출 비용도 usage log로 추적한다. |
 | FR-012 | LLM 파라미터 추천 룰셋 | P2 | `진행중` | `서비스/API/UI 일부 구현` | 운영 로그 기반 추천 API와 추천 모달이 있다. 모델 라우팅 enable/refresh 같은 `direct_policy_update`는 즉시 적용 가능하고, 일반 파라미터/RAG 조정은 A/B 후보 실험으로 검증한다. |
-| FR-013 | 추천 설정 인라인 검증 및 출력 품질 평가 | P1 | `구현 완료` | `Gateway API·quality judge·멱등 저장·모달/API client 구현 및 targeted test 통과` | 추천 모달에서 최신 성공 baseline과 추천 설정 B를 한 번 비교 실행해 비용·속도·token·품질 점수·JSON schema·downstream 호환성을 보여주고, 같은 결과를 적용하거나 상세 분석으로 이어간다. |
+| FR-013 | Cost Optimizer 후보 검증 및 출력 품질 평가 | P1 | `구현 완료` | `추천 빠른 검증·일반 compare quality judge·이력 저장·결과 분석 UI 및 targeted test 통과` | 추천 모달과 일반 비교 분석 테스트에서 동일 입력의 A/B 출력을 평가해 비용·속도·token·품질 점수·JSON schema·downstream 호환성을 보여주고, 같은 결과를 적용하거나 다시 조회한다. |
 
 ### FR-001. LLM 노드 단위 A/B 테스트 진입
 
@@ -386,7 +386,7 @@ downstream 호환성 상태가 `주의 필요` 또는 `검증 불가`인 경우,
 
 A/B 테스트 시작 1회는 새 `cost_optimizer_experiments` 1개로 기록한다. 같은 baseline을 사용하더라도 사용자가 나중에 다시 A/B 테스트를 시작하면 기존 experiment를 재사용하지 않고 새 experiment를 만든다. 하나의 experiment 비용 합계는 해당 experiment에 속한 candidate 실행 비용만 포함한다. 같은 baseline 기준 누적 비용이 필요하면 `baseline_node_run_id`가 같은 여러 experiments를 합산한다.
 
-결과 분석 화면은 같은 workflow, 같은 target LLM node, 같은 baseline 기준으로 과거 experiments와 candidates를 다시 조회할 수 있어야 한다. 사용자는 기간, 실행자, 후보 상태, 모델, 적용 여부, schema 검증 상태, downstream 상태 같은 조건으로 이전 실험 결과를 좁혀 볼 수 있어야 한다.
+결과 분석 화면은 같은 workflow, 같은 target LLM node, 같은 baseline 기준으로 과거 experiments와 candidates를 다시 조회할 수 있어야 한다. 사용자는 기간, 실행자, 후보 상태, 모델, 적용 여부, schema 검증 상태, downstream 상태 같은 조건으로 이전 실험 결과를 좁혀 볼 수 있어야 한다. 후보 조건을 사용하면 조건에 맞는 experiment 안에서도 일치하는 candidate만 결과에 포함해야 한다.
 
 기존 `workflow_runs`, `workflow_node_runs`, `llm_usage_logs`, `trace_payloads`는 실행/trace/비용의 원천으로 유지한다. Cost Optimizer 전용 테이블은 이 원천 데이터를 대체하지 않고, A baseline과 여러 B 후보 실행을 하나의 비교 흐름으로 묶기 위한 메타데이터를 저장한다.
 
@@ -649,9 +649,11 @@ RAG context가 prompt token의 대부분을 차지하고, evidence 충분성이 
 
 자동 모델 라우팅 정책 갱신처럼 운영 정책만 바꾸는 항목은 후속 구현에서 `direct_policy_update`를 허용할 수 있다. 그러나 현재 LLM node의 prompt, parameter, Knowledge/RAG 설정값을 바꾸는 추천은 A/B 비교와 사용자 확인 없이 적용하지 않는다.
 
-### FR-013. 추천 설정 인라인 검증 및 출력 품질 평가
+### FR-013. Cost Optimizer 후보 검증 및 출력 품질 평가
 
 추천 모달의 `테스트하기`는 더 이상 Cost Optimizer workspace로 즉시 이동하지 않는다. 사용자가 선택한 추천 설정을 현재 LLM node 설정 복사본에 적용한 B candidate를 만들고, 최신 비교 가능한 성공 실행을 A baseline으로 자동 선택해 모달 안에서 B를 한 번 실행한다.
+
+일반 `비교 분석 테스트`에서 사용자가 baseline을 직접 선택해 B candidate를 실행하는 경로도 같은 출력 품질 평가 계약을 사용한다. B candidate 실행이 끝나면 동일 입력의 A/B 출력을 blind pairwise judge로 평가하고, 결과 분석 화면의 `핵심 지표 비교`에 `출력 품질 점수` 행을 추가한다. 점수와 confidence는 compare 응답과 experiment/candidate 이력에 함께 저장해, 방금 실행한 후보와 이전 실험을 같은 기준으로 다시 확인할 수 있어야 한다.
 
 빠른 검증 baseline은 요청 시점의 target LLM node 실행 중 다음 조건을 모두 만족하는 가장 최근 실행이다.
 
@@ -693,6 +695,10 @@ A baseline 비용은 과거 실행에서 이미 발생한 참고 비용이므로
 - judge가 실패하거나 실행 가능한 credential/model이 없으면 품질 점수만 `평가 불가`로 표시하고 비용·속도·schema·downstream 결과는 유지한다.
 - 품질 점수는 추천 근거이며 단독 hard block으로 사용하지 않는다. 낮은 점수 또는 낮은 confidence에서는 적용 전 경고와 명시적 확인을 요구한다.
 
+일반 compare 경로의 품질 judge 호출은 B candidate 실행과 같은 비교 결과에 귀속한다. candidate 실행이 실패하면 judge를 호출하지 않고 `unavailable` 품질 평가를 저장한다. candidate 실행이 성공했지만 judge가 실패해도 compare HTTP 응답은 성공한 candidate 실행 결과를 유지하며, 품질 평가 상태와 safe summary만 `unavailable`로 반환한다.
+
+judge provider 호출이 완료됐지만 응답 JSON 파싱, 필수 dimension 또는 confidence 검증에 실패한 경우에도 실제 발생한 judge usage와 비용은 기록한다. 이 경우 점수는 임의로 보정하지 않고 `unavailable`로 반환하며, 계약에 없는 추가 dimension은 총점 계산에서 제외한다.
+
 출력 schema 검증은 candidate의 `output_format.type=json`일 때만 수행한다.
 
 - JSON schema가 있으면 `passed` 또는 `failed`와 누락 field/type mismatch를 safe summary로 보여준다.
@@ -702,6 +708,8 @@ A baseline 비용은 과거 실행에서 이미 발생한 참고 비용이므로
 downstream 호환성은 기존 FR-007 contract validator를 재사용한다. `compatible`, `warning`, `incompatible`, `unknown` 상태와 검사한 직접 소비 노드를 표시한다. `incompatible`은 적용을 막고, `warning`은 사용자 확인 후 적용할 수 있다.
 
 빠른 검증 결과는 기존 Cost Optimizer experiment/candidate 이력으로 저장한다. 모달의 `상세 비교 분석하기`는 같은 `comparison_id`와 `candidate_id`를 기존 결과 분석 workspace에 전달하며 B를 다시 실행하거나 비용을 중복 발생시키지 않는다.
+
+결과 분석 workspace는 전달받은 experiment/candidate를 목록 pagination이나 현재 이력 필터에서 검색하지 않고 단건 safe summary API로 복원한다. 선택한 후보가 오래됐거나 실패 상태여도 URL이 유효하고 권한 범위 안이면 같은 결과를 유지해야 한다. workflow, target node 또는 deep link 식별자가 바뀌면 이전 화면 세션의 baseline과 compare result를 초기화한다.
 
 검증 완료 후 모달 하단에는 다음 액션을 제공한다.
 

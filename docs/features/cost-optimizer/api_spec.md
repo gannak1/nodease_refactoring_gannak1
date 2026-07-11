@@ -1,7 +1,7 @@
 # Cost Optimizer API Spec
 
 Status: Draft
-Verified Against: feature/mba-197 @ e087119
+Verified Against: feature/mba-198 @ 08201d6834bf6f80693d8392773cffa2cb6ed1a8
 
 ## Purpose
 
@@ -30,7 +30,7 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | FR-010 | builder 이상 권한을 API에서 강제한다. |
 | FR-011 | policy 조회/설정/refresh API와 배포 후 run 완료 event가 policy table을 관리한다. runtime은 active policy만 평가하고 judge 호출은 하지 않는다. |
 | FR-012 | 운영 로그와 trace summary를 분석해 LLM 파라미터/모델 라우팅 추천을 반환한다. `direct_policy_update`만 즉시 적용하고, 일반 파라미터 조정은 A/B candidate 생성 경로로 보낸다. |
-| FR-013 | 최신 성공 baseline을 서버에서 확정하고 추천 candidate 실행, semantic 품질 평가, schema/downstream 판정, 실제 신규 비용을 하나의 빠른 검증 응답으로 반환한다. |
+| FR-013 | 추천 빠른 검증과 사용자가 baseline을 고르는 일반 compare 모두 candidate 실행 후 semantic 품질 평가를 수행하고 점수·confidence·safe summary를 응답과 이력에 저장한다. |
 
 ## Endpoints
 
@@ -40,10 +40,11 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/baselines/latest` | 최신 baseline 실행 로그 조회 | FR-002, FR-004, FR-007 | builder 이상 |
 | GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/baselines` | baseline 실행 로그 목록 검색/필터/정렬 | FR-002, FR-004, FR-007 | builder 이상 |
 | GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/experiments` | 과거 experiment/candidate 결과 목록 조회 | FR-006, FR-009, FR-010 | builder 이상 |
+| GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/experiments/{experiment_id}/candidates/{candidate_id}` | 결과 분석 deep link용 experiment/candidate 단건 safe summary 조회 | FR-006, FR-009, FR-010, FR-013 | builder 이상 |
 | GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/parameter-recommendations` | 운영 로그 기반 LLM 파라미터/모델 라우팅 추천 조회 | FR-012 | builder 이상 |
 | PATCH | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/apply-recommendations` | `direct_policy_update` 추천을 현재 draft에 즉시 적용 | FR-012 | builder 이상 |
 | POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/recommendations/verify` | 최신 성공 baseline으로 추천 candidate를 한 번 실행하고 품질·schema·downstream·신규 비용을 평가 | FR-013 | builder 이상 |
-| POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/compare` | 선택 baseline input으로 B 후보 실행 | FR-003, FR-004, FR-005, FR-006, FR-009, FR-010 | builder 이상 |
+| POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/compare` | 선택 baseline input으로 B 후보를 실행하고 A/B 출력 품질을 평가 | FR-003, FR-004, FR-005, FR-006, FR-009, FR-010, FR-013 | builder 이상 |
 | PATCH | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/apply` | 선택한 B 후보 설정을 current draft에 적용 | FR-008, FR-010 | builder 이상 |
 | GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy` | 현재 policy 상태, 누적 운영 run 수, active/pending policy 조회 | FR-011 | builder 이상 |
 | PATCH | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy` | 자동 라우팅 ON/OFF와 정책 점검 주기 변경 | FR-011 | builder 이상 |
@@ -67,7 +68,7 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | FR-010 | builder permission enforcement | `apps/gateway/api/v1/endpoints/workflow.py`, `apps/gateway/auth/permissions.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
 | FR-011 | policy persistence, event idempotency, refresh task, runtime lookup, judge usage tracking | `apps/shared/db/models/model_routing_policy.py`, `apps/gateway/api/v1/endpoints/workflow.py`, `apps/workflow_engine/tasks.py`, `apps/workflow_engine/services/model_routing_policy_refresh.py`, `apps/workflow_engine/services/model_routing_policy_refresh_task.py`, `apps/workflow_engine/workflow/nodes/llm/llm_node.py` | 구현 완료 | `apps/workflow_engine/tests/services/test_model_routing_policy_lifecycle.py`, `apps/workflow_engine/tests/services/test_model_routing_policy_refresh.py`, `apps/workflow_engine/tests/services/test_model_routing_policy_refresh_task.py`, `apps/workflow_engine/tests/services/test_model_routing_policy_tasks.py`, `apps/workflow_engine/tests/nodes/test_llm_node_runtime.py`, `apps/log_system/tests/test_model_routing_policy_hook.py`, `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 관련 targeted test 통과 |
 | FR-012 | LLM parameter recommendation contract | `apps/gateway/services/cost_optimizer_parameter_recommendation_service.py`, `apps/gateway/api/v1/endpoints/workflow.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_parameter_recommendations_api.py`, `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 기록 있음 |
-| FR-013 | Recommendation verification orchestration, quality judge, usage aggregation, modal/API client | `apps/gateway/services/cost_optimizer_recommendation_verification_service.py`, `apps/gateway/services/cost_optimizer_output_quality_service.py`, `apps/gateway/api/v1/endpoints/workflow.py`, `apps/shared/db/models/cost_optimizer.py`, `apps/client/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal.tsx`, `apps/client/app/features/workflow/api/workflowApi.ts`, `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_recommendation_verification_api.py`, `apps/gateway/tests/services/test_cost_optimizer_output_quality_service.py`, `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-inline-verification.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-verification-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | Gateway/frontend targeted test 통과 |
+| FR-013 | Recommendation/compare verification orchestration, quality judge, history summary, modal/result-analysis UI | `apps/gateway/services/cost_optimizer_recommendation_verification_service.py`, `apps/gateway/services/cost_optimizer_output_quality_service.py`, `apps/gateway/api/v1/endpoints/workflow.py`, `apps/shared/db/models/cost_optimizer.py`, `apps/client/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal.tsx`, `apps/client/app/features/workflow/api/workflowApi.ts`, `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py`, `apps/gateway/tests/api/cost_optimizer/test_recommendation_verification_api.py`, `apps/gateway/tests/services/test_cost_optimizer_output_quality_service.py`, `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-inline-verification.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-verification-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | Gateway/frontend targeted test 통과 |
 
 ## Model Routing Policy Contract
 
@@ -399,7 +400,7 @@ LLMParameterRecommendationService.recommend(
 
 RAG context 추천은 `prompt_tokens` 중 retrieval context 비중과 RAG trace summary를 사용한다. author prompt를 줄이지 않고 `topK`, `retrievedContextMaxChars`, `retrievedContextCompression`만 후보로 제안한다.
 
-파라미터 추천 API는 current draft를 수정하지 않는다. FR-013 구현 후 사용자가 추천 row를 선택하면 서버가 recommendation id를 다시 검증하고 `candidate_patch`를 current node 설정 복사본에 merge해 모달 내부 빠른 검증을 실행한다.
+파라미터 추천 API는 current draft를 수정하지 않는다. FR-013에서 사용자가 추천 row를 선택하면 서버가 recommendation id를 다시 검증하고 `candidate_patch`를 current node 설정 복사본에 merge해 모달 내부 빠른 검증을 실행한다.
 
 ## Recommendation Inline Verification Contract
 
@@ -465,9 +466,9 @@ latest baseline은 다음 필터를 모두 적용한 뒤 `WorkflowNodeRun.starte
     "delta": -4,
     "confidence": "medium",
     "dimensions": {
-      "instruction_fulfillment": {"baseline": 35, "candidate": 34},
-      "relevance_completeness": {"baseline": 27, "candidate": 25},
-      "clarity_consistency": {"baseline": 18, "candidate": 18}
+      "instruction_fulfillment": {"baseline": 88, "candidate": 84, "delta": -4},
+      "relevance_completeness": {"baseline": 85, "candidate": 80, "delta": -5},
+      "clarity_consistency": {"baseline": 85, "candidate": 82, "delta": -3}
     },
     "safe_summary": "후보 출력의 품질 점수가 기준 출력보다 낮게 평가되었습니다."
   },
@@ -496,7 +497,11 @@ judge 입력은 다음 범위로 제한한다.
 - baseline output과 candidate output
 - JSON schema 또는 RAG evidence summary가 있으면 해당 safe contract
 
+동일 input과 output은 평가에 필요한 user-visible 값만 전달한다. `usage`, 실행 `metadata`, credential·secret 계열 필드와 raw RAG chunk는 Judge payload에서 제거하고, RAG 정보는 허용된 summary 필드만 전달한다.
+
 judge 출력은 0~100 점수, dimension 점수, confidence, safe summary다. raw judge prompt/output은 API response, audit metadata, 일반 trace에 노출하지 않는다. judge 호출은 현재 사용자가 실행 가능한 provider/model credential로 수행하며 usage/cost를 candidate experiment에 `quality_judge` 역할로 연결한다.
+
+응답은 요청한 모든 dimension과 confidence를 포함해야 한다. 필수 값이 없거나 JSON을 해석할 수 없으면 `quality_evaluation.status=unavailable`로 처리하고 점수를 반환하지 않는다. 계약에 없는 추가 dimension은 무시한다. provider 응답을 이미 받은 경우에는 해석 실패와 무관하게 실제 judge usage/cost와 usage log id를 기록하고 반환한다.
 
 schema/downstream 결과는 judge 점수와 별도로 계산한다.
 
@@ -907,7 +912,7 @@ Response:
 
 ### GET experiments
 
-관련 FR: FR-006, FR-009, FR-010
+관련 FR: FR-006, FR-009, FR-010, FR-013
 
 `GET /api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/experiments`
 
@@ -926,6 +931,8 @@ Query:
 | `schema_status` | string optional | `not_checked`, `pass`, `failed` |
 | `downstream_state` | string optional | `compatible`, `warning`, `incompatible`, `unknown` |
 | `limit`, `offset` | integer | pagination |
+
+candidate 조건 중 하나 이상을 전달하면 서버는 조건에 맞는 candidate가 있는 experiment만 선택하고, 각 `items[].candidates`에도 같은 조건과 일치하는 candidate만 포함한다. 한 experiment 안의 다른 상태·모델 후보를 함께 반환하지 않는다.
 
 Response:
 
@@ -947,7 +954,8 @@ Response:
       "created_at": "2026-07-05T01:30:00+00:00",
       "usage_summary": {
         "total_tokens": 240,
-        "cost": 0.0006
+        "cost": 0.0006,
+        "quality_judge_cost": 0.00008
       },
       "candidates": [
         {
@@ -962,6 +970,16 @@ Response:
           "latency_ms": 1200,
           "schema_status": "pass",
           "downstream_state": "compatible",
+          "quality_evaluation": {
+            "status": "completed",
+            "baseline": {"score": 86},
+            "candidate": {"score": 82},
+            "delta": -4,
+            "dimensions": {},
+            "confidence": "medium",
+            "safe_summary": "후보 출력의 품질 점수가 기준 출력보다 낮게 평가되었습니다.",
+            "judge_cost": 0.00008
+          },
           "is_applied": false,
           "created_at": "2026-07-05T01:30:00+00:00"
         }
@@ -973,13 +991,51 @@ Response:
 
 이 응답은 summary 조회용이다. raw prompt, credential 원문, secret payload는 포함하지 않는다. 상세 trace 원천은 기존 trace/usage 조회 경계에서 권한과 redaction 정책을 거쳐 조회한다.
 
+### GET experiment candidate detail
+
+관련 FR: FR-006, FR-009, FR-010, FR-013
+
+`GET /api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/experiments/{experiment_id}/candidates/{candidate_id}`
+
+`comparisonId`와 `candidateId`를 포함한 결과 분석 deep link를 목록 pagination이나 현재 필터와 무관하게 복원한다. 서버는 workflow, node, organization 범위 안에서 experiment와 candidate를 함께 확인하고, builder 이상 권한이 없거나 범위 밖이면 `404 resource.not_found` 또는 기존 권한 오류를 반환한다.
+
+응답은 `GET experiments`의 experiment safe summary에서 `candidates` 목록을 제거하고, 요청한 후보 하나를 `candidate`에 담는다.
+
+```json
+{
+  "experiment_id": "uuid",
+  "workflow_id": "uuid",
+  "node_id": "llm-triage",
+  "baseline_summary": {
+    "baseline_id": "uuid",
+    "model": "gpt-4.1",
+    "cost": 0.0012,
+    "total_tokens": 249,
+    "latency_ms": 1600
+  },
+  "candidate": {
+    "candidate_id": "uuid",
+    "status": "schema_failed",
+    "model_id": "gpt-4.1-mini",
+    "quality_evaluation": {
+      "status": "completed",
+      "baseline": { "score": 86 },
+      "candidate": { "score": 82 },
+      "confidence": "medium"
+    }
+  }
+}
+```
+
+이 endpoint도 목록과 동일한 redaction 경계를 사용한다. candidate settings 원문, credential, raw trace, raw RAG chunk는 추가로 노출하지 않는다.
+
 ### POST compare
 
-관련 FR: FR-003, FR-004, FR-005, FR-006, FR-009, FR-010
+관련 FR: FR-003, FR-004, FR-005, FR-006, FR-009, FR-010, FR-013
 
 `POST /api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/compare`
 
-A baseline input을 사용해 B 후보 설정을 실행한다. A baseline은 재실행하지 않는다.
+A baseline input을 사용해 B 후보 설정을 실행한다. A baseline은 재실행하지 않는다. B candidate 실행이 성공하면 Recommendation Inline Verification과 같은 `CostOptimizerOutputQualityService`로 동일 입력의 A/B 출력을 평가한다. candidate 실행이 실패하면 judge를 호출하지 않고 `quality_evaluation.status=unavailable`을 반환한다.
 
 `baseline_id`는 `workflow_node_runs.id`다. 해당 baseline의 target LLM node input을 복원할 수 없으면 API는 B 후보 실행을 시작하지 않고 `400 cost_optimizer.baseline_input_unavailable`을 반환한다.
 
@@ -1108,6 +1164,20 @@ Response:
     "token_delta": -360,
     "latency_delta_ms": -500
   },
+  "quality_evaluation": {
+    "status": "completed",
+    "baseline": {"score": 86},
+    "candidate": {"score": 82},
+    "delta": -4,
+    "confidence": "medium",
+    "dimensions": {
+      "instruction_fulfillment": {"baseline": 88, "candidate": 84, "delta": -4},
+      "relevance_completeness": {"baseline": 85, "candidate": 80, "delta": -5},
+      "clarity_consistency": {"baseline": 85, "candidate": 82, "delta": -3}
+    },
+    "safe_summary": "후보 출력의 품질 점수가 기준 출력보다 낮게 평가되었습니다.",
+    "judge_cost": 0.00008
+  },
   "downstream_compatibility": {
     "state": "compatible",
     "label": "검증 가능",
@@ -1117,6 +1187,8 @@ Response:
 ```
 
 비교 실행에서 발생한 LLM call은 `llm_usage_logs`에 기록되어야 한다. 또한 비교 실행 자체도 `comparison_id`로 재조회하거나 추적할 수 있도록 저장한다.
+
+품질 judge usage는 같은 candidate에 `quality_judge` 역할로 연결하고, 품질 평가 safe summary는 `cost_optimizer_candidates.diff_summary.quality_evaluation`에 저장한다. experiment history의 candidate summary는 `quality_evaluation`을 반환해 결과 분석 화면에서 이전 실험을 선택해도 같은 품질 점수 행을 복원할 수 있어야 한다. judge 실패는 candidate 실행 실패로 취급하지 않으며 `quality_evaluation.status=unavailable`과 safe summary를 반환한다.
 
 JSON schema 검증에 실패한 경우에도 HTTP response는 200으로 반환할 수 있다. 이 경우 후보 LLM call은 성공한 것이므로 비용/토큰/시간을 반환하고, `candidate.usage.status` 또는 `candidate.schema_validation.status`를 `schema_failed`로 표시한다. schema 실패 후보는 apply API에서 거부한다.
 
@@ -1204,7 +1276,7 @@ Response:
 | 400 | `cost_optimizer.baseline_input_unavailable` | baseline input을 복원할 수 없음 | FR-004 |
 | 400 | `cost_optimizer.downstream_ack_required` | downstream warning 확인 없이 적용 요청 | FR-007, FR-008 |
 | 403 | `permission.denied` | builder 이상 권한 없음 | FR-010 |
-| 404 | `resource.not_found` | workflow, node, baseline이 없거나 scope 밖임 | FR-001, FR-002 |
+| 404 | `resource.not_found` | workflow, node, baseline, experiment 또는 candidate가 없거나 요청한 workflow/node/organization scope 밖임 | FR-001, FR-002, FR-006, FR-009, FR-013 |
 | 422 | `cost_optimizer.model_unavailable` | 사용할 수 없는 credential/model 후보 | FR-003, FR-010 |
 | 422 | `cost_optimizer.knowledge_unavailable` | 사용할 수 없거나 접근 권한이 없는 Knowledge Base 후보 | FR-003, FR-010 |
 | 500 | `cost_optimizer.compare_failed` | B 후보 실행 결과를 failed candidate로 기록할 수 없는 예기치 않은 서버 오류 | FR-006 |
@@ -1223,6 +1295,8 @@ Cost Optimizer API는 builder 이상 권한을 요구한다.
 
 - A/B 테스트 진입 가능 여부 조회: builder 이상
 - baseline 조회: builder 이상
+- experiment/candidate 이력 목록 조회: builder 이상
+- experiment/candidate 단건 상세 조회: builder 이상
 - B 후보 실행: builder 이상
 - 후보 적용: builder 이상
 
