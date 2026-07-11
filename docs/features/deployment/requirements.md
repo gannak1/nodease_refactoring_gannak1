@@ -49,6 +49,11 @@ Webhook capture helper는 public webhook 실행 표면이 아니라 로그인한
 - DEP-REQ-026: Schedule claim과 Worker admission의 duplicate suppression은 외부 node 부수효과의 exactly-once를 의미하지 않는다. Provider별 idempotency는 별도 node adapter 계약으로 다뤄야 한다.
 - DEP-REQ-027: 신규 Schedule 생성/활성화의 invalid cron expression 또는 timezone은 partial deployment/schedule mutation 없이 safe `422 deployment.schedule_configuration_invalid`로 거부해야 한다. 기존 invalid legacy row는 다른 due schedule을 굶기지 않고 해당 row만 safe하게 격리해야 한다.
 - DEP-REQ-028: admission된 system schedule의 stable WorkflowRun correlation이 visibility grace 이후에도 Log System에서 확인되지 않으면 canonical claim에 one-time safe visibility signal과 system audit을 같은 transaction으로 기록해야 한다. 이 signal은 workflow, node, provider side effect를 replay하거나 raw run payload를 저장해서는 안 된다.
+- DEP-REQ-029: `attempt_count`는 pending claim을 Gateway dispatcher가 처리한 주기 수다. 한 처리 주기에서 budget 결과와 broker publish 여부에 관계없이 최대 한 번만 증가하고, Worker budget unavailable은 이미 publish된 attempt를 추가 증가시키지 않아야 한다. 최대치에 도달한 pending claim은 publish 없이 safe dead-letter로 격리한다.
+- DEP-REQ-030: `execution_outcome_unknown` 검토는 exact claim의 조사 완료 acknowledgment와 rollback gate 해제 표시에 한정한다. 검토는 claim status를 바꾸거나 redrive 권한을 부여하지 않으며, rollback preflight는 nonterminal claim, 미검토 outcome unknown, Celery active/reserved/scheduled 전용 task를 독립적으로 확인하고 inspection 불가 시 fail-closed해야 한다.
+- DEP-REQ-031: Dispatch 핵심 복구는 expired `dispatching`/`enqueued`와 running deadline 격리를 먼저 처리해야 한다. WorkflowRun visibility signal과 terminal cleanup은 별도 UnitOfWork의 optional maintenance로 수행하며 실패가 핵심 dispatch/recovery를 차단해서는 안 된다.
+- DEP-REQ-032: `claim`/`drain` mode의 Gateway와 Worker는 동일한 shared Alembic/schema readiness를 startup에서 통과해야 한다. Migration은 동일 DB connection의 bounded PostgreSQL advisory lock과 production rollout 공통 concurrency group으로 직렬화하고 application rollout 전에 전용 migration job에서만 실행한다. Pod가 로드한 canonical settings fingerprint가 manifest annotation과 다르거나 일반 독립 rollout 시 live Gateway/Worker fingerprint가 desired 값과 다르면 fail-closed한다.
+- DEP-REQ-033: Admission 전 `pending`/`dispatching`/`enqueued` claim은 `workflow_run_id`를 가질 수 없다. Scheduler는 한 claim의 publish 결과 write 실패를 다른 prepared claim으로 전파하지 않고 lease recovery에 맡겨야 한다. Engine 결과 확정 후 terminal state write는 engine을 재실행하지 않는 fresh-session bounded retry만 허용한다.
 
 ## Runtime Audience Matrix
 

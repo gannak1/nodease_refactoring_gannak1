@@ -42,6 +42,10 @@ Admission 전에 stable `workflow_run_id`를 정한다. Duplicate delivery는 �
 - Fixed execution deadline은 결과 불명 분류 기준이며 Worker 강제 종료나 실패 확정 근거가 아니다.
 - Outcome unknown acknowledgment는 조사 완료와 rollback gate 해제 표시일 뿐 redrive 권한이 아니다.
 - 외부 provider별 idempotency와 node side-effect exactly-once는 MBA-190 범위다.
+- `attempt_count`는 Gateway dispatcher 처리 주기에서만 정확히 한 번 증가한다. Worker budget unavailable은 같은 published attempt를 재사용하고, 최대치에 도달한 pending claim은 publish하지 않는다.
+- Admission 전 dead-letter reason은 run/start correlation을 금지하고 admission 후 reason은 task/enqueue/start/run correlation을 모두 요구한다. Domain과 DB constraint를 같은 matrix로 유지하며 기존 모순 row는 migration에서 추측 보정하지 않는다.
+- `pending`, `dispatching`, `enqueued`는 `workflow_run_id`를 가질 수 없다. Stable run identity는 Worker admission winner가 확정한다.
+- 한 claim의 publish 결과 write 실패는 같은 prepared batch의 후속 publish를 중단하지 않고 lease recovery로 수렴한다. Engine 결과 확정 뒤 terminal CAS write는 fresh DB session으로 bounded 재시도하되 engine을 다시 실행하지 않는다.
 
 ### System actor and Knowledge boundary
 
@@ -49,6 +53,7 @@ Admission 전에 stable `workflow_run_id`를 정한다. Duplicate delivery는 �
 - Schedule execution audit은 `actor_id=NULL`, `actor_type=system`이다.
 - App creator, deployment creator, workflow owner를 executor 또는 RAG execution subject로 합성하지 않는다.
 - 명시적인 service account/assigned operator가 없는 schedule RAG는 ADR-0018의 anonymous public-only 경계를 사용한다.
+- LLM provider credential이 필요한 경우 locked canonical Deployment의 `created_by`를 user형 credential principal로만 전달한다. Queue는 principal을 지정할 수 없고, principal은 executor/audit actor/Knowledge execution subject로 승격되지 않는다. 별도 service account 모델은 이 ADR에서 도입하지 않는다.
 
 ### Audit and transaction
 
@@ -87,6 +92,10 @@ Gateway schedule application은 access-management application model/port/recorde
 Migration을 먼저 적용하고 application은 `disabled` mode로 배포한다. 구버전 direct dispatcher와 신버전 claim dispatcher가 동시에 활성화되지 않도록 queue/task drain 뒤 `claim` mode를 활성화한다. Rollback은 `claim -> drain -> disabled` 순서로 수행한다. Nonterminal claim, review되지 않은 outcome unknown, active/queued/reserved schedule task가 남아 있으면 rollback을 중단한다. 이는 application rollout rollback이며, schedule branch의 migration downgrade는 system schedule executor history, Log System row가 아직 없는 admitted claim, active/unreviewed claim, quarantine state를 임의로 버리지 않도록 모든 schedule revision의 첫 DDL 전에 fail-closed한다.
 
 Gateway startup은 migration-managed table/enum을 `create_all()`로 생성하거나 보정하지 않는다. Demo/test bootstrap만 명시적으로 `create_all()`을 사용할 수 있다.
+
+Gateway와 Worker는 공통 schema readiness service로 Alembic head, runtime 필수 column과 claim check/unique constraint를 검사한다. Online migration은 동일 DB connection의 bounded PostgreSQL advisory lock과 production rollout 공통 concurrency group으로 직렬화하고 전용 migration job만 실행한다. Helm/raw Kubernetes pod는 mode와 모든 dispatch 설정을 포함한 canonical fingerprint annotation을 Downward API로 process에 전달하며 `claim`/`drain`에서 fingerprint 누락 또는 실제 설정 불일치가 있으면 startup을 중단한다. 일반 독립 service rollout은 desired 값과 live Gateway/Worker fingerprint가 모두 일치할 때만 허용한다. 설정 변경은 승인된 이전 공통 fingerprint, 양쪽 desired/current, migration, commit image가 포함된 최종 manifest render, staged apply와 최종 검증을 한 coordinated workflow가 소유한다. `claim` 활성화는 Worker를 먼저 준비하고 `drain`/`disabled` 전환은 Gateway를 먼저 멈추며, active claim 상태의 설정 변경은 drain을 선행한다. 중간 실패 재실행은 선행 서비스가 동일 commit image/desired fingerprint이고 나머지가 승인된 이전 fingerprint인 경우만 재개한다.
+
+핵심 recovery는 expired dispatch/enqueue와 running deadline 격리를 먼저 처리한다. WorkflowRun visibility와 retention cleanup은 별도 UnitOfWork의 optional maintenance라서 실패가 claim/dispatch 진행을 막지 않는다. Outcome review는 acknowledgment 전용이며 rollback preflight와 redrive에서 분리한다.
 
 ## Non-Goals
 

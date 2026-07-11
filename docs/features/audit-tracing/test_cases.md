@@ -68,3 +68,4 @@ Status: Draft
 - Management reason의 CRLF/trim/Unicode code-point 경계와 bidi control을 검증하고, common secret/PII는 durable audit 전에 redacted한다.
 - Reason redaction/sanitization 실패는 raw fallback 없이 access mutation과 audit을 모두 rollback한다.
 - Schedule/Deployment가 삭제된 뒤에도 claim의 durable organization provenance로 outcome review audit을 올바른 조직에 귀속하고 다른 조직에서 조회하지 못한다.
+- System schedule WorkflowRun audit은 exact claim task id, workflow run id, deployment id가 모두 일치할 때만 claim organization을 사용한다. Current deployment가 존재하면 App workflow/organization도 일치해야 하며, queue/run/claim 불일치에서는 잘못된 조직 audit을 생성하지 않는다.

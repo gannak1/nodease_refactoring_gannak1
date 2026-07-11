@@ -356,7 +356,7 @@ schedule deployment의 실행 설정. deployment와 1:1이다.
 | execution_deadline_at | DATETIME(timezone) | running outcome 분류 기준. 강제 종료 시각 아님 |
 | attempt_count / next_attempt_at | INTEGER / DATETIME(timezone) | bounded retry. next attempt는 pending에서만 허용 |
 | celery_task_id | VARCHAR(128) | deterministic idempotency key와 동일 |
-| workflow_run_id | UUID | NULL, UNIQUE, FK 없음. Admission 전 stable run correlation |
+| workflow_run_id | UUID | NULL, UNIQUE, FK 없음. Worker admission winner가 확정하며 pending/dispatching/enqueued에서는 NULL |
 | workflow_run_missing_reported_at | DATETIME(timezone) | NULL. visibility grace 이후 Log System row가 아직 없을 때 한 번만 signal을 기록하는 timestamp |
 | safe_reason_code | VARCHAR(64) | NULL, 상태별 allowlist |
 | outcome_reviewed_at / outcome_review_audit_id / outcome_resolution_code | DATETIME / UUID / VARCHAR(64) | outcome unknown에서 all-or-none. Audit FK 없음 |
