@@ -40,6 +40,16 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - Public Access Grant, credential/billing principal과 app owner는 execution subject 또는 audit actor로 승격되지 않는다.
 - Preflight 뒤 Worker pool capability가 바뀌어도 runtime guard가 incompatible task를 거부한다.
 
+## Mail Credential Reference Tests
+
+- Mail node editor는 safe credential option을 표시하고 선택 시 graph에 `credential_id`만 저장한다.
+- Client node, panel, visible properties와 실행 로그 설정 요약은 email/password/token/ciphertext를 렌더링하지 않는다.
+- Workflow 저장은 inline Mail secret field, 잘못된 UUID, 다른 organization reference, revoked credential과 `use` 권한 없는 reference를 provider 호출 없이 거부한다.
+- Agent Builder가 생성한 unresolved Mail node는 preview/apply-save가 가능하지만 runtime 실행은 credential reference를 요구한다.
+- Runtime은 인증 test/deployment 표면에서 canonical organization, 명시 execution subject, active 상태와 `use` 권한을 재검증한다. Public/schedule 표면은 App/workflow owner의 `user_id`로 fallback하지 않고 명시 주체가 없으면 차단한다.
+- IMAP resolver는 private/loopback/metadata target과 `143/993` 이외 포트를 거부하고, `143`에서는 로그인 전에 STARTTLS를 강제한다. DNS 검증 IP에 socket 연결을 고정하면서 TLS hostname 검증은 canonical hostname으로 수행한다.
+- Legacy inline password graph는 validation error에 secret 값을 포함하지 않고 fail-closed한다.
+
 ## Spec Document Mapping
 
 `Demo Test Priority` 표의 `영역` 컬럼은 아래 spec 문서 섹션과 대응된다. 테스트를 구현하거나 우선순위를 바꿀 때는 대응하는 `requirements.md`, `api_spec.md`, `component_spec.md`를 함께 확인한다.

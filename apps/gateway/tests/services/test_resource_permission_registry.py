@@ -17,12 +17,15 @@ from apps.gateway.services.resource_permission_registry import (
 )
 from apps.shared.db.models.knowledge import KnowledgeBase
 from apps.shared.db.models.llm import LLMCredential
+from apps.shared.db.models.mail_credential import MailCredential
 from apps.shared.db.models.team import (
     TeamKnowledgePermission,
     TeamLLMPermission,
+    TeamMailCredentialPermission,
     TeamWorkflowPermission,
     UserKnowledgePermission,
     UserLLMPermission,
+    UserMailCredentialPermission,
     UserWorkflowPermission,
 )
 from apps.shared.db.models.workflow import Workflow
@@ -56,8 +59,8 @@ def test_registry_resource_types_match_public_schemas():
 
 def test_registry_mapping_is_immutable():
     with pytest.raises(TypeError):
-        registry_module.RESOURCE_PERMISSION_REGISTRY["document"] = resource_permission_spec(
-            "workflow"
+        registry_module.RESOURCE_PERMISSION_REGISTRY["document"] = (
+            resource_permission_spec("workflow")
         )
 
 
@@ -76,6 +79,11 @@ def test_registry_maps_resource_targets_and_permission_tables():
     assert llm.target_model is LLMCredential
     assert llm.team_route.model is TeamLLMPermission
     assert llm.user_route.model is UserLLMPermission
+
+    mail = resource_permission_spec("mail_credential")
+    assert mail.target_model is MailCredential
+    assert mail.team_route.model is TeamMailCredentialPermission
+    assert mail.user_route.model is UserMailCredentialPermission
 
 
 def test_production_permission_api_models_are_resolved_from_registry():
@@ -146,6 +154,20 @@ def test_production_permission_api_models_are_resolved_from_registry():
             "llm_credential_id",
             "user_id",
         ),
+        (
+            "mail_credential",
+            "team",
+            TeamMailCredentialPermission,
+            "mail_credential_id",
+            "team_id",
+        ),
+        (
+            "mail_credential",
+            "user",
+            UserMailCredentialPermission,
+            "mail_credential_id",
+            "user_id",
+        ),
     ],
 )
 def test_permission_routes_use_exact_resource_and_grantee_columns(
@@ -200,6 +222,11 @@ def test_registry_fails_closed_for_unknown_resource_type_or_grantee_type():
             "get_effective_llm_credential_auth_state",
             "llm_credential_auth_state_allows",
         ),
+        (
+            "mail_credential",
+            "get_effective_mail_credential_auth_state",
+            "mail_credential_auth_state_allows",
+        ),
     ],
 )
 def test_registry_spec_owns_auth_resolver_and_action_policy(
@@ -214,10 +241,9 @@ def test_registry_spec_owns_auth_resolver_and_action_policy(
     monkeypatch.setattr(
         registry_module,
         resolver_name,
-        lambda db, user_id, resource_id, *, organization_id: calls.append(
-            (db, user_id, resource_id, organization_id)
-        )
-        or "manager",
+        lambda db, user_id, resource_id, *, organization_id: (
+            calls.append((db, user_id, resource_id, organization_id)) or "manager"
+        ),
     )
     monkeypatch.setattr(
         registry_module,

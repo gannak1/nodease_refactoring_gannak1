@@ -21,6 +21,7 @@ from sqlalchemy.orm import Mapped, declared_attr, mapped_column, relationship
 if TYPE_CHECKING:
     from apps.shared.db.models.knowledge import KnowledgeBase, KnowledgeCollection
     from apps.shared.db.models.llm import LLMCredential
+    from apps.shared.db.models.mail_credential import MailCredential
     from apps.shared.db.models.organization import Organization
     from apps.shared.db.models.user import User
     from apps.shared.db.models.workflow import Workflow
@@ -85,9 +86,7 @@ class Team(Base):
     )
 
     creator: Mapped["User"] = relationship("User", foreign_keys=[created_by])
-    manager: Mapped[Optional["User"]] = relationship(
-        "User", foreign_keys=[managed_by]
-    )
+    manager: Mapped[Optional["User"]] = relationship("User", foreign_keys=[managed_by])
 
 
 class TeamAssignmentMixin:
@@ -247,9 +246,7 @@ class TeamMembership(TeamAssignmentMixin, Base):
             ["teams.id", "teams.organization_id"],
             name="fk_team_memberships_team_org",
         ),
-        CheckConstraint(
-            "flags >= 0", name="ck_team_memberships_flags_nonnegative"
-        ),
+        CheckConstraint("flags >= 0", name="ck_team_memberships_flags_nonnegative"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -364,9 +361,7 @@ class UserLLMPermission(UserResourcePermissionMixin, Base):
             "auth_state IN ('none', 'viewer', 'operator', 'builder', 'manager')",
             name="ck_user_llm_permissions_auth_state",
         ),
-        CheckConstraint(
-            "flags >= 0", name="ck_user_llm_permissions_flags_nonnegative"
-        ),
+        CheckConstraint("flags >= 0", name="ck_user_llm_permissions_flags_nonnegative"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -383,6 +378,42 @@ class UserLLMPermission(UserResourcePermissionMixin, Base):
     llm_credential: Mapped["LLMCredential"] = relationship(
         "LLMCredential",
         overlaps="grantee_organization",
+    )
+
+
+class UserMailCredentialPermission(UserResourcePermissionMixin, Base):
+    """Direct additive user permission for a Mail credential resource."""
+
+    __tablename__ = "user_mail_credential_permissions"
+    __table_args__ = (
+        UniqueConstraint(
+            "grantee_organization_id",
+            "user_id",
+            "mail_credential_id",
+            name="uq_user_mail_credential_permissions_org_user_credential",
+        ),
+        ForeignKeyConstraint(
+            ["mail_credential_id", "grantee_organization_id"],
+            ["mail_credentials.id", "mail_credentials.organization_id"],
+            name="fk_user_mail_credential_permissions_credential_org",
+        ),
+        CheckConstraint(
+            "auth_state IN ('none', 'viewer', 'operator', 'builder', 'manager')",
+            name="ck_user_mail_credential_permissions_auth_state",
+        ),
+        CheckConstraint(
+            "flags >= 0", name="ck_user_mail_credential_permissions_flags_nonnegative"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False
+    )
+    mail_credential_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    mail_credential: Mapped["MailCredential"] = relationship(
+        "MailCredential", overlaps="grantee_organization"
     )
 
 
@@ -600,9 +631,7 @@ class TeamLLMPermission(TeamResourcePermissionMixin, Base):
             ["teams.id", "teams.organization_id"],
             name="fk_team_llm_permissions_team_org",
         ),
-        CheckConstraint(
-            "flags >= 0", name="ck_team_llm_permissions_flags_nonnegative"
-        ),
+        CheckConstraint("flags >= 0", name="ck_team_llm_permissions_flags_nonnegative"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -619,6 +648,47 @@ class TeamLLMPermission(TeamResourcePermissionMixin, Base):
     )
 
     llm_credential: Mapped["LLMCredential"] = relationship("LLMCredential")
+
+
+class TeamMailCredentialPermission(TeamResourcePermissionMixin, Base):
+    """Team permission for a Mail credential resource."""
+
+    __tablename__ = "team_mail_credential_permissions"
+    __table_args__ = (
+        UniqueConstraint(
+            "grantee_organization_id",
+            "mail_credential_id",
+            "team_id",
+            name="uq_team_mail_credential_permissions_org_credential_team",
+        ),
+        ForeignKeyConstraint(
+            ["team_id", "grantee_organization_id"],
+            ["teams.id", "teams.organization_id"],
+            name="fk_team_mail_credential_permissions_team_org",
+        ),
+        ForeignKeyConstraint(
+            ["mail_credential_id", "grantee_organization_id"],
+            ["mail_credentials.id", "mail_credentials.organization_id"],
+            name="fk_team_mail_credential_permissions_credential_org",
+        ),
+        CheckConstraint(
+            "auth_state IN ('none', 'viewer', 'operator', 'builder', 'manager')",
+            name="ck_team_mail_credential_permissions_auth_state",
+        ),
+        CheckConstraint(
+            "flags >= 0", name="ck_team_mail_credential_permissions_flags_nonnegative"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False
+    )
+    mail_credential_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    mail_credential: Mapped["MailCredential"] = relationship(
+        "MailCredential", overlaps="grantee_organization"
+    )
 
 
 class TeamAuditPermission(TeamResourcePermissionMixin, Base):

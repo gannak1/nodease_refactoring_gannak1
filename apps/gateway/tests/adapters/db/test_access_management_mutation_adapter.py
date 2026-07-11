@@ -13,8 +13,10 @@ from apps.shared.audit.manual_ownership import is_manually_audited
 from apps.shared.db.models.organization_membership import OrganizationMembership
 from apps.shared.db.models.team import (
     Team,
+    TeamMailCredentialPermission,
     UserWorkflowPermission,
 )
+from apps.shared.db.models.mail_credential import MailCredential
 from apps.shared.db.models.user import User
 from apps.shared.db.models.user_app_creation_permission import UserAppCreationPermission
 
@@ -181,6 +183,37 @@ def test_direct_update_and_delete_register_object_specific_ownership():
     assert is_manually_audited(session, row, "deleted")
     assert session.deleted == [row]
     assert deleted.before["auth_state"] == "operator"
+
+
+def test_mail_team_source_count_excludes_revoked_credentials():
+    class CountingQuery:
+        def __init__(self):
+            self.filters = []
+
+        def join(self, *args):
+            return self
+
+        def filter(self, *args):
+            self.filters.extend(args)
+            return self
+
+        def count(self):
+            return 0
+
+    query = CountingQuery()
+    session = _MutationSession()
+    session.query = lambda *_entities: query
+    adapter = SqlAlchemyAccessManagementMutationAdapter(session)
+
+    adapter._count_operational_team_permission(
+        uuid.uuid4(),
+        uuid.uuid4(),
+        TeamMailCredentialPermission,
+        MailCredential,
+        "mail_credential_id",
+    )
+
+    assert "mail_credentials.status" in " ".join(str(item) for item in query.filters)
 
 
 def test_app_creation_descriptor_preserves_organization_provenance():

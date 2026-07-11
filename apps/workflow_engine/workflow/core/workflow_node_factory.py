@@ -1,13 +1,23 @@
 from typing import Dict
 
 from apps.shared.schemas.workflow import NodeSchema
+from apps.shared.domain.mail_credential import validate_mail_node_credential_boundary
 from apps.workflow_engine.workflow.nodes.answer import AnswerNode, AnswerNodeData
 from apps.workflow_engine.workflow.nodes.base.node import Node
 from apps.workflow_engine.workflow.nodes.code import CodeNode, CodeNodeData
-from apps.workflow_engine.workflow.nodes.condition import ConditionNode, ConditionNodeData
-from apps.workflow_engine.workflow.nodes.file_extraction import FileExtractionNode, FileExtractionNodeData
+from apps.workflow_engine.workflow.nodes.condition import (
+    ConditionNode,
+    ConditionNodeData,
+)
+from apps.workflow_engine.workflow.nodes.file_extraction import (
+    FileExtractionNode,
+    FileExtractionNodeData,
+)
 from apps.workflow_engine.workflow.nodes.github import GithubNode, GithubNodeData
-from apps.workflow_engine.workflow.nodes.http import HttpRequestNode, HttpRequestNodeData
+from apps.workflow_engine.workflow.nodes.http import (
+    HttpRequestNode,
+    HttpRequestNodeData,
+)
 from apps.workflow_engine.workflow.nodes.llm import LLMNode, LLMNodeData
 from apps.workflow_engine.workflow.nodes.loop import LoopNode, LoopNodeData
 from apps.workflow_engine.workflow.nodes.mail import MailNode, MailNodeData
@@ -18,7 +28,10 @@ from apps.workflow_engine.workflow.nodes.schedule import (
 from apps.workflow_engine.workflow.nodes.start import StartNode, StartNodeData
 from apps.workflow_engine.workflow.nodes.template.entities import TemplateNodeData
 from apps.workflow_engine.workflow.nodes.template.template_node import TemplateNode
-from apps.workflow_engine.workflow.nodes.webhook import WebhookTriggerNode, WebhookTriggerNodeData
+from apps.workflow_engine.workflow.nodes.webhook import (
+    WebhookTriggerNode,
+    WebhookTriggerNodeData,
+)
 from apps.workflow_engine.workflow.nodes.workflow.entities import WorkflowNodeData
 from apps.workflow_engine.workflow.nodes.workflow.workflow_node import WorkflowNode
 from apps.workflow_engine.workflow.nodes.variable_extraction import (
@@ -74,6 +87,9 @@ class NodeFactory:
                 f"Node type '{schema.type}' is not implemented yet. "
                 f"Available types: {list(NodeFactory.NODE_REGISTRY.keys())}"
             )
+
+        if schema.type == "mailNode":
+            validate_mail_node_credential_boundary(schema.data)
 
         NodeClass, DataClass = NodeFactory.NODE_REGISTRY[schema.type]
         data = DataClass(**schema.data)

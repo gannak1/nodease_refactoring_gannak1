@@ -103,6 +103,12 @@ class DeploymentService:
             workflow.id,
             deployment_in.graph_snapshot,
         )
+        WorkflowService.validate_mail_credential_references(
+            db,
+            graph_snapshot,
+            user_id=str(user_id),
+            organization_id=workflow.organization_id,
+        )
 
         if deployment_in.is_active:
             DeploymentService._enforce_knowledge_preflight(
@@ -698,9 +704,7 @@ class DeploymentService:
                 deployment.id,
                 type(e).__name__,
             )
-            raise HTTPException(
-                status_code=504, detail="Workflow execution timed out"
-            )
+            raise HTTPException(status_code=504, detail="Workflow execution timed out")
 
         except ValueError as e:
             logger.warning(
@@ -870,9 +874,7 @@ class DeploymentService:
             return None
 
         existing = (
-            db.query(Schedule)
-            .filter(Schedule.deployment_id == deployment.id)
-            .first()
+            db.query(Schedule).filter(Schedule.deployment_id == deployment.id).first()
         )
         if existing:
             return existing
@@ -933,6 +935,7 @@ class DeploymentService:
         scheduler_service=None,
         *,
         runtime_policy: DeploymentRuntimePolicy,
+        user_id: uuid.UUID | str | None = None,
     ) -> WorkflowDeployment:
         """
         배포의 is_active 상태를 토글합니다.
@@ -966,6 +969,12 @@ class DeploymentService:
         if new_state:
             if not app:
                 raise HTTPException(status_code=404, detail="App not found")
+            WorkflowService.validate_mail_credential_references(
+                db,
+                deployment.graph_snapshot,
+                user_id=str(user_id) if user_id is not None else "",
+                organization_id=getattr(app, "organization_id", None),
+            )
             DeploymentService._enforce_knowledge_preflight(
                 db,
                 app=app,

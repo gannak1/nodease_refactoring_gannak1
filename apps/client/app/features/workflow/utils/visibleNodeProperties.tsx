@@ -289,14 +289,9 @@ export const VISIBLE_NODE_PROPERTIES: Partial<
   ],
   mailNode: [
     {
-      key: 'provider',
-      label: 'Provider',
-      getValue: (node) => asText(node.data.provider),
-    },
-    {
-      key: 'email',
-      label: 'Email',
-      getValue: (node) => asText(node.data.email),
+      key: 'credential_id',
+      label: 'Mail Credential',
+      getValue: (node) => (node.data.credential_id ? '연결됨' : '연결 필요'),
     },
     {
       key: 'folder',

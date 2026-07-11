@@ -2,6 +2,17 @@ import { describe, expect, it } from 'vitest';
 import { auditActionLabel } from './auditActionLabel';
 
 describe('auditActionLabel', () => {
+  it('Mail credential lifecycle action을 한국어로 표시한다', () => {
+    expect(auditActionLabel('mail_credential.create')).toBe(
+      'Mail Credential 등록',
+    );
+    expect(auditActionLabel('mail_credential.update')).toBe(
+      'Mail Credential 수정',
+    );
+    expect(auditActionLabel('mail_credential.revoke')).toBe(
+      'Mail Credential 폐기',
+    );
+  });
   it('canonical action의 사용자 친화 라벨을 반환한다', () => {
     expect(auditActionLabel('permission_request.approved')).toBe(
       '권한 신청 승인',

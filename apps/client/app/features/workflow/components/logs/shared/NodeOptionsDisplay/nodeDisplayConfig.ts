@@ -135,20 +135,12 @@ export const nodeDisplayConfigs: Record<string, NodeDisplayConfig> = {
 
   // ========================
   // Mail Node
-  // 패널 순서: 서버 설정 → 계정 → 입력변수 → 검색 옵션
+  // 패널 순서: Credential → 입력변수 → 검색 옵션
   // ========================
   mailNode: {
     label: 'Mail 노드 설정',
     rows: [
-      [
-        { key: 'provider', label: '메일 서비스' },
-        { key: 'imap_server', label: 'IMAP 서버' },
-      ],
-      [
-        { key: 'imap_port', label: '포트' },
-        { key: 'use_ssl', label: 'SSL 사용' },
-      ],
-      [{ key: 'email', label: '이메일' }],
+      [{ key: 'credential_id', label: 'Mail Credential' }],
       [{ key: 'referenced_variables', label: '입력변수', type: 'input-mapping-table' }],
       [
         { key: 'keyword', label: '검색 키워드' },

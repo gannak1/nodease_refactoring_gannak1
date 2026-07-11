@@ -21,6 +21,7 @@ from apps.gateway.services.resource_permission_registry import resource_permissi
 from apps.shared.db.models.app import App
 from apps.shared.db.models.knowledge import KnowledgeBase
 from apps.shared.db.models.llm import LLMCredential
+from apps.shared.db.models.mail_credential import MailCredential
 from apps.shared.db.models.organization_membership import (
     ORGANIZATION_AUTH_MANAGER,
     ORGANIZATION_MEMBERSHIP_ACTIVE,
@@ -30,10 +31,12 @@ from apps.shared.db.models.team import (
     Team,
     TeamKnowledgePermission,
     TeamLLMPermission,
+    TeamMailCredentialPermission,
     TeamMembership,
     TeamWorkflowPermission,
     UserKnowledgePermission,
     UserLLMPermission,
+    UserMailCredentialPermission,
     UserWorkflowPermission,
 )
 from apps.shared.db.models.user import User
@@ -49,6 +52,7 @@ _DIRECT_MODELS_AND_RESOURCES = (
     (UserWorkflowPermission, Workflow, "workflow_id"),
     (UserKnowledgePermission, KnowledgeBase, "knowledge_base_id"),
     (UserLLMPermission, LLMCredential, "llm_credential_id"),
+    (UserMailCredentialPermission, MailCredential, "mail_credential_id"),
 )
 _TEAM_MODELS_AND_COLUMNS = (
     ("workflow", TeamWorkflowPermission, "workflow_id", Workflow),
@@ -63,6 +67,12 @@ _TEAM_MODELS_AND_COLUMNS = (
         TeamLLMPermission,
         "llm_credential_id",
         LLMCredential,
+    ),
+    (
+        "mail_credential",
+        TeamMailCredentialPermission,
+        "mail_credential_id",
+        MailCredential,
     ),
 )
 
@@ -119,7 +129,8 @@ class SqlAlchemyAccessManagementQueryAdapter:
             .join(User, User.id == OrganizationMembership.user_id)
             .filter(
                 OrganizationMembership.organization_id == organization_id,
-                OrganizationMembership.membership_state == ORGANIZATION_MEMBERSHIP_ACTIVE,
+                OrganizationMembership.membership_state
+                == ORGANIZATION_MEMBERSHIP_ACTIVE,
                 OrganizationMembership.organization_auth_state
                 == ORGANIZATION_AUTH_MANAGER,
                 User.deactivated_at.is_(None),
@@ -198,10 +209,7 @@ class SqlAlchemyAccessManagementQueryAdapter:
                 .join(
                     resource_model,
                     (resource_model.id == getattr(model, resource_column))
-                    & (
-                        resource_model.organization_id
-                        == model.grantee_organization_id
-                    ),
+                    & (resource_model.organization_id == model.grantee_organization_id),
                 )
             )
             query = _filter_operational_resource(query, resource_model)
@@ -373,7 +381,9 @@ class SqlAlchemyAccessManagementQueryAdapter:
             .order_by(Team.name.asc(), Team.id.asc())
             .all()
         )
-        team_by_resource: dict[uuid.UUID, list[TeamPermissionSource]] = defaultdict(list)
+        team_by_resource: dict[uuid.UUID, list[TeamPermissionSource]] = defaultdict(
+            list
+        )
         for permission, membership, team in team_rows:
             team_by_resource[getattr(permission, team_route.resource_column)].append(
                 TeamPermissionSource(
@@ -409,6 +419,7 @@ class SqlAlchemyAccessManagementQueryAdapter:
                 "workflow": set(),
                 "knowledge_base": set(),
                 "llm_credential": set(),
+                "mail_credential": set(),
             }
         )
         for (
@@ -429,14 +440,13 @@ class SqlAlchemyAccessManagementQueryAdapter:
                 model.auth_state.in_(_OPERATIONAL_STATES),
             ).all()
             for row in rows:
-                by_team[row.team_id][resource_type].add(
-                    getattr(row, resource_column)
-                )
+                by_team[row.team_id][resource_type].add(getattr(row, resource_column))
         return {
             team_id: InheritedResourceCounts(
                 workflow=len(values["workflow"]),
                 knowledge_base=len(values["knowledge_base"]),
                 llm_credential=len(values["llm_credential"]),
+                mail_credential=len(values["mail_credential"]),
             )
             for team_id, values in by_team.items()
         }
@@ -495,6 +505,21 @@ class SqlAlchemyAccessManagementQueryAdapter:
                     KnowledgeBase.lifecycle_state == "active",
                 )
             )
+        if resource_type == "mail_credential":
+            return (
+                self.db.query(
+                    MailCredential.id.label("resource_id"),
+                    MailCredential.credential_name.label("resource_name"),
+                )
+                .join(
+                    source_subquery,
+                    source_subquery.c.resource_id == MailCredential.id,
+                )
+                .filter(
+                    MailCredential.organization_id == organization_id,
+                    MailCredential.status == "active",
+                )
+            )
         return (
             self.db.query(
                 LLMCredential.id.label("resource_id"),
@@ -542,4 +567,6 @@ def _filter_operational_resource(query, resource_model):
         return query.filter(KnowledgeBase.lifecycle_state == "active")
     if resource_model is LLMCredential:
         return query.filter(LLMCredential.is_valid.is_(True))
+    if resource_model is MailCredential:
+        return query.filter(MailCredential.status == "active")
     return query

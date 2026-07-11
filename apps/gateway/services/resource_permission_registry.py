@@ -15,23 +15,28 @@ from sqlalchemy.orm import Session
 
 from apps.shared.db.models.knowledge import KnowledgeBase
 from apps.shared.db.models.llm import LLMCredential
+from apps.shared.db.models.mail_credential import MailCredential
 from apps.shared.db.models.team import (
     TeamKnowledgePermission,
     TeamLLMPermission,
+    TeamMailCredentialPermission,
     TeamWorkflowPermission,
     UserKnowledgePermission,
     UserLLMPermission,
+    UserMailCredentialPermission,
     UserWorkflowPermission,
 )
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.permissions import (
     knowledge_base_auth_state_allows,
     llm_credential_auth_state_allows,
+    mail_credential_auth_state_allows,
     workflow_auth_state_allows,
 )
 from apps.shared.services.permissions import (
     get_effective_knowledge_base_auth_state,
     get_effective_llm_credential_auth_state,
+    get_effective_mail_credential_auth_state,
     get_effective_workflow_auth_state,
 )
 
@@ -84,90 +89,120 @@ class ResourcePermissionSpec:
         raise ResourceTypeNotRegistered(f"{self.resource_type}:{grantee_type}")
 
 
-RESOURCE_PERMISSION_REGISTRY: Mapping[str, ResourcePermissionSpec] = MappingProxyType({
-    "workflow": ResourcePermissionSpec(
-        resource_type="workflow",
-        target_model=Workflow,
-        not_found_detail="Workflow not found",
-        team_route=PermissionRoute(
-            model=TeamWorkflowPermission,
-            resource_column="workflow_id",
-            grantee_column="team_id",
+RESOURCE_PERMISSION_REGISTRY: Mapping[str, ResourcePermissionSpec] = MappingProxyType(
+    {
+        "workflow": ResourcePermissionSpec(
+            resource_type="workflow",
+            target_model=Workflow,
+            not_found_detail="Workflow not found",
+            team_route=PermissionRoute(
+                model=TeamWorkflowPermission,
+                resource_column="workflow_id",
+                grantee_column="team_id",
+            ),
+            user_route=PermissionRoute(
+                model=UserWorkflowPermission,
+                resource_column="workflow_id",
+                grantee_column="user_id",
+            ),
+            auth_state_resolver=lambda db, user_id, resource_id, *, organization_id: (
+                get_effective_workflow_auth_state(
+                    db,
+                    user_id,
+                    resource_id,
+                    organization_id=organization_id,
+                )
+            ),
+            auth_state_allows=lambda auth_state, action: workflow_auth_state_allows(
+                auth_state,
+                action,
+            ),
         ),
-        user_route=PermissionRoute(
-            model=UserWorkflowPermission,
-            resource_column="workflow_id",
-            grantee_column="user_id",
+        "knowledge_base": ResourcePermissionSpec(
+            resource_type="knowledge_base",
+            target_model=KnowledgeBase,
+            not_found_detail="Knowledge Base not found",
+            team_route=PermissionRoute(
+                model=TeamKnowledgePermission,
+                resource_column="knowledge_base_id",
+                grantee_column="team_id",
+            ),
+            user_route=PermissionRoute(
+                model=UserKnowledgePermission,
+                resource_column="knowledge_base_id",
+                grantee_column="user_id",
+            ),
+            auth_state_resolver=lambda db, user_id, resource_id, *, organization_id: (
+                get_effective_knowledge_base_auth_state(
+                    db,
+                    user_id,
+                    resource_id,
+                    organization_id=organization_id,
+                )
+            ),
+            auth_state_allows=lambda auth_state, action: (
+                knowledge_base_auth_state_allows(
+                    auth_state,
+                    action,
+                )
+            ),
+            active_filter=lambda model: model.lifecycle_state == "active",
         ),
-        auth_state_resolver=lambda db, user_id, resource_id, *, organization_id: (
-            get_effective_workflow_auth_state(
-                db,
-                user_id,
-                resource_id,
-                organization_id=organization_id,
-            )
+        "llm_credential": ResourcePermissionSpec(
+            resource_type="llm_credential",
+            target_model=LLMCredential,
+            not_found_detail="Credential not found",
+            team_route=PermissionRoute(
+                model=TeamLLMPermission,
+                resource_column="llm_credential_id",
+                grantee_column="team_id",
+            ),
+            user_route=PermissionRoute(
+                model=UserLLMPermission,
+                resource_column="llm_credential_id",
+                grantee_column="user_id",
+            ),
+            auth_state_resolver=lambda db, user_id, resource_id, *, organization_id: (
+                get_effective_llm_credential_auth_state(
+                    db,
+                    user_id,
+                    resource_id,
+                    organization_id=organization_id,
+                )
+            ),
+            auth_state_allows=lambda auth_state, action: (
+                llm_credential_auth_state_allows(
+                    auth_state,
+                    action,
+                )
+            ),
         ),
-        auth_state_allows=lambda auth_state, action: workflow_auth_state_allows(
-            auth_state,
-            action,
+        "mail_credential": ResourcePermissionSpec(
+            resource_type="mail_credential",
+            target_model=MailCredential,
+            not_found_detail="Mail credential not found",
+            team_route=PermissionRoute(
+                model=TeamMailCredentialPermission,
+                resource_column="mail_credential_id",
+                grantee_column="team_id",
+            ),
+            user_route=PermissionRoute(
+                model=UserMailCredentialPermission,
+                resource_column="mail_credential_id",
+                grantee_column="user_id",
+            ),
+            auth_state_resolver=lambda db, user_id, resource_id, *, organization_id: (
+                get_effective_mail_credential_auth_state(
+                    db, user_id, resource_id, organization_id=organization_id
+                )
+            ),
+            auth_state_allows=lambda auth_state, action: (
+                mail_credential_auth_state_allows(auth_state, action)
+            ),
+            active_filter=lambda model: model.status == "active",
         ),
-    ),
-    "knowledge_base": ResourcePermissionSpec(
-        resource_type="knowledge_base",
-        target_model=KnowledgeBase,
-        not_found_detail="Knowledge Base not found",
-        team_route=PermissionRoute(
-            model=TeamKnowledgePermission,
-            resource_column="knowledge_base_id",
-            grantee_column="team_id",
-        ),
-        user_route=PermissionRoute(
-            model=UserKnowledgePermission,
-            resource_column="knowledge_base_id",
-            grantee_column="user_id",
-        ),
-        auth_state_resolver=lambda db, user_id, resource_id, *, organization_id: (
-            get_effective_knowledge_base_auth_state(
-                db,
-                user_id,
-                resource_id,
-                organization_id=organization_id,
-            )
-        ),
-        auth_state_allows=lambda auth_state, action: knowledge_base_auth_state_allows(
-            auth_state,
-            action,
-        ),
-        active_filter=lambda model: model.lifecycle_state == "active",
-    ),
-    "llm_credential": ResourcePermissionSpec(
-        resource_type="llm_credential",
-        target_model=LLMCredential,
-        not_found_detail="Credential not found",
-        team_route=PermissionRoute(
-            model=TeamLLMPermission,
-            resource_column="llm_credential_id",
-            grantee_column="team_id",
-        ),
-        user_route=PermissionRoute(
-            model=UserLLMPermission,
-            resource_column="llm_credential_id",
-            grantee_column="user_id",
-        ),
-        auth_state_resolver=lambda db, user_id, resource_id, *, organization_id: (
-            get_effective_llm_credential_auth_state(
-                db,
-                user_id,
-                resource_id,
-                organization_id=organization_id,
-            )
-        ),
-        auth_state_allows=lambda auth_state, action: llm_credential_auth_state_allows(
-            auth_state,
-            action,
-        ),
-    ),
-})
+    }
+)
 
 
 def registered_resource_types() -> frozenset[str]:

@@ -110,6 +110,15 @@ spec:
               name: {{ include "moduly.secretName" . }}
               key: ENCRYPTION_KEY
         {{- end }}
+        {{- if .Values.secrets.mailCredentialEncryptionKeys }}
+        - name: MAIL_CREDENTIAL_ENCRYPTION_KEYS
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "moduly.secretName" . }}
+              key: MAIL_CREDENTIAL_ENCRYPTION_KEYS
+        - name: MAIL_CREDENTIAL_ACTIVE_KEY_VERSION
+          value: {{ .Values.secrets.mailCredentialActiveKeyVersion | default "v1" | quote }}
+        {{- end }}
         
         # Celery-specific Redis configuration
         - name: REDIS_BROKER_DB

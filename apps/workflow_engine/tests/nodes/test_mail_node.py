@@ -1,39 +1,85 @@
-"""Mail 노드 테스트 [GEVENT] Sync 버전"""
+"""Mail node credential reference tests."""
 
+import imaplib
+import uuid
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from apps.workflow_engine.workflow.nodes.mail.entities import (
-    EmailProvider,
-    MailNodeData,
-    MailVariable,
+from apps.workflow_engine.services.mail_credential_service import (
+    ResolvedMailCredential,
 )
+from apps.workflow_engine.workflow.core.workflow_node_factory import NodeFactory
+from apps.workflow_engine.workflow.nodes.mail.entities import MailNodeData, MailVariable
 from apps.workflow_engine.workflow.nodes.mail.mail_node import MailNode
 
 
 @pytest.fixture
 def mock_imap():
-    """IMAP 클라이언트 Mock"""
     with patch(
-        "apps.workflow_engine.workflow.nodes.mail.mail_node.imaplib.IMAP4_SSL"
+        "apps.workflow_engine.workflow.nodes.mail.mail_node._PinnedIMAP4SSL"
     ) as mock:
         yield mock
 
 
-# ============================================================================
-# 1. 기본 검색 성공 테스트
-# ============================================================================
+@pytest.fixture
+def resolved_credential():
+    return ResolvedMailCredential(
+        credential_id=uuid.uuid4(),
+        email_address="mailbox@example.test",
+        imap_host="imap.example.test",
+        imap_port=993,
+        resolved_ip="203.0.113.10",
+        use_ssl=True,
+        secret="synthetic-mail-secret",
+    )
 
 
-def test_mail_search_success(mock_imap):
-    """메일 검색이 정상적으로 동작한다"""
-    # Mock IMAP 설정
+@pytest.fixture
+def credential_resolver(resolved_credential):
+    with patch(
+        "apps.workflow_engine.workflow.nodes.mail.mail_node."
+        "MailCredentialResolver.resolve",
+        return_value=resolved_credential,
+    ) as resolver:
+        yield resolver
+
+
+def _node_data(credential_id: uuid.UUID, **overrides) -> MailNodeData:
+    data = {
+        "title": "Mail Search",
+        "credential_id": credential_id,
+        "keyword": "test",
+        "folder": "INBOX",
+        "max_results": 10,
+        "referenced_variables": [],
+    }
+    data.update(overrides)
+    return MailNodeData(**data)
+
+
+def _node(data: MailNodeData) -> MailNode:
+    subject_id = uuid.uuid4()
+    return MailNode(
+        id="mail-test",
+        data=data,
+        execution_context={
+            "user_id": str(uuid.uuid4()),
+            "execution_subject": {
+                "type": "user",
+                "id": str(subject_id),
+            },
+            "organization_id": str(uuid.uuid4()),
+            "db": MagicMock(),
+        },
+    )
+
+
+def test_mail_search_success(mock_imap, resolved_credential, credential_resolver):
     mock_mail = MagicMock()
     mock_mail.select.return_value = ("OK", [b"INBOX"])
     mock_mail.search.return_value = ("OK", [b"1 2 3"])
-
-    # Mock 이메일 데이터
     mock_email_data = b"""From: sender@example.com
 To: recipient@example.com
 Subject: Test Email
@@ -44,45 +90,24 @@ This is a test email body.
     mock_mail.fetch.return_value = ("OK", [(b"1 (RFC822 {123})", mock_email_data)])
     mock_imap.return_value = mock_mail
 
-    # 노드 생성 및 실행
-    node_data = MailNodeData(
-        title="Mail Search",
-        provider=EmailProvider.GMAIL,
-        email="test@gmail.com",
-        password="app_password",
-        imap_server="imap.gmail.com",
-        imap_port=993,
-        use_ssl=True,
-        keyword="test",
-        folder="INBOX",
-        max_results=10,
-        referenced_variables=[],
-    )
-
-    node = MailNode(id="mail-test", data=node_data)
-    # [GEVENT] sync 호출
+    node = _node(_node_data(resolved_credential.credential_id))
     result = node._run(inputs={})
 
-    # 검증
     assert result["total_count"] == 3
     assert result["folder"] == "INBOX"
-    assert len(result["emails"]) == 3
     assert result["emails"][0]["subject"] == "Test Email"
-    assert result["emails"][0]["from"] == "sender@example.com"
+    mock_mail.login.assert_called_once_with(
+        "mailbox@example.test", "synthetic-mail-secret"
+    )
+    assert credential_resolver.call_count == 1
 
 
-# ============================================================================
-# 2. 변수 치환 테스트
-# ============================================================================
-
-
-def test_mail_variable_substitution(mock_imap):
-    """referenced_variables를 사용한 변수 치환이 정상 동작한다"""
-    # Mock IMAP 설정
+def test_mail_variable_substitution(
+    mock_imap, resolved_credential, credential_resolver
+):
     mock_mail = MagicMock()
     mock_mail.select.return_value = ("OK", [b"INBOX"])
     mock_mail.search.return_value = ("OK", [b"1"])
-
     mock_email_data = b"""From: sender@example.com
 To: recipient@example.com
 Subject: PR #123
@@ -92,101 +117,162 @@ Pull request merged.
 """
     mock_mail.fetch.return_value = ("OK", [(b"1 (RFC822 {123})", mock_email_data)])
     mock_imap.return_value = mock_mail
-
-    # 변수가 포함된 노드 데이터
-    node_data = MailNodeData(
-        title="Mail Search",
-        provider=EmailProvider.GMAIL,
-        email="test@gmail.com",
-        password="app_password",
-        imap_server="imap.gmail.com",
-        imap_port=993,
-        use_ssl=True,
-        keyword="{{pr_number}}",  # Jinja2 템플릿
-        folder="INBOX",
-        max_results=10,
-        referenced_variables=[
-            MailVariable(name="pr_number", value_selector=["start-123", "pr_id"])
-        ],
+    node = _node(
+        _node_data(
+            resolved_credential.credential_id,
+            keyword="{{pr_number}}",
+            referenced_variables=[
+                MailVariable(name="pr_number", value_selector=["start-123", "pr_id"])
+            ],
+        )
     )
 
-    node = MailNode(id="mail-test", data=node_data)
+    result = node._run(inputs={"start-123": {"pr_id": "PR #123"}})
 
-    # 입력 데이터 (upstream 노드 결과)
-    inputs = {"start-123": {"pr_id": "PR #123"}}
-
-    # [GEVENT] sync 호출
-    result = node._run(inputs=inputs)
-
-    # 검증: keyword가 "PR #123"로 치환되어 검색됨
     assert result["total_count"] == 1
-    assert "PR #123" in result["emails"][0]["subject"]
+    mock_mail.search.assert_called_once_with(None, mock_mail.search.call_args.args[1])
+    assert 'TEXT "PR #123"' in mock_mail.search.call_args.args[1]
 
 
-# ============================================================================
-# 3. 인증 실패 테스트
-# ============================================================================
+def test_mail_search_criteria_escape_quotes_and_backslashes():
+    node = _node(_node_data(uuid.uuid4()))
+
+    query = node._build_search_query('report "Q3" \\ final', "", "")
+
+    assert query.startswith('TEXT "report \\"Q3\\" \\\\ final"')
 
 
-def test_mail_authentication_failure(mock_imap):
-    """잘못된 인증 정보로 에러가 발생한다"""
-    # Mock IMAP 인증 실패
-    mock_imap.return_value.login.side_effect = Exception("Authentication failed")
+@pytest.mark.parametrize("value", ["safe\r\nA1 NOOP", "safe\x00A1 NOOP"])
+def test_mail_search_criteria_reject_protocol_control_characters(value):
+    node = _node(_node_data(uuid.uuid4()))
 
-    node_data = MailNodeData(
-        title="Mail Search",
-        provider=EmailProvider.GMAIL,
-        email="test@gmail.com",
-        password="wrong_password",
-        imap_server="imap.gmail.com",
-        imap_port=993,
-        use_ssl=True,
-        keyword="test",
-        folder="INBOX",
-        max_results=10,
-        referenced_variables=[],
+    with pytest.raises(RuntimeError, match="^mail.search_criteria_invalid$"):
+        node._build_search_query(value, "", "")
+
+
+def test_mail_authentication_failure_is_redacted(
+    mock_imap, resolved_credential, credential_resolver
+):
+    mock_imap.return_value.login.side_effect = imaplib.IMAP4.error(
+        "provider detail must not escape"
     )
+    node = _node(_node_data(resolved_credential.credential_id))
 
-    node = MailNode(id="mail-test", data=node_data)
-
-    # 에러 발생 확인
-    with pytest.raises(RuntimeError, match="IMAP 연결 실패"):
-        # [GEVENT] sync 호출
+    with pytest.raises(RuntimeError, match="^mail.authentication_failed$") as exc:
         node._run(inputs={})
 
-
-# ============================================================================
-# 4. 빈 검색 결과 테스트
-# ============================================================================
+    assert "provider detail" not in str(exc.value)
+    mock_imap.return_value.shutdown.assert_called_once_with()
 
 
-def test_mail_empty_results(mock_imap):
-    """검색 조건에 맞는 메일이 없을 때 빈 배열을 반환한다"""
-    # Mock IMAP 설정 - 검색 결과 없음
+def test_mail_post_login_provider_failure_is_redacted(
+    mock_imap, resolved_credential, credential_resolver
+):
     mock_mail = MagicMock()
     mock_mail.select.return_value = ("OK", [b"INBOX"])
-    mock_mail.search.return_value = ("OK", [b""])  # 빈 결과
-    mock_imap.return_value = mock_mail
-
-    node_data = MailNodeData(
-        title="Mail Search",
-        provider=EmailProvider.GMAIL,
-        email="test@gmail.com",
-        password="app_password",
-        imap_server="imap.gmail.com",
-        imap_port=993,
-        use_ssl=True,
-        keyword="nonexistent_keyword_12345",
-        folder="INBOX",
-        max_results=10,
-        referenced_variables=[],
+    mock_mail.search.side_effect = imaplib.IMAP4.error(
+        "provider mailbox detail must not escape"
     )
+    mock_imap.return_value = mock_mail
+    node = _node(_node_data(resolved_credential.credential_id))
 
-    node = MailNode(id="mail-test", data=node_data)
-    # [GEVENT] sync 호출
+    with pytest.raises(RuntimeError, match="^mail.operation_failed$") as exc:
+        node._run(inputs={})
+
+    assert "provider mailbox detail" not in str(exc.value)
+    mock_mail.logout.assert_called_once()
+
+
+def test_mail_logout_failure_does_not_override_successful_result(
+    mock_imap, resolved_credential, credential_resolver
+):
+    mock_mail = MagicMock()
+    mock_mail.select.return_value = ("OK", [b"INBOX"])
+    mock_mail.search.return_value = ("OK", [b""])
+    mock_mail.logout.side_effect = imaplib.IMAP4.abort(
+        "provider cleanup detail must not escape"
+    )
+    mock_imap.return_value = mock_mail
+    node = _node(_node_data(resolved_credential.credential_id))
+
     result = node._run(inputs={})
 
-    # 검증
+    assert result["emails"] == []
+
+
+@patch("apps.workflow_engine.workflow.nodes.mail.mail_node._PinnedIMAP4")
+def test_port_143_negotiates_starttls_before_login(plain_imap, resolved_credential):
+    starttls_credential = ResolvedMailCredential(
+        credential_id=resolved_credential.credential_id,
+        email_address=resolved_credential.email_address,
+        imap_host=resolved_credential.imap_host,
+        imap_port=143,
+        resolved_ip=resolved_credential.resolved_ip,
+        use_ssl=False,
+        secret=resolved_credential.secret,
+    )
+    mail = plain_imap.return_value
+    node = _node(_node_data(starttls_credential.credential_id))
+
+    node._connect_imap(starttls_credential)
+
+    assert mail.method_calls[0][0] == "starttls"
+    assert mail.method_calls[1] == (
+        "login",
+        ("mailbox@example.test", "synthetic-mail-secret"),
+        {},
+    )
+
+
+def test_mail_empty_results(mock_imap, resolved_credential, credential_resolver):
+    mock_mail = MagicMock()
+    mock_mail.select.return_value = ("OK", [b"INBOX"])
+    mock_mail.search.return_value = ("OK", [b""])
+    mock_imap.return_value = mock_mail
+    node = _node(_node_data(resolved_credential.credential_id))
+
+    result = node._run(inputs={})
+
     assert result["total_count"] == 0
     assert result["emails"] == []
-    assert result["folder"] == "INBOX"
+
+
+def test_node_factory_rejects_legacy_inline_secret_without_echoing_value():
+    legacy_value = "synthetic-legacy-secret"
+    schema = SimpleNamespace(
+        id="mail-test",
+        type="mailNode",
+        data={
+            "title": "Legacy Mail",
+            "email": "mailbox@example.test",
+            "password": legacy_value,
+        },
+    )
+
+    with pytest.raises(ValueError, match="^mail.credential_reference_required$") as exc:
+        NodeFactory.create(schema)
+
+    assert legacy_value not in str(exc.value)
+
+
+def test_mail_node_does_not_fallback_to_workflow_or_app_owner_identity():
+    node = MailNode(
+        id="mail-test",
+        data=_node_data(uuid.uuid4()),
+        execution_context={
+            "user_id": str(uuid.uuid4()),
+            "organization_id": str(uuid.uuid4()),
+            "db": MagicMock(),
+        },
+    )
+
+    with (
+        patch(
+            "apps.workflow_engine.workflow.nodes.mail.mail_node."
+            "MailCredentialResolver.resolve"
+        ) as resolver,
+        pytest.raises(RuntimeError, match="^mail.execution_subject_required$"),
+    ):
+        node._run(inputs={})
+
+    resolver.assert_not_called()

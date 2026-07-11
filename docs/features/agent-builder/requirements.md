@@ -1,7 +1,7 @@
 # Agent Builder Requirements
 
 Status: Draft
-Related Features: workflow, knowledge, llm-credentials, deployment
+Related Features: workflow, knowledge, llm-credentials, mail-credentials, deployment
 
 ## Purpose
 
@@ -191,7 +191,7 @@ Draft는 기존 workflow model/schema와 지원 capability allowlist를 따라�
 
 지원 capability allowlist는 [ADR-0024](../../decisions/ADR-0024-agent-builder-node-capability-catalog.md)의 공통 Workflow Node Capability Catalog를 기준으로 한다. 현재 구현된 16개 node type 중 `agent_builder_supported=true`인 `startNode`, `webhookTrigger`, `scheduleTrigger`, `llmNode`, `workflowNode`, `codeNode`, `conditionNode`, `fileExtractionNode`, `variableExtractionNode`, `answerNode`, `httpRequestNode`, `slackPostNode`, `templateNode`, `githubNode`, `mailNode` 15개를 포함한다. `loopNode`는 runtime 구현 여부와 별개로 현재 제품 가용성이 비활성 상태이므로 Agent Builder allowlist와 intent capability guide에서 제외한다. `githubNode`는 현재 PR 조회와 PR 댓글 등록 capability를 구분하며, 요청에 두 동작이 모두 필요하면 별도 node로 생성한다. PR 생성 operation은 자연어 의미로는 인식하지만 runtime, editor, catalog capability가 준비되기 전까지 draft node로 materialize하지 않는다.
 
-외부 action 또는 필수 runtime 설정이 필요한 node는 draft에 포함할 수 있지만 Agent Builder가 credential, token, password, repository, channel, URL, target workflow 같은 값을 임의 생성하거나 원문으로 채우지 않는다. 해결되지 않은 값은 빈 값과 `configuration_state=unresolved`로 표시하고 node별 `configuration_issues`에 필요한 파라미터를 남긴다. 같은 type의 node가 여러 개여도 issue를 합치지 않는다. Draft 생성, Preview Mode, apply/save는 해당 node를 실행하지 않으며, 실제 실행 전 기존 editor/runtime validation과 별도 사용자 동작이 필요하다.
+외부 action 또는 필수 runtime 설정이 필요한 node는 draft에 포함할 수 있지만 Agent Builder가 credential, token, password, repository, channel, URL, target workflow 같은 값을 임의 생성하거나 원문으로 채우지 않는다. 해결되지 않은 값은 빈 값과 `configuration_state=unresolved`로 표시하고 node별 `configuration_issues`에 필요한 파라미터를 남긴다. Mail node는 특히 `credential_id=null`만 생성하고 email/password/provider endpoint field를 graph에 넣지 않는다. 같은 type의 node가 여러 개여도 issue를 합치지 않는다. Draft 생성, Preview Mode, apply/save는 해당 node를 실행하지 않으며, 실제 실행 전 기존 editor/runtime validation과 별도 사용자 동작이 필요하다.
 
 Generated LLM node의 기본 `model_id`는 active organization의 valid credential, active chat model, verified relation, 사용자 `use` 권한을 통과한 model 후보에서 추천한다. Provider는 `openai`, `anthropic`, `google` 순서로 평가하고, provider 안에서는 최신 세대, 같은 세대 `mini`, 이후 낮은 성능 tier 순으로 추천한다. Workflow graph에는 model id만 저장하며 추천에 사용된 credential id나 원문은 저장하지 않는다. 후보가 없으면 model id를 비우고 `configuration_state=unresolved`와 model 설정 필요 warning을 남기며, 고정 환경변수 model route 때문에 draft 생성을 실패시키지 않는다.
 

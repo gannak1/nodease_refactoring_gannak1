@@ -174,7 +174,9 @@ class ExecuteAccessAction:
         if command.action.startswith("direct_permission."):
             if command.resource_type is None or command.resource_id is None:
                 self.unit_of_work.rollback()
-                raise InputValidationError("resource_type and resource_id are required.")
+                raise InputValidationError(
+                    "resource_type and resource_id are required."
+                )
             resource = self.resource_scope.lock_resource(
                 command.organization_id,
                 command.resource_type,
@@ -206,7 +208,10 @@ class ExecuteAccessAction:
     ) -> None:
         if command.action == "team_membership.remove":
             current_id = context.team.membership_id if context.team else None
-            if current_id is not None and current_id != command.expected_team_membership_id:
+            if (
+                current_id is not None
+                and current_id != command.expected_team_membership_id
+            ):
                 self._raise_stale(
                     command,
                     reason,
@@ -250,9 +255,15 @@ class ExecuteAccessAction:
         context: _ActionContext,
     ) -> AccessActionResult | None:
         member = context.member.member
-        if command.action == "membership.suspend" and member.membership_state == "suspended":
+        if (
+            command.action == "membership.suspend"
+            and member.membership_state == "suspended"
+        ):
             return _unchanged(command, "organization_membership", member.membership_id)
-        if command.action == "membership.reactivate" and member.membership_state == "active":
+        if (
+            command.action == "membership.reactivate"
+            and member.membership_state == "active"
+        ):
             return _unchanged(command, "organization_membership", member.membership_id)
         if (
             command.action == "organization_role.set"
@@ -303,10 +314,7 @@ class ExecuteAccessAction:
                         reason,
                         context.member.member.membership_id,
                     )
-            elif (
-                current is None
-                or current.auth_state != command.expected_auth_state
-            ):
+            elif current is None or current.auth_state != command.expected_auth_state:
                 self._raise_stale(
                     command,
                     reason,
@@ -407,6 +415,7 @@ def _direct_target_type(resource_type: str | None) -> str:
         "workflow": "user_workflow_permission",
         "knowledge_base": "user_knowledge_permission",
         "llm_credential": "user_llm_permission",
+        "mail_credential": "user_mail_credential_permission",
     }.get(resource_type)
     if target_type is None:
         raise InputValidationError("Unsupported resource type.")

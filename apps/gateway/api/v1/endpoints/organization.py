@@ -446,7 +446,12 @@ def get_member_resource_access(
     organization_id: UUID,
     user_id: UUID,
     resource_type: Annotated[
-        Literal["workflow", "knowledge_base", "llm_credential"],
+        Literal[
+            "workflow",
+            "knowledge_base",
+            "llm_credential",
+            "mail_credential",
+        ],
         Query(alias="resourceType"),
     ],
     resource_id: Annotated[UUID | None, Query(alias="resourceId")] = None,

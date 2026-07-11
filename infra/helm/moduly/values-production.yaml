@@ -269,6 +269,8 @@ secrets:
   # Master encryption keys
   masterKey: ""
   encryptionKey: ""
+  mailCredentialEncryptionKeys: ""
+  mailCredentialActiveKeyVersion: "v1"
   
   # Sandbox API key
   sandboxApiKey: ""

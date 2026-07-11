@@ -290,6 +290,8 @@ secrets:
   # Master encryption key (generate with: openssl rand -base64 32)
   masterKey: ""
   encryptionKey: ""
+  mailCredentialEncryptionKeys: ""
+  mailCredentialActiveKeyVersion: "v1"
   
   # Sandbox API key
   sandboxApiKey: "Modulycallsandbox306"

@@ -1,3 +1,5 @@
+import uuid
+from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -6,8 +8,22 @@ from sqlalchemy.orm import Session
 from apps.gateway.services.organization_context import ensure_user_default_organization
 from apps.gateway.services.app_service import AppService
 from apps.shared.db.models.app import App
+from apps.shared.audit.context import get_current_metadata
+from apps.shared.db.models.mail_credential import (
+    MAIL_CREDENTIAL_ACTIVE,
+    MailCredential,
+)
 from apps.shared.db.models.workflow import Workflow
+from apps.shared.domain.mail_credential import (
+    MailNodeCredentialBoundaryError,
+    validate_mail_node_credential_boundary,
+)
 from apps.shared.schemas.workflow import WorkflowCreateRequest, WorkflowDraftRequest
+from apps.shared.services.permission_audit import record_resource_permission_denied
+from apps.shared.services.permissions import (
+    get_effective_mail_credential_auth_state,
+    has_mail_credential_permission,
+)
 
 
 class WorkflowService:
@@ -78,7 +94,7 @@ class WorkflowService:
     def save_draft(
         db: Session,
         workflow_id: str,
-        request: WorkflowDraftRequest,
+        request: WorkflowDraftRequest | dict[str, Any],
         user_id: str,
     ):
         """
@@ -102,6 +118,13 @@ class WorkflowService:
                 status_code=404,  # "찾을 수 없음" (에러 종류)
                 detail="Workflow not found",  # 상세 메시지
             )
+
+        WorkflowService.validate_mail_credential_references(
+            db,
+            request,
+            user_id=user_id,
+            organization_id=workflow.organization_id,
+        )
 
         # Graph 데이터 저장 (JSONB 형식)
         workflow.graph = {
@@ -135,6 +158,98 @@ class WorkflowService:
             "message": "Draft saved to PostgreSQL",
             "workflow_id": workflow_id,
         }
+
+    @staticmethod
+    def validate_mail_credential_references(
+        db: Session,
+        request: WorkflowDraftRequest,
+        *,
+        user_id: str,
+        organization_id: UUID,
+    ) -> None:
+        nodes = (
+            request.nodes
+            if isinstance(request, WorkflowDraftRequest)
+            else request.get("nodes", [])
+        )
+        mail_nodes = [
+            node
+            for node in nodes
+            if (
+                getattr(node, "type", None)
+                if not isinstance(node, dict)
+                else node.get("type")
+            )
+            == "mailNode"
+        ]
+        if not mail_nodes:
+            return
+        try:
+            user_uuid = uuid.UUID(str(user_id))
+            organization_uuid = uuid.UUID(str(organization_id))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=422, detail="mail.credential_context_invalid"
+            ) from exc
+
+        for node in mail_nodes:
+            raw_data = node.get("data") if isinstance(node, dict) else node.data
+            try:
+                validate_mail_node_credential_boundary(raw_data)
+            except MailNodeCredentialBoundaryError as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail="mail.credential_reference_required",
+                ) from exc
+            data = raw_data
+            credential_value = data.get("credential_id")
+            if credential_value in (None, ""):
+                continue
+            try:
+                credential_id = uuid.UUID(str(credential_value))
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail="mail.credential_reference_invalid",
+                ) from exc
+
+            credential = (
+                db.query(MailCredential)
+                .filter(
+                    MailCredential.id == credential_id,
+                    MailCredential.organization_id == organization_uuid,
+                    MailCredential.status == MAIL_CREDENTIAL_ACTIVE,
+                )
+                .first()
+            )
+            if credential is None:
+                raise HTTPException(status_code=404, detail="resource.not_found")
+            if has_mail_credential_permission(
+                db,
+                user_uuid,
+                credential.id,
+                "use",
+                organization_id=organization_uuid,
+            ):
+                continue
+            record_resource_permission_denied(
+                user_id=user_uuid,
+                resource_type="mail_credential",
+                resource_id=credential.id,
+                action="use",
+                effective_auth_state=get_effective_mail_credential_auth_state(
+                    db,
+                    user_uuid,
+                    credential.id,
+                    organization_id=organization_uuid,
+                ),
+                organization_id=organization_uuid,
+                metadata=get_current_metadata(),
+            )
+            raise HTTPException(
+                status_code=403,
+                detail="mail.credential_permission_denied",
+            )
 
     @staticmethod
     def get_draft(db: Session, workflow_id: str):

@@ -50,6 +50,7 @@ ADR 본문은 작성 시점의 결정 과정을 보존하는 기록 문서다. `
 | [ADR-0028](ADR-0028-security-alert-detection-and-lifecycle.md) | Accepted | Security Alert 탐지와 lifecycle 경계 | 조직·actor가 검증된 `permission.denied`와 allowlist `policy.block`을 규칙 기반 alert로 탐지하는 정책을 확정했다. Alert/evidence 모델, 실시간 detector, reconciliation, 관리자 API/UI는 MBA-211~214, audit producer 정규화는 MBA-223 구현 전이다. |
 | [ADR-0029](ADR-0029-distributed-schedule-dispatch-claim.md) | Accepted | 분산 Schedule dispatch claim과 admission 멱등성 경계 | MBA-187이 occurrence별 durable claim, deterministic task id, duplicate-suppressed Worker admission, system actor, outcome-unknown no-replay, WorkflowRun visibility signal을 구현했다. 외부 node 부수효과 exactly-once는 MBA-190 범위다 |
 | [ADR-0030](ADR-0030-memory-bounded-context.md) | Accepted | 독립 Memory bounded context와 Conversation Memory 경계 | Memory가 session/turn/entry/summary/provenance/retention과 durable dispatch를 소유하고 Gateway/Workflow Engine은 port로 협업한다. Deployment-version-pinned session, principal-neutral authorization revision, ProviderExecutionCapability, complete purge/audit cardinality, versioned Worker와 fenced summary를 목표로 하며 정상 turn/summary는 AuditLog가 아닌 operational trace로 분리한다. 현재 global `memory_mode`, client conversation ID와 execution-log 기반 기억 구현은 아직 이관되지 않았다. |
+| [ADR-0031](ADR-0031-mail-credential-reference-boundary.md) | Accepted | Mail credential reference 경계 | Organization-scoped Mail credential과 `read/use/manage` 권한을 두고 workflow graph에는 `credential_id`만 저장한다. Runtime은 명시 execution subject 기준으로 재검증하며 legacy inline password는 fail-closed한다. |
 
 ## 참고 보고서
 

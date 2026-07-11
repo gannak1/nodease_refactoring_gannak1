@@ -36,6 +36,7 @@ const RESOURCE_TYPES: Array<{
   { value: 'workflow', label: 'Workflow' },
   { value: 'knowledge_base', label: 'Knowledge Base' },
   { value: 'llm_credential', label: 'LLM Credential' },
+  { value: 'mail_credential', label: 'Mail Credential' },
 ];
 const GRANT_STATES: ActorGrantAuthState[] = [
   'viewer',
@@ -85,7 +86,12 @@ export function ActorAccessDrawer({
   >([]);
   const [resourceAccess, setResourceAccess] = useState<
     Record<ActorResourceType, MemberResourceAccess[]>
-  >({ workflow: [], knowledge_base: [], llm_credential: [] });
+  >({
+    workflow: [],
+    knowledge_base: [],
+    llm_credential: [],
+    mail_credential: [],
+  });
   const [resourceType, setResourceType] =
     useState<ActorResourceType>('workflow');
   const [resourceSource, setResourceSource] = useState<
@@ -95,10 +101,10 @@ export function ActorAccessDrawer({
   const [teamTotal, setTeamTotal] = useState(0);
   const [resourcePages, setResourcePages] = useState<
     Record<ActorResourceType, number>
-  >({ workflow: 1, knowledge_base: 1, llm_credential: 1 });
+  >({ workflow: 1, knowledge_base: 1, llm_credential: 1, mail_credential: 1 });
   const [resourceTotals, setResourceTotals] = useState<
     Record<ActorResourceType, number>
-  >({ workflow: 0, knowledge_base: 0, llm_credential: 0 });
+  >({ workflow: 0, knowledge_base: 0, llm_credential: 0, mail_credential: 0 });
   const [selectedTeamId, setSelectedTeamId] = useState('');
   const [selectedTeamMembership, setSelectedTeamMembership] =
     useState<MemberTeamMembership | null>(null);
@@ -824,6 +830,7 @@ export function ActorAccessDrawer({
                                   `workflow ${membership.inherited_resource_counts.workflow}`,
                                   `KB ${membership.inherited_resource_counts.knowledge_base}`,
                                   `LLM ${membership.inherited_resource_counts.llm_credential}`,
+                                  `Mail ${membership.inherited_resource_counts.mail_credential || 0}`,
                                   `총 ${membership.inherited_resource_counts.total}`,
                                 ].join(' · '),
                               },

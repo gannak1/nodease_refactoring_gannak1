@@ -8,7 +8,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 MembershipState = Literal["active", "suspended"]
 OrganizationAuthState = Literal["member", "manager"]
-ResourceType = Literal["workflow", "knowledge_base", "llm_credential"]
+ResourceType = Literal[
+    "workflow",
+    "knowledge_base",
+    "llm_credential",
+    "mail_credential",
+]
 ResourceAuthState = Literal["none", "viewer", "operator", "builder", "manager"]
 GrantAuthState = Literal["viewer", "operator", "builder", "manager"]
 
@@ -102,6 +107,7 @@ class InheritedResourceCounts(BaseModel):
     workflow: int = Field(ge=0)
     knowledge_base: int = Field(ge=0)
     llm_credential: int = Field(ge=0)
+    mail_credential: int = Field(default=0, ge=0)
     total: int = Field(ge=0)
 
 

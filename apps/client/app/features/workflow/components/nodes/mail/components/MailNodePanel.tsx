@@ -1,6 +1,10 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useWorkflowStore } from '@/app/features/workflow/store/useWorkflowStore';
-import { MailNodeData, EmailProvider } from '../../../../types/Nodes';
+import { MailNodeData } from '../../../../types/Nodes';
+import {
+  MailCredentialOption,
+  mailCredentialApi,
+} from '../../../../api/mailCredentialApi';
 import { CollapsibleSection } from '../../ui/CollapsibleSection';
 import { RoundedSelect } from '../../../ui/RoundedSelect';
 import { ValidationAlert } from '../../../ui/ValidationAlert';
@@ -18,40 +22,11 @@ interface MailNodePanelProps {
   data: MailNodeData;
 }
 
-// 노드 실행 필수 요건 체크
-// 1. SMTP 서버 설정(호스트, 포트, 사용자)이 완료되어야 함
-// 2. 수신자 이메일이 입력되어야 함
-// 3. 제목과 본문이 입력되어야 함
-
-// Provider별 IMAP 서버 프리셋
-const PROVIDER_PRESETS: Record<
-  Exclude<EmailProvider, 'custom'>,
-  { imap_server: string; imap_port: number; use_ssl: boolean }
-> = {
-  gmail: {
-    imap_server: 'imap.gmail.com',
-    imap_port: 993,
-    use_ssl: true,
-  },
-  naver: {
-    imap_server: 'imap.naver.com',
-    imap_port: 993,
-    use_ssl: true,
-  },
-  daum: {
-    imap_server: 'imap.daum.net',
-    imap_port: 993,
-    use_ssl: true,
-  },
-  outlook: {
-    imap_server: 'outlook.office365.com',
-    imap_port: 993,
-    use_ssl: true,
-  },
-};
-
 export function MailNodePanel({ nodeId, data }: MailNodePanelProps) {
   const { updateNodeData, nodes, edges } = useWorkflowStore();
+  const [credentials, setCredentials] = useState<MailCredentialOption[]>([]);
+  const [credentialsLoading, setCredentialsLoading] = useState(true);
+  const [credentialsError, setCredentialsError] = useState(false);
   const upstreamNodes = useMemo(
     () => getUpstreamNodes(nodeId, nodes, edges),
     [nodeId, nodes, edges],
@@ -64,34 +39,31 @@ export function MailNodePanel({ nodeId, data }: MailNodePanelProps) {
     [nodeId, updateNodeData],
   );
 
-  // Provider 변경 핸들러
-  const handleProviderChange = useCallback(
-    (provider: EmailProvider) => {
-      handleUpdateData('provider', provider);
+  useEffect(() => {
+    let active = true;
+    setCredentialsLoading(true);
+    setCredentialsError(false);
+    mailCredentialApi
+      .listAvailable()
+      .then((options) => {
+        if (active) setCredentials(options);
+      })
+      .catch(() => {
+        if (active) setCredentialsError(true);
+      })
+      .finally(() => {
+        if (active) setCredentialsLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
-      // Custom이 아니면 프리셋 자동 설정
-      if (provider !== 'custom') {
-        const preset = PROVIDER_PRESETS[provider];
-        handleUpdateData('imap_server', preset.imap_server);
-        handleUpdateData('imap_port', preset.imap_port);
-        handleUpdateData('use_ssl', preset.use_ssl);
-      } else {
-        // Custom 선택 시 예시 값 설정
-        handleUpdateData('imap_server', 'imap.example.com');
-        handleUpdateData('imap_port', 993);
-        handleUpdateData('use_ssl', true);
-      }
-    },
-    [handleUpdateData],
-  );
-
-  const emailMissing = useMemo(() => {
-    return !data.email?.trim();
-  }, [data.email]);
-
-  const passwordMissing = useMemo(() => {
-    return !data.password?.trim();
-  }, [data.password]);
+  const credentialMissing = !data.credential_id;
+  const selectedCredentialUnavailable =
+    Boolean(data.credential_id) &&
+    !credentialsLoading &&
+    !credentials.some((credential) => credential.id === data.credential_id);
 
   const handleKeywordDropOutput = useCallback(
     (output: DraggedOutputVariable) => {
@@ -118,131 +90,47 @@ export function MailNodePanel({ nodeId, data }: MailNodePanelProps) {
     [data.referenced_variables, upstreamNodes],
   );
 
-  const isCustomProvider = data.provider === 'custom';
-
   return (
     <div className="flex flex-col gap-2">
-      {/* 1. 서버 설정 */}
-      <CollapsibleSection title="서버 설정" defaultOpen={true} showDivider>
+      <CollapsibleSection
+        title="Mail Credential"
+        defaultOpen={true}
+        showDivider
+      >
         <div className="flex flex-col gap-2">
           <div className="flex flex-col gap-1">
             <label className="text-xs font-medium text-gray-700">
-              메일 서비스
+              연결 계정
             </label>
             <RoundedSelect
-              value={data.provider || 'gmail'}
-              onChange={(val) => handleProviderChange(val as EmailProvider)}
-              options={[
-                { label: 'Gmail', value: 'gmail' },
-                { label: 'Naver', value: 'naver' },
-                { label: 'Daum', value: 'daum' },
-                { label: 'Outlook', value: 'outlook' },
-                { label: '직접 설정', value: 'custom' },
-              ]}
-              placeholder="메일 서비스 선택"
+              value={data.credential_id || ''}
+              onChange={(value) =>
+                updateNodeData(nodeId, {
+                  credential_id: value || null,
+                  configuration_state: value ? 'resolved' : 'unresolved',
+                })
+              }
+              options={credentials.map((credential) => ({
+                label: `${credential.credential_name} (${credential.email_preview})`,
+                value: credential.id,
+              }))}
+              placeholder={
+                credentialsLoading ? '불러오는 중' : 'Mail credential 선택'
+              }
             />
           </div>
-
-          <div className="flex flex-col gap-1">
-            <label className="text-xs font-medium text-gray-700">
-              IMAP 서버
-            </label>
-            <input
-              type="text"
-              className={`h-8 w-full rounded border px-2 text-sm focus:outline-none ${
-                isCustomProvider
-                  ? 'border-gray-300 bg-white focus:border-blue-500'
-                  : 'border-gray-200 bg-gray-50 text-gray-600 cursor-not-allowed'
-              }`}
-              value={data.imap_server || ''}
-              onChange={(e) => handleUpdateData('imap_server', e.target.value)}
-              readOnly={!isCustomProvider}
-              disabled={!isCustomProvider}
-            />
-          </div>
-
-          <div className="flex gap-2">
-            <div className="flex flex-col gap-1 flex-1">
-              <label className="text-xs font-medium text-gray-700">포트</label>
-              <input
-                type="number"
-                className={`h-8 w-full rounded border px-2 text-sm focus:outline-none ${
-                  isCustomProvider
-                    ? 'border-gray-300 bg-white focus:border-blue-500'
-                    : 'border-gray-200 bg-gray-50 text-gray-600 cursor-not-allowed'
-                }`}
-                value={data.imap_port || 993}
-                onChange={(e) =>
-                  handleUpdateData('imap_port', parseInt(e.target.value))
-                }
-                readOnly={!isCustomProvider}
-                disabled={!isCustomProvider}
-              />
-            </div>
-
-            <div className="flex flex-col gap-1">
-              <label className="text-xs font-medium text-gray-700">
-                SSL 사용
-              </label>
-              <input
-                type="checkbox"
-                className="h-8 w-8 rounded border border-gray-300 disabled:cursor-not-allowed disabled:opacity-50"
-                checked={data.use_ssl ?? true}
-                onChange={(e) => handleUpdateData('use_ssl', e.target.checked)}
-                disabled={!isCustomProvider}
-              />
-            </div>
-          </div>
-
-          {isCustomProvider ? (
-            <p className="text-[10px] text-gray-500"></p>
-          ) : (
-            <p className="text-[10px] text-blue-600">
-              ℹ️ 메일 서비스 선택 시 서버 설정이 자동으로 구성됩니다
-            </p>
+          {credentialMissing && !credentialsLoading && (
+            <ValidationAlert message="Mail credential을 선택해주세요." />
+          )}
+          {selectedCredentialUnavailable && (
+            <ValidationAlert message="선택한 Mail credential을 사용할 수 없습니다." />
+          )}
+          {credentialsError && (
+            <ValidationAlert message="Mail credential 목록을 불러오지 못했습니다." />
           )}
         </div>
       </CollapsibleSection>
 
-      {/* 2. 계정 */}
-      <CollapsibleSection title="계정" defaultOpen={true} showDivider>
-        <div className="flex flex-col gap-2">
-          <div className="flex flex-col gap-1">
-            <label className="text-xs font-medium text-gray-700">이메일</label>
-            <input
-              type="email"
-              className="h-8 w-full rounded border border-gray-300 px-2 text-sm focus:outline-none focus:border-blue-500"
-              placeholder="your@email.com"
-              value={data.email || ''}
-              onChange={(e) => handleUpdateData('email', e.target.value)}
-            />
-            {emailMissing && (
-              <ValidationAlert message="⚠️ 이메일을 입력해주세요." />
-            )}
-          </div>
-
-          <div className="flex flex-col gap-1">
-            <label className="text-xs font-medium text-gray-700">
-              비밀번호
-            </label>
-            <input
-              type="password"
-              className="h-8 w-full rounded border border-gray-300 px-2 text-sm font-mono focus:outline-none focus:border-blue-500"
-              placeholder="앱 비밀번호"
-              value={data.password || ''}
-              onChange={(e) => handleUpdateData('password', e.target.value)}
-            />
-            <p className="text-[10px] text-gray-500">
-              💡 Gmail: 앱 비밀번호 사용 권장
-            </p>
-            {passwordMissing && (
-              <ValidationAlert message="⚠️ 비밀번호를 입력해주세요." />
-            )}
-          </div>
-        </div>
-      </CollapsibleSection>
-
-      {/* 4. 검색 옵션 */}
       <CollapsibleSection title="검색 옵션" defaultOpen={true} showDivider>
         <div className="flex flex-col gap-2 relative">
           <div className="flex flex-col gap-1">
