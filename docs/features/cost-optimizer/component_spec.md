@@ -1,7 +1,7 @@
 # Cost Optimizer Component Spec
 
 Status: Draft
-Verified Against: feature/mba-198 @ 08201d6834bf6f80693d8392773cffa2cb6ed1a8
+Verified Against: feature/mba-198 @ 391b00b347920184b44658528d2929a75d5d3923
 
 ## Purpose
 

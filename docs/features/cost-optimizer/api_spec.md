@@ -1,7 +1,7 @@
 # Cost Optimizer API Spec
 
 Status: Draft
-Verified Against: feature/mba-198 @ 08201d6834bf6f80693d8392773cffa2cb6ed1a8
+Verified Against: feature/mba-198 @ 391b00b347920184b44658528d2929a75d5d3923
 
 ## Purpose
 
@@ -485,6 +485,36 @@ latest baseline은 다음 필터를 모두 적용한 뒤 `WorkflowNodeRun.starte
 ```
 
 `verification_status`는 `completed`, `partial`, `failed`, `stale` 중 하나다. candidate 실행이 성공하고 judge만 실패하면 `partial`이며 deterministic 결과와 candidate usage는 유지한다.
+
+freshness 검증에 실패한 `stale` 응답은 candidate 실행과 judge 호출을 시작하지 않는다. 따라서 실행 결과 식별자와 A/B 결과는 `null`이며, 프론트는 이 상태를 completed/partial/failed 결과와 구분해 결과 panel 대신 재조회 안내를 표시해야 한다.
+
+```json
+{
+  "verification_status": "stale",
+  "comparison_id": null,
+  "candidate_id": null,
+  "baseline": null,
+  "candidate": null,
+  "metrics": {},
+  "quality_evaluation": {
+    "status": "unavailable",
+    "safe_summary": "추천 설정이 최신 node 설정과 일치하지 않습니다."
+  },
+  "schema_validation": {"status": "not_applicable", "issues": []},
+  "downstream_compatibility": {"state": "unknown"},
+  "incurred_cost": {
+    "candidate_execution_cost": null,
+    "quality_judge_cost": null,
+    "total_new_cost": null,
+    "currency": "USD"
+  },
+  "apply": {
+    "allowed": false,
+    "requires_confirmation": false,
+    "reasons": ["recommendation_stale"]
+  }
+}
+```
 
 ### Output Quality Judge
 

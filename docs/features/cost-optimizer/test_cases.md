@@ -1,7 +1,7 @@
 # Cost Optimizer Test Cases
 
 Status: Draft
-Verified Against: feature/mba-198 @ 08201d6834bf6f80693d8392773cffa2cb6ed1a8
+Verified Against: feature/mba-198 @ 391b00b347920184b44658528d2929a75d5d3923
 
 ## Purpose
 
@@ -170,6 +170,7 @@ FR-011 모델 라우팅은 정책 기반 자동 라우팅으로 다룬다. 자�
 | FR-013-R24 | detail deep link | 선택 candidate가 이력 첫 20개 밖이거나 `schema_failed/failed` 상태다 | `comparisonId/candidateId` 결과 분석 URL을 연다 | 단건 상세 API로 exact candidate를 복원하고, 기본 성공 이력 목록 조회가 완료돼도 선택 결과를 유지한다. B와 judge를 다시 실행하지 않는다. |
 | FR-013-R25 | route session reset | 한 LLM node의 비교 결과를 본 상태에서 workflow/node/deep link URL이 바뀐다 | 같은 route 컴포넌트가 새 식별자로 렌더링된다 | 이전 baseline, compare result, 선택 이력을 표시하지 않고 새 node의 baseline 선택 상태로 초기화한다. |
 | FR-013-R26 | explicit history filter | 결과 분석 이력 패널에서 실행자·모델·기간 필터를 입력한다 | 입력 중에는 대기하고 `필터 적용`을 실행한다 | 입력 중 추가 목록 요청을 보내지 않고 적용 시점에 정규화된 query로 한 번 조회한다. |
+| FR-013-R27 | stale response shape | recommendation policy version 또는 node fingerprint가 현재 상태와 다르다 | 빠른 검증 API를 호출한다 | provider를 호출하지 않고 `verification_status=stale`, null comparison/candidate/baseline과 `apply.allowed=false`를 반환하며, 프론트는 결과 값을 읽지 않고 재시도 안내를 표시한다. |
 
 ## FR-001 LLM 노드 단위 A/B 테스트 진입
 ## Knowledge/RAG Compare Tests
