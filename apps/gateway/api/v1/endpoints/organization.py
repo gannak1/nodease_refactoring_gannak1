@@ -52,6 +52,7 @@ from apps.shared.schemas.member_access import (
     MemberTeamMembershipItem,
     MemberTeamMembershipListResponse,
 )
+from apps.shared.services.permission_audit import record_resource_permission_denied
 from apps.shared.services.permissions import (
     has_organization_manager_permission,
     has_organization_scope_access,
@@ -612,11 +613,20 @@ def update_organization(
         )
 
     if not has_organization_manager_permission(db, current_user.id, organization_id):
+        record_resource_permission_denied(
+            user_id=current_user.id,
+            resource_type="organization",
+            resource_id=organization_id,
+            action="manage",
+            effective_auth_state="member",
+            organization_id=organization_id,
+        )
         raise_api_error(
             request,
             403,
             "permission.denied",
             "Permission denied.",
+            audit_recorded=True,
         )
 
     if "name" in fields:

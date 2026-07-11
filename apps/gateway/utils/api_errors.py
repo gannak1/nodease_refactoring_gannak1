@@ -40,11 +40,16 @@ def raise_api_error(
     code: str,
     message: str,
     details: dict | None = None,
+    *,
+    audit_recorded: bool = False,
 ) -> NoReturn:
-    raise HTTPException(
+    exc = HTTPException(
         status_code=status_code,
         detail=error_detail(request, code, message, details),
     )
+    if audit_recorded:
+        setattr(exc, "audit_recorded", True)
+    raise exc
 
 
 def parse_organization_id(request: Request, raw_organization_id: str | None) -> UUID:

@@ -5,7 +5,10 @@ import pytest
 from fastapi import HTTPException
 
 from apps.gateway.auth import permissions
-from apps.gateway.auth.permissions import ensure_workflow_permission
+from apps.gateway.auth.permissions import (
+    ensure_llm_credential_permission,
+    ensure_workflow_permission,
+)
 from apps.shared.audit.actions import AuditAction
 
 
@@ -69,6 +72,7 @@ def test_workflow_permission_denied_records_permission_audit(monkeypatch):
     assert events[0]["metadata"]["required_permission"] == "write"
     assert events[0]["metadata"]["permission_action"] == "write"
     assert events[0]["metadata"]["effective_auth_state"] == "viewer"
+    assert events[0]["metadata"]["organization_id"] == str(workflow.organization_id)
 
 
 def test_workflow_permission_denied_outside_organization_scope_is_404(monkeypatch):
@@ -99,6 +103,86 @@ def test_workflow_permission_denied_outside_organization_scope_is_404(monkeypatc
 
     with pytest.raises(HTTPException) as exc_info:
         ensure_workflow_permission(FakeDb(workflow), user, workflow.id, "read")
+
+    assert exc_info.value.status_code == 404
+    assert getattr(exc_info.value, "audit_recorded", False) is False
+    assert events == []
+
+
+def test_llm_credential_permission_denied_records_verified_organization(monkeypatch):
+    credential = SimpleNamespace(id=uuid.uuid4(), organization_id=uuid.uuid4())
+    user = SimpleNamespace(id=uuid.uuid4())
+    events = []
+
+    monkeypatch.setattr(
+        permissions,
+        "get_effective_llm_credential_auth_state",
+        lambda db, user_id, credential_id, organization_id=None: "viewer",
+    )
+    monkeypatch.setattr(
+        permissions,
+        "has_llm_credential_permission",
+        lambda db, user_id, credential_id, action, organization_id=None: False,
+    )
+    monkeypatch.setattr(
+        permissions,
+        "has_organization_scope_access",
+        lambda db, user_id, organization_id: True,
+    )
+    monkeypatch.setattr(
+        permissions,
+        "record_audit",
+        lambda **event: events.append(event),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        ensure_llm_credential_permission(
+            FakeDb(credential),
+            user,
+            credential.id,
+            "read",
+        )
+
+    assert exc_info.value.status_code == 403
+    assert getattr(exc_info.value, "audit_recorded", False) is True
+    assert len(events) == 1
+    assert events[0]["action"] == AuditAction.PERMISSION_DENIED
+    assert events[0]["actor_id"] == user.id
+    assert events[0]["actor_type"] == "user"
+    assert events[0]["category"] == "action"
+    assert events[0]["status"] == "failure"
+    assert events[0]["target_type"] == "llm_credential"
+    assert events[0]["target_id"] == credential.id
+    assert events[0]["metadata"]["organization_id"] == str(
+        credential.organization_id
+    )
+
+
+def test_llm_credential_permission_denied_outside_organization_scope_is_404(
+    monkeypatch,
+):
+    credential = SimpleNamespace(id=uuid.uuid4(), organization_id=uuid.uuid4())
+    user = SimpleNamespace(id=uuid.uuid4())
+    events = []
+
+    monkeypatch.setattr(
+        permissions,
+        "has_organization_scope_access",
+        lambda db, user_id, organization_id: False,
+    )
+    monkeypatch.setattr(
+        permissions,
+        "record_audit",
+        lambda **event: events.append(event),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        ensure_llm_credential_permission(
+            FakeDb(credential),
+            user,
+            credential.id,
+            "read",
+        )
 
     assert exc_info.value.status_code == 404
     assert getattr(exc_info.value, "audit_recorded", False) is False

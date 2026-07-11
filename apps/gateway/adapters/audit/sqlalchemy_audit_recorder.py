@@ -67,7 +67,7 @@ class SqlAlchemyAccessManagementAuditRecorder:
     ) -> None:
         if policy_reason not in _POLICY_REASONS:
             raise ValueError("Unsupported access-management policy reason")
-        metadata = self._metadata(command.organization_id, reason)
+        metadata = self._policy_block_metadata(command.organization_id, reason)
         metadata.update(
             {
                 "target_user_id": str(command.target_user_id),
@@ -94,6 +94,17 @@ class SqlAlchemyAccessManagementAuditRecorder:
                 audit_metadata=metadata,
             )
         )
+
+    def _policy_block_metadata(
+        self,
+        organization_id: uuid.UUID,
+        reason: str | None,
+    ) -> dict[str, Any]:
+        metadata = self._metadata(organization_id, reason)
+        for key in ("ip", "user_agent"):
+            metadata.pop(key, None)
+        metadata["actor"] = {"id": str(self.actor.id)}
+        return metadata
 
     def _metadata(
         self,

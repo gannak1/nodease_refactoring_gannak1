@@ -29,6 +29,9 @@ from apps.shared.services.rag_evidence_policy import (
     RAGEvidencePolicy,
     blocked_evidence_reason_for_chunks,
 )
+from apps.shared.services.security_alert_policy_reason import (
+    with_normalized_security_alert_policy_reason,
+)
 from apps.shared.services.rag_source_tier import (
     chunk_source_tier_priority,
     source_tier_tie_break_enabled,
@@ -2243,15 +2246,17 @@ class LLMNode(Node[LLMNodeData]):
         *,
         reason_code: str,
     ) -> None:
-        metadata = {
-            "workflow_id": self.execution_context.get("workflow_id"),
-            "workflow_run_id": self.execution_context.get("workflow_run_id"),
-            "node_id": self.id,
-            "policy_result": {
-                "result": "block",
-                "reason_code": reason_code,
-            },
-        }
+        metadata = with_normalized_security_alert_policy_reason(
+            {
+                "workflow_id": self.execution_context.get("workflow_id"),
+                "workflow_run_id": self.execution_context.get("workflow_run_id"),
+                "node_id": self.id,
+                "policy_result": {
+                    "result": "block",
+                    "reason_code": reason_code,
+                },
+            }
+        )
         organization_id = self._canonical_audit_organization_id()
         if organization_id is None:
             return

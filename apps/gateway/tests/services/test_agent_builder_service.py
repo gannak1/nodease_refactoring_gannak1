@@ -3,6 +3,7 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from pydantic import ValidationError
 
 from apps.gateway.services import agent_builder_service as service_module
@@ -1249,6 +1250,61 @@ def test_submit_message_preserves_explicit_github_comment_capabilities(
         for node in preview_nodes
         if node["type"] == "githubNode"
     ] == ["get_pr", "comment_pr"]
+
+
+def test_submit_message_app_scope_denial_marks_permission_audit_recorded(
+    monkeypatch,
+):
+    db = FakeDb()
+    session_id = uuid.uuid4()
+    app_id = uuid.uuid4()
+    user = SimpleNamespace(id=uuid.uuid4())
+    organization_id = uuid.uuid4()
+    session = SimpleNamespace(
+        id=session_id,
+        workflow_id=None,
+        app_id=app_id,
+        status="active",
+        updated_at=None,
+    )
+    svc = AgentBuilderService(
+        db,
+        user=user,
+        organization_id=organization_id,
+    )
+    audits = []
+    monkeypatch.setattr(svc, "_session_or_404", lambda _: session)
+    monkeypatch.setattr(svc, "_lock_session_for_request", lambda value: value)
+    monkeypatch.setattr(svc, "_reject_if_pending", lambda _: None)
+    monkeypatch.setattr(
+        svc,
+        "_app_in_active_org",
+        lambda _: SimpleNamespace(id=app_id),
+    )
+    monkeypatch.setattr(
+        service_module.AppService,
+        "access_denial_status",
+        lambda *args, **kwargs: 403,
+    )
+    monkeypatch.setattr(
+        service_module,
+        "record_resource_permission_denied",
+        lambda **event: audits.append(event),
+    )
+
+    with pytest.raises(HTTPException) as denied:
+        svc.submit_message(
+            session_id,
+            AgentBuilderMessageRequest(message="새 workflow를 만들어줘"),
+        )
+
+    assert denied.value.status_code == 403
+    assert getattr(denied.value, "audit_recorded", False) is True
+    assert len(audits) == 1
+    assert audits[0]["user_id"] == user.id
+    assert audits[0]["resource_type"] == "app"
+    assert audits[0]["resource_id"] == app_id
+    assert audits[0]["organization_id"] == organization_id
 
 
 @pytest.mark.parametrize(

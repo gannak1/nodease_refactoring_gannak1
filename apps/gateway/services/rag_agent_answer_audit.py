@@ -7,6 +7,9 @@ from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.logger import record_audit
 from apps.shared.db.models.knowledge import RAGAnswerRun
 from apps.shared.db.models.llm import LLMCredential, LLMModel, LLMUsageLog
+from apps.shared.services.security_alert_policy_reason import (
+    with_normalized_security_alert_policy_reason,
+)
 
 
 class RAGAgentAnswerAuditRecorder:
@@ -95,6 +98,14 @@ class RAGAgentAnswerAuditRecorder:
     def record_policy_block(
         self, run: RAGAnswerRun, policy_result: dict[str, Any]
     ) -> None:
+        metadata = with_normalized_security_alert_policy_reason(
+            {
+                "organization_id": str(self.organization_id),
+                "answer_run_id": str(run.id),
+                "correlation_id": run.correlation_id,
+                "policy_result": policy_result,
+            }
+        )
         record_audit(
             action=AuditAction.POLICY_BLOCK,
             category="action",
@@ -103,12 +114,7 @@ class RAGAgentAnswerAuditRecorder:
             target_type="rag_answer_run",
             target_id=run.id,
             status="failure",
-            metadata={
-                "organization_id": str(self.organization_id),
-                "answer_run_id": str(run.id),
-                "correlation_id": run.correlation_id,
-                "policy_result": policy_result,
-            },
+            metadata=metadata,
         )
 
     def record_usage_log(

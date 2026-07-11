@@ -10,7 +10,10 @@ from fastapi import HTTPException
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from apps.gateway.auth.permissions import ensure_workflow_permission
+from apps.gateway.auth.permissions import (
+    ensure_workflow_permission,
+    recorded_permission_denied_exception,
+)
 from apps.gateway.services.app_service import AppService
 from apps.gateway.services.agent_builder_intent_service import (
     AgentBuilderIntentExtraction,
@@ -984,6 +987,8 @@ class AgentBuilderService:
                             "agent_builder_reason": "new_workflow_draft_scope_denied"
                         },
                     )
+                if denial_status == 403:
+                    raise recorded_permission_denied_exception(detail)
                 raise HTTPException(status_code=denial_status, detail=detail)
 
         request_row = AgentBuilderRequest(
