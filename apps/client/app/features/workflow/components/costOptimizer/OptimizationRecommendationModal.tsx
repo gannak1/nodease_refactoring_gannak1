@@ -290,6 +290,8 @@ function VerificationResultPanel({
   verification: CostOptimizerRecommendationVerificationResponse;
   isStale: boolean;
 }) {
+  if (verification.verification_status === 'stale') return null;
+
   const qualityMetric: CostOptimizerMetricComparison = {
     baseline: verification.quality_evaluation.baseline?.score ?? null,
     candidate: verification.quality_evaluation.candidate?.score ?? null,

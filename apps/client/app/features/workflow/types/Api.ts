@@ -203,24 +203,8 @@ export interface CostOptimizerQualityEvaluation {
   judge_usage_log_id?: string | null;
 }
 
-export interface CostOptimizerRecommendationVerificationResponse {
-  verification_status: 'completed' | 'partial' | 'failed' | 'stale';
-  comparison_id: string | null;
-  candidate_id: string | null;
+interface CostOptimizerRecommendationVerificationCommon {
   applied_recommendation_ids?: string[];
-  baseline: {
-    label: string;
-    workflow_node_run_id?: string | null;
-    executed_at?: string | null;
-    model?: string | null;
-    deployment_id?: string | null;
-    metrics: Record<string, number | null | undefined>;
-  };
-  candidate: {
-    status: string;
-    model?: string | null;
-    metrics: Record<string, number | null | undefined>;
-  };
   metrics: Record<string, CostOptimizerMetricComparison>;
   quality_evaluation: CostOptimizerQualityEvaluation;
   schema_validation: {
@@ -244,6 +228,39 @@ export interface CostOptimizerRecommendationVerificationResponse {
     recommendation_policy_version?: string | null;
   };
 }
+
+interface CostOptimizerRecommendationVerificationResult
+  extends CostOptimizerRecommendationVerificationCommon {
+  verification_status: 'completed' | 'partial' | 'failed';
+  comparison_id: string | null;
+  candidate_id: string | null;
+  baseline: {
+    label: string;
+    workflow_node_run_id?: string | null;
+    executed_at?: string | null;
+    model?: string | null;
+    deployment_id?: string | null;
+    metrics: Record<string, number | null | undefined>;
+  };
+  candidate: {
+    status: string;
+    model?: string | null;
+    metrics: Record<string, number | null | undefined>;
+  };
+}
+
+interface CostOptimizerRecommendationVerificationStale
+  extends CostOptimizerRecommendationVerificationCommon {
+  verification_status: 'stale';
+  comparison_id: null;
+  candidate_id: null;
+  baseline: null;
+  candidate: null;
+}
+
+export type CostOptimizerRecommendationVerificationResponse =
+  | CostOptimizerRecommendationVerificationResult
+  | CostOptimizerRecommendationVerificationStale;
 
 export interface ModelRoutingPolicyResponse {
   enabled: boolean;

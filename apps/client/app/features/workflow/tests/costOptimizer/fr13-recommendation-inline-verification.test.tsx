@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { OptimizationRecommendationModal } from '../../components/costOptimizer/OptimizationRecommendationModal';
+import type { CostOptimizerRecommendationVerificationResponse } from '../../types/Api';
 
 const workflowApiMock = vi.hoisted(() => ({
   getCostOptimizerParameterRecommendations: vi.fn(),
@@ -82,6 +83,34 @@ const verificationResponse = {
   verification_context: {
     node_config_fingerprint: 'node-fingerprint',
     recommendation_policy_version: 'recommendation-v2',
+  },
+};
+
+const staleVerificationResponse: CostOptimizerRecommendationVerificationResponse = {
+  verification_status: 'stale',
+  comparison_id: null,
+  candidate_id: null,
+  baseline: null,
+  candidate: null,
+  metrics: {},
+  quality_evaluation: {
+    status: 'unavailable',
+    baseline: { score: null },
+    candidate: { score: null },
+    safe_summary: '추천 설정이 최신 node 설정과 일치하지 않습니다.',
+  },
+  schema_validation: { status: 'not_applicable', issues: [] },
+  downstream_compatibility: { state: 'unknown' },
+  incurred_cost: {
+    candidate_execution_cost: null,
+    quality_judge_cost: null,
+    total_new_cost: null,
+    currency: 'USD',
+  },
+  apply: {
+    allowed: false,
+    requires_confirmation: false,
+    reasons: ['recommendation_stale'],
   },
 };
 
@@ -213,5 +242,21 @@ describe('FR-013 추천 설정 인라인 검증 모달', () => {
       '/modules/workflow-1/cost-optimizer/llm-triage?comparisonId=comparison-1&candidateId=candidate-1',
     );
     expect(workflowApiMock.verifyCostOptimizerRecommendations).toHaveBeenCalledTimes(1);
+  });
+
+  it('stale 응답은 null 결과를 읽지 않고 재시도 안내만 표시한다', async () => {
+    workflowApiMock.verifyCostOptimizerRecommendations.mockResolvedValueOnce(
+      staleVerificationResponse,
+    );
+    renderModal();
+
+    fireEvent.click(await screen.findByRole('button', { name: '테스트하기' }));
+
+    expect(
+      await screen.findByText('추천 설정이 최신 상태가 아닙니다.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('A BASELINE')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '적용하기' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '다시 테스트하기' })).toBeEnabled();
   });
 });
