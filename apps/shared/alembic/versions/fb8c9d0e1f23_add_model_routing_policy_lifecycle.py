@@ -17,7 +17,7 @@ from apps.shared.db.models.model_routing_policy import (
 
 
 revision: str = "fb8c9d0e1f23"
-down_revision: Union[str, Sequence[str], None] = "fa7b8c9d0e12"
+down_revision: Union[str, Sequence[str], None] = "fa7c8d9e0f12"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
