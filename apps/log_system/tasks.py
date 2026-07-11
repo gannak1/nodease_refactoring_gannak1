@@ -82,6 +82,19 @@ class PermanentLogContractError(ValueError):
     pass
 
 
+def _retry_workflow_run_log_task(task, *, operation: str, error: Exception) -> None:
+    """Retry a run-log write without retaining raw storage details."""
+    logger.error(
+        "[Log-System] workflow run log operation failed: operation=%s error_type=%s",
+        operation,
+        type(error).__name__,
+    )
+    raise task.retry(
+        exc=RuntimeError("workflow run log storage retry requested"),
+        countdown=2**task.request.retries,
+    )
+
+
 def _serialize_uuid(obj):
     """UUID를 문자열로 변환 (JSON 직렬화용)"""
     if isinstance(obj, uuid.UUID):
@@ -328,7 +341,7 @@ def create_run_log(self, data: Dict[str, Any]):
     except PermanentLogContractError:
         session.rollback()
         raise
-    except IntegrityError as e:
+    except IntegrityError as error:
         session.rollback()
         if run_id is not None:
             existing = (
@@ -337,11 +350,18 @@ def create_run_log(self, data: Dict[str, Any]):
             if existing:
                 # 동일 run_id 재시도 시 중복 insert는 정상으로 간주합니다.
                 return {"status": "success", "run_id": str(run_id)}
-        raise self.retry(exc=e, countdown=2**self.request.retries)
-    except Exception as e:
+        _retry_workflow_run_log_task(
+            self,
+            operation="create",
+            error=error,
+        )
+    except Exception as error:
         session.rollback()
-        logger.error(f"[Log-System] create_run_log 실패: {e}")
-        raise self.retry(exc=e, countdown=2**self.request.retries)
+        _retry_workflow_run_log_task(
+            self,
+            operation="create",
+            error=error,
+        )
     finally:
         session.close()
 
@@ -403,10 +423,13 @@ def update_run_log_finish(self, data: Dict[str, Any]):
 
         return {"status": "success", "run_id": str(run_id)}
 
-    except Exception as e:
+    except Exception as error:
         session.rollback()
-        logger.error(f"[Log-System] update_run_log_finish 실패: {e}")
-        raise self.retry(exc=e, countdown=2**self.request.retries)
+        _retry_workflow_run_log_task(
+            self,
+            operation="finish",
+            error=error,
+        )
     finally:
         session.close()
 
@@ -444,10 +467,13 @@ def update_run_log_error(self, data: Dict[str, Any]):
 
         return {"status": "success", "run_id": str(run_id)}
 
-    except Exception as e:
+    except Exception as error:
         session.rollback()
-        logger.error(f"[Log-System] update_run_log_error 실패: {e}")
-        raise self.retry(exc=e, countdown=2**self.request.retries)
+        _retry_workflow_run_log_task(
+            self,
+            operation="error",
+            error=error,
+        )
     finally:
         session.close()
 

@@ -40,6 +40,7 @@ Audit와 trace는 workflow 실행, RAG retrieval, LLM 호출, permission/policy 
 - Schedule outcome unknown acknowledgment는 `schedule_dispatch.outcome_reviewed` action, `schedule_dispatch_claim` target과 exact claim id를 사용한다. Metadata는 durable `organization_id`, allowlisted `operation_correlation_id`, `outcome_resolution_code`만 허용하고 두 operation field는 정확한 action/target 조합에서만 detail에 표시한다. Raw incident note, provider response, workflow input/output를 저장하지 않는다 ([ADR-0024](../../decisions/ADR-0024-distributed-schedule-dispatch-claim.md)).
 - Schedule outcome review claim update와 AuditLog는 같은 UnitOfWork에서 commit한다. Recorder가 생성한 audit id만 claim에 연결하며 CLI가 audit id/actor id를 입력하거나 adapter가 독립 commit해서는 안 된다.
 - Schedule WorkflowRun visibility signal은 `schedule_dispatch.workflow_run_missing`, `schedule_dispatch_claim` exact target, `actor_id=NULL`, `actor_type=system`을 사용한다. Metadata는 canonical `organization_id`와 fixed reason만 허용하며 claim marker와 audit을 같은 UnitOfWork에서 한 번만 기록한다. 이는 Log System 지연/누락 관측이며 WorkflowRun 재생성, engine replay, raw run identity 또는 payload 보관을 의미하지 않는다.
+- Schedule-correlated WorkflowRun의 Log System create/finish/error 재시도는 raw storage/provider exception을 로그 또는 retry result에 전달하지 않고, static operation label과 exception type만 기록해야 한다.
 - `Schedule.next_run_at`/`last_run_at` system operational update는 generic configuration data-change audit에서 field-level 제외한다. Cron/timezone/activation/lifecycle 변경 audit과 unrelated tracked mutation은 유지하며 claim ledger를 generic listener 대상으로 추가하지 않는다.
 
 ## Policies And Edge Cases

@@ -5,7 +5,9 @@ docs/features/chatbot-deployment/test_cases.md:
   conversation_id가 WorkflowRun.conversation_id 컬럼에 저장되어야 한다.
 """
 
+import logging
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from uuid import uuid4
 
 from apps.log_system import tasks as log_tasks
@@ -60,6 +62,22 @@ class _CaptureSession:
         pass
 
 
+class _RetryRequested(Exception):
+    pass
+
+
+class _RetryTask:
+    def __init__(self):
+        self.request = SimpleNamespace(retries=2)
+        self.error = None
+        self.countdown = None
+
+    def retry(self, *, exc, countdown):
+        self.error = exc
+        self.countdown = countdown
+        raise _RetryRequested()
+
+
 def _run_create_run_log(data, monkeypatch):
     session = _CaptureSession()
     monkeypatch.setattr(log_tasks, "SessionLocal", lambda: session)
@@ -106,6 +124,26 @@ def test_null_executor_without_schedule_correlation_is_rejected(monkeypatch):
             _base_data(user_id=None, trigger_mode="manual"),
             monkeypatch,
         )
+
+
+def test_workflow_run_log_retry_redacts_raw_exception(caplog):
+    import pytest
+
+    task = _RetryTask()
+    raw_detail = "credential=do-not-log"
+
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(_RetryRequested):
+            log_tasks._retry_workflow_run_log_task(
+                task,
+                operation="create",
+                error=RuntimeError(raw_detail),
+            )
+
+    assert raw_detail not in caplog.text
+    assert "error_type=RuntimeError" in caplog.text
+    assert str(task.error) == "workflow run log storage retry requested"
+    assert task.countdown == 4
 
 
 class _QuerySession:
