@@ -208,8 +208,11 @@ Demo 주요 workflow:
 
 - `사내 문서 질문 응답 봇`
 - `Enterprise 고객 티켓 처리`
+- `비용 최적화 테스트 (RAG 미사용)`
 - `테스트용 문의 응답 워크플로우`
 - 비용 위험 표시용 workflow 3종
+
+`비용 최적화 테스트 (RAG 미사용)`은 Start → LLM → Answer만 포함하며 Knowledge Base를 사용하지 않는다. author 계정에서 Cost Optimizer의 추천 테스트를 실행할 때 RAG 검색 결과와 무관하게 B 후보의 실제 LLM token과 비용을 비교하기 위한 workflow다. demo seed는 이 workflow의 비교 가능한 성공 run과 `llm_usage_logs` 비용 기록을 함께 생성한다.
 
 ## Demo Knowledge / RAG 데이터
 

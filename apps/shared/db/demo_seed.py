@@ -263,6 +263,7 @@ APP_IDS = {
     "ticket_ops_risk": _uuid(403),
     "ticket_ops_paused": _uuid(404),
     "test_inquiry": _uuid(405),
+    "cost_optimizer_simple": _uuid(406),
     "model_router_ticket_ops": uuid.UUID("91000000-0000-0000-0000-000000000001"),
 }
 
@@ -959,6 +960,7 @@ def demo_summary(profile: str = "demo") -> dict[str, Any]:
         "apps": [
             "사내 문서 질문 응답 봇",
             "Enterprise 고객 티켓 처리",
+            "비용 최적화 테스트 (RAG 미사용)",
             "테스트용 문의 응답 워크플로우",
         ],
         "reset_scope": "demo seed fixed UUID rows only",
@@ -1853,6 +1855,66 @@ def _ticket_ops_graph() -> dict[str, Any]:
     }
 
 
+def _cost_optimizer_simple_graph() -> dict[str, Any]:
+    return {
+        "nodes": [
+            _node(
+                "start-prompt",
+                "startNode",
+                120,
+                120,
+                {
+                    **_base_node_data("테스트 시작", "비용 최적화 비교 실행을 시작합니다.", 1),
+                    "triggerType": "manual",
+                    "trigger_type": "manual",
+                    "variables": [],
+                },
+            ),
+            _node(
+                "llm-triage",
+                "llmNode",
+                540,
+                120,
+                {
+                    **_base_node_data(
+                        "간단한 요약 생성",
+                        "RAG 없이 고정 프롬프트로 비용과 토큰을 비교합니다.",
+                        2,
+                        ["model_id", "user_prompt", "parameters"],
+                    ),
+                    "provider": "openai",
+                    "model_id": DEMO_CHAT_MODEL,
+                    "system_prompt": "사용자의 요청을 간결하고 명확한 한국어 한 문장으로 정리합니다.",
+                    "user_prompt": "Nodease는 기업 내부 AI workflow의 비용과 품질을 함께 관리합니다. 이 문장을 한 문장으로 요약하세요.",
+                    "referenced_variables": [],
+                    "parameters": {"temperature": 0.7, "max_tokens": 1000},
+                },
+            ),
+            _node(
+                "answer",
+                "answerNode",
+                960,
+                120,
+                {
+                    **_base_node_data("요약 결과", "LLM의 요약 결과를 반환합니다.", 3),
+                    "outputs": [
+                        {
+                            "variable": "answer_text",
+                            "label": "요약",
+                            "value_selector": ["llm-triage", "text"],
+                        }
+                    ],
+                },
+            ),
+        ],
+        "edges": [
+            _edge("edge-start-llm", "start-prompt", "llm-triage"),
+            _edge("edge-llm-answer", "llm-triage", "answer"),
+        ],
+        "viewport": {"x": 40, "y": 80, "zoom": 0.85},
+    }
+
+
 def _model_router_ticket_ops_graph() -> dict[str, Any]:
     graph = _ticket_ops_graph()
     for node in graph["nodes"]:
@@ -2644,6 +2706,15 @@ def _seed_apps_and_workflows(db: Session) -> dict[str, Workflow]:
             _test_inquiry_graph(),
             deployed=True,
         ),
+        "cost_optimizer_simple": _upsert_app_workflow(
+            db,
+            "cost_optimizer_simple",
+            "비용 최적화 테스트 (RAG 미사용)",
+            "RAG 없이 LLM 비용, 토큰, 실행 시간 비교를 확인하는 데모 workflow",
+            "author",
+            _cost_optimizer_simple_graph(),
+            deployed=True,
+        ),
     }
 
     # 운영 현황 상단 위험 패널 확인용 추가 앱.
@@ -2737,8 +2808,15 @@ def _seed_permissions(db: Session) -> None:
     for row_id, model, values in permission_specs:
         _upsert_by_id(db, model, row_id, values)
 
-    # 운영자에게 위험 패널용 workflow도 직접 manager 권한을 준다.
-    for index, workflow_key in enumerate(["ticket_ops_warning", "ticket_ops_risk", "ticket_ops_paused"]):
+    # 운영자에게 비용 시연용 workflow도 직접 manager 권한을 준다.
+    for index, workflow_key in enumerate(
+        [
+            "ticket_ops_warning",
+            "ticket_ops_risk",
+            "ticket_ops_paused",
+            "cost_optimizer_simple",
+        ]
+    ):
         _upsert_by_id(
             db,
             UserWorkflowPermission,
@@ -2870,6 +2948,15 @@ def _seed_run(
     deployment_id = app.active_deployment_id if app else None
     finished_at = started_at + timedelta(seconds=duration)
     outputs = {"answer_text": output_text} if output_text else None
+    is_simple_cost_optimizer = workflow_key == "cost_optimizer_simple"
+    run_inputs = (
+        {}
+        if is_simple_cost_optimizer
+        else {
+            "customerTier": "enterprise",
+            "message": "결제 API 장애로 크레딧 보상 가능 여부를 확인해 주세요.",
+        }
+    )
     run = _upsert_by_id(
         db,
         WorkflowRun,
@@ -2881,11 +2968,12 @@ def _seed_run(
             "deployment_id": deployment_id,
             "workflow_version": 1,
             "status": status,
-            "trigger_mode": RunTriggerMode.WEBHOOK,
-            "inputs": {
-                "customerTier": "enterprise",
-                "message": "결제 API 장애로 크레딧 보상 가능 여부를 확인해 주세요.",
-            },
+            "trigger_mode": (
+                RunTriggerMode.API
+                if is_simple_cost_optimizer
+                else RunTriggerMode.WEBHOOK
+            ),
+            "inputs": run_inputs,
             "outputs": outputs,
             "error_message": error_message,
             "started_at": started_at,
@@ -2905,31 +2993,60 @@ def _seed_run(
     )
     db.flush()
 
-    node_specs = [
-        ("webhook-ticket", "webhookTrigger", 0.02, {"message": run.inputs["message"]}),
-        (
-            "llm-triage",
-            "llmNode",
-            max(duration - 0.15, 0.5),
-            {
-                "text": output_text or "실행 실패",
-                "model": model_name,
-                "usage": {
-                    "prompt_tokens": prompt_tokens,
-                    "completion_tokens": completion_tokens,
+    if is_simple_cost_optimizer:
+        node_specs = [
+            ("start-prompt", "startNode", 0.02, {}),
+            (
+                "llm-triage",
+                "llmNode",
+                max(duration - 0.05, 0.5),
+                {
+                    "text": output_text or "실행 실패",
+                    "model": model_name,
+                    "usage": {
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                    },
                 },
-            },
-        ),
-        (
-            "extract-ticket",
-            "variableExtractionNode",
-            0.03,
-            {"approvalRequired": True, "mailDraft": output_text},
-        ),
-        ("condition-approval", "conditionNode", 0.01, {"selected_handle": "approval"}),
-        ("template-approval", "templateNode", 0.01, {"text": output_text}),
-        ("answer-approval", "answerNode", 0.01, outputs),
-    ]
+            ),
+            ("answer", "answerNode", 0.01, outputs),
+        ]
+    else:
+        node_specs = [
+            (
+                "webhook-ticket",
+                "webhookTrigger",
+                0.02,
+                {"message": run.inputs["message"]},
+            ),
+            (
+                "llm-triage",
+                "llmNode",
+                max(duration - 0.15, 0.5),
+                {
+                    "text": output_text or "실행 실패",
+                    "model": model_name,
+                    "usage": {
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                    },
+                },
+            ),
+            (
+                "extract-ticket",
+                "variableExtractionNode",
+                0.03,
+                {"approvalRequired": True, "mailDraft": output_text},
+            ),
+            (
+                "condition-approval",
+                "conditionNode",
+                0.01,
+                {"selected_handle": "approval"},
+            ),
+            ("template-approval", "templateNode", 0.01, {"text": output_text}),
+            ("answer-approval", "answerNode", 0.01, outputs),
+        ]
     for index, (node_id, node_type, node_duration, node_outputs) in enumerate(node_specs):
         node_run_id = _uuid(3000 + node_prefix * 10 + index)
         _upsert_by_id(
@@ -2943,7 +3060,11 @@ def _seed_run(
                 "status": NodeRunStatus.FAILED
                 if status == RunStatus.FAILED and node_id == "llm-triage"
                 else NodeRunStatus.SUCCESS,
-                "inputs": run.inputs if node_id == "webhook-ticket" else {"previous": "redacted"},
+                "inputs": (
+                    run.inputs
+                    if node_id in {"webhook-ticket", "start-prompt"}
+                    else {"previous": "redacted"}
+                ),
                 "process_data": {
                     **_demo_options(f"node-run-{node_prefix}-{index}"),
                     "node_options": node_data_by_id.get(node_id, {}),
@@ -3118,6 +3239,19 @@ def _seed_runs_and_usage(db: Session, models: dict[str, LLMModel]) -> None:
             280,
             765,
             2700,
+        ),
+        (
+            "cost_optimizer_simple",
+            "author",
+            RunStatus.SUCCESS,
+            3.6,
+            4200,
+            Decimal("0.0340"),
+            "Nodease는 기업 내부 AI workflow의 비용과 품질을 함께 관리하는 서비스입니다.",
+            DEMO_CHAT_MODEL,
+            3500,
+            700,
+            3600,
         ),
     ]
 
