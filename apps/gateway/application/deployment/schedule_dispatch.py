@@ -25,12 +25,15 @@ from apps.shared.domain.schedule_dispatch import (
     REASON_DEPLOYMENT_NOT_CURRENT,
     REASON_DEPLOYMENT_NOT_FOUND,
     REASON_DEPLOYMENT_TYPE_NOT_ALLOWED,
+    REASON_ENQUEUE_ATTEMPTS_EXHAUSTED,
     REASON_ORGANIZATION_SCOPE_MISMATCH,
     REASON_ORGANIZATION_SCOPE_MISSING,
     REASON_SCHEDULE_DEPLOYMENT_MISMATCH,
     REASON_SCHEDULE_NOT_FOUND,
     STATUS_CANCELED,
+    STATUS_DEAD_LETTERED,
     ScheduleDispatchSettings,
+    next_dispatch_attempt,
     retry_delay_seconds,
 )
 
@@ -95,13 +98,32 @@ class ScheduleDispatchUseCase:
                         reason=REASON_BUDGET_BLOCKED,
                     )
                     continue
+
+                next_attempt, already_exhausted = next_dispatch_attempt(
+                    claim.attempt_count,
+                    max_attempts=self.settings.max_attempts,
+                )
+                if already_exhausted and claim.attempt_count >= self.settings.max_attempts:
+                    repository.mark_pre_dispatch_terminal(
+                        claim,
+                        status=STATUS_DEAD_LETTERED,
+                        reason=REASON_ENQUEUE_ATTEMPTS_EXHAUSTED,
+                        now=now,
+                    )
+                    audit.record_policy_result(
+                        organization_id=claim.organization_id,
+                        claim_id=claim.claim_id,
+                        action="schedule_dispatch.deferred",
+                        reason=REASON_ENQUEUE_ATTEMPTS_EXHAUSTED,
+                    )
+                    continue
                 if decision.status == "unavailable":
-                    next_attempt = claim.attempt_count + 1
                     exhausted = next_attempt >= self.settings.max_attempts
                     repository.mark_budget_unavailable(
                         claim,
                         now=now,
                         exhausted=exhausted,
+                        attempt_count=next_attempt,
                         next_attempt_at=(
                             None
                             if exhausted
@@ -120,6 +142,7 @@ class ScheduleDispatchUseCase:
                     claim,
                     owner=owner,
                     now=now,
+                    attempt_count=next_attempt,
                     lease_expires_at=now
                     + timedelta(seconds=self.settings.lease_seconds),
                 )
@@ -181,15 +204,14 @@ class ScheduleDispatchUseCase:
             uow.rollback()
             raise
 
-    def recover(
+    def recover_critical(
         self,
         *,
         repository: ScheduleDispatchRepositoryPort,
-        audit: ScheduleDispatchAuditRecorderPort,
         uow: ScheduleDispatchUnitOfWork,
-    ) -> tuple[int, int, int, int]:
+    ) -> tuple[int, int]:
         if not self.settings.processes_existing_claims:
-            return (0, 0, 0, 0)
+            return (0, 0)
         try:
             now = repository.database_now()
             retried = repository.recover_expired_claims(
@@ -202,6 +224,23 @@ class ScheduleDispatchUseCase:
                 now=now,
                 limit=self.settings.recovery_batch_size,
             )
+            uow.commit()
+            return (retried, unknown)
+        except Exception:
+            uow.rollback()
+            raise
+
+    def maintain_visibility(
+        self,
+        *,
+        repository: ScheduleDispatchRepositoryPort,
+        audit: ScheduleDispatchAuditRecorderPort,
+        uow: ScheduleDispatchUnitOfWork,
+    ) -> int:
+        if not self.settings.processes_existing_claims:
+            return 0
+        try:
+            now = repository.database_now()
             visibility_gaps = repository.lock_workflow_run_visibility_gaps(
                 now=now,
                 grace_seconds=self.settings.workflow_run_visibility_timeout_seconds,
@@ -216,6 +255,22 @@ class ScheduleDispatchUseCase:
                     gap.claim_id,
                     now=now,
                 )
+            uow.commit()
+            return len(visibility_gaps)
+        except Exception:
+            uow.rollback()
+            raise
+
+    def cleanup_terminal_claims(
+        self,
+        *,
+        repository: ScheduleDispatchRepositoryPort,
+        uow: ScheduleDispatchUnitOfWork,
+    ) -> int:
+        if not self.settings.processes_existing_claims:
+            return 0
+        try:
+            now = repository.database_now()
             cleaned = repository.cleanup_terminal_claims(
                 now=now,
                 retention_days=self.settings.retention_days,
@@ -223,7 +278,7 @@ class ScheduleDispatchUseCase:
                 limit=self.settings.cleanup_batch_size,
             )
             uow.commit()
-            return (retried, unknown, len(visibility_gaps), cleaned)
+            return cleaned
         except Exception:
             uow.rollback()
             raise

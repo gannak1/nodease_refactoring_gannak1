@@ -201,9 +201,19 @@ class DeploymentService:
         except HTTPException:
             db.rollback()
             raise
-        except Exception as e:
+        except Exception as exc:
             db.rollback()
-            raise HTTPException(status_code=400, detail=str(e))
+            logger.error(
+                "Deployment creation failed: error_type=%s",
+                type(exc).__name__,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "code": "deployment.creation_failed",
+                    "message": "Deployment could not be created.",
+                },
+            ) from None
 
     @staticmethod
     def preview_knowledge_preflight(

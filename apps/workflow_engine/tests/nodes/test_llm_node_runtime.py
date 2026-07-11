@@ -418,6 +418,178 @@ def test_llm_node_auto_model_routing_without_policy_uses_stored_model(monkeypatc
     assert result["usage"] == {"prompt_tokens": 1, "completion_tokens": 1}
 
 
+def test_system_schedule_uses_credential_principal_without_rag_subject(monkeypatch):
+    credential_user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    captured = {}
+    usage_calls = []
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4.1",
+        system_prompt="sys",
+        user_prompt="user",
+        assistant_prompt=None,
+        referenced_variables=[],
+        context_variable=None,
+        parameters={},
+    )
+    node = LLMNode(
+        "llm-schedule",
+        data,
+        execution_context={
+            "db": object(),
+            "user_id": None,
+            "credential_principal": {
+                "subject_type": "user",
+                "subject_id": str(credential_user_id),
+            },
+            "organization_id": str(organization_id),
+            "trigger_mode": "schedule",
+        },
+    )
+
+    def fake_runtime_client(db, *, user_id, model_id, organization_id):
+        captured.update(
+            user_id=user_id,
+            model_id=model_id,
+            organization_id=organization_id,
+        )
+        return LLMRuntimeSelection(
+            client=DummyClient(),
+            credential_id=uuid.uuid4(),
+            model_id=model_id,
+            organization_id=organization_id,
+        )
+
+    monkeypatch.setattr(LLMService, "get_runtime_client_for_user", fake_runtime_client)
+    monkeypatch.setattr(LLMService, "calculate_cost", lambda *args, **kwargs: 0.0)
+    monkeypatch.setattr(
+        LLMService,
+        "log_usage",
+        lambda *args, **kwargs: usage_calls.append(kwargs),
+    )
+
+    result = node.execute({})
+
+    assert result["text"] == "hello world"
+    assert captured == {
+        "user_id": credential_user_id,
+        "model_id": "gpt-4.1",
+        "organization_id": organization_id,
+    }
+    assert usage_calls[0]["user_id"] == credential_user_id
+    assert node._resolve_rag_execution_subject() is None  # noqa: SLF001
+
+
+def test_system_schedule_uses_credential_principal_for_routing_models(monkeypatch):
+    credential_user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    node = LLMNode.__new__(LLMNode)
+    node.data = SimpleNamespace(model_id="gpt-4.1")
+    node.execution_context = {
+        "user_id": None,
+        "credential_principal": {
+            "subject_type": "user",
+            "subject_id": str(credential_user_id),
+        },
+        "organization_id": str(organization_id),
+    }
+    captured = {}
+
+    def available(_db, *, user_id, organization_id):
+        captured.update(user_id=user_id, organization_id=organization_id)
+        return ["gpt-4.1", "gpt-4.1-mini"]
+
+    monkeypatch.setattr(
+        LLMService,
+        "get_runtime_available_model_ids_for_user",
+        available,
+    )
+
+    assert node._available_routing_model_ids(object()) == [  # noqa: SLF001
+        "gpt-4.1",
+        "gpt-4.1-mini",
+    ]
+    assert captured == {
+        "user_id": credential_user_id,
+        "organization_id": organization_id,
+    }
+
+
+def test_system_schedule_provider_fallback_uses_credential_principal(monkeypatch):
+    credential_user_id = uuid.uuid4()
+    expected_organization_id = uuid.uuid4()
+    requested_models = []
+
+    class _PrimaryClient:
+        def invoke_sync(self, **_kwargs):
+            raise RuntimeError("raw provider response must not escape")
+
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="gpt-4.1",
+        fallback_model_id="gpt-4.1-mini",
+        system_prompt="sys",
+        user_prompt="user",
+        assistant_prompt=None,
+        referenced_variables=[],
+        context_variable=None,
+        parameters={},
+    )
+    node = LLMNode(
+        "llm-schedule-fallback",
+        data,
+        execution_context={
+            "db": object(),
+            "user_id": None,
+            "credential_principal": {
+                "subject_type": "user",
+                "subject_id": str(credential_user_id),
+            },
+            "organization_id": str(expected_organization_id),
+            "trigger_mode": "schedule",
+        },
+    )
+
+    def runtime_client(_db, *, user_id, model_id, organization_id):
+        assert user_id == credential_user_id
+        assert organization_id == expected_organization_id
+        requested_models.append(model_id)
+        return LLMRuntimeSelection(
+            client=_PrimaryClient() if model_id == "gpt-4.1" else DummyClient(),
+            credential_id=uuid.uuid4(),
+            model_id=model_id,
+            organization_id=organization_id,
+        )
+
+    monkeypatch.setattr(LLMService, "get_runtime_client_for_user", runtime_client)
+    monkeypatch.setattr(LLMService, "calculate_cost", lambda *args, **kwargs: 0.0)
+    monkeypatch.setattr(LLMService, "log_usage", lambda *args, **kwargs: None)
+
+    result = node.execute({})
+
+    assert requested_models == ["gpt-4.1", "gpt-4.1-mini"]
+    assert result["model"] == "gpt-4.1-mini"
+
+
+@pytest.mark.parametrize(
+    "principal",
+    [
+        "not-an-object",
+        {"subject_type": "service_account", "subject_id": str(uuid.uuid4())},
+        {"subject_type": "user", "subject_id": "not-a-uuid"},
+    ],
+)
+def test_invalid_credential_principal_fails_closed(principal):
+    node = LLMNode.__new__(LLMNode)
+    node.execution_context = {"credential_principal": principal}
+
+    with pytest.raises(PermissionError):
+        node._resolve_credential_principal_user()  # noqa: SLF001
+
+
 def test_llm_node_policy_is_limited_to_models_usable_by_current_execution_subject(
     monkeypatch,
 ):
@@ -1104,6 +1276,59 @@ def test_llm_node_logs_fallback_model_when_primary_client_selection_fails(
     assert cost_calls[0]["model_id"] == "fallback-model"
     assert log_calls[0]["model_id"] == "fallback-model"
     assert log_calls[0]["credential_id"] == fallback_credential_id
+
+
+def test_client_selection_fallback_is_not_invoked_twice_on_provider_failure(
+    monkeypatch,
+):
+    fallback_client = FailingClient()
+    organization_id = uuid.uuid4()
+    service_calls = []
+
+    def runtime_client(_db, user_id, model_id, organization_id=None):
+        service_calls.append(model_id)
+        if model_id == "primary-model":
+            raise LLMCredentialNotAvailableError(
+                "credential_use_denied",
+                "primary denied",
+                model_id=model_id,
+                organization_id=organization_id,
+            )
+        return SimpleNamespace(
+            client=fallback_client,
+            credential_id=uuid.uuid4(),
+            model_id=model_id,
+            organization_id=organization_id,
+        )
+
+    monkeypatch.setattr(LLMService, "get_runtime_client_for_user", runtime_client)
+    data = LLMNodeData(
+        title="LLM",
+        provider="openai",
+        model_id="primary-model",
+        fallback_model_id="fallback-model",
+        system_prompt="sys",
+        user_prompt="user",
+        assistant_prompt=None,
+        referenced_variables=[],
+        context_variable=None,
+        parameters={},
+    )
+    node = LLMNode(
+        "llm-fallback-once",
+        data,
+        execution_context={
+            "user_id": str(uuid.uuid4()),
+            "organization_id": str(organization_id),
+            "db": object(),
+        },
+    )
+
+    with pytest.raises(RuntimeError):
+        node.execute({})
+
+    assert service_calls == ["primary-model", "fallback-model"]
+    assert len(fallback_client.calls) == 1
 
 
 def test_llm_node_logs_usage_with_selected_credential_id(monkeypatch):

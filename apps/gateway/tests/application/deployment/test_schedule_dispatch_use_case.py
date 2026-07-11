@@ -19,6 +19,7 @@ from apps.shared.domain.deployment_runtime_policy import (
 )
 from apps.shared.domain.schedule_dispatch import (
     MODE_CLAIM,
+    REASON_ENQUEUE_ATTEMPTS_EXHAUSTED,
     REASON_ORGANIZATION_SCOPE_MISMATCH,
     ScheduleDispatchSettings,
 )
@@ -169,6 +170,7 @@ def test_valid_claim_is_leased_and_prepared_for_deterministic_publish():
     assert requests[0].task_id == claim.idempotency_key
     assert requests[0].lease_owner == "opaque-owner"
     assert len(repository.dispatching) == 1
+    assert repository.dispatching[0][1]["attempt_count"] == 1
 
 
 def test_canonical_organization_mismatch_cancels_before_publish():
@@ -206,6 +208,47 @@ def test_budget_unavailable_is_not_published():
 
     assert requests == ()
     assert len(repository.budget_unavailable) == 1
+    assert repository.budget_unavailable[0][1]["attempt_count"] == 1
+
+
+def test_pending_claim_at_attempt_limit_is_dead_lettered_without_publish():
+    claim = replace(_claim(), attempt_count=5)
+    repository = _Repository(claim, _context(claim))
+
+    requests = _use_case().prepare_publish_batch(
+        repository=repository,
+        budget=_Budget(),
+        audit=_Audit(),
+        uow=_Uow(),
+        owner="opaque-owner",
+    )
+
+    assert requests == ()
+    assert repository.dispatching == []
+    assert repository.terminal[0][1] == {
+        "status": "dead_lettered",
+        "reason": REASON_ENQUEUE_ATTEMPTS_EXHAUSTED,
+        "now": NOW,
+    }
+
+
+def test_final_budget_unavailable_attempt_is_dead_lettered_at_exact_limit():
+    claim = replace(_claim(), attempt_count=4)
+    repository = _Repository(claim, _context(claim))
+
+    requests = _use_case().prepare_publish_batch(
+        repository=repository,
+        budget=_Budget("unavailable"),
+        audit=_Audit(),
+        uow=_Uow(),
+        owner="opaque-owner",
+    )
+
+    assert requests == ()
+    transition = repository.budget_unavailable[0][1]
+    assert transition["attempt_count"] == 5
+    assert transition["exhausted"] is True
+    assert transition["next_attempt_at"] is None
 
 
 def test_publish_result_is_recorded_in_separate_transaction():
@@ -232,15 +275,19 @@ def test_publish_result_is_recorded_in_separate_transaction():
     assert result_uow.commits == 1
 
 
-def test_recovery_scans_delivery_execution_and_retention_boundaries():
+def test_critical_recovery_scans_delivery_and_execution_deadlines():
     claim = _claim()
     repository = _Repository(claim, _context(claim))
 
-    assert _use_case().recover(
+    assert _use_case().recover_critical(
         repository=repository,
-        audit=_Audit(),
         uow=_Uow(),
-    ) == (1, 2, 0, 3)
+    ) == (1, 2)
+
+    assert _use_case().cleanup_terminal_claims(
+        repository=repository,
+        uow=_Uow(),
+    ) == 3
 
 
 def test_recovery_reports_each_missing_workflow_run_once_without_replay():
@@ -255,13 +302,13 @@ def test_recovery_reports_each_missing_workflow_run_once_without_replay():
     ]
     audit = _Audit()
 
-    result = _use_case().recover(
+    result = _use_case().maintain_visibility(
         repository=repository,
         audit=audit,
         uow=_Uow(),
     )
 
-    assert result == (1, 2, 1, 3)
+    assert result == 1
     assert audit.events[-1] == {
         "organization_id": claim.organization_id,
         "claim_id": claim.claim_id,

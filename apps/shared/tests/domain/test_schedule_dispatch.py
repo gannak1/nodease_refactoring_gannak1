@@ -26,6 +26,7 @@ from apps.shared.domain.schedule_dispatch import (
     ScheduleDispatchDomainError,
     ScheduleDispatchSettings,
     ensure_transition_allowed,
+    next_dispatch_attempt,
     retry_delay_seconds,
     schedule_dispatch_settings_from_environment,
     schedule_idempotency_key,
@@ -64,6 +65,65 @@ def test_schedule_idempotency_key_normalizes_timezone():
 
 def test_schedule_idempotency_key_preserves_microseconds():
     assert schedule_idempotency_key(SCHEDULE_ID, NOW + timedelta(microseconds=1)) != _key()
+
+
+@pytest.mark.parametrize(
+    ("current", "maximum", "expected"),
+    [
+        (0, 5, (1, False)),
+        (4, 5, (5, True)),
+        (5, 5, (5, True)),
+        (6, 5, (6, True)),
+    ],
+)
+def test_next_dispatch_attempt_is_bounded(current, maximum, expected):
+    assert next_dispatch_attempt(current, max_attempts=maximum) == expected
+
+
+@pytest.mark.parametrize(("current", "maximum"), [(-1, 5), (0, 0)])
+def test_next_dispatch_attempt_rejects_invalid_values(current, maximum):
+    with pytest.raises(ScheduleDispatchDomainError):
+        next_dispatch_attempt(current, max_attempts=maximum)
+
+
+def test_schedule_dispatch_mode_fingerprint_must_match_process_mode():
+    with pytest.raises(ScheduleDispatchDomainError, match="fingerprint"):
+        schedule_dispatch_settings_from_environment(
+            {
+                "SCHEDULE_DISPATCH_MODE": "claim",
+                "SCHEDULE_DISPATCH_MODE_FINGERPRINT": "disabled",
+            }
+        )
+
+    settings = schedule_dispatch_settings_from_environment(
+        {
+            "SCHEDULE_DISPATCH_MODE": "drain",
+            "SCHEDULE_DISPATCH_MODE_FINGERPRINT": (
+                "v1|drain|5|50|10|50|100|60|120|900|120|5|5|30|180"
+            ),
+        }
+    )
+    assert settings.mode == "drain"
+
+
+def test_non_disabled_schedule_dispatch_requires_full_settings_fingerprint():
+    with pytest.raises(ScheduleDispatchDomainError, match="fingerprint is required"):
+        schedule_dispatch_settings_from_environment(
+            {"SCHEDULE_DISPATCH_MODE": "claim"}
+        )
+
+
+def test_schedule_dispatch_fingerprint_covers_non_mode_settings():
+    with pytest.raises(ScheduleDispatchDomainError, match="fingerprint"):
+        schedule_dispatch_settings_from_environment(
+            {
+                "SCHEDULE_DISPATCH_MODE": "claim",
+                "SCHEDULE_DISPATCH_LEASE_SECONDS": "61",
+                "SCHEDULE_DISPATCH_MODE_FINGERPRINT": (
+                    "v1|claim|5|50|10|50|100|60|120|900|120|5|5|30|180"
+                ),
+            }
+        )
 
 
 @pytest.mark.parametrize("value", [datetime(2026, 7, 10), None])
@@ -164,6 +224,9 @@ def test_settings_factory_defaults_to_disabled_and_reads_explicit_values():
             "SCHEDULE_DISPATCH_MODE": "claim",
             "SCHEDULE_DISPATCH_POLL_SECONDS": "7",
             "SCHEDULE_DISPATCH_MAX_ATTEMPTS": "8",
+            "SCHEDULE_DISPATCH_MODE_FINGERPRINT": (
+                "v1|claim|7|50|10|50|100|60|120|900|120|8|5|30|180"
+            ),
         }
     )
 
@@ -213,6 +276,37 @@ def test_pending_claim_state_accepts_bounded_retry_fields():
         safe_reason_code=REASON_BROKER_ENQUEUE_FAILED,
     )
     state.validate()
+
+
+@pytest.mark.parametrize(
+    ("status", "fields"),
+    [
+        (STATUS_PENDING, {}),
+        (
+            STATUS_DISPATCHING,
+            {
+                "lease_owner": "gateway",
+                "lease_expires_at": NOW + timedelta(minutes=1),
+                "celery_task_id": _key(),
+            },
+        ),
+        (
+            STATUS_ENQUEUED,
+            {
+                "celery_task_id": _key(),
+                "enqueued_at": NOW,
+                "lease_expires_at": NOW + timedelta(minutes=2),
+            },
+        ),
+    ],
+)
+def test_pre_admission_claim_rejects_workflow_run_correlation(status, fields):
+    with pytest.raises(ScheduleDispatchDomainError):
+        _state(
+            status=status,
+            workflow_run_id=uuid.uuid4(),
+            **fields,
+        ).validate()
 
 
 def test_running_claim_requires_admission_correlation():
@@ -278,6 +372,37 @@ def test_reviewed_outcome_unknown_is_valid_and_not_replayable():
     state.validate()
     with pytest.raises(ScheduleDispatchDomainError):
         ensure_transition_allowed(state.status, STATUS_ENQUEUED)
+
+
+@pytest.mark.parametrize(
+    "reason",
+    ["execution_failed_after_admission", "execution_outcome_unknown"],
+)
+def test_post_admission_dead_letter_requires_complete_run_correlation(reason):
+    with pytest.raises(ScheduleDispatchDomainError):
+        _state(
+            status=STATUS_DEAD_LETTERED,
+            workflow_run_id=uuid.uuid4(),
+            completed_at=NOW,
+            safe_reason_code=reason,
+        ).validate()
+
+
+@pytest.mark.parametrize(
+    "reason",
+    ["budget_evaluation_failed", "enqueue_attempts_exhausted"],
+)
+def test_pre_admission_dead_letter_rejects_workflow_run_correlation(reason):
+    with pytest.raises(ScheduleDispatchDomainError):
+        _state(
+            status=STATUS_DEAD_LETTERED,
+            celery_task_id=_key(),
+            workflow_run_id=uuid.uuid4(),
+            enqueued_at=NOW,
+            started_at=NOW,
+            completed_at=NOW,
+            safe_reason_code=reason,
+        ).validate()
 
 
 def test_claim_rejects_mismatched_celery_task_id():

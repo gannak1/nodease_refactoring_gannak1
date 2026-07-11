@@ -7,9 +7,10 @@ from typing import Optional
 from apps.shared.db.base import Base
 from apps.shared.domain.schedule_dispatch import (
     CANCELED_REASONS,
-    DEAD_LETTER_REASONS,
     OUTCOME_RESOLUTIONS,
     PENDING_REASONS,
+    POST_ADMISSION_DEAD_LETTER_REASONS,
+    PRE_ADMISSION_DEAD_LETTER_REASONS,
     REASON_EXECUTION_OUTCOME_UNKNOWN,
     SCHEDULE_DISPATCH_STATUSES,
     STATUS_CANCELED,
@@ -65,8 +66,9 @@ def _status_field_constraint() -> str:
             f"(status = 'canceled' AND {terminal_common} "
             "AND workflow_run_id IS NULL AND started_at IS NULL)",
             f"(status = 'dead_lettered' AND {terminal_common} "
-            "AND (started_at IS NULL OR "
-            "(workflow_run_id IS NOT NULL AND enqueued_at IS NOT NULL)))",
+            "AND ((workflow_run_id IS NULL AND started_at IS NULL) OR "
+            "(workflow_run_id IS NOT NULL AND celery_task_id IS NOT NULL "
+            "AND enqueued_at IS NOT NULL AND started_at IS NOT NULL)))",
         )
     )
 
@@ -81,8 +83,12 @@ def _safe_reason_constraint() -> str:
             f"(safe_reason_code IS NULL OR safe_reason_code IN ({_sql_values(PENDING_REASONS)})))",
             f"(status = '{STATUS_CANCELED}' AND "
             f"safe_reason_code IN ({_sql_values(CANCELED_REASONS)}))",
-            f"(status = '{STATUS_DEAD_LETTERED}' AND "
-            f"safe_reason_code IN ({_sql_values(DEAD_LETTER_REASONS)}))",
+            f"(status = '{STATUS_DEAD_LETTERED}' AND ((safe_reason_code IN "
+            f"({_sql_values(PRE_ADMISSION_DEAD_LETTER_REASONS)}) "
+            "AND workflow_run_id IS NULL AND started_at IS NULL) OR "
+            f"(safe_reason_code IN ({_sql_values(POST_ADMISSION_DEAD_LETTER_REASONS)}) "
+            "AND workflow_run_id IS NOT NULL AND celery_task_id IS NOT NULL "
+            "AND enqueued_at IS NOT NULL AND started_at IS NOT NULL)))",
             f"(status IN ({_sql_values(non_reason_statuses)}) "
             "AND safe_reason_code IS NULL)",
         )
@@ -136,6 +142,11 @@ class ScheduleDispatchClaim(Base):
         CheckConstraint(
             "next_attempt_at IS NULL OR status = 'pending'",
             name="ck_schedule_dispatch_claims_next_attempt_status",
+        ),
+        CheckConstraint(
+            "status NOT IN ('pending', 'dispatching', 'enqueued') "
+            "OR workflow_run_id IS NULL",
+            name="ck_schedule_dispatch_claims_preadmission_run",
         ),
         CheckConstraint(
             _status_field_constraint(),

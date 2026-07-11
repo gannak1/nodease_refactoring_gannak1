@@ -443,12 +443,8 @@ class LLMNode(Node[LLMNodeData]):
         """현재 execution subject가 실제로 호출할 수 있는 모델만 policy 평가에 넘긴다."""
         if db_session is None:
             return None
-        user_id_value = self.execution_context.get("user_id")
-        if not user_id_value:
-            return []
-        try:
-            user_id = uuid.UUID(str(user_id_value))
-        except (TypeError, ValueError):
+        user_id = self._resolve_credential_principal_user()
+        if user_id is None:
             return []
         organization_id = self._require_runtime_organization_id(
             user_id,
@@ -499,19 +495,11 @@ class LLMNode(Node[LLMNodeData]):
             if client_override:
                 client = client_override
             else:
-                user_id_str = self.execution_context.get("user_id")
-                if not user_id_str:
+                user_id = self._resolve_credential_principal_user()
+                if user_id is None:
                     raise ValueError(
-                        "LLM 노드 실행에는 user_id가 필요합니다. "
-                        "사용자 컨텍스트를 전달하거나 클라이언트를 주입하세요."
+                        "LLM 노드 실행에는 유효한 credential principal이 필요합니다."
                     )
-
-                try:
-                    user_id = uuid.UUID(user_id_str)
-                except (TypeError, ValueError) as exc:
-                    raise ValueError(
-                        "LLM 노드 실행에 유효한 user_id가 필요합니다."
-                    ) from exc
                 organization_id = self._require_runtime_organization_id(
                     user_id, selected_model_id
                 )
@@ -544,8 +532,10 @@ class LLMNode(Node[LLMNodeData]):
                     # [FIX] API 키 조회 실패 시 fallback 모델로 시도
                     if fallback_model_id:
                         logger.warning(
-                            f"[LLMNode] Primary model client failed: {primary_client_error}. "
-                            f"Trying fallback model: {fallback_model_id}"
+                            "[LLMNode] Primary model client failed: "
+                            "error_type=%s fallback_model=%s",
+                            type(primary_client_error).__name__,
+                            fallback_model_id,
                         )
                         try:
                             runtime_selection = LLMService.get_runtime_client_for_user(
@@ -558,9 +548,13 @@ class LLMNode(Node[LLMNodeData]):
                             selected_credential_id = runtime_selection.credential_id
                             selected_model_id = runtime_selection.model_id
                             fallback_used = True
+                            # The fallback is now the active client. Do not invoke
+                            # the same provider a second time if this call fails.
+                            fallback_model_id = None
                         except Exception as fallback_client_error:
                             logger.error(
-                                f"[LLMNode] Fallback model client also failed: {fallback_client_error}"
+                                "[LLMNode] Fallback model client failed: error_type=%s",
+                                type(fallback_client_error).__name__,
                             )
                             self._record_llm_runtime_permission_denied(
                                 user_id=user_id,
@@ -571,7 +565,8 @@ class LLMNode(Node[LLMNodeData]):
                             raise primary_client_error  # 원래 에러로 raise
                     else:
                         logger.warning(
-                            f"[LLMNode] User context found but failed to get client: {primary_client_error}."
+                            "[LLMNode] Credential client unavailable: error_type=%s",
+                            type(primary_client_error).__name__,
                         )
                         self._record_llm_runtime_permission_denied(
                             user_id=user_id,
@@ -584,9 +579,12 @@ class LLMNode(Node[LLMNodeData]):
             memory_summary = None
             try:
                 memory_summary = self._build_memory_summary()
-            except Exception as e:
+            except Exception as exc:
                 # 기억 모드 실패는 실행을 막지 않음 (비용만 스킵)
-                logger.warning(f"[LLMNode] memory summary skipped: {e}")
+                logger.warning(
+                    "[LLMNode] Memory summary skipped: error_type=%s",
+                    type(exc).__name__,
+                )
 
             # STEP 2.25 프롬프트 렌더링 -------------------------------------------
             system_render = self._render_privileged_prompt(
@@ -626,8 +624,11 @@ class LLMNode(Node[LLMNodeData]):
                         knowledge_metadata = knowledge_result.metadata
                 except PermissionError:
                     raise
-                except Exception as e:
-                    logger.error(f"[LLMNode] Knowledge search failed: {e}")
+                except Exception as exc:
+                    logger.error(
+                        "[LLMNode] Knowledge search failed: error_type=%s",
+                        type(exc).__name__,
+                    )
                     if self.data.ragFailurePolicy == "fail_node":
                         raise
                     knowledge_result = WorkflowRAGSearchResult(
@@ -742,26 +743,21 @@ class LLMNode(Node[LLMNodeData]):
             except Exception as primary_error:
                 if not fallback_model_id:
                     raise
-                logger.error(
-                    f"[LLMNode] Primary model failed: {primary_error}. "
-                    f"Trying fallback model: {fallback_model_id}"
+                logger.warning(
+                    "[LLMNode] Primary provider call failed: "
+                    "error_type=%s fallback_model=%s",
+                    type(primary_error).__name__,
+                    fallback_model_id,
                 )
                 fallback_client = None
                 if client_override:
                     fallback_client = client_override
                 else:
-                    user_id_str = self.execution_context.get("user_id")
-                    if not user_id_str:
+                    user_id = self._resolve_credential_principal_user()
+                    if user_id is None:
                         raise ValueError(
-                            "폴백 모델 실행에는 user_id가 필요합니다. "
-                            "사용자 컨텍스트를 전달하거나 클라이언트를 주입하세요."
+                            "폴백 모델 실행에는 유효한 credential principal이 필요합니다."
                         )
-                    try:
-                        user_id = uuid.UUID(user_id_str)
-                    except (TypeError, ValueError) as exc:
-                        raise ValueError(
-                            "폴백 모델 실행에 유효한 user_id가 필요합니다."
-                        ) from exc
                     organization_id = self._require_runtime_organization_id(
                         user_id, fallback_model_id
                     )
@@ -775,13 +771,16 @@ class LLMNode(Node[LLMNodeData]):
                         )
                         fallback_client = runtime_selection.client
                         selected_credential_id = runtime_selection.credential_id
-                    except Exception as e:
-                        logger.error(f"[LLMNode] Fallback client load failed: {e}.")
+                    except Exception as exc:
+                        logger.error(
+                            "[LLMNode] Fallback client load failed: error_type=%s",
+                            type(exc).__name__,
+                        )
                         self._record_llm_runtime_permission_denied(
                             user_id=user_id,
                             model_id=fallback_model_id,
                             organization_id=organization_id,
-                            error=e,
+                            error=exc,
                         )
                         raise
 
@@ -826,7 +825,7 @@ class LLMNode(Node[LLMNodeData]):
                         db_session, used_model_id, prompt_tokens, completion_tokens
                     )
 
-                    user_id_str = self.execution_context.get("user_id")
+                    usage_user_id = self._resolve_credential_principal_user()
                     workflow_run_id_str = self.execution_context.get(
                         "workflow_run_id"
                     )
@@ -844,7 +843,7 @@ class LLMNode(Node[LLMNodeData]):
                             "candidate_id"
                         )
 
-                    if user_id_str:
+                    if usage_user_id is not None:
                         try:
                             # workflow_run_id는 engine에서 string으로 넘겨준다고 가정 (execute_stream 참조)
                             wf_run_uuid = (
@@ -860,7 +859,9 @@ class LLMNode(Node[LLMNodeData]):
 
                             LLMService.log_usage(
                                 db=db_session,
-                                user_id=uuid.UUID(user_id_str),
+                                # LLMUsageLog.user_id is the legacy billing/
+                                # credential principal FK, not WorkflowRun actor.
+                                user_id=usage_user_id,
                                 model_id=used_model_id,
                                 usage=usage_for_log,
                                 cost=cost,
@@ -875,11 +876,15 @@ class LLMNode(Node[LLMNodeData]):
                             )
                         except Exception as log_err:
                             logger.error(
-                                f"[LLMNode] Failed to save usage log: {log_err}"
+                                "[LLMNode] Failed to save usage log: error_type=%s",
+                                type(log_err).__name__,
                             )
 
-            except Exception as e:
-                logger.error(f"[LLMNode] Cost calculation/logging failed: {e}")
+            except Exception as exc:
+                logger.error(
+                    "[LLMNode] Cost calculation/logging failed: error_type=%s",
+                    type(exc).__name__,
+                )
 
             self._trace_payloads = [
                 {
@@ -1894,6 +1899,22 @@ class LLMNode(Node[LLMNodeData]):
         raise PermissionError("RAG retrieval requires a valid execution subject.")
 
     def _resolve_rag_actor_user(self) -> uuid.UUID | None:
+        return self._resolve_credential_principal_user()
+
+    def _resolve_credential_principal_user(self) -> uuid.UUID | None:
+        principal = self.execution_context.get("credential_principal")
+        if principal is not None:
+            if not isinstance(principal, dict):
+                raise PermissionError("LLM credential principal is invalid.")
+            principal_type = principal.get("subject_type") or principal.get("type")
+            principal_id = principal.get("subject_id") or principal.get("id")
+            if principal_type != "user":
+                raise PermissionError("LLM credential principal type is not supported.")
+            try:
+                return uuid.UUID(str(principal_id))
+            except (TypeError, ValueError) as exc:
+                raise PermissionError("LLM credential principal is invalid.") from exc
+
         user_id_str = self.execution_context.get("user_id")
         if not user_id_str:
             return None

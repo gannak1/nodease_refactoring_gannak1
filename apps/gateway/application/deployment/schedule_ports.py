@@ -10,7 +10,9 @@ from apps.gateway.application.deployment.schedule_models import (
     DispatchClaimSnapshot,
     ScheduleDefinitionSnapshot,
     ScheduleOccurrenceSnapshot,
+    ScheduleOutcomeReviewSnapshot,
     SchedulePublishRequest,
+    ScheduleRollbackBlockers,
     WorkflowRunVisibilityGap,
 )
 from apps.shared.domain.workflow_budget import BudgetExecutionDecision
@@ -73,6 +75,7 @@ class ScheduleDispatchRepositoryPort(Protocol):
         owner: str,
         now: datetime,
         lease_expires_at: datetime,
+        attempt_count: int,
     ) -> None: ...
 
     def mark_pre_dispatch_terminal(
@@ -91,6 +94,7 @@ class ScheduleDispatchRepositoryPort(Protocol):
         now: datetime,
         next_attempt_at: datetime | None,
         exhausted: bool,
+        attempt_count: int,
     ) -> None: ...
 
     def record_publish_accepted(
@@ -148,6 +152,21 @@ class ScheduleDispatchRepositoryPort(Protocol):
         limit: int,
     ) -> int: ...
 
+    def lock_outcome_review_claim(
+        self, claim_id: uuid.UUID
+    ) -> ScheduleOutcomeReviewSnapshot | None: ...
+
+    def mark_outcome_reviewed(
+        self,
+        claim_id: uuid.UUID,
+        *,
+        reviewed_at: datetime,
+        audit_id: uuid.UUID,
+        resolution: str,
+    ) -> None: ...
+
+    def count_rollback_blockers(self) -> ScheduleRollbackBlockers: ...
+
 
 class NextFireCalculatorPort(Protocol):
     def first_after(
@@ -193,6 +212,15 @@ class ScheduleDispatchAuditRecorderPort(Protocol):
         organization_id: uuid.UUID,
         claim_id: uuid.UUID,
     ) -> None: ...
+
+    def record_outcome_reviewed(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        claim_id: uuid.UUID,
+        operation_correlation_id: str,
+        outcome_resolution_code: str,
+    ) -> uuid.UUID: ...
 
 
 class ScheduleTaskPublisherPort(Protocol):

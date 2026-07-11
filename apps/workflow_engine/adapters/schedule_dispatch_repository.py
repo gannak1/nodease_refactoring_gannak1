@@ -128,6 +128,9 @@ class SqlAlchemyScheduleAdmissionRepository:
             ),
             app_id=app.id if app is not None else None,
             app_organization_id=app.organization_id if app is not None else None,
+            credential_principal_user_id=(
+                deployment.created_by if deployment is not None else None
+            ),
             workflow_id=app.workflow_id if app is not None else None,
             active_deployment_id=(
                 app.active_deployment_id if app is not None else None
@@ -165,7 +168,6 @@ class SqlAlchemyScheduleAdmissionRepository:
         exhausted: bool,
     ) -> None:
         claim = self._require_claim()
-        claim.attempt_count += 1
         claim.status = STATUS_DEAD_LETTERED if exhausted else STATUS_PENDING
         claim.safe_reason_code = REASON_BUDGET_EVALUATION_FAILED
         claim.lease_owner = None

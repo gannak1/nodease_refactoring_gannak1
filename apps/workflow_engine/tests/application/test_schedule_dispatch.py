@@ -47,6 +47,7 @@ def _snapshot(**overrides):
         "schedule_deployment_id": deployment_id,
         "app_id": app_id,
         "app_organization_id": organization_id,
+        "credential_principal_user_id": uuid.uuid4(),
         "workflow_id": uuid.uuid4(),
         "active_deployment_id": deployment_id,
         "deployment_id": deployment_id,
@@ -262,6 +263,30 @@ def test_budget_unavailable_returns_claim_to_dispatcher_without_engine_start():
     assert result.status == "deferred"
     assert repository.deferred[0]["exhausted"] is False
     assert repository.running == []
+
+
+def test_schedule_plan_separates_system_actor_credential_and_rag_subject():
+    snapshot = _snapshot()
+    repository = _Repository(snapshot)
+
+    result = _use_case().admit(
+        repository=repository,
+        budget=_Budget(),
+        uow=_Uow(),
+        claim_id=snapshot.claim_id,
+        task_id=snapshot.idempotency_key,
+        admission_owner="owner",
+    )
+
+    assert result.status == "admitted"
+    assert result.plan is not None
+    context = result.plan.execution_context
+    assert context["user_id"] is None
+    assert context["credential_principal"] == {
+        "subject_type": "user",
+        "subject_id": str(snapshot.credential_principal_user_id),
+    }
+    assert "execution_subject" not in context
 
 
 def test_finalize_uses_claim_run_and_owner_compare_and_set_contract():

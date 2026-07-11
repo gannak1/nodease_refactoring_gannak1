@@ -31,3 +31,19 @@ def test_configuration_quarantine_rejects_non_allowlisted_code():
 
     with pytest.raises(ValueError, match="unknown schedule"):
         repository.mark_configuration_invalid(uuid.uuid4(), "raw detail")
+
+
+def test_outcome_review_repository_uses_exact_claim_lock_and_db_blocker_counts():
+    inspect_module = __import__("inspect")
+    lock_source = inspect_module.getsource(
+        SqlAlchemyScheduleDispatchRepository.lock_outcome_review_claim
+    )
+    blocker_source = inspect_module.getsource(
+        SqlAlchemyScheduleDispatchRepository.count_rollback_blockers
+    )
+
+    assert "ScheduleDispatchClaim.id == claim_id" in lock_source
+    assert ".with_for_update()" in lock_source
+    assert "STATUS_DISPATCHING" in blocker_source
+    assert "REASON_EXECUTION_OUTCOME_UNKNOWN" in blocker_source
+    assert "outcome_reviewed_at.is_(None)" in blocker_source

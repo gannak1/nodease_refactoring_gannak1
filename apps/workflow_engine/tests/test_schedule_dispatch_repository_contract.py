@@ -25,7 +25,16 @@ def test_admission_repository_declares_canonical_lock_order():
     assert app_lock < deployment_lock < schedule_lock < claim_lock
 
 
-def test_budget_deferred_increments_attempt_count_for_bounded_retry():
+def test_admission_repository_uses_deployment_creator_as_credential_principal():
+    source = inspect.getsource(
+        SqlAlchemyScheduleAdmissionRepository.lock_canonical_bundle
+    )
+
+    assert "credential_principal_user_id" in source
+    assert "deployment.created_by" in source
+
+
+def test_worker_budget_deferred_reuses_dispatcher_attempt_count():
     now = datetime.now(timezone.utc)
     claim = ScheduleDispatchClaim(
         id=uuid.uuid4(),
@@ -47,6 +56,6 @@ def test_budget_deferred_increments_attempt_count_for_bounded_retry():
         exhausted=False,
     )
 
-    assert claim.attempt_count == 3
+    assert claim.attempt_count == 2
     assert claim.status == STATUS_PENDING
     assert claim.safe_reason_code == REASON_BUDGET_EVALUATION_FAILED

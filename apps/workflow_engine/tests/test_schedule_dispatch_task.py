@@ -138,6 +138,57 @@ def test_scheduled_task_cleanup_failure_keeps_successful_claim_finalization(
     assert finalized == [True]
 
 
+def test_scheduled_task_retries_only_finalization_with_fresh_sessions(monkeypatch):
+    claim_id = uuid.uuid4()
+    task_id = f"schedule:{uuid.uuid4()}"
+    finalization_attempts = []
+    sessions = []
+
+    class _UseCase:
+        def __init__(self, **kwargs):
+            pass
+
+        def admit(self, **kwargs):
+            return application.ScheduleAdmissionResult(
+                "admitted", plan=_plan(claim_id, task_id)
+            )
+
+        def finalize(self, **kwargs):
+            finalization_attempts.append(kwargs["succeeded"])
+            if len(finalization_attempts) == 1:
+                raise RuntimeError("database endpoint must not escape")
+            return True
+
+    def session_factory():
+        session = _Session()
+        sessions.append(session)
+        return session
+
+    monkeypatch.setattr(tasks, "SessionLocal", session_factory)
+    monkeypatch.setattr(application, "ScheduledDeploymentExecutionUseCase", _UseCase)
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.core.workflow_engine.WorkflowEngine",
+        _Engine,
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_sync_knowledge_bases_for_execution_subject",
+        lambda *a, **k: {"skipped": True},
+    )
+    _Engine.calls = []
+
+    result = tasks._execute_scheduled_deployment_claim(
+        str(claim_id),
+        task_id=task_id,
+    )
+
+    assert result["status"] == "success"
+    assert len(_Engine.calls) == 1
+    assert finalization_attempts == [True, True]
+    assert len(sessions) == 4
+    assert all(session.closed for session in sessions)
+
+
 def test_scheduled_task_duplicate_does_not_construct_engine(monkeypatch):
     claim_id = uuid.uuid4()
     task_id = f"schedule:{uuid.uuid4()}"

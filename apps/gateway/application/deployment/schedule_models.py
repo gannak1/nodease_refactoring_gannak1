@@ -64,3 +64,22 @@ class WorkflowRunVisibilityGap:
     claim_id: uuid.UUID
     organization_id: uuid.UUID
     workflow_run_id: uuid.UUID
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduleOutcomeReviewSnapshot:
+    claim_id: uuid.UUID
+    organization_id: uuid.UUID
+    status: str
+    safe_reason_code: str | None
+    outcome_reviewed_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduleRollbackBlockers:
+    nonterminal_claims: int
+    unreviewed_outcome_unknown_claims: int
+
+    @property
+    def ready(self) -> bool:
+        return self.nonterminal_claims == 0 and self.unreviewed_outcome_unknown_claims == 0

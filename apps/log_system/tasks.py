@@ -29,6 +29,7 @@ from apps.shared.db.models.llm import (  # noqa: F401
     LLMUsageLog,
 )
 from apps.shared.db.models.schedule import Schedule  # noqa: F401
+from apps.shared.db.models.schedule_dispatch import ScheduleDispatchClaim
 
 # SQLAlchemy 모델 relationship 초기화를 위해 모든 모델을 명시적으로 import
 # 순서 중요: 의존성 순서대로 import해야 관계가 올바르게 초기화됨
@@ -141,7 +142,49 @@ def _resolve_app_id(session, workflow_id, deployment_id=None):
     return None
 
 
-def _record_workflow_execute_audit(run_log, status, reason_code=None):
+def _schedule_audit_organization_id(session, run_log):
+    trigger_mode = getattr(run_log.trigger_mode, "value", run_log.trigger_mode)
+    task_id = str(run_log.workflow_task_id or "")
+    if trigger_mode not in {"schedule", "scheduler"} or not task_id.startswith(
+        "schedule:"
+    ):
+        return None
+
+    claim = (
+        session.query(ScheduleDispatchClaim)
+        .filter(
+            ScheduleDispatchClaim.idempotency_key == task_id,
+            ScheduleDispatchClaim.workflow_run_id == run_log.id,
+            ScheduleDispatchClaim.deployment_id == run_log.deployment_id,
+        )
+        .first()
+    )
+    if claim is None:
+        return None
+
+    deployment = (
+        session.query(WorkflowDeployment)
+        .filter(WorkflowDeployment.id == run_log.deployment_id)
+        .first()
+    )
+    if deployment is not None:
+        if deployment.id != claim.deployment_id:
+            return None
+        app = session.query(App).filter(App.id == deployment.app_id).first()
+        if app is None or app.workflow_id != run_log.workflow_id:
+            return None
+        if app.organization_id != claim.organization_id:
+            return None
+    return claim.organization_id
+
+
+def _record_workflow_execute_audit(
+    run_log,
+    status,
+    reason_code=None,
+    *,
+    organization_id=None,
+):
     metadata = {
         "policy_result": "allow",
         "workflow_run_id": str(run_log.id),
@@ -151,6 +194,8 @@ def _record_workflow_execute_audit(run_log, status, reason_code=None):
         "request_id": run_log.request_id,
         "correlation_id": run_log.correlation_id,
     }
+    if organization_id is not None:
+        metadata["organization_id"] = str(organization_id)
     if reason_code:
         metadata["reason_code"] = reason_code
         metadata["error_present"] = bool(run_log.error_message)
@@ -419,7 +464,18 @@ def update_run_log_finish(self, data: Dict[str, Any]):
         _insert_trace_payloads(session, run_id, data.get("trace_payloads") or [])
         session.commit()
         _schedule_model_routing_run_record(run_log)
-        _record_workflow_execute_audit(run_log, "success")
+        audit_organization_id = _schedule_audit_organization_id(session, run_log)
+        if run_log.user_id is not None or audit_organization_id is not None:
+            _record_workflow_execute_audit(
+                run_log,
+                "success",
+                organization_id=audit_organization_id,
+            )
+        else:
+            logger.warning(
+                "System schedule audit correlation failed: run_id=%s",
+                run_id,
+            )
 
         return {"status": "success", "run_id": str(run_id)}
 
@@ -461,9 +517,19 @@ def update_run_log_error(self, data: Dict[str, Any]):
         )
         session.commit()
         _schedule_model_routing_run_record(run_log)
-        _record_workflow_execute_audit(
-            run_log, "failure", reason_code="workflow.execute_failed"
-        )
+        audit_organization_id = _schedule_audit_organization_id(session, run_log)
+        if run_log.user_id is not None or audit_organization_id is not None:
+            _record_workflow_execute_audit(
+                run_log,
+                "failure",
+                reason_code="workflow.execute_failed",
+                organization_id=audit_organization_id,
+            )
+        else:
+            logger.warning(
+                "System schedule audit correlation failed: run_id=%s",
+                run_id,
+            )
 
         return {"status": "success", "run_id": str(run_id)}
 

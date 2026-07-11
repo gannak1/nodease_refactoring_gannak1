@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -68,13 +69,14 @@ CANCELED_REASONS = frozenset(
         REASON_ORGANIZATION_SCOPE_MISMATCH,
     }
 )
-DEAD_LETTER_REASONS = frozenset(
-    {
-        REASON_ENQUEUE_ATTEMPTS_EXHAUSTED,
-        REASON_BUDGET_EVALUATION_FAILED,
-        REASON_EXECUTION_FAILED_AFTER_ADMISSION,
-        REASON_EXECUTION_OUTCOME_UNKNOWN,
-    }
+PRE_ADMISSION_DEAD_LETTER_REASONS = frozenset(
+    {REASON_ENQUEUE_ATTEMPTS_EXHAUSTED, REASON_BUDGET_EVALUATION_FAILED}
+)
+POST_ADMISSION_DEAD_LETTER_REASONS = frozenset(
+    {REASON_EXECUTION_FAILED_AFTER_ADMISSION, REASON_EXECUTION_OUTCOME_UNKNOWN}
+)
+DEAD_LETTER_REASONS = (
+    PRE_ADMISSION_DEAD_LETTER_REASONS | POST_ADMISSION_DEAD_LETTER_REASONS
 )
 SCHEDULE_DISPATCH_REASONS = PENDING_REASONS | CANCELED_REASONS | DEAD_LETTER_REASONS
 
@@ -87,6 +89,10 @@ OUTCOME_RESOLUTIONS = frozenset(
         RESOLUTION_CONFIRMED_FAILED_NO_REPLAY,
         RESOLUTION_ACCEPTED_UNKNOWN_NO_REPLAY,
     }
+)
+_OPERATION_CORRELATION_RE = re.compile(
+    r"^(?:github-run:[0-9]{1,20}|k8s-job:[0-9a-f]{8}-[0-9a-f]{4}-"
+    r"[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$"
 )
 
 _TRANSITIONS = {
@@ -149,12 +155,38 @@ def validate_schedule_configuration_error_code(error_code: str) -> None:
         raise ScheduleDispatchDomainError("unknown schedule configuration error code")
 
 
+def validate_outcome_resolution(resolution: str) -> str:
+    if resolution not in OUTCOME_RESOLUTIONS:
+        raise ScheduleDispatchDomainError("unknown outcome resolution")
+    return resolution
+
+
+def validate_operation_correlation(correlation: str) -> str:
+    if not isinstance(correlation, str) or len(correlation) > 128:
+        raise ScheduleDispatchDomainError("invalid operation correlation")
+    normalized = correlation.strip().lower()
+    if not _OPERATION_CORRELATION_RE.fullmatch(normalized):
+        raise ScheduleDispatchDomainError("invalid operation correlation")
+    return normalized
+
+
 def retry_delay_seconds(attempt: int, *, base_seconds: int = 5) -> int:
     if attempt < 1:
         raise ScheduleDispatchDomainError("attempt must be positive")
     if not 1 <= base_seconds <= 300:
         raise ScheduleDispatchDomainError("retry base is outside the supported range")
     return min(base_seconds * (2 ** (attempt - 1)), 300)
+
+
+def next_dispatch_attempt(current_attempt: int, *, max_attempts: int) -> tuple[int, bool]:
+    if current_attempt < 0:
+        raise ScheduleDispatchDomainError("attempt_count must be non-negative")
+    if max_attempts < 1:
+        raise ScheduleDispatchDomainError("max_attempts must be positive")
+    if current_attempt >= max_attempts:
+        return current_attempt, True
+    next_attempt = current_attempt + 1
+    return next_attempt, next_attempt >= max_attempts
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,6 +245,27 @@ class ScheduleDispatchSettings:
     def processes_existing_claims(self) -> bool:
         return self.mode in {MODE_DRAIN, MODE_CLAIM}
 
+    def configuration_fingerprint(self) -> str:
+        """Stable non-secret rollout identity shared by Gateway and Worker."""
+        values = (
+            "v1",
+            self.mode,
+            self.poll_seconds,
+            self.occurrence_batch_size,
+            self.dispatch_batch_size,
+            self.recovery_batch_size,
+            self.cleanup_batch_size,
+            self.lease_seconds,
+            self.delivery_timeout_seconds,
+            self.execution_deadline_seconds,
+            self.workflow_run_visibility_timeout_seconds,
+            self.max_attempts,
+            self.retry_base_seconds,
+            self.retention_days,
+            self.dead_letter_retention_days,
+        )
+        return "|".join(str(value) for value in values)
+
 
 _SETTING_ENV_FIELDS = {
     "SCHEDULE_DISPATCH_POLL_SECONDS": "poll_seconds",
@@ -249,7 +302,17 @@ def schedule_dispatch_settings_from_environment(
             raise ScheduleDispatchDomainError(
                 f"{env_name} must be an integer"
             ) from exc
-    return ScheduleDispatchSettings(**values)
+    settings = ScheduleDispatchSettings(**values)
+    fingerprint = str(environ.get("SCHEDULE_DISPATCH_MODE_FINGERPRINT", "")).strip()
+    if settings.processes_existing_claims and not fingerprint:
+        raise ScheduleDispatchDomainError(
+            "schedule dispatch configuration fingerprint is required"
+        )
+    if fingerprint and fingerprint != settings.configuration_fingerprint():
+        raise ScheduleDispatchDomainError(
+            "schedule dispatch configuration fingerprint does not match process settings"
+        )
+    return settings
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,6 +359,7 @@ class ScheduleDispatchClaimState:
     def _validate_status_fields(self) -> None:
         if self.status == STATUS_PENDING:
             _require_none(
+                self.workflow_run_id,
                 self.lease_owner,
                 self.lease_expires_at,
                 self.execution_deadline_at,
@@ -304,12 +368,18 @@ class ScheduleDispatchClaimState:
             )
         elif self.status == STATUS_DISPATCHING:
             _require_present(self.lease_owner, self.lease_expires_at, self.celery_task_id)
-            _require_none(self.execution_deadline_at, self.started_at, self.completed_at)
+            _require_none(
+                self.workflow_run_id,
+                self.execution_deadline_at,
+                self.started_at,
+                self.completed_at,
+            )
         elif self.status == STATUS_ENQUEUED:
             _require_present(
                 self.celery_task_id, self.enqueued_at, self.lease_expires_at
             )
             _require_none(
+                self.workflow_run_id,
                 self.lease_owner,
                 self.execution_deadline_at,
                 self.started_at,
@@ -336,8 +406,14 @@ class ScheduleDispatchClaimState:
                 )
             elif self.status == STATUS_CANCELED:
                 _require_none(self.workflow_run_id, self.started_at)
-            elif self.started_at is not None:
-                _require_present(self.workflow_run_id, self.enqueued_at)
+            elif self.workflow_run_id is None:
+                _require_none(self.started_at)
+            else:
+                _require_present(
+                    self.celery_task_id,
+                    self.enqueued_at,
+                    self.started_at,
+                )
         if self.status != STATUS_PENDING and self.next_attempt_at is not None:
             raise ScheduleDispatchDomainError(
                 "next_attempt_at is only valid for pending claims"
@@ -353,6 +429,15 @@ class ScheduleDispatchClaimState:
         elif self.status == STATUS_DEAD_LETTERED:
             if self.safe_reason_code not in DEAD_LETTER_REASONS:
                 raise ScheduleDispatchDomainError("invalid dead-letter reason")
+            if self.safe_reason_code in PRE_ADMISSION_DEAD_LETTER_REASONS:
+                _require_none(self.workflow_run_id, self.started_at)
+            elif self.safe_reason_code in POST_ADMISSION_DEAD_LETTER_REASONS:
+                _require_present(
+                    self.workflow_run_id,
+                    self.celery_task_id,
+                    self.enqueued_at,
+                    self.started_at,
+                )
         elif self.safe_reason_code is not None:
             raise ScheduleDispatchDomainError("reason is not valid for this status")
 

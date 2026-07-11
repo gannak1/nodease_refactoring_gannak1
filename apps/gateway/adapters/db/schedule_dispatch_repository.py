@@ -9,6 +9,8 @@ from sqlalchemy.orm import Session
 from apps.gateway.application.deployment.schedule_models import (
     DispatchCanonicalContext,
     DispatchClaimSnapshot,
+    ScheduleOutcomeReviewSnapshot,
+    ScheduleRollbackBlockers,
     ScheduleDefinitionSnapshot,
     ScheduleOccurrenceSnapshot,
     WorkflowRunVisibilityGap,
@@ -191,13 +193,14 @@ class SqlAlchemyScheduleDispatchRepository:
         owner: str,
         now: datetime,
         lease_expires_at: datetime,
+        attempt_count: int,
     ) -> None:
         row = self._locked_claim(claim.claim_id)
         row.status = STATUS_DISPATCHING
         row.lease_owner = owner
         row.lease_expires_at = lease_expires_at
         row.celery_task_id = row.idempotency_key
-        row.attempt_count += 1
+        row.attempt_count = attempt_count
         row.next_attempt_at = None
         row.safe_reason_code = None
         row.updated_at = now
@@ -226,9 +229,10 @@ class SqlAlchemyScheduleDispatchRepository:
         now: datetime,
         next_attempt_at: datetime | None,
         exhausted: bool,
+        attempt_count: int,
     ) -> None:
         row = self._locked_claim(claim.claim_id)
-        row.attempt_count += 1
+        row.attempt_count = attempt_count
         row.status = STATUS_DEAD_LETTERED if exhausted else STATUS_PENDING
         row.safe_reason_code = REASON_BUDGET_EVALUATION_FAILED
         row.next_attempt_at = next_attempt_at
@@ -449,6 +453,64 @@ class SqlAlchemyScheduleDispatchRepository:
                 )
             )
         return len(ids)
+
+    def lock_outcome_review_claim(
+        self, claim_id: uuid.UUID
+    ) -> ScheduleOutcomeReviewSnapshot | None:
+        claim = self.db.execute(
+            select(ScheduleDispatchClaim)
+            .where(ScheduleDispatchClaim.id == claim_id)
+            .with_for_update()
+        ).scalar_one_or_none()
+        if claim is None:
+            return None
+        self._locked_claims[claim.id] = claim
+        return ScheduleOutcomeReviewSnapshot(
+            claim_id=claim.id,
+            organization_id=claim.organization_id,
+            status=claim.status,
+            safe_reason_code=claim.safe_reason_code,
+            outcome_reviewed_at=claim.outcome_reviewed_at,
+        )
+
+    def mark_outcome_reviewed(
+        self,
+        claim_id: uuid.UUID,
+        *,
+        reviewed_at: datetime,
+        audit_id: uuid.UUID,
+        resolution: str,
+    ) -> None:
+        claim = self._locked_claim(claim_id)
+        claim.outcome_reviewed_at = reviewed_at
+        claim.outcome_review_audit_id = audit_id
+        claim.outcome_resolution_code = resolution
+        claim.updated_at = reviewed_at
+
+    def count_rollback_blockers(self) -> ScheduleRollbackBlockers:
+        nonterminal = self.db.execute(
+            select(func.count())
+            .select_from(ScheduleDispatchClaim)
+            .where(
+                ScheduleDispatchClaim.status.in_(
+                    (STATUS_PENDING, STATUS_DISPATCHING, STATUS_ENQUEUED, STATUS_RUNNING)
+                )
+            )
+        ).scalar_one()
+        unreviewed = self.db.execute(
+            select(func.count())
+            .select_from(ScheduleDispatchClaim)
+            .where(
+                ScheduleDispatchClaim.status == STATUS_DEAD_LETTERED,
+                ScheduleDispatchClaim.safe_reason_code
+                == REASON_EXECUTION_OUTCOME_UNKNOWN,
+                ScheduleDispatchClaim.outcome_reviewed_at.is_(None),
+            )
+        ).scalar_one()
+        return ScheduleRollbackBlockers(
+            nonterminal_claims=int(nonterminal),
+            unreviewed_outcome_unknown_claims=int(unreviewed),
+        )
 
     @staticmethod
     def _active_schedule_statement():

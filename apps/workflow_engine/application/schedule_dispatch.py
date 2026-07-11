@@ -61,6 +61,7 @@ class ScheduleAdmissionSnapshot:
     schedule_deployment_id: uuid.UUID | None
     app_id: uuid.UUID | None
     app_organization_id: uuid.UUID | None
+    credential_principal_user_id: uuid.UUID | None
     workflow_id: uuid.UUID | None
     active_deployment_id: uuid.UUID | None
     deployment_id: uuid.UUID | None
@@ -244,6 +245,10 @@ class ScheduledDeploymentExecutionUseCase:
                     },
                     execution_context={
                         "user_id": None,
+                        "credential_principal": {
+                            "subject_type": "user",
+                            "subject_id": str(snapshot.credential_principal_user_id),
+                        },
                         "workflow_id": str(snapshot.workflow_id),
                         "organization_id": str(snapshot.app_organization_id),
                         "app_id": str(snapshot.app_id),
@@ -299,6 +304,8 @@ class ScheduledDeploymentExecutionUseCase:
         if not snapshot.deployment_exists or snapshot.deployment_id is None:
             return REASON_DEPLOYMENT_NOT_FOUND
         if not snapshot.app_exists:
+            return REASON_APP_NOT_FOUND
+        if snapshot.credential_principal_user_id is None:
             return REASON_APP_NOT_FOUND
         if snapshot.deployment_app_id != snapshot.app_id:
             return REASON_APP_NOT_FOUND

@@ -122,7 +122,7 @@ class SchedulerService:
         if not self.settings.processes_existing_claims:
             return
         try:
-            self._recover()
+            self._recover_critical()
             if self.settings.claims_new_occurrences:
                 self._reconcile_uninitialized()
                 self._claim_due_occurrences()
@@ -137,12 +137,31 @@ class SchedulerService:
                         "Schedule dispatch publish failed: claim_id=%s",
                         request.claim_id,
                     )
-                self._record_publish_result(request, accepted=accepted)
+                try:
+                    self._record_publish_result(request, accepted=accepted)
+                except Exception as exc:
+                    # The dispatching lease remains the durable recovery source.
+                    # One claim's result-write failure must not strand the rest
+                    # of the already prepared batch.
+                    logger.error(
+                        "Schedule publish result write failed: "
+                        "claim_id=%s error_type=%s",
+                        request.claim_id,
+                        type(exc).__name__,
+                    )
         except Exception as exc:
             logger.error(
                 "Schedule dispatch tick failed: error_type=%s",
                 type(exc).__name__,
             )
+        self._run_optional_maintenance(
+            self._maintain_visibility,
+            operation_name="visibility",
+        )
+        self._run_optional_maintenance(
+            self._cleanup_terminal_claims,
+            operation_name="cleanup",
+        )
 
     def _reconcile_uninitialized(self) -> None:
         db = self.session_factory()
@@ -192,16 +211,50 @@ class SchedulerService:
         finally:
             db.close()
 
-    def _recover(self) -> None:
+    def _recover_critical(self) -> None:
         db = self.session_factory()
         try:
-            self.dispatch_use_case.recover(
+            self.dispatch_use_case.recover_critical(
+                repository=SqlAlchemyScheduleDispatchRepository(db),
+                uow=SqlAlchemyUnitOfWork(db),
+            )
+        finally:
+            db.close()
+
+    def _maintain_visibility(self) -> None:
+        db = self.session_factory()
+        try:
+            self.dispatch_use_case.maintain_visibility(
                 repository=SqlAlchemyScheduleDispatchRepository(db),
                 audit=SqlAlchemyScheduleDispatchAuditRecorder(db),
                 uow=SqlAlchemyUnitOfWork(db),
             )
         finally:
             db.close()
+
+    def _cleanup_terminal_claims(self) -> None:
+        db = self.session_factory()
+        try:
+            self.dispatch_use_case.cleanup_terminal_claims(
+                repository=SqlAlchemyScheduleDispatchRepository(db),
+                uow=SqlAlchemyUnitOfWork(db),
+            )
+        finally:
+            db.close()
+
+    @staticmethod
+    def _run_optional_maintenance(
+        callback: Callable[[], None], *, operation_name: str
+    ) -> None:
+        try:
+            callback()
+        except Exception as exc:
+            logger.warning(
+                "Schedule dispatch optional maintenance failed: "
+                "operation=%s error_type=%s",
+                operation_name,
+                type(exc).__name__,
+            )
 
     def shutdown(self) -> None:
         if self.scheduler is not None:

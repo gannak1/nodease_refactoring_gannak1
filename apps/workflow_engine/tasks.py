@@ -23,6 +23,8 @@ from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
 
 logger = logging.getLogger(__name__)
 
+_SCHEDULE_FINALIZATION_MAX_ATTEMPTS = 3
+
 _DEPLOYMENT_CONTEXT_PASSTHROUGH_KEYS = frozenset(
     {
         "conversation_id",
@@ -472,6 +474,42 @@ def execute_scheduled_deployment(self, schedule_dispatch_claim_id: str):
     )
 
 
+def _finalize_scheduled_claim(
+    *,
+    use_case,
+    plan,
+    succeeded: bool,
+) -> bool:
+    """Retry only the terminal CAS write; never re-run the workflow engine."""
+    from apps.workflow_engine.adapters.schedule_dispatch_repository import (
+        SqlAlchemyScheduleAdmissionRepository,
+        SqlAlchemyScheduleAdmissionUnitOfWork,
+    )
+
+    for attempt in range(1, _SCHEDULE_FINALIZATION_MAX_ATTEMPTS + 1):
+        session = SessionLocal()
+        try:
+            return use_case.finalize(
+                repository=SqlAlchemyScheduleAdmissionRepository(session),
+                uow=SqlAlchemyScheduleAdmissionUnitOfWork(session),
+                plan=plan,
+                succeeded=succeeded,
+            )
+        except Exception as exc:
+            logger.error(
+                "Schedule finalization unavailable: claim_id=%s "
+                "attempt=%s error_type=%s",
+                plan.claim_id,
+                attempt,
+                type(exc).__name__,
+            )
+        finally:
+            session.close()
+    raise NonRetryableWorkflowError(
+        "scheduled workflow finalization is unavailable"
+    )
+
+
 def _execute_scheduled_deployment_claim(
     schedule_dispatch_claim_id: str,
     *,
@@ -580,26 +618,11 @@ def _execute_scheduled_deployment_claim(
                 )
         engine_session.close()
 
-    finalization_session = SessionLocal()
-    try:
-        try:
-            finalized = use_case.finalize(
-                repository=SqlAlchemyScheduleAdmissionRepository(finalization_session),
-                uow=SqlAlchemyScheduleAdmissionUnitOfWork(finalization_session),
-                plan=plan,
-                succeeded=execution_succeeded,
-            )
-        except Exception as exc:
-            logger.error(
-                "Schedule finalization unavailable: claim_id=%s error_type=%s",
-                claim_id,
-                type(exc).__name__,
-            )
-            raise NonRetryableWorkflowError(
-                "scheduled workflow finalization is unavailable"
-            ) from None
-    finally:
-        finalization_session.close()
+    finalized = _finalize_scheduled_claim(
+        use_case=use_case,
+        plan=plan,
+        succeeded=execution_succeeded,
+    )
 
     if not execution_succeeded:
         raise NonRetryableWorkflowError("scheduled workflow execution failed")

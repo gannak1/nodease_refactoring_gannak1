@@ -104,3 +104,33 @@ class SqlAlchemyScheduleDispatchAuditRecorder:
                 },
             )
         )
+
+    def record_outcome_reviewed(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        claim_id: uuid.UUID,
+        operation_correlation_id: str,
+        outcome_resolution_code: str,
+    ) -> uuid.UUID:
+        audit_id = uuid.uuid4()
+        self.db.add(
+            AuditLog(
+                id=audit_id,
+                action="schedule_dispatch.outcome_reviewed",
+                category=AuditCategory.ACTION,
+                actor_id=None,
+                actor_type=ActorType.SYSTEM,
+                target_type="schedule_dispatch_claim",
+                target_id=str(claim_id),
+                before=None,
+                after=None,
+                status=AuditStatus.SUCCESS,
+                audit_metadata={
+                    "organization_id": str(organization_id),
+                    "operation_correlation_id": operation_correlation_id,
+                    "outcome_resolution_code": outcome_resolution_code,
+                },
+            )
+        )
+        return audit_id

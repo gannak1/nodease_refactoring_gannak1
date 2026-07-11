@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 
 import pytest
 from apps.shared.alembic.schedule_dispatch_downgrade import (
@@ -126,8 +127,6 @@ def test_claim_migration_downgrade_refuses_to_fabricate_system_executor():
 
 
 def test_schedule_dispatch_downgrade_guard_blocks_admitted_claim_without_run_row():
-    import inspect
-
     source = inspect.getsource(assert_schedule_dispatch_downgrade_is_safe)
 
     assert "workflow_run_id IS NOT NULL" in source
@@ -193,6 +192,23 @@ def test_schedule_dispatch_merge_migration_joins_rebased_model_routing_head():
     assert set(migration.down_revision) == {"fd1e2f3a4b56", "fb8c9d0e1f23"}
 
 
+def test_schedule_admission_correlation_migration_extends_merge_head():
+    migration = importlib.import_module(
+        "apps.shared.alembic.versions."
+        "ff3a4b5c6d78_enforce_schedule_admission_correlation"
+    )
+
+    assert migration.revision == "ff3a4b5c6d78"
+    assert migration.down_revision == "fe2f3a4b5c67"
+    assert "workflow_run_id IS NOT NULL" in migration._STATUS_FIELDS
+    assert "execution_outcome_unknown" in migration._SAFE_REASON
+    assert "workflow_run_id IS NOT NULL" in str(migration._INVALID_EXISTING_ROWS)
+    assert "ck_schedule_dispatch_claims_preadmission_run" in inspect.getsource(
+        migration.upgrade
+    )
+    assert "correlation cleanup is required" in inspect.getsource(migration.upgrade)
+
+
 class _MigrationOperations:
     def __init__(self, calls: list[str]):
         self.calls = calls
@@ -230,6 +246,14 @@ class _MigrationOperations:
         (
             "apps.shared.alembic.versions."
             "fd1e2f3a4b56_enforce_schedule_configuration_error_codes",
+            (
+                "assert_schedule_dispatch_downgrade_is_safe",
+                "assert_schedule_configuration_quarantine_downgrade_is_safe",
+            ),
+        ),
+        (
+            "apps.shared.alembic.versions."
+            "ff3a4b5c6d78_enforce_schedule_admission_correlation",
             (
                 "assert_schedule_dispatch_downgrade_is_safe",
                 "assert_schedule_configuration_quarantine_downgrade_is_safe",
