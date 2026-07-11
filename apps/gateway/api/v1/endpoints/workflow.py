@@ -2057,8 +2057,19 @@ def _normalize_cost_optimizer_candidate_usage(
         return {}
 
     normalized = dict(usage)
+    metadata = output.get("metadata") if isinstance(output, dict) else None
+    llm_invoked = metadata.get("llm_invoked") if isinstance(metadata, dict) else None
+    if llm_invoked is False:
+        normalized.setdefault("prompt_tokens", 0)
+        normalized.setdefault("completion_tokens", 0)
+        normalized.setdefault("total_tokens", 0)
+        normalized["cost"] = 0.0
+        normalized["cost_unavailable"] = False
+        return normalized
+
     cost = _cost_optimizer_usage_number(normalized, "cost", "total_cost")
-    if cost is None and isinstance(output, dict):
+    has_token_usage = _cost_optimizer_total_tokens(normalized) is not None
+    if cost is None and has_token_usage and isinstance(output, dict):
         cost = _cost_optimizer_usage_number(output, "cost", "total_cost")
     if cost is None:
         normalized["cost"] = None

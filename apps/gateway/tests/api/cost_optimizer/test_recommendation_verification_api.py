@@ -425,6 +425,47 @@ class TestRecommendationInlineVerificationApi:
             modal_apply_candidate.model_dump(mode="json"),
         )
 
+    def test_fr13_missing_usage_does_not_report_zero_cost_savings(self):
+        usage = workflow_endpoint._normalize_cost_optimizer_candidate_usage(
+            {},
+            {"cost": 0.0},
+        )
+
+        assert usage["cost"] is None
+        assert usage["cost_unavailable"] is True
+        assert workflow_endpoint._cost_optimizer_metric_comparison(
+            0.091,
+            usage["cost"],
+        ) == {
+            "baseline": 0.091,
+            "candidate": None,
+            "delta": None,
+            "change_rate": None,
+        }
+
+    def test_fr13_skipped_llm_reports_zero_candidate_cost_and_tokens(self):
+        usage = workflow_endpoint._normalize_cost_optimizer_candidate_usage(
+            {},
+            {"cost": 0.0, "metadata": {"llm_invoked": False}},
+        )
+
+        assert usage == {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "cost": 0.0,
+            "cost_unavailable": False,
+        }
+        assert workflow_endpoint._cost_optimizer_metric_comparison(
+            0.091,
+            usage["cost"],
+        ) == {
+            "baseline": 0.091,
+            "candidate": 0.0,
+            "delta": -0.091,
+            "change_rate": -1.0,
+        }
+
 
 class TestRecommendationVerificationIdempotency:
     def test_fr13_same_idempotency_key_replays_completed_response(self):

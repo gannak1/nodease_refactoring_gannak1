@@ -1495,6 +1495,7 @@ def test_llm_node_rag_no_evidence_skips_llm_call(monkeypatch):
     assert client.calls == []
     assert result["text"] == "해당 질문에 답변할 수 있는 문서를 찾지 못했습니다."
     assert result["usage"] == {}
+    assert result["metadata"]["llm_invoked"] is False
     assert result["metadata"]["rag"]["evidence_sufficient"] is False
     assert result["metadata"]["rag"]["insufficiency_reason"] == "no_evidence"
     assert node._trace_payloads[0]["payload_kind"] == "rag.retrieval"

@@ -463,6 +463,7 @@ FR-011 모델 라우팅은 정책 기반 자동 라우팅으로 다룬다. 자�
 - Cost Optimizer experiment/candidate summary는 trace metadata retention 기준으로 만료일을 계산하고, 만료된 experiment를 정리하면 candidate도 함께 정리된다.
 - RAG safe summary는 raw chunk content/source metadata/document filename 계열 값을 제거하고, list 값은 20개, string 값은 200자로 제한한다.
 - 비용 계산이 불가능한 모델은 response에 비용 불가 상태를 명확히 반환한다.
+- RAG 근거 부족으로 LLM을 호출하지 않은 후보는 비용과 token을 0으로 표시하고, LLM을 호출했지만 usage가 누락된 후보는 계산 불가로 표시한다.
 - usage response에는 credential 원문, API key, encrypted config가 포함되지 않는다.
 - 저장된 candidate summary에는 raw system/user/assistant prompt가 포함되지 않고 redacted summary와 apply 검증용 fingerprint만 남는다.
 

@@ -638,6 +638,7 @@ Cost Optimizer 비교 실행은 기존 run/usage/trace 테이블을 원천으로
 - B candidate의 실제 실행/입출력/비용 원천도 동일한 기존 테이블이다.
 - B candidate 실행에서 생성되는 `workflow_runs.id`는 `cost_optimizer_candidates.candidate_workflow_run_id`로 저장한다. 이 값은 candidate 실행 로그가 최신 baseline 후보로 다시 잡히지 않게 하는 1차 식별자다.
 - B candidate 실행에서 생성되는 `llm_usage_logs` row는 `cost_optimizer_candidate_id`로 `cost_optimizer_candidates.id`를 직접 참조한다. worker 전파가 지연되거나 누락되어도 Gateway는 `candidate_workflow_run_id` 기준으로 usage row를 candidate에 다시 연결한다.
+- RAG 근거 부족 정책으로 LLM 호출을 건너뛴 B candidate는 `metadata.llm_invoked=false`로 구분하며 비용과 token을 0으로 표시한다. 호출했지만 provider usage가 누락된 경우에는 비용과 token을 계산 불가로 표시한다.
 - `cost_optimizer_experiments`와 `cost_optimizer_candidates`는 원천 로그를 복제하기 위한 테이블이 아니라, baseline과 여러 candidate 실행을 하나의 비교 흐름으로 묶는 메타 저장소다.
 - experiment의 `usage_summary`는 해당 experiment에 속한 candidate 비용만 합산한다. 같은 baseline을 기준으로 여러 experiment가 있으면 baseline 누적 비용은 `baseline_node_run_id`가 같은 experiments를 별도로 합산해 계산한다.
 - raw prompt, credential 원문, API key, encrypted config, secret payload는 두 테이블에 저장하지 않는다.

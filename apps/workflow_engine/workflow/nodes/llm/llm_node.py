@@ -660,6 +660,7 @@ class LLMNode(Node[LLMNodeData]):
                     "model": selected_model_id,
                     "cost": 0.0,
                     "metadata": {
+                        "llm_invoked": False,
                         "knowledge_search": knowledge_metadata
                         if knowledge_metadata
                         else None,
@@ -912,6 +913,7 @@ class LLMNode(Node[LLMNodeData]):
                 "model": used_model_id,
                 "cost": cost,
                 "metadata": {
+                    "llm_invoked": True,
                     "model_routing": model_routing_metadata,
                     "routing_context": routing_context,
                     "fallback_used": fallback_used,
