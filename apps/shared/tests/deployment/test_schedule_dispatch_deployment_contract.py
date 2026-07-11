@@ -88,6 +88,13 @@ def test_raw_manifests_and_compose_keep_gateway_worker_schedule_settings_aligned
     assert "${SCHEDULE_DISPATCH_LEASE_SECONDS:-60}" in compose
 
 
+def test_dev_deploy_is_manual_only_until_aws_oidc_is_configured():
+    workflow = _read(".github/workflows/deploy-dev-namespace.yml")
+
+    assert "\n  workflow_dispatch:" in workflow
+    assert "\n  push:" not in workflow
+
+
 def test_dev_deploy_runs_migration_before_application_rollout():
     workflow = _read(".github/workflows/deploy-dev-namespace.yml")
     migration = workflow.index("name: Run Alembic Migration")

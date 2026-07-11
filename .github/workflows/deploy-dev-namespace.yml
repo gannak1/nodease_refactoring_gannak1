@@ -1,23 +1,7 @@
 name: Deploy to Dev Namespace (Manual)
 
 on:
-  push:
-    branches:
-      - dev
-    paths:
-      - "apps/gateway/**"
-      - "apps/workflow_engine/**"
-      - "apps/log_system/**"
-      - "apps/sandbox/**"
-      - "apps/shared/**"
-      - "docker/gateway/**"
-      - "docker/workflow_engine/**"
-      - "docker/log_system/**"
-      - "docker/sandbox/**"
-      - "infra/k8s/namespaces/dev/**"
-      - ".github/workflows/deploy-dev-namespace.yml"
-
-  workflow_dispatch: # 수동 실행도 여전히 가능
+  workflow_dispatch:
     inputs:
       services:
         description: "Services to deploy (gateway, worker, logger, frontend, or all)"
