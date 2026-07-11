@@ -101,6 +101,7 @@ export function useCanvasKeyboardShortcuts({
       if (!isModKey || event.altKey) return;
 
       if (key === 'c' && !event.shiftKey) {
+        if (window.getSelection()?.toString()) return;
         event.preventDefault();
         copySelectedNodes();
         return;
