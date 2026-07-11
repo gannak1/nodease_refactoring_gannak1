@@ -47,6 +47,7 @@ Status: Draft
 - MAIL-CRED-TC-036: 최상위와 중첩 `subGraph`의 Mail node에 같은 allowlist와 credential 검증을 적용하고 safe UI metadata는 허용한다.
 - MAIL-CRED-TC-037: Draft와 Agent Builder preview는 unresolved Mail node를 허용하지만 deployment 생성과 활성화는 credential reference 누락을 거부한다.
 - MAIL-CRED-TC-038: 실행 로그 설정 요약은 credential UUID 대신 연결 상태만 표시한다.
+- MAIL-CRED-TC-039: Active membership row가 남아 있어도 `User.deactivated_at`이 설정된 사용자에게 direct Mail credential 권한을 생성하거나 갱신하지 않는다.
 
 ## Non-Exposure
 

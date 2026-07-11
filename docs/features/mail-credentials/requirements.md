@@ -35,6 +35,7 @@ Mail credential은 organization이 관리하는 Mail provider 인증 정보를 w
 - MAIL-CRED-REQ-024: Mail node allowlist와 credential 검증은 최상위 graph뿐 아니라 모든 중첩 `subGraph.nodes`에 적용해야 한다. `displayNumber`와 `visibleProperties`는 safe UI metadata로 허용할 수 있다.
 - MAIL-CRED-REQ-025: Draft와 Agent Builder preview는 unresolved Mail reference를 허용할 수 있지만 deployment snapshot 생성과 기존 deployment 활성화는 모든 Mail node의 유효한 credential reference를 요구해야 한다.
 - MAIL-CRED-REQ-026: `993` implicit TLS와 `143` STARTTLS는 모두 기본 trust store 기반 인증서 및 hostname 검증을 수행하고 connect/read timeout을 기본 10초로 제한해야 한다.
+- MAIL-CRED-REQ-027: User direct permission은 active organization membership과 비활성화되지 않은 User를 함께 잠금 확인한 뒤에만 생성하거나 갱신해야 한다.
 - MAIL-CRED-REQ-027: Gateway와 Worker는 process startup에서 Mail credential keyring 형식과 active version을 검증하고 잘못된 설정이면 요청 또는 task 소비 전에 fail-fast해야 한다.
 
 ## Policies And Edge Cases

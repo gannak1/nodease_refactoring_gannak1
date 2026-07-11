@@ -81,7 +81,7 @@ PATCH는 `credential_name`, `secret` 중 하나 이상을 요구한다. `email_a
 
 ## Permission 계약
 
-Permission PUT body는 `auth_state`에 `viewer`, `operator`, `builder`, `manager` 중 하나만 허용한다. 기존 row가 있으면 갱신하고 없으면 생성한다. User는 active organization member, Team은 같은 organization의 active Team이어야 한다. 동시 변경은 credential row lock 안에서 직렬화한다. Revoked credential에는 신규 권한을 부여할 수 없지만 기존 권한 회수는 허용한다.
+Permission PUT body는 `auth_state`에 `viewer`, `operator`, `builder`, `manager` 중 하나만 허용한다. 기존 row가 있으면 갱신하고 없으면 생성한다. User는 active organization member이면서 비활성화되지 않은 계정이어야 하고, Team은 같은 organization의 active Team이어야 한다. User direct grant는 대상 membership과 User를 잠금 확인하고 동시 변경은 credential row lock 안에서 직렬화한다. Revoked credential에는 신규 권한을 부여할 수 없지만 기존 권한 회수는 허용한다.
 
 - `viewer`: safe detail `read`
 - `operator`: `read`, runtime `use`

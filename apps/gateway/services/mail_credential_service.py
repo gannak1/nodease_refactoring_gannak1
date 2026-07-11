@@ -421,12 +421,15 @@ class MailCredentialService:
         self._require_active(credential)
         membership = (
             self.db.query(OrganizationMembership)
+            .join(User, User.id == OrganizationMembership.user_id)
             .filter(
                 OrganizationMembership.organization_id == organization_id,
                 OrganizationMembership.user_id == user_id,
                 OrganizationMembership.membership_state
                 == ORGANIZATION_MEMBERSHIP_ACTIVE,
+                User.deactivated_at.is_(None),
             )
+            .with_for_update()
             .first()
         )
         if membership is None:

@@ -13,10 +13,12 @@ from apps.gateway.services.mail_credential_service import (
     MailCredentialPersistenceFailed,
     MailCredentialRevoked,
     MailCredentialService,
+    MailCredentialTargetNotFound,
 )
 from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.schemas.mail_credential import (
     MailCredentialCreate,
+    MailCredentialPermissionGrant,
     MailCredentialUpdate,
 )
 from apps.shared.services.credential_encryption import EncryptedSecretEnvelope
@@ -313,4 +315,34 @@ def test_revoked_credential_rejects_mutation(operation):
                 MailCredentialPermissionGrant(auth_state="operator"),
             )
 
+    db.commit.assert_not_called()
+
+
+def test_grant_user_permission_rejects_deactivated_active_member():
+    db = MagicMock()
+    membership_query = MagicMock()
+    db.query.return_value = membership_query
+    membership_query.join.return_value = membership_query
+    membership_query.filter.return_value = membership_query
+    membership_query.with_for_update.return_value = membership_query
+    membership_query.first.return_value = None
+
+    service = MailCredentialService(db, encryption=MagicMock())
+    credential = _credential()
+    service._get_scoped = MagicMock(return_value=credential)
+    service._require = MagicMock()
+
+    with pytest.raises(MailCredentialTargetNotFound):
+        service.grant_user_permission(
+            uuid.uuid4(),
+            credential.organization_id,
+            credential.id,
+            uuid.uuid4(),
+            MailCredentialPermissionGrant(auth_state="operator"),
+        )
+
+    predicates = {str(predicate) for predicate in membership_query.filter.call_args.args}
+    assert "users.deactivated_at IS NULL" in predicates
+    membership_query.join.assert_called_once()
+    membership_query.with_for_update.assert_called_once_with()
     db.commit.assert_not_called()
