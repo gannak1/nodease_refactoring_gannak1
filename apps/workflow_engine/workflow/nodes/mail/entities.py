@@ -53,8 +53,31 @@ class MailNodeData(BaseNodeData):
     )
     unread_only: bool = Field(False, description="읽지 않은 메일만")
     mark_as_read: bool = Field(False, description="검색 후 읽음 표시")
+    processing_mode: Literal["search_only", "durable"] = Field(
+        "search_only", description="Mail 처리 상태 저장 모드"
+    )
+
+    def model_post_init(self, __context) -> None:
+        if self.processing_mode == "durable" and self.mark_as_read:
+            raise ValueError("mail.processing_configuration_invalid")
 
     # Variables
     referenced_variables: List[MailVariable] = Field(
         default_factory=list, description="참조된 변수 목록"
     )
+
+
+class GmailDraftNodeData(BaseNodeData):
+    model_config = ConfigDict(extra="forbid")
+
+    credential_id: Optional[UUID] = None
+    configuration_state: Optional[Literal["resolved", "unresolved"]] = None
+    processing_ref_selector: List[str] = Field(min_length=2)
+    reply_body_selector: List[str] = Field(min_length=2)
+
+
+class MailAcknowledgeNodeData(BaseNodeData):
+    model_config = ConfigDict(extra="forbid")
+
+    processing_ref_selector: List[str] = Field(min_length=2)
+    required_effect_ref_selectors: List[List[str]] = Field(min_length=1)

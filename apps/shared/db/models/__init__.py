@@ -45,6 +45,10 @@ from apps.shared.db.models.mail_credential import (
     MAIL_CREDENTIAL_REVOKED,
     MailCredential,
 )
+from apps.shared.db.models.mail_processing import (
+    MailDraftEffect,
+    MailMessageProcessing,
+)
 from apps.shared.db.models.model_routing_policy import (
     LLMNodeModelRoutingPolicy,
     LLMNodeModelRoutingPolicyRunEvent,
@@ -133,6 +137,8 @@ __all__ = [
     "MailCredential",
     "MAIL_CREDENTIAL_ACTIVE",
     "MAIL_CREDENTIAL_REVOKED",
+    "MailMessageProcessing",
+    "MailDraftEffect",
     "LLMNodeVersion",
     "LLMNodeModelRoutingPolicy",
     "LLMNodeModelRoutingPolicyRunEvent",

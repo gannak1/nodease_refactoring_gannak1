@@ -1,7 +1,10 @@
 from typing import Dict
 
 from apps.shared.schemas.workflow import NodeSchema
-from apps.shared.domain.mail_credential import validate_mail_node_credential_boundary
+from apps.shared.domain.mail_credential import (
+    validate_mail_node_credential_boundary,
+    validate_mail_processing_node_boundary,
+)
 from apps.workflow_engine.workflow.nodes.answer import AnswerNode, AnswerNodeData
 from apps.workflow_engine.workflow.nodes.base.node import Node
 from apps.workflow_engine.workflow.nodes.code import CodeNode, CodeNodeData
@@ -20,7 +23,14 @@ from apps.workflow_engine.workflow.nodes.http import (
 )
 from apps.workflow_engine.workflow.nodes.llm import LLMNode, LLMNodeData
 from apps.workflow_engine.workflow.nodes.loop import LoopNode, LoopNodeData
-from apps.workflow_engine.workflow.nodes.mail import MailNode, MailNodeData
+from apps.workflow_engine.workflow.nodes.mail import (
+    GmailDraftNode,
+    GmailDraftNodeData,
+    MailAcknowledgeNode,
+    MailAcknowledgeNodeData,
+    MailNode,
+    MailNodeData,
+)
 from apps.workflow_engine.workflow.nodes.schedule import (
     ScheduleTriggerNode,
     ScheduleTriggerNodeData,
@@ -60,6 +70,8 @@ class NodeFactory:
         "slackPostNode": (HttpRequestNode, HttpRequestNodeData),
         "githubNode": (GithubNode, GithubNodeData),
         "mailNode": (MailNode, MailNodeData),
+        "gmailDraftNode": (GmailDraftNode, GmailDraftNodeData),
+        "mailAcknowledgeNode": (MailAcknowledgeNode, MailAcknowledgeNodeData),
         "templateNode": (TemplateNode, TemplateNodeData),
         "workflowNode": (WorkflowNode, WorkflowNodeData),
         "fileExtractionNode": (FileExtractionNode, FileExtractionNodeData),
@@ -90,6 +102,8 @@ class NodeFactory:
 
         if schema.type == "mailNode":
             validate_mail_node_credential_boundary(schema.data)
+        elif schema.type in {"gmailDraftNode", "mailAcknowledgeNode"}:
+            validate_mail_processing_node_boundary(schema.type, schema.data)
 
         NodeClass, DataClass = NodeFactory.NODE_REGISTRY[schema.type]
         data = DataClass(**schema.data)

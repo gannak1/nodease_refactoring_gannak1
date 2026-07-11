@@ -32,6 +32,64 @@ def _engine_without_init():
     return object.__new__(WorkflowEngine)
 
 
+def test_mail_sensitive_lineage_includes_every_graph_descendant():
+    engine = _engine_without_init()
+    engine.node_schemas = {
+        "start": SimpleNamespace(type="startNode"),
+        "mail": SimpleNamespace(type="mailNode"),
+        "template": SimpleNamespace(type="templateNode"),
+        "answer": SimpleNamespace(type="answerNode"),
+        "other": SimpleNamespace(type="llmNode"),
+    }
+    engine.adjacency_list = {
+        "start": ["mail", "other"],
+        "mail": ["template"],
+        "template": ["answer"],
+    }
+    engine.data_dependencies = {}
+
+    assert engine._descendants_of_type("mailNode") == {
+        "mail",
+        "template",
+        "answer",
+    }
+
+
+def test_mail_sensitive_lineage_includes_selector_only_data_dependencies():
+    engine = _engine_without_init()
+    engine.node_schemas = {
+        "mail": SimpleNamespace(type="mailNode"),
+        "llm": SimpleNamespace(type="llmNode"),
+        "answer": SimpleNamespace(type="answerNode"),
+    }
+
+
+def test_dependency_extraction_supports_all_selector_field_shapes():
+    engine = _engine_without_init()
+    engine.node_schemas = {
+        "mail": SimpleNamespace(type="mailNode"),
+        "draft": SimpleNamespace(type="gmailDraftNode"),
+        "other": SimpleNamespace(type="templateNode"),
+    }
+    schema = SimpleNamespace(
+        data={
+            "variable_selector": ["mail", "emails"],
+            "source_selector": ["other", "text"],
+            "required_effect_ref_selectors": [["draft", "draft_ref"]],
+        }
+    )
+
+    assert engine._extract_value_selectors(schema) == {"mail", "draft", "other"}
+    engine.adjacency_list = {"llm": ["answer"]}
+    engine.data_dependencies = {"llm": {"mail"}}
+
+    assert engine._descendants_of_type("mailNode") == {
+        "mail",
+        "llm",
+        "answer",
+    }
+
+
 def test_error_trace_metadata_excludes_raw_error_message():
     engine = _engine_without_init()
     started_at = datetime.now(timezone.utc)

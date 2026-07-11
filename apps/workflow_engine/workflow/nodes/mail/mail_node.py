@@ -11,16 +11,35 @@ from typing import Any, Dict, List, Optional
 
 from jinja2 import Environment
 
-from apps.workflow_engine.workflow.nodes.base.node import Node
-from apps.workflow_engine.workflow.nodes.mail.entities import MailNodeData
 from apps.shared.db.session import SessionLocal
+from apps.shared.domain.mail_processing import MailSourceReference
+from apps.shared.services.credential_encryption import (
+    get_credential_encryption_service,
+)
+from apps.workflow_engine.adapters.gmail_mailbox_provider import (
+    GmailMailboxProvider,
+    GmailSearchCriteria,
+)
+from apps.workflow_engine.adapters.mail_processing_repository import (
+    SqlAlchemyMailProcessingRepository,
+)
+from apps.workflow_engine.application.mail_processing import (
+    MailProcessingApplicationService,
+    ProcessingRegistration,
+)
 from apps.workflow_engine.services.mail_credential_service import (
     MailCredentialResolver,
     ResolvedMailCredential,
 )
+from apps.workflow_engine.services.google_oauth_service import (
+    GoogleOAuthTokenService,
+)
+from apps.workflow_engine.workflow.nodes.base.node import Node
+from apps.workflow_engine.workflow.nodes.mail.entities import MailNodeData
 
 _jinja_env = Environment(autoescape=False)
 MAIL_IMAP_TIMEOUT_SECONDS = 10.0
+MAX_IMAP_MESSAGE_BYTES = 2 * 1024 * 1024
 
 
 def _imap_quoted_string(value: str) -> str:
@@ -79,6 +98,50 @@ def _get_nested_value(data: Any, keys: List[str]) -> Any:
     return data
 
 
+def _shutdown_failed_connection(mail: imaplib.IMAP4 | None) -> None:
+    if mail is None:
+        return
+    try:
+        mail.shutdown()
+    except Exception:
+        pass
+
+
+def _connect_imap_credential(
+    credential: ResolvedMailCredential,
+) -> imaplib.IMAP4:
+    """Connect with a resolved credential without exposing its secret."""
+    if credential.auth_type == "oauth2":
+        raise RuntimeError("mail.oauth_imap_not_supported")
+    mail: imaplib.IMAP4 | None = None
+    try:
+        if credential.use_ssl:
+            mail = _PinnedIMAP4SSL(
+                credential.imap_host,
+                credential.imap_port,
+                credential.resolved_ip,
+                ssl_context=ssl.create_default_context(),
+                timeout=MAIL_IMAP_TIMEOUT_SECONDS,
+            )
+        else:
+            mail = _PinnedIMAP4(
+                credential.imap_host,
+                credential.imap_port,
+                credential.resolved_ip,
+                timeout=MAIL_IMAP_TIMEOUT_SECONDS,
+            )
+            mail.starttls(ssl_context=ssl.create_default_context())
+
+        mail.login(credential.email_address, credential.secret)
+        return mail
+    except imaplib.IMAP4.error as exc:
+        _shutdown_failed_connection(mail)
+        raise RuntimeError("mail.authentication_failed") from exc
+    except Exception as exc:
+        _shutdown_failed_connection(mail)
+        raise RuntimeError("mail.connection_failed") from exc
+
+
 class MailNode(Node[MailNodeData]):
     """
     IMAP을 사용하여 이메일을 검색하는 노드입니다.
@@ -122,6 +185,16 @@ class MailNode(Node[MailNodeData]):
             if should_close:
                 db.close()
 
+        if credential.auth_type == "oauth2":
+            return self._run_gmail_rest(
+                credential=credential,
+                organization_id=organization_id,
+                user_id=user_id,
+                keyword=keyword,
+                sender=sender,
+                subject=subject,
+            )
+
         # IMAP 연결
         mail = self._connect_imap(credential)
 
@@ -135,7 +208,10 @@ class MailNode(Node[MailNodeData]):
             search_query = self._build_search_query(keyword, sender, subject)
 
             # 검색 실행
-            status, messages = mail.search(None, search_query)
+            if data.processing_mode == "durable":
+                status, messages = mail.uid("search", None, search_query)
+            else:
+                status, messages = mail.search(None, search_query)
             if status != "OK":
                 raise RuntimeError("mail.search_failed")
 
@@ -145,22 +221,56 @@ class MailNode(Node[MailNodeData]):
             max_results = data.max_results if data.max_results is not None else 5
             email_ids = email_ids[-max_results:]
 
+            uid_validity = (
+                self._uid_validity(mail)
+                if data.processing_mode == "durable" and email_ids
+                else None
+            )
+
             # 각 이메일 가져오기 (최신 순)
             emails = []
             for email_id in reversed(email_ids):
-                msg = self._fetch_email(mail, email_id)
+                msg, rfc_message_id = self._fetch_email(
+                    mail,
+                    email_id,
+                    use_uid=data.processing_mode == "durable",
+                )
+                if "error" in msg:
+                    raise RuntimeError("mail.fetch_failed")
+                if data.processing_mode == "durable":
+                    msg["processing_ref"] = self._register_processing(
+                        organization_id=organization_id,
+                        credential=credential,
+                        uid_validity=uid_validity,
+                        uid=email_id,
+                        rfc_message_id=rfc_message_id,
+                        folder=data.folder,
+                    )
+                    msg.pop("id", None)
                 emails.append(msg)
 
-            return {
+            if (
+                data.processing_mode == "search_only"
+                and data.mark_as_read
+                and email_ids
+            ):
+                status, _ = mail.store(b",".join(email_ids), "+FLAGS", "\\Seen")
+                if status != "OK":
+                    raise RuntimeError("mail.acknowledgement_failed")
+
+            result = {
                 "emails": emails,
                 "total_count": len(emails),
                 "folder": data.folder,
             }
+            if data.processing_mode == "durable" and len(emails) == 1:
+                result["processing_ref"] = emails[0]["processing_ref"]
+            return result
 
         except RuntimeError:
             raise
-        except Exception as exc:
-            raise RuntimeError("mail.operation_failed") from exc
+        except Exception:
+            raise RuntimeError("mail.operation_failed") from None
         finally:
             # 연결 종료
             try:
@@ -174,43 +284,93 @@ class MailNode(Node[MailNodeData]):
 
     def _connect_imap(self, credential: ResolvedMailCredential) -> imaplib.IMAP4:
         """IMAP 서버에 연결합니다."""
-        mail: imaplib.IMAP4 | None = None
+        return _connect_imap_credential(credential)
+
+    def _run_gmail_rest(
+        self,
+        *,
+        credential: ResolvedMailCredential,
+        organization_id: uuid.UUID,
+        user_id: uuid.UUID,
+        keyword: str,
+        sender: str,
+        subject: str,
+    ) -> Dict[str, Any]:
+        if credential.provider != "gmail":
+            raise RuntimeError("mail.oauth_provider_unsupported")
+        token_service = self.execution_context.get("google_oauth_token_service")
+        if token_service is None:
+            token_service = GoogleOAuthTokenService()
+        rotation_db, should_close_rotation_db = self._borrow_db_session()
         try:
-            if credential.use_ssl:
-                mail = _PinnedIMAP4SSL(
-                    credential.imap_host,
-                    credential.imap_port,
-                    credential.resolved_ip,
-                    ssl_context=ssl.create_default_context(),
-                    timeout=MAIL_IMAP_TIMEOUT_SECONDS,
+            access_token = MailCredentialResolver.refresh_oauth_serialized(
+                rotation_db,
+                user_id=user_id,
+                organization_id=organization_id,
+                credential_id=credential.credential_id,
+                refresh=token_service.refresh,
+            )
+        finally:
+            if should_close_rotation_db:
+                rotation_db.close()
+        provider_factory = self.execution_context.get("gmail_mailbox_provider_factory")
+        provider = (
+            provider_factory(access_token.value)
+            if callable(provider_factory)
+            else GmailMailboxProvider(access_token=access_token.value)
+        )
+        authorization_db, should_close_authorization_db = self._borrow_db_session()
+        try:
+            authorization_guard = self.execution_context.get("mail_authorization_guard")
+            if callable(authorization_guard):
+                authorization_guard(
+                    authorization_db,
+                    user_id=user_id,
+                    organization_id=organization_id,
+                    credential_id=credential.credential_id,
                 )
             else:
-                mail = _PinnedIMAP4(
-                    credential.imap_host,
-                    credential.imap_port,
-                    credential.resolved_ip,
-                    timeout=MAIL_IMAP_TIMEOUT_SECONDS,
+                MailCredentialResolver.revalidate_use(
+                    authorization_db,
+                    user_id=user_id,
+                    organization_id=organization_id,
+                    credential_id=credential.credential_id,
                 )
-                mail.starttls(ssl_context=ssl.create_default_context())
-
-            mail.login(credential.email_address, credential.secret)
-            return mail
-
-        except imaplib.IMAP4.error as exc:
-            self._shutdown_failed_connection(mail)
-            raise RuntimeError("mail.authentication_failed") from exc
-        except Exception as exc:
-            self._shutdown_failed_connection(mail)
-            raise RuntimeError("mail.connection_failed") from exc
-
-    @staticmethod
-    def _shutdown_failed_connection(mail: imaplib.IMAP4 | None) -> None:
-        if mail is None:
-            return
-        try:
-            mail.shutdown()
-        except Exception:
-            pass
+        finally:
+            if should_close_authorization_db:
+                authorization_db.close()
+        messages = provider.search(
+            GmailSearchCriteria(
+                keyword=keyword,
+                sender=sender,
+                subject=subject,
+                start_date=self.data.start_date,
+                end_date=self.data.end_date,
+                unread_only=self.data.unread_only,
+                folder=self.data.folder,
+                max_results=self.data.max_results or 5,
+            )
+        )
+        emails: list[dict[str, Any]] = []
+        for message in messages:
+            output = dict(message.output)
+            if self.data.processing_mode == "durable":
+                output["processing_ref"] = self._register_processing_source(
+                    organization_id=organization_id,
+                    credential=credential,
+                    source=message.source_reference,
+                )
+            emails.append(output)
+        if self.data.processing_mode == "search_only" and self.data.mark_as_read:
+            provider.mark_read(message.source_reference for message in messages)
+        result: Dict[str, Any] = {
+            "emails": emails,
+            "total_count": len(emails),
+            "folder": self.data.folder,
+        }
+        if self.data.processing_mode == "durable" and len(emails) == 1:
+            result["processing_ref"] = emails[0]["processing_ref"]
+        return result
 
     def _required_context_uuid(self, key: str) -> uuid.UUID:
         value = self.execution_context.get(key)
@@ -290,23 +450,42 @@ class MailNode(Node[MailNodeData]):
 
         return " ".join(criteria) if criteria else "ALL"
 
-    def _fetch_email(self, mail: imaplib.IMAP4_SSL, email_id: bytes) -> Dict[str, Any]:
+    def _fetch_email(
+        self,
+        mail: imaplib.IMAP4,
+        email_id: bytes,
+        *,
+        use_uid: bool = False,
+    ) -> tuple[Dict[str, Any], str | None]:
         """이메일 상세 정보를 가져옵니다."""
-        status, msg_data = mail.fetch(email_id, "(RFC822)")
+        if use_uid:
+            status, msg_data = mail.uid("fetch", email_id, "(RFC822)")
+        else:
+            status, msg_data = mail.fetch(email_id, "(RFC822)")
 
         if status != "OK" or not msg_data or not msg_data[0]:
-            return {
-                "id": email_id.decode(),
-                "error": "Failed to fetch email",
-            }
+            return (
+                {
+                    "id": email_id.decode(),
+                    "error": "Failed to fetch email",
+                },
+                None,
+            )
 
-        msg = email.message_from_bytes(msg_data[0][1])
+        raw_message = msg_data[0][1]
+        if (
+            not isinstance(raw_message, bytes)
+            or len(raw_message) > MAX_IMAP_MESSAGE_BYTES
+        ):
+            raise RuntimeError("mail.message_too_large")
+        msg = email.message_from_bytes(raw_message)
 
         # 헤더 파싱
         subject = self._decode_header(msg.get("Subject", ""))
         from_ = self._decode_header(msg.get("From", ""))
         to = self._decode_header(msg.get("To", ""))
         date = msg.get("Date", "")
+        rfc_message_id = msg.get("Message-ID")
 
         # 본문 추출
         body_text = ""
@@ -352,25 +531,151 @@ class MailNode(Node[MailNodeData]):
             except Exception:
                 pass
 
-        # Mark as read if requested
-        if self.data.mark_as_read:
-            try:
-                mail.store(email_id, "+FLAGS", "\\Seen")
-            except Exception:
-                pass
+        return (
+            {
+                "id": email_id.decode(),
+                "subject": subject,
+                "from": from_,
+                "to": to,
+                "date": date,
+                "body_text": body_text[:1000] if body_text else "",  # 처음 1000자
+                "body_html": body_html[:1000] if body_html else "",
+                "snippet": body_text[:200] if body_text else "",  # 미리보기
+                "has_attachments": len(attachments) > 0,
+                "attachments": attachments,
+            },
+            rfc_message_id,
+        )
 
-        return {
-            "id": email_id.decode(),
-            "subject": subject,
-            "from": from_,
-            "to": to,
-            "date": date,
-            "body_text": body_text[:1000] if body_text else "",  # 처음 1000자
-            "body_html": body_html[:1000] if body_html else "",
-            "snippet": body_text[:200] if body_text else "",  # 미리보기
-            "has_attachments": len(attachments) > 0,
-            "attachments": attachments,
-        }
+    @staticmethod
+    def _uid_validity(mail: imaplib.IMAP4) -> int:
+        _code, values = mail.response("UIDVALIDITY")
+        try:
+            raw = values[0] if values else None
+            value = int(raw.decode("ascii") if isinstance(raw, bytes) else raw)
+        except (TypeError, ValueError, IndexError, UnicodeDecodeError) as exc:
+            raise RuntimeError("mail.message_identity_invalid") from exc
+        if value < 1:
+            raise RuntimeError("mail.message_identity_invalid")
+        return value
+
+    def _register_processing(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        credential: ResolvedMailCredential,
+        uid_validity: int | None,
+        uid: bytes,
+        rfc_message_id: str | None,
+        folder: str,
+    ) -> str:
+        if uid_validity is None:
+            raise RuntimeError("mail.message_identity_invalid")
+        workflow_id = self._required_context_uuid("workflow_id")
+        deployment_value = self.execution_context.get("deployment_id")
+        try:
+            deployment_id = (
+                uuid.UUID(str(deployment_value))
+                if deployment_value is not None
+                else None
+            )
+            uid_value = int(uid.decode("ascii"))
+            source = MailSourceReference.from_mapping(
+                {
+                    "uid_validity": uid_validity,
+                    "uid": uid_value,
+                    "message_id": rfc_message_id,
+                    "folder": folder,
+                }
+            )
+        except (TypeError, ValueError, UnicodeDecodeError) as exc:
+            raise RuntimeError("mail.message_identity_invalid") from exc
+
+        db, should_close = self._borrow_db_session()
+        try:
+            factory = self.execution_context.get("mail_processing_service_factory")
+            service = (
+                factory(db)
+                if callable(factory)
+                else MailProcessingApplicationService(
+                    repository=SqlAlchemyMailProcessingRepository(db),
+                    encryption=get_credential_encryption_service(),
+                )
+            )
+            return self._register_processing_source(
+                organization_id=organization_id,
+                credential=credential,
+                source=source,
+                service=service,
+                workflow_id=workflow_id,
+                deployment_id=deployment_id,
+            )
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError("mail.processing_registration_failed") from exc
+        finally:
+            if should_close:
+                db.close()
+
+    def _register_processing_source(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        credential: ResolvedMailCredential,
+        source: MailSourceReference,
+        service: MailProcessingApplicationService | None = None,
+        workflow_id: uuid.UUID | None = None,
+        deployment_id: uuid.UUID | None = None,
+    ) -> str:
+        effective_workflow_id = workflow_id or self._required_context_uuid(
+            "workflow_id"
+        )
+        if deployment_id is None:
+            deployment_value = self.execution_context.get("deployment_id")
+            deployment_id = (
+                uuid.UUID(str(deployment_value))
+                if deployment_value is not None
+                else None
+            )
+        if service is not None:
+            return service.register_message(
+                ProcessingRegistration(
+                    organization_id=organization_id,
+                    workflow_id=effective_workflow_id,
+                    deployment_id=deployment_id,
+                    source_node_id=self.id,
+                    credential_id=credential.credential_id,
+                    provider=credential.provider,
+                    source=source,
+                )
+            )
+        db, should_close = self._borrow_db_session()
+        try:
+            factory = self.execution_context.get("mail_processing_service_factory")
+            processing_service = (
+                factory(db)
+                if callable(factory)
+                else MailProcessingApplicationService(
+                    repository=SqlAlchemyMailProcessingRepository(db),
+                    encryption=get_credential_encryption_service(),
+                )
+            )
+            return self._register_processing_source(
+                organization_id=organization_id,
+                credential=credential,
+                source=source,
+                service=processing_service,
+                workflow_id=effective_workflow_id,
+                deployment_id=deployment_id,
+            )
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError("mail.processing_registration_failed") from exc
+        finally:
+            if should_close:
+                db.close()
 
     def _decode_header(self, header: str) -> str:
         """이메일 헤더를 디코딩합니다."""
