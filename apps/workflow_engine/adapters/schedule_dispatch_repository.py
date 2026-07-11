@@ -58,7 +58,7 @@ class SqlAlchemyScheduleAdmissionRepository:
         self._schedule: Schedule | None = None
 
     def database_now(self) -> datetime:
-        return self.db.execute(select(func.now())).scalar_one()
+        return self.db.execute(select(func.clock_timestamp())).scalar_one()
 
     def read_locator(self, claim_id: uuid.UUID) -> ScheduleClaimLocator | None:
         row = self.db.execute(

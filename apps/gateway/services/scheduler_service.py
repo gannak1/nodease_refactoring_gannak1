@@ -3,50 +3,56 @@
 from __future__ import annotations
 
 import logging
-import os
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from apps.gateway.adapters.audit.sqlalchemy_schedule_dispatch_audit import (
-    SqlAlchemyScheduleDispatchAuditRecorder,
-)
-from apps.gateway.adapters.db.schedule_dispatch_repository import (
-    SqlAlchemyScheduleDispatchRepository,
-)
-from apps.gateway.adapters.db.sqlalchemy_unit_of_work import SqlAlchemyUnitOfWork
-from apps.gateway.adapters.queue.celery_schedule_publisher import (
-    CeleryScheduleTaskPublisher,
-)
-from apps.gateway.adapters.schedule.apscheduler_next_fire import (
-    ApschedulerNextFireCalculator,
-)
 from apps.gateway.application.deployment.schedule_dispatch import (
     ScheduleDispatchUseCase,
 )
+from apps.gateway.application.deployment.schedule_models import SchedulePublishResult
 from apps.gateway.application.deployment.schedule_occurrence import (
     ScheduleOccurrenceUseCase,
 )
 from apps.gateway.application.deployment.schedule_ports import (
+    BudgetDecisionPort,
+    NextFireCalculatorPort,
+    ScheduleDispatchAuditRecorderPort,
+    ScheduleDispatchRepositoryPort,
+    ScheduleDispatchUnitOfWork,
     ScheduleTaskPublisherPort,
-)
-from apps.gateway.services.workflow_budget_service import (
-    WorkflowBudgetDecisionAdapter,
 )
 from apps.shared.db.models.schedule import Schedule
 from apps.shared.domain.deployment_runtime_policy import DeploymentRuntimePolicy
 from apps.shared.domain.schedule_dispatch import (
+    REASON_BUDGET_EVALUATION_FAILED,
+    REASON_ENQUEUE_ATTEMPTS_EXHAUSTED,
+    REASON_EXECUTION_OUTCOME_UNKNOWN,
     ScheduleDispatchSettings,
-    schedule_dispatch_settings_from_environment,
+)
+from apps.shared.services.schedule_dispatch_observability import (
+    emit_schedule_dispatch_signal,
 )
 
 logger = logging.getLogger(__name__)
 
 SessionFactory = Callable[[], Session]
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduleDispatchDependencies:
+    repository: ScheduleDispatchRepositoryPort
+    audit: ScheduleDispatchAuditRecorderPort
+    budget: BudgetDecisionPort
+    uow: ScheduleDispatchUnitOfWork
+
+
+ScheduleDependencyBuilder = Callable[[Session], ScheduleDispatchDependencies]
 
 
 class SchedulerService:
@@ -59,14 +65,19 @@ class SchedulerService:
         settings: ScheduleDispatchSettings,
         session_factory: SessionFactory,
         publisher: ScheduleTaskPublisherPort,
+        dependency_builder: ScheduleDependencyBuilder,
+        next_fire: NextFireCalculatorPort,
         start_background: bool = True,
+        maintenance_enabled: bool = True,
     ) -> None:
         self.runtime_policy = runtime_policy
         self.settings = settings
         self.session_factory = session_factory
         self.publisher = publisher
+        self.dependency_builder = dependency_builder
+        self.maintenance_enabled = maintenance_enabled
         self.instance_id = str(uuid.uuid4())
-        self.next_fire = ApschedulerNextFireCalculator()
+        self.next_fire = next_fire
         self.occurrence_use_case = ScheduleOccurrenceUseCase(
             settings=settings,
             runtime_policy=runtime_policy,
@@ -77,7 +88,9 @@ class SchedulerService:
             runtime_policy=runtime_policy,
         )
         self.scheduler: BackgroundScheduler | None = None
-        if start_background and settings.processes_existing_claims:
+        if start_background and (
+            settings.processes_existing_claims or maintenance_enabled
+        ):
             scheduler = BackgroundScheduler(timezone="UTC")
             scheduler.add_job(
                 self._tick,
@@ -99,7 +112,7 @@ class SchedulerService:
 
     def add_schedule(self, schedule: Schedule, db: Session) -> None:
         """Validate configuration and initialize its cursor without committing."""
-        now = db.execute(select(func.now())).scalar_one()
+        now = self.dependency_builder(db).repository.database_now()
         schedule.next_run_at = self.next_fire.first_after(
             cron_expression=schedule.cron_expression,
             timezone_name=schedule.timezone,
@@ -119,41 +132,63 @@ class SchedulerService:
         self._tick()
 
     def _tick(self) -> None:
-        if not self.settings.processes_existing_claims:
+        if self.settings.processes_existing_claims:
+            try:
+                self._recover_critical()
+                if self.settings.claims_new_occurrences:
+                    self._reconcile_uninitialized()
+                    self._claim_due_occurrences()
+                batch = self._prepare_publish_batch()
+                self._emit_dead_letter_signal(
+                    batch.enqueue_attempts_exhausted,
+                    REASON_ENQUEUE_ATTEMPTS_EXHAUSTED,
+                )
+                self._emit_dead_letter_signal(
+                    batch.budget_evaluation_failed,
+                    REASON_BUDGET_EVALUATION_FAILED,
+                )
+                for request in batch.requests:
+                    emit_schedule_dispatch_signal(
+                        logger,
+                        "schedule_enqueue_attempt_total",
+                        mode=self.settings.mode,
+                    )
+                    accepted = True
+                    try:
+                        self.publisher.publish(request)
+                    except Exception:
+                        accepted = False
+                        logger.warning("Schedule dispatch publish failed")
+                        emit_schedule_dispatch_signal(
+                            logger,
+                            "schedule_enqueue_failure_total",
+                            mode=self.settings.mode,
+                        )
+                    try:
+                        result = self._record_publish_result(
+                            request,
+                            accepted=accepted,
+                        )
+                        if result.dead_lettered_reason is not None:
+                            self._emit_dead_letter_signal(
+                                1,
+                                result.dead_lettered_reason,
+                            )
+                    except Exception as exc:
+                        # The dispatching lease remains the durable recovery source.
+                        # One claim's result-write failure must not strand the rest
+                        # of the already prepared batch.
+                        logger.error(
+                            "Schedule publish result write failed: error_type=%s",
+                            type(exc).__name__,
+                        )
+            except Exception as exc:
+                logger.error(
+                    "Schedule dispatch tick failed: error_type=%s",
+                    type(exc).__name__,
+                )
+        if not self.maintenance_enabled:
             return
-        try:
-            self._recover_critical()
-            if self.settings.claims_new_occurrences:
-                self._reconcile_uninitialized()
-                self._claim_due_occurrences()
-            requests = self._prepare_publish_batch()
-            for request in requests:
-                accepted = True
-                try:
-                    self.publisher.publish(request)
-                except Exception:
-                    accepted = False
-                    logger.warning(
-                        "Schedule dispatch publish failed: claim_id=%s",
-                        request.claim_id,
-                    )
-                try:
-                    self._record_publish_result(request, accepted=accepted)
-                except Exception as exc:
-                    # The dispatching lease remains the durable recovery source.
-                    # One claim's result-write failure must not strand the rest
-                    # of the already prepared batch.
-                    logger.error(
-                        "Schedule publish result write failed: "
-                        "claim_id=%s error_type=%s",
-                        request.claim_id,
-                        type(exc).__name__,
-                    )
-        except Exception as exc:
-            logger.error(
-                "Schedule dispatch tick failed: error_type=%s",
-                type(exc).__name__,
-            )
         self._run_optional_maintenance(
             self._maintain_visibility,
             operation_name="visibility",
@@ -162,14 +197,19 @@ class SchedulerService:
             self._cleanup_terminal_claims,
             operation_name="cleanup",
         )
+        self._run_optional_maintenance(
+            self._observe_claim_ages,
+            operation_name="claim_age",
+        )
 
     def _reconcile_uninitialized(self) -> None:
         db = self.session_factory()
         try:
+            dependencies = self.dependency_builder(db)
             self.occurrence_use_case.reconcile_uninitialized(
-                repository=SqlAlchemyScheduleDispatchRepository(db),
-                audit=SqlAlchemyScheduleDispatchAuditRecorder(db),
-                uow=SqlAlchemyUnitOfWork(db),
+                repository=dependencies.repository,
+                audit=dependencies.audit,
+                uow=dependencies.uow,
             )
         finally:
             db.close()
@@ -177,34 +217,56 @@ class SchedulerService:
     def _claim_due_occurrences(self) -> None:
         db = self.session_factory()
         try:
-            self.occurrence_use_case.claim_due_occurrences(
-                repository=SqlAlchemyScheduleDispatchRepository(db),
-                budget=WorkflowBudgetDecisionAdapter(db),
-                audit=SqlAlchemyScheduleDispatchAuditRecorder(db),
-                uow=SqlAlchemyUnitOfWork(db),
+            dependencies = self.dependency_builder(db)
+            created = self.occurrence_use_case.claim_due_occurrences(
+                repository=dependencies.repository,
+                budget=dependencies.budget,
+                audit=dependencies.audit,
+                uow=dependencies.uow,
             )
+            if created:
+                emit_schedule_dispatch_signal(
+                    logger,
+                    "schedule_claim_created_total",
+                    value=created,
+                    mode=self.settings.mode,
+                )
+        except IntegrityError:
+            emit_schedule_dispatch_signal(
+                logger,
+                "schedule_claim_conflict_total",
+                mode=self.settings.mode,
+            )
+            raise
         finally:
             db.close()
 
     def _prepare_publish_batch(self):
         db = self.session_factory()
         try:
+            dependencies = self.dependency_builder(db)
             return self.dispatch_use_case.prepare_publish_batch(
-                repository=SqlAlchemyScheduleDispatchRepository(db),
-                budget=WorkflowBudgetDecisionAdapter(db),
-                audit=SqlAlchemyScheduleDispatchAuditRecorder(db),
-                uow=SqlAlchemyUnitOfWork(db),
+                repository=dependencies.repository,
+                budget=dependencies.budget,
+                audit=dependencies.audit,
+                uow=dependencies.uow,
                 owner=self.instance_id,
             )
         finally:
             db.close()
 
-    def _record_publish_result(self, request, *, accepted: bool) -> None:
+    def _record_publish_result(
+        self,
+        request,
+        *,
+        accepted: bool,
+    ) -> SchedulePublishResult:
         db = self.session_factory()
         try:
-            self.dispatch_use_case.record_publish_result(
-                repository=SqlAlchemyScheduleDispatchRepository(db),
-                uow=SqlAlchemyUnitOfWork(db),
+            dependencies = self.dependency_builder(db)
+            return self.dispatch_use_case.record_publish_result(
+                repository=dependencies.repository,
+                uow=dependencies.uow,
                 request=request,
                 accepted=accepted,
             )
@@ -214,9 +276,18 @@ class SchedulerService:
     def _recover_critical(self) -> None:
         db = self.session_factory()
         try:
-            self.dispatch_use_case.recover_critical(
-                repository=SqlAlchemyScheduleDispatchRepository(db),
-                uow=SqlAlchemyUnitOfWork(db),
+            dependencies = self.dependency_builder(db)
+            result = self.dispatch_use_case.recover_critical(
+                repository=dependencies.repository,
+                uow=dependencies.uow,
+            )
+            self._emit_dead_letter_signal(
+                result.enqueue_attempts_exhausted,
+                REASON_ENQUEUE_ATTEMPTS_EXHAUSTED,
+            )
+            self._emit_dead_letter_signal(
+                result.execution_outcome_unknown,
+                REASON_EXECUTION_OUTCOME_UNKNOWN,
             )
         finally:
             db.close()
@@ -224,20 +295,55 @@ class SchedulerService:
     def _maintain_visibility(self) -> None:
         db = self.session_factory()
         try:
-            self.dispatch_use_case.maintain_visibility(
-                repository=SqlAlchemyScheduleDispatchRepository(db),
-                audit=SqlAlchemyScheduleDispatchAuditRecorder(db),
-                uow=SqlAlchemyUnitOfWork(db),
+            dependencies = self.dependency_builder(db)
+            missing = self.dispatch_use_case.maintain_visibility(
+                repository=dependencies.repository,
+                audit=dependencies.audit,
+                uow=dependencies.uow,
             )
+            if missing:
+                emit_schedule_dispatch_signal(
+                    logger,
+                    "schedule_claim_workflow_run_missing_total",
+                    value=missing,
+                    reason="workflow_run_missing",
+                    mode=self.settings.mode,
+                )
         finally:
             db.close()
 
     def _cleanup_terminal_claims(self) -> None:
         db = self.session_factory()
         try:
+            dependencies = self.dependency_builder(db)
             self.dispatch_use_case.cleanup_terminal_claims(
-                repository=SqlAlchemyScheduleDispatchRepository(db),
-                uow=SqlAlchemyUnitOfWork(db),
+                repository=dependencies.repository,
+                uow=dependencies.uow,
+            )
+        finally:
+            db.close()
+
+    def _observe_claim_ages(self) -> None:
+        db = self.session_factory()
+        try:
+            dependencies = self.dependency_builder(db)
+            now = dependencies.repository.database_now()
+            pending_age, running_age = dependencies.repository.claim_age_seconds(
+                now=now
+            )
+            emit_schedule_dispatch_signal(
+                logger,
+                "schedule_claim_pending_age_seconds",
+                value=pending_age,
+                status="pending",
+                mode=self.settings.mode,
+            )
+            emit_schedule_dispatch_signal(
+                logger,
+                "schedule_claim_running_age_seconds",
+                value=running_age,
+                status="running",
+                mode=self.settings.mode,
             )
         finally:
             db.close()
@@ -255,6 +361,18 @@ class SchedulerService:
                 operation_name,
                 type(exc).__name__,
             )
+
+    def _emit_dead_letter_signal(self, value: int, reason: str) -> None:
+        if value <= 0:
+            return
+        emit_schedule_dispatch_signal(
+            logger,
+            "schedule_claim_dead_letter_total",
+            value=value,
+            status="dead_lettered",
+            reason=reason,
+            mode=self.settings.mode,
+        )
 
     def shutdown(self) -> None:
         if self.scheduler is not None:
@@ -275,25 +393,23 @@ def init_scheduler_service(
     db: Session,
     *,
     runtime_policy: DeploymentRuntimePolicy,
-    settings: ScheduleDispatchSettings | None = None,
-    session_factory: SessionFactory | None = None,
-    celery_application: Any | None = None,
+    settings: ScheduleDispatchSettings,
+    session_factory: SessionFactory,
+    publisher: ScheduleTaskPublisherPort,
+    dependency_builder: ScheduleDependencyBuilder,
+    next_fire: NextFireCalculatorPort,
+    maintenance_enabled: bool = True,
 ) -> SchedulerService:
     global scheduler_service
 
-    from apps.shared.celery_app import celery_app
-    from apps.shared.db.session import SessionLocal
-
-    validated_settings = settings or schedule_dispatch_settings_from_environment(
-        os.environ
-    )
-    factory = session_factory or SessionLocal
-    application = celery_application or celery_app
     scheduler_service = SchedulerService(
         runtime_policy=runtime_policy,
-        settings=validated_settings,
-        session_factory=factory,
-        publisher=CeleryScheduleTaskPublisher(application),
+        settings=settings,
+        session_factory=session_factory,
+        publisher=publisher,
+        dependency_builder=dependency_builder,
+        next_fire=next_fire,
+        maintenance_enabled=maintenance_enabled,
     )
     scheduler_service.load_schedules_from_db(db)
     return scheduler_service

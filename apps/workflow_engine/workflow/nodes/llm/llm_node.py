@@ -19,11 +19,11 @@ from apps.shared.db.models.llm import LLMModel
 from apps.shared.db.models.workflow_run import RunStatus, WorkflowNodeRun, WorkflowRun
 from apps.shared.db.session import SessionLocal  # 임시 세션 생성용
 from apps.shared.schemas.rag import ChunkPreview
+from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
 from apps.shared.services.permission_audit import (
     record_resource_permission_denied,
     record_system_resource_permission_denied,
 )
-from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
 from apps.shared.services.rag_evidence_policy import (
     RAGEvidenceDecision,
     RAGEvidencePolicy,
@@ -51,10 +51,10 @@ from apps.workflow_engine.services.retrieval import RetrievalService
 
 from ..base.node import Node
 from .entities import (
-    LLMNodeData,
     MAX_RAG_CHUNKS_PER_KB,
     MAX_RAG_QUERY_REWRITE_TEMPLATE_LENGTH,
     MAX_RAG_RETRIEVAL_KBS,
+    LLMNodeData,
 )
 
 logger = logging.getLogger(__name__)
@@ -2219,6 +2219,10 @@ class LLMNode(Node[LLMNodeData]):
             "result_count": result_count,
             "policy_result": policy_result,
         }
+        organization_id = self._canonical_audit_organization_id()
+        if organization_id is None:
+            return
+        metadata["organization_id"] = organization_id
         if reason_code:
             metadata["reason_code"] = reason_code
         is_user_actor = user_id is not None and not self._is_system_schedule_execution()
@@ -2248,9 +2252,10 @@ class LLMNode(Node[LLMNodeData]):
                 "reason_code": reason_code,
             },
         }
-        organization_id = self.execution_context.get("organization_id")
-        if organization_id:
-            metadata["organization_id"] = str(organization_id)
+        organization_id = self._canonical_audit_organization_id()
+        if organization_id is None:
+            return
+        metadata["organization_id"] = organization_id
         is_user_actor = user_id is not None and not self._is_system_schedule_execution()
         record_audit(
             action=AuditAction.POLICY_BLOCK,
@@ -2262,6 +2267,16 @@ class LLMNode(Node[LLMNodeData]):
             status="failure",
             metadata=metadata,
         )
+
+    def _canonical_audit_organization_id(self) -> str | None:
+        organization_id = self.execution_context.get("organization_id")
+        if not organization_id:
+            return None
+        try:
+            return str(uuid.UUID(str(organization_id)))
+        except (TypeError, ValueError):
+            logger.warning("RAG audit omitted invalid organization context")
+            return None
 
     def _record_knowledge_permission_denied(
         self,

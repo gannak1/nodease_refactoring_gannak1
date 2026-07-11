@@ -87,6 +87,7 @@ class ScheduleAdmissionResult:
     status: AdmissionStatus
     reason: str | None = None
     plan: ScheduledExecutionPlan | None = None
+    dead_lettered_reason: str | None = None
 
 
 class ScheduleAdmissionRepositoryPort(Protocol):
@@ -148,6 +149,25 @@ class BudgetDecisionPort(Protocol):
     ) -> BudgetExecutionDecision: ...
 
 
+class ScheduleAdmissionAuditPort(Protocol):
+    def record_budget_block(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        workflow_id: uuid.UUID,
+        claim_id: uuid.UUID,
+    ) -> None: ...
+
+    def record_claim_result(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        claim_id: uuid.UUID,
+        action: str,
+        reason: str,
+    ) -> None: ...
+
+
 class ScheduledDeploymentExecutionUseCase:
     def __init__(
         self,
@@ -163,6 +183,7 @@ class ScheduledDeploymentExecutionUseCase:
         *,
         repository: ScheduleAdmissionRepositoryPort,
         budget: BudgetDecisionPort,
+        audit: ScheduleAdmissionAuditPort,
         uow: UnitOfWorkPort,
         claim_id: uuid.UUID,
         task_id: str,
@@ -195,23 +216,42 @@ class ScheduledDeploymentExecutionUseCase:
             reason = self._canonical_rejection_reason(snapshot)
             if reason is not None:
                 repository.mark_canceled(reason=reason, now=now)
+                audit.record_claim_result(
+                    organization_id=snapshot.claim_organization_id,
+                    claim_id=snapshot.claim_id,
+                    action="schedule_dispatch.canceled",
+                    reason=reason,
+                )
                 uow.commit()
                 return ScheduleAdmissionResult("rejected", reason)
 
             decision = budget.evaluate(workflow_id=snapshot.workflow_id, now=now)
+            transition_now = repository.database_now()
             if decision.status == "blocked":
-                repository.mark_canceled(reason=REASON_BUDGET_BLOCKED, now=now)
+                repository.mark_canceled(
+                    reason=REASON_BUDGET_BLOCKED,
+                    now=transition_now,
+                )
+                if snapshot.workflow_id is None:
+                    raise RuntimeError(
+                        "budget block requires canonical workflow identity"
+                    )
+                audit.record_budget_block(
+                    organization_id=snapshot.claim_organization_id,
+                    workflow_id=snapshot.workflow_id,
+                    claim_id=snapshot.claim_id,
+                )
                 uow.commit()
                 return ScheduleAdmissionResult("rejected", REASON_BUDGET_BLOCKED)
             if decision.status == "unavailable":
                 exhausted = snapshot.attempt_count >= self.settings.max_attempts
                 repository.mark_budget_deferred(
-                    now=now,
+                    now=transition_now,
                     exhausted=exhausted,
                     next_attempt_at=(
                         None
                         if exhausted
-                        else now
+                        else transition_now
                         + timedelta(
                             seconds=retry_delay_seconds(
                                 max(snapshot.attempt_count, 1),
@@ -220,15 +260,31 @@ class ScheduledDeploymentExecutionUseCase:
                         )
                     ),
                 )
+                audit.record_claim_result(
+                    organization_id=snapshot.claim_organization_id,
+                    claim_id=snapshot.claim_id,
+                    action=(
+                        "schedule_dispatch.failed"
+                        if exhausted
+                        else "schedule_dispatch.deferred"
+                    ),
+                    reason=REASON_BUDGET_EVALUATION_FAILED,
+                )
                 uow.commit()
-                return ScheduleAdmissionResult("deferred", REASON_BUDGET_EVALUATION_FAILED)
+                return ScheduleAdmissionResult(
+                    "deferred",
+                    REASON_BUDGET_EVALUATION_FAILED,
+                    dead_lettered_reason=(
+                        REASON_BUDGET_EVALUATION_FAILED if exhausted else None
+                    ),
+                )
 
             workflow_run_id = uuid.uuid4()
             repository.mark_running(
                 workflow_run_id=workflow_run_id,
                 admission_owner=admission_owner,
-                now=now,
-                execution_deadline_at=now
+                now=transition_now,
+                execution_deadline_at=transition_now
                 + timedelta(seconds=self.settings.execution_deadline_seconds),
             )
             uow.commit()

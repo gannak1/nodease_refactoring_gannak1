@@ -33,6 +33,7 @@ def test_schedule_publisher_sends_only_claim_locator_with_deterministic_task_id(
                 "args": [str(request.claim_id)],
                 "task_id": request.task_id,
                 "retry": False,
+                "ignore_result": True,
             },
         )
     ]

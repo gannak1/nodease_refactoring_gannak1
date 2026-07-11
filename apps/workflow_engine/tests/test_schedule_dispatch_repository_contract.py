@@ -2,13 +2,13 @@ import inspect
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from apps.workflow_engine.adapters.schedule_dispatch_repository import (
-    SqlAlchemyScheduleAdmissionRepository,
-)
 from apps.shared.db.models.schedule_dispatch import ScheduleDispatchClaim
 from apps.shared.domain.schedule_dispatch import (
     REASON_BUDGET_EVALUATION_FAILED,
     STATUS_PENDING,
+)
+from apps.workflow_engine.adapters.schedule_dispatch_repository import (
+    SqlAlchemyScheduleAdmissionRepository,
 )
 
 
@@ -23,6 +23,12 @@ def test_admission_repository_declares_canonical_lock_order():
     claim_lock = source.index("select(ScheduleDispatchClaim)", schedule_lock)
 
     assert app_lock < deployment_lock < schedule_lock < claim_lock
+
+
+def test_admission_repository_uses_wall_clock_after_lock_acquisition():
+    source = inspect.getsource(SqlAlchemyScheduleAdmissionRepository.database_now)
+
+    assert "clock_timestamp" in source
 
 
 def test_admission_repository_uses_deployment_creator_as_credential_principal():

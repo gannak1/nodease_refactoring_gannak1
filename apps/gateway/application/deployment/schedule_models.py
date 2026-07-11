@@ -52,11 +52,23 @@ class SchedulePublishRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class SchedulePublishBatch:
+    requests: tuple[SchedulePublishRequest, ...]
+    enqueue_attempts_exhausted: int = 0
+    budget_evaluation_failed: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class SchedulePublishResult:
-    claim_id: uuid.UUID
-    task_id: str
-    lease_owner: str
-    accepted: bool
+    changed: bool
+    dead_lettered_reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduleRecoveryResult:
+    retried: int
+    enqueue_attempts_exhausted: int
+    execution_outcome_unknown: int
 
 
 @dataclass(frozen=True, slots=True)

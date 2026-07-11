@@ -11,6 +11,7 @@ from apps.shared.domain.deployment_runtime_policy import (
 )
 from apps.shared.domain.schedule_dispatch import (
     REASON_BUDGET_BLOCKED,
+    REASON_BUDGET_EVALUATION_FAILED,
     REASON_ORGANIZATION_SCOPE_MISMATCH,
     STATUS_ENQUEUED,
     ScheduleDispatchSettings,
@@ -122,6 +123,18 @@ class _Budget:
         return BudgetExecutionDecision(status=self.status)
 
 
+class _Audit:
+    def __init__(self):
+        self.budget_blocks = []
+        self.claim_results = []
+
+    def record_budget_block(self, **kwargs):
+        self.budget_blocks.append(kwargs)
+
+    def record_claim_result(self, **kwargs):
+        self.claim_results.append(kwargs)
+
+
 def _use_case(*, mode="claim"):
     return ScheduledDeploymentExecutionUseCase(
         settings=ScheduleDispatchSettings(mode=mode),
@@ -137,6 +150,7 @@ def test_valid_claim_admits_one_system_schedule_execution():
     result = _use_case().admit(
         repository=repository,
         budget=_Budget(),
+        audit=_Audit(),
         uow=uow,
         claim_id=snapshot.claim_id,
         task_id=snapshot.idempotency_key,
@@ -163,6 +177,7 @@ def test_disabled_mode_does_not_admit_an_already_queued_schedule_task():
     result = _use_case(mode="disabled").admit(
         repository=repository,
         budget=_Budget(),
+        audit=_Audit(),
         uow=uow,
         claim_id=snapshot.claim_id,
         task_id=snapshot.idempotency_key,
@@ -170,6 +185,7 @@ def test_disabled_mode_does_not_admit_an_already_queued_schedule_task():
     )
 
     assert result.status == "deferred"
+    assert result.dead_lettered_reason is None
     assert result.reason == "schedule_dispatch_disabled"
     assert repository.running == []
     assert uow.commits == 0
@@ -183,6 +199,7 @@ def test_non_admissible_existing_state_suppresses_duplicate_engine_start(status)
     result = _use_case().admit(
         repository=repository,
         budget=_Budget(),
+        audit=_Audit(),
         uow=_Uow(),
         claim_id=snapshot.claim_id,
         task_id=snapshot.idempotency_key,
@@ -201,6 +218,7 @@ def test_task_id_mismatch_is_rejected_without_claim_mutation():
     result = _use_case().admit(
         repository=repository,
         budget=_Budget(),
+        audit=_Audit(),
         uow=_Uow(),
         claim_id=snapshot.claim_id,
         task_id=f"schedule:{uuid.uuid4()}",
@@ -215,10 +233,12 @@ def test_canonical_organization_mismatch_is_canceled_before_admission():
     snapshot = _snapshot(app_organization_id=uuid.uuid4())
     repository = _Repository(snapshot)
     uow = _Uow()
+    audit = _Audit()
 
     result = _use_case().admit(
         repository=repository,
         budget=_Budget(),
+        audit=audit,
         uow=uow,
         claim_id=snapshot.claim_id,
         task_id=snapshot.idempotency_key,
@@ -227,16 +247,19 @@ def test_canonical_organization_mismatch_is_canceled_before_admission():
 
     assert result.reason == REASON_ORGANIZATION_SCOPE_MISMATCH
     assert repository.canceled == [{"reason": result.reason, "now": NOW}]
+    assert audit.claim_results[0]["action"] == "schedule_dispatch.canceled"
     assert uow.commits == 1
 
 
 def test_budget_blocked_after_enqueue_is_canceled_before_admission():
     snapshot = _snapshot()
     repository = _Repository(snapshot)
+    audit = _Audit()
 
     result = _use_case().admit(
         repository=repository,
         budget=_Budget("blocked"),
+        audit=audit,
         uow=_Uow(),
         claim_id=snapshot.claim_id,
         task_id=snapshot.idempotency_key,
@@ -244,16 +267,25 @@ def test_budget_blocked_after_enqueue_is_canceled_before_admission():
     )
 
     assert result.reason == REASON_BUDGET_BLOCKED
+    assert audit.budget_blocks == [
+        {
+            "organization_id": snapshot.claim_organization_id,
+            "workflow_id": snapshot.workflow_id,
+            "claim_id": snapshot.claim_id,
+        }
+    ]
     assert repository.running == []
 
 
 def test_budget_unavailable_returns_claim_to_dispatcher_without_engine_start():
     snapshot = _snapshot()
     repository = _Repository(snapshot)
+    audit = _Audit()
 
     result = _use_case().admit(
         repository=repository,
         budget=_Budget("unavailable"),
+        audit=audit,
         uow=_Uow(),
         claim_id=snapshot.claim_id,
         task_id=snapshot.idempotency_key,
@@ -261,8 +293,31 @@ def test_budget_unavailable_returns_claim_to_dispatcher_without_engine_start():
     )
 
     assert result.status == "deferred"
+    assert result.dead_lettered_reason is None
     assert repository.deferred[0]["exhausted"] is False
+    assert audit.claim_results[0]["action"] == "schedule_dispatch.deferred"
     assert repository.running == []
+
+
+def test_budget_unavailable_at_attempt_limit_records_terminal_failure():
+    snapshot = _snapshot(attempt_count=5)
+    repository = _Repository(snapshot)
+    audit = _Audit()
+
+    result = _use_case().admit(
+        repository=repository,
+        budget=_Budget("unavailable"),
+        audit=audit,
+        uow=_Uow(),
+        claim_id=snapshot.claim_id,
+        task_id=snapshot.idempotency_key,
+        admission_owner="owner",
+    )
+
+    assert result.status == "deferred"
+    assert result.dead_lettered_reason == REASON_BUDGET_EVALUATION_FAILED
+    assert repository.deferred[0]["exhausted"] is True
+    assert audit.claim_results[0]["action"] == "schedule_dispatch.failed"
 
 
 def test_schedule_plan_separates_system_actor_credential_and_rag_subject():
@@ -272,6 +327,7 @@ def test_schedule_plan_separates_system_actor_credential_and_rag_subject():
     result = _use_case().admit(
         repository=repository,
         budget=_Budget(),
+        audit=_Audit(),
         uow=_Uow(),
         claim_id=snapshot.claim_id,
         task_id=snapshot.idempotency_key,
@@ -289,12 +345,42 @@ def test_schedule_plan_separates_system_actor_credential_and_rag_subject():
     assert "execution_subject" not in context
 
 
+def test_admission_deadline_uses_fresh_db_clock_after_budget_evaluation():
+    later = datetime(2026, 7, 10, 0, 2, tzinfo=timezone.utc)
+
+    class _ClockRepository(_Repository):
+        def __init__(self, snapshot):
+            super().__init__(snapshot)
+            self.times = iter([NOW, later])
+
+        def database_now(self):
+            return next(self.times)
+
+    snapshot = _snapshot()
+    repository = _ClockRepository(snapshot)
+
+    result = _use_case().admit(
+        repository=repository,
+        budget=_Budget(),
+        audit=_Audit(),
+        uow=_Uow(),
+        claim_id=snapshot.claim_id,
+        task_id=snapshot.idempotency_key,
+        admission_owner="owner",
+    )
+
+    assert result.status == "admitted"
+    assert repository.running[0]["now"] == later
+    assert repository.running[0]["execution_deadline_at"] > later
+
+
 def test_finalize_uses_claim_run_and_owner_compare_and_set_contract():
     snapshot = _snapshot()
     repository = _Repository(snapshot)
     admission = _use_case().admit(
         repository=repository,
         budget=_Budget(),
+        audit=_Audit(),
         uow=_Uow(),
         claim_id=snapshot.claim_id,
         task_id=snapshot.idempotency_key,
@@ -322,6 +408,7 @@ def test_admission_exception_rolls_back_without_plan():
         _use_case().admit(
             repository=_BrokenRepository(snapshot),
             budget=_Budget(),
+            audit=_Audit(),
             uow=uow,
             claim_id=snapshot.claim_id,
             task_id=snapshot.idempotency_key,

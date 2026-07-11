@@ -9,10 +9,10 @@ from sqlalchemy.orm import Session
 from apps.gateway.application.deployment.schedule_models import (
     DispatchCanonicalContext,
     DispatchClaimSnapshot,
-    ScheduleOutcomeReviewSnapshot,
-    ScheduleRollbackBlockers,
     ScheduleDefinitionSnapshot,
     ScheduleOccurrenceSnapshot,
+    ScheduleOutcomeReviewSnapshot,
+    ScheduleRollbackBlockers,
     WorkflowRunVisibilityGap,
 )
 from apps.shared.db.models.app import App
@@ -46,7 +46,7 @@ class SqlAlchemyScheduleDispatchRepository:
         self._locked_claims: dict[uuid.UUID, ScheduleDispatchClaim] = {}
 
     def database_now(self) -> datetime:
-        return self.db.execute(select(func.now())).scalar_one()
+        return self.db.execute(select(func.clock_timestamp())).scalar_one()
 
     def lock_uninitialized_schedules(
         self, limit: int
@@ -300,7 +300,7 @@ class SqlAlchemyScheduleDispatchRepository:
         limit: int,
         max_attempts: int,
         retry_base_seconds: int,
-    ) -> int:
+    ) -> tuple[int, int]:
         claims = self.db.execute(
             select(ScheduleDispatchClaim)
             .where(
@@ -313,7 +313,8 @@ class SqlAlchemyScheduleDispatchRepository:
             .limit(limit)
             .with_for_update(skip_locked=True)
         ).scalars()
-        count = 0
+        retried = 0
+        dead_lettered = 0
         for claim in claims:
             exhausted = claim.attempt_count >= max_attempts
             claim.status = STATUS_DEAD_LETTERED if exhausted else STATUS_PENDING
@@ -337,8 +338,11 @@ class SqlAlchemyScheduleDispatchRepository:
             )
             claim.completed_at = now if exhausted else None
             claim.updated_at = now
-            count += 1
-        return count
+            if exhausted:
+                dead_lettered += 1
+            else:
+                retried += 1
+        return retried, dead_lettered
 
     def quarantine_expired_running(self, *, now: datetime, limit: int) -> int:
         claims = self.db.execute(
@@ -458,6 +462,35 @@ class SqlAlchemyScheduleDispatchRepository:
                 )
             )
         return len(ids)
+
+    def claim_age_seconds(self, *, now: datetime) -> tuple[float, float]:
+        pending_age = self.db.execute(
+            select(
+                func.coalesce(
+                    func.max(
+                        func.extract(
+                            "epoch",
+                            now - ScheduleDispatchClaim.claimed_at,
+                        )
+                    ),
+                    0.0,
+                )
+            ).where(ScheduleDispatchClaim.status == STATUS_PENDING)
+        ).scalar_one()
+        running_age = self.db.execute(
+            select(
+                func.coalesce(
+                    func.max(
+                        func.extract(
+                            "epoch",
+                            now - ScheduleDispatchClaim.started_at,
+                        )
+                    ),
+                    0.0,
+                )
+            ).where(ScheduleDispatchClaim.status == STATUS_RUNNING)
+        ).scalar_one()
+        return max(float(pending_age), 0.0), max(float(running_age), 0.0)
 
     def lock_outcome_review_claim(
         self, claim_id: uuid.UUID

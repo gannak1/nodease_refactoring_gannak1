@@ -9,7 +9,13 @@ from apps.gateway.application.deployment.schedule_errors import (
     ScheduleConfigurationError,
 )
 from apps.gateway.application.deployment.schedule_models import (
+    SchedulePublishBatch,
     SchedulePublishRequest,
+    SchedulePublishResult,
+)
+from apps.gateway.composition.deployment import (
+    build_schedule_dispatch_dependencies,
+    build_schedule_next_fire_calculator,
 )
 from apps.gateway.services.scheduler_service import SchedulerService
 from apps.shared.domain.deployment_runtime_policy import (
@@ -47,7 +53,7 @@ class _Publisher:
             raise RuntimeError("provider detail must not escape")
 
 
-def _service(*, mode="claim", publisher=None):
+def _service(*, mode="claim", publisher=None, maintenance_enabled=True):
     return SchedulerService(
         runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
         settings=ScheduleDispatchSettings(mode=mode),
@@ -55,7 +61,10 @@ def _service(*, mode="claim", publisher=None):
             AssertionError("unexpected session")
         ),
         publisher=publisher or _Publisher(),
+        dependency_builder=build_schedule_dispatch_dependencies,
+        next_fire=build_schedule_next_fire_calculator(),
         start_background=False,
+        maintenance_enabled=maintenance_enabled,
     )
 
 
@@ -64,6 +73,45 @@ def test_disabled_mode_is_a_kill_switch_without_legacy_fallback_scheduler():
 
     assert service.scheduler is None
     service.run_tick_once()
+
+
+def test_disabled_mode_runs_only_visibility_and_retention_maintenance(monkeypatch):
+    service = _service(mode="disabled")
+    calls = []
+    monkeypatch.setattr(service, "_recover_critical", lambda: calls.append("recover"))
+    monkeypatch.setattr(
+        service,
+        "_maintain_visibility",
+        lambda: calls.append("visibility"),
+    )
+    monkeypatch.setattr(
+        service,
+        "_cleanup_terminal_claims",
+        lambda: calls.append("cleanup"),
+    )
+    monkeypatch.setattr(
+        service,
+        "_observe_claim_ages",
+        lambda: calls.append("claim_age"),
+    )
+
+    service.run_tick_once()
+
+    assert calls == ["visibility", "cleanup", "claim_age"]
+
+
+def test_disabled_mode_skips_maintenance_when_schema_is_not_ready(monkeypatch):
+    service = _service(mode="disabled", maintenance_enabled=False)
+    calls = []
+    monkeypatch.setattr(
+        service,
+        "_maintain_visibility",
+        lambda: calls.append("visibility"),
+    )
+
+    service.run_tick_once()
+
+    assert calls == []
 
 
 def test_add_schedule_validates_and_sets_cursor_without_commit():
@@ -125,12 +173,18 @@ def test_tick_publishes_after_prepare_and_records_success(monkeypatch):
     monkeypatch.setattr(
         service,
         "_prepare_publish_batch",
-        lambda: (order.append("prepare") or (request,)),
+        lambda: (
+            order.append("prepare")
+            or SchedulePublishBatch(requests=(request,))
+        ),
     )
     monkeypatch.setattr(
         service,
         "_record_publish_result",
-        lambda _request, *, accepted: order.append(f"result:{accepted}"),
+        lambda _request, *, accepted: (
+            order.append(f"result:{accepted}")
+            or SchedulePublishResult(changed=True)
+        ),
     )
     monkeypatch.setattr(
         service, "_maintain_visibility", lambda: order.append("visibility")
@@ -153,7 +207,10 @@ def test_tick_publishes_after_prepare_and_records_success(monkeypatch):
     assert publisher.requests == [request]
 
 
-def test_publish_provider_failure_is_recorded_as_failed_without_raising(monkeypatch):
+def test_publish_provider_failure_is_recorded_as_failed_without_raising(
+    monkeypatch,
+    caplog,
+):
     publisher = _Publisher(fails=True)
     service = _service(publisher=publisher)
     request = SchedulePublishRequest(
@@ -165,11 +222,17 @@ def test_publish_provider_failure_is_recorded_as_failed_without_raising(monkeypa
     monkeypatch.setattr(service, "_recover_critical", lambda: None)
     monkeypatch.setattr(service, "_reconcile_uninitialized", lambda: None)
     monkeypatch.setattr(service, "_claim_due_occurrences", lambda: None)
-    monkeypatch.setattr(service, "_prepare_publish_batch", lambda: (request,))
+    monkeypatch.setattr(
+        service,
+        "_prepare_publish_batch",
+        lambda: SchedulePublishBatch(requests=(request,)),
+    )
     monkeypatch.setattr(
         service,
         "_record_publish_result",
-        lambda _request, *, accepted: results.append(accepted),
+        lambda _request, *, accepted: (
+            results.append(accepted) or SchedulePublishResult(changed=True)
+        ),
     )
     monkeypatch.setattr(service, "_maintain_visibility", lambda: None)
     monkeypatch.setattr(service, "_cleanup_terminal_claims", lambda: None)
@@ -177,9 +240,61 @@ def test_publish_provider_failure_is_recorded_as_failed_without_raising(monkeypa
     service.run_tick_once()
 
     assert results == [False]
+    assert str(request.claim_id) not in "\n".join(caplog.messages)
+    assert "provider detail must not escape" not in "\n".join(caplog.messages)
 
 
-def test_publish_result_failure_does_not_block_remaining_batch(monkeypatch):
+def test_tick_emits_committed_dead_letter_reasons(monkeypatch):
+    service = _service()
+    signals = []
+    monkeypatch.setattr(service, "_recover_critical", lambda: None)
+    monkeypatch.setattr(service, "_reconcile_uninitialized", lambda: None)
+    monkeypatch.setattr(service, "_claim_due_occurrences", lambda: None)
+    monkeypatch.setattr(
+        service,
+        "_prepare_publish_batch",
+        lambda: SchedulePublishBatch(
+            requests=(),
+            enqueue_attempts_exhausted=2,
+            budget_evaluation_failed=1,
+        ),
+    )
+    monkeypatch.setattr(service, "_maintain_visibility", lambda: None)
+    monkeypatch.setattr(service, "_cleanup_terminal_claims", lambda: None)
+    monkeypatch.setattr(service, "_observe_claim_ages", lambda: None)
+    monkeypatch.setattr(
+        "apps.gateway.services.scheduler_service.emit_schedule_dispatch_signal",
+        lambda _logger, event, **kwargs: signals.append((event, kwargs)),
+    )
+
+    service.run_tick_once()
+
+    assert signals == [
+        (
+            "schedule_claim_dead_letter_total",
+            {
+                "value": 2,
+                "status": "dead_lettered",
+                "reason": "enqueue_attempts_exhausted",
+                "mode": "claim",
+            },
+        ),
+        (
+            "schedule_claim_dead_letter_total",
+            {
+                "value": 1,
+                "status": "dead_lettered",
+                "reason": "budget_evaluation_failed",
+                "mode": "claim",
+            },
+        ),
+    ]
+
+
+def test_publish_result_failure_does_not_block_remaining_batch(
+    monkeypatch,
+    caplog,
+):
     publisher = _Publisher()
     service = _service(publisher=publisher)
     requests = tuple(
@@ -194,12 +309,17 @@ def test_publish_result_failure_does_not_block_remaining_batch(monkeypatch):
     monkeypatch.setattr(service, "_recover_critical", lambda: None)
     monkeypatch.setattr(service, "_reconcile_uninitialized", lambda: None)
     monkeypatch.setattr(service, "_claim_due_occurrences", lambda: None)
-    monkeypatch.setattr(service, "_prepare_publish_batch", lambda: requests)
+    monkeypatch.setattr(
+        service,
+        "_prepare_publish_batch",
+        lambda: SchedulePublishBatch(requests=requests),
+    )
 
     def record(request, *, accepted):
         recorded.append((request.claim_id, accepted))
         if request is requests[0]:
             raise RuntimeError("storage detail must not escape")
+        return SchedulePublishResult(changed=True)
 
     monkeypatch.setattr(service, "_record_publish_result", record)
     monkeypatch.setattr(service, "_maintain_visibility", lambda: None)
@@ -212,6 +332,9 @@ def test_publish_result_failure_does_not_block_remaining_batch(monkeypatch):
         (requests[0].claim_id, True),
         (requests[1].claim_id, True),
     ]
+    messages = "\n".join(caplog.messages)
+    assert all(str(request.claim_id) not in messages for request in requests)
+    assert "storage detail must not escape" not in messages
 
 
 def test_drain_mode_skips_new_occurrence_claiming(monkeypatch):
@@ -230,17 +353,24 @@ def test_drain_mode_skips_new_occurrence_claiming(monkeypatch):
         "_claim_due_occurrences",
         lambda: calls.append("unexpected"),
     )
-    monkeypatch.setattr(service, "_prepare_publish_batch", lambda: ())
+    monkeypatch.setattr(
+        service,
+        "_prepare_publish_batch",
+        lambda: SchedulePublishBatch(requests=()),
+    )
     monkeypatch.setattr(
         service, "_maintain_visibility", lambda: calls.append("visibility")
     )
     monkeypatch.setattr(
         service, "_cleanup_terminal_claims", lambda: calls.append("cleanup")
     )
+    monkeypatch.setattr(
+        service, "_observe_claim_ages", lambda: calls.append("claim_age")
+    )
 
     service.run_tick_once()
 
-    assert calls == ["recover", "visibility", "cleanup"]
+    assert calls == ["recover", "visibility", "cleanup", "claim_age"]
 
 
 def test_optional_maintenance_failures_do_not_block_dispatch(monkeypatch):
@@ -252,7 +382,9 @@ def test_optional_maintenance_failures_do_not_block_dispatch(monkeypatch):
     monkeypatch.setattr(service, "_reconcile_uninitialized", lambda: None)
     monkeypatch.setattr(service, "_claim_due_occurrences", lambda: None)
     monkeypatch.setattr(
-        service, "_prepare_publish_batch", lambda: calls.append("dispatch") or ()
+        service,
+        "_prepare_publish_batch",
+        lambda: calls.append("dispatch") or SchedulePublishBatch(requests=()),
     )
     monkeypatch.setattr(
         service,
@@ -262,6 +394,11 @@ def test_optional_maintenance_failures_do_not_block_dispatch(monkeypatch):
     monkeypatch.setattr(
         service,
         "_cleanup_terminal_claims",
+        lambda: (_ for _ in ()).throw(RuntimeError("private detail")),
+    )
+    monkeypatch.setattr(
+        service,
+        "_observe_claim_ages",
         lambda: (_ for _ in ()).throw(RuntimeError("private detail")),
     )
 

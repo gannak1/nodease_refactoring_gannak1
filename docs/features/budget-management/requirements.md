@@ -53,6 +53,7 @@ Related Features: admin-dashboard, workflow, app-management, deployment, audit-t
 
 - BGT-REQ-040: 예산 생성/수정/비활성화는 canonical action `workflow_budget.created`/`workflow_budget.updated`로 audit에 기록한다. `audit_metadata`에는 `monthly_budget_usd`, `is_enabled` 같은 운영 summary만 포함한다. 비활성화는 `workflow_budget.updated`에 `is_enabled=false` metadata로 표현한다. [ADR-0008](../../decisions/ADR-0008-audit-action-naming-standard.md) canonical action table 갱신이 필요하다.
 - BGT-REQ-041: 예산 초과로 실행이 차단되면 `policy.block`(target_type `workflow`, status `failure`, `audit_metadata.reason='budget.exceeded'`, trigger mode 포함)으로 기록한다. 별도 결과 중심 action(`workflow.budget_blocked` 등)은 만들지 않는다 (ADR-0008 원인 중심 명명).
+- BGT-REQ-043: Schedule은 occurrence 생성, Gateway publish 직전, Worker admission 직전의 세 예산 판정에서 동일한 BGT-REQ-041 audit 계약을 사용한다. 최종 Worker 판정에서 차단되거나 budget 집계가 unavailable인 경우에도 claim 상태와 audit을 같은 transaction에 기록한다.
 - BGT-REQ-042: credential 원문, raw payload, secret 값은 예산 관련 응답/audit/trace에 노출하지 않는다 (NFR-004). 예산 금액과 비용 집계값은 secret이 아니며 관리자 표면과 audit metadata에 포함할 수 있다.
 
 ## Policies And Edge Cases

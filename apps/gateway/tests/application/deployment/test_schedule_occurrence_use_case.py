@@ -5,16 +5,15 @@ from datetime import datetime, timezone
 
 import pytest
 
+from apps.gateway.application.deployment.schedule_errors import (
+    ScheduleConfigurationError,
+)
 from apps.gateway.application.deployment.schedule_models import (
     ScheduleDefinitionSnapshot,
     ScheduleOccurrenceSnapshot,
 )
-from apps.shared.domain.workflow_budget import BudgetExecutionDecision
 from apps.gateway.application.deployment.schedule_occurrence import (
     ScheduleOccurrenceUseCase,
-)
-from apps.gateway.application.deployment.schedule_errors import (
-    ScheduleConfigurationError,
 )
 from apps.shared.db.models.workflow_deployment import DeploymentType
 from apps.shared.domain.deployment_runtime_policy import (
@@ -25,11 +24,12 @@ from apps.shared.domain.schedule_dispatch import (
     MODE_DISABLED,
     REASON_BUDGET_BLOCKED,
     REASON_BUDGET_EVALUATION_FAILED,
+    SCHEDULE_CONFIGURATION_INVALID,
     STATUS_CANCELED,
     STATUS_PENDING,
-    SCHEDULE_CONFIGURATION_INVALID,
     ScheduleDispatchSettings,
 )
+from apps.shared.domain.workflow_budget import BudgetExecutionDecision
 
 NOW = datetime(2026, 7, 10, 0, 0, tzinfo=timezone.utc)
 NEXT = datetime(2026, 7, 10, 1, 0, tzinfo=timezone.utc)
@@ -112,7 +112,11 @@ class _Budget:
 class _Audit:
     def __init__(self):
         self.policy = []
+        self.budget_blocks = []
         self.invalid = []
+
+    def record_budget_block(self, **kwargs):
+        self.budget_blocks.append(kwargs)
 
     def record_policy_result(self, **kwargs):
         self.policy.append(kwargs)
@@ -185,7 +189,33 @@ def test_budget_decision_is_persisted_with_same_occurrence(decision, status, rea
     kwargs = repository.claims[0][2]
     assert kwargs["status"] == status
     assert kwargs["safe_reason_code"] == reason
-    assert audit.policy[0]["claim_id"] == repository.claims[0][0]
+    if decision == "blocked":
+        assert audit.budget_blocks[0] == {
+            "organization_id": occurrence.organization_id,
+            "workflow_id": occurrence.workflow_id,
+            "claim_id": repository.claims[0][0],
+        }
+        assert audit.policy == []
+    else:
+        assert audit.policy[0]["claim_id"] == repository.claims[0][0]
+
+
+def test_runtime_policy_rejection_uses_canonical_canceled_audit_action():
+    occurrence = _occurrence(deployment_type=DeploymentType.WEBAPP)
+    repository = _Repository([occurrence])
+    budget = _Budget()
+    audit = _Audit()
+
+    _use_case().claim_due_occurrences(
+        repository=repository,
+        budget=budget,
+        audit=audit,
+        uow=_Uow(),
+    )
+
+    assert budget.calls == []
+    assert repository.claims[0][2]["status"] == STATUS_CANCELED
+    assert audit.policy[0]["action"] == "schedule_dispatch.canceled"
 
 
 def test_missing_organization_fails_closed_without_cursor_advance():

@@ -9,10 +9,11 @@ Moduly Celery 앱 설정
 
 import os
 
+from celery import Celery
+
 from apps.shared.domain.schedule_dispatch import (
     schedule_dispatch_settings_from_environment,
 )
-from celery import Celery
 
 # Redis 연결 설정 (개별 환경변수로 URL 동적 생성 )
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
@@ -64,6 +65,7 @@ celery_app.conf.update(
     worker_concurrency=100,  # [NEW] gevent pool: 높은 동시성 (4 → 100)
     # 결과 설정
     result_expires=3600,  # 결과 만료 시간 (1시간)
+    task_store_errors_even_if_ignored=False,
     # [NEW] 메모리 누수 방지 설정 (워커 재시작)
     worker_max_tasks_per_child=1000,  # [UPDATE] gevent: 1000개 태스크 처리 후 재시작
     worker_max_memory_per_child=500000,  # [UPDATE] gevent: 500MB 초과 시 재시작 (단일 프로세스)

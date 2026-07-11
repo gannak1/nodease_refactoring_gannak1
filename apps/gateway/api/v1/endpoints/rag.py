@@ -21,12 +21,13 @@ from sqlalchemy.orm import Session
 
 from apps.gateway.api.deps import get_db
 from apps.gateway.auth.dependencies import get_current_user
-from apps.gateway.utils.audit import audit
 from apps.gateway.core.config import settings
 
 # from services.ingestion_local_service import IngestionService
 from apps.gateway.services.ingestion.service import (
     IngestionOrchestrator as IngestionService,
+)
+from apps.gateway.services.ingestion.service import (
     finalize_stale_processing_start,
     recover_timed_out_document_with_artifacts,
 )
@@ -38,11 +39,13 @@ from apps.gateway.utils.api_errors import (
     parse_organization_id,
     raise_api_error,
 )
+from apps.gateway.utils.audit import audit
 from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.logger import record_audit
 from apps.shared.db.models.connection import Connection
 from apps.shared.db.models.knowledge import Document, KnowledgeBase, SourceType
 from apps.shared.db.models.user import User
+from apps.shared.permissions import knowledge_base_auth_state_allows
 from apps.shared.schemas.rag import (
     ApiPreviewRequest,
     ChunkPreview,
@@ -54,23 +57,22 @@ from apps.shared.schemas.rag import (
     RAGResponse,
     SearchQuery,
 )
-from apps.shared.permissions import knowledge_base_auth_state_allows
-from apps.shared.services.permission_audit import record_resource_permission_denied
-from apps.shared.services.permissions import (
-    get_effective_knowledge_base_auth_state,
-    has_organization_scope_access,
-)
-from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
-from apps.shared.services.rag_filters import normalize_metadata_filter
-from apps.shared.services.rag_hierarchy import (
-    RAGHierarchyError,
-    validate_chunking_request,
-)
 from apps.shared.services.egress_guard import (
     API_RESPONSE_CONTENT_TYPES,
     EgressGuardError,
     EgressGuardPolicy,
     safe_http_request,
+)
+from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
+from apps.shared.services.permission_audit import record_resource_permission_denied
+from apps.shared.services.permissions import (
+    get_effective_knowledge_base_auth_state,
+    has_organization_scope_access,
+)
+from apps.shared.services.rag_filters import normalize_metadata_filter
+from apps.shared.services.rag_hierarchy import (
+    RAGHierarchyError,
+    validate_chunking_request,
 )
 
 logger = logging.getLogger(__name__)
@@ -170,6 +172,7 @@ def _authorize_rag_use(
 def _record_rag_retrieve_audit(
     request: Request,
     current_user: User,
+    organization_id: UUID,
     knowledge_base_id: UUID,
     metadata_filter,
     result_count: int,
@@ -182,6 +185,7 @@ def _record_rag_retrieve_audit(
             "name": getattr(current_user, "name", None),
         },
         "request_id": getattr(request.state, "request_id", None),
+        "organization_id": str(organization_id),
         "knowledge_base_id": str(knowledge_base_id),
         "retrieval_mode": mode,
         "result_count": result_count,
@@ -615,6 +619,7 @@ async def search_test_chat(
     _record_rag_retrieve_audit(
         request,
         current_user,
+        organization_id,
         knowledge_base_id,
         metadata_filter,
         len(response.references),
@@ -672,6 +677,7 @@ async def search_test_pure(
     _record_rag_retrieve_audit(
         request,
         current_user,
+        organization_id,
         knowledge_base_id,
         metadata_filter,
         len(results),

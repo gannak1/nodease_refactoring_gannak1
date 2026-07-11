@@ -34,6 +34,7 @@ Status: Draft
 - `schedule_dispatch.outcome_reviewed` detail은 exact claim target과 같은 organization에서만 조회되고 allowlisted operation correlation/resolution만 반환한다. 다른 조직은 404이고 malformed correlation/resolution 또는 nested/raw metadata는 생략한다.
 - Outcome review audit insert/flush가 실패하면 claim review field도 rollback하고, recorder가 생성하지 않은 audit id를 claim에 연결할 수 없다.
 - WorkflowRun visibility grace를 지난 claim은 exact claim target의 `schedule_dispatch.workflow_run_missing` audit과 one-time marker를 같은 transaction으로 남긴다. 중복 scan은 audit을 추가하지 않고, raw run id/input/output/provider response를 저장하거나 engine을 replay하지 않는다.
+- System schedule과 interactive RAG retrieval이 `rag.retrieve`를 기록하면 metadata의 canonical UUID `organization_id`로 해당 조직 list/detail 조회에 노출되고 다른 조직에서는 조회되지 않는다. Invalid/missing organization context는 unscoped audit row로 저장하지 않으며 Schedule credential principal은 actor로 승격되지 않는다.
 - Schedule-correlated WorkflowRun Log System write가 재시도되면 raw storage/provider detail은 logger와 retry exception에 없고, static operation label과 error type만 남는다.
 - Schedule operational timestamp만 갱신하면 generic `schedule.updated`가 생성되지 않지만 cron/timezone/lifecycle 변경과 같은 transaction의 unrelated tracked mutation audit은 유지된다.
 - RAG strategy/A-B summary API는 권한 없는 문서명/ID, raw source metadata, raw prompt/completion, content preview를 반환하지 않는다.

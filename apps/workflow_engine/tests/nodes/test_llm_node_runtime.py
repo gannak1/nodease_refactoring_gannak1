@@ -27,9 +27,12 @@ from apps.shared.db.models.knowledge import (  # noqa: E402
 )
 from apps.shared.db.models.llm import LLMModel  # noqa: E402
 from apps.shared.schemas.rag import ChunkPreview  # noqa: E402
+from apps.shared.services.rag_evidence_policy import RAGEvidenceDecision  # noqa: E402
 from apps.shared.services.tracing.metadata import TraceMetadataSanitizer  # noqa: E402
 from apps.workflow_engine.services import (  # noqa: E402
     llm_service as workflow_llm_service,
+)
+from apps.workflow_engine.services import (  # noqa: E402
     retrieval as workflow_retrieval_service,
 )
 from apps.workflow_engine.services.llm_service import (  # noqa: E402
@@ -38,11 +41,11 @@ from apps.workflow_engine.services.llm_service import (  # noqa: E402
     LLMService,
 )
 from apps.workflow_engine.workflow.nodes.llm.entities import (  # noqa: E402
+    MAX_RAG_CHUNKS_PER_KB,
+    MAX_RAG_RETRIEVAL_KBS,
     KnowledgeBaseRef,
     LLMNodeData,
     LLMVariable,
-    MAX_RAG_CHUNKS_PER_KB,
-    MAX_RAG_RETRIEVAL_KBS,
 )
 from apps.workflow_engine.workflow.nodes.llm.llm_node import (  # noqa: E402
     RAG_NO_EVIDENCE_MESSAGE,
@@ -51,7 +54,6 @@ from apps.workflow_engine.workflow.nodes.llm.llm_node import (  # noqa: E402
     WorkflowRAGFanoutResult,
     WorkflowRAGSearchResult,
 )
-from apps.shared.services.rag_evidence_policy import RAGEvidenceDecision  # noqa: E402
 
 
 class DummyClient:
@@ -2943,6 +2945,9 @@ def test_system_schedule_rag_audit_does_not_promote_credential_principal(
     assert audit_calls[0]["action"] == expected_action
     assert audit_calls[0]["actor_id"] is None
     assert audit_calls[0]["actor_type"] == "system"
+    assert audit_calls[0]["metadata"]["organization_id"] == node.execution_context[
+        "organization_id"
+    ]
 
 
 def test_interactive_rag_audit_uses_execution_subject_not_credential_principal(
@@ -2950,12 +2955,14 @@ def test_interactive_rag_audit_uses_execution_subject_not_credential_principal(
 ):
     execution_subject_id = uuid.uuid4()
     credential_principal_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
     node = LLMNode.__new__(LLMNode)
     node.id = "llm-1"
     node.execution_context = {
         "user_id": str(execution_subject_id),
         "trigger_mode": "manual",
         "workflow_task_id": str(uuid.uuid4()),
+        "organization_id": str(organization_id),
         "credential_principal": {
             "subject_type": "user",
             "subject_id": str(credential_principal_id),
@@ -2976,6 +2983,33 @@ def test_interactive_rag_audit_uses_execution_subject_not_credential_principal(
     assert audit_calls[0]["actor_id"] == execution_subject_id
     assert audit_calls[0]["actor_id"] != credential_principal_id
     assert audit_calls[0]["actor_type"] == "user"
+    assert audit_calls[0]["metadata"]["organization_id"] == str(organization_id)
+
+
+@pytest.mark.parametrize(
+    "audit_method",
+    ("_record_rag_retrieve_audit", "_record_rag_policy_block_audit"),
+)
+def test_rag_audit_omits_unscoped_invalid_organization(monkeypatch, audit_method):
+    node = LLMNode.__new__(LLMNode)
+    node.id = "llm-1"
+    node.execution_context = {
+        "user_id": str(uuid.uuid4()),
+        "organization_id": "not-a-uuid",
+        "trigger_mode": "manual",
+    }
+    audit_calls = []
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.record_audit",
+        lambda **kwargs: audit_calls.append(kwargs),
+    )
+
+    if audit_method == "_record_rag_retrieve_audit":
+        getattr(node, audit_method)(uuid.uuid4(), str(uuid.uuid4()), 1)
+    else:
+        getattr(node, audit_method)(uuid.uuid4(), reason_code="pii_policy_blocked")
+
+    assert audit_calls == []
 
 
 def test_llm_node_rag_fanout_uses_bounded_pool(monkeypatch):

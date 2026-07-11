@@ -5,7 +5,10 @@ from datetime import timedelta
 from apps.gateway.application.deployment.schedule_models import (
     DispatchCanonicalContext,
     DispatchClaimSnapshot,
+    SchedulePublishBatch,
     SchedulePublishRequest,
+    SchedulePublishResult,
+    ScheduleRecoveryResult,
 )
 from apps.gateway.application.deployment.schedule_ports import (
     BudgetDecisionPort,
@@ -21,6 +24,7 @@ from apps.shared.domain.deployment_runtime_policy import (
 from apps.shared.domain.schedule_dispatch import (
     REASON_APP_NOT_FOUND,
     REASON_BUDGET_BLOCKED,
+    REASON_BUDGET_EVALUATION_FAILED,
     REASON_DEPLOYMENT_INACTIVE,
     REASON_DEPLOYMENT_NOT_CURRENT,
     REASON_DEPLOYMENT_NOT_FOUND,
@@ -32,6 +36,7 @@ from apps.shared.domain.schedule_dispatch import (
     REASON_SCHEDULE_NOT_FOUND,
     STATUS_CANCELED,
     STATUS_DEAD_LETTERED,
+    STATUS_DISPATCHING,
     ScheduleDispatchSettings,
     next_dispatch_attempt,
     retry_delay_seconds,
@@ -56,24 +61,27 @@ class ScheduleDispatchUseCase:
         audit: ScheduleDispatchAuditRecorderPort,
         uow: ScheduleDispatchUnitOfWork,
         owner: str,
-    ) -> tuple[SchedulePublishRequest, ...]:
+    ) -> SchedulePublishBatch:
         if not self.settings.processes_existing_claims:
-            return ()
+            return SchedulePublishBatch(requests=())
         prepared: list[SchedulePublishRequest] = []
+        enqueue_attempts_exhausted = 0
+        budget_evaluation_failed = 0
         try:
-            now = repository.database_now()
+            scan_now = repository.database_now()
             for claim in repository.lock_dispatch_candidates(
-                now=now,
+                now=scan_now,
                 limit=self.settings.dispatch_batch_size,
             ):
                 context = repository.load_canonical_context(claim)
                 reason = self._canonical_rejection_reason(claim, context)
                 if reason is not None:
+                    transition_now = repository.database_now()
                     repository.mark_pre_dispatch_terminal(
                         claim,
                         status=STATUS_CANCELED,
                         reason=reason,
-                        now=now,
+                        now=transition_now,
                     )
                     audit.record_policy_result(
                         organization_id=claim.organization_id,
@@ -83,19 +91,27 @@ class ScheduleDispatchUseCase:
                     )
                     continue
 
-                decision = budget.evaluate(workflow_id=context.workflow_id, now=now)
+                decision_now = repository.database_now()
+                decision = budget.evaluate(
+                    workflow_id=context.workflow_id,
+                    now=decision_now,
+                )
+                transition_now = repository.database_now()
                 if decision.status == "blocked":
                     repository.mark_pre_dispatch_terminal(
                         claim,
                         status=STATUS_CANCELED,
                         reason=REASON_BUDGET_BLOCKED,
-                        now=now,
+                        now=transition_now,
                     )
-                    audit.record_policy_result(
+                    if context.workflow_id is None:
+                        raise RuntimeError(
+                            "budget block requires canonical workflow identity"
+                        )
+                    audit.record_budget_block(
                         organization_id=claim.organization_id,
+                        workflow_id=context.workflow_id,
                         claim_id=claim.claim_id,
-                        action="schedule_dispatch.blocked",
-                        reason=REASON_BUDGET_BLOCKED,
                     )
                     continue
 
@@ -108,26 +124,27 @@ class ScheduleDispatchUseCase:
                         claim,
                         status=STATUS_DEAD_LETTERED,
                         reason=REASON_ENQUEUE_ATTEMPTS_EXHAUSTED,
-                        now=now,
+                        now=transition_now,
                     )
                     audit.record_policy_result(
                         organization_id=claim.organization_id,
                         claim_id=claim.claim_id,
-                        action="schedule_dispatch.deferred",
+                        action="schedule_dispatch.failed",
                         reason=REASON_ENQUEUE_ATTEMPTS_EXHAUSTED,
                     )
+                    enqueue_attempts_exhausted += 1
                     continue
                 if decision.status == "unavailable":
                     exhausted = next_attempt >= self.settings.max_attempts
                     repository.mark_budget_unavailable(
                         claim,
-                        now=now,
+                        now=transition_now,
                         exhausted=exhausted,
                         attempt_count=next_attempt,
                         next_attempt_at=(
                             None
                             if exhausted
-                            else now
+                            else transition_now
                             + timedelta(
                                 seconds=retry_delay_seconds(
                                     next_attempt,
@@ -136,14 +153,26 @@ class ScheduleDispatchUseCase:
                             )
                         ),
                     )
+                    audit.record_policy_result(
+                        organization_id=claim.organization_id,
+                        claim_id=claim.claim_id,
+                        action=(
+                            "schedule_dispatch.failed"
+                            if exhausted
+                            else "schedule_dispatch.deferred"
+                        ),
+                        reason=REASON_BUDGET_EVALUATION_FAILED,
+                    )
+                    if exhausted:
+                        budget_evaluation_failed += 1
                     continue
 
                 repository.mark_dispatching(
                     claim,
                     owner=owner,
-                    now=now,
+                    now=transition_now,
                     attempt_count=next_attempt,
-                    lease_expires_at=now
+                    lease_expires_at=transition_now
                     + timedelta(seconds=self.settings.lease_seconds),
                 )
                 prepared.append(
@@ -154,7 +183,11 @@ class ScheduleDispatchUseCase:
                     )
                 )
             uow.commit()
-            return tuple(prepared)
+            return SchedulePublishBatch(
+                requests=tuple(prepared),
+                enqueue_attempts_exhausted=enqueue_attempts_exhausted,
+                budget_evaluation_failed=budget_evaluation_failed,
+            )
         except Exception:
             uow.rollback()
             raise
@@ -166,8 +199,12 @@ class ScheduleDispatchUseCase:
         uow: ScheduleDispatchUnitOfWork,
         request: SchedulePublishRequest,
         accepted: bool,
-    ) -> bool:
+    ) -> SchedulePublishResult:
         try:
+            exhausted = False
+            claim = repository.get_claim_for_publish_result(request.claim_id)
+            # The row lock may wait. Read PostgreSQL wall clock only after the
+            # canonical claim is locked so delivery/retry deadlines are fresh.
             now = repository.database_now()
             if accepted:
                 changed = repository.record_publish_accepted(
@@ -178,7 +215,6 @@ class ScheduleDispatchUseCase:
                     + timedelta(seconds=self.settings.delivery_timeout_seconds),
                 )
             else:
-                claim = repository.get_claim_for_publish_result(request.claim_id)
                 next_attempt = claim.attempt_count
                 exhausted = next_attempt >= self.settings.max_attempts
                 changed = repository.record_publish_failed(
@@ -199,7 +235,19 @@ class ScheduleDispatchUseCase:
                     ),
                 )
             uow.commit()
-            return changed
+            return SchedulePublishResult(
+                changed=changed,
+                dead_lettered_reason=(
+                    REASON_ENQUEUE_ATTEMPTS_EXHAUSTED
+                    if (
+                        changed
+                        and not accepted
+                        and exhausted
+                        and claim.status == STATUS_DISPATCHING
+                    )
+                    else None
+                ),
+            )
         except Exception:
             uow.rollback()
             raise
@@ -209,12 +257,12 @@ class ScheduleDispatchUseCase:
         *,
         repository: ScheduleDispatchRepositoryPort,
         uow: ScheduleDispatchUnitOfWork,
-    ) -> tuple[int, int]:
+    ) -> ScheduleRecoveryResult:
         if not self.settings.processes_existing_claims:
-            return (0, 0)
+            return ScheduleRecoveryResult(0, 0, 0)
         try:
             now = repository.database_now()
-            retried = repository.recover_expired_claims(
+            retried, exhausted = repository.recover_expired_claims(
                 now=now,
                 limit=self.settings.recovery_batch_size,
                 max_attempts=self.settings.max_attempts,
@@ -225,7 +273,7 @@ class ScheduleDispatchUseCase:
                 limit=self.settings.recovery_batch_size,
             )
             uow.commit()
-            return (retried, unknown)
+            return ScheduleRecoveryResult(retried, exhausted, unknown)
         except Exception:
             uow.rollback()
             raise
@@ -237,8 +285,6 @@ class ScheduleDispatchUseCase:
         audit: ScheduleDispatchAuditRecorderPort,
         uow: ScheduleDispatchUnitOfWork,
     ) -> int:
-        if not self.settings.processes_existing_claims:
-            return 0
         try:
             now = repository.database_now()
             visibility_gaps = repository.lock_workflow_run_visibility_gaps(
@@ -267,8 +313,6 @@ class ScheduleDispatchUseCase:
         repository: ScheduleDispatchRepositoryPort,
         uow: ScheduleDispatchUnitOfWork,
     ) -> int:
-        if not self.settings.processes_existing_claims:
-            return 0
         try:
             now = repository.database_now()
             cleaned = repository.cleanup_terminal_claims(

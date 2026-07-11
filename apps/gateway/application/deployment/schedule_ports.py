@@ -127,7 +127,7 @@ class ScheduleDispatchRepositoryPort(Protocol):
         limit: int,
         max_attempts: int,
         retry_base_seconds: int,
-    ) -> int: ...
+    ) -> tuple[int, int]: ...
 
     def quarantine_expired_running(self, *, now: datetime, limit: int) -> int: ...
 
@@ -151,6 +151,8 @@ class ScheduleDispatchRepositoryPort(Protocol):
         dead_letter_retention_days: int,
         limit: int,
     ) -> int: ...
+
+    def claim_age_seconds(self, *, now: datetime) -> tuple[float, float]: ...
 
     def lock_outcome_review_claim(
         self, claim_id: uuid.UUID
@@ -190,6 +192,14 @@ class BudgetDecisionPort(Protocol):
 
 
 class ScheduleDispatchAuditRecorderPort(Protocol):
+    def record_budget_block(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        workflow_id: uuid.UUID,
+        claim_id: uuid.UUID,
+    ) -> None: ...
+
     def record_policy_result(
         self,
         *,

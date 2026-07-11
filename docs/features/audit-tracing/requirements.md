@@ -18,7 +18,7 @@ Audit와 trace는 workflow 실행, RAG retrieval, LLM 호출, permission/policy 
 ## Functional Requirements
 
 - Audit metadata는 raw secret, credential value, raw source content, raw source ACL, raw source id/url/path/title을 저장하지 않는다. Raw/compliance access audit도 safe reference, decision, reason code, retention/legal-hold summary 같은 allowlist만 저장한다.
-- RAG retrieval 성공은 `rag.retrieve`, standalone answer lifecycle은 `rag.answer.*`로 구분한다.
+- RAG retrieval 성공은 `rag.retrieve`, standalone answer lifecycle은 `rag.answer.*`로 구분한다. `rag.retrieve` metadata에는 canonical `organization_id`를 포함해 system schedule과 interactive 실행 모두 조직 scope 감사 조회에서 추적 가능해야 한다.
 - Standalone answer는 `rag_answer_runs`와 `correlation_id`로 trace/usage/audit을 느슨하게 연결하고, trace/usage table에 RAG 전용 FK를 만들지 않는다.
 - Knowledge source sync, source ACL mapping, partial result, egress guard failure는 sanitized reason code와 retryability 중심으로 기록한다.
 - Auto-ingested KB use provisioning audit은 source ACL fact를 KB `use`로 오해하지 않게 구분한다. Source authorization provenance update, explicit KB `use` grant provisioning, requester source ACL evaluation은 서로 다른 safe action/reason/metadata로 구분해야 한다.

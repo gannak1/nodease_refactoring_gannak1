@@ -56,3 +56,17 @@ def test_terminal_cleanup_keeps_unreviewed_outcome_unknown_claims():
 
     assert "REASON_EXECUTION_OUTCOME_UNKNOWN" in source
     assert "outcome_reviewed_at.is_not(None)" in source
+
+
+def test_repository_uses_wall_clock_for_lease_and_age_observation():
+    inspect_module = __import__("inspect")
+    clock_source = inspect_module.getsource(
+        SqlAlchemyScheduleDispatchRepository.database_now
+    )
+    age_source = inspect_module.getsource(
+        SqlAlchemyScheduleDispatchRepository.claim_age_seconds
+    )
+
+    assert "clock_timestamp" in clock_source
+    assert "ScheduleDispatchClaim.claimed_at" in age_source
+    assert "ScheduleDispatchClaim.started_at" in age_source

@@ -7,7 +7,7 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 
 from apps.gateway.services.migration_readiness import (
     require_schedule_dispatch_migration_ready,
@@ -20,6 +20,9 @@ from apps.shared.db.seed import (
 from apps.shared.db.session import engine
 from apps.shared.domain.schedule_dispatch import (
     schedule_dispatch_settings_from_environment,
+)
+from apps.shared.services.schedule_dispatch_schema_readiness import (
+    required_schedule_dispatch_schema_exists,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,6 +39,9 @@ async def lifespan(app: FastAPI):
     require_schedule_dispatch_migration_ready(
         engine,
         settings=dispatch_settings,
+    )
+    schedule_maintenance_enabled = required_schedule_dispatch_schema_exists(
+        inspect(engine)
     )
 
     # Extension provisioning remains explicit until infra owns it. ORM metadata
@@ -65,6 +71,11 @@ async def lifespan(app: FastAPI):
         db.close()
 
     from apps.gateway.api.deps import get_deployment_runtime_policy
+    from apps.gateway.composition.deployment import (
+        build_schedule_dispatch_dependencies,
+        build_schedule_next_fire_calculator,
+        build_schedule_task_publisher,
+    )
     from apps.gateway.services.scheduler_service import init_scheduler_service
 
     scheduler_db = SessionLocal()
@@ -74,6 +85,10 @@ async def lifespan(app: FastAPI):
             runtime_policy=get_deployment_runtime_policy(),
             settings=dispatch_settings,
             session_factory=SessionLocal,
+            publisher=build_schedule_task_publisher(),
+            dependency_builder=build_schedule_dispatch_dependencies,
+            next_fire=build_schedule_next_fire_calculator(),
+            maintenance_enabled=schedule_maintenance_enabled,
         )
     finally:
         scheduler_db.close()

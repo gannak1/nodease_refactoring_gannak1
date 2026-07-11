@@ -10,12 +10,13 @@ from apps.shared.db.models.audit_log import (
     AuditLog,
     AuditStatus,
 )
+from apps.shared.domain.schedule_dispatch import SCHEDULE_DISPATCH_REASONS
 
 _ALLOWED_ACTIONS = frozenset(
     {
-        "schedule_dispatch.blocked",
         "schedule_dispatch.canceled",
         "schedule_dispatch.deferred",
+        "schedule_dispatch.failed",
         "schedule_dispatch.workflow_run_missing",
     }
 )
@@ -25,6 +26,32 @@ class SqlAlchemyScheduleDispatchAuditRecorder:
     def __init__(self, db: Session) -> None:
         self.db = db
 
+    def record_budget_block(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        workflow_id: uuid.UUID,
+        claim_id: uuid.UUID,
+    ) -> None:
+        self.db.add(
+            AuditLog(
+                action="policy.block",
+                category=AuditCategory.ACTION,
+                actor_id=None,
+                actor_type=ActorType.SYSTEM,
+                target_type="workflow",
+                target_id=str(workflow_id),
+                before=None,
+                after=None,
+                status=AuditStatus.FAILURE,
+                audit_metadata={
+                    "organization_id": str(organization_id),
+                    "reason": "budget.exceeded",
+                    "trigger_mode": "scheduler",
+                    "schedule_dispatch_claim_id": str(claim_id),
+                },
+            )
+        )
     def record_policy_result(
         self,
         *,
@@ -35,6 +62,8 @@ class SqlAlchemyScheduleDispatchAuditRecorder:
     ) -> None:
         if action not in _ALLOWED_ACTIONS:
             raise ValueError("unsupported schedule dispatch audit action")
+        if reason not in SCHEDULE_DISPATCH_REASONS:
+            raise ValueError("unsupported schedule dispatch audit reason")
         self.db.add(
             AuditLog(
                 action=action,

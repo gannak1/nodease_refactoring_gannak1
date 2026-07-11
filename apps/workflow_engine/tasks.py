@@ -15,6 +15,10 @@ from apps.shared.domain.deployment_runtime_policy import (
     DeploymentRuntimePolicy,
     is_deployment_type_allowed_for_trigger,
 )
+from apps.shared.domain.schedule_dispatch import REASON_EXECUTION_FAILED_AFTER_ADMISSION
+from apps.shared.services.schedule_dispatch_observability import (
+    emit_schedule_dispatch_signal,
+)
 from apps.workflow_engine.runtime_policy import get_deployment_runtime_policy
 from apps.workflow_engine.schedule_dispatch_settings import (
     get_schedule_dispatch_settings,
@@ -464,6 +468,7 @@ def execute_by_deployment(
     name="workflow.execute_scheduled_deployment",
     bind=True,
     max_retries=0,
+    ignore_result=True,
 )
 def execute_scheduled_deployment(self, schedule_dispatch_claim_id: str):
     """Execute one canonical schedule claim without Celery-level replay."""
@@ -481,25 +486,23 @@ def _finalize_scheduled_claim(
     succeeded: bool,
 ) -> bool:
     """Retry only the terminal CAS write; never re-run the workflow engine."""
-    from apps.workflow_engine.adapters.schedule_dispatch_repository import (
-        SqlAlchemyScheduleAdmissionRepository,
-        SqlAlchemyScheduleAdmissionUnitOfWork,
+    from apps.workflow_engine.composition.schedule_dispatch import (
+        build_schedule_admission_dependencies,
     )
 
     for attempt in range(1, _SCHEDULE_FINALIZATION_MAX_ATTEMPTS + 1):
         session = SessionLocal()
         try:
+            dependencies = build_schedule_admission_dependencies(session)
             return use_case.finalize(
-                repository=SqlAlchemyScheduleAdmissionRepository(session),
-                uow=SqlAlchemyScheduleAdmissionUnitOfWork(session),
+                repository=dependencies.repository,
+                uow=dependencies.uow,
                 plan=plan,
                 succeeded=succeeded,
             )
         except Exception as exc:
             logger.error(
-                "Schedule finalization unavailable: claim_id=%s "
-                "attempt=%s error_type=%s",
-                plan.claim_id,
+                "Schedule finalization unavailable: attempt=%s error_type=%s",
                 attempt,
                 type(exc).__name__,
             )
@@ -515,15 +518,11 @@ def _execute_scheduled_deployment_claim(
     *,
     task_id: str,
 ):
-    from apps.workflow_engine.adapters.schedule_dispatch_repository import (
-        SharedWorkflowBudgetDecisionAdapter,
-        SqlAlchemyScheduleAdmissionRepository,
-        SqlAlchemyScheduleAdmissionUnitOfWork,
+    from apps.workflow_engine.composition.schedule_dispatch import (
+        build_schedule_admission_dependencies,
+        build_scheduled_execution_use_case,
+        build_scheduled_workflow_engine,
     )
-    from apps.workflow_engine.application.schedule_dispatch import (
-        ScheduledDeploymentExecutionUseCase,
-    )
-    from apps.workflow_engine.workflow.core.workflow_engine import WorkflowEngine
 
     try:
         claim_id = uuid.UUID(str(schedule_dispatch_claim_id))
@@ -542,7 +541,7 @@ def _execute_scheduled_deployment_claim(
         raise PermanentDeploymentExecutionError(
             "schedule dispatch configuration is invalid"
         ) from None
-    use_case = ScheduledDeploymentExecutionUseCase(
+    use_case = build_scheduled_execution_use_case(
         settings=settings,
         runtime_policy=get_deployment_runtime_policy(),
     )
@@ -550,18 +549,19 @@ def _execute_scheduled_deployment_claim(
     admission_session = SessionLocal()
     try:
         try:
+            dependencies = build_schedule_admission_dependencies(admission_session)
             admission = use_case.admit(
-                repository=SqlAlchemyScheduleAdmissionRepository(admission_session),
-                budget=SharedWorkflowBudgetDecisionAdapter(admission_session),
-                uow=SqlAlchemyScheduleAdmissionUnitOfWork(admission_session),
+                repository=dependencies.repository,
+                budget=dependencies.budget,
+                audit=dependencies.audit,
+                uow=dependencies.uow,
                 claim_id=claim_id,
                 task_id=task_id,
                 admission_owner=admission_owner,
             )
         except Exception as exc:
             logger.error(
-                "Schedule admission unavailable: claim_id=%s error_type=%s",
-                claim_id,
+                "Schedule admission unavailable: error_type=%s",
                 type(exc).__name__,
             )
             raise PermanentDeploymentExecutionError(
@@ -571,6 +571,22 @@ def _execute_scheduled_deployment_claim(
         admission_session.close()
 
     if admission.status != "admitted" or admission.plan is None:
+        if admission.dead_lettered_reason is not None:
+            emit_schedule_dispatch_signal(
+                logger,
+                "schedule_claim_dead_letter_total",
+                status="dead_lettered",
+                reason=admission.dead_lettered_reason,
+                mode=settings.mode,
+            )
+        if admission.status == "duplicate":
+            emit_schedule_dispatch_signal(
+                logger,
+                "schedule_duplicate_delivery_suppressed_total",
+                status="duplicate",
+                reason=admission.reason,
+                mode=settings.mode,
+            )
         return {
             "status": admission.status,
             "reason": admission.reason,
@@ -581,18 +597,16 @@ def _execute_scheduled_deployment_claim(
     sync_session = None
     try:
         sync_session = SessionLocal()
-        sync_result = _sync_knowledge_bases_for_execution_subject(
+        _sync_knowledge_bases_for_execution_subject(
             sync_session,
             plan.graph_snapshot,
             plan.execution_context,
         )
     except Exception as exc:
         logger.warning(
-            "Scheduled knowledge sync skipped: claim_id=%s error_type=%s",
-            claim_id,
+            "Scheduled knowledge sync skipped: error_type=%s",
             type(exc).__name__,
         )
-        sync_result = _sync_skipped_result("sync_failed")
     finally:
         if sync_session is not None:
             sync_session.close()
@@ -601,22 +615,20 @@ def _execute_scheduled_deployment_claim(
     engine = None
     execution_succeeded = False
     try:
-        engine = WorkflowEngine(
+        engine = build_scheduled_workflow_engine(
             graph=plan.graph_snapshot,
             user_input=plan.user_input,
             execution_context=plan.execution_context,
             is_deployed=True,
             db=engine_session,
         )
-        result = engine.execute()
+        engine.execute()
         execution_succeeded = True
     except Exception as exc:
         logger.error(
-            "Scheduled workflow execution failed: claim_id=%s error_type=%s",
-            claim_id,
+            "Scheduled workflow execution failed: error_type=%s",
             type(exc).__name__,
         )
-        result = None
     finally:
         if engine is not None:
             try:
@@ -625,8 +637,7 @@ def _execute_scheduled_deployment_claim(
                 # Cleanup is best-effort after the workflow result is known. It must
                 # not prevent the durable claim from reaching its terminal state.
                 logger.warning(
-                    "Scheduled workflow cleanup failed: claim_id=%s error_type=%s",
-                    claim_id,
+                    "Scheduled workflow cleanup failed: error_type=%s",
                     type(exc).__name__,
                 )
         engine_session.close()
@@ -636,13 +647,19 @@ def _execute_scheduled_deployment_claim(
         plan=plan,
         succeeded=execution_succeeded,
     )
+    if finalized and not execution_succeeded:
+        emit_schedule_dispatch_signal(
+            logger,
+            "schedule_claim_dead_letter_total",
+            status="dead_lettered",
+            reason=REASON_EXECUTION_FAILED_AFTER_ADMISSION,
+            mode=settings.mode,
+        )
 
     if not execution_succeeded:
         raise NonRetryableWorkflowError("scheduled workflow execution failed")
     return {
         "status": "success",
-        "result": result,
-        "sync_status": sync_result,
         "claim_id": str(claim_id),
         "finalized": finalized,
     }

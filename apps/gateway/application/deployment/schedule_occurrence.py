@@ -21,9 +21,9 @@ from apps.shared.domain.schedule_dispatch import (
     REASON_BUDGET_BLOCKED,
     REASON_BUDGET_EVALUATION_FAILED,
     REASON_DEPLOYMENT_TYPE_NOT_ALLOWED,
+    SCHEDULE_CONFIGURATION_INVALID,
     STATUS_CANCELED,
     STATUS_PENDING,
-    SCHEDULE_CONFIGURATION_INVALID,
     ScheduleDispatchSettings,
     retry_delay_seconds,
     schedule_idempotency_key,
@@ -159,12 +159,22 @@ class ScheduleOccurrenceUseCase:
                     next_attempt_at=next_attempt_at,
                 )
                 repository.advance_schedule(occurrence.schedule_id, next_run)
-                if reason is not None:
+                if reason == REASON_BUDGET_BLOCKED:
+                    if occurrence.workflow_id is None:
+                        raise RuntimeError(
+                            "budget block requires canonical workflow identity"
+                        )
+                    audit.record_budget_block(
+                        organization_id=occurrence.organization_id,
+                        workflow_id=occurrence.workflow_id,
+                        claim_id=claim_id,
+                    )
+                elif reason is not None:
                     audit.record_policy_result(
                         organization_id=occurrence.organization_id,
                         claim_id=claim_id,
                         action=(
-                            "schedule_dispatch.blocked"
+                            "schedule_dispatch.canceled"
                             if status == STATUS_CANCELED
                             else "schedule_dispatch.deferred"
                         ),

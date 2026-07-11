@@ -17,4 +17,5 @@ class CeleryScheduleTaskPublisher:
             args=[str(request.claim_id)],
             task_id=request.task_id,
             retry=False,
+            ignore_result=True,
         )
