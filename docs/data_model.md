@@ -343,7 +343,7 @@ schedule deployment의 실행 설정. deployment와 1:1이다.
 
 #### `schedule_dispatch_claims` (MBA-187)
 
-[ADR-0024](decisions/ADR-0024-distributed-schedule-dispatch-claim.md)의 분산 schedule operational ledger다. Claim schema는 Alembic migration으로 관리되며 raw workflow/prompt/evidence payload를 포함하지 않는다.
+[ADR-0029](decisions/ADR-0029-distributed-schedule-dispatch-claim.md)의 분산 schedule operational ledger다. Claim schema는 Alembic migration으로 관리되며 raw workflow/prompt/evidence payload를 포함하지 않는다.
 
 | 컬럼 | 타입 | 제약 |
 | --- | --- | --- |

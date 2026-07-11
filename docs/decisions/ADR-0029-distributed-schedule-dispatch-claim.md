@@ -1,4 +1,4 @@
-# ADR-0024: Distributed Schedule Dispatch Claim
+# ADR-0029: Distributed Schedule Dispatch Claim
 
 Status: Accepted
 Related ADRs: [ADR-0008](ADR-0008-audit-action-naming-standard.md), [ADR-0018](ADR-0018-workflow-rag-anonymous-public-only-runtime.md), [ADR-0022](ADR-0022-incremental-hexagonal-architecture-adoption.md), [ADR-0023](ADR-0023-audit-actor-access-management-boundary.md)
