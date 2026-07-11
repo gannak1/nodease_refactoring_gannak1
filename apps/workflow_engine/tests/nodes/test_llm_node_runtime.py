@@ -3188,6 +3188,49 @@ def test_llm_runtime_permission_denied_uses_detailed_reason_and_unknown_target(
     assert audit_calls[0]["metadata"]["reason"] == "model_relation_not_verified"
 
 
+def test_schedule_credential_denial_uses_system_audit_actor(monkeypatch):
+    node = LLMNode.__new__(LLMNode)
+    node.id = "llm-1"
+    node.execution_context = {
+        "user_id": None,
+        "credential_principal": {
+            "subject_type": "user",
+            "subject_id": str(uuid.uuid4()),
+        },
+        "organization_id": str(uuid.uuid4()),
+        "workflow_id": str(uuid.uuid4()),
+        "workflow_run_id": str(uuid.uuid4()),
+        "trigger_mode": "schedule",
+        "workflow_task_id": f"schedule:{uuid.uuid4()}",
+    }
+    user_audits = []
+    system_audits = []
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.record_resource_permission_denied",
+        lambda **kwargs: user_audits.append(kwargs),
+    )
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.nodes.llm.llm_node.record_system_resource_permission_denied",
+        lambda **kwargs: system_audits.append(kwargs),
+    )
+
+    node._record_llm_runtime_permission_denied(  # noqa: SLF001
+        user_id=uuid.UUID(node.execution_context["credential_principal"]["subject_id"]),
+        model_id="gpt-4o-mini",
+        organization_id=node.execution_context["organization_id"],
+        error=LLMCredentialNotAvailableError(
+            "credential_use_denied",
+            "denied",
+            model_id="gpt-4o-mini",
+        ),
+    )
+
+    assert user_audits == []
+    assert len(system_audits) == 1
+    assert "user_id" not in system_audits[0]
+    assert system_audits[0]["metadata"]["reason"] == "credential_use_denied"
+
+
 def test_auto_model_routing_uses_active_policy_without_judge_call(monkeypatch):
     """자동 라우팅 ON이면 실행 시점 judge 호출 없이 active policy 모델을 사용합니다."""
     user_id = uuid.uuid4()

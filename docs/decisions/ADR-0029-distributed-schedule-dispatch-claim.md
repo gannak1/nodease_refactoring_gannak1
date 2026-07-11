@@ -44,6 +44,7 @@ Admission 전에 stable `workflow_run_id`를 정한다. Duplicate delivery는 �
 - 외부 provider별 idempotency와 node side-effect exactly-once는 MBA-190 범위다.
 - `attempt_count`는 Gateway dispatcher 처리 주기에서만 정확히 한 번 증가한다. Worker budget unavailable은 같은 published attempt를 재사용하고, 최대치에 도달한 pending claim은 publish하지 않는다.
 - Admission 전 dead-letter reason은 run/start correlation을 금지하고 admission 후 reason은 task/enqueue/start/run correlation을 모두 요구한다. Domain과 DB constraint를 같은 matrix로 유지하며 기존 모순 row는 migration에서 추측 보정하지 않는다.
+- `canceled`/`dead_lettered` terminal claim은 allowlisted `safe_reason_code`를 반드시 가지며, outcome review marker/audit/resolution은 모두 null이거나 모두 유효한 non-null 값이어야 한다. PostgreSQL CHECK의 `UNKNOWN` 통과에 의존하지 않는다.
 - `pending`, `dispatching`, `enqueued`는 `workflow_run_id`를 가질 수 없다. Stable run identity는 Worker admission winner가 확정한다.
 - 한 claim의 publish 결과 write 실패는 같은 prepared batch의 후속 publish를 중단하지 않고 lease recovery로 수렴한다. Engine 결과 확정 뒤 terminal CAS write는 fresh DB session으로 bounded 재시도하되 engine을 다시 실행하지 않는다.
 
@@ -54,6 +55,7 @@ Admission 전에 stable `workflow_run_id`를 정한다. Duplicate delivery는 �
 - App creator, deployment creator, workflow owner를 executor 또는 RAG execution subject로 합성하지 않는다.
 - 명시적인 service account/assigned operator가 없는 schedule RAG는 ADR-0018의 anonymous public-only 경계를 사용한다.
 - LLM provider credential이 필요한 경우 locked canonical Deployment의 `created_by`를 user형 credential principal로만 전달한다. Queue는 principal을 지정할 수 없고, principal은 executor/audit actor/Knowledge execution subject로 승격되지 않는다. 별도 service account 모델은 이 ADR에서 도입하지 않는다.
+- System schedule의 LLM credential/model permission denial도 credential principal을 user actor로 기록하지 않고 `actor_id=NULL`, `actor_type=system`으로 남긴다.
 
 ### Audit and transaction
 
@@ -74,6 +76,8 @@ Audit recorder가 생성한 id만 claim의 `outcome_review_audit_id`로 저장�
 WorkflowRun visibility signal의 canonical audit은 `schedule_dispatch.workflow_run_missing`이며 target은 exact `schedule_dispatch_claim`이다. Metadata는 canonical `organization_id`와 `reason='workflow_run_missing'`만 허용한다. Signal 기록과 claim marker update는 같은 UnitOfWork에서 한 번만 commit하며 raw run id, input, output, provider response 또는 exception을 저장하지 않는다.
 
 `Schedule.next_run_at`과 `last_run_at`은 system operational cursor다. Generic ORM configuration audit에서는 이 두 field만 제외하고 cron, timezone, activation/lifecycle 변경 audit은 유지한다. Claim model은 generic ORM audit listener 대상에 추가하지 않는다.
+
+오래 중단된 고빈도 schedule은 과거 occurrence를 반복 열거하지 않고 `now`와 기존 cursor 중 더 늦은 시각을 기준으로 첫 미래 fire time에 coalesce한다. Catch-up 개수가 많다는 이유만으로 valid cron을 configuration error로 격리하지 않는다.
 
 ### Layer and composition
 

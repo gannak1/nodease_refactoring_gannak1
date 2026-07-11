@@ -372,10 +372,12 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_merged_hea
 
     safe_metadata_revision = script.get_revision("fa7c8d9e0f12")
     merged_revision = script.get_revision("ff4b5c6d7e89")
+    hardened_revision = script.get_revision("ff5c6d7e8f90")
 
     assert safe_metadata_revision.down_revision == "fa7b8c9d0e12"
     assert set(merged_revision.down_revision) == {"fa7c8d9e0f12", "ff3a4b5c6d78"}
-    assert script.get_heads() == ["ff4b5c6d7e89"]
+    assert hardened_revision.down_revision == "ff4b5c6d7e89"
+    assert script.get_heads() == ["ff5c6d7e8f90"]
 
 
 def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():

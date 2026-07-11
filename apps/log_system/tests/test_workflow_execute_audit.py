@@ -218,3 +218,58 @@ def test_schedule_audit_organization_fails_closed_on_current_app_mismatch():
         )
         is None
     )
+
+
+def test_schedule_audit_uses_durable_claim_after_deployment_is_deleted():
+    run_id = uuid4()
+    organization_id = uuid4()
+    task_id = f"schedule:{uuid4()}"
+    run = SimpleNamespace(
+        id=run_id,
+        workflow_id=uuid4(),
+        deployment_id=None,
+        workflow_task_id=task_id,
+        trigger_mode=RunTriggerMode.SCHEDULER,
+    )
+    claim = SimpleNamespace(
+        workflow_run_id=run_id,
+        deployment_id=uuid4(),
+        organization_id=organization_id,
+        idempotency_key=task_id,
+    )
+
+    result = _schedule_audit_organization_id(
+        _Session(
+            {
+                ScheduleDispatchClaim: claim,
+                WorkflowDeployment: None,
+                App: None,
+            }
+        ),
+        run,
+    )
+
+    assert result == organization_id
+
+
+def test_schedule_audit_fails_closed_when_live_run_and_claim_deployments_differ():
+    run_id = uuid4()
+    run = SimpleNamespace(
+        id=run_id,
+        workflow_id=uuid4(),
+        deployment_id=uuid4(),
+        workflow_task_id=f"schedule:{uuid4()}",
+        trigger_mode=RunTriggerMode.SCHEDULER,
+    )
+    claim = SimpleNamespace(
+        workflow_run_id=run_id,
+        deployment_id=uuid4(),
+        organization_id=uuid4(),
+    )
+
+    result = _schedule_audit_organization_id(
+        _Session({ScheduleDispatchClaim: claim}),
+        run,
+    )
+
+    assert result is None

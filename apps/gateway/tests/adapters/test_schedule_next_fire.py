@@ -34,6 +34,30 @@ def test_overdue_occurrences_coalesce_to_first_future_fire():
     assert result == datetime(2026, 7, 10, 9, 5, tzinfo=timezone.utc)
 
 
+def test_high_frequency_schedule_recovers_after_more_than_1024_missed_fires():
+    result = ApschedulerNextFireCalculator().next_after_occurrence(
+        cron_expression="* * * * *",
+        timezone_name="UTC",
+        scheduled_for=datetime(2023, 1, 1, tzinfo=timezone.utc),
+        now=datetime(2026, 7, 11, 9, 2, tzinfo=timezone.utc),
+    )
+
+    assert result == datetime(2026, 7, 11, 9, 3, tzinfo=timezone.utc)
+
+
+def test_future_occurrence_never_moves_the_cursor_backwards():
+    scheduled_for = datetime(2026, 7, 11, 10, 0, tzinfo=timezone.utc)
+
+    result = ApschedulerNextFireCalculator().next_after_occurrence(
+        cron_expression="*/5 * * * *",
+        timezone_name="UTC",
+        scheduled_for=scheduled_for,
+        now=datetime(2026, 7, 11, 9, 2, tzinfo=timezone.utc),
+    )
+
+    assert result == datetime(2026, 7, 11, 10, 5, tzinfo=timezone.utc)
+
+
 @pytest.mark.parametrize(
     ("expression", "timezone_name"),
     [("bad cron", "UTC"), ("0 * * * *", "Invalid/Timezone")],

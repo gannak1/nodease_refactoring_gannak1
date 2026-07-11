@@ -56,13 +56,15 @@ _SAFE_REASON = " OR ".join(
     (
         "(status = 'pending' AND (safe_reason_code IS NULL OR safe_reason_code IN "
         "('broker_enqueue_failed', 'budget_evaluation_failed')))",
-        "(status = 'canceled' AND safe_reason_code IN "
+        "(status = 'canceled' AND safe_reason_code IS NOT NULL "
+        "AND safe_reason_code IN "
         "('app_not_found', 'budget_blocked', 'deployment_inactive', "
         "'deployment_not_current', 'deployment_not_found', "
         "'deployment_type_not_allowed', 'organization_scope_mismatch', "
         "'organization_scope_missing', 'schedule_deployment_mismatch', "
         "'schedule_not_found'))",
-        "(status = 'dead_lettered' AND ((safe_reason_code IN "
+        "(status = 'dead_lettered' AND safe_reason_code IS NOT NULL "
+        "AND ((safe_reason_code IN "
         "('budget_evaluation_failed', 'enqueue_attempts_exhausted') "
         "AND workflow_run_id IS NULL AND started_at IS NULL) OR "
         "(safe_reason_code IN "
@@ -86,13 +88,15 @@ _LEGACY_SAFE_REASON = " OR ".join(
     (
         "(status = 'pending' AND (safe_reason_code IS NULL OR safe_reason_code IN "
         "('broker_enqueue_failed', 'budget_evaluation_failed')))",
-        "(status = 'canceled' AND safe_reason_code IN "
+        "(status = 'canceled' AND safe_reason_code IS NOT NULL "
+        "AND safe_reason_code IN "
         "('app_not_found', 'budget_blocked', 'deployment_inactive', "
         "'deployment_not_current', 'deployment_not_found', "
         "'deployment_type_not_allowed', 'organization_scope_mismatch', "
         "'organization_scope_missing', 'schedule_deployment_mismatch', "
         "'schedule_not_found'))",
-        "(status = 'dead_lettered' AND safe_reason_code IN "
+        "(status = 'dead_lettered' AND safe_reason_code IS NOT NULL "
+        "AND safe_reason_code IN "
         "('budget_evaluation_failed', 'enqueue_attempts_exhausted', "
         "'execution_failed_after_admission', 'execution_outcome_unknown'))",
         "(status IN ('dispatching', 'enqueued', 'running', 'succeeded') "

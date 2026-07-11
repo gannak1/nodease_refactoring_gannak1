@@ -63,7 +63,7 @@ from sqlalchemy.orm import Session
 ROOT_DIR = Path(__file__).resolve().parents[4]
 RUN_ENV = "NODEASE_RUN_DISPOSABLE_DB_TEST"
 DB_PREFIX = "mbased_schedule_claim"
-HEAD_REVISION = "ff4b5c6d7e89"
+HEAD_REVISION = "ff5c6d7e8f90"
 PRE_CLAIM_REVISION = "fa7b8c9d0e12"
 
 
@@ -109,6 +109,16 @@ def _revision(database: str, config: DisposablePostgresConfig) -> str:
             return connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
     finally:
         engine.dispose()
+
+
+def _assert_integrity_error(engine, statement, parameters) -> None:
+    with engine.connect() as connection:
+        transaction = connection.begin()
+        try:
+            with pytest.raises(IntegrityError):
+                connection.execute(text(statement), parameters)
+        finally:
+            transaction.rollback()
 
 
 def _insert_pending_claim(database: str, config: DisposablePostgresConfig) -> None:
@@ -355,37 +365,108 @@ def test_schedule_occurrence_and_worker_admission_have_single_database_winner():
 
         invariant_engine = create_engine(config.database_url(database))
         try:
-            with invariant_engine.connect() as connection:
-                transaction = connection.begin()
-                try:
-                    with pytest.raises(IntegrityError):
-                        connection.execute(
-                            text(
-                                """
-                                INSERT INTO schedule_dispatch_claims (
-                                    id, schedule_id, organization_id, deployment_id,
-                                    scheduled_for, idempotency_key, status,
-                                    attempt_count, workflow_run_id, claimed_at
-                                ) VALUES (
-                                    :id, :schedule_id, :organization_id, :deployment_id,
-                                    :scheduled_for, :idempotency_key, 'pending',
-                                    0, :workflow_run_id, :claimed_at
-                                )
-                                """
-                            ),
-                            {
-                                "id": uuid.uuid4(),
-                                "schedule_id": ids["schedule"],
-                                "organization_id": ids["organization"],
-                                "deployment_id": ids["deployment"],
-                                "scheduled_for": datetime.now(timezone.utc),
-                                "idempotency_key": f"schedule:{uuid.uuid4()}",
-                                "workflow_run_id": uuid.uuid4(),
-                                "claimed_at": datetime.now(timezone.utc),
-                            },
-                        )
-                finally:
-                    transaction.rollback()
+            now = datetime.now(timezone.utc)
+            claim_parameters = {
+                "id": uuid.uuid4(),
+                "schedule_id": ids["schedule"],
+                "organization_id": ids["organization"],
+                "deployment_id": ids["deployment"],
+                "scheduled_for": now,
+                "idempotency_key": f"schedule:{uuid.uuid4()}",
+                "workflow_run_id": uuid.uuid4(),
+                "claimed_at": now,
+            }
+            _assert_integrity_error(
+                invariant_engine,
+                """
+                INSERT INTO schedule_dispatch_claims (
+                    id, schedule_id, organization_id, deployment_id,
+                    scheduled_for, idempotency_key, status,
+                    attempt_count, workflow_run_id, claimed_at
+                ) VALUES (
+                    :id, :schedule_id, :organization_id, :deployment_id,
+                    :scheduled_for, :idempotency_key, 'pending',
+                    0, :workflow_run_id, :claimed_at
+                )
+                """,
+                claim_parameters,
+            )
+            for offset, terminal_status in enumerate(
+                ("canceled", "dead_lettered"), start=1
+            ):
+                terminal_parameters = dict(claim_parameters)
+                terminal_parameters.update(
+                    {
+                        "id": uuid.uuid4(),
+                        "scheduled_for": now + timedelta(seconds=offset),
+                        "idempotency_key": f"schedule:{uuid.uuid4()}",
+                        "status": terminal_status,
+                        "completed_at": now,
+                    }
+                )
+                _assert_integrity_error(
+                    invariant_engine,
+                    """
+                    INSERT INTO schedule_dispatch_claims (
+                        id, schedule_id, organization_id, deployment_id,
+                        scheduled_for, idempotency_key, status, attempt_count,
+                        claimed_at, completed_at
+                    ) VALUES (
+                        :id, :schedule_id, :organization_id, :deployment_id,
+                        :scheduled_for, :idempotency_key, :status, 0,
+                        :claimed_at, :completed_at
+                    )
+                    """,
+                    terminal_parameters,
+                )
+            outcome_parameters = dict(claim_parameters)
+            outcome_parameters.update(
+                {
+                    "id": uuid.uuid4(),
+                    "scheduled_for": now + timedelta(minutes=1),
+                    "idempotency_key": f"schedule:{uuid.uuid4()}",
+                    "completed_at": now,
+                    "outcome_review_audit_id": uuid.uuid4(),
+                }
+            )
+            outcome_parameters["celery_task_id"] = outcome_parameters["idempotency_key"]
+            _assert_integrity_error(
+                invariant_engine,
+                """
+                INSERT INTO schedule_dispatch_claims (
+                    id, schedule_id, organization_id, deployment_id,
+                    scheduled_for, idempotency_key, status, attempt_count,
+                    celery_task_id, enqueued_at, workflow_run_id, started_at,
+                    claimed_at, completed_at, safe_reason_code,
+                    outcome_reviewed_at, outcome_review_audit_id,
+                    outcome_resolution_code
+                ) VALUES (
+                    :id, :schedule_id, :organization_id, :deployment_id,
+                    :scheduled_for, :idempotency_key, 'dead_lettered', 1,
+                    :celery_task_id, :claimed_at, :workflow_run_id, :claimed_at,
+                    :claimed_at, :completed_at, 'execution_outcome_unknown',
+                    :claimed_at, :outcome_review_audit_id, NULL
+                )
+                """,
+                outcome_parameters,
+            )
+            _assert_integrity_error(
+                invariant_engine,
+                """
+                INSERT INTO workflow_runs (
+                    id, workflow_id, user_id, status, trigger_mode,
+                    inputs, started_at, workflow_task_id
+                ) VALUES (
+                    :id, :workflow_id, NULL, 'RUNNING', 'SCHEDULER',
+                    '{}'::jsonb, :started_at, NULL
+                )
+                """,
+                {
+                    "id": uuid.uuid4(),
+                    "workflow_id": ids["workflow"],
+                    "started_at": now,
+                },
+            )
         finally:
             invariant_engine.dispose()
 

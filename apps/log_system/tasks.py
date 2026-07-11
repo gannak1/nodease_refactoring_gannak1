@@ -155,20 +155,24 @@ def _schedule_audit_organization_id(session, run_log):
         .filter(
             ScheduleDispatchClaim.idempotency_key == task_id,
             ScheduleDispatchClaim.workflow_run_id == run_log.id,
-            ScheduleDispatchClaim.deployment_id == run_log.deployment_id,
         )
         .first()
     )
     if claim is None:
         return None
+    if (
+        run_log.deployment_id is not None
+        and claim.deployment_id != run_log.deployment_id
+    ):
+        return None
 
     deployment = (
         session.query(WorkflowDeployment)
-        .filter(WorkflowDeployment.id == run_log.deployment_id)
+        .filter(WorkflowDeployment.id == claim.deployment_id)
         .first()
     )
     if deployment is not None:
-        if deployment.id != claim.deployment_id:
+        if run_log.deployment_id != deployment.id:
             return None
         app = session.query(App).filter(App.id == deployment.app_id).first()
         if app is None or app.workflow_id != run_log.workflow_id:

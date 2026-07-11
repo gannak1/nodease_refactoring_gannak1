@@ -54,7 +54,8 @@ class WorkflowRun(Base):
     __table_args__ = (
         CheckConstraint(
             "user_id IS NOT NULL OR "
-            "(trigger_mode = 'SCHEDULER' AND workflow_task_id LIKE 'schedule:%')",
+            "(trigger_mode = 'SCHEDULER' AND workflow_task_id IS NOT NULL "
+            "AND workflow_task_id LIKE 'schedule:%')",
             name="ck_workflow_runs_system_schedule_executor",
         ),
     )

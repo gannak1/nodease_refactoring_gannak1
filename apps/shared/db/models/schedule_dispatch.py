@@ -82,8 +82,10 @@ def _safe_reason_constraint() -> str:
             f"(status = '{STATUS_PENDING}' AND "
             f"(safe_reason_code IS NULL OR safe_reason_code IN ({_sql_values(PENDING_REASONS)})))",
             f"(status = '{STATUS_CANCELED}' AND "
+            f"safe_reason_code IS NOT NULL AND "
             f"safe_reason_code IN ({_sql_values(CANCELED_REASONS)}))",
-            f"(status = '{STATUS_DEAD_LETTERED}' AND ((safe_reason_code IN "
+            f"(status = '{STATUS_DEAD_LETTERED}' AND "
+            f"safe_reason_code IS NOT NULL AND ((safe_reason_code IN "
             f"({_sql_values(PRE_ADMISSION_DEAD_LETTER_REASONS)}) "
             "AND workflow_run_id IS NULL AND started_at IS NULL) OR "
             f"(safe_reason_code IN ({_sql_values(POST_ADMISSION_DEAD_LETTER_REASONS)}) "

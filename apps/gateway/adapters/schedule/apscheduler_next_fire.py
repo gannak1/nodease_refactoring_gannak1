@@ -11,11 +11,6 @@ from apps.shared.domain.schedule_dispatch import canonical_utc
 
 
 class ApschedulerNextFireCalculator:
-    def __init__(self, *, iteration_limit: int = 1024) -> None:
-        if iteration_limit < 1:
-            raise ValueError("iteration_limit must be positive")
-        self.iteration_limit = iteration_limit
-
     def first_after(
         self, *, cron_expression: str, timezone_name: str, now: datetime
     ) -> datetime:
@@ -38,19 +33,14 @@ class ApschedulerNextFireCalculator:
         trigger = self._trigger(cron_expression, timezone_name)
         previous = canonical_utc(scheduled_for)
         canonical_now = canonical_utc(now)
-        candidate = trigger.get_next_fire_time(previous, canonical_now)
-        for _ in range(self.iteration_limit):
-            if candidate is None:
-                break
-            candidate = canonical_utc(candidate)
-            if candidate > canonical_now:
-                return candidate
-            previous = candidate
-            candidate = trigger.get_next_fire_time(
-                previous,
-                previous + timedelta(microseconds=1),
-            )
-        raise ScheduleConfigurationError("schedule has no bounded future fire time")
+        # Missed occurrences are coalesced. Replaying each historical fire time
+        # makes a valid high-frequency cron look invalid after a long outage.
+        anchor = max(previous, canonical_now)
+        candidate = trigger.get_next_fire_time(
+            None,
+            anchor + timedelta(microseconds=1),
+        )
+        return self._require_future(candidate, canonical_now)
 
     @staticmethod
     def _trigger(cron_expression: str, timezone_name: str) -> CronTrigger:

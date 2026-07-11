@@ -48,6 +48,7 @@ Status: Draft
 - Direct permission revoke 후 team source가 남는 경우 audit은 direct row deletion만 기록하고 UI effective access는 remaining team source를 반영한다.
 - Security Alert detail의 evidence에서 audit detail로 이동해도 기존 organization scope와 metadata allowlist를 우회하지 않아야 한다.
 - Protected outcome review job은 product audit에 system actor/canonical organization/operation correlation만 남기고 human operator identity는 platform IAM audit에 남긴다. Acknowledgment 뒤에도 workflow redrive가 발생하지 않는다.
+- System schedule 실행 중 deployment가 삭제되어 WorkflowRun deployment FK가 null이 되어도 exact task/run claim의 durable organization으로 완료/실패 audit을 기록한다. Live deployment가 남아 있는데 run/claim/deployment/App provenance가 충돌하면 fail-closed한다.
 
 ## Permission Tests
 

@@ -54,7 +54,9 @@ Webhook capture helper는 public webhook 실행 표면이 아니라 로그인한
 - DEP-REQ-031: Dispatch 핵심 복구는 expired `dispatching`/`enqueued`와 running deadline 격리를 먼저 처리해야 한다. WorkflowRun visibility signal과 terminal cleanup은 별도 UnitOfWork의 optional maintenance로 수행하며 실패가 핵심 dispatch/recovery를 차단해서는 안 된다.
 - DEP-REQ-032: `claim`/`drain` mode의 Gateway와 Worker는 동일한 shared Alembic/schema readiness를 startup에서 통과해야 한다. Migration은 동일 DB connection의 bounded PostgreSQL advisory lock과 production rollout 공통 concurrency group으로 직렬화한다. 동시 migration 진입은 제한 시간 동안 현재 owner의 완료를 기다린 뒤에만 실패한다. Pod가 로드한 canonical settings fingerprint가 manifest annotation과 다르거나 일반 독립 rollout 시 live Gateway/Worker fingerprint가 desired 값과 다르면 fail-closed한다. 단, desired mode가 `disabled`인 최초 rollout에서는 기존 Deployment의 fingerprint annotation 누락을 bootstrap 상태로 허용한다.
 - DEP-REQ-033: Schedule claim을 활성화하는 coordinated production rollout은 Gateway/Worker보다 먼저 동일 commit의 Log System image를 배포하고 실제 Deployment image identity를 검증해야 한다. 그래야 nullable system actor와 canonical schedule trigger를 이해하지 못하는 이전 Logger가 새 schedule run을 소비하는 혼합 버전을 차단할 수 있다.
-- DEP-REQ-033: Admission 전 `pending`/`dispatching`/`enqueued` claim은 `workflow_run_id`를 가질 수 없다. Scheduler는 한 claim의 publish 결과 write 실패를 다른 prepared claim으로 전파하지 않고 lease recovery에 맡겨야 한다. Engine 결과 확정 후 terminal state write는 engine을 재실행하지 않는 fresh-session bounded retry만 허용한다.
+- DEP-REQ-034: Admission 전 `pending`/`dispatching`/`enqueued` claim은 `workflow_run_id`를 가질 수 없다. Scheduler는 한 claim의 publish 결과 write 실패를 다른 prepared claim으로 전파하지 않고 lease recovery에 맡겨야 한다. Engine 결과 확정 후 terminal state write는 engine을 재실행하지 않는 fresh-session bounded retry만 허용한다.
+- DEP-REQ-035: 오래 밀린 valid schedule은 과거 occurrence 수와 무관하게 현재 시각 이후 첫 fire time으로 coalesce해야 한다. Catch-up iteration cap 초과를 configuration error로 분류하거나 schedule을 quarantine해서는 안 된다.
+- DEP-REQ-036: `canceled`/`dead_lettered` claim의 safe reason, completed outcome review의 resolution, nullable system schedule WorkflowRun의 claim task id는 DB CHECK에서도 명시적으로 non-null이어야 한다. PostgreSQL `UNKNOWN` 평가가 incomplete terminal/correlation row를 허용해서는 안 된다.
 
 ## Runtime Audience Matrix
 

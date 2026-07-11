@@ -19,7 +19,10 @@ from apps.shared.db.models.llm import LLMModel
 from apps.shared.db.models.workflow_run import RunStatus, WorkflowNodeRun, WorkflowRun
 from apps.shared.db.session import SessionLocal  # 임시 세션 생성용
 from apps.shared.schemas.rag import ChunkPreview
-from apps.shared.services.permission_audit import record_resource_permission_denied
+from apps.shared.services.permission_audit import (
+    record_resource_permission_denied,
+    record_system_resource_permission_denied,
+)
 from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
 from apps.shared.services.rag_evidence_policy import (
     RAGEvidenceDecision,
@@ -1925,6 +1928,15 @@ class LLMNode(Node[LLMNodeData]):
                 "RAG retrieval requires a valid credential user context."
             ) from exc
 
+    def _is_system_schedule_execution(self) -> bool:
+        trigger_mode = str(self.execution_context.get("trigger_mode") or "").lower()
+        task_id = str(self.execution_context.get("workflow_task_id") or "")
+        return (
+            self.execution_context.get("user_id") is None
+            and trigger_mode in {"schedule", "scheduler"}
+            and task_id.startswith("schedule:")
+        )
+
     def _authorized_runtime_kb_ids(
         self,
         db_session,
@@ -2337,15 +2349,18 @@ class LLMNode(Node[LLMNodeData]):
         if credential_id is None:
             metadata["credential_id"] = None
 
-        record_resource_permission_denied(
-            user_id=user_id,
-            resource_type="llm_credential",
-            resource_id=credential_id or "unknown",
-            action="use",
-            effective_auth_state="none",
-            organization_id=organization_uuid,
-            metadata=metadata,
-        )
+        audit_kwargs = {
+            "resource_type": "llm_credential",
+            "resource_id": credential_id or "unknown",
+            "action": "use",
+            "effective_auth_state": "none",
+            "organization_id": organization_uuid,
+            "metadata": metadata,
+        }
+        if self._is_system_schedule_execution():
+            record_system_resource_permission_denied(**audit_kwargs)
+        else:
+            record_resource_permission_denied(user_id=user_id, **audit_kwargs)
 
     def _knowledge_trace_metadata(
         self, knowledge_base_id: str, chunk: ChunkPreview

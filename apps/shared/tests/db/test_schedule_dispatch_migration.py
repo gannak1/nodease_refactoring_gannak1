@@ -60,6 +60,17 @@ def test_claim_model_declares_required_constraints_and_indexes():
     assert EXPECTED_CLAIM_CONSTRAINTS <= constraint_names
     assert EXPECTED_CLAIM_INDEXES == index_names
 
+    constraints = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in table.constraints
+        if constraint.name and hasattr(constraint, "sqltext")
+    }
+    safe_reason = constraints["ck_schedule_dispatch_claims_safe_reason"]
+    outcome_review = constraints["ck_schedule_dispatch_claims_outcome_review"]
+    assert "status = 'canceled' AND safe_reason_code IS NOT NULL" in safe_reason
+    assert "status = 'dead_lettered' AND safe_reason_code IS NOT NULL" in safe_reason
+    assert "outcome_resolution_code IS NOT NULL" in outcome_review
+
 
 def test_workflow_run_allows_only_correlated_system_schedule_null_executor():
     table = WorkflowRun.__table__
@@ -73,6 +84,7 @@ def test_workflow_run_allows_only_correlated_system_schedule_null_executor():
     sql = str(constraint.sqltext)
     assert "user_id IS NOT NULL" in sql
     assert "trigger_mode = 'SCHEDULER'" in sql
+    assert "workflow_task_id IS NOT NULL" in sql
     assert "workflow_task_id LIKE 'schedule:%'" in sql
 
 
@@ -83,6 +95,13 @@ def test_schedule_dispatch_migration_extends_pre_schedule_base_revision():
 
     assert migration.revision == "fa8b9c0d1e23"
     assert migration.down_revision == "fa7b8c9d0e12"
+    assert "status = 'canceled' AND safe_reason_code IS NOT NULL" in migration._SAFE_REASON
+    assert (
+        "status = 'dead_lettered' AND safe_reason_code IS NOT NULL"
+        in migration._SAFE_REASON
+    )
+    assert "outcome_resolution_code IS NOT NULL" in migration._OUTCOME_REVIEW
+    assert "workflow_task_id IS NOT NULL" in inspect.getsource(migration.upgrade)
 
 
 class _DowngradeResult:
@@ -202,6 +221,12 @@ def test_schedule_admission_correlation_migration_extends_merge_head():
     assert migration.down_revision == "fe2f3a4b5c67"
     assert "workflow_run_id IS NOT NULL" in migration._STATUS_FIELDS
     assert "execution_outcome_unknown" in migration._SAFE_REASON
+    assert "status = 'canceled' AND safe_reason_code IS NOT NULL" in migration._SAFE_REASON
+    assert (
+        "status = 'dead_lettered' AND safe_reason_code IS NOT NULL"
+        in migration._SAFE_REASON
+    )
+    assert "safe_reason_code IS NOT NULL" in migration._LEGACY_SAFE_REASON
     assert "workflow_run_id IS NOT NULL" in str(migration._INVALID_EXISTING_ROWS)
     assert "ck_schedule_dispatch_claims_preadmission_run" in inspect.getsource(
         migration.upgrade
@@ -217,6 +242,23 @@ def test_schedule_and_knowledge_metadata_heads_are_merged_without_ddl():
 
     assert migration.revision == "ff4b5c6d7e89"
     assert set(migration.down_revision) == {"ff3a4b5c6d78", "fa7c8d9e0f12"}
+
+
+def test_schedule_null_constraint_hardening_extends_the_single_merge_head():
+    migration = importlib.import_module(
+        "apps.shared.alembic.versions."
+        "ff5c6d7e8f90_harden_schedule_null_constraints"
+    )
+
+    assert migration.revision == "ff5c6d7e8f90"
+    assert migration.down_revision == "ff4b5c6d7e89"
+    assert "workflow_task_id IS NOT NULL" in migration._WORKFLOW_RUN_EXECUTOR
+    assert "status = 'canceled' AND safe_reason_code IS NOT NULL" in migration._SAFE_REASON
+    assert (
+        "status = 'dead_lettered' AND safe_reason_code IS NOT NULL"
+        in migration._SAFE_REASON
+    )
+    assert "outcome_resolution_code IS NOT NULL" in migration._OUTCOME_REVIEW
 
 
 class _MigrationOperations:
