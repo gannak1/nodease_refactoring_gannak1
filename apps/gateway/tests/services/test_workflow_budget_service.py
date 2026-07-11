@@ -80,6 +80,32 @@ def test_classify_budget_usage_uses_decimal_not_float():
     )
 
 
+def test_classify_budget_usage_reads_the_centralized_at_risk_threshold(monkeypatch):
+    """임계값을 한 곳에서 조정하면 모든 판정 경계가 함께 바뀐다."""
+    from apps.gateway.services import workflow_budget_service as budget_module
+
+    monkeypatch.setattr(
+        budget_module,
+        "BUDGET_AT_RISK_RATIO",
+        Decimal("0.85"),
+    )
+
+    assert (
+        budget_module.WorkflowBudgetService.classify_budget_usage(
+            current_cost=Decimal("84.00"),
+            monthly_budget_usd=Decimal("100.00"),
+        )
+        == "normal"
+    )
+    assert (
+        budget_module.WorkflowBudgetService.classify_budget_usage(
+            current_cost=Decimal("85.00"),
+            monthly_budget_usd=Decimal("100.00"),
+        )
+        == "at_risk"
+    )
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [
