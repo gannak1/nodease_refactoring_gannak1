@@ -252,6 +252,20 @@ Then 모든 기능에 접근할 수 있고 severity/status를 color 없이도 �
 
 Drawer/dialog close와 drawer 간 전환 뒤 focus가 숨겨진 element에 남지 않아야 한다.
 
+### AC-31 Audit Producer Contract
+
+Given 탐지 대상 `permission.denied` 또는 `policy.block` producer가 audit를 생성할 때,
+When 저장된 audit row를 검사하면,
+Then actor, organization, target, category, status와 reason은 ADR-0028의 canonical 계약을 만족해야 한다.
+
+`permission.denied`의 `audit_metadata.organization_id`는 audit 생성 전에 scope가 검증된 UUID여야 하며 caller가 전달한 추가 metadata로 덮어쓸 수 없어야 한다. Workflow, LLM credential, Team manager, Team resource manager, Organization member manager 경로는 각각 이 계약을 검증해야 한다.
+
+`policy.block` producer는 최상위 `audit_metadata.policy_reason`에 canonical 값을 기록해야 한다. Access-management reason 6종과 `rag.pii_evidence_detected`, `budget.exceeded`를 producer 계약으로 허용하되, Security Alert evaluator는 `budget.exceeded`를 제외해야 한다.
+
+Scope 밖 404, validation 실패, desired-state no-op에는 target-aware audit을 새로 만들지 않아야 한다. 이미 `permission.denied`를 기록한 요청은 전역 handler에서 `auth.permission_denied`를 중복 기록하지 않아야 한다.
+
+신규 metadata에는 raw request, email, IP, user-agent, exception text, secret, credential 또는 hidden target 정보를 추가하지 않아야 한다. Legacy `pii_policy_blocked` 정규화는 append-only 원본 audit row를 변경하지 않는 pure mapping이어야 한다.
+
 ## Detailed Test Matrix
 
 ### Test Environment And Concurrency Rules
@@ -289,6 +303,27 @@ Drawer/dialog close와 drawer 간 전환 뒤 focus가 숨겨진 element에 남�
 | SAL-TC-U018 | AC-20 | open/acknowledged/resolved 혼합 목록 | summary count/recent item은 open만 포함 |
 | SAL-TC-U019 | AC-27 | safe projection 입력에 raw metadata와 synthetic secret marker 포함 | allowlist 밖 field와 marker 제거 |
 | SAL-TC-U020 | AC-29 | event time과 UI-visible time 비교 helper | 60초 이하/초과 판정이 timezone과 무관하게 결정적 |
+
+### Audit Producer Contract Tests
+
+이 표는 MBA-223의 merge gate다. Worker와 Alert lifecycle 구현 없이 audit producer와 shared normalizer만으로 실행할 수 있어야 한다.
+
+| ID | Related AC | Producer / Scenario | Expected |
+| --- | --- | --- | --- |
+| SAL-TC-P001 | AC-31 | 공통 resource permission denial helper에 검증된 organization과 safe target 전달 | `permission.denied`, user actor, action category, failure status, exact target과 canonical organization UUID 기록 |
+| SAL-TC-P002 | AC-31 | 공통 helper에 organization과 충돌하는 caller metadata 전달 | 검증된 `organization_id`를 덮어쓰지 못하고 raw/unknown organization 값이 저장되지 않음 |
+| SAL-TC-P003 | AC-02, AC-31 | `ensure_workflow_permission()`의 same-scope 권한 부족과 cross-scope workflow 요청 | Same-scope 403은 workflow target과 workflow의 organization 기록, cross-scope 404는 target-aware audit 없음 |
+| SAL-TC-P004 | AC-02, AC-31 | `ensure_llm_credential_permission()`의 same-scope 권한 부족과 cross-scope credential 요청 | Same-scope 403은 credential target과 credential의 organization 기록, cross-scope 404는 target-aware audit 없음 |
+| SAL-TC-P005 | AC-31 | Team manager 권한 부족 | 검증된 organization과 safe team/organization target을 한 건 기록하고 actor/category/status 계약 준수 |
+| SAL-TC-P006 | AC-31 | Team resource manage 권한 부족 | 검증된 organization과 scope 확인이 끝난 safe resource target을 한 건 기록하고 hidden target 정보 없음 |
+| SAL-TC-P007 | AC-31 | Organization member manager 권한 부족 | 해당 organization을 target으로 `permission.denied` 한 건 기록하고 target user name/email 또는 membership detail 없음 |
+| SAL-TC-P008 | AC-28, AC-31 | Producer가 `audit_recorded` 요청 표식을 남긴 뒤 전역 403 handler 실행 | `permission.denied`만 한 건 존재하고 `auth.permission_denied` 중복 없음 |
+| SAL-TC-P009 | AC-03, AC-31 | Access-management policy block reason 6종과 unknown/malformed reason | Canonical 6종은 최상위 `policy_reason`으로 저장, unknown/malformed reason은 audit 없이 거부 |
+| SAL-TC-P010 | AC-03, AC-31 | RAG PII evidence policy block producer 실행 | 최상위 `policy_reason="rag.pii_evidence_detected"` 저장, 호환 legacy field가 있어도 canonical 값이 source of truth |
+| SAL-TC-P011 | AC-01, AC-03, AC-31 | Budget enforcement policy block producer 실행 후 evaluator 입력 | Producer는 `policy_reason="budget.exceeded"`를 저장하지만 evaluator는 Security Alert 입력에서 제외 |
+| SAL-TC-P012 | AC-03, AC-31 | Legacy `pii_policy_blocked`, canonical PII reason, unknown legacy reason 정규화 | Legacy PII만 canonical 값으로 mapping하고 append-only 원본 row와 metadata는 불변, unknown은 allowlist 입력이 아님 |
+| SAL-TC-P013 | AC-27, AC-31 | 각 producer 입력에 synthetic email/IP/user-agent/exception/request/secret marker 포함 | 신규 audit metadata와 log에 marker가 없고 safe opaque ID와 canonical code만 남음 |
+| SAL-TC-P014 | AC-31 | Hidden 404, validation 실패, desired-state no-op 경로 실행 | Target-aware `permission.denied`/`policy.block` audit가 생성되지 않음 |
 
 ### Service And Database Tests
 
