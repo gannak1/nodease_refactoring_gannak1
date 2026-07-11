@@ -67,8 +67,10 @@ from sqlalchemy.orm import Session
 ROOT_DIR = Path(__file__).resolve().parents[4]
 RUN_ENV = "NODEASE_RUN_DISPOSABLE_DB_TEST"
 DB_PREFIX = "mbased_schedule_claim"
-SCHEDULE_HEAD_REVISION = "ff5c6d7e8f90"
-MERGE_REVISION = "ff4b5c6d7e89"
+COST_OPTIMIZER_HEAD_REVISION = "fd0e1f2a3b4c"
+SCHEDULE_HEAD_REVISION = "b39e0f1a2b43"
+SCHEDULE_MERGE_REVISION = "ff4b5c6d7e89"
+SPLIT_HEAD_REVISIONS = {COST_OPTIMIZER_HEAD_REVISION, SCHEDULE_HEAD_REVISION}
 
 
 def _run_alembic(
@@ -112,15 +114,23 @@ def _enable_vector_extension(database: str, config: DisposablePostgresConfig) ->
         engine.dispose()
 
 
-def _revision(database: str, config: DisposablePostgresConfig) -> str:
+def _revisions(database: str, config: DisposablePostgresConfig) -> set[str]:
     engine = create_engine(config.database_url(database))
     try:
         with engine.connect() as connection:
-            return connection.execute(
-                text("SELECT version_num FROM alembic_version")
-            ).scalar_one()
+            return set(
+                connection.execute(
+                    text("SELECT version_num FROM alembic_version")
+                ).scalars()
+            )
     finally:
         engine.dispose()
+
+
+def _revision(database: str, config: DisposablePostgresConfig) -> str:
+    revisions = _revisions(database, config)
+    assert len(revisions) == 1
+    return next(iter(revisions))
 
 
 def _column_exists(
@@ -314,7 +324,7 @@ def test_schedule_dispatch_head_downgrade_requires_explicit_break_glass():
 
         _run_alembic(
             "downgrade",
-            "-1",
+            COST_OPTIMIZER_HEAD_REVISION,
             database=database,
             config=config,
             expect_success=False,
@@ -323,13 +333,26 @@ def test_schedule_dispatch_head_downgrade_requires_explicit_break_glass():
 
         _run_alembic(
             "downgrade",
-            "-1",
+            COST_OPTIMIZER_HEAD_REVISION,
             database=database,
             config=config,
             expect_success=True,
             allow_destructive_downgrade=True,
         )
-        assert _revision(database, config) == MERGE_REVISION
+        assert _revisions(database, config) == SPLIT_HEAD_REVISIONS
+
+        _run_alembic(
+            "downgrade",
+            SCHEDULE_MERGE_REVISION,
+            database=database,
+            config=config,
+            expect_success=True,
+            allow_destructive_downgrade=True,
+        )
+        assert _revisions(database, config) == {
+            COST_OPTIMIZER_HEAD_REVISION,
+            SCHEDULE_MERGE_REVISION,
+        }
         assert _column_exists(
             database,
             config,
@@ -349,7 +372,7 @@ def test_schedule_dispatch_head_downgrade_requires_explicit_break_glass():
         _insert_pending_claim(database, config)
         _run_alembic(
             "downgrade",
-            "-1",
+            COST_OPTIMIZER_HEAD_REVISION,
             database=database,
             config=config,
             expect_success=False,

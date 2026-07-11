@@ -375,6 +375,8 @@ def test_schedule_head_downgrade_guards_noop_graph_move(monkeypatch):
         "ff4b5c6d7e89_merge_schedule_and_knowledge_metadata_heads",
         "apps.shared.alembic.versions."
         "fe2f3a4b5c67_merge_schedule_dispatch_and_model_routing_heads",
+        "apps.shared.alembic.versions."
+        "ff6d7e8f9012_merge_cost_optimizer_and_schedule_heads",
     ),
 )
 def test_schedule_merge_downgrade_guards_graph_split(monkeypatch, module_name):
