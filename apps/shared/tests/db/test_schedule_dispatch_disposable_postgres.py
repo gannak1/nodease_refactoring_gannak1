@@ -68,7 +68,7 @@ from apps.workflow_engine.application.schedule_dispatch import (
 ROOT_DIR = Path(__file__).resolve().parents[4]
 RUN_ENV = "NODEASE_RUN_DISPOSABLE_DB_TEST"
 DB_PREFIX = "mbased_schedule_claim"
-HEAD_REVISION = "ff5c6d7e8f90"
+SCHEDULE_HEAD_REVISION = "ff5c6d7e8f90"
 MERGE_REVISION = "ff4b5c6d7e89"
 
 
@@ -305,9 +305,13 @@ def test_schedule_dispatch_head_downgrade_requires_explicit_break_glass():
 
         _enable_vector_extension(database, config)
         _run_alembic(
-            "upgrade", "heads", database=database, config=config, expect_success=True
+            "upgrade",
+            SCHEDULE_HEAD_REVISION,
+            database=database,
+            config=config,
+            expect_success=True,
         )
-        assert _revision(database, config) == HEAD_REVISION
+        assert _revision(database, config) == SCHEDULE_HEAD_REVISION
 
         _run_alembic(
             "downgrade",
@@ -316,7 +320,7 @@ def test_schedule_dispatch_head_downgrade_requires_explicit_break_glass():
             config=config,
             expect_success=False,
         )
-        assert _revision(database, config) == HEAD_REVISION
+        assert _revision(database, config) == SCHEDULE_HEAD_REVISION
 
         _run_alembic(
             "downgrade",
@@ -335,9 +339,13 @@ def test_schedule_dispatch_head_downgrade_requires_explicit_break_glass():
         )
 
         _run_alembic(
-            "upgrade", "heads", database=database, config=config, expect_success=True
+            "upgrade",
+            SCHEDULE_HEAD_REVISION,
+            database=database,
+            config=config,
+            expect_success=True,
         )
-        assert _revision(database, config) == HEAD_REVISION
+        assert _revision(database, config) == SCHEDULE_HEAD_REVISION
 
         _insert_pending_claim(database, config)
         _run_alembic(
@@ -348,7 +356,7 @@ def test_schedule_dispatch_head_downgrade_requires_explicit_break_glass():
             expect_success=False,
             allow_destructive_downgrade=True,
         )
-        assert _revision(database, config) == HEAD_REVISION
+        assert _revision(database, config) == SCHEDULE_HEAD_REVISION
     except OperationalError:
         raise pytest.fail.Exception(
             "disposable PostgreSQL is unavailable or rejected the connection; "
