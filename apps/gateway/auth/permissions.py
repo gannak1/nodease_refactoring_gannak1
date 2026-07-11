@@ -10,6 +10,9 @@ from apps.shared.db.models.llm import LLMCredential
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.session import get_db
+from apps.shared.services.permission_audit import (
+    build_resource_permission_denied_metadata,
+)
 from apps.shared.services.permissions import (
     get_effective_llm_credential_auth_state,
     get_effective_workflow_auth_state,
@@ -25,6 +28,7 @@ def record_permission_denied(
     resource_id: Any,
     action: str,
     effective_auth_state: str,
+    organization_id: Any,
 ) -> None:
     record_audit(
         action=AuditAction.PERMISSION_DENIED,
@@ -34,19 +38,18 @@ def record_permission_denied(
         target_type=resource_type,
         target_id=resource_id,
         status="failure",
-        metadata={
-            "policy_result": "deny",
-            "resource_type": resource_type,
-            "resource_id": str(resource_id),
-            "required_permission": action,
-            "permission_action": action,
-            "effective_auth_state": effective_auth_state,
-        },
+        metadata=build_resource_permission_denied_metadata(
+            resource_type=resource_type,
+            resource_id=resource_id,
+            action=action,
+            effective_auth_state=effective_auth_state,
+            organization_id=organization_id,
+        ),
     )
 
 
-def _permission_denied_exception() -> HTTPException:
-    exc = HTTPException(status_code=403, detail="Forbidden")
+def recorded_permission_denied_exception(detail: Any = "Forbidden") -> HTTPException:
+    exc = HTTPException(status_code=403, detail=detail)
     setattr(exc, "audit_recorded", True)
     return exc
 
@@ -85,8 +88,9 @@ def ensure_workflow_permission(
             workflow.id,
             action,
             effective_auth_state,
+            workflow.organization_id,
         )
-        raise _permission_denied_exception()
+        raise recorded_permission_denied_exception()
     return workflow
 
 
@@ -126,8 +130,9 @@ def ensure_llm_credential_permission(
             credential.id,
             action,
             effective_auth_state,
+            credential.organization_id,
         )
-        raise _permission_denied_exception()
+        raise recorded_permission_denied_exception()
     return credential
 
 

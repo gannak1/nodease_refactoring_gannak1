@@ -86,6 +86,7 @@ def _ensure_organization_manager(
         organization_id,
         "manage",
         AUTH_STATE_NONE,
+        organization_id,
     )
     raise HTTPException(
         status_code=403,
@@ -225,6 +226,7 @@ def _ensure_resource_permission_manager(
         resource_id,
         "manage",
         effective_auth_state,
+        organization_id,
     )
     raise HTTPException(status_code=403, detail="Forbidden")
 

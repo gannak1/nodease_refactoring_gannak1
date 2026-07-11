@@ -878,7 +878,7 @@ def test_manager_gate_hides_or_forbids_non_manager(monkeypatch, scope_access, ex
         lambda *args: scope_access,
     )
     monkeypatch.setattr(
-        "apps.gateway.services.organization_member_service.record_audit",
+        "apps.shared.services.permission_audit.record_audit",
         lambda **event: events.append(event),
     )
 
@@ -910,24 +910,14 @@ def test_manager_gate_hides_or_forbids_non_manager(monkeypatch, scope_access, ex
                 "target_id": org.id,
                 "status": "failure",
                 "metadata": {
-                    "ip": "127.0.0.1",
-                    "method": "GET",
-                    "path": f"/api/v1/organizations/{org.id}/members",
-                    "user_agent": "test-agent",
                     "request_id": "req-test",
-                    "actor": {
-                        "id": str(user.id),
-                        "email": user.email,
-                        "name": user.name,
-                    },
+                    "organization_id": str(org.id),
                     "policy_result": "deny",
                     "resource_type": "organization",
                     "resource_id": str(org.id),
-                    "required_permission": ORGANIZATION_AUTH_MANAGER,
+                    "required_permission": "manage_members",
                     "permission_action": "manage_members",
                     "effective_auth_state": ORGANIZATION_AUTH_MEMBER,
-                    "status_code": 403,
-                    "detail": "Organization manager permission is required.",
                 },
             }
         ]

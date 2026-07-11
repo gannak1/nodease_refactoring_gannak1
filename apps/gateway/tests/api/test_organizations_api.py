@@ -982,6 +982,48 @@ class TestOrganizationsApi(unittest.TestCase):
             _error("permission.denied", "Permission denied."),
         )
 
+    def test_patch_organization_non_manager_records_scoped_permission_denial(self):
+        organization_id = uuid4()
+        user_id = uuid4()
+        organization = _organization(id=organization_id, name="Acme")
+        events = []
+
+        app.dependency_overrides[get_db] = lambda: _Session(
+            [organization],
+            users=[_user(user_id)],
+            memberships=[_membership(user_id, organization_id)],
+        )
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with patch(
+            "apps.shared.services.permission_audit.record_audit",
+            side_effect=lambda **event: events.append(event),
+        ), patch("apps.gateway.main.record_audit") as global_record_audit:
+            response = TestClient(app).patch(
+                f"/api/v1/organizations/{organization_id}",
+                headers={
+                    "X-Organization-Id": str(organization_id),
+                    "X-Request-ID": "req-test",
+                },
+                json={"name": "Acme Korea"},
+            )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event["action"], "permission.denied")
+        self.assertEqual(event["actor_id"], user_id)
+        self.assertEqual(event["actor_type"], "user")
+        self.assertEqual(event["category"], "action")
+        self.assertEqual(event["status"], "failure")
+        self.assertEqual(event["target_type"], "organization")
+        self.assertEqual(event["target_id"], organization_id)
+        self.assertEqual(
+            event["metadata"]["organization_id"],
+            str(organization_id),
+        )
+        global_record_audit.assert_not_called()
+
     def test_patch_organization_hides_missing_or_out_of_scope_organization(self):
         organization_id = uuid4()
         user_id = uuid4()
@@ -989,20 +1031,24 @@ class TestOrganizationsApi(unittest.TestCase):
         app.dependency_overrides[get_db] = lambda: _Session([])
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
-        response = TestClient(app).patch(
-            f"/api/v1/organizations/{organization_id}",
-            headers={
-                "X-Organization-Id": str(organization_id),
-                "X-Request-ID": "req-test",
-            },
-            json={"name": "Acme Korea"},
-        )
+        with patch(
+            "apps.shared.services.permission_audit.record_audit"
+        ) as scoped_record_audit:
+            response = TestClient(app).patch(
+                f"/api/v1/organizations/{organization_id}",
+                headers={
+                    "X-Organization-Id": str(organization_id),
+                    "X-Request-ID": "req-test",
+                },
+                json={"name": "Acme Korea"},
+            )
 
         self.assertEqual(response.status_code, 404)
         self.assertEqual(
             response.json(),
             _error("resource.not_found", "Organization not found."),
         )
+        scoped_record_audit.assert_not_called()
 
     def test_patch_organization_hides_different_organization_from_query(self):
         organization_id = uuid4()

@@ -6,6 +6,30 @@ from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.logger import record_audit
 
 
+def build_resource_permission_denied_metadata(
+    *,
+    resource_type: str,
+    resource_id: Any,
+    action: str,
+    effective_auth_state: str,
+    organization_id: Any = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    audit_metadata: dict[str, Any] = {
+        "policy_result": "deny",
+        "resource_type": resource_type,
+        "resource_id": str(resource_id),
+        "required_permission": action,
+        "permission_action": action,
+        "effective_auth_state": effective_auth_state,
+    }
+    if metadata:
+        audit_metadata.update(metadata)
+    if organization_id is not None:
+        audit_metadata["organization_id"] = str(organization_id)
+    return audit_metadata
+
+
 def _record_resource_permission_denied(
     *,
     actor_id: Any,
@@ -19,19 +43,6 @@ def _record_resource_permission_denied(
 ) -> None:
     """Resource permission 거부를 audit_logs.permission.denied로 기록한다."""
 
-    audit_metadata: dict[str, Any] = {
-        "policy_result": "deny",
-        "resource_type": resource_type,
-        "resource_id": str(resource_id),
-        "required_permission": action,
-        "permission_action": action,
-        "effective_auth_state": effective_auth_state,
-    }
-    if organization_id is not None:
-        audit_metadata["organization_id"] = str(organization_id)
-    if metadata:
-        audit_metadata.update(metadata)
-
     record_audit(
         action=AuditAction.PERMISSION_DENIED,
         category="action",
@@ -40,7 +51,14 @@ def _record_resource_permission_denied(
         target_type=resource_type,
         target_id=resource_id,
         status="failure",
-        metadata=audit_metadata,
+        metadata=build_resource_permission_denied_metadata(
+            resource_type=resource_type,
+            resource_id=resource_id,
+            action=action,
+            effective_auth_state=effective_auth_state,
+            organization_id=organization_id,
+            metadata=metadata,
+        ),
     )
 
 

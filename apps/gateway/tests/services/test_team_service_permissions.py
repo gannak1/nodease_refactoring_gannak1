@@ -231,6 +231,7 @@ def test_grant_rejects_cross_organization_resource_before_authorization(monkeypa
             )
         ]
     )
+    denied = []
 
     monkeypatch.setattr(
         team_service,
@@ -238,6 +239,11 @@ def test_grant_rejects_cross_organization_resource_before_authorization(monkeypa
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("authorization must not run across organizations")
         ),
+    )
+    monkeypatch.setattr(
+        team_service,
+        "record_permission_denied",
+        lambda *args, **kwargs: denied.append((args, kwargs)),
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -257,6 +263,7 @@ def test_grant_rejects_cross_organization_resource_before_authorization(monkeypa
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail == "Resource organization mismatch"
     assert db.committed is False
+    assert denied == []
 
 
 def test_resource_permission_manager_denial_is_fail_closed_and_audited(monkeypatch):
@@ -302,7 +309,9 @@ def test_resource_permission_manager_denial_is_fail_closed_and_audited(monkeypat
 
     assert exc_info.value.status_code == 403
     assert exc_info.value.detail == "Forbidden"
-    assert denied == [(user, "workflow", workflow_id, "manage", "viewer")]
+    assert denied == [
+        (user, "workflow", workflow_id, "manage", "viewer", organization_id)
+    ]
     assert db.committed is False
 
 
@@ -473,7 +482,16 @@ def test_team_create_still_requires_organization_manager(monkeypatch):
         )
 
     assert exc_info.value.status_code == 403
-    assert denied[0][1] == "organization"
+    assert denied == [
+        (
+            user,
+            "organization",
+            organization_id,
+            "manage",
+            "none",
+            organization_id,
+        )
+    ]
 
 
 def test_team_update_rejects_managed_by_outside_organization():

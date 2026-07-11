@@ -1,10 +1,12 @@
+import asyncio
 import unittest
 from unittest.mock import MagicMock, patch
 
+from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 
 from apps.gateway.api.v1.endpoints.webhook import CAPTURE_SESSIONS
-from apps.gateway.main import app
+from apps.gateway.main import app, audit_permission_denied
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.session import get_db
 
@@ -61,6 +63,28 @@ class TestPermissionDeniedAudit(unittest.TestCase):
         self.assertEqual(event["metadata"]["path"], "/api/v1/hooks/test-slug")
         self.assertEqual(event["metadata"]["status_code"], 403)
         self.assertEqual(event["metadata"]["request_id"], "req-test")
+
+    def test_already_recorded_permission_denial_skips_global_auth_audit(self):
+        request = Request(
+            {
+                "type": "http",
+                "method": "PATCH",
+                "path": "/api/v1/organizations/example",
+                "headers": [],
+                "query_string": b"",
+                "server": ("testserver", 80),
+                "client": ("testclient", 50000),
+                "scheme": "http",
+            }
+        )
+        exc = HTTPException(status_code=403, detail="Forbidden")
+        setattr(exc, "audit_recorded", True)
+
+        with patch("apps.gateway.main.record_audit") as record_audit:
+            response = asyncio.run(audit_permission_denied(request, exc))
+
+        self.assertEqual(response.status_code, 403)
+        record_audit.assert_not_called()
 
 
 if __name__ == "__main__":

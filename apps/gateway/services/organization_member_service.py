@@ -10,7 +10,6 @@ from apps.gateway.adapters.db.access_management_locking import (
 )
 from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.context import get_current_metadata
-from apps.shared.audit.logger import record_audit
 from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.organization_membership import (
@@ -38,6 +37,7 @@ from apps.shared.schemas.organization_membership import (
     OrganizationSummaryResponse,
     RevokedUserPermissionCounts,
 )
+from apps.shared.services.permission_audit import record_resource_permission_denied
 from apps.shared.services.permissions import (
     has_organization_manager_permission,
     has_organization_scope_access,
@@ -124,25 +124,16 @@ def _ensure_manager(db: Session, current_user: User, organization_id: Any) -> No
     if not has_organization_scope_access(db, current_user.id, organization_id):
         raise HTTPException(status_code=404, detail="Organization not found.")
     detail = "Organization manager permission is required."
-    record_audit(
-        action=AuditAction.PERMISSION_DENIED,
-        category="action",
-        actor_id=current_user.id,
-        actor_type="user",
-        target_type="organization",
-        target_id=organization_id,
-        status="failure",
+    request_id = get_current_metadata().get("request_id")
+    record_resource_permission_denied(
+        user_id=current_user.id,
+        resource_type="organization",
+        resource_id=organization_id,
+        action="manage_members",
+        effective_auth_state=ORGANIZATION_AUTH_MEMBER,
+        organization_id=organization_id,
         metadata={
-            **get_current_metadata(),
-            "actor": _actor_snapshot(current_user),
-            "policy_result": "deny",
-            "resource_type": "organization",
-            "resource_id": str(organization_id),
-            "required_permission": ORGANIZATION_AUTH_MANAGER,
-            "permission_action": "manage_members",
-            "effective_auth_state": ORGANIZATION_AUTH_MEMBER,
-            "status_code": 403,
-            "detail": detail,
+            "request_id": request_id,
         },
     )
     exc = HTTPException(
