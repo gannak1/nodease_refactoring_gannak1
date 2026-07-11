@@ -462,6 +462,8 @@ class TestModelRoutingPolicyApi:
         workflow_id = uuid4()
         user_id = uuid4()
         baseline_id = uuid4()
+        experiment_id = uuid4()
+        candidate_id = uuid4()
         db = MagicMock()
         denied = HTTPException(status_code=403, detail="permission.denied")
         setattr(denied, "audit_recorded", True)
@@ -490,6 +492,12 @@ class TestModelRoutingPolicyApi:
                 "GET",
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
                 f"/cost-optimizer/experiments?baseline_id={baseline_id}",
+                None,
+            ),
+            (
+                "GET",
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
+                f"/cost-optimizer/experiments/{experiment_id}/candidates/{candidate_id}",
                 None,
             ),
             (
@@ -2152,7 +2160,7 @@ class TestCostOptimizerCompareApi:
         assert response.status_code == 400
         assert response.json()["detail"] == "cost_optimizer.baseline_input_unavailable"
 
-    def test_fr6_compare_response_includes_diff_and_safe_candidate_trace(self):
+    def test_fr6_fr13_compare_response_includes_diff_trace_and_quality_evaluation(self):
         workflow_id = uuid4()
         organization_id = uuid4()
         app_id = uuid4()
@@ -2183,6 +2191,23 @@ class TestCostOptimizerCompareApi:
         )
         baseline["input"] = {"message": "baseline input only"}
         baseline["output"] = {"text": "baseline output"}
+        quality_evaluation = {
+            "status": "completed",
+            "baseline": {"score": 86},
+            "candidate": {"score": 82},
+            "delta": -4,
+            "dimensions": {
+                "clarity_consistency": {
+                    "baseline": 86,
+                    "candidate": 82,
+                    "delta": -4,
+                }
+            },
+            "confidence": "medium",
+            "safe_summary": "후보 출력의 품질 점수가 기준 출력보다 낮게 평가되었습니다.",
+            "judge_cost": 0.00008,
+            "judge_usage_log_id": str(uuid4()),
+        }
 
         class FakeTask:
             def get(self, timeout):
@@ -2239,6 +2264,11 @@ class TestCostOptimizerCompareApi:
                 "apps.gateway.api.v1.endpoints.workflow.celery_app.send_task",
                 return_value=FakeTask(),
             ),
+            patch.object(
+                workflow_endpoint.CostOptimizerOutputQualityService,
+                "evaluate",
+                return_value=quality_evaluation,
+            ) as evaluate_quality,
         ):
             response = self.client.post(
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
@@ -2271,6 +2301,17 @@ class TestCostOptimizerCompareApi:
             "token_delta": -180,
             "latency_delta_ms": -600,
         }
+        assert payload["quality_evaluation"] == quality_evaluation
+        evaluate_quality.assert_called_once()
+        quality_call = evaluate_quality.call_args.kwargs
+        assert quality_call["baseline"] == baseline
+        assert quality_call["candidate_result"]["input"] == baseline["input"]
+        quality_candidate_output = quality_call["candidate_result"]["output"]
+        assert quality_candidate_output["text"] == "candidate output"
+        assert "api_key" not in str(quality_candidate_output)
+        assert quality_call["candidate_row"].diff_summary["quality_evaluation"] == (
+            quality_evaluation
+        )
         serialized = response.text
         assert "must-not-leak" not in serialized
         assert "api_key" not in serialized
@@ -2305,6 +2346,17 @@ class TestCostOptimizerCompareApi:
             compare_available=True,
         )
         baseline["input"] = {"message": "baseline input only"}
+        quality_unavailable = {
+            "status": "unavailable",
+            "baseline": {"score": None},
+            "candidate": {"score": None},
+            "delta": None,
+            "dimensions": {},
+            "confidence": "unavailable",
+            "safe_summary": "품질 평가를 완료하지 못했습니다.",
+            "judge_cost": 0.00008,
+            "judge_usage_log_id": str(uuid4()),
+        }
 
         class FakeTask:
             def get(self, timeout):
@@ -2347,6 +2399,11 @@ class TestCostOptimizerCompareApi:
                 "apps.gateway.api.v1.endpoints.workflow.celery_app.send_task",
                 return_value=FakeTask(),
             ),
+            patch.object(
+                workflow_endpoint.CostOptimizerOutputQualityService,
+                "evaluate",
+                return_value=quality_unavailable,
+            ) as evaluate_quality,
         ):
             response = self.client.post(
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
@@ -2375,7 +2432,8 @@ class TestCostOptimizerCompareApi:
             )
 
         assert response.status_code == 200
-        candidate = response.json()["candidate"]
+        payload = response.json()
+        candidate = payload["candidate"]
         assert candidate["status"] == "schema_failed"
         assert candidate["usage"]["total_tokens"] == 240
         assert candidate["usage"]["cost"] == 0.0006
@@ -2383,6 +2441,8 @@ class TestCostOptimizerCompareApi:
         assert candidate["schema_validation"]["errors"] == [
             "approvalRequired must be boolean"
         ]
+        assert payload["quality_evaluation"] == quality_unavailable
+        evaluate_quality.assert_called_once()
 
     def test_fr9_rag_summary_safe_value_has_bounded_size_and_redaction(self):
         summary = {
@@ -2793,6 +2853,10 @@ class TestCostOptimizerCompareApi:
                 "apps.gateway.api.v1.endpoints.workflow.celery_app.send_task",
                 return_value=FailingTask(),
             ),
+            patch.object(
+                workflow_endpoint.CostOptimizerOutputQualityService,
+                "evaluate",
+            ) as evaluate_quality,
         ):
             response = self.client.post(
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
@@ -2814,8 +2878,14 @@ class TestCostOptimizerCompareApi:
         payload = response.json()
         assert payload["baseline"]["baseline_id"] == str(baseline_id)
         assert payload["candidate"]["status"] == "failed"
+
         assert payload["candidate"]["error_message"] == "workflow.execution_failed"
         assert payload["candidate"]["error_detail"] is None
+        assert payload["quality_evaluation"]["status"] == "unavailable"
+        assert payload["quality_evaluation"]["baseline"]["score"] is None
+        assert payload["quality_evaluation"]["candidate"]["score"] is None
+        evaluate_quality.assert_not_called()
+
         experiment = next(
             item for item in added if isinstance(item, CostOptimizerExperiment)
         )
@@ -3894,6 +3964,37 @@ class TestCostOptimizerExperimentHistoryApi:
             latency_ms=1200,
             schema_status="pass",
             downstream_state="compatible",
+            usage_summary={"quality_judge_cost": 0.00008},
+            diff_summary={
+                "quality_evaluation": {
+                    "status": "completed",
+                    "baseline": {"score": 86},
+                    "candidate": {"score": 82},
+                    "delta": -4,
+                    "dimensions": {},
+                    "confidence": "medium",
+                    "safe_summary": "후보 출력의 품질 점수가 기준 출력보다 낮게 평가되었습니다.",
+                    "judge_cost": 0.00008,
+                    "judge_usage_log_id": "internal-usage-log-id",
+                }
+            },
+            is_applied=False,
+            created_at=created_at,
+        )
+        failed_candidate = SimpleNamespace(
+            id=uuid4(),
+            name="실패 후보",
+            status="schema_failed",
+            model_id="gpt-4.1-mini",
+            fallback_model_id=None,
+            task_type="generate",
+            total_cost=0.0004,
+            total_tokens=200,
+            latency_ms=1100,
+            schema_status="failed",
+            downstream_state="incompatible",
+            usage_summary={},
+            diff_summary={},
             is_applied=False,
             created_at=created_at,
         )
@@ -3908,7 +4009,7 @@ class TestCostOptimizerExperimentHistoryApi:
             created_by=user_id,
             created_at=created_at,
             usage_summary={"total_tokens": 240, "cost": 0.0006},
-            candidates=[candidate],
+            candidates=[candidate, failed_candidate],
         )
 
         class FakeQuery:
@@ -3954,6 +4055,7 @@ class TestCostOptimizerExperimentHistoryApi:
             response = self.client.get(
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
                 f"/cost-optimizer/experiments?baseline_id={baseline_id}"
+                "&candidate_status=success"
             )
 
         assert response.status_code == 200
@@ -3964,6 +4066,7 @@ class TestCostOptimizerExperimentHistoryApi:
         assert payload["total"] == 1
         assert payload["items"][0]["experiment_id"] == str(experiment_id)
         assert payload["items"][0]["baseline_node_run_id"] == str(baseline_id)
+        assert len(payload["items"][0]["candidates"]) == 1
         assert payload["items"][0]["candidates"][0] == {
             "candidate_id": str(candidate_id),
             "name": "비용 절감 후보",
@@ -3976,9 +4079,183 @@ class TestCostOptimizerExperimentHistoryApi:
             "latency_ms": 1200,
             "schema_status": "pass",
             "downstream_state": "compatible",
+            "quality_evaluation": {
+                "status": "completed",
+                "baseline": {"score": 86},
+                "candidate": {"score": 82},
+                "delta": -4,
+                "dimensions": {},
+                "confidence": "medium",
+                "safe_summary": "후보 출력의 품질 점수가 기준 출력보다 낮게 평가되었습니다.",
+                "judge_cost": 0.00008,
+            },
             "is_applied": False,
             "created_at": "2026-07-05T01:30:00+00:00",
         }
+
+    def test_fr13_gets_exact_experiment_candidate_for_detail_deep_link(self):
+        workflow_id = uuid4()
+        organization_id = uuid4()
+        user_id = uuid4()
+        experiment_id = uuid4()
+        candidate_id = uuid4()
+        db = MagicMock()
+        workflow = _workflow_with_nodes(
+            workflow_id,
+            organization_id,
+            [
+                {
+                    "id": "llm-triage",
+                    "type": "llmNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {"model_id": "gpt-4.1"},
+                }
+            ],
+        )
+        detail = {
+            "experiment_id": str(experiment_id),
+            "workflow_id": str(workflow_id),
+            "node_id": "llm-triage",
+            "baseline_summary": {"baseline_id": str(uuid4())},
+            "candidate": {
+                "candidate_id": str(candidate_id),
+                "status": "schema_failed",
+            },
+        }
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with (
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+                return_value=workflow,
+            ) as ensure_builder,
+            patch.object(
+                workflow_endpoint,
+                "get_cost_optimizer_experiment_candidate",
+                return_value=detail,
+            ) as get_detail,
+        ):
+            response = self.client.get(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
+                f"/cost-optimizer/experiments/{experiment_id}/candidates/{candidate_id}"
+            )
+
+        assert response.status_code == 200
+        assert response.json() == detail
+        ensure_builder.assert_called_once_with(
+            db, SimpleNamespace(id=user_id), str(workflow_id), "write"
+        )
+        get_detail.assert_called_once_with(
+            db,
+            workflow,
+            "llm-triage",
+            str(experiment_id),
+            str(candidate_id),
+        )
+
+    def test_fr13_detail_helper_returns_only_requested_candidate(self):
+        workflow_id = uuid4()
+        organization_id = uuid4()
+        experiment_id = uuid4()
+        candidate_id = uuid4()
+        other_candidate_id = uuid4()
+        created_at = datetime(2026, 7, 5, 1, 30, tzinfo=timezone.utc)
+        workflow = SimpleNamespace(
+            id=workflow_id,
+            organization_id=organization_id,
+        )
+
+        def candidate(candidate_row_id, status):
+            return SimpleNamespace(
+                id=candidate_row_id,
+                name="상세 후보",
+                status=status,
+                model_id="gpt-4.1-mini",
+                fallback_model_id=None,
+                task_type="generate",
+                total_cost=0.0006,
+                total_tokens=240,
+                latency_ms=1200,
+                schema_status="failed" if status == "schema_failed" else "pass",
+                downstream_state="incompatible",
+                usage_summary={},
+                diff_summary={},
+                candidate_node_run_id=None,
+                candidate_workflow_run_id=None,
+                is_applied=False,
+                created_at=created_at,
+            )
+
+        experiment = SimpleNamespace(
+            id=experiment_id,
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            app_id=None,
+            node_id="llm-triage",
+            baseline_node_run_id=uuid4(),
+            baseline_workflow_run_id=uuid4(),
+            baseline_usage_summary={
+                "model": "gpt-4.1",
+                "cost": 0.001,
+                "prompt_tokens": 100,
+                "completion_tokens": 50,
+                "total_tokens": 150,
+                "latency_ms": 1000,
+            },
+            baseline_node_options={},
+            status="completed",
+            created_by=uuid4(),
+            created_at=created_at,
+            usage_summary={},
+            candidates=[
+                candidate(other_candidate_id, "success"),
+                candidate(candidate_id, "schema_failed"),
+            ],
+        )
+        db = MagicMock()
+        _configure_cost_optimizer_experiment_query(db, experiment)
+
+        result = workflow_endpoint.get_cost_optimizer_experiment_candidate(
+            db,
+            workflow,
+            "llm-triage",
+            str(experiment_id),
+            str(candidate_id),
+        )
+
+        assert result["experiment_id"] == str(experiment_id)
+        assert result["candidate"]["candidate_id"] == str(candidate_id)
+        assert result["candidate"]["status"] == "schema_failed"
+        assert "candidates" not in result
+
+    def test_fr13_detail_helper_rejects_candidate_outside_experiment(self):
+        workflow_id = uuid4()
+        organization_id = uuid4()
+        experiment_id = uuid4()
+        candidate_id = uuid4()
+        workflow = SimpleNamespace(
+            id=workflow_id,
+            organization_id=organization_id,
+        )
+        experiment = SimpleNamespace(
+            id=experiment_id,
+            candidates=[SimpleNamespace(id=uuid4())],
+        )
+        db = MagicMock()
+        _configure_cost_optimizer_experiment_query(db, experiment)
+
+        with pytest.raises(HTTPException) as exc_info:
+            workflow_endpoint.get_cost_optimizer_experiment_candidate(
+                db,
+                workflow,
+                "llm-triage",
+                str(experiment_id),
+                str(candidate_id),
+            )
+
+        assert exc_info.value.status_code == 404
+        assert exc_info.value.detail == "resource.not_found"
 
 
 class TestCostOptimizerBaselineHelpers:

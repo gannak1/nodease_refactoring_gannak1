@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import math
 import secrets
 import time
 from typing import Any
 
 from apps.gateway.services.llm_service import LLMService
+from apps.shared.services.tracing.policy import TracePolicyService
+from apps.shared.services.tracing.redaction import TraceRedactionService
 
 
 class CostOptimizerOutputQualityService:
@@ -22,6 +25,14 @@ class CostOptimizerOutputQualityService:
         "instruction_fulfillment",
         "relevance_completeness",
         "clarity_consistency",
+    )
+    JUDGE_OMITTED_FIELDS = frozenset(
+        {
+            "metadata",
+            "rawchunkcontent",
+            "rawpayload",
+            "usage",
+        }
     )
 
     @classmethod
@@ -61,19 +72,21 @@ class CostOptimizerOutputQualityService:
             if not selected_model_id or client is None:
                 return cls._unavailable("품질 평가에 사용할 수 있는 LLM credential/model이 없습니다.")
             order = pair_order or cls._pair_order(baseline, candidate_result)
+            expected_dimensions = cls._expected_dimensions(
+                baseline,
+                candidate_result,
+            )
             messages = cls._build_messages(
                 baseline=baseline,
                 candidate_result=candidate_result,
                 pair_order=order,
+                dimensions=expected_dimensions,
             )
             started = time.perf_counter()
             response = client.invoke_sync(messages, temperature=0.0, max_tokens=700)
             latency_ms = int((time.perf_counter() - started) * 1000)
             usage = cls._usage_from_response(response)
             usage["latency_ms"] = latency_ms
-            parsed = cls._parse_response(cls._content_from_response(response))
-            quality = cls._normalize_result(parsed, pair_order=order)
-
             cost = LLMService.calculate_cost(
                 db,
                 selected_model_id,
@@ -91,20 +104,21 @@ class CostOptimizerOutputQualityService:
                 node_id=f"{node_id}:quality-judge",
                 cost_optimizer_candidate_id=getattr(candidate_row, "id", None),
             )
+            try:
+                parsed = cls._parse_response(cls._content_from_response(response))
+                quality = cls._normalize_result(
+                    parsed,
+                    pair_order=order,
+                    expected_dimensions=expected_dimensions,
+                )
+            except Exception:
+                quality = cls._unavailable("품질 평가 응답을 해석하지 못했습니다.")
+
             quality["judge_cost"] = float(cost) if cost is not None else None
             quality["judge_usage_log_id"] = (
                 str(usage_log.id) if usage_log is not None else None
             )
-            quality["judge"] = {
-                "role": "quality_judge",
-                "model_id": selected_model_id,
-                "prompt_version": cls.PROMPT_VERSION,
-                "usage": {
-                    "prompt_tokens": int(usage.get("prompt_tokens") or 0),
-                    "completion_tokens": int(usage.get("completion_tokens") or 0),
-                    "total_tokens": int(usage.get("total_tokens") or 0),
-                },
-            }
+            quality["judge"] = cls._judge_summary(selected_model_id, usage)
             return quality
         except Exception:
             # provider/credential 오류의 원문을 response, audit, 일반 trace에 전파하지 않는다.
@@ -121,6 +135,23 @@ class CostOptimizerOutputQualityService:
         if not chat_models:
             return None
         return str(getattr(chat_models[0], "model_id_for_api_call", "") or "") or None
+
+    @classmethod
+    def _judge_summary(
+        cls,
+        model_id: str,
+        usage: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "role": "quality_judge",
+            "model_id": model_id,
+            "prompt_version": cls.PROMPT_VERSION,
+            "usage": {
+                "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+                "completion_tokens": int(usage.get("completion_tokens") or 0),
+                "total_tokens": int(usage.get("total_tokens") or 0),
+            },
+        }
 
     @classmethod
     def _select_judge_runtime(
@@ -159,6 +190,7 @@ class CostOptimizerOutputQualityService:
         baseline: dict[str, Any],
         candidate_result: dict[str, Any],
         pair_order: str,
+        dimensions: tuple[str, ...],
     ) -> list[dict[str, str]]:
         baseline_variant = cls._variant_from_result(baseline)
         candidate_variant = cls._variant_from_result(candidate_result)
@@ -167,13 +199,9 @@ class CostOptimizerOutputQualityService:
             if pair_order == "baseline_left"
             else (candidate_variant, baseline_variant)
         )
-        dimensions = list(cls.BASE_DIMENSIONS)
-        if left.get("rag_enabled") or right.get("rag_enabled"):
-            dimensions.append("groundedness")
-
         payload = {
             "task": "Evaluate two anonymized LLM outputs for the same input.",
-            "dimensions": dimensions,
+            "dimensions": list(dimensions),
             "scoring": "Score each dimension from 0 to 100. Do not assume either variant is correct.",
             "response_schema": {
                 "variant_left": {dimension: "0..100" for dimension in dimensions},
@@ -196,6 +224,24 @@ class CostOptimizerOutputQualityService:
         ]
 
     @classmethod
+    def _expected_dimensions(
+        cls,
+        baseline: dict[str, Any],
+        candidate_result: dict[str, Any],
+    ) -> tuple[str, ...]:
+        dimensions = list(cls.BASE_DIMENSIONS)
+        if cls._rag_enabled(baseline) or cls._rag_enabled(candidate_result):
+            dimensions.append("groundedness")
+        return tuple(dimensions)
+
+    @staticmethod
+    def _rag_enabled(result: dict[str, Any]) -> bool:
+        trace = result.get("trace") if isinstance(result, dict) else None
+        if not isinstance(trace, dict):
+            return False
+        return bool(trace.get("rag_summary"))
+
+    @classmethod
     def _variant_from_result(cls, result: dict[str, Any]) -> dict[str, Any]:
         output = result.get("output") if isinstance(result, dict) else {}
         output = output if isinstance(output, dict) else {"text": output}
@@ -203,26 +249,84 @@ class CostOptimizerOutputQualityService:
         trace = trace if isinstance(trace, dict) else {}
         rag_summary = trace.get("rag_summary")
         return {
-            "input": cls._bounded_value(result.get("input") if isinstance(result, dict) else None),
-            "output": cls._bounded_value(output),
+            "input": cls._judge_visible_value(
+                result.get("input") if isinstance(result, dict) else None
+            ),
+            "output": cls._judge_visible_value(output),
             "rag_enabled": bool(rag_summary),
             "rag_summary": cls._safe_rag_summary(rag_summary),
         }
 
+    @classmethod
+    def _judge_visible_value(cls, value: Any) -> Any:
+        """Judge 입력에서 내부 메타데이터를 제거하고 공통 redaction을 적용한다."""
+        bounded = cls._bounded_value(value)
+        stripped = cls._strip_judge_internal_fields(bounded)
+        redaction = TraceRedactionService.redact_payload(
+            stripped,
+            TracePolicyService.fail_closed_redaction_policy(),
+            payload_kind="cost_optimizer_quality_judge",
+        )
+        if redaction.failed:
+            raise ValueError("cost_optimizer.quality_judge_redaction_failed")
+        return cls._bounded_value(redaction.redacted_payload)
+
+    @classmethod
+    def _strip_judge_internal_fields(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                str(key): cls._strip_judge_internal_fields(item)
+                for key, item in value.items()
+                if cls._normalized_judge_field(key) not in cls.JUDGE_OMITTED_FIELDS
+            }
+        if isinstance(value, list):
+            return [cls._strip_judge_internal_fields(item) for item in value]
+        return value
+
     @staticmethod
-    def _bounded_value(value: Any, *, max_chars: int = 12000) -> Any:
+    def _normalized_judge_field(value: Any) -> str:
+        return "".join(
+            character for character in str(value).lower() if character.isalnum()
+        )
+
+    @staticmethod
+    def _bounded_value(
+        value: Any,
+        *,
+        max_chars: int = 12000,
+        max_items: int = 50,
+        depth: int = 5,
+    ) -> Any:
+        if depth <= 0:
+            return "[TRUNCATED]"
         if isinstance(value, str):
             return value[:max_chars]
         if isinstance(value, dict):
-            return {
-                str(key): CostOptimizerOutputQualityService._bounded_value(item, max_chars=max_chars)
-                for key, item in value.items()
-            }
+            bounded: dict[str, Any] = {}
+            for index, (key, item) in enumerate(value.items()):
+                if index >= max_items:
+                    bounded["__truncated__"] = True
+                    break
+                bounded[str(key)] = CostOptimizerOutputQualityService._bounded_value(
+                    item,
+                    max_chars=max_chars,
+                    max_items=max_items,
+                    depth=depth - 1,
+                )
+            return bounded
         if isinstance(value, list):
-            return [
-                CostOptimizerOutputQualityService._bounded_value(item, max_chars=max_chars)
-                for item in value[:20]
+            bounded = [
+                CostOptimizerOutputQualityService._bounded_value(
+                    item,
+                    max_chars=max_chars,
+                    max_items=max_items,
+                    depth=depth - 1,
+                )
+                for item in value[:max_items]
             ]
+            if len(value) > max_items:
+                bounded.append("[TRUNCATED]")
+            return bounded
         return value
 
     @staticmethod
@@ -280,9 +384,19 @@ class CostOptimizerOutputQualityService:
         parsed: dict[str, Any],
         *,
         pair_order: str,
+        expected_dimensions: tuple[str, ...],
     ) -> dict[str, Any]:
-        left = cls._dimension_scores(parsed.get("variant_left"))
-        right = cls._dimension_scores(parsed.get("variant_right"))
+        raw_left = cls._dimension_scores(parsed.get("variant_left"))
+        raw_right = cls._dimension_scores(parsed.get("variant_right"))
+        missing_dimensions = [
+            dimension
+            for dimension in expected_dimensions
+            if dimension not in raw_left or dimension not in raw_right
+        ]
+        if missing_dimensions:
+            raise ValueError("judge response is missing required dimensions")
+        left = {dimension: raw_left[dimension] for dimension in expected_dimensions}
+        right = {dimension: raw_right[dimension] for dimension in expected_dimensions}
         baseline_dimensions, candidate_dimensions = (
             (left, right) if pair_order == "baseline_left" else (right, left)
         )
@@ -299,6 +413,8 @@ class CostOptimizerOutputQualityService:
         baseline_score = cls._average(baseline_dimensions.values())
         candidate_score = cls._average(candidate_dimensions.values())
         confidence_score = cls._score(parsed.get("confidence"), lower=0, upper=1)
+        if confidence_score is None:
+            raise ValueError("judge response confidence is missing")
         return {
             "status": "completed",
             "baseline": {"score": baseline_score},
@@ -325,10 +441,15 @@ class CostOptimizerOutputQualityService:
 
     @staticmethod
     def _score(value: Any, *, lower: float, upper: float) -> float | None:
+        if isinstance(value, bool):
+            return None
         try:
-            return max(lower, min(upper, float(value)))
+            number = float(value)
         except (TypeError, ValueError):
             return None
+        if not math.isfinite(number) or number < lower or number > upper:
+            return None
+        return number
 
     @staticmethod
     def _average(values: Any) -> int | None:

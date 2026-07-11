@@ -2720,6 +2720,12 @@ def _cost_optimizer_candidate_summary(
         summary["prompt_tokens"] = int(prompt_tokens)
     if completion_tokens is not None:
         summary["completion_tokens"] = int(completion_tokens)
+    diff_summary = _cost_optimizer_dict(getattr(row, "diff_summary", None))
+    quality_evaluation = _cost_optimizer_quality_evaluation_summary(
+        diff_summary.get("quality_evaluation")
+    )
+    if quality_evaluation:
+        summary["quality_evaluation"] = quality_evaluation
     output_summary = _cost_optimizer_node_run_output_summary_from_source(
         db,
         node_run_id=getattr(row, "candidate_node_run_id", None),
@@ -2728,6 +2734,45 @@ def _cost_optimizer_candidate_summary(
     )
     if output_summary.get("output_available"):
         summary.update(output_summary)
+    return summary
+
+
+def _cost_optimizer_quality_evaluation_summary(value: Any) -> dict[str, Any]:
+    """실험 이력에 필요한 품질 평가 safe summary만 반환한다."""
+    evaluation = _cost_optimizer_dict(value)
+    if not evaluation:
+        return {}
+
+    summary = {
+        key: evaluation.get(key)
+        for key in (
+            "status",
+            "delta",
+            "confidence",
+            "confidence_score",
+            "safe_summary",
+            "judge_cost",
+        )
+        if key in evaluation
+    }
+    for variant in ("baseline", "candidate"):
+        variant_summary = _cost_optimizer_dict(evaluation.get(variant))
+        if "score" in variant_summary:
+            summary[variant] = {"score": variant_summary.get("score")}
+
+    dimensions = _cost_optimizer_dict(evaluation.get("dimensions"))
+    if "dimensions" in evaluation:
+        safe_dimensions: dict[str, Any] = {}
+        for name, raw_dimension in dimensions.items():
+            dimension = _cost_optimizer_dict(raw_dimension)
+            if not dimension:
+                continue
+            safe_dimensions[str(name)] = {
+                key: dimension.get(key)
+                for key in ("baseline", "candidate", "delta")
+                if key in dimension
+            }
+        summary["dimensions"] = safe_dimensions
     return summary
 
 
@@ -2838,8 +2883,17 @@ def _cost_optimizer_baseline_summary(db: Session, row: Any) -> dict[str, Any]:
     return summary
 
 
-def _cost_optimizer_experiment_summary(db: Session, row: Any) -> dict[str, Any]:
-    candidates = getattr(row, "candidates", None) or []
+def _cost_optimizer_experiment_summary(
+    db: Session,
+    row: Any,
+    *,
+    candidates: list[Any] | None = None,
+) -> dict[str, Any]:
+    summary_candidates = (
+        candidates
+        if candidates is not None
+        else list(getattr(row, "candidates", None) or [])
+    )
     return {
         "experiment_id": str(row.id),
         "workflow_id": str(row.workflow_id),
@@ -2858,9 +2912,34 @@ def _cost_optimizer_experiment_summary(db: Session, row: Any) -> dict[str, Any]:
         "usage_summary": getattr(row, "usage_summary", None) or {},
         "candidates": [
             _cost_optimizer_candidate_summary(db, candidate, row.node_id)
-            for candidate in candidates
+            for candidate in summary_candidates
         ],
     }
+
+
+def _cost_optimizer_candidate_matches_filters(
+    candidate: Any,
+    *,
+    candidate_status: str | None,
+    model: str | None,
+    is_applied: bool | None,
+    schema_status: str | None,
+    downstream_state: str | None,
+) -> bool:
+    """목록 query에 적용한 후보 조건을 experiment 내부 후보에도 동일하게 적용한다."""
+    return all(
+        (
+            candidate_status is None
+            or getattr(candidate, "status", None) == candidate_status,
+            model is None or getattr(candidate, "model_id", None) == model,
+            is_applied is None
+            or bool(getattr(candidate, "is_applied", False)) == is_applied,
+            schema_status is None
+            or getattr(candidate, "schema_status", None) == schema_status,
+            downstream_state is None
+            or getattr(candidate, "downstream_state", None) == downstream_state,
+        )
+    )
 
 
 def list_cost_optimizer_experiments(
@@ -2918,7 +2997,8 @@ def list_cost_optimizer_experiments(
         schema_status,
         downstream_state,
     ]
-    if any(candidate_filters):
+    has_candidate_filters = any(candidate_filters)
+    if has_candidate_filters:
         query = query.join(CostOptimizerCandidate).distinct()
         if candidate_status:
             query = query.filter(CostOptimizerCandidate.status == candidate_status)
@@ -2943,12 +3023,88 @@ def list_cost_optimizer_experiments(
         .limit(limit)
         .all()
     )
+    items = []
+    for row in rows:
+        matching_candidates = None
+        if has_candidate_filters:
+            matching_candidates = [
+                candidate
+                for candidate in list(getattr(row, "candidates", None) or [])
+                if _cost_optimizer_candidate_matches_filters(
+                    candidate,
+                    candidate_status=candidate_status,
+                    model=model,
+                    is_applied=is_applied,
+                    schema_status=schema_status,
+                    downstream_state=downstream_state,
+                )
+            ]
+        items.append(
+            _cost_optimizer_experiment_summary(
+                db,
+                row,
+                candidates=matching_candidates,
+            )
+        )
+
     return {
         "total": total,
         "limit": limit,
         "offset": offset,
-        "items": [_cost_optimizer_experiment_summary(db, row) for row in rows],
+        "items": items,
     }
+
+
+def get_cost_optimizer_experiment_candidate(
+    db: Session,
+    workflow: Workflow,
+    node_id: str,
+    experiment_id: str,
+    candidate_id: str,
+) -> dict[str, Any]:
+    """목록 pagination과 무관하게 실험 후보 한 건의 safe summary를 반환한다."""
+    experiment_uuid = _uuid_or_none(experiment_id)
+    candidate_uuid = _uuid_or_none(candidate_id)
+    if experiment_uuid is None or candidate_uuid is None:
+        raise HTTPException(status_code=404, detail="resource.not_found")
+
+    experiment = (
+        db.query(CostOptimizerExperiment)
+        .options(selectinload(CostOptimizerExperiment.candidates))
+        .filter(
+            CostOptimizerExperiment.id == experiment_uuid,
+            CostOptimizerExperiment.workflow_id == workflow.id,
+            CostOptimizerExperiment.node_id == node_id,
+            CostOptimizerExperiment.organization_id == workflow.organization_id,
+        )
+        .first()
+    )
+    if experiment is None:
+        raise HTTPException(status_code=404, detail="resource.not_found")
+
+    candidate = next(
+        (
+            row
+            for row in list(getattr(experiment, "candidates", None) or [])
+            if getattr(row, "id", None) == candidate_uuid
+        ),
+        None,
+    )
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="resource.not_found")
+
+    experiment_summary = _cost_optimizer_experiment_summary(db, experiment)
+    detail = {
+        key: value
+        for key, value in experiment_summary.items()
+        if key != "candidates"
+    }
+    detail["candidate"] = _cost_optimizer_candidate_summary(
+        db,
+        candidate,
+        node_id,
+    )
+    return detail
 
 
 def _cost_optimizer_candidate_execution_context(
@@ -3521,8 +3677,30 @@ def list_cost_optimizer_experiments_endpoint(
 
 
 @router.get(
-    "/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/parameter-recommendations"
+    "/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/experiments/"
+    "{experiment_id}/candidates/{candidate_id}"
 )
+def get_cost_optimizer_experiment_candidate_endpoint(
+    workflow_id: str,
+    node_id: str,
+    experiment_id: str,
+    candidate_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """URL로 지정한 Cost Optimizer 실험 후보의 상세 summary를 조회합니다."""
+    workflow = ensure_workflow_permission(db, current_user, workflow_id, "write")
+    _ensure_cost_optimizer_llm_node(workflow, node_id)
+    return get_cost_optimizer_experiment_candidate(
+        db,
+        workflow,
+        node_id,
+        experiment_id,
+        candidate_id,
+    )
+
+
+@router.get("/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/parameter-recommendations")
 def get_cost_optimizer_parameter_recommendations_endpoint(
     workflow_id: str,
     node_id: str,
@@ -3677,6 +3855,41 @@ def _cost_optimizer_metric_comparison(
             else None
         ),
     }
+
+
+def _evaluate_cost_optimizer_output_quality(
+    *,
+    db: Session,
+    workflow: Any,
+    current_user: User,
+    node_id: str,
+    candidate_row: CostOptimizerCandidate,
+    baseline: dict[str, Any],
+    candidate_result: dict[str, Any],
+) -> dict[str, Any]:
+    """성공한 B 출력만 평가하고 실패 후보는 평가 불가로 정규화한다."""
+    if candidate_result.get("status") == "failed":
+        return {
+            "status": "unavailable",
+            "baseline": {"score": None},
+            "candidate": {"score": None},
+            "delta": None,
+            "dimensions": {},
+            "confidence": "unavailable",
+            "safe_summary": "candidate 실행 실패로 품질 평가를 수행하지 않았습니다.",
+            "judge_cost": None,
+            "judge_usage_log_id": None,
+        }
+
+    return CostOptimizerOutputQualityService.evaluate(
+        db=db,
+        workflow=workflow,
+        current_user=current_user,
+        node_id=node_id,
+        candidate_row=candidate_row,
+        baseline=baseline,
+        candidate_result={**candidate_result, "input": baseline.get("input")},
+    )
 
 
 def _build_cost_optimizer_verification_apply_decision(
@@ -3885,32 +4098,14 @@ def _verify_cost_optimizer_recommendations(
             candidate,
             candidate_result,
         )
-        candidate_for_quality = {
-            **candidate_result,
-            "input": baseline.get("input"),
-        }
-        quality_evaluation = (
-            CostOptimizerOutputQualityService.evaluate(
-                db=db,
-                workflow=workflow,
-                current_user=current_user,
-                node_id=node_id,
-                candidate_row=candidate_row,
-                baseline=baseline,
-                candidate_result=candidate_for_quality,
-            )
-            if candidate_result.get("status") != "failed"
-            else {
-                "status": "unavailable",
-                "baseline": {"score": None},
-                "candidate": {"score": None},
-                "delta": None,
-                "dimensions": {},
-                "confidence": "unavailable",
-                "safe_summary": "candidate 실행 실패로 품질 평가를 수행하지 않았습니다.",
-                "judge_cost": None,
-                "judge_usage_log_id": None,
-            }
+        quality_evaluation = _evaluate_cost_optimizer_output_quality(
+            db=db,
+            workflow=workflow,
+            current_user=current_user,
+            node_id=node_id,
+            candidate_row=candidate_row,
+            baseline=baseline,
+            candidate_result=candidate_result,
         )
         diff = _build_cost_optimizer_diff(baseline, candidate_result)
         experiment = _persist_cost_optimizer_comparison(
@@ -4136,6 +4331,15 @@ def compare_cost_optimizer_candidate(
         if isinstance(candidate_result, dict)
         else None,
     )
+    quality_evaluation = _evaluate_cost_optimizer_output_quality(
+        db=db,
+        workflow=workflow,
+        current_user=current_user,
+        node_id=node_id,
+        candidate_row=candidate_row,
+        baseline=baseline,
+        candidate_result=candidate_result,
+    )
     experiment = _persist_cost_optimizer_comparison(
         db=db,
         experiment=experiment,
@@ -4144,6 +4348,7 @@ def compare_cost_optimizer_candidate(
         candidate_result=candidate_result,
         diff=diff,
         downstream_compatibility=downstream_compatibility,
+        quality_evaluation=quality_evaluation,
     )
 
     return {
@@ -4161,6 +4366,7 @@ def compare_cost_optimizer_candidate(
         },
         "candidate": candidate_result,
         "diff": diff,
+        "quality_evaluation": quality_evaluation,
         "downstream_compatibility": downstream_compatibility,
     }
 

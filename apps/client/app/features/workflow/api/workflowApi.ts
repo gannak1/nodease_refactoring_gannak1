@@ -21,6 +21,7 @@ import {
   CostOptimizerBaselineListResponse,
   CostOptimizerCompareRequest,
   CostOptimizerCompareResponse,
+  CostOptimizerExperimentCandidateDetail,
   CostOptimizerExperimentListParams,
   CostOptimizerExperimentListResponse,
   CostOptimizerLatestBaselineResponse,
@@ -357,6 +358,18 @@ export const workflowApi = {
     const response = await api.get(
       `/workflows/${workflowId}/llm-nodes/${nodeId}/cost-optimizer/experiments`,
       { params },
+    );
+    return response.data;
+  },
+
+  getCostOptimizerExperimentCandidate: async (
+    workflowId: string,
+    nodeId: string,
+    experimentId: string,
+    candidateId: string,
+  ): Promise<CostOptimizerExperimentCandidateDetail> => {
+    const response = await api.get(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/cost-optimizer/experiments/${experimentId}/candidates/${candidateId}`,
     );
     return response.data;
   },

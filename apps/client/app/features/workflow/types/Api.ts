@@ -183,6 +183,26 @@ export interface CostOptimizerMetricComparison {
   change_rate?: number | null;
 }
 
+export interface CostOptimizerQualityEvaluation {
+  status: string;
+  baseline?: { score?: number | null };
+  candidate?: { score?: number | null };
+  delta?: number | null;
+  dimensions?: Record<
+    string,
+    {
+      baseline?: number | null;
+      candidate?: number | null;
+      delta?: number | null;
+    }
+  >;
+  confidence?: string | null;
+  confidence_score?: number | null;
+  safe_summary?: string | null;
+  judge_cost?: number | null;
+  judge_usage_log_id?: string | null;
+}
+
 export interface CostOptimizerRecommendationVerificationResponse {
   verification_status: 'completed' | 'partial' | 'failed' | 'stale';
   comparison_id: string | null;
@@ -202,20 +222,7 @@ export interface CostOptimizerRecommendationVerificationResponse {
     metrics: Record<string, number | null | undefined>;
   };
   metrics: Record<string, CostOptimizerMetricComparison>;
-  quality_evaluation: {
-    status: string;
-    baseline?: { score?: number | null };
-    candidate?: { score?: number | null };
-    delta?: number | null;
-    dimensions?: Record<
-      string,
-      { baseline?: number | null; candidate?: number | null }
-    >;
-    confidence?: string | null;
-    safe_summary?: string | null;
-    judge_cost?: number | null;
-    judge_usage_log_id?: string | null;
-  };
+  quality_evaluation: CostOptimizerQualityEvaluation;
   schema_validation: {
     status: string;
     issues?: Array<{ code?: string; message?: string } | string>;
@@ -343,6 +350,7 @@ export interface CostOptimizerCompareResponse {
     error_message?: string | null;
   };
   diff?: Record<string, unknown>;
+  quality_evaluation?: CostOptimizerQualityEvaluation;
   downstream_compatibility?: CostOptimizerDownstreamCompatibility;
 }
 
@@ -385,6 +393,7 @@ export interface CostOptimizerCandidateSummary {
   output_preview?: string | null;
   schema_status?: string | null;
   downstream_state?: string | null;
+  quality_evaluation?: CostOptimizerQualityEvaluation;
   is_applied?: boolean;
   created_at?: string | null;
 }
@@ -427,6 +436,13 @@ export interface CostOptimizerExperimentListResponse {
   offset: number;
   items: CostOptimizerExperimentSummary[];
 }
+
+export type CostOptimizerExperimentCandidateDetail = Omit<
+  CostOptimizerExperimentSummary,
+  'candidates'
+> & {
+  candidate: CostOptimizerCandidateSummary;
+};
 
 export interface CostOptimizerParameterRecommendation {
   recommendation_type: 'llm_parameter' | string;
