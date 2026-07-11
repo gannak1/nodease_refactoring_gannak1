@@ -363,6 +363,65 @@ def test_schedule_occurrence_and_worker_admission_have_single_database_winner():
             readiness_engine.dispose()
         ids = _seed_active_schedule(database, config)
 
+        budget_engine = create_engine(config.database_url(database))
+        try:
+            with Session(budget_engine) as session:
+                now = datetime.now(timezone.utc)
+                session.execute(
+                    text(
+                        """
+                        INSERT INTO workflow_budgets (
+                            id, organization_id, workflow_id,
+                            monthly_budget_usd, is_enabled, created_by,
+                            options, flags
+                        ) VALUES (
+                            :id, :organization_id, :workflow_id,
+                            100, true, :created_by,
+                            '{}'::jsonb, 0
+                        )
+                        """
+                    ),
+                    {
+                        "id": uuid.uuid4(),
+                        "organization_id": ids["organization"],
+                        "workflow_id": ids["workflow"],
+                        "created_by": ids["user"],
+                    },
+                )
+                session.execute(
+                    text(
+                        "ALTER TABLE llm_usage_logs "
+                        "RENAME TO llm_usage_logs_unavailable"
+                    )
+                )
+
+                decision = WorkflowBudgetDecisionAdapter(session).evaluate(
+                    workflow_id=ids["workflow"],
+                    now=now,
+                )
+                session.execute(
+                    text(
+                        "UPDATE schedules SET last_run_at = :now "
+                        "WHERE id = :schedule_id"
+                    ),
+                    {"now": now, "schedule_id": ids["schedule"]},
+                )
+                session.execute(
+                    text(
+                        "ALTER TABLE llm_usage_logs_unavailable "
+                        "RENAME TO llm_usage_logs"
+                    )
+                )
+                session.commit()
+
+                assert decision.status == "unavailable"
+
+            with Session(budget_engine) as session:
+                schedule = session.get(Schedule, ids["schedule"])
+                assert schedule.last_run_at is not None
+        finally:
+            budget_engine.dispose()
+
         invariant_engine = create_engine(config.database_url(database))
         try:
             now = datetime.now(timezone.utc)

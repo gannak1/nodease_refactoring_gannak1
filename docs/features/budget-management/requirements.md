@@ -47,6 +47,7 @@ Related Features: admin-dashboard, workflow, app-management, deployment, audit-t
 - BGT-REQ-033: 차단 판정은 fail-closed다. 활성 예산 workflow에서 당월 비용 집계에 실패하면 실행을 차단한다. 활성 예산이 없는 workflow는 판정 로직을 건너뛰어 기존 실행 경로가 깨지지 않아야 한다 (NFR-005).
 - BGT-REQ-034: 판정은 매 실행 요청마다 dispatch 직전에 DB 집계로 수행한다. 판정 결과를 캐시하거나 이전 요청의 판정을 재사용하지 않는다. 초과가 `llm_usage_logs`에 반영된 이후 도착하는 모든 신규 실행 요청은 경로와 무관하게 차단되어야 한다 (동시성 방어의 보장 하한선).
 - BGT-REQ-035: 동시 실행으로 인한 한시적 초과(overshoot)는 알려진 한계로 수용한다. 비용은 LLM 호출 완료 후 기록되므로 in-flight 실행의 비용은 dispatch 시점 판정에 반영될 수 없고, dispatch 직렬화(분산 락)로도 이 창은 닫히지 않는다. 초과 폭은 "차단 확정 전에 dispatch된 동시 실행들의 비용"으로 한정되며, 이미 시작된 실행은 중단하지 않는다. 실행 전 비용 예약(reservation) 모델은 1차 구현 범위 밖이다.
+- BGT-REQ-036: Schedule dispatch/admission transaction 안의 예산 조회·집계는 nested transaction/savepoint로 격리해야 한다. DB statement 실패를 `unavailable`로 변환할 때 실패한 savepoint를 먼저 rollback하여 caller가 보유한 canonical row lock과 outer UnitOfWork를 유지하고 bounded retry/dead-letter 상태를 같은 transaction에서 기록할 수 있어야 한다.
 
 ### Audit
 

@@ -125,6 +125,7 @@ Gateway service/helper 대상 (기존 pytest 패턴). 함수명은 구현 시 �
 - `normal`/`at_risk`(정확히 100% 포함) → 통과.
 - `exceeded` → 차단 예외 (HTTP 계층에서 `429 budget.exceeded`로 변환).
 - 활성 예산 workflow에서 집계 쿼리 예외 → fail-closed 차단 예외 (BGT-REQ-033).
+- Schedule dispatch/admission의 활성 예산 집계 statement가 실패하면 savepoint만 rollback되고 outer transaction은 계속 사용 가능해야 한다. 같은 UnitOfWork에서 `budget_evaluation_failed` backoff/dead-letter 상태를 기록하고 commit할 때 `PendingRollbackError`가 발생하지 않는다.
 - 매 호출마다 집계를 새로 조회한다 — 같은 helper 인스턴스/요청 컨텍스트에서 판정 캐시 없음 (BGT-REQ-034).
 - compare 경로 플래그/미호출 검증 (BGT-REQ-032).
 
