@@ -10,6 +10,7 @@ from apps.gateway.application.deployment.schedule_dispatch import (
 from apps.gateway.application.deployment.schedule_models import (
     DispatchCanonicalContext,
     DispatchClaimSnapshot,
+    WorkflowRunVisibilityGap,
 )
 from apps.shared.domain.workflow_budget import BudgetExecutionDecision
 from apps.shared.db.models.workflow_deployment import DeploymentType
@@ -75,6 +76,8 @@ class _Repository:
         self.terminal = []
         self.budget_unavailable = []
         self.publish = []
+        self.visibility_gaps = []
+        self.reported_visibility_gaps = []
 
     def database_now(self):
         return NOW
@@ -111,6 +114,12 @@ class _Repository:
     def quarantine_expired_running(self, **kwargs):
         return 2
 
+    def lock_workflow_run_visibility_gaps(self, **kwargs):
+        return tuple(self.visibility_gaps)
+
+    def mark_workflow_run_missing_reported(self, claim_id, **kwargs):
+        self.reported_visibility_gaps.append((claim_id, kwargs))
+
     def cleanup_terminal_claims(self, **kwargs):
         return 3
 
@@ -132,6 +141,9 @@ class _Audit:
 
     def record_schedule_configuration_invalid(self, **kwargs):
         raise AssertionError("not used")
+
+    def record_workflow_run_missing(self, **kwargs):
+        self.events.append(kwargs)
 
 
 def _use_case():
@@ -224,4 +236,34 @@ def test_recovery_scans_delivery_execution_and_retention_boundaries():
     claim = _claim()
     repository = _Repository(claim, _context(claim))
 
-    assert _use_case().recover(repository=repository, uow=_Uow()) == (1, 2, 3)
+    assert _use_case().recover(
+        repository=repository,
+        audit=_Audit(),
+        uow=_Uow(),
+    ) == (1, 2, 0, 3)
+
+
+def test_recovery_reports_each_missing_workflow_run_once_without_replay():
+    claim = _claim()
+    repository = _Repository(claim, _context(claim))
+    repository.visibility_gaps = [
+        WorkflowRunVisibilityGap(
+            claim_id=claim.claim_id,
+            organization_id=claim.organization_id,
+            workflow_run_id=uuid.uuid4(),
+        )
+    ]
+    audit = _Audit()
+
+    result = _use_case().recover(
+        repository=repository,
+        audit=audit,
+        uow=_Uow(),
+    )
+
+    assert result == (1, 2, 1, 3)
+    assert audit.events[-1] == {
+        "organization_id": claim.organization_id,
+        "claim_id": claim.claim_id,
+    }
+    assert repository.reported_visibility_gaps[0][0] == claim.claim_id

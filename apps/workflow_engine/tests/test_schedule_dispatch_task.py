@@ -20,6 +20,7 @@ class _Session:
 class _Engine:
     calls = []
     error = None
+    cleanup_error = None
 
     def __init__(self, **kwargs):
         self.__class__.calls.append(kwargs)
@@ -30,7 +31,8 @@ class _Engine:
         return {"ok": True}
 
     def cleanup(self):
-        pass
+        if self.cleanup_error:
+            raise self.cleanup_error
 
 
 def _plan(claim_id, task_id):
@@ -80,6 +82,7 @@ def test_scheduled_task_runs_engine_only_after_admission_and_finalizes(monkeypat
         "_sync_knowledge_bases_for_execution_subject",
         lambda *a, **k: {"skipped": True},
     )
+    _Engine.calls = []
 
     result = tasks._execute_scheduled_deployment_claim(
         str(claim_id),
@@ -89,6 +92,50 @@ def test_scheduled_task_runs_engine_only_after_admission_and_finalizes(monkeypat
     assert result["status"] == "success"
     assert calls == ["admit", ("finalize", True)]
     assert len(_Engine.calls) == 1
+
+
+def test_scheduled_task_cleanup_failure_keeps_successful_claim_finalization(
+    monkeypatch,
+):
+    claim_id = uuid.uuid4()
+    task_id = f"schedule:{uuid.uuid4()}"
+    finalized = []
+
+    class _UseCase:
+        def __init__(self, **kwargs):
+            pass
+
+        def admit(self, **kwargs):
+            return application.ScheduleAdmissionResult(
+                "admitted", plan=_plan(claim_id, task_id)
+            )
+
+        def finalize(self, **kwargs):
+            finalized.append(kwargs["succeeded"])
+            return True
+
+    monkeypatch.setattr(tasks, "SessionLocal", _Session)
+    monkeypatch.setattr(application, "ScheduledDeploymentExecutionUseCase", _UseCase)
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.core.workflow_engine.WorkflowEngine",
+        _Engine,
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_sync_knowledge_bases_for_execution_subject",
+        lambda *a, **k: {"skipped": True},
+    )
+    _Engine.cleanup_error = RuntimeError("cleanup detail must not escape")
+    try:
+        result = tasks._execute_scheduled_deployment_claim(
+            str(claim_id),
+            task_id=task_id,
+        )
+    finally:
+        _Engine.cleanup_error = None
+
+    assert result["status"] == "success"
+    assert finalized == [True]
 
 
 def test_scheduled_task_duplicate_does_not_construct_engine(monkeypatch):
@@ -192,3 +239,21 @@ def test_missing_claim_schema_is_safe_permanent_rejection(monkeypatch):
         )
 
     assert str(exc_info.value) == "schedule admission is unavailable"
+
+
+def test_invalid_schedule_dispatch_settings_are_safe_permanent_rejection(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        tasks,
+        "get_schedule_dispatch_settings",
+        lambda: (_ for _ in ()).throw(ValueError("invalid environment detail")),
+    )
+
+    with pytest.raises(tasks.PermanentDeploymentExecutionError) as exc_info:
+        tasks._execute_scheduled_deployment_claim(
+            str(uuid.uuid4()),
+            task_id=f"schedule:{uuid.uuid4()}",
+        )
+
+    assert str(exc_info.value) == "schedule dispatch configuration is invalid"

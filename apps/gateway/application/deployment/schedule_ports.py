@@ -11,6 +11,7 @@ from apps.gateway.application.deployment.schedule_models import (
     ScheduleDefinitionSnapshot,
     ScheduleOccurrenceSnapshot,
     SchedulePublishRequest,
+    WorkflowRunVisibilityGap,
 )
 from apps.shared.domain.workflow_budget import BudgetExecutionDecision
 
@@ -36,6 +37,10 @@ class ScheduleDispatchRepositoryPort(Protocol):
 
     def initialize_next_run(
         self, schedule_id: uuid.UUID, next_run_at: datetime
+    ) -> None: ...
+
+    def mark_configuration_invalid(
+        self, schedule_id: uuid.UUID, error_code: str
     ) -> None: ...
 
     def create_claim(
@@ -122,6 +127,18 @@ class ScheduleDispatchRepositoryPort(Protocol):
 
     def quarantine_expired_running(self, *, now: datetime, limit: int) -> int: ...
 
+    def lock_workflow_run_visibility_gaps(
+        self,
+        *,
+        now: datetime,
+        grace_seconds: int,
+        limit: int,
+    ) -> Sequence[WorkflowRunVisibilityGap]: ...
+
+    def mark_workflow_run_missing_reported(
+        self, claim_id: uuid.UUID, *, now: datetime
+    ) -> None: ...
+
     def cleanup_terminal_claims(
         self,
         *,
@@ -168,6 +185,13 @@ class ScheduleDispatchAuditRecorderPort(Protocol):
         *,
         organization_id: uuid.UUID,
         schedule_id: uuid.UUID,
+    ) -> None: ...
+
+    def record_workflow_run_missing(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        claim_id: uuid.UUID,
     ) -> None: ...
 
 

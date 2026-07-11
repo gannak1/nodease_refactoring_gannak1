@@ -14,6 +14,7 @@ from apps.shared.domain.schedule_dispatch import (
     REASON_BUDGET_BLOCKED,
     REASON_EXECUTION_OUTCOME_UNKNOWN,
     RESOLUTION_CONFIRMED_COMPLETED,
+    SCHEDULE_CONFIGURATION_INVALID,
     STATUS_CANCELED,
     STATUS_DEAD_LETTERED,
     STATUS_DISPATCHING,
@@ -28,6 +29,7 @@ from apps.shared.domain.schedule_dispatch import (
     retry_delay_seconds,
     schedule_dispatch_settings_from_environment,
     schedule_idempotency_key,
+    validate_schedule_configuration_error_code,
 )
 
 SCHEDULE_ID = uuid.UUID("11111111-2222-3333-4444-555555555555")
@@ -73,6 +75,13 @@ def test_schedule_idempotency_key_rejects_non_aware_datetime(value):
 def test_schedule_idempotency_key_rejects_non_uuid_schedule_id():
     with pytest.raises(ScheduleDispatchDomainError):
         schedule_idempotency_key(str(SCHEDULE_ID), NOW)
+
+
+def test_configuration_quarantine_code_is_allowlisted():
+    validate_schedule_configuration_error_code(SCHEDULE_CONFIGURATION_INVALID)
+
+    with pytest.raises(ScheduleDispatchDomainError):
+        validate_schedule_configuration_error_code("raw parser detail")
 
 
 def test_claim_state_requires_claimed_at():

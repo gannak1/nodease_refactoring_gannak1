@@ -167,6 +167,8 @@ class ScheduledDeploymentExecutionUseCase:
         task_id: str,
         admission_owner: str,
     ) -> ScheduleAdmissionResult:
+        if not self.settings.processes_existing_claims:
+            return ScheduleAdmissionResult("deferred", "schedule_dispatch_disabled")
         try:
             locator = repository.read_locator(claim_id)
             if locator is None:

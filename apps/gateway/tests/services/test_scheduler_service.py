@@ -73,6 +73,7 @@ def test_add_schedule_validates_and_sets_cursor_without_commit():
         cron_expression="0 * * * *",
         timezone="UTC",
         next_run_at=None,
+        configuration_error_code="schedule_configuration_invalid",
     )
 
     service.add_schedule(schedule, db)
@@ -80,6 +81,7 @@ def test_add_schedule_validates_and_sets_cursor_without_commit():
     assert schedule.next_run_at == datetime(
         2026, 7, 10, 10, 0, tzinfo=timezone.utc
     )
+    assert schedule.configuration_error_code is None
     assert db.commits == 0
 
 

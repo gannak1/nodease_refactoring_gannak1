@@ -121,9 +121,9 @@ class _Budget:
         return BudgetExecutionDecision(status=self.status)
 
 
-def _use_case():
+def _use_case(*, mode="claim"):
     return ScheduledDeploymentExecutionUseCase(
-        settings=ScheduleDispatchSettings(mode="claim"),
+        settings=ScheduleDispatchSettings(mode=mode),
         runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
     )
 
@@ -152,6 +152,26 @@ def test_valid_claim_admits_one_system_schedule_execution():
     assert result.plan.execution_context["workflow_task_id"] == snapshot.idempotency_key
     assert repository.running[0]["admission_owner"] == "opaque-owner"
     assert uow.commits == 1
+
+
+def test_disabled_mode_does_not_admit_an_already_queued_schedule_task():
+    snapshot = _snapshot()
+    repository = _Repository(snapshot)
+    uow = _Uow()
+
+    result = _use_case(mode="disabled").admit(
+        repository=repository,
+        budget=_Budget(),
+        uow=uow,
+        claim_id=snapshot.claim_id,
+        task_id=snapshot.idempotency_key,
+        admission_owner="owner",
+    )
+
+    assert result.status == "deferred"
+    assert result.reason == "schedule_dispatch_disabled"
+    assert repository.running == []
+    assert uow.commits == 0
 
 
 @pytest.mark.parametrize("status", ["running", "succeeded", "canceled", "dead_lettered"])

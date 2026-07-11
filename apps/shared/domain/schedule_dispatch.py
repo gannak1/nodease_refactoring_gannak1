@@ -48,6 +48,8 @@ REASON_ORGANIZATION_SCOPE_MISMATCH = "organization_scope_mismatch"
 REASON_ENQUEUE_ATTEMPTS_EXHAUSTED = "enqueue_attempts_exhausted"
 REASON_EXECUTION_FAILED_AFTER_ADMISSION = "execution_failed_after_admission"
 REASON_EXECUTION_OUTCOME_UNKNOWN = "execution_outcome_unknown"
+SCHEDULE_CONFIGURATION_INVALID = "schedule_configuration_invalid"
+SCHEDULE_CONFIGURATION_ERROR_CODES = frozenset({SCHEDULE_CONFIGURATION_INVALID})
 
 PENDING_REASONS = frozenset(
     {REASON_BROKER_ENQUEUE_FAILED, REASON_BUDGET_EVALUATION_FAILED}
@@ -140,6 +142,11 @@ def ensure_transition_allowed(current: str, target: str) -> None:
         raise ScheduleDispatchDomainError("unknown target schedule dispatch status")
     if target not in _TRANSITIONS[current]:
         raise ScheduleDispatchDomainError("schedule dispatch transition is not allowed")
+
+
+def validate_schedule_configuration_error_code(error_code: str) -> None:
+    if error_code not in SCHEDULE_CONFIGURATION_ERROR_CODES:
+        raise ScheduleDispatchDomainError("unknown schedule configuration error code")
 
 
 def retry_delay_seconds(attempt: int, *, base_seconds: int = 5) -> int:

@@ -185,10 +185,11 @@ class ScheduleDispatchUseCase:
         self,
         *,
         repository: ScheduleDispatchRepositoryPort,
+        audit: ScheduleDispatchAuditRecorderPort,
         uow: ScheduleDispatchUnitOfWork,
-    ) -> tuple[int, int, int]:
+    ) -> tuple[int, int, int, int]:
         if not self.settings.processes_existing_claims:
-            return (0, 0, 0)
+            return (0, 0, 0, 0)
         try:
             now = repository.database_now()
             retried = repository.recover_expired_claims(
@@ -201,6 +202,20 @@ class ScheduleDispatchUseCase:
                 now=now,
                 limit=self.settings.recovery_batch_size,
             )
+            visibility_gaps = repository.lock_workflow_run_visibility_gaps(
+                now=now,
+                grace_seconds=self.settings.workflow_run_visibility_timeout_seconds,
+                limit=self.settings.recovery_batch_size,
+            )
+            for gap in visibility_gaps:
+                audit.record_workflow_run_missing(
+                    organization_id=gap.organization_id,
+                    claim_id=gap.claim_id,
+                )
+                repository.mark_workflow_run_missing_reported(
+                    gap.claim_id,
+                    now=now,
+                )
             cleaned = repository.cleanup_terminal_claims(
                 now=now,
                 retention_days=self.settings.retention_days,
@@ -208,7 +223,7 @@ class ScheduleDispatchUseCase:
                 limit=self.settings.cleanup_batch_size,
             )
             uow.commit()
-            return (retried, unknown, cleaned)
+            return (retried, unknown, len(visibility_gaps), cleaned)
         except Exception:
             uow.rollback()
             raise

@@ -23,6 +23,7 @@ from apps.shared.domain.schedule_dispatch import (
     REASON_DEPLOYMENT_TYPE_NOT_ALLOWED,
     STATUS_CANCELED,
     STATUS_PENDING,
+    SCHEDULE_CONFIGURATION_INVALID,
     ScheduleDispatchSettings,
     retry_delay_seconds,
     schedule_idempotency_key,
@@ -64,6 +65,10 @@ class ScheduleOccurrenceUseCase:
                     )
                 except ScheduleConfigurationError:
                     if schedule.organization_id is not None:
+                        repository.mark_configuration_invalid(
+                            schedule.schedule_id,
+                            SCHEDULE_CONFIGURATION_INVALID,
+                        )
                         audit.record_schedule_configuration_invalid(
                             organization_id=schedule.organization_id,
                             schedule_id=schedule.schedule_id,
@@ -105,6 +110,10 @@ class ScheduleOccurrenceUseCase:
                         now=now,
                     )
                 except ScheduleConfigurationError:
+                    repository.mark_configuration_invalid(
+                        occurrence.schedule_id,
+                        SCHEDULE_CONFIGURATION_INVALID,
+                    )
                     audit.record_schedule_configuration_invalid(
                         organization_id=occurrence.organization_id,
                         schedule_id=occurrence.schedule_id,

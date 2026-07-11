@@ -57,3 +57,10 @@ class SchedulePublishResult:
     task_id: str
     lease_owner: str
     accepted: bool
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowRunVisibilityGap:
+    claim_id: uuid.UUID
+    organization_id: uuid.UUID
+    workflow_run_id: uuid.UUID

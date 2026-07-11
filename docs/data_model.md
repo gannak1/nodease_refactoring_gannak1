@@ -338,11 +338,12 @@ schedule deployment의 실행 설정. deployment와 1:1이다.
 | cron_expression | VARCHAR | NOT NULL |
 | timezone | VARCHAR | NOT NULL |
 | last_run_at / next_run_at | DATETIME | NULL (next_run_at INDEX) |
+| configuration_error_code | VARCHAR(64) | NULL, allowlisted legacy configuration quarantine code; valid schedule update clears it |
 | created_at / updated_at | DATETIME | NOT NULL |
 
 #### Target `schedule_dispatch_claims` (MBA-187)
 
-[ADR-0024](decisions/ADR-0024-distributed-schedule-dispatch-claim.md)의 분산 schedule operational ledger다. 이 subsection은 migration 적용 전 목표 schema이며 현재 구현 테이블 목록에 포함됐다는 뜻이 아니다.
+[ADR-0024](decisions/ADR-0024-distributed-schedule-dispatch-claim.md)의 분산 schedule operational ledger다. Claim schema는 Alembic migration으로 관리되며 raw workflow/prompt/evidence payload를 포함하지 않는다.
 
 | 컬럼 | 타입 | 제약 |
 | --- | --- | --- |
@@ -371,7 +372,7 @@ workflow 실행 이력. usage/trace/dashboard raw query의 원천이다.
 | --- | --- | --- |
 | id | UUID | PK |
 | workflow_id | UUID | NOT NULL, FK→workflows.id (CASCADE) |
-| user_id | UUID | 현재 NOT NULL, FK→users.id (CASCADE). MBA-187 target은 `trigger_mode=schedule`과 canonical claim correlation이 있는 system run에만 NULL 허용 |
+| user_id | UUID | FK→users.id (CASCADE). `trigger_mode='SCHEDULER'` 및 `workflow_task_id LIKE 'schedule:%'`인 system run에만 NULL 허용; 그 외는 NOT NULL |
 | app_id | UUID | NULL, FK→apps.id (SET NULL) |
 | deployment_id | UUID | NULL, FK→workflow_deployments.id (SET NULL) |
 | workflow_version | INTEGER | NULL |
@@ -394,6 +395,8 @@ workflow 실행 이력. usage/trace/dashboard raw query의 원천이다.
 | retention_purged_at | DATETIME | NULL |
 | total_tokens | INTEGER | NULL |
 | total_cost | NUMERIC(10,6) | NULL |
+
+System schedule 실행 이력이 하나라도 존재하면 `user_id`를 다시 NOT NULL로 바꾸는 과거 schema downgrade는 의미를 보존할 수 없다. migration downgrade는 임의 사용자 귀속이나 이력 삭제 대신 fail-closed하며, 운영 rollback은 schema downgrade가 아니라 `claim -> drain -> disabled` mode 전환으로 수행한다.
 
 #### `workflow_node_runs`
 

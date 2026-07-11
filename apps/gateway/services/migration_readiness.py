@@ -32,9 +32,11 @@ _REQUIRED_SCHEDULE_DISPATCH_SCHEMA = {
         "attempt_count",
         "claimed_at",
         "workflow_run_id",
+        "workflow_run_missing_reported_at",
         "execution_deadline_at",
     },
     "workflow_runs": {"user_id", "trigger_mode", "workflow_task_id"},
+    "schedules": {"configuration_error_code"},
 }
 
 

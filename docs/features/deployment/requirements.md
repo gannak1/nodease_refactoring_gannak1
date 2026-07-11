@@ -45,7 +45,7 @@ Webhook capture helper는 public webhook 실행 표면이 아니라 로그인한
 - DEP-REQ-022: Admission 이후 결과가 불명확하면 `execution_outcome_unknown`으로 격리하고 자동 replay하지 않아야 한다. Outcome acknowledgment는 exact claim별 allowlisted resolution과 system audit을 같은 transaction에 기록하지만 redrive 권한을 부여하지 않는다.
 - DEP-REQ-023: Schedule dispatch claim은 canonical App의 non-null `organization_id`를 durable audit provenance로 저장해야 한다. Queue/CLI가 제공한 organization을 신뢰하지 않고, 조직 누락 또는 claim/App 불일치는 dispatch와 execution 전에 fail-closed해야 한다.
 - DEP-REQ-024: System schedule의 workflow run executor는 null이고 audit actor는 system이어야 한다. App/deployment creator나 workflow owner를 executor, audit actor, private RAG execution subject로 합성하지 않아야 한다.
-- DEP-REQ-025: Schedule dispatch mode 전환은 migration-first, disabled rollout, legacy task drain, claim activation 순서를 따라야 한다. Rollback은 claim, drain, disabled 순서이며 nonterminal/review되지 않은 outcome unknown/active task가 있으면 fail-closed해야 한다.
+- DEP-REQ-025: Schedule dispatch mode 전환은 migration-first, disabled rollout, legacy task drain, claim activation 순서를 따라야 한다. Rollback은 claim, drain, disabled 순서이며 nonterminal/review되지 않은 outcome unknown/active task가 있으면 fail-closed해야 한다. 이는 application rollout rollback이며, system schedule `WorkflowRun.user_id=NULL` 이력이 생긴 뒤 과거 NOT NULL schema로 migration downgrade를 시도하면 임의 executor 귀속이나 이력 삭제 대신 fail-closed해야 한다.
 - DEP-REQ-026: Schedule claim과 Worker admission의 duplicate suppression은 외부 node 부수효과의 exactly-once를 의미하지 않는다. Provider별 idempotency는 별도 node adapter 계약으로 다뤄야 한다.
 - DEP-REQ-027: 신규 Schedule 생성/활성화의 invalid cron expression 또는 timezone은 partial deployment/schedule mutation 없이 safe `422 deployment.schedule_configuration_invalid`로 거부해야 한다. 기존 invalid legacy row는 다른 due schedule을 굶기지 않고 해당 row만 safe하게 격리해야 한다.
 

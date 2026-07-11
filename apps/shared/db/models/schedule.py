@@ -4,11 +4,10 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import DateTime, ForeignKey, String
+from apps.shared.db.base import Base
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, String
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
-
-from apps.shared.db.base import Base
 
 
 class Schedule(Base):
@@ -26,6 +25,13 @@ class Schedule(Base):
     """
 
     __tablename__ = "schedules"
+    __table_args__ = (
+        CheckConstraint(
+            "configuration_error_code IS NULL OR "
+            "configuration_error_code IN ('schedule_configuration_invalid')",
+            name="ck_schedules_configuration_error_code",
+        ),
+    )
 
     # Primary Key
     id: Mapped[uuid.UUID] = mapped_column(
@@ -72,6 +78,11 @@ class Schedule(Base):
         nullable=True,
         index=True,
         comment="다음 실행 예정 시간 (APScheduler가 계산)",
+    )
+
+    # Legacy configuration quarantine. Cleared when a valid schedule is saved.
+    configuration_error_code: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True, index=True
     )
 
     # 메타데이터

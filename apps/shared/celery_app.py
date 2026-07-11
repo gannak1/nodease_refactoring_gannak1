@@ -9,6 +9,9 @@ Moduly Celery 앱 설정
 
 import os
 
+from apps.shared.domain.schedule_dispatch import (
+    schedule_dispatch_settings_from_environment,
+)
 from celery import Celery
 
 # Redis 연결 설정 (개별 환경변수로 URL 동적 생성 )
@@ -112,6 +115,10 @@ def init_worker_process(**kwargs):
 
     # 2. DB 연결 초기화
     from apps.shared.db.session import engine
+
+    # Validate the shared Gateway/Worker schedule contract before the process
+    # can consume tasks. This only reads non-secret configuration values.
+    schedule_dispatch_settings_from_environment(os.environ)
 
     # 기존 커넥션 풀 폐기 (연결 종료가 아니라 풀 객체만 리셋)
     engine.dispose()

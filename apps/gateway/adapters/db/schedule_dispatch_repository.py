@@ -11,6 +11,7 @@ from apps.gateway.application.deployment.schedule_models import (
     DispatchClaimSnapshot,
     ScheduleDefinitionSnapshot,
     ScheduleOccurrenceSnapshot,
+    WorkflowRunVisibilityGap,
 )
 from apps.shared.db.models.app import App
 from apps.shared.db.models.schedule import Schedule
@@ -19,6 +20,7 @@ from apps.shared.db.models.workflow_deployment import (
     DeploymentType,
     WorkflowDeployment,
 )
+from apps.shared.db.models.workflow_run import WorkflowRun
 from apps.shared.domain.schedule_dispatch import (
     REASON_BROKER_ENQUEUE_FAILED,
     REASON_BUDGET_EVALUATION_FAILED,
@@ -32,6 +34,7 @@ from apps.shared.domain.schedule_dispatch import (
     STATUS_RUNNING,
     STATUS_SUCCEEDED,
     retry_delay_seconds,
+    validate_schedule_configuration_error_code,
 )
 
 
@@ -78,6 +81,15 @@ class SqlAlchemyScheduleDispatchRepository:
     ) -> None:
         schedule = self._locked_schedule(schedule_id)
         schedule.next_run_at = next_run_at
+        schedule.configuration_error_code = None
+
+    def mark_configuration_invalid(
+        self, schedule_id: uuid.UUID, error_code: str
+    ) -> None:
+        validate_schedule_configuration_error_code(error_code)
+        schedule = self._locked_schedule(schedule_id)
+        schedule.configuration_error_code = error_code
+        schedule.next_run_at = None
 
     def create_claim(
         self,
@@ -349,6 +361,57 @@ class SqlAlchemyScheduleDispatchRepository:
             count += 1
         return count
 
+    def lock_workflow_run_visibility_gaps(
+        self,
+        *,
+        now: datetime,
+        grace_seconds: int,
+        limit: int,
+    ) -> tuple[WorkflowRunVisibilityGap, ...]:
+        threshold = now - timedelta(seconds=grace_seconds)
+        claims = tuple(
+            self.db.execute(
+                select(ScheduleDispatchClaim)
+                .outerjoin(
+                    WorkflowRun,
+                    WorkflowRun.id == ScheduleDispatchClaim.workflow_run_id,
+                )
+                .where(
+                    ScheduleDispatchClaim.status.in_(
+                        (STATUS_RUNNING, STATUS_SUCCEEDED, STATUS_DEAD_LETTERED)
+                    ),
+                    ScheduleDispatchClaim.workflow_run_id.is_not(None),
+                    ScheduleDispatchClaim.started_at.is_not(None),
+                    ScheduleDispatchClaim.started_at <= threshold,
+                    ScheduleDispatchClaim.workflow_run_missing_reported_at.is_(None),
+                    WorkflowRun.id.is_(None),
+                )
+                .order_by(
+                    ScheduleDispatchClaim.started_at,
+                    ScheduleDispatchClaim.id,
+                )
+                .limit(limit)
+                .with_for_update(of=ScheduleDispatchClaim, skip_locked=True)
+            ).scalars()
+        )
+        self._locked_claims.update({claim.id: claim for claim in claims})
+        return tuple(
+            WorkflowRunVisibilityGap(
+                claim_id=claim.id,
+                organization_id=claim.organization_id,
+                workflow_run_id=claim.workflow_run_id,
+            )
+            for claim in claims
+            if claim.workflow_run_id is not None
+        )
+
+    def mark_workflow_run_missing_reported(
+        self, claim_id: uuid.UUID, *, now: datetime
+    ) -> None:
+        claim = self._locked_claim(claim_id)
+        claim.workflow_run_missing_reported_at = now
+        claim.updated_at = now
+
     def cleanup_terminal_claims(
         self,
         *,
@@ -401,6 +464,7 @@ class SqlAlchemyScheduleDispatchRepository:
                 WorkflowDeployment.type == DeploymentType.SCHEDULE,
                 App.active_deployment_id == WorkflowDeployment.id,
                 App.organization_id.is_not(None),
+                Schedule.configuration_error_code.is_(None),
             )
         )
 

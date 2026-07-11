@@ -2,8 +2,14 @@ from __future__ import annotations
 
 import importlib
 
+import pytest
+from apps.shared.db.models.schedule import Schedule
 from apps.shared.db.models.schedule_dispatch import ScheduleDispatchClaim
 from apps.shared.db.models.workflow_run import WorkflowRun
+from apps.shared.alembic.schedule_dispatch_downgrade import (
+    assert_schedule_configuration_quarantine_downgrade_is_safe,
+    assert_schedule_dispatch_downgrade_is_safe,
+)
 
 EXPECTED_CLAIM_INDEXES = {
     "ix_schedule_dispatch_claims_completed_at",
@@ -12,6 +18,7 @@ EXPECTED_CLAIM_INDEXES = {
     "ix_schedule_dispatch_claims_status_execution_deadline",
     "ix_schedule_dispatch_claims_status_lease_expiry",
     "ix_schedule_dispatch_claims_status_next_attempt",
+    "ix_schedule_dispatch_claims_visibility_gap",
 }
 EXPECTED_CLAIM_CONSTRAINTS = {
     "ck_schedule_dispatch_claims_attempt_count",
@@ -75,3 +82,94 @@ def test_schedule_dispatch_migration_extends_current_single_head():
 
     assert migration.revision == "fa8b9c0d1e23"
     assert migration.down_revision == "fa7b8c9d0e12"
+
+
+class _DowngradeResult:
+    def __init__(self, value):
+        self.value = value
+
+    def scalar(self):
+        return self.value
+
+
+class _DowngradeConnection:
+    def __init__(
+        self,
+        has_null_executor,
+        has_blocking_claim=False,
+        has_quarantined_schedule=False,
+    ):
+        self.has_null_executor = has_null_executor
+        self.has_blocking_claim = has_blocking_claim
+        self.has_quarantined_schedule = has_quarantined_schedule
+
+    def execute(self, statement):
+        sql = str(statement)
+        if "workflow_runs" in sql:
+            return _DowngradeResult(self.has_null_executor)
+        if "configuration_error_code" in sql:
+            return _DowngradeResult(self.has_quarantined_schedule)
+        assert "schedule_dispatch_claims" in sql
+        return _DowngradeResult(self.has_blocking_claim)
+
+
+def test_claim_migration_downgrade_refuses_to_fabricate_system_executor():
+    assert_schedule_dispatch_downgrade_is_safe(_DowngradeConnection(False))
+
+    with pytest.raises(RuntimeError, match="system workflow runs"):
+        assert_schedule_dispatch_downgrade_is_safe(_DowngradeConnection(True))
+
+    with pytest.raises(RuntimeError, match="active or unreviewed claims"):
+        assert_schedule_dispatch_downgrade_is_safe(
+            _DowngradeConnection(False, has_blocking_claim=True)
+        )
+
+
+def test_quarantine_downgrade_only_blocks_quarantined_schedule_rows():
+    assert_schedule_configuration_quarantine_downgrade_is_safe(
+        _DowngradeConnection(False)
+    )
+
+    with pytest.raises(RuntimeError, match="invalid schedules"):
+        assert_schedule_configuration_quarantine_downgrade_is_safe(
+            _DowngradeConnection(False, has_quarantined_schedule=True)
+        )
+
+
+def test_schedule_model_declares_invalid_configuration_quarantine_field():
+    table = Schedule.__table__
+
+    assert table.c.configuration_error_code.nullable is True
+    assert "ix_schedules_configuration_error_code" in {
+        index.name for index in table.indexes
+    }
+    assert "ck_schedules_configuration_error_code" in {
+        constraint.name for constraint in table.constraints
+    }
+
+
+def test_schedule_quarantine_migration_extends_claim_migration():
+    migration = importlib.import_module(
+        "apps.shared.alembic.versions.fb9c0d1e2f34_quarantine_invalid_schedule_configuration"
+    )
+
+    assert migration.revision == "fb9c0d1e2f34"
+    assert migration.down_revision == "fa8b9c0d1e23"
+
+
+def test_workflow_run_visibility_migration_extends_quarantine_migration():
+    migration = importlib.import_module(
+        "apps.shared.alembic.versions.fc0d1e2f3a45_add_schedule_workflow_run_visibility"
+    )
+
+    assert migration.revision == "fc0d1e2f3a45"
+    assert migration.down_revision == "fb9c0d1e2f34"
+
+
+def test_schedule_configuration_code_migration_extends_visibility_migration():
+    migration = importlib.import_module(
+        "apps.shared.alembic.versions.fd1e2f3a4b56_enforce_schedule_configuration_error_codes"
+    )
+
+    assert migration.revision == "fd1e2f3a4b56"
+    assert migration.down_revision == "fc0d1e2f3a45"

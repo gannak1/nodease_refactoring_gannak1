@@ -494,8 +494,18 @@ def _execute_scheduled_deployment_claim(
     if not task_id.startswith("schedule:"):
         raise PermanentDeploymentExecutionError("invalid schedule task identity")
 
+    try:
+        settings = get_schedule_dispatch_settings()
+    except Exception as exc:
+        logger.error(
+            "Schedule dispatch configuration is invalid: error_type=%s",
+            type(exc).__name__,
+        )
+        raise PermanentDeploymentExecutionError(
+            "schedule dispatch configuration is invalid"
+        ) from None
     use_case = ScheduledDeploymentExecutionUseCase(
-        settings=get_schedule_dispatch_settings(),
+        settings=settings,
         runtime_policy=get_deployment_runtime_policy(),
     )
     admission_owner = str(uuid.uuid4())
@@ -558,7 +568,16 @@ def _execute_scheduled_deployment_claim(
         sync_result = _sync_skipped_result("execution_failed")
     finally:
         if engine is not None:
-            engine.cleanup()
+            try:
+                engine.cleanup()
+            except Exception as exc:
+                # Cleanup is best-effort after the workflow result is known. It must
+                # not prevent the durable claim from reaching its terminal state.
+                logger.warning(
+                    "Scheduled workflow cleanup failed: claim_id=%s error_type=%s",
+                    claim_id,
+                    type(exc).__name__,
+                )
         engine_session.close()
 
     finalization_session = SessionLocal()

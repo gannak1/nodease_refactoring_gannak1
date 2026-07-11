@@ -105,6 +105,7 @@ class SchedulerService:
             timezone_name=schedule.timezone,
             now=now,
         )
+        schedule.configuration_error_code = None
 
     def update_schedule(self, schedule: Schedule, db: Session) -> None:
         self.add_schedule(schedule, db)
@@ -196,6 +197,7 @@ class SchedulerService:
         try:
             self.dispatch_use_case.recover(
                 repository=SqlAlchemyScheduleDispatchRepository(db),
+                audit=SqlAlchemyScheduleDispatchAuditRecorder(db),
                 uow=SqlAlchemyUnitOfWork(db),
             )
         finally:

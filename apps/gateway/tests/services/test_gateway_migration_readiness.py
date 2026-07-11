@@ -119,10 +119,12 @@ def test_claim_mode_accepts_current_single_head(monkeypatch):
                 "attempt_count",
                 "claimed_at",
                 "workflow_run_id",
+                "workflow_run_missing_reported_at",
                 "execution_deadline_at",
                 "user_id",
                 "trigger_mode",
                 "workflow_task_id",
+                "configuration_error_code",
             }]
 
     monkeypatch.setattr(migration_readiness, "inspect", lambda _engine: _Inspector())

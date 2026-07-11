@@ -170,6 +170,12 @@ class ScheduleDispatchClaim(Base):
             "status",
             "execution_deadline_at",
         ),
+        Index(
+            "ix_schedule_dispatch_claims_visibility_gap",
+            "workflow_run_missing_reported_at",
+            "status",
+            "started_at",
+        ),
         Index("ix_schedule_dispatch_claims_deployment_id", "deployment_id"),
         Index("ix_schedule_dispatch_claims_completed_at", "completed_at"),
         Index(
@@ -215,6 +221,9 @@ class ScheduleDispatchClaim(Base):
     celery_task_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     workflow_run_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         PGUUID(as_uuid=True), nullable=True
+    )
+    workflow_run_missing_reported_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
     safe_reason_code: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     outcome_reviewed_at: Mapped[Optional[datetime]] = mapped_column(

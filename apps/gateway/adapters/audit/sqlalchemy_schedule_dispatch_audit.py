@@ -16,6 +16,7 @@ _ALLOWED_ACTIONS = frozenset(
         "schedule_dispatch.blocked",
         "schedule_dispatch.canceled",
         "schedule_dispatch.deferred",
+        "schedule_dispatch.workflow_run_missing",
     }
 )
 
@@ -76,6 +77,30 @@ class SqlAlchemyScheduleDispatchAuditRecorder:
                 audit_metadata={
                     "organization_id": str(organization_id),
                     "reason": "schedule_configuration_invalid",
+                },
+            )
+        )
+
+    def record_workflow_run_missing(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        claim_id: uuid.UUID,
+    ) -> None:
+        self.db.add(
+            AuditLog(
+                action="schedule_dispatch.workflow_run_missing",
+                category=AuditCategory.ACTION,
+                actor_id=None,
+                actor_type=ActorType.SYSTEM,
+                target_type="schedule_dispatch_claim",
+                target_id=str(claim_id),
+                before=None,
+                after=None,
+                status=AuditStatus.FAILURE,
+                audit_metadata={
+                    "organization_id": str(organization_id),
+                    "reason": "workflow_run_missing",
                 },
             )
         )

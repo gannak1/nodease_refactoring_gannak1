@@ -80,7 +80,7 @@ Gateway schedule application은 access-management application model/port/recorde
 
 ### Rollout
 
-Migration을 먼저 적용하고 application은 `disabled` mode로 배포한다. 구버전 direct dispatcher와 신버전 claim dispatcher가 동시에 활성화되지 않도록 queue/task drain 뒤 `claim` mode를 활성화한다. Rollback은 `claim -> drain -> disabled` 순서로 수행한다. Nonterminal claim, review되지 않은 outcome unknown, active/queued/reserved schedule task가 남아 있으면 rollback을 중단한다.
+Migration을 먼저 적용하고 application은 `disabled` mode로 배포한다. 구버전 direct dispatcher와 신버전 claim dispatcher가 동시에 활성화되지 않도록 queue/task drain 뒤 `claim` mode를 활성화한다. Rollback은 `claim -> drain -> disabled` 순서로 수행한다. Nonterminal claim, review되지 않은 outcome unknown, active/queued/reserved schedule task가 남아 있으면 rollback을 중단한다. 이는 application rollout rollback이며, `user_id=NULL` system schedule 실행 이력이 생긴 DB를 과거 NOT NULL schema로 내리는 migration downgrade는 임의 사용자 귀속이나 이력 삭제 대신 fail-closed한다.
 
 Gateway startup은 migration-managed table/enum을 `create_all()`로 생성하거나 보정하지 않는다. Demo/test bootstrap만 명시적으로 `create_all()`을 사용할 수 있다.
 

@@ -9,6 +9,9 @@ Create Date: 2026-07-10 00:00:00.000000
 from typing import Sequence, Union
 
 import sqlalchemy as sa
+from apps.shared.alembic.schedule_dispatch_downgrade import (
+    assert_schedule_dispatch_downgrade_is_safe,
+)
 from sqlalchemy.dialects import postgresql
 
 from alembic import op
@@ -76,6 +79,10 @@ _OUTCOME_REVIEW = (
     "AND outcome_resolution_code IN ('accepted_unknown_no_replay', "
     "'confirmed_completed', 'confirmed_failed_no_replay'))"
 )
+
+
+def _assert_workflow_run_downgrade_is_safe(connection) -> None:
+    assert_schedule_dispatch_downgrade_is_safe(connection)
 
 
 def upgrade() -> None:
@@ -228,6 +235,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    _assert_workflow_run_downgrade_is_safe(op.get_bind())
+
     op.drop_index(
         "ix_schedule_dispatch_claims_org_status_completed",
         table_name="schedule_dispatch_claims",

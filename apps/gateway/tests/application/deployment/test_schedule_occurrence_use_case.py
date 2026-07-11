@@ -13,6 +13,9 @@ from apps.shared.domain.workflow_budget import BudgetExecutionDecision
 from apps.gateway.application.deployment.schedule_occurrence import (
     ScheduleOccurrenceUseCase,
 )
+from apps.gateway.application.deployment.schedule_errors import (
+    ScheduleConfigurationError,
+)
 from apps.shared.db.models.workflow_deployment import DeploymentType
 from apps.shared.domain.deployment_runtime_policy import (
     DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
@@ -24,6 +27,7 @@ from apps.shared.domain.schedule_dispatch import (
     REASON_BUDGET_EVALUATION_FAILED,
     STATUS_CANCELED,
     STATUS_PENDING,
+    SCHEDULE_CONFIGURATION_INVALID,
     ScheduleDispatchSettings,
 )
 
@@ -68,6 +72,7 @@ class _Repository:
         self.claims = []
         self.advanced = []
         self.initialized = []
+        self.invalidated = []
 
     def database_now(self):
         return NOW
@@ -89,6 +94,9 @@ class _Repository:
 
     def initialize_next_run(self, schedule_id, next_run_at):
         self.initialized.append((schedule_id, next_run_at))
+
+    def mark_configuration_invalid(self, schedule_id, error_code):
+        self.invalidated.append((schedule_id, error_code))
 
 
 class _Budget:
@@ -231,6 +239,60 @@ def test_uninitialized_schedule_uses_first_fire_calculator():
 
     assert count == 1
     assert repository.initialized == [(definition.schedule_id, NEXT)]
+
+
+def test_invalid_uninitialized_schedule_is_durably_quarantined():
+    definition = ScheduleDefinitionSnapshot(
+        schedule_id=uuid.uuid4(),
+        deployment_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        workflow_id=uuid.uuid4(),
+        deployment_type=DeploymentType.SCHEDULE,
+        cron_expression="invalid",
+        timezone="UTC",
+    )
+    repository = _Repository(uninitialized=[definition])
+    audit = _Audit()
+
+    count = _use_case(
+        next_fire=_NextFire(ScheduleConfigurationError("hidden"))
+    ).reconcile_uninitialized(
+        repository=repository,
+        audit=audit,
+        uow=_Uow(),
+    )
+
+    assert count == 0
+    assert repository.invalidated == [
+        (definition.schedule_id, SCHEDULE_CONFIGURATION_INVALID)
+    ]
+    assert audit.invalid == [
+        {
+            "organization_id": definition.organization_id,
+            "schedule_id": definition.schedule_id,
+        }
+    ]
+
+
+def test_invalid_due_schedule_is_durably_quarantined():
+    occurrence = _occurrence()
+    repository = _Repository([occurrence])
+    audit = _Audit()
+
+    count = _use_case(
+        next_fire=_NextFire(ScheduleConfigurationError("hidden"))
+    ).claim_due_occurrences(
+        repository=repository,
+        budget=_Budget(),
+        audit=audit,
+        uow=_Uow(),
+    )
+
+    assert count == 0
+    assert repository.claims == []
+    assert repository.invalidated == [
+        (occurrence.schedule_id, SCHEDULE_CONFIGURATION_INVALID)
+    ]
 
 
 def test_occurrence_failure_rolls_back_claim_and_cursor_transaction():
