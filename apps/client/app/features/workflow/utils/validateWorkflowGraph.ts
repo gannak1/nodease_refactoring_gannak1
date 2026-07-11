@@ -44,7 +44,7 @@ const SOURCE_ONLY_NODE_TYPES = new Set([
   ...START_NODE_TYPES,
   ...TRIGGER_NODE_TYPES,
 ]);
-const TERMINAL_NODE_TYPES = new Set(['answerNode']);
+const TERMINAL_NODE_TYPES = new Set(['answerNode', 'mailAcknowledgeNode']);
 
 const getNodeTitle = (node?: AppNode) => {
   const title = String(node?.data?.title || '').trim();
@@ -194,7 +194,7 @@ const getDirectEdgeIssues = (
       issues.push(
         toIssue(
           'TERMINAL_NODE_HAS_OUTGOING_EDGE',
-          '응답 노드에서는 다른 노드로 연결할 수 없습니다.',
+          '종료 노드에서는 다른 노드로 연결할 수 없습니다.',
           edge,
           sourceNode,
           targetNode,
@@ -285,7 +285,9 @@ export const cleanupInvalidEdges = (
     directIssues
       .filter(
         (issue) =>
-          issue.code !== 'DUPLICATE_EDGE' && issue.edgeId && issue.level === 'error',
+          issue.code !== 'DUPLICATE_EDGE' &&
+          issue.edgeId &&
+          issue.level === 'error',
       )
       .map((issue) => issue.edgeId),
   );

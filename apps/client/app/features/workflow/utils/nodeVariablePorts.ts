@@ -207,6 +207,41 @@ const outputInfoByType: Partial<
       dataType: 'string',
       description: '검색한 메일 폴더입니다.',
     },
+    processing_ref: {
+      label: '메일 처리 참조',
+      dataType: 'string',
+      description:
+        '단일 메일을 durable 모드로 검색했을 때 생성되는 불투명 처리 참조입니다.',
+    },
+  },
+  gmailDraftNode: {
+    status: {
+      label: '초안 생성 상태',
+      dataType: 'string',
+      description: 'Gmail 답장 초안 생성 상태입니다.',
+    },
+    draft_ref: {
+      label: '초안 작업 참조',
+      dataType: 'string',
+      description: '중복 처리를 막기 위한 불투명 Draft effect 참조입니다.',
+    },
+    processing_ref: {
+      label: '메일 처리 참조',
+      dataType: 'string',
+      description: '원본 메일의 불투명 처리 참조입니다.',
+    },
+  },
+  mailAcknowledgeNode: {
+    status: {
+      label: '처리 완료 상태',
+      dataType: 'string',
+      description: '필수 작업 완료 및 원본 메일 확인 상태입니다.',
+    },
+    processing_ref: {
+      label: '메일 처리 참조',
+      dataType: 'string',
+      description: '완료 처리된 원본 메일의 불투명 처리 참조입니다.',
+    },
   },
   scheduleTrigger: {
     triggered_at: {
@@ -438,7 +473,9 @@ export const getNodeOutputVariables = (node?: AppNode | null) => {
       'comment_url',
       'comment_body',
     ],
-    mailNode: ['emails', 'total_count', 'folder'],
+    mailNode: ['emails', 'total_count', 'folder', 'processing_ref'],
+    gmailDraftNode: ['status', 'draft_ref', 'processing_ref'],
+    mailAcknowledgeNode: ['status', 'processing_ref'],
     scheduleTrigger: ['triggered_at', 'schedule_id'],
     conditionNode: ['result', 'matched_case_id', 'selected_handle'],
   };

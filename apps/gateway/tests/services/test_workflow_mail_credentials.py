@@ -289,3 +289,217 @@ def test_raw_deployment_graph_rejects_non_object_mail_data():
     assert exc.value.status_code == 422
     assert exc.value.detail == "mail.credential_reference_required"
     assert "synthetic-only" not in str(exc.value)
+
+
+def _durable_draft_graph(credential_id: uuid.UUID) -> dict:
+    return {
+        "nodes": [
+            {
+                "id": "mail-source",
+                "type": "mailNode",
+                "data": {
+                    "title": "Mail",
+                    "credential_id": str(credential_id),
+                    "folder": "INBOX",
+                    "max_results": 1,
+                    "unread_only": True,
+                    "mark_as_read": False,
+                    "processing_mode": "durable",
+                    "referenced_variables": [],
+                },
+            },
+            {
+                "id": "llm-reply",
+                "type": "llmNode",
+                "data": {"title": "LLM"},
+            },
+            {
+                "id": "draft-effect",
+                "type": "gmailDraftNode",
+                "data": {
+                    "title": "Draft",
+                    "credential_id": str(credential_id),
+                    "configuration_state": "resolved",
+                    "processing_ref_selector": [
+                        "mail-source",
+                        "processing_ref",
+                    ],
+                    "reply_body_selector": ["llm-reply", "text"],
+                },
+            },
+            {
+                "id": "mail-ack",
+                "type": "mailAcknowledgeNode",
+                "data": {
+                    "title": "Ack",
+                    "processing_ref_selector": [
+                        "mail-source",
+                        "processing_ref",
+                    ],
+                    "required_effect_ref_selectors": [
+                        ["draft-effect", "draft_ref"]
+                    ],
+                },
+            },
+        ],
+        "edges": [
+            {"id": "e1", "source": "mail-source", "target": "llm-reply"},
+            {"id": "e2", "source": "llm-reply", "target": "draft-effect"},
+            {"id": "e3", "source": "draft-effect", "target": "mail-ack"},
+        ],
+    }
+
+
+def test_unresolved_processing_nodes_can_be_saved_but_not_deployed():
+    graph = {
+        "nodes": [
+            {
+                "id": "draft-effect",
+                "type": "gmailDraftNode",
+                "data": {
+                    "title": "Draft",
+                    "credential_id": None,
+                    "configuration_state": "unresolved",
+                    "processing_ref_selector": [],
+                    "reply_body_selector": [],
+                },
+            },
+            {
+                "id": "mail-ack",
+                "type": "mailAcknowledgeNode",
+                "data": {
+                    "title": "Ack",
+                    "processing_ref_selector": [],
+                    "required_effect_ref_selectors": [],
+                },
+            },
+        ],
+        "edges": [],
+    }
+
+    WorkflowService.validate_mail_credential_references(
+        MagicMock(),
+        graph,
+        user_id=str(uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    with pytest.raises(HTTPException) as exc:
+        WorkflowService.validate_mail_credential_references(
+            MagicMock(),
+            graph,
+            user_id=str(uuid.uuid4()),
+            organization_id=uuid.uuid4(),
+            require_resolved=True,
+        )
+    assert exc.value.detail == "mail.processing_configuration_invalid"
+
+
+@patch(
+    "apps.gateway.services.workflow_service.has_mail_credential_permission",
+    return_value=True,
+)
+def test_deployment_accepts_consistent_durable_gmail_draft_graph(_permission):
+    credential_id = uuid.uuid4()
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = SimpleNamespace(
+        id=credential_id,
+        provider="gmail",
+        auth_type="oauth2",
+    )
+
+    WorkflowService.validate_mail_credential_references(
+        db,
+        _durable_draft_graph(credential_id),
+        user_id=str(uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+        require_resolved=True,
+    )
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda graph: graph["nodes"][0]["data"].update(
+            {"processing_mode": "search_only"}
+        ),
+        lambda graph: graph["nodes"][0]["data"].update({"max_results": 2}),
+        lambda graph: graph["nodes"][2]["data"].update(
+            {"processing_ref_selector": ["llm-reply", "processing_ref"]}
+        ),
+        lambda graph: graph["nodes"][3]["data"].update(
+            {"required_effect_ref_selectors": [["llm-reply", "text"]]}
+        ),
+        lambda graph: graph["edges"].pop(),
+    ],
+)
+def test_deployment_rejects_inconsistent_mail_processing_graph(mutate):
+    graph = _durable_draft_graph(uuid.uuid4())
+    mutate(graph)
+
+    with pytest.raises(HTTPException) as exc:
+        WorkflowService.validate_mail_credential_references(
+            MagicMock(),
+            graph,
+            user_id=str(uuid.uuid4()),
+            organization_id=uuid.uuid4(),
+            require_resolved=True,
+        )
+    assert exc.value.detail == "mail.processing_configuration_invalid"
+
+
+@patch(
+    "apps.gateway.services.workflow_service.has_mail_credential_permission",
+    return_value=True,
+)
+def test_deployment_rejects_non_oauth_credential_for_gmail_draft(_permission):
+    credential_id = uuid.uuid4()
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = SimpleNamespace(
+        id=credential_id,
+        provider="gmail",
+        auth_type="app_password",
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        WorkflowService.validate_mail_credential_references(
+            db,
+            _durable_draft_graph(credential_id),
+            user_id=str(uuid.uuid4()),
+            organization_id=uuid.uuid4(),
+            require_resolved=True,
+        )
+    assert exc.value.detail == "mail.gmail_oauth_credential_required"
+
+
+@patch("apps.gateway.services.workflow_service.record_resource_permission_denied")
+@patch(
+    "apps.gateway.services.workflow_service.get_effective_mail_credential_auth_state",
+    return_value="none",
+)
+@patch(
+    "apps.gateway.services.workflow_service.has_mail_credential_permission",
+    return_value=False,
+)
+def test_gmail_credential_capability_is_not_disclosed_before_permission(
+    _permission,
+    _auth_state,
+    _record_denial,
+):
+    credential_id = uuid.uuid4()
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = SimpleNamespace(
+        id=credential_id,
+        provider="gmail",
+        auth_type="app_password",
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        WorkflowService.validate_mail_credential_references(
+            db,
+            _durable_draft_graph(credential_id),
+            user_id=str(uuid.uuid4()),
+            organization_id=uuid.uuid4(),
+            require_resolved=True,
+        )
+    assert exc.value.status_code == 403
+    assert exc.value.detail == "mail.credential_permission_denied"

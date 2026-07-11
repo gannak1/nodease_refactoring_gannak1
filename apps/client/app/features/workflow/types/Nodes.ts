@@ -136,7 +136,13 @@ export interface LLMNodeData extends BaseNodeData {
   fallback_model_id?: string;
   auto_model_routing?: boolean;
   model_routing_policy?: {
-    status?: 'off' | 'collecting' | 'active' | 'refreshing' | 'pending_review' | 'failed';
+    status?:
+      | 'off'
+      | 'collecting'
+      | 'active'
+      | 'refreshing'
+      | 'pending_review'
+      | 'failed';
     policy_id?: string;
     policy_version?: string;
     active_policy?: {
@@ -340,9 +346,22 @@ export interface MailNodeData extends BaseNodeData {
   max_results?: number; // Optional: 기본값 10
   unread_only: boolean;
   mark_as_read: boolean;
+  processing_mode?: 'search_only' | 'durable';
 
   // Variables
   referenced_variables: MailVariable[];
+}
+
+export interface GmailDraftNodeData extends BaseNodeData {
+  credential_id?: string | null;
+  configuration_state?: 'resolved' | 'unresolved';
+  processing_ref_selector: string[];
+  reply_body_selector: string[];
+}
+
+export interface MailAcknowledgeNodeData extends BaseNodeData {
+  processing_ref_selector: string[];
+  required_effect_ref_selectors: string[][];
 }
 
 // ========================= [Loop Node] ======================================
@@ -404,6 +423,14 @@ export type ScheduleTriggerNode = ReactFlowNode<
 export type GithubNode = ReactFlowNode<GithubNodeData, 'githubNode'>;
 
 export type MailNode = ReactFlowNode<MailNodeData, 'mailNode'>;
+export type GmailDraftNode = ReactFlowNode<
+  GmailDraftNodeData,
+  'gmailDraftNode'
+>;
+export type MailAcknowledgeNode = ReactFlowNode<
+  MailAcknowledgeNodeData,
+  'mailAcknowledgeNode'
+>;
 export type LoopNode = ReactFlowNode<LoopNodeData, 'loopNode'>;
 // ============================================================================
 
@@ -418,12 +445,14 @@ export type AppNode =
   | ConditionNode
   | CodeNode
   | TemplateNode
+  | MailNode
+  | GmailDraftNode
+  | MailAcknowledgeNode
   | FileExtractionNode
   | VariableExtractionNode
   | WebhookTriggerNode
   | ScheduleTriggerNode
   | GithubNode
-  | MailNode
   | LoopNode
   | NoteNode
   | WorkflowNode;

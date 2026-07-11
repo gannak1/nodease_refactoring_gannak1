@@ -182,6 +182,33 @@
       }
     },
     {
+      "node_type": "gmailDraftNode",
+      "implemented": true,
+      "agent_builder_supported": true,
+      "connection_policy": {"role": "intermediate", "incoming": "allowed", "outgoing": "allowed", "outgoing_handles": "standard"},
+      "capabilities": ["gmail_reply_draft_create"],
+      "side_effect": "external_write",
+      "required_configuration": ["credential_id", "processing_ref_selector", "reply_body_selector"],
+      "configuration_labels": {
+        "credential_id": "Gmail credential",
+        "processing_ref_selector": "Mail processing",
+        "reply_body_selector": "Reply body"
+      }
+    },
+    {
+      "node_type": "mailAcknowledgeNode",
+      "implemented": true,
+      "agent_builder_supported": true,
+      "connection_policy": {"role": "terminal", "incoming": "allowed", "outgoing": "forbidden", "outgoing_handles": "standard"},
+      "capabilities": ["mail_terminal_acknowledgement"],
+      "side_effect": "external_write",
+      "required_configuration": ["processing_ref_selector", "required_effect_ref_selectors"],
+      "configuration_labels": {
+        "processing_ref_selector": "Mail processing",
+        "required_effect_ref_selectors": "Required effects"
+      }
+    },
+    {
       "node_type": "pluginNode",
       "implemented": false,
       "agent_builder_supported": false,

@@ -67,9 +67,7 @@ describe('nodeVariablePorts', () => {
       outputLabels: {
         customer_message: '오래된 출력 라벨',
       },
-      variables: [
-        { name: 'customer_message', label: '고객 문의' },
-      ],
+      variables: [{ name: 'customer_message', label: '고객 문의' }],
     });
 
     expect(getNodeOutputVariables(node)[0]).toMatchObject({
@@ -86,12 +84,15 @@ describe('nodeVariablePorts', () => {
     });
 
     expect(
-      applyDroppedOutputToNodeData(node, makeOutput({
-        key: 'result',
-        label: 'result',
-        sourceNodeId: 'source-node',
-        sourceTitle: 'Source',
-      })),
+      applyDroppedOutputToNodeData(
+        node,
+        makeOutput({
+          key: 'result',
+          label: 'result',
+          sourceNodeId: 'source-node',
+          sourceTitle: 'Source',
+        }),
+      ),
     ).toEqual({
       inputs: [{ name: 'result', source: 'source-node.result' }],
     });
@@ -106,12 +107,15 @@ describe('nodeVariablePorts', () => {
     });
 
     expect(
-      applyDroppedOutputToNodeData(node, makeOutput({
-        key: 'text',
-        label: 'text',
-        sourceNodeId: 'source-node',
-        sourceTitle: 'Source',
-      })),
+      applyDroppedOutputToNodeData(
+        node,
+        makeOutput({
+          key: 'text',
+          label: 'text',
+          sourceNodeId: 'source-node',
+          sourceTitle: 'Source',
+        }),
+      ),
     ).toEqual({
       referenced_variables: [
         { name: 'text', value_selector: ['source-node', 'text'] },
@@ -153,9 +157,7 @@ describe('nodeVariablePorts', () => {
   });
 
   it('이미 등록된 selector를 다시 drop하면 기존 alias를 재사용한다', () => {
-    const existing = [
-      { name: 'llm_text', value_selector: ['node-a', 'text'] },
-    ];
+    const existing = [{ name: 'llm_text', value_selector: ['node-a', 'text'] }];
     const output = makeOutput({
       key: 'text',
       label: 'text',
@@ -190,13 +192,16 @@ describe('nodeVariablePorts', () => {
       ],
     });
 
-    const patch = applyDroppedOutputToNodeData(node, makeOutput({
-      key: 'customer_message',
-      label: '고객 문의',
-      outputId: 'start-variable-id',
-      sourceNodeId: 'start-node',
-      sourceTitle: 'Start',
-    }));
+    const patch = applyDroppedOutputToNodeData(
+      node,
+      makeOutput({
+        key: 'customer_message',
+        label: '고객 문의',
+        outputId: 'start-variable-id',
+        sourceNodeId: 'start-node',
+        sourceTitle: 'Start',
+      }),
+    );
 
     expect(patch).toMatchObject({
       cases: [
@@ -227,17 +232,13 @@ describe('nodeVariablePorts', () => {
         }),
       ),
     ).toEqual({
-      outputs: [
-        { variable: 'text', value_selector: ['llm-node', 'text'] },
-      ],
+      outputs: [{ variable: 'text', value_selector: ['llm-node', 'text'] }],
     });
   });
 
   it('answer node에 같은 selector를 다시 drop하면 반환값을 중복 추가하지 않는다', () => {
     const node = makeNode('answerNode', {
-      outputs: [
-        { variable: 'analysis', value_selector: ['llm-node', 'text'] },
-      ],
+      outputs: [{ variable: 'analysis', value_selector: ['llm-node', 'text'] }],
     });
 
     expect(
@@ -251,17 +252,13 @@ describe('nodeVariablePorts', () => {
         }),
       ),
     ).toEqual({
-      outputs: [
-        { variable: 'analysis', value_selector: ['llm-node', 'text'] },
-      ],
+      outputs: [{ variable: 'analysis', value_selector: ['llm-node', 'text'] }],
     });
   });
 
   it('answer node에 같은 key의 다른 output을 drop하면 반환 key 충돌을 피한다', () => {
     const node = makeNode('answerNode', {
-      outputs: [
-        { variable: 'text', value_selector: ['llm-a', 'text'] },
-      ],
+      outputs: [{ variable: 'text', value_selector: ['llm-a', 'text'] }],
     });
 
     expect(
@@ -308,19 +305,15 @@ describe('nodeVariablePorts', () => {
       referenced_variables: [],
     });
 
-    expect(getNodeOutputVariables(templateNode).map((output) => output.key)).toEqual([
-      'text',
-    ]);
-    expect(getNodeOutputVariables(httpNode).map((output) => output.key)).toEqual([
-      'status',
-      'data',
-      'headers',
-    ]);
-    expect(getNodeOutputVariables(slackNode).map((output) => output.key)).toEqual([
-      'status',
-      'data',
-      'headers',
-    ]);
+    expect(
+      getNodeOutputVariables(templateNode).map((output) => output.key),
+    ).toEqual(['text']);
+    expect(
+      getNodeOutputVariables(httpNode).map((output) => output.key),
+    ).toEqual(['status', 'data', 'headers']);
+    expect(
+      getNodeOutputVariables(slackNode).map((output) => output.key),
+    ).toEqual(['status', 'data', 'headers']);
   });
 
   it('webhook/file extraction의 동적 출력 key를 노드 데이터에서 만든다', () => {
@@ -338,10 +331,9 @@ describe('nodeVariablePorts', () => {
       ],
     });
 
-    expect(getNodeOutputVariables(webhookNode).map((output) => output.key)).toEqual([
-      'issue_key',
-      'summary',
-    ]);
+    expect(
+      getNodeOutputVariables(webhookNode).map((output) => output.key),
+    ).toEqual(['issue_key', 'summary']);
     expect(
       getNodeOutputVariables(fileExtractionNode).map((output) => output.key),
     ).toEqual(['invoice_text', 'contract_text']);
@@ -367,7 +359,9 @@ describe('nodeVariablePorts', () => {
       cases: [],
     });
 
-    expect(getNodeOutputVariables(githubNode).map((output) => output.key)).toEqual([
+    expect(
+      getNodeOutputVariables(githubNode).map((output) => output.key),
+    ).toEqual([
       'pr_title',
       'pr_body',
       'pr_state',
@@ -379,16 +373,12 @@ describe('nodeVariablePorts', () => {
       'comment_url',
       'comment_body',
     ]);
-    expect(getNodeOutputVariables(mailNode).map((output) => output.key)).toEqual([
-      'emails',
-      'total_count',
-      'folder',
-    ]);
-    expect(getNodeOutputVariables(conditionNode).map((output) => output.key)).toEqual([
-      'result',
-      'matched_case_id',
-      'selected_handle',
-    ]);
+    expect(
+      getNodeOutputVariables(mailNode).map((output) => output.key),
+    ).toEqual(['emails', 'total_count', 'folder', 'processing_ref']);
+    expect(
+      getNodeOutputVariables(conditionNode).map((output) => output.key),
+    ).toEqual(['result', 'matched_case_id', 'selected_handle']);
   });
 
   it('llm 출력 변수에 라벨, 설명, 데이터 타입을 포함한다', () => {
