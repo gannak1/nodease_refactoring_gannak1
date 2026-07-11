@@ -79,7 +79,9 @@ Verified Against: TBD
 - Claim model은 generic ORM audit listener 대상이 아니며 raw input, graph, prompt/evidence, credential/provider response와 raw exception column이 없다.
 - Dead-letter reason/correlation DB constraint는 admission 전 reason에 run/start correlation을 금지하고 admission 후 reason에 task/enqueue/start/run correlation을 모두 요구한다. 기존 모순 row가 있으면 migration은 값을 추측해 보정하지 않고 constraint 교체 전에 fail-closed한다.
 - `pending`/`dispatching`/`enqueued`에 `workflow_run_id`를 직접 기록하면 domain과 실제 PostgreSQL check constraint가 모두 거부한다. 한 claim의 publish 결과 write 실패 뒤에도 같은 prepared batch의 다음 claim은 publish/result 처리를 계속하며, terminal finalization 일시 실패는 engine call 1회를 유지한 채 fresh session write만 bounded 재시도한다.
-- Gateway/Worker startup readiness는 같은 shared helper 결과를 사용하고 introspection 실패, stale head, 필수 column 누락을 safe하게 거부한다. Concurrent migration은 advisory lock winner 하나만 진행하며 lock을 얻지 못한 실행은 DDL 전에 실패한다.
+- Gateway/Worker startup readiness는 같은 shared helper 결과를 사용하고 introspection 실패, stale head, 필수 column 누락을 safe하게 거부한다. Concurrent migration은 advisory lock owner 하나만 진행하며 contender는 bounded wait 안에서 owner가 끝나면 이어서 진행하고 제한 시간을 넘기면 DDL 전에 실패한다.
+- 기존 운영 Deployment에 fingerprint annotation이 없는 최초 `disabled` rollout은 bootstrap으로 진행되지만, `drain`/`claim` desired mode에서 annotation 누락은 fail-closed한다.
+- Coordinated claim rollout은 동일 commit Logger image를 Gateway/Worker보다 먼저 배포하고 image identity를 검증한다. 이전 Logger가 남아 있거나 Logger rollout이 실패하면 claim admission을 활성화하지 않는다.
 
 ## Permission Tests
 

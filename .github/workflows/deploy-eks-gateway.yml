@@ -80,6 +80,9 @@ jobs:
             2>"$error_file"); then
             rm -f "$error_file"
             if [[ -z "$current" ]]; then
+              if [[ "$desired" == v1\|disabled\|* ]]; then
+                continue
+              fi
               echo "Schedule dispatch fingerprint is missing from a live deployment."
               exit 1
             fi

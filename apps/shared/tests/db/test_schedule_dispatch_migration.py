@@ -209,6 +209,16 @@ def test_schedule_admission_correlation_migration_extends_merge_head():
     assert "correlation cleanup is required" in inspect.getsource(migration.upgrade)
 
 
+def test_schedule_and_knowledge_metadata_heads_are_merged_without_ddl():
+    migration = importlib.import_module(
+        "apps.shared.alembic.versions."
+        "ff4b5c6d7e89_merge_schedule_and_knowledge_metadata_heads"
+    )
+
+    assert migration.revision == "ff4b5c6d7e89"
+    assert set(migration.down_revision) == {"ff3a4b5c6d78", "fa7c8d9e0f12"}
+
+
 class _MigrationOperations:
     def __init__(self, calls: list[str]):
         self.calls = calls

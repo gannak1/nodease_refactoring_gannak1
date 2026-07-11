@@ -39,19 +39,23 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build and push Gateway and Worker images
+      - name: Build and push Gateway, Worker, and Logger images
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
           gateway_image="$ECR_REGISTRY/moduly-gateway:$IMAGE_TAG"
           worker_image="$ECR_REGISTRY/moduly-workflow-engine:$IMAGE_TAG"
+          logger_image="$ECR_REGISTRY/moduly-logger:$IMAGE_TAG"
           docker build -t "$gateway_image" -f docker/gateway/Dockerfile .
           docker build -t "$worker_image" -f docker/workflow_engine/Dockerfile .
+          docker build -t "$logger_image" -f docker/log_system/Dockerfile .
           docker push "$gateway_image"
           docker push "$worker_image"
+          docker push "$logger_image"
           echo "gateway_image=$gateway_image" >> "$GITHUB_ENV"
           echo "worker_image=$worker_image" >> "$GITHUB_ENV"
+          echo "logger_image=$logger_image" >> "$GITHUB_ENV"
 
       - name: Configure kubectl
         run: |
@@ -77,7 +81,14 @@ jobs:
               2>"$error_file"); then
               rm -f "$error_file"
               IFS=$'\t' read -r live_fingerprint live_image <<< "$output"
-              if [[ -z "$live_fingerprint" || -z "$live_image" ]]; then
+              if [[ -z "$live_image" ]]; then
+                echo "A live deployment is missing rollout identity."
+                exit 1
+              fi
+              if [[ -z "$live_fingerprint" ]]; then
+                if [[ "$gateway_desired" == v1\|disabled\|* ]]; then
+                  return
+                fi
                 echo "A live deployment is missing rollout identity."
                 exit 1
               fi
@@ -221,11 +232,15 @@ jobs:
           gateway_tag=${gateway_image##*:}
           worker_name=${worker_image%:*}
           worker_tag=${worker_image##*:}
-          mkdir -p /tmp/nodease-gateway /tmp/nodease-worker
+          logger_name=${logger_image%:*}
+          logger_tag=${logger_image##*:}
+          mkdir -p /tmp/nodease-gateway /tmp/nodease-worker /tmp/nodease-logger
           cp infra/k8s/namespaces/default/gateway-deployment.yaml \
             /tmp/nodease-gateway/resources.yaml
           cp infra/k8s/namespaces/default/worker-deployment.yaml \
             /tmp/nodease-worker/resources.yaml
+          cp infra/k8s/namespaces/default/logger-deployment.yaml \
+            /tmp/nodease-logger/resources.yaml
           cat > /tmp/nodease-gateway/kustomization.yaml <<EOF
           resources:
             - resources.yaml
@@ -242,8 +257,17 @@ jobs:
               newName: $worker_name
               newTag: $worker_tag
           EOF
+          cat > /tmp/nodease-logger/kustomization.yaml <<EOF
+          resources:
+            - resources.yaml
+          images:
+            - name: 912894834396.dkr.ecr.ap-northeast-2.amazonaws.com/moduly-logger
+              newName: $logger_name
+              newTag: $logger_tag
+          EOF
           kubectl kustomize /tmp/nodease-gateway > /tmp/gateway-rendered.yaml
           kubectl kustomize /tmp/nodease-worker > /tmp/worker-rendered.yaml
+          kubectl kustomize /tmp/nodease-logger > /tmp/logger-rendered.yaml
 
           apply_and_verify() {
             manifest=$1
@@ -261,6 +285,20 @@ jobs:
               exit 1
             fi
           }
+
+          apply_logger_and_verify() {
+            kubectl apply -f /tmp/logger-rendered.yaml
+            kubectl rollout status deployment/logger --timeout=10m
+            current_image=$(kubectl get deployment logger \
+              -o jsonpath='{.spec.template.spec.containers[0].image}')
+            if [[ "$current_image" != "$logger_image" ]]; then
+              echo "Logger did not load the expected commit image."
+              exit 1
+            fi
+          }
+
+          # New schedule run/log contracts must be live before claim admission starts.
+          apply_logger_and_verify
 
           target_mode=$(printf '%s' "$schedule_fingerprint" | cut -d'|' -f2)
           case "$schedule_rollout_action" in

@@ -105,23 +105,48 @@ def test_eks_worker_deploy_runs_migration_before_application_rollout():
 def test_eks_gateway_and_worker_share_rollout_lock_and_fingerprint_preflight():
     gateway = _read(".github/workflows/deploy-eks-gateway.yml")
     worker = _read(".github/workflows/deploy-eks-worker.yml")
+    logger = _read(".github/workflows/deploy-eks-logger.yml")
 
     for workflow in (gateway, worker):
         assert "group: production-schema-rollout" in workflow
         assert "name: Verify shared schedule dispatch fingerprint" in workflow
         assert "api-server worker" in workflow
+        missing_annotation = workflow.index('if [[ -z "$current" ]]')
+        bootstrap_guard = workflow.index(
+            '"$desired" == v1\\|disabled\\|*', missing_annotation
+        )
+        missing_error = workflow.index(
+            "Schedule dispatch fingerprint is missing", missing_annotation
+        )
+        assert bootstrap_guard < missing_error
         assert "require the coordinated rollout workflow" in workflow
+    assert "group: production-schema-rollout" in logger
+    assert "cancel-in-progress: false" in logger
 
     coordinated = _read(".github/workflows/deploy-eks-schedule-coordinated.yml")
     assert "group: production-schema-rollout" in coordinated
     assert "environment: production" in coordinated
     assert "name: Validate current and desired fingerprints" in coordinated
+    assert "Build and push Gateway, Worker, and Logger images" in coordinated
+    assert "docker/log_system/Dockerfile" in coordinated
     assert "name: Run Alembic Migration" in coordinated
     assert "name: Render commit images and apply staged rollout" in coordinated
     assert "apiVersion: \"v1\"" in coordinated
     assert "github.run_attempt" in coordinated
     assert "trap cleanup_migration_pod EXIT" in coordinated
     assert "kubectl kustomize" in coordinated
+    assert "/tmp/logger-rendered.yaml" in coordinated
+    assert "apply_logger_and_verify" in coordinated
+    logger_rollout = coordinated.index("\n          apply_logger_and_verify\n")
+    assert logger_rollout < coordinated.index('case "$schedule_rollout_action"')
+    missing_annotation = coordinated.index('if [[ -z "$live_fingerprint" ]]')
+    bootstrap_guard = coordinated.index(
+        '"$gateway_desired" == v1\\|disabled\\|*', missing_annotation
+    )
+    missing_error = coordinated.index(
+        "A live deployment is missing rollout identity", missing_annotation
+    )
+    assert bootstrap_guard < missing_error
     assert 'target_mode" == "claim"' in coordinated
     assert "previous_fingerprint:" in coordinated
     assert "apps.shared.domain.schedule_dispatch_rollout" in coordinated

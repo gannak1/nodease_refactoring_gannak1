@@ -63,7 +63,7 @@ from sqlalchemy.orm import Session
 ROOT_DIR = Path(__file__).resolve().parents[4]
 RUN_ENV = "NODEASE_RUN_DISPOSABLE_DB_TEST"
 DB_PREFIX = "mbased_schedule_claim"
-HEAD_REVISION = "ff3a4b5c6d78"
+HEAD_REVISION = "ff4b5c6d7e89"
 PRE_CLAIM_REVISION = "fa7b8c9d0e12"
 
 
@@ -520,6 +520,7 @@ def test_migration_advisory_lock_has_one_database_session_owner():
     )
     database_created = False
     acquired = Event()
+    contender_acquired = Event()
     release = Event()
 
     try:
@@ -535,15 +536,28 @@ def test_migration_advisory_lock_has_one_database_session_owner():
                     if not release.wait(timeout=10):
                         raise RuntimeError("migration lock test release timed out")
 
+        def wait_for_lock() -> None:
+            with engine.connect() as connection:
+                with migration_advisory_lock(
+                    connection,
+                    timeout_seconds=5,
+                    poll_interval_seconds=0.05,
+                ):
+                    contender_acquired.set()
+
         with ThreadPoolExecutor(max_workers=2) as executor:
             owner = executor.submit(hold_lock)
             assert acquired.wait(timeout=10)
             with engine.connect() as contender:
                 with pytest.raises(RuntimeError, match="already running"):
-                    with migration_advisory_lock(contender):
+                    with migration_advisory_lock(contender, timeout_seconds=0):
                         pass
+            waiting = executor.submit(wait_for_lock)
+            assert not contender_acquired.wait(timeout=0.1)
             release.set()
             owner.result(timeout=10)
+            waiting.result(timeout=10)
+            assert contender_acquired.is_set()
         engine.dispose()
     except OperationalError:
         raise pytest.fail.Exception(
