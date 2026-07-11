@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
 from apps.shared.alembic.migration_lock import migration_advisory_lock
 
 

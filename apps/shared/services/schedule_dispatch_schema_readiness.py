@@ -4,14 +4,13 @@ from pathlib import Path
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from sqlalchemy import inspect
-from sqlalchemy.engine import Engine
-
 from apps.shared.domain.schedule_dispatch import ScheduleDispatchSettings
 from apps.shared.services.alembic_readiness import (
     AlembicReadinessResult,
     check_alembic_readiness_with_inspector,
 )
+from sqlalchemy import inspect
+from sqlalchemy.engine import Engine
 
 ROOT_DIR = Path(__file__).resolve().parents[3]
 

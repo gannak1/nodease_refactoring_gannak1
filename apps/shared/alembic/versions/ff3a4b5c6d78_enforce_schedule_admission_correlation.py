@@ -7,12 +7,12 @@ Revises: fe2f3a4b5c67
 from typing import Sequence, Union
 
 import sqlalchemy as sa
-from alembic import op
-
 from apps.shared.alembic.schedule_dispatch_downgrade import (
     assert_schedule_configuration_quarantine_downgrade_is_safe,
     assert_schedule_dispatch_downgrade_is_safe,
 )
+
+from alembic import op
 
 revision: str = "ff3a4b5c6d78"
 down_revision: Union[str, Sequence[str], None] = "fe2f3a4b5c67"
