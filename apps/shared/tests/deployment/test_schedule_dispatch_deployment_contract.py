@@ -128,4 +128,8 @@ def test_eks_gateway_and_worker_share_rollout_lock_and_fingerprint_preflight():
     assert 'case "$schedule_rollout_action"' in coordinated
     assert "name: Check disabled rollback blockers" in coordinated
     assert "check_schedule_dispatch_rollback.py" in coordinated
+    assert coordinated.index("name: Run Alembic Migration") < coordinated.index(
+        "name: Check disabled rollback blockers"
+    )
+    assert '"$previous_mode" != "drain"' in coordinated
     assert "name: Verify both rollouts and fingerprints" in coordinated
