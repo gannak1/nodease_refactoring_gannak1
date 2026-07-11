@@ -138,6 +138,7 @@ def test_block_records_policy_block_audit_with_actor_and_trigger_mode():
     assert audit.status == "failure"
     assert audit.actor_id == actor_id
     assert audit.audit_metadata["reason"] == "budget.exceeded"
+    assert audit.audit_metadata["policy_reason"] == "budget.exceeded"
     assert audit.audit_metadata["trigger_mode"] == "test"
     assert audit.audit_metadata["organization_id"] == str(organization_id)
     # 요청은 실패해도 차단 audit은 커밋되어야 한다.

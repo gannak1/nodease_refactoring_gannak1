@@ -132,3 +132,75 @@ def test_policy_block_rejects_unknown_machine_reason_without_writing():
         )
 
     assert session.added == []
+
+
+@pytest.mark.parametrize(
+    "policy_reason",
+    [
+        "access_management.self_control_forbidden",
+        "access_management.last_active_manager",
+        "access_management.manager_override_active",
+        "access_management.member_state_not_manageable",
+        "access_management.target_user_inactive",
+        "access_management.stale_state",
+    ],
+)
+def test_policy_block_accepts_all_canonical_access_management_reasons(
+    policy_reason,
+):
+    session = _Session()
+    actor = SimpleNamespace(id=uuid.uuid4(), email=None, name=None)
+    command = _command(actor_id=actor.id)
+
+    SqlAlchemyAccessManagementAuditRecorder(session, actor=actor).record_policy_block(
+        command,
+        membership_id=uuid.uuid4(),
+        policy_reason=policy_reason,
+        reason=None,
+    )
+
+    assert len(session.added) == 1
+    row = session.added[0]
+    assert row.action == "policy.block"
+    assert row.category == "action"
+    assert row.status == "failure"
+    assert row.audit_metadata["policy_reason"] == policy_reason
+
+
+def test_policy_block_excludes_actor_contact_and_request_network_metadata():
+    session = _Session()
+    actor = SimpleNamespace(
+        id=uuid.uuid4(),
+        email="synthetic-secret@example.invalid",
+        name="Synthetic Secret Actor",
+    )
+    command = _command(actor_id=actor.id)
+    token = set_current_metadata(
+        {
+            "request_id": "request-safe",
+            "ip": "203.0.113.99",
+            "user_agent": "synthetic-secret-agent",
+        }
+    )
+    try:
+        SqlAlchemyAccessManagementAuditRecorder(
+            session,
+            actor=actor,
+        ).record_policy_block(
+            command,
+            membership_id=uuid.uuid4(),
+            policy_reason="access_management.self_control_forbidden",
+            reason=None,
+        )
+    finally:
+        clear_current_metadata(token)
+
+    metadata = session.added[0].audit_metadata
+    assert metadata["request_id"] == "request-safe"
+    assert metadata["actor"] == {"id": str(actor.id)}
+    assert "ip" not in metadata
+    assert "user_agent" not in metadata
+    assert actor.email not in repr(metadata)
+    assert actor.name not in repr(metadata)
+    assert "203.0.113.99" not in repr(metadata)
+    assert "synthetic-secret-agent" not in repr(metadata)

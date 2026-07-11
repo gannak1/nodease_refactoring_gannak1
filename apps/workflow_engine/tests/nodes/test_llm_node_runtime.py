@@ -2896,6 +2896,10 @@ def test_llm_node_rag_policy_block_audit_uses_canonical_action(monkeypatch):
         "result": "block",
         "reason_code": "pii_policy_blocked",
     }
+    assert (
+        audit_calls[0]["metadata"]["policy_reason"]
+        == "rag.pii_evidence_detected"
+    )
     assert audit_calls[0]["metadata"]["organization_id"] == str(organization_id)
 
 

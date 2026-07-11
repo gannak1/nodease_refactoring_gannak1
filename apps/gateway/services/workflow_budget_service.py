@@ -173,7 +173,11 @@ class WorkflowBudgetService:
             target_type="workflow",
             target_id=normalized_id,
             organization_id=budget.organization_id,
-            metadata={"reason": "budget.exceeded", "trigger_mode": trigger_mode},
+            metadata={
+                "reason": "budget.exceeded",
+                "policy_reason": "budget.exceeded",
+                "trigger_mode": trigger_mode,
+            },
             status="failure",
         )
         db.commit()
