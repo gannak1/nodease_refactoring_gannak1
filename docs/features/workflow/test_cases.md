@@ -391,6 +391,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - Schedule/webhook/API trigger 실행은 배포 시 승인된 service account 또는 정책상 지정된 execution subject가 없으면 anonymous public-only로 Knowledge retrieval을 실행한다.
 - System schedule run은 `WorkflowRun.user_id=null`, execution audit system actor이며 App/deployment creator나 workflow owner가 executor/RAG subject로 전파되지 않는다. 기존 manual/API/webhook user-attributed run은 non-null actor 계약을 유지한다.
 - System schedule의 LLM credential principal은 locked canonical deployment creator에서만 구성되고 queue가 덮어쓸 수 없다. 이 principal로 LLM credential, query embedding과 legacy usage billing owner를 선택할 수 있지만 private Knowledge retrieval은 계속 execution subject 부재에 따른 anonymous public-only 경계를 사용한다. Malformed/unknown principal type은 fail-closed한다.
+- Code node는 interactive/system schedule 여부와 무관하게 canonical `execution_context.organization_id`를 sandbox tenant로 전달한다. `user_id`가 null인 schedule도 organization tenant를 유지하고, organization이 없을 때 user를 tenant로 승격하지 않는다.
 - Duplicate schedule task delivery는 stable workflow run id 하나를 재사용하고 engine admission을 한 번만 허용한다. Admission 이후 outcome unknown은 자동 replay하지 않는다.
 - Schedule idempotency correlation은 node execution context에서 opaque하게 전달되지만 prompt/output/raw trace에 포함되지 않으며 provider side-effect exactly-once로 주장하지 않는다.
 - 배포 preflight는 LLM node RAG 옵션의 KB/collection 후보가 deployment type에서 파생한 runtime audience에게 사용 가능한지 검증하고, unavailable/unknown/private 후보가 있으면 hidden id/count 없이 safe reason과 required action만 반환한다.

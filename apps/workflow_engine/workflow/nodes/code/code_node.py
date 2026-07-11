@@ -55,8 +55,12 @@ class CodeNode(Node[CodeNodeData]):
 
         # 2. 샌드박스에서 코드 실행
         organization_id = (
-            self.execution_context.get("user_id") if self.execution_context else None
+            self.execution_context.get("organization_id")
+            if self.execution_context
+            else None
         )
+        if organization_id is not None:
+            organization_id = str(organization_id)
         trigger_mode = (
             self.execution_context.get("trigger_mode")
             if self.execution_context

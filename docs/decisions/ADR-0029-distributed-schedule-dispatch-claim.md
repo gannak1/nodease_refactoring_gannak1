@@ -95,6 +95,8 @@ Gateway schedule application은 access-management application model/port/recorde
 
 Migration을 먼저 적용하고 application은 `disabled` mode로 배포한다. 구버전 direct dispatcher와 신버전 claim dispatcher가 동시에 활성화되지 않도록 queue/task drain 뒤 `claim` mode를 활성화한다. Rollback은 `claim -> drain -> disabled` 순서로 수행한다. Nonterminal claim, review되지 않은 outcome unknown, active/queued/reserved schedule task가 남아 있으면 rollback을 중단한다. 이는 application rollout rollback이며, schedule branch의 migration downgrade는 system schedule executor history, Log System row가 아직 없는 admitted claim, active/unreviewed claim, quarantine state를 임의로 버리지 않도록 모든 schedule revision의 첫 DDL 전에 fail-closed한다.
 
+`disabled`는 명시적인 kill switch이자 rollout 중간 상태다. 이 모드에서 신규 claim 또는 legacy APScheduler enqueue를 수행하지 않는다. Legacy fallback을 되살리면 다중 Gateway replica가 같은 occurrence를 중복 실행할 수 있으므로 허용하지 않으며, 지속적인 schedule 실행이 필요한 환경은 승인된 drain 검증 뒤 `claim` mode로 전환해야 한다.
+
 Claim activation preflight는 legacy/new schedule task의 active/reserved/scheduled 상태와 Redis workflow priority queue depth를 확인한다. Broker queue payload는 파싱하거나 보관하지 않으며 inspection/queue depth 확인 불가 또는 non-zero이면 fail-closed한다. Rollback preflight는 migration 이후 `drain -> disabled`에서만 실행한다. 신규 disabled bootstrap과 disabled image-only rollout은 Worker 부재를 오류로 오인하지 않도록 rollback preflight를 생략한다.
 
 Gateway startup은 migration-managed table/enum을 `create_all()`로 생성하거나 보정하지 않는다. Demo/test bootstrap만 명시적으로 `create_all()`을 사용할 수 있다.

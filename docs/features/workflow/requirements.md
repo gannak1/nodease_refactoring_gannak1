@@ -53,6 +53,7 @@ MBA-104 범위에서는 비용 최적화와 A/B 비교 실행을 준비하기 �
 - FR-011: Schedule Worker는 claim admission 전에 stable workflow run id를 정하고 duplicate delivery에서 같은 id를 재사용해야 한다. Admission 이후 실패나 timeout으로 outcome이 불명확하면 engine을 자동 재실행하지 않아야 한다.
 - FR-012: Schedule execution context의 idempotency key는 node adapter까지 opaque correlation으로 전달할 수 있지만 prompt, user-visible output, durable raw trace에 복제하지 않아야 한다. 이 전달은 외부 provider의 exactly-once를 보장하지 않는다.
 - FR-013: 요청 사용자가 없는 system schedule이 LLM provider credential을 사용해야 할 때 runtime은 locked canonical deployment의 `created_by`를 user형 credential principal로만 사용할 수 있다. 이 principal은 queue 입력에서 받지 않으며 executor, audit actor 또는 Knowledge execution subject로 승격하지 않는다. Legacy `LLMUsageLog.user_id`에는 비용/credential 귀속을 위해 이 principal을 기록하되 WorkflowRun actor 의미로 해석하지 않는다. 별도 service account principal은 lifecycle과 권한 모델이 승인되기 전까지 합성하지 않는다.
+- FR-014: Code node는 sandbox tenant/fairness context에 canonical `execution_context.organization_id`를 전달해야 한다. `user_id`를 organization tenant로 해석하거나 system schedule의 null executor 때문에 canonical organization을 누락해서는 안 된다.
 
 
 ### 1. 실행 편의성

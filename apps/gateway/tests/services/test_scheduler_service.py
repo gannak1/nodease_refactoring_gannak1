@@ -59,7 +59,7 @@ def _service(*, mode="claim", publisher=None):
     )
 
 
-def test_disabled_mode_initializes_facade_without_background_scheduler():
+def test_disabled_mode_is_a_kill_switch_without_legacy_fallback_scheduler():
     service = _service(mode="disabled")
 
     assert service.scheduler is None

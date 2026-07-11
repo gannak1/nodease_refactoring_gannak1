@@ -12,7 +12,7 @@ class TraceSummarySchema(BaseModel):
     id: UUID
     workflow_id: UUID
     app_id: Optional[UUID] = None
-    user_id: UUID
+    user_id: Optional[UUID]
     deployment_id: Optional[UUID] = None
     status: str
     trigger_mode: str
