@@ -24,8 +24,8 @@ Verified Against: feature/mba-147 @ e1a04e9
 
 ### AC-3. 사용률 판정 경계 (BGT-REQ-010~012)
 
-- Given 예산 100 USD와 당월 비용 89.99 USD, When 상태를 판정하면, Then `normal`이다.
-- Given 당월 비용 90.00 USD (정확히 90%), Then `at_risk`다.
+- Given 예산 100 USD와 당월 비용 79.99 USD, When 상태를 판정하면, Then `normal`이다.
+- Given 당월 비용 80.00 USD (정확히 80%), Then `at_risk`다.
 - Given 당월 비용 100.00 USD (정확히 100%), Then `at_risk`이고 실행은 차단되지 않는다.
 - Given 당월 비용 100.000001 USD (100% 초과), Then `exceeded`다. 판정은 반올림 전 값 기준이다.
 - Given `is_enabled=false` 또는 `monthly_budget_usd <= 0`인 예산, When 판정하면, Then 상태/사용률은 null이고 위험/초과 집계와 차단 대상에서 제외된다.
@@ -49,7 +49,7 @@ Verified Against: feature/mba-147 @ e1a04e9
 - Given `workflow_id=null`인 App과 같은 `app_id`를 가진 과거/보조 workflow에 활성 예산이 있다, When `GET /apps` 또는 `GET /apps/operations`를 호출하면, Then 해당 App의 `budget_status`는 null이다.
 - Given `GET /apps` 또는 `GET /apps/operations` 응답 대상에 여러 App의 primary workflow가 포함된다, When `budget_status`를 계산하면, Then primary workflow별 당월 비용은 grouped query로 계산하고 App row마다 개별 집계를 반복하지 않는다.
 - Given App의 primary workflow에 활성 예산이 있고 같은 workflow의 당월 usage row 중 `llm_usage_logs.organization_id`가 NULL인 기존/마이그레이션 로그가 있다, When `GET /apps` 또는 `GET /apps/operations`의 `budget_status`를 계산하면, Then NULL organization usage도 합산해 실행 차단 판정과 같은 `status`를 반환한다.
-- Given 예산 100 USD와 당월 비용 89.99/90.00/100.00/100.000001 USD인 App들이 있다, When `GET /apps` 또는 `GET /apps/operations`를 호출하면, Then `budget_status.status`는 각각 `normal`/`at_risk`/`at_risk`/`exceeded`다.
+- Given 예산 100 USD와 당월 비용 79.99/80.00/100.00/100.000001 USD인 App들이 있다, When `GET /apps` 또는 `GET /apps/operations`를 호출하면, Then `budget_status.status`는 각각 `normal`/`at_risk`/`at_risk`/`exceeded`다.
 - Given KST 월 경계 row가 App의 primary workflow에 기록되어 있다, When `budget_status`를 계산하면, Then KST 당월 `[start, end)` 경계 기준으로 포함/제외한다.
 
 ### AC-5. 실행 차단 (BGT-REQ-030~034)
@@ -58,7 +58,7 @@ Verified Against: feature/mba-147 @ e1a04e9
 - Given `exceeded` 상태 workflow의 활성 배포, When `POST /run/{slug}`(api)와 `POST /run-public/{slug}`(app)를 호출하면, Then 동일한 `429 budget.exceeded`로 차단된다.
 - Given `exceeded` 상태 workflow의 webhook/schedule trigger, When trigger가 발화하면, Then 실행이 dispatch되지 않고 차단 audit이 기록된다.
 - Given 차단 응답, When body를 확인하면, Then 예산 금액과 당월 비용 원문이 포함되지 않는다.
-- Given `at_risk` 상태(90% 이상 100% 이하) workflow, When 실행하면, Then 차단되지 않고 정상 실행된다.
+- Given `at_risk` 상태(80% 이상 100% 이하) workflow, When 실행하면, Then 차단되지 않고 정상 실행된다.
 - Given `exceeded` 상태 workflow, When `POST /workflows/{id}/compare`(A/B 비교)를 호출하면, Then 차단되지 않는다 (BGT-REQ-032).
 - Given 예산 미설정 workflow, When 모든 실행 경로(테스트/api/app/webhook/schedule)를 실행하면, Then 예산 로직 없이 기존과 동일하게 동작한다 (NFR-005 기존 경로 보존).
 - Given 활성 예산 workflow에서 당월 비용 집계 실패(DB 오류 주입), When 실행을 요청하면, Then fail-closed로 차단된다 (BGT-REQ-033).
@@ -89,8 +89,8 @@ Gateway service/helper 대상 (기존 pytest 패턴). 함수명은 구현 시 �
 
 ### 판정 함수 `classify_budget_usage(current_cost, budget)`
 
-- 경계값: 89.99→`normal`, 90.00→`at_risk`, 100.00→`at_risk`, 100.000001→`exceeded` (예산 100 기준).
-- 정밀도: 비교는 `Decimal`로 수행하고, float 이진 표현 오차로 경계 판정이 뒤집히는 입력(예: 예산 0.30, 비용 0.27)에서도 정확히 판정한다.
+- 경계값: 79.99→`normal`, 80.00→`at_risk`, 100.00→`at_risk`, 100.000001→`exceeded` (예산 100 기준).
+- 정밀도: 비교는 `Decimal`로 수행하고, float 이진 표현 오차로 경계 판정이 뒤집히는 입력(예: 예산 0.30, 비용 0.24)에서도 정확히 판정한다.
 - 비활성(`is_enabled=false`), 예산 0, 음수 예산, 예산 row 없음 → null (판정 제외).
 - 비용 0, 비용이 예산의 수백 배인 극단값 → 각각 `normal`/`exceeded`, 오버플로 없음.
 
@@ -144,7 +144,7 @@ Gateway service/helper 대상 (기존 pytest 패턴). 함수명은 구현 시 �
 - `GET /admin/workflow-budgets` 목록 — 조직 scope 필터, `updated_at` 내림차순, pagination.
 - `GET /apps` budget_status — 목록 전체가 primary workflow id 기준 grouped query 1회로 계산 (N+1 없음), 사용량 합산은 실행 차단과 동일하게 `workflow_id`+KST 월 경계 기준(`llm_usage_logs.organization_id` 필터 없음), `usage_ratio`/`status`만 포함 (금액 필드 부재 검증), `workflow_id` null인 App은 null, 같은 `app_id`의 과거/보조 workflow 예산은 무시.
 - `GET /apps/operations` app budget_status — operations page/batch의 primary workflow id 기준으로 grouped query 1회 계산, 같은 workflow의 NULL organization legacy usage를 포함, `row.app.budget_status` shape는 `GET /apps`와 동일, 권한 없는 row에는 예산 상태를 노출하지 않음, `workflows.app_id` 역참조로 후보를 확장하지 않음.
-- App budget_status 경계값 — 89.99/90.00/100.00/100.000001(예산 100)에서 `normal`/`at_risk`/`at_risk`/`exceeded`, `total_cost` NULL은 0, 비활성/0 이하 예산은 null.
+- App budget_status 경계값 — 79.99/80.00/100.00/100.000001(예산 100)에서 `normal`/`at_risk`/`at_risk`/`exceeded`, `total_cost` NULL은 0, 비활성/0 이하 예산은 null.
 - App budget_status 월 경계 — KST 월초 정각 포함, 다음 달 월초 정각 제외, 기준 시각은 timezone-aware KST now 사용.
 - 모든 예산 응답에 secret/credential/raw payload 계열 필드 부재.
 

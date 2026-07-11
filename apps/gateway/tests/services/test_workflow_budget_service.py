@@ -3,7 +3,7 @@
 TDD red phase: 서비스와 AuditAction 상수가 아직 없으므로 전부 실패해야 한다.
 docs/features/budget-management/test_cases.md의 Unit Tests 계약을 검증한다.
 
-- 판정 함수: 90%/100% 경계, Decimal 정밀도, 비활성/0 이하 제외 (BGT-REQ-010~012)
+- 판정 함수: 80%/100% 경계, Decimal 정밀도, 비활성/0 이하 제외 (BGT-REQ-010~012)
 - 당월 집계: KST 달력 월 [start, end), NULL cost 0 합산, now 주입 (BGT-REQ-011)
 - 예산 upsert: 생성/갱신/비활성화/no-op/생성 경합, audit 분기 (BGT-REQ-001~005, 040)
 - admin summary/usage의 budget 블록 (BGT-REQ-020~021)
@@ -44,8 +44,8 @@ def _admin_usage_service():
 @pytest.mark.parametrize(
     ("current_cost", "expected"),
     [
-        (Decimal("89.99"), "normal"),
-        (Decimal("90.00"), "at_risk"),
+        (Decimal("79.99"), "normal"),
+        (Decimal("80.00"), "at_risk"),
         (Decimal("100.00"), "at_risk"),  # 정확히 100%는 초과가 아니다
         (Decimal("100.000001"), "exceeded"),
         (Decimal("0"), "normal"),
@@ -65,14 +65,14 @@ def test_classify_budget_usage_boundaries(current_cost, expected):
 
 
 def test_classify_budget_usage_uses_decimal_not_float():
-    # float로 계산하면 0.99/1.10 == 0.8999999999999999 로 normal 오판.
-    # Decimal로는 정확히 90%라 at_risk다 (requirements Policies의 Decimal 규칙).
+    # float로 계산하면 0.24/0.30이 0.8보다 작게 표현될 수 있다.
+    # Decimal로는 정확히 80%라 at_risk다 (requirements Policies의 Decimal 규칙).
     service = _service()
 
     assert (
         service.classify_budget_usage(
-            current_cost=Decimal("0.99"),
-            monthly_budget_usd=Decimal("1.10"),
+            current_cost=Decimal("0.24"),
+            monthly_budget_usd=Decimal("0.30"),
         )
         == "at_risk"
     )

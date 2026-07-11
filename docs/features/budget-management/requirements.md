@@ -30,7 +30,7 @@ Related Features: admin-dashboard, workflow, app-management, deployment, audit-t
 
 - BGT-REQ-010: 활성 예산은 `is_enabled=true`이고 `monthly_budget_usd > 0`인 예산이다. 예산 미설정, 비활성, 0 이하 예산 workflow는 위험/초과 판정과 실행 차단 대상에서 제외한다.
 - BGT-REQ-011: 사용률은 `당월 비용 합계 / monthly_budget_usd`로 계산한다. 당월 비용 합계는 해당 workflow의 `llm_usage_logs.total_cost`를 KST(Asia/Seoul) 달력 월 경계로 합산한 값이며, usage row가 없거나 `total_cost`가 NULL인 row는 0으로 합산한다 (admin-dashboard 시간대/집계 규칙과 동일). 비용 합산 범위는 실행 차단 판정과 동일하게 `workflow_id`와 월 경계로 결정한다. 예산 row 조회와 접근 권한은 organization scope로 제한하지만, `llm_usage_logs.organization_id`는 nullable/denormalized 호환 컬럼이므로 비용 합산 필터로 요구하지 않는다. 따라서 `workflow_id`가 일치하는 기존/마이그레이션 로그는 `organization_id`가 NULL이어도 합산한다.
-- BGT-REQ-012: 상태는 반올림 전 사용률 값으로 판정한다: 90% 미만은 `normal`, 90% 이상 100% 이하는 `at_risk`, 100% 초과는 `exceeded`.
+- BGT-REQ-012: 상태는 반올림 전 사용률 값으로 판정한다: 80% 미만은 `normal`, 80% 이상 100% 이하는 `at_risk`, 100% 초과는 `exceeded`.
 
 ### 사용률 조회 (FR-052, FR-015)
 
@@ -65,7 +65,7 @@ Related Features: admin-dashboard, workflow, app-management, deployment, audit-t
 - 관리자 비용 탭의 `GET /admin/usage/workflows`도 App primary workflow 전체를 목록 기준으로 삼는다. 기간 안에 usage가 없는 workflow는 비용 0 row로 표시되어야 하며, 예산 설정 진입에서 누락되면 안 된다.
 - `GET /apps`/`GET /apps/operations`의 `budget_status` 조회와 예산 수정·비활성화·삭제가 경합하면 응답은 5xx 없이 완료되어야 한다. 각 row의 `usage_ratio`와 `status`는 같은 조회 스냅샷 기준으로 일관되면 되며, 경합 결과 활성 예산을 찾을 수 없으면 `budget_status=null`로 처리한다.
 - 예산 수정/비활성화가 진행 중인 실행에 소급 적용되지 않는다. 판정은 dispatch 시점 스냅샷이며, 판정과 동시에 예산이 수정되는 경합에서는 수정 전/후 어느 한쪽 기준으로 일관되게 판정되면 된다 (5xx 금지).
-- 월 경계(KST 자정) 근처의 실행 요청은 판정 시점의 KST가 속한 달을 기준으로 집계한다. 사용률 계산은 float 오차로 90%/100% 경계 판정이 뒤집히지 않도록 `Decimal`(원본 `NUMERIC` 정밀도)로 수행한다.
+- 월 경계(KST 자정) 근처의 실행 요청은 판정 시점의 KST가 속한 달을 기준으로 집계한다. 사용률 계산은 float 오차로 80%/100% 경계 판정이 뒤집히지 않도록 `Decimal`(원본 `NUMERIC` 정밀도)로 수행한다.
 - 가격 미산정 모델 호출이 `total_cost=0.0`으로 기록되는 admin-dashboard의 알려진 한계는 예산 집계에도 동일하게 적용된다. 실제 비용보다 낮게 집계되어 차단이 늦어질 수 있다 (수용).
 - 프론트의 실행 버튼 차단은 UX 보조이며 최종 차단은 Gateway가 수행한다 (NFR-001).
 

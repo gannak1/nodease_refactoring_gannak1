@@ -25,6 +25,7 @@ Verified Against: feature/mba-147 @ e1a04e9
 - Pagination은 기존 패턴을 따른다: `page`(1-base, 기본 1), `limit`(기본 20, 최대 100), 응답은 `{ "total": <int>, "items": [...] }`.
 - 비용/예산 값은 USD이며 JSON number로 반환한다. 반올림은 클라이언트 표시 계층에서 1회만 수행한다. `usage_ratio`와 상태 판정은 반올림 전 값 기준이다 (BGT-REQ-012).
 - `status`는 `normal` | `at_risk` | `exceeded` 문자열이다.
+- 상태 판정은 반올림 전 `usage_ratio` 기준으로 80% 미만 `normal`, 80% 이상 100% 이하 `at_risk`, 100% 초과 `exceeded`다 (BGT-REQ-012).
 
 ### GET /admin/workflow-budgets
 

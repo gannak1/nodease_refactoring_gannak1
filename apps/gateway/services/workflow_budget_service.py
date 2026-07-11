@@ -38,7 +38,7 @@ class WorkflowBudgetService:
         ratio = _to_decimal(current_cost) / budget
         if ratio > Decimal("1.0"):
             return "exceeded"
-        if ratio >= Decimal("0.9"):
+        if ratio >= Decimal("0.8"):
             return "at_risk"
         return "normal"
 

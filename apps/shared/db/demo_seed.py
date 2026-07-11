@@ -559,11 +559,11 @@ LLM은 개인정보 처리 기준, 접근 신청 절차, 보존 기간 같은 �
 
 민감 정보 접근 요청이 탐지되면 audit trace에 정책 차단 이벤트를 남기고 관리자 검토 대상으로 분류한다.
 """,
-    "internal_budget_alert_runbook": """# 워크플로우 예산 90% 알림 운영 Runbook
+    "internal_budget_alert_runbook": """# 워크플로우 예산 80% 알림 운영 Runbook
 
 ## 알림 기준
 
-관리자 운영 콘솔은 월 예산 사용률이 90% 이상인 워크플로우를 비용 위험 대상으로 표시한다.
+관리자 운영 콘솔은 월 예산 사용률이 80% 이상인 워크플로우를 비용 위험 대상으로 표시한다.
 관리자는 대상 워크플로우를 일괄 선택해 운영자에게 비용 점검 알림을 보낼 수 있다.
 
 ## 알림 내용
@@ -855,14 +855,14 @@ INTERNAL_DOCUMENT_SPECS = (
     ),
     DemoKnowledgeSeedSpec(
         key="internal_budget_alert_runbook",
-        name="사내문서: 워크플로우 예산 90% 알림 Runbook",
+        name="사내문서: 워크플로우 예산 80% 알림 Runbook",
         description="관리자 예산 알림과 운영자 후속 분석 절차를 설명하는 운영문서 KB",
-        filename="워크플로우 예산 90퍼센트 알림 Runbook.md",
-        summary="예산 90% 이상 워크플로우 알림과 운영자 분석 진입 절차를 안내합니다.",
+        filename="워크플로우 예산 80퍼센트 알림 Runbook.md",
+        summary="예산 80% 이상 워크플로우 알림과 운영자 분석 진입 절차를 안내합니다.",
         source_tier="internal_ops",
         classification="internal_runbook",
         tags=("internal", "llmops", "budget"),
-        keywords=("예산 90%", "일괄 알림", "운영자", "워크플로우 분석", "LLM 노드 비용"),
+        keywords=("예산 80%", "일괄 알림", "운영자", "워크플로우 분석", "LLM 노드 비용"),
         collection_key="internal_onboarding",
         content=INTERNAL_DOCUMENT_CONTENT["internal_budget_alert_runbook"],
     ),
@@ -2610,8 +2610,8 @@ def _seed_apps_and_workflows(db: Session) -> dict[str, Workflow]:
 
     # 운영 현황 상단 위험 패널 확인용 추가 앱.
     for key, name, owner in [
-        ("ticket_ops_warning", "예산 90% 근접 티켓 처리 A", "author"),
-        ("ticket_ops_risk", "예산 90% 근접 티켓 처리 B", "author"),
+        ("ticket_ops_warning", "예산 80% 근접 티켓 처리 A", "author"),
+        ("ticket_ops_risk", "예산 80% 근접 티켓 처리 B", "author"),
         ("ticket_ops_paused", "예산 초과로 정지된 워크플로우", "author"),
     ]:
         workflows[key] = _upsert_app_workflow(

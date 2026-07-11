@@ -147,7 +147,7 @@ Response `200`:
 }
 ```
 
-- `budget` 블록의 판정(사용률 90% 이상 위험, 100% 초과 초과)과 `ratio`의 분모(활성 예산 workflow 수)는 [budget-management api_spec](../budget-management/api_spec.md)을 따른다. 활성 예산 workflow가 0개면 `budget`은 null이다.
+- `budget` 블록의 판정(사용률 80% 이상 위험, 100% 초과 초과)과 `ratio`의 분모(활성 예산 workflow 수)는 [budget-management api_spec](../budget-management/api_spec.md)을 따른다. 활성 예산 workflow가 0개면 `budget`은 null이다.
 - 부적절한 접근/행동 탐지 건수 필드는 FR-013 복원 시 추가한다 (후순위).
 
 ### GET /admin/permission-requests

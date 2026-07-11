@@ -39,7 +39,7 @@ Verified Against: feature/mba-188 @ 59d1cc51
 - Given 조직 A의 이번 달 usage, When `GET /admin/summary`를 호출하면, Then 이번 달(KST) 조직 LLM 비용 합계가 반환된다.
 - Given KST 월 경계 근처의 usage row (예: KST 7월 1일 00:30 = UTC 6월 30일 15:30 저장), When 7월 요약을 조회하면, Then 해당 row는 7월 집계에 포함된다.
 - Given 활성 예산 workflow가 없는 조직, When 요약을 조회하면, Then `budget` 블록은 null이고 이는 오류가 아니다.
-- Given 예산이 설정된 workflow, When 사용률이 90% 이상이면 위험, 100%를 초과하면 초과로 분류되고, 반올림 전 값으로 판정된다. 예산 미설정 workflow는 판정 대상에서 제외된다.
+- Given 예산이 설정된 workflow, When 사용률이 80% 이상이면 위험, 100%를 초과하면 초과로 분류되고, 반올림 전 값으로 판정된다. 예산 미설정 workflow는 판정 대상에서 제외된다.
 
 ### AC-5. 권한 경계
 
@@ -166,8 +166,8 @@ Verified Against: feature/mba-188 @ 59d1cc51
   - Given `total_cost`가 `NULL`인 row, When summary를 조회하면, Then 0으로 합산한다.
   - Given 활성 예산 workflow가 0개인 조직, When summary를 조회하면, Then `budget`은 `None`이다.
 - `classify_budget_usage(total_cost, budget_amount)`
-  - Given 사용률이 89.9999%, When 판정하면, Then 정상이다.
-  - Given 사용률이 90.0000%, When 판정하면, Then 위험이다.
+  - Given 사용률이 79.9999%, When 판정하면, Then 정상이다.
+  - Given 사용률이 80.0000%, When 판정하면, Then 위험이다.
   - Given 사용률이 100.0000%, When 판정하면, Then 위험이며 초과는 아니다.
   - Given 사용률이 100.0001%, When 판정하면, Then 초과다.
   - Given 예산이 없거나 0 이하, When 판정하면, Then 위험/초과 판정 대상에서 제외한다. 비율의 분모는 활성 예산 workflow 수다.
