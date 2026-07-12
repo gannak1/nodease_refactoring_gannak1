@@ -1065,7 +1065,7 @@ def test_concurrent_same_detection_key_reuses_partial_unique_winner():
             def aggregate_once():
                 with Session(engine, autoflush=False) as session:
                     session.connection(
-                        execution_options={"isolation_level": "REPEATABLE READ"}
+                        execution_options={"isolation_level": "READ COMMITTED"}
                     )
                     audit_logs = (
                         session.query(AuditLog)

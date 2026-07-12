@@ -11,6 +11,7 @@ from apps.shared.db.models.security_alert import SecurityAlert
 from apps.shared.services.security_alert_rule_evaluator import (
     build_security_alert_detection_key,
 )
+from sqlalchemy.exc import IntegrityError
 
 _NOW = datetime(2026, 7, 12, 12, 0, tzinfo=timezone.utc)
 
@@ -185,6 +186,54 @@ def test_sal_tc_s005_resolved_alert_uses_only_fresh_events_for_recurrence():
     assert db.added == []
 
 
+def test_resolved_multi_resource_alert_requires_fresh_distinct_targets():
+    candidate = _candidate()
+    candidate.rule_id = "multi_resource_permission_probe"
+    candidate.severity = "high"
+    candidate.detection_key = build_security_alert_detection_key(
+        organization_id=candidate.organization_id,
+        actor_id=candidate.subject_actor_id,
+        rule_id=candidate.rule_id,
+        rule_version=candidate.rule_version,
+    )
+    resolved_at = _NOW - timedelta(minutes=2)
+    resolved_alert = SimpleNamespace(
+        **vars(_active_alert(candidate, status="resolved")),
+        resolved_at=resolved_at,
+    )
+    old_events = _audit_logs(
+        candidate.organization_id,
+        count=4,
+        start_at=resolved_at - timedelta(minutes=1),
+    )
+    for index, audit_log in enumerate(old_events):
+        audit_log.target_type = "workflow"
+        audit_log.target_id = f"old-{index}"
+    fresh_events = _audit_logs(
+        candidate.organization_id,
+        count=5,
+        start_at=resolved_at + timedelta(seconds=1),
+    )
+    for audit_log in fresh_events:
+        audit_log.target_type = "workflow"
+        audit_log.target_id = "fresh-repeated-target"
+    candidate.matched_audit_ids = tuple(
+        audit_log.id for audit_log in [*old_events, *fresh_events]
+    )
+    db = _AggregationDb(latest_resolved_alert=resolved_alert)
+
+    result = _aggregate(
+        db,
+        candidate=candidate,
+        audit_logs=[*old_events, *fresh_events],
+        detected_at=_NOW,
+    )
+
+    assert result is None
+    assert db.added == []
+    assert db.evidence_keys == set()
+
+
 def test_sal_tc_u011_cooldown_expires_at_exactly_thirty_minutes():
     module = importlib.import_module(
         "apps.shared.services.security_alert_aggregation"
@@ -203,6 +252,32 @@ def test_sal_tc_u011_cooldown_expires_at_exactly_thirty_minutes():
         last_detected_at=last_detected_at,
         event_at=_NOW + timedelta(minutes=30, microseconds=1),
     ) is False
+
+
+@pytest.mark.parametrize("status", ["open", "acknowledged"])
+def test_expired_cooldown_does_not_update_existing_active_alert(status):
+    candidate = _candidate()
+    alert = _active_alert(candidate, status=status)
+    alert.last_detected_at = _NOW - timedelta(minutes=30)
+    original_count = alert.occurrence_count
+    new_audit = _audit_logs(
+        candidate.organization_id,
+        count=1,
+        start_at=_NOW,
+    )[0]
+    db = _AggregationDb(active_alert=alert)
+
+    result = _aggregate(
+        db,
+        candidate=candidate,
+        audit_logs=[new_audit],
+        detected_at=_NOW,
+    )
+
+    assert result is None
+    assert alert.occurrence_count == original_count
+    assert alert.last_detected_at == _NOW - timedelta(minutes=30)
+    assert db.evidence_keys == set()
 
 
 @pytest.mark.parametrize("failure", ["evidence", "detected_audit"])
@@ -227,6 +302,33 @@ def test_sal_tc_s006_s007_creation_failure_rolls_back_whole_uow(failure):
     assert db.commits == 0
     assert db.added == []
     assert db.evidence_keys == set()
+
+
+def test_reconciliation_conflict_preserves_earlier_batch_results():
+    candidate = _candidate()
+    audit_logs = _audit_logs(
+        candidate.organization_id,
+        count=5,
+        start_at=_NOW - timedelta(minutes=1),
+    )
+    winner = _active_alert(candidate, status="open")
+    earlier_batch_result = object()
+    db = _AggregationConflictDb(
+        winner=winner,
+        earlier_batch_result=earlier_batch_result,
+    )
+
+    result = _aggregate(
+        db,
+        candidate=candidate,
+        audit_logs=audit_logs,
+        detected_at=_NOW,
+    )
+
+    assert result is winner
+    assert db.outer_rollbacks == 0
+    assert db.savepoint_rollbacks == 1
+    assert db.earlier_batch_result is earlier_batch_result
 
 
 def _active_alert(candidate, *, status):
@@ -300,3 +402,39 @@ class _AggregationDb:
         self.rollbacks += 1
         self.added.clear()
         self.evidence_keys.clear()
+
+
+class _AggregationConflictDb(_AggregationDb):
+    def __init__(self, *, winner, earlier_batch_result):
+        super().__init__()
+        self.winner = winner
+        self.earlier_batch_result = earlier_batch_result
+        self.outer_rollbacks = 0
+        self.savepoint_rollbacks = 0
+        self.conflict_pending = True
+
+    def begin_nested(self):
+        return _AggregationSavepoint(self)
+
+    def flush(self):
+        if self.conflict_pending:
+            raise IntegrityError("insert", {}, RuntimeError("duplicate"))
+
+    def find_active_alert(self, *, detection_key):
+        if self.conflict_pending:
+            return None
+        return self.winner
+
+    def rollback(self):
+        self.outer_rollbacks += 1
+        self.earlier_batch_result = None
+        self.conflict_pending = False
+
+
+class _AggregationSavepoint:
+    def __init__(self, db):
+        self.db = db
+
+    def rollback(self):
+        self.db.savepoint_rollbacks += 1
+        self.db.conflict_pending = False

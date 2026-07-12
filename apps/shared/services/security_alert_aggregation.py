@@ -49,8 +49,12 @@ def aggregate_security_alert_detection(
     try:
         active_alert = _find_active_alert(db, detection_key=detection_key)
         if active_alert is not None:
-            _link_evidence(db, alert=active_alert, audit_logs=matched_audits)
-            return active_alert
+            return _update_active_alert_during_cooldown(
+                db,
+                alert=active_alert,
+                audit_logs=matched_audits,
+                detected_at=detected_at,
+            )
 
         latest_resolved = _find_latest_resolved_alert(
             db,
@@ -60,10 +64,10 @@ def aggregate_security_alert_detection(
             matched_audits,
             latest_resolved,
         )
-        if not _meets_threshold(candidate.rule_id, fresh_audits):
+        if not _meets_rule_threshold(candidate.rule_id, fresh_audits):
             return None
 
-        return _create_alert_in_uow(
+        return _create_alert_with_savepoint(
             db,
             candidate=candidate,
             detection_key=detection_key,
@@ -82,6 +86,22 @@ def aggregate_security_alert_detection(
     except Exception:
         db.rollback()
         raise
+
+
+def _update_active_alert_during_cooldown(
+    db: Any,
+    *,
+    alert: Any,
+    audit_logs: Sequence[Any],
+    detected_at: datetime,
+) -> Any | None:
+    if not is_security_alert_cooldown_active(
+        last_detected_at=alert.last_detected_at,
+        event_at=detected_at,
+    ):
+        return None
+    _link_evidence(db, alert=alert, audit_logs=audit_logs)
+    return alert
 
 
 def _select_candidate_audits(
@@ -134,13 +154,41 @@ def _create_alert_in_uow(
     return alert
 
 
+def _create_alert_with_savepoint(
+    db: Any,
+    *,
+    candidate: Any,
+    detection_key: str,
+    audit_logs: Sequence[Any],
+    detected_at: datetime,
+) -> SecurityAlert:
+    begin_nested = getattr(db, "begin_nested", None)
+    savepoint = begin_nested() if callable(begin_nested) else None
+    try:
+        alert = _create_alert_in_uow(
+            db,
+            candidate=candidate,
+            detection_key=detection_key,
+            audit_logs=audit_logs,
+            detected_at=detected_at,
+        )
+    except IntegrityError:
+        if savepoint is not None:
+            savepoint.rollback()
+        raise
+
+    commit = getattr(savepoint, "commit", None) if savepoint is not None else None
+    if callable(commit):
+        commit()
+    return alert
+
+
 def _recover_active_alert_after_conflict(
     db: Any,
     *,
     detection_key: str,
     audit_logs: Sequence[Any],
 ) -> Any | None:
-    db.rollback()
     winner = _find_active_alert(db, detection_key=detection_key)
     if winner is not None:
         _link_evidence(db, alert=winner, audit_logs=audit_logs)
@@ -214,9 +262,17 @@ def _unique_audits_after_resolution(
     ]
 
 
-def _meets_threshold(rule_id: str, audit_logs: Sequence[Any]) -> bool:
+def _meets_rule_threshold(rule_id: str, audit_logs: Sequence[Any]) -> bool:
     threshold = _RULE_THRESHOLDS.get(rule_id)
-    return threshold is not None and len(audit_logs) >= threshold
+    if threshold is None:
+        return False
+    if rule_id == "multi_resource_permission_probe":
+        distinct_targets = {
+            (audit_log.target_type, audit_log.target_id)
+            for audit_log in audit_logs
+        }
+        return len(distinct_targets) >= threshold
+    return len(audit_logs) >= threshold
 
 
 def _link_evidence(db: Any, *, alert: Any, audit_logs: Sequence[Any]) -> None:
