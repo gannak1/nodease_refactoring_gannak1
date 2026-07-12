@@ -13,7 +13,7 @@ Status: Draft
 
 ## 도메인별 테이블
 
-현재 코드 기준 활성 테이블은 Security Alert 2개를 포함해 39개다. `legacy_llm_provider`, `legacy_llm_credentials`는 migration `e4956fcd7e2b`에서 DROP됐고 모델도 주석 처리돼 있다.
+현재 코드 기준 활성 테이블은 Security Alert 3개를 포함해 40개다. `legacy_llm_provider`, `legacy_llm_credentials`는 migration `e4956fcd7e2b`에서 DROP됐고 모델도 주석 처리돼 있다.
 
 | 도메인 | 테이블 |
 | --- | --- |
@@ -21,7 +21,7 @@ Status: Draft
 | 권한 | `team_workflow_permissions`, `team_knowledge_permissions`, `team_llm_permissions`, `team_mail_credential_permissions`, `team_audit_permissions`, `user_workflow_permissions`, `user_knowledge_permissions`, `user_llm_permissions`, `user_mail_credential_permissions` |
 | 앱/워크플로우 | `apps`, `workflows`, `workflow_budgets`, `workflow_deployments`, `schedules`, `workflow_runs`, `workflow_node_runs` |
 | 추적/감사 | `trace_payloads`, `trace_payload_access_events`, `trace_redaction_policies`, `trace_retention_policies`, `trace_visibility_policies`, `audit_logs` |
-| 보안 알림 | `security_alerts`, `security_alert_audit_events` |
+| 보안 알림 | `security_alerts`, `security_alert_audit_events`, `security_alert_reconciliation_watermarks` |
 | Knowledge/RAG | `knowledge_bases`, `documents`, `document_chunks`, `rag_answer_runs` |
 | LLM | `llm_providers`, `llm_models`, `llm_credentials`, `llm_rel_credential_models`, `llm_usage_logs` |
 | 외부 연동 | `connections`, `mail_credentials` |
@@ -575,7 +575,24 @@ Alert와 실제 근거 audit의 연결 및 idempotency boundary다.
 - 활성 alert row를 잠근 뒤 최신 status를 확인하므로 resolve가 먼저 commit된 stale `open` 객체는 evidence나 occurrence를 변경하지 않는다. 서로 다른 audit의 동시 연결은 직렬화하며 `last_detected_at`은 가장 최신 event time을 유지한다.
 - Alert 최초 row, 최초 evidence, `security_alert.detected` audit은 같은 transaction에 기록한다.
 - Generic `audit_metadata`, `before`, `after`를 evidence table에 복사하지 않는다. 조회는 연결된 `audit_logs`의 safe projection을 사용한다.
-- Reconciliation cursor의 물리 저장 방식은 MBA-212에서 결정하되 `(occurred_at, audit_log.id)`와 기능 활성화 시각을 durable하게 보존해야 한다.
+
+#### `security_alert_reconciliation_watermarks`
+
+실시간 task가 놓친 audit를 복구하는 reconciliation의 기능 활성화 시각과 마지막 완료 cursor를 PostgreSQL에 보존한다. Migration `b28d9e0f1a32`에서 테이블과 `security-alert-v1` 초기 row를 함께 생성한다. 초기 `activation_started_at`은 migration transaction의 `now()`이며 cursor 두 필드는 NULL이다.
+
+| 컬럼 | 타입 | 제약/의미 |
+| --- | --- | --- |
+| processor_name | VARCHAR(100) | PK — rule/version별 reconciler identity |
+| activation_started_at | DATETIME | NOT NULL — 이 시각 이전 audit은 backfill하지 않음 |
+| cursor_occurred_at | DATETIME | NULL — 마지막 완료 audit의 UTC event time |
+| cursor_audit_log_id | UUID | NULL, FK 없음 — 같은 occurred_at 안의 안정적인 tie-breaker |
+| created_at / updated_at | DATETIME | NOT NULL |
+
+- Cursor 두 필드는 둘 다 NULL이거나 둘 다 값이 있어야 한다.
+- 초기 row 생성 시각을 기능 활성화 경계로 사용하므로 migration 이전 audit은 backfill하지 않는다.
+- Reconciler는 row를 잠근 뒤 overlap을 적용해 `(occurred_at, audit_log.id)` 순서로 처리하고 batch 성공 뒤에만 cursor를 전진한다.
+- `audit_logs(occurred_at, id)` 복합 인덱스가 cursor scan을 지원한다.
+- Audit row의 삭제 lifecycle에 watermark가 결합되지 않도록 cursor UUID에는 FK를 두지 않는다.
 
 ### Agent Builder
 

@@ -21,7 +21,11 @@ EXPECTED_ALERT_CHECKS = {
 
 def _security_alert_models():
     module = importlib.import_module("apps.shared.db.models.security_alert")
-    return module.SecurityAlert, module.SecurityAlertAuditEvent
+    return (
+        module.SecurityAlert,
+        module.SecurityAlertAuditEvent,
+        module.SecurityAlertReconciliationWatermark,
+    )
 
 
 def _constraint_names(table, constraint_type):
@@ -33,16 +37,18 @@ def _constraint_names(table, constraint_type):
 
 
 def test_security_alert_models_are_registered_with_expected_table_names():
-    alert_model, evidence_model = _security_alert_models()
+    alert_model, evidence_model, watermark_model = _security_alert_models()
 
     assert shared_models.SecurityAlert is alert_model
     assert shared_models.SecurityAlertAuditEvent is evidence_model
+    assert shared_models.SecurityAlertReconciliationWatermark is watermark_model
     assert alert_model.__tablename__ == "security_alerts"
     assert evidence_model.__tablename__ == "security_alert_audit_events"
+    assert watermark_model.__tablename__ == "security_alert_reconciliation_watermarks"
 
 
 def test_security_alert_model_declares_required_columns_and_defaults():
-    alert_model, _ = _security_alert_models()
+    alert_model, _, _ = _security_alert_models()
     table = alert_model.__table__
 
     required_columns = {
@@ -91,7 +97,7 @@ def test_security_alert_model_declares_required_columns_and_defaults():
 
 
 def test_security_alert_tables_declare_required_constraints_and_indexes():
-    alert_model, evidence_model = _security_alert_models()
+    alert_model, evidence_model, _ = _security_alert_models()
     alert_table = alert_model.__table__
     evidence_table = evidence_model.__table__
 
@@ -125,7 +131,7 @@ def test_security_alert_tables_declare_required_constraints_and_indexes():
 
 
 def test_security_alert_indexes_cover_each_organization_filter_prefix():
-    alert_model, _ = _security_alert_models()
+    alert_model, _, _ = _security_alert_models()
     index_prefixes = {
         tuple(column.name for column in index.columns)[:2]
         for index in alert_model.__table__.indexes
@@ -140,7 +146,7 @@ def test_security_alert_indexes_cover_each_organization_filter_prefix():
 
 
 def test_security_alert_handler_deletion_is_compatible_with_status_constraint():
-    alert_model, _ = _security_alert_models()
+    alert_model, _, _ = _security_alert_models()
     table = alert_model.__table__
 
     for column_name in ("acknowledged_by", "resolved_by"):
@@ -160,7 +166,7 @@ def test_security_alert_handler_deletion_is_compatible_with_status_constraint():
 
 
 def test_security_alert_evidence_rejects_orphans_and_cascades_with_parents():
-    _, evidence_model = _security_alert_models()
+    _, evidence_model, _ = _security_alert_models()
     table = evidence_model.__table__
 
     expected_foreign_keys = {
@@ -191,4 +197,43 @@ def test_security_alert_migration_defines_upgrade_and_downgrade_for_both_tables(
     assert "def downgrade" in source
     assert source.index("drop_table(\"security_alert_audit_events\")") < source.index(
         "drop_table(\"security_alerts\")"
+    )
+
+
+def test_security_alert_watermark_declares_durable_cursor_contract():
+    _, _, watermark_model = _security_alert_models()
+    table = watermark_model.__table__
+
+    assert set(table.columns.keys()) == {
+        "processor_name",
+        "activation_started_at",
+        "cursor_occurred_at",
+        "cursor_audit_log_id",
+        "created_at",
+        "updated_at",
+    }
+    assert table.c.processor_name.primary_key is True
+    assert table.c.activation_started_at.nullable is False
+    assert table.c.cursor_occurred_at.nullable is True
+    assert table.c.cursor_audit_log_id.nullable is True
+    assert not table.c.cursor_audit_log_id.foreign_keys
+    assert table.c.activation_started_at.type.timezone is True
+    assert table.c.cursor_occurred_at.type.timezone is True
+
+    checks = _constraint_names(table, CheckConstraint)
+    assert "ck_security_alert_reconciliation_cursor_pair" in checks
+
+
+def test_security_alert_watermark_migration_adds_cursor_table_and_scan_index():
+    path = Path(
+        "apps/shared/alembic/versions/"
+        "b28d9e0f1a32_add_security_alert_reconciliation_watermark.py"
+    )
+    source = path.read_text(encoding="utf-8")
+
+    assert 'down_revision: Union[str, Sequence[str], None] = "a17c8d9e0f21"' in source
+    assert '"security_alert_reconciliation_watermarks"' in source
+    assert '"ix_audit_logs_occurred_at_id"' in source
+    assert source.index('drop_index("ix_audit_logs_occurred_at_id"') < source.index(
+        'drop_table("security_alert_reconciliation_watermarks")'
     )
