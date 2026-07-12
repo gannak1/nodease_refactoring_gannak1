@@ -364,7 +364,12 @@ def test_security_alert_downgrade_removes_only_feature_schema_and_keeps_data():
                     },
                 )
 
-            _run_alembic_command(database, config, "downgrade", "-1")
+            _run_alembic_command(
+                database,
+                config,
+                "downgrade",
+                "fd2e3f4a5b67",
+            )
 
             with engine.connect() as connection:
                 tables_after = set(inspect(connection).get_table_names())

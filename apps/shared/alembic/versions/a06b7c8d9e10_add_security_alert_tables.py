@@ -68,10 +68,6 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index("ix_security_alerts_organization_last_detected", "security_alerts", ["organization_id", "last_detected_at"])
-    op.create_index("ix_security_alerts_org_status_detected", "security_alerts", ["organization_id", "status", "last_detected_at", "id"])
-    op.create_index("ix_security_alerts_org_severity_detected", "security_alerts", ["organization_id", "severity", "last_detected_at", "id"])
-    op.create_index("ix_security_alerts_org_rule_detected", "security_alerts", ["organization_id", "rule_id", "last_detected_at", "id"])
-    op.create_index("ix_security_alerts_org_actor_detected", "security_alerts", ["organization_id", "subject_actor_id", "last_detected_at", "id"])
     op.create_index("uq_security_alerts_active_detection_key", "security_alerts", ["detection_key"], unique=True, postgresql_where=sa.text("status IN ('open', 'acknowledged')"))
 
     op.create_table(
@@ -92,9 +88,5 @@ def downgrade() -> None:
     op.drop_index("ix_security_alert_audit_events_audit_log_id", table_name="security_alert_audit_events")
     op.drop_table("security_alert_audit_events")
     op.drop_index("uq_security_alerts_active_detection_key", table_name="security_alerts")
-    op.drop_index("ix_security_alerts_org_actor_detected", table_name="security_alerts")
-    op.drop_index("ix_security_alerts_org_rule_detected", table_name="security_alerts")
-    op.drop_index("ix_security_alerts_org_severity_detected", table_name="security_alerts")
-    op.drop_index("ix_security_alerts_org_status_detected", table_name="security_alerts")
     op.drop_index("ix_security_alerts_organization_last_detected", table_name="security_alerts")
     op.drop_table("security_alerts")
