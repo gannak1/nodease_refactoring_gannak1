@@ -24,6 +24,7 @@ from apps.shared.services.security_alert_reconciliation import (
 )
 from apps.shared.services.security_alert_rule_evaluator import (
     evaluate_security_alert_rules,
+    is_security_alert_event_eligible,
 )
 from sqlalchemy.exc import IntegrityError
 
@@ -227,11 +228,22 @@ def _evaluate_and_aggregate_security_alerts(
     return len(candidates)
 
 
-def _load_security_alert_detection_context(db: Any, audit_id: uuid.UUID | None):
+def _load_security_alert_detection_context(
+    db: Any,
+    audit_id: uuid.UUID | None,
+) -> tuple[Any, list[Any], datetime] | None:
     current_event = db.get(AuditLog, audit_id)
     if current_event is None:
         return None
-    activation_started_at = _security_alert_activation_started_at(db, current_event)
+    activation_started_at = _security_alert_activation_started_at(
+        db,
+        current_event,
+    )
+    if not is_security_alert_event_eligible(
+        event=current_event,
+        activation_started_at=activation_started_at,
+    ):
+        return current_event, [], activation_started_at
     window_started_at = max(
         activation_started_at,
         current_event.occurred_at - _SECURITY_ALERT_MAX_WINDOW,

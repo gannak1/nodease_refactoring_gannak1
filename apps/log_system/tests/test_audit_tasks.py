@@ -319,6 +319,74 @@ def test_detection_context_loads_ten_minute_window_from_activation_watermark():
     assert session.query_value.ordering == (AuditLog.occurred_at, AuditLog.id)
 
 
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"status": "success"},
+        {"actor_type": "system"},
+        {"action": "workflow.executed"},
+    ],
+)
+def test_ineligible_current_event_skips_window_query(overrides):
+    now = datetime(2026, 7, 12, 0, 10, tzinfo=timezone.utc)
+    organization_id = uuid4()
+    values = {
+        "actor_type": "user",
+        "action": "permission.denied",
+        "status": "failure",
+        **overrides,
+    }
+    current = AuditLog(
+        id=uuid4(),
+        occurred_at=now,
+        actor_id=uuid4(),
+        actor_type=values["actor_type"],
+        category="action",
+        action=values["action"],
+        target_type="workflow",
+        target_id=str(uuid4()),
+        status=values["status"],
+        audit_metadata={"organization_id": str(organization_id)},
+    )
+    watermark = SecurityAlertReconciliationWatermark(
+        processor_name="security-alert-v1",
+        activation_started_at=now - timedelta(minutes=10),
+    )
+
+    class _UnexpectedWindowQuery:
+        def filter(self, *conditions):
+            return self
+
+        def order_by(self, *columns):
+            return self
+
+        def all(self):
+            return []
+
+    class _EligibilitySession:
+        def __init__(self):
+            self.window_queries = 0
+
+        def get(self, model, identity):
+            if model is AuditLog and identity == current.id:
+                return current
+            if model is SecurityAlertReconciliationWatermark:
+                return watermark
+            return None
+
+        def query(self, model):
+            assert model is AuditLog
+            self.window_queries += 1
+            return _UnexpectedWindowQuery()
+
+    session = _EligibilitySession()
+
+    result = audit_tasks._process_security_alert_audit(session, current.id)
+
+    assert result == 0
+    assert session.window_queries == 0
+
+
 def test_security_alert_detection_is_routed_to_log_queue():
     route = audit_tasks.celery_app.amqp.router.route(
         {},

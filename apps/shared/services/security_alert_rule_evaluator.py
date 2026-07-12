@@ -138,6 +138,14 @@ def evaluate_security_alert_rules(
     return tuple(candidates)
 
 
+def is_security_alert_event_eligible(
+    *,
+    event: Any,
+    activation_started_at: datetime,
+) -> bool:
+    return _eligible_event(event, activation_started_at) is not None
+
+
 def _eligible_event(
     event: Any,
     activation_started_at: datetime,
