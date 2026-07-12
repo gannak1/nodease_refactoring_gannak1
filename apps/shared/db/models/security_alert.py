@@ -80,6 +80,34 @@ class SecurityAlert(Base):
             "organization_id",
             "last_detected_at",
         ),
+        Index(
+            "ix_security_alerts_org_status_detected",
+            "organization_id",
+            "status",
+            "last_detected_at",
+            "id",
+        ),
+        Index(
+            "ix_security_alerts_org_severity_detected",
+            "organization_id",
+            "severity",
+            "last_detected_at",
+            "id",
+        ),
+        Index(
+            "ix_security_alerts_org_rule_detected",
+            "organization_id",
+            "rule_id",
+            "last_detected_at",
+            "id",
+        ),
+        Index(
+            "ix_security_alerts_org_actor_detected",
+            "organization_id",
+            "subject_actor_id",
+            "last_detected_at",
+            "id",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
