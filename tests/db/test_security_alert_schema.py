@@ -124,6 +124,21 @@ def test_security_alert_tables_declare_required_constraints_and_indexes():
     assert organization_fk.ondelete in {None, "NO ACTION", "RESTRICT"}
 
 
+def test_security_alert_indexes_cover_each_organization_filter_prefix():
+    alert_model, _ = _security_alert_models()
+    index_prefixes = {
+        tuple(column.name for column in index.columns)[:2]
+        for index in alert_model.__table__.indexes
+    }
+
+    assert {
+        ("organization_id", "status"),
+        ("organization_id", "severity"),
+        ("organization_id", "rule_id"),
+        ("organization_id", "subject_actor_id"),
+    } <= index_prefixes
+
+
 def test_security_alert_handler_deletion_is_compatible_with_status_constraint():
     alert_model, _ = _security_alert_models()
     table = alert_model.__table__

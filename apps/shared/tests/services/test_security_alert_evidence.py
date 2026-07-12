@@ -71,6 +71,33 @@ def test_cross_organization_audit_is_not_linked_as_evidence():
     assert audit_log.audit_metadata == original_audit_metadata
 
 
+def test_resolved_alert_does_not_accept_new_evidence():
+    from apps.shared.services.security_alert_evidence import (
+        link_security_alert_evidence,
+    )
+
+    original_detected_at = datetime(2026, 7, 10, tzinfo=timezone.utc)
+    alert = SimpleNamespace(
+        id=uuid4(),
+        status="resolved",
+        occurrence_count=3,
+        last_detected_at=original_detected_at,
+    )
+    db = _EvidenceDb()
+
+    linked = link_security_alert_evidence(
+        db,
+        alert=alert,
+        audit_log_id=uuid4(),
+        detected_at=datetime(2026, 7, 11, tzinfo=timezone.utc),
+    )
+
+    assert linked is False
+    assert db.evidence_keys == set()
+    assert alert.occurrence_count == 3
+    assert alert.last_detected_at == original_detected_at
+
+
 def test_concurrent_same_audit_link_is_counted_once_without_deadlock():
     from apps.shared.services.security_alert_evidence import (
         link_security_alert_evidence,

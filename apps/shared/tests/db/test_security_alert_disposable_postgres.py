@@ -91,6 +91,80 @@ def _assert_integrity_error(engine, statement: str, parameters: dict) -> None:
             transaction.rollback()
 
 
+def _seed_evidence_race_rows(
+    engine,
+    *,
+    manager_id,
+    organization_id,
+    alert_id,
+    audit_events,
+    now,
+) -> None:
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO users "
+                "(id, email, name, social_provider, created_at, updated_at) "
+                "VALUES (:id, :email, 'Manager', 'local', :now, :now)"
+            ),
+            {
+                "id": manager_id,
+                "email": f"security-alert-evidence-race-{manager_id}@example.invalid",
+                "now": now,
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO organization "
+                "(id, name, options, flags, created_by, is_active, "
+                "created_at, updated_at) VALUES "
+                "(:id, 'Evidence Race', '{}'::jsonb, 0, :created_by, "
+                "true, :now, :now)"
+            ),
+            {
+                "id": organization_id,
+                "created_by": manager_id,
+                "now": now,
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO security_alerts "
+                "(id, organization_id, subject_actor_id, rule_id, "
+                "rule_version, severity, status, detection_key, "
+                "occurrence_count, first_detected_at, last_detected_at, "
+                "lifecycle_version) VALUES "
+                "(:id, :organization_id, :subject_actor_id, "
+                "'repeated_permission_denied', 'v1', 'medium', 'open', "
+                ":detection_key, 0, :now, :now, 1)"
+            ),
+            {
+                "id": alert_id,
+                "organization_id": organization_id,
+                "subject_actor_id": uuid.uuid4(),
+                "detection_key": f"evidence-race:{alert_id}",
+                "now": now,
+            },
+        )
+        for audit_log_id, occurred_at in audit_events:
+            connection.execute(
+                text(
+                    "INSERT INTO audit_logs "
+                    "(id, occurred_at, actor_id, actor_type, category, action, "
+                    "status, audit_metadata) VALUES "
+                    "(:id, :occurred_at, :actor_id, 'user', 'action', "
+                    "'permission.denied', 'failure', "
+                    "jsonb_build_object('organization_id', :organization_id))"
+                ),
+                {
+                    "id": audit_log_id,
+                    "occurred_at": occurred_at,
+                    "actor_id": manager_id,
+                    "organization_id": str(organization_id),
+                },
+            )
+
+
 @contextmanager
 def _disposable_database():
     try:
@@ -200,6 +274,17 @@ def test_security_alert_migration_creates_real_postgres_schema():
                 if index["name"] == "uq_security_alerts_active_detection_key"
             )
             assert active_index["unique"] is True
+
+            index_prefixes = {
+                tuple(index["column_names"][:2])
+                for index in schema.get_indexes("security_alerts")
+            }
+            assert {
+                ("organization_id", "status"),
+                ("organization_id", "severity"),
+                ("organization_id", "rule_id"),
+                ("organization_id", "subject_actor_id"),
+            } <= index_prefixes
         finally:
             engine.dispose()
     except OperationalError:
@@ -675,6 +760,16 @@ def test_evidence_is_idempotent_under_race_and_rejects_cross_organization():
                 )
                 session.commit()
 
+            with Session(engine) as session:
+                alert = session.get(SecurityAlert, alert_id)
+                cross_organization_id_linked = link_security_alert_evidence(
+                    session,
+                    alert=alert,
+                    audit_log_id=audit_ids[1],
+                    detected_at=now,
+                )
+                session.commit()
+
             with engine.connect() as connection:
                 occurrence_count = connection.execute(
                     text(
@@ -693,8 +788,153 @@ def test_evidence_is_idempotent_under_race_and_rejects_cross_organization():
 
             assert sorted(results) == [False, True]
             assert cross_organization_linked is False
+            assert cross_organization_id_linked is False
             assert occurrence_count == 1
             assert evidence_count == 1
+        finally:
+            engine.dispose()
+
+
+@pytest.mark.skipif(
+    os.getenv(RUN_ENV) != "1",
+    reason=f"set {RUN_ENV}=1 to run disposable PostgreSQL integration tests",
+)
+def test_distinct_concurrent_evidence_keeps_exact_count_and_latest_timestamp():
+    with _disposable_database() as (database, config):
+        engine = create_engine(config.database_url(database))
+        manager_id = uuid.uuid4()
+        organization_id = uuid.uuid4()
+        alert_id = uuid.uuid4()
+        audit_ids = (uuid.uuid4(), uuid.uuid4())
+        now = datetime.now(timezone.utc)
+        detected_times = (now + timedelta(seconds=1), now + timedelta(seconds=2))
+
+        try:
+            _seed_evidence_race_rows(
+                engine,
+                manager_id=manager_id,
+                organization_id=organization_id,
+                alert_id=alert_id,
+                audit_events=tuple(zip(audit_ids, detected_times)),
+                now=now,
+            )
+            ready = Barrier(2)
+
+            def link_once(audit_log_id, detected_at):
+                with Session(engine) as session:
+                    alert = session.get(SecurityAlert, alert_id)
+                    audit_log = session.get(AuditLog, audit_log_id)
+                    ready.wait(timeout=5)
+                    linked = link_security_alert_evidence(
+                        session,
+                        alert=alert,
+                        audit_log=audit_log,
+                        detected_at=detected_at,
+                    )
+                    session.commit()
+                    return linked
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [
+                    executor.submit(link_once, audit_log_id, detected_at)
+                    for audit_log_id, detected_at in zip(audit_ids, detected_times)
+                ]
+                results = [future.result(timeout=10) for future in futures]
+
+            with engine.connect() as connection:
+                stored = connection.execute(
+                    text(
+                        "SELECT occurrence_count, last_detected_at "
+                        "FROM security_alerts WHERE id = :alert_id"
+                    ),
+                    {"alert_id": alert_id},
+                ).one()
+                evidence_count = connection.execute(
+                    text(
+                        "SELECT count(*) FROM security_alert_audit_events "
+                        "WHERE security_alert_id = :alert_id"
+                    ),
+                    {"alert_id": alert_id},
+                ).scalar_one()
+
+            assert results == [True, True]
+            assert evidence_count == 2
+            assert stored.occurrence_count == 2
+            assert stored.last_detected_at == max(detected_times)
+        finally:
+            engine.dispose()
+
+
+@pytest.mark.skipif(
+    os.getenv(RUN_ENV) != "1",
+    reason=f"set {RUN_ENV}=1 to run disposable PostgreSQL integration tests",
+)
+def test_stale_open_alert_cannot_link_evidence_after_resolve_commits():
+    with _disposable_database() as (database, config):
+        engine = create_engine(config.database_url(database))
+        manager_id = uuid.uuid4()
+        organization_id = uuid.uuid4()
+        alert_id = uuid.uuid4()
+        audit_log_id = uuid.uuid4()
+        now = datetime.now(timezone.utc)
+        detected_at = now + timedelta(seconds=1)
+
+        try:
+            _seed_evidence_race_rows(
+                engine,
+                manager_id=manager_id,
+                organization_id=organization_id,
+                alert_id=alert_id,
+                audit_events=((audit_log_id, detected_at),),
+                now=now,
+            )
+
+            with Session(engine) as stale_session:
+                stale_alert = stale_session.get(SecurityAlert, alert_id)
+                audit_log = stale_session.get(AuditLog, audit_log_id)
+
+                with Session(engine) as resolve_session:
+                    current_alert = resolve_session.get(SecurityAlert, alert_id)
+                    resolve_security_alert(
+                        resolve_session,
+                        alert=current_alert,
+                        manager_id=manager_id,
+                        resolved_at=detected_at,
+                        expected_version=1,
+                        resolution_type="mitigated",
+                        reason="대응 완료",
+                        reason_sanitizer=_IdentityReasonSanitizer(),
+                    )
+                    resolve_session.commit()
+
+                linked = link_security_alert_evidence(
+                    stale_session,
+                    alert=stale_alert,
+                    audit_log=audit_log,
+                    detected_at=detected_at,
+                )
+                stale_session.commit()
+
+            with engine.connect() as connection:
+                stored = connection.execute(
+                    text(
+                        "SELECT status, occurrence_count "
+                        "FROM security_alerts WHERE id = :alert_id"
+                    ),
+                    {"alert_id": alert_id},
+                ).one()
+                evidence_count = connection.execute(
+                    text(
+                        "SELECT count(*) FROM security_alert_audit_events "
+                        "WHERE security_alert_id = :alert_id"
+                    ),
+                    {"alert_id": alert_id},
+                ).scalar_one()
+
+            assert linked is False
+            assert stored.status == "resolved"
+            assert stored.occurrence_count == 0
+            assert evidence_count == 0
         finally:
             engine.dispose()
 
