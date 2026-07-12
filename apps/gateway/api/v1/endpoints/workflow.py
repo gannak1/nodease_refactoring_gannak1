@@ -191,9 +191,8 @@ def _ensure_workflow_matches_active_organization(
         current_user.id,
     )
     workflow_organization_id = getattr(workflow, "organization_id", None)
-    if (
-        workflow_organization_id is not None
-        and str(workflow_organization_id) != str(organization_id)
+    if workflow_organization_id is not None and str(workflow_organization_id) != str(
+        organization_id
     ):
         raise HTTPException(status_code=404, detail="Workflow not found")
 
@@ -312,13 +311,9 @@ def _validate_cost_optimizer_candidate_shape(
 
     if "knowledge_base_ids" in knowledge:
         knowledge_base_ids = knowledge.get("knowledge_base_ids")
-        if (
-            not isinstance(knowledge_base_ids, list)
-            or any(
-                not isinstance(knowledge_base_id, str)
-                or not knowledge_base_id.strip()
-                for knowledge_base_id in knowledge_base_ids
-            )
+        if not isinstance(knowledge_base_ids, list) or any(
+            not isinstance(knowledge_base_id, str) or not knowledge_base_id.strip()
+            for knowledge_base_id in knowledge_base_ids
         ):
             _raise_invalid_cost_optimizer_candidate()
     if "top_k" in knowledge:
@@ -326,9 +321,7 @@ def _validate_cost_optimizer_candidate_shape(
         if not isinstance(top_k, int) or isinstance(top_k, bool) or top_k < 1:
             _raise_invalid_cost_optimizer_candidate()
     if "score_threshold" in knowledge:
-        _validate_number_range(
-            knowledge.get("score_threshold"), minimum=0, maximum=1
-        )
+        _validate_number_range(knowledge.get("score_threshold"), minimum=0, maximum=1)
     if "dedupe_retrieved_context" in knowledge and not isinstance(
         knowledge.get("dedupe_retrieved_context"), bool
     ):
@@ -608,7 +601,9 @@ def _ensure_cost_optimizer_candidate_models_available(
         )
 
 
-def _find_workflow_node(graph: dict[str, Any] | None, node_id: str) -> dict[str, Any] | None:
+def _find_workflow_node(
+    graph: dict[str, Any] | None, node_id: str
+) -> dict[str, Any] | None:
     if not isinstance(graph, dict):
         return None
     nodes = graph.get("nodes") or []
@@ -695,7 +690,9 @@ def _model_routing_policy_update_summary(
     """정책 갱신 이력에서 UI에 필요한 safe summary만 반환한다."""
     if update is None:
         return None
-    output_summary = update.output_summary if isinstance(update.output_summary, dict) else {}
+    output_summary = (
+        update.output_summary if isinstance(update.output_summary, dict) else {}
+    )
     judge_cost = output_summary.get("judge_cost")
     try:
         judge_cost = float(judge_cost) if judge_cost is not None else None
@@ -946,7 +943,9 @@ def _cost_optimizer_json_path_exists(payload: Any, json_path: str) -> bool:
     return True
 
 
-def _cost_optimizer_contract_payload(candidate_output: Any, selector: str | None) -> Any:
+def _cost_optimizer_contract_payload(
+    candidate_output: Any, selector: str | None
+) -> Any:
     if not isinstance(candidate_output, dict):
         return candidate_output
     selected = candidate_output.get(selector or "text")
@@ -1109,7 +1108,9 @@ def build_cost_optimizer_downstream_compatibility(
             "first_consumer_status": "same",
             "contract_check": {
                 "status": "warning",
-                "checked_node_ids": output_contract_check.get("checked_node_ids", checked_node_ids)
+                "checked_node_ids": output_contract_check.get(
+                    "checked_node_ids", checked_node_ids
+                )
                 if output_contract_check
                 else checked_node_ids,
                 "warnings": warnings,
@@ -1326,7 +1327,9 @@ def _baseline_row_from_records(
     model = _usage_model_name(usage)
     input_preview = _preview_baseline_payload(input_payload)
     output_preview = _preview_baseline_payload(output_payload)
-    trace_available = bool(node_run.trace_metadata) or has_trace_input or has_trace_output
+    trace_available = (
+        bool(node_run.trace_metadata) or has_trace_input or has_trace_output
+    )
     process_data = getattr(node_run, "process_data", None) or {}
     node_options = (
         process_data.get("node_options") if isinstance(process_data, dict) else {}
@@ -1512,9 +1515,7 @@ def list_cost_optimizer_baselines(
         ]
     if compare_available is not None:
         rows = [
-            row
-            for row in rows
-            if row.get("compare_available") is compare_available
+            row for row in rows if row.get("compare_available") is compare_available
         ]
 
     sort_key = {
@@ -1607,7 +1608,9 @@ def _patch_cost_optimizer_candidate_graph(
     if candidate.referenced_variables is not None:
         data["referenced_variables"] = candidate.referenced_variables
     if candidate.parameters:
-        current_parameters = data.get("parameters") if isinstance(data.get("parameters"), dict) else {}
+        current_parameters = (
+            data.get("parameters") if isinstance(data.get("parameters"), dict) else {}
+        )
         next_parameters = {**current_parameters}
         for key, value in candidate.parameters.items():
             if value is None:
@@ -1720,18 +1723,13 @@ def _cost_optimizer_candidate_data_from_node_data(
             "score_threshold": node_data.get("scoreThreshold")
             if node_data.get("scoreThreshold") is not None
             else 0.5,
-            "dedupe_retrieved_context": bool(
-                node_data.get("dedupeRetrievedContext")
-            ),
-            "retrieved_context_max_chars": node_data.get(
-                "retrievedContextMaxChars"
-            ),
+            "dedupe_retrieved_context": bool(node_data.get("dedupeRetrievedContext")),
+            "retrieved_context_max_chars": node_data.get("retrievedContextMaxChars"),
             "retrieved_context_compression": node_data.get(
                 "retrievedContextCompression"
             )
             or "off",
-            "answer_grounding_check": node_data.get("answerGroundingCheck")
-            or "off",
+            "answer_grounding_check": node_data.get("answerGroundingCheck") or "off",
         },
     }
 
@@ -1854,7 +1852,9 @@ def _cost_optimizer_candidate_from_recommendations(
                 detail="cost_optimizer.recommendation_not_found",
             )
         apply_mode = recommendation.get("apply_mode")
-        apply_mode = apply_mode if isinstance(apply_mode, str) else "experiment_required"
+        apply_mode = (
+            apply_mode if isinstance(apply_mode, str) else "experiment_required"
+        )
         if allowed_apply_modes is not None and apply_mode not in allowed_apply_modes:
             raise HTTPException(
                 status_code=400,
@@ -2024,7 +2024,9 @@ def _build_cost_optimizer_candidate_trace(output: dict[str, Any]) -> dict[str, A
     )
     return {
         "input_preview": "",
-        "output_preview": _preview_baseline_payload(safe_output.get("text", safe_output)),
+        "output_preview": _preview_baseline_payload(
+            safe_output.get("text", safe_output)
+        ),
         "messages_preview": [],
         "rag_summary": rag_summary,
         "model_routing": model_routing,
@@ -2047,7 +2049,9 @@ def _cost_optimizer_json_value_type_matches(value: Any, expected_type: str) -> b
 
 
 def _cost_optimizer_output_payload_for_schema(output: dict[str, Any]) -> Any:
-    payload = output.get("text") if isinstance(output, dict) and "text" in output else output
+    payload = (
+        output.get("text") if isinstance(output, dict) and "text" in output else output
+    )
     if isinstance(payload, str):
         try:
             return json.loads(payload)
@@ -2060,7 +2064,9 @@ def _validate_cost_optimizer_candidate_output_schema(
     output: dict[str, Any],
     candidate: CostOptimizerCandidateRequest,
 ) -> dict[str, Any]:
-    output_format = candidate.output_format if isinstance(candidate.output_format, dict) else {}
+    output_format = (
+        candidate.output_format if isinstance(candidate.output_format, dict) else {}
+    )
     if output_format.get("type") != "json":
         return {"status": "skipped", "errors": []}
 
@@ -2084,7 +2090,9 @@ def _validate_cost_optimizer_candidate_output_schema(
         errors.append(f"output must be {expected_type}")
 
     if isinstance(payload, dict):
-        required = schema.get("required") if isinstance(schema.get("required"), list) else []
+        required = (
+            schema.get("required") if isinstance(schema.get("required"), list) else []
+        )
         for field in required:
             if isinstance(field, str) and field not in payload:
                 errors.append(f"{field} is required")
@@ -2095,7 +2103,9 @@ def _validate_cost_optimizer_candidate_output_schema(
                 if field not in payload or not isinstance(field_schema, dict):
                     continue
                 field_type = field_schema.get("type")
-                if isinstance(field_type, str) and not _cost_optimizer_json_value_type_matches(
+                if isinstance(
+                    field_type, str
+                ) and not _cost_optimizer_json_value_type_matches(
                     payload[field],
                     field_type,
                 ):
@@ -2137,9 +2147,7 @@ def _build_cost_optimizer_diff(
         cost_delta = candidate_cost - baseline_cost
         diff["cost_delta"] = round(cost_delta, 10)
         diff["cost_delta_percent"] = (
-            round((cost_delta / baseline_cost) * 100, 2)
-            if baseline_cost
-            else None
+            round((cost_delta / baseline_cost) * 100, 2) if baseline_cost else None
         )
     if baseline_tokens is not None and candidate_tokens is not None:
         diff["token_delta"] = candidate_tokens - baseline_tokens
@@ -2325,8 +2333,12 @@ def _persist_cost_optimizer_comparison(
     candidate_row.model_id = candidate.model_id
     candidate_row.fallback_model_id = candidate.fallback_model_id
     candidate_row.task_type = candidate.task_type
-    candidate_row.candidate_settings = _safe_cost_optimizer_candidate_settings(candidate)
-    candidate_row.total_cost = Decimal(str(total_cost)) if total_cost is not None else None
+    candidate_row.candidate_settings = _safe_cost_optimizer_candidate_settings(
+        candidate
+    )
+    candidate_row.total_cost = (
+        Decimal(str(total_cost)) if total_cost is not None else None
+    )
     candidate_row.total_tokens = _cost_optimizer_total_tokens(usage)
     candidate_row.latency_ms = (
         int(latency_ms) if isinstance(latency_ms, (int, float)) else None
@@ -2499,7 +2511,9 @@ def _cost_optimizer_summary_missing_any(
     )
 
 
-def _cost_optimizer_node_run_output_summary(node_run: WorkflowNodeRun) -> dict[str, Any]:
+def _cost_optimizer_node_run_output_summary(
+    node_run: WorkflowNodeRun,
+) -> dict[str, Any]:
     has_trace_output, trace_output_available, trace_output = _trace_payload_value(
         node_run,
         "output",
@@ -2970,7 +2984,7 @@ def validate_execution_graph(graph: dict):
         if isinstance(node, dict) and node.get("id")
     }
     source_only_types = {"startNode", "webhookTrigger", "scheduleTrigger"}
-    terminal_types = {"answerNode"}
+    terminal_types = {"answerNode", "mailAcknowledgeNode"}
 
     adjacency = {node_id: [] for node_id in node_map.keys()}
 
@@ -3001,7 +3015,7 @@ def validate_execution_graph(graph: dict):
         if source_node.get("type") in terminal_types:
             raise HTTPException(
                 status_code=400,
-                detail="응답 노드에서는 다른 노드로 연결할 수 없습니다.",
+                detail="종료 노드에서는 다른 노드로 연결할 수 없습니다.",
             )
 
         adjacency[source_id].append(target_id)
@@ -3360,7 +3374,9 @@ def list_cost_optimizer_experiments_endpoint(
     )
 
 
-@router.get("/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/parameter-recommendations")
+@router.get(
+    "/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/parameter-recommendations"
+)
 def get_cost_optimizer_parameter_recommendations_endpoint(
     workflow_id: str,
     node_id: str,
@@ -3379,9 +3395,7 @@ def get_cost_optimizer_parameter_recommendations_endpoint(
     )
 
 
-@router.patch(
-    "/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/apply-recommendations"
-)
+@router.patch("/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/apply-recommendations")
 def apply_cost_optimizer_recommendations(
     workflow_id: str,
     node_id: str,
@@ -3440,7 +3454,9 @@ def apply_cost_optimizer_recommendations(
     try:
         db.refresh(workflow)
     except Exception:
-        logger.debug("Cost Optimizer recommendation apply refresh skipped", exc_info=True)
+        logger.debug(
+            "Cost Optimizer recommendation apply refresh skipped", exc_info=True
+        )
 
     updated_at = getattr(workflow, "updated_at", None)
     updated_revision = (
@@ -3621,9 +3637,7 @@ def apply_cost_optimizer_candidate(
             is_applied_candidate = candidate_row is applied_candidate_row
             candidate_row.is_applied = is_applied_candidate
             candidate_row.applied_at = applied_at if is_applied_candidate else None
-            candidate_row.applied_by = (
-                current_user.id if is_applied_candidate else None
-            )
+            candidate_row.applied_by = current_user.id if is_applied_candidate else None
     db.commit()
     try:
         db.refresh(workflow)
@@ -3730,15 +3744,19 @@ def get_workflow_run_detail(
         # 필터링된 로그 리스트로 교체 (started_at 순으로 정렬)
         run.node_runs = sorted(
             latest_logs.values(),
-            key=lambda x: x.started_at
-            if x.started_at
-            else datetime.min.replace(tzinfo=timezone.utc),
+            key=lambda x: (
+                x.started_at
+                if x.started_at
+                else datetime.min.replace(tzinfo=timezone.utc)
+            ),
         )
 
     return run
 
 
-@router.get("/{workflow_id}/runs/{run_id}/llm-traces", response_model=LLMTraceListResponse)
+@router.get(
+    "/{workflow_id}/runs/{run_id}/llm-traces", response_model=LLMTraceListResponse
+)
 def get_workflow_run_llm_traces(
     workflow_id: str,
     run_id: str,
@@ -4102,9 +4120,7 @@ def list_workflows_by_app(
     if not app:
         raise HTTPException(status_code=404, detail="App not found")
 
-    denial_status = AppService.access_denial_status(
-        db, app, current_user.id, "read"
-    )
+    denial_status = AppService.access_denial_status(db, app, current_user.id, "read")
     if denial_status is not None:
         detail = "Forbidden" if denial_status == 403 else "App not found"
         raise HTTPException(status_code=denial_status, detail=detail)
@@ -4404,9 +4420,10 @@ async def stream_workflow(
                 )
 
         # 토글 값 분리 (문자열 true/false 허용)
-        memory_mode_enabled = str(
-            form.get("memory_mode", user_input.pop("memory_mode", ""))
-        ).lower() == "true"
+        memory_mode_enabled = (
+            str(form.get("memory_mode", user_input.pop("memory_mode", ""))).lower()
+            == "true"
+        )
     else:
         # JSON 방식 (기존)
         try:

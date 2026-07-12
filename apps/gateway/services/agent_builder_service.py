@@ -109,8 +109,10 @@ CAPABILITY_GENERATION_ORDER = (
     "loop",
     "llm",
     "knowledge_backed_llm",
+    "gmail_reply_draft_create",
     "github_pr_comment",
     "slack_send",
+    "mail_terminal_acknowledgement",
     "answer",
 )
 CAPABILITY_STEP_IDS = {
@@ -118,6 +120,8 @@ CAPABILITY_STEP_IDS = {
     "variable_extraction": "step_variable_extraction",
     "github_pr_read": "step_github_read",
     "mail_search": "step_mail",
+    "gmail_reply_draft_create": "step_gmail_draft",
+    "mail_terminal_acknowledgement": "step_mail_acknowledge",
     "http_request": "step_http",
     "workflow_call": "step_workflow",
     "code_execution": "step_code",
@@ -135,6 +139,8 @@ CAPABILITY_NODE_PREFIXES = {
     "variable_extraction": "agent-variable-extraction",
     "github_pr_read": "agent-github-read",
     "mail_search": "agent-mail",
+    "gmail_reply_draft_create": "agent-gmail-draft",
+    "mail_terminal_acknowledgement": "agent-mail-acknowledge",
     "http_request": "agent-http",
     "workflow_call": "agent-workflow",
     "code_execution": "agent-code",
@@ -155,6 +161,8 @@ CAPABILITY_OUTPUT_KEYS = {
     "variable_extraction": "result",
     "github_pr_read": "files",
     "mail_search": "emails",
+    "gmail_reply_draft_create": "draft_ref",
+    "mail_terminal_acknowledgement": "processing_ref",
     "http_request": "data",
     "workflow_call": "result",
     "code_execution": "result",
@@ -175,6 +183,8 @@ CAPABILITY_PURPOSES = {
     "variable_extraction": "입력 데이터에서 필요한 변수를 추출합니다.",
     "github_pr_read": "GitHub Pull Request와 변경 파일을 조회합니다.",
     "mail_search": "메일을 검색합니다.",
+    "gmail_reply_draft_create": "원본 메일 thread에 Gmail 답장 초안을 생성합니다.",
+    "mail_terminal_acknowledgement": "필수 작업 성공 후 원본 메일 처리를 완료합니다.",
     "http_request": "외부 HTTP API를 호출합니다.",
     "workflow_call": "다른 workflow를 호출합니다.",
     "code_execution": "sandbox에서 코드를 실행합니다.",
@@ -510,13 +520,32 @@ def _message_requested_catalog_capabilities(message: str) -> list[str]:
         ):
             add("github_pr_comment")
 
-    if any(token in text for token in ("메일", "이메일", "email", "imap")):
+    mentions_mail = any(token in text for token in ("메일", "이메일", "email", "imap"))
+    if mentions_mail:
         add("mail_search")
+    if mentions_mail and any(
+        token in text
+        for token in ("답장 초안", "회신 초안", "reply draft", "gmail draft")
+    ):
+        add("gmail_reply_draft_create")
+        add("mail_terminal_acknowledgement")
     if re.search(r"(?:응답|출력|answer)\s*(?:노드|node)", text, re.IGNORECASE):
         add("answer")
     if _message_requests_llm_processing(message):
         add("llm")
     return requested
+
+
+def _message_requests_mail_send(message: str) -> bool:
+    text = (message or "").casefold()
+    return bool(
+        re.search(
+            r"(?:메일|이메일)(?:을|를)?\s*(?:보내|발송|전송)|"
+            r"(?:send|deliver)\s+(?:an?\s+)?(?:e-?mail|mail)",
+            text,
+            re.IGNORECASE,
+        )
+    )
 
 
 def _target_node_types_for_text(
@@ -2204,6 +2233,10 @@ class AgentBuilderService:
             intent_summary = _safe_summary(request.message)
 
         unsupported_integration_requests = []
+        if _message_requests_mail_send(request.message):
+            unsupported_integration_requests.append(
+                "메일 발송은 지원하지 않습니다. Gmail 답장 초안 생성만 사용할 수 있습니다."
+            )
         if any(
             action.provider == "github"
             and action.resource == "pull_request"
@@ -2228,6 +2261,13 @@ class AgentBuilderService:
             if extraction.edit
             else []
         )
+        if (
+            "mail_terminal_acknowledgement" in requested
+            and "gmail_reply_draft_create" not in requested
+        ):
+            unsupported_integration_requests.append(
+                "메일 처리 완료 노드는 Gmail 답장 초안 처리 흐름 안에서만 생성할 수 있습니다."
+            )
         unsupported_capabilities = [
             capability
             for capability in [*requested, *target_requested]
@@ -2313,6 +2353,36 @@ class AgentBuilderService:
             )
             normalized_capabilities.insert(answer_index, "knowledge_backed_llm")
 
+        if "gmail_reply_draft_create" in normalized_capabilities:
+            entry_steps = [
+                capability
+                for capability in normalized_capabilities
+                if capability in entry_capabilities
+            ]
+            mail_flow_capabilities = {
+                "mail_search",
+                "llm",
+                "knowledge_backed_llm",
+                "gmail_reply_draft_create",
+                "mail_terminal_acknowledgement",
+                "answer",
+            }
+            other_steps = [
+                capability
+                for capability in normalized_capabilities
+                if capability not in entry_capabilities
+                and capability not in mail_flow_capabilities
+            ]
+            llm_capability = "knowledge_backed_llm" if knowledge_required else "llm"
+            normalized_capabilities = [
+                *entry_steps,
+                "mail_search",
+                llm_capability,
+                "gmail_reply_draft_create",
+                *other_steps,
+                "mail_terminal_acknowledgement",
+            ]
+
         missing_information: list[str] = []
         if draft_mode in {"new_workflow", "replace_workflow"}:
             entries = [
@@ -2336,7 +2406,16 @@ class AgentBuilderService:
                 for capability in normalized_capabilities
                 if capability not in entry_capabilities and capability != "answer"
             ]
-            normalized_capabilities = [entry, *normalized_capabilities, "answer"]
+            terminal_capability = (
+                []
+                if "mail_terminal_acknowledgement" in normalized_capabilities
+                else ["answer"]
+            )
+            normalized_capabilities = [
+                entry,
+                *normalized_capabilities,
+                *terminal_capability,
+            ]
         elif draft_mode == "modify_workflow":
             normalized_capabilities = [
                 capability
@@ -2451,6 +2530,19 @@ class AgentBuilderService:
             if "external_action_requested" not in risk_flags:
                 risk_flags.append("external_action_requested")
             risk_flags.append("github_configuration_unresolved")
+        if "gmail_reply_draft_create" in capability_set:
+            pending_resolution.append(
+                AgentBuilderPendingResolution(
+                    resolution_id="res_gmail_credential_1",
+                    slot_type="other",
+                    slot_key="gmail_draft.credential_id",
+                    blocking=False,
+                    target_step_ref=CAPABILITY_STEP_IDS["gmail_reply_draft_create"],
+                )
+            )
+            risk_flags.extend(
+                ["external_action_requested", "gmail_credential_unresolved"]
+            )
         if {
             "workflow_call",
             "http_request",
@@ -2561,6 +2653,16 @@ class AgentBuilderService:
                 ],
                 risk_flags=["unsupported_capability"],
             )
+        if _message_requests_mail_send(request.message):
+            return AgentBuilderStructuredRequest(
+                request_type="unsupported",
+                draft_mode="new_workflow",
+                intent_summary=_safe_summary(request.message),
+                unsupported_requests=[
+                    "메일 발송은 지원하지 않습니다. Gmail 답장 초안 생성만 사용할 수 있습니다."
+                ],
+                risk_flags=["unsupported_capability"],
+            )
         explicit_new_workflow = _message_requests_new_workflow(request.message)
         edit_spec = (
             _extract_workflow_edit_spec(
@@ -2665,6 +2767,7 @@ class AgentBuilderService:
         uses_llm = not simple_input_output and (
             needs_kb
             or _message_requests_llm_processing(capability_text)
+            or "gmail_reply_draft_create" in requested_capabilities
             or (
                 not targeted_modify
                 and (wants_slack or "github_pr_comment" in requested_capabilities)
@@ -2694,6 +2797,8 @@ class AgentBuilderService:
             "variable_extraction": "입력 데이터에서 필요한 변수를 추출하도록 설정합니다.",
             "github_pr_read": "GitHub Pull Request와 변경 파일을 조회하도록 설정합니다.",
             "mail_search": "메일을 검색하도록 설정합니다.",
+            "gmail_reply_draft_create": "LLM 결과로 Gmail 답장 초안을 생성하도록 설정합니다.",
+            "mail_terminal_acknowledgement": "필수 작업 성공 후 원본 메일 처리를 완료하도록 설정합니다.",
             "http_request": "외부 HTTP API를 호출하도록 설정합니다.",
             "workflow_call": "다른 workflow를 호출하도록 설정합니다.",
             "code_execution": "sandbox에서 코드를 실행하도록 설정합니다.",
@@ -2758,9 +2863,24 @@ class AgentBuilderService:
             "github_pr_read",
             "github_pr_comment",
             "mail_search",
+            "gmail_reply_draft_create",
+            "mail_terminal_acknowledgement",
         } & selected_capabilities:
             if "external_configuration_unresolved" not in risk_flags:
                 risk_flags.append("external_configuration_unresolved")
+        if "gmail_reply_draft_create" in selected_capabilities:
+            pending_resolution.append(
+                AgentBuilderPendingResolution(
+                    resolution_id="res_gmail_credential_1",
+                    slot_type="other",
+                    slot_key="gmail_draft.credential_id",
+                    blocking=False,
+                    target_step_ref="step_gmail_draft",
+                )
+            )
+            risk_flags.extend(
+                ["external_action_requested", "gmail_credential_unresolved"]
+            )
         edit_operations: list[AgentBuilderEditOperation] = []
         if targeted_modify:
             if edit_spec is None:
@@ -2802,7 +2922,7 @@ class AgentBuilderService:
                         target_step_ref=planned_steps[0].step_id,
                     )
                 )
-        else:
+        elif "mail_terminal_acknowledgement" not in selected_capabilities:
             planned_steps.append(
                 AgentBuilderPlannedStep(
                     step_id="step_answer",
@@ -3685,6 +3805,9 @@ class AgentBuilderService:
         entry_capability: str,
         model_id: str | None,
         kb_refs: list[dict[str, Any]],
+        mail_processing_source_id: str | None = None,
+        mail_draft_effect_source_id: str | None = None,
+        durable_mail_processing: bool = False,
     ) -> dict[str, Any]:
         source_selector = [source_id, source_output_key]
         configuration_state = "unresolved"
@@ -3833,11 +3956,40 @@ class AgentBuilderService:
                 "start_date": None,
                 "end_date": None,
                 "folder": "INBOX",
-                "max_results": 10,
+                "max_results": 1 if durable_mail_processing else 10,
                 "unread_only": False,
                 "mark_as_read": False,
+                "processing_mode": (
+                    "durable" if durable_mail_processing else "search_only"
+                ),
                 "referenced_variables": [],
                 "configuration_state": configuration_state,
+            }
+        elif capability == "gmail_reply_draft_create":
+            if not mail_processing_source_id:
+                raise ValueError("Gmail Draft requires a durable Mail source")
+            data = {
+                "title": "Gmail 답장 초안",
+                "credential_id": None,
+                "configuration_state": configuration_state,
+                "processing_ref_selector": [
+                    mail_processing_source_id,
+                    "processing_ref",
+                ],
+                "reply_body_selector": source_selector,
+            }
+        elif capability == "mail_terminal_acknowledgement":
+            if not mail_processing_source_id or not mail_draft_effect_source_id:
+                raise ValueError("Mail acknowledgement requires a durable Mail source")
+            data = {
+                "title": "메일 처리 완료",
+                "processing_ref_selector": [
+                    mail_processing_source_id,
+                    "processing_ref",
+                ],
+                "required_effect_ref_selectors": [
+                    [mail_draft_effect_source_id, "draft_ref"]
+                ],
             }
         elif capability == "answer":
             data = {
@@ -3939,6 +4091,11 @@ class AgentBuilderService:
         generated_node_ids: list[str] = []
         current_source_id = source_id
         current_output_key = source_output_key
+        mail_processing_source_id = (
+            source_id if source_capability == "mail_search" else None
+        )
+        mail_draft_effect_source_id: str | None = None
+        durable_mail_processing = "gmail_reply_draft_create" in body_capabilities
         for capability in body_capabilities:
             node_id = self._unique_node_id(
                 CAPABILITY_NODE_PREFIXES[capability],
@@ -3955,12 +4112,19 @@ class AgentBuilderService:
                     entry_capability=source_capability,
                     model_id=model_id,
                     kb_refs=kb_refs,
+                    mail_processing_source_id=mail_processing_source_id,
+                    mail_draft_effect_source_id=mail_draft_effect_source_id,
+                    durable_mail_processing=durable_mail_processing,
                 )
             )
             generated_node_ids.append(node_id)
             reserved_ids.add(node_id)
             current_source_id = node_id
             current_output_key = CAPABILITY_OUTPUT_KEYS[capability]
+            if capability == "mail_search":
+                mail_processing_source_id = node_id
+            elif capability == "gmail_reply_draft_create":
+                mail_draft_effect_source_id = node_id
 
         replaced_edge_ids = set(target_resolution.get("replaced_edge_ids") or [])
         replaced_edge = next(
@@ -4077,6 +4241,9 @@ class AgentBuilderService:
         )
         source_id = input_id
         source_output_key = input_output_key
+        mail_processing_source_id: str | None = None
+        mail_draft_effect_source_id: str | None = None
+        durable_mail_processing = "gmail_reply_draft_create" in body_capabilities
         for capability in body_capabilities:
             prefix = CAPABILITY_NODE_PREFIXES[capability]
             node_id = self._unique_node_id(prefix, reserved_ids, suffix)
@@ -4090,31 +4257,39 @@ class AgentBuilderService:
                     entry_capability=entry_capability,
                     model_id=model_id,
                     kb_refs=kb_refs,
+                    mail_processing_source_id=mail_processing_source_id,
+                    mail_draft_effect_source_id=mail_draft_effect_source_id,
+                    durable_mail_processing=durable_mail_processing,
                 )
             )
             reserved_ids.add(node_id)
             generated_node_ids_for_layout.append(node_id)
             source_id = node_id
             source_output_key = CAPABILITY_OUTPUT_KEYS[capability]
+            if capability == "mail_search":
+                mail_processing_source_id = node_id
+            elif capability == "gmail_reply_draft_create":
+                mail_draft_effect_source_id = node_id
 
-        answer_id = self._unique_node_id("agent-answer", reserved_ids, suffix)
-        generated_nodes.append(
-            {
-                "id": answer_id,
-                "type": "answerNode",
-                "position": {"x": 0, "y": 0},
-                "data": {
-                    "title": "응답",
-                    "outputs": [
-                        {
-                            "variable": "answer",
-                            "value_selector": [source_id, source_output_key],
-                        }
-                    ],
-                },
-            }
-        )
-        generated_node_ids_for_layout.append(answer_id)
+        if "mail_terminal_acknowledgement" not in body_capabilities:
+            answer_id = self._unique_node_id("agent-answer", reserved_ids, suffix)
+            generated_nodes.append(
+                {
+                    "id": answer_id,
+                    "type": "answerNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "title": "응답",
+                        "outputs": [
+                            {
+                                "variable": "answer",
+                                "value_selector": [source_id, source_output_key],
+                            }
+                        ],
+                    },
+                }
+            )
+            generated_node_ids_for_layout.append(answer_id)
         generated_edges = [
             {
                 "id": f"edge-{source['id']}-{target['id']}",

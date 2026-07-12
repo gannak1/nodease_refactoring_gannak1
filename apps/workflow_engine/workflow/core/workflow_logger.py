@@ -21,6 +21,7 @@ from typing import Any, Dict, Optional
 from apps.shared.celery_app import celery_app
 from apps.shared.db.session import SessionLocal
 from apps.shared.services.tracing.metadata import TraceMetadataSanitizer
+from apps.shared.services.tracing.mail_payload import sanitize_mail_trace_payload
 from apps.shared.services.tracing.payload import TracePayloadService
 from apps.shared.services.tracing.policy import TracePolicyService
 from apps.shared.services.tracing.redaction import TraceRedactionService
@@ -207,12 +208,11 @@ class WorkflowLogger:
         external_run_id: Optional[str] = None,  # [NEW] 외부에서 전달받은 run_id
     ) -> Optional[uuid.UUID]:
         """워크플로우 실행 로그 생성"""
-        is_system_schedule = (
-            execution_context.get("trigger_mode") == "schedule"
-            and str(execution_context.get("workflow_task_id") or "").startswith(
-                "schedule:"
-            )
-        )
+        is_system_schedule = execution_context.get(
+            "trigger_mode"
+        ) == "schedule" and str(
+            execution_context.get("workflow_task_id") or ""
+        ).startswith("schedule:")
         if not workflow_id or (not user_id and not is_system_schedule):
             return None
 
@@ -267,22 +267,33 @@ class WorkflowLogger:
         self._submit_log("log.create_run", data)
         return run_id
 
-    def update_run_log_finish(self, outputs: Dict[str, Any]):
+    def update_run_log_finish(
+        self,
+        outputs: Dict[str, Any],
+        *,
+        mail_sensitive_lineage: bool = False,
+    ):
         """워크플로우 실행 완료 로그 업데이트"""
         if not self.workflow_run_id:
             return
 
+        trace_outputs = sanitize_mail_trace_payload(
+            node_type=None,
+            payload_kind="output",
+            value=outputs,
+            mail_sensitive_lineage=mail_sensitive_lineage,
+        )
         payload_records, summary, _ = self._prepare_payloads(
-            [{"payload_kind": "output", "payload": outputs, "scope": "trace"}],
+            [{"payload_kind": "output", "payload": trace_outputs, "scope": "trace"}],
             default_scope="trace",
             app_id=self.app_id,
         )
         redacted_outputs = (
-            payload_records[0]["redacted_payload"] if payload_records else outputs
+            payload_records[0]["redacted_payload"] if payload_records else trace_outputs
         )
         if not payload_records:
             redacted_outputs = self._redact_compat_value(
-                outputs, payload_kind="output", app_id=self.app_id
+                trace_outputs, payload_kind="output", app_id=self.app_id
             )
 
         data = {
@@ -320,6 +331,7 @@ class WorkflowLogger:
         process_data: Optional[Dict[str, Any]] = None,
         sequence: Optional[int] = None,
         retry_count: int = 0,
+        mail_sensitive_lineage: bool = False,
     ) -> Optional[uuid.UUID]:
         """노드 실행 로그 생성"""
         if not self.workflow_run_id:
@@ -327,11 +339,17 @@ class WorkflowLogger:
 
         # [FIX] Deterministic Log ID 생성
         log_id = uuid.uuid4()
+        trace_inputs = sanitize_mail_trace_payload(
+            node_type=node_type,
+            payload_kind="input",
+            value=inputs,
+            mail_sensitive_lineage=mail_sensitive_lineage,
+        )
         payload_records, summary, policy_context = self._prepare_payloads(
             [
                 {
                     "payload_kind": "input",
-                    "payload": inputs,
+                    "payload": trace_inputs,
                     "scope": "span",
                     "workflow_node_run_id": log_id,
                 }
@@ -341,11 +359,11 @@ class WorkflowLogger:
             default_node_run_id=log_id,
         )
         redacted_inputs = (
-            payload_records[0]["redacted_payload"] if payload_records else inputs
+            payload_records[0]["redacted_payload"] if payload_records else trace_inputs
         )
         if not payload_records:
             redacted_inputs = self._redact_compat_value(
-                inputs, payload_kind="input", app_id=self.app_id
+                trace_inputs, payload_kind="input", app_id=self.app_id
             )
         redacted_process_data = self._redact_compat_value(
             process_data or {}, payload_kind="process_data", app_id=self.app_id
@@ -383,21 +401,31 @@ class WorkflowLogger:
         trace_payloads: list[dict[str, Any]] = None,
         sequence: Optional[int] = None,
         retry_count: int = 0,
+        mail_sensitive_lineage: bool = False,
     ):
         """노드 실행 완료 로그 업데이트 (Upsert 패턴 지원)"""
         if not self.workflow_run_id or not log_id:
             return
 
-        normalized_outputs = outputs if isinstance(outputs, dict) else {"result": outputs}
+        normalized_outputs = (
+            outputs if isinstance(outputs, dict) else {"result": outputs}
+        )
+        trace_outputs = sanitize_mail_trace_payload(
+            node_type=node_type,
+            payload_kind="output",
+            value=normalized_outputs,
+            mail_sensitive_lineage=mail_sensitive_lineage,
+        )
         payload_items = [
             {
                 "payload_kind": "output",
-                "payload": normalized_outputs,
+                "payload": trace_outputs,
                 "scope": "span",
                 "workflow_node_run_id": log_id,
             }
         ]
-        payload_items.extend(trace_payloads or [])
+        if not mail_sensitive_lineage:
+            payload_items.extend(trace_payloads or [])
         payload_records, summary, _ = self._prepare_payloads(
             payload_items,
             default_scope="span",
@@ -405,16 +433,20 @@ class WorkflowLogger:
             default_node_run_id=log_id,
         )
         redacted_outputs = (
-            payload_records[0]["redacted_payload"]
-            if payload_records
-            else normalized_outputs
+            payload_records[0]["redacted_payload"] if payload_records else trace_outputs
         )
         if not payload_records:
             redacted_outputs = self._redact_compat_value(
-                normalized_outputs, payload_kind="output", app_id=self.app_id
+                trace_outputs, payload_kind="output", app_id=self.app_id
             )
+        trace_inputs = sanitize_mail_trace_payload(
+            node_type=node_type,
+            payload_kind="input",
+            value=inputs or {},
+            mail_sensitive_lineage=mail_sensitive_lineage,
+        )
         redacted_inputs = self._redact_compat_value(
-            inputs or {}, payload_kind="input", app_id=self.app_id
+            trace_inputs, payload_kind="input", app_id=self.app_id
         )
         redacted_process_data = self._redact_compat_value(
             process_data or {}, payload_kind="process_data", app_id=self.app_id
@@ -464,13 +496,20 @@ class WorkflowLogger:
         trace_metadata: Dict[str, Any] = None,
         sequence: Optional[int] = None,
         retry_count: int = 0,
+        mail_sensitive_lineage: bool = False,
     ):
         """노드 실행 에러 로그 업데이트 (Upsert 패턴 지원)"""
         if not self.workflow_run_id or not log_id:
             return
 
+        trace_inputs = sanitize_mail_trace_payload(
+            node_type=node_type,
+            payload_kind="input",
+            value=inputs or {},
+            mail_sensitive_lineage=mail_sensitive_lineage,
+        )
         redacted_inputs = self._redact_compat_value(
-            inputs or {}, payload_kind="input", app_id=self.app_id
+            trace_inputs, payload_kind="input", app_id=self.app_id
         )
         redacted_process_data = self._redact_compat_value(
             process_data or {}, payload_kind="process_data", app_id=self.app_id

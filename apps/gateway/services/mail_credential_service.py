@@ -40,6 +40,7 @@ from apps.shared.schemas.mail_credential import (
     MailCredentialResponse,
     MailCredentialUpdate,
 )
+from apps.shared.domain.mail_oauth import GmailOAuthSecret
 from apps.shared.services.credential_encryption import (
     CredentialEncryptionService,
     get_credential_encryption_service,
@@ -95,6 +96,12 @@ class MailCredentialRevoked(MailCredentialServiceError):
     status_code = 409
     code = "mail.credential_revoked"
     detail = "Revoked Mail credential cannot be changed."
+
+
+class MailCredentialOAuthManaged(MailCredentialServiceError):
+    status_code = 422
+    code = "mail.oauth_credential_managed"
+    detail = "OAuth secrets must be changed through the authorization flow."
 
 
 class MailCredentialPersistenceFailed(MailCredentialServiceError):
@@ -195,6 +202,59 @@ class MailCredentialService:
         self.db.refresh(credential)
         return self.to_response(credential)
 
+    def create_gmail_oauth(
+        self,
+        *,
+        actor_id: uuid.UUID,
+        organization_id: uuid.UUID,
+        credential_name: str,
+        email_address: str,
+        refresh_token: str,
+        scopes: tuple[str, ...],
+    ) -> MailCredentialResponse:
+        if not has_organization_manager_permission(
+            self.db, actor_id, organization_id
+        ):
+            self._record_denial(actor_id, organization_id, organization_id, "create")
+            raise MailCredentialPermissionDenied()
+        secret_payload = GmailOAuthSecret(
+            refresh_token=refresh_token,
+            scopes=scopes,
+        ).serialize()
+        envelope = self.encryption.encrypt(secret_payload)
+        credential = MailCredential(
+            organization_id=organization_id,
+            credential_name=credential_name.strip(),
+            provider="gmail",
+            email_address=email_address.strip().lower(),
+            auth_type="oauth2",
+            imap_host="imap.gmail.com",
+            imap_port=993,
+            use_ssl=True,
+            encrypted_secret=envelope.ciphertext,
+            encryption_key_version=envelope.key_version,
+            encryption_algorithm=envelope.algorithm,
+            status=MAIL_CREDENTIAL_ACTIVE,
+            created_by=actor_id,
+        )
+        try:
+            register_manual_audit_ownership(self.db, credential, "created")
+            self.db.add(credential)
+            self.db.flush()
+            self._add_mutation_audit(
+                action=AuditAction.MAIL_CREDENTIAL_CREATE,
+                actor_id=actor_id,
+                organization_id=organization_id,
+                target_id=credential.id,
+                metadata={"provider": "gmail", "status": credential.status},
+            )
+            self.db.commit()
+        except SQLAlchemyError as exc:
+            self.db.rollback()
+            raise MailCredentialPersistenceFailed() from exc
+        self.db.refresh(credential)
+        return self.to_response(credential)
+
     def list_available(
         self,
         actor_id: uuid.UUID,
@@ -270,6 +330,7 @@ class MailCredentialService:
             id=credential.id,
             credential_name=credential.credential_name,
             provider=credential.provider,
+            auth_type=credential.auth_type,
             email_preview=_email_preview(credential.email_address),
             status=credential.status,
         )
@@ -294,6 +355,11 @@ class MailCredentialService:
         credential = self._get_scoped(organization_id, credential_id, for_update=True)
         self._require(actor_id, organization_id, credential, "manage")
         self._require_active(credential)
+        if (
+            credential.auth_type == "oauth2"
+            and "secret" in payload.model_fields_set
+        ):
+            raise MailCredentialOAuthManaged()
         register_manual_audit_ownership(self.db, credential, "updated")
         updates = payload.model_dump(exclude_unset=True, exclude={"secret"})
         for key, value in updates.items():

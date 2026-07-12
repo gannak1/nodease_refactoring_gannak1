@@ -46,6 +46,11 @@ class MailCredential(Base):
             "imap_port > 0 AND imap_port <= 65535",
             name="ck_mail_credentials_imap_port",
         ),
+        CheckConstraint(
+            "(oauth_refresh_lease_owner_hash IS NULL) = "
+            "(oauth_refresh_lease_expires_at IS NULL)",
+            name="ck_mail_credentials_oauth_refresh_lease_pair",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -85,6 +90,12 @@ class MailCredential(Base):
         onupdate=lambda: datetime.now(timezone.utc),
     )
     revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    oauth_refresh_lease_owner_hash: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    oauth_refresh_lease_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 

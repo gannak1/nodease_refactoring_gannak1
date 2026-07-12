@@ -54,3 +54,37 @@ Status: Draft
 - MAIL-CRED-TC-040: API response, graph, audit, trace, log와 fixture에 secret/ciphertext가 없다.
 - MAIL-CRED-TC-041: 로그인 및 로그인 이후 작업/cleanup의 provider raw exception과 mailbox email 원문이 audit/trace/log에 없다.
 - MAIL-CRED-TC-042: DB 예외 문자열에 mailbox identity나 ciphertext가 포함되어도 audit metadata와 API 오류에는 안전한 error code만 남는다.
+
+## Gmail OAuth, Draft And Processing
+
+- MAIL-CRED-TC-050: OAuth start/callback은 manager, active organization, state, PKCE, expiry를 검증하고 token을 response/log에 노출하지 않는다.
+- MAIL-CRED-TC-051: Login OAuth token은 Mail credential resolver에서 사용할 수 없고 Gmail refresh token은 versioned encryption envelope로만 저장된다.
+- MAIL-CRED-TC-052: Revoked, cross-organization, `use` 권한 없는 credential은 token refresh와 Gmail 호출 전에 차단된다.
+- MAIL-CRED-TC-053: 같은 workflow/source node/credential/provider message를 동시 claim해도 processing row와 draft provider 호출은 하나다.
+- MAIL-CRED-TC-054: 다른 workflow 또는 다른 source node는 같은 provider message를 독립 logical consumer로 처리할 수 있다.
+- MAIL-CRED-TC-055: IMAP sequence id만 있는 message는 durable mode에서 거부하고 UID/UIDVALIDITY 또는 canonical provider identity를 요구한다.
+- MAIL-CRED-TC-056: Gmail Draft는 원본 thread, In-Reply-To, bounded References와 정규화된 subject를 보존한다.
+- MAIL-CRED-TC-057: Header injection, 다중 recipient, CC/BCC/reply-all, HTML, attachment와 size limit 초과는 provider 호출 전에 거부된다.
+- MAIL-CRED-TC-058: Request 전달 후 timeout/응답 유실은 `outcome_unknown`이며 duplicate delivery가 Gmail create를 다시 호출하지 않는다.
+- MAIL-CRED-TC-059: Provider 호출 전 확정 실패만 동일 operation key와 bounded backoff로 retry한다.
+- MAIL-CRED-TC-060: Draft 성공 후 required effect 또는 acknowledgement 실패는 draft를 다시 생성하지 않고 미완료 단계만 재시도한다.
+- MAIL-CRED-TC-061: Durable mode의 `mark_as_read=true`는 graph validation에서 실패하고 search-only mode는 전체 fetch 성공 후에만 일괄 ack한다.
+- MAIL-CRED-TC-062: Production adapter와 catalog에는 Gmail send endpoint/capability가 존재하지 않는다.
+- MAIL-CRED-TC-063: Processing/effect row, API, graph, audit, trace, log와 fixture에 body, MIME, token, raw provider id/response/error가 없다.
+- MAIL-CRED-TC-064: Migration은 최신 단일 head를 유지하고 기존 IMAP credential/workflow를 보존한다.
+- MAIL-CRED-TC-065: OAuth start는 `gmail.modify`만 요청하고 기존 `gmail.compose`-only secret은 provider 호출 전에 scope 부족으로 거부한다.
+- MAIL-CRED-TC-066: OAuth Gmail Mail node는 고정 Gmail REST API로 검색·조회하며 IMAP socket/XOAUTH2를 호출하지 않는다. Password/app-password credential은 기존 IMAP TLS 경로를 유지한다.
+- MAIL-CRED-TC-067: Gmail REST 검색의 provider message id는 Mail output에 없고 암호화 source reference와 identity hash에만 반영된다.
+- MAIL-CRED-TC-068: Gmail REST 메시지 상세 조회가 하나라도 실패하면 search-only 일괄 읽음 처리를 호출하지 않는다. 성공한 전체 집합만 `batchModify`로 읽음 처리한다.
+- MAIL-CRED-TC-069: Gmail provider 401/403은 재인가 필요, 429/5xx/timeout은 safe unavailable code로 분류하며 provider raw response/error는 노출하지 않는다.
+- MAIL-CRED-TC-070: OAuth terminal acknowledgement는 암호화 source reference의 provider message id로 고정 `messages.modify`를 호출하고 IMAP UID 경로를 사용하지 않는다.
+- MAIL-CRED-TC-071: 과도한 IMAP raw message와 Gmail REST body payload는 MIME/attachment 처리 전에 size limit으로 거부된다.
+- MAIL-CRED-TC-072: `failed_before_effect`는 `next_attempt_at` 전에 reclaim되지 않고 attempt cap 소진 시 effect/processing이 `exhausted`/`failed` terminal 상태가 된다.
+- MAIL-CRED-TC-073: 같은 processing을 다른 deployment 또는 다른 required-effect selector contract로 acknowledge하면 provider 호출 전에 거부된다.
+- MAIL-CRED-TC-074: Workflow 삭제 시 processing/effect operational row는 cascade 정리되고 별도 audit row lifecycle에는 영향을 주지 않는다.
+- MAIL-CRED-TC-075: Mail processing metric에 임의 event/outcome을 전달하면 `unknown`으로 정규화하며 raw message/draft/tenant/provider 값이 label이나 구조화 로그에 남지 않는다.
+- MAIL-CRED-TC-076: selector로만 Mail output을 참조하는 downstream LLM/template node와 그 후손도 Mail-sensitive lineage로 분류되어 durable trace가 구조 요약으로 치환된다.
+- MAIL-CRED-TC-077: 이미 성공한 acknowledgement 또는 다른 실행의 활성 ack lease를 만나면 provider acknowledgement 호출 수는 증가하지 않는다. Ack 실패는 lease를 해제하고 Draft를 재생성하지 않는다.
+- MAIL-CRED-TC-078: 재배포 후 effect 없는 pending processing은 현재 deployment로 재귀속되지만 active/effect-bearing processing은 conflict로 차단되고 terminal success는 재사용된다.
+- MAIL-CRED-TC-079: 동시 OAuth refresh는 짧은 credential lease winner만 provider를 호출하고 외부 HTTP 동안 DB transaction을 유지하지 않는다. Replacement token rotation과 audit은 lease owner를 확인한 finalize transaction에서 commit하며 `invalid_grant`만 local revoke한다.
+- MAIL-CRED-TC-080: Opt-in disposable PostgreSQL race에서 동일 message registration은 한 processing id로 수렴하고 동시 Draft admission의 acquired winner는 하나다.

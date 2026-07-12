@@ -15,6 +15,8 @@ import { WebhookTriggerNodePanel } from './webhook/components/WebhookTriggerNode
 import { ScheduleTriggerNodePanel } from './schedule/components/ScheduleTriggerNodePanel';
 import { GithubNodePanel } from './github/components/GithubNodePanel';
 import { MailNodePanel } from './mail/components/MailNodePanel';
+import { GmailDraftNodePanel } from './mail/components/GmailDraftNodePanel';
+import { MailAcknowledgeNodePanel } from './mail/components/MailAcknowledgeNodePanel';
 import { LoopNodePanel } from './loop/components/LoopNodePanel';
 import { VisiblePropertiesControl } from './VisiblePropertiesControl';
 
@@ -83,6 +85,12 @@ const NodePanelBody = ({
   if (node.type === 'mailNode') {
     return <MailNodePanel nodeId={node.id} data={node.data} />;
   }
+  if (node.type === 'gmailDraftNode') {
+    return <GmailDraftNodePanel nodeId={node.id} data={node.data} />;
+  }
+  if (node.type === 'mailAcknowledgeNode') {
+    return <MailAcknowledgeNodePanel nodeId={node.id} data={node.data} />;
+  }
   if (node.type === 'loopNode') {
     return <LoopNodePanel nodeId={node.id} data={node.data} />;
   }
@@ -114,10 +122,7 @@ export const NodeInlinePanel = ({
     >
       <div className="min-w-0 max-w-full [&_*]:min-w-0 [&_input]:max-w-full [&_input]:text-gray-700 [&_input::placeholder]:text-gray-500 [&_select]:max-w-full [&_select]:text-gray-700 [&_textarea]:max-w-full [&_textarea]:text-gray-800 [&_textarea::placeholder]:text-gray-500">
         {node.type !== 'llmNode' && <VisiblePropertiesControl node={node} />}
-        <NodePanelBody
-          node={node}
-          onOpenSidePanel={onOpenSidePanel}
-        />
+        <NodePanelBody node={node} onOpenSidePanel={onOpenSidePanel} />
       </div>
     </div>
   );

@@ -18,6 +18,7 @@ from apps.shared.db.models.workflow import Workflow
 from apps.shared.domain.mail_credential import (
     MailNodeCredentialBoundaryError,
     validate_mail_node_credential_boundary,
+    validate_mail_processing_node_boundary,
 )
 from apps.shared.schemas.workflow import WorkflowCreateRequest, WorkflowDraftRequest
 from apps.shared.services.permission_audit import record_resource_permission_denied
@@ -202,10 +203,14 @@ class WorkflowService:
                 if not isinstance(node, dict)
                 else node.get("type")
             )
-            == "mailNode"
+            in {"mailNode", "gmailDraftNode", "mailAcknowledgeNode"}
         ]
         if not mail_nodes:
             return
+        WorkflowService._validate_mail_processing_graph_contract(
+            request,
+            require_resolved=require_resolved,
+        )
         try:
             user_uuid = uuid.UUID(str(user_id))
             organization_uuid = uuid.UUID(str(organization_id))
@@ -216,14 +221,28 @@ class WorkflowService:
 
         for node in mail_nodes:
             raw_data = node.get("data") if isinstance(node, dict) else node.data
+            node_type = node.get("type") if isinstance(node, dict) else node.type
             try:
-                validate_mail_node_credential_boundary(raw_data)
+                if node_type == "mailNode":
+                    validate_mail_node_credential_boundary(raw_data)
+                else:
+                    validate_mail_processing_node_boundary(
+                        node_type,
+                        raw_data,
+                        allow_unresolved=not require_resolved,
+                    )
             except MailNodeCredentialBoundaryError as exc:
                 raise HTTPException(
                     status_code=422,
-                    detail="mail.credential_reference_required",
+                    detail=(
+                        "mail.credential_reference_required"
+                        if node_type == "mailNode"
+                        else "mail.processing_configuration_invalid"
+                    ),
                 ) from exc
             data = raw_data
+            if node_type == "mailAcknowledgeNode":
+                continue
             credential_value = data.get("credential_id")
             if credential_value in (None, ""):
                 if require_resolved:
@@ -258,6 +277,14 @@ class WorkflowService:
                 "use",
                 organization_id=organization_uuid,
             ):
+                if node_type == "gmailDraftNode" and (
+                    credential.provider != "gmail"
+                    or credential.auth_type != "oauth2"
+                ):
+                    raise HTTPException(
+                        status_code=422,
+                        detail="mail.gmail_oauth_credential_required",
+                    )
                 continue
             record_resource_permission_denied(
                 user_id=user_uuid,
@@ -277,6 +304,178 @@ class WorkflowService:
                 status_code=403,
                 detail="mail.credential_permission_denied",
             )
+
+    @staticmethod
+    def _validate_mail_processing_graph_contract(
+        request: WorkflowDraftRequest | Mapping[str, Any],
+        *,
+        require_resolved: bool,
+    ) -> None:
+        graph = (
+            request.model_dump(mode="python")
+            if isinstance(request, WorkflowDraftRequest)
+            else dict(request)
+        )
+        for current_graph in WorkflowService._iter_graphs(graph):
+            nodes = current_graph.get("nodes")
+            edges = current_graph.get("edges")
+            if not isinstance(nodes, list):
+                continue
+            node_by_id = {
+                str(node.get("id")): node
+                for node in nodes
+                if isinstance(node, Mapping) and node.get("id")
+            }
+            edge_pairs = {
+                (str(edge.get("source")), str(edge.get("target")))
+                for edge in (edges if isinstance(edges, list) else [])
+                if isinstance(edge, Mapping)
+                and edge.get("source")
+                and edge.get("target")
+            }
+
+            for node in node_by_id.values():
+                node_type = str(node.get("type") or "")
+                if node_type not in {"gmailDraftNode", "mailAcknowledgeNode"}:
+                    continue
+                data = node.get("data")
+                if not isinstance(data, Mapping):
+                    continue
+                processing_selector = data.get("processing_ref_selector")
+                if processing_selector in (None, []) and not require_resolved:
+                    continue
+                source = WorkflowService._mail_processing_source(
+                    node_by_id,
+                    processing_selector,
+                )
+                if source is None or not WorkflowService._has_graph_path(
+                    edge_pairs,
+                    str(source.get("id")),
+                    str(node.get("id")),
+                ):
+                    raise HTTPException(
+                        status_code=422,
+                        detail="mail.processing_configuration_invalid",
+                    )
+
+                if node_type == "gmailDraftNode":
+                    reply_selector = data.get("reply_body_selector")
+                    reply_source_id = (
+                        str(reply_selector[0])
+                        if isinstance(reply_selector, list) and len(reply_selector) >= 2
+                        else ""
+                    )
+                    reply_source = node_by_id.get(reply_source_id)
+                    if (
+                        reply_source is None
+                        or not WorkflowService._has_graph_path(
+                            edge_pairs,
+                            reply_source_id,
+                            str(node.get("id")),
+                        )
+                        or source.get("data", {}).get("credential_id")
+                        != data.get("credential_id")
+                    ):
+                        raise HTTPException(
+                            status_code=422,
+                            detail="mail.processing_configuration_invalid",
+                        )
+                    continue
+
+                effect_selectors = data.get("required_effect_ref_selectors")
+                if effect_selectors in (None, []) and not require_resolved:
+                    continue
+                for selector in effect_selectors or []:
+                    effect_id = (
+                        str(selector[0])
+                        if isinstance(selector, list) and len(selector) >= 2
+                        else ""
+                    )
+                    effect_node = node_by_id.get(effect_id)
+                    effect_data = (
+                        effect_node.get("data")
+                        if isinstance(effect_node, Mapping)
+                        else None
+                    )
+                    if (
+                        not isinstance(effect_node, Mapping)
+                        or effect_node.get("type") != "gmailDraftNode"
+                        or selector[1] != "draft_ref"
+                        or not isinstance(effect_data, Mapping)
+                        or effect_data.get("processing_ref_selector")
+                        != processing_selector
+                        or not WorkflowService._has_graph_path(
+                            edge_pairs,
+                            effect_id,
+                            str(node.get("id")),
+                        )
+                    ):
+                        raise HTTPException(
+                            status_code=422,
+                            detail="mail.processing_configuration_invalid",
+                        )
+
+    @staticmethod
+    def _iter_graphs(graph: Mapping[str, Any]) -> Iterable[Mapping[str, Any]]:
+        pending = [graph]
+        while pending:
+            current = pending.pop()
+            yield current
+            nodes = current.get("nodes")
+            if not isinstance(nodes, list):
+                continue
+            for node in nodes:
+                data = node.get("data") if isinstance(node, Mapping) else None
+                subgraph = data.get("subGraph") if isinstance(data, Mapping) else None
+                if isinstance(subgraph, Mapping):
+                    pending.append(subgraph)
+
+    @staticmethod
+    def _mail_processing_source(
+        node_by_id: Mapping[str, Mapping[str, Any]],
+        selector: Any,
+    ) -> Mapping[str, Any] | None:
+        if (
+            not isinstance(selector, list)
+            or len(selector) != 2
+            or selector[1] != "processing_ref"
+        ):
+            return None
+        source = node_by_id.get(str(selector[0]))
+        data = source.get("data") if isinstance(source, Mapping) else None
+        if (
+            not isinstance(source, Mapping)
+            or source.get("type") != "mailNode"
+            or not isinstance(data, Mapping)
+            or data.get("processing_mode") != "durable"
+            or data.get("mark_as_read") is True
+            or data.get("max_results") != 1
+        ):
+            return None
+        return source
+
+    @staticmethod
+    def _has_graph_path(
+        edge_pairs: set[tuple[str, str]],
+        source_id: str,
+        target_id: str,
+    ) -> bool:
+        if not source_id or not target_id or source_id == target_id:
+            return False
+        pending = [source_id]
+        visited: set[str] = set()
+        while pending:
+            current = pending.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            for edge_source, edge_target in edge_pairs:
+                if edge_source != current:
+                    continue
+                if edge_target == target_id:
+                    return True
+                pending.append(edge_target)
+        return False
 
     @staticmethod
     def get_draft(db: Session, workflow_id: str):

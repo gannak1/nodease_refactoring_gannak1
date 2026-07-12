@@ -68,7 +68,9 @@ class WorkflowEngine:
                 for edge in graph[1]
             ]
         else:
-            raise ValueError("워크플로우 graph는 dict 또는 (nodes, edges) tuple이어야 합니다.")
+            raise ValueError(
+                "워크플로우 graph는 dict 또는 (nodes, edges) tuple이어야 합니다."
+            )
 
         self.is_deployed = is_deployed
         self.node_schemas = {node.id: node for node in nodes}
@@ -90,6 +92,7 @@ class WorkflowEngine:
         self.edge_handles = {}
         self.data_dependencies = {}
         self._build_optimized_graph()
+        self._mail_sensitive_node_ids = self._descendants_of_type("mailNode")
 
         # 타입별 노드 인덱스
         self.nodes_by_type = {}
@@ -348,14 +351,20 @@ class WorkflowEngine:
             if stream_mode:
                 final_context = dict(results)
                 if not self.is_subworkflow:
-                    self.logger.update_run_log_finish(final_context)
+                    self.logger.update_run_log_finish(
+                        final_context,
+                        mail_sensitive_lineage=bool(self._mail_sensitive_node_ids),
+                    )
                 if run_id and not self.is_subworkflow:
                     publish_workflow_event(run_id, "workflow_finish", final_context)
                 yield {"type": "workflow_finish", "data": final_context}
             else:
                 final_result = self._get_answer_node_result(results)
                 if not self.is_subworkflow:
-                    self.logger.update_run_log_finish(final_result)
+                    self.logger.update_run_log_finish(
+                        final_result,
+                        mail_sensitive_lineage=bool(self._mail_sensitive_node_ids),
+                    )
                 if run_id and not self.is_subworkflow:
                     publish_workflow_event(run_id, "workflow_finish", final_result)
                 yield {"type": "workflow_finish", "data": final_result}
@@ -422,6 +431,7 @@ class WorkflowEngine:
                 inputs,
                 process_data=node_options_snapshot,
                 sequence=sequence,
+                mail_sensitive_lineage=self._is_mail_sensitive_node(node_id),
             )
             running_nodes[node_id] = {
                 "log_id": log_id,
@@ -545,6 +555,7 @@ class WorkflowEngine:
             started_at=node_info.get("started_at"),
             trace_metadata=trace_metadata,
             sequence=node_info.get("sequence"),
+            mail_sensitive_lineage=self._is_mail_sensitive_node(node_id),
         )
 
     def _execute_node_task(
@@ -592,6 +603,7 @@ class WorkflowEngine:
                     trace_metadata=trace_metadata,
                     trace_payloads=trace_payloads,
                     sequence=sequence,
+                    mail_sensitive_lineage=self._is_mail_sensitive_node(node_id),
                 )
 
             return result
@@ -615,6 +627,7 @@ class WorkflowEngine:
                     started_at=started_at,
                     trace_metadata=trace_metadata,
                     sequence=sequence,
+                    mail_sensitive_lineage=self._is_mail_sensitive_node(node_id),
                 )
             raise e
 
@@ -698,7 +711,8 @@ class WorkflowEngine:
                     "prompt_tokens": usage.get("prompt_tokens", 0),
                     "completion_tokens": usage.get("completion_tokens", 0),
                     "total_tokens": usage.get("total_tokens")
-                    or usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0),
+                    or usage.get("prompt_tokens", 0)
+                    + usage.get("completion_tokens", 0),
                     "total_cost": result_dict.get("cost", 0.0),
                     "latency_ms": latency_ms,
                     "retry_count": 0,
@@ -771,7 +785,9 @@ class WorkflowEngine:
             sandbox_metadata = dict(metadata.get("sandbox") or {})
             sandbox_metadata.update(
                 {
-                    "execution_time_ms": result_dict.get("execution_time_ms", latency_ms),
+                    "execution_time_ms": result_dict.get(
+                        "execution_time_ms", latency_ms
+                    ),
                     "exit_code": result_dict.get("exit_code"),
                     "timeout": bool(result_dict.get("timeout", False)),
                     "latency_ms": latency_ms,
@@ -941,6 +957,31 @@ class WorkflowEngine:
 
         self._analyze_data_dependencies()
 
+    def _descendants_of_type(self, node_type: str) -> set[str]:
+        forward_dependencies: dict[str, set[str]] = {
+            node_id: set(targets)
+            for node_id, targets in self.adjacency_list.items()
+        }
+        for target_id, source_ids in self.data_dependencies.items():
+            for source_id in source_ids:
+                forward_dependencies.setdefault(source_id, set()).add(target_id)
+        pending = [
+            node_id
+            for node_id, schema in self.node_schemas.items()
+            if schema.type == node_type
+        ]
+        descendants: set[str] = set()
+        while pending:
+            node_id = pending.pop()
+            if node_id in descendants:
+                continue
+            descendants.add(node_id)
+            pending.extend(forward_dependencies.get(node_id, ()))
+        return descendants
+
+    def _is_mail_sensitive_node(self, node_id: str) -> bool:
+        return node_id in getattr(self, "_mail_sensitive_node_ids", set())
+
     def _build_node_instances(self):
         """NodeSchema를 실제 Node 인스턴스로 변환"""
         for node_id, schema in self.node_schemas.items():
@@ -979,17 +1020,22 @@ class WorkflowEngine:
 
         data_dict = schema.data if isinstance(schema.data, dict) else schema.data.dict()
 
+        def add_selector(selector):
+            if isinstance(selector, list) and selector:
+                if isinstance(selector[0], str):
+                    node_id = selector[0]
+                    if node_id in self.node_schemas:
+                        referenced_nodes.add(node_id)
+                    return
+                for item in selector:
+                    add_selector(item)
+
         def extract_from_value(value):
             if isinstance(value, dict):
-                if "value_selector" in value:
-                    selector = value["value_selector"]
-                    if isinstance(selector, list) and len(selector) > 0:
-                        node_id = selector[0]
-                        if isinstance(node_id, str) and node_id in self.node_schemas:
-                            referenced_nodes.add(node_id)
-
-                for v in value.values():
-                    extract_from_value(v)
+                for key, child in value.items():
+                    if key.endswith("_selector") or key.endswith("_selectors"):
+                        add_selector(child)
+                    extract_from_value(child)
 
             elif isinstance(value, list):
                 for item in value:

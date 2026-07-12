@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { RefreshCw } from 'lucide-react';
 import { useWorkflowStore } from '@/app/features/workflow/store/useWorkflowStore';
 import { MailNodeData } from '../../../../types/Nodes';
 import {
@@ -27,6 +28,7 @@ export function MailNodePanel({ nodeId, data }: MailNodePanelProps) {
   const [credentials, setCredentials] = useState<MailCredentialOption[]>([]);
   const [credentialsLoading, setCredentialsLoading] = useState(true);
   const [credentialsError, setCredentialsError] = useState(false);
+  const [oauthStarting, setOauthStarting] = useState(false);
   const upstreamNodes = useMemo(
     () => getUpstreamNodes(nodeId, nodes, edges),
     [nodeId, nodes, edges],
@@ -90,6 +92,18 @@ export function MailNodePanel({ nodeId, data }: MailNodePanelProps) {
     [data.referenced_variables, upstreamNodes],
   );
 
+  const refreshCredentials = useCallback(async () => {
+    setCredentialsLoading(true);
+    setCredentialsError(false);
+    try {
+      setCredentials(await mailCredentialApi.listAvailable());
+    } catch {
+      setCredentialsError(true);
+    } finally {
+      setCredentialsLoading(false);
+    }
+  }, []);
+
   return (
     <div className="flex flex-col gap-2">
       <CollapsibleSection
@@ -128,6 +142,46 @@ export function MailNodePanel({ nodeId, data }: MailNodePanelProps) {
           {credentialsError && (
             <ValidationAlert message="Mail credential 목록을 불러오지 못했습니다." />
           )}
+          <button
+            type="button"
+            disabled={oauthStarting}
+            onClick={async () => {
+              const popup = window.open(
+                'about:blank',
+                'gmail-oauth',
+                'popup,width=560,height=720',
+              );
+              if (!popup) {
+                setCredentialsError(true);
+                return;
+              }
+              popup.opener = null;
+              setOauthStarting(true);
+              try {
+                const { authorization_url } =
+                  await mailCredentialApi.startGoogleOAuth('Gmail OAuth');
+                popup.location.replace(authorization_url);
+              } catch {
+                popup.close();
+                setCredentialsError(true);
+              } finally {
+                setOauthStarting(false);
+              }
+            }}
+            className="h-8 rounded border border-gray-300 bg-white px-3 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+          >
+            {oauthStarting ? '연결 준비 중' : 'Gmail OAuth 연결'}
+          </button>
+          <button
+            type="button"
+            title="Credential 목록 새로고침"
+            aria-label="Credential 목록 새로고침"
+            disabled={credentialsLoading}
+            onClick={refreshCredentials}
+            className="flex h-8 w-8 items-center justify-center rounded border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+          >
+            <RefreshCw className="h-4 w-4" aria-hidden="true" />
+          </button>
         </div>
       </CollapsibleSection>
 
@@ -245,6 +299,26 @@ export function MailNodePanel({ nodeId, data }: MailNodePanelProps) {
           </div>
 
           {/* 체크박스 */}
+          <div className="flex flex-col gap-1">
+            <label className="text-xs font-medium text-gray-700">
+              처리 모드
+            </label>
+            <RoundedSelect
+              value={data.processing_mode || 'search_only'}
+              onChange={(value) =>
+                updateNodeData(nodeId, {
+                  processing_mode: value,
+                  mark_as_read: value === 'durable' ? false : data.mark_as_read,
+                })
+              }
+              options={[
+                { label: '검색만', value: 'search_only' },
+                { label: '자동화 처리 추적', value: 'durable' },
+              ]}
+              placeholder="처리 모드"
+            />
+          </div>
+
           <div className="flex items-center gap-2">
             <input
               type="checkbox"
@@ -266,12 +340,15 @@ export function MailNodePanel({ nodeId, data }: MailNodePanelProps) {
               id="mark-as-read"
               className="h-4 w-4 rounded border-gray-300"
               checked={data.mark_as_read || false}
+              disabled={data.processing_mode === 'durable'}
               onChange={(e) =>
                 handleUpdateData('mark_as_read', e.target.checked)
               }
             />
             <label htmlFor="mark-as-read" className="text-xs text-gray-700">
-              검색 후 읽음 처리
+              {data.processing_mode === 'durable'
+                ? '처리 완료 노드에서 읽음 처리'
+                : '검색 후 읽음 처리'}
             </label>
           </div>
         </div>

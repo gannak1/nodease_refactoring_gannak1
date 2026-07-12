@@ -12,7 +12,8 @@ from pydantic import (
 )
 
 MailProvider = Literal["gmail", "naver", "daum", "outlook", "custom"]
-MailAuthType = Literal["app_password", "password"]
+MailAuthType = Literal["app_password", "password", "oauth2"]
+MailManualAuthType = Literal["app_password", "password"]
 MailCredentialStatus = Literal["active", "revoked"]
 
 
@@ -28,7 +29,7 @@ class MailCredentialCreate(BaseModel):
     credential_name: str = Field(min_length=1, max_length=255)
     provider: MailProvider
     email_address: str = Field(min_length=3, max_length=320)
-    auth_type: MailAuthType = "app_password"
+    auth_type: MailManualAuthType = "app_password"
     secret: SecretStr = Field(min_length=1)
     imap_host: str = Field(min_length=1, max_length=255)
     imap_port: int = Field(default=993, ge=1, le=65535)
@@ -122,6 +123,7 @@ class MailCredentialOptionResponse(BaseModel):
     id: UUID
     credential_name: str
     provider: MailProvider
+    auth_type: MailAuthType
     email_preview: str
     status: MailCredentialStatus
 
@@ -140,3 +142,23 @@ class MailCredentialPermissionResponse(BaseModel):
     auth_state: str
     assigned_by: UUID
     assigned_at: datetime
+
+
+class GmailOAuthStartRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    credential_name: str = Field(min_length=1, max_length=255)
+
+    @field_validator("credential_name")
+    @classmethod
+    def strip_name(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("credential_name must not be blank")
+        return stripped
+
+
+class GmailOAuthStartResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    authorization_url: str

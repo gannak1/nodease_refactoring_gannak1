@@ -1,4 +1,5 @@
 from apps.gateway.main import app
+from apps.gateway.api.v1.endpoints.mail_credentials import gmail_oauth_result
 
 
 def test_mail_credential_routes_and_safe_response_schema_are_registered():
@@ -16,6 +17,13 @@ def test_mail_credential_routes_and_safe_response_schema_are_registered():
     assert {"put", "delete"} <= set(
         paths["/api/v1/mail/credentials/{credential_id}/permissions/teams/{team_id}"]
     )
+    assert {"post"} <= set(
+        paths["/api/v1/mail/credentials/oauth/google/start"]
+    )
+    assert {"get"} <= set(
+        paths["/api/v1/mail/credentials/oauth/google/callback"]
+    )
+    assert "/api/v1/mail/credentials/oauth/google/result" not in paths
 
     properties = schema["components"]["schemas"]["MailCredentialResponse"]["properties"]
     assert "email_preview" in properties
@@ -43,6 +51,7 @@ def test_mail_credential_routes_and_safe_response_schema_are_registered():
         "id",
         "credential_name",
         "provider",
+        "auth_type",
         "email_preview",
         "status",
     }
@@ -51,3 +60,13 @@ def test_mail_credential_routes_and_safe_response_schema_are_registered():
         "properties"
     ]
     assert set(update_properties) == {"credential_name", "secret"}
+
+
+def test_gmail_oauth_result_is_static_and_non_cacheable():
+    response = gmail_oauth_result()
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert b"credential_id" not in response.body
+    assert b"token" not in response.body

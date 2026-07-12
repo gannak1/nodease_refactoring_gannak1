@@ -65,3 +65,57 @@ def test_create_run_log_sanitizes_run_trace_metadata(monkeypatch):
 
     assert captured["task_name"] == "log.create_run"
     assert captured["data"]["trace_metadata"] == {"gateway": {"status_code": 200}}
+
+
+def test_mail_node_finish_log_sanitizes_content_before_trace_policy(monkeypatch):
+    captured = {}
+
+    def capture_submit(self, task_name, data, countdown=0):
+        captured["task_name"] = task_name
+        captured["data"] = data
+
+    def passthrough_payloads(
+        self,
+        payloads,
+        default_scope,
+        app_id=None,
+        default_node_run_id=None,
+    ):
+        records = [
+            {
+                "id": str(uuid.uuid4()),
+                "payload_kind": item["payload_kind"],
+                "redacted_payload": item["payload"],
+            }
+            for item in payloads
+        ]
+        return records, {"redaction_applied": False, "pii_detected": False}, {}
+
+    monkeypatch.setattr(WorkflowLogger, "_submit_log", capture_submit)
+    monkeypatch.setattr(WorkflowLogger, "_prepare_payloads", passthrough_payloads)
+    monkeypatch.setattr(
+        WorkflowLogger,
+        "_redact_compat_value",
+        lambda self, value, payload_kind, app_id=None: value,
+    )
+    logger = WorkflowLogger()
+    logger.workflow_run_id = uuid.uuid4()
+
+    logger.update_node_log_finish(
+        uuid.uuid4(),
+        "mail-source",
+        {
+            "emails": [{"body_text": "confidential mail body"}],
+            "total_count": 1,
+            "folder": "INBOX",
+        },
+        node_type="mailNode",
+    )
+
+    assert captured["task_name"] == "log.update_node_finish"
+    assert captured["data"]["outputs"] == {
+        "mail_content_redacted": True,
+        "total_count": 1,
+        "folder": "INBOX",
+    }
+    assert "confidential mail body" not in str(captured["data"])

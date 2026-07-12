@@ -61,6 +61,11 @@ Main generation과 Memory summary provider adapter는 LLM Credential/egress port
 - Node data에는 `credential_id`와 `configuration_state`만 유지한다. Mailbox email, password, IMAP host/port와 provider secret 입력란은 Workflow Editor에 두지 않는다.
 - `MailNode`와 실행 로그 설정 요약은 `연결됨` 또는 `연결 필요`만 표시하며 credential id, mailbox identity나 credential secret을 렌더링하지 않는다.
 - Credential 등록·표시 이름 변경·secret 교체·revoke는 Mail Credentials API의 별도 관리 경계에서 수행한다. Mailbox identity와 IMAP endpoint/TLS mode는 생성 후 변경하지 않는다.
+- `MailNodePanel`은 `search_only`와 `durable` 처리 모드를 제공한다. Durable mode에서는 즉시 읽음 설정을 비활성화하고 이유를 표시한다.
+- Gmail OAuth 팝업 완료 후 credential을 자동 선택하지 않으며 사용자가 safe option 목록을 다시 조회할 수 있는 새로고침 control을 제공한다.
+- `GmailDraftNodePanel`은 Mail processing output과 reply body output selector, Gmail OAuth credential을 선택하게 하되 recipient/send/attachment 입력을 제공하지 않는다.
+- `MailAcknowledgeNodePanel`은 processing ref와 required effect output을 연결하며 임의 성공값을 입력받지 않는다.
+- Agent Builder preview와 저장 workflow는 두 신규 node의 credential을 unresolved로 보존할 수 있지만 deployment 전 필수 selector와 credential을 해결해야 한다.
 
 ### 1. 실행 편의성
 

@@ -37,6 +37,8 @@ Status: Draft
 - 공통 catalog의 `implemented=true` node type 16개 집합은 Workflow Editor node registry, React Flow renderer, Workflow Engine registry와 일치해야 한다. Agent Builder allowlist는 제품 가용성이 비활성인 `loopNode`를 제외한 15개이며, `implemented=false` 또는 `agent_builder_supported=false` node는 Builder capability guide와 draft에 들어가면 안 된다.
 - "웹훅 노드로 받아서 PR 리뷰를 깃허브에 올려주는 워크플로우를 만들어줘" 요청은 Webhook Trigger, GitHub PR 조회, LLM 리뷰, GitHub PR 댓글, Answer node를 순서대로 포함한다. 두 GitHub node의 credential/repository/PR 설정은 원문 없이 `configuration_state=unresolved`여야 하며 draft 생성 중 GitHub API 호출이 없어야 한다.
 - 업무 메일 수신 workflow 요청으로 생성된 Mail node는 `credential_id=null`, `configuration_state=unresolved`이며 email, password, token, provider endpoint를 포함하지 않는다. Draft 생성 중 credential 조회·복호화 또는 Mail provider 연결이 없어야 한다.
+- Gmail 답장 초안 요청은 `max_results=1`인 durable Mail 검색, LLM, unresolved Gmail Draft와 Mail Acknowledge node를 순서대로 연결한다. 잘못 정렬된 intent extraction도 server에서 이 순서로 정규화하고 acknowledgement 단독 extraction은 unsupported로 거부한다. Preview/apply-save 중 OAuth token refresh, Gmail draft 생성, 읽음 처리 또는 send 호출이 없어야 한다.
+- Agent Builder가 email send, reply-all, attachment를 요청받으면 지원하지 않는 capability로 명시하고 Gmail send node나 arbitrary HTTP fallback을 만들지 않는다.
 - `새 워크플로우로 웹훅에서 요청을 받고 GitHub PR을 조회한 뒤 LLM으로 리뷰해서 GitHub PR에 댓글을 등록해줘` 요청은 `unsupported`가 아니라 Webhook Trigger, GitHub PR 조회, LLM, GitHub PR 댓글, Answer node를 반환해야 한다.
 - `새 워크플로우로 GitHub PR을 조회한 뒤 LLM으로 리뷰해줘`처럼 댓글/게시 의도가 없는 요청은 GitHub PR 조회와 LLM을 포함하되 `github_pr_comment` capability를 추가하면 안 된다.
 - "웹 훅으로 받고 깃허브에서 PR을 받고 분석해서 깃허브 PR에 리뷰 댓글을 올리는 노드를 생성해줘"처럼 `웹 훅`을 띄어 쓰거나 `올리는` 활용형을 사용해도 목적어가 댓글이면 같은 Webhook Trigger, GitHub PR 조회, LLM, GitHub PR 댓글, Answer 흐름을 생성해야 한다.

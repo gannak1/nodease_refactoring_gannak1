@@ -253,7 +253,10 @@ def test_agent_builder_preview_redacts_raw_kb_and_source_identifiers():
     node_data = preview["nodes"][0]["data"]
     assert raw_kb_id not in str(node_data)
     assert "secret.example.com" not in str(node_data)
-    assert node_data["knowledgeBases"][0]["reference_type"] == "existing_redacted_reference"
+    assert (
+        node_data["knowledgeBases"][0]["reference_type"]
+        == "existing_redacted_reference"
+    )
     assert "url" not in node_data
 
 
@@ -347,7 +350,9 @@ def test_agent_builder_record_preview_opened_audits_success(monkeypatch):
 
     svc.record_preview_opened(draft.id)
 
-    assert audit_calls[0][0][1] == service_module.AuditAction.AGENT_BUILDER_PREVIEW_OPENED
+    assert (
+        audit_calls[0][0][1] == service_module.AuditAction.AGENT_BUILDER_PREVIEW_OPENED
+    )
     assert db.commits == 1
 
 
@@ -380,7 +385,9 @@ def test_agent_builder_record_preview_opened_blocks_invalid_draft(monkeypatch):
         svc.record_preview_opened(draft.id)
 
     assert exc.value.detail == "DRAFT_VALIDATION_FAILED"
-    assert audit_calls[0][0][1] == service_module.AuditAction.AGENT_BUILDER_PREVIEW_BLOCKED
+    assert (
+        audit_calls[0][0][1] == service_module.AuditAction.AGENT_BUILDER_PREVIEW_BLOCKED
+    )
     assert audit_calls[0][1]["metadata"]["block_reason"] == "DRAFT_VALIDATION_FAILED"
     assert db.commits == 1
 
@@ -402,7 +409,9 @@ def test_create_session_uses_workflow_app_id_over_client_app_id(monkeypatch):
         organization_id=workflow.organization_id,
     )
     monkeypatch.setattr(svc, "_workflow_in_active_org", lambda _workflow_id: workflow)
-    monkeypatch.setattr(service_module, "ensure_workflow_permission", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        service_module, "ensure_workflow_permission", lambda *args, **kwargs: None
+    )
     monkeypatch.setattr(svc, "_session_response", lambda _session: SimpleNamespace())
 
     svc.create_or_restore_session(
@@ -426,7 +435,9 @@ def test_structured_request_respects_explicit_new_workflow_intent_with_workflow_
     workflow = SimpleNamespace(id=uuid.uuid4(), graph={"nodes": [], "edges": []})
 
     structured = svc._build_structured_request(  # noqa: SLF001
-        AgentBuilderMessageRequest(message="새 워크플로우로 휴가 정책 답변 로직을 만들어줘"),
+        AgentBuilderMessageRequest(
+            message="새 워크플로우로 휴가 정책 답변 로직을 만들어줘"
+        ),
         workflow=workflow,
     )
 
@@ -443,7 +454,9 @@ def test_structured_request_defaults_to_new_workflow_without_targeted_insert():
     workflow = SimpleNamespace(id=uuid.uuid4(), graph={"nodes": [], "edges": []})
 
     structured = svc._build_structured_request(  # noqa: SLF001
-        AgentBuilderMessageRequest(message="입력값을 분석해서 답변하는 로직을 만들어줘"),
+        AgentBuilderMessageRequest(
+            message="입력값을 분석해서 답변하는 로직을 만들어줘"
+        ),
         workflow=workflow,
     )
 
@@ -485,7 +498,11 @@ def test_structured_request_keeps_existing_target_out_of_new_capabilities():
             ],
             "edges": [
                 {"id": "edge-start-github", "source": "start", "target": "github-read"},
-                {"id": "edge-github-answer", "source": "github-read", "target": "answer"},
+                {
+                    "id": "edge-github-answer",
+                    "source": "github-read",
+                    "target": "answer",
+                },
             ],
         }
     )
@@ -529,7 +546,11 @@ def test_named_existing_node_target_is_resolved_and_only_requested_node_is_splic
             ],
             "edges": [
                 {"id": "edge-start-github", "source": "start", "target": "github-read"},
-                {"id": "edge-github-answer", "source": "github-read", "target": "answer"},
+                {
+                    "id": "edge-github-answer",
+                    "source": "github-read",
+                    "target": "answer",
+                },
             ],
         }
     )
@@ -645,7 +666,9 @@ def test_named_target_resolution_uses_catalog_node_type_for_multiple_node_kinds(
                 },
                 {"id": "answer", "type": "answerNode", "data": {"title": "응답"}},
             ],
-            "edges": [{"id": "edge-target-answer", "source": "target", "target": "answer"}],
+            "edges": [
+                {"id": "edge-target-answer", "source": "target", "target": "answer"}
+            ],
         }
     )
     svc = AgentBuilderService(
@@ -722,9 +745,7 @@ def test_modify_preview_rejects_generated_component_detached_from_existing_graph
     )
 
     assert validation.valid is False
-    assert "DETACHED_GENERATED_COMPONENT" in {
-        issue.code for issue in validation.issues
-    }
+    assert "DETACHED_GENERATED_COMPONENT" in {issue.code for issue in validation.issues}
 
 
 @pytest.mark.parametrize(
@@ -919,7 +940,9 @@ def test_structured_request_rejects_guardrail_node_in_mvp():
     )
 
     structured = svc._build_structured_request(  # noqa: SLF001
-        AgentBuilderMessageRequest(message="입력값을 검사하는 Guardrail 노드를 추가해줘"),
+        AgentBuilderMessageRequest(
+            message="입력값을 검사하는 Guardrail 노드를 추가해줘"
+        ),
         workflow=None,
     )
     validation = svc._validate_structured_request(  # noqa: SLF001
@@ -932,6 +955,162 @@ def test_structured_request_rejects_guardrail_node_in_mvp():
     assert "unsupported_capability" in structured.risk_flags
     assert validation.valid is False
     assert validation.issues[0].code == "UNSUPPORTED_REQUEST"
+
+
+def test_structured_request_builds_durable_gmail_reply_draft_flow(monkeypatch):
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
+
+    structured = svc._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(
+            message="읽지 않은 메일을 분석해서 Gmail 답장 초안을 만드는 워크플로우를 생성해줘"
+        ),
+        workflow=None,
+    )
+    preview = svc._build_preview_graph(  # noqa: SLF001
+        structured,
+        workflow=None,
+        kb_bindings=[],
+    )
+
+    nodes_by_type = {node["type"]: node for node in preview["nodes"]}
+    assert "answerNode" not in nodes_by_type
+    assert nodes_by_type["mailNode"]["data"]["processing_mode"] == "durable"
+    assert nodes_by_type["mailNode"]["data"]["max_results"] == 1
+    assert nodes_by_type["gmailDraftNode"]["data"] == {
+        "title": "Gmail 답장 초안",
+        "credential_id": None,
+        "configuration_state": "unresolved",
+        "processing_ref_selector": [nodes_by_type["mailNode"]["id"], "processing_ref"],
+        "reply_body_selector": [nodes_by_type["llmNode"]["id"], "text"],
+    }
+    assert nodes_by_type["mailAcknowledgeNode"]["data"] == {
+        "title": "메일 처리 완료",
+        "processing_ref_selector": [nodes_by_type["mailNode"]["id"], "processing_ref"],
+        "required_effect_ref_selectors": [
+            [nodes_by_type["gmailDraftNode"]["id"], "draft_ref"]
+        ],
+    }
+
+
+def test_gmail_acknowledgement_keeps_draft_effect_selector_after_other_steps(
+    monkeypatch,
+):
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
+    structured = service_module.AgentBuilderStructuredRequest(
+        request_type="new_workflow",
+        draft_mode="new_workflow",
+        intent_summary="메일 초안과 알림",
+        required_capabilities=[
+            "mail_search",
+            "llm",
+            "gmail_reply_draft_create",
+            "slack_send",
+            "mail_terminal_acknowledgement",
+        ],
+    )
+
+    preview = svc._build_preview_graph(  # noqa: SLF001
+        structured,
+        workflow=None,
+        kb_bindings=[],
+    )
+
+    nodes_by_type = {node["type"]: node for node in preview["nodes"]}
+    assert nodes_by_type["mailAcknowledgeNode"]["data"][
+        "required_effect_ref_selectors"
+    ] == [[nodes_by_type["gmailDraftNode"]["id"], "draft_ref"]]
+
+
+def test_intent_extraction_normalizes_gmail_draft_dependencies_and_terminal_order():
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    extraction = service_module.AgentBuilderIntentExtraction(
+        request_type="new_workflow",
+        draft_mode="new_workflow",
+        intent_summary="메일 답장 초안 자동화",
+        ordered_capabilities=[
+            "start_input",
+            "mail_terminal_acknowledgement",
+            "gmail_reply_draft_create",
+            "answer",
+        ],
+    )
+
+    structured = svc._normalize_intent_extraction(  # noqa: SLF001
+        extraction,
+        request=AgentBuilderMessageRequest(
+            message="메일을 분석해서 Gmail 답장 초안을 만드는 워크플로우를 생성해줘"
+        ),
+        workflow=None,
+    )
+
+    assert [step.capability for step in structured.planned_steps] == [
+        "start_input",
+        "mail_search",
+        "llm",
+        "gmail_reply_draft_create",
+        "mail_terminal_acknowledgement",
+    ]
+
+
+def test_intent_extraction_rejects_acknowledgement_without_draft():
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    extraction = service_module.AgentBuilderIntentExtraction(
+        request_type="new_workflow",
+        draft_mode="new_workflow",
+        intent_summary="메일 처리 완료",
+        ordered_capabilities=[
+            "start_input",
+            "mail_terminal_acknowledgement",
+            "answer",
+        ],
+    )
+
+    structured = svc._normalize_intent_extraction(  # noqa: SLF001
+        extraction,
+        request=AgentBuilderMessageRequest(
+            message="메일 처리 완료 노드를 만드는 워크플로우를 생성해줘"
+        ),
+        workflow=None,
+    )
+
+    assert structured.request_type == "unsupported"
+
+
+def test_structured_request_rejects_mail_send_intent():
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    structured = svc._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(
+            message="고객에게 이메일을 보내는 워크플로우를 만들어줘"
+        ),
+        workflow=None,
+    )
+
+    assert structured.request_type == "unsupported"
+    assert structured.risk_flags == ["unsupported_capability"]
+    assert "메일 발송은 지원하지 않습니다" in structured.unsupported_requests[0]
 
 
 def test_input_output_request_builds_without_llm_model_recommendation():
@@ -1036,8 +1215,7 @@ def test_github_pr_review_request_builds_read_review_and_comment_nodes(monkeypat
     ]
     assert all(node["data"]["api_token"] == "" for node in github_nodes)
     assert all(
-        node["data"]["configuration_state"] == "unresolved"
-        for node in github_nodes
+        node["data"]["configuration_state"] == "unresolved" for node in github_nodes
     )
     configuration_issues = svc._node_configuration_issues(  # noqa: SLF001
         preview_graph
@@ -1218,7 +1396,9 @@ def test_submit_message_preserves_explicit_github_comment_capabilities(
         "access_denial_status",
         lambda *args, **kwargs: None,
     )
-    monkeypatch.setattr(service_module, "add_action_audit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        service_module, "add_action_audit", lambda *args, **kwargs: None
+    )
 
     response = svc.submit_message(
         session_id,
@@ -1246,9 +1426,7 @@ def test_submit_message_preserves_explicit_github_comment_capabilities(
         "answerNode",
     ]
     assert [
-        node["data"]["action"]
-        for node in preview_nodes
-        if node["type"] == "githubNode"
+        node["data"]["action"] for node in preview_nodes if node["type"] == "githubNode"
     ] == ["get_pr", "comment_pr"]
 
 
@@ -1393,8 +1571,12 @@ def test_submit_message_allows_new_workflow_draft_from_existing_workflow_context
         lambda _: SimpleNamespace(id=app_id),
     )
     monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
-    monkeypatch.setattr(service_module, "ensure_workflow_permission", lambda *args: None)
-    monkeypatch.setattr(service_module, "add_action_audit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        service_module, "ensure_workflow_permission", lambda *args: None
+    )
+    monkeypatch.setattr(
+        service_module, "add_action_audit", lambda *args, **kwargs: None
+    )
 
     response = svc.submit_message(
         session_id,
@@ -1438,7 +1620,11 @@ def test_submit_message_splices_named_existing_target_and_apply_removes_old_edge
             ],
             "edges": [
                 {"id": "edge-start-github", "source": "start", "target": "github-read"},
-                {"id": "edge-github-answer", "source": "github-read", "target": "answer"},
+                {
+                    "id": "edge-github-answer",
+                    "source": "github-read",
+                    "target": "answer",
+                },
             ],
         },
     )
@@ -1473,8 +1659,12 @@ def test_submit_message_splices_named_existing_target_and_apply_removes_old_edge
         lambda _: SimpleNamespace(id=app_id),
     )
     monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
-    monkeypatch.setattr(service_module, "ensure_workflow_permission", lambda *args: None)
-    monkeypatch.setattr(service_module, "add_action_audit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        service_module, "ensure_workflow_permission", lambda *args: None
+    )
+    monkeypatch.setattr(
+        service_module, "add_action_audit", lambda *args, **kwargs: None
+    )
 
     response = svc.submit_message(
         session_id,
@@ -1530,6 +1720,8 @@ def test_submit_message_splices_named_existing_target_and_apply_removes_old_edge
         ("github_pr_read", "githubNode"),
         ("github_pr_comment", "githubNode"),
         ("mail_search", "mailNode"),
+        ("gmail_reply_draft_create", "gmailDraftNode"),
+        ("mail_terminal_acknowledgement", "mailAcknowledgeNode"),
     ],
 )
 def test_agent_builder_has_draft_template_for_every_supported_capability(
@@ -1543,11 +1735,24 @@ def test_agent_builder_has_draft_template_for_every_supported_capability(
         organization_id=uuid.uuid4(),
     )
     monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
+    dependency_capabilities = {
+        "gmail_reply_draft_create": [
+            "mail_search",
+            "llm",
+            "gmail_reply_draft_create",
+        ],
+        "mail_terminal_acknowledgement": [
+            "mail_search",
+            "llm",
+            "gmail_reply_draft_create",
+            "mail_terminal_acknowledgement",
+        ],
+    }
     structured = service_module.AgentBuilderStructuredRequest(
         request_type="new_workflow",
         draft_mode="new_workflow",
         intent_summary="catalog capability",
-        required_capabilities=[capability],
+        required_capabilities=dependency_capabilities.get(capability, [capability]),
     )
 
     preview = svc._build_preview_graph(  # noqa: SLF001
@@ -1592,8 +1797,7 @@ def test_structured_request_keeps_unresolved_slack_channel_as_nonblocking_warnin
     assert len(configuration_issues) == 1
     assert configuration_issues[0].node_label == "Slack 전송"
     assert [
-        parameter.label
-        for parameter in configuration_issues[0].missing_parameters
+        parameter.label for parameter in configuration_issues[0].missing_parameters
     ] == ["Slack credential", "Slack channel"]
     slack_resolution = next(
         item
@@ -1665,7 +1869,9 @@ def test_session_message_payload_rehydrates_ready_draft_preview():
     ]
 
 
-@pytest.mark.parametrize("latest_status", ["failed", "unsupported", "validation_failed"])
+@pytest.mark.parametrize(
+    "latest_status", ["failed", "unsupported", "validation_failed"]
+)
 def test_session_response_hides_draft_from_an_older_request(latest_status):
     latest_request_id = uuid.uuid4()
     graph = {
@@ -1801,7 +2007,9 @@ def test_agent_builder_validator_rejects_unsupported_node_type():
     assert result.issues[0].code == "UNSUPPORTED_NODE_TYPE"
 
 
-def test_agent_builder_kb_recommendation_uses_safe_summary_and_high_confidence(monkeypatch):
+def test_agent_builder_kb_recommendation_uses_safe_summary_and_high_confidence(
+    monkeypatch,
+):
     user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
     kb_id = uuid.uuid4()
@@ -1829,7 +2037,9 @@ def test_agent_builder_kb_recommendation_uses_safe_summary_and_high_confidence(m
                         threshold_result="high_confidence",
                         safe_reason_code="topic_keyword_match",
                         recommended_options=KnowledgeRAGRecommendedOptions(),
-                        materialized_knowledge_bases=[{"id": kb_id, "name": "휴가 정책"}],
+                        materialized_knowledge_bases=[
+                            {"id": kb_id, "name": "휴가 정책"}
+                        ],
                         provenance=KnowledgeRAGRecommendationProvenance(
                             safe_reason_code="topic_keyword_match",
                         ),
@@ -1853,7 +2063,9 @@ def test_agent_builder_kb_recommendation_uses_safe_summary_and_high_confidence(m
         organization_id=organization_id,
     )
     structured = svc._build_structured_request(  # noqa: SLF001
-        AgentBuilderMessageRequest(message="휴가 정책 문서를 찾아 답변 workflow를 만들어줘"),
+        AgentBuilderMessageRequest(
+            message="휴가 정책 문서를 찾아 답변 workflow를 만들어줘"
+        ),
         workflow=None,
     )
 
@@ -1894,7 +2106,9 @@ def test_agent_builder_structures_kb_query_topics_without_workflow_noise():
     assert "워크플로우" not in topics
 
 
-def test_agent_builder_kb_recommendation_close_score_requires_clarification(monkeypatch):
+def test_agent_builder_kb_recommendation_close_score_requires_clarification(
+    monkeypatch,
+):
     kb_id_a = uuid.uuid4()
     kb_id_b = uuid.uuid4()
 
@@ -1916,7 +2130,9 @@ def test_agent_builder_kb_recommendation_close_score_requires_clarification(monk
                         threshold_result="high_confidence",
                         safe_reason_code="topic_keyword_match",
                         recommended_options=KnowledgeRAGRecommendedOptions(),
-                        materialized_knowledge_bases=[{"id": kb_id_a, "name": "휴가 정책"}],
+                        materialized_knowledge_bases=[
+                            {"id": kb_id_a, "name": "휴가 정책"}
+                        ],
                         provenance=KnowledgeRAGRecommendationProvenance(
                             safe_reason_code="topic_keyword_match",
                         ),
@@ -1933,7 +2149,9 @@ def test_agent_builder_kb_recommendation_close_score_requires_clarification(monk
                         threshold_result="high_confidence",
                         safe_reason_code="metadata_match",
                         recommended_options=KnowledgeRAGRecommendedOptions(),
-                        materialized_knowledge_bases=[{"id": kb_id_b, "name": "인사 정책"}],
+                        materialized_knowledge_bases=[
+                            {"id": kb_id_b, "name": "인사 정책"}
+                        ],
                         provenance=KnowledgeRAGRecommendationProvenance(
                             safe_reason_code="metadata_match",
                         ),
@@ -1957,7 +2175,9 @@ def test_agent_builder_kb_recommendation_close_score_requires_clarification(monk
         organization_id=uuid.uuid4(),
     )
     structured = svc._build_structured_request(  # noqa: SLF001
-        AgentBuilderMessageRequest(message="휴가 정책 문서를 찾아 답변 workflow를 만들어줘"),
+        AgentBuilderMessageRequest(
+            message="휴가 정책 문서를 찾아 답변 workflow를 만들어줘"
+        ),
         workflow=None,
     )
 
@@ -2082,7 +2302,9 @@ def test_agent_builder_multiple_kb_candidates_require_clarification_even_when_to
     assert result["bindings"] == []
 
 
-def test_agent_builder_single_close_score_kb_candidate_requires_clarification(monkeypatch):
+def test_agent_builder_single_close_score_kb_candidate_requires_clarification(
+    monkeypatch,
+):
     class FakeRecommendationService:
         def __init__(self, db, *, user_id, organization_id):
             pass
@@ -2150,8 +2372,16 @@ def test_agent_builder_selected_kb_candidates_use_selected_safe_handles(monkeypa
 
         def recommend_for_builder(self, request, **kwargs):
             include_materialized_refs = kwargs.get("include_materialized_refs", False)
-            materialized_a = [{"id": kb_id_a, "name": "휴가 정책"}] if include_materialized_refs else []
-            materialized_b = [{"id": kb_id_b, "name": "인사 정책"}] if include_materialized_refs else []
+            materialized_a = (
+                [{"id": kb_id_a, "name": "휴가 정책"}]
+                if include_materialized_refs
+                else []
+            )
+            materialized_b = (
+                [{"id": kb_id_b, "name": "인사 정책"}]
+                if include_materialized_refs
+                else []
+            )
             return KnowledgeRAGRecommendationResponse(
                 recommendations=[
                     KnowledgeRAGRecommendation(
@@ -2206,7 +2436,9 @@ def test_agent_builder_selected_kb_candidates_use_selected_safe_handles(monkeypa
         organization_id=uuid.uuid4(),
     )
     structured = svc._build_structured_request(  # noqa: SLF001
-        AgentBuilderMessageRequest(message="휴가 정책 문서를 찾아 답변 workflow를 만들어줘"),
+        AgentBuilderMessageRequest(
+            message="휴가 정책 문서를 찾아 답변 workflow를 만들어줘"
+        ),
         workflow=None,
     )
 
@@ -2235,7 +2467,7 @@ def test_agent_builder_selected_kb_candidates_use_selected_safe_handles(monkeypa
             "reason_category": "metadata_match",
             "threshold_result": "high_confidence",
             "knowledge_base_id": str(kb_id_b),
-        }
+        },
     ]
 
 
@@ -2385,7 +2617,9 @@ def test_agent_builder_selected_no_kb_option_skips_kb_binding(monkeypatch):
     assert service_called is False
 
 
-def test_agent_builder_kb_recommendation_adapter_unavailable_with_options_requires_clarification(monkeypatch):
+def test_agent_builder_kb_recommendation_adapter_unavailable_with_options_requires_clarification(
+    monkeypatch,
+):
     class FakeRecommendationService:
         def __init__(self, db, *, user_id, organization_id):
             pass
@@ -2416,7 +2650,9 @@ def test_agent_builder_kb_recommendation_adapter_unavailable_with_options_requir
         organization_id=uuid.uuid4(),
     )
     structured = svc._build_structured_request(  # noqa: SLF001
-        AgentBuilderMessageRequest(message="휴가 정책 문서를 찾아 답변 workflow를 만들어줘"),
+        AgentBuilderMessageRequest(
+            message="휴가 정책 문서를 찾아 답변 workflow를 만들어줘"
+        ),
         workflow=None,
     )
 
@@ -2428,7 +2664,9 @@ def test_agent_builder_kb_recommendation_adapter_unavailable_with_options_requir
     assert result["options"][0]["resolution_id"] == "res_kb_1"
 
 
-def test_agent_builder_selected_kb_candidate_from_unavailable_fallback_is_used(monkeypatch):
+def test_agent_builder_selected_kb_candidate_from_unavailable_fallback_is_used(
+    monkeypatch,
+):
     class FakeRecommendationService:
         def __init__(self, db, *, user_id, organization_id):
             pass
@@ -2524,7 +2762,9 @@ def test_agent_builder_kb_recommendation_unavailable_blocks_required_kb(monkeypa
         organization_id=uuid.uuid4(),
     )
     structured = svc._build_structured_request(  # noqa: SLF001
-        AgentBuilderMessageRequest(message="휴가 정책 문서를 찾아 답변 workflow를 만들어줘"),
+        AgentBuilderMessageRequest(
+            message="휴가 정책 문서를 찾아 답변 workflow를 만들어줘"
+        ),
         workflow=None,
     )
 
@@ -2559,7 +2799,9 @@ def test_agent_builder_kb_recommendation_no_candidate_warns_and_continues(monkey
         organization_id=uuid.uuid4(),
     )
     structured = svc._build_structured_request(  # noqa: SLF001
-        AgentBuilderMessageRequest(message="휴가 정책 문서를 찾아 Slack으로 보내는 workflow를 만들어줘"),
+        AgentBuilderMessageRequest(
+            message="휴가 정책 문서를 찾아 Slack으로 보내는 workflow를 만들어줘"
+        ),
         workflow=None,
     )
 
@@ -2575,7 +2817,10 @@ def test_agent_builder_kb_recommendation_no_candidate_warns_and_continues(monkey
     assert result["bindings"] == []
     assert "Knowledge Base 없이" in result["warnings"][0]
     assert nodes_by_type["llmNode"]["data"]["knowledgeBases"] == []
-    assert nodes_by_type["slackPostNode"]["data"]["channel_resolution_state"] == "unresolved"
+    assert (
+        nodes_by_type["slackPostNode"]["data"]["channel_resolution_state"]
+        == "unresolved"
+    )
 
 
 def test_agent_builder_session_messages_restore_redacted_user_turn_and_assistant_turn():
@@ -2666,7 +2911,9 @@ def test_agent_builder_selected_kb_candidate_validates_prior_clarification_conte
     )
 
     assert context["candidate_handles"] == {"safe-rec-1"}
-    assert context["structured_request"].knowledge_requirements[0].requirement_id == "kr_1"
+    assert (
+        context["structured_request"].knowledge_requirements[0].requirement_id == "kr_1"
+    )
 
 
 def test_agent_builder_selected_kb_candidates_accepts_multiple_safe_handles():
@@ -2970,7 +3217,9 @@ def test_agent_builder_apply_blocks_preview_hash_mismatch(monkeypatch):
     assert draft.status == "ready"
 
 
-def test_agent_builder_apply_blocks_canceled_draft_without_overwriting_status(monkeypatch):
+def test_agent_builder_apply_blocks_canceled_draft_without_overwriting_status(
+    monkeypatch,
+):
     class FakeDb:
         def __init__(self):
             self.commits = 0
@@ -3048,7 +3297,9 @@ def test_agent_builder_cancel_does_not_overwrite_applied_draft(monkeypatch):
     assert draft.status == "applied"
 
 
-def test_agent_builder_cancel_records_audit_without_terminally_canceling_ready_draft(monkeypatch):
+def test_agent_builder_cancel_records_audit_without_terminally_canceling_ready_draft(
+    monkeypatch,
+):
     preview_graph = {"nodes": [], "edges": []}
     draft = SimpleNamespace(
         id=uuid.uuid4(),
@@ -3100,7 +3351,9 @@ def test_agent_builder_apply_requires_workflow_write_permission(monkeypatch):
     )
     monkeypatch.setattr(svc, "_draft_or_404", lambda _draft_id: draft)
     monkeypatch.setattr(svc, "_workflow_in_active_org", lambda _workflow_id: workflow)
-    monkeypatch.setattr(service_module, "has_workflow_permission", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        service_module, "has_workflow_permission", lambda *args, **kwargs: False
+    )
 
     response = svc.apply_draft(
         draft.id,
@@ -3135,7 +3388,9 @@ def test_agent_builder_apply_blocks_missing_latest_graph_hash(monkeypatch):
     )
     monkeypatch.setattr(svc, "_draft_or_404", lambda _draft_id: draft)
     monkeypatch.setattr(svc, "_workflow_in_active_org", lambda _workflow_id: workflow)
-    monkeypatch.setattr(service_module, "has_workflow_permission", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        service_module, "has_workflow_permission", lambda *args, **kwargs: True
+    )
 
     response = svc.apply_draft(
         draft.id,
@@ -3168,7 +3423,9 @@ def test_agent_builder_apply_blocks_latest_graph_hash_mismatch(monkeypatch):
     )
     monkeypatch.setattr(svc, "_draft_or_404", lambda _draft_id: draft)
     monkeypatch.setattr(svc, "_workflow_in_active_org", lambda _workflow_id: workflow)
-    monkeypatch.setattr(service_module, "has_workflow_permission", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        service_module, "has_workflow_permission", lambda *args, **kwargs: True
+    )
 
     response = svc.apply_draft(
         draft.id,
@@ -3188,7 +3445,10 @@ def test_agent_builder_apply_blocks_stale_base_graph_hash(monkeypatch):
     db = FakeDb()
     workflow_id = uuid.uuid4()
     graph = {"nodes": [], "edges": []}
-    changed_graph = {"nodes": [{"id": "n1", "type": "startNode", "data": {}}], "edges": []}
+    changed_graph = {
+        "nodes": [{"id": "n1", "type": "startNode", "data": {}}],
+        "edges": [],
+    }
     workflow = SimpleNamespace(
         id=workflow_id,
         graph=changed_graph,
@@ -3203,7 +3463,9 @@ def test_agent_builder_apply_blocks_stale_base_graph_hash(monkeypatch):
     )
     monkeypatch.setattr(svc, "_draft_or_404", lambda _draft_id: draft)
     monkeypatch.setattr(svc, "_workflow_in_active_org", lambda _workflow_id: workflow)
-    monkeypatch.setattr(service_module, "has_workflow_permission", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        service_module, "has_workflow_permission", lambda *args, **kwargs: True
+    )
 
     response = svc.apply_draft(
         draft.id,
@@ -3223,11 +3485,15 @@ def test_agent_builder_apply_blocks_stale_workflow_updated_at(monkeypatch):
     db = FakeDb()
     workflow_id = uuid.uuid4()
     graph = {"nodes": [], "edges": []}
-    base_updated_at = service_module.datetime(2026, 1, 1, tzinfo=service_module.timezone.utc)
+    base_updated_at = service_module.datetime(
+        2026, 1, 1, tzinfo=service_module.timezone.utc
+    )
     workflow = SimpleNamespace(
         id=workflow_id,
         graph=graph,
-        updated_at=service_module.datetime(2026, 1, 2, tzinfo=service_module.timezone.utc),
+        updated_at=service_module.datetime(
+            2026, 1, 2, tzinfo=service_module.timezone.utc
+        ),
         app_id=uuid.uuid4(),
     )
     draft = _ready_modify_draft(graph, workflow_id=workflow_id)
@@ -3239,7 +3505,9 @@ def test_agent_builder_apply_blocks_stale_workflow_updated_at(monkeypatch):
     )
     monkeypatch.setattr(svc, "_draft_or_404", lambda _draft_id: draft)
     monkeypatch.setattr(svc, "_workflow_in_active_org", lambda _workflow_id: workflow)
-    monkeypatch.setattr(service_module, "has_workflow_permission", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        service_module, "has_workflow_permission", lambda *args, **kwargs: True
+    )
 
     response = svc.apply_draft(
         draft.id,
@@ -3255,7 +3523,9 @@ def test_agent_builder_apply_blocks_stale_workflow_updated_at(monkeypatch):
     assert response.stale_state == "stale"
 
 
-def test_agent_builder_apply_commit_success_refresh_failure_still_returns_saved(monkeypatch):
+def test_agent_builder_apply_commit_success_refresh_failure_still_returns_saved(
+    monkeypatch,
+):
     class RefreshFailingDb(FakeDb):
         def refresh(self, row):
             raise RuntimeError("refresh failed")
@@ -3278,7 +3548,9 @@ def test_agent_builder_apply_commit_success_refresh_failure_still_returns_saved(
     )
     monkeypatch.setattr(svc, "_draft_or_404", lambda _draft_id: draft)
     monkeypatch.setattr(svc, "_workflow_in_active_org", lambda _workflow_id: workflow)
-    monkeypatch.setattr(service_module, "has_workflow_permission", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        service_module, "has_workflow_permission", lambda *args, **kwargs: True
+    )
     monkeypatch.setattr(svc, "_runtime_kb_bindings_for_apply", lambda _draft: [])
 
     response = svc.apply_draft(
@@ -3321,7 +3593,9 @@ def test_agent_builder_apply_requires_app_create_scope(monkeypatch):
         organization_id=uuid.uuid4(),
     )
     monkeypatch.setattr(svc, "_draft_or_404", lambda _draft_id: draft)
-    monkeypatch.setattr(svc, "_app_in_active_org", lambda _app_id: SimpleNamespace(id=app_id))
+    monkeypatch.setattr(
+        svc, "_app_in_active_org", lambda _app_id: SimpleNamespace(id=app_id)
+    )
     monkeypatch.setattr(
         service_module.AppService,
         "access_denial_status",
@@ -3350,7 +3624,9 @@ def test_agent_builder_preview_splices_generated_chain_into_selected_edge(monkey
                 {"id": "start", "type": "startNode", "data": {}},
                 {"id": "answer", "type": "answerNode", "data": {}},
             ],
-            "edges": [{"id": "edge-start-answer", "source": "start", "target": "answer"}],
+            "edges": [
+                {"id": "edge-start-answer", "source": "start", "target": "answer"}
+            ],
         }
     )
     svc = AgentBuilderService(
@@ -3515,7 +3791,9 @@ def test_agent_builder_selected_edge_uses_structured_target_without_message_rege
     workflow = SimpleNamespace(
         graph={
             "nodes": [],
-            "edges": [{"id": "edge-start-answer", "source": "start", "target": "answer"}],
+            "edges": [
+                {"id": "edge-start-answer", "source": "start", "target": "answer"}
+            ],
         }
     )
     svc = AgentBuilderService(
@@ -3529,9 +3807,7 @@ def test_agent_builder_selected_edge_uses_structured_target_without_message_rege
         draft_mode="modify_workflow",
         intent_summary="선택된 연결에 LLM을 추가합니다.",
         planned_steps=[
-            AgentBuilderPlannedStep(
-                step_id="step_llm", capability="llm", purpose="LLM"
-            )
+            AgentBuilderPlannedStep(step_id="step_llm", capability="llm", purpose="LLM")
         ],
         required_capabilities=["llm"],
         edit_operations=[
@@ -3540,9 +3816,7 @@ def test_agent_builder_selected_edge_uses_structured_target_without_message_rege
                 operation="insert",
                 placement="between",
                 step_refs=["step_llm"],
-                target=AgentBuilderEditTargetReference(
-                    reference_type="selected_edge"
-                ),
+                target=AgentBuilderEditTargetReference(reference_type="selected_edge"),
             )
         ],
     )
@@ -3573,10 +3847,26 @@ def test_agent_builder_save_graph_removes_selected_edge_when_spliced():
             {"id": "agent-answer", "type": "answerNode", "data": {}},
         ],
         "edges": [
-            {"id": "edge-start-agent-input", "source": "start", "target": "agent-input"},
-            {"id": "edge-agent-input-agent-llm", "source": "agent-input", "target": "agent-llm"},
-            {"id": "edge-agent-llm-agent-answer", "source": "agent-llm", "target": "agent-answer"},
-            {"id": "edge-agent-answer-answer", "source": "agent-answer", "target": "answer"},
+            {
+                "id": "edge-start-agent-input",
+                "source": "start",
+                "target": "agent-input",
+            },
+            {
+                "id": "edge-agent-input-agent-llm",
+                "source": "agent-input",
+                "target": "agent-llm",
+            },
+            {
+                "id": "edge-agent-llm-agent-answer",
+                "source": "agent-llm",
+                "target": "agent-answer",
+            },
+            {
+                "id": "edge-agent-answer-answer",
+                "source": "agent-answer",
+                "target": "answer",
+            },
         ],
     }
     draft = SimpleNamespace(
@@ -3615,13 +3905,36 @@ def test_agent_builder_save_graph_removes_selected_edge_when_spliced():
 def test_agent_builder_graph_for_apply_optimizes_layout_before_save():
     preview_graph = {
         "nodes": [
-            {"id": "agent-input", "type": "startNode", "position": {"x": 0, "y": 0}, "data": {}},
-            {"id": "agent-llm", "type": "llmNode", "position": {"x": 0, "y": 0}, "data": {}},
-            {"id": "agent-answer", "type": "answerNode", "position": {"x": 0, "y": 0}, "data": {}},
+            {
+                "id": "agent-input",
+                "type": "startNode",
+                "position": {"x": 0, "y": 0},
+                "data": {},
+            },
+            {
+                "id": "agent-llm",
+                "type": "llmNode",
+                "position": {"x": 0, "y": 0},
+                "data": {},
+            },
+            {
+                "id": "agent-answer",
+                "type": "answerNode",
+                "position": {"x": 0, "y": 0},
+                "data": {},
+            },
         ],
         "edges": [
-            {"id": "edge-agent-input-agent-llm", "source": "agent-input", "target": "agent-llm"},
-            {"id": "edge-agent-llm-agent-answer", "source": "agent-llm", "target": "agent-answer"},
+            {
+                "id": "edge-agent-input-agent-llm",
+                "source": "agent-input",
+                "target": "agent-llm",
+            },
+            {
+                "id": "edge-agent-llm-agent-answer",
+                "source": "agent-llm",
+                "target": "agent-answer",
+            },
         ],
     }
     draft = SimpleNamespace(
@@ -3658,8 +3971,18 @@ def test_agent_builder_apply_persists_optimized_layout(monkeypatch):
     workflow_id = uuid.uuid4()
     base_graph = {
         "nodes": [
-            {"id": "start", "type": "startNode", "position": {"x": 0, "y": 0}, "data": {}},
-            {"id": "answer", "type": "answerNode", "position": {"x": 0, "y": 0}, "data": {}},
+            {
+                "id": "start",
+                "type": "startNode",
+                "position": {"x": 0, "y": 0},
+                "data": {},
+            },
+            {
+                "id": "answer",
+                "type": "answerNode",
+                "position": {"x": 0, "y": 0},
+                "data": {},
+            },
         ],
         "edges": [{"id": "edge-start-answer", "source": "start", "target": "answer"}],
         "viewport": {"x": 0, "y": 0, "zoom": 1},
@@ -3717,7 +4040,9 @@ def test_agent_builder_apply_persists_optimized_layout(monkeypatch):
     )
     monkeypatch.setattr(svc, "_draft_or_404", lambda _draft_id: draft)
     monkeypatch.setattr(svc, "_workflow_in_active_org", lambda _workflow_id: workflow)
-    monkeypatch.setattr(service_module, "has_workflow_permission", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        service_module, "has_workflow_permission", lambda *args, **kwargs: True
+    )
     monkeypatch.setattr(svc, "_runtime_kb_bindings_for_apply", lambda _draft: [])
 
     response = svc.apply_draft(
@@ -3794,7 +4119,9 @@ def test_agent_builder_apply_rejects_invalid_connection_policy(monkeypatch):
     )
     monkeypatch.setattr(svc, "_draft_or_404", lambda _draft_id: draft)
     monkeypatch.setattr(svc, "_workflow_in_active_org", lambda _workflow_id: workflow)
-    monkeypatch.setattr(service_module, "has_workflow_permission", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        service_module, "has_workflow_permission", lambda *args, **kwargs: True
+    )
     monkeypatch.setattr(svc, "_runtime_kb_bindings_for_apply", lambda _draft: [])
 
     response = svc.apply_draft(
@@ -3818,7 +4145,9 @@ def test_agent_builder_draft_without_recommended_model_stays_unresolved():
         organization_id=uuid.uuid4(),
     )
     structured = svc._build_structured_request(  # noqa: SLF001
-        AgentBuilderMessageRequest(message="LLM으로 입력을 요약하는 워크플로우를 만들어줘"),
+        AgentBuilderMessageRequest(
+            message="LLM으로 입력을 요약하는 워크플로우를 만들어줘"
+        ),
         workflow=None,
     )
     preview_graph = svc._build_preview_graph(  # noqa: SLF001
@@ -3888,7 +4217,9 @@ def test_agent_builder_apply_save_failure_returns_safe_failure(monkeypatch):
     )
     monkeypatch.setattr(svc, "_draft_or_404", lambda _draft_id: draft)
     monkeypatch.setattr(svc, "_workflow_in_active_org", lambda _workflow_id: workflow)
-    monkeypatch.setattr(service_module, "has_workflow_permission", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        service_module, "has_workflow_permission", lambda *args, **kwargs: True
+    )
     monkeypatch.setattr(svc, "_runtime_kb_bindings_for_apply", lambda _draft: [])
 
     response = svc.apply_draft(
@@ -3979,7 +4310,9 @@ def test_agent_builder_apply_materializes_kb_at_apply_time(monkeypatch):
     assert "knowledge_base_id" in bindings[0]
 
 
-def test_agent_builder_session_restore_hides_cached_payload_when_scope_denied(monkeypatch):
+def test_agent_builder_session_restore_hides_cached_payload_when_scope_denied(
+    monkeypatch,
+):
     session = SimpleNamespace(
         id=uuid.uuid4(),
         workflow_id=uuid.uuid4(),

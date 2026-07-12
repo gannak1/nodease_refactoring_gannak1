@@ -5,17 +5,18 @@ from apps.shared.services.workflow_node_catalog import (
     validate_workflow_graph_connections,
 )
 
-
 EXPECTED_IMPLEMENTED_NODE_TYPES = {
     "answerNode",
     "codeNode",
     "conditionNode",
     "fileExtractionNode",
+    "gmailDraftNode",
     "githubNode",
     "httpRequestNode",
     "llmNode",
     "loopNode",
     "mailNode",
+    "mailAcknowledgeNode",
     "scheduleTrigger",
     "slackPostNode",
     "startNode",

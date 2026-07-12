@@ -86,6 +86,8 @@ _CAPABILITY_DESCRIPTIONS = {
     "variable_extraction": "extract structured variables",
     "github_pr_read": "read a GitHub pull request",
     "mail_search": "search or read email",
+    "gmail_reply_draft_create": "create a Gmail reply draft without sending it",
+    "mail_terminal_acknowledgement": "mark the source email handled after required effects succeed",
     "http_request": "call a REST or HTTP API",
     "workflow_call": "call another workflow",
     "code_execution": "run code in the sandbox",
@@ -294,6 +296,10 @@ order in ordered_capabilities. Distinguish GitHub PR reading from GitHub PR comm
 Reviewing or analyzing a PR is github_pr_read plus llm; add github_pr_comment only when the
 user explicitly requests writing or posting a comment.
 
+For an email reply-draft automation, use mail_search, llm,
+gmail_reply_draft_create, and mail_terminal_acknowledgement in that order. Do not map a
+request to send or deliver email to draft creation; email sending is unsupported.
+
 Classify every explicit GitHub Pull Request action in integration_actions. Use operation
 read for reading a PR or its diff, comment for writing a comment or review result to an
 existing PR, and create for opening or creating a new PR. Korean `PR을 올려`, `PR을 열어`,
@@ -303,7 +309,8 @@ GitHub Pull Request action. A create action is recognized but currently unsuppor
 keep it in integration_actions and do not invent an executable capability for it.
 
 For a new workflow, include exactly one entry capability and include answer as the terminal
-capability unless the request is unsupported. For an existing-workflow insertion, include
+capability unless mail_terminal_acknowledgement is the terminal capability or the request is
+unsupported. For an existing-workflow insertion, include
 only newly requested capabilities in ordered_capabilities. Put the existing target in edit;
 do not repeat the target capability as a new step. Words such as create, generate, add,
 insert, make, or their Korean equivalents describe the speech act and do not by themselves

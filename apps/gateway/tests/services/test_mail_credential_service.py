@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from apps.gateway.services.mail_credential_service import (
     MailCredentialEgressDenied,
     MailCredentialNotFound,
+    MailCredentialOAuthManaged,
     MailCredentialPermissionDenied,
     MailCredentialPersistenceFailed,
     MailCredentialRevoked,
@@ -16,6 +17,7 @@ from apps.gateway.services.mail_credential_service import (
     MailCredentialTargetNotFound,
 )
 from apps.shared.db.models.audit_log import AuditLog
+from apps.shared.domain.mail_oauth import GMAIL_MODIFY_SCOPE, GmailOAuthSecret
 from apps.shared.schemas.mail_credential import (
     MailCredentialCreate,
     MailCredentialPermissionGrant,
@@ -77,6 +79,7 @@ def test_picker_option_uses_minimum_safe_metadata_allowlist():
         "id",
         "credential_name",
         "provider",
+        "auth_type",
         "email_preview",
         "status",
     }
@@ -119,6 +122,54 @@ def test_create_encrypts_secret_before_persistence(_manager, _egress):
     assert stored.encryption_key_version == "v2"
     assert not hasattr(stored, "secret")
     assert response.email_preview == "m***@example.test"
+    assert isinstance(audit, AuditLog)
+    assert audit.target_id == str(stored.id)
+    assert "email_address" not in audit.audit_metadata
+    assert "encrypted_secret" not in audit.audit_metadata
+    db.commit.assert_called_once()
+
+
+@patch(
+    "apps.gateway.services.mail_credential_service.has_organization_manager_permission",
+    return_value=True,
+)
+def test_create_gmail_oauth_encrypts_refresh_payload_and_returns_safe_metadata(_manager):
+    db = MagicMock()
+    encryption = MagicMock()
+    encryption.encrypt.return_value = EncryptedSecretEnvelope(
+        ciphertext="synthetic-oauth-ciphertext",
+        key_version="v2",
+    )
+
+    def flush():
+        row = db.add.call_args_list[0].args[0]
+        row.id = uuid.uuid4()
+
+    def refresh(row):
+        row.created_at = NOW
+        row.updated_at = NOW
+        row.revoked_at = None
+
+    db.flush.side_effect = flush
+    db.refresh.side_effect = refresh
+    response = MailCredentialService(db, encryption=encryption).create_gmail_oauth(
+        actor_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        credential_name="Gmail OAuth",
+        email_address="Mailbox@Example.test",
+        refresh_token="synthetic-refresh-token",
+        scopes=(GMAIL_MODIFY_SCOPE,),
+    )
+
+    protected_input = encryption.encrypt.call_args.args[0]
+    parsed = GmailOAuthSecret.parse(protected_input)
+    stored = db.add.call_args_list[0].args[0]
+    audit = db.add.call_args_list[1].args[0]
+    assert parsed.refresh_token == "synthetic-refresh-token"
+    assert stored.auth_type == "oauth2"
+    assert stored.encrypted_secret == "synthetic-oauth-ciphertext"
+    assert response.email_preview == "m***@example.test"
+    assert "refresh_token" not in response.model_dump()
     assert isinstance(audit, AuditLog)
     assert audit.target_id == str(stored.id)
     assert "email_address" not in audit.audit_metadata
@@ -315,6 +366,26 @@ def test_revoked_credential_rejects_mutation(operation):
                 MailCredentialPermissionGrant(auth_state="operator"),
             )
 
+    db.commit.assert_not_called()
+
+
+def test_oauth_credential_secret_can_only_change_through_oauth_flow():
+    db = MagicMock()
+    encryption = MagicMock()
+    service = MailCredentialService(db, encryption=encryption)
+    credential = _credential(auth_type="oauth2")
+    service._get_scoped = MagicMock(return_value=credential)
+    service._require = MagicMock()
+
+    with pytest.raises(MailCredentialOAuthManaged):
+        service.update(
+            uuid.uuid4(),
+            credential.organization_id,
+            credential.id,
+            MailCredentialUpdate(secret="synthetic-replacement"),
+        )
+
+    encryption.encrypt.assert_not_called()
     db.commit.assert_not_called()
 
 

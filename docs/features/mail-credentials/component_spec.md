@@ -25,6 +25,11 @@ Status: Draft
 - Runtime value는 node data, node output, audit 또는 trace metadata에 저장하지 않는다.
 - Legacy inline password field가 발견되면 provider 연결 전에 중지한다.
 - Mail 검색 문자열은 IMAP quoted-string으로 인코딩하고 protocol control character를 거부한다. 연결 이후 provider/cleanup 오류도 safe reason code 밖으로 노출하지 않는다.
+- `MailProcessingService`는 workflow/source node scoped message identity, processing lease와 terminal state를 소유한다.
+- `GmailDraftService`는 credential resolve, draft effect admission, MIME build, provider port 호출과 safe outcome 기록을 조정한다.
+- `GmailDraftProviderPort`는 create reply draft만 노출하고 send method를 정의하지 않는다.
+- `TerminalAcknowledgementService`는 processing과 required effect provenance를 검증한 뒤 idempotent acknowledgement를 수행한다.
+- `mailNode` durable mode는 opaque `processing_ref`를 출력하고, `gmailDraftNode`와 `mailAcknowledgeNode`는 해당 reference를 서버에서 다시 검증한다.
 
 ## Client
 
@@ -36,6 +41,9 @@ Status: Draft
 - Draft는 unresolved Mail node를 보존할 수 있지만 deployment 생성·활성화는 최상위와 중첩 graph의 모든 Mail node가 유효한 credential을 참조해야 한다.
 - 실행 로그 설정 요약은 credential id나 mailbox identity 대신 `연결됨` 또는 `연결 필요`만 표시한다.
 - 관리자 콘솔의 resource 권한 화면과 actor access drawer는 Mail credential의 user/team `read/use/manage` 부여·회수를 지원한다.
+- Gmail OAuth credential 연결은 Gateway가 발급한 authorization URL로만 시작하며 token이나 provider response를 browser storage에 저장하지 않는다.
+- Gmail Draft node는 processing ref와 reply body selector를, Mail Acknowledge node는 processing/effect selector를 명시적으로 연결한다.
+- Agent Builder가 Gmail Draft automation을 제안하면 Mail node는 durable mode, 외부 node credential은 unresolved 상태로 생성한다.
 
 ## Audit And Trace
 
