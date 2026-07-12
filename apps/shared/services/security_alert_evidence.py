@@ -6,7 +6,10 @@ from uuid import UUID
 
 from sqlalchemy.dialects.postgresql import insert
 
-from apps.shared.db.models.security_alert import SecurityAlertAuditEvent
+from apps.shared.db.models.audit_log import AuditLog
+from apps.shared.db.models.security_alert import SecurityAlert, SecurityAlertAuditEvent
+
+_ACTIVE_STATUSES = frozenset({"open", "acknowledged"})
 
 
 def link_security_alert_evidence(
@@ -17,13 +20,30 @@ def link_security_alert_evidence(
     audit_log_id: UUID | None = None,
     audit_log: Any | None = None,
 ) -> bool:
-    if audit_log is not None:
-        if not _has_matching_organization(alert, audit_log):
-            return False
-        audit_log_id = audit_log.id
+    if getattr(alert, "status", "open") not in _ACTIVE_STATUSES:
+        return False
 
+    insert_once = getattr(db, "add_evidence_once", None)
+    get = getattr(db, "get", None)
+    uses_database_session = callable(get) and not callable(insert_once)
+
+    audit_log_id = _validated_audit_log_id(
+        db,
+        alert=alert,
+        audit_log_id=audit_log_id,
+        audit_log=audit_log,
+        load_from_database=uses_database_session,
+    )
     if audit_log_id is None:
-        raise ValueError("audit_log or audit_log_id is required")
+        return False
+
+    alert = _lock_active_alert(
+        db,
+        alert=alert,
+        lock_in_database=uses_database_session,
+    )
+    if alert is None:
+        return False
 
     if not _insert_evidence_once(
         db,
@@ -33,9 +53,59 @@ def link_security_alert_evidence(
     ):
         return False
 
-    alert.occurrence_count += 1
-    alert.last_detected_at = detected_at
+    _record_occurrence(alert, detected_at=detected_at)
     return True
+
+
+def _validated_audit_log_id(
+    db: Any,
+    *,
+    alert: Any,
+    audit_log_id: UUID | None,
+    audit_log: Any | None,
+    load_from_database: bool,
+) -> UUID | None:
+    if audit_log is None and audit_log_id is None:
+        raise ValueError("audit_log or audit_log_id is required")
+
+    if audit_log is None and load_from_database:
+        audit_log = db.get(AuditLog, audit_log_id)
+
+    if audit_log is not None:
+        if not _has_matching_organization(alert, audit_log):
+            return None
+        return audit_log.id
+
+    return audit_log_id
+
+
+def _lock_active_alert(
+    db: Any,
+    *,
+    alert: Any,
+    lock_in_database: bool,
+) -> Any | None:
+    if not lock_in_database:
+        return alert
+
+    locked_alert = db.get(
+        SecurityAlert,
+        alert.id,
+        populate_existing=True,
+        with_for_update=True,
+    )
+    if locked_alert is None or locked_alert.status not in _ACTIVE_STATUSES:
+        return None
+    return locked_alert
+
+
+def _record_occurrence(alert: Any, *, detected_at: datetime) -> None:
+    alert.occurrence_count += 1
+    alert.last_detected_at = (
+        detected_at
+        if alert.last_detected_at is None
+        else max(alert.last_detected_at, detected_at)
+    )
 
 
 def _has_matching_organization(alert: Any, audit_log: Any) -> bool:
