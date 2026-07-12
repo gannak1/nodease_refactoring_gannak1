@@ -59,8 +59,8 @@ Security Alert는 검증된 organization 안에서 인증 사용자가 짧은 �
 
 - SAL-REQ-023: Alert status는 `open`, `acknowledged`, `resolved`만 허용해야 한다.
 - SAL-REQ-024: 허용 상태 전이는 `open → acknowledged`, `open → resolved`, `acknowledged → resolved`, `acknowledged → open`이어야 한다. 그 밖의 전이는 거부해야 한다.
-- SAL-REQ-025: Acknowledge는 처리 관리자와 처리 시각을 기록해야 한다.
-- SAL-REQ-026: Resolve는 처리 관리자, 처리 시각, resolution type, sanitized reason을 기록해야 한다.
+- SAL-REQ-025: Acknowledge 전이 시점에는 인증·인가된 처리 관리자와 처리 시각을 필수로 기록해야 한다. 이후 처리 관리자 user가 삭제되면 actor FK는 `NULL`이 될 수 있지만 처리 시각과 lifecycle 이력은 보존해야 한다.
+- SAL-REQ-026: Resolve 전이 시점에는 인증·인가된 처리 관리자, 처리 시각, resolution type, sanitized reason을 필수로 기록해야 한다. 이후 처리 관리자 user가 삭제되면 actor FK는 `NULL`이 될 수 있지만 처리 시각, resolution 정보, canonical audit은 보존해야 한다.
 - SAL-REQ-027: Resolution type은 `mitigated`, `false_positive`, `accepted_risk`만 허용해야 한다.
 - SAL-REQ-028: Resolve reason은 필수이며 organization management reason과 같은 정규화, 길이 제한, control-character 차단, secret/PII redaction 기준을 적용해야 한다.
 - SAL-REQ-029: 해결된 alert는 삭제하지 않아야 한다. Alert delete API와 자동 retention 삭제는 이 범위에서 제공하지 않아야 한다.

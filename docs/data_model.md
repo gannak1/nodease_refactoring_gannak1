@@ -549,14 +549,16 @@ Security Alert 탐지 대상 audit는 추가로 다음 application contract를 �
 | occurrence_count | INTEGER | NOT NULL, 0 이상 |
 | first_detected_at / last_detected_at | DATETIME | NOT NULL, UTC event-time 기준 |
 | lifecycle_version | INTEGER | NOT NULL, 1 이상 — occurrence 갱신에는 증가하지 않음 |
-| acknowledged_by / acknowledged_at | UUID / DATETIME | NULL, 처리 관리자 FK→users.id (SET NULL)와 시각 |
+| acknowledged_by / acknowledged_at | UUID / DATETIME | NULL, 전이 시 service가 처리 관리자/시각을 필수로 기록. 관리자 삭제 후 FK→users.id는 SET NULL이고 시각은 보존 |
 | resolution_type | VARCHAR | NULL — `mitigated/false_positive/accepted_risk` |
 | resolution_reason | TEXT | NULL — resolved에서 sanitized non-blank 값 |
-| resolved_by / resolved_at | UUID / DATETIME | NULL, 처리 관리자 FK→users.id (SET NULL)와 시각 |
+| resolved_by / resolved_at | UUID / DATETIME | NULL, 전이 시 service가 처리 관리자/시각을 필수로 기록. 관리자 삭제 후 FK→users.id는 SET NULL이고 시각·resolution 정보는 보존 |
 | created_at / updated_at | DATETIME | NOT NULL |
 
 - 같은 detection key의 `open/acknowledged` 활성 alert는 최대 하나다. PostgreSQL partial unique constraint 또는 동등한 transaction-safe 제약으로 보장한다.
 - `occurrence_count`와 `last_detected_at` 갱신은 lifecycle version을 바꾸지 않아 상태 변경과 occurrence 처리의 불필요한 충돌을 피한다.
+- Lifecycle 전이의 처리자 필수 여부는 전이 시점 service가 검증한다. DB status check는 user 삭제 후 `acknowledged_by`/`resolved_by`가 `SET NULL`인 historical row를 허용해야 하며 처리 시각과 resolution 이력을 제거하지 않는다.
+- Lifecycle mutation은 현재 status와 `lifecycle_version`을 조건으로 한 원자적 DB update에서 winner를 결정하고 canonical lifecycle audit과 같은 transaction에 기록한다. Stale 요청은 row와 audit을 변경하지 않는다.
 - Actor name/email snapshot, raw target 목록, raw audit metadata, IP/user-agent/exception/request body/secret/trace payload를 저장하지 않는다.
 - Resolved row는 삭제하거나 다시 open으로 바꾸지 않는다. 재발은 resolve 이후 새 audit만으로 threshold를 충족한 새 row다.
 - Alert retention/자동 삭제는 MVP 범위 밖이다.
@@ -574,7 +576,7 @@ Alert와 실제 근거 audit의 연결 및 idempotency boundary다.
 
 - UNIQUE `(security_alert_id, audit_log_id)`로 같은 alert에서 동일 audit의 중복 연결을 막는다.
 - 동일 audit은 서로 다른 rule alert의 근거가 될 수 있으므로 `audit_log_id` 단독 UNIQUE는 두지 않는다.
-- `occurrence_count` 갱신과 evidence insert는 같은 transaction에서 처리해 count 유실·중복을 막는다.
+- `occurrence_count` 갱신과 evidence insert는 같은 transaction에서 처리하고 `(security_alert_id, audit_log_id)` conflict winner만 count를 증가시켜 재시도·동시 처리의 유실과 중복을 막는다.
 - Alert 최초 row, 최초 evidence, `security_alert.detected` audit은 같은 transaction에 기록한다.
 - Generic `audit_metadata`, `before`, `after`를 evidence table에 복사하지 않는다. 조회는 연결된 `audit_logs`의 safe projection을 사용한다.
 - Reconciliation cursor의 물리 저장 방식은 MBA-212에서 결정하되 `(occurred_at, audit_log.id)`와 기능 활성화 시각을 durable하게 보존해야 한다.
