@@ -18,6 +18,8 @@ from apps.shared.domain.schedule_dispatch import (
     REASON_DEPLOYMENT_NOT_CURRENT,
     REASON_DEPLOYMENT_NOT_FOUND,
     REASON_DEPLOYMENT_TYPE_NOT_ALLOWED,
+    REASON_EXECUTION_FAILED_AFTER_ADMISSION,
+    REASON_EXECUTION_OUTCOME_UNKNOWN,
     REASON_ORGANIZATION_SCOPE_MISMATCH,
     REASON_ORGANIZATION_SCOPE_MISSING,
     REASON_SCHEDULE_DEPLOYMENT_MISMATCH,
@@ -33,6 +35,7 @@ from apps.shared.domain.schedule_dispatch import (
     retry_delay_seconds,
 )
 from apps.shared.domain.workflow_budget import BudgetExecutionDecision
+from apps.shared.domain.workflow_execution_identity import schedule_execution_id
 
 AdmissionStatus = Literal["admitted", "duplicate", "rejected", "deferred"]
 
@@ -134,6 +137,7 @@ class ScheduleAdmissionRepositoryPort(Protocol):
         workflow_run_id: uuid.UUID,
         admission_owner: str,
         now: datetime,
+        reason: str = REASON_EXECUTION_FAILED_AFTER_ADMISSION,
     ) -> bool: ...
 
 
@@ -314,6 +318,7 @@ class ScheduledDeploymentExecutionUseCase:
                         "workflow_run_id": str(workflow_run_id),
                         "workflow_task_id": task_id,
                         "idempotency_key": task_id,
+                        "execution_id": str(schedule_execution_id(snapshot.claim_id)),
                     },
                 ),
             )
@@ -328,6 +333,7 @@ class ScheduledDeploymentExecutionUseCase:
         uow: UnitOfWorkPort,
         plan: ScheduledExecutionPlan,
         succeeded: bool,
+        failure_reason: str = REASON_EXECUTION_FAILED_AFTER_ADMISSION,
     ) -> bool:
         try:
             now = repository.database_now()
@@ -336,11 +342,21 @@ class ScheduledDeploymentExecutionUseCase:
                 if succeeded
                 else repository.finalize_failed
             )
+            kwargs = {
+                "claim_id": plan.claim_id,
+                "workflow_run_id": plan.workflow_run_id,
+                "admission_owner": plan.admission_owner,
+                "now": now,
+            }
+            if not succeeded:
+                if failure_reason not in {
+                    REASON_EXECUTION_FAILED_AFTER_ADMISSION,
+                    REASON_EXECUTION_OUTCOME_UNKNOWN,
+                }:
+                    raise ValueError("invalid schedule execution failure reason")
+                kwargs["reason"] = failure_reason
             changed = method(
-                claim_id=plan.claim_id,
-                workflow_run_id=plan.workflow_run_id,
-                admission_owner=plan.admission_owner,
-                now=now,
+                **kwargs,
             )
             uow.commit()
             return changed

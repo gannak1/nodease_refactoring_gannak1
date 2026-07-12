@@ -29,7 +29,12 @@ def test_operational_run_task_dispatches_refresh_for_due_policy():
     assert sent == [
         (
             ("workflow.model_routing.refresh_policy",),
-            {"args": [str(policy_id), "auto_n_runs"]},
+            {
+                "args": [str(policy_id), "auto_n_runs"],
+                "kwargs": {},
+                "argsrepr": "[workflow arguments redacted]",
+                "kwargsrepr": "{workflow arguments redacted}",
+            },
         )
     ]
 

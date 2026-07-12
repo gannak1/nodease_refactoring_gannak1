@@ -22,6 +22,10 @@ from apps.gateway.adapters.schedule.apscheduler_next_fire import (
     ApschedulerNextFireCalculator,
 )
 from apps.gateway.application.deployment.preflight import DeploymentPreflightUseCase
+from apps.gateway.application.deployment.workflow_node_binding import (
+    WorkflowNodeBindingUseCase,
+)
+from apps.shared.services.workflow_node_catalog import node_side_effect_mapping
 from apps.gateway.services.scheduler_service import ScheduleDispatchDependencies
 from apps.gateway.services.workflow_budget_service import WorkflowBudgetDecisionAdapter
 
@@ -60,4 +64,16 @@ def build_deployment_preflight_use_case(
         organization_id=organization_id,
         candidate_graphs_by_app_id=candidate_graphs_by_app_id,
         candidate_deployment_types_by_app_id=candidate_deployment_types_by_app_id,
+    )
+
+
+def build_workflow_node_binding_use_case(
+    db: Session,
+    *,
+    organization_id: uuid.UUID | None,
+) -> WorkflowNodeBindingUseCase:
+    return WorkflowNodeBindingUseCase(
+        SqlAlchemyDeploymentPreflightRepository(db),
+        organization_id=organization_id,
+        side_effect_by_node_type=node_side_effect_mapping(),
     )

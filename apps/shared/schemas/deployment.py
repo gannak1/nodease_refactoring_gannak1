@@ -3,8 +3,8 @@ from typing import Any, Dict, Literal, Optional
 from uuid import UUID
 
 from apps.shared.db.models.workflow_deployment import DeploymentType
-from pydantic import BaseModel, Field
-
+from apps.shared.domain.workflow_node_binding import strip_workflow_node_bindings
+from pydantic import BaseModel, Field, field_serializer
 
 DeploymentPreflightStatus = Literal["passed", "warning", "blocked"]
 DeploymentPreflightAudience = Literal[
@@ -83,6 +83,10 @@ class DeploymentResponse(DeploymentBase):
 
     class Config:
         from_attributes = True
+
+    @field_serializer("graph_snapshot")
+    def serialize_graph_snapshot(self, value: Dict[str, Any]) -> Dict[str, Any]:
+        return strip_workflow_node_bindings(value)
 
 
 class DeploymentInfoResponse(BaseModel):

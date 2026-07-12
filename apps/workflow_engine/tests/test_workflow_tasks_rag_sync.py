@@ -16,6 +16,7 @@ from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
 class FakeSession:
     deployment = None
     app = None
+    workflow = None
 
     def close(self):
         return None
@@ -36,6 +37,8 @@ class FakeQuery:
             return FakeSession.deployment
         if self.model is FakeApp and FakeSession.app is not None:
             return FakeSession.app
+        if self.model is FakeWorkflow and FakeSession.workflow is not None:
+            return FakeSession.workflow
         return SimpleNamespace(
             id=uuid.uuid4(),
             app_id=uuid.uuid4(),
@@ -60,11 +63,17 @@ class FakeColumn:
 
 class FakeApp:
     id = FakeColumn()
+    workflow_id = FakeColumn()
+
+
+class FakeWorkflow:
+    id = FakeColumn()
+    app_id = FakeColumn()
 
 
 class FakeWorkflowDeployment:
     id = FakeColumn()
-    workflow_id = FakeColumn()
+    app_id = FakeColumn()
     is_active = FakeColumn()
 
 
@@ -145,6 +154,31 @@ def patch_task_dependencies(monkeypatch):
     FakeWorkflowEngine.execute_error = None
     FakeSession.deployment = None
     FakeSession.app = None
+    app_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    deployment_id = uuid.uuid4()
+    FakeSession.workflow = SimpleNamespace(
+        id=workflow_id,
+        app_id=app_id,
+        organization_id=organization_id,
+    )
+    FakeSession.app = SimpleNamespace(
+        id=app_id,
+        workflow_id=workflow_id,
+        organization_id=organization_id,
+        active_deployment_id=deployment_id,
+        created_by=uuid.uuid4(),
+    )
+    FakeSession.deployment = SimpleNamespace(
+        id=deployment_id,
+        app_id=app_id,
+        version=1,
+        type=DeploymentType.WEBHOOK,
+        is_active=True,
+        created_by=FakeSession.app.created_by,
+        graph_snapshot={"nodes": []},
+    )
     monkeypatch.setattr(tasks, "SessionLocal", lambda: FakeSession())
     monkeypatch.setitem(
         sys.modules,
@@ -169,6 +203,11 @@ def patch_task_dependencies(monkeypatch):
             WorkflowDeployment=FakeWorkflowDeployment,
         ),
     )
+    monkeypatch.setitem(
+        sys.modules,
+        "apps.shared.db.models.workflow",
+        SimpleNamespace(Workflow=FakeWorkflow),
+    )
 
 
 def test_execute_workflow_skips_sync_without_execution_subject():
@@ -178,7 +217,9 @@ def test_execute_workflow_skips_sync_without_execution_subject():
         {},
         {
             "user_id": str(owner_id),
+            "workflow_id": str(FakeSession.workflow.id),
             "organization_id": str(uuid.uuid4()),
+            "execution_id": str(uuid.uuid4()),
         },
         False,
     )
@@ -193,6 +234,68 @@ def test_execute_workflow_skips_sync_without_execution_subject():
     assert FakeSyncService.calls == []
 
 
+def test_deployed_graph_execution_revalidates_exact_snapshot():
+    graph = {"nodes": [], "edges": []}
+    FakeSession.deployment.graph_snapshot = graph
+
+    result = tasks.execute_workflow.run(
+        graph,
+        {},
+        {
+            "workflow_id": str(FakeSession.workflow.id),
+            "execution_id": str(uuid.uuid4()),
+            "deployment_id": str(FakeSession.deployment.id),
+            "workflow_version": FakeSession.deployment.version,
+        },
+        True,
+    )
+
+    context = FakeWorkflowEngine.calls[0]["kwargs"]["execution_context"]
+    assert result["status"] == "success"
+    assert context["deployment_id"] == str(FakeSession.deployment.id)
+    assert context["workflow_version"] == FakeSession.deployment.version
+
+
+def test_deployed_graph_execution_rejects_snapshot_drift():
+    FakeSession.deployment.graph_snapshot = {"nodes": [], "edges": []}
+
+    with pytest.raises(
+        tasks.PermanentDeploymentExecutionError,
+        match="identity is not frozen",
+    ):
+        tasks.execute_workflow.run(
+            {"nodes": [{"id": "changed"}], "edges": []},
+            {},
+            {
+                "workflow_id": str(FakeSession.workflow.id),
+                "execution_id": str(uuid.uuid4()),
+                "deployment_id": str(FakeSession.deployment.id),
+                "workflow_version": FakeSession.deployment.version,
+            },
+            True,
+        )
+
+    assert FakeWorkflowEngine.calls == []
+
+
+def test_execute_workflow_rejects_invalid_execution_identity_without_retry():
+    with pytest.raises(
+        tasks.PermanentDeploymentExecutionError,
+        match="identity is invalid",
+    ):
+        tasks.execute_workflow.run(
+            {"nodes": []},
+            {},
+            {
+                "workflow_id": str(FakeSession.workflow.id),
+                "execution_id": "not-a-uuid",
+            },
+            False,
+        )
+
+    assert FakeWorkflowEngine.calls == []
+
+
 def test_execute_workflow_syncs_with_execution_subject_not_actor_user():
     actor_id = uuid.uuid4()
     subject_id = uuid.uuid4()
@@ -203,7 +306,9 @@ def test_execute_workflow_syncs_with_execution_subject_not_actor_user():
         {},
         {
             "user_id": str(actor_id),
+            "workflow_id": str(FakeSession.workflow.id),
             "organization_id": str(organization_id),
+            "execution_id": str(uuid.uuid4()),
             "execution_subject": {
                 "type": "user",
                 "id": str(subject_id),
@@ -216,7 +321,7 @@ def test_execute_workflow_syncs_with_execution_subject_not_actor_user():
     assert FakeSyncService.calls == [
         {
             "user_id": subject_id,
-            "organization_id": str(organization_id),
+            "organization_id": str(FakeSession.workflow.organization_id),
             "graph": {"nodes": []},
         }
     ]
@@ -228,7 +333,9 @@ def test_execute_workflow_skips_sync_for_invalid_subject():
         {},
         {
             "user_id": str(uuid.uuid4()),
+            "workflow_id": str(FakeSession.workflow.id),
             "organization_id": str(uuid.uuid4()),
+            "execution_id": str(uuid.uuid4()),
             "execution_subject": {
                 "type": "service_account",
                 "id": str(uuid.uuid4()),
@@ -252,7 +359,9 @@ def test_stream_workflow_uses_execution_subject_for_sync():
         {},
         {
             "user_id": str(uuid.uuid4()),
+            "workflow_id": str(FakeSession.workflow.id),
             "organization_id": str(organization_id),
+            "execution_id": str(uuid.uuid4()),
             "execution_subject": {
                 "subject_type": "user",
                 "subject_id": str(subject_id),
@@ -265,10 +374,30 @@ def test_stream_workflow_uses_execution_subject_for_sync():
     assert FakeSyncService.calls == [
         {
             "user_id": subject_id,
-            "organization_id": str(organization_id),
+            "organization_id": str(FakeSession.workflow.organization_id),
             "graph": {"nodes": []},
         }
     ]
+
+
+def test_stream_workflow_does_not_retry_permanent_identity_error(monkeypatch):
+    def reject_context(*_args, **_kwargs):
+        raise tasks.PermanentDeploymentExecutionError("invalid workflow identity")
+
+    monkeypatch.setattr(tasks, "_canonical_workflow_execution_context", reject_context)
+    monkeypatch.setitem(
+        sys.modules,
+        "apps.shared.pubsub",
+        SimpleNamespace(publish_workflow_event=lambda *_args, **_kwargs: None),
+    )
+
+    with pytest.raises(tasks.PermanentDeploymentExecutionError):
+        tasks.stream_workflow.run(
+            {"nodes": []},
+            {},
+            {"workflow_id": str(uuid.uuid4())},
+            str(uuid.uuid4()),
+        )
 
 
 def test_execute_deployed_workflow_skips_sync_without_execution_subject():
@@ -291,6 +420,72 @@ def test_execute_deployed_workflow_skips_sync_without_execution_subject():
     assert FakeSyncService.calls == []
 
 
+def test_legacy_deployed_effect_requires_frozen_deployment_envelope():
+    deployment, app, _trigger_mode = _active_deployment_pair(
+        graph_snapshot={
+            "nodes": [
+                {
+                    "id": "http-1",
+                    "type": "httpRequestNode",
+                    "data": {"method": "POST"},
+                }
+            ],
+            "edges": [],
+        }
+    )
+
+    with pytest.raises(
+        tasks.PermanentDeploymentExecutionError,
+        match="identity is not frozen",
+    ):
+        tasks.execute_deployed_workflow.run(
+            str(app.workflow_id),
+            {},
+            {
+                "workflow_id": str(app.workflow_id),
+                "execution_id": str(uuid.uuid4()),
+            },
+        )
+
+    assert FakeWorkflowEngine.calls == []
+
+
+def test_legacy_deployed_effect_accepts_exact_snapshot_envelope():
+    from apps.shared.domain.workflow_node_binding import canonical_snapshot_sha256
+
+    deployment, app, _trigger_mode = _active_deployment_pair(
+        graph_snapshot={
+            "nodes": [
+                {
+                    "id": "http-1",
+                    "type": "httpRequestNode",
+                    "data": {"method": "POST"},
+                }
+            ],
+            "edges": [],
+        }
+    )
+    snapshot_sha256 = canonical_snapshot_sha256(deployment.graph_snapshot)
+
+    result = tasks.execute_deployed_workflow.run(
+        str(app.workflow_id),
+        {},
+        {
+            "workflow_id": str(app.workflow_id),
+            "execution_id": str(uuid.uuid4()),
+            "deployment_id": str(deployment.id),
+            "deployment_version": deployment.version,
+            "snapshot_sha256": snapshot_sha256,
+        },
+    )
+
+    context = FakeWorkflowEngine.calls[0]["kwargs"]["execution_context"]
+    assert result["status"] == "success"
+    assert context["deployment_version"] == deployment.version
+    assert context["snapshot_sha256"] == snapshot_sha256
+    assert context["workflow_version"] == deployment.version
+
+
 def test_execute_by_deployment_skips_sync_without_execution_subject():
     deployment, _app, trigger_mode = _active_deployment_pair()
 
@@ -301,6 +496,7 @@ def test_execute_by_deployment_skips_sync_without_execution_subject():
             "user_id": str(uuid.uuid4()),
             "organization_id": str(uuid.uuid4()),
             "trigger_mode": trigger_mode,
+            "execution_id": str(uuid.uuid4()),
         },
     )
 
@@ -342,7 +538,7 @@ def test_execute_by_deployment_uses_snapshot_rag_selection():
     result = tasks.execute_by_deployment.run(
         str(deployment_id),
         {"message": "hello"},
-        {"trigger_mode": trigger_mode},
+        {"trigger_mode": trigger_mode, "execution_id": str(uuid.uuid4())},
     )
 
     engine_kwargs = FakeWorkflowEngine.calls[0]["kwargs"]
@@ -370,6 +566,7 @@ def test_execute_by_deployment_rebuilds_tenant_context_from_database():
         {},
         {
             "trigger_mode": trigger_mode,
+            "execution_id": str(uuid.uuid4()),
             "workflow_id": attacker_workflow_id,
             "organization_id": attacker_organization_id,
             "app_id": attacker_app_id,
@@ -408,7 +605,7 @@ def test_execute_by_deployment_rejects_inactive_deployment():
         tasks.execute_by_deployment.run(
             str(deployment.id),
             {},
-            {"trigger_mode": trigger_mode},
+            {"trigger_mode": trigger_mode, "execution_id": str(uuid.uuid4())},
         )
 
     assert FakeWorkflowEngine.calls == []
@@ -438,7 +635,7 @@ def test_execute_by_deployment_rejects_missing_graph_without_retry():
         tasks.execute_by_deployment.run(
             str(deployment.id),
             {},
-            {"trigger_mode": trigger_mode},
+            {"trigger_mode": trigger_mode, "execution_id": str(uuid.uuid4())},
         )
 
     assert FakeWorkflowEngine.calls == []
@@ -541,7 +738,7 @@ def test_execute_by_deployment_does_not_retry_non_retryable_runtime_error():
         tasks.execute_by_deployment.run(
             str(deployment.id),
             {},
-            {"trigger_mode": trigger_mode},
+            {"trigger_mode": trigger_mode, "execution_id": str(uuid.uuid4())},
         )
 
     assert len(FakeWorkflowEngine.calls) == 1

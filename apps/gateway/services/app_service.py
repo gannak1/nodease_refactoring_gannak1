@@ -1093,7 +1093,11 @@ class AppService:
         그래프 스냅샷에서 민감 정보를 제거합니다.
         (knowledgeBases, api_token, authConfig, password, email 등)
         """
-        cleaned_data = copy.deepcopy(graph_snapshot)
+        from apps.shared.domain.workflow_node_binding import (
+            strip_workflow_node_bindings,
+        )
+
+        cleaned_data = strip_workflow_node_bindings(graph_snapshot)
         nodes = cleaned_data.get("nodes", [])
 
         for node in nodes:

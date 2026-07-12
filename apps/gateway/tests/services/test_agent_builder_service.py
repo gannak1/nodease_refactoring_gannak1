@@ -4001,6 +4001,9 @@ def test_agent_builder_apply_persists_optimized_layout(monkeypatch):
             {"id": "edge-start-agent-llm", "source": "start", "target": "agent-llm"},
             {"id": "edge-agent-llm-answer", "source": "agent-llm", "target": "answer"},
         ],
+        "_nodease_runtime": {
+            "workflow_node_bindings": {"version": "forged", "entries": []}
+        },
     }
     workflow = SimpleNamespace(
         id=workflow_id,
@@ -4060,6 +4063,7 @@ def test_agent_builder_apply_persists_optimized_layout(monkeypatch):
     assert positions["start"]["x"] < positions["agent-llm"]["x"]
     assert positions["agent-llm"]["x"] < positions["answer"]["x"]
     assert {position["y"] for position in positions.values()} == {0}
+    assert "_nodease_runtime" not in workflow.graph
 
 
 def test_agent_builder_apply_rejects_invalid_connection_policy(monkeypatch):

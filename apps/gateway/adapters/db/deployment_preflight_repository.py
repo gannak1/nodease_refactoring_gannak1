@@ -105,7 +105,13 @@ class SqlAlchemyDeploymentPreflightRepository:
         if deployment_id is None:
             return WorkflowNodeTargetSnapshot(
                 app_id=app.id,
+                organization_id=app.organization_id,
+                workflow_id=getattr(app, "workflow_id", None),
+                deployment_id=None,
+                deployment_version=None,
+                deployment_type=None,
                 active_graph_snapshot=None,
+                active_pointer_valid=False,
             )
 
         deployment = (
@@ -120,9 +126,66 @@ class SqlAlchemyDeploymentPreflightRepository:
         )
         return WorkflowNodeTargetSnapshot(
             app_id=app.id,
+            organization_id=app.organization_id,
+            workflow_id=getattr(app, "workflow_id", None),
+            deployment_id=deployment.id if deployment is not None else None,
+            deployment_version=(
+                getattr(deployment, "version", None)
+                if deployment is not None
+                else None
+            ),
+            deployment_type=(
+                deployment.type.value if deployment is not None else None
+            ),
             active_graph_snapshot=(
                 deployment.graph_snapshot if deployment is not None else None
             ),
+            active_pointer_valid=deployment is not None,
+        )
+
+    def get_workflow_node_deployment(
+        self,
+        app_id: uuid.UUID,
+        deployment_id: uuid.UUID,
+        organization_id: uuid.UUID | None,
+    ) -> WorkflowNodeTargetSnapshot | None:
+        query = self.db.query(App).filter(App.id == app_id)
+        if organization_id is not None:
+            query = query.filter(App.organization_id == organization_id)
+        app = query.first()
+        if app is None or app.active_deployment_id is None:
+            return None
+        active_exists = (
+            self.db.query(WorkflowDeployment.id)
+            .filter(
+                WorkflowDeployment.id == app.active_deployment_id,
+                WorkflowDeployment.app_id == app.id,
+                WorkflowDeployment.is_active.is_(True),
+                WorkflowDeployment.type == DeploymentType.WORKFLOW_NODE,
+            )
+            .first()
+            is not None
+        )
+        deployment = (
+            self.db.query(WorkflowDeployment)
+            .filter(
+                WorkflowDeployment.id == deployment_id,
+                WorkflowDeployment.app_id == app.id,
+                WorkflowDeployment.type == DeploymentType.WORKFLOW_NODE,
+            )
+            .first()
+        )
+        if deployment is None:
+            return None
+        return WorkflowNodeTargetSnapshot(
+            app_id=app.id,
+            organization_id=app.organization_id,
+            workflow_id=getattr(app, "workflow_id", None),
+            deployment_id=deployment.id,
+            deployment_version=getattr(deployment, "version", None),
+            deployment_type=deployment.type.value,
+            active_graph_snapshot=deployment.graph_snapshot,
+            active_pointer_valid=active_exists,
         )
 
 

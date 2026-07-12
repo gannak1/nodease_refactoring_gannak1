@@ -6,6 +6,7 @@ Workflow-Engine Celery 태스크 정의
 """
 
 import logging
+import time
 import uuid
 from typing import Any, Dict
 
@@ -15,14 +16,31 @@ from apps.shared.domain.deployment_runtime_policy import (
     DeploymentRuntimePolicy,
     is_deployment_type_allowed_for_trigger,
 )
-from apps.shared.domain.schedule_dispatch import REASON_EXECUTION_FAILED_AFTER_ADMISSION
+from apps.shared.domain.schedule_dispatch import (
+    REASON_EXECUTION_FAILED_AFTER_ADMISSION,
+    REASON_EXECUTION_OUTCOME_UNKNOWN,
+)
+from apps.shared.domain.workflow_node_binding import (
+    canonical_snapshot_sha256,
+    graph_has_external_effect,
+    workflow_node_references,
+)
 from apps.shared.services.schedule_dispatch_observability import (
     emit_schedule_dispatch_signal,
 )
+from apps.shared.services.workflow_task_publisher import (
+    RedactedWorkflowTask,
+    send_workflow_task,
+)
+from apps.shared.services.workflow_node_catalog import node_side_effect_mapping
 from apps.workflow_engine import mail_credential_startup  # noqa: F401
 from apps.workflow_engine.runtime_policy import get_deployment_runtime_policy
 from apps.workflow_engine.schedule_dispatch_settings import (
     get_schedule_dispatch_settings,
+)
+from apps.workflow_engine.domain.external_effect import (
+    ExternalEffectError,
+    ExternalEffectRetrySignal,
 )
 from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
 
@@ -38,11 +56,59 @@ _DEPLOYMENT_CONTEXT_PASSTHROUGH_KEYS = frozenset(
         "trace_metadata",
         "trigger_mode",
         "workflow_task_id",
+        "execution_id",
+        "deployment_version",
+        "snapshot_sha256",
     }
 )
 
 
-@celery_app.task(name="workflow.model_routing.record_run", bind=True, max_retries=3)
+def _external_effect_error_result(error: ExternalEffectError) -> Dict[str, Any]:
+    return {"status": "error", "error": error.to_payload()}
+
+
+def _safe_retry(self, error: Exception):
+    code = getattr(error, "code", "workflow.execution_failed")
+    raise self.retry(
+        exc=Exception(str(code)),
+        countdown=2**self.request.retries,
+    )
+
+
+def _workflow_task_deadline() -> float:
+    hard_limit = celery_app.conf.task_time_limit
+    if not isinstance(hard_limit, (int, float)) or hard_limit <= 0:
+        raise RuntimeError("workflow task hard time limit is invalid")
+    safety_margin = min(1.0, float(hard_limit) * 0.1)
+    return time.monotonic() + float(hard_limit) - safety_margin
+
+
+def _cleanup_execution_resources(engine, session, *, label: str) -> None:
+    if engine is not None:
+        try:
+            engine.cleanup()
+        except Exception as exc:
+            logger.warning(
+                "%s engine cleanup failed: error_type=%s",
+                label,
+                type(exc).__name__,
+            )
+    try:
+        session.close()
+    except Exception as exc:
+        logger.warning(
+            "%s session close failed: error_type=%s",
+            label,
+            type(exc).__name__,
+        )
+
+
+@celery_app.task(
+    name="workflow.model_routing.record_run",
+    bind=True,
+    max_retries=3,
+    base=RedactedWorkflowTask,
+)
 def record_model_routing_operational_run(self, workflow_run_id: str):
     """완료된 LLM node run을 정책 갱신 카운터에 반영하고 필요할 때만 refresh task를 예약한다."""
     from apps.workflow_engine.services.model_routing_policy_store import (
@@ -57,7 +123,8 @@ def record_model_routing_operational_run(self, workflow_run_id: str):
         )
         session.commit()
         for policy_id in policy_ids:
-            celery_app.send_task(
+            send_workflow_task(
+                celery_app,
                 "workflow.model_routing.refresh_policy",
                 args=[str(policy_id), "auto_n_runs"],
             )
@@ -73,7 +140,12 @@ def record_model_routing_operational_run(self, workflow_run_id: str):
         session.close()
 
 
-@celery_app.task(name="workflow.model_routing.refresh_policy", bind=True, max_retries=2)
+@celery_app.task(
+    name="workflow.model_routing.refresh_policy",
+    bind=True,
+    max_retries=2,
+    base=RedactedWorkflowTask,
+)
 def refresh_model_routing_policy(self, policy_id: str, trigger: str = "manual_refresh"):
     """Judge를 한 번 호출해 persisted policy rule set만 갱신한다. runtime에서는 호출하지 않는다."""
     from apps.workflow_engine.services.model_routing_policy_refresh_task import (
@@ -188,6 +260,7 @@ def _canonical_deployment_execution_context(
     *,
     deployment: Any,
     app: Any,
+    require_execution_id: bool = True,
 ) -> Dict[str, Any]:
     """Rebuild tenant/resource identity from canonical deployment rows."""
     context = {
@@ -210,10 +283,103 @@ def _canonical_deployment_execution_context(
             "workflow_version": deployment.version,
         }
     )
+    if require_execution_id:
+        context["execution_id"] = _canonical_execution_id(context)
     return context
 
 
-@celery_app.task(name="workflow.execute", bind=True, max_retries=3)
+def _canonical_execution_id(context: Dict[str, Any]) -> str:
+    try:
+        return str(uuid.UUID(str(context.get("execution_id"))))
+    except (TypeError, ValueError, AttributeError):
+        raise PermanentDeploymentExecutionError(
+            "workflow execution identity is invalid"
+        ) from None
+
+
+def _canonical_workflow_execution_context(
+    session,
+    queued_context: Dict[str, Any],
+) -> Dict[str, Any]:
+    from apps.shared.db.models.app import App
+    from apps.shared.db.models.workflow import Workflow
+
+    try:
+        workflow_id = uuid.UUID(str(queued_context.get("workflow_id")))
+    except (TypeError, ValueError):
+        raise PermanentDeploymentExecutionError(
+            "workflow execution identity is invalid"
+        ) from None
+    workflow = session.query(Workflow).filter(Workflow.id == workflow_id).first()
+    if workflow is None:
+        raise PermanentDeploymentExecutionError(
+            "workflow execution identity is invalid"
+        )
+    app = session.query(App).filter(App.id == workflow.app_id).first()
+    if app is None or app.workflow_id != workflow.id:
+        raise PermanentDeploymentExecutionError(
+            "workflow execution identity is invalid"
+        )
+    context = dict(queued_context)
+    context.update(
+        {
+            "workflow_id": str(workflow.id),
+            "organization_id": (
+                str(workflow.organization_id) if workflow.organization_id else None
+            ),
+            "app_id": str(app.id),
+        }
+    )
+    context["execution_id"] = _canonical_execution_id(context)
+    return context
+
+
+def _canonical_deployed_graph_execution_context(
+    session,
+    queued_context: Dict[str, Any],
+    graph: Dict[str, Any],
+) -> Dict[str, Any]:
+    from apps.shared.db.models.workflow_deployment import WorkflowDeployment
+
+    context = _canonical_workflow_execution_context(session, queued_context)
+    try:
+        deployment_id = uuid.UUID(str(queued_context.get("deployment_id")))
+    except (TypeError, ValueError):
+        raise PermanentDeploymentExecutionError(
+            "deployed workflow identity is not frozen"
+        ) from None
+    deployment = (
+        session.query(WorkflowDeployment)
+        .filter(WorkflowDeployment.id == deployment_id)
+        .first()
+    )
+    if (
+        deployment is None
+        or str(deployment.app_id) != str(context["app_id"])
+        or str(queued_context.get("workflow_version"))
+        != str(deployment.version)
+        or not isinstance(deployment.graph_snapshot, dict)
+        or canonical_snapshot_sha256(graph)
+        != canonical_snapshot_sha256(deployment.graph_snapshot)
+    ):
+        raise PermanentDeploymentExecutionError(
+            "deployed workflow identity is not frozen"
+        )
+    context["deployment_id"] = str(deployment.id)
+    context["workflow_version"] = deployment.version
+    return context
+
+
+def _graph_requires_frozen_deployment(graph: Dict[str, Any]) -> bool:
+    return bool(workflow_node_references(graph)) or graph_has_external_effect(
+        graph,
+        node_side_effect_mapping(),
+    )
+
+
+@celery_app.task(
+    name="workflow.execute", bind=True, max_retries=3, base=RedactedWorkflowTask
+)
 def execute_workflow(
     self,
     graph: Dict[str, Any],
@@ -237,11 +403,22 @@ def execute_workflow(
     """
     from apps.workflow_engine.workflow.core.workflow_engine import WorkflowEngine
 
+    task_deadline = _workflow_task_deadline()
     session = SessionLocal()
     engine = None
     sync_result = {}
 
     try:
+        queued_context = dict(execution_context or {})
+        execution_context = (
+            _canonical_deployed_graph_execution_context(
+                session,
+                queued_context,
+                graph,
+            )
+            if is_deployed
+            else _canonical_workflow_execution_context(session, queued_context)
+        )
         # Knowledge Base 동기화
         try:
             sync_result = _sync_knowledge_bases_for_execution_subject(
@@ -250,7 +427,10 @@ def execute_workflow(
                 execution_context,
             )
         except Exception as e:
-            logger.error(f"[Workflow-Engine] 동기화 훅 실패: {e}")
+            logger.error(
+                "Workflow knowledge sync failed: error_type=%s",
+                type(e).__name__,
+            )
 
         engine = WorkflowEngine(
             graph=graph,
@@ -258,25 +438,38 @@ def execute_workflow(
             execution_context=execution_context,
             is_deployed=is_deployed,
             db=session,
+            task_deadline=task_deadline,
         )
 
         # [GEVENT] 직접 동기 호출 - asyncio 불필요
         result = engine.execute()
         return {"status": "success", "result": result, "sync_status": sync_result}
 
-    except NonRetryableWorkflowError as e:
-        logger.error(f"[Workflow-Engine] execute_workflow 정책 차단: {e}")
+    except ExternalEffectRetrySignal as e:
+        logger.warning("Workflow external effect retry requested: code=%s", e.code)
+        _safe_retry(self, e)
+    except ExternalEffectError as e:
+        logger.warning("Workflow external effect stopped: code=%s", e.code)
+        return _external_effect_error_result(e)
+    except (PermanentDeploymentExecutionError, NonRetryableWorkflowError) as e:
+        logger.error(
+            "Workflow execution blocked: error_type=%s",
+            type(e).__name__,
+        )
         raise
     except Exception as e:
-        logger.error(f"[Workflow-Engine] execute_workflow 실패: {e}")
-        raise self.retry(exc=Exception(str(e)), countdown=2**self.request.retries)
+        logger.error("Workflow execution failed: error_type=%s", type(e).__name__)
+        _safe_retry(self, e)
     finally:
-        if engine is not None:
-            engine.cleanup()
-        session.close()
+        _cleanup_execution_resources(engine, session, label="workflow")
 
 
-@celery_app.task(name="workflow.execute_deployed", bind=True, max_retries=3)
+@celery_app.task(
+    name="workflow.execute_deployed",
+    bind=True,
+    max_retries=3,
+    base=RedactedWorkflowTask,
+)
 def execute_deployed_workflow(
     self,
     workflow_id: str,
@@ -292,30 +485,46 @@ def execute_deployed_workflow(
     from apps.shared.db.models.workflow_deployment import WorkflowDeployment
     from apps.workflow_engine.workflow.core.workflow_engine import WorkflowEngine
 
+    task_deadline = _workflow_task_deadline()
     session = SessionLocal()
     engine = None
 
     try:
-        deployment = (
-            session.query(WorkflowDeployment)
-            .filter(WorkflowDeployment.workflow_id == workflow_id)
-            .filter(WorkflowDeployment.is_active.is_(True))
-            .first()
-        )
-
-        if not deployment:
-            raise ValueError(f"배포된 워크플로우를 찾을 수 없습니다: {workflow_id}")
-
-        graph = deployment.graph_data
-        app = session.query(App).filter(App.id == deployment.app_id).first()
+        app = session.query(App).filter(App.workflow_id == workflow_id).first()
         if not app:
             raise PermanentDeploymentExecutionError(
-                f"배포 앱을 찾을 수 없습니다: {deployment.app_id}"
+                "deployed workflow is unavailable"
+            )
+        deployment = (
+            session.query(WorkflowDeployment)
+            .filter(
+                WorkflowDeployment.id == app.active_deployment_id,
+                WorkflowDeployment.app_id == app.id,
+                WorkflowDeployment.is_active.is_(True),
+            )
+            .first()
+        )
+        if not deployment or not deployment.graph_snapshot:
+            raise PermanentDeploymentExecutionError(
+                "deployed workflow is unavailable"
+            )
+        graph = deployment.graph_snapshot
+        queued_context = dict(execution_context or {})
+        if _graph_requires_frozen_deployment(graph) and (
+            str(queued_context.get("deployment_id")) != str(deployment.id)
+            or str(queued_context.get("deployment_version"))
+            != str(deployment.version)
+            or queued_context.get("snapshot_sha256")
+            != canonical_snapshot_sha256(graph)
+        ):
+            raise PermanentDeploymentExecutionError(
+                "deployed workflow identity is not frozen"
             )
         execution_context = _canonical_deployment_execution_context(
-            dict(execution_context or {}),
+            queued_context,
             deployment=deployment,
             app=app,
+            require_execution_id=_graph_requires_frozen_deployment(graph),
         )
 
         sync_result = {}
@@ -326,7 +535,10 @@ def execute_deployed_workflow(
                 execution_context,
             )
         except Exception as e:
-            logger.error(f"[Workflow-Engine] 동기화 훅 실패: {e}")
+            logger.error(
+                "Workflow knowledge sync failed: error_type=%s",
+                type(e).__name__,
+            )
 
         engine = WorkflowEngine(
             graph=graph,
@@ -334,25 +546,41 @@ def execute_deployed_workflow(
             execution_context=execution_context,
             is_deployed=True,
             db=session,
+            task_deadline=task_deadline,
         )
 
         # [GEVENT] 직접 동기 호출
         result = engine.execute()
         return {"status": "success", "result": result, "sync_status": sync_result}
 
-    except NonRetryableWorkflowError as e:
-        logger.error(f"[Workflow-Engine] execute_deployed_workflow 정책 차단: {e}")
+    except ExternalEffectRetrySignal as e:
+        logger.warning("Workflow external effect retry requested: code=%s", e.code)
+        _safe_retry(self, e)
+    except ExternalEffectError as e:
+        logger.warning("Workflow external effect stopped: code=%s", e.code)
+        return _external_effect_error_result(e)
+    except (PermanentDeploymentExecutionError, NonRetryableWorkflowError) as e:
+        logger.error(
+            "Deployed workflow execution blocked: error_type=%s",
+            type(e).__name__,
+        )
         raise
     except Exception as e:
-        logger.error(f"[Workflow-Engine] execute_deployed_workflow 실패: {e}")
-        raise self.retry(exc=Exception(str(e)), countdown=2**self.request.retries)
+        logger.error(
+            "Deployed workflow execution failed: error_type=%s",
+            type(e).__name__,
+        )
+        _safe_retry(self, e)
     finally:
-        if engine is not None:
-            engine.cleanup()
-        session.close()
+        _cleanup_execution_resources(engine, session, label="deployed workflow")
 
 
-@celery_app.task(name="workflow.execute_by_deployment", bind=True, max_retries=3)
+@celery_app.task(
+    name="workflow.execute_by_deployment",
+    bind=True,
+    max_retries=3,
+    base=RedactedWorkflowTask,
+)
 def execute_by_deployment(
     self,
     deployment_id: str,
@@ -371,6 +599,7 @@ def execute_by_deployment(
     )
     from apps.workflow_engine.workflow.core.workflow_engine import WorkflowEngine
 
+    task_deadline = _workflow_task_deadline()
     session = SessionLocal()
     engine = None
 
@@ -444,7 +673,10 @@ def execute_by_deployment(
                 execution_context,
             )
         except Exception as e:
-            logger.error(f"[Workflow-Engine] 동기화 훅 실패: {e}")
+            logger.error(
+                "Workflow knowledge sync failed: error_type=%s",
+                type(e).__name__,
+            )
 
         engine = WorkflowEngine(
             graph=deployment.graph_snapshot,
@@ -452,22 +684,33 @@ def execute_by_deployment(
             execution_context=execution_context,
             is_deployed=True,
             db=session,
+            task_deadline=task_deadline,
         )
 
         # [GEVENT] 직접 동기 호출
         result = engine.execute()
         return {"status": "success", "result": result, "sync_status": sync_result}
 
+    except ExternalEffectRetrySignal as e:
+        logger.warning("Workflow external effect retry requested: code=%s", e.code)
+        _safe_retry(self, e)
+    except ExternalEffectError as e:
+        logger.warning("Workflow external effect stopped: code=%s", e.code)
+        return _external_effect_error_result(e)
     except (PermanentDeploymentExecutionError, NonRetryableWorkflowError) as e:
-        logger.error(f"[Workflow-Engine] execute_by_deployment 정책 차단: {e}")
+        logger.error(
+            "Deployment workflow execution blocked: error_type=%s",
+            type(e).__name__,
+        )
         raise
     except Exception as e:
-        logger.error(f"[Workflow-Engine] execute_by_deployment 실패: {e}")
-        raise self.retry(exc=Exception(str(e)), countdown=2**self.request.retries)
+        logger.error(
+            "Deployment workflow execution failed: error_type=%s",
+            type(e).__name__,
+        )
+        _safe_retry(self, e)
     finally:
-        if engine is not None:
-            engine.cleanup()
-        session.close()
+        _cleanup_execution_resources(engine, session, label="deployment workflow")
 
 
 @celery_app.task(
@@ -475,6 +718,7 @@ def execute_by_deployment(
     bind=True,
     max_retries=0,
     ignore_result=True,
+    base=RedactedWorkflowTask,
 )
 def execute_scheduled_deployment(self, schedule_dispatch_claim_id: str):
     """Execute one canonical schedule claim without Celery-level replay."""
@@ -482,6 +726,7 @@ def execute_scheduled_deployment(self, schedule_dispatch_claim_id: str):
     return _execute_scheduled_deployment_claim(
         schedule_dispatch_claim_id,
         task_id=task_id,
+        task_deadline=_workflow_task_deadline(),
     )
 
 
@@ -490,6 +735,7 @@ def _finalize_scheduled_claim(
     use_case,
     plan,
     succeeded: bool,
+    failure_reason: str = REASON_EXECUTION_FAILED_AFTER_ADMISSION,
 ) -> bool:
     """Retry only the terminal CAS write; never re-run the workflow engine."""
     from apps.workflow_engine.composition.schedule_dispatch import (
@@ -505,6 +751,7 @@ def _finalize_scheduled_claim(
                 uow=dependencies.uow,
                 plan=plan,
                 succeeded=succeeded,
+                failure_reason=failure_reason,
             )
         except Exception as exc:
             logger.error(
@@ -513,7 +760,11 @@ def _finalize_scheduled_claim(
                 type(exc).__name__,
             )
         finally:
-            session.close()
+            _cleanup_execution_resources(
+                None,
+                session,
+                label="schedule finalization",
+            )
     raise NonRetryableWorkflowError("scheduled workflow finalization is unavailable")
 
 
@@ -521,6 +772,7 @@ def _execute_scheduled_deployment_claim(
     schedule_dispatch_claim_id: str,
     *,
     task_id: str,
+    task_deadline: float | None = None,
 ):
     from apps.workflow_engine.composition.schedule_dispatch import (
         build_schedule_admission_dependencies,
@@ -536,6 +788,8 @@ def _execute_scheduled_deployment_claim(
         ) from None
     if not task_id.startswith("schedule:"):
         raise PermanentDeploymentExecutionError("invalid schedule task identity")
+    if task_deadline is None:
+        task_deadline = _workflow_task_deadline()
 
     try:
         settings = get_schedule_dispatch_settings()
@@ -574,7 +828,11 @@ def _execute_scheduled_deployment_claim(
                 "schedule admission is unavailable"
             ) from None
     finally:
-        admission_session.close()
+        _cleanup_execution_resources(
+            None,
+            admission_session,
+            label="schedule admission",
+        )
 
     if admission.status != "admitted" or admission.plan is None:
         if admission.dead_lettered_reason is not None:
@@ -615,11 +873,17 @@ def _execute_scheduled_deployment_claim(
         )
     finally:
         if sync_session is not None:
-            sync_session.close()
+            _cleanup_execution_resources(
+                None,
+                sync_session,
+                label="scheduled knowledge sync",
+            )
 
     engine_session = SessionLocal()
     engine = None
     execution_succeeded = False
+    execution_failure_reason = REASON_EXECUTION_FAILED_AFTER_ADMISSION
+    execution_error_code = "workflow.execution_failed"
     try:
         engine = build_scheduled_workflow_engine(
             graph=plan.graph_snapshot,
@@ -627,9 +891,18 @@ def _execute_scheduled_deployment_claim(
             execution_context=plan.execution_context,
             is_deployed=True,
             db=engine_session,
+            task_deadline=task_deadline,
         )
         engine.execute()
         execution_succeeded = True
+    except ExternalEffectError as exc:
+        execution_error_code = exc.code
+        if exc.code == "external_effect.outcome_unknown":
+            execution_failure_reason = REASON_EXECUTION_OUTCOME_UNKNOWN
+        logger.error(
+            "Scheduled workflow external effect stopped: code=%s",
+            exc.code,
+        )
     except Exception as exc:
         logger.error(
             "Scheduled workflow execution failed: error_type=%s",
@@ -646,24 +919,31 @@ def _execute_scheduled_deployment_claim(
                     "Scheduled workflow cleanup failed: error_type=%s",
                     type(exc).__name__,
                 )
-        engine_session.close()
+        try:
+            engine_session.close()
+        except Exception as exc:
+            logger.warning(
+                "Scheduled workflow session close failed: error_type=%s",
+                type(exc).__name__,
+            )
 
     finalized = _finalize_scheduled_claim(
         use_case=use_case,
         plan=plan,
         succeeded=execution_succeeded,
+        failure_reason=execution_failure_reason,
     )
     if finalized and not execution_succeeded:
         emit_schedule_dispatch_signal(
             logger,
             "schedule_claim_dead_letter_total",
             status="dead_lettered",
-            reason=REASON_EXECUTION_FAILED_AFTER_ADMISSION,
+            reason=execution_failure_reason,
             mode=settings.mode,
         )
 
     if not execution_succeeded:
-        raise NonRetryableWorkflowError("scheduled workflow execution failed")
+        raise NonRetryableWorkflowError(execution_error_code)
     return {
         "status": "success",
         "claim_id": str(claim_id),
@@ -671,7 +951,9 @@ def _execute_scheduled_deployment_claim(
     }
 
 
-@celery_app.task(name="workflow.stream", bind=True, max_retries=3)
+@celery_app.task(
+    name="workflow.stream", bind=True, max_retries=3, base=RedactedWorkflowTask
+)
 def stream_workflow(
     self,
     graph: Dict[str, Any],
@@ -686,10 +968,15 @@ def stream_workflow(
     """
     from apps.workflow_engine.workflow.core.workflow_engine import WorkflowEngine
 
+    task_deadline = _workflow_task_deadline()
     session = SessionLocal()
     engine = None
 
     try:
+        execution_context = _canonical_workflow_execution_context(
+            session,
+            dict(execution_context or {}),
+        )
         execution_context["workflow_run_id"] = external_run_id
 
         sync_result = {}
@@ -706,7 +993,10 @@ def stream_workflow(
                 publish_workflow_event(external_run_id, "sync_warning", sync_result)
 
         except Exception as e:
-            logger.error(f"[Workflow-Engine] 동기화 훅 실패: {e}")
+            logger.error(
+                "Workflow knowledge sync failed: error_type=%s",
+                type(e).__name__,
+            )
 
         engine = WorkflowEngine(
             graph=graph,
@@ -714,6 +1004,7 @@ def stream_workflow(
             execution_context=execution_context,
             is_deployed=False,
             db=session,
+            task_deadline=task_deadline,
         )
 
         # [GEVENT] 동기 제너레이터 사용
@@ -724,25 +1015,50 @@ def stream_workflow(
             elif event.get("type") == "error":
                 event_data = event.get("data", {})
                 error_message = event_data.get("message", "Unknown error")
+                error_payload = event_data.get("error")
+                if isinstance(error_payload, dict) and error_payload.get("code"):
+                    raise ExternalEffectError(
+                        str(error_payload["code"]),
+                        retryable=bool(error_payload.get("retryable", False)),
+                        node_id=error_payload.get("node_id"),
+                    )
                 if event_data.get("non_retryable"):
                     raise NonRetryableWorkflowError(error_message)
                 raise ValueError(error_message)
 
         return {"status": "success", "result": final_result, "sync_status": sync_result}
 
-    except NonRetryableWorkflowError as e:
-        logger.error(f"[Workflow-Engine] stream_workflow 정책 차단: {e}")
+    except ExternalEffectRetrySignal as e:
+        logger.warning("Workflow external effect retry requested: code=%s", e.code)
+        _safe_retry(self, e)
+    except ExternalEffectError as e:
+        logger.warning("Workflow external effect stopped: code=%s", e.code)
+        return _external_effect_error_result(e)
+    except (PermanentDeploymentExecutionError, NonRetryableWorkflowError) as e:
+        logger.error(
+            "Streaming workflow execution blocked: error_type=%s",
+            type(e).__name__,
+        )
         from apps.shared.pubsub import publish_workflow_event
 
-        publish_workflow_event(external_run_id, "error", {"message": str(e)})
+        publish_workflow_event(
+            external_run_id,
+            "error",
+            {"message": "workflow.execution_blocked"},
+        )
         raise
     except Exception as e:
-        logger.error(f"[Workflow-Engine] stream_workflow 실패: {e}")
+        logger.error(
+            "Streaming workflow execution failed: error_type=%s",
+            type(e).__name__,
+        )
         from apps.shared.pubsub import publish_workflow_event
 
-        publish_workflow_event(external_run_id, "error", {"message": str(e)})
-        raise self.retry(exc=Exception(str(e)), countdown=2**self.request.retries)
+        publish_workflow_event(
+            external_run_id,
+            "error",
+            {"message": "workflow.execution_failed"},
+        )
+        _safe_retry(self, e)
     finally:
-        if engine is not None:
-            engine.cleanup()
-        session.close()
+        _cleanup_execution_resources(engine, session, label="streaming workflow")

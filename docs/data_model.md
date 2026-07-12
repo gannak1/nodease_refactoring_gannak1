@@ -13,13 +13,13 @@ Status: Draft
 
 ## 도메인별 테이블
 
-현재 코드 기준 활성 테이블은 Security Alert 3개를 포함해 40개다. `legacy_llm_provider`, `legacy_llm_credentials`는 migration `e4956fcd7e2b`에서 DROP됐고 모델도 주석 처리돼 있다.
+현재 코드 기준 활성 테이블은 Security Alert 3개와 `workflow_node_effect_attempts`를 포함해 41개다. `legacy_llm_provider`, `legacy_llm_credentials`는 migration `e4956fcd7e2b`에서 DROP됐고 모델도 주석 처리돼 있다.
 
 | 도메인 | 테이블 |
 | --- | --- |
 | 사용자/조직 | `users`, `organization`, `organization_memberships`, `teams`, `team_memberships` |
 | 권한 | `team_workflow_permissions`, `team_knowledge_permissions`, `team_llm_permissions`, `team_mail_credential_permissions`, `team_audit_permissions`, `user_workflow_permissions`, `user_knowledge_permissions`, `user_llm_permissions`, `user_mail_credential_permissions` |
-| 앱/워크플로우 | `apps`, `workflows`, `workflow_budgets`, `workflow_deployments`, `schedules`, `workflow_runs`, `workflow_node_runs` |
+| 앱/워크플로우 | `apps`, `workflows`, `workflow_budgets`, `workflow_deployments`, `schedules`, `workflow_runs`, `workflow_node_runs`, `workflow_node_effect_attempts` |
 | 추적/감사 | `trace_payloads`, `trace_payload_access_events`, `trace_redaction_policies`, `trace_retention_policies`, `trace_visibility_policies`, `audit_logs` |
 | 보안 알림 | `security_alerts`, `security_alert_audit_events`, `security_alert_reconciliation_watermarks` |
 | Knowledge/RAG | `knowledge_bases`, `documents`, `document_chunks`, `rag_answer_runs` |
@@ -338,7 +338,7 @@ workflow 단위 월간 LLM 예산 ([features/budget-management](features/budget-
 | app_id | UUID | NOT NULL, FK→apps.id (CASCADE) |
 | version | INTEGER | NOT NULL |
 | type | VARCHAR(13) | NOT NULL — deployment type (api/webapp/widget/mcp/workflow_node/schedule/webhook/chatbot) |
-| graph_snapshot | JSONB | NOT NULL — 배포 시점 graph 고정본 |
+| graph_snapshot | JSONB | NOT NULL — 배포 시점 graph 고정본. MBA-190 이후 server가 계산한 WorkflowNode target deployment ID/version/snapshot-hash internal binding을 포함할 수 있으며 public graph 응답에서는 제거 |
 | config / input_schema / output_schema | JSONB | NULL |
 | description | VARCHAR | NULL |
 | created_by | UUID | NOT NULL, FK→users.id |
@@ -440,6 +440,84 @@ node 단위 실행 이력.
 | parent_node_run_id | UUID | NULL, FK→workflow_node_runs.id (SET NULL) — loop/중첩 실행 |
 | sequence | INTEGER | NULL |
 | retry_count | INTEGER | NOT NULL |
+
+#### `workflow_node_effect_attempts` (MBA-190)
+
+Workflow Runtime에서 외부 부수효과를 만드는 node invocation의 claim, provider-start와 replay 판단을 보존하는 operational ledger다. [ADR-0035](decisions/ADR-0035-external-effect-idempotency-boundary.md)을 따른다. SQLAlchemy model과 Alembic revision `fe3f4a5b6c78`에 반영되어 있으며, 실제 환경에서는 해당 revision을 포함한 현재 code head 적용이 필요하다.
+
+`workflow_node_runs`는 비동기 node trace의 중심이고, `workflow_node_effect_attempts`는 provider 호출 전후 correctness의 중심이다. WorkflowRun/NodeRun row가 늦게 생성되거나 생성되지 않아도 provider 호출 전 attempt를 만들 수 있어야 한다.
+
+ADR-0032의 `mail_message_processings`와 `mail_draft_effects`는 이미 구현된 Mail/Gmail 전용 source/effect ledger다. MBA-190은 이 row를 대체하거나 외래 키로 연결하거나 같은 Gmail effect를 두 ledger에 이중 기록하지 않는다.
+
+| 컬럼 | 타입 | 제약/의미 |
+| --- | --- | --- |
+| id | UUID | PK |
+| organization_id | UUID | NOT NULL, FK 없음 — canonical tenant provenance와 uniqueness scope |
+| app_id | UUID | NOT NULL, FK 없음 — 현재 node를 소유한 canonical App provenance |
+| workflow_id | UUID | NOT NULL, FK 없음 — 현재 node를 소유한 canonical Workflow provenance. Subworkflow에서는 target Workflow |
+| execution_id | UUID | NOT NULL — logical workflow 실행마다 한 번 발급되고 retry/duplicate delivery에서 유지 |
+| node_invocation_id | UUID | NOT NULL — Loop iteration과 subworkflow path를 구분하는 opaque invocation identity |
+| workflow_run_id | UUID | NULL, FK 없음 — 비동기 WorkflowRun correlation 전용 |
+| node_run_id | UUID | NULL, FK 없음 — 비동기 WorkflowNodeRun correlation 전용 |
+| node_id | VARCHAR(255) | NOT NULL — graph 내 display/correlation용 string 참조 |
+| operation | VARCHAR(64) | NOT NULL — canonical provider operation |
+| effect_sequence | INTEGER | NOT NULL, `>= 0` — 같은 invocation 안의 모든 외부 effect를 operation과 무관하게 세는 0-based stable slot 순번. 현재 1회 호출 node는 `0` |
+| provider | VARCHAR(64) | NOT NULL |
+| provider_contract_version | VARCHAR(64) | NOT NULL — 두 지원 수준, key 전달 위치·형식·길이·retention·duplicate 응답 의미와 replay-result schema를 고정하는 변경 불가능한 provider contract version |
+| provider_replay_capability | VARCHAR(16) | NOT NULL — `supported`, `unsupported`, `unknown` |
+| result_reuse_capability | VARCHAR(16) | NOT NULL — `supported`, `unavailable` |
+| effect_input_digest | VARCHAR(64) | NOT NULL — provider key를 제외한 실제 effect-semantic request를 contract version별 canonicalization 후 SHA-256한 값. 원문 저장 금지 |
+| replay_deadline_at | DATETIME(timezone) | NULL — provider replay가 `supported`일 때만 NOT NULL. Attempt 생성 DB 시각과 당시 contract retention으로 고정한 자동 재호출 마지막 시각 |
+| status | VARCHAR(16) | NOT NULL — `prepared`, `in_flight`, `terminal` |
+| outcome | VARCHAR(32) | NULL — terminal에서만 `succeeded`, `failed_before_effect`, `effect_outcome_unknown` |
+| replay_decision | VARCHAR(32) | NULL — terminal에서만 `reuse_result`, `result_unavailable`, `retry_before_effect`, `replay_same_key`, `stop` |
+| claim_owner | VARCHAR(64) | NULL — claim/reopen마다 새 CSPRNG UUID를 사용하는 delivery-local opaque owner. Celery task ID/worker/execution identity에서 파생 금지 |
+| claim_expires_at | DATETIME(timezone) | NULL — DB clock 기준 claim expiry |
+| claim_generation | INTEGER | NOT NULL, `> 0` — claim 재획득마다 증가하는 fencing value |
+| key_version | VARCHAR(32) | NULL — provider replay `supported`일 때만 사용하는 전용 idempotency HMAC key version |
+| key_format_version | VARCHAR(32) | NULL — provider replay `supported`일 때만 사용하는 canonical encoding/provider key format version |
+| idempotency_key_fingerprint | VARCHAR(64) | NULL — provider replay `supported`일 때만 저장하는 최종 provider-visible key ASCII bytes의 SHA-256 lowercase hex fingerprint |
+| replay_result | JSONB | NULL — `succeeded + reuse_result`에서 필수인 allowlisted projection. Sorted key, compact separator, UTF-8, non-ASCII 유지, NaN 금지 canonical JSON 기준 최대 65,536 bytes |
+| provider_status_code | INTEGER | NULL |
+| error_code | VARCHAR(64) | NULL — `connection_failed`, `invalid_prepared_request`, `provider_call_failed`, `provider_call_finalize_failed`, `provider_key_field_conflict`, `provider_key_request_conflict`, `provider_rejected_request`, `response_lost`, `response_malformed`, `timeout`, `unexpected_provider_status`만 저장 |
+| provider_started_at | DATETIME(timezone) | NULL — effect 생성, request byte 전송이나 Python 함수 실제 진입 증거가 아니라 최종 provider call 검증 뒤 호출을 허용한 `in_flight` commit 시각 |
+| terminal_at | DATETIME(timezone) | NULL — terminal에서만 non-null |
+| created_at / updated_at | DATETIME(timezone) | NOT NULL |
+
+- UNIQUE `(organization_id, execution_id, node_invocation_id, effect_sequence)` — operation이 재시도 중 바뀌어도 새 row를 만들 수 없도록 organization 안의 stable effect slot을 하나로 고정한다. Full logical identity에는 frozen `operation`이 포함된다.
+- Repository는 위 slot로 먼저 조회한다. 기존 row가 있으면 그 row의 frozen `provider_contract_version` profile로 현재 request를 준비·canonicalize하고, row가 없을 때만 현재 active profile을 사용한다. 동시 insert unique 충돌도 winner row를 같은 slot로 다시 읽는다. 이때 loser가 선택한 contract version이 winner와 다르면 새 row나 provider 호출 없이 identity conflict로 닫는다. 최초 insert가 `app_id`, `workflow_id`, `provider`, `operation`, `provider_contract_version`, 두 지원 수준과 `effect_input_digest`를 고정한다. 재진입 값이 하나라도 다르면 별도 operation row를 만들거나 기존 row를 변경하지 않고 provider/result/downstream을 사용하지 않은 채 `external_effect.identity_conflict`로 종료한다.
+- `prepared`: claim owner/expiry가 있고 outcome/replay decision/provider_started_at/terminal_at은 null이다.
+- `in_flight`: claim owner/expiry와 provider_started_at이 있고 outcome/replay decision/terminal_at은 null이다.
+- `terminal`: outcome/replay decision/terminal_at이 있고 active claim은 없다. `succeeded|effect_outcome_unknown`이면 `provider_started_at`이 non-null이다. `failed_before_effect`는 network-free prepare/finalize 단계에서 닫혔으면 null이고, `in_flight` commit 뒤 byte 미전송이 증명된 transport 실패 또는 provider rejection으로 닫혔으면 non-null이다. Commit 직후 실제 provider 함수 호출 전에 종료된 row도 marker는 non-null이고 다음 재진입에서 outcome unknown으로 처리한다.
+- `provider_status_code`와 allowlisted `error_code`는 terminal에서만 non-null일 수 있다. `prepared`, `in_flight`와 reopen 직후에는 둘 다 null이다.
+- Outcome/decision 조합은 `succeeded + reuse_result|result_unavailable`, `failed_before_effect + retry_before_effect|stop`, `effect_outcome_unknown + replay_same_key|stop`만 허용한다. `replay_same_key`는 frozen provider replay capability가 `supported`일 때만 허용한다.
+- Provider replay capability가 `supported`면 `replay_deadline_at`이 non-null이어야 하고 `unsupported|unknown`이면 null이어야 한다.
+- Provider replay capability `supported` profile은 key transport가 `header|body`여야 하며 key version/format/fingerprint가 모두 non-null이어야 한다. `none|unknown` transport와 `unsupported|unknown` capability에서는 세 값이 모두 null이고 시스템 key를 생성·주입하지 않는다.
+- 새 row 후보가 선택한 active key version은 stable slot unique winner가 되기 전까지 확정값이 아니다. Concurrent insert loser는 자기 candidate key를 폐기하고 winner row의 key version/format/fingerprint를 source of truth로 사용한다. 실제 claim owner만 frozen key를 재생성해 fingerprint/길이를 검증하고 최종 provider call에 한 번 주입한다. 이 검증 실패는 `in_flight` 전에 `failed_before_effect + stop`으로 닫고 provider를 호출하지 않는다.
+- Provider-visible key는 `key_format_version=hmac-b64url-v1`, domain tag `nodease.external-effect-key.v1`과 field name/value 각각에 unsigned 4-byte big-endian UTF-8 length를 붙이는 V1 framing을 사용한다. UUID는 lowercase hyphenated 36자, effect sequence는 leading zero 없는 base-10 ASCII다. Field 순서는 organization/app/workflow provenance, execution/node invocation identity, operation, effect sequence로 고정한다. 같은 logical identity라도 organization이나 target workflow가 다르면 다른 key를 만든다.
+- `succeeded + reuse_result`는 result reuse capability가 `supported`이고 canonical JSON 65,536 bytes 이하 `replay_result`가 non-null이어야 한다. `succeeded + result_unavailable`은 capability가 `unavailable`이거나, `supported` profile이 안전한 projection을 만들지 못했거나 65,536 bytes를 넘은 방어적 fallback이며 `replay_result`가 null이어야 한다. Non-success outcome의 `replay_result`도 null이다.
+- DB CHECK는 위 nullability/enum 조합과 generation 범위만 검사하며 현재 시각을 참조하지 않는다.
+- Provider 실행 권한을 가진 delivery의 `prepared -> in_flight|terminal`과 `in_flight -> terminal` update는 `status + claim_owner + claim_generation + claim_expires_at > DB clock`으로 stale Worker를 거부한다. 만료 `prepared|in_flight` 복구는 예상 status/generation과 `claim_expires_at <= DB clock`을 사용한다. Terminal reopen과 retry budget 소진 전이는 예상 terminal status/generation/decision 및 `claim_owner IS NULL`, `claim_expires_at IS NULL`을 사용한다.
+- 새 claim TTL은 active Workflow Engine Celery hard time limit에 code-owned terminal commit 여유 30초를 더해 계산한다. 현재 hard limit 600초에서는 630초이고 새 환경변수는 추가하지 않는다. Hard limit이 없거나 양수가 아니면 Worker readiness가 실패한다. Claim 획득/만료는 DB clock, loser 대기 deadline은 task 시작 때 계산한 monotonic clock을 사용한다. Loser 조회는 session을 닫은 채 100ms에서 최대 1초까지 간격을 늘린다.
+- Repository는 canonical `organization_id`를 모든 attempt lookup/mutation 조건에 포함하고 queue/client 값만으로 scope를 선택하지 않는다. `app_id`/`workflow_id`가 frozen row와 다르면 다른 scope의 row 내용을 반환하지 않고 safe identity conflict로 닫는다.
+- 유효한 claim을 다른 Worker가 소유하면 중복 Worker는 provider를 호출하지 않고 session/lock을 유지하지 않는 짧은 조회로 terminal, claim 만료 또는 기존 task deadline 중 먼저 오는 경계까지 기다린다. Terminal이면 frozen provider/contract/digest 일치 확인 뒤 저장된 decision을 따른다. 만료된 `in_flight`는 outcome-unknown 상태 정리만 수행하고, 만료된 `prepared`는 row를 바꾸거나 claim하지 않은 채 대기를 끝낸다. 어느 경우에도 같은 진입에서 provider를 호출하지 않는다. Task deadline이 먼저 오면 row를 변경하지 않고 기존 timeout/retry 경계로 종료한다.
+- Fencing은 이미 시작된 network I/O를 취소하지 않는다. Claim 만료 뒤 이전 요청과 `supported` same-key replay가 겹칠 수 있으며 이 경우 provider contract가 duplicate effect를 막는다. `unsupported|unknown`은 replay하지 않는다.
+- Provider 호출 결과를 받은 Worker는 terminal update의 owner/generation compare-and-set과 commit이 성공한 뒤에만 node output 또는 `replay_result`를 반환하고 downstream 실행을 허용한다. Terminal commit 실패나 stale generation 거부에서는 output/downstream을 사용하지 않고 committed `in_flight`를 다음 재진입의 outcome-unknown 처리에 맡긴다.
+- `terminal + retry_before_effect|replay_same_key`만 같은 row를 새 claim generation의 `prepared`로 원자적으로 다시 열 수 있다. 예상 terminal status/decision/generation과 active claim null을 비교해 새 CSPRNG owner/expiry와 `generation + 1`을 같은 update에 기록한다. Identity, 두 지원 수준, contract/key version, `replay_deadline_at`과 fingerprint는 보존하고 outcome/decision/provider_started_at/terminal_at/result/error summary는 비운다. `reuse_result|result_unavailable|stop`은 reopen을 거부한다.
+- 기존 Celery retry budget이 거부되거나 소진되면 `terminal + retry_before_effect|replay_same_key` row는 outcome, terminal timestamp와 기존 allowlisted `error_code`를 유지한 채 `replay_decision=stop`으로 compare-and-set한다. Provider를 호출하거나 generation을 증가시키지 않고 이후 broker redelivery의 reopen을 차단한다.
+- `replay_same_key` reopen은 DB clock이 저장된 `replay_deadline_at`보다 이른 경우에만 허용하고, 경계 시각부터는 decision을 `stop`으로 바꾼다. 이후 배포의 현재 contract retention으로 이 값을 다시 계산하지 않는다.
+- Provider request identifier는 attempt, trace, log에 저장하지 않는다.
+- Provider contract profile 자체는 code-owned 정적 registry다. `provider + operation + provider_contract_version`으로 두 지원 수준, key 전달 위치/field, alphabet/format/max length, retention, provider key를 제외한 effect-semantic request canonicalization, replay result allowlist/schema와 전역 canonical JSON 65,536 bytes 이하 provider별 상한, effect success/rejection과 duplicate/conflict response semantics, 공식 문서 reference를 찾는다. V1 profile ID는 `generic_http.request.v1`, `slack.http.request.v1`, `github.issue_comment.create.v1`, test-only `fake.create_effect.v1`으로 고정한다. Generic HTTP/Slack V1의 key 위치와 제약은 `unknown`, GitHub V1의 key 위치는 `none`이고 세 production profile의 result reuse는 `unavailable`이다. Fake의 different-request `409`는 success projection이 아니라 provider가 effect 부재를 확정한 safe stop이다. Registry는 version을 추가만 하고 한 번 사용한 과거 version을 수정하거나 제거하지 않는다.
+- Workflow Engine Worker readiness는 terminal duplicate delivery까지 frozen canonicalization을 다시 수행할 수 있도록 모든 attempt row가 참조하는 provider contract version을 현재 코드가 해석할 수 있는지 확인한다. 하나라도 누락되면 현재 version으로 대체하지 않고 provider task 처리 전에 fail-closed한다. 공용 Celery app과 Log System Worker에는 이 readiness를 적용하지 않는다.
+- Schema readiness는 기존 shared Alembic helper로 현재 code head와 DB revision을 비교하고 이 subsection의 필수 table/column/constraint/index shape를 검사한다. DB revision이 MBA-190 migration ID와 정확히 같은지만 검사해서는 안 되며 이후 descendant migration이 적용된 current head도 유효하다.
+- HMAC key ring은 production `supported` profile을 새 attempt에 사용할 수 있거나 위 상태의 supported attempt가 참조하는 key version이 있을 때만 Workflow Engine Worker 시작 필수 설정이다. 현재처럼 production `supported` operation과 재호출 가능한 supported attempt가 모두 없으면 필수 설정이 아니다.
+- 공식 문서에서 확인할 수 없는 profile 값은 `unknown`으로 유지한다. Generic HTTP 사용자 지정 header는 profile이나 frozen capability를 변경하지 않으며 시스템은 `unsupported|unknown` operation의 key를 생성·주입하거나 사용자 header/body를 덮어쓰지 않는다.
+- 1차 production profile은 Generic HTTP mutation과 method에 무관한 Slack request replay `unknown`, GitHub issue comment replay `unsupported`, 세 operation result reuse `unavailable`이다. Generic HTTP `GET`과 GitHub `get_pr`는 effect attempt를 만들지 않는다. Slack의 method, endpoint와 mode는 capability를 올리거나 profile을 바꾸지 않는다. Test-only fake profile은 production registry나 환경 설정에서 선택할 수 없다.
+- Attempt row에는 provider-visible raw key, HMAC secret, credential 원문, Authorization, API key, token, `encrypted_config`, 전체 URL/host/path/query, raw request/response header/body와 provider exception message를 저장하지 않는다. `effect_input_digest`도 API, log, trace와 metric label에 노출하지 않는다. Generic HTTP durable trace의 기존 `host`와 `path`는 이 table 밖에서 기존 trace 계약대로 유지한다.
+- Correlation 조회용 `workflow_run_id`, `node_run_id` index를 둔다. 별도 recovery scan index나 주기적 scheduler는 추가하지 않는다. 같은 logical execution의 재진입은 identity unique key로 자기 row를 찾고 만료된 `in_flight`를 `effect_outcome_unknown`과 저장된 capability/`replay_deadline_at`에 따른 `replay_same_key|stop`으로 바꾼다.
+- Workflow Engine 시작 점검이 무기한 누적되는 전체 history를 매번 순차 조회하지 않도록 모든 row의 `(provider, operation, provider_contract_version)` 일반 index를 둔다. HMAC key readiness에는 `(provider, operation, provider_contract_version, key_version)` partial index를 별도로 두고 predicate를 supported row 중 `status IN ('prepared', 'in_flight') OR (status='terminal' AND replay_decision IN ('retry_before_effect', 'replay_same_key'))`로 제한한다. 두 index는 전역 recovery scan 용도가 아니다.
+- MBA-190은 cleanup을 추가하지 않는다. 후속 cleanup은 broker/task duplicate-delivery 최대 기간이 끝나고, `replay_deadline_at`이 non-null이면 그 시각도 지났으며, row가 더 이상 reopen될 수 없음을 증명하기 전 row 또는 `replay_result`를 삭제하지 않는다.
+- 운영 attempt row가 하나라도 있으면 migration downgrade는 기록과 재진입 판단을 잃으므로 fail-closed한다. 운영 rollback은 먼저 producer와 Worker를 중지하고 보존·배출 절차를 완료해야 하며, 자동 downgrade가 row를 삭제하지 않는다.
 
 ### Target Conversation Memory Logical Model
 

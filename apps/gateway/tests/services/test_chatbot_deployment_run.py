@@ -541,7 +541,7 @@ class _CaptureCelery:
     def __init__(self):
         self.captured = None
 
-    def send_task(self, name, args=None, kwargs=None):
+    def send_task(self, name, args=None, kwargs=None, **options):
         self.captured = SimpleNamespace(name=name, args=args, kwargs=kwargs)
         return SimpleNamespace(id="fake-task-id")
 
