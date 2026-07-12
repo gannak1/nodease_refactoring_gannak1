@@ -41,10 +41,12 @@ def record_audit(
     after: Optional[Dict[str, Any]] = None,
     status: str = "success",
     metadata: Optional[Dict[str, Any]] = None,
-) -> None:
-    """감사 이벤트 1건을 발행한다. 발행 실패는 로깅만 한다."""
+) -> Optional[uuid.UUID]:
+    """감사 이벤트 ID를 먼저 고정해 발행한다. 발행 실패는 로깅만 한다."""
+    audit_id = uuid.uuid4()
     try:
         data = {
+            "id": audit_id,
             "action": action,
             "category": category,
             "actor_id": actor_id,
@@ -58,9 +60,11 @@ def record_audit(
             "occurred_at": datetime.now(timezone.utc),
         }
         celery_app.send_task("audit.record", args=[_serialize(data)])
+        return audit_id
     except Exception as exc:  # noqa: BLE001 - 감사 발행은 절대 본 요청을 막지 않는다
         logger.error(
             "[Audit] record publish failed: action=%s error_type=%s",
             action,
             type(exc).__name__,
         )
+        return None

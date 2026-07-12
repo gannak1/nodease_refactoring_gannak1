@@ -41,6 +41,9 @@ cleanup() {
     if [ ! -z "$LOG_CELERY_PID" ]; then
         kill $LOG_CELERY_PID 2>/dev/null || true
     fi
+    if [ ! -z "$LOG_CELERY_BEAT_PID" ]; then
+        kill $LOG_CELERY_BEAT_PID 2>/dev/null || true
+    fi
     if [ ! -z "$WORKFLOW_CELERY_PID" ]; then
         kill $WORKFLOW_CELERY_PID 2>/dev/null || true
     fi
@@ -111,24 +114,33 @@ done
 docker compose -f dev/docker-compose.yml logs -f postgres redis sandbox &
 DOCKER_PID=$!
 
+if [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "win32" ]] || [[ "$OSTYPE" == "cygwin" ]]; then
+    LOG_SYSTEM_PYTHON="apps/log_system/.venv/Scripts/python"
+else
+    LOG_SYSTEM_PYTHON="apps/log_system/.venv/bin/python"
+fi
+
 # 2. Celery Worker (Log-System)
 # 로그 시스템은 로컬 안정성을 위해 solo pool을 사용한다.
 echo -e "${GREEN}📝 Log-System Celery Worker 시작...${NC}"
 (
-    # OS별 Python 경로 설정
-    if [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "win32" ]] || [[ "$OSTYPE" == "cygwin" ]]; then
-        VENV_PYTHON="apps/log_system/.venv/Scripts/python"
-    else
-        VENV_PYTHON="apps/log_system/.venv/bin/python"
-    fi
     export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
-    PYTHONPATH="$PROJECT_ROOT" $VENV_PYTHON -m celery -A apps.log_system.main worker -n log@%h -Q log -l info -P solo
+    PYTHONPATH="$PROJECT_ROOT" "$LOG_SYSTEM_PYTHON" -m celery -A apps.log_system.main worker -n log@%h -Q log -l info -P solo
 ) &
 LOG_CELERY_PID=$!
 
 sleep 1
 
-# 3. Celery Worker (Workflow-Engine)
+# 3. Celery Beat (Log-System)
+echo -e "${GREEN}⏱️ Log-System Celery Beat 시작...${NC}"
+(
+    PYTHONPATH="$PROJECT_ROOT" "$LOG_SYSTEM_PYTHON" -m celery -A apps.log_system.main beat -l info
+) &
+LOG_CELERY_BEAT_PID=$!
+
+sleep 1
+
+# 4. Celery Worker (Workflow-Engine)
 echo -e "${GREEN}⚙️ Workflow-Engine Celery Worker 시작...${NC}"
 (
     # OS별 Python 경로 설정
@@ -144,7 +156,7 @@ WORKFLOW_CELERY_PID=$!
 
 sleep 1
 
-# 4. Gateway API 서버
+# 5. Gateway API 서버
 echo -e "${GREEN}🖥️ Gateway API 서버 시작...${NC}"
 (
     # OS별 Python 경로 설정
