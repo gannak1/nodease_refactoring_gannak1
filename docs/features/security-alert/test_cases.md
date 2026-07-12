@@ -340,15 +340,15 @@ Scope 밖 404, validation 실패, desired-state no-op에는 target-aware audit�
 | SAL-TC-S009 | AC-13 | lifecycle audit insert 실패 주입 | 상태, version, 처리자, reason 모두 rollback |
 | SAL-TC-S010 | AC-14 | 실제 PostgreSQL 독립 transaction에서 두 manager가 같은 expected version으로 동시에 acknowledge | 조건부 원자적 DB update로 정확히 하나 성공, 하나 409/stale 결과, audit 한 건 |
 | SAL-TC-S011 | AC-14 | 실제 PostgreSQL 독립 transaction에서 occurrence update와 acknowledge를 동시에 실행 | occurrence/evidence 유실 없음, acknowledge와 audit 성공, lifecycle version 정확 |
-| SAL-TC-S012 | AC-10 | 같은 detection key threshold event 두 건을 서로 다른 transaction에서 동시에 처리 | 활성 alert 하나, evidence 둘 중 eligible한 연결 정확, count 중복/유실 없음 |
+| SAL-TC-S012 | AC-10 | 같은 활성 alert에 서로 다른 eligible audit 두 건을 독립 transaction에서 동시에 연결 | evidence 두 건, occurrence 정확히 2 증가, `last_detected_at`은 두 event 중 최신 시각 |
 | SAL-TC-S013 | AC-07 | 같은 actor/rule이지만 organization이 다른 동시 insert | organization별 alert 한 건씩 생성 |
 | SAL-TC-S014 | AC-09 | 실제 PostgreSQL 독립 transaction에서 동일 audit를 동시에 연결 | evidence 한 건, occurrence 한 번, transaction deadlock 없이 종료 또는 안전한 retry |
-| SAL-TC-S015 | AC-11 | resolve transaction과 새 event transaction 경합 | commit 순서에 따라 event가 기존 활성 alert 또는 resolve 이후 fresh 계산 중 정확히 한 쪽에만 귀속 |
+| SAL-TC-S015 | AC-11 | event transaction이 open 객체를 읽은 뒤 resolve가 먼저 commit하고 stale 객체로 evidence 연결 시도 | resolved row의 evidence/count/time은 불변이고 event는 기존 alert에 귀속되지 않음 |
 | SAL-TC-S016 | AC-16, AC-17 | 조회 중 membership을 다른 transaction에서 suspend/강등 | 다음 authorization check부터 차단, cross-org data 없음 |
 | SAL-TC-S017 | AC-27 | actor user 삭제/SET NULL 또는 membership removed | alert 보존, safe deleted/removed projection 반환 |
 | SAL-TC-S018 | AC-18 | filter와 pagination에 충분한 다중 alert | total은 filter 적용 전체 수, page item 중복/누락 없음 |
-| SAL-TC-S019 | AC-12 | Disposable PostgreSQL 빈 DB에 MBA-211 migration upgrade 실행 후 schema introspection | `security_alerts`, `security_alert_audit_events`, 모든 column/FK/index/check/unique constraint가 명세와 일치 |
-| SAL-TC-S020 | AC-12 | Disposable PostgreSQL upgrade DB에 기존 organization/user/audit row를 넣고 migration downgrade 실행 | Security Alert table·index·constraint만 제거되고 기존 organization/user/audit row와 schema는 보존 |
+| SAL-TC-S019 | AC-12 | Disposable PostgreSQL 빈 DB에 `a06b7c8d9e10`과 `a17c8d9e0f21`을 순서대로 upgrade 후 schema introspection | `security_alerts`, `security_alert_audit_events`, 모든 column/FK/index/check/unique constraint가 명세와 일치 |
+| SAL-TC-S020 | AC-12 | Disposable PostgreSQL head DB에 기존 organization/user/audit row를 넣고 `fd2e3f4a5b67`까지 downgrade | Security Alert table·index·constraint만 제거되고 기존 organization/user/audit row와 schema는 보존 |
 | SAL-TC-S021 | AC-10, AC-13 | 최소 필수값으로 Security Alert model 생성 | status `open`, occurrence count 0 이상, lifecycle version 1 이상, UTC created/updated timestamp가 model·DB default 계약과 일치 |
 | SAL-TC-S022 | AC-10, AC-13, AC-15 | unknown severity/status/resolution type, 음수 occurrence, 0 이하 lifecycle version을 ORM 우회 insert | DB check constraint가 각 invalid row를 거부 |
 | SAL-TC-S023 | AC-08, AC-10 | `first_detected_at > last_detected_at` 또는 timezone 계약을 어긴 timestamp 저장 | DB/service validation이 거부하고 UTC `first <= last` row만 commit |
@@ -359,8 +359,9 @@ Scope 밖 404, validation 실패, desired-state no-op에는 target-aware audit�
 | SAL-TC-S028 | AC-09, AC-27 | 존재하지 않는 alert/audit evidence insert와 부모 alert/audit 삭제 | 잘못된 FK insert 거부, 유효한 evidence는 부모 삭제 시 `CASCADE`, orphan link 없음 |
 | SAL-TC-S029 | AC-17, AC-27 | Security Alert가 남은 organization hard delete 시도 | Organization FK의 `RESTRICT/NO ACTION`으로 이력 없는 삭제만 허용하고 alert orphan 생성 금지 |
 | SAL-TC-S030 | AC-18, AC-27 | ORM/schema serialize와 column introspection | detection key는 persistence 내부에서만 사용하고 raw metadata/before/after/target 목록/email/IP/secret 저장 column·response field가 없음 |
-| SAL-TC-S031 | AC-07, AC-17 | Alert organization과 다른 organization provenance의 audit를 evidence로 연결 | Service가 연결과 occurrence 증가를 거부하고 alert/audit row 모두 불변 |
+| SAL-TC-S031 | AC-07, AC-17 | Alert organization과 다른 organization provenance의 audit를 객체 또는 `audit_log_id`로 evidence 연결 | 두 입력 경로 모두 연결과 occurrence 증가를 거부하고 alert/audit row는 불변 |
 | SAL-TC-S032 | AC-12, AC-15 | Resolution reason 정규화·redaction 성공과 sanitizer/audit insert 실패 주입 | 성공 시 sanitized non-blank reason만 저장, 실패 시 status/version/reason/canonical audit 전체 rollback |
+| SAL-TC-S033 | AC-12, AC-18 | Alert row가 있는 `a06b7c8d9e10` DB를 `a17c8d9e0f21`로 upgrade한 뒤 index revision만 downgrade | Upgrade는 filter index 4개를 생성하고 기존 alert/evidence를 보존하며 downgrade는 해당 index만 제거하고 table/data를 유지 |
 
 ### API Tests
 
