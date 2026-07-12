@@ -50,7 +50,7 @@ Security Alert는 검증된 organization 안에서 인증 사용자가 짧은 �
 
 - SAL-REQ-017: 같은 detection key에는 `open` 또는 `acknowledged` 상태의 활성 alert가 최대 하나만 존재해야 한다.
 - SAL-REQ-018: 마지막 탐지 시각부터 30분의 sliding cooldown을 적용해야 한다.
-- SAL-REQ-019: Cooldown 중 같은 detection key의 event는 새 alert를 만들지 않고 기존 활성 alert의 occurrence count와 `last_detected_at`을 갱신하고 evidence로 연결해야 한다.
+- SAL-REQ-019: Cooldown 중 같은 detection key의 event는 검증된 audit organization이 alert organization과 일치할 때만 기존 활성 alert의 occurrence count와 `last_detected_at`을 갱신하고 evidence로 연결해야 한다. ID만 전달된 audit도 canonical row를 조회해 같은 organization 검증을 적용해야 한다.
 - SAL-REQ-020: Cooldown 중 occurrence 갱신은 별도 canonical audit action을 만들지 않아야 한다.
 - SAL-REQ-021: `resolved` alert에는 새 evidence를 연결하지 않아야 한다.
 - SAL-REQ-022: Resolve 이후 발생한 새 audit만으로 threshold를 다시 충족했을 때 새 alert를 만들어야 한다. 이전 alert에 연결된 audit을 새 threshold 계산에 재사용하지 않아야 한다.
@@ -59,8 +59,8 @@ Security Alert는 검증된 organization 안에서 인증 사용자가 짧은 �
 
 - SAL-REQ-023: Alert status는 `open`, `acknowledged`, `resolved`만 허용해야 한다.
 - SAL-REQ-024: 허용 상태 전이는 `open → acknowledged`, `open → resolved`, `acknowledged → resolved`, `acknowledged → open`이어야 한다. 그 밖의 전이는 거부해야 한다.
-- SAL-REQ-025: Acknowledge는 처리 관리자와 처리 시각을 기록해야 한다.
-- SAL-REQ-026: Resolve는 처리 관리자, 처리 시각, resolution type, sanitized reason을 기록해야 한다.
+- SAL-REQ-025: Acknowledge 전이 시점에는 인증·인가된 처리 관리자와 처리 시각을 필수로 기록해야 한다. 이후 처리 관리자 user가 삭제되면 actor FK는 `NULL`이 될 수 있지만 처리 시각과 lifecycle 이력은 보존해야 한다.
+- SAL-REQ-026: Resolve 전이 시점에는 인증·인가된 처리 관리자, 처리 시각, resolution type, sanitized reason을 필수로 기록해야 한다. 이후 처리 관리자 user가 삭제되면 actor FK는 `NULL`이 될 수 있지만 처리 시각, resolution 정보, canonical audit은 보존해야 한다.
 - SAL-REQ-027: Resolution type은 `mitigated`, `false_positive`, `accepted_risk`만 허용해야 한다.
 - SAL-REQ-028: Resolve reason은 필수이며 organization management reason과 같은 정규화, 길이 제한, control-character 차단, secret/PII redaction 기준을 적용해야 한다.
 - SAL-REQ-029: 해결된 alert는 삭제하지 않아야 한다. Alert delete API와 자동 retention 삭제는 이 범위에서 제공하지 않아야 한다.
@@ -87,7 +87,7 @@ Security Alert는 검증된 organization 안에서 인증 사용자가 짧은 �
 - SAL-REQ-037: 탐지 실패 시 원본 audit을 삭제하거나 authorization 결과를 바꾸지 않고 탐지 작업만 재시도해야 한다.
 - SAL-REQ-038: Reconciliation은 실시간 task와 같은 eligible-event 정규화와 rule 평가 함수를 사용해야 한다.
 - SAL-REQ-039: Reconciliation은 `(occurred_at, audit_log.id)` cursor와 overlap window를 사용해 worker 중단, publish 실패, 경계 시각 누락을 복구해야 한다.
-- SAL-REQ-040: 실시간 task, retry, reconciliation이 같은 audit을 동시에 처리해도 evidence, occurrence, 활성 alert가 중복 생성되지 않아야 한다.
+- SAL-REQ-040: 실시간 task, retry, reconciliation이 같은 audit을 동시에 처리해도 evidence, occurrence, 활성 alert가 중복 생성되지 않아야 한다. 서로 다른 audit을 같은 활성 alert에 동시에 연결해도 occurrence를 유실하지 않고 `last_detected_at`은 가장 최신 event time을 유지해야 한다.
 - SAL-REQ-041: Alert 생성 또는 활성 alert 갱신 commit 이후 notification 변경 신호를 발행해야 한다.
 - SAL-REQ-042: Notification 발행 실패는 alert transaction을 rollback하지 않아야 하며 별도로 재시도할 수 있어야 한다.
 - SAL-REQ-043: Eligible event 발생 후 관리자 UI 반영 목표는 1분 이내여야 한다.

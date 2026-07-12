@@ -61,6 +61,8 @@ Actor 표시값은 Alert row에 snapshot으로 저장하지 않고 현재 organi
 - Cooldown occurrence count와 `last_detected_at` 갱신은 `version`을 증가시키지 않는다.
 - Mutation request의 `expected_version`이 현재 version과 다르면 `409 stale_state`다.
 - `409`에서는 상태 변경과 lifecycle audit을 만들지 않는다.
+- 동시 요청은 현재 status와 `expected_version`을 조건으로 한 원자적 DB update에서 정확히 하나만 성공해야 한다. 단순히 요청 시작 시 읽은 in-memory version만 비교해서는 안 된다.
+- Acknowledge/resolve 성공 시 처리 관리자 projection을 반환한다. 이후 해당 user가 삭제되면 actor ID/name은 deleted safe projection으로 바뀔 수 있지만 처리 시각과 resolution 정보는 유지한다.
 
 ## Response Models
 
@@ -308,7 +310,7 @@ Sidebar 전용 bounded projection이다. Query parameter를 받지 않는다.
 
 변경 후 `SecurityAlertDetail`을 반환한다.
 
-같은 transaction에서 처리 관리자/시각을 기록하고 `security_alert.acknowledged` audit을 생성한다.
+같은 transaction에서 전이 시점의 처리 관리자/시각을 기록하고 `security_alert.acknowledged` audit을 생성한다. 처리 관리자 user가 나중에 삭제되면 `acknowledged.by`는 deleted safe projection이 될 수 있지만 `acknowledged.at`은 유지한다.
 
 ## POST `/admin/security-alerts/{alert_id}/resolve`
 
@@ -345,7 +347,7 @@ Reason은 다음 기준을 적용한다.
 
 변경 후 `SecurityAlertDetail`을 반환한다.
 
-같은 transaction에서 resolution과 처리 관리자/시각을 기록하고 `security_alert.resolved` audit을 생성한다.
+같은 transaction에서 resolution과 전이 시점의 처리 관리자/시각을 기록하고 `security_alert.resolved` audit을 생성한다. 처리 관리자 user가 나중에 삭제되면 `resolution.by`는 deleted safe projection이 될 수 있지만 처리 시각, type, sanitized reason은 유지한다.
 
 ## POST `/admin/security-alerts/{alert_id}/reopen`
 
