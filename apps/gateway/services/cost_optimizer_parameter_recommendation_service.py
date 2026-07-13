@@ -19,6 +19,9 @@ from apps.shared.db.models.workflow_run import (
     WorkflowRun,
 )
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
+from apps.shared.services.node_config_fingerprint import (
+    llm_node_config_fingerprint,
+)
 
 POLICY_VERSION = "llm-parameter-recommendation-rules-v1"
 MIN_OPERATION_SAMPLES = 20
@@ -926,34 +929,7 @@ def _resolve_operation_cohort(
 
 def _node_config_fingerprint(node_data: dict[str, Any]) -> str:
     """원문을 노출하지 않고 비용/품질에 영향을 주는 node 설정만 비교한다."""
-    relevant_keys = (
-        "model_id",
-        "fallback_model_id",
-        "parameters",
-        "output_format",
-        "system_prompt",
-        "user_prompt",
-        "assistant_prompt",
-        "knowledgeBases",
-        "topK",
-        "scoreThreshold",
-        "retrievedContextMaxChars",
-        "dedupeRetrievedContext",
-        "retrievedContextCompression",
-        "includeSourceMetadata",
-        "answerGroundingCheck",
-        "ragFailurePolicy",
-        "auto_model_routing",
-    )
-    payload = {key: node_data.get(key) for key in relevant_keys if key in node_data}
-    routing_policy = node_data.get("model_routing_policy")
-    refresh = routing_policy.get("refresh") if isinstance(routing_policy, dict) else None
-    if isinstance(refresh, dict) and "refresh_every_runs" in refresh:
-        payload["model_routing_refresh_every_runs"] = refresh.get(
-            "refresh_every_runs"
-        )
-    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    return llm_node_config_fingerprint(node_data)
 
 
 def _recommendation_response(

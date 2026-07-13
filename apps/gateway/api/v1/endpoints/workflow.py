@@ -96,6 +96,7 @@ from apps.shared.services.permissions import (
     has_knowledge_base_permission,
 )
 from apps.shared.services.cost_optimizer_retention import CostOptimizerRetentionService
+from apps.shared.services.tracing.metadata import TraceMetadataSanitizer
 from apps.shared.services.workflow_task_publisher import send_workflow_task
 
 logger = logging.getLogger(__name__)
@@ -1459,6 +1460,10 @@ def _baseline_row_from_records(
     trace_metadata = (
         node_run.trace_metadata if isinstance(node_run.trace_metadata, dict) else {}
     )
+    llm_trace_summary = TraceMetadataSanitizer.sanitize_span_metadata(
+        "llmNode",
+        {"llm": trace_metadata.get("llm")},
+    ).get("llm")
     rag_summary = trace_metadata.get("rag") or trace_metadata.get("rag_summary")
     rag_summary = _safe_cost_optimizer_rag_summary(rag_summary)
     rag_summary = rag_summary if isinstance(rag_summary, dict) else None
@@ -1531,6 +1536,11 @@ def _baseline_row_from_records(
             "output_preview": output_preview,
             "messages_preview": [],
             "rag_summary": rag_summary,
+            **(
+                {"model_routing": llm_trace_summary}
+                if llm_trace_summary
+                else {}
+            ),
             "error_message": node_run.error_message,
         },
         "downstream_compatibility": downstream_compatibility,
@@ -2375,6 +2385,31 @@ def _cost_optimizer_schema_status(
     return "not_checked"
 
 
+def _cost_optimizer_routing_evidence_summary(
+    *,
+    trace: Any,
+    node_options: Any,
+) -> dict[str, Any]:
+    trace = trace if isinstance(trace, dict) else {}
+    routing = trace.get("model_routing")
+    routing = routing if isinstance(routing, dict) else {}
+    node_options = node_options if isinstance(node_options, dict) else {}
+    output_format = node_options.get("output_format")
+    output_format = output_format if isinstance(output_format, dict) else {}
+
+    return {
+        "semantic_cohort_id": str(routing.get("matched_cohort_id") or "") or None,
+        "route_catalog_version": (
+            str(routing.get("route_catalog_version") or "") or None
+        ),
+        "schema_required": (
+            str(output_format.get("type") or "").lower() == "json"
+            and isinstance(output_format.get("schema"), dict)
+            and bool(output_format["schema"])
+        ),
+    }
+
+
 def _create_cost_optimizer_comparison(
     *,
     db: Session,
@@ -2385,6 +2420,13 @@ def _create_cost_optimizer_comparison(
     current_user: User,
 ) -> tuple[CostOptimizerExperiment, CostOptimizerCandidate]:
     candidate_settings = _safe_cost_optimizer_candidate_settings(candidate)
+    baseline_node_fingerprint = str(
+        baseline.get("node_config_fingerprint") or ""
+    ).strip()
+    if baseline_node_fingerprint:
+        candidate_settings["_baseline_node_config_fingerprint"] = (
+            baseline_node_fingerprint
+        )
     baseline_usage_summary = _cost_optimizer_baseline_usage_summary(baseline)
     created_at = datetime.now(timezone.utc)
     retention_expires_at = CostOptimizerRetentionService.expires_at(
@@ -2425,7 +2467,12 @@ def _create_cost_optimizer_comparison(
         usage_summary={},
         schema_validation={"status": "skipped", "errors": []},
         downstream_compatibility={},
-        diff_summary={},
+        diff_summary={
+            "routing_evidence": _cost_optimizer_routing_evidence_summary(
+                trace=baseline.get("trace"),
+                node_options=baseline.get("node_options"),
+            )
+        },
         status="running",
         created_at=created_at,
         updated_at=created_at,
@@ -2516,9 +2563,18 @@ def _persist_cost_optimizer_comparison(
     candidate_row.model_id = candidate.model_id
     candidate_row.fallback_model_id = candidate.fallback_model_id
     candidate_row.task_type = candidate.task_type
-    candidate_row.candidate_settings = _safe_cost_optimizer_candidate_settings(
-        candidate
-    )
+    baseline_node_fingerprint = str(
+        (candidate_row.candidate_settings or {}).get(
+            "_baseline_node_config_fingerprint"
+        )
+        or ""
+    ).strip()
+    candidate_settings = _safe_cost_optimizer_candidate_settings(candidate)
+    if baseline_node_fingerprint:
+        candidate_settings["_baseline_node_config_fingerprint"] = (
+            baseline_node_fingerprint
+        )
+    candidate_row.candidate_settings = candidate_settings
     candidate_row.total_cost = (
         Decimal(str(total_cost)) if total_cost is not None else None
     )
@@ -2547,6 +2603,10 @@ def _persist_cost_optimizer_comparison(
     candidate_row.diff_summary = {
         **diff,
         "quality_evaluation": quality_evaluation,
+        "routing_evidence": _cost_optimizer_routing_evidence_summary(
+            trace=experiment.baseline_trace_summary,
+            node_options=experiment.baseline_node_options,
+        ),
     }
     candidate_row.status = status
     db.commit()

@@ -508,6 +508,115 @@ def test_fr13_quality_judge_tries_next_model_when_first_model_is_not_usable_in_o
     assert get_client.call_count == 2
 
 
+def test_fr13_quality_judge_skips_legacy_completion_model_mislabeled_as_chat():
+    db = MagicMock()
+    workflow = SimpleNamespace(id=uuid4(), organization_id=uuid4())
+    current_user = SimpleNamespace(id=uuid4())
+    candidate_row = SimpleNamespace(id=uuid4())
+    usable_client = _JudgeClient(_judge_response())
+
+    with (
+        patch(
+            "apps.gateway.services.cost_optimizer_output_quality_service.LLMService.get_my_available_models",
+            return_value=[
+                SimpleNamespace(
+                    model_id_for_api_call="babbage-002",
+                    name="Babbage 002",
+                    type="chat",
+                    is_active=True,
+                ),
+                SimpleNamespace(
+                    model_id_for_api_call="gpt-4.1-mini",
+                    name="GPT-4.1 mini",
+                    type="chat",
+                    is_active=True,
+                ),
+            ],
+        ),
+        patch(
+            "apps.gateway.services.cost_optimizer_output_quality_service.LLMService.get_client_for_user",
+            return_value=usable_client,
+        ) as get_client,
+        patch(
+            "apps.gateway.services.cost_optimizer_output_quality_service.LLMService.calculate_cost",
+            return_value=0.0004,
+        ),
+        patch(
+            "apps.gateway.services.cost_optimizer_output_quality_service.LLMService.log_usage",
+            return_value=SimpleNamespace(id=uuid4(), total_cost=0.0004),
+        ),
+    ):
+        result = CostOptimizerOutputQualityService.evaluate(
+            db=db,
+            workflow=workflow,
+            current_user=current_user,
+            node_id="llm-triage",
+            candidate_row=candidate_row,
+            baseline={"input": {"message": "문의"}, "output": {"text": "A"}},
+            candidate_result={"input": {"message": "문의"}, "output": {"text": "B"}},
+            pair_order="baseline_left",
+        )
+
+    assert result["status"] == "completed"
+    assert result["judge"]["model_id"] == "gpt-4.1-mini"
+    assert get_client.call_args.args[2] == "gpt-4.1-mini"
+
+
+@pytest.mark.parametrize(
+    ("available_models", "expected_model_id"),
+    [
+        (
+            [
+                SimpleNamespace(
+                    model_id_for_api_call="claude-haiku-4-5-20251001",
+                    name="Claude Haiku 4.5",
+                    type="chat",
+                    is_active=True,
+                ),
+                SimpleNamespace(
+                    model_id_for_api_call="claude-sonnet-4-5-20250929",
+                    name="Claude Sonnet 4.5",
+                    type="chat",
+                    is_active=True,
+                ),
+            ],
+            "claude-sonnet-4-5-20250929",
+        ),
+        (
+            [
+                SimpleNamespace(
+                    model_id_for_api_call="models/gemini-2.5-flash-lite",
+                    name="Gemini 2.5 Flash-Lite",
+                    type="chat",
+                    is_active=True,
+                ),
+                SimpleNamespace(
+                    model_id_for_api_call="models/gemini-2.5-flash",
+                    name="Gemini 2.5 Flash",
+                    type="chat",
+                    is_active=True,
+                ),
+            ],
+            "models/gemini-2.5-flash",
+        ),
+    ],
+)
+def test_fr13_quality_judge_prefers_balanced_model_for_single_provider_org(
+    available_models,
+    expected_model_id,
+):
+    with patch(
+        "apps.gateway.services.cost_optimizer_output_quality_service.LLMService.get_my_available_models",
+        return_value=available_models,
+    ):
+        selected = CostOptimizerOutputQualityService._select_judge_model(
+            db=MagicMock(),
+            user_id=uuid4(),
+        )
+
+    assert selected == expected_model_id
+
+
 def test_fr13_quality_judge_adds_groundedness_only_for_rag_variants():
     response = _judge_response()
     judge_payload = json.loads(response["choices"][0]["message"]["content"])

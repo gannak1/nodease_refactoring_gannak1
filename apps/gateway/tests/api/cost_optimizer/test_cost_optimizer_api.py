@@ -2698,6 +2698,11 @@ class TestCostOptimizerCompareApi:
             compare_available=True,
         )
         baseline["input"] = {"message": "baseline input only"}
+        baseline["node_config_fingerprint"] = "node-fingerprint"
+        baseline["trace"]["model_routing"] = {
+            "matched_cohort_id": "routine_support",
+            "route_catalog_version": "ticket-routing-v1",
+        }
         sent_tasks = []
 
         class FakeTask:
@@ -2791,6 +2796,15 @@ class TestCostOptimizerCompareApi:
         assert candidate.status == "success"
         assert candidate.model_id == "gpt-4.1-mini"
         assert candidate.candidate_settings["model_id"] == "gpt-4.1-mini"
+        assert (
+            candidate.candidate_settings["_baseline_node_config_fingerprint"]
+            == "node-fingerprint"
+        )
+        assert candidate.diff_summary["routing_evidence"] == {
+            "semantic_cohort_id": "routine_support",
+            "route_catalog_version": "ticket-routing-v1",
+            "schema_required": False,
+        }
         assert candidate.total_tokens == 240
         assert float(candidate.total_cost) == 0.0006
         assert candidate.latency_ms == 1200
@@ -4889,6 +4903,75 @@ class TestCostOptimizerBaselineHelpers:
         assert row["output"]["encrypted_config"] == "[REDACTED]"
         assert row["node_options"]["api_key"] == "[REDACTED]"
         assert row["node_options"]["model_id"] == "gpt-4.1-mini"
+
+    def test_fr11_baseline_row_preserves_safe_semantic_routing_summary(self):
+        workflow = SimpleNamespace(id=uuid4())
+        run = SimpleNamespace(
+            id=uuid4(),
+            workflow_id=workflow.id,
+            status=SimpleNamespace(value="success"),
+            started_at=datetime(2026, 7, 4, tzinfo=timezone.utc),
+        )
+        node_run = SimpleNamespace(
+            id=uuid4(),
+            workflow_run_id=run.id,
+            node_id="llm-triage",
+            node_type="llmNode",
+            status=SimpleNamespace(value="success"),
+            inputs={"message": "safe input"},
+            outputs={"answer": "done"},
+            process_data={"node_options": {"model_id": "gpt-4o-mini"}},
+            error_message=None,
+            trace_metadata={
+                "llm": {
+                    "selected_model": "gpt-4o-mini",
+                    "fallback_model": "gpt-4.1-mini",
+                    "matched_cohort_id": "routine_support",
+                    "semantic_route_label": "단순 사용·안내 문의",
+                    "semantic_similarity": 0.88,
+                    "semantic_threshold": 0.75,
+                    "semantic_margin": 0.37,
+                    "semantic_match_status": "matched",
+                    "route_catalog_version": "ticket-routing-v1",
+                    "policy_version": "routing-policy-v3",
+                    "reason_code": "validated_quality_floor_positive_net_saving",
+                    "query_vector": [0.1, 0.2, 0.3],
+                    "raw_input": "must-not-leak",
+                }
+            },
+        )
+        usage = SimpleNamespace(
+            model=SimpleNamespace(model_id_for_api_call="gpt-4o-mini"),
+            model_id=uuid4(),
+            prompt_tokens=10,
+            completion_tokens=5,
+            total_cost=0.0001,
+            latency_ms=300,
+            status="success",
+        )
+
+        row = workflow_endpoint._baseline_row_from_records(
+            workflow=workflow,
+            run=run,
+            node_run=node_run,
+            usage=usage,
+        )
+
+        assert row["trace"]["model_routing"] == {
+            "selected_model": "gpt-4o-mini",
+            "fallback_model": "gpt-4.1-mini",
+            "matched_cohort_id": "routine_support",
+            "semantic_route_label": "단순 사용·안내 문의",
+            "semantic_similarity": 0.88,
+            "semantic_threshold": 0.75,
+            "semantic_margin": 0.37,
+            "semantic_match_status": "matched",
+            "route_catalog_version": "ticket-routing-v1",
+            "policy_version": "routing-policy-v3",
+            "reason_code": "validated_quality_floor_positive_net_saving",
+        }
+        assert "must-not-leak" not in str(row)
+        assert "query_vector" not in str(row)
 
     def test_fr2_baseline_row_uses_node_run_duration_when_usage_latency_is_zero(self):
         workflow = SimpleNamespace(id=uuid4())
