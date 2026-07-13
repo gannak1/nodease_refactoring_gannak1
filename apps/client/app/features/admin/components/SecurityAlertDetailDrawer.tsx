@@ -237,6 +237,16 @@ export function SecurityAlertDetailDrawer({
     } catch (mutationError) {
       if (
         isAxiosError(mutationError) &&
+        mutationError.response?.status === 403
+      ) {
+        setDetail(null);
+        setMutationFeedback(null);
+        setResolveOpen(false);
+        close();
+        return true;
+      }
+      if (
+        isAxiosError(mutationError) &&
         mutationError.response?.status === 409
       ) {
         const latest = await loadDetail();

@@ -99,6 +99,12 @@ const conflictError = () => {
   return error;
 };
 
+const forbiddenError = () => {
+  const error = new AxiosError('raw forbidden');
+  error.response = { status: 403 } as AxiosResponse;
+  return error;
+};
+
 const openDetail = {
   ...detail,
   status: 'open' as const,
@@ -520,5 +526,84 @@ describe('SecurityAlertDetailDrawer', () => {
     expect(await screen.findByText('확인됨')).toBeInTheDocument();
     expect(mockedDetail).toHaveBeenCalledTimes(2);
     expect(screen.queryByText('raw conflict')).not.toBeInTheDocument();
+  });
+
+  it('확인 요청이 403이면 cached detail과 drawer URL을 닫는다', async () => {
+    mockedDetail.mockResolvedValue(openDetail);
+    mockedEvidence.mockResolvedValue({ total: 0, items: [] });
+    mockedAcknowledge.mockRejectedValue(forbiddenError());
+    const onClose = vi.fn();
+
+    render(
+      <SecurityAlertDetailDrawer
+        alertId={detail.id}
+        members={members}
+        onClose={onClose}
+        onNotFound={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: '확인' }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole('button', { name: '확인' })).not.toBeInTheDocument();
+    expect(screen.queryByText('raw forbidden')).not.toBeInTheDocument();
+  });
+
+  it('미확인 전환 요청이 403이면 cached detail과 drawer URL을 닫는다', async () => {
+    mockedDetail.mockResolvedValue(acknowledgedDetail);
+    mockedEvidence.mockResolvedValue({ total: 0, items: [] });
+    mockedReopen.mockRejectedValue(forbiddenError());
+    const onClose = vi.fn();
+
+    render(
+      <SecurityAlertDetailDrawer
+        alertId={detail.id}
+        members={members}
+        onClose={onClose}
+        onNotFound={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: '미확인으로 되돌리기' }),
+    );
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(
+      screen.queryByRole('button', { name: '미확인으로 되돌리기' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('해결 요청이 403이면 dialog, cached detail과 drawer URL을 닫는다', async () => {
+    mockedDetail.mockResolvedValue(openDetail);
+    mockedEvidence.mockResolvedValue({ total: 0, items: [] });
+    mockedResolve.mockRejectedValue(forbiddenError());
+    const onClose = vi.fn();
+
+    render(
+      <SecurityAlertDetailDrawer
+        alertId={detail.id}
+        members={members}
+        onClose={onClose}
+        onNotFound={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: '해결' }));
+    const dialog = screen.getByRole('dialog', { name: '보안 알림 해결' });
+    fireEvent.change(within(dialog).getByLabelText('처리 결과'), {
+      target: { value: 'mitigated' },
+    });
+    fireEvent.change(within(dialog).getByLabelText('처리 사유'), {
+      target: { value: '조치 완료' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: '해결 확정' }));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(
+      screen.queryByRole('dialog', { name: '보안 알림 해결' }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '해결' })).not.toBeInTheDocument();
   });
 });
