@@ -140,6 +140,11 @@ Request context:
 | Organization | `X-Organization-Id`로 해석한 active organization |
 | Permission | active Collection에 대한 current user effective `route` |
 
+서버는 organization/lifecycle과 effective `route`를 SQL query scope에 먼저 적용한 뒤
+최신순 최대 500개를 반환한다. Unauthorized 최근 row를 먼저 500개로 자른 뒤
+authorization하지 않는다. 따라서 500개보다 오래된 authorized Collection도 authorized
+result cap 안에 있으면 후보에 포함된다.
+
 Response:
 
 ```json
@@ -169,10 +174,13 @@ reference를 다시 authorize한다.
 
 | Reference | Save-time gate |
 | --- | --- |
-| Direct KB | same organization, active, retrieval-selectable, effective KB `use`, applicable materialized source authorization |
+| Direct KB | same organization, active, `sync_state != source_deleted`, retrieval-selectable, effective KB `use`, applicable materialized source authorization |
 | Selected Collection | same organization, active, effective Collection `route` |
 
 Collection child membership/KB/source authorization은 save-time에 열거하지 않는다.
+Graph에 direct KB와 Collection reference가 모두 없으면 구조 검증 뒤 authorization context와
+DB permission query를 생략하여 organization이 없는 legacy non-RAG draft 저장을 유지한다.
+Malformed Knowledge field는 이 short-circuit 전에 거부한다.
 Reference 하나라도 실패하면 전체 write와 success audit을 commit하지 않는다. Hidden,
 cross-organization, missing, inactive, revoked와 denied 상태는 외부에서 구분하지 않는
 `knowledge_reference_unavailable` 계열 fixed code와 safe field path만 반환하며 UUID,
@@ -628,6 +636,12 @@ A/B 테스트, 비용 최적화, trace side panel은 다음 redaction-safe summa
 | `insufficiency_reason` | `no_evidence`, `low_score`, `insufficient_citation`, `policy_filtered`, `operational_partial` 같은 safe reason class |
 | `query_rewrite_applied` | Query rewrite 적용 여부 |
 | `query_rewrite_strategy` | `template`, `llm_assisted` 같은 safe strategy summary. Raw rewritten query는 포함하지 않는다 |
+
+Collection-derived candidate가 하나라도 있는 실행은 `authorized_kb_count`와
+`selected_kb_count` exact 값을 생략하고 각각의 `_bucket` field만 저장한다. Candidate
+수에서 유도되는 actual `fanout_concurrency`도 생략한다. Collection-derived evidence는
+child KB별 결과 경계를 재구성할 수 있는 per-KB `rank`도 생략한다. Direct-only 실행은 current user가
+명시적으로 선택하고 authorization된 KB의 기존 exact operational summary를 유지할 수 있다.
 | `source_tier_used` | Authorized evidence 안에서 사용한 safe source tier summary |
 | `evidence_count` / `min_score_bucket` | 실제 evidence 기준 count와 bucketed score summary. Hidden/denied count는 포함하지 않는다 |
 | `skill_id` / `skill_version` | 사용한 Knowledge Skill 식별자와 version. 표시 가능 여부는 skill display policy를 따른다 |

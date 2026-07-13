@@ -76,11 +76,11 @@ retrieval timeout과 구분한다.
 | Component | 책임 | 금지 |
 | --- | --- | --- |
 | Shared Workflow Knowledge Reference Parser | 두 graph list의 shape, canonical UUID, display snapshot, per-list 20 cap을 pure validation하고 configured order/deduped ID를 제공한다 | Graph mutation, silent slicing, permission/DB 조회 |
-| Route-safe Collection Query Service | active organization에서 current editor가 `route` 가능한 active Collection의 UUID와 optional safe label만 bulk projection한다 | Management response 재사용, raw name/description/child count, runtime authorization |
-| Workflow Knowledge Reference Service | Editable graph write 전에 direct KB effective `use`/source gate와 Collection `route`를 current editor로 검증하고 whole-write failure를 반환한다 | Collection child expansion, saved label/Client capability 신뢰, runtime lease 발급 |
-| Deployment Preflight | 두 list의 structure, lifecycle와 server-derived audience/public gate를 재귀 graph에 적용하고 safe bucket/action을 반환한다 | Child ID/exact hidden count 공개, preflight를 runtime capability로 재사용 |
+| Route-safe Collection Query Service | active organization/lifecycle와 current editor effective `route`를 SQL query scope에 먼저 적용하고, authorized result를 정렬·제한한 뒤 UUID와 optional safe label만 projection한다 | 권한 확인 전 row cap, Management response 재사용, raw name/description/child count, runtime authorization |
+| Workflow Knowledge Reference Service | Editable graph write 전에 direct KB active/non-source-deleted/effective `use`/source gate와 Collection `route`를 current editor로 검증하고 whole-write failure를 반환한다. Reference 없는 legacy graph는 구조 검증 뒤 authorization query를 생략한다 | Collection child expansion, saved label/Client capability 신뢰, runtime lease 발급 |
+| Deployment Preflight | 두 list의 structure, lifecycle/sync eligibility와 server-derived audience/public gate를 재귀 graph에 적용하고 safe bucket/action을 반환한다 | Child ID/exact hidden count 공개, preflight를 runtime capability로 재사용 |
 | Workflow LLM Integration | explicit execution audience와 두 configured ID list로 MBA-232 resolver를 invocation당 한 번 호출하고 ordered KB ID를 Retrieval Orchestrator에 전달한다 | Gateway resolver import, LLM node 내부 permission SQL, owner/credential fallback |
-| Public/Observability Projector | public graph에서 두 reference list를 제거하고 durable output은 routing/count/failure safe summary로 제한한다 | Collection identity/provenance, raw graph/query/source/provider payload 저장 |
+| Public/Observability Projector | public graph에서 두 reference list를 제거한다. Explicit direct KB의 기존 authorized lineage는 유지할 수 있지만 Collection-derived evidence는 child KB/document/chunk identity와 per-KB rank를 제거하고 node-level count bucket으로 감사한다 | Collection identity/provenance, child resource identity/rank, raw graph/query/source/provider payload 저장 |
 
 Builder는 고정 KB와 Knowledge Collection을 별도 selector group으로 표시한다. 각 group은
 독립 `n/20` limit을 가지며 Collection membership이 실행 시점에 다시 계산된다는 설명을

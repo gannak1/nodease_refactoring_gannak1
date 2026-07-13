@@ -92,10 +92,16 @@ Status: Draft
   `route` positive case와 read/manage/sync/domain-only, inactive membership, revoked,
   cross-organization, archived/deleted negative case를 검증한다. Response는 UUID와 optional
   approved safe label만 가지며 child/source/permission/hidden count를 포함하지 않는다.
+  최근 unauthorized Collection 500개 뒤에 authorized Collection이 있는 fixture와 authorized
+  Collection 501개 fixture로 permission scope가 limit보다 먼저 적용되고 authorized 결과가
+  500개로 제한되는 순서를 검증한다.
 - Draft/Agent Builder/optimizer/model-routing graph save는 direct KB effective `use`와
   source authorization, Collection `route`를 current editor로 다시 검증한다. 하나라도
   stale/forged/denied/cross-org이면 partial graph/success audit 없이 whole-write를
-  rollback하고 safe generic error만 반환한다.
+  rollback하고 safe generic error만 반환한다. Knowledge reference가 없는 root/nested legacy
+  graph는 null organization/invalid legacy user identifier로 permission service를 만들지 않지만,
+  malformed empty-list shape는 422 구조 오류로 유지한다. 과거 completed chunk가 남은
+  `source_deleted` direct KB는 save와 preflight 모두 거부한다.
 - Collection route는 있지만 child KB/source access가 전부 denied인 graph는 save할 수
   있고 runtime에서 zero candidate/no provider로 닫힌다. Save-time에 child membership이나
   source를 query하면 테스트 실패다.
@@ -106,6 +112,13 @@ Status: Draft
 - Deployment preview/create/activation/toggle과 nested workflow-node graph는 두 list를
   검증한다. Anonymous private Collection/direct KB와 source public exposure primitive가
   없는 source-managed content는 fixed blocker이고 hidden child ID/count를 반환하지 않는다.
+  Direct/public-membership/Collection aggregate query 모두 `source_deleted` KB를 제외하는
+  PostgreSQL predicate를 사용하며 runtime resolver eligibility와 어긋나면 테스트 실패다.
+  빠른 SQL compile test는 INNER JOIN 대상/조직 ON 조건/lifecycle/sync predicate를 검증하고,
+  opt-in disposable PostgreSQL test는 active, source-deleted, archived, cross-organization,
+  organization-mismatched membership이 실제 반환 집합과 candidate count에서 올바르게
+  포함·제외되는지 migration 적용 스키마에서 검증한다. 같은 실제 DB 테스트에서 최근
+  unauthorized 500개 뒤의 authorized Collection과 501개 authorized 결과 cap도 검증한다.
 - 모든 production execution surface는 same resolver dependency를 주입한다. Direct-only,
   Collection-only와 mixed invocation은 resolver를 정확히 한 번 호출하며 ordered canonical
   candidate마다 retrieval을 최대 한 번 실행한다.
@@ -118,7 +131,14 @@ Status: Draft
   Collection child를 열거하거나 connector를 호출하지 않는다.
 - Public app/deployment graph는 두 reference list를 제거한다. API/SSE/error/log/trace/audit
   fixture는 Collection ID/name/provenance, hidden KB ID, raw graph/query/source/credential/
-  provider payload가 없고 safe bucket/fixed code만 있음을 검증한다.
+  provider payload가 없고 safe bucket/fixed code만 있음을 검증한다. Mixed successful
+  retrieval에서는 explicit direct KB의 기존 KB/chunk/document lineage는 유지하지만
+  Collection-derived evidence의 child KB/chunk/document ID와 per-KB rank는 result metadata, durable trace,
+  audit 어디에도 나타나지 않고 Collection retrieval audit은 node target과 count bucket만
+  포함한다. Collection-only/mixed trace는 authorized/selected KB exact count와 그 값에서
+  유도되는 actual fan-out concurrency를 저장하지 않고 count bucket만 남긴다.
+  Query-vector/fan-out INFO log도 KB/model/vector/failure exact count 대신 bucket만 기록한다.
+  Anonymous/system actor와 invalid organization audit 경계도 같은 redaction을 쓴다.
 - Worker-first canary는 구 task drain 뒤 Gateway write와 Client를 순서대로 노출하고,
   rollback은 Client/Gateway write 중지와 drain 뒤 Worker를 되돌린다. 구 Worker가
   Collection graph를 소비할 수 있는 상태에서는 rollout/rollback acceptance가 실패다.
