@@ -127,7 +127,7 @@ def test_kb_manager_can_read_detail_with_bounded_capabilities(
         app.dependency_overrides = {}
 
     assert response.status_code == 200
-    assert response.json()["can_edit_settings"] is False
+    assert response.json()["can_edit_settings"] is True
     assert response.json()["can_manage_safe_metadata"] is True
 
 
@@ -170,12 +170,12 @@ def test_kb_operator_cannot_update_safe_metadata(db_session, safe_metadata_scope
     finally:
         app.dependency_overrides = {}
 
-    assert response.status_code == 404
+    assert response.status_code == 403
     db_session.refresh(knowledge_base)
     assert knowledge_base.safe_metadata == {}
 
 
-def test_kb_manager_cannot_use_owner_settings_patch(db_session, safe_metadata_scope):
+def test_kb_manager_can_use_resource_settings_patch(db_session, safe_metadata_scope):
     organization, knowledge_base, _, manager, _ = safe_metadata_scope
     client = _client_for(db_session, manager)
     try:
@@ -187,9 +187,9 @@ def test_kb_manager_cannot_use_owner_settings_patch(db_session, safe_metadata_sc
     finally:
         app.dependency_overrides = {}
 
-    assert response.status_code == 404
+    assert response.status_code == 204
     db_session.refresh(knowledge_base)
-    assert knowledge_base.name == "People Ops"
+    assert knowledge_base.name == "Manager rename"
 
 
 def test_generic_settings_patch_rejects_safe_metadata_payload(
