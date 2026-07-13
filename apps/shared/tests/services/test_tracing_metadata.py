@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
 from apps.shared.schemas.tracing import TraceDetailSchema, TraceSummarySchema
 from apps.shared.services.tracing.metadata import TraceMetadataSanitizer
 from apps.shared.services.tracing.query import TraceQueryService
@@ -185,6 +186,7 @@ def test_rag_metadata_preserves_payload_reference_and_summarizes_evidence():
                         "document_id": "doc-1",
                         "filename": "sensitive-title.pdf",
                         "rank": 1,
+                        "evidence_rank": 1,
                         "similarity_score": 0.9,
                         "score": 0.91,
                         "token_count": 210,
@@ -214,6 +216,27 @@ def test_rag_metadata_preserves_payload_reference_and_summarizes_evidence():
     assert "sensitive-title.pdf" not in str(metadata)
     assert "internal.example" not in str(metadata)
     assert "/private/source/path" not in str(metadata)
+
+
+def test_rag_result_sanitizer_keeps_global_evidence_rank_only_by_allowlist():
+    metadata = TraceMetadataSanitizer.sanitize_rag_metadata(
+        {
+            "evidence_rank": 2,
+            "rank": 1,
+            "child_kb_rank": 1,
+        }
+    )
+
+    assert metadata == {"evidence_rank": 2, "rank": 1}
+
+
+@pytest.mark.parametrize("invalid_rank", [0, -1, True, 1.5, "1"])
+def test_rag_result_sanitizer_drops_invalid_global_evidence_rank(invalid_rank):
+    metadata = TraceMetadataSanitizer.sanitize_rag_metadata(
+        {"evidence_rank": invalid_rank, "score": 0.9}
+    )
+
+    assert metadata == {"score": 0.9}
 
 
 def test_rag_span_metadata_preserves_evidence_summary_fields_only():

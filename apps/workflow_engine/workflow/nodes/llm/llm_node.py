@@ -1454,11 +1454,12 @@ class LLMNode(Node[LLMNodeData]):
             self._knowledge_trace_metadata(
                 kb_id,
                 chunk,
+                evidence_rank=evidence_rank,
                 include_resource_identity=(
                     candidate_kind_by_kb_id.get(kb_id) == "direct"
                 ),
             )
-            for kb_id, chunk in top_chunks
+            for evidence_rank, (kb_id, chunk) in enumerate(top_chunks, start=1)
         ]
         selected_chunks = [chunk for _kb_id, chunk in top_chunks]
         evidence_policy = RAGEvidencePolicy()
@@ -2618,6 +2619,7 @@ class LLMNode(Node[LLMNodeData]):
         knowledge_base_id: str,
         chunk: ChunkPreview,
         *,
+        evidence_rank: int | None = None,
         include_resource_identity: bool = True,
     ) -> Dict[str, Any]:
         """추적 메타데이터에는 redaction-safe evidence 요약만 남깁니다."""
@@ -2630,6 +2632,8 @@ class LLMNode(Node[LLMNodeData]):
             "metadata_summary": metadata_summary,
             "hierarchy_path": chunk.hierarchy_path or [],
         }
+        if evidence_rank is not None:
+            metadata["evidence_rank"] = evidence_rank
         if include_resource_identity:
             metadata.update(
                 {

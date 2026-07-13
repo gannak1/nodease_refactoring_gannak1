@@ -287,6 +287,7 @@ RAG_RESULT_FIELDS = {
     "chunk_id",
     "parent_chunk_id",
     "rank",
+    "evidence_rank",
     "knowledge_base_id",
     "metadata_summary",
     "hierarchy_path",
@@ -416,7 +417,15 @@ class TraceMetadataSanitizer:
                 if item
             ]
         if isinstance(safe_value, dict):
-            return cls._filter_allowed_dict(safe_value, RAG_RESULT_FIELDS)
+            filtered = cls._filter_allowed_dict(safe_value, RAG_RESULT_FIELDS)
+            evidence_rank = filtered.get("evidence_rank")
+            if evidence_rank is not None and (
+                isinstance(evidence_rank, bool)
+                or not isinstance(evidence_rank, int)
+                or evidence_rank < 1
+            ):
+                filtered.pop("evidence_rank", None)
+            return filtered
         return None
 
     @classmethod

@@ -1657,13 +1657,19 @@ def test_knowledge_trace_metadata_excludes_chunk_content():
         metadata={"source": "kb"},
     )
 
-    metadata = node._knowledge_trace_metadata("kb-1", chunk)  # noqa: SLF001 - 테스트용
+    metadata = node._knowledge_trace_metadata(  # noqa: SLF001 - 테스트용
+        "kb-1",
+        chunk,
+        evidence_rank=1,
+    )
 
     assert metadata["page_number"] == 3
     assert metadata["knowledge_base_id"] == "kb-1"
     assert metadata["chunk_id"] == str(chunk_id)
     assert metadata["parent_chunk_id"] == str(parent_chunk_id)
     assert metadata["score"] == 0.92
+    assert metadata["rank"] == 1
+    assert metadata["evidence_rank"] == 1
     assert metadata["token_count"] == 120
     assert metadata["metadata_summary"] == {
         "classification": "internal",
@@ -1702,6 +1708,7 @@ def test_collection_trace_metadata_omits_child_resource_lineage_identifiers():
     metadata = node._knowledge_trace_metadata(  # noqa: SLF001 - redaction contract
         str(uuid.uuid4()),
         chunk,
+        evidence_rank=2,
         include_resource_identity=False,
     )
 
@@ -1710,6 +1717,7 @@ def test_collection_trace_metadata_omits_child_resource_lineage_identifiers():
     assert "chunk_id" not in metadata
     assert "parent_chunk_id" not in metadata
     assert "rank" not in metadata
+    assert metadata["evidence_rank"] == 2
     assert metadata["page_number"] == 2
     assert metadata["similarity_score"] == 0.93
     assert metadata["token_count"] == 80
@@ -3931,15 +3939,18 @@ def test_collection_evidence_redacts_child_identity_and_aggregates_audit(monkeyp
     direct_chunk_id = uuid.uuid4()
     collection_id = uuid.uuid4()
     child_kb_id = uuid.uuid4()
+    child_kb_b_id = uuid.uuid4()
     child_document_id = uuid.uuid4()
+    child_document_b_id = uuid.uuid4()
     child_chunk_id = uuid.uuid4()
+    child_chunk_b_id = uuid.uuid4()
     resolver = CapturingRuntimeCandidateResolver(
         KnowledgeRuntimeCandidateSnapshot(
             eligible_direct_kb_ids=(direct_kb_id,),
             collection_streams=(
                 KnowledgeCollectionCandidateStream(
                     collection_id=collection_id,
-                    eligible_kb_ids=(child_kb_id,),
+                    eligible_kb_ids=(child_kb_id, child_kb_b_id),
                 ),
             ),
         )
@@ -3990,6 +4001,16 @@ def test_collection_evidence_redacts_child_identity_and_aggregates_audit(monkeyp
         rank=1,
         metadata_summary={"classification": "internal"},
     )
+    collection_chunk_b = ChunkPreview(
+        chunk_id=child_chunk_b_id,
+        content="second collection evidence",
+        document_id=child_document_b_id,
+        filename="collection-b.md",
+        similarity_score=0.94,
+        score=0.94,
+        rank=1,
+        metadata_summary={"classification": "internal"},
+    )
     audit_calls = []
     monkeypatch.setattr(
         node,
@@ -4003,6 +4024,7 @@ def test_collection_evidence_redacts_child_identity_and_aggregates_audit(monkeyp
             results=[
                 (str(direct_kb_id), [direct_chunk]),
                 (str(child_kb_id), [collection_chunk]),
+                (str(child_kb_b_id), [collection_chunk_b]),
             ],
             failed_count=0,
         ),
@@ -4024,16 +4046,18 @@ def test_collection_evidence_redacts_child_identity_and_aggregates_audit(monkeyp
         for item in result.metadata
         if item.get("knowledge_base_id") == str(direct_kb_id)
     )
-    collection_metadata = next(
+    collection_metadata = [
         item for item in result.metadata if "knowledge_base_id" not in item
-    )
+    ]
     assert direct_metadata["document_id"] == str(direct_document_id)
     assert direct_metadata["chunk_id"] == str(direct_chunk_id)
     assert direct_metadata["rank"] == 1
-    assert "document_id" not in collection_metadata
-    assert "chunk_id" not in collection_metadata
-    assert "parent_chunk_id" not in collection_metadata
-    assert "rank" not in collection_metadata
+    assert direct_metadata["evidence_rank"] == 1
+    assert [item["evidence_rank"] for item in collection_metadata] == [2, 3]
+    assert all("document_id" not in item for item in collection_metadata)
+    assert all("chunk_id" not in item for item in collection_metadata)
+    assert all("parent_chunk_id" not in item for item in collection_metadata)
+    assert all("rank" not in item for item in collection_metadata)
 
     direct_audit = next(
         call for call in audit_calls if call["target_type"] == "knowledge_base"
@@ -4044,8 +4068,9 @@ def test_collection_evidence_redacts_child_identity_and_aggregates_audit(monkeyp
     assert direct_audit["target_id"] == str(direct_kb_id)
     assert collection_audit["target_id"] == "llm-1"
     assert collection_audit["metadata"]["retrieval_mode"] == "collection"
-    assert collection_audit["metadata"]["candidate_count_bucket"] == "1"
-    assert collection_audit["metadata"]["result_count_bucket"] == "1"
+    assert collection_audit["metadata"]["candidate_count_bucket"] == "2-10"
+    assert collection_audit["metadata"]["result_count_bucket"] == "2-10"
+    assert "evidence_rank" not in collection_audit["metadata"]
     assert "authorized_kb_count" not in trace_payload
     assert "selected_kb_count" not in trace_payload
     assert "fanout_concurrency" not in trace_payload
@@ -4064,7 +4089,10 @@ def test_collection_evidence_redacts_child_identity_and_aggregates_audit(monkeyp
     assert str(collection_id) not in durable_output
     assert str(child_kb_id) not in durable_output
     assert str(child_document_id) not in durable_output
+    assert str(child_document_b_id) not in durable_output
     assert str(child_chunk_id) not in durable_output
+    assert str(child_chunk_b_id) not in durable_output
+    assert str(child_kb_b_id) not in durable_output
     assert str(direct_kb_id) in durable_output
 
 
@@ -5317,6 +5345,8 @@ def test_knowledge_search_deduplicates_retrieved_context_when_enabled(monkeypatc
     assert context.count("중복 근거입니다.") == 1
     assert "고유 근거입니다." in context
     assert len(metadata) == 2
+    assert [item["rank"] for item in metadata] == [1, 3]
+    assert [item["evidence_rank"] for item in metadata] == [1, 2]
 
 
 def test_knowledge_search_limits_retrieved_context_chars(monkeypatch):

@@ -80,7 +80,7 @@ retrieval timeout과 구분한다.
 | Workflow Knowledge Reference Service | Editable graph write 전에 direct KB active/non-source-deleted/effective `use`/source gate와 Collection `route`를 current editor로 검증하고 whole-write failure를 반환한다. Reference 없는 legacy graph는 구조 검증 뒤 authorization query를 생략한다 | Collection child expansion, saved label/Client capability 신뢰, runtime lease 발급 |
 | Deployment Preflight | 두 list의 structure, lifecycle/sync eligibility와 server-derived audience/public gate를 재귀 graph에 적용하고 safe bucket/action을 반환한다 | Child ID/exact hidden count 공개, preflight를 runtime capability로 재사용 |
 | Workflow LLM Integration | explicit execution audience와 두 configured ID list로 MBA-232 resolver를 invocation당 한 번 호출하고 ordered KB ID를 Retrieval Orchestrator에 전달한다 | Gateway resolver import, LLM node 내부 permission SQL, owner/credential fallback |
-| Public/Observability Projector | public graph에서 두 reference list를 제거한다. Explicit direct KB의 기존 authorized lineage는 유지할 수 있지만 Collection-derived evidence는 child KB/document/chunk identity와 per-KB rank를 제거하고 node-level count bucket으로 감사한다 | Collection identity/provenance, child resource identity/rank, raw graph/query/source/provider payload 저장 |
+| Public/Observability Projector | public graph에서 두 reference list를 제거한다. Explicit direct KB의 기존 authorized lineage와 KB-local rank는 유지할 수 있다. Collection-derived evidence는 child KB/document/chunk identity와 KB-local rank를 제거하고 최종 병합 evidence rank만 result/quality trace에 남기며, audit은 node-level count bucket으로 집계한다 | Collection identity/provenance, child resource identity/rank, raw graph/query/source/provider payload 저장 |
 
 Builder는 고정 KB와 Knowledge Collection을 별도 selector group으로 표시한다. 각 group은
 독립 `n/20` limit을 가지며 Collection membership이 실행 시점에 다시 계산된다는 설명을

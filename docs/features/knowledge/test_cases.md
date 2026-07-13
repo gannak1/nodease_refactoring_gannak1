@@ -134,7 +134,9 @@ Status: Draft
   provider payload가 없고 safe bucket/fixed code만 있음을 검증한다. Mixed successful
   retrieval에서는 explicit direct KB의 기존 KB/chunk/document lineage는 유지하지만
   Collection-derived evidence의 child KB/chunk/document ID와 per-KB rank는 result metadata, durable trace,
-  audit 어디에도 나타나지 않고 Collection retrieval audit은 node target과 count bucket만
+  audit 어디에도 나타나지 않는다. 최종 정렬·dedupe·top-k 이후의 `evidence_rank`는 direct와
+  Collection-derived result/quality trace에 1부터 연속해서 나타나며 child KB별로 재시작하지
+  않는다. Collection retrieval audit은 node target과 count bucket만
   포함한다. Collection-only/mixed trace는 authorized/selected KB exact count와 그 값에서
   유도되는 actual fan-out concurrency를 저장하지 않고 count bucket만 남긴다.
   Query-vector/fan-out INFO log도 KB/model/vector/failure exact count 대신 bucket만 기록한다.

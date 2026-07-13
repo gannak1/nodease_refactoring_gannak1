@@ -640,7 +640,10 @@ A/B 테스트, 비용 최적화, trace side panel은 다음 redaction-safe summa
 Collection-derived candidate가 하나라도 있는 실행은 `authorized_kb_count`와
 `selected_kb_count` exact 값을 생략하고 각각의 `_bucket` field만 저장한다. Candidate
 수에서 유도되는 actual `fanout_concurrency`도 생략한다. Collection-derived evidence는
-child KB별 결과 경계를 재구성할 수 있는 per-KB `rank`도 생략한다. Direct-only 실행은 current user가
+child KB별 결과 경계를 재구성할 수 있는 per-KB `rank`도 생략한다. 대신 최종 전역
+정렬·dedupe·top-k 이후 1부터 부여한 `evidence_rank`는 result와 품질 trace에 저장할 수
+있다. 이 값은 해당 invocation의 최종 evidence 순서이며 child KB 경계를 뜻하지 않는다.
+Direct-only 실행은 current user가
 명시적으로 선택하고 authorization된 KB의 기존 exact operational summary를 유지할 수 있다.
 | `source_tier_used` | Authorized evidence 안에서 사용한 safe source tier summary |
 | `evidence_count` / `min_score_bucket` | 실제 evidence 기준 count와 bucketed score summary. Hidden/denied count는 포함하지 않는다 |
@@ -663,7 +666,7 @@ child KB별 결과 경계를 재구성할 수 있는 per-KB `rank`도 생략한�
 | Collection sync/remediation | `collection.sync` 또는 organization/admin operation policy. Raw content access를 의미하지 않는다 |
 | Raw content/export | Dedicated raw/compliance endpoint only. Raw/compliance permission, source-managed KB의 fresh source ACL, retention/legal-hold/purge check, response 전 raw access audit이 필요하다. 최종 enum 이름은 RBAC ADR에서 확정한다 |
 
-Response summary와 citation은 KB id, document version id, chunk id, citation id, optional collection id, rank/score, hierarchy path, safe filename/display label, safe metadata summary, policy result, partial marker, bucketed count, retryability, opaque correlation/request id 같은 redaction-safe field만 포함할 수 있다.
+Response summary와 citation은 허용된 KB/document version/chunk identity, citation id, direct KB-local `rank`, 최종 `evidence_rank`, score, hierarchy path, safe filename/display label, safe metadata summary, policy result, partial marker, bucketed count, retryability, opaque correlation/request id 같은 redaction-safe field만 포함할 수 있다. Collection-derived evidence에는 child identity, optional collection id, KB-local `rank`를 포함하지 않는다.
 
 Raw source id/url/path/title, raw source ACL, raw principal, raw source exception, raw query, raw rewritten query, raw answer, raw prompt/completion, raw provider response, raw skill body, hidden skill source reference, content preview, credential value는 durable audit/trace/usage metadata에 저장하지 않는다. `content_preview`는 user-facing response 전용이며 redacted/capped 상태로만 반환하고 durable summary에서 제외한다. Raw artifact를 활성화하더라도 dedicated raw/compliance flow에서만 노출하며 Agent answer, retrieval context, prompt construction, SSE stream에는 사용하지 않는다. Raw/compliance access audit은 safe reference, decision, reason code, retention/legal-hold summary, request/correlation identifier만 저장한다.
 
@@ -695,5 +698,5 @@ Safe no-result/insufficient-evidence response는 `status`, `evidence_sufficient=
 - Multi-KB 또는 collection-routed answer는 `trace_payloads.rag_answer_run_id`나 `llm_usage_logs.rag_answer_run_id`를 추가하지 않는다.
 - Standalone Agent answer lifecycle은 [ADR-0013](../../decisions/ADR-0013-rag-answer-trace-usage-correlation-boundary.md)에 따라 `rag.answer.*`와 `rag_answer_runs`를 사용한다.
 - Workflow runtime RAG evidence는 계속 `trace_payloads.payload_kind='rag.retrieval'`를 사용할 수 있다. Standalone answer는 summary/citation을 RAG-owned record에 저장한다.
-- Trace side panel에는 RAG strategy summary, citation id, KB id, document version id, chunk id, rank/score, safe metadata summary, token/cost/latency summary만 표시한다. 권한 없는 문서명/ID, raw source metadata, raw content, raw prompt/completion은 표시하지 않는다.
+- Trace side panel에는 RAG strategy summary, citation id, 허용된 KB/document version/chunk identity, direct KB-local rank, 최종 evidence rank/score, safe metadata summary, token/cost/latency summary만 표시한다. Collection-derived evidence에는 child identity와 KB-local rank를 표시하지 않는다. 권한 없는 문서명/ID, raw source metadata, raw content, raw prompt/completion은 표시하지 않는다.
 - Skill usage summary는 workflow draft, LLM node의 RAG 옵션, workflow test run, RAG strategy comparison에서 skill id, skill version, freshness state, eval status, safe source tier, safe provenance refs만 포함할 수 있다. Raw skill body, raw source title/path/url, hidden source refs는 표시하지 않는다.
