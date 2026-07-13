@@ -70,6 +70,7 @@ DB_PREFIX = "mbased_schedule_claim"
 COST_OPTIMIZER_HEAD_REVISION = "fd0e1f2a3b4c"
 SCHEDULE_HEAD_REVISION = "b39e0f1a2b43"
 SCHEDULE_MERGE_REVISION = "ff4b5c6d7e89"
+COMBINED_HEAD_REVISION = "ff6d7e8f9012"
 SPLIT_HEAD_REVISIONS = {COST_OPTIMIZER_HEAD_REVISION, SCHEDULE_HEAD_REVISION}
 
 
@@ -315,12 +316,12 @@ def test_schedule_dispatch_head_downgrade_requires_explicit_break_glass():
         _enable_vector_extension(database, config)
         _run_alembic(
             "upgrade",
-            SCHEDULE_HEAD_REVISION,
+            COMBINED_HEAD_REVISION,
             database=database,
             config=config,
             expect_success=True,
         )
-        assert _revision(database, config) == SCHEDULE_HEAD_REVISION
+        assert _revision(database, config) == COMBINED_HEAD_REVISION
 
         _run_alembic(
             "downgrade",
@@ -329,7 +330,7 @@ def test_schedule_dispatch_head_downgrade_requires_explicit_break_glass():
             config=config,
             expect_success=False,
         )
-        assert _revision(database, config) == SCHEDULE_HEAD_REVISION
+        assert _revision(database, config) == COMBINED_HEAD_REVISION
 
         _run_alembic(
             "downgrade",
@@ -367,18 +368,18 @@ def test_schedule_dispatch_head_downgrade_requires_explicit_break_glass():
             config=config,
             expect_success=True,
         )
-        assert _revision(database, config) == SCHEDULE_HEAD_REVISION
+        assert _revisions(database, config) == SPLIT_HEAD_REVISIONS
 
         _insert_pending_claim(database, config)
         _run_alembic(
             "downgrade",
-            COST_OPTIMIZER_HEAD_REVISION,
+            SCHEDULE_MERGE_REVISION,
             database=database,
             config=config,
             expect_success=False,
             allow_destructive_downgrade=True,
         )
-        assert _revision(database, config) == SCHEDULE_HEAD_REVISION
+        assert _revisions(database, config) == SPLIT_HEAD_REVISIONS
     except OperationalError:
         raise pytest.fail.Exception(
             "disposable PostgreSQL is unavailable or rejected the connection; "
