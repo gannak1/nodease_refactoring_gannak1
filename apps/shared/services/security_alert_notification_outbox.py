@@ -134,10 +134,11 @@ class SecurityAlertNotificationOutboxService:
                 SecurityAlertNotificationOutbox.lease_expires_at.is_not(None),
                 SecurityAlertNotificationOutbox.lease_expires_at <= now,
             )
+            .with_for_update(skip_locked=True)
             .all()
         )
         for event in events:
-            self.mark_retry_or_dead_letter(
+            self._apply_retry_or_dead_letter(
                 event,
                 safe_reason_code="notification.lease_expired",
                 now=now,
@@ -149,18 +150,66 @@ class SecurityAlertNotificationOutboxService:
         self,
         event: SecurityAlertNotificationOutbox,
         *,
+        owner_token: str,
         now: datetime | None = None,
-    ) -> None:
+    ) -> bool:
         now = now or datetime.now(timezone.utc)
-        event.status = OUTBOX_STATUS_SUCCEEDED
-        event.owner_token = None
-        event.lease_expires_at = None
-        event.next_retry_at = None
-        event.safe_reason_code = None
-        event.delivered_at = now
-        event.updated_at = now
+        owned_event = self._lock_owned_lease(
+            event_id=event.id,
+            owner_token=owner_token,
+        )
+        if owned_event is None:
+            return False
+        owned_event.status = OUTBOX_STATUS_SUCCEEDED
+        owned_event.owner_token = None
+        owned_event.lease_expires_at = None
+        owned_event.next_retry_at = None
+        owned_event.safe_reason_code = None
+        owned_event.delivered_at = now
+        owned_event.updated_at = now
+        return True
 
     def mark_retry_or_dead_letter(
+        self,
+        event: SecurityAlertNotificationOutbox,
+        *,
+        owner_token: str,
+        safe_reason_code: str,
+        now: datetime | None = None,
+        retry_after_seconds: int = DEFAULT_RETRY_SECONDS,
+    ) -> bool:
+        owned_event = self._lock_owned_lease(
+            event_id=event.id,
+            owner_token=owner_token,
+        )
+        if owned_event is None:
+            return False
+        self._apply_retry_or_dead_letter(
+            owned_event,
+            safe_reason_code=safe_reason_code,
+            now=now,
+            retry_after_seconds=retry_after_seconds,
+        )
+        return True
+
+    def _lock_owned_lease(
+        self,
+        *,
+        event_id: uuid.UUID,
+        owner_token: str,
+    ) -> SecurityAlertNotificationOutbox | None:
+        return (
+            self.db.query(SecurityAlertNotificationOutbox)
+            .filter(
+                SecurityAlertNotificationOutbox.id == event_id,
+                SecurityAlertNotificationOutbox.status == OUTBOX_STATUS_LEASED,
+                SecurityAlertNotificationOutbox.owner_token == owner_token,
+            )
+            .with_for_update()
+            .one_or_none()
+        )
+
+    def _apply_retry_or_dead_letter(
         self,
         event: SecurityAlertNotificationOutbox,
         *,
@@ -208,13 +257,10 @@ class SecurityAlertNotificationOutboxProcessor:
         self.db.commit()
         processed_count = 0
         for event in events:
-            delivered = False
             try:
                 if event.event_type != OUTBOX_EVENT_NOTIFICATIONS_CHANGED:
                     raise ValueError("unsupported_event_type")
                 self.deliver(self.db, event.organization_id)
-                self.outbox.mark_succeeded(event)
-                delivered = True
             except Exception:
                 # A manager lookup can leave the delivery transaction aborted.
                 # The durable lease is already committed, so reset only this
@@ -222,11 +268,14 @@ class SecurityAlertNotificationOutboxProcessor:
                 self.db.rollback()
                 self.outbox.mark_retry_or_dead_letter(
                     event,
+                    owner_token=owner_token,
                     safe_reason_code="notification.delivery_failed",
                 )
-            self.db.commit()
-            if delivered:
+                self.db.commit()
+                continue
+            if self.outbox.mark_succeeded(event, owner_token=owner_token):
                 processed_count += 1
+            self.db.commit()
         return SecurityAlertNotificationProcessResult(
             processed_count=processed_count,
             recovered_count=recovered_count,

@@ -21,6 +21,9 @@ class _Query:
     def filter(self, *args):
         return self
 
+    def with_for_update(self, **kwargs):
+        return self
+
     def one_or_none(self):
         return self.rows[0] if self.rows else None
 
@@ -130,8 +133,10 @@ def test_concurrent_enqueue_returns_winner_without_rolling_back_outer_work():
 def test_retry_is_scheduled_then_fifth_failure_is_dead_lettered():
     module = _module()
     now = datetime(2026, 7, 13, 5, 0, tzinfo=timezone.utc)
-    service = module.SecurityAlertNotificationOutboxService(_Db())
+    db = _Db()
+    service = module.SecurityAlertNotificationOutboxService(db)
     event = SimpleNamespace(
+        id=uuid4(),
         status="leased",
         owner_token="worker-1",
         lease_expires_at=now + timedelta(minutes=5),
@@ -144,13 +149,15 @@ def test_retry_is_scheduled_then_fifth_failure_is_dead_lettered():
         dead_lettered_at=None,
         updated_at=None,
     )
+    db.rows = [event]
 
-    service.mark_retry_or_dead_letter(
+    assert service.mark_retry_or_dead_letter(
         event,
+        owner_token="worker-1",
         safe_reason_code="notification.delivery_failed",
         now=now,
         retry_after_seconds=60,
-    )
+    ) is True
 
     assert event.status == "retry_scheduled"
     assert event.next_retry_at == now + timedelta(seconds=60)
@@ -159,16 +166,54 @@ def test_retry_is_scheduled_then_fifth_failure_is_dead_lettered():
     assert event.lease_expires_at is None
 
     event.status = "leased"
+    event.owner_token = "worker-1"
     event.attempt_count = 5
-    service.mark_retry_or_dead_letter(
+    assert service.mark_retry_or_dead_letter(
         event,
+        owner_token="worker-1",
         safe_reason_code="notification.delivery_failed",
         now=now,
-    )
+    ) is True
 
     assert event.status == "dead_lettered"
     assert event.next_retry_at is None
     assert event.dead_lettered_at == now
+
+
+def test_stale_lease_owner_cannot_overwrite_terminal_outbox_state():
+    module = _module()
+    now = datetime(2026, 7, 13, 5, 0, tzinfo=timezone.utc)
+    event = SimpleNamespace(
+        id=uuid4(),
+        status="succeeded",
+        owner_token=None,
+        lease_expires_at=None,
+        attempt_count=2,
+        max_attempts=5,
+        retryable=True,
+        next_retry_at=None,
+        safe_reason_code=None,
+        delivered_at=now,
+        dead_lettered_at=None,
+        updated_at=now,
+    )
+    service = module.SecurityAlertNotificationOutboxService(_Db())
+
+    assert service.mark_succeeded(
+        event,
+        owner_token="stale-worker",
+        now=now + timedelta(minutes=1),
+    ) is False
+    assert service.mark_retry_or_dead_letter(
+        event,
+        owner_token="stale-worker",
+        safe_reason_code="notification.delivery_failed",
+        now=now + timedelta(minutes=1),
+    ) is False
+
+    assert event.status == "succeeded"
+    assert event.delivered_at == now
+    assert event.safe_reason_code is None
 
 
 def test_processor_delivers_current_manager_refresh_and_marks_success(monkeypatch):
@@ -192,11 +237,15 @@ def test_processor_delivers_current_manager_refresh_and_marks_success(monkeypatc
             events.append("lease")
             return [event]
 
-        def mark_succeeded(self, row):
+        def mark_succeeded(self, row, *, owner_token):
             assert row is event
+            assert owner_token == "worker-1"
             events.append("succeeded")
+            return True
 
-        def mark_retry_or_dead_letter(self, row, *, safe_reason_code):
+        def mark_retry_or_dead_letter(
+            self, row, *, owner_token, safe_reason_code
+        ):
             raise AssertionError(safe_reason_code)
 
     monkeypatch.setattr(module, "SecurityAlertNotificationOutboxService", Outbox)
@@ -232,12 +281,16 @@ def test_processor_converts_delivery_exception_to_safe_retry_reason(monkeypatch)
             events.append("lease")
             return [event]
 
-        def mark_succeeded(self, row):
+        def mark_succeeded(self, row, *, owner_token):
             raise AssertionError("failure must not be marked as succeeded")
 
-        def mark_retry_or_dead_letter(self, row, *, safe_reason_code):
+        def mark_retry_or_dead_letter(
+            self, row, *, owner_token, safe_reason_code
+        ):
             assert row is event
+            assert owner_token == "worker-1"
             events.append(("retry", safe_reason_code))
+            return True
 
     monkeypatch.setattr(module, "SecurityAlertNotificationOutboxService", Outbox)
     secret = "raw-redis-secret"
