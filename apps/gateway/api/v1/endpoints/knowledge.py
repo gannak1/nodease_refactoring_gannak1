@@ -1227,7 +1227,6 @@ def get_knowledge_base(
     try:
         return _knowledge_base_query_service(db).get_detail(
             kb_id,
-            user_id=None,
             organization_scope=organization_id,
             has_organization_id=True,
             can_edit_settings=capabilities.can_write,
@@ -1426,6 +1425,13 @@ def _raise_knowledge_lifecycle_policy_error(
             "Knowledge Base not found.",
         )
     if isinstance(exc, KnowledgeLifecyclePolicyDenied):
+        if exc.reason_code == "retention_policy_unavailable":
+            raise_api_error(
+                request,
+                status.HTTP_403_FORBIDDEN,
+                "policy.denied",
+                "Knowledge Base retention policy does not allow hard delete.",
+            )
         raise_api_error(
             request,
             status.HTTP_403_FORBIDDEN,
@@ -1802,6 +1808,7 @@ def preview_document_chunking(
 @router.post(
     "/{kb_id}/documents/{document_id}/sync", status_code=status.HTTP_202_ACCEPTED
 )
+@audit(AuditAction.DOCUMENT_PROCESS, target_param="document_id")
 async def sync_document(
     kb_id: UUID,
     document_id: UUID,

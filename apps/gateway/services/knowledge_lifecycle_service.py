@@ -19,20 +19,30 @@ class StorageServiceProtocol(Protocol):
 
 
 StorageServiceFactory = Callable[[], StorageServiceProtocol]
+HardDeletePolicyChecker = Callable[[KnowledgeBase], bool]
 
 
 class KnowledgeLifecycleNotFound(Exception):
-    """Raised when a Knowledge lifecycle operation cannot find an owned KB."""
+    """Raised when a Knowledge lifecycle operation cannot find a valid KB state."""
 
 
 class KnowledgeLifecyclePolicyDenied(Exception):
-    """Raised when source/system ownership forbids manual lifecycle mutation."""
+    """Raised when source ownership or retention policy forbids a mutation."""
+
+    def __init__(self, reason_code: str = "source_managed") -> None:
+        super().__init__(reason_code)
+        self.reason_code = reason_code
 
 
 def _default_storage_service() -> StorageServiceProtocol:
     from apps.gateway.services.storage import get_storage_service
 
     return get_storage_service()
+
+
+def _default_hard_delete_policy_checker(_kb: KnowledgeBase) -> bool:
+    # Retention/legal-hold policy has no approved production primitive yet.
+    return False
 
 
 class KnowledgeLifecycleService:
@@ -43,27 +53,13 @@ class KnowledgeLifecycleService:
         db: Session,
         *,
         storage_service_factory: StorageServiceFactory = _default_storage_service,
+        hard_delete_policy_checker: HardDeletePolicyChecker = (
+            _default_hard_delete_policy_checker
+        ),
     ) -> None:
         self.db = db
         self._storage_service_factory = storage_service_factory
-
-    def delete_owned_knowledge_base(self, kb_id: UUID, user_id: UUID) -> None:
-        kb = (
-            self.db.query(KnowledgeBase)
-            .filter(KnowledgeBase.id == kb_id, KnowledgeBase.user_id == user_id)
-            .first()
-        )
-        if not kb:
-            raise KnowledgeLifecycleNotFound
-
-        self._delete_document_files_best_effort(kb)
-        try:
-            self._delete_direct_permission_rows(kb)
-            self.db.delete(kb)
-            self.db.commit()
-        except Exception:
-            self.db.rollback()
-            raise
+        self._hard_delete_policy_checker = hard_delete_policy_checker
 
     def archive_knowledge_base(self, kb: KnowledgeBase, *, actor_id: UUID) -> None:
         self._require_manual_kb(kb)
@@ -106,6 +102,7 @@ class KnowledgeLifecycleService:
         actor_id: UUID,
     ) -> None:
         self._require_manual_kb(kb)
+        self._require_hard_delete_policy(kb)
         self._delete_document_files_best_effort(kb)
         try:
             self._delete_direct_permission_rows(kb)
@@ -128,7 +125,19 @@ class KnowledgeLifecycleService:
 
     def _require_manual_kb(self, kb: KnowledgeBase) -> None:
         if getattr(kb, "source_identity_id", None) is not None:
-            raise KnowledgeLifecyclePolicyDenied
+            raise KnowledgeLifecyclePolicyDenied("source_managed")
+
+    def _require_hard_delete_policy(self, kb: KnowledgeBase) -> None:
+        try:
+            allowed = self._hard_delete_policy_checker(kb)
+        except Exception as exc:
+            logger.warning(
+                "Knowledge hard-delete policy evaluation failed: %s",
+                type(exc).__name__,
+            )
+            allowed = False
+        if not allowed:
+            raise KnowledgeLifecyclePolicyDenied("retention_policy_unavailable")
 
     def _commit_or_rollback(self) -> None:
         try:

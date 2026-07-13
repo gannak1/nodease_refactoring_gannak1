@@ -20,6 +20,7 @@ vi.mock('@/lib/apiClient', () => ({
 
 import { knowledgeApi, RAGAgentStreamEvent } from './knowledgeApi';
 import { apiClient } from '@/lib/apiClient';
+import { getStoredActiveOrganizationId } from '@/lib/activeOrganization';
 
 const streamResponse = (chunks: Array<string | Uint8Array>, status = 200): Response => {
   const encoder = new TextEncoder();
@@ -45,6 +46,24 @@ const payload = {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+describe('knowledgeApi.getProgressUrl', () => {
+  it('includes the active organization for native EventSource authorization', () => {
+    vi.mocked(getStoredActiveOrganizationId).mockReturnValueOnce('org/with space');
+
+    expect(knowledgeApi.getProgressUrl('document-1')).toBe(
+      'http://localhost:8000/api/v1/rag/document/document-1/progress?organizationId=org%2Fwith%20space',
+    );
+  });
+
+  it('fails closed when the active organization is missing', () => {
+    vi.mocked(getStoredActiveOrganizationId).mockReturnValueOnce(null);
+
+    expect(() => knowledgeApi.getProgressUrl('document-1')).toThrow(
+      'Active organization is required for document progress.',
+    );
+  });
 });
 
 describe('knowledgeApi.streamAgentAnswer', () => {

@@ -666,7 +666,13 @@ export const knowledgeApi = {
 
   // SSE 연결을 위한 URL 반환
   getProgressUrl: (documentId: string): string => {
-    return `${API_BASE_URL}/rag/document/${documentId}/progress`;
+    const organizationId = getStoredActiveOrganizationId();
+    if (!organizationId) {
+      throw new Error('Active organization is required for document progress.');
+    }
+    return `${API_BASE_URL}/rag/document/${documentId}/progress?organizationId=${encodeURIComponent(
+      organizationId,
+    )}`;
   },
 
   // API Proxy Preview

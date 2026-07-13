@@ -7,7 +7,6 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from apps.gateway.services import knowledge_base_query_service as service_module
 from apps.gateway.services.knowledge_base_query_service import (
-    DEFAULT_EMBEDDING_MODEL,
     KnowledgeBaseCreateFailed,
     KnowledgeBaseNotFound,
     KnowledgeBaseQueryService,
@@ -46,16 +45,6 @@ class FakeKnowledgeQuery:
 
     def all(self):
         return self.rows
-
-
-class FakeKnowledgeDb:
-    def __init__(self, rows):
-        self.rows = rows
-        self.query_entities = []
-
-    def query(self, *entities):
-        self.query_entities.append(entities)
-        return FakeKnowledgeQuery(self.rows)
 
 
 class FakeSelectableDb:
@@ -175,99 +164,6 @@ class FakeCreateDb:
 class FailingCreateDb(FakeCreateDb):
     def commit(self):
         raise SQLAlchemyError("simulated write failure")
-
-
-def test_list_maps_legacy_documentless_rows_without_full_orm_load():
-    kb_id = uuid.uuid4()
-    row = (
-        kb_id,
-        None,
-        "문서 없는 KB",
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
-    db = FakeKnowledgeDb([row])
-
-    response = KnowledgeBaseQueryService(db).list(
-        user_id=uuid.uuid4(),
-        organization_scope=None,
-        has_organization_id=False,
-    )
-
-    assert all(
-        entity is not service_module.KnowledgeBase
-        for query_entities in db.query_entities
-        for entity in query_entities
-    )
-    assert response[0].id == kb_id
-    assert response[0].organization_id is None
-    assert response[0].document_count == 0
-    assert response[0].source_types == []
-    assert response[0].embedding_model == DEFAULT_EMBEDDING_MODEL
-    assert response[0].created_at is not None
-    assert response[0].updated_at is not None
-
-
-def test_list_normalizes_source_types_and_uses_latest_document_update():
-    kb_id = uuid.uuid4()
-    organization_id = uuid.uuid4()
-    created_at = datetime(2026, 7, 7, 1, tzinfo=timezone.utc)
-    kb_updated_at = datetime(2026, 7, 7, 2, tzinfo=timezone.utc)
-    doc_updated_at = datetime(2026, 7, 7, 3, tzinfo=timezone.utc)
-    row = (
-        kb_id,
-        organization_id,
-        "휴가 정책 KB",
-        "휴가 정책",
-        "custom-embedding",
-        created_at,
-        kb_updated_at,
-        2,
-        doc_updated_at,
-        [SourceType.FILE, " API ", None, '"CSV"', "'EMAIL'", SourceType.FILE],
-    )
-
-    response = KnowledgeBaseQueryService(FakeKnowledgeDb([row])).list(
-        user_id=uuid.uuid4(),
-        organization_scope=organization_id,
-        has_organization_id=True,
-    )
-
-    assert response[0].organization_id == organization_id
-    assert response[0].document_count == 2
-    assert response[0].created_at == created_at
-    assert response[0].updated_at == doc_updated_at
-    assert response[0].source_types == ["FILE", "API", "CSV", "EMAIL"]
-    assert response[0].embedding_model == "custom-embedding"
-
-
-def test_list_normalizes_string_array_source_types():
-    kb_id = uuid.uuid4()
-    row = (
-        kb_id,
-        None,
-        "문자열 source type KB",
-        None,
-        None,
-        None,
-        None,
-        2,
-        None,
-        '{"FILE", "API"}',
-    )
-
-    response = KnowledgeBaseQueryService(FakeKnowledgeDb([row])).list(
-        user_id=uuid.uuid4(),
-        organization_scope=None,
-        has_organization_id=False,
-    )
-
-    assert response[0].source_types == ["FILE", "API"]
 
 
 def test_list_authorized_returns_only_active_org_kbs_with_read_permission():
@@ -395,7 +291,6 @@ def test_get_detail_maps_documents_without_full_kb_orm_load():
         recover_processing_timeout=lambda *_args, **_kwargs: False,
     ).get_detail(
         knowledge_base_id,
-        user_id=uuid.uuid4(),
         organization_scope=organization_id,
         has_organization_id=True,
     )
@@ -628,7 +523,6 @@ def test_get_detail_raises_not_found_for_missing_or_hidden_kb():
     with pytest.raises(KnowledgeBaseNotFound):
         KnowledgeBaseQueryService(db).get_detail(
             uuid.uuid4(),
-            user_id=uuid.uuid4(),
             organization_scope=uuid.uuid4(),
             has_organization_id=True,
         )
@@ -683,7 +577,6 @@ def test_get_detail_uses_chunk_counts_when_chunk_table_is_available():
         recover_processing_timeout=lambda *_args, **_kwargs: False,
     ).get_detail(
         knowledge_base_id,
-        user_id=uuid.uuid4(),
         organization_scope=organization_id,
         has_organization_id=True,
     )
@@ -732,7 +625,6 @@ def test_get_detail_normalizes_non_dict_meta_info_to_safe_empty_dict():
         recover_processing_timeout=lambda *_args, **_kwargs: False,
     ).get_detail(
         knowledge_base_id,
-        user_id=uuid.uuid4(),
         organization_scope=organization_id,
         has_organization_id=True,
     )
@@ -779,7 +671,6 @@ def test_get_detail_counts_only_active_ready_version_chunks_for_selectability():
         recover_processing_timeout=lambda *_args, **_kwargs: False,
     ).get_detail(
         knowledge_base_id,
-        user_id=uuid.uuid4(),
         organization_scope=organization_id,
         has_organization_id=True,
     )
@@ -788,65 +679,6 @@ def test_get_detail_counts_only_active_ready_version_chunks_for_selectability():
     assert response.documents[0].chunk_count == 1
     assert "document_chunks.document_version_id" in chunk_filter_sql
     assert "document_versions.status" in chunk_filter_sql
-
-
-def test_llm_rag_selectability_requires_completed_document_with_chunks():
-    knowledge_base_id = uuid.uuid4()
-    now = datetime(2026, 7, 7, 1, tzinfo=timezone.utc)
-    completed_doc_id = uuid.uuid4()
-    db = FakeDetailDb(
-        (
-            knowledge_base_id,
-            None,
-            "온보딩 KB",
-            None,
-            "text-embedding-3-small",
-            now,
-            None,
-            None,
-        ),
-        [
-            (
-                completed_doc_id,
-                "onboarding.pdf",
-                "completed",
-                now,
-                None,
-                None,
-                SourceType.FILE,
-                {},
-            ),
-            (
-                uuid.uuid4(),
-                "pending.pdf",
-                "processing",
-                now,
-                None,
-                None,
-                SourceType.FILE,
-                {},
-            ),
-        ],
-        [(completed_doc_id, 3)],
-    )
-
-    selectability = KnowledgeBaseQueryService(
-        db,
-        column_exists=lambda *_args, **_kwargs: True,
-        finalize_processing_start=lambda *_args, **_kwargs: False,
-        recover_processing_timeout=lambda *_args, **_kwargs: False,
-    ).get_llm_rag_selectability(
-        knowledge_base_id,
-        user_id=uuid.uuid4(),
-        organization_scope=None,
-        has_organization_id=False,
-    )
-
-    assert selectability.available is True
-    assert selectability.state == "available"
-    assert selectability.safe_reason_code == "completed_document_available"
-    assert selectability.completed_document_count == 1
-    assert selectability.document_count == 2
 
 
 def test_llm_rag_selectability_reports_not_ready_when_completed_document_has_no_chunks():

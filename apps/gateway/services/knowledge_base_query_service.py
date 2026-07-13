@@ -343,115 +343,6 @@ class KnowledgeBaseQueryService:
             embedding_model=kb.embedding_model,
         )
 
-    def list(
-        self,
-        *,
-        user_id: UUID,
-        organization_scope: UUID | None,
-        has_organization_id: bool,
-    ) -> list[KnowledgeBaseResponse]:
-        has_safe_metadata = self.has_column("knowledge_bases", "safe_metadata")
-        organization_id_column = (
-            KnowledgeBase.organization_id
-            if has_organization_id
-            else literal(None).label("organization_id")
-        )
-        group_by_columns = [
-            KnowledgeBase.id,
-            KnowledgeBase.name,
-            KnowledgeBase.description,
-            KnowledgeBase.embedding_model,
-            KnowledgeBase.created_at,
-            KnowledgeBase.updated_at,
-        ]
-        if has_organization_id:
-            group_by_columns.append(KnowledgeBase.organization_id)
-        select_columns = [
-            KnowledgeBase.id,
-            organization_id_column,
-            KnowledgeBase.name,
-            KnowledgeBase.description,
-            KnowledgeBase.embedding_model,
-            KnowledgeBase.created_at,
-            KnowledgeBase.updated_at,
-        ]
-        if has_safe_metadata:
-            select_columns.append(KnowledgeBase.safe_metadata)
-            group_by_columns.append(KnowledgeBase.safe_metadata)
-        select_columns.extend(
-            [
-                func.count(Document.id).label("document_count"),
-                func.max(Document.updated_at).label("last_updated_at"),
-                func.array_agg(Document.source_type).label("source_types"),
-            ]
-        )
-
-        query = (
-            self.db.query(*select_columns)
-            .select_from(KnowledgeBase)
-            .outerjoin(Document, KnowledgeBase.id == Document.knowledge_base_id)
-            .filter(KnowledgeBase.user_id == user_id)
-        )
-        if organization_scope is not None:
-            query = query.filter(KnowledgeBase.organization_id == organization_scope)
-        results = (
-            query.group_by(*group_by_columns)
-            .order_by(KnowledgeBase.created_at.desc())
-            .all()
-        )
-
-        response: list[KnowledgeBaseResponse] = []
-        for row in results:
-            if has_safe_metadata and len(row) == 11:
-                (
-                    kb_id,
-                    organization_id,
-                    name,
-                    description,
-                    embedding_model,
-                    created_at,
-                    updated_at,
-                    safe_metadata,
-                    doc_count,
-                    last_updated_at,
-                    source_types,
-                ) = row
-            else:
-                (
-                    kb_id,
-                    organization_id,
-                    name,
-                    description,
-                    embedding_model,
-                    created_at,
-                    updated_at,
-                    doc_count,
-                    last_updated_at,
-                    source_types,
-                ) = row
-                safe_metadata = {}
-            created_at = created_at or _max_datetime_or_now(
-                updated_at, last_updated_at
-            )
-            final_updated_at = _max_datetime_or_now(
-                updated_at, last_updated_at, created_at
-            )
-            response.append(
-                KnowledgeBaseResponse(
-                    id=kb_id,
-                    organization_id=organization_id,
-                    name=name,
-                    description=description,
-                    safe_metadata=_safe_metadata_dict(safe_metadata),
-                    document_count=int(doc_count or 0),
-                    created_at=created_at,
-                    updated_at=final_updated_at,
-                    source_types=_clean_source_types(source_types),
-                    embedding_model=embedding_model or DEFAULT_EMBEDDING_MODEL,
-                )
-            )
-        return response
-
     def list_authorized(
         self,
         *,
@@ -536,7 +427,6 @@ class KnowledgeBaseQueryService:
         self,
         kb_id: UUID,
         *,
-        user_id: UUID | None,
         organization_scope: UUID | None,
         has_organization_id: bool,
         can_edit_settings: bool = True,
@@ -578,8 +468,6 @@ class KnowledgeBaseQueryService:
         kb_query = self.db.query(*kb_select_columns).select_from(KnowledgeBase).filter(
             KnowledgeBase.id == kb_id
         )
-        if user_id is not None:
-            kb_query = kb_query.filter(KnowledgeBase.user_id == user_id)
         if organization_scope is not None:
             kb_query = kb_query.filter(KnowledgeBase.organization_id == organization_scope)
         kb = kb_query.first()
@@ -681,22 +569,6 @@ class KnowledgeBaseQueryService:
             can_read_content=can_read_content,
             can_manage=can_manage,
         )
-
-    def get_llm_rag_selectability(
-        self,
-        kb_id: UUID,
-        *,
-        user_id: UUID,
-        organization_scope: UUID | None,
-        has_organization_id: bool,
-    ) -> LLMRAGSelectability:
-        detail = self.get_detail(
-            kb_id,
-            user_id=user_id,
-            organization_scope=organization_scope,
-            has_organization_id=has_organization_id,
-        )
-        return evaluate_llm_rag_selectability(detail)
 
     def list_llm_selectable(
         self,

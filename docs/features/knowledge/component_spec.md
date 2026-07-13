@@ -63,6 +63,7 @@ Retrieval Orchestrator는 최종 evidence와 함께 KB/document version, organiz
 
 - KB 상세의 source 목록은 `pending` document에 `처리 시작` action과 "처리 시작 전에는 RAG 검색에 사용되지 않는다"는 safe 안내를 표시한다.
 - `failed` document는 같은 document settings 화면으로 들어가는 `재처리` action을 제공한다.
+- 처리 중 document의 progress UI는 active organization UUID를 포함한 authorization-scoped SSE URL만 연다. Active organization이 없으면 stream을 열지 않고 safe 안내를 표시하며, Gateway의 KB `read` 거부 응답 뒤 자동 재연결하지 않는다.
 - Source upload 성공 후 UI는 KB 상세 source 목록으로 돌아오며, 방금 등록된 `pending` source를 포함한 목록에서 처리 시작 action을 제공한다. FILE source는 document settings 화면에서 원본 preview iframe을 렌더할 수 있으므로 업로드 직후 자동으로 상세 화면을 열지 않는다.
 - 이 UI는 hidden document, 권한 없는 source path/title, raw source content를 표시하지 않는다.
 

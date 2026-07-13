@@ -8,13 +8,13 @@ Status: Draft
 | Method | Path | 목적 | 권한 경계 |
 | --- | --- | --- | --- |
 | GET | `/api/v1/knowledge` | 현재 KB 목록 | Active organization에서 KB `read`가 허용된 active KB만 반환하고 unauthorized row/count는 생략한다 |
-| GET | `/api/v1/knowledge/llm-selectable` | Workflow LLM node RAG picker용 KB 후보 목록 | `X-Organization-Id` active organization 필수. 일반 관리 목록의 owner filtering을 사용하지 않고 active organization 안에서 caller가 KB `use` 권한을 가진 KB만 반환한다. 반환 후보는 retrieval-visible `completed` document chunk가 1개 이상 있어야 하며, runtime은 실행 시점 execution subject 기준으로 다시 권한을 평가한다 |
+| GET | `/api/v1/knowledge/llm-selectable` | Workflow LLM node RAG picker용 KB 후보 목록 | `X-Organization-Id` active organization 필수. active organization 안에서 caller가 KB `use` 권한을 가진 KB만 반환한다. 반환 후보는 retrieval-visible `completed` document chunk가 1개 이상 있어야 하며, runtime은 실행 시점 execution subject 기준으로 다시 권한을 평가한다 |
 | POST | `/api/v1/knowledge` | 빈 KB 생성 | Active organization에 KB, 생성자의 user-direct `manager`, canonical audit를 한 transaction에서 생성한다. 필수 schema가 준비되지 않으면 `503 knowledge.schema_not_ready`로 fail-closed 처리한다 |
 | GET | `/api/v1/knowledge/{kb_id}` | 현재 KB 상세와 문서 상태 | Active organization + KB `read`. Detail capability는 `can_read/use/write/read_content/manage`와 파생 UI flag로 반환한다 |
 | GET | `/api/v1/knowledge/{kb_id}/safe-metadata` | allowlisted KB recommendation metadata 조회 | active organization, KB `manage`; 권한 없는 resource는 404로 숨긴다 |
 | PATCH | `/api/v1/knowledge/{kb_id}/safe-metadata` | `safe_label`, `kb_safe_description`, `kb_safe_topics` 수정 | active organization, KB `manage`, sanitizer, audit. 일반 KB 설정 PATCH와 분리한다 |
 | POST | `/api/v1/knowledge/{kb_id}/archive`, `/restore` | Manual KB lifecycle 전이 | KB `manage` 또는 domain `lifecycle_manage`; source-managed KB는 source-owned로 차단 |
-| DELETE | `/api/v1/knowledge/{kb_id}?acknowledged_hard_delete=true` | Manual KB hard delete | Organization manager 전용, explicit acknowledgement, permission cleanup과 audit를 같은 DB transaction에서 처리 |
+| DELETE | `/api/v1/knowledge/{kb_id}?acknowledged_hard_delete=true` | Manual KB hard delete | Organization manager 전용, explicit acknowledgement, approved retention/legal-hold gate. Production gate가 연결되지 않은 현재 baseline은 `403 policy.denied`로 fail-closed하며, allow된 경우에만 permission cleanup과 audit를 같은 DB transaction에서 처리한다 |
 | POST | `/api/v1/knowledge/candidates/resolve` | Builder/deployment preflight용 safe KB 후보 조회 | active organization, collection route 또는 explicit KB helper |
 | POST | `/api/v1/knowledge/rag-recommendations` | Workflow Builder용 LLM node RAG option 추천 | active organization, candidate resolver safe set, KB 단위 recommendation |
 | POST | `/api/v1/rag/upload` | KB 문서 업로드/색인 요청 | `X-Organization-Id` active organization 필수. 신규 KB는 active organization에 귀속하며 primary organization fallback을 사용하지 않는다. 기존 KB 업로드는 KB organization과 active organization이 일치하고 KB write/manage 권한을 통과해야 한다 |
@@ -22,6 +22,7 @@ Status: Draft
 | POST | `/api/v1/rag/search-test/chat` | 검색+답변 테스트 | active organization, KB use, LLM credential |
 | POST | `/api/v1/rag/agent/answer` | 명시 `knowledge_base_id` 기반 standalone Agent answer | KB use, generation model/credential use |
 | POST | `/api/v1/rag/agent/answer/stream` | standalone Agent answer SSE | KB use, generation model/credential use |
+| GET | `/api/v1/rag/document/{document_id}/progress?organizationId={active_organization_id}` | 문서 처리 상태 SSE | Native EventSource의 custom header 제약 때문에 active organization을 query parameter로 전달한다. Gateway는 stream 생성 전에 active organization + KB `read`를 검증하며, 권한 없는 document의 상태·오류·Redis progress를 노출하지 않는다 |
 | GET | `/api/v1/permissions/knowledge-bases/{knowledge_base_id}` | KB에 부여된 team/user direct permission 목록 | manager 또는 KB `manage`, active organization |
 | PUT | `/api/v1/permissions/knowledge-bases/{knowledge_base_id}/teams/{team_id}` | team KB permission 생성/갱신 | manager 또는 KB `manage`, active organization |
 | PUT | `/api/v1/permissions/knowledge-bases/{knowledge_base_id}/users/{user_id}` | user direct KB permission 생성/갱신 | manager 또는 KB `manage`, active organization |
@@ -30,7 +31,7 @@ Status: Draft
 
 현재 `POST /api/v1/knowledge`는 공백뿐인 `name`, 255자를 초과하는 `name`, 비어 있거나 secret-like/token-like 또는 allowlist 밖 문자를 포함한 `embedding_model`을 DB insert 전에 safe validation error로 거부한다. Validation error response는 raw request value를 echo하지 않고 reason code만 반환한다. KB `name`은 사용자 표시용 label이며 resource identity가 아니므로 같은 organization 안의 동일 `name` 생성을 이름만으로 거부하지 않는다. 같은 제목의 서로 다른 문서, 수동 KB, source-managed KB는 `knowledge_base_id`, protected source identity, sync/lifecycle state, safe metadata로 구분한다. 단, 같은 문서의 version은 여러 개가 동시에 retrieval-visible한 resource로 취급하지 않는다. 내부 문서는 active/head pointer가 가리키는 ready version만 검색 노출하고, 외부 source-managed 문서는 정상 sync/finalization이 완료되면 최신 active ready version으로 교체한다. Sync 실패나 stale 상태에서는 기존 active ready version만 warning과 함께 유지할 수 있으며, 이전/superseded/pre-finalized version은 selectable-ready 또는 retrieval evidence 후보가 아니다. Source-managed KB의 동일 source item 중복 방지는 `source_identity_id`와 source sync lineage invariant로 다루며, KB `name` conflict로 대체하지 않는다.
 
-MBA-231 cutover 이후 `/api/v1/knowledge/*`의 list/detail/settings/document/process/preview/sync와 `/api/v1/rag/upload`, document analyze/confirm/delete는 active organization과 canonical KB action helper를 사용한다. `knowledge_bases.user_id`는 생성자/귀속 정보이며 이 표면의 권한 우회가 아니다. Presigned upload와 URL/proxy preview처럼 아직 KB가 확정되지 않은 표면은 별도 storage/egress 경계를 따르며, raw/source-derived content는 승인된 `content_read` 또는 후속 raw/compliance 정책 없이 노출하지 않는다.
+MBA-231 cutover 이후 `/api/v1/knowledge/*`의 list/detail/settings/document/process/preview/sync와 `/api/v1/rag/upload`, document analyze/confirm/delete/progress는 active organization과 canonical KB action helper를 사용한다. `knowledge_bases.user_id`는 생성자/귀속 정보이며 이 표면의 권한 우회가 아니다. Presigned upload와 URL/proxy preview처럼 아직 KB가 확정되지 않은 표면은 별도 storage/egress 경계를 따르며, raw/source-derived content는 승인된 `content_read` 또는 후속 raw/compliance 정책 없이 노출하지 않는다.
 
 ## Target Endpoint Groups
 
@@ -124,17 +125,29 @@ Domain subject 응답은 active Team/User의 opaque id와 safe label만 반환�
 raw principal, source identity를 포함하지 않는다. UI는 Team을 기본 선택으로 두고
 User direct domain grant는 예외 경로로 제공한다.
 
-### MBA-231 KB Object/Property Authorization
+### MBA-231 KB Object/Property Authorization Inventory
 
-| Surface | Gate |
-| --- | --- |
-| KB list/detail safe metadata와 safe document status | `read` |
-| LLM picker/search/answer | `use` + source gate |
-| KB settings, manual upload/process/preview/sync | `write` |
-| Manual original content | `content_read` |
-| Source-managed original content | `content_read` + requester source authorization + approved display/raw policy; primitive 부재 시 fail-closed |
-| Permission 관리와 archive/restore | `manage` 또는 해당 domain action |
-| Hard delete | Organization manager + `acknowledged_hard_delete=true` |
+| Surface/path group | Gate | Scope/hidden response | Response boundary | Audit |
+| --- | --- | --- | --- | --- |
+| `POST /knowledge` | active organization member; creator `manager` bootstrap | active organization required | created KB safe metadata only | KB + creator grant + canonical audit in one transaction |
+| `GET /knowledge`, `GET /knowledge/{kb_id}`, document safe status, RAG document progress SSE | `read` | active organization; list omits denied rows, direct hidden is 404, visible action denial is 403 | safe KB/document status only; no raw content or hidden count | read/status polling has no mutation audit |
+| `GET /knowledge/llm-selectable`, search-test, standalone Agent answer/stream | `use` + source authorization where applicable | active organization; hidden/source denial does not reveal KB/source identity | retrieval-visible evidence and redaction-safe citation/summary only | retrieval/answer canonical audit; no raw query/evidence payload |
+| `POST /knowledge/candidates/resolve`, RAG recommendation, Agent Builder internal safe-reference consumption | caller-specific `read/use/route` composition | active organization and server-resolved candidate set | safe handles/labels/reason codes; hidden IDs, names, counts excluded | decision/audit summary uses safe reason codes only |
+| KB settings PATCH, RAG upload to existing KB, document analyze/confirm/delete/process/preview | `write` | active organization; document must belong to authorized KB | mutation result and safe processing metadata only | settings uses KB update audit; upload/confirm/delete/process use document action audit; analyze/preview are non-mutating and emit no mutation audit; payload/content excluded |
+| Document sync | `write` or bounded domain `sync_manage` | active organization; source-owned policy remains authoritative | safe queued/status response | document process action audit without credential/source payload |
+| Manual original content | `content_read` | active organization; document must belong to authorized manual KB | validated content response | access path must not place content in audit/trace |
+| Source-managed original content | `content_read` + requester source authorization + approved display/raw policy | missing primitive/policy is fail-closed | no raw response in MBA-231 baseline | denied/safe decision only; no raw source metadata |
+| KB permission list/grant/revoke | Organization manager, KB `manage`, or bounded domain `permission_delegate` | active organization; self/own-Team escalation is 409 policy block | safe Team/User permission projection | permission row and canonical audit in one transaction |
+| KB safe catalog metadata | `manage` | active organization | allowlisted `safe_label`, description, topics only | metadata change audit in the mutation transaction |
+| KB/Collection archive/restore | resource `manage` or matching domain `lifecycle_manage` | active organization; source-managed lifecycle mutation denied | 204/safe lifecycle projection | lifecycle row and canonical audit in one transaction |
+| KB hard delete | Organization manager + `acknowledged_hard_delete=true` + approved retention/legal-hold gate | active organization; source-managed/retention policy fail-closed. Gate 미구성 baseline은 403 | allow된 경우 204; deleted resource is subsequently hidden | allow된 경우 permission cleanup + canonical audit + DB delete in one transaction; default deny는 mutation/audit 없음 |
+| Private Collection link/unlink/reorder of KB membership | Collection/KB resource manage combination or domain `catalog_manage` | active organization; public Collection uses stronger exposure gate | safe Collection item projection; linking grants no KB content action | membership mutation and canonical audit in one transaction |
+| Public Collection membership/visibility | Organization manager + explicit acknowledgement + source public approval | active organization; absent approval fails closed | safe visibility/membership state only | exposure mutation and canonical audit in one transaction |
+
+Presigned upload and URL/proxy preview do not yet carry a KB/document identifier and
+therefore are not KB object authorization surfaces. They remain behind authenticated
+storage ownership, filename/key validation, egress guard, size/content-type caps, and
+safe error contracts. The subsequent upload/link operation must still pass KB `write`.
 
 Direct resource는 active organization으로 먼저 scope를 고정한다. Unknown,
 cross-organization, deleted 또는 invisible resource는 `404 resource.hidden`,

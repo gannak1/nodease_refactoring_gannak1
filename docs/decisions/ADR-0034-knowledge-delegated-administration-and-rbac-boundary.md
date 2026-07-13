@@ -96,6 +96,10 @@ permission은 KB `read/use/write/content_read/manage` 또는 Collection
   필요하며 source-managed KB public approval은 별도로 검증한다.
 - Public/private visibility 전환과 KB hard delete는 V1에서 Organization manager
   전용이다. Hard delete는 명시적 acknowledgement와 retention gate를 요구한다.
+- Approved retention/legal-hold policy primitive가 production에 연결되기 전에는
+  hard delete eligibility checker가 기본 거부한다. Transaction/cleanup test는
+  명시적으로 allow checker를 주입해 mechanics를 검증하지만 production allow의
+  근거로 사용하지 않는다.
 - UI role bundle은 explicit action row를 transactionally 적용하는 편의 기능이다.
   Viewer=`read`, Workflow Router=`read+route`, Maintainer=`read+manage`, Sync
   Operator=`read+sync`이며 KB `use`를 만들지 않는다.
@@ -117,6 +121,45 @@ permission은 KB `read/use/write/content_read/manage` 또는 Collection
 - 신규 mutation flow는 ADR-0022의 application use case, port, SQLAlchemy adapter,
   UnitOfWork 경계를 따른다. Controller는 request/dependency/response mapping만
   담당한다.
+
+### Document progress SSE authorization transport
+
+Context: `GET /api/v1/rag/document/{document_id}/progress`는 document 상태와 safe
+error를 지속적으로 반환하지만 기존 구현은 KB 권한을 확인하지 않았다. Native
+`EventSource`는 custom `X-Organization-Id` header를 설정할 수 없다.
+
+검토한 선택지는 (1) document에서 organization을 추론해 active organization
+선택을 생략, (2) SSE URL query에 active organization UUID 전달, (3) frontend
+streaming fetch parser 또는 same-origin proxy를 새로 도입하는 방식이다.
+
+V1은 선택지 2를 채택한다. Client는 `organizationId` query parameter를 URL
+encoding해 전달하고 Gateway는 UUID 형식과 active organization 범위, KB `read`를
+stream 생성 전에 검증한다. Organization UUID는 credential은 아니지만 URL에는
+raw document/source metadata나 token을 넣지 않는다. 이 결정은 기존
+`EventSource` reconnect 동작을 유지하면서 unauthorized event 한 건도 전송하지
+않는 가장 작은 cutover다.
+
+영향 파일은 RAG progress endpoint, Knowledge client URL builder, Knowledge API/test
+문서와 해당 Gateway/Client 테스트다. 후속 검토에서는 공통 authenticated SSE
+proxy가 도입될 때 query transport를 header 기반으로 대체할지 평가한다.
+
+### Hard-delete retention eligibility
+
+Context: hard delete는 retention/legal-hold gate를 요구하지만 현재 KB schema와
+서비스에는 승인된 eligibility primitive가 없다. 검토한 선택지는 (1) manager와
+acknowledgement만으로 삭제 허용, (2) 임시 retention 필드를 이 이슈에서 설계,
+(3) production checker를 기본 거부하고 후속 정책 primitive가 연결될 때만 허용이다.
+
+선택지 3을 채택한다. 선택지 1은 Accepted gate를 우회하고 선택지 2는 별도
+retention policy, legal-hold, recovery 계약 없이 schema를 선점한다. Gateway
+lifecycle service는 checker 미구성 또는 평가 오류를 safe `policy.denied`로 닫고
+storage/DB mutation을 시작하지 않는다. Transaction/cleanup 테스트만 명시적인
+test-only allow checker를 주입해 mechanics를 검증한다.
+
+영향 파일은 Knowledge lifecycle service/endpoint, lifecycle/API/PostgreSQL 테스트,
+Knowledge API/test 문서다. 후속 이슈에서 approved retention/legal-hold policy port와
+운영 상태 모델을 확정한 뒤 production checker를 연결하고 이 default deny를
+재검토한다.
 
 ## Consequences
 

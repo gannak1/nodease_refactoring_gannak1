@@ -13,6 +13,7 @@ from fastapi import (
     Form,
     Header,
     HTTPException,
+    Query,
     Request,
     UploadFile,
 )
@@ -566,6 +567,7 @@ async def analyze_document(
 
 
 @router.post("/document/{document_id}/confirm")
+@audit(AuditAction.DOCUMENT_PROCESS, target_param="document_id")
 async def confirm_document_parsing(
     document_id: UUID,
     request: Request,
@@ -759,6 +761,8 @@ async def search_test_pure(
 @router.get("/document/{document_id}/progress")
 async def get_document_progress(
     document_id: UUID,
+    request: Request,
+    organization_id_query: UUID = Query(..., alias="organizationId"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -771,6 +775,15 @@ async def get_document_progress(
     from fastapi.responses import StreamingResponse
 
     from apps.shared.pubsub import get_redis_client
+
+    _authorize_knowledge_document_action(
+        request,
+        db,
+        current_user,
+        organization_id_query,
+        document_id,
+        "read",
+    )
 
     async def event_generator():
         while True:

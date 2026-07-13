@@ -181,6 +181,76 @@ def test_authorize_rag_use_hides_source_acl_denial(monkeypatch):
     assert exc.value.detail["error"]["code"] == "resource.hidden"
 
 
+def test_document_progress_authorizes_read_before_opening_stream(monkeypatch):
+    document_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    user = SimpleNamespace(id=uuid.uuid4())
+    db = object()
+    request = _request()
+    captured = {}
+
+    def authorize(
+        request_arg,
+        db_arg,
+        user_arg,
+        organization_id_arg,
+        document_id_arg,
+        action,
+    ):
+        captured["authorization"] = (
+            request_arg,
+            db_arg,
+            user_arg,
+            organization_id_arg,
+            document_id_arg,
+            action,
+        )
+
+    monkeypatch.setattr(rag, "_authorize_knowledge_document_action", authorize)
+
+    response = asyncio.run(
+        rag.get_document_progress(
+            document_id,
+            request,
+            organization_id,
+            db=db,
+            current_user=user,
+        )
+    )
+
+    assert response.media_type == "text/event-stream"
+    assert captured["authorization"] == (
+        request,
+        db,
+        user,
+        organization_id,
+        document_id,
+        "read",
+    )
+
+
+def test_document_progress_denial_prevents_stream_creation(monkeypatch):
+    denial = HTTPException(status_code=404, detail={"reason_code": "resource.hidden"})
+
+    def deny(*_args, **_kwargs):
+        raise denial
+
+    monkeypatch.setattr(rag, "_authorize_knowledge_document_action", deny)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            rag.get_document_progress(
+                uuid.uuid4(),
+                _request(),
+                uuid.uuid4(),
+                db=object(),
+                current_user=SimpleNamespace(id=uuid.uuid4()),
+            )
+        )
+
+    assert exc.value is denial
+
+
 def test_record_rag_retrieve_audit_marks_policy_as_not_evaluated(monkeypatch):
     user_id = uuid.uuid4()
     organization_id = uuid.uuid4()

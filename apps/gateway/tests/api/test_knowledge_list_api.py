@@ -840,10 +840,9 @@ def test_knowledge_detail_uses_read_gate_and_returns_capabilities(monkeypatch):
         "current_user_id": user_id,
         "authorization": (knowledge_base_id, "read"),
         "detail": (
-            knowledge_base_id,
-            {
-                "user_id": None,
-                "organization_scope": organization_id,
+                knowledge_base_id,
+                {
+                    "organization_scope": organization_id,
                 "has_organization_id": True,
                 "can_edit_settings": True,
                 "can_manage_safe_metadata": False,

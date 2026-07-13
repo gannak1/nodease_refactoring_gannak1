@@ -9,10 +9,8 @@ from sqlalchemy import create_engine, event, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
-from apps.gateway.services.knowledge_lifecycle_service import (
-    KnowledgeLifecycleNotFound,
-    KnowledgeLifecycleService,
-)
+from apps.gateway.services.knowledge_lifecycle_service import KnowledgeLifecycleService
+from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.knowledge import Document, DocumentChunk, KnowledgeBase
 from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.team import (
@@ -75,7 +73,7 @@ class _Storage:
     os.getenv(RUN_ENV) != "1",
     reason=f"set {RUN_ENV}=1 to run disposable PostgreSQL lifecycle integration",
 )
-def test_delete_owned_knowledge_base_enforces_owner_and_cleans_actual_fk_rows():
+def test_hard_delete_knowledge_base_is_atomic_and_cleans_actual_fk_rows():
     try:
         config = DisposablePostgresConfig.from_environment()
     except DisposablePostgresConfigurationError:
@@ -110,18 +108,11 @@ def test_delete_owned_knowledge_base_enforces_owner_and_cleans_actual_fk_rows():
         db = sessionmaker(bind=engine, expire_on_commit=False)()
 
         owner_id = uuid.uuid4()
-        wrong_owner_id = uuid.uuid4()
         grantee_id = uuid.uuid4()
         owner = User(
             id=owner_id,
             email=f"owner-{owner_id}@example.test",
             name="Owner",
-            social_provider="local",
-        )
-        wrong_owner = User(
-            id=wrong_owner_id,
-            email=f"wrong-{wrong_owner_id}@example.test",
-            name="Wrong Owner",
             social_provider="local",
         )
         grantee = User(
@@ -130,7 +121,7 @@ def test_delete_owned_knowledge_base_enforces_owner_and_cleans_actual_fk_rows():
             name="Grantee",
             social_provider="local",
         )
-        db.add_all([owner, wrong_owner, grantee])
+        db.add_all([owner, grantee])
         db.flush()
 
         owner_org_id = uuid.uuid4()
@@ -221,30 +212,17 @@ def test_delete_owned_knowledge_base_enforces_owner_and_cleans_actual_fk_rows():
         service = KnowledgeLifecycleService(
             db,
             storage_service_factory=lambda: storage,
+            hard_delete_policy_checker=lambda _kb: True,
         )
-
-        with pytest.raises(KnowledgeLifecycleNotFound):
-            service.delete_owned_knowledge_base(kb_id, wrong_owner_id)
-
-        assert db.query(KnowledgeBase).filter_by(id=kb_id).count() == 1
-        assert db.query(Document).filter_by(id=document_id).count() == 1
-        assert db.query(DocumentChunk).filter_by(id=chunk_id).count() == 1
-        assert (
-            db.query(UserKnowledgePermission).filter_by(knowledge_base_id=kb_id).count()
-            == 1
-        )
-        assert (
-            db.query(TeamKnowledgePermission).filter_by(knowledge_base_id=kb_id).count()
-            == 1
-        )
-        assert storage.deleted_paths == []
 
         def fail_before_commit(_session) -> None:
             raise RuntimeError("injected commit failure")
 
+        kb = db.get(KnowledgeBase, kb_id)
+        assert kb is not None
         event.listen(db, "before_commit", fail_before_commit, once=True)
         with pytest.raises(RuntimeError, match="^injected commit failure$"):
-            service.delete_owned_knowledge_base(kb_id, owner_id)
+            service.hard_delete_knowledge_base(kb, actor_id=owner_id)
         db.rollback()
 
         assert db.query(KnowledgeBase).filter_by(id=kb_id).count() == 1
@@ -258,12 +236,15 @@ def test_delete_owned_knowledge_base_enforces_owner_and_cleans_actual_fk_rows():
             db.query(TeamKnowledgePermission).filter_by(knowledge_base_id=kb_id).count()
             == 1
         )
+        assert db.query(AuditLog).filter_by(action="knowledge.hard_deleted").count() == 0
         # Physical cleanup-before-commit is the documented transitional baseline;
         # durable cleanup moves to the MBA-184 outbox/reconciler boundary.
         assert storage.deleted_paths == ["private/policy.txt"]
         storage.deleted_paths.clear()
 
-        service.delete_owned_knowledge_base(kb_id, owner_id)
+        kb = db.get(KnowledgeBase, kb_id)
+        assert kb is not None
+        service.hard_delete_knowledge_base(kb, actor_id=owner_id)
 
         assert db.query(KnowledgeBase).filter_by(id=kb_id).count() == 0
         assert db.query(Document).filter_by(id=document_id).count() == 0
@@ -277,6 +258,7 @@ def test_delete_owned_knowledge_base_enforces_owner_and_cleans_actual_fk_rows():
             == 0
         )
         assert db.query(Team).filter_by(id=legacy_team_id).count() == 1
+        assert db.query(AuditLog).filter_by(action="knowledge.hard_deleted").count() == 1
         assert storage.deleted_paths == ["private/policy.txt"]
         db.close()
         db = None

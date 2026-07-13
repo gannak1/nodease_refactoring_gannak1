@@ -5,6 +5,9 @@ import pytest
 from fastapi import HTTPException
 
 from apps.gateway.api.v1.endpoints import knowledge as knowledge_endpoint
+from apps.gateway.services.knowledge_lifecycle_service import (
+    KnowledgeLifecyclePolicyDenied,
+)
 
 
 def test_delete_knowledge_base_delegates_lifecycle_service(monkeypatch):
@@ -85,4 +88,22 @@ def test_delete_knowledge_base_requires_explicit_acknowledgement(monkeypatch):
     assert exc_info.value.detail["error"]["code"] == "validation.failed"
     assert exc_info.value.detail["error"]["details"] == {
         "field": "acknowledged_hard_delete"
+    }
+
+
+def test_delete_knowledge_base_hides_retention_policy_details():
+    request = SimpleNamespace(state=SimpleNamespace(request_id="req"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        knowledge_endpoint._raise_knowledge_lifecycle_policy_error(
+            request,
+            KnowledgeLifecyclePolicyDenied("retention_policy_unavailable"),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail["error"] == {
+        "code": "policy.denied",
+        "message": "Knowledge Base retention policy does not allow hard delete.",
+        "request_id": "req",
+        "details": {},
     }

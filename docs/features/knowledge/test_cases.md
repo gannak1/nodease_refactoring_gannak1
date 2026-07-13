@@ -28,6 +28,8 @@ Status: Draft
 
 ## Permission And RBAC Tests
 
+- Document progress SSE는 stream을 열기 전에 active organization과 KB `read`를 검증한다. 권한 없는 actor나 다른 organization context는 document status, safe error, Redis progress를 한 건도 수신하지 못한다.
+- KB hard delete는 Organization manager와 acknowledgement가 있어도 approved retention/legal-hold checker가 없으면 storage/DB mutation 전에 fail-closed한다. 삭제 mechanics transaction 테스트는 explicit allow checker를 주입하며 production eligibility 증거로 취급하지 않는다.
 - Collection `read`, `route`, `manage`, `sync`만으로는 하위 KB content retrieval 권한이 생기지 않는다.
 - Auto collection mode는 route 권한이 없는 collection scope에서 유래한 KB를 제외한다.
 - Explicit KB mode는 collection route permission을 생략할 수 있지만 KB helper allow, source ACL gate, final evidence policy는 계속 요구한다.

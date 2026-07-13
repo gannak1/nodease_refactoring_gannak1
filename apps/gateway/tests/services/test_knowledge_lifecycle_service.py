@@ -5,7 +5,6 @@ from types import SimpleNamespace
 import pytest
 
 from apps.gateway.services.knowledge_lifecycle_service import (
-    KnowledgeLifecycleNotFound,
     KnowledgeLifecyclePolicyDenied,
     KnowledgeLifecycleService,
 )
@@ -87,6 +86,10 @@ def _kb(*, documents=None):
     )
 
 
+def _allow_hard_delete(_kb):
+    return True
+
+
 def test_archive_knowledge_base_commits_lifecycle_and_audit_together():
     kb = _kb()
     db = _LifecycleDb(kb)
@@ -118,7 +121,52 @@ def test_restore_knowledge_base_rejects_source_managed_resource():
     assert db.added == []
 
 
-def test_delete_owned_knowledge_base_deletes_files_permissions_and_kb():
+def test_hard_delete_fails_closed_without_retention_policy():
+    kb = _kb(documents=[SimpleNamespace(id=uuid.uuid4(), file_path="hidden/path")])
+    db = _LifecycleDb(kb)
+    storage_called = False
+
+    def storage_factory():
+        nonlocal storage_called
+        storage_called = True
+        return _Storage()
+
+    with pytest.raises(KnowledgeLifecyclePolicyDenied) as exc_info:
+        KnowledgeLifecycleService(
+            db,
+            storage_service_factory=storage_factory,
+        ).hard_delete_knowledge_base(kb, actor_id=kb.user_id)
+
+    assert exc_info.value.reason_code == "retention_policy_unavailable"
+    assert storage_called is False
+    assert db.operations == []
+    assert db.committed is False
+
+
+def test_hard_delete_policy_failure_is_redacted_and_fails_closed(caplog):
+    kb = _kb()
+    db = _LifecycleDb(kb)
+
+    def failing_checker(_kb):
+        raise RuntimeError("sensitive policy provider detail")
+
+    with caplog.at_level(
+        logging.WARNING,
+        logger="apps.gateway.services.knowledge_lifecycle_service",
+    ):
+        with pytest.raises(KnowledgeLifecyclePolicyDenied) as exc_info:
+            KnowledgeLifecycleService(
+                db,
+                hard_delete_policy_checker=failing_checker,
+            ).hard_delete_knowledge_base(kb, actor_id=kb.user_id)
+
+    assert exc_info.value.reason_code == "retention_policy_unavailable"
+    assert "RuntimeError" in caplog.text
+    assert "sensitive policy provider detail" not in caplog.text
+    assert db.operations == []
+
+
+def test_hard_delete_knowledge_base_deletes_files_permissions_audit_and_kb():
     doc_with_file = SimpleNamespace(id=uuid.uuid4(), file_path="kb/doc.txt")
     doc_without_file = SimpleNamespace(id=uuid.uuid4(), file_path=None)
     kb = _kb(documents=[doc_with_file, doc_without_file])
@@ -128,12 +176,14 @@ def test_delete_owned_knowledge_base_deletes_files_permissions_and_kb():
     KnowledgeLifecycleService(
         db,
         storage_service_factory=lambda: storage,
-    ).delete_owned_knowledge_base(kb.id, kb.user_id)
+        hard_delete_policy_checker=_allow_hard_delete,
+    ).hard_delete_knowledge_base(kb, actor_id=kb.user_id)
 
     assert storage.deleted_paths == ["kb/doc.txt"]
     assert db.operations == [
         ("permission_delete", UserKnowledgePermission),
         ("permission_delete", TeamKnowledgePermission),
+        ("add", AuditLog),
         ("kb_delete", kb),
     ]
     permission_filters = {
@@ -146,7 +196,7 @@ def test_delete_owned_knowledge_base_deletes_files_permissions_and_kb():
     assert db.committed is True
 
 
-def test_delete_owned_knowledge_base_storage_failure_is_best_effort(caplog):
+def test_hard_delete_knowledge_base_storage_failure_is_best_effort(caplog):
     sensitive_path = "private/customer-contract.pdf"
     doc = SimpleNamespace(id=uuid.uuid4(), file_path=sensitive_path)
     kb = _kb(documents=[doc])
@@ -160,7 +210,8 @@ def test_delete_owned_knowledge_base_storage_failure_is_best_effort(caplog):
         KnowledgeLifecycleService(
             db,
             storage_service_factory=lambda: storage,
-        ).delete_owned_knowledge_base(kb.id, kb.user_id)
+            hard_delete_policy_checker=_allow_hard_delete,
+        ).hard_delete_knowledge_base(kb, actor_id=kb.user_id)
 
     assert db.operations[-1] == ("kb_delete", kb)
     assert db.committed is True
@@ -169,7 +220,7 @@ def test_delete_owned_knowledge_base_storage_failure_is_best_effort(caplog):
     assert sensitive_path not in caplog.text
 
 
-def test_delete_owned_knowledge_base_storage_factory_failure_is_best_effort(caplog):
+def test_hard_delete_knowledge_base_storage_factory_failure_is_best_effort(caplog):
     kb = _kb(documents=[SimpleNamespace(id=uuid.uuid4(), file_path="hidden/path")])
     db = _LifecycleDb(kb)
 
@@ -183,7 +234,8 @@ def test_delete_owned_knowledge_base_storage_factory_failure_is_best_effort(capl
         KnowledgeLifecycleService(
             db,
             storage_service_factory=raise_storage_error,
-        ).delete_owned_knowledge_base(kb.id, kb.user_id)
+            hard_delete_policy_checker=_allow_hard_delete,
+        ).hard_delete_knowledge_base(kb, actor_id=kb.user_id)
 
     assert db.operations[-1] == ("kb_delete", kb)
     assert db.committed is True
@@ -192,7 +244,7 @@ def test_delete_owned_knowledge_base_storage_factory_failure_is_best_effort(capl
     assert "hidden/path" not in caplog.text
 
 
-def test_delete_owned_knowledge_base_continues_after_one_storage_delete_failure(
+def test_hard_delete_knowledge_base_continues_after_one_storage_delete_failure(
     caplog,
 ):
     first_path = "private/failing.pdf"
@@ -220,7 +272,8 @@ def test_delete_owned_knowledge_base_continues_after_one_storage_delete_failure(
         KnowledgeLifecycleService(
             db,
             storage_service_factory=lambda: storage,
-        ).delete_owned_knowledge_base(kb.id, kb.user_id)
+            hard_delete_policy_checker=_allow_hard_delete,
+        ).hard_delete_knowledge_base(kb, actor_id=kb.user_id)
 
     assert storage.deleted_paths == [first_path, second_path]
     assert db.committed is True
@@ -231,7 +284,7 @@ def test_delete_owned_knowledge_base_continues_after_one_storage_delete_failure(
     assert "provider detail must not be logged" not in caplog.text
 
 
-def test_delete_owned_knowledge_base_rolls_back_and_propagates_commit_failure():
+def test_hard_delete_knowledge_base_rolls_back_and_propagates_commit_failure():
     doc = SimpleNamespace(id=uuid.uuid4(), file_path="private/document.pdf")
     kb = _kb(documents=[doc])
     commit_error = RuntimeError("commit failed")
@@ -242,7 +295,8 @@ def test_delete_owned_knowledge_base_rolls_back_and_propagates_commit_failure():
         KnowledgeLifecycleService(
             db,
             storage_service_factory=lambda: storage,
-        ).delete_owned_knowledge_base(kb.id, kb.user_id)
+            hard_delete_policy_checker=_allow_hard_delete,
+        ).hard_delete_knowledge_base(kb, actor_id=kb.user_id)
 
     assert exc_info.value is commit_error
     assert db.committed is False
@@ -250,7 +304,7 @@ def test_delete_owned_knowledge_base_rolls_back_and_propagates_commit_failure():
     assert storage.deleted_paths == [doc.file_path]
 
 
-def test_delete_owned_knowledge_base_rolls_back_permission_cleanup_failure():
+def test_hard_delete_knowledge_base_rolls_back_permission_cleanup_failure():
     kb = _kb()
     db = _LifecycleDb(kb, delete_error_model=TeamKnowledgePermission)
 
@@ -258,31 +312,11 @@ def test_delete_owned_knowledge_base_rolls_back_permission_cleanup_failure():
         KnowledgeLifecycleService(
             db,
             storage_service_factory=lambda: _Storage(),
-        ).delete_owned_knowledge_base(kb.id, kb.user_id)
+            hard_delete_policy_checker=_allow_hard_delete,
+        ).hard_delete_knowledge_base(kb, actor_id=kb.user_id)
 
     assert db.operations == [
         ("permission_delete", UserKnowledgePermission),
     ]
     assert db.committed is False
     assert db.rolled_back is True
-
-
-def test_delete_owned_knowledge_base_missing_owned_kb_does_not_mutate():
-    db = _LifecycleDb(kb=None)
-    storage_called = False
-
-    def storage_factory():
-        nonlocal storage_called
-        storage_called = True
-        return _Storage()
-
-    with pytest.raises(KnowledgeLifecycleNotFound):
-        KnowledgeLifecycleService(
-            db,
-            storage_service_factory=storage_factory,
-        ).delete_owned_knowledge_base(uuid.uuid4(), uuid.uuid4())
-
-    assert storage_called is False
-    assert db.operations == []
-    assert db.committed is False
-    assert db.rolled_back is False
