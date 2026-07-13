@@ -21,6 +21,7 @@ def _workflow_with_llm_node(workflow_id, organization_id):
         app_id=uuid4(),
         graph={
             "nodes": [
+                {"id": "start", "type": "startNode", "data": {}},
                 {
                     "id": "llm-triage",
                     "type": "llmNode",
@@ -30,7 +31,9 @@ def _workflow_with_llm_node(workflow_id, organization_id):
                     },
                 }
             ],
-            "edges": [],
+            "edges": [
+                {"id": "start-llm", "source": "start", "target": "llm-triage"}
+            ],
         },
     )
 
@@ -38,8 +41,15 @@ def _workflow_with_llm_node(workflow_id, organization_id):
 class TestRecommendationInlineVerificationApi:
     def setup_method(self):
         self.client = TestClient(app)
+        self.replay_existing_patcher = patch.object(
+            workflow_endpoint.CostOptimizerRecommendationVerificationService,
+            "replay_existing",
+            return_value=None,
+        )
+        self.replay_existing = self.replay_existing_patcher.start()
 
     def teardown_method(self):
+        self.replay_existing_patcher.stop()
         app.dependency_overrides = {}
 
     def test_fr13_verify_returns_modal_contract_for_latest_success_baseline(self):
@@ -162,6 +172,63 @@ class TestRecommendationInlineVerificationApi:
         assert response.json()["verification_status"] == "stale"
         assert response.json()["apply"]["allowed"] is False
         verify.assert_called_once()
+
+    def test_fr13_completed_replay_skips_configuration_preflight(self):
+        workflow_id = uuid4()
+        user_id = uuid4()
+        organization_id = uuid4()
+        workflow = _workflow_with_llm_node(workflow_id, organization_id)
+        workflow.graph = {"nodes": [], "edges": []}
+        replay = {
+            "verification_status": "completed",
+            "comparison_id": str(uuid4()),
+            "candidate_id": str(uuid4()),
+            "apply": {
+                "allowed": True,
+                "requires_confirmation": False,
+                "reasons": [],
+            },
+        }
+        self.replay_existing.return_value = replay
+        app.dependency_overrides[get_db] = lambda: SimpleNamespace()
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with (
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+                return_value=workflow,
+            ),
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow."
+                "_ensure_workflow_matches_active_organization",
+            ) as scope_check,
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow."
+                "_bind_and_preflight_authenticated_graph",
+            ) as preflight,
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow."
+                "_verify_cost_optimizer_recommendations",
+            ) as verify,
+        ):
+            response = self.client.post(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage/"
+                "cost-optimizer/recommendations/verify",
+                headers={
+                    "Idempotency-Key": "fr13-replay-001",
+                    "X-Organization-Id": str(organization_id),
+                },
+                json={
+                    "recommendation_ids": ["max_tokens"],
+                    "baseline_mode": "latest_success",
+                },
+            )
+
+        assert response.status_code == 200
+        assert response.json() == replay
+        scope_check.assert_called_once()
+        preflight.assert_not_called()
+        verify.assert_not_called()
 
     def test_fr13_verify_requires_idempotency_key(self):
         app.dependency_overrides[get_db] = lambda: SimpleNamespace()
@@ -293,6 +360,7 @@ class TestRecommendationInlineVerificationApi:
             result = workflow_endpoint._verify_cost_optimizer_recommendations(
                 db=SimpleNamespace(),
                 workflow=workflow,
+                execution_graph=workflow.graph,
                 node_id="llm-triage",
                 current_user=SimpleNamespace(id=user_id),
                 request=SimpleNamespace(),
@@ -344,6 +412,7 @@ class TestRecommendationInlineVerificationApi:
             result = workflow_endpoint._verify_cost_optimizer_recommendations(
                 db=SimpleNamespace(),
                 workflow=workflow,
+                execution_graph=workflow.graph,
                 node_id="llm-triage",
                 current_user=SimpleNamespace(id=uuid4()),
                 request=SimpleNamespace(),
@@ -389,6 +458,7 @@ class TestRecommendationInlineVerificationApi:
             result = workflow_endpoint._verify_cost_optimizer_recommendations(
                 db=SimpleNamespace(),
                 workflow=workflow,
+                execution_graph=workflow.graph,
                 node_id="llm-triage",
                 current_user=SimpleNamespace(id=uuid4()),
                 request=SimpleNamespace(),
@@ -526,6 +596,7 @@ class TestRecommendationInlineVerificationApi:
             result = workflow_endpoint._verify_cost_optimizer_recommendations(
                 db=SimpleNamespace(),
                 workflow=workflow,
+                execution_graph=workflow.graph,
                 node_id="llm-triage",
                 current_user=SimpleNamespace(id=uuid4()),
                 request=SimpleNamespace(),
@@ -609,6 +680,15 @@ class TestRecommendationVerificationIdempotency:
             idempotency_key="fr13-idempotency-001",
             request_fingerprint=request_fingerprint,
         )
+        replay_without_claim = (
+            CostOptimizerRecommendationVerificationService.replay_existing(
+                db,
+                user_id=user_id,
+                idempotency_key="fr13-idempotency-001",
+                request_fingerprint=request_fingerprint,
+            )
+        )
 
         assert replay.record.id == first.record.id
         assert replay.replay_response == response
+        assert replay_without_claim == response

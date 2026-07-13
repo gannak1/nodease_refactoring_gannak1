@@ -73,6 +73,13 @@ def _request(path, *, body=None, headers=None):
     return Request(scope, receive)
 
 
+def _valid_graph():
+    return {
+        "nodes": [{"id": "start-1", "type": "startNode", "data": {}}],
+        "edges": [],
+    }
+
+
 def _patch_common(monkeypatch, workflow):
     monkeypatch.setattr(
         workflow_endpoint,
@@ -82,7 +89,7 @@ def _patch_common(monkeypatch, workflow):
     monkeypatch.setattr(
         workflow_endpoint.WorkflowService,
         "get_draft",
-        lambda *args, **kwargs: {"nodes": [], "edges": []},
+        lambda *args, **kwargs: _valid_graph(),
     )
     monkeypatch.setattr(workflow_endpoint, "celery_app", _DispatchGuard())
 
@@ -256,7 +263,7 @@ def test_execute_allows_matching_active_organization_before_dispatch(monkeypatch
     monkeypatch.setattr(
         workflow_endpoint.WorkflowService,
         "get_draft",
-        lambda *args, **kwargs: {"nodes": [], "edges": []},
+        lambda *args, **kwargs: _valid_graph(),
     )
     monkeypatch.setattr(workflow_endpoint, "celery_app", celery)
 

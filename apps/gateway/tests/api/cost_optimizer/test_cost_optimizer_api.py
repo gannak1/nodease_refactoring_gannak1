@@ -1131,8 +1131,15 @@ class TestCostOptimizerBaselinesApi:
 class TestCostOptimizerCompareApi:
     def setup_method(self):
         self.client = TestClient(app)
+        self.configuration_preflight = patch(
+            "apps.gateway.api.v1.endpoints.workflow."
+            "_bind_and_preflight_authenticated_graph",
+            side_effect=lambda _db, *, workflow, graph, principal_id: graph,
+        )
+        self.configuration_preflight.start()
 
     def teardown_method(self):
+        self.configuration_preflight.stop()
         app.dependency_overrides = {}
 
     def test_fr3_compare_rejects_invalid_candidate_before_running_task(self):
@@ -3019,8 +3026,12 @@ class TestCostOptimizerCompareApi:
         db = MagicMock()
         baseline_graph = {
             "nodes": [
-                {"id": "llm-triage", "type": "llmNode"},
-                {"id": "extract-result", "type": "variableExtractionNode"},
+                {"id": "llm-triage", "type": "llmNode", "data": {}},
+                {
+                    "id": "extract-result",
+                    "type": "variableExtractionNode",
+                    "data": {},
+                },
             ],
             "edges": [
                 {"id": "e1", "source": "llm-triage", "target": "extract-result"},
@@ -3028,9 +3039,13 @@ class TestCostOptimizerCompareApi:
         }
         current_graph = {
             "nodes": [
-                {"id": "llm-triage", "type": "llmNode"},
-                {"id": "extract-result", "type": "variableExtractionNode"},
-                {"id": "answer", "type": "answerNode"},
+                {"id": "llm-triage", "type": "llmNode", "data": {}},
+                {
+                    "id": "extract-result",
+                    "type": "variableExtractionNode",
+                    "data": {},
+                },
+                {"id": "answer", "type": "answerNode", "data": {}},
             ],
             "edges": [
                 {"id": "e1", "source": "llm-triage", "target": "extract-result"},

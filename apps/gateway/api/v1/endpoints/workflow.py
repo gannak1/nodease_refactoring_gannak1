@@ -60,6 +60,10 @@ from apps.shared.domain.workflow_knowledge_references import (
     WorkflowKnowledgeReferenceError,
     parse_workflow_knowledge_references,
 )
+from apps.shared.domain.workflow_graph import (
+    WorkflowGraphValidationError,
+    validate_workflow_graph,
+)
 from apps.shared.permissions import workflow_auth_state_allows
 from apps.workflow_engine.services.model_router import ModelCandidate, ModelRouter
 from apps.workflow_engine.services.model_routing_policy_refresh import (
@@ -263,6 +267,48 @@ def _ensure_workflow_matches_active_organization(
         organization_id
     ):
         raise HTTPException(status_code=404, detail="Workflow not found")
+
+
+def _bind_and_preflight_authenticated_graph(
+    db: Session,
+    *,
+    workflow: Workflow,
+    graph: dict[str, Any],
+    principal_id: UUID,
+) -> dict[str, Any]:
+    try:
+        validate_workflow_graph(graph)
+    except WorkflowGraphValidationError:
+        DeploymentService.enforce_authenticated_configuration_preflight(
+            db,
+            graph_snapshot=graph,
+            organization_id=workflow.organization_id,
+            principal_id=principal_id,
+        )
+    try:
+        bound_graph = DeploymentService.bind_workflow_node_targets(
+            db,
+            graph,
+            app=SimpleNamespace(
+                id=getattr(workflow, "app_id", None) or workflow.id,
+                organization_id=workflow.organization_id,
+            ),
+        )
+    except HTTPException:
+        DeploymentService.enforce_authenticated_configuration_preflight(
+            db,
+            graph_snapshot=graph,
+            organization_id=workflow.organization_id,
+            principal_id=principal_id,
+        )
+        raise
+    DeploymentService.enforce_authenticated_configuration_preflight(
+        db,
+        graph_snapshot=bound_graph,
+        organization_id=workflow.organization_id,
+        principal_id=principal_id,
+    )
+    return bound_graph
 
 
 def _is_number(value: Any) -> bool:
@@ -3171,13 +3217,13 @@ def _cost_optimizer_candidate_execution_context(
 def _run_cost_optimizer_candidate(
     *,
     workflow: Workflow,
+    execution_graph: dict[str, Any],
     node_id: str,
     baseline: dict[str, Any],
     candidate: CostOptimizerCandidateRequest,
     cost_optimizer_candidate_id: UUID,
     current_user: User,
     request: Request,
-    db: Session,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     candidate_workflow_run_id = uuid4()
@@ -3192,18 +3238,10 @@ def _run_cost_optimizer_candidate(
         request=request,
     )
     patched_graph = _build_cost_optimizer_candidate_execution_graph(
-        workflow.graph,
+        execution_graph,
         node_id,
         candidate,
         baseline["input"],
-    )
-    patched_graph = DeploymentService.bind_workflow_node_targets(
-        db,
-        patched_graph,
-        app=SimpleNamespace(
-            id=getattr(workflow, "app_id", workflow.id),
-            organization_id=getattr(workflow, "organization_id", None),
-        ),
     )
 
     try:
@@ -3293,82 +3331,30 @@ def _run_cost_optimizer_candidate(
 
 def validate_execution_graph(graph: dict):
     try:
+        validate_workflow_graph(graph)
+    except WorkflowGraphValidationError as exc:
+        detail_by_code = {
+            "workflow_edge_invalid": "Invalid edge format",
+            "workflow_edge_targets_source": "입력/트리거 노드에는 다른 노드를 연결할 수 없습니다.",
+            "workflow_edge_from_terminal": "종료 노드에서는 다른 노드로 연결할 수 없습니다.",
+        }
+        if exc.code == "workflow_edge_source_missing":
+            detail = f"존재하지 않는 노드에서 시작하는 연결입니다. edge: {exc.reference}"
+        elif exc.code == "workflow_edge_target_missing":
+            detail = f"존재하지 않는 노드로 향하는 연결입니다. edge: {exc.reference}"
+        elif exc.code == "workflow_cycle_detected":
+            detail = f"워크플로우에 순환 연결이 있습니다. node: {exc.reference}"
+        else:
+            detail = detail_by_code.get(exc.code, "Workflow graph is invalid")
+        raise HTTPException(status_code=400, detail=detail) from None
+
+    try:
         parse_workflow_knowledge_references(graph)
     except WorkflowKnowledgeReferenceError as exc:
         raise HTTPException(
             status_code=422,
             detail={"code": exc.reason_code, "field": exc.field_path},
         ) from exc
-
-    nodes = graph.get("nodes") or []
-    edges = graph.get("edges") or []
-    node_map = {
-        node.get("id"): node
-        for node in nodes
-        if isinstance(node, dict) and node.get("id")
-    }
-    source_only_types = {"startNode", "webhookTrigger", "scheduleTrigger"}
-    terminal_types = {"answerNode", "mailAcknowledgeNode"}
-
-    adjacency = {node_id: [] for node_id in node_map.keys()}
-
-    for edge in edges:
-        if not isinstance(edge, dict):
-            raise HTTPException(status_code=400, detail="Invalid edge format")
-
-        source_id = edge.get("source")
-        target_id = edge.get("target")
-        source_node = node_map.get(source_id)
-        target_node = node_map.get(target_id)
-
-        if source_node is None:
-            raise HTTPException(
-                status_code=400,
-                detail=f"존재하지 않는 노드에서 시작하는 연결입니다. edge: {edge.get('id')}",
-            )
-        if target_node is None:
-            raise HTTPException(
-                status_code=400,
-                detail=f"존재하지 않는 노드로 향하는 연결입니다. edge: {edge.get('id')}",
-            )
-        if target_node.get("type") in source_only_types:
-            raise HTTPException(
-                status_code=400,
-                detail="입력/트리거 노드에는 다른 노드를 연결할 수 없습니다.",
-            )
-        if source_node.get("type") in terminal_types:
-            raise HTTPException(
-                status_code=400,
-                detail="종료 노드에서는 다른 노드로 연결할 수 없습니다.",
-            )
-
-        adjacency[source_id].append(target_id)
-
-    visited = set()
-
-    for start_id in node_map.keys():
-        if start_id in visited:
-            continue
-        # iterative DFS — avoids Python recursion limit on large graphs
-        path: set[str] = set()
-        stack = [(start_id, iter(adjacency.get(start_id, [])))]
-        path.add(start_id)
-        while stack:
-            node_id, children = stack[-1]
-            try:
-                child = next(children)
-                if child in path:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"워크플로우에 순환 연결이 있습니다. node: {child}",
-                    )
-                if child not in visited:
-                    path.add(child)
-                    stack.append((child, iter(adjacency.get(child, []))))
-            except StopIteration:
-                path.discard(node_id)
-                visited.add(node_id)
-                stack.pop()
 
 
 def _patch_compare_graph(
@@ -3998,10 +3984,28 @@ def _cost_optimizer_stale_verification_response(reason: str) -> dict[str, Any]:
     }
 
 
+def _cost_optimizer_recommendation_request_fingerprint(
+    *,
+    workflow: Workflow,
+    node_id: str,
+    request_body: CostOptimizerRecommendationVerifyRequest,
+) -> str:
+    return CostOptimizerRecommendationVerificationService.request_fingerprint(
+        workflow_id=workflow.id,
+        node_id=node_id,
+        recommendation_ids=request_body.recommendation_ids,
+        baseline_mode=request_body.baseline_mode,
+        recommendation_policy_version=request_body.recommendation_policy_version,
+        recommendation_fingerprint=request_body.recommendation_fingerprint,
+        node_config_fingerprint=request_body.node_config_fingerprint,
+    )
+
+
 def _verify_cost_optimizer_recommendations(
     *,
     db: Session,
     workflow: Workflow,
+    execution_graph: dict[str, Any],
     node_id: str,
     current_user: User,
     request: Request,
@@ -4012,14 +4016,10 @@ def _verify_cost_optimizer_recommendations(
     idempotency_key = idempotency_key.strip()
     if not idempotency_key:
         raise HTTPException(status_code=422, detail="cost_optimizer.idempotency_key_required")
-    request_fingerprint = CostOptimizerRecommendationVerificationService.request_fingerprint(
-        workflow_id=workflow.id,
+    request_fingerprint = _cost_optimizer_recommendation_request_fingerprint(
+        workflow=workflow,
         node_id=node_id,
-        recommendation_ids=request_body.recommendation_ids,
-        baseline_mode=request_body.baseline_mode,
-        recommendation_policy_version=request_body.recommendation_policy_version,
-        recommendation_fingerprint=request_body.recommendation_fingerprint,
-        node_config_fingerprint=request_body.node_config_fingerprint,
+        request_body=request_body,
     )
     claim = CostOptimizerRecommendationVerificationService.claim(
         db,
@@ -4128,6 +4128,7 @@ def _verify_cost_optimizer_recommendations(
         )
         candidate_result = _run_cost_optimizer_candidate(
             workflow=workflow,
+            execution_graph=execution_graph,
             node_id=node_id,
             baseline=baseline,
             candidate=candidate,
@@ -4293,20 +4294,56 @@ def verify_cost_optimizer_recommendations(
     request_body: CostOptimizerRecommendationVerifyRequest,
     request: Request,
     idempotency_key: str = Header(..., alias="Idempotency-Key", min_length=1),
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """추천 설정을 최신 성공 운영 baseline에 한 번만 실행해 빠르게 검증한다."""
     workflow = ensure_workflow_permission(db, current_user, workflow_id, "write")
+    _ensure_workflow_matches_active_organization(
+        db,
+        request,
+        current_user,
+        workflow,
+        x_organization_id,
+    )
+    normalized_idempotency_key = idempotency_key.strip()
+    if not normalized_idempotency_key:
+        raise HTTPException(
+            status_code=422,
+            detail="cost_optimizer.idempotency_key_required",
+        )
+    request_fingerprint = _cost_optimizer_recommendation_request_fingerprint(
+        workflow=workflow,
+        node_id=node_id,
+        request_body=request_body,
+    )
+    replay_response = (
+        CostOptimizerRecommendationVerificationService.replay_existing(
+            db,
+            user_id=current_user.id,
+            idempotency_key=normalized_idempotency_key,
+            request_fingerprint=request_fingerprint,
+        )
+    )
+    if replay_response is not None:
+        return replay_response
     _ensure_cost_optimizer_llm_node(workflow, node_id)
+    execution_graph = _bind_and_preflight_authenticated_graph(
+        db,
+        workflow=workflow,
+        graph=workflow.graph or {},
+        principal_id=current_user.id,
+    )
     return _verify_cost_optimizer_recommendations(
         db=db,
         workflow=workflow,
+        execution_graph=execution_graph,
         node_id=node_id,
         current_user=current_user,
         request=request,
         request_body=request_body,
-        idempotency_key=idempotency_key,
+        idempotency_key=normalized_idempotency_key,
     )
 
 
@@ -4316,6 +4353,7 @@ def compare_cost_optimizer_candidate(
     node_id: str,
     request_body: CostOptimizerCompareRequest,
     request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -4323,7 +4361,20 @@ def compare_cost_optimizer_candidate(
     A baseline input을 고정하고 B candidate만 새 설정으로 실행합니다.
     """
     workflow = ensure_workflow_permission(db, current_user, workflow_id, "write")
+    _ensure_workflow_matches_active_organization(
+        db,
+        request,
+        current_user,
+        workflow,
+        x_organization_id,
+    )
     _ensure_cost_optimizer_llm_node(workflow, node_id)
+    execution_graph = _bind_and_preflight_authenticated_graph(
+        db,
+        workflow=workflow,
+        graph=workflow.graph or {},
+        principal_id=current_user.id,
+    )
     baseline = get_cost_optimizer_baseline_by_id(
         db,
         workflow,
@@ -4364,13 +4415,13 @@ def compare_cost_optimizer_candidate(
 
     candidate_result = _run_cost_optimizer_candidate(
         workflow=workflow,
+        execution_graph=execution_graph,
         node_id=node_id,
         baseline=baseline,
         candidate=candidate,
         cost_optimizer_candidate_id=candidate_row.id,
         current_user=current_user,
         request=request,
-        db=db,
     )
     diff = _build_cost_optimizer_diff(baseline, candidate_result)
     downstream_compatibility = _resolve_cost_optimizer_downstream_compatibility(
@@ -5030,15 +5081,30 @@ def compare_workflow_variants(
     workflow_id: str,
     request_body: WorkflowCompareRequest,
     request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     workflow = ensure_workflow_permission(db, current_user, workflow_id, "execute")
+    _ensure_workflow_matches_active_organization(
+        db,
+        request,
+        current_user,
+        workflow,
+        x_organization_id,
+    )
     graph = WorkflowService.get_draft(db, workflow_id)
     if not graph:
         raise HTTPException(
             status_code=404, detail=f"Workflow '{workflow_id}' draft not found"
         )
+
+    graph = _bind_and_preflight_authenticated_graph(
+        db,
+        workflow=workflow,
+        graph=graph,
+        principal_id=current_user.id,
+    )
 
     base_context = {
         "user_id": str(current_user.id),
@@ -5065,14 +5131,6 @@ def compare_workflow_variants(
         try:
             patched_graph = _patch_compare_graph(
                 graph, request_body.node_id, request_body.compare_type, value
-            )
-            patched_graph = DeploymentService.bind_workflow_node_targets(
-                db,
-                patched_graph,
-                app=SimpleNamespace(
-                    id=workflow.app_id,
-                    organization_id=workflow.organization_id,
-                ),
             )
             task = send_workflow_task(
                 celery_app,
@@ -5170,13 +5228,11 @@ async def execute_workflow(
             raise HTTPException(
                 status_code=404, detail=f"Workflow '{workflow_id}' draft not found"
             )
-        graph = DeploymentService.bind_workflow_node_targets(
+        graph = _bind_and_preflight_authenticated_graph(
             db,
-            graph,
-            app=SimpleNamespace(
-                id=workflow.app_id,
-                organization_id=workflow.organization_id,
-            ),
+            workflow=workflow,
+            graph=graph,
+            principal_id=current_user.id,
         )
 
         # execution_context 구성
@@ -5327,14 +5383,11 @@ async def stream_workflow(
         raise HTTPException(
             status_code=404, detail=f"Workflow '{workflow_id}' draft not found"
         )
-    validate_execution_graph(graph)
-    graph = DeploymentService.bind_workflow_node_targets(
+    graph = _bind_and_preflight_authenticated_graph(
         db,
-        graph,
-        app=SimpleNamespace(
-            id=workflow.app_id,
-            organization_id=workflow.organization_id,
-        ),
+        workflow=workflow,
+        graph=graph,
+        principal_id=current_user.id,
     )
 
     # 4. [NEW] Gateway에서 run_id 생성 (Celery 태스크에 전달)

@@ -29,6 +29,25 @@ export function formatDeploymentPreflightMessage(
     .join('\n');
 }
 
+function formatSafePreflightFields(
+  blockedReason: string | null | undefined,
+  affectedKbCountBucket: string,
+  actionLabels: string[],
+): string {
+  const reason = blockedReason || 'deployment_preflight_blocked';
+  const actions = actionLabels.filter(Boolean);
+
+  return [
+    `실행 준비 검사에서 차단되었습니다. (${reason})`,
+    affectedKbCountBucket !== '0'
+      ? `영향 KB 수: ${affectedKbCountBucket}`
+      : null,
+    actions.length ? `필요 조치: ${actions.join(', ')}` : null,
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
 export function deploymentApiErrorMessage(
   error: unknown,
   fallback = '배포 중 오류가 발생했습니다.',
@@ -42,11 +61,9 @@ export function deploymentApiErrorMessage(
   }
   const detailObject = asRecord(detail);
   const detailError = asRecord(detailObject.error);
-  const preflight = detailError.preflight as
-    | DeploymentPreflightResponse
-    | undefined;
-  if (preflight?.status === 'blocked') {
-    return formatDeploymentPreflightMessage(preflight);
+  const preflightMessage = safeBlockedPreflightMessage(detailError.preflight);
+  if (preflightMessage) {
+    return preflightMessage;
   }
   if (typeof detailError.message === 'string') {
     return detailError.message;
@@ -55,6 +72,28 @@ export function deploymentApiErrorMessage(
     return errorObject.message;
   }
   return fallback;
+}
+
+function safeBlockedPreflightMessage(value: unknown): string | null {
+  const preflight = asRecord(value);
+  if (preflight.status !== 'blocked') return null;
+
+  const summary = asRecord(preflight.safe_summary);
+  const affected = summary.affected_kb_count_bucket;
+  const blockedReason = summary.blocked_reason;
+  const actions = preflight.required_actions;
+  if (
+    typeof affected !== 'string' ||
+    (blockedReason !== null && typeof blockedReason !== 'string') ||
+    !Array.isArray(actions)
+  ) {
+    return null;
+  }
+
+  const actionLabels = actions
+    .map((action) => asRecord(action).label)
+    .filter((label): label is string => typeof label === 'string' && !!label);
+  return formatSafePreflightFields(blockedReason, affected, actionLabels);
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

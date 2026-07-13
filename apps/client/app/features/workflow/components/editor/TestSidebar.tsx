@@ -42,6 +42,7 @@ import {
   shouldShowFinalResponseCard,
 } from '../../utils/testExecutionFinalResponse';
 import { FinalResponseCard } from '../execution/FinalResponseCard';
+import { deploymentApiErrorMessage } from '../../utils/deploymentPreflightMessage';
 
 export { FinalResponseCard } from '../execution/FinalResponseCard';
 
@@ -760,12 +761,14 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     } catch (err: any) {
       console.error('Execution failed:', err);
       const budgetExceeded = isBudgetExceededError(err);
-      failTestExecution(
-        budgetExceeded
-          ? BUDGET_EXCEEDED_MESSAGE
-          : err.message || '실행 중 오류가 발생했습니다.',
-      );
-      toast.error(budgetExceeded ? BUDGET_EXCEEDED_MESSAGE : '실행 실패');
+      const message = budgetExceeded
+        ? BUDGET_EXCEEDED_MESSAGE
+        : deploymentApiErrorMessage(
+            err,
+            err.message || '실행 중 오류가 발생했습니다.',
+          );
+      failTestExecution(message);
+      toast.error(message);
     } finally {
       setTestUploading(false);
       setPreflightStatus('idle');

@@ -37,6 +37,13 @@ class FakeNoBudgetDb:
         )
 
 
+def _valid_start_graph():
+    return {
+        "nodes": [{"id": "start-1", "type": "startNode", "data": {}}],
+        "edges": [],
+    }
+
+
 def test_authenticated_execute_passes_current_user_execution_subject(monkeypatch):
     workflow_id = str(uuid.uuid4())
     app_id = uuid.uuid4()
@@ -61,7 +68,7 @@ def test_authenticated_execute_passes_current_user_execution_subject(monkeypatch
     monkeypatch.setattr(
         workflow_endpoint.WorkflowService,
         "get_draft",
-        lambda *args, **kwargs: {"nodes": [], "edges": []},
+        lambda *args, **kwargs: _valid_start_graph(),
     )
     monkeypatch.setattr(workflow_endpoint, "celery_app", celery)
 
@@ -95,6 +102,12 @@ def test_authenticated_execute_dispatches_draft_rag_selection(monkeypatch):
     draft_graph = {
         "nodes": [
             {
+                "id": "start-1",
+                "type": "startNode",
+                "position": {"x": 0, "y": 0},
+                "data": {},
+            },
+            {
                 "id": "llm-1",
                 "type": "llmNode",
                 "position": {"x": 100, "y": 120},
@@ -111,7 +124,9 @@ def test_authenticated_execute_dispatches_draft_rag_selection(monkeypatch):
                 },
             }
         ],
-        "edges": [],
+        "edges": [
+            {"id": "start-llm", "source": "start-1", "target": "llm-1"}
+        ],
     }
     request = Request(
         {
@@ -147,11 +162,14 @@ def test_authenticated_execute_dispatches_draft_rag_selection(monkeypatch):
     dispatched_graph = celery.calls[0]["args"][0]
     dispatched_context = celery.calls[0]["args"][2]
 
-    assert dispatched_graph["nodes"][0]["data"]["knowledgeBases"] == [
+    dispatched_llm = next(
+        node for node in dispatched_graph["nodes"] if node["id"] == "llm-1"
+    )
+    assert dispatched_llm["data"]["knowledgeBases"] == [
         {"id": knowledge_base_id, "name": "제품 정책"}
     ]
-    assert dispatched_graph["nodes"][0]["data"]["topK"] == 4
-    assert dispatched_graph["nodes"][0]["data"]["scoreThreshold"] == 0.6
+    assert dispatched_llm["data"]["topK"] == 4
+    assert dispatched_llm["data"]["scoreThreshold"] == 0.6
     assert dispatched_context["execution_subject"] == {
         "type": "user",
         "id": str(current_user.id),
