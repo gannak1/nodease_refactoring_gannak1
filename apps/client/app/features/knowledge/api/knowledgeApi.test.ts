@@ -371,6 +371,31 @@ describe('knowledgeApi safe failure logging', () => {
 });
 
 describe('knowledgeApi collection management', () => {
+  it('loads the route-safe Workflow Collection picker projection', async () => {
+    vi.mocked(apiClient.get).mockResolvedValueOnce({
+      data: {
+        collections: [
+          {
+            id: '11111111-1111-1111-1111-111111111111',
+            safe_label: '사내 문서',
+          },
+        ],
+      },
+    });
+
+    const response = await knowledgeApi.getLLMSelectableKnowledgeCollections();
+
+    expect(apiClient.get).toHaveBeenCalledWith(
+      '/knowledge/llm-selectable-collections',
+    );
+    expect(response.collections).toEqual([
+      {
+        id: '11111111-1111-1111-1111-111111111111',
+        safe_label: '사내 문서',
+      },
+    ]);
+  });
+
   it('updates Knowledge Base safe metadata', async () => {
     vi.mocked(apiClient.patch).mockResolvedValueOnce({
       data: {

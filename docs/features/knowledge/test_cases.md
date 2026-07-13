@@ -74,13 +74,80 @@ Status: Draft
 - Active ready version 또는 documented completed-document unversioned legacy chunk fallback만 ready다. Archived/deleted/source_deleted/non-ready/pre-finalized 후보는 identity 없이 제외한다.
 - Authenticated source-managed KB는 active/fresh/unexpired/matching materialized `SourceAuthorizationProvenance`가 필요하다. Missing/inactive/stale/unmapped/ambiguous/unverified/revoked/denied/unknown/expired/organization-requester-KB-source mismatch는 fail-closed다.
 - MBA-232 adapter는 connector client, HTTP client, `check_access_batch`, single `check_access`, runtime source authorization cache를 0회 호출한다.
-- Anonymous selected Collection child는 active public Collection의 active/ready manual KB만 허용한다. Direct manual KB도 하나 이상의 active public Collection membership이 필요하다. Source public exposure primitive가 없는 동안 source-managed KB는 public membership과 authenticated provenance가 있어도 모두 제외한다.
+- Anonymous selected Collection child는 active public manual Collection의 active/ready manual KB만 허용한다. Direct manual KB도 하나 이상의 active public manual Collection membership이 필요하다. Source public exposure primitive가 없는 동안 source-managed Collection은 manual child만 포함해도 membership scan 전에 제외하고, source-managed KB는 public membership과 authenticated provenance가 있어도 모두 제외한다. Collection source identity field가 projection에서 누락되거나 malformed이면 anonymous path는 fail-closed다.
 - PostgreSQL adapter는 fresh transaction의 첫 query 전에 `REPEATABLE READ, READ ONLY`를 적용한다. Path-scoped PostgreSQL CI의 two-transaction test에서 resolver 시작 뒤 membership/Collection route/KB use/organization membership/source provenance/Collection lifecycle/KB lifecycle 변경이 commit되어도 current invocation은 한 snapshot만 보고 다음 invocation이 변경을 본다.
 - Source-policy/provenance expiry는 timezone-aware PostgreSQL transaction timestamp 하나로 전체 invocation을 평가한다. KB 순회 중 wall clock이 만료 경계를 지나도 같은 invocation에서 서로 다른 evaluation time을 사용하면 테스트 실패다.
 - Snapshot/repository/authorization infrastructure exception은 fixed safe retryable whole-resolution failure다. 이미 평가한 candidate partial set, raw SQL/exception, identifier, source metadata, exact count를 반환하거나 retrieval/provider mock을 호출하면 테스트 실패다.
 - Candidate 0개는 `safe_no_result`, budget 제한은 successful warning이며 downstream partial retrieval failure와 구분한다.
 - Query count는 candidate/Collection 수에 비례하는 N+1이 아니고 selected 20 Collections/5,000 membership fixture에서도 scan/memory/result가 bounded하고 fair해야 한다. Membership SQL은 Collection별 LATERAL cap을 global window보다 먼저 적용하고 outer `LIMIT`만으로 boundedness를 주장하지 않는다.
 - Shared pure policy는 SQLAlchemy/FastAPI/Celery/Gateway/Workflow Engine concrete package를 import하지 않고 Workflow Engine runtime retrieval production code는 `apps.gateway.*`를 import하지 않는다.
+
+## MBA-233 Workflow Collection Routing Integration Tests
+
+- Legacy direct-only graph, Collection-only graph와 mixed graph가 Shared/Gateway/Worker/
+  Client validator에서 같은 pass/fail 결과를 사용한다. 각 list의 19/20은 성공하고
+  21은 silent slicing 없이 실패한다. Malformed/non-canonical UUID, unknown item field,
+  overlong/control display snapshot과 raw object echo를 거부한다.
+- Route-safe Collection picker는 user-direct/active-Team/organization-manager effective
+  `route` positive case와 read/manage/sync/domain-only, inactive membership, revoked,
+  cross-organization, archived/deleted negative case를 검증한다. Response는 UUID와 optional
+  approved safe label만 가지며 child/source/permission/hidden count를 포함하지 않는다.
+  최근 unauthorized Collection 500개 뒤에 authorized Collection이 있는 fixture와 authorized
+  Collection 501개 fixture로 permission scope가 limit보다 먼저 적용되고 authorized 결과가
+  500개로 제한되는 순서를 검증한다.
+- Draft/Agent Builder/optimizer/model-routing graph save는 direct KB effective `use`와
+  source authorization, Collection `route`를 current editor로 다시 검증한다. 하나라도
+  stale/forged/denied/cross-org이면 partial graph/success audit 없이 whole-write를
+  rollback하고 safe generic error만 반환한다. Knowledge reference가 없는 root/nested legacy
+  graph는 null organization/invalid legacy user identifier로 permission service를 만들지 않지만,
+  malformed empty-list shape는 422 구조 오류로 유지한다. 과거 completed chunk가 남은
+  `source_deleted` direct KB와 route grant/membership이 남은 `source_deleted` parent
+  Collection은 picker, save, preflight와 runtime 모두 거부한다.
+- Collection route는 있지만 child KB/source access가 전부 denied인 graph는 save할 수
+  있고 runtime에서 zero candidate/no provider로 닫힌다. Save-time에 child membership이나
+  source를 query하면 테스트 실패다.
+- PostgreSQL coordinated revoke/save test는 revoke가 authorization read 전에 commit되면
+  save가 실패함을 보이고, read 뒤 revoke 경합으로 configuration intent가 남더라도
+  다음 MBA-232 invocation이 current permission으로 제외하며 save capability를 재사용하지
+  않음을 검증한다.
+- Deployment preview/create/activation/toggle과 nested workflow-node graph는 두 list를
+  검증한다. Anonymous private Collection/direct KB와 source public exposure primitive가
+  없는 source-managed content는 fixed blocker이고 hidden child ID/count를 반환하지 않는다.
+  Direct/public-membership/Collection aggregate query 모두 `source_deleted` KB를 제외하는
+  PostgreSQL predicate를 사용하고 direct KB에는 retrieval-visible completed chunk
+  readiness를 적용하며 runtime resolver eligibility와 어긋나면 테스트 실패다.
+  빠른 SQL compile test는 INNER JOIN 대상/조직 ON 조건/lifecycle/sync predicate를 검증하고,
+  opt-in disposable PostgreSQL test는 active, source-deleted, archived, cross-organization,
+  organization-mismatched membership이 실제 반환 집합과 candidate count에서 올바르게
+  포함·제외되는지 migration 적용 스키마에서 검증한다. 같은 실제 DB 테스트에서 최근
+  unauthorized 500개 뒤의 authorized Collection과 501개 authorized 결과 cap도 검증한다.
+  Source-deleted parent Collection은 route permission이 남아 있어도 picker cap, save,
+  preflight와 runtime candidate stream 어느 곳에도 포함되지 않아야 한다.
+- 모든 production execution surface는 same resolver dependency를 주입한다. Direct-only,
+  Collection-only와 mixed invocation은 resolver를 정확히 한 번 호출하며 ordered canonical
+  candidate마다 retrieval을 최대 한 번 실행한다.
+- Resolver policy zero-result와 insufficient evidence는 embedding/retrieval/provider를
+  호출하지 않는다. Resolver infrastructure exception은 safe retryable workflow failure로
+  Celery retry되고 `ragFailurePolicy=safe_no_result`로 낮아지지 않는다. Retry/redelivery는
+  fresh snapshot을 열 수 있지만 exactly-once provider 호출을 주장하지 않는다.
+- Agent Builder/optimizer/compare/copy/import/model routing/deployment snapshot은 unrelated
+  edit에서 `knowledgeCollections`를 보존한다. Pre-execution sync는 direct KB만 처리하고
+  Collection child를 열거하거나 connector를 호출하지 않는다.
+- Public app/deployment graph는 두 reference list를 제거한다. API/SSE/error/log/trace/audit
+  fixture는 Collection ID/name/provenance, hidden KB ID, raw graph/query/source/credential/
+  provider payload가 없고 safe bucket/fixed code만 있음을 검증한다. Mixed successful
+  retrieval에서는 explicit direct KB의 기존 KB/chunk/document lineage는 유지하지만
+  Collection-derived evidence의 child KB/chunk/document ID와 per-KB rank는 result metadata, durable trace,
+  audit 어디에도 나타나지 않는다. 최종 정렬·dedupe·top-k 이후의 `evidence_rank`는 direct와
+  Collection-derived result/quality trace에 1부터 연속해서 나타나며 child KB별로 재시작하지
+  않는다. Collection retrieval audit은 node target과 count bucket만
+  포함한다. Collection-only/mixed trace는 authorized/selected KB exact count와 그 값에서
+  유도되는 actual fan-out concurrency를 저장하지 않고 count bucket만 남긴다.
+  Query-vector/fan-out INFO log도 KB/model/vector/failure exact count 대신 bucket만 기록한다.
+  Anonymous/system actor와 invalid organization audit 경계도 같은 redaction을 쓴다.
+- Worker-first canary는 구 task drain 뒤 Gateway write와 Client를 순서대로 노출하고,
+  rollback은 Client/Gateway write 중지와 drain 뒤 Worker를 되돌린다. 구 Worker가
+  Collection graph를 소비할 수 있는 상태에서는 rollout/rollback acceptance가 실패다.
 
 ## Knowledge Base API Tests
 

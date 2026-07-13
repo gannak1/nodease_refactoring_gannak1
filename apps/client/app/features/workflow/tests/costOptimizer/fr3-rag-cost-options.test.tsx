@@ -29,12 +29,16 @@ vi.mock('@/app/features/knowledge/api/knowledgeApi', () => ({
 }));
 
 vi.mock('@/app/features/workflow/utils/llmKnowledgeBaseSelection', () => ({
+  MAX_CONFIGURED_KNOWLEDGE_REFERENCES: 20,
   fetchEligibleKnowledgeBases: vi.fn().mockResolvedValue({
     bases: [],
     detailsById: {},
   }),
+  fetchEligibleKnowledgeCollections: vi.fn().mockResolvedValue([]),
   sanitizeSelectedKnowledgeBases: (selected: unknown) => selected,
+  sanitizeSelectedKnowledgeCollections: (selected: unknown) => selected,
   isSameKnowledgeSelection: () => true,
+  isSameKnowledgeCollectionSelection: () => true,
 }));
 
 const baseData: LLMNodeData = {
@@ -306,7 +310,7 @@ describe('FR-003 RAG cost optimization options', () => {
     expect(
       await screen.findByText('지식을 불러오지 못했습니다.'),
     ).toBeInTheDocument();
-    expect(screen.getByText('선택됨:')).toBeInTheDocument();
+    expect(screen.getByText(/기존 선택/)).toBeInTheDocument();
     expect(screen.getAllByText('1').length).toBeGreaterThan(0);
     expect(updateNodeDataMock).not.toHaveBeenCalled();
   });

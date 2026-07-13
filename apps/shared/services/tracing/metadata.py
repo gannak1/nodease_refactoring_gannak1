@@ -237,6 +237,7 @@ SPAN_SECTION_FIELDS = {
         "insufficiency_reason",
         "knowledge_base_id",
         "authorized_kb_count",
+        "authorized_kb_count_bucket",
         "permission_filter_applied",
         "latency_ms",
         "partial_result",
@@ -252,6 +253,7 @@ SPAN_SECTION_FIELDS = {
         "safe_exclusion_summary",
         "score_summary",
         "selected_kb_count",
+        "selected_kb_count_bucket",
         "source_tier_policy",
         "source_tier_used",
         "stored_result_count",
@@ -285,6 +287,7 @@ RAG_RESULT_FIELDS = {
     "chunk_id",
     "parent_chunk_id",
     "rank",
+    "evidence_rank",
     "knowledge_base_id",
     "metadata_summary",
     "hierarchy_path",
@@ -414,7 +417,15 @@ class TraceMetadataSanitizer:
                 if item
             ]
         if isinstance(safe_value, dict):
-            return cls._filter_allowed_dict(safe_value, RAG_RESULT_FIELDS)
+            filtered = cls._filter_allowed_dict(safe_value, RAG_RESULT_FIELDS)
+            evidence_rank = filtered.get("evidence_rank")
+            if evidence_rank is not None and (
+                isinstance(evidence_rank, bool)
+                or not isinstance(evidence_rank, int)
+                or evidence_rank < 1
+            ):
+                filtered.pop("evidence_rank", None)
+            return filtered
         return None
 
     @classmethod

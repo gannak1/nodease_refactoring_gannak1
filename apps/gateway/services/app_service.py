@@ -1091,7 +1091,7 @@ class AppService:
     def _clean_graph_data(graph_snapshot: dict) -> dict:
         """
         그래프 스냅샷에서 민감 정보를 제거합니다.
-        (knowledgeBases, api_token, authConfig, password, email 등)
+        (knowledgeBases, knowledgeCollections, api_token, authConfig, password, email 등)
         """
         from apps.shared.domain.workflow_node_binding import (
             strip_workflow_node_bindings,
@@ -1110,6 +1110,7 @@ class AppService:
 
             if node_type == "llmNode":
                 data.pop("knowledgeBases", None)
+                data.pop("knowledgeCollections", None)
             elif node_type == "githubNode":
                 data.pop("api_token", None)
             elif node_type == "httpRequestNode":

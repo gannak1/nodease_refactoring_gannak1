@@ -82,6 +82,10 @@ semantic discovery는 수행하지 않는다.
   한다. 누락, 다른 값, malformed 값은 private로 취급한다.
 - Direct KB도 active public Collection에 현재 연결되어 있어야 한다.
 - Manual active/ready KB만 public candidate가 될 수 있다.
+- Source-managed Collection은 별도 source/connector public exposure approval store가 현재
+  구현되어 있지 않으므로 public visibility와 manual child KB가 있어도 fail-closed
+  제외한다. Collection source identity projection이 누락된 상태도 허용으로 해석하지
+  않는다.
 - Source-managed KB는 별도 source/connector public exposure approval store가 현재
   구현되어 있지 않으므로 public Collection에 연결되어 있어도 fail-closed 제외한다.
 - Anonymous path는 Team/User Collection/KB permission, domain permission, 로그인

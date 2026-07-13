@@ -68,6 +68,8 @@ export interface DeploymentPreflightResponse {
     blocked_reason?: string | null;
     affected_node_count: number;
     affected_kb_count_bucket: string;
+    affected_collection_count_bucket?: string;
+    candidate_budget_limited?: boolean;
   };
   required_actions: DeploymentPreflightRequiredAction[];
   warnings: string[];
@@ -77,6 +79,8 @@ export interface DeploymentPreflightResponse {
     status: DeploymentPreflightStatus;
     reason_codes: string[];
     knowledge_base_count_bucket: string;
+    knowledge_collection_count_bucket?: string;
+    candidate_budget_limited?: boolean;
   }>;
 }
 

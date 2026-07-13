@@ -6,13 +6,23 @@ export function formatDeploymentPreflightMessage(
   const reason =
     preflight.safe_summary.blocked_reason || 'deployment_preflight_blocked';
   const affected = preflight.safe_summary.affected_kb_count_bucket;
+  const affectedCollections =
+    preflight.safe_summary.affected_collection_count_bucket ?? '0';
   const actions = preflight.required_actions
     .map((action) => action.label)
     .filter(Boolean);
 
   return [
-    `배포 전 검사에서 차단되었습니다. (${reason})`,
+    preflight.status === 'warning'
+      ? `배포 전 검사 경고가 있습니다. (${reason})`
+      : `배포 전 검사에서 차단되었습니다. (${reason})`,
     affected !== '0' ? `영향 KB 수: ${affected}` : null,
+    affectedCollections !== '0'
+      ? `영향 Collection 수: ${affectedCollections}`
+      : null,
+    preflight.safe_summary.candidate_budget_limited
+      ? '실행 시 지식 후보가 최대 후보 수로 제한될 수 있습니다.'
+      : null,
     actions.length ? `필요 조치: ${actions.join(', ')}` : null,
   ]
     .filter(Boolean)

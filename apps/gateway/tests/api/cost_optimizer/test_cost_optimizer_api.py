@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.api.v1.endpoints import workflow as workflow_endpoint
 from apps.gateway.main import app
+from apps.gateway.services.workflow_service import WorkflowService
 from apps.shared.db.models.cost_optimizer import (
     CostOptimizerCandidate,
     CostOptimizerExperiment,
@@ -3229,6 +3230,10 @@ class TestCostOptimizerApplyApi:
                 "apps.gateway.api.v1.endpoints.workflow.LLMService.get_my_available_models",
                 return_value=_available_model_options("gpt-4.1-mini", "gpt-4.1"),
             ),
+            patch.object(
+                WorkflowService,
+                "validate_knowledge_references",
+            ) as validate_knowledge_references,
         ):
             response = self.client.patch(
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
@@ -3241,6 +3246,7 @@ class TestCostOptimizerApplyApi:
             )
 
         assert response.status_code == 200
+        validate_knowledge_references.assert_called_once()
         ensure_builder.assert_called_once_with(
             db, SimpleNamespace(id=user_id), str(workflow_id), "write"
         )
@@ -3348,6 +3354,10 @@ class TestCostOptimizerApplyApi:
                 "apps.gateway.api.v1.endpoints.workflow.LLMService.get_my_available_models",
                 return_value=_available_model_options("gpt-4.1-mini"),
             ),
+            patch.object(
+                WorkflowService,
+                "validate_knowledge_references",
+            ) as validate_knowledge_references,
         ):
             response = self.client.patch(
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
@@ -3359,6 +3369,7 @@ class TestCostOptimizerApplyApi:
             )
 
         assert response.status_code == 200, response.json()
+        validate_knowledge_references.assert_called_once()
         target_data = workflow.graph["nodes"][0]["data"]
         assert target_data["model_id"] == "gpt-4.1-mini"
         assert target_data["parameters"] == {

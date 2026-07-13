@@ -1,4 +1,5 @@
 import ast
+import uuid
 from pathlib import Path
 
 from apps.workflow_engine.adapters.knowledge_runtime_candidates import (
@@ -10,6 +11,10 @@ from apps.workflow_engine.application.runtime_retrieval.knowledge_candidates imp
 from apps.workflow_engine.composition.runtime_retrieval import (
     build_knowledge_runtime_candidate_resolver,
 )
+from apps.workflow_engine.workflow.core.runtime_dependencies import (
+    WorkflowRuntimeDependencies,
+)
+from apps.workflow_engine.workflow.core.workflow_engine import WorkflowEngine
 
 
 def test_composition_builds_runtime_resolver_without_opening_session():
@@ -30,6 +35,64 @@ def test_composition_builds_runtime_resolver_without_opening_session():
     )
     assert resolver._snapshot_port._session_factory is session_factory
     assert calls == []
+
+
+def test_engine_injects_resolver_only_into_knowledge_llm_node():
+    class FakeResolver:
+        def resolve(self, request):  # pragma: no cover - binding-only test
+            raise AssertionError("resolver must not run during composition")
+
+    resolver = FakeResolver()
+    collection_id = uuid.uuid4()
+    engine = WorkflowEngine(
+        graph={
+            "nodes": [
+                {
+                    "id": "start-1",
+                    "type": "startNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {"title": "Start"},
+                },
+                {
+                    "id": "llm-1",
+                    "type": "llmNode",
+                    "position": {"x": 200, "y": 0},
+                    "data": {
+                        "title": "LLM",
+                        "provider": "openai",
+                        "model_id": "gpt-4o",
+                        "user_prompt": "query",
+                        "knowledgeCollections": [
+                            {
+                                "id": str(collection_id),
+                                "safeLabel": "Collection",
+                            }
+                        ],
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "edge-1",
+                    "source": "start-1",
+                    "target": "llm-1",
+                }
+            ],
+        },
+        runtime_dependencies=WorkflowRuntimeDependencies(
+            knowledge_runtime_candidate_resolver=resolver,
+        ),
+    )
+
+    assert (
+        engine.node_instances["llm-1"]._knowledge_runtime_candidate_resolver
+        is resolver
+    )
+    assert not hasattr(
+        engine.node_instances["start-1"],
+        "_knowledge_runtime_candidate_resolver",
+    )
+    assert "knowledge_runtime_candidate_resolver" not in engine.execution_context
 
 
 def _imported_modules(path: Path) -> set[str]:
@@ -58,6 +121,23 @@ def test_runtime_candidate_layers_never_import_gateway():
             module == "apps.gateway" or module.startswith("apps.gateway.")
             for module in _imported_modules(path)
         ), path
+
+
+def test_llm_runtime_does_not_restore_gateway_or_legacy_authorization_imports():
+    root = Path(__file__).resolve().parents[3]
+    llm_node_path = (
+        root / "apps/workflow_engine/workflow/nodes/llm/llm_node.py"
+    )
+    imported_modules = _imported_modules(llm_node_path)
+    source = llm_node_path.read_text(encoding="utf-8")
+
+    assert not any(
+        module == "apps.gateway" or module.startswith("apps.gateway.")
+        for module in imported_modules
+    )
+    assert "KnowledgePermissionHelper" not in source
+    assert "KnowledgeCollectionItem" not in source
+    assert "KnowledgeCollection," not in source
 
 
 def test_pure_candidate_policy_has_no_framework_or_runtime_imports():

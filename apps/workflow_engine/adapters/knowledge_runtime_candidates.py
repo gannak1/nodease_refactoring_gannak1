@@ -27,6 +27,13 @@ from apps.shared.domain.knowledge_runtime_candidates import (
     KnowledgeRuntimeCandidateSnapshot,
 )
 from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
+from apps.shared.services.knowledge_resource_eligibility import (
+    is_anonymous_public_knowledge_collection,
+    is_operational_knowledge_resource,
+    knowledge_base_operational_predicates,
+    knowledge_collection_anonymous_public_predicates,
+    knowledge_collection_operational_predicates,
+)
 
 
 SessionFactory = Callable[[], Session]
@@ -167,7 +174,7 @@ class PostgresKnowledgeRuntimeCandidateSnapshotAdapter:
             allowed_collection_ids = tuple(
                 collection.id
                 for collection in configured_collections
-                if self._collection_is_public(collection)
+                if is_anonymous_public_knowledge_collection(collection)
             )
         else:
             raise KnowledgeRuntimeCandidateSnapshotError("snapshot_audience_invalid")
@@ -364,6 +371,7 @@ class PostgresKnowledgeRuntimeCandidateSnapshotAdapter:
                         KnowledgeCollection.organization_id,
                         KnowledgeCollection.lifecycle_state,
                         KnowledgeCollection.sync_state,
+                        KnowledgeCollection.source_identity_id,
                         KnowledgeCollection.is_system_managed,
                         KnowledgeCollection.safe_metadata,
                     )
@@ -371,7 +379,7 @@ class PostgresKnowledgeRuntimeCandidateSnapshotAdapter:
                 .where(
                     KnowledgeCollection.id.in_(bounded_ids),
                     KnowledgeCollection.organization_id == organization_id,
-                    KnowledgeCollection.lifecycle_state == "active",
+                    *knowledge_collection_operational_predicates(),
                 )
             )
             .scalars()
@@ -503,8 +511,7 @@ class PostgresKnowledgeRuntimeCandidateSnapshotAdapter:
                 .where(
                     KnowledgeBase.id.in_(bounded_ids),
                     KnowledgeBase.organization_id == organization_id,
-                    KnowledgeBase.lifecycle_state == "active",
-                    KnowledgeBase.sync_state != "source_deleted",
+                    *knowledge_base_operational_predicates(),
                 )
             )
             .scalars()
@@ -618,9 +625,7 @@ class PostgresKnowledgeRuntimeCandidateSnapshotAdapter:
                     KnowledgeCollectionItem.organization_id == organization_id,
                     KnowledgeCollectionItem.knowledge_base_id.in_(bounded_ids),
                     KnowledgeCollection.organization_id == organization_id,
-                    KnowledgeCollection.lifecycle_state == "active",
-                    KnowledgeCollection.safe_metadata["visibility"].astext
-                    == "public",
+                    *knowledge_collection_anonymous_public_predicates(),
                 )
                 .distinct()
             )
@@ -653,15 +658,7 @@ class PostgresKnowledgeRuntimeCandidateSnapshotAdapter:
             collection is not None
             and getattr(collection, "id", None) == expected_id
             and getattr(collection, "organization_id", None) == organization_id
-            and getattr(collection, "lifecycle_state", None) == "active"
-        )
-
-    @staticmethod
-    def _collection_is_public(collection: Any) -> bool:
-        safe_metadata = getattr(collection, "safe_metadata", None)
-        return (
-            isinstance(safe_metadata, dict)
-            and safe_metadata.get("visibility") == "public"
+            and is_operational_knowledge_resource(collection)
         )
 
     @staticmethod
@@ -675,8 +672,7 @@ class PostgresKnowledgeRuntimeCandidateSnapshotAdapter:
             kb is not None
             and getattr(kb, "id", None) == expected_id
             and getattr(kb, "organization_id", None) == organization_id
-            and getattr(kb, "lifecycle_state", None) == "active"
-            and getattr(kb, "sync_state", None) != "source_deleted"
+            and is_operational_knowledge_resource(kb)
         )
 
     @staticmethod

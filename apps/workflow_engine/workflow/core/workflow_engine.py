@@ -43,6 +43,9 @@ from apps.workflow_engine.domain.external_effect import (
 )
 from apps.workflow_engine.workflow.core.workflow_logger import WorkflowLogger
 from apps.workflow_engine.workflow.core.workflow_node_factory import NodeFactory
+from apps.workflow_engine.workflow.core.runtime_dependencies import (
+    WorkflowRuntimeDependencies,
+)
 from apps.workflow_engine.workflow.errors import (
     NonRetryableWorkflowError,
     WorkflowNodeConfigurationError,
@@ -71,6 +74,7 @@ class WorkflowEngine:
         workflow_node_bindings: tuple[WorkflowNodeBinding, ...] | None = None,
         binding_container_path: tuple[tuple[str, str], ...] = (),
         task_deadline: float | None = None,
+        runtime_dependencies: WorkflowRuntimeDependencies | None = None,
     ):
         """
         WorkflowEngine 초기화
@@ -143,6 +147,32 @@ class WorkflowEngine:
         self.execution_context.pop("db", None)
         if "db_session_factory" not in self.execution_context:
             self.execution_context["db_session_factory"] = self._default_session_factory
+        knowledge_enabled = any(
+            schema.type == "llmNode"
+            and bool(
+                (schema.data or {}).get("knowledgeBases")
+                or (schema.data or {}).get("knowledgeCollections")
+            )
+            for schema in self.node_schemas.values()
+        )
+        self.runtime_dependencies = (
+            runtime_dependencies or WorkflowRuntimeDependencies()
+        )
+        if (
+            knowledge_enabled
+            and self.runtime_dependencies.knowledge_runtime_candidate_resolver is None
+        ):
+            from apps.workflow_engine.composition.runtime_retrieval import (
+                build_knowledge_runtime_candidate_resolver,
+            )
+
+            self.runtime_dependencies = WorkflowRuntimeDependencies(
+                knowledge_runtime_candidate_resolver=(
+                    build_knowledge_runtime_candidate_resolver(
+                        session_factory=self.execution_context["db_session_factory"]
+                    )
+                )
+            )
 
         # [PERF] 그래프 구조 사전 계산
         self.adjacency_list = {}
@@ -213,6 +243,7 @@ class WorkflowEngine:
         self._node_submit_ordinals.clear()
         self._external_effect_sensitive_node_ids.clear()
         self.workflow_node_bindings = ()
+        self.runtime_dependencies = WorkflowRuntimeDependencies()
 
     def execute(self) -> Dict[str, Any]:
         """
@@ -1279,7 +1310,9 @@ class WorkflowEngine:
 
             try:
                 self.node_instances[node_id] = NodeFactory.create(
-                    schema, context=self.execution_context
+                    schema,
+                    context=self.execution_context,
+                    runtime_dependencies=self.runtime_dependencies,
                 )
             except NotImplementedError as e:
                 raise NotImplementedError(

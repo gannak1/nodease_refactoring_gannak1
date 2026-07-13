@@ -30,7 +30,7 @@ from apps.shared.services.permissions import (
     get_organization_auth_state,
     has_active_organization_membership,
 )
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, exists, false, or_
 from sqlalchemy.orm import Session, load_only
 
 COLLECTION_PERMISSION_ACTIONS = {"read", "route", "manage", "sync"}
@@ -188,6 +188,45 @@ class KnowledgePermissionHelper:
                     safe_metadata=self._collection_safe_metadata(collection),
                 )
         return decisions
+
+    def scope_collection_query_for_action(self, query: Any, action: str) -> Any:
+        """Apply effective Collection authorization before ordering and limits."""
+        if action not in COLLECTION_PERMISSION_ACTIONS:
+            return query.filter(false())
+
+        organization_auth_state = self._organization_auth_state()
+        if organization_auth_state == AUTH_STATE_MANAGER:
+            return query
+        if organization_auth_state != ORGANIZATION_AUTH_MEMBER:
+            return query.filter(false())
+
+        direct_permission_exists = exists().where(
+            and_(
+                UserKnowledgeCollectionPermission.knowledge_collection_id
+                == KnowledgeCollection.id,
+                UserKnowledgeCollectionPermission.user_id == self.user_id,
+                UserKnowledgeCollectionPermission.grantee_organization_id
+                == self.organization_id,
+                UserKnowledgeCollectionPermission.permission_action == action,
+            )
+        )
+        team_permission_exists = exists().where(
+            and_(
+                TeamKnowledgeCollectionPermission.knowledge_collection_id
+                == KnowledgeCollection.id,
+                TeamKnowledgeCollectionPermission.grantee_organization_id
+                == self.organization_id,
+                TeamKnowledgeCollectionPermission.permission_action == action,
+                TeamMembership.team_id
+                == TeamKnowledgeCollectionPermission.team_id,
+                TeamMembership.user_id == self.user_id,
+                TeamMembership.grantee_organization_id == self.organization_id,
+                Team.organization_id == self.organization_id,
+                Team.id == TeamKnowledgeCollectionPermission.team_id,
+                Team.is_active.is_(True),
+            )
+        )
+        return query.filter(or_(direct_permission_exists, team_permission_exists))
 
     def evaluate_kb_use(self, kb: KnowledgeBase) -> KnowledgePermissionDecision:
         if not self._kb_in_scope(kb):

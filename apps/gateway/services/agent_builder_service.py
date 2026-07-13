@@ -1860,6 +1860,12 @@ class AgentBuilderService:
             )
 
         try:
+            WorkflowService.validate_knowledge_references(
+                self.db,
+                save_graph,
+                user_id=self.user.id,
+                organization_id=self.organization_id,
+            )
             WorkflowService.validate_mail_credential_references(
                 self.db,
                 save_graph,

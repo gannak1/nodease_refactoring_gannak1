@@ -20,6 +20,11 @@ from apps.shared.domain.mail_credential import (
     validate_mail_node_credential_boundary,
     validate_mail_processing_node_boundary,
 )
+from apps.shared.domain.workflow_knowledge_references import (
+    WorkflowKnowledgeReferenceError,
+    aggregate_workflow_knowledge_reference_ids,
+    parse_workflow_knowledge_references,
+)
 from apps.shared.domain.slack_delivery import (
     SlackGraphBoundaryError,
     validate_slack_graph_boundary,
@@ -29,6 +34,11 @@ from apps.shared.services.permission_audit import record_resource_permission_den
 from apps.shared.services.permissions import (
     get_effective_mail_credential_auth_state,
     has_mail_credential_permission,
+)
+from apps.gateway.services.workflow_knowledge_reference_service import (
+    WorkflowKnowledgeReferenceAuthorizationUnavailable,
+    WorkflowKnowledgeReferenceService,
+    WorkflowKnowledgeReferenceUnavailable,
 )
 
 
@@ -145,6 +155,13 @@ class WorkflowService:
                 detail="Workflow not found",  # 상세 메시지
             )
 
+        WorkflowService.validate_knowledge_references(
+            db,
+            request,
+            user_id=user_id,
+            organization_id=workflow.organization_id,
+        )
+
         WorkflowService.validate_mail_credential_references(
             db,
             request,
@@ -184,6 +201,73 @@ class WorkflowService:
             "message": "Draft saved to PostgreSQL",
             "workflow_id": workflow_id,
         }
+
+    @staticmethod
+    def validate_knowledge_references(
+        db: Session,
+        request: WorkflowDraftRequest | Mapping[str, Any],
+        *,
+        user_id: str | UUID,
+        organization_id: UUID | None,
+    ) -> None:
+        graph = (
+            request.model_dump(mode="python")
+            if isinstance(request, WorkflowDraftRequest)
+            else dict(request)
+        )
+        try:
+            parsed_nodes = parse_workflow_knowledge_references(graph)
+            direct_ids, collection_ids = aggregate_workflow_knowledge_reference_ids(
+                parsed_nodes
+            )
+        except WorkflowKnowledgeReferenceError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": exc.reason_code, "field": exc.field_path},
+            ) from exc
+
+        # Legacy workflows may not have organization scope. A graph with no
+        # Knowledge intent needs neither authorization context nor a DB query.
+        if not direct_ids and not collection_ids:
+            return
+
+        try:
+            user_uuid = uuid.UUID(str(user_id))
+            organization_uuid = uuid.UUID(str(organization_id))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "knowledge_reference_context_invalid",
+                    "field": "graph",
+                },
+            ) from exc
+
+        service = WorkflowKnowledgeReferenceService(
+            db,
+            user_id=user_uuid,
+            organization_id=organization_uuid,
+        )
+        try:
+            service.validate_parsed_references(parsed_nodes)
+        except WorkflowKnowledgeReferenceError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": exc.reason_code, "field": exc.field_path},
+            ) from exc
+        except WorkflowKnowledgeReferenceUnavailable as exc:
+            raise HTTPException(
+                status_code=403,
+                detail={"code": exc.reason_code, "field": exc.field_path},
+            ) from exc
+        except WorkflowKnowledgeReferenceAuthorizationUnavailable as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "knowledge_reference_authorization_unavailable",
+                    "field": "graph.knowledgeReferences",
+                },
+            ) from exc
 
     @staticmethod
     def validate_mail_credential_references(

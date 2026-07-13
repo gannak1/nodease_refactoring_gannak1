@@ -71,6 +71,27 @@ authorization infrastructure failure는 partial candidate를 반환하지 않는
 whole-resolution failure다. Budget cap은 successful safe warning이며 downstream
 retrieval timeout과 구분한다.
 
+### MBA-233 Workflow Collection Routing Integration
+
+| Component | 책임 | 금지 |
+| --- | --- | --- |
+| Shared Workflow Knowledge Reference Parser | 두 graph list의 shape, canonical UUID, display snapshot, per-list 20 cap을 pure validation하고 configured order/deduped ID를 제공한다 | Graph mutation, silent slicing, permission/DB 조회 |
+| Route-safe Collection Query Service | active organization/lifecycle, non-source-deleted sync state와 current editor effective `route`를 SQL query scope에 먼저 적용하고, authorized result를 정렬·제한한 뒤 UUID와 optional safe label만 projection한다 | 권한 확인 전 row cap, Management response 재사용, raw name/description/child count, runtime authorization |
+| Workflow Knowledge Reference Service | Editable graph write 전에 direct KB active/non-source-deleted/retrieval-visible/effective `use`/source gate와 Collection active/non-source-deleted/`route`를 current editor로 검증하고 whole-write failure를 반환한다. Reference 없는 legacy graph는 구조 검증 뒤 authorization query를 생략한다 | Collection child expansion, saved label/Client capability 신뢰, runtime lease 발급 |
+| Deployment Preflight | 두 list의 structure, lifecycle/sync eligibility, direct KB retrieval-visible readiness와 server-derived audience/public gate를 재귀 graph에 적용하고 safe bucket/action을 반환한다 | Child ID/exact hidden count 공개, preflight를 runtime capability로 재사용 |
+| Workflow LLM Integration | explicit execution audience와 두 configured ID list로 MBA-232 resolver를 invocation당 한 번 호출하고 ordered KB ID를 Retrieval Orchestrator에 전달한다 | Gateway resolver import, LLM node 내부 permission SQL, owner/credential fallback |
+| Public/Observability Projector | public graph에서 두 reference list를 제거한다. Explicit direct KB의 기존 authorized lineage와 KB-local rank는 유지할 수 있다. Collection-derived evidence는 child KB/document/chunk identity와 KB-local rank를 제거하고 최종 병합 evidence rank만 result/quality trace에 남기며, audit은 node-level count bucket으로 집계한다 | Collection identity/provenance, child resource identity/rank, raw graph/query/source/provider payload 저장 |
+
+Builder는 고정 KB와 Knowledge Collection을 별도 selector group으로 표시한다. 각 group은
+독립 `n/20` limit을 가지며 Collection membership이 실행 시점에 다시 계산된다는 설명을
+표시한다. Picker에서 사라진 saved item은 generic unavailable chip으로 보존하고
+사용자가 제거하거나 권한이 복구되기 전 새 저장을 차단한다. Builder 안에서
+Collection 생성/삭제/permission/membership을 관리하지 않는다.
+
+Agent Builder와 optimizer는 기존 Collection selection을 보존하지만 자동으로 새
+Collection을 추천하거나 선택하지 않는다. Runtime sync는 explicit direct KB만 처리하고
+Collection child는 MBA-232 materialized provenance/readiness 결과를 사용한다.
+
 Conversation Memory target adapter는 Knowledge Permission Helper의 bulk 결과를 `decision`, `principal_kind`, opaque `authorization_decision_revision`, `resource_revision`, `policy_revision`, `evaluated_at` contract로 투영한다. Source-managed KB의 source ACL revision은 decision revision에 반영한다. Lifecycle, KB permission, source ACL 중 필요한 revision이 없으면 allow를 추정하지 않고 `unknown`을 반환한다. Anonymous public audience에는 subject ID/revision을 합성하지 않는다.
 
 Retrieval Orchestrator는 최종 evidence와 함께 KB/document version, organization, sensitivity와 authorization-safe reference를 `RuntimeDataDependencyEnvelope`로 발급한다. Raw title/path/URL/content/ACL은 envelope에 포함하지 않는다. Client나 Workflow node가 canonical Knowledge dependency를 발급할 수 없고, V1에서는 answer content에 영향을 준 모든 Knowledge dependency를 필수로 취급한다.
@@ -193,7 +214,7 @@ Purge는 일반 KB lifecycle state가 아니다. Retention/legal-hold purge, raw
 1. Workflow runtime이 run context에서 execution subject를 resolve한다. Interactive run은 request user를 subject로 전달할 수 있다.
 2. Execution subject가 있으면 Knowledge Permission Helper가 해당 subject 기준으로 KB permission과 source ACL/requester authorization을 평가한다.
 3. Execution subject가 없으면 Workflow owner, deployment owner, builder, `user_id`를 silent fallback으로 쓰지 않는다. Runtime은 anonymous public-only로 낮추고, active public collection에 연결된 active KB만 candidate로 남긴다.
-4. Public collection은 `KnowledgeCollection.safe_metadata["visibility"] == "public"`으로 판정한다. 누락 또는 다른 값은 private로 취급한다. Source-managed KB는 Public Exposure Policy Store의 valid source/connector public exposure approval도 통과해야 candidate로 남는다. MBA-176에서 approval primitive가 없으면 source-managed public 후보는 warning이 아니라 `source_public_exposure_required` blocked state로 표시한다.
+4. Public collection은 `KnowledgeCollection.safe_metadata["visibility"] == "public"`으로 판정한다. 누락 또는 다른 값은 private로 취급한다. Source-managed Collection과 source-managed KB는 Public Exposure Policy Store의 valid source/connector public exposure approval도 통과해야 candidate로 남는다. Approval primitive가 없는 현재 anonymous runtime은 `source_identity_id`가 있는 Collection을 child KB 유형과 무관하게 fail-closed 제외하며, source-managed public 후보는 warning이 아니라 `source_public_exposure_required` blocked state로 표시한다.
 5. Workflow가 Knowledge Skill을 사용할 경우 skill visibility, freshness/eval, safe metadata gate도 execution subject가 있을 때 같은 subject 기준으로 평가한다. Anonymous public-only runtime은 skill 선택만으로 private KB 후보를 넓힐 수 없다.
 6. `general`, `permission_scoped`, `task_aware` 등 모든 운영 RAG mode는 subject 기반 gate 또는 anonymous public-only gate와 final evidence gate를 통과한다.
 7. Retrieval strategy, query rewrite, source tier, skill 차이는 gate 이후 authorized/public evidence를 얼마나 넓게 또는 정밀하게 선택하는지에만 영향을 준다.

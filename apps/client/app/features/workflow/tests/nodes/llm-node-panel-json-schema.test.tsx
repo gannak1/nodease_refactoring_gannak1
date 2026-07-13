@@ -70,9 +70,13 @@ vi.mock('../../components/nodes/ui/PropertyVisibilityToggle', () => ({
 }));
 
 vi.mock('@/app/features/workflow/utils/llmKnowledgeBaseSelection', () => ({
+  MAX_CONFIGURED_KNOWLEDGE_REFERENCES: 20,
   fetchEligibleKnowledgeBases: vi.fn(async () => []),
+  fetchEligibleKnowledgeCollections: vi.fn(async () => []),
   sanitizeSelectedKnowledgeBases: vi.fn((selected) => selected || []),
+  sanitizeSelectedKnowledgeCollections: vi.fn((selected) => selected || []),
   isSameKnowledgeSelection: vi.fn(() => true),
+  isSameKnowledgeCollectionSelection: vi.fn(() => true),
 }));
 
 const baseData = (): LLMNodeData => ({

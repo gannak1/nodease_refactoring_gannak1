@@ -137,6 +137,15 @@ ${authHeader}  -d '{
       </div>
 
       <div className="p-6 space-y-6 max-h-[60vh] overflow-y-auto">
+        {result.message && (
+          <div
+            role="status"
+            className="whitespace-pre-line rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900"
+          >
+            {result.message}
+          </div>
+        )}
+
         {/* Web App / Chatbot Share Link */}
         {result.webAppUrl && (
           <div className="border-2 border-blue-200 rounded-lg p-4 bg-blue-50">

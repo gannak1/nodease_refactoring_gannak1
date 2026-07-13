@@ -15,7 +15,7 @@ export interface DeploymentResult {
   isWorkflowNode?: boolean;
   input_schema?: InputSchema | null;
   output_schema?: OutputSchema | null;
-  message?: string; // Error message
+  message?: string; // Error or non-blocking preflight warning
   cronExpression?: string; // Schedule trigger용
   timezone?: string; // Schedule trigger용
   graph_snapshot?: any; // 노드 타입 확인용 (webhookTrigger 등)

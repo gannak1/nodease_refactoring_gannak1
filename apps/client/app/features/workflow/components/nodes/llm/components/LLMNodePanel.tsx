@@ -17,11 +17,6 @@ import {
 import { PromptWizardModal } from '../../../modals/PromptWizardModal';
 import { ModelSelectDropdown } from './ModelSelectDropdown';
 import { LLMParameterSidePanel } from './LLMParameterSidePanel';
-import {
-  fetchEligibleKnowledgeBases,
-  sanitizeSelectedKnowledgeBases,
-  isSameKnowledgeSelection,
-} from '@/app/features/workflow/utils/llmKnowledgeBaseSelection';
 import { resolveWorkflowWizardOrganizationId } from '@/app/features/workflow/utils/resolveWorkflowWizardOrganizationId';
 import {
   DraggedOutputVariable,
@@ -898,35 +893,6 @@ export function LLMNodePanel({
   }, [data.auto_model_routing, loadRoutingPolicy]);
 
   useEffect(() => {
-    if (!data.knowledgeBases || data.knowledgeBases.length === 0) return;
-    let active = true;
-    const syncKnowledgeBases = async () => {
-      try {
-        const { bases, preserveSelectionIds = [] } =
-          await fetchEligibleKnowledgeBases();
-        if (!active) return;
-        const nextSelected = sanitizeSelectedKnowledgeBases(
-          data.knowledgeBases || [],
-          bases,
-          { preserveMissingIds: preserveSelectionIds },
-        );
-        if (
-          !isSameKnowledgeSelection(nextSelected, data.knowledgeBases || [])
-        ) {
-          updateNodeData(nodeId, { knowledgeBases: nextSelected });
-        }
-      } catch {
-        // 지식 베이스 동기화 실패는 노드 편집 자체를 막지 않습니다.
-      }
-    };
-
-    syncKnowledgeBases();
-    return () => {
-      active = false;
-    };
-  }, [data.knowledgeBases, nodeId, updateNodeData]);
-
-  useEffect(() => {
     if (!activeHelp) return;
 
     const closeHelp = () => setActiveHelp(null);
@@ -1435,7 +1401,7 @@ export function LLMNodePanel({
         </div>
       </CollapsibleSection>
 
-      {/* 2.5 지식 베이스 버튼 (지식 베이스 그룹 통합) */}
+      {/* 2.5 Knowledge 선택 버튼 */}
       <div className="my-2 group">
         <button
           type="button"
@@ -1451,7 +1417,8 @@ export function LLMNodePanel({
             window.dispatchEvent(event);
           }}
           className={`relative w-full py-4 px-5 rounded-xl border-2 border-dashed transition-all duration-300 flex items-center gap-4 active:scale-[0.98] ${
-            (data.knowledgeBases?.length ?? 0) > 0
+            (data.knowledgeBases?.length ?? 0) > 0 ||
+            (data.knowledgeCollections?.length ?? 0) > 0
               ? 'border-indigo-400 bg-indigo-50/80 text-indigo-800 shadow-sm hover:shadow-md hover:bg-indigo-50 hover:border-indigo-500'
               : 'border-gray-300 bg-gray-50/50 text-gray-600 hover:border-indigo-400 hover:bg-indigo-50/30 hover:text-indigo-700 hover:shadow-sm'
           }`}
@@ -1462,7 +1429,8 @@ export function LLMNodePanel({
           {/* 왼쪽 아이콘 (책) */}
           <div
             className={`p-2 rounded-lg transition-colors duration-300 ${
-              (data.knowledgeBases?.length ?? 0) > 0
+              (data.knowledgeBases?.length ?? 0) > 0 ||
+              (data.knowledgeCollections?.length ?? 0) > 0
                 ? 'bg-indigo-200 text-indigo-700'
                 : 'bg-gray-200 text-gray-500 group-hover:bg-indigo-100 group-hover:text-indigo-600'
             }`}
@@ -1473,17 +1441,21 @@ export function LLMNodePanel({
           {/* 텍스트 내용 */}
           <div className="flex flex-col items-start flex-1 gap-0.5">
             <span className="font-bold text-sm tracking-tight">
-              지식 베이스 설정
+              Knowledge 설정
             </span>
             <span
               className={`text-xs transition-colors duration-300 ${
-                (data.knowledgeBases?.length ?? 0) > 0
+                (data.knowledgeBases?.length ?? 0) > 0 ||
+                (data.knowledgeCollections?.length ?? 0) > 0
                   ? 'text-indigo-600 font-medium'
                   : 'text-gray-400 group-hover:text-indigo-500'
               }`}
             >
-              {(data.knowledgeBases?.length ?? 0) > 0
-                ? `${data.knowledgeBases!.length}개 그룹 연결됨`
+              {(data.knowledgeBases?.length ?? 0) > 0 ||
+              (data.knowledgeCollections?.length ?? 0) > 0
+                ? `고정 KB ${data.knowledgeBases?.length ?? 0}개 · Collection ${
+                    data.knowledgeCollections?.length ?? 0
+                  }개`
                 : 'LLM에 지식을 연결하세요'}
             </span>
           </div>

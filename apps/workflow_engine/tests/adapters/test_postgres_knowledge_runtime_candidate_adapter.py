@@ -5,6 +5,7 @@ from uuid import UUID
 
 import pytest
 from sqlalchemy.dialects import postgresql
+
 from apps.shared.domain.knowledge_runtime_candidates import (
     AnonymousPublicAudience,
     AuthenticatedAudience,
@@ -27,11 +28,20 @@ KB_4 = UUID(int=303)
 KB_5 = UUID(int=304)
 
 
-def _collection(collection_id, *, visibility="private", organization_id=ORG_ID):
+def _collection(
+    collection_id,
+    *,
+    visibility="private",
+    organization_id=ORG_ID,
+    sync_state="manual",
+    source_managed=False,
+):
     return SimpleNamespace(
         id=collection_id,
         organization_id=organization_id,
         lifecycle_state="active",
+        sync_state=sync_state,
+        source_identity_id=UUID(int=901) if source_managed else None,
         safe_metadata={"visibility": visibility},
     )
 
@@ -523,6 +533,70 @@ def test_anonymous_collection_visibility_is_exact_and_fail_closed(metadata):
     assert not any(event[0] == "memberships" for event in adapter.read_events)
 
 
+@pytest.mark.parametrize("source_identity_state", ["managed", "missing"])
+def test_anonymous_source_managed_collection_is_excluded_before_membership_scan(
+    source_identity_state,
+):
+    session = _FakeSession()
+    collection = _collection(
+        COLLECTION_A,
+        visibility="public",
+        source_managed=True,
+    )
+    if source_identity_state == "missing":
+        del collection.source_identity_id
+    adapter = _FixtureAdapter(
+        session,
+        collections=[collection],
+        memberships=[(COLLECTION_A, KB_1)],
+        kbs=[_kb(KB_1)],
+        ready={KB_1},
+    )
+    request = KnowledgeRuntimeCandidateRequest(
+        audience=AnonymousPublicAudience(organization_id=ORG_ID),
+        collection_ids=(COLLECTION_A,),
+    )
+
+    snapshot = adapter.load_snapshot(request)
+
+    assert snapshot.collection_streams == ()
+    assert snapshot.policy_excluded_count == 1
+    assert not any(event[0] == "memberships" for event in adapter.read_events)
+
+
+def test_authenticated_source_managed_collection_keeps_route_and_kb_use_policy():
+    session = _FakeSession()
+    helper = _PermissionHelper(routed={COLLECTION_A}, usable={KB_1})
+    adapter = _FixtureAdapter(
+        session,
+        collections=[
+            _collection(
+                COLLECTION_A,
+                visibility="public",
+                source_managed=True,
+            )
+        ],
+        memberships=[(COLLECTION_A, KB_1)],
+        kbs=[_kb(KB_1)],
+        ready={KB_1},
+        permission_helper=helper,
+    )
+    request = KnowledgeRuntimeCandidateRequest(
+        audience=AuthenticatedAudience(
+            organization_id=ORG_ID,
+            user_id=USER_ID,
+        ),
+        collection_ids=(COLLECTION_A,),
+    )
+
+    snapshot = adapter.load_snapshot(request)
+
+    assert snapshot.collection_streams[0].collection_id == COLLECTION_A
+    assert snapshot.collection_streams[0].eligible_kb_ids == (KB_1,)
+    assert helper.collection_calls == [((COLLECTION_A,), "route")]
+    assert helper.kb_calls == [(KB_1,)]
+
+
 def test_snapshot_excludes_cross_org_archived_and_source_deleted_facts():
     session = _FakeSession()
     helper = _PermissionHelper(
@@ -555,6 +629,30 @@ def test_snapshot_excludes_cross_org_archived_and_source_deleted_facts():
     assert snapshot.policy_excluded_count == 5
     assert helper.collection_calls == []
     assert helper.kb_calls == []
+
+
+def test_snapshot_excludes_source_deleted_collection_before_permission_or_membership():
+    session = _FakeSession()
+    helper = _PermissionHelper(routed={COLLECTION_A}, usable={KB_1})
+    adapter = _FixtureAdapter(
+        session,
+        collections=[_collection(COLLECTION_A, sync_state="source_deleted")],
+        memberships=[(COLLECTION_A, KB_1)],
+        kbs=[_kb(KB_1)],
+        ready={KB_1},
+        permission_helper=helper,
+    )
+    request = KnowledgeRuntimeCandidateRequest(
+        audience=AuthenticatedAudience(ORG_ID, USER_ID),
+        collection_ids=(COLLECTION_A,),
+    )
+
+    snapshot = adapter.load_snapshot(request)
+
+    assert snapshot.collection_streams == ()
+    assert snapshot.policy_excluded_count == 1
+    assert helper.collection_calls == []
+    assert not any(event[0] == "memberships" for event in adapter.read_events)
 
 
 def test_scan_limit_is_preserved_as_safe_snapshot_signal():
@@ -695,12 +793,23 @@ def test_snapshot_queries_do_not_select_raw_collection_or_kb_text_fields():
     assert "knowledge_collections.name" not in collection_sql
     assert "knowledge_collections.description" not in collection_sql
     assert "source_connector_ref" not in collection_sql
+    assert "knowledge_collections.source_identity_id" in collection_sql
+    assert "knowledge_collections.lifecycle_state =" in collection_sql
+    assert "knowledge_collections.sync_state !=" in collection_sql
 
     adapter._load_candidate_kbs(db, ORG_ID, (KB_1,))
     kb_sql = str(db.statement.compile(dialect=postgresql.dialect())).lower()
     assert "knowledge_bases.name" not in kb_sql
     assert "knowledge_bases.description" not in kb_sql
     assert "knowledge_bases.safe_metadata" not in kb_sql
+
+    adapter._load_public_direct_kb_ids(db, ORG_ID, (KB_1,))
+    public_direct_sql = str(
+        db.statement.compile(dialect=postgresql.dialect())
+    ).lower()
+    assert "knowledge_collections.lifecycle_state =" in public_direct_sql
+    assert "knowledge_collections.sync_state !=" in public_direct_sql
+    assert "knowledge_collections.source_identity_id is null" in public_direct_sql
 
 
 def test_session_factory_failure_does_not_expose_partial_snapshot():

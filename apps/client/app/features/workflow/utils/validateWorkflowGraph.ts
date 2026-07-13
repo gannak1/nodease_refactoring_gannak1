@@ -11,6 +11,8 @@ export type GraphValidationIssueCode =
   | 'INVALID_CONDITION_SOURCE_HANDLE'
   | 'SLACK_LEGACY_CONFIGURATION'
   | 'SLACK_REMOVED_OUTPUT_SELECTOR'
+  | 'KNOWLEDGE_REFERENCE_INVALID'
+  | 'KNOWLEDGE_REFERENCE_LIMIT_EXCEEDED'
   | 'DUPLICATE_EDGE'
   | 'CYCLE_DETECTED';
 
@@ -47,6 +49,9 @@ const SOURCE_ONLY_NODE_TYPES = new Set([
   ...TRIGGER_NODE_TYPES,
 ]);
 const TERMINAL_NODE_TYPES = new Set(['answerNode', 'mailAcknowledgeNode']);
+const MAX_KNOWLEDGE_REFERENCES_PER_TYPE = 20;
+const CANONICAL_UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 const getNodeTitle = (node?: AppNode) => {
   const title = String(node?.data?.title || '').trim();
@@ -261,6 +266,86 @@ const getAllWorkflowNodes = (nodes: AppNode[]): AppNode[] => {
   return collected;
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
+const hasOnlyKeys = (value: Record<string, unknown>, allowed: Set<string>) =>
+  Object.keys(value).every((key) => allowed.has(key));
+
+const isSafeDisplay = (value: unknown) =>
+  typeof value === 'string' &&
+  value.length <= 255 &&
+  !Array.from(value).some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint < 32 || codePoint === 127;
+  });
+
+const getKnowledgeReferenceIssues = (
+  nodes: AppNode[],
+): GraphValidationIssue[] =>
+  getAllWorkflowNodes(nodes).flatMap((node) => {
+    if (node.type !== 'llmNode') return [];
+    const data = node.data as Record<string, unknown>;
+    const issues: GraphValidationIssue[] = [];
+
+    const validateList = (
+      key: 'knowledgeBases' | 'knowledgeCollections',
+      itemIsValid: (value: unknown) => boolean,
+    ) => {
+      if (!(key in data)) return;
+      const value = data[key];
+      if (!Array.isArray(value)) {
+        issues.push({
+          level: 'error',
+          code: 'KNOWLEDGE_REFERENCE_INVALID',
+          message: 'Knowledge 참조 형식이 올바르지 않습니다.',
+          nodeId: node.id,
+        });
+        return;
+      }
+      if (value.length > MAX_KNOWLEDGE_REFERENCES_PER_TYPE) {
+        issues.push({
+          level: 'error',
+          code: 'KNOWLEDGE_REFERENCE_LIMIT_EXCEEDED',
+          message: `Knowledge 참조는 유형별로 최대 ${MAX_KNOWLEDGE_REFERENCES_PER_TYPE}개까지 선택할 수 있습니다.`,
+          nodeId: node.id,
+        });
+        return;
+      }
+      if (!value.every(itemIsValid)) {
+        issues.push({
+          level: 'error',
+          code: 'KNOWLEDGE_REFERENCE_INVALID',
+          message: 'Knowledge 참조 형식이 올바르지 않습니다.',
+          nodeId: node.id,
+        });
+      }
+    };
+
+    validateList('knowledgeBases', (value) => {
+      if (!isRecord(value)) return false;
+      const keys = Object.keys(value);
+      return (
+        keys.length === 2 &&
+        hasOnlyKeys(value, new Set(['id', 'name'])) &&
+        CANONICAL_UUID_PATTERN.test(String(value.id ?? '')) &&
+        isSafeDisplay(value.name)
+      );
+    });
+    validateList('knowledgeCollections', (value) => {
+      if (!isRecord(value) || !('id' in value)) return false;
+      const keys = Object.keys(value);
+      return (
+        keys.length >= 1 &&
+        keys.length <= 2 &&
+        hasOnlyKeys(value, new Set(['id', 'safeLabel'])) &&
+        CANONICAL_UUID_PATTERN.test(String(value.id ?? '')) &&
+        (!('safeLabel' in value) || isSafeDisplay(value.safeLabel))
+      );
+    });
+    return issues;
+  });
+
 const getSlackCompatibilityIssues = (
   nodes: AppNode[],
 ): GraphValidationIssue[] =>
@@ -393,6 +478,7 @@ export const validateWorkflowGraph = (
 
   const allIssues = [
     ...directIssues,
+    ...getKnowledgeReferenceIssues(nodes),
     ...getSlackCompatibilityIssues(nodes),
     ...getRemovedSlackSelectorIssues(nodes),
     ...cycleIssue,

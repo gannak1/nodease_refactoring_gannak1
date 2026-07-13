@@ -3,10 +3,12 @@ from __future__ import annotations
 import uuid
 from collections.abc import Iterable
 
+from sqlalchemy import and_, func
 from sqlalchemy.orm import Session
 
 from apps.gateway.application.deployment.models import (
     KnowledgeBaseSnapshot,
+    KnowledgeCollectionPreflightSnapshot,
     WorkflowNodeTargetSnapshot,
 )
 from apps.shared.db.models.app import App
@@ -16,6 +18,16 @@ from apps.shared.db.models.knowledge import (
     KnowledgeCollectionItem,
 )
 from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
+from apps.shared.domain.knowledge_runtime_candidates import (
+    MAX_RUNTIME_CANDIDATE_BUDGET,
+)
+from apps.shared.services.knowledge_resource_eligibility import (
+    is_anonymous_public_knowledge_collection,
+    knowledge_base_operational_predicates,
+    knowledge_collection_anonymous_public_predicates,
+    knowledge_collection_operational_predicates,
+    retrieval_visible_chunk_exists,
+)
 
 
 class SqlAlchemyDeploymentPreflightRepository:
@@ -35,7 +47,8 @@ class SqlAlchemyDeploymentPreflightRepository:
             .filter(
                 KnowledgeBase.id.in_(ids),
                 KnowledgeBase.organization_id == organization_id,
-                KnowledgeBase.lifecycle_state == "active",
+                *knowledge_base_operational_predicates(),
+                retrieval_visible_chunk_exists(),
             )
             .all()
         )
@@ -58,9 +71,20 @@ class SqlAlchemyDeploymentPreflightRepository:
 
         items = (
             self.db.query(KnowledgeCollectionItem)
+            .join(
+                KnowledgeBase,
+                and_(
+                    KnowledgeBase.id == KnowledgeCollectionItem.knowledge_base_id,
+                    KnowledgeBase.organization_id
+                    == KnowledgeCollectionItem.organization_id,
+                ),
+            )
             .filter(
                 KnowledgeCollectionItem.organization_id == organization_id,
                 KnowledgeCollectionItem.knowledge_base_id.in_(ids),
+                KnowledgeBase.organization_id == organization_id,
+                *knowledge_base_operational_predicates(),
+                retrieval_visible_chunk_exists(),
             )
             .all()
         )
@@ -73,21 +97,98 @@ class SqlAlchemyDeploymentPreflightRepository:
             .filter(
                 KnowledgeCollection.id.in_(collection_ids),
                 KnowledgeCollection.organization_id == organization_id,
-                KnowledgeCollection.lifecycle_state == "active",
+                *knowledge_collection_anonymous_public_predicates(),
             )
             .all()
         )
         public_collection_ids = {
             collection.id
             for collection in collections
-            if (getattr(collection, "safe_metadata", None) or {}).get("visibility")
-            == "public"
+            if is_anonymous_public_knowledge_collection(collection)
         }
         return {
             item.knowledge_base_id
             for item in items
             if item.collection_id in public_collection_ids
         }
+
+    def get_active_knowledge_collections(
+        self,
+        collection_ids: Iterable[uuid.UUID],
+        organization_id: uuid.UUID | None,
+    ) -> dict[uuid.UUID, KnowledgeCollectionPreflightSnapshot]:
+        ids = _dedupe_ids(collection_ids)
+        if not ids or organization_id is None:
+            return {}
+
+        collections = (
+            self.db.query(KnowledgeCollection)
+            .filter(
+                KnowledgeCollection.id.in_(ids),
+                KnowledgeCollection.organization_id == organization_id,
+                *knowledge_collection_operational_predicates(),
+            )
+            .all()
+        )
+        active_collection_ids = [collection.id for collection in collections]
+        if not active_collection_ids:
+            return {}
+
+        aggregate_rows = (
+            self.db.query(
+                KnowledgeCollectionItem.collection_id,
+                func.count(KnowledgeCollectionItem.knowledge_base_id),
+                func.count(KnowledgeBase.source_identity_id),
+            )
+            .join(
+                KnowledgeBase,
+                and_(
+                    KnowledgeBase.id
+                    == KnowledgeCollectionItem.knowledge_base_id,
+                    KnowledgeBase.organization_id
+                    == KnowledgeCollectionItem.organization_id,
+                ),
+            )
+            .filter(
+                KnowledgeCollectionItem.organization_id == organization_id,
+                KnowledgeCollectionItem.collection_id.in_(
+                    active_collection_ids
+                ),
+                KnowledgeBase.organization_id == organization_id,
+                *knowledge_base_operational_predicates(),
+                retrieval_visible_chunk_exists(),
+            )
+            .group_by(KnowledgeCollectionItem.collection_id)
+            .all()
+        )
+        aggregate_by_collection: dict[uuid.UUID, tuple[int, bool]] = {}
+        for collection_id, member_count, source_managed_count in aggregate_rows:
+            safe_member_count = min(
+                max(int(member_count or 0), 0),
+                MAX_RUNTIME_CANDIDATE_BUDGET + 1,
+            )
+            aggregate_by_collection[collection_id] = (
+                safe_member_count,
+                int(source_managed_count or 0) > 0,
+            )
+
+        result: dict[uuid.UUID, KnowledgeCollectionPreflightSnapshot] = {}
+        for collection in collections:
+            metadata = getattr(collection, "safe_metadata", None)
+            safe_metadata = metadata if isinstance(metadata, dict) else {}
+            member_count, has_source_managed_members = (
+                aggregate_by_collection.get(collection.id, (0, False))
+            )
+            result[collection.id] = KnowledgeCollectionPreflightSnapshot(
+                id=collection.id,
+                public=safe_metadata.get("visibility") == "public",
+                source_managed=(
+                    getattr(collection, "source_identity_id", None) is not None
+                ),
+                has_source_managed_members=has_source_managed_members,
+                candidate_member_count=member_count,
+            )
+        return result
 
     def get_workflow_node_target(
         self,

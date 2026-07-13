@@ -489,7 +489,10 @@ class ModelRouter:
         )
         routing_context = getattr(node_data, "model_routing_context", None)
         routing_context = routing_context if isinstance(routing_context, dict) else {}
-        knowledge_enabled = bool(getattr(node_data, "knowledgeBases", None))
+        knowledge_enabled = bool(
+            getattr(node_data, "knowledgeBases", None)
+            or getattr(node_data, "knowledgeCollections", None)
+        )
         output_format = cls._output_format_name(
             getattr(node_data, "output_format", None)
         )

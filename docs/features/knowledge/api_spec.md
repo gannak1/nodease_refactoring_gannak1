@@ -8,7 +8,7 @@ Status: Draft
 | Method | Path | 목적 | 권한 경계 |
 | --- | --- | --- | --- |
 | GET | `/api/v1/knowledge` | 현재 KB 목록 | Active organization에서 KB `read`가 허용된 active KB만 반환하고 unauthorized row/count는 생략한다 |
-| GET | `/api/v1/knowledge/llm-selectable` | Workflow LLM node RAG picker용 KB 후보 목록 | `X-Organization-Id` active organization 필수. active organization 안에서 caller가 KB `use` 권한을 가진 KB만 반환한다. 반환 후보는 retrieval-visible `completed` document chunk가 1개 이상 있어야 하며, runtime은 실행 시점 execution subject 기준으로 다시 권한을 평가한다 |
+| GET | `/api/v1/knowledge/llm-selectable` | Workflow LLM node RAG picker용 KB 후보 목록 | `X-Organization-Id` active organization 필수. active lifecycle이고 `sync_state != source_deleted`이며 caller가 KB `use` 권한을 가진 KB만 반환한다. 반환 후보는 retrieval-visible `completed` document chunk가 1개 이상 있어야 하며, runtime은 실행 시점 execution subject 기준으로 다시 권한을 평가한다 |
 | POST | `/api/v1/knowledge` | 빈 KB 생성 | Active organization에 KB, 생성자의 user-direct `manager`, canonical audit를 한 transaction에서 생성한다. 필수 schema가 준비되지 않으면 `503 knowledge.schema_not_ready`로 fail-closed 처리한다 |
 | GET | `/api/v1/knowledge/{kb_id}` | 현재 KB 상세와 문서 상태 | Active organization + KB `read`. Detail capability는 `can_read/use/write/read_content/manage`와 파생 UI flag로 반환한다 |
 | GET | `/api/v1/knowledge/{kb_id}/documents/{document_id}/edit-config` | Document preview/process 설정 복원 | Active organization + KB `write`. Bounded property/aggregate/serialized-size allowlist만 반환하고 read detail과 encrypted source config를 재사용하지 않는다. 성공 응답은 `Cache-Control: no-store`다 |
@@ -125,6 +125,72 @@ lifecycle/readiness/permission/materialized provenance는 같은 snapshot에서 
 Membership은 configured Collection별 ordered LATERAL cap을 먼저 적용한 bounded
 intermediate relation에서 round-robin ranking한다. Source-policy/provenance expiry는 같은
 transaction에서 한 번 읽은 `transaction_timestamp()`를 전체 invocation에 재사용한다.
+
+### MBA-233 Workflow Builder Collection Picker
+
+`GET /api/v1/knowledge/llm-selectable-collections`는 authenticated Workflow Builder
+전용 route-safe projection이다. Collection 관리 목록이나 MBA-232 runtime resolver
+response를 재사용하지 않는다.
+
+Request context:
+
+| 항목 | 규칙 |
+| --- | --- |
+| Authentication | 로그인 사용자 필수 |
+| Organization | `X-Organization-Id`로 해석한 active organization |
+| Permission | active lifecycle이고 `sync_state != source_deleted`인 Collection에 대한 current user effective `route` |
+
+서버는 organization/lifecycle과 effective `route`를 SQL query scope에 먼저 적용한 뒤
+최신순 최대 500개를 반환한다. Unauthorized 최근 row를 먼저 500개로 자른 뒤
+authorization하지 않는다. 따라서 500개보다 오래된 authorized Collection도 authorized
+result cap 안에 있으면 후보에 포함된다.
+
+Response:
+
+```json
+{
+  "collections": [
+    {
+      "id": "00000000-0000-0000-0000-000000000000",
+      "safe_label": "사내 문서"
+    }
+  ]
+}
+```
+
+`safe_label`은 optional이며 approved safe metadata에 값이 없거나 display policy를
+통과하지 못하면 `null`이다. Response에는 raw Collection name/description,
+organization ID, lifecycle/source/system-managed field, member KB ID, exact child count,
+permission row/capability, hidden/unavailable total을 포함하지 않는다. `read`, `manage`,
+`sync` 또는 Knowledge domain action만 있고 `route`가 없는 Collection은 반환하지 않는다.
+다른 organization, inactive/archived/deleted 또는 `source_deleted` Collection은 존재
+여부를 구분하지 않고 생략한다. Schema/DB failure는 raw SQL/exception 없이 fixed safe
+error envelope로 닫는다.
+
+### MBA-233 Editable Graph Reference Authorization
+
+Workflow draft save, Agent Builder apply, optimizer/model-routing graph persistence는
+graph structural validation 뒤 current editor와 active organization으로 Knowledge
+reference를 다시 authorize한다.
+
+| Reference | Save-time gate |
+| --- | --- |
+| Direct KB | same organization, active, `sync_state != source_deleted`, retrieval-selectable, effective KB `use`, applicable materialized source authorization |
+| Selected Collection | same organization, active, `sync_state != source_deleted`, effective Collection `route` |
+
+Collection child membership/KB/source authorization은 save-time에 열거하지 않는다.
+Graph에 direct KB와 Collection reference가 모두 없으면 구조 검증 뒤 authorization context와
+DB permission query를 생략하여 organization이 없는 legacy non-RAG draft 저장을 유지한다.
+Malformed Knowledge field는 이 short-circuit 전에 거부한다.
+Reference 하나라도 실패하면 전체 write와 success audit을 commit하지 않는다. Hidden,
+cross-organization, missing, inactive, revoked와 denied 상태는 외부에서 구분하지 않는
+`knowledge_reference_unavailable` 계열 fixed code와 safe field path만 반환하며 UUID,
+label, raw graph와 permission reason을 echo하지 않는다. Permission query/DB failure는
+retryable safe infrastructure error이고 partial graph를 만들지 않는다.
+
+Save authorization result, picker item과 preflight 결과는 capability/token이 아니다.
+Direct execute/stream graph는 같은 structural contract를 통과하고 invocation-time
+MBA-232 resolver로 current audience를 authorize한다.
 
 ### KB Permission Endpoints
 
@@ -445,9 +511,9 @@ MVP에서 public/private visibility 전환은 organization manager만 허용한�
 
 `safe_metadata["visibility"] == "public"`은 anonymous public-only runtime의 collection candidate inclusion flag다. 인증 사용자 KB `use`, source ACL requester authorization, final evidence policy를 대체하지 않는다.
 
-Source-managed KB가 anonymous public-only 후보가 되려면 collection public visibility와 별도 source/connector public exposure approval을 모두 통과해야 한다. Approval row는 `approval_scope`, scope별 target id, `approved_by`, `approved_at`, `expires_at`, `source_identity_id` 또는 connector/source target, `revocation_behavior`, reverification cadence, explicit acknowledgement를 저장해야 한다. `approval_scope`와 target field가 일치하지 않거나 expiry/reverification/revocation 조건이 빠진 broad connector-wide approval은 public-only 후보에서 제외한다.
+Source-managed Collection 또는 source-managed KB가 anonymous public-only 후보가 되려면 collection public visibility와 별도 source/connector public exposure approval을 모두 통과해야 한다. Approval row는 `approval_scope`, scope별 target id, `approved_by`, `approved_at`, `expires_at`, `source_identity_id` 또는 connector/source target, `revocation_behavior`, reverification cadence, explicit acknowledgement를 저장해야 한다. `approval_scope`와 target field가 일치하지 않거나 expiry/reverification/revocation 조건이 빠진 broad connector-wide approval은 public-only 후보에서 제외한다.
 
-MBA-176에서 source/connector public exposure approval primitive가 아직 구현되지 않은 경우, source-managed KB는 public collection에 연결되어 있어도 anonymous public-only 후보로 승격하지 않는다. Deployment preflight와 runtime availability preview는 이를 warning이 아니라 `source_public_exposure_required` blocked reason으로 반환한다.
+MBA-176에서 source/connector public exposure approval primitive가 아직 구현되지 않은 경우, source-managed Collection은 manual child KB만 포함해도 anonymous candidate stream을 만들지 않고 source-managed KB도 public collection에 연결되어 있어도 anonymous public-only 후보로 승격하지 않는다. Deployment preflight와 runtime availability preview는 이를 warning이 아니라 `source_public_exposure_required` blocked reason으로 반환한다.
 
 ### Workflow Runtime RAG Execution Subject
 
@@ -571,6 +637,15 @@ A/B 테스트, 비용 최적화, trace side panel은 다음 redaction-safe summa
 | `insufficiency_reason` | `no_evidence`, `low_score`, `insufficient_citation`, `policy_filtered`, `operational_partial` 같은 safe reason class |
 | `query_rewrite_applied` | Query rewrite 적용 여부 |
 | `query_rewrite_strategy` | `template`, `llm_assisted` 같은 safe strategy summary. Raw rewritten query는 포함하지 않는다 |
+
+Collection-derived candidate가 하나라도 있는 실행은 `authorized_kb_count`와
+`selected_kb_count` exact 값을 생략하고 각각의 `_bucket` field만 저장한다. Candidate
+수에서 유도되는 actual `fanout_concurrency`도 생략한다. Collection-derived evidence는
+child KB별 결과 경계를 재구성할 수 있는 per-KB `rank`도 생략한다. 대신 최종 전역
+정렬·dedupe·top-k 이후 1부터 부여한 `evidence_rank`는 result와 품질 trace에 저장할 수
+있다. 이 값은 해당 invocation의 최종 evidence 순서이며 child KB 경계를 뜻하지 않는다.
+Direct-only 실행은 current user가
+명시적으로 선택하고 authorization된 KB의 기존 exact operational summary를 유지할 수 있다.
 | `source_tier_used` | Authorized evidence 안에서 사용한 safe source tier summary |
 | `evidence_count` / `min_score_bucket` | 실제 evidence 기준 count와 bucketed score summary. Hidden/denied count는 포함하지 않는다 |
 | `skill_id` / `skill_version` | 사용한 Knowledge Skill 식별자와 version. 표시 가능 여부는 skill display policy를 따른다 |
@@ -592,7 +667,7 @@ A/B 테스트, 비용 최적화, trace side panel은 다음 redaction-safe summa
 | Collection sync/remediation | `collection.sync` 또는 organization/admin operation policy. Raw content access를 의미하지 않는다 |
 | Raw content/export | Dedicated raw/compliance endpoint only. Raw/compliance permission, source-managed KB의 fresh source ACL, retention/legal-hold/purge check, response 전 raw access audit이 필요하다. 최종 enum 이름은 RBAC ADR에서 확정한다 |
 
-Response summary와 citation은 KB id, document version id, chunk id, citation id, optional collection id, rank/score, hierarchy path, safe filename/display label, safe metadata summary, policy result, partial marker, bucketed count, retryability, opaque correlation/request id 같은 redaction-safe field만 포함할 수 있다.
+Response summary와 citation은 허용된 KB/document version/chunk identity, citation id, direct KB-local `rank`, 최종 `evidence_rank`, score, hierarchy path, safe filename/display label, safe metadata summary, policy result, partial marker, bucketed count, retryability, opaque correlation/request id 같은 redaction-safe field만 포함할 수 있다. Collection-derived evidence에는 child identity, optional collection id, KB-local `rank`를 포함하지 않는다.
 
 Raw source id/url/path/title, raw source ACL, raw principal, raw source exception, raw query, raw rewritten query, raw answer, raw prompt/completion, raw provider response, raw skill body, hidden skill source reference, content preview, credential value는 durable audit/trace/usage metadata에 저장하지 않는다. `content_preview`는 user-facing response 전용이며 redacted/capped 상태로만 반환하고 durable summary에서 제외한다. Raw artifact를 활성화하더라도 dedicated raw/compliance flow에서만 노출하며 Agent answer, retrieval context, prompt construction, SSE stream에는 사용하지 않는다. Raw/compliance access audit은 safe reference, decision, reason code, retention/legal-hold summary, request/correlation identifier만 저장한다.
 
@@ -624,5 +699,5 @@ Safe no-result/insufficient-evidence response는 `status`, `evidence_sufficient=
 - Multi-KB 또는 collection-routed answer는 `trace_payloads.rag_answer_run_id`나 `llm_usage_logs.rag_answer_run_id`를 추가하지 않는다.
 - Standalone Agent answer lifecycle은 [ADR-0013](../../decisions/ADR-0013-rag-answer-trace-usage-correlation-boundary.md)에 따라 `rag.answer.*`와 `rag_answer_runs`를 사용한다.
 - Workflow runtime RAG evidence는 계속 `trace_payloads.payload_kind='rag.retrieval'`를 사용할 수 있다. Standalone answer는 summary/citation을 RAG-owned record에 저장한다.
-- Trace side panel에는 RAG strategy summary, citation id, KB id, document version id, chunk id, rank/score, safe metadata summary, token/cost/latency summary만 표시한다. 권한 없는 문서명/ID, raw source metadata, raw content, raw prompt/completion은 표시하지 않는다.
+- Trace side panel에는 RAG strategy summary, citation id, 허용된 KB/document version/chunk identity, direct KB-local rank, 최종 evidence rank/score, safe metadata summary, token/cost/latency summary만 표시한다. Collection-derived evidence에는 child identity와 KB-local rank를 표시하지 않는다. 권한 없는 문서명/ID, raw source metadata, raw content, raw prompt/completion은 표시하지 않는다.
 - Skill usage summary는 workflow draft, LLM node의 RAG 옵션, workflow test run, RAG strategy comparison에서 skill id, skill version, freshness state, eval status, safe source tier, safe provenance refs만 포함할 수 있다. Raw skill body, raw source title/path/url, hidden source refs는 표시하지 않는다.

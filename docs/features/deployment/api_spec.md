@@ -1,7 +1,7 @@
 # Deployment API Spec
 
 Status: Draft
-Verified Against: TBD
+Verified Against: `feature/mba-233 @ b4ff694f`
 
 ## Endpoints
 
@@ -58,21 +58,23 @@ Conversation-capable target snapshot은 별도 server-derived metadata로 immuta
 
 Preview response uses `200 OK` even when blocked:
 
-When `is_active=false`, preview reflects inactive-save context by returning activation blockers as `status="warning"` while keeping safe reason codes and required actions. Create with `is_active=true` and later activation/toggle still use blocking `409` enforcement.
+When `is_active=false`, preview reflects inactive-save context by returning audience/lifecycle activation blockers as `status="warning"` while keeping safe reason codes and required actions. Malformed or over-limit Knowledge reference configuration and existing workflow-node structural errors remain blocked. Create with `is_active=true` and later activation/toggle use blocking `409` enforcement.
 
 ```json
 {
   "status": "blocked",
   "audience": "anonymous_public",
   "safe_summary": {
-    "blocked_reason": "private_kb_requires_execution_subject",
+    "blocked_reason": "private_collection_requires_execution_subject",
     "affected_node_count": 1,
-    "affected_kb_count_bucket": "1"
+    "affected_kb_count_bucket": "0",
+    "affected_collection_count_bucket": "1",
+    "candidate_budget_limited": false
   },
   "required_actions": [
     {
-      "action": "remove_private_kb_or_use_authenticated_run",
-      "label": "Private KB를 제거하거나 인증 실행 경로를 사용하세요"
+      "action": "remove_private_collection_or_use_authenticated_run",
+      "label": "Private Collection을 제거하거나 인증 실행 경로를 사용하세요"
     }
   ],
   "warnings": [],
@@ -81,8 +83,10 @@ When `is_active=false`, preview reflects inactive-save context by returning acti
       "node_id": "llm-1",
       "node_type": "llmNode",
       "status": "blocked",
-      "reason_codes": ["private_kb_requires_execution_subject"],
-      "knowledge_base_count_bucket": "1"
+      "reason_codes": ["private_collection_requires_execution_subject"],
+      "knowledge_base_count_bucket": "0",
+      "knowledge_collection_count_bucket": "1",
+      "candidate_budget_limited": false
     }
   ]
 }
@@ -96,7 +100,39 @@ When `is_active=false`, preview reflects inactive-save context by returning acti
 | `warning` | 저장은 가능하지만 활성화 전 확인이 필요한 비차단 이슈 있음 |
 | `blocked` | 활성 deployment surface에 올릴 수 없음 |
 
-Response는 hidden KB id/name/path, exact denied count, raw source metadata, raw exception을 포함하지 않는다.
+Preflight가 해석하는 LLM node graph field는 다음 두 목록이다.
+
+- `knowledgeBases`: 최대 20개의 `{ "id": "<canonical-uuid>", "name": "<bounded-display>" }` 객체
+- `knowledgeCollections`: 최대 20개의 `{ "id": "<canonical-uuid>", "safeLabel": "<optional-bounded-display>" }` 객체
+
+Display field는 응답 표시 snapshot일 뿐 authorization이나 routing 입력이 아니다. 목록이 아닌 값, 허용되지 않은 field, non-canonical UUID, control character, 21번째 항목은 fixed configuration reason으로 차단한다.
+
+Additive safe result fields:
+
+| Field | Meaning |
+| --- | --- |
+| `safe_summary.affected_collection_count_bucket` | 이슈에 포함된 Collection 수의 안전한 bucket. 실제 hidden membership 수가 아님 |
+| `safe_summary.candidate_budget_limited` | direct configured refs와 selected Collection active-member aggregate상 runtime 후보 20개 제한 가능성 |
+| `nodes[].knowledge_collection_count_bucket` | 해당 node 이슈의 안전한 Collection count bucket |
+| `nodes[].candidate_budget_limited` | 해당 node의 보수적 후보 제한 가능성 |
+
+MBA-233 Knowledge reason/action code는 다음과 같다.
+
+| Reason code | Status | Required action |
+| --- | --- | --- |
+| `knowledge_reference_invalid` | blocked | `fix_invalid_knowledge_references` |
+| `knowledge_reference_limit_exceeded` | blocked | `reduce_knowledge_references` |
+| `knowledge_base_unavailable` | blocked 또는 inactive warning | `remove_unavailable_kb_reference` |
+| `knowledge_collection_unavailable` | blocked 또는 inactive warning | `remove_unavailable_collection_reference` |
+| `private_kb_requires_execution_subject` | blocked 또는 inactive warning | `remove_private_kb_or_use_authenticated_run` |
+| `private_collection_requires_execution_subject` | blocked 또는 inactive warning | `remove_private_collection_or_use_authenticated_run` |
+| `source_public_exposure_required` | blocked 또는 inactive warning | `approve_source_public_exposure_or_remove_reference` |
+| `knowledge_candidate_budget_limited` | warning | `review_knowledge_candidate_selection` |
+| `workflow_node_execution_subject_inherited` | warning | `verify_parent_execution_subject` |
+
+`knowledge_candidate_budget_limited`만 있는 preview는 `status="warning"`이며 active create를 차단하지 않는다. Runtime의 실제 candidate resolution이 current permission, membership, lifecycle, readiness, source policy와 dedupe를 다시 적용하므로 preflight boolean은 capability나 exact count가 아니다.
+
+Response는 hidden KB/Collection/child id, name, label, path, exact denied/member count, raw graph/source metadata, raw exception을 포함하지 않는다. Public graph projection은 root와 embedded subgraph의 두 Knowledge reference 배열도 제거한다.
 
 ### Create / Activation Blocking
 
@@ -105,6 +141,8 @@ Response는 hidden KB id/name/path, exact denied count, raw source metadata, raw
 `is_active=false` 생성은 저장 가능하지만 active deployment 교체, public URL 활성화, schedule job 생성 같은 실행 부작용을 만들지 않는다.
 
 Public `type="chatbot"`은 항상 `public_chatbot` audience로 preflight하므로 private KB 후보가 있으면 activation이 차단된다. 별도 authenticated internal Chatbot surface는 public Chatbot audience를 완화하거나 login cookie를 public route에 선택적으로 붙이는 방식으로 제공하지 않는다. 해당 기능은 별도 deployment access policy와 runtime/session namespace가 구현된 뒤 독립 preflight를 사용한다.
+
+Selected Collection 검사는 selected ID와 active organization으로 범위를 제한하고 active lifecycle과 `sync_state != source_deleted`를 요구한다. Missing, inactive, deleted, source-deleted, cross-organization Collection은 존재 여부를 구분하지 않고 `knowledge_collection_unavailable`로 처리한다. Direct KB는 같은 lifecycle/sync 경계와 retrieval-visible completed chunk readiness를 통과해야 한다. Anonymous-public surface에서 active private Collection은 차단되며, public Collection 자체 또는 active member가 source-managed이면 별도 public source exposure primitive가 없는 현재 구현에서 fail-closed한다. Child ID나 exact membership count는 preflight port/result로 전달하지 않는다.
 
 Conversation Memory target activation은 explicit input/output mapping, node Memory policy, immutable deployment/snapshot binding, Memory contract/storage generation과 capable Worker routing을 함께 검사한다. Schedule/webhook/API batch, workflow-node direct run과 일반 authenticated deployment run은 target session을 암묵적으로 생성하지 않는다.
 
@@ -193,7 +231,9 @@ Blocking preflight failure:
         "safe_summary": {
           "blocked_reason": "private_kb_requires_execution_subject",
           "affected_node_count": 1,
-          "affected_kb_count_bucket": "1"
+          "affected_kb_count_bucket": "1",
+          "affected_collection_count_bucket": "0",
+          "candidate_budget_limited": false
         }
       }
     }

@@ -1,4 +1,4 @@
-from .entities import LLMNodeData
+from .entities import KnowledgeCollectionRef, LLMNodeData
 from .llm_node import LLMNode
 
-__all__ = ["LLMNode", "LLMNodeData"]
+__all__ = ["KnowledgeCollectionRef", "LLMNode", "LLMNodeData"]

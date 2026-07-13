@@ -22,6 +22,52 @@ Workflow test stream은 별도 계약 전 Conversation Memory session을 자동 
 
 ## Request And Response Models
 
+### MBA-233 LLM Knowledge reference graph contract
+
+LLM node `data`는 다음 두 configured reference list를 함께 가질 수 있다.
+
+```json
+{
+  "knowledgeBases": [
+    {
+      "id": "00000000-0000-0000-0000-000000000000",
+      "name": "직접 선택 KB"
+    }
+  ],
+  "knowledgeCollections": [
+    {
+      "id": "00000000-0000-0000-0000-000000000000",
+      "safeLabel": "사내 문서"
+    }
+  ]
+}
+```
+
+- Field 부재는 빈 목록과 같다. Direct-only legacy graph는 그대로 유효하다.
+- 각 목록은 최대 20개다. 21번째는 `knowledge_reference_limit_exceeded`로 거부하며
+  server와 Client 모두 silent slicing을 하지 않는다.
+- Item은 canonical UUID string `id`와 해당 type의 display field만 허용한다.
+  `knowledgeBases.name`은 legacy 호환을 위해 빈 문자열을 허용하지만 string이어야
+  하고, `knowledgeCollections.safeLabel`은 optional string이다. Present display field는
+  255자 이하이고 control character를 포함할 수 없다.
+- Unknown item field, non-object item, duplicate field shape, malformed/non-canonical UUID는
+  fixed validation code와 safe field path로 거부한다. Error는 item value, label과 raw
+  graph를 echo하지 않는다.
+- Display field는 Builder snapshot이며 authorization/routing/audit/trace input이 아니다.
+  Duplicate reference는 stored graph에서 자동 삭제하지 않고 runtime request에서 첫
+  canonical occurrence만 사용한다.
+
+`PUT /api/v1/workflows/{workflow_id}/draft`, Agent Builder apply-save와 graph를 저장하는
+optimizer/model-routing path는 위 structural contract와 Knowledge API의 save-time
+reference authorization을 모두 적용한다. Direct execute/stream은 structural validation을
+통과하고 current invocation audience로 MBA-232 resolver를 호출한다.
+
+Deployment preflight result는 기존 safe summary에 additive
+`knowledge_collection_count_bucket`과 `candidate_budget_limited`를 포함할 수 있다.
+Reason/action은 fixed allowlist만 사용하며 Collection/child UUID, label, exact hidden count,
+permission/source detail을 반환하지 않는다. Malformed/over-limit graph와 anonymous
+private/source-public-exposure 위반은 active publish에서 non-downgradable blocker다.
+
 ### Workflow run actor compatibility
 
 Workflow run list/detail 또는 node execution log가 run actor를 포함하는 경우 `user_id`는 `UUID | null`이다. Null은 canonical schedule claim에서 내부 입력 `schedule`이 저장 계약 `trigger_mode="scheduler"`로 정규화된 system execution에서만 허용한다. Client는 null을 App creator로 대체하지 않고 actor를 표시하는 화면에서는 `System`으로 표현한다. Manual/API/webhook 등 기존 user-attributed run의 non-null 계약은 유지한다.

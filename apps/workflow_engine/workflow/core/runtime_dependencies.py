@@ -1,0 +1,21 @@
+"""In-memory dependencies composed for one Workflow Engine instance."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from apps.workflow_engine.application.runtime_retrieval.knowledge_candidates import (
+    KnowledgeRuntimeCandidateResolver,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowRuntimeDependencies:
+    """Dependencies that must never be copied into a queued execution context."""
+
+    knowledge_runtime_candidate_resolver: KnowledgeRuntimeCandidateResolver | None = (
+        None
+    )
+
+
+__all__ = ["WorkflowRuntimeDependencies"]

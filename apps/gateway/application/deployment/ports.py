@@ -4,7 +4,11 @@ import uuid
 from collections.abc import Iterable, Mapping
 from typing import Protocol
 
-from .models import KnowledgeBaseSnapshot, WorkflowNodeTargetSnapshot
+from .models import (
+    KnowledgeBaseSnapshot,
+    KnowledgeCollectionPreflightSnapshot,
+    WorkflowNodeTargetSnapshot,
+)
 
 
 class DeploymentPreflightRepository(Protocol):
@@ -19,6 +23,12 @@ class DeploymentPreflightRepository(Protocol):
         knowledge_base_ids: Iterable[uuid.UUID],
         organization_id: uuid.UUID | None,
     ) -> set[uuid.UUID]: ...
+
+    def get_active_knowledge_collections(
+        self,
+        collection_ids: Iterable[uuid.UUID],
+        organization_id: uuid.UUID | None,
+    ) -> Mapping[uuid.UUID, KnowledgeCollectionPreflightSnapshot]: ...
 
     def get_workflow_node_target(
         self,

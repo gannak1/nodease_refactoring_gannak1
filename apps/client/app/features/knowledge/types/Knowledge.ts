@@ -191,6 +191,15 @@ export interface KnowledgeCollectionListResponse {
   can_change_public_visibility: boolean;
 }
 
+export interface KnowledgeCollectionLLMSelectableItem {
+  id: string;
+  safe_label?: string | null;
+}
+
+export interface KnowledgeCollectionLLMSelectableResponse {
+  collections: KnowledgeCollectionLLMSelectableItem[];
+}
+
 export interface KnowledgeCollectionItemResponse {
   item_id: string;
   knowledge_base_id: string;

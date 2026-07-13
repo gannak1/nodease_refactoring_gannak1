@@ -10,6 +10,7 @@ from apps.gateway.main import app
 from apps.gateway.services.knowledge_collection_service import (
     KnowledgeCollectionServiceError,
 )
+from apps.shared.schemas.knowledge import KnowledgeCollectionLLMSelectableResponse
 from apps.shared.schemas.knowledge import (
     KnowledgeCollectionResponse,
     KnowledgeCollectionVisibilityResponse,
@@ -118,6 +119,57 @@ def test_collection_list_route_returns_management_capabilities(monkeypatch):
     assert body["collections"][0]["id"] == str(collection.id)
     assert body["can_create_collection"] is True
     assert body["can_change_public_visibility"] is True
+
+
+def test_collection_picker_uses_active_organization_and_minimal_projection(monkeypatch):
+    organization_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    collection_id = uuid.uuid4()
+    captured = {}
+
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "resolve_active_organization_id",
+        lambda db, request, raw, current_user_id: organization_id,
+    )
+
+    class FakePicker:
+        def __init__(self, db, *, user_id, organization_id):
+            captured["user_id"] = user_id
+            captured["organization_id"] = organization_id
+
+        def list_llm_selectable(self):
+            return KnowledgeCollectionLLMSelectableResponse(
+                collections=[
+                    {"id": collection_id, "safe_label": "사내 문서"}
+                ]
+            )
+
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "KnowledgeCollectionPickerQueryService",
+        FakePicker,
+    )
+    app.dependency_overrides[knowledge_endpoint.get_db] = lambda: object()
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+    try:
+        response = TestClient(app).get(
+            "/api/v1/knowledge/llm-selectable-collections",
+            headers={"X-Organization-Id": str(organization_id)},
+        )
+    finally:
+        app.dependency_overrides = {}
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "collections": [
+            {"id": str(collection_id), "safe_label": "사내 문서"}
+        ]
+    }
+    assert captured == {
+        "user_id": user_id,
+        "organization_id": organization_id,
+    }
 
 
 def test_collection_visibility_error_uses_safe_envelope(monkeypatch):
