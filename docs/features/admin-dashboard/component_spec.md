@@ -8,7 +8,7 @@ Verified Against: feature/mba-188 @ 59d1cc51
 기존 관리자 페이지 `/dashboard/admin`(`apps/client/app/dashboard/admin/page.tsx`)을 확장한다. 이 페이지는 이미 탭 구조(구성원/팀/권한/credential/knowledge/감사 로그/조직)와 공용 컴포넌트(`DashboardPageHeader`, `DashboardPanel`, `DashboardSummaryCard`)를 갖고 있다. 이 feature는 새 화면을 만들지 않고 다음을 추가/전환한다.
 
 - 감사 로그 탭을 본인 이력(`/users/me/audit-logs`) 임시 구현에서 조직 단위 검색(`GET /admin/audit-logs`, FR-011)으로 전환
-- `권한 신청` 탭 신설 (FR-014)
+- 기존 `권한` 탭에 권한 신청·App 생성 권한 보유 카드를 통합 (FR-014)
 - `비용` 탭 신설 (FR-012)
 - 상단 요약 카드 신설 (FR-015)
 - `보안 알림` 탭과 Sidebar deep link 연동 (FR-013, [Security Alert component spec](../security-alert/component_spec.md))
@@ -24,7 +24,7 @@ Verified Against: feature/mba-188 @ 59d1cc51
 | 상단 요약 카드 | 이번 달 조직 LLM 비용(USD), 예산 위험/초과 workflow 비율 | organization owner/manager |
 | 감사 로그 탭 | 조직 audit log 검색/필터 + 상세 드로어 | audit `auditor` 이상 |
 | Actor access drawer | Audit actor의 current organization access 조회/관리 | ADR-0009 organization manager |
-| 권한 신청 탭 | 신청 목록 + 승인/거절 | organization owner/manager |
+| 권한 탭 | resource 권한 관리 + 권한 신청 목록/처리 + App 생성 권한 보유 목록/회수 | organization owner/manager |
 | 비용 탭 | workflow별 사용량/비용 집계 | organization owner/manager |
 | 보안 알림 탭 | 영속 Security Alert 검색·상세·safe evidence·상태 변경 | organization owner/manager |
 | 기존 탭들 (구성원/팀/권한/credential/knowledge/조직) | 이 feature의 감사/비용/권한신청 범위 밖에서는 기존 구현 유지. MBA-176은 기존 권한/knowledge 탭을 확장해 KB team/user direct permission 관리를 추가한다 | 기존 기준 유지 |
@@ -88,6 +88,8 @@ Verified Against: feature/mba-188 @ 59d1cc51
 
 ### PermissionRequestsTab (FR-014)
 
+별도 `권한 신청` 메뉴를 두지 않고 기존 `권한` 탭의 resource 권한 관리 카드 아래에 렌더링한다. 기존 주소 `/dashboard/admin?tab=permission-requests`로 접근하면 `/dashboard/admin?tab=permissions`로 정규화해 새로고침과 기존 링크를 안전하게 유지한다.
+
 - status 필터: 기본 `pending`, `approved`/`rejected` 전환 가능.
 - 테이블 컬럼: 요청자(이름/이메일), 요청 권한(`app.create`의 사용자 친화 라벨 — "workflow 생성/배포"), 신청 사유, 신청일, 상태 배지. 처리된 건은 처리자/처리 시각 표시.
 - pending 행에만 `승인`/`거절` 버튼을 인라인으로 둔다.
@@ -95,7 +97,7 @@ Verified Against: feature/mba-188 @ 59d1cc51
 - 확정 시 `POST /admin/permission-requests/{id}/approve|reject` 호출. 성공하면 toast(기존 sonner)로 알리고 목록을 갱신한다.
 - 데이터 원천: `GET /admin/permission-requests`.
 
-같은 탭 하단에 `보유 권한` 섹션을 둔다 (FR-014 회수 확장).
+같은 카드 하단에 `보유 권한` 섹션을 둔다 (FR-014 회수 확장).
 
 - 테이블 컬럼: 보유자(이름/이메일), 부여자, 부여일. 행별 `회수` 버튼을 인라인으로 둔다.
 - organization owner/manager는 row 없이 허용되므로 이 목록에 나타나지 않는다. 섹션 설명에 이 사실을 안내하고, 빈 목록은 "부여된 App 생성 권한이 없습니다" empty state로 표시한다.
@@ -127,7 +129,7 @@ Verified Against: feature/mba-188 @ 59d1cc51
 
 - 각 탭 공통: 로딩(스켈레톤 또는 스피너), 빈 목록(안내 문구 포함 empty state), 오류(재시도 버튼).
 - 비용 탭의 빈 목록은 organization scope 안에 표시할 App primary workflow가 없을 때만 사용한다. 기간 안에 usage가 없는 workflow는 빈 목록이 아니라 사용량 0 row로 표시한다.
-- 권한 신청 처리 중: 해당 행 버튼 비활성화(중복 클릭 방지). 409 응답(이미 처리된 신청)은 "이미 처리된 신청입니다" toast 후 목록 갱신.
+- 권한 탭의 권한 신청 처리 중: 해당 행 버튼 비활성화(중복 클릭 방지). 409 응답(이미 처리된 신청)은 "이미 처리된 신청입니다" toast 후 목록 갱신.
 - 권한 회수 처리 중: 확인 다이얼로그의 버튼을 비활성화한다(중복 클릭 방지, modal이 행 버튼 접근을 막는다). 404 응답(이미 회수된 권한)은 "이미 회수된 권한입니다" toast 후 목록 갱신.
 - Actor access profile 404: current organization에서 관리할 수 없는 historical actor 안내 후 audit detail은 유지한다.
 - Actor access action 409: last manager, manager override, target user inactive, stale member state에 맞는 안전한 안내를 표시하고 profile을 재조회한다.
@@ -142,7 +144,7 @@ Verified Against: feature/mba-188 @ 59d1cc51
 2. audit 검색: 필터 변경 → 조회 버튼 또는 디바운스 적용 → 1페이지부터 재조회.
 3. audit 행 클릭 → 드로어 열림. ESC/바깥 클릭/닫기 버튼으로 닫힘.
 4. audit user actor 클릭 → ActorAccessDrawer → 항목 선택 → ActorAccessConfirmDialog → single access action → profile/resource/audit 재조회.
-5. 권한 신청 승인: `승인` 클릭 → ConfirmDialog → 확정 → API 호출 → 성공 toast → 목록 갱신. 거절도 동일 흐름.
+5. 권한 탭의 권한 신청 카드에서 `승인` 클릭 → ConfirmDialog → 확정 → API 호출 → 성공 toast → 목록 갱신. 거절도 동일 흐름.
 6. 비용 행의 workflow 링크 클릭 → 해당 workflow 화면으로 이동.
 7. 요약 카드는 페이지 진입 시 로드하고 탭 전환과 무관하게 유지한다.
 

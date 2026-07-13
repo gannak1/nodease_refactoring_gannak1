@@ -10,7 +10,7 @@ Security Alert FR-013의 상세 rule/worker/API/component/E2E matrix는 [Securit
 - Given audit `auditor`/`raw_auditor` only user, When Admin Dashboard를 열거나 Security Alert API를 호출하면, Then audit list/detail은 기존 권한대로 사용할 수 있지만 Security Alert 탭/API는 허용되지 않는다.
 - Given Security Alert deep link의 유효한 `alertId`, When 새로고침하면, Then 같은 tab/detail이 복원된다. Invalid/cross-org ID는 safe 404로 처리한다.
 - Given Alert detail에서 `사용자 접근 관리` 선택, When ActorAccessDrawer로 전환하면, Then 두 drawer가 겹치지 않고 기존 organization access-management 정책을 재사용하며 alert를 자동 resolve하지 않는다.
-- Given Security Alert 기능 활성화, When audit/비용/권한 신청/App 생성 권한 탭을 사용하면, Then 기존 API, 권한, pagination, drawer 흐름이 회귀하지 않는다.
+- Given Security Alert 기능 활성화, When audit/비용/권한 탭의 권한 신청·App 생성 권한 카드를 사용하면, Then 기존 API, 권한, pagination, drawer 흐름이 회귀하지 않는다.
 Verified Against: feature/mba-188 @ 59d1cc51
 
 검증 값은 MBA-188 actor access와 audit detail 확장 case에 적용한다. 기존 비용/권한 신청 case의 기준은 해당 feature 문서와 git history를 따른다.
@@ -39,6 +39,8 @@ Verified Against: feature/mba-188 @ 59d1cc51
 
 ### AC-3. 권한 신청 목록/승인/거절 (FR-014)
 
+- Given 관리자가 Admin Dashboard를 열었을 때, Then 별도 `권한 신청` 메뉴는 없고 신청 목록과 App 생성 권한 보유 목록은 `권한` 탭에 표시된다.
+- Given 기존 `/dashboard/admin?tab=permission-requests` 주소로 직접 접근하거나 새로고침했을 때, Then `/dashboard/admin?tab=permissions`로 정규화되고 통합 화면이 표시된다.
 - Given pending 신청이 있는 조직, When owner/manager가 `GET /admin/permission-requests`를 호출하면, Then 요청자, 요청 권한(`app.create`), 신청 사유, 신청일이 포함된 pending 목록이 기본 반환된다.
 - Given pending 신청, When 승인하면, Then 같은 트랜잭션에서 (1) status가 `approved`로 바뀌고 decided_by/decided_at이 기록되고, (2) 신청자의 `user_app_creation_permissions` row가 생성되고, (3) `permission_request.approved`와 `user_app_creation_permission.created` audit이 각각 기록된다.
 - Given 승인된 신청자, When App 생성(`POST /apps`)을 시도하면, Then 성공한다.
@@ -248,7 +250,7 @@ Verified Against: feature/mba-188 @ 59d1cc51
 
 ## E2E Tests
 
-- **PRD 시나리오 1→2 연결 완주**: 권한 없는 신입 계정의 App 생성 차단(403) → 권한 신청 제출 → 관리자가 권한 신청 탭에서 승인 → 신입 계정 App 생성 성공 → 관리자 audit 탭에서 `permission_request.created/approved`, `user_app_creation_permission.created`, App/workflow 생성 기록 확인.
+- **PRD 시나리오 1→2 연결 완주**: 권한 없는 신입 계정의 App 생성 차단(403) → 권한 신청 제출 → 관리자가 권한 탭의 신청 카드에서 승인 → 신입 계정 App 생성 성공 → 관리자 audit 탭에서 `permission_request.created/approved`, `user_app_creation_permission.created`, App/workflow 생성 기록 확인.
 - **PRD 시나리오 2 완주**: 관리자가 audit 검색으로 권한 신청/승인, workflow 생성/배포/실행 기록을 확인하고, 상단 요약 카드에서 이번 달 조직 비용과 예산 위험/초과 workflow 비율을 확인한다.
 - **Audit actor 제어 연결**: 관리자가 audit actor를 열어 member를 정지하고 재활성화한 뒤, 같은 audit tab에서 `organization.member.update`의 optional reason과 safe change summary를 확인한다.
 - 비용 탭에서 비용 상위 workflow를 확인하고 해당 workflow 화면으로 이동한다 (진입만 — 비교/최적화는 cost-optimizer 범위).
