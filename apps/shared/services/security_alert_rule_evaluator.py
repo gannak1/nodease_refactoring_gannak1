@@ -146,6 +146,45 @@ def is_security_alert_event_eligible(
     return _eligible_event(event, activation_started_at) is not None
 
 
+def build_security_alert_cooldown_candidates(
+    *,
+    current_event: Any,
+    activation_started_at: datetime,
+) -> tuple[SecurityAlertRuleCandidate, ...]:
+    current = _eligible_event(current_event, activation_started_at)
+    if current is None:
+        return ()
+
+    if current.action == "permission.denied":
+        return (
+            _build_candidate(
+                rule_id="repeated_permission_denied",
+                severity="medium",
+                organization_id=current.organization_id,
+                actor_id=current.actor_id,
+                matched_events=(current,),
+            ),
+            _build_candidate(
+                rule_id="multi_resource_permission_probe",
+                severity="high",
+                organization_id=current.organization_id,
+                actor_id=current.actor_id,
+                matched_events=(current,),
+            ),
+        )
+
+    return (
+        _build_candidate(
+            rule_id="repeated_policy_block",
+            severity="high",
+            organization_id=current.organization_id,
+            actor_id=current.actor_id,
+            matched_events=(current,),
+            policy_reason=current.policy_reason,
+        ),
+    )
+
+
 def _eligible_event(
     event: Any,
     activation_started_at: datetime,

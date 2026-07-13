@@ -280,6 +280,31 @@ def test_expired_cooldown_does_not_update_existing_active_alert(status):
     assert db.evidence_keys == set()
 
 
+def test_late_older_audit_updates_active_alert_without_moving_last_detected_back():
+    candidate = _candidate()
+    alert = _active_alert(candidate, status="open")
+    alert.last_detected_at = _NOW
+    late_audit = _audit_logs(
+        candidate.organization_id,
+        count=1,
+        start_at=_NOW - timedelta(minutes=1),
+    )[0]
+    original_count = alert.occurrence_count
+    db = _AggregationDb(active_alert=alert)
+
+    result = _aggregate(
+        db,
+        candidate=candidate,
+        audit_logs=[late_audit],
+        detected_at=late_audit.occurred_at,
+    )
+
+    assert result is alert
+    assert alert.occurrence_count == original_count + 1
+    assert alert.last_detected_at == _NOW
+    assert db.evidence_keys == {(alert.id, late_audit.id)}
+
+
 @pytest.mark.parametrize("failure", ["evidence", "detected_audit"])
 def test_sal_tc_s006_s007_creation_failure_rolls_back_whole_uow(failure):
     candidate = _candidate()

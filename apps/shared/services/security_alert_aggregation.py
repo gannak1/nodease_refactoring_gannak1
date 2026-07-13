@@ -32,8 +32,7 @@ def is_security_alert_cooldown_active(
     last_detected_at: datetime,
     event_at: datetime,
 ) -> bool:
-    cooldown_expires_at = last_detected_at + _SECURITY_ALERT_COOLDOWN
-    return last_detected_at <= event_at < cooldown_expires_at
+    return abs(event_at - last_detected_at) < _SECURITY_ALERT_COOLDOWN
 
 
 def aggregate_security_alert_detection(

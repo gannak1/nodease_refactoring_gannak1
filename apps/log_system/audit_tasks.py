@@ -23,6 +23,7 @@ from apps.shared.services.security_alert_reconciliation import (
     reconcile_security_alert_batch,
 )
 from apps.shared.services.security_alert_rule_evaluator import (
+    build_security_alert_cooldown_candidates,
     evaluate_security_alert_rules,
     is_security_alert_event_eligible,
 )
@@ -213,19 +214,29 @@ def _evaluate_and_aggregate_security_alerts(
     window_events: list[Any],
     activation_started_at: datetime,
 ) -> int:
-    candidates = evaluate_security_alert_rules(
+    threshold_candidates = evaluate_security_alert_rules(
         current_event=current_event,
         window_events=window_events,
         activation_started_at=activation_started_at,
     )
-    for candidate in candidates:
+    cooldown_candidates = build_security_alert_cooldown_candidates(
+        current_event=current_event,
+        activation_started_at=activation_started_at,
+    )
+    candidates_by_key = {
+        candidate.detection_key: candidate for candidate in cooldown_candidates
+    }
+    candidates_by_key.update(
+        {candidate.detection_key: candidate for candidate in threshold_candidates}
+    )
+    for candidate in candidates_by_key.values():
         aggregate_security_alert_detection(
             db,
             candidate=candidate,
             audit_logs=window_events,
             detected_at=current_event.occurred_at,
         )
-    return len(candidates)
+    return len(threshold_candidates)
 
 
 def _load_security_alert_detection_context(

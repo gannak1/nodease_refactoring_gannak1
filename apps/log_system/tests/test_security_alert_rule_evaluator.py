@@ -125,6 +125,32 @@ def test_sal_tc_w001_repeated_permission_denied_triggers_on_fifth_event_only():
     assert candidate.subject_actor_id == actor_id
 
 
+def test_permission_denied_builds_cooldown_candidates_below_threshold():
+    actor_id = uuid4()
+    organization_id = uuid4()
+    event = _event(
+        offset_seconds=0,
+        actor_id=actor_id,
+        organization_id=organization_id,
+    )
+    module = importlib.import_module(
+        "apps.shared.services.security_alert_rule_evaluator"
+    )
+
+    candidates = module.build_security_alert_cooldown_candidates(
+        current_event=event,
+        activation_started_at=_NOW - timedelta(minutes=1),
+    )
+
+    assert {candidate.rule_id for candidate in candidates} == {
+        "repeated_permission_denied",
+        "multi_resource_permission_probe",
+    }
+    assert all(
+        candidate.matched_audit_ids == (event.id,) for candidate in candidates
+    )
+
+
 def test_sal_tc_w002_multi_resource_probe_counts_only_distinct_safe_targets():
     actor_id = uuid4()
     organization_id = uuid4()

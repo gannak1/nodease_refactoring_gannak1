@@ -200,7 +200,10 @@ def test_sal_tc_w001_fifth_denial_is_evaluated_and_aggregated(monkeypatch):
         for index in range(5)
     ]
     current = audits[-1]
-    candidate = SimpleNamespace(rule_id="repeated_permission_denied")
+    candidate = SimpleNamespace(
+        rule_id="repeated_permission_denied",
+        detection_key="threshold-key",
+    )
     alert = SimpleNamespace(id=uuid4())
     session = _Session(existing=current)
     evaluated = []
@@ -217,6 +220,11 @@ def test_sal_tc_w001_fifth_denial_is_evaluated_and_aggregated(monkeypatch):
         "evaluate_security_alert_rules",
         lambda **kwargs: (evaluated.append(kwargs), (candidate,))[1],
         raising=False,
+    )
+    monkeypatch.setattr(
+        audit_tasks,
+        "build_security_alert_cooldown_candidates",
+        lambda **kwargs: (),
     )
     monkeypatch.setattr(
         audit_tasks,
@@ -251,6 +259,63 @@ def test_sal_tc_w001_fifth_denial_is_evaluated_and_aggregated(monkeypatch):
     }
     assert session.commits == 1
     assert session.closed == 1
+
+
+def test_cooldown_candidate_is_aggregated_without_threshold_candidate(monkeypatch):
+    now = datetime(2026, 7, 12, 0, 10, tzinfo=timezone.utc)
+    current = AuditLog(
+        id=uuid4(),
+        occurred_at=now,
+        actor_id=uuid4(),
+        actor_type="user",
+        category="action",
+        action="permission.denied",
+        target_type="workflow",
+        target_id=str(uuid4()),
+        status="failure",
+        audit_metadata={"organization_id": str(uuid4())},
+    )
+    cooldown_candidate = SimpleNamespace(
+        rule_id="repeated_permission_denied",
+        detection_key="cooldown-key",
+    )
+    aggregated = []
+    monkeypatch.setattr(
+        audit_tasks,
+        "evaluate_security_alert_rules",
+        lambda **kwargs: (),
+    )
+    monkeypatch.setattr(
+        audit_tasks,
+        "build_security_alert_cooldown_candidates",
+        lambda **kwargs: (cooldown_candidate,),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        audit_tasks,
+        "aggregate_security_alert_detection",
+        lambda db, **kwargs: aggregated.append((db, kwargs)),
+    )
+    db = object()
+
+    candidate_count = audit_tasks._evaluate_and_aggregate_security_alerts(
+        db,
+        current_event=current,
+        window_events=[current],
+        activation_started_at=now - timedelta(minutes=10),
+    )
+
+    assert candidate_count == 0
+    assert aggregated == [
+        (
+            db,
+            {
+                "candidate": cooldown_candidate,
+                "audit_logs": [current],
+                "detected_at": now,
+            },
+        )
+    ]
 
 
 def test_detection_context_loads_ten_minute_window_from_activation_watermark():
