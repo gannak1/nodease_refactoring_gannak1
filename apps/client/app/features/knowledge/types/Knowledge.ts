@@ -71,17 +71,69 @@ export interface DocumentResponse {
   parsing_strategy?: 'general' | 'llamaparse';
   source_type?: SourceType;
   meta_info?: {
+    progress?: number;
+    processing_progress?: number;
+    processing_enqueued_at?: string;
+    processing_started_at?: string;
+    processing_progress_updated_at?: string;
+    processing_recovered_from_timeout?: boolean;
     cost_estimate?: {
       pages: number;
       credits: number;
       cost_usd: number;
     };
     strategy?: string;
-    segment_identifier?: string;
     remove_urls_emails?: boolean;
     remove_whitespace?: boolean;
-    [key: string]: any; // Allow other properties
+    chunking_mode?: 'flat' | 'hierarchical';
+    upload_method?: 'backend' | 'direct';
   };
+}
+
+export interface DocumentDbJoinConfig {
+  enabled: boolean;
+  base_table?: string | null;
+  joins: Array<{
+    from_table: string;
+    to_table: string;
+    from_column: string;
+    to_column: string;
+  }>;
+}
+
+export interface DocumentDbEditConfig {
+  connection_id: string;
+  selected_items: Record<string, string[]>;
+  sensitive_columns: Record<string, string[]>;
+  aliases: Record<string, Record<string, string>>;
+  template?: string | null;
+  join_config: DocumentDbJoinConfig;
+}
+
+export interface DocumentApiEditConfigSummary {
+  configured: boolean;
+  method: 'GET' | 'POST';
+  safe_label: string;
+  has_headers: boolean;
+  has_body: boolean;
+}
+
+export interface DocumentEditConfigResponse {
+  editable: boolean;
+  safe_reason_code?: 'document.edit_config_unavailable' | null;
+  source_type: SourceType;
+  chunk_size?: number | null;
+  chunk_overlap?: number | null;
+  segment_identifier?: string | null;
+  remove_urls_emails?: boolean | null;
+  remove_whitespace?: boolean | null;
+  strategy?: 'general' | 'llamaparse' | null;
+  chunking_mode?: 'flat' | 'hierarchical' | null;
+  selection_mode?: 'all' | 'range' | 'keyword' | null;
+  chunk_range?: string | null;
+  keyword_filter?: string | null;
+  db_config?: DocumentDbEditConfig | null;
+  api_config?: DocumentApiEditConfigSummary | null;
 }
 
 export interface KnowledgeBaseDetailResponse extends KnowledgeBaseResponse {

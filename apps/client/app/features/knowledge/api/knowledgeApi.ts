@@ -6,6 +6,7 @@ import {
   KnowledgeBaseDetailResponse,
   KnowledgeSafeMetadataResponse,
   DocumentResponse,
+  DocumentEditConfigResponse,
   SourceType,
   KnowledgeCollectionAction,
   KnowledgeCollectionRoleBundle,
@@ -44,6 +45,7 @@ export interface DocumentPreviewRequest {
   remove_whitespace?: boolean;
   source_type: SourceType;
   strategy?: 'general' | 'llamaparse';
+  chunking_mode?: 'flat' | 'hierarchical';
   db_config?: {
     selections: {
       table_name: string;
@@ -348,6 +350,16 @@ export const knowledgeApi = {
   ): Promise<DocumentResponse> => {
     const response = await api.get(
       `/knowledge/${kbId}/documents/${documentId}`,
+    );
+    return response.data;
+  },
+
+  getDocumentEditConfig: async (
+    kbId: string,
+    documentId: string,
+  ): Promise<DocumentEditConfigResponse> => {
+    const response = await api.get(
+      `/knowledge/${kbId}/documents/${documentId}/edit-config`,
     );
     return response.data;
   },

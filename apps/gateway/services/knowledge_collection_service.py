@@ -39,6 +39,10 @@ from apps.shared.schemas.knowledge import (
     KnowledgeDelegationSubjectsResponse,
 )
 from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
+from apps.shared.services.knowledge_safe_text import (
+    safe_label_from_text,
+    sanitize_kb_safe_metadata,
+)
 from apps.shared.services.permissions import (
     get_effective_knowledge_domain_actions,
     get_effective_knowledge_base_auth_state,
@@ -421,16 +425,26 @@ class KnowledgeCollectionService:
             if not page:
                 break
             scanned += len(page)
+            read_decisions = self.permission_helper.bulk_evaluate_kb_action(
+                page,
+                "read",
+            )
             for kb in page:
                 if kb.id in linked_ids or not self._kb_link_candidate_allowed(
                     collection,
                     kb,
                 ):
                     continue
+                read_decision = read_decisions.get(kb.id)
                 candidates.append(
                     KnowledgeCollectionLinkCandidate(
                         knowledge_base_id=kb.id,
-                        safe_label=self._kb_safe_label(kb),
+                        safe_label=self._kb_safe_label(
+                            kb,
+                            can_read_kb=bool(
+                                read_decision and read_decision.allowed
+                            ),
+                        ),
                         disabled=False,
                         safe_reason_code=None,
                     )
@@ -884,7 +898,10 @@ class KnowledgeCollectionService:
         return KnowledgeCollectionItemResponse(
             item_id=item.id,
             knowledge_base_id=kb.id,
-            safe_label=self._kb_safe_label(kb),
+            safe_label=self._kb_safe_label(
+                kb,
+                can_read_kb=knowledge_base_auth_state_allows(auth_state, "read"),
+            ),
             lifecycle_state=kb.lifecycle_state,
             sync_state=kb.sync_state,
             rank=item.rank,
@@ -1119,15 +1136,33 @@ class KnowledgeCollectionService:
             organization_id=self.organization_id,
         )
 
-    def _kb_safe_label(self, kb: KnowledgeBase) -> str:
+    def _kb_safe_label(
+        self,
+        kb: KnowledgeBase,
+        *,
+        can_read_kb: bool = False,
+    ) -> str:
         source_identity = getattr(kb, "source_identity", None)
-        if source_identity is not None:
+        if source_identity is not None or self._is_source_managed_kb(kb):
             if getattr(source_identity, "display_policy_state", None) == "approved":
-                safe_display_name = getattr(source_identity, "safe_display_name", None)
+                safe_display_name = safe_label_from_text(
+                    getattr(source_identity, "safe_display_name", None)
+                )
                 if safe_display_name:
-                    return str(safe_display_name)
+                    return safe_display_name
             return GENERIC_KB_LABEL
-        return str(getattr(kb, "name", None) or GENERIC_KB_LABEL)
+
+        safe_metadata = sanitize_kb_safe_metadata(
+            getattr(kb, "safe_metadata", None)
+        )
+        safe_label = safe_metadata.get("safe_label")
+        if isinstance(safe_label, str):
+            return safe_label
+        if can_read_kb:
+            readable_name = safe_label_from_text(getattr(kb, "name", None))
+            if readable_name:
+                return readable_name
+        return GENERIC_KB_LABEL
 
     def _collection_or_hidden(self, collection_id: uuid.UUID) -> KnowledgeCollection:
         collection = (

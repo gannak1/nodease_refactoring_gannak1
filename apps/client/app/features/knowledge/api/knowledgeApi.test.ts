@@ -66,6 +66,25 @@ describe('knowledgeApi.getProgressUrl', () => {
   });
 });
 
+describe('knowledgeApi.getDocumentEditConfig', () => {
+  it('uses the write-scoped document configuration endpoint', async () => {
+    const response = {
+      editable: true,
+      source_type: 'FILE',
+      chunk_size: 800,
+      chunk_overlap: 80,
+    };
+    vi.mocked(apiClient.get).mockResolvedValueOnce({ data: response });
+
+    await expect(
+      knowledgeApi.getDocumentEditConfig('kb-1', 'document-1'),
+    ).resolves.toEqual(response);
+    expect(apiClient.get).toHaveBeenCalledWith(
+      '/knowledge/kb-1/documents/document-1/edit-config',
+    );
+  });
+});
+
 describe('knowledgeApi.streamAgentAnswer', () => {
   it('sends the active organization header and emits streamed events', async () => {
     const events: RAGAgentStreamEvent[] = [];

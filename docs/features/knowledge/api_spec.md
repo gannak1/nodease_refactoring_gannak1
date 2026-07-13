@@ -11,6 +11,7 @@ Status: Draft
 | GET | `/api/v1/knowledge/llm-selectable` | Workflow LLM node RAG picker용 KB 후보 목록 | `X-Organization-Id` active organization 필수. active organization 안에서 caller가 KB `use` 권한을 가진 KB만 반환한다. 반환 후보는 retrieval-visible `completed` document chunk가 1개 이상 있어야 하며, runtime은 실행 시점 execution subject 기준으로 다시 권한을 평가한다 |
 | POST | `/api/v1/knowledge` | 빈 KB 생성 | Active organization에 KB, 생성자의 user-direct `manager`, canonical audit를 한 transaction에서 생성한다. 필수 schema가 준비되지 않으면 `503 knowledge.schema_not_ready`로 fail-closed 처리한다 |
 | GET | `/api/v1/knowledge/{kb_id}` | 현재 KB 상세와 문서 상태 | Active organization + KB `read`. Detail capability는 `can_read/use/write/read_content/manage`와 파생 UI flag로 반환한다 |
+| GET | `/api/v1/knowledge/{kb_id}/documents/{document_id}/edit-config` | Document preview/process 설정 복원 | Active organization + KB `write`. Bounded property/aggregate/serialized-size allowlist만 반환하고 read detail과 encrypted source config를 재사용하지 않는다. 성공 응답은 `Cache-Control: no-store`다 |
 | GET | `/api/v1/knowledge/{kb_id}/safe-metadata` | allowlisted KB recommendation metadata 조회 | active organization, KB `manage`; 권한 없는 resource는 404로 숨긴다 |
 | PATCH | `/api/v1/knowledge/{kb_id}/safe-metadata` | `safe_label`, `kb_safe_description`, `kb_safe_topics` 수정 | active organization, KB `manage`, sanitizer, audit. 일반 KB 설정 PATCH와 분리한다 |
 | POST | `/api/v1/knowledge/{kb_id}/archive`, `/restore` | Manual KB lifecycle 전이 | KB `manage` 또는 domain `lifecycle_manage`; source-managed KB는 source-owned로 차단 |
@@ -22,7 +23,7 @@ Status: Draft
 | POST | `/api/v1/rag/search-test/chat` | 검색+답변 테스트 | active organization, KB use, LLM credential |
 | POST | `/api/v1/rag/agent/answer` | 명시 `knowledge_base_id` 기반 standalone Agent answer | KB use, generation model/credential use |
 | POST | `/api/v1/rag/agent/answer/stream` | standalone Agent answer SSE | KB use, generation model/credential use |
-| GET | `/api/v1/rag/document/{document_id}/progress?organizationId={active_organization_id}` | 문서 처리 상태 SSE | Native EventSource의 custom header 제약 때문에 active organization을 query parameter로 전달한다. Gateway는 stream 생성 전에 active organization + KB `read`를 검증하며, 권한 없는 document의 상태·오류·Redis progress를 노출하지 않는다 |
+| GET | `/api/v1/rag/document/{document_id}/progress?organizationId={active_organization_id}` | 문서 처리 상태 SSE | Native EventSource의 custom header 제약 때문에 active organization을 query parameter로 전달한다. Gateway는 stream 생성 전에 active organization + KB `read`를 검증하며, 권한 없는 document의 상태·오류·Redis progress를 노출하지 않는다. 응답은 `Cache-Control: no-cache, no-store`, `X-Accel-Buffering: no`를 사용한다 |
 | GET | `/api/v1/permissions/knowledge-bases/{knowledge_base_id}` | KB에 부여된 team/user direct permission 목록 | manager 또는 KB `manage`, active organization |
 | PUT | `/api/v1/permissions/knowledge-bases/{knowledge_base_id}/teams/{team_id}` | team KB permission 생성/갱신 | manager 또는 KB `manage`, active organization |
 | PUT | `/api/v1/permissions/knowledge-bases/{knowledge_base_id}/users/{user_id}` | user direct KB permission 생성/갱신 | manager 또는 KB `manage`, active organization |
@@ -32,6 +33,27 @@ Status: Draft
 현재 `POST /api/v1/knowledge`는 공백뿐인 `name`, 255자를 초과하는 `name`, 비어 있거나 secret-like/token-like 또는 allowlist 밖 문자를 포함한 `embedding_model`을 DB insert 전에 safe validation error로 거부한다. Validation error response는 raw request value를 echo하지 않고 reason code만 반환한다. KB `name`은 사용자 표시용 label이며 resource identity가 아니므로 같은 organization 안의 동일 `name` 생성을 이름만으로 거부하지 않는다. 같은 제목의 서로 다른 문서, 수동 KB, source-managed KB는 `knowledge_base_id`, protected source identity, sync/lifecycle state, safe metadata로 구분한다. 단, 같은 문서의 version은 여러 개가 동시에 retrieval-visible한 resource로 취급하지 않는다. 내부 문서는 active/head pointer가 가리키는 ready version만 검색 노출하고, 외부 source-managed 문서는 정상 sync/finalization이 완료되면 최신 active ready version으로 교체한다. Sync 실패나 stale 상태에서는 기존 active ready version만 warning과 함께 유지할 수 있으며, 이전/superseded/pre-finalized version은 selectable-ready 또는 retrieval evidence 후보가 아니다. Source-managed KB의 동일 source item 중복 방지는 `source_identity_id`와 source sync lineage invariant로 다루며, KB `name` conflict로 대체하지 않는다.
 
 MBA-231 cutover 이후 `/api/v1/knowledge/*`의 list/detail/settings/document/process/preview/sync와 `/api/v1/rag/upload`, document analyze/confirm/delete/progress는 active organization과 canonical KB action helper를 사용한다. `knowledge_bases.user_id`는 생성자/귀속 정보이며 이 표면의 권한 우회가 아니다. Presigned upload와 URL/proxy preview처럼 아직 KB가 확정되지 않은 표면은 별도 storage/egress 경계를 따르며, raw/source-derived content는 승인된 `content_read` 또는 후속 raw/compliance 정책 없이 노출하지 않는다.
+
+Document `read` response의 `meta_info`는 status/progress allowlist이며 edit form의
+source가 아니다. `GET /knowledge/{kb_id}/documents/{document_id}/edit-config`는 KB
+`write`를 통과한 caller에게 `chunk_size`, `chunk_overlap`, `chunking_mode`,
+`segment_identifier`, processing option, selection option과 DB edit allowlist를
+반환한다. DB allowlist는 opaque `connection_id`, bounded table/column selection,
+sensitive-column marking, alias, template와 join shape만 허용한다. API source는 method,
+configured/header/body presence 같은 safe summary만 반환하고 URL/header/body 원문,
+encrypted field, connection credential/detail은 반환하지 않는다. Stored config가
+malformed 또는 bound 밖이면 raw fallback 대신 `editable=false`와 safe reason code를
+반환하고 Client는 preview/process를 차단한다. 개별 field cap을 모두 통과하더라도
+aggregate item 또는 serialized response budget을 초과하면 같은 unavailable 결과로
+닫는다. Client는 권한과 hydration 상태를 현재 KB/document id scope에 결박하고, route
+전환 뒤 늦게 도착한 이전 scope 응답이나 fetch failure로 action을 다시 열지 않는다.
+
+KB detail/direct document의 `error_message`와 progress SSE의 `message`/`error`는
+persisted 원문이 아니다. Gateway가 status를 fixed public message로 투영하며 failure는
+generic safe message만 반환한다. SSE progress는 0..100 범위로 제한하고 unauthorized
+또는 concurrent-delete path에서도 raw DB/Redis/exception text를 event에 넣지 않는다.
+Redis progress는 `indexing`/`processing`에서만 사용하며 `pending`과
+`waiting_for_approval`은 stale Redis 값과 무관하게 0이다.
 
 ## Target Endpoint Groups
 
@@ -121,6 +143,14 @@ authority가 남아 있는지 검증한다.
 grant/revoke와 audit는 한 transaction이며, raw principal, request payload,
 resource label이나 source metadata를 audit에 저장하지 않는다.
 
+Active subject 조건은 PUT grant에만 적용한다. DELETE revoke는 inactive Team,
+deactivated/removed User를 다시 활성화하거나 membership을 복원하도록 요구하지
+않고, active organization 안에서 `organization_id + subject_type/id + action`에
+해당하는 기존 permission row를 `FOR UPDATE` 또는 동등한 row lock으로 고정한 뒤
+삭제한다. 기존 row가 없으면 idempotent `204`이며 audit를 만들지 않는다. Row가
+있으면 permission delete와 canonical audit를 같은 transaction에서 commit하고,
+둘 중 하나라도 실패하면 모두 rollback한다.
+
 Domain subject 응답은 active Team/User의 opaque id와 safe label만 반환하며 email,
 raw principal, source identity를 포함하지 않는다. UI는 Team을 기본 선택으로 두고
 User direct domain grant는 예외 경로로 제공한다.
@@ -130,7 +160,7 @@ User direct domain grant는 예외 경로로 제공한다.
 | Surface/path group | Gate | Scope/hidden response | Response boundary | Audit |
 | --- | --- | --- | --- | --- |
 | `POST /knowledge` | active organization member; creator `manager` bootstrap | active organization required | created KB safe metadata only | KB + creator grant + canonical audit in one transaction |
-| `GET /knowledge`, `GET /knowledge/{kb_id}`, document safe status, RAG document progress SSE | `read` | active organization; list omits denied rows, direct hidden is 404, visible action denial is 403 | safe KB/document status only; no raw content or hidden count | read/status polling has no mutation audit |
+| `GET /knowledge`, `GET /knowledge/{kb_id}`, `GET /knowledge/{kb_id}/documents/{document_id}`, document safe status, RAG document progress SSE | `read` | active organization; list omits denied rows, direct hidden is 404, visible action denial is 403 | safe KB/document status와 allowlisted operational metadata만 반환. Encrypted config, connection/source identifier, raw/unknown nested metadata와 hidden count는 제외 | read/status polling has no mutation audit |
 | `GET /knowledge/llm-selectable`, search-test, standalone Agent answer/stream | `use` + source authorization where applicable | active organization; hidden/source denial does not reveal KB/source identity | retrieval-visible evidence and redaction-safe citation/summary only | retrieval/answer canonical audit; no raw query/evidence payload |
 | `POST /knowledge/candidates/resolve`, RAG recommendation, Agent Builder internal safe-reference consumption | caller-specific `read/use/route` composition | active organization and server-resolved candidate set | safe handles/labels/reason codes; hidden IDs, names, counts excluded | decision/audit summary uses safe reason codes only |
 | KB settings PATCH, RAG upload to existing KB, document analyze/confirm/delete/process/preview | `write` | active organization; document must belong to authorized KB | mutation result and safe processing metadata only | settings uses KB update audit; upload/confirm/delete/process use document action audit; analyze/preview are non-mutating and emit no mutation audit; payload/content excluded |
@@ -329,7 +359,7 @@ Update request는 visibility를 바꾸지 않는다. Public/private 전환은 �
 | PATCH | `/api/v1/knowledge/collections/{collection_id}/items/reorder` | deterministic rank 변경 | private: `collection.manage` 또는 `catalog_manage`; public: Organization manager + acknowledgement |
 | GET | `/api/v1/knowledge/collections/{collection_id}/link-candidates` | link 가능한 KB 후보 | 해당 membership mutation 권한의 safe 후보만 반환 |
 
-Item response는 `item_id`, `knowledge_base_id`, safe label, lifecycle/sync state, rank, caller action flags만 포함한다. `can_use_kb=false`인 item이 보일 수 있지만, 이는 runtime retrieval 가능성을 의미하지 않는다. Link/unlink는 같은 organization KB만 허용하며 archived/deleted KB는 link 대상에서 제외한다. Private Collection membership은 `collection.manage` + KB `manage`, 또는 domain `catalog_manage`로 관리할 수 있다. Public Collection의 link/unlink/reorder는 visibility 변경과 같은 public exposure mutation이므로 Organization manager와 `acknowledged_public_runtime_exposure=true`를 요구한다. Duplicate link는 MVP에서 idempotent success로 처리할 수 있다.
+Item response는 `item_id`, `knowledge_base_id`, safe label, lifecycle/sync state, rank, caller action flags만 포함한다. Safe label은 유효한 `KnowledgeBase.safe_metadata.safe_label`, display-policy-approved source safe label, caller가 독립 KB `read`를 통과한 manual KB `name` 순으로 선택하고, 모두 사용할 수 없으면 generic `Knowledge Base`를 반환한다. Domain `catalog_manage`만으로 raw manual KB `name`을 fallback하지 않으며 link-candidate response도 같은 projection을 사용한다. `can_use_kb=false`인 item이 보일 수 있지만, 이는 runtime retrieval 가능성을 의미하지 않는다. Link/unlink는 같은 organization KB만 허용하며 archived/deleted KB는 link 대상에서 제외한다. Private Collection membership은 `collection.manage` + KB `manage`, 또는 domain `catalog_manage`로 관리할 수 있다. Public Collection의 link/unlink/reorder는 visibility 변경과 같은 public exposure mutation이므로 Organization manager와 `acknowledged_public_runtime_exposure=true`를 요구한다. Duplicate link는 MVP에서 idempotent success로 처리할 수 있다.
 
 ### Collection Permission Management
 
@@ -406,6 +436,18 @@ Workflow Builder가 LLM node의 RAG 옵션을 구성할 때 다음 목표 옵션
 `GET /api/v1/knowledge/{kb_id}`의 `documents[].chunk_count`는 물리적으로 저장된 모든 chunk row 수가 아니라, LLM RAG 후보 판단에 사용할 수 있는 retrieval-visible chunk 수다. Document-level KB에서 active ready document version이 있으면 해당 version에 연결된 chunk만 센다. Active version pointer가 아직 없는 전환기 legacy KB는 `document_chunks.document_version_id IS NULL`인 legacy unversioned chunk만 fallback으로 셀 수 있다. `documents.status`가 `completed`가 아니거나 active version이 `ready`가 아닌 pre-finalized/indexing/failed/superseded artifact는 `chunk_count`와 selectable-ready 판단의 근거가 아니다.
 
 이 값은 KB 상세 화면과 LLM node Knowledge Base picker가 같은 ready/not-ready 경계를 쓰도록 제공하는 safe availability signal이다. Raw source title/path/url, hidden document count, 권한 없는 document 존재 여부, non-allowlisted metadata는 포함하지 않는다.
+
+`documents[].meta_info`와 `GET /api/v1/knowledge/{kb_id}/documents/{document_id}`의
+`meta_info`는 동일한 fail-closed projection을 사용한다. 허용 후보는 bounded
+`progress`/`processing_progress`, safe processing timestamp,
+`processing_recovered_from_timeout`, bounded `chunking_mode`/`strategy`/
+`upload_method`와 non-negative finite numeric `cost_estimate`다. 각 field는 기대
+type, 범위, 길이 또는 enum 검증을 통과해야 한다. `api_config` 전체와
+`url_encrypted`, `headers_encrypted`, `body_encrypted`, `connection_id`,
+`source_identity_id`, connector/source ref, `db_config`, connection label/config,
+unknown key/nested object는 반환하지 않는다. 내부 저장값이 encrypted ciphertext여도
+API-safe metadata가 아니며, 새 field는 allowlist와 negative test가 함께 추가되기
+전까지 응답에서 생략한다.
 
 ### Citation Identity
 

@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from starlette.requests import Request
 
 from apps.gateway.api.v1.endpoints import rag
+from apps.shared import pubsub
 from apps.shared.db.models.knowledge import KnowledgeBase
 from apps.shared.schemas.rag import (
     RAGAgentAnswerRequest,
@@ -219,6 +220,8 @@ def test_document_progress_authorizes_read_before_opening_stream(monkeypatch):
     )
 
     assert response.media_type == "text/event-stream"
+    assert response.headers["cache-control"] == "no-cache, no-store"
+    assert response.headers["x-accel-buffering"] == "no"
     assert captured["authorization"] == (
         request,
         db,
@@ -249,6 +252,106 @@ def test_document_progress_denial_prevents_stream_creation(monkeypatch):
         )
 
     assert exc.value is denial
+
+
+def test_document_progress_uses_fixed_messages_and_sleeps_after_bad_redis_value(
+    monkeypatch,
+):
+    document_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    sleep_calls = []
+    documents = iter(
+        [
+            SimpleNamespace(
+                id=document_id,
+                status="processing",
+                error_message="legacy-internal-exception-marker",
+                meta_info={"processing_current_step": "legacy-step-marker"},
+            ),
+            SimpleNamespace(
+                id=document_id,
+                status="failed",
+                error_message="legacy-internal-exception-marker",
+                meta_info={"processing_current_step": "legacy-step-marker"},
+            ),
+        ]
+    )
+
+    class ProgressQuery:
+        def get(self, _document_id):
+            return next(documents)
+
+    class ProgressDb:
+        def expire_all(self):
+            pass
+
+        def query(self, _model):
+            return ProgressQuery()
+
+    class InvalidProgressRedis:
+        def get(self, _key):
+            return b"not-a-number"
+
+    async def fake_sleep(delay):
+        sleep_calls.append(delay)
+
+    monkeypatch.setattr(
+        rag,
+        "_authorize_knowledge_document_action",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        rag,
+        "finalize_stale_processing_start",
+        lambda *args, **kwargs: False,
+    )
+    monkeypatch.setattr(
+        rag,
+        "recover_timed_out_document_with_artifacts",
+        lambda *args, **kwargs: False,
+    )
+    monkeypatch.setattr(
+        pubsub,
+        "get_redis_client",
+        lambda: InvalidProgressRedis(),
+    )
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    async def consume_events():
+        response = await rag.get_document_progress(
+            document_id,
+            _request(),
+            organization_id,
+            db=ProgressDb(),
+            current_user=SimpleNamespace(id=uuid.uuid4()),
+        )
+        iterator = response.body_iterator
+        first = await anext(iterator)
+        second = await anext(iterator)
+        with pytest.raises(StopAsyncIteration):
+            await anext(iterator)
+        return first, second
+
+    first_event, second_event = asyncio.run(consume_events())
+    first_payload = json.loads(first_event.removeprefix("data: ").strip())
+    second_payload = json.loads(second_event.removeprefix("data: ").strip())
+
+    assert first_payload == {
+        "progress": 0,
+        "message": "Document processing is in progress.",
+        "status": "processing",
+        "error": None,
+    }
+    assert second_payload == {
+        "progress": 0,
+        "message": "Document processing failed. You can retry the document.",
+        "status": "failed",
+        "error": "Document processing failed. You can retry the document.",
+    }
+    serialized = first_event + second_event
+    assert "legacy-internal-exception-marker" not in serialized
+    assert "legacy-step-marker" not in serialized
+    assert sleep_calls == [1]
 
 
 def test_record_rag_retrieve_audit_marks_policy_as_not_evaluated(monkeypatch):

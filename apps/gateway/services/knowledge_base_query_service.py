@@ -16,6 +16,11 @@ from apps.gateway.services.ingestion.service import (
     finalize_stale_processing_start,
     recover_timed_out_document_with_artifacts,
 )
+from apps.gateway.services.knowledge_document_projection import (
+    project_safe_document_error,
+    project_safe_document_metadata,
+    project_safe_document_status,
+)
 from apps.shared.audit.manual_ownership import register_manual_audit_ownership
 from apps.shared.db.models.audit_log import (
     ActorType,
@@ -147,12 +152,6 @@ def _clean_source_type(source_type) -> str:
     if value is None:
         return "FILE"
     return str(value)
-
-
-def _safe_meta_info(meta_info) -> dict:
-    if isinstance(meta_info, dict):
-        return meta_info
-    return {}
 
 
 def _safe_metadata_dict(safe_metadata) -> dict:
@@ -538,14 +537,17 @@ class KnowledgeBaseQueryService:
                 DocumentResponse(
                     id=document_id,
                     filename=filename,
-                    status=document_status or "pending",
+                    status=project_safe_document_status(document_status),
                     created_at=document_created_at or _max_datetime_or_now(),
                     updated_at=document_updated_at,
-                    error_message=error_message,
+                    error_message=project_safe_document_error(
+                        document_status,
+                        error_message,
+                    ),
                     chunk_count=chunk_counts.get(document_id, 0),
                     token_count=0,
                     source_type=_clean_source_type(source_type),
-                    meta_info=_safe_meta_info(meta_info),
+                    meta_info=project_safe_document_metadata(meta_info),
                 )
             )
 
@@ -647,14 +649,17 @@ class KnowledgeBaseQueryService:
                 DocumentResponse(
                     id=document_id,
                     filename=filename,
-                    status=document_status or "pending",
+                    status=project_safe_document_status(document_status),
                     created_at=document_created_at or _max_datetime_or_now(),
                     updated_at=document_updated_at,
-                    error_message=error_message,
+                    error_message=project_safe_document_error(
+                        document_status,
+                        error_message,
+                    ),
                     chunk_count=chunk_counts.get(document_id, 0),
                     token_count=0,
                     source_type=_clean_source_type(source_type),
-                    meta_info=_safe_meta_info(meta_info),
+                    meta_info=project_safe_document_metadata(meta_info),
                 )
             )
 

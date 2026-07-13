@@ -7,6 +7,14 @@ import pytest
 ROOT = Path(__file__).resolve().parents[4]
 KNOWLEDGE_ENDPOINT = ROOT / "apps/gateway/api/v1/endpoints/knowledge.py"
 RAG_ENDPOINT = ROOT / "apps/gateway/api/v1/endpoints/rag.py"
+CLIENT_DOCUMENT_SETTINGS = (
+    ROOT
+    / "apps/client/app/dashboard/knowledge/[id]/document/[documentId]/page.tsx"
+)
+CLIENT_API_SOURCE_VIEWER = (
+    ROOT
+    / "apps/client/app/features/knowledge/components/ingestion-views/ApiSourceViewer.tsx"
+)
 
 
 def _module(path: Path) -> ast.Module:
@@ -82,6 +90,7 @@ def test_knowledge_base_endpoints_use_canonical_actions(
     ("function_name", "expected_action"),
     [
         ("get_document", "read"),
+        ("get_document_edit_config", "write"),
         ("get_document_content", "content_read"),
         ("process_document", "write"),
         ("preview_document_chunking", "write"),
@@ -174,3 +183,13 @@ def test_production_knowledge_services_have_no_owner_authorization_predicate():
         source = path.read_text(encoding="utf-8")
         assert "KnowledgeBase.user_id" not in source, path
         assert "delete_owned_knowledge_base" not in source, path
+
+
+def test_client_does_not_restore_raw_api_config_from_read_metadata_or_storage():
+    settings_source = CLIENT_DOCUMENT_SETTINGS.read_text(encoding="utf-8")
+    viewer_source = CLIENT_API_SOURCE_VIEWER.read_text(encoding="utf-8")
+
+    assert "sessionStorage" not in settings_source
+    assert "api_preview" not in settings_source
+    assert "meta_info?.api_config" not in settings_source
+    assert "JSON.stringify(apiConfig" not in viewer_source

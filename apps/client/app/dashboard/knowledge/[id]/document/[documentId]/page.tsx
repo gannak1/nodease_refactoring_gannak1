@@ -1,5 +1,5 @@
 'use client';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   FileText,
@@ -21,7 +21,10 @@ import {
   knowledgeApi,
   JoinConfig,
 } from '@/app/features/knowledge/api/knowledgeApi';
-import { DocumentResponse } from '@/app/features/knowledge/types/Knowledge';
+import {
+  DocumentApiEditConfigSummary,
+  DocumentResponse,
+} from '@/app/features/knowledge/types/Knowledge';
 import { useDocumentProcess } from '@/app/features/knowledge/hooks/useDocumentProcess';
 import Link from 'next/link'; // Added for Breadcrumb
 // Separated Components
@@ -96,13 +99,31 @@ export default function DocumentSettingsPage() {
   const [parsingStrategy, setParsingStrategy] = useState<
     'general' | 'llamaparse'
   >('general');
-  const [apiOriginalData, setApiOriginalData] = useState<any>(null); // API 원본 데이터 (SessionStorage)
+  const [chunkingMode, setChunkingMode] = useState<
+    'flat' | 'hierarchical'
+  >('flat');
+  const [apiConfigSummary, setApiConfigSummary] =
+    useState<DocumentApiEditConfigSummary | null>(null);
   const [enableAutoChunking, setEnableAutoChunking] = useState<boolean>(true); // 자동 청킹 활성화
   const [joinConfig, setJoinConfig] = useState<JoinConfig | null>(null); // JOIN 설정 상태
+  const [canEditDocument, setCanEditDocument] = useState(false);
+  const [isEditConfigReady, setIsEditConfigReady] = useState(false);
+  const [permissionScope, setPermissionScope] = useState<string | null>(null);
+  const [editConfigScope, setEditConfigScope] = useState<string | null>(null);
+  const fetchGeneration = useRef(0);
+  const currentDocumentScope = `${kbId}:${documentId}`;
+  const canEditCurrentDocument =
+    canEditDocument && permissionScope === currentDocumentScope;
+  const isCurrentEditConfigReady =
+    isEditConfigReady && editConfigScope === currentDocumentScope;
 
   // 작업 불가능 조건: (전략이 llamaparse인데 키가 없으면)
   const isActionDisabled =
     parsingStrategy === 'llamaparse' && !isKeyLoading && !hasLlamaParseKey;
+  const isEditActionDisabled =
+    isActionDisabled ||
+    !canEditCurrentDocument ||
+    !isCurrentEditConfigReady;
 
   // 실시간 진행 상태
   const [progress, setProgress] = useState(0);
@@ -173,6 +194,45 @@ export default function DocumentSettingsPage() {
   }, [status, documentId]);
   // 초기 데이터 로드
   useEffect(() => {
+    const generation = ++fetchGeneration.current;
+    const requestScope = `${kbId}:${documentId}`;
+    let cancelled = false;
+    const isStale = () =>
+      cancelled || fetchGeneration.current !== generation;
+
+    setIsLoading(true);
+    setDocument(null);
+    setKbName('');
+    setStatus('');
+    setErrorMessage(null);
+    setProgress(0);
+    setCanEditDocument(false);
+    setPermissionScope(null);
+    setIsEditConfigReady(false);
+    setEditConfigScope(null);
+    setApiConfigSummary(null);
+    setChunkSize(1000);
+    setChunkOverlap(200);
+    setSegmentIdentifier('\\n\\n');
+    setRemoveUrlsEmails(false);
+    setRemoveWhitespace(true);
+    setParsingStrategy('general');
+    setChunkingMode('flat');
+    setEnableAutoChunking(true);
+    setSelectedDbItems({});
+    setSensitiveColumns({});
+    setAliases({});
+    setTemplate('');
+    setConnectionId('');
+    setJoinConfig(null);
+    setSelectionMode('all');
+    setRangeStart('');
+    setRangeEnd('');
+    setKeywordFilter('');
+    setIsEditingConnection(false);
+    setConnectionDetails(null);
+    setIsLoadingDetails(false);
+
     const fetchDocument = async () => {
       try {
         // KB 정보와 문서 정보를 병렬로 조회
@@ -180,11 +240,12 @@ export default function DocumentSettingsPage() {
           knowledgeApi.getKnowledgeBase(kbId),
           knowledgeApi.getDocument(kbId, documentId),
         ]);
+        if (isStale()) return;
 
-        // KB 이름 설정
-        if (kbData) {
-          setKbName(kbData.name);
-        }
+        setKbName(kbData.name);
+        const canWrite = kbData.can_write === true;
+        setCanEditDocument(canWrite);
+        setPermissionScope(requestScope);
         if (targetDoc) {
           setDocument(targetDoc);
           setStatus(targetDoc.status);
@@ -200,80 +261,99 @@ export default function DocumentSettingsPage() {
             setProgress(savedProgress);
           }
           setErrorMessage(targetDoc.error_message || null); // [추가] 초기 에러 메시지 로드
-          setChunkSize(targetDoc.chunk_size || 1000);
-          setChunkOverlap(targetDoc.chunk_overlap || 200);
-          if (targetDoc.meta_info) {
-            if (targetDoc.meta_info.segment_identifier) {
-              setSegmentIdentifier(targetDoc.meta_info.segment_identifier);
-            }
-            if (targetDoc.meta_info.remove_urls_emails !== undefined) {
-              setRemoveUrlsEmails(targetDoc.meta_info.remove_urls_emails);
-            }
-            if (targetDoc.meta_info.remove_whitespace !== undefined) {
-              setRemoveWhitespace(targetDoc.meta_info.remove_whitespace);
-            }
-            // DB 선택값 복원
-            if (targetDoc.meta_info.db_config) {
-              if (targetDoc.meta_info.db_config.selected_items) {
-                setSelectedDbItems(
-                  targetDoc.meta_info.db_config.selected_items,
+
+          if (canWrite) {
+            try {
+              const editConfig = await knowledgeApi.getDocumentEditConfig(
+                kbId,
+                documentId,
+              );
+              if (isStale()) return;
+              const sourceType = targetDoc.source_type || 'FILE';
+              const hasRequiredSourceConfig =
+                (sourceType !== 'DB' || Boolean(editConfig.db_config)) &&
+                (sourceType !== 'API' || Boolean(editConfig.api_config));
+              if (
+                !editConfig.editable ||
+                editConfig.source_type !== sourceType ||
+                !hasRequiredSourceConfig
+              ) {
+                toast.warning(
+                  '기존 문서 설정을 안전하게 복원할 수 없어 수정 작업을 차단했습니다.',
                 );
+                return;
               }
-              if (targetDoc.meta_info.db_config.sensitive_columns) {
-                setSensitiveColumns(
-                  targetDoc.meta_info.db_config.sensitive_columns,
-                );
+
+              setChunkSize(editConfig.chunk_size ?? 1000);
+              setChunkOverlap(editConfig.chunk_overlap ?? 200);
+              setSegmentIdentifier(editConfig.segment_identifier ?? '\\n\\n');
+              setRemoveUrlsEmails(editConfig.remove_urls_emails ?? false);
+              setRemoveWhitespace(editConfig.remove_whitespace ?? true);
+              setParsingStrategy(editConfig.strategy ?? 'general');
+              setChunkingMode(editConfig.chunking_mode ?? 'flat');
+              setSelectionMode(editConfig.selection_mode ?? 'all');
+              if (
+                editConfig.selection_mode === 'range' &&
+                editConfig.chunk_range
+              ) {
+                const [start, end] = editConfig.chunk_range.split('-', 2);
+                setRangeStart(start);
+                setRangeEnd(end);
+              } else {
+                setRangeStart('');
+                setRangeEnd('');
               }
-              if (targetDoc.meta_info.db_config.aliases) {
-                setAliases(targetDoc.meta_info.db_config.aliases);
+              setKeywordFilter(editConfig.keyword_filter ?? '');
+
+              if (editConfig.db_config) {
+                setSelectedDbItems(editConfig.db_config.selected_items);
+                setSensitiveColumns(editConfig.db_config.sensitive_columns);
+                setAliases(editConfig.db_config.aliases);
+                setTemplate(editConfig.db_config.template ?? '');
+                setConnectionId(editConfig.db_config.connection_id);
+                setJoinConfig({
+                  enabled: editConfig.db_config.join_config.enabled,
+                  ...(editConfig.db_config.join_config.base_table
+                    ? {
+                        base_table:
+                          editConfig.db_config.join_config.base_table,
+                      }
+                    : {}),
+                  joins: editConfig.db_config.join_config.joins,
+                });
               }
-              if (targetDoc.meta_info.db_config.template) {
-                setTemplate(targetDoc.meta_info.db_config.template);
-              }
-              if (targetDoc.meta_info.db_config.connection_id) {
-                setConnectionId(targetDoc.meta_info.db_config.connection_id);
-              }
-            }
-            // Fallback for flat structure
-            if (targetDoc.meta_info.connection_id) {
-              setConnectionId(targetDoc.meta_info.connection_id);
+              setApiConfigSummary(editConfig.api_config ?? null);
+              setIsEditConfigReady(true);
+              setEditConfigScope(requestScope);
+            } catch {
+              if (isStale()) return;
+              console.warn('Document edit configuration request failed.');
+              toast.warning(
+                '기존 문서 설정을 불러오지 못해 수정 작업을 차단했습니다.',
+              );
             }
           }
         } else {
           toast.error('문서를 찾을 수 없습니다.');
           router.push(`/dashboard/knowledge/${kbId}`);
         }
-      } catch (error) {
-        console.error(error);
+      } catch {
+        if (isStale()) return;
+        console.warn('Document detail request failed.');
         toast.error('문서 정보를 불러오는데 실패했습니다.');
       } finally {
-        setIsLoading(false);
+        if (!isStale()) {
+          setIsLoading(false);
+        }
       }
     };
     if (kbId && documentId) {
       fetchDocument();
     }
+    return () => {
+      cancelled = true;
+    };
   }, [kbId, documentId, router]);
-  // SessionStorage에서 API 원본 데이터 불러오기
-  useEffect(() => {
-    if (
-      document?.source_type === 'API' &&
-      document.meta_info?.api_config?.url
-    ) {
-      const storageKey = 'api_preview' + document.meta_info.api_config.url;
-      const storedData = sessionStorage.getItem(storageKey);
-      if (storedData) {
-        try {
-          setApiOriginalData(JSON.parse(storedData));
-        } catch (e) {
-          console.error(
-            'Failed to parse API preview data from sessionStorage',
-            e,
-          );
-        }
-      }
-    }
-  }, [document]);
   // useDocumentProcess Hook 사용
   const {
     isAnalyzing,
@@ -294,6 +374,8 @@ export default function DocumentSettingsPage() {
     document,
     setStatus,
     setProgress,
+    canEditDocument: canEditCurrentDocument,
+    editConfigReady: isCurrentEditConfigReady,
     settings: {
       chunkSize,
       chunkOverlap,
@@ -301,6 +383,7 @@ export default function DocumentSettingsPage() {
       removeUrlsEmails,
       removeWhitespace,
       parsingStrategy,
+      chunkingMode,
       selectedDbItems,
       sensitiveColumns,
       aliases,
@@ -318,6 +401,10 @@ export default function DocumentSettingsPage() {
 
   // DB 연결 저장 핸들러
   const handleConnectionRequest = async (config: DBConfig) => {
+    if (!canEditCurrentDocument || !isCurrentEditConfigReady) {
+      toast.error('기존 문서 설정을 복원한 뒤 다시 시도해 주세요.');
+      return false;
+    }
     try {
       const newConn = await connectorApi.createConnector(config);
       if (newConn.success && newConn.id) {
@@ -329,14 +416,18 @@ export default function DocumentSettingsPage() {
         toast.error(newConn.message || '연결 실패');
         return false;
       }
-    } catch (e: any) {
-      console.error(e);
-      toast.error(e.response?.data?.detail || '오류 발생');
+    } catch {
+      console.warn('Database connection update failed.');
+      toast.error('DB 연결 정보 업데이트에 실패했습니다.');
       return false;
     }
   };
 
   const handleEditConnection = async () => {
+    if (!canEditCurrentDocument || !isCurrentEditConfigReady) {
+      toast.error('기존 문서 설정을 복원한 뒤 다시 시도해 주세요.');
+      return;
+    }
     if (!connectionId) {
       toast.error('연결 ID가 없습니다.');
       return;
@@ -348,8 +439,8 @@ export default function DocumentSettingsPage() {
       setConnectionDetails(details);
       setIsEditingConnection(true);
       setFormKey((prev) => prev + 1);
-    } catch (e: any) {
-      console.error(e);
+    } catch {
+      console.warn('Database connection detail request failed.');
       toast.error('연결 정보를 불러오는데 실패했습니다.');
     } finally {
       setIsLoadingDetails(false);
@@ -470,6 +561,17 @@ export default function DocumentSettingsPage() {
   // 중앙 패널 렌더러
   const renderCenterPanel = () => {
     if (!document) return null;
+    if (
+      (document.source_type === 'DB' || document.source_type === 'API') &&
+      !isCurrentEditConfigReady
+    ) {
+      return (
+        <div className="flex h-full items-center justify-center p-6 text-center text-sm text-gray-600 dark:text-gray-300">
+          이 소스의 설정은 수정 권한과 안전한 설정 복원이 확인된 경우에만
+          표시됩니다.
+        </div>
+      );
+    }
     switch (document.source_type) {
       case 'DB':
         return (
@@ -524,12 +626,7 @@ export default function DocumentSettingsPage() {
           </div>
         );
       case 'API':
-        return (
-          <ApiSourceViewer
-            apiOriginalData={apiOriginalData}
-            apiConfig={document.meta_info?.api_config}
-          />
-        );
+        return <ApiSourceViewer apiConfig={apiConfigSummary} />;
       default: // FILE
         return <FileSourceViewer kbId={kbId} documentId={documentId} />;
     }
@@ -671,7 +768,7 @@ export default function DocumentSettingsPage() {
             <button
               onClick={handleSaveClick}
               disabled={
-                isActionDisabled ||
+                isEditActionDisabled ||
                 isAnalyzing ||
                 status === 'completed' ||
                 isActiveProcessingStatus(status)
@@ -832,7 +929,9 @@ export default function DocumentSettingsPage() {
             <div className="absolute bottom-0 left-0 right-0 z-10 p-4 bg-gradient-to-t from-white via-white/80 to-transparent dark:from-gray-800 dark:via-gray-800/80 dark:to-transparent">
               <button
                 onClick={handlePreviewClick}
-                disabled={isActionDisabled || isPreviewLoading || isAnalyzing}
+                disabled={
+                  isEditActionDisabled || isPreviewLoading || isAnalyzing
+                }
                 className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed font-medium"
               >
                 {isPreviewLoading || analyzingAction === 'preview' ? (
@@ -872,7 +971,11 @@ export default function DocumentSettingsPage() {
                     headerButton={
                       <button
                         onClick={handlePreviewClick}
-                        disabled={isPreviewLoading || isAnalyzing}
+                        disabled={
+                          isEditActionDisabled ||
+                          isPreviewLoading ||
+                          isAnalyzing
+                        }
                         className="px-3 py-1.5 text-xs font-medium bg-white border border-gray-300 dark:border-gray-600 rounded-md hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors text-gray-700 dark:text-gray-300 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
                       >
                         {isPreviewLoading || analyzingAction === 'preview' ? (

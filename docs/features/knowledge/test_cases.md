@@ -52,6 +52,9 @@ Status: Draft
 - Active member manual KB create는 KB, creator user-direct `manager`, canonical audit를 한 transaction에서 생성한다. Grant 또는 audit flush/commit 실패는 세 row를 모두 rollback한다.
 - Legacy owner backfill은 같은 organization active member만 grant하고 stronger grant를 낮추지 않으며 반복 실행해도 중복 row/audit을 만들지 않는다. Cross-org/inactive/non-member/ambiguous owner는 identity나 KB label 없이 safe finding bucket으로 남긴다.
 - Team/User Knowledge domain grant는 Organization manager만 변경할 수 있고, action allowlist, same-org active subject, optional expiry와 non-negative flags constraint를 강제한다.
+- Knowledge domain grant는 inactive Team, deactivated/removed User, non-member 또는 cross-organization subject를 계속 거부한다. Revoke는 같은 대상의 기존 permission row가 있으면 subject active check 없이 row를 lock/delete하고 audit와 함께 commit한다. Existing row가 없는 revoke는 idempotent하며 audit를 만들지 않는다.
+- Inactive/removed subject의 domain permission revoke에서 audit 저장 또는 commit이 실패하면 permission delete도 rollback된다. 다른 organization의 동일 subject/action row는 조회·삭제·audit되지 않는다.
+- Domain revoke repository test는 filter를 무시하는 query fake를 사용하지 않는다. PostgreSQL dialect로 organization/subject/action bind predicate와 `FOR UPDATE`를 compile 검증하고, opt-in disposable PostgreSQL test는 cross-org row 보존, audit failure rollback, 두 session의 concurrent revoke가 `deleted` 1회와 `unchanged` 1회 및 delete audit 1개만 만드는지 검증한다.
 - Expired domain grant는 cleanup worker 실행 여부와 무관하게 effective action에서 제외된다. Team과 user direct domain grant는 additive allow이며 explicit deny를 만들지 않는다.
 - Domain action은 KB read/use/content, Collection route를 상속하지 않는다. `catalog_manage`만 가진 actor의 RAG 검색과 원문 조회가 허용되면 테스트 실패다.
 - `permission_delegate` actor가 자신 또는 자신이 active member인 Team에 content-plane grant를 시도하면 mutation 없이 safe policy block audit만 정확히 한 번 기록한다. Organization manager와 resource manager의 기존 recovery path는 별도 positive case로 검증한다.
@@ -68,6 +71,11 @@ Status: Draft
 - 같은 organization 안에서 동일한 KB `name` create는 이름만으로 conflict 처리하지 않는다. KB name은 display label이며 identity가 아니므로 `knowledge_base_id`, source identity, sync/lifecycle state, safe metadata로 구분한다.
 - 동일 문서의 version은 여러 개를 동시에 retrieval-visible 후보로 만들지 않는다. 내부 문서는 active/head pointer가 가리키는 ready version만 검색 노출하고, 외부 source-managed 문서는 정상 sync/finalization 이후 최신 active ready version만 검색 노출한다. Sync 실패나 stale 상태에서는 기존 active ready version만 warning과 함께 유지할 수 있으며, 이전/superseded/pre-finalized version은 selectable-ready 또는 evidence 후보가 아니다.
 - Source-managed KB의 동일 source item 중복은 KB `name`이 아니라 protected source identity/source sync lineage invariant로 검증한다.
+- KB detail과 direct document detail은 같은 document metadata projector를 사용한다. Safe progress/state/timestamp/processing option과 finite non-negative cost estimate만 반환하고, `api_config` 및 encrypted config field, `connection_id`, source/connector identifier, DB connection metadata, unknown nested field는 KB `read` 또는 더 강한 resource state에서도 반환하지 않는다.
+- Document metadata projector는 non-mapping input, 잘못된 type, out-of-range progress, invalid timestamp, non-finite/negative cost와 oversized/unknown string을 생략하며 projection 실패 때문에 response 전체가 500이 되거나 내부 값을 그대로 fallback하지 않는다.
+- KB `write` actor의 document settings 화면은 전용 edit-config API에서 기존 segment/chunk/selection과 DB selection/opaque connection reference를 복원한다. Read-only actor는 endpoint에서 hidden/denied되고, encrypted API URL/header/body와 credential/connection detail은 write actor에게도 반환되지 않는다. Edit config가 malformed, 개별/aggregate/serialized-size budget 초과 또는 load failure면 Client는 DB/API preview/process를 호출하지 않고 기존 저장 설정을 보존한다. 응답은 `Cache-Control: no-store`다.
+- Document settings route 전환은 permission/readiness와 모든 source-specific state를 즉시 reset한다. Cleanup/generation 이후 늦게 도착한 이전 KB/document response는 현재 설정이나 action gate를 변경하지 못하며, 새 fetch failure도 이전 문서의 설정으로 action을 다시 열지 않는다.
+- KB detail/direct document의 `error_message`와 progress SSE의 `message`/`error`는 arbitrary legacy exception 또는 processing-step 원문을 포함하지 않는다. Fixed safe message만 반환하고 raw input marker가 JSON/SSE/toast/log capture에 나타나지 않아야 하며 progress는 0..100 범위 밖 값을 전달하지 않는다. Redis progress는 `indexing`/`processing`에서만 사용하고 pending/approval 상태는 stale 100을 무시한다. SSE는 no-cache/no-store와 buffering disable header를 반환한다.
 
 ## Connector And Egress Tests
 
@@ -215,6 +223,7 @@ Status: Draft
 
 - Successful retrieval audit은 redaction-safe KB/document version/chunk id, score summary, correlation id, policy-safe metadata만 저장한다.
 - Hidden/denied/resource-hidden path audit/trace metadata에는 raw title/path/url, exact hidden count, denied KB id, raw source ACL, raw exception을 포함하지 않는다.
+- KB/document response projection test fixture와 failure log는 credential-like value나 raw payload를 출력하지 않는다. Encrypted/source config key가 응답, error, audit, trace, captured log에 나타나지 않는지만 구조적으로 검증한다.
 - Partial result audit/trace는 safe partial marker, bucketed reason/retryability summary, request/correlation id만 저장한다.
 - RAG strategy summary는 `retrieval_strategy`, `rag_mode`, selected collection/KB count, retrieved chunk count, citation count, context token estimate, retrieval latency, permission filter flag, policy result, partial result, safe exclusion summary, query rewrite 적용 여부, evidence sufficiency 결과만 포함한다.
 - Skill usage summary는 workflow draft, LLM node의 RAG 옵션, workflow test run, RAG strategy comparison에서 skill id, skill version, freshness state, eval status, safe source tier, safe provenance refs만 포함한다.
@@ -239,6 +248,7 @@ Status: Draft
 - Duplicate Collection safe name은 raw DB constraint나 internal value 없이 safe conflict response로 닫힌다.
 - Collection item link는 `collection.manage`와 대상 KB `manage`를 모두 요구한다. 둘 중 하나만 있으면 실패하고 hidden KB id/name을 오류에 포함하지 않는다.
 - Domain `catalog_manage` actor는 content 권한 없이 private Collection membership을 관리할 수 있다. Public Collection link/unlink/reorder는 domain/resource manage만으로는 실패하고 Organization manager acknowledgement와 source public approval gate를 요구한다.
+- Domain `catalog_manage`만 가진 actor의 Collection item/link-candidate response는 manual KB에 유효한 `safe_metadata.safe_label`이 있으면 sanitizer를 통과한 label만 표시하고, 없으면 generic label을 표시한다. Raw `kb.name`은 독립 KB `read`가 확인된 actor에게만 허용하며 source-managed KB는 기존 display-policy-approved safe label 규칙을 계속 적용한다.
 - Collection item duplicate link는 idempotent success 또는 문서화된 safe conflict 중 하나로 deterministic하게 처리한다.
 - Collection item unlink와 reorder는 같은 Collection 안의 item만 대상으로 하며, 다른 organization 또는 hidden KB item을 조작하지 못한다.
 - Link candidate API는 resource manager에게 KB `manage` 가능한 후보만 반환하고, domain `catalog_manage`에는 private membership 관리용 safe 후보만 반환한다. Public 후보는 Organization manager와 source exposure gate를 통과해야 한다.

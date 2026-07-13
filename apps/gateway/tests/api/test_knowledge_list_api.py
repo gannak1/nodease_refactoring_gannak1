@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException, Response
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -862,6 +862,248 @@ def test_knowledge_detail_uses_read_gate_and_returns_capabilities(monkeypatch):
     assert body["documents"][0]["chunk_count"] == 0
     assert body["can_write"] is True
     assert body["can_manage"] is False
+
+
+def test_direct_document_detail_projects_internal_metadata(monkeypatch):
+    knowledge_base_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+    now = datetime(2026, 7, 13, 9, tzinfo=timezone.utc)
+    document = SimpleNamespace(
+        id=document_id,
+        filename="safe-document.pdf",
+        status="processing",
+        created_at=now,
+        updated_at=now,
+        error_message=None,
+        chunks=[],
+        source_type="API",
+        meta_info={
+            "progress": 20,
+            "processing_current_step": "Processing queued.",
+            "api_config": {"headers_encrypted": None},
+            "connection_id": None,
+            "source_connector_ref": None,
+        },
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_authorized_knowledge_document",
+        lambda *args, **kwargs: (SimpleNamespace(id=knowledge_base_id), document),
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "finalize_stale_processing_start",
+        lambda *args, **kwargs: False,
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "recover_timed_out_document_with_artifacts",
+        lambda *args, **kwargs: False,
+    )
+
+    response = knowledge_endpoint.get_document(
+        kb_id=knowledge_base_id,
+        document_id=document_id,
+        request=SimpleNamespace(),
+        x_organization_id=str(uuid.uuid4()),
+        db=object(),
+        current_user=SimpleNamespace(id=uuid.uuid4()),
+    )
+
+    assert response.meta_info == {"progress": 20}
+
+
+def test_direct_document_detail_replaces_persisted_failure_detail(monkeypatch):
+    knowledge_base_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+    now = datetime(2026, 7, 13, 9, tzinfo=timezone.utc)
+    document = SimpleNamespace(
+        id=document_id,
+        filename="safe-document.pdf",
+        status="failed",
+        created_at=now,
+        updated_at=now,
+        error_message="legacy-internal-exception-marker",
+        chunks=[],
+        source_type="FILE",
+        meta_info={"processing_current_step": "legacy-step-marker"},
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_authorized_knowledge_document",
+        lambda *args, **kwargs: (SimpleNamespace(id=knowledge_base_id), document),
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "finalize_stale_processing_start",
+        lambda *args, **kwargs: False,
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "recover_timed_out_document_with_artifacts",
+        lambda *args, **kwargs: False,
+    )
+
+    response = knowledge_endpoint.get_document(
+        kb_id=knowledge_base_id,
+        document_id=document_id,
+        request=SimpleNamespace(),
+        x_organization_id=str(uuid.uuid4()),
+        db=object(),
+        current_user=SimpleNamespace(id=uuid.uuid4()),
+    )
+
+    assert response.status == "failed"
+    assert response.error_message == (
+        "Document processing failed. You can retry the document."
+    )
+    assert response.meta_info == {}
+    serialized = repr(response.model_dump(mode="json"))
+    assert "legacy-internal-exception-marker" not in serialized
+    assert "legacy-step-marker" not in serialized
+
+
+def test_document_edit_config_requires_write_and_returns_bounded_projection(
+    monkeypatch,
+):
+    knowledge_base_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    captured = {}
+    document = SimpleNamespace(
+        id=document_id,
+        source_type="API",
+        chunk_size=800,
+        chunk_overlap=80,
+        meta_info={
+            "api_config": {
+                "url_encrypted": "opaque-url-ciphertext",
+                "method": "GET",
+                "headers_encrypted": None,
+                "body_encrypted": "opaque-body-ciphertext",
+                "safe_label": "API source",
+            }
+        },
+    )
+
+    def authorize(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(id=knowledge_base_id), document
+
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_authorized_knowledge_document",
+        authorize,
+    )
+
+    response_headers = Response()
+    response = knowledge_endpoint.get_document_edit_config(
+        kb_id=knowledge_base_id,
+        document_id=document_id,
+        request=SimpleNamespace(),
+        response=response_headers,
+        x_organization_id=str(organization_id),
+        db=object(),
+        current_user=SimpleNamespace(id=user_id),
+    )
+
+    assert captured["args"][0:3] == (
+        knowledge_base_id,
+        document_id,
+        "write",
+    )
+    body = response.model_dump(mode="json")
+    assert body["editable"] is True
+    assert body["api_config"] == {
+        "configured": True,
+        "method": "GET",
+        "safe_label": "API source",
+        "has_headers": False,
+        "has_body": True,
+    }
+    serialized = repr(body)
+    assert "opaque-url-ciphertext" not in serialized
+    assert "opaque-body-ciphertext" not in serialized
+    assert response_headers.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.asyncio
+async def test_api_process_preserves_server_side_encrypted_source_config(monkeypatch):
+    knowledge_base_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+    encrypted_config = {
+        "url_encrypted": "opaque-url-ciphertext",
+        "method": "POST",
+        "headers_encrypted": "opaque-header-ciphertext",
+        "body_encrypted": None,
+        "safe_label": "API source",
+    }
+    document = SimpleNamespace(
+        id=document_id,
+        source_type="API",
+        chunk_size=800,
+        chunk_overlap=80,
+        meta_info={"api_config": encrypted_config},
+    )
+
+    class FakeDb:
+        committed = False
+
+        def commit(self):
+            self.committed = True
+
+    class FakeIngestionService:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def process_document(self, _document_id):
+            pass
+
+    db = FakeDb()
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_authorized_knowledge_document",
+        lambda *args, **kwargs: (
+            SimpleNamespace(id=knowledge_base_id, embedding_model="embedding-model"),
+            document,
+        ),
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "mark_document_processing_queued",
+        lambda doc: setattr(doc, "status", "indexing"),
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "IngestionService",
+        FakeIngestionService,
+    )
+
+    response = await knowledge_endpoint.process_document.__wrapped__(
+        kb_id=knowledge_base_id,
+        document_id=document_id,
+        preview_request=knowledge_endpoint.DocumentPreviewRequest(
+            chunk_size=700,
+            chunk_overlap=70,
+            source_type="API",
+            db_config=None,
+        ),
+        request=SimpleNamespace(),
+        background_tasks=BackgroundTasks(),
+        x_organization_id=str(uuid.uuid4()),
+        db=db,
+        current_user=SimpleNamespace(id=uuid.uuid4()),
+    )
+
+    assert response == {
+        "status": "processing",
+        "message": "Document processing started",
+    }
+    assert db.committed is True
+    assert document.meta_info["api_config"] is encrypted_config
+    assert document.meta_info["db_config"] is None
 
 
 def test_knowledge_detail_fails_closed_when_required_schema_is_missing(monkeypatch):

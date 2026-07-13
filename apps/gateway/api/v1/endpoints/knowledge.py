@@ -46,6 +46,14 @@ from apps.gateway.services.knowledge_collection_service import (
 from apps.gateway.services.knowledge_document_content_service import (
     KnowledgeDocumentContentService,
 )
+from apps.gateway.services.knowledge_document_edit_projection import (
+    project_document_edit_config,
+)
+from apps.gateway.services.knowledge_document_projection import (
+    project_safe_document_error,
+    project_safe_document_metadata,
+    project_safe_document_status,
+)
 from apps.gateway.services.knowledge_base_query_service import (
     KNOWLEDGE_BASE_MUTATION_COLUMNS,
     KnowledgeBaseCreateFailed,
@@ -100,6 +108,7 @@ from apps.shared.schemas.knowledge import (
     KnowledgeRAGRecommendationResponse,
 )
 from apps.shared.schemas.rag import (
+    DocumentEditConfigResponse,
     DocumentPreviewRequest,
     DocumentPreviewResponse,
     DocumentResponse,
@@ -1601,15 +1610,43 @@ def get_document(
     return DocumentResponse(
         id=doc.id,
         filename=doc.filename,
-        status=doc.status,
+        status=project_safe_document_status(doc.status),
         created_at=doc.created_at,
         updated_at=doc.updated_at,
-        error_message=doc.error_message,
+        error_message=project_safe_document_error(doc.status, doc.error_message),
         chunk_count=len(doc.chunks),
         # token_count=doc.token_count,
         source_type=doc.source_type,
-        meta_info=doc.meta_info,
+        meta_info=project_safe_document_metadata(doc.meta_info),
     )
+
+
+@router.get(
+    "/{kb_id}/documents/{document_id}/edit-config",
+    response_model=DocumentEditConfigResponse,
+)
+def get_document_edit_config(
+    kb_id: UUID,
+    document_id: UUID,
+    request: Request,
+    response: Response,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return a bounded edit projection to an authorized KB writer."""
+
+    response.headers["Cache-Control"] = "no-store"
+    _, doc = _authorized_knowledge_document(
+        kb_id,
+        document_id,
+        "write",
+        request,
+        x_organization_id,
+        db,
+        current_user,
+    )
+    return DocumentEditConfigResponse(**project_document_edit_config(doc))
 
 
 @router.get("/{kb_id}/documents/{document_id}/content")

@@ -632,6 +632,112 @@ def test_get_detail_normalizes_non_dict_meta_info_to_safe_empty_dict():
     assert response.documents[0].meta_info == {}
 
 
+def test_get_detail_projects_internal_document_metadata_to_safe_allowlist():
+    knowledge_base_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    now = datetime(2026, 7, 7, 1, tzinfo=timezone.utc)
+    document_id = uuid.uuid4()
+    db = FakeDetailDb(
+        (
+            knowledge_base_id,
+            organization_id,
+            "문서 메타데이터 경계 KB",
+            None,
+            "text-embedding-3-small",
+            now,
+            None,
+            None,
+        ),
+        [
+            (
+                document_id,
+                "safe-document.pdf",
+                "processing",
+                now,
+                None,
+                None,
+                SourceType.API,
+                {
+                    "progress": 25,
+                    "chunking_mode": "flat",
+                    "api_config": {"url_encrypted": None},
+                    "connection_id": None,
+                    "source_identity_id": None,
+                },
+            ),
+        ],
+        [],
+    )
+
+    response = KnowledgeBaseQueryService(
+        db,
+        column_exists=lambda *_args, **_kwargs: True,
+        finalize_processing_start=lambda *_args, **_kwargs: False,
+        recover_processing_timeout=lambda *_args, **_kwargs: False,
+    ).get_detail(
+        knowledge_base_id,
+        organization_scope=organization_id,
+        has_organization_id=True,
+    )
+
+    assert response.documents[0].meta_info == {
+        "progress": 25,
+        "chunking_mode": "flat",
+    }
+
+
+def test_get_detail_replaces_persisted_document_failure_detail():
+    knowledge_base_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    now = datetime(2026, 7, 7, 1, tzinfo=timezone.utc)
+    document_id = uuid.uuid4()
+    db = FakeDetailDb(
+        (
+            knowledge_base_id,
+            organization_id,
+            "문서 실패 경계 KB",
+            None,
+            "text-embedding-3-small",
+            now,
+            None,
+            None,
+        ),
+        [
+            (
+                document_id,
+                "safe-document.pdf",
+                "failed",
+                now,
+                None,
+                "legacy-internal-exception-marker",
+                SourceType.FILE,
+                {"processing_current_step": "legacy-step-marker"},
+            ),
+        ],
+        [],
+    )
+
+    response = KnowledgeBaseQueryService(
+        db,
+        column_exists=lambda *_args, **_kwargs: True,
+        finalize_processing_start=lambda *_args, **_kwargs: False,
+        recover_processing_timeout=lambda *_args, **_kwargs: False,
+    ).get_detail(
+        knowledge_base_id,
+        organization_scope=organization_id,
+        has_organization_id=True,
+    )
+
+    document = response.documents[0]
+    assert document.error_message == (
+        "Document processing failed. You can retry the document."
+    )
+    assert document.meta_info == {}
+    serialized = repr(document.model_dump(mode="json"))
+    assert "legacy-internal-exception-marker" not in serialized
+    assert "legacy-step-marker" not in serialized
+
+
 def test_get_detail_counts_only_active_ready_version_chunks_for_selectability():
     knowledge_base_id = uuid.uuid4()
     organization_id = uuid.uuid4()

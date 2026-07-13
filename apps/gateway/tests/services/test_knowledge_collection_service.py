@@ -78,6 +78,13 @@ def _service(monkeypatch, db=None):
         "_collection_has_source_managed_items",
         lambda collection_id: False,
     )
+    monkeypatch.setattr(
+        service.permission_helper,
+        "bulk_evaluate_kb_action",
+        lambda kbs, action: {
+            kb.id: SimpleNamespace(allowed=False) for kb in kbs
+        },
+    )
     return service
 
 
@@ -537,3 +544,189 @@ def test_link_candidates_use_approved_source_safe_display_name(monkeypatch):
     candidates = service.list_link_candidates(collection.id, limit=1)
 
     assert candidates[0].safe_label == "Reviewed HR Label"
+
+
+def test_catalog_only_link_candidate_does_not_fallback_to_manual_kb_name(
+    monkeypatch,
+):
+    service = _service(monkeypatch)
+    collection = _collection()
+    kb = SimpleNamespace(
+        id=uuid.uuid4(),
+        name="Restricted Manual Label",
+        safe_metadata={},
+        lifecycle_state="active",
+        source_identity=None,
+        source_identity_id=None,
+    )
+    monkeypatch.setattr(
+        service,
+        "_has_domain_action",
+        lambda action: action == "catalog_manage",
+    )
+    monkeypatch.setattr(service, "_collection_or_hidden", lambda collection_id: collection)
+    monkeypatch.setattr(service, "_linked_kb_ids", lambda collection_id: set())
+    monkeypatch.setattr(service, "_link_candidate_kb_page", lambda *, limit, offset: [kb])
+    read_calls = []
+    monkeypatch.setattr(
+        service.permission_helper,
+        "bulk_evaluate_kb_action",
+        lambda kbs, action: read_calls.append(
+            (action, [candidate.id for candidate in kbs])
+        )
+        or {candidate.id: SimpleNamespace(allowed=False) for candidate in kbs},
+    )
+
+    candidates = service.list_link_candidates(collection.id, limit=1)
+
+    assert candidates[0].safe_label == "Knowledge Base"
+    assert "Restricted Manual Label" not in candidates[0].model_dump_json()
+    assert read_calls == [("read", [kb.id])]
+
+
+def test_catalog_only_link_candidate_uses_sanitized_safe_metadata_label(
+    monkeypatch,
+):
+    service = _service(monkeypatch)
+    collection = _collection()
+    kb = SimpleNamespace(
+        id=uuid.uuid4(),
+        name="Restricted Manual Label",
+        safe_metadata={"safe_label": "  Approved Catalog Label  "},
+        lifecycle_state="active",
+        source_identity=None,
+        source_identity_id=None,
+    )
+    monkeypatch.setattr(
+        service,
+        "_has_domain_action",
+        lambda action: action == "catalog_manage",
+    )
+    monkeypatch.setattr(service, "_collection_or_hidden", lambda collection_id: collection)
+    monkeypatch.setattr(service, "_linked_kb_ids", lambda collection_id: set())
+    monkeypatch.setattr(service, "_link_candidate_kb_page", lambda *, limit, offset: [kb])
+
+    candidates = service.list_link_candidates(collection.id, limit=1)
+
+    assert candidates[0].safe_label == "Approved Catalog Label"
+    assert "Restricted Manual Label" not in candidates[0].model_dump_json()
+
+
+def test_link_candidate_uses_manual_kb_name_after_independent_read_allows(
+    monkeypatch,
+):
+    service = _service(monkeypatch)
+    collection = _collection()
+    kb = SimpleNamespace(
+        id=uuid.uuid4(),
+        name="Readable Manual Label",
+        safe_metadata={},
+        lifecycle_state="active",
+        source_identity=None,
+        source_identity_id=None,
+    )
+    monkeypatch.setattr(
+        service,
+        "_has_domain_action",
+        lambda action: action == "catalog_manage",
+    )
+    monkeypatch.setattr(service, "_collection_or_hidden", lambda collection_id: collection)
+    monkeypatch.setattr(service, "_linked_kb_ids", lambda collection_id: set())
+    monkeypatch.setattr(service, "_link_candidate_kb_page", lambda *, limit, offset: [kb])
+    monkeypatch.setattr(
+        service.permission_helper,
+        "bulk_evaluate_kb_action",
+        lambda kbs, action: {
+            candidate.id: SimpleNamespace(allowed=True) for candidate in kbs
+        },
+    )
+
+    candidates = service.list_link_candidates(collection.id, limit=1)
+
+    assert candidates[0].safe_label == "Readable Manual Label"
+
+
+@pytest.mark.parametrize(
+    ("auth_state", "safe_metadata", "expected_label"),
+    [
+        ("none", {}, "Knowledge Base"),
+        ("none", {"safe_label": "Approved Catalog Label"}, "Approved Catalog Label"),
+        ("none", {"safe_label": 123}, "Knowledge Base"),
+        ("viewer", {}, "Readable Item Label"),
+    ],
+)
+def test_collection_item_label_requires_safe_metadata_or_independent_read(
+    monkeypatch,
+    auth_state,
+    safe_metadata,
+    expected_label,
+):
+    service = _service(monkeypatch)
+    kb = SimpleNamespace(
+        id=uuid.uuid4(),
+        name="Readable Item Label",
+        safe_metadata=safe_metadata,
+        lifecycle_state="active",
+        sync_state="manual",
+        source_identity=None,
+        source_identity_id=None,
+    )
+    item = SimpleNamespace(
+        id=uuid.uuid4(),
+        knowledge_base_id=kb.id,
+        knowledge_base=kb,
+        rank=0,
+    )
+    monkeypatch.setattr(
+        "apps.gateway.services.knowledge_collection_service."
+        "get_effective_knowledge_base_auth_state",
+        lambda *args, **kwargs: auth_state,
+    )
+    monkeypatch.setattr(
+        service.permission_helper,
+        "evaluate_kb_use",
+        lambda candidate: SimpleNamespace(allowed=False),
+    )
+
+    response = service._item_response(item)
+
+    assert response.safe_label == expected_label
+    if auth_state == "none" and not isinstance(safe_metadata.get("safe_label"), str):
+        assert "Readable Item Label" not in response.model_dump_json()
+
+
+def test_source_managed_item_without_loaded_identity_never_uses_raw_kb_name(
+    monkeypatch,
+):
+    service = _service(monkeypatch)
+    kb = SimpleNamespace(
+        id=uuid.uuid4(),
+        name="Source Internal Label",
+        safe_metadata={"safe_label": "Manual Override Label"},
+        lifecycle_state="active",
+        sync_state="synced",
+        source_identity=None,
+        source_identity_id=uuid.uuid4(),
+    )
+    item = SimpleNamespace(
+        id=uuid.uuid4(),
+        knowledge_base_id=kb.id,
+        knowledge_base=kb,
+        rank=0,
+    )
+    monkeypatch.setattr(
+        "apps.gateway.services.knowledge_collection_service."
+        "get_effective_knowledge_base_auth_state",
+        lambda *args, **kwargs: "viewer",
+    )
+    monkeypatch.setattr(
+        service.permission_helper,
+        "evaluate_kb_use",
+        lambda candidate: SimpleNamespace(allowed=False),
+    )
+
+    response = service._item_response(item)
+
+    assert response.safe_label == "Knowledge Base"
+    assert "Source Internal Label" not in response.model_dump_json()
+    assert "Manual Override Label" not in response.model_dump_json()
