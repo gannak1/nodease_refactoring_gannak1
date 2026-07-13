@@ -11,6 +11,7 @@ Status: Draft
 | GET | `/api/v1/knowledge/llm-selectable` | Workflow LLM node RAG picker용 KB 후보 목록 | `X-Organization-Id` active organization 필수. active organization 안에서 caller가 KB `use` 권한을 가진 KB만 반환한다. 반환 후보는 retrieval-visible `completed` document chunk가 1개 이상 있어야 하며, runtime은 실행 시점 execution subject 기준으로 다시 권한을 평가한다 |
 | POST | `/api/v1/knowledge` | 빈 KB 생성 | Active organization에 KB, 생성자의 user-direct `manager`, canonical audit를 한 transaction에서 생성한다. 필수 schema가 준비되지 않으면 `503 knowledge.schema_not_ready`로 fail-closed 처리한다 |
 | GET | `/api/v1/knowledge/{kb_id}` | 현재 KB 상세와 문서 상태 | Active organization + KB `read`. Detail capability는 `can_read/use/write/read_content/manage`와 파생 UI flag로 반환한다 |
+| GET | `/api/v1/knowledge/{kb_id}/documents/{document_id}/edit-config` | Document preview/process 설정 복원 | Active organization + KB `write`. Bounded property allowlist만 반환하고 read detail과 encrypted source config를 재사용하지 않는다 |
 | GET | `/api/v1/knowledge/{kb_id}/safe-metadata` | allowlisted KB recommendation metadata 조회 | active organization, KB `manage`; 권한 없는 resource는 404로 숨긴다 |
 | PATCH | `/api/v1/knowledge/{kb_id}/safe-metadata` | `safe_label`, `kb_safe_description`, `kb_safe_topics` 수정 | active organization, KB `manage`, sanitizer, audit. 일반 KB 설정 PATCH와 분리한다 |
 | POST | `/api/v1/knowledge/{kb_id}/archive`, `/restore` | Manual KB lifecycle 전이 | KB `manage` 또는 domain `lifecycle_manage`; source-managed KB는 source-owned로 차단 |
@@ -32,6 +33,22 @@ Status: Draft
 현재 `POST /api/v1/knowledge`는 공백뿐인 `name`, 255자를 초과하는 `name`, 비어 있거나 secret-like/token-like 또는 allowlist 밖 문자를 포함한 `embedding_model`을 DB insert 전에 safe validation error로 거부한다. Validation error response는 raw request value를 echo하지 않고 reason code만 반환한다. KB `name`은 사용자 표시용 label이며 resource identity가 아니므로 같은 organization 안의 동일 `name` 생성을 이름만으로 거부하지 않는다. 같은 제목의 서로 다른 문서, 수동 KB, source-managed KB는 `knowledge_base_id`, protected source identity, sync/lifecycle state, safe metadata로 구분한다. 단, 같은 문서의 version은 여러 개가 동시에 retrieval-visible한 resource로 취급하지 않는다. 내부 문서는 active/head pointer가 가리키는 ready version만 검색 노출하고, 외부 source-managed 문서는 정상 sync/finalization이 완료되면 최신 active ready version으로 교체한다. Sync 실패나 stale 상태에서는 기존 active ready version만 warning과 함께 유지할 수 있으며, 이전/superseded/pre-finalized version은 selectable-ready 또는 retrieval evidence 후보가 아니다. Source-managed KB의 동일 source item 중복 방지는 `source_identity_id`와 source sync lineage invariant로 다루며, KB `name` conflict로 대체하지 않는다.
 
 MBA-231 cutover 이후 `/api/v1/knowledge/*`의 list/detail/settings/document/process/preview/sync와 `/api/v1/rag/upload`, document analyze/confirm/delete/progress는 active organization과 canonical KB action helper를 사용한다. `knowledge_bases.user_id`는 생성자/귀속 정보이며 이 표면의 권한 우회가 아니다. Presigned upload와 URL/proxy preview처럼 아직 KB가 확정되지 않은 표면은 별도 storage/egress 경계를 따르며, raw/source-derived content는 승인된 `content_read` 또는 후속 raw/compliance 정책 없이 노출하지 않는다.
+
+Document `read` response의 `meta_info`는 status/progress allowlist이며 edit form의
+source가 아니다. `GET /knowledge/{kb_id}/documents/{document_id}/edit-config`는 KB
+`write`를 통과한 caller에게 `chunk_size`, `chunk_overlap`, `chunking_mode`,
+`segment_identifier`, processing option, selection option과 DB edit allowlist를
+반환한다. DB allowlist는 opaque `connection_id`, bounded table/column selection,
+sensitive-column marking, alias, template와 join shape만 허용한다. API source는 method,
+configured/header/body presence 같은 safe summary만 반환하고 URL/header/body 원문,
+encrypted field, connection credential/detail은 반환하지 않는다. Stored config가
+malformed 또는 bound 밖이면 raw fallback 대신 `editable=false`와 safe reason code를
+반환하고 Client는 preview/process를 차단한다.
+
+KB detail/direct document의 `error_message`와 progress SSE의 `message`/`error`는
+persisted 원문이 아니다. Gateway가 status를 fixed public message로 투영하며 failure는
+generic safe message만 반환한다. SSE progress는 0..100 범위로 제한하고 unauthorized
+또는 concurrent-delete path에서도 raw DB/Redis/exception text를 event에 넣지 않는다.
 
 ## Target Endpoint Groups
 

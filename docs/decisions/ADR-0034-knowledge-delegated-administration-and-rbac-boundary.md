@@ -206,6 +206,51 @@ test다. 후속 검토에서는 source config 편집 UI가 필요한 경우 KB `
 property-level response model을 가진 전용 endpoint를 설계하며, 이번 read projection을
 다시 넓히지 않는다.
 
+### MBA-241 review follow-up: edit configuration, safe failures, and revoke proof
+
+Context: default-deny document metadata projection은 encrypted source config 노출을
+차단하지만, 기존 Client는 같은 `meta_info`에서 `segment_identifier`, DB selection,
+`connection_id`를 복원했다. 빈 초기값으로 document process request를 보내면 저장된
+DB edit configuration을 덮어쓸 수 있다. 또한 persisted legacy `str(exception)`이
+`DocumentResponse.error_message`와 progress SSE의 `message`/`error`로 다시 노출되고,
+revoke repository unit test가 filter expression을 실행하지 않는 fake를 사용해
+organization predicate와 row lock 누락을 잡지 못했다.
+
+검토한 선택지는 다음과 같다.
+
+1. KB `read` detail에 기존 `meta_info`를 복원한다.
+2. DB/API document 설정 UI를 전부 비활성화한다.
+3. Read projection은 유지하고 KB `write` 전용 edit-config endpoint를 추가하며,
+   Client는 해당 configuration hydration 성공 전 preview/process를 차단한다. Public
+   status/error projection은 fixed safe message/code만 사용하고, revoke query는
+   compile 가능한 organization-scoped `SELECT ... FOR UPDATE` statement로 검증한다.
+
+선택지 3을 채택한다. 선택지 1은 property-level authorization을 다시 무너뜨리고,
+선택지 2는 안전하지만 기존 manual document 운영 흐름을 불필요하게 제거한다.
+
+- `GET /api/v1/knowledge/{kb_id}/documents/{document_id}/edit-config`는 active
+  organization과 KB `write`를 요구한다. Response는 chunk/process option과 DB edit에
+  필요한 bounded allowlist만 반환한다. `connection_id`는 opaque UUID reference로만
+  허용하며 API URL/header/body, encrypted value, credential, connection secret/raw
+  connection detail은 반환하지 않는다. Malformed legacy config는 raw fallback하지
+  않고 safe unavailable response로 닫으며 Client는 저장을 차단한다.
+- KB detail/direct document detail의 `error_message`와 progress SSE의 processing
+  step/error는 persisted raw string을 그대로 사용하지 않는다. Status에 대응하는
+  fixed public message와 generic failure message만 반환하고, legacy exception string은
+  DB 내부에 남아 있어도 response/SSE에 나타나지 않는다.
+- Domain revoke adapter는 organization, subject, action predicate와 `FOR UPDATE`를
+  포함한 statement를 실행한다. Unit contract는 PostgreSQL dialect로 statement와
+  bind value를 검증한다. Opt-in disposable PostgreSQL test는 cross-organization
+  isolation, audit failure rollback, concurrent revoke의 exactly-one delete/audit 및
+  idempotent unchanged를 검증한다. PostgreSQL이 없는 local run에서는 이 integration을
+  skip하되 fake filter 결과를 성공 근거로 사용하지 않는다.
+
+영향 파일은 document edit/public projection service와 schema, Knowledge/RAG endpoint,
+Knowledge Client settings page/API/type, domain permission repository test, opt-in
+PostgreSQL test와 Knowledge 공식 문서다. API source의 원문 URL/header/body를 다시
+표시하거나 수정하는 기능은 credential-aware 별도 UX/rotation 계약 없이는 추가하지
+않는다.
+
 ## Consequences
 
 장점:

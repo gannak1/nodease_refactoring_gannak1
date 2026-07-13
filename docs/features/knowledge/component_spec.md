@@ -67,7 +67,8 @@ Retrieval Orchestrator는 최종 evidence와 함께 KB/document version, organiz
 - `failed` document는 같은 document settings 화면으로 들어가는 `재처리` action을 제공한다.
 - 처리 중 document의 progress UI는 active organization UUID를 포함한 authorization-scoped SSE URL만 연다. Active organization이 없으면 stream을 열지 않고 safe 안내를 표시하며, Gateway의 KB `read` 거부 응답 뒤 자동 재연결하지 않는다.
 - Source upload 성공 후 UI는 KB 상세 source 목록으로 돌아오며, 방금 등록된 `pending` source를 포함한 목록에서 처리 시작 action을 제공한다. FILE source는 document settings 화면에서 원본 preview iframe을 렌더할 수 있으므로 업로드 직후 자동으로 상세 화면을 열지 않는다.
-- KB/document `read` response의 metadata는 safe progress/state projection만 사용한다. UI는 `api_config`, encrypted source config, DB/connector connection identifier나 raw source reference가 detail payload에 존재한다고 가정하지 않는다. Source config 편집이 필요하면 후속 별도 `write`-authorized property endpoint를 사용해야 하며 read projection을 재사용하지 않는다.
+- KB/document `read` response의 metadata는 safe progress/state projection만 사용한다. UI는 `api_config`, encrypted source config, DB/connector connection identifier나 raw source reference가 detail payload에 존재한다고 가정하지 않는다. Document settings UI는 별도 `GET .../edit-config`를 KB `write` 경계에서 호출하고, `editable=true` configuration hydration이 끝나기 전에는 DB/API preview와 process action을 disabled 처리한다. API URL/header/body나 encrypted value를 화면 state, session storage key, toast/log에 복원하지 않는다.
+- Document status UI는 Gateway가 반환한 fixed public processing message와 generic failure만 표시한다. Persisted `error_message`, `processing_current_step`, Redis value를 raw UI string으로 간주하지 않으며 Client가 internal exception detail을 fallback으로 표시하지 않는다.
 - 이 UI는 hidden document, 권한 없는 source path/title, raw source content를 표시하지 않는다.
 
 ### KB Permission Management UI
@@ -218,6 +219,7 @@ Purge는 일반 KB lifecycle state가 아니다. Retention/legal-hold purge, raw
 - Raw source id/url/title/path, raw source ACL, raw content, prompt/completion, provider raw response, credential value, secret은 audit/trace/log에서 제외한다. Raw/compliance access log는 safe reference와 decision만 저장한다.
 - Internal document metadata는 encrypted value도 credential-bearing configuration으로 취급한다. KB/document read response는 allowlist projector를 통과하고 unknown field는 default deny하며, API config와 connection/source identifier는 response, error, audit, trace, log로 복사하지 않는다.
 - Domain revoke는 inactive subject 복원을 요구하지 않는다. Existing permission row를 organization scope 안에서 lock/delete하고 audit와 원자 commit해 stale delegated capability를 제거한다.
+- Domain revoke repository는 organization/subject/action predicate와 `FOR UPDATE`를 하나의 SQL statement로 유지한다. Compile contract와 opt-in disposable PostgreSQL test가 cross-org isolation, audit rollback, concurrent exactly-one delete/audit를 검증한다.
 - Collection membership 관리 capability는 KB label read capability가 아니다. Safe label이 없으면 독립 KB `read`를 통과한 caller만 manual KB `name`을 볼 수 있다.
 - Source-derived display metadata는 user-facing 저장 전에 redaction, 길이 제한, display-policy approval을 거쳐야 한다.
 - `verify=false`, HTTPS downgrade, 승인된 outbound client factory 밖의 custom HTTP client, private/link-local/metadata IP target, redirect 기반 guard 우회는 금지한다.

@@ -54,6 +54,7 @@ Status: Draft
 - Team/User Knowledge domain grant는 Organization manager만 변경할 수 있고, action allowlist, same-org active subject, optional expiry와 non-negative flags constraint를 강제한다.
 - Knowledge domain grant는 inactive Team, deactivated/removed User, non-member 또는 cross-organization subject를 계속 거부한다. Revoke는 같은 대상의 기존 permission row가 있으면 subject active check 없이 row를 lock/delete하고 audit와 함께 commit한다. Existing row가 없는 revoke는 idempotent하며 audit를 만들지 않는다.
 - Inactive/removed subject의 domain permission revoke에서 audit 저장 또는 commit이 실패하면 permission delete도 rollback된다. 다른 organization의 동일 subject/action row는 조회·삭제·audit되지 않는다.
+- Domain revoke repository test는 filter를 무시하는 query fake를 사용하지 않는다. PostgreSQL dialect로 organization/subject/action bind predicate와 `FOR UPDATE`를 compile 검증하고, opt-in disposable PostgreSQL test는 cross-org row 보존, audit failure rollback, 두 session의 concurrent revoke가 `deleted` 1회와 `unchanged` 1회 및 delete audit 1개만 만드는지 검증한다.
 - Expired domain grant는 cleanup worker 실행 여부와 무관하게 effective action에서 제외된다. Team과 user direct domain grant는 additive allow이며 explicit deny를 만들지 않는다.
 - Domain action은 KB read/use/content, Collection route를 상속하지 않는다. `catalog_manage`만 가진 actor의 RAG 검색과 원문 조회가 허용되면 테스트 실패다.
 - `permission_delegate` actor가 자신 또는 자신이 active member인 Team에 content-plane grant를 시도하면 mutation 없이 safe policy block audit만 정확히 한 번 기록한다. Organization manager와 resource manager의 기존 recovery path는 별도 positive case로 검증한다.
@@ -72,6 +73,8 @@ Status: Draft
 - Source-managed KB의 동일 source item 중복은 KB `name`이 아니라 protected source identity/source sync lineage invariant로 검증한다.
 - KB detail과 direct document detail은 같은 document metadata projector를 사용한다. Safe progress/state/timestamp/processing option과 finite non-negative cost estimate만 반환하고, `api_config` 및 encrypted config field, `connection_id`, source/connector identifier, DB connection metadata, unknown nested field는 KB `read` 또는 더 강한 resource state에서도 반환하지 않는다.
 - Document metadata projector는 non-mapping input, 잘못된 type, out-of-range progress, invalid timestamp, non-finite/negative cost와 oversized/unknown string을 생략하며 projection 실패 때문에 response 전체가 500이 되거나 내부 값을 그대로 fallback하지 않는다.
+- KB `write` actor의 document settings 화면은 전용 edit-config API에서 기존 segment/chunk/selection과 DB selection/opaque connection reference를 복원한다. Read-only actor는 endpoint에서 hidden/denied되고, encrypted API URL/header/body와 credential/connection detail은 write actor에게도 반환되지 않는다. Edit config가 malformed, oversized 또는 load failure면 Client는 DB/API preview/process를 호출하지 않고 기존 저장 설정을 보존한다.
+- KB detail/direct document의 `error_message`와 progress SSE의 `message`/`error`는 arbitrary legacy exception 또는 processing-step 원문을 포함하지 않는다. Fixed safe message만 반환하고 raw input marker가 JSON/SSE/toast/log capture에 나타나지 않아야 하며 progress는 0..100 범위 밖 값을 전달하지 않는다.
 
 ## Connector And Egress Tests
 
