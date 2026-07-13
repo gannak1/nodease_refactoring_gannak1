@@ -167,7 +167,7 @@ Color만으로 severity나 status를 구분하지 않고 항상 text label을 �
 
 - 목록 영역에 `보안 알림을 불러오는 중...`을 표시한다.
 - 이전 organization의 목록을 새 organization loading 중에 표시하지 않는다.
-- 같은 organization·filter·page의 background refresh는 기존 목록을 지우거나 initial loading 화면으로 교체하지 않는다. 응답 성공 시 목록과 발생 횟수를 한 번에 갱신한다.
+- 같은 organization·filter·page의 background refresh는 기존 목록을 지우거나 initial loading 화면으로 교체하지 않는다. 응답 성공 시 목록과 발생 횟수를 한 번에 갱신하고, 재시도 가능한 실패 시에도 기존 목록을 유지한다.
 
 ### Empty
 
@@ -348,7 +348,7 @@ Security Alert detail
 - 수신자 집합은 현재 manager 권한 판정과 일치해야 하며 active manager membership과 membership 없는 유효한 organization `created_by`/`managed_by`를 포함한다. Suspended, removed, deactivated owner는 제외하고 중복 user는 한 번만 발행한다.
 - Event 수신 시 invitation 목록은 항상 재조회하고, 현재 organization manager이면 Security Alert summary도 재조회한다. 별도 client refresh event로 열려 있는 Security Alert 목록/detail도 다시 조회한다.
 - Security Alert tab 또는 detail 재조회는 적용 중인 filter, 현재 page, evidence page를 유지한다.
-- 같은 scope의 background refresh 중에는 현재 목록, detail과 evidence를 유지한다. 새 응답이 성공하면 화면 데이터를 한 번에 교체하고, organization·filter·page·alert scope 변경이나 `403`에서는 이전 데이터를 즉시 제거한다.
+- 같은 scope의 background refresh 중에는 현재 목록, detail과 evidence를 유지한다. 새 응답이 성공하면 화면 데이터를 한 번에 교체하고, 재시도 가능한 실패에는 기존 데이터를 유지한다. Organization·filter·page·alert scope 변경이나 `403`에서는 이전 데이터를 즉시 제거한다.
 - 최초 summary snapshot은 toast를 만들지 않는다. 이후 `notifications.changed` 재조회 결과에서 새 alert가 생기거나 같은 alert의 `occurrence_count`가 증가했을 때만 빨간색 경고 아이콘과 `새 보안 알림이 있습니다.`라는 일반 문구를 표시한다.
 - 같은 alert의 toast에는 60초 client cooldown을 적용한다. 여러 alert가 한 번에 바뀌어도 한 번의 summary refresh에서는 toast 하나만 표시한다.
 - SSE `open` event는 invitation과 권한에 맞는 Security Alert summary/list/detail을 재조회해 초기 연결과 reconnect 누락을 복구하되 toast는 만들지 않는다.

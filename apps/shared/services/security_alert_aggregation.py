@@ -30,7 +30,9 @@ def is_security_alert_cooldown_active(
     last_detected_at: datetime,
     event_at: datetime,
 ) -> bool:
-    return abs(event_at - last_detected_at) < _SECURITY_ALERT_COOLDOWN
+    # Delayed/reconciled events may be older than the alert's latest event.
+    # They can add evidence, but must never open a new episode in the past.
+    return event_at < last_detected_at + _SECURITY_ALERT_COOLDOWN
 
 
 def aggregate_security_alert_detection(

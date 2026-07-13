@@ -227,7 +227,7 @@ Threshold 전 event처럼 Alert가 생성·갱신되지 않은 경우에는 even
 
 SSE reconnect나 event 누락 이후에도 영속 API 재조회로 현재 상태를 복구해야 한다.
 
-같은 organization·filter·page·alert의 background refresh가 진행되는 동안에는 현재 목록, detail과 evidence를 유지하고 성공 응답으로 한 번에 교체해야 한다. Organization·filter·page·alert scope 변경이나 권한 회수에서는 이전 scope 데이터를 유지하면 안 된다.
+같은 organization·filter·page·alert의 background refresh가 진행되는 동안에는 현재 목록, detail과 evidence를 유지하고 성공 응답으로 한 번에 교체해야 한다. 재시도 가능한 실패에도 기존 데이터를 유지해야 하며, organization·filter·page·alert scope 변경이나 권한 회수에서는 이전 scope 데이터를 유지하면 안 된다.
 
 ### AC-25 Reconciliation Recovery
 
@@ -402,6 +402,7 @@ Then lookback window를 포함해 실제 evaluator와 같은 결과를 계산하
 | SAL-TC-S034 | AC-25 | Watermark cursor 두 필드를 하나만 저장하거나 activation/cursor를 재시작 뒤 다시 조회 | 불완전 cursor는 DB check로 거부하고 완전 cursor와 활성화 시각은 PostgreSQL에 durable하게 보존 |
 | SAL-TC-S035 | AC-10 | cooldown이 끝난 활성 alert에 새 audit 1건만 발생 | alert/evidence/episode count와 notification refresh 불변 |
 | SAL-TC-S036 | AC-10 | cooldown이 끝난 open/acknowledged alert가 새 audit만으로 threshold 재충족 | 기존 status 유지, evidence/occurrence 연결, episode count 1 증가, episode 시작 시각 갱신, notification refresh 대상으로 반환 |
+| SAL-TC-S037 | AC-10 | 현재 `last_detected_at`보다 30분 이상 오래된 audit 묶음이 지연 도착해 threshold 충족 | evidence/occurrence만 idempotent하게 연결하고 `last_detected_at`, episode count와 episode 시작 시각은 과거로 이동하지 않음 |
 
 ### API Tests
 
@@ -447,11 +448,12 @@ Then lookback window를 포함해 실제 evaluator와 같은 결과를 계산하
 | SAL-TC-W015 | AC-10 | 서로 다른 worker가 같은 detection key의 서로 다른 threshold event를 동시에 처리 | active unique 보장, count 유실 없음, 안전한 retry |
 | SAL-TC-W016 | AC-07 | 여러 organization/actor queue event가 interleave | key별 독립 결과 |
 | SAL-TC-W017 | AC-11 | resolve commit 직전/직후 event를 각각 처리 | event 귀속이 commit 순서와 fresh threshold 계약에 일치 |
-| SAL-TC-W018 | AC-26 | Redis publish adapter 또는 현재 manager 수신자 조회 실패 | alert commit 유지, 60초 retry scheduling, 5번째 실패 dead-letter, raw payload·수신자 목록·raw exception 저장 없음 |
+| SAL-TC-W018 | AC-26 | Redis publish adapter/현재 manager 수신자 조회 실패 또는 전달 중 worker hard timeout | 전달 전에 lease와 attempt가 commit되고, alert commit 유지, lease 만료 복구 또는 60초 retry scheduling, 5번째 실패 dead-letter, raw payload·수신자 목록·raw exception 저장 없음 |
 | SAL-TC-W019 | AC-27 | worker exception에 synthetic secret marker 포함 | durable log/metric에 marker와 raw exception 없음 |
 | SAL-TC-W020 | AC-29 | threshold event부터 notification publish까지 측정 | 정상 경로 60초 이내 |
 | SAL-TC-W021 | AC-24 | Threshold 전 cooldown candidate의 aggregation 결과가 `None` | Alert 변경은 없고 commit 후 `notifications.changed` 발행도 없음 |
 | SAL-TC-W022 | AC-16, AC-24 | Active manager membership과 membership 없는 `created_by`/`managed_by`, suspended/deactivated owner 혼합 | 현재 manager 권한 사용자만 중복 없이 수신자에 포함 |
+| SAL-TC-W023 | AC-09, AC-26 | 실시간 task와 reconciliation이 같은 organization/idempotency key의 Outbox를 독립 PostgreSQL transaction에서 동시에 enqueue | Outbox 한 건을 공유하고 unique 충돌이 alert/evidence 바깥 transaction을 rollback하지 않음 |
 
 ### Component Tests
 
@@ -479,7 +481,7 @@ Then lookback window를 포함해 실제 evaluator와 같은 결과를 계산하
 | SAL-TC-C020 | AC-19, AC-30 | Security Alert evidence의 `상세 보기` 선택 | 기존 Audit detail API 호출, Alert drawer보다 높은 layer에 상세 표시, close 후 row focus 복원 |
 | SAL-TC-C021 | AC-19, AC-27 | 연결된 감사 기록과 Audit detail 표시 | safe 권한 거부 정보가 있으면 시도한 작업·필요 권한·거부 사유를 사용자 문장과 라벨로 표시하고 canonical action과 safe ID는 보조 정보로 유지, raw metadata 미노출 |
 | SAL-TC-C022 | AC-16 | 열린 detail에서 acknowledge, reopen, resolve가 각각 403 | cached detail과 해결 dialog 제거, drawer close callback으로 `alertId` URL 제거, action button 미노출 |
-| SAL-TC-C023 | AC-24 | occurrence 증가 notification으로 같은 scope의 list/detail/evidence background refresh가 지연 | 기존 table/detail/evidence와 발생 횟수를 응답 전까지 유지하고 initial loading 화면 없이 성공 응답으로 한 번에 교체 |
+| SAL-TC-C023 | AC-24 | occurrence 증가 notification으로 같은 scope의 list/detail/evidence background refresh가 지연되거나 재시도 가능한 오류로 실패 | 기존 table/detail/evidence와 발생 횟수를 유지하고 initial loading/error 전용 화면으로 교체하지 않으며 성공 응답만 한 번에 반영 |
 
 ### End-To-End Tests
 
@@ -512,5 +514,6 @@ Then lookback window를 포함해 실제 evaluator와 같은 결과를 계산하
 | Lifecycle optimistic concurrency | SAL-TC-S010, SAL-TC-A018, SAL-TC-E009 | 동시 상태 변경 중 하나만 성공 |
 | Resolve/event race | SAL-TC-S015, SAL-TC-W017 | event가 기존 alert와 새 threshold에 중복 귀속되지 않음 |
 | Reconciliation overlap | SAL-TC-W011, SAL-TC-W012 | cursor 경계 누락과 중복 없음 |
+| Outbox idempotency | SAL-TC-W023 | 동시 enqueue가 한 row로 수렴하고 alert/evidence transaction을 보존 |
 
 PostgreSQL concurrency gate를 실행하지 못한 경우 PR에서 미실행 이유와 남은 위험을 명시해야 하며, SQLite 결과만으로 위 gate를 통과 처리하면 안 된다.

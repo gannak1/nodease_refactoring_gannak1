@@ -11,6 +11,7 @@ from apps.shared.services.notification_pubsub import (
     deliver_notifications_changed_to_organization_managers,
 )
 from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 OUTBOX_TASK_NAME = "security_alert.notification_outbox.deliver"
@@ -44,13 +45,9 @@ class SecurityAlertNotificationOutboxService:
         idempotency_key: str,
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     ) -> SecurityAlertNotificationOutbox:
-        existing = (
-            self.db.query(SecurityAlertNotificationOutbox)
-            .filter(
-                SecurityAlertNotificationOutbox.organization_id == organization_id,
-                SecurityAlertNotificationOutbox.idempotency_key == idempotency_key,
-            )
-            .one_or_none()
+        existing = self._find_existing(
+            organization_id=organization_id,
+            idempotency_key=idempotency_key,
         )
         if existing is not None:
             return existing
@@ -63,9 +60,36 @@ class SecurityAlertNotificationOutboxService:
             max_attempts=max_attempts,
             retryable=True,
         )
-        self.db.add(event)
-        self.db.flush()
+        try:
+            with self.db.begin_nested():
+                self.db.add(event)
+                self.db.flush()
+        except IntegrityError:
+            # A concurrent realtime/reconciliation transaction may have won the
+            # unique key race. Roll back only the savepoint, not the alert UoW.
+            existing = self._find_existing(
+                organization_id=organization_id,
+                idempotency_key=idempotency_key,
+            )
+            if existing is None:
+                raise
+            return existing
         return event
+
+    def _find_existing(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        idempotency_key: str,
+    ) -> SecurityAlertNotificationOutbox | None:
+        return (
+            self.db.query(SecurityAlertNotificationOutbox)
+            .filter(
+                SecurityAlertNotificationOutbox.organization_id == organization_id,
+                SecurityAlertNotificationOutbox.idempotency_key == idempotency_key,
+            )
+            .one_or_none()
+        )
 
     def lease_due_events(
         self,
@@ -179,19 +203,30 @@ class SecurityAlertNotificationOutboxProcessor:
     ) -> SecurityAlertNotificationProcessResult:
         recovered_count = self.outbox.recover_stale_leases()
         events = self.outbox.lease_due_events(owner_token=owner_token, limit=limit)
+        # The lease and attempt counter must survive a worker crash or hard timeout
+        # while the external Redis delivery is in progress.
+        self.db.commit()
         processed_count = 0
         for event in events:
+            delivered = False
             try:
                 if event.event_type != OUTBOX_EVENT_NOTIFICATIONS_CHANGED:
                     raise ValueError("unsupported_event_type")
                 self.deliver(self.db, event.organization_id)
                 self.outbox.mark_succeeded(event)
-                processed_count += 1
+                delivered = True
             except Exception:
+                # A manager lookup can leave the delivery transaction aborted.
+                # The durable lease is already committed, so reset only this
+                # delivery transaction before recording the retry outcome.
+                self.db.rollback()
                 self.outbox.mark_retry_or_dead_letter(
                     event,
                     safe_reason_code="notification.delivery_failed",
                 )
+            self.db.commit()
+            if delivered:
+                processed_count += 1
         return SecurityAlertNotificationProcessResult(
             processed_count=processed_count,
             recovered_count=recovered_count,

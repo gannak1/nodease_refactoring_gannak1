@@ -384,7 +384,6 @@ def deliver_security_alert_notification_outbox(
             owner_token=str(uuid.uuid4()),
             limit=limit,
         )
-        session.commit()
         return {
             "processed_count": result.processed_count,
             "recovered_count": result.recovered_count,

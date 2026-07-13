@@ -173,7 +173,7 @@ export function SecurityAlertsTab({
         setError('forbidden');
         setSelectedActorId(null);
         onCloseAlertRef.current?.();
-      } else {
+      } else if (!canPreserveCurrentData) {
         setError('unknown');
       }
     } finally {

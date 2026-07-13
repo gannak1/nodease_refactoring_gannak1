@@ -782,7 +782,7 @@ def test_security_alert_notification_outbox_has_recovery_beat_schedule():
     ]
 
 
-def test_security_alert_notification_outbox_worker_commits_processed_state(
+def test_security_alert_notification_outbox_worker_delegates_transaction_control(
     monkeypatch,
 ):
     session = _Session()
@@ -810,6 +810,6 @@ def test_security_alert_notification_outbox_worker_commits_processed_state(
     assert len(processed) == 1
     assert processed[0][1] == 25
     assert processed[0][0]
-    assert session.commits == 1
+    assert session.commits == 0
     assert session.rollbacks == 0
     assert session.closed == 1

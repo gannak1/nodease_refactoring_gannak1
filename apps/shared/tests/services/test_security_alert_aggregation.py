@@ -254,6 +254,10 @@ def test_sal_tc_u011_cooldown_expires_at_exactly_thirty_minutes():
         last_detected_at=last_detected_at,
         event_at=_NOW + timedelta(minutes=30, microseconds=1),
     ) is False
+    assert module.is_security_alert_cooldown_active(
+        last_detected_at=last_detected_at,
+        event_at=_NOW - timedelta(hours=1),
+    ) is True
 
 
 def test_aggregation_threshold_comes_from_rule_registry(monkeypatch):
@@ -367,6 +371,36 @@ def test_late_older_audit_updates_active_alert_without_moving_last_detected_back
     assert alert.occurrence_count == original_count + 1
     assert alert.last_detected_at == _NOW
     assert db.evidence_keys == {(alert.id, late_audit.id)}
+
+
+def test_late_older_threshold_does_not_start_a_new_episode():
+    candidate = _candidate()
+    alert = _active_alert(candidate, status="open")
+    alert.last_detected_at = _NOW
+    original_count = alert.occurrence_count
+    original_episode_count = alert.episode_count
+    original_episode_started_at = alert.last_episode_started_at
+    late_audits = _audit_logs(
+        candidate.organization_id,
+        count=5,
+        start_at=_NOW - timedelta(hours=1),
+    )
+    candidate.matched_audit_ids = tuple(audit.id for audit in late_audits)
+    detected_at = late_audits[-1].occurred_at
+    db = _AggregationDb(active_alert=alert)
+
+    result = _aggregate(
+        db,
+        candidate=candidate,
+        audit_logs=late_audits,
+        detected_at=detected_at,
+    )
+
+    assert result is alert
+    assert alert.occurrence_count == original_count + 5
+    assert alert.last_detected_at == _NOW
+    assert alert.episode_count == original_episode_count
+    assert alert.last_episode_started_at == original_episode_started_at
 
 
 @pytest.mark.parametrize("failure", ["evidence", "detected_audit"])

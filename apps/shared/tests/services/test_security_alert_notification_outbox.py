@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
+from sqlalchemy.exc import IntegrityError
+
 
 def _module():
     return importlib.import_module(
@@ -37,6 +39,49 @@ class _Db:
     def flush(self):
         self.flushes += 1
 
+    def begin_nested(self):
+        return _Savepoint(self)
+
+
+class _Savepoint:
+    def __init__(self, db):
+        self.db = db
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        if exc_type is not None:
+            self.db.savepoint_rollbacks += 1
+        return False
+
+
+class _ConcurrentEnqueueDb(_Db):
+    def __init__(self, winner):
+        super().__init__()
+        self.winner = winner
+        self.savepoint_rollbacks = 0
+        self.outer_state = ["alert-change"]
+        self._conflict_pending = True
+
+    def flush(self):
+        super().flush()
+        if self._conflict_pending:
+            self._conflict_pending = False
+            self.rows = [self.winner]
+            raise IntegrityError("insert", {}, RuntimeError("duplicate"))
+
+
+class _ProcessorDb:
+    def __init__(self, events):
+        self.events = events
+
+    def commit(self):
+        self.events.append("commit")
+
+    def rollback(self):
+        self.events.append("rollback")
+
 
 def test_enqueue_is_idempotent_and_stores_no_notification_payload():
     module = _module()
@@ -61,6 +106,25 @@ def test_enqueue_is_idempotent_and_stores_no_notification_payload():
     assert first.max_attempts == 5
     assert not hasattr(first, "payload")
     assert not hasattr(first, "recipient_ids")
+
+
+def test_concurrent_enqueue_returns_winner_without_rolling_back_outer_work():
+    module = _module()
+    organization_id = uuid4()
+    winner = SimpleNamespace(
+        organization_id=organization_id,
+        idempotency_key="audit:123:notifications.changed",
+    )
+    db = _ConcurrentEnqueueDb(winner)
+
+    result = module.SecurityAlertNotificationOutboxService(db).enqueue(
+        organization_id=organization_id,
+        idempotency_key="audit:123:notifications.changed",
+    )
+
+    assert result is winner
+    assert db.savepoint_rollbacks == 1
+    assert db.outer_state == ["alert-change"]
 
 
 def test_retry_is_scheduled_then_fifth_failure_is_dead_lettered():
@@ -114,7 +178,7 @@ def test_processor_delivers_current_manager_refresh_and_marks_success(monkeypatc
         organization_id=organization_id,
         event_type="notifications.changed",
     )
-    succeeded = []
+    events = []
 
     class Outbox:
         def __init__(self, db):
@@ -125,30 +189,28 @@ def test_processor_delivers_current_manager_refresh_and_marks_success(monkeypatc
 
         def lease_due_events(self, *, owner_token, limit):
             assert owner_token == "worker-1"
+            events.append("lease")
             return [event]
 
         def mark_succeeded(self, row):
-            succeeded.append(row)
+            assert row is event
+            events.append("succeeded")
 
         def mark_retry_or_dead_letter(self, row, *, safe_reason_code):
             raise AssertionError(safe_reason_code)
 
     monkeypatch.setattr(module, "SecurityAlertNotificationOutboxService", Outbox)
-    delivered = []
-    db = object()
+    db = _ProcessorDb(events)
     processor = module.SecurityAlertNotificationOutboxProcessor(
         db,
-        deliver=lambda scoped_db, scoped_org_id: delivered.append(
-            (scoped_db, scoped_org_id)
-        ),
+        deliver=lambda scoped_db, scoped_org_id: events.append("deliver"),
     )
 
     result = processor.process_due_events(owner_token="worker-1", limit=10)
 
     assert result.processed_count == 1
     assert result.recovered_count == 0
-    assert delivered == [(db, organization_id)]
-    assert succeeded == [event]
+    assert events == ["lease", "commit", "deliver", "succeeded", "commit"]
 
 
 def test_processor_converts_delivery_exception_to_safe_retry_reason(monkeypatch):
@@ -157,7 +219,7 @@ def test_processor_converts_delivery_exception_to_safe_retry_reason(monkeypatch)
         organization_id=uuid4(),
         event_type="notifications.changed",
     )
-    failed = []
+    events = []
 
     class Outbox:
         def __init__(self, db):
@@ -167,25 +229,35 @@ def test_processor_converts_delivery_exception_to_safe_retry_reason(monkeypatch)
             return 0
 
         def lease_due_events(self, *, owner_token, limit):
+            events.append("lease")
             return [event]
 
         def mark_succeeded(self, row):
             raise AssertionError("failure must not be marked as succeeded")
 
         def mark_retry_or_dead_letter(self, row, *, safe_reason_code):
-            failed.append((row, safe_reason_code))
+            assert row is event
+            events.append(("retry", safe_reason_code))
 
     monkeypatch.setattr(module, "SecurityAlertNotificationOutboxService", Outbox)
     secret = "raw-redis-secret"
 
     def fail_delivery(db, organization_id):
+        events.append("deliver")
         raise RuntimeError(secret)
 
     result = module.SecurityAlertNotificationOutboxProcessor(
-        object(),
+        _ProcessorDb(events),
         deliver=fail_delivery,
     ).process_due_events(owner_token="worker-1")
 
     assert result.processed_count == 0
-    assert failed == [(event, "notification.delivery_failed")]
-    assert secret not in failed[0][1]
+    assert events == [
+        "lease",
+        "commit",
+        "deliver",
+        "rollback",
+        ("retry", "notification.delivery_failed"),
+        "commit",
+    ]
+    assert secret not in events[4][1]

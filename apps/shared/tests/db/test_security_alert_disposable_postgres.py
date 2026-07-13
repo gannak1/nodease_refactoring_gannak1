@@ -27,6 +27,9 @@ from apps.shared.services.security_alert_lifecycle import (
     reopen_security_alert,
     resolve_security_alert,
 )
+from apps.shared.services.security_alert_notification_outbox import (
+    SecurityAlertNotificationOutboxService,
+)
 from apps.shared.services.security_alert_rule_evaluator import (
     build_security_alert_detection_key,
 )
@@ -42,6 +45,94 @@ from sqlalchemy.orm import Session
 ROOT_DIR = Path(__file__).resolve().parents[4]
 RUN_ENV = "NODEASE_RUN_SECURITY_ALERT_DB_TEST"
 DB_PREFIX = "mbased_security_alert"
+
+
+@pytest.mark.skipif(
+    os.getenv(RUN_ENV) != "1",
+    reason=f"set {RUN_ENV}=1 to run disposable PostgreSQL integration tests",
+)
+def test_concurrent_notification_outbox_enqueue_is_idempotent_in_postgres():
+    with _disposable_database() as (database, config):
+        engine = create_engine(config.database_url(database))
+        try:
+            _enable_vector_extension(database, config)
+            _run_alembic(database, config)
+            now = datetime.now(timezone.utc)
+            user_id = uuid.uuid4()
+            organization_id = uuid.uuid4()
+            idempotency_key = "audit:concurrent:notifications.changed"
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "INSERT INTO users "
+                        "(id, email, name, social_provider, created_at, updated_at) "
+                        "VALUES (:id, :email, 'Manager', 'local', :now, :now)"
+                    ),
+                    {
+                        "id": user_id,
+                        "email": f"outbox-race-{user_id}@example.invalid",
+                        "now": now,
+                    },
+                )
+                connection.execute(
+                    text(
+                        "INSERT INTO organization "
+                        "(id, name, options, flags, created_by, is_active, "
+                        "created_at, updated_at) VALUES "
+                        "(:id, 'Outbox Race', '{}'::jsonb, 0, :created_by, "
+                        "true, :now, :now)"
+                    ),
+                    {
+                        "id": organization_id,
+                        "created_by": user_id,
+                        "now": now,
+                    },
+                )
+
+            barrier = Barrier(2)
+
+            class SynchronizedOutboxService(
+                SecurityAlertNotificationOutboxService
+            ):
+                def __init__(self, db):
+                    super().__init__(db)
+                    self.find_calls = 0
+
+                def _find_existing(self, **kwargs):
+                    existing = super()._find_existing(**kwargs)
+                    self.find_calls += 1
+                    if self.find_calls == 1:
+                        barrier.wait(timeout=10)
+                    return existing
+
+            def enqueue_once():
+                with Session(engine) as session:
+                    event = SynchronizedOutboxService(session).enqueue(
+                        organization_id=organization_id,
+                        idempotency_key=idempotency_key,
+                    )
+                    session.commit()
+                    return event.id
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                event_ids = list(executor.map(lambda _: enqueue_once(), range(2)))
+
+            assert event_ids[0] == event_ids[1]
+            with engine.connect() as connection:
+                count = connection.execute(
+                    text(
+                        "SELECT count(*) FROM security_alert_notification_outbox "
+                        "WHERE organization_id = :organization_id "
+                        "AND idempotency_key = :idempotency_key"
+                    ),
+                    {
+                        "organization_id": organization_id,
+                        "idempotency_key": idempotency_key,
+                    },
+                ).scalar_one()
+            assert count == 1
+        finally:
+            engine.dispose()
 
 
 def _run_alembic(database: str, config: DisposablePostgresConfig) -> None:
