@@ -17,6 +17,10 @@ Client 내부 route:
 | --- | --- | --- |
 | POST | `/stream-api/workflows/{workflow_id}` | Next.js route handler가 Gateway `/api/v1/workflows/{workflow_id}/stream`으로 SSE를 proxy한다. Backend URL은 `API_URL`, `NEXT_PUBLIC_API_URL`, `http://127.0.0.1:8000` 순서로 결정하며 trailing `/api/v1`은 제거한다. Cookie와 `X-Organization-Id`, `X-Request-Id`, `X-Correlation-Id` 같은 safe context header만 전달한다. 서버/컨테이너 runtime에서는 `API_URL` 명시를 우선한다. `API_URL`이 없고 `NEXT_PUBLIC_API_URL`이 공개 Gateway URL이면 production에서도 fallback으로 사용할 수 있지만, `localhost`, `127.0.0.1`, `::1`, `0.0.0.0` 같은 loopback public URL은 production server fallback으로 사용하지 않는다. |
 
+## Conversation Memory Internal Target Contracts
+
+Workflow test stream은 별도 계약 전 Conversation Memory session을 자동 생성하지 않는다. Target runtime은 node value와 `RuntimeDataDependencyEnvelope`를 함께 전달하고 Condition/Switch/Loop의 active control dependency를 final output까지 보존한다. Main/summary provider 호출은 [LLM Credentials API Spec](../llm-credentials/api_spec.md#target-provider-execution-capability-contract)이 소유하는 opaque `ProviderExecutionCapability` identity/revision을 사용한다. 이 contract는 public HTTP request/response에 capability token, credential principal 또는 raw scope를 노출하지 않는다.
+
 ## Request And Response Models
 
 ### Workflow run actor compatibility

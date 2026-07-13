@@ -44,7 +44,7 @@ Knowledge 통합 목표 구조에서는 Gateway/Shared 경계에 다음 domain s
 | Skill Context Loader | 후속 target component로, 빌더 단계에서 safe skill metadata와 필요한 checklist/body를 gate 통과 후 점진적으로 로드한다. MBA-145 Agent Builder MVP는 Knowledge Skill body/checklist를 prompt context로 직접 로드하지 않고 ADR-0017 기본 RAG option 후보와 KB safe metadata만 사용한다. Raw skill body, hidden source reference, raw source title/path/url은 Builder input으로 제공하지 않는다. |
 | Source-of-Truth Catalog | 정책 문서, ADR/decision record, semantic definition, curated query corpus 같은 source tier와 safe reference를 관리하는 target component다. Retrieval에서는 authorized evidence 안의 ranking/tie-break/conflict hint로만 사용한다. |
 
-Conversation Memory 목표 구조는 [ADR-0030](decisions/ADR-0030-memory-bounded-context.md)를 따른다. 이는 현재 별도 network service가 추가되었다는 뜻이 아니라 Gateway와 Workflow Engine이 같은 domain/application contract를 사용하는 in-process bounded context다.
+Conversation Memory 목표 구조는 [ADR-0030](decisions/ADR-0030-memory-bounded-context.md)과 [ADR-0033](decisions/ADR-0033-conversation-memory-contract-completion.md)을 따른다. 이는 현재 별도 network service가 추가되었다는 뜻이 아니라 Gateway와 Workflow Engine이 같은 domain/application contract를 사용하는 in-process bounded context다.
 
 | 구성요소 | 책임 |
 | --- | --- |
@@ -52,7 +52,7 @@ Conversation Memory 목표 구조는 [ADR-0030](decisions/ADR-0030-memory-bounde
 | Turn Dispatch Job/Dispatcher | StartTurn과 원자적으로 저장된 durable dispatch를 application command로 claim/publish/reconcile하고 Gateway crash, broker ambiguity와 Workflow admission acknowledgement 유실을 복구 |
 | Memory Persistence Adapter | Memory-owned aggregate/revision/outbox를 PostgreSQL에 저장. 다른 production module의 Memory table 직접 mutation을 허용하지 않음 |
 | Source Authorization Adapter | Knowledge/connector/subworkflow의 current decision과 principal-neutral authorization decision/resource/policy revision을 bulk contract로 변환 |
-| Memory Provider Adapter | Reference-only materialization plan, `ProviderExecutionCapability`에 binding된 provider attempt/lease claim, current authorization 재검증, raw bounded context materialization과 provider-start marker를 main provider 호출 직전에 결합 |
+| Memory Provider Adapter | Reference-only materialization plan, LLM Credentials가 발급한 opaque `ProviderExecutionCapability` identity/revision에 binding된 provider attempt/lease claim, current authorization 재검증, raw bounded context materialization과 provider-start marker를 main provider 호출 직전에 결합 |
 | Summary Process Adapter | Fenced generation lease, approved provider execution capability/egress, capability-bound budget reservation, provider usage와 reconciliation 조정 |
 
 ### 구성도
@@ -86,7 +86,7 @@ graph LR
 4. audit/trace 기록은 Log System worker가 비동기로 처리한다.
 5. Security Alert flow는 audit 저장 성공 뒤 `security_alert.detect` task를 `log` queue에 발행한다. Detector는 eligible event를 평가하고 alert/evidence/`security_alert.detected` audit을 같은 transaction에 기록한다. `security_alert.reconcile`은 migration이 만든 `security-alert-v1` watermark, 1분 overlap, `(occurred_at, audit_log.id)` cursor를 사용해 같은 evaluator와 idempotency key로 실시간 누락을 복구한다. Alert commit 이후 Redis notification 갱신 신호는 MBA-214 target이며 현재 MBA-212 구현 범위에는 포함되지 않는다.
 6. Knowledge 자동 수집은 connector adapter가 직접 네트워크를 열지 않고 `OutboundEgressGuard` 또는 승인된 client/dialer factory를 통과한다. MCP/API source도 LLM 임의 tool-use가 아니라 server-side Knowledge Source Connector allowlist adapter로만 호출한다. Retrieval/Agent 요청은 collection routing scope와 KB permission helper/source ACL helper 결과로 만든 safe candidate set만 사용한다.
-7. Target Conversation Memory session은 canonical deployment ID/version 또는 snapshot hash, conversation mapping과 node Memory policy version에 고정한다. Gateway가 pending Turn과 durable dispatch job을 같은 transaction에 저장한 뒤 Dispatcher가 versioned Worker task를 발행한다. Workflow Engine은 `AdmitExecution(dispatch_id)`으로 중복 admission을 제거하고 task capability를 side effect 전에 검증한다. LLM Credential/egress 경계가 main-generation `ProviderExecutionCapability`를 먼저 발급하고 Memory는 같은 capability에 binding된 context lease를 만든다. Provider adapter는 해당 capability와 provider attempt로 lease를 claim하고 current authorization을 재검증한 뒤 reference-only plan을 materialize하며 outbound 호출 직전에 provider-start marker를 기록한다. Log System은 observer이며 conversation source of truth가 아니다.
+7. Target Conversation Memory session은 canonical deployment ID/version 또는 snapshot hash, conversation mapping과 node Memory policy version에 고정한다. Gateway가 pending Turn과 durable dispatch job을 같은 transaction에 저장한 뒤 Dispatcher가 versioned Worker task를 발행한다. Workflow Engine은 `AdmitExecution(dispatch_id)`으로 중복 admission을 제거하고 task capability를 side effect 전에 검증하며 node value dependency와 활성 Condition/Switch/Loop control dependency를 final output까지 전파한다. Workflow Runtime이 provider effect 전에 server-issued provider attempt reference를 생성하면 LLM Credentials 경계가 해당 invocation/admission/attempt에 binding된 authoritative main-generation `ProviderExecutionCapability` identity/revision을 발급하고 Memory는 같은 capability에 binding된 context lease를 만든다. Provider adapter는 해당 capability와 provider attempt로 lease를 claim하고 current authorization을 재검증한 뒤 reference-only plan을 materialize하며 outbound 호출 직전에 provider-start marker를 기록한다. Log System은 observer이며 conversation source of truth가 아니다.
 
 ### 경계 규칙
 

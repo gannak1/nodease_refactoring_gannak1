@@ -4,7 +4,7 @@ Status: Draft
 
 ## Architecture
 
-Conversation Memory는 [ADR-0030](../../decisions/ADR-0030-memory-bounded-context.md)의 독립 bounded context다. 초기에는 별도 network service가 아닌 in-process 모듈러 모놀리스 package로 구현한다.
+Conversation Memory는 [ADR-0030](../../decisions/ADR-0030-memory-bounded-context.md)의 독립 bounded context이며 [ADR-0033](../../decisions/ADR-0033-conversation-memory-contract-completion.md)의 provenance, capability authority, session surface와 Access Grant V1 보정을 따른다. 초기에는 별도 network service가 아닌 in-process 모듈러 모놀리스 package로 구현한다.
 
 ```text
 Gateway/Chat Inbound Adapter
@@ -23,6 +23,13 @@ Workflow Runtime Inbound Adapter
 ```
 
 FastAPI request/response, Celery task, SQLAlchemy expression와 provider SDK는 Memory domain/application policy 안으로 들어오지 않는다.
+
+## Session Surface Composition
+
+- 초기 Gateway composition은 public Chatbot adapter만 Conversation Session create/run/lifecycle port에 연결한다.
+- Authenticated internal Chatbot adapter는 별도 access policy와 route/CSRF/session namespace 계약이 구현된 뒤 연결하는 후속 target이다.
+- Workflow Editor test adapter는 일반 test execution만 수행하고 Conversation Session port를 호출하지 않는다. Editor session은 별도 feature/security contract 전까지 composition allowlist에 등록하지 않는다.
+- Schedule, webhook, API batch와 subworkflow가 임의 public/authenticated adapter를 재사용해 session을 만들 수 없다.
 
 ## Target Package Direction
 
@@ -64,7 +71,7 @@ SQLAlchemy persistence model은 기존 Alembic metadata registry와의 호환을
 | --- | --- | --- |
 | `ConversationSession` | Lifecycle, active turn claim과 session revisions | Opaque turn/grant ID |
 | `ConversationTurn` | Request idempotency, dispatch/attempt와 terminal transition | Session ID, entry ID |
-| `ConversationAccessGrant` | Issue/rotate/revoke/expiry와 verifier hash | Session/deployment ID |
+| `ConversationAccessGrant` | Issue/reset replacement/revoke/expiry와 verifier hash | Session/deployment ID |
 | `TurnDispatchJob` | Claim/publish/ack/reconcile | Turn/session ID |
 | `ConversationPurgeJob` | Tombstone 이후 bounded batch purge/retry/terminal receipt | Session ID |
 | `SummaryGenerationJob` | Lease fencing, budget/provider/summary/usage state | Session/channel/source revision |
@@ -103,9 +110,9 @@ Public session bearer capability의 server-side hash와 lifecycle을 관리한�
 
 - raw token 비저장
 - session/deployment ID·version/audience binding
-- issue/expire/revoke/rotate
-- optional grace-period policy
-- rotated grant chain
+- `active`, `transcript_only`, `revoked`, `expired` state
+- issue/expire/immediate revoke와 reset replacement
+- standalone rotation endpoint, grace window와 rotated grant chain은 V1에서 미지원
 - idempotency/replay record reference
 
 Authenticated session은 Access Grant가 아니라 current authentication/authorization과 session subject binding으로 접근한다.
@@ -183,10 +190,12 @@ Workflow Runtime의 모든 content-bearing node result는 bounded dependency 집
 | Connector/tool | 승인된 adapter가 connector resource/item revision, source ACL/egress policy revision 발급 |
 | Subworkflow | Workflow Runtime이 target deployment version과 child envelope 합집합 반환 |
 | LLM | Prompt input/Memory Context/retrieval/tool dependency 합집합 상속 |
-| Transform/code | 모든 content input dependency 합집합을 보존하고 canonical dependency를 발급·삭제하지 않음 |
+| Transform/code | 모든 value input dependency 합집합을 보존하고 canonical dependency를 발급·삭제하지 않음 |
+| Condition/Switch | Predicate dependency와 선택 route를 active control context에 추가. 선택된 상수 output도 control dependency 상속 |
+| Loop | Iterable/bound/continue/termination 판단 dependency를 body와 loop 결과의 active control context에 추가 |
 | System/privacy policy | Policy owner가 classification/redaction policy revision 발급 |
 
-Client 또는 arbitrary node는 canonical dependency를 만들 수 없다. Code/custom result가 lineage를 보존하지 못하면 public-only/non-sensitive임을 server policy가 증명하지 않는 한 private/sensitive Memory write를 거부한다.
+Runtime은 값 dependency와 활성 control dependency를 구분해 계산하되 V1 canonical envelope에는 둘의 필수 합집합을 기록한다. 선택되지 않은 branch의 값 dependency는 합산하지 않는다. Client 또는 arbitrary node는 canonical dependency를 만들 수 없다. Code/custom result가 lineage를 보존하지 못하면 public-only/non-sensitive임을 server policy가 증명하지 않는 한 private/sensitive Memory write를 거부한다.
 
 ### SummaryGenerationJob
 
@@ -334,10 +343,10 @@ Window-only path는 read-only다. Summary path는 generation job, budget reserva
 - Delete/tombstone
 - Retention expiry
 - Durable purge
-- Access Grant rotate/revoke
+- Access Grant replacement/revoke
 - Source invalidation/revalidation
 
-Public close는 session lifecycle에서 current grant의 사용 범위를 transcript-only로 제한하되 grant rotation/issue audit을 만들지 않는다. Reset/delete는 old grant를 revoke하며 delete status는 별도 purge receipt가 소유한다.
+Public close는 session lifecycle에서 current grant의 사용 범위를 transcript-only로 제한하되 새 grant issue audit을 만들지 않는다. Reset은 old grant를 즉시 revoke하고 새 session/grant를 원자 발급하며, delete는 old grant를 즉시 revoke한다. 이는 grace rotation이 아니며 delete status는 별도 purge receipt가 소유한다.
 
 ## Ports And Adapters
 
@@ -388,13 +397,13 @@ Bulk authorization result는 dependency별 `decision`, `principal_kind`, opaque 
 
 ### Runtime Provenance
 
-Knowledge/tool/connector/subworkflow adapter는 node output과 함께 server-derived `RuntimeDataDependencyEnvelope`를 제공한다. Workflow Runtime은 transform/code/LLM/final output에서 모든 content-influencing dependency 합집합을 전파한다. V1은 optional dependency를 지원하지 않는다.
+Knowledge/tool/connector/subworkflow adapter는 node output과 함께 server-derived `RuntimeDataDependencyEnvelope`를 제공한다. Workflow Runtime은 transform/code/LLM/final output에서 값 dependency와 결과를 선택한 활성 control dependency의 합집합을 전파한다. V1은 optional dependency를 지원하지 않는다.
 
 Code/custom node가 dependency를 보존하지 못하면 `provenance_incomplete`로 표시한다. Private/sensitive result는 fail-closed하고 public-only/non-sensitive임을 server policy가 증명한 projection만 별도 allow policy 아래 저장한다.
 
 ### Summary Execution Policy And Summarizer
 
-LLM Credential/egress port가 organization/workflow/deployment version/node invocation/provider/model/credential/purpose/egress revision/pricing revision/token·cost cap/expiry에 binding된 `ProviderExecutionCapability`를 반환한다. 초기 summary policy는 `inherit_node`만 지원한다. Summarizer adapter는 승인된 capability와 bounded prompt로 provider를 호출하고 normalized usage/cost를 반환한다. Adapter가 model fallback, 조직 기본 credential 또는 permission policy를 독자 결정하지 않는다.
+LLM Credentials domain의 authoritative port가 발급한 opaque `ProviderExecutionCapability` identity/revision을 사용한다. 상세 scope, credential principal과 permission decision revision은 [LLM Credentials API Spec](../llm-credentials/api_spec.md#target-provider-execution-capability-contract)이 소유한다. 초기 summary policy는 `inherit_node`만 지원한다. Summarizer adapter는 승인된 capability와 bounded prompt로 provider를 호출하고 normalized usage/cost를 반환한다. Adapter가 model fallback, 조직 기본 credential 또는 permission policy를 독자 결정하지 않는다.
 
 Summary generation lease는 source authorization decision revision set에 binding한다. Lease owner는 summary provider 호출 직전에 current authorization과 lease validity를 재검증하며, revoke/expiry/unknown이면 raw history를 provider에 보내지 않는다.
 
@@ -404,7 +413,7 @@ Shared privacy boundary는 bounded content에 대해 classification, redacted pr
 
 ### Budget And Usage
 
-- ProviderExecutionCapability의 model/pricing revision/purpose/token·cost cap에 binding된 예상 비용 reserve
+- Opaque ProviderExecutionCapability identity/revision의 Budget-required purpose/pricing/cap binding에 따른 예상 비용 reserve
 - actual usage commit
 - 명확한 미호출/실패 release
 - unknown provider outcome reconcile
@@ -418,7 +427,7 @@ Price estimate가 unavailable, invalid 또는 unknown 때문에 zero이면 reser
 
 Raw Memory content/token/source를 제외한 lifecycle, decision, status와 safe reason을 기록한다. Security/lifecycle mutation은 audit 또는 durable outbox 기록 실패 후 성공으로 처리하지 않는다. Authenticated request actor는 실제 요청 사용자이고 public request actor는 `actor_id=null`, `actor_type='public'`이다. 비동기 physical purge/compliance completion은 `actor_id=null`, `actor_type='system'`으로 기록한다. Access Grant, execution/credential/billing principal과 app/deployment owner를 audit actor로 대체하지 않는다.
 
-AuditLog canonical action은 `memory.session.created/closed/reset/delete_requested/purged`, `memory.grant.issued/rotated/revoked`만 사용한다. Public create는 session created + grant issued, close는 session closed만 기록한다. Reset은 old session reset/grant revoke와 new session created/public grant issued를 각각 한 번 기록하고 closed를 중복 생성하지 않는다. Delete request는 session delete_requested와 active public grant revoke를 기록한다. Physical erasure 완료만 session purged를 기록하며 completed_with_hold/terminal_failure에는 금지한다. Organization-scoped row는 safe `organization_id`를 필수 metadata로 포함한다. 정상 turn/summary 상태는 high-cardinality operational event/trace/metric으로 기록하고 AuditLog row를 만들지 않는다. Permission/policy 차단은 `permission.denied`/`policy.block`, provider 호출은 `llm.call`, workflow 실행은 `workflow.execute`를 재사용한다.
+AuditLog canonical action은 `memory.session.created/closed/reset/delete_requested/purged`, `memory.grant.issued/revoked`를 사용한다. ADR-0008의 `memory.grant.rotated` 명칭은 향후 standalone rotation 계약용으로 예약되며 V1은 발행하지 않는다. Public create는 session created + grant issued, close는 session closed만 기록한다. Reset은 old session reset/grant revoke와 new session created/public grant issued를 각각 한 번 기록하고 closed를 중복 생성하지 않는다. Delete request는 session delete_requested와 active public grant revoke를 기록한다. Physical erasure 완료만 session purged를 기록하며 completed_with_hold/terminal_failure에는 금지한다. Organization-scoped row는 safe `organization_id`를 필수 metadata로 포함한다. 정상 turn/summary 상태는 high-cardinality operational event/trace/metric으로 기록하고 AuditLog row를 만들지 않는다. Permission/policy 차단은 `permission.denied`/`policy.block`, provider 호출은 `llm.call`, workflow 실행은 `workflow.execute`를 재사용한다.
 
 ## Runtime Sequence
 
@@ -429,7 +438,8 @@ Gateway resolves canonical execution subject/audience, principal roles and versi
   -> Worker validates contract/storage/capability before side effects
   -> Workflow admission deduplicates dispatch/execution attempt
   -> LLM node evaluates versioned MemoryConfig
-  -> LLM Credential/egress resolves main-generation ProviderExecutionCapability
+  -> Workflow creates server-issued provider attempt reference without starting provider effect
+  -> LLM Credentials resolves invocation/admission/attempt-bound main-generation ProviderExecutionCapability
   -> Memory.BuildMemoryContext with capability reference
        -> candidate snapshot
        -> current source authorization

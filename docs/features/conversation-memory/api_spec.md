@@ -4,7 +4,7 @@ Status: Draft
 
 ## Contract Status
 
-이 문서는 [ADR-0030](../../decisions/ADR-0030-memory-bounded-context.md)의 목표 API와 runtime application contract를 정의한다. 아래 session endpoint와 request envelope은 아직 구현되지 않았다. 현재 Chatbot의 `inputs.memory_mode`와 `inputs.conversation_id`는 legacy contract이며 target API에 포함하지 않는다.
+이 문서는 [ADR-0030](../../decisions/ADR-0030-memory-bounded-context.md)과 [ADR-0033](../../decisions/ADR-0033-conversation-memory-contract-completion.md)의 목표 API와 runtime application contract를 정의한다. 아래 session endpoint와 request envelope은 아직 구현되지 않았다. 현재 Chatbot의 `inputs.memory_mode`와 `inputs.conversation_id`는 legacy contract이며 target API에 포함하지 않는다.
 
 Endpoint path는 목표 contract다. 구현 PR은 additive versioning과 guided migration으로 도입하고 기존 Workflow/Chatbot API 문서를 함께 갱신해야 한다. Authenticated internal Chatbot endpoint는 별도 내부 Chatbot 접근 정책·배포 surface 구현에 의존하며 이 Conversation Memory 설계만으로 현재 제공되는 기능이 아니다. Numeric retention/rate limit은 운영 설정이지만 이 문서의 security/idempotency baseline을 완화할 수 없다.
 
@@ -14,7 +14,7 @@ Endpoint path는 목표 contract다. 구현 PR은 additive versioning과 guided 
 | --- | --- | --- |
 | Public chatbot | 사용자 identity 없음 | Server-issued public Conversation Access Grant bearer capability |
 | Authenticated internal Chatbot | 로그인 사용자 | Current user + organization + 별도 내부 Chatbot 이용 권한 + internal deployment/session scope. 별도 기능 구현 전 미지원 |
-| Workflow editor test | 로그인 사용자 | Current user + editable workflow scope + explicit test session |
+| Workflow editor test | 로그인 사용자 | 초기 Conversation Memory session 미지원. 별도 인증·CSRF·idempotency·retention·snapshot binding API가 승인되기 전 일반 test execution만 사용 |
 | Schedule/webhook/API batch와 일반 deployment run | 일반적으로 사용자 없음 | 이 version에서는 session 생성 안 함. 후속 명시적 conversational contract 필요 |
 | Subworkflow | Parent runtime | Parent가 전달한 bounded Memory Context/channel만 사용, parent table 직접 조회 금지 |
 
@@ -26,7 +26,7 @@ Execution subject, credential principal, billing principal과 audit actor는 별
 Authorization: Conversation <opaque-access-token>
 ```
 
-Raw token은 기본적으로 탭 단위 `sessionStorage`에 보관하고 persistent `localStorage`, URL, browser history, access log, audit, trace와 metric label에 남길 수 없다. 새 탭/브라우저 간 지속성은 별도 grant 발급으로 처리한다. Public API는 credential-less CORS만 허용하고 `Access-Control-Allow-Credentials`를 반환하지 않는다. 허용 origin은 deployment-owned versioned exact origin/embed allowlist로 제한하며 wildcard와 credential을 함께 사용하지 않는다. 이 설정 계약이 구현되기 전 client 입력이나 환경변수 fallback으로 allowlist를 넓혀서는 안 된다.
+Raw token은 기본적으로 탭 단위 `sessionStorage`에 보관하고 persistent `localStorage`, URL, browser history, access log, audit, trace와 metric label에 남길 수 없다. V1은 탭/브라우저 간 token 이동이나 기존 session용 별도 grant 발급을 지원하지 않는다. 새 탭에서는 새 idempotency key로 새 conversation을 명시 생성한다. Public API는 credential-less CORS만 허용하고 `Access-Control-Allow-Credentials`를 반환하지 않는다. 허용 origin은 deployment-owned versioned exact origin/embed allowlist로 제한하며 wildcard와 credential을 함께 사용하지 않는다. 이 설정 계약이 구현되기 전 client 입력이나 환경변수 fallback으로 allowlist를 넓혀서는 안 된다.
 
 Browser-facing public conversation create/run/lifecycle 요청은 allowlist에 있는 `Origin`을 필수로 요구한다. Origin 없는 server-to-server 실행은 이 browser grant surface를 사용하지 않고 별도 API-secret/service contract를 사용하며 Conversation Session은 명시적으로 구성해야 한다.
 
@@ -101,11 +101,12 @@ Public reset/delete의 `memory.secret_replay_expired`는 stored idempotency scop
 }
 ```
 
-- Raw access token은 생성·rotation 응답에서만 반환한다.
+- Raw access token은 create 또는 reset replacement 응답에서만 반환한다.
 - Internal session ID, token hash, subject hash와 persistence key는 반환하지 않는다.
 - Response/log redaction middleware는 `access_token`을 secret field로 처리한다.
 - Access token은 versioned CSPRNG token이며 최소 128-bit entropy를 가져야 한다. Server verifier는 HMAC 같은 keyed one-way verifier 또는 승인된 memory-hard password hash와 constant-time comparison을 사용한다.
 - Create/reset의 replay record가 필요하면 application-level encryption과 10분 TTL을 적용한다. Grant table의 hash에서 raw token을 복원하지 않는다. TTL 이후 same-key replay는 `memory.secret_replay_expired`다.
+- V1은 standalone grant rotation endpoint, rotated-grant chain과 old/new grant grace window를 제공하지 않는다. Reset은 old grant를 즉시 revoke하고 새 session/grant를 원자 발급하는 replacement다.
 
 ### Create Authenticated Conversation Response
 
@@ -269,7 +270,7 @@ HTTP/Celery adapter는 다음 framework-independent command/query를 호출한�
 - conversation mapping/Memory policy version
 - verified execution subject 또는 public audience
 - validated Access Grant hash/reference
-- runtime surface (`public_chatbot | authenticated_internal_chatbot | workflow_editor_test`)
+- runtime surface (`public_chatbot | authenticated_internal_chatbot`). 초기 구현은 `public_chatbot`만 허용하며 `workflow_editor_test`는 별도 계약 전 거부한다.
 
 출력:
 
@@ -348,7 +349,7 @@ Context handle은 raw text가 아니라 ordered entry/summary reference, version
 
 ### ResolveProviderExecutionCapability
 
-LLM Credential/egress 경계가 발급하는 internal opaque capability다. 입력은 canonical organization/workflow/deployment ID·version, node/invocation, execution subject/audience와 `main_generation | memory_summary` purpose다. 출력 capability는 provider/model/credential safe reference, egress policy revision, pricing revision, token·cost cap과 expiry를 고정한다. Main-generation capability는 `BuildMemoryContext` 전에 발급해 lease 발급 입력에 포함하고 claim에서 같은 identity/revision을 다시 검증한다. Client, Access Grant와 Memory adapter는 provider/model/credential을 직접 선택하거나 capability scope를 확장할 수 없다. Context lease, budget reservation, provider call과 usage reconciliation은 같은 capability identity/revision을 검증한다.
+LLM Credentials domain의 authoritative internal port를 호출해 opaque capability identity/revision을 받는다. 상세 입력·출력 schema와 credential principal/permission decision revision 의미는 [LLM Credentials API Spec](../llm-credentials/api_spec.md#target-provider-execution-capability-contract)이 소유한다. Workflow Runtime은 provider effect 전에 server-issued provider attempt reference를 먼저 만들고 capability 발급 입력에 포함한다. Memory는 main-generation capability를 `BuildMemoryContext` 전에 받아 lease에 binding하고 claim에서 같은 identity/revision, session/deployment version, node invocation, purpose와 provider attempt를 다시 검증한다. Client, Access Grant와 Memory adapter는 provider/model/credential을 직접 선택하거나 capability scope를 확장할 수 없다. Credential revoke 또는 permission/relation/egress revision 변경 뒤 stale capability는 새 claim·reservation·provider attempt admission과 outbound call 전에 거부한다.
 
 ### MarkMemoryContextProviderStarted
 
@@ -366,9 +367,9 @@ Workflow Runtime 내부 result/task contract이며 business `inputs`, client res
 | --- | --- |
 | `envelope_version` | Server-supported version. Unknown version은 fail-closed |
 | `completeness` | `complete` 또는 `unknown`. V1은 `complete`만 Memory write에 허용 |
-| `dependencies` | Bounded, deduplicated server-derived dependency list. Complete empty list는 source 영향이 없음을 producer가 확인한 경우에만 허용 |
+| `dependencies` | Bounded, deduplicated server-derived dependency list. 값 dependency와 결과를 선택한 활성 control dependency의 필수 합집합. Complete empty list는 값·제어 source 영향이 없음을 producer가 확인한 경우에만 허용 |
 
-각 dependency는 server-issued opaque dependency reference, source kind, organization safe reference, canonical resource/version safe reference, sensitivity, current authorization adapter가 사용할 authorization-safe lookup reference를 포함한다. Raw source title/path/URL/content/ACL, client subject, optional/required flag와 provider credential을 포함하지 않는다. Missing envelope, `unknown` completeness, unknown source kind, duplicate conflict, organization mismatch와 count/size cap 초과는 `memory.provenance_incomplete` 또는 `memory.provenance_invalid`로 처리하고 private/sensitive Memory write를 거부한다.
+각 dependency는 server-issued opaque dependency reference, source kind, organization safe reference, canonical resource/version safe reference, sensitivity, current authorization adapter가 사용할 authorization-safe lookup reference를 포함한다. Raw source title/path/URL/content/ACL, client subject, optional/required flag와 provider credential을 포함하지 않는다. Condition/Switch는 predicate와 선택 route, Loop는 iterable/bound/continue/termination 판단의 dependency를 active control context로 전달한다. 선택된 branch의 상수 output도 control dependency를 상속하고 선택되지 않은 branch의 값 dependency는 제외한다. Missing envelope, `unknown` completeness, unknown source kind, duplicate conflict, organization mismatch와 count/size cap 초과는 `memory.provenance_incomplete` 또는 `memory.provenance_invalid`로 처리하고 private/sensitive Memory write를 거부한다.
 
 ### EvaluateSourceAuthorization
 

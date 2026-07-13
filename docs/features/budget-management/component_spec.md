@@ -75,7 +75,7 @@ Verified Against: feature/mba-147 @ e1a04e9
 - `release_unused_reservation(reservation_id, reason)`
 - `reconcile_unknown_outcome(reservation_id, provider_attempt_ref)`
 
-Reservation adapter는 ProviderExecutionCapability의 organization/workflow/deployment ID·version/node invocation/provider/model/pricing revision/purpose/token·cost cap/expiry와 server-derived billing principal을 검증한 뒤 provider 호출 전에 durable approval을 반환하고 중복 key에 같은 결과를 재생한다. Memory context lease, provider attempt와 usage reconciliation은 같은 capability identity/revision을 사용한다. Memory가 Budget table을 직접 query하거나 reservation 미지원 adapter에서 summary를 실행해서는 안 된다. 일반 workflow 실행 전체의 BGT-REQ-035 overshoot 정책은 이 target extension 때문에 자동 변경되지 않는다.
+Reservation adapter는 [LLM Credentials API Spec](../llm-credentials/api_spec.md#target-provider-execution-capability-contract)이 소유하는 opaque ProviderExecutionCapability identity/revision과 Budget에 필요한 purpose/pricing/cap/expiry binding 및 server-derived billing principal을 검증한 뒤 provider 호출 전에 durable approval을 반환하고 중복 key에 같은 결과를 재생한다. Memory context lease, provider attempt와 usage reconciliation은 같은 capability identity/revision을 사용한다. Budget은 credential principal이나 permission decision revision을 자체 합성하지 않는다. Memory가 Budget table을 직접 query하거나 reservation 미지원 adapter에서 summary를 실행해서는 안 된다. 일반 workflow 실행 전체의 BGT-REQ-035 overshoot 정책은 이 target extension 때문에 자동 변경되지 않는다.
 
 Pricing lookup이 unavailable하거나 estimate가 invalid/unknown-zero이면 `reserve_estimated_cost`는 typed `budget.price_unavailable`을 반환한다. Memory adapter가 0원 또는 임의 보수 가격을 자체 생성하지 않으며 summary provider를 호출하지 않는다.
 
