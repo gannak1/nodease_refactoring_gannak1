@@ -665,6 +665,9 @@ class OrganizationMemberService:
                 revoked_user_permissions=RevokedUserPermissionCounts(),
             )
 
+        was_invited = (
+            membership.membership_state == ORGANIZATION_MEMBERSHIP_INVITED
+        )
         _guard_last_manager(
             membership,
             ORGANIZATION_MEMBERSHIP_REMOVED,
@@ -764,6 +767,8 @@ class OrganizationMemberService:
         except Exception:
             db.rollback()
             raise
+        if was_invited:
+            publish_notifications_changed(user_id)
         return OrganizationMemberRemoveResponse(
             status="removed",
             removed_team_memberships=removed_team_memberships,

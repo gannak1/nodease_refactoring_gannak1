@@ -6,7 +6,10 @@ from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql.operators import eq, in_op, is_
 
-from apps.gateway.services.notification_service import NotificationService
+from apps.gateway.services.notification_service import (
+    NotificationService,
+    publish_notifications_changed,
+)
 from apps.gateway.services.organization_member_service import OrganizationMemberService
 from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.context import clear_current_metadata, set_current_metadata
@@ -739,6 +742,162 @@ def test_remove_member_soft_removes_and_cleans_permissions(monkeypatch):
         }
         assert "target_user_email" not in metadata
         assert target.email not in str(metadata)
+
+
+def test_remove_invited_member_publishes_notification_after_commit(monkeypatch):
+    manager = _user()
+    target = _user()
+    org = _organization("Acme", created_by=manager.id)
+    db = _Db(
+        users=[manager, target],
+        organizations=[org],
+        memberships=[
+            _membership(manager, org, auth_state=ORGANIZATION_AUTH_MANAGER),
+            _membership(target, org, ORGANIZATION_MEMBERSHIP_INVITED),
+        ],
+    )
+    events = []
+    original_commit = db.commit
+    monkeypatch.setattr(
+        "apps.gateway.services.organization_member_service.has_organization_manager_permission",
+        lambda *args: True,
+    )
+
+    def commit():
+        original_commit()
+        events.append("commit")
+
+    monkeypatch.setattr(db, "commit", commit)
+    monkeypatch.setattr(
+        "apps.gateway.services.organization_member_service.publish_notifications_changed",
+        lambda user_id: events.append(("publish", user_id)),
+    )
+
+    response = OrganizationMemberService.remove_member(
+        db, manager, org.id, target.id
+    )
+
+    assert response.status == "removed"
+    assert events == ["commit", ("publish", target.id)]
+
+
+def test_remove_invited_member_does_not_publish_when_commit_fails(monkeypatch):
+    manager = _user()
+    target = _user()
+    org = _organization("Acme", created_by=manager.id)
+    db = _Db(
+        users=[manager, target],
+        organizations=[org],
+        memberships=[
+            _membership(manager, org, auth_state=ORGANIZATION_AUTH_MANAGER),
+            _membership(target, org, ORGANIZATION_MEMBERSHIP_INVITED),
+        ],
+    )
+    published = []
+    monkeypatch.setattr(
+        "apps.gateway.services.organization_member_service.has_organization_manager_permission",
+        lambda *args: True,
+    )
+
+    def fail_commit():
+        raise RuntimeError("commit failed")
+
+    monkeypatch.setattr(db, "commit", fail_commit)
+    monkeypatch.setattr(
+        "apps.gateway.services.organization_member_service.publish_notifications_changed",
+        lambda user_id: published.append(user_id),
+    )
+
+    with pytest.raises(RuntimeError, match="commit failed"):
+        OrganizationMemberService.remove_member(db, manager, org.id, target.id)
+
+    assert published == []
+    assert db.rollbacks == 1
+
+
+@pytest.mark.parametrize(
+    "membership_state",
+    [
+        ORGANIZATION_MEMBERSHIP_ACTIVE,
+        ORGANIZATION_MEMBERSHIP_SUSPENDED,
+        ORGANIZATION_MEMBERSHIP_REMOVED,
+    ],
+)
+def test_remove_non_invited_member_does_not_publish_notification(
+    monkeypatch, membership_state
+):
+    manager = _user()
+    target = _user()
+    org = _organization("Acme", created_by=manager.id)
+    db = _Db(
+        users=[manager, target],
+        organizations=[org],
+        memberships=[
+            _membership(manager, org, auth_state=ORGANIZATION_AUTH_MANAGER),
+            _membership(target, org, membership_state),
+        ],
+    )
+    published = []
+    monkeypatch.setattr(
+        "apps.gateway.services.organization_member_service.has_organization_manager_permission",
+        lambda *args: True,
+    )
+    monkeypatch.setattr(
+        "apps.gateway.services.organization_member_service.publish_notifications_changed",
+        lambda user_id: published.append(user_id),
+    )
+
+    response = OrganizationMemberService.remove_member(
+        db, manager, org.id, target.id
+    )
+
+    assert response.status == "removed"
+    assert published == []
+
+
+def test_remove_invited_member_keeps_commit_when_notification_publish_fails(
+    monkeypatch,
+):
+    manager = _user()
+    target = _user()
+    org = _organization("Acme", created_by=manager.id)
+    target_membership = _membership(
+        target, org, ORGANIZATION_MEMBERSHIP_INVITED
+    )
+    db = _Db(
+        users=[manager, target],
+        organizations=[org],
+        memberships=[
+            _membership(manager, org, auth_state=ORGANIZATION_AUTH_MANAGER),
+            target_membership,
+        ],
+    )
+    monkeypatch.setattr(
+        "apps.gateway.services.organization_member_service.has_organization_manager_permission",
+        lambda *args: True,
+    )
+
+    class FailingRedis:
+        def publish(self, *_args, **_kwargs):
+            raise RuntimeError("redis unavailable")
+
+    monkeypatch.setattr(
+        "apps.gateway.services.notification_service.get_redis_client",
+        lambda: FailingRedis(),
+    )
+    monkeypatch.setattr(
+        "apps.gateway.services.organization_member_service.publish_notifications_changed",
+        publish_notifications_changed,
+    )
+
+    response = OrganizationMemberService.remove_member(
+        db, manager, org.id, target.id
+    )
+
+    assert response.status == "removed"
+    assert target_membership.membership_state == ORGANIZATION_MEMBERSHIP_REMOVED
+    assert db.commits == 1
+    assert db.rollbacks == 0
 
 
 def test_invite_conflict_and_not_found_cases(monkeypatch):
