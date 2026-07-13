@@ -18,7 +18,11 @@ export function getModuleTags(app: App): ModuleTag[] {
       api: { label: 'REST API', type: 'api' },
       webapp: { label: '웹 앱', type: 'webapp' },
       widget: { label: '위젯', type: 'widget' },
-      chatbot: { label: '챗봇', type: 'chatbot' },
+      chatbot: { label: '공개 챗봇', type: 'chatbot' },
+      internal_chatbot: {
+        label: '내부 챗봇',
+        type: 'internal_chatbot',
+      },
       mcp: { label: 'MCP', type: 'mcp' },
       workflow_node: { label: '서브 모듈', type: 'workflow_node' },
       webhook: { label: '웹훅', type: 'webhook' },

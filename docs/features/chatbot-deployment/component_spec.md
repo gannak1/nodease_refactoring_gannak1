@@ -7,16 +7,18 @@ Status: Draft
 - 워크플로우 에디터 상단 "게시하기" 드롭다운 (`components/editor/NodeCanvas.tsx`)
 - 배포 플로우 모달 (`components/deployment/DeploymentFlowModal.tsx` → `SuccessStep.tsx`)
 - 공개 챗봇 페이지 (`app/embed/chat/[urlSlug]/page.tsx`) — 기존 임베드 챗 UI 재사용
-- Current generic 인증 실행 페이지 (`app/modules/[id]/run/page.tsx`) — 로그인 사용자 권한으로 배포 snapshot 실행. Target 내부 Chatbot access/session surface가 아님
+- 인증 내부 챗봇 실행 페이지 (`app/modules/[id]/run/page.tsx`) — 로그인 사용자 권한으로 `internal_chatbot` 배포 snapshot을 실행한다. Target access grant/session surface는 별도 후속 계약이다.
 
 ## Components
 
-- "게시하기" 드롭다운: 시작 노드가 `startNode`일 때 "공개 웹페이지 생성"과 "사이트에 임베드" 사이에 **"챗봇 배포"** 항목을 노출한다. 클릭 시 `handlePublishAsChatbot`(`hooks/useDeployment.ts`)이 `deploymentType='chatbot'`으로 모달을 연다.
-- `useDeployment.handleDeploy`: `deploymentType === 'chatbot'`이면 결과의 `webAppUrl`을 `${origin}/embed/chat/{url_slug}`로 설정하고, `internalRunUrl`을 `${origin}/modules/{workflow_id}/run?deploymentId={deployment_id}`로 설정한다.
-- `DeploymentFlowModal.getDeploymentTypeName`: `chatbot` → `"챗봇"`.
-- `SuccessStep` (Current): `deploymentType === 'chatbot'`이면 공개 챗봇 공유 링크와 generic 사내 인증 실행 링크를 별도 카드로 표시한다. Target 전환에서는 별도 내부 Chatbot access mode가 실제 생성된 경우에만 내부 Chatbot 링크를 표시하며 generic workflow run을 완성된 내부 Chatbot으로 오표시하지 않는다.
+- "게시하기" 드롭다운: 시작 노드가 `startNode`일 때 **"공개 챗봇 배포"**와 **"내부 챗봇 배포"**를 별도 항목으로 노출한다. 각각 `handlePublishAsChatbot`과 `handlePublishAsInternalChatbot` 호출로 `deploymentType='chatbot'` 또는 `'internal_chatbot'`인 모달을 연다.
+- `useDeployment.handleDeploy`: `chatbot`은 `${origin}/embed/chat/{url_slug}` 공개 링크만 결과에 넣고, `internal_chatbot`은 `${origin}/modules/{workflow_id}/run?deploymentId={deployment_id}` 인증 실행 링크만 넣는다.
+- `DeploymentFlowModal.getDeploymentTypeName`: `chatbot` → `"공개 챗봇"`, `internal_chatbot` → `"내부 챗봇"`.
+- `SuccessStep`: `chatbot`은 공개 챗봇 공유 카드만, `internal_chatbot`은 사내 인증 실행 카드만 표시해 두 보안 경계를 한 배포 결과에서 섞지 않는다.
 - 챗봇 페이지(`app/embed/chat/[urlSlug]/page.tsx`): 메시지 버블/입력창/환영 메시지/입력 중 표시(기존). 전송 시 `POST /api/v1/run-public/{urlSlug}`를 사용하며, private Knowledge/RAG 후보를 workflow owner 권한으로 넓히지 않는다.
-- Current generic 인증 실행 페이지(`app/modules/[id]/run/page.tsx`): `GET /api/v1/deployments/{deployment_id}/run-info`와 `POST /api/v1/deployments/{deployment_id}/run`을 사용한다. LLM node RAG는 로그인 사용자를 execution subject로 전달받지만 Target 내부 Chatbot session/permission 계약은 별도다.
+- 인증 내부 실행 페이지(`app/modules/[id]/run/page.tsx`): `GET /api/v1/deployments/{deployment_id}/run-info`와 `POST /api/v1/deployments/{deployment_id}/run`을 사용한다. `internal_chatbot`에도 `memory_mode: true`와 페이지 세션의 `conversation_id`를 전송하며, LLM node RAG는 로그인 사용자를 execution subject로 전달받는다.
+- 인증 복귀: run-info가 `401`을 반환하면 내부 실행 페이지와 API interceptor는 모두 원래 path/query/hash를 인코딩한 `/auth/login?next=...`로 이동한다. 이메일/비밀번호 로그인 성공 후 `LoginPage`는 safe same-origin `next`로 복귀하고 외부 URL은 `/dashboard`로 닫는다.
+.
 
 ## States
 
@@ -28,6 +30,7 @@ Status: Draft
 ## Interactions
 
 - 메시지 전송: 사용자 입력을 첫 입력 변수에 매핑하고, `inputs.memory_mode = true`, `inputs.conversation_id = conversationId`를 추가하여 전송한다. 두 값은 서버에서 pop된다.
+- 내부 링크 인증 복귀: 인증이 없거나 만료하면 현재 실행 링크를 `next`로 보존한다. 이메일/비밀번호 로그인은 안전한 내부 `next`로 복귀하며 Google OAuth는 기존처럼 대시보드로 이동한다.
 - 응답 추출: `results`에서 `answer` 필드를 가진 노드 결과를 찾아 assistant 메시지로 표시한다(기존 로직 유지).
 
 Target interaction은 conversation envelope과 idempotency key를 사용하고 node별 Memory config를 deployment snapshot에서 읽는다. UI가 모든 node Memory를 강제하거나 client state를 transcript source of truth로 사용하지 않는다.

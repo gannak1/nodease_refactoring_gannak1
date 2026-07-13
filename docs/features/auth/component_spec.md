@@ -1,7 +1,6 @@
 # Auth Component Spec
 
-Status: Verified
-Verified Against: feature/mba-106 @ 2528e73c044ec41975c081b64c6a6a031b6992cf
+Status: Draft
 
 ## Screens
 
@@ -68,7 +67,8 @@ Verified Against: feature/mba-106 @ 2528e73c044ec41975c081b64c6a6a031b6992cf
   - 제출 버튼 라벨은 `로그인`에서 `로그인 중...`으로 바뀐다.
 - 성공 상태:
   - 로그인 제출 성공 시 별도 성공 메시지는 렌더링하지 않는다.
-  - 페이지는 `/dashboard`로 이동한다.
+  - query의 `next`가 safe same-origin 경로면 그 경로로 이동한다.
+  - `next`가 없거나 절대 URL, protocol-relative URL 등 안전하지 않은 값이면 `/dashboard`로 이동한다.
 - 오류 상태:
   - `finally`에서 `isLoading`은 false로 재설정된다.
   - `error`는 선택된 사용자 표시용 메시지로 설정된다.
@@ -130,10 +130,11 @@ Verified Against: feature/mba-106 @ 2528e73c044ec41975c081b64c6a6a031b6992cf
 
 ### Auth HTTP Client Redirects
 
-- 출처: `apps/client/lib/apiClient.ts`
-- `publicApiClient`와 `apiClient`는 `withCredentials: true`로 생성되므로 auth 관련 API 호출에 브라우저 credential이 함께 전송된다.
-- 두 클라이언트 모두 401 응답 인터셉터를 연결한다.
-- `/auth/*` 및 `/` 바깥에서 401이 발생하면 인터셉터는 `window.location.href = '/auth/login'`을 설정한다.
+- 출처: `apps/client/lib/apiClient.ts`, `apps/client/app/features/workflow/api/workflowApi.ts`, `apps/client/lib/authReturn.ts`
+- `publicApiClient`, `apiClient`, workflow API client는 `withCredentials: true`로 생성되므로 auth 관련 API 호출에 브라우저 credential이 함께 전송된다.
+- 세 클라이언트는 401 응답 인터셉터를 연결한다.
+- `/auth/*` 및 `/` 바깥에서 401이 발생하면 공통 client와 workflow client는 현재 `pathname + search + hash`를 보존한 `/auth/login?next=...`로 이동한다.
+- `resolveSafeAuthReturnPath`는 상대 경로를 동일 origin 기준 URL로 파싱하고 정규화 결과를 다시 파싱한다. 두 단계 중 origin이 달라지거나 입력이 `/`로 시작하지 않으면 `/dashboard`로 fallback한다.
 - `/auth/*` 또는 `/`에서 401이 발생하면 현재 페이지가 자체 오류나 공개 상태를 표시할 수 있도록 인터셉터는 리다이렉트하지 않는다.
 
 ### Auth Redirect Hook
@@ -155,7 +156,7 @@ Verified Against: feature/mba-106 @ 2528e73c044ec41975c081b64c6a6a031b6992cf
 - 이메일/비밀번호 제출:
   - 사용자가 로그인 폼을 제출한다.
   - `LoginPage`는 기존 `error`를 비우고 `isLoading = true`로 설정한 뒤 `authApi.login`을 호출한다.
-  - 성공 시 `/dashboard`로 이동한다.
+  - 성공 시 safe same-origin `next`가 있으면 그 경로로, 없거나 안전하지 않으면 `/dashboard`로 이동한다.
   - 401 실패는 `이메일 또는 비밀번호가 올바르지 않습니다.`를 표시한다.
   - 배열 `detail`이 있는 422 실패는 `입력한 값이 올바르지 않습니다.`를 표시한다.
   - 배열 `detail`이 없는 422 실패는 `입력 형식이 올바르지 않습니다.`를 표시한다.
@@ -168,6 +169,7 @@ Verified Against: feature/mba-106 @ 2528e73c044ec41975c081b64c6a6a031b6992cf
   - 사용자가 `구글로 로그인`을 클릭한다.
   - `LoginPage`는 `authApi.googleLogin`을 호출한다.
   - 브라우저 내비게이션은 백엔드 Google OAuth 로그인 URL로 넘겨진다.
+  - Google callback 성공 후에는 현재 기존 계약대로 `/dashboard`로 이동하며 `next`를 보존하지 않는다.
 - Auth 페이지 내비게이션:
   - `← 홈으로 돌아가기`를 클릭하면 `/`로 이동한다.
   - 회원가입 링크를 클릭하면 `/auth/signup`으로 이동한다.

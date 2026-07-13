@@ -9,6 +9,8 @@ Status: Draft
 | POST | `/api/v1/workflows/{workflow_id}/stream` | 테스트 실행 스트리밍 이벤트를 반환한다. 기존 구현을 사용한다. | workflow execute 권한 |
 | GET | `/api/v1/workflows/{workflow_id}/nodes/{node_id}/execution-logs` | 현재 노드가 실행된 workflow run 목록을 최신순으로 조회한다. 목록 row에 필요한 node-level preview를 포함한다. | workflow read 권한 |
 | GET | `/api/v1/workflows/{workflow_id}/nodes/{node_id}/execution-logs/{run_id}` | 선택한 workflow run 안의 현재 노드 input/output/trace/usage 상세를 조회한다. | workflow read 권한 |
+| GET | `/api/v1/deployments/{deployment_id}/run-info` | 내부 실행 화면용 safe deployment metadata를 반환한다. | 로그인 + workflow execute 권한 |
+| POST | `/api/v1/deployments/{deployment_id}/run` | active deployment snapshot을 current user execution subject로 실행한다. | 로그인 + workflow execute 권한 |
 
 Client 내부 route:
 
@@ -240,6 +242,10 @@ Example detail response:
   }
 }
 ```
+
+### 5. 인증 내부 챗봇 실행
+
+이 endpoint의 소유 계약은 [Deployment API Spec](../deployment/api_spec.md)을 따른다. `internal_chatbot` run-info는 secret과 graph snapshot을 제외한 safe metadata만 반환하고, run은 current user를 `execution_subject`로 전달한다. 서버는 챗봇 memory mode를 강제하고 인증 `conversation_id`를 deployment와 execution subject 기준으로 namespace 처리한다. 공개 `/api/v1/run-public/{url_slug}`의 `chatbot`은 execution subject 없이 anonymous public-only 경계를 유지한다.
 
 ## Errors
 

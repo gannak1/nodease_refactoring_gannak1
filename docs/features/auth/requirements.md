@@ -1,7 +1,6 @@
 # Auth Requirements
 
 Status: Draft
-Verified Against: feature/mba-106 @ 120b79b81fd9552f528aebd6de5bf0dda5947d66
 Related Features: organization, audit-tracing, workflow, deployment, chatbot-deployment, conversation-memory
 
 ## Purpose
@@ -13,7 +12,7 @@ Auth는 보호된 Gateway API가 `auth_token` 쿠키에서 현재 사용자를 �
 ## User Stories
 
 - 방문자는 이름, 이메일, 비밀번호로 계정을 생성하고 즉시 로그인된 상태로 대시보드에 진입할 수 있다.
-- 방문자는 이메일과 비밀번호로 로그인하고 대시보드에 진입할 수 있다.
+- 방문자는 이메일과 비밀번호로 로그인하고, 안전한 원래 보호 경로가 있으면 그 경로로, 없으면 대시보드로 진입할 수 있다.
 - 방문자는 Google OAuth 로그인을 시작하고, 성공한 콜백 이후 대시보드에 진입할 수 있다.
 - 이미 로그인된 사용자는 공개 홈 진입 시 대시보드로 자동 이동된다.
 - 로그인되지 않은 사용자는 공개 홈과 auth 화면에서 강제 로그인 리다이렉트 없이 오류나 공개 화면을 볼 수 있다.
@@ -56,7 +55,7 @@ Auth는 보호된 Gateway API가 `auth_token` 쿠키에서 현재 사용자를 �
 - AUTH-REQ-031: Gateway 공통 인증 의존성은 `auth_token` 쿠키를 읽고 `AuthService.get_user_from_token`으로 현재 사용자를 반환해야 한다.
 - AUTH-REQ-032: 클라이언트 `authApi`는 signup, login, logout, me, googleLogin 호출을 제공해야 한다.
 - AUTH-REQ-033: 클라이언트 auth API 호출은 credential 포함 요청을 사용해야 한다.
-- AUTH-REQ-034: 로그인 화면은 이메일/비밀번호 로그인을 제출하고 성공 시 `/dashboard`로 이동해야 한다.
+- AUTH-REQ-034: 로그인 화면은 이메일/비밀번호 로그인을 제출하고 성공 시 safe same-origin `next` query가 있으면 그 경로로, 없거나 안전하지 않으면 `/dashboard`로 이동해야 한다.
 - AUTH-REQ-035: 로그인 화면은 401, 422, 5xx, 네트워크 실패, 기타 실패를 사용자 메시지와 toast로 표시해야 한다.
 - AUTH-REQ-036: 로그인 화면은 Google 로그인 버튼 클릭 시 Gateway의 `/auth/google/login`으로 브라우저를 이동시켜야 한다.
 - AUTH-REQ-037: 회원가입 화면은 이름, 이메일, 비밀번호, 비밀번호 확인을 제출하고 성공 시 성공 toast를 표시한 뒤 `/dashboard`로 이동해야 한다.
@@ -64,12 +63,13 @@ Auth는 보호된 Gateway API가 `auth_token` 쿠키에서 현재 사용자를 �
 - AUTH-REQ-039: 회원가입 화면은 백엔드 오류, 5xx 오류, 네트워크 실패, 기타 실패를 사용자 메시지와 toast로 표시해야 한다.
 - AUTH-REQ-040: 홈 화면은 마운트 시 `authApi.me()`를 호출하고, 성공하면 `/dashboard`로 `router.replace`해야 한다.
 - AUTH-REQ-041: 홈 화면의 인증 확인이 실패하면 공개 랜딩 화면을 렌더링할 수 있도록 로딩 상태를 해제해야 한다.
-- AUTH-REQ-042: 클라이언트 공통 API 인터셉터는 `/auth/*`와 `/`가 아닌 경로에서 401 응답을 받으면 `/auth/login`으로 이동시켜야 한다.
+- AUTH-REQ-042: 클라이언트 API 인터셉터는 `/auth/*`와 `/`가 아닌 경로에서 401 응답을 받으면 현재 `pathname + search + hash`를 URL-encode한 `/auth/login?next=...`로 이동시켜야 한다.
 - AUTH-REQ-043: 클라이언트 공통 API 인터셉터는 `/auth/*`와 `/`에서는 401 응답을 자동 리다이렉트하지 않아야 한다.
-- AUTH-REQ-044 (Target Runtime Contract): Auth가 검증한 current user identity만 user형 authenticated execution subject 후보가 될 수 있다. 향후 service account는 별도 Auth/RBAC lifecycle과 승인된 principal type이 필요하다. Resource/organization adapter가 current membership과 permission을 별도로 평가해야 하며 credential/billing principal을 user 또는 service-account identity로 해석해서는 안 된다.
-- AUTH-REQ-045 (Target Runtime Contract): Conversation Access Grant와 Purge Receipt는 사용자 authentication이 아닌 scoped capability다. Gateway 공통 `get_current_user` 또는 authenticated endpoint가 이를 JWT/session identity로 받아들여서는 안 된다.
-- AUTH-REQ-046 (Target Runtime Contract): Public Chatbot route는 valid login cookie가 함께 있어도 명시적으로 authenticated internal surface로 전환되지 않는 한 anonymous public audience를 유지해야 한다. Optional authentication으로 private Knowledge/Memory 권한을 높여서는 안 된다.
-- AUTH-REQ-047 (Target Runtime Contract): Authenticated request audit actor는 실제 current user에서 파생하고 public capability request lifecycle actor는 `actor_id=null`, `actor_type='public'`으로 표현해야 한다. 비동기 purge completion 같은 system operation은 별도 `system` actor를 사용한다. App/deployment owner, credential/billing principal 또는 Access Grant reference를 user actor로 합성해서는 안 된다.
+- AUTH-REQ-044: `next`는 `/`로 시작하고 URL 파싱·정규화 전후에 클라이언트와 같은 origin을 유지하는 경로만 허용해야 한다. 절대 URL, `//host`, `\\host`, `/%2e%2e//host` 형태는 `/dashboard`로 fallback해 open redirect를 막아야 한다.
+- AUTH-REQ-045 (Target Runtime Contract): Auth가 검증한 current user identity만 user형 authenticated execution subject 후보가 될 수 있다. 향후 service account는 별도 Auth/RBAC lifecycle과 승인된 principal type이 필요하다. Resource/organization adapter가 current membership과 permission을 별도로 평가해야 하며 credential/billing principal을 user 또는 service-account identity로 해석해서는 안 된다.
+- AUTH-REQ-046 (Target Runtime Contract): Conversation Access Grant와 Purge Receipt는 사용자 authentication이 아닌 scoped capability다. Gateway 공통 `get_current_user` 또는 authenticated endpoint가 이를 JWT/session identity로 받아들여서는 안 된다.
+- AUTH-REQ-047 (Target Runtime Contract): Public Chatbot route는 valid login cookie가 함께 있어도 명시적으로 authenticated internal surface로 전환되지 않는 한 anonymous public audience를 유지해야 한다. Optional authentication으로 private Knowledge/Memory 권한을 높여서는 안 된다.
+- AUTH-REQ-048 (Target Runtime Contract): Authenticated request audit actor는 실제 current user에서 파생하고 public capability request lifecycle actor는 `actor_id=null`, `actor_type='public'`으로 표현해야 한다. 비동기 purge completion 같은 system operation은 별도 `system` actor를 사용한다. App/deployment owner, credential/billing principal 또는 Access Grant reference를 user actor로 합성해서는 안 된다.
 
 ## Policies And Edge Cases
 
@@ -87,6 +87,7 @@ Auth는 보호된 Gateway API가 `auth_token` 쿠키에서 현재 사용자를 �
 - 실제 로그아웃 사용자 경로는 서버 로그아웃 후 로그인 화면으로 이동해야 한다.
 - Frontend auth 타입에는 `emailVerified`, `role`, `isActive`, email verification, password reset 관련 타입이 있으나 현재 Gateway auth 응답과 구현된 화면/API는 그 전체 필드를 제공하지 않는다.
 - Google OAuth 설정은 `GOOGLE_CLIENT_ID`와 `GOOGLE_CLIENT_SECRET` 환경 변수에 의존한다.
+- `next` 복귀는 현재 이메일/비밀번호 로그인에만 적용한다. Google OAuth callback은 AUTH-REQ-027~028의 기존 대시보드 리다이렉트를 유지한다.
 - JWT 서명은 `SECRET_KEY` 환경 변수와 HS256 알고리즘을 사용한다.
 
 ## Open Questions

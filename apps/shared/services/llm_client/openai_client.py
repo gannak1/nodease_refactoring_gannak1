@@ -65,6 +65,12 @@ class OpenAIClient(BaseLLMClient):
 
     _LONG_TIMEOUT_PREFIXES = ("gpt-5", "o1", "o3", "o4")
     _RESPONSES_ENDPOINT_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+    _RESPONSES_UNSUPPORTED_GENERATION_PARAMS = (
+        "top_p",
+        "presence_penalty",
+        "frequency_penalty",
+        "stop",
+    )
     _LEGACY_COMPLETIONS_PREFIXES = (
         "text-davinci",
         "text-curie",
@@ -102,6 +108,9 @@ class OpenAIClient(BaseLLMClient):
         if self._uses_strict_generation_params():
             if "temperature" in normalized and normalized["temperature"] != 1:
                 normalized["temperature"] = 1
+        if self._should_use_responses_endpoint():
+            for parameter in self._RESPONSES_UNSUPPORTED_GENERATION_PARAMS:
+                normalized.pop(parameter, None)
         return normalized
 
     def _build_completion_prompt(self, messages: List[Dict[str, Any]]) -> str:

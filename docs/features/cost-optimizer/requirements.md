@@ -842,9 +842,10 @@ Cost Optimizer는 모델 교체뿐 아니라 LLM 노드의 파라미터 조정 �
 - 사용자-facing 답변이나 창의적 생성 노드는 낮추더라도 품질 영향이 있을 수 있으므로 반드시 A/B 후보로만 제안한다.
 - `temperature` 추천은 직접 비용 절감보다 실패, 재시도, fallback 비용 감소를 목표로 한다.
 
-`top_p` 추천은 provider 호환성과 조합 안정성을 우선한다.
+`top_p` 추천은 provider/model 호환성과 조합 안정성을 우선한다.
 
-- Anthropic 계열처럼 현재 UI/실행 경로에서 `top_p` 동시 사용을 제한하는 모델은 추천 대상에서 제외하거나 제거 후보로만 표시한다.
+- Anthropic 계열처럼 현재 UI/실행 경로에서 `top_p` 동시 사용을 제한하는 모델과 OpenAI GPT-5/o Responses 계열처럼 중앙 runtime 보정이 `top_p`를 제외하는 모델은 새 값 추천 대상에서 제외하거나 제거 후보로만 표시한다.
+- 중앙 runtime 보정은 저장된 node parameter를 바꾸지 않고, GPT-5/o Responses 요청에서 지원하지 않는 `top_p`, `presence_penalty`, `frequency_penalty`, `stop`을 제거한다.
 - `temperature`와 `top_p`가 동시에 극단값이면 한쪽만 조정하도록 추천한다.
 - 단독 비용 절감 근거가 약하므로 `temperature` 안정화 추천의 보조 항목으로 다룬다.
 

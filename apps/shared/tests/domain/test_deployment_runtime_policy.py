@@ -7,6 +7,7 @@ from apps.shared.domain.deployment_runtime_policy import (
     DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
     DEPLOYMENT_API,
     DEPLOYMENT_CHATBOT,
+    DEPLOYMENT_INTERNAL_CHATBOT,
     DEPLOYMENT_MCP,
     DEPLOYMENT_SCHEDULE,
     DEPLOYMENT_WEBAPP,
@@ -53,6 +54,7 @@ class FakeDeploymentType(str, Enum):
                 DEPLOYMENT_WEBAPP,
                 DEPLOYMENT_WIDGET,
                 DEPLOYMENT_CHATBOT,
+                DEPLOYMENT_INTERNAL_CHATBOT,
                 DEPLOYMENT_MCP,
                 DEPLOYMENT_SCHEDULE,
                 DEPLOYMENT_WEBHOOK,
@@ -65,6 +67,7 @@ class FakeDeploymentType(str, Enum):
                 DEPLOYMENT_WEBAPP,
                 DEPLOYMENT_WIDGET,
                 DEPLOYMENT_CHATBOT,
+                DEPLOYMENT_INTERNAL_CHATBOT,
                 DEPLOYMENT_MCP,
                 DEPLOYMENT_SCHEDULE,
                 DEPLOYMENT_WEBHOOK,
@@ -86,6 +89,7 @@ def test_runtime_surface_matrix_allows_only_documented_types(surface, allowed):
         DEPLOYMENT_WEBAPP,
         DEPLOYMENT_WIDGET,
         DEPLOYMENT_CHATBOT,
+        DEPLOYMENT_INTERNAL_CHATBOT,
         DEPLOYMENT_MCP,
         DEPLOYMENT_WORKFLOW_NODE,
         DEPLOYMENT_SCHEDULE,
@@ -107,6 +111,27 @@ def test_runtime_policy_fails_closed_for_unknown_surface_or_type():
     unknown_type = evaluate_deployment_runtime_surface("future", SURFACE_PUBLIC_INFO)
     assert unknown_type.allowed is False
     assert unknown_type.reason == "unknown_deployment_type"
+
+
+def test_internal_chatbot_is_allowed_only_on_authenticated_surfaces():
+    deployment_type = "internal_chatbot"
+
+    assert is_deployment_type_allowed_for_surface(
+        deployment_type,
+        SURFACE_AUTHENTICATED_RUN_INFO,
+    )
+    assert is_deployment_type_allowed_for_surface(
+        deployment_type,
+        SURFACE_AUTHENTICATED_RUN,
+    )
+    assert not is_deployment_type_allowed_for_surface(
+        deployment_type,
+        SURFACE_PUBLIC_INFO,
+    )
+    assert not is_deployment_type_allowed_for_surface(
+        deployment_type,
+        SURFACE_APP_PUBLIC_RUN,
+    )
 
 
 @pytest.mark.parametrize(

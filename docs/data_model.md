@@ -345,7 +345,7 @@ workflow 단위 월간 LLM 예산 ([features/budget-management](features/budget-
 | id | UUID | PK |
 | app_id | UUID | NOT NULL, FK→apps.id (CASCADE) |
 | version | INTEGER | NOT NULL |
-| type | VARCHAR(13) | NOT NULL — deployment type (api/webapp/widget/mcp/workflow_node/schedule/webhook/chatbot) |
+| type | DeploymentType enum | NOT NULL — deployment type (api/webapp/widget/mcp/workflow_node/schedule/webhook/chatbot/internal_chatbot) |
 | graph_snapshot | JSONB | NOT NULL — 배포 시점 graph 고정본. MBA-190 이후 server가 계산한 WorkflowNode target deployment ID/version/snapshot-hash internal binding을 포함할 수 있다. MBA-233 LLM node의 `knowledgeBases`/`knowledgeCollections` configured intent도 보존하되 public graph 응답에서는 internal binding과 두 Knowledge reference 목록을 제거한다 |
 | config / input_schema / output_schema | JSONB | NULL |
 | description | VARCHAR | NULL |

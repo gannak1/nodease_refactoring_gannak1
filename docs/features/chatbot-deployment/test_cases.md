@@ -14,9 +14,10 @@ Status: Draft
 - `conversation_id`가 없으면 `execution_context.conversation_id`는 None.
 - `conversation_id`/`memory_mode`는 dispatch되는 워크플로우 `inputs`에서 제거된다.
 - 공개 실행(`/run-public`)은 `execution_subject`를 주입하지 않고 workflow owner 권한으로 private RAG를 fallback하지 않는다.
-- Current generic 인증 실행(`/deployments/{deployment_id}/run`)은 `execution_context.execution_subject`에 로그인 사용자를 주입하고 예산 actor도 로그인 사용자로 기록한다.
-- Current generic 인증 실행의 legacy `conversation_id`는 deployment, execution subject, client conversation id 기준으로 서버에서 namespace 처리되어 사용자 간 execution-log memory context가 섞이지 않는다.
-- Current generic 인증 실행은 활성 배포가 아니거나 app의 `active_deployment_id`와 일치하지 않는 배포를 거부한다.
+- 인증 내부 실행(`/deployments/{deployment_id}/run`)은 `execution_context.execution_subject`에 로그인 사용자를 주입하고 예산 actor도 로그인 사용자로 기록한다.
+- `internal_chatbot` 인증 실행은 같은 Gateway→Runtime 계약을 사용해 로그인 사용자를 `execution_subject`로 전달하고, 챗봇 `memory_mode`를 강제하며, `conversation_id`를 deployment와 사용자 기준으로 namespace 처리한다.
+- 인증 내부 실행의 `conversation_id`는 deployment, execution subject, client conversation id 기준으로 서버에서 namespace 처리되어 사용자 간 memory context가 섞이지 않는다.
+- 인증 내부 실행은 활성 배포가 아니거나 app의 `active_deployment_id`와 일치하지 않는 배포를 거부한다.
 - 실행 화면용 run-info는 `auth_secret`, `graph_snapshot`을 반환하지 않고 입력/출력 schema와 표시 metadata만 반환한다.
 - 엔진 실패 예외 문자열에 secret-like 값이 있어도 배포 실행 응답 detail에는 원문을 노출하지 않는다.
 
@@ -31,11 +32,15 @@ Status: Draft
 - `create_run_log`가 `data.conversation_id`를 `WorkflowRun.conversation_id`로 저장한다.
 - `conversation_id`가 없으면 None으로 저장한다.
 
-### Client — deployment success links
+### Client — deployment UI and authentication return
 
-- Current `useDeployment`의 챗봇 배포 결과는 `${origin}/embed/chat/{url_slug}` 공개 링크와 `${origin}/modules/{workflow_id}/run?deploymentId={deployment_id}` generic 인증 실행 링크를 분리해서 만든다. Target 내부 Chatbot link 계약은 별도다.
-- Current `SuccessStep`은 챗봇 배포 성공 시 공개 챗봇 공유 링크가 anonymous public-only RAG임을 표시하고, generic 인증 실행 링크가 로그인 사용자 권한 실행임을 별도 표시한다.
+- 배포 메뉴는 `공개 챗봇`과 `내부 챗봇`을 별도 항목으로 표시하고 각각 `chatbot`, `internal_chatbot` 배포를 생성한다.
+- `useDeployment`의 공개 챗봇 결과는 `${origin}/embed/chat/{url_slug}`만 만들고, 내부 챗봇 결과는 `${origin}/modules/{workflow_id}/run?deploymentId={deployment_id}` 인증 링크만 만든다.
+- `SuccessStep`은 선택한 챗봇 유형에 맞는 공개 링크 또는 사내 인증 링크만 표시하고 두 보안 경계를 한 배포 결과에서 섞지 않는다. 내부 챗봇에는 public REST API endpoint/secret/test panel을 표시하지 않는다.
 - 공개 챗봇 공유 링크 설명은 private Knowledge 접근을 암시하지 않는다.
+- 내부 실행 페이지는 `internal_chatbot`을 실행할 때 `memory_mode: true`와 빈 값이 아닌 `conversation_id`를 전송한다.
+- 내부 실행 링크에서 `401`을 받으면 `/auth/login?next=<원래 내부 실행 경로>`로 이동하고, 일반 로그인 성공 후 safe same-origin `next` 경로로 복귀한다.
+- 절대 URL, `//host`, `/%2e%2e//host` 처럼 정규화 후 외부 URL이 되는 `next` 값은 무시하고 `/dashboard`로 이동한다.
 
 ## API Tests
 
@@ -47,7 +52,7 @@ Status: Draft
 
 ## E2E Tests
 
-- `startNode → llmNode → answerNode` 워크플로우를 "챗봇 배포"로 배포하고 `${origin}/embed/chat/{slug}` 공유 링크 확인.
+- `startNode → llmNode → answerNode` 워크플로우를 "공개 챗봇 배포"로 배포하고 `${origin}/embed/chat/{slug}` 공유 링크 확인.
 - 챗봇 링크에서 2~3턴 대화 → N턴 응답이 N-1턴 맥락을 반영(기억 동작).
 - 다른 브라우저/시크릿(새 `conversation_id`)에서 열어 첫 대화 맥락이 새지 않음(방문자 격리).
 - 대화 중 새로고침 후에도 서버 기억으로 맥락 유지(같은 `conversation_id`).
@@ -55,7 +60,9 @@ Status: Draft
 ## Permission Tests
 
 - 배포 생성은 `deploy` 권한 없는 사용자에게 거부(기존 deployment 권한 테스트 범위).
-- Current generic 인증 실행은 `execute` 권한 없는 사용자에게 거부한다.
+- 내부 챗봇은 authenticated deployment run/run-info surface에서만 허용하고 public info 및 `/run-public` surface에서는 거부한다.
+- 내부 챗봇 preflight는 `authenticated_user` audience로 private KB 참조를 허용하되, 실제 실행 시점 권한 검사를 대체하지 않는다.
+- 인증 내부 실행은 `execute` 권한 없는 사용자에게 거부한다.
 - 공개 실행은 무인증 표면이므로 private Knowledge/RAG 후보를 anonymous public-only 경계 밖으로 확장하지 않는다.
 - 공개 챗봇 활성화 preflight는 client-supplied audience hint로 우회할 수 없다.
 
@@ -75,3 +82,4 @@ Status: Draft
 
 - 시작 노드에 `conversation_id`/`memory_mode`와 동일 이름의 입력 변수가 있으면 해당 값이 pop되어 삼켜진다.
 - `localStorage` 접근 불가 시 세션 한정 임시 `conversation_id`로 폴백(대화 격리는 유지, 새로고침 시 초기화 가능).
+- 다른 organization을 active context로 선택한 사용자가 내부 링크를 열면 run-info는 `404`를 반환하며 클라이언트는 링크만으로 organization을 자동 전환하지 않는다.

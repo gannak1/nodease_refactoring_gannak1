@@ -211,7 +211,7 @@ Purge는 일반 KB lifecycle state가 아니다. Retention/legal-hold purge, raw
 
 ### Workflow Runtime RAG
 
-1. Workflow runtime이 run context에서 execution subject를 resolve한다. Interactive run은 request user를 subject로 전달할 수 있다.
+1. Workflow runtime이 run context에서 execution subject를 resolve한다. Gateway는 `internal_chatbot` 인증 run에서 current user를 subject로 전달하고 공개 `chatbot` run에는 subject를 전달하지 않는다.
 2. Execution subject가 있으면 Knowledge Permission Helper가 해당 subject 기준으로 KB permission과 source ACL/requester authorization을 평가한다.
 3. Execution subject가 없으면 Workflow owner, deployment owner, builder, `user_id`를 silent fallback으로 쓰지 않는다. Runtime은 anonymous public-only로 낮추고, active public collection에 연결된 active KB만 candidate로 남긴다.
 4. Public collection은 `KnowledgeCollection.safe_metadata["visibility"] == "public"`으로 판정한다. 누락 또는 다른 값은 private로 취급한다. Source-managed Collection과 source-managed KB는 Public Exposure Policy Store의 valid source/connector public exposure approval도 통과해야 candidate로 남는다. Approval primitive가 없는 현재 anonymous runtime은 `source_identity_id`가 있는 Collection을 child KB 유형과 무관하게 fail-closed 제외하며, source-managed public 후보는 warning이 아니라 `source_public_exposure_required` blocked state로 표시한다.

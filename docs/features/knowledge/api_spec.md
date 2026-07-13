@@ -519,6 +519,8 @@ MBA-176에서 source/connector public exposure approval primitive가 아직 구�
 
 Workflow runtime에서 RAG를 호출하는 API나 내부 service call은 server-resolved execution audience를 명시한다. MBA-232 contract는 interactive/current user를 `AuthenticatedAudience`로, subject 부재를 synthetic identity 없는 `AnonymousPublicAudience`로 표현한다. 승인된 service account/operator audience는 별도 lifecycle/approval 계약 전까지 MBA-232 closed union에 포함하지 않는다. Subject가 없으면 retrieval은 실패가 아니라 anonymous public-only로 낮아진다.
 
+`/api/v1/deployments/{deployment_id}/run`의 `internal_chatbot`은 current user를 user execution subject로 주입하고 Runtime은 해당 user의 KB permission/source ACL을 다시 검사한다. `/api/v1/run-public/{url_slug}`의 공개 `chatbot`은 subject를 주입하지 않으며 `internal_chatbot`은 public surface에서 허용하지 않는다.
+
 필수 계약:
 
 | 항목 | 규칙 |

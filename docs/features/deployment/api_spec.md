@@ -23,7 +23,7 @@ Verified Against: `feature/mba-233 @ b4ff694f`
 
 ### `GET /api/v1/deployments/public/{url_slug}/info`
 
-인증 없는 공유 화면에서 입력 폼을 구성하기 위한 metadata endpoint다. Production 기본 `DeploymentRuntimePolicy`는 active deployment가 target app 소유이고 `type`이 `webapp`, `widget`, `chatbot`인 경우에만 응답한다. API, MCP, schedule, webhook, workflow-node, unknown/empty type과 stale/cross-app active pointer는 safe `404`로 닫는다.
+인증 없는 공유 화면에서 입력 폼을 구성하기 위한 metadata endpoint다. Production 기본 `DeploymentRuntimePolicy`는 active deployment가 target app 소유이고 `type`이 `webapp`, `widget`, `chatbot`인 경우에만 응답한다. API, `internal_chatbot`, MCP, schedule, webhook, workflow-node, unknown/empty type과 stale/cross-app active pointer는 safe `404`로 닫는다.
 
 응답은 `url_slug`, safe app name/description, deployment version/type, input/output schema만 포함하고 app secret, graph snapshot, workflow/internal organization identifier를 포함하지 않는다. Allowlist 교체는 FastAPI composition dependency에 불변 policy 객체를 명시적으로 주입하는 방식만 허용하며 환경변수 기반 확장은 지원하지 않는다.
 
@@ -48,7 +48,7 @@ Request body:
 | Field | Required | Notes |
 | --- | --- | --- |
 | `app_id` | yes | Target app. Server validates active organization and deploy/manage permission |
-| `type` | no | `api`, `webapp`, `widget`, `chatbot`, `mcp`, `workflow_node`, `schedule`, `webhook`. Defaults to `api` |
+| `type` | no | `api`, `webapp`, `widget`, `chatbot`, `internal_chatbot`, `mcp`, `workflow_node`, `schedule`, `webhook`. Defaults to `api` |
 | `config` | no | Deployment-specific config. Defaults to `{}` |
 | `is_active` | no | Preview context. Defaults to `true`; inactive create may warn but does not activate |
 | `graph_snapshot` | no | If omitted, server resolves the current app/workflow deployment snapshot candidate |
@@ -254,6 +254,8 @@ Blocking preflight failure:
 
 - Preflight preview requires the same active organization and workflow deploy/manage permission as deployment create.
 - Public/API/webhook/schedule/chatbot/mcp surfaces do not receive user KB permission unless a future service account/assigned operator policy explicitly provides an execution subject.
+- `internal_chatbot` run/run-info requires active membership in the workflow organization and workflow `execute` permission. When `X-Organization-Id` is supplied, it must also match the deployment app organization. Run dispatch sets the current user as `execution_subject`.
+- `internal_chatbot` preflight derives `authenticated_user` server-side, so a private KB reference alone does not block activation; runtime still rechecks the current user's KB permission and source ACL.
 - Public Chatbot exact Origin/embed/CSP allowlist is deployment-owned versioned configuration. Client hints, wildcard, or environment fallback cannot widen it; the browser Conversation Session surface remains unavailable until this contract is implemented.
 - Conversation Access Grant proves only public session access. It cannot become an execution subject, credential/billing principal, or audit actor.
 - `workflow_node` deployment is not directly executable through public/API/webhook URL surfaces or authenticated deployment `run`/`run-info` endpoints. Workflow-node target inspection uses `workflowNode.data.appId` and inherits parent execution subject at runtime.

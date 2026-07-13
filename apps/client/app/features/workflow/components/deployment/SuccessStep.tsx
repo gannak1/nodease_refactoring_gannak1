@@ -147,7 +147,7 @@ ${authHeader}  -d '{
         )}
 
         {/* Web App / Chatbot Share Link */}
-        {result.webAppUrl && (
+        {result.webAppUrl && deploymentType !== 'internal_chatbot' && (
           <div className="border-2 border-blue-200 rounded-lg p-4 bg-blue-50">
             <label className="block text-sm font-semibold text-blue-900 mb-2">
               {deploymentType === 'chatbot'
@@ -173,7 +173,7 @@ ${authHeader}  -d '{
           </div>
         )}
 
-        {deploymentType === 'chatbot' && result.internalRunUrl && (
+        {deploymentType === 'internal_chatbot' && result.internalRunUrl && (
           <div className="border-2 border-emerald-200 rounded-lg p-4 bg-emerald-50">
             <label className="block text-sm font-semibold text-emerald-900 mb-2">
               사내 인증 실행 링크
@@ -497,6 +497,7 @@ ${authHeader}  -d '{
         {!result.webAppUrl &&
           !result.embedUrl &&
           !result.isWorkflowNode &&
+          deploymentType !== 'internal_chatbot' &&
           deploymentType !== 'schedule' &&
           !isWebhookTrigger && (
             <div className="grid grid-cols-2 gap-6">

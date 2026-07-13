@@ -18,6 +18,10 @@ import type {
   InputVariable,
 } from '@/app/features/workflow/types/Deployment';
 import { getDeploymentRunFinalPreview } from '@/app/features/workflow/utils/deploymentRunResult';
+import {
+  buildLoginRedirectPath,
+  getCurrentAuthReturnPath,
+} from '@/lib/authReturn';
 
 const isCheckboxVariable = (variable: InputVariable) =>
   variable.type === 'boolean' || variable.type === 'checkbox';
@@ -41,6 +45,12 @@ const readErrorMessage = (error: unknown) => {
 
   return '배포 실행에 실패했습니다.';
 };
+
+const isUnauthorized = (error: unknown) =>
+  typeof error === 'object' &&
+  error !== null &&
+  'response' in error &&
+  (error as { response?: { status?: unknown } }).response?.status === 401;
 
 const defaultValueFor = (variable: InputVariable) =>
   isCheckboxVariable(variable) ? false : '';
@@ -68,7 +78,7 @@ const makeConversationId = () => {
 };
 
 export default function AuthenticatedDeploymentRunPage() {
-  const router = useRouter();
+  const { push, replace } = useRouter();
   const params = useParams<{ id: string }>();
   const searchParams = useSearchParams();
   const workflowId = params.id;
@@ -123,7 +133,12 @@ export default function AuthenticatedDeploymentRunPage() {
         setInputs(nextInputs);
       })
       .catch((error) => {
-        if (active) setLoadError(readErrorMessage(error));
+        if (!active) return;
+        if (isUnauthorized(error)) {
+          replace(buildLoginRedirectPath(getCurrentAuthReturnPath()));
+          return;
+        }
+        setLoadError(readErrorMessage(error));
       })
       .finally(() => {
         if (active) setIsLoading(false);
@@ -132,7 +147,7 @@ export default function AuthenticatedDeploymentRunPage() {
     return () => {
       active = false;
     };
-  }, [deploymentId, workflowId]);
+  }, [deploymentId, replace, workflowId]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -155,7 +170,10 @@ export default function AuthenticatedDeploymentRunPage() {
         if (coerced !== undefined) payload[variable.name] = coerced;
       }
 
-      if (deployment?.type === 'chatbot') {
+      if (
+        deployment?.type === 'chatbot' ||
+        deployment?.type === 'internal_chatbot'
+      ) {
         payload.memory_mode = true;
         payload.conversation_id = conversationId;
       }
@@ -181,7 +199,7 @@ export default function AuthenticatedDeploymentRunPage() {
           <div className="min-w-0">
             <button
               type="button"
-              onClick={() => router.push('/dashboard')}
+              onClick={() => push('/dashboard')}
               className="mb-4 inline-flex items-center gap-2 text-sm font-semibold text-slate-500 hover:text-slate-900"
             >
               <ArrowLeft className="h-4 w-4" />

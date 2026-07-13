@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => {
@@ -41,20 +41,7 @@ vi.mock('@/app/features/knowledge/api/knowledgeApi', () => ({
 }));
 
 vi.mock('@/app/features/knowledge/hooks/useDocumentProcess', () => ({
-  useDocumentProcess: () => ({
-    isAnalyzing: false,
-    analyzingAction: null,
-    isPreviewLoading: false,
-    showCostConfirm: false,
-    setShowCostConfirm: vi.fn(),
-    analyzeResult: null,
-    setAnalyzeResult: vi.fn(),
-    setPendingAction: vi.fn(),
-    previewSegments: [],
-    handleSaveClick: vi.fn(),
-    handlePreviewClick: vi.fn(),
-    handleConfirmCost: vi.fn(),
-  }),
+  useDocumentProcess: vi.fn(),
 }));
 
 vi.mock('@/app/features/knowledge/hooks/useGenericCredential', () => ({
@@ -109,6 +96,24 @@ vi.mock(
 );
 
 import DocumentSettingsPage from './page';
+import { useDocumentProcess } from '@/app/features/knowledge/hooks/useDocumentProcess';
+
+const mockedUseDocumentProcess = vi.mocked(useDocumentProcess);
+
+const createDocumentProcessResult = (handleSaveClick = vi.fn()) => ({
+  isAnalyzing: false,
+  analyzingAction: null,
+  isPreviewLoading: false,
+  showCostConfirm: false,
+  setShowCostConfirm: vi.fn(),
+  analyzeResult: null,
+  setAnalyzeResult: vi.fn(),
+  setPendingAction: vi.fn(),
+  previewSegments: [],
+  handleSaveClick,
+  handlePreviewClick: vi.fn(),
+  handleConfirmCost: vi.fn(),
+});
 
 const knowledgeBase = {
   id: 'kb-1',
@@ -149,10 +154,19 @@ const deferred = <T,>() => {
   return { promise, resolve };
 };
 
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.params = { id: 'kb-1', documentId: 'document-1' };
   mocks.getKnowledgeBase.mockResolvedValue(knowledgeBase);
+  mocks.getDocumentEditConfig.mockResolvedValue(editConfig(1000));
+  mockedUseDocumentProcess.mockReturnValue(
+    createDocumentProcessResult() as ReturnType<typeof useDocumentProcess>,
+  );
 });
 
 afterEach(() => {
@@ -300,5 +314,57 @@ describe('DocumentSettingsPage request scoping', () => {
       ).toBeDisabled();
     });
     expect(screen.getByTestId('chunk-size')).toHaveTextContent('1000');
+  });
+});
+
+
+describe('DocumentSettingsPage completion redirect', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  it('keeps an already-completed document settings page open', async () => {
+    mocks.getDocument.mockResolvedValue({
+      ...documentResponse('doc-1'),
+      filename: 'guide.md',
+      status: 'completed',
+    });
+
+    await act(async () => {
+      render(<DocumentSettingsPage />);
+    });
+
+    expect(screen.getByRole('heading', { name: 'guide.md' })).toBeVisible();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    expect(mocks.push).not.toHaveBeenCalled();
+  });
+
+  it('returns to the knowledge base after this page starts processing and it completes', async () => {
+    mocks.getDocument.mockResolvedValue({
+      ...documentResponse('doc-1'),
+      filename: 'guide.md',
+    });
+    mockedUseDocumentProcess.mockImplementation((props) =>
+      createDocumentProcessResult(() => {
+        props.setStatus('completed');
+        props.setProgress(100);
+      }) as ReturnType<typeof useDocumentProcess>,
+    );
+
+    await act(async () => {
+      render(<DocumentSettingsPage />);
+    });
+
+    expect(screen.getByRole('heading', { name: 'guide.md' })).toBeVisible();
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: '처리 시작' }));
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    expect(mocks.push).toHaveBeenCalledWith('/dashboard/knowledge/kb-1');
   });
 });

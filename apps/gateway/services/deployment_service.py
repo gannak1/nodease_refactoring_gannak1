@@ -689,7 +689,10 @@ class DeploymentService:
                     )
 
             # 챗봇 배포는 기억모드가 항상 켜져 있어야 한다 (클라이언트 값과 무관하게 서버가 강제).
-            if deployment.type == DeploymentType.CHATBOT:
+            if deployment.type in {
+                DeploymentType.CHATBOT,
+                DeploymentType.INTERNAL_CHATBOT,
+            }:
                 memory_mode_enabled = True
 
             execution_context = {

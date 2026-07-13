@@ -354,6 +354,7 @@ export default function NodeCanvas() {
     handlePublishAsWebApp,
     handlePublishAsWidget,
     handlePublishAsChatbot,
+    handlePublishAsInternalChatbot,
     handlePublishAsWorkflowNode,
     handlePublishAsSchedule,
     handlePublishAsWebhook,
@@ -1228,10 +1229,22 @@ export default function NodeCanvas() {
                       className="w-full px-4 py-3 text-left transition-colors hover:bg-gray-50"
                     >
                       <div className="font-medium text-gray-900">
-                        챗봇 배포
+                        공개 챗봇 배포
                       </div>
                       <div className="mt-1 text-sm text-gray-500">
                         대화 맥락을 기억하는 공개 채팅 페이지 제공
+                      </div>
+                    </button>
+                    <div className="my-1 border-t border-gray-100" />
+                    <button
+                      onClick={handlePublishAsInternalChatbot}
+                      className="w-full px-4 py-3 text-left transition-colors hover:bg-gray-50"
+                    >
+                      <div className="font-medium text-gray-900">
+                        내부 챗봇 배포
+                      </div>
+                      <div className="mt-1 text-sm text-gray-500">
+                        로그인 사용자 권한으로 사내 Knowledge 실행
                       </div>
                     </button>
                     <div className="my-1 border-t border-gray-100" />

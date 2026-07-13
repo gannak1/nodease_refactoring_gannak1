@@ -1,7 +1,6 @@
 # Auth Test Cases
 
 Status: Draft
-Verified Against: feature/mba-106 @ 804d42fbf6b41e6574e4333b0d95376b397e2e64
 
 ## Minimum Failure Rule
 

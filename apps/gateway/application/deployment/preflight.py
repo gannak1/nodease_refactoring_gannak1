@@ -162,6 +162,8 @@ class DeploymentPreflightUseCase:
 
     @staticmethod
     def server_derived_audience(deployment_type: str) -> PreflightAudience:
+        if deployment_type == "internal_chatbot":
+            return "authenticated_user"
         if deployment_type == "workflow_node":
             return "workflow_node_inherited"
         if deployment_type in ANONYMOUS_PUBLIC_TYPES:

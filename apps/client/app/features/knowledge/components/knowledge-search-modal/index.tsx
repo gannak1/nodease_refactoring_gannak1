@@ -3,6 +3,10 @@
 import { useState, useEffect } from 'react';
 import { Search, Send, Bot, X, Loader2, Settings } from 'lucide-react';
 import axios from 'axios';
+import {
+  activeOrganizationHeaders,
+  getStoredActiveOrganizationId,
+} from '@/lib/activeOrganization';
 
 const BASE_URL = '';
 
@@ -121,7 +125,10 @@ export default function KnowledgeSearchModal({
       const res = await axios.post<RAGResponse>(
         `${BASE_URL}${endpoint}`,
         payload,
-        { withCredentials: true },
+        {
+          withCredentials: true,
+          headers: activeOrganizationHeaders(getStoredActiveOrganizationId()),
+        },
       );
 
       // Response Handling

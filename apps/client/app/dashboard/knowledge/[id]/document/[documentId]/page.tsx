@@ -73,6 +73,8 @@ export default function DocumentSettingsPage() {
   const [status, setStatus] = useState<string>(''); // 문서 상태
   const [errorMessage, setErrorMessage] = useState<string | null>(null); // [추가] 에러 메시지 상태
   const [document, setDocument] = useState<DocumentResponse | null>(null);
+  const [shouldRedirectAfterProcessing, setShouldRedirectAfterProcessing] =
+    useState(false);
   const [kbName, setKbName] = useState<string>(''); // KB 이름 상태 추가
   const [selectedDbItems, setSelectedDbItems] = useState<
     Record<string, string[]>
@@ -401,6 +403,11 @@ export default function DocumentSettingsPage() {
     keywordFilter,
   });
 
+  const handleStartProcessing = () => {
+    setShouldRedirectAfterProcessing(true);
+    handleSaveClick();
+  };
+
   // DB 연결 저장 핸들러
   const handleConnectionRequest = async (config: DBConfig) => {
     if (!canEditCurrentDocument || !isCurrentEditConfigReady) {
@@ -518,7 +525,8 @@ export default function DocumentSettingsPage() {
       return;
     }
     if (
-      activeProcessingScope.current === currentDocumentScope &&
+      (shouldRedirectAfterProcessing ||
+        activeProcessingScope.current === currentDocumentScope) &&
       status === 'completed' &&
       progress >= 100
     ) {
@@ -527,7 +535,15 @@ export default function DocumentSettingsPage() {
       }, 3000);
       return () => clearTimeout(timer);
     }
-  }, [status, progress, router, kbId, permissionScope, currentDocumentScope]);
+  }, [
+    shouldRedirectAfterProcessing,
+    status,
+    progress,
+    router,
+    kbId,
+    permissionScope,
+    currentDocumentScope,
+  ]);
   if (isLoading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
@@ -783,7 +799,7 @@ export default function DocumentSettingsPage() {
             )}
 
             <button
-              onClick={handleSaveClick}
+              onClick={handleStartProcessing}
               disabled={
                 isEditActionDisabled ||
                 isAnalyzing ||

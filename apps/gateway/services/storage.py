@@ -1,7 +1,9 @@
+import errno
 import logging
 import os
 import shutil
 from abc import ABC, abstractmethod
+from pathlib import Path
 from urllib.parse import quote
 
 import boto3
@@ -18,6 +20,10 @@ from apps.gateway.services.storage_reference import (
 )
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_LOCAL_UPLOAD_DIR = "/app/uploads"
+FALLBACK_LOCAL_UPLOAD_DIR = str(Path(__file__).resolve().parents[3] / "uploads")
+_LOCAL_STORAGE_FALLBACK_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
 
 
 class StorageService(ABC):
@@ -37,9 +43,19 @@ class StorageService(ABC):
 
 
 class LocalStorageService(StorageService):
-    def __init__(self, upload_dir: str = "/app/uploads"):  # 컨테이너에서 쓰기 가능
-        self.upload_dir = upload_dir
-        os.makedirs(self.upload_dir, exist_ok=True)
+    def __init__(self, upload_dir: str | None = None):
+        target_dir = upload_dir or DEFAULT_LOCAL_UPLOAD_DIR
+
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+        except OSError as exc:
+            if upload_dir is not None or exc.errno not in _LOCAL_STORAGE_FALLBACK_ERRNOS:
+                raise
+
+            target_dir = FALLBACK_LOCAL_UPLOAD_DIR
+            os.makedirs(target_dir, exist_ok=True)
+
+        self.upload_dir = target_dir
 
     def upload(self, file: UploadFile) -> str:
         unique_filename = build_upload_object_name(file.filename)

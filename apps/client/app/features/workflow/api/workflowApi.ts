@@ -1,5 +1,9 @@
 import axios from 'axios';
 import {
+  buildLoginRedirectPath,
+  getCurrentAuthReturnPath,
+} from '@/lib/authReturn';
+import {
   attachActiveOrganizationHeader,
   getStoredActiveOrganizationId,
 } from '@/lib/activeOrganization';
@@ -95,10 +99,17 @@ const createHttpError = (
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
+    if (
+      error.response?.status === 401 &&
+      typeof window !== 'undefined' &&
+      !window.location.pathname.startsWith('/auth') &&
+      window.location.pathname !== '/'
+    ) {
       // 인증 만료 → 로그인 페이지로 리다이렉트
       console.warn('Authentication expired, redirecting to login...');
-      window.location.href = '/auth/login';
+      window.location.href = buildLoginRedirectPath(
+        getCurrentAuthReturnPath(),
+      );
     }
     return Promise.reject(error);
   },

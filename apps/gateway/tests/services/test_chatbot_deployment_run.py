@@ -300,10 +300,17 @@ def test_api_slug_run_rejects_non_api_deployment_types(monkeypatch, deployment_t
     assert exc_info.value.detail == "Deployment not found."
 
 
-def test_authenticated_run_uses_current_user_execution_subject(monkeypatch):
+@pytest.mark.parametrize(
+    "deployment_type",
+    [DeploymentType.CHATBOT, DeploymentType.INTERNAL_CHATBOT],
+)
+def test_authenticated_run_uses_current_user_execution_subject(
+    monkeypatch,
+    deployment_type,
+):
     from apps.gateway.services import deployment_service as deployment_module
 
-    app_row, deployment_row = _deployed_app(DeploymentType.CHATBOT)
+    app_row, deployment_row = _deployed_app(deployment_type)
     current_user_id = uuid4()
     db = _Db(rows=[app_row, deployment_row])
     budget_calls = []

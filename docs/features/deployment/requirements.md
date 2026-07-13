@@ -24,7 +24,7 @@ Webhook capture helper는 public webhook 실행 표면이 아니라 로그인한
 ## Functional Requirements
 
 - DEP-REQ-001: 배포 생성과 활성화는 workflow graph snapshot, input/output schema, deployment type, active 상태를 기준으로 실행 가능 surface를 만든다.
-- DEP-REQ-002: `DeploymentType`은 `api`, `webapp`, `widget`, `chatbot`, `mcp`, `workflow_node`, `schedule`, `webhook`를 지원한다.
+- DEP-REQ-002: `DeploymentType`은 `api`, `webapp`, `widget`, `chatbot`, `internal_chatbot`, `mcp`, `workflow_node`, `schedule`, `webhook`를 지원한다.
 - DEP-REQ-003: LLM node RAG 옵션이 private KB 후보를 참조하고 실행 표면에 authenticated execution subject가 없으면 해당 활성 배포는 preflight에서 차단해야 한다.
 - DEP-REQ-004: Preflight preview endpoint는 UI가 결과를 렌더링할 수 있도록 blocked 상태도 `200 OK` 응답으로 반환한다. `is_active=false` preview는 inactive 저장 가능성을 반영해 활성화 blocker를 warning으로 낮출 수 있지만, create(`is_active=true`)와 enable/toggle activation의 blocking preflight는 완화하지 않는다.
 - DEP-REQ-005: 실제 배포를 활성 surface에 올리는 create(`is_active=true`), enable/toggle activation은 blocking preflight 실패 시 `409 deployment.preflight.blocked`로 실패해야 한다.
@@ -36,10 +36,11 @@ Webhook capture helper는 public webhook 실행 표면이 아니라 로그인한
 - DEP-REQ-011: Schedule record와 scheduler job은 active `type=schedule` deployment에서만 생성/로드/실행한다. `scheduleTrigger` node가 `workflow_node`, `chatbot`, `api` 등 다른 deployment type graph에 포함되어도 schedule 실행 surface를 만들지 않는다.
 - DEP-REQ-012: Webhook 수신 endpoint는 active deployment가 target app 소유이고 active 상태이며 `type=webhook`일 때만 background execution을 예약한다. 같은 slug의 active deployment가 `api`, `chatbot`, `workflow_node`, `schedule` 등 다른 type이면 `accepted`를 반환하지 않고 dispatch 전에 safe 404로 거부한다.
 - DEP-REQ-013: Deployment 실행 surface와 `DeploymentType` allowlist는 Gateway endpoint, scheduler, Workflow Engine task의 개별 문자열 분기가 아니라 중앙 runtime policy matrix에서 판정해야 한다. Unknown surface 또는 unknown deployment type은 fail-closed로 거부한다.
-- DEP-REQ-014: 인증 없는 public deployment info는 기본 runtime policy에서 `webapp`, `widget`, `chatbot` metadata만 노출한다. API, MCP, schedule, webhook, workflow-node와 unknown type은 safe 404로 닫는다. Allowlist는 endpoint 문자열 분기나 환경변수가 아니라 불변 `DeploymentRuntimePolicy` dependency로 주입하며, 확장은 명시적 composition 변경과 계약 테스트를 요구한다.
+- DEP-REQ-014: 인증 없는 public deployment info는 기본 runtime policy에서 `webapp`, `widget`, `chatbot` metadata만 노출한다. API, internal chatbot, MCP, schedule, webhook, workflow-node와 unknown type은 safe 404로 닫는다. Allowlist는 endpoint 문자열 분기나 환경변수가 아니라 불변 `DeploymentRuntimePolicy` dependency로 주입하며, 확장은 명시적 composition 변경과 계약 테스트를 요구한다.
 - DEP-REQ-015: Scheduler는 Celery dispatch 전에 `Schedule.id`와 `deployment_id`가 일치하는 canonical DB row를 확인해야 한다. Row가 삭제되었거나 불일치하면 stale local job을 제거하고 budget check, queue dispatch, `last_run_at`/`next_run_at` update를 수행하지 않아야 한다.
 - DEP-REQ-016: Deployment ID 기반 Worker는 queue 입력의 tenant/resource 식별자를 권한 source of truth로 사용하지 않아야 한다. `workflow_id`, `organization_id`, `app_id`, deployment id/version, runtime credential owner는 DB의 current active Deployment/App에서 재구성하고, queue에서는 검증된 trigger와 제한된 correlation metadata만 전달받아야 한다. Subject 없는 webhook/schedule 실행에 queue 입력으로 `execution_subject`를 주입할 수 없다.
 - DEP-REQ-017: Deployment preflight policy/use case는 FastAPI, SQLAlchemy, concrete adapter를 import하지 않아야 한다. SQLAlchemy adapter는 organization/lifecycle/workflow-node owner/type/active 조건을 pure snapshot으로 변환하고, outer composition root가 port implementation을 주입해야 한다. Existing service facade는 typed application block을 기존 `409 deployment.preflight.blocked` HTTP contract로만 mapping해야 한다.
+- Internal Chatbot execution extension: `internal_chatbot`은 authenticated deployment run/run-info surface에서만 실행·조회한다. Gateway는 대상 workflow organization의 active membership과 workflow `execute` 권한을 dispatch 전에 확인하고, `X-Organization-Id`가 전달되면 배포 앱 organization과의 일치도 확인한 뒤 현재 로그인 사용자를 runtime `execution_subject`로 전달한다.
 - DEP-REQ-018: 동일 schedule occurrence는 persisted `Schedule.next_run_at`에서 얻은 `schedule_id + scheduled_for`로 식별하고 durable claim을 정확히 하나만 생성해야 한다. 여러 Gateway replica가 동시에 due row를 처리해도 unique constraint와 row lock으로 한 winner만 claim해야 한다.
 - DEP-REQ-019: Claim 생성, budget allow/block/unavailable 판단, 필요한 policy audit와 `Schedule.next_run_at` 전진은 application use case가 소유하는 한 DB transaction에서 commit해야 한다. Repository, audit, queue adapter는 독립 commit/rollback을 수행하지 않아야 한다.
 - DEP-REQ-020: Claim commit 뒤 broker publish는 at-least-once로 처리한다. Deterministic idempotency/task id, bounded lease/recovery와 attempt cap을 사용하고 broker network call 중 DB row lock을 유지하지 않아야 한다.
@@ -92,7 +93,8 @@ Webhook capture helper는 public webhook 실행 표면이 아니라 로그인한
 | `api` | Public/app secret 호출에는 사용자 subject가 없다 | Anonymous public-only. Private KB blocked |
 | `webapp` | Public web app surface에는 사용자 subject가 없다 | Anonymous public-only. Private KB blocked |
 | `widget` | Embedded widget surface에는 사용자 subject가 없다 | Anonymous public-only. Private KB blocked |
-| `chatbot` | `/run-public` 공개 실행에는 사용자 subject가 없다. 현재 generic authenticated deployment run은 로그인 사용자를 subject로 사용할 수 있지만 Target Conversation Session을 자동 생성하지 않는다. 별도 `authenticated_internal_chatbot` surface는 후속 접근 정책 구현에 의존한다 | 공개 실행은 anonymous public-only이고 private KB activation을 차단. 별도 내부 surface만 current user 권한 사용 |
+| `chatbot` | `/run-public` 공개 실행에는 사용자 subject가 없다 | Anonymous public-only. Private KB blocked |
+| `internal_chatbot` | 인증 deployment run endpoint가 현재 로그인 사용자를 subject로 전달한다 | Current user 기준 KB permission/source ACL 재검사. Private KB 허용 가능 |
 | `mcp` | 별도 authenticated operator/service account가 없으면 사용자 subject가 없다 | Anonymous public-only. Private KB blocked |
 | `workflow_node` | Public/API/webhook 및 authenticated run/run-info 같은 direct execution surface는 지원하지 않는다. Subworkflow 실행은 parent workflow의 execution context를 상속한다 | Parent subject 기준 KB permission/source ACL. Parent subject가 없으면 anonymous public-only로 평가되어 private KB blocked |
 | `schedule` | 예약 실행에는 사용자 subject가 없다 | Anonymous public-only. Private KB blocked |

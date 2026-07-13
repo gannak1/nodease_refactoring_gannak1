@@ -234,6 +234,7 @@ Status: Draft
 - Current hard-delete baseline은 KB delete가 Knowledge lifecycle service boundary를 통과하고, organization field가 잘못된 legacy row를 포함해 해당 KB를 참조하는 direct KB permission row cleanup이 hard delete와 같은 transaction에서 먼저 일어나며, storage adapter 생성 또는 object delete 실패가 API 실패나 raw path/raw exception log 노출로 이어지지 않음을 검증한다. Storage adapter는 provider 세부정보가 없는 typed delete error를 호출자에게 전달하고, lifecycle service는 한 object cleanup 실패 뒤에도 나머지 object cleanup을 계속한다. Permission cleanup, ORM delete 또는 DB commit이 실패하면 session rollback 후 예외를 전파한다. 이 baseline은 MBA-184의 durable audit/outbox와 target cleanup outbox/reconciler cutover를 대체하지 않는다.
 - S3 delete reference는 configured bucket의 `s3://`, virtual-host, 승인된 path-style URL과 canonical `uploads/` key만 허용한다. URL-encoded 공백/한글 key는 한 번 decode하고, bucket/host mismatch, HTTP, query/fragment, 빈 key, control/dot/backslash segment, `uploads/` 밖 key는 provider 호출 전에 safe typed error로 거부한다.
 - Local delete reference는 configured upload root 내부 resolved path만 허용한다. Root 밖 절대/상대 경로와 symlink escape는 파일을 삭제하지 않고 safe typed error로 닫는다.
+- Local storage는 쓰기 가능한 컨테이너 기본 경로(`/app/uploads`)를 우선 사용하고, 기본 경로가 permission/read-only 오류로 생성되지 않을 때만 프로젝트 `uploads/` 경로로 fallback한다. 명시한 upload root의 생성 실패는 fallback하지 않고 전파한다.
 - Backend upload와 presigned upload가 생성한 S3 key 및 Local path는 같은 canonical builder/delete validator round-trip을 통과해야 한다. Filename 또는 user segment에 slash/backslash, `.`/`..`, control character, 과도한 길이가 있으면 object 생성/presign 전에 safe typed error로 거부하며, delete validator를 완화해 legacy unsafe key를 허용하지 않는다.
 
 ## Client/UI Tests
@@ -242,9 +243,12 @@ Status: Draft
 - KB 상세 source 목록은 `pending` document에 `처리 시작` action과 "처리 시작 전에는 RAG 검색에 사용되지 않는다"는 안내를 표시한다.
 - KB 상세 source 목록은 `failed` document에 `재처리` action을 표시하고, `completed` document에는 처리 시작 CTA를 표시하지 않는다.
 - Pending/failed processing CTA는 document settings 화면으로 이동하며 raw file path, source title, hidden KB id를 새로 노출하지 않는다.
+- 지식 테스트 모달의 일반 검색과 AI 답변 요청은 현재 활성 조직의 `X-Organization-Id` 헤더를 전송한다.
 
 ## Retrieval And Agent Tests
 
+- `internal_chatbot` 실행의 current user는 Runtime permission helper에 그대로 전달되고, 해당 user의 KB permission 또는 source ACL이 거부한 후보는 retrieval 전에 제외된다.
+- 공개 `chatbot`은 execution subject나 owner fallback 없이 anonymous public-only로 검색하며, `internal_chatbot`의 public surface 실행은 safe 404로 거부된다.
 - Auto mode는 collection route helper와 KB permission/source ACL helper 결과로 candidate set을 만든다.
 - Auto mode의 collection/KB cap은 authorization 전 임의 row cap이 아니라 route/use/source ACL helper를 통과한 authorized subset에 적용한다.
 - Builder/recommendation Auto mode에서 명시 `collection_ids`가 없으면 organization 전체 collection이 아니라 actor가 route할 수 있는 collection subset에서 시작한다. MBA-232 Workflow runtime은 missing/empty Collection scope를 0개로 유지하며 이 fallback을 사용하지 않는다.

@@ -36,7 +36,7 @@ describe('SuccessStep', () => {
     );
   });
 
-  it('distinguishes public chatbot link from authenticated internal run link', () => {
+  it('public chatbot shows only the anonymous public link', () => {
     render(
       <SuccessStep
         deploymentType="chatbot"
@@ -58,6 +58,28 @@ describe('SuccessStep', () => {
         '인증 없이 접근하는 공개 링크입니다. 공개 Collection에 연결된 지식만 검색됩니다.',
       ),
     ).toBeVisible();
+    expect(screen.queryByText('사내 인증 실행 링크')).not.toBeInTheDocument();
+    expect(
+      screen.getByText('http://localhost:3000/embed/chat/onboarding-bot'),
+    ).toBeVisible();
+  });
+
+  it('internal chatbot shows only the authenticated run link', () => {
+    render(
+      <SuccessStep
+        deploymentType="internal_chatbot"
+        onClose={vi.fn()}
+        result={{
+          success: true,
+          version: 1,
+          url_slug: 'onboarding-bot',
+          internalRunUrl:
+            'http://localhost:3000/modules/workflow-1/run?deploymentId=deployment-1',
+        }}
+      />,
+    );
+
+    expect(screen.queryByText('공개 챗봇 공유 링크')).not.toBeInTheDocument();
     expect(screen.getByText('사내 인증 실행 링크')).toBeVisible();
     expect(
       screen.getByText(
@@ -65,12 +87,11 @@ describe('SuccessStep', () => {
       ),
     ).toBeVisible();
     expect(
-      screen.getByText('http://localhost:3000/embed/chat/onboarding-bot'),
-    ).toBeVisible();
-    expect(
       screen.getByText(
         'http://localhost:3000/modules/workflow-1/run?deploymentId=deployment-1',
       ),
     ).toBeVisible();
+    expect(screen.queryByText('API Endpoint URL')).not.toBeInTheDocument();
+    expect(screen.queryByText('API Secret Key')).not.toBeInTheDocument();
   });
 });
