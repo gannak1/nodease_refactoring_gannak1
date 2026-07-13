@@ -1,5 +1,5 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => {
   const push = vi.fn();
@@ -67,7 +67,13 @@ vi.mock('@/app/features/knowledge/api/connectorApi', () => ({
 
 vi.mock(
   '@/app/features/knowledge/components/ingestion-views/FileSourceViewer',
-  () => ({ default: () => <div>file source</div> }),
+  () => ({
+    default: ({ filename }: { filename?: string | null }) => (
+      <div data-testid="file-source" data-filename={filename ?? ''}>
+        file source
+      </div>
+    ),
+  }),
 );
 vi.mock(
   '@/app/features/knowledge/components/ingestion-views/ApiSourceViewer',
@@ -149,7 +155,78 @@ beforeEach(() => {
   mocks.getKnowledgeBase.mockResolvedValue(knowledgeBase);
 });
 
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
 describe('DocumentSettingsPage request scoping', () => {
+  it('keeps an already completed document open for preview', async () => {
+    const timeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    mocks.getDocument.mockResolvedValue({
+      ...documentResponse('document-1'),
+      status: 'completed',
+    });
+    mocks.getDocumentEditConfig.mockResolvedValue(editConfig(1000));
+
+    render(<DocumentSettingsPage />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('file-source')).toHaveAttribute(
+        'data-filename',
+        'document-1.pdf',
+      );
+    });
+    expect(
+      timeoutSpy.mock.calls.some(([, delay]) => delay === 3000),
+    ).toBe(false);
+    expect(mocks.push).not.toHaveBeenCalled();
+  });
+
+  it('schedules the existing redirect after observed processing completes', async () => {
+    class FakeEventSource {
+      static readonly CLOSED = 2;
+      static latest: FakeEventSource | null = null;
+
+      readyState = 1;
+      onmessage: ((event: { data: string }) => void) | null = null;
+      onerror: (() => void) | null = null;
+
+      constructor() {
+        FakeEventSource.latest = this;
+      }
+
+      close() {
+        this.readyState = FakeEventSource.CLOSED;
+      }
+    }
+    vi.stubGlobal('EventSource', FakeEventSource);
+    const timeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    mocks.getDocument.mockResolvedValue({
+      ...documentResponse('document-1'),
+      status: 'processing',
+      meta_info: { progress: 50 },
+    });
+    mocks.getDocumentEditConfig.mockResolvedValue(editConfig(1000));
+
+    render(<DocumentSettingsPage />);
+
+    await waitFor(() => {
+      expect(FakeEventSource.latest).not.toBeNull();
+    });
+    act(() => {
+      FakeEventSource.latest?.onmessage?.({
+        data: JSON.stringify({ status: 'completed', progress: 100 }),
+      });
+    });
+
+    await waitFor(() => {
+      expect(
+        timeoutSpy.mock.calls.some(([, delay]) => delay === 3000),
+      ).toBe(true);
+    });
+  });
+
   it('ignores a late response from the previously selected document', async () => {
     const firstDocument = deferred<ReturnType<typeof documentResponse>>();
     mocks.getDocument.mockImplementation(
@@ -169,6 +246,10 @@ describe('DocumentSettingsPage request scoping', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('chunk-size')).toHaveTextContent('2222');
+      expect(screen.getByTestId('file-source')).toHaveAttribute(
+        'data-filename',
+        'document-2.pdf',
+      );
       expect(
         screen.getByRole('button', { name: '처리 시작' }),
       ).toBeEnabled();
@@ -180,6 +261,10 @@ describe('DocumentSettingsPage request scoping', () => {
     });
 
     expect(screen.getByTestId('chunk-size')).toHaveTextContent('2222');
+    expect(screen.getByTestId('file-source')).toHaveAttribute(
+      'data-filename',
+      'document-2.pdf',
+    );
     expect(mocks.getDocumentEditConfig).not.toHaveBeenCalledWith(
       'kb-1',
       'document-1',

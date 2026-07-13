@@ -111,6 +111,7 @@ export default function DocumentSettingsPage() {
   const [permissionScope, setPermissionScope] = useState<string | null>(null);
   const [editConfigScope, setEditConfigScope] = useState<string | null>(null);
   const fetchGeneration = useRef(0);
+  const activeProcessingScope = useRef<string | null>(null);
   const currentDocumentScope = `${kbId}:${documentId}`;
   const canEditCurrentDocument =
     canEditDocument && permissionScope === currentDocumentScope;
@@ -232,6 +233,7 @@ export default function DocumentSettingsPage() {
     setIsEditingConnection(false);
     setConnectionDetails(null);
     setIsLoadingDetails(false);
+    activeProcessingScope.current = null;
 
     const fetchDocument = async () => {
       try {
@@ -510,13 +512,22 @@ export default function DocumentSettingsPage() {
 
   // 완료 시 자동 이동
   useEffect(() => {
-    if (status === 'completed' && progress >= 100) {
+    if (permissionScope !== currentDocumentScope) return;
+    if (isActiveProcessingStatus(status)) {
+      activeProcessingScope.current = currentDocumentScope;
+      return;
+    }
+    if (
+      activeProcessingScope.current === currentDocumentScope &&
+      status === 'completed' &&
+      progress >= 100
+    ) {
       const timer = setTimeout(() => {
         router.push(`/dashboard/knowledge/${kbId}`);
       }, 3000);
       return () => clearTimeout(timer);
     }
-  }, [status, progress, router, kbId]);
+  }, [status, progress, router, kbId, permissionScope, currentDocumentScope]);
   if (isLoading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
@@ -628,7 +639,13 @@ export default function DocumentSettingsPage() {
       case 'API':
         return <ApiSourceViewer apiConfig={apiConfigSummary} />;
       default: // FILE
-        return <FileSourceViewer kbId={kbId} documentId={documentId} />;
+        return (
+          <FileSourceViewer
+            kbId={kbId}
+            documentId={documentId}
+            filename={document?.filename}
+          />
+        );
     }
   };
 

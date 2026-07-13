@@ -1,14 +1,22 @@
 import React from 'react';
-import { FileText } from 'lucide-react';
+import { ExternalLink, FileText } from 'lucide-react';
 
 interface FileSourceViewerProps {
   kbId: string;
   documentId: string;
+  filename?: string | null;
 }
+
+const isPdfFilename = (filename?: string | null): boolean => {
+  const normalized = (filename ?? '').trim().toLowerCase();
+  const path = normalized.split(/[?#]/)[0];
+  return path.endsWith('.pdf');
+};
 
 export default function FileSourceViewer({
   kbId,
   documentId,
+  filename,
 }: FileSourceViewerProps) {
   if (!kbId || !documentId) {
     return (
@@ -19,12 +27,50 @@ export default function FileSourceViewer({
     );
   }
 
-  // Next.js Rewrite(Proxy)를 타도록 상대 경로 사용 (쿠키 전달 문제 해결)
-  const baseUrl = '';
+  if (!filename?.trim()) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-3 text-gray-400">
+        <FileText className="h-12 w-12 opacity-20" />
+        <p>원본 문서 정보를 확인할 수 없습니다.</p>
+      </div>
+    );
+  }
+
+  // Next.js rewrite를 거치는 same-origin URL이어야 인증 쿠키가 유지된다.
+  const contentUrl = `/api/v1/knowledge/${kbId}/documents/${documentId}/content`;
+
+  if (isPdfFilename(filename)) {
+    return (
+      <div className="flex h-full min-h-0 flex-col gap-2">
+        <div className="flex flex-none justify-end">
+          <a
+            href={contentUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex h-9 items-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-sm font-medium text-gray-700 hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+          >
+            <ExternalLink className="h-4 w-4" aria-hidden="true" />
+            PDF를 새 탭에서 열기
+          </a>
+        </div>
+        <object
+          data={contentUrl}
+          type="application/pdf"
+          className="min-h-0 w-full flex-1 rounded-lg border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800"
+          title="Original PDF Document Preview"
+        >
+          <p className="p-4 text-sm text-gray-600 dark:text-gray-300">
+            브라우저에서 PDF 미리보기를 표시할 수 없습니다. 상단 링크로 문서를
+            여세요.
+          </p>
+        </object>
+      </div>
+    );
+  }
 
   return (
     <iframe
-      src={`${baseUrl}/api/v1/knowledge/${kbId}/documents/${documentId}/content`}
+      src={contentUrl}
       sandbox="allow-same-origin allow-downloads"
       className="w-full h-full bg-white rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 dark:bg-gray-800"
       title="Original Document Preview"
