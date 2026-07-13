@@ -5,7 +5,7 @@ Verified Against: feature/mba-188 @ 59d1cc51
 
 검증 값은 MBA-188 actor access, audit detail 연동 섹션에 적용한다. 기존 비용/권한 신청 섹션의 기준은 해당 feature 문서와 git history를 따른다.
 
-기존 관리자 페이지 `/dashboard/admin`(`apps/client/app/dashboard/admin/page.tsx`)을 확장한다. 이 페이지는 이미 탭 구조(구성원/팀/권한/credential/knowledge/감사 로그/조직)와 공용 컴포넌트(`DashboardPageHeader`, `DashboardPanel`, `DashboardSummaryCard`)를 갖고 있다. 이 feature는 새 화면을 만들지 않고 다음을 추가/전환한다.
+기존 관리자 페이지 `/dashboard/admin`(`apps/client/app/dashboard/admin/page.tsx`)을 확장한다. 이 페이지는 관리 tab 구조와 공용 컴포넌트(`DashboardPageHeader`, `DashboardPanel`, `DashboardSummaryCard`)를 갖고 있다. MBA-141 목표 계약은 기존 `멤버`/`팀` 상위 tab을 `조직 구성` 하나로 통합하고 내부 `view=members|teams`로 전환한다. 이 feature는 새 화면을 만들지 않고 다음을 추가/전환한다.
 
 - 감사 로그 탭을 본인 이력(`/users/me/audit-logs`) 임시 구현에서 조직 단위 검색(`GET /admin/audit-logs`, FR-011)으로 전환
 - 기존 `권한` 탭에 권한 신청·App 생성 권한 보유 카드를 통합 (FR-014)
@@ -27,7 +27,8 @@ Verified Against: feature/mba-188 @ 59d1cc51
 | 권한 탭 | resource 권한 관리 + 권한 신청 목록/처리 + App 생성 권한 보유 목록/회수 | organization owner/manager |
 | 비용 탭 | workflow별 사용량/비용 집계 | organization owner/manager |
 | 보안 알림 탭 | 영속 Security Alert 검색·상세·safe evidence·상태 변경 | organization owner/manager |
-| 기존 탭들 (구성원/팀/권한/credential/knowledge/조직) | 이 feature의 감사/비용/권한신청 범위 밖에서는 기존 구현 유지. MBA-176은 기존 권한/knowledge 탭을 확장해 KB team/user direct permission 관리를 추가한다 | 기존 기준 유지 |
+| 조직 구성 탭 | member/team 내부 보기 전환. 상세 계약은 [organization component spec](../organization/component_spec.md)의 MBA-141 목표 계약을 따른다 | organization owner/manager |
+| 기존 탭들 (권한/credential/knowledge/조직 설정) | 이 feature의 감사/비용/권한신청 범위 밖에서는 기존 구현 유지. MBA-176은 기존 권한/knowledge 탭을 확장해 KB team/user direct permission 관리를 추가한다 | 기존 기준 유지 |
 
 `보안 알림` 탭은 `감사 로그` 앞에 두고 내부 key `security-alerts`를 사용한다. `/dashboard/admin?tab=security-alerts&alertId=<uuid>` deep link, 목록/filter/detail drawer, resolve dialog, 기존 ActorAccessDrawer handoff의 상세 계약은 [Security Alert component spec](../security-alert/component_spec.md)이 소유한다. Security Alert detail과 ActorAccessDrawer는 동시에 열지 않으며, 사용자 접근 조치 성공만으로 alert를 자동 resolve하지 않는다.
 
