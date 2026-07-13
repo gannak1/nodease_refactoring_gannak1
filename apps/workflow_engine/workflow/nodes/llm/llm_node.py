@@ -1378,7 +1378,12 @@ class LLMNode(Node[LLMNodeData]):
             else self._resolve_runtime_knowledge_candidates()
         )
         candidate_summary = self._knowledge_candidate_trace_summary(resolution)
-        kb_ids = [str(candidate.knowledge_base_id) for candidate in resolution.candidates]
+        candidate_kind_by_kb_id = {
+            str(candidate.knowledge_base_id): candidate.provenance.kind
+            for candidate in resolution.candidates
+        }
+        bucket_kb_counts = "collection" in candidate_kind_by_kb_id.values()
+        kb_ids = list(candidate_kind_by_kb_id)
         if not kb_ids:
             return self._knowledge_candidate_safe_no_result(resolution)
         top_k = min(self.data.topK or 3, MAX_RAG_CHUNKS_PER_KB)
@@ -1446,7 +1451,14 @@ class LLMNode(Node[LLMNodeData]):
         top_chunks = candidate_chunks[:top_k] if top_k else candidate_chunks
 
         metadata_list = [
-            self._knowledge_trace_metadata(kb_id, chunk) for kb_id, chunk in top_chunks
+            self._knowledge_trace_metadata(
+                kb_id,
+                chunk,
+                include_resource_identity=(
+                    candidate_kind_by_kb_id.get(kb_id) == "direct"
+                ),
+            )
+            for kb_id, chunk in top_chunks
         ]
         selected_chunks = [chunk for _kb_id, chunk in top_chunks]
         evidence_policy = RAGEvidencePolicy()
@@ -1467,6 +1479,7 @@ class LLMNode(Node[LLMNodeData]):
             fanout=fanout,
             query_rewrite_applied=query_rewrite_applied,
             query_rewrite_strategy=query_rewrite_strategy,
+            bucket_kb_counts=bucket_kb_counts,
         )
         trace_summary.update(candidate_summary)
         policy_block_reason = blocked_evidence_reason_for_chunks(selected_chunks)
@@ -1488,6 +1501,7 @@ class LLMNode(Node[LLMNodeData]):
                 ),
                 query_rewrite_applied=query_rewrite_applied,
                 query_rewrite_strategy=query_rewrite_strategy,
+                bucket_kb_counts=bucket_kb_counts,
             )
             blocked_trace_summary.update(candidate_summary)
             blocked_trace_summary["safe_exclusion_summary"] = {
@@ -1515,11 +1529,23 @@ class LLMNode(Node[LLMNodeData]):
                 answer_override=self._rag_safe_no_result_answer(evidence_decision),
                 trace_summary=blocked_trace_summary,
             )
+        collection_candidate_count = 0
+        collection_result_count = 0
         for kb_id, result_count in rag_result_counts:
-            self._record_rag_retrieve_audit(
+            if candidate_kind_by_kb_id.get(kb_id) == "direct":
+                self._record_rag_retrieve_audit(
+                    execution_subject_user_id,
+                    kb_id,
+                    result_count,
+                )
+                continue
+            collection_candidate_count += 1
+            collection_result_count += result_count
+        if collection_candidate_count:
+            self._record_rag_collection_retrieve_audit(
                 execution_subject_user_id,
-                kb_id,
-                result_count,
+                candidate_count=collection_candidate_count,
+                result_count=collection_result_count,
             )
         if not evidence_decision.evidence_sufficient:
             if self.data.ragFailurePolicy == "fail_node":
@@ -1580,8 +1606,9 @@ class LLMNode(Node[LLMNodeData]):
 
         if query_vectors_by_kb is not None:
             logger.info(
-                "[LLMNode] RAG fanout uses precomputed query vectors: kb_count=%s",
-                len(knowledge_base_ids),
+                "[LLMNode] RAG fanout uses precomputed query vectors: "
+                "kb_count_bucket=%s",
+                self._bucket_count(len(knowledge_base_ids)),
             )
             return self._run_rag_retrieval_fanout_sequential(
                 query=query,
@@ -1857,11 +1884,13 @@ class LLMNode(Node[LLMNodeData]):
                 query_vectors_by_kb[kb_id] = query_vector
 
         logger.info(
-            "[LLMNode] RAG query vector precompute completed: kb_count=%s model_count=%s vector_kb_count=%s failed_count=%s",
-            len(knowledge_base_ids),
-            len(model_to_kb_ids),
-            len(query_vectors_by_kb),
-            failed_count,
+            "[LLMNode] RAG query vector precompute completed: "
+            "kb_count_bucket=%s model_count_bucket=%s "
+            "vector_kb_count_bucket=%s failed_count_bucket=%s",
+            self._bucket_count(len(knowledge_base_ids)),
+            self._bucket_count(len(model_to_kb_ids)),
+            self._bucket_count(len(query_vectors_by_kb)),
+            self._bucket_count(failed_count),
         )
         return query_vectors_by_kb, failed_count, True
 
@@ -1914,6 +1943,7 @@ class LLMNode(Node[LLMNodeData]):
         fanout: WorkflowRAGFanoutResult,
         query_rewrite_applied: bool,
         query_rewrite_strategy: str,
+        bucket_kb_counts: bool,
     ) -> Dict[str, Any]:
         safe_exclusion_summary: Dict[str, Any] = {}
         if fanout.failed_count:
@@ -1925,11 +1955,9 @@ class LLMNode(Node[LLMNodeData]):
                 fanout.timeout_count
             )
 
-        return {
+        summary = {
             "retrieval_strategy": "permission_scoped_hierarchical_hybrid",
             "rag_mode": "explicit_kb",
-            "authorized_kb_count": authorized_kb_count,
-            "selected_kb_count": selected_kb_count,
             "retrieved_chunk_count": retrieved_chunk_count,
             "context_token_estimate": self._rag_context_token_estimate(context_chunks),
             "permission_filter_applied": True,
@@ -1937,12 +1965,29 @@ class LLMNode(Node[LLMNodeData]):
             "query_rewrite_applied": query_rewrite_applied,
             "query_rewrite_strategy": query_rewrite_strategy,
             "source_tier_policy": getattr(self.data, "sourceTierPolicy", "tie_break"),
-            "fanout_concurrency": min(
-                MAX_RAG_FANOUT_CONCURRENCY,
-                max(authorized_kb_count, 1),
-            ),
             "fanout_timeout_seconds": RAG_FANOUT_AGGREGATE_TIMEOUT_SECONDS,
         }
+        if bucket_kb_counts:
+            summary.update(
+                {
+                    "authorized_kb_count_bucket": self._bucket_count(
+                        authorized_kb_count
+                    ),
+                    "selected_kb_count_bucket": self._bucket_count(selected_kb_count),
+                }
+            )
+        else:
+            summary.update(
+                {
+                    "authorized_kb_count": authorized_kb_count,
+                    "selected_kb_count": selected_kb_count,
+                    "fanout_concurrency": min(
+                        MAX_RAG_FANOUT_CONCURRENCY,
+                        max(authorized_kb_count, 1),
+                    ),
+                }
+            )
+        return summary
 
     @staticmethod
     def _rag_context_token_estimate(chunks: List[ChunkPreview]) -> int:
@@ -2412,6 +2457,39 @@ class LLMNode(Node[LLMNodeData]):
             metadata=metadata,
         )
 
+    def _record_rag_collection_retrieve_audit(
+        self,
+        user_id: uuid.UUID | None,
+        *,
+        candidate_count: int,
+        result_count: int,
+    ) -> None:
+        """Record Collection retrieval without persisting child resource lineage."""
+        organization_id = self._canonical_audit_organization_id()
+        if organization_id is None:
+            return
+        metadata = {
+            "workflow_id": self.execution_context.get("workflow_id"),
+            "workflow_run_id": self.execution_context.get("workflow_run_id"),
+            "node_id": self.id,
+            "organization_id": organization_id,
+            "retrieval_mode": "collection",
+            "candidate_count_bucket": self._bucket_count(candidate_count),
+            "result_count_bucket": self._bucket_count(result_count),
+            "policy_result": "allow",
+        }
+        is_user_actor = user_id is not None and not self._is_system_schedule_execution()
+        record_audit(
+            action=AuditAction.RAG_RETRIEVE,
+            category="action",
+            actor_id=user_id if is_user_actor else None,
+            actor_type="user" if is_user_actor else "system",
+            target_type="workflow_node",
+            target_id=self.id,
+            status="success",
+            metadata=metadata,
+        )
+
     def _record_rag_policy_block_audit(
         self,
         user_id: uuid.UUID | None,
@@ -2536,25 +2614,34 @@ class LLMNode(Node[LLMNodeData]):
             record_resource_permission_denied(user_id=user_id, **audit_kwargs)
 
     def _knowledge_trace_metadata(
-        self, knowledge_base_id: str, chunk: ChunkPreview
+        self,
+        knowledge_base_id: str,
+        chunk: ChunkPreview,
+        *,
+        include_resource_identity: bool = True,
     ) -> Dict[str, Any]:
         """추적 메타데이터에는 redaction-safe evidence 요약만 남깁니다."""
         metadata_summary = self._safe_rag_metadata_summary(chunk.metadata_summary)
         metadata = {
-            "knowledge_base_id": str(knowledge_base_id),
-            "chunk_id": str(chunk.chunk_id) if chunk.chunk_id else None,
-            "parent_chunk_id": (
-                str(chunk.parent_chunk_id) if chunk.parent_chunk_id else None
-            ),
-            "document_id": str(chunk.document_id),
             "page_number": chunk.page_number,
             "similarity_score": chunk.similarity_score,
             "score": chunk.score if chunk.score is not None else chunk.similarity_score,
-            "rank": chunk.rank,
             "token_count": chunk.token_count,
             "metadata_summary": metadata_summary,
             "hierarchy_path": chunk.hierarchy_path or [],
         }
+        if include_resource_identity:
+            metadata.update(
+                {
+                    "rank": chunk.rank,
+                    "knowledge_base_id": str(knowledge_base_id),
+                    "chunk_id": str(chunk.chunk_id) if chunk.chunk_id else None,
+                    "parent_chunk_id": (
+                        str(chunk.parent_chunk_id) if chunk.parent_chunk_id else None
+                    ),
+                    "document_id": str(chunk.document_id),
+                }
+            )
         if metadata_summary.get("hierarchy_fallback"):
             metadata["hierarchy_fallback"] = True
         return metadata

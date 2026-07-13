@@ -232,7 +232,9 @@ def test_rag_span_metadata_preserves_evidence_summary_fields_only():
                 "retrieval_strategy": "permission_scoped_hierarchical_hybrid",
                 "rag_mode": "explicit_kb",
                 "authorized_kb_count": 2,
+                "authorized_kb_count_bucket": "2-10",
                 "selected_kb_count": 1,
+                "selected_kb_count_bucket": "1",
                 "retrieved_chunk_count": 3,
                 "context_token_estimate": 123,
                 "permission_filter_applied": True,
@@ -262,7 +264,9 @@ def test_rag_span_metadata_preserves_evidence_summary_fields_only():
     )
     assert metadata["rag"]["rag_mode"] == "explicit_kb"
     assert metadata["rag"]["authorized_kb_count"] == 2
+    assert metadata["rag"]["authorized_kb_count_bucket"] == "2-10"
     assert metadata["rag"]["selected_kb_count"] == 1
+    assert metadata["rag"]["selected_kb_count_bucket"] == "1"
     assert metadata["rag"]["retrieved_chunk_count"] == 3
     assert metadata["rag"]["context_token_estimate"] == 123
     assert metadata["rag"]["permission_filter_applied"] is True
