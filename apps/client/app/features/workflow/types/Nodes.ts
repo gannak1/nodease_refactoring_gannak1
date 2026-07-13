@@ -87,7 +87,7 @@ export interface HttpRequestNodeData extends BaseNodeData {
 // ============================================================================
 
 // ======================== [Slack Post Node] ================================
-export interface SlackPostNodeData extends HttpRequestNodeData {
+export interface SlackPostNodeData extends BaseNodeData {
   slackMode?: 'webhook' | 'api';
   channel?: string;
   message?: string;
@@ -96,6 +96,16 @@ export interface SlackPostNodeData extends HttpRequestNodeData {
   icon_emoji?: string;
   blocks?: string;
   attachments?: string;
+  referenced_variables: HttpVariable[];
+
+  // Legacy HTTP-shaped fields are read-only compatibility input.
+  url?: string;
+  authConfig?: { token?: string };
+  method?: 'POST';
+  headers?: { key: string; value: string }[];
+  body?: string;
+  timeout?: number;
+  authType?: 'bearer' | 'none';
 }
 // ============================================================================
 

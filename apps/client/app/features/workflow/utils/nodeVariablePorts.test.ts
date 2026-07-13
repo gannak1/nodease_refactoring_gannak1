@@ -295,12 +295,7 @@ describe('nodeVariablePorts', () => {
       referenced_variables: [],
     });
     const slackNode = makeNode('slackPostNode', {
-      method: 'POST',
-      url: '',
-      headers: [],
-      body: '',
-      timeout: 30000,
-      authType: 'none',
+      slackMode: 'api',
       authConfig: {},
       referenced_variables: [],
     });
@@ -313,7 +308,16 @@ describe('nodeVariablePorts', () => {
     ).toEqual(['status', 'data', 'headers']);
     expect(
       getNodeOutputVariables(slackNode).map((output) => output.key),
-    ).toEqual(['status', 'data', 'headers']);
+    ).toEqual(['status', 'delivery_status', 'delivery_mode', 'message_ref']);
+
+    const webhookSlackNode = makeNode('slackPostNode', {
+      slackMode: 'webhook',
+      authConfig: {},
+      referenced_variables: [],
+    });
+    expect(
+      getNodeOutputVariables(webhookSlackNode).map((output) => output.key),
+    ).toEqual(['status', 'delivery_status', 'delivery_mode']);
   });
 
   it('webhook/file extraction의 동적 출력 key를 노드 데이터에서 만든다', () => {

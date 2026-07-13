@@ -24,6 +24,184 @@ const draft = (nodes: AppNode[], edges: Edge[]): WorkflowDraftRequest => ({
 });
 
 describe('validateWorkflowGraph', () => {
+  it('rejects selectors for removed Slack raw outputs', () => {
+    const slack = {
+      ...node('slack', 'slackPostNode', 'Slack'),
+      data: {
+        title: 'Slack',
+        slackMode: 'api',
+        referenced_variables: [],
+      },
+    } as AppNode;
+    const consumer = {
+      ...node('consumer', 'templateNode', '템플릿'),
+      data: {
+        title: '템플릿',
+        referenced_variables: [
+          { name: 'raw', value_selector: ['slack', 'headers'] },
+        ],
+      },
+    } as AppNode;
+
+    const result = validateWorkflowGraph(draft([slack, consumer], []));
+
+    expect(result.ok).toBe(false);
+    expect(result.errors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'SLACK_REMOVED_OUTPUT_SELECTOR' }),
+      ]),
+    );
+  });
+
+  it('rejects removed Slack selectors inside nested graphs and arbitrary fields', () => {
+    const nestedSlack = {
+      ...node('nested-slack', 'slackPostNode', 'Nested Slack'),
+      data: {
+        title: 'Nested Slack',
+        slackMode: 'api',
+        referenced_variables: [],
+      },
+    } as AppNode;
+    const nestedConsumer = {
+      ...node('nested-consumer', 'answerNode', 'Nested Answer'),
+      data: {
+        title: 'Nested Answer',
+        outputs: [
+          { variable: 'raw', value_selector: ['nested-slack', 'data'] },
+        ],
+      },
+    } as AppNode;
+    const container = {
+      ...node('loop', 'loopNode', 'Loop'),
+      data: {
+        title: 'Loop',
+        subGraph: { nodes: [nestedSlack, nestedConsumer], edges: [] },
+      },
+    } as AppNode;
+
+    const result = validateWorkflowGraph(draft([container], []));
+
+    expect(result.errors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: 'SLACK_REMOVED_OUTPUT_SELECTOR',
+          nodeId: 'nested-consumer',
+        }),
+      ]),
+    );
+  });
+
+  it('rejects removed Slack raw outputs in condition selectors', () => {
+    const slack = {
+      ...node('slack', 'slackPostNode', 'Slack'),
+      data: { title: 'Slack', slackMode: 'api', referenced_variables: [] },
+    } as AppNode;
+    const condition = {
+      ...node('condition', 'conditionNode', '조건'),
+      data: {
+        title: '조건',
+        cases: [
+          {
+            id: 'case-1',
+            variable_selector: ['slack', 'data'],
+            operator: 'equals',
+            value: 'ok',
+          },
+        ],
+      },
+    } as unknown as AppNode;
+
+    const result = validateWorkflowGraph(draft([slack, condition], []));
+
+    expect(result.errors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: 'SLACK_REMOVED_OUTPUT_SELECTOR',
+          nodeId: 'condition',
+        }),
+      ]),
+    );
+  });
+
+  it('rejects message_ref only when the source Slack node uses webhook mode', () => {
+    const consumer = {
+      ...node('consumer', 'templateNode', '템플릿'),
+      data: {
+        title: '템플릿',
+        referenced_variables: [
+          { name: 'ref', value_selector: ['slack', 'message_ref'] },
+        ],
+      },
+    } as AppNode;
+    const slack = (slackMode: 'api' | 'webhook') =>
+      ({
+        ...node('slack', 'slackPostNode', 'Slack'),
+        data: { title: 'Slack', slackMode, referenced_variables: [] },
+      }) as AppNode;
+
+    const webhookResult = validateWorkflowGraph(
+      draft([slack('webhook'), consumer], []),
+    );
+    const apiResult = validateWorkflowGraph(
+      draft([slack('api'), consumer], []),
+    );
+
+    expect(webhookResult.errors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'SLACK_REMOVED_OUTPUT_SELECTOR' }),
+      ]),
+    );
+    expect(
+      apiResult.errors.some(
+        (issue) => issue.code === 'SLACK_REMOVED_OUTPUT_SELECTOR',
+      ),
+    ).toBe(false);
+  });
+
+  it('warns about custom legacy Slack HTTP configuration without blocking edit', () => {
+    const slack = {
+      ...node('slack', 'slackPostNode', 'Slack'),
+      data: {
+        title: 'Slack',
+        slackMode: 'api',
+        method: 'POST',
+        headers: [{ key: 'X-Legacy', value: '1' }],
+        referenced_variables: [],
+      },
+    } as AppNode;
+
+    const result = validateWorkflowGraph(draft([slack], []));
+
+    expect(result.ok).toBe(true);
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'SLACK_LEGACY_CONFIGURATION' }),
+      ]),
+    );
+  });
+
+  it('warns when API mode keeps an alternate legacy endpoint or auth mode', () => {
+    const slack = {
+      ...node('slack', 'slackPostNode', 'Slack'),
+      data: {
+        title: 'Slack',
+        slackMode: 'api',
+        url: 'https://example.invalid/slack',
+        authType: 'none',
+        referenced_variables: [],
+      },
+    } as AppNode;
+
+    const result = validateWorkflowGraph(draft([slack], []));
+
+    expect(result.ok).toBe(true);
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'SLACK_LEGACY_CONFIGURATION' }),
+      ]),
+    );
+  });
+
   it('matches catalog entry, terminal, and condition connection policies', () => {
     const catalog = JSON.parse(
       readFileSync(
