@@ -43,6 +43,10 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from apps.gateway.api.api import api_router
+from apps.gateway.core.http_security import (
+    parse_credentialed_cors_origins,
+    resolve_session_signing_secret,
+)
 from apps.gateway.lifespan import lifespan  # Import lifespan from module
 from apps.shared.audit import record_audit
 from apps.shared.audit.actions import AuditAction
@@ -136,7 +140,7 @@ async def validation_failed(request: Request, exc: RequestValidationError):
 
 
 origins_str = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
-origins = origins_str.split(",")
+origins = parse_credentialed_cors_origins(origins_str)
 
 # CORS 설정 (withCredentials 지원)
 app.add_middleware(
@@ -150,7 +154,10 @@ app.add_middleware(
 # 세션 미들웨어 추가 (OAuth 상태 저장용)
 app.add_middleware(
     SessionMiddleware,
-    secret_key=os.getenv("SECRET_KEY", "your-secret-key-change-in-production"),
+    secret_key=resolve_session_signing_secret(
+        os.getenv("SECRET_KEY"),
+        node_env=os.getenv("NODE_ENV"),
+    ),
     https_only=os.getenv("NODE_ENV") == "production",  # 배포 환경에서는 Secure 쿠키
 )
 

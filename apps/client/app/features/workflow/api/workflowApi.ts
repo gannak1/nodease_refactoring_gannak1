@@ -1,6 +1,6 @@
 import axios from 'axios';
 import {
-  buildLoginRedirectPath,
+  claimLoginRedirectPath,
   getCurrentAuthReturnPath,
 } from '@/lib/authReturn';
 import {
@@ -107,9 +107,8 @@ api.interceptors.response.use(
     ) {
       // 인증 만료 → 로그인 페이지로 리다이렉트
       console.warn('Authentication expired, redirecting to login...');
-      window.location.href = buildLoginRedirectPath(
-        getCurrentAuthReturnPath(),
-      );
+      const redirectPath = claimLoginRedirectPath(getCurrentAuthReturnPath());
+      if (redirectPath) window.location.href = redirectPath;
     }
     return Promise.reject(error);
   },

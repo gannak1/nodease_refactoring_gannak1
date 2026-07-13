@@ -6,7 +6,10 @@ from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.auth.permissions import ensure_workflow_permission
-from apps.gateway.api.deps import get_deployment_runtime_policy
+from apps.gateway.api.deps import (
+    get_deployment_runtime_policy,
+    require_json_content_type,
+)
 from apps.gateway.services.organization_context import resolve_active_organization_id
 from apps.gateway.utils.audit import audit
 from apps.gateway.services.deployment_service import DeploymentService
@@ -273,7 +276,10 @@ def get_authenticated_deployment_run_info(
     )
 
 
-@router.post("/{deployment_id}/run")
+@router.post(
+    "/{deployment_id}/run",
+    dependencies=[Depends(require_json_content_type)],
+)
 async def run_authenticated_deployment(
     deployment_id: str,
     request: Request,

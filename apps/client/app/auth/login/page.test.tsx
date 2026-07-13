@@ -82,4 +82,32 @@ describe('LoginPage auth return', () => {
       expect(routerPush).toHaveBeenCalledWith('/dashboard');
     });
   });
+
+  it('Google 로그인에도 검증된 next 복귀 경로를 전달한다', () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/auth/login?next=%2Fmodules%2Fworkflow-1%2Frun%3FdeploymentId%3Ddeployment-1',
+    );
+    render(<LoginPage />);
+
+    fireEvent.click(screen.getByRole('button', { name: '구글로 로그인' }));
+
+    expect(mockedAuthApi.googleLogin).toHaveBeenCalledWith(
+      '/modules/workflow-1/run?deploymentId=deployment-1',
+    );
+  });
+
+  it('Google 로그인은 외부 next URL을 대시보드로 제한한다', () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/auth/login?next=https%3A%2F%2Fevil.example%2Fsteal',
+    );
+    render(<LoginPage />);
+
+    fireEvent.click(screen.getByRole('button', { name: '구글로 로그인' }));
+
+    expect(mockedAuthApi.googleLogin).toHaveBeenCalledWith('/dashboard');
+  });
 });

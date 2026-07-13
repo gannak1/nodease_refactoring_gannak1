@@ -19,7 +19,7 @@ import type {
 } from '@/app/features/workflow/types/Deployment';
 import { getDeploymentRunFinalPreview } from '@/app/features/workflow/utils/deploymentRunResult';
 import {
-  buildLoginRedirectPath,
+  claimLoginRedirectPath,
   getCurrentAuthReturnPath,
 } from '@/lib/authReturn';
 
@@ -161,7 +161,10 @@ export default function AuthenticatedDeploymentRunPage() {
       .catch((error) => {
         if (!active) return;
         if (isUnauthorized(error)) {
-          replace(buildLoginRedirectPath(getCurrentAuthReturnPath()));
+          const redirectPath = claimLoginRedirectPath(
+            getCurrentAuthReturnPath(),
+          );
+          if (redirectPath) replace(redirectPath);
           return;
         }
         setLoadError(readErrorMessage(error));

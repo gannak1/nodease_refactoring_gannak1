@@ -75,7 +75,10 @@ export default function LoginPage() {
   };
 
   const handleGoogleLogin = () => {
-    authApi.googleLogin();
+    const returnPath = resolveSafeAuthReturnPath(
+      new URLSearchParams(window.location.search).get('next'),
+    );
+    authApi.googleLogin(returnPath);
   };
 
   return (

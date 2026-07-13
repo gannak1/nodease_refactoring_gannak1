@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { attachActiveOrganizationHeader } from './activeOrganization';
 import {
-  buildLoginRedirectPath,
+  claimLoginRedirectPath,
   getCurrentAuthReturnPath,
 } from './authReturn';
 
@@ -28,9 +28,10 @@ const attachAuthRedirectInterceptor = (
           !window.location.pathname.startsWith('/auth') &&
           window.location.pathname !== '/'
         ) {
-          window.location.href = buildLoginRedirectPath(
+          const redirectPath = claimLoginRedirectPath(
             getCurrentAuthReturnPath(),
           );
+          if (redirectPath) window.location.href = redirectPath;
         }
       }
       return Promise.reject(error);
