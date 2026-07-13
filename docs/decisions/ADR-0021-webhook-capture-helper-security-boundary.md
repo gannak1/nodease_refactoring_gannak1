@@ -1,7 +1,9 @@
 # ADR-0021: Webhook capture helper security boundary
 
 Status: Accepted
-Related ADRs: ADR-0010, ADR-0018
+Related ADRs: ADR-0010, ADR-0018, ADR-0041
+
+Partial supersession note: Public trigger credential transport and ingress payload limits are governed by [ADR-0041](ADR-0041-public-webhook-ingress-security-boundary.md). The historical query-token statement below is no longer the current public trigger contract. This ADR continues to govern capture helper authentication, retention, and preview redaction.
 
 ## Context
 

@@ -8,7 +8,7 @@ Verified Against: `feature/mba-234 @ 647913b9`
 
 Deployment feature는 App의 workflow snapshot을 API, webapp, widget, chatbot, MCP, workflow-node, schedule, webhook 같은 실행 표면으로 게시하고 실행 가능한 상태를 관리한다.
 
-이 feature의 범위에는 배포된 앱의 공개 실행 표면 — 임베드 챗 UI(`app/embed/chat`), public run/webhook endpoint(app secret Bearer 인증) — 을 포함한다.
+이 feature의 범위에는 배포된 앱의 공개 실행 표면 — 임베드 챗 UI(`app/embed/chat`), public run/webhook endpoint — 을 포함한다. Public webhook은 query secret을 허용하지 않고 app secret Bearer primary 또는 `X-Webhook-Secret` compatibility header 중 정확히 하나로 인증한다.
 
 배포 타입 `chatbot`의 공개 채팅 웹페이지와 현재 visitor 격리 동작은 [chatbot-deployment](../chatbot-deployment/requirements.md)를 참조한다. 현재의 기억모드 항상 ON은 Legacy Current Implementation이며 목표 Memory 계약은 [Conversation Memory](../conversation-memory/requirements.md)의 node별 기본 OFF, server-issued session/grant와 versioned Worker 경계를 따른다.
 
@@ -85,6 +85,15 @@ Webhook capture helper는 public webhook 실행 표면이 아니라 로그인한
 - DEP-REQ-059 (MBA-233): Preflight 통과, Builder picker 결과, saved display label은 runtime capability가 아니다. Workflow Engine은 각 Knowledge-enabled LLM invocation에서 current execution audience로 candidate resolver를 다시 호출하고, 이후 revoke/lifecycle/membership/source 변경을 현재 상태로 반영한다.
 - DEP-REQ-060 (MBA-233): Public graph projection은 root와 embedded subgraph의 LLM node에서 `knowledgeBases`와 `knowledgeCollections`를 모두 제거한다. Preflight 응답과 409 envelope은 fixed reason/action, node type/id, count bucket과 제한 boolean만 포함하고 Collection/child identity, label, raw graph/source/exception을 포함하지 않는다.
 - DEP-REQ-061 (MBA-233): Client-supplied `audience`는 anonymous-public surface를 authenticated로 완화할 수 없다. `authenticated_user` override는 server-owned application boundary에서만 사용할 수 있고 현재 public deployment endpoint는 이를 전달하지 않는다.
+- DEP-REQ-062: Public webhook request에 query `token` key가 있으면 값이나 valid header 존재 여부와 관계없이 `400 webhook.query_secret_not_supported`로 거부해야 한다. Query 값을 읽거나 비교·로그·audit·trace·metric에 저장해서는 안 된다.
+- DEP-REQ-063: Public webhook credential source는 `Authorization: Bearer` 또는 `X-Webhook-Secret` 중 정확히 하나여야 한다. 두 source, duplicate occurrence 또는 ambiguous header는 `400 webhook.credential_ambiguous`로 거부하고 body를 읽지 않아야 한다.
+- DEP-REQ-064: Credential candidate는 1~512 ASCII bytes이며 current App secret과 constant-time 비교해야 한다. Missing, malformed, oversized, non-ASCII, invalid credential 또는 invalid server verifier state는 동일한 `403 webhook.authentication_failed`로 fail-closed해야 한다.
+- DEP-REQ-065: Public webhook은 `application/json`과 `application/*+json`만 허용하고 optional charset은 UTF-8이어야 한다. `Content-Encoding`은 생략 또는 단일 `identity`만 허용하며 malformed/duplicate media metadata와 압축 body는 `415 webhook.payload.unsupported_media_type`으로 거부해야 한다.
+- DEP-REQ-066: Gateway는 streamed actual body 1,048,576 bytes, 첫 body read 직전부터 JSON complexity validation 완료까지 5초, root depth 1 기준 depth 20, root 포함 total JSON node 10,000 상한을 immutable policy로 적용해야 한다. `Content-Length`는 early rejection hint이며 actual streamed bytes가 최종 기준이다.
+- DEP-REQ-067: Duplicate/negative/non-decimal `Content-Length`, disconnect, UTF-8 BOM, invalid UTF-8/JSON, non-finite number, depth/node 초과는 `400 webhook.payload.invalid`, declared/actual body 초과는 `413 webhook.payload.too_large`, ingress deadline 초과는 `408 webhook.payload.timeout`으로 거부해야 한다. Parser exception과 raw payload를 응답이나 로그에 노출해서는 안 된다.
+- DEP-REQ-068: Public webhook root JSON은 현재 Workflow Engine input contract에 맞춰 object만 허용한다. Array, string, finite number, boolean과 null root는 downstream 전에 `400 webhook.payload.invalid`로 거부하고 자동 포장하지 않는다. Nested JSON value는 보존하며 parsed object는 workflow input으로만 전달해 payload key가 App/organization/workflow/deployment/user/trigger/execution context provenance 또는 ORM field를 덮어쓰지 못해야 한다.
+- DEP-REQ-069: Processing order는 App lookup, credential source validation, authentication, media/declared size, bounded receive, strict JSON validation, capture, active deployment/runtime policy, budget, background publish registration 순이어야 한다. 앞 단계 실패는 이후 단계 side effect 또는 Celery publish를 수행하지 않아야 한다.
+- DEP-REQ-070: Repository Nginx `/api/v1/hooks/`는 webhook request target과 credential header를 access log에 남기지 않고 `client_max_body_size 1m`, `client_body_timeout 5s`를 적용해야 한다. Production ALB/Ingress도 배포 전에 동등한 safe logging과 bounded body guard를 운영 검증해야 하며 edge idle timeout을 Gateway 전체 processing deadline으로 간주해서는 안 된다.
 
 ## Runtime Audience Matrix
 
