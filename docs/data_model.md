@@ -416,7 +416,7 @@ workflow 실행 이력. usage/trace/dashboard raw query의 원천이다.
 | total_tokens | INTEGER | NULL |
 | total_cost | NUMERIC(10,6) | NULL |
 
-Log System은 producer의 실행 표면 문자열을 저장 직전에 canonical `RunTriggerMode`로 정규화한다. `schedule`은 `scheduler`, `webhook`은 `webhook`으로 저장한다. 기존 string compatibility를 위해 `app`/`deployed`/`api_secret`은 `api`, `test`/`manual_compare`/`cost_optimizer_compare`는 `manual`로 분류한다. 이미 `RunTriggerMode` enum인 입력은 exact 값을 보존한다. Trigger가 누락된 legacy payload만 `is_deployed`에 따라 `api` 또는 `manual`로 fallback하고, 명시적인 blank/unknown/invalid 값은 WorkflowRun을 저장하지 않는다.
+Shared pure policy가 producer와 consumer의 실행 표면 문자열 계약을 소유한다. Workflow Engine은 노드 실행과 run id 할당 전에 trigger를 검증하고, Log System은 저장 직전에 같은 계약으로 canonical `RunTriggerMode`를 재검증한다. `schedule`은 `scheduler`, `webhook`은 `webhook`으로 저장한다. 기존 string compatibility를 위해 `app`/`deployed`/`api_secret`은 `api`, `test`/`manual_compare`/`cost_optimizer_compare`는 `manual`로 분류한다. Log System이 이미 `RunTriggerMode` enum을 받은 경우 exact 값을 보존한다. Trigger가 누락된 legacy payload만 `is_deployed`에 따라 `api` 또는 `manual`로 fallback하고, 명시적인 blank/unknown/invalid 값은 실행 또는 WorkflowRun 저장을 시작하지 않는다.
 
 System schedule 실행 이력이 하나라도 존재하면 `user_id`를 다시 NOT NULL로 바꾸는 과거 schema downgrade는 의미를 보존할 수 없다. 비동기 Log System row가 아직 없더라도 admitted claim의 `workflow_run_id`는 실행 근거이므로 schedule branch의 migration downgrade는 이를 포함해 fail-closed한다. 후속 quarantine/visibility/allowlist migration도 partial DDL rollback으로 history 또는 operational state를 분리하지 않도록 같은 guard를 적용한다. 운영 rollback은 schema downgrade가 아니라 `claim -> drain -> disabled` mode 전환으로 수행한다.
 

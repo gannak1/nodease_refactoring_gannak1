@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import pytest
+
 from apps.shared.schemas.workflow import NodeSchema
 
 
@@ -26,10 +28,38 @@ if "pymupdf4llm" not in sys.modules:
     sys.modules["pymupdf4llm"] = pymupdf_stub
 
 from apps.workflow_engine.workflow.core.workflow_engine import WorkflowEngine
+from apps.workflow_engine.workflow.core.workflow_logger import WorkflowLogger
+from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
 
 
 def _engine_without_init():
     return object.__new__(WorkflowEngine)
+
+
+def test_invalid_trigger_stops_before_start_node_execution():
+    engine = _engine_without_init()
+    engine.execution_context = {
+        "workflow_id": str(uuid.uuid4()),
+        "user_id": str(uuid.uuid4()),
+        "trigger_mode": "unknown-secret-like-trigger",
+    }
+    engine.user_input = {"secret_like_value": "must-not-appear"}
+    engine.is_deployed = True
+    engine.is_subworkflow = False
+    engine.parent_run_id = None
+    engine.logger = WorkflowLogger()
+    engine._find_start_node = Mock(
+        side_effect=AssertionError("start node must not be resolved")
+    )
+
+    with pytest.raises(
+        NonRetryableWorkflowError,
+        match="^workflow run trigger mode is invalid$",
+    ):
+        next(engine._execute_core(stream_mode=False))
+
+    engine._find_start_node.assert_not_called()
+    assert engine.logger.workflow_run_id is None
 
 
 def test_mail_sensitive_lineage_includes_every_graph_descendant():

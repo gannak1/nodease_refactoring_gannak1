@@ -1,7 +1,10 @@
 import uuid
 from types import SimpleNamespace
 
+import pytest
+
 from apps.workflow_engine.workflow.core.workflow_logger import WorkflowLogger
+from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
 
 
 def _passthrough_payloads(
@@ -21,8 +24,16 @@ def _passthrough_payloads(
     ]
     return (
         records,
-        {"redaction_applied": False, "pii_detected": False},
-        {"redaction": SimpleNamespace(id=None)},
+        {
+            "redaction_applied": False,
+            "pii_detected": False,
+            "payload_storage_mode": "redacted_only",
+        },
+        {
+            "redaction": SimpleNamespace(id=None),
+            "retention": SimpleNamespace(id=None),
+            "visibility": SimpleNamespace(id=None),
+        },
     )
 
 
@@ -88,6 +99,56 @@ def test_create_run_log_sanitizes_run_trace_metadata(monkeypatch):
 
     assert captured["task_name"] == "log.create_run"
     assert captured["data"]["trace_metadata"] == {"gateway": {"status_code": 200}}
+
+
+def test_create_run_log_rejects_invalid_trigger_before_run_allocation(monkeypatch):
+    def fail_if_called(*args, **kwargs):
+        pytest.fail("invalid trigger must not prepare or submit a run log")
+
+    logger = WorkflowLogger()
+    monkeypatch.setattr(logger, "_prepare_payloads", fail_if_called)
+    monkeypatch.setattr(logger, "_submit_log", fail_if_called)
+
+    with pytest.raises(
+        NonRetryableWorkflowError,
+        match="^workflow run trigger mode is invalid$",
+    ) as exc_info:
+        logger.create_run_log(
+            workflow_id=str(uuid.uuid4()),
+            user_id=str(uuid.uuid4()),
+            user_input={"secret_like_value": "must-not-appear"},
+            is_deployed=True,
+            execution_context={"trigger_mode": "unknown-secret-like-trigger"},
+        )
+
+    assert logger.workflow_run_id is None
+    assert logger.app_id is None
+    assert "unknown-secret-like-trigger" not in str(exc_info.value)
+    assert "must-not-appear" not in str(exc_info.value)
+
+
+def test_create_run_log_keeps_valid_webhook_wire_value(monkeypatch):
+    captured = {}
+
+    def capture_submit(self, task_name, data, countdown=0):
+        captured["task_name"] = task_name
+        captured["data"] = data
+
+    monkeypatch.setattr(WorkflowLogger, "_prepare_payloads", _passthrough_payloads)
+    monkeypatch.setattr(WorkflowLogger, "_submit_log", capture_submit)
+
+    logger = WorkflowLogger()
+    run_id = logger.create_run_log(
+        workflow_id=str(uuid.uuid4()),
+        user_id=str(uuid.uuid4()),
+        user_input={},
+        is_deployed=True,
+        execution_context={"trigger_mode": "webhook"},
+    )
+
+    assert run_id is not None
+    assert captured["task_name"] == "log.create_run"
+    assert captured["data"]["trigger_mode"] == "webhook"
 
 
 def test_mail_node_finish_log_sanitizes_content_before_trace_policy(monkeypatch):

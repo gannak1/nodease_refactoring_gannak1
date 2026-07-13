@@ -11,8 +11,9 @@ Status: Draft
 - Conversation Memory sanitizer는 raw transcript/Memory content, Access Grant token/hash, prompt, private source identity와 provider raw error를 제거하고 session/grant lifecycle의 safe opaque reference, audience, status, reason과 bucketed count만 허용한다.
 - Hidden/denied/resource-hidden summary allowlist는 sanitized reason class, actor/org scope, request/correlation id, coarse retryability만 허용하고 exact hidden/denied count나 hidden KB id를 거부한다.
 - Partial result summary는 `partial_result=true`, bucketed reason summary, retryability, request/correlation id만 허용한다.
-- Run trigger pure policy는 `manual`/`test`/`manual_compare`/`cost_optimizer_compare`를 MANUAL, `api`/`app`/`deployed`/`api_secret`을 API, `webhook`을 WEBHOOK, `schedule`/`scheduler`를 SCHEDULER로 정규화한다. String은 trim/lowercase하고 enum 입력은 exact 값을 보존한다.
+- Run trigger pure policy는 `manual`/`test`/`manual_compare`/`cost_optimizer_compare`를 MANUAL, `api`/`app`/`deployed`/`api_secret`을 API, `webhook`을 WEBHOOK, `schedule`/`scheduler`를 SCHEDULER로 정규화한다. String은 trim/lowercase하고, Log System adapter가 이미 받은 `RunTriggerMode` enum은 string alias policy를 거치지 않고 exact 값을 보존한다.
 - Trigger 누락 또는 `None`은 legacy compatibility로 deployed면 API, 아니면 MANUAL이지만 blank/unknown/non-string explicit input은 fallback하지 않고 permanent contract error다.
+- Workflow Logger는 explicit invalid trigger를 run id 할당과 payload preparation 전에 static `NonRetryableWorkflowError`로 변환한다. 이때 trigger와 workflow input 원문을 예외에 포함하지 않는다.
 
 ## API Tests
 
@@ -40,7 +41,7 @@ Status: Draft
 - System schedule과 interactive RAG retrieval이 `rag.retrieve`를 기록하면 metadata의 canonical UUID `organization_id`로 해당 조직 list/detail 조회에 노출되고 다른 조직에서는 조회되지 않는다. Invalid/missing organization context는 unscoped audit row로 저장하지 않으며 Schedule credential principal은 actor로 승격되지 않는다.
 - Schedule-correlated WorkflowRun Log System write가 재시도되면 raw storage/provider detail은 logger와 retry exception에 없고, static operation label과 error type만 남는다.
 - Gateway webhook dispatch는 execution context에 exact `trigger_mode="webhook"`을 전달하고 Log System은 같은 wire value를 `RunTriggerMode.WEBHOOK`으로 저장한다. Existing manual/API/app/deployed/schedule/scheduler와 compare alias 결과는 회귀하지 않아야 한다.
-- Explicit invalid trigger는 session rollback/close 후 WorkflowRun add/flush/commit 없이 종료하고 Celery storage retry를 요청하지 않는다. Exception과 captured log에는 raw trigger, task payload, workflow input 또는 secret-like fixture value가 없어야 한다.
+- Explicit invalid trigger는 Workflow Engine의 start node 조회/실행, `log.create_run`, `log.update_run_finish`, `log.update_run_error` 발행 없이 종료하고 workflow Celery retry를 요청하지 않는다. Log System에 직접 전달된 경우에도 session rollback/close 후 WorkflowRun add/flush/commit 없이 종료하고 storage retry를 요청하지 않는다. Exception과 captured log에는 raw trigger, task payload, workflow input 또는 secret-like fixture value가 없어야 한다.
 - Schedule operational timestamp만 갱신하면 generic `schedule.updated`가 생성되지 않지만 cron/timezone/lifecycle 변경과 같은 transaction의 unrelated tracked mutation audit은 유지된다.
 - RAG strategy/A-B summary API는 권한 없는 문서명/ID, raw source metadata, raw prompt/completion, content preview를 반환하지 않는다.
 - RAG strategy/A-B summary API는 query rewrite 적용 여부, evidence sufficiency 결과, source tier summary를 safe field로 반환할 수 있지만 raw rewritten query와 hidden source reference를 반환하지 않는다.

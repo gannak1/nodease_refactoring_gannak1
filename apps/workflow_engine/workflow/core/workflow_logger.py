@@ -20,6 +20,10 @@ from typing import Any, Dict, Optional
 
 from apps.shared.celery_app import celery_app
 from apps.shared.db.session import SessionLocal
+from apps.shared.domain.run_trigger import (
+    RunTriggerContractError,
+    normalize_run_trigger_mode,
+)
 from apps.shared.services.external_effect_trace_capture import (
     defers_provider_capture_until_finish,
     durable_provider_summary,
@@ -30,6 +34,7 @@ from apps.shared.services.tracing.mail_payload import sanitize_mail_trace_payloa
 from apps.shared.services.tracing.payload import TracePayloadService
 from apps.shared.services.tracing.policy import TracePolicyService
 from apps.shared.services.tracing.redaction import TraceRedactionService
+from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
 
 
 class WorkflowLogger:
@@ -213,9 +218,17 @@ class WorkflowLogger:
         external_run_id: Optional[str] = None,  # [NEW] 외부에서 전달받은 run_id
     ) -> Optional[uuid.UUID]:
         """워크플로우 실행 로그 생성"""
-        is_system_schedule = execution_context.get(
-            "trigger_mode"
-        ) == "schedule" and str(
+        try:
+            canonical_trigger_mode = normalize_run_trigger_mode(
+                execution_context.get("trigger_mode"),
+                is_deployed=is_deployed,
+            )
+        except RunTriggerContractError:
+            raise NonRetryableWorkflowError(
+                "workflow run trigger mode is invalid"
+            ) from None
+
+        is_system_schedule = canonical_trigger_mode == "scheduler" and str(
             execution_context.get("workflow_task_id") or ""
         ).startswith("schedule:")
         if not workflow_id or (not user_id and not is_system_schedule):

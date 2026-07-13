@@ -10,10 +10,6 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict
 
-from apps.log_system.domain.run_trigger import (
-    RunTriggerContractError,
-    normalize_run_trigger_mode,
-)
 from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.logger import record_audit
 from apps.shared.celery_app import celery_app
@@ -49,6 +45,10 @@ from apps.shared.db.models.workflow_run import (
     WorkflowRun,
 )
 from apps.shared.db.session import SessionLocal
+from apps.shared.domain.run_trigger import (
+    RunTriggerContractError,
+    normalize_run_trigger_mode,
+)
 from apps.shared.services.external_effect_trace_capture import (
     defers_provider_capture_until_finish,
     durable_provider_summary,

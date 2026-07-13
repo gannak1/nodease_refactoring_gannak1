@@ -1,5 +1,5 @@
 import pytest
-from apps.log_system.domain.run_trigger import (
+from apps.shared.domain.run_trigger import (
     RunTriggerContractError,
     normalize_run_trigger_mode,
 )
