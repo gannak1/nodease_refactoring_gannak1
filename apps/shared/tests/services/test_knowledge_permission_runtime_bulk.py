@@ -113,7 +113,10 @@ class _SourceActionHelper(KnowledgePermissionHelper):
         return self.provenance
 
 
-@pytest.mark.parametrize("action", ["read", "view", "use", "retrieve", "search"])
+@pytest.mark.parametrize(
+    "action",
+    ["read", "view", "use", "retrieve", "search", " READ ", "Search"],
+)
 def test_materialized_source_retrieval_action_is_compatible(action):
     decision = _SourceActionHelper(_provenance(action=action)).evaluate_kb_use(
         _source_kb()
@@ -123,7 +126,10 @@ def test_materialized_source_retrieval_action_is_compatible(action):
     assert decision.freshness_epoch == 7
 
 
-@pytest.mark.parametrize("action", [None, "", "write", "admin", "delete", "unknown"])
+@pytest.mark.parametrize(
+    "action",
+    [None, "", "write", "admin", "delete", "unknown", 42],
+)
 def test_materialized_source_non_retrieval_action_fails_closed(action):
     decision = _SourceActionHelper(_provenance(action=action)).evaluate_kb_use(
         _source_kb()

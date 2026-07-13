@@ -66,10 +66,21 @@ class _NoAutoflush(AbstractContextManager):
 
 
 class _FakeSession:
-    def __init__(self, *, dialect="postgresql", in_transaction=False):
+    def __init__(
+        self,
+        *,
+        dialect="postgresql",
+        in_transaction=False,
+        connection_error=False,
+        rollback_error=False,
+        close_error=False,
+    ):
         self.events = []
         self._in_transaction = in_transaction
         self._dialect = dialect
+        self._connection_error = connection_error
+        self._rollback_error = rollback_error
+        self._close_error = close_error
         self.connection_options = None
 
     def get_bind(self):
@@ -80,6 +91,8 @@ class _FakeSession:
 
     def connection(self, *, execution_options):
         self.events.append("connection")
+        if self._connection_error:
+            raise RuntimeError("internal-db-setup-detail")
         self.connection_options = execution_options
         self._in_transaction = True
         return object()
@@ -90,10 +103,14 @@ class _FakeSession:
 
     def rollback(self):
         self.events.append("rollback")
+        if self._rollback_error:
+            raise RuntimeError("internal-db-rollback-detail")
         self._in_transaction = False
 
     def close(self):
         self.events.append("close")
+        if self._close_error:
+            raise RuntimeError("internal-db-close-detail")
 
 
 class _CaptureResult:
@@ -247,11 +264,14 @@ def test_snapshot_applies_postgres_repeatable_read_only_before_first_read():
     adapter = _FixtureAdapter(session, organization_active=False)
     request = KnowledgeRuntimeCandidateRequest(
         audience=AnonymousPublicAudience(organization_id=ORG_ID),
+        direct_kb_ids=(KB_1,),
+        collection_ids=(COLLECTION_A,),
     )
 
     snapshot = adapter.load_snapshot(request)
 
     assert snapshot.eligible_direct_kb_ids == ()
+    assert snapshot.policy_excluded_count == 2
     assert session.connection_options == {
         "isolation_level": "REPEATABLE READ",
         "postgresql_readonly": True,
@@ -292,6 +312,61 @@ def test_snapshot_rejects_reused_transaction_before_any_read():
 
     assert adapter.read_events == []
     assert "connection" not in session.events
+    assert session.events[-2:] == ["rollback", "close"]
+
+
+def test_snapshot_transaction_setup_failure_is_fixed_and_raw_free():
+    session = _FakeSession(connection_error=True)
+    adapter = _FixtureAdapter(session)
+    request = KnowledgeRuntimeCandidateRequest(
+        audience=AnonymousPublicAudience(organization_id=ORG_ID),
+    )
+
+    with pytest.raises(RuntimeError, match="snapshot_transaction_setup_failed") as exc_info:
+        adapter.load_snapshot(request)
+
+    assert "internal-db-setup-detail" not in str(exc_info.value)
+    assert exc_info.value.__cause__ is None
+    assert adapter.read_events == []
+    assert session.events == ["connection", "rollback", "close"]
+
+
+class _FailingReadAdapter(_FixtureAdapter):
+    def _organization_is_active(self, db, organization_id):
+        del db, organization_id
+        raise RuntimeError("internal-db-read-detail")
+
+
+def test_snapshot_read_failure_discards_partial_state_and_is_raw_free():
+    session = _FakeSession()
+    adapter = _FailingReadAdapter(session)
+    request = KnowledgeRuntimeCandidateRequest(
+        audience=AnonymousPublicAudience(organization_id=ORG_ID),
+    )
+
+    with pytest.raises(RuntimeError, match="snapshot_read_failed") as exc_info:
+        adapter.load_snapshot(request)
+
+    assert "internal-db-read-detail" not in str(exc_info.value)
+    assert exc_info.value.__cause__ is None
+    assert session.events[-2:] == ["rollback", "close"]
+
+
+@pytest.mark.parametrize("failure", ["rollback", "close"])
+def test_snapshot_cleanup_failure_cannot_return_precleanup_result(failure):
+    session = _FakeSession(
+        rollback_error=failure == "rollback",
+        close_error=failure == "close",
+    )
+    adapter = _FixtureAdapter(session, organization_active=False)
+    request = KnowledgeRuntimeCandidateRequest(
+        audience=AnonymousPublicAudience(organization_id=ORG_ID),
+    )
+
+    with pytest.raises(RuntimeError, match="snapshot_cleanup_failed") as exc_info:
+        adapter.load_snapshot(request)
+
+    assert "internal-db" not in str(exc_info.value)
     assert session.events[-2:] == ["rollback", "close"]
 
 
@@ -488,6 +563,32 @@ def test_scan_limit_is_preserved_as_safe_snapshot_signal():
 
     assert snapshot.scan_limited is True
     assert ("memberships", (COLLECTION_A,), 20) in adapter.read_events
+
+
+def test_malformed_membership_is_fail_closed_without_identifier_projection():
+    session = _FakeSession()
+    helper = _PermissionHelper(routed={COLLECTION_A}, usable={KB_1})
+    adapter = _FixtureAdapter(
+        session,
+        collections=[_collection(COLLECTION_A)],
+        memberships=[
+            (COLLECTION_A, KB_1),
+            (COLLECTION_A, "not-a-uuid"),
+            (COLLECTION_B, KB_2),
+        ],
+        kbs=[_kb(KB_1), _kb(KB_2)],
+        ready={KB_1, KB_2},
+        permission_helper=helper,
+    )
+    request = KnowledgeRuntimeCandidateRequest(
+        audience=AuthenticatedAudience(ORG_ID, USER_ID),
+        collection_ids=(COLLECTION_A,),
+    )
+
+    snapshot = adapter.load_snapshot(request)
+
+    assert snapshot.collection_streams[0].eligible_kb_ids == (KB_1,)
+    assert snapshot.policy_excluded_count == 1
 
 
 def test_fair_membership_query_is_windowed_ordered_and_bounded():
