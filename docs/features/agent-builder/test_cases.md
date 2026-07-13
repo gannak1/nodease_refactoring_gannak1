@@ -140,7 +140,7 @@ Status: Draft
 - Preview Mode action이 Agent Builder panel 안에 있으면 panel close를 차단해 `적용 및 저장`과 `취소` 경로가 유지된다.
 - workflow/app route scope가 바뀌면 이전 scope의 Agent Builder session, pending state, preview graph가 새 scope로 이어지지 않는다.
 - 같은 workflow의 apply/save 성공 후 server graph reconcile로 `app_id`가 `null`에서 실제 값으로 채워져도 Agent Builder panel은 열린 상태와 기존 대화를 유지한다.
-- 새 workflow apply/save 성공 시 DB session의 workflow scope가 `saved_workflow_id`로 같은 transaction에서 갱신되고, 새 route에서 같은 server-issued session id와 redaction된 대화를 복구한다.
+- 새 workflow apply/save 성공 시 DB session의 workflow scope와 App의 primary `workflow_id`가 `saved_workflow_id`로 같은 transaction에서 갱신되고, 새 route에서 같은 server-issued session id와 redaction된 대화를 복구한다.
 - Refresh 후 session 복구는 redaction된 사용자 message summary와 assistant response를 함께 복구하고, secret-like user input 원문을 다시 표시하지 않는다.
 - 최신 request가 `failed`, `unsupported`, `validation_failed`이고 session에 과거 ready draft가 남아 있어도 backend는 request ID가 다른 top-level `draft_preview`를 반환하지 않으며 client도 이를 도안 생성 미리보기로 복구하지 않는다. 최신 request와 draft의 `request_id`가 일치하면 정상적으로 preview를 복구한다.
 - Preview Mode에서 node를 클릭하면 Node Detail Panel에 node type, 주요 설정, KB/Slack binding, credential 참조 상태, input/output mapping, validation 상태가 읽기 전용으로 표시된다.

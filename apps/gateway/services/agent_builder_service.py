@@ -1889,8 +1889,7 @@ class AgentBuilderService:
                     self.db, workflow, self.user.id, self.organization_id
                 )
                 app = self._app_in_active_org(draft.app_id)
-                if app.workflow_id is None:
-                    app.workflow_id = workflow.id
+                app.workflow_id = workflow.id
             else:
                 workflow.graph = save_graph
                 workflow.updated_by = self.user.id

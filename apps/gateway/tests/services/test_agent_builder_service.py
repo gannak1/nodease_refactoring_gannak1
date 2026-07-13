@@ -3617,6 +3617,87 @@ def test_agent_builder_apply_requires_app_create_scope(monkeypatch):
     assert draft.status == "ready"
 
 
+def test_agent_builder_new_workflow_promotes_app_primary(monkeypatch):
+    db = FakeDb()
+    app_id = uuid.uuid4()
+    old_workflow_id = uuid.uuid4()
+    graph = {
+        "nodes": [
+            {"id": "start", "type": "startNode", "data": {}},
+            {"id": "answer", "type": "answerNode", "data": {}},
+        ],
+        "edges": [{"id": "start-answer", "source": "start", "target": "answer"}],
+    }
+    app = SimpleNamespace(id=app_id, workflow_id=old_workflow_id)
+    draft = SimpleNamespace(
+        id=uuid.uuid4(),
+        request_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+        draft_mode="new_workflow",
+        base_graph_hash=calculate_graph_hash(graph),
+        base_workflow_updated_at=None,
+        preview_graph=graph,
+        status="ready",
+        workflow_id=None,
+        app_id=app_id,
+        draft_metadata={},
+        expires_at=None,
+    )
+    svc = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    def flush_with_workflow_id():
+        db.flushed = True
+        for row in db.added:
+            if isinstance(row, service_module.Workflow) and row.id is None:
+                row.id = uuid.uuid4()
+
+    db.flush = flush_with_workflow_id
+    monkeypatch.setattr(svc, "_draft_or_404", lambda _draft_id: draft)
+    monkeypatch.setattr(svc, "_app_in_active_org", lambda _app_id: app)
+    monkeypatch.setattr(
+        service_module.AppService,
+        "access_denial_status",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        service_module.AppService,
+        "_grant_workflow_manager_permission",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(svc, "_runtime_kb_bindings_for_apply", lambda _draft: [])
+    monkeypatch.setattr(
+        service_module.WorkflowService,
+        "validate_mail_credential_references",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        svc,
+        "_rebind_session_after_new_workflow_apply",
+        lambda _draft, _workflow: None,
+    )
+    monkeypatch.setattr(
+        service_module,
+        "add_action_audit",
+        lambda *args, **kwargs: None,
+    )
+
+    response = svc.apply_draft(
+        draft.id,
+        AgentBuilderApplyRequest(
+            action="apply_and_save",
+            client_preview_graph_hash=calculate_graph_hash(graph),
+        ),
+    )
+
+    assert response.outcome == "saved"
+    assert app.workflow_id == response.saved_workflow_id
+    assert app.workflow_id != old_workflow_id
+
+
 def test_agent_builder_preview_splices_generated_chain_into_selected_edge(monkeypatch):
     workflow = SimpleNamespace(
         graph={
