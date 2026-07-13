@@ -43,6 +43,10 @@ class SecurityAlert(Base):
             name="ck_security_alerts_occurrence_count_nonnegative",
         ),
         CheckConstraint(
+            "episode_count >= 1",
+            name="ck_security_alerts_episode_count_positive",
+        ),
+        CheckConstraint(
             "lifecycle_version >= 1",
             name="ck_security_alerts_lifecycle_version_positive",
         ),
@@ -128,11 +132,20 @@ class SecurityAlert(Base):
     occurrence_count: Mapped[int] = mapped_column(
         nullable=False, default=0, server_default=text("0")
     )
+    episode_count: Mapped[int] = mapped_column(
+        nullable=False, default=1, server_default=text("1")
+    )
     first_detected_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
     last_detected_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
+    )
+    last_episode_started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utc_now,
+        server_default=text("now()"),
     )
     lifecycle_version: Mapped[int] = mapped_column(
         nullable=False, default=1, server_default=text("1")

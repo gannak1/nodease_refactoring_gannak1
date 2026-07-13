@@ -46,9 +46,18 @@ def aggregate_security_alert_detection(
     try:
         active_alert = _find_active_alert(db, detection_key=detection_key)
         if active_alert is not None:
-            return _update_active_alert_during_cooldown(
+            updated_alert = _update_active_alert_during_cooldown(
                 db,
                 alert=active_alert,
+                audit_logs=matched_audits,
+                detected_at=detected_at,
+            )
+            if updated_alert is not None:
+                return updated_alert
+            return _start_new_episode_after_cooldown(
+                db,
+                alert=active_alert,
+                rule_id=candidate.rule_id,
                 audit_logs=matched_audits,
                 detected_at=detected_at,
             )
@@ -98,6 +107,23 @@ def _update_active_alert_during_cooldown(
     ):
         return None
     _link_evidence(db, alert=alert, audit_logs=audit_logs)
+    return alert
+
+
+def _start_new_episode_after_cooldown(
+    db: Any,
+    *,
+    alert: Any,
+    rule_id: str,
+    audit_logs: Sequence[Any],
+    detected_at: datetime,
+) -> Any | None:
+    if not _meets_rule_threshold(rule_id, audit_logs):
+        return None
+    if _link_evidence(db, alert=alert, audit_logs=audit_logs) == 0:
+        return None
+    alert.episode_count += 1
+    alert.last_episode_started_at = detected_at
     return alert
 
 
@@ -209,8 +235,10 @@ def _build_alert(
         policy_reason=candidate.policy_reason,
         detection_key=detection_key,
         occurrence_count=0,
+        episode_count=1,
         first_detected_at=detected_at,
         last_detected_at=detected_at,
+        last_episode_started_at=detected_at,
         lifecycle_version=1,
     )
 
@@ -272,7 +300,8 @@ def _meets_rule_threshold(rule_id: str, audit_logs: Sequence[Any]) -> bool:
     return len(audit_logs) >= rule.threshold
 
 
-def _link_evidence(db: Any, *, alert: Any, audit_logs: Sequence[Any]) -> None:
+def _link_evidence(db: Any, *, alert: Any, audit_logs: Sequence[Any]) -> int:
+    linked_count = 0
     for audit_log in audit_logs:
         linked = link_security_alert_evidence(
             db,
@@ -281,7 +310,9 @@ def _link_evidence(db: Any, *, alert: Any, audit_logs: Sequence[Any]) -> None:
             detected_at=audit_log.occurred_at,
         )
         if linked:
+            linked_count += 1
             _flush(db)
+    return linked_count
 
 
 def _build_detected_audit(*, alert: Any, occurred_at: datetime) -> AuditLog:

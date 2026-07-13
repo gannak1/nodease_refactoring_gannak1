@@ -383,6 +383,14 @@ def test_security_alert_migration_creates_real_postgres_schema():
             }
             assert "ck_security_alerts_status_fields" in alert_checks
             assert "ck_security_alerts_timestamp_order" in alert_checks
+            assert "ck_security_alerts_episode_count_positive" in alert_checks
+
+            alert_columns = {
+                column["name"]: column
+                for column in schema.get_columns("security_alerts")
+            }
+            assert alert_columns["episode_count"]["nullable"] is False
+            assert alert_columns["last_episode_started_at"]["nullable"] is False
 
             active_index = next(
                 index
@@ -1840,13 +1848,16 @@ def test_alert_constraints_defaults_and_delete_policies_in_postgres():
             with engine.connect() as connection:
                 defaults = connection.execute(
                     text(
-                        "SELECT status, occurrence_count, lifecycle_version, "
+                        "SELECT status, occurrence_count, episode_count, "
+                        "last_episode_started_at, lifecycle_version, "
                         "created_at, updated_at FROM security_alerts WHERE id = :id"
                     ),
                     {"id": alert_id},
                 ).one()
             assert defaults.status == "open"
             assert defaults.occurrence_count == 0
+            assert defaults.episode_count == 1
+            assert defaults.last_episode_started_at is not None
             assert defaults.lifecycle_version == 1
             assert defaults.created_at.tzinfo is not None
             assert defaults.updated_at.tzinfo is not None
@@ -1872,6 +1883,7 @@ def test_alert_constraints_defaults_and_delete_policies_in_postgres():
 
             for invalid_update in (
                 "occurrence_count = -1",
+                "episode_count = 0",
                 "lifecycle_version = 0",
                 "status = 'unknown'",
                 "resolution_type = 'unknown'",

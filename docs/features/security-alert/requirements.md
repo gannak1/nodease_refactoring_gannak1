@@ -49,7 +49,7 @@ Security Alert는 검증된 organization 안에서 인증 사용자가 짧은 �
 ## Alert Aggregation And Cooldown
 
 - SAL-REQ-017: 같은 detection key에는 `open` 또는 `acknowledged` 상태의 활성 alert가 최대 하나만 존재해야 한다.
-- SAL-REQ-018: 마지막 탐지 시각부터 30분의 sliding cooldown을 적용해야 한다.
+- SAL-REQ-018: 마지막 탐지 시각부터 30분의 sliding cooldown을 적용해야 한다. Cooldown이 끝난 활성 alert가 새 audit만으로 같은 rule threshold를 다시 충족하면 새 alert를 만들지 않고 새 episode로 기록해 관리자 notification refresh를 다시 발생시켜야 한다.
 - SAL-REQ-019: Cooldown 중 같은 detection key의 event는 검증된 audit organization이 alert organization과 일치할 때만 기존 활성 alert의 occurrence count와 `last_detected_at`을 갱신하고 evidence로 연결해야 한다. ID만 전달된 audit도 canonical row를 조회해 같은 organization 검증을 적용해야 한다.
 - SAL-REQ-020: Cooldown 중 occurrence 갱신은 별도 canonical audit action을 만들지 않아야 한다.
 - SAL-REQ-021: `resolved` alert에는 새 evidence를 연결하지 않아야 한다.
@@ -127,6 +127,7 @@ Security Alert는 검증된 organization 안에서 인증 사용자가 짧은 �
 - SAL-REQ-068: 열린 detail에서 acknowledge, reopen, resolve가 현재 권한 회수로 `403`을 반환하면 Client는 cached detail과 해결 dialog를 비우고 선택된 `alertId` URL을 닫아야 한다.
 - SAL-REQ-069: Rule ID/version, action, window, threshold, severity, count mode와 policy-reason grouping은 하나의 server-owned rule registry를 source of truth로 사용해야 한다. Evaluator, aggregation threshold 확인과 worker 최대 조회 window는 별도 상수를 중복 정의하지 않고 같은 registry를 읽어야 한다.
 - SAL-REQ-070: 운영 반영 전 rule replay는 지정한 organization과 기간의 audit를 읽기 전용으로 평가하고 rule별 발화 횟수의 safe aggregate만 반환해야 한다. Replay는 Security Alert, evidence, lifecycle audit, notification, watermark를 생성·변경하거나 raw audit payload와 target을 출력하지 않아야 한다.
+- SAL-REQ-071: 최초 alert는 `episode_count=1`과 `last_episode_started_at=first_detected_at`으로 시작해야 한다. Cooldown 종료 후 threshold 재충족 시 새 evidence가 실제 연결된 transaction만 episode count를 한 번 증가시키고 마지막 episode 시작 시각을 threshold event time으로 갱신해야 한다. 이 시각은 notification 전달 성공 시각을 의미하지 않는다.
 
 ## Non-Functional Requirements
 

@@ -125,6 +125,8 @@ Distinct target은 `(target_type, target_id)` 조합이다. Target이 없거나 
 - 같은 detection key에는 활성 alert가 최대 하나다.
 - 마지막 탐지 시각부터 30분의 sliding cooldown을 적용한다.
 - Cooldown 중 같은 detection key의 사건은 새 alert를 만들지 않고 기존 alert의 occurrence count와 `last_detected_at`을 갱신하며 evidence를 연결한다.
+- Cooldown 종료 뒤 새 audit만으로 같은 rule threshold를 다시 충족하면 기존 활성 alert에 새 episode를 시작한다. 새 evidence를 연결한 transaction에서 `episode_count`를 한 번 증가시키고 `last_episode_started_at`을 threshold event time으로 갱신하며 commit 뒤 notification refresh를 다시 발생시킨다.
+- `last_episode_started_at`은 notification 전달 성공 시각이 아니다. Notification publish 실패와 durable retry는 별도 delivery 경계가 소유한다.
 - Cooldown 중 occurrence 갱신은 별도 audit action을 만들지 않는다.
 - `resolved` alert에는 새 evidence를 연결하지 않는다.
 - Resolve 이후 발생한 새 audit만으로 threshold를 다시 충족하면 새 alert를 생성한다.

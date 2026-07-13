@@ -91,6 +91,12 @@ Then 새 alert를 만들지 않고 기존 alert의 occurrence count, `last_detec
 
 그리고 추가 `security_alert.detected` audit을 만들지 않아야 한다.
 
+Given 같은 활성 alert의 마지막 탐지 이후 cooldown이 끝났을 때,
+When 새 audit만으로 같은 rule threshold를 다시 충족하면,
+Then 기존 alert를 유지하면서 `episode_count`를 한 번 증가시키고 `last_episode_started_at`을 새 threshold event time으로 갱신하며 notification refresh 대상으로 반환해야 한다.
+
+Threshold를 충족하지 못한 단일 event는 새 episode나 evidence로 기록하지 않아야 한다. `last_episode_started_at`은 notification 전달 성공 시각이 아니라 재알림 대상으로 만든 event time이다.
+
 ### AC-11 Resolved Recurrence
 
 Given alert가 `resolved` 상태일 때,
@@ -392,6 +398,8 @@ Then lookback window를 포함해 실제 evaluator와 같은 결과를 계산하
 | SAL-TC-S032 | AC-12, AC-15 | Resolution reason 정규화·redaction 성공과 sanitizer/audit insert 실패 주입 | 성공 시 sanitized non-blank reason만 저장, 실패 시 status/version/reason/canonical audit 전체 rollback |
 | SAL-TC-S033 | AC-12, AC-18 | Alert row가 있는 `a06b7c8d9e10` DB를 `a17c8d9e0f21`로 upgrade한 뒤 index revision만 downgrade | Upgrade는 filter index 4개를 생성하고 기존 alert/evidence를 보존하며 downgrade는 해당 index만 제거하고 table/data를 유지 |
 | SAL-TC-S034 | AC-25 | Watermark cursor 두 필드를 하나만 저장하거나 activation/cursor를 재시작 뒤 다시 조회 | 불완전 cursor는 DB check로 거부하고 완전 cursor와 활성화 시각은 PostgreSQL에 durable하게 보존 |
+| SAL-TC-S035 | AC-10 | cooldown이 끝난 활성 alert에 새 audit 1건만 발생 | alert/evidence/episode count와 notification refresh 불변 |
+| SAL-TC-S036 | AC-10 | cooldown이 끝난 open/acknowledged alert가 새 audit만으로 threshold 재충족 | 기존 status 유지, evidence/occurrence 연결, episode count 1 증가, episode 시작 시각 갱신, notification refresh 대상으로 반환 |
 
 ### API Tests
 
