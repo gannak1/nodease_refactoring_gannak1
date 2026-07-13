@@ -302,23 +302,27 @@ def _knowledge_base_scope(
     db: Session,
     knowledge_base_id: Any,
     organization_id: Any = None,
+    *,
+    include_archived: bool = False,
 ) -> tuple[Optional[KnowledgeBase], Optional[uuid.UUID]]:
     knowledge_base_uuid = coerce_uuid(knowledge_base_id)
     requested_organization_uuid = coerce_uuid(organization_id)
     if knowledge_base_uuid is None:
         return None, None
 
-    knowledge_base = (
-        db.query(KnowledgeBase)
-        .filter(
-            KnowledgeBase.id == knowledge_base_uuid,
-            KnowledgeBase.lifecycle_state == "active",
-        )
-        .first()
+    query = db.query(KnowledgeBase).filter(KnowledgeBase.id == knowledge_base_uuid)
+    query = query.filter(
+        KnowledgeBase.lifecycle_state != "deleted"
+        if include_archived
+        else KnowledgeBase.lifecycle_state == "active"
     )
+    knowledge_base = query.first()
     if not knowledge_base:
         return None, None
-    if getattr(knowledge_base, "lifecycle_state", "active") != "active":
+    lifecycle_state = getattr(knowledge_base, "lifecycle_state", "active")
+    if lifecycle_state == "deleted" or (
+        lifecycle_state != "active" and not include_archived
+    ):
         return None, None
 
     knowledge_base_organization_uuid = coerce_uuid(knowledge_base.organization_id)
@@ -714,10 +718,15 @@ def get_effective_knowledge_base_auth_state(
     user_id: Any,
     knowledge_base_id: Any,
     organization_id: Any = None,
+    *,
+    include_archived: bool = False,
 ) -> str:
     user_uuid = coerce_uuid(user_id)
     knowledge_base, organization_uuid = _knowledge_base_scope(
-        db, knowledge_base_id, organization_id
+        db,
+        knowledge_base_id,
+        organization_id,
+        include_archived=include_archived,
     )
     if user_uuid is None or knowledge_base is None or organization_uuid is None:
         return AUTH_STATE_NONE
@@ -769,12 +778,15 @@ def has_knowledge_base_permission(
     knowledge_base_id: Any,
     action: str,
     organization_id: Any = None,
+    *,
+    include_archived: bool = False,
 ) -> bool:
     auth_state = get_effective_knowledge_base_auth_state(
         db,
         user_id,
         knowledge_base_id,
         organization_id=organization_id,
+        include_archived=include_archived,
     )
     return knowledge_base_auth_state_allows(auth_state, action)
 

@@ -127,11 +127,15 @@ class FakeDetailDb:
 class FakeCreateDb:
     def __init__(self):
         self.added = None
+        self.added_items = []
         self.committed = False
         self.rolled_back = False
+        self.info = {}
 
     def add(self, item):
-        self.added = item
+        self.added_items.append(item)
+        if isinstance(item, service_module.KnowledgeBase):
+            self.added = item
 
     def commit(self):
         self.committed = True
@@ -903,11 +907,12 @@ def test_create_allows_duplicate_display_names_with_distinct_ids():
     class TrackingCreateDb(FakeCreateDb):
         def __init__(self):
             super().__init__()
-            self.added_items = []
+            self.knowledge_bases = []
 
         def add(self, item):
-            self.added_items.append(item)
-            self.added = item
+            super().add(item)
+            if isinstance(item, service_module.KnowledgeBase):
+                self.knowledge_bases.append(item)
 
     db = TrackingCreateDb()
     service = KnowledgeBaseQueryService(db)
@@ -929,7 +934,39 @@ def test_create_allows_duplicate_display_names_with_distinct_ids():
 
     assert first.name == second.name == "중복 표시명 KB"
     assert first.id != second.id
-    assert [item.name for item in db.added_items] == [
+    assert [item.name for item in db.knowledge_bases] == [
         "중복 표시명 KB",
         "중복 표시명 KB",
     ]
+
+
+def test_create_bootstraps_creator_manager_and_audits_in_one_commit():
+    db = FakeCreateDb()
+    organization_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+
+    response = KnowledgeBaseQueryService(db).create(
+        service_module.KnowledgeBaseCreate(name="원자 생성 KB"),
+        user_id=user_id,
+        organization_id=organization_id,
+        schema_ready=True,
+    )
+
+    permissions = [
+        item
+        for item in db.added_items
+        if isinstance(item, service_module.UserKnowledgePermission)
+    ]
+    audits = [
+        item for item in db.added_items if isinstance(item, service_module.AuditLog)
+    ]
+    assert response.id == db.added.id
+    assert len(permissions) == 1
+    assert permissions[0].knowledge_base_id == response.id
+    assert permissions[0].user_id == user_id
+    assert permissions[0].auth_state == "manager"
+    assert {audit.action for audit in audits} == {
+        "knowledge.created",
+        "user_knowledge_permission.created",
+    }
+    assert db.committed is True

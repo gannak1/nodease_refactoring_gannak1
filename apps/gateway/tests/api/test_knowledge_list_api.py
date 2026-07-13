@@ -52,9 +52,11 @@ class FakeCreateKnowledgeDb:
         self.added = None
         self.committed = False
         self.rolled_back = False
+        self.info = {}
 
     def add(self, item):
-        self.added = item
+        if isinstance(item, knowledge_endpoint.KnowledgeBase):
+            self.added = item
 
     def commit(self):
         self.committed = True

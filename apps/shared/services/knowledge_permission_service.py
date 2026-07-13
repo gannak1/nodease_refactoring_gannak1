@@ -155,6 +155,73 @@ class KnowledgePermissionHelper:
             safe_metadata=self._kb_safe_metadata(kb),
         )
 
+    def evaluate_kb_action(
+        self,
+        kb: KnowledgeBase,
+        action: str,
+        *,
+        include_archived: bool = False,
+    ) -> KnowledgePermissionDecision:
+        if action == "use":
+            return self.evaluate_kb_use(kb)
+        if action not in {"read", "write", "content_read", "manage"}:
+            return self._denied(reason_code="permission.invalid_action")
+        if not self._kb_in_scope(kb, include_archived=include_archived):
+            return self._denied(reason_code="resource.hidden")
+
+        auth_state = (
+            get_effective_knowledge_base_auth_state(
+                self.db,
+                self.user_id,
+                kb.id,
+                organization_id=self.organization_id,
+                include_archived=True,
+            )
+            if include_archived
+            else self._manual_kb_auth_state(kb)
+        )
+        if auth_state == AUTH_STATE_NONE:
+            return self._denied(reason_code="resource.hidden")
+        if not knowledge_base_auth_state_allows(auth_state, action):
+            return self._denied(
+                resource_visibility="visible",
+                effective_auth_state=auth_state,
+                reason_code=f"kb_{action}_denied",
+                external_reason_code="permission.denied",
+                safe_metadata=self._kb_safe_metadata(kb),
+            )
+        if action == "content_read" and self._is_source_managed(kb):
+            return self._denied(
+                resource_visibility="visible",
+                effective_auth_state=auth_state,
+                reason_code="source_content_policy_required",
+                external_reason_code="permission.denied",
+                safe_metadata={"source_managed": True},
+            )
+        return self._allowed(
+            effective_auth_state=auth_state,
+            safe_metadata=self._kb_safe_metadata(kb),
+        )
+
+    def bulk_evaluate_kb_action(
+        self,
+        kbs: Iterable[KnowledgeBase],
+        action: str,
+    ) -> dict[uuid.UUID, KnowledgePermissionDecision]:
+        kb_list = list(kbs)
+        if not kb_list:
+            return {}
+        if action == "use":
+            return self.bulk_evaluate_kb_use(kb_list)
+        previous = self._bulk_manual_auth_state_by_kb_id
+        try:
+            self._bulk_manual_auth_state_by_kb_id = self._bulk_manual_kb_auth_states(
+                kb_list
+            )
+            return {kb.id: self.evaluate_kb_action(kb, action) for kb in kb_list}
+        finally:
+            self._bulk_manual_auth_state_by_kb_id = previous
+
     def bulk_evaluate_kb_use(
         self,
         kbs: Iterable[KnowledgeBase],
@@ -594,11 +661,18 @@ class KnowledgePermissionHelper:
             and getattr(collection, "lifecycle_state", "active") == "active"
         )
 
-    def _kb_in_scope(self, kb: KnowledgeBase) -> bool:
+    def _kb_in_scope(
+        self,
+        kb: KnowledgeBase,
+        *,
+        include_archived: bool = False,
+    ) -> bool:
+        lifecycle_state = getattr(kb, "lifecycle_state", "active")
         return (
             kb is not None
             and kb.organization_id == self.organization_id
-            and getattr(kb, "lifecycle_state", "active") == "active"
+            and lifecycle_state != "deleted"
+            and (lifecycle_state == "active" or include_archived)
         )
 
     def _is_source_managed(self, kb: KnowledgeBase) -> bool:

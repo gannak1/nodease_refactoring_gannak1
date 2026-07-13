@@ -154,6 +154,11 @@ class KnowledgeBaseDetailResponse(KnowledgeBaseResponse):
     documents: List[DocumentResponse]
     can_edit_settings: bool = True
     can_manage_safe_metadata: bool = True
+    can_read: bool = True
+    can_use: bool = False
+    can_write: bool = False
+    can_read_content: bool = False
+    can_manage: bool = False
 
 
 # --- Retrieval Schemas (Dev B) ---

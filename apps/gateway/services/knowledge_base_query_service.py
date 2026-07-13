@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable
@@ -15,12 +16,20 @@ from apps.gateway.services.ingestion.service import (
     finalize_stale_processing_start,
     recover_timed_out_document_with_artifacts,
 )
+from apps.shared.audit.manual_ownership import register_manual_audit_ownership
+from apps.shared.db.models.audit_log import (
+    ActorType,
+    AuditCategory,
+    AuditLog,
+    AuditStatus,
+)
 from apps.shared.db.models.knowledge import (
     Document,
     DocumentChunk,
     DocumentVersion,
     KnowledgeBase,
 )
+from apps.shared.db.models.team import UserKnowledgePermission
 from apps.shared.schemas.rag import (
     DocumentResponse,
     KnowledgeBaseCreate,
@@ -251,15 +260,60 @@ class KnowledgeBaseQueryService:
     ) -> KnowledgeBaseResponse:
         if not schema_ready:
             self.ensure_schema_ready(KNOWLEDGE_BASE_MUTATION_COLUMNS)
+        if organization_id is None:
+            raise KnowledgeValidationError("organization_required")
         name, description, embedding_model = _validate_create_input(kb_in)
         kb = KnowledgeBase(
+            id=uuid.uuid4(),
             name=name,
             description=description,
             embedding_model=embedding_model,
             organization_id=organization_id,
             user_id=user_id,
         )
+        creator_permission = UserKnowledgePermission(
+            id=uuid.uuid4(),
+            grantee_organization_id=organization_id,
+            user_id=user_id,
+            knowledge_base_id=kb.id,
+            auth_state="manager",
+            assigned_by=user_id,
+        )
         self.db.add(kb)
+        self.db.add(creator_permission)
+        register_manual_audit_ownership(self.db, kb, "created")
+        register_manual_audit_ownership(self.db, creator_permission, "created")
+        self.db.add(
+            AuditLog(
+                action="knowledge.created",
+                category=AuditCategory.DATA_CHANGE,
+                actor_id=user_id,
+                actor_type=ActorType.USER,
+                target_type="knowledge",
+                target_id=str(kb.id),
+                before=None,
+                after={"organization_id": str(organization_id)},
+                status=AuditStatus.SUCCESS,
+                audit_metadata={"organization_id": str(organization_id)},
+            )
+        )
+        self.db.add(
+            AuditLog(
+                action="user_knowledge_permission.created",
+                category=AuditCategory.DATA_CHANGE,
+                actor_id=user_id,
+                actor_type=ActorType.USER,
+                target_type="user_knowledge_permission",
+                target_id=str(creator_permission.id),
+                before=None,
+                after={"auth_state": "manager"},
+                status=AuditStatus.SUCCESS,
+                audit_metadata={
+                    "organization_id": str(organization_id),
+                    "reason_code": "knowledge.creator_manager_bootstrap",
+                },
+            )
+        )
         try:
             self.db.commit()
             self.db.refresh(kb)
