@@ -10,16 +10,18 @@ from jinja2 import Environment
 
 from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.logger import record_audit
-from apps.shared.db.models.knowledge import (
-    KnowledgeBase,
-    KnowledgeCollection,
-    KnowledgeCollectionItem,
-)
+from apps.shared.db.models.knowledge import KnowledgeBase
 from apps.shared.db.models.llm import LLMModel
 from apps.shared.db.models.workflow_run import RunStatus, WorkflowNodeRun, WorkflowRun
+from apps.shared.domain.knowledge_runtime_candidates import (
+    AnonymousPublicAudience,
+    AuthenticatedAudience,
+    KnowledgeRuntimeCandidateConfigurationError,
+    KnowledgeRuntimeCandidateRequest,
+    KnowledgeRuntimeCandidateResolution,
+)
 from apps.shared.db.session import SessionLocal  # 임시 세션 생성용
 from apps.shared.schemas.rag import ChunkPreview
-from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
 from apps.shared.services.permission_audit import (
     record_resource_permission_denied,
     record_system_resource_permission_denied,
@@ -51,12 +53,16 @@ from apps.workflow_engine.services.model_router import (
     ModelRoutingUnavailableError,
 )
 from apps.workflow_engine.services.retrieval import RetrievalService
+from apps.workflow_engine.application.runtime_retrieval.knowledge_candidates import (
+    KnowledgeRuntimeCandidateInfrastructureError,
+    KnowledgeRuntimeCandidateResolver,
+)
+from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
 
 from ..base.node import Node
 from .entities import (
     MAX_RAG_CHUNKS_PER_KB,
     MAX_RAG_QUERY_REWRITE_TEMPLATE_LENGTH,
-    MAX_RAG_RETRIEVAL_KBS,
     LLMNodeData,
 )
 
@@ -345,6 +351,13 @@ class LLMNode(Node[LLMNodeData]):
 
     node_type = "llmNode"
 
+    def bind_knowledge_runtime_candidate_resolver(
+        self,
+        resolver: KnowledgeRuntimeCandidateResolver,
+    ) -> None:
+        """Bind an in-memory resolver without serializing it in execution context."""
+        self._knowledge_runtime_candidate_resolver = resolver
+
     def _resolve_model_routing_policy(
         self, inputs: Dict[str, Any], db_session=None
     ) -> tuple[str, Optional[str], Optional[dict]]:
@@ -483,10 +496,54 @@ class LLMNode(Node[LLMNodeData]):
         temp_session = None
         client_override = getattr(self, "_client_override", None)
         selected_credential_id = None
-        if not client_override or self.data.knowledgeBases or self.data.auto_model_routing:
+        knowledge_enabled = bool(
+            self.data.knowledgeBases or self.data.knowledgeCollections
+        )
+        if not client_override or knowledge_enabled or self.data.auto_model_routing:
             db_session, should_close_session = self._borrow_db_session()
             if should_close_session:
                 temp_session = db_session
+
+        candidate_resolution: KnowledgeRuntimeCandidateResolution | None = None
+        if knowledge_enabled:
+            try:
+                candidate_resolution = self._resolve_runtime_knowledge_candidates()
+            except Exception:
+                if temp_session is not None:
+                    temp_session.close()
+                raise
+            if not candidate_resolution.candidates:
+                knowledge_result = self._knowledge_candidate_safe_no_result(
+                    candidate_resolution
+                )
+                self._trace_payloads = [
+                    {
+                        "payload_kind": "rag.retrieval",
+                        "payload": self._rag_retrieval_trace_payload(
+                            [],
+                            evidence_decision=knowledge_result.evidence_decision,
+                            runtime_summary=knowledge_result.trace_summary,
+                        ),
+                        "scope": "span",
+                    }
+                ]
+                if temp_session is not None:
+                    temp_session.close()
+                if self.data.ragFailurePolicy == "fail_node":
+                    raise NonRetryableWorkflowError(
+                        candidate_resolution.reason_code
+                        or "knowledge_candidates.safe_no_result"
+                    )
+                return {
+                    "text": RAG_NO_EVIDENCE_MESSAGE,
+                    "usage": {},
+                    "model": self.data.model_id,
+                    "cost": 0.0,
+                    "metadata": {
+                        "knowledge_search": None,
+                        "rag": self._rag_result_metadata(knowledge_result),
+                    },
+                }
 
         selected_model_id, fallback_model_id, model_routing_metadata = (
             self._resolve_model_routing_policy(inputs, db_session)
@@ -619,15 +676,29 @@ class LLMNode(Node[LLMNodeData]):
             knowledge_context = ""
             knowledge_metadata = []
             knowledge_result: WorkflowRAGSearchResult | None = None
-            if self.data.knowledgeBases and len(self.data.knowledgeBases) > 0:
+            if knowledge_enabled:
                 try:
                     # User Prompt를 검색 쿼리로 사용 (렌더링 후)
                     if rendered_user_prompt:
                         knowledge_result = self._execute_knowledge_search(
-                            query=rendered_user_prompt, db_session=db_session
+                            query=rendered_user_prompt,
+                            db_session=db_session,
+                            candidate_resolution=candidate_resolution,
                         )
                         knowledge_context = knowledge_result.context
                         knowledge_metadata = knowledge_result.metadata
+                    else:
+                        knowledge_result = self._knowledge_candidate_safe_no_result(
+                            candidate_resolution
+                        )
+                        if self.data.ragFailurePolicy == "fail_node":
+                            raise NonRetryableWorkflowError(
+                                "knowledge_runtime_query_empty"
+                            )
+                except KnowledgeRuntimeCandidateInfrastructureError:
+                    raise
+                except NonRetryableWorkflowError:
+                    raise
                 except PermissionError:
                     raise
                 except Exception as exc:
@@ -1276,7 +1347,11 @@ class LLMNode(Node[LLMNodeData]):
         return fallback_model
 
     def _execute_knowledge_search(
-        self, query: str, db_session
+        self,
+        query: str,
+        db_session,
+        *,
+        candidate_resolution: KnowledgeRuntimeCandidateResolution | None = None,
     ) -> WorkflowRAGSearchResult:
         """
         연결된 지식 베이스에서 문서를 검색합니다.
@@ -1297,8 +1372,15 @@ class LLMNode(Node[LLMNodeData]):
                 "RAG retrieval requires an active organization context."
             ) from exc
 
-        kb_ids = list(dict.fromkeys(kb.id for kb in self.data.knowledgeBases if kb.id))
-        kb_ids = kb_ids[:MAX_RAG_RETRIEVAL_KBS]
+        resolution = (
+            candidate_resolution
+            if candidate_resolution is not None
+            else self._resolve_runtime_knowledge_candidates()
+        )
+        candidate_summary = self._knowledge_candidate_trace_summary(resolution)
+        kb_ids = [str(candidate.knowledge_base_id) for candidate in resolution.candidates]
+        if not kb_ids:
+            return self._knowledge_candidate_safe_no_result(resolution)
         top_k = min(self.data.topK or 3, MAX_RAG_CHUNKS_PER_KB)
         threshold = (
             0.5 if self.data.scoreThreshold is None else self.data.scoreThreshold
@@ -1309,25 +1391,19 @@ class LLMNode(Node[LLMNodeData]):
 
         all_chunks: List[tuple[str, ChunkPreview]] = []
         rag_result_counts: list[tuple[str, int]] = []
-        authorized_kb_ids = self._authorized_runtime_kb_ids(
-            db_session,
-            user_id=execution_subject_user_id,
-            organization_id=organization_uuid,
-            knowledge_base_ids=kb_ids,
-        )
         query_vectors_by_kb, embedding_failed_count, precomputed_vectors = (
             self._precompute_rag_query_vectors_by_kb(
                 db_session,
                 query=search_query,
                 user_id=credential_user_id,
                 organization_id=organization_uuid,
-                knowledge_base_ids=authorized_kb_ids,
+                knowledge_base_ids=kb_ids,
             )
         )
-        fanout_kb_ids = authorized_kb_ids
+        fanout_kb_ids = kb_ids
         if precomputed_vectors:
             fanout_kb_ids = [
-                kb_id for kb_id in authorized_kb_ids if kb_id in query_vectors_by_kb
+                kb_id for kb_id in kb_ids if kb_id in query_vectors_by_kb
             ]
 
         fanout = self._run_rag_retrieval_fanout(
@@ -1381,10 +1457,10 @@ class LLMNode(Node[LLMNodeData]):
         evidence_decision = self._rag_decision_with_operational_failures(
             evidence_decision,
             fanout.failed_count,
-            successful_candidate_count=len(authorized_kb_ids) - fanout.failed_count,
+            successful_candidate_count=len(kb_ids) - fanout.failed_count,
         )
         trace_summary = self._rag_runtime_trace_summary(
-            authorized_kb_count=len(authorized_kb_ids),
+            authorized_kb_count=len(kb_ids),
             retrieved_chunk_count=len(top_chunks),
             selected_kb_count=len({kb_id for kb_id, _chunk in top_chunks}),
             context_chunks=selected_chunks,
@@ -1392,6 +1468,7 @@ class LLMNode(Node[LLMNodeData]):
             query_rewrite_applied=query_rewrite_applied,
             query_rewrite_strategy=query_rewrite_strategy,
         )
+        trace_summary.update(candidate_summary)
         policy_block_reason = blocked_evidence_reason_for_chunks(selected_chunks)
         if policy_block_reason:
             # 정책상 외부 LLM에 전달할 수 없는 evidence는 근거 충분성과 무관하게 차단한다.
@@ -1400,7 +1477,7 @@ class LLMNode(Node[LLMNodeData]):
                 reason_code=policy_block_reason,
             )
             blocked_trace_summary = self._rag_runtime_trace_summary(
-                authorized_kb_count=len(authorized_kb_ids),
+                authorized_kb_count=len(kb_ids),
                 retrieved_chunk_count=0,
                 selected_kb_count=0,
                 context_chunks=[],
@@ -1412,6 +1489,7 @@ class LLMNode(Node[LLMNodeData]):
                 query_rewrite_applied=query_rewrite_applied,
                 query_rewrite_strategy=query_rewrite_strategy,
             )
+            blocked_trace_summary.update(candidate_summary)
             blocked_trace_summary["safe_exclusion_summary"] = {
                 "policy_filtered": True,
                 "reason_code": policy_block_reason,
@@ -1884,6 +1962,206 @@ class LLMNode(Node[LLMNodeData]):
             total += max(1, len(getattr(chunk, "content", "") or "") // 4)
         return total
 
+    def _get_knowledge_runtime_candidate_resolver(
+        self,
+    ) -> KnowledgeRuntimeCandidateResolver:
+        resolver = getattr(
+            self,
+            "_knowledge_runtime_candidate_resolver",
+            None,
+        )
+        if resolver is None or not callable(getattr(resolver, "resolve", None)):
+            raise KnowledgeRuntimeCandidateInfrastructureError()
+        return resolver
+
+    def _resolve_runtime_knowledge_candidates(
+        self,
+    ) -> KnowledgeRuntimeCandidateResolution:
+        try:
+            organization_id = uuid.UUID(
+                str(self.execution_context.get("organization_id"))
+            )
+        except (TypeError, ValueError):
+            raise NonRetryableWorkflowError(
+                "knowledge_runtime_organization_invalid"
+            ) from None
+
+        try:
+            execution_subject_user_id = self._resolve_rag_execution_subject()
+        except PermissionError:
+            raise NonRetryableWorkflowError(
+                "knowledge_runtime_audience_invalid"
+            ) from None
+
+        audience = (
+            AuthenticatedAudience(
+                organization_id=organization_id,
+                user_id=execution_subject_user_id,
+            )
+            if execution_subject_user_id is not None
+            else AnonymousPublicAudience(organization_id=organization_id)
+        )
+        try:
+            request = KnowledgeRuntimeCandidateRequest(
+                audience=audience,
+                direct_kb_ids=tuple(
+                    uuid.UUID(reference.id)
+                    for reference in self.data.knowledgeBases
+                ),
+                collection_ids=tuple(
+                    uuid.UUID(reference.id)
+                    for reference in self.data.knowledgeCollections
+                ),
+            )
+        except KnowledgeRuntimeCandidateConfigurationError as exc:
+            raise NonRetryableWorkflowError(exc.reason_code) from None
+        except (TypeError, ValueError):
+            raise NonRetryableWorkflowError(
+                "knowledge_runtime_reference_invalid"
+            ) from None
+
+        try:
+            result = self._get_knowledge_runtime_candidate_resolver().resolve(
+                request
+            )
+        except KnowledgeRuntimeCandidateConfigurationError as exc:
+            raise NonRetryableWorkflowError(exc.reason_code) from None
+        except KnowledgeRuntimeCandidateInfrastructureError:
+            raise
+        except Exception:
+            raise KnowledgeRuntimeCandidateInfrastructureError() from None
+
+        if not isinstance(result, KnowledgeRuntimeCandidateResolution):
+            raise NonRetryableWorkflowError(
+                "knowledge_runtime_candidate_resolution_invalid"
+            )
+        self._validate_knowledge_runtime_candidate_resolution(request, result)
+        return result
+
+    @staticmethod
+    def _validate_knowledge_runtime_candidate_resolution(
+        request: KnowledgeRuntimeCandidateRequest,
+        resolution: KnowledgeRuntimeCandidateResolution,
+    ) -> None:
+        invalid_reason = "knowledge_runtime_candidate_resolution_invalid"
+        candidates = resolution.candidates
+        if not isinstance(candidates, tuple):
+            raise NonRetryableWorkflowError(invalid_reason)
+        if len(candidates) > request.candidate_budget:
+            raise NonRetryableWorkflowError(invalid_reason)
+
+        seen: set[uuid.UUID] = set()
+        provenance_kinds: set[str] = set()
+        for candidate in candidates:
+            knowledge_base_id = getattr(candidate, "knowledge_base_id", None)
+            provenance = getattr(candidate, "provenance", None)
+            kind = getattr(provenance, "kind", None)
+            collection_id = getattr(provenance, "collection_id", None)
+            if not isinstance(knowledge_base_id, uuid.UUID):
+                raise NonRetryableWorkflowError(invalid_reason)
+            if knowledge_base_id in seen:
+                raise NonRetryableWorkflowError(invalid_reason)
+            seen.add(knowledge_base_id)
+            if kind == "direct":
+                if (
+                    knowledge_base_id not in request.direct_kb_ids
+                    or collection_id is not None
+                ):
+                    raise NonRetryableWorkflowError(invalid_reason)
+            elif kind == "collection":
+                if collection_id not in request.collection_ids:
+                    raise NonRetryableWorkflowError(invalid_reason)
+            else:
+                raise NonRetryableWorkflowError(invalid_reason)
+            provenance_kinds.add(kind)
+
+        expected_status = "resolved" if candidates else "safe_no_result"
+        expected_mode = (
+            "mixed"
+            if provenance_kinds == {"direct", "collection"}
+            else "direct"
+            if provenance_kinds == {"direct"}
+            else "collection"
+            if provenance_kinds == {"collection"}
+            else "none"
+        )
+        safe_buckets = {"0", "1", "2-10", "11-100", "100+"}
+        bucket_values = (
+            resolution.configured_direct_count_bucket,
+            resolution.configured_collection_count_bucket,
+            resolution.eligible_candidate_count_bucket,
+            resolution.selected_candidate_count_bucket,
+            resolution.policy_excluded_count_bucket,
+        )
+        if (
+            resolution.status != expected_status
+            or resolution.routing_mode != expected_mode
+            or any(
+                not isinstance(bucket, str) or bucket not in safe_buckets
+                for bucket in bucket_values
+            )
+            or not isinstance(resolution.budget_limited, bool)
+            or not isinstance(resolution.scan_limited, bool)
+            or not isinstance(resolution.warning_codes, tuple)
+            or any(
+                not isinstance(code, str)
+                or code
+                not in {"candidate_budget_limited", "candidate_scan_limited"}
+                for code in resolution.warning_codes
+            )
+            or resolution.reason_code
+            != (
+                None
+                if candidates
+                else "knowledge_candidates.safe_no_result"
+            )
+        ):
+            raise NonRetryableWorkflowError(invalid_reason)
+
+    def _knowledge_candidate_safe_no_result(
+        self,
+        resolution: KnowledgeRuntimeCandidateResolution,
+    ) -> WorkflowRAGSearchResult:
+        return WorkflowRAGSearchResult(
+            context="",
+            metadata=[],
+            evidence_decision=RAGEvidenceDecision(
+                evidence_sufficient=False,
+                insufficiency_reason="no_evidence",
+            ),
+            should_invoke_llm=False,
+            answer_override=RAG_NO_EVIDENCE_MESSAGE,
+            trace_summary=self._knowledge_candidate_trace_summary(resolution),
+        )
+
+    @staticmethod
+    def _knowledge_candidate_trace_summary(
+        resolution: KnowledgeRuntimeCandidateResolution,
+    ) -> Dict[str, Any]:
+        return {
+            "candidate_resolution_status": resolution.status,
+            "routing_mode": resolution.routing_mode,
+            "configured_direct_count_bucket": (
+                resolution.configured_direct_count_bucket
+            ),
+            "configured_collection_count_bucket": (
+                resolution.configured_collection_count_bucket
+            ),
+            "eligible_candidate_count_bucket": (
+                resolution.eligible_candidate_count_bucket
+            ),
+            "selected_candidate_count_bucket": (
+                resolution.selected_candidate_count_bucket
+            ),
+            "policy_excluded_count_bucket": (
+                resolution.policy_excluded_count_bucket
+            ),
+            "candidate_budget_limited": resolution.budget_limited,
+            "candidate_scan_limited": resolution.scan_limited,
+            "candidate_warning_codes": list(resolution.warning_codes),
+            "candidate_reason_code": resolution.reason_code,
+        }
+
     def _resolve_rag_execution_subject(self) -> uuid.UUID | None:
         # Workflow owner나 builder 권한으로 조용히 대체하지 않는다.
         # 현재 runtime은 user execution subject만 지원하며 service account는 후속 gate다.
@@ -1939,112 +2217,6 @@ class LLMNode(Node[LLMNodeData]):
             and trigger_mode in {"schedule", "scheduler"}
             and task_id.startswith("schedule:")
         )
-
-    def _authorized_runtime_kb_ids(
-        self,
-        db_session,
-        *,
-        user_id: uuid.UUID | None,
-        organization_id: uuid.UUID,
-        knowledge_base_ids: List[str],
-    ) -> List[str]:
-        parsed_ids = []
-        for kb_id in knowledge_base_ids:
-            try:
-                parsed_ids.append(uuid.UUID(str(kb_id)))
-            except (TypeError, ValueError) as exc:
-                raise PermissionError("Knowledge Base is unavailable.") from exc
-
-        if not parsed_ids:
-            return []
-
-        if user_id is None:
-            return self._public_runtime_kb_ids(
-                db_session,
-                organization_id=organization_id,
-                knowledge_base_ids=parsed_ids,
-            )
-
-        rows = (
-            db_session.query(KnowledgeBase)
-            .filter(
-                KnowledgeBase.id.in_(parsed_ids),
-                KnowledgeBase.organization_id == organization_id,
-                KnowledgeBase.lifecycle_state == "active",
-            )
-            .all()
-        )
-        kbs_by_id = {row.id: row for row in rows}
-        helper = KnowledgePermissionHelper(
-            db_session,
-            user_id=user_id,
-            organization_id=organization_id,
-        )
-
-        authorized_ids: List[str] = []
-        decisions = helper.bulk_evaluate_kb_use(
-            [kbs_by_id[kb_id] for kb_id in parsed_ids if kb_id in kbs_by_id]
-        )
-        for kb_id in parsed_ids:
-            kb = kbs_by_id.get(kb_id)
-            if kb is None:
-                # Stale deployment snapshots can contain KBs that were later deleted
-                # or made inactive. Hide them from retrieval instead of failing the
-                # whole LLM node and leaking resource state to the user.
-                continue
-            decision = decisions.get(kb.id)
-            if decision is None or not decision.allowed:
-                self._record_knowledge_permission_denied(
-                    user_id,
-                    str(kb_id),
-                    getattr(decision, "effective_auth_state", "unknown")
-                    if decision
-                    else "unknown",
-                    organization_id,
-                )
-                continue
-            authorized_ids.append(str(kb_id))
-        return authorized_ids
-
-    def _public_runtime_kb_ids(
-        self,
-        db_session,
-        *,
-        organization_id: uuid.UUID,
-        knowledge_base_ids: List[uuid.UUID],
-    ) -> List[str]:
-        rows = (
-            db_session.query(KnowledgeCollectionItem, KnowledgeCollection, KnowledgeBase)
-            .join(
-                KnowledgeCollection,
-                KnowledgeCollection.id == KnowledgeCollectionItem.collection_id,
-            )
-            .join(
-                KnowledgeBase,
-                KnowledgeBase.id == KnowledgeCollectionItem.knowledge_base_id,
-            )
-            .filter(
-                KnowledgeCollectionItem.organization_id == organization_id,
-                KnowledgeCollectionItem.knowledge_base_id.in_(knowledge_base_ids),
-                KnowledgeCollection.organization_id == organization_id,
-                KnowledgeCollection.lifecycle_state == "active",
-                KnowledgeBase.organization_id == organization_id,
-                KnowledgeBase.lifecycle_state == "active",
-            )
-            .all()
-        )
-        public_kb_ids: set[uuid.UUID] = set()
-        for item, collection, kb in rows:
-            safe_metadata = getattr(collection, "safe_metadata", None) or {}
-            source_identity_id = getattr(kb, "source_identity_id", None)
-            # ADR-0018/ADR-0020 require source-managed KB public runtime exposure
-            # to pass a separate source/connector approval gate. Until that
-            # approval primitive exists in runtime, fail closed for anonymous
-            # public-only runs.
-            if safe_metadata.get("visibility") == "public" and source_identity_id is None:
-                public_kb_ids.add(item.knowledge_base_id)
-
-        return [str(kb_id) for kb_id in knowledge_base_ids if kb_id in public_kb_ids]
 
     def _rag_safe_no_result_answer(
         self,
@@ -2282,27 +2454,6 @@ class LLMNode(Node[LLMNodeData]):
         except (TypeError, ValueError):
             logger.warning("RAG audit omitted invalid organization context")
             return None
-
-    def _record_knowledge_permission_denied(
-        self,
-        user_id: uuid.UUID,
-        knowledge_base_id: str,
-        effective_auth_state: str,
-        organization_id: uuid.UUID,
-    ) -> None:
-        record_resource_permission_denied(
-            user_id=user_id,
-            resource_type="knowledge_base",
-            resource_id=knowledge_base_id,
-            action="use",
-            effective_auth_state=effective_auth_state,
-            organization_id=organization_id,
-            metadata={
-                "workflow_id": self.execution_context.get("workflow_id"),
-                "workflow_run_id": self.execution_context.get("workflow_run_id"),
-                "node_id": self.id,
-            },
-        )
 
     def _require_runtime_organization_id(
         self,

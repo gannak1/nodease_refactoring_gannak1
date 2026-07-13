@@ -146,3 +146,19 @@ def test_persisted_refresh_prefers_current_model_for_judge_when_available():
         )
         == "gpt-4.1"
     )
+
+
+def test_safe_node_summary_treats_collection_only_node_as_knowledge_enabled():
+    from apps.workflow_engine.services.model_routing_policy_refresh_task import (
+        PersistedModelRoutingPolicyRefreshService,
+    )
+
+    summary = PersistedModelRoutingPolicyRefreshService._safe_node_summary(
+        {
+            "knowledgeBases": [],
+            "knowledgeCollections": [{"id": str(uuid4())}],
+            "output_format": {"type": "text"},
+        }
+    )
+
+    assert summary["knowledge_enabled"] is True

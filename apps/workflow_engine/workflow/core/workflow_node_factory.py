@@ -54,6 +54,9 @@ from apps.workflow_engine.workflow.nodes.variable_extraction import (
     VariableExtractionNodeData,
 )
 from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
+from apps.workflow_engine.workflow.core.runtime_dependencies import (
+    WorkflowRuntimeDependencies,
+)
 
 
 class NodeFactory:
@@ -86,7 +89,11 @@ class NodeFactory:
     }
 
     @staticmethod
-    def create(schema: NodeSchema, context: Dict = None) -> Node:
+    def create(
+        schema: NodeSchema,
+        context: Dict = None,
+        runtime_dependencies: WorkflowRuntimeDependencies | None = None,
+    ) -> Node:
         """
         NodeSchema로부터 적절한 Node 인스턴스를 생성
 
@@ -119,5 +126,11 @@ class NodeFactory:
         NodeClass, DataClass = NodeFactory.NODE_REGISTRY[schema.type]
         data = DataClass(**schema.data)
         node = NodeClass(schema.id, data, execution_context=context)
+        if schema.type == "llmNode" and runtime_dependencies is not None:
+            resolver = (
+                runtime_dependencies.knowledge_runtime_candidate_resolver
+            )
+            if resolver is not None:
+                node.bind_knowledge_runtime_candidate_resolver(resolver)
         node.runtime_node_type = schema.type
         return node

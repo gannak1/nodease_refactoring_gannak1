@@ -233,7 +233,10 @@ class PersistedModelRoutingPolicyRefreshService:
         return {
             "output_format": output_format.get("type") or "text",
             "schema_required": bool(output_format.get("schema")),
-            "knowledge_enabled": bool(node_data.get("knowledgeBases")),
+            "knowledge_enabled": bool(
+                node_data.get("knowledgeBases")
+                or node_data.get("knowledgeCollections")
+            ),
             "has_fallback_model": bool(node_data.get("fallback_model_id")),
             "model_routing_context": node_data.get("model_routing_context") or {},
         }

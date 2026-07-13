@@ -1000,3 +1000,22 @@ def test_runtime_context_does_not_classify_domain_keywords_by_itself():
     assert context.schema_required is True
     assert context.output_format == "json"
     assert "keywords" not in context.as_metadata()
+
+
+def test_runtime_context_treats_collection_only_node_as_knowledge_enabled():
+    context = ModelRouter.infer_runtime_context(
+        {"message": "사내 문서를 확인해 주세요."},
+        SimpleNamespace(
+            model_id="gpt-4.1-mini",
+            fallback_model_id=None,
+            knowledgeBases=[],
+            knowledgeCollections=[{"id": str(uuid4())}],
+            output_format={"type": "text"},
+            system_prompt="",
+            user_prompt="",
+            assistant_prompt="",
+            task_type="generate",
+        ),
+    )
+
+    assert context.knowledge_enabled is True
