@@ -2,31 +2,33 @@ import {
   knowledgeApi,
   KnowledgeBaseDetailResponse,
   KnowledgeBaseResponse,
+  KnowledgeCollectionLLMSelectableItem,
 } from '@/app/features/knowledge/api/knowledgeApi';
+import type {
+  KnowledgeBaseNodeReference,
+  KnowledgeCollectionNodeReference,
+} from '@/app/features/workflow/types/Nodes';
 
 /**
- * LLM 노드의 "지식" 선택/필터링 전용 유틸입니다.
- * 지식 탭에서 사용하는 그룹/문서 목록 로직과는 분리되어 있으며,
- * 그 로직을 재사용하거나 수정하지 않기 위해 별도 파일로 유지합니다.
- *
- * 이 유틸은 LLM 노드에서 아래 역할만 담당합니다.
- * - 완료된 retrieval-visible 문서가 있는 지식 베이스만 보여주기
- * - 외부에서 삭제된 베이스가 기존 선택에 남는 문제 정리
- * - 선택 목록의 이름/중복을 최신 상태로 정리
+ * Workflow Builder의 LLM Knowledge picker 전용 유틸입니다.
+ * 관리 화면의 Collection projection과 runtime resolver 결과는 사용하지 않습니다.
  */
-type KnowledgeBaseSelection = { id: string; name: string };
+export const MAX_CONFIGURED_KNOWLEDGE_REFERENCES = 20;
 
 type EligibleKnowledgeBasesResult = {
   bases: KnowledgeBaseResponse[];
   detailsById: Record<string, KnowledgeBaseDetailResponse>;
-  preserveSelectionIds?: string[];
 };
 
-type SanitizeSelectedKnowledgeBasesOptions = {
-  preserveMissingIds?: Iterable<string>;
-};
+const CANONICAL_UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const isSafeDisplay = (value: string) =>
+  value.length <= 255 &&
+  !Array.from(value).some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint < 32 || codePoint === 127;
+  });
 
-// LLM 노드에서 실제로 사용할 수 있는지 판단하기 위해 검색 가능한 완료 문서 수를 계산합니다.
 const getCompletedCount = (detail: KnowledgeBaseDetailResponse) => {
   const documents = Array.isArray(detail.documents) ? detail.documents : [];
   return documents.filter(
@@ -34,21 +36,26 @@ const getCompletedCount = (detail: KnowledgeBaseDetailResponse) => {
   ).length;
 };
 
-/**
- * LLM 노드에서 표시 가능한 지식 베이스만 가져옵니다.
- * - Gateway의 LLM 전용 후보 API가 active organization, KB use 권한,
- *   retrieval-visible completed chunk 기준을 적용합니다.
- * - client는 malformed payload 방어와 최신 이름/중복 정리만 수행합니다.
- */
+/** Gateway가 권한과 retrieval readiness를 적용한 direct KB 후보를 가져옵니다. */
 export const fetchEligibleKnowledgeBases =
   async (): Promise<EligibleKnowledgeBasesResult> => {
     const details = await knowledgeApi.getLLMSelectableKnowledgeBases();
     const detailsById: Record<string, KnowledgeBaseDetailResponse> = {};
     const eligibleBases: KnowledgeBaseResponse[] = [];
 
+    if (!Array.isArray(details)) return { bases: [], detailsById };
+
     details.forEach((detail) => {
+      if (
+        !detail ||
+        typeof detail !== 'object' ||
+        typeof detail.id !== 'string' ||
+        typeof detail.name !== 'string'
+      ) {
+        return;
+      }
       const completedCount = getCompletedCount(detail);
-      if (completedCount > 0) {
+      if (completedCount > 0 && !detailsById[detail.id]) {
         eligibleBases.push(detail);
         detailsById[detail.id] = detail;
       }
@@ -57,47 +64,96 @@ export const fetchEligibleKnowledgeBases =
     return { bases: eligibleBases, detailsById };
   };
 
+const isSelectableCollection = (
+  value: unknown,
+): value is KnowledgeCollectionLLMSelectableItem => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const item = value as Record<string, unknown>;
+  if (!CANONICAL_UUID_PATTERN.test(String(item.id ?? ''))) return false;
+  if (item.safe_label !== undefined && item.safe_label !== null) {
+    if (
+      typeof item.safe_label !== 'string' ||
+      !isSafeDisplay(item.safe_label)
+    ) {
+      return false;
+    }
+  }
+  return Object.keys(item).every((key) => key === 'id' || key === 'safe_label');
+};
+
+/** Gateway의 route-safe 최소 projection만 수용하고 malformed row는 무시합니다. */
+export const fetchEligibleKnowledgeCollections = async () => {
+  const response = await knowledgeApi.getLLMSelectableKnowledgeCollections();
+  const rawCollections = Array.isArray(response?.collections)
+    ? response.collections
+    : [];
+  const seen = new Set<string>();
+  return rawCollections.filter((item) => {
+    if (!isSelectableCollection(item) || seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  });
+};
+
 /**
- * 기존 선택된 지식 베이스를 최신 상태로 정리합니다.
- * - 현재 목록에 없는 항목은 제거
- * - 일시 장애 등으로 보존 요청된 기존 선택 항목은 이름을 유지한 채 보존
- * - 중복 제거
- * - 이름은 최신 목록 기준으로 갱신
+ * 저장 참조를 자동 삭제하지 않고, 현재 후보에 있는 display snapshot만 갱신합니다.
+ * 중복은 첫 항목을 유지합니다.
  */
 export const sanitizeSelectedKnowledgeBases = (
-  selected: KnowledgeBaseSelection[],
+  selected: KnowledgeBaseNodeReference[],
   eligibleBases: KnowledgeBaseResponse[],
-  options: SanitizeSelectedKnowledgeBasesOptions = {},
 ) => {
-  const nameById = new Map(
-    eligibleBases.map((kb) => [kb.id, kb.name]),
-  );
-  const preserveMissingIds = new Set(options.preserveMissingIds ?? []);
+  const nameById = new Map(eligibleBases.map((kb) => [kb.id, kb.name]));
   const seen = new Set<string>();
-  const next: KnowledgeBaseSelection[] = [];
-
-  selected.forEach((kb) => {
-    const name = nameById.get(kb.id);
-    if (!name && !preserveMissingIds.has(kb.id)) return;
-    if (seen.has(kb.id)) return;
+  return selected.flatMap((kb) => {
+    if (seen.has(kb.id)) return [];
     seen.add(kb.id);
-    next.push({ id: kb.id, name: name ?? kb.name });
+    return [{ id: kb.id, name: nameById.get(kb.id) ?? kb.name }];
   });
-
-  return next;
 };
 
-/**
- * 선택 목록이 변경되었는지 판단하기 위한 순서/값 비교 헬퍼입니다.
- * LLM 노드의 불필요한 상태 업데이트를 줄이기 위해 사용합니다.
- */
-export const isSameKnowledgeSelection = (
-  a: KnowledgeBaseSelection[],
-  b: KnowledgeBaseSelection[],
+export const sanitizeSelectedKnowledgeCollections = (
+  selected: KnowledgeCollectionNodeReference[],
+  eligibleCollections: KnowledgeCollectionLLMSelectableItem[],
 ) => {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i += 1) {
-    if (a[i].id !== b[i].id || a[i].name !== b[i].name) return false;
-  }
-  return true;
+  const labelById = new Map(
+    eligibleCollections.map((collection) => [
+      collection.id,
+      collection.safe_label ?? undefined,
+    ]),
+  );
+  const availableIds = new Set(
+    eligibleCollections.map((collection) => collection.id),
+  );
+  const seen = new Set<string>();
+  return selected.flatMap((collection) => {
+    if (seen.has(collection.id)) return [];
+    seen.add(collection.id);
+    if (!availableIds.has(collection.id)) return [collection];
+    const safeLabel = labelById.get(collection.id);
+    return [
+      safeLabel === undefined
+        ? { id: collection.id }
+        : { id: collection.id, safeLabel },
+    ];
+  });
 };
+
+export const isSameKnowledgeSelection = (
+  a: KnowledgeBaseNodeReference[],
+  b: KnowledgeBaseNodeReference[],
+) =>
+  a.length === b.length &&
+  a.every(
+    (item, index) => item.id === b[index]?.id && item.name === b[index]?.name,
+  );
+
+export const isSameKnowledgeCollectionSelection = (
+  a: KnowledgeCollectionNodeReference[],
+  b: KnowledgeCollectionNodeReference[],
+) =>
+  a.length === b.length &&
+  a.every(
+    (item, index) =>
+      item.id === b[index]?.id && item.safeLabel === b[index]?.safeLabel,
+  );

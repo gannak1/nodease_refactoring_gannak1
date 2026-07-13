@@ -24,6 +24,106 @@ const draft = (nodes: AppNode[], edges: Edge[]): WorkflowDraftRequest => ({
 });
 
 describe('validateWorkflowGraph', () => {
+  it('accepts legacy direct-only, Collection-only, and mixed Knowledge references in nested graphs', () => {
+    const directId = '11111111-1111-1111-1111-111111111111';
+    const collectionId = '22222222-2222-2222-2222-222222222222';
+    const nestedLlm = {
+      ...node('nested-llm', 'llmNode', 'Nested LLM'),
+      data: {
+        title: 'Nested LLM',
+        knowledgeCollections: [{ id: collectionId, safeLabel: '사내 문서' }],
+      },
+    } as AppNode;
+    const container = {
+      ...node('loop', 'loopNode', 'Loop'),
+      data: {
+        title: 'Loop',
+        subGraph: { nodes: [nestedLlm], edges: [] },
+      },
+    } as AppNode;
+    const mixedLlm = {
+      ...node('llm', 'llmNode', 'LLM'),
+      data: {
+        title: 'LLM',
+        knowledgeBases: [{ id: directId, name: '' }],
+        knowledgeCollections: [{ id: collectionId }],
+      },
+    } as AppNode;
+    const legacyLlm = node('legacy-llm', 'llmNode', 'Legacy LLM');
+
+    const result = validateWorkflowGraph(
+      draft([mixedLlm, legacyLlm, container], []),
+    );
+
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects a 21st Knowledge reference without silently slicing either list', () => {
+    const references = Array.from({ length: 21 }, (_, index) => ({
+      id: `00000000-0000-0000-0000-${String(index).padStart(12, '0')}`,
+      safeLabel: `Collection ${index}`,
+    }));
+    const llm = {
+      ...node('llm', 'llmNode', 'LLM'),
+      data: { title: 'LLM', knowledgeCollections: references },
+    } as AppNode;
+
+    const result = validateWorkflowGraph(draft([llm], []));
+
+    expect(result.errors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: 'KNOWLEDGE_REFERENCE_LIMIT_EXCEEDED',
+          nodeId: 'llm',
+        }),
+      ]),
+    );
+  });
+
+  it.each([
+    {
+      knowledgeBases: [
+        {
+          id: '11111111-1111-1111-1111-111111111111',
+          name: '정책',
+          forged: true,
+        },
+      ],
+    },
+    {
+      knowledgeCollections: [{ id: '11111111-1111-1111-1111-11111111111A' }],
+    },
+    {
+      knowledgeCollections: [
+        {
+          id: '11111111-1111-1111-1111-111111111111',
+          safeLabel: '잘못된\u0000이름',
+        },
+      ],
+    },
+    { knowledgeBases: null },
+  ])(
+    'rejects malformed Knowledge graph data without echoing values: %o',
+    (data) => {
+      const llm = {
+        ...node('llm', 'llmNode', 'LLM'),
+        data: { title: 'LLM', ...data },
+      } as AppNode;
+
+      const result = validateWorkflowGraph(draft([llm], []));
+
+      expect(result.errors).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ code: 'KNOWLEDGE_REFERENCE_INVALID' }),
+        ]),
+      );
+      expect(JSON.stringify(result.errors)).not.toContain('정책');
+      expect(JSON.stringify(result.errors)).not.toContain(
+        '11111111-1111-1111-1111-11111111111A',
+      );
+    },
+  );
+
   it('rejects selectors for removed Slack raw outputs', () => {
     const slack = {
       ...node('slack', 'slackPostNode', 'Slack'),
@@ -343,7 +443,18 @@ describe('validateWorkflowGraph', () => {
       ...node('llm', 'llmNode', 'LLM'),
       data: {
         title: 'LLM',
-        knowledgeBases: [{ id: 'kb-1', name: '제품 정책' }],
+        knowledgeBases: [
+          {
+            id: '11111111-1111-1111-1111-111111111111',
+            name: '제품 정책',
+          },
+        ],
+        knowledgeCollections: [
+          {
+            id: '22222222-2222-2222-2222-222222222222',
+            safeLabel: '사내 문서',
+          },
+        ],
         topK: 4,
         scoreThreshold: 0.6,
         dedupeRetrievedContext: true,
@@ -379,7 +490,18 @@ describe('validateWorkflowGraph', () => {
 
     expect(result.graph.edges.map((edge) => edge.id)).toEqual(['good-edge']);
     expect(cleanedLlmNode?.data).toMatchObject({
-      knowledgeBases: [{ id: 'kb-1', name: '제품 정책' }],
+      knowledgeBases: [
+        {
+          id: '11111111-1111-1111-1111-111111111111',
+          name: '제품 정책',
+        },
+      ],
+      knowledgeCollections: [
+        {
+          id: '22222222-2222-2222-2222-222222222222',
+          safeLabel: '사내 문서',
+        },
+      ],
       topK: 4,
       scoreThreshold: 0.6,
       dedupeRetrievedContext: true,

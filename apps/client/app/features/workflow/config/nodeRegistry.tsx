@@ -121,6 +121,7 @@ export const nodeRegistry: NodeDefinition[] = [
       referenced_variables: [],
       context_variable: '',
       knowledgeBases: [],
+      knowledgeCollections: [],
       topK: 3,
       scoreThreshold: 0.5,
       dedupeRetrievedContext: false,

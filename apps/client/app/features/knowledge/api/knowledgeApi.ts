@@ -12,6 +12,8 @@ import {
   KnowledgeCollectionRoleBundle,
   KnowledgeCollectionResponse,
   KnowledgeCollectionListResponse,
+  KnowledgeCollectionLLMSelectableItem,
+  KnowledgeCollectionLLMSelectableResponse,
   KnowledgeCollectionItemResponse,
   KnowledgeCollectionItemsResponse,
   KnowledgeCollectionLinkCandidate,
@@ -174,6 +176,8 @@ export type {
   KnowledgeCollectionRoleBundle,
   KnowledgeCollectionResponse,
   KnowledgeCollectionListResponse,
+  KnowledgeCollectionLLMSelectableItem,
+  KnowledgeCollectionLLMSelectableResponse,
   KnowledgeCollectionItemResponse,
   KnowledgeCollectionItemsResponse,
   KnowledgeCollectionLinkCandidate,
@@ -334,6 +338,18 @@ export const knowledgeApi = {
       throw error;
     }
   },
+
+  // LLM 노드에서 route 권한으로 선택 가능한 Collection의 최소 projection 조회
+  getLLMSelectableKnowledgeCollections:
+    async (): Promise<KnowledgeCollectionLLMSelectableResponse> => {
+      try {
+        const response = await api.get('/knowledge/llm-selectable-collections');
+        return response.data;
+      } catch (error) {
+        logKnowledgeApiFailure('getLLMSelectableKnowledgeCollections', error);
+        throw error;
+      }
+    },
 
   // 지식 상세 조회
   getKnowledgeBase: async (

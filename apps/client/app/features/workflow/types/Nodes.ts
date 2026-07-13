@@ -140,6 +140,16 @@ export interface LLMVariable {
   value_selector: string[];
 }
 
+export interface KnowledgeBaseNodeReference {
+  id: string;
+  name: string;
+}
+
+export interface KnowledgeCollectionNodeReference {
+  id: string;
+  safeLabel?: string;
+}
+
 export interface LLMNodeData extends BaseNodeData {
   provider: string;
   model_id: string;
@@ -193,7 +203,8 @@ export interface LLMNodeData extends BaseNodeData {
   };
 
   // 지식 (Knowledge) 통합 필드
-  knowledgeBases?: { id: string; name: string }[];
+  knowledgeBases?: KnowledgeBaseNodeReference[];
+  knowledgeCollections?: KnowledgeCollectionNodeReference[];
   scoreThreshold?: number;
   topK?: number;
   dedupeRetrievedContext?: boolean;

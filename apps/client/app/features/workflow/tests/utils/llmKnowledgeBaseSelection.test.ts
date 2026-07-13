@@ -4,13 +4,16 @@ import { knowledgeApi } from '@/app/features/knowledge/api/knowledgeApi';
 import type { KnowledgeBaseDetailResponse } from '@/app/features/knowledge/types/Knowledge';
 import {
   fetchEligibleKnowledgeBases,
+  fetchEligibleKnowledgeCollections,
   sanitizeSelectedKnowledgeBases,
+  sanitizeSelectedKnowledgeCollections,
 } from '../../utils/llmKnowledgeBaseSelection';
 
 vi.mock('@/app/features/knowledge/api/knowledgeApi', () => ({
   knowledgeApi: {
     getKnowledgeBases: vi.fn(),
     getLLMSelectableKnowledgeBases: vi.fn(),
+    getLLMSelectableKnowledgeCollections: vi.fn(),
     getKnowledgeBase: vi.fn(),
   },
 }));
@@ -45,14 +48,18 @@ describe('llmKnowledgeBaseSelection', () => {
   });
 
   it('uses the permission-scoped LLM selectable API instead of owner-filtered legacy list/detail calls', async () => {
-    vi.mocked(knowledgeApi.getLLMSelectableKnowledgeBases).mockResolvedValueOnce([
+    vi.mocked(
+      knowledgeApi.getLLMSelectableKnowledgeBases,
+    ).mockResolvedValueOnce([
       readyDetail('kb-a', '사내 정책'),
       readyDetail('kb-b', '개발 규칙'),
     ]);
 
     const result = await fetchEligibleKnowledgeBases();
 
-    expect(knowledgeApi.getLLMSelectableKnowledgeBases).toHaveBeenCalledTimes(1);
+    expect(knowledgeApi.getLLMSelectableKnowledgeBases).toHaveBeenCalledTimes(
+      1,
+    );
     expect(knowledgeApi.getKnowledgeBases).not.toHaveBeenCalled();
     expect(knowledgeApi.getKnowledgeBase).not.toHaveBeenCalled();
     expect(result.bases.map((base) => base.id)).toEqual(['kb-a', 'kb-b']);
@@ -83,7 +90,9 @@ describe('llmKnowledgeBaseSelection', () => {
   });
 
   it('defensively excludes malformed or not-ready selectable API rows', async () => {
-    vi.mocked(knowledgeApi.getLLMSelectableKnowledgeBases).mockResolvedValueOnce([
+    vi.mocked(
+      knowledgeApi.getLLMSelectableKnowledgeBases,
+    ).mockResolvedValueOnce([
       readyDetail('kb-ready', '완료 KB'),
       {
         ...readyDetail('kb-pending', '처리 전 KB'),
@@ -111,7 +120,7 @@ describe('llmKnowledgeBaseSelection', () => {
     expect(Object.keys(result.detailsById)).toEqual(['kb-ready']);
   });
 
-  it('deduplicates selected knowledge bases, removes missing rows, and preserves transient ids when requested', () => {
+  it('deduplicates selected knowledge bases, refreshes current names, and preserves missing rows', () => {
     expect(
       sanitizeSelectedKnowledgeBases(
         [
@@ -130,11 +139,81 @@ describe('llmKnowledgeBaseSelection', () => {
             embedding_model: 'text-embedding-3-small',
           },
         ],
-        { preserveMissingIds: ['kb-transient'] },
       ),
     ).toEqual([
       { id: 'kb-ready', name: '최신 이름' },
       { id: 'kb-transient', name: '일시 장애 KB' },
+      { id: 'kb-missing', name: '삭제된 KB' },
+    ]);
+  });
+
+  it('uses the route-safe Collection picker and ignores malformed or duplicate rows', async () => {
+    const collectionId = '11111111-1111-1111-1111-111111111111';
+    vi.mocked(
+      knowledgeApi.getLLMSelectableKnowledgeCollections,
+    ).mockResolvedValueOnce({
+      collections: [
+        { id: collectionId, safe_label: '사내 문서' },
+        { id: collectionId, safe_label: '중복' },
+        { id: 'NOT-A-UUID', safe_label: '잘못된 항목' },
+        {
+          id: '22222222-2222-2222-2222-222222222222',
+          safe_label: '제어\u0000문자',
+        },
+        {
+          id: '33333333-3333-3333-3333-333333333333',
+          safe_label: null,
+        },
+      ],
+    });
+
+    const result = await fetchEligibleKnowledgeCollections();
+
+    expect(
+      knowledgeApi.getLLMSelectableKnowledgeCollections,
+    ).toHaveBeenCalledTimes(1);
+    expect(result).toEqual([
+      { id: collectionId, safe_label: '사내 문서' },
+      {
+        id: '33333333-3333-3333-3333-333333333333',
+        safe_label: null,
+      },
+    ]);
+  });
+
+  it('refreshes available Collection labels without deleting unavailable references', () => {
+    expect(
+      sanitizeSelectedKnowledgeCollections(
+        [
+          {
+            id: '11111111-1111-1111-1111-111111111111',
+            safeLabel: '이전 이름',
+          },
+          {
+            id: '22222222-2222-2222-2222-222222222222',
+            safeLabel: '노출하면 안 되는 저장 이름',
+          },
+          {
+            id: '11111111-1111-1111-1111-111111111111',
+            safeLabel: '중복',
+          },
+        ],
+        [
+          {
+            id: '11111111-1111-1111-1111-111111111111',
+            safe_label: '최신 안전 이름',
+          },
+        ],
+      ),
+    ).toEqual([
+      {
+        id: '11111111-1111-1111-1111-111111111111',
+        safeLabel: '최신 안전 이름',
+      },
+      {
+        id: '22222222-2222-2222-2222-222222222222',
+        safeLabel: '노출하면 안 되는 저장 이름',
+      },
     ]);
   });
 });
