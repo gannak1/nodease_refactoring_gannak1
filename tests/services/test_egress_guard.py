@@ -165,6 +165,22 @@ def test_safe_http_request_rejects_unverified_peer_ip(monkeypatch):
     assert fake_response.closed is True
 
 
+def test_response_peer_ip_validation_rejects_missing_or_private_peer():
+    guard = OutboundEgressGuard()
+
+    with pytest.raises(EgressGuardError) as missing:
+        guard.validate_response_peer_ip(None)
+    with pytest.raises(EgressGuardError) as private:
+        guard.validate_response_peer_ip("127.0.0.1")
+
+    assert missing.value.reason_code == "egress.peer_unverified"
+    assert private.value.reason_code == "egress.private_target"
+
+
+def test_response_peer_ip_validation_allows_public_peer():
+    OutboundEgressGuard().validate_response_peer_ip("8.8.8.8")
+
+
 def test_egress_guard_rejects_request_body_over_policy_cap(monkeypatch):
     monkeypatch.setattr(
         socket,

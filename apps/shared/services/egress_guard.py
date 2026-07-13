@@ -10,7 +10,6 @@ from urllib.parse import quote, urlsplit, urlunsplit
 
 import requests
 
-
 SENSITIVE_HEADER_NAMES = {
     "authorization",
     "cookie",
@@ -271,6 +270,12 @@ class OutboundEgressGuard:
         if not self.policy.validate_peer_ip:
             return
         peer_ip = _extract_response_peer_ip(response)
+        self.validate_response_peer_ip(peer_ip)
+
+    def validate_response_peer_ip(self, peer_ip: str | None) -> None:
+        """Validate a peer address extracted by a non-requests HTTP adapter."""
+        if not self.policy.validate_peer_ip:
+            return
         if not peer_ip:
             raise EgressGuardError("egress.peer_unverified")
         try:
