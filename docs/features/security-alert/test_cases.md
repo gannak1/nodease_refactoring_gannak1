@@ -444,7 +444,7 @@ Scope 밖 404, validation 실패, desired-state no-op에는 target-aware audit�
 | SAL-TC-C016 | AC-16, AC-24 | active organization 전환 또는 manager 권한 회수 | 이전 snapshot/cooldown/cache/list/detail/badge 제거, invitation source 유지 |
 | SAL-TC-C017 | AC-30 | keyboard로 tab→filter→row→drawer→dialog 조작 | focus trap/restore, Escape, accessible label 정상 |
 | SAL-TC-C018 | AC-30 | severity/status render | color 없이 text로 의미 전달 |
-| SAL-TC-C019 | AC-24, AC-27 | 새 alert와 같은 alert occurrence 증가 event를 연속 수신 | 최초 snapshot/reconnect는 toast 없음, 일반 문구만 표시, 같은 alert는 60초 안에 한 번만 toast |
+| SAL-TC-C019 | AC-24, AC-27 | 새 alert와 같은 alert occurrence 증가 event를 연속 수신 | 최초 snapshot/reconnect는 toast 없음, 빨간색 경고 아이콘과 일반 문구만 표시, 같은 alert는 60초 안에 한 번만 toast |
 | SAL-TC-C020 | AC-19, AC-30 | Security Alert evidence의 `상세 보기` 선택 | 기존 Audit detail API 호출, Alert drawer보다 높은 layer에 상세 표시, close 후 row focus 복원 |
 | SAL-TC-C021 | AC-19, AC-27 | 연결된 감사 기록과 Audit detail 표시 | safe 권한 거부 정보가 있으면 시도한 작업·필요 권한·거부 사유를 사용자 문장과 라벨로 표시하고 canonical action과 safe ID는 보조 정보로 유지, raw metadata 미노출 |
 

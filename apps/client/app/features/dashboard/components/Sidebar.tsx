@@ -178,7 +178,9 @@ export default function Sidebar() {
             }
           }
           if (shouldNotify) {
-            toast.warning('새 보안 알림이 있습니다.');
+            toast.warning('새 보안 알림이 있습니다.', {
+              classNames: { icon: 'text-red-600' },
+            });
           }
         }
         securityAlertSnapshotRef.current = new Map(

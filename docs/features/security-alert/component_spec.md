@@ -343,7 +343,7 @@ Security Alert detail
 - Event payload를 alert source of truth로 사용하지 않는다.
 - Event 수신 시 invitation 목록은 항상 재조회하고, 현재 organization manager이면 Security Alert summary도 재조회한다. 별도 client refresh event로 열려 있는 Security Alert 목록/detail도 다시 조회한다.
 - Security Alert tab 또는 detail 재조회는 적용 중인 filter, 현재 page, evidence page를 유지한다.
-- 최초 summary snapshot은 toast를 만들지 않는다. 이후 `notifications.changed` 재조회 결과에서 새 alert가 생기거나 같은 alert의 `occurrence_count`가 증가했을 때만 `새 보안 알림이 있습니다.`라는 일반 문구를 표시한다.
+- 최초 summary snapshot은 toast를 만들지 않는다. 이후 `notifications.changed` 재조회 결과에서 새 alert가 생기거나 같은 alert의 `occurrence_count`가 증가했을 때만 빨간색 경고 아이콘과 `새 보안 알림이 있습니다.`라는 일반 문구를 표시한다.
 - 같은 alert의 toast에는 60초 client cooldown을 적용한다. 여러 alert가 한 번에 바뀌어도 한 번의 summary refresh에서는 toast 하나만 표시한다.
 - SSE `open` event는 invitation과 권한에 맞는 Security Alert summary/list/detail을 재조회해 초기 연결과 reconnect 누락을 복구하되 toast는 만들지 않는다.
 - Active organization 전환 시 이전 organization summary, 목록, detail을 즉시 제거하고 새 scope를 조회한다.

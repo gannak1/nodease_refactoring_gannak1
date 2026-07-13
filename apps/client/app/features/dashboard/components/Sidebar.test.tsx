@@ -380,7 +380,9 @@ describe('Sidebar notifications', () => {
     await waitFor(() =>
       expect(adminApi.getSecurityAlertSummary).toHaveBeenCalledTimes(2),
     );
-    expect(toast.warning).toHaveBeenCalledWith('새 보안 알림이 있습니다.');
+    expect(toast.warning).toHaveBeenCalledWith('새 보안 알림이 있습니다.', {
+      classNames: { icon: 'text-red-600' },
+    });
 
     act(() => {
       listeners.get('notifications.changed')?.(new Event('notifications.changed'));
