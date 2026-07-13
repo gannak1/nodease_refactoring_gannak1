@@ -49,7 +49,7 @@ MBA-105 구현 baseline, 운영 기본값, permission helper output, active vers
 | --- | --- | --- |
 | Shared pure contract/policy | explicit audience/request/snapshot/result, direct-first/round-robin/dedupe/budget, safe bucket | SQLAlchemy, FastAPI, Celery, Gateway/Workflow concrete import |
 | Workflow Engine application use case/port | request validation, snapshot port 1회 호출, pure policy 적용, whole-resolution failure mapping | SQL query, Gateway response schema, provider/retrieval side effect |
-| PostgreSQL outbound adapter | fresh `REPEATABLE READ, READ ONLY` transaction, selected Collection/membership/readiness/permission/materialized provenance bulk projection | organization-wide discovery, live connector/source call, cross-invocation cache |
+| PostgreSQL outbound adapter | fresh `REPEATABLE READ, READ ONLY` transaction, selected Collection별 pre-window LATERAL cap, fixed transaction evaluation time, membership/readiness/permission/materialized provenance bulk projection | organization-wide discovery, live connector/source call, cross-invocation cache |
 | Workflow Engine composition | session factory, adapter와 use case 조립 | LLM node business policy와 graph parsing |
 
 Gateway의 기존 `KnowledgeCandidateResolver`는 Builder recommendation/deployment

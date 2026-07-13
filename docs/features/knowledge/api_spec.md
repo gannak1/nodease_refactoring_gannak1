@@ -122,6 +122,9 @@ Resolver adapter는 invocation마다 fresh PostgreSQL transaction을 열고 첫 
 lifecycle/readiness/permission/materialized provenance는 같은 snapshot에서 읽고 candidate
 또는 authorization 결과를 invocation 사이에 cache하지 않는다. Live connector
 `check_access*`와 runtime source authorization cache는 MBA-232에서 호출하지 않는다.
+Membership은 configured Collection별 ordered LATERAL cap을 먼저 적용한 bounded
+intermediate relation에서 round-robin ranking한다. Source-policy/provenance expiry는 같은
+transaction에서 한 번 읽은 `transaction_timestamp()`를 전체 invocation에 재사용한다.
 
 ### KB Permission Endpoints
 

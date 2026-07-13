@@ -1,4 +1,5 @@
 from contextlib import AbstractContextManager
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -10,6 +11,7 @@ from apps.shared.domain.knowledge_runtime_candidates import (
     KnowledgeRuntimeCandidateRequest,
 )
 from apps.workflow_engine.adapters.knowledge_runtime_candidates import (
+    KnowledgeRuntimeCandidateSnapshotError,
     PostgresKnowledgeRuntimeCandidateSnapshotAdapter,
 )
 
@@ -123,6 +125,11 @@ class _CaptureResult:
     def scalars(self):
         return self
 
+    def scalar_one(self):
+        if len(self._rows) != 1:
+            raise AssertionError("expected exactly one captured scalar")
+        return self._rows[0]
+
 
 class _CaptureSession:
     def __init__(self, rows=()):
@@ -184,6 +191,7 @@ class _FixtureAdapter(PostgresKnowledgeRuntimeCandidateSnapshotAdapter):
         self.legacy_ready = set(legacy_ready)
         self.public_direct = set(public_direct)
         self.permission_helper = permission_helper
+        self.evaluation_time = datetime(2030, 1, 2, tzinfo=timezone.utc)
         self.read_events = []
 
     def _organization_is_active(self, db, organization_id):
@@ -252,8 +260,14 @@ class _FixtureAdapter(PostgresKnowledgeRuntimeCandidateSnapshotAdapter):
         self.read_events.append(("public_direct", tuple(knowledge_base_ids)))
         return set(knowledge_base_ids) & self.public_direct
 
-    def _build_permission_helper(self, db, audience):
+    def _load_policy_evaluation_time(self, db):
+        del db
+        self.read_events.append(("evaluation_time", self.evaluation_time))
+        return self.evaluation_time
+
+    def _build_permission_helper(self, db, audience, *, evaluation_time):
         del db, audience
+        self.read_events.append(("permission_helper", evaluation_time))
         if self.permission_helper is None:
             raise AssertionError("anonymous resolution must not construct RBAC helper")
         return self.permission_helper
@@ -413,6 +427,8 @@ def test_authenticated_snapshot_combines_route_use_and_bulk_readiness():
         ((COLLECTION_A, COLLECTION_B), "route")
     ]
     assert helper.kb_calls == [(KB_1, KB_3, KB_4)]
+    assert ("evaluation_time", adapter.evaluation_time) in adapter.read_events
+    assert ("permission_helper", adapter.evaluation_time) in adapter.read_events
     assert ("memberships", (COLLECTION_A,), 5000) in adapter.read_events
     assert ("legacy", (KB_2, KB_4)) in adapter.read_events
 
@@ -617,9 +633,12 @@ def test_fair_membership_query_is_windowed_ordered_and_bounded():
     )
     assert scan_limited is True
     sql = str(db.statement.compile(dialect=postgresql.dialect())).lower()
-    assert "row_number() over (partition by" in sql
-    assert "order by anon_1.collection_position asc, case" in sql
-    assert "limit" in sql
+    assert "join lateral" in sql
+    assert "values" in sql
+    assert "bounded_memberships" in sql
+    assert "row_number() over (partition by bounded_memberships.collection_id" in sql
+    assert sql.count("limit") >= 2
+    assert sql.index("limit") < sql.index("row_number() over")
 
 
 def test_legacy_readiness_query_matches_retrieval_visible_null_pointer_rule():
@@ -634,6 +653,33 @@ def test_legacy_readiness_query_matches_retrieval_visible_null_pointer_rule():
     assert "knowledge_bases.active_document_version_id is null" in sql
     assert "document_chunks.document_version_id is null" in sql
     assert "documents.status" in sql
+
+
+def test_policy_evaluation_time_uses_one_timezone_aware_transaction_timestamp():
+    evaluation_time = datetime(2030, 1, 2, tzinfo=timezone.utc)
+    db = _CaptureSession([evaluation_time])
+    adapter = PostgresKnowledgeRuntimeCandidateSnapshotAdapter(
+        session_factory=lambda: None
+    )
+
+    loaded = adapter._load_policy_evaluation_time(db)
+
+    assert loaded == evaluation_time
+    sql = str(db.statement.compile(dialect=postgresql.dialect())).lower()
+    assert "transaction_timestamp()" in sql
+
+
+def test_policy_evaluation_time_rejects_naive_database_value():
+    db = _CaptureSession([datetime(2030, 1, 2)])
+    adapter = PostgresKnowledgeRuntimeCandidateSnapshotAdapter(
+        session_factory=lambda: None
+    )
+
+    with pytest.raises(
+        KnowledgeRuntimeCandidateSnapshotError,
+        match="snapshot_evaluation_time_invalid",
+    ):
+        adapter._load_policy_evaluation_time(db)
 
 
 def test_snapshot_queries_do_not_select_raw_collection_or_kb_text_fields():

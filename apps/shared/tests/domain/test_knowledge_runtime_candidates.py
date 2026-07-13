@@ -2,7 +2,6 @@ from dataclasses import FrozenInstanceError
 from uuid import UUID
 
 import pytest
-
 from apps.shared.domain.knowledge_runtime_candidates import (
     AnonymousPublicAudience,
     AuthenticatedAudience,

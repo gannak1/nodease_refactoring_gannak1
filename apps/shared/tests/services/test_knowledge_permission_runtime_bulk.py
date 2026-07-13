@@ -100,8 +100,13 @@ def test_bulk_collection_invalid_action_is_fixed_safe_denial():
 
 
 class _SourceActionHelper(KnowledgePermissionHelper):
-    def __init__(self, provenance):
-        super().__init__(None, user_id=USER_ID, organization_id=ORG_ID)
+    def __init__(self, provenance, *, evaluation_time=None):
+        super().__init__(
+            None,
+            user_id=USER_ID,
+            organization_id=ORG_ID,
+            evaluation_time=evaluation_time,
+        )
         self.provenance = provenance
 
     def _effective_kb_use_auth_state(self, kb):
@@ -138,3 +143,31 @@ def test_materialized_source_non_retrieval_action_fails_closed(action):
     assert decision.allowed is False
     assert decision.reason_code == "source_authorization.operation_unverified"
     assert decision.external_reason_code == "resource.hidden"
+
+
+def test_source_expiry_uses_one_injected_invocation_time():
+    evaluation_time = datetime(2030, 1, 1, tzinfo=timezone.utc)
+    provenance = _provenance(action="read")
+    provenance.freshness_expires_at = evaluation_time + timedelta(seconds=1)
+    helper = _SourceActionHelper(
+        provenance,
+        evaluation_time=evaluation_time,
+    )
+
+    decision = helper.evaluate_kb_use(_source_kb())
+
+    assert decision.allowed is True
+    assert helper._now() == evaluation_time
+
+
+def test_permission_evaluation_time_requires_timezone():
+    with pytest.raises(
+        ValueError,
+        match="knowledge_permission_evaluation_time_invalid",
+    ):
+        KnowledgePermissionHelper(
+            None,
+            user_id=USER_ID,
+            organization_id=ORG_ID,
+            evaluation_time=datetime(2030, 1, 1),
+        )

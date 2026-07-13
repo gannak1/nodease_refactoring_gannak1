@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import and_, case, func, select
+from sqlalchemy import Integer, and_, column, func, select, true, values
 from sqlalchemy.orm import Session, load_only
 
 from apps.shared.db.models.knowledge import (
@@ -143,7 +144,12 @@ class PostgresKnowledgeRuntimeCandidateSnapshotAdapter:
 
         permission_helper: KnowledgePermissionHelper | None = None
         if isinstance(request.audience, AuthenticatedAudience):
-            permission_helper = self._build_permission_helper(db, request.audience)
+            evaluation_time = self._load_policy_evaluation_time(db)
+            permission_helper = self._build_permission_helper(
+                db,
+                request.audience,
+                evaluation_time=evaluation_time,
+            )
             route_decisions = (
                 permission_helper.bulk_evaluate_collection_action(
                     configured_collections,
@@ -384,33 +390,72 @@ class PostgresKnowledgeRuntimeCandidateSnapshotAdapter:
         if not bounded_collection_ids:
             return (), False
 
-        collection_position = func.row_number().over(
-            partition_by=KnowledgeCollectionItem.collection_id,
-            order_by=(
+        configured_collections = values(
+            column(
+                "collection_id",
+                KnowledgeCollectionItem.collection_id.type,
+            ),
+            column("configured_order", Integer()),
+            name="selected_collections",
+        ).data(
+            [
+                (collection_id, configured_order)
+                for configured_order, collection_id in enumerate(
+                    bounded_collection_ids
+                )
+            ]
+        )
+        bounded_collection_items = (
+            select(
+                KnowledgeCollectionItem.collection_id.label("collection_id"),
+                KnowledgeCollectionItem.knowledge_base_id.label(
+                    "knowledge_base_id"
+                ),
+                KnowledgeCollectionItem.rank.label("item_rank"),
+                KnowledgeCollectionItem.created_at.label("item_created_at"),
+            )
+            .where(
+                KnowledgeCollectionItem.organization_id == organization_id,
+                KnowledgeCollectionItem.collection_id
+                == configured_collections.c.collection_id,
+            )
+            .order_by(
                 KnowledgeCollectionItem.rank.asc(),
                 KnowledgeCollectionItem.created_at.asc(),
                 KnowledgeCollectionItem.knowledge_base_id.asc(),
+            )
+            .limit(scan_cap + 1)
+            .lateral("bounded_collection_items")
+        )
+        bounded_memberships = (
+            select(
+                bounded_collection_items.c.collection_id,
+                bounded_collection_items.c.knowledge_base_id,
+                bounded_collection_items.c.item_rank,
+                bounded_collection_items.c.item_created_at,
+                configured_collections.c.configured_order,
+            )
+            .select_from(configured_collections)
+            .join(bounded_collection_items, true())
+            .cte("bounded_memberships")
+        )
+        collection_position = func.row_number().over(
+            partition_by=bounded_memberships.c.collection_id,
+            order_by=(
+                bounded_memberships.c.item_rank.asc(),
+                bounded_memberships.c.item_created_at.asc(),
+                bounded_memberships.c.knowledge_base_id.asc(),
             ),
         ).label("collection_position")
         ranked_items = (
             select(
-                KnowledgeCollectionItem.collection_id.label("collection_id"),
-                KnowledgeCollectionItem.knowledge_base_id.label("knowledge_base_id"),
+                bounded_memberships.c.collection_id,
+                bounded_memberships.c.knowledge_base_id,
+                bounded_memberships.c.configured_order,
                 collection_position,
             )
-            .where(
-                KnowledgeCollectionItem.organization_id == organization_id,
-                KnowledgeCollectionItem.collection_id.in_(bounded_collection_ids),
-            )
-            .subquery()
-        )
-        configured_order = case(
-            {
-                collection_id: index
-                for index, collection_id in enumerate(bounded_collection_ids)
-            },
-            value=ranked_items.c.collection_id,
-            else_=len(bounded_collection_ids),
+            .select_from(bounded_memberships)
+            .cte("ranked_memberships")
         )
         rows = db.execute(
             select(
@@ -419,7 +464,7 @@ class PostgresKnowledgeRuntimeCandidateSnapshotAdapter:
             )
             .order_by(
                 ranked_items.c.collection_position.asc(),
-                configured_order.asc(),
+                ranked_items.c.configured_order.asc(),
                 ranked_items.c.knowledge_base_id.asc(),
             )
             .limit(scan_cap + 1)
@@ -499,6 +544,20 @@ class PostgresKnowledgeRuntimeCandidateSnapshotAdapter:
             .all()
         )
 
+    def _load_policy_evaluation_time(self, db: Session) -> datetime:
+        evaluation_time = db.execute(
+            select(func.transaction_timestamp())
+        ).scalar_one()
+        if (
+            not isinstance(evaluation_time, datetime)
+            or evaluation_time.tzinfo is None
+            or evaluation_time.utcoffset() is None
+        ):
+            raise KnowledgeRuntimeCandidateSnapshotError(
+                "snapshot_evaluation_time_invalid"
+            )
+        return evaluation_time.astimezone(timezone.utc)
+
     def _load_legacy_ready_kb_ids(
         self,
         db: Session,
@@ -573,11 +632,14 @@ class PostgresKnowledgeRuntimeCandidateSnapshotAdapter:
         self,
         db: Session,
         audience: AuthenticatedAudience,
+        *,
+        evaluation_time: datetime,
     ) -> KnowledgePermissionHelper:
         return KnowledgePermissionHelper(
             db,
             user_id=audience.user_id,
             organization_id=audience.organization_id,
+            evaluation_time=evaluation_time,
         )
 
     @staticmethod

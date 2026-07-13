@@ -130,8 +130,13 @@ ID 또는 permission 결과도 invocation 사이에 cache하지 않는다.
 5. Duplicate를 만나면 해당 slot을 소비하지 않고 traversal을 계속한다.
 
 Adapter의 membership scan도 선택한 첫 Collection이 나머지를 굶기지 않도록 fair하고
-bounded해야 한다. Budget 또는 scan cap 도달은 성공 결과에 fixed safe warning과
-bucketed summary를 붙이는 동작이며 authorization partial failure가 아니다.
+bounded해야 한다. Global window 뒤에만 `LIMIT`을 두지 않고, configured Collection
+`VALUES` relation과 ordered LATERAL subquery로 각 Collection을 `scan_cap + 1` 이하로
+먼저 제한한 뒤 bounded intermediate relation에만 round-robin window를 적용한다. 이
+구현은 기존 ordering을 유지하고 DB migration 없이 window 입력을 최대
+`selected_collection_count * (scan_cap + 1)`로 제한한다. Budget 또는 scan cap 도달은
+성공 결과에 fixed safe warning과 bucketed summary를 붙이는 동작이며 authorization
+partial failure가 아니다.
 
 ### PostgreSQL invocation snapshot
 
@@ -143,7 +148,14 @@ Session-wide isolation 변경을 pooled connection에 남기지 않는다.
 Collection, membership, lifecycle/readiness, permission, materialized source
 provenance query는 같은 snapshot을 사용한다. 중간에 commit된 변경은 다음 resolver
 invocation부터 반영한다. Fake session test는 이 동시성 계약의 증명이 아니며 disposable
-PostgreSQL two-transaction test를 둔다.
+PostgreSQL two-transaction test를 둔다. Source-policy grant와 materialized provenance의
+expiry는 KB마다 wall clock을 다시 읽지 않고 같은 transaction에서 한 번 읽은 timezone-aware
+`transaction_timestamp()`를 permission helper에 주입해 invocation 전체에서 재사용한다.
+
+Disposable PostgreSQL evidence는 membership뿐 아니라 Collection `route`, KB `use`,
+organization membership, source provenance, Collection lifecycle와 KB lifecycle 변경을
+포함한다. 관련 runtime resolver 경로가 바뀌는 pull request와 `dev` push에서 전용
+path-scoped workflow가 이 evidence를 실행한다.
 
 ### Result와 failure
 

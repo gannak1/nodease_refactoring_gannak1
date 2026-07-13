@@ -61,12 +61,22 @@ class KnowledgePermissionHelper:
         organization_id: uuid.UUID,
         requester_subject_type: str = "user",
         requester_subject_id: uuid.UUID | None = None,
+        evaluation_time: datetime | None = None,
     ) -> None:
+        if evaluation_time is not None:
+            if (
+                not isinstance(evaluation_time, datetime)
+                or evaluation_time.tzinfo is None
+                or evaluation_time.utcoffset() is None
+            ):
+                raise ValueError("knowledge_permission_evaluation_time_invalid")
+            evaluation_time = evaluation_time.astimezone(timezone.utc)
         self.db = db
         self.user_id = user_id
         self.organization_id = organization_id
         self.requester_subject_type = requester_subject_type
         self.requester_subject_id = requester_subject_id or user_id
+        self._evaluation_time = evaluation_time
         self._team_ids_cache: set[uuid.UUID] | None = None
         self._bulk_manual_auth_state_by_kb_id: dict[uuid.UUID, str] | None = None
         self._bulk_source_policy_allowed_kb_ids: set[uuid.UUID] | None = None
@@ -840,7 +850,7 @@ class KnowledgePermissionHelper:
         return expires_at <= self._now()
 
     def _now(self) -> datetime:
-        return datetime.now(timezone.utc)
+        return self._evaluation_time or datetime.now(timezone.utc)
 
     def _allowed(
         self,
