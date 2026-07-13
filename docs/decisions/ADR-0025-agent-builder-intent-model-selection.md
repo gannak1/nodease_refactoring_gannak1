@@ -1,6 +1,6 @@
 # ADR-0025: Agent Builder Intent Model Selection
 
-Status: Accepted
+Status: Superseded
 Related ADRs: [ADR-0009](ADR-0009-active-organization-header-context.md), [ADR-0019](ADR-0019-agent-builder-preview-apply-save-boundary.md)
 
 ## Context

@@ -8,6 +8,11 @@ import requests
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
+from apps.gateway.application.agent_builder.model_recommendation_policy import (
+    ModelRecommendationCandidate,
+    SUPPORTED_PROVIDER_ORDER,
+    sort_model_candidates,
+)
 from apps.gateway.services.organization_context import ensure_user_default_organization
 from apps.shared.db.models.llm import (
     LLMCredential,
@@ -117,13 +122,7 @@ class LLMService:
         "anthropic": "claude-haiku-4-5-20251001",
     }
 
-    AGENT_BUILDER_PROVIDER_ORDER = (
-        "openai",
-        "anthropic",
-        "google",
-        "llamaparse",
-    )
-    AGENT_BUILDER_PREFERRED_MODEL = ("openai", "gpt-5.5")
+    AGENT_BUILDER_PROVIDER_ORDER = (*SUPPORTED_PROVIDER_ORDER, "llamaparse")
 
     # [신규] 기본 가격 설정 (1M 토큰 기준 미화를 1K 기준으로 환산)
     # 가격 출처: https://openai.com/api/pricing/, https://docs.anthropic.com/en/docs/about-claude/pricing
@@ -1384,6 +1383,7 @@ class LLMService:
             )
             .options(joinedload(LLMModel.provider), joinedload(LLMCredential.provider))
             .filter(
+                LLMModel.provider_id == LLMCredential.provider_id,
                 LLMCredential.organization_id == organization_id,
                 LLMCredential.is_valid == True,
                 LLMRelCredentialModel.is_verified == True,
@@ -1419,140 +1419,38 @@ class LLMService:
         return options
 
     @staticmethod
-    def _agent_builder_model_rank(
-        provider_name: str,
-        model_id: str,
-    ) -> tuple[int, int, int]:
-        import re
+    def _order_agent_builder_options(
+        options: List[LLMCredentialModelOptionResponse],
+    ) -> List[LLMCredentialModelOptionResponse]:
+        option_by_identity: dict[
+            tuple[str, str],
+            LLMCredentialModelOptionResponse,
+        ] = {}
+        for option in options:
+            identity = (str(option.model.id), str(option.credential.id))
+            current = option_by_identity.get(identity)
+            if current is None or option.relation_priority < current.relation_priority:
+                option_by_identity[identity] = option
 
-        normalized = model_id.lower().replace("models/", "")
-        if provider_name == "openai":
-            generation_match = re.search(r"gpt-(\d+)(?:\.(\d+))?", normalized)
-            if generation_match is None:
-                generation_match = re.search(r"^o(\d+)(?:\.(\d+))?", normalized)
-            if "-pro" in normalized:
-                tier = 4
-            elif "-mini" in normalized:
-                tier = 2
-            elif "-nano" in normalized:
-                tier = 1
-            else:
-                tier = 3
-        elif provider_name == "anthropic":
-            generation_match = re.search(
-                r"claude-(?:fable|opus|sonnet|haiku)-(\d+)(?:-(\d+))?",
-                normalized,
+        candidates: list[ModelRecommendationCandidate] = []
+        for identity, option in option_by_identity.items():
+            candidates.append(
+                ModelRecommendationCandidate(
+                    provider_name=option.provider_name,
+                    model_id=option.model.model_id_for_api_call,
+                    model_name=option.model.name,
+                    relation_priority=option.relation_priority,
+                    credential_name=option.credential.credential_name,
+                    model_stable_id=identity[0],
+                    credential_stable_id=identity[1],
+                )
             )
-            tier = next(
-                (
-                    rank
-                    for label, rank in (
-                        ("fable", 5),
-                        ("opus", 4),
-                        ("sonnet", 3),
-                        ("haiku", 2),
-                    )
-                    if label in normalized
-                ),
-                1,
-            )
-        elif provider_name == "google":
-            generation_match = re.search(
-                r"gemini-(\d+)(?:\.(\d+))?",
-                normalized,
-            )
-            if "flash-lite" in normalized:
-                tier = 1
-            elif "flash" in normalized:
-                tier = 2
-            elif "pro" in normalized:
-                tier = 3
-            else:
-                tier = 0
-        else:
-            generation_match = None
-            tier = 0
-        if generation_match is None:
-            tier = 0
-        generation_major = (
-            int(generation_match.group(1)) if generation_match else 0
-        )
-        generation_minor = (
-            int(generation_match.group(2))
-            if generation_match and generation_match.group(2)
-            else 0
-        )
-        return generation_major, generation_minor, tier
-
-    @staticmethod
-    def _agent_builder_model_sort_key(option: LLMCredentialModelOptionResponse):
-        provider_name = option.provider_name.lower()
-        generation_major, generation_minor, tier = LLMService._agent_builder_model_rank(
-            provider_name,
-            option.model.model_id_for_api_call,
-        )
-        return (
-            0
-            if LLMService._is_agent_builder_preferred_model(
-                provider_name,
-                option.model.model_id_for_api_call,
-            )
-            else 1,
-            -generation_major,
-            -generation_minor,
-            -tier,
-            option.relation_priority,
-            option.model.name.lower(),
-            option.credential.credential_name.lower(),
-        )
-
-    @staticmethod
-    def _agent_builder_draft_model_sort_key(
-        option: LLMCredentialModelOptionResponse,
-    ):
-        provider_name = option.provider_name.lower()
-        provider_order = {
-            name: index
-            for index, name in enumerate(LLMService.AGENT_BUILDER_PROVIDER_ORDER)
-        }
-        generation_major, generation_minor, tier = LLMService._agent_builder_model_rank(
-            provider_name,
-            option.model.model_id_for_api_call,
-        )
-        normalized_model_id = option.model.model_id_for_api_call.lower().replace(
-            "models/", ""
-        )
-        generation_unknown = generation_major == 0 and generation_minor == 0
-        mini_priority = 0 if "-mini" in normalized_model_id else 1
-        return (
-            0
-            if LLMService._is_agent_builder_preferred_model(
-                provider_name,
-                option.model.model_id_for_api_call,
-            )
-            else 1,
-            provider_order.get(provider_name, len(provider_order)),
-            generation_unknown,
-            -generation_major,
-            -generation_minor,
-            mini_priority,
-            tier,
-            option.relation_priority,
-            option.model.name.lower(),
-            option.credential.credential_name.lower(),
-        )
-
-    @staticmethod
-    def _is_agent_builder_preferred_model(
-        provider_name: str,
-        model_id: str,
-    ) -> bool:
-        normalized_provider = provider_name.strip().lower()
-        normalized_model_id = model_id.strip().lower()
-        return (
-            normalized_provider,
-            normalized_model_id,
-        ) == LLMService.AGENT_BUILDER_PREFERRED_MODEL
+        return [
+            option_by_identity[
+                (candidate.model_stable_id, candidate.credential_stable_id)
+            ]
+            for candidate in sort_model_candidates(candidates)
+        ]
 
     @staticmethod
     def get_agent_builder_draft_model_recommendation(
@@ -1561,21 +1459,16 @@ class LLMService:
         organization_id: uuid.UUID,
     ) -> Optional[LLMCredentialModelOptionResponse]:
         """Return the authorized default for generated Agent Builder LLM nodes."""
-        supported_providers = set(LLMService.AGENT_BUILDER_PROVIDER_ORDER) - {
-            "llamaparse"
-        }
-        options = [
-            option
-            for option in LLMService.get_agent_answer_options(
+        options = LLMService._order_agent_builder_options(
+            LLMService.get_agent_answer_options(
                 db,
                 user_id,
                 organization_id,
             )
-            if option.provider_name.lower() in supported_providers
-        ]
+        )
         if not options:
             return None
-        return min(options, key=LLMService._agent_builder_draft_model_sort_key)
+        return options[0]
 
     @staticmethod
     def get_agent_builder_model_option_groups(
@@ -1583,26 +1476,25 @@ class LLMService:
         user_id: uuid.UUID,
         organization_id: uuid.UUID,
     ) -> List[LLMIntentModelProviderResponse]:
-        options = LLMService.get_agent_answer_options(
-            db,
-            user_id,
-            organization_id,
+        options = LLMService._order_agent_builder_options(
+            LLMService.get_agent_answer_options(
+                db,
+                user_id,
+                organization_id,
+            )
         )
         by_provider: dict[str, list[LLMCredentialModelOptionResponse]] = {
             provider_name: []
             for provider_name in LLMService.AGENT_BUILDER_PROVIDER_ORDER
         }
         for option in options:
-            provider_name = option.provider_name.lower()
+            provider_name = option.provider_name.strip().casefold()
             if provider_name in by_provider:
                 by_provider[provider_name].append(option)
 
         groups: list[LLMIntentModelProviderResponse] = []
         for provider_name in LLMService.AGENT_BUILDER_PROVIDER_ORDER:
-            provider_options = sorted(
-                by_provider[provider_name],
-                key=LLMService._agent_builder_model_sort_key,
-            )
+            provider_options = by_provider[provider_name]
             unavailable_reason = None
             if not provider_options:
                 unavailable_reason = (

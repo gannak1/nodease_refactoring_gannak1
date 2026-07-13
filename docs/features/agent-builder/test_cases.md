@@ -4,18 +4,22 @@ Status: Draft
 
 ## Unit Tests
 
-- Agent Builder intent model option은 `openai`, `anthropic`, `google`, `llamaparse` provider 순서로 반환된다. MBA-240 동안 권한 확인된 OpenAI의 API model ID가 정확히 `gpt-5.5`이면 OpenAI group의 첫 option이며, 없으면 provider 안에서 최신 세대 우선, 같은 세대에서는 성능 tier가 높은 기존 순서로 정렬된다.
-- Model option은 active organization의 valid credential, active chat model, verified credential-model relation, 사용자 `use` 권한을 모두 통과한 조합만 포함한다.
+- Agent Builder intent model option은 `openai`, `anthropic`, `google`, `llamaparse` provider 순서로 반환되고, Header와 generated LLM node는 같은 통합 추천 정책을 사용한다.
+- Model option은 active organization의 `LLMCredential.is_valid=true`, `LLMModel.is_active=true`, `LLMModel.type=chat`, model과 credential의 provider 일치, `LLMRelCredentialModel.is_verified=true`, 사용자 credential `use` 권한을 모두 통과한 조합을 포함한다. 가장 높은 순위 후보가 invalid, inactive, non-chat, provider 불일치, unverified, permission denied 또는 특수 목적 모델이면 같은 provider의 다음 자격 후보를 선택하고, 해당 provider에 자격 후보가 없으면 다음 provider로 이동한다. 같은 model/credential의 verified relation이 중복이면 가장 낮은 relation priority 하나만 Header와 generated LLM node 추천에 사용한다.
+- Provider 안에서는 최신 세대가 tier보다 먼저이며, 같은 세대의 모델은 `general`, `mini`, `nano`, `pro` 순서로 정렬된다. OpenAI의 `gpt-5.5`, `gpt-4o`, `gpt-4o-mini`, `o4-mini` 계열, Anthropic의 제품명 우선 및 `claude-3-5-sonnet` 같은 세대명 우선 형식, Google 기본형/flash/flash-lite/pro 대응을 각각 검증한다.
+- 날짜 또는 release suffix가 붙은 `claude-sonnet-4-5-20250929`, `preview` suffix가 붙은 `gemini-3.1-pro-preview`, `latest` suffix가 붙은 모델은 원래 model ID를 유지하면서 세대와 tier만 해석한다. 같은 provider, 세대와 tier의 후보는 suffix가 없는 기본형, 날짜 또는 명시 release snapshot, `preview`, `latest` 순서다. 선행 `models/`, 대소문자와 앞뒤 공백은 비교용으로만 정규화한다.
+- Sora, audio, transcribe, TTS, speech, Whisper, realtime, live, image, embedding, moderation, search, Codex, computer-use, robotics처럼 정규화한 API model ID로 특수 목적이 확정된 모델은 Agent Builder option과 generated LLM node 추천에서 제외된다. `gpt-4o-mini-tts`, `gpt-5.3-codex`, `gemini-2.5-flash-image-preview`, `gemini-2.5-computer-use-preview`는 완전한 token 또는 명시된 연속 token 규칙으로 제외되어야 한다. `gpt-livestream`, `gpt-researcher`, `gpt-audiophile`처럼 금지 token의 문자열 일부만 포함한 미분류 verified chat 모델은 단순 부분 문자열 일치로 제외하면 안 된다. 이 모델들은 임의 성능을 추측하지 않고 provider의 해석 가능한 후보 뒤에 안정적인 순서로 남아 Header에서 선택할 수 있고 두 경로의 fallback 후보로 사용된다. 입력 순서를 바꿔도 결과가 같아야 하며 전역 model catalog row는 변경하지 않는다.
 - LlamaParse group은 option 없이 `chat_model_not_supported`를 반환한다.
-- Agent Builder header는 권한 있는 OpenAI `gpt-5.5`가 있으면 이를 기본 표시하고, 없으면 첫 사용 가능 model을 표시한다. 사용자가 다른 model을 선택할 수 있으며 선택한 credential/model ID 쌍은 message request에만 포함하고 저장하지 않는다.
+- 같은 5.5 세대의 OpenAI general/mini/nano/pro 후보가 있으면 `gpt-5.5`, `gpt-5.5-mini`, `gpt-5.5-nano`, `gpt-5.5-pro` 순서로 정렬되어 MBA-240 회귀 사례를 충족한다. 같은 5.5 general 후보는 `gpt-5.5`, `gpt-5.5-2026-04-23`, `gpt-5.5-preview`, `gpt-5.5-latest` 순서이며, 더 최신 세대가 있으면 특정 `gpt-5.5` 고정 예외 없이 최신 세대를 먼저 선택한다.
+- 동일한 자격 후보 집합에서 Header provider group을 펼친 첫 사용 가능 model ID와 새 generated LLM node의 추천 model ID가 같다.
+- Agent Builder Header는 통합 정책의 첫 사용 가능 model을 기본 표시한다. 사용자가 다른 model을 선택하면 선택한 credential/model ID 쌍은 message request에만 포함하고 저장하지 않으며 generated LLM node 추천 model로 복사하지 않는다.
 - Agent Builder model 선택 메뉴는 chat panel 가로 폭의 약 절반이며 모델 행 약 5개 높이를 넘는 option은 내부 세로 스크롤로 확인할 수 있다.
 - Message submit 직전 선택이 아직 확정되지 않았으면 화면에 표시할 같은 option 목록을 조회해 첫 option을 확정하며, option이 없으면 message를 전송하지 않는다.
 - Server는 선택된 credential/model 쌍을 매 요청 재검증하고 `use` 권한 또는 verified relation이 사라졌으면 LLM client를 생성하지 않는다.
 - Intent model 선택 상태는 session, draft metadata, workflow graph 또는 별도 model-selection DB column에 저장되지 않는다. Permission/runtime 차단 audit은 safe credential/model ID와 reason만 기록하며 credential 원문과 raw provider response는 API response, audit, trace에 포함되지 않는다.
-- Generated LLM node model 추천은 active organization의 valid credential, active chat model, verified relation, 사용자 `use` 권한을 통과한 후보만 사용한다.
-- Generated LLM node 추천은 MBA-240 동안 권한 확인된 OpenAI `gpt-5.5` 정확 일치를 먼저 사용한다. 없으면 `openai`, `anthropic`, `google` provider 순서와 provider별 최신 세대, 같은 세대 `mini`, 이후 낮은 성능 tier 순서를 사용한다. 최신 세대에 `mini`가 없고 `nano`가 있으면 `nano`를 먼저 추천한다. 다른 provider의 `gpt-5.5`, `gpt-5.5-pro`, `gpt-5.5-mini`, 날짜/version suffix 모델은 정확 일치 기본값으로 취급하지 않는다.
-- Generated LLM node graph에는 추천 model id만 저장하고 credential id/config는 저장하지 않는다. 권한 후보가 없으면 `model_id`가 비어 있는 `configuration_state=unresolved` node와 model 설정 필요 issue를 만들며 draft는 계속 생성된다.
-- 신규 Agent draft를 적용 및 저장한 뒤 workflow를 다시 조회하면 새 LLM node의 `model_id`가 `gpt-5.5`로 유지된다. 기존 Agent 수정 시 기존 LLM node의 다른 model ID는 저장 후에도 유지되고, 새로 생성한 LLM node에만 현재 추천을 적용한다. 사용자는 기존 Workflow Editor에서 LLM node model을 다른 사용 가능한 값으로 변경해 저장할 수 있다.
+- Generated LLM node graph에는 추천 model id만 저장하고 credential id/config는 저장하지 않는다. DB 자격 후보가 없거나 특수 목적 모델을 제외한 뒤 후보가 없으면 `model_id`가 비어 있는 `configuration_state=unresolved` node와 model 설정 필요 issue를 만들며 draft는 계속 생성된다.
+- Preview Mode에서는 generated LLM node model을 읽기 전용으로 표시하고 model picker를 제공하지 않는다. 신규 Agent draft를 적용 및 저장한 뒤 workflow를 다시 조회하면 추천 `model_id`가 유지된다. 기존 Agent 수정 시 기존 LLM node의 다른 model ID는 저장 후에도 유지되고, 새로 생성한 LLM node에만 현재 추천을 적용한다. 사용자는 적용 및 저장 후 기존 Workflow Editor에서 LLM node model을 다른 사용 가능한 값으로 변경해 저장할 수 있으며 이후 추천 정책이 이를 덮어쓰지 않는다.
+- `apps/gateway/application/agent_builder`의 추천 정책 모듈은 SQLAlchemy, FastAPI, Pydantic response schema, provider SDK, credential service 또는 outer adapter를 import하지 않는다는 architecture import-boundary 테스트를 통과한다.
 - `StructuredRequestBuilder`는 자연어 요청을 `request_type`, `intent_summary`, `planned_steps`, `knowledge_requirements`, `pending_resolution`, `missing_information`으로 분리한다.
 - `LLMIntentExtractor`는 redaction된 요청, safe workflow context, permission/readiness를 통과한 상위 20개 bounded safe KB candidate context를 입력받고 JSON object를 반환하며, 절에 나타난 capability 순서와 기존 target/new step 역할을 보존한다.
 - LLM 출력에 catalog 밖 capability, node/edge id, 잘못된 request type/draft mode 조합이 있으면 `StructuredRequestBuilder`는 이를 graph로 materialize하지 않는다.
