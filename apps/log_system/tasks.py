@@ -45,6 +45,12 @@ from apps.shared.db.models.workflow_run import (
     WorkflowRun,
 )
 from apps.shared.db.session import SessionLocal
+from apps.shared.services.external_effect_trace_capture import (
+    defers_provider_capture_until_finish,
+    durable_provider_summary,
+    sanitize_provider_trace_records,
+    uses_metadata_only_provider_capture,
+)
 from apps.shared.services.tracing.metadata import TraceMetadataSanitizer
 from celery.exceptions import Retry
 from sqlalchemy import func
@@ -283,6 +289,12 @@ def _insert_trace_payloads(session, workflow_run_id, payload_records):
             else datetime.now(timezone.utc),
         )
         session.add(payload)
+
+
+def _delete_node_trace_payloads(session, workflow_node_run_id) -> None:
+    session.query(TracePayload).filter(
+        TracePayload.workflow_node_run_id == workflow_node_run_id
+    ).delete(synchronize_session=False)
 
 
 def _retry_waiting_for_workflow_run(task, workflow_run_id):
@@ -553,6 +565,18 @@ def create_node_log(self, data: Dict[str, Any]):
     """노드 실행 로그 생성"""
     session = SessionLocal()
     try:
+        data = dict(data)
+        if (
+            defers_provider_capture_until_finish(data.get("node_type"))
+            or uses_metadata_only_provider_capture(
+                data.get("node_type"),
+                data.get("process_data"),
+                data.get("trace_metadata"),
+            )
+        ):
+            data["inputs"] = {}
+            data["process_data"] = {}
+            data["trace_payloads"] = []
         workflow_run_id = _deserialize_uuid(data["workflow_run_id"])
         # 전달받은 ID 사용
         node_run_id = _deserialize_uuid(data.get("id"))
@@ -609,15 +633,20 @@ def create_node_log(self, data: Dict[str, Any]):
             workflow_run_id = _deserialize_uuid(data["workflow_run_id"])
             node_run_id = _deserialize_uuid(data.get("id"))
             existing_node = (
-                session.query(WorkflowNodeRun.id)
+                session.query(WorkflowNodeRun)
                 .filter(WorkflowNodeRun.id == node_run_id)
                 .first()
             )
             if not existing_node:
                 raise e
-            _insert_trace_payloads(
-                session, workflow_run_id, data.get("trace_payloads") or []
-            )
+            if not uses_metadata_only_provider_capture(
+                existing_node.node_type,
+                existing_node.process_data,
+                existing_node.trace_metadata,
+            ):
+                _insert_trace_payloads(
+                    session, workflow_run_id, data.get("trace_payloads") or []
+                )
             session.commit()
         except Exception as payload_error:
             session.rollback()
@@ -642,6 +671,23 @@ def update_node_log_finish(self, data: Dict[str, Any]):
     """노드 실행 완료 로그 업데이트 (Upsert 패턴 적용)"""
     session = SessionLocal()
     try:
+        data = dict(data)
+        original_process_data = data.get("process_data")
+        provider_summary = durable_provider_summary(
+            node_type=data.get("node_type"),
+            process_data=original_process_data,
+            trace_metadata=data.get("trace_metadata"),
+        )
+        if provider_summary is not None:
+            data["inputs"] = {}
+            data["process_data"] = {}
+            data["outputs"] = provider_summary
+            data["trace_payloads"] = sanitize_provider_trace_records(
+                data.get("trace_payloads"),
+                node_type=data.get("node_type"),
+                process_data=original_process_data,
+                trace_metadata=data.get("trace_metadata"),
+            )
         log_id = _deserialize_uuid(data.get("log_id"))
         workflow_run_id = _deserialize_uuid(data["workflow_run_id"])
         finished_at = _deserialize_datetime(data["finished_at"])
@@ -708,6 +754,12 @@ def update_node_log_finish(self, data: Dict[str, Any]):
             # 레코드가 있으면 업데이트
             node_run.status = NodeRunStatus.SUCCESS
             node_run.outputs = outputs
+            if provider_summary is not None:
+                node_run.inputs = {}
+                node_run.process_data = {}
+            else:
+                node_run.inputs = data.get("inputs") or {}
+                node_run.process_data = data.get("process_data") or {}
             node_run.finished_at = finished_at
             node_run.duration = data.get("duration") or (
                 (finished_at - node_run.started_at).total_seconds()
@@ -726,6 +778,8 @@ def update_node_log_finish(self, data: Dict[str, Any]):
             node_run.sequence = node_run.sequence or data.get("sequence")
             node_run.retry_count = data.get("retry_count") or node_run.retry_count
 
+        if provider_summary is not None and log_id is not None:
+            _delete_node_trace_payloads(session, log_id)
         _insert_trace_payloads(session, workflow_run_id, data.get("trace_payloads") or [])
         session.commit()
 
@@ -733,11 +787,16 @@ def update_node_log_finish(self, data: Dict[str, Any]):
 
     except IntegrityError:
         session.rollback()
-        # 중복 키 오류는 이미 처리됨을 의미 (Idempotency)
         logger.info(
-            f"[Log-System] update_node_finish 중복 처리 무시: log_id={data.get('log_id')}"
+            "[Log-System] update_node_finish 동시 insert 충돌 재시도: log_id=%s",
+            data.get("log_id"),
         )
-        return {"status": "success", "node_id": data["node_id"], "duplicated": True}
+        retry = self.retry(
+            exc=RuntimeError("node log finish retry requested"),
+            countdown=min(2**self.request.retries, 30),
+            throw=False,
+        )
+        raise retry from None
     except Retry:
         raise
     except Exception as e:
@@ -753,6 +812,18 @@ def update_node_log_error(self, data: Dict[str, Any]):
     """노드 실행 에러 로그 업데이트 (Upsert 패턴 적용)"""
     session = SessionLocal()
     try:
+        data = dict(data)
+        metadata_only = (
+            defers_provider_capture_until_finish(data.get("node_type"))
+            or uses_metadata_only_provider_capture(
+                data.get("node_type"),
+                data.get("process_data"),
+                data.get("trace_metadata"),
+            )
+        )
+        if metadata_only:
+            data["inputs"] = {}
+            data["process_data"] = {}
         log_id = _deserialize_uuid(data.get("log_id"))
         workflow_run_id = _deserialize_uuid(data["workflow_run_id"])
         finished_at = _deserialize_datetime(data["finished_at"])
@@ -812,6 +883,9 @@ def update_node_log_error(self, data: Dict[str, Any]):
         else:
             # 레코드가 있으면 업데이트
             node_run.status = NodeRunStatus.FAILED
+            if metadata_only:
+                node_run.inputs = {}
+                node_run.process_data = {}
             node_run.error_message = data["error_message"]
             node_run.finished_at = finished_at
             node_run.duration = data.get("duration") or (
@@ -827,6 +901,8 @@ def update_node_log_error(self, data: Dict[str, Any]):
             node_run.sequence = node_run.sequence or data.get("sequence")
             node_run.retry_count = data.get("retry_count") or node_run.retry_count
 
+        if metadata_only and log_id is not None:
+            _delete_node_trace_payloads(session, log_id)
         session.commit()
         if node_run.node_type == "llmNode":
             _schedule_model_routing_run_record_after_llm_node_log(
@@ -838,11 +914,17 @@ def update_node_log_error(self, data: Dict[str, Any]):
 
     except IntegrityError:
         session.rollback()
-        # 중복 키 오류는 이미 처리됨을 의미 (Idempotency)
+        # Concurrent create may have won; retry so this terminal update is applied.
         logger.info(
-            f"[Log-System] update_node_error 중복 처리 무시: log_id={data.get('log_id')}"
+            "[Log-System] update_node_error 동시 insert 충돌 재시도: log_id=%s",
+            data.get("log_id"),
         )
-        return {"status": "success", "node_id": data["node_id"], "duplicated": True}
+        retry = self.retry(
+            exc=RuntimeError("node log error retry requested"),
+            countdown=min(2**self.request.retries, 30),
+            throw=False,
+        )
+        raise retry from None
     except Retry:
         raise
     except Exception as e:

@@ -9,7 +9,10 @@ from apps.shared.domain.workflow_node_binding import (
     apply_workflow_node_bindings,
 )
 from apps.workflow_engine.workflow.core.workflow_engine import WorkflowEngine
-from apps.workflow_engine.domain.external_effect import ExternalEffectRetrySignal
+from apps.workflow_engine.domain.external_effect import (
+    ExternalEffectError,
+    ExternalEffectRetrySignal,
+)
 
 
 def _graph():
@@ -115,6 +118,40 @@ def test_retry_signal_reaches_task_boundary_without_error_event(stream: bool) ->
     engine.logger.update_run_log_error.assert_called_with(
         "external_effect.retry_allowed"
     )
+
+
+def test_external_effect_stream_error_uses_flat_public_payload(monkeypatch) -> None:
+    run_id = uuid.uuid4()
+    context = _context(uuid.uuid4())
+    context["workflow_run_id"] = str(run_id)
+    engine = WorkflowEngine(_graph(), execution_context=context)
+    engine.logger = Mock()
+    published = []
+
+    def fail_permanently(*_args, **_kwargs):
+        raise ExternalEffectError(
+            "external_effect.outcome_unknown",
+            retryable=False,
+            node_id="http-1",
+        )
+
+    engine.node_instances["http-1"].execute = fail_permanently
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.core.workflow_engine.publish_workflow_event",
+        lambda *args: published.append(args),
+    )
+
+    events = list(engine.execute_stream())
+
+    expected = {
+        "code": "external_effect.outcome_unknown",
+        "message": "external_effect.outcome_unknown",
+        "retryable": False,
+        "node_id": "http-1",
+    }
+    assert events[-1]["data"] == {**expected, "non_retryable": True}
+    assert published[-1] == (str(run_id), "error", expected)
+    assert "error" not in events[-1]["data"]
 
 
 def test_server_owned_workflow_node_binding_stays_out_of_execution_context() -> None:

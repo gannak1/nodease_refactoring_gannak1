@@ -5,8 +5,10 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Barrier
@@ -131,6 +133,8 @@ def test_concurrent_claims_have_one_database_winner():
             execution_id=uuid.uuid4(),
             node_invocation_id=uuid.uuid4(),
             node_id="http-1",
+            workflow_run_id=uuid.uuid4(),
+            node_run_id=uuid.uuid4(),
         )
         profile = provider_contract_registry().get(
             "generic_http",
@@ -182,8 +186,13 @@ def test_concurrent_claims_have_one_database_winner():
             error_code="connection_failed",
             now=datetime.now(timezone.utc),
         )
+        retry_context = replace(
+            context,
+            workflow_run_id=uuid.uuid4(),
+            node_run_id=uuid.uuid4(),
+        )
         reopened = repository.acquire(
-            spec,
+            replace(spec, context=retry_context),
             claim_owner="reopened-worker",
             claim_ttl=timedelta(seconds=630),
             allow_retry=True,
@@ -191,11 +200,104 @@ def test_concurrent_claims_have_one_database_winner():
         )
         assert reopened.kind is AcquireKind.CLAIMED
         assert reopened.record.claim_generation == winner.claim_generation + 1
+        assert (
+            reopened.record.spec.context.workflow_run_id
+            == retry_context.workflow_run_id
+        )
+        assert reopened.record.spec.context.node_run_id == retry_context.node_run_id
         with pytest.raises(RuntimeError, match="stale effect claim"):
             repository.mark_in_flight(
                 in_flight,
                 now=datetime.now(timezone.utc),
             )
+
+        lock_context = replace(
+            context,
+            execution_id=uuid.uuid4(),
+            node_invocation_id=uuid.uuid4(),
+        )
+        lock_spec = replace(
+            spec,
+            context=lock_context,
+            effect_input_digest="f" * 64,
+        )
+        expiring_claim = repository.acquire(
+            lock_spec,
+            claim_owner="deadline-worker",
+            claim_ttl=timedelta(seconds=0.5),
+            allow_retry=True,
+            now=datetime.now(timezone.utc),
+        ).record
+        lock_session = session_factory()
+        try:
+            lock_session.execute(
+                text(
+                    "SELECT id FROM workflow_node_effect_attempts "
+                    "WHERE id = :attempt_id FOR UPDATE"
+                ),
+                {"attempt_id": expiring_claim.id},
+            ).scalar_one()
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                blocked = executor.submit(
+                    repository.mark_in_flight,
+                    expiring_claim,
+                    now=datetime.now(timezone.utc),
+                )
+                time.sleep(0.7)
+                lock_session.commit()
+                with pytest.raises(RuntimeError, match="stale effect claim"):
+                    blocked.result(timeout=10)
+        finally:
+            lock_session.rollback()
+            lock_session.close()
+
+        finish_lock_spec = replace(
+            spec,
+            context=replace(
+                context,
+                execution_id=uuid.uuid4(),
+                node_invocation_id=uuid.uuid4(),
+            ),
+            effect_input_digest="0" * 64,
+        )
+        finish_claim = repository.acquire(
+            finish_lock_spec,
+            claim_owner="finish-deadline-worker",
+            claim_ttl=timedelta(seconds=0.8),
+            allow_retry=True,
+            now=datetime.now(timezone.utc),
+        ).record
+        finish_in_flight = repository.mark_in_flight(
+            finish_claim,
+            now=datetime.now(timezone.utc),
+        )
+        finish_lock_session = session_factory()
+        try:
+            finish_lock_session.execute(
+                text(
+                    "SELECT id FROM workflow_node_effect_attempts "
+                    "WHERE id = :attempt_id FOR UPDATE"
+                ),
+                {"attempt_id": finish_in_flight.id},
+            ).scalar_one()
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                blocked_finish = executor.submit(
+                    repository.finish,
+                    finish_in_flight,
+                    outcome=EffectOutcome.SUCCEEDED,
+                    replay_decision=ReplayDecision.RESULT_UNAVAILABLE,
+                    replay_result=None,
+                    provider_status_code=200,
+                    error_code=None,
+                    now=datetime.now(timezone.utc),
+                )
+                time.sleep(1.0)
+                finish_lock_session.commit()
+                with pytest.raises(RuntimeError, match="stale effect claim"):
+                    blocked_finish.result(timeout=10)
+        finally:
+            finish_lock_session.rollback()
+            finish_lock_session.close()
 
         drift_context = ExternalEffectContext(
             organization_id=uuid.uuid4(),
@@ -468,6 +570,72 @@ def test_concurrent_claims_have_one_database_winner():
         )
         assert deadline_recovered.kind is AcquireKind.TERMINAL
         assert deadline_recovered.record.replay_decision is ReplayDecision.STOP
+
+        lock_deadline_spec = replace(
+            replay_spec,
+            context=replace(
+                replay_context,
+                execution_id=uuid.uuid4(),
+                node_invocation_id=uuid.uuid4(),
+                node_id="locked-replay-deadline",
+            ),
+            effect_input_digest="2" * 64,
+            idempotency_key_fingerprint="5" * 64,
+        )
+        lock_deadline_claimed = repository.acquire(
+            lock_deadline_spec,
+            claim_owner="locked-deadline-initial",
+            claim_ttl=timedelta(seconds=630),
+            allow_retry=True,
+            now=datetime.now(timezone.utc),
+        ).record
+        lock_deadline_in_flight = repository.mark_in_flight(
+            lock_deadline_claimed,
+            now=datetime.now(timezone.utc),
+        )
+        lock_deadline_terminal = repository.finish(
+            lock_deadline_in_flight,
+            outcome=EffectOutcome.EFFECT_OUTCOME_UNKNOWN,
+            replay_decision=ReplayDecision.REPLAY_SAME_KEY,
+            replay_result=None,
+            provider_status_code=None,
+            error_code="response_lost",
+            now=datetime.now(timezone.utc),
+        )
+        lock_deadline_session = session_factory()
+        try:
+            lock_deadline_session.execute(
+                text(
+                    "UPDATE workflow_node_effect_attempts "
+                    "SET replay_deadline_at = clock_timestamp() + INTERVAL '0.5 second' "
+                    "WHERE id = :attempt_id"
+                ),
+                {"attempt_id": lock_deadline_terminal.id},
+            )
+            lock_deadline_session.execute(
+                text(
+                    "SELECT id FROM workflow_node_effect_attempts "
+                    "WHERE id = :attempt_id FOR UPDATE"
+                ),
+                {"attempt_id": lock_deadline_terminal.id},
+            ).scalar_one()
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                blocked_reopen = executor.submit(
+                    repository.acquire,
+                    lock_deadline_spec,
+                    claim_owner="locked-deadline-reopen",
+                    claim_ttl=timedelta(seconds=630),
+                    allow_retry=True,
+                    now=datetime.now(timezone.utc),
+                )
+                time.sleep(0.7)
+                lock_deadline_session.commit()
+                deadline_result = blocked_reopen.result(timeout=10)
+        finally:
+            lock_deadline_session.rollback()
+            lock_deadline_session.close()
+        assert deadline_result.kind is AcquireKind.TERMINAL
+        assert deadline_result.record.replay_decision is ReplayDecision.STOP
 
         with engine.begin() as connection:
             connection.execute(text("DELETE FROM workflow_node_effect_attempts"))

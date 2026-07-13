@@ -10,6 +10,8 @@ import time
 import uuid
 from typing import Any, Dict
 
+from celery.exceptions import Retry
+
 from apps.shared.celery_app import celery_app
 from apps.shared.db.session import SessionLocal
 from apps.shared.domain.deployment_runtime_policy import (
@@ -490,12 +492,13 @@ def execute_deployed_workflow(
     engine = None
 
     try:
+        queued_context = dict(execution_context or {})
         app = session.query(App).filter(App.workflow_id == workflow_id).first()
         if not app:
             raise PermanentDeploymentExecutionError(
                 "deployed workflow is unavailable"
             )
-        deployment = (
+        active_deployment = (
             session.query(WorkflowDeployment)
             .filter(
                 WorkflowDeployment.id == app.active_deployment_id,
@@ -504,12 +507,33 @@ def execute_deployed_workflow(
             )
             .first()
         )
+        if active_deployment is None:
+            raise PermanentDeploymentExecutionError(
+                "deployed workflow is unavailable"
+            )
+        queued_deployment_id = queued_context.get("deployment_id")
+        if queued_deployment_id is None:
+            deployment = active_deployment
+        else:
+            try:
+                frozen_deployment_id = uuid.UUID(str(queued_deployment_id))
+            except (TypeError, ValueError):
+                raise PermanentDeploymentExecutionError(
+                    "deployed workflow identity is not frozen"
+                ) from None
+            deployment = (
+                session.query(WorkflowDeployment)
+                .filter(
+                    WorkflowDeployment.id == frozen_deployment_id,
+                    WorkflowDeployment.app_id == app.id,
+                )
+                .first()
+            )
         if not deployment or not deployment.graph_snapshot:
             raise PermanentDeploymentExecutionError(
                 "deployed workflow is unavailable"
             )
         graph = deployment.graph_snapshot
-        queued_context = dict(execution_context or {})
         if _graph_requires_frozen_deployment(graph) and (
             str(queued_context.get("deployment_id")) != str(deployment.id)
             or str(queued_context.get("deployment_version"))
@@ -1015,7 +1039,9 @@ def stream_workflow(
             elif event.get("type") == "error":
                 event_data = event.get("data", {})
                 error_message = event_data.get("message", "Unknown error")
-                error_payload = event_data.get("error")
+                error_payload = (
+                    event_data if event_data.get("code") else event_data.get("error")
+                )
                 if isinstance(error_payload, dict) and error_payload.get("code"):
                     raise ExternalEffectError(
                         str(error_payload["code"]),
@@ -1030,7 +1056,24 @@ def stream_workflow(
 
     except ExternalEffectRetrySignal as e:
         logger.warning("Workflow external effect retry requested: code=%s", e.code)
-        _safe_retry(self, e)
+        try:
+            _safe_retry(self, e)
+        except Retry:
+            raise
+        except Exception:
+            from apps.shared.pubsub import publish_workflow_event
+
+            terminal_error = ExternalEffectError(
+                e.terminal_code,
+                retryable=False,
+                node_id=e.node_id,
+            )
+            publish_workflow_event(
+                external_run_id,
+                "error",
+                terminal_error.to_payload(),
+            )
+            raise
     except ExternalEffectError as e:
         logger.warning("Workflow external effect stopped: code=%s", e.code)
         return _external_effect_error_result(e)

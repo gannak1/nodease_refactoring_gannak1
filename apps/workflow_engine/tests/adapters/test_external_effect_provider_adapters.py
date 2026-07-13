@@ -53,6 +53,20 @@ class _CaptureHttpClient:
         return httpx.Response(200, json={"ok": True})
 
 
+class _ResponseHttpClient:
+    def __init__(self, response: httpx.Response, **_kwargs) -> None:
+        self.response = response
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def request(self, **_kwargs):
+        return self.response
+
+
 def test_generic_http_local_protocol_error_is_safe_stop() -> None:
     adapter = GenericHttpEffectAdapter(
         client_factory=lambda **kwargs: _HttpClient(
@@ -91,6 +105,36 @@ def test_generic_http_response_loss_is_outcome_unknown() -> None:
 
     assert captured.value.outcome is EffectOutcome.EFFECT_OUTCOME_UNKNOWN
     assert captured.value.error_code == "response_lost"
+
+
+@pytest.mark.parametrize(
+    ("content", "content_type"),
+    [
+        (b"\xff", "application/json; charset=utf-8"),
+        (b"not-json", "application/json; charset=not-a-codec"),
+    ],
+)
+def test_generic_http_invalid_text_encoding_falls_back_to_text_output(
+    content,
+    content_type,
+) -> None:
+    response = httpx.Response(
+        200,
+        content=content,
+        headers={"content-type": content_type},
+    )
+    adapter = GenericHttpEffectAdapter(
+        client_factory=lambda **kwargs: _ResponseHttpClient(response, **kwargs)
+    )
+    prepared = adapter.prepare_effect(
+        GenericHttpRequest("POST", "https://example.test", {}, None, 1.0)
+    )
+
+    result = adapter.invoke_effect(adapter.finalize_provider_call(prepared, None))
+
+    assert result.output["status"] == 200
+    assert isinstance(result.output["data"], str)
+    assert result.output["data"]
 
 
 @pytest.mark.parametrize(
@@ -148,6 +192,30 @@ def test_generic_http_digest_normalizes_json_object_key_order() -> None:
     assert first.effect_input_digest == reordered.effect_input_digest
     assert list(first.request.json_body) == ["a", "b"]
     assert list(reordered.request.json_body) == ["b", "a"]
+
+
+def test_generic_http_request_v1_matches_frozen_length_delimited_digest() -> None:
+    adapter = GenericHttpEffectAdapter()
+
+    prepared = adapter.prepare_effect(
+        GenericHttpRequest(
+            "POST",
+            "https://example.test/items?b=2&a=1",
+            httpx.Headers(
+                [
+                    ("X-Trace", "first"),
+                    ("X-Trace", "second"),
+                    ("Content-Type", "text/plain"),
+                ]
+            ),
+            '{"b":2,"a":1}',
+            1.0,
+        )
+    )
+
+    assert prepared.effect_input_digest == (
+        "1c84d9f5aa88406bbdb077f7dac7e6f6f7b661d03c9236baceac8c8fe03f1c4b"
+    )
 
 
 def test_supported_http_profile_rejects_reserved_key_field_before_network() -> None:
@@ -265,7 +333,7 @@ def test_github_adapter_can_prepare_frozen_v1_after_active_v2_switch() -> None:
     adapter = GithubCommentEffectAdapter(contracts=contracts)
 
     prepared = adapter.prepare_effect(
-        GithubCommentRequest("token", "owner", "repo", 1, "comment"),
+        GithubCommentRequest("fixture-value", "owner", "repo", 1, "comment"),
         profile=v1,
     )
 
@@ -315,7 +383,7 @@ def test_github_adapter_rejects_contract_with_unknown_response_semantics() -> No
 def test_github_invalid_url_is_safe_stop() -> None:
     adapter = GithubCommentEffectAdapter()
     prepared = adapter.prepare_effect(
-        GithubCommentRequest("token", "owner", "repo", 1, "comment")
+        GithubCommentRequest("fixture-value", "owner", "repo", 1, "comment")
     )
 
     with patch(
@@ -327,6 +395,27 @@ def test_github_invalid_url_is_safe_stop() -> None:
 
     assert captured.value.outcome is EffectOutcome.FAILED_BEFORE_EFFECT
     assert captured.value.error_code == "invalid_prepared_request"
+    assert captured.value.retry_before_effect is False
+
+
+@pytest.mark.parametrize("status_code", [401, 403, 404, 410, 422])
+def test_github_explicit_rejection_is_failed_before_effect(status_code) -> None:
+    adapter = GithubCommentEffectAdapter()
+    prepared = adapter.prepare_effect(
+        GithubCommentRequest("fixture-value", "owner", "repo", 1, "comment")
+    )
+    response = Mock(status_code=status_code, content=b"{}")
+
+    with patch(
+        "apps.workflow_engine.adapters.providers.github.requests.post",
+        return_value=response,
+    ):
+        with pytest.raises(EffectInvocationFailure) as captured:
+            adapter.invoke_effect(adapter.finalize_provider_call(prepared, None))
+
+    assert captured.value.outcome is EffectOutcome.FAILED_BEFORE_EFFECT
+    assert captured.value.error_code == "provider_rejected_request"
+    assert captured.value.provider_status_code == status_code
     assert captured.value.retry_before_effect is False
 
 
@@ -342,7 +431,7 @@ def test_github_invalid_url_is_safe_stop() -> None:
 def test_github_201_requires_schema_valid_comment(payload) -> None:
     adapter = GithubCommentEffectAdapter()
     prepared = adapter.prepare_effect(
-        GithubCommentRequest("token", "owner", "repo", 1, "comment")
+        GithubCommentRequest("fixture-value", "owner", "repo", 1, "comment")
     )
     response = Mock(status_code=201, content=b"{}")
     response.json.return_value = payload

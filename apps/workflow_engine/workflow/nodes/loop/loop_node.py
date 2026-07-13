@@ -232,7 +232,12 @@ class LoopNode(Node[LoopNodeData]):
         )
         self._subgraph_engine = engine
         try:
-            return engine.execute()
+            result = engine.execute()
+            if engine._external_effect_output_sensitive:
+                self._trace_metadata = {
+                    "external_effect_output": {"sensitive": True}
+                }
+            return result
         finally:
             try:
                 engine.cleanup()

@@ -251,6 +251,10 @@ class WorkflowNode(Node[WorkflowNodeData]):
             # [동기 전환] 직접 동기적으로 서브 워크플로우 실행
             try:
                 result = engine.execute()
+                if engine._external_effect_output_sensitive:
+                    self._trace_metadata = {
+                        "external_effect_output": {"sensitive": True}
+                    }
             finally:
                 try:
                     engine.cleanup()

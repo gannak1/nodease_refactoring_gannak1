@@ -133,12 +133,14 @@ GATEWAY_FIELDS = {
 
 COMMON_SPAN_FIELDS = {
     "error",
+    "external_effect_output",
     "latency_ms",
 }
 SPAN_TOP_LEVEL_BY_NODE_TYPE = {
     "llmNode": {"llm", "rag"},
-    "httpRequestNode": {"http"},
-    "slackPostNode": {"http"},
+    "httpRequestNode": {"http", "external_effect"},
+    "slackPostNode": {"http", "external_effect"},
+    "githubNode": {"http", "external_effect"},
     "codeNode": {"sandbox"},
     "workflowNode": {"workflow"},
 }
@@ -148,6 +150,14 @@ SPAN_SECTION_FIELDS = {
         "error_type",
         "type",
     },
+    "external_effect": {
+        "error_code",
+        "operation",
+        "outcome",
+        "provider",
+        "replay_decision",
+    },
+    "external_effect_output": {"sensitive"},
     "guardrail": {
         "blocked",
         "decision",

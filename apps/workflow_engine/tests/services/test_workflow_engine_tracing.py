@@ -109,6 +109,166 @@ def test_error_trace_metadata_excludes_raw_error_message():
     assert metadata["guardrail"]["reason_redacted"] == "node_error"
 
 
+def test_external_effect_error_trace_keeps_only_safe_provider_summary():
+    engine = _engine_without_init()
+    started_at = datetime.now(timezone.utc)
+    node = SimpleNamespace(
+        _trace_metadata={
+            "http": {
+                "method": "POST",
+                "status_code": 403,
+                "response_size": 17,
+                "latency_ms": 12,
+                "body": "opaque-customer-response",
+            },
+            "external_effect": {
+                "provider": "github",
+                "operation": "github.issue_comment.create",
+                "outcome": "failed_before_effect",
+                "replay_decision": "stop",
+                "error_code": "provider_rejected_request",
+            },
+        }
+    )
+
+    metadata = engine._build_error_trace_metadata(
+        "githubNode",
+        started_at,
+        datetime.now(timezone.utc),
+        RuntimeError("raw provider failure"),
+        node_instance=node,
+    )
+
+    assert metadata["http"] == {
+        "method": "POST",
+        "status_code": 403,
+        "response_size": 17,
+        "latency_ms": 12,
+    }
+    assert metadata["external_effect"] == {
+        "provider": "github",
+        "operation": "github.issue_comment.create",
+        "outcome": "failed_before_effect",
+        "replay_decision": "stop",
+        "error_code": "provider_rejected_request",
+    }
+    assert "opaque-customer-response" not in str(metadata)
+    assert "raw provider failure" not in str(metadata)
+
+
+def test_run_log_outputs_remove_provider_results_and_downstream_copies():
+    engine = _engine_without_init()
+    engine.node_schemas = {
+        "http": SimpleNamespace(type="httpRequestNode", data={"method": "POST"}),
+        "template": SimpleNamespace(type="templateNode", data={}),
+        "answer": SimpleNamespace(type="answerNode", data={}),
+        "other": SimpleNamespace(type="templateNode", data={}),
+    }
+    engine.node_instances = {
+        "http": SimpleNamespace(
+            _trace_metadata={
+                "http": {
+                    "method": "POST",
+                    "status_code": 200,
+                    "response_size": 27,
+                },
+                "external_effect": {
+                    "provider": "generic_http",
+                    "operation": "generic_http.request",
+                    "outcome": "succeeded",
+                    "replay_decision": "result_unavailable",
+                },
+            }
+        )
+    }
+    engine.adjacency_list = {"http": ["template"], "template": ["answer"]}
+    engine.data_dependencies = {}
+    engine.nodes_by_type = {"answerNode": ["answer"]}
+    all_results = {
+        "http": {"data": "opaque-provider-response"},
+        "template": {"value": "copied-provider-response"},
+        "answer": {"answer": "copied-provider-response"},
+        "other": {"value": "safe-unrelated-output"},
+    }
+
+    durable_stream = engine._durable_run_outputs(
+        all_results,
+        all_results=all_results,
+        stream_mode=True,
+    )
+    durable_answer = engine._durable_run_outputs(
+        all_results["answer"],
+        all_results=all_results,
+        stream_mode=False,
+    )
+
+    assert durable_stream["http"]["external_effect"]["provider"] == "generic_http"
+    assert durable_stream["template"] == {}
+    assert durable_stream["answer"] == {}
+    assert durable_stream["other"] == {"value": "safe-unrelated-output"}
+    assert durable_answer == {}
+    assert "opaque-provider-response" not in str(durable_stream)
+    assert "copied-provider-response" not in str(durable_stream)
+
+
+def test_run_log_outputs_remove_nested_workflow_provider_results():
+    engine = _engine_without_init()
+    engine.node_schemas = {
+        "child": SimpleNamespace(type="workflowNode", data={}),
+        "answer": SimpleNamespace(type="answerNode", data={}),
+    }
+    engine.node_instances = {
+        "child": SimpleNamespace(
+            _trace_metadata={"external_effect_output": {"sensitive": True}}
+        )
+    }
+    engine.adjacency_list = {"child": ["answer"]}
+    engine.data_dependencies = {}
+    engine.nodes_by_type = {"answerNode": ["answer"]}
+    all_results = {
+        "child": {"result": "opaque-child-provider-response"},
+        "answer": {"answer": "opaque-child-provider-response"},
+    }
+
+    durable = engine._durable_run_outputs(
+        all_results,
+        all_results=all_results,
+        stream_mode=True,
+    )
+
+    assert durable == {"child": {}, "answer": {}}
+
+
+def test_nested_workflow_provider_result_marks_parent_downstream_before_submit():
+    engine = _engine_without_init()
+    engine.node_schemas = {
+        "child": SimpleNamespace(type="workflowNode", data={}),
+        "template": SimpleNamespace(type="templateNode", data={}),
+        "answer": SimpleNamespace(type="answerNode", data={}),
+        "other": SimpleNamespace(type="templateNode", data={}),
+    }
+    engine.node_instances = {
+        "child": SimpleNamespace(
+            _trace_metadata={"external_effect_output": {"sensitive": True}}
+        )
+    }
+    engine.adjacency_list = {
+        "child": ["template"],
+        "template": ["answer"],
+    }
+    engine.data_dependencies = {}
+    engine._external_effect_sensitive_node_ids = set()
+
+    engine._propagate_external_effect_output_sensitivity("child")
+
+    assert engine._external_effect_sensitive_node_ids == {
+        "child",
+        "template",
+        "answer",
+    }
+    assert "other" not in engine._external_effect_sensitive_node_ids
+
+
 def test_node_trace_metadata_applies_allowlist_and_denylist():
     engine = _engine_without_init()
     node = SimpleNamespace(

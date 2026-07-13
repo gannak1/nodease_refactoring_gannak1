@@ -11,6 +11,12 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping
 
+from apps.shared.domain.external_effect_error import (
+    ALLOWED_EFFECT_ERROR_CODES as ALLOWED_EFFECT_ERROR_CODES,
+    ALLOWED_EXTERNAL_EFFECT_CONTROL_CODES,
+    safe_effect_error_code as safe_effect_error_code,
+)
+
 
 MAX_REPLAY_RESULT_BYTES = 65_536
 
@@ -36,46 +42,6 @@ class EffectOutcome(str, Enum):
     SUCCEEDED = "succeeded"
     FAILED_BEFORE_EFFECT = "failed_before_effect"
     EFFECT_OUTCOME_UNKNOWN = "effect_outcome_unknown"
-
-
-ALLOWED_EFFECT_ERROR_CODES = frozenset(
-    {
-        "connection_failed",
-        "invalid_prepared_request",
-        "provider_call_failed",
-        "provider_call_finalize_failed",
-        "provider_key_field_conflict",
-        "provider_key_request_conflict",
-        "provider_rejected_request",
-        "response_lost",
-        "response_malformed",
-        "timeout",
-        "unexpected_provider_status",
-    }
-)
-
-ALLOWED_EXTERNAL_EFFECT_CODES = frozenset(
-    {
-        "external_effect.claim_wait",
-        "external_effect.identity_conflict",
-        "external_effect.identity_invalid",
-        "external_effect.invalid_request",
-        "external_effect.outcome_unknown",
-        "external_effect.prepare_failed",
-        "external_effect.result_unavailable",
-        "external_effect.retry_allowed",
-        "external_effect.stopped",
-        *(f"external_effect.{code}" for code in ALLOWED_EFFECT_ERROR_CODES),
-    }
-)
-
-
-def safe_effect_error_code(code: object, *, fallback: str) -> str:
-    if isinstance(code, str) and code in ALLOWED_EFFECT_ERROR_CODES:
-        return code
-    if fallback not in ALLOWED_EFFECT_ERROR_CODES:
-        raise ValueError("external effect fallback error code is not allowlisted")
-    return fallback
 
 
 class ReplayDecision(str, Enum):
@@ -471,7 +437,10 @@ class ExternalEffectError(Exception):
         retryable: bool,
         node_id: str | None = None,
     ) -> None:
-        if not isinstance(code, str) or code not in ALLOWED_EXTERNAL_EFFECT_CODES:
+        if (
+            not isinstance(code, str)
+            or code not in ALLOWED_EXTERNAL_EFFECT_CONTROL_CODES
+        ):
             code = "external_effect.stopped"
             retryable = False
         super().__init__(code)
@@ -491,5 +460,17 @@ class ExternalEffectError(Exception):
 
 
 class ExternalEffectRetrySignal(ExternalEffectError):
-    def __init__(self, code: str, *, node_id: str | None = None) -> None:
+    def __init__(
+        self,
+        code: str,
+        *,
+        node_id: str | None = None,
+        terminal_code: str | None = None,
+    ) -> None:
         super().__init__(code, retryable=True, node_id=node_id)
+        terminal_error = ExternalEffectError(
+            terminal_code or self.code,
+            retryable=False,
+            node_id=node_id,
+        )
+        self.terminal_code = terminal_error.code

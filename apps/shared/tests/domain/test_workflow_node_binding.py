@@ -73,6 +73,10 @@ def test_snapshot_hash_rejects_nan() -> None:
 
 def test_effect_classifier_only_lowers_documented_read_operations() -> None:
     assert not graph_has_external_effect(
+        {"nodes": [{"id": "note-1", "type": "note", "data": {}}]},
+        SIDE_EFFECTS,
+    )
+    assert not graph_has_external_effect(
         {"nodes": [{"id": "h", "type": "httpRequestNode", "data": {"method": "GET"}}]},
         SIDE_EFFECTS,
     )
@@ -91,6 +95,21 @@ def test_effect_classifier_only_lowers_documented_read_operations() -> None:
     assert graph_has_external_effect(
         {"nodes": [{"id": "future", "type": "unknownNode", "data": {}}]},
         SIDE_EFFECTS,
+    )
+
+
+def test_effect_classifier_fails_closed_for_malformed_nodes_and_catalog_values() -> None:
+    assert graph_has_external_effect(
+        {"nodes": [{"type": "httpRequestNode", "data": {"method": "GET"}}]},
+        SIDE_EFFECTS,
+    )
+    assert graph_has_external_effect(
+        {"nodes": [{"id": "http", "type": "httpRequestNode", "data": None}]},
+        SIDE_EFFECTS,
+    )
+    assert graph_has_external_effect(
+        {"nodes": [{"id": "start", "type": "startNode", "data": {}}]},
+        {**SIDE_EFFECTS, "startNode": "invalid"},
     )
 
 

@@ -26,6 +26,22 @@ from apps.workflow_engine.domain.external_effect import (
 )
 
 
+_REQUEST_CANONICAL_DOMAIN_V1 = "nodease.generic-http-request.v1"
+
+
+def _length_delimited_field(name: str, value: str | bytes) -> bytes:
+    name_bytes = name.encode("utf-8")
+    value_bytes = value if isinstance(value, bytes) else value.encode("utf-8")
+    if len(name_bytes) >= 2**32 or len(value_bytes) >= 2**32:
+        raise ValueError("canonical request field is too large")
+    return (
+        len(name_bytes).to_bytes(4, "big")
+        + name_bytes
+        + len(value_bytes).to_bytes(4, "big")
+        + value_bytes
+    )
+
+
 @dataclass(frozen=True)
 class GenericHttpRequest:
     method: str
@@ -182,9 +198,6 @@ class GenericHttpEffectAdapter:
                 )
             except (json.JSONDecodeError, ValueError, TypeError):
                 body_mode = "invalid_json"
-                canonical_body = hashlib.sha256(
-                    request.body.encode("utf-8")
-                ).hexdigest()
                 error_code = "invalid_prepared_request"
             else:
                 if parsed_body is None:
@@ -235,13 +248,6 @@ class GenericHttpEffectAdapter:
             except ValueError:
                 error_code = error_code or "provider_key_field_conflict"
         canonical_headers = sorted(effective_headers, key=lambda item: item[0])
-        canonical = {
-            "method": request.method.upper(),
-            "url": request.url,
-            "headers": canonical_headers,
-            "body_mode": body_mode,
-            "body": canonical_body,
-        }
         prepared = PreparedGenericHttpRequest(
             method=request.method.upper(),
             url=request.url,
@@ -251,13 +257,41 @@ class GenericHttpEffectAdapter:
             timeout_seconds=request.timeout_seconds,
             slack_mode=request.slack_mode,
         )
-        canonical_bytes = json.dumps(
-            canonical,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-            allow_nan=False,
-        ).encode("utf-8")
+        if body_mode == "no_body":
+            canonical_body_bytes = b""
+        elif body_mode == "invalid_json":
+            canonical_body_bytes = (request.body or "").encode("utf-8")
+        else:
+            canonical_body_bytes = json.dumps(
+                canonical_body,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            ).encode("utf-8")
+        canonical_fields: list[tuple[str, str | bytes]] = [
+            ("domain", _REQUEST_CANONICAL_DOMAIN_V1),
+            ("method", request.method.upper()),
+            ("target", request.url),
+            ("header_count", str(len(canonical_headers))),
+        ]
+        for header_name, header_value in canonical_headers:
+            canonical_fields.extend(
+                (
+                    ("header_name", header_name),
+                    ("header_value", header_value),
+                )
+            )
+        canonical_fields.extend(
+            (
+                ("body_mode", body_mode),
+                ("body", canonical_body_bytes),
+            )
+        )
+        canonical_bytes = b"".join(
+            _length_delimited_field(name, value)
+            for name, value in canonical_fields
+        )
         return prepared, canonical_bytes, error_code
 
     def prepare_effect(
@@ -357,33 +391,36 @@ class GenericHttpEffectAdapter:
                     )
                 response = client.request(**kwargs)
         except (httpx.InvalidURL, httpx.UnsupportedProtocol, httpx.LocalProtocolError):
+            self._set_trace(request, None, started)
             raise EffectInvocationFailure(
                 outcome=EffectOutcome.FAILED_BEFORE_EFFECT,
                 error_code="invalid_prepared_request",
                 retry_before_effect=False,
             ) from None
         except (httpx.ConnectTimeout, httpx.ConnectError, httpx.PoolTimeout):
+            self._set_trace(request, None, started)
             raise EffectInvocationFailure(
                 outcome=EffectOutcome.FAILED_BEFORE_EFFECT,
                 error_code="connection_failed",
                 retry_before_effect=True,
             ) from None
         except httpx.RequestError:
+            self._set_trace(request, None, started)
             raise EffectInvocationFailure(
                 outcome=EffectOutcome.EFFECT_OUTCOME_UNKNOWN,
                 error_code="response_lost",
             ) from None
 
+        self._set_trace(request, response, started)
         try:
             response_body = response.json()
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             response_body = response.text
         output = {
             "status": response.status_code,
             "data": response_body,
             "headers": dict(response.headers),
         }
-        self._set_trace(request, response, started)
         return ProviderInvocationResult(
             output, provider_status_code=response.status_code
         )
@@ -407,7 +444,7 @@ class GenericHttpEffectAdapter:
     def _set_trace(
         self,
         request: PreparedGenericHttpRequest,
-        response: httpx.Response,
+        response: httpx.Response | None,
         started: float,
     ) -> None:
         latency_ms = int((time.perf_counter() - started) * 1000)
@@ -422,12 +459,13 @@ class GenericHttpEffectAdapter:
                 ).encode("utf-8")
             )
         response_size = len(getattr(response, "content", b"") or b"")
+        status_code = getattr(response, "status_code", None)
         if request.slack_mode:
             self.trace_metadata = {
                 "http": {
                     "method": request.method,
                     "operation": "slack.http.request",
-                    "status_code": response.status_code,
+                    "status_code": status_code,
                     "latency_ms": latency_ms,
                     "request_size": request_size,
                     "response_size": response_size,
@@ -448,7 +486,7 @@ class GenericHttpEffectAdapter:
                 "method": request.method,
                 "host": hostname,
                 "path": parsed.path or "/",
-                "status_code": response.status_code,
+                "status_code": status_code,
                 "latency_ms": latency_ms,
                 "request_size": request_size,
                 "response_size": response_size,

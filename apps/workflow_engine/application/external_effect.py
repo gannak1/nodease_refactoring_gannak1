@@ -6,7 +6,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Mapping, NoReturn, Protocol
 
 from apps.workflow_engine.domain.external_effect import (
     EffectInvocationFailure,
@@ -181,10 +181,17 @@ class ExternalEffectExecutor:
         effect_sequence: int = 0,
     ) -> Any:
         allow_retry = self.retry_available()
-        existing = self.repository.find_by_slot(
-            context=context,
-            effect_sequence=effect_sequence,
-        )
+        try:
+            existing = self.repository.find_by_slot(
+                context=context,
+                effect_sequence=effect_sequence,
+            )
+        except Exception:
+            self._raise_repository_retry(
+                allow_retry=allow_retry,
+                node_id=context.node_id,
+                terminal_code="external_effect.claim_wait",
+            )
         if existing is not None and (
             existing.spec.profile.provider != adapter.profile.provider
             or existing.spec.profile.operation != adapter.profile.operation
@@ -258,13 +265,20 @@ class ExternalEffectExecutor:
             key_format_version=key_format_version,
             idempotency_key_fingerprint=key_fingerprint,
         )
-        acquired = self.repository.acquire(
-            spec,
-            claim_owner=str(uuid.uuid4()),
-            claim_ttl=self.claim_ttl,
-            allow_retry=allow_retry,
-            now=now,
-        )
+        try:
+            acquired = self.repository.acquire(
+                spec,
+                claim_owner=str(uuid.uuid4()),
+                claim_ttl=self.claim_ttl,
+                allow_retry=allow_retry,
+                now=now,
+            )
+        except Exception:
+            self._raise_repository_retry(
+                allow_retry=allow_retry,
+                node_id=context.node_id,
+                terminal_code="external_effect.claim_wait",
+            )
         if acquired.kind is AcquireKind.IDENTITY_CONFLICT:
             raise ExternalEffectError(
                 "external_effect.identity_conflict",
@@ -272,10 +286,17 @@ class ExternalEffectExecutor:
                 node_id=context.node_id,
             )
         if acquired.kind is AcquireKind.WAIT:
-            acquired = self.repository.wait_for_resolution(
-                acquired.record,
-                deadline=self.task_deadline(),
-            )
+            try:
+                acquired = self.repository.wait_for_resolution(
+                    acquired.record,
+                    deadline=self.task_deadline(),
+                )
+            except Exception:
+                self._raise_repository_retry(
+                    allow_retry=allow_retry,
+                    node_id=context.node_id,
+                    terminal_code="external_effect.claim_wait",
+                )
         if acquired.kind is AcquireKind.IDENTITY_CONFLICT:
             raise ExternalEffectError(
                 "external_effect.identity_conflict",
@@ -287,8 +308,15 @@ class ExternalEffectExecutor:
                 acquired.record,
                 allow_retry=allow_retry,
             )
+            self._attach_terminal_trace(adapter, terminal)
             return self._terminal_result(terminal)
         if acquired.kind is not AcquireKind.CLAIMED:
+            if not allow_retry:
+                raise ExternalEffectError(
+                    "external_effect.claim_wait",
+                    retryable=False,
+                    node_id=context.node_id,
+                )
             raise ExternalEffectRetrySignal(
                 "external_effect.claim_wait",
                 node_id=context.node_id,
@@ -300,7 +328,7 @@ class ExternalEffectExecutor:
                 prepared.error_code,
                 fallback="invalid_prepared_request",
             )
-            terminal = self.repository.finish(
+            terminal = self._finish_attempt(
                 record,
                 outcome=EffectOutcome.FAILED_BEFORE_EFFECT,
                 replay_decision=ReplayDecision.STOP,
@@ -308,7 +336,10 @@ class ExternalEffectExecutor:
                 provider_status_code=None,
                 error_code=safe_error_code,
                 now=self.clock(),
+                allow_retry=allow_retry,
+                terminal_code="external_effect.prepare_failed",
             )
+            self._attach_terminal_trace(adapter, terminal)
             return self._terminal_result(terminal)
         try:
             provider_key = self._validated_winner_key(record)
@@ -319,7 +350,7 @@ class ExternalEffectExecutor:
                 profile=profile,
             )
         except Exception:
-            self.repository.finish(
+            terminal = self._finish_attempt(
                 record,
                 outcome=EffectOutcome.FAILED_BEFORE_EFFECT,
                 replay_decision=ReplayDecision.STOP,
@@ -327,14 +358,24 @@ class ExternalEffectExecutor:
                 provider_status_code=None,
                 error_code="provider_call_finalize_failed",
                 now=self.clock(),
+                allow_retry=allow_retry,
+                terminal_code="external_effect.prepare_failed",
             )
+            self._attach_terminal_trace(adapter, terminal)
             raise ExternalEffectError(
                 "external_effect.prepare_failed",
                 retryable=False,
                 node_id=context.node_id,
             ) from None
 
-        record = self.repository.mark_in_flight(record, now=self.clock())
+        try:
+            record = self.repository.mark_in_flight(record, now=self.clock())
+        except Exception:
+            self._raise_repository_retry(
+                allow_retry=allow_retry,
+                node_id=context.node_id,
+                terminal_code="external_effect.claim_wait",
+            )
         try:
             invocation = adapter.invoke_effect(call)
             if not isinstance(invocation, ProviderInvocationResult):
@@ -382,7 +423,7 @@ class ExternalEffectExecutor:
                 or not 100 <= provider_status_code <= 599
             ):
                 provider_status_code = None
-            terminal = self.repository.finish(
+            terminal = self._finish_attempt(
                 record,
                 outcome=outcome,
                 replay_decision=decision,
@@ -390,18 +431,17 @@ class ExternalEffectExecutor:
                 provider_status_code=provider_status_code,
                 error_code=safe_error_code,
                 now=self.clock(),
+                allow_retry=allow_retry,
+                terminal_code=(
+                    "external_effect.outcome_unknown"
+                    if outcome is EffectOutcome.EFFECT_OUTCOME_UNKNOWN
+                    else f"external_effect.{safe_error_code}"
+                ),
             )
-            if decision in {
-                ReplayDecision.RETRY_BEFORE_EFFECT,
-                ReplayDecision.REPLAY_SAME_KEY,
-            }:
-                raise ExternalEffectRetrySignal(
-                    "external_effect.retry_allowed",
-                    node_id=context.node_id,
-                ) from None
+            self._attach_terminal_trace(adapter, terminal)
             return self._terminal_result(terminal)
         except Exception:
-            terminal = self.repository.finish(
+            terminal = self._finish_attempt(
                 record,
                 outcome=EffectOutcome.EFFECT_OUTCOME_UNKNOWN,
                 replay_decision=ReplayDecision.STOP,
@@ -409,7 +449,10 @@ class ExternalEffectExecutor:
                 provider_status_code=None,
                 error_code="provider_call_failed",
                 now=self.clock(),
+                allow_retry=allow_retry,
+                terminal_code="external_effect.outcome_unknown",
             )
+            self._attach_terminal_trace(adapter, terminal)
             return self._terminal_result(terminal)
 
         replay_result = None
@@ -428,7 +471,7 @@ class ExternalEffectExecutor:
             result_reuse=profile.result_reuse,
             has_replay_result=replay_result is not None,
         )
-        self.repository.finish(
+        terminal = self._finish_attempt(
             record,
             outcome=EffectOutcome.SUCCEEDED,
             replay_decision=decision,
@@ -436,8 +479,80 @@ class ExternalEffectExecutor:
             provider_status_code=invocation.provider_status_code,
             error_code=None,
             now=self.clock(),
+            allow_retry=allow_retry,
+            terminal_code="external_effect.outcome_unknown",
         )
+        self._attach_terminal_trace(adapter, terminal)
         return invocation.output
+
+    @staticmethod
+    def _attach_terminal_trace(
+        adapter: EffectAdapter,
+        record: EffectAttemptRecord,
+    ) -> None:
+        metadata = getattr(adapter, "trace_metadata", None)
+        safe_metadata = dict(metadata) if isinstance(metadata, dict) else {}
+        summary: dict[str, Any] = {
+            "provider": record.spec.profile.provider,
+            "operation": record.spec.profile.operation,
+        }
+        if record.outcome is not None:
+            summary["outcome"] = record.outcome.value
+        if record.replay_decision is not None:
+            summary["replay_decision"] = record.replay_decision.value
+        if record.error_code is not None:
+            summary["error_code"] = record.error_code
+        safe_metadata["external_effect"] = summary
+        setattr(adapter, "trace_metadata", safe_metadata)
+
+    def _finish_attempt(
+        self,
+        record: EffectAttemptRecord,
+        *,
+        outcome: EffectOutcome,
+        replay_decision: ReplayDecision,
+        replay_result: Any,
+        provider_status_code: int | None,
+        error_code: str | None,
+        now: datetime,
+        allow_retry: bool,
+        terminal_code: str,
+    ) -> EffectAttemptRecord:
+        try:
+            return self.repository.finish(
+                record,
+                outcome=outcome,
+                replay_decision=replay_decision,
+                replay_result=replay_result,
+                provider_status_code=provider_status_code,
+                error_code=error_code,
+                now=now,
+            )
+        except Exception:
+            self._raise_repository_retry(
+                allow_retry=allow_retry,
+                node_id=record.spec.context.node_id,
+                terminal_code=terminal_code,
+            )
+
+    @staticmethod
+    def _raise_repository_retry(
+        *,
+        allow_retry: bool,
+        node_id: str,
+        terminal_code: str,
+    ) -> NoReturn:
+        if allow_retry:
+            raise ExternalEffectRetrySignal(
+                "external_effect.claim_wait",
+                node_id=node_id,
+                terminal_code=terminal_code,
+            ) from None
+        raise ExternalEffectError(
+            terminal_code,
+            retryable=False,
+            node_id=node_id,
+        ) from None
 
     @staticmethod
     def _validate_prepared_request(
@@ -481,7 +596,14 @@ class ExternalEffectExecutor:
             ReplayDecision.REPLAY_SAME_KEY,
         }:
             return record
-        return self.repository.stop_retry(record, now=self.clock())
+        try:
+            return self.repository.stop_retry(record, now=self.clock())
+        except Exception:
+            raise ExternalEffectError(
+                self._terminal_failure_code(record),
+                retryable=False,
+                node_id=record.spec.context.node_id,
+            ) from None
 
     def guard_read_only_slot(
         self,
@@ -491,7 +613,16 @@ class ExternalEffectExecutor:
     ) -> None:
         guard = getattr(self.repository, "guard_read_only_slot", None)
         if callable(guard):
-            guard(context=context, effect_sequence=effect_sequence)
+            try:
+                guard(context=context, effect_sequence=effect_sequence)
+            except ExternalEffectError:
+                raise
+            except Exception:
+                self._raise_repository_retry(
+                    allow_retry=self.retry_available(),
+                    node_id=context.node_id,
+                    terminal_code="external_effect.claim_wait",
+                )
 
     def _validated_winner_key(self, record: EffectAttemptRecord) -> str | None:
         profile = record.spec.profile
@@ -558,12 +689,6 @@ class ExternalEffectExecutor:
                 retryable=False,
                 node_id=record.spec.context.node_id,
             )
-        if record.outcome is EffectOutcome.EFFECT_OUTCOME_UNKNOWN:
-            raise ExternalEffectError(
-                "external_effect.outcome_unknown",
-                retryable=False,
-                node_id=record.spec.context.node_id,
-            )
         if record.replay_decision in {
             ReplayDecision.RETRY_BEFORE_EFFECT,
             ReplayDecision.REPLAY_SAME_KEY,
@@ -571,19 +696,17 @@ class ExternalEffectExecutor:
             raise ExternalEffectRetrySignal(
                 "external_effect.retry_allowed",
                 node_id=record.spec.context.node_id,
+                terminal_code=ExternalEffectExecutor._terminal_failure_code(record),
+            )
+        if record.outcome is EffectOutcome.EFFECT_OUTCOME_UNKNOWN:
+            raise ExternalEffectError(
+                "external_effect.outcome_unknown",
+                retryable=False,
+                node_id=record.spec.context.node_id,
             )
         if record.outcome is EffectOutcome.FAILED_BEFORE_EFFECT:
-            safe_code = safe_effect_error_code(
-                record.error_code or "provider_call_failed",
-                fallback="provider_call_failed",
-            )
-            public_code = (
-                "external_effect.prepare_failed"
-                if safe_code == "provider_call_finalize_failed"
-                else f"external_effect.{safe_code}"
-            )
             raise ExternalEffectError(
-                public_code,
+                ExternalEffectExecutor._failed_before_effect_code(record),
                 retryable=False,
                 node_id=record.spec.context.node_id,
             )
@@ -591,4 +714,24 @@ class ExternalEffectExecutor:
             "external_effect.stopped",
             retryable=False,
             node_id=record.spec.context.node_id,
+        )
+
+    @staticmethod
+    def _terminal_failure_code(record: EffectAttemptRecord) -> str:
+        if record.outcome is EffectOutcome.EFFECT_OUTCOME_UNKNOWN:
+            return "external_effect.outcome_unknown"
+        if record.outcome is EffectOutcome.FAILED_BEFORE_EFFECT:
+            return ExternalEffectExecutor._failed_before_effect_code(record)
+        return "external_effect.stopped"
+
+    @staticmethod
+    def _failed_before_effect_code(record: EffectAttemptRecord) -> str:
+        safe_code = safe_effect_error_code(
+            record.error_code or "provider_call_failed",
+            fallback="provider_call_failed",
+        )
+        return (
+            "external_effect.prepare_failed"
+            if safe_code == "provider_call_finalize_failed"
+            else f"external_effect.{safe_code}"
         )

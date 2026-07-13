@@ -108,6 +108,160 @@ def test_unknown_provider_response_loss_is_not_replayed() -> None:
     assert "hidden" not in str(first.value)
 
 
+def test_repository_terminal_decision_overrides_precommit_retry_decision() -> None:
+    repository = InMemoryEffectAttemptRepository()
+    original_finish = repository.finish
+
+    def finish_with_expired_deadline(*args, **kwargs):
+        terminal = original_finish(*args, **kwargs)
+        stopped = replace(terminal, replay_decision=ReplayDecision.STOP)
+        repository._by_slot[repository._slot(stopped.spec)] = stopped
+        return stopped
+
+    repository.finish = finish_with_expired_deadline
+    adapter = FakeEffectAdapter(
+        provider_replay=ProviderReplayCapability.SUPPORTED,
+        result_reuse=ResultReuseCapability.UNAVAILABLE,
+        failures=[
+            EffectInvocationFailure(
+                outcome=EffectOutcome.EFFECT_OUTCOME_UNKNOWN,
+                error_code="response_lost",
+            )
+        ],
+    )
+    executor = _executor(repository)
+
+    with pytest.raises(ExternalEffectError) as captured:
+        executor.execute(context=_context(), adapter=adapter, payload={"value": 1})
+
+    assert captured.value.code == "external_effect.outcome_unknown"
+    assert captured.value.retryable is False
+
+
+def test_expired_claim_before_provider_call_uses_external_effect_retry_signal() -> None:
+    repository = InMemoryEffectAttemptRepository()
+    adapter = FakeEffectAdapter()
+
+    def reject_stale_claim(*_args, **_kwargs):
+        raise RuntimeError("stale effect claim")
+
+    repository.mark_in_flight = reject_stale_claim
+
+    with pytest.raises(ExternalEffectRetrySignal) as captured:
+        _executor(repository).execute(
+            context=_context(),
+            adapter=adapter,
+            payload={"value": 1},
+        )
+
+    assert captured.value.code == "external_effect.claim_wait"
+    assert captured.value.terminal_code == "external_effect.claim_wait"
+    assert adapter.provider.call_count == 0
+
+
+def test_repository_lookup_failure_uses_claim_wait_without_provider_call() -> None:
+    repository = InMemoryEffectAttemptRepository()
+    adapter = FakeEffectAdapter()
+
+    def fail_lookup(*_args, **_kwargs):
+        raise RuntimeError("database unavailable")
+
+    repository.find_by_slot = fail_lookup
+
+    with pytest.raises(ExternalEffectRetrySignal) as captured:
+        _executor(repository).execute(
+            context=_context(),
+            adapter=adapter,
+            payload={"value": 1},
+        )
+
+    assert captured.value.code == "external_effect.claim_wait"
+    assert captured.value.terminal_code == "external_effect.claim_wait"
+    assert adapter.provider.call_count == 0
+
+
+def test_exhausted_retry_budget_closes_live_claim_wait() -> None:
+    repository = InMemoryEffectAttemptRepository()
+    adapter = FakeEffectAdapter()
+    context = _context()
+    prepared = adapter.prepare_effect({"value": 1})
+    spec = EffectAttemptSpec(
+        context=context,
+        profile=adapter.profile,
+        effect_sequence=0,
+        effect_input_digest=prepared.effect_input_digest,
+        replay_deadline_at=None,
+        key_version="test-v1",
+        key_format_version=adapter.profile.key_format,
+        idempotency_key_fingerprint="0" * 64,
+    )
+    repository.acquire(
+        spec,
+        claim_owner="other-worker",
+        claim_ttl=timedelta(seconds=30),
+        allow_retry=True,
+        now=datetime.now(timezone.utc),
+    )
+    executor = ExternalEffectExecutor(
+        repository=repository,
+        keyring={"test-v1": b"process-local-test-secret"},
+        active_key_version="test-v1",
+        retry_available=lambda: False,
+    )
+
+    with pytest.raises(ExternalEffectError) as captured:
+        executor.execute(context=context, adapter=adapter, payload={"value": 1})
+
+    assert captured.value.code == "external_effect.claim_wait"
+    assert captured.value.retryable is False
+    assert adapter.provider.call_count == 0
+
+
+def test_terminal_commit_failure_after_provider_call_never_returns_output() -> None:
+    repository = InMemoryEffectAttemptRepository()
+    adapter = FakeEffectAdapter()
+
+    def fail_terminal_commit(*_args, **_kwargs):
+        raise RuntimeError("database unavailable")
+
+    repository.finish = fail_terminal_commit
+
+    with pytest.raises(ExternalEffectRetrySignal) as captured:
+        _executor(repository).execute(
+            context=_context(),
+            adapter=adapter,
+            payload={"value": 1},
+        )
+
+    assert captured.value.code == "external_effect.claim_wait"
+    assert captured.value.terminal_code == "external_effect.outcome_unknown"
+    assert adapter.provider.call_count == 1
+
+
+def test_unknown_outcome_retry_preserves_terminal_public_code() -> None:
+    repository = InMemoryEffectAttemptRepository()
+    adapter = FakeEffectAdapter(
+        provider_replay=ProviderReplayCapability.SUPPORTED,
+        result_reuse=ResultReuseCapability.UNAVAILABLE,
+        failures=[
+            EffectInvocationFailure(
+                outcome=EffectOutcome.EFFECT_OUTCOME_UNKNOWN,
+                error_code="response_lost",
+            )
+        ],
+    )
+
+    with pytest.raises(ExternalEffectRetrySignal) as retry_signal:
+        _executor(repository).execute(
+            context=_context(),
+            adapter=adapter,
+            payload={"value": 1},
+        )
+
+    assert retry_signal.value.code == "external_effect.retry_allowed"
+    assert retry_signal.value.terminal_code == "external_effect.outcome_unknown"
+
+
 def test_same_identity_with_different_effect_input_is_rejected() -> None:
     repository = InMemoryEffectAttemptRepository()
     adapter = FakeEffectAdapter(result_reuse=ResultReuseCapability.SUPPORTED)
@@ -174,8 +328,11 @@ def test_retry_uses_frozen_key_version_after_active_key_rotation() -> None:
         clock=lambda: datetime.now(timezone.utc),
     )
 
-    with pytest.raises(ExternalEffectRetrySignal):
+    with pytest.raises(ExternalEffectRetrySignal) as retry_signal:
         first.execute(context=context, adapter=adapter, payload={"value": 1})
+
+    assert retry_signal.value.code == "external_effect.retry_allowed"
+    assert retry_signal.value.terminal_code == "external_effect.connection_failed"
 
     rotated = ExternalEffectExecutor(
         repository=repository,
@@ -186,6 +343,46 @@ def test_retry_uses_frozen_key_version_after_active_key_rotation() -> None:
     rotated.execute(context=context, adapter=adapter, payload={"value": 1})
 
     assert adapter.finalized_keys[0] == adapter.finalized_keys[1]
+
+
+def test_retry_claim_uses_current_run_correlation_ids() -> None:
+    repository = InMemoryEffectAttemptRepository()
+    adapter = FakeEffectAdapter(
+        failures=[
+            EffectInvocationFailure(
+                outcome=EffectOutcome.FAILED_BEFORE_EFFECT,
+                error_code="connection_failed",
+            )
+        ]
+    )
+    executor = _executor(repository)
+    first_context = replace(
+        _context(),
+        workflow_run_id=uuid.uuid4(),
+        node_run_id=uuid.uuid4(),
+    )
+
+    with pytest.raises(ExternalEffectRetrySignal):
+        executor.execute(
+            context=first_context,
+            adapter=adapter,
+            payload={"value": 1},
+        )
+
+    retry_context = replace(
+        first_context,
+        workflow_run_id=uuid.uuid4(),
+        node_run_id=uuid.uuid4(),
+    )
+    executor.execute(
+        context=retry_context,
+        adapter=adapter,
+        payload={"value": 1},
+    )
+
+    attempt = next(iter(repository._by_slot.values()))
+    assert attempt.spec.context.workflow_run_id == retry_context.workflow_run_id
+    assert attempt.spec.context.node_run_id == retry_context.node_run_id
 
 
 def test_retry_uses_frozen_result_projection_after_active_profile_change() -> None:

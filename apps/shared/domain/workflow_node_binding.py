@@ -12,6 +12,9 @@ RUNTIME_METADATA_KEY = "_nodease_runtime"
 BINDINGS_KEY = "workflow_node_bindings"
 BINDING_VERSION = "workflow-node-bindings.v1"
 MAX_WORKFLOW_NODE_DEPTH = 3
+_SIDE_EFFECT_VALUES = frozenset(
+    {"none", "external_read", "local_execution", "external_write"}
+)
 
 
 class WorkflowNodeBindingError(ValueError):
@@ -241,14 +244,23 @@ def graph_has_external_effect(
         if not isinstance(node, dict):
             return True
         node_type = node.get("type")
+        if node_type == "note":
+            continue
         if not isinstance(node_type, str) or node_type not in side_effect_by_node_type:
             return True
-        data = node.get("data") if isinstance(node.get("data"), dict) else {}
+        if not isinstance(node.get("id"), str) or not node["id"]:
+            return True
+        if not isinstance(node.get("data"), dict):
+            return True
+        data = node["data"]
+        side_effect = side_effect_by_node_type[node_type]
+        if side_effect not in _SIDE_EFFECT_VALUES:
+            return True
         if node_type == "httpRequestNode" and str(data.get("method", "GET")).upper() == "GET":
             continue
         if node_type == "githubNode" and data.get("action", "get_pr") == "get_pr":
             continue
-        if side_effect_by_node_type[node_type] == "external_write":
+        if side_effect == "external_write":
             return True
         if node_type == "loopNode":
             subgraph = data.get("subGraph")

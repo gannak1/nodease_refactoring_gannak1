@@ -1,3 +1,4 @@
+import copy
 import logging
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Generic, TypeVar, final
@@ -73,27 +74,38 @@ class Node(ABC, Generic[NodeDataT]):
 
     def _run_external_effect(self, adapter, payload: Any) -> Any:
         control = self._runtime_control
-        if control is None:
-            # Direct node unit usage remains available; WorkflowEngine always supplies
-            # a control object and therefore cannot bypass the durable boundary.
-            return adapter.invoke_effect(adapter.finalize_provider_call(
-                adapter.prepare_effect(payload), None
-            )).output
-        context = control.external_effect_context
-        if context is None:
-            raise ExternalEffectError(
-                "external_effect.identity_invalid",
-                retryable=False,
-                node_id=self.id,
+        try:
+            if control is None:
+                # Direct node unit usage remains available; WorkflowEngine always supplies
+                # a control object and therefore cannot bypass the durable boundary.
+                return adapter.invoke_effect(
+                    adapter.finalize_provider_call(
+                        adapter.prepare_effect(payload), None
+                    )
+                ).output
+            context = control.external_effect_context
+            if context is None:
+                raise ExternalEffectError(
+                    "external_effect.identity_invalid",
+                    retryable=False,
+                    node_id=self.id,
+                )
+            from apps.workflow_engine.composition.external_effect import (
+                build_external_effect_executor,
             )
-        from apps.workflow_engine.composition.external_effect import (
-            build_external_effect_executor,
-        )
 
-        executor = build_external_effect_executor(
-            task_deadline=lambda: control.task_deadline,
+            executor = build_external_effect_executor(
+                task_deadline=lambda: control.task_deadline,
+            )
+            return executor.execute(context=context, adapter=adapter, payload=payload)
+        finally:
+            self._capture_provider_trace(adapter)
+
+    def _capture_provider_trace(self, adapter) -> None:
+        metadata = getattr(adapter, "trace_metadata", None)
+        self._trace_metadata = (
+            copy.deepcopy(metadata) if isinstance(metadata, dict) else {}
         )
-        return executor.execute(context=context, adapter=adapter, payload=payload)
 
     def _guard_read_only_effect_slot(self) -> None:
         control = self._runtime_control

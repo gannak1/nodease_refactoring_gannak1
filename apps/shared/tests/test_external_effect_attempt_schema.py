@@ -73,13 +73,20 @@ class _DowngradeResult:
 class _DowngradeConnection:
     def __init__(self, has_attempts: bool) -> None:
         self.has_attempts = has_attempts
+        self.statements = []
 
-    def execute(self, _statement):
+    def execute(self, statement):
+        self.statements.append(str(statement))
         return _DowngradeResult(self.has_attempts)
 
 
 def test_external_effect_downgrade_refuses_to_drop_attempts() -> None:
-    assert_external_effect_downgrade_is_safe(_DowngradeConnection(False))
+    empty = _DowngradeConnection(False)
+    assert_external_effect_downgrade_is_safe(empty)
+    assert empty.statements[0] == (
+        "LOCK TABLE workflow_node_effect_attempts IN ACCESS EXCLUSIVE MODE"
+    )
+    assert "SELECT EXISTS" in empty.statements[1]
 
     with pytest.raises(RuntimeError, match="attempts exist"):
         assert_external_effect_downgrade_is_safe(_DowngradeConnection(True))

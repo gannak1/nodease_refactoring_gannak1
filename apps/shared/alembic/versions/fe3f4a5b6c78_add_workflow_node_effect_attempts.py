@@ -1,7 +1,7 @@
 """add workflow node external effect attempts
 
 Revision ID: fe3f4a5b6c78
-Revises: b28d9e0f1a32
+Revises: b39e0f1a2b43
 """
 
 from typing import Sequence, Union
@@ -15,7 +15,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision: str = "fe3f4a5b6c78"
-down_revision: Union[str, Sequence[str], None] = "b28d9e0f1a32"
+down_revision: Union[str, Sequence[str], None] = "b39e0f1a2b43"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

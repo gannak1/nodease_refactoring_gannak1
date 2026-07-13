@@ -52,7 +52,7 @@ class SQLAlchemyEffectAttemptRepository:
 
     @staticmethod
     def _database_now(session: Session) -> datetime:
-        value = session.execute(select(text("CURRENT_TIMESTAMP"))).scalar_one()
+        value = session.execute(select(text("clock_timestamp()"))).scalar_one()
         if value.tzinfo is None:
             value = value.replace(tzinfo=timezone.utc)
         return value
@@ -207,8 +207,8 @@ class SQLAlchemyEffectAttemptRepository:
         del now
         try:
             with self._session() as session:
-                db_now = self._database_now(session)
                 row = self._locked_by_slot(session, spec)
+                db_now = self._database_now(session)
                 if row is None:
                     row = self._new_row(
                         spec,
@@ -234,10 +234,10 @@ class SQLAlchemyEffectAttemptRepository:
         except IntegrityError:
             with self._session() as session:
                 session.rollback()
-                db_now = self._database_now(session)
                 row = self._locked_by_slot(session, spec)
                 if row is None:
                     raise RuntimeError("effect attempt winner is unavailable") from None
+                db_now = self._database_now(session)
                 result = self._acquire_existing(
                     session,
                     row,
@@ -283,6 +283,8 @@ class SQLAlchemyEffectAttemptRepository:
                 session.flush()
                 return AcquireResult(AcquireKind.TERMINAL, self._record(row))
             row.status = EffectAttemptStatus.PREPARED.value
+            row.workflow_run_id = spec.context.workflow_run_id
+            row.node_run_id = spec.context.node_run_id
             row.claim_owner = claim_owner
             row.claim_expires_at = now + claim_ttl
             row.claim_generation += 1
@@ -322,6 +324,8 @@ class SQLAlchemyEffectAttemptRepository:
                 session.flush()
                 return AcquireResult(AcquireKind.TERMINAL, self._record(row))
             row.claim_owner = claim_owner
+            row.workflow_run_id = spec.context.workflow_run_id
+            row.node_run_id = spec.context.node_run_id
             row.claim_expires_at = now + claim_ttl
             row.claim_generation += 1
             row.updated_at = now
@@ -337,7 +341,6 @@ class SQLAlchemyEffectAttemptRepository:
     ) -> EffectAttemptRecord:
         del now
         with self._session() as session:
-            db_now = self._database_now(session)
             row = session.execute(
                 select(WorkflowNodeEffectAttempt)
                 .where(
@@ -349,11 +352,15 @@ class SQLAlchemyEffectAttemptRepository:
                     WorkflowNodeEffectAttempt.claim_owner == record.claim_owner,
                     WorkflowNodeEffectAttempt.claim_generation
                     == record.claim_generation,
-                    WorkflowNodeEffectAttempt.claim_expires_at > db_now,
                 )
                 .with_for_update()
             ).scalar_one_or_none()
-            if row is None:
+            db_now = self._database_now(session)
+            if (
+                row is None
+                or row.claim_expires_at is None
+                or row.claim_expires_at <= db_now
+            ):
                 raise RuntimeError("stale effect claim")
             row.status = EffectAttemptStatus.IN_FLIGHT.value
             row.provider_started_at = db_now
@@ -375,7 +382,6 @@ class SQLAlchemyEffectAttemptRepository:
     ) -> EffectAttemptRecord:
         del now
         with self._session() as session:
-            db_now = self._database_now(session)
             row = session.execute(
                 select(WorkflowNodeEffectAttempt)
                 .where(
@@ -391,11 +397,15 @@ class SQLAlchemyEffectAttemptRepository:
                     WorkflowNodeEffectAttempt.claim_owner == record.claim_owner,
                     WorkflowNodeEffectAttempt.claim_generation
                     == record.claim_generation,
-                    WorkflowNodeEffectAttempt.claim_expires_at > db_now,
                 )
                 .with_for_update()
             ).scalar_one_or_none()
-            if row is None:
+            db_now = self._database_now(session)
+            if (
+                row is None
+                or row.claim_expires_at is None
+                or row.claim_expires_at <= db_now
+            ):
                 raise RuntimeError("stale effect claim")
             row.status = EffectAttemptStatus.TERMINAL.value
             row.claim_owner = None
@@ -432,7 +442,6 @@ class SQLAlchemyEffectAttemptRepository:
         self, record: EffectAttemptRecord
     ) -> tuple[EffectAttemptRecord | None, datetime]:
         with self._session() as session:
-            db_now = self._database_now(session)
             row = session.execute(
                 select(WorkflowNodeEffectAttempt).where(
                     WorkflowNodeEffectAttempt.id == record.id,
@@ -440,6 +449,7 @@ class SQLAlchemyEffectAttemptRepository:
                     == record.spec.context.organization_id,
                 )
             ).scalar_one_or_none()
+            db_now = self._database_now(session)
             return (self._record(row) if row is not None else None, db_now)
 
     def wait_for_resolution(

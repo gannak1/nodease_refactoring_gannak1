@@ -121,6 +121,14 @@ class InMemoryEffectAttemptRepository:
                         )
                     current = replace(
                         current,
+                        spec=replace(
+                            current.spec,
+                            context=replace(
+                                current.spec.context,
+                                workflow_run_id=spec.context.workflow_run_id,
+                                node_run_id=spec.context.node_run_id,
+                            ),
+                        ),
                         status=EffectAttemptStatus.PREPARED.value,
                         claim_owner=claim_owner,
                         claim_generation=current.claim_generation + 1,
@@ -162,6 +170,14 @@ class InMemoryEffectAttemptRepository:
                     return AcquireResult(AcquireKind.TERMINAL, copy.deepcopy(current))
                 current = replace(
                     current,
+                    spec=replace(
+                        current.spec,
+                        context=replace(
+                            current.spec.context,
+                            workflow_run_id=spec.context.workflow_run_id,
+                            node_run_id=spec.context.node_run_id,
+                        ),
+                    ),
                     claim_owner=claim_owner,
                     claim_generation=current.claim_generation + 1,
                     claim_expires_at=now + claim_ttl,

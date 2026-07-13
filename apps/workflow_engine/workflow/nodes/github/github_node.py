@@ -130,7 +130,7 @@ class GithubNode(Node[GithubNodeData]):
                             comment_body=comment_body,
                         ),
                     )
-                    self._trace_metadata = adapter.trace_metadata
+                    self._capture_provider_trace(adapter)
                     self._trace_payloads = []
                     return output
 

@@ -400,6 +400,100 @@ def test_stream_workflow_does_not_retry_permanent_identity_error(monkeypatch):
         )
 
 
+def test_stream_workflow_publishes_error_when_external_effect_retry_is_exhausted(
+    monkeypatch,
+):
+    external_run_id = str(uuid.uuid4())
+    published = []
+
+    def retrying_stream(_self):
+        if False:
+            yield None
+        raise tasks.ExternalEffectRetrySignal(
+            "external_effect.retry_allowed",
+            node_id="http-1",
+            terminal_code="external_effect.connection_failed",
+        )
+
+    def exhausted_retry(_task, _error):
+        raise RuntimeError("retry exhausted")
+
+    monkeypatch.setattr(FakeWorkflowEngine, "execute_stream", retrying_stream)
+    monkeypatch.setattr(tasks, "_safe_retry", exhausted_retry)
+    monkeypatch.setitem(
+        sys.modules,
+        "apps.shared.pubsub",
+        SimpleNamespace(
+            publish_workflow_event=lambda *args: published.append(args),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="retry exhausted"):
+        tasks.stream_workflow.run(
+            {"nodes": []},
+            {},
+            {
+                "user_id": str(uuid.uuid4()),
+                "workflow_id": str(FakeSession.workflow.id),
+                "organization_id": str(uuid.uuid4()),
+                "execution_id": str(uuid.uuid4()),
+            },
+            external_run_id,
+        )
+
+    assert published == [
+        (
+            external_run_id,
+            "error",
+            {
+                "code": "external_effect.connection_failed",
+                "message": "external_effect.connection_failed",
+                "retryable": False,
+                "node_id": "http-1",
+            },
+        )
+    ]
+
+
+def test_stream_workflow_does_not_publish_terminal_error_while_retry_is_scheduled(
+    monkeypatch,
+):
+    published = []
+
+    def retrying_stream(_self):
+        if False:
+            yield None
+        raise tasks.ExternalEffectRetrySignal("external_effect.claim_wait")
+
+    def scheduled_retry(_task, _error):
+        raise tasks.Retry()
+
+    monkeypatch.setattr(FakeWorkflowEngine, "execute_stream", retrying_stream)
+    monkeypatch.setattr(tasks, "_safe_retry", scheduled_retry)
+    monkeypatch.setitem(
+        sys.modules,
+        "apps.shared.pubsub",
+        SimpleNamespace(
+            publish_workflow_event=lambda *args: published.append(args),
+        ),
+    )
+
+    with pytest.raises(tasks.Retry):
+        tasks.stream_workflow.run(
+            {"nodes": []},
+            {},
+            {
+                "user_id": str(uuid.uuid4()),
+                "workflow_id": str(FakeSession.workflow.id),
+                "organization_id": str(uuid.uuid4()),
+                "execution_id": str(uuid.uuid4()),
+            },
+            str(uuid.uuid4()),
+        )
+
+    assert published == []
+
+
 def test_execute_deployed_workflow_skips_sync_without_execution_subject():
     result = tasks.execute_deployed_workflow.run(
         str(uuid.uuid4()),
@@ -484,6 +578,112 @@ def test_legacy_deployed_effect_accepts_exact_snapshot_envelope():
     assert context["deployment_version"] == deployment.version
     assert context["snapshot_sha256"] == snapshot_sha256
     assert context["workflow_version"] == deployment.version
+
+
+def test_legacy_deployed_redelivery_uses_frozen_deployment_after_new_activation(
+    monkeypatch,
+):
+    from apps.shared.domain.workflow_node_binding import canonical_snapshot_sha256
+
+    class _NamedColumn:
+        def __init__(self, name):
+            self.name = name
+
+        def __eq__(self, value):
+            return ("eq", self.name, value)
+
+        def is_(self, value):
+            return ("is", self.name, value)
+
+    monkeypatch.setattr(FakeApp, "workflow_id", _NamedColumn("workflow_id"))
+    monkeypatch.setattr(FakeWorkflowDeployment, "id", _NamedColumn("id"))
+    monkeypatch.setattr(FakeWorkflowDeployment, "app_id", _NamedColumn("app_id"))
+    monkeypatch.setattr(
+        FakeWorkflowDeployment,
+        "is_active",
+        _NamedColumn("is_active"),
+    )
+    app_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    d1_graph = {
+        "nodes": [
+            {
+                "id": "http-1",
+                "type": "httpRequestNode",
+                "data": {"method": "POST"},
+            }
+        ],
+        "edges": [],
+    }
+    d1 = SimpleNamespace(
+        id=uuid.uuid4(),
+        app_id=app_id,
+        version=1,
+        is_active=False,
+        created_by=uuid.uuid4(),
+        graph_snapshot=d1_graph,
+    )
+    d2 = SimpleNamespace(
+        id=uuid.uuid4(),
+        app_id=app_id,
+        version=2,
+        is_active=True,
+        created_by=d1.created_by,
+        graph_snapshot={"nodes": [], "edges": []},
+    )
+    app = SimpleNamespace(
+        id=app_id,
+        workflow_id=workflow_id,
+        organization_id=uuid.uuid4(),
+        active_deployment_id=d2.id,
+        created_by=d1.created_by,
+    )
+
+    class _Query:
+        def __init__(self, model):
+            self.model = model
+            self.criteria = ()
+
+        def filter(self, *criteria):
+            self.criteria = criteria
+            return self
+
+        def first(self):
+            if self.model is FakeApp:
+                return app
+            if self.model is FakeWorkflowDeployment:
+                requested_id = next(
+                    (value for _operator, name, value in self.criteria if name == "id"),
+                    None,
+                )
+                return {d1.id: d1, d2.id: d2}.get(requested_id)
+            return None
+
+    class _Session:
+        def query(self, model):
+            return _Query(model)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(tasks, "SessionLocal", _Session)
+
+    result = tasks.execute_deployed_workflow.run(
+        str(workflow_id),
+        {},
+        {
+            "workflow_id": str(workflow_id),
+            "execution_id": str(uuid.uuid4()),
+            "deployment_id": str(d1.id),
+            "deployment_version": d1.version,
+            "snapshot_sha256": canonical_snapshot_sha256(d1_graph),
+        },
+    )
+
+    context = FakeWorkflowEngine.calls[0]["kwargs"]["execution_context"]
+    assert result["status"] == "success"
+    assert context["deployment_id"] == str(d1.id)
+    assert context["deployment_version"] == d1.version
 
 
 def test_execute_by_deployment_skips_sync_without_execution_subject():

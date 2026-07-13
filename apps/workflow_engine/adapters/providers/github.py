@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
@@ -162,6 +163,7 @@ class GithubCommentEffectAdapter:
             "Accept": "application/vnd.github.v3+json",
             "User-Agent": "moduly",
         }
+        started = time.perf_counter()
         try:
             response = requests.post(
                 url,
@@ -175,33 +177,28 @@ class GithubCommentEffectAdapter:
             requests.exceptions.InvalidURL,
             requests.exceptions.InvalidHeader,
         ):
+            self._set_trace(request, None, started)
             raise EffectInvocationFailure(
                 outcome=EffectOutcome.FAILED_BEFORE_EFFECT,
                 error_code="invalid_prepared_request",
                 retry_before_effect=False,
             ) from None
         except requests.exceptions.ConnectTimeout:
+            self._set_trace(request, None, started)
             raise EffectInvocationFailure(
                 outcome=EffectOutcome.FAILED_BEFORE_EFFECT,
                 error_code="timeout",
                 retry_before_effect=True,
             ) from None
         except requests.exceptions.RequestException:
+            self._set_trace(request, None, started)
             raise EffectInvocationFailure(
                 outcome=EffectOutcome.EFFECT_OUTCOME_UNKNOWN,
                 error_code="response_lost",
             ) from None
 
-        self.trace_metadata = {
-            "http": {
-                "method": "POST",
-                "operation": "github.issue_comment.create",
-                "status_code": response.status_code,
-                "request_size": len(request.comment_body.encode("utf-8")),
-                "response_size": len(getattr(response, "content", b"") or b""),
-            }
-        }
-        if response.status_code in {403, 404, 410, 422}:
+        self._set_trace(request, response, started)
+        if response.status_code in {401, 403, 404, 410, 422}:
             raise EffectInvocationFailure(
                 outcome=EffectOutcome.FAILED_BEFORE_EFFECT,
                 error_code="provider_rejected_request",
@@ -241,6 +238,22 @@ class GithubCommentEffectAdapter:
         return ProviderInvocationResult(
             output, provider_status_code=response.status_code
         )
+
+    def _set_trace(
+        self,
+        request: GithubCommentRequest,
+        response: Any,
+        started: float,
+    ) -> None:
+        self.trace_metadata = {
+            "http": {
+                "method": "POST",
+                "status_code": getattr(response, "status_code", None),
+                "latency_ms": int((time.perf_counter() - started) * 1000),
+                "request_size": len(request.comment_body.encode("utf-8")),
+                "response_size": len(getattr(response, "content", b"") or b""),
+            }
+        }
 
     def replay_projection(
         self,

@@ -31,11 +31,26 @@ from apps.shared.domain.deployment_runtime_policy import (
     is_deployment_type_allowed_for_surface,
     is_deployment_type_allowed_for_trigger,
 )
+from apps.shared.domain.external_effect_error import (
+    safe_external_effect_error_payload,
+)
 from apps.shared.schemas.deployment import DeploymentCreate, DeploymentPreflightResponse
 from apps.shared.services.permissions import has_workflow_permission
 from apps.shared.services.workflow_task_publisher import send_workflow_task
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_deployment_error_detail(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return "Workflow execution failed"
+    code = value.get("code")
+    if isinstance(code, str) and code.startswith("external_effect."):
+        return (
+            safe_external_effect_error_payload(value)
+            or "Workflow execution failed"
+        )
+    return value
 
 
 def _deployment_type_allowed_for_slug_trigger(
@@ -730,8 +745,7 @@ class DeploymentService:
             if result.get("status") == "success":
                 return {"status": "success", "results": result.get("result", {})}
             else:
-                error = result.get("error")
-                detail = error if isinstance(error, dict) else "Workflow execution failed"
+                detail = _safe_deployment_error_detail(result.get("error"))
                 raise HTTPException(status_code=500, detail=detail)
 
         except TimeoutError as e:

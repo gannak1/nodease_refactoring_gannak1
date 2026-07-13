@@ -114,12 +114,14 @@ class HttpRequestNode(Node[HttpRequestNodeData]):  # Node 상속
             timeout_seconds=timeout,
             slack_mode=slack_mode,
         )
-        if method == "GET" and not slack_mode:
-            self._guard_read_only_effect_slot()
-            output = adapter.invoke_read_only(request).output
-        else:
-            output = self._run_external_effect(adapter, request)
-        self._trace_metadata = adapter.trace_metadata
+        try:
+            if method == "GET" and not slack_mode:
+                self._guard_read_only_effect_slot()
+                output = adapter.invoke_read_only(request).output
+            else:
+                output = self._run_external_effect(adapter, request)
+        finally:
+            self._capture_provider_trace(adapter)
         self._trace_payloads = []
         return output
 

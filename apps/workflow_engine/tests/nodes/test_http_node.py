@@ -17,6 +17,7 @@ import sys
 import uuid
 from unittest.mock import Mock, patch
 
+import httpx
 import pytest
 
 # Add project root to sys.path
@@ -26,7 +27,10 @@ sys.path.append(
 
 from apps.workflow_engine.workflow.nodes.base.entities import NodeStatus
 from apps.workflow_engine.domain.execution import NodeExecutionControl
-from apps.workflow_engine.domain.external_effect import ExternalEffectError
+from apps.workflow_engine.domain.external_effect import (
+    EffectInvocationFailure,
+    ExternalEffectError,
+)
 from apps.workflow_engine.workflow.nodes.http import (
     HttpRequestNode,
     HttpRequestNodeData,
@@ -142,6 +146,38 @@ def test_legacy_mutating_http_without_publisher_identity_is_blocked():
 
     assert captured.value.code == "external_effect.identity_invalid"
     mock_client.assert_not_called()
+
+
+def test_failed_http_provider_call_keeps_safe_trace_summary_without_payload():
+    node = HttpRequestNode(
+        id="http-1",
+        data=HttpRequestNodeData(
+            title="POST",
+            method=HttpMethod.POST,
+            url="https://api.example.com/items",
+            body='{"opaque":"request"}',
+            referenced_variables=[],
+        ),
+    )
+    request = httpx.Request("POST", "https://api.example.com/items")
+
+    with (
+        patch("httpx.Client") as mock_client,
+        pytest.raises(EffectInvocationFailure),
+    ):
+        client = mock_client.return_value
+        client.__enter__ = Mock(return_value=client)
+        client.__exit__ = Mock(return_value=False)
+        client.request.side_effect = httpx.ReadTimeout(
+            "opaque provider failure",
+            request=request,
+        )
+        node.execute({})
+
+    assert node._trace_metadata["http"]["method"] == "POST"
+    assert node._trace_metadata["http"]["response_size"] == 0
+    assert "opaque provider failure" not in str(node._trace_metadata)
+    assert "opaque" not in str(node._trace_metadata)
 
 
 def test_http_node_post_with_body():

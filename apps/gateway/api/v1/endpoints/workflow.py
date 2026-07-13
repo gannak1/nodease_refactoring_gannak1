@@ -45,6 +45,9 @@ from apps.shared.db.models.model_routing_policy import (
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
+from apps.shared.domain.external_effect_error import (
+    safe_external_effect_error_payload,
+)
 from apps.shared.permissions import workflow_auth_state_allows
 from apps.workflow_engine.services.model_router import ModelCandidate, ModelRouter
 from apps.workflow_engine.services.model_routing_policy_refresh import (
@@ -99,6 +102,9 @@ def _safe_task_error(value: Any) -> dict[str, Any] | None:
     retryable = value.get("retryable")
     if not isinstance(code, str) or not isinstance(retryable, bool):
         return None
+    is_external_effect_error = code.startswith("external_effect.")
+    if is_external_effect_error:
+        return safe_external_effect_error_payload(value)
     payload: dict[str, Any] = {
         "code": code,
         "message": str(value.get("message") or code),
@@ -107,6 +113,27 @@ def _safe_task_error(value: Any) -> dict[str, Any] | None:
     if isinstance(value.get("node_id"), str):
         payload["node_id"] = value["node_id"]
     return payload
+
+
+def _safe_stream_event(value: Any) -> dict[str, Any]:
+    generic_error = {
+        "type": "error",
+        "data": {"message": "workflow.execution_failed"},
+    }
+    if not isinstance(value, dict) or not isinstance(value.get("type"), str):
+        return generic_error
+    if value["type"] != "error":
+        return value
+    data = value.get("data")
+    if not isinstance(data, dict):
+        return generic_error
+    code = data.get("code")
+    if isinstance(code, str) and code.startswith("external_effect."):
+        safe_error = _safe_task_error(data)
+        if safe_error is None:
+            return generic_error
+        return {"type": "error", "data": safe_error}
+    return value
 
 
 class WorkflowCompareRequest(BaseModel):
@@ -4575,7 +4602,7 @@ async def stream_workflow(
             # 3. 이벤트 수신 및 SSE 전송
             for message in pubsub.listen():
                 if message["type"] == "message":
-                    event = json.loads(message["data"])
+                    event = _safe_stream_event(json.loads(message["data"]))
                     # SSE 포맷: "data: {json_content}\n\n"
                     yield f"data: {json.dumps(event)}\n\n"
 
