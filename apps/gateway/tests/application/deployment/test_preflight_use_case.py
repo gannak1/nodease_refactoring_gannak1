@@ -96,7 +96,7 @@ def test_internal_chatbot_private_kb_uses_authenticated_audience():
 
     assert result.audience == "authenticated_user"
     assert result.status == "passed"
-    assert repository.calls == []
+    assert repository.calls == [("knowledge", organization_id)]
 
 
 def test_inactive_preview_downgrades_publish_blocker_but_not_structural_target_error():
