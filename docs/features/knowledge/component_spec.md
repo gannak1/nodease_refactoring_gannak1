@@ -49,6 +49,7 @@ Retrieval Orchestrator는 최종 evidence와 함께 KB/document version, organiz
 | Knowledge Collections | Collection 목록, 상세, 생성/수정/archive, item 관리, permission grant/revoke, visibility 상태를 표시한다 |
 | KB Detail | Document-level KB lifecycle, active version, sync state, permission state를 표시한다 |
 | KB Permission Management | Admin/settings의 권한 UI에서 KB별 team grant와 user direct grant를 표시, 생성, 갱신, 회수한다 |
+| Knowledge Delegation | Organization manager가 Team 우선으로 Knowledge domain action을 부여·회수하고 만료 상태를 확인한다. Domain action과 KB content access를 분리해 표시한다 |
 | Source Connector Setup | Connector config, egress-safe test/preview, ACL mapping status를 관리한다 |
 | Sync Remediation Queue | Stale/unmapped/ambiguous ACL, failed sync, tombstone, retry/dead-letter status를 표시한다 |
 | Agent Knowledge Settings | Collection routing scope 또는 explicit KB를 선택한다. 허용된 safe candidate만 표시한다 |
@@ -67,11 +68,13 @@ Retrieval Orchestrator는 최종 evidence와 함께 KB/document version, organiz
 
 ### KB Permission Management UI
 
-- MBA-176에서는 기존 admin/settings permission surface를 확장해 KB team permission과 user direct permission을 함께 관리한다. 새 독립 화면을 만들지 않는다.
+- MBA-176에서는 기존 admin/settings permission surface를 확장해 KB team permission과 user direct permission을 함께 관리한다. MBA-231은 같은 관리 영역에 Organization manager 전용 Knowledge domain delegation panel을 추가하되 KB resource grant와 시각적으로 분리한다.
 - UI는 organization member 목록을 grant 대상 후보로 사용하되, 조직에 속해 있다는 사실만으로 KB `use/read/manage` 권한이 생긴다고 표시하지 않는다.
 - User direct grant 생성/수정에서는 `viewer`, `operator`, `builder`, `manager`만 선택할 수 있다. `none`은 선택지로 제공하지 않고, 권한 회수는 삭제 action으로 표현한다.
 - Effective permission 표시는 organization manager override와 team/user direct grant 중 가장 강한 additive allow로 계산된 값을 사용한다. User direct grant가 team grant를 낮추거나 deny할 수 있는 것처럼 표시하지 않는다.
 - `can_manage_kb`가 없는 사용자에게는 grant action을 숨기거나 disabled 처리하되, 최종 차단은 Gateway API가 수행한다.
+- Domain delegation은 Team을 기본 선택으로 제공하고 user direct grant는 예외 경로로 둔다. `catalog_manage`, `permission_delegate`, `lifecycle_manage`, `sync_manage`의 허용 범위와 content-plane 비상속을 각 action 설명에 표시한다.
+- Domain `permission_delegate` actor에게는 자신과 자신이 속한 Team이 grant 대상으로 보이더라도 content-plane grant가 차단됨을 safe 안내한다. 최종 self/own-Team 차단은 Gateway가 수행한다.
 - `completed` document만 workflow builder/RAG 선택과 runtime retrieval에서 ready evidence 후보가 될 수 있다.
 
 KB detail UI는 manual KB recommendation용 safe metadata 편집 surface를 제공할 수 있다. `safe_label` 자동 생성 버튼과 `kb_safe_topics` 자동 생성 버튼은 각각 KB name/description에서 sanitizer, length cap, secret/url/path removal을 적용한 값을 채우며, 저장 버튼은 전용 `PATCH /api/v1/knowledge/{kb_id}/safe-metadata`로 allowlisted 필드만 전송한다. `can_manage_safe_metadata=true`일 때만 이 surface를 표시하고, `can_edit_settings=false`이면 이름·설명·embedding model·소스 추가/재처리/삭제 같은 owner-only 동작을 표시하거나 활성화하지 않는다. Source-managed KB의 raw source title/path/url은 이 surface에 표시하거나 recommendation input으로 사용하지 않는다.
@@ -83,11 +86,13 @@ Knowledge Collection 관리 UI는 Workflow Builder가 아니라 Knowledge 관리
 필수 surface:
 
 - Collection 목록: safe name/description, manual/system-managed, lifecycle/sync state, visibility, bucketed linked/active KB count, caller action flags를 표시한다.
-- Collection 생성/수정: MVP 생성은 organization manager만 허용한다. `is_system_managed`나 public visibility는 일반 create/edit form에서 직접 설정하지 않는다.
+- Collection 생성/수정: organization manager 또는 domain `catalog_manage`가 private manual Collection을 생성한다. Delegated create는 client 입력과 무관하게 private다. `is_system_managed`나 public visibility는 일반 create/edit form에서 직접 설정하지 않는다.
 - Collection 상세: item, permission, visibility, sync/system state를 분리해서 표시한다.
 - Item manager: linked KB safe label, lifecycle/sync state, rank, `can_manage_kb`, `can_use_kb`를 표시한다. Link/unlink/reorder action은 `collection.manage`와 대상 KB `manage` 경계를 따른다.
 - Permission panel: team/user subject에 `read`, `route`, `manage`, `sync` additive allow grant/revoke를 제공한다.
 - Public visibility warning flow: organization manager, explicit acknowledgement, safe exposure summary를 요구한다.
+- Public Collection item link/unlink/reorder도 같은 public exposure warning과 acknowledgement를 요구한다.
+- Collection role preset은 Viewer, Workflow Router, Maintainer, Sync Operator를 제공하되 저장 시 explicit action row를 transactionally 적용하고 KB `use`가 포함되지 않음을 표시한다.
 
 금지 surface:
 

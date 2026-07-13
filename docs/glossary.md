@@ -27,6 +27,8 @@ Status: Draft
 | User Direct Permission | Team 권한으로 처리하기 어려운 user별 additive allow 예외 권한. Workflow, Knowledge Base, LLM Credential 같은 resource별 user direct permission table로 표현하며, team 권한을 낮추는 explicit deny로 쓰지 않는다. |
 | Resource | 권한 판정 대상이 되는 업무 객체. 대표적으로 Workflow, Knowledge Base, LLM Credential, Audit 대상 organization이 있다. |
 | Explicit Deny | 명시적 거부 권한. 현재 권한 모델에는 도입하지 않는다. 권한 판정은 허용 권한 중 가장 강한 값을 선택하는 방식이다. |
+| Knowledge Domain Permission | Organization 안의 Knowledge 관리 업무를 Team/User에게 위임하는 additive allow. `catalog_manage`, `permission_delegate`, `lifecycle_manage`, `sync_manage`를 사용하며 KB content access나 Collection route를 자동 부여하지 않는다. |
+| Knowledge Delegator | Domain `permission_delegate` 또는 resource `manage`로 KB/Collection resource grant를 관리하는 actor. Domain delegator는 자신이나 자신이 속한 Team에 content-plane 권한을 부여해 self-escalation할 수 없다. |
 
 ## Workflow And Execution
 
@@ -91,6 +93,7 @@ Status: Draft
 | Knowledge Source Connector | Source item과 source ACL을 열거, 가져오기, 동기화하는 adapter 계층. MCP/API source도 LLM 자유 tool-use가 아니라 이 계층 뒤의 server-side allowlist adapter로만 사용한다. Connector는 mbased permission을 직접 결정하지 않고 Outbound Egress Guard, protocol adapter policy, runtime source authorization boundary를 통과해야 한다. |
 | Knowledge Base | 목표 KB 통합 모델에서 문서/source item 1개에 대응하는 permission, retrieval, sync, lifecycle atom. DB에서는 `knowledge_bases` table을 사용한다. 현재 구현에는 여러 문서를 포함하는 legacy 의미가 남아 있으며, MBA-105 target baseline은 [ADR-0014](decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)와 [ADR-0017](decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)을 따른다. |
 | Knowledge Collection | 여러 document-level Knowledge Base를 묶는 grouping, routing, UX, operations 단위. Collection 권한은 하위 KB content retrieval 권한을 자동 부여하지 않는다. |
+| Standalone Knowledge Base | 어떤 Knowledge Collection에도 연결되지 않은 KB. Collection membership은 선택 사항이며 하나의 KB는 0개 이상의 Collection에 연결될 수 있다. |
 | Knowledge Skill | Workflow Builder가 LLM node의 RAG 옵션을 구성할 때 어떤 source-of-truth tier를 먼저 볼지, 어떤 collection/KB 후보를 고려할지, 어떤 query template과 검증 절차를 쓸지 정의하는 Knowledge 도메인의 provider-neutral 절차 지식 artifact. Skill metadata/body/resource도 권한과 redaction-safe boundary 안에 있으며, 실제 근거는 KB/document version/citation에서 가져온다. MBA-145 Agent Builder MVP는 Knowledge Skill body/checklist를 prompt context로 직접 로드하지 않는다. |
 | Skill Metadata | Skill 선택에 필요한 name, description, tag, owner, source tier, freshness 같은 요약 정보. 이 값 자체도 민감 metadata일 수 있어 organization/permission/display policy와 redaction/cap을 거친 safe field만 Workflow Builder, router, 실행 시점 RAG 경로에 제공한다. |
 | Skill Freshness | Skill이 참조하는 source-of-truth version, 업무 절차, eval 결과가 아직 유효한지를 나타내는 상태. 예: `fresh`, `stale`, `review_required`, `deprecated`. |

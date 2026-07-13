@@ -53,6 +53,7 @@ ADR 본문은 작성 시점의 결정 과정을 보존하는 기록 문서다. `
 | [ADR-0031](ADR-0031-mail-credential-reference-boundary.md) | Accepted | Mail credential reference 경계 | Organization-scoped Mail credential과 `read/use/manage` 권한을 두고 workflow graph에는 `credential_id`만 저장한다. Runtime은 명시 execution subject 기준으로 재검증하며 legacy inline password는 fail-closed한다. |
 | [ADR-0032](ADR-0032-mail-processing-gmail-draft-idempotency.md) | Accepted | Mail 처리 claim과 Gmail 답장 초안 멱등성 경계 | Workflow/source node 단위 durable message claim, no-send Gmail Draft adapter, outcome-unknown no-replay와 명시적 terminal acknowledgement node를 채택한다. |
 | [ADR-0033](ADR-0033-conversation-memory-contract-completion.md) | Accepted | Conversation Memory 계약 공백 보정 | Runtime provenance에 활성 control dependency를 포함하고 ProviderExecutionCapability authority를 LLM Credentials로 고정한다. 초기 session surface에서 Workflow Editor test를 제외하며 Access Grant V1은 standalone rotation/grace 없이 즉시 replacement/revoke한다. 현재 target 설계이며 legacy Memory 구현 완료를 의미하지 않는다. |
+| [ADR-0034](ADR-0034-knowledge-delegated-administration-and-rbac-boundary.md) | Accepted | Knowledge 위임 관리와 KB RBAC 경계 | MBA-231은 owner를 귀속 정보로 전환하고 KB object/property action, Team/User Knowledge domain delegation, self-escalation 차단, transaction-bound audit, public exposure·hard delete 조직 관리자 경계를 구현한다. |
 
 ## 참고 보고서
 

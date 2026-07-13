@@ -72,6 +72,7 @@ ADR-0014는 목표 구조와 gate 목록을 정의한다. ADR-0017은 MBA-105 �
 | Retry/dead-letter vocabulary | Outbox/recovery row는 status, lease/fencing, attempt, next retry, dead-letter, re-drive contract를 가진다. |
 | MCP incremental sync boundary | MCP/API source connector는 approved operation allowlist만 호출한다. Runtime source authorization은 batch 우선 primitive와 bounded fallback을 사용하고, Live-linked search는 requester-scoped 또는 opaque-ref-only flow만 허용한다. |
 | Content safety and parser isolation | External source content는 egress guard 이후에도 untrusted다. File type allowlist, active content 차단, archive cap, parser sandbox, scan timeout/unknown fail-closed를 redacted canonical text 생성 전에 적용한다. |
+| Knowledge delegated administration | MBA-231은 [ADR-0034](../../decisions/ADR-0034-knowledge-delegated-administration-and-rbac-boundary.md)의 KB object/property action, owner migration, Team/User domain permission, self-escalation 차단과 transaction-bound audit를 사용한다. |
 
 ## Permission Helper 기준
 
@@ -85,6 +86,10 @@ Permission Helper는 DB permission row나 source ACL row를 router, Builder, LLM
 - content retrieval에 필요한 KB `use`.
 - source-managed KB의 fresh requester source authorization.
 - prompt construction, answer delta, citation preview, trace/audit summary 생성 전 final evidence policy.
+
+관리 API는 같은 helper/service 경계에서 KB `read`, `write`, `content_read`,
+`manage`와 organization-scoped Knowledge domain action을 평가한다. Domain action은
+retrieval helper의 KB `use`나 Collection `route` 결과에 합산하지 않는다.
 
 필수 helper output:
 
