@@ -30,6 +30,7 @@ import { PermissionRequestsTab } from '@/app/features/admin/components/Permissio
 import { SecurityAlertsTab } from '@/app/features/admin/components/SecurityAlertsTab';
 import { UsageTab } from '@/app/features/admin/components/UsageTab';
 import {
+  ADMIN_TAB_ITEMS,
   buildAdminTabUrl,
   isAdminTabVisible,
   parseAdminUrlState,
@@ -139,19 +140,6 @@ type ConfirmState = {
 type TeamEditorState =
   | { mode: 'create'; team?: undefined }
   | { mode: 'edit'; team: TeamResponse };
-
-const tabs: Array<{ key: AdminTab; label: string }> = [
-  { key: 'members', label: '멤버' },
-  { key: 'teams', label: '팀' },
-  { key: 'permissions', label: '권한' },
-  { key: 'permission-requests', label: '권한 신청' },
-  { key: 'usage', label: '비용' },
-  { key: 'credentials', label: 'LLM Credentials' },
-  { key: 'knowledge', label: '지식 기반' },
-  { key: 'security-alerts', label: '보안 알림' },
-  { key: 'audit', label: '감사 로그' },
-  { key: 'organization', label: '조직 설정' },
-];
 
 const PAGE_SIZE = 20;
 const AUTH_STATES: OrganizationAuthState[] = ['member', 'manager'];
@@ -1091,7 +1079,7 @@ export default function AdminConsolePage() {
 
           <div className="border-b border-slate-200">
             <nav className="-mb-px flex gap-5 overflow-x-auto">
-              {tabs
+              {ADMIN_TAB_ITEMS
                 .filter((tab) =>
                   isAdminTabVisible(
                     tab.key,
@@ -1199,44 +1187,47 @@ export default function AdminConsolePage() {
             />
           )}
           {activeTab === 'permissions' && (
-            <PermissionsTab
-              resourceType={permissionResourceType}
-              onResourceTypeChange={setPermissionResourceType}
-              workflowOptions={workflowOptions}
-              selectedWorkflowId={selectedWorkflowId}
-              onSelectedWorkflowIdChange={setSelectedWorkflowId}
-              knowledgeBases={knowledgeBases}
-              selectedKnowledgeBaseId={selectedKnowledgeBaseId}
-              onSelectedKnowledgeBaseIdChange={setSelectedKnowledgeBaseId}
-              credentials={credentials}
-              selectedCredentialId={selectedCredentialId}
-              onSelectedCredentialIdChange={setSelectedCredentialId}
-              mailCredentials={mailCredentials}
-              selectedMailCredentialId={selectedMailCredentialId}
-              onSelectedMailCredentialIdChange={setSelectedMailCredentialId}
-              activeTeams={activeTeams}
-              activeMembers={activeMembers}
-              granteeType={permissionGranteeType}
-              onGranteeTypeChange={setPermissionGranteeType}
-              granteeId={permissionGranteeId}
-              onGranteeIdChange={setPermissionGranteeId}
-              authState={permissionAuthState}
-              onAuthStateChange={setPermissionAuthState}
-              permissionList={selectedPermissionList}
-              actionPending={actionPending}
-              onGrant={grantPermission}
-              onRevoke={(resourceType, granteeType, granteeId, label) =>
-                openConfirm({
-                  title: '권한을 회수할까요?',
-                  description: '선택한 대상의 resource 권한이 제거됩니다.',
-                  confirmLabel: '회수',
-                  tone: 'danger',
-                  details: [label],
-                  onConfirm: () =>
-                    revokePermission(resourceType, granteeType, granteeId),
-                })
-              }
-            />
+            <div className="flex flex-col gap-6">
+              <PermissionsTab
+                resourceType={permissionResourceType}
+                onResourceTypeChange={setPermissionResourceType}
+                workflowOptions={workflowOptions}
+                selectedWorkflowId={selectedWorkflowId}
+                onSelectedWorkflowIdChange={setSelectedWorkflowId}
+                knowledgeBases={knowledgeBases}
+                selectedKnowledgeBaseId={selectedKnowledgeBaseId}
+                onSelectedKnowledgeBaseIdChange={setSelectedKnowledgeBaseId}
+                credentials={credentials}
+                selectedCredentialId={selectedCredentialId}
+                onSelectedCredentialIdChange={setSelectedCredentialId}
+                mailCredentials={mailCredentials}
+                selectedMailCredentialId={selectedMailCredentialId}
+                onSelectedMailCredentialIdChange={setSelectedMailCredentialId}
+                activeTeams={activeTeams}
+                activeMembers={activeMembers}
+                granteeType={permissionGranteeType}
+                onGranteeTypeChange={setPermissionGranteeType}
+                granteeId={permissionGranteeId}
+                onGranteeIdChange={setPermissionGranteeId}
+                authState={permissionAuthState}
+                onAuthStateChange={setPermissionAuthState}
+                permissionList={selectedPermissionList}
+                actionPending={actionPending}
+                onGrant={grantPermission}
+                onRevoke={(resourceType, granteeType, granteeId, label) =>
+                  openConfirm({
+                    title: '권한을 회수할까요?',
+                    description: '선택한 대상의 resource 권한이 제거됩니다.',
+                    confirmLabel: '회수',
+                    tone: 'danger',
+                    details: [label],
+                    onConfirm: () =>
+                      revokePermission(resourceType, granteeType, granteeId),
+                  })
+                }
+              />
+              <PermissionRequestsTab members={members} />
+            </div>
           )}
           {activeTab === 'credentials' && (
             <CredentialsTab
@@ -1274,9 +1265,6 @@ export default function AdminConsolePage() {
                 selectAdminTab('permissions');
               }}
             />
-          )}
-          {activeTab === 'permission-requests' && (
-            <PermissionRequestsTab members={members} />
           )}
           {activeTab === 'usage' && <UsageTab />}
           {activeTab === 'security-alerts' &&

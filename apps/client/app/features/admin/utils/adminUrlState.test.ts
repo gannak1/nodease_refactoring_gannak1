@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ADMIN_TAB_ITEMS,
   buildAdminTabUrl,
   isAdminTabVisible,
   parseAdminUrlState,
@@ -40,6 +41,24 @@ describe('parseAdminUrlState', () => {
     expect(state.alertId).toBeNull();
     expect(state.notice).toBe('알림을 찾을 수 없습니다.');
     expect(state.normalizedQuery?.toString()).toBe('tab=security-alerts');
+  });
+
+  it('기존 권한 신청 주소는 통합된 권한 탭으로 정규화한다', () => {
+    const state = parseAdminUrlState(
+      new URLSearchParams('tab=permission-requests'),
+    );
+
+    expect(state.tab).toBe('permissions');
+    expect(state.normalizedQuery?.toString()).toBe('tab=permissions');
+  });
+});
+
+describe('ADMIN_TAB_ITEMS', () => {
+  it('권한 신청 메뉴를 제거하고 권한 메뉴만 제공한다', () => {
+    expect(ADMIN_TAB_ITEMS).toContainEqual({ key: 'permissions', label: '권한' });
+    expect(ADMIN_TAB_ITEMS.map(({ key }) => String(key))).not.toContain(
+      'permission-requests',
+    );
   });
 });
 
