@@ -26,15 +26,18 @@ import { apiClient } from '@/lib/apiClient';
 import { ACTIVE_ORGANIZATION_CHANGED_EVENT } from '@/lib/activeOrganization';
 import { AdminSummaryCards } from '@/app/features/admin/components/AdminSummaryCards';
 import { AuditSearchTab } from '@/app/features/admin/components/AuditSearchTab';
+import { OrganizationStructureSwitch } from '@/app/features/admin/components/OrganizationStructureSwitch';
 import { PermissionRequestsTab } from '@/app/features/admin/components/PermissionRequestsTab';
 import { SecurityAlertsTab } from '@/app/features/admin/components/SecurityAlertsTab';
 import { UsageTab } from '@/app/features/admin/components/UsageTab';
 import {
   ADMIN_TAB_ITEMS,
   buildAdminTabUrl,
+  buildOrganizationStructureViewUrl,
   isAdminTabVisible,
   parseAdminUrlState,
   type AdminTab,
+  type OrganizationStructureView,
 } from '@/app/features/admin/utils/adminUrlState';
 import { authApi } from '@/app/features/auth/api/authApi';
 import { organizationApi } from '@/app/features/organization/api/organizationApi';
@@ -188,6 +191,7 @@ export default function AdminConsolePage() {
     [searchParamsString],
   );
   const [activeTab, setActiveTab] = useState<AdminTab>(adminUrlState.tab);
+  const organizationView = adminUrlState.organizationView || 'members';
   const [organization, setOrganization] = useState<OrganizationResponse | null>(
     null,
   );
@@ -244,17 +248,28 @@ export default function AdminConsolePage() {
     );
   };
 
+  const selectOrganizationView = (view: OrganizationStructureView) => {
+    router.push(
+      buildOrganizationStructureViewUrl(
+        pathname,
+        new URLSearchParams(searchParamsString),
+        view,
+      ),
+      { scroll: false },
+    );
+  };
+
   useEffect(() => {
     if (
       organization &&
       !isAdminTabVisible(activeTab, organization.is_manager === true)
     ) {
-      setActiveTab('members');
+      setActiveTab('organization-structure');
       router.replace(
         buildAdminTabUrl(
           pathname,
           new URLSearchParams(searchParamsString),
-          'members',
+          'organization-structure',
         ),
         { scroll: false },
       );
@@ -1102,7 +1117,17 @@ export default function AdminConsolePage() {
             </nav>
           </div>
 
-          {activeTab === 'members' && (
+          {activeTab === 'organization-structure' && (
+            <OrganizationStructureSwitch
+              view={organizationView}
+              memberCount={members.length}
+              teamCount={teams.length}
+              onChange={selectOrganizationView}
+            />
+          )}
+
+          {activeTab === 'organization-structure' &&
+            organizationView === 'members' && (
             <MembersTab
               members={filteredMembers}
               page={memberPage}
@@ -1152,8 +1177,9 @@ export default function AdminConsolePage() {
                 })
               }
             />
-          )}
-          {activeTab === 'teams' && (
+            )}
+          {activeTab === 'organization-structure' &&
+            organizationView === 'teams' && (
             <TeamsTab
               teams={filteredTeams}
               page={teamPage}
@@ -1185,7 +1211,7 @@ export default function AdminConsolePage() {
               }
               onOpenTeam={setSelectedTeamId}
             />
-          )}
+            )}
           {activeTab === 'permissions' && (
             <div className="flex flex-col gap-6">
               <PermissionsTab
