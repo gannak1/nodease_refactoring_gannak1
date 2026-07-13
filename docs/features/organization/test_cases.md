@@ -156,6 +156,12 @@ Status: Draft
 | ORG-TC-E031 | Security Alert item은 Admin deep link로 이동해야 한다. | Overlay 안에서 lifecycle mutation을 하거나 잘못된 tab으로 이동한다. | Overlay close 후 `tab=security-alerts&alertId=<uuid>` 이동. |
 | ORG-TC-E032 | active organization 전환과 manager 권한 회수는 alert cache를 제거해야 한다. | 이전 조직 badge/detail이 새 scope에 남는다. | 이전 summary 제거 후 권한 있는 새 scope만 재조회. |
 | ORG-TC-E033 | SettingsPage는 역할별 Access/LLM Credentials tab만 유지하고 Activity를 제거해야 한다. | manager/member에게 잘못된 tab이 보이거나 초기 load, refresh, permission grant에서 `/users/me/audit-logs`를 요청한다. | manager는 Access/LLM Credentials, member는 LLM Credentials만 표시하고 Activity UI와 audit 요청은 없다. |
+| ORG-TC-E034 | Admin 상위 tab은 별도 `멤버`, `팀` 대신 `조직 구성` 하나를 제공해야 한다. | 상위 tab bar에 `멤버` 또는 `팀`이 별도 항목으로 남거나 `조직 구성`이 없다. | `조직 구성` 하나만 표시. |
+| ORG-TC-E035 | 조직 구성의 기본 보기는 member 목록이어야 한다. | `view`가 없거나 유효하지 않을 때 team 또는 빈 화면이 표시된다. | member 보기 선택, member 목록 전체 너비 표시. |
+| ORG-TC-E036 | 조직 구성 deep link는 `view=members|teams` 선택을 복원해야 한다. | 새로고침 또는 history 이동 뒤 다른 보기가 선택된다. | canonical URL의 보기와 선택 상태/목록이 일치. |
+| ORG-TC-E037 | 기존 `tab=members|teams` deep link는 대응하는 조직 구성 URL로 정규화해야 한다. | legacy URL이 빈 화면, 기본 member 오판 또는 별도 legacy tab을 표시한다. | `tab=organization-structure&view=<legacy-value>`로 교체하고 같은 목록 표시. |
+| ORG-TC-E038 | member/team 보기 전환은 두 목록을 동시에 렌더링하거나 각 보기의 목록 상태를 초기화하지 않아야 한다. | 좌우/상하로 두 목록이 동시에 보이거나 전환 후 검색/filter/page가 초기화된다. | 선택한 목록 하나만 전체 너비로 표시하고 보기별 상태 유지. |
+| ORG-TC-E039 | 조직 구성 전환 control은 작은 화면에서도 overflow 없이 compact하게 표시되고 keyboard focus와 선택 상태를 제공해야 한다. | control이 화면 전체를 불필요하게 늘리거나 잘리며, button focus 또는 `aria-pressed` 상태가 없다. | 내용 너비의 동일 column button, native keyboard focus, 선택 button의 `aria-pressed=true`. |
 
 ## Permission Tests
 

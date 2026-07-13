@@ -41,6 +41,13 @@ Verified Against: feature/mba-127 @ 258b26a9
   - manager가 아니면 `관리 권한 없음` 상태를 표시한다.
   - manager면 member/team/permission 데이터를 로드하고 tab UI로 관리한다.
   - LLM credential, knowledge, audit 관련 tab도 포함한다. MBA-176에서는 permission controls에 Knowledge Base team/user direct grant/revoke를 포함한다.
+- MBA-141 목표 계약:
+  - 상단의 `멤버`, `팀` tab을 `조직 구성` tab 하나로 통합한다.
+  - `조직 구성` 안에서 `멤버`와 `팀` 보기를 전환하며 한 번에 선택한 목록 하나만 전체 너비로 렌더링한다.
+  - 기본 보기는 `멤버`다.
+  - canonical URL은 `?tab=organization-structure&view=members|teams`다.
+  - 기존 `?tab=members`, `?tab=teams` deep link는 각각 대응하는 canonical URL로 정규화한다.
+  - member와 team의 검색, filter, pagination state는 서로 독립적으로 유지한다.
 
 ### SettingsPage
 
@@ -134,10 +141,34 @@ Verified Against: feature/mba-127 @ 258b26a9
   - organization 이름 meta
   - refresh button
 
+### OrganizationStructureTab (MBA-141 목표 계약)
+
+- 출처: `apps/client/app/dashboard/admin/page.tsx`
+- 책임: organization member와 team 관리 진입점을 상위 `조직 구성` tab 하나로 묶고 내부 보기를 전환한다.
+- 렌더링:
+  - `멤버 <count>`와 `팀 <count>` 전환 button
+  - count는 active 수가 아니라 각 API가 반환한 전체 member/team 목록 row 수다. active 수는 기존 상단 summary card가 별도로 표시한다.
+  - 선택된 button의 명시적인 selected/pressed 상태
+  - 선택한 보기의 `MembersTab` 또는 `TeamsTab` 하나
+- 반응형:
+  - 전환 button 묶음은 모든 화면에서 내용에 맞는 compact 너비를 사용한다.
+  - 두 button은 같은 너비를 유지하고 아래 목록은 계속 전체 너비를 사용한다.
+- URL 상태:
+  - `tab=organization-structure&view=members`: member 보기
+  - `tab=organization-structure&view=teams`: team 보기
+  - `view`가 없거나 지원하지 않는 값이면 `members`를 기본값으로 사용한다.
+  - legacy `tab=members|teams`는 의미가 같은 canonical URL로 교체한다.
+- 상태:
+  - 보기 전환과 browser history 이동은 URL 상태를 따른다.
+  - member/team 검색, filter, pagination은 각 보기별 state를 유지하며 다른 보기로 전환해도 초기화하지 않는다.
+- 제한:
+  - 상위 tab bar에 별도 `멤버`, `팀` 항목을 함께 노출하지 않는다.
+  - 프론트 노출은 기존 manager gate를 유지하고 API가 최종 권한 경계다.
+
 ### MembersTab
 
 - 출처: `apps/client/app/dashboard/admin/page.tsx`
-- 책임: organization member 목록을 검색/필터/페이지네이션하고 초대, 상태 변경, 권한 변경, 제거 action을 제공한다.
+- 책임: `조직 구성`의 member 보기로서 organization member 목록을 검색/필터/페이지네이션하고 초대, 상태 변경, 권한 변경, 제거 action을 제공한다.
 - 렌더링:
   - `멤버` panel
   - `초대` button
@@ -208,7 +239,7 @@ Verified Against: feature/mba-127 @ 258b26a9
 ### TeamsTab
 
 - 출처: `apps/client/app/dashboard/admin/page.tsx`
-- 책임: team 목록을 검색/필터/페이지네이션하고 team 생성, 수정, 비활성화, 상세 side panel 진입을 제공한다.
+- 책임: `조직 구성`의 team 보기로서 team 목록을 검색/필터/페이지네이션하고 team 생성, 수정, 비활성화, 상세 side panel 진입을 제공한다.
 - 렌더링:
   - `팀` panel
   - `팀 생성` button
