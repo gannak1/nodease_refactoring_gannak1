@@ -95,9 +95,10 @@ child KB lifecycle은 독립적으로 평가한다.
 
 KB는 active lifecycle이고 `sync_state != "source_deleted"`여야 한다. 기본 readiness는
 active `DocumentVersion.status == "ready"`다. 전환기에는 completed document에 연결된
-unversioned retrieval-visible chunk가 있는 legacy KB를 기존 문서 계약대로 허용할 수
-있다. Pre-finalized chunk, non-ready version 또는 document row 존재만으로 ready를
-추정하지 않는다.
+unversioned chunk가 있고 `KnowledgeBase.active_document_version_id IS NULL`인 legacy
+KB만 현재 retrieval-visible 계약에 따라 허용할 수 있다. Active pointer가 non-ready
+version을 가리키는 동안에는 unversioned chunk로 fallback하지 않는다. Pre-finalized
+chunk, non-ready version 또는 document row 존재만으로 ready를 추정하지 않는다.
 
 ### Materialized source authorization
 
