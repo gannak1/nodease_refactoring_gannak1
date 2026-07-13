@@ -49,9 +49,12 @@ class TestPermissionDeniedAudit(unittest.TestCase):
 
         with patch("apps.gateway.main.record_audit") as record_audit:
             response = self.client.post(
-                "/api/v1/hooks/test-slug?token=wrong-token",
+                "/api/v1/hooks/test-slug",
                 json={},
-                headers={"X-Request-ID": "req-test"},
+                headers={
+                    "Authorization": "Bearer wrong-token",
+                    "X-Request-ID": "req-test",
+                },
             )
 
         self.assertEqual(response.status_code, 403)

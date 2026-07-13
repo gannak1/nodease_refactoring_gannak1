@@ -6,7 +6,6 @@ import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Dict
-from urllib.parse import unquote_to_bytes
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
@@ -28,6 +27,10 @@ from apps.gateway.application.webhook_ingress.errors import (
 )
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.auth.permissions import ensure_workflow_permission
+from apps.gateway.middleware.webhook_query_redaction import (
+    WEBHOOK_QUERY_TOKEN_PRESENT_STATE_KEY,
+    webhook_query_token_present,
+)
 from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
 from apps.shared.celery_app import celery_app
 from apps.shared.db.models.app import App
@@ -236,18 +239,6 @@ def _capture_session_for_request(
     return session
 
 
-def _raw_query_key_present(raw_query: bytes, expected_key: bytes) -> bool:
-    for field in raw_query.split(b"&"):
-        raw_key = field.partition(b"=")[0].replace(b"+", b" ")
-        try:
-            decoded_key = unquote_to_bytes(raw_key)
-        except Exception:
-            continue
-        if decoded_key == expected_key:
-            return True
-    return False
-
-
 def _raw_header_values(request: Request, expected_name: bytes) -> tuple[bytes, ...]:
     return tuple(
         value
@@ -258,8 +249,12 @@ def _raw_header_values(request: Request, expected_name: bytes) -> tuple[bytes, .
 
 def _webhook_request_metadata(request: Request) -> WebhookIngressRequestMetadata:
     raw_query = request.scope.get("query_string", b"")
+    state = request.scope.get("state", {})
     return WebhookIngressRequestMetadata(
-        query_token_present=_raw_query_key_present(raw_query, b"token"),
+        query_token_present=bool(
+            state.get(WEBHOOK_QUERY_TOKEN_PRESENT_STATE_KEY, False)
+        )
+        or webhook_query_token_present(raw_query),
         authorization_headers=_raw_header_values(request, b"authorization"),
         webhook_secret_headers=_raw_header_values(request, b"x-webhook-secret"),
         content_type_headers=_raw_header_values(request, b"content-type"),

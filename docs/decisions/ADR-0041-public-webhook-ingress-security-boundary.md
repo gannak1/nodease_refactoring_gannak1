@@ -22,6 +22,8 @@ URL query에 포함된 secret은 browser history, reverse proxy와 access log, m
 
 Public webhook credential은 `Authorization: Bearer <secret>`을 primary로, `X-Webhook-Secret: <secret>`을 compatibility source로 사용한다. 한 요청에는 정확히 하나의 source만 허용한다. Query에 `token` key가 있으면 값이나 유효 header의 존재와 관계없이 `400 webhook.query_secret_not_supported`로 거부하고 query 값을 읽거나 비교·기록하지 않는다. 두 header source 또는 같은 credential header occurrence가 중복되면 `400 webhook.credential_ambiguous`로 거부한다.
 
+Gateway ASGI transport middleware는 outermost user middleware로 등록한다. `/api/v1/hooks` 경로에 도달한 query에서 exact 또는 percent-encoded `token` key field를 다른 middleware와 Uvicorn access logging 전에 제거한다. 값은 decode하거나 request state에 보존하지 않고 boolean presence marker만 남긴다. Public trigger endpoint는 이 marker로 기존 400 rejection을 유지한다. 다른 query field는 capture/provider contract를 깨뜨리지 않도록 원래 bytes로 보존한다. Endpoint를 직접 호출하는 test와 대체 ASGI host를 위해 endpoint adapter도 남아 있는 raw query의 token key를 fail-closed하게 확인한다.
+
 Credential candidate는 1~512 ASCII bytes로 제한하고 App의 현재 active secret과 constant-time 비교한다. Missing, malformed, oversized, non-ASCII, invalid credential과 invalid server-side verifier state는 동일한 `403 webhook.authentication_failed`로 fail-closed한다. MBA-93은 secret issuance, response removal 또는 rotation schema를 추가하지 않으며 해당 lifecycle은 MBA-247이 소유한다.
 
 Payload는 `application/json` 또는 `application/*+json`만 허용한다. `charset`은 생략하거나 UTF-8이어야 하고 `Content-Encoding`은 생략하거나 단일 `identity`여야 한다. Duplicate/malformed media metadata와 압축 body는 `415 webhook.payload.unsupported_media_type`으로 거부한다.
@@ -43,7 +45,7 @@ Root JSON은 현재 Workflow Engine `Dict[str, Any]` input contract에 맞춰 ob
 
 FastAPI/SQLAlchemy에 의존하지 않는 policy와 typed error를 `apps/gateway/application/webhook_ingress/`에 두고 ASGI stream, HTTP mapping과 기존 orchestration은 endpoint adapter가 담당한다. 이번 결정은 기존 capture, deployment, budget, publish orchestration 전체를 재작성하지 않는다.
 
-Repository Nginx의 `/api/v1/hooks/` 경로는 request target과 credential header를 access log에 남기지 않고 `client_max_body_size 1m`, `client_body_timeout 5s`를 적용한다. Nginx timeout은 연속 body read 사이 idle timeout이며 Gateway의 전체 deadline을 대체하지 않는다. Production ALB/Ingress의 실제 logging과 body guard는 rollout 전 별도 운영 검증을 요구한다.
+Repository Nginx의 `/api/v1/hooks/` 경로는 access log를 끄고 location error log도 억제한다. Nginx의 413 같은 edge rejection은 기본 error log에 query를 포함한 request target을 기록할 수 있기 때문이다. 이 경로에는 `client_max_body_size 1m`, `client_body_timeout 5s`, `proxy_request_buffering off`를 적용한다. Request body를 Gateway로 즉시 stream해 application deadline이 첫 upstream read부터 적용되게 한다. Nginx timeout은 연속 body read 사이 idle timeout이며 Gateway의 전체 deadline을 대체하지 않는다. Production ALB/Ingress의 실제 logging과 body guard는 rollout 전 별도 운영 검증을 요구한다. Webhook edge 관측은 raw request target을 남기지 않는 Gateway의 status/metric/audit으로 수행한다.
 
 ## Rationale
 
@@ -65,6 +67,8 @@ Repository Nginx의 `/api/v1/hooks/` 경로는 request target과 credential head
 ## Affected Files
 
 - `apps/gateway/application/webhook_ingress/`
+- `apps/gateway/middleware/webhook_query_redaction.py`
+- `apps/gateway/main.py`
 - `apps/gateway/api/deps.py`
 - `apps/gateway/api/v1/endpoints/webhook.py`
 - `apps/client/app/features/workflow/components/deployment/SuccessStep.tsx`
@@ -78,3 +82,4 @@ Repository Nginx의 `/api/v1/hooks/` 경로는 request target과 credential head
 - MBA-94는 공개·고비용 endpoint의 분산 rate limit을 별도로 도입한다.
 - Provider signature 요구가 생기면 raw-byte canonicalization, timestamp skew, event identity와 retention을 provider별 ADR에서 정의한다.
 - Production ingress가 query/header safe logging과 bounded body guard를 제공하지 못하면 rollout blocker 또는 별도 infrastructure change로 다룬다.
+- ASGI server 또는 access logger를 교체할 때는 middleware가 변경한 `scope["query_string"]`을 logger가 사용하는지 synthetic marker 통합 테스트로 다시 확인한다.

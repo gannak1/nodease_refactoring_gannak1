@@ -172,6 +172,8 @@ Content-Type: application/json
 
 한 요청에는 정확히 하나의 credential source만 사용한다. Bearer scheme은 case-insensitive하게 인식하지만 credential 값을 trim하거나 정규화하지 않는다. Credential은 1~512 ASCII bytes로 제한한다. Query `token` key가 있으면 값과 header 유효 여부를 확인하지 않고 요청 전체를 거부하며 다른 provider-owned query parameter는 금지하지 않는다.
 
+Gateway transport는 `/api/v1/hooks` query에서 exact 또는 percent-encoded `token` field를 Uvicorn access logging 전에 제거하고 boolean presence만 endpoint에 전달한다. Token 값은 decode하거나 request state에 보존하지 않는다. 다른 query field는 원래 bytes로 보존한다.
+
 Allowed payload media type은 case-insensitive `application/json` 또는 `application/*+json`이다. Well-formed non-charset parameter는 허용하며 `charset`이 있으면 UTF-8이어야 한다. `Content-Encoding`은 누락 또는 단일 `identity`만 허용한다.
 
 | Limit | Value | Definition |
@@ -273,7 +275,7 @@ Public webhook ingress errors preserve the FastAPI `{ "detail": "..." }` envelop
 | Ingress processing deadline exceeded | 408 | `webhook.payload.timeout` |
 | Invalid length, disconnect, UTF-8/JSON or complexity | 400 | `webhook.payload.invalid` |
 
-App not found, active deployment/type/runtime policy and workflow budget failures keep their existing status/envelope. Authentication and payload failure response/logging must not include query/header secret, raw URL/query, raw body, parsed payload or parser exception text.
+App not found, active deployment/type/runtime policy and workflow budget failures keep their existing status/envelope. Authentication and payload failure response/logging must not include query/header secret, raw URL/query, raw body, parsed payload or parser exception text. Repository Nginx와 Gateway/Uvicorn access-log path 모두 synthetic query marker가 남지 않아야 한다.
 
 Blocking preflight failure:
 

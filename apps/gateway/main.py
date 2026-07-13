@@ -48,6 +48,9 @@ from apps.gateway.core.http_security import (
     resolve_session_signing_secret,
 )
 from apps.gateway.lifespan import lifespan  # Import lifespan from module
+from apps.gateway.middleware.webhook_query_redaction import (
+    WebhookQueryRedactionMiddleware,
+)
 from apps.shared.audit import record_audit
 from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.context import (
@@ -160,6 +163,10 @@ app.add_middleware(
     ),
     https_only=os.getenv("NODE_ENV") == "production",  # 배포 환경에서는 Secure 쿠키
 )
+
+# Keep this transport sanitizer outermost so earlier middleware failures cannot
+# expose legacy webhook query credentials through the ASGI server access log.
+app.add_middleware(WebhookQueryRedactionMiddleware)
 
 # 정적 파일 서빙 (widget.js) - 옵션
 STATIC_DIR = BASE_DIR / "static"

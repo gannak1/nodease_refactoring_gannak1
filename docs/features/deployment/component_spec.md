@@ -25,11 +25,11 @@ Verified Against: `feature/mba-234 @ 647913b9`
 
 ### Public Webhook Components
 
-- Deployment success UI와 Webhook trigger node panel은 secret을 query에 결합한 URL을 생성·복사하지 않는다. Endpoint URL과 secret을 분리해 표시하고 Bearer primary 또는 `X-Webhook-Secret` header 설정을 안내한다.
+- Deployment success UI와 Webhook trigger node panel은 secret을 query에 결합한 URL을 생성·복사하지 않는다. Endpoint URL과 secret을 분리해 표시하고 primary 방식인 `Authorization: Bearer` header 설정을 안내한다. `X-Webhook-Secret`은 기존 caller 호환을 위한 API 계약으로만 유지하며 UI에서 권장하지 않는다.
 - Secret을 URL, `localStorage`, `sessionStorage`, analytics, toast 또는 Client log에 넣지 않는다. MBA-247 전까지 기존 response에서 전달되는 secret 표시 동작은 호환 범위로 남지만 query-integrated URL은 제공하지 않는다.
 - Gateway endpoint는 ASGI/HTTP inbound adapter로 raw header occurrence와 query key presence를 추출하고 bounded stream을 수신한다. Framework-independent `application/webhook_ingress` policy가 credential/media/JSON limits를 판정하며 endpoint는 typed error를 static HTTP code로 mapping한다.
 - Existing capture, active deployment/runtime policy, budget와 background publish orchestration은 ingress validation 뒤의 transitional path로 유지한다. Client validation은 보안 판단이 아니며 Gateway를 우회할 수 없다.
-- Repository Nginx는 `/api/v1/hooks/` 전용 location에서 access log를 비활성화하거나 query/header를 포함하지 않는 동등한 format을 사용하고 1 MiB/5초 idle body guard를 적용한다.
+- Gateway의 outermost ASGI middleware는 `/api/v1/hooks` query에서 `token` field를 값 보존 없이 제거하고 boolean marker로 400 rejection을 유지해 Uvicorn access log 노출을 막는다. Repository Nginx는 `/api/v1/hooks/` 전용 location의 access/error log를 억제하고 1 MiB/5초 idle body guard와 request streaming을 적용한다.
 
 ### Internal Schedule Dispatch Components
 
