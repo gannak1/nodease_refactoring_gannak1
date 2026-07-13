@@ -1,13 +1,17 @@
 # Deployment Test Cases
 
 Status: Draft
-Verified Against: TBD
+Verified Against: `feature/mba-233 @ 90da2f84`
 
 ## Unit Tests
 
 - Deployment application package는 FastAPI, SQLAlchemy, DB model, concrete adapter/service/composition module을 import하지 않는다.
 - Pure preflight use case는 repository port snapshot만으로 결과를 만들고 active blocker는 HTTPException이 아닌 typed `DeploymentPreflightBlocked`를 반환한다. Compatibility facade만 이를 기존 409 envelope으로 mapping한다.
-- Preflight graph scanner는 LLM node RAG 옵션의 explicit/materialized KB 후보를 찾고 unsupported shape는 safe warning 또는 blocked reason으로 낮춘다.
+- Preflight graph scanner는 shared strict parser로 root/embedded LLM node의 direct KB와 Collection 목록을 검사한다. Malformed shape와 20개 초과는 active/inactive 여부와 무관한 fixed non-downgradable blocker다.
+- Embedded `subGraph` 순회는 반복 방식이며 호출 스택보다 깊은 입력에서도 같은 Collection audience policy를 적용한다.
+- Selected Collection repository projection은 selected IDs, active organization, active lifecycle로 제한하고 same-organization active KB aggregate만 계산한다. Child ID를 application result로 반환하거나 Collection별 N+1 query를 만들지 않는다.
+- Anonymous-public preflight는 private Collection과 source-managed Collection/member를 fail-closed하고, public manual Collection은 통과시킨다. Missing/inactive/cross-org는 하나의 generic unavailable code로 처리한다.
+- Candidate budget 가능성은 bucket/boolean warning으로만 반환되고 active create를 차단하지 않는다. Client success step은 warning을 text status로 표시한다.
 - Runtime audience resolver는 `api`, `webapp`, `widget`, `chatbot`, `mcp`, `schedule`, `webhook`를 anonymous public-only로 판정한다.
 - `workflow_node` direct public/API/webhook/authenticated run execution is rejected. Subworkflow audience resolver는 parent execution subject를 상속하고, subject가 없으면 anonymous public-only로 판정한다.
 - Workflow-node target resolver는 `workflowNode.data.appId`를 사용하고 `workflowId`로 target app을 찾지 않는다.
@@ -16,6 +20,7 @@ Verified Against: TBD
 - Workflow-node target unavailable, cycle, depth cap 초과는 `workflow_node_inherited` audience나 inactive preview에서도 warning으로 낮추지 않고 blocked로 유지한다.
 - Scheduler service는 active `type=schedule` deployment만 로드/실행하고, non-schedule deployment id로 job이 호출되면 dispatch하지 않는다.
 - Preflight response sanitizer는 hidden KB id/name/path, exact denied count, raw source metadata, raw exception을 제거한다.
+- Preflight response/409/public graph projection은 Collection/child ID, label, membership, exact count와 두 Knowledge reference 배열을 노출하지 않는다.
 - Central deployment runtime policy matrix는 public info, authenticated run/run-info, API secret run, webhook run, schedule run, workflow-node child run surface별 허용 deployment type을 고정하고 unknown surface/type을 fail-closed로 거부한다. 기본 policy는 불변 객체이며 composition dependency로 교체 주입할 수 있지만 환경변수나 전역 mutation으로 확장할 수 없다.
 - Schedule occurrence key/state/reason/settings helper는 DB/framework 없이 테스트하고 naive datetime, unknown state/reason, mutable settings input을 fail-closed한다.
 - Schedule application use case는 access-management command/model/port/recorder와 FastAPI/Celery/SQLAlchemy query를 import하지 않는다. Schedule 전용 audit port를 사용하고 concrete Gateway UnitOfWork만 composition에서 주입한다.
@@ -98,6 +103,7 @@ Verified Against: TBD
 - Preflight preview는 workflow deploy/manage 권한 없이는 호출할 수 없다.
 - Organization member이지만 KB `use` 권한이 없는 사용자의 private KB 후보는 authenticated run에서는 denied 또는 unavailable로 표시되고, anonymous deployment에서는 blocked로 표시된다.
 - Client-supplied `audience` hint는 create/activation의 server-derived audience 차단을 완화하지 못한다.
+- `authenticated_user` application override가 명시된 내부 use-case 테스트 외에는 public deployment service가 authenticated override를 전달하지 않는다.
 - System schedule의 LLM credential permission denial은 credential principal을 user audit actor로 사용하지 않고 system actor로 기록한다.
 - Terminal cleanup은 retention을 지난 일반 dead-letter와 검토 완료 `execution_outcome_unknown` claim을 정리하지만, `outcome_reviewed_at`이 null인 `execution_outcome_unknown` claim은 보존한다.
 - `disabled` mode는 BackgroundScheduler job 또는 legacy direct enqueue를 만들지 않는다. Schedule 실행이 필요한 환경은 drain 검증 없이 fallback하지 않고 `claim` mode activation 절차를 사용한다.
@@ -106,6 +112,9 @@ Verified Against: TBD
 
 - workflow-node target active deployment가 없으면 safe blocked/warning reason을 반환하고 target app hidden identity를 노출하지 않는다.
 - workflow-node 순환 또는 depth cap 초과는 safe blocked reason으로 닫는다.
+- 1,100단계 embedded subgraph도 recursive stack error 없이 검사하고 최하위 Collection blocker를 반환한다.
+- Direct-only, Collection-only, mixed preflight 결과는 기존 KB bucket을 보존하면서 additive Collection bucket/limit flag를 반환한다.
+- Warning-only preflight 뒤 create가 정확히 한 번 호출되고 성공 결과에 safe warning이 표시되며, blocked preflight 뒤에는 create가 호출되지 않는다.
 - workflow-node target이 현재 활성화 후보 app을 다시 참조하면 기존 active deployment가 아니라 candidate graph 기준으로 순환을 감지한다.
 - 일부 authorized KB의 operational failure는 Knowledge partial-result 정책으로만 표시하고 preflight permission denial과 섞지 않는다.
 - Conversation-capable activation preflight는 input/output mapping, node Memory policy, immutable deployment version/snapshot hash, contract/storage generation과 Worker capability 누락을 각각 fail-closed 한다.

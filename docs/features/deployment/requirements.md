@@ -2,6 +2,7 @@
 
 Status: Draft
 Related Features: workflow, llm-credentials, audit-tracing, knowledge, chatbot-deployment, conversation-memory
+Verified Against: `feature/mba-233 @ 90da2f84`
 
 ## Purpose
 
@@ -16,8 +17,9 @@ Webhook capture helper는 public webhook 실행 표면이 아니라 로그인한
 ## User Stories
 
 - 빌더로서, 배포를 활성화하기 전에 현재 workflow snapshot이 실제 실행 표면에서 사용할 수 없는 private KB를 참조하는지 알고 싶다.
+- 빌더로서, 직접 선택한 KB와 Collection을 함께 사용하더라도 배포 전에 Collection의 현재 lifecycle·공개 범위·source 정책과 후보 제한 가능성을 안전하게 확인하고 싶다.
 - 운영자로서, public/API/webhook/schedule/chatbot 실행에서 사용자 주체가 없을 때 private KB가 owner 권한으로 조용히 사용되지 않기를 원한다.
-- 감사자로서, 배포 실행 표면별로 RAG 접근 경계가 명시되어 있고 실패 시 hidden KB id/name/count가 노출되지 않기를 원한다.
+- 감사자로서, 배포 실행 표면별로 RAG 접근 경계가 명시되어 있고 실패 시 hidden KB/Collection/child id, name, exact count가 노출되지 않기를 원한다.
 
 ## Functional Requirements
 
@@ -74,6 +76,14 @@ Webhook capture helper는 public webhook 실행 표면이 아니라 로그인한
 - DEP-REQ-051 (Target Memory): Public `chatbot` activation은 public-only audience로 preflight하고 private KB 후보를 계속 차단해야 한다. 별도 authenticated internal Chatbot 기능은 public route의 audience나 optional authentication을 완화하는 방식이 아니라 별도 runtime policy, access permission과 deployment/session namespace를 가져야 한다.
 - DEP-REQ-052 (Target Memory): Public browser Chatbot의 exact Origin/embed/CSP allowlist는 deployment-owned versioned config여야 하며 client hint, wildcard 또는 environment fallback이 enforcement를 완화하지 않아야 한다. 이 config contract가 구현되기 전 browser session surface를 허용해서는 안 된다.
 - DEP-REQ-053 (Target Memory): Deployment runtime은 execution subject, credential principal, billing principal과 audit actor를 별도로 서버에서 파생해야 한다. App/deployment creator를 subject 또는 public audit actor로 합성하지 않아야 하며 Conversation Access Grant는 session 접근에만 사용해야 한다.
+- DEP-REQ-054 (MBA-233): Deployment preflight는 LLM node의 `knowledgeBases`와 `knowledgeCollections`를 동일한 shared strict parser로 검사한다. 각 목록은 최대 20개이며 canonical UUID와 허용된 display field shape만 받는다. malformed 또는 over-limit graph는 inactive preview에서도 warning으로 낮추지 않는 configuration blocker다.
+- DEP-REQ-055 (MBA-233): Preflight repository는 명시적으로 선택된 ID와 active organization에 한정해 active KB/Collection lifecycle을 검사한다. Anonymous-public surface는 private Collection을 차단하고, 별도 public source exposure primitive가 없는 동안 source-managed Collection 또는 active source-managed member가 있는 public Collection도 `source_public_exposure_required`로 차단한다.
+- DEP-REQ-056 (MBA-233): `workflow_node` preflight는 current owner/creator/credential을 subject로 합성하지 않고 inherited-subject warning을 반환한다. Embedded `subGraph`와 bound workflow-node target graph에도 같은 strict reference와 audience 규칙을 적용하며, embedded graph 순회는 비정상적인 깊이에서도 호출 스택에 의존하지 않는다.
+- DEP-REQ-057 (MBA-233): Candidate budget preflight는 selected Collection의 same-organization active member aggregate만 내부적으로 사용하고 child ID를 application result나 API에 반환하지 않는다. Direct configured count와 bounded aggregate가 runtime 후보 예산 20을 넘을 수 있으면 `knowledge_candidate_budget_limited` warning과 bucket/boolean만 반환한다. Collection overlap으로 인한 보수적 과대 경고는 허용하지만 exact unique/hidden count를 노출해서는 안 된다.
+- DEP-REQ-058 (MBA-233): `knowledge_candidate_budget_limited`는 non-blocking warning이다. Client는 active create를 계속하고 성공 화면에 fixed reason/action과 bucket 기반 경고를 text로 표시한다. `blocked` 결과에서는 create를 호출하지 않는다.
+- DEP-REQ-059 (MBA-233): Preflight 통과, Builder picker 결과, saved display label은 runtime capability가 아니다. Workflow Engine은 각 Knowledge-enabled LLM invocation에서 current execution audience로 candidate resolver를 다시 호출하고, 이후 revoke/lifecycle/membership/source 변경을 현재 상태로 반영한다.
+- DEP-REQ-060 (MBA-233): Public graph projection은 root와 embedded subgraph의 LLM node에서 `knowledgeBases`와 `knowledgeCollections`를 모두 제거한다. Preflight 응답과 409 envelope은 fixed reason/action, node type/id, count bucket과 제한 boolean만 포함하고 Collection/child identity, label, raw graph/source/exception을 포함하지 않는다.
+- DEP-REQ-061 (MBA-233): Client-supplied `audience`는 anonymous-public surface를 authenticated로 완화할 수 없다. `authenticated_user` override는 server-owned application boundary에서만 사용할 수 있고 현재 public deployment endpoint는 이를 전달하지 않는다.
 
 ## Runtime Audience Matrix
 
