@@ -1,17 +1,33 @@
 """Webhook 수신 및 캡처 엔드포인트"""
 
+import asyncio
 import logging
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Dict
+from urllib.parse import unquote_to_bytes
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
+from starlette.requests import ClientDisconnect
 
+from apps.gateway.api.deps import (
+    get_deployment_runtime_policy,
+    get_webhook_ingress_policy,
+)
+from apps.gateway.application.webhook_ingress import (
+    JsonObject,
+    WebhookIngressError,
+    WebhookIngressPolicy,
+    WebhookIngressRequestMetadata,
+)
+from apps.gateway.application.webhook_ingress.errors import (
+    PayloadInvalidError,
+    PayloadTimeoutError,
+)
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.auth.permissions import ensure_workflow_permission
-from apps.gateway.api.deps import get_deployment_runtime_policy
 from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
 from apps.shared.celery_app import celery_app
 from apps.shared.db.models.app import App
@@ -220,40 +236,70 @@ def _capture_session_for_request(
     return session
 
 
-def verify_webhook_auth(request: Request, app: App) -> bool:
-    """
-    다양한 Webhook 인증 방식을 순차적으로 검증
-
-    지원 방식:
-    1. Query Parameter: ?token=xxx
-    2. Authorization Header: Bearer xxx
-    3. Custom Header: X-Webhook-Secret: xxx
-
-    Args:
-        request: FastAPI Request 객체
-        app: App 모델 객체 (auth_secret 포함)
-
-    Returns:
-        True if authenticated, False otherwise
-    """
-    # 1. Query Parameter
-    token = request.query_params.get("token")
-    if token and token == app.auth_secret:
-        return True
-
-    # 2. Authorization Header (Bearer)
-    auth_header = request.headers.get("Authorization")
-    if auth_header and auth_header.startswith("Bearer "):
-        token = auth_header[7:]  # "Bearer " 제거
-        if token == app.auth_secret:
+def _raw_query_key_present(raw_query: bytes, expected_key: bytes) -> bool:
+    for field in raw_query.split(b"&"):
+        raw_key = field.partition(b"=")[0].replace(b"+", b" ")
+        try:
+            decoded_key = unquote_to_bytes(raw_key)
+        except Exception:
+            continue
+        if decoded_key == expected_key:
             return True
-
-    # 3. Custom Header (X-Webhook-Secret)
-    webhook_secret = request.headers.get("X-Webhook-Secret")
-    if webhook_secret and webhook_secret == app.auth_secret:
-        return True
-
     return False
+
+
+def _raw_header_values(request: Request, expected_name: bytes) -> tuple[bytes, ...]:
+    return tuple(
+        value
+        for name, value in request.scope.get("headers", ())
+        if name.lower() == expected_name
+    )
+
+
+def _webhook_request_metadata(request: Request) -> WebhookIngressRequestMetadata:
+    raw_query = request.scope.get("query_string", b"")
+    return WebhookIngressRequestMetadata(
+        query_token_present=_raw_query_key_present(raw_query, b"token"),
+        authorization_headers=_raw_header_values(request, b"authorization"),
+        webhook_secret_headers=_raw_header_values(request, b"x-webhook-secret"),
+        content_type_headers=_raw_header_values(request, b"content-type"),
+        content_encoding_headers=_raw_header_values(request, b"content-encoding"),
+        content_length_headers=_raw_header_values(request, b"content-length"),
+    )
+
+
+async def _read_webhook_payload(
+    request: Request,
+    ingress_policy: WebhookIngressPolicy,
+) -> JsonObject:
+    deadline = ingress_policy.start_deadline()
+    body = bytearray()
+    stream = request.stream().__aiter__()
+
+    while True:
+        timeout = ingress_policy.remaining_seconds(deadline)
+        try:
+            chunk = await asyncio.wait_for(anext(stream), timeout=timeout)
+        except StopAsyncIteration:
+            break
+        except TimeoutError:
+            raise PayloadTimeoutError() from None
+        except ClientDisconnect:
+            raise PayloadInvalidError() from None
+        except Exception:
+            raise PayloadInvalidError() from None
+
+        if not isinstance(chunk, (bytes, bytearray, memoryview)):
+            raise PayloadInvalidError()
+        ingress_policy.validate_actual_body_size(len(body) + len(chunk))
+        body.extend(chunk)
+
+    ingress_policy.ensure_within_deadline(deadline)
+    return ingress_policy.parse_json(bytes(body), deadline)
+
+
+def _raise_webhook_http_error(error: WebhookIngressError) -> None:
+    raise HTTPException(status_code=error.status_code, detail=error.code) from None
 
 
 def run_webhook_workflow(
@@ -308,6 +354,10 @@ async def receive_webhook(
         DeploymentRuntimePolicy,
         Depends(get_deployment_runtime_policy),
     ],
+    ingress_policy: Annotated[
+        WebhookIngressPolicy,
+        Depends(get_webhook_ingress_policy),
+    ],
     db: Session = Depends(get_db),
 ):
     """
@@ -316,25 +366,25 @@ async def receive_webhook(
     - 캡처 모드: Payload를 메모리에 저장
     - 실행 모드: WorkflowEngine을 BackgroundTasks로 실행
 
-    인증 방식:
-    - Query Parameter: ?token=xxx
-    - Authorization Header: Bearer xxx
-    - Custom Header: X-Webhook-Secret: xxx
+    인증 방식은 Bearer 또는 X-Webhook-Secret header 중 정확히 하나다.
+    Query token은 지원하지 않는다.
     """
     # 1. App 조회 (url_slug로)
     app = db.query(App).filter(App.url_slug == url_slug).first()
     if not app:
         raise HTTPException(status_code=404, detail="App not found")
 
-    # 2. 인증 검증
-    if not verify_webhook_auth(request, app):
-        raise HTTPException(
-            status_code=403,
-            detail="Authentication failed. Provide token via query param (?token=xxx), Bearer header, or X-Webhook-Secret header.",
+    # 2. 인증과 bounded JSON validation은 downstream action보다 먼저 끝낸다.
+    try:
+        request_metadata = _webhook_request_metadata(request)
+        ingress_policy.authenticate(
+            request_metadata,
+            expected_secret=app.auth_secret,
         )
-
-    # 3. Payload 파싱
-    payload = await request.json()
+        ingress_policy.validate_payload_metadata(request_metadata)
+        payload = await _read_webhook_payload(request, ingress_policy)
+    except WebhookIngressError as error:
+        _raise_webhook_http_error(error)
 
     # 4. 캡처 모드 확인
     capture_session = _capture_session_for_webhook(url_slug)
