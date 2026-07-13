@@ -249,6 +249,24 @@ user와 organization의 직접 소속. organization scope와 manager 판정의 �
 | `user_llm_permissions` | llm_credential_id | (llm_credential_id, grantee_organization_id) → llm_credentials(id, organization_id) | (grantee_organization_id, user_id, llm_credential_id) |
 | `user_mail_credential_permissions` | mail_credential_id | (mail_credential_id, grantee_organization_id) → mail_credentials(id, organization_id) | (grantee_organization_id, user_id, mail_credential_id) |
 
+#### Knowledge domain delegation permission
+
+MBA-231은 [ADR-0034](decisions/ADR-0034-knowledge-delegated-administration-and-rbac-boundary.md)에 따라 `team_knowledge_domain_permissions`와 `user_knowledge_domain_permissions`를 사용한다. Resource `auth_state`가 아니라 organization-scoped management action의 additive allow다.
+
+| 컬럼 | 타입 | 제약 |
+| --- | --- | --- |
+| id | UUID | PK |
+| organization_id | UUID | NOT NULL, FK→organization.id |
+| team_id 또는 user_id | UUID | NOT NULL, 같은 organization active subject는 application에서 검증. Team은 `(team_id, organization_id)` 복합 FK |
+| permission_action | VARCHAR(32) | NOT NULL, CK: `catalog_manage/permission_delegate/lifecycle_manage/sync_manage` |
+| assigned_by | UUID | NOT NULL, FK→users.id |
+| assigned_at | DATETIME | NOT NULL |
+| expires_at | DATETIME | NULL. 평가 시 현재 시각 이하이면 inactive |
+| flags | BIGINT | NOT NULL, CK `flags >= 0` |
+
+- UNIQUE: Team은 `(organization_id, team_id, permission_action)`, User는 `(organization_id, user_id, permission_action)`.
+- Organization manager만 grant/revoke한다. Domain permission은 KB `read/use/write/content_read/manage` 또는 Collection `read/route/manage/sync`를 저장하거나 상속하지 않는다.
+
 - Mail team/user permission 테이블은 canonical `auth_state` CHECK를 적용한다. 기존 일부 team permission 테이블의 legacy 값(`read/write/execute/admin`)은 application-level에서 normalize한다.
 
 ### 앱/워크플로우
@@ -623,7 +641,7 @@ Agent Builder message history를 사용자 경험 복구 목적으로 보존할 
 | embedding_model | VARCHAR(50) | NOT NULL |
 | top_k | INTEGER | NOT NULL |
 | similarity_threshold | FLOAT | NOT NULL |
-| user_id | UUID | NOT NULL, FK→users.id — owner |
+| user_id | UUID | NOT NULL, FK→users.id — 생성자/귀속 정보. MBA-231 owner backfill 이후 authorization source가 아님 |
 | created_at / updated_at | DATETIME | NOT NULL |
 
 `knowledge_bases.safe_metadata`는 Agent Builder와 Knowledge recommendation에
@@ -735,6 +753,7 @@ knowledge_skills
 | `knowledge_collections` | collection/grouping/routing/UX/ops 단위 | `organization_id`, safe display name/description, source connector ref, system-managed flag, sync status. MVP anonymous public-only runtime은 `safe_metadata["visibility"] == "public"`을 public collection 판정으로 사용하며, 누락 또는 다른 값은 private로 취급한다. Source-managed KB는 별도 `source_public_exposure_policies` validation도 통과해야 public-only 후보가 된다. Source-derived display fields는 redacted/capped/display-policy-approved 값만 저장한다. |
 | `knowledge_collection_items` | collection과 document-level KB의 link | collection membership은 child KB content retrieval 권한을 부여하지 않는다. Linking에는 collection manage와 KB manage가 모두 필요하다. |
 | `team_knowledge_collection_permissions` / `user_knowledge_collection_permissions` | collection `read`/`route`/`manage`/`sync` 권한 저장 | ADR-0017 임시 baseline의 collection permission table이다. 기존 `auth_state` 계층으로 추론하지 않고 `permission_action` 값(`read`, `route`, `manage`, `sync`)을 저장하는 additive allow row를 기본으로 한다. Collection permission은 child KB content access를 상속하지 않고, router/controller는 permission row가 아니라 helper 결과를 소비한다. |
+| `team_knowledge_domain_permissions` / `user_knowledge_domain_permissions` | organization-scoped Knowledge 관리 위임 | ADR-0034의 `catalog_manage`, `permission_delegate`, `lifecycle_manage`, `sync_manage` additive allow를 저장한다. Optional expiry를 평가 시점에 적용하며 KB content/Collection route 권한을 상속하지 않는다. |
 | `knowledge_bases` | document/source item 단위 permission/retrieval/sync/lifecycle atom | target 의미는 `granularity=document`로 고정한다. Source-managed KB는 protected source identity와 sync state를 갖고, KB `use`와 source ACL gate를 모두 통과해야 retrieval 대상이 된다. Target column 후보에는 `active_document_version_id`, `source_identity_id`, lifecycle/sync state가 포함된다. |
 | `document_versions` | document-level KB의 canonical content/index version | `staging/indexing/ready/failed/superseded` 상태. Active version pointer swap은 indexing 성공 후 transaction/outbox 계약에 따라 수행한다. `content_hash`, chunking fingerprint, embedding model reference는 실제 artifact finalization과 같은 boundary에서 확정해야 한다. Content safety state, parser/scanner policy version, safe reason code는 ready 전 gate 결과로 document version metadata 또는 canonical metadata table에 둔다. `source_tier`, approval state, source freshness, version provenance는 document version metadata 또는 canonical metadata table에 두고 chunk metadata에는 ranking용으로 denormalize할 수 있다. |
 | `knowledge_source_identities` | source item identity의 protected 저장소 | 사용자-facing resource가 아니며 source-managed KB와 1:1 관계를 목표로 한다. Raw source id/url/principal/path는 keyed HMAC-SHA256 safe ref, key version, rotation/backfill, tombstone matching, safe external reference format으로 다룬다. |
@@ -955,7 +974,7 @@ Unique key는 `(processing_id, node_id, operation_key_hash)`다. Reply body, MIM
 | `none` | 없음 (거부) |
 | `viewer` | `read` |
 | `operator` | `read`, `execute`, `use` |
-| `builder` | `read`, `write`, `execute`, `use` |
+| `builder` | `read`, `write`, `execute`, `use`, Knowledge eligible manual `content_read` |
 | `manager` | `read`, `write`, `execute`, `use`, `deploy`, `manage` |
 | `auditor` | `read` (audit 전용) |
 | `raw_auditor` | `read`, `view_raw` (audit 전용) |
@@ -972,6 +991,11 @@ Unique key는 `(processing_id, node_id, operation_key_hash)`다. Reply body, MIM
 5. team permission과 user direct permission 중 **가장 강한 허용**을 적용한다. user direct는 additive allow 전용이며 team 권한을 낮추지 못한다. explicit deny는 없다.
 6. permission row 없음 또는 `auth_state='none'`이면 거부한다.
 7. trace raw payload처럼 별도 visibility policy가 있으면 추가 평가하고, 거부/민감 action은 audit에 기록한다.
+
+Knowledge 관리 plane은 별도 domain action을 합산한다. Organization manager
+override, active Team grant, active user direct grant 중 해당 action이 하나라도
+있고 만료되지 않았으면 허용한다. 이 결과는 resource `auth_state`, KB `use`,
+Collection `route`, source ACL requester authorization에 합산하지 않는다.
 
 ### Team Template
 

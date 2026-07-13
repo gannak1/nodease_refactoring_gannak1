@@ -181,6 +181,76 @@ def test_authorize_rag_use_hides_source_acl_denial(monkeypatch):
     assert exc.value.detail["error"]["code"] == "resource.hidden"
 
 
+def test_document_progress_authorizes_read_before_opening_stream(monkeypatch):
+    document_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    user = SimpleNamespace(id=uuid.uuid4())
+    db = object()
+    request = _request()
+    captured = {}
+
+    def authorize(
+        request_arg,
+        db_arg,
+        user_arg,
+        organization_id_arg,
+        document_id_arg,
+        action,
+    ):
+        captured["authorization"] = (
+            request_arg,
+            db_arg,
+            user_arg,
+            organization_id_arg,
+            document_id_arg,
+            action,
+        )
+
+    monkeypatch.setattr(rag, "_authorize_knowledge_document_action", authorize)
+
+    response = asyncio.run(
+        rag.get_document_progress(
+            document_id,
+            request,
+            organization_id,
+            db=db,
+            current_user=user,
+        )
+    )
+
+    assert response.media_type == "text/event-stream"
+    assert captured["authorization"] == (
+        request,
+        db,
+        user,
+        organization_id,
+        document_id,
+        "read",
+    )
+
+
+def test_document_progress_denial_prevents_stream_creation(monkeypatch):
+    denial = HTTPException(status_code=404, detail={"reason_code": "resource.hidden"})
+
+    def deny(*_args, **_kwargs):
+        raise denial
+
+    monkeypatch.setattr(rag, "_authorize_knowledge_document_action", deny)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            rag.get_document_progress(
+                uuid.uuid4(),
+                _request(),
+                uuid.uuid4(),
+                db=object(),
+                current_user=SimpleNamespace(id=uuid.uuid4()),
+            )
+        )
+
+    assert exc.value is denial
+
+
 def test_record_rag_retrieve_audit_marks_policy_as_not_evaluated(monkeypatch):
     user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
@@ -252,23 +322,28 @@ def test_search_test_chat_passes_top_k_and_organization_id(monkeypatch):
 def test_get_or_create_knowledge_base_uses_active_organization(monkeypatch):
     organization_id = uuid.uuid4()
     user_id = uuid.uuid4()
-    added = {}
+    captured = {}
+    kb_id = uuid.uuid4()
 
-    class FakeDb:
-        def add(self, value):
-            added["kb"] = value
+    class FakeCreateService:
+        def __init__(self, db):
+            captured["db"] = db
 
-        def commit(self):
-            added["committed"] = True
-
-        def refresh(self, value):
-            value.id = uuid.uuid4()
+        def create(self, payload, **kwargs):
+            captured["payload"] = payload
+            captured["kwargs"] = kwargs
+            return SimpleNamespace(
+                id=kb_id,
+                embedding_model="text-embedding-3-small",
+            )
 
     monkeypatch.setattr(rag, "has_organization_scope_access", lambda *args: True)
+    monkeypatch.setattr(rag, "KnowledgeBaseQueryService", FakeCreateService)
+    fake_db = object()
 
-    kb_id, model = rag._get_or_create_knowledge_base(
+    created_kb_id, model = rag._get_or_create_knowledge_base(
         _request(),
-        FakeDb(),
+        fake_db,
         SimpleNamespace(id=user_id),
         organization_id,
         None,
@@ -280,11 +355,17 @@ def test_get_or_create_knowledge_base_uses_active_organization(monkeypatch):
         None,
     )
 
-    assert kb_id == added["kb"].id
+    assert created_kb_id == kb_id
     assert model == "text-embedding-3-small"
-    assert added["kb"].organization_id == organization_id
-    assert added["kb"].user_id == user_id
-    assert added["committed"] is True
+    assert captured["db"] is fake_db
+    assert captured["payload"].name == "KB"
+    assert captured["payload"].description == "desc"
+    assert captured["kwargs"] == {
+        "user_id": user_id,
+        "organization_id": organization_id,
+        "top_k": 5,
+        "similarity_threshold": 0.7,
+    }
 
 
 def _agent_answer_payload() -> RAGAgentAnswerRequest:

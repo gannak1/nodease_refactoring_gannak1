@@ -125,7 +125,13 @@ export default function DocumentSettingsPage() {
   // SSE 연결 (Indexing 상태일 때)
   useEffect(() => {
     if (!isActiveProcessingStatus(status) || !documentId) return;
-    const url = knowledgeApi.getProgressUrl(documentId);
+    let url: string;
+    try {
+      url = knowledgeApi.getProgressUrl(documentId);
+    } catch {
+      toast.error('활성 조직을 선택한 뒤 문서 상태를 확인해 주세요.');
+      return;
+    }
     const eventSource = new EventSource(url, { withCredentials: true });
     eventSource.onmessage = (event) => {
       try {

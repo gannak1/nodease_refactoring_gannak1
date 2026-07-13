@@ -88,6 +88,11 @@ export interface KnowledgeBaseDetailResponse extends KnowledgeBaseResponse {
   documents: DocumentResponse[];
   can_edit_settings?: boolean;
   can_manage_safe_metadata?: boolean;
+  can_read?: boolean;
+  can_use?: boolean;
+  can_write?: boolean;
+  can_read_content?: boolean;
+  can_manage?: boolean;
 }
 
 export interface KnowledgeSafeMetadataResponse {
@@ -96,7 +101,17 @@ export interface KnowledgeSafeMetadataResponse {
 }
 
 export type KnowledgeCollectionAction = 'read' | 'route' | 'manage' | 'sync';
+export type KnowledgeCollectionRoleBundle =
+  | 'viewer'
+  | 'workflow_router'
+  | 'maintainer'
+  | 'sync_operator';
 export type KnowledgeCollectionVisibility = 'private' | 'public';
+export type KnowledgeDomainAction =
+  | 'catalog_manage'
+  | 'permission_delegate'
+  | 'lifecycle_manage'
+  | 'sync_manage';
 
 export interface KnowledgeCollectionResponse {
   id: string;
@@ -160,6 +175,42 @@ export interface KnowledgeCollectionPermissionResponse {
 
 export interface KnowledgeCollectionPermissionsResponse {
   permissions: KnowledgeCollectionPermissionResponse[];
+}
+
+export interface KnowledgeDelegationSubject {
+  subject_type: 'team' | 'user';
+  subject_id: string;
+  subject_safe_label: string;
+}
+
+export interface KnowledgeDelegationSubjectsResponse {
+  teams: KnowledgeDelegationSubject[];
+  users: KnowledgeDelegationSubject[];
+}
+
+export interface KnowledgeDomainCapabilitiesResponse {
+  actions: KnowledgeDomainAction[];
+  can_manage_domain_permissions: boolean;
+  can_create_collection: boolean;
+  can_delegate_permissions: boolean;
+  can_manage_lifecycle: boolean;
+  can_manage_sync: boolean;
+  can_change_public_visibility: boolean;
+}
+
+export interface KnowledgeDomainPermissionResponse {
+  permission_id: string;
+  subject_type: 'team' | 'user';
+  subject_id: string;
+  subject_safe_label: string;
+  permission_action: KnowledgeDomainAction;
+  assigned_at: string;
+  expires_at?: string | null;
+  is_expired: boolean;
+}
+
+export interface KnowledgeDomainPermissionListResponse {
+  permissions: KnowledgeDomainPermissionResponse[];
 }
 
 export interface KnowledgeCollectionVisibilityResponse {

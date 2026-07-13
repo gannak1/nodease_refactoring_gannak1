@@ -7,7 +7,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from apps.shared.audit.logger import record_audit
+from apps.gateway.services.audit_records import add_action_audit, add_data_change_audit
 from apps.shared.db.models.knowledge import (
     KnowledgeBase,
     KnowledgeCollection,
@@ -19,6 +19,7 @@ from apps.shared.db.models.team import (
     TeamMembership,
     UserKnowledgeCollectionPermission,
 )
+from apps.shared.db.models.organization_membership import OrganizationMembership
 from apps.shared.db.models.user import User
 from apps.shared.permissions import knowledge_base_auth_state_allows
 from apps.shared.schemas.knowledge import (
@@ -28,14 +29,18 @@ from apps.shared.schemas.knowledge import (
     KnowledgeCollectionItemResponse,
     KnowledgeCollectionLinkCandidate,
     KnowledgeCollectionPermissionGrantRequest,
+    KnowledgeCollectionPermissionBundleGrantRequest,
     KnowledgeCollectionPermissionResponse,
     KnowledgeCollectionResponse,
     KnowledgeCollectionUpdateRequest,
     KnowledgeCollectionVisibilityRequest,
     KnowledgeCollectionVisibilityResponse,
+    KnowledgeDelegationSubject,
+    KnowledgeDelegationSubjectsResponse,
 )
 from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
 from apps.shared.services.permissions import (
+    get_effective_knowledge_domain_actions,
     get_effective_knowledge_base_auth_state,
     has_active_organization_membership,
     has_knowledge_base_permission,
@@ -52,6 +57,12 @@ from apps.gateway.services.knowledge_collection_policy import (
 
 GENERIC_KB_LABEL = "Knowledge Base"
 LINK_CANDIDATE_SCAN_LIMIT = 5000
+COLLECTION_ROLE_BUNDLE_ACTIONS = {
+    "viewer": ("read",),
+    "workflow_router": ("read", "route"),
+    "maintainer": ("read", "manage"),
+    "sync_operator": ("read", "sync"),
+}
 
 
 @dataclass
@@ -85,6 +96,7 @@ class KnowledgeCollectionService:
             user_id=user_id,
             organization_id=organization_id,
         )
+        self._domain_actions_cache: set[str] | None = None
 
     def list_collections(
         self,
@@ -126,7 +138,10 @@ class KnowledgeCollectionService:
         responses: list[KnowledgeCollectionResponse] = []
         for collection in collections:
             decision = decisions.get(collection.id)
-            if not decision or not decision.allowed:
+            if (
+                (not decision or not decision.allowed)
+                and not self._has_safe_collection_admin_visibility()
+            ):
                 continue
             if visibility is not None and self._visibility(collection) != visibility:
                 continue
@@ -138,23 +153,27 @@ class KnowledgeCollectionService:
     def management_capabilities(self) -> dict[str, bool]:
         can_manage_public_scope = self._is_org_manager()
         return {
-            "can_create_collection": can_manage_public_scope,
+            "can_create_collection": (
+                can_manage_public_scope or self._has_domain_action("catalog_manage")
+            ),
             "can_change_public_visibility": can_manage_public_scope,
         }
 
     def get_collection(self, collection_id: uuid.UUID) -> KnowledgeCollectionResponse:
         collection = self._collection_or_hidden(collection_id)
-        self._require_collection_action(collection, "read")
+        if not self._has_safe_collection_admin_visibility():
+            self._require_collection_action(collection, "read")
         return self._collection_response(collection)
 
     def create_collection(
         self,
         request: KnowledgeCollectionCreateRequest,
     ) -> KnowledgeCollectionResponse:
-        self._require_org_manager()
+        self._require_org_manager_or_domain("catalog_manage")
         safe_metadata = self._sanitize_safe_metadata(request.safe_metadata)
         name = self._normalize_required_text(request.name, "name")
         collection = KnowledgeCollection(
+            id=uuid.uuid4(),
             organization_id=self.organization_id,
             name=name,
             description=self._normalize_optional_text(request.description),
@@ -166,6 +185,7 @@ class KnowledgeCollectionService:
         )
         self.db.add(collection)
         try:
+            self._record_collection_audit("knowledge.collection.created", collection)
             self.db.commit()
         except IntegrityError as exc:
             self.db.rollback()
@@ -174,8 +194,10 @@ class KnowledgeCollectionService:
                 "conflict",
                 "Knowledge Collection name already exists.",
             ) from exc
+        except Exception:
+            self.db.rollback()
+            raise
         self.db.refresh(collection)
-        self._record_collection_audit("knowledge.collection.created", collection)
         return self._collection_response(collection)
 
     def update_collection(
@@ -184,7 +206,7 @@ class KnowledgeCollectionService:
         request: KnowledgeCollectionUpdateRequest,
     ) -> KnowledgeCollectionResponse:
         collection = self._collection_or_hidden(collection_id)
-        self._require_collection_action(collection, "manage")
+        self._require_collection_manage_or_catalog(collection)
         if collection.is_system_managed:
             raise KnowledgeCollectionServiceError(
                 403,
@@ -202,6 +224,7 @@ class KnowledgeCollectionService:
             )
         collection.updated_at = self._now()
         try:
+            self._record_collection_audit("knowledge.collection.updated", collection)
             self.db.commit()
         except IntegrityError as exc:
             self.db.rollback()
@@ -210,13 +233,16 @@ class KnowledgeCollectionService:
                 "conflict",
                 "Knowledge Collection name already exists.",
             ) from exc
+        except Exception:
+            self.db.rollback()
+            raise
         self.db.refresh(collection)
-        self._record_collection_audit("knowledge.collection.updated", collection)
         return self._collection_response(collection)
 
     def archive_collection(self, collection_id: uuid.UUID) -> None:
         collection = self._collection_or_hidden(collection_id)
-        self._require_collection_action(collection, "manage")
+        if not self._has_domain_action("lifecycle_manage"):
+            self._require_collection_action(collection, "manage")
         if collection.is_system_managed:
             raise KnowledgeCollectionServiceError(
                 403,
@@ -225,12 +251,18 @@ class KnowledgeCollectionService:
             )
         collection.lifecycle_state = "archived"
         collection.updated_at = self._now()
-        self.db.commit()
-        self._record_collection_audit("knowledge.collection.archived", collection)
+        self._record_collection_audit_and_commit(
+            "knowledge.collection.archived",
+            collection,
+        )
 
     def list_items(self, collection_id: uuid.UUID) -> list[KnowledgeCollectionItemResponse]:
         collection = self._collection_or_hidden(collection_id)
-        self._require_collection_action(collection, "read")
+        if not (
+            self._visibility(collection) == "private"
+            and self._has_domain_action("catalog_manage")
+        ):
+            self._require_collection_action(collection, "read")
         items = (
             self.db.query(KnowledgeCollectionItem)
             .filter(
@@ -248,9 +280,15 @@ class KnowledgeCollectionService:
         request: KnowledgeCollectionItemLinkRequest,
     ) -> KnowledgeCollectionItemResponse:
         collection = self._collection_or_hidden(collection_id)
-        self._require_collection_action(collection, "manage")
         kb = self._knowledge_base_or_hidden(request.knowledge_base_id)
-        self._require_kb_manage(kb)
+        self._require_collection_membership_mutation(
+            collection,
+            kb=kb,
+            acknowledged_public_runtime_exposure=(
+                request.acknowledged_public_runtime_exposure
+            ),
+            adds_public_exposure=True,
+        )
         if kb.lifecycle_state != "active":
             raise KnowledgeCollectionServiceError(
                 404,
@@ -270,6 +308,7 @@ class KnowledgeCollectionService:
             return self._item_response(existing)
 
         item = KnowledgeCollectionItem(
+            id=uuid.uuid4(),
             organization_id=self.organization_id,
             collection_id=collection.id,
             knowledge_base_id=kb.id,
@@ -278,6 +317,11 @@ class KnowledgeCollectionService:
         )
         self.db.add(item)
         try:
+            self._record_collection_audit(
+                "knowledge.collection.item.linked",
+                collection,
+                metadata={"knowledge_base_id": str(kb.id)},
+            )
             self.db.commit()
         except IntegrityError:
             self.db.rollback()
@@ -292,23 +336,31 @@ class KnowledgeCollectionService:
             if existing is not None:
                 return self._item_response(existing)
             raise
+        except Exception:
+            self.db.rollback()
+            raise
         self.db.refresh(item)
-        self._record_collection_audit(
-            "knowledge.collection.item.linked",
-            collection,
-            metadata={"knowledge_base_id": str(kb.id)},
-        )
         return self._item_response(item)
 
-    def unlink_item(self, collection_id: uuid.UUID, item_id: uuid.UUID) -> None:
+    def unlink_item(
+        self,
+        collection_id: uuid.UUID,
+        item_id: uuid.UUID,
+        *,
+        acknowledged_public_runtime_exposure: bool = False,
+    ) -> None:
         collection = self._collection_or_hidden(collection_id)
-        self._require_collection_action(collection, "manage")
         item = self._item_or_hidden(collection.id, item_id)
         kb = self._knowledge_base_or_hidden(item.knowledge_base_id)
-        self._require_kb_manage(kb)
+        self._require_collection_membership_mutation(
+            collection,
+            kb=kb,
+            acknowledged_public_runtime_exposure=(
+                acknowledged_public_runtime_exposure
+            ),
+        )
         self.db.delete(item)
-        self.db.commit()
-        self._record_collection_audit(
+        self._record_collection_audit_and_commit(
             "knowledge.collection.item.unlinked",
             collection,
             metadata={"knowledge_base_id": str(kb.id)},
@@ -320,7 +372,12 @@ class KnowledgeCollectionService:
         request: KnowledgeCollectionItemReorderRequest,
     ) -> list[KnowledgeCollectionItemResponse]:
         collection = self._collection_or_hidden(collection_id)
-        self._require_collection_action(collection, "manage")
+        self._require_collection_membership_mutation(
+            collection,
+            acknowledged_public_runtime_exposure=(
+                request.acknowledged_public_runtime_exposure
+            ),
+        )
         ranks = {entry.item_id: entry.rank for entry in request.items}
         items = (
             self.db.query(KnowledgeCollectionItem)
@@ -335,10 +392,12 @@ class KnowledgeCollectionService:
             raise KnowledgeCollectionServiceError(404, "resource.hidden", "Resource not found.")
         for item in items:
             item.rank = ranks[item.id]
-        self.db.commit()
+        self._record_collection_audit_and_commit(
+            "knowledge.collection.items.reordered",
+            collection,
+        )
         for item in items:
             self.db.refresh(item)
-        self._record_collection_audit("knowledge.collection.items.reordered", collection)
         return self.list_items(collection.id)
 
     def list_link_candidates(
@@ -348,7 +407,7 @@ class KnowledgeCollectionService:
         limit: int = 100,
     ) -> list[KnowledgeCollectionLinkCandidate]:
         collection = self._collection_or_hidden(collection_id)
-        self._require_collection_action(collection, "manage")
+        self._require_collection_membership_candidate_access(collection)
         linked_ids = self._linked_kb_ids(collection.id)
         requested_limit = min(max(limit, 1), 500)
         batch_size = min(max(requested_limit * 2, 100), 500)
@@ -363,7 +422,10 @@ class KnowledgeCollectionService:
                 break
             scanned += len(page)
             for kb in page:
-                if kb.id in linked_ids or not self._kb_manage_allowed(kb):
+                if kb.id in linked_ids or not self._kb_link_candidate_allowed(
+                    collection,
+                    kb,
+                ):
                     continue
                 candidates.append(
                     KnowledgeCollectionLinkCandidate(
@@ -408,7 +470,7 @@ class KnowledgeCollectionService:
         collection_id: uuid.UUID,
     ) -> list[KnowledgeCollectionPermissionResponse]:
         collection = self._collection_or_hidden(collection_id)
-        self._require_collection_action(collection, "manage")
+        self._require_collection_permission_authority(collection)
         team_rows = (
             self.db.query(TeamKnowledgeCollectionPermission)
             .filter(
@@ -433,16 +495,78 @@ class KnowledgeCollectionService:
             self._user_permission_response(row) for row in user_rows
         ]
 
+    def list_delegation_subjects(
+        self,
+        collection_id: uuid.UUID,
+    ) -> KnowledgeDelegationSubjectsResponse:
+        collection = self._collection_or_hidden(collection_id)
+        self._require_collection_permission_authority(collection)
+        return self._delegation_subjects_response()
+
+    def list_domain_delegation_subjects(self) -> KnowledgeDelegationSubjectsResponse:
+        self._require_org_manager()
+        return self._delegation_subjects_response()
+
+    def _delegation_subjects_response(self) -> KnowledgeDelegationSubjectsResponse:
+        teams = (
+            self.db.query(Team)
+            .filter(
+                Team.organization_id == self.organization_id,
+                Team.is_active.is_(True),
+            )
+            .order_by(Team.name.asc(), Team.id.asc())
+            .all()
+        )
+        users = (
+            self.db.query(User)
+            .join(
+                OrganizationMembership,
+                OrganizationMembership.user_id == User.id,
+            )
+            .filter(
+                OrganizationMembership.organization_id == self.organization_id,
+                OrganizationMembership.membership_state == "active",
+                User.deactivated_at.is_(None),
+            )
+            .order_by(User.name.asc(), User.id.asc())
+            .all()
+        )
+        return KnowledgeDelegationSubjectsResponse(
+            teams=[
+                KnowledgeDelegationSubject(
+                    subject_type="team",
+                    subject_id=team.id,
+                    subject_safe_label=str(team.name or "Team"),
+                )
+                for team in teams
+            ],
+            users=[
+                KnowledgeDelegationSubject(
+                    subject_type="user",
+                    subject_id=user.id,
+                    subject_safe_label=str(user.name or "User"),
+                )
+                for user in users
+            ],
+        )
+
     def grant_permission(
         self,
         collection_id: uuid.UUID,
         request: KnowledgeCollectionPermissionGrantRequest,
     ) -> KnowledgeCollectionPermissionResponse:
         collection = self._collection_or_hidden(collection_id)
-        self._require_collection_action(collection, "manage")
+        authority = self._require_collection_permission_authority(collection)
+        self._block_collection_delegate_self_escalation(
+            collection,
+            request,
+            authority=authority,
+        )
         if request.subject_type == "team":
-            row = self._grant_team_permission(collection, request)
-            self._record_collection_audit(
+            row, created = self._grant_team_permission(collection, request)
+            if not created:
+                return self._team_permission_response(row)
+            self._record_collection_audit_and_commit(
                 "knowledge.collection.permission.granted",
                 collection,
                 metadata={
@@ -450,9 +574,12 @@ class KnowledgeCollectionService:
                     "permission_action": request.permission_action,
                 },
             )
+            self.db.refresh(row)
             return self._team_permission_response(row)
-        row = self._grant_user_permission(collection, request)
-        self._record_collection_audit(
+        row, created = self._grant_user_permission(collection, request)
+        if not created:
+            return self._user_permission_response(row)
+        self._record_collection_audit_and_commit(
             "knowledge.collection.permission.granted",
             collection,
             metadata={
@@ -460,11 +587,80 @@ class KnowledgeCollectionService:
                 "permission_action": request.permission_action,
             },
         )
+        self.db.refresh(row)
         return self._user_permission_response(row)
+
+    def grant_permission_bundle(
+        self,
+        collection_id: uuid.UUID,
+        request: KnowledgeCollectionPermissionBundleGrantRequest,
+    ) -> list[KnowledgeCollectionPermissionResponse]:
+        collection = self._collection_or_hidden(collection_id)
+        authority = self._require_collection_permission_authority(collection)
+        actions = COLLECTION_ROLE_BUNDLE_ACTIONS[request.role_bundle]
+        escalation_probe = KnowledgeCollectionPermissionGrantRequest(
+            subject_type=request.subject_type,
+            subject_id=request.subject_id,
+            permission_action=actions[0],
+        )
+        self._block_collection_delegate_self_escalation(
+            collection,
+            escalation_probe,
+            authority=authority,
+        )
+
+        rows: list[
+            TeamKnowledgeCollectionPermission | UserKnowledgeCollectionPermission
+        ] = []
+        created_rows: list[
+            TeamKnowledgeCollectionPermission | UserKnowledgeCollectionPermission
+        ] = []
+        for action in actions:
+            grant = KnowledgeCollectionPermissionGrantRequest(
+                subject_type=request.subject_type,
+                subject_id=request.subject_id,
+                permission_action=action,
+            )
+            if request.subject_type == "team":
+                row, created = self._grant_team_permission(collection, grant)
+            else:
+                row, created = self._grant_user_permission(collection, grant)
+            rows.append(row)
+            if created:
+                created_rows.append(row)
+
+        if created_rows:
+            try:
+                self._record_collection_audit(
+                    "knowledge.collection.permission_bundle.granted",
+                    collection,
+                    metadata={
+                        "subject_type": request.subject_type,
+                        "role_bundle": request.role_bundle,
+                        "permission_actions": list(actions),
+                    },
+                )
+                self.db.commit()
+            except IntegrityError as exc:
+                self.db.rollback()
+                raise KnowledgeCollectionServiceError(
+                    409,
+                    "conflict",
+                    "Knowledge Collection permission bundle changed concurrently.",
+                ) from exc
+            except Exception:
+                self.db.rollback()
+                raise
+            for row in created_rows:
+                self.db.refresh(row)
+
+        if request.subject_type == "team":
+            return [self._team_permission_response(row) for row in rows]
+        return [self._user_permission_response(row) for row in rows]
 
     def revoke_permission(self, collection_id: uuid.UUID, permission_id: uuid.UUID) -> None:
         collection = self._collection_or_hidden(collection_id)
-        self._require_collection_action(collection, "manage")
+        self._require_collection_permission_authority(collection)
         row = (
             self.db.query(TeamKnowledgeCollectionPermission)
             .filter(
@@ -504,8 +700,7 @@ class KnowledgeCollectionService:
             )
         permission_action = row.permission_action
         self.db.delete(row)
-        self.db.commit()
-        self._record_collection_audit(
+        self._record_collection_audit_and_commit(
             "knowledge.collection.permission.revoked",
             collection,
             metadata={
@@ -528,18 +723,27 @@ class KnowledgeCollectionService:
                 "Public visibility acknowledgement is required.",
                 {"field": "acknowledged_public_runtime_exposure"},
             )
+        if (
+            request.visibility == "public"
+            and self._collection_has_source_managed_items(collection.id)
+        ):
+            raise KnowledgeCollectionServiceError(
+                409,
+                "policy.blocked",
+                "Source-managed Knowledge requires public exposure approval.",
+                {"policy_reason": "source_public_exposure_required"},
+            )
 
         metadata = dict(collection.safe_metadata or {})
         metadata["visibility"] = request.visibility
         collection.safe_metadata = metadata
         collection.updated_at = self._now()
-        self.db.commit()
-        self.db.refresh(collection)
-        self._record_collection_audit(
+        self._record_collection_audit_and_commit(
             "knowledge.collection.visibility.changed",
             collection,
             metadata={"visibility": request.visibility},
         )
+        self.db.refresh(collection)
         response = self._collection_response(collection)
         return KnowledgeCollectionVisibilityResponse(
             collection=response,
@@ -551,7 +755,7 @@ class KnowledgeCollectionService:
         self,
         collection: KnowledgeCollection,
         request: KnowledgeCollectionPermissionGrantRequest,
-    ) -> TeamKnowledgeCollectionPermission:
+    ) -> tuple[TeamKnowledgeCollectionPermission, bool]:
         team = (
             self.db.query(Team)
             .filter(
@@ -577,8 +781,9 @@ class KnowledgeCollectionService:
             .first()
         )
         if row is not None:
-            return row
+            return row, False
         row = TeamKnowledgeCollectionPermission(
+            id=uuid.uuid4(),
             grantee_organization_id=self.organization_id,
             team_id=team.id,
             assigned_by=self.user_id,
@@ -586,15 +791,13 @@ class KnowledgeCollectionService:
             permission_action=request.permission_action,
         )
         self.db.add(row)
-        self.db.commit()
-        self.db.refresh(row)
-        return row
+        return row, True
 
     def _grant_user_permission(
         self,
         collection: KnowledgeCollection,
         request: KnowledgeCollectionPermissionGrantRequest,
-    ) -> UserKnowledgeCollectionPermission:
+    ) -> tuple[UserKnowledgeCollectionPermission, bool]:
         user = (
             self.db.query(User)
             .filter(User.id == request.subject_id, User.deactivated_at.is_(None))
@@ -620,8 +823,9 @@ class KnowledgeCollectionService:
             .first()
         )
         if row is not None:
-            return row
+            return row, False
         row = UserKnowledgeCollectionPermission(
+            id=uuid.uuid4(),
             grantee_organization_id=self.organization_id,
             user_id=user.id,
             assigned_by=self.user_id,
@@ -629,9 +833,7 @@ class KnowledgeCollectionService:
             permission_action=request.permission_action,
         )
         self.db.add(row)
-        self.db.commit()
-        self.db.refresh(row)
-        return row
+        return row, True
 
     def _collection_response(
         self,
@@ -724,11 +926,166 @@ class KnowledgeCollectionService:
                 "Organization manager permission is required.",
             )
 
+    def _require_org_manager_or_domain(self, action: str) -> None:
+        if self._is_org_manager() or self._has_domain_action(action):
+            return
+        raise KnowledgeCollectionServiceError(
+            403,
+            "permission.denied",
+            "Knowledge administration permission is required.",
+        )
+
     def _is_org_manager(self) -> bool:
         return has_organization_manager_permission(
             self.db,
             self.user_id,
             self.organization_id,
+        )
+
+    def _has_domain_action(self, action: str) -> bool:
+        if self._domain_actions_cache is None:
+            self._domain_actions_cache = get_effective_knowledge_domain_actions(
+                self.db,
+                self.user_id,
+                self.organization_id,
+            )
+        return action in self._domain_actions_cache
+
+    def _has_safe_collection_admin_visibility(self) -> bool:
+        return any(
+            self._has_domain_action(action)
+            for action in (
+                "catalog_manage",
+                "permission_delegate",
+                "lifecycle_manage",
+                "sync_manage",
+            )
+        )
+
+    def _require_collection_manage_or_catalog(
+        self,
+        collection: KnowledgeCollection,
+    ) -> None:
+        if (
+            not collection.is_system_managed
+            and self._visibility(collection) == "private"
+            and self._has_domain_action("catalog_manage")
+        ):
+            return
+        self._require_collection_action(collection, "manage")
+
+    def _require_collection_membership_candidate_access(
+        self,
+        collection: KnowledgeCollection,
+    ) -> None:
+        if self._visibility(collection) == "public":
+            self._require_org_manager()
+            return
+        self._require_collection_manage_or_catalog(collection)
+
+    def _require_collection_membership_mutation(
+        self,
+        collection: KnowledgeCollection,
+        *,
+        kb: KnowledgeBase | None = None,
+        acknowledged_public_runtime_exposure: bool = False,
+        adds_public_exposure: bool = False,
+    ) -> None:
+        if collection.is_system_managed:
+            raise KnowledgeCollectionServiceError(
+                403,
+                "policy.denied",
+                "System-managed collections cannot be manually changed.",
+            )
+        if self._visibility(collection) == "public":
+            self._require_org_manager()
+            if not acknowledged_public_runtime_exposure:
+                raise KnowledgeCollectionServiceError(
+                    400,
+                    "validation.failed",
+                    "Public membership acknowledgement is required.",
+                    {"field": "acknowledged_public_runtime_exposure"},
+                )
+            if adds_public_exposure and kb is not None and self._is_source_managed_kb(kb):
+                raise KnowledgeCollectionServiceError(
+                    409,
+                    "policy.blocked",
+                    "Source-managed Knowledge requires public exposure approval.",
+                    {"policy_reason": "source_public_exposure_required"},
+                )
+            return
+        if self._has_domain_action("catalog_manage"):
+            return
+        self._require_collection_action(collection, "manage")
+        if kb is not None:
+            self._require_kb_manage(kb)
+
+    def _kb_link_candidate_allowed(
+        self,
+        collection: KnowledgeCollection,
+        kb: KnowledgeBase,
+    ) -> bool:
+        if self._visibility(collection) == "public":
+            return self._is_org_manager() and not self._is_source_managed_kb(kb)
+        if self._has_domain_action("catalog_manage"):
+            return True
+        return self._kb_manage_allowed(kb)
+
+    def _require_collection_permission_authority(
+        self,
+        collection: KnowledgeCollection,
+    ) -> str:
+        if self._is_org_manager():
+            return "organization_manager"
+        decision = self.permission_helper.evaluate_collection_action(
+            collection,
+            "manage",
+        )
+        if decision.allowed:
+            return "resource_manager"
+        if self._has_domain_action("permission_delegate"):
+            return "domain_delegate"
+        status_code = 404 if decision.external_reason_code == "resource.hidden" else 403
+        raise KnowledgeCollectionServiceError(
+            status_code,
+            decision.external_reason_code,
+            "Resource not found." if status_code == 404 else "Permission denied.",
+        )
+
+    def _block_collection_delegate_self_escalation(
+        self,
+        collection: KnowledgeCollection,
+        request: KnowledgeCollectionPermissionGrantRequest,
+        *,
+        authority: str,
+    ) -> None:
+        if authority != "domain_delegate":
+            return
+        targets_actor = request.subject_type == "user" and request.subject_id == self.user_id
+        if request.subject_type == "team":
+            targets_actor = request.subject_id in self._active_team_ids()
+        if not targets_actor:
+            return
+        try:
+            add_action_audit(
+                self.db,
+                "knowledge.collection.permission_grant.blocked",
+                self.user_id,
+                "knowledge_collection",
+                collection.id,
+                organization_id=self.organization_id,
+                status="blocked",
+                metadata={"policy_reason": "knowledge.self_escalation"},
+            )
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+        raise KnowledgeCollectionServiceError(
+            409,
+            "policy.blocked",
+            "Knowledge permission grant is blocked by policy.",
+            {"policy_reason": "knowledge.self_escalation"},
         )
 
     def _require_collection_action(
@@ -837,6 +1194,28 @@ class KnowledgeCollectionService:
             .scalar()
             or 0
         )
+
+    def _collection_has_source_managed_items(
+        self,
+        collection_id: uuid.UUID,
+    ) -> bool:
+        return (
+            self.db.query(func.count(KnowledgeCollectionItem.id))
+            .join(
+                KnowledgeBase,
+                KnowledgeBase.id == KnowledgeCollectionItem.knowledge_base_id,
+            )
+            .filter(
+                KnowledgeCollectionItem.organization_id == self.organization_id,
+                KnowledgeCollectionItem.collection_id == collection_id,
+                KnowledgeBase.source_identity_id.is_not(None),
+            )
+            .scalar()
+            or 0
+        ) > 0
+
+    def _is_source_managed_kb(self, kb: KnowledgeBase) -> bool:
+        return getattr(kb, "source_identity_id", None) is not None
 
     def _visibility(self, collection: KnowledgeCollection) -> str:
         return collection_visibility(collection)
@@ -967,6 +1346,24 @@ class KnowledgeCollectionService:
         )
         return {row[0] for row in rows}
 
+    def _record_collection_audit_and_commit(
+        self,
+        action: str,
+        collection: KnowledgeCollection,
+        *,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        try:
+            self._record_collection_audit(
+                action,
+                collection,
+                metadata=metadata,
+            )
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+
     def _record_collection_audit(
         self,
         action: str,
@@ -975,14 +1372,13 @@ class KnowledgeCollectionService:
         metadata: dict[str, Any] | None = None,
     ) -> None:
         # Audit에는 raw source title/path/url이나 hidden count를 넣지 않는다.
-        record_audit(
-            action=action,
-            category="knowledge",
-            actor_id=self.user_id,
-            actor_type="user",
-            target_type="knowledge_collection",
-            target_id=collection.id,
-            status="success",
+        add_data_change_audit(
+            self.db,
+            action,
+            self.user_id,
+            "knowledge_collection",
+            collection.id,
+            organization_id=self.organization_id,
             metadata={
                 "organization_id": str(self.organization_id),
                 "visibility": self._visibility(collection),

@@ -15,17 +15,24 @@ import {
   Users,
 } from 'lucide-react';
 import type {
-  KnowledgeCollectionAction,
   KnowledgeCollectionItemResponse,
   KnowledgeCollectionLinkCandidate,
   KnowledgeCollectionPermissionResponse,
+  KnowledgeCollectionRoleBundle,
   KnowledgeCollectionResponse,
   KnowledgeCollectionVisibility,
+  KnowledgeDelegationSubjectsResponse,
+  KnowledgeDomainAction,
+  KnowledgeDomainPermissionListResponse,
 } from '@/app/features/knowledge/api/knowledgeApi';
 
 export type CollectionCapabilities = {
   can_create_collection: boolean;
   can_change_public_visibility: boolean;
+  can_manage_catalog: boolean;
+  can_delegate_permissions: boolean;
+  can_manage_lifecycle: boolean;
+  can_manage_domain_permissions: boolean;
 };
 
 export type CollectionFormState = {
@@ -36,15 +43,158 @@ export type CollectionFormState = {
 export type GrantFormState = {
   subject_type: 'team' | 'user';
   subject_id: string;
-  permission_action: KnowledgeCollectionAction;
+  role_bundle: KnowledgeCollectionRoleBundle;
 };
 
-const collectionActions: KnowledgeCollectionAction[] = [
-  'read',
-  'route',
-  'manage',
-  'sync',
+export type DomainGrantFormState = {
+  subject_type: 'team' | 'user';
+  subject_id: string;
+  permission_action: KnowledgeDomainAction;
+};
+
+const domainActions: Array<{ value: KnowledgeDomainAction; label: string }> = [
+  { value: 'catalog_manage', label: 'Catalog manager' },
+  { value: 'permission_delegate', label: 'Permission delegator' },
+  { value: 'lifecycle_manage', label: 'Lifecycle manager' },
+  { value: 'sync_manage', label: 'Sync manager' },
 ];
+
+const collectionRoleBundles: Array<{
+  value: KnowledgeCollectionRoleBundle;
+  label: string;
+}> = [
+  { value: 'viewer', label: 'Viewer (read)' },
+  { value: 'workflow_router', label: 'Workflow Router (read + route)' },
+  { value: 'maintainer', label: 'Maintainer (read + manage)' },
+  { value: 'sync_operator', label: 'Sync Operator (read + sync)' },
+];
+
+type DomainDelegationPanelProps = {
+  form: DomainGrantFormState;
+  isSaving: boolean;
+  permissions: KnowledgeDomainPermissionListResponse['permissions'];
+  subjects: KnowledgeDelegationSubjectsResponse;
+  onGrant: () => void;
+  onRevoke: (
+    subjectType: 'team' | 'user',
+    subjectId: string,
+    action: KnowledgeDomainAction,
+  ) => void;
+  setForm: Dispatch<SetStateAction<DomainGrantFormState>>;
+};
+
+export function DomainDelegationPanel({
+  form,
+  isSaving,
+  permissions,
+  subjects,
+  onGrant,
+  onRevoke,
+  setForm,
+}: DomainDelegationPanelProps) {
+  const subjectOptions = form.subject_type === 'team' ? subjects.teams : subjects.users;
+  return (
+    <section className="rounded-lg border border-blue-200 bg-blue-50/40 p-4">
+      <div className="mb-2 flex items-center gap-2">
+        <Users className="h-4 w-4 text-blue-700" />
+        <h2 className="text-sm font-bold text-slate-900">
+          Knowledge 관리 위임
+        </h2>
+      </div>
+      <p className="mb-4 text-xs text-slate-600">
+        Team에 관리 역할을 먼저 위임합니다. 이 권한은 KB use나 문서 원문 접근을
+        자동으로 부여하지 않습니다.
+      </p>
+      <div className="grid gap-2 md:grid-cols-[120px_1fr_180px_auto]">
+        <select
+          value={form.subject_type}
+          onChange={(event) =>
+            setForm((current) => ({
+              ...current,
+              subject_type: event.target.value as 'team' | 'user',
+              subject_id: '',
+            }))
+          }
+          className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm"
+        >
+          <option value="team">team</option>
+          <option value="user">user</option>
+        </select>
+        <select
+          value={form.subject_id}
+          onChange={(event) =>
+            setForm((current) => ({ ...current, subject_id: event.target.value }))
+          }
+          className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm"
+        >
+          <option value="">대상 선택</option>
+          {subjectOptions.map((subject) => (
+            <option key={subject.subject_id} value={subject.subject_id}>
+              {subject.subject_safe_label}
+            </option>
+          ))}
+        </select>
+        <select
+          value={form.permission_action}
+          onChange={(event) =>
+            setForm((current) => ({
+              ...current,
+              permission_action: event.target.value as KnowledgeDomainAction,
+            }))
+          }
+          className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm"
+        >
+          {domainActions.map((action) => (
+            <option key={action.value} value={action.value}>
+              {action.label}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          onClick={onGrant}
+          disabled={isSaving || !form.subject_id}
+          className="rounded-md bg-blue-700 px-3 py-2 text-sm font-semibold text-white disabled:bg-slate-300"
+        >
+          위임
+        </button>
+      </div>
+      {permissions.length > 0 && (
+        <div className="mt-4 grid gap-2 md:grid-cols-2">
+          {permissions.map((permission) => (
+            <div
+              key={permission.permission_id}
+              className="flex items-center justify-between rounded-md border border-blue-100 bg-white px-3 py-2 text-sm"
+            >
+              <span className="min-w-0 truncate">
+                <strong>{permission.subject_safe_label}</strong>{' '}
+                <span className="text-slate-500">
+                  {permission.permission_action}
+                  {permission.is_expired ? ' · expired' : ''}
+                </span>
+              </span>
+              <button
+                type="button"
+                onClick={() =>
+                  onRevoke(
+                    permission.subject_type,
+                    permission.subject_id,
+                    permission.permission_action,
+                  )
+                }
+                disabled={isSaving}
+                className="rounded-md p-2 text-slate-500 hover:bg-red-50 hover:text-red-600"
+                aria-label="Knowledge 관리 위임 회수"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
 
 type CollectionSidebarProps = {
   capabilities: CollectionCapabilities;
@@ -224,6 +374,7 @@ type CollectionDetailPanelProps = {
   isSaving: boolean;
   items: KnowledgeCollectionItemResponse[];
   permissions: KnowledgeCollectionPermissionResponse[];
+  subjects: KnowledgeDelegationSubjectsResponse;
   onArchive: () => void;
   onGrantPermission: () => void;
   onLinkCandidate: (candidateId: string) => void;
@@ -247,6 +398,7 @@ export function CollectionDetailPanel({
   isSaving,
   items,
   permissions,
+  subjects,
   onArchive,
   onGrantPermission,
   onLinkCandidate,
@@ -269,6 +421,7 @@ export function CollectionDetailPanel({
   return (
     <div className="space-y-6 p-5">
       <CollectionHeader
+        canArchive={collection.can_manage || capabilities.can_manage_lifecycle}
         collection={collection}
         isSaving={isSaving}
         onArchive={onArchive}
@@ -276,6 +429,7 @@ export function CollectionDetailPanel({
 
       <section className="grid gap-4 md:grid-cols-2">
         <CollectionInfoPanel
+          canManageCatalog={capabilities.can_manage_catalog}
           collection={collection}
           editForm={editForm}
           isSaving={isSaving}
@@ -293,8 +447,11 @@ export function CollectionDetailPanel({
       </section>
 
       <CollectionItemsPanel
+        acknowledgePublic={acknowledgePublic}
         candidates={candidates}
         collection={collection}
+        canManageCatalog={capabilities.can_manage_catalog}
+        canManagePublicMembership={capabilities.can_change_public_visibility}
         isDetailLoading={isDetailLoading}
         isSaving={isSaving}
         items={items}
@@ -303,10 +460,12 @@ export function CollectionDetailPanel({
       />
 
       <CollectionPermissionsPanel
+        canDelegatePermissions={capabilities.can_delegate_permissions}
         collection={collection}
         grantForm={grantForm}
         isSaving={isSaving}
         permissions={permissions}
+        subjects={subjects}
         onGrantPermission={onGrantPermission}
         onRevokePermission={onRevokePermission}
         setGrantForm={setGrantForm}
@@ -318,12 +477,14 @@ export function CollectionDetailPanel({
 }
 
 type CollectionHeaderProps = {
+  canArchive: boolean;
   collection: KnowledgeCollectionResponse;
   isSaving: boolean;
   onArchive: () => void;
 };
 
 function CollectionHeader({
+  canArchive,
   collection,
   isSaving,
   onArchive,
@@ -352,7 +513,7 @@ function CollectionHeader({
       <button
         type="button"
         onClick={onArchive}
-        disabled={isSaving || !collection.can_manage}
+        disabled={isSaving || !canArchive}
         className="inline-flex items-center justify-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:text-slate-300"
       >
         <Archive className="h-4 w-4" />
@@ -363,6 +524,7 @@ function CollectionHeader({
 }
 
 type CollectionInfoPanelProps = {
+  canManageCatalog: boolean;
   collection: KnowledgeCollectionResponse;
   editForm: CollectionFormState;
   isSaving: boolean;
@@ -371,13 +533,15 @@ type CollectionInfoPanelProps = {
 };
 
 function CollectionInfoPanel({
+  canManageCatalog,
   collection,
   editForm,
   isSaving,
   onUpdateCollection,
   setEditForm,
 }: CollectionInfoPanelProps) {
-  const isEditable = collection.can_manage && !collection.is_system_managed;
+  const isEditable =
+    (collection.can_manage || canManageCatalog) && !collection.is_system_managed;
 
   return (
     <div className="rounded-lg border border-slate-200 p-4">
@@ -460,8 +624,8 @@ function CollectionVisibilityPanel({
               className="mt-1"
             />
             <span>
-              public 전환 시 execution subject 없는 RAG 후보가 될 수 있음을
-              확인했습니다.
+              public 전환과 public Collection의 KB 연결 변경이 execution
+              subject 없는 RAG 후보 범위에 영향을 줄 수 있음을 확인했습니다.
             </span>
           </label>
           <div className="mt-4 flex gap-2">
@@ -497,6 +661,9 @@ function CollectionVisibilityPanel({
 }
 
 type CollectionItemsPanelProps = {
+  acknowledgePublic: boolean;
+  canManageCatalog: boolean;
+  canManagePublicMembership: boolean;
   candidates: KnowledgeCollectionLinkCandidate[];
   collection: KnowledgeCollectionResponse;
   isDetailLoading: boolean;
@@ -507,6 +674,9 @@ type CollectionItemsPanelProps = {
 };
 
 function CollectionItemsPanel({
+  acknowledgePublic,
+  canManageCatalog,
+  canManagePublicMembership,
   candidates,
   collection,
   isDetailLoading,
@@ -515,6 +685,10 @@ function CollectionItemsPanel({
   onLinkCandidate,
   onUnlinkItem,
 }: CollectionItemsPanelProps) {
+  const canMutateMembership =
+    collection.visibility === 'public'
+      ? canManagePublicMembership && acknowledgePublic
+      : collection.can_manage || canManageCatalog;
   return (
     <section className="rounded-lg border border-slate-200 p-4">
       <div className="mb-3 flex items-center gap-2">
@@ -547,9 +721,7 @@ function CollectionItemsPanel({
                   type="button"
                   onClick={() => onUnlinkItem(item.item_id)}
                   disabled={
-                    isSaving ||
-                    !collection.can_manage ||
-                    !item.can_manage_kb
+                    isSaving || !canMutateMembership
                   }
                   className="rounded-md p-2 text-slate-500 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:text-slate-300"
                   aria-label="KB 연결 해제"
@@ -575,7 +747,9 @@ function CollectionItemsPanel({
                 <button
                   type="button"
                   onClick={() => onLinkCandidate(candidate.knowledge_base_id)}
-                  disabled={isSaving || candidate.disabled}
+                  disabled={
+                    isSaving || candidate.disabled || !canMutateMembership
+                  }
                   className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
                 >
                   추가
@@ -590,31 +764,38 @@ function CollectionItemsPanel({
 }
 
 type CollectionPermissionsPanelProps = {
+  canDelegatePermissions: boolean;
   collection: KnowledgeCollectionResponse;
   grantForm: GrantFormState;
   isSaving: boolean;
   permissions: KnowledgeCollectionPermissionResponse[];
+  subjects: KnowledgeDelegationSubjectsResponse;
   onGrantPermission: () => void;
   onRevokePermission: (permissionId: string) => void;
   setGrantForm: Dispatch<SetStateAction<GrantFormState>>;
 };
 
 function CollectionPermissionsPanel({
+  canDelegatePermissions,
   collection,
   grantForm,
   isSaving,
   permissions,
+  subjects,
   onGrantPermission,
   onRevokePermission,
   setGrantForm,
 }: CollectionPermissionsPanelProps) {
+  const canManagePermissions = collection.can_manage || canDelegatePermissions;
+  const subjectOptions =
+    grantForm.subject_type === 'team' ? subjects.teams : subjects.users;
   return (
     <section className="rounded-lg border border-slate-200 p-4">
       <div className="mb-3 flex items-center gap-2">
         <Users className="h-4 w-4 text-slate-600" />
         <h3 className="text-sm font-bold text-slate-900">권한</h3>
       </div>
-      {collection.can_manage ? (
+      {canManagePermissions ? (
         <div className="mb-4 grid gap-2 md:grid-cols-[120px_1fr_140px_auto]">
           <select
             value={grantForm.subject_type}
@@ -622,6 +803,7 @@ function CollectionPermissionsPanel({
               setGrantForm((current) => ({
                 ...current,
                 subject_type: event.target.value as 'team' | 'user',
+                subject_id: '',
               }))
             }
             className="rounded-md border border-slate-200 px-3 py-2 text-sm"
@@ -629,7 +811,7 @@ function CollectionPermissionsPanel({
             <option value="team">team</option>
             <option value="user">user</option>
           </select>
-          <input
+          <select
             value={grantForm.subject_id}
             onChange={(event) =>
               setGrantForm((current) => ({
@@ -637,22 +819,28 @@ function CollectionPermissionsPanel({
                 subject_id: event.target.value,
               }))
             }
-            placeholder="subject id"
             className="rounded-md border border-slate-200 px-3 py-2 text-sm"
-          />
+          >
+            <option value="">대상 선택</option>
+            {subjectOptions.map((subject) => (
+              <option key={subject.subject_id} value={subject.subject_id}>
+                {subject.subject_safe_label}
+              </option>
+            ))}
+          </select>
           <select
-            value={grantForm.permission_action}
+            value={grantForm.role_bundle}
             onChange={(event) =>
               setGrantForm((current) => ({
                 ...current,
-                permission_action: event.target.value as KnowledgeCollectionAction,
+                role_bundle: event.target.value as KnowledgeCollectionRoleBundle,
               }))
             }
             className="rounded-md border border-slate-200 px-3 py-2 text-sm"
           >
-            {collectionActions.map((action) => (
-              <option key={action} value={action}>
-                {action}
+            {collectionRoleBundles.map((bundle) => (
+              <option key={bundle.value} value={bundle.value}>
+                {bundle.label}
               </option>
             ))}
           </select>
@@ -667,7 +855,7 @@ function CollectionPermissionsPanel({
         </div>
       ) : (
         <p className="mb-4 text-sm text-slate-500">
-          권한 관리는 collection.manage 권한이 필요합니다.
+          권한 관리는 collection.manage 또는 Knowledge permission_delegate가 필요합니다.
         </p>
       )}
       {permissions.length === 0 ? (
@@ -690,7 +878,7 @@ function CollectionPermissionsPanel({
               <button
                 type="button"
                 onClick={() => onRevokePermission(permission.permission_id)}
-                disabled={isSaving || !collection.can_manage}
+                disabled={isSaving || !canManagePermissions}
                 className="rounded-md p-2 text-slate-500 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:text-slate-300"
                 aria-label="권한 회수"
               >

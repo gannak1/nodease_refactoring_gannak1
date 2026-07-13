@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { knowledgeApi } from '@/app/features/knowledge/api/knowledgeApi';
+import type { KnowledgeBaseDetailResponse } from '@/app/features/knowledge/types/Knowledge';
 import {
   fetchEligibleKnowledgeBases,
   sanitizeSelectedKnowledgeBases,
@@ -14,7 +15,10 @@ vi.mock('@/app/features/knowledge/api/knowledgeApi', () => ({
   },
 }));
 
-const readyDetail = (id: string, name: string) => ({
+const readyDetail = (
+  id: string,
+  name: string,
+): KnowledgeBaseDetailResponse => ({
   id,
   name,
   description: `${name} 설명`,

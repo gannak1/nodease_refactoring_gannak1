@@ -23,11 +23,12 @@ from apps.shared.audit.context import get_current_metadata
 from apps.shared.audit.logger import record_audit
 from apps.shared.audit.manual_ownership import register_manual_audit_ownership
 from apps.shared.db.models.organization import Organization
-from apps.shared.db.models.team import Team
+from apps.shared.db.models.team import Team, TeamMembership
 from apps.shared.db.models.user import User
 from apps.shared.db.session import get_db
 from apps.shared.services.permissions import (
     has_active_organization_membership,
+    has_knowledge_domain_permission,
     has_organization_manager_permission,
     has_organization_scope_access,
 )
@@ -90,6 +91,108 @@ def _has_active_membership(
 ) -> bool:
     """사용자의 active organization membership 보유 여부를 확인한다."""
     return has_active_organization_membership(db, user_id, organization_id)
+
+
+def _has_knowledge_permission_delegate(
+    db: Session,
+    user_id: UUID,
+    organization_id: UUID,
+) -> bool:
+    return has_knowledge_domain_permission(
+        db,
+        user_id,
+        organization_id,
+        "permission_delegate",
+    )
+
+
+def _knowledge_permission_change_authority(
+    db: Session,
+    *,
+    user_id: UUID,
+    organization_id: UUID,
+    knowledge_base_id: UUID,
+    is_organization_manager: bool,
+) -> str | None:
+    if is_organization_manager:
+        return "organization_manager"
+    if PermissionEnforcementService.has_knowledge_base_manage_permission(
+        db,
+        organization_id,
+        knowledge_base_id,
+        user_id,
+    ):
+        return "resource_manager"
+    if _has_knowledge_permission_delegate(db, user_id, organization_id):
+        return "domain_delegate"
+    return None
+
+
+def _actor_is_active_member_of_team(
+    db: Session,
+    *,
+    user_id: UUID,
+    organization_id: UUID,
+    team_id: UUID,
+) -> bool:
+    return (
+        db.query(TeamMembership)
+        .join(Team, Team.id == TeamMembership.team_id)
+        .filter(
+            TeamMembership.grantee_organization_id == organization_id,
+            TeamMembership.user_id == user_id,
+            TeamMembership.team_id == team_id,
+            Team.organization_id == organization_id,
+            Team.is_active.is_(True),
+        )
+        .first()
+        is not None
+    )
+
+
+def _block_domain_delegate_self_escalation(
+    request: Request,
+    db: Session,
+    current_user: User,
+    organization_id: UUID,
+    knowledge_base_id: UUID,
+    *,
+    authority: str,
+    target_user_id: UUID | None = None,
+    target_team_id: UUID | None = None,
+) -> None:
+    if authority != "domain_delegate":
+        return
+    targets_actor = target_user_id == current_user.id
+    if target_team_id is not None:
+        targets_actor = targets_actor or _actor_is_active_member_of_team(
+            db,
+            user_id=current_user.id,
+            organization_id=organization_id,
+            team_id=target_team_id,
+        )
+    if not targets_actor:
+        return
+
+    record_audit(
+        action="knowledge.permission_grant.blocked",
+        category="security",
+        actor_id=str(current_user.id),
+        actor_type="user",
+        target_type="knowledge_base",
+        target_id=knowledge_base_id,
+        metadata={
+            "organization_id": str(organization_id),
+            "policy_reason": "knowledge.self_escalation",
+        },
+    )
+    raise_api_error(
+        request,
+        409,
+        "policy.blocked",
+        "Knowledge permission grant is blocked by policy.",
+        {"policy_reason": "knowledge.self_escalation"},
+    )
 
 
 def _lock_permission_key(db: Session, namespace: str, *ids: UUID) -> None:
@@ -765,7 +868,7 @@ def _authorize_team_knowledge_permission_change(
     organization_id: UUID,
     knowledge_base_id: UUID,
     team_id: UUID,
-) -> tuple[Organization, KnowledgeBase, Team]:
+) -> tuple[Organization, KnowledgeBase, Team, str]:
     """team KB permission 변경 공통 scope와 manage 권한을 검증한다."""
     organization = (
         db.query(Organization)
@@ -833,23 +936,22 @@ def _authorize_team_knowledge_permission_change(
             "Team not found.",
         )
 
-    if (
-        not is_organization_manager
-        and not PermissionEnforcementService.has_knowledge_base_manage_permission(
-            db,
-            organization_id,
-            knowledge_base_id,
-            current_user.id,
-        )
-    ):
+    authority = _knowledge_permission_change_authority(
+        db,
+        user_id=current_user.id,
+        organization_id=organization_id,
+        knowledge_base_id=knowledge_base_id,
+        is_organization_manager=is_organization_manager,
+    )
+    if authority is None:
         raise_api_error(
             request,
             403,
             "permission.denied",
-            "Knowledge Base manage or organization manager permission is required.",
+            "Knowledge permission delegation is required.",
         )
 
-    return organization, knowledge_base, team
+    return organization, knowledge_base, team, authority
 
 
 def _authorize_user_workflow_permission_change(
@@ -1077,7 +1179,7 @@ def _authorize_user_knowledge_permission_change(
     user_id: UUID,
     *,
     require_active_target: bool = True,
-) -> tuple[Organization, KnowledgeBase, User | None]:
+) -> tuple[Organization, KnowledgeBase, User | None, str]:
     """user KB permission 변경 공통 scope와 manage 권한을 검증한다."""
     organization = (
         db.query(Organization)
@@ -1158,23 +1260,22 @@ def _authorize_user_knowledge_permission_change(
                 "User not found.",
             )
 
-    if (
-        not is_organization_manager
-        and not PermissionEnforcementService.has_knowledge_base_manage_permission(
-            db,
-            organization_id,
-            knowledge_base_id,
-            current_user.id,
-        )
-    ):
+    authority = _knowledge_permission_change_authority(
+        db,
+        user_id=current_user.id,
+        organization_id=organization_id,
+        knowledge_base_id=knowledge_base_id,
+        is_organization_manager=is_organization_manager,
+    )
+    if authority is None:
         raise_api_error(
             request,
             403,
             "permission.denied",
-            "Knowledge Base manage or organization manager permission is required.",
+            "Knowledge permission delegation is required.",
         )
 
-    return organization, knowledge_base, target_user
+    return organization, knowledge_base, target_user, authority
 
 
 def _authorize_workflow_permission_read(
@@ -1379,20 +1480,19 @@ def _authorize_knowledge_permission_read(
             "Knowledge Base not found.",
         )
 
-    if (
-        not is_organization_manager
-        and not PermissionEnforcementService.has_knowledge_base_manage_permission(
-            db,
-            organization_id,
-            knowledge_base_id,
-            current_user.id,
-        )
-    ):
+    authority = _knowledge_permission_change_authority(
+        db,
+        user_id=current_user.id,
+        organization_id=organization_id,
+        knowledge_base_id=knowledge_base_id,
+        is_organization_manager=is_organization_manager,
+    )
+    if authority is None:
         raise_api_error(
             request,
             403,
             "permission.denied",
-            "Knowledge Base manage or organization manager permission is required.",
+            "Knowledge permission delegation is required.",
         )
 
     return organization, knowledge_base
@@ -2126,13 +2226,22 @@ def put_team_knowledge_permission(
     """team에 KB 권한을 부여하거나 갱신하는 PUT endpoint."""
     current_user = _authenticate(request, db, auth_token)
     organization_id = parse_organization_id(request, x_organization_id)
-    _authorize_team_knowledge_permission_change(
+    _, _, _, authority = _authorize_team_knowledge_permission_change(
         request,
         db,
         current_user,
         organization_id,
         knowledge_base_id,
         team_id,
+    )
+    _block_domain_delegate_self_escalation(
+        request,
+        db,
+        current_user,
+        organization_id,
+        knowledge_base_id,
+        authority=authority,
+        target_team_id=team_id,
     )
 
     now = datetime.now(timezone.utc)
@@ -2241,13 +2350,22 @@ def put_user_knowledge_permission(
     """user에 KB 직접 권한을 부여하거나 갱신하는 PUT endpoint."""
     current_user = _authenticate(request, db, auth_token)
     organization_id = parse_organization_id(request, x_organization_id)
-    _authorize_user_knowledge_permission_change(
+    _, _, _, authority = _authorize_user_knowledge_permission_change(
         request,
         db,
         current_user,
         organization_id,
         knowledge_base_id,
         user_id,
+    )
+    _block_domain_delegate_self_escalation(
+        request,
+        db,
+        current_user,
+        organization_id,
+        knowledge_base_id,
+        authority=authority,
+        target_user_id=user_id,
     )
 
     now = datetime.now(timezone.utc)

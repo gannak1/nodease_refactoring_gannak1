@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from apps.shared.db.models.knowledge import KnowledgeBase
@@ -13,11 +14,13 @@ from apps.shared.db.models.organization_membership import (
 )
 from apps.shared.db.models.team import (
     Team,
+    TeamKnowledgeDomainPermission,
     TeamKnowledgePermission,
     TeamLLMPermission,
     TeamMailCredentialPermission,
     TeamMembership,
     TeamWorkflowPermission,
+    UserKnowledgeDomainPermission,
     UserKnowledgePermission,
     UserLLMPermission,
     UserMailCredentialPermission,
@@ -32,6 +35,7 @@ from apps.shared.permissions import (
     AUTH_STATE_MANAGER,
     AUTH_STATE_NONE,
     AUTH_STATE_RANK,
+    KNOWLEDGE_DOMAIN_ACTIONS,
     knowledge_base_auth_state_allows,
     llm_credential_auth_state_allows,
     mail_credential_auth_state_allows,
@@ -298,23 +302,27 @@ def _knowledge_base_scope(
     db: Session,
     knowledge_base_id: Any,
     organization_id: Any = None,
+    *,
+    include_archived: bool = False,
 ) -> tuple[Optional[KnowledgeBase], Optional[uuid.UUID]]:
     knowledge_base_uuid = coerce_uuid(knowledge_base_id)
     requested_organization_uuid = coerce_uuid(organization_id)
     if knowledge_base_uuid is None:
         return None, None
 
-    knowledge_base = (
-        db.query(KnowledgeBase)
-        .filter(
-            KnowledgeBase.id == knowledge_base_uuid,
-            KnowledgeBase.lifecycle_state == "active",
-        )
-        .first()
+    query = db.query(KnowledgeBase).filter(KnowledgeBase.id == knowledge_base_uuid)
+    query = query.filter(
+        KnowledgeBase.lifecycle_state != "deleted"
+        if include_archived
+        else KnowledgeBase.lifecycle_state == "active"
     )
+    knowledge_base = query.first()
     if not knowledge_base:
         return None, None
-    if getattr(knowledge_base, "lifecycle_state", "active") != "active":
+    lifecycle_state = getattr(knowledge_base, "lifecycle_state", "active")
+    if lifecycle_state == "deleted" or (
+        lifecycle_state != "active" and not include_archived
+    ):
         return None, None
 
     knowledge_base_organization_uuid = coerce_uuid(knowledge_base.organization_id)
@@ -710,10 +718,15 @@ def get_effective_knowledge_base_auth_state(
     user_id: Any,
     knowledge_base_id: Any,
     organization_id: Any = None,
+    *,
+    include_archived: bool = False,
 ) -> str:
     user_uuid = coerce_uuid(user_id)
     knowledge_base, organization_uuid = _knowledge_base_scope(
-        db, knowledge_base_id, organization_id
+        db,
+        knowledge_base_id,
+        organization_id,
+        include_archived=include_archived,
     )
     if user_uuid is None or knowledge_base is None or organization_uuid is None:
         return AUTH_STATE_NONE
@@ -765,14 +778,110 @@ def has_knowledge_base_permission(
     knowledge_base_id: Any,
     action: str,
     organization_id: Any = None,
+    *,
+    include_archived: bool = False,
 ) -> bool:
     auth_state = get_effective_knowledge_base_auth_state(
         db,
         user_id,
         knowledge_base_id,
         organization_id=organization_id,
+        include_archived=include_archived,
     )
     return knowledge_base_auth_state_allows(auth_state, action)
+
+
+def get_effective_knowledge_domain_actions(
+    db: Session,
+    user_id: Any,
+    organization_id: Any,
+    *,
+    now: datetime | None = None,
+) -> set[str]:
+    """Return active additive Knowledge management actions for one organization."""
+
+    user_uuid = coerce_uuid(user_id)
+    organization_uuid = coerce_uuid(organization_id)
+    if user_uuid is None or organization_uuid is None:
+        return set()
+
+    organization_auth_state = get_organization_auth_state(
+        db, user_uuid, organization_uuid
+    )
+    if organization_auth_state == AUTH_STATE_MANAGER:
+        return set(KNOWLEDGE_DOMAIN_ACTIONS)
+    if organization_auth_state != ORGANIZATION_AUTH_MEMBER:
+        return set()
+
+    evaluated_at = now or datetime.now(timezone.utc)
+    team_rows = (
+        db.query(
+            TeamKnowledgeDomainPermission.permission_action,
+            TeamKnowledgeDomainPermission.expires_at,
+        )
+        .join(
+            TeamMembership,
+            TeamMembership.team_id == TeamKnowledgeDomainPermission.team_id,
+        )
+        .join(Team, Team.id == TeamKnowledgeDomainPermission.team_id)
+        .filter(
+            TeamMembership.user_id == user_uuid,
+            TeamMembership.grantee_organization_id == organization_uuid,
+            TeamKnowledgeDomainPermission.organization_id == organization_uuid,
+            Team.organization_id == organization_uuid,
+            Team.is_active.is_(True),
+        )
+        .all()
+    )
+    user_rows = (
+        db.query(
+            UserKnowledgeDomainPermission.permission_action,
+            UserKnowledgeDomainPermission.expires_at,
+        )
+        .filter(
+            UserKnowledgeDomainPermission.user_id == user_uuid,
+            UserKnowledgeDomainPermission.organization_id == organization_uuid,
+        )
+        .all()
+    )
+
+    actions: set[str] = set()
+    for row in [*team_rows, *user_rows]:
+        action, expires_at = _knowledge_domain_row_values(row)
+        if action not in KNOWLEDGE_DOMAIN_ACTIONS:
+            continue
+        if expires_at is not None and _as_aware_utc(expires_at) <= evaluated_at:
+            continue
+        actions.add(action)
+    return actions
+
+
+def has_knowledge_domain_permission(
+    db: Session,
+    user_id: Any,
+    organization_id: Any,
+    action: str,
+) -> bool:
+    if action not in KNOWLEDGE_DOMAIN_ACTIONS:
+        return False
+    return action in get_effective_knowledge_domain_actions(
+        db, user_id, organization_id
+    )
+
+
+def _knowledge_domain_row_values(row: Any) -> tuple[str, datetime | None]:
+    mapping = getattr(row, "_mapping", None)
+    if mapping is not None:
+        return str(mapping["permission_action"]), mapping["expires_at"]
+    if isinstance(row, tuple):
+        return str(row[0]), row[1]
+    return str(row.permission_action), row.expires_at
+
+
+def _as_aware_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def canonical_effective_auth_state(auth_state: Any) -> str:

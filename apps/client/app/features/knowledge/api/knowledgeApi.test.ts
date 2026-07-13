@@ -14,11 +14,13 @@ vi.mock('@/lib/apiClient', () => ({
     get: vi.fn(),
     patch: vi.fn(),
     post: vi.fn(),
+    put: vi.fn(),
   },
 }));
 
 import { knowledgeApi, RAGAgentStreamEvent } from './knowledgeApi';
 import { apiClient } from '@/lib/apiClient';
+import { getStoredActiveOrganizationId } from '@/lib/activeOrganization';
 
 const streamResponse = (chunks: Array<string | Uint8Array>, status = 200): Response => {
   const encoder = new TextEncoder();
@@ -44,6 +46,24 @@ const payload = {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+describe('knowledgeApi.getProgressUrl', () => {
+  it('includes the active organization for native EventSource authorization', () => {
+    vi.mocked(getStoredActiveOrganizationId).mockReturnValueOnce('org/with space');
+
+    expect(knowledgeApi.getProgressUrl('document-1')).toBe(
+      'http://localhost:8000/api/v1/rag/document/document-1/progress?organizationId=org%2Fwith%20space',
+    );
+  });
+
+  it('fails closed when the active organization is missing', () => {
+    vi.mocked(getStoredActiveOrganizationId).mockReturnValueOnce(null);
+
+    expect(() => knowledgeApi.getProgressUrl('document-1')).toThrow(
+      'Active organization is required for document progress.',
+    );
+  });
 });
 
 describe('knowledgeApi.streamAgentAnswer', () => {
@@ -417,6 +437,59 @@ describe('knowledgeApi collection management', () => {
     expect(apiClient.post).toHaveBeenCalledWith(
       '/knowledge/collections/collection-1/items',
       { knowledge_base_id: 'kb-1' },
+    );
+  });
+
+  it('applies Collection role bundles through the transactional endpoint', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce({
+      data: { permissions: [] },
+    });
+
+    await knowledgeApi.grantKnowledgeCollectionPermissionBundle('collection-1', {
+      subject_type: 'team',
+      subject_id: 'team-1',
+      role_bundle: 'workflow_router',
+    });
+
+    expect(apiClient.post).toHaveBeenCalledWith(
+      '/knowledge/collections/collection-1/permissions/bundles',
+      {
+        subject_type: 'team',
+        subject_id: 'team-1',
+        role_bundle: 'workflow_router',
+      },
+    );
+  });
+
+  it('sends public membership acknowledgement when unlinking', async () => {
+    vi.mocked(apiClient.delete).mockResolvedValueOnce({ data: undefined });
+
+    await knowledgeApi.unlinkKnowledgeCollectionItem(
+      'collection-1',
+      'item-1',
+      true,
+    );
+
+    expect(apiClient.delete).toHaveBeenCalledWith(
+      '/knowledge/collections/collection-1/items/item-1',
+      {
+        params: { acknowledged_public_runtime_exposure: true },
+      },
+    );
+  });
+
+  it('grants Knowledge domain actions to a Team', async () => {
+    vi.mocked(apiClient.put).mockResolvedValueOnce({ data: undefined });
+
+    await knowledgeApi.grantKnowledgeDomainPermission({
+      subject_type: 'team',
+      subject_id: 'team-1',
+      permission_action: 'catalog_manage',
+    });
+
+    expect(apiClient.put).toHaveBeenCalledWith(
+      '/knowledge/domain-permissions/teams/team-1/catalog_manage',
+      { expires_at: null },
     );
   });
 });

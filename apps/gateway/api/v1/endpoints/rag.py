@@ -13,6 +13,7 @@ from fastapi import (
     Form,
     Header,
     HTTPException,
+    Query,
     Request,
     UploadFile,
 )
@@ -31,6 +32,17 @@ from apps.gateway.services.ingestion.service import (
     finalize_stale_processing_start,
     recover_timed_out_document_with_artifacts,
 )
+from apps.gateway.services.knowledge_authorization_service import (
+    KnowledgeAuthorizationService,
+    KnowledgePermissionDenied,
+    KnowledgeResourceHidden,
+)
+from apps.gateway.services.knowledge_base_query_service import (
+    KnowledgeBaseCreateFailed,
+    KnowledgeBaseQueryService,
+    KnowledgeSchemaNotReady,
+    KnowledgeValidationError,
+)
 from apps.gateway.services.rag_agent_answer_service import RAGAgentAnswerService
 from apps.gateway.services.retrieval import RetrievalService
 from apps.gateway.services.storage import get_storage_service
@@ -45,12 +57,12 @@ from apps.shared.audit.logger import record_audit
 from apps.shared.db.models.connection import Connection
 from apps.shared.db.models.knowledge import Document, KnowledgeBase, SourceType
 from apps.shared.db.models.user import User
-from apps.shared.permissions import knowledge_base_auth_state_allows
 from apps.shared.schemas.rag import (
     ApiPreviewRequest,
     ChunkPreview,
     DocumentAnalyzeResponse,
     IngestionResponse,
+    KnowledgeBaseCreate,
     RAGAgentAnswerRequest,
     RAGAgentAnswerResponse,
     RAGAgentSSEEvent,
@@ -65,10 +77,7 @@ from apps.shared.services.egress_guard import (
 )
 from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
 from apps.shared.services.permission_audit import record_resource_permission_denied
-from apps.shared.services.permissions import (
-    get_effective_knowledge_base_auth_state,
-    has_organization_scope_access,
-)
+from apps.shared.services.permissions import has_organization_scope_access
 from apps.shared.services.rag_filters import normalize_metadata_filter
 from apps.shared.services.rag_hierarchy import (
     RAGHierarchyError,
@@ -167,6 +176,48 @@ def _authorize_rag_use(
     )
     setattr(exc, "audit_recorded", True)
     raise exc
+
+
+def _authorize_knowledge_document_action(
+    request: Request,
+    db: Session,
+    current_user: User,
+    organization_id: UUID,
+    document_id: UUID,
+    action: str,
+) -> tuple[KnowledgeBase, Document]:
+    document = db.query(Document).filter(Document.id == document_id).first()
+    if document is None:
+        raise_api_error(
+            request,
+            404,
+            "resource.hidden",
+            "Document not found.",
+        )
+    try:
+        return KnowledgeAuthorizationService(
+            db,
+            user_id=current_user.id,
+            organization_id=organization_id,
+        ).load_document(
+            document.knowledge_base_id,
+            document_id,
+            action,
+        )
+    except KnowledgeResourceHidden:
+        raise_api_error(
+            request,
+            404,
+            "resource.hidden",
+            "Document not found.",
+        )
+    except KnowledgePermissionDenied:
+        raise_api_error(
+            request,
+            403,
+            "permission.denied",
+            "Knowledge permission is required.",
+        )
 
 
 def _record_rag_retrieve_audit(
@@ -486,12 +537,23 @@ def _prepare_db_source(db: Session, user: User, connection_id: Optional[UUID]):
 @router.post("/document/{document_id}/analyze", response_model=DocumentAnalyzeResponse)
 async def analyze_document(
     document_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
     문서 분석 API: 페이지 수 및 LlamaParse 비용 예측 반환
     """
+    organization_id = parse_organization_id(request, x_organization_id)
+    _authorize_knowledge_document_action(
+        request,
+        db,
+        current_user,
+        organization_id,
+        document_id,
+        "write",
+    )
     ingestion_service = IngestionService(db, user_id=current_user.id)
     try:
         result = await ingestion_service.analyze_document(document_id)
@@ -505,19 +567,28 @@ async def analyze_document(
 
 
 @router.post("/document/{document_id}/confirm")
+@audit(AuditAction.DOCUMENT_PROCESS, target_param="document_id")
 async def confirm_document_parsing(
     document_id: UUID,
+    request: Request,
     background_tasks: BackgroundTasks,
     strategy: str = "llamaparse",  # "llamaparse" or "general"
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
     비용 승인 대기 중인 문서의 파싱을 재개합니다.
     """
-    doc = db.query(Document).filter(Document.id == document_id).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    organization_id = parse_organization_id(request, x_organization_id)
+    _, doc = _authorize_knowledge_document_action(
+        request,
+        db,
+        current_user,
+        organization_id,
+        document_id,
+        "write",
+    )
 
     if doc.status != "waiting_for_approval":
         raise HTTPException(status_code=400, detail="Document remains in invalid state")
@@ -538,22 +609,23 @@ async def confirm_document_parsing(
 @audit(AuditAction.DOCUMENT_DELETE, target_param="document_id")
 def delete_document(
     document_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
     문서를 삭제합니다. (연관된 청크도 자동 삭제됨)
     """
-    # 1. 문서 조회 (권한 확인)
-    doc = (
-        db.query(Document)
-        .join(KnowledgeBase)
-        .filter(Document.id == document_id, KnowledgeBase.user_id == current_user.id)
-        .first()
+    organization_id = parse_organization_id(request, x_organization_id)
+    _, doc = _authorize_knowledge_document_action(
+        request,
+        db,
+        current_user,
+        organization_id,
+        document_id,
+        "write",
     )
-
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
 
     # 2. 파일 삭제 (S3/Local 자동 분기)
     if doc.file_path:
@@ -689,6 +761,8 @@ async def search_test_pure(
 @router.get("/document/{document_id}/progress")
 async def get_document_progress(
     document_id: UUID,
+    request: Request,
+    organization_id_query: UUID = Query(..., alias="organizationId"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -701,6 +775,15 @@ async def get_document_progress(
     from fastapi.responses import StreamingResponse
 
     from apps.shared.pubsub import get_redis_client
+
+    _authorize_knowledge_document_action(
+        request,
+        db,
+        current_user,
+        organization_id_query,
+        document_id,
+        "read",
+    )
 
     async def event_generator():
         while True:
@@ -876,79 +959,64 @@ def _get_or_create_knowledge_base(
         # 이름 결정: 입력된 이름 -> (파일 있으면 파일명) -> "API Source"
         kb_name = name if name else (file.filename if file else "API Source")
 
-        new_kb = KnowledgeBase(
-            user_id=user.id,
-            organization_id=organization_id,
-            name=kb_name,
-            description=description,
-            embedding_model=ai_model,
-            top_k=top_k,
-            similarity_threshold=similarity_threshold,
-        )
-        db.add(new_kb)
-        db.commit()
-        db.refresh(new_kb)
-        return new_kb.id, ai_model
+        try:
+            created = KnowledgeBaseQueryService(db).create(
+                KnowledgeBaseCreate(
+                    name=kb_name,
+                    description=description,
+                    embedding_model=ai_model,
+                ),
+                user_id=user.id,
+                organization_id=organization_id,
+                top_k=top_k,
+                similarity_threshold=similarity_threshold,
+            )
+        except KnowledgeSchemaNotReady:
+            raise_api_error(
+                request,
+                503,
+                "knowledge.schema_not_ready",
+                "Knowledge database schema is not ready for this operation.",
+            )
+        except KnowledgeValidationError as exc:
+            raise_api_error(
+                request,
+                400,
+                "knowledge.validation_failed",
+                "Knowledge base request validation failed.",
+                {"reason": exc.reason},
+            )
+        except KnowledgeBaseCreateFailed:
+            raise_api_error(
+                request,
+                500,
+                "knowledge.create_failed",
+                "Knowledge base creation failed.",
+            )
+        return created.id, created.embedding_model
 
     else:
-        kb: KnowledgeBase = (
-            db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id).first()
-        )
-        if not kb:
-            raise HTTPException(status_code=404, detail="Knowledge Base not found")
-        if kb.organization_id != organization_id:
-            raise HTTPException(status_code=404, detail="Knowledge Base not found")
-        _authorize_upload_knowledge_base_write(request, db, user, kb)
+        try:
+            kb = KnowledgeAuthorizationService(
+                db,
+                user_id=user.id,
+                organization_id=organization_id,
+            ).load_kb(kb_id, "write")
+        except KnowledgeResourceHidden:
+            raise_api_error(
+                request,
+                404,
+                "resource.hidden",
+                "Knowledge Base not found.",
+            )
+        except KnowledgePermissionDenied:
+            raise_api_error(
+                request,
+                403,
+                "permission.denied",
+                "Knowledge Base write permission is required.",
+            )
         return kb.id, kb.embedding_model
-
-
-def _authorize_upload_knowledge_base_write(
-    request: Request,
-    db: Session,
-    user: User,
-    kb: KnowledgeBase,
-) -> None:
-    if kb.organization_id and not has_organization_scope_access(
-        db,
-        user.id,
-        kb.organization_id,
-    ):
-        raise HTTPException(status_code=404, detail="Knowledge Base not found")
-
-    if kb.user_id == user.id:
-        return
-
-    effective_auth_state = get_effective_knowledge_base_auth_state(
-        db,
-        user.id,
-        kb.id,
-        organization_id=kb.organization_id,
-    )
-    if knowledge_base_auth_state_allows(effective_auth_state, "write"):
-        return
-
-    record_resource_permission_denied(
-        user_id=user.id,
-        resource_type="knowledge_base",
-        resource_id=kb.id,
-        action="write",
-        effective_auth_state=effective_auth_state,
-        organization_id=kb.organization_id,
-        metadata={
-            "request_id": getattr(request.state, "request_id", None),
-            "path": request.url.path,
-        },
-    )
-    exc = HTTPException(
-        status_code=403,
-        detail=error_detail(
-            request,
-            "permission.denied",
-            "Knowledge Base write permission is required.",
-        ),
-    )
-    setattr(exc, "audit_recorded", True)
-    raise exc
 
 
 def _validate_safe_document_filename(filename: str) -> str:

@@ -8,9 +8,12 @@ from apps.gateway.services.knowledge_collection_service import (
     KnowledgeCollectionService,
     KnowledgeCollectionServiceError,
 )
+from apps.shared.db.models.audit_log import AuditLog
+from apps.shared.db.models.knowledge import KnowledgeCollection
 from apps.shared.schemas.knowledge import (
     KnowledgeCollectionCreateRequest,
     KnowledgeCollectionItemLinkRequest,
+    KnowledgeCollectionPermissionBundleGrantRequest,
     KnowledgeCollectionResponse,
     KnowledgeCollectionUpdateRequest,
     KnowledgeCollectionVisibilityRequest,
@@ -21,12 +24,45 @@ class _FakeDb:
     def __init__(self):
         self.committed = False
         self.refreshed = []
+        self.added = []
+        self.operations = []
+
+    def add(self, value):
+        self.added.append(value)
+        self.operations.append(("add", type(value)))
 
     def commit(self):
         self.committed = True
+        self.operations.append(("commit", None))
 
     def refresh(self, value):
         self.refreshed.append(value)
+
+
+class _SubjectQuery:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def join(self, *_args, **_kwargs):
+        return self
+
+    def filter(self, *_args, **_kwargs):
+        return self
+
+    def order_by(self, *_args, **_kwargs):
+        return self
+
+    def all(self):
+        return self.rows
+
+
+class _SubjectDb:
+    def __init__(self, teams, users):
+        self.teams = teams
+        self.users = users
+
+    def query(self, model):
+        return _SubjectQuery(self.teams if model.__name__ == "Team" else self.users)
 
 
 def _service(monkeypatch, db=None):
@@ -36,6 +72,12 @@ def _service(monkeypatch, db=None):
         organization_id=uuid.uuid4(),
     )
     monkeypatch.setattr(service, "_record_collection_audit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(service, "_has_domain_action", lambda action: False)
+    monkeypatch.setattr(
+        service,
+        "_collection_has_source_managed_items",
+        lambda collection_id: False,
+    )
     return service
 
 
@@ -81,7 +123,7 @@ def test_safe_metadata_rejects_raw_source_keys(monkeypatch):
 
 def test_create_collection_rejects_blank_name_after_normalization(monkeypatch):
     service = _service(monkeypatch)
-    monkeypatch.setattr(service, "_require_org_manager", lambda: None)
+    monkeypatch.setattr(service, "_require_org_manager_or_domain", lambda action: None)
 
     with pytest.raises(KnowledgeCollectionServiceError) as exc_info:
         service.create_collection(KnowledgeCollectionCreateRequest(name="   \t  "))
@@ -89,6 +131,169 @@ def test_create_collection_rejects_blank_name_after_normalization(monkeypatch):
     assert exc_info.value.status_code == 400
     assert exc_info.value.code == "validation.failed"
     assert exc_info.value.details == {"field": "name"}
+
+
+def test_delegated_collection_create_commits_collection_and_audit_together(monkeypatch):
+    db = _FakeDb()
+    service = KnowledgeCollectionService(
+        db,
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+    )
+    monkeypatch.setattr(service, "_is_org_manager", lambda: False)
+    monkeypatch.setattr(
+        service,
+        "_has_domain_action",
+        lambda action: action == "catalog_manage",
+    )
+    monkeypatch.setattr(
+        service,
+        "_collection_response",
+        lambda collection: SimpleNamespace(id=collection.id),
+    )
+
+    result = service.create_collection(KnowledgeCollectionCreateRequest(name="HR"))
+
+    assert result.id is not None
+    assert isinstance(db.added[0], KnowledgeCollection)
+    assert isinstance(db.added[1], AuditLog)
+    assert db.operations == [
+        ("add", KnowledgeCollection),
+        ("add", AuditLog),
+        ("commit", None),
+    ]
+    assert db.added[0].safe_metadata == {}
+
+
+def test_catalog_delegate_can_manage_private_membership_without_kb_content_grant(
+    monkeypatch,
+):
+    service = _service(monkeypatch)
+    collection = _collection()
+    kb = SimpleNamespace(id=uuid.uuid4(), source_identity_id=None)
+    monkeypatch.setattr(
+        service,
+        "_has_domain_action",
+        lambda action: action == "catalog_manage",
+    )
+    monkeypatch.setattr(
+        service,
+        "_require_collection_action",
+        lambda *_args, **_kwargs: pytest.fail("resource manage should not be required"),
+    )
+    monkeypatch.setattr(
+        service,
+        "_require_kb_manage",
+        lambda *_args, **_kwargs: pytest.fail("KB content manage should not be required"),
+    )
+
+    service._require_collection_membership_mutation(collection, kb=kb)
+
+
+def test_public_membership_requires_org_manager_ack_and_blocks_source_managed_link(
+    monkeypatch,
+):
+    service = _service(monkeypatch)
+    collection = _collection()
+    collection.safe_metadata = {"visibility": "public"}
+    source_kb = SimpleNamespace(id=uuid.uuid4(), source_identity_id=uuid.uuid4())
+    monkeypatch.setattr(service, "_require_org_manager", lambda: None)
+
+    with pytest.raises(KnowledgeCollectionServiceError) as missing_ack:
+        service._require_collection_membership_mutation(
+            collection,
+            kb=source_kb,
+            adds_public_exposure=True,
+        )
+    assert missing_ack.value.status_code == 400
+
+    with pytest.raises(KnowledgeCollectionServiceError) as source_block:
+        service._require_collection_membership_mutation(
+            collection,
+            kb=source_kb,
+            acknowledged_public_runtime_exposure=True,
+            adds_public_exposure=True,
+        )
+    assert source_block.value.status_code == 409
+    assert source_block.value.details == {
+        "policy_reason": "source_public_exposure_required"
+    }
+
+
+def test_collection_role_bundle_writes_explicit_actions_in_one_transaction(monkeypatch):
+    db = _FakeDb()
+    service = KnowledgeCollectionService(
+        db,
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+    )
+    collection = _collection()
+    actions = []
+
+    monkeypatch.setattr(service, "_collection_or_hidden", lambda _id: collection)
+    monkeypatch.setattr(
+        service,
+        "_require_collection_permission_authority",
+        lambda _collection: "resource_manager",
+    )
+    monkeypatch.setattr(
+        service,
+        "_block_collection_delegate_self_escalation",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def fake_grant(_collection, grant):
+        actions.append(grant.permission_action)
+        row = SimpleNamespace(id=uuid.uuid4())
+        db.add(row)
+        return row, True
+
+    monkeypatch.setattr(service, "_grant_team_permission", fake_grant)
+    monkeypatch.setattr(
+        service,
+        "_team_permission_response",
+        lambda row: SimpleNamespace(permission_id=row.id),
+    )
+
+    result = service.grant_permission_bundle(
+        collection.id,
+        KnowledgeCollectionPermissionBundleGrantRequest(
+            subject_type="team",
+            subject_id=uuid.uuid4(),
+            role_bundle="workflow_router",
+        ),
+    )
+
+    assert actions == ["read", "route"]
+    assert len(result) == 2
+    assert sum(1 for operation in db.operations if operation == ("commit", None)) == 1
+    assert isinstance(db.added[-1], AuditLog)
+    assert db.operations[-1] == ("commit", None)
+
+
+def test_domain_delegation_subjects_return_safe_team_and_user_labels(monkeypatch):
+    db = _SubjectDb(
+        teams=[SimpleNamespace(id=uuid.uuid4(), name="Knowledge Team")],
+        users=[
+            SimpleNamespace(
+                id=uuid.uuid4(),
+                name=None,
+                email="raw-email-must-not-be-returned@example.com",
+            )
+        ],
+    )
+    service = KnowledgeCollectionService(
+        db,
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+    )
+    monkeypatch.setattr(service, "_require_org_manager", lambda: None)
+
+    result = service.list_domain_delegation_subjects()
+
+    assert result.teams[0].subject_safe_label == "Knowledge Team"
+    assert result.users[0].subject_safe_label == "User"
+    assert "@" not in str(result.model_dump())
 
 
 def test_update_collection_rejects_blank_name_after_normalization(monkeypatch):
@@ -177,6 +382,35 @@ def test_public_visibility_requires_acknowledgement(monkeypatch):
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.details == {"field": "acknowledged_public_runtime_exposure"}
+
+
+def test_public_visibility_blocks_source_managed_items_without_approval_primitive(
+    monkeypatch,
+):
+    service = _service(monkeypatch)
+    collection = _collection()
+    monkeypatch.setattr(service, "_collection_or_hidden", lambda collection_id: collection)
+    monkeypatch.setattr(service, "_require_org_manager", lambda: None)
+    monkeypatch.setattr(
+        service,
+        "_collection_has_source_managed_items",
+        lambda collection_id: True,
+    )
+
+    with pytest.raises(KnowledgeCollectionServiceError) as exc_info:
+        service.update_visibility(
+            collection.id,
+            KnowledgeCollectionVisibilityRequest(
+                visibility="public",
+                acknowledged_public_runtime_exposure=True,
+            ),
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.code == "policy.blocked"
+    assert exc_info.value.details == {
+        "policy_reason": "source_public_exposure_required"
+    }
 
 
 def test_public_visibility_sets_only_candidate_flag(monkeypatch):

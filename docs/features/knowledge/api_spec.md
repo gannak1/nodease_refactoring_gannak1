@@ -1,18 +1,20 @@
 # Knowledge API Spec
 
 Status: Draft
-이 문서는 Knowledge feature의 현재 API baseline과 목표 KB 통합 API 계약을 함께 기록한다. MBA-105 목표 API는 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)의 임시 구현 baseline, Workflow RAG anonymous public-only runtime은 [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md), MCP/API source connector와 incremental sync 경계는 [ADR-0020](../../decisions/ADR-0020-knowledge-mcp-incremental-sync-boundary.md), 세부 구현 기준은 [implementation_baseline.md](implementation_baseline.md)를 따른다. Knowledge Skill 관련 API 경계는 [ADR-0015](../../decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)를 따른다.
+이 문서는 Knowledge feature의 현재 API baseline과 목표 KB 통합 API 계약을 함께 기록한다. MBA-105 목표 API는 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)의 임시 구현 baseline, Workflow RAG anonymous public-only runtime은 [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md), MCP/API source connector와 incremental sync 경계는 [ADR-0020](../../decisions/ADR-0020-knowledge-mcp-incremental-sync-boundary.md), MBA-231 위임 관리와 KB RBAC cutover는 [ADR-0034](../../decisions/ADR-0034-knowledge-delegated-administration-and-rbac-boundary.md), 세부 구현 기준은 [implementation_baseline.md](implementation_baseline.md)를 따른다. Knowledge Skill 관련 API 경계는 [ADR-0015](../../decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)를 따른다.
 
 ## Current Baseline Endpoints
 
 | Method | Path | 목적 | 권한 경계 |
 | --- | --- | --- | --- |
-| GET | `/api/v1/knowledge` | 현재 KB 목록 | 현재 구현 기준 owner filtering. `X-Organization-Id`가 있으면 active organization validation 후 `knowledge_bases.organization_id`로 범위를 좁힌다. Header가 없으면 기존 owner-only 동작을 유지한다 |
-| GET | `/api/v1/knowledge/llm-selectable` | Workflow LLM node RAG picker용 KB 후보 목록 | `X-Organization-Id` active organization 필수. 일반 관리 목록의 owner filtering을 사용하지 않고 active organization 안에서 caller가 KB `use` 권한을 가진 KB만 반환한다. 반환 후보는 retrieval-visible `completed` document chunk가 1개 이상 있어야 하며, runtime은 실행 시점 execution subject 기준으로 다시 권한을 평가한다 |
-| POST | `/api/v1/knowledge` | 빈 KB 생성 | `X-Organization-Id`가 있으면 active organization validation 후 해당 organization에 귀속한다. Header가 없으면 기존 primary organization fallback을 유지한다. 최신 Knowledge schema 필수 컬럼이 없거나 schema introspection이 실패하면 500 대신 `503 knowledge.schema_not_ready`로 fail-closed 처리한다 |
-| GET | `/api/v1/knowledge/{kb_id}` | 현재 KB 상세와 문서 상태 | owner 또는 같은 active organization에서 KB `manage`. Detail 응답의 `can_edit_settings`는 owner에게만 true이고 `can_manage_safe_metadata`는 owner 또는 KB manager에게 true다. 최신 `KnowledgeBase` ORM 전체 로드에 의존하지 않아 stale local DB에서 신규 lifecycle/sync 컬럼 누락으로 500이 나지 않아야 한다 |
+| GET | `/api/v1/knowledge` | 현재 KB 목록 | Active organization에서 KB `read`가 허용된 active KB만 반환하고 unauthorized row/count는 생략한다 |
+| GET | `/api/v1/knowledge/llm-selectable` | Workflow LLM node RAG picker용 KB 후보 목록 | `X-Organization-Id` active organization 필수. active organization 안에서 caller가 KB `use` 권한을 가진 KB만 반환한다. 반환 후보는 retrieval-visible `completed` document chunk가 1개 이상 있어야 하며, runtime은 실행 시점 execution subject 기준으로 다시 권한을 평가한다 |
+| POST | `/api/v1/knowledge` | 빈 KB 생성 | Active organization에 KB, 생성자의 user-direct `manager`, canonical audit를 한 transaction에서 생성한다. 필수 schema가 준비되지 않으면 `503 knowledge.schema_not_ready`로 fail-closed 처리한다 |
+| GET | `/api/v1/knowledge/{kb_id}` | 현재 KB 상세와 문서 상태 | Active organization + KB `read`. Detail capability는 `can_read/use/write/read_content/manage`와 파생 UI flag로 반환한다 |
 | GET | `/api/v1/knowledge/{kb_id}/safe-metadata` | allowlisted KB recommendation metadata 조회 | active organization, KB `manage`; 권한 없는 resource는 404로 숨긴다 |
 | PATCH | `/api/v1/knowledge/{kb_id}/safe-metadata` | `safe_label`, `kb_safe_description`, `kb_safe_topics` 수정 | active organization, KB `manage`, sanitizer, audit. 일반 KB 설정 PATCH와 분리한다 |
+| POST | `/api/v1/knowledge/{kb_id}/archive`, `/restore` | Manual KB lifecycle 전이 | KB `manage` 또는 domain `lifecycle_manage`; source-managed KB는 source-owned로 차단 |
+| DELETE | `/api/v1/knowledge/{kb_id}?acknowledged_hard_delete=true` | Manual KB hard delete | Organization manager 전용, explicit acknowledgement, approved retention/legal-hold gate. Production gate가 연결되지 않은 현재 baseline은 `403 policy.denied`로 fail-closed하며, allow된 경우에만 permission cleanup과 audit를 같은 DB transaction에서 처리한다 |
 | POST | `/api/v1/knowledge/candidates/resolve` | Builder/deployment preflight용 safe KB 후보 조회 | active organization, collection route 또는 explicit KB helper |
 | POST | `/api/v1/knowledge/rag-recommendations` | Workflow Builder용 LLM node RAG option 추천 | active organization, candidate resolver safe set, KB 단위 recommendation |
 | POST | `/api/v1/rag/upload` | KB 문서 업로드/색인 요청 | `X-Organization-Id` active organization 필수. 신규 KB는 active organization에 귀속하며 primary organization fallback을 사용하지 않는다. 기존 KB 업로드는 KB organization과 active organization이 일치하고 KB write/manage 권한을 통과해야 한다 |
@@ -20,6 +22,7 @@ Status: Draft
 | POST | `/api/v1/rag/search-test/chat` | 검색+답변 테스트 | active organization, KB use, LLM credential |
 | POST | `/api/v1/rag/agent/answer` | 명시 `knowledge_base_id` 기반 standalone Agent answer | KB use, generation model/credential use |
 | POST | `/api/v1/rag/agent/answer/stream` | standalone Agent answer SSE | KB use, generation model/credential use |
+| GET | `/api/v1/rag/document/{document_id}/progress?organizationId={active_organization_id}` | 문서 처리 상태 SSE | Native EventSource의 custom header 제약 때문에 active organization을 query parameter로 전달한다. Gateway는 stream 생성 전에 active organization + KB `read`를 검증하며, 권한 없는 document의 상태·오류·Redis progress를 노출하지 않는다 |
 | GET | `/api/v1/permissions/knowledge-bases/{knowledge_base_id}` | KB에 부여된 team/user direct permission 목록 | manager 또는 KB `manage`, active organization |
 | PUT | `/api/v1/permissions/knowledge-bases/{knowledge_base_id}/teams/{team_id}` | team KB permission 생성/갱신 | manager 또는 KB `manage`, active organization |
 | PUT | `/api/v1/permissions/knowledge-bases/{knowledge_base_id}/users/{user_id}` | user direct KB permission 생성/갱신 | manager 또는 KB `manage`, active organization |
@@ -28,7 +31,7 @@ Status: Draft
 
 현재 `POST /api/v1/knowledge`는 공백뿐인 `name`, 255자를 초과하는 `name`, 비어 있거나 secret-like/token-like 또는 allowlist 밖 문자를 포함한 `embedding_model`을 DB insert 전에 safe validation error로 거부한다. Validation error response는 raw request value를 echo하지 않고 reason code만 반환한다. KB `name`은 사용자 표시용 label이며 resource identity가 아니므로 같은 organization 안의 동일 `name` 생성을 이름만으로 거부하지 않는다. 같은 제목의 서로 다른 문서, 수동 KB, source-managed KB는 `knowledge_base_id`, protected source identity, sync/lifecycle state, safe metadata로 구분한다. 단, 같은 문서의 version은 여러 개가 동시에 retrieval-visible한 resource로 취급하지 않는다. 내부 문서는 active/head pointer가 가리키는 ready version만 검색 노출하고, 외부 source-managed 문서는 정상 sync/finalization이 완료되면 최신 active ready version으로 교체한다. Sync 실패나 stale 상태에서는 기존 active ready version만 warning과 함께 유지할 수 있으며, 이전/superseded/pre-finalized version은 selectable-ready 또는 retrieval evidence 후보가 아니다. Source-managed KB의 동일 source item 중복 방지는 `source_identity_id`와 source sync lineage invariant로 다루며, KB `name` conflict로 대체하지 않는다.
 
-그 외 `/api/v1/knowledge/*` KB/list/detail/document/process/sync surface, `/api/v1/rag/upload/presigned-url`, `/api/v1/rag/document/*`, `/api/v1/rag/proxy/preview` 계열은 현재 동작 경로로 읽는다. 특정 endpoint가 helper 기반 KB permission enforcement를 명시하지 않는 한, 현재 `/api/v1/knowledge/*` endpoint는 owner/current-behavior filtered surface다. Document content/download/preview surface는 현재 raw 또는 source-derived content를 노출할 수 있으므로, KB 통합 cutover 전 target raw/compliance access 또는 redacted-preview policy로 재분류해야 한다. URL/proxy preview surface는 목표 `OutboundEgressGuard` 정렬 대상이며, 구현이 갱신되기 전에는 target egress 계약을 만족한다고 보지 않는다.
+MBA-231 cutover 이후 `/api/v1/knowledge/*`의 list/detail/settings/document/process/preview/sync와 `/api/v1/rag/upload`, document analyze/confirm/delete/progress는 active organization과 canonical KB action helper를 사용한다. `knowledge_bases.user_id`는 생성자/귀속 정보이며 이 표면의 권한 우회가 아니다. Presigned upload와 URL/proxy preview처럼 아직 KB가 확정되지 않은 표면은 별도 storage/egress 경계를 따르며, raw/source-derived content는 승인된 `content_read` 또는 후속 raw/compliance 정책 없이 노출하지 않는다.
 
 ## Target Endpoint Groups
 
@@ -44,6 +47,7 @@ Status: Draft
 | Source connectors | `/api/v1/knowledge/sources/*` | Source connection, sync, tombstone, ACL status, remediation |
 | Knowledge skills | `/api/v1/knowledge/skills/*` | Provider-neutral skill registry, version, freshness/eval status, safe metadata. 주 사용처는 빌더 단계 LLM node의 RAG 옵션 구성 |
 | 실행 시점 RAG retrieval | 내부 service call | Workflow LLM node의 RAG 옵션 실행 시 collection-routed 또는 KB-candidate-routed retrieval. Builder/preflight 후보 조회는 `/api/v1/knowledge/candidates/resolve`를 사용할 수 있지만, runtime retrieval은 내부 service boundary로 다시 권한을 평가한다 |
+| Knowledge domain permissions | `/api/v1/knowledge/domain-permissions`, `/api/v1/knowledge/domain-capabilities` | Organization manager가 Team/User 관리 action을 위임하고 caller의 safe capability를 조회 |
 
 공개 HTTP path가 필요한 경우에는 별도 API gate review에서 path 이름과 JSON/SSE shape를 확정한다. MBA-105의 필수 계약은 collection listing(`collection.read`), collection routing(`collection.route`), KB content permission, source ACL state, document version citation identity의 분리다. Skill authoring, test, submit-for-review, publish/deprecate, Workflow Playground skill binding API는 아직 승인된 계약이 아니다.
 
@@ -88,6 +92,67 @@ Grant request:
 - Grant/revoke 성공은 permission row 변경과 같은 DB transaction 안에 `team_knowledge_permission.*` 또는 `user_knowledge_permission.*` data-change audit row를 정확히 한 번 기록해야 한다. Core upsert와 bulk delete 경로는 ORM listener에만 의존하지 않는다.
 - Effective KB permission은 organization manager override와 team/user direct grant 중 가장 강한 additive allow다. 직접 grant는 team grant를 낮추거나 deny할 수 없다.
 - Source-managed KB retrieval에서는 KB `use` grant가 있어도 source ACL/requester authorization gate와 final evidence policy를 다시 통과해야 한다.
+
+MBA-231부터 list/grant/revoke는 Organization manager, 해당 KB `manage`, 또는
+domain `permission_delegate`를 허용한다. Domain delegator가 자신 또는 자신이
+active member인 Team에 `viewer/operator/builder/manager` grant를 만드는 요청은
+`409 policy.blocked`와 safe `policy_reason=knowledge.self_escalation`으로 차단한다.
+Resource manager는 이미 해당 KB의 content-plane `manager`이므로 자기 grant를
+갱신하는 행위가 권한을 상승시키지 않지만, 마지막 관리 경로 제거는 recovery
+authority가 남아 있는지 검증한다.
+
+### Knowledge Domain Permission Endpoints
+
+| Method | Path | 목적 | 권한 |
+| --- | --- | --- | --- |
+| GET | `/api/v1/knowledge/domain-capabilities` | 현재 actor의 effective domain action과 UI capability 조회 | active organization member |
+| GET | `/api/v1/knowledge/domain-permissions` | Team/User domain grant 목록 | Organization manager |
+| GET | `/api/v1/knowledge/domain-delegation-subjects` | Team-first safe 위임 대상 목록 | Organization manager |
+| PUT | `/api/v1/knowledge/domain-permissions/teams/{team_id}/{permission_action}` | Team domain grant upsert | Organization manager |
+| DELETE | `/api/v1/knowledge/domain-permissions/teams/{team_id}/{permission_action}` | Team domain grant revoke | Organization manager |
+| PUT | `/api/v1/knowledge/domain-permissions/users/{user_id}/{permission_action}` | User domain grant upsert | Organization manager |
+| DELETE | `/api/v1/knowledge/domain-permissions/users/{user_id}/{permission_action}` | User domain grant revoke | Organization manager |
+
+`permission_action`은 `catalog_manage`, `permission_delegate`,
+`lifecycle_manage`, `sync_manage`만 허용한다. PUT body는 optional `expires_at`만
+받고 unknown field를 거부한다. Team은 같은 organization의 active Team, User는
+같은 organization의 active member여야 한다. Expired row는 list history에 safe
+상태로 표시할 수 있지만 effective capability에는 포함하지 않는다. Domain
+grant/revoke와 audit는 한 transaction이며, raw principal, request payload,
+resource label이나 source metadata를 audit에 저장하지 않는다.
+
+Domain subject 응답은 active Team/User의 opaque id와 safe label만 반환하며 email,
+raw principal, source identity를 포함하지 않는다. UI는 Team을 기본 선택으로 두고
+User direct domain grant는 예외 경로로 제공한다.
+
+### MBA-231 KB Object/Property Authorization Inventory
+
+| Surface/path group | Gate | Scope/hidden response | Response boundary | Audit |
+| --- | --- | --- | --- | --- |
+| `POST /knowledge` | active organization member; creator `manager` bootstrap | active organization required | created KB safe metadata only | KB + creator grant + canonical audit in one transaction |
+| `GET /knowledge`, `GET /knowledge/{kb_id}`, document safe status, RAG document progress SSE | `read` | active organization; list omits denied rows, direct hidden is 404, visible action denial is 403 | safe KB/document status only; no raw content or hidden count | read/status polling has no mutation audit |
+| `GET /knowledge/llm-selectable`, search-test, standalone Agent answer/stream | `use` + source authorization where applicable | active organization; hidden/source denial does not reveal KB/source identity | retrieval-visible evidence and redaction-safe citation/summary only | retrieval/answer canonical audit; no raw query/evidence payload |
+| `POST /knowledge/candidates/resolve`, RAG recommendation, Agent Builder internal safe-reference consumption | caller-specific `read/use/route` composition | active organization and server-resolved candidate set | safe handles/labels/reason codes; hidden IDs, names, counts excluded | decision/audit summary uses safe reason codes only |
+| KB settings PATCH, RAG upload to existing KB, document analyze/confirm/delete/process/preview | `write` | active organization; document must belong to authorized KB | mutation result and safe processing metadata only | settings uses KB update audit; upload/confirm/delete/process use document action audit; analyze/preview are non-mutating and emit no mutation audit; payload/content excluded |
+| Document sync | `write` or bounded domain `sync_manage` | active organization; source-owned policy remains authoritative | safe queued/status response | document process action audit without credential/source payload |
+| Manual original content | `content_read` | active organization; document must belong to authorized manual KB | validated content response | access path must not place content in audit/trace |
+| Source-managed original content | `content_read` + requester source authorization + approved display/raw policy | missing primitive/policy is fail-closed | no raw response in MBA-231 baseline | denied/safe decision only; no raw source metadata |
+| KB permission list/grant/revoke | Organization manager, KB `manage`, or bounded domain `permission_delegate` | active organization; self/own-Team escalation is 409 policy block | safe Team/User permission projection | permission row and canonical audit in one transaction |
+| KB safe catalog metadata | `manage` | active organization | allowlisted `safe_label`, description, topics only | metadata change audit in the mutation transaction |
+| KB/Collection archive/restore | resource `manage` or matching domain `lifecycle_manage` | active organization; source-managed lifecycle mutation denied | 204/safe lifecycle projection | lifecycle row and canonical audit in one transaction |
+| KB hard delete | Organization manager + `acknowledged_hard_delete=true` + approved retention/legal-hold gate | active organization; source-managed/retention policy fail-closed. Gate 미구성 baseline은 403 | allow된 경우 204; deleted resource is subsequently hidden | allow된 경우 permission cleanup + canonical audit + DB delete in one transaction; default deny는 mutation/audit 없음 |
+| Private Collection link/unlink/reorder of KB membership | Collection/KB resource manage combination or domain `catalog_manage` | active organization; public Collection uses stronger exposure gate | safe Collection item projection; linking grants no KB content action | membership mutation and canonical audit in one transaction |
+| Public Collection membership/visibility | Organization manager + explicit acknowledgement + source public approval | active organization; absent approval fails closed | safe visibility/membership state only | exposure mutation and canonical audit in one transaction |
+
+Presigned upload and URL/proxy preview do not yet carry a KB/document identifier and
+therefore are not KB object authorization surfaces. They remain behind authenticated
+storage ownership, filename/key validation, egress guard, size/content-type caps, and
+safe error contracts. The subsequent upload/link operation must still pass KB `write`.
+
+Direct resource는 active organization으로 먼저 scope를 고정한다. Unknown,
+cross-organization, deleted 또는 invisible resource는 `404 resource.hidden`,
+same-scope visible resource의 action 부족은 `403 permission.denied`다. 목록은
+unauthorized row와 hidden count를 반환하지 않는다.
 
 Builder와 deployment preflight가 사용할 MBA-105 candidate resolver contract는 다음 shape를 지켜야 한다.
 
@@ -175,7 +240,7 @@ Apply/save 직전 materialization은 recommendation list의 현재 top-N 결과�
 
 `score`는 DB 저장값이 아니라 추천 요청 시점에 계산한 KB 단위 ranking 값이다. Ranking은 `safe_query_topics`와 KB safe metadata의 `kb_relevance`를 0.70 비중으로 두고, `source_tier`, `runtime_availability`, `sync_freshness`를 각각 0.10 비중으로 더한다. Relevance 입력은 KB candidate의 `safe_label`, `kb_safe_description`, `kb_safe_topics` 같은 allowlisted safe comparison text로 제한한다. `collection_safe_label`, `collection_safe_topics`, Collection name/description, collection id/count는 route/permission boundary와 `source_collection_summary`에만 사용하며 KB relevance score 계산에는 사용하지 않는다. Manual KB의 `name`/`description`은 sanitizer, length cap, secret/url/path 제거를 통과한 뒤 safe label/topics comparison text로 자동 생성할 수 있다. Source-managed KB는 display-policy-approved source safe metadata만 이 경로에 사용할 수 있다.
 
-Manual KB는 `KnowledgeBaseResponse.safe_metadata`로 allowlisted safe metadata를 반환할 수 있다. Safe metadata 조회·수정은 `GET/PATCH /api/v1/knowledge/{kb_id}/safe-metadata`를 사용하며 `safe_label`, `kb_safe_description`, `kb_safe_topics`만 저장 대상으로 허용하고 secret/url/path/raw source key는 sanitizer 또는 allowlist에서 제거한다. 일반 `PATCH /api/v1/knowledge/{kb_id}`는 owner-only 이름·설명·embedding model 경로이며 `safe_metadata` payload를 422로 거부한다. Detail 응답은 `can_edit_settings`와 `can_manage_safe_metadata`를 분리한다. Safe metadata 변경의 action/data-change audit은 KB target id와 마스킹된 변경 필드를 남기고 metadata 원문 값은 저장하지 않는다. Source-managed KB recommendation은 저장된 manual override가 아니라 display-policy-approved source safe metadata만 사용한다.
+Manual KB는 `KnowledgeBaseResponse.safe_metadata`로 allowlisted safe metadata를 반환할 수 있다. Safe metadata 조회·수정은 `GET/PATCH /api/v1/knowledge/{kb_id}/safe-metadata`를 사용하며 `safe_label`, `kb_safe_description`, `kb_safe_topics`만 저장 대상으로 허용하고 secret/url/path/raw source key는 sanitizer 또는 allowlist에서 제거한다. 일반 `PATCH /api/v1/knowledge/{kb_id}`는 KB `write` 이름·설명·embedding model 경로이며 `safe_metadata` payload를 422로 거부한다. Detail 응답은 `can_edit_settings`와 `can_manage_safe_metadata`를 분리한다. Safe metadata 변경의 action/data-change audit은 KB target id와 마스킹된 변경 필드를 남기고 metadata 원문 값은 저장하지 않는다. Source-managed KB recommendation은 저장된 manual override가 아니라 display-policy-approved source safe metadata만 사용한다.
 
 KnowledgeCandidateResolver와 recommendation ranking은 retrieval-visible active version 경계를 지켜야 한다. `sync_state=source_deleted`인 KB, active ready document version과 legacy unversioned retrieval-visible chunk가 모두 없는 KB는 recommendation candidate에서 제외한다. Active document version이 있으나 `ready`가 아니고 legacy retrieval-visible artifact도 없는 KB는 selectable ready candidate가 아니며, response는 이를 권한 없음이나 hidden resource로 표현하지 않고 safe `candidate_not_ready` 또는 `indexing_in_progress` warning/fallback reason으로 표시할 수 있어야 한다. 기존 active ready version은 유지되지만 최신 sync 상태가 `stale` 또는 `failed`인 KB는 후보로 남길 수 있으나, safe warning과 score penalty 또는 낮은 confidence를 함께 제공해야 한다. 이 경고는 raw source path/title/url, raw source error, hidden document count를 포함하지 않는다.
 
@@ -242,11 +307,11 @@ Manual Collection 관리 API는 Knowledge 관리 영역에서 사용한다. Work
 
 | Method | Path | 목적 | 권한 |
 | --- | --- | --- | --- |
-| GET | `/api/v1/knowledge/collections` | Collection 목록. `collection.read` 가능한 row만 반환 | `collection.read` 또는 organization manager override |
-| POST | `/api/v1/knowledge/collections` | Manual Collection 생성 | MVP는 organization manager만 허용 |
-| GET | `/api/v1/knowledge/collections/{collection_id}` | Collection 상세 | `collection.read` 또는 organization manager override |
-| PATCH | `/api/v1/knowledge/collections/{collection_id}` | safe name/description/metadata 수정 | `collection.manage` 또는 organization manager override |
-| DELETE | `/api/v1/knowledge/collections/{collection_id}` | physical delete가 아니라 archive 전이 | `collection.manage` 또는 organization manager override |
+| GET | `/api/v1/knowledge/collections` | Collection 목록. content 권한이 없는 domain 관리자는 safe 관리 projection만 조회 | `collection.read`, Knowledge domain 관리 action, 또는 organization manager override |
+| POST | `/api/v1/knowledge/collections` | private Manual Collection 생성 | organization manager 또는 domain `catalog_manage` |
+| GET | `/api/v1/knowledge/collections/{collection_id}` | Collection 상세 | `collection.read`, Knowledge domain 관리 action, 또는 organization manager override |
+| PATCH | `/api/v1/knowledge/collections/{collection_id}` | safe name/description/metadata 수정 | `collection.manage`, private manual Collection의 domain `catalog_manage`, 또는 organization manager override |
+| DELETE | `/api/v1/knowledge/collections/{collection_id}` | physical delete가 아니라 archive 전이 | `collection.manage`, domain `lifecycle_manage`, 또는 organization manager override |
 
 List response는 `collections`, `can_create_collection`, `can_change_public_visibility`를 포함한다. 각 Collection row는 `id`, `name`, `description`, `is_system_managed`, `sync_state`, `lifecycle_state`, `visibility`, bucketed linked/active KB count, caller action flags, `safe_metadata`, timestamps만 포함한다. Raw source title/path/url/principal, hidden KB name/id, exact denied count는 반환하지 않는다.
 
@@ -259,22 +324,24 @@ Update request는 visibility를 바꾸지 않는다. Public/private 전환은 �
 | Method | Path | 목적 | 권한 |
 | --- | --- | --- | --- |
 | GET | `/api/v1/knowledge/collections/{collection_id}/items` | linked KB item 목록 | `collection.read` |
-| POST | `/api/v1/knowledge/collections/{collection_id}/items` | KB link | `collection.manage` + 대상 KB `manage` |
-| DELETE | `/api/v1/knowledge/collections/{collection_id}/items/{item_id}` | KB unlink | `collection.manage` + 대상 KB `manage` |
-| PATCH | `/api/v1/knowledge/collections/{collection_id}/items/reorder` | deterministic rank 변경 | `collection.manage` |
-| GET | `/api/v1/knowledge/collections/{collection_id}/link-candidates` | link 가능한 KB 후보 | `collection.manage`; 기본적으로 대상 KB `manage` 가능한 후보만 반환 |
+| POST | `/api/v1/knowledge/collections/{collection_id}/items` | KB link | private: `collection.manage` + KB `manage` 또는 `catalog_manage`; public: Organization manager + acknowledgement |
+| DELETE | `/api/v1/knowledge/collections/{collection_id}/items/{item_id}` | KB unlink | private: `collection.manage` + KB `manage` 또는 `catalog_manage`; public: Organization manager + acknowledgement |
+| PATCH | `/api/v1/knowledge/collections/{collection_id}/items/reorder` | deterministic rank 변경 | private: `collection.manage` 또는 `catalog_manage`; public: Organization manager + acknowledgement |
+| GET | `/api/v1/knowledge/collections/{collection_id}/link-candidates` | link 가능한 KB 후보 | 해당 membership mutation 권한의 safe 후보만 반환 |
 
-Item response는 `item_id`, `knowledge_base_id`, safe label, lifecycle/sync state, rank, caller action flags만 포함한다. `can_use_kb=false`인 item이 보일 수 있지만, 이는 runtime retrieval 가능성을 의미하지 않는다. Link/unlink는 같은 organization KB만 허용하며 archived/deleted KB는 link 대상에서 제외한다. Duplicate link는 MVP에서 idempotent success로 처리할 수 있다.
+Item response는 `item_id`, `knowledge_base_id`, safe label, lifecycle/sync state, rank, caller action flags만 포함한다. `can_use_kb=false`인 item이 보일 수 있지만, 이는 runtime retrieval 가능성을 의미하지 않는다. Link/unlink는 같은 organization KB만 허용하며 archived/deleted KB는 link 대상에서 제외한다. Private Collection membership은 `collection.manage` + KB `manage`, 또는 domain `catalog_manage`로 관리할 수 있다. Public Collection의 link/unlink/reorder는 visibility 변경과 같은 public exposure mutation이므로 Organization manager와 `acknowledged_public_runtime_exposure=true`를 요구한다. Duplicate link는 MVP에서 idempotent success로 처리할 수 있다.
 
 ### Collection Permission Management
 
 | Method | Path | 목적 | 권한 |
 | --- | --- | --- | --- |
-| GET | `/api/v1/knowledge/collections/{collection_id}/permissions` | permission grant 목록 | `collection.manage` 또는 organization manager |
-| POST | `/api/v1/knowledge/collections/{collection_id}/permissions` | team/user action grant | `collection.manage` 또는 organization manager |
-| DELETE | `/api/v1/knowledge/collections/{collection_id}/permissions/{permission_id}` | grant revoke | `collection.manage` 또는 organization manager |
+| GET | `/api/v1/knowledge/collections/{collection_id}/permissions` | permission grant 목록 | `collection.manage`, domain `permission_delegate`, 또는 organization manager |
+| GET | `/api/v1/knowledge/collections/{collection_id}/delegation-subjects` | active Team/User safe 대상 목록 | permission 변경과 동일 |
+| POST | `/api/v1/knowledge/collections/{collection_id}/permissions` | team/user 단일 action grant | permission 변경과 동일 |
+| POST | `/api/v1/knowledge/collections/{collection_id}/permissions/bundles` | role bundle을 explicit action row로 원자 적용 | permission 변경과 동일 |
+| DELETE | `/api/v1/knowledge/collections/{collection_id}/permissions/{permission_id}` | grant revoke | permission 변경과 동일 |
 
-Grant request는 `subject_type=team|user`, `subject_id`, `permission_action=read|route|manage|sync`만 허용한다. Explicit deny, inherited grant, role table 연결은 이번 MVP 범위가 아니다. Revoke는 자기 자신의 마지막 `manage` grant를 제거하는 edge case를 safe denial로 처리하거나 organization manager만 허용해야 한다.
+단일 grant request는 `subject_type=team|user`, `subject_id`, `permission_action=read|route|manage|sync`만 허용한다. Bundle request의 `role_bundle`은 `viewer`, `workflow_router`, `maintainer`, `sync_operator`이며 각각 ADR-0034의 explicit action 집합을 한 transaction에서 upsert한다. 별도 role row나 inheritance를 만들지 않는다. Domain delegator의 self/own-Team grant는 `409 policy.blocked`로 차단하고, 마지막 manage 경로 회수는 safe denial 또는 Organization manager recovery를 요구한다.
 
 ### Public Visibility
 

@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from apps.shared.permissions import (
@@ -11,11 +12,13 @@ from apps.shared.permissions import (
 )
 from apps.shared.services.permissions import (
     get_effective_knowledge_base_auth_state,
+    get_effective_knowledge_domain_actions,
     get_effective_llm_credential_auth_state,
     get_effective_workflow_auth_state,
     get_workflow_permission_sources,
     has_active_organization_membership,
     has_knowledge_base_permission,
+    has_knowledge_domain_permission,
     has_llm_credential_permission,
     has_workflow_permission,
 )
@@ -502,6 +505,54 @@ def test_knowledge_base_use_requires_operator_or_builder():
     assert knowledge_base_auth_state_allows("viewer", "use") is False
     assert knowledge_base_auth_state_allows("operator", "use") is True
     assert knowledge_base_auth_state_allows("builder", "use") is True
+
+
+def test_knowledge_base_content_read_requires_builder():
+    assert knowledge_base_auth_state_allows("operator", "content_read") is False
+    assert knowledge_base_auth_state_allows("builder", "content_read") is True
+    assert knowledge_base_auth_state_allows("manager", "content_read") is True
+
+
+def test_knowledge_domain_permissions_are_additive_and_expired_rows_are_ignored():
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    db = FakeDb(
+        first_values=[
+            _active_user(user_id),
+            _active_organization(organization_id),
+            _organization_member(),
+        ],
+        all_values=[
+            [("catalog_manage", None), ("sync_manage", datetime(2000, 1, 1, tzinfo=timezone.utc))],
+            [("permission_delegate", None)],
+        ],
+    )
+
+    assert get_effective_knowledge_domain_actions(
+        db, user_id, organization_id
+    ) == {"catalog_manage", "permission_delegate"}
+
+
+def test_organization_manager_has_all_knowledge_domain_actions():
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    db = FakeDb(
+        first_values=[
+            _active_user(user_id),
+            _active_organization(organization_id),
+            _organization_member("manager"),
+        ]
+    )
+
+    assert has_knowledge_domain_permission(
+        db, user_id, organization_id, "sync_manage"
+    ) is True
+
+
+def test_unknown_knowledge_domain_action_fails_closed():
+    assert has_knowledge_domain_permission(
+        FakeDb(), uuid.uuid4(), uuid.uuid4(), "use"
+    ) is False
 
 
 def test_llm_credential_write_requires_manager():

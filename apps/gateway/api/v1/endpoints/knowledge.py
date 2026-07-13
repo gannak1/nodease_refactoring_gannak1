@@ -19,7 +19,17 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from apps.gateway.api.deps import get_db
+from apps.gateway.application.knowledge_administration.domain_permissions import (
+    DomainPermissionCommand,
+    DomainPermissionInputInvalid,
+    DomainPermissionPersistenceFailed,
+    DomainPermissionSubjectHidden,
+    OrganizationManagerRequired,
+)
 from apps.gateway.auth.dependencies import get_current_user
+from apps.gateway.composition.knowledge_administration import (
+    build_knowledge_domain_permission_use_case,
+)
 from apps.gateway.utils.api_errors import raise_api_error
 from apps.gateway.utils.audit import audit
 from apps.gateway.services.ingestion.service import (
@@ -44,8 +54,14 @@ from apps.gateway.services.knowledge_base_query_service import (
     KnowledgeSchemaNotReady,
     KnowledgeValidationError,
 )
+from apps.gateway.services.knowledge_authorization_service import (
+    KnowledgeAuthorizationService,
+    KnowledgePermissionDenied,
+    KnowledgeResourceHidden,
+)
 from apps.gateway.services.knowledge_lifecycle_service import (
     KnowledgeLifecycleNotFound,
+    KnowledgeLifecyclePolicyDenied,
     KnowledgeLifecycleService,
 )
 from apps.gateway.services.knowledge_rag_recommendation_service import (
@@ -68,11 +84,18 @@ from apps.shared.schemas.knowledge import (
     KnowledgeCollectionLinkCandidatesResponse,
     KnowledgeCollectionListResponse,
     KnowledgeCollectionPermissionGrantRequest,
+    KnowledgeCollectionPermissionBundleGrantRequest,
     KnowledgeCollectionPermissionsResponse,
     KnowledgeCollectionResponse,
     KnowledgeCollectionUpdateRequest,
     KnowledgeCollectionVisibilityRequest,
     KnowledgeCollectionVisibilityResponse,
+    KnowledgeDomainCapabilitiesResponse,
+    KnowledgeDomainPermissionAction,
+    KnowledgeDomainPermissionListResponse,
+    KnowledgeDomainPermissionResponse,
+    KnowledgeDomainPermissionUpsertRequest,
+    KnowledgeDelegationSubjectsResponse,
     KnowledgeRAGRecommendationRequest,
     KnowledgeRAGRecommendationResponse,
 )
@@ -92,7 +115,7 @@ from apps.shared.services.rag_hierarchy import (
     validate_chunking_request,
 )
 from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
-from apps.shared.services.permission_enforcement import PermissionEnforcementService
+from apps.shared.services.permissions import has_organization_manager_permission
 from apps.shared.services.knowledge_schema_readiness import (
     check_knowledge_schema_readiness,
     table_has_column,
@@ -265,8 +288,87 @@ def _raise_collection_service_error(
     )
 
 
+def _raise_domain_permission_error(request: Request, exc: Exception) -> None:
+    if isinstance(exc, OrganizationManagerRequired):
+        raise_api_error(
+            request,
+            status.HTTP_403_FORBIDDEN,
+            "permission.denied",
+            "Organization manager permission is required.",
+        )
+    if isinstance(exc, DomainPermissionSubjectHidden):
+        raise_api_error(
+            request,
+            status.HTTP_404_NOT_FOUND,
+            "resource.hidden",
+            "Resource not found.",
+        )
+    if isinstance(exc, DomainPermissionInputInvalid):
+        raise_api_error(
+            request,
+            status.HTTP_400_BAD_REQUEST,
+            "validation.failed",
+            "Knowledge domain permission request is invalid.",
+        )
+    if isinstance(exc, DomainPermissionPersistenceFailed):
+        raise_api_error(
+            request,
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "knowledge.permission_write_failed",
+            "Knowledge permission change could not be saved.",
+        )
+    raise exc
+
+
+def _domain_permission_response(row) -> KnowledgeDomainPermissionResponse:
+    return KnowledgeDomainPermissionResponse(
+        permission_id=row.permission_id,
+        subject_type=row.subject_type,
+        subject_id=row.subject_id,
+        subject_safe_label=row.subject_safe_label,
+        permission_action=row.permission_action,
+        assigned_at=row.assigned_at,
+        expires_at=row.expires_at,
+        is_expired=row.is_expired,
+    )
+
+
 def _knowledge_base_query_service(db: Session) -> KnowledgeBaseQueryService:
     return KnowledgeBaseQueryService(db)
+
+
+def _knowledge_authorization_service(
+    db: Session,
+    *,
+    user_id: UUID,
+    organization_id: UUID,
+) -> KnowledgeAuthorizationService:
+    return KnowledgeAuthorizationService(
+        db,
+        user_id=user_id,
+        organization_id=organization_id,
+    )
+
+
+def _raise_knowledge_authorization_error(
+    request: Request,
+    exc: Exception,
+) -> None:
+    if isinstance(exc, KnowledgeResourceHidden):
+        raise_api_error(
+            request,
+            status.HTTP_404_NOT_FOUND,
+            "resource.hidden",
+            "Knowledge resource not found.",
+        )
+    if isinstance(exc, KnowledgePermissionDenied):
+        raise_api_error(
+            request,
+            status.HTTP_403_FORBIDDEN,
+            "permission.denied",
+            "Knowledge permission is required.",
+        )
+    raise exc
 
 
 def _raise_knowledge_query_service_error(
@@ -352,19 +454,21 @@ def list_knowledge_bases(
     사용자의 자료 목록을 조회합니다.
     각 지식 베이스 그룹에 포함된 문서 개수도 함께 반환합니다.
     """
-    service = _knowledge_base_query_service(db)
-    has_organization_id = _table_has_column(db, "knowledge_bases", "organization_id")
-    organization_scope = _resolve_read_organization_scope(
+    _ensure_knowledge_schema_columns(
+        db,
+        request,
+        KNOWLEDGE_BASE_MUTATION_COLUMNS,
+    )
+    organization_id = resolve_active_organization_id(
         db,
         request,
         x_organization_id,
         current_user.id,
-        has_organization_id=has_organization_id,
     )
-    return service.list(
+    return _knowledge_base_query_service(db).list_authorized(
         user_id=current_user.id,
-        organization_scope=organization_scope,
-        has_organization_id=has_organization_id,
+        organization_id=organization_id,
+        schema_ready=True,
     )
 
 
@@ -549,6 +653,224 @@ async def recommend_rag_options(
     return result
 
 
+@router.get(
+    "/domain-capabilities",
+    response_model=KnowledgeDomainCapabilitiesResponse,
+)
+def get_knowledge_domain_capabilities(
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = resolve_active_organization_id(
+        db, request, x_organization_id, current_user.id
+    )
+    actions, is_manager = build_knowledge_domain_permission_use_case(db).capabilities(
+        current_user.id, organization_id
+    )
+    return KnowledgeDomainCapabilitiesResponse(
+        actions=sorted(actions),
+        can_manage_domain_permissions=is_manager,
+        can_create_collection="catalog_manage" in actions,
+        can_delegate_permissions="permission_delegate" in actions,
+        can_manage_lifecycle="lifecycle_manage" in actions,
+        can_manage_sync="sync_manage" in actions,
+        can_change_public_visibility=is_manager,
+    )
+
+
+@router.get(
+    "/domain-permissions",
+    response_model=KnowledgeDomainPermissionListResponse,
+)
+def list_knowledge_domain_permissions(
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = resolve_active_organization_id(
+        db, request, x_organization_id, current_user.id
+    )
+    try:
+        rows = build_knowledge_domain_permission_use_case(db).list_permissions(
+            current_user.id, organization_id
+        )
+    except (OrganizationManagerRequired, DomainPermissionPersistenceFailed) as exc:
+        _raise_domain_permission_error(request, exc)
+    return KnowledgeDomainPermissionListResponse(
+        permissions=[_domain_permission_response(row) for row in rows]
+    )
+
+
+@router.get(
+    "/domain-delegation-subjects",
+    response_model=KnowledgeDelegationSubjectsResponse,
+)
+def list_knowledge_domain_delegation_subjects(
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = _knowledge_collection_service(db, request, x_organization_id, current_user)
+    try:
+        return service.list_domain_delegation_subjects()
+    except KnowledgeCollectionServiceError as exc:
+        _raise_collection_service_error(request, exc)
+
+
+def _change_knowledge_domain_permission(
+    *,
+    request: Request,
+    db: Session,
+    current_user: User,
+    organization_id: UUID,
+    subject_type: str,
+    subject_id: UUID,
+    permission_action: KnowledgeDomainPermissionAction,
+    expires_at,
+    revoke: bool,
+):
+    command = DomainPermissionCommand(
+        actor_id=current_user.id,
+        organization_id=organization_id,
+        subject_type=subject_type,
+        subject_id=subject_id,
+        permission_action=permission_action,
+        expires_at=expires_at,
+    )
+    use_case = build_knowledge_domain_permission_use_case(db)
+    try:
+        return use_case.revoke(command) if revoke else use_case.grant(command)
+    except (
+        OrganizationManagerRequired,
+        DomainPermissionSubjectHidden,
+        DomainPermissionInputInvalid,
+        DomainPermissionPersistenceFailed,
+    ) as exc:
+        _raise_domain_permission_error(request, exc)
+
+
+@router.put(
+    "/domain-permissions/teams/{team_id}/{permission_action}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def put_team_knowledge_domain_permission(
+    team_id: UUID,
+    permission_action: KnowledgeDomainPermissionAction,
+    body: KnowledgeDomainPermissionUpsertRequest,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = resolve_active_organization_id(
+        db, request, x_organization_id, current_user.id
+    )
+    _change_knowledge_domain_permission(
+        request=request,
+        db=db,
+        current_user=current_user,
+        organization_id=organization_id,
+        subject_type="team",
+        subject_id=team_id,
+        permission_action=permission_action,
+        expires_at=body.expires_at,
+        revoke=False,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete(
+    "/domain-permissions/teams/{team_id}/{permission_action}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_team_knowledge_domain_permission(
+    team_id: UUID,
+    permission_action: KnowledgeDomainPermissionAction,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = resolve_active_organization_id(
+        db, request, x_organization_id, current_user.id
+    )
+    _change_knowledge_domain_permission(
+        request=request,
+        db=db,
+        current_user=current_user,
+        organization_id=organization_id,
+        subject_type="team",
+        subject_id=team_id,
+        permission_action=permission_action,
+        expires_at=None,
+        revoke=True,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.put(
+    "/domain-permissions/users/{user_id}/{permission_action}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def put_user_knowledge_domain_permission(
+    user_id: UUID,
+    permission_action: KnowledgeDomainPermissionAction,
+    body: KnowledgeDomainPermissionUpsertRequest,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = resolve_active_organization_id(
+        db, request, x_organization_id, current_user.id
+    )
+    _change_knowledge_domain_permission(
+        request=request,
+        db=db,
+        current_user=current_user,
+        organization_id=organization_id,
+        subject_type="user",
+        subject_id=user_id,
+        permission_action=permission_action,
+        expires_at=body.expires_at,
+        revoke=False,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete(
+    "/domain-permissions/users/{user_id}/{permission_action}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_user_knowledge_domain_permission(
+    user_id: UUID,
+    permission_action: KnowledgeDomainPermissionAction,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = resolve_active_organization_id(
+        db, request, x_organization_id, current_user.id
+    )
+    _change_knowledge_domain_permission(
+        request=request,
+        db=db,
+        current_user=current_user,
+        organization_id=organization_id,
+        subject_type="user",
+        subject_id=user_id,
+        permission_action=permission_action,
+        expires_at=None,
+        revoke=True,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.get("/collections", response_model=KnowledgeCollectionListResponse)
 def list_knowledge_collections(
     request: Request,
@@ -707,13 +1029,20 @@ def unlink_knowledge_collection_item(
     collection_id: UUID,
     item_id: UUID,
     request: Request,
+    acknowledged_public_runtime_exposure: bool = Query(default=False),
     x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     service = _knowledge_collection_service(db, request, x_organization_id, current_user)
     try:
-        service.unlink_item(collection_id, item_id)
+        service.unlink_item(
+            collection_id,
+            item_id,
+            acknowledged_public_runtime_exposure=(
+                acknowledged_public_runtime_exposure
+            ),
+        )
     except KnowledgeCollectionServiceError as exc:
         _raise_collection_service_error(request, exc)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -760,6 +1089,24 @@ def list_knowledge_collection_permissions(
         _raise_collection_service_error(request, exc)
 
 
+@router.get(
+    "/collections/{collection_id}/delegation-subjects",
+    response_model=KnowledgeDelegationSubjectsResponse,
+)
+def list_knowledge_collection_delegation_subjects(
+    collection_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = _knowledge_collection_service(db, request, x_organization_id, current_user)
+    try:
+        return service.list_delegation_subjects(collection_id)
+    except KnowledgeCollectionServiceError as exc:
+        _raise_collection_service_error(request, exc)
+
+
 @router.post(
     "/collections/{collection_id}/permissions",
     response_model=KnowledgeCollectionPermissionsResponse,
@@ -776,6 +1123,30 @@ def grant_knowledge_collection_permission(
     try:
         permission = service.grant_permission(collection_id, permission_request)
         return KnowledgeCollectionPermissionsResponse(permissions=[permission])
+    except KnowledgeCollectionServiceError as exc:
+        _raise_collection_service_error(request, exc)
+
+
+@router.post(
+    "/collections/{collection_id}/permissions/bundles",
+    response_model=KnowledgeCollectionPermissionsResponse,
+)
+def grant_knowledge_collection_permission_bundle(
+    collection_id: UUID,
+    permission_request: KnowledgeCollectionPermissionBundleGrantRequest,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = _knowledge_collection_service(db, request, x_organization_id, current_user)
+    try:
+        return KnowledgeCollectionPermissionsResponse(
+            permissions=service.grant_permission_bundle(
+                collection_id,
+                permission_request,
+            )
+        )
     except KnowledgeCollectionServiceError as exc:
         _raise_collection_service_error(request, exc)
 
@@ -831,50 +1202,40 @@ def get_knowledge_base(
     지식 베이스의 상세 정보를 조회합니다.
     포함된 자료 목록과 각 자료의 상태를 함께 반환합니다.
     """
-    service = _knowledge_base_query_service(db)
-    has_organization_id = _table_has_column(db, "knowledge_bases", "organization_id")
-    organization_scope = _resolve_read_organization_scope(
+    _ensure_knowledge_schema_columns(
+        db,
+        request,
+        KNOWLEDGE_BASE_MUTATION_COLUMNS,
+    )
+    organization_id = resolve_active_organization_id(
         db,
         request,
         x_organization_id,
         current_user.id,
-        has_organization_id=has_organization_id,
     )
-    try:
-        return service.get_detail(
-            kb_id,
-            user_id=current_user.id,
-            organization_scope=organization_scope,
-            has_organization_id=has_organization_id,
-        )
-    except KnowledgeBaseNotFound:
-        if organization_scope is None:
-            _raise_knowledge_query_service_error(request, KnowledgeBaseNotFound())
-
-    kb = (
-        db.query(KnowledgeBase)
-        .filter(
-            KnowledgeBase.id == kb_id,
-            KnowledgeBase.organization_id == organization_scope,
-        )
-        .first()
-    )
-    if kb is None or not PermissionEnforcementService.has_knowledge_base_manage_permission(
+    authorization = _knowledge_authorization_service(
         db,
-        organization_scope,
-        kb_id,
-        current_user.id,
-    ):
-        _raise_knowledge_query_service_error(request, KnowledgeBaseNotFound())
+        user_id=current_user.id,
+        organization_id=organization_id,
+    )
+    try:
+        kb = authorization.load_kb(kb_id, "read")
+    except (KnowledgeResourceHidden, KnowledgePermissionDenied) as exc:
+        _raise_knowledge_authorization_error(request, exc)
+    capabilities = authorization.capabilities(kb)
 
     try:
-        return service.get_detail(
+        return _knowledge_base_query_service(db).get_detail(
             kb_id,
-            user_id=None,
-            organization_scope=organization_scope,
-            has_organization_id=has_organization_id,
-            can_edit_settings=False,
-            can_manage_safe_metadata=True,
+            organization_scope=organization_id,
+            has_organization_id=True,
+            can_edit_settings=capabilities.can_write,
+            can_manage_safe_metadata=capabilities.can_manage,
+            can_read=capabilities.can_read,
+            can_use=capabilities.can_use,
+            can_write=capabilities.can_write,
+            can_read_content=capabilities.can_read_content,
+            can_manage=capabilities.can_manage,
         )
     except KnowledgeBaseNotFound as exc:
         _raise_knowledge_query_service_error(request, exc)
@@ -893,26 +1254,46 @@ def _manageable_knowledge_base(
         raw_organization_id,
         current_user.id,
     )
-    kb = (
-        db.query(KnowledgeBase)
-        .filter(
-            KnowledgeBase.id == kb_id,
-            KnowledgeBase.organization_id == organization_id,
-        )
-        .first()
-    )
-    if kb is None:
-        raise HTTPException(status_code=404, detail="Knowledge Base not found")
-    if kb.user_id == current_user.id:
-        return kb
-    if not PermissionEnforcementService.has_knowledge_base_manage_permission(
+    try:
+        return _knowledge_authorization_service(
+            db,
+            user_id=current_user.id,
+            organization_id=organization_id,
+        ).load_kb(kb_id, "manage")
+    except (KnowledgeResourceHidden, KnowledgePermissionDenied) as exc:
+        _raise_knowledge_authorization_error(request, exc)
+
+
+def _authorized_knowledge_document(
+    kb_id: UUID,
+    document_id: UUID,
+    action: str,
+    request: Request,
+    raw_organization_id: str | None,
+    db: Session,
+    current_user: User,
+    *,
+    domain_action: str | None = None,
+) -> tuple[KnowledgeBase, Document]:
+    organization_id = resolve_active_organization_id(
         db,
-        organization_id,
-        kb_id,
+        request,
+        raw_organization_id,
         current_user.id,
-    ):
-        raise HTTPException(status_code=404, detail="Knowledge Base not found")
-    return kb
+    )
+    try:
+        return _knowledge_authorization_service(
+            db,
+            user_id=current_user.id,
+            organization_id=organization_id,
+        ).load_document(
+            kb_id,
+            document_id,
+            action,
+            domain_action=domain_action,
+        )
+    except (KnowledgeResourceHidden, KnowledgePermissionDenied) as exc:
+        _raise_knowledge_authorization_error(request, exc)
 
 
 @router.get(
@@ -982,6 +1363,7 @@ def update_knowledge_base(
     update_data: KnowledgeUpdate,
     request: Request,
     background_tasks: BackgroundTasks,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -993,14 +1375,20 @@ def update_knowledge_base(
         request,
         KNOWLEDGE_BASE_MUTATION_COLUMNS,
     )
-    kb = (
-        db.query(KnowledgeBase)
-        .filter(KnowledgeBase.id == kb_id, KnowledgeBase.user_id == current_user.id)
-        .first()
+    organization_id = resolve_active_organization_id(
+        db,
+        request,
+        x_organization_id,
+        current_user.id,
     )
-
-    if not kb:
-        raise HTTPException(status_code=404, detail="Knowledge Base not found")
+    try:
+        kb = _knowledge_authorization_service(
+            db,
+            user_id=current_user.id,
+            organization_id=organization_id,
+        ).load_kb(kb_id, "write")
+    except (KnowledgeResourceHidden, KnowledgePermissionDenied) as exc:
+        _raise_knowledge_authorization_error(request, exc)
 
     if update_data.name is not None:
         kb.name = update_data.name
@@ -1025,25 +1413,159 @@ def update_knowledge_base(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.delete("/{kb_id}", status_code=status.HTTP_204_NO_CONTENT)
-@audit(AuditAction.KNOWLEDGE_DELETE, target_param="kb_id")
-def delete_knowledge_base(
+def _raise_knowledge_lifecycle_policy_error(
+    request: Request,
+    exc: Exception,
+) -> None:
+    if isinstance(exc, KnowledgeLifecycleNotFound):
+        raise_api_error(
+            request,
+            status.HTTP_404_NOT_FOUND,
+            "resource.hidden",
+            "Knowledge Base not found.",
+        )
+    if isinstance(exc, KnowledgeLifecyclePolicyDenied):
+        if exc.reason_code == "retention_policy_unavailable":
+            raise_api_error(
+                request,
+                status.HTTP_403_FORBIDDEN,
+                "policy.denied",
+                "Knowledge Base retention policy does not allow hard delete.",
+            )
+        raise_api_error(
+            request,
+            status.HTTP_403_FORBIDDEN,
+            "policy.denied",
+            "Source-managed Knowledge lifecycle is controlled by its source.",
+        )
+    raise exc
+
+
+@router.post("/{kb_id}/archive", status_code=status.HTTP_204_NO_CONTENT)
+def archive_knowledge_base(
     kb_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    지식 베이스를 삭제합니다.
-    연결된 문서 및 임베딩 데이터는 DB Cascade 설정에 따라 함께 삭제됩니다.
-    물리적 파일(S3/Local)도 함께 삭제합니다.
-    """
+    organization_id = resolve_active_organization_id(
+        db,
+        request,
+        x_organization_id,
+        current_user.id,
+    )
     try:
-        KnowledgeLifecycleService(db).delete_owned_knowledge_base(
-            kb_id=kb_id,
+        kb = _knowledge_authorization_service(
+            db,
             user_id=current_user.id,
+            organization_id=organization_id,
+        ).load_kb(
+            kb_id,
+            "manage",
+            domain_action="lifecycle_manage",
         )
-    except KnowledgeLifecycleNotFound:
-        raise HTTPException(status_code=404, detail="Knowledge Base not found")
+        KnowledgeLifecycleService(db).archive_knowledge_base(
+            kb,
+            actor_id=current_user.id,
+        )
+    except (KnowledgeResourceHidden, KnowledgePermissionDenied) as exc:
+        _raise_knowledge_authorization_error(request, exc)
+    except (KnowledgeLifecycleNotFound, KnowledgeLifecyclePolicyDenied) as exc:
+        _raise_knowledge_lifecycle_policy_error(request, exc)
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/{kb_id}/restore", status_code=status.HTTP_204_NO_CONTENT)
+def restore_knowledge_base(
+    kb_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = resolve_active_organization_id(
+        db,
+        request,
+        x_organization_id,
+        current_user.id,
+    )
+    try:
+        kb = _knowledge_authorization_service(
+            db,
+            user_id=current_user.id,
+            organization_id=organization_id,
+        ).load_kb(
+            kb_id,
+            "manage",
+            include_archived=True,
+            domain_action="lifecycle_manage",
+        )
+        KnowledgeLifecycleService(db).restore_knowledge_base(
+            kb,
+            actor_id=current_user.id,
+        )
+    except (KnowledgeResourceHidden, KnowledgePermissionDenied) as exc:
+        _raise_knowledge_authorization_error(request, exc)
+    except (KnowledgeLifecycleNotFound, KnowledgeLifecyclePolicyDenied) as exc:
+        _raise_knowledge_lifecycle_policy_error(request, exc)
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete("/{kb_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_knowledge_base(
+    kb_id: UUID,
+    request: Request,
+    acknowledged_hard_delete: bool = Query(default=False),
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = resolve_active_organization_id(
+        db,
+        request,
+        x_organization_id,
+        current_user.id,
+    )
+    if not has_organization_manager_permission(
+        db,
+        current_user.id,
+        organization_id,
+    ):
+        raise_api_error(
+            request,
+            status.HTTP_403_FORBIDDEN,
+            "permission.denied",
+            "Organization manager permission is required.",
+        )
+    if not acknowledged_hard_delete:
+        raise_api_error(
+            request,
+            status.HTTP_400_BAD_REQUEST,
+            "validation.failed",
+            "Hard delete acknowledgement is required.",
+            {"field": "acknowledged_hard_delete"},
+        )
+    try:
+        kb = _knowledge_authorization_service(
+            db,
+            user_id=current_user.id,
+            organization_id=organization_id,
+        ).load_kb(
+            kb_id,
+            "manage",
+            include_archived=True,
+        )
+        KnowledgeLifecycleService(db).hard_delete_knowledge_base(
+            kb,
+            actor_id=current_user.id,
+        )
+    except (KnowledgeResourceHidden, KnowledgePermissionDenied) as exc:
+        _raise_knowledge_authorization_error(request, exc)
+    except (KnowledgeLifecycleNotFound, KnowledgeLifecyclePolicyDenied) as exc:
+        _raise_knowledge_lifecycle_policy_error(request, exc)
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -1052,26 +1574,23 @@ def delete_knowledge_base(
 def get_document(
     kb_id: UUID,
     document_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
     특정 문서를 조회합니다.
     """
-    doc = (
-        db.query(Document)
-        .join(KnowledgeBase)
-        .filter(Document.id == document_id, KnowledgeBase.user_id == current_user.id)
-        .first()
+    _, doc = _authorized_knowledge_document(
+        kb_id,
+        document_id,
+        "read",
+        request,
+        x_organization_id,
+        db,
+        current_user,
     )
-
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
-
-    if doc.knowledge_base_id != kb_id:
-        raise HTTPException(
-            status_code=400, detail="Document does not belong to this Knowledge Base"
-        )
 
     if finalize_stale_processing_start(
         db,
@@ -1097,26 +1616,23 @@ def get_document(
 def get_document_content(
     kb_id: UUID,
     document_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
     문서의 원본 파일을 반환합니다. (브라우저 표시용)
     """
-    doc = (
-        db.query(Document)
-        .join(KnowledgeBase)
-        .filter(Document.id == document_id, KnowledgeBase.user_id == current_user.id)
-        .first()
+    _, doc = _authorized_knowledge_document(
+        kb_id,
+        document_id,
+        "content_read",
+        request,
+        x_organization_id,
+        db,
+        current_user,
     )
-
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found in DB")
-
-    if doc.knowledge_base_id != kb_id:
-        raise HTTPException(
-            status_code=400, detail="Document does not belong to this Knowledge Base"
-        )
 
     return KnowledgeDocumentContentService().build_content_response(doc)
 
@@ -1128,8 +1644,10 @@ def get_document_content(
 async def process_document(
     kb_id: UUID,
     document_id: UUID,
-    request: DocumentPreviewRequest,
+    preview_request: DocumentPreviewRequest,
+    request: Request,
     background_tasks: BackgroundTasks,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -1138,55 +1656,51 @@ async def process_document(
     """
 
     # 1. 문서 조회 (권한 확인)
-    doc = (
-        db.query(Document)
-        .join(KnowledgeBase)
-        .filter(
-            Document.id == document_id,
-            KnowledgeBase.id == kb_id,
-            KnowledgeBase.user_id == current_user.id,
-        )
-        .first()
+    kb, doc = _authorized_knowledge_document(
+        kb_id,
+        document_id,
+        "write",
+        request,
+        x_organization_id,
+        db,
+        current_user,
     )
-
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
 
     try:
         normalized_chunking_mode = validate_chunking_request(
-            chunking_mode=request.chunking_mode,
+            chunking_mode=preview_request.chunking_mode,
             source_type=doc.source_type,
-            selection_mode=request.selection_mode,
+            selection_mode=preview_request.selection_mode,
         )
     except RAGHierarchyError as exc:
         raise _chunking_http_exception(exc)
 
     # 2. 설정 업데이트
-    doc.chunk_size = request.chunk_size
-    doc.chunk_overlap = request.chunk_overlap
+    doc.chunk_size = preview_request.chunk_size
+    doc.chunk_overlap = preview_request.chunk_overlap
 
     # 메타데이터에 추가 설정 저장
     new_meta = dict(doc.meta_info or {})
     new_meta.update(
         {
-            "segment_identifier": request.segment_identifier,
-            "remove_urls_emails": request.remove_urls_emails,
-            "remove_whitespace": request.remove_whitespace,
-            "strategy": request.strategy,  # LlamaParse 등 파싱 전략 저장
+            "segment_identifier": preview_request.segment_identifier,
+            "remove_urls_emails": preview_request.remove_urls_emails,
+            "remove_whitespace": preview_request.remove_whitespace,
+            "strategy": preview_request.strategy,  # LlamaParse 등 파싱 전략 저장
             "chunking_mode": normalized_chunking_mode,
-            "db_config": request.db_config,
+            "db_config": preview_request.db_config,
             # 필터링 설정 저장
-            "selection_mode": request.selection_mode,
-            "chunk_range": request.chunk_range,
-            "keyword_filter": request.keyword_filter,
+            "selection_mode": preview_request.selection_mode,
+            "chunk_range": preview_request.chunk_range,
+            "keyword_filter": preview_request.keyword_filter,
         }
     )
     doc.meta_info = new_meta
 
     # DB 소스인 경우 FK 관계 검증 (백그라운드 실행 전)
-    if doc.source_type == "DB" and request.db_config:
-        selections = request.db_config.get("selections", [])
-        join_config = request.db_config.get("join_config", {})
+    if doc.source_type == "DB" and preview_request.db_config:
+        selections = preview_request.db_config.get("selections", [])
+        join_config = preview_request.db_config.get("join_config", {})
 
         # 2개 테이블 선택 시 FK 관계 필수
         if len(selections) == 2 and not join_config.get("enabled", False):
@@ -1202,9 +1716,9 @@ async def process_document(
     ingestion_service = IngestionService(
         db,
         user_id=current_user.id,
-        chunk_size=request.chunk_size,
-        chunk_overlap=request.chunk_overlap,
-        ai_model=doc.knowledge_base.embedding_model,
+        chunk_size=preview_request.chunk_size,
+        chunk_overlap=preview_request.chunk_overlap,
+        ai_model=kb.embedding_model,
     )
 
     background_tasks.add_task(
@@ -1221,7 +1735,9 @@ async def process_document(
 def preview_document_chunking(
     kb_id: UUID,
     document_id: UUID,
-    request: DocumentPreviewRequest,
+    preview_request: DocumentPreviewRequest,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -1229,26 +1745,21 @@ def preview_document_chunking(
     문서 청킹 설정을 미리보기 합니다. DB를 업데이트하지 않고 결과만 반환합니다.
     """
     # 1. 문서 존재 및 권한 확인
-    doc = (
-        db.query(Document)
-        .join(KnowledgeBase)
-        .filter(Document.id == document_id, KnowledgeBase.user_id == current_user.id)
-        .first()
+    _, doc = _authorized_knowledge_document(
+        kb_id,
+        document_id,
+        "write",
+        request,
+        x_organization_id,
+        db,
+        current_user,
     )
-
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
-
-    if doc.knowledge_base_id != kb_id:
-        raise HTTPException(
-            status_code=400, detail="Document does not belong to this Knowledge Base"
-        )
 
     try:
         normalized_chunking_mode = validate_chunking_request(
-            chunking_mode=request.chunking_mode,
+            chunking_mode=preview_request.chunking_mode,
             source_type=doc.source_type,
-            selection_mode=request.selection_mode,
+            selection_mode=preview_request.selection_mode,
         )
     except RAGHierarchyError as exc:
         raise _chunking_http_exception(exc)
@@ -1258,20 +1769,20 @@ def preview_document_chunking(
     try:
         segments = service.preview_chunking(
             file_path=doc.file_path,
-            chunk_size=request.chunk_size,
-            chunk_overlap=request.chunk_overlap,
-            segment_identifier=request.segment_identifier,
-            remove_urls_emails=request.remove_urls_emails,
-            remove_whitespace=request.remove_whitespace,
-            strategy=request.strategy,
+            chunk_size=preview_request.chunk_size,
+            chunk_overlap=preview_request.chunk_overlap,
+            segment_identifier=preview_request.segment_identifier,
+            remove_urls_emails=preview_request.remove_urls_emails,
+            remove_whitespace=preview_request.remove_whitespace,
+            strategy=preview_request.strategy,
             source_type=doc.source_type,
             chunking_mode=normalized_chunking_mode,
             meta_info=doc.meta_info,
-            db_config=request.db_config,
+            db_config=preview_request.db_config,
             # 필터링 파라미터 전달
-            selection_mode=request.selection_mode,
-            chunk_range=request.chunk_range,
-            keyword_filter=request.keyword_filter,
+            selection_mode=preview_request.selection_mode,
+            chunk_range=preview_request.chunk_range,
+            keyword_filter=preview_request.keyword_filter,
         )
     except ValueError as e:
         logger.warning("Preview validation failed: %s", type(e).__name__)
@@ -1297,10 +1808,13 @@ def preview_document_chunking(
 @router.post(
     "/{kb_id}/documents/{document_id}/sync", status_code=status.HTTP_202_ACCEPTED
 )
+@audit(AuditAction.DOCUMENT_PROCESS, target_param="document_id")
 async def sync_document(
     kb_id: UUID,
     document_id: UUID,
+    request: Request,
     background_tasks: BackgroundTasks,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -1309,19 +1823,16 @@ async def sync_document(
     기존 설정을 유지하면서 처리를 다시 시작합니다.
     """
     # 1. 문서 조회
-    doc = (
-        db.query(Document)
-        .join(KnowledgeBase)
-        .filter(
-            Document.id == document_id,
-            KnowledgeBase.id == kb_id,
-            KnowledgeBase.user_id == current_user.id,
-        )
-        .first()
+    kb, doc = _authorized_knowledge_document(
+        kb_id,
+        document_id,
+        "write",
+        request,
+        x_organization_id,
+        db,
+        current_user,
+        domain_action="sync_manage",
     )
-
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
 
     # 상태 업데이트
     mark_document_processing_queued(doc)
@@ -1333,7 +1844,7 @@ async def sync_document(
         user_id=current_user.id,
         chunk_size=doc.chunk_size,
         chunk_overlap=doc.chunk_overlap,
-        ai_model=doc.knowledge_base.embedding_model,
+        ai_model=kb.embedding_model,
     )
 
     background_tasks.add_task(

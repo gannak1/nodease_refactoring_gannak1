@@ -21,6 +21,7 @@ import {
   Home,
   ChevronRight,
   Cpu,
+  Archive,
 } from 'lucide-react';
 import {
   knowledgeApi,
@@ -327,7 +328,7 @@ export default function KnowledgeDetailPage() {
     }
   };
 
-  // 지식 베이스 삭제 핸들러
+  // 지식 베이스 archive 핸들러
   const handleDeleteKnowledgeBase = async () => {
     if (deleteConfirmName !== knowledgeBase?.name) {
       toast.error('자료 그룹 이름이 일치하지 않습니다.');
@@ -335,11 +336,11 @@ export default function KnowledgeDetailPage() {
     }
     try {
       setIsDeleting(true);
-      await knowledgeApi.deleteKnowledgeBase(id);
-      toast.success('자료 그룹이 삭제되었습니다.');
+      await knowledgeApi.archiveKnowledgeBase(id);
+      toast.success('자료 그룹을 보관했습니다.');
       router.push('/dashboard/knowledge');
     } catch {
-      toast.error('자료 그룹 삭제 실패');
+      toast.error('자료 그룹 보관 실패');
       setIsDeleting(false);
     }
   };
@@ -444,6 +445,7 @@ export default function KnowledgeDetailPage() {
   const canEditSettings = knowledgeBase.can_edit_settings !== false;
   const canManageSafeMetadata =
     knowledgeBase.can_manage_safe_metadata ?? canEditSettings;
+  const canManageKnowledgeBase = knowledgeBase.can_manage === true;
 
   return (
     <div className="p-8 bg-gray-50/30 dark:bg-gray-900 min-h-full">
@@ -567,7 +569,6 @@ export default function KnowledgeDetailPage() {
             AI 답변 테스트
           </button>
           {canEditSettings && (
-            <>
               <button
                 onClick={() => setIsUploadModalOpen(true)}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors shadow-sm"
@@ -575,14 +576,15 @@ export default function KnowledgeDetailPage() {
                 <Plus className="w-4 h-4" />
                 소스 추가
               </button>
+          )}
+          {canManageKnowledgeBase && (
               <button
                 onClick={() => setIsDeleteModalOpen(true)}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-red-300 dark:border-red-700 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 text-sm rounded-lg transition-colors"
               >
-                <Trash2 className="w-4 h-4" />
-                삭제
+                <Archive className="w-4 h-4" />
+                보관
               </button>
-            </>
           )}
         </div>
       </div>
@@ -870,8 +872,8 @@ export default function KnowledgeDetailPage() {
           <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-md w-full p-6 space-y-4">
             <div className="flex justify-between items-start">
               <h3 className="text-lg font-bold text-red-600 dark:text-red-400 flex items-center gap-2">
-                <Trash2 className="w-5 h-5" />
-                지식 베이스 삭제
+                <Archive className="w-5 h-5" />
+                지식 베이스 보관
               </h3>
               <button
                 onClick={() => setIsDeleteModalOpen(false)}
@@ -884,9 +886,9 @@ export default function KnowledgeDetailPage() {
             <div className="space-y-4">
               <div className="p-4 bg-red-50 dark:bg-red-900/20 rounded-lg text-sm text-red-800 dark:text-red-300">
                 <p className="font-semibold mb-2">
-                  ⚠️ 경고: 복구할 수 없습니다.
+                  보관하면 일반 목록과 RAG 후보에서 제외됩니다.
                 </p>
-                <p>삭제하시려면 지식 베이스 이름을 정확히 입력해주세요:</p>
+                <p>보관하시려면 지식 베이스 이름을 정확히 입력해주세요:</p>
                 <p className="mt-2 px-3 py-2 bg-white dark:bg-gray-800 rounded border border-red-200 dark:border-red-800 font-bold text-red-700 dark:text-red-300">
                   {knowledgeBase.name}
                 </p>
@@ -917,10 +919,10 @@ export default function KnowledgeDetailPage() {
                   {isDeleting ? (
                     <>
                       <Loader2 className="w-4 h-4 animate-spin" />
-                      삭제 중...
+                      보관 중...
                     </>
                   ) : (
-                    '삭제 확인'
+                    '보관 확인'
                   )}
                 </button>
               </div>

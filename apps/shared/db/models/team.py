@@ -615,6 +615,119 @@ class UserKnowledgeCollectionPermission(Base):
     )
 
 
+class TeamKnowledgeDomainPermission(Base):
+    """Organization-scoped Knowledge management action delegated to a Team."""
+
+    __tablename__ = "team_knowledge_domain_permissions"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "team_id",
+            "permission_action",
+            name="uq_team_knowledge_domain_permissions_action",
+        ),
+        ForeignKeyConstraint(
+            ["team_id", "organization_id"],
+            ["teams.id", "teams.organization_id"],
+            name="fk_team_knowledge_domain_permissions_team_org",
+        ),
+        CheckConstraint(
+            "permission_action IN ('catalog_manage', 'permission_delegate', 'lifecycle_manage', 'sync_manage')",
+            name="ck_team_knowledge_domain_permissions_action",
+        ),
+        CheckConstraint(
+            "flags >= 0",
+            name="ck_team_knowledge_domain_permissions_flags_nonnegative",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organization.id"), nullable=False, index=True
+    )
+    team_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False, index=True
+    )
+    permission_action: Mapped[str] = mapped_column(String(32), nullable=False)
+    assigned_by: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
+    )
+    assigned_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    flags: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default=text("0")
+    )
+
+    organization: Mapped["Organization"] = relationship(
+        "Organization", foreign_keys=[organization_id]
+    )
+    team: Mapped["Team"] = relationship(
+        "Team", foreign_keys=[team_id], overlaps="organization"
+    )
+    assigner: Mapped["User"] = relationship("User", foreign_keys=[assigned_by])
+
+
+class UserKnowledgeDomainPermission(Base):
+    """Organization-scoped Knowledge management action delegated to a User."""
+
+    __tablename__ = "user_knowledge_domain_permissions"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "user_id",
+            "permission_action",
+            name="uq_user_knowledge_domain_permissions_action",
+        ),
+        CheckConstraint(
+            "permission_action IN ('catalog_manage', 'permission_delegate', 'lifecycle_manage', 'sync_manage')",
+            name="ck_user_knowledge_domain_permissions_action",
+        ),
+        CheckConstraint(
+            "flags >= 0",
+            name="ck_user_knowledge_domain_permissions_flags_nonnegative",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organization.id"), nullable=False, index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
+    )
+    permission_action: Mapped[str] = mapped_column(String(32), nullable=False)
+    assigned_by: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
+    )
+    assigned_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    flags: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default=text("0")
+    )
+
+    organization: Mapped["Organization"] = relationship(
+        "Organization", foreign_keys=[organization_id]
+    )
+    user: Mapped["User"] = relationship("User", foreign_keys=[user_id])
+    assigner: Mapped["User"] = relationship("User", foreign_keys=[assigned_by])
+
+
 class TeamLLMPermission(TeamResourcePermissionMixin, Base):
     """Team permission for an LLM credential resource."""
 
