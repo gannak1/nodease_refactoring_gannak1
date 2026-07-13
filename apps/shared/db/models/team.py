@@ -648,7 +648,7 @@ class TeamKnowledgeDomainPermission(Base):
         UUID(as_uuid=True), ForeignKey("organization.id"), nullable=False, index=True
     )
     team_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("teams.id"), nullable=False, index=True
+        UUID(as_uuid=True), nullable=False, index=True
     )
     permission_action: Mapped[str] = mapped_column(String(32), nullable=False)
     assigned_by: Mapped[uuid.UUID] = mapped_column(
