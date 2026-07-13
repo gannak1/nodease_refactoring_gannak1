@@ -91,6 +91,7 @@ class KnowledgeDocumentContentService:
             filename=filename,
             media_type=media_type,
             content_disposition_type=content_disposition_type,
+            headers={"X-Content-Type-Options": "nosniff"},
         )
 
     def _try_html_preview_response(
@@ -248,7 +249,8 @@ class KnowledgeDocumentContentService:
                     "Content-Disposition": (
                         f"{content_disposition_type}; "
                         f"filename={safe_quote_filename(filename)}"
-                    )
+                    ),
+                    "X-Content-Type-Options": "nosniff",
                 },
             )
         except EgressGuardError as exc:

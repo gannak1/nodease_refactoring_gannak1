@@ -354,6 +354,27 @@ export const knowledgeApi = {
     return response.data;
   },
 
+  getDocumentContent: async (
+    kbId: string,
+    documentId: string,
+    signal?: AbortSignal,
+  ): Promise<Blob> => {
+    const organizationId = getStoredActiveOrganizationId();
+    if (!organizationId) {
+      throw new Error('Active organization is required for document content.');
+    }
+
+    const response = await api.get<Blob>(
+      `/knowledge/${kbId}/documents/${documentId}/content`,
+      {
+        headers: activeOrganizationHeaders(organizationId),
+        responseType: 'blob',
+        signal,
+      },
+    );
+    return response.data;
+  },
+
   getDocumentEditConfig: async (
     kbId: string,
     documentId: string,

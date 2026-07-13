@@ -45,6 +45,7 @@ const payload = {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.clearAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -82,6 +83,35 @@ describe('knowledgeApi.getDocumentEditConfig', () => {
     expect(apiClient.get).toHaveBeenCalledWith(
       '/knowledge/kb-1/documents/document-1/edit-config',
     );
+  });
+});
+
+describe('knowledgeApi.getDocumentContent', () => {
+  it('fetches the original through the organization-scoped API client', async () => {
+    const content = new Blob(['pdf'], { type: 'application/pdf' });
+    const controller = new AbortController();
+    vi.mocked(apiClient.get).mockResolvedValueOnce({ data: content });
+
+    await expect(
+      knowledgeApi.getDocumentContent('kb-1', 'document-1', controller.signal),
+    ).resolves.toBe(content);
+    expect(apiClient.get).toHaveBeenCalledWith(
+      '/knowledge/kb-1/documents/document-1/content',
+      {
+        headers: { 'X-Organization-Id': 'org-1' },
+        responseType: 'blob',
+        signal: controller.signal,
+      },
+    );
+  });
+
+  it('fails closed before the request when active organization is missing', async () => {
+    vi.mocked(getStoredActiveOrganizationId).mockReturnValueOnce(null);
+
+    await expect(
+      knowledgeApi.getDocumentContent('kb-1', 'document-1'),
+    ).rejects.toThrow('Active organization is required for document content.');
+    expect(apiClient.get).not.toHaveBeenCalled();
   });
 });
 
