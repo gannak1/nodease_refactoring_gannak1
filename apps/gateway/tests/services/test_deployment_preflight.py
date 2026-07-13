@@ -114,6 +114,7 @@ def test_preflight_allows_public_collection_kb_for_public_surface():
                     id=collection_id,
                     organization_id=organization_id,
                     lifecycle_state="active",
+                    source_identity_id=None,
                     safe_metadata={"visibility": "public"},
                 )
             ],
@@ -158,6 +159,7 @@ def test_preflight_blocks_source_managed_kb_even_if_collection_is_public():
                     id=collection_id,
                     organization_id=organization_id,
                     lifecycle_state="active",
+                    source_identity_id=None,
                     safe_metadata={"visibility": "public"},
                 )
             ],
@@ -1724,6 +1726,8 @@ def _matches_expression(row, expression):
 def _right_value(right):
     if hasattr(right, "value"):
         return right.value
+    if str(right).lower() == "null":
+        return None
     if str(right).lower() == "true":
         return True
     if str(right).lower() == "false":

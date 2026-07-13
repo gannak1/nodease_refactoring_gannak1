@@ -2,8 +2,10 @@ from types import SimpleNamespace
 
 from apps.shared.db.models.knowledge import KnowledgeBase, KnowledgeCollection
 from apps.shared.services.knowledge_resource_eligibility import (
+    is_anonymous_public_knowledge_collection,
     is_operational_knowledge_resource,
     knowledge_base_operational_predicates,
+    knowledge_collection_anonymous_public_predicates,
     knowledge_collection_operational_predicates,
     retrieval_visible_chunk_exists,
 )
@@ -36,6 +38,20 @@ def test_operational_predicates_share_lifecycle_and_source_deleted_boundary():
     assert "knowledge_collections.sync_state != 'source_deleted'" in collection_sql
 
 
+def test_anonymous_public_collection_predicates_include_source_and_visibility_gate():
+    sql = _postgres_sql(
+        select(KnowledgeCollection.id).where(
+            *knowledge_collection_anonymous_public_predicates()
+        )
+    )
+
+    assert "knowledge_collections.lifecycle_state = 'active'" in sql
+    assert "knowledge_collections.sync_state != 'source_deleted'" in sql
+    assert "knowledge_collections.source_identity_id is null" in sql
+    assert "knowledge_collections.safe_metadata" in sql
+    assert "= 'public'" in sql
+
+
 def test_retrieval_visible_chunk_predicate_covers_versioned_and_legacy_paths():
     sql = _postgres_sql(
         select(KnowledgeBase.id).where(retrieval_visible_chunk_exists())
@@ -61,3 +77,34 @@ def test_loaded_resource_boundary_allows_stale_snapshot_but_not_deleted_source()
     assert is_operational_knowledge_resource(active_stale) is True
     assert is_operational_knowledge_resource(source_deleted) is False
     assert is_operational_knowledge_resource(archived) is False
+
+
+def test_loaded_anonymous_public_collection_is_manual_public_and_fail_closed():
+    manual_public = SimpleNamespace(
+        lifecycle_state="active",
+        sync_state="manual",
+        source_identity_id=None,
+        safe_metadata={"visibility": "public"},
+    )
+    source_managed = SimpleNamespace(
+        lifecycle_state="active",
+        sync_state="synced",
+        source_identity_id="opaque-source",
+        safe_metadata={"visibility": "public"},
+    )
+    missing_source_state = SimpleNamespace(
+        lifecycle_state="active",
+        sync_state="manual",
+        safe_metadata={"visibility": "public"},
+    )
+    private = SimpleNamespace(
+        lifecycle_state="active",
+        sync_state="manual",
+        source_identity_id=None,
+        safe_metadata={"visibility": "private"},
+    )
+
+    assert is_anonymous_public_knowledge_collection(manual_public) is True
+    assert is_anonymous_public_knowledge_collection(source_managed) is False
+    assert is_anonymous_public_knowledge_collection(missing_source_state) is False
+    assert is_anonymous_public_knowledge_collection(private) is False

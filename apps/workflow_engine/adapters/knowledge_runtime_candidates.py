@@ -28,8 +28,10 @@ from apps.shared.domain.knowledge_runtime_candidates import (
 )
 from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
 from apps.shared.services.knowledge_resource_eligibility import (
+    is_anonymous_public_knowledge_collection,
     is_operational_knowledge_resource,
     knowledge_base_operational_predicates,
+    knowledge_collection_anonymous_public_predicates,
     knowledge_collection_operational_predicates,
 )
 
@@ -172,7 +174,7 @@ class PostgresKnowledgeRuntimeCandidateSnapshotAdapter:
             allowed_collection_ids = tuple(
                 collection.id
                 for collection in configured_collections
-                if self._collection_is_public(collection)
+                if is_anonymous_public_knowledge_collection(collection)
             )
         else:
             raise KnowledgeRuntimeCandidateSnapshotError("snapshot_audience_invalid")
@@ -369,6 +371,7 @@ class PostgresKnowledgeRuntimeCandidateSnapshotAdapter:
                         KnowledgeCollection.organization_id,
                         KnowledgeCollection.lifecycle_state,
                         KnowledgeCollection.sync_state,
+                        KnowledgeCollection.source_identity_id,
                         KnowledgeCollection.is_system_managed,
                         KnowledgeCollection.safe_metadata,
                     )
@@ -622,9 +625,7 @@ class PostgresKnowledgeRuntimeCandidateSnapshotAdapter:
                     KnowledgeCollectionItem.organization_id == organization_id,
                     KnowledgeCollectionItem.knowledge_base_id.in_(bounded_ids),
                     KnowledgeCollection.organization_id == organization_id,
-                    *knowledge_collection_operational_predicates(),
-                    KnowledgeCollection.safe_metadata["visibility"].astext
-                    == "public",
+                    *knowledge_collection_anonymous_public_predicates(),
                 )
                 .distinct()
             )
@@ -658,14 +659,6 @@ class PostgresKnowledgeRuntimeCandidateSnapshotAdapter:
             and getattr(collection, "id", None) == expected_id
             and getattr(collection, "organization_id", None) == organization_id
             and is_operational_knowledge_resource(collection)
-        )
-
-    @staticmethod
-    def _collection_is_public(collection: Any) -> bool:
-        safe_metadata = getattr(collection, "safe_metadata", None)
-        return (
-            isinstance(safe_metadata, dict)
-            and safe_metadata.get("visibility") == "public"
         )
 
     @staticmethod

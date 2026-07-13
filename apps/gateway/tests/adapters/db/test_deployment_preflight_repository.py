@@ -114,6 +114,29 @@ def test_public_runtime_preflight_query_excludes_source_deleted_membership():
     )
 
 
+def test_public_runtime_preflight_excludes_source_managed_parent_collection():
+    knowledge_base_id = uuid.uuid4()
+    collection_id = uuid.uuid4()
+    item = SimpleNamespace(
+        knowledge_base_id=knowledge_base_id,
+        collection_id=collection_id,
+    )
+    source_managed_collection = SimpleNamespace(
+        id=collection_id,
+        safe_metadata={"visibility": "public"},
+        source_identity_id=uuid.uuid4(),
+    )
+    db = _Db([item], [source_managed_collection])
+    repository = SqlAlchemyDeploymentPreflightRepository(db)
+
+    result = repository.get_public_runtime_eligible_knowledge_base_ids(
+        [knowledge_base_id],
+        uuid.uuid4(),
+    )
+
+    assert result == set()
+
+
 def test_collection_preflight_aggregate_excludes_source_deleted_members():
     collection_id = uuid.uuid4()
     collection = SimpleNamespace(

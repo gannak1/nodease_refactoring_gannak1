@@ -16,6 +16,7 @@ from sqlalchemy.sql.elements import ColumnElement
 
 ACTIVE_LIFECYCLE_STATE = "active"
 SOURCE_DELETED_SYNC_STATE = "source_deleted"
+_MISSING_SOURCE_IDENTITY = object()
 
 
 def knowledge_base_operational_predicates() -> tuple[ColumnElement[bool], ...]:
@@ -35,6 +36,18 @@ def knowledge_collection_operational_predicates() -> tuple[
     return (
         KnowledgeCollection.lifecycle_state == ACTIVE_LIFECYCLE_STATE,
         KnowledgeCollection.sync_state != SOURCE_DELETED_SYNC_STATE,
+    )
+
+
+def knowledge_collection_anonymous_public_predicates() -> tuple[
+    ColumnElement[bool], ...
+]:
+    """Return the current fail-closed anonymous public Collection scope."""
+
+    return (
+        *knowledge_collection_operational_predicates(),
+        KnowledgeCollection.source_identity_id.is_(None),
+        KnowledgeCollection.safe_metadata["visibility"].astext == "public",
     )
 
 
@@ -89,11 +102,30 @@ def is_operational_knowledge_resource(resource: Any) -> bool:
     )
 
 
+def is_anonymous_public_knowledge_collection(resource: Any) -> bool:
+    """Apply the anonymous public Collection scope to an already-loaded row."""
+
+    safe_metadata = getattr(resource, "safe_metadata", None)
+    source_identity_id = getattr(
+        resource,
+        "source_identity_id",
+        _MISSING_SOURCE_IDENTITY,
+    )
+    return (
+        is_operational_knowledge_resource(resource)
+        and isinstance(safe_metadata, dict)
+        and safe_metadata.get("visibility") == "public"
+        and source_identity_id is None
+    )
+
+
 __all__ = [
     "ACTIVE_LIFECYCLE_STATE",
     "SOURCE_DELETED_SYNC_STATE",
+    "is_anonymous_public_knowledge_collection",
     "is_operational_knowledge_resource",
     "knowledge_base_operational_predicates",
+    "knowledge_collection_anonymous_public_predicates",
     "knowledge_collection_operational_predicates",
     "retrieval_visible_chunk_exists",
 ]

@@ -95,6 +95,7 @@ def _collection(collection_id=None):
         name="HR",
         description=None,
         is_system_managed=False,
+        source_identity_id=None,
         sync_state="manual",
         lifecycle_state="active",
         safe_metadata={},
@@ -403,6 +404,31 @@ def test_public_visibility_blocks_source_managed_items_without_approval_primitiv
         "_collection_has_source_managed_items",
         lambda collection_id: True,
     )
+
+    with pytest.raises(KnowledgeCollectionServiceError) as exc_info:
+        service.update_visibility(
+            collection.id,
+            KnowledgeCollectionVisibilityRequest(
+                visibility="public",
+                acknowledged_public_runtime_exposure=True,
+            ),
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.code == "policy.blocked"
+    assert exc_info.value.details == {
+        "policy_reason": "source_public_exposure_required"
+    }
+
+
+def test_public_visibility_blocks_source_managed_collection_without_approval_primitive(
+    monkeypatch,
+):
+    service = _service(monkeypatch)
+    collection = _collection()
+    collection.source_identity_id = uuid.uuid4()
+    monkeypatch.setattr(service, "_collection_or_hidden", lambda collection_id: collection)
+    monkeypatch.setattr(service, "_require_org_manager", lambda: None)
 
     with pytest.raises(KnowledgeCollectionServiceError) as exc_info:
         service.update_visibility(

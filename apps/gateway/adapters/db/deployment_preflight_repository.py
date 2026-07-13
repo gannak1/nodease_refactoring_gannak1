@@ -22,7 +22,9 @@ from apps.shared.domain.knowledge_runtime_candidates import (
     MAX_RUNTIME_CANDIDATE_BUDGET,
 )
 from apps.shared.services.knowledge_resource_eligibility import (
+    is_anonymous_public_knowledge_collection,
     knowledge_base_operational_predicates,
+    knowledge_collection_anonymous_public_predicates,
     knowledge_collection_operational_predicates,
     retrieval_visible_chunk_exists,
 )
@@ -95,15 +97,14 @@ class SqlAlchemyDeploymentPreflightRepository:
             .filter(
                 KnowledgeCollection.id.in_(collection_ids),
                 KnowledgeCollection.organization_id == organization_id,
-                *knowledge_collection_operational_predicates(),
+                *knowledge_collection_anonymous_public_predicates(),
             )
             .all()
         )
         public_collection_ids = {
             collection.id
             for collection in collections
-            if (getattr(collection, "safe_metadata", None) or {}).get("visibility")
-            == "public"
+            if is_anonymous_public_knowledge_collection(collection)
         }
         return {
             item.knowledge_base_id

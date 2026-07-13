@@ -739,7 +739,10 @@ class KnowledgeCollectionService:
             )
         if (
             request.visibility == "public"
-            and self._collection_has_source_managed_items(collection.id)
+            and (
+                getattr(collection, "source_identity_id", None) is not None
+                or self._collection_has_source_managed_items(collection.id)
+            )
         ):
             raise KnowledgeCollectionServiceError(
                 409,

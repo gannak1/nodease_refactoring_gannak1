@@ -511,9 +511,9 @@ MVP에서 public/private visibility 전환은 organization manager만 허용한�
 
 `safe_metadata["visibility"] == "public"`은 anonymous public-only runtime의 collection candidate inclusion flag다. 인증 사용자 KB `use`, source ACL requester authorization, final evidence policy를 대체하지 않는다.
 
-Source-managed KB가 anonymous public-only 후보가 되려면 collection public visibility와 별도 source/connector public exposure approval을 모두 통과해야 한다. Approval row는 `approval_scope`, scope별 target id, `approved_by`, `approved_at`, `expires_at`, `source_identity_id` 또는 connector/source target, `revocation_behavior`, reverification cadence, explicit acknowledgement를 저장해야 한다. `approval_scope`와 target field가 일치하지 않거나 expiry/reverification/revocation 조건이 빠진 broad connector-wide approval은 public-only 후보에서 제외한다.
+Source-managed Collection 또는 source-managed KB가 anonymous public-only 후보가 되려면 collection public visibility와 별도 source/connector public exposure approval을 모두 통과해야 한다. Approval row는 `approval_scope`, scope별 target id, `approved_by`, `approved_at`, `expires_at`, `source_identity_id` 또는 connector/source target, `revocation_behavior`, reverification cadence, explicit acknowledgement를 저장해야 한다. `approval_scope`와 target field가 일치하지 않거나 expiry/reverification/revocation 조건이 빠진 broad connector-wide approval은 public-only 후보에서 제외한다.
 
-MBA-176에서 source/connector public exposure approval primitive가 아직 구현되지 않은 경우, source-managed KB는 public collection에 연결되어 있어도 anonymous public-only 후보로 승격하지 않는다. Deployment preflight와 runtime availability preview는 이를 warning이 아니라 `source_public_exposure_required` blocked reason으로 반환한다.
+MBA-176에서 source/connector public exposure approval primitive가 아직 구현되지 않은 경우, source-managed Collection은 manual child KB만 포함해도 anonymous candidate stream을 만들지 않고 source-managed KB도 public collection에 연결되어 있어도 anonymous public-only 후보로 승격하지 않는다. Deployment preflight와 runtime availability preview는 이를 warning이 아니라 `source_public_exposure_required` blocked reason으로 반환한다.
 
 ### Workflow Runtime RAG Execution Subject
 
