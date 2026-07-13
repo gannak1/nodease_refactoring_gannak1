@@ -1531,9 +1531,17 @@ class IngestionOrchestrator:
             try:
                 self._update_status(doc.id, "pending")
                 self.process_document(doc.id)
-            except Exception as e:
-                logger.error(f"Failed to re-index document {doc.id}: {e}")
-                self._update_status(doc.id, "failed", str(e))
+            except Exception as error:
+                logger.error(
+                    "Failed to re-index document %s, error_type: %s",
+                    doc.id,
+                    type(error).__name__,
+                )
+                self._update_status(
+                    doc.id,
+                    "failed",
+                    self._safe_ingestion_error_message(error),
+                )
 
     def preprocess_text(self, text: str, options: Dict[str, Any]) -> str:
         """

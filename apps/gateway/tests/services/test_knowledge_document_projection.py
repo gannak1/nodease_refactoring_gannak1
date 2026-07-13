@@ -1,5 +1,11 @@
+import pytest
+
 from apps.gateway.services.knowledge_document_projection import (
+    project_safe_document_error,
     project_safe_document_metadata,
+    project_safe_document_progress,
+    project_safe_document_progress_message,
+    project_safe_document_status,
 )
 
 
@@ -35,7 +41,6 @@ def test_document_metadata_projection_returns_only_allowlisted_safe_fields():
     assert projected == {
         "progress": 45,
         "processing_progress": 45.5,
-        "processing_current_step": "Processing chunks.",
         "processing_enqueued_at": "2026-07-13T09:00:00+00:00",
         "processing_started_at": "2026-07-13T09:00:01Z",
         "processing_progress_updated_at": "2026-07-13T09:00:02+00:00",
@@ -92,3 +97,54 @@ def test_document_metadata_projection_accepts_partial_bounded_cost_estimate():
 
 def test_document_metadata_projection_rejects_non_mapping_input():
     assert project_safe_document_metadata(["unexpected"]) == {}
+
+
+def test_document_metadata_projection_does_not_return_persisted_step_text():
+    projected = project_safe_document_metadata(
+        {"processing_current_step": "legacy-step-marker", "progress": 10}
+    )
+
+    assert projected == {"progress": 10}
+    assert "legacy-step-marker" not in repr(projected)
+
+
+def test_document_error_projection_returns_only_fixed_public_messages():
+    failed = project_safe_document_error(
+        "failed",
+        "legacy-internal-exception-marker",
+    )
+    completed = project_safe_document_error(
+        "completed",
+        "legacy-completion-warning-marker",
+    )
+
+    assert failed == "Document processing failed. You can retry the document."
+    assert completed == "Document processing completed with a notice."
+    assert "legacy-internal-exception-marker" not in failed
+    assert "legacy-completion-warning-marker" not in completed
+    assert project_safe_document_error("processing", "legacy-marker") is None
+
+
+def test_document_status_and_message_projection_fail_closed_for_unknown_status():
+    assert project_safe_document_status("PROCESSING") == "processing"
+    assert project_safe_document_status("legacy-status-marker") == "failed"
+    assert project_safe_document_progress_message("legacy-status-marker") == (
+        "Document processing failed. You can retry the document."
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "redis_progress", "expected"),
+    [
+        ("processing", b"55", 55),
+        ("processing", "not-a-number", 0),
+        ("processing", -1, 0),
+        ("processing", 101, 0),
+        ("processing", "1000", 0),
+        ("processing", True, 0),
+        ("completed", "not-a-number", 100),
+        ("failed", 75, 0),
+    ],
+)
+def test_document_progress_projection_is_bounded(status, redis_progress, expected):
+    assert project_safe_document_progress(status, redis_progress) == expected

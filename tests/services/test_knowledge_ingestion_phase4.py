@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -1302,3 +1303,45 @@ def test_ingestion_error_message_does_not_store_raw_exception_detail():
     assert orchestrator._safe_ingestion_error_message(
         KnowledgeIngestionFinalizationError("version_has_no_chunks")
     ) == "문서 색인 최종화에 실패했습니다."
+
+
+def test_reindex_failure_stores_fixed_error_and_logs_only_exception_type(
+    monkeypatch,
+    caplog,
+):
+    document = SimpleNamespace(id=DOC_ID)
+
+    class DocumentQuery:
+        def filter(self, *_args, **_kwargs):
+            return self
+
+        def all(self):
+            return [document]
+
+    db = SimpleNamespace(query=lambda _model: DocumentQuery())
+    orchestrator = IngestionOrchestrator(db=db)
+    status_updates = []
+
+    monkeypatch.setattr(
+        orchestrator,
+        "_update_status",
+        lambda *args, **kwargs: status_updates.append((args, kwargs)),
+    )
+
+    def fail_processing(_document_id):
+        raise RuntimeError("legacy-reindex-exception-marker")
+
+    monkeypatch.setattr(orchestrator, "process_document", fail_processing)
+    caplog.set_level(
+        logging.ERROR,
+        logger="apps.gateway.services.ingestion.service",
+    )
+
+    orchestrator.reindex_knowledge_base(KB_ID, "embedding-model-v2")
+
+    assert status_updates == [
+        ((DOC_ID, "pending"), {}),
+        ((DOC_ID, "failed", "문서 처리에 실패했습니다."), {}),
+    ]
+    assert "RuntimeError" in caplog.text
+    assert "legacy-reindex-exception-marker" not in caplog.text

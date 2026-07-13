@@ -73,7 +73,6 @@ export interface DocumentResponse {
   meta_info?: {
     progress?: number;
     processing_progress?: number;
-    processing_current_step?: string;
     processing_enqueued_at?: string;
     processing_started_at?: string;
     processing_progress_updated_at?: string;
@@ -84,7 +83,6 @@ export interface DocumentResponse {
       cost_usd: number;
     };
     strategy?: string;
-    segment_identifier?: string;
     remove_urls_emails?: boolean;
     remove_whitespace?: boolean;
     chunking_mode?: 'flat' | 'hierarchical';

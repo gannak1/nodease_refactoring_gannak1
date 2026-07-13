@@ -43,6 +43,12 @@ from apps.gateway.services.knowledge_base_query_service import (
     KnowledgeSchemaNotReady,
     KnowledgeValidationError,
 )
+from apps.gateway.services.knowledge_document_projection import (
+    project_safe_document_error,
+    project_safe_document_progress,
+    project_safe_document_progress_message,
+    project_safe_document_status,
+)
 from apps.gateway.services.rag_agent_answer_service import RAGAgentAnswerService
 from apps.gateway.services.retrieval import RetrievalService
 from apps.gateway.services.storage import get_storage_service
@@ -801,7 +807,7 @@ async def get_document_progress(
             ) or recover_timed_out_document_with_artifacts(db, document_id):
                 db.refresh(doc)
 
-            status = doc.status
+            status = project_safe_document_status(doc.status)
 
             # 2. Redis에서 실시간 진행률 조회 (에러 핸들링 포함)
             redis_progress = None
@@ -812,23 +818,9 @@ async def get_document_progress(
             except Exception as e:
                 logger.warning("Redis read failed for progress: %s", type(e).__name__)
 
-            # 3. 진행률 결정 (상태 기반 우선)
-            if status == "completed":
-                progress = 100
-            elif status == "failed":
-                progress = 0
-            elif redis_progress:
-                try:
-                    progress = int(redis_progress)
-                except (ValueError, TypeError):
-                    # Redis 값이 손상되었으면 이번 전송 건너뛰고 재시도
-                    continue
-            else:
-                progress = 0
-
-            # 메타 정보에서는 메시지만 가져옴
-            meta = doc.meta_info or {}
-            step_message = meta.get("processing_current_step", "처리 중...")
+            # 3. 저장된 raw step/error와 Redis payload를 외부 문자열로 사용하지 않음
+            progress = project_safe_document_progress(status, redis_progress)
+            step_message = project_safe_document_progress_message(status)
 
             # 4. 데이터 전송 포맷 (SSE 표준: "data: ...\n\n")
             data = json.dumps(
@@ -836,7 +828,10 @@ async def get_document_progress(
                     "progress": progress,
                     "message": step_message,
                     "status": status,
-                    "error": doc.error_message,
+                    "error": project_safe_document_error(
+                        status,
+                        doc.error_message,
+                    ),
                 },
                 ensure_ascii=False,
             )

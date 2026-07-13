@@ -50,7 +50,9 @@ from apps.gateway.services.knowledge_document_edit_projection import (
     project_document_edit_config,
 )
 from apps.gateway.services.knowledge_document_projection import (
+    project_safe_document_error,
     project_safe_document_metadata,
+    project_safe_document_status,
 )
 from apps.gateway.services.knowledge_base_query_service import (
     KNOWLEDGE_BASE_MUTATION_COLUMNS,
@@ -1608,10 +1610,10 @@ def get_document(
     return DocumentResponse(
         id=doc.id,
         filename=doc.filename,
-        status=doc.status,
+        status=project_safe_document_status(doc.status),
         created_at=doc.created_at,
         updated_at=doc.updated_at,
-        error_message=doc.error_message,
+        error_message=project_safe_document_error(doc.status, doc.error_message),
         chunk_count=len(doc.chunks),
         # token_count=doc.token_count,
         source_type=doc.source_type,

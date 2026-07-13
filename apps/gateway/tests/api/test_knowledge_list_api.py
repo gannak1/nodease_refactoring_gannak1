@@ -910,10 +910,57 @@ def test_direct_document_detail_projects_internal_metadata(monkeypatch):
         current_user=SimpleNamespace(id=uuid.uuid4()),
     )
 
-    assert response.meta_info == {
-        "progress": 20,
-        "processing_current_step": "Processing queued.",
-    }
+    assert response.meta_info == {"progress": 20}
+
+
+def test_direct_document_detail_replaces_persisted_failure_detail(monkeypatch):
+    knowledge_base_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+    now = datetime(2026, 7, 13, 9, tzinfo=timezone.utc)
+    document = SimpleNamespace(
+        id=document_id,
+        filename="safe-document.pdf",
+        status="failed",
+        created_at=now,
+        updated_at=now,
+        error_message="legacy-internal-exception-marker",
+        chunks=[],
+        source_type="FILE",
+        meta_info={"processing_current_step": "legacy-step-marker"},
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_authorized_knowledge_document",
+        lambda *args, **kwargs: (SimpleNamespace(id=knowledge_base_id), document),
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "finalize_stale_processing_start",
+        lambda *args, **kwargs: False,
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "recover_timed_out_document_with_artifacts",
+        lambda *args, **kwargs: False,
+    )
+
+    response = knowledge_endpoint.get_document(
+        kb_id=knowledge_base_id,
+        document_id=document_id,
+        request=SimpleNamespace(),
+        x_organization_id=str(uuid.uuid4()),
+        db=object(),
+        current_user=SimpleNamespace(id=uuid.uuid4()),
+    )
+
+    assert response.status == "failed"
+    assert response.error_message == (
+        "Document processing failed. You can retry the document."
+    )
+    assert response.meta_info == {}
+    serialized = repr(response.model_dump(mode="json"))
+    assert "legacy-internal-exception-marker" not in serialized
+    assert "legacy-step-marker" not in serialized
 
 
 def test_document_edit_config_requires_write_and_returns_bounded_projection(

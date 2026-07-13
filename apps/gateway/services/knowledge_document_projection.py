@@ -5,9 +5,6 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
-from apps.shared.services.knowledge_safe_text import sanitize_safe_text
-
-
 _PROGRESS_FIELDS = ("progress", "processing_progress")
 _TIMESTAMP_FIELDS = (
     "processing_enqueued_at",
@@ -29,6 +26,26 @@ _COST_FIELD_LIMITS = {
     "credits": 1_000_000_000,
     "cost_usd": 1_000_000,
 }
+_PUBLIC_DOCUMENT_STATUSES = frozenset(
+    {
+        "pending",
+        "indexing",
+        "processing",
+        "waiting_for_approval",
+        "completed",
+        "failed",
+    }
+)
+_PUBLIC_PROGRESS_MESSAGES = {
+    "pending": "Document processing is queued.",
+    "indexing": "Document processing is in progress.",
+    "processing": "Document processing is in progress.",
+    "waiting_for_approval": "Document processing is waiting for approval.",
+    "completed": "Document processing completed.",
+    "failed": "Document processing failed. You can retry the document.",
+}
+_PUBLIC_FAILURE_MESSAGE = "Document processing failed. You can retry the document."
+_PUBLIC_NOTICE_MESSAGE = "Document processing completed with a notice."
 
 
 def project_safe_document_metadata(meta_info: Any) -> dict[str, object]:
@@ -42,13 +59,6 @@ def project_safe_document_metadata(meta_info: Any) -> dict[str, object]:
         value = _bounded_number(meta_info.get(field), upper=100)
         if value is not None:
             projected[field] = value
-
-    processing_step = sanitize_safe_text(
-        meta_info.get("processing_current_step"),
-        max_length=160,
-    )
-    if processing_step:
-        projected["processing_current_step"] = processing_step
 
     for field in _TIMESTAMP_FIELDS:
         timestamp = _aware_iso_timestamp(meta_info.get(field))
@@ -72,6 +82,56 @@ def project_safe_document_metadata(meta_info: Any) -> dict[str, object]:
         projected["cost_estimate"] = cost_estimate
 
     return projected
+
+
+def project_safe_document_status(value: Any) -> str:
+    if value is None:
+        return "pending"
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in _PUBLIC_DOCUMENT_STATUSES:
+            return normalized
+    return "failed"
+
+
+def project_safe_document_error(status: Any, persisted_error: Any) -> str | None:
+    public_status = project_safe_document_status(status)
+    if public_status == "failed":
+        return _PUBLIC_FAILURE_MESSAGE
+    if (
+        public_status == "completed"
+        and isinstance(persisted_error, str)
+        and bool(persisted_error.strip())
+    ):
+        return _PUBLIC_NOTICE_MESSAGE
+    return None
+
+
+def project_safe_document_progress_message(status: Any) -> str:
+    public_status = project_safe_document_status(status)
+    return _PUBLIC_PROGRESS_MESSAGES[public_status]
+
+
+def project_safe_document_progress(status: Any, redis_progress: Any) -> int:
+    public_status = project_safe_document_status(status)
+    if public_status == "completed":
+        return 100
+    if public_status == "failed":
+        return 0
+    if isinstance(redis_progress, bool):
+        return 0
+    if isinstance(redis_progress, int):
+        progress = redis_progress
+    elif isinstance(redis_progress, (bytes, str)):
+        if len(redis_progress) > 3:
+            return 0
+        try:
+            progress = int(redis_progress)
+        except (TypeError, ValueError):
+            return 0
+    else:
+        return 0
+    return progress if 0 <= progress <= 100 else 0
 
 
 def _aware_iso_timestamp(value: Any) -> str | None:
