@@ -234,7 +234,7 @@ Status: Draft
 - Current hard-delete baseline은 KB delete가 Knowledge lifecycle service boundary를 통과하고, organization field가 잘못된 legacy row를 포함해 해당 KB를 참조하는 direct KB permission row cleanup이 hard delete와 같은 transaction에서 먼저 일어나며, storage adapter 생성 또는 object delete 실패가 API 실패나 raw path/raw exception log 노출로 이어지지 않음을 검증한다. Storage adapter는 provider 세부정보가 없는 typed delete error를 호출자에게 전달하고, lifecycle service는 한 object cleanup 실패 뒤에도 나머지 object cleanup을 계속한다. Permission cleanup, ORM delete 또는 DB commit이 실패하면 session rollback 후 예외를 전파한다. 이 baseline은 MBA-184의 durable audit/outbox와 target cleanup outbox/reconciler cutover를 대체하지 않는다.
 - S3 delete reference는 configured bucket의 `s3://`, virtual-host, 승인된 path-style URL과 canonical `uploads/` key만 허용한다. URL-encoded 공백/한글 key는 한 번 decode하고, bucket/host mismatch, HTTP, query/fragment, 빈 key, control/dot/backslash segment, `uploads/` 밖 key는 provider 호출 전에 safe typed error로 거부한다.
 - Local delete reference는 configured upload root 내부 resolved path만 허용한다. Root 밖 절대/상대 경로와 symlink escape는 파일을 삭제하지 않고 safe typed error로 닫는다.
-- Local storage는 쓰기 가능한 컨테이너 기본 경로(`/app/uploads`)를 우선 사용하고, 기본 경로가 permission/read-only 오류로 생성되지 않을 때만 프로젝트 `uploads/` 경로로 fallback한다. 명시한 upload root의 생성 실패는 fallback하지 않고 전파한다.
+- Local storage는 컨테이너 기본 경로(`/app/uploads`)를 생성한 뒤 임시 파일 write/flush/delete probe까지 통과한 경우에만 사용한다. 기본 경로가 permission/read-only 오류로 생성되지 않거나 기존 directory가 실제로 쓰기 불가능하면 프로젝트 `uploads/` 경로를 같은 방식으로 검증해 fallback하며, 선택한 default root는 프로세스 안에서 lock으로 한 번만 고정한다. Probe artifact는 남지 않아야 하고 동시 service 생성도 다른 root를 선택하면 안 된다. 명시한 upload root는 같은 write probe 실패를 전파하고 fallback하지 않는다.
 - Backend upload와 presigned upload가 생성한 S3 key 및 Local path는 같은 canonical builder/delete validator round-trip을 통과해야 한다. Filename 또는 user segment에 slash/backslash, `.`/`..`, control character, 과도한 길이가 있으면 object 생성/presign 전에 safe typed error로 거부하며, delete validator를 완화해 legacy unsafe key를 허용하지 않는다.
 
 ## Client/UI Tests
@@ -243,7 +243,11 @@ Status: Draft
 - KB 상세 source 목록은 `pending` document에 `처리 시작` action과 "처리 시작 전에는 RAG 검색에 사용되지 않는다"는 안내를 표시한다.
 - KB 상세 source 목록은 `failed` document에 `재처리` action을 표시하고, `completed` document에는 처리 시작 CTA를 표시하지 않는다.
 - Pending/failed processing CTA는 document settings 화면으로 이동하며 raw file path, source title, hidden KB id를 새로 노출하지 않는다.
-- 지식 테스트 모달의 일반 검색과 AI 답변 요청은 현재 활성 조직의 `X-Organization-Id` 헤더를 전송한다.
+- 지식 테스트 모달의 모델 목록, 일반 검색과 AI 답변 요청은 현재 활성 조직의 `X-Organization-Id` 헤더를 전송한다.
+- Organization 또는 KB가 바뀌거나 modal scope가 닫히는 동안 이전 검색 요청이 완료되어도 해당 결과는 새 scope에 표시되지 않는다. 오류 UI는 raw backend/provider/source detail을 표시하지 않는다.
+- AI 답변은 현재 organization에서 조회된 유효한 chat model이 선택된 경우에만 요청하며, 모델이 없거나 목록 응답 shape가 잘못되면 generation model이 빈 요청을 전송하지 않는다.
+- 초기부터 `completed`인 document settings 화면은 자동 이동하지 않는다. 같은 document scope에서 `indexing|processing`을 관찰한 뒤 `completed`에 도달한 경우에만 KB 상세 이동을 한 번 예약한다. 이 active 상태는 현재 화면의 성공한 process/approval 요청 또는 처음부터 처리 중인 문서를 관찰하면서 시작될 수 있다.
+- 비용 승인 취소, process/approval 요청 실패, `failed` 완료는 이동 intent를 만들지 않는다. 이전 KB/document의 늦은 initial fetch, SSE 또는 polling 결과는 현재 화면의 status/progress/edit gate를 변경하거나 이동을 예약하지 않는다.
 
 ## Retrieval And Agent Tests
 

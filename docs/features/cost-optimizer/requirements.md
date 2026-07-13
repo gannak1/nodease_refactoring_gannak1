@@ -845,7 +845,7 @@ Cost Optimizer는 모델 교체뿐 아니라 LLM 노드의 파라미터 조정 �
 `top_p` 추천은 provider/model 호환성과 조합 안정성을 우선한다.
 
 - Anthropic 계열처럼 현재 UI/실행 경로에서 `top_p` 동시 사용을 제한하는 모델과 OpenAI GPT-5/o Responses 계열처럼 중앙 runtime 보정이 `top_p`를 제외하는 모델은 새 값 추천 대상에서 제외하거나 제거 후보로만 표시한다.
-- 중앙 runtime 보정은 저장된 node parameter를 바꾸지 않고, GPT-5/o Responses 요청에서 지원하지 않는 `top_p`, `presence_penalty`, `frequency_penalty`, `stop`을 제거한다.
+- 중앙 runtime 보정은 저장된 node parameter와 호출자가 전달한 message/parameter object를 바꾸지 않고 별도 effective request를 만든다. GPT-5/o Responses 요청에서는 지원하지 않는 `top_p`, `presence_penalty`, `frequency_penalty`, `stop`을 제거하며, `response_format`을 `text.format`으로 합칠 때도 기존 nested `text` object를 변경하지 않는다.
 - `temperature`와 `top_p`가 동시에 극단값이면 한쪽만 조정하도록 추천한다.
 - 단독 비용 절감 근거가 약하므로 `temperature` 안정화 추천의 보조 항목으로 다룬다.
 
