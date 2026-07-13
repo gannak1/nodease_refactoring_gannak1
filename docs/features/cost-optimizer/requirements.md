@@ -86,7 +86,7 @@ Functional Requirement 상태는 다음 기준으로 구분한다.
 | FR-008 | 후보 적용 | P1 | `구현 완료` | `테스트 통과` | 사용자가 성공한 B 후보 설정 전체를 현재 target LLM node draft에 적용한다. downstream warning 확인과 schema 실패 후보 차단을 제공한다. draft conflict 처리는 후속 보강 대상이다. |
 | FR-009 | 비용 기록 | P1 | `구현 완료` | `테스트 통과` | 결과 분석 화면은 A/B 비용, prompt/completion/total token, latency를 표시한다. 비교 실행은 전용 experiment/candidate row로 저장되고 usage row가 candidate를 직접 참조한다. 과거 결과 재조회 API와 trace metadata retention 기준 정리를 제공한다. |
 | FR-010 | 권한 | P1 | `구현 완료` | `UI/API 권한 기반 구현, 테스트 통과` | A/B 테스트와 후보 적용은 builder 이상 권한이 있는 사용자만 수행한다. compare/apply/history API와 모델/Knowledge 후보 사용 가능성 검증이 적용됐다. |
-| FR-011 | Workflow-Aware Adaptive Routing | P1 | `진행중` | `정책/runtime/trace 기반 구현 완료, Replay evidence 연결·적합성 분석·결정론적 optimizer 구현 필요` | 운영 로그와 Cost Optimizer Replay를 출처가 구분된 evidence로 사용한다. Hard Gate와 품질 gate를 통과한 후보만 workflow/node cohort별 policy에 반영하고, runtime은 저장된 policy만 평가한다. Judge는 출력 품질 평가와 설명을 돕지만 정책을 직접 결정하지 않는다. |
+| FR-011 | Workflow-Aware Adaptive Routing | P1 | `진행중` | `semantic matcher·보수적 optimizer·runtime trace·60건 실배포 검증 완료, Replay evidence→policy 자동 연결과 분석 UI 남음` | 운영 로그와 Cost Optimizer Replay를 출처가 구분된 evidence로 사용한다. Hard Gate와 품질 gate를 통과한 후보만 versioned Semantic Route에 연결하며, runtime은 Aurelio식 cohort matcher와 저장 policy만 평가한다. Judge는 출력 품질 평가와 설명을 돕지만 정책을 직접 결정하지 않는다. |
 | FR-012 | LLM 파라미터 추천 룰셋 | P2 | `진행중` | `서비스/API/UI 일부 구현` | 운영 로그 기반 추천 API와 추천 모달이 있다. 모델 라우팅 enable/refresh 같은 `direct_policy_update`는 즉시 적용 가능하고, 일반 파라미터/RAG 조정은 A/B 후보 실험으로 검증한다. |
 | FR-013 | Cost Optimizer 후보 검증 및 출력 품질 평가 | P1 | `구현 완료` | `추천 빠른 검증·일반 compare quality judge·이력 저장·결과 분석 UI 및 targeted test 통과` | 추천 모달과 일반 비교 분석 테스트에서 동일 입력의 A/B 출력을 평가해 비용·속도·token·품질 점수·JSON schema·downstream 호환성을 보여주고, 같은 결과를 적용하거나 다시 조회한다. |
 
@@ -454,7 +454,7 @@ Replay candidate가 policy와 runtime 모델 변경으로 이어짐을 증명하
   -> Deterministic Policy Optimizer
   -> Policy Proposal 또는 Fixed Model 권고
   -> Active Policy
-  -> Runtime Rule Evaluator
+  -> Runtime Semantic Cohort Matcher + Rule Evaluator
   -> Decision Trace
 ```
 
@@ -465,7 +465,7 @@ Evidence는 출처를 구분해야 한다.
 | Source | 의미 | FR-011 적용 |
 | --- | --- | --- |
 | `operational` | 배포 후 실제 운영 run | 현재 구현과 연결 |
-| `replay` | 같은 baseline input으로 실행한 Cost Optimizer candidate | 오늘 저녁 연결 |
+| `replay` | 같은 baseline input으로 실행한 Cost Optimizer candidate | 현재 FR-011 구현 범위 |
 | `shadow` | 운영 응답에 영향 없이 후보를 병렬 실행 | 후속 |
 | `canary` | 제한된 실제 traffic에 후보를 적용 | 후속 |
 
@@ -548,16 +548,97 @@ Judge 결과를 active policy에 직접 저장하면 안 된다. Hard Gate, samp
 schema/downstream gate, 비용/latency 비교와 허용 condition 검사는 결정론적 코드가
 다시 수행해야 한다. Runtime 요청마다 Judge를 호출해서도 안 된다.
 
+#### Semantic cohort catalog
+
+입력의 의미가 다른데도 길이와 JSON 여부가 같으면 일반 feature만으로는 서로 다른
+모델을 선택할 수 없다. 따라서 FR-011은 Aurelio Semantic Router의 정적 Route 방식을
+참고한 semantic cohort matcher를 포함한다.
+
+Semantic cohort는 runtime에서 즉석으로 군집을 만드는 기능이 아니다. Policy를
+활성화하기 전에 다음을 준비한다.
+
+- node별 versioned Route catalog
+- Route별 사용자 친화 label과 대표 문장
+- 대표 문장의 사전 계산 embedding vector
+- Route별 사전 계산 centroid vector
+- embedding model/version
+- 의미 분류에 사용할 runtime input의 명시적인 `input_paths`
+- Route별 threshold, `centroid` aggregation, `min_margin`
+
+대표 문장은 실제 운영 raw input을 그대로 저장하지 않는다. 첫 구현은 node에
+명시적으로 등록했거나 검토된 synthetic 문장만 허용한다. Runtime은 `input_paths`에
+지정된 업무 본문 값만 순서대로 추출해 한 번 embedding한다. 객체 key, customer tier,
+실행 식별자처럼 의미 분류 대상이 아닌 주변 metadata는 포함하지 않는다. 원문과
+vector는 trace/API에 저장하지 않는다. 지정 경로에 값이 없으면 임의로 전체 payload를
+사용하지 않고 semantic match를 `unavailable`로 닫아 default model을 유지한다.
+
+Route 대표 문장과 threshold/min-margin은 label이 있는 calibration 입력으로만
+조정한다. Aurelio의 `fit/evaluate` 분리를 참고해 calibration에 사용한 문장은 최종
+정확도 보고용 holdout에서 제외한다. Holdout 결과를 보고 같은 holdout 문장을 그대로
+대표 문장에 추가한 뒤 그 데이터로 정확도를 다시 주장해서는 안 된다.
+
+Policy 활성화 시 각 Route 대표 vector의 평균으로 centroid를 미리 계산한다. Runtime은
+입력 vector와 각 Route centroid의 cosine similarity를 계산한다. 이 방식은 대표 문장
+하나와 우연히 비슷해서 잘못 분류되는 `max` 방식의 위험을 줄이고 Route 전체 의미를
+반영한다. 최고 Route가 threshold를 넘고 2위와의 차이가 `min_margin` 이상일 때만
+semantic cohort를 확정한다. 불확실하면 `no_match` 또는 `ambiguous`로 표시하고 현재
+default model을 유지한다. 기존 policy의 `mean`, `max`, `sum`은 호환을 위해 유지한다.
+
+분류가 확정되지 않아도 운영자가 기준을 조정할 수 있도록 가장 점수가 높았던 Route의
+`candidate_cohort_id`, 사용자 친화 label, similarity, threshold와 margin은 safe
+진단 정보로 남긴다. 이 후보 Route는 확정 cohort가 아니며 모델 선택 rule에 전달하지
+않는다. Runtime input 원문, 대표 문장 원문과 embedding vector는 계속 trace/API에
+노출하지 않는다.
+
+Semantic cohort는 입력 의미를 판정할 뿐 모델을 직접 결정하지 않는다. 해당
+cohort에서 품질 gate를 통과한 모델만 active policy rule에 연결할 수 있다. Embedding
+호출 비용과 latency도 예상 순절감 계산에 포함한다.
+
+#### Hybrid safety override
+
+결제·계정처럼 같은 주제 안에서도 일반 문의와 보안 사고가 함께 발생할 수 있으므로,
+서로 배타적인 centroid Route 하나만으로 위험도를 판정하지 않는다. FR-011 runtime은
+다음 순서의 하이브리드 matcher를 사용한다.
+
+1. active policy catalog에 `safety_override=true`인 Route가 있으면 해당 Route의
+   versioned `lexical_signals`를 먼저 평가한다.
+2. signal 점수가 Route의 `lexical_override_threshold` 이상이면 dense similarity보다
+   안전 Route를 우선 확정한다.
+3. 안전 override가 없으면 기존 embedding centroid, Route threshold와 `min_margin`으로
+   semantic cohort를 판정한다.
+4. 두 단계 모두 확정하지 못하면 default model을 유지한다.
+
+도메인 신호는 runtime Python 상수에 하드코딩하지 않고 Route catalog/policy 데이터에만
+저장한다. 따라서 다른 workflow는 자기 catalog에 맞는 신호를 가질 수 있고, catalog
+version 변경으로 검증·배포 이력을 추적할 수 있다. Runtime matcher는 문자열 정규화,
+가중치 합산과 threshold 비교만 담당하며 `보안`, `결제`, `SLA` 같은 업무 단어의 의미를
+알지 못한다.
+
+Trace에는 `hybrid` matcher 여부, safety override 적용 여부, 매칭 signal 수와 합산
+점수만 남긴다. 입력 원문과 매칭된 signal 원문은 저장하지 않는다. 일반 결제 단어만
+있다는 이유로 안전 Route를 선택해서는 안 되며, catalog에 명시된 사고 신호가 실제로
+threshold를 넘어야 한다.
+
 #### Deterministic Policy Optimizer
 
 Optimizer는 다음 순서로 policy를 만든다.
 
 1. Hard Gate와 quality gate를 통과한 `validated` 후보만 남긴다.
-2. cohort별 품질 floor를 먼저 만족시킨다.
-3. 품질 floor 안에서 비용 또는 latency 목적 함수를 최적화한다.
-4. 운영 traffic share로 전체 예상 비용을 계산한다.
-5. fallback과 평가 비용을 포함한 예상 순절감액이 양수일 때만 변경한다.
-6. 증거가 부족한 cohort는 현재 모델을 유지한다.
+2. 성공/schema/downstream 같은 이진 품질은 Wilson lower bound로 작은 표본의
+   불확실성을 반영한다.
+3. 자유형 quality score는 표본 수와 분산을 반영한 보수적 lower bound를 사용한다.
+4. 후보의 품질 하한이 `baseline 품질 하한 - 허용 품질 저하` 이상인 경우에만 품질
+   floor를 통과한다.
+5. 품질 floor 안에서 expected cost 또는 latency를 최소화한다. 동률이면 현재 모델을
+   유지한다.
+6. 운영 traffic share로 전체 예상 비용을 계산한다.
+7. fallback, Replay/Judge, semantic embedding 비용을 포함한 예상 순절감액이 양수일
+   때만 변경한다.
+8. 증거가 부족한 cohort는 현재 모델을 유지한다.
+
+이 알고리즘은 RouteLLM의 `강한 모델이 필요한 확률을 threshold와 비교한 뒤 약한
+모델을 사용한다`는 보수적 경계를 참고하되, Nodease의 여러 모델/provider와
+schema/downstream 계약에 맞게 constrained optimization으로 확장한다.
 
 초기 cohort condition은 runtime과 optimizer가 공통으로 이해하는 일반 feature만
 사용한다.
@@ -584,6 +665,10 @@ optimizer는 runtime request path에서 호출하지 않는다. 사용할 수 �
 건너뛰고 검증된 fallback을 사용하며, 사용할 수 있는 policy model이 없으면 provider
 호출 전에 fail-closed한다.
 
+Semantic Route catalog가 있으면 runtime은 일반 feature와 semantic cohort를 함께
+평가한다. Encoder 사용 실패, threshold 미달, margin 미달에서는 임의로 저비용
+모델을 선택하지 않고 default model을 사용한다.
+
 Trace에는 최소한 다음 safe metadata를 남긴다.
 
 - `strategy=workflow_aware_adaptive`
@@ -591,6 +676,8 @@ Trace에는 최소한 다음 safe metadata를 남긴다.
 - evidence version과 gate profile version
 - selected/fallback model
 - matched cohort/rule id
+- semantic Route label, similarity, threshold, margin, match status
+- route catalog와 encoder version
 - decision source와 reason code
 - fallback/escalation 여부와 사유
 - `judge_called=false`
@@ -610,28 +697,52 @@ Trace에는 최소한 다음 safe metadata를 남긴다.
 새 evidence가 없으면 `kept_current`로 끝내고 policy version을 불필요하게 올리지
 않는다.
 
-#### 오늘 저녁 완료 조건
+#### 구현 및 실험 완료 조건
 
-오늘 저녁 구현 완료는 문서나 synthetic profile 테스트만으로 판정하지 않는다. 한
+FR-011 구현 완료는 문서나 synthetic profile 테스트만으로 판정하지 않는다. 한
 workflow의 한 LLM node에서 다음 흐름이 실제 DB 데이터를 통해 연결되어야 한다.
 
 1. 현재 모델과 저비용 후보를 같은 대표 입력군으로 Replay한다.
 2. 후보가 schema/downstream/quality gate를 통과한다.
 3. refresh가 Replay evidence를 읽어 policy proposal을 만든다.
-4. active policy가 해당 cohort에서 후보 모델을 선택한다.
-5. 다른 cohort 또는 근거 부족 입력은 현재 모델을 유지한다.
-6. trace에서 모델, cohort, rule, policy/evidence version과 사유를 확인한다.
-7. gate 실패 후보는 active policy에 들어가지 않는다.
+4. active policy가 versioned Semantic Route catalog를 포함한다.
+5. runtime은 입력을 embedding하고 threshold/margin을 통과한 semantic cohort에서
+   검증된 후보 모델을 선택한다.
+6. 다른 cohort, 애매한 입력 또는 근거 부족 입력은 현재 모델을 유지한다.
+7. trace에서 모델, Route label/score/threshold, rule, policy/evidence/catalog version과
+   사유를 확인한다.
+8. gate 실패 후보는 active policy에 들어가지 않는다.
+9. 배포된 workflow에 학습 대표 문장과 겹치지 않는 50개 이상의 다양한 입력을 보내
+   예상 cohort/model과 실제 선택 결과를 비교한다.
+10. 전체 semantic cohort 정확도 90% 이상, 고위험 입력 recall 95% 이상, trace 필수
+    필드 기록률 100%, 권한 없는 모델 선택 0건을 만족해야 한다.
+11. 기준을 만족하지 못하면 threshold, 대표 문장 또는 policy mapping의 원인을
+    분석하고 수정한 뒤 같은 검증을 반복한다.
 
-#### 밤 작업과 후속 범위
+실제 배포 검증은 `reports/model-routing/semantic-routing-hybrid-v3.json`과 `.md`에
+남겼다. 서로 겹치지 않는 60개 입력에서 입력군 정확도 95.0%(57/60), 모델 선택
+정확도 96.7%(58/60), 고위험 입력 재현율 100%(20/20), 선정 근거 trace 완성률
+100%(60/60)를 확인했다. 분류가 불확실한 입력은 저비용 모델로 강제하지 않고 기본
+모델을 유지했다. 같은 실험 ID를 다시 사용하는 검증에서도 요청 시각 이전의 과거
+run을 새 결과로 집계하지 않는다.
 
-밤에는 라우팅 적합성/evidence gap/예상 절감/policy diff UI, 실행 로그의 실제 선택
-모델·rule·fallback·policy version 표시, activation/rollback UI, traffic share 기반
-예상 절감 보강과 시연 QA를 진행한다.
+Replay 품질 증거를 만드는 입력군은 Route 대표 문장, threshold 보정용 calibration,
+최종 정확도 평가용 holdout과 분리한다. 증거 수집 입력은 실제 배포 baseline을 먼저
+만들고, 그 baseline의 동일 입력으로 후보 모델만 실행한다. 이 과정에서 생성된 실제
+`cost_optimizer_experiments`와 `cost_optimizer_candidates`만 policy optimizer의
+후보 증거로 사용하며, 임의로 만든 DB 행이나 최종 holdout 결과를 증거로 사용하지
+않는다.
 
-Shadow, Canary, Selective Cascade, provider SLO, drift 기반 adaptive refresh,
-Semantic Router, Contextual Bandit은 후속 범위다. 이 항목을 오늘 밤까지 모두
-완료하는 것으로 계획하지 않는다.
+#### 후속 제품 범위
+
+후속 제품 작업에서는 라우팅 적합성/evidence gap/예상 절감/policy diff UI,
+activation/rollback UI, traffic share 기반 예상 절감 보강과 시연 QA를 진행한다.
+실행 로그의 실제 선택 모델·입력 유형·fallback·policy version과 사용자 친화적 선택
+근거 표시는 현재 구현 범위에 포함된다.
+
+Shadow, Canary, Selective Cascade, provider SLO, drift 기반 adaptive refresh와
+Contextual Bandit은 후속 범위다. Semantic cohort matcher는 현재 FR-011 범위에
+포함한다.
 
 #### 현재 구현 호환 동작
 

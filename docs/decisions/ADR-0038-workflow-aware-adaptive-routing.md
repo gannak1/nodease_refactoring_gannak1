@@ -36,6 +36,9 @@ node의 출력 계약, RAG 사용 여부, downstream 의존성, 과거 입력군
 전체 흐름은 다음 순서를 따른다.
 
 ```text
+버전이 지정된 Semantic Route catalog
+  -> 대표 문장 embedding 사전 계산
+
 운영 로그 + Cost Optimizer Replay 후보
   -> Evidence Adapter
   -> Hard Gate
@@ -44,7 +47,7 @@ node의 출력 계약, RAG 사용 여부, downstream 의존성, 과거 입력군
   -> Deterministic Policy Optimizer
   -> Policy Proposal 또는 Fixed Model 권고
   -> Active Policy
-  -> Runtime Rule Evaluator
+  -> Runtime Semantic Cohort Matcher + Rule Evaluator
   -> Decision Trace
   -> 다음 Evidence Loop
 ```
@@ -114,7 +117,14 @@ Eligibility가 `fixed_model_recommended`이면 억지로 rule을 만들지 않�
 
 ### Workflow-aware cohorts
 
-Runtime과 optimizer가 공통으로 이해하는 조건만 cohort에 사용한다.
+Workflow-aware cohort는 두 종류의 신호를 함께 사용한다.
+
+1. **결정론적 workflow 신호**: node 설정과 입력 shape에서 바로 계산할 수 있는 값
+2. **semantic cohort**: 입력 문장의 의미가 사전에 정의된 Route 중 어디에 가까운지
+   embedding 유사도로 판정한 값
+
+결정론적 workflow 신호는 runtime과 optimizer가 공통으로 이해하는 다음 값만
+사용한다.
 
 - `output_format`
 - `schema_required`
@@ -126,8 +136,62 @@ Runtime과 optimizer가 공통으로 이해하는 조건만 cohort에 사용한�
 - 명시적으로 저장된 `node_task`
 
 런타임 코드에는 고객지원, SLA, 법무 같은 제품 도메인 키워드를 하드코딩하지
-않는다. `keyword_any`가 필요하면 raw payload를 보관하지 않는 별도 승인된 분류
-계약과 검증 증거가 먼저 있어야 한다. 초기 구현은 자동 생성 대상에서 제외한다.
+않는다. 의미 판정이 필요한 경우 코드의 `keyword_any`가 아니라 versioned Semantic
+Route catalog를 사용한다.
+
+### Semantic Route catalog와 runtime matcher
+
+Semantic routing은 Aurelio Semantic Router의 정적 Route 방식을 참고한다. 자동으로
+K-means 군집을 만드는 것이 아니라, policy가 활성화되기 전에 Route와 각 Route를
+설명하는 대표 문장을 준비한다. 첫 구현의 대표 문장은 운영 raw input을 복사하지
+않고 node에 명시적으로 등록한 문장 또는 검토된 synthetic 문장만 사용한다.
+
+각 catalog는 최소한 다음 정보를 가진다.
+
+- `route_catalog_version`
+- embedding provider/model/version
+- runtime input에서 의미 분류에 사용할 명시적인 `input_paths`
+- `top_k`와 aggregation 방식
+- 애매한 분류를 거부하기 위한 `min_margin`
+- Route별 `cohort_id`, 사용자 친화 label, threshold
+- 대표 문장의 hash와 사전 계산한 embedding vector 및 Route centroid vector
+
+대표 문장 embedding과 Route centroid는 policy 생성 또는 활성화 시 한 번 계산한다.
+일반 workflow 실행마다 Route 대표 문장을 다시 embedding하지 않는다. 실제 입력은
+`input_paths`로 선택한 업무 본문만 runtime에서 한 번 embedding하고 벡터나 원문을
+trace에 저장하지 않는다. 객체 key, customer tier, 실행 식별자처럼 의미 분류 대상이
+아닌 주변 metadata를 임의로 합쳐 embedding하지 않는다.
+
+Runtime matcher는 다음 순서를 따른다.
+
+1. `input_paths`에서 추출한 실제 업무 본문을 catalog와 같은 encoder로 embedding한다.
+2. 기본 `centroid` 방식에서는 query vector와 사전 계산 Route centroid의 cosine
+   similarity를 계산한다.
+3. 기존 policy의 `mean`, `max`, `sum` 방식은 호환 경로로 유지하고 이 경우 전체 대표
+   문장 중 `top_k` 결과를 Route별로 집계한다.
+4. 새 catalog는 대표 문장 하나의 우연한 고득점에 좌우되지 않도록 `centroid`를
+   기본 aggregation으로 사용한다.
+5. 최고 Route 점수가 해당 threshold 이상이고 2위와의 차이가 `min_margin` 이상일
+   때만 semantic cohort를 확정한다.
+6. threshold 또는 margin을 통과하지 못하면 `no_match` 또는 `ambiguous`로 닫고
+   policy의 보수적인 default model을 사용한다.
+
+Semantic matcher는 cohort만 판정한다. 어떤 모델을 사용할지는 semantic cohort와
+결정론적 workflow 신호, 검증 evidence를 입력받은 active policy가 결정한다. Route에
+연결되는 selected/fallback model은 해당 cohort에서 품질 gate를 통과한 모델만
+허용한다.
+
+단일 dense Route는 `일반 결제 문의`와 `결제 수단 탈취 사고`처럼 주제는 같고 위험도는
+다른 입력을 서로 배타적인 한 군으로 오분류할 수 있다. 따라서 안전 Route는 catalog에
+versioned lexical signal, weight와 threshold를 둘 수 있다. Runtime은 policy에 저장된
+signal을 일반적인 문자열 matcher로 먼저 평가하고, 안전 threshold를 통과한 경우에만
+dense Route보다 우선한다. 도메인 keyword는 runtime 코드에 두지 않으며 입력 원문과
+signal 원문은 trace/API에 노출하지 않는다. 안전 override가 없을 때만 기존 centroid
+Route 판정을 사용한다.
+
+Embedding 호출 자체에도 비용과 latency가 있으므로 적합성 분석과 예상 순절감액은
+`embedding_routing_overhead`를 포함한다. 예상 절감액이 이 비용보다 작으면
+`fixed_model_recommended`로 닫는다.
 
 ### Candidate validation and quality gate
 
@@ -172,11 +236,22 @@ Judge가 하면 안 되는 일:
 Optimizer는 다음 우선순위를 지킨다.
 
 1. Hard Gate와 quality gate를 통과한 후보만 남긴다.
-2. cohort별 품질 floor를 먼저 만족시킨다.
-3. 품질 floor 안에서 사용자가 선택한 목적 함수에 따라 비용/latency를 최적화한다.
-4. historical traffic share로 전체 예상 비용을 계산한다.
-5. fallback과 평가 비용을 포함한 예상 순절감액이 양수일 때만 변경한다.
-6. 근거가 부족한 cohort는 현재 모델을 유지한다.
+2. 성공/schema/downstream 같은 이진 품질은 작은 표본을 100%로 믿지 않도록
+   Wilson lower bound를 계산한다.
+3. 자유형 quality score는 표본 수와 분산을 반영한 보수적 lower bound를 계산한다.
+4. 각 후보가 `baseline_quality_lower_bound - allowed_quality_drop` 이상인 경우에만
+   cohort의 품질 floor를 통과한다.
+5. 품질 floor를 통과한 후보 중 사용자가 선택한 목적 함수에 따라 expected cost 또는
+   latency를 최소화한다. 동률이면 보수적으로 현재 모델을 우선한다.
+6. historical traffic share로 전체 예상 비용을 계산한다.
+7. fallback, Replay/Judge, embedding routing overhead를 포함한 예상 순절감액이 양수일
+   때만 변경한다.
+8. 근거가 부족한 cohort는 현재 모델을 유지한다.
+
+이 구조는 RouteLLM에서 참고한 `품질을 만족할 확률/threshold를 먼저 판단한 뒤 약한
+모델을 선택한다`는 경계를 multi-model 환경으로 확장한 것이다. RouteLLM의 이진
+strong/weak 선택기를 그대로 복사하지 않고, Nodease의 schema/downstream gate와
+여러 provider 후보에 맞게 constrained optimization으로 구현한다.
 
 Policy rule은 최소한 `cohort_id`, `when`, `selected_model_id`,
 `fallback_model_id`, `reason_code`, `evidence_version`, `gate_profile_version`을
@@ -186,9 +261,10 @@ Policy rule은 최소한 `cohort_id`, `when`, `selected_model_id`,
 ### Runtime
 
 Runtime은 Judge나 optimizer를 호출하지 않는다. DB의 active policy snapshot을 읽고
-일반 feature를 계산해 우선순위 rule을 평가한다. 사용할 수 없는 rule model은
-건너뛰고 검증된 fallback을 사용하며, 사용할 수 있는 policy model이 없으면 provider
-호출 전에 fail-closed한다.
+일반 feature와 semantic cohort를 계산해 우선순위 rule을 평가한다. 사용할 수 없는
+rule model은 건너뛰고 검증된 fallback을 사용하며, 사용할 수 있는 policy model이
+없으면 provider 호출 전에 fail-closed한다. Semantic encoder를 사용할 수 없거나
+분류가 애매하면 임의 Route를 선택하지 않고 default model로 닫는다.
 
 Trace에는 다음 safe metadata를 남긴다.
 
@@ -197,6 +273,8 @@ Trace에는 다음 safe metadata를 남긴다.
 - evidence version과 gate profile version
 - selected/fallback model
 - matched cohort/rule id
+- semantic Route label, similarity, threshold, margin과 match status
+- route catalog/encoder version
 - decision source와 reason code
 - fallback/escalation 여부와 사유
 - `judge_called=false`
@@ -305,9 +383,10 @@ Nodease의 test-first 규칙에 따라 아래 순서로 진행한다.
 - 기존 terminal workflow 완료 후 운영 run 집계 경계를 유지한다.
 - 기존 execution subject credential guard를 우회하지 않는다.
 - Cost Optimizer candidate의 raw prompt/output을 policy update에 복사하지 않는다.
-- 오늘 저녁 core 변경에 Shadow/Canary용 schema migration을 섞지 않는다.
+- Semantic query 원문과 embedding vector를 trace/API에 노출하지 않는다.
+- 현재 core 변경에 Shadow/Canary용 schema migration을 섞지 않는다.
 
-### 오늘 저녁 완료 범위
+### 현재 목표 완료 범위
 
 - 공통 evidence/candidate/policy/decision 계약 정의
 - operational/replay evidence adapter 구현
@@ -316,6 +395,8 @@ Nodease의 test-first 규칙에 따라 아래 순서로 진행한다.
 - 기존 refresh task에서 새 pipeline 호출
 - active policy와 runtime trace에 cohort/evidence/gate version 연결
 - DB Replay 결과부터 runtime model 선택까지 실제 통합 테스트
+- versioned Semantic Route catalog와 Aurelio식 matcher 구현
+- 서로 다른 의미 입력이 서로 다른 검증 모델로 선택되는 runtime/trace 검증
 
 완료 판정은 한 workflow의 한 LLM node에서 다음 흐름이 모두 증명되는 것이다.
 
@@ -327,7 +408,7 @@ Nodease의 test-first 규칙에 따라 아래 순서로 진행한다.
 6. trace에서 선택 모델, cohort, rule, policy/evidence version과 사유를 확인한다.
 7. gate 실패 후보는 active policy에 들어가지 않는다.
 
-### 밤 작업 범위
+### 후속 제품 범위
 
 - 라우팅 적합성, evidence gap, 예상 절감, policy diff UI
 - 실제 선택 모델, matched rule, fallback, policy version 실행 로그 UI
@@ -341,11 +422,12 @@ Nodease의 test-first 규칙에 따라 아래 순서로 진행한다.
 - Selective Cascade
 - provider SLO와 cross-provider fallback 고도화
 - 고정 N회 대신 drift/증거 기반 adaptive refresh 전면 전환
-- Semantic Router 또는 Contextual Bandit
+- Semantic Route catalog를 운영 evidence로 안전하게 보정하는 승인 flow
+- Contextual Bandit
 
-Shadow, Canary, Cascade, Semantic Router를 오늘 밤까지 모두 구현 완료 대상으로
-보지 않는다. 오늘의 핵심은 검증 증거가 실제 policy와 runtime 선택으로 이어지는
-끊기지 않은 한 경로다.
+Shadow, Canary, Cascade, Contextual Bandit을 현재 구현 완료 대상으로 보지 않는다.
+현재 핵심은 versioned Semantic Route가 검증 evidence, active policy, runtime 선택과
+trace로 이어지는 끊기지 않은 한 경로다.
 
 ## Consequences
 
@@ -375,5 +457,7 @@ Shadow, Canary, Cascade, Semantic Router를 오늘 밤까지 모두 구현 완�
 3. 20회마다 무조건 모델 변경: 새 증거가 없는 상태에서 정책을 바꾸는 근거가 없다.
 4. 운영 runtime이 임의로 저비용 모델을 탐색: 사용자 응답 품질을 검증 없이 위험에
    노출한다.
-5. 처음부터 Semantic Router/Contextual Bandit 도입: 현재의 가장 큰 문제인 Replay
-   evidence와 policy 연결을 해결하지 못한 채 복잡도만 증가시킨다.
+5. Semantic similarity만으로 모델을 직접 선택: 의미가 비슷하다는 사실은 해당
+   모델의 품질을 보장하지 않으므로 Replay/운영 quality gate와 분리할 수 없다.
+6. 처음부터 Contextual Bandit 도입: 후보 evidence와 안전한 탐색 경계가 없는 상태의
+   online exploration은 운영 품질을 위험에 노출한다.
