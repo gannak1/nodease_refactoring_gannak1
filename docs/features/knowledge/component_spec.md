@@ -26,7 +26,9 @@ MBA-105 구현 baseline, 운영 기본값, permission helper output, active vers
 | Active Version Finalizer | Transactional active version pointer swap, previous version `superseded` 표시, content_hash/fingerprint commit, outbox insert를 수행한다 | Fencing/recovery gate가 필요하며 hash만 먼저 commit하거나 pointer swap 후 outbox insert 전에 crash window를 만들지 않는다 |
 | Artifact Cleanup Reconciler | DB state와 object storage/vector index/external artifact cleanup을 outbox 기반으로 맞춘다 | DB commit 전 physical delete를 수행하지 않고 retry 가능한 cleanup만 실행한다 |
 | Knowledge Permission Helper | Collection `read`, collection `route`, KB use, source ACL freshness/requester authorization을 bulk 평가한다 | Router와 controller는 permission row가 아니라 helper 결과를 소비해야 한다 |
+| Knowledge Administration Application | Organization manager의 domain grant/revoke, active subject grant validation, stale grant permission-row revoke와 transaction-bound audit를 조율한다 | Grant subject lock과 revoke permission-row lock을 분리하고 controller가 subject 활성 상태를 추정하지 않는다 |
 | Knowledge Collection Management Service | Manual Collection CRUD, item link/unlink/reorder, permission grant/revoke, visibility transition을 조율한다 | Controller에 business logic을 두지 않고, Collection 권한과 KB content 권한을 분리해서 검증한다 |
+| Knowledge Document Response Projector | 내부 `documents.meta_info`에서 safe operational field만 allowlist projection한다 | Encrypted config, connection/source identifier, DB/source config와 unknown nested field를 API response로 전달하지 않는다 |
 | Knowledge RAG Recommendation Adapter | `StructuredRequest` 기반 safe intent summary, node purpose summary, knowledge requirement, pending resolution reference를 받아 safe KB recommendation과 LLM node RAG option 후보를 만든다 | Raw natural language 전체를 받지 않고 권한 판단을 직접 하지 않는다. HTTP/serialized boundary에서는 `KnowledgeCandidateResolver`가 만든 server-issued reference만 사용하고, full safe candidate set 객체는 같은 backend 내부 service call에서만 ranking input으로 사용할 수 있다. 초기 구현은 `candidate_type=knowledge_base`만 반환하고 Collection은 safe summary metadata로만 제공한다 |
 | Knowledge Skill Registry | Provider-neutral Knowledge Skill, version, owner/review state, freshness/eval status를 관리한다 | Skill은 빌더 단계 LLM node의 RAG 옵션 후보이며 권한 source나 source of truth가 아니다 |
 | Source-of-Truth Catalog | 정책 문서, ADR/decision record, semantic definition, curated query corpus 같은 source tier와 safe reference를 관리한다 | Raw content나 hidden source identity를 router에 노출하지 않는다 |
@@ -65,6 +67,7 @@ Retrieval Orchestrator는 최종 evidence와 함께 KB/document version, organiz
 - `failed` document는 같은 document settings 화면으로 들어가는 `재처리` action을 제공한다.
 - 처리 중 document의 progress UI는 active organization UUID를 포함한 authorization-scoped SSE URL만 연다. Active organization이 없으면 stream을 열지 않고 safe 안내를 표시하며, Gateway의 KB `read` 거부 응답 뒤 자동 재연결하지 않는다.
 - Source upload 성공 후 UI는 KB 상세 source 목록으로 돌아오며, 방금 등록된 `pending` source를 포함한 목록에서 처리 시작 action을 제공한다. FILE source는 document settings 화면에서 원본 preview iframe을 렌더할 수 있으므로 업로드 직후 자동으로 상세 화면을 열지 않는다.
+- KB/document `read` response의 metadata는 safe progress/state projection만 사용한다. UI는 `api_config`, encrypted source config, DB/connector connection identifier나 raw source reference가 detail payload에 존재한다고 가정하지 않는다. Source config 편집이 필요하면 후속 별도 `write`-authorized property endpoint를 사용해야 하며 read projection을 재사용하지 않는다.
 - 이 UI는 hidden document, 권한 없는 source path/title, raw source content를 표시하지 않는다.
 
 ### KB Permission Management UI
@@ -89,7 +92,7 @@ Knowledge Collection 관리 UI는 Workflow Builder가 아니라 Knowledge 관리
 - Collection 목록: safe name/description, manual/system-managed, lifecycle/sync state, visibility, bucketed linked/active KB count, caller action flags를 표시한다.
 - Collection 생성/수정: organization manager 또는 domain `catalog_manage`가 private manual Collection을 생성한다. Delegated create는 client 입력과 무관하게 private다. `is_system_managed`나 public visibility는 일반 create/edit form에서 직접 설정하지 않는다.
 - Collection 상세: item, permission, visibility, sync/system state를 분리해서 표시한다.
-- Item manager: linked KB safe label, lifecycle/sync state, rank, `can_manage_kb`, `can_use_kb`를 표시한다. Private membership은 `collection.manage` + KB `manage` 또는 domain `catalog_manage`, public membership은 Organization manager acknowledgement 경계를 따른다.
+- Item manager: linked KB safe label, lifecycle/sync state, rank, `can_manage_kb`, `can_use_kb`를 표시한다. 유효한 safe label이 없고 caller가 KB `read`를 통과하지 못하면 generic label을 사용하며, domain `catalog_manage`만으로 manual KB `name`을 표시하지 않는다. Private membership은 `collection.manage` + KB `manage` 또는 domain `catalog_manage`, public membership은 Organization manager acknowledgement 경계를 따른다.
 - Permission panel: server가 반환한 safe Team/User 대상 목록을 사용하고 Team을 기본값으로 둔다. `collection.manage` 또는 domain `permission_delegate` actor가 `read`, `route`, `manage`, `sync` additive allow를 grant/revoke할 수 있다.
 - Public visibility warning flow: organization manager, explicit acknowledgement, safe exposure summary를 요구한다.
 - Public Collection item link/unlink/reorder도 같은 public exposure warning과 acknowledgement를 요구한다.
@@ -213,6 +216,9 @@ Purge는 일반 KB lifecycle state가 아니다. Retention/legal-hold purge, raw
 ## Security And Privacy
 
 - Raw source id/url/title/path, raw source ACL, raw content, prompt/completion, provider raw response, credential value, secret은 audit/trace/log에서 제외한다. Raw/compliance access log는 safe reference와 decision만 저장한다.
+- Internal document metadata는 encrypted value도 credential-bearing configuration으로 취급한다. KB/document read response는 allowlist projector를 통과하고 unknown field는 default deny하며, API config와 connection/source identifier는 response, error, audit, trace, log로 복사하지 않는다.
+- Domain revoke는 inactive subject 복원을 요구하지 않는다. Existing permission row를 organization scope 안에서 lock/delete하고 audit와 원자 commit해 stale delegated capability를 제거한다.
+- Collection membership 관리 capability는 KB label read capability가 아니다. Safe label이 없으면 독립 KB `read`를 통과한 caller만 manual KB `name`을 볼 수 있다.
 - Source-derived display metadata는 user-facing 저장 전에 redaction, 길이 제한, display-policy approval을 거쳐야 한다.
 - `verify=false`, HTTPS downgrade, 승인된 outbound client factory 밖의 custom HTTP client, private/link-local/metadata IP target, redirect 기반 guard 우회는 금지한다.
 - DB adapter arbitrary SQL과 SSH adapter arbitrary command execution은 향후 ADR이 좁은 use case를 승인하지 않는 한 connector test/preview/sync path에서 금지한다.

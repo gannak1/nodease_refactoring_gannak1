@@ -161,6 +161,51 @@ Knowledge API/test 문서다. 후속 이슈에서 approved retention/legal-hold 
 운영 상태 모델을 확정한 뒤 production checker를 연결하고 이 default deny를
 재검토한다.
 
+### MBA-241 post-merge response and revocation hardening
+
+Context: MBA-231 merge 후 세 가지 property-level 경계 결함이 확인됐다. 첫째,
+KB detail과 document detail이 내부 `documents.meta_info`를 그대로 투영하면
+encrypted API source config, connection/source identifier와 미래에 추가되는 내부
+field가 KB `read` actor에게 노출될 수 있다. 둘째, domain grant 회수도 grant와
+같은 active subject lock을 요구하면 제거·비활성화된 User 또는 inactive Team의
+기존 row를 Organization manager가 회수할 수 없다. 셋째, domain
+`catalog_manage`만 가진 actor의 Collection item projection이 manual KB `name`을
+fallback label로 사용하면 KB `read`를 우회해 resource label을 노출한다.
+
+검토한 선택지는 다음과 같다.
+
+1. 기존 pass-through와 active subject lock, raw name fallback을 유지한다.
+2. 알려진 secret/source key만 denylist하고 inactive subject를 임시 재활성화한 뒤
+   회수하며 모든 manual KB label을 generic하게 만든다.
+3. Document metadata는 safe operational field allowlist로 투영하고, grant와 revoke
+   lock 경계를 분리하며, Collection label은 safe metadata와 독립 KB `read` 판정을
+   조합한다.
+
+선택지 3을 채택한다.
+
+- KB/document read response의 `meta_info`는 progress, processing state/timestamp,
+  bounded processing option과 numeric cost estimate처럼 명시된 safe operational
+  field만 반환한다. `api_config`, encrypted config field, `connection_id`,
+  `source_identity_id`, connector/source reference, DB connection label/config와
+  unknown nested field는 값이 암호화됐는지와 관계없이 반환하지 않는다. 새 내부
+  field는 allowlist에 명시되고 negative test가 추가되기 전까지 기본 비노출이다.
+- Domain grant는 계속 같은 organization의 active Team 또는 active member User를
+  row lock으로 확인한다. Revoke는 active subject 존재를 요구하지 않고
+  organization, subject type/id, action으로 기존 permission row 자체를 lock한 뒤
+  삭제한다. Row가 없으면 idempotent unchanged이며, row가 있으면 delete와 canonical
+  audit를 같은 transaction에서 commit한다.
+- Collection item/link-candidate label은 유효한 `safe_metadata.safe_label` 또는
+  display-policy-approved source safe label을 우선한다. 그런 label이 없을 때 manual
+  KB의 실제 `name`은 caller가 별도의 KB `read` 판정을 통과한 경우에만 반환하고,
+  domain `catalog_manage`만 있는 caller에게는 generic label을 반환한다.
+
+이 결정은 API path나 DB schema를 바꾸지 않는다. 영향 파일은 Knowledge response
+projection helper, KB/document endpoint와 query service, domain permission use
+case/repository, Collection service, Knowledge 공식 문서와 해당 unit/API regression
+test다. 후속 검토에서는 source config 편집 UI가 필요한 경우 KB `write`와 별도
+property-level response model을 가진 전용 endpoint를 설계하며, 이번 read projection을
+다시 넓히지 않는다.
+
 ## Consequences
 
 장점:
