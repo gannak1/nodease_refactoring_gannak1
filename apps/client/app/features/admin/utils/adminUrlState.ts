@@ -2,7 +2,6 @@ export type AdminTab =
   | 'members'
   | 'teams'
   | 'permissions'
-  | 'permission-requests'
   | 'usage'
   | 'credentials'
   | 'knowledge'
@@ -10,18 +9,22 @@ export type AdminTab =
   | 'audit'
   | 'organization';
 
-const ADMIN_TABS = new Set<AdminTab>([
-  'members',
-  'teams',
-  'permissions',
-  'permission-requests',
-  'usage',
-  'credentials',
-  'knowledge',
-  'security-alerts',
-  'audit',
-  'organization',
-]);
+export const ADMIN_TAB_ITEMS: ReadonlyArray<{
+  key: AdminTab;
+  label: string;
+}> = [
+  { key: 'members', label: '멤버' },
+  { key: 'teams', label: '팀' },
+  { key: 'permissions', label: '권한' },
+  { key: 'usage', label: '비용' },
+  { key: 'credentials', label: 'LLM Credentials' },
+  { key: 'knowledge', label: '지식 기반' },
+  { key: 'security-alerts', label: '보안 알림' },
+  { key: 'audit', label: '감사 로그' },
+  { key: 'organization', label: '조직 설정' },
+];
+
+const ADMIN_TABS = new Set(ADMIN_TAB_ITEMS.map(({ key }) => key));
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -37,11 +40,19 @@ export const parseAdminUrlState = (
   searchParams: URLSearchParams,
 ): AdminUrlState => {
   const rawTab = searchParams.get('tab');
-  const tab = rawTab && ADMIN_TABS.has(rawTab as AdminTab)
-    ? (rawTab as AdminTab)
-    : 'members';
+  const tab =
+    rawTab === 'permission-requests'
+      ? 'permissions'
+      : rawTab && ADMIN_TABS.has(rawTab as AdminTab)
+        ? (rawTab as AdminTab)
+        : 'members';
   const normalizedQuery = new URLSearchParams(searchParams);
   let needsNormalization = false;
+
+  if (rawTab === 'permission-requests') {
+    normalizedQuery.set('tab', 'permissions');
+    needsNormalization = true;
+  }
 
   if (rawTab && tab === 'members' && rawTab !== 'members') {
     normalizedQuery.set('tab', 'members');
