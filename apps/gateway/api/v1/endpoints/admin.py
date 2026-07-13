@@ -16,7 +16,15 @@ from apps.gateway.services.app_creation_permission_service import (
 )
 from apps.gateway.services.organization_context import resolve_active_organization_id
 from apps.gateway.services.permission_request_service import PermissionRequestService
+from apps.gateway.services.security_alert_access import (
+    resolve_security_alert_manager_organization,
+)
+from apps.gateway.services.security_alert_service import (
+    SecurityAlertFilters,
+    SecurityAlertService,
+)
 from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
+from apps.gateway.utils.api_errors import raise_api_error
 from apps.shared.db.models.app import App
 from apps.shared.db.models.audit_log import AuditStatus
 from apps.shared.db.models.user import User
@@ -36,12 +44,27 @@ from apps.shared.schemas.permission_request import (
     PermissionRequestResponse,
     PermissionRequestUserSchema,
 )
+from apps.shared.schemas.security_alert import (
+    SecurityAlertAcknowledgeRequest,
+    SecurityAlertAuditLogListResponse,
+    SecurityAlertDetail,
+    SecurityAlertListResponse,
+    SecurityAlertReopenRequest,
+    SecurityAlertResolveRequest,
+    SecurityAlertRuleId,
+    SecurityAlertSeverity,
+    SecurityAlertStatus,
+    SecurityAlertSummaryResponse,
+)
 from apps.shared.schemas.workflow_budget import (
     WorkflowBudgetListResponse,
     WorkflowBudgetResponse,
     WorkflowBudgetUpsertRequest,
 )
 from apps.shared.services import permissions as shared_permissions
+from apps.shared.services.security_alert_lifecycle import (
+    SecurityAlertStaleStateError,
+)
 
 router = APIRouter()
 
@@ -72,6 +95,48 @@ def _resolve_managed_organization(
     ):
         raise HTTPException(status_code=403, detail="Forbidden")
     return organization_id
+
+
+def _resolve_security_alert_organization(
+    db: Session,
+    request: Request,
+    x_organization_id: str | None,
+    current_user: User,
+):
+    return resolve_security_alert_manager_organization(
+        db,
+        request,
+        x_organization_id,
+        current_user.id,
+    )
+
+
+def _run_security_alert_mutation(request: Request, operation):
+    try:
+        return operation()
+    except HTTPException:
+        raise
+    except SecurityAlertStaleStateError:
+        raise_api_error(
+            request,
+            409,
+            "stale_state",
+            "Security alert state changed. Refresh and try again.",
+        )
+    except ValueError:
+        raise_api_error(
+            request,
+            422,
+            "validation.failed",
+            "Security alert mutation is invalid.",
+        )
+    except Exception:
+        raise_api_error(
+            request,
+            500,
+            "audit.persistence_failed",
+            "Security alert update could not be persisted.",
+        )
 
 
 def _users_by_id(db: Session, items) -> dict:
@@ -504,4 +569,195 @@ def revoke_app_creation_permission(
     return AppCreationPermissionRevokeResponse(
         id=revoked.id,
         user_id=revoked.user_id,
+    )
+
+
+@router.get(
+    "/security-alerts",
+    response_model=SecurityAlertListResponse,
+)
+def list_security_alerts(
+    request: Request,
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=20, ge=1, le=100),
+    severity: SecurityAlertSeverity | None = None,
+    status: SecurityAlertStatus | None = None,
+    rule_id: Annotated[
+        SecurityAlertRuleId | None, Query(alias="ruleId")
+    ] = None,
+    actor_id: Annotated[UUID | None, Query(alias="actorId")] = None,
+    start_at: Annotated[datetime | None, Query(alias="startAt")] = None,
+    end_at: Annotated[datetime | None, Query(alias="endAt")] = None,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = _resolve_security_alert_organization(
+        db, request, x_organization_id, current_user
+    )
+    period = SecurityAlertService.resolve_period(request, start_at, end_at)
+    return SecurityAlertService.list_alerts(
+        db,
+        organization_id=organization_id,
+        filters=SecurityAlertFilters(
+            severity=severity,
+            status=status,
+            rule_id=rule_id,
+            actor_id=actor_id,
+            start_at=period.start_at,
+            end_at=period.end_at,
+        ),
+        page=page,
+        limit=limit,
+    )
+
+
+# Static route는 UUID 동적 route보다 먼저 등록한다.
+@router.get(
+    "/security-alerts/summary",
+    response_model=SecurityAlertSummaryResponse,
+)
+def get_security_alert_summary(
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = _resolve_security_alert_organization(
+        db, request, x_organization_id, current_user
+    )
+    return SecurityAlertService.get_summary(db, organization_id=organization_id)
+
+
+@router.get(
+    "/security-alerts/{alert_id}",
+    response_model=SecurityAlertDetail,
+)
+def get_security_alert_detail(
+    request: Request,
+    alert_id: UUID,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = _resolve_security_alert_organization(
+        db, request, x_organization_id, current_user
+    )
+    return SecurityAlertService.get_detail(
+        db,
+        request=request,
+        organization_id=organization_id,
+        alert_id=alert_id,
+    )
+
+
+@router.get(
+    "/security-alerts/{alert_id}/audit-logs",
+    response_model=SecurityAlertAuditLogListResponse,
+)
+def list_security_alert_audit_logs(
+    request: Request,
+    alert_id: UUID,
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=20, ge=1, le=100),
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = _resolve_security_alert_organization(
+        db, request, x_organization_id, current_user
+    )
+    return SecurityAlertService.list_evidence(
+        db,
+        request=request,
+        organization_id=organization_id,
+        alert_id=alert_id,
+        page=page,
+        limit=limit,
+    )
+
+
+@router.post(
+    "/security-alerts/{alert_id}/acknowledge",
+    response_model=SecurityAlertDetail,
+)
+def acknowledge_security_alert_endpoint(
+    request: Request,
+    alert_id: UUID,
+    body: SecurityAlertAcknowledgeRequest,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = _resolve_security_alert_organization(
+        db, request, x_organization_id, current_user
+    )
+    return _run_security_alert_mutation(
+        request,
+        lambda: SecurityAlertService.acknowledge(
+            db,
+            request=request,
+            organization_id=organization_id,
+            alert_id=alert_id,
+            manager_id=current_user.id,
+            expected_version=body.expected_version,
+        ),
+    )
+
+
+@router.post(
+    "/security-alerts/{alert_id}/resolve",
+    response_model=SecurityAlertDetail,
+)
+def resolve_security_alert_endpoint(
+    request: Request,
+    alert_id: UUID,
+    body: SecurityAlertResolveRequest,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = _resolve_security_alert_organization(
+        db, request, x_organization_id, current_user
+    )
+    return _run_security_alert_mutation(
+        request,
+        lambda: SecurityAlertService.resolve(
+            db,
+            request=request,
+            organization_id=organization_id,
+            alert_id=alert_id,
+            manager_id=current_user.id,
+            expected_version=body.expected_version,
+            resolution_type=body.resolution_type,
+            reason=body.reason,
+        ),
+    )
+
+
+@router.post(
+    "/security-alerts/{alert_id}/reopen",
+    response_model=SecurityAlertDetail,
+)
+def reopen_security_alert_endpoint(
+    request: Request,
+    alert_id: UUID,
+    body: SecurityAlertReopenRequest,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = _resolve_security_alert_organization(
+        db, request, x_organization_id, current_user
+    )
+    return _run_security_alert_mutation(
+        request,
+        lambda: SecurityAlertService.reopen(
+            db,
+            request=request,
+            organization_id=organization_id,
+            alert_id=alert_id,
+            manager_id=current_user.id,
+            expected_version=body.expected_version,
+        ),
     )
