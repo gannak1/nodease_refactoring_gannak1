@@ -169,6 +169,6 @@ describe('isAdminTabVisible', () => {
   it('보안 알림 탭은 manager에게만 표시한다', () => {
     expect(isAdminTabVisible('security-alerts', true)).toBe(true);
     expect(isAdminTabVisible('security-alerts', false)).toBe(false);
-    expect(isAdminTabVisible('members', false)).toBe(true);
+    expect(isAdminTabVisible('organization-structure', false)).toBe(true);
   });
 });
