@@ -47,6 +47,12 @@ KnowledgeRAGSourceTierPolicy = Literal["tie_break", "off"]
 KnowledgeCollectionAction = Literal["read", "route", "manage", "sync"]
 KnowledgeCollectionVisibility = Literal["private", "public"]
 KnowledgeCollectionLifecycleState = Literal["active", "archived", "deleted"]
+KnowledgeDomainPermissionAction = Literal[
+    "catalog_manage",
+    "permission_delegate",
+    "lifecycle_manage",
+    "sync_manage",
+]
 
 _CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]+")
 
@@ -214,6 +220,37 @@ class KnowledgeCollectionVisibilityResponse(BaseModel):
     linked_kb_count_bucket: str = "0"
     active_kb_count_bucket: str = "0"
     sensitive_content_warning: str = "unknown_or_present"
+
+
+class KnowledgeDomainPermissionUpsertRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expires_at: datetime | None = None
+
+
+class KnowledgeDomainPermissionResponse(BaseModel):
+    permission_id: UUID
+    subject_type: Literal["team", "user"]
+    subject_id: UUID
+    subject_safe_label: str
+    permission_action: KnowledgeDomainPermissionAction
+    assigned_at: datetime
+    expires_at: datetime | None = None
+    is_expired: bool = False
+
+
+class KnowledgeDomainPermissionListResponse(BaseModel):
+    permissions: list[KnowledgeDomainPermissionResponse] = Field(default_factory=list)
+
+
+class KnowledgeDomainCapabilitiesResponse(BaseModel):
+    actions: list[KnowledgeDomainPermissionAction] = Field(default_factory=list)
+    can_manage_domain_permissions: bool = False
+    can_create_collection: bool = False
+    can_delegate_permissions: bool = False
+    can_manage_lifecycle: bool = False
+    can_manage_sync: bool = False
+    can_change_public_visibility: bool = False
 
 
 def normalize_recommendation_text(value: str | None) -> str | None:

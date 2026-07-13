@@ -19,7 +19,17 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from apps.gateway.api.deps import get_db
+from apps.gateway.application.knowledge_administration.domain_permissions import (
+    DomainPermissionCommand,
+    DomainPermissionInputInvalid,
+    DomainPermissionPersistenceFailed,
+    DomainPermissionSubjectHidden,
+    OrganizationManagerRequired,
+)
 from apps.gateway.auth.dependencies import get_current_user
+from apps.gateway.composition.knowledge_administration import (
+    build_knowledge_domain_permission_use_case,
+)
 from apps.gateway.utils.api_errors import raise_api_error
 from apps.gateway.utils.audit import audit
 from apps.gateway.services.ingestion.service import (
@@ -73,6 +83,11 @@ from apps.shared.schemas.knowledge import (
     KnowledgeCollectionUpdateRequest,
     KnowledgeCollectionVisibilityRequest,
     KnowledgeCollectionVisibilityResponse,
+    KnowledgeDomainCapabilitiesResponse,
+    KnowledgeDomainPermissionAction,
+    KnowledgeDomainPermissionListResponse,
+    KnowledgeDomainPermissionResponse,
+    KnowledgeDomainPermissionUpsertRequest,
     KnowledgeRAGRecommendationRequest,
     KnowledgeRAGRecommendationResponse,
 )
@@ -262,6 +277,51 @@ def _raise_collection_service_error(
         exc.code,
         exc.message,
         exc.details,
+    )
+
+
+def _raise_domain_permission_error(request: Request, exc: Exception) -> None:
+    if isinstance(exc, OrganizationManagerRequired):
+        raise_api_error(
+            request,
+            status.HTTP_403_FORBIDDEN,
+            "permission.denied",
+            "Organization manager permission is required.",
+        )
+    if isinstance(exc, DomainPermissionSubjectHidden):
+        raise_api_error(
+            request,
+            status.HTTP_404_NOT_FOUND,
+            "resource.hidden",
+            "Resource not found.",
+        )
+    if isinstance(exc, DomainPermissionInputInvalid):
+        raise_api_error(
+            request,
+            status.HTTP_400_BAD_REQUEST,
+            "validation.failed",
+            "Knowledge domain permission request is invalid.",
+        )
+    if isinstance(exc, DomainPermissionPersistenceFailed):
+        raise_api_error(
+            request,
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "knowledge.permission_write_failed",
+            "Knowledge permission change could not be saved.",
+        )
+    raise exc
+
+
+def _domain_permission_response(row) -> KnowledgeDomainPermissionResponse:
+    return KnowledgeDomainPermissionResponse(
+        permission_id=row.permission_id,
+        subject_type=row.subject_type,
+        subject_id=row.subject_id,
+        subject_safe_label=row.subject_safe_label,
+        permission_action=row.permission_action,
+        assigned_at=row.assigned_at,
+        expires_at=row.expires_at,
+        is_expired=row.is_expired,
     )
 
 
@@ -547,6 +607,207 @@ async def recommend_rag_options(
     for recommendation in result.recommendations:
         recommendation.materialized_knowledge_bases = []
     return result
+
+
+@router.get(
+    "/domain-capabilities",
+    response_model=KnowledgeDomainCapabilitiesResponse,
+)
+def get_knowledge_domain_capabilities(
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = resolve_active_organization_id(
+        db, request, x_organization_id, current_user.id
+    )
+    actions, is_manager = build_knowledge_domain_permission_use_case(db).capabilities(
+        current_user.id, organization_id
+    )
+    return KnowledgeDomainCapabilitiesResponse(
+        actions=sorted(actions),
+        can_manage_domain_permissions=is_manager,
+        can_create_collection="catalog_manage" in actions,
+        can_delegate_permissions="permission_delegate" in actions,
+        can_manage_lifecycle="lifecycle_manage" in actions,
+        can_manage_sync="sync_manage" in actions,
+        can_change_public_visibility=is_manager,
+    )
+
+
+@router.get(
+    "/domain-permissions",
+    response_model=KnowledgeDomainPermissionListResponse,
+)
+def list_knowledge_domain_permissions(
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = resolve_active_organization_id(
+        db, request, x_organization_id, current_user.id
+    )
+    try:
+        rows = build_knowledge_domain_permission_use_case(db).list_permissions(
+            current_user.id, organization_id
+        )
+    except (OrganizationManagerRequired, DomainPermissionPersistenceFailed) as exc:
+        _raise_domain_permission_error(request, exc)
+    return KnowledgeDomainPermissionListResponse(
+        permissions=[_domain_permission_response(row) for row in rows]
+    )
+
+
+def _change_knowledge_domain_permission(
+    *,
+    request: Request,
+    db: Session,
+    current_user: User,
+    organization_id: UUID,
+    subject_type: str,
+    subject_id: UUID,
+    permission_action: KnowledgeDomainPermissionAction,
+    expires_at,
+    revoke: bool,
+):
+    command = DomainPermissionCommand(
+        actor_id=current_user.id,
+        organization_id=organization_id,
+        subject_type=subject_type,
+        subject_id=subject_id,
+        permission_action=permission_action,
+        expires_at=expires_at,
+    )
+    use_case = build_knowledge_domain_permission_use_case(db)
+    try:
+        return use_case.revoke(command) if revoke else use_case.grant(command)
+    except (
+        OrganizationManagerRequired,
+        DomainPermissionSubjectHidden,
+        DomainPermissionInputInvalid,
+        DomainPermissionPersistenceFailed,
+    ) as exc:
+        _raise_domain_permission_error(request, exc)
+
+
+@router.put(
+    "/domain-permissions/teams/{team_id}/{permission_action}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def put_team_knowledge_domain_permission(
+    team_id: UUID,
+    permission_action: KnowledgeDomainPermissionAction,
+    body: KnowledgeDomainPermissionUpsertRequest,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = resolve_active_organization_id(
+        db, request, x_organization_id, current_user.id
+    )
+    _change_knowledge_domain_permission(
+        request=request,
+        db=db,
+        current_user=current_user,
+        organization_id=organization_id,
+        subject_type="team",
+        subject_id=team_id,
+        permission_action=permission_action,
+        expires_at=body.expires_at,
+        revoke=False,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete(
+    "/domain-permissions/teams/{team_id}/{permission_action}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_team_knowledge_domain_permission(
+    team_id: UUID,
+    permission_action: KnowledgeDomainPermissionAction,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = resolve_active_organization_id(
+        db, request, x_organization_id, current_user.id
+    )
+    _change_knowledge_domain_permission(
+        request=request,
+        db=db,
+        current_user=current_user,
+        organization_id=organization_id,
+        subject_type="team",
+        subject_id=team_id,
+        permission_action=permission_action,
+        expires_at=None,
+        revoke=True,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.put(
+    "/domain-permissions/users/{user_id}/{permission_action}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def put_user_knowledge_domain_permission(
+    user_id: UUID,
+    permission_action: KnowledgeDomainPermissionAction,
+    body: KnowledgeDomainPermissionUpsertRequest,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = resolve_active_organization_id(
+        db, request, x_organization_id, current_user.id
+    )
+    _change_knowledge_domain_permission(
+        request=request,
+        db=db,
+        current_user=current_user,
+        organization_id=organization_id,
+        subject_type="user",
+        subject_id=user_id,
+        permission_action=permission_action,
+        expires_at=body.expires_at,
+        revoke=False,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete(
+    "/domain-permissions/users/{user_id}/{permission_action}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_user_knowledge_domain_permission(
+    user_id: UUID,
+    permission_action: KnowledgeDomainPermissionAction,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = resolve_active_organization_id(
+        db, request, x_organization_id, current_user.id
+    )
+    _change_knowledge_domain_permission(
+        request=request,
+        db=db,
+        current_user=current_user,
+        organization_id=organization_id,
+        subject_type="user",
+        subject_id=user_id,
+        permission_action=permission_action,
+        expires_at=None,
+        revoke=True,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/collections", response_model=KnowledgeCollectionListResponse)

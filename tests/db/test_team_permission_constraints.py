@@ -108,6 +108,14 @@ def test_team_tables_use_final_names():
         team.UserKnowledgeCollectionPermission.__tablename__
         == "user_knowledge_collection_permissions"
     )
+    assert (
+        team.TeamKnowledgeDomainPermission.__tablename__
+        == "team_knowledge_domain_permissions"
+    )
+    assert (
+        team.UserKnowledgeDomainPermission.__tablename__
+        == "user_knowledge_domain_permissions"
+    )
 
 
 def test_team_has_unique_team_id_organization_id_constraint():
@@ -161,6 +169,21 @@ def test_team_assignment_tables_have_composite_team_org_fk():
             "teams.id",
             "teams.organization_id",
         ]
+
+    domain_fk = next(
+        constraint
+        for constraint in team.TeamKnowledgeDomainPermission.__table__.constraints
+        if isinstance(constraint, ForeignKeyConstraint)
+        and constraint.name == "fk_team_knowledge_domain_permissions_team_org"
+    )
+    assert [column.name for column in domain_fk.columns] == [
+        "team_id",
+        "organization_id",
+    ]
+    assert [element.target_fullname for element in domain_fk.elements] == [
+        "teams.id",
+        "teams.organization_id",
+    ]
 
 
 def test_team_options_and_flags_columns():
@@ -218,6 +241,8 @@ def test_auth_state_is_only_on_resource_permission_tables():
 
     assert "auth_state" not in team.TeamKnowledgeCollectionPermission.__table__.columns
     assert "auth_state" not in team.UserKnowledgeCollectionPermission.__table__.columns
+    assert "auth_state" not in team.TeamKnowledgeDomainPermission.__table__.columns
+    assert "auth_state" not in team.UserKnowledgeDomainPermission.__table__.columns
 
 
 def test_collection_permission_tables_use_permission_action_rows():
@@ -279,5 +304,44 @@ def test_user_direct_permission_tables_are_additive_user_resource_grants():
             isinstance(constraint, UniqueConstraint)
             and constraint.name == constraint_name
             and [column.name for column in constraint.columns] == columns
+            for constraint in model.__table__.constraints
+        )
+
+
+def test_knowledge_domain_permission_tables_use_bounded_expiring_action_rows():
+    team = _load_team_module()
+    expected = {
+        team.TeamKnowledgeDomainPermission: (
+            "uq_team_knowledge_domain_permissions_action",
+            ["organization_id", "team_id", "permission_action"],
+        ),
+        team.UserKnowledgeDomainPermission: (
+            "uq_user_knowledge_domain_permissions_action",
+            ["organization_id", "user_id", "permission_action"],
+        ),
+    }
+
+    for model, (constraint_name, columns) in expected.items():
+        assert "expires_at" in model.__table__.columns
+        assert "permission_action" in model.__table__.columns
+        assert "options" not in model.__table__.columns
+        assert "flags" in model.__table__.columns
+        assert any(
+            isinstance(constraint, UniqueConstraint)
+            and constraint.name == constraint_name
+            and [column.name for column in constraint.columns] == columns
+            for constraint in model.__table__.constraints
+        )
+        assert any(
+            isinstance(constraint, CheckConstraint)
+            and all(
+                action in str(constraint.sqltext)
+                for action in (
+                    "catalog_manage",
+                    "permission_delegate",
+                    "lifecycle_manage",
+                    "sync_manage",
+                )
+            )
             for constraint in model.__table__.constraints
         )

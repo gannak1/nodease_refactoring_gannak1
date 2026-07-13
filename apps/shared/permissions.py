@@ -69,8 +69,18 @@ KNOWLEDGE_BASE_ACTION_MINIMUM_AUTH_STATE = {
     "read": AUTH_STATE_VIEWER,
     "use": AUTH_STATE_OPERATOR,
     "write": AUTH_STATE_BUILDER,
+    "content_read": AUTH_STATE_BUILDER,
     "manage": AUTH_STATE_MANAGER,
 }
+
+KNOWLEDGE_DOMAIN_ACTIONS = frozenset(
+    {
+        "catalog_manage",
+        "permission_delegate",
+        "lifecycle_manage",
+        "sync_manage",
+    }
+)
 
 
 def normalize_auth_state(auth_state: Any) -> str:
