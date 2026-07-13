@@ -18,6 +18,12 @@ EXPECTED_ALERT_CHECKS = {
     "ck_security_alerts_status_fields",
 }
 
+EXPECTED_NOTIFICATION_OUTBOX_CHECKS = {
+    "ck_security_alert_notification_outbox_status",
+    "ck_security_alert_notification_outbox_attempt_nonnegative",
+    "ck_security_alert_notification_outbox_max_attempts_positive",
+}
+
 
 def _security_alert_models():
     module = importlib.import_module("apps.shared.db.models.security_alert")
@@ -34,6 +40,11 @@ def _constraint_names(table, constraint_type):
         for constraint in table.constraints
         if isinstance(constraint, constraint_type) and constraint.name
     }
+
+
+def _security_alert_notification_outbox_model():
+    module = importlib.import_module("apps.shared.db.models.security_alert")
+    return getattr(module, "SecurityAlertNotificationOutbox")
 
 
 def test_security_alert_models_are_registered_with_expected_table_names():
@@ -62,8 +73,10 @@ def test_security_alert_model_declares_required_columns_and_defaults():
         "policy_reason",
         "detection_key",
         "occurrence_count",
+        "episode_count",
         "first_detected_at",
         "last_detected_at",
+        "last_episode_started_at",
         "lifecycle_version",
         "acknowledged_by",
         "acknowledged_at",
@@ -237,3 +250,76 @@ def test_security_alert_watermark_migration_adds_cursor_table_and_scan_index():
     assert source.index('drop_index("ix_audit_logs_occurred_at_id"') < source.index(
         'drop_table("security_alert_reconciliation_watermarks")'
     )
+
+
+def test_security_alert_notification_outbox_declares_durable_delivery_contract():
+    outbox_model = _security_alert_notification_outbox_model()
+    table = outbox_model.__table__
+
+    assert shared_models.SecurityAlertNotificationOutbox is outbox_model
+    assert table.name == "security_alert_notification_outbox"
+    assert set(table.columns.keys()) == {
+        "id",
+        "organization_id",
+        "event_type",
+        "idempotency_key",
+        "status",
+        "owner_token",
+        "lease_expires_at",
+        "attempt_count",
+        "max_attempts",
+        "next_retry_at",
+        "retryable",
+        "safe_reason_code",
+        "delivered_at",
+        "dead_lettered_at",
+        "created_at",
+        "updated_at",
+    }
+    assert str(table.c.attempt_count.server_default.arg) == "0"
+    assert str(table.c.max_attempts.server_default.arg) == "5"
+    assert EXPECTED_NOTIFICATION_OUTBOX_CHECKS <= _constraint_names(
+        table,
+        CheckConstraint,
+    )
+    assert (
+        "uq_security_alert_notification_outbox_org_idempotency"
+        in _constraint_names(table, UniqueConstraint)
+    )
+    assert {
+        "ix_security_alert_notification_outbox_status_retry",
+        "ix_security_alert_notification_outbox_lease",
+    } <= {index.name for index in table.indexes}
+
+    organization_fk = next(iter(table.c.organization_id.foreign_keys))
+    assert organization_fk.target_fullname == "organization.id"
+    assert organization_fk.ondelete in {None, "NO ACTION", "RESTRICT"}
+    for name in (
+        "lease_expires_at",
+        "next_retry_at",
+        "delivered_at",
+        "dead_lettered_at",
+        "created_at",
+        "updated_at",
+    ):
+        assert table.c[name].type.timezone is True, name
+
+
+def test_security_alert_notification_outbox_has_additive_migration():
+    episode_path = Path(
+        "apps/shared/alembic/versions/"
+        "fe4a5b6c7d89_add_security_alert_episodes.py"
+    )
+    path = Path(
+        "apps/shared/alembic/versions/"
+        "c05d6e7f8a90_add_security_alert_notification_outbox.py"
+    )
+    episode_source = episode_path.read_text(encoding="utf-8")
+    source = path.read_text(encoding="utf-8")
+
+    assert 'down_revision: Union[str, Sequence[str], None] = "fd0e1f2a3b4c"' in (
+        episode_source
+    )
+    assert 'down_revision: Union[str, Sequence[str], None] = "fe4a5b6c7d89"' in source
+    assert 'create_table(\n        "security_alert_notification_outbox"' in source
+    assert 'drop_table("security_alert_notification_outbox")' in source

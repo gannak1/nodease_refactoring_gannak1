@@ -62,6 +62,11 @@ celery_app.conf.update(
             "schedule": 60.0,
             "options": {"queue": "log"},
         },
+        "security-alert-notification-outbox": {
+            "task": "security_alert.notification_outbox.deliver",
+            "schedule": 30.0,
+            "options": {"queue": "log"},
+        },
     },
     # 태스크 설정
     task_track_started=False,  # [FIX] STARTED 상태 추적 비활성화 (Protocol Error 방지)

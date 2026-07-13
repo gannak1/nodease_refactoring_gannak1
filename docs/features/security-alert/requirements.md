@@ -49,7 +49,7 @@ Security Alert는 검증된 organization 안에서 인증 사용자가 짧은 �
 ## Alert Aggregation And Cooldown
 
 - SAL-REQ-017: 같은 detection key에는 `open` 또는 `acknowledged` 상태의 활성 alert가 최대 하나만 존재해야 한다.
-- SAL-REQ-018: 마지막 탐지 시각부터 30분의 sliding cooldown을 적용해야 한다.
+- SAL-REQ-018: 마지막 탐지 시각부터 30분의 sliding cooldown을 적용해야 한다. Cooldown이 끝난 활성 alert가 새 audit만으로 같은 rule threshold를 다시 충족하면 새 alert를 만들지 않고 새 episode로 기록해 관리자 notification refresh를 다시 발생시켜야 한다.
 - SAL-REQ-019: Cooldown 중 같은 detection key의 event는 검증된 audit organization이 alert organization과 일치할 때만 기존 활성 alert의 occurrence count와 `last_detected_at`을 갱신하고 evidence로 연결해야 한다. ID만 전달된 audit도 canonical row를 조회해 같은 organization 검증을 적용해야 한다.
 - SAL-REQ-020: Cooldown 중 occurrence 갱신은 별도 canonical audit action을 만들지 않아야 한다.
 - SAL-REQ-021: `resolved` alert에는 새 evidence를 연결하지 않아야 한다.
@@ -89,7 +89,7 @@ Security Alert는 검증된 organization 안에서 인증 사용자가 짧은 �
 - SAL-REQ-039: Reconciliation은 PostgreSQL watermark table에 기능 활성화 시각과 `(occurred_at, audit_log.id)` cursor를 durable하게 저장하고 overlap window를 사용해 worker 중단, publish 실패, 경계 시각 누락을 복구해야 한다. Batch가 완전히 성공한 뒤에만 cursor를 전진해야 한다.
 - SAL-REQ-040: 실시간 task, retry, reconciliation이 같은 audit을 동시에 처리해도 evidence, occurrence, 활성 alert가 중복 생성되지 않아야 한다. 서로 다른 audit을 같은 활성 alert에 동시에 연결해도 occurrence를 유실하지 않고 `last_detected_at`은 가장 최신 event time을 유지해야 한다.
 - SAL-REQ-041: Alert 생성 또는 활성 alert 갱신 commit 이후 notification 변경 신호를 발행해야 한다.
-- SAL-REQ-042: Notification 발행 실패는 alert transaction을 rollback하지 않아야 하며 별도로 재시도할 수 있어야 한다.
+- SAL-REQ-042: Notification 발행 요청은 Alert 생성·occurrence/episode 갱신·lifecycle 변경과 같은 DB transaction의 durable Outbox에 기록해야 한다. Redis 발행 또는 현재 manager 수신자 조회 실패는 Alert transaction을 rollback하지 않고 최대 5회 재시도한 뒤 dead-letter로 보존해야 한다.
 - SAL-REQ-043: Eligible event 발생 후 관리자 UI 반영 목표는 1분 이내여야 한다.
 
 ## Authorization And Organization Isolation
@@ -125,6 +125,10 @@ Security Alert는 검증된 organization 안에서 인증 사용자가 짧은 �
 - SAL-REQ-066: `notifications.changed`는 Alert 생성, 새 evidence에 의한 occurrence 갱신 또는 lifecycle 상태 변경이 실제로 commit된 경우에만 발행해야 한다. Threshold 전 event처럼 Alert가 변경되지 않은 경우에는 발행하지 않아야 한다.
 - SAL-REQ-067: Security Alert notification 수신자는 현재 관리자 API 권한 판정과 같은 집합이어야 한다. Active manager membership뿐 아니라 membership이 없는 유효한 `Organization.created_by`/`managed_by`를 포함하고 suspended, removed, deactivated 사용자는 제외해야 한다.
 - SAL-REQ-068: 열린 detail에서 acknowledge, reopen, resolve가 현재 권한 회수로 `403`을 반환하면 Client는 cached detail과 해결 dialog를 비우고 선택된 `alertId` URL을 닫아야 한다.
+- SAL-REQ-069: Rule ID/version, action, window, threshold, severity, count mode와 policy-reason grouping은 하나의 server-owned rule registry를 source of truth로 사용해야 한다. Evaluator, aggregation threshold 확인과 worker 최대 조회 window는 별도 상수를 중복 정의하지 않고 같은 registry를 읽어야 한다.
+- SAL-REQ-070: 운영 반영 전 rule replay는 지정한 organization과 기간의 audit를 읽기 전용으로 평가하고 rule별 발화 횟수의 safe aggregate만 반환해야 한다. Replay는 lookback 구간과 실제 평가 구간을 각각 완전하게 읽은 경우에만 집계를 반환해야 하며, 어느 구간이든 설정된 limit을 초과하면 부분 결과를 성공으로 반환하지 않고 safe reason code로 실패해야 한다. Replay는 Security Alert, evidence, lifecycle audit, notification, watermark를 생성·변경하거나 raw audit payload와 target을 출력하지 않아야 한다.
+- SAL-REQ-071: 최초 alert는 `episode_count=1`과 `last_episode_started_at=first_detected_at`으로 시작해야 한다. Cooldown 종료 후 threshold 재충족 시 새 evidence가 실제 연결된 transaction만 episode count를 한 번 증가시키고 마지막 episode 시작 시각을 threshold event time으로 갱신해야 한다. 이 시각은 notification 전달 성공 시각을 의미하지 않는다.
+- SAL-REQ-072: SSE 또는 notification 신호에 따른 같은 organization·filter·page·alert의 background refresh는 현재 목록, 상세와 evidence를 응답 전까지 유지하고 성공 응답으로 한 번에 교체해야 한다. Organization, filter, page 또는 alert scope가 바뀌거나 현재 권한이 회수된 경우에는 이전 scope 데이터를 유지하면 안 된다.
 
 ## Non-Functional Requirements
 
@@ -158,4 +162,4 @@ Security Alert는 검증된 organization 안에서 인증 사용자가 짧은 �
 | MBA-213 | 관리자 조회·상태 변경 API | 구현됨 |
 | MBA-214 | Admin Dashboard, Sidebar, SSE | 구현됨 |
 
-문서 상태는 `Draft`를 유지한다. SAL-REQ-042의 notification 발행 실패 후 durable한 별도 재시도 수단과 실제 Redis/SSE End-to-End·PostgreSQL concurrency gate 검증이 아직 남아 있다. 현재 구현은 Alert transaction을 보존하고 안전한 오류 유형만 기록하며, reconnect와 영속 API 재조회로 client 상태를 복구한다.
+문서 상태는 `Draft`를 유지한다. SAL-REQ-042의 durable notification Outbox와 재시도/dead-letter 처리는 구현됐으며, 실제 Redis/SSE End-to-End와 PostgreSQL concurrency acceptance gate 검증은 아직 남아 있다. Client는 reconnect와 영속 API 재조회로 상태를 복구한다.

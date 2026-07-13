@@ -218,6 +218,60 @@ describe('SecurityAlertsTab', () => {
     });
   });
 
+  it('notification background refresh 중 기존 목록을 유지한다', async () => {
+    const refreshRequest = deferred<{
+      total: number;
+      items: typeof alertItem[];
+    }>();
+    mockedList
+      .mockResolvedValueOnce({ total: 1, items: [alertItem] })
+      .mockReturnValueOnce(refreshRequest.promise);
+
+    render(
+      <SecurityAlertsTab members={members} organizationId="org-1" />,
+    );
+    expect(await screen.findByText('5')).toBeInTheDocument();
+
+    act(() => {
+      window.dispatchEvent(new Event('nodease-notifications-refresh'));
+    });
+    await waitFor(() => expect(mockedList).toHaveBeenCalledTimes(2));
+
+    expect(screen.getByRole('table')).toBeInTheDocument();
+    expect(screen.getByText('5')).toBeInTheDocument();
+    expect(
+      screen.queryByText('보안 알림을 불러오는 중...'),
+    ).not.toBeInTheDocument();
+
+    refreshRequest.resolve({
+      total: 1,
+      items: [{ ...alertItem, occurrence_count: 6 }],
+    });
+    expect(await screen.findByText('6')).toBeInTheDocument();
+  });
+
+  it('notification background refresh 실패 시 기존 목록을 유지한다', async () => {
+    mockedList
+      .mockResolvedValueOnce({ total: 1, items: [alertItem] })
+      .mockRejectedValueOnce(new Error('temporary network failure'));
+
+    render(
+      <SecurityAlertsTab members={members} organizationId="org-1" />,
+    );
+    expect(await screen.findByText('5')).toBeInTheDocument();
+
+    act(() => {
+      window.dispatchEvent(new Event('nodease-notifications-refresh'));
+    });
+    await waitFor(() => expect(mockedList).toHaveBeenCalledTimes(2));
+
+    expect(screen.getByRole('table')).toBeInTheDocument();
+    expect(screen.getByText('5')).toBeInTheDocument();
+    expect(
+      screen.queryByText('보안 알림을 불러오지 못했습니다.'),
+    ).not.toBeInTheDocument();
+  });
+
   it('조직 전환 전에 시작한 늦은 응답은 현재 조직 목록을 덮어쓰지 않는다', async () => {
     const oldOrganizationRequest = deferred<{
       total: number;

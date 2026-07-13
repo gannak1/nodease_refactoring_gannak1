@@ -41,6 +41,22 @@ describe('auditPresentation', () => {
     ).toBe('조직 관리자 권한');
   });
 
+  it('보안 알림 operation이 없으면 자연스러운 공통 문구를 사용한다', () => {
+    expect(
+      auditEventSummary({
+        action: 'permission.denied',
+        status: 'failure',
+        targetType: 'organization',
+        targetId: 'org-1',
+        currentOrganizationId: 'org-1',
+        requiredPermission: 'security_alert.manage',
+        requestedOperation: null,
+      }),
+    ).toBe(
+      '보안 알림 관련 작업을 시도했지만 조직 관리자 권한이 필요해 거부되었습니다.',
+    );
+  });
+
   it('알려진 대상 종류는 한국어 이름과 안전한 ID를 유지한다', () => {
     expect(auditTargetLabel('organization_membership', 'member-1')).toBe(
       '조직 멤버 · member-1',

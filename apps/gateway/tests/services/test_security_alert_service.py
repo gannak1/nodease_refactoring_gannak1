@@ -12,7 +12,10 @@ from apps.gateway.services.security_alert_service import (
     SecurityAlertFilters,
     SecurityAlertService,
 )
-from apps.shared.schemas.security_alert import SecurityAlertSafeActor
+from apps.shared.schemas.security_alert import (
+    SecurityAlertDetail,
+    SecurityAlertSafeActor,
+)
 from apps.shared.db.models.audit_log import ActorType, AuditCategory, AuditStatus
 
 
@@ -453,7 +456,22 @@ def _prepare_lifecycle_service(monkeypatch, alert):
     monkeypatch.setattr(
         SecurityAlertService,
         "get_detail",
-        lambda db, request, organization_id, alert_id: alert,
+        lambda db, request, organization_id, alert_id: SecurityAlertDetail.model_construct(
+            id=alert.id,
+            organization_id=alert.organization_id,
+            status=alert.status,
+            version=alert.lifecycle_version,
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "enqueue_security_alert_notification",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        module,
+        "dispatch_security_alert_notification_outbox",
+        lambda: None,
     )
 
 
@@ -474,7 +492,9 @@ def test_acknowledge_commits_transition_and_canonical_audit(monkeypatch):
         now=at,
     )
 
-    assert result is alert
+    assert isinstance(result, SecurityAlertDetail)
+    assert result.status == "acknowledged"
+    assert result.version == 2
     assert alert.status == "acknowledged"
     assert alert.lifecycle_version == 2
     assert db.commits == 1
@@ -482,7 +502,9 @@ def test_acknowledge_commits_transition_and_canonical_audit(monkeypatch):
     assert [audit.action for audit in db.added] == ["security_alert.acknowledged"]
 
 
-def test_lifecycle_notification_is_published_after_commit(monkeypatch):
+def test_lifecycle_notification_is_enqueued_before_commit_and_dispatched_after(
+    monkeypatch,
+):
     alert = _alert()
     db = _LifecycleSession(alert)
     events = []
@@ -496,8 +518,16 @@ def test_lifecycle_notification_is_published_after_commit(monkeypatch):
     _prepare_lifecycle_service(monkeypatch, alert)
     monkeypatch.setattr(
         module,
-        "publish_notifications_changed_to_organization_managers",
-        lambda db, organization_id: events.append(("publish", organization_id)),
+        "enqueue_security_alert_notification",
+        lambda db, *, scoped_organization_id, idempotency_key: events.append(
+            ("enqueue", scoped_organization_id, idempotency_key)
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        module,
+        "dispatch_security_alert_notification_outbox",
+        lambda: events.append("dispatch"),
         raising=False,
     )
 
@@ -510,23 +540,81 @@ def test_lifecycle_notification_is_published_after_commit(monkeypatch):
         expected_version=1,
     )
 
-    assert events == ["commit", ("publish", alert.organization_id)]
+    assert events == [
+        (
+            "enqueue",
+            alert.organization_id,
+            f"security-alert:{alert.id}:lifecycle:2",
+        ),
+        "commit",
+        "dispatch",
+    ]
 
 
-def test_lifecycle_notification_failure_does_not_rollback_commit(monkeypatch):
+def test_lifecycle_notification_uses_response_version_for_outbox_key(monkeypatch):
+    alert = _alert(lifecycle_version=2)
+    detail = SecurityAlertDetail.model_construct(version=2)
+    db = _LifecycleSession(alert)
+    events = []
+    monkeypatch.setattr(
+        SecurityAlertService,
+        "get_detail",
+        lambda db, request, organization_id, alert_id: detail,
+    )
+    monkeypatch.setattr(
+        module,
+        "enqueue_security_alert_notification",
+        lambda db, *, scoped_organization_id, idempotency_key: events.append(
+            (scoped_organization_id, idempotency_key)
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "dispatch_security_alert_notification_outbox",
+        lambda: None,
+    )
+
+    result = module._detail_then_commit(
+        db,
+        request=_request(),
+        organization_id=alert.organization_id,
+        alert_id=alert.id,
+    )
+
+    assert result is detail
+    assert events == [
+        (
+            alert.organization_id,
+            f"security-alert:{alert.id}:lifecycle:2",
+        )
+    ]
+    assert db.commits == 1
+    assert db.rollbacks == 0
+
+
+def test_lifecycle_dispatch_failure_does_not_rollback_persisted_outbox(monkeypatch):
     alert = _alert()
     db = _LifecycleSession(alert)
-    publish_attempts = []
+    events = []
     _prepare_lifecycle_service(monkeypatch, alert)
 
-    def fail_publish(db, organization_id):
-        publish_attempts.append(organization_id)
+    monkeypatch.setattr(
+        module,
+        "enqueue_security_alert_notification",
+        lambda db, *, scoped_organization_id, idempotency_key: events.append(
+            ("enqueue", scoped_organization_id)
+        ),
+        raising=False,
+    )
+
+    def fail_dispatch():
+        events.append("dispatch")
         raise RuntimeError("notification unavailable")
 
     monkeypatch.setattr(
         module,
-        "publish_notifications_changed_to_organization_managers",
-        fail_publish,
+        "dispatch_security_alert_notification_outbox",
+        fail_dispatch,
         raising=False,
     )
 
@@ -539,7 +627,7 @@ def test_lifecycle_notification_failure_does_not_rollback_commit(monkeypatch):
         expected_version=1,
     )
 
-    assert publish_attempts == [alert.organization_id]
+    assert events == [("enqueue", alert.organization_id), "dispatch"]
     assert db.commits == 1
     assert db.rollbacks == 0
 

@@ -261,7 +261,7 @@ def test_sal_tc_w001_fifth_denial_is_evaluated_and_aggregated(monkeypatch):
     assert session.closed == 1
 
 
-def test_security_alert_detection_publishes_manager_refresh_after_commit(monkeypatch):
+def test_security_alert_detection_enqueues_before_commit_and_dispatches_after(monkeypatch):
     now = datetime(2026, 7, 12, 0, 10, tzinfo=timezone.utc)
     organization_id = uuid4()
     current = AuditLog(
@@ -307,16 +307,30 @@ def test_security_alert_detection_publishes_manager_refresh_after_commit(monkeyp
     )
     monkeypatch.setattr(
         audit_tasks,
-        "publish_notifications_changed_to_organization_managers",
-        lambda db, scoped_organization_id: events.append(
-            ("publish", scoped_organization_id)
+        "enqueue_security_alert_notification",
+        lambda db, *, scoped_organization_id, idempotency_key: events.append(
+            ("enqueue", scoped_organization_id, idempotency_key)
         ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        audit_tasks,
+        "dispatch_security_alert_notification_outbox",
+        lambda: events.append("dispatch"),
         raising=False,
     )
 
     audit_tasks.detect_security_alert.run(str(current.id))
 
-    assert events == ["commit", ("publish", organization_id)]
+    assert events == [
+        (
+            "enqueue",
+            organization_id,
+            f"audit:{current.id}:notifications.changed",
+        ),
+        "commit",
+        "dispatch",
+    ]
 
 
 def test_security_alert_detection_skips_refresh_without_alert_change(monkeypatch):
@@ -364,10 +378,15 @@ def test_security_alert_detection_skips_refresh_without_alert_change(monkeypatch
     )
     monkeypatch.setattr(
         audit_tasks,
-        "publish_notifications_changed_to_organization_managers",
-        lambda db, scoped_organization_id: events.append(
-            ("publish", scoped_organization_id)
-        ),
+        "enqueue_security_alert_notification",
+        lambda *args, **kwargs: events.append("enqueue"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        audit_tasks,
+        "dispatch_security_alert_notification_outbox",
+        lambda: events.append("dispatch"),
+        raising=False,
     )
 
     result = audit_tasks.detect_security_alert.run(str(current.id))
@@ -376,7 +395,7 @@ def test_security_alert_detection_skips_refresh_without_alert_change(monkeypatch
     assert events == ["commit"]
 
 
-def test_reconciliation_publishes_manager_refresh_after_batch_commit(monkeypatch):
+def test_reconciliation_dispatches_persisted_refresh_after_batch_commit(monkeypatch):
     organization_id = uuid4()
     audit = AuditLog(id=uuid4())
     events = []
@@ -389,25 +408,22 @@ def test_reconciliation_publishes_manager_refresh_after_batch_commit(monkeypatch
         return SimpleNamespace(processed_count=1)
 
     monkeypatch.setattr(audit_tasks, "reconcile_security_alert_batch", reconcile)
+    def process(db, audit_id, *, changed_organization_ids):
+        changed_organization_ids.add(organization_id)
+        events.append(("enqueue", organization_id))
+
+    monkeypatch.setattr(audit_tasks, "_process_security_alert_audit", process)
     monkeypatch.setattr(
         audit_tasks,
-        "_process_security_alert_audit",
-        lambda db, audit_id, *, changed_organization_ids: (
-            changed_organization_ids.add(organization_id)
-        ),
-    )
-    monkeypatch.setattr(
-        audit_tasks,
-        "publish_notifications_changed_to_organization_managers",
-        lambda db, scoped_organization_id: events.append(
-            ("publish", scoped_organization_id)
-        ),
+        "dispatch_security_alert_notification_outbox",
+        lambda: events.append("dispatch"),
+        raising=False,
     )
 
     result = audit_tasks.reconcile_security_alerts.run()
 
     assert result == {"status": "processed", "processed_count": 1}
-    assert events == ["commit", ("publish", organization_id)]
+    assert events == [("enqueue", organization_id), "commit", "dispatch"]
 
 
 def test_cooldown_candidate_is_aggregated_without_threshold_candidate(monkeypatch):
@@ -735,3 +751,65 @@ def test_security_alert_reconciliation_has_one_minute_beat_schedule():
             "options": {"queue": "log"},
         }
     ]
+
+
+def test_security_alert_notification_outbox_task_is_registered_on_log_queue():
+    task_name = "security_alert.notification_outbox.deliver"
+
+    assert task_name in audit_tasks.celery_app.tasks
+    route = audit_tasks.celery_app.amqp.router.route(
+        {},
+        task_name,
+        args=[],
+        kwargs={},
+    )
+    assert route["queue"].name == "log"
+
+
+def test_security_alert_notification_outbox_has_recovery_beat_schedule():
+    entries = [
+        entry
+        for entry in (audit_tasks.celery_app.conf.beat_schedule or {}).values()
+        if entry.get("task") == "security_alert.notification_outbox.deliver"
+    ]
+
+    assert entries == [
+        {
+            "task": "security_alert.notification_outbox.deliver",
+            "schedule": 30.0,
+            "options": {"queue": "log"},
+        }
+    ]
+
+
+def test_security_alert_notification_outbox_worker_delegates_transaction_control(
+    monkeypatch,
+):
+    session = _Session()
+    processed = []
+
+    class Processor:
+        def __init__(self, db):
+            assert db is session
+
+        def process_due_events(self, *, owner_token, limit):
+            processed.append((owner_token, limit))
+            return SimpleNamespace(processed_count=2, recovered_count=1)
+
+    monkeypatch.setattr(audit_tasks, "SessionLocal", lambda: session)
+    monkeypatch.setattr(
+        audit_tasks,
+        "SecurityAlertNotificationOutboxProcessor",
+        Processor,
+        raising=False,
+    )
+
+    result = audit_tasks.deliver_security_alert_notification_outbox.run(limit=25)
+
+    assert result == {"processed_count": 2, "recovered_count": 1}
+    assert len(processed) == 1
+    assert processed[0][1] == 25
+    assert processed[0][0]
+    assert session.commits == 0
+    assert session.rollbacks == 0
+    assert session.closed == 1

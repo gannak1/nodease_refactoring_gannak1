@@ -398,6 +398,8 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     external_effect_revision = script.get_revision("fe3f4a5b6c78")
     recommendation_revision = script.get_revision("fc9a1b2c3d4e")
     repair_revision = script.get_revision("fd0e1f2a3b4c")
+    security_alert_episode_revision = script.get_revision("fe4a5b6c7d89")
+    security_alert_outbox_revision = script.get_revision("c05d6e7f8a90")
 
     assert safe_metadata_revision.down_revision == "fa7b8c9d0e12"
     assert set(merged_revision.down_revision) == {"fa7c8d9e0f12", "ff3a4b5c6d78"}
@@ -411,7 +413,9 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     assert external_effect_revision.down_revision == "b39e0f1a2b43"
     assert recommendation_revision.down_revision == "fe3f4a5b6c78"
     assert repair_revision.down_revision == "fc9a1b2c3d4e"
-    assert script.get_heads() == ["fd0e1f2a3b4c"]
+    assert security_alert_episode_revision.down_revision == "fd0e1f2a3b4c"
+    assert security_alert_outbox_revision.down_revision == "fe4a5b6c7d89"
+    assert script.get_heads() == ["c05d6e7f8a90"]
 
 
 def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():

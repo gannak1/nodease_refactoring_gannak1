@@ -4,9 +4,9 @@ Status: Draft
 
 이 문서는 [requirements.md](requirements.md), [api_spec.md](api_spec.md), [component_spec.md](component_spec.md), [ADR-0028](../../decisions/ADR-0028-security-alert-detection-and-lifecycle.md)의 검증 기준을 정의한다.
 
-현재 구현은 MBA-223의 audit 정규화부터 MBA-211~214의 영속 모델·lifecycle, 실시간 탐지·reconciliation, 관리자 API, Admin Dashboard·Sidebar·SSE 재조회까지 포함한다. 관련 자동 검증은 Client test/lint/build, Gateway Security Alert API/service 35건, Log System 관련 21건, Shared 관련 27건과 notification publisher 3건을 통과했다.
+현재 구현은 MBA-223의 audit 정규화부터 MBA-211~214의 영속 모델·lifecycle, 실시간 탐지·reconciliation, durable notification Outbox, 관리자 API, Admin Dashboard·Sidebar·SSE 재조회까지 포함한다.
 
-문서 상태는 `Draft`를 유지한다. 실제 Redis를 연결한 SSE End-to-End, 전체 PostgreSQL concurrency acceptance gate, SAL-REQ-042의 durable notification publish retry는 아직 완료되지 않았다. 전체 Log System suite의 Redis 연결 테스트와 전체 Shared suite의 선택 의존성도 환경 제약으로 별도 확인이 필요하다.
+문서 상태는 `Draft`를 유지한다. 실제 Redis를 연결한 SSE End-to-End와 전체 PostgreSQL concurrency acceptance gate는 아직 완료되지 않았다. 전체 Log System suite의 Redis 연결 테스트와 전체 Shared suite의 선택 의존성도 환경 제약으로 별도 확인이 필요하다.
 
 ## Acceptance Criteria
 
@@ -90,6 +90,12 @@ When detector가 event를 처리하면,
 Then 새 alert를 만들지 않고 기존 alert의 occurrence count, `last_detected_at`, evidence만 갱신해야 한다.
 
 그리고 추가 `security_alert.detected` audit을 만들지 않아야 한다.
+
+Given 같은 활성 alert의 마지막 탐지 이후 cooldown이 끝났을 때,
+When 새 audit만으로 같은 rule threshold를 다시 충족하면,
+Then 기존 alert를 유지하면서 `episode_count`를 한 번 증가시키고 `last_episode_started_at`을 새 threshold event time으로 갱신하며 notification refresh 대상으로 반환해야 한다.
+
+Threshold를 충족하지 못한 단일 event는 새 episode나 evidence로 기록하지 않아야 한다. `last_episode_started_at`은 notification 전달 성공 시각이 아니라 재알림 대상으로 만든 event time이다.
 
 ### AC-11 Resolved Recurrence
 
@@ -221,6 +227,8 @@ Threshold 전 event처럼 Alert가 생성·갱신되지 않은 경우에는 even
 
 SSE reconnect나 event 누락 이후에도 영속 API 재조회로 현재 상태를 복구해야 한다.
 
+같은 organization·filter·page·alert의 background refresh가 진행되는 동안에는 현재 목록, detail과 evidence를 유지하고 성공 응답으로 한 번에 교체해야 한다. 재시도 가능한 실패에도 기존 데이터를 유지해야 하며, organization·filter·page·alert scope 변경이나 권한 회수에서는 이전 scope 데이터를 유지하면 안 된다.
+
 ### AC-25 Reconciliation Recovery
 
 Given 실시간 task publish 실패, worker 중단 또는 window 경계 누락이 있을 때,
@@ -233,7 +241,7 @@ Then 활성화 시점 이후 누락된 eligible event를 복구하고 중복 occ
 
 Given Alert 또는 lifecycle mutation commit 이후 notification publish가 실패할 때,
 When 실패 처리를 수행하면,
-Then 이미 commit된 Alert를 rollback하지 않고 notification만 재시도 가능해야 한다.
+Then 같은 transaction에서 이미 저장된 Outbox를 60초 뒤 재시도하고, 최대 5번째 실패에서 safe reason만 남긴 dead-letter로 전환하며 Alert를 rollback하지 않아야 한다.
 
 ### AC-27 Data Minimization
 
@@ -279,6 +287,20 @@ Scope 밖 404, validation 실패, desired-state no-op에는 target-aware audit�
 
 신규 metadata에는 raw request, email, IP, user-agent, exception text, secret, credential 또는 hidden target 정보를 추가하지 않아야 한다. Legacy `pii_policy_blocked` 정규화는 append-only 원본 audit row를 변경하지 않는 pure mapping이어야 한다.
 
+### AC-32 Single Rule Registry And Read-Only Replay
+
+Given Security Alert v1 규칙이 evaluator, aggregation과 worker에서 사용될 때,
+When rule contract를 조회하면,
+Then rule ID/version, action, window, threshold, severity, count mode와 policy-reason grouping은 하나의 server-owned registry에서 제공되어야 한다.
+
+Given 관리자가 organization과 기간을 지정해 rule replay를 실행할 때,
+When 저장된 audit를 평가하면,
+Then lookback window를 포함해 실제 evaluator와 같은 결과를 계산하고 지정 기간의 rule별 발화 횟수만 safe aggregate로 반환해야 한다.
+
+Lookback 구간 또는 지정 평가 구간의 audit가 설정된 limit을 초과하면 불완전한 집계를 성공으로 반환하지 않고 safe reason code로 실패해야 한다.
+
+그리고 replay는 Alert, evidence, lifecycle audit, notification과 watermark를 생성·변경하지 않아야 하며 raw audit payload, target, actor 정보를 출력하지 않아야 한다.
+
 ## Detailed Test Matrix
 
 ### Test Environment And Concurrency Rules
@@ -316,6 +338,10 @@ Scope 밖 404, validation 실패, desired-state no-op에는 target-aware audit�
 | SAL-TC-U018 | AC-20 | open/acknowledged/resolved 혼합 목록 | summary count/recent item은 open만 포함 |
 | SAL-TC-U019 | AC-27 | safe projection 입력에 raw metadata와 synthetic secret marker 포함 | allowlist 밖 field와 marker 제거 |
 | SAL-TC-U020 | AC-29 | event time과 UI-visible time 비교 helper | 60초 이하/초과 판정이 timezone과 무관하게 결정적 |
+| SAL-TC-U021 | AC-32 | v1 rule registry 조회 | 세 규칙의 version/window/threshold/severity/count mode/grouping과 최대 window가 단일 계약과 일치 |
+| SAL-TC-U022 | AC-32 | threshold 직전/도달 audit sequence replay | 지정 기간 event만 평가하되 lookback을 사용하고 rule별 발화 횟수 집계 정확 |
+| SAL-TC-U023 | AC-32 | replay 전후 입력 audit와 safe output 비교 | 입력 불변, DB mutation 경로 없음, 출력에 aggregate count 외 raw event/target/actor 없음 |
+| SAL-TC-U024 | AC-32 | lookback 또는 지정 평가 구간의 audit 수가 각각 replay limit을 초과 | evaluator를 실행하거나 부분 count를 반환하지 않고 `security_alert.replay_limit_exceeded`로 실패, raw event 정보 미노출 |
 
 ### Audit Producer Contract Tests
 
@@ -377,6 +403,9 @@ Scope 밖 404, validation 실패, desired-state no-op에는 target-aware audit�
 | SAL-TC-S032 | AC-12, AC-15 | Resolution reason 정규화·redaction 성공과 sanitizer/audit insert 실패 주입 | 성공 시 sanitized non-blank reason만 저장, 실패 시 status/version/reason/canonical audit 전체 rollback |
 | SAL-TC-S033 | AC-12, AC-18 | Alert row가 있는 `a06b7c8d9e10` DB를 `a17c8d9e0f21`로 upgrade한 뒤 index revision만 downgrade | Upgrade는 filter index 4개를 생성하고 기존 alert/evidence를 보존하며 downgrade는 해당 index만 제거하고 table/data를 유지 |
 | SAL-TC-S034 | AC-25 | Watermark cursor 두 필드를 하나만 저장하거나 activation/cursor를 재시작 뒤 다시 조회 | 불완전 cursor는 DB check로 거부하고 완전 cursor와 활성화 시각은 PostgreSQL에 durable하게 보존 |
+| SAL-TC-S035 | AC-10 | cooldown이 끝난 활성 alert에 새 audit 1건만 발생 | alert/evidence/episode count와 notification refresh 불변 |
+| SAL-TC-S036 | AC-10 | cooldown이 끝난 open/acknowledged alert가 새 audit만으로 threshold 재충족 | 기존 status 유지, evidence/occurrence 연결, episode count 1 증가, episode 시작 시각 갱신, notification refresh 대상으로 반환 |
+| SAL-TC-S037 | AC-10 | 현재 `last_detected_at`보다 30분 이상 오래된 audit 묶음이 지연 도착해 threshold 충족 | evidence/occurrence만 idempotent하게 연결하고 `last_detected_at`, episode count와 episode 시작 시각은 과거로 이동하지 않음 |
 
 ### API Tests
 
@@ -411,7 +440,7 @@ Scope 밖 404, validation 실패, desired-state no-op에는 target-aware audit�
 | SAL-TC-W004 | AC-01 | budget, auth, invalid organization, hidden/unsafe event | alert와 evidence 없음 |
 | SAL-TC-W005 | AC-09 | task 성공 응답 유실로 Celery가 동일 audit 재전달 | count/evidence/detected audit 중복 없음 |
 | SAL-TC-W006 | AC-09 | task가 evidence commit 전 실패 | retry가 transaction을 복구하고 정확히 한 번 반영 |
-| SAL-TC-W007 | AC-09 | task가 commit 후 notification publish 전에 실패 | retry 시 alert 중복 없이 notification 재시도 가능 |
+| SAL-TC-W007 | AC-09 | Alert+Outbox commit 후 notification task dispatch 전에 실패 | 30초 recovery schedule이 pending Outbox를 찾아 alert 중복 없이 전달 재시도 |
 | SAL-TC-W008 | AC-10 | cooldown 안 occurrence 연속 처리 | 활성 alert 한 건과 정확한 count/last time |
 | SAL-TC-W009 | AC-10 | event가 occurred_at 역순으로 도착 | window와 last time이 event time 계약에 맞고 count 유실 없음 |
 | SAL-TC-W010 | AC-25 | 실시간 publish가 누락된 audit를 reconciliation이 스캔 | 누락 event 복구 |
@@ -422,11 +451,12 @@ Scope 밖 404, validation 실패, desired-state no-op에는 target-aware audit�
 | SAL-TC-W015 | AC-10 | 서로 다른 worker가 같은 detection key의 서로 다른 threshold event를 동시에 처리 | active unique 보장, count 유실 없음, 안전한 retry |
 | SAL-TC-W016 | AC-07 | 여러 organization/actor queue event가 interleave | key별 독립 결과 |
 | SAL-TC-W017 | AC-11 | resolve commit 직전/직후 event를 각각 처리 | event 귀속이 commit 순서와 fresh threshold 계약에 일치 |
-| SAL-TC-W018 | AC-26 | Redis/SSE publish adapter 또는 수신자 조회 실패 | alert commit 유지, durable retry scheduling 또는 동등한 복구 기록, raw payload·raw exception log 없음 |
+| SAL-TC-W018 | AC-26 | Redis publish adapter/현재 manager 수신자 조회 실패 또는 전달 중 worker hard timeout | 전달 전에 lease와 attempt가 commit되고, alert commit 유지, lease 만료 복구 또는 60초 retry scheduling, 5번째 실패 dead-letter, raw payload·수신자 목록·raw exception 저장 없음 |
 | SAL-TC-W019 | AC-27 | worker exception에 synthetic secret marker 포함 | durable log/metric에 marker와 raw exception 없음 |
 | SAL-TC-W020 | AC-29 | threshold event부터 notification publish까지 측정 | 정상 경로 60초 이내 |
 | SAL-TC-W021 | AC-24 | Threshold 전 cooldown candidate의 aggregation 결과가 `None` | Alert 변경은 없고 commit 후 `notifications.changed` 발행도 없음 |
 | SAL-TC-W022 | AC-16, AC-24 | Active manager membership과 membership 없는 `created_by`/`managed_by`, suspended/deactivated owner 혼합 | 현재 manager 권한 사용자만 중복 없이 수신자에 포함 |
+| SAL-TC-W023 | AC-09, AC-26 | 실시간 task와 reconciliation이 같은 organization/idempotency key의 Outbox를 독립 PostgreSQL transaction에서 동시에 enqueue | Outbox 한 건을 공유하고 unique 충돌이 alert/evidence 바깥 transaction을 rollback하지 않음 |
 
 ### Component Tests
 
@@ -454,6 +484,8 @@ Scope 밖 404, validation 실패, desired-state no-op에는 target-aware audit�
 | SAL-TC-C020 | AC-19, AC-30 | Security Alert evidence의 `상세 보기` 선택 | 기존 Audit detail API 호출, Alert drawer보다 높은 layer에 상세 표시, close 후 row focus 복원 |
 | SAL-TC-C021 | AC-19, AC-27 | 연결된 감사 기록과 Audit detail 표시 | safe 권한 거부 정보가 있으면 시도한 작업·필요 권한·거부 사유를 사용자 문장과 라벨로 표시하고 canonical action과 safe ID는 보조 정보로 유지, raw metadata 미노출 |
 | SAL-TC-C022 | AC-16 | 열린 detail에서 acknowledge, reopen, resolve가 각각 403 | cached detail과 해결 dialog 제거, drawer close callback으로 `alertId` URL 제거, action button 미노출 |
+| SAL-TC-C023 | AC-24 | occurrence 증가 notification으로 같은 scope의 list/detail/evidence background refresh가 지연되거나 재시도 가능한 오류로 실패 | 기존 table/detail/evidence와 발생 횟수를 유지하고 initial loading/error 전용 화면으로 교체하지 않으며 성공 응답만 한 번에 반영 |
+| SAL-TC-C024 | AC-14 | mutation 409 뒤 최신 detail 재조회가 재시도 가능한 오류로 실패 | stale detail과 mutation action 제거, safe detail 오류 표시, 이전 version으로 추가 mutation 불가 |
 
 ### End-To-End Tests
 
@@ -486,5 +518,6 @@ Scope 밖 404, validation 실패, desired-state no-op에는 target-aware audit�
 | Lifecycle optimistic concurrency | SAL-TC-S010, SAL-TC-A018, SAL-TC-E009 | 동시 상태 변경 중 하나만 성공 |
 | Resolve/event race | SAL-TC-S015, SAL-TC-W017 | event가 기존 alert와 새 threshold에 중복 귀속되지 않음 |
 | Reconciliation overlap | SAL-TC-W011, SAL-TC-W012 | cursor 경계 누락과 중복 없음 |
+| Outbox idempotency | SAL-TC-W023 | 동시 enqueue가 한 row로 수렴하고 alert/evidence transaction을 보존 |
 
 PostgreSQL concurrency gate를 실행하지 못한 경우 PR에서 미실행 이유와 남은 위험을 명시해야 하며, SQLite 결과만으로 위 gate를 통과 처리하면 안 된다.

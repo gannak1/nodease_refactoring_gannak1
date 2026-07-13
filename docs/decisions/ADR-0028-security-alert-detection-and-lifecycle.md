@@ -97,6 +97,8 @@ Legacy `pii_policy_blocked`는 읽기와 reconciliation 단계에서 `rag.pii_ev
 
 초기 규칙은 서버가 소유하는 고정 `v1` 계약이다. Organization별 rule 편집 UI는 만들지 않는다.
 
+세 규칙의 ID/version, action, window, threshold, severity, count mode와 policy-reason grouping은 하나의 server-owned rule registry가 소유한다. Evaluator, alert aggregation과 worker 조회 window는 이 registry를 공유하며 같은 값을 별도 상수로 중복 정의하지 않는다.
+
 | Rule ID | Detection key | Window and threshold | Severity |
 | --- | --- | --- | --- |
 | `repeated_permission_denied` | organization + actor + rule + version | 5분 안에 `permission.denied` 5회 | `medium` |
@@ -104,6 +106,8 @@ Legacy `pii_policy_blocked`는 읽기와 reconciliation 단계에서 `rag.pii_ev
 | `repeated_policy_block` | organization + actor + rule + version + policy reason | 10분 안에 같은 `policy_reason`의 `policy.block` 3회 | `high` |
 
 다른 organization, actor, rule version, policy reason은 합산하지 않는다. 동일 audit은 여러 규칙의 조건을 각각 만족할 수 있지만 같은 규칙에서 두 번 계산하지 않는다.
+
+운영 반영 전 검증은 같은 evaluator를 사용하는 read-only replay로 수행할 수 있다. Replay는 지정 기간 이전의 최대 rule window만 lookback으로 읽고 지정 기간 event의 rule별 발화 횟수를 safe aggregate로 반환한다. Lookback 구간과 지정 평가 구간은 각각 bounded query로 완전하게 읽어야 하며, 어느 구간이든 limit을 초과하면 불완전한 집계를 반환하지 않고 safe reason code로 실패한다. Alert, evidence, lifecycle audit, notification과 reconciliation watermark는 변경하지 않으며 raw audit payload, target과 actor를 출력하지 않는다.
 
 Distinct target은 `(target_type, target_id)` 조합이다. Target이 없거나 scope 안전성이 확인되지 않으면 `multi_resource_permission_probe`에서 제외한다.
 
@@ -121,6 +125,8 @@ Distinct target은 `(target_type, target_id)` 조합이다. Target이 없거나 
 - 같은 detection key에는 활성 alert가 최대 하나다.
 - 마지막 탐지 시각부터 30분의 sliding cooldown을 적용한다.
 - Cooldown 중 같은 detection key의 사건은 새 alert를 만들지 않고 기존 alert의 occurrence count와 `last_detected_at`을 갱신하며 evidence를 연결한다.
+- Cooldown 종료 뒤 새 audit만으로 같은 rule threshold를 다시 충족하면 기존 활성 alert에 새 episode를 시작한다. 새 evidence를 연결한 transaction에서 `episode_count`를 한 번 증가시키고 `last_episode_started_at`을 threshold event time으로 갱신하며 commit 뒤 notification refresh를 다시 발생시킨다.
+- `last_episode_started_at`은 notification 전달 성공 시각이 아니다. Notification publish 실패와 durable retry는 별도 delivery 경계가 소유한다.
 - Cooldown 중 occurrence 갱신은 별도 audit action을 만들지 않는다.
 - `resolved` alert에는 새 evidence를 연결하지 않는다.
 - Resolve 이후 발생한 새 audit만으로 threshold를 다시 충족하면 새 alert를 생성한다.
@@ -164,7 +170,7 @@ Sidebar badge는 `open` alert만 센다. `acknowledged`와 `resolved`는 badge�
 - 상태 변경 성공은 `status='success'`
 - metadata에는 organization ID, rule ID/version, severity, sanitized resolution type/reason만 허용한다.
 
-Alert 최초 생성, 최초 evidence 연결, `security_alert.detected` audit은 같은 DB transaction에 기록한다. Commit 이후 notification 갱신 신호를 발행한다. Notification 발행 실패는 alert transaction을 rollback하지 않고 별도로 재시도한다.
+Alert 최초 생성, 최초 evidence 연결, `security_alert.detected` audit과 notification Outbox는 같은 DB transaction에 기록한다. Commit 이후 worker가 현재 manager 대상 notification 갱신 신호를 발행한다. Redis 발행이나 수신자 조회 실패는 alert transaction을 rollback하지 않고 최대 5회 재시도한 뒤 dead-letter 처리한다.
 
 Lifecycle mutation은 현재 status와 `expected_version`을 조건으로 한 DB 원자적 변경에서 정확히 한 요청만 성공해야 한다. 성공 mutation과 canonical lifecycle audit은 같은 transaction에 기록하며 audit persistence 실패 시 mutation도 rollback한다.
 

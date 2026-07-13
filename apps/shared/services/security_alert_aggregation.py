@@ -17,13 +17,11 @@ from apps.shared.services.security_alert_evidence import (
 from apps.shared.services.security_alert_rule_evaluator import (
     build_security_alert_detection_key,
 )
+from apps.shared.services.security_alert_rule_registry import (
+    get_security_alert_rule,
+)
 from sqlalchemy.exc import IntegrityError
 
-_RULE_THRESHOLDS = {
-    "repeated_permission_denied": 5,
-    "multi_resource_permission_probe": 5,
-    "repeated_policy_block": 3,
-}
 _SECURITY_ALERT_COOLDOWN = timedelta(minutes=30)
 
 
@@ -32,7 +30,9 @@ def is_security_alert_cooldown_active(
     last_detected_at: datetime,
     event_at: datetime,
 ) -> bool:
-    return abs(event_at - last_detected_at) < _SECURITY_ALERT_COOLDOWN
+    # Delayed/reconciled events may be older than the alert's latest event.
+    # They can add evidence, but must never open a new episode in the past.
+    return event_at < last_detected_at + _SECURITY_ALERT_COOLDOWN
 
 
 def aggregate_security_alert_detection(
@@ -48,9 +48,18 @@ def aggregate_security_alert_detection(
     try:
         active_alert = _find_active_alert(db, detection_key=detection_key)
         if active_alert is not None:
-            return _update_active_alert_during_cooldown(
+            updated_alert = _update_active_alert_during_cooldown(
                 db,
                 alert=active_alert,
+                audit_logs=matched_audits,
+                detected_at=detected_at,
+            )
+            if updated_alert is not None:
+                return updated_alert
+            return _start_new_episode_after_cooldown(
+                db,
+                alert=active_alert,
+                rule_id=candidate.rule_id,
                 audit_logs=matched_audits,
                 detected_at=detected_at,
             )
@@ -100,6 +109,23 @@ def _update_active_alert_during_cooldown(
     ):
         return None
     _link_evidence(db, alert=alert, audit_logs=audit_logs)
+    return alert
+
+
+def _start_new_episode_after_cooldown(
+    db: Any,
+    *,
+    alert: Any,
+    rule_id: str,
+    audit_logs: Sequence[Any],
+    detected_at: datetime,
+) -> Any | None:
+    if not _meets_rule_threshold(rule_id, audit_logs):
+        return None
+    if _link_evidence(db, alert=alert, audit_logs=audit_logs) == 0:
+        return None
+    alert.episode_count += 1
+    alert.last_episode_started_at = detected_at
     return alert
 
 
@@ -211,8 +237,10 @@ def _build_alert(
         policy_reason=candidate.policy_reason,
         detection_key=detection_key,
         occurrence_count=0,
+        episode_count=1,
         first_detected_at=detected_at,
         last_detected_at=detected_at,
+        last_episode_started_at=detected_at,
         lifecycle_version=1,
     )
 
@@ -262,19 +290,20 @@ def _unique_audits_after_resolution(
 
 
 def _meets_rule_threshold(rule_id: str, audit_logs: Sequence[Any]) -> bool:
-    threshold = _RULE_THRESHOLDS.get(rule_id)
-    if threshold is None:
+    rule = get_security_alert_rule(rule_id)
+    if rule is None:
         return False
-    if rule_id == "multi_resource_permission_probe":
+    if rule.count_mode == "distinct_targets":
         distinct_targets = {
             (audit_log.target_type, audit_log.target_id)
             for audit_log in audit_logs
         }
-        return len(distinct_targets) >= threshold
-    return len(audit_logs) >= threshold
+        return len(distinct_targets) >= rule.threshold
+    return len(audit_logs) >= rule.threshold
 
 
-def _link_evidence(db: Any, *, alert: Any, audit_logs: Sequence[Any]) -> None:
+def _link_evidence(db: Any, *, alert: Any, audit_logs: Sequence[Any]) -> int:
+    linked_count = 0
     for audit_log in audit_logs:
         linked = link_security_alert_evidence(
             db,
@@ -283,7 +312,9 @@ def _link_evidence(db: Any, *, alert: Any, audit_logs: Sequence[Any]) -> None:
             detected_at=audit_log.occurred_at,
         )
         if linked:
+            linked_count += 1
             _flush(db)
+    return linked_count
 
 
 def _build_detected_audit(*, alert: Any, occurred_at: datetime) -> AuditLog:

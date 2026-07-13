@@ -76,6 +76,7 @@ from apps.shared.db.models.schedule_dispatch import ScheduleDispatchClaim
 from apps.shared.db.models.security_alert import (
     SecurityAlert,
     SecurityAlertAuditEvent,
+    SecurityAlertNotificationOutbox,
     SecurityAlertReconciliationWatermark,
 )
 from apps.shared.db.models.team import (
@@ -157,6 +158,7 @@ __all__ = [
     "ScheduleDispatchClaim",
     "SecurityAlert",
     "SecurityAlertAuditEvent",
+    "SecurityAlertNotificationOutbox",
     "SecurityAlertReconciliationWatermark",
     "Organization",
     "OrganizationMembership",

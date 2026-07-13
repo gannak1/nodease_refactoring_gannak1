@@ -83,6 +83,8 @@ export function SecurityAlertDetailDrawer({
   const auditTriggerRef = useRef<HTMLElement | null>(null);
   const detailSequenceRef = useRef(0);
   const evidenceSequenceRef = useRef(0);
+  const loadedDetailAlertIdRef = useRef<string | null>(null);
+  const loadedEvidenceScopeRef = useRef<string | null>(null);
   const onNotFoundRef = useRef(onNotFound);
   const [detail, setDetail] = useState<SecurityAlertDetail | null>(null);
   const [detailError, setDetailError] = useState<'forbidden' | 'unknown' | null>(
@@ -105,19 +107,38 @@ export function SecurityAlertDetailDrawer({
     onNotFoundRef.current = onNotFound;
   }, [onNotFound]);
 
-  const loadDetail = useCallback(async () => {
+  const loadDetail = useCallback(async (mode: 'background' | 'authoritative') => {
     const sequence = ++detailSequenceRef.current;
-    setDetail(null);
+    const canPreserveCurrentDetail =
+      mode === 'background' &&
+      loadedDetailAlertIdRef.current === alertId;
+    if (!canPreserveCurrentDetail) {
+      loadedDetailAlertIdRef.current = null;
+      setDetail(null);
+    }
     setDetailError(null);
     try {
       const data = await adminApi.getSecurityAlertDetail(alertId);
       if (sequence !== detailSequenceRef.current) return null;
       setDetail(data);
+      loadedDetailAlertIdRef.current = alertId;
       return data;
     } catch (loadError) {
       if (sequence !== detailSequenceRef.current) return null;
       if (isAxiosError(loadError) && loadError.response?.status === 404) {
+        loadedDetailAlertIdRef.current = null;
+        setDetail(null);
         onNotFoundRef.current();
+        return null;
+      }
+      if (isAxiosError(loadError) && loadError.response?.status === 403) {
+        loadedDetailAlertIdRef.current = null;
+        setDetail(null);
+      }
+      if (
+        canPreserveCurrentDetail &&
+        !(isAxiosError(loadError) && loadError.response?.status === 403)
+      ) {
         return null;
       }
       setDetailError(
@@ -130,7 +151,7 @@ export function SecurityAlertDetailDrawer({
   }, [alertId]);
 
   useEffect(() => {
-    loadDetail();
+    loadDetail('background');
     return () => {
       detailSequenceRef.current += 1;
     };
@@ -143,13 +164,19 @@ export function SecurityAlertDetailDrawer({
   const loadEvidence = useCallback(async () => {
     const sequence = ++evidenceSequenceRef.current;
     const requestContext = evidenceRequestContext;
+    const evidenceScope = `${alertId}:${evidencePage}`;
+    const canPreserveCurrentEvidence =
+      loadedEvidenceScopeRef.current === evidenceScope;
     const isCurrentRequest = () =>
       sequence === evidenceSequenceRef.current &&
       requestContext === currentEvidenceRequestContextRef.current;
-    setEvidenceLoading(true);
+    if (!canPreserveCurrentEvidence) {
+      loadedEvidenceScopeRef.current = null;
+      setEvidenceLoading(true);
+      setEvidence([]);
+      setEvidenceTotal(0);
+    }
     setEvidenceError(false);
-    setEvidence([]);
-    setEvidenceTotal(0);
     try {
       const data = await adminApi.listSecurityAlertAuditLogs(alertId, {
         page: evidencePage,
@@ -158,8 +185,11 @@ export function SecurityAlertDetailDrawer({
       if (!isCurrentRequest()) return;
       setEvidence(data.items);
       setEvidenceTotal(data.total);
+      loadedEvidenceScopeRef.current = evidenceScope;
     } catch {
-      if (isCurrentRequest()) setEvidenceError(true);
+      if (isCurrentRequest() && !canPreserveCurrentEvidence) {
+        setEvidenceError(true);
+      }
     } finally {
       if (isCurrentRequest()) setEvidenceLoading(false);
     }
@@ -239,6 +269,7 @@ export function SecurityAlertDetailDrawer({
         isAxiosError(mutationError) &&
         mutationError.response?.status === 403
       ) {
+        loadedDetailAlertIdRef.current = null;
         setDetail(null);
         setMutationFeedback(null);
         setResolveOpen(false);
@@ -249,10 +280,14 @@ export function SecurityAlertDetailDrawer({
         isAxiosError(mutationError) &&
         mutationError.response?.status === 409
       ) {
-        const latest = await loadDetail();
-        if (latest) onChanged?.(latest);
-        setMutationFeedback('다른 관리자가 상태를 변경했습니다.');
-        return true;
+        const latest = await loadDetail('authoritative');
+        if (latest) {
+          onChanged?.(latest);
+          setMutationFeedback('다른 관리자가 상태를 변경했습니다.');
+          return true;
+        }
+        setMutationFeedback(null);
+        return false;
       }
       setMutationFeedback('상태 변경에 실패했습니다. 다시 시도해 주세요.');
       return false;

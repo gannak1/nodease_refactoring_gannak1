@@ -43,6 +43,7 @@ ROOT_DIR = Path(__file__).resolve().parents[4]
 RUN_ENV = "NODEASE_RUN_DISPOSABLE_DB_TEST"
 DB_PREFIX = "mbased_external_effect"
 EXTERNAL_EFFECT_REVISION = "fe3f4a5b6c78"
+EXTERNAL_EFFECT_MIGRATION_PARENT_REVISION = "b39e0f1a2b43"
 
 
 def _alembic_python() -> str:
@@ -692,8 +693,12 @@ def test_external_effect_revision_downgrades_after_attempts_are_removed():
             extension_engine.dispose()
 
         _run_alembic(database, config, "upgrade", EXTERNAL_EFFECT_REVISION)
-        _run_alembic(database, config, "downgrade", "-1")
-
+        _run_alembic(
+            database,
+            config,
+            "downgrade",
+            EXTERNAL_EFFECT_MIGRATION_PARENT_REVISION,
+        )
         downgraded_engine = create_engine(config.database_url(database))
         try:
             with downgraded_engine.connect() as connection:

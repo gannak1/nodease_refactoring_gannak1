@@ -16,7 +16,7 @@ vi.mock('../api/adminApi', () => ({
 import { adminApi } from '../api/adminApi';
 import { SecurityAlertDetailDrawer } from './SecurityAlertDetailDrawer';
 import type { OrganizationMember } from '../../organization/types/Organization';
-import type { SecurityAlertAuditLogListResponse } from '../types/SecurityAlert';
+import type { SecurityAlertAuditLogItem, SecurityAlertAuditLogListResponse } from '../types/SecurityAlert';
 
 const mockedDetail = vi.mocked(adminApi.getSecurityAlertDetail);
 const mockedEvidence = vi.mocked(adminApi.listSecurityAlertAuditLogs);
@@ -86,7 +86,7 @@ const evidence = {
   required_permission: 'security_alert.manage',
   requested_operation: 'security_alert.list',
   denial_reason: 'organization_manager_required',
-};
+} satisfies SecurityAlertAuditLogItem;
 
 const notFoundError = () => {
   const error = new AxiosError('raw server detail');
@@ -103,6 +103,12 @@ const conflictError = () => {
 const forbiddenError = () => {
   const error = new AxiosError('raw forbidden');
   error.response = { status: 403 } as AxiosResponse;
+  return error;
+};
+
+const retryableError = () => {
+  const error = new AxiosError('raw server detail');
+  error.response = { status: 500 } as AxiosResponse;
   return error;
 };
 
@@ -248,6 +254,98 @@ describe('SecurityAlertDetailDrawer', () => {
       page: 2,
       limit: 20,
     });
+  });
+
+  it('refresh token background refresh 중 기존 상세와 evidence를 유지한다', async () => {
+    const detailRefreshRequest = deferred<typeof detail>();
+    const evidenceRefreshRequest = deferred<SecurityAlertAuditLogListResponse>();
+    mockedDetail
+      .mockResolvedValueOnce(detail)
+      .mockReturnValueOnce(detailRefreshRequest.promise);
+    mockedEvidence
+      .mockResolvedValueOnce({ total: 1, items: [evidence] })
+      .mockReturnValueOnce(evidenceRefreshRequest.promise);
+
+    const { rerender } = render(
+      <SecurityAlertDetailDrawer
+        alertId={detail.id}
+        members={members}
+        onClose={vi.fn()}
+        onNotFound={vi.fn()}
+        refreshToken={0}
+      />,
+    );
+    expect(await screen.findByText('반복된 정책 차단')).toBeInTheDocument();
+    expect(await screen.findByText('permission.denied')).toBeInTheDocument();
+
+    rerender(
+      <SecurityAlertDetailDrawer
+        alertId={detail.id}
+        members={members}
+        onClose={vi.fn()}
+        onNotFound={vi.fn()}
+        refreshToken={1}
+      />,
+    );
+    await waitFor(() => expect(mockedDetail).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mockedEvidence).toHaveBeenCalledTimes(2));
+
+    expect(screen.getByText('반복된 정책 차단')).toBeInTheDocument();
+    expect(screen.getByText('permission.denied')).toBeInTheDocument();
+    expect(
+      screen.queryByText('보안 알림 상세를 불러오는 중...'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('연결된 감사 기록을 불러오는 중...'),
+    ).not.toBeInTheDocument();
+
+    detailRefreshRequest.resolve({ ...detail, occurrence_count: 4 });
+    evidenceRefreshRequest.resolve({ total: 1, items: [evidence] });
+    expect(await screen.findByText('4')).toBeInTheDocument();
+  });
+
+  it('refresh token background refresh 실패 후에도 기존 상세와 evidence를 유지한다', async () => {
+    mockedDetail
+      .mockResolvedValueOnce(detail)
+      .mockRejectedValueOnce(new Error('temporary detail failure'));
+    mockedEvidence
+      .mockResolvedValueOnce({ total: 1, items: [evidence] })
+      .mockRejectedValueOnce(new Error('temporary evidence failure'));
+
+    const { rerender } = render(
+      <SecurityAlertDetailDrawer
+        alertId={detail.id}
+        members={members}
+        onClose={vi.fn()}
+        onNotFound={vi.fn()}
+        refreshToken={0}
+      />,
+    );
+    expect(await screen.findByText('반복된 정책 차단')).toBeInTheDocument();
+    expect(await screen.findByText('permission.denied')).toBeInTheDocument();
+
+    rerender(
+      <SecurityAlertDetailDrawer
+        alertId={detail.id}
+        members={members}
+        onClose={vi.fn()}
+        onNotFound={vi.fn()}
+        refreshToken={1}
+      />,
+    );
+
+    await waitFor(() => expect(mockedDetail).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mockedEvidence).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(
+        screen.queryByText('보안 알림 상세를 불러오지 못했습니다.'),
+      ).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByText('연결된 감사 기록을 불러오지 못했습니다.'),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText('반복된 정책 차단')).toBeInTheDocument();
+    expect(screen.getByText('permission.denied')).toBeInTheDocument();
   });
 
   it('alert 전환 전에 시작한 늦은 evidence 응답은 현재 alert를 덮어쓰지 않는다', async () => {
@@ -521,6 +619,38 @@ describe('SecurityAlertDetailDrawer', () => {
     expect(await screen.findByText('확인됨')).toBeInTheDocument();
     expect(mockedDetail).toHaveBeenCalledTimes(2);
     expect(screen.queryByText('raw conflict')).not.toBeInTheDocument();
+  });
+
+  it('409 이후 최신 상세 재조회가 실패하면 stale 상세와 작업 버튼을 제거한다', async () => {
+    mockedDetail
+      .mockResolvedValueOnce(openDetail)
+      .mockRejectedValueOnce(retryableError());
+    mockedEvidence.mockResolvedValue({ total: 0, items: [] });
+    mockedAcknowledge.mockRejectedValue(conflictError());
+
+    render(
+      <SecurityAlertDetailDrawer
+        alertId={detail.id}
+        members={members}
+        onClose={vi.fn()}
+        onNotFound={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: '확인' }));
+
+    expect(
+      await screen.findByText('보안 알림 상세를 불러오지 못했습니다.'),
+    ).toBeInTheDocument();
+    expect(mockedDetail).toHaveBeenCalledTimes(2);
+    expect(
+      screen.queryByRole('button', { name: '확인' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('다른 관리자가 상태를 변경했습니다.'),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText('raw conflict')).not.toBeInTheDocument();
+    expect(screen.queryByText('raw server detail')).not.toBeInTheDocument();
   });
 
   it('확인 요청이 403이면 cached detail과 drawer URL을 닫는다', async () => {

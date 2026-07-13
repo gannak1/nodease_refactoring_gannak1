@@ -408,10 +408,10 @@ Error response는 가능한 경우 다음 safe shape을 사용한다.
 
 ## Notification Boundary
 
-- Alert 생성, 활성 alert occurrence 갱신, acknowledge, resolve, reopen commit 이후 `notifications.changed`를 권한 있는 현재 organization manager 대상 channel에 발행한다.
-- 수신자는 active membership, manager 권한, 활성 사용자 조건을 모두 만족하는 현재 organization 사용자로 매번 계산한다.
+- Alert 생성, 활성 alert occurrence/episode 갱신, acknowledge, resolve, reopen은 같은 DB transaction에 `notifications.changed` Outbox row를 기록한다. Commit 이후 `security_alert.notification_outbox.deliver` task를 깨우고, 30초 recovery schedule이 유실된 dispatch를 보완한다.
+- Worker는 처리 시점마다 active membership, manager 권한, 활성 사용자 조건을 만족하는 현재 organization 사용자를 계산해 Redis channel에 발행한다.
 - Redis message는 event type만 포함하며, SSE는 `event: notifications.changed`와 빈 `data: {}`만 전달한다. Alert ID, detail, evidence, organization ID, raw metadata는 payload에 넣지 않는다.
 - Client는 event payload를 상태로 사용하지 않고 invitation과 Security Alert summary를 각각 재조회한다. 열려 있는 Security Alert 목록/detail은 현재 filter와 page를 유지한 채 다시 조회한다.
-- Publish 또는 수신자 조회 실패는 이미 commit된 Alert/lifecycle mutation을 rollback하지 않는다. 로그에는 raw exception이나 alert payload 대신 안전한 오류 유형만 기록한다.
+- Publish 또는 수신자 조회 실패는 이미 commit된 Alert/lifecycle mutation을 rollback하지 않는다. 60초 뒤 재시도하고 최대 5번째 실패에서 dead-letter 처리한다. Outbox에는 organization, event type, idempotency key, 상태·시도·lease·안전한 reason만 저장하며 수신자 목록과 알림 payload를 저장하지 않는다.
 - Reconnect와 missed event 복구는 영속 summary/list/detail 조회가 담당한다. Reconnect 자체는 사용자 toast를 만들지 않는다.
-- 현재 구현에는 publish 실패를 durable queue에 저장해 다시 보내는 별도 retry adapter가 없다. SAL-REQ-042 완료를 위해 후속 구현과 검증이 필요하다.
+- 전달 보장은 at-least-once다. 중복 `notifications.changed`는 client가 영속 API를 다시 조회하는 무상태 invalidation 신호이므로 같은 Alert 변경을 중복 적용하지 않는다.

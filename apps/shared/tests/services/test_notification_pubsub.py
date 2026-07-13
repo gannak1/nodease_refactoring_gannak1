@@ -140,3 +140,19 @@ def test_manager_recipient_lookup_failure_is_isolated(monkeypatch):
     )
 
     assert published == []
+
+
+def test_durable_manager_notification_delivery_propagates_failure(monkeypatch):
+    class Db:
+        def query(self, *args):
+            raise RuntimeError("database unavailable")
+
+    try:
+        module.deliver_notifications_changed_to_organization_managers(
+            Db(),
+            uuid4(),
+        )
+    except RuntimeError as error:
+        assert str(error) == "database unavailable"
+    else:
+        raise AssertionError("durable delivery must expose failures for retry")

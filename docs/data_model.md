@@ -13,7 +13,7 @@ Status: Draft
 
 ## 도메인별 테이블
 
-현재 코드 기준 활성 테이블은 Security Alert 3개와 `workflow_node_effect_attempts`를 포함해 41개다. `legacy_llm_provider`, `legacy_llm_credentials`는 migration `e4956fcd7e2b`에서 DROP됐고 모델도 주석 처리돼 있다.
+현재 코드 기준 활성 테이블은 Security Alert 4개와 `workflow_node_effect_attempts`를 포함해 42개다. `legacy_llm_provider`, `legacy_llm_credentials`는 migration `e4956fcd7e2b`에서 DROP됐고 모델도 주석 처리돼 있다.
 
 | 도메인 | 테이블 |
 | --- | --- |
@@ -21,7 +21,7 @@ Status: Draft
 | 권한 | `team_workflow_permissions`, `team_knowledge_permissions`, `team_llm_permissions`, `team_mail_credential_permissions`, `team_audit_permissions`, `user_workflow_permissions`, `user_knowledge_permissions`, `user_llm_permissions`, `user_mail_credential_permissions` |
 | 앱/워크플로우 | `apps`, `workflows`, `workflow_budgets`, `workflow_deployments`, `schedules`, `workflow_runs`, `workflow_node_runs`, `workflow_node_effect_attempts` |
 | 추적/감사 | `trace_payloads`, `trace_payload_access_events`, `trace_redaction_policies`, `trace_retention_policies`, `trace_visibility_policies`, `audit_logs` |
-| 보안 알림 | `security_alerts`, `security_alert_audit_events`, `security_alert_reconciliation_watermarks` |
+| 보안 알림 | `security_alerts`, `security_alert_audit_events`, `security_alert_reconciliation_watermarks`, `security_alert_notification_outbox` |
 | Knowledge/RAG | `knowledge_bases`, `documents`, `document_chunks`, `rag_answer_runs` |
 | LLM | `llm_providers`, `llm_models`, `llm_credentials`, `llm_rel_credential_models`, `llm_usage_logs` |
 | 외부 연동 | `connections`, `mail_credentials` |
@@ -79,6 +79,7 @@ erDiagram
   users ||--o{ audit_logs : acts
   users ||--o{ connections : owns
   organization ||--o{ security_alerts : scopes
+  organization ||--o{ security_alert_notification_outbox : scopes
   security_alerts ||--o{ security_alert_audit_events : has_evidence
   audit_logs ||--o{ security_alert_audit_events : supports
 ```
@@ -625,7 +626,7 @@ Security Alert 탐지 대상 audit는 추가로 다음 application contract를 �
 
 #### `security_alerts`
 
-규칙 threshold를 충족한 위험 신호와 관리자 대응 lifecycle을 보존한다. 테이블과 기본 제약은 migration `a06b7c8d9e10`, 관리자 조회 인덱스는 additive migration `a17c8d9e0f21`에서 생성한다.
+규칙 threshold를 충족한 위험 신호와 관리자 대응 lifecycle을 보존한다. 테이블과 기본 제약은 migration `a06b7c8d9e10`, 관리자 조회 인덱스는 additive migration `a17c8d9e0f21`, episode 필드는 additive migration `fe4a5b6c7d89`에서 생성한다.
 
 | 컬럼 | 타입 | 제약/의미 |
 | --- | --- | --- |
@@ -638,7 +639,9 @@ Security Alert 탐지 대상 audit는 추가로 다음 application contract를 �
 | policy_reason | VARCHAR | NULL — repeated policy block만 canonical allowlist 값 |
 | detection_key | VARCHAR | NOT NULL — organization/actor/rule/version/reason에서 만든 내부 key, API 비노출 |
 | occurrence_count | INTEGER | NOT NULL, 0 이상 |
+| episode_count | INTEGER | NOT NULL, 1 이상 — 최초 alert는 1, cooldown 종료 후 threshold 재충족마다 1 증가 |
 | first_detected_at / last_detected_at | DATETIME | NOT NULL, UTC event-time 기준 |
+| last_episode_started_at | DATETIME | NOT NULL — 최초에는 `first_detected_at`, 이후 episode의 threshold event time. notification 전달 성공 시각은 아님 |
 | lifecycle_version | INTEGER | NOT NULL, 1 이상 — occurrence 갱신에는 증가하지 않음 |
 | acknowledged_by / acknowledged_at | UUID / DATETIME | NULL, 전이 시 service가 처리 관리자/시각을 필수로 기록. 관리자 삭제 후 FK→users.id는 SET NULL이고 시각은 보존 |
 | resolution_type | VARCHAR | NULL — `mitigated/false_positive/accepted_risk` |
@@ -649,6 +652,7 @@ Security Alert 탐지 대상 audit는 추가로 다음 application contract를 �
 - 같은 detection key의 `open/acknowledged` 활성 alert는 최대 하나다. PostgreSQL partial unique constraint 또는 동등한 transaction-safe 제약으로 보장한다.
 - 관리자 조회 인덱스는 `organization_id` 뒤에 각각 `status`, `severity`, `rule_id`, `subject_actor_id`를 두고 `last_detected_at`, `id`를 이어 목록 filter와 최근순 조회를 지원한다.
 - `occurrence_count`와 `last_detected_at` 갱신은 lifecycle version을 바꾸지 않아 상태 변경과 occurrence 처리의 불필요한 충돌을 피한다.
+- Cooldown 종료 후 새 threshold를 충족한 활성 alert는 새 row를 만들지 않고 새 evidence와 같은 transaction에서 `episode_count`와 `last_episode_started_at`을 갱신한다. Evidence가 retry로 모두 중복이면 episode를 다시 증가시키지 않는다.
 - Lifecycle 전이의 처리자 필수 여부는 전이 시점 service가 검증한다. DB status check는 user 삭제 후 `acknowledged_by`/`resolved_by`가 `SET NULL`인 historical row를 허용해야 하며 처리 시각과 resolution 이력을 제거하지 않는다.
 - Lifecycle mutation은 현재 status와 `lifecycle_version`을 조건으로 한 원자적 DB update에서 winner를 결정하고 canonical lifecycle audit과 같은 transaction에 기록한다. Stale 요청은 row와 audit을 변경하지 않는다.
 - Actor name/email snapshot, raw target 목록, raw audit metadata, IP/user-agent/exception/request body/secret/trace payload를 저장하지 않는다.
@@ -691,6 +695,28 @@ Alert와 실제 근거 audit의 연결 및 idempotency boundary다.
 - Reconciler는 row를 잠근 뒤 overlap을 적용해 `(occurred_at, audit_log.id)` 순서로 처리하고 batch 성공 뒤에만 cursor를 전진한다.
 - `audit_logs(occurred_at, id)` 복합 인덱스가 cursor scan을 지원한다.
 - Audit row의 삭제 lifecycle에 watermark가 결합되지 않도록 cursor UUID에는 FK를 두지 않는다.
+
+#### `security_alert_notification_outbox`
+
+Alert 변경과 관리자 `notifications.changed` Redis 발행 사이의 durable retry 경계다. Additive migration `c05d6e7f8a90`에서 생성한다.
+
+| 컬럼 | 타입 | 제약/의미 |
+| --- | --- | --- |
+| id | UUID | PK |
+| organization_id | UUID | NOT NULL, FK→organization.id |
+| event_type / idempotency_key | VARCHAR | `notifications.changed`와 source mutation별 중복 방지 key |
+| status | VARCHAR | `pending/leased/succeeded/retry_scheduled/dead_lettered` |
+| owner_token / lease_expires_at | VARCHAR / DATETIME | 동시 worker lease와 crash recovery |
+| attempt_count / max_attempts | INTEGER | 기본 최대 5회 |
+| next_retry_at / retryable | DATETIME / BOOLEAN | 60초 retry scheduling 여부 |
+| safe_reason_code | VARCHAR | raw exception이 아닌 allowlisted 실패 분류 |
+| delivered_at / dead_lettered_at | DATETIME | terminal 상태 시각 |
+| created_at / updated_at | DATETIME | NOT NULL |
+
+- Alert 생성·occurrence/episode 갱신·lifecycle 변경과 Outbox insert는 같은 DB transaction에서 commit한다.
+- Worker는 `FOR UPDATE SKIP LOCKED` lease로 due row를 가져오고 처리 시점의 현재 manager만 조회한다. 30초 beat가 dispatch 유실과 만료 lease를 복구한다.
+- Redis 또는 수신자 조회 실패는 60초 뒤 재시도하며 5번째 실패는 dead-letter 처리한다. At-least-once 중복 신호는 client의 영속 API 재조회로 안전하게 수렴한다.
+- Alert/detail/evidence, raw notification payload, manager 수신자 목록, raw exception, email·token·credential을 저장하지 않는다.
 
 ### Agent Builder
 
