@@ -13,7 +13,7 @@ Status: Draft
 
 ## 도메인별 테이블
 
-현재 코드 기준 활성 테이블은 Security Alert 3개와 `workflow_node_effect_attempts`를 포함해 41개다. `legacy_llm_provider`, `legacy_llm_credentials`는 migration `e4956fcd7e2b`에서 DROP됐고 모델도 주석 처리돼 있다.
+현재 코드 기준 활성 테이블은 Security Alert 4개와 `workflow_node_effect_attempts`를 포함해 42개다. `legacy_llm_provider`, `legacy_llm_credentials`는 migration `e4956fcd7e2b`에서 DROP됐고 모델도 주석 처리돼 있다.
 
 | 도메인 | 테이블 |
 | --- | --- |
@@ -21,7 +21,7 @@ Status: Draft
 | 권한 | `team_workflow_permissions`, `team_knowledge_permissions`, `team_llm_permissions`, `team_mail_credential_permissions`, `team_audit_permissions`, `user_workflow_permissions`, `user_knowledge_permissions`, `user_llm_permissions`, `user_mail_credential_permissions` |
 | 앱/워크플로우 | `apps`, `workflows`, `workflow_budgets`, `workflow_deployments`, `schedules`, `workflow_runs`, `workflow_node_runs`, `workflow_node_effect_attempts` |
 | 추적/감사 | `trace_payloads`, `trace_payload_access_events`, `trace_redaction_policies`, `trace_retention_policies`, `trace_visibility_policies`, `audit_logs` |
-| 보안 알림 | `security_alerts`, `security_alert_audit_events`, `security_alert_reconciliation_watermarks` |
+| 보안 알림 | `security_alerts`, `security_alert_audit_events`, `security_alert_reconciliation_watermarks`, `security_alert_notification_outbox` |
 | Knowledge/RAG | `knowledge_bases`, `documents`, `document_chunks`, `rag_answer_runs` |
 | LLM | `llm_providers`, `llm_models`, `llm_credentials`, `llm_rel_credential_models`, `llm_usage_logs` |
 | 외부 연동 | `connections`, `mail_credentials` |
@@ -79,6 +79,7 @@ erDiagram
   users ||--o{ audit_logs : acts
   users ||--o{ connections : owns
   organization ||--o{ security_alerts : scopes
+  organization ||--o{ security_alert_notification_outbox : scopes
   security_alerts ||--o{ security_alert_audit_events : has_evidence
   audit_logs ||--o{ security_alert_audit_events : supports
 ```
@@ -694,6 +695,28 @@ Alert와 실제 근거 audit의 연결 및 idempotency boundary다.
 - Reconciler는 row를 잠근 뒤 overlap을 적용해 `(occurred_at, audit_log.id)` 순서로 처리하고 batch 성공 뒤에만 cursor를 전진한다.
 - `audit_logs(occurred_at, id)` 복합 인덱스가 cursor scan을 지원한다.
 - Audit row의 삭제 lifecycle에 watermark가 결합되지 않도록 cursor UUID에는 FK를 두지 않는다.
+
+#### `security_alert_notification_outbox`
+
+Alert 변경과 관리자 `notifications.changed` Redis 발행 사이의 durable retry 경계다. Additive migration `c05d6e7f8a90`에서 생성한다.
+
+| 컬럼 | 타입 | 제약/의미 |
+| --- | --- | --- |
+| id | UUID | PK |
+| organization_id | UUID | NOT NULL, FK→organization.id |
+| event_type / idempotency_key | VARCHAR | `notifications.changed`와 source mutation별 중복 방지 key |
+| status | VARCHAR | `pending/leased/succeeded/retry_scheduled/dead_lettered` |
+| owner_token / lease_expires_at | VARCHAR / DATETIME | 동시 worker lease와 crash recovery |
+| attempt_count / max_attempts | INTEGER | 기본 최대 5회 |
+| next_retry_at / retryable | DATETIME / BOOLEAN | 60초 retry scheduling 여부 |
+| safe_reason_code | VARCHAR | raw exception이 아닌 allowlisted 실패 분류 |
+| delivered_at / dead_lettered_at | DATETIME | terminal 상태 시각 |
+| created_at / updated_at | DATETIME | NOT NULL |
+
+- Alert 생성·occurrence/episode 갱신·lifecycle 변경과 Outbox insert는 같은 DB transaction에서 commit한다.
+- Worker는 `FOR UPDATE SKIP LOCKED` lease로 due row를 가져오고 처리 시점의 현재 manager만 조회한다. 30초 beat가 dispatch 유실과 만료 lease를 복구한다.
+- Redis 또는 수신자 조회 실패는 60초 뒤 재시도하며 5번째 실패는 dead-letter 처리한다. At-least-once 중복 신호는 client의 영속 API 재조회로 안전하게 수렴한다.
+- Alert/detail/evidence, raw notification payload, manager 수신자 목록, raw exception, email·token·credential을 저장하지 않는다.
 
 ### Agent Builder
 

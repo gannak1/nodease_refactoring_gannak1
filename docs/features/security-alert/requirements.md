@@ -89,7 +89,7 @@ Security Alert는 검증된 organization 안에서 인증 사용자가 짧은 �
 - SAL-REQ-039: Reconciliation은 PostgreSQL watermark table에 기능 활성화 시각과 `(occurred_at, audit_log.id)` cursor를 durable하게 저장하고 overlap window를 사용해 worker 중단, publish 실패, 경계 시각 누락을 복구해야 한다. Batch가 완전히 성공한 뒤에만 cursor를 전진해야 한다.
 - SAL-REQ-040: 실시간 task, retry, reconciliation이 같은 audit을 동시에 처리해도 evidence, occurrence, 활성 alert가 중복 생성되지 않아야 한다. 서로 다른 audit을 같은 활성 alert에 동시에 연결해도 occurrence를 유실하지 않고 `last_detected_at`은 가장 최신 event time을 유지해야 한다.
 - SAL-REQ-041: Alert 생성 또는 활성 alert 갱신 commit 이후 notification 변경 신호를 발행해야 한다.
-- SAL-REQ-042: Notification 발행 실패는 alert transaction을 rollback하지 않아야 하며 별도로 재시도할 수 있어야 한다.
+- SAL-REQ-042: Notification 발행 요청은 Alert 생성·occurrence/episode 갱신·lifecycle 변경과 같은 DB transaction의 durable Outbox에 기록해야 한다. Redis 발행 또는 현재 manager 수신자 조회 실패는 Alert transaction을 rollback하지 않고 최대 5회 재시도한 뒤 dead-letter로 보존해야 한다.
 - SAL-REQ-043: Eligible event 발생 후 관리자 UI 반영 목표는 1분 이내여야 한다.
 
 ## Authorization And Organization Isolation
@@ -162,4 +162,4 @@ Security Alert는 검증된 organization 안에서 인증 사용자가 짧은 �
 | MBA-213 | 관리자 조회·상태 변경 API | 구현됨 |
 | MBA-214 | Admin Dashboard, Sidebar, SSE | 구현됨 |
 
-문서 상태는 `Draft`를 유지한다. SAL-REQ-042의 notification 발행 실패 후 durable한 별도 재시도 수단과 실제 Redis/SSE End-to-End·PostgreSQL concurrency gate 검증이 아직 남아 있다. 현재 구현은 Alert transaction을 보존하고 안전한 오류 유형만 기록하며, reconnect와 영속 API 재조회로 client 상태를 복구한다.
+문서 상태는 `Draft`를 유지한다. SAL-REQ-042의 durable notification Outbox와 재시도/dead-letter 처리는 구현됐으며, 실제 Redis/SSE End-to-End와 PostgreSQL concurrency acceptance gate 검증은 아직 남아 있다. Client는 reconnect와 영속 API 재조회로 상태를 복구한다.

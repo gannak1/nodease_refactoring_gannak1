@@ -170,7 +170,7 @@ Sidebar badge는 `open` alert만 센다. `acknowledged`와 `resolved`는 badge�
 - 상태 변경 성공은 `status='success'`
 - metadata에는 organization ID, rule ID/version, severity, sanitized resolution type/reason만 허용한다.
 
-Alert 최초 생성, 최초 evidence 연결, `security_alert.detected` audit은 같은 DB transaction에 기록한다. Commit 이후 notification 갱신 신호를 발행한다. Notification 발행 실패는 alert transaction을 rollback하지 않고 별도로 재시도한다.
+Alert 최초 생성, 최초 evidence 연결, `security_alert.detected` audit과 notification Outbox는 같은 DB transaction에 기록한다. Commit 이후 worker가 현재 manager 대상 notification 갱신 신호를 발행한다. Redis 발행이나 수신자 조회 실패는 alert transaction을 rollback하지 않고 최대 5회 재시도한 뒤 dead-letter 처리한다.
 
 Lifecycle mutation은 현재 status와 `expected_version`을 조건으로 한 DB 원자적 변경에서 정확히 한 요청만 성공해야 한다. 성공 mutation과 canonical lifecycle audit은 같은 transaction에 기록하며 audit persistence 실패 시 mutation도 rollback한다.
 

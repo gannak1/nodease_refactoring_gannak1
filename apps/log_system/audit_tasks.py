@@ -15,11 +15,14 @@ from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.security_alert import SecurityAlertReconciliationWatermark
 from apps.shared.db.models.user import User  # noqa: F401
 from apps.shared.db.session import SessionLocal
-from apps.shared.services.notification_pubsub import (
-    publish_notifications_changed_to_organization_managers,
-)
 from apps.shared.services.security_alert_aggregation import (
     aggregate_security_alert_detection,
+)
+from apps.shared.services.security_alert_notification_outbox import (
+    SecurityAlertNotificationOutboxProcessor,
+    detection_notification_idempotency_key,
+    dispatch_security_alert_notification_outbox,
+    enqueue_security_alert_notification,
 )
 from apps.shared.services.security_alert_reconciliation import (
     SQLAlchemySecurityAlertReconciliationRepository,
@@ -38,6 +41,9 @@ from sqlalchemy.exc import IntegrityError
 logger = logging.getLogger(__name__)
 _SECURITY_ALERT_DETECTION_TASK = "security_alert.detect"
 _SECURITY_ALERT_RECONCILIATION_TASK = "security_alert.reconcile"
+_SECURITY_ALERT_NOTIFICATION_OUTBOX_TASK = (
+    "security_alert.notification_outbox.deliver"
+)
 _SECURITY_ALERT_PROCESSOR = "security-alert-v1"
 _SECURITY_ALERT_RECONCILIATION_OVERLAP = timedelta(minutes=1)
 
@@ -189,7 +195,7 @@ def detect_security_alert(self, audit_id: str) -> Dict[str, Any]:
             return {"status": "missing", "audit_id": audit_id}
 
         session.commit()
-        _publish_security_alert_updates(session, changed_organization_ids)
+        _dispatch_security_alert_updates(changed_organization_ids)
         return {
             "status": "processed",
             "audit_id": audit_id,
@@ -212,13 +218,23 @@ def _process_security_alert_audit(
     if context is None:
         return None
     current_event, window_events, activation_started_at = context
-    return _evaluate_and_aggregate_security_alerts(
+    current_changed_organization_ids: set[uuid.UUID] = set()
+    candidate_count = _evaluate_and_aggregate_security_alerts(
         db,
         current_event=current_event,
         window_events=window_events,
         activation_started_at=activation_started_at,
-        changed_organization_ids=changed_organization_ids,
+        changed_organization_ids=current_changed_organization_ids,
     )
+    for organization_id in current_changed_organization_ids:
+        enqueue_security_alert_notification(
+            db,
+            scoped_organization_id=organization_id,
+            idempotency_key=detection_notification_idempotency_key(current_event.id),
+        )
+    if changed_organization_ids is not None:
+        changed_organization_ids.update(current_changed_organization_ids)
+    return candidate_count
 
 
 def _evaluate_and_aggregate_security_alerts(
@@ -257,21 +273,18 @@ def _evaluate_and_aggregate_security_alerts(
     return len(threshold_candidates)
 
 
-def _publish_security_alert_updates(
-    db: Any,
+def _dispatch_security_alert_updates(
     organization_ids: set[uuid.UUID],
 ) -> None:
-    for organization_id in organization_ids:
-        try:
-            publish_notifications_changed_to_organization_managers(
-                db,
-                organization_id,
-            )
-        except Exception as error:
-            logger.warning(
-                "[Security Alert] notification publish failed: error_type=%s",
-                type(error).__name__,
-            )
+    if not organization_ids:
+        return
+    try:
+        dispatch_security_alert_notification_outbox()
+    except Exception as error:
+        logger.warning(
+            "[Security Alert] notification outbox dispatch failed: error_type=%s",
+            type(error).__name__,
+        )
 
 
 def _load_security_alert_detection_context(
@@ -344,7 +357,7 @@ def reconcile_security_alerts(self) -> Dict[str, Any]:
             processor_name=_SECURITY_ALERT_PROCESSOR,
             overlap=_SECURITY_ALERT_RECONCILIATION_OVERLAP,
         )
-        _publish_security_alert_updates(session, changed_organization_ids)
+        _dispatch_security_alert_updates(changed_organization_ids)
         return {
             "status": "processed",
             "processed_count": result.processed_count,
@@ -352,6 +365,33 @@ def reconcile_security_alerts(self) -> Dict[str, Any]:
     except Exception as e:
         session.rollback()
         _retry_security_alert_task(self, e, operation="reconcile")
+    finally:
+        session.close()
+
+
+@celery_app.task(
+    name=_SECURITY_ALERT_NOTIFICATION_OUTBOX_TASK,
+    bind=True,
+    max_retries=3,
+)
+def deliver_security_alert_notification_outbox(
+    self,
+    limit: int = 100,
+) -> Dict[str, int]:
+    session = SessionLocal()
+    try:
+        result = SecurityAlertNotificationOutboxProcessor(session).process_due_events(
+            owner_token=str(uuid.uuid4()),
+            limit=limit,
+        )
+        session.commit()
+        return {
+            "processed_count": result.processed_count,
+            "recovered_count": result.recovered_count,
+        }
+    except Exception as error:
+        session.rollback()
+        _retry_security_alert_task(self, error, operation="notification_outbox")
     finally:
         session.close()
 

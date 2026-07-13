@@ -41,8 +41,10 @@ from apps.shared.services.security_alert_lifecycle import (
     reopen_security_alert,
     resolve_security_alert,
 )
-from apps.shared.services.notification_pubsub import (
-    publish_notifications_changed_to_organization_managers,
+from apps.shared.services.security_alert_notification_outbox import (
+    dispatch_security_alert_notification_outbox,
+    enqueue_security_alert_notification,
+    lifecycle_notification_idempotency_key,
 )
 
 KST = ZoneInfo("Asia/Seoul")
@@ -517,18 +519,23 @@ def _detail_then_commit(
             organization_id=organization_id,
             alert_id=alert_id,
         )
+        enqueue_security_alert_notification(
+            db,
+            scoped_organization_id=organization_id,
+            idempotency_key=lifecycle_notification_idempotency_key(
+                alert_id,
+                detail.version,
+            ),
+        )
         db.commit()
     except Exception:
         db.rollback()
         raise
     try:
-        publish_notifications_changed_to_organization_managers(
-            db,
-            organization_id,
-        )
+        dispatch_security_alert_notification_outbox()
     except Exception as error:
         logger.warning(
-            "Failed to publish security alert lifecycle notification: error_type=%s",
+            "Failed to dispatch security alert notification outbox: error_type=%s",
             type(error).__name__,
         )
     return detail

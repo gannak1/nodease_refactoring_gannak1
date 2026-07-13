@@ -4,9 +4,9 @@ Status: Draft
 
 이 문서는 [requirements.md](requirements.md), [api_spec.md](api_spec.md), [component_spec.md](component_spec.md), [ADR-0028](../../decisions/ADR-0028-security-alert-detection-and-lifecycle.md)의 검증 기준을 정의한다.
 
-현재 구현은 MBA-223의 audit 정규화부터 MBA-211~214의 영속 모델·lifecycle, 실시간 탐지·reconciliation, 관리자 API, Admin Dashboard·Sidebar·SSE 재조회까지 포함한다. 관련 자동 검증은 Client test/lint/build, Gateway Security Alert API/service 35건, Log System 관련 21건, Shared 관련 27건과 notification publisher 3건을 통과했다.
+현재 구현은 MBA-223의 audit 정규화부터 MBA-211~214의 영속 모델·lifecycle, 실시간 탐지·reconciliation, durable notification Outbox, 관리자 API, Admin Dashboard·Sidebar·SSE 재조회까지 포함한다.
 
-문서 상태는 `Draft`를 유지한다. 실제 Redis를 연결한 SSE End-to-End, 전체 PostgreSQL concurrency acceptance gate, SAL-REQ-042의 durable notification publish retry는 아직 완료되지 않았다. 전체 Log System suite의 Redis 연결 테스트와 전체 Shared suite의 선택 의존성도 환경 제약으로 별도 확인이 필요하다.
+문서 상태는 `Draft`를 유지한다. 실제 Redis를 연결한 SSE End-to-End와 전체 PostgreSQL concurrency acceptance gate는 아직 완료되지 않았다. 전체 Log System suite의 Redis 연결 테스트와 전체 Shared suite의 선택 의존성도 환경 제약으로 별도 확인이 필요하다.
 
 ## Acceptance Criteria
 
@@ -241,7 +241,7 @@ Then 활성화 시점 이후 누락된 eligible event를 복구하고 중복 occ
 
 Given Alert 또는 lifecycle mutation commit 이후 notification publish가 실패할 때,
 When 실패 처리를 수행하면,
-Then 이미 commit된 Alert를 rollback하지 않고 notification만 재시도 가능해야 한다.
+Then 같은 transaction에서 이미 저장된 Outbox를 60초 뒤 재시도하고, 최대 5번째 실패에서 safe reason만 남긴 dead-letter로 전환하며 Alert를 rollback하지 않아야 한다.
 
 ### AC-27 Data Minimization
 
@@ -436,7 +436,7 @@ Then lookback window를 포함해 실제 evaluator와 같은 결과를 계산하
 | SAL-TC-W004 | AC-01 | budget, auth, invalid organization, hidden/unsafe event | alert와 evidence 없음 |
 | SAL-TC-W005 | AC-09 | task 성공 응답 유실로 Celery가 동일 audit 재전달 | count/evidence/detected audit 중복 없음 |
 | SAL-TC-W006 | AC-09 | task가 evidence commit 전 실패 | retry가 transaction을 복구하고 정확히 한 번 반영 |
-| SAL-TC-W007 | AC-09 | task가 commit 후 notification publish 전에 실패 | retry 시 alert 중복 없이 notification 재시도 가능 |
+| SAL-TC-W007 | AC-09 | Alert+Outbox commit 후 notification task dispatch 전에 실패 | 30초 recovery schedule이 pending Outbox를 찾아 alert 중복 없이 전달 재시도 |
 | SAL-TC-W008 | AC-10 | cooldown 안 occurrence 연속 처리 | 활성 alert 한 건과 정확한 count/last time |
 | SAL-TC-W009 | AC-10 | event가 occurred_at 역순으로 도착 | window와 last time이 event time 계약에 맞고 count 유실 없음 |
 | SAL-TC-W010 | AC-25 | 실시간 publish가 누락된 audit를 reconciliation이 스캔 | 누락 event 복구 |
@@ -447,7 +447,7 @@ Then lookback window를 포함해 실제 evaluator와 같은 결과를 계산하
 | SAL-TC-W015 | AC-10 | 서로 다른 worker가 같은 detection key의 서로 다른 threshold event를 동시에 처리 | active unique 보장, count 유실 없음, 안전한 retry |
 | SAL-TC-W016 | AC-07 | 여러 organization/actor queue event가 interleave | key별 독립 결과 |
 | SAL-TC-W017 | AC-11 | resolve commit 직전/직후 event를 각각 처리 | event 귀속이 commit 순서와 fresh threshold 계약에 일치 |
-| SAL-TC-W018 | AC-26 | Redis/SSE publish adapter 또는 수신자 조회 실패 | alert commit 유지, durable retry scheduling 또는 동등한 복구 기록, raw payload·raw exception log 없음 |
+| SAL-TC-W018 | AC-26 | Redis publish adapter 또는 현재 manager 수신자 조회 실패 | alert commit 유지, 60초 retry scheduling, 5번째 실패 dead-letter, raw payload·수신자 목록·raw exception 저장 없음 |
 | SAL-TC-W019 | AC-27 | worker exception에 synthetic secret marker 포함 | durable log/metric에 marker와 raw exception 없음 |
 | SAL-TC-W020 | AC-29 | threshold event부터 notification publish까지 측정 | 정상 경로 60초 이내 |
 | SAL-TC-W021 | AC-24 | Threshold 전 cooldown candidate의 aggregation 결과가 `None` | Alert 변경은 없고 commit 후 `notifications.changed` 발행도 없음 |

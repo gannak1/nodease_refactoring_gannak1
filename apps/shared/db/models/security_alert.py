@@ -6,10 +6,12 @@ from typing import Optional
 
 from apps.shared.db.base import Base
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -233,6 +235,88 @@ class SecurityAlertReconciliationWatermark(Base):
     )
     cursor_audit_log_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         PGUUID(as_uuid=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utc_now,
+        server_default=text("now()"),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utc_now,
+        onupdate=_utc_now,
+        server_default=text("now()"),
+    )
+
+
+class SecurityAlertNotificationOutbox(Base):
+    __tablename__ = "security_alert_notification_outbox"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "idempotency_key",
+            name="uq_security_alert_notification_outbox_org_idempotency",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'leased', 'succeeded', "
+            "'retry_scheduled', 'dead_lettered')",
+            name="ck_security_alert_notification_outbox_status",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0",
+            name="ck_security_alert_notification_outbox_attempt_nonnegative",
+        ),
+        CheckConstraint(
+            "max_attempts > 0",
+            name="ck_security_alert_notification_outbox_max_attempts_positive",
+        ),
+        Index(
+            "ix_security_alert_notification_outbox_status_retry",
+            "status",
+            "next_retry_at",
+        ),
+        Index(
+            "ix_security_alert_notification_outbox_lease",
+            "status",
+            "lease_expires_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("organization.id"), nullable=False
+    )
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="pending", server_default=text("'pending'")
+    )
+    owner_token: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    lease_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    max_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=5, server_default=text("5")
+    )
+    next_retry_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    retryable: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    safe_reason_code: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    delivered_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    dead_lettered_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
