@@ -128,10 +128,12 @@ describe('ActorAccessDrawer', () => {
 
   it('team/resource page와 source filter를 독립적으로 갱신한다', async () => {
     mockedProfile.mockResolvedValue(profile);
-    mockedTeams.mockImplementation(async (_organizationId, _userId, params) => ({
-      total: 21,
-      items: params.page === 2 ? [] : [],
-    }));
+    mockedTeams.mockImplementation(
+      async (_organizationId, _userId, params = {}) => ({
+        total: 21,
+        items: params.page === 2 ? [] : [],
+      }),
+    );
     mockedResources.mockImplementation(
       async (_organizationId, _userId, params) => ({
         total: params.resourceId ? 0 : 21,
@@ -240,7 +242,7 @@ describe('ActorAccessDrawer', () => {
   it('다른 page에 존재하는 team membership을 exact filter로 확인해 중복 추가를 막는다', async () => {
     mockedProfile.mockResolvedValue(profile);
     mockedTeams.mockImplementation(
-      async (_organizationId, _userId, params) =>
+      async (_organizationId, _userId, params = {}) =>
         params.teamId
           ? {
               total: 1,
@@ -291,10 +293,12 @@ describe('ActorAccessDrawer', () => {
 
   it('team/resource exact 조회 실패 시 absence precondition action을 차단한다', async () => {
     mockedProfile.mockResolvedValue(profile);
-    mockedTeams.mockImplementation(async (_organizationId, _userId, params) => {
-      if (params.teamId) throw new Error('team lookup failed');
-      return { total: 0, items: [] };
-    });
+    mockedTeams.mockImplementation(
+      async (_organizationId, _userId, params = {}) => {
+        if (params.teamId) throw new Error('team lookup failed');
+        return { total: 0, items: [] };
+      },
+    );
     mockedResources.mockImplementation(
       async (_organizationId, _userId, params) => {
         if (params.resourceId) throw new Error('resource lookup failed');

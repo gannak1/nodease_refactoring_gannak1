@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { AppNode } from '../../types/Nodes';
+import type { AppNode, ConditionNode } from '../../types/Nodes';
 import type { Edge, WorkflowDraftRequest } from '../../types/Workflow';
 import {
   cleanupInvalidEdges,
@@ -98,10 +98,22 @@ describe('validateWorkflowGraph', () => {
   });
 
   it('blocks condition edges that use an unknown branch handle', () => {
-    const condition = {
-      ...node('condition', 'conditionNode', '조건'),
-      data: { title: '조건', cases: [{ id: 'case-1', value: 'yes' }] },
-    } as AppNode;
+    const condition: ConditionNode = {
+      id: 'condition',
+      type: 'conditionNode',
+      position: { x: 0, y: 0 },
+      data: {
+        title: '조건',
+        cases: [
+          {
+            id: 'case-1',
+            case_name: 'Yes',
+            conditions: [],
+            logical_operator: 'and',
+          },
+        ],
+      },
+    };
     const result = validateWorkflowGraph(
       draft(
         [condition, node('template', 'templateNode', '템플릿')],

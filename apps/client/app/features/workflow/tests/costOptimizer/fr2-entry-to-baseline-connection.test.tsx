@@ -9,7 +9,6 @@ const workflowApiMock = vi.hoisted(() => ({
   getCostOptimizerParameterRecommendations: vi.fn(),
   getCostOptimizerLatestBaseline: vi.fn(),
   listCostOptimizerBaselines: vi.fn(),
-  getCostOptimizerParameterRecommendations: vi.fn(),
 }));
 
 const routerMock = vi.hoisted(() => ({

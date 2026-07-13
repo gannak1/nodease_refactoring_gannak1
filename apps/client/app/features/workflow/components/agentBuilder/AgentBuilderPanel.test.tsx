@@ -323,7 +323,10 @@ describe('AgentBuilderPanel', () => {
       features: { nextNodeDisplayNumber: 2 },
     });
     vi.mocked(workflowApi.getWorkflow).mockResolvedValue({
+      id: 'workflow-new',
       app_id: 'app-1',
+      created_at: '2026-07-10T00:00:00Z',
+      updated_at: '2026-07-10T00:00:00Z',
     });
     window.localStorage.setItem(
       'agent-builder:workflow:workflow-old',
