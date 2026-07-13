@@ -864,6 +864,58 @@ def test_knowledge_detail_uses_read_gate_and_returns_capabilities(monkeypatch):
     assert body["can_manage"] is False
 
 
+def test_direct_document_detail_projects_internal_metadata(monkeypatch):
+    knowledge_base_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+    now = datetime(2026, 7, 13, 9, tzinfo=timezone.utc)
+    document = SimpleNamespace(
+        id=document_id,
+        filename="safe-document.pdf",
+        status="processing",
+        created_at=now,
+        updated_at=now,
+        error_message=None,
+        chunks=[],
+        source_type="API",
+        meta_info={
+            "progress": 20,
+            "processing_current_step": "Processing queued.",
+            "api_config": {"headers_encrypted": None},
+            "connection_id": None,
+            "source_connector_ref": None,
+        },
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_authorized_knowledge_document",
+        lambda *args, **kwargs: (SimpleNamespace(id=knowledge_base_id), document),
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "finalize_stale_processing_start",
+        lambda *args, **kwargs: False,
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "recover_timed_out_document_with_artifacts",
+        lambda *args, **kwargs: False,
+    )
+
+    response = knowledge_endpoint.get_document(
+        kb_id=knowledge_base_id,
+        document_id=document_id,
+        request=SimpleNamespace(),
+        x_organization_id=str(uuid.uuid4()),
+        db=object(),
+        current_user=SimpleNamespace(id=uuid.uuid4()),
+    )
+
+    assert response.meta_info == {
+        "progress": 20,
+        "processing_current_step": "Processing queued.",
+    }
+
+
 def test_knowledge_detail_fails_closed_when_required_schema_is_missing(monkeypatch):
     knowledge_base_id = uuid.uuid4()
     monkeypatch.setattr(

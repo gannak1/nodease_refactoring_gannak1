@@ -46,6 +46,9 @@ from apps.gateway.services.knowledge_collection_service import (
 from apps.gateway.services.knowledge_document_content_service import (
     KnowledgeDocumentContentService,
 )
+from apps.gateway.services.knowledge_document_projection import (
+    project_safe_document_metadata,
+)
 from apps.gateway.services.knowledge_base_query_service import (
     KNOWLEDGE_BASE_MUTATION_COLUMNS,
     KnowledgeBaseCreateFailed,
@@ -1608,7 +1611,7 @@ def get_document(
         chunk_count=len(doc.chunks),
         # token_count=doc.token_count,
         source_type=doc.source_type,
-        meta_info=doc.meta_info,
+        meta_info=project_safe_document_metadata(doc.meta_info),
     )
 
 
