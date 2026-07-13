@@ -126,6 +126,63 @@ Membership은 configured Collection별 ordered LATERAL cap을 먼저 적용한 b
 intermediate relation에서 round-robin ranking한다. Source-policy/provenance expiry는 같은
 transaction에서 한 번 읽은 `transaction_timestamp()`를 전체 invocation에 재사용한다.
 
+### MBA-233 Workflow Builder Collection Picker
+
+`GET /api/v1/knowledge/llm-selectable-collections`는 authenticated Workflow Builder
+전용 route-safe projection이다. Collection 관리 목록이나 MBA-232 runtime resolver
+response를 재사용하지 않는다.
+
+Request context:
+
+| 항목 | 규칙 |
+| --- | --- |
+| Authentication | 로그인 사용자 필수 |
+| Organization | `X-Organization-Id`로 해석한 active organization |
+| Permission | active Collection에 대한 current user effective `route` |
+
+Response:
+
+```json
+{
+  "collections": [
+    {
+      "id": "00000000-0000-0000-0000-000000000000",
+      "safe_label": "사내 문서"
+    }
+  ]
+}
+```
+
+`safe_label`은 optional이며 approved safe metadata에 값이 없거나 display policy를
+통과하지 못하면 `null`이다. Response에는 raw Collection name/description,
+organization ID, lifecycle/source/system-managed field, member KB ID, exact child count,
+permission row/capability, hidden/unavailable total을 포함하지 않는다. `read`, `manage`,
+`sync` 또는 Knowledge domain action만 있고 `route`가 없는 Collection은 반환하지 않는다.
+다른 organization, inactive/archived/deleted Collection은 존재 여부를 구분하지 않고
+생략한다. Schema/DB failure는 raw SQL/exception 없이 fixed safe error envelope로 닫는다.
+
+### MBA-233 Editable Graph Reference Authorization
+
+Workflow draft save, Agent Builder apply, optimizer/model-routing graph persistence는
+graph structural validation 뒤 current editor와 active organization으로 Knowledge
+reference를 다시 authorize한다.
+
+| Reference | Save-time gate |
+| --- | --- |
+| Direct KB | same organization, active, retrieval-selectable, effective KB `use`, applicable materialized source authorization |
+| Selected Collection | same organization, active, effective Collection `route` |
+
+Collection child membership/KB/source authorization은 save-time에 열거하지 않는다.
+Reference 하나라도 실패하면 전체 write와 success audit을 commit하지 않는다. Hidden,
+cross-organization, missing, inactive, revoked와 denied 상태는 외부에서 구분하지 않는
+`knowledge_reference_unavailable` 계열 fixed code와 safe field path만 반환하며 UUID,
+label, raw graph와 permission reason을 echo하지 않는다. Permission query/DB failure는
+retryable safe infrastructure error이고 partial graph를 만들지 않는다.
+
+Save authorization result, picker item과 preflight 결과는 capability/token이 아니다.
+Direct execute/stream graph는 같은 structural contract를 통과하고 invocation-time
+MBA-232 resolver로 current audience를 authorize한다.
+
 ### KB Permission Endpoints
 
 MBA-176의 Knowledge 직접 권한 API는 Organization resource permission surface와 같은 응답 envelope를 사용한다. KB 권한은 organization membership의 대체물이 아니며, active organization member에게만 effective permission으로 적용된다.

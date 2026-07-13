@@ -50,6 +50,28 @@ V1 canonical envelope은 값 dependency와 활성 control dependency의 합집�
 
 Main generation과 Memory summary provider adapter는 Workflow admission 안에서 provider effect 없는 server-issued attempt reference를 먼저 만든 뒤 LLM Credentials domain의 authoritative port에서 해당 invocation/admission/attempt에 binding된 opaque capability identity/revision을 받는다. 상세 schema, credential principal과 permission decision revision은 [LLM Credentials API Spec](../llm-credentials/api_spec.md#target-provider-execution-capability-contract)이 소유한다. Runtime은 capability identity/revision을 Memory context lease, budget reservation, provider attempt와 usage reconciliation에 그대로 전달하고 client/Access Grant/owner 값으로 scope를 바꾸거나 credential principal을 합성하지 않는다.
 
+## MBA-233 LLM Knowledge Selection And Runtime
+
+- `LLMNodePanel`과 `LLMReferenceSidePanel`은 “고정 지식 베이스”와 “지식
+  Collection”을 분리해 표시하고 각 목록의 `n / 20` 상태를 독립적으로 관리한다.
+- Direct KB는 `/knowledge/llm-selectable`, Collection은
+  `/knowledge/llm-selectable-collections`의 route-safe projection에서 선택한다.
+- Saved item이 current picker response에 없으면 generic unavailable 상태로 보존한다.
+  Picker load failure와 성공한 empty response를 구분하며 어느 경우에도 자동 삭제하지
+  않는다.
+- LLM node의 Knowledge-enabled 상태는 두 목록 중 하나라도 non-empty이면 true다.
+  Collection-only node도 RAG evidence/failure controls를 사용할 수 있다.
+- Gateway save는 Client validation을 신뢰하지 않고 current editor direct KB `use`와
+  Collection `route`를 재검증한다. Save denial은 hidden resource identity 없이
+  제거/권한 복구가 필요하다는 generic action만 표시한다.
+- Workflow Engine은 runtime dependency로 주입된 MBA-232 resolver를 direct-only,
+  Collection-only, mixed invocation에 한 번 사용한다. Resolver zero-result와 evidence
+  insufficient는 provider 호출 전 safe 결과로 종료하고 infrastructure failure는 Celery
+  retry 경계로 전달한다.
+- Agent Builder, cost optimizer, compare/apply와 model-routing refresh는 unrelated edit에서
+  `knowledgeCollections`를 보존한다. Public app graph와 실행 로그 option projection은
+  Collection identity를 표시하지 않는다.
+
 ## Screens
 
 - Workflow Builder 화면: 캔버스, 노드 라이브러리, 상단 액션, 테스트 실행 사이드바, 하단 캔버스 도구를 포함한다.

@@ -71,6 +71,27 @@ authorization infrastructure failure는 partial candidate를 반환하지 않는
 whole-resolution failure다. Budget cap은 successful safe warning이며 downstream
 retrieval timeout과 구분한다.
 
+### MBA-233 Workflow Collection Routing Integration
+
+| Component | 책임 | 금지 |
+| --- | --- | --- |
+| Shared Workflow Knowledge Reference Parser | 두 graph list의 shape, canonical UUID, display snapshot, per-list 20 cap을 pure validation하고 configured order/deduped ID를 제공한다 | Graph mutation, silent slicing, permission/DB 조회 |
+| Route-safe Collection Query Service | active organization에서 current editor가 `route` 가능한 active Collection의 UUID와 optional safe label만 bulk projection한다 | Management response 재사용, raw name/description/child count, runtime authorization |
+| Workflow Knowledge Reference Service | Editable graph write 전에 direct KB effective `use`/source gate와 Collection `route`를 current editor로 검증하고 whole-write failure를 반환한다 | Collection child expansion, saved label/Client capability 신뢰, runtime lease 발급 |
+| Deployment Preflight | 두 list의 structure, lifecycle와 server-derived audience/public gate를 재귀 graph에 적용하고 safe bucket/action을 반환한다 | Child ID/exact hidden count 공개, preflight를 runtime capability로 재사용 |
+| Workflow LLM Integration | explicit execution audience와 두 configured ID list로 MBA-232 resolver를 invocation당 한 번 호출하고 ordered KB ID를 Retrieval Orchestrator에 전달한다 | Gateway resolver import, LLM node 내부 permission SQL, owner/credential fallback |
+| Public/Observability Projector | public graph에서 두 reference list를 제거하고 durable output은 routing/count/failure safe summary로 제한한다 | Collection identity/provenance, raw graph/query/source/provider payload 저장 |
+
+Builder는 고정 KB와 Knowledge Collection을 별도 selector group으로 표시한다. 각 group은
+독립 `n/20` limit을 가지며 Collection membership이 실행 시점에 다시 계산된다는 설명을
+표시한다. Picker에서 사라진 saved item은 generic unavailable chip으로 보존하고
+사용자가 제거하거나 권한이 복구되기 전 새 저장을 차단한다. Builder 안에서
+Collection 생성/삭제/permission/membership을 관리하지 않는다.
+
+Agent Builder와 optimizer는 기존 Collection selection을 보존하지만 자동으로 새
+Collection을 추천하거나 선택하지 않는다. Runtime sync는 explicit direct KB만 처리하고
+Collection child는 MBA-232 materialized provenance/readiness 결과를 사용한다.
+
 Conversation Memory target adapter는 Knowledge Permission Helper의 bulk 결과를 `decision`, `principal_kind`, opaque `authorization_decision_revision`, `resource_revision`, `policy_revision`, `evaluated_at` contract로 투영한다. Source-managed KB의 source ACL revision은 decision revision에 반영한다. Lifecycle, KB permission, source ACL 중 필요한 revision이 없으면 allow를 추정하지 않고 `unknown`을 반환한다. Anonymous public audience에는 subject ID/revision을 합성하지 않는다.
 
 Retrieval Orchestrator는 최종 evidence와 함께 KB/document version, organization, sensitivity와 authorization-safe reference를 `RuntimeDataDependencyEnvelope`로 발급한다. Raw title/path/URL/content/ACL은 envelope에 포함하지 않는다. Client나 Workflow node가 canonical Knowledge dependency를 발급할 수 없고, V1에서는 answer content에 영향을 준 모든 Knowledge dependency를 필수로 취급한다.

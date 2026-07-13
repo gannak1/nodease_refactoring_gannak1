@@ -437,6 +437,31 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - Missing execution subject는 anonymous public-only 결과를 반환하고 workflow owner fallback을 만들지 않는다. Ambiguous execution subject는 private retrieval fail-closed로 처리한다.
 - LLM node의 RAG 옵션은 Builder-time skill selection과 runtime data access 권한을 분리한다.
 
+## MBA-233 Workflow Knowledge Collection Tests
+
+- Builder는 direct KB와 Collection을 별도 group으로 선택하고 각각 20개 cap을 적용한다.
+  Collection-only/mixed graph가 save/reload 뒤 ID, configured order와 bounded display
+  snapshot을 보존한다.
+- Current picker에서 사라진 saved reference는 stale label 대신 generic unavailable로
+  남고 picker failure/empty response가 selection을 자동 삭제하지 않는다. 새 save가
+  server authorization에 실패하면 hidden identity 없이 제거/권한 복구 action을 표시한다.
+- Client validation을 우회한 malformed/over-limit graph는 draft save, direct stream,
+  deployment와 Worker NodeFactory에서 provider 실행 전 거부된다.
+- Agent Builder apply, cost optimizer candidate/apply/compare, model routing refresh와 graph
+  copy path는 기존 `knowledgeCollections`를 보존하고 Collection을 자동 추천하지 않는다.
+- `knowledgeBases` 또는 `knowledgeCollections` 중 하나라도 있으면 model router와 LLM
+  runtime은 Knowledge-enabled로 판정한다. Collection-only node는 MBA-232 resolver 결과를
+  기존 bounded retrieval/evidence path에 전달한다.
+- Authenticated execution은 explicit user subject, subject 부재는 anonymous public
+  audience를 사용한다. Credential principal/owner/builder가 Collection route를 가져도
+  execution subject가 denied이면 candidate를 얻지 못한다.
+- Resolver zero-result는 LLM provider를 호출하지 않고 infrastructure failure는 retryable
+  task failure다. Authorized resolution 뒤 일부 retrieval timeout만 partial-result policy를
+  사용할 수 있다.
+- Public graph, node option display, trace/log/audit/error/SSE는 Collection identity와 child
+  structure를 노출하지 않는다. Runtime trace는 routing mode와 count/limit/failure safe
+  summary만 허용한다.
+
 ## API Tests
 
 - 로그인 LLM node의 RAG 옵션 실행 요청은 Knowledge service에 `execution_subject=current_user`를 전달한다.

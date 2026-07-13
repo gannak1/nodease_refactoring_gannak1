@@ -310,6 +310,13 @@ project/endpoint boundary.
 | created_at / updated_at | DATETIME | NOT NULL |
 
 - UNIQUE `(id, organization_id)` — user direct permission의 복합 FK 대상.
+- MBA-233 LLM node data는 `knowledgeBases`와 additive `knowledgeCollections` reference
+  목록을 함께 저장할 수 있다. 각 item은 canonical UUID와 bounded display snapshot만
+  가지며 display 값은 permission/routing/source 판단에 사용하지 않는다.
+- `knowledgeCollections`는 Collection membership snapshot이 아니다. 실행 시점에
+  current Collection item/permission을 MBA-232 resolver가 다시 읽으므로 이 field를
+  위해 새 relation, migration 또는 `llm_node_versions` column을 추가하지 않는다
+  ([ADR-0039](decisions/ADR-0039-knowledge-workflow-collection-routing-integration.md)).
 
 #### `workflow_budgets`
 
@@ -339,7 +346,7 @@ workflow 단위 월간 LLM 예산 ([features/budget-management](features/budget-
 | app_id | UUID | NOT NULL, FK→apps.id (CASCADE) |
 | version | INTEGER | NOT NULL |
 | type | VARCHAR(13) | NOT NULL — deployment type (api/webapp/widget/mcp/workflow_node/schedule/webhook/chatbot) |
-| graph_snapshot | JSONB | NOT NULL — 배포 시점 graph 고정본. MBA-190 이후 server가 계산한 WorkflowNode target deployment ID/version/snapshot-hash internal binding을 포함할 수 있으며 public graph 응답에서는 제거 |
+| graph_snapshot | JSONB | NOT NULL — 배포 시점 graph 고정본. MBA-190 이후 server가 계산한 WorkflowNode target deployment ID/version/snapshot-hash internal binding을 포함할 수 있다. MBA-233 LLM node의 `knowledgeBases`/`knowledgeCollections` configured intent도 보존하되 public graph 응답에서는 internal binding과 두 Knowledge reference 목록을 제거한다 |
 | config / input_schema / output_schema | JSONB | NULL |
 | description | VARCHAR | NULL |
 | created_by | UUID | NOT NULL, FK→users.id |

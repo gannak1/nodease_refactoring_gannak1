@@ -82,6 +82,47 @@ Status: Draft
 - Query count는 candidate/Collection 수에 비례하는 N+1이 아니고 selected 20 Collections/5,000 membership fixture에서도 scan/memory/result가 bounded하고 fair해야 한다. Membership SQL은 Collection별 LATERAL cap을 global window보다 먼저 적용하고 outer `LIMIT`만으로 boundedness를 주장하지 않는다.
 - Shared pure policy는 SQLAlchemy/FastAPI/Celery/Gateway/Workflow Engine concrete package를 import하지 않고 Workflow Engine runtime retrieval production code는 `apps.gateway.*`를 import하지 않는다.
 
+## MBA-233 Workflow Collection Routing Integration Tests
+
+- Legacy direct-only graph, Collection-only graph와 mixed graph가 Shared/Gateway/Worker/
+  Client validator에서 같은 pass/fail 결과를 사용한다. 각 list의 19/20은 성공하고
+  21은 silent slicing 없이 실패한다. Malformed/non-canonical UUID, unknown item field,
+  overlong/control display snapshot과 raw object echo를 거부한다.
+- Route-safe Collection picker는 user-direct/active-Team/organization-manager effective
+  `route` positive case와 read/manage/sync/domain-only, inactive membership, revoked,
+  cross-organization, archived/deleted negative case를 검증한다. Response는 UUID와 optional
+  approved safe label만 가지며 child/source/permission/hidden count를 포함하지 않는다.
+- Draft/Agent Builder/optimizer/model-routing graph save는 direct KB effective `use`와
+  source authorization, Collection `route`를 current editor로 다시 검증한다. 하나라도
+  stale/forged/denied/cross-org이면 partial graph/success audit 없이 whole-write를
+  rollback하고 safe generic error만 반환한다.
+- Collection route는 있지만 child KB/source access가 전부 denied인 graph는 save할 수
+  있고 runtime에서 zero candidate/no provider로 닫힌다. Save-time에 child membership이나
+  source를 query하면 테스트 실패다.
+- PostgreSQL coordinated revoke/save test는 revoke가 authorization read 전에 commit되면
+  save가 실패함을 보이고, read 뒤 revoke 경합으로 configuration intent가 남더라도
+  다음 MBA-232 invocation이 current permission으로 제외하며 save capability를 재사용하지
+  않음을 검증한다.
+- Deployment preview/create/activation/toggle과 nested workflow-node graph는 두 list를
+  검증한다. Anonymous private Collection/direct KB와 source public exposure primitive가
+  없는 source-managed content는 fixed blocker이고 hidden child ID/count를 반환하지 않는다.
+- 모든 production execution surface는 same resolver dependency를 주입한다. Direct-only,
+  Collection-only와 mixed invocation은 resolver를 정확히 한 번 호출하며 ordered canonical
+  candidate마다 retrieval을 최대 한 번 실행한다.
+- Resolver policy zero-result와 insufficient evidence는 embedding/retrieval/provider를
+  호출하지 않는다. Resolver infrastructure exception은 safe retryable workflow failure로
+  Celery retry되고 `ragFailurePolicy=safe_no_result`로 낮아지지 않는다. Retry/redelivery는
+  fresh snapshot을 열 수 있지만 exactly-once provider 호출을 주장하지 않는다.
+- Agent Builder/optimizer/compare/copy/import/model routing/deployment snapshot은 unrelated
+  edit에서 `knowledgeCollections`를 보존한다. Pre-execution sync는 direct KB만 처리하고
+  Collection child를 열거하거나 connector를 호출하지 않는다.
+- Public app/deployment graph는 두 reference list를 제거한다. API/SSE/error/log/trace/audit
+  fixture는 Collection ID/name/provenance, hidden KB ID, raw graph/query/source/credential/
+  provider payload가 없고 safe bucket/fixed code만 있음을 검증한다.
+- Worker-first canary는 구 task drain 뒤 Gateway write와 Client를 순서대로 노출하고,
+  rollback은 Client/Gateway write 중지와 drain 뒤 Worker를 되돌린다. 구 Worker가
+  Collection graph를 소비할 수 있는 상태에서는 rollout/rollback acceptance가 실패다.
+
 ## Knowledge Base API Tests
 
 - KB create는 blank name을 DB insert 전에 거부하고 safe validation reason code만 반환한다.
