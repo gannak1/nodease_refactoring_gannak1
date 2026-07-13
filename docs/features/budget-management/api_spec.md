@@ -74,6 +74,7 @@ Response `200`: 목록 항목과 동일한 필드 + 당월 판정 값.
 ```
 
 - `current_month_cost`/`usage_ratio`/`status`는 당월(KST) 기준이다 (BGT-REQ-011).
+- 당월 비용은 예산 row의 organization과 같은 usage 또는 NULL legacy usage만 합산한다. 다른 organization UUID가 명시된 usage는 단건 관리자 응답에서 제외한다 (BGT-REQ-024).
 - 비활성이거나 예산이 0 이하면 `usage_ratio`와 `status`는 null이다 (BGT-REQ-010).
 - 예산이 설정되지 않은 workflow는 `404 resource.not_found`가 아니라 `200`에 예산 필드 null로 반환하지 않고, `404`로 반환한다 — 예산 row가 없는 상태와 조직 scope 밖을 클라이언트가 구분할 필요가 없고, 설정 UI는 목록/usage 응답의 null로 미설정을 판단한다.
 
@@ -89,7 +90,7 @@ Request body:
 - `is_enabled`: 필수 boolean.
 - Request body의 unknown field는 `422`로 거부한다. 예: `is_enabledd` 같은 오타 필드는 조용히 무시하지 않는다.
 
-Response `200`: 단건 조회와 동일한 shape. 신규 생성이어도 `200`으로 통일한다.
+Response `200`: 단건 조회와 동일한 shape와 organization-scoped 당월 비용 projection을 사용한다. 신규 생성이어도 `200`으로 통일한다 (BGT-REQ-024).
 
 Side effects:
 
@@ -119,8 +120,9 @@ Side effects:
 }
 ```
 
-- 응답 item은 organization scope 안의 App primary workflow(`apps.workflow_id`) 전체를 대상으로 한다. 기간 안에 usage row가 없는 workflow도 item으로 반환하며 `prompt_tokens=0`, `completion_tokens=0`, `call_count=0`, `total_cost=0`이다.
+- 응답 item은 App과 Workflow의 organization이 모두 요청 organization과 일치하는 App primary workflow(`apps.workflow_id`) 전체를 대상으로 한다. App/Workflow organization이 불일치하거나 Workflow row가 없으면 item과 `total`에서 제외한다. 기간 안에 eligible usage row가 없는 workflow도 item으로 반환하며 `prompt_tokens=0`, `completion_tokens=0`, `call_count=0`, `total_cost=0`이다.
 - `total`은 기간 안에 usage row가 있는 workflow 수가 아니라 응답 대상 App primary workflow 수다.
+- 조회 기간 usage와 `budget.current_month_cost`는 `llm_usage_logs.organization_id`가 요청 organization과 같거나 NULL인 row만 합산한다. 명시적 타 organization row는 관리자 projection에서 제외한다. NULL legacy usage를 포함하는 호환 계약은 유지한다.
 - `budget`은 활성 예산(`is_enabled=true` ∧ `monthly_budget_usd > 0`)이 없으면 null이다.
 - `budget` 블록은 query의 `startAt`/`endAt` 기간 필터와 무관하게 항상 당월(KST) 기준으로 계산한다 (BGT-REQ-020). `total_cost`는 기존대로 조회 기간 기준이다.
 - 활성 예산이 있고 당월 usage row가 없으면 `budget.current_month_cost=0`, `usage_ratio=0`, `status="normal"`이다.

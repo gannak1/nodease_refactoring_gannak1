@@ -6,6 +6,8 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.orm import Query, Session
 
 
 def _service():
@@ -341,6 +343,224 @@ def test_aggregate_workflow_usage_includes_null_organization_usage_for_primary_w
     assert item.completion_tokens == 20
     assert item.call_count == 1
     assert item.total_cost == pytest.approx(1.25)
+
+
+def test_aggregate_workflow_usage_excludes_explicit_cross_organization_usage():
+    AdminUsageService, AdminUsagePeriod = _service()
+    organization_id = uuid4()
+    other_organization_id = uuid4()
+    workflow_id = uuid4()
+    cross_only_workflow_id = uuid4()
+    app_id = uuid4()
+    cross_only_app_id = uuid4()
+    created_at = datetime(2026, 7, 5, 0, 0, tzinfo=timezone.utc)
+    db = _UsageSession(
+        usage_logs=[
+            _usage_log(
+                organization_id,
+                workflow_id,
+                prompt_tokens=10,
+                completion_tokens=2,
+                total_cost=Decimal("1.000000"),
+                created_at=created_at,
+            ),
+            _usage_log(
+                None,
+                workflow_id,
+                prompt_tokens=20,
+                completion_tokens=3,
+                total_cost=Decimal("2.000000"),
+                created_at=created_at,
+            ),
+            _usage_log(
+                other_organization_id,
+                workflow_id,
+                prompt_tokens=999,
+                completion_tokens=999,
+                total_cost=Decimal("99.000000"),
+                created_at=created_at,
+            ),
+            _usage_log(
+                other_organization_id,
+                cross_only_workflow_id,
+                prompt_tokens=999,
+                completion_tokens=999,
+                total_cost=Decimal("99.000000"),
+                created_at=created_at,
+            ),
+        ],
+        workflows=[
+            _workflow(workflow_id, app_id, organization_id),
+            _workflow(
+                cross_only_workflow_id,
+                cross_only_app_id,
+                organization_id,
+            ),
+        ],
+        apps=[
+            _app(
+                app_id,
+                "조직 범위 워크플로우",
+                workflow_id=workflow_id,
+                organization_id=organization_id,
+            ),
+            _app(
+                cross_only_app_id,
+                "타 조직 사용량만 있는 워크플로우",
+                workflow_id=cross_only_workflow_id,
+                organization_id=organization_id,
+            ),
+        ],
+    )
+
+    result = AdminUsageService.aggregate_workflow_usage(
+        db,
+        organization_id=organization_id,
+        period=AdminUsagePeriod(
+            start_at=datetime(2026, 7, 1, 0, 0, tzinfo=timezone.utc),
+            end_at=datetime(2026, 8, 1, 0, 0, tzinfo=timezone.utc),
+        ),
+    )
+
+    item = result.items[0]
+    assert item.prompt_tokens == 30
+    assert item.completion_tokens == 5
+    assert item.call_count == 2
+    assert item.total_cost == pytest.approx(3.0)
+    assert result.total == 2
+    cross_only_item = next(
+        item for item in result.items if item.workflow_id == cross_only_workflow_id
+    )
+    assert cross_only_item.prompt_tokens == 0
+    assert cross_only_item.completion_tokens == 0
+    assert cross_only_item.call_count == 0
+    assert cross_only_item.total_cost == 0
+
+
+def test_aggregate_workflow_usage_excludes_app_workflow_organization_mismatch():
+    AdminUsageService, AdminUsagePeriod = _service()
+    organization_id = uuid4()
+    other_organization_id = uuid4()
+    valid_workflow_id = uuid4()
+    mismatched_workflow_id = uuid4()
+    missing_workflow_id = uuid4()
+    valid_app_id = uuid4()
+    mismatched_app_id = uuid4()
+    missing_app_id = uuid4()
+    created_at = datetime(2026, 7, 5, 0, 0, tzinfo=timezone.utc)
+    db = _UsageSession(
+        usage_logs=[
+            _usage_log(
+                organization_id,
+                valid_workflow_id,
+                prompt_tokens=10,
+                completion_tokens=2,
+                total_cost=Decimal("1.000000"),
+                created_at=created_at,
+            ),
+            _usage_log(
+                organization_id,
+                mismatched_workflow_id,
+                prompt_tokens=999,
+                completion_tokens=999,
+                total_cost=Decimal("99.000000"),
+                created_at=created_at,
+            ),
+        ],
+        workflows=[
+            _workflow(valid_workflow_id, valid_app_id, organization_id),
+            _workflow(
+                mismatched_workflow_id,
+                mismatched_app_id,
+                other_organization_id,
+            ),
+        ],
+        apps=[
+            _app(
+                valid_app_id,
+                "정상 워크플로우",
+                workflow_id=valid_workflow_id,
+                organization_id=organization_id,
+            ),
+            _app(
+                mismatched_app_id,
+                "불일치 워크플로우",
+                workflow_id=mismatched_workflow_id,
+                organization_id=organization_id,
+            ),
+            _app(
+                missing_app_id,
+                "누락 워크플로우",
+                workflow_id=missing_workflow_id,
+                organization_id=organization_id,
+            ),
+        ],
+    )
+
+    result = AdminUsageService.aggregate_workflow_usage(
+        db,
+        organization_id=organization_id,
+        period=AdminUsagePeriod(
+            start_at=datetime(2026, 7, 1, 0, 0, tzinfo=timezone.utc),
+            end_at=datetime(2026, 8, 1, 0, 0, tzinfo=timezone.utc),
+        ),
+    )
+
+    assert result.total == 1
+    assert [item.workflow_id for item in result.items] == [valid_workflow_id]
+
+
+def test_aggregate_workflow_usage_sql_keeps_scope_guards_in_join_conditions(
+    monkeypatch,
+):
+    from apps.gateway.services.admin_usage_service import (
+        _aggregate_workflow_usage_query,
+    )
+
+    _, AdminUsagePeriod = _service()
+    organization_id = uuid4()
+    captured_sql = {}
+
+    def capture_count(query):
+        captured_sql["count"] = str(
+            query.statement.compile(dialect=postgresql.dialect())
+        )
+        return 0
+
+    def capture_rows(query):
+        captured_sql["rows"] = str(
+            query.statement.compile(dialect=postgresql.dialect())
+        )
+        return []
+
+    monkeypatch.setattr(Query, "count", capture_count)
+    monkeypatch.setattr(Query, "all", capture_rows)
+    db = Session()
+
+    try:
+        result = _aggregate_workflow_usage_query(
+            db,
+            organization_id=organization_id,
+            period=AdminUsagePeriod(
+                start_at=datetime(2026, 7, 1, 0, 0, tzinfo=timezone.utc),
+                end_at=datetime(2026, 8, 1, 0, 0, tzinfo=timezone.utc),
+            ),
+            page=1,
+            limit=20,
+            budget_now=datetime(2026, 7, 15, 0, 0, tzinfo=timezone.utc),
+        )
+    finally:
+        db.close()
+
+    assert result.total == 0
+    sql = " ".join(captured_sql["count"].split())
+    where_sql = sql.split(" WHERE ", 1)[1].split(" GROUP BY", 1)[0]
+    assert "JOIN workflows ON workflows.id = apps.workflow_id" in sql
+    assert "workflows.organization_id" in sql
+    assert "LEFT OUTER JOIN llm_usage_logs ON" in sql
+    assert "llm_usage_logs.organization_id" in sql
+    assert "llm_usage_logs.organization_id IS NULL" in sql
+    assert "llm_usage_logs.organization_id" not in where_sql
 
 
 def test_aggregate_workflow_usage_total_counts_primary_workflows_for_page_slice():

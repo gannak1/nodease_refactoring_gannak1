@@ -62,9 +62,10 @@ def test_budget_usage_serialization_passes_timezone_aware_kst_now(monkeypatch):
         updated_at=now,
     )
 
-    def fake_get_current_month_cost(db, *, workflow_id, now):
+    def fake_get_current_month_cost(db, *, workflow_id, now, organization_id=None):
         captured["workflow_id"] = workflow_id
         captured["now"] = now
+        captured["organization_id"] = organization_id
         return Decimal("1.00")
 
     monkeypatch.setattr(
@@ -82,6 +83,7 @@ def test_budget_usage_serialization_passes_timezone_aware_kst_now(monkeypatch):
 
     assert response.current_month_cost == 1.0
     assert captured["workflow_id"] == workflow_id
+    assert captured["organization_id"] == budget.organization_id
     assert captured["now"].tzinfo is not None
     assert captured["now"].utcoffset() == KST.utcoffset(captured["now"])
 

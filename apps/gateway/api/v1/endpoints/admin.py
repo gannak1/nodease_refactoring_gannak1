@@ -226,6 +226,7 @@ def _serialize_workflow_budget(
             db,
             workflow_id=budget.workflow_id,
             now=datetime.now(KST),
+            organization_id=budget.organization_id,
         )
         status = WorkflowBudgetService.classify_budget_usage(
             current_cost=current_cost,

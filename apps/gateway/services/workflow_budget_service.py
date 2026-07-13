@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import Any
 
 from fastapi import HTTPException
+from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -51,6 +52,7 @@ class WorkflowBudgetService:
         db: Session,
         workflow_id: Any,
         now: datetime,
+        organization_id: Any = None,
     ) -> Decimal:
         period = AdminUsageService.resolve_month_period_kst(now)
         if hasattr(db, "usage_logs"):
@@ -58,12 +60,14 @@ class WorkflowBudgetService:
                 db,
                 workflow_id=workflow_id,
                 period=period,
+                organization_id=organization_id,
             )
 
         return _current_month_cost_query(
             db,
             workflow_id=workflow_id,
             period=period,
+            organization_id=organization_id,
         )
 
     @staticmethod
@@ -245,6 +249,7 @@ def _current_month_cost_fake(
     *,
     workflow_id: Any,
     period: Any,
+    organization_id: Any = None,
 ) -> Decimal:
     return sum(
         (
@@ -252,6 +257,11 @@ def _current_month_cost_fake(
             for usage in db.usage_logs
             if usage.workflow_id == workflow_id
             and period.start_at <= usage.created_at < period.end_at
+            and (
+                organization_id is None
+                or usage.organization_id is None
+                or usage.organization_id == organization_id
+            )
         ),
         Decimal("0"),
     )
@@ -262,16 +272,21 @@ def _current_month_cost_query(
     *,
     workflow_id: Any,
     period: Any,
+    organization_id: Any = None,
 ) -> Decimal:
-    total = (
-        db.query(_total_cost_sum())
-        .filter(
-            LLMUsageLog.workflow_id == workflow_id,
-            LLMUsageLog.created_at >= period.start_at,
-            LLMUsageLog.created_at < period.end_at,
-        )
-        .scalar()
+    query = db.query(_total_cost_sum()).filter(
+        LLMUsageLog.workflow_id == workflow_id,
+        LLMUsageLog.created_at >= period.start_at,
+        LLMUsageLog.created_at < period.end_at,
     )
+    if organization_id is not None:
+        query = query.filter(
+            or_(
+                LLMUsageLog.organization_id == organization_id,
+                LLMUsageLog.organization_id.is_(None),
+            )
+        )
+    total = query.scalar()
     return AdminUsageService.coalesce_cost(total)
 
 
