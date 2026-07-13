@@ -1,7 +1,7 @@
 # Organization API Spec
 
 Status: Draft
-Verified Against: feature/mba-188 @ 59d1cc51
+Verified Against: feature/mba-136 @ 9819d16a
 
 검증 값은 actor access profile/team/resource/action과 MBA-188이 보강한 member/team/user-direct/App 권한 mutation 계약에 적용한다. 다른 organization endpoint는 각 구현 이력의 기준을 따른다.
 
