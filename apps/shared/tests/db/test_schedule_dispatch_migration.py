@@ -4,7 +4,6 @@ import importlib
 import inspect
 
 import pytest
-
 from apps.shared.alembic.schedule_dispatch_downgrade import (
     DESTRUCTIVE_DOWNGRADE_ENV,
     assert_schedule_configuration_quarantine_downgrade_is_safe,
@@ -71,6 +70,7 @@ def test_claim_model_declares_required_constraints_and_indexes():
     outcome_review = constraints["ck_schedule_dispatch_claims_outcome_review"]
     assert "status = 'canceled' AND safe_reason_code IS NOT NULL" in safe_reason
     assert "status = 'dead_lettered' AND safe_reason_code IS NOT NULL" in safe_reason
+    assert "configuration_preflight_blocked" in safe_reason
     assert "outcome_resolution_code IS NOT NULL" in outcome_review
 
 
@@ -368,6 +368,62 @@ def test_schedule_head_downgrade_guards_noop_graph_move(monkeypatch):
     ]
 
 
+class _ConfigurationReasonConnection:
+    def __init__(self, blocking_row):
+        self.blocking_row = blocking_row
+
+    def execute(self, statement, params=None):
+        assert "schedule_dispatch_claims" in str(statement)
+        assert params == {"reason": "configuration_preflight_blocked"}
+        return _DowngradeResult(self.blocking_row)
+
+
+def test_configuration_preflight_reason_migration_extends_current_head():
+    migration = importlib.import_module(
+        "apps.shared.alembic.versions."
+        "0f4a5b6c7d89_add_schedule_configuration_preflight_reason"
+    )
+
+    assert migration.revision == "0f4a5b6c7d89"
+    assert migration.down_revision == "fd3e4f5a6b78"
+    assert "configuration_preflight_blocked" in migration._safe_reason_constraint(
+        include_configuration_preflight=True
+    )
+    assert "configuration_preflight_blocked" not in migration._safe_reason_constraint(
+        include_configuration_preflight=False
+    )
+
+
+@pytest.mark.parametrize("blocking_row", (None, 1))
+def test_configuration_preflight_reason_downgrade_is_fail_closed_before_ddl(
+    monkeypatch,
+    blocking_row,
+):
+    migration = importlib.import_module(
+        "apps.shared.alembic.versions."
+        "0f4a5b6c7d89_add_schedule_configuration_preflight_reason"
+    )
+    calls: list[str] = []
+    monkeypatch.setattr(
+        migration,
+        "op",
+        _MigrationOperations(
+            calls,
+            connection=_ConfigurationReasonConnection(blocking_row),
+        ),
+    )
+
+    if blocking_row is not None:
+        with pytest.raises(RuntimeError, match="Cannot downgrade"):
+            migration.downgrade()
+        assert calls == ["get_bind"]
+        return
+
+    migration.downgrade()
+
+    assert calls == ["get_bind", "drop_constraint", "create_check_constraint"]
+
+
 @pytest.mark.parametrize(
     "module_name",
     (
@@ -409,8 +465,7 @@ def test_schedule_merge_downgrade_guards_graph_split(monkeypatch, module_name):
     ("module_name", "expected_guards"),
     (
         (
-            "apps.shared.alembic.versions."
-            "fa8b9c0d1e23_add_schedule_dispatch_claims",
+            "apps.shared.alembic.versions.fa8b9c0d1e23_add_schedule_dispatch_claims",
             ("assert_schedule_dispatch_downgrade_is_safe",),
         ),
         (

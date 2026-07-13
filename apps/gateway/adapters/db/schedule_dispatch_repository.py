@@ -184,6 +184,9 @@ class SqlAlchemyScheduleDispatchRepository:
                 and app
                 and app.active_deployment_id == deployment.id
             ),
+            graph_snapshot=(
+                deployment.graph_snapshot if deployment is not None else None
+            ),
         )
 
     def mark_dispatching(

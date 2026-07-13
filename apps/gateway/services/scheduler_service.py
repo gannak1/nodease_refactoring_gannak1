@@ -25,6 +25,7 @@ from apps.gateway.application.deployment.schedule_ports import (
     ScheduleDispatchAuditRecorderPort,
     ScheduleDispatchRepositoryPort,
     ScheduleDispatchUnitOfWork,
+    ScheduleConfigurationPreflightPort,
     ScheduleTaskPublisherPort,
 )
 from apps.shared.db.models.schedule import Schedule
@@ -49,6 +50,7 @@ class ScheduleDispatchDependencies:
     repository: ScheduleDispatchRepositoryPort
     audit: ScheduleDispatchAuditRecorderPort
     budget: BudgetDecisionPort
+    configuration_preflight: ScheduleConfigurationPreflightPort
     uow: ScheduleDispatchUnitOfWork
 
 
@@ -248,6 +250,7 @@ class SchedulerService:
             return self.dispatch_use_case.prepare_publish_batch(
                 repository=dependencies.repository,
                 budget=dependencies.budget,
+                configuration_preflight=dependencies.configuration_preflight,
                 audit=dependencies.audit,
                 uow=dependencies.uow,
                 owner=self.instance_id,

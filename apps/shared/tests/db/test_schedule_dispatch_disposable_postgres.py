@@ -69,6 +69,9 @@ RUN_ENV = "NODEASE_RUN_DISPOSABLE_DB_TEST"
 DB_PREFIX = "mbased_schedule_claim"
 SCHEDULE_HEAD_REVISION = "ff5c6d7e8f90"
 MERGE_REVISION = "ff4b5c6d7e89"
+CONFIGURATION_PREFLIGHT_PARENT_REVISION = "c05d6e7f8a90"
+CONFIGURATION_PREFLIGHT_REVISION = "0f4a5b6c7d89"
+CONFIGURATION_PREFLIGHT_REASON = "configuration_preflight_blocked"
 
 
 def _run_alembic(
@@ -193,6 +196,171 @@ def _insert_pending_claim(database: str, config: DisposablePostgresConfig) -> No
             )
     finally:
         engine.dispose()
+
+
+def _configuration_preflight_claim_parameters(
+    *, status: str = "canceled"
+) -> dict[str, object]:
+    now = datetime.now(timezone.utc)
+    return {
+        "id": uuid.uuid4(),
+        "schedule_id": uuid.uuid4(),
+        "organization_id": uuid.uuid4(),
+        "deployment_id": uuid.uuid4(),
+        "scheduled_for": now,
+        "idempotency_key": f"schedule:{uuid.uuid4()}",
+        "status": status,
+        "safe_reason_code": CONFIGURATION_PREFLIGHT_REASON,
+        "claimed_at": now,
+        "completed_at": now if status == "canceled" else None,
+    }
+
+
+_INSERT_CONFIGURATION_PREFLIGHT_CANCELLATION = """
+    INSERT INTO schedule_dispatch_claims (
+        id, schedule_id, organization_id, deployment_id,
+        scheduled_for, idempotency_key, status, attempt_count,
+        safe_reason_code, claimed_at, completed_at
+    ) VALUES (
+        :id, :schedule_id, :organization_id, :deployment_id,
+        :scheduled_for, :idempotency_key, :status, 0,
+        :safe_reason_code, :claimed_at, :completed_at
+    )
+"""
+
+
+@pytest.mark.skipif(
+    os.getenv(RUN_ENV) != "1",
+    reason=f"set {RUN_ENV}=1 to run disposable PostgreSQL schedule migration smoke",
+)
+def test_configuration_preflight_reason_upgrade_and_downgrade_guard():
+    try:
+        config = DisposablePostgresConfig.from_environment()
+    except DisposablePostgresConfigurationError:
+        raise pytest.fail.Exception(
+            "disposable PostgreSQL connection settings are not safely configured",
+            pytrace=False,
+        ) from None
+
+    database = f"{DB_PREFIX}_{uuid.uuid4().hex[:12]}"
+    quoted_database = quote_disposable_database_name(database, prefix=DB_PREFIX)
+    admin_engine = create_engine(
+        config.database_url(config.maintenance_database),
+        isolation_level="AUTOCOMMIT",
+    )
+    database_created = False
+
+    try:
+        with admin_engine.connect() as connection:
+            connection.execute(text(f"CREATE DATABASE {quoted_database}"))
+        database_created = True
+
+        _enable_vector_extension(database, config)
+        _run_alembic(
+            "upgrade",
+            CONFIGURATION_PREFLIGHT_PARENT_REVISION,
+            database=database,
+            config=config,
+            expect_success=True,
+        )
+        assert _revision(database, config) == CONFIGURATION_PREFLIGHT_PARENT_REVISION
+
+        engine = create_engine(config.database_url(database))
+        try:
+            _assert_integrity_error(
+                engine,
+                _INSERT_CONFIGURATION_PREFLIGHT_CANCELLATION,
+                _configuration_preflight_claim_parameters(),
+            )
+        finally:
+            engine.dispose()
+
+        _run_alembic(
+            "upgrade",
+            CONFIGURATION_PREFLIGHT_REVISION,
+            database=database,
+            config=config,
+            expect_success=True,
+        )
+        assert _revision(database, config) == CONFIGURATION_PREFLIGHT_REVISION
+
+        engine = create_engine(config.database_url(database))
+        try:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(_INSERT_CONFIGURATION_PREFLIGHT_CANCELLATION),
+                    _configuration_preflight_claim_parameters(),
+                )
+
+            _assert_integrity_error(
+                engine,
+                _INSERT_CONFIGURATION_PREFLIGHT_CANCELLATION,
+                _configuration_preflight_claim_parameters(status="pending"),
+            )
+        finally:
+            engine.dispose()
+
+        _run_alembic(
+            "downgrade",
+            "-1",
+            database=database,
+            config=config,
+            expect_success=False,
+        )
+        assert _revision(database, config) == CONFIGURATION_PREFLIGHT_REVISION
+
+        engine = create_engine(config.database_url(database))
+        try:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "DELETE FROM schedule_dispatch_claims "
+                        "WHERE safe_reason_code = :safe_reason_code"
+                    ),
+                    {"safe_reason_code": CONFIGURATION_PREFLIGHT_REASON},
+                )
+        finally:
+            engine.dispose()
+
+        _run_alembic(
+            "downgrade",
+            "-1",
+            database=database,
+            config=config,
+            expect_success=True,
+        )
+        assert _revision(database, config) == CONFIGURATION_PREFLIGHT_PARENT_REVISION
+    except OperationalError:
+        raise pytest.fail.Exception(
+            "disposable PostgreSQL is unavailable or rejected the connection; "
+            "connection details omitted",
+            pytrace=False,
+        ) from None
+    finally:
+        if database_created:
+            try:
+                with admin_engine.connect() as connection:
+                    connection.execute(
+                        text(
+                            """
+                            SELECT pg_terminate_backend(pid)
+                            FROM pg_stat_activity
+                            WHERE datname = :database
+                              AND pid <> pg_backend_pid()
+                            """
+                        ),
+                        {"database": database},
+                    )
+                    connection.execute(
+                        text(f"DROP DATABASE IF EXISTS {quoted_database}")
+                    )
+            except OperationalError:
+                raise pytest.fail.Exception(
+                    "disposable PostgreSQL cleanup could not connect; "
+                    "connection details omitted",
+                    pytrace=False,
+                ) from None
+        admin_engine.dispose()
 
 
 def _seed_active_schedule(database: str, config: DisposablePostgresConfig):

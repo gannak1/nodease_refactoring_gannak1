@@ -42,6 +42,7 @@ class DispatchCanonicalContext:
     deployment_type: object | None
     deployment_active: bool
     deployment_current: bool
+    graph_snapshot: dict | None
 
 
 @dataclass(frozen=True, slots=True)

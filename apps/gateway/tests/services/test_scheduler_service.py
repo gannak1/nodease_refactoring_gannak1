@@ -126,9 +126,7 @@ def test_add_schedule_validates_and_sets_cursor_without_commit():
 
     service.add_schedule(schedule, db)
 
-    assert schedule.next_run_at == datetime(
-        2026, 7, 10, 10, 0, tzinfo=timezone.utc
-    )
+    assert schedule.next_run_at == datetime(2026, 7, 10, 10, 0, tzinfo=timezone.utc)
     assert schedule.configuration_error_code is None
     assert db.commits == 0
 
@@ -148,6 +146,41 @@ def test_add_schedule_rejects_invalid_configuration_without_commit():
     assert db.commits == 0
 
 
+def test_configuration_preflight_is_wired_to_publish_preparation_only():
+    service = _service()
+    session = SimpleNamespace(close=lambda: None)
+    configuration_preflight = object()
+    dependencies = SimpleNamespace(
+        repository=object(),
+        budget=object(),
+        configuration_preflight=configuration_preflight,
+        audit=object(),
+        uow=object(),
+    )
+    calls = {}
+
+    class _OccurrenceUseCase:
+        def claim_due_occurrences(self, **kwargs):
+            calls["occurrence"] = kwargs
+            return 0
+
+    class _DispatchUseCase:
+        def prepare_publish_batch(self, **kwargs):
+            calls["dispatch"] = kwargs
+            return SchedulePublishBatch(requests=())
+
+    service.session_factory = lambda: session
+    service.dependency_builder = lambda _db: dependencies
+    service.occurrence_use_case = _OccurrenceUseCase()
+    service.dispatch_use_case = _DispatchUseCase()
+
+    service._claim_due_occurrences()
+    service._prepare_publish_batch()
+
+    assert "configuration_preflight" not in calls["occurrence"]
+    assert calls["dispatch"]["configuration_preflight"] is configuration_preflight
+
+
 def test_tick_publishes_after_prepare_and_records_success(monkeypatch):
     publisher = _Publisher()
     service = _service(publisher=publisher)
@@ -157,9 +190,7 @@ def test_tick_publishes_after_prepare_and_records_success(monkeypatch):
         lease_owner="owner",
     )
     order = []
-    monkeypatch.setattr(
-        service, "_recover_critical", lambda: order.append("recover")
-    )
+    monkeypatch.setattr(service, "_recover_critical", lambda: order.append("recover"))
     monkeypatch.setattr(
         service,
         "_reconcile_uninitialized",
@@ -173,17 +204,13 @@ def test_tick_publishes_after_prepare_and_records_success(monkeypatch):
     monkeypatch.setattr(
         service,
         "_prepare_publish_batch",
-        lambda: (
-            order.append("prepare")
-            or SchedulePublishBatch(requests=(request,))
-        ),
+        lambda: order.append("prepare") or SchedulePublishBatch(requests=(request,)),
     )
     monkeypatch.setattr(
         service,
         "_record_publish_result",
         lambda _request, *, accepted: (
-            order.append(f"result:{accepted}")
-            or SchedulePublishResult(changed=True)
+            order.append(f"result:{accepted}") or SchedulePublishResult(changed=True)
         ),
     )
     monkeypatch.setattr(
@@ -340,9 +367,7 @@ def test_publish_result_failure_does_not_block_remaining_batch(
 def test_drain_mode_skips_new_occurrence_claiming(monkeypatch):
     service = _service(mode="drain")
     calls = []
-    monkeypatch.setattr(
-        service, "_recover_critical", lambda: calls.append("recover")
-    )
+    monkeypatch.setattr(service, "_recover_critical", lambda: calls.append("recover"))
     monkeypatch.setattr(
         service,
         "_reconcile_uninitialized",
@@ -376,9 +401,7 @@ def test_drain_mode_skips_new_occurrence_claiming(monkeypatch):
 def test_optional_maintenance_failures_do_not_block_dispatch(monkeypatch):
     service = _service(mode="claim")
     calls = []
-    monkeypatch.setattr(
-        service, "_recover_critical", lambda: calls.append("recover")
-    )
+    monkeypatch.setattr(service, "_recover_critical", lambda: calls.append("recover"))
     monkeypatch.setattr(service, "_reconcile_uninitialized", lambda: None)
     monkeypatch.setattr(service, "_claim_due_occurrences", lambda: None)
     monkeypatch.setattr(
