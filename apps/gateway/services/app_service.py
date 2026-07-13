@@ -1098,10 +1098,14 @@ class AppService:
         )
 
         cleaned_data = strip_workflow_node_bindings(graph_snapshot)
-        nodes = cleaned_data.get("nodes", [])
-
-        for node in nodes:
+        pending = list(cleaned_data.get("nodes", []))
+        while pending:
+            node = pending.pop()
+            if not isinstance(node, dict):
+                continue
             data = node.get("data", {})
+            if not isinstance(data, dict):
+                continue
             node_type = node.get("type")
 
             if node_type == "llmNode":
@@ -1110,9 +1114,19 @@ class AppService:
                 data.pop("api_token", None)
             elif node_type == "httpRequestNode":
                 data.pop("authConfig", None)
+            elif node_type == "slackPostNode":
+                data.pop("authConfig", None)
+                data.pop("url", None)
+                data.pop("headers", None)
+                data.pop("body", None)
             elif node_type == "mailNode":
                 data.pop("password", None)
                 data.pop("email", None)
+
+            subgraph = data.get("subGraph")
+            nested = subgraph.get("nodes") if isinstance(subgraph, dict) else None
+            if isinstance(nested, list):
+                pending.extend(nested)
 
         return cleaned_data
 
