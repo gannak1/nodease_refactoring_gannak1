@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import {
-  Activity,
   AlertCircle,
   CheckCircle,
   ExternalLink,
@@ -31,7 +30,7 @@ import {
   type KnowledgeBaseResponse,
 } from '@/app/features/knowledge/api/knowledgeApi';
 
-type SettingsTab = 'access' | 'credentials' | 'activity';
+type SettingsTab = 'access' | 'credentials';
 type ResourceType = 'workflow' | 'knowledge_base' | 'llm_credential';
 type GranteeType = 'team' | 'user';
 type AuthState = 'viewer' | 'operator' | 'builder' | 'manager';
@@ -101,15 +100,6 @@ type AppResponse = {
   workflow_id?: string;
 };
 
-type AuditItem = {
-  id: string;
-  occurred_at: string;
-  action: string;
-  target_type: string;
-  target_id?: string;
-  status: string;
-};
-
 const API_BASE_URL = '/api/v1';
 const AUTH_STATES: AuthState[] = ['viewer', 'operator', 'builder', 'manager'];
 
@@ -149,7 +139,6 @@ export default function SettingsPage() {
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseResponse[]>(
     [],
   );
-  const [auditItems, setAuditItems] = useState<AuditItem[]>([]);
   const [workflowPermissions, setWorkflowPermissions] =
     useState<ResourcePermissionListResponse | null>(null);
   const [knowledgePermissions, setKnowledgePermissions] =
@@ -192,17 +181,13 @@ export default function SettingsPage() {
         ? [
             ['access', 'Access'],
             ['credentials', 'LLM Credentials'],
-            ['activity', 'Activity'],
           ]
-        : [
-            ['credentials', 'LLM Credentials'],
-            ['activity', 'Activity'],
-          ],
+        : [['credentials', 'LLM Credentials']],
     [isManager],
   );
   const effectiveTab = visibleTabs.some(([key]) => key === activeTab)
     ? activeTab
-    : visibleTabs[0]?.[0] || 'credentials';
+    : 'credentials';
 
   const activePermissions =
     permissionForm.resourceType === 'workflow'
@@ -293,12 +278,11 @@ export default function SettingsPage() {
       setActiveOrganizationId(org.id);
       setOrganization(org);
 
-      const [providerData, credentialData, appData, audit, knowledgeData] =
+      const [providerData, credentialData, appData, knowledgeData] =
         await Promise.all([
           apiRequest<LLMProviderResponse[]>('/llm/providers'),
           apiRequest<LLMCredentialResponse[]>('/llm/credentials'),
           apiRequest<AppResponse[]>('/apps'),
-          apiRequest<{ items: AuditItem[] }>('/users/me/audit-logs?limit=30'),
           org.is_manager ? knowledgeApi.getKnowledgeBases().catch(() => []) : [],
         ]);
 
@@ -306,7 +290,6 @@ export default function SettingsPage() {
       setCredentials(credentialData);
       setApps(appData);
       setKnowledgeBases(knowledgeData);
-      setAuditItems(audit.items || []);
 
       const firstWorkflowId =
         selectedWorkflowId ||
@@ -541,10 +524,6 @@ export default function SettingsPage() {
       },
     );
     await loadPermissions();
-    const audit = await apiRequest<{ items: AuditItem[] }>(
-      '/users/me/audit-logs?limit=30',
-    );
-    setAuditItems(audit.items || []);
   };
 
   const handleRevokePermission = async (
@@ -961,7 +940,7 @@ export default function SettingsPage() {
             </div>
           </section>
         </div>
-      ) : effectiveTab === 'credentials' ? (
+      ) : (
         <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
           <section className="grid gap-4">
             {providers.map((provider) => {
@@ -1060,45 +1039,6 @@ export default function SettingsPage() {
             </p>
           </section>
         </div>
-      ) : (
-        <section className="rounded-lg border border-gray-200">
-          <div className="border-b border-gray-200 px-4 py-3">
-            <h2 className="flex items-center gap-2 text-sm font-semibold text-gray-900">
-              <Activity className="h-4 w-4 text-blue-600" />
-              Audit Activity
-            </h2>
-          </div>
-          <div className="divide-y divide-gray-100">
-            {auditItems.length === 0 ? (
-              <div className="px-4 py-8 text-center text-sm text-gray-500">
-                표시할 activity 없음
-              </div>
-            ) : (
-              auditItems.map((item) => (
-                <div
-                  key={item.id}
-                  className="grid gap-2 px-4 py-3 text-sm sm:grid-cols-[220px_1fr_160px]"
-                >
-                  <span className="text-gray-500">
-                    {new Date(item.occurred_at).toLocaleString()}
-                  </span>
-                  <span className="font-medium text-gray-900">
-                    {item.action} · {item.target_type}
-                  </span>
-                  <span
-                    className={`w-fit rounded-md px-2 py-0.5 text-xs font-medium ${
-                      item.status === 'failure'
-                        ? 'bg-red-50 text-red-700'
-                        : 'bg-gray-100 text-gray-700'
-                    }`}
-                  >
-                    {item.status}
-                  </span>
-                </div>
-              ))
-            )}
-          </div>
-        </section>
       )}
     </div>
   );

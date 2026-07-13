@@ -1,7 +1,7 @@
 # Organization Component Spec
 
 Status: Draft
-Verified Against: feature/mba-188 @ 59d1cc51
+Verified Against: feature/mba-127 @ 258b26a9
 
 검증 값은 ActorAccessDrawer/confirm과 관련 organization API wrapper에 적용한다. 기존 organization 관리 UI의 나머지 섹션은 각 구현 이력의 기준을 따른다.
 
@@ -48,8 +48,9 @@ Verified Against: feature/mba-188 @ 59d1cc51
 - 경로: `/dashboard/settings`
 - 책임: 현재 organization 이름과 organization auth badge를 표시한다. Access-management tab을 노출하는 경우 AdminConsolePage와 같은 workflow/KB/LLM permission semantics를 사용해야 한다.
 - 현재 동작:
-  - code에는 access-management branch가 남아 있지만 현재 기본 visible path는 AdminConsolePage다.
-  - Settings access-management를 활성화하면 KB direct grant/revoke와 `none` 거부, DELETE revoke, active member prerequisite를 AdminConsolePage와 동일하게 구현한다.
+  - organization manager에게 `Access`, `LLM Credentials` tab을 노출하고 일반 member에게 `LLM Credentials` tab만 노출한다.
+  - 감사 조회는 AdminConsolePage의 감사 로그 tab이 소유하며 SettingsPage는 Activity tab 또는 본인 audit-log 요청을 제공하지 않는다.
+  - Settings access-management는 KB direct grant/revoke와 `none` 거부, DELETE revoke, active member prerequisite를 AdminConsolePage와 동일하게 구현한다.
 
 ### CreateAppModal Permission Request State
 
@@ -435,9 +436,10 @@ Verified Against: feature/mba-188 @ 59d1cc51
 ### SettingsPage
 
 - loading/error state를 가진다.
-- visible tab은 현재 `credentials`, `activity`이다.
+- visible tab은 organization manager의 `access`, `credentials`와 일반 member의 `credentials`이다. `activity` tab은 제공하지 않는다.
 - organization name과 auth badge를 표시한다.
-- `access` branch를 visible navigation에 노출하는 경우 AdminConsolePage와 같은 workflow/KB/LLM permission list/grant/revoke contract를 사용한다.
+- `access` branch는 AdminConsolePage와 같은 workflow/KB/LLM permission list/grant/revoke contract를 사용한다.
+- 감사 로그 조회와 표시는 AdminConsolePage가 소유하며 SettingsPage는 `/users/me/audit-logs`를 요청하지 않는다.
 
 ### CreateAppModal Permission Request State
 
