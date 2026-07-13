@@ -21,7 +21,7 @@ Agent Builder panel은 workflow를 직접 실행하지 않는다. 사용자가 P
 | --- | --- |
 | `AgentBuilderLauncher` | 우측 하단 고정 entry point |
 | `AgentBuilderChatPanel` | 대화 목록, 입력창, pending 상태, cancel control |
-| `AgentBuilderIntentModelSelector` | Header에서 active organization의 권한 확인 model/credential 조합을 provider별로 표시하고 내부 intent planner 선택을 관리. 첫 사용 가능 option을 표시 기본값으로 사용하며 선택 ID는 message request에만 포함. 선택 메뉴는 chat panel 가로 폭의 약 절반을 사용하고 모델 행 약 5개 높이 이후에는 내부 스크롤로 나머지 option을 표시 |
+| `AgentBuilderIntentModelSelector` | Header에서 active organization의 권한 확인 model/credential 조합을 provider별로 표시하고 내부 intent planner 선택을 관리. MBA-240 동안 권한 있는 OpenAI `gpt-5.5` 정확 일치 option이 있으면 첫 option으로 표시하고, 없으면 기존 정렬의 첫 option을 기본값으로 사용. 사용자가 다른 option으로 변경할 수 있으며 선택 ID는 message request에만 포함하고 저장하지 않음. 선택 메뉴는 chat panel 가로 폭의 약 절반을 사용하고 모델 행 약 5개 높이 이후에는 내부 스크롤로 나머지 option을 표시 |
 | `AgentBuilderMessageList` | 사용자 메시지, agent response, clarification, warning 표시 |
 | `DraftPreviewSummary` | chatbot panel 안에서 생성/변경될 workflow 요약과 `도안 생성 미리보기` action 표시 |
 | `PreviewModeController` | actual editor graph와 preview graph를 분리하고 Preview Mode 진입/종료 제어 |
@@ -48,8 +48,8 @@ Answer/Output 계열 node의 output variable 목록, value selector, input/outpu
 | `ConversationSessionService` | server-issued chat session, redaction된 사용자 message summary와 assistant response로 구성된 최근 메시지, pending request, cancel state 관리. Session은 인증 사용자, active organization, workflow/app scope, agent panel lifecycle에 묶인다 |
 | `LLMIntentExtractor` | redaction된 사용자 요청, safe workflow context, `PreIntentKnowledgeContextProvider`의 bounded safe KB 후보를 명시적으로 선택되고 요청마다 재검증된 permission-aware LLM runtime에 전달하고 schema-validated 의미 후보를 반환. Raw graph, node/edge id, credential, raw provider response를 구조화 결과에 포함하지 않음 |
 | `PreIntentKnowledgeContextProvider` | 기존 Knowledge candidate resolver와 metadata ranker로 권한/readiness를 통과한 후보를 조회하고 상위 20개의 opaque handle, safe label/topics/description, runtime availability, bounded relevance만 Intent LLM에 투영 |
-| `AgentBuilderIntentModelOptionService` | Active organization의 valid credential, active chat model, verified relation, `use` permission을 결합해 ADR-0025 provider group과 결정적 model 순서 반환 |
-| `DraftLLMModelRecommender` | 같은 권한 확인 model 후보에서 provider 순서, 최신 세대, `mini` 우선, 나머지 낮은 tier 순으로 generated LLM node 기본 model id 추천. Credential은 graph에 저장하지 않고 후보가 없으면 unresolved 설정 issue 반환 |
+| `AgentBuilderIntentModelOptionService` | Active organization의 valid credential, active chat model, verified relation, `use` permission을 결합해 provider group과 결정적 model 순서 반환. MBA-240 임시 예외로 OpenAI `gpt-5.5` 정확 일치를 먼저 배치하고 없으면 ADR-0025의 기존 순서 사용 |
+| `DraftLLMModelRecommender` | 같은 권한 확인 model 후보에서 MBA-240 임시 OpenAI `gpt-5.5` 정확 일치를 먼저 추천하고, 없으면 provider 순서, 최신 세대, `mini` 우선, 나머지 낮은 tier 순으로 generated LLM node 기본 model id 추천. Credential은 graph에 저장하지 않고 후보가 없으면 unresolved 설정 issue 반환. 기존 node의 저장 model은 덮어쓰지 않음 |
 | `StructuredRequestBuilder` | 자연어 의미 후보를 안전한 `StructuredRequest`로 정규화 |
 | `WorkflowContextSnapshotBuilder` | graph, selected node, selected edge, existing node/edge summary 생성 |
 | `TargetResolver` | 기존 workflow 수정 target 해석 |

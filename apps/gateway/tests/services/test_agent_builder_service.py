@@ -4192,11 +4192,11 @@ def test_agent_builder_draft_uses_permission_aware_model_recommendation(monkeypa
         service_module.LLMService,
         "get_agent_builder_draft_model_recommendation",
         lambda *args, **kwargs: SimpleNamespace(
-            model=SimpleNamespace(model_id_for_api_call="gpt-5.5-mini")
+            model=SimpleNamespace(model_id_for_api_call="gpt-5.5")
         ),
     )
 
-    assert svc._recommended_draft_model_id() == "gpt-5.5-mini"  # noqa: SLF001
+    assert svc._recommended_draft_model_id() == "gpt-5.5"  # noqa: SLF001
     db.close()
 
 

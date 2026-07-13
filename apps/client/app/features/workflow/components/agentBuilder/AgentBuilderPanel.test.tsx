@@ -99,6 +99,19 @@ describe('AgentBuilderPanel', () => {
           {
             model: {
               id: 'model-openai',
+              model_id_for_api_call: 'gpt-5.5',
+              name: 'GPT-5.5',
+              provider_name: 'openai',
+            },
+            credential: {
+              id: 'credential-openai',
+              credential_name: 'OpenAI Main',
+            },
+            relation_priority: 0,
+          },
+          {
+            model: {
+              id: 'model-openai-pro',
               model_id_for_api_call: 'gpt-5.5-pro',
               name: 'GPT-5.5 Pro',
               provider_name: 'openai',
@@ -161,7 +174,7 @@ describe('AgentBuilderPanel', () => {
 
     fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
     await screen.findByRole('button', {
-      name: /Agent Builder 모델: GPT-5.5 Pro/,
+      name: /Agent Builder 모델: GPT-5.5$/,
     });
     expect(screen.getByText('Agent Builder')).toBeInTheDocument();
 
@@ -197,9 +210,9 @@ describe('AgentBuilderPanel', () => {
     );
 
     fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
-    await screen.findByRole('button', { name: /Agent Builder 모델: GPT-5.5 Pro/ });
+    await screen.findByRole('button', { name: /Agent Builder 모델: GPT-5.5$/ });
     fireEvent.click(
-      screen.getByRole('button', { name: /Agent Builder 모델: GPT-5.5 Pro/ }),
+      screen.getByRole('button', { name: /Agent Builder 모델: GPT-5.5$/ }),
     );
 
     expect(screen.getByTestId('agent-builder-model-menu')).toHaveClass(
@@ -1648,7 +1661,7 @@ describe('AgentBuilderPanel', () => {
 
     fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
     await screen.findByRole('button', {
-      name: /Agent Builder 모델: GPT-5.5 Pro/,
+      name: /Agent Builder 모델: GPT-5.5$/,
     });
 
     expect(

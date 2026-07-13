@@ -1,3 +1,4 @@
+import copy
 import json
 import uuid
 
@@ -12,6 +13,7 @@ from apps.gateway.services.llm_service import (
     LLMCredentialNotAvailableError,
     LLMService,
 )
+from apps.gateway.services.workflow_service import WorkflowService
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.agent_builder import (
     AgentBuilderDraft,
@@ -34,7 +36,11 @@ from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_run import WorkflowRun
 from apps.shared.db.session import engine
-from apps.shared.schemas.agent_builder import AgentBuilderApplyRequest
+from apps.shared.schemas.agent_builder import (
+    AgentBuilderApplyRequest,
+    AgentBuilderMessageRequest,
+)
+from apps.shared.schemas.workflow import WorkflowDraftRequest
 
 
 @pytest.fixture
@@ -102,8 +108,16 @@ def test_agent_builder_selected_model_rechecks_db_permission_and_relation(db_ses
     db_session.flush()
     model = LLMModel(
         provider_id=provider.id,
-        model_id_for_api_call="gpt-5.5-pro-integration",
-        name="GPT-5.5 Pro Integration",
+        model_id_for_api_call="gpt-5.5",
+        name="GPT-5.5",
+        type="chat",
+        context_window=8192,
+        is_active=True,
+    )
+    pro_model = LLMModel(
+        provider_id=provider.id,
+        model_id_for_api_call="gpt-5.5-pro",
+        name="GPT-5.5 Pro",
         type="chat",
         context_window=8192,
         is_active=True,
@@ -117,11 +131,17 @@ def test_agent_builder_selected_model_rechecks_db_permission_and_relation(db_ses
         config_preview="inte****",
         is_valid=True,
     )
-    db_session.add_all([model, credential])
+    db_session.add_all([model, pro_model, credential])
     db_session.flush()
     relation = LLMRelCredentialModel(
         credential_id=credential.id,
         model_id=model.id,
+        is_verified=True,
+        priority=5,
+    )
+    pro_relation = LLMRelCredentialModel(
+        credential_id=credential.id,
+        model_id=pro_model.id,
         is_verified=True,
         priority=0,
     )
@@ -132,7 +152,7 @@ def test_agent_builder_selected_model_rechecks_db_permission_and_relation(db_ses
         auth_state="operator",
         assigned_by=manager.id,
     )
-    db_session.add_all([relation, permission])
+    db_session.add_all([relation, pro_relation, permission])
     db_session.flush()
 
     groups = LLMService.get_agent_builder_model_option_groups(
@@ -143,8 +163,11 @@ def test_agent_builder_selected_model_rechecks_db_permission_and_relation(db_ses
     openai_options = next(
         group.options for group in groups if group.provider_name == "openai"
     )
-    assert [option.credential.id for option in openai_options] == [credential.id]
-    assert [option.model.id for option in openai_options] == [model.id]
+    assert [option.credential.id for option in openai_options] == [
+        credential.id,
+        credential.id,
+    ]
+    assert [option.model.id for option in openai_options] == [model.id, pro_model.id]
     recommendation = LLMService.get_agent_builder_draft_model_recommendation(
         db_session,
         actor.id,
@@ -191,7 +214,123 @@ def test_agent_builder_selected_model_rechecks_db_permission_and_relation(db_ses
     assert exc.value.reason == "credential_use_denied"
 
 
-def test_agent_builder_apply_save_persists_layout_and_audit_without_execution(db_session):
+@pytest.mark.parametrize(
+    "excluded_state",
+    [
+        "other_organization",
+        "inactive_model",
+        "invalid_credential",
+        "unverified_relation",
+    ],
+)
+def test_agent_builder_default_excludes_unavailable_gpt_5_5(
+    db_session,
+    excluded_state,
+):
+    manager = _user(f"excluded-manager-{excluded_state}")
+    actor = _user(f"excluded-actor-{excluded_state}")
+    db_session.add_all([manager, actor])
+    db_session.flush()
+
+    organization = Organization(
+        name=f"Agent Builder Exclusion {uuid.uuid4().hex}",
+        created_by=manager.id,
+        managed_by=manager.id,
+    )
+    other_organization = Organization(
+        name=f"Agent Builder Other {uuid.uuid4().hex}",
+        created_by=manager.id,
+        managed_by=manager.id,
+    )
+    db_session.add_all([organization, other_organization])
+    db_session.flush()
+    db_session.add(
+        OrganizationMembership(
+            organization_id=organization.id,
+            user_id=actor.id,
+            membership_state="active",
+            organization_auth_state="member",
+            invited_by=manager.id,
+        )
+    )
+
+    provider = LLMProvider(
+        name="openai",
+        description="Agent Builder exclusion provider",
+        type="system",
+        base_url="https://example.invalid/v1",
+        auth_type="api_key",
+        doc_url="https://example.invalid/docs",
+    )
+    db_session.add(provider)
+    db_session.flush()
+    model = LLMModel(
+        provider_id=provider.id,
+        model_id_for_api_call="gpt-5.5",
+        name="GPT-5.5",
+        type="chat",
+        context_window=8192,
+        is_active=excluded_state != "inactive_model",
+    )
+    credential = LLMCredential(
+        provider_id=provider.id,
+        user_id=manager.id,
+        organization_id=(
+            other_organization.id
+            if excluded_state == "other_organization"
+            else organization.id
+        ),
+        credential_name="Agent Builder Excluded Credential",
+        encrypted_config=json.dumps({}),
+        config_preview=None,
+        is_valid=excluded_state != "invalid_credential",
+    )
+    db_session.add_all([model, credential])
+    db_session.flush()
+    relation = LLMRelCredentialModel(
+        credential_id=credential.id,
+        model_id=model.id,
+        is_verified=excluded_state != "unverified_relation",
+        priority=0,
+    )
+    permission = UserLLMPermission(
+        grantee_organization_id=(
+            other_organization.id
+            if excluded_state == "other_organization"
+            else organization.id
+        ),
+        user_id=actor.id,
+        llm_credential_id=credential.id,
+        auth_state="operator",
+        assigned_by=manager.id,
+    )
+    db_session.add_all([relation, permission])
+    db_session.flush()
+
+    groups = LLMService.get_agent_builder_model_option_groups(
+        db_session,
+        actor.id,
+        organization.id,
+    )
+    openai_group = next(
+        group for group in groups if group.provider_name == "openai"
+    )
+
+    assert openai_group.options == []
+    assert openai_group.unavailable_reason == "no_authorized_model"
+    assert (
+        LLMService.get_agent_builder_draft_model_recommendation(
+            db_session,
+            actor.id,
+            organization.id,
+        )
+        is None
+    )
+
+
+def test_agent_builder_apply_save_persists_layout_models_and_audit_without_execution(
+    db_session,
+):
     actor = _user("apply-save")
     db_session.add(actor)
     db_session.flush()
@@ -237,9 +376,24 @@ def test_agent_builder_apply_save_persists_layout_and_audit_without_execution(db
                 "position": {"x": 0, "y": 0},
                 "data": {},
             },
+            {
+                "id": "existing-llm",
+                "type": "llmNode",
+                "position": {"x": 0, "y": 0},
+                "data": {"model_id": "gpt-5.5-pro"},
+            },
         ],
         "edges": [
-            {"id": "edge-start-answer", "source": "start", "target": "answer"}
+            {
+                "id": "edge-start-existing",
+                "source": "start",
+                "target": "existing-llm",
+            },
+            {
+                "id": "edge-existing-answer",
+                "source": "existing-llm",
+                "target": "answer",
+            },
         ],
         "viewport": {"x": 0, "y": 0, "zoom": 1},
     }
@@ -294,7 +448,7 @@ def test_agent_builder_apply_save_persists_layout_and_audit_without_execution(db
                 "id": "agent-llm",
                 "type": "llmNode",
                 "position": {"x": 0, "y": 0},
-                "data": {"model_id": "safe-model-reference"},
+                "data": {"model_id": "gpt-5.5"},
             },
         ],
         "edges": [
@@ -304,10 +458,11 @@ def test_agent_builder_apply_save_persists_layout_and_audit_without_execution(db
                 "target": "agent-llm",
             },
             {
-                "id": "edge-agent-llm-answer",
+                "id": "edge-agent-llm-existing",
                 "source": "agent-llm",
-                "target": "answer",
+                "target": "existing-llm",
             },
+            *base_graph["edges"][1:],
         ],
     }
     draft = AgentBuilderDraft(
@@ -326,9 +481,9 @@ def test_agent_builder_apply_save_persists_layout_and_audit_without_execution(db
             "generated_node_ids": ["agent-llm"],
             "generated_edge_ids": [
                 "edge-start-agent-llm",
-                "edge-agent-llm-answer",
+                "edge-agent-llm-existing",
             ],
-            "target_resolution": {"replaced_edge_ids": ["edge-start-answer"]},
+            "target_resolution": {"replaced_edge_ids": ["edge-start-existing"]},
         },
         base_graph_hash=calculate_graph_hash(base_graph),
         status="ready",
@@ -379,7 +534,17 @@ def test_agent_builder_apply_save_persists_layout_and_audit_without_execution(db
     assert positions == {
         "start": {"x": 0, "y": 0},
         "agent-llm": {"x": 580, "y": 0},
-        "answer": {"x": 1160, "y": 0},
+        "existing-llm": {"x": 1160, "y": 0},
+        "answer": {"x": 1740, "y": 0},
+    }
+    saved_models = {
+        node["id"]: node.get("data", {}).get("model_id")
+        for node in saved_workflow.graph["nodes"]
+        if node.get("type") == "llmNode"
+    }
+    assert saved_models == {
+        "agent-llm": "gpt-5.5",
+        "existing-llm": "gpt-5.5-pro",
     }
 
     actions = {
@@ -424,6 +589,210 @@ def test_agent_builder_apply_save_persists_layout_and_audit_without_execution(db
         .count()
         == 0
     )
+
+    editor_graph = copy.deepcopy(saved_workflow.graph)
+    generated_llm = next(
+        node for node in editor_graph["nodes"] if node["id"] == "agent-llm"
+    )
+    generated_llm["data"]["model_id"] = "gpt-5.5-pro"
+    WorkflowService.save_draft(
+        db_session,
+        str(workflow.id),
+        WorkflowDraftRequest.model_validate(editor_graph),
+        user_id=str(actor.id),
+    )
+    db_session.expire_all()
+
+    editor_saved_workflow = db_session.get(Workflow, workflow.id)
+    editor_saved_models = {
+        node["id"]: node.get("data", {}).get("model_id")
+        for node in editor_saved_workflow.graph["nodes"]
+        if node.get("type") == "llmNode"
+    }
+    assert editor_saved_models == {
+        "agent-llm": "gpt-5.5-pro",
+        "existing-llm": "gpt-5.5-pro",
+    }
+
+
+def test_new_agent_generation_apply_and_reload_persists_gpt_5_5(db_session):
+    actor = _user("new-agent-default-model")
+    db_session.add(actor)
+    db_session.flush()
+
+    organization = Organization(
+        name=f"Agent Builder Default Model {uuid.uuid4().hex}",
+        created_by=actor.id,
+        managed_by=actor.id,
+    )
+    db_session.add(organization)
+    db_session.flush()
+    db_session.add(
+        OrganizationMembership(
+            organization_id=organization.id,
+            user_id=actor.id,
+            membership_state="active",
+            organization_auth_state="manager",
+        )
+    )
+
+    provider = LLMProvider(
+        name="openai",
+        description="Agent Builder default model provider",
+        type="system",
+        base_url="https://example.invalid/v1",
+        auth_type="api_key",
+        doc_url="https://example.invalid/docs",
+    )
+    db_session.add(provider)
+    db_session.flush()
+    preferred_model = LLMModel(
+        provider_id=provider.id,
+        model_id_for_api_call="gpt-5.5",
+        name="GPT-5.5",
+        type="chat",
+        context_window=8192,
+        is_active=True,
+    )
+    pro_model = LLMModel(
+        provider_id=provider.id,
+        model_id_for_api_call="gpt-5.5-pro",
+        name="GPT-5.5 Pro",
+        type="chat",
+        context_window=8192,
+        is_active=True,
+    )
+    credential = LLMCredential(
+        provider_id=provider.id,
+        user_id=actor.id,
+        organization_id=organization.id,
+        credential_name="Agent Builder Default Model Credential",
+        encrypted_config=json.dumps({}),
+        config_preview=None,
+        is_valid=True,
+    )
+    db_session.add_all([preferred_model, pro_model, credential])
+    db_session.flush()
+    db_session.add_all(
+        [
+            LLMRelCredentialModel(
+                credential_id=credential.id,
+                model_id=preferred_model.id,
+                is_verified=True,
+                priority=5,
+            ),
+            LLMRelCredentialModel(
+                credential_id=credential.id,
+                model_id=pro_model.id,
+                is_verified=True,
+                priority=0,
+            ),
+            UserLLMPermission(
+                grantee_organization_id=organization.id,
+                user_id=actor.id,
+                llm_credential_id=credential.id,
+                auth_state="operator",
+                assigned_by=actor.id,
+            ),
+        ]
+    )
+
+    app = App(
+        organization_id=organization.id,
+        name="Agent Builder Default Model",
+        url_slug=f"agent-builder-default-model-{uuid.uuid4().hex}",
+        auth_secret="integration-placeholder",
+        created_by=actor.id,
+    )
+    db_session.add(app)
+    db_session.flush()
+    original_workflow = Workflow(
+        organization_id=organization.id,
+        app_id=app.id,
+        graph={"nodes": [], "edges": []},
+        created_by=actor.id,
+        updated_by=actor.id,
+    )
+    db_session.add(original_workflow)
+    db_session.flush()
+    app.workflow_id = original_workflow.id
+
+    session = AgentBuilderSession(
+        organization_id=organization.id,
+        user_id=actor.id,
+        workflow_id=original_workflow.id,
+        app_id=app.id,
+        status="active",
+    )
+    db_session.add(session)
+    db_session.flush()
+    service = AgentBuilderService(
+        db_session,
+        user=actor,
+        organization_id=organization.id,
+    )
+    structured = service._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(message="새 워크플로우로 입력을 LLM으로 요약해줘"),
+        workflow=None,
+    )
+    preview_graph = service._build_preview_graph(  # noqa: SLF001
+        structured,
+        workflow=None,
+        kb_bindings=[],
+    )
+    generated_llm = next(
+        node for node in preview_graph["nodes"] if node["type"] == "llmNode"
+    )
+    assert generated_llm["data"]["model_id"] == "gpt-5.5"
+
+    request = AgentBuilderRequest(
+        session_id=session.id,
+        organization_id=organization.id,
+        user_id=actor.id,
+        status="draft_ready",
+        message_summary="Create a new LLM workflow",
+        structured_request=structured.model_dump(mode="json"),
+        response_payload={},
+    )
+    db_session.add(request)
+    db_session.flush()
+    draft = AgentBuilderDraft(
+        request_id=request.id,
+        session_id=session.id,
+        organization_id=organization.id,
+        user_id=actor.id,
+        draft_mode="new_workflow",
+        workflow_id=None,
+        app_id=app.id,
+        preview_graph=preview_graph,
+        node_detail_previews=[],
+        validation_result={"valid": True, "issues": []},
+        draft_metadata={
+            "workflow_scope": "new_workflow",
+            "generated_node_ids": [node["id"] for node in preview_graph["nodes"]],
+            "generated_edge_ids": [edge["id"] for edge in preview_graph["edges"]],
+        },
+        base_graph_hash=None,
+        status="ready",
+    )
+    db_session.add(draft)
+    db_session.flush()
+
+    response = service.apply_draft(
+        draft.id,
+        AgentBuilderApplyRequest(
+            action="apply_and_save",
+            client_preview_graph_hash=calculate_graph_hash(preview_graph),
+        ),
+    )
+
+    assert response.outcome == "saved"
+    db_session.expire_all()
+    saved_workflow = db_session.get(Workflow, response.saved_workflow_id)
+    saved_llm = next(
+        node for node in saved_workflow.graph["nodes"] if node["type"] == "llmNode"
+    )
+    assert saved_llm["data"]["model_id"] == "gpt-5.5"
 
 
 def test_agent_builder_new_workflow_apply_rebinds_session_scope(db_session):

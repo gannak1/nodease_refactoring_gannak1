@@ -47,7 +47,7 @@ MVP는 다음을 포함하지 않는다.
 
 Workflow Editor에는 평소 우측 하단에 작은 Agent Builder launcher가 표시되어야 한다. 사용자가 launcher를 클릭하면 workflow canvas 위 또는 옆에 chatbot panel이 열린다. Panel은 workflow canvas를 대체하지 않고, draft 생성과 검토를 돕는 보조 UI다.
 
-Panel header는 [ADR-0025](../../decisions/ADR-0025-agent-builder-intent-model-selection.md)에 따라 Agent Builder 내부 intent planner가 사용할 model을 표시하고 변경할 수 있어야 한다. Provider group은 `openai`, `anthropic`, `google`, `llamaparse` 순서로 표시하며, 사용 가능한 model/credential 조합만 선택할 수 있다. LlamaParse는 chat model을 지원하지 않는 disabled group으로 표시한다.
+Panel header는 [ADR-0025](../../decisions/ADR-0025-agent-builder-intent-model-selection.md)에 따라 Agent Builder 내부 intent planner가 사용할 model을 표시하고 변경할 수 있어야 한다. Provider group은 `openai`, `anthropic`, `google`, `llamaparse` 순서로 표시하며, 사용 가능한 model/credential 조합만 선택할 수 있다. LlamaParse는 chat model을 지원하지 않는 disabled group으로 표시한다. MBA-240 임시 기본값으로 권한 확인 후보에 provider가 OpenAI이고 API model ID가 정확히 `gpt-5.5`인 조합이 있으면 이를 첫 option으로 표시한다. 이 기본값은 고정값이 아니며 사용자는 다른 option을 선택할 수 있다.
 
 ### AB-FR-002: Request Context
 
@@ -91,9 +91,9 @@ LLM 의미 후보는 서버에서 다시 검증한다. 최종 schema 정규화, 
 
 구조화 LLM runtime은 인증 사용자와 active organization 범위에서 `use` 권한과 verified model relation을 통과한 credential/model 조합만 사용할 수 있다. Client는 화면에 표시된 조합 중 하나의 `credential_id`, `model_id`를 message request에 포함하고, server는 모든 요청에서 organization, credential validity, `use` 권한, active chat model, provider 일치, verified relation을 다시 검증한다. 선택 상태는 session, draft metadata, workflow graph 또는 별도 model-selection DB column에 저장하지 않는다. Permission/runtime 차단 audit은 safe credential/model ID와 reason을 기록할 수 있다. Credential 원문과 raw provider response는 prompt, API response, draft metadata, trace, audit에 저장하지 않는다. 사용할 runtime이 없으면 `configuration_required`, LLM 호출 또는 schema validation이 실패하면 `failed`를 반환하며 부분 draft를 확정하지 않는다.
 
-Model option은 provider별 최신 세대 우선, 같은 세대에서는 성능 tier가 높은 순으로 정렬한다. 이후 relation priority와 safe display name으로 결정적 순서를 보장한다. Agent Builder는 provider별 고정 저비용 model map으로 선택값을 숨겨 대체하지 않는다.
+Model option은 MBA-240 임시 예외로 권한 확인된 OpenAI의 정확한 `gpt-5.5`를 먼저 표시한다. 해당 후보가 없으면 provider별 최신 세대 우선, 같은 세대에서는 성능 tier가 높은 순으로 정렬한다. 이후 relation priority와 safe display name으로 결정적 순서를 보장한다. `gpt-5.5-pro`, `gpt-5.5-mini`, 날짜/version suffix 모델 또는 다른 provider의 같은 ID는 정확 일치로 보지 않는다. Agent Builder는 provider별 고정 저비용 model map으로 선택값을 숨겨 대체하지 않는다.
 
-이 순서는 intent planner header 표시 순서다. Generated workflow LLM node의 기본 model 추천은 AB-FR-009의 별도 비용 친화적 순서를 사용하며, header에서 사용자가 선택한 intent planner model을 workflow node model로 복사하지 않는다.
+이 순서는 intent planner header 표시 순서다. Generated workflow LLM node의 기본 model 추천은 AB-FR-009의 별도 비용 친화적 순서를 사용하되, MBA-240 동안 권한 확인된 OpenAI의 정확한 `gpt-5.5`가 있으면 먼저 추천한다. Header에서 사용자가 선택한 intent planner model을 workflow node model로 복사하지 않는다. Header와 generated node의 일반 fallback 정책 통합은 MBA-256에서 수행한다.
 
 `StructuredRequestBuilder`는 raw KB 목록이나 runtime KB id mapping을 입력으로 받지 않고 KB를 자동 선택하지도 않는다. Intent extractor가 권한 확인된 bounded safe candidate context에서 반환한 opaque handle은 `knowledge_requirements[].suggested_candidate_handles`에 hint로만 보존한다. 이 단계는 어떤 지식이 필요한지와 어떤 값이 resolver로 해결되어야 하는지를 구조화하며, 최종 후보 순위와 선택은 Recommendation Adapter와 사용자 clarification이 결정한다.
 
@@ -195,7 +195,7 @@ Draft는 기존 workflow model/schema와 지원 capability allowlist를 따라�
 
 Gmail 답장 초안 automation을 제안할 때 Agent Builder는 source Mail node를 `processing_mode=durable`, `max_results=1`로 설정하고 LLM, `gmailDraftNode`, 다른 후속 effect, `mailAcknowledgeNode` 순으로 명시적으로 연결한다. Gmail credential은 자동 선택하지 않고 unresolved로 남긴다. Intent extractor의 순서가 잘못되어도 server normalizer가 이 의존 순서를 복구하며 acknowledgement 단독 capability는 거부한다. Send, reply-all, CC/BCC, attachment capability를 생성하지 않으며 draft/acknowledgement는 Preview/apply-save 중 실제 실행하지 않는다.
 
-Generated LLM node의 기본 `model_id`는 active organization의 valid credential, active chat model, verified relation, 사용자 `use` 권한을 통과한 model 후보에서 추천한다. Provider는 `openai`, `anthropic`, `google` 순서로 평가하고, provider 안에서는 최신 세대, 같은 세대 `mini`, 이후 낮은 성능 tier 순으로 추천한다. Workflow graph에는 model id만 저장하며 추천에 사용된 credential id나 원문은 저장하지 않는다. 후보가 없으면 model id를 비우고 `configuration_state=unresolved`와 model 설정 필요 warning을 남기며, 고정 환경변수 model route 때문에 draft 생성을 실패시키지 않는다.
+Generated LLM node의 기본 `model_id`는 active organization의 valid credential, active chat model, verified relation, 사용자 `use` 권한을 통과한 model 후보에서 추천한다. MBA-240 임시 예외로 provider가 OpenAI이고 API model ID가 정확히 `gpt-5.5`인 후보가 있으면 먼저 추천한다. 해당 후보가 없으면 provider를 `openai`, `anthropic`, `google` 순서로 평가하고, provider 안에서는 최신 세대, 같은 세대 `mini`, 이후 낮은 성능 tier 순으로 추천한다. Workflow graph에는 model id만 저장하며 추천에 사용된 credential id나 원문은 저장하지 않는다. 후보가 없으면 model id를 비우고 `configuration_state=unresolved`와 model 설정 필요 warning을 남기며, 고정 환경변수 model route 때문에 draft 생성을 실패시키지 않는다. 기존 workflow를 수정할 때는 기존 LLM node의 저장 model을 덮어쓰지 않고 새로 생성한 LLM node에만 현재 추천을 적용한다. 사용자는 저장 후 기존 Workflow Editor에서 LLM node model을 다른 사용 가능한 값으로 변경해 저장할 수 있다.
 
 새 workflow draft는 시작 가능한 entry step을 포함해야 한다. 기존 workflow 수정 draft는 target resolution 결과와 graph validation을 만족해야 한다.
 

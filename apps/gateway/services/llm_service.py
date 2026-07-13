@@ -123,6 +123,7 @@ class LLMService:
         "google",
         "llamaparse",
     )
+    AGENT_BUILDER_PREFERRED_MODEL = ("openai", "gpt-5.5")
 
     # [신규] 기본 가격 설정 (1M 토큰 기준 미화를 1K 기준으로 환산)
     # 가격 출처: https://openai.com/api/pricing/, https://docs.anthropic.com/en/docs/about-claude/pricing
@@ -1491,6 +1492,12 @@ class LLMService:
             option.model.model_id_for_api_call,
         )
         return (
+            0
+            if LLMService._is_agent_builder_preferred_model(
+                provider_name,
+                option.model.model_id_for_api_call,
+            )
+            else 1,
             -generation_major,
             -generation_minor,
             -tier,
@@ -1518,6 +1525,12 @@ class LLMService:
         generation_unknown = generation_major == 0 and generation_minor == 0
         mini_priority = 0 if "-mini" in normalized_model_id else 1
         return (
+            0
+            if LLMService._is_agent_builder_preferred_model(
+                provider_name,
+                option.model.model_id_for_api_call,
+            )
+            else 1,
             provider_order.get(provider_name, len(provider_order)),
             generation_unknown,
             -generation_major,
@@ -1528,6 +1541,18 @@ class LLMService:
             option.model.name.lower(),
             option.credential.credential_name.lower(),
         )
+
+    @staticmethod
+    def _is_agent_builder_preferred_model(
+        provider_name: str,
+        model_id: str,
+    ) -> bool:
+        normalized_provider = provider_name.strip().lower()
+        normalized_model_id = model_id.strip().lower()
+        return (
+            normalized_provider,
+            normalized_model_id,
+        ) == LLMService.AGENT_BUILDER_PREFERRED_MODEL
 
     @staticmethod
     def get_agent_builder_draft_model_recommendation(

@@ -4,7 +4,7 @@ Status: Draft
 
 ## API Boundary
 
-Agent Builder API는 workflow draft 생성, clarification, validation, draft preview, Preview Mode, 그리고 사용자가 `적용 및 저장`을 선택한 draft의 workflow graph 저장을 지원한다. Preview apply/save 경계는 [ADR-0019](../../decisions/ADR-0019-agent-builder-preview-apply-save-boundary.md)를 따르고 node/capability allowlist는 [ADR-0024](../../decisions/ADR-0024-agent-builder-node-capability-catalog.md)을 따른다. 내부 intent model 선택은 [ADR-0025](../../decisions/ADR-0025-agent-builder-intent-model-selection.md)를 따른다. 이 API는 workflow 실행, Knowledge Base retrieval, Slack/GitHub/HTTP/Mail 전송 또는 조회, workflow node credential 사용/변경, 외부 시스템 변경을 수행하지 않는다. AB-FR-003의 자연어 구조화를 위한 permission-aware 내부 planner 호출은 workflow node credential 실행과 구분한다.
+Agent Builder API는 workflow draft 생성, clarification, validation, draft preview, Preview Mode, 그리고 사용자가 `적용 및 저장`을 선택한 draft의 workflow graph 저장을 지원한다. Preview apply/save 경계는 [ADR-0019](../../decisions/ADR-0019-agent-builder-preview-apply-save-boundary.md)를 따르고 node/capability allowlist는 [ADR-0024](../../decisions/ADR-0024-agent-builder-node-capability-catalog.md)을 따른다. 내부 intent model 선택의 일반 정책은 [ADR-0025](../../decisions/ADR-0025-agent-builder-intent-model-selection.md)를 따르되, MBA-240 동안 권한 있는 OpenAI `gpt-5.5` 정확 일치를 먼저 선택하는 임시 예외를 적용한다. 일반 정책 갱신과 Header/generated node fallback 통합은 MBA-256에서 수행한다. 이 API는 workflow 실행, Knowledge Base retrieval, Slack/GitHub/HTTP/Mail 전송 또는 조회, workflow node credential 사용/변경, 외부 시스템 변경을 수행하지 않는다. AB-FR-003의 자연어 구조화를 위한 permission-aware 내부 planner 호출은 workflow node credential 실행과 구분한다.
 
 모든 endpoint는 인증 사용자와 `X-Organization-Id` 기반 active organization membership을 먼저 검증한다. Request body의 `organization_id`는 권한 또는 scope 판단에 사용하지 않는다.
 
@@ -42,11 +42,13 @@ Client request body는 organization override를 포함하지 않는다.
 | `selected_knowledge_candidates` | KB 후보 clarification에 대한 사용자 선택 목록. 0개, 1개, 여러 개 선택을 표현하며 빈 배열은 표시된 후보를 선택하지 않고 Knowledge Base binding 없이 draft 생성을 계속한다는 뜻이다 |
 | `intent_model_selection` | 내부 intent planner가 사용할 명시적 `credential_id`, `model_id` 쌍. Raw credential 또는 provider config를 포함하지 않음 |
 
-`GET /model-options`는 provider group을 `openai`, `anthropic`, `google`, `llamaparse` 순서로 반환한다. 각 `options` item은 safe model schema, safe credential option, relation priority만 포함한다. Model은 provider별 최신 세대 우선, 같은 세대에서는 성능 tier가 높은 순으로 정렬한다. 후보가 없는 chat provider는 `no_authorized_model`, LlamaParse는 `chat_model_not_supported`를 반환한다.
+`GET /model-options`는 provider group을 `openai`, `anthropic`, `google`, `llamaparse` 순서로 반환한다. 각 `options` item은 safe model schema, safe credential option, relation priority만 포함한다. MBA-240 임시 예외로 권한 확인된 OpenAI의 API model ID가 정확히 `gpt-5.5`이면 OpenAI group의 첫 option으로 반환한다. 해당 후보가 없으면 provider별 최신 세대 우선, 같은 세대에서는 성능 tier가 높은 순으로 정렬한다. `gpt-5.5-pro`, `gpt-5.5-mini`, 날짜/version suffix 모델 또는 다른 provider의 같은 ID는 정확 일치로 보지 않는다. 후보가 없는 chat provider는 `no_authorized_model`, LlamaParse는 `chat_model_not_supported`를 반환한다.
 
-이 endpoint의 순서는 내부 intent planner 선택 UI용이다. Draft generator가 LLM node를 만들 때는 같은 권한 확인 후보 집합에서 `openai`, `anthropic`, `google` provider 순서와 provider별 최신 세대, 같은 세대 `mini`, 이후 낮은 성능 tier 순서를 사용해 기본 model을 추천한다. Preview/draft graph에는 추천된 safe model id만 포함하고 credential id/config는 포함하지 않는다. 후보가 없으면 `model_id=null`, `configuration_state=unresolved`와 model 설정 필요 `configuration_issues`를 반환하며, 고정 환경변수 fallback으로 바꾸거나 draft 전체를 실패시키지 않는다.
+이 endpoint의 순서는 내부 intent planner 선택 UI용이다. Draft generator가 LLM node를 만들 때도 MBA-240 임시 예외로 같은 권한 확인 후보 집합의 OpenAI `gpt-5.5` 정확 일치를 먼저 추천한다. 해당 후보가 없으면 `openai`, `anthropic`, `google` provider 순서와 provider별 최신 세대, 같은 세대 `mini`, 이후 낮은 성능 tier 순서를 사용한다. Preview/draft graph에는 추천된 safe model id만 포함하고 credential id/config는 포함하지 않는다. 후보가 없으면 `model_id=null`, `configuration_state=unresolved`와 model 설정 필요 `configuration_issues`를 반환하며, 고정 환경변수 fallback으로 바꾸거나 draft 전체를 실패시키지 않는다. Header와 generated node의 일반 fallback 정책 통합은 MBA-256 범위다.
 
 Message submit은 `intent_model_selection`을 session, draft metadata, workflow graph 또는 별도 model-selection DB column에 저장하지 않는다. Server는 요청마다 credential organization/validity/`use` permission과 model active chat type/provider/verified relation을 다시 검사한다. 선택이 없거나 유효하지 않으면 hidden fallback model을 자동 선택하지 않는다. Permission/runtime 차단 audit에는 safe credential/model ID, reason, runtime surface를 기록할 수 있지만 credential 원문과 raw provider response는 포함하지 않는다.
+
+Header intent model 선택은 요청별 planner 실행에만 사용한다. Generated LLM node의 `model_id`는 draft graph와 apply/save 결과에 저장되지만 Header 선택을 자동 복사하지 않는다. 기존 workflow 수정 draft는 기존 LLM node의 `model_id`를 보존하고 새로 생성한 LLM node에만 현재 추천값을 설정한다.
 
 MVP message request는 raw editor graph snapshot을 받지 않는다. Client는 선택된 node/edge hint만 보낼 수 있으며, unsaved editor graph를 draft base로 신뢰하지 않는다. Apply/save stale guard에 필요한 graph 비교는 apply request의 semantic graph hash로만 수행한다. Request body에 `client_graph_snapshot` 또는 동등한 raw graph payload가 포함되면 서버는 이를 권한/scope 판단이나 draft base로 사용하지 않고 거부해야 한다.
 
