@@ -39,6 +39,10 @@ import { DBConfig } from '@/app/features/knowledge/types/DB';
 import { connectorApi } from '@/app/features/knowledge/api/connectorApi';
 import { useGenericCredential } from '@/app/features/knowledge/hooks/useGenericCredential';
 import ColumnAutocomplete from '@/app/features/knowledge/components/document-settings/ColumnAutocomplete';
+import {
+  ACTIVE_ORGANIZATION_CHANGED_EVENT,
+  getStoredActiveOrganizationId,
+} from '@/lib/activeOrganization';
 
 // UUID prefix가 있으면 제거, API URL이면 도메인만 추출
 const getDisplayFilename = (filename: string): string => {
@@ -110,9 +114,13 @@ export default function DocumentSettingsPage() {
   const [isEditConfigReady, setIsEditConfigReady] = useState(false);
   const [permissionScope, setPermissionScope] = useState<string | null>(null);
   const [editConfigScope, setEditConfigScope] = useState<string | null>(null);
+  const [activeOrganizationId, setActiveOrganizationId] = useState<
+    string | null
+  >(() => getStoredActiveOrganizationId());
   const fetchGeneration = useRef(0);
+  const activeOrganizationRef = useRef<string | null>(activeOrganizationId);
   const activeProcessingScope = useRef<string | null>(null);
-  const currentDocumentScope = `${kbId}:${documentId}`;
+  const currentDocumentScope = `${activeOrganizationId ?? 'no-organization'}:${kbId}:${documentId}`;
   const documentScopeRef = useRef(currentDocumentScope);
   documentScopeRef.current = currentDocumentScope;
   const canEditCurrentDocument =
@@ -145,6 +153,29 @@ export default function DocumentSettingsPage() {
   const [rangeStart, setRangeStart] = useState<string>('');
   const [rangeEnd, setRangeEnd] = useState<string>('');
   const [keywordFilter, setKeywordFilter] = useState<string>('');
+
+  useEffect(() => {
+    const syncActiveOrganization = () => {
+      const nextOrganizationId = getStoredActiveOrganizationId();
+      documentScopeRef.current = `${nextOrganizationId ?? 'no-organization'}:${kbId}:${documentId}`;
+      if (activeOrganizationRef.current === nextOrganizationId) return;
+      activeOrganizationRef.current = nextOrganizationId;
+      fetchGeneration.current += 1;
+      setActiveOrganizationId(nextOrganizationId);
+    };
+
+    syncActiveOrganization();
+    window.addEventListener(
+      ACTIVE_ORGANIZATION_CHANGED_EVENT,
+      syncActiveOrganization,
+    );
+    return () => {
+      window.removeEventListener(
+        ACTIVE_ORGANIZATION_CHANGED_EVENT,
+        syncActiveOrganization,
+      );
+    };
+  }, [kbId, documentId]);
 
   // SSE 연결 (Indexing 상태일 때)
   useEffect(() => {
@@ -200,10 +231,12 @@ export default function DocumentSettingsPage() {
   // 초기 데이터 로드
   useEffect(() => {
     const generation = ++fetchGeneration.current;
-    const requestScope = `${kbId}:${documentId}`;
+    const requestScope = currentDocumentScope;
     let cancelled = false;
     const isStale = () =>
-      cancelled || fetchGeneration.current !== generation;
+      cancelled ||
+      fetchGeneration.current !== generation ||
+      documentScopeRef.current !== requestScope;
 
     setIsLoading(true);
     setDocument(null);
@@ -357,7 +390,7 @@ export default function DocumentSettingsPage() {
     return () => {
       cancelled = true;
     };
-  }, [kbId, documentId, router]);
+  }, [kbId, documentId, router, currentDocumentScope]);
   // useDocumentProcess Hook 사용
   const {
     isAnalyzing,
@@ -375,6 +408,8 @@ export default function DocumentSettingsPage() {
   } = useDocumentProcess({
     kbId,
     documentId,
+    requestScope: currentDocumentScope,
+    isRequestScopeCurrent: (scope) => documentScopeRef.current === scope,
     document,
     setStatus,
     setProgress,
@@ -528,8 +563,11 @@ export default function DocumentSettingsPage() {
       status === 'completed' &&
       progress >= 100
     ) {
+      const redirectScope = currentDocumentScope;
       const timer = setTimeout(() => {
-        router.push(`/dashboard/knowledge/${kbId}`);
+        if (documentScopeRef.current === redirectScope) {
+          router.push(`/dashboard/knowledge/${kbId}`);
+        }
       }, 3000);
       return () => clearTimeout(timer);
     }

@@ -144,4 +144,35 @@ describe('useDocumentProcess edit configuration gate', () => {
     expect(setStatus).not.toHaveBeenCalled();
     expect(setProgress).not.toHaveBeenCalled();
   });
+
+  it('discards a processing response after the organization scope changes', async () => {
+    let resolveProcessing!: (value: { status: string; message: string }) => void;
+    processDocument.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveProcessing = resolve;
+      }),
+    );
+    const setStatus = vi.fn();
+    const setProgress = vi.fn();
+    const { result, rerender } = renderHook(
+      ({ requestScope }) =>
+        useDocumentProcess({
+          ...props,
+          requestScope,
+          setStatus,
+          setProgress,
+        }),
+      { initialProps: { requestScope: 'org-1:kb-1:document-1' } },
+    );
+
+    act(() => result.current.handleSaveClick());
+    await waitFor(() => expect(processDocument).toHaveBeenCalledOnce());
+    rerender({ requestScope: 'org-2:kb-1:document-1' });
+    await act(async () => {
+      resolveProcessing({ status: 'processing', message: 'processing' });
+    });
+
+    expect(setStatus).not.toHaveBeenCalled();
+    expect(setProgress).not.toHaveBeenCalled();
+  });
 });

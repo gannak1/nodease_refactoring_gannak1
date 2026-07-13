@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => {
     getDocument: vi.fn(),
     getDocumentEditConfig: vi.fn(),
     toastError: vi.fn(),
+    activeOrganizationId: 'org-1' as string | null,
   };
 });
 
@@ -42,6 +43,11 @@ vi.mock('@/app/features/knowledge/api/knowledgeApi', () => ({
 
 vi.mock('@/app/features/knowledge/hooks/useDocumentProcess', () => ({
   useDocumentProcess: vi.fn(),
+}));
+
+vi.mock('@/lib/activeOrganization', () => ({
+  ACTIVE_ORGANIZATION_CHANGED_EVENT: 'nodease-active-organization-changed',
+  getStoredActiveOrganizationId: () => mocks.activeOrganizationId,
 }));
 
 vi.mock('@/app/features/knowledge/hooks/useGenericCredential', () => ({
@@ -183,6 +189,7 @@ afterEach(() => {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.params = { id: 'kb-1', documentId: 'document-1' };
+  mocks.activeOrganizationId = 'org-1';
   mocks.getKnowledgeBase.mockResolvedValue(knowledgeBase);
   mocks.getDocumentEditConfig.mockResolvedValue(editConfig(1000));
   mockedUseDocumentProcess.mockReturnValue(
@@ -290,6 +297,53 @@ describe('DocumentSettingsPage request scoping', () => {
       'kb-1',
       'document-1',
     );
+  });
+
+  it('ignores a late response from the previously active organization', async () => {
+    const firstOrganizationDocument = deferred<
+      ReturnType<typeof documentResponse>
+    >();
+    let documentReads = 0;
+    mocks.getDocument.mockImplementation(() => {
+      documentReads += 1;
+      if (documentReads === 1) return firstOrganizationDocument.promise;
+      return Promise.resolve({
+        ...documentResponse('document-1'),
+        filename: 'organization-2.pdf',
+      });
+    });
+    mocks.getDocumentEditConfig.mockResolvedValue(editConfig(2222));
+
+    render(<DocumentSettingsPage />);
+    await waitFor(() => expect(mocks.getDocument).toHaveBeenCalledOnce());
+
+    mocks.activeOrganizationId = 'org-2';
+    act(() => {
+      window.dispatchEvent(new Event('nodease-active-organization-changed'));
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('file-source')).toHaveAttribute(
+        'data-filename',
+        'organization-2.pdf',
+      );
+      expect(screen.getByTestId('chunk-size')).toHaveTextContent('2222');
+    });
+
+    await act(async () => {
+      firstOrganizationDocument.resolve({
+        ...documentResponse('document-1'),
+        filename: 'organization-1-private.pdf',
+      });
+      await firstOrganizationDocument.promise;
+    });
+
+    expect(screen.getByTestId('file-source')).toHaveAttribute(
+      'data-filename',
+      'organization-2.pdf',
+    );
+    expect(
+      screen.queryByRole('heading', { name: 'organization-1-private.pdf' }),
+    ).not.toBeInTheDocument();
   });
 
   it('resets the edit gate when the next document request fails', async () => {
