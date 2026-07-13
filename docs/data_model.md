@@ -250,6 +250,8 @@ user와 organization의 직접 소속. organization scope와 manager 판정의 �
 | `user_llm_permissions` | llm_credential_id | (llm_credential_id, grantee_organization_id) → llm_credentials(id, organization_id) | (grantee_organization_id, user_id, llm_credential_id) |
 | `user_mail_credential_permissions` | mail_credential_id | (mail_credential_id, grantee_organization_id) → mail_credentials(id, organization_id) | (grantee_organization_id, user_id, mail_credential_id) |
 
+- `user_workflow_permissions`의 organization 단독 조건은 UNIQUE 인덱스의 왼쪽 접두어를 사용한다. 별도 `grantee_organization_id` 단일 인덱스는 유지하지 않는다.
+
 #### Knowledge domain delegation permission
 
 MBA-231은 [ADR-0034](decisions/ADR-0034-knowledge-delegated-administration-and-rbac-boundary.md)에 따라 `team_knowledge_domain_permissions`와 `user_knowledge_domain_permissions`를 사용한다. Resource `auth_state`가 아니라 organization-scoped management action의 additive allow다.
@@ -266,6 +268,7 @@ MBA-231은 [ADR-0034](decisions/ADR-0034-knowledge-delegated-administration-and-
 | flags | BIGINT | NOT NULL, CK `flags >= 0` |
 
 - UNIQUE: Team은 `(organization_id, team_id, permission_action)`, User는 `(organization_id, user_id, permission_action)`.
+- 위 UNIQUE 인덱스가 organization/subject/action 조회와 만료 판정 row 접근을 이미 지원하므로, 같은 접두어 뒤에 `expires_at`만 추가한 중복 복합 인덱스는 유지하지 않는다.
 - Organization manager만 grant/revoke한다. Domain permission은 KB `read/use/write/content_read/manage` 또는 Collection `read/route/manage/sync`를 저장하거나 상속하지 않는다.
 
 - Mail team/user permission 테이블은 canonical `auth_state` CHECK를 적용한다. 기존 일부 team permission 테이블의 legacy 값(`read/write/execute/admin`)은 application-level에서 normalize한다.
@@ -301,7 +304,7 @@ project/endpoint boundary.
 | 컬럼 | 타입 | 제약 |
 | --- | --- | --- |
 | id | UUID | PK |
-| organization_id | UUID | NULL, FK→organization.id |
+| organization_id | UUID | NULL, FK→organization.id, INDEX |
 | app_id | UUID | NOT NULL, FK→apps.id |
 | graph | JSONB | NULL — 노드/엣지 정의 |
 | features / env_variables / runtime_variables | JSONB | NULL |
@@ -572,7 +575,7 @@ Session의 deployment binding은 active deployment pointer 변경으로 자동 �
 | retention_expires_at / retention_purged_at | DATETIME | NULL |
 | created_at | DATETIME | NOT NULL |
 
-- 조회 인덱스 `ix_trace_payloads_latest_view(workflow_run_id, scope, workflow_node_run_id, payload_kind, created_at, sequence, attempt)`, retention 스캔 인덱스 별도.
+- 조회 인덱스 `ix_trace_payloads_latest_view(workflow_run_id, scope, workflow_node_run_id, payload_kind, created_at, sequence, attempt)`, retention 스캔 인덱스 별도. Raw 암호문 정리는 `raw_payload_encrypted IS NOT NULL` 조건의 부분 인덱스 `ix_trace_payloads_raw_retention(created_at)`를 사용한다.
 
 #### `trace_payload_access_events`
 
@@ -601,6 +604,7 @@ trace 정책 3종. 공통으로 `scope_type` VARCHAR(32) NOT NULL + `scope_id` U
 | `trace_visibility_policies` | owner_trace/redacted/raw/prompt_completion access_enabled, admin_raw/prompt_completion access_enabled, deny_owner_trace_access, default_view_level |
 
 - 물리 schema는 `organization` scope도 담을 수 있으나 현재 management API는 `global`/`app`만 지원한다.
+- 각 정책 테이블은 `(scope_type, scope_id, is_active)` 복합 인덱스를 사용하며, 이에 포함되는 scope 단일 인덱스를 중복 생성하지 않는다.
 - Trace redaction policy는 현재 trace payload 저장/조회 경계의 구현이다. Target KB integration에서는 detector/masking engine을 shared privacy/redaction boundary로 분리하고, trace-specific storage/visibility/retention은 Audit/Tracing 도메인에 남긴다 ([ADR-0014](decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)).
 
 #### `audit_logs`
@@ -621,7 +625,7 @@ canonical 감사 로그. action 값은 [ADR-0008](decisions/ADR-0008-audit-actio
 | status | VARCHAR(7) | NOT NULL — success/failure |
 | audit_metadata | JSONB | NULL — policy_result, correlation_id 등 |
 
-- 검색 인덱스: occurred_at, actor_id, category, action, `(target_type, target_id)`.
+- 검색 인덱스: occurred_at, actor_id, category, action, `(target_type, target_id)`, cursor scan용 `(occurred_at, id)`.
 - ADR-0030 Target public Conversation request lifecycle event는 `actor_id=NULL`, `actor_type='public'`을 사용한다. `public`은 현재 `VARCHAR(6)`에 맞는 explicit anonymous request actor kind이며 App/deployment owner나 Access Grant를 user actor로 합성하지 않는다. 비동기 physical purge/compliance completion은 `actor_id=NULL`, `actor_type='system'`이다.
 
 Security Alert 탐지 대상 audit는 추가로 다음 application contract를 만족해야 한다.
@@ -815,7 +819,7 @@ retrieval 최소 단위. pgvector 임베딩과 hierarchical chunk 구조를 가�
 | token_count | INTEGER | NOT NULL |
 | metadata | JSONB | NOT NULL — `documents.meta_info`의 denormalized cache. 충돌 시 document 우선 ([ADR-0012](decisions/ADR-0012-metadata-aware-hierarchical-rag-boundary.md)) |
 
-- 인덱스: `(knowledge_base_id, chunk_level)`, parent_chunk_id.
+- 인덱스: `(knowledge_base_id, chunk_level)`, `(knowledge_base_id, document_version_id)`, document_version_id, parent_chunk_id.
 
 #### `rag_answer_runs`
 
@@ -881,6 +885,8 @@ knowledge_skills
 | `knowledge_skill_versions` | skill body/checklist/routing rule의 version | raw source content, raw source title/path/url, raw principal, raw ACL fact, restricted document list, hidden KB id, raw prompt/completion/provider response를 저장하지 않는다. `freshness_state`, `last_validated_at`, `eval_status`, `source_version_refs` 또는 safe refs가 필요하다. |
 | `knowledge_skill_source_refs` | skill이 참조하는 source-of-truth tier, safe reference, 빌더 단계 routing hint | 정책 문서, ADR/decision record, semantic definition, curated query corpus 같은 tier와 safe source/version ref만 저장한다. Collection/KB route hint가 필요하면 display-policy-approved safe reference로 저장하고, 실행 시점 permission helper와 교집합 처리해야 한다. Raw source id/url/path/title은 protected identity gate 없이 저장하지 않는다. |
 | `knowledge_skill_evaluations` | golden question/regression 결과 | eval fixture는 raw restricted content를 포함하지 않고, safe question id, expected behavior, pass/fail/bucketed score, evaluated_at, evaluator ref를 저장한다. |
+
+Collection permission row는 organization/subject/collection/action UNIQUE를 권한 판정에 사용한다. Team 또는 User와 Collection 단일 인덱스는 FK 역방향 조회·삭제 경로를 위해 유지하지만, UNIQUE의 왼쪽 접두어와 같은 organization 단일 인덱스와 조회하지 않는 `assigned_by` 단일 인덱스는 중복 생성하지 않는다.
 
 Target permission helper는 mbased KB permission gate와 source ACL/requester authorization gate를 분리해 평가한다. Manual team/user KB grant와 organization manager override는 mbased KB gate를 만족시킬 수 있지만 source-managed KB의 source ACL freshness/requester authorization gate를 우회하지 않는다. Source ACL provenance는 source ACL gate의 입력이며, KB `use` permission 자체를 자동 부여하는 행으로 해석하지 않는다. 자동 수집된 document-level KB는 normal mbased permission path 또는 `source_policy_kb_use_grants`가 명시 KB `use`를 provision한 경우에만 retrieval 후보가 된다. `subject_type="organization"` source-policy grant는 해당 organization의 active member에게만 적용되며, removed/suspended/invited/non-member user에게는 단순 organization_id 일치만으로 적용되지 않는다. Policy expiry, connector revocation, source ACL revocation, policy disable은 source-policy-provisioned grant만 inactive 처리하고 freshness epoch와 candidate cache를 갱신해야 한다. Manual team/user/admin grant row는 저장상 유지될 수 있지만, source-managed KB에서는 fresh source ACL/requester authorization gate가 fail-closed이면 retrieval 후보가 될 수 없다. Runtime source authorization cache는 short-lived optimization이며 authorization source of truth가 아니다. Cache key에는 organization, connector, protected source identity, source item 또는 document version, execution subject, mapping epoch, source ACL freshness epoch, operation을 포함해야 하고, subject-level allowed 결과를 다른 source item에 재사용하지 않는다. Helper는 allow/deny뿐 아니라 sanitized reason code, source ACL freshness state, freshness epoch, audit-safe metadata를 반환해야 하며 router/retrieval이 grant row를 직접 조합하지 않는다. `source_authorization_provenance` column 이름은 source permission action, source authorization state, provenance, KB permission `auth_state`가 섞이지 않게 정한다.
 

@@ -427,6 +427,11 @@ class DocumentChunk(Base):
             "knowledge_base_id",
             "chunk_level",
         ),
+        Index(
+            "ix_document_chunks_kb_doc_version",
+            "knowledge_base_id",
+            "document_version_id",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

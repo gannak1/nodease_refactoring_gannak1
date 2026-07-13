@@ -10,6 +10,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
+    Index,
     String,
     Text,
     UniqueConstraint,
@@ -330,6 +331,12 @@ class UserWorkflowPermission(UserResourcePermissionMixin, Base):
         default=uuid.uuid4,
         nullable=False,
     )
+    # 조직 단독 조회는 아래 unique constraint의 왼쪽 접두어로 처리한다.
+    grantee_organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization.id"),
+        nullable=False,
+    )
     workflow_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         nullable=False,
@@ -521,6 +528,14 @@ class TeamKnowledgeCollectionPermission(TeamAssignmentMixin, Base):
             "flags >= 0",
             name="ck_team_knowledge_collection_permissions_flags_nonnegative",
         ),
+        Index(
+            "ix_team_knowledge_collection_permissions_team",
+            "team_id",
+        ),
+        Index(
+            "ix_team_knowledge_collection_permissions_collection",
+            "knowledge_collection_id",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -529,11 +544,27 @@ class TeamKnowledgeCollectionPermission(TeamAssignmentMixin, Base):
         default=uuid.uuid4,
         nullable=False,
     )
+    # 조직 단독 조건은 unique constraint의 왼쪽 접두어로 처리한다. team과
+    # collection 단일 인덱스는 FK 대상 삭제 및 역방향 관리 조회를 위해 유지한다.
+    grantee_organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization.id"),
+        nullable=False,
+    )
+    team_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("teams.id"),
+        nullable=False,
+    )
+    assigned_by: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id"),
+        nullable=False,
+    )
     knowledge_collection_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("knowledge_collections.id", ondelete="CASCADE"),
         nullable=False,
-        index=True,
     )
     permission_action: Mapped[str] = mapped_column(String(32), nullable=False)
 
@@ -562,6 +593,14 @@ class UserKnowledgeCollectionPermission(Base):
             "flags >= 0",
             name="ck_user_knowledge_collection_permissions_flags_nonnegative",
         ),
+        Index(
+            "ix_user_knowledge_collection_permissions_user",
+            "user_id",
+        ),
+        Index(
+            "ix_user_knowledge_collection_permissions_collection",
+            "knowledge_collection_id",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -574,23 +613,20 @@ class UserKnowledgeCollectionPermission(Base):
         UUID(as_uuid=True),
         ForeignKey("organization.id"),
         nullable=False,
-        index=True,
     )
     user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
     knowledge_collection_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("knowledge_collections.id", ondelete="CASCADE"),
         nullable=False,
-        index=True,
     )
     permission_action: Mapped[str] = mapped_column(String(32), nullable=False)
     assigned_by: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("users.id"),
         nullable=False,
-        index=True,
     )
     assigned_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

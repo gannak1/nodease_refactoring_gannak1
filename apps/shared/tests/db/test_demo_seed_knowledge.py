@@ -402,6 +402,7 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     security_alert_episode_revision = script.get_revision("fe4a5b6c7d89")
     security_alert_outbox_revision = script.get_revision("c05d6e7f8a90")
     internal_chatbot_revision = script.get_revision("fc9d0e1f2a34")
+    index_alignment_revision = script.get_revision("fd3e4f5a6b78")
 
     assert safe_metadata_revision.down_revision == "fa7b8c9d0e12"
     assert set(merged_revision.down_revision) == {"fa7c8d9e0f12", "ff3a4b5c6d78"}
@@ -418,7 +419,8 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     assert security_alert_episode_revision.down_revision == "fd0e1f2a3b4c"
     assert security_alert_outbox_revision.down_revision == "fe4a5b6c7d89"
     assert internal_chatbot_revision.down_revision == "c05d6e7f8a90"
-    assert script.get_heads() == ["fc9d0e1f2a34"]
+    assert index_alignment_revision.down_revision == "fc9d0e1f2a34"
+    assert script.get_heads() == ["fd3e4f5a6b78"]
 
     internal_chatbot_source = Path(internal_chatbot_revision.path).read_text(
         encoding="utf-8"
