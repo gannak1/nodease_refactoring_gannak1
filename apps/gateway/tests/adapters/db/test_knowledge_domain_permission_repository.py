@@ -74,6 +74,7 @@ def test_revoke_statement_scopes_and_locks_exact_permission_row(
     assert f"{table_name}.{subject_column}" in sql
     assert f"{table_name}.permission_action" in sql
     assert sql.endswith("FOR UPDATE")
+    assert len(params) == 3
     assert set(params.values()) == {
         command.organization_id,
         command.subject_id,
