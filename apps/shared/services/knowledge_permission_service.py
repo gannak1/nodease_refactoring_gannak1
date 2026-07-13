@@ -31,7 +31,7 @@ from apps.shared.services.permissions import (
     has_active_organization_membership,
 )
 from sqlalchemy import and_, or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 COLLECTION_PERMISSION_ACTIONS = {"read", "route", "manage", "sync"}
 SOURCE_ACL_PASS_STATE = "fresh"
@@ -474,6 +474,17 @@ class KnowledgePermissionHelper:
             == self.requester_subject_id,
             SourceAuthorizationProvenance.status == "active",
         )
+        query = query.options(
+            load_only(
+                SourceAuthorizationProvenance.knowledge_base_id,
+                SourceAuthorizationProvenance.source_identity_id,
+                SourceAuthorizationProvenance.source_acl_state,
+                SourceAuthorizationProvenance.requester_source_authorization,
+                SourceAuthorizationProvenance.source_permission_action,
+                SourceAuthorizationProvenance.freshness_epoch,
+                SourceAuthorizationProvenance.freshness_expires_at,
+            )
+        )
         if kb.source_identity_id is not None:
             query = query.filter(
                 SourceAuthorizationProvenance.source_identity_id
@@ -628,6 +639,17 @@ class KnowledgePermissionHelper:
 
         rows = (
             self.db.query(SourceAuthorizationProvenance)
+            .options(
+                load_only(
+                    SourceAuthorizationProvenance.knowledge_base_id,
+                    SourceAuthorizationProvenance.source_identity_id,
+                    SourceAuthorizationProvenance.source_acl_state,
+                    SourceAuthorizationProvenance.requester_source_authorization,
+                    SourceAuthorizationProvenance.source_permission_action,
+                    SourceAuthorizationProvenance.freshness_epoch,
+                    SourceAuthorizationProvenance.freshness_expires_at,
+                )
+            )
             .filter(
                 SourceAuthorizationProvenance.organization_id == self.organization_id,
                 SourceAuthorizationProvenance.knowledge_base_id.in_(
