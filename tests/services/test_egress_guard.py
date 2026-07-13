@@ -5,7 +5,6 @@ from types import SimpleNamespace
 import pytest
 from cryptography.fernet import Fernet
 
-from apps.gateway.api.v1.endpoints import knowledge as knowledge_endpoint
 from apps.gateway.api.v1.endpoints import rag as rag_endpoint
 from apps.gateway.api.v1.endpoints import connectors as connectors_endpoint
 from apps.gateway.api.v1.endpoints.rag import _prepare_api_source

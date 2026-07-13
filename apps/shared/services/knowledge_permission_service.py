@@ -2,9 +2,6 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
-from sqlalchemy import and_, or_
-from sqlalchemy.orm import Session
-
 from apps.shared.db.models.knowledge import (
     KnowledgeBase,
     KnowledgeCollection,
@@ -14,8 +11,8 @@ from apps.shared.db.models.knowledge import (
 from apps.shared.db.models.organization_membership import ORGANIZATION_AUTH_MEMBER
 from apps.shared.db.models.team import (
     Team,
-    TeamKnowledgePermission,
     TeamKnowledgeCollectionPermission,
+    TeamKnowledgePermission,
     TeamMembership,
     UserKnowledgeCollectionPermission,
     UserKnowledgePermission,
@@ -33,7 +30,8 @@ from apps.shared.services.permissions import (
     get_organization_auth_state,
     has_active_organization_membership,
 )
-
+from sqlalchemy import and_, or_
+from sqlalchemy.orm import Session
 
 COLLECTION_PERMISSION_ACTIONS = {"read", "route", "manage", "sync"}
 SOURCE_ACL_PASS_STATE = "fresh"

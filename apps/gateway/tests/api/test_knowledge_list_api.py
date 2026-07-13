@@ -11,7 +11,6 @@ from apps.gateway.api.v1.endpoints import knowledge as knowledge_endpoint
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.main import app
 from apps.gateway.services.knowledge_base_query_service import DEFAULT_EMBEDDING_MODEL
-from apps.shared.db.models.knowledge import SourceType
 
 
 class FakeKnowledgeQuery:

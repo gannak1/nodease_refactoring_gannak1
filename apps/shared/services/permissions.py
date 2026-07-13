@@ -14,14 +14,14 @@ from apps.shared.db.models.organization_membership import (
 )
 from apps.shared.db.models.team import (
     Team,
-    TeamKnowledgePermission,
     TeamKnowledgeDomainPermission,
+    TeamKnowledgePermission,
     TeamLLMPermission,
     TeamMailCredentialPermission,
     TeamMembership,
     TeamWorkflowPermission,
-    UserKnowledgePermission,
     UserKnowledgeDomainPermission,
+    UserKnowledgePermission,
     UserLLMPermission,
     UserMailCredentialPermission,
     UserWorkflowPermission,

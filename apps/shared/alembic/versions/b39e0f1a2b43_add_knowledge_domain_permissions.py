@@ -4,14 +4,14 @@ Revision ID: b39e0f1a2b43
 Revises: b28d9e0f1a32
 """
 
+import uuid
 from datetime import datetime, timezone
 from typing import Sequence, Union
-import uuid
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects import postgresql
 
+from alembic import op
 
 revision: str = "b39e0f1a2b43"
 down_revision: Union[str, Sequence[str], None] = "b28d9e0f1a32"

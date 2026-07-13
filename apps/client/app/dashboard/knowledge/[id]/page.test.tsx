@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import KnowledgeDetailPage from './page';
 import { knowledgeApi } from '@/app/features/knowledge/api/knowledgeApi';
+import type { KnowledgeBaseDetailResponse } from '@/app/features/knowledge/types/Knowledge';
 
 const { routerPush } = vi.hoisted(() => ({
   routerPush: vi.fn(),
@@ -54,7 +55,7 @@ vi.mock('sonner', () => ({
 
 const mockedKnowledgeApi = vi.mocked(knowledgeApi);
 
-const knowledgeBaseFixture = {
+const knowledgeBaseFixture: KnowledgeBaseDetailResponse = {
   id: 'kb-1',
   name: '사내 문서',
   description: '온보딩 자료',

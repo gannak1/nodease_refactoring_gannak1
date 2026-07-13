@@ -341,7 +341,7 @@ Item response는 `item_id`, `knowledge_base_id`, safe label, lifecycle/sync stat
 | POST | `/api/v1/knowledge/collections/{collection_id}/permissions/bundles` | role bundle을 explicit action row로 원자 적용 | permission 변경과 동일 |
 | DELETE | `/api/v1/knowledge/collections/{collection_id}/permissions/{permission_id}` | grant revoke | permission 변경과 동일 |
 
-단일 grant request는 `subject_type=team|user`, `subject_id`, `permission_action=read|route|manage|sync`만 허용한다. Bundle request의 `role_bundle`은 `viewer`, `workflow_router`, `maintainer`, `sync_operator`이며 각각 ADR-0033의 explicit action 집합을 한 transaction에서 upsert한다. 별도 role row나 inheritance를 만들지 않는다. Domain delegator의 self/own-Team grant는 `409 policy.blocked`로 차단하고, 마지막 manage 경로 회수는 safe denial 또는 Organization manager recovery를 요구한다.
+단일 grant request는 `subject_type=team|user`, `subject_id`, `permission_action=read|route|manage|sync`만 허용한다. Bundle request의 `role_bundle`은 `viewer`, `workflow_router`, `maintainer`, `sync_operator`이며 각각 ADR-0034의 explicit action 집합을 한 transaction에서 upsert한다. 별도 role row나 inheritance를 만들지 않는다. Domain delegator의 self/own-Team grant는 `409 policy.blocked`로 차단하고, 마지막 manage 경로 회수는 safe denial 또는 Organization manager recovery를 요구한다.
 
 ### Public Visibility
 

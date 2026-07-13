@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-import uuid
 from dataclasses import dataclass
-
-from sqlalchemy import and_
-from sqlalchemy.orm import Session
 
 from apps.shared.audit.manual_ownership import register_manual_audit_ownership
 from apps.shared.db.models.audit_log import (
@@ -21,6 +17,8 @@ from apps.shared.db.models.organization_membership import (
 from apps.shared.db.models.team import UserKnowledgePermission
 from apps.shared.db.models.user import User
 from apps.shared.permissions import normalize_resource_auth_state
+from sqlalchemy import and_
+from sqlalchemy.orm import Session
 
 
 @dataclass(frozen=True)
