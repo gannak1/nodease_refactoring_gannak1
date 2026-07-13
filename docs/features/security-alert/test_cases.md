@@ -4,7 +4,7 @@ Status: Draft
 
 이 문서는 [requirements.md](requirements.md), [api_spec.md](api_spec.md), [component_spec.md](component_spec.md), [ADR-0028](../../decisions/ADR-0028-security-alert-detection-and-lifecycle.md)의 검증 기준을 정의한다.
 
-현재 구현은 MBA-223의 audit 정규화부터 MBA-211~214의 영속 모델·lifecycle, 실시간 탐지·reconciliation, 관리자 API, Admin Dashboard·Sidebar·SSE 재조회까지 포함한다. 관련 자동 검증은 Client test/lint/build, Gateway Security Alert API/service 35건, Log System 관련 20건, Shared 관련 27건과 notification publisher 2건을 통과했다.
+현재 구현은 MBA-223의 audit 정규화부터 MBA-211~214의 영속 모델·lifecycle, 실시간 탐지·reconciliation, 관리자 API, Admin Dashboard·Sidebar·SSE 재조회까지 포함한다. 관련 자동 검증은 Client test/lint/build, Gateway Security Alert API/service 35건, Log System 관련 21건, Shared 관련 27건과 notification publisher 3건을 통과했다.
 
 문서 상태는 `Draft`를 유지한다. 실제 Redis를 연결한 SSE End-to-End, 전체 PostgreSQL concurrency acceptance gate, SAL-REQ-042의 durable notification publish retry는 아직 완료되지 않았다. 전체 Log System suite의 Redis 연결 테스트와 전체 Shared suite의 선택 의존성도 환경 제약으로 별도 확인이 필요하다.
 
@@ -147,6 +147,8 @@ Given 일반 member, audit 전용 auditor/raw auditor, suspended/removed member 
 When 같은 API를 사용하면,
 Then `403 permission.denied`로 거부해야 한다.
 
+열린 detail의 acknowledge, reopen, resolve가 권한 회수로 `403`을 받으면 Client는 cached detail과 해결 dialog를 비우고 drawer와 `alertId` URL을 닫아야 한다.
+
 ### AC-17 Cross-Organization Hiding
 
 Given 다른 organization의 `alert_id` 또는 scope 밖 alert를 요청할 때,
@@ -214,6 +216,8 @@ Then 원래 `alertId`를 유지한 채 Security Alert detail을 다시 열고 �
 Given Alert 생성·occurrence 갱신·상태 변경이 commit될 때,
 When `notifications.changed`를 수신하면,
 Then Client는 event payload를 source of truth로 사용하지 않고 summary와 필요한 목록/detail을 재조회해야 한다.
+
+Threshold 전 event처럼 Alert가 생성·갱신되지 않은 경우에는 event를 발행하지 않아야 한다. 수신자는 현재 manager 권한 집합과 같아야 하며 membership 없는 유효한 organization owner/manager도 포함하고 suspended, removed, deactivated user는 제외해야 한다.
 
 SSE reconnect나 event 누락 이후에도 영속 API 재조회로 현재 상태를 복구해야 한다.
 
@@ -421,6 +425,8 @@ Scope 밖 404, validation 실패, desired-state no-op에는 target-aware audit�
 | SAL-TC-W018 | AC-26 | Redis/SSE publish adapter 또는 수신자 조회 실패 | alert commit 유지, durable retry scheduling 또는 동등한 복구 기록, raw payload·raw exception log 없음 |
 | SAL-TC-W019 | AC-27 | worker exception에 synthetic secret marker 포함 | durable log/metric에 marker와 raw exception 없음 |
 | SAL-TC-W020 | AC-29 | threshold event부터 notification publish까지 측정 | 정상 경로 60초 이내 |
+| SAL-TC-W021 | AC-24 | Threshold 전 cooldown candidate의 aggregation 결과가 `None` | Alert 변경은 없고 commit 후 `notifications.changed` 발행도 없음 |
+| SAL-TC-W022 | AC-16, AC-24 | Active manager membership과 membership 없는 `created_by`/`managed_by`, suspended/deactivated owner 혼합 | 현재 manager 권한 사용자만 중복 없이 수신자에 포함 |
 
 ### Component Tests
 
@@ -447,6 +453,7 @@ Scope 밖 404, validation 실패, desired-state no-op에는 target-aware audit�
 | SAL-TC-C019 | AC-24, AC-27 | 새 alert와 같은 alert occurrence 증가 event를 연속 수신 | 최초 snapshot/reconnect는 toast 없음, 빨간색 경고 아이콘과 일반 문구만 표시, 같은 alert는 60초 안에 한 번만 toast |
 | SAL-TC-C020 | AC-19, AC-30 | Security Alert evidence의 `상세 보기` 선택 | 기존 Audit detail API 호출, Alert drawer보다 높은 layer에 상세 표시, close 후 row focus 복원 |
 | SAL-TC-C021 | AC-19, AC-27 | 연결된 감사 기록과 Audit detail 표시 | safe 권한 거부 정보가 있으면 시도한 작업·필요 권한·거부 사유를 사용자 문장과 라벨로 표시하고 canonical action과 safe ID는 보조 정보로 유지, raw metadata 미노출 |
+| SAL-TC-C022 | AC-16 | 열린 detail에서 acknowledge, reopen, resolve가 각각 403 | cached detail과 해결 dialog 제거, drawer close callback으로 `alertId` URL 제거, action button 미노출 |
 
 ### End-To-End Tests
 

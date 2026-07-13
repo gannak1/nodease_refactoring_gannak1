@@ -122,6 +122,9 @@ Security Alert는 검증된 organization 안에서 인증 사용자가 짧은 �
 - SAL-REQ-063: Actor가 삭제됐거나 표시할 수 없으면 opaque actor ID 또는 삭제된 사용자 상태로 표시해야 한다.
 - SAL-REQ-064: Related audit는 raw `audit_metadata`, `before`, `after`를 그대로 반환하지 않고 audit-tracing allowlist를 따른 safe projection만 제공해야 한다.
 - SAL-REQ-065: Security Alert 관리자 API의 권한 거부 기록은 관리자가 원인을 이해할 수 있도록 고정 allowlist의 필요 권한, 시도한 작업, 거부 사유를 제공해야 한다. Raw URL/path/query, header, request body, exception은 기록하거나 반환하지 않아야 한다.
+- SAL-REQ-066: `notifications.changed`는 Alert 생성, 새 evidence에 의한 occurrence 갱신 또는 lifecycle 상태 변경이 실제로 commit된 경우에만 발행해야 한다. Threshold 전 event처럼 Alert가 변경되지 않은 경우에는 발행하지 않아야 한다.
+- SAL-REQ-067: Security Alert notification 수신자는 현재 관리자 API 권한 판정과 같은 집합이어야 한다. Active manager membership뿐 아니라 membership이 없는 유효한 `Organization.created_by`/`managed_by`를 포함하고 suspended, removed, deactivated 사용자는 제외해야 한다.
+- SAL-REQ-068: 열린 detail에서 acknowledge, reopen, resolve가 현재 권한 회수로 `403`을 반환하면 Client는 cached detail과 해결 dialog를 비우고 선택된 `alertId` URL을 닫아야 한다.
 
 ## Non-Functional Requirements
 

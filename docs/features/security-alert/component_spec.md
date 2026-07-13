@@ -250,6 +250,7 @@ Resolved alert는 reopen하지 않는다. 재발은 새 threshold를 충족한 �
 - `확인` action은 current `version`을 `expected_version`으로 전송한다.
 - 성공하면 detail과 목록 item을 응답 값으로 갱신하고 Sidebar summary를 재조회한다.
 - 요청 중 같은 action을 중복 제출할 수 없게 한다.
+- Acknowledge, reopen, resolve가 `403`을 반환하면 stale detail과 해결 dialog를 비우고 drawer를 닫아 URL의 `alertId`를 제거한다. 같은 action button을 남겨 반복 요청하게 해서는 안 된다.
 
 ### Reopen
 
@@ -341,6 +342,8 @@ Security Alert detail
 
 - 기존 `/api/v1/notifications/stream`과 `notifications.changed` event를 재사용한다.
 - Event payload를 alert source of truth로 사용하지 않는다.
+- Worker는 Alert 생성 또는 새 evidence에 의한 occurrence 갱신이 실제로 commit된 organization만 event 발행 대상으로 추가한다. Threshold 전 event처럼 aggregation 결과가 없으면 발행하지 않는다.
+- 수신자 집합은 현재 manager 권한 판정과 일치해야 하며 active manager membership과 membership 없는 유효한 organization `created_by`/`managed_by`를 포함한다. Suspended, removed, deactivated owner는 제외하고 중복 user는 한 번만 발행한다.
 - Event 수신 시 invitation 목록은 항상 재조회하고, 현재 organization manager이면 Security Alert summary도 재조회한다. 별도 client refresh event로 열려 있는 Security Alert 목록/detail도 다시 조회한다.
 - Security Alert tab 또는 detail 재조회는 적용 중인 filter, 현재 page, evidence page를 유지한다.
 - 최초 summary snapshot은 toast를 만들지 않는다. 이후 `notifications.changed` 재조회 결과에서 새 alert가 생기거나 같은 alert의 `occurrence_count`가 증가했을 때만 빨간색 경고 아이콘과 `새 보안 알림이 있습니다.`라는 일반 문구를 표시한다.
