@@ -48,3 +48,74 @@ def test_sensitive_json_path_redaction_records_metadata_without_values():
     assert result.redacted_payload["input"]["account"]["number"] == "[REDACTED]"
     assert "payload.input.account.number" in metadata["fields"]
     assert "1234567890" not in str(metadata)
+
+
+def test_token_count_fields_remain_visible_while_auth_tokens_stay_redacted():
+    result = TraceRedactionService.redact_payload(
+        {
+            "parameters": {
+                "max_tokens": 700,
+                "max_output_tokens": 512,
+                "max_completion_tokens": None,
+            },
+            "usage": {
+                "prompt_tokens": 120,
+                "completion_tokens": 80,
+                "input_tokens": 120,
+                "output_tokens": 80,
+                "total_tokens": 200,
+                "cached_tokens": 40,
+                "reasoning_tokens": 20,
+                "token_count": 200,
+                "context_token_estimate": 180,
+            },
+            "access_token": "access-secret",
+            "refresh_token": "refresh-secret",
+            "provider_token": "provider-secret",
+            "fencing_token": 123,
+            "invalid_parameter": {"max_tokens": "not-a-number"},
+        },
+        ResolvedRedactionPolicy(),
+    )
+
+    assert result.redacted_payload["parameters"] == {
+        "max_tokens": 700,
+        "max_output_tokens": 512,
+        "max_completion_tokens": None,
+    }
+    assert result.redacted_payload["usage"] == {
+        "prompt_tokens": 120,
+        "completion_tokens": 80,
+        "input_tokens": 120,
+        "output_tokens": 80,
+        "total_tokens": 200,
+        "cached_tokens": 40,
+        "reasoning_tokens": 20,
+        "token_count": 200,
+        "context_token_estimate": 180,
+    }
+    assert result.redacted_payload["access_token"] == "[REDACTED]"
+    assert result.redacted_payload["refresh_token"] == "[REDACTED]"
+    assert result.redacted_payload["provider_token"] == "[REDACTED]"
+    assert result.redacted_payload["fencing_token"] == "[REDACTED]"
+    assert result.redacted_payload["invalid_parameter"]["max_tokens"] == "[REDACTED]"
+
+
+def test_explicit_sensitive_path_still_redacts_safe_token_count_field():
+    result = TraceRedactionService.redact_payload(
+        {"parameters": {"max_tokens": 700}},
+        ResolvedRedactionPolicy(
+            sensitive_json_paths=("payload.parameters.max_tokens",)
+        ),
+    )
+
+    assert result.redacted_payload["parameters"]["max_tokens"] == "[REDACTED]"
+
+
+def test_explicit_sensitive_keyword_still_redacts_safe_token_count_field():
+    result = TraceRedactionService.redact_payload(
+        {"parameters": {"max_tokens": 700}},
+        ResolvedRedactionPolicy(sensitive_keywords=("max_tokens",)),
+    )
+
+    assert result.redacted_payload["parameters"]["max_tokens"] == "[REDACTED]"

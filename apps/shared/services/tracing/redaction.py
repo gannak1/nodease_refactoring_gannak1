@@ -31,6 +31,20 @@ SECRET_KEYWORDS = {
     "x-auth-token",
     "x-webhook-secret",
 }
+SAFE_TOKEN_COUNT_KEYS = {
+    "cached_tokens",
+    "completion_tokens",
+    "context_token_estimate",
+    "input_tokens",
+    "max_completion_tokens",
+    "max_output_tokens",
+    "max_tokens",
+    "output_tokens",
+    "prompt_tokens",
+    "reasoning_tokens",
+    "token_count",
+    "total_tokens",
+}
 DEFAULT_SENSITIVE_HEADERS = {
     "authorization",
     "cookie",
@@ -153,14 +167,25 @@ class TraceRedactionService:
         metadata["detector_types"].append(detector_type)
 
     @staticmethod
-    def _is_sensitive_key(key: str, policy: ResolvedRedactionPolicy) -> bool:
+    def _is_sensitive_key(
+        key: str, value: Any, policy: ResolvedRedactionPolicy
+    ) -> bool:
         normalized = key.lower().replace("-", "_")
         raw_key = key.lower()
         policy_headers = {str(h).lower() for h in policy.sensitive_headers or ()}
         policy_keywords = {str(k).lower() for k in policy.sensitive_keywords or ()}
         if raw_key in DEFAULT_SENSITIVE_HEADERS or raw_key in policy_headers:
             return True
-        return any(keyword in normalized for keyword in SECRET_KEYWORDS | policy_keywords)
+        if any(keyword in normalized for keyword in policy_keywords):
+            return True
+        # 토큰 제한과 사용량은 비교 가능한 운영 지표다. 숫자 또는 null인
+        # 명시적 allowlist만 보존하고, 문자열이나 알 수 없는 *_token은 가린다.
+        if normalized in SAFE_TOKEN_COUNT_KEYS and (
+            value is None
+            or (isinstance(value, (int, float)) and not isinstance(value, bool))
+        ):
+            return False
+        return any(keyword in normalized for keyword in SECRET_KEYWORDS)
 
     @staticmethod
     def _path_matches(path: str, policy: ResolvedRedactionPolicy) -> bool:
@@ -218,7 +243,11 @@ class TraceRedactionService:
             for key, child_value in value.items():
                 child_path = f"{path}.{key}"
                 # 비밀값 키는 정책의 마스킹 사용 여부와 무관하게 항상 마스킹합니다.
-                if TraceRedactionService._is_sensitive_key(str(key), policy) or TraceRedactionService._path_matches(child_path, policy):
+                if TraceRedactionService._path_matches(
+                    child_path, policy
+                ) or TraceRedactionService._is_sensitive_key(
+                    str(key), child_value, policy
+                ):
                     redacted[key] = replacement
                     TraceRedactionService._record(
                         metadata, child_path, str(key).lower(), "secret"

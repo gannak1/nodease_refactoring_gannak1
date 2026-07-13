@@ -26,6 +26,7 @@ Audit와 trace는 workflow 실행, RAG retrieval, LLM 호출, permission/policy 
 - Knowledge source sync, source ACL mapping, partial result, egress guard failure는 sanitized reason code와 retryability 중심으로 기록한다.
 - Auto-ingested KB use provisioning audit은 source ACL fact를 KB `use`로 오해하지 않게 구분한다. Source authorization provenance update, explicit KB `use` grant provisioning, requester source ACL evaluation은 서로 다른 safe action/reason/metadata로 구분해야 한다.
 - Trace redaction storage policy는 Audit/Tracing이 소유하되, PII/secret detector와 masking engine은 shared privacy/redaction boundary로 분리해 Knowledge ingestion도 재사용한다 ([ADR-0014](../../decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)).
+- `max_tokens`, prompt/completion/input/output/total token count처럼 숫자 또는 null인 명시적 토큰 제한·사용량 allowlist는 비교 가능한 운영 지표로 보존한다. `access_token`, `refresh_token`, `session_token`, 임의의 `*_token` 문자열과 정책이 지정한 민감 경로는 계속 마스킹한다.
 - Raw Knowledge artifact access audit은 content 반환 전에 성공해야 하며, audit metadata에는 raw content, raw source id/url/path/title, raw principal, object storage key를 저장하지 않는다.
 - Skill usage summary는 redaction-safe allowlist만 사용한다. 허용값은 workflow draft/LLM node의 RAG 옵션/test run에서 사용한 skill id, skill version, freshness state, eval status, safe source-of-truth tier, safe provenance ref, request/correlation id다.
 - Workflow LLM node prompt trace가 RAG context를 포함한 provider 호출을 기록하더라도, durable trace payload에는 Knowledge context 원문이나 chunk body를 중복 저장하지 않는다. 저장 payload는 redacted marker, safe summary, count/strategy metadata 같은 allowlist만 사용할 수 있다.
