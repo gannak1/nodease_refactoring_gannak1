@@ -67,11 +67,8 @@ from sqlalchemy.orm import Session
 ROOT_DIR = Path(__file__).resolve().parents[4]
 RUN_ENV = "NODEASE_RUN_DISPOSABLE_DB_TEST"
 DB_PREFIX = "mbased_schedule_claim"
-COST_OPTIMIZER_HEAD_REVISION = "fd0e1f2a3b4c"
-SCHEDULE_HEAD_REVISION = "b39e0f1a2b43"
-SCHEDULE_MERGE_REVISION = "ff4b5c6d7e89"
-COMBINED_HEAD_REVISION = "ff6d7e8f9012"
-SPLIT_HEAD_REVISIONS = {COST_OPTIMIZER_HEAD_REVISION, SCHEDULE_HEAD_REVISION}
+SCHEDULE_HEAD_REVISION = "ff5c6d7e8f90"
+MERGE_REVISION = "ff4b5c6d7e89"
 
 
 def _run_alembic(
@@ -115,23 +112,15 @@ def _enable_vector_extension(database: str, config: DisposablePostgresConfig) ->
         engine.dispose()
 
 
-def _revisions(database: str, config: DisposablePostgresConfig) -> set[str]:
+def _revision(database: str, config: DisposablePostgresConfig) -> str:
     engine = create_engine(config.database_url(database))
     try:
         with engine.connect() as connection:
-            return set(
-                connection.execute(
-                    text("SELECT version_num FROM alembic_version")
-                ).scalars()
-            )
+            return connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
     finally:
         engine.dispose()
-
-
-def _revision(database: str, config: DisposablePostgresConfig) -> str:
-    revisions = _revisions(database, config)
-    assert len(revisions) == 1
-    return next(iter(revisions))
 
 
 def _column_exists(
@@ -316,44 +305,31 @@ def test_schedule_dispatch_head_downgrade_requires_explicit_break_glass():
         _enable_vector_extension(database, config)
         _run_alembic(
             "upgrade",
-            COMBINED_HEAD_REVISION,
+            SCHEDULE_HEAD_REVISION,
             database=database,
             config=config,
             expect_success=True,
         )
-        assert _revision(database, config) == COMBINED_HEAD_REVISION
+        assert _revision(database, config) == SCHEDULE_HEAD_REVISION
 
         _run_alembic(
             "downgrade",
-            COST_OPTIMIZER_HEAD_REVISION,
+            "-1",
             database=database,
             config=config,
             expect_success=False,
         )
-        assert _revision(database, config) == COMBINED_HEAD_REVISION
+        assert _revision(database, config) == SCHEDULE_HEAD_REVISION
 
         _run_alembic(
             "downgrade",
-            COST_OPTIMIZER_HEAD_REVISION,
+            "-1",
             database=database,
             config=config,
             expect_success=True,
             allow_destructive_downgrade=True,
         )
-        assert _revisions(database, config) == SPLIT_HEAD_REVISIONS
-
-        _run_alembic(
-            "downgrade",
-            SCHEDULE_MERGE_REVISION,
-            database=database,
-            config=config,
-            expect_success=True,
-            allow_destructive_downgrade=True,
-        )
-        assert _revisions(database, config) == {
-            COST_OPTIMIZER_HEAD_REVISION,
-            SCHEDULE_MERGE_REVISION,
-        }
+        assert _revision(database, config) == MERGE_REVISION
         assert _column_exists(
             database,
             config,
@@ -368,18 +344,18 @@ def test_schedule_dispatch_head_downgrade_requires_explicit_break_glass():
             config=config,
             expect_success=True,
         )
-        assert _revisions(database, config) == SPLIT_HEAD_REVISIONS
+        assert _revision(database, config) == SCHEDULE_HEAD_REVISION
 
         _insert_pending_claim(database, config)
         _run_alembic(
             "downgrade",
-            SCHEDULE_MERGE_REVISION,
+            "-1",
             database=database,
             config=config,
             expect_success=False,
             allow_destructive_downgrade=True,
         )
-        assert _revisions(database, config) == SPLIT_HEAD_REVISIONS
+        assert _revision(database, config) == SCHEDULE_HEAD_REVISION
     except OperationalError:
         raise pytest.fail.Exception(
             "disposable PostgreSQL is unavailable or rejected the connection; "

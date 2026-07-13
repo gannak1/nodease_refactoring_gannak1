@@ -26,17 +26,16 @@ def test_user_knowledge_permission_schema_repair_follows_current_head():
     assert "user_knowledge_permissions" in source
 
 
-def test_latest_merge_joins_cost_optimizer_and_schedule_heads_without_rewriting_history():
-    """이미 적용 가능한 migration parent는 유지하고 새 merge revision으로 합쳐야 한다."""
+def test_cost_optimizer_migrations_follow_latest_runtime_head():
+    """신규 Cost Optimizer migration은 최신 runtime head 뒤에 선형으로 연결한다."""
     script = _script_directory()
     model_routing_revision = script.get_revision("fb8c9d0e1f23")
     external_effect_revision = script.get_revision("fe3f4a5b6c78")
-    merge_revision = script.get_revision("ff6d7e8f9012")
+    recommendation_revision = script.get_revision("fc9a1b2c3d4e")
+    repair_revision = script.get_revision("fd0e1f2a3b4c")
 
     assert model_routing_revision.down_revision == "fa7b8c9d0e12"
     assert external_effect_revision.down_revision == "b39e0f1a2b43"
-    assert set(merge_revision.down_revision) == {
-        "fd0e1f2a3b4c",
-        "fe3f4a5b6c78",
-    }
-    assert script.get_heads() == ["ff6d7e8f9012"]
+    assert recommendation_revision.down_revision == "fe3f4a5b6c78"
+    assert repair_revision.down_revision == "fc9a1b2c3d4e"
+    assert script.get_heads() == ["fd0e1f2a3b4c"]

@@ -42,6 +42,7 @@ from sqlalchemy.orm import sessionmaker
 ROOT_DIR = Path(__file__).resolve().parents[4]
 RUN_ENV = "NODEASE_RUN_DISPOSABLE_DB_TEST"
 DB_PREFIX = "mbased_external_effect"
+EXTERNAL_EFFECT_REVISION = "fe3f4a5b6c78"
 
 
 def _alembic_python() -> str:
@@ -637,11 +638,62 @@ def test_concurrent_claims_have_one_database_winner():
         assert deadline_result.kind is AcquireKind.TERMINAL
         assert deadline_result.record.replay_decision is ReplayDecision.STOP
 
-        with engine.begin() as connection:
-            connection.execute(text("DELETE FROM workflow_node_effect_attempts"))
-        engine.dispose()
-        engine = None
+    finally:
+        if engine is not None:
+            engine.dispose()
+        if database_created:
+            try:
+                with admin_engine.connect() as connection:
+                    connection.execute(
+                        text(f"DROP DATABASE IF EXISTS {quoted_database}")
+                    )
+            except OperationalError:
+                raise pytest.fail.Exception(
+                    "disposable PostgreSQL cleanup could not connect; "
+                    "connection details omitted",
+                    pytrace=False,
+                ) from None
+        admin_engine.dispose()
+
+
+@pytest.mark.skipif(
+    os.getenv(RUN_ENV) != "1",
+    reason=f"set {RUN_ENV}=1 to run disposable PostgreSQL external-effect evidence",
+)
+def test_external_effect_revision_downgrades_after_attempts_are_removed():
+    try:
+        config = DisposablePostgresConfig.from_environment()
+    except DisposablePostgresConfigurationError:
+        raise pytest.fail.Exception(
+            "disposable PostgreSQL connection settings are not safely configured",
+            pytrace=False,
+        ) from None
+
+    database = f"{DB_PREFIX}_{uuid.uuid4().hex[:12]}"
+    quoted_database = quote_disposable_database_name(database, prefix=DB_PREFIX)
+    admin_engine = create_engine(
+        config.database_url(config.maintenance_database),
+        isolation_level="AUTOCOMMIT",
+    )
+    database_created = False
+    try:
+        with admin_engine.connect() as connection:
+            connection.execute(text(f"CREATE DATABASE {quoted_database}"))
+        database_created = True
+
+        extension_engine = create_engine(
+            config.database_url(database),
+            isolation_level="AUTOCOMMIT",
+        )
+        try:
+            with extension_engine.connect() as connection:
+                connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        finally:
+            extension_engine.dispose()
+
+        _run_alembic(database, config, "upgrade", EXTERNAL_EFFECT_REVISION)
         _run_alembic(database, config, "downgrade", "-1")
+
         downgraded_engine = create_engine(config.database_url(database))
         try:
             with downgraded_engine.connect() as connection:
@@ -660,8 +712,6 @@ def test_concurrent_claims_have_one_database_winner():
         finally:
             downgraded_engine.dispose()
     finally:
-        if engine is not None:
-            engine.dispose()
         if database_created:
             try:
                 with admin_engine.connect() as connection:
