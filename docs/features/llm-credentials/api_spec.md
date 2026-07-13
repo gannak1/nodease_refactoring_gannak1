@@ -54,19 +54,24 @@ Option response는 전체 credential read schema가 아니라 실행 선택을 �
 입력:
 
 - canonical organization/workflow/deployment ID와 immutable version 또는 snapshot hash
-- node/invocation reference
+- node/invocation reference와 Workflow가 승인한 execution admission reference
+- 해당 invocation에서 미리 생성한 server-issued provider attempt reference
 - execution subject 또는 public audience
 - `purpose=main_generation | memory_summary`
 - requested bounded input/output token과 cost ceiling
 
+Workflow Runtime은 provider SDK 호출 전에 attempt reference를 먼저 생성하되 provider effect를 시작하지 않는다. Issuer는 이 canonical attempt를 다른 invocation/admission에 재사용할 수 없는지 검증한 뒤 capability를 발급한다.
+
 출력 opaque capability:
 
+- opaque capability identity/revision
 - provider/model/credential safe reference와 verified relation revision
-- credential permission revision
+- server-derived credential principal safe reference와 credential permission decision revision
 - egress policy revision과 pricing revision
 - approved token/cost cap, purpose와 expiry
+- node invocation, execution admission과 server-issued provider attempt binding
 
-Memory summary 초기 정책은 `inherit_node`만 허용한다. Main node의 approved scope에서 별도 `memory_summary` capability를 발급하며 direct credential ID, name/order fallback과 `organization_default`를 거부한다. Credential revoke/permission loss, model relation/egress/pricing revision mismatch, wrong deployment/node/purpose 또는 expiry는 context materialization·budget reservation·provider call 전에 fail-closed한다. Capability, credential principal과 public Access Grant는 execution subject나 audit actor가 아니다.
+Memory summary 초기 정책은 `inherit_node`만 허용한다. Main node의 approved scope에서 별도 `memory_summary` capability를 발급하며 direct credential ID, name/order fallback과 `organization_default`를 거부한다. Capability identity/revision은 client에 해석 가능한 scope를 노출하지 않는 opaque reference다. Credential revoke, credential permission decision revision 변경, model relation/egress/pricing revision mismatch, wrong deployment/node/invocation/admission/provider-attempt/purpose 또는 expiry는 새 context claim·budget reservation·provider attempt admission·provider call 전에 fail-closed한다. 이미 시작된 provider attempt의 normalized usage reconciliation은 새 outbound call 권한과 분리한다. Capability, credential principal과 public Access Grant는 execution subject나 audit actor가 아니다.
 
 ## 권한
 

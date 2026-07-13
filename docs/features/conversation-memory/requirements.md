@@ -7,7 +7,7 @@ Related Features: workflow, chatbot-deployment, deployment, knowledge, connector
 
 Workflow와 Chatbot의 여러 turn에서 필요한 대화 맥락을 독립 Memory bounded context가 안전하게 저장·조회·요약하고, node별 policy에 따라 LLM 실행에 제공한다.
 
-이 문서는 [ADR-0030](../../decisions/ADR-0030-memory-bounded-context.md)의 기능 계약을 구체화한다. 현재 `memory_mode`, browser-generated `conversation_id`, Workflow execution log 재조회 방식은 migration 전 legacy 동작이며 목표 source of truth가 아니다.
+이 문서는 [ADR-0030](../../decisions/ADR-0030-memory-bounded-context.md)과 [ADR-0033](../../decisions/ADR-0033-conversation-memory-contract-completion.md)의 기능 계약을 구체화한다. 현재 `memory_mode`, browser-generated `conversation_id`, Workflow execution log 재조회 방식은 migration 전 legacy 동작이며 목표 source of truth가 아니다.
 
 ## Scope
 
@@ -76,12 +76,12 @@ Workflow와 Chatbot의 여러 turn에서 필요한 대화 맥락을 독립 Memor
 - MEM-REQ-023: Chatbot deployment type은 conversation session을 제공할 수 있지만 모든 LLM node Memory를 강제해서는 안 된다.
 - MEM-REQ-024: 기본 Memory source는 completed user turn과 mapped final assistant answer로 제한해야 한다.
 - MEM-REQ-025: 중간 node output은 node config가 허용한 bounded channel/projection으로만 저장해야 한다.
-- MEM-REQ-026: Session 생성 surface는 public Chatbot, explicit Workflow Editor test와 별도 인증·접근 정책을 갖춘 authenticated internal Chatbot으로 제한해야 한다. Schedule, webhook, API batch와 비대화형 deployment는 명시적 후속 conversational contract 없이는 Conversation Session을 자동 생성하지 않아야 한다.
+- MEM-REQ-026: 초기 Session 생성 surface는 public Chatbot으로 제한해야 한다. 별도 인증·접근 정책을 갖춘 authenticated internal Chatbot은 후속 target이며, Workflow Editor test, schedule, webhook, API batch와 비대화형 deployment는 각각의 인증·CSRF·idempotency·retention 계약 없이는 Conversation Session을 자동 생성하지 않아야 한다.
 
 ### Provenance And Authorization
 
-- MEM-REQ-030: Knowledge, connector/tool, subworkflow와 system policy adapter는 server-derived bounded Data Dependency를 `RuntimeDataDependencyEnvelope`로 결과와 함께 제공해야 한다.
-- MEM-REQ-031: Workflow Runtime은 transform/code/LLM/final output을 거치는 동안 내용에 영향을 준 dependency의 합집합을 보존해야 한다. V1에서는 optional dependency를 지원하지 않고 모든 content-influencing dependency를 필수로 취급해야 한다.
+- MEM-REQ-030: Knowledge, connector/tool, subworkflow와 system policy adapter는 server-derived bounded Data Dependency를 `RuntimeDataDependencyEnvelope`로 결과와 함께 제공해야 한다. Condition/Switch/Loop runtime은 predicate, route, iterable, bound와 termination 판단에 사용한 dependency를 활성 control context로 전파해야 한다.
+- MEM-REQ-031: Workflow Runtime은 transform/code/LLM/final output을 거치는 동안 값에 영향을 준 dependency와 해당 결과를 선택한 활성 control dependency의 합집합을 보존해야 한다. 선택된 branch의 상수 출력은 control dependency를 상속하고 선택되지 않은 branch의 값 dependency는 합산하지 않아야 한다. V1에서는 optional dependency를 지원하지 않고 canonical envelope의 모든 dependency를 필수로 취급해야 한다.
 - MEM-REQ-032: Client 또는 arbitrary node payload가 canonical resource ID, authorization-safe reference나 decision revision을 선언해 Memory 권한을 높일 수 없어야 한다.
 - MEM-REQ-033: Private/sensitive derived output의 provenance가 incomplete하면 Memory write를 fail-closed 해야 한다.
 - MEM-REQ-034: Memory read는 current session subject/audience와 source-owning domain의 current authorization을 다시 평가해야 한다.
@@ -94,7 +94,7 @@ Workflow와 Chatbot의 여러 turn에서 필요한 대화 맥락을 독립 Memor
 ### Public And Authenticated Boundary
 
 - MEM-REQ-040: Public conversation token은 server-issued opaque bearer capability여야 하며 raw token과 internal session ID를 분리해야 한다.
-- MEM-REQ-041: Public token 원문은 Access Grant source-of-truth에 저장하지 않고 verifier hash, session/deployment ID·version/audience binding, expiry, rotation과 revoke state만 관리해야 한다. 별도 idempotency response store의 application-encrypted replay record는 최대 10분 TTL 예외이며 만료 후 복구 불가능하게 삭제해야 한다. TTL 뒤 same-key replay는 새 secret/grant를 만들지 않고 `memory.secret_replay_expired` conflict를 반환해야 한다.
+- MEM-REQ-041: Public token 원문은 Access Grant source-of-truth에 저장하지 않고 verifier hash, session/deployment ID·version/audience binding, `active|transcript_only|revoked|expired` state와 expiry만 관리해야 한다. V1은 standalone rotation endpoint, rotated grant chain과 old/new grant grace window를 지원하지 않는다. 별도 idempotency response store의 application-encrypted replay record는 최대 10분 TTL 예외이며 만료 후 복구 불가능하게 삭제해야 한다. TTL 뒤 same-key replay는 새 secret/grant를 만들지 않고 `memory.secret_replay_expired` conflict를 반환해야 한다.
 - MEM-REQ-042: Public token 원문을 URL/query, audit, trace, metric label과 application log에 남기지 않아야 한다.
 - MEM-REQ-043: Public session을 로그인 후 authenticated session으로 자동 승격·병합하지 않아야 한다.
 - MEM-REQ-044: Authenticated session은 current user execution subject, organization, workflow/deployment scope를 서버가 canonical하게 구성해야 한다. Credential principal, billing principal과 audit actor는 execution subject와 별도로 파생해야 한다.
@@ -106,11 +106,11 @@ Workflow와 Chatbot의 여러 turn에서 필요한 대화 맥락을 독립 Memor
 
 ### Context, Summary And Cost
 
-- MEM-REQ-050: BuildMemoryContext는 사전에 발급된 `purpose=main_generation` ProviderExecutionCapability identity/revision, bounded turn/token policy, current authorization과 node channel을 적용한 Context Materialization Plan handle과 single-active-attempt authorization lease를 반환해야 한다. Raw context는 provider adapter가 같은 capability와 provider attempt로 lease를 claim할 때만 획득해야 하며, claim 결과는 materialized context에 대응하는 server-derived RuntimeDataDependencyEnvelope를 함께 반환해야 한다. Same-attempt retry만 idempotent하게 허용해야 한다.
+- MEM-REQ-050: BuildMemoryContext는 LLM Credentials가 사전에 발급한 `purpose=main_generation` ProviderExecutionCapability의 opaque identity/revision, bounded turn/token policy, current authorization과 node channel을 적용한 Context Materialization Plan handle과 single-active-attempt authorization lease를 반환해야 한다. Raw context는 provider adapter가 같은 capability와 provider attempt로 lease를 claim할 때만 획득해야 하며, claim 결과는 materialized context에 대응하는 server-derived RuntimeDataDependencyEnvelope를 함께 반환해야 한다. Same-attempt retry만 idempotent하게 허용해야 한다.
 - MEM-REQ-051: Window 범위 안에서는 불필요한 summary provider 호출을 생략할 수 있어야 한다.
 - MEM-REQ-052: 동일 session/channel/source revision/policy/summarizer version의 동시 summary 요청은 provider 호출 전 generation lease로 단일화해야 한다.
 - MEM-REQ-053: Main/summary model, credential과 data egress는 LLM Credential domain이 발급한 `ProviderExecutionCapability`만 사용해야 한다. 초기 summary policy는 node의 승인된 provider/model/credential을 상속하는 `inherit_node`만 지원하고 별도 preset 결정 전 `organization_default`를 지원하지 않아야 한다.
-- MEM-REQ-054: Summary 예상 비용은 provider 호출 전에 ProviderExecutionCapability의 provider/model/pricing revision/purpose/token·cost cap에 binding해 원자적으로 reserve하고 실제 usage를 idempotent하게 commit/reconcile 해야 한다.
+- MEM-REQ-054: Summary 예상 비용은 provider 호출 전에 LLM Credentials가 발급한 ProviderExecutionCapability의 opaque identity/revision과 Budget이 요구하는 purpose/pricing/cap binding으로 원자적으로 reserve하고 실제 usage를 idempotent하게 commit/reconcile 해야 한다.
 - MEM-REQ-055: Provider 성공, summary CAS, usage commit과 audit/outbox의 부분 실패를 durable generation state와 reconciliation으로 처리해야 한다.
 - MEM-REQ-056: Usage/reconciliation terminal 전 summary를 새 Memory Context에서 재사용하지 않아야 한다.
 - MEM-REQ-057: Memory summary usage는 main node usage와 구분되는 `purpose=memory_summary` 또는 동등한 typed purpose로 귀속해야 한다.
@@ -156,8 +156,8 @@ Workflow와 Chatbot의 여러 turn에서 필요한 대화 맥락을 독립 Memor
 
 - MEM-REQ-086: Session은 canonical organization/app/workflow, deployment ID와 immutable version 또는 snapshot hash, conversation mapping version과 node Memory policy version에 고정해야 한다. Runtime이 현재 active deployment pointer로 기존 session을 자동 rebind해서는 안 된다.
 - MEM-REQ-087: Active deployment version이 변경되면 기존 session은 자동 migration하지 않아야 한다. Public surface는 기존 session 정보를 숨기고 새 conversation을 요구하며 authenticated surface는 typed conflict와 safe new-session action을 제공해야 한다.
-- MEM-REQ-088: ProviderExecutionCapability는 organization, workflow, deployment ID/version, node/invocation, provider/model/credential safe reference, `main_generation|memory_summary` purpose, egress/pricing revision, token·cost cap과 expiry에 server-side binding되어야 한다.
-- MEM-REQ-089: Main/summary provider call, Memory context lease, budget reservation과 usage reconciliation은 같은 ProviderExecutionCapability identity/revision을 검증해야 하며 client나 Access Grant가 scope를 확장할 수 없어야 한다.
+- MEM-REQ-088: ProviderExecutionCapability의 authoritative schema, credential principal, credential permission decision revision과 발급·revoke 검증 정책은 LLM Credentials domain이 소유해야 한다. Memory는 opaque capability identity/revision과 session/deployment version, node invocation, purpose, provider attempt binding만 소비하고 credential scope를 자체 구성해서는 안 된다.
+- MEM-REQ-089: Main/summary provider call, Memory context lease, budget reservation과 usage reconciliation은 같은 ProviderExecutionCapability identity/revision을 검증해야 하며 client나 Access Grant가 scope를 확장할 수 없어야 한다. Credential revoke, permission decision revision 또는 verified relation/egress policy 변경 뒤 stale capability는 새 lease claim, reservation, provider attempt admission과 outbound call 전에 fail-closed해야 한다.
 - MEM-REQ-090: Source authorization bulk result는 `decision`, `principal_kind`, opaque `authorization_decision_revision`, `resource_revision`, `policy_revision`, `evaluated_at`을 제공해야 한다. Source ACL이 있는 resource의 ACL revision은 decision revision에 포함해야 한다.
 - MEM-REQ-091: Source-owning adapter는 membership/team/direct permission/public visibility/source ACL/lifecycle처럼 authorization decision에 영향을 주는 값이 바뀌면 decision revision을 변경해야 한다. Public audience는 subject ID/revision을 합성하지 않고 `anonymous_public_audience` principal kind로 평가해야 한다.
 - MEM-REQ-092: Purge는 Session subject/audience binding, Access Grant verifier/source row, Turn content, final/provisional Entry·projection, Summary, sensitive dependency reference, raw/materialized context cache·plan, transcript/result와 conversation access-token replay ciphertext를 지워야 한다. Purge status용 최소 opaque tombstone, verifier-hash receipt와 delete 응답 유실 복구용 encrypted receipt replay만 각각 정해진 TTL/receipt expiry까지 허용하고 Dispatch/Summary Job, Provider Attempt, Context Lease, idempotency record에서는 content와 민감 reference를 제거해야 한다.
@@ -204,7 +204,7 @@ Network source는 신뢰 가능한 reverse proxy chain에서 canonicalized clien
 - Public Access Grant는 `Authorization: Conversation` header로만 전달한다. URL/query와 일반 authentication cookie에는 넣지 않는다.
 - Public/authenticated session은 finite idle expiry, absolute expiry, 최대 completed turn, entry bytes와 context token bound를 가진다.
 - Public create/run은 grant·deployment·network source 기준 rate/concurrency limit과 organization cost gate를 모두 통과해야 한다.
-- Public create/reset의 raw token 응답은 idempotency scope 동안 암호화된 단기 replay record 또는 원자적 grant rotation으로 복구한다. Hash-only grant row만으로 token을 재구성하지 않는다.
+- Public create/reset의 raw token 응답은 idempotency scope 동안 암호화된 단기 replay record로만 복구한다. Reset은 old grant를 즉시 revoke하고 새 session/grant를 원자 발급하는 replacement이며 rotation/grace가 아니다. Hash-only grant row만으로 token을 재구성하지 않는다.
 - Secret replay record가 만료된 same-key retry는 `409 memory.secret_replay_expired`로 닫고 새 grant/receipt를 자동 생성하지 않는다. 새 conversation은 새 idempotency key로 명시적으로 생성한다.
 - Public reset/delete의 secret replay expiry는 stored scope/fingerprint, grant verifier relation과 high-entropy idempotency key가 모두 일치할 때만 노출하고 그 외에는 resource-hidden 404를 유지한다.
 - Public create idempotency key는 최소 128-bit random entropy를 사용하고 hash로 식별한다. Network source 변경은 정상 retry scope를 바꾸지 않으며 raw key를 durable log에 저장하지 않는다.

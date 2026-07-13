@@ -8,8 +8,9 @@ Status: Draft
 - Agent answer option builder는 credential value, encrypted config, API key/token, raw owner metadata, 불필요한 raw timestamp를 제외한다.
 - Credential-model relation resolver는 inactive, unverified, wrong-provider, missing relation case를 거부한다.
 - Generation credential preflight는 KB permission, collection route permission, source ACL authorization을 충족시키지 않는다.
-- ProviderExecutionCapability issuer는 organization/workflow/deployment version/node invocation/provider/model/credential/purpose/egress·pricing revision/token·cost cap/expiry를 모두 고정한다.
+- ProviderExecutionCapability issuer는 opaque identity/revision, organization/workflow/deployment version, node invocation/execution admission/provider attempt, provider/model/credential, server-derived credential principal, credential permission decision, purpose, verified relation/egress·pricing revision, token·cost cap과 expiry를 모두 고정한다.
 - Capability response/trace에는 raw credential, encrypted config와 capability token/scope 원문을 노출하지 않는다.
+- Capability consumer가 client 값으로 credential principal 또는 permission revision을 덮어쓰려 하면 발급·사용을 거부한다.
 
 ## API 테스트
 
@@ -30,7 +31,7 @@ Status: Draft
 - Credential 등록 권한은 organization manager 전용이며, credential `use`/`manage` 권한은 등록 권한으로 승격되지 않는다.
 - Credential read/list 권한만 있고 credential `use` 권한이 없는 사용자는 해당 credential로 Agent answer generation을 실행할 수 없다.
 - 사용 가능한 credential이라도 요청 model과 verified relation이 없으면 Agent answer generation을 실행할 수 없다.
-- Credential revoke/permission loss/model relation 또는 egress policy 변경 뒤 stale capability는 Memory context materialization, budget reservation과 provider 호출에 사용할 수 없다.
+- Credential revoke/permission decision revision 변경/model relation 또는 egress policy 변경 뒤 stale capability는 새 Memory context claim, budget reservation, provider attempt admission과 provider 호출에 사용할 수 없다.
 - Credential principal, billing principal, execution subject와 audit actor가 서로 다른 fixture에서도 credential owner가 private KB subject/public actor로 승격되지 않는다.
 
 ## Edge Case
@@ -38,3 +39,5 @@ Status: Draft
 - 여러 credential 또는 model이 있어도 name/order fallback selection을 하지 않는다.
 - Default credential/preset ambiguity는 향후 ADR이 selection priority를 정의하기 전까지 gated/unsupported condition으로 반환한다.
 - Capability의 deployment version, node invocation, model, pricing revision, token/cost cap 또는 expiry 중 하나가 mismatch이면 raw secret/provider call 없이 fail-closed한다.
+- Capability의 execution admission 또는 provider attempt binding을 다른 run/attempt에서 재사용하면 provider SDK 호출 전에 fail-closed한다.
+- Provider call 시작 뒤 credential이 revoke된 ambiguous outcome은 자동 재호출하지 않되 이미 발생한 usage reconciliation은 같은 capability/attempt safe reference로 한 번만 처리한다.

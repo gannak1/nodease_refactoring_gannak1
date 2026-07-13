@@ -134,6 +134,7 @@ Gateway service/helper 대상 (기존 pytest 패턴). 함수명은 구현 시 �
 ### Conversation Memory reservation target
 
 - 동일 ProviderExecutionCapability identity/revision + billing scope + idempotency key의 동시 reserve는 하나의 reservation만 만든다.
+- Credential revoke/permission decision revision 변경 뒤 stale capability는 새 reservation을 만들지 못하고, Budget consumer가 credential principal/revision을 자체 합성해 우회하지 못한다.
 - Reservation 거부 또는 adapter unavailable이면 summary provider를 호출하지 않는다.
 - Provider 미호출 실패는 reservation을 release하고 usage를 기록하지 않는다.
 - Provider 성공 후 commit retry는 actual usage를 한 번만 계상한다.

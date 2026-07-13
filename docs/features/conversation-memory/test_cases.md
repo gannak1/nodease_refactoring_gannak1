@@ -7,7 +7,7 @@ Status: Draft
 - 숫자 coverage보다 tenant isolation, current authorization, idempotency, read-your-writes와 cost consistency를 우선한다.
 - Domain/application test는 DB, FastAPI, Celery와 provider 없이 실행 가능해야 한다.
 - Adapter contract는 실제 PostgreSQL transaction, constraint와 query behavior를 검증한다.
-- Public/authenticated Chatbot, Workflow editor와 non-conversational trigger를 분리한다.
+- 초기 public Chatbot, 후속 authenticated internal Chatbot, session 미지원 Workflow Editor test와 non-conversational trigger를 분리한다.
 - Execution subject, credential/billing principal, audit actor와 public Access Grant를 서로 대체하지 않는지 검증한다.
 - Secret, raw private source, raw Memory content와 exact denied count를 assertion failure/output에 남기지 않는다.
 - At-least-once delivery, out-of-order event, partial failure와 late completion을 정상 운영 조건으로 검증한다.
@@ -80,8 +80,9 @@ Status: Draft
 - MEM-TC-DOM-049: Explicit revoke/regrant는 과거 private-derived entry를 자동 복원하지 않고 current authorization/retention을 다시 평가하며 stale out-of-order invalidation event를 source/version으로 거부한다.
 - MEM-TC-DOM-050: Authorization result에 principal kind, authorization decision/resource/policy revision 또는 evaluated_at이 없으면 unknown으로 fail-closed 한다.
 - MEM-TC-DOM-051: Anonymous public audience는 subject ID/revision 없이 `anonymous_public_audience` principal kind로 같은 authorization policy를 통과한다.
-- MEM-TC-DOM-052: Dependency optional flag를 주입해도 V1 policy는 content-influencing dependency를 모두 필수로 평가한다.
+- MEM-TC-DOM-052: Dependency optional flag를 주입해도 V1 policy는 값·활성 control dependency를 모두 필수로 평가한다.
 - MEM-TC-DOM-053: Membership/team/direct permission/public visibility/source ACL/lifecycle 변경은 authorization decision revision을 바꾸고 stale result를 거부한다.
+- MEM-TC-DOM-054: 동일한 상수 output이라도 private predicate에 의해 branch가 선택되면 predicate dependency를 보존하며, 선택되지 않은 branch의 값 dependency는 합산하지 않는다.
 
 ## Application Use Case Tests
 
@@ -180,7 +181,7 @@ Status: Draft
 - MEM-TC-DB-004: Lifecycle/content/turn/source CAS가 목적에 맞는 version만 비교한다.
 - MEM-TC-DB-005: Entry/dependency organization mismatch constraint를 검증한다.
 - MEM-TC-DB-006: Source invalidation과 summary stale update가 transaction rollback된다.
-- MEM-TC-DB-007: Access Grant token hash uniqueness, expiry, rotation, revoke와 multiple browser grant 격리를 검증한다.
+- MEM-TC-DB-007: Access Grant token hash uniqueness, `active|transcript_only|revoked|expired` 전이, immediate revoke와 서로 다른 create/reset에서 발급된 grant 격리를 검증한다. V1 schema는 rotated-grant chain이나 grace-window 상태를 요구하지 않는다.
 - MEM-TC-DB-008: Raw public token column이 존재하지 않는다.
 - MEM-TC-DB-009: Memory content encryption key unavailable/rotation contract를 검증한다.
 - MEM-TC-DB-010: Content/provenance 최대 크기를 application과 DB 양쪽에서 검증한다.
@@ -242,7 +243,7 @@ Status: Draft
 - MEM-TC-API-002: Client subject/organization/internal session/storage generation spoofing을 무시한다.
 - MEM-TC-API-003: Authenticated endpoint의 invalid/expired auth는 anonymous fallback 없이 401이다.
 - MEM-TC-API-004: Organization/deployment/session scope mismatch는 safe hiding policy를 적용한다.
-- MEM-TC-API-005: Public Access Grant는 hash/session/deployment ID·version/audience/expiry/rotation/revoke를 검증한다.
+- MEM-TC-API-005: Public Access Grant는 hash/session/deployment ID·version/audience/expiry/state를 검증하고 wrong scope, revoke와 expiry를 즉시 차단한다.
 - MEM-TC-API-006: Public token의 cross-slug/deployment/audience replay를 거부한다.
 - MEM-TC-API-007: Public endpoint의 optional auth header가 private Memory 권한을 높이지 않는다.
 - MEM-TC-API-008: Public session은 login 후 authenticated session으로 자동 병합되지 않는다.
@@ -261,9 +262,9 @@ Status: Draft
 - MEM-TC-API-017: Transcript pagination/cursor가 tenant/session을 벗어나지 않는다.
 - MEM-TC-API-018: Create는 201, pending run/delete는 202, completed run/lifecycle read는 200 계약을 지킨다.
 - MEM-TC-API-019: 같은 idempotency key의 pending/completed/failed replay는 새 task/provider 호출 없이 같은 safe 상태/결과를 반환한다.
-- MEM-TC-API-020: Public create/reset 응답 유실 뒤 같은 key retry는 동일 grant만 유지하고 bounded replay record에서 같은 raw token을 반환한다.
+- MEM-TC-API-020: Public create/reset 응답 유실 뒤 같은 key retry는 최초 응답의 동일 grant만 유지하고 bounded replay record에서 같은 raw token을 반환한다. Reset replay는 old grant를 다시 활성화하거나 replacement grant를 추가 발급하지 않는다.
 - MEM-TC-API-020A: Public create idempotency key는 최소 128-bit entropy를 요구하고 raw key를 durable log에 남기지 않으며 정상 network 변경 뒤에도 같은 deployment/origin retry를 복구한다.
-- MEM-TC-API-021: Access Grant replay 10분 TTL 만료 뒤 same-key create/reset은 `409 memory.secret_replay_expired`를 반환하고 새 grant/rotation을 만들지 않는다.
+- MEM-TC-API-021: Access Grant replay 10분 TTL 만료 뒤 same-key create/reset은 `409 memory.secret_replay_expired`를 반환하고 새 grant를 만들지 않는다.
 - MEM-TC-API-021A: `memory.secret_replay_expired` 뒤 새 idempotency key의 explicit create는 새 session/grant를 만들며 접근 불가능한 기존 session은 idle expiry/retention cleanup 대상이다.
 - MEM-TC-API-021B: Public reset/delete의 expired secret conflict는 exact scope/fingerprint/grant-verifier relation에서만 반환하고 wrong key/token/origin/deployment는 동일한 404다.
 - MEM-TC-API-022: Public invalid/expired/revoked/wrong-scope grant와 lifecycle probe는 모두 동일한 safe 404 shape다.
@@ -272,6 +273,9 @@ Status: Draft
 - MEM-TC-API-024A: `X-CSRF-Token`은 authenticated session에 binding되고 다른 session/user token replay, URL token과 auth cookie-derived token을 거부한다.
 - MEM-TC-API-025: Public API는 cookie를 무시/거부하고 credential-less exact-origin CORS만 반환한다. Authenticated CORS와 wildcard를 혼용하지 않는다.
 - MEM-TC-API-025A: Public browser conversation은 missing/null/unlisted Origin을 거부하고 server-to-server API가 browser grant surface로 우회하지 못한다.
+- MEM-TC-API-025B: V1은 standalone grant rotate endpoint를 노출하지 않고 old/new token grace overlap을 허용하지 않는다. Reset 성공과 동시에 old grant는 사용할 수 없다.
+- MEM-TC-API-025C: Workflow Editor test 실행은 별도 Conversation Session을 생성하거나 public/authenticated session route를 재사용하지 않는다. 미승인 session surface 값은 fail-closed한다.
+- MEM-TC-API-025D: 새 탭/브라우저는 기존 session용 grant를 재발급받지 못하며 새 idempotency key로 별도 conversation을 생성한다.
 - MEM-TC-API-026: Token/transcript/status 응답은 no-store/private/Vary header 계약을 지킨다.
 - MEM-TC-API-026A: Public conversation page는 no-referrer/CSP를 반환하고 미허용 third-party script/frame origin과 inline token telemetry를 허용하지 않는다.
 - MEM-TC-API-027: Grant/deployment/network/organization rate 또는 concurrency limit 초과는 provider/dispatch 전에 429와 safe Retry-After를 반환한다.
@@ -280,7 +284,7 @@ Status: Draft
 - MEM-TC-API-029A: Public delete 응답 유실 뒤 24시간 replay TTL 안의 same-key replay는 추가 receipt를 만들지 않고 encrypted response record에서 같은 receipt를 복구한다.
 - MEM-TC-API-029B: Purge receipt는 terminal 후 최소 24시간과 발급 후 최대 8일 경계를 지키며 만료 전 terminal 상태를 조회할 수 있다.
 - MEM-TC-API-029C: Purge job은 발급 후 7일 안에 completed/completed_with_hold/terminal_failure로 닫고 남은 retryable failure는 dead-letter/alert와 terminal failure로 승격한다.
-- MEM-TC-API-029D: Purge receipt replay ciphertext 만료 뒤 same-key delete는 `memory.secret_replay_expired`이고 새 receipt를 자동 rotation하지 않는다.
+- MEM-TC-API-029D: Purge receipt replay ciphertext 만료 뒤 same-key delete는 `memory.secret_replay_expired`이고 새 receipt를 자동 재발급하지 않는다.
 - MEM-TC-API-030: Public idle 24시간/absolute 7일 경계 직전은 유효하고 경계 시각부터 resource-hidden 처리한다.
 - MEM-TC-API-031: Public completed turn 100개까지 허용하고 101번째는 dispatch/provider 전에 bounded limit으로 거부한다.
 - MEM-TC-API-032: Entry 16 KiB는 UTF-8 byte 기준으로 검증해 multi-byte Unicode가 문자 수 우회로 overflow하지 않는다.
@@ -314,12 +318,19 @@ Status: Draft
 - MEM-TC-RUN-016: Memory는 Workflow execution lease/heartbeat를 변경하지 않고 safe state projection만 반영한다.
 - MEM-TC-RUN-017: Knowledge, connector/tool, subworkflow, LLM, transform/code와 system policy producer가 RuntimeDataDependencyEnvelope source-owner contract를 지킨다.
 - MEM-TC-RUN-018: Transform/code node는 모든 content input dependency 합집합을 보존하며 dependency를 삭제하거나 canonical ID를 새로 발급하지 못한다.
+- MEM-TC-RUN-018A: Condition/Switch의 predicate가 private source에 의존하고 선택 branch가 상수를 반환해도 final envelope은 predicate dependency와 선택 route control context를 보존한다.
+- MEM-TC-RUN-018B: Condition/Switch는 선택되지 않은 branch 내부의 값 dependency를 final envelope에 합산하지 않는다.
+- MEM-TC-RUN-018C: Loop의 iterable, bound, continue와 termination 판단 dependency는 실행된 body output과 loop aggregate/final output에 전파된다.
+- MEM-TC-RUN-018D: Predicate/loop control lineage가 missing/unknown이면 private/sensitive Memory write를 `provenance_incomplete`로 거부한다.
+- MEM-TC-RUN-018E: Loop가 0회 실행돼 상수 empty aggregate를 반환해도 iterable/bound/termination 판단 dependency는 final envelope에 남는다.
+- MEM-TC-RUN-018F: Nested Condition/Switch/Loop는 실행된 경로의 active control dependency만 bounded deduplicate하고 count/size cap 초과를 fail-closed한다.
 - MEM-TC-RUN-019: Subworkflow output은 target deployment version과 child envelope 합집합을 parent에 반환한다.
 - MEM-TC-RUN-020: Dependency 없는 code/custom private/sensitive output은 final mapping까지 도달해도 Memory write에서 fail-closed 한다.
 - MEM-TC-RUN-020A: Server-derived complete empty envelope과 missing/unknown envelope을 구분하고, 후자를 source 없는 결과로 승격하지 않는다.
 - MEM-TC-RUN-021: Main/summary provider call은 각각 purpose가 일치하는 ProviderExecutionCapability, context lease와 budget reservation을 사용한다.
 - MEM-TC-RUN-022: Active deployment가 바뀐 뒤 queued old-session task는 pinned snapshot만 실행하거나 version mismatch로 side effect 전에 거부하고 새 active graph로 실행하지 않는다.
 - MEM-TC-RUN-023: LLM output은 current Memory Context가 상속한 dependency를 새 retrieval/tool dependency와 합산하고 final entry까지 보존한다.
+- MEM-TC-RUN-024: Credential revoke 또는 credential permission decision/verified relation/egress revision 변경 뒤 stale ProviderExecutionCapability는 새 context claim, budget reservation, provider attempt admission과 outbound call 전에 거부된다.
 
 ## Client Tests
 
@@ -343,7 +354,7 @@ Status: Draft
 | --- | --- | --- |
 | MEM-TC-E2E-001 | Single LLM chatbot, three turns | Previous completed turn context를 정확히 이어감 |
 | MEM-TC-E2E-002 | New conversation | Past context 없음 |
-| MEM-TC-E2E-003 | Two public browsers | Access Grant/session 격리 |
+| MEM-TC-E2E-003 | Two public browsers create separate conversations | Access Grant/session 격리, 기존 session grant 재발급 없음 |
 | MEM-TC-E2E-004 | Two authenticated users | Subject/session 격리 |
 | MEM-TC-E2E-005 | Same user, two organizations | Organization 격리 |
 | MEM-TC-E2E-006 | Same workflow, two explicit sessions | 업무 context 격리 |
@@ -409,6 +420,7 @@ Status: Draft
 - MEM-TC-SEC-020: Forged optional dependency flag로 denied/private source lineage 제거.
 - MEM-TC-SEC-021: Stale authorization decision revision 또는 source ACL revision replay.
 - MEM-TC-SEC-022: Expired/wrong-purpose/wrong-pricing ProviderExecutionCapability로 context materialization, provider call 또는 budget reservation.
+- MEM-TC-SEC-022A: Client/Memory/Budget가 credential principal이나 permission decision revision을 위조하거나 stale capability identity를 새 revision으로 재해석.
 - MEM-TC-SEC-023: Active deployment pointer 교체로 old session을 attacker-selected graph/version에 자동 rebind.
 
 ## Rolling Deployment And Migration Tests
@@ -468,6 +480,7 @@ Status: Draft
 - MEM-TC-OBS-013: Public create/close/reset/delete request action의 exact target/action/count/status와 `actor_type='public'`, physical purge/compliance completion의 `actor_type='system'`을 검증한다. 모두 `actor_id=null`이고 owner fallback이 없다.
 - MEM-TC-OBS-014: completed_with_hold/terminal_failure는 operational/compliance event와 alert만 만들고 `memory.session.purged`를 만들지 않는다.
 - MEM-TC-OBS-015: ProviderExecutionCapability는 safe opaque reference/revision만 관측하고 credential, raw scope/token과 private source를 남기지 않는다.
+- MEM-TC-OBS-016: V1 create/reset/close/delete lifecycle은 `memory.grant.rotated`를 발행하지 않고 issued/revoked cardinality만 계약대로 기록한다.
 
 ## Requirement Traceability
 

@@ -29,14 +29,17 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - Memory acknowledgement가 유실되면 `GetExecutionAdmission(dispatch_id)`으로 queued/running/terminal safe projection을 복구한다.
 - Memory adapter는 Workflow execution lease/heartbeat를 갱신할 수 없다.
 - Workflow node/tool의 외부 side effect retry는 해당 node idempotency 계약을 따르며 Memory dispatcher가 arbitrary execution을 무조건 재실행하지 않는다.
-- Knowledge, connector/tool, subworkflow, LLM, transform/code와 final output은 RuntimeDataDependencyEnvelope source-owner/union contract를 보존한다.
+- Knowledge, connector/tool, subworkflow, LLM, transform/code, Condition/Switch/Loop와 final output은 RuntimeDataDependencyEnvelope source-owner/union contract를 보존한다.
 - LLM output은 Memory Context dependency를 prompt/retrieval/tool dependency와 합산해 final output까지 전달한다.
 - Transform/code node가 dependency를 제거하거나 canonical dependency를 발급하면 거부하고, provenance-incomplete private/sensitive output은 Memory write 전에 fail-closed 한다.
-- Optional dependency flag를 주입해도 V1은 모든 content-influencing dependency를 필수로 평가한다.
+- Optional dependency flag를 주입해도 V1은 모든 값·활성 control dependency를 필수로 평가한다.
+- Private predicate가 선택한 상수 branch output은 predicate dependency를 상속하고, 선택되지 않은 branch의 값 dependency는 final envelope에서 제외한다.
+- Loop iterable/bound/continue/termination dependency는 실행된 body와 loop aggregate/final output까지 전파되며 control lineage가 unknown이면 private/sensitive Memory write를 거부한다.
 - Explicit complete empty envelope은 source 없는 pure input/transform에서 허용하지만 missing/unknown envelope을 empty로 승격하지 않는다.
 - Subworkflow는 target deployment version과 child envelope 합집합을 parent output에 전달한다.
 - Memory admission/task는 deployment version/snapshot과 mapping/Memory policy version에 고정되고 active deployment 교체 후 새 graph로 자동 rebind하지 않는다.
-- Main/summary provider는 purpose와 deployment/node/model/pricing scope가 일치하는 ProviderExecutionCapability만 사용한다.
+- Main/summary provider는 LLM Credentials가 발급한 opaque ProviderExecutionCapability identity/revision과 deployment/node/admission/provider-attempt/purpose binding이 일치할 때만 호출한다.
+- Credential revoke/permission decision revision 또는 verified relation/egress revision 변경 뒤 stale capability는 새 claim/reservation/attempt/provider call에 사용할 수 없다.
 - Public Access Grant, credential/billing principal과 app owner는 execution subject 또는 audit actor로 승격되지 않는다.
 - Preflight 뒤 Worker pool capability가 바뀌어도 runtime guard가 incompatible task를 거부한다.
 
@@ -457,7 +460,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - RAG를 포함한 workflow compare/A-B 실행도 로그인 실행에서는 일반 workflow 실행과 같은 execution subject를 사용하고, subject가 없으면 public-only gate를 사용한다.
 - Public Chatbot route에 login cookie가 있어도 anonymous public audience를 유지하고 private KB/Memory를 허용하지 않는다. Target authenticated internal Chatbot은 별도 access policy/runtime namespace가 구현된 경우에만 user execution subject를 사용한다.
 - Active deployment 변경과 queued old-session task 경합에서 Worker는 pinned deployment snapshot을 사용하거나 side effect 전에 version conflict로 닫고 current graph를 임의 실행하지 않는다.
-- ProviderExecutionCapability의 purpose/credential/model/pricing revision/expiry mismatch는 context materialization, provider call과 budget reservation 전에 fail-closed 한다.
+- LLM Credentials가 발급한 ProviderExecutionCapability identity/revision의 purpose, deployment/node/admission/provider-attempt binding 또는 current validity mismatch는 context materialization, provider call과 budget reservation 전에 fail-closed 한다.
 
 ## Edge Cases
 

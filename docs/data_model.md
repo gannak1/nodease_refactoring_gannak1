@@ -425,16 +425,16 @@ node 단위 실행 이력.
 
 ### Target Conversation Memory Logical Model
 
-아래 항목은 [ADR-0030](decisions/ADR-0030-memory-bounded-context.md)의 목표 logical model이다. 물리 table 이름, column 타입, aggregate별 table 분할과 retention partition은 구현 PR의 migration/API 계약에서 확정한다. 아직 현재 활성 table 34개와 위 도메인별 현재 table 목록에는 포함하지 않는다.
+아래 항목은 [ADR-0030](decisions/ADR-0030-memory-bounded-context.md)과 [ADR-0033](decisions/ADR-0033-conversation-memory-contract-completion.md)의 목표 logical model이다. 물리 table 이름, column 타입, aggregate별 table 분할과 retention partition은 구현 PR의 migration/API 계약에서 확정한다. 아직 현재 활성 table 34개와 위 도메인별 현재 table 목록에는 포함하지 않는다.
 
 | Logical record | 핵심 binding과 제약 |
 | --- | --- |
 | Conversation Session | organization/app/workflow, deployment ID와 immutable version 또는 snapshot hash, conversation mapping/Memory policy version, execution subject 또는 public audience, lifecycle/content revision, active turn, contract/storage generation |
-| Conversation Access Grant | Public session, deployment ID/version/audience, verifier hash, expiry, rotation/revoke state. Raw token과 identity/subject를 저장하지 않음 |
+| Conversation Access Grant | Public session, deployment ID/version/audience, verifier hash, expiry와 `active`, `transcript_only`, `revoked`, `expired` state. Raw token과 identity/subject를 저장하지 않으며 V1은 rotation chain/grace state를 두지 않음 |
 | Conversation Turn | Session, canonical request/fingerprint, sequence/version, dispatch/execution reference, bounded display/Memory projection, terminal state |
 | Conversation Memory Entry | Final 또는 provisional projection, channel, content revision, privacy classification과 server-derived dependency set. Provisional entry는 CompleteTurn 전 다음 turn에서 조회하지 않음 |
 | Conversation Memory Summary | Source entry/revision과 dependency 합집합, summarizer capability/model policy version, generation/usage reconciliation state |
-| Memory Data Dependency | Source kind/organization/canonical resource and version, sensitivity, authorization-safe reference. V1은 content-influencing dependency를 모두 필수로 처리 |
+| Memory Data Dependency | Source kind/organization/canonical resource and version, sensitivity, authorization-safe reference. V1은 값 dependency와 결과를 선택한 활성 control dependency를 canonical 필수 합집합으로 처리 |
 | Turn Dispatch Job | Turn과 같은 admission UnitOfWork에서 생성되는 durable publish/claim/admission reconciliation state |
 | Summary Generation Job | Fenced generation, Provider Execution Capability, budget reservation, provider attempt, summary CAS와 usage reconciliation state |
 | Context Materialization Plan / Lease / Provider Attempt | Raw context를 복제하지 않는 ordered reference plan, authorization decision revision, capability-bound short-lived claim과 durable provider-start/outcome state |

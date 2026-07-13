@@ -38,15 +38,17 @@ Workflow Runtime은 node value와 `RuntimeDataDependencyEnvelope`를 하나의 r
 | Connector/tool | 승인된 adapter가 resource/item, source ACL/egress policy revision 발급 |
 | Subworkflow | Target deployment version과 child output envelope 합집합 반환 |
 | LLM | Prompt input, Memory Context, retrieval와 tool dependency 합집합 상속 |
-| Transform/code | 모든 content input dependency 합집합을 그대로 상속하고 canonical dependency를 발급·제거하지 않음 |
+| Transform/code | 모든 value input dependency 합집합을 그대로 상속하고 canonical dependency를 발급·제거하지 않음 |
+| Condition/Switch | Predicate dependency와 선택 route를 active control context에 추가하고 선택된 output에 상속 |
+| Loop | Iterable/bound/continue/termination dependency를 body와 loop aggregate에 active control context로 상속 |
 | Final output | Answer에 영향을 준 upstream dependency 전체 합집합 전달 |
 | System/privacy policy | Policy owner가 classification/redaction policy revision을 발급하고 Runtime이 result envelope에 합산 |
 
-V1에서는 content-influencing dependency를 모두 필수로 취급한다. Code/custom adapter가 provenance를 반환하지 못하면 result를 `provenance_incomplete`로 표시하고 private/sensitive Memory write를 차단한다.
+V1 canonical envelope은 값 dependency와 활성 control dependency의 합집합을 모두 필수로 취급한다. 선택된 branch의 상수 output도 predicate dependency를 상속하고 선택되지 않은 branch의 값 dependency는 합산하지 않는다. Code/custom adapter가 provenance를 반환하지 못하면 result를 `provenance_incomplete`로 표시하고 private/sensitive Memory write를 차단한다.
 
 ### Provider Execution Capability
 
-Main generation과 Memory summary provider adapter는 LLM Credential/egress port에서 server-issued capability를 받는다. Capability는 organization/workflow/deployment version/node invocation, provider/model/credential safe reference, `main_generation|memory_summary` purpose, egress/pricing revision, token·cost cap과 expiry를 고정한다. Runtime은 capability identity/revision을 Memory context lease, budget reservation, provider attempt와 usage reconciliation에 그대로 전달하고 client/Access Grant/owner 값으로 scope를 바꾸지 않는다.
+Main generation과 Memory summary provider adapter는 Workflow admission 안에서 provider effect 없는 server-issued attempt reference를 먼저 만든 뒤 LLM Credentials domain의 authoritative port에서 해당 invocation/admission/attempt에 binding된 opaque capability identity/revision을 받는다. 상세 schema, credential principal과 permission decision revision은 [LLM Credentials API Spec](../llm-credentials/api_spec.md#target-provider-execution-capability-contract)이 소유한다. Runtime은 capability identity/revision을 Memory context lease, budget reservation, provider attempt와 usage reconciliation에 그대로 전달하고 client/Access Grant/owner 값으로 scope를 바꾸거나 credential principal을 합성하지 않는다.
 
 ## Screens
 
