@@ -162,9 +162,10 @@ export function useDocumentProcess({
 
   // 저장 및 처리 (Save)
   const executeSave = async (strategy: 'general' | 'llamaparse') => {
+    const operationScope = requestScope;
+    if (!operationScopeIsCurrent(operationScope)) return;
     if (!document) return;
     if (!validateRequest()) return;
-    const operationScope = requestScope;
     try {
       const requestData = createRequestData(strategy);
       await knowledgeApi.processDocument(kbId, document.id, requestData);
@@ -193,9 +194,10 @@ export function useDocumentProcess({
 
   // 3. 미리보기 (Preview)
   const executePreview = async (strategy: 'general' | 'llamaparse') => {
+    const operationScope = requestScope;
+    if (!operationScopeIsCurrent(operationScope)) return;
     if (!kbId || !documentId) return;
     if (!validateRequest()) return;
-    const operationScope = requestScope;
     setIsPreviewLoading(true);
     try {
       const requestData = createRequestData(strategy);
@@ -223,8 +225,9 @@ export function useDocumentProcess({
 
   // 비용 승인 핸들러
   const handleAnalyzeAndProceed = async (action: 'preview' | 'save') => {
-    if (!validateRequest()) return;
     const operationScope = requestScope;
+    if (!operationScopeIsCurrent(operationScope)) return;
+    if (!validateRequest()) return;
     setAnalyzingAction(action);
     try {
       const result = await knowledgeApi.analyzeDocument(documentId);
@@ -251,9 +254,10 @@ export function useDocumentProcess({
 
   // 5. 비용 승인 확인
   const handleConfirmCost = async () => {
+    const operationScope = requestScope;
+    if (!operationScopeIsCurrent(operationScope)) return;
     setShowCostConfirm(false);
     if (!validateRequest()) return;
-    const operationScope = requestScope;
 
     // waiting_for_approval 상태에서 재개하는 경우
     if (document?.status === 'waiting_for_approval') {

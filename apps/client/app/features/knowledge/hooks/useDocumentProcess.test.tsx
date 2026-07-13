@@ -175,4 +175,19 @@ describe('useDocumentProcess edit configuration gate', () => {
     expect(setStatus).not.toHaveBeenCalled();
     expect(setProgress).not.toHaveBeenCalled();
   });
+
+  it('does not start processing when the external organization scope is already stale', () => {
+    const { result } = renderHook(() =>
+      useDocumentProcess({
+        ...props,
+        requestScope: 'org-1:kb-1:document-1',
+        isRequestScopeCurrent: () => false,
+      }),
+    );
+
+    act(() => result.current.handleSaveClick());
+
+    expect(processDocument).not.toHaveBeenCalled();
+    expect(analyzeDocument).not.toHaveBeenCalled();
+  });
 });

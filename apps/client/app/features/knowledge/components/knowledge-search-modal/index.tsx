@@ -174,6 +174,7 @@ export default function KnowledgeSearchModal({
       alert('활성 조직을 선택해 주세요.');
       return;
     }
+    if (getStoredActiveOrganizationId() !== activeOrganizationId) return;
     if (activeTab === 'chat' && !selectedModelId) {
       alert('AI 답변에 사용할 모델을 먼저 설정해 주세요.');
       return;

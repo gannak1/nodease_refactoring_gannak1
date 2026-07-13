@@ -188,6 +188,24 @@ describe('KnowledgeSearchModal', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('does not start a search with stale organization state', () => {
+    vi.mocked(fetch).mockReturnValueOnce(new Promise<Response>(() => {}));
+    render(
+      <KnowledgeSearchModal
+        isOpen
+        knowledgeBaseId="10200000-0000-0000-0000-000000000334"
+        onClose={vi.fn()}
+      />,
+    );
+    const textarea = screen.getByPlaceholderText('검색어를 입력하세요...');
+    fireEvent.change(textarea, { target: { value: '조직 전환 직후 검색' } });
+    activeOrganizationMock.getStoredActiveOrganizationId.mockReturnValue('org-2');
+
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+
+    expect(axiosPostMock).not.toHaveBeenCalled();
+  });
+
   it('does not submit chat without an available generation model', async () => {
     vi.mocked(fetch).mockResolvedValueOnce({
       ok: true,
