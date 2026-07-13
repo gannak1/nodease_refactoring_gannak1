@@ -26,6 +26,10 @@ from apps.shared.domain.workflow_node_binding import (
     WorkflowNodeBinding,
     parse_workflow_node_bindings,
 )
+from apps.shared.domain.slack_delivery import (
+    SlackGraphBoundaryError,
+    validate_slack_graph_boundary,
+)
 from apps.shared.services.external_effect_trace_capture import (
     durable_provider_summary,
     uses_metadata_only_provider_capture,
@@ -39,7 +43,10 @@ from apps.workflow_engine.domain.external_effect import (
 )
 from apps.workflow_engine.workflow.core.workflow_logger import WorkflowLogger
 from apps.workflow_engine.workflow.core.workflow_node_factory import NodeFactory
-from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
+from apps.workflow_engine.workflow.errors import (
+    NonRetryableWorkflowError,
+    WorkflowNodeConfigurationError,
+)
 
 
 class WorkflowEngine:
@@ -1036,6 +1043,14 @@ class WorkflowEngine:
 
     def validate_graph(self):
         """워크플로우 그래프의 구조적 유효성을 검사합니다."""
+        try:
+            validate_slack_graph_boundary(
+                self.node_schemas.values(),
+                require_resolved=True,
+                allow_legacy_selectors=False,
+            )
+        except SlackGraphBoundaryError as exc:
+            raise WorkflowNodeConfigurationError(exc.reason_code) from None
         self._check_cycles()
         self._check_start_nodes()
         self._check_isolation()
