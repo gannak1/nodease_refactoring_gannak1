@@ -134,6 +134,12 @@ export function SecurityAlertDetailDrawer({
         loadedDetailAlertIdRef.current = null;
         setDetail(null);
       }
+      if (
+        canPreserveCurrentDetail &&
+        !(isAxiosError(loadError) && loadError.response?.status === 403)
+      ) {
+        return null;
+      }
       setDetailError(
         isAxiosError(loadError) && loadError.response?.status === 403
           ? 'forbidden'
@@ -180,7 +186,9 @@ export function SecurityAlertDetailDrawer({
       setEvidenceTotal(data.total);
       loadedEvidenceScopeRef.current = evidenceScope;
     } catch {
-      if (isCurrentRequest()) setEvidenceError(true);
+      if (isCurrentRequest() && !canPreserveCurrentEvidence) {
+        setEvidenceError(true);
+      }
     } finally {
       if (isCurrentRequest()) setEvidenceLoading(false);
     }
