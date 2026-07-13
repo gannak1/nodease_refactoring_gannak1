@@ -99,6 +99,9 @@ permission은 KB `read/use/write/content_read/manage` 또는 Collection
 - UI role bundle은 explicit action row를 transactionally 적용하는 편의 기능이다.
   Viewer=`read`, Workflow Router=`read+route`, Maintainer=`read+manage`, Sync
   Operator=`read+sync`이며 KB `use`를 만들지 않는다.
+- 위임 대상 picker는 권한 변경 권한을 통과한 actor에게만 active Team/User의
+  opaque id와 safe label을 반환한다. Team을 기본 선택으로 두며 raw principal,
+  email, source identity는 위임 대상 응답과 감사 metadata에 포함하지 않는다.
 
 ### Resource hiding, audit, and architecture
 

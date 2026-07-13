@@ -53,6 +53,8 @@ Status: Draft
 - Expired domain grant는 cleanup worker 실행 여부와 무관하게 effective action에서 제외된다. Team과 user direct domain grant는 additive allow이며 explicit deny를 만들지 않는다.
 - Domain action은 KB read/use/content, Collection route를 상속하지 않는다. `catalog_manage`만 가진 actor의 RAG 검색과 원문 조회가 허용되면 테스트 실패다.
 - `permission_delegate` actor가 자신 또는 자신이 active member인 Team에 content-plane grant를 시도하면 mutation 없이 safe policy block audit만 정확히 한 번 기록한다. Organization manager와 resource manager의 기존 recovery path는 별도 positive case로 검증한다.
+- Collection role bundle은 Viewer=`read`, Workflow Router=`read+route`, Maintainer=`read+manage`, Sync Operator=`read+sync` explicit row를 한 transaction에서 적용한다. 일부 row 또는 audit 저장 실패 시 bundle 전체를 rollback하고 KB `use` row를 만들지 않는다.
+- Domain `catalog_manage` actor는 private manual Collection과 membership을 관리할 수 있지만 public membership 변경은 Organization manager acknowledgement 없이는 차단된다. Source public exposure primitive가 없으면 source-managed KB의 public link/visibility 전환은 `source_public_exposure_required`로 fail-closed된다.
 
 ## Knowledge Base API Tests
 
@@ -230,14 +232,14 @@ Status: Draft
 
 ## API And UI Tests
 
-- Manual Collection CRUD API는 organization manager 또는 domain `catalog_manage`만 private Collection을 생성할 수 있게 하고, delegated create가 public metadata를 보내도 private로 저장한다. `collection.read`가 없는 사용자는 목록/상세에서 hidden-safe 응답을 받는다.
-- Collection update/archive는 `collection.manage` 또는 organization manager만 허용하고, system-managed Collection의 source-owned field는 manual update로 바꾸지 못한다.
+- Manual Collection CRUD API는 organization manager 또는 domain `catalog_manage`만 private Collection을 생성할 수 있게 하고, delegated create가 public metadata를 보내도 private로 저장한다. Collection content `read`가 없는 domain 관리자는 허용 action 수행에 필요한 safe 관리 projection만 받는다.
+- Collection update/archive는 resource `manage`, 해당 domain action, 또는 organization manager를 허용하고 system-managed Collection의 source-owned field는 manual update로 바꾸지 못한다.
 - Duplicate Collection safe name은 raw DB constraint나 internal value 없이 safe conflict response로 닫힌다.
 - Collection item link는 `collection.manage`와 대상 KB `manage`를 모두 요구한다. 둘 중 하나만 있으면 실패하고 hidden KB id/name을 오류에 포함하지 않는다.
 - Domain `catalog_manage` actor는 content 권한 없이 private Collection membership을 관리할 수 있다. Public Collection link/unlink/reorder는 domain/resource manage만으로는 실패하고 Organization manager acknowledgement와 source public approval gate를 요구한다.
 - Collection item duplicate link는 idempotent success 또는 문서화된 safe conflict 중 하나로 deterministic하게 처리한다.
 - Collection item unlink와 reorder는 같은 Collection 안의 item만 대상으로 하며, 다른 organization 또는 hidden KB item을 조작하지 못한다.
-- Link candidate API는 기본적으로 KB `manage` 가능한 후보만 반환하고, visible-only KB를 표시해야 하는 경우 disabled 상태와 safe reason만 반환한다.
+- Link candidate API는 resource manager에게 KB `manage` 가능한 후보만 반환하고, domain `catalog_manage`에는 private membership 관리용 safe 후보만 반환한다. Public 후보는 Organization manager와 source exposure gate를 통과해야 한다.
 - Collection permission grant/revoke는 `read`, `route`, `manage`, `sync`만 허용하고 explicit deny나 role inheritance를 만들지 않는다.
 - Collection UI role bundle은 Viewer=`read`, Workflow Router=`read+route`, Maintainer=`read+manage`, Sync Operator=`read+sync` explicit row를 한 transaction에서 적용하며 어떤 bundle도 KB `use`를 만들지 않는다.
 - Collection permission revoke는 자기 자신의 마지막 `manage` grant 제거 edge case를 safe denial 또는 organization manager 전용 동작으로 처리한다.
@@ -247,7 +249,7 @@ Status: Draft
 - Resource permission registry contract는 schema가 허용하는 `workflow`, `llm_credential`, `knowledge_base` resource type과 Gateway routing key가 일치하는지 검증한다.
 - `resource_type="knowledge_base"` grant/revoke/list는 `TeamKnowledgePermission`과 `UserKnowledgePermission`만 사용하고 LLM credential 또는 workflow permission fallback으로 흐르지 않는다.
 - KB hard delete는 Knowledge lifecycle service boundary를 통과하고, `team_knowledge_permissions`, `user_knowledge_permissions` direct grant row를 같은 transaction에서 먼저 정리해 orphan permission이나 FK failure를 남기지 않는다. Disposable PostgreSQL integration은 owner predicate, wrong-owner no-mutation, legacy cross-organization permission cleanup, document/chunk cascade와 실제 FK delete 성공을 검증한다.
-- KB hard delete는 Organization manager와 explicit acknowledgement만 허용한다. Resource manager와 domain lifecycle manager는 archive/restore만 수행하고 hard delete나 system-managed source-owned lifecycle을 수행하지 못한다.
+- KB hard delete는 Organization manager와 explicit acknowledgement만 허용한다. Resource manager와 domain lifecycle manager는 archive/restore만 수행하고 hard delete나 system-managed source-owned lifecycle을 수행하지 못한다. Permission cleanup, canonical audit, KB delete 중 하나라도 실패하면 DB mutation 전체를 rollback한다.
 - Unknown/cross-org/invisible direct resource는 `404 resource.hidden`, same-scope visible action 부족은 `403 permission.denied`, 목록은 unauthorized row와 exact hidden count를 생략한다.
 - Disposable PostgreSQL integration은 명시적 host/port/user/password를 요구하고 기본 credential을 사용하지 않는다. Loopback 밖 host는 exact host confirmation 없이는 연결하지 않으며, allowlist random DB name만 생성/삭제하고 subprocess에는 검증된 개별 DB 설정만 전달한다. 실패 출력과 config representation은 credential/connection detail을 노출하지 않는다.
 - Runtime/builder bulk KB permission evaluation은 team KB permission과 `user_knowledge_permissions` direct grant를 모두 합산해야 한다. User direct grant만 있는 경우에도 해당 user의 KB `use` 권한이 허용되어야 한다.

@@ -47,6 +47,12 @@ KnowledgeRAGSourceTierPolicy = Literal["tie_break", "off"]
 KnowledgeCollectionAction = Literal["read", "route", "manage", "sync"]
 KnowledgeCollectionVisibility = Literal["private", "public"]
 KnowledgeCollectionLifecycleState = Literal["active", "archived", "deleted"]
+KnowledgeCollectionRoleBundle = Literal[
+    "viewer",
+    "workflow_router",
+    "maintainer",
+    "sync_operator",
+]
 KnowledgeDomainPermissionAction = Literal[
     "catalog_manage",
     "permission_delegate",
@@ -142,6 +148,7 @@ class KnowledgeCollectionItemLinkRequest(BaseModel):
 
     knowledge_base_id: UUID
     rank: int = Field(default=0, ge=0)
+    acknowledged_public_runtime_exposure: bool = False
 
 
 class KnowledgeCollectionItemResponse(BaseModel):
@@ -172,6 +179,7 @@ class KnowledgeCollectionItemReorderRequest(BaseModel):
     items: list[KnowledgeCollectionItemReorderEntry] = Field(
         ..., min_length=1, max_length=500
     )
+    acknowledged_public_runtime_exposure: bool = False
 
 
 class KnowledgeCollectionLinkCandidate(BaseModel):
@@ -193,6 +201,14 @@ class KnowledgeCollectionPermissionGrantRequest(BaseModel):
     permission_action: KnowledgeCollectionAction
 
 
+class KnowledgeCollectionPermissionBundleGrantRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    subject_type: Literal["team", "user"]
+    subject_id: UUID
+    role_bundle: KnowledgeCollectionRoleBundle
+
+
 class KnowledgeCollectionPermissionResponse(BaseModel):
     permission_id: UUID
     subject_type: Literal["team", "user"]
@@ -205,6 +221,17 @@ class KnowledgeCollectionPermissionsResponse(BaseModel):
     permissions: list[KnowledgeCollectionPermissionResponse] = Field(
         default_factory=list
     )
+
+
+class KnowledgeDelegationSubject(BaseModel):
+    subject_type: Literal["team", "user"]
+    subject_id: UUID
+    subject_safe_label: str
+
+
+class KnowledgeDelegationSubjectsResponse(BaseModel):
+    teams: list[KnowledgeDelegationSubject] = Field(default_factory=list)
+    users: list[KnowledgeDelegationSubject] = Field(default_factory=list)
 
 
 class KnowledgeCollectionVisibilityRequest(BaseModel):

@@ -6,8 +6,10 @@ import pytest
 
 from apps.gateway.services.knowledge_lifecycle_service import (
     KnowledgeLifecycleNotFound,
+    KnowledgeLifecyclePolicyDenied,
     KnowledgeLifecycleService,
 )
+from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.knowledge import KnowledgeBase
 from apps.shared.db.models.team import TeamKnowledgePermission, UserKnowledgePermission
 
@@ -42,12 +44,17 @@ class _LifecycleDb:
         self.filters = []
         self.committed = False
         self.rolled_back = False
+        self.added = []
 
     def query(self, model):
         return _LifecycleQuery(self, model)
 
     def delete(self, row):
         self.operations.append(("kb_delete", row))
+
+    def add(self, row):
+        self.added.append(row)
+        self.operations.append(("add", type(row)))
 
     def commit(self):
         if self.commit_error is not None:
@@ -75,7 +82,40 @@ def _kb(*, documents=None):
         organization_id=uuid.uuid4(),
         user_id=uuid.uuid4(),
         documents=documents or [],
+        lifecycle_state="active",
+        source_identity_id=None,
     )
+
+
+def test_archive_knowledge_base_commits_lifecycle_and_audit_together():
+    kb = _kb()
+    db = _LifecycleDb(kb)
+
+    KnowledgeLifecycleService(db).archive_knowledge_base(
+        kb,
+        actor_id=uuid.uuid4(),
+    )
+
+    assert kb.lifecycle_state == "archived"
+    assert len(db.added) == 1
+    assert isinstance(db.added[0], AuditLog)
+    assert db.committed is True
+
+
+def test_restore_knowledge_base_rejects_source_managed_resource():
+    kb = _kb()
+    kb.lifecycle_state = "archived"
+    kb.source_identity_id = uuid.uuid4()
+    db = _LifecycleDb(kb)
+
+    with pytest.raises(KnowledgeLifecyclePolicyDenied):
+        KnowledgeLifecycleService(db).restore_knowledge_base(
+            kb,
+            actor_id=uuid.uuid4(),
+        )
+
+    assert db.committed is False
+    assert db.added == []
 
 
 def test_delete_owned_knowledge_base_deletes_files_permissions_and_kb():

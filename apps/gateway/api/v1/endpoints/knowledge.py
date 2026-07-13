@@ -61,6 +61,7 @@ from apps.gateway.services.knowledge_authorization_service import (
 )
 from apps.gateway.services.knowledge_lifecycle_service import (
     KnowledgeLifecycleNotFound,
+    KnowledgeLifecyclePolicyDenied,
     KnowledgeLifecycleService,
 )
 from apps.gateway.services.knowledge_rag_recommendation_service import (
@@ -83,6 +84,7 @@ from apps.shared.schemas.knowledge import (
     KnowledgeCollectionLinkCandidatesResponse,
     KnowledgeCollectionListResponse,
     KnowledgeCollectionPermissionGrantRequest,
+    KnowledgeCollectionPermissionBundleGrantRequest,
     KnowledgeCollectionPermissionsResponse,
     KnowledgeCollectionResponse,
     KnowledgeCollectionUpdateRequest,
@@ -93,6 +95,7 @@ from apps.shared.schemas.knowledge import (
     KnowledgeDomainPermissionListResponse,
     KnowledgeDomainPermissionResponse,
     KnowledgeDomainPermissionUpsertRequest,
+    KnowledgeDelegationSubjectsResponse,
     KnowledgeRAGRecommendationRequest,
     KnowledgeRAGRecommendationResponse,
 )
@@ -112,6 +115,7 @@ from apps.shared.services.rag_hierarchy import (
     validate_chunking_request,
 )
 from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
+from apps.shared.services.permissions import has_organization_manager_permission
 from apps.shared.services.knowledge_schema_readiness import (
     check_knowledge_schema_readiness,
     table_has_column,
@@ -700,6 +704,23 @@ def list_knowledge_domain_permissions(
     )
 
 
+@router.get(
+    "/domain-delegation-subjects",
+    response_model=KnowledgeDelegationSubjectsResponse,
+)
+def list_knowledge_domain_delegation_subjects(
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = _knowledge_collection_service(db, request, x_organization_id, current_user)
+    try:
+        return service.list_domain_delegation_subjects()
+    except KnowledgeCollectionServiceError as exc:
+        _raise_collection_service_error(request, exc)
+
+
 def _change_knowledge_domain_permission(
     *,
     request: Request,
@@ -1008,13 +1029,20 @@ def unlink_knowledge_collection_item(
     collection_id: UUID,
     item_id: UUID,
     request: Request,
+    acknowledged_public_runtime_exposure: bool = Query(default=False),
     x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     service = _knowledge_collection_service(db, request, x_organization_id, current_user)
     try:
-        service.unlink_item(collection_id, item_id)
+        service.unlink_item(
+            collection_id,
+            item_id,
+            acknowledged_public_runtime_exposure=(
+                acknowledged_public_runtime_exposure
+            ),
+        )
     except KnowledgeCollectionServiceError as exc:
         _raise_collection_service_error(request, exc)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -1061,6 +1089,24 @@ def list_knowledge_collection_permissions(
         _raise_collection_service_error(request, exc)
 
 
+@router.get(
+    "/collections/{collection_id}/delegation-subjects",
+    response_model=KnowledgeDelegationSubjectsResponse,
+)
+def list_knowledge_collection_delegation_subjects(
+    collection_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = _knowledge_collection_service(db, request, x_organization_id, current_user)
+    try:
+        return service.list_delegation_subjects(collection_id)
+    except KnowledgeCollectionServiceError as exc:
+        _raise_collection_service_error(request, exc)
+
+
 @router.post(
     "/collections/{collection_id}/permissions",
     response_model=KnowledgeCollectionPermissionsResponse,
@@ -1077,6 +1123,30 @@ def grant_knowledge_collection_permission(
     try:
         permission = service.grant_permission(collection_id, permission_request)
         return KnowledgeCollectionPermissionsResponse(permissions=[permission])
+    except KnowledgeCollectionServiceError as exc:
+        _raise_collection_service_error(request, exc)
+
+
+@router.post(
+    "/collections/{collection_id}/permissions/bundles",
+    response_model=KnowledgeCollectionPermissionsResponse,
+)
+def grant_knowledge_collection_permission_bundle(
+    collection_id: UUID,
+    permission_request: KnowledgeCollectionPermissionBundleGrantRequest,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = _knowledge_collection_service(db, request, x_organization_id, current_user)
+    try:
+        return KnowledgeCollectionPermissionsResponse(
+            permissions=service.grant_permission_bundle(
+                collection_id,
+                permission_request,
+            )
+        )
     except KnowledgeCollectionServiceError as exc:
         _raise_collection_service_error(request, exc)
 
@@ -1344,25 +1414,152 @@ def update_knowledge_base(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.delete("/{kb_id}", status_code=status.HTTP_204_NO_CONTENT)
-@audit(AuditAction.KNOWLEDGE_DELETE, target_param="kb_id")
-def delete_knowledge_base(
+def _raise_knowledge_lifecycle_policy_error(
+    request: Request,
+    exc: Exception,
+) -> None:
+    if isinstance(exc, KnowledgeLifecycleNotFound):
+        raise_api_error(
+            request,
+            status.HTTP_404_NOT_FOUND,
+            "resource.hidden",
+            "Knowledge Base not found.",
+        )
+    if isinstance(exc, KnowledgeLifecyclePolicyDenied):
+        raise_api_error(
+            request,
+            status.HTTP_403_FORBIDDEN,
+            "policy.denied",
+            "Source-managed Knowledge lifecycle is controlled by its source.",
+        )
+    raise exc
+
+
+@router.post("/{kb_id}/archive", status_code=status.HTTP_204_NO_CONTENT)
+def archive_knowledge_base(
     kb_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    지식 베이스를 삭제합니다.
-    연결된 문서 및 임베딩 데이터는 DB Cascade 설정에 따라 함께 삭제됩니다.
-    물리적 파일(S3/Local)도 함께 삭제합니다.
-    """
+    organization_id = resolve_active_organization_id(
+        db,
+        request,
+        x_organization_id,
+        current_user.id,
+    )
     try:
-        KnowledgeLifecycleService(db).delete_owned_knowledge_base(
-            kb_id=kb_id,
+        kb = _knowledge_authorization_service(
+            db,
             user_id=current_user.id,
+            organization_id=organization_id,
+        ).load_kb(
+            kb_id,
+            "manage",
+            domain_action="lifecycle_manage",
         )
-    except KnowledgeLifecycleNotFound:
-        raise HTTPException(status_code=404, detail="Knowledge Base not found")
+        KnowledgeLifecycleService(db).archive_knowledge_base(
+            kb,
+            actor_id=current_user.id,
+        )
+    except (KnowledgeResourceHidden, KnowledgePermissionDenied) as exc:
+        _raise_knowledge_authorization_error(request, exc)
+    except (KnowledgeLifecycleNotFound, KnowledgeLifecyclePolicyDenied) as exc:
+        _raise_knowledge_lifecycle_policy_error(request, exc)
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/{kb_id}/restore", status_code=status.HTTP_204_NO_CONTENT)
+def restore_knowledge_base(
+    kb_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = resolve_active_organization_id(
+        db,
+        request,
+        x_organization_id,
+        current_user.id,
+    )
+    try:
+        kb = _knowledge_authorization_service(
+            db,
+            user_id=current_user.id,
+            organization_id=organization_id,
+        ).load_kb(
+            kb_id,
+            "manage",
+            include_archived=True,
+            domain_action="lifecycle_manage",
+        )
+        KnowledgeLifecycleService(db).restore_knowledge_base(
+            kb,
+            actor_id=current_user.id,
+        )
+    except (KnowledgeResourceHidden, KnowledgePermissionDenied) as exc:
+        _raise_knowledge_authorization_error(request, exc)
+    except (KnowledgeLifecycleNotFound, KnowledgeLifecyclePolicyDenied) as exc:
+        _raise_knowledge_lifecycle_policy_error(request, exc)
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete("/{kb_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_knowledge_base(
+    kb_id: UUID,
+    request: Request,
+    acknowledged_hard_delete: bool = Query(default=False),
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = resolve_active_organization_id(
+        db,
+        request,
+        x_organization_id,
+        current_user.id,
+    )
+    if not has_organization_manager_permission(
+        db,
+        current_user.id,
+        organization_id,
+    ):
+        raise_api_error(
+            request,
+            status.HTTP_403_FORBIDDEN,
+            "permission.denied",
+            "Organization manager permission is required.",
+        )
+    if not acknowledged_hard_delete:
+        raise_api_error(
+            request,
+            status.HTTP_400_BAD_REQUEST,
+            "validation.failed",
+            "Hard delete acknowledgement is required.",
+            {"field": "acknowledged_hard_delete"},
+        )
+    try:
+        kb = _knowledge_authorization_service(
+            db,
+            user_id=current_user.id,
+            organization_id=organization_id,
+        ).load_kb(
+            kb_id,
+            "manage",
+            include_archived=True,
+        )
+        KnowledgeLifecycleService(db).hard_delete_knowledge_base(
+            kb,
+            actor_id=current_user.id,
+        )
+    except (KnowledgeResourceHidden, KnowledgePermissionDenied) as exc:
+        _raise_knowledge_authorization_error(request, exc)
+    except (KnowledgeLifecycleNotFound, KnowledgeLifecyclePolicyDenied) as exc:
+        _raise_knowledge_lifecycle_policy_error(request, exc)
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

@@ -13,8 +13,30 @@ def test_delete_knowledge_base_delegates_lifecycle_service(monkeypatch):
     db = object()
     calls = []
 
+    organization_id = uuid.uuid4()
+    kb = SimpleNamespace(id=kb_id)
+    request = SimpleNamespace(state=SimpleNamespace(request_id="req"))
     service = SimpleNamespace(
-        delete_owned_knowledge_base=lambda **kwargs: calls.append(kwargs)
+        hard_delete_knowledge_base=lambda loaded_kb, **kwargs: calls.append(
+            (loaded_kb, kwargs)
+        )
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "resolve_active_organization_id",
+        lambda *_args, **_kwargs: organization_id,
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "has_organization_manager_permission",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_knowledge_authorization_service",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            load_kb=lambda *args, **kwargs: kb
+        ),
     )
     monkeypatch.setattr(
         knowledge_endpoint,
@@ -22,32 +44,45 @@ def test_delete_knowledge_base_delegates_lifecycle_service(monkeypatch):
         lambda service_db: service if service_db is db else None,
     )
 
-    response = knowledge_endpoint.delete_knowledge_base.__wrapped__(
+    response = knowledge_endpoint.delete_knowledge_base(
         kb_id=kb_id,
+        request=request,
+        acknowledged_hard_delete=True,
+        x_organization_id=str(organization_id),
         db=db,
         current_user=SimpleNamespace(id=user_id),
     )
 
     assert response.status_code == 204
-    assert calls == [{"kb_id": kb_id, "user_id": user_id}]
+    assert calls == [(kb, {"actor_id": user_id})]
 
 
-def test_delete_knowledge_base_translates_lifecycle_not_found(monkeypatch):
-    def raise_not_found(**_kwargs):
-        raise knowledge_endpoint.KnowledgeLifecycleNotFound()
-
+def test_delete_knowledge_base_requires_explicit_acknowledgement(monkeypatch):
+    organization_id = uuid.uuid4()
+    request = SimpleNamespace(state=SimpleNamespace(request_id="req"))
     monkeypatch.setattr(
         knowledge_endpoint,
-        "KnowledgeLifecycleService",
-        lambda _db: SimpleNamespace(delete_owned_knowledge_base=raise_not_found),
+        "resolve_active_organization_id",
+        lambda *_args, **_kwargs: organization_id,
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "has_organization_manager_permission",
+        lambda *_args, **_kwargs: True,
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        knowledge_endpoint.delete_knowledge_base.__wrapped__(
+        knowledge_endpoint.delete_knowledge_base(
             kb_id=uuid.uuid4(),
+            request=request,
+            acknowledged_hard_delete=False,
+            x_organization_id=str(organization_id),
             db=object(),
             current_user=SimpleNamespace(id=uuid.uuid4()),
         )
 
-    assert exc_info.value.status_code == 404
-    assert exc_info.value.detail == "Knowledge Base not found"
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail["error"]["code"] == "validation.failed"
+    assert exc_info.value.detail["error"]["details"] == {
+        "field": "acknowledged_hard_delete"
+    }

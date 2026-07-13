@@ -38,12 +38,18 @@ class TestPermissionsApi(unittest.TestCase):
         self.permission_audit_patcher = patch(
             "apps.gateway.api.v1.endpoints.permissions.record_audit"
         )
+        self.domain_delegate_patcher = patch(
+            "apps.gateway.api.v1.endpoints.permissions._has_knowledge_permission_delegate",
+            return_value=False,
+        )
         self.main_audit_patcher.start()
         self.permission_audit = self.permission_audit_patcher.start()
+        self.domain_delegate = self.domain_delegate_patcher.start()
 
     def tearDown(self):
         """테스트에서 추가한 patch와 FastAPI dependency override를 정리한다."""
         self.permission_audit_patcher.stop()
+        self.domain_delegate_patcher.stop()
         self.main_audit_patcher.stop()
         app.dependency_overrides.pop(get_db, None)
 
@@ -667,6 +673,131 @@ class TestPermissionsApi(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 422)
+
+    def test_domain_delegate_can_grant_kb_permission_to_another_user(self):
+        actor_id = uuid4()
+        target_user_id = uuid4()
+        organization_id = uuid4()
+        knowledge_base_id = uuid4()
+        membership = _membership(actor_id, organization_id)
+        target_membership = _membership(target_user_id, organization_id)
+        upsert_result = _user_knowledge_permission(
+            organization_id=organization_id,
+            knowledge_base_id=knowledge_base_id,
+            user_id=target_user_id,
+            auth_state="viewer",
+            assigned_by=actor_id,
+        )
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=uuid4()),
+            membership=membership,
+            knowledge_base=_knowledge_base(
+                id=knowledge_base_id,
+                organization_id=organization_id,
+                user_id=uuid4(),
+            ),
+            target_user=_user(
+                id=target_user_id,
+                email="target@example.com",
+                name="Target User",
+            ),
+            target_membership=target_membership,
+            user_knowledge_upsert_result=upsert_result,
+        )
+        self.domain_delegate.return_value = True
+
+        response = self._put_user_knowledge_permission(
+            session=session,
+            user_id=actor_id,
+            knowledge_base_id=knowledge_base_id,
+            target_user_id=target_user_id,
+            payload={"auth_state": "viewer"},
+            organization_id=organization_id,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(session.committed)
+
+    def test_domain_delegate_cannot_grant_kb_permission_to_self(self):
+        actor_id = uuid4()
+        organization_id = uuid4()
+        knowledge_base_id = uuid4()
+        membership = _membership(actor_id, organization_id)
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=uuid4()),
+            membership=membership,
+            knowledge_base=_knowledge_base(
+                id=knowledge_base_id,
+                organization_id=organization_id,
+                user_id=uuid4(),
+            ),
+            target_user=_user(
+                id=actor_id,
+                email="actor@example.com",
+                name="Actor User",
+            ),
+            target_membership=membership,
+        )
+        self.domain_delegate.return_value = True
+
+        response = self._put_user_knowledge_permission(
+            session=session,
+            user_id=actor_id,
+            knowledge_base_id=knowledge_base_id,
+            target_user_id=actor_id,
+            payload={"auth_state": "manager"},
+            organization_id=organization_id,
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["error"]["code"], "policy.blocked")
+        self.assertEqual(
+            response.json()["error"]["details"]["policy_reason"],
+            "knowledge.self_escalation",
+        )
+        self.assertFalse(session.scalars_called)
+        self.assertFalse(session.committed)
+        self.permission_audit.assert_called_once()
+        self.assertEqual(
+            self.permission_audit.call_args.kwargs["action"],
+            "knowledge.permission_grant.blocked",
+        )
+
+    def test_domain_delegate_cannot_grant_kb_permission_to_own_team(self):
+        actor_id = uuid4()
+        organization_id = uuid4()
+        knowledge_base_id = uuid4()
+        team_id = uuid4()
+        membership = _membership(actor_id, organization_id)
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=uuid4()),
+            membership=membership,
+            knowledge_base=_knowledge_base(
+                id=knowledge_base_id,
+                organization_id=organization_id,
+                user_id=uuid4(),
+            ),
+            team=_team(id=team_id, organization_id=organization_id),
+        )
+        self.domain_delegate.return_value = True
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.permissions._actor_is_active_member_of_team",
+            return_value=True,
+        ):
+            response = self._put_knowledge_permission(
+                session=session,
+                user_id=actor_id,
+                knowledge_base_id=knowledge_base_id,
+                team_id=team_id,
+                payload={"auth_state": "builder"},
+                organization_id=organization_id,
+            )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertFalse(session.scalars_called)
+        self.assertFalse(session.committed)
+        self.permission_audit.assert_called_once()
 
     def test_delete_user_knowledge_permission_deletes_row_for_organization_manager(self):
         user_id = uuid4()
