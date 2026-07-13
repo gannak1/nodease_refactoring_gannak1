@@ -1,9 +1,14 @@
 import uuid
 
+import pytest
+
 from apps.workflow_engine.workflow.core.workflow_logger import WorkflowLogger
 
 
-def test_workflow_logger_emits_correlated_system_schedule_run_without_user():
+@pytest.mark.parametrize("trigger_mode", ["schedule", "scheduler"])
+def test_workflow_logger_emits_correlated_system_schedule_run_without_user(
+    trigger_mode,
+):
     logger = WorkflowLogger()
     submitted = []
     logger._prepare_payloads = lambda *a, **k: (
@@ -36,7 +41,7 @@ def test_workflow_logger_emits_correlated_system_schedule_run_without_user():
         user_input={},
         is_deployed=True,
         execution_context={
-            "trigger_mode": "schedule",
+            "trigger_mode": trigger_mode,
             "workflow_task_id": task_id,
         },
         external_run_id=str(uuid.uuid4()),
