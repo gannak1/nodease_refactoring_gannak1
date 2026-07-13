@@ -125,7 +125,7 @@ Status: Draft
 - `SignupPage`는 `authApi.signup({ name, email, password })`을 호출하며, 이 함수는 `publicApiClient`를 통해 `/auth/signup`에 POST한다.
 - `LogoutButton`은 `authApi.logout()`을 호출하며, 이 함수는 빈 body로 `/auth/logout`에 POST한다.
 - `useAuthRedirect`는 `authApi.me()`를 호출하며, 이 함수는 `/auth/me`를 GET한다.
-- `LoginPage`는 `authApi.googleLogin()`을 호출하며, 이 함수는 `window.location.href`를 `${apiBaseUrl}/auth/google/login`으로 설정한다.
+- `LoginPage`는 검증된 `next`로 `authApi.googleLogin(returnPath)`을 호출하며, 이 함수는 `window.location.href`를 `${apiBaseUrl}/auth/google/login?next=<encoded-safe-path>`로 설정한다.
 - Auth API 요청 실패는 래퍼에서 정규화하지 않는다. 각 호출자가 거부된 Axios 요청을 처리하거나 로컬에서 실패를 무시한다.
 
 ### Auth HTTP Client Redirects
@@ -133,8 +133,8 @@ Status: Draft
 - 출처: `apps/client/lib/apiClient.ts`, `apps/client/app/features/workflow/api/workflowApi.ts`, `apps/client/lib/authReturn.ts`
 - `publicApiClient`, `apiClient`, workflow API client는 `withCredentials: true`로 생성되므로 auth 관련 API 호출에 브라우저 credential이 함께 전송된다.
 - 세 클라이언트는 401 응답 인터셉터를 연결한다.
-- `/auth/*` 및 `/` 바깥에서 401이 발생하면 공통 client와 workflow client는 현재 `pathname + search + hash`를 보존한 `/auth/login?next=...`로 이동한다.
-- `resolveSafeAuthReturnPath`는 상대 경로를 동일 origin 기준 URL로 파싱하고 정규화 결과를 다시 파싱한다. 두 단계 중 origin이 달라지거나 입력이 `/`로 시작하지 않으면 `/dashboard`로 fallback한다.
+- `/auth/*` 및 `/` 바깥에서 401이 발생하면 공통 client와 workflow client는 현재 `pathname + search + hash`를 보존한 `/auth/login?next=...`로 이동한다. 같은 경로를 대상으로 interceptor와 page handler가 동시에 이동을 요청하면 `claimLoginRedirectPath`가 2초 동안 한 번만 navigation을 허용한다.
+- `resolveSafeAuthReturnPath`는 길이와 percent encoding을 확인하고 최대 5회 반복 decode한다. 각 단계에서 절대/protocol-relative URL, backslash, control character, dot segment와 origin 변화를 거부하며 안정화되지 않는 중첩 encoding은 `/dashboard`로 fallback한다.
 - `/auth/*` 또는 `/`에서 401이 발생하면 현재 페이지가 자체 오류나 공개 상태를 표시할 수 있도록 인터셉터는 리다이렉트하지 않는다.
 
 ### Auth Redirect Hook
@@ -167,9 +167,9 @@ Status: Draft
   - `finally`에서 `isLoading = false`로 재설정한다.
 - Google 로그인:
   - 사용자가 `구글로 로그인`을 클릭한다.
-  - `LoginPage`는 `authApi.googleLogin`을 호출한다.
+  - `LoginPage`는 query의 `next`를 같은 validator로 제한한 뒤 `authApi.googleLogin`에 전달한다.
   - 브라우저 내비게이션은 백엔드 Google OAuth 로그인 URL로 넘겨진다.
-  - Google callback 성공 후에는 현재 기존 계약대로 `/dashboard`로 이동하며 `next`를 보존하지 않는다.
+  - Gateway는 safe `next`를 서명 세션에 10분·1회용으로 보관하고 Google callback 성공 후 해당 경로로 이동한다. 유효한 컨텍스트가 없으면 `/dashboard`로 이동한다.
 - Auth 페이지 내비게이션:
   - `← 홈으로 돌아가기`를 클릭하면 `/`로 이동한다.
   - 회원가입 링크를 클릭하면 `/auth/signup`으로 이동한다.

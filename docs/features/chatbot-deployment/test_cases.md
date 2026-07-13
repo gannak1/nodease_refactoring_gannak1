@@ -43,8 +43,8 @@ Status: Draft
 - 공개 챗봇 공유 링크 설명은 private Knowledge 접근을 암시하지 않는다.
 - 내부 실행 페이지는 `internal_chatbot`을 실행할 때 업무 `inputs`와 별도의 non-empty canonical `conversation.client_id`를 전송하고 client-controlled `memory_mode`를 보내지 않는다.
 - 내부 실행 페이지는 backend의 문서화되지 않은 임의 `detail` string을 표시하지 않고 status별 fixed safe message를 사용한다.
-- 내부 실행 링크에서 `401`을 받으면 `/auth/login?next=<원래 내부 실행 경로>`로 이동하고, 일반 로그인 성공 후 safe same-origin `next` 경로로 복귀한다.
-- 절대 URL, `//host`, `/%2e%2e//host` 처럼 정규화 후 외부 URL이 되는 `next` 값은 무시하고 `/dashboard`로 이동한다.
+- 내부 실행 링크에서 `401`을 받으면 `/auth/login?next=<원래 내부 실행 경로>`로 이동하고, 이메일/비밀번호와 Google OAuth 로그인 성공 후 safe same-origin `next` 경로로 복귀한다.
+- 절대 URL, `//host`, backslash, dot segment, control character, malformed 또는 과다 중첩 encoding처럼 안전하지 않은 `next` 값은 무시하고 `/dashboard`로 이동한다. Google OAuth return context는 10분 만료와 1회 소비를 검증한다.
 
 ## API Tests
 
@@ -52,6 +52,8 @@ Status: Draft
 - `POST /deployments`에 `type: "chatbot"`, `is_active=true`, private KB RAG 후보가 있으면 `409 deployment.preflight.blocked`를 반환한다.
 - `GET /deployments/{deployment_id}/run-info`는 workflow `execute` 권한을 요구하고, active organization scope가 app organization과 다르면 404를 반환한다.
 - `POST /deployments/{deployment_id}/run`은 workflow `execute` 권한을 요구하고, `inputs`가 object가 아니면 400을 반환한다.
+- `POST /deployments/{deployment_id}/run`은 `application/json`만 허용하고 Content-Type 누락, `text/plain`, form-urlencoded, multipart 요청을 415로 거부하며 실행 service를 호출하지 않는다.
+- Credentialed CORS preflight는 configured origin에 allow-origin/allow-credentials를 반환하고 unlisted origin에는 allow-origin을 반환하지 않으며 실행 service를 호출하지 않는다. Wildcard·malformed CORS 설정은 Gateway 시작 전에 거부한다.
 - `GET /deployments/public/{slug}/info` → `type: "chatbot"` 직렬화 확인.
 
 ## E2E Tests

@@ -12,7 +12,7 @@ Status: Draft
 | --- | --- | --- | --- |
 | POST | `/api/v1/deployments` | 배포 생성. `type: "chatbot"` 또는 `"internal_chatbot"` 지원 | 로그인 + workflow `deploy` 권한 |
 | GET | `/api/v1/deployments/{deployment_id}/run-info` | 실행 화면용 safe 배포 정보 조회. secret/graph snapshot 제외 | 로그인 + workflow `execute` 권한 |
-| POST | `/api/v1/deployments/{deployment_id}/run` | 활성 배포 snapshot을 로그인 사용자 권한 주체로 실행 | 로그인 + workflow `execute` 권한 |
+| POST | `/api/v1/deployments/{deployment_id}/run` | 활성 배포 snapshot을 로그인 사용자 권한 주체로 실행 | 로그인 + workflow `execute` 권한 + `application/json` |
 | GET | `/api/v1/deployments/public/{url_slug}/info` | 공개 배포 정보(`type: "chatbot"` 포함) | 없음 (Legacy Current Implementation: CORS *) |
 | POST | `/api/v1/run-public/{url_slug}` | 챗봇 공개 실행. `inputs.conversation_id`/`inputs.memory_mode` 수용 | 없음 (Legacy Current Implementation: CORS *) |
 
@@ -101,6 +101,8 @@ Request body:
 - 인증 내부 실행에서 서버는 `deployment_id + execution_subject + client_id`를 domain-separated versioned digest로 바꿔 사용자·배포 간 memory context가 섞이지 않게 한다. raw `client_id`는 dispatch context, 응답, audit와 log에 기록하지 않는다.
 - `inputs`에 workflow schema가 선언한 `conversation_id` 또는 `memory_mode`가 있으면 업무 입력으로 보존한다. typed control과 선언되지 않은 legacy `inputs.conversation_id`를 동시에 보내는 모호한 요청은 `400`으로 거부한다.
 - 기존 인증 caller의 legacy reserved input은 schema collision이 없는 범위에서만 임시 호환하며 string, 최대 255자, control character 금지 조건을 적용한다. 공개 실행은 기존 visitor conversation id 계약을 유지한다.
+- 요청 `Content-Type`의 media type은 정확히 `application/json`이어야 한다(`charset` parameter 허용). 누락, `text/plain`, `application/x-www-form-urlencoded`, `multipart/form-data`는 body/schema 처리나 workflow dispatch 전에 `415`로 거부한다.
+- Browser credentialed JSON 호출은 configured `CORS_ORIGINS`의 명시적 HTTP(S) origin만 preflight를 통과한다. Wildcard credentialed origin은 Gateway 구성 시 거부한다. 이 현행 경계를 별도 CSRF token/exact-Origin 구현 완료로 표현하지 않는다.
 
 Response: `{"status": "success", "results": { ... }}`.
 
@@ -115,7 +117,7 @@ Response: `{"status": "success", "results": { ... }}`.
 
 ## Errors
 
-- 공개 실행과 current generic 인증 실행 모두 404 배포 없음/비활성, 429 예산 초과, 504 타임아웃, 500 엔진 실패를 반환할 수 있다. 엔진 실패 응답 detail은 provider 오류, credential, raw payload를 노출하지 않는 고정된 safe message여야 한다. Generic 인증 실행은 추가로 400 invalid/non-object input, invalid/conflicting conversation control, non-Chatbot conversation control과 401/403 인증·권한 오류를 반환할 수 있다. Client는 문서화되지 않은 임의 `detail` string을 그대로 표시하지 않는다. Target authenticated internal Chatbot의 별도 permission/error contract는 해당 기능 구현 문서에서 확정한다.
+- 공개 실행과 current generic 인증 실행 모두 404 배포 없음/비활성, 429 예산 초과, 504 타임아웃, 500 엔진 실패를 반환할 수 있다. 엔진 실패 응답 detail은 provider 오류, credential, raw payload를 노출하지 않는 고정된 safe message여야 한다. Generic 인증 실행은 추가로 400 invalid/non-object input, invalid/conflicting conversation control, non-Chatbot conversation control, 401/403 인증·권한 오류와 415 non-JSON media type을 반환할 수 있다. Client는 문서화되지 않은 임의 `detail` string을 그대로 표시하지 않는다. Target authenticated internal Chatbot의 별도 permission/error contract는 해당 기능 구현 문서에서 확정한다.
 
 ## Permissions
 

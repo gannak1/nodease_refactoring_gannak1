@@ -27,9 +27,10 @@ CBOT-REQ-004~007의 global `memory_mode`, client UUID와 execution-log memory는
 - CBOT-REQ-003: 배포 성공 시 `${origin}/embed/chat/{url_slug}` 형태의 공개 챗봇 공유 링크를 제공한다. 이 링크는 무인증 공개 실행 표면(`POST /run-public/{url_slug}`)을 사용한다.
 - CBOT-REQ-003a: 공개 챗봇 활성 배포 생성/전환은 deployment preflight를 통과해야 한다. `/run-public`은 사용자 execution subject를 주입하지 않으므로 private KB 후보가 있으면 `409 deployment.preflight.blocked`로 활성화를 차단한다.
 - CBOT-REQ-003b: 내부 챗봇은 인증 deployment run/run-info endpoint만 사용한다. Gateway는 대상 workflow organization의 active membership과 workflow `execute` 권한을 확인하고, `X-Organization-Id`가 전달되면 배포 앱 organization과의 일치도 확인한 뒤 현재 로그인 사용자를 runtime `execution_subject`로 전달한다.
-- CBOT-REQ-003c: 비로그인 사용자가 내부 챗봇 실행 링크를 열어 run-info에서 `401`을 받으면 클라이언트는 `/auth/login?next=<원래 path+query+hash>`로 이동한다. 이메일/비밀번호 로그인 성공 후 같은 origin의 안전한 `next`로 복귀하고, 외부 또는 프로토콜 상대 URL은 `/dashboard`로 fallback한다.
+- CBOT-REQ-003c: 비로그인 사용자가 내부 챗봇 실행 링크를 열어 run-info에서 `401`을 받으면 클라이언트는 `/auth/login?next=<원래 path+query+hash>`로 이동한다. 이메일/비밀번호와 Google OAuth 로그인 모두 같은 origin의 안전한 `next`로 복귀하고, 외부·프로토콜 상대·malformed/중첩-encoded URL은 `/dashboard`로 fallback한다. Google OAuth 복귀 컨텍스트는 서명 session에서 10분 안에 한 번만 소비한다.
 - CBOT-REQ-003d: 인증 실행 요청은 업무 `inputs`와 별도의 top-level `conversation.client_id`에 canonical UUID를 전달한다. Gateway는 이 값을 deployment와 current user에 결박한 versioned internal namespace로 바꾸며, raw client id를 workflow input, response, audit 또는 log에 노출하지 않는다.
 - CBOT-REQ-003e: 인증 실행의 `conversation.client_id`는 Chatbot deployment에서만 허용한다. `inputs`에 선언된 `conversation_id` 또는 `memory_mode` workflow 변수는 업무 입력으로 보존하며, typed control과 선언되지 않은 legacy reserved control이 동시에 오면 모호한 요청으로 거부한다.
+- CBOT-REQ-003f: 현재 인증 실행 mutation은 `Content-Type: application/json`만 허용하고, 누락·`text/plain`·form-urlencoded·multipart는 workflow dispatch 전에 `415`로 거부한다. Credentialed CORS는 명시적 HTTP(S) allowlist를 사용하고 wildcard 구성을 거부한다. 이는 현행 browser 경계이며 Target의 별도 CSRF token/exact-Origin/access grant를 대체하지 않는다.
 - CBOT-REQ-004 (Legacy Current Implementation): 챗봇 배포의 실행은 **기억모드(memory_mode)를 항상 ON** 으로 강제한다. 이 강제는 서버(`run_deployment`)가 `deployment.type in {chatbot, internal_chatbot}`을 근거로 수행하며, 클라이언트가 보낸 `memory_mode` 값과 무관하다.
 - CBOT-REQ-005 (Legacy Current Implementation): 공개 챗봇 페이지는 방문자별 `conversation_id`를 브라우저 `localStorage`(`nodease_chat_conv_{url_slug}`)에 생성/유지하고, 매 실행 요청의 `inputs`에 `conversation_id`와 `memory_mode: true`를 담아 보낸다. 공개 legacy 서버 경로는 이 두 값을 dispatch 전에 `inputs`에서 제거(pop)하여 `execution_context`로 전달한다. 인증 내부 페이지는 page-session UUID를 별도 `conversation.client_id`로 보내므로 이 reserved-input 계약을 신규 호출에 복제하지 않는다.
 - CBOT-REQ-006 (Legacy Current Implementation): 기억 조회는 방문자별로 격리한다. `execution_context.conversation_id`가 있으면 기억 요약은 `workflow_id + conversation_id + status=SUCCESS` 실행 이력으로 스코프하고 `user_id` 필터를 사용하지 않는다. `conversation_id`가 없으면 기존 `workflow_id + user_id` 스코프를 유지한다(하위호환).
@@ -54,6 +55,7 @@ CBOT-REQ-004~007의 global `memory_mode`, client UUID와 execution-log memory는
 - Legacy 기억은 성공(`SUCCESS`)한 `llmNode` 실행 이력과 `MEMORY_RUN_LIMIT`(5)을 사용한다. Target contract에서는 dedicated store, node별 window/summary policy와 current authorization을 사용한다.
 - Legacy `conversation_id`/`memory_mode` business input collision은 target conversation envelope migration으로 제거한다.
 - 현재 인증 실행은 typed conversation control을 사용해 신규 내부 호출의 reserved-input collision을 제거한다. 공개 legacy route와 명시적 compatibility fallback은 Target Conversation Session migration 전까지 별도로 표시한다.
+- 현재 내부 실행 UI는 first-party configured CORS origin에서 JSON 요청만 보낸다. 브라우저의 unlisted-origin JSON 요청은 preflight에서 차단되고 simple cross-site content type은 `415`로 dispatch 전에 차단되지만, 별도 CSRF token과 exact-Origin 검사는 아직 Target이다.
 
 ## Open Questions
 

@@ -13,7 +13,7 @@ Auth는 보호된 Gateway API가 `auth_token` 쿠키에서 현재 사용자를 �
 
 - 방문자는 이름, 이메일, 비밀번호로 계정을 생성하고 즉시 로그인된 상태로 대시보드에 진입할 수 있다.
 - 방문자는 이메일과 비밀번호로 로그인하고, 안전한 원래 보호 경로가 있으면 그 경로로, 없으면 대시보드로 진입할 수 있다.
-- 방문자는 Google OAuth 로그인을 시작하고, 성공한 콜백 이후 대시보드에 진입할 수 있다.
+- 방문자는 Google OAuth 로그인을 시작하고, 안전한 원래 보호 경로가 있으면 성공한 콜백 이후 그 경로로, 없으면 대시보드로 진입할 수 있다.
 - 이미 로그인된 사용자는 공개 홈 진입 시 대시보드로 자동 이동된다.
 - 로그인되지 않은 사용자는 공개 홈과 auth 화면에서 강제 로그인 리다이렉트 없이 오류나 공개 화면을 볼 수 있다.
 - 인증된 클라이언트 화면은 현재 사용자 이름과 이메일을 조회할 수 있다.
@@ -44,12 +44,12 @@ Auth는 보호된 Gateway API가 `auth_token` 쿠키에서 현재 사용자를 �
 - AUTH-REQ-020: `POST /auth/logout`은 `auth_token` 쿠키를 삭제하고 로그아웃 확인 응답을 반환해야 한다.
 - AUTH-REQ-021: `GET /auth/google/login`은 요청 host를 기반으로 Google OAuth callback URL을 만들고 Google 인증 화면으로 리다이렉트해야 한다.
 - AUTH-REQ-022: non-local Google OAuth redirect URI는 `https` 스킴을 사용해야 한다.
-- AUTH-REQ-023: Google OAuth callback은 Google 사용자 정보에서 email을 요구해야 하며, email이 없으면 `400`과 `Email not found in Google account`를 반환해야 한다.
+- AUTH-REQ-023: Google OAuth callback은 Google 사용자 정보에서 email을 요구해야 하며, token/user info 응답이 없거나 잘못된 타입이거나 email이 없으면 raw provider 값 없이 `400`과 고정 본문 `OAuth authentication failed`를 반환해야 한다.
 - AUTH-REQ-024: Google OAuth callback은 email 기준으로 기존 사용자를 찾거나 신규 소셜 사용자를 생성해야 한다.
 - AUTH-REQ-025: 기존 소셜 사용자는 provider, social id, avatar URL이 바뀌면 갱신되어야 한다.
 - AUTH-REQ-026: Google OAuth 신규 사용자 생성 시 시스템은 기본 organization 컨텍스트를 생성해야 한다.
-- AUTH-REQ-027: Google OAuth 성공 시 시스템은 `last_login_at`을 갱신하고 6시간 만료 JWT 세션 쿠키를 설정한 뒤 대시보드로 리다이렉트해야 한다.
-- AUTH-REQ-028: Gateway host가 `localhost:8000` 또는 `127.0.0.1:8000`이면 Google OAuth 성공 리다이렉트 대상은 `http://localhost:3000/dashboard`여야 한다.
+- AUTH-REQ-027: Google OAuth 성공 시 시스템은 `last_login_at`을 갱신하고 6시간 만료 JWT 세션 쿠키를 설정한 뒤, 서명 세션에서 한 번 소비한 safe same-origin `next`로 리다이렉트해야 한다. 유효한 복귀 경로가 없으면 `/dashboard`를 사용한다.
+- AUTH-REQ-028: Gateway host가 정확히 `localhost:8000` 또는 `127.0.0.1:8000`이면 Google OAuth 성공 리다이렉트 대상은 각각 대응하는 `http://<loopback>:3000<safe-next>`여야 한다. 유사 문자열을 포함한 non-local host는 local로 취급하지 않는다.
 - AUTH-REQ-029: 회원가입 성공, 로그인 성공, 회원가입 실패, 로그인 실패, 로그아웃은 인증 행위 감사 이벤트로 기록되어야 한다.
 - AUTH-REQ-030: 인증 실패 또는 권한 거부로 발생한 401/403 응답은 `auth.permission_denied` 감사 이벤트로 기록되어야 한다.
 - AUTH-REQ-031: Gateway 공통 인증 의존성은 `auth_token` 쿠키를 읽고 `AuthService.get_user_from_token`으로 현재 사용자를 반환해야 한다.
@@ -57,19 +57,22 @@ Auth는 보호된 Gateway API가 `auth_token` 쿠키에서 현재 사용자를 �
 - AUTH-REQ-033: 클라이언트 auth API 호출은 credential 포함 요청을 사용해야 한다.
 - AUTH-REQ-034: 로그인 화면은 이메일/비밀번호 로그인을 제출하고 성공 시 safe same-origin `next` query가 있으면 그 경로로, 없거나 안전하지 않으면 `/dashboard`로 이동해야 한다.
 - AUTH-REQ-035: 로그인 화면은 401, 422, 5xx, 네트워크 실패, 기타 실패를 사용자 메시지와 toast로 표시해야 한다.
-- AUTH-REQ-036: 로그인 화면은 Google 로그인 버튼 클릭 시 Gateway의 `/auth/google/login`으로 브라우저를 이동시켜야 한다.
+- AUTH-REQ-036: 로그인 화면은 Google 로그인 버튼 클릭 시 검증된 `next`를 query로 포함한 Gateway의 `/auth/google/login`으로 브라우저를 이동시켜야 한다.
 - AUTH-REQ-037: 회원가입 화면은 이름, 이메일, 비밀번호, 비밀번호 확인을 제출하고 성공 시 성공 toast를 표시한 뒤 `/dashboard`로 이동해야 한다.
 - AUTH-REQ-038: 회원가입 화면은 비밀번호와 비밀번호 확인이 다르면 API 호출 전에 `비밀번호가 일치하지 않습니다.` 오류를 표시해야 한다.
 - AUTH-REQ-039: 회원가입 화면은 백엔드 오류, 5xx 오류, 네트워크 실패, 기타 실패를 사용자 메시지와 toast로 표시해야 한다.
 - AUTH-REQ-040: 홈 화면은 마운트 시 `authApi.me()`를 호출하고, 성공하면 `/dashboard`로 `router.replace`해야 한다.
 - AUTH-REQ-041: 홈 화면의 인증 확인이 실패하면 공개 랜딩 화면을 렌더링할 수 있도록 로딩 상태를 해제해야 한다.
-- AUTH-REQ-042: 클라이언트 API 인터셉터는 `/auth/*`와 `/`가 아닌 경로에서 401 응답을 받으면 현재 `pathname + search + hash`를 URL-encode한 `/auth/login?next=...`로 이동시켜야 한다.
+- AUTH-REQ-042: 클라이언트 API 인터셉터는 `/auth/*`와 `/`가 아닌 경로에서 401 응답을 받으면 현재 `pathname + search + hash`를 URL-encode한 `/auth/login?next=...`로 이동시켜야 한다. 같은 경로를 대상으로 동시에 발생한 interceptor/page redirect는 짧은 deduplication window에서 한 번만 navigation을 소유해야 한다.
 - AUTH-REQ-043: 클라이언트 공통 API 인터셉터는 `/auth/*`와 `/`에서는 401 응답을 자동 리다이렉트하지 않아야 한다.
-- AUTH-REQ-044: `next`는 `/`로 시작하고 URL 파싱·정규화 전후에 클라이언트와 같은 origin을 유지하는 경로만 허용해야 한다. 절대 URL, `//host`, `\\host`, `/%2e%2e//host` 형태는 `/dashboard`로 fallback해 open redirect를 막아야 한다.
+- AUTH-REQ-044: `next`는 2,048자 이하이고 `/`로 시작하며 URL 파싱·반복 decode·정규화 전후에 클라이언트와 같은 origin을 유지하는 경로만 허용해야 한다. 절대 URL, `//host`, backslash, dot segment, control character, 잘못된 percent encoding, 제한 횟수 안에 안정화되지 않는 중첩 encoding은 `/dashboard`로 fallback해 open redirect와 header injection을 막아야 한다.
 - AUTH-REQ-045 (Target Runtime Contract): Auth가 검증한 current user identity만 user형 authenticated execution subject 후보가 될 수 있다. 향후 service account는 별도 Auth/RBAC lifecycle과 승인된 principal type이 필요하다. Resource/organization adapter가 current membership과 permission을 별도로 평가해야 하며 credential/billing principal을 user 또는 service-account identity로 해석해서는 안 된다.
 - AUTH-REQ-046 (Target Runtime Contract): Conversation Access Grant와 Purge Receipt는 사용자 authentication이 아닌 scoped capability다. Gateway 공통 `get_current_user` 또는 authenticated endpoint가 이를 JWT/session identity로 받아들여서는 안 된다.
 - AUTH-REQ-047 (Target Runtime Contract): Public Chatbot route는 valid login cookie가 함께 있어도 명시적으로 authenticated internal surface로 전환되지 않는 한 anonymous public audience를 유지해야 한다. Optional authentication으로 private Knowledge/Memory 권한을 높여서는 안 된다.
 - AUTH-REQ-048 (Target Runtime Contract): Authenticated request audit actor는 실제 current user에서 파생하고 public capability request lifecycle actor는 `actor_id=null`, `actor_type='public'`으로 표현해야 한다. 비동기 purge completion 같은 system operation은 별도 `system` actor를 사용한다. App/deployment owner, credential/billing principal 또는 Access Grant reference를 user actor로 합성해서는 안 된다.
+- AUTH-REQ-049: Google OAuth `next`는 client가 callback에 다시 제출하는 권한 값이 아니다. Gateway는 검증한 경로와 발급 시각을 서명된 server session에 저장하고 10분 이내 callback에서 한 번만 소비해야 하며, 만료·미래 시각·재사용·형식 오류는 `/dashboard`로 닫아야 한다.
+- AUTH-REQ-050: Google OAuth 시작·token 교환·user info 실패 응답, 로그와 audit metadata에는 provider exception 원문, token, credential 또는 raw payload를 포함하지 않아야 한다. 로그에는 오류 타입, audit에는 고정 reason code만 기록한다.
+- AUTH-REQ-051: `NODE_ENV=production`에서는 OAuth session 서명용 `SECRET_KEY`가 없거나 공백이거나 알려진 개발 placeholder이면 Gateway 시작을 거부해야 한다. Credentialed `CORS_ORIGINS`는 명시적인 HTTP(S) origin 목록이어야 하며 `*`, 빈 목록, userinfo/path/query/fragment가 있는 값을 거부해야 한다.
 
 ## Policies And Edge Cases
 
@@ -81,14 +84,14 @@ Auth는 보호된 Gateway API가 `auth_token` 쿠키에서 현재 사용자를 �
 - 현재 구현은 비밀번호 재설정 API나 화면을 제공하지 않는다.
 - 현재 구현은 로그인 실패 횟수 제한이나 계정 잠금 정책을 제공하지 않는다.
 - `LoginResponse`는 HTTP-only 쿠키와 별도로 JWT token 값을 응답 본문에도 포함한다.
-- Audit metadata에는 actor snapshot, 요청 metadata, 실패 email/error가 포함될 수 있지만, 세션 token 원문은 기록하지 않는다.
+- Audit metadata에는 actor snapshot, 요청 metadata, 실패 email/error type 또는 OAuth reason code가 포함될 수 있지만, exception 원문과 세션 token 원문은 기록하지 않는다.
 - 로그아웃 엔드포인트는 현재 사용자 식별을 요구하지 않으며, cookie 삭제 시점에 actor id 없이 audit을 기록한다.
 - Conversation capability authorization header는 `auth_token` cookie/JWT와 다른 scheme·dependency에서 처리한다. Scheme 혼동은 authenticated fallback 없이 fail-closed한다.
 - 실제 로그아웃 사용자 경로는 서버 로그아웃 후 로그인 화면으로 이동해야 한다.
 - Frontend auth 타입에는 `emailVerified`, `role`, `isActive`, email verification, password reset 관련 타입이 있으나 현재 Gateway auth 응답과 구현된 화면/API는 그 전체 필드를 제공하지 않는다.
 - Google OAuth 설정은 `GOOGLE_CLIENT_ID`와 `GOOGLE_CLIENT_SECRET` 환경 변수에 의존한다.
-- `next` 복귀는 현재 이메일/비밀번호 로그인에만 적용한다. Google OAuth callback은 AUTH-REQ-027~028의 기존 대시보드 리다이렉트를 유지한다.
-- JWT 서명은 `SECRET_KEY` 환경 변수와 HS256 알고리즘을 사용한다.
+- `next` 복귀는 이메일/비밀번호 로그인과 Google OAuth에 모두 적용한다. Google OAuth는 client query를 callback 권한으로 신뢰하지 않고 서명 세션의 10분·1회용 복귀 컨텍스트를 사용한다.
+- JWT와 OAuth session 서명은 현재 같은 `SECRET_KEY` 환경 변수에 의존한다. Production은 누락·공백·개발 placeholder를 시작 시 거부하며, secret 원문은 진단에 출력하지 않는다.
 
 ## Open Questions
 
