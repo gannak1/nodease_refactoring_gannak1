@@ -16,6 +16,7 @@ vi.mock('../api/adminApi', () => ({
 import { adminApi } from '../api/adminApi';
 import { SecurityAlertDetailDrawer } from './SecurityAlertDetailDrawer';
 import type { OrganizationMember } from '../../organization/types/Organization';
+import type { SecurityAlertAuditLogListResponse } from '../types/SecurityAlert';
 
 const mockedDetail = vi.mocked(adminApi.getSecurityAlertDetail);
 const mockedEvidence = vi.mocked(adminApi.listSecurityAlertAuditLogs);
@@ -251,14 +252,8 @@ describe('SecurityAlertDetailDrawer', () => {
 
   it('alert 전환 전에 시작한 늦은 evidence 응답은 현재 alert를 덮어쓰지 않는다', async () => {
     const nextAlertId = '223e4567-e89b-42d3-a456-426614174000';
-    const oldAlertRequest = deferred<{
-      total: number;
-      items: typeof evidence[];
-    }>();
-    const currentAlertRequest = deferred<{
-      total: number;
-      items: typeof evidence[];
-    }>();
+    const oldAlertRequest = deferred<SecurityAlertAuditLogListResponse>();
+    const currentAlertRequest = deferred<SecurityAlertAuditLogListResponse>();
     const currentEvidence = {
       ...evidence,
       id: 'audit-2',
