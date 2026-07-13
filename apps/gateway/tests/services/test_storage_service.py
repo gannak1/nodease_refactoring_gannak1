@@ -15,6 +15,15 @@ from apps.gateway.services.storage import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _reset_default_local_storage_root(monkeypatch):
+    monkeypatch.setattr(
+        storage_module,
+        "_resolved_default_local_upload_dir",
+        None,
+    )
+
+
 class _FailingS3Client:
     def __init__(self, message: str) -> None:
         self.message = message
@@ -311,6 +320,103 @@ def test_local_storage_falls_back_when_container_directory_is_not_writable(
 
     assert storage.upload_dir == str(fallback_dir)
     assert fallback_dir.is_dir()
+
+
+def test_local_storage_falls_back_when_existing_container_directory_is_unwritable(
+    monkeypatch,
+    tmp_path,
+):
+    container_dir = tmp_path / "container-uploads"
+    fallback_dir = tmp_path / "project-uploads"
+    container_dir.mkdir()
+    original_prepare = storage_module._prepare_writable_directory
+
+    monkeypatch.setattr(
+        storage_module,
+        "DEFAULT_LOCAL_UPLOAD_DIR",
+        str(container_dir),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        storage_module,
+        "FALLBACK_LOCAL_UPLOAD_DIR",
+        str(fallback_dir),
+        raising=False,
+    )
+
+    def prepare_or_reject(path):
+        if path == str(container_dir):
+            raise OSError(errno.EACCES, "Permission denied")
+        return original_prepare(path)
+
+    monkeypatch.setattr(
+        storage_module,
+        "_prepare_writable_directory",
+        prepare_or_reject,
+    )
+
+    storage = LocalStorageService()
+
+    assert storage.upload_dir == str(fallback_dir.resolve())
+    assert fallback_dir.is_dir()
+
+
+def test_default_local_storage_root_remains_stable_across_instances(
+    monkeypatch,
+    tmp_path,
+):
+    container_dir = tmp_path / "container-uploads"
+    fallback_dir = tmp_path / "project-uploads"
+    original_prepare = storage_module._prepare_writable_directory
+    primary_attempts = 0
+
+    monkeypatch.setattr(
+        storage_module,
+        "DEFAULT_LOCAL_UPLOAD_DIR",
+        str(container_dir),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        storage_module,
+        "FALLBACK_LOCAL_UPLOAD_DIR",
+        str(fallback_dir),
+        raising=False,
+    )
+
+    def fail_primary_once(path):
+        nonlocal primary_attempts
+        if path == str(container_dir):
+            primary_attempts += 1
+            raise OSError(errno.EROFS, "Read-only file system")
+        return original_prepare(path)
+
+    monkeypatch.setattr(
+        storage_module,
+        "_prepare_writable_directory",
+        fail_primary_once,
+    )
+    first = LocalStorageService()
+
+    monkeypatch.setattr(
+        storage_module,
+        "_prepare_writable_directory",
+        lambda path: original_prepare(path),
+    )
+    second = LocalStorageService()
+
+    assert first.upload_dir == str(fallback_dir.resolve())
+    assert second.upload_dir == first.upload_dir
+    assert primary_attempts == 1
+    assert not container_dir.exists()
+
+
+def test_local_storage_writability_probe_leaves_no_file(tmp_path):
+    upload_root = tmp_path / "uploads"
+
+    storage = LocalStorageService(str(upload_root))
+
+    assert storage.upload_dir == str(upload_root.resolve())
+    assert list(upload_root.glob(".nodease-storage-probe-*")) == []
 
 
 def test_local_storage_does_not_fallback_from_explicit_directory_failure(
