@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from enum import Enum
 from typing import Any, Mapping, Sequence
 from uuid import UUID
@@ -11,8 +11,10 @@ from uuid import UUID
 from apps.shared.services.security_alert_policy_reason import (
     normalize_security_alert_policy_reason,
 )
-
-_RULE_VERSION = "v1"
+from apps.shared.services.security_alert_rule_registry import (
+    SecurityAlertRule,
+    security_alert_rules_for_action,
+)
 
 
 @dataclass(frozen=True)
@@ -76,62 +78,30 @@ def evaluate_security_alert_rules(
     )
 
     candidates: list[SecurityAlertRuleCandidate] = []
-    if current.action == "permission.denied":
-        permission_events = _events_since(
+    for rule in security_alert_rules_for_action(current.action):
+        matched_events = _events_since(
             eligible_events,
-            action="permission.denied",
-            started_at=event_time - timedelta(minutes=5),
+            action=rule.action,
+            started_at=event_time - rule.window,
         )
-        if len(permission_events) >= 5:
+        if rule.group_by_policy_reason:
+            matched_events = [
+                event
+                for event in matched_events
+                if event.policy_reason == current.policy_reason
+            ]
+        if _rule_threshold_reached(rule, matched_events):
             candidates.append(
                 _build_candidate(
-                    rule_id="repeated_permission_denied",
-                    severity="medium",
+                    rule=rule,
                     organization_id=current.organization_id,
                     actor_id=current.actor_id,
-                    matched_events=permission_events,
-                )
-            )
-
-        probe_events = _events_since(
-            eligible_events,
-            action="permission.denied",
-            started_at=event_time - timedelta(minutes=10),
-        )
-        distinct_targets = {
-            (event.source.target_type, event.source.target_id)
-            for event in probe_events
-        }
-        if len(distinct_targets) >= 5:
-            candidates.append(
-                _build_candidate(
-                    rule_id="multi_resource_permission_probe",
-                    severity="high",
-                    organization_id=current.organization_id,
-                    actor_id=current.actor_id,
-                    matched_events=probe_events,
-                )
-            )
-
-    if current.action == "policy.block":
-        policy_events = [
-            event
-            for event in _events_since(
-                eligible_events,
-                action="policy.block",
-                started_at=event_time - timedelta(minutes=10),
-            )
-            if event.policy_reason == current.policy_reason
-        ]
-        if len(policy_events) >= 3:
-            candidates.append(
-                _build_candidate(
-                    rule_id="repeated_policy_block",
-                    severity="high",
-                    organization_id=current.organization_id,
-                    actor_id=current.actor_id,
-                    matched_events=policy_events,
-                    policy_reason=current.policy_reason,
+                    matched_events=matched_events,
+                    policy_reason=(
+                        current.policy_reason
+                        if rule.group_by_policy_reason
+                        else None
+                    ),
                 )
             )
 
@@ -155,33 +125,17 @@ def build_security_alert_cooldown_candidates(
     if current is None:
         return ()
 
-    if current.action == "permission.denied":
-        return (
-            _build_candidate(
-                rule_id="repeated_permission_denied",
-                severity="medium",
-                organization_id=current.organization_id,
-                actor_id=current.actor_id,
-                matched_events=(current,),
-            ),
-            _build_candidate(
-                rule_id="multi_resource_permission_probe",
-                severity="high",
-                organization_id=current.organization_id,
-                actor_id=current.actor_id,
-                matched_events=(current,),
-            ),
-        )
-
-    return (
+    return tuple(
         _build_candidate(
-            rule_id="repeated_policy_block",
-            severity="high",
+            rule=rule,
             organization_id=current.organization_id,
             actor_id=current.actor_id,
             matched_events=(current,),
-            policy_reason=current.policy_reason,
-        ),
+            policy_reason=(
+                current.policy_reason if rule.group_by_policy_reason else None
+            ),
+        )
+        for rule in security_alert_rules_for_action(current.action)
     )
 
 
@@ -263,26 +217,39 @@ def _events_since(
     ]
 
 
+def _rule_threshold_reached(
+    rule: SecurityAlertRule,
+    events: Sequence[_EligibleAuditEvent],
+) -> bool:
+    if rule.count_mode == "distinct_targets":
+        return len(
+            {
+                (event.source.target_type, event.source.target_id)
+                for event in events
+            }
+        ) >= rule.threshold
+    return len(events) >= rule.threshold
+
+
 def _build_candidate(
     *,
-    rule_id: str,
-    severity: str,
+    rule: SecurityAlertRule,
     organization_id: UUID,
     actor_id: UUID,
     matched_events: Sequence[_EligibleAuditEvent],
     policy_reason: str | None = None,
 ) -> SecurityAlertRuleCandidate:
     return SecurityAlertRuleCandidate(
-        rule_id=rule_id,
-        rule_version=_RULE_VERSION,
-        severity=severity,
+        rule_id=rule.rule_id,
+        rule_version=rule.version,
+        severity=rule.severity,
         organization_id=organization_id,
         subject_actor_id=actor_id,
         detection_key=build_security_alert_detection_key(
             organization_id=organization_id,
             actor_id=actor_id,
-            rule_id=rule_id,
-            rule_version=_RULE_VERSION,
+            rule_id=rule.rule_id,
+            rule_version=rule.version,
             policy_reason=policy_reason,
         ),
         matched_audit_ids=tuple(event.source.id for event in matched_events),

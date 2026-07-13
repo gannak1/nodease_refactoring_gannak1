@@ -125,6 +125,8 @@ Security Alert는 검증된 organization 안에서 인증 사용자가 짧은 �
 - SAL-REQ-066: `notifications.changed`는 Alert 생성, 새 evidence에 의한 occurrence 갱신 또는 lifecycle 상태 변경이 실제로 commit된 경우에만 발행해야 한다. Threshold 전 event처럼 Alert가 변경되지 않은 경우에는 발행하지 않아야 한다.
 - SAL-REQ-067: Security Alert notification 수신자는 현재 관리자 API 권한 판정과 같은 집합이어야 한다. Active manager membership뿐 아니라 membership이 없는 유효한 `Organization.created_by`/`managed_by`를 포함하고 suspended, removed, deactivated 사용자는 제외해야 한다.
 - SAL-REQ-068: 열린 detail에서 acknowledge, reopen, resolve가 현재 권한 회수로 `403`을 반환하면 Client는 cached detail과 해결 dialog를 비우고 선택된 `alertId` URL을 닫아야 한다.
+- SAL-REQ-069: Rule ID/version, action, window, threshold, severity, count mode와 policy-reason grouping은 하나의 server-owned rule registry를 source of truth로 사용해야 한다. Evaluator, aggregation threshold 확인과 worker 최대 조회 window는 별도 상수를 중복 정의하지 않고 같은 registry를 읽어야 한다.
+- SAL-REQ-070: 운영 반영 전 rule replay는 지정한 organization과 기간의 audit를 읽기 전용으로 평가하고 rule별 발화 횟수의 safe aggregate만 반환해야 한다. Replay는 Security Alert, evidence, lifecycle audit, notification, watermark를 생성·변경하거나 raw audit payload와 target을 출력하지 않아야 한다.
 
 ## Non-Functional Requirements
 

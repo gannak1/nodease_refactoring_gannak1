@@ -254,6 +254,29 @@ def test_sal_tc_u011_cooldown_expires_at_exactly_thirty_minutes():
     ) is False
 
 
+def test_aggregation_threshold_comes_from_rule_registry(monkeypatch):
+    module = importlib.import_module(
+        "apps.shared.services.security_alert_aggregation"
+    )
+    registry = importlib.import_module(
+        "apps.shared.services.security_alert_rule_registry"
+    )
+    original = registry.get_security_alert_rule("repeated_permission_denied")
+    stricter = registry.SecurityAlertRule(
+        **{**vars(original), "threshold": 6}
+    )
+    monkeypatch.setattr(
+        module,
+        "get_security_alert_rule",
+        lambda rule_id: stricter if rule_id == stricter.rule_id else None,
+    )
+
+    assert module._meets_rule_threshold(
+        "repeated_permission_denied",
+        _audit_logs(uuid4(), count=5, start_at=_NOW),
+    ) is False
+
+
 @pytest.mark.parametrize("status", ["open", "acknowledged"])
 def test_expired_cooldown_does_not_update_existing_active_alert(status):
     candidate = _candidate()

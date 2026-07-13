@@ -279,6 +279,18 @@ Scope 밖 404, validation 실패, desired-state no-op에는 target-aware audit�
 
 신규 metadata에는 raw request, email, IP, user-agent, exception text, secret, credential 또는 hidden target 정보를 추가하지 않아야 한다. Legacy `pii_policy_blocked` 정규화는 append-only 원본 audit row를 변경하지 않는 pure mapping이어야 한다.
 
+### AC-32 Single Rule Registry And Read-Only Replay
+
+Given Security Alert v1 규칙이 evaluator, aggregation과 worker에서 사용될 때,
+When rule contract를 조회하면,
+Then rule ID/version, action, window, threshold, severity, count mode와 policy-reason grouping은 하나의 server-owned registry에서 제공되어야 한다.
+
+Given 관리자가 organization과 기간을 지정해 rule replay를 실행할 때,
+When 저장된 audit를 평가하면,
+Then lookback window를 포함해 실제 evaluator와 같은 결과를 계산하고 지정 기간의 rule별 발화 횟수만 safe aggregate로 반환해야 한다.
+
+그리고 replay는 Alert, evidence, lifecycle audit, notification과 watermark를 생성·변경하지 않아야 하며 raw audit payload, target, actor 정보를 출력하지 않아야 한다.
+
 ## Detailed Test Matrix
 
 ### Test Environment And Concurrency Rules
@@ -316,6 +328,9 @@ Scope 밖 404, validation 실패, desired-state no-op에는 target-aware audit�
 | SAL-TC-U018 | AC-20 | open/acknowledged/resolved 혼합 목록 | summary count/recent item은 open만 포함 |
 | SAL-TC-U019 | AC-27 | safe projection 입력에 raw metadata와 synthetic secret marker 포함 | allowlist 밖 field와 marker 제거 |
 | SAL-TC-U020 | AC-29 | event time과 UI-visible time 비교 helper | 60초 이하/초과 판정이 timezone과 무관하게 결정적 |
+| SAL-TC-U021 | AC-32 | v1 rule registry 조회 | 세 규칙의 version/window/threshold/severity/count mode/grouping과 최대 window가 단일 계약과 일치 |
+| SAL-TC-U022 | AC-32 | threshold 직전/도달 audit sequence replay | 지정 기간 event만 평가하되 lookback을 사용하고 rule별 발화 횟수 집계 정확 |
+| SAL-TC-U023 | AC-32 | replay 전후 입력 audit와 safe output 비교 | 입력 불변, DB mutation 경로 없음, 출력에 aggregate count 외 raw event/target/actor 없음 |
 
 ### Audit Producer Contract Tests
 

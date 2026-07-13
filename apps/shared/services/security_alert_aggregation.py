@@ -17,13 +17,11 @@ from apps.shared.services.security_alert_evidence import (
 from apps.shared.services.security_alert_rule_evaluator import (
     build_security_alert_detection_key,
 )
+from apps.shared.services.security_alert_rule_registry import (
+    get_security_alert_rule,
+)
 from sqlalchemy.exc import IntegrityError
 
-_RULE_THRESHOLDS = {
-    "repeated_permission_denied": 5,
-    "multi_resource_permission_probe": 5,
-    "repeated_policy_block": 3,
-}
 _SECURITY_ALERT_COOLDOWN = timedelta(minutes=30)
 
 
@@ -262,16 +260,16 @@ def _unique_audits_after_resolution(
 
 
 def _meets_rule_threshold(rule_id: str, audit_logs: Sequence[Any]) -> bool:
-    threshold = _RULE_THRESHOLDS.get(rule_id)
-    if threshold is None:
+    rule = get_security_alert_rule(rule_id)
+    if rule is None:
         return False
-    if rule_id == "multi_resource_permission_probe":
+    if rule.count_mode == "distinct_targets":
         distinct_targets = {
             (audit_log.target_type, audit_log.target_id)
             for audit_log in audit_logs
         }
-        return len(distinct_targets) >= threshold
-    return len(audit_logs) >= threshold
+        return len(distinct_targets) >= rule.threshold
+    return len(audit_logs) >= rule.threshold
 
 
 def _link_evidence(db: Any, *, alert: Any, audit_logs: Sequence[Any]) -> None:

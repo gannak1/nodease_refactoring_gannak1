@@ -15,6 +15,9 @@ from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.security_alert import SecurityAlertReconciliationWatermark
 from apps.shared.db.models.user import User  # noqa: F401
 from apps.shared.db.session import SessionLocal
+from apps.shared.services.notification_pubsub import (
+    publish_notifications_changed_to_organization_managers,
+)
 from apps.shared.services.security_alert_aggregation import (
     aggregate_security_alert_detection,
 )
@@ -22,13 +25,13 @@ from apps.shared.services.security_alert_reconciliation import (
     SQLAlchemySecurityAlertReconciliationRepository,
     reconcile_security_alert_batch,
 )
-from apps.shared.services.notification_pubsub import (
-    publish_notifications_changed_to_organization_managers,
-)
 from apps.shared.services.security_alert_rule_evaluator import (
     build_security_alert_cooldown_candidates,
     evaluate_security_alert_rules,
     is_security_alert_event_eligible,
+)
+from apps.shared.services.security_alert_rule_registry import (
+    SECURITY_ALERT_MAX_WINDOW,
 )
 from sqlalchemy.exc import IntegrityError
 
@@ -36,7 +39,6 @@ logger = logging.getLogger(__name__)
 _SECURITY_ALERT_DETECTION_TASK = "security_alert.detect"
 _SECURITY_ALERT_RECONCILIATION_TASK = "security_alert.reconcile"
 _SECURITY_ALERT_PROCESSOR = "security-alert-v1"
-_SECURITY_ALERT_MAX_WINDOW = timedelta(minutes=10)
 _SECURITY_ALERT_RECONCILIATION_OVERLAP = timedelta(minutes=1)
 
 
@@ -290,7 +292,7 @@ def _load_security_alert_detection_context(
         return current_event, [], activation_started_at
     window_started_at = max(
         activation_started_at,
-        current_event.occurred_at - _SECURITY_ALERT_MAX_WINDOW,
+        current_event.occurred_at - SECURITY_ALERT_MAX_WINDOW,
     )
     organization_id = (current_event.audit_metadata or {}).get("organization_id")
     window_events = (
