@@ -26,7 +26,7 @@ vi.mock('@/app/features/knowledge/api/knowledgeApi', () => ({
     deleteDocument: vi.fn(),
     updateKnowledgeBase: vi.fn(),
     updateKnowledgeSafeMetadata: vi.fn(),
-    deleteKnowledgeBase: vi.fn(),
+    archiveKnowledgeBase: vi.fn(),
   },
 }));
 

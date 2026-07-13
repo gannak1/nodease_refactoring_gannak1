@@ -77,7 +77,7 @@ Retrieval Orchestrator는 최종 evidence와 함께 KB/document version, organiz
 - Domain `permission_delegate` actor에게는 자신과 자신이 속한 Team이 grant 대상으로 보이더라도 content-plane grant가 차단됨을 safe 안내한다. 최종 self/own-Team 차단은 Gateway가 수행한다.
 - `completed` document만 workflow builder/RAG 선택과 runtime retrieval에서 ready evidence 후보가 될 수 있다.
 
-KB detail UI는 manual KB recommendation용 safe metadata 편집 surface를 제공할 수 있다. `safe_label` 자동 생성 버튼과 `kb_safe_topics` 자동 생성 버튼은 각각 KB name/description에서 sanitizer, length cap, secret/url/path removal을 적용한 값을 채우며, 저장 버튼은 전용 `PATCH /api/v1/knowledge/{kb_id}/safe-metadata`로 allowlisted 필드만 전송한다. `can_manage_safe_metadata=true`일 때만 이 surface를 표시하고, `can_edit_settings=false`이면 이름·설명·embedding model·소스 추가/재처리/삭제 같은 owner-only 동작을 표시하거나 활성화하지 않는다. Source-managed KB의 raw source title/path/url은 이 surface에 표시하거나 recommendation input으로 사용하지 않는다.
+KB detail UI는 manual KB recommendation용 safe metadata 편집 surface를 제공할 수 있다. `safe_label` 자동 생성 버튼과 `kb_safe_topics` 자동 생성 버튼은 각각 KB name/description에서 sanitizer, length cap, secret/url/path removal을 적용한 값을 채우며, 저장 버튼은 전용 `PATCH /api/v1/knowledge/{kb_id}/safe-metadata`로 allowlisted 필드만 전송한다. `can_manage_safe_metadata=true`일 때만 이 surface를 표시하고, `can_edit_settings=false`이면 이름·설명·embedding model·소스 추가/재처리 같은 `write` 동작을 표시하거나 활성화하지 않는다. Archive/restore는 `can_manage` 또는 lifecycle domain capability, hard delete는 별도 Organization manager acknowledgement capability를 사용한다. Source-managed KB의 raw source title/path/url은 이 surface에 표시하거나 recommendation input으로 사용하지 않는다.
 
 ### Knowledge Collection Management UI
 
@@ -88,8 +88,8 @@ Knowledge Collection 관리 UI는 Workflow Builder가 아니라 Knowledge 관리
 - Collection 목록: safe name/description, manual/system-managed, lifecycle/sync state, visibility, bucketed linked/active KB count, caller action flags를 표시한다.
 - Collection 생성/수정: organization manager 또는 domain `catalog_manage`가 private manual Collection을 생성한다. Delegated create는 client 입력과 무관하게 private다. `is_system_managed`나 public visibility는 일반 create/edit form에서 직접 설정하지 않는다.
 - Collection 상세: item, permission, visibility, sync/system state를 분리해서 표시한다.
-- Item manager: linked KB safe label, lifecycle/sync state, rank, `can_manage_kb`, `can_use_kb`를 표시한다. Link/unlink/reorder action은 `collection.manage`와 대상 KB `manage` 경계를 따른다.
-- Permission panel: team/user subject에 `read`, `route`, `manage`, `sync` additive allow grant/revoke를 제공한다.
+- Item manager: linked KB safe label, lifecycle/sync state, rank, `can_manage_kb`, `can_use_kb`를 표시한다. Private membership은 `collection.manage` + KB `manage` 또는 domain `catalog_manage`, public membership은 Organization manager acknowledgement 경계를 따른다.
+- Permission panel: server가 반환한 safe Team/User 대상 목록을 사용하고 Team을 기본값으로 둔다. `collection.manage` 또는 domain `permission_delegate` actor가 `read`, `route`, `manage`, `sync` additive allow를 grant/revoke할 수 있다.
 - Public visibility warning flow: organization manager, explicit acknowledgement, safe exposure summary를 요구한다.
 - Public Collection item link/unlink/reorder도 같은 public exposure warning과 acknowledgement를 요구한다.
 - Collection role preset은 Viewer, Workflow Router, Maintainer, Sync Operator를 제공하되 저장 시 explicit action row를 transactionally 적용하고 KB `use`가 포함되지 않음을 표시한다.

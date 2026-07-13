@@ -8,12 +8,17 @@ import {
   KnowledgeCollectionPermissionResponse,
   KnowledgeCollectionResponse,
   KnowledgeCollectionVisibility,
+  KnowledgeDelegationSubjectsResponse,
+  KnowledgeDomainAction,
+  KnowledgeDomainPermissionListResponse,
 } from '@/app/features/knowledge/api/knowledgeApi';
 import {
   CollectionDetailPanel,
   CollectionSidebar,
+  DomainDelegationPanel,
   type CollectionCapabilities,
   type CollectionFormState,
+  type DomainGrantFormState,
   type GrantFormState,
 } from './knowledge-collection-manager-panels';
 
@@ -43,9 +48,22 @@ export default function KnowledgeCollectionManager() {
   const [permissions, setPermissions] = useState<
     KnowledgeCollectionPermissionResponse[]
   >([]);
+  const [subjects, setSubjects] = useState<KnowledgeDelegationSubjectsResponse>({
+    teams: [],
+    users: [],
+  });
+  const [domainPermissions, setDomainPermissions] = useState<
+    KnowledgeDomainPermissionListResponse['permissions']
+  >([]);
+  const [domainSubjects, setDomainSubjects] =
+    useState<KnowledgeDelegationSubjectsResponse>({ teams: [], users: [] });
   const [capabilities, setCapabilities] = useState<CollectionCapabilities>({
     can_create_collection: false,
     can_change_public_visibility: false,
+    can_manage_catalog: false,
+    can_delegate_permissions: false,
+    can_manage_lifecycle: false,
+    can_manage_domain_permissions: false,
   });
   const [isLoading, setIsLoading] = useState(true);
   const [isDetailLoading, setIsDetailLoading] = useState(false);
@@ -62,9 +80,14 @@ export default function KnowledgeCollectionManager() {
   const [grantForm, setGrantForm] = useState<GrantFormState>({
     subject_type: 'team',
     subject_id: '',
-    permission_action: 'read',
+    role_bundle: 'viewer',
   });
   const [acknowledgePublic, setAcknowledgePublic] = useState(false);
+  const [domainGrantForm, setDomainGrantForm] = useState<DomainGrantFormState>({
+    subject_type: 'team',
+    subject_id: '',
+    permission_action: 'catalog_manage',
+  });
 
   const selectedCollection = useMemo(
     () => collections.find((collection) => collection.id === selectedId) ?? null,
@@ -75,12 +98,32 @@ export default function KnowledgeCollectionManager() {
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      const data = await knowledgeApi.getKnowledgeCollectionsResponse();
+      const [data, domainCapabilities] = await Promise.all([
+        knowledgeApi.getKnowledgeCollectionsResponse(),
+        knowledgeApi.getKnowledgeDomainCapabilities(),
+      ]);
       setCollections(data.collections);
       setCapabilities({
         can_create_collection: data.can_create_collection,
         can_change_public_visibility: data.can_change_public_visibility,
+        can_manage_catalog: domainCapabilities.can_create_collection,
+        can_delegate_permissions:
+          domainCapabilities.can_delegate_permissions,
+        can_manage_lifecycle: domainCapabilities.can_manage_lifecycle,
+        can_manage_domain_permissions:
+          domainCapabilities.can_manage_domain_permissions,
       });
+      if (domainCapabilities.can_manage_domain_permissions) {
+        const [permissionData, subjectData] = await Promise.all([
+          knowledgeApi.getKnowledgeDomainPermissions(),
+          knowledgeApi.getKnowledgeDomainDelegationSubjects(),
+        ]);
+        setDomainPermissions(permissionData.permissions);
+        setDomainSubjects(subjectData);
+      } else {
+        setDomainPermissions([]);
+        setDomainSubjects({ teams: [], users: [] });
+      }
       setSelectedId((currentId) => currentId ?? data.collections[0]?.id ?? null);
     } catch (error) {
       setErrorMessage(errorText(error));
@@ -90,35 +133,40 @@ export default function KnowledgeCollectionManager() {
   }, []);
 
   const loadCollectionDetail = useCallback(async (
-    collectionId: string,
-    canManage: boolean,
+    collection: KnowledgeCollectionResponse,
+    currentCapabilities: CollectionCapabilities,
   ) => {
     setIsDetailLoading(true);
     setErrorMessage(null);
     try {
-      const itemData = await knowledgeApi.getKnowledgeCollectionItems(collectionId);
-      setItems(itemData.items);
-      if (!canManage) {
-        setCandidates([]);
-        setPermissions([]);
-        return;
-      }
-      try {
-        const [candidateData, permissionData] = await Promise.all([
-          knowledgeApi.getKnowledgeCollectionLinkCandidates(collectionId),
-          knowledgeApi.getKnowledgeCollectionPermissions(collectionId),
+      const canManageCatalog =
+        collection.can_manage || currentCapabilities.can_manage_catalog;
+      const canDelegate =
+        collection.can_manage || currentCapabilities.can_delegate_permissions;
+      const [itemData, candidateData, permissionData, subjectData] =
+        await Promise.all([
+          collection.can_read || canManageCatalog
+            ? knowledgeApi.getKnowledgeCollectionItems(collection.id)
+            : Promise.resolve({ items: [] }),
+          canManageCatalog
+            ? knowledgeApi.getKnowledgeCollectionLinkCandidates(collection.id)
+            : Promise.resolve({ candidates: [] }),
+          canDelegate
+            ? knowledgeApi.getKnowledgeCollectionPermissions(collection.id)
+            : Promise.resolve({ permissions: [] }),
+          canDelegate
+            ? knowledgeApi.getKnowledgeCollectionDelegationSubjects(collection.id)
+            : Promise.resolve({ teams: [], users: [] }),
         ]);
-        setCandidates(candidateData.candidates);
-        setPermissions(permissionData.permissions);
-      } catch (error) {
-        setCandidates([]);
-        setPermissions([]);
-        setErrorMessage(errorText(error));
-      }
+      setItems(itemData.items);
+      setCandidates(candidateData.candidates);
+      setPermissions(permissionData.permissions);
+      setSubjects(subjectData);
     } catch (error) {
       setItems([]);
       setCandidates([]);
       setPermissions([]);
+      setSubjects({ teams: [], users: [] });
       setErrorMessage(errorText(error));
     } finally {
       setIsDetailLoading(false);
@@ -136,13 +184,13 @@ export default function KnowledgeCollectionManager() {
       description: selectedCollection.description ?? '',
     });
     setAcknowledgePublic(false);
-    loadCollectionDetail(selectedCollection.id, selectedCollection.can_manage);
-  }, [loadCollectionDetail, selectedCollection]);
+    loadCollectionDetail(selectedCollection, capabilities);
+  }, [capabilities, loadCollectionDetail, selectedCollection]);
 
   const refreshSelected = async () => {
     await loadCollections();
-    if (selectedId) {
-      await loadCollectionDetail(selectedId, selectedCollection?.can_manage ?? false);
+    if (selectedCollection) {
+      await loadCollectionDetail(selectedCollection, capabilities);
     }
   };
 
@@ -204,10 +252,12 @@ export default function KnowledgeCollectionManager() {
     try {
       await knowledgeApi.linkKnowledgeCollectionItem(selectedCollection.id, {
         knowledge_base_id: candidateId,
+        acknowledged_public_runtime_exposure:
+          selectedCollection.visibility === 'public' && acknowledgePublic,
       });
       await loadCollectionDetail(
-        selectedCollection.id,
-        selectedCollection.can_manage,
+        selectedCollection,
+        capabilities,
       );
       await loadCollections();
     } catch (error) {
@@ -225,10 +275,11 @@ export default function KnowledgeCollectionManager() {
       await knowledgeApi.unlinkKnowledgeCollectionItem(
         selectedCollection.id,
         itemId,
+        selectedCollection.visibility === 'public' && acknowledgePublic,
       );
       await loadCollectionDetail(
-        selectedCollection.id,
-        selectedCollection.can_manage,
+        selectedCollection,
+        capabilities,
       );
       await loadCollections();
     } catch (error) {
@@ -243,7 +294,7 @@ export default function KnowledgeCollectionManager() {
     setIsSaving(true);
     setErrorMessage(null);
     try {
-      await knowledgeApi.grantKnowledgeCollectionPermission(
+      await knowledgeApi.grantKnowledgeCollectionPermissionBundle(
         selectedCollection.id,
         {
           ...grantForm,
@@ -253,11 +304,11 @@ export default function KnowledgeCollectionManager() {
       setGrantForm({
         subject_type: 'team',
         subject_id: '',
-        permission_action: 'read',
+        role_bundle: 'viewer',
       });
       await loadCollectionDetail(
-        selectedCollection.id,
-        selectedCollection.can_manage,
+        selectedCollection,
+        capabilities,
       );
     } catch (error) {
       setErrorMessage(errorText(error));
@@ -276,8 +327,8 @@ export default function KnowledgeCollectionManager() {
         permissionId,
       );
       await loadCollectionDetail(
-        selectedCollection.id,
-        selectedCollection.can_manage,
+        selectedCollection,
+        capabilities,
       );
     } catch (error) {
       setErrorMessage(errorText(error));
@@ -305,12 +356,64 @@ export default function KnowledgeCollectionManager() {
     }
   };
 
+  const grantDomainPermission = async () => {
+    if (!domainGrantForm.subject_id) return;
+    setIsSaving(true);
+    setErrorMessage(null);
+    try {
+      await knowledgeApi.grantKnowledgeDomainPermission(domainGrantForm);
+      setDomainGrantForm({
+        subject_type: 'team',
+        subject_id: '',
+        permission_action: 'catalog_manage',
+      });
+      await loadCollections();
+    } catch (error) {
+      setErrorMessage(errorText(error));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const revokeDomainPermission = async (
+    subjectType: 'team' | 'user',
+    subjectId: string,
+    permissionAction: KnowledgeDomainAction,
+  ) => {
+    setIsSaving(true);
+    setErrorMessage(null);
+    try {
+      await knowledgeApi.revokeKnowledgeDomainPermission({
+        subject_type: subjectType,
+        subject_id: subjectId,
+        permission_action: permissionAction,
+      });
+      await loadCollections();
+    } catch (error) {
+      setErrorMessage(errorText(error));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {errorMessage && (
         <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
           {errorMessage}
         </div>
+      )}
+
+      {capabilities.can_manage_domain_permissions && (
+        <DomainDelegationPanel
+          form={domainGrantForm}
+          isSaving={isSaving}
+          permissions={domainPermissions}
+          subjects={domainSubjects}
+          onGrant={grantDomainPermission}
+          onRevoke={revokeDomainPermission}
+          setForm={setDomainGrantForm}
+        />
       )}
 
       <section className="grid gap-4 lg:grid-cols-[360px_1fr]">
@@ -338,6 +441,7 @@ export default function KnowledgeCollectionManager() {
             isSaving={isSaving}
             items={items}
             permissions={permissions}
+            subjects={subjects}
             onArchive={archiveCollection}
             onGrantPermission={grantPermission}
             onLinkCandidate={linkCandidate}

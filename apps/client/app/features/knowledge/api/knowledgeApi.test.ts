@@ -14,6 +14,7 @@ vi.mock('@/lib/apiClient', () => ({
     get: vi.fn(),
     patch: vi.fn(),
     post: vi.fn(),
+    put: vi.fn(),
   },
 }));
 
@@ -417,6 +418,59 @@ describe('knowledgeApi collection management', () => {
     expect(apiClient.post).toHaveBeenCalledWith(
       '/knowledge/collections/collection-1/items',
       { knowledge_base_id: 'kb-1' },
+    );
+  });
+
+  it('applies Collection role bundles through the transactional endpoint', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce({
+      data: { permissions: [] },
+    });
+
+    await knowledgeApi.grantKnowledgeCollectionPermissionBundle('collection-1', {
+      subject_type: 'team',
+      subject_id: 'team-1',
+      role_bundle: 'workflow_router',
+    });
+
+    expect(apiClient.post).toHaveBeenCalledWith(
+      '/knowledge/collections/collection-1/permissions/bundles',
+      {
+        subject_type: 'team',
+        subject_id: 'team-1',
+        role_bundle: 'workflow_router',
+      },
+    );
+  });
+
+  it('sends public membership acknowledgement when unlinking', async () => {
+    vi.mocked(apiClient.delete).mockResolvedValueOnce({ data: undefined });
+
+    await knowledgeApi.unlinkKnowledgeCollectionItem(
+      'collection-1',
+      'item-1',
+      true,
+    );
+
+    expect(apiClient.delete).toHaveBeenCalledWith(
+      '/knowledge/collections/collection-1/items/item-1',
+      {
+        params: { acknowledged_public_runtime_exposure: true },
+      },
+    );
+  });
+
+  it('grants Knowledge domain actions to a Team', async () => {
+    vi.mocked(apiClient.put).mockResolvedValueOnce({ data: undefined });
+
+    await knowledgeApi.grantKnowledgeDomainPermission({
+      subject_type: 'team',
+      subject_id: 'team-1',
+      permission_action: 'catalog_manage',
+    });
+
+    expect(apiClient.put).toHaveBeenCalledWith(
+      '/knowledge/domain-permissions/teams/team-1/catalog_manage',
+      { expires_at: null },
     );
   });
 });
