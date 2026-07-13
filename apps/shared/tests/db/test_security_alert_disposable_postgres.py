@@ -135,8 +135,13 @@ def test_concurrent_notification_outbox_enqueue_is_idempotent_in_postgres():
             engine.dispose()
 
 
-def _run_alembic(database: str, config: DisposablePostgresConfig) -> None:
-    _run_alembic_command(database, config, "upgrade", "heads")
+def _run_alembic(
+    database: str,
+    config: DisposablePostgresConfig,
+    *,
+    target_revision: str = "heads",
+) -> None:
+    _run_alembic_command(database, config, "upgrade", target_revision)
 
 
 def _run_alembic_command(
@@ -337,7 +342,7 @@ def _aggregation_candidate(*, organization_id, actor_id):
 
 
 @contextmanager
-def _disposable_database():
+def _disposable_database(*, target_revision: str = "heads"):
     try:
         config = DisposablePostgresConfig.from_environment()
     except DisposablePostgresConfigurationError:
@@ -358,7 +363,7 @@ def _disposable_database():
             connection.execute(text(f"CREATE DATABASE {quoted_database}"))
         database_created = True
         _enable_vector_extension(database, config)
-        _run_alembic(database, config)
+        _run_alembic(database, config, target_revision=target_revision)
         yield database, config
     except OperationalError:
         raise pytest.fail.Exception(
@@ -526,7 +531,10 @@ def test_security_alert_migration_creates_real_postgres_schema():
     reason=f"set {RUN_ENV}=1 to run disposable PostgreSQL integration tests",
 )
 def test_security_alert_downgrade_removes_only_feature_schema_and_keeps_data():
-    with _disposable_database() as (database, config):
+    with _disposable_database(target_revision="b28d9e0f1a32") as (
+        database,
+        config,
+    ):
         engine = create_engine(config.database_url(database))
         user_id = uuid.uuid4()
         organization_id = uuid.uuid4()

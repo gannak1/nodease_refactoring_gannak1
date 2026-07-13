@@ -1,7 +1,7 @@
 # Workflow Requirements
 
 Status: Draft
-Related Features: auth, organization, agent-builder, audit-tracing, knowledge, mail-credentials, conversation-memory
+Related Features: auth, organization, agent-builder, audit-tracing, knowledge, deployment, chatbot-deployment, mail-credentials, conversation-memory
 
 ## Purpose
 
@@ -47,8 +47,9 @@ MBA-104 범위에서는 비용 최적화와 A/B 비교 실행을 준비하기 �
 - FR-005: `execution_subject`가 없을 때 Workflow owner, deployment owner, app creator, builder, `user_id` 권한으로 조용히 fallback하지 않는다. Subject 부재는 private retrieval 실패가 아니라 anonymous public-only gate를 통과한 public collection/KB 후보만 허용하는 실행이다. Source-managed KB는 collection public visibility와 별도 source/connector public exposure approval을 모두 통과해야 한다. 모호하거나 지원하지 않는 subject는 private retrieval fail-closed로 처리한다.
 - FR-006: Workflow owner, deployment owner, execution subject는 audit/trace에서 구분할 수 있어야 한다. Owner는 소유권과 관리 표시에는 사용할 수 있지만, 명시 정책 없이 실행 시점 data access 권한으로 사용하지 않는다.
 - FR-007: Workflow runtime이 Knowledge Skill을 사용할 경우, execution subject 기준으로 skill visibility, freshness/eval, collection route, KB permission/source ACL gate를 통과해야 한다. 빌더 단계 skill 선택이나 workflow 작성자 권한은 실행 시점 data access 권한으로 전파되지 않는다.
-- FR-008: LLM node의 RAG 옵션을 포함한 workflow 배포는 deployment type에서 파생한 runtime audience 기준 preflight를 수행해야 한다. 사용자 subject가 없는 public/API/webhook/schedule/chatbot/MCP surface는 private KB 후보를 활성 배포로 올릴 수 없고 anonymous public-only 후보만 허용한다.
+- FR-008: LLM node의 RAG 옵션을 포함한 workflow 배포는 deployment type에서 파생한 runtime audience 기준 preflight를 수행해야 한다. 사용자 subject가 없는 API/webapp/widget/webhook/schedule/공개 `chatbot`/MCP surface는 private KB 후보를 활성 배포로 올릴 수 없고 anonymous public-only 후보만 허용한다. `internal_chatbot`은 server-derived `authenticated_user` audience를 사용하며 실행 시 current user 기준 KB permission/source ACL을 다시 검사한다.
 - FR-009: Workflow-node 실행은 parent workflow의 execution context를 상속한다. Parent execution subject가 있으면 해당 subject 기준 KB permission/source ACL gate를 사용하고, subject가 없으면 anonymous public-only로 낮춘다. Deployment preflight에서 workflow-node target은 node 설정의 `workflowNode.data.appId`를 기준으로 target app active deployment를 찾는다.
+- FR-009a: 공개 `chatbot`과 `internal_chatbot`은 서버가 memory mode를 강제한다. 인증 실행의 client `conversation_id`는 deployment와 execution subject를 포함한 namespace로 변환하며 상세 계약은 [chatbot-deployment](../chatbot-deployment/requirements.md)를 따른다.
 - FR-010: System schedule execution은 App/deployment creator나 workflow owner를 executor로 기록하지 않아야 한다. Canonical schedule claim과 연결된 `WorkflowRun.user_id`는 null이고 audit actor는 system이어야 하며, 기존 manual/API/webhook interactive run의 사용자 attribution은 유지해야 한다.
 - FR-011: Schedule Worker admission winner는 claim을 `running`으로 전이하는 같은 원자적 write에서 stable workflow run id를 생성·저장하고 duplicate delivery에서 같은 id를 재사용해야 한다. Admission 이후 실패나 timeout으로 outcome이 불명확하면 engine을 자동 재실행하지 않아야 한다.
 - FR-012: Schedule occurrence idempotency key는 MBA-187 dispatch/admission 계층의 correlation으로만 유지하고 `ExternalEffectContext`, node/provider adapter 또는 provider-visible key 입력으로 전달하지 않아야 한다. MBA-190 external effect identity는 canonical claim UUID에서 별도로 계산한 `execution_id`를 사용하며 prompt, user-visible output, durable raw trace와 metric label에 schedule key나 새 identity를 복제하지 않아야 한다. 어느 값도 외부 provider의 exactly-once를 보장하지 않는다.

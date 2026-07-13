@@ -75,7 +75,7 @@ describe('useDeployment', () => {
     });
   });
 
-  it('chatbot deployment returns separate public and authenticated run links', async () => {
+  it('public chatbot deployment returns only the anonymous public link', async () => {
     const { result } = renderDeploymentHook();
 
     act(() => {
@@ -97,6 +97,45 @@ describe('useDeployment', () => {
     expect(deploymentResult!.webAppUrl).toContain(
       '/embed/chat/onboarding-bot',
     );
+    expect(deploymentResult!.internalRunUrl).toBeUndefined();
+  });
+
+  it('internal chatbot deployment returns only the authenticated run link', async () => {
+    mockedWorkflowApi.createDeployment.mockResolvedValueOnce({
+      id: 'deployment-1',
+      app_id: 'app-1',
+      version: 3,
+      type: 'internal_chatbot',
+      url_slug: 'onboarding-bot',
+      is_active: true,
+      created_by: 'user-1',
+      created_at: '2026-07-08T00:00:00Z',
+      graph_snapshot: {},
+      input_schema: null,
+      output_schema: null,
+    });
+    const { result } = renderDeploymentHook();
+
+    act(() => {
+      result.current.handlePublishAsInternalChatbot();
+    });
+
+    let deploymentResult: Awaited<ReturnType<typeof result.current.handleDeploy>>;
+    await act(async () => {
+      deploymentResult = await result.current.handleDeploy('사내 문서 질문 응답 봇');
+    });
+
+    expect(mockedWorkflowApi.preflightDeployment).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'internal_chatbot' }),
+    );
+    expect(mockedWorkflowApi.createDeployment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        app_id: 'app-1',
+        type: 'internal_chatbot',
+        is_active: true,
+      }),
+    );
+    expect(deploymentResult!.webAppUrl).toBeUndefined();
     expect(deploymentResult!.internalRunUrl).toContain(
       '/modules/workflow-1/run?deploymentId=deployment-1',
     );

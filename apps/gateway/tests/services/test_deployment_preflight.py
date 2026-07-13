@@ -864,6 +864,7 @@ def test_preflight_audience_classifies_every_deployment_type():
         DeploymentType.WEBAPP: "anonymous_public",
         DeploymentType.WIDGET: "anonymous_public",
         DeploymentType.CHATBOT: "anonymous_public",
+        DeploymentType.INTERNAL_CHATBOT: "authenticated_user",
         DeploymentType.MCP: "anonymous_public",
         DeploymentType.WORKFLOW_NODE: "workflow_node_inherited",
         DeploymentType.SCHEDULE: "anonymous_public",

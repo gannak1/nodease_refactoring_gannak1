@@ -1,10 +1,14 @@
+import logging
 import os
+from collections.abc import Mapping
+from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from apps.gateway.auth.oauth import oauth
+from apps.gateway.services.auth_return_service import AuthReturnService
 from apps.gateway.services.auth_service import AuthService
 from apps.shared.audit import record_audit
 from apps.shared.audit.actions import AuditAction
@@ -13,6 +17,18 @@ from apps.shared.db.session import get_db
 from apps.shared.schemas.auth import LoginRequest, LoginResponse, SignupRequest
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+
+def _request_hostname(request: Request) -> str:
+    try:
+        return urlsplit(f"//{request.headers.get('host', '')}").hostname or ""
+    except ValueError:
+        return ""
+
+
+def _is_loopback_hostname(hostname: str) -> bool:
+    return hostname.lower() in {"localhost", "127.0.0.1", "::1"}
 
 
 def _request_meta(request: Request) -> dict:
@@ -59,7 +75,25 @@ def _record_auth_failure(
         category="action",
         actor_type="system",
         status="failure",
-        metadata={"email": email, "error": str(error), **_request_meta(request)},
+        metadata={
+            "email": email,
+            "error_type": type(error).__name__,
+            **_request_meta(request),
+        },
+    )
+
+
+def _record_google_oauth_failure(request: Request, reason: str) -> None:
+    record_audit(
+        action=AuditAction.USER_LOGIN_FAILED,
+        category="action",
+        actor_type="system",
+        status="failure",
+        metadata={
+            "provider": "google",
+            "reason": reason,
+            **_request_meta(request),
+        },
     )
 
 
@@ -70,8 +104,8 @@ def _get_cookie_config(request: Request) -> tuple[bool, str | None]:
     Returns:
         (is_production, cookie_domain)
     """
-    host = request.headers.get("host", "")
-    is_production = "localhost" not in host and "127.0.0.1" not in host
+    host = _request_hostname(request)
+    is_production = not _is_loopback_hostname(host)
 
     # 쿠키 도메인 (환경변수 우선, 없으면 호스트에서 자동 추출)
     cookie_domain = os.getenv("COOKIE_DOMAIN")
@@ -248,7 +282,14 @@ def get_current_user(request: Request, db: Session = Depends(get_db)):
 
 
 @router.get("/google/login")
-async def google_login(request: Request):
+async def google_login(
+    request: Request,
+    next_path: str | None = Query(
+        default=None,
+        alias="next",
+        max_length=2048,
+    ),
+):
     """
     구글 로그인 리디렉션
     - 로컬/배포 환경에 따라 redirect_uri를 동적으로 생성
@@ -257,10 +298,21 @@ async def google_login(request: Request):
     redirect_uri = request.url_for("auth_google_callback")
 
     # https로 요청 보내도록 수정
-    if "localhost" not in str(redirect_uri) and "127.0.0.1" not in str(redirect_uri):
+    redirect_hostname = urlsplit(str(redirect_uri)).hostname or ""
+    if not _is_loopback_hostname(redirect_hostname):
         redirect_uri = str(redirect_uri).replace("http://", "https://")
 
-    return await oauth.google.authorize_redirect(request, redirect_uri)
+    AuthReturnService.remember(request, next_path)
+    try:
+        return await oauth.google.authorize_redirect(request, redirect_uri)
+    except Exception as exc:
+        AuthReturnService.consume(request)
+        logger.warning(
+            "Google OAuth start failed: error_type=%s",
+            type(exc).__name__,
+        )
+        _record_google_oauth_failure(request, "oauth_start_failed")
+        return Response(status_code=503, content="OAuth login is unavailable")
 
 
 @router.get("/google/callback")
@@ -270,16 +322,45 @@ async def auth_google_callback(
     """
     구글 로그인 콜백
     """
+    return_path = AuthReturnService.consume(request)
     try:
         token = await oauth.google.authorize_access_token(request)
-    except Exception as e:
-        # 인증 실패 시 로그인 페이지로 리디렉션 (에러 파라미터 포함 등)
-        return Response(status_code=400, content=f"OAuth Authentication Failed: {e}")
+    except Exception as exc:
+        logger.warning(
+            "Google OAuth callback token exchange failed: error_type=%s",
+            type(exc).__name__,
+        )
+        _record_google_oauth_failure(request, "token_exchange_failed")
+        return Response(status_code=400, content="OAuth authentication failed")
+
+    if not isinstance(token, Mapping):
+        logger.warning(
+            "Google OAuth callback returned invalid token response: response_type=%s",
+            type(token).__name__,
+        )
+        _record_google_oauth_failure(request, "invalid_token_response")
+        return Response(status_code=400, content="OAuth authentication failed")
 
     # 사용자 정보 추출
     user_info = token.get("userinfo")
-    if not user_info:
-        user_info = await oauth.google.userinfo(token=token)
+    if not isinstance(user_info, Mapping):
+        try:
+            user_info = await oauth.google.userinfo(token=token)
+        except Exception as exc:
+            logger.warning(
+                "Google OAuth user info failed: error_type=%s",
+                type(exc).__name__,
+            )
+            _record_google_oauth_failure(request, "user_info_failed")
+            return Response(status_code=400, content="OAuth authentication failed")
+
+    if not isinstance(user_info, Mapping):
+        logger.warning(
+            "Google OAuth callback returned invalid user info: response_type=%s",
+            type(user_info).__name__,
+        )
+        _record_google_oauth_failure(request, "invalid_user_info")
+        return Response(status_code=400, content="OAuth authentication failed")
 
     email = user_info.get("email")
     name = user_info.get("name", "Unknown")
@@ -288,7 +369,8 @@ async def auth_google_callback(
     picture = user_info.get("picture")
 
     if not email:
-        return Response(status_code=400, content="Email not found in Google account")
+        _record_google_oauth_failure(request, "email_missing")
+        return Response(status_code=400, content="OAuth authentication failed")
 
     # 사용자 조회 또는 생성
     user = AuthService.get_or_create_social_user(
@@ -309,14 +391,9 @@ async def auth_google_callback(
     # 쿠키 설정
     is_production, cookie_domain = _get_cookie_config(request)
 
-    dashboard_url = "/dashboard"
+    redirect_url = AuthReturnService.build_client_redirect(request, return_path)
 
-    # 호스트가 localhost:8000이면 -> localhost:3000으로 보냄 (개발 편의성)
-    host = request.headers.get("host", "")
-    if "localhost:8000" in host or "127.0.0.1:8000" in host:
-        dashboard_url = "http://localhost:3000/dashboard"
-
-    redirect_response = RedirectResponse(url=dashboard_url, status_code=302)
+    redirect_response = RedirectResponse(url=redirect_url, status_code=302)
     redirect_response.set_cookie(
         key="auth_token",
         value=access_token,

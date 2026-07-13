@@ -329,6 +329,7 @@ Slack/meeting source item의 effective ACL baseline:
 
 - Runtime RAG는 execution subject가 있으면 명시 `execution_subject` 기준으로 평가한다.
 - Interactive run은 active membership validation을 통과한 request user를 사용할 수 있다.
+- `internal_chatbot` 인증 run은 current user를 명시 `execution_subject`로 전달하고 해당 user의 KB `use`/source ACL을 재평가한다. 공개 `chatbot` run은 subject 없이 anonymous public-only다.
 - Execution subject가 없으면 anonymous public-only로 낮추고, active public collection에 연결된 active KB만 검색한다. Source-managed KB는 valid source/connector public exposure approval도 통과해야 한다.
 - Schedule, webhook, API trigger run의 private KB access는 deployment-approved service account 또는 명시적으로 지정된 operator가 필요하며 후속 기능이다. Subject가 없거나 inactive, removed, ambiguous 상태에서는 private KB retrieval을 수행하지 않는다.
 - Workflow owner/builder permission을 runtime fallback으로 조용히 사용하지 않는다.

@@ -1,7 +1,7 @@
 # Workflow Component Spec
 
 Status: Draft
-Verified Against: feature/mba-216 @ 745d9071
+
 
 ## Condition Exit Layout
 
@@ -167,6 +167,12 @@ Main generation과 Memory summary provider adapter는 Workflow admission 안에�
   - 현재 노드 기록에는 상태, 소요 시간, 토큰, 비용, 모델/프로바이더, input, output, error, metadata를 표시한다.
   - input/output은 JSON이면 code block 형태로, plain text면 줄바꿈이 보존되는 text block으로 표시한다.
 
+### 5. 공개/내부 챗봇 배포
+
+- Workflow editor 게시하기 메뉴는 공개 `chatbot`과 `internal_chatbot`을 별도 항목으로 제공한다.
+- 배포 성공 화면은 공개 링크와 인증 내부 링크를 상호 배타적으로 표시한다. 내부 챗봇에는 public REST API secret/test panel을 표시하지 않는다.
+- 내부 실행 페이지는 deployment run-info/run endpoint를 사용하고 `memory_mode: true`와 session `conversation_id`를 전송한다. 상세 UI 계약은 [Chatbot Deployment Component Spec](../chatbot-deployment/component_spec.md)을 따른다.
+
 ## States
 
 ### 1. 실행 편의성
@@ -247,6 +253,11 @@ Main generation과 Memory summary provider adapter는 Workflow admission 안에�
 - 사용자가 `가장 최신 로그 기록 불러오기`를 클릭하면 현재 node_id 기록이 존재하는 가장 최신 workflow run을 찾아 detail view에 표시한다.
 - 선택한 run에 현재 node_id 기록이 없으면 상세 대신 `이 실행에서 현재 노드 기록 없음` 안내를 표시한다.
 - 실행 기록 탭에서 표시되는 input/output은 현재 노드 설정값을 변경하지 않는다.
+
+### 5. 공개/내부 챗봇 배포
+
+- 내부 실행 페이지가 `401`을 받으면 path/query/hash를 safe `next`로 보존해 로그인 화면으로 이동한다.
+- 이메일/비밀번호 로그인 성공 후 same-origin `next`로 복귀하며, unsafe URL은 `/dashboard`로 닫는다. Google OAuth는 기존 dashboard 복귀 계약을 유지한다.
 
 ## Accessibility
 

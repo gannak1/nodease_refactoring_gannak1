@@ -109,7 +109,7 @@ class CostOptimizerExperiment(Base):
         onupdate=lambda: datetime.now(timezone.utc),
     )
     retention_expires_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime(timezone=True), nullable=True, index=True
+        DateTime(timezone=True), nullable=True
     )
 
     candidates: Mapped[list["CostOptimizerCandidate"]] = relationship(

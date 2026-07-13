@@ -1,5 +1,9 @@
 import axios from 'axios';
 import {
+  claimLoginRedirectPath,
+  getCurrentAuthReturnPath,
+} from '@/lib/authReturn';
+import {
   attachActiveOrganizationHeader,
   getStoredActiveOrganizationId,
 } from '@/lib/activeOrganization';
@@ -95,10 +99,16 @@ const createHttpError = (
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
+    if (
+      error.response?.status === 401 &&
+      typeof window !== 'undefined' &&
+      !window.location.pathname.startsWith('/auth') &&
+      window.location.pathname !== '/'
+    ) {
       // 인증 만료 → 로그인 페이지로 리다이렉트
       console.warn('Authentication expired, redirecting to login...');
-      window.location.href = '/auth/login';
+      const redirectPath = claimLoginRedirectPath(getCurrentAuthReturnPath());
+      if (redirectPath) window.location.href = redirectPath;
     }
     return Promise.reject(error);
   },
@@ -531,9 +541,13 @@ export const workflowApi = {
   runDeployment: async (
     deploymentId: string,
     inputs: Record<string, unknown>,
+    clientConversationId?: string,
   ) => {
     const response = await api.post(`/deployments/${deploymentId}/run`, {
       inputs,
+      ...(clientConversationId
+        ? { conversation: { client_id: clientConversationId } }
+        : {}),
     });
     return response.data as { status: string; results?: unknown };
   },

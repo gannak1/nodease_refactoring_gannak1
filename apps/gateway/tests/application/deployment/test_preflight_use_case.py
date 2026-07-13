@@ -76,6 +76,29 @@ def test_blocking_result_is_application_error_without_http_dependency():
     ]
 
 
+def test_internal_chatbot_private_kb_uses_authenticated_audience():
+    organization_id = uuid.uuid4()
+    kb_id = uuid.uuid4()
+    repository = _Repository()
+    repository.knowledge_bases[kb_id] = KnowledgeBaseSnapshot(
+        id=kb_id,
+        source_managed=False,
+    )
+    use_case = DeploymentPreflightUseCase(
+        repository,
+        organization_id=organization_id,
+    )
+
+    result = use_case.preview(
+        deployment_type="internal_chatbot",
+        graph_snapshot=_llm_graph(kb_id),
+    )
+
+    assert result.audience == "authenticated_user"
+    assert result.status == "passed"
+    assert repository.calls == [("knowledge", organization_id)]
+
+
 def test_inactive_preview_downgrades_publish_blocker_but_not_structural_target_error():
     organization_id = uuid.uuid4()
     kb_id = uuid.uuid4()

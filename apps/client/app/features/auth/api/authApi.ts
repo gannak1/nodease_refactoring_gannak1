@@ -1,4 +1,5 @@
 import { apiBaseUrl, publicApiClient } from '@/lib/apiClient';
+import { resolveSafeAuthReturnPath } from '@/lib/authReturn';
 import {
   SignupRequest,
   SignupResponse,
@@ -31,7 +32,8 @@ export const authApi = {
   },
 
   // 구글 OAuth 로그인
-  googleLogin: () => {
-    window.location.href = `${apiBaseUrl}/auth/google/login`;
+  googleLogin: (returnPath?: string | null) => {
+    const safeReturnPath = resolveSafeAuthReturnPath(returnPath);
+    window.location.href = `${apiBaseUrl}/auth/google/login?next=${encodeURIComponent(safeReturnPath)}`;
   },
 };

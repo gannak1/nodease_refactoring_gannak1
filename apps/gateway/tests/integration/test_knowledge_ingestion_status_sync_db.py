@@ -16,6 +16,11 @@ from apps.shared.db.models.user import User
 from apps.shared.db.session import engine
 
 
+PUBLIC_PROCESSING_FAILURE_MESSAGE = (
+    "Document processing failed. You can retry the document."
+)
+
+
 @pytest.fixture
 def db_session():
     connection = engine.connect()
@@ -89,7 +94,8 @@ def test_detail_api_synchronizes_stale_indexing_status_with_document_row(db_sess
     response_document = response.json()["documents"][0]
     assert response_document["id"] == str(document.id)
     assert response_document["status"] == "failed"
-    assert response_document["error_message"] == PROCESSING_START_TIMEOUT_MESSAGE
+    assert response_document["error_message"] == PUBLIC_PROCESSING_FAILURE_MESSAGE
+    assert PROCESSING_START_TIMEOUT_MESSAGE not in response_document["error_message"]
     db_session.refresh(document)
     assert document.status == "failed"
     assert document.error_message == PROCESSING_START_TIMEOUT_MESSAGE

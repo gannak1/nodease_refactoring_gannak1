@@ -93,4 +93,5 @@ class AuditLog(Base):
 
     __table_args__ = (
         Index("ix_audit_logs_target", "target_type", "target_id"),
+        Index("ix_audit_logs_occurred_at_id", "occurred_at", "id"),
     )

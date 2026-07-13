@@ -2,6 +2,7 @@ export type DeploymentType =
   | 'api'
   | 'widget'
   | 'chatbot'
+  | 'internal_chatbot'
   | 'webapp'
   | 'mcp'
   | 'workflow_node'

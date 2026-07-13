@@ -1,7 +1,6 @@
 # Auth Test Cases
 
 Status: Draft
-Verified Against: feature/mba-106 @ 804d42fbf6b41e6574e4333b0d95376b397e2e64
 
 ## Minimum Failure Rule
 
@@ -32,6 +31,9 @@ Verified Against: feature/mba-106 @ 804d42fbf6b41e6574e4333b0d95376b397e2e64
 | AUTH-TC-U017 | 기존 소셜 사용자는 provider, social id, avatar 변경을 반영해야 한다. | 같은 email 사용자의 소셜 필드가 입력값과 다르다. | 변경된 필드가 저장된다. |
 | AUTH-TC-U018 | 신규 소셜 사용자는 기본 organization 컨텍스트를 생성해야 한다. | 같은 email 사용자가 없고 Google user info가 유효하지만 기본 organization 컨텍스트가 준비되지 않는다. | 테스트 실패. |
 | AUTH-TC-U019 | 비활성 소셜 사용자는 재로그인할 수 없어야 한다. | 같은 email 사용자에 `deactivated_at`이 설정되어 있다. | `403`, `비활성화된 계정입니다`. |
+| AUTH-TC-U020 | Auth return validator는 중첩 encoding과 URL 정규화 우회를 막아야 한다. | 절대 URL, protocol-relative URL, backslash, dot segment, control character, malformed/과다 중첩 encoding 중 하나를 입력한다. | `/dashboard` fallback. |
+| AUTH-TC-U021 | OAuth return context는 짧은 수명과 1회 소비를 강제해야 한다. | 같은 session context를 두 번 소비하거나 발급 10분 후 또는 미래 issued-at으로 소비한다. | 첫 정상 소비만 원래 경로, 나머지는 `/dashboard`. |
+| AUTH-TC-U022 | Production session 서명키 구성은 fail-closed해야 한다. | `NODE_ENV=production`에서 키가 누락·공백·개발 placeholder 중 하나다. | Gateway 구성 오류. Secret 원문 미출력. |
 
 ## API Tests
 
@@ -63,17 +65,22 @@ Verified Against: feature/mba-106 @ 804d42fbf6b41e6574e4333b0d95376b397e2e64
 | AUTH-TC-A024 | `GET /auth/me`는 비활성 사용자를 거부해야 한다. | JWT는 유효하지만 사용자의 `deactivated_at`이 설정되어 있다. | `403`, `비활성화된 계정입니다`. |
 | AUTH-TC-A025 | `GET /auth/me` 성공은 현재 사용자와 세션을 반환해야 한다. | 유효한 `auth_token` 요청의 응답에서 user 또는 session 필드가 빠진다. | 테스트 실패. |
 | AUTH-TC-A026 | `GET /auth/google/login`은 non-local redirect URI를 https로 만들어야 한다. | Host가 non-local인데 OAuth redirect URI가 `http://`로 전달된다. | 테스트 실패. |
-| AUTH-TC-A027 | Google OAuth callback은 token 교환 실패를 거부해야 한다. | `authorize_access_token`이 예외를 던진다. | `400`, `OAuth Authentication Failed: ...`. |
-| AUTH-TC-A028 | Google OAuth callback은 email 없는 사용자 정보를 거부해야 한다. | Google user info에 `email`이 없다. | `400`, `Email not found in Google account`. |
+| AUTH-TC-A027 | Google OAuth callback은 token 교환 실패를 안전하게 거부해야 한다. | `authorize_access_token`이 raw marker를 포함한 예외를 던진다. | `400`, 고정 본문 `OAuth authentication failed`; 응답·로그·audit에 raw marker 없음. |
+| AUTH-TC-A028 | Google OAuth callback은 malformed/email 없는 identity를 거부해야 한다. | token 또는 user info가 mapping이 아니거나 Google user info에 `email`이 없다. | `400`, 고정 본문 `OAuth authentication failed`. |
 | AUTH-TC-A029 | Google OAuth callback 성공은 세션 쿠키를 설정해야 한다. | 유효한 user info인데 `auth_token` 쿠키가 없다. | 테스트 실패. |
-| AUTH-TC-A030 | Google OAuth callback 성공은 대시보드로 리다이렉트해야 한다. | 유효한 user info인데 `302` redirect가 없다. | 테스트 실패. |
-| AUTH-TC-A031 | localhost Google OAuth callback은 client dashboard로 redirect해야 한다. | Host가 `localhost:8000` 또는 `127.0.0.1:8000`인데 redirect 대상이 `http://localhost:3000/dashboard`가 아니다. | 테스트 실패. |
+| AUTH-TC-A030 | Google OAuth callback 성공은 서명 session의 safe `next`로 리다이렉트해야 한다. | 유효한 user info와 10분 이내 복귀 컨텍스트가 있는데 원래 path/query/hash로 `302` redirect하지 않는다. | 테스트 실패. |
+| AUTH-TC-A031 | localhost Google OAuth callback은 대응하는 client origin으로 redirect해야 한다. | Host가 정확히 `localhost:8000` 또는 `127.0.0.1:8000`인데 대응하는 3000 포트의 safe `next`가 아니다. | 테스트 실패. |
 | AUTH-TC-A032 | 회원가입 성공은 audit 이벤트를 기록해야 한다. | signup 성공 응답이 반환되었는데 audit 기록 호출이 없다. | 테스트 실패. |
 | AUTH-TC-A033 | 회원가입 실패는 audit 이벤트를 기록해야 한다. | signup 실패 응답이 반환되었는데 audit 기록 호출이 없다. | 테스트 실패. |
 | AUTH-TC-A034 | 로그인 성공은 audit 이벤트를 기록해야 한다. | login 성공 응답이 반환되었는데 audit 기록 호출이 없다. | 테스트 실패. |
 | AUTH-TC-A035 | 로그인 실패는 audit 이벤트를 기록해야 한다. | login 실패 응답이 반환되었는데 audit 기록 호출이 없다. | 테스트 실패. |
 | AUTH-TC-A036 | Google OAuth 성공은 audit 이벤트를 기록해야 한다. | Google OAuth callback 성공 응답이 반환되었는데 audit 기록 호출이 없다. | 테스트 실패. |
 | AUTH-TC-A037 | 로그아웃은 audit 이벤트를 기록해야 한다. | logout 성공 응답이 반환되었는데 audit 기록 호출이 없다. | 테스트 실패. |
+| AUTH-TC-A038 | Google OAuth 시작 실패는 fixed safe 응답을 반환해야 한다. | `authorize_redirect`가 raw marker를 포함한 예외를 던진다. | `503`, `OAuth login is unavailable`; 응답·로그·audit에 raw marker 없음. |
+| AUTH-TC-A039 | Google OAuth return context replay는 기본 경로로 닫혀야 한다. | 성공 callback 뒤 같은 signed session으로 callback을 다시 호출한다. | 첫 호출은 safe `next`, 두 번째는 `/dashboard`. |
+| AUTH-TC-A040 | Google OAuth unsafe `next`는 session에 권한 경로로 저장되지 않아야 한다. | 절대/protocol-relative/중첩-encoded/dot-segment 값으로 login을 시작한다. | callback은 `/dashboard`, 외부 host 비노출. |
+| AUTH-TC-A041 | Non-local 유사 loopback host는 HTTPS callback을 사용해야 한다. | Host가 `localhost.attacker.example`처럼 loopback 문자열만 포함한다. | HTTPS non-local callback; local client redirect 미적용. |
+| AUTH-TC-A042 | Credentialed CORS 구성은 wildcard와 malformed origin을 거부해야 한다. | `*`, 빈 목록, userinfo/path/query/fragment 또는 비-HTTP(S) 값 중 하나를 설정한다. | Gateway 구성 오류. |
 
 ## Component And Hook Tests
 
@@ -83,9 +90,9 @@ Verified Against: feature/mba-106 @ 804d42fbf6b41e6574e4333b0d95376b397e2e64
 | AUTH-TC-C002 | `authApi.login`은 `/auth/login`으로 POST해야 한다. | login 호출이 다른 path 또는 GET/PUT으로 나간다. | 테스트 실패. |
 | AUTH-TC-C003 | `authApi.logout`은 `/auth/logout`으로 POST해야 한다. | logout 호출이 다른 path로 나가거나 body 없는 POST를 처리하지 못한다. | 테스트 실패. |
 | AUTH-TC-C004 | `authApi.me`는 `/auth/me`로 GET해야 한다. | me 호출이 다른 path 또는 POST로 나간다. | 테스트 실패. |
-| AUTH-TC-C005 | `authApi.googleLogin`은 브라우저를 Google login endpoint로 이동시켜야 한다. | 호출 후 `window.location.href`가 `${apiBaseUrl}/auth/google/login`이 아니다. | 테스트 실패. |
+| AUTH-TC-C005 | `authApi.googleLogin`은 safe 복귀 경로와 함께 Google login endpoint로 이동시켜야 한다. | 호출 후 `window.location.href`가 `${apiBaseUrl}/auth/google/login?next=<encoded-safe-path>`가 아니다. | 테스트 실패. |
 | AUTH-TC-C006 | API client는 credential 포함 요청을 사용해야 한다. | `publicApiClient` 또는 `apiClient`의 `withCredentials`가 false이다. | 테스트 실패. |
-| AUTH-TC-C007 | 401 인터셉터는 보호 경로에서 로그인으로 보내야 한다. | 현재 path가 `/auth/*`도 `/`도 아닌데 401 후 `/auth/login`으로 이동하지 않는다. | 테스트 실패. |
+| AUTH-TC-C007 | 401 인터셉터는 보호 경로에서 로그인으로 보내고 중복 이동을 조정해야 한다. | 현재 path가 `/auth/*`도 `/`도 아닌데 401 후 `/auth/login`으로 이동하지 않거나 같은 path의 동시 interceptor/page redirect가 2초 안에 둘 다 navigation을 소유한다. | 테스트 실패. |
 | AUTH-TC-C008 | 401 인터셉터는 auth 화면에서 자동 이동하지 않아야 한다. | 현재 path가 `/auth/login` 또는 `/auth/signup`인데 401 후 `window.location.href`가 바뀐다. | 테스트 실패. |
 | AUTH-TC-C009 | 401 인터셉터는 홈에서 자동 이동하지 않아야 한다. | 현재 path가 `/`인데 401 후 `window.location.href`가 바뀐다. | 테스트 실패. |
 | AUTH-TC-C010 | `useAuthRedirect`는 인증 성공 시 지정 경로로 replace해야 한다. | `authApi.me()`가 resolve되지만 `router.replace(redirectTo)`가 호출되지 않는다. | 테스트 실패. |
@@ -102,7 +109,7 @@ Verified Against: feature/mba-106 @ 804d42fbf6b41e6574e4333b0d95376b397e2e64
 | AUTH-TC-E004 | 로그인 화면은 비배열 detail 422를 사용자 메시지로 표시해야 한다. | login 요청이 `status=422`, 배열이 아닌 detail로 reject된다. | `입력 형식이 올바르지 않습니다.` 표시. |
 | AUTH-TC-E005 | 로그인 화면은 5xx를 사용자 메시지로 표시해야 한다. | login 요청이 500 이상으로 reject된다. | `서버에 문제가 발생했습니다. 잠시 후 다시 시도해주세요.` 표시. |
 | AUTH-TC-E006 | 로그인 화면은 네트워크 실패를 사용자 메시지로 표시해야 한다. | Axios error에 `response`가 없다. | `네트워크 연결을 확인해주세요.` 표시. |
-| AUTH-TC-E007 | 로그인 화면은 Google 로그인 버튼을 OAuth 진입점에 연결해야 한다. | `구글로 로그인` 클릭 후 Google login URL로 이동하지 않는다. | 테스트 실패. |
+| AUTH-TC-E007 | 로그인 화면은 Google 로그인 버튼을 safe 복귀 경로가 있는 OAuth 진입점에 연결해야 한다. | `구글로 로그인` 클릭 후 검증된 `next`가 `authApi.googleLogin`에 전달되지 않는다. | 테스트 실패. |
 | AUTH-TC-E008 | 회원가입 화면은 비밀번호 불일치를 API 호출 전에 막아야 한다. | `password`와 `confirmPassword`가 다르다. | `authApi.signup` 미호출, `비밀번호가 일치하지 않습니다.` 표시. |
 | AUTH-TC-E009 | 회원가입 화면은 성공 후 대시보드로 이동해야 한다. | `authApi.signup`이 성공했는데 성공 toast 또는 `/dashboard` 이동 중 하나가 없다. | 테스트 실패. |
 | AUTH-TC-E010 | 회원가입 화면은 backend detail을 우선 표시해야 한다. | signup 요청이 `{ detail: "..." }`로 reject된다. | 해당 detail이 인라인 오류와 toast에 표시. |
@@ -133,3 +140,4 @@ Verified Against: feature/mba-106 @ 804d42fbf6b41e6574e4333b0d95376b397e2e64
 | AUTH-TC-X001 | LoginResponse의 session token은 쿠키와 별도로 body에 존재해야 한다. | signup/login 성공 body에서 `session.token`이 빠진다. | 테스트 실패. |
 | AUTH-TC-X002 | audit metadata는 세션 token 원문을 남기지 않아야 한다. | signup, login, logout, auth failure audit metadata에 JWT 또는 `auth_token` 원문이 포함된다. | 테스트 실패. |
 | AUTH-TC-X003 | logout audit은 actor id 없이도 기록될 수 있어야 한다. | logout 요청에 현재 사용자 식별이 없다는 이유만으로 audit 기록이 실패한다. | 테스트 실패. |
+| AUTH-TC-X004 | OAuth 실패 audit은 raw provider 예외를 저장하지 않아야 한다. | provider 예외 문자열에 credential-like marker를 포함한다. | audit에는 fixed reason code만 있고 raw marker는 없다. |

@@ -24,7 +24,7 @@ class Workflow(Base):
         nullable=False,
     )
     organization_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True),ForeignKey("organization.id"), nullable=True
+        UUID(as_uuid=True), ForeignKey("organization.id"), nullable=True, index=True
     )
     app_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("apps.id"), index=True, nullable=False

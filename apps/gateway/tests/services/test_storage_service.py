@@ -1,3 +1,4 @@
+import errno
 import logging
 from io import BytesIO
 from pathlib import Path
@@ -5,12 +6,22 @@ from types import SimpleNamespace
 
 import pytest
 
+from apps.gateway.services import storage as storage_module
 from apps.gateway.services.storage import (
     LocalStorageService,
     S3StorageService,
     StorageDeleteError,
     StorageReferenceError,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_default_local_storage_root(monkeypatch):
+    monkeypatch.setattr(
+        storage_module,
+        "_resolved_default_local_upload_dir",
+        None,
+    )
 
 
 class _FailingS3Client:
@@ -244,6 +255,189 @@ def test_local_upload_rejects_non_canonical_filename(tmp_path):
 
     with pytest.raises(StorageReferenceError, match="^storage_reference_invalid$"):
         storage.upload(upload)
+
+
+def test_local_storage_uses_container_directory_when_writable(monkeypatch, tmp_path):
+    container_dir = tmp_path / "container-uploads"
+    fallback_dir = tmp_path / "project-uploads"
+    original_makedirs = storage_module.os.makedirs
+
+    monkeypatch.setattr(
+        storage_module,
+        "DEFAULT_LOCAL_UPLOAD_DIR",
+        str(container_dir),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        storage_module,
+        "FALLBACK_LOCAL_UPLOAD_DIR",
+        str(fallback_dir),
+        raising=False,
+    )
+
+    def create_container_directory(path, exist_ok=False):
+        assert path == str(container_dir)
+        return original_makedirs(path, exist_ok=exist_ok)
+
+    monkeypatch.setattr(storage_module.os, "makedirs", create_container_directory)
+
+    storage = LocalStorageService()
+
+    assert storage.upload_dir == str(container_dir)
+    assert container_dir.is_dir()
+    assert not fallback_dir.exists()
+
+
+def test_local_storage_falls_back_when_container_directory_is_not_writable(
+    monkeypatch, tmp_path
+):
+    container_dir = tmp_path / "container-uploads"
+    fallback_dir = tmp_path / "project-uploads"
+    original_makedirs = storage_module.os.makedirs
+
+    monkeypatch.setattr(
+        storage_module,
+        "DEFAULT_LOCAL_UPLOAD_DIR",
+        str(container_dir),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        storage_module,
+        "FALLBACK_LOCAL_UPLOAD_DIR",
+        str(fallback_dir),
+        raising=False,
+    )
+
+    def create_or_reject_directory(path, exist_ok=False):
+        if path == str(container_dir):
+            raise OSError(errno.EROFS, "Read-only file system")
+        assert path == str(fallback_dir)
+        return original_makedirs(path, exist_ok=exist_ok)
+
+    monkeypatch.setattr(storage_module.os, "makedirs", create_or_reject_directory)
+
+    storage = LocalStorageService()
+
+    assert storage.upload_dir == str(fallback_dir)
+    assert fallback_dir.is_dir()
+
+
+def test_local_storage_falls_back_when_existing_container_directory_is_unwritable(
+    monkeypatch,
+    tmp_path,
+):
+    container_dir = tmp_path / "container-uploads"
+    fallback_dir = tmp_path / "project-uploads"
+    container_dir.mkdir()
+    original_prepare = storage_module._prepare_writable_directory
+
+    monkeypatch.setattr(
+        storage_module,
+        "DEFAULT_LOCAL_UPLOAD_DIR",
+        str(container_dir),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        storage_module,
+        "FALLBACK_LOCAL_UPLOAD_DIR",
+        str(fallback_dir),
+        raising=False,
+    )
+
+    def prepare_or_reject(path):
+        if path == str(container_dir):
+            raise OSError(errno.EACCES, "Permission denied")
+        return original_prepare(path)
+
+    monkeypatch.setattr(
+        storage_module,
+        "_prepare_writable_directory",
+        prepare_or_reject,
+    )
+
+    storage = LocalStorageService()
+
+    assert storage.upload_dir == str(fallback_dir.resolve())
+    assert fallback_dir.is_dir()
+
+
+def test_default_local_storage_root_remains_stable_across_instances(
+    monkeypatch,
+    tmp_path,
+):
+    container_dir = tmp_path / "container-uploads"
+    fallback_dir = tmp_path / "project-uploads"
+    original_prepare = storage_module._prepare_writable_directory
+    primary_attempts = 0
+
+    monkeypatch.setattr(
+        storage_module,
+        "DEFAULT_LOCAL_UPLOAD_DIR",
+        str(container_dir),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        storage_module,
+        "FALLBACK_LOCAL_UPLOAD_DIR",
+        str(fallback_dir),
+        raising=False,
+    )
+
+    def fail_primary_once(path):
+        nonlocal primary_attempts
+        if path == str(container_dir):
+            primary_attempts += 1
+            raise OSError(errno.EROFS, "Read-only file system")
+        return original_prepare(path)
+
+    monkeypatch.setattr(
+        storage_module,
+        "_prepare_writable_directory",
+        fail_primary_once,
+    )
+    first = LocalStorageService()
+
+    monkeypatch.setattr(
+        storage_module,
+        "_prepare_writable_directory",
+        lambda path: original_prepare(path),
+    )
+    second = LocalStorageService()
+
+    assert first.upload_dir == str(fallback_dir.resolve())
+    assert second.upload_dir == first.upload_dir
+    assert primary_attempts == 1
+    assert not container_dir.exists()
+
+
+def test_local_storage_writability_probe_leaves_no_file(tmp_path):
+    upload_root = tmp_path / "uploads"
+
+    storage = LocalStorageService(str(upload_root))
+
+    assert storage.upload_dir == str(upload_root.resolve())
+    assert list(upload_root.glob(".nodease-storage-probe-*")) == []
+
+
+def test_local_storage_does_not_fallback_from_explicit_directory_failure(
+    monkeypatch, tmp_path
+):
+    explicit_dir = tmp_path / "explicit-uploads"
+
+    def reject_explicit_directory(path, exist_ok=False):
+        assert path == str(explicit_dir)
+        raise OSError(errno.EROFS, "Read-only file system")
+
+    monkeypatch.setattr(
+        storage_module.os,
+        "makedirs",
+        reject_explicit_directory,
+    )
+
+    with pytest.raises(OSError) as exc:
+        LocalStorageService(str(explicit_dir))
+
+    assert exc.value.errno == errno.EROFS
 
 
 def test_local_delete_rejects_path_outside_upload_root(tmp_path):

@@ -52,7 +52,7 @@ Nodease는 기존 Moduly 코드를 리팩토링해 만드는 기업 내부 AI �
 
 이번 범위의 전제가 되는 기존 기능이다. 깨뜨리지 않는 것이 요구사항이다.
 
-- Workflow 생성/편집/실행/배포 (schedule/webhook/API 트리거 포함)
+- Workflow 생성/편집/실행/배포 (schedule/webhook/API 트리거와 공개·인증 내부 챗봇 포함)
 - Organization/Team 관리, 초대, RBAC 권한 부여와 차단
 - LLM credential 관리와 모델 연결
 - 외부 DB 연결(connectors)과 workflow DB 노드 사용 경로

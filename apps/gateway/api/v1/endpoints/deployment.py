@@ -1,12 +1,15 @@
 import uuid
-from typing import Annotated, Any, List
+from typing import Annotated, List
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.auth.permissions import ensure_workflow_permission
-from apps.gateway.api.deps import get_deployment_runtime_policy
+from apps.gateway.api.deps import (
+    get_deployment_runtime_policy,
+    require_json_content_type,
+)
 from apps.gateway.services.organization_context import resolve_active_organization_id
 from apps.gateway.utils.audit import audit
 from apps.gateway.services.deployment_service import DeploymentService
@@ -23,6 +26,7 @@ from apps.shared.domain.deployment_runtime_policy import (
 )
 from apps.shared.db.session import get_db
 from apps.shared.schemas.deployment import (
+    AuthenticatedDeploymentRunRequest,
     DeploymentCreate,
     DeploymentPreflightRequest,
     DeploymentPreflightResponse,
@@ -272,7 +276,10 @@ def get_authenticated_deployment_run_info(
     )
 
 
-@router.post("/{deployment_id}/run")
+@router.post(
+    "/{deployment_id}/run",
+    dependencies=[Depends(require_json_content_type)],
+)
 async def run_authenticated_deployment(
     deployment_id: str,
     request: Request,
@@ -280,7 +287,7 @@ async def run_authenticated_deployment(
         DeploymentRuntimePolicy,
         Depends(get_deployment_runtime_policy),
     ],
-    request_body: dict[str, Any] | None = Body(default=None),
+    request_body: AuthenticatedDeploymentRunRequest | None = Body(default=None),
     x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -298,15 +305,22 @@ async def run_authenticated_deployment(
     )
     ensure_workflow_permission(db, current_user, workflow_id, "execute")
 
-    request_body = request_body or {}
-    inputs = request_body.get("inputs", {})
+    request_body = request_body or AuthenticatedDeploymentRunRequest()
+    inputs = request_body.inputs
     if not isinstance(inputs, dict):
         raise HTTPException(status_code=400, detail="inputs must be an object")
+
+    client_conversation_id = (
+        str(request_body.conversation.client_id)
+        if request_body.conversation is not None
+        else None
+    )
 
     return await DeploymentService.run_authenticated_deployment(
         db=db,
         deployment_id=deployment_id,
         user_inputs=inputs,
+        client_conversation_id=client_conversation_id,
         current_user_id=current_user.id,
         runtime_policy=runtime_policy,
         request_id=_request_id_from_request(request),

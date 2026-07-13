@@ -4,13 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import AuthenticatedDeploymentRunPage from './page';
 import { workflowApi } from '@/app/features/workflow/api/workflowApi';
 
-const { routerPush } = vi.hoisted(() => ({
+const { routerPush, routerReplace } = vi.hoisted(() => ({
   routerPush: vi.fn(),
+  routerReplace: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
   useParams: () => ({ id: 'workflow-1' }),
-  useRouter: () => ({ push: routerPush }),
+  useRouter: () => ({ push: routerPush, replace: routerReplace }),
   useSearchParams: () => new URLSearchParams('deploymentId=deployment-1'),
 }));
 
@@ -31,7 +32,7 @@ describe('AuthenticatedDeploymentRunPage', () => {
       workflow_id: 'workflow-1',
       name: '사내 문서 질문 응답 봇',
       version: 1,
-      type: 'chatbot',
+      type: 'internal_chatbot',
       input_schema: {
         variables: [
           {
@@ -56,6 +57,7 @@ describe('AuthenticatedDeploymentRunPage', () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+    window.history.replaceState({}, '', '/');
   });
 
   it('safe run-info로 입력 폼을 만들고 인증 배포 실행 결과를 최종 응답으로 표시한다', async () => {
@@ -77,11 +79,12 @@ describe('AuthenticatedDeploymentRunPage', () => {
     await waitFor(() => {
       expect(mockedWorkflowApi.runDeployment).toHaveBeenCalledWith(
         'deployment-1',
-        expect.objectContaining({
+        {
           question: '개발팀 신입 연봉 기준을 알려줘',
-          memory_mode: true,
-          conversation_id: expect.any(String),
-        }),
+        },
+        expect.stringMatching(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+        ),
       );
     });
     expect(
@@ -99,6 +102,25 @@ describe('AuthenticatedDeploymentRunPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '대시보드로 돌아가기' }));
 
     expect(routerPush).toHaveBeenCalledWith('/dashboard');
+  });
+
+  it('비로그인 사용자는 원래 내부 실행 링크를 보존한 로그인 화면으로 이동한다', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/modules/workflow-1/run?deploymentId=deployment-1&tab=history#result',
+    );
+    mockedWorkflowApi.getDeploymentRunInfo.mockRejectedValueOnce({
+      response: { status: 401 },
+    });
+
+    render(<AuthenticatedDeploymentRunPage />);
+
+    await waitFor(() => {
+      expect(routerReplace).toHaveBeenCalledWith(
+        '/auth/login?next=%2Fmodules%2Fworkflow-1%2Frun%3FdeploymentId%3Ddeployment-1%26tab%3Dhistory%23result',
+      );
+    });
   });
 
   it('URL workflow와 run-info workflow가 다르면 실행을 막는다', async () => {
@@ -121,5 +143,29 @@ describe('AuthenticatedDeploymentRunPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '실행' }));
     expect(mockedWorkflowApi.runDeployment).not.toHaveBeenCalled();
+  });
+
+  it('문서화되지 않은 backend detail 원문을 실행 오류로 표시하지 않는다', async () => {
+    mockedWorkflowApi.runDeployment.mockRejectedValueOnce({
+      response: {
+        status: 400,
+        data: { detail: 'source_url=https://private.example/internal' },
+      },
+    });
+
+    render(<AuthenticatedDeploymentRunPage />);
+    await screen.findByRole('heading', { name: '사내 문서 질문 응답 봇' });
+
+    fireEvent.change(screen.getByLabelText('질문'), {
+      target: { value: '질문' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '실행' }));
+
+    expect(
+      await screen.findByText('실행 입력이 올바르지 않습니다.'),
+    ).toBeVisible();
+    expect(
+      screen.queryByText('source_url=https://private.example/internal'),
+    ).not.toBeInTheDocument();
   });
 });

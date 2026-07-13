@@ -99,6 +99,8 @@ def _run_migrations(database, config):
         env=config.subprocess_environment(database=database, root_dir=ROOT_DIR),
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=180,
         check=False,
     )

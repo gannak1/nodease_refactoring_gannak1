@@ -1,7 +1,7 @@
 # Deployment Test Cases
 
 Status: Draft
-Verified Against: `feature/mba-233 @ b4ff694f`
+Verified Against: `feature/mba-234 @ 647913b9`
 
 ## Unit Tests
 
@@ -13,6 +13,9 @@ Verified Against: `feature/mba-233 @ b4ff694f`
 - Anonymous-public preflight는 private Collection과 source-managed Collection/member를 fail-closed하고, public manual Collection은 통과시킨다. Missing/inactive/cross-org는 하나의 generic unavailable code로 처리한다.
 - Candidate budget 가능성은 bucket/boolean warning으로만 반환되고 active create를 차단하지 않는다. Client success step은 warning을 text status로 표시한다.
 - Runtime audience resolver는 `api`, `webapp`, `widget`, `chatbot`, `mcp`, `schedule`, `webhook`를 anonymous public-only로 판정한다.
+- `internal_chatbot`은 authenticated run/run-info surface에서만 허용하고 public info와 public app run surface에서는 fail-closed로 거부한다.
+- `internal_chatbot` preflight는 server-derived audience를 `authenticated_user`로 판정하며 private KB 참조만으로 활성 배포를 차단하지 않는다. 다만 repository를 조회해 direct KB와 Collection의 organization/lifecycle/sync/retrieval readiness를 검증하고 unavailable reference는 차단한다.
+- `internal_chatbot` authenticated run은 current user를 `execution_subject`로 Runtime에 전달하고, 챗봇 `memory_mode`와 deployment/user 기준 conversation namespace를 적용한다.
 - `workflow_node` direct public/API/webhook/authenticated run execution is rejected. Subworkflow audience resolver는 parent execution subject를 상속하고, subject가 없으면 anonymous public-only로 판정한다.
 - Workflow-node target resolver는 `workflowNode.data.appId`를 사용하고 `workflowId`로 target app을 찾지 않는다.
 - Workflow-node target app이 존재하고 `active_deployment_id`가 있어도 active deployment의 `type`이 `workflow_node`가 아니면 `workflow_node_target_unavailable`로 처리한다.
@@ -37,7 +40,7 @@ Verified Against: `feature/mba-233 @ b4ff694f`
 - Active deployment delete는 다른 deployment를 자동 active로 승격하지 않는다.
 - Public/API run endpoint, webhook endpoint, authenticated deployment run/run-info endpoint는 `workflow_node` active deployment를 직접 실행하거나 실행 정보를 노출하지 않는다.
 - Public info와 public/API slug run은 `App.active_deployment_id`가 가리키는 deployment의 `app_id`가 요청 app과 일치할 때만 노출하거나 실행한다. 다른 app 소유 deployment를 가리키는 stale/corrupt pointer는 safe 404로 닫고 task를 dispatch하지 않는다.
-- Public info 기본 policy는 `webapp`, `widget`, `chatbot`만 허용하고 API/MCP/schedule/webhook/workflow-node/unknown/empty type을 safe 404로 닫는다. 명시적으로 주입한 immutable test policy가 기본 policy를 mutation하지 않고 독립적으로 동작하는지 검증한다.
+- Public info 기본 policy는 `webapp`, `widget`, `chatbot`만 허용하고 API/`internal_chatbot`/MCP/schedule/webhook/workflow-node/unknown/empty type을 safe 404로 닫는다. 명시적으로 주입한 immutable test policy가 기본 policy를 mutation하지 않고 독립적으로 동작하는지 검증한다.
 - App status, clone, workflow-node deployment listing은 active deployment id뿐 아니라 deployment `app_id` ownership도 확인한다. Cross-app pointer로 다른 app의 graph/schema/status를 복제하거나 노출하지 않는다.
 - Webhook endpoint는 active deployment가 `type=webhook`이 아닌 경우 API/chatbot/schedule/workflow-node 등 모든 non-webhook deployment와 unknown/empty type을 safe 404로 거부하며, budget check와 background task 등록 전에 종료한다.
 - Gateway runtime endpoints, webhook endpoint, scheduler, Workflow Engine task는 같은 central runtime policy 결과를 사용하며 서로 다른 allowlist를 갖지 않는다.
@@ -67,6 +70,7 @@ Verified Against: `feature/mba-233 @ b4ff694f`
 
 - Deployment modal은 preflight preview가 blocked인 경우 safe reason과 required actions를 표시하고 hidden KB identity를 표시하지 않는다.
 - Inactive save 후 activation을 시도하면 같은 preflight blocker가 사용자에게 표시된다.
+- 공개/내부 챗봇 배포 결과는 각각 공개 링크와 인증 내부 링크만 표시하며, 내부 링크의 `401`은 safe `next`를 보존해 이메일/비밀번호 로그인 후 원래 링크로 복귀한다. 상세 assertion은 [chatbot-deployment test cases](../chatbot-deployment/test_cases.md)를 따른다.
 - Disposable PostgreSQL에 연결한 dispatcher 두 개가 같은 occurrence를 동시에 처리해도 claim은 하나이고 `next_run_at`은 한 번만 전진한다.
 - Duplicate Celery task를 Worker 두 개가 받아도 stable workflow run identity 하나와 engine admission 한 번만 발생한다.
 - Disposable pgvector PostgreSQL CI는 실제 Alembic head에서 두 dispatcher session과 두 Worker admission session을 동시에 실행해 각각 winner가 하나임을 필수 검증한다. Opt-in skip만 존재하고 CI에서 실행되지 않는 상태는 완료 증거로 인정하지 않는다.

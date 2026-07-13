@@ -86,6 +86,12 @@ export function useDeployment({
     setShowDeployDropdown(false);
   }, []);
 
+  const handlePublishAsInternalChatbot = useCallback(() => {
+    setDeploymentType('internal_chatbot');
+    setShowDeployFlowModal(true);
+    setShowDeployDropdown(false);
+  }, []);
+
   const handlePublishAsWorkflowNode = useCallback(() => {
     setDeploymentType('workflow_node');
     setShowDeployFlowModal(true);
@@ -158,6 +164,7 @@ export function useDeployment({
             // 공개 챗봇 링크는 무인증 public-only RAG 경계를 사용한다.
             result.webAppUrl = `${window.location.origin}/embed/chat/${response.url_slug}`;
           }
+        } else if (deploymentType === 'internal_chatbot') {
           if (activeWorkflow.id) {
             result.internalRunUrl = `${window.location.origin}/modules/${activeWorkflow.id}/run?deploymentId=${response.id}`;
           }
@@ -200,6 +207,7 @@ export function useDeployment({
     handlePublishAsWebApp,
     handlePublishAsWidget,
     handlePublishAsChatbot,
+    handlePublishAsInternalChatbot,
     handlePublishAsWorkflowNode,
     handlePublishAsSchedule,
     handlePublishAsWebhook,

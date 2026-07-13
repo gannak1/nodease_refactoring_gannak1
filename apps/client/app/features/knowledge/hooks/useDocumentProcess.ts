@@ -1,6 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import axios from 'axios';
 import {
   knowledgeApi,
   DocumentPreviewRequest,
@@ -13,6 +12,8 @@ import { DocumentResponse } from '@/app/features/knowledge/types/Knowledge';
 interface UseDocumentProcessProps {
   kbId: string;
   documentId: string;
+  requestScope?: string;
+  isRequestScopeCurrent?: (scope: string) => boolean;
   document: DocumentResponse | null;
   setStatus: (status: string) => void;
   setProgress: (progress: number) => void;
@@ -44,6 +45,8 @@ interface UseDocumentProcessProps {
 export function useDocumentProcess({
   kbId,
   documentId,
+  requestScope: requestScopeOverride,
+  isRequestScopeCurrent,
   document,
   setStatus,
   setProgress,
@@ -69,6 +72,21 @@ export function useDocumentProcess({
     null,
   );
   const [previewSegments, setPreviewSegments] = useState<DocumentSegment[]>([]);
+  const requestScope = requestScopeOverride ?? `${kbId}:${documentId}`;
+  const requestScopeRef = useRef(requestScope);
+  requestScopeRef.current = requestScope;
+  const operationScopeIsCurrent = (operationScope: string) =>
+    requestScopeRef.current === operationScope &&
+    (isRequestScopeCurrent?.(operationScope) ?? true);
+
+  useEffect(() => {
+    setAnalyzingAction(null);
+    setIsPreviewLoading(false);
+    setShowCostConfirm(false);
+    setAnalyzeResult(null);
+    setPendingAction(null);
+    setPreviewSegments([]);
+  }, [requestScope]);
 
   // 공통 Request Data 생성 함수
   const createRequestData = (
@@ -144,11 +162,14 @@ export function useDocumentProcess({
 
   // 저장 및 처리 (Save)
   const executeSave = async (strategy: 'general' | 'llamaparse') => {
+    const operationScope = requestScope;
+    if (!operationScopeIsCurrent(operationScope)) return;
     if (!document) return;
     if (!validateRequest()) return;
     try {
       const requestData = createRequestData(strategy);
       await knowledgeApi.processDocument(kbId, document.id, requestData);
+      if (!operationScopeIsCurrent(operationScope)) return;
 
       setStatus('indexing');
       setProgress(0);
@@ -164,17 +185,17 @@ export function useDocumentProcess({
       } else {
         toast.success('데이터 처리를 시작합니다.');
       }
-    } catch (error: unknown) {
-      console.error('[Debug] Save failed:', error);
-      const errorMessage = axios.isAxiosError(error)
-        ? error.response?.data?.detail || '저장에 실패했습니다.'
-        : '저장에 실패했습니다.';
-      toast.error(errorMessage);
+    } catch {
+      if (operationScopeIsCurrent(operationScope)) {
+        toast.error('저장에 실패했습니다.');
+      }
     }
   };
 
   // 3. 미리보기 (Preview)
   const executePreview = async (strategy: 'general' | 'llamaparse') => {
+    const operationScope = requestScope;
+    if (!operationScopeIsCurrent(operationScope)) return;
     if (!kbId || !documentId) return;
     if (!validateRequest()) return;
     setIsPreviewLoading(true);
@@ -186,27 +207,31 @@ export function useDocumentProcess({
         documentId,
         requestData,
       );
+      if (!operationScopeIsCurrent(operationScope)) return;
 
       // 서버에서 필터링된 결과를 그대로 사용 (클라이언트 필터링 로직 제거)
       setPreviewSegments(response.segments);
       toast.success(`청킹 미리보기 완료 (${response.segments.length}개 청크)`);
-    } catch (error: unknown) {
-      console.error(error);
-      const errorMessage = axios.isAxiosError(error)
-        ? error.response?.data?.detail || '미리보기 생성 실패'
-        : '미리보기 생성 실패';
-      toast.error(errorMessage);
+    } catch {
+      if (operationScopeIsCurrent(operationScope)) {
+        toast.error('미리보기 생성 실패');
+      }
     } finally {
-      setIsPreviewLoading(false);
+      if (operationScopeIsCurrent(operationScope)) {
+        setIsPreviewLoading(false);
+      }
     }
   };
 
   // 비용 승인 핸들러
   const handleAnalyzeAndProceed = async (action: 'preview' | 'save') => {
+    const operationScope = requestScope;
+    if (!operationScopeIsCurrent(operationScope)) return;
     if (!validateRequest()) return;
     setAnalyzingAction(action);
     try {
       const result = await knowledgeApi.analyzeDocument(documentId);
+      if (!operationScopeIsCurrent(operationScope)) return;
       setAnalyzeResult(result);
 
       if (result.is_cached) {
@@ -216,28 +241,36 @@ export function useDocumentProcess({
       }
       setPendingAction(action);
       setShowCostConfirm(true);
-    } catch (error) {
-      console.error(error);
-      toast.error('문서 분석에 실패했습니다.');
+    } catch {
+      if (operationScopeIsCurrent(operationScope)) {
+        toast.error('문서 분석에 실패했습니다.');
+      }
     } finally {
-      setAnalyzingAction(null);
+      if (operationScopeIsCurrent(operationScope)) {
+        setAnalyzingAction(null);
+      }
     }
   };
 
   // 5. 비용 승인 확인
   const handleConfirmCost = async () => {
+    const operationScope = requestScope;
+    if (!operationScopeIsCurrent(operationScope)) return;
     setShowCostConfirm(false);
     if (!validateRequest()) return;
 
     // waiting_for_approval 상태에서 재개하는 경우
     if (document?.status === 'waiting_for_approval') {
       try {
-        setStatus('indexing');
         await knowledgeApi.confirmDocumentParsing(documentId, 'llamaparse');
+        if (!operationScopeIsCurrent(operationScope)) return;
+        setStatus('indexing');
+        setProgress(0);
         toast.success('처리를 재개합니다.');
-      } catch (e) {
-        console.error(e);
-        toast.error('처리 재개 실패');
+      } catch {
+        if (operationScopeIsCurrent(operationScope)) {
+          toast.error('처리 재개 실패');
+        }
       }
       return;
     }

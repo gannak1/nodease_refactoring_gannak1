@@ -76,6 +76,7 @@ def _run_authenticated(
     user_inputs,
     monkeypatch,
     async_result_cls=None,
+    client_conversation_id=None,
 ):
     from apps.gateway.services import deployment_service as deployment_module
 
@@ -91,6 +92,7 @@ def _run_authenticated(
             db=db,
             deployment_id=deployment_id,
             user_inputs=user_inputs,
+            client_conversation_id=client_conversation_id,
             current_user_id=user_id,
             runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
         )
@@ -300,11 +302,19 @@ def test_api_slug_run_rejects_non_api_deployment_types(monkeypatch, deployment_t
     assert exc_info.value.detail == "Deployment not found."
 
 
-def test_authenticated_run_uses_current_user_execution_subject(monkeypatch):
+@pytest.mark.parametrize(
+    "deployment_type",
+    [DeploymentType.CHATBOT, DeploymentType.INTERNAL_CHATBOT],
+)
+def test_authenticated_run_uses_current_user_execution_subject(
+    monkeypatch,
+    deployment_type,
+):
     from apps.gateway.services import deployment_service as deployment_module
 
-    app_row, deployment_row = _deployed_app(DeploymentType.CHATBOT)
+    app_row, deployment_row = _deployed_app(deployment_type)
     current_user_id = uuid4()
+    client_conversation_id = str(uuid4())
     db = _Db(rows=[app_row, deployment_row])
     budget_calls = []
     evaluated_surfaces = []
@@ -331,8 +341,9 @@ def test_authenticated_run_uses_current_user_execution_subject(monkeypatch):
         db,
         deployment_row.id,
         current_user_id,
-        {"question": "안녕", "conversation_id": "internal-conv"},
+        {"question": "안녕"},
         monkeypatch,
+        client_conversation_id=client_conversation_id,
     )
 
     ctx = _captured_context(celery)
@@ -344,8 +355,8 @@ def test_authenticated_run_uses_current_user_execution_subject(monkeypatch):
         "id": str(current_user_id),
     }
     assert ctx["memory_mode"] is True
-    assert ctx["conversation_id"].startswith("auth:")
-    assert "internal-conv" not in ctx["conversation_id"]
+    assert ctx["conversation_id"].startswith("auth:v1:")
+    assert client_conversation_id not in ctx["conversation_id"]
     assert sent_inputs == {"question": "안녕"}
     assert budget_calls == [
         {
@@ -358,6 +369,155 @@ def test_authenticated_run_uses_current_user_execution_subject(monkeypatch):
         (deployment_row.type, deployment_module.SURFACE_AUTHENTICATED_RUN)
     ]
     assert result["status"] == "success"
+
+
+def test_authenticated_conversation_control_preserves_declared_reserved_inputs(
+    monkeypatch,
+):
+    app_row, deployment_row = _deployed_app(DeploymentType.INTERNAL_CHATBOT)
+    deployment_row.input_schema = {
+        "variables": [
+            {"name": "conversation_id"},
+            {"name": "memory_mode"},
+        ]
+    }
+    db = _Db(rows=[app_row, deployment_row])
+    client_conversation_id = str(uuid4())
+
+    celery, _ = _run_authenticated(
+        db,
+        deployment_row.id,
+        uuid4(),
+        {
+            "conversation_id": "business-conversation-value",
+            "memory_mode": "business-memory-value",
+        },
+        monkeypatch,
+        client_conversation_id=client_conversation_id,
+    )
+
+    assert _captured_inputs(celery) == {
+        "conversation_id": "business-conversation-value",
+        "memory_mode": "business-memory-value",
+    }
+    context = _captured_context(celery)
+    assert context["memory_mode"] is True
+    assert context["conversation_id"].startswith("auth:v1:")
+    assert client_conversation_id not in context["conversation_id"]
+
+
+def test_authenticated_run_rejects_conflicting_conversation_controls(monkeypatch):
+    app_row, deployment_row = _deployed_app(DeploymentType.INTERNAL_CHATBOT)
+    db = _Db(rows=[app_row, deployment_row])
+
+    with pytest.raises(HTTPException) as exc_info:
+        _run_authenticated(
+            db,
+            deployment_row.id,
+            uuid4(),
+            {"question": "x", "conversation_id": "legacy-value"},
+            monkeypatch,
+            client_conversation_id=str(uuid4()),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Conflicting conversation controls"
+
+
+def test_authenticated_run_rejects_typed_conversation_for_non_chatbot(monkeypatch):
+    app_row, deployment_row = _deployed_app(DeploymentType.WEBAPP)
+    db = _Db(rows=[app_row, deployment_row])
+
+    with pytest.raises(HTTPException) as exc_info:
+        _run_authenticated(
+            db,
+            deployment_row.id,
+            uuid4(),
+            {"question": "x"},
+            monkeypatch,
+            client_conversation_id=str(uuid4()),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert (
+        exc_info.value.detail
+        == "Conversation control is only supported for chatbot deployments"
+    )
+
+
+@pytest.mark.parametrize(
+    "invalid_value",
+    [123, "", " " * 4, "x" * 256, "valid-prefix\ninvalid-suffix"],
+)
+def test_authenticated_legacy_conversation_control_is_bounded(
+    monkeypatch,
+    invalid_value,
+):
+    app_row, deployment_row = _deployed_app(DeploymentType.INTERNAL_CHATBOT)
+    db = _Db(rows=[app_row, deployment_row])
+
+    with pytest.raises(HTTPException) as exc_info:
+        _run_authenticated(
+            db,
+            deployment_row.id,
+            uuid4(),
+            {"question": "x", "conversation_id": invalid_value},
+            monkeypatch,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Invalid conversation control"
+
+
+def test_authenticated_declared_legacy_conversation_input_is_not_swallowed(
+    monkeypatch,
+):
+    app_row, deployment_row = _deployed_app(DeploymentType.INTERNAL_CHATBOT)
+    deployment_row.input_schema = {"variables": [{"name": "conversation_id"}]}
+    db = _Db(rows=[app_row, deployment_row])
+
+    celery, _ = _run_authenticated(
+        db,
+        deployment_row.id,
+        uuid4(),
+        {"conversation_id": "business-value"},
+        monkeypatch,
+    )
+
+    assert _captured_inputs(celery) == {"conversation_id": "business-value"}
+    assert _captured_context(celery)["conversation_id"] is None
+
+
+def test_authenticated_conversation_namespace_is_stable_and_isolated():
+    from apps.gateway.services.deployment_service import DeploymentService
+
+    deployment_id = uuid4()
+    subject_id = uuid4()
+    client_id = str(uuid4())
+
+    first = DeploymentService._authenticated_conversation_id(
+        deployment_id=deployment_id,
+        subject_id=subject_id,
+        client_conversation_id=client_id,
+    )
+
+    assert first == DeploymentService._authenticated_conversation_id(
+        deployment_id=deployment_id,
+        subject_id=subject_id,
+        client_conversation_id=client_id,
+    )
+    assert first != DeploymentService._authenticated_conversation_id(
+        deployment_id=uuid4(),
+        subject_id=subject_id,
+        client_conversation_id=client_id,
+    )
+    assert first != DeploymentService._authenticated_conversation_id(
+        deployment_id=deployment_id,
+        subject_id=uuid4(),
+        client_conversation_id=client_id,
+    )
+    assert first.startswith("auth:v1:")
+    assert client_id not in first
 
 
 def test_authenticated_run_rejects_inactive_deployment(monkeypatch):

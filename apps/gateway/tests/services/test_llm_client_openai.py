@@ -5,6 +5,7 @@ OpenAIClient 단위 테스트.
 - 토큰 카운트가 최소 1 이상으로 계산되는지 검증
 """
 
+from copy import deepcopy
 import pathlib
 import sys
 
@@ -57,6 +58,54 @@ async def test_openai_invoke_success(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_openai_chat_completions_keeps_generation_params(monkeypatch):
+    """Chat Completions 모델은 지원하는 생성 파라미터를 유지한다."""
+    requested = {}
+
+    class MockResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"choices": []}
+
+    class MockAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def post(self, url, **kwargs):
+            requested["url"] = url
+            requested["payload"] = kwargs["json"]
+            return MockResponse()
+
+    monkeypatch.setattr(
+        "apps.shared.services.llm_client.openai_client.httpx.AsyncClient",
+        lambda **_kwargs: MockAsyncClient(),
+    )
+
+    client = OpenAIClient(
+        model_id="gpt-4o",
+        credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
+    )
+    parameters = {
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "presence_penalty": 0.5,
+        "frequency_penalty": 0.5,
+        "stop": ["END"],
+    }
+
+    await client.invoke([{"role": "user", "content": "hi"}], **parameters)
+
+    assert requested["url"] == "https://api.openai.com/v1/chat/completions"
+    for parameter, value in parameters.items():
+        assert requested["payload"][parameter] == value
+
+
+@pytest.mark.asyncio
 async def test_openai_invoke_uses_responses_for_new_model_families(monkeypatch):
     """Responses 전용 모델군은 chat/completions를 거치지 않고 responses를 호출한다."""
     messages = [{"role": "user", "content": "hi"}]
@@ -96,12 +145,32 @@ async def test_openai_invoke_uses_responses_for_new_model_families(monkeypatch):
         credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
     )
 
-    resp = await client.invoke(messages, max_tokens=10)
+    parameters = {
+        "max_tokens": 10,
+        "top_p": 0.9,
+        "presence_penalty": 0.5,
+        "frequency_penalty": 0.5,
+        "stop": ["END"],
+        "text": {"verbosity": "low"},
+        "response_format": {"type": "json_object"},
+    }
+    original_parameters = deepcopy(parameters)
+    original_messages = deepcopy(messages)
+
+    resp = await client.invoke(messages, **parameters)
 
     assert requested_urls == ["https://api.openai.com/v1/responses"]
     assert requested_payloads[0]["max_output_tokens"] == 10
     assert "max_tokens" not in requested_payloads[0]
     assert "max_completion_tokens" not in requested_payloads[0]
+    for parameter in ("top_p", "presence_penalty", "frequency_penalty", "stop"):
+        assert parameter not in requested_payloads[0]
+    assert requested_payloads[0]["text"] == {
+        "verbosity": "low",
+        "format": {"type": "json_object"},
+    }
+    assert parameters == original_parameters
+    assert messages == original_messages
     assert resp["choices"][0]["message"]["content"] == "hello"
     assert resp["usage"]["prompt_tokens"] == 2
     assert resp["usage"]["completion_tokens"] == 3
@@ -426,6 +495,71 @@ def test_openai_invoke_sync_uses_responses_sync_client(monkeypatch):
     assert requested["timeout"] == 180
     assert resp["choices"][0]["message"]["content"] == "hello"
     assert resp["usage"]["total_tokens"] == 5
+
+
+def test_openai_invoke_sync_responses_strips_unsupported_generation_params(monkeypatch):
+    """GPT-5.5 Responses 요청은 지원하지 않는 기본 LLM 파라미터를 보내지 않는다."""
+    requested = {}
+    default_parameters = {
+        "temperature": 0.7,
+        "top_p": 1.0,
+        "max_tokens": 4096,
+        "presence_penalty": 0.0,
+        "frequency_penalty": 0.0,
+        "stop": [],
+        "text": {"verbosity": "low"},
+        "response_format": {"type": "json_object"},
+    }
+    original_parameters = deepcopy(default_parameters)
+    messages = [{"role": "user", "content": "hi"}]
+    original_messages = deepcopy(messages)
+
+    class MockResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "output_text": "hello",
+                "usage": {"input_tokens": 2, "output_tokens": 3},
+            }
+
+    class MockClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def post(self, _url, **kwargs):
+            requested["payload"] = kwargs["json"]
+            return MockResponse()
+
+    monkeypatch.setattr(
+        "apps.shared.services.llm_client.openai_client.httpx.Client",
+        MockClient,
+    )
+
+    client = OpenAIClient(
+        model_id="gpt-5.5",
+        credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
+    )
+
+    client.invoke_sync(messages, **default_parameters)
+
+    assert default_parameters == original_parameters
+    assert messages == original_messages
+    assert requested["payload"]["max_output_tokens"] == 4096
+    assert requested["payload"]["temperature"] == 1
+    assert requested["payload"]["text"] == {
+        "verbosity": "low",
+        "format": {"type": "json_object"},
+    }
+    for parameter in ("top_p", "presence_penalty", "frequency_penalty", "stop"):
+        assert parameter not in requested["payload"]
 
 
 def test_openai_responses_json_format_adds_json_word_to_input(monkeypatch):

@@ -39,6 +39,10 @@ import { DBConfig } from '@/app/features/knowledge/types/DB';
 import { connectorApi } from '@/app/features/knowledge/api/connectorApi';
 import { useGenericCredential } from '@/app/features/knowledge/hooks/useGenericCredential';
 import ColumnAutocomplete from '@/app/features/knowledge/components/document-settings/ColumnAutocomplete';
+import {
+  ACTIVE_ORGANIZATION_CHANGED_EVENT,
+  getStoredActiveOrganizationId,
+} from '@/lib/activeOrganization';
 
 // UUID prefix가 있으면 제거, API URL이면 도메인만 추출
 const getDisplayFilename = (filename: string): string => {
@@ -110,9 +114,15 @@ export default function DocumentSettingsPage() {
   const [isEditConfigReady, setIsEditConfigReady] = useState(false);
   const [permissionScope, setPermissionScope] = useState<string | null>(null);
   const [editConfigScope, setEditConfigScope] = useState<string | null>(null);
+  const [activeOrganizationId, setActiveOrganizationId] = useState<
+    string | null
+  >(() => getStoredActiveOrganizationId());
   const fetchGeneration = useRef(0);
+  const activeOrganizationRef = useRef<string | null>(activeOrganizationId);
   const activeProcessingScope = useRef<string | null>(null);
-  const currentDocumentScope = `${kbId}:${documentId}`;
+  const currentDocumentScope = `${activeOrganizationId ?? 'no-organization'}:${kbId}:${documentId}`;
+  const documentScopeRef = useRef(currentDocumentScope);
+  documentScopeRef.current = currentDocumentScope;
   const canEditCurrentDocument =
     canEditDocument && permissionScope === currentDocumentScope;
   const isCurrentEditConfigReady =
@@ -144,9 +154,34 @@ export default function DocumentSettingsPage() {
   const [rangeEnd, setRangeEnd] = useState<string>('');
   const [keywordFilter, setKeywordFilter] = useState<string>('');
 
+  useEffect(() => {
+    const syncActiveOrganization = () => {
+      const nextOrganizationId = getStoredActiveOrganizationId();
+      documentScopeRef.current = `${nextOrganizationId ?? 'no-organization'}:${kbId}:${documentId}`;
+      if (activeOrganizationRef.current === nextOrganizationId) return;
+      activeOrganizationRef.current = nextOrganizationId;
+      fetchGeneration.current += 1;
+      setActiveOrganizationId(nextOrganizationId);
+    };
+
+    syncActiveOrganization();
+    window.addEventListener(
+      ACTIVE_ORGANIZATION_CHANGED_EVENT,
+      syncActiveOrganization,
+    );
+    return () => {
+      window.removeEventListener(
+        ACTIVE_ORGANIZATION_CHANGED_EVENT,
+        syncActiveOrganization,
+      );
+    };
+  }, [kbId, documentId]);
+
   // SSE 연결 (Indexing 상태일 때)
   useEffect(() => {
     if (!isActiveProcessingStatus(status) || !documentId) return;
+    const streamScope = currentDocumentScope;
+    let active = true;
     let url: string;
     try {
       url = knowledgeApi.getProgressUrl(documentId);
@@ -156,13 +191,14 @@ export default function DocumentSettingsPage() {
     }
     const eventSource = new EventSource(url, { withCredentials: true });
     eventSource.onmessage = (event) => {
+      if (!active || documentScopeRef.current !== streamScope) return;
       try {
         const data = JSON.parse(event.data);
         if (data.error && data.status !== 'completed') {
           eventSource.close();
           setProgress(0);
           setStatus('failed');
-          toast.error(data.error);
+          toast.error('문서 처리 중 오류가 발생했습니다.');
           return;
         }
         setProgress(data.progress);
@@ -176,30 +212,31 @@ export default function DocumentSettingsPage() {
           eventSource.close();
           setProgress(0);
           setStatus('failed');
-          toast.error(
-            data.error || data.message || 'Processing failed.',
-          );
+          toast.error('문서 처리 중 오류가 발생했습니다.');
         }
-      } catch (err) {
-        console.error('SSE Parse Error:', err);
+      } catch {
+        // 잘못된 진행 응답은 현재 문서 상태에 반영하지 않는다.
       }
     };
-    eventSource.onerror = (err) => {
+    eventSource.onerror = () => {
+      if (!active || documentScopeRef.current !== streamScope) return;
       if (eventSource.readyState === EventSource.CLOSED) return;
-      console.error('SSE Error:', err);
       eventSource.close();
     };
     return () => {
+      active = false;
       eventSource.close();
     };
-  }, [status, documentId]);
+  }, [currentDocumentScope, documentId, status]);
   // 초기 데이터 로드
   useEffect(() => {
     const generation = ++fetchGeneration.current;
-    const requestScope = `${kbId}:${documentId}`;
+    const requestScope = currentDocumentScope;
     let cancelled = false;
     const isStale = () =>
-      cancelled || fetchGeneration.current !== generation;
+      cancelled ||
+      fetchGeneration.current !== generation ||
+      documentScopeRef.current !== requestScope;
 
     setIsLoading(true);
     setDocument(null);
@@ -329,7 +366,6 @@ export default function DocumentSettingsPage() {
               setEditConfigScope(requestScope);
             } catch {
               if (isStale()) return;
-              console.warn('Document edit configuration request failed.');
               toast.warning(
                 '기존 문서 설정을 불러오지 못해 수정 작업을 차단했습니다.',
               );
@@ -341,7 +377,6 @@ export default function DocumentSettingsPage() {
         }
       } catch {
         if (isStale()) return;
-        console.warn('Document detail request failed.');
         toast.error('문서 정보를 불러오는데 실패했습니다.');
       } finally {
         if (!isStale()) {
@@ -355,7 +390,7 @@ export default function DocumentSettingsPage() {
     return () => {
       cancelled = true;
     };
-  }, [kbId, documentId, router]);
+  }, [kbId, documentId, router, currentDocumentScope]);
   // useDocumentProcess Hook 사용
   const {
     isAnalyzing,
@@ -373,6 +408,8 @@ export default function DocumentSettingsPage() {
   } = useDocumentProcess({
     kbId,
     documentId,
+    requestScope: currentDocumentScope,
+    isRequestScopeCurrent: (scope) => documentScopeRef.current === scope,
     document,
     setStatus,
     setProgress,
@@ -401,6 +438,8 @@ export default function DocumentSettingsPage() {
     keywordFilter,
   });
 
+  const handleStartProcessing = () => handleSaveClick();
+
   // DB 연결 저장 핸들러
   const handleConnectionRequest = async (config: DBConfig) => {
     if (!canEditCurrentDocument || !isCurrentEditConfigReady) {
@@ -419,7 +458,6 @@ export default function DocumentSettingsPage() {
         return false;
       }
     } catch {
-      console.warn('Database connection update failed.');
       toast.error('DB 연결 정보 업데이트에 실패했습니다.');
       return false;
     }
@@ -442,7 +480,6 @@ export default function DocumentSettingsPage() {
       setIsEditingConnection(true);
       setFormKey((prev) => prev + 1);
     } catch {
-      console.warn('Database connection detail request failed.');
       toast.error('연결 정보를 불러오는데 실패했습니다.');
     } finally {
       setIsLoadingDetails(false);
@@ -451,14 +488,14 @@ export default function DocumentSettingsPage() {
 
   // 상태 폴링
   useEffect(() => {
-    let intervalId: NodeJS.Timeout;
+    let intervalId: NodeJS.Timeout | undefined;
+    let cancelled = false;
+    const pollingScope = currentDocumentScope;
     if (isActiveProcessingStatus(status) || status === 'waiting_for_approval') {
       intervalId = setInterval(async () => {
         try {
-          const doc = await knowledgeApi.getDocument(
-            params.id as string,
-            params.documentId as string,
-          );
+          const doc = await knowledgeApi.getDocument(kbId, documentId);
+          if (cancelled || documentScopeRef.current !== pollingScope) return;
           setStatus(doc.status);
 
           if (doc.status === 'waiting_for_approval') {
@@ -495,16 +532,20 @@ export default function DocumentSettingsPage() {
               setProgress(doc.meta_info.processing_progress);
             }
           }
-        } catch (e) {
-          console.error('Polling failed', e);
+        } catch {
+          // 다음 polling tick 또는 SSE 재연결이 상태 확인을 재시도한다.
         }
       }, 2000);
     }
-    return () => clearInterval(intervalId);
+    return () => {
+      cancelled = true;
+      if (intervalId) clearInterval(intervalId);
+    };
   }, [
     status,
-    params.id,
-    params.documentId,
+    kbId,
+    documentId,
+    currentDocumentScope,
     setAnalyzeResult,
     setPendingAction,
     setShowCostConfirm,
@@ -522,12 +563,22 @@ export default function DocumentSettingsPage() {
       status === 'completed' &&
       progress >= 100
     ) {
+      const redirectScope = currentDocumentScope;
       const timer = setTimeout(() => {
-        router.push(`/dashboard/knowledge/${kbId}`);
+        if (documentScopeRef.current === redirectScope) {
+          router.push(`/dashboard/knowledge/${kbId}`);
+        }
       }, 3000);
       return () => clearTimeout(timer);
     }
-  }, [status, progress, router, kbId, permissionScope, currentDocumentScope]);
+  }, [
+    status,
+    progress,
+    router,
+    kbId,
+    permissionScope,
+    currentDocumentScope,
+  ]);
   if (isLoading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
@@ -783,7 +834,7 @@ export default function DocumentSettingsPage() {
             )}
 
             <button
-              onClick={handleSaveClick}
+              onClick={handleStartProcessing}
               disabled={
                 isEditActionDisabled ||
                 isAnalyzing ||

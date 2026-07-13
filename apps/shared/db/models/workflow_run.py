@@ -15,6 +15,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    text,
 )
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import JSONB
@@ -270,13 +271,21 @@ class TraceRedactionPolicy(Base):
     """전역, 조직, 앱 범위별 추적 페이로드 마스킹 정책."""
 
     __tablename__ = "trace_redaction_policies"
+    __table_args__ = (
+        Index(
+            "ix_trace_redaction_policies_scope",
+            "scope_type",
+            "scope_id",
+            "is_active",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False
     )
-    scope_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    scope_type: Mapped[str] = mapped_column(String(32), nullable=False)
     scope_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        PGUUID(as_uuid=True), nullable=True, index=True
+        PGUUID(as_uuid=True), nullable=True
     )
     redaction_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     raw_payload_storage_enabled: Mapped[bool] = mapped_column(
@@ -319,13 +328,21 @@ class TraceRetentionPolicy(Base):
     """추적 메타데이터와 페이로드 보관 정책."""
 
     __tablename__ = "trace_retention_policies"
+    __table_args__ = (
+        Index(
+            "ix_trace_retention_policies_scope",
+            "scope_type",
+            "scope_id",
+            "is_active",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False
     )
-    scope_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    scope_type: Mapped[str] = mapped_column(String(32), nullable=False)
     scope_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        PGUUID(as_uuid=True), nullable=True, index=True
+        PGUUID(as_uuid=True), nullable=True
     )
     metadata_retention_days: Mapped[int] = mapped_column(
         Integer, nullable=False, default=90
@@ -366,13 +383,21 @@ class TraceVisibilityPolicy(Base):
     """앱 소유자와 시스템 관리자를 위한 추적 표시 정책."""
 
     __tablename__ = "trace_visibility_policies"
+    __table_args__ = (
+        Index(
+            "ix_trace_visibility_policies_scope",
+            "scope_type",
+            "scope_id",
+            "is_active",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False
     )
-    scope_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    scope_type: Mapped[str] = mapped_column(String(32), nullable=False)
     scope_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        PGUUID(as_uuid=True), nullable=True, index=True
+        PGUUID(as_uuid=True), nullable=True
     )
     owner_trace_access_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True
@@ -436,6 +461,11 @@ class TracePayload(Base):
             "payload_kind",
             "created_at",
             "retention_expires_at",
+        ),
+        Index(
+            "ix_trace_payloads_raw_retention",
+            "created_at",
+            postgresql_where=text("raw_payload_encrypted IS NOT NULL"),
         ),
     )
 

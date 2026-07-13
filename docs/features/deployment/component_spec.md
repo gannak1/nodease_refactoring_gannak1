@@ -1,12 +1,13 @@
 # Deployment Component Spec
 
 Status: Draft
-Verified Against: `feature/mba-233 @ 90da2f84`
+Verified Against: `feature/mba-234 @ 647913b9`
 
 ## Screens
 
 - Deployment flow modal or equivalent deployment settings surface.
 - Existing App/workflow deployment list and activation controls.
+- Workflow editor의 게시하기 메뉴와 공개/내부 챗봇 배포 성공 화면.
 
 ## Components
 
@@ -16,8 +17,10 @@ Verified Against: `feature/mba-233 @ 90da2f84`
 - Collection preflight copy may show affected Collection count bucket and candidate-budget-limited boolean. It never renders selected Collection/child identifiers, labels, membership, or exact hidden counts.
 - Existing activation toggle controls surface `deployment.preflight.blocked` responses without showing hidden KB identity.
 - Active delete controls do not need preflight display in MBA-176 because delete no longer auto-promotes another deployment.
+- 게시하기 메뉴는 공개 `chatbot`과 `internal_chatbot`을 별도 항목으로 제공한다.
+- `SuccessStep`은 공개 챗봇에는 `/embed/chat/{url_slug}` 링크만, 내부 챗봇에는 `/modules/{workflow_id}/run?deploymentId={deployment_id}` 인증 링크만 표시한다. 내부 챗봇 결과에는 public REST API secret/test panel을 표시하지 않는다.
 - Target Conversation Memory preflight snapshot includes immutable deployment version/snapshot hash, conversation mapping and node Memory policy version, contract/storage generation and required Worker capability. Runtime revalidates the same binding and never resolves an existing session through the latest active deployment pointer.
-- Public Chatbot and future authenticated internal Chatbot use separate runtime policy/composition dependencies. They may share a visual Client component, but not auth/CORS/Origin, access permission, preflight audience or session namespace.
+- Public Chatbot and authenticated internal Chatbot use separate runtime policy/composition dependencies. They may share a visual Client component, but not auth/CORS/Origin, access permission, preflight audience or session namespace.
 - Exact public Origin/embed/CSP allowlist is a deployment-owned versioned policy adapter. Memory or Client code must not read environment fallback to widen it.
 
 ### Internal Schedule Dispatch Components
@@ -67,6 +70,7 @@ Verified Against: `feature/mba-233 @ 90da2f84`
 - `is_active=false` 저장은 blocked preview가 있더라도 허용할 수 있지만, 현재 deployment modal은 active create만 제공한다.
 - Active create 또는 activation toggle에서 `409 deployment.preflight.blocked`가 오면 error/blocked message로 safe reason과 required actions를 보여준다.
 - Workflow-node 대상은 node 설정의 target app 기준으로 검사된다는 점을 내부 상태에서 유지한다. UI copy는 workflow id나 hidden target identity를 노출하지 않는다.
+- 내부 실행 페이지가 `401`을 받으면 현재 path/query/hash를 safe `next`로 보존해 로그인 화면으로 이동한다. 이메일/비밀번호 로그인만 same-origin `next`로 복귀하며 unsafe URL은 `/dashboard`로 닫는다.
 
 ## Accessibility
 
