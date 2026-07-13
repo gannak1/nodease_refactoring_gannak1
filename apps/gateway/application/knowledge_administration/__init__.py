@@ -1,2 +1,1 @@
 """Knowledge administration application boundary."""
-

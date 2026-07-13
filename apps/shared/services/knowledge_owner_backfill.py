@@ -80,7 +80,6 @@ def backfill_knowledge_owner_manager_permissions(
         .order_by(KnowledgeBase.id.asc())
         .all()
     )
-
     counts = {
         "total": len(rows),
         "eligible": 0,
@@ -166,4 +165,3 @@ def _record_backfill_audit(
             },
         )
     )
-
