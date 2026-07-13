@@ -589,7 +589,9 @@ def test_get_agent_answer_options_returns_safe_credential_option_schema(monkeypa
     assert "updated_at" not in option["credential"]
 
 
-def test_agent_builder_model_options_use_provider_and_performance_order(monkeypatch):
+def test_agent_builder_model_options_prefer_openai_gpt_5_5_then_provider_order(
+    monkeypatch,
+):
     user_id = uuid.uuid4()
     organization_id = uuid.uuid4()
 
@@ -628,6 +630,12 @@ def test_agent_builder_model_options_use_provider_and_performance_order(monkeypa
         option("google", "gemini-3.5-flash", "Gemini 3.5 Flash", "google"),
         option("anthropic", "claude-sonnet-5", "Claude Sonnet 5", "anthropic"),
         option("openai", "gpt-5.5-pro", "GPT-5.5 Pro", "openai"),
+        option(
+            "openai",
+            "models/gpt-5.5",
+            "GPT-5.5 Prefixed Alias",
+            "openai",
+        ),
         option("openai", "o4-mini", "o4 Mini", "openai"),
     ]
     monkeypatch.setattr(
@@ -669,7 +677,13 @@ def test_agent_builder_model_options_use_provider_and_performance_order(monkeypa
     ]
     assert [
         item.model.model_id_for_api_call for item in groups[0].options
-    ] == ["gpt-5.5-pro", "gpt-5.5", "gpt-5.4-mini", "o4-mini"]
+    ] == [
+        "gpt-5.5",
+        "gpt-5.5-pro",
+        "models/gpt-5.5",
+        "gpt-5.4-mini",
+        "o4-mini",
+    ]
     assert [
         item.model.model_id_for_api_call for item in groups[1].options
     ] == ["claude-sonnet-5", "claude-opus-4-8"]
@@ -679,8 +693,18 @@ def test_agent_builder_model_options_use_provider_and_performance_order(monkeypa
     assert groups[3].options == []
     assert groups[3].unavailable_reason == "chat_model_not_supported"
 
+    fallback_rows = [
+        row for row in rows if row[0].model_id_for_api_call != "gpt-5.5"
+    ]
+    fallback_groups = LLMService.get_agent_builder_model_option_groups(
+        FakeDb(fallback_rows), user_id, organization_id
+    )
+    assert [
+        item.model.model_id_for_api_call for item in fallback_groups[0].options
+    ] == ["gpt-5.5-pro", "models/gpt-5.5", "gpt-5.4-mini", "o4-mini"]
 
-def test_agent_builder_draft_model_recommendation_prefers_latest_mini_then_low_tier(
+
+def test_agent_builder_draft_model_recommendation_prefers_openai_gpt_5_5(
     monkeypatch,
 ):
     user_id = uuid.uuid4()
@@ -722,7 +746,7 @@ def test_agent_builder_draft_model_recommendation_prefers_latest_mini_then_low_t
     )
 
     assert recommendation is not None
-    assert recommendation.model.model_id_for_api_call == "gpt-5.5-mini"
+    assert recommendation.model.model_id_for_api_call == "gpt-5.5"
 
 
 def test_agent_builder_draft_model_recommendation_uses_nano_when_mini_is_absent(
@@ -744,7 +768,7 @@ def test_agent_builder_draft_model_recommendation_uses_nano_when_mini_is_absent(
             ),
             relation_priority=0,
         )
-        for model_id in ("gpt-5.5-pro", "gpt-5.5", "gpt-5.5-nano")
+        for model_id in ("gpt-5.5-pro", "gpt-5.5-nano")
     ]
     monkeypatch.setattr(
         LLMService,
@@ -760,6 +784,50 @@ def test_agent_builder_draft_model_recommendation_uses_nano_when_mini_is_absent(
 
     assert recommendation is not None
     assert recommendation.model.model_id_for_api_call == "gpt-5.5-nano"
+
+
+def test_agent_builder_draft_model_recommendation_rejects_preferred_aliases(
+    monkeypatch,
+):
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+
+    def option(provider_name, model_id):
+        return SimpleNamespace(
+            provider_name=provider_name,
+            model=SimpleNamespace(
+                id=uuid.uuid4(),
+                model_id_for_api_call=model_id,
+                name=model_id,
+            ),
+            credential=SimpleNamespace(
+                id=uuid.uuid4(),
+                credential_name=f"{provider_name}-credential",
+            ),
+            relation_priority=0,
+        )
+
+    options = [
+        option("anthropic", "gpt-5.5"),
+        option("openai", "models/gpt-5.5"),
+        option("openai", "gpt-5.5-2026-07-01"),
+        option("openai", "gpt-5.5-mini"),
+    ]
+    monkeypatch.setattr(
+        LLMService,
+        "get_agent_answer_options",
+        lambda *args, **kwargs: options,
+    )
+
+    recommendation = LLMService.get_agent_builder_draft_model_recommendation(
+        object(),
+        user_id,
+        organization_id,
+    )
+
+    assert recommendation is not None
+    assert recommendation.provider_name == "openai"
+    assert recommendation.model.model_id_for_api_call == "gpt-5.5-mini"
 
 
 def test_agent_builder_draft_model_recommendation_returns_none_without_authorized_option(

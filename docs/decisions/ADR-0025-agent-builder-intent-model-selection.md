@@ -15,6 +15,7 @@ Agent Builder 내부 intent planner는 active organization에서 사용할 수 �
 
 - 선택 후보는 active organization의 valid credential, active chat model, verified credential-model relation, 사용자 `use` 권한을 모두 통과한 조합만 포함한다.
 - Agent Builder header는 provider를 `openai`, `anthropic`, `google`, `llamaparse` 순서로 표시한다.
+- MBA-240의 한정된 기본값 변경으로, 권한 확인 후보에 provider가 OpenAI이고 API model ID가 정확히 `gpt-5.5`인 조합이 있으면 해당 provider의 첫 option으로 표시한다. 해당 후보가 없으면 아래의 기존 세대/tier 정렬을 적용한다. Header와 생성 LLM node의 전체 fallback 정책 통합은 MBA-256에서 수행한다.
 - 각 provider 안에서는 모델 id의 provider별 세대 표기를 기준으로 최신 세대를 먼저 표시하고, 같은 세대에서는 성능 tier가 높은 모델을 먼저 표시한다. 이후 relation priority와 안전한 표시 이름으로 순서를 안정화한다.
 - Provider별 세대/tier parser는 작은 allowlist 규칙으로 관리한다. 알 수 없는 이름은 임의 성능을 추론하지 않고 안정적인 후순위로 둔다.
 - `llamaparse`는 chat model provider가 아니므로 group은 표시하되 선택 불가 상태와 `chat_model_not_supported` reason을 반환한다.
@@ -27,6 +28,7 @@ Agent Builder 내부 intent planner는 active organization에서 사용할 수 �
 생성 workflow LLM node의 기본 model 추천은 intent planner 선택과 별도 정책으로 처리한다.
 
 - 추천 후보는 intent planner와 동일하게 active organization의 valid credential, active chat model, verified credential-model relation, 사용자 `use` 권한을 모두 통과한 조합으로 제한한다.
+- MBA-240의 한정된 기본값 변경으로, 권한 확인 후보에 provider가 OpenAI이고 API model ID가 정확히 `gpt-5.5`인 조합이 있으면 generated LLM node에 먼저 추천한다. 해당 후보가 없으면 아래의 기존 provider/세대/tier 추천 순서를 적용한다.
 - Provider는 `openai`, `anthropic`, `google` 순서로 평가한다. 각 provider에서는 최신 세대를 우선하고, 같은 세대에 `mini`가 있으면 먼저 추천한다. `mini`가 없으면 `nano` 또는 provider별 낮은 성능 tier부터 평가한 뒤 높은 tier로 진행한다.
 - 추천이 있으면 generated `llmNode.model_id`에 safe model id만 저장한다. 추천에 사용된 credential id, credential 원문, provider config는 workflow graph, session, draft metadata, audit에 저장하지 않는다.
 - 추천 후보가 없으면 draft 생성을 실패시키지 않고 `model_id`를 비운 `configuration_state=unresolved` node와 `model_id` 설정 필요 warning을 만든다. 실제 실행 전 사용자가 model을 선택해야 한다.
