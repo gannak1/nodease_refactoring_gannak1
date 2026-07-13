@@ -68,7 +68,7 @@ const createNoteNode = (id: string, x = 0, y = 0): NoteNode => ({
   id,
   type: 'note',
   position: { x, y },
-  data: { content: '' },
+  data: { title: id, content: '' },
 });
 
 const edge = (id: string, source: string, target: string): Edge => ({

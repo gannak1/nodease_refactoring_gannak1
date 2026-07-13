@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CostOptimizerEntryAction } from '../../components/costOptimizer/CostOptimizerEntryAction';
+import type { WorkflowPermissionResponse } from '../../types/Api';
 
 const pushMock = vi.hoisted(() => vi.fn());
 const getAvailabilityMock = vi.hoisted(() => vi.fn());
@@ -17,11 +18,16 @@ vi.mock('../../api/workflowApi', () => ({
   },
 }));
 
-const writableAccess = {
+const writableAccess: WorkflowPermissionResponse = {
+  workflow_id: 'workflow-1',
+  organization_id: 'org-1',
+  auth_state: 'builder',
   can_read: true,
   can_execute: true,
   can_write: true,
+  can_deploy: false,
   can_manage: false,
+  sources: [],
 };
 
 describe('CostOptimizerEntryAction', () => {

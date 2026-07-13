@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
+import type { ComponentProps } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import {
   AgentBuilderPreviewNode,
@@ -18,18 +19,27 @@ vi.mock('@xyflow/react', async () => {
 
 describe('NodeCanvas Agent Builder preview boundary', () => {
   it('renders an Answer preview card without internal output mappings', () => {
+    const previewNodeProps = {
+      id: 'answer',
+      type: 'answerNode',
+      data: {
+        title: 'Answer',
+        outputs: ['internal-output-variable'],
+        value_selector: ['llm', 'text'],
+      },
+      dragging: false,
+      zIndex: 0,
+      selectable: true,
+      deletable: true,
+      selected: false,
+      draggable: true,
+      isConnectable: true,
+      positionAbsoluteX: 0,
+      positionAbsoluteY: 0,
+    } satisfies ComponentProps<typeof AgentBuilderPreviewNode>;
+
     render(
-      <AgentBuilderPreviewNode
-        {...({
-          id: 'answer',
-          type: 'answerNode',
-          data: {
-            title: 'Answer',
-            outputs: ['internal-output-variable'],
-            value_selector: ['llm', 'text'],
-          },
-        } as never)}
-      />,
+      <AgentBuilderPreviewNode {...previewNodeProps} />,
     );
 
     expect(screen.getByText('Answer')).toBeTruthy();

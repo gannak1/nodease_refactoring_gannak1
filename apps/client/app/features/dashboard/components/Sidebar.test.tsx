@@ -70,18 +70,48 @@ vi.mock('../../notifications/components/NotificationOverlay', () => ({
 import { authApi } from '../../auth/api/authApi';
 import { apiClient } from '@/lib/apiClient';
 import { notificationsApi } from '../../notifications/api/notificationsApi';
+import type { ModuleOperationAppSummary } from '../../app/api/moduleOperationsApi';
 import Sidebar from './Sidebar';
 
-const managerOrganization = {
+type SidebarOrganizationFixture = {
+  id: string;
+  name: string;
+  is_manager: boolean;
+};
+
+type SidebarDefaults = {
+  currentOrganization?: SidebarOrganizationFixture;
+  organizations?: SidebarOrganizationFixture[];
+  operationRows?: Array<{ app: ModuleOperationAppSummary }>;
+};
+
+const managerOrganization: SidebarOrganizationFixture = {
   id: 'org-manager',
   name: 'Acme',
   is_manager: true,
 };
 
-const memberOrganization = {
+const memberOrganization: SidebarOrganizationFixture = {
   id: 'org-member',
   name: 'Beta',
   is_manager: false,
+};
+
+const currentUserResponse: Awaited<ReturnType<typeof authApi.me>> = {
+  user: {
+    id: 'user-1',
+    name: '홍길동',
+    email: 'hong@example.com',
+    emailVerified: true,
+    role: 'user',
+    isActive: true,
+    createdAt: '2026-07-10T00:00:00Z',
+    updatedAt: '2026-07-10T00:00:00Z',
+  },
+  session: {
+    token: '[REDACTED]',
+    expiresAt: '2026-07-11T00:00:00Z',
+  },
 };
 
 const fakeEventSource = () => ({
@@ -93,13 +123,11 @@ const mockSidebarDefaults = ({
   currentOrganization = managerOrganization,
   organizations = [managerOrganization, memberOrganization],
   operationRows = [],
-} = {}) => {
+}: SidebarDefaults = {}) => {
   activeOrganizationMock.getStoredActiveOrganizationId.mockReturnValue(
     currentOrganization.id,
   );
-  vi.mocked(authApi.me).mockResolvedValue({
-    user: { name: '홍길동', email: 'hong@example.com' },
-  });
+  vi.mocked(authApi.me).mockResolvedValue(currentUserResponse);
   vi.mocked(notificationsApi.listNotifications).mockResolvedValue({ items: [] });
   vi.mocked(notificationsApi.createEventSource).mockReturnValue(
     fakeEventSource() as unknown as EventSource,
@@ -192,7 +220,16 @@ describe('Sidebar organization switcher', () => {
   it('운영 가능한 row가 있는 일반 멤버에게 내 모듈 운영 메뉴를 표시한다', async () => {
     mockSidebarDefaults({
       currentOrganization: memberOrganization,
-      operationRows: [{ app: { id: 'app-1', name: '작성자 모듈' } }],
+      operationRows: [
+        {
+          app: {
+            id: 'app-1',
+            name: '작성자 모듈',
+            created_at: '2026-07-10T00:00:00Z',
+            updated_at: '2026-07-10T00:00:00Z',
+          },
+        },
+      ],
     });
 
     render(<Sidebar />);

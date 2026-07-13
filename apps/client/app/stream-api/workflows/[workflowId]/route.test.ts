@@ -1,26 +1,22 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type MockedFunction,
+} from 'vitest';
 
 import { POST } from './route';
 
-const originalApiUrl = process.env.API_URL;
-const originalNextPublicApiUrl = process.env.NEXT_PUBLIC_API_URL;
-const originalNodeEnv = process.env.NODE_ENV;
-
-const restoreEnv = (
-  name: 'API_URL' | 'NEXT_PUBLIC_API_URL' | 'NODE_ENV',
-  value?: string,
-) => {
-  if (value === undefined) {
-    delete process.env[name];
-    return;
-  }
-  process.env[name] = value;
+const getFetchInit = (fetchMock: MockedFunction<typeof fetch>): RequestInit => {
+  const init = fetchMock.mock.calls[0]?.[1];
+  if (!init) throw new Error('Expected fetch to receive request options');
+  return init;
 };
 
 afterEach(() => {
-  restoreEnv('API_URL', originalApiUrl);
-  restoreEnv('NEXT_PUBLIC_API_URL', originalNextPublicApiUrl);
-  restoreEnv('NODE_ENV', originalNodeEnv);
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -32,9 +28,11 @@ const callRoute = (request: Request, workflowId = 'workflow-1') =>
 
 describe('workflow stream proxy route', () => {
   it('uses NEXT_PUBLIC_API_URL when API_URL is unset and forwards safe context headers', async () => {
-    delete process.env.API_URL;
-    process.env.NEXT_PUBLIC_API_URL = 'http://localhost:8001/api/v1/';
-    const fetchMock = vi.fn(async () => new Response('data: {}\n\n'));
+    vi.stubEnv('API_URL', undefined);
+    vi.stubEnv('NEXT_PUBLIC_API_URL', 'http://localhost:8001/api/v1/');
+    const fetchMock: MockedFunction<typeof fetch> = vi.fn(async () =>
+      Promise.resolve(new Response('data: {}\n\n')),
+    );
     vi.stubGlobal('fetch', fetchMock);
 
     const response = await callRoute(
@@ -57,8 +55,8 @@ describe('workflow stream proxy route', () => {
       'http://localhost:8001/api/v1/workflows/workflow-1/stream',
       expect.objectContaining({ method: 'POST' }),
     );
-    const [, init] = fetchMock.mock.calls[0];
-    const headers = init.headers as Headers;
+    const init = getFetchInit(fetchMock);
+    const headers = new Headers(init.headers);
     expect(headers.get('Content-Type')).toBe('application/json');
     expect(headers.get('Cookie')).toBe('auth_token=session');
     expect(headers.get('X-Organization-Id')).toBe('org-1');
@@ -69,8 +67,10 @@ describe('workflow stream proxy route', () => {
   });
 
   it('proxies FormData without overriding the multipart Content-Type', async () => {
-    process.env.API_URL = 'http://localhost:8000';
-    const fetchMock = vi.fn(async () => new Response('data: {}\n\n'));
+    vi.stubEnv('API_URL', 'http://localhost:8000');
+    const fetchMock: MockedFunction<typeof fetch> = vi.fn(async () =>
+      Promise.resolve(new Response('data: {}\n\n')),
+    );
     vi.stubGlobal('fetch', fetchMock);
     const formData = new FormData();
     formData.set('inputs', JSON.stringify({ question: 'hello' }));
@@ -85,8 +85,8 @@ describe('workflow stream proxy route', () => {
       }),
     );
 
-    const [, init] = fetchMock.mock.calls[0];
-    const headers = init.headers as Headers;
+    const init = getFetchInit(fetchMock);
+    const headers = new Headers(init.headers);
     expect(headers.has('Content-Type')).toBe(false);
     expect(headers.get('X-Organization-Id')).toBe('org-1');
     expect((init.body as FormData).get('inputs')).toBe(
@@ -95,9 +95,11 @@ describe('workflow stream proxy route', () => {
   });
 
   it('prefers API_URL over NEXT_PUBLIC_API_URL', async () => {
-    process.env.API_URL = 'http://gateway.internal:8000/';
-    process.env.NEXT_PUBLIC_API_URL = 'http://localhost:8001';
-    const fetchMock = vi.fn(async () => new Response('data: {}\n\n'));
+    vi.stubEnv('API_URL', 'http://gateway.internal:8000/');
+    vi.stubEnv('NEXT_PUBLIC_API_URL', 'http://localhost:8001');
+    const fetchMock: MockedFunction<typeof fetch> = vi.fn(async () =>
+      Promise.resolve(new Response('data: {}\n\n')),
+    );
     vi.stubGlobal('fetch', fetchMock);
 
     await callRoute(
@@ -115,10 +117,12 @@ describe('workflow stream proxy route', () => {
   });
 
   it('uses non-loopback NEXT_PUBLIC_API_URL as a production fallback', async () => {
-    delete process.env.API_URL;
-    process.env.NEXT_PUBLIC_API_URL = 'https://api.nodease.example/api/v1';
-    process.env.NODE_ENV = 'production';
-    const fetchMock = vi.fn(async () => new Response('data: {}\n\n'));
+    vi.stubEnv('API_URL', undefined);
+    vi.stubEnv('NEXT_PUBLIC_API_URL', 'https://api.nodease.example/api/v1');
+    vi.stubEnv('NODE_ENV', 'production');
+    const fetchMock: MockedFunction<typeof fetch> = vi.fn(async () =>
+      Promise.resolve(new Response('data: {}\n\n')),
+    );
     vi.stubGlobal('fetch', fetchMock);
 
     await callRoute(
@@ -136,10 +140,12 @@ describe('workflow stream proxy route', () => {
   });
 
   it('does not use loopback NEXT_PUBLIC_API_URL as a production server fallback', async () => {
-    delete process.env.API_URL;
-    process.env.NEXT_PUBLIC_API_URL = 'http://localhost';
-    process.env.NODE_ENV = 'production';
-    const fetchMock = vi.fn(async () => new Response('data: {}\n\n'));
+    vi.stubEnv('API_URL', undefined);
+    vi.stubEnv('NEXT_PUBLIC_API_URL', 'http://localhost');
+    vi.stubEnv('NODE_ENV', 'production');
+    const fetchMock: MockedFunction<typeof fetch> = vi.fn(async () =>
+      Promise.resolve(new Response('data: {}\n\n')),
+    );
     vi.stubGlobal('fetch', fetchMock);
 
     await callRoute(
@@ -157,10 +163,12 @@ describe('workflow stream proxy route', () => {
   });
 
   it('returns structured json when the backend error body is plain text', async () => {
-    process.env.API_URL = 'http://localhost:8000';
+    vi.stubEnv('API_URL', 'http://localhost:8000');
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => new Response('upstream unavailable', { status: 503 })),
+      vi.fn<typeof fetch>(async () =>
+        Promise.resolve(new Response('upstream unavailable', { status: 503 })),
+      ),
     );
 
     const response = await callRoute(
