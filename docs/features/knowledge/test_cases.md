@@ -75,10 +75,11 @@ Status: Draft
 - Authenticated source-managed KB는 active/fresh/unexpired/matching materialized `SourceAuthorizationProvenance`가 필요하다. Missing/inactive/stale/unmapped/ambiguous/unverified/revoked/denied/unknown/expired/organization-requester-KB-source mismatch는 fail-closed다.
 - MBA-232 adapter는 connector client, HTTP client, `check_access_batch`, single `check_access`, runtime source authorization cache를 0회 호출한다.
 - Anonymous selected Collection child는 active public Collection의 active/ready manual KB만 허용한다. Direct manual KB도 하나 이상의 active public Collection membership이 필요하다. Source public exposure primitive가 없는 동안 source-managed KB는 public membership과 authenticated provenance가 있어도 모두 제외한다.
-- PostgreSQL adapter는 fresh transaction의 첫 query 전에 `REPEATABLE READ, READ ONLY`를 적용한다. Two-transaction test에서 resolver 시작 뒤 membership/route/use/provenance/lifecycle 변경이 commit되어도 current invocation은 한 snapshot만 보고 다음 invocation이 변경을 본다.
+- PostgreSQL adapter는 fresh transaction의 첫 query 전에 `REPEATABLE READ, READ ONLY`를 적용한다. Path-scoped PostgreSQL CI의 two-transaction test에서 resolver 시작 뒤 membership/Collection route/KB use/organization membership/source provenance/Collection lifecycle/KB lifecycle 변경이 commit되어도 current invocation은 한 snapshot만 보고 다음 invocation이 변경을 본다.
+- Source-policy/provenance expiry는 timezone-aware PostgreSQL transaction timestamp 하나로 전체 invocation을 평가한다. KB 순회 중 wall clock이 만료 경계를 지나도 같은 invocation에서 서로 다른 evaluation time을 사용하면 테스트 실패다.
 - Snapshot/repository/authorization infrastructure exception은 fixed safe retryable whole-resolution failure다. 이미 평가한 candidate partial set, raw SQL/exception, identifier, source metadata, exact count를 반환하거나 retrieval/provider mock을 호출하면 테스트 실패다.
 - Candidate 0개는 `safe_no_result`, budget 제한은 successful warning이며 downstream partial retrieval failure와 구분한다.
-- Query count는 candidate/Collection 수에 비례하는 N+1이 아니고 selected 20 Collections/5,000 membership fixture에서도 scan/memory/result가 bounded하고 fair해야 한다.
+- Query count는 candidate/Collection 수에 비례하는 N+1이 아니고 selected 20 Collections/5,000 membership fixture에서도 scan/memory/result가 bounded하고 fair해야 한다. Membership SQL은 Collection별 LATERAL cap을 global window보다 먼저 적용하고 outer `LIMIT`만으로 boundedness를 주장하지 않는다.
 - Shared pure policy는 SQLAlchemy/FastAPI/Celery/Gateway/Workflow Engine concrete package를 import하지 않고 Workflow Engine runtime retrieval production code는 `apps.gateway.*`를 import하지 않는다.
 
 ## Knowledge Base API Tests

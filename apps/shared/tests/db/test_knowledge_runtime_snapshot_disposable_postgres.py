@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 import pytest
 from apps.shared.domain.knowledge_runtime_candidates import (
     AnonymousPublicAudience,
+    AuthenticatedAudience,
     KnowledgeRuntimeCandidateRequest,
 )
 from apps.shared.tests.helpers.disposable_postgres import (
@@ -27,9 +28,64 @@ DB_PREFIX = "nodease_knowledge_snapshot_test"
 def _create_schema(engine) -> None:
     statements = (
         """
+        CREATE TABLE users (
+            id UUID PRIMARY KEY,
+            email VARCHAR(255) NOT NULL,
+            name VARCHAR(255) NOT NULL,
+            password VARCHAR(255) NULL,
+            social_provider VARCHAR(50) NOT NULL DEFAULT 'test',
+            social_id VARCHAR(255) NULL,
+            avatar_url VARCHAR(255) NULL,
+            deactivated_at TIMESTAMPTZ NULL,
+            last_login_at TIMESTAMPTZ NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+        """,
+        """
         CREATE TABLE organization (
             id UUID PRIMARY KEY,
+            name VARCHAR(255) NOT NULL DEFAULT 'test organization',
+            options JSONB NOT NULL DEFAULT '{}'::jsonb,
+            flags BIGINT NOT NULL DEFAULT 0,
+            created_by UUID NULL,
+            managed_by UUID NULL,
+            is_active BOOLEAN NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            deactivated_at TIMESTAMPTZ NULL
+        )
+        """,
+        """
+        CREATE TABLE organization_memberships (
+            id UUID PRIMARY KEY,
+            organization_id UUID NOT NULL,
+            user_id UUID NOT NULL,
+            membership_state VARCHAR(50) NOT NULL,
+            organization_auth_state VARCHAR(50) NOT NULL,
+            invited_by UUID NULL,
+            invited_at TIMESTAMPTZ NULL,
+            accepted_at TIMESTAMPTZ NULL,
+            removed_at TIMESTAMPTZ NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            options JSONB NOT NULL DEFAULT '{}'::jsonb,
+            flags BIGINT NOT NULL DEFAULT 0
+        )
+        """,
+        """
+        CREATE TABLE teams (
+            id UUID PRIMARY KEY,
+            organization_id UUID NOT NULL,
             is_active BOOLEAN NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE team_memberships (
+            id UUID PRIMARY KEY,
+            grantee_organization_id UUID NOT NULL,
+            team_id UUID NOT NULL,
+            user_id UUID NOT NULL
         )
         """,
         """
@@ -83,6 +139,67 @@ def _create_schema(engine) -> None:
             document_id UUID NOT NULL,
             document_version_id UUID NULL,
             knowledge_base_id UUID NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE team_knowledge_collection_permissions (
+            knowledge_collection_id UUID NOT NULL,
+            team_id UUID NOT NULL,
+            grantee_organization_id UUID NOT NULL,
+            permission_action VARCHAR(32) NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE user_knowledge_collection_permissions (
+            knowledge_collection_id UUID NOT NULL,
+            user_id UUID NOT NULL,
+            grantee_organization_id UUID NOT NULL,
+            permission_action VARCHAR(32) NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE team_knowledge_permissions (
+            knowledge_base_id UUID NOT NULL,
+            team_id UUID NOT NULL,
+            grantee_organization_id UUID NOT NULL,
+            auth_state VARCHAR(50) NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE user_knowledge_permissions (
+            knowledge_base_id UUID NOT NULL,
+            user_id UUID NOT NULL,
+            grantee_organization_id UUID NOT NULL,
+            auth_state VARCHAR(50) NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE source_policy_kb_use_grants (
+            knowledge_base_id UUID NOT NULL,
+            source_identity_id UUID NULL,
+            organization_id UUID NOT NULL,
+            permission_action VARCHAR(32) NOT NULL,
+            status VARCHAR(32) NOT NULL,
+            expires_at TIMESTAMPTZ NULL,
+            subject_type VARCHAR(32) NOT NULL,
+            subject_id UUID NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE source_authorization_provenance (
+            id UUID PRIMARY KEY,
+            organization_id UUID NOT NULL,
+            knowledge_base_id UUID NOT NULL,
+            source_identity_id UUID NULL,
+            requester_subject_type VARCHAR(32) NOT NULL,
+            requester_subject_id UUID NOT NULL,
+            source_acl_state VARCHAR(32) NOT NULL,
+            requester_source_authorization VARCHAR(32) NOT NULL,
+            source_permission_action VARCHAR(64) NULL,
+            freshness_epoch BIGINT NOT NULL,
+            freshness_expires_at TIMESTAMPTZ NULL,
+            status VARCHAR(32) NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )
         """,
         """
@@ -168,6 +285,313 @@ def _seed_ready_public_collection(engine):
     return organization_id, collection_id, knowledge_base_id
 
 
+def _seed_two_public_collections(engine):
+    organization_id = uuid4()
+    collection_ids = (uuid4(), uuid4())
+    knowledge_base_ids_by_collection = []
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO organization (id, is_active) "
+                "VALUES (:organization_id, true)"
+            ),
+            {"organization_id": organization_id},
+        )
+        for collection_id in collection_ids:
+            connection.execute(
+                text(
+                    "INSERT INTO knowledge_collections "
+                    "(id, organization_id, lifecycle_state, sync_state, "
+                    "is_system_managed, safe_metadata) "
+                    "VALUES (:collection_id, :organization_id, 'active', "
+                    "'manual', false, "
+                    "'{\"visibility\": \"public\"}'::jsonb)"
+                ),
+                {
+                    "collection_id": collection_id,
+                    "organization_id": organization_id,
+                },
+            )
+            collection_kb_ids = []
+            # More than scan_cap + 1 in the bounded-scan test so the per-
+            # Collection LATERAL limit is exercised by real PostgreSQL.
+            for rank in range(6):
+                knowledge_base_id = uuid4()
+                version_id = uuid4()
+                collection_kb_ids.append(knowledge_base_id)
+                connection.execute(
+                    text(
+                        "INSERT INTO knowledge_bases "
+                        "(id, organization_id, active_document_version_id, "
+                        "source_identity_id, sync_state, lifecycle_state) "
+                        "VALUES (:knowledge_base_id, :organization_id, "
+                        ":version_id, NULL, 'manual', 'active')"
+                    ),
+                    {
+                        "knowledge_base_id": knowledge_base_id,
+                        "organization_id": organization_id,
+                        "version_id": version_id,
+                    },
+                )
+                connection.execute(
+                    text(
+                        "INSERT INTO document_versions "
+                        "(id, organization_id, knowledge_base_id, status) "
+                        "VALUES (:version_id, :organization_id, "
+                        ":knowledge_base_id, 'ready')"
+                    ),
+                    {
+                        "version_id": version_id,
+                        "organization_id": organization_id,
+                        "knowledge_base_id": knowledge_base_id,
+                    },
+                )
+                connection.execute(
+                    text(
+                        "INSERT INTO knowledge_collection_items "
+                        "(id, organization_id, collection_id, "
+                        "knowledge_base_id, rank, created_at) "
+                        "VALUES (:item_id, :organization_id, "
+                        ":collection_id, :knowledge_base_id, :rank, "
+                        "clock_timestamp())"
+                    ),
+                    {
+                        "item_id": uuid4(),
+                        "organization_id": organization_id,
+                        "collection_id": collection_id,
+                        "knowledge_base_id": knowledge_base_id,
+                        "rank": rank,
+                    },
+                )
+            knowledge_base_ids_by_collection.append(tuple(collection_kb_ids))
+    return (
+        organization_id,
+        collection_ids,
+        tuple(knowledge_base_ids_by_collection),
+    )
+
+
+def _seed_authenticated_collection(engine, *, source_managed: bool):
+    owner_id = uuid4()
+    requester_id = uuid4()
+    organization_id = uuid4()
+    membership_id = uuid4()
+    collection_id = uuid4()
+    knowledge_base_id = uuid4()
+    version_id = uuid4()
+    item_id = uuid4()
+    source_identity_id = uuid4() if source_managed else None
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO users "
+                "(id, email, name, social_provider) VALUES "
+                "(:owner_id, :owner_email, 'owner', 'test'), "
+                "(:requester_id, :requester_email, 'requester', 'test')"
+            ),
+            {
+                "owner_id": owner_id,
+                "owner_email": f"owner-{owner_id.hex}@test.invalid",
+                "requester_id": requester_id,
+                "requester_email": f"requester-{requester_id.hex}@test.invalid",
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO organization "
+                "(id, created_by, is_active) "
+                "VALUES (:organization_id, :owner_id, true)"
+            ),
+            {
+                "organization_id": organization_id,
+                "owner_id": owner_id,
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO organization_memberships "
+                "(id, organization_id, user_id, membership_state, "
+                "organization_auth_state) "
+                "VALUES (:membership_id, :organization_id, :requester_id, "
+                "'active', 'member')"
+            ),
+            {
+                "membership_id": membership_id,
+                "organization_id": organization_id,
+                "requester_id": requester_id,
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO knowledge_collections "
+                "(id, organization_id, lifecycle_state, sync_state, "
+                "is_system_managed, safe_metadata) "
+                "VALUES (:collection_id, :organization_id, 'active', "
+                "'manual', false, '{\"visibility\": \"private\"}'::jsonb)"
+            ),
+            {
+                "collection_id": collection_id,
+                "organization_id": organization_id,
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO knowledge_bases "
+                "(id, organization_id, active_document_version_id, "
+                "source_identity_id, sync_state, lifecycle_state) "
+                "VALUES (:knowledge_base_id, :organization_id, :version_id, "
+                ":source_identity_id, 'manual', 'active')"
+            ),
+            {
+                "knowledge_base_id": knowledge_base_id,
+                "organization_id": organization_id,
+                "version_id": version_id,
+                "source_identity_id": source_identity_id,
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO document_versions "
+                "(id, organization_id, knowledge_base_id, status) "
+                "VALUES (:version_id, :organization_id, "
+                ":knowledge_base_id, 'ready')"
+            ),
+            {
+                "version_id": version_id,
+                "organization_id": organization_id,
+                "knowledge_base_id": knowledge_base_id,
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO knowledge_collection_items "
+                "(id, organization_id, collection_id, knowledge_base_id, "
+                "rank, created_at) "
+                "VALUES (:item_id, :organization_id, :collection_id, "
+                ":knowledge_base_id, 0, clock_timestamp())"
+            ),
+            {
+                "item_id": item_id,
+                "organization_id": organization_id,
+                "collection_id": collection_id,
+                "knowledge_base_id": knowledge_base_id,
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO user_knowledge_collection_permissions "
+                "(knowledge_collection_id, user_id, "
+                "grantee_organization_id, permission_action) "
+                "VALUES (:collection_id, :requester_id, "
+                ":organization_id, 'route')"
+            ),
+            {
+                "collection_id": collection_id,
+                "requester_id": requester_id,
+                "organization_id": organization_id,
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO user_knowledge_permissions "
+                "(knowledge_base_id, user_id, grantee_organization_id, "
+                "auth_state) VALUES (:knowledge_base_id, :requester_id, "
+                ":organization_id, 'operator')"
+            ),
+            {
+                "knowledge_base_id": knowledge_base_id,
+                "requester_id": requester_id,
+                "organization_id": organization_id,
+            },
+        )
+        if source_identity_id is not None:
+            connection.execute(
+                text(
+                    "INSERT INTO source_authorization_provenance "
+                    "(id, organization_id, knowledge_base_id, "
+                    "source_identity_id, requester_subject_type, "
+                    "requester_subject_id, source_acl_state, "
+                    "requester_source_authorization, "
+                    "source_permission_action, freshness_epoch, "
+                    "freshness_expires_at, status) VALUES "
+                    "(:provenance_id, :organization_id, "
+                    ":knowledge_base_id, :source_identity_id, 'user', "
+                    ":requester_id, 'fresh', 'allowed', 'read', 1, "
+                    "clock_timestamp() + interval '1 hour', 'active')"
+                ),
+                {
+                    "provenance_id": uuid4(),
+                    "organization_id": organization_id,
+                    "knowledge_base_id": knowledge_base_id,
+                    "source_identity_id": source_identity_id,
+                    "requester_id": requester_id,
+                },
+            )
+    return {
+        "organization_id": organization_id,
+        "requester_id": requester_id,
+        "collection_id": collection_id,
+        "knowledge_base_id": knowledge_base_id,
+    }
+
+
+def _apply_authenticated_mutation(connection, mutation, seeded):
+    params = {
+        "organization_id": seeded["organization_id"],
+        "requester_id": seeded["requester_id"],
+        "collection_id": seeded["collection_id"],
+        "knowledge_base_id": seeded["knowledge_base_id"],
+    }
+    statements = {
+        "collection_route": (
+            "DELETE FROM user_knowledge_collection_permissions "
+            "WHERE grantee_organization_id = :organization_id "
+            "AND user_id = :requester_id "
+            "AND knowledge_collection_id = :collection_id"
+        ),
+        "kb_use": (
+            "DELETE FROM user_knowledge_permissions "
+            "WHERE grantee_organization_id = :organization_id "
+            "AND user_id = :requester_id "
+            "AND knowledge_base_id = :knowledge_base_id"
+        ),
+        "organization_membership": (
+            "UPDATE organization_memberships "
+            "SET membership_state = 'removed', removed_at = clock_timestamp() "
+            "WHERE organization_id = :organization_id "
+            "AND user_id = :requester_id"
+        ),
+        "source_provenance": (
+            "UPDATE source_authorization_provenance "
+            "SET source_acl_state = 'revoked', "
+            "requester_source_authorization = 'denied', "
+            "freshness_epoch = freshness_epoch + 1, "
+            "updated_at = clock_timestamp() "
+            "WHERE organization_id = :organization_id "
+            "AND requester_subject_id = :requester_id "
+            "AND knowledge_base_id = :knowledge_base_id"
+        ),
+        "collection_lifecycle": (
+            "UPDATE knowledge_collections SET lifecycle_state = 'archived' "
+            "WHERE organization_id = :organization_id "
+            "AND id = :collection_id"
+        ),
+        "kb_lifecycle": (
+            "UPDATE knowledge_bases SET lifecycle_state = 'archived' "
+            "WHERE organization_id = :organization_id "
+            "AND id = :knowledge_base_id"
+        ),
+    }
+    connection.execute(text(statements[mutation]), params)
+
+
+def _snapshot_contains(snapshot, knowledge_base_id):
+    return knowledge_base_id in snapshot.eligible_direct_kb_ids or any(
+        knowledge_base_id in stream.eligible_kb_ids
+        for stream in snapshot.collection_streams
+    )
+
+
 @pytest.fixture
 def disposable_snapshot_database():
     try:
@@ -218,6 +642,11 @@ class _PausingSnapshotAdapter(PostgresKnowledgeRuntimeCandidateSnapshotAdapter):
         self.writer_finished = writer_finished
         self.isolation_level = None
         self.transaction_read_only = None
+        self.evaluation_time = None
+
+    def _load_policy_evaluation_time(self, db):
+        self.evaluation_time = super()._load_policy_evaluation_time(db)
+        return self.evaluation_time
 
     def _load_selected_collections(
         self,
@@ -305,6 +734,104 @@ def test_repeatable_read_snapshot_does_not_mix_concurrent_membership_change(
             text("SELECT id FROM snapshot_write_probe WHERE id = :probe_id"),
             {"probe_id": probe_id},
         ).scalar_one() == probe_id
+
+
+@pytest.mark.skipif(
+    os.getenv(RUN_ENV) != "1",
+    reason=f"set {RUN_ENV}=1 to run disposable Knowledge bounded scan evidence",
+)
+def test_lateral_membership_scan_is_bounded_and_fair_in_postgres(
+    disposable_snapshot_database,
+):
+    engine = disposable_snapshot_database
+    organization_id, collection_ids, kb_ids_by_collection = (
+        _seed_two_public_collections(engine)
+    )
+    session_factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    request = KnowledgeRuntimeCandidateRequest(
+        audience=AnonymousPublicAudience(organization_id=organization_id),
+        collection_ids=collection_ids,
+        candidate_budget=4,
+        candidate_scan_cap=4,
+    )
+
+    snapshot = PostgresKnowledgeRuntimeCandidateSnapshotAdapter(
+        session_factory=session_factory
+    ).load_snapshot(request)
+
+    assert snapshot.scan_limited is True
+    assert tuple(stream.collection_id for stream in snapshot.collection_streams) == (
+        collection_ids
+    )
+    assert tuple(
+        stream.eligible_kb_ids for stream in snapshot.collection_streams
+    ) == (
+        kb_ids_by_collection[0][:2],
+        kb_ids_by_collection[1][:2],
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "source_managed"),
+    [
+        ("collection_route", False),
+        ("kb_use", False),
+        ("organization_membership", False),
+        ("source_provenance", True),
+        ("collection_lifecycle", False),
+        ("kb_lifecycle", False),
+    ],
+)
+@pytest.mark.skipif(
+    os.getenv(RUN_ENV) != "1",
+    reason=f"set {RUN_ENV}=1 to run disposable Knowledge authorization evidence",
+)
+def test_authenticated_snapshot_keeps_one_revision_and_next_call_sees_mutation(
+    disposable_snapshot_database,
+    mutation,
+    source_managed,
+):
+    engine = disposable_snapshot_database
+    seeded = _seed_authenticated_collection(
+        engine,
+        source_managed=source_managed,
+    )
+    session_factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    snapshot_started = Event()
+    writer_finished = Event()
+    adapter = _PausingSnapshotAdapter(
+        session_factory=session_factory,
+        snapshot_started=snapshot_started,
+        writer_finished=writer_finished,
+    )
+    request = KnowledgeRuntimeCandidateRequest(
+        audience=AuthenticatedAudience(
+            organization_id=seeded["organization_id"],
+            user_id=seeded["requester_id"],
+        ),
+        collection_ids=(seeded["collection_id"],),
+    )
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(adapter.load_snapshot, request)
+        assert snapshot_started.wait(timeout=15)
+        try:
+            with engine.begin() as connection:
+                _apply_authenticated_mutation(connection, mutation, seeded)
+        finally:
+            writer_finished.set()
+        first_snapshot = future.result(timeout=15)
+
+    assert adapter.isolation_level == "repeatable read"
+    assert adapter.transaction_read_only == "on"
+    assert adapter.evaluation_time is not None
+    assert adapter.evaluation_time.utcoffset() is not None
+    assert _snapshot_contains(first_snapshot, seeded["knowledge_base_id"])
+
+    next_snapshot = PostgresKnowledgeRuntimeCandidateSnapshotAdapter(
+        session_factory=session_factory
+    ).load_snapshot(request)
+    assert not _snapshot_contains(next_snapshot, seeded["knowledge_base_id"])
 
 
 class _WriteAttemptSnapshotAdapter(PostgresKnowledgeRuntimeCandidateSnapshotAdapter):
