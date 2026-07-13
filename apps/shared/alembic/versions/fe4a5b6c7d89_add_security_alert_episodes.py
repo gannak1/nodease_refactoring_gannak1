@@ -1,7 +1,7 @@
 """Add Security Alert episode tracking.
 
 Revision ID: fe4a5b6c7d89
-Revises: fe3f4a5b6c78
+Revises: fd0e1f2a3b4c
 """
 
 from typing import Sequence, Union
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "fe4a5b6c7d89"
-down_revision: Union[str, Sequence[str], None] = "fe3f4a5b6c78"
+down_revision: Union[str, Sequence[str], None] = "fd0e1f2a3b4c"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

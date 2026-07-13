@@ -306,12 +306,20 @@ def test_security_alert_notification_outbox_declares_durable_delivery_contract()
 
 
 def test_security_alert_notification_outbox_has_additive_migration():
+    episode_path = Path(
+        "apps/shared/alembic/versions/"
+        "fe4a5b6c7d89_add_security_alert_episodes.py"
+    )
     path = Path(
         "apps/shared/alembic/versions/"
         "c05d6e7f8a90_add_security_alert_notification_outbox.py"
     )
+    episode_source = episode_path.read_text(encoding="utf-8")
     source = path.read_text(encoding="utf-8")
 
+    assert 'down_revision: Union[str, Sequence[str], None] = "fd0e1f2a3b4c"' in (
+        episode_source
+    )
     assert 'down_revision: Union[str, Sequence[str], None] = "fe4a5b6c7d89"' in source
     assert 'create_table(\n        "security_alert_notification_outbox"' in source
     assert 'drop_table("security_alert_notification_outbox")' in source

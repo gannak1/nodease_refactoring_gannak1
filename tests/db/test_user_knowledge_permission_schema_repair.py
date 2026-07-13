@@ -26,16 +26,20 @@ def test_user_knowledge_permission_schema_repair_follows_current_head():
     assert "user_knowledge_permissions" in source
 
 
-def test_cost_optimizer_migrations_follow_latest_runtime_head():
-    """신규 Cost Optimizer migration은 최신 runtime head 뒤에 선형으로 연결한다."""
+def test_cost_optimizer_and_security_alert_migrations_form_single_head():
+    """신규 migration은 기존 runtime migration 뒤에 단일 경로로 연결한다."""
     script = _script_directory()
     model_routing_revision = script.get_revision("fb8c9d0e1f23")
     external_effect_revision = script.get_revision("fe3f4a5b6c78")
     recommendation_revision = script.get_revision("fc9a1b2c3d4e")
     repair_revision = script.get_revision("fd0e1f2a3b4c")
+    security_alert_episode_revision = script.get_revision("fe4a5b6c7d89")
+    security_alert_outbox_revision = script.get_revision("c05d6e7f8a90")
 
     assert model_routing_revision.down_revision == "fa7b8c9d0e12"
     assert external_effect_revision.down_revision == "b39e0f1a2b43"
     assert recommendation_revision.down_revision == "fe3f4a5b6c78"
     assert repair_revision.down_revision == "fc9a1b2c3d4e"
-    assert script.get_heads() == ["fd0e1f2a3b4c"]
+    assert security_alert_episode_revision.down_revision == "fd0e1f2a3b4c"
+    assert security_alert_outbox_revision.down_revision == "fe4a5b6c7d89"
+    assert script.get_heads() == ["c05d6e7f8a90"]
