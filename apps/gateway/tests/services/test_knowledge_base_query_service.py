@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import SQLAlchemyError
 
 from apps.gateway.services import knowledge_base_query_service as service_module
@@ -24,6 +25,7 @@ from apps.shared.services.knowledge_schema_readiness import (
 class FakeKnowledgeQuery:
     def __init__(self, rows):
         self.rows = rows
+        self.filters = []
 
     def select_from(self, *_args, **_kwargs):
         return self
@@ -35,6 +37,7 @@ class FakeKnowledgeQuery:
         return self
 
     def filter(self, *_args, **_kwargs):
+        self.filters.extend(_args)
         return self
 
     def group_by(self, *_args, **_kwargs):
@@ -51,10 +54,25 @@ class FakeSelectableDb:
     def __init__(self, kbs):
         self.kbs = kbs
         self.query_entities = []
+        self.queries = []
 
     def query(self, *entities):
         self.query_entities.append(entities)
-        return FakeKnowledgeQuery(self.kbs)
+        query = FakeKnowledgeQuery(self.kbs)
+        self.queries.append(query)
+        return query
+
+
+def _compiled_filters(query) -> str:
+    return " ".join(
+        str(
+            criterion.compile(
+                dialect=postgresql.dialect(),
+                compile_kwargs={"literal_binds": True},
+            )
+        )
+        for criterion in query.filters
+    ).lower()
 
 
 class FakeAuthorizedListDb:
@@ -515,6 +533,23 @@ def test_list_llm_selectable_excludes_completed_document_without_visible_chunks(
     )
 
     assert response == []
+
+
+def test_list_llm_selectable_query_excludes_source_deleted_and_not_ready_kbs():
+    db = FakeSelectableDb([])
+    service = KnowledgeBaseQueryService(db)
+
+    assert service.list_llm_selectable(
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        schema_ready=True,
+    ) == []
+
+    sql = _compiled_filters(db.queries[0])
+    assert "knowledge_bases.lifecycle_state = 'active'" in sql
+    assert "knowledge_bases.sync_state != 'source_deleted'" in sql
+    assert "documents.status = 'completed'" in sql
+    assert "document_chunks.document_version_id = knowledge_bases.active_document_version_id" in sql
 
 
 def test_get_detail_raises_not_found_for_missing_or_hidden_kb():

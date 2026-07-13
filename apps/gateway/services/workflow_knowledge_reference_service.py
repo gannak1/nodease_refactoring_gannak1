@@ -5,14 +5,10 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 
-from sqlalchemy import and_, or_
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from apps.shared.db.models.knowledge import (
-    Document,
-    DocumentChunk,
-    DocumentVersion,
     KnowledgeBase,
     KnowledgeCollection,
 )
@@ -22,6 +18,11 @@ from apps.shared.domain.workflow_knowledge_references import (
     parse_workflow_knowledge_references,
 )
 from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
+from apps.shared.services.knowledge_resource_eligibility import (
+    knowledge_base_operational_predicates,
+    knowledge_collection_operational_predicates,
+    retrieval_visible_chunk_exists,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,8 +140,7 @@ class WorkflowKnowledgeReferenceService:
             .filter(
                 KnowledgeBase.id.in_(direct_ids),
                 KnowledgeBase.organization_id == self.organization_id,
-                KnowledgeBase.lifecycle_state == "active",
-                KnowledgeBase.sync_state != "source_deleted",
+                *knowledge_base_operational_predicates(),
             )
             .all()
         )
@@ -156,7 +156,7 @@ class WorkflowKnowledgeReferenceService:
             .filter(
                 KnowledgeCollection.id.in_(collection_ids),
                 KnowledgeCollection.organization_id == self.organization_id,
-                KnowledgeCollection.lifecycle_state == "active",
+                *knowledge_collection_operational_predicates(),
             )
             .all()
         )
@@ -168,40 +168,16 @@ class WorkflowKnowledgeReferenceService:
         if not direct_ids:
             return set()
         rows = (
-            self.db.query(DocumentChunk.knowledge_base_id)
-            .select_from(DocumentChunk)
-            .join(KnowledgeBase, KnowledgeBase.id == DocumentChunk.knowledge_base_id)
-            .join(Document, Document.id == DocumentChunk.document_id)
-            .outerjoin(
-                DocumentVersion,
-                DocumentVersion.id == DocumentChunk.document_version_id,
-            )
+            self.db.query(KnowledgeBase.id)
             .filter(
                 KnowledgeBase.id.in_(direct_ids),
                 KnowledgeBase.organization_id == self.organization_id,
-                KnowledgeBase.lifecycle_state == "active",
-                KnowledgeBase.sync_state != "source_deleted",
-                Document.status == "completed",
-                or_(
-                    and_(
-                        KnowledgeBase.active_document_version_id.is_(None),
-                        DocumentChunk.document_version_id.is_(None),
-                    ),
-                    and_(
-                        KnowledgeBase.active_document_version_id.is_not(None),
-                        DocumentChunk.document_version_id
-                        == KnowledgeBase.active_document_version_id,
-                        DocumentVersion.status == "ready",
-                    ),
-                ),
+                *knowledge_base_operational_predicates(),
+                retrieval_visible_chunk_exists(),
             )
-            .distinct()
             .all()
         )
-        return {
-            row[0] if isinstance(row, tuple) else row.knowledge_base_id
-            for row in rows
-        }
+        return {row[0] for row in rows}
 
     @staticmethod
     def _first_reference_path(

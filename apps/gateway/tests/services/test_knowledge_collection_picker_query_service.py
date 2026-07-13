@@ -1,6 +1,8 @@
 import uuid
 from types import SimpleNamespace
 
+from sqlalchemy.dialects import postgresql
+
 from apps.gateway.services.knowledge_collection_picker_query_service import (
     MAX_LLM_SELECTABLE_COLLECTION_SCAN,
     KnowledgeCollectionPickerQueryService,
@@ -76,6 +78,18 @@ def _scope_to_ids(monkeypatch, service, allowed_ids):
     )
 
 
+def _compiled_filters(query):
+    return " ".join(
+        str(
+            criterion.compile(
+                dialect=postgresql.dialect(),
+                compile_kwargs={"literal_binds": True},
+            )
+        )
+        for criterion in query.filters
+    ).lower()
+
+
 def test_picker_returns_only_route_allowed_minimal_projection(monkeypatch):
     organization_id = uuid.uuid4()
     allowed = _collection(
@@ -100,7 +114,10 @@ def test_picker_returns_only_route_allowed_minimal_projection(monkeypatch):
         "collections": [{"id": str(allowed.id), "safe_label": "사내 규정"}]
     }
     assert db.query_value.limit_value == MAX_LLM_SELECTABLE_COLLECTION_SCAN
-    assert len(db.query_value.filters) == 2
+    assert len(db.query_value.filters) == 3
+    assert "knowledge_collections.sync_state != 'source_deleted'" in _compiled_filters(
+        db.query_value
+    )
     assert db.query_value.events == [
         "options",
         "filter",

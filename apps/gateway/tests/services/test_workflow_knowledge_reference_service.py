@@ -226,8 +226,9 @@ def test_workflow_service_requires_context_when_knowledge_reference_exists():
 
 
 class _CriteriaQuery:
-    def __init__(self):
+    def __init__(self, rows=()):
         self.criteria = []
+        self.rows = list(rows)
 
     def select_from(self, *_args):
         return self
@@ -246,15 +247,16 @@ class _CriteriaQuery:
         return self
 
     def all(self):
-        return []
+        return self.rows
 
 
 class _CriteriaDb:
-    def __init__(self):
+    def __init__(self, rows=()):
         self.queries = []
+        self.rows = rows
 
     def query(self, *_args):
-        query = _CriteriaQuery()
+        query = _CriteriaQuery(self.rows)
         self.queries.append(query)
         return query
 
@@ -289,3 +291,34 @@ def test_save_time_direct_kb_queries_exclude_source_deleted(method_name):
     sql = _compiled_criteria(db.queries[0])
     assert "knowledge_bases.lifecycle_state = 'active'" in sql
     assert "knowledge_bases.sync_state != 'source_deleted'" in sql
+    if method_name == "_retrieval_ready_ids":
+        assert "documents.status = 'completed'" in sql
+        assert "document_versions.status = 'ready'" in sql
+
+
+def test_save_time_collection_query_excludes_source_deleted_parent():
+    db = _CriteriaDb()
+    service = WorkflowKnowledgeReferenceService(
+        db,
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+    )
+
+    assert service._load_collections((uuid.uuid4(),)) == []
+
+    sql = _compiled_criteria(db.queries[0])
+    assert "knowledge_collections.lifecycle_state = 'active'" in sql
+    assert "knowledge_collections.sync_state != 'source_deleted'" in sql
+
+
+def test_retrieval_ready_ids_extracts_sqlalchemy_row_value():
+    knowledge_base_id = uuid.uuid4()
+    service = WorkflowKnowledgeReferenceService(
+        _CriteriaDb([(knowledge_base_id,)]),
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+    )
+
+    assert service._retrieval_ready_ids((knowledge_base_id,)) == {
+        knowledge_base_id
+    }

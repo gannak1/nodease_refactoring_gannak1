@@ -21,6 +21,11 @@ from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDe
 from apps.shared.domain.knowledge_runtime_candidates import (
     MAX_RUNTIME_CANDIDATE_BUDGET,
 )
+from apps.shared.services.knowledge_resource_eligibility import (
+    knowledge_base_operational_predicates,
+    knowledge_collection_operational_predicates,
+    retrieval_visible_chunk_exists,
+)
 
 
 class SqlAlchemyDeploymentPreflightRepository:
@@ -40,8 +45,8 @@ class SqlAlchemyDeploymentPreflightRepository:
             .filter(
                 KnowledgeBase.id.in_(ids),
                 KnowledgeBase.organization_id == organization_id,
-                KnowledgeBase.lifecycle_state == "active",
-                KnowledgeBase.sync_state != "source_deleted",
+                *knowledge_base_operational_predicates(),
+                retrieval_visible_chunk_exists(),
             )
             .all()
         )
@@ -76,8 +81,8 @@ class SqlAlchemyDeploymentPreflightRepository:
                 KnowledgeCollectionItem.organization_id == organization_id,
                 KnowledgeCollectionItem.knowledge_base_id.in_(ids),
                 KnowledgeBase.organization_id == organization_id,
-                KnowledgeBase.lifecycle_state == "active",
-                KnowledgeBase.sync_state != "source_deleted",
+                *knowledge_base_operational_predicates(),
+                retrieval_visible_chunk_exists(),
             )
             .all()
         )
@@ -90,7 +95,7 @@ class SqlAlchemyDeploymentPreflightRepository:
             .filter(
                 KnowledgeCollection.id.in_(collection_ids),
                 KnowledgeCollection.organization_id == organization_id,
-                KnowledgeCollection.lifecycle_state == "active",
+                *knowledge_collection_operational_predicates(),
             )
             .all()
         )
@@ -120,7 +125,7 @@ class SqlAlchemyDeploymentPreflightRepository:
             .filter(
                 KnowledgeCollection.id.in_(ids),
                 KnowledgeCollection.organization_id == organization_id,
-                KnowledgeCollection.lifecycle_state == "active",
+                *knowledge_collection_operational_predicates(),
             )
             .all()
         )
@@ -149,8 +154,8 @@ class SqlAlchemyDeploymentPreflightRepository:
                     active_collection_ids
                 ),
                 KnowledgeBase.organization_id == organization_id,
-                KnowledgeBase.lifecycle_state == "active",
-                KnowledgeBase.sync_state != "source_deleted",
+                *knowledge_base_operational_predicates(),
+                retrieval_visible_chunk_exists(),
             )
             .group_by(KnowledgeCollectionItem.collection_id)
             .all()

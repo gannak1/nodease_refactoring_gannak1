@@ -42,6 +42,10 @@ from apps.shared.schemas.rag import (
     KnowledgeBaseResponse,
 )
 from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
+from apps.shared.services.knowledge_resource_eligibility import (
+    knowledge_base_operational_predicates,
+    retrieval_visible_chunk_exists,
+)
 from apps.shared.services.knowledge_schema_readiness import (
     check_knowledge_schema_readiness,
     table_has_column,
@@ -585,7 +589,8 @@ class KnowledgeBaseQueryService:
             self.db.query(KnowledgeBase)
             .filter(
                 KnowledgeBase.organization_id == organization_id,
-                KnowledgeBase.lifecycle_state == "active",
+                *knowledge_base_operational_predicates(),
+                retrieval_visible_chunk_exists(),
             )
             .order_by(KnowledgeBase.created_at.desc())
             .all()

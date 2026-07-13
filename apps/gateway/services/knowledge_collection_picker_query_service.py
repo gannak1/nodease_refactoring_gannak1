@@ -13,6 +13,9 @@ from apps.shared.schemas.knowledge import (
     KnowledgeCollectionLLMSelectableResponse,
 )
 from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
+from apps.shared.services.knowledge_resource_eligibility import (
+    knowledge_collection_operational_predicates,
+)
 from apps.shared.services.knowledge_safe_text import safe_label_from_text
 
 MAX_LLM_SELECTABLE_COLLECTION_SCAN = 500
@@ -52,7 +55,7 @@ class KnowledgeCollectionPickerQueryService:
                 .options(selectinload(KnowledgeCollection.source_identity))
                 .filter(
                     KnowledgeCollection.organization_id == self.organization_id,
-                    KnowledgeCollection.lifecycle_state == "active",
+                    *knowledge_collection_operational_predicates(),
                 )
             )
             query = self.permission_helper.scope_collection_query_for_action(

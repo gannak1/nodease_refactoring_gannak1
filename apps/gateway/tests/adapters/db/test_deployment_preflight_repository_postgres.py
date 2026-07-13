@@ -24,6 +24,8 @@ from apps.gateway.services.workflow_knowledge_reference_service import (
     WorkflowKnowledgeReferenceUnavailable,
 )
 from apps.shared.db.models.knowledge import (
+    Document,
+    DocumentChunk,
     KnowledgeBase,
     KnowledgeCollection,
     KnowledgeCollectionItem,
@@ -199,8 +201,37 @@ def test_save_and_preflight_queries_filter_deleted_and_cross_org_resources():
         )
         db.flush()
 
+        for index, knowledge_base_id in enumerate(
+            (
+                active_kb_id,
+                deleted_kb_id,
+                archived_kb_id,
+                other_org_kb_id,
+            )
+        ):
+            document = Document(
+                id=uuid.uuid4(),
+                knowledge_base_id=knowledge_base_id,
+                filename=f"ready-{index}.md",
+                status="completed",
+            )
+            db.add(document)
+            db.flush()
+            db.add(
+                DocumentChunk(
+                    id=uuid.uuid4(),
+                    document_id=document.id,
+                    knowledge_base_id=knowledge_base_id,
+                    content=f"retrieval-visible-{index}",
+                    embedding=[0.0] * 1536,
+                    chunk_index=0,
+                )
+            )
+        db.flush()
+
         public_collection_id = uuid.uuid4()
         deleted_only_collection_id = uuid.uuid4()
+        source_deleted_collection_id = uuid.uuid4()
         db.add_all(
             [
                 KnowledgeCollection(
@@ -214,6 +245,14 @@ def test_save_and_preflight_queries_filter_deleted_and_cross_org_resources():
                     id=deleted_only_collection_id,
                     organization_id=organization_id,
                     name="Deleted only collection",
+                    safe_metadata={"visibility": "public"},
+                    created_by=owner_id,
+                ),
+                KnowledgeCollection(
+                    id=source_deleted_collection_id,
+                    organization_id=organization_id,
+                    name="Source deleted collection",
+                    sync_state="source_deleted",
                     safe_metadata={"visibility": "public"},
                     created_by=owner_id,
                 ),
@@ -279,6 +318,25 @@ def test_save_and_preflight_queries_filter_deleted_and_cross_org_resources():
                     ]
                 }
             )
+        with pytest.raises(WorkflowKnowledgeReferenceUnavailable):
+            save_service.validate_editable_graph(
+                {
+                    "nodes": [
+                        {
+                            "id": "llm",
+                            "type": "llmNode",
+                            "data": {
+                                "knowledgeCollections": [
+                                    {
+                                        "id": str(source_deleted_collection_id),
+                                        "safeLabel": "Source deleted",
+                                    }
+                                ]
+                            },
+                        }
+                    ]
+                }
+            )
         direct = repository.get_active_knowledge_bases(
             [active_kb_id, deleted_kb_id, archived_kb_id, other_org_kb_id],
             organization_id,
@@ -288,13 +346,18 @@ def test_save_and_preflight_queries_filter_deleted_and_cross_org_resources():
             organization_id,
         )
         collections = repository.get_active_knowledge_collections(
-            [public_collection_id, deleted_only_collection_id],
+            [
+                public_collection_id,
+                deleted_only_collection_id,
+                source_deleted_collection_id,
+            ],
             organization_id,
         )
 
         assert {row.id for row in save_loaded} == {active_kb_id}
         assert set(direct) == {active_kb_id}
         assert public == {active_kb_id}
+        assert source_deleted_collection_id not in collections
         assert collections[public_collection_id].candidate_member_count == 1
         assert collections[deleted_only_collection_id].candidate_member_count == 0
         assert collections[public_collection_id].has_source_managed_members is False
@@ -334,6 +397,15 @@ def test_save_and_preflight_queries_filter_deleted_and_cross_org_resources():
                 user_id=member_id,
                 assigned_by=owner_id,
                 knowledge_collection_id=oldest_allowed_id,
+                permission_action="route",
+            )
+        )
+        db.add(
+            UserKnowledgeCollectionPermission(
+                grantee_organization_id=organization_id,
+                user_id=member_id,
+                assigned_by=owner_id,
+                knowledge_collection_id=source_deleted_collection_id,
                 permission_action="route",
             )
         )

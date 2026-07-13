@@ -51,7 +51,7 @@ def _compiled_criteria(query):
             )
         )
         for criterion in query.criteria
-    )
+    ).lower()
 
 
 def _compiled_join_on(query):
@@ -70,6 +70,13 @@ def _assert_active_runtime_eligible_kb_scope(query):
     sql = _compiled_criteria(query)
     assert "knowledge_bases.lifecycle_state = 'active'" in sql
     assert "knowledge_bases.sync_state != 'source_deleted'" in sql
+    assert "documents.status = 'completed'" in sql
+    assert "document_chunks.document_version_id is null" in sql
+    assert (
+        "document_chunks.document_version_id = "
+        "knowledge_bases.active_document_version_id" in sql
+    )
+    assert "document_versions.status = 'ready'" in sql
 
 
 def test_direct_preflight_query_excludes_source_deleted_kb():
@@ -134,3 +141,17 @@ def test_collection_preflight_aggregate_excludes_source_deleted_members():
         "knowledge_bases.organization_id = "
         "knowledge_collection_items.organization_id" in join_sql
     )
+
+
+def test_collection_preflight_excludes_source_deleted_parent():
+    db = _Db([])
+    repository = SqlAlchemyDeploymentPreflightRepository(db)
+
+    assert repository.get_active_knowledge_collections(
+        [uuid.uuid4()],
+        uuid.uuid4(),
+    ) == {}
+
+    sql = _compiled_criteria(db.queries[0])
+    assert "knowledge_collections.lifecycle_state = 'active'" in sql
+    assert "knowledge_collections.sync_state != 'source_deleted'" in sql
