@@ -319,6 +319,63 @@ def test_security_alert_detection_publishes_manager_refresh_after_commit(monkeyp
     assert events == ["commit", ("publish", organization_id)]
 
 
+def test_security_alert_detection_skips_refresh_without_alert_change(monkeypatch):
+    now = datetime(2026, 7, 12, 0, 10, tzinfo=timezone.utc)
+    organization_id = uuid4()
+    current = AuditLog(
+        id=uuid4(),
+        occurred_at=now,
+        actor_id=uuid4(),
+        actor_type="user",
+        category="action",
+        action="permission.denied",
+        target_type="workflow",
+        target_id=str(uuid4()),
+        status="failure",
+        audit_metadata={"organization_id": str(organization_id)},
+    )
+    candidate = SimpleNamespace(
+        rule_id="repeated_permission_denied",
+        detection_key="below-threshold-key",
+        organization_id=organization_id,
+    )
+    events = []
+    session = _Session(existing=current, events=events)
+    monkeypatch.setattr(audit_tasks, "SessionLocal", lambda: session)
+    monkeypatch.setattr(
+        audit_tasks,
+        "_load_security_alert_detection_context",
+        lambda db, audit_id: (current, [current], now - timedelta(minutes=10)),
+    )
+    monkeypatch.setattr(
+        audit_tasks,
+        "evaluate_security_alert_rules",
+        lambda **kwargs: (),
+    )
+    monkeypatch.setattr(
+        audit_tasks,
+        "build_security_alert_cooldown_candidates",
+        lambda **kwargs: (candidate,),
+    )
+    monkeypatch.setattr(
+        audit_tasks,
+        "aggregate_security_alert_detection",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        audit_tasks,
+        "publish_notifications_changed_to_organization_managers",
+        lambda db, scoped_organization_id: events.append(
+            ("publish", scoped_organization_id)
+        ),
+    )
+
+    result = audit_tasks.detect_security_alert.run(str(current.id))
+
+    assert result["candidate_count"] == 0
+    assert events == ["commit"]
+
+
 def test_reconciliation_publishes_manager_refresh_after_batch_commit(monkeypatch):
     organization_id = uuid4()
     audit = AuditLog(id=uuid4())

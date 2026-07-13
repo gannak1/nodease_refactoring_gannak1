@@ -250,8 +250,6 @@ def _evaluate_and_aggregate_security_alerts(
             detected_at=current_event.occurred_at,
         )
         organization_id = getattr(alert, "organization_id", None)
-        if organization_id is None:
-            organization_id = getattr(candidate, "organization_id", None)
         if organization_id is not None and changed_organization_ids is not None:
             changed_organization_ids.add(organization_id)
     return len(threshold_candidates)
