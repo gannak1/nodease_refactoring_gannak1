@@ -6,9 +6,16 @@ from apps.gateway.application.deployment.errors import DeploymentPreflightBlocke
 from apps.gateway.application.deployment.models import (
     KnowledgeBaseSnapshot,
     KnowledgeCollectionPreflightSnapshot,
+    MailCredentialSnapshot,
+    NodeCatalogSnapshot,
     WorkflowNodeTargetSnapshot,
 )
 from apps.gateway.application.deployment.preflight import DeploymentPreflightUseCase
+from apps.shared.domain.workflow_node_binding import (
+    WorkflowNodeBinding,
+    apply_workflow_node_bindings,
+    canonical_snapshot_sha256,
+)
 
 
 class _Repository:
@@ -19,11 +26,19 @@ class _Repository:
         ] = {}
         self.public_ids: set[uuid.UUID] = set()
         self.targets: dict[uuid.UUID, WorkflowNodeTargetSnapshot] = {}
+        self.deployments: dict[
+            tuple[uuid.UUID, uuid.UUID], WorkflowNodeTargetSnapshot
+        ] = {}
+        self.mail_credentials: dict[uuid.UUID, MailCredentialSnapshot] = {}
         self.calls: list[tuple[str, uuid.UUID | None]] = []
 
     def get_active_knowledge_bases(self, ids, organization_id):
         self.calls.append(("knowledge", organization_id))
-        return {item_id: self.knowledge_bases[item_id] for item_id in ids if item_id in self.knowledge_bases}
+        return {
+            item_id: self.knowledge_bases[item_id]
+            for item_id in ids
+            if item_id in self.knowledge_bases
+        }
 
     def get_public_runtime_eligible_knowledge_base_ids(
         self,
@@ -44,6 +59,68 @@ class _Repository:
     def get_workflow_node_target(self, app_id, organization_id):
         self.calls.append(("workflow_node", organization_id))
         return self.targets.get(app_id)
+
+    def get_workflow_node_deployment(
+        self,
+        app_id,
+        deployment_id,
+        organization_id,
+    ):
+        self.calls.append(("workflow_node_deployment", organization_id))
+        return self.deployments.get((app_id, deployment_id))
+
+    def get_mail_credential_snapshots(
+        self,
+        ids,
+        organization_id,
+        principal_id,
+    ):
+        self.calls.append(("mail", organization_id))
+        return {
+            item_id: self.mail_credentials[item_id]
+            for item_id in ids
+            if item_id in self.mail_credentials
+        }
+
+
+class _PermissionDenialAudit:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def record_mail_credential_use_denied(self, **kwargs) -> None:
+        self.calls.append(kwargs)
+
+
+def test_mail_credential_snapshot_contains_only_safe_decision_fields():
+    assert set(MailCredentialSnapshot.__dataclass_fields__) == {
+        "provider",
+        "auth_type",
+        "usable_by_principal",
+        "effective_auth_state",
+    }
+
+
+def test_internal_chatbot_private_kb_uses_authenticated_audience():
+    organization_id = uuid.uuid4()
+    kb_id = uuid.uuid4()
+    repository = _Repository()
+    repository.knowledge_bases[kb_id] = KnowledgeBaseSnapshot(
+        id=kb_id,
+        source_managed=False,
+    )
+    use_case = DeploymentPreflightUseCase(
+        repository,
+        organization_id=organization_id,
+    )
+
+    result = use_case.preview(
+        deployment_type="internal_chatbot",
+        graph_snapshot=_llm_graph(kb_id),
+    )
+
+    assert result.audience == "authenticated_user"
+    assert result.status == "passed"
+    assert repository.calls == [("knowledge", organization_id)]
 
 
 def test_blocking_result_is_application_error_without_http_dependency():
@@ -74,29 +151,6 @@ def test_blocking_result_is_application_error_without_http_dependency():
         ("knowledge", organization_id),
         ("public", organization_id),
     ]
-
-
-def test_internal_chatbot_private_kb_uses_authenticated_audience():
-    organization_id = uuid.uuid4()
-    kb_id = uuid.uuid4()
-    repository = _Repository()
-    repository.knowledge_bases[kb_id] = KnowledgeBaseSnapshot(
-        id=kb_id,
-        source_managed=False,
-    )
-    use_case = DeploymentPreflightUseCase(
-        repository,
-        organization_id=organization_id,
-    )
-
-    result = use_case.preview(
-        deployment_type="internal_chatbot",
-        graph_snapshot=_llm_graph(kb_id),
-    )
-
-    assert result.audience == "authenticated_user"
-    assert result.status == "passed"
-    assert repository.calls == [("knowledge", organization_id)]
 
 
 def test_inactive_preview_downgrades_publish_blocker_but_not_structural_target_error():
@@ -157,10 +211,30 @@ def test_candidate_workflow_node_graph_requires_existing_scoped_target_and_type(
 
     assert missing_result.status == "blocked"
     assert present_result.status == "blocked"
-    assert (
-        present_result.safe_summary.blocked_reason
-        == "workflow_node_cycle_detected"
+    assert present_result.safe_summary.blocked_reason == "workflow_node_cycle_detected"
+
+
+def test_transitive_workflow_node_graph_uses_common_structural_result():
+    organization_id = uuid.uuid4()
+    target_app_id = uuid.uuid4()
+    repository = _Repository()
+    repository.targets[target_app_id] = WorkflowNodeTargetSnapshot(
+        app_id=target_app_id,
+        organization_id=organization_id,
+        active_graph_snapshot={"nodes": "invalid", "edges": []},
     )
+    use_case = DeploymentPreflightUseCase(
+        repository,
+        organization_id=organization_id,
+    )
+
+    result = use_case.preview(
+        deployment_type="api",
+        graph_snapshot=_workflow_node_graph(target_app_id),
+    )
+
+    assert result.status == "blocked"
+    assert result.safe_summary.blocked_reason == "workflow_graph_invalid"
 
 
 def test_source_managed_public_kb_remains_blocked():
@@ -186,15 +260,694 @@ def test_source_managed_public_kb_remains_blocked():
     assert result.safe_summary.blocked_reason == "source_public_exposure_required"
 
 
+def test_authenticated_run_blocks_unresolved_mail_before_publish():
+    repository = _Repository()
+    use_case = DeploymentPreflightUseCase(
+        repository,
+        organization_id=uuid.uuid4(),
+        principal_id=uuid.uuid4(),
+        node_catalog_by_type=_catalog(mailNode=("external_read", True)),
+    )
+
+    with pytest.raises(DeploymentPreflightBlocked) as exc_info:
+        use_case.enforce_authenticated_run(
+            graph_snapshot=_mail_graph(None),
+        )
+
+    result = exc_info.value.result
+    assert result.safe_summary.blocked_reason == "node_configuration_unresolved"
+    assert result.required_actions[0].action == "complete_node_configuration"
+
+
+def test_mail_resource_failures_share_safe_unavailable_reason():
+    organization_id = uuid.uuid4()
+    credential_id = uuid.uuid4()
+    repository = _Repository()
+    repository.mail_credentials[credential_id] = MailCredentialSnapshot(
+        provider="imap",
+        auth_type="password",
+        usable_by_principal=False,
+        effective_auth_state="viewer",
+    )
+    use_case = DeploymentPreflightUseCase(
+        repository,
+        organization_id=organization_id,
+        principal_id=uuid.uuid4(),
+        node_catalog_by_type=_catalog(mailNode=("external_read", True)),
+    )
+
+    result = use_case.preview(
+        deployment_type="workflow_node",
+        graph_snapshot=_mail_graph(credential_id),
+    )
+
+    assert result.status == "blocked"
+    assert result.safe_summary.blocked_reason == "mail_credential_unavailable"
+    assert "mail_execution_subject_inherited" in result.warnings
+
+
+def test_authenticated_run_accepts_complete_gmail_processing_chain():
+    organization_id = uuid.uuid4()
+    credential_id = uuid.uuid4()
+    repository = _Repository()
+    repository.mail_credentials[credential_id] = MailCredentialSnapshot(
+        provider="gmail",
+        auth_type="oauth2",
+        usable_by_principal=True,
+        effective_auth_state="operator",
+    )
+    use_case = DeploymentPreflightUseCase(
+        repository,
+        organization_id=organization_id,
+        principal_id=uuid.uuid4(),
+        node_catalog_by_type=_mail_processing_catalog(),
+    )
+
+    result = use_case.enforce_authenticated_run(
+        graph_snapshot=_mail_processing_graph(credential_id),
+    )
+
+    assert result.status == "passed"
+
+
+def test_authenticated_run_rejects_non_gmail_oauth_draft_credential():
+    organization_id = uuid.uuid4()
+    credential_id = uuid.uuid4()
+    repository = _Repository()
+    repository.mail_credentials[credential_id] = MailCredentialSnapshot(
+        provider="imap",
+        auth_type="password",
+        usable_by_principal=True,
+        effective_auth_state="operator",
+    )
+    use_case = DeploymentPreflightUseCase(
+        repository,
+        organization_id=organization_id,
+        principal_id=uuid.uuid4(),
+        node_catalog_by_type=_mail_processing_catalog(),
+    )
+
+    with pytest.raises(DeploymentPreflightBlocked) as exc_info:
+        use_case.enforce_authenticated_run(
+            graph_snapshot=_mail_processing_graph(credential_id),
+        )
+
+    assert exc_info.value.result.safe_summary.blocked_reason == (
+        "node_configuration_invalid"
+    )
+
+
+def test_inactive_preview_keeps_invalid_mail_configuration_blocked():
+    organization_id = uuid.uuid4()
+    credential_id = uuid.uuid4()
+    repository = _Repository()
+    repository.mail_credentials[credential_id] = MailCredentialSnapshot(
+        provider="imap",
+        auth_type="password",
+        usable_by_principal=True,
+        effective_auth_state="operator",
+    )
+    use_case = DeploymentPreflightUseCase(
+        repository,
+        organization_id=organization_id,
+        principal_id=uuid.uuid4(),
+        node_catalog_by_type=_mail_processing_catalog(),
+    )
+
+    result = use_case.preview(
+        deployment_type="workflow_node",
+        graph_snapshot=_mail_processing_graph(credential_id),
+        is_active=False,
+    )
+
+    assert result.status == "blocked"
+    assert result.safe_summary.blocked_reason == "node_configuration_invalid"
+
+
+def test_public_mail_blocks_on_missing_execution_subject_and_checks_reference():
+    credential_id = uuid.uuid4()
+    repository = _Repository()
+    use_case = DeploymentPreflightUseCase(
+        repository,
+        organization_id=uuid.uuid4(),
+        principal_id=uuid.uuid4(),
+        node_catalog_by_type=_catalog(mailNode=("external_read", True)),
+    )
+
+    result = use_case.preview(
+        deployment_type="schedule",
+        graph_snapshot=_mail_graph(credential_id),
+    )
+
+    assert result.status == "blocked"
+    assert result.safe_summary.blocked_reason == "mail_execution_subject_required"
+    assert any(call[0] == "mail" for call in repository.calls)
+
+
+def test_public_mail_does_not_report_permission_denial_without_a_principal():
+    credential_id = uuid.uuid4()
+    repository = _Repository()
+    repository.mail_credentials[credential_id] = MailCredentialSnapshot(
+        provider="imap",
+        auth_type="password",
+        usable_by_principal=False,
+        effective_auth_state="none",
+    )
+    use_case = DeploymentPreflightUseCase(
+        repository,
+        organization_id=uuid.uuid4(),
+        principal_id=None,
+        node_catalog_by_type=_catalog(mailNode=("external_read", True)),
+    )
+
+    result = use_case.preview(
+        deployment_type="schedule",
+        graph_snapshot=_mail_graph(credential_id),
+    )
+
+    reason_codes = {
+        reason
+        for node_result in result.nodes
+        for reason in node_result.reason_codes
+    }
+    assert result.status == "blocked"
+    assert reason_codes == {"mail_execution_subject_required"}
+
+
+def test_inactive_preview_downgrades_fixable_mail_configuration():
+    use_case = DeploymentPreflightUseCase(
+        _Repository(),
+        organization_id=uuid.uuid4(),
+        principal_id=uuid.uuid4(),
+        node_catalog_by_type=_catalog(mailNode=("external_read", True)),
+    )
+
+    result = use_case.preview(
+        deployment_type="workflow_node",
+        graph_snapshot=_mail_graph(None),
+        is_active=False,
+    )
+
+    assert result.status == "warning"
+    assert result.safe_summary.blocked_reason == "node_configuration_unresolved"
+
+
+@pytest.mark.parametrize(
+    ("credential_id", "configuration_state"),
+    [
+        (None, "resolved"),
+        (None, None),
+        ("", "unresolved"),
+    ],
+)
+def test_inactive_preview_rejects_null_or_empty_reference_without_explicit_unresolved_state(
+    credential_id,
+    configuration_state,
+):
+    use_case = DeploymentPreflightUseCase(
+        _Repository(),
+        organization_id=uuid.uuid4(),
+        principal_id=uuid.uuid4(),
+        node_catalog_by_type=_catalog(mailNode=("external_read", True)),
+    )
+    graph = _mail_graph(None)
+    mail_data = graph["nodes"][1]["data"]
+    mail_data["credential_id"] = credential_id
+    if configuration_state is None:
+        mail_data.pop("configuration_state")
+    else:
+        mail_data["configuration_state"] = configuration_state
+
+    result = use_case.preview(
+        deployment_type="workflow_node",
+        graph_snapshot=graph,
+        is_active=False,
+    )
+
+    assert result.status == "blocked"
+    assert result.safe_summary.blocked_reason == "node_configuration_invalid"
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    [
+        ("folder", "ARCHIVE"),
+        ("parameters", {"unexpected": True}),
+        ("title", None),
+    ],
+)
+def test_inactive_preview_does_not_hide_invalid_mail_fields_behind_unresolved_reference(
+    field_name,
+    invalid_value,
+):
+    repository = _Repository()
+    use_case = DeploymentPreflightUseCase(
+        repository,
+        organization_id=uuid.uuid4(),
+        principal_id=uuid.uuid4(),
+        node_catalog_by_type=_catalog(mailNode=("external_read", True)),
+    )
+    graph = _mail_graph(None)
+    graph["nodes"][1]["data"][field_name] = invalid_value
+
+    result = use_case.preview(
+        deployment_type="workflow_node",
+        graph_snapshot=graph,
+        is_active=False,
+    )
+
+    assert result.status == "blocked"
+    assert result.safe_summary.blocked_reason == "node_configuration_invalid"
+    assert not any(call[0] == "mail" for call in repository.calls)
+
+
+def test_inactive_preview_keeps_non_null_unavailable_mail_blocked():
+    use_case = DeploymentPreflightUseCase(
+        _Repository(),
+        organization_id=uuid.uuid4(),
+        principal_id=uuid.uuid4(),
+        node_catalog_by_type=_catalog(mailNode=("external_read", True)),
+    )
+
+    result = use_case.preview(
+        deployment_type="workflow_node",
+        graph_snapshot=_mail_graph(uuid.uuid4()),
+        is_active=False,
+    )
+
+    assert result.status == "blocked"
+    assert result.safe_summary.blocked_reason == "mail_credential_unavailable"
+
+
+def test_inactive_preview_downgrades_only_fixable_slack_configuration():
+    use_case = DeploymentPreflightUseCase(
+        _Repository(),
+        organization_id=uuid.uuid4(),
+        principal_id=uuid.uuid4(),
+        node_catalog_by_type=_catalog(slackPostNode=("external_write", True)),
+    )
+
+    result = use_case.preview(
+        deployment_type="workflow_node",
+        graph_snapshot=_slack_graph(
+            {
+                "title": "Slack",
+                "slackMode": "api",
+                "authConfig": {},
+                "configuration_state": "unresolved",
+                "channel_resolution_state": "unresolved",
+            }
+        ),
+        is_active=False,
+    )
+
+    assert result.status == "warning"
+    assert result.safe_summary.blocked_reason == "node_configuration_unresolved"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {"message": "   ", "blocks": None, "attachments": None},
+        {"message": "", "blocks": "[]", "attachments": "[]"},
+    ),
+)
+def test_inactive_preview_treats_empty_slack_payload_as_unresolved(payload):
+    use_case = DeploymentPreflightUseCase(
+        _Repository(),
+        organization_id=uuid.uuid4(),
+        principal_id=uuid.uuid4(),
+        node_catalog_by_type=_catalog(slackPostNode=("external_write", True)),
+    )
+
+    result = use_case.preview(
+        deployment_type="workflow_node",
+        graph_snapshot=_slack_graph(
+            {
+                "title": "Slack",
+                "slackMode": "api",
+                "authConfig": {"token": "configuration-ready"},
+                "channel": "C123",
+                "configuration_state": "unresolved",
+                **payload,
+            }
+        ),
+        is_active=False,
+    )
+
+    assert result.status == "warning"
+    assert result.safe_summary.blocked_reason == "node_configuration_unresolved"
+
+
+def test_inactive_preview_does_not_hide_invalid_slack_fields_behind_missing_values():
+    use_case = DeploymentPreflightUseCase(
+        _Repository(),
+        organization_id=uuid.uuid4(),
+        principal_id=uuid.uuid4(),
+        node_catalog_by_type=_catalog(slackPostNode=("external_write", True)),
+    )
+
+    result = use_case.preview(
+        deployment_type="workflow_node",
+        graph_snapshot=_slack_graph(
+            {
+                "title": "Slack",
+                "slackMode": "api",
+                "authConfig": {},
+                "parameters": {"unexpected": True},
+                "configuration_state": "unresolved",
+            }
+        ),
+        is_active=False,
+    )
+
+    assert result.status == "blocked"
+    assert result.safe_summary.blocked_reason == "node_configuration_invalid"
+
+
+def test_preview_does_not_audit_mail_permission_denial():
+    credential_id = uuid.uuid4()
+    repository = _Repository()
+    repository.mail_credentials[credential_id] = MailCredentialSnapshot(
+        provider="imap",
+        auth_type="password",
+        usable_by_principal=False,
+        effective_auth_state="viewer",
+    )
+    audit = _PermissionDenialAudit()
+    use_case = DeploymentPreflightUseCase(
+        repository,
+        organization_id=uuid.uuid4(),
+        principal_id=uuid.uuid4(),
+        node_catalog_by_type=_catalog(mailNode=("external_read", True)),
+        permission_denial_audit=audit,
+    )
+
+    use_case.preview(
+        deployment_type="workflow_node",
+        graph_snapshot=_mail_graph(credential_id),
+    )
+
+    assert audit.calls == []
+
+
+def test_enforcement_audits_each_denied_mail_credential_once():
+    organization_id = uuid.uuid4()
+    principal_id = uuid.uuid4()
+    credential_id = uuid.uuid4()
+    repository = _Repository()
+    repository.mail_credentials[credential_id] = MailCredentialSnapshot(
+        provider="imap",
+        auth_type="password",
+        usable_by_principal=False,
+        effective_auth_state="viewer",
+    )
+    audit = _PermissionDenialAudit()
+    graph = _mail_graph(credential_id)
+    graph["nodes"].append(
+        {
+            "id": "mail-2",
+            "type": "mailNode",
+            "data": dict(graph["nodes"][1]["data"]),
+        }
+    )
+    graph["edges"].append({"source": "start", "target": "mail-2"})
+    use_case = DeploymentPreflightUseCase(
+        repository,
+        organization_id=organization_id,
+        principal_id=principal_id,
+        node_catalog_by_type=_catalog(mailNode=("external_read", True)),
+        permission_denial_audit=audit,
+    )
+
+    with pytest.raises(DeploymentPreflightBlocked):
+        use_case.enforce_authenticated_run(graph_snapshot=graph)
+
+    assert audit.calls == [
+        {
+            "principal_id": principal_id,
+            "organization_id": organization_id,
+            "credential_id": credential_id,
+            "effective_auth_state": "viewer",
+        }
+    ]
+
+
+def test_enforcement_does_not_audit_missing_mail_credential():
+    audit = _PermissionDenialAudit()
+    use_case = DeploymentPreflightUseCase(
+        _Repository(),
+        organization_id=uuid.uuid4(),
+        principal_id=uuid.uuid4(),
+        node_catalog_by_type=_catalog(mailNode=("external_read", True)),
+        permission_denial_audit=audit,
+    )
+
+    with pytest.raises(DeploymentPreflightBlocked):
+        use_case.enforce_authenticated_run(
+            graph_snapshot=_mail_graph(uuid.uuid4()),
+        )
+
+    assert audit.calls == []
+
+
+def test_inactive_save_allows_warning_but_rejects_structural_blocker():
+    mail_use_case = DeploymentPreflightUseCase(
+        _Repository(),
+        organization_id=uuid.uuid4(),
+        principal_id=uuid.uuid4(),
+        node_catalog_by_type=_catalog(mailNode=("external_read", True)),
+    )
+
+    result = mail_use_case.enforce_inactive_save(
+        deployment_type="workflow_node",
+        graph_snapshot=_mail_graph(None),
+    )
+
+    assert result.status == "warning"
+
+    malformed_use_case = DeploymentPreflightUseCase(
+        _Repository(),
+        organization_id=uuid.uuid4(),
+        node_catalog_by_type={},
+    )
+    with pytest.raises(DeploymentPreflightBlocked):
+        malformed_use_case.enforce_inactive_save(
+            deployment_type="api",
+            graph_snapshot={"nodes": "invalid", "edges": []},
+        )
+
+
+def test_unimplemented_external_node_is_not_downgraded_for_inactive_preview():
+    use_case = DeploymentPreflightUseCase(
+        _Repository(),
+        organization_id=uuid.uuid4(),
+        node_catalog_by_type=_catalog(pluginNode=("external_write", False)),
+    )
+    graph = {
+        "nodes": [
+            {"id": "start", "type": "startNode", "data": {}},
+            {"id": "plugin-1", "type": "pluginNode", "data": {}},
+        ],
+        "edges": [{"source": "start", "target": "plugin-1"}],
+    }
+
+    result = use_case.preview(
+        deployment_type="api",
+        graph_snapshot=graph,
+        is_active=False,
+    )
+
+    assert result.status == "blocked"
+    assert (
+        result.safe_summary.blocked_reason == "node_configuration_validator_unavailable"
+    )
+
+
+def test_runtime_authoritative_external_node_remains_supported():
+    use_case = DeploymentPreflightUseCase(
+        _Repository(),
+        organization_id=uuid.uuid4(),
+        node_catalog_by_type=_catalog(llmNode=("external_read", True)),
+    )
+    graph = {
+        "nodes": [
+            {"id": "start", "type": "startNode", "data": {}},
+            {"id": "llm-1", "type": "llmNode", "data": {}},
+        ],
+        "edges": [{"source": "start", "target": "llm-1"}],
+    }
+
+    result = use_case.preview(deployment_type="api", graph_snapshot=graph)
+
+    assert result.status == "passed"
+
+
+def test_canvas_note_is_allowed_without_catalog_runtime_definition():
+    use_case = DeploymentPreflightUseCase(
+        _Repository(),
+        organization_id=uuid.uuid4(),
+        node_catalog_by_type=_catalog(),
+    )
+
+    result = use_case.preview(
+        deployment_type="api",
+        graph_snapshot={
+            "nodes": [
+                {"id": "start", "type": "startNode", "data": {}},
+                {"id": "note-1", "type": "note", "data": {}},
+            ],
+            "edges": [],
+        },
+    )
+
+    assert result.status == "passed"
+
+
+def test_nested_loop_mail_uses_same_authenticated_principal():
+    organization_id = uuid.uuid4()
+    principal_id = uuid.uuid4()
+    credential_id = uuid.uuid4()
+    repository = _Repository()
+    repository.mail_credentials[credential_id] = MailCredentialSnapshot(
+        provider="imap",
+        auth_type="password",
+        usable_by_principal=True,
+        effective_auth_state="operator",
+    )
+    use_case = DeploymentPreflightUseCase(
+        repository,
+        organization_id=organization_id,
+        principal_id=principal_id,
+        node_catalog_by_type=_catalog(
+            loopNode=("local_execution", True),
+            mailNode=("external_read", True),
+        ),
+    )
+    graph = {
+        "nodes": [
+            {"id": "start", "type": "startNode", "data": {}},
+            {
+                "id": "loop-1",
+                "type": "loopNode",
+                "data": {"subGraph": _mail_graph(credential_id)},
+            }
+        ],
+        "edges": [{"source": "start", "target": "loop-1"}],
+    }
+
+    result = use_case.enforce_authenticated_run(graph_snapshot=graph)
+
+    assert result.status == "passed"
+    assert ("mail", organization_id) in repository.calls
+
+
+def test_workflow_node_preflight_uses_exact_bound_deployment_snapshot():
+    organization_id = uuid.uuid4()
+    principal_id = uuid.uuid4()
+    target_app_id = uuid.uuid4()
+    target_workflow_id = uuid.uuid4()
+    bound_deployment_id = uuid.uuid4()
+    credential_id = uuid.uuid4()
+    bound_graph = _mail_graph(credential_id)
+    repository = _Repository()
+    repository.targets[target_app_id] = WorkflowNodeTargetSnapshot(
+        app_id=target_app_id,
+        organization_id=organization_id,
+        workflow_id=target_workflow_id,
+        deployment_id=uuid.uuid4(),
+        deployment_version=2,
+        deployment_type="workflow_node",
+        active_graph_snapshot={"nodes": [], "edges": []},
+        active_pointer_valid=True,
+    )
+    repository.deployments[(target_app_id, bound_deployment_id)] = (
+        WorkflowNodeTargetSnapshot(
+            app_id=target_app_id,
+            organization_id=organization_id,
+            workflow_id=target_workflow_id,
+            deployment_id=bound_deployment_id,
+            deployment_version=1,
+            deployment_type="workflow_node",
+            active_graph_snapshot=bound_graph,
+            active_pointer_valid=True,
+        )
+    )
+    root_graph = apply_workflow_node_bindings(
+        _workflow_node_graph(target_app_id),
+        (
+            WorkflowNodeBinding(
+                container_path=(),
+                workflow_node_id="workflow-1",
+                target_app_id=target_app_id,
+                deployment_id=bound_deployment_id,
+                deployment_version=1,
+                snapshot_sha256=canonical_snapshot_sha256(bound_graph),
+            ),
+        ),
+    )
+    use_case = DeploymentPreflightUseCase(
+        repository,
+        organization_id=organization_id,
+        principal_id=principal_id,
+        node_catalog_by_type=_catalog(
+            workflowNode=("local_execution", True),
+            mailNode=("external_read", True),
+        ),
+    )
+
+    with pytest.raises(DeploymentPreflightBlocked) as exc_info:
+        use_case.enforce_authenticated_run(graph_snapshot=root_graph)
+
+    assert exc_info.value.result.safe_summary.blocked_reason == (
+        "mail_credential_unavailable"
+    )
+    assert ("workflow_node_deployment", organization_id) in repository.calls
+
+
+def test_malformed_graph_fails_closed():
+    use_case = DeploymentPreflightUseCase(
+        _Repository(),
+        organization_id=uuid.uuid4(),
+        node_catalog_by_type={},
+    )
+
+    result = use_case.preview(
+        deployment_type="api",
+        graph_snapshot={"nodes": "invalid", "edges": []},
+        is_active=False,
+    )
+
+    assert result.status == "blocked"
+    assert result.safe_summary.blocked_reason == "workflow_graph_invalid"
+
+
+def test_malformed_runtime_authoritative_node_data_fails_closed():
+    use_case = DeploymentPreflightUseCase(
+        _Repository(),
+        organization_id=uuid.uuid4(),
+        node_catalog_by_type=_catalog(llmNode=("external_read", True)),
+    )
+
+    result = use_case.preview(
+        deployment_type="api",
+        graph_snapshot={
+            "nodes": [{"id": "llm", "type": "llmNode", "data": None}],
+            "edges": [],
+        },
+        is_active=False,
+    )
+
+    assert result.status == "blocked"
+    assert result.safe_summary.blocked_reason == "workflow_graph_invalid"
+
+
 @pytest.mark.parametrize(
     ("references", "expected_reason"),
     [
         ([{"id": "not-a-uuid"}], "knowledge_reference_invalid"),
         (
-            [
-                {"id": str(uuid.uuid4())}
-                for _index in range(21)
-            ],
+            [{"id": str(uuid.uuid4())} for _index in range(21)],
             "knowledge_reference_limit_exceeded",
         ),
     ],
@@ -204,6 +957,7 @@ def test_malformed_or_over_limit_collection_graph_is_non_downgradable(
     expected_reason,
 ):
     repository = _Repository()
+
     result = DeploymentPreflightUseCase(
         repository,
         organization_id=uuid.uuid4(),
@@ -372,19 +1126,28 @@ def test_nested_loop_collection_is_evaluated_with_parent_audience():
         collection_id,
         public=False,
     )
-    graph = {
+    loop_body = {
         "nodes": [
             {
-                "id": "loop-1",
-                "type": "loopNode",
+                "id": "llm-collection",
+                "type": "llmNode",
                 "data": {
-                    "subGraph": _collection_graph(
-                        [{"id": str(collection_id)}]
-                    )
+                    "knowledgeCollections": [{"id": str(collection_id)}]
                 },
             }
         ],
         "edges": [],
+    }
+    graph = {
+        "nodes": [
+            {"id": "start", "type": "startNode", "data": {}},
+            {
+                "id": "loop-1",
+                "type": "loopNode",
+                "data": {"subGraph": loop_body},
+            },
+        ],
+        "edges": [{"source": "start", "target": "loop-1"}],
     }
 
     result = DeploymentPreflightUseCase(
@@ -401,44 +1164,57 @@ def test_nested_loop_collection_is_evaluated_with_parent_audience():
     )
 
 
-def test_deep_nested_subgraphs_are_evaluated_without_recursive_stack_usage():
-    organization_id = uuid.uuid4()
+def test_nested_collection_beyond_shared_graph_depth_limit_fails_closed():
     collection_id = uuid.uuid4()
-    repository = _Repository()
-    repository.collections[collection_id] = _collection_snapshot(
-        collection_id,
-        public=False,
-    )
-    graph = _collection_graph([{"id": str(collection_id)}])
-    for index in range(1_100):
-        graph = {
+    body = {
+        "nodes": [
+            {
+                "id": "llm-collection",
+                "type": "llmNode",
+                "data": {
+                    "knowledgeCollections": [{"id": str(collection_id)}]
+                },
+            }
+        ],
+        "edges": [],
+    }
+    for index in range(17):
+        body = {
             "nodes": [
                 {
                     "id": f"loop-{index}",
                     "type": "loopNode",
-                    "data": {"subGraph": graph},
+                    "data": {"subGraph": body},
                 }
             ],
             "edges": [],
         }
+    graph = {
+        "nodes": [
+            {"id": "start", "type": "startNode", "data": {}},
+            {"id": "root-loop", "type": "loopNode", "data": {"subGraph": body}},
+        ],
+        "edges": [{"source": "start", "target": "root-loop"}],
+    }
+    repository = _Repository()
 
     result = DeploymentPreflightUseCase(
         repository,
-        organization_id=organization_id,
+        organization_id=uuid.uuid4(),
     ).preview(
         deployment_type="chatbot",
         graph_snapshot=graph,
     )
 
     assert result.status == "blocked"
-    assert result.safe_summary.blocked_reason == (
-        "private_collection_requires_execution_subject"
-    )
+    assert result.safe_summary.blocked_reason == "workflow_graph_invalid"
+    assert repository.calls == []
 
 
 def _llm_graph(kb_id: uuid.UUID) -> dict:
     return {
         "nodes": [
+            {"id": "start", "type": "startNode", "data": {}},
             {
                 "id": "llm-1",
                 "type": "llmNode",
@@ -447,20 +1223,35 @@ def _llm_graph(kb_id: uuid.UUID) -> dict:
                 },
             }
         ],
-        "edges": [],
+        "edges": [{"source": "start", "target": "llm-1"}],
+    }
+
+
+def _workflow_node_graph(app_id: uuid.UUID) -> dict:
+    return {
+        "nodes": [
+            {"id": "start", "type": "startNode", "data": {}},
+            {
+                "id": "workflow-1",
+                "type": "workflowNode",
+                "data": {"appId": str(app_id)},
+            }
+        ],
+        "edges": [{"source": "start", "target": "workflow-1"}],
     }
 
 
 def _collection_graph(references: list[dict]) -> dict:
     return {
         "nodes": [
+            {"id": "start", "type": "startNode", "data": {}},
             {
-                "id": "llm-1",
+                "id": "llm-collection",
                 "type": "llmNode",
                 "data": {"knowledgeCollections": references},
-            }
+            },
         ],
-        "edges": [],
+        "edges": [{"source": "start", "target": "llm-collection"}],
     }
 
 
@@ -481,14 +1272,107 @@ def _collection_snapshot(
     )
 
 
-def _workflow_node_graph(app_id: uuid.UUID) -> dict:
+def _mail_graph(credential_id: uuid.UUID | None) -> dict:
     return {
         "nodes": [
+            {"id": "start", "type": "startNode", "data": {}},
             {
-                "id": "workflow-1",
-                "type": "workflowNode",
-                "data": {"appId": str(app_id)},
+                "id": "mail-1",
+                "type": "mailNode",
+                "data": {
+                    "title": "Mail",
+                    "parameters": {},
+                    "credential_id": (
+                        str(credential_id) if credential_id is not None else None
+                    ),
+                    "configuration_state": (
+                        "resolved" if credential_id is not None else "unresolved"
+                    ),
+                    "processing_mode": "search_only",
+                },
             }
         ],
-        "edges": [],
+        "edges": [{"source": "start", "target": "mail-1"}],
     }
+
+
+def _mail_processing_graph(credential_id: uuid.UUID) -> dict:
+    processing_selector = ["mail", "processing_ref"]
+    return {
+        "nodes": [
+            {"id": "start", "type": "startNode", "data": {}},
+            {
+                "id": "mail",
+                "type": "mailNode",
+                "data": {
+                    "title": "Mail",
+                    "credential_id": str(credential_id),
+                    "configuration_state": "resolved",
+                    "processing_mode": "durable",
+                    "max_results": 1,
+                    "mark_as_read": False,
+                },
+            },
+            {"id": "llm", "type": "llmNode", "data": {}},
+            {
+                "id": "draft",
+                "type": "gmailDraftNode",
+                "data": {
+                    "title": "Gmail Draft",
+                    "credential_id": str(credential_id),
+                    "configuration_state": "resolved",
+                    "processing_ref_selector": processing_selector,
+                    "reply_body_selector": ["llm", "result"],
+                },
+            },
+            {
+                "id": "ack",
+                "type": "mailAcknowledgeNode",
+                "data": {
+                    "title": "Mail Acknowledge",
+                    "processing_ref_selector": processing_selector,
+                    "required_effect_ref_selectors": [["draft", "draft_ref"]],
+                },
+            },
+        ],
+        "edges": [
+            {"source": "start", "target": "mail"},
+            {"source": "mail", "target": "llm"},
+            {"source": "llm", "target": "draft"},
+            {"source": "draft", "target": "ack"},
+        ],
+    }
+
+
+def _mail_processing_catalog() -> dict[str, NodeCatalogSnapshot]:
+    return _catalog(
+        mailNode=("external_read", True),
+        llmNode=("external_write", True),
+        gmailDraftNode=("external_write", True),
+        mailAcknowledgeNode=("external_write", True),
+    )
+
+
+def _slack_graph(data: dict) -> dict:
+    return {
+        "nodes": [
+            {"id": "start", "type": "startNode", "data": {}},
+            {"id": "slack", "type": "slackPostNode", "data": data},
+        ],
+        "edges": [{"source": "start", "target": "slack"}],
+    }
+
+
+def _catalog(**definitions: tuple[str, bool]) -> dict[str, NodeCatalogSnapshot]:
+    snapshots = {
+        node_type: NodeCatalogSnapshot(
+            side_effect=side_effect,
+            implemented=implemented,
+        )
+        for node_type, (side_effect, implemented) in definitions.items()
+    }
+    snapshots["startNode"] = NodeCatalogSnapshot(
+        side_effect="none",
+        implemented=True,
+    )
+    return snapshots

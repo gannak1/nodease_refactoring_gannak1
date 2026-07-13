@@ -13,6 +13,10 @@ from apps.shared.domain.workflow_node_binding import (
     parse_workflow_node_bindings,
     workflow_node_references,
 )
+from apps.shared.domain.workflow_graph import (
+    WorkflowGraphValidationError,
+    validate_workflow_graph,
+)
 
 from .models import WorkflowNodeTargetSnapshot
 from .ports import DeploymentPreflightRepository
@@ -36,6 +40,7 @@ class WorkflowNodeBindingUseCase:
         *,
         root_app_id: uuid.UUID,
     ) -> dict:
+        self._require_valid_graph(graph)
         bindings: list[WorkflowNodeBinding] = []
         for reference in workflow_node_references(graph):
             target = self.repository.get_workflow_node_target(
@@ -96,6 +101,7 @@ class WorkflowNodeBindingUseCase:
         if depth > MAX_WORKFLOW_NODE_DEPTH:
             raise WorkflowNodeBindingError("workflow_node.depth_exceeded")
         graph = target.active_graph_snapshot
+        self._require_valid_graph(graph)
         references = workflow_node_references(graph)
         if not references:
             return
@@ -162,6 +168,7 @@ class WorkflowNodeBindingUseCase:
         depth: int,
         visited: set[uuid.UUID],
     ) -> bool:
+        self._require_valid_graph(graph)
         if graph_has_external_effect(graph, self.side_effect_by_node_type):
             return True
         if depth >= MAX_WORKFLOW_NODE_DEPTH:
@@ -188,3 +195,10 @@ class WorkflowNodeBindingUseCase:
             ):
                 return True
         return False
+
+    @staticmethod
+    def _require_valid_graph(graph: dict) -> None:
+        try:
+            validate_workflow_graph(graph)
+        except WorkflowGraphValidationError as exc:
+            raise WorkflowNodeBindingError("workflow_graph_invalid") from exc

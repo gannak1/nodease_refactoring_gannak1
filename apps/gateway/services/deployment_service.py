@@ -34,6 +34,10 @@ from apps.shared.domain.deployment_runtime_policy import (
 from apps.shared.domain.external_effect_error import (
     safe_external_effect_error_payload,
 )
+from apps.shared.domain.workflow_graph import (
+    WorkflowGraphValidationError,
+    validate_workflow_graph,
+)
 from apps.shared.schemas.deployment import DeploymentCreate, DeploymentPreflightResponse
 from apps.shared.services.permissions import has_workflow_permission
 from apps.shared.services.workflow_task_publisher import send_workflow_task
@@ -133,26 +137,45 @@ class DeploymentService:
             user_id=user_id,
             organization_id=workflow.organization_id,
         )
-        graph_snapshot = DeploymentService.bind_workflow_node_targets(
+        DeploymentService._enforce_graph_structure_before_binding(
             db,
-            graph_snapshot,
             app=app,
+            deployment_type=deployment_in.type,
+            graph_snapshot=graph_snapshot,
+            principal_id=user_id,
+            is_active=deployment_in.is_active,
         )
-        WorkflowService.validate_mail_credential_references(
-            db,
-            graph_snapshot,
-            user_id=str(user_id),
-            organization_id=workflow.organization_id,
-            require_resolved=True,
-        )
-
-        if deployment_in.is_active:
-            DeploymentService._enforce_knowledge_preflight(
+        try:
+            graph_snapshot = DeploymentService.bind_workflow_node_targets(
+                db,
+                graph_snapshot,
+                app=app,
+            )
+        except HTTPException:
+            # A transitive target can fail structural validation inside binding.
+            # Preserve the common safe preflight envelope before exposing a
+            # lower-level binding error.
+            DeploymentService._enforce_deployment_configuration_preflight(
                 db,
                 app=app,
                 deployment_type=deployment_in.type,
                 graph_snapshot=graph_snapshot,
+                principal_id=user_id,
+                is_active=deployment_in.is_active,
             )
+            raise
+        DeploymentService._enforce_deployment_configuration_preflight(
+            db,
+            app=app,
+            deployment_type=deployment_in.type,
+            graph_snapshot=graph_snapshot,
+            principal_id=user_id,
+            is_active=deployment_in.is_active,
+        )
+        WorkflowService.validate_external_node_storage_boundaries(
+            graph_snapshot,
+            require_resolved=False,
+        )
 
         # 5. 첫 배포 시 url_slug, auth_secret 생성. Preflight 실패 시
         # app 상태가 남지 않도록 active preflight 이후에 수행한다.
@@ -266,10 +289,12 @@ class DeploymentService:
         graph_snapshot: dict,
         audience_hint=None,
         is_active: bool = True,
+        principal_id: uuid.UUID | None = None,
     ) -> DeploymentPreflightResponse:
         return KnowledgeDeploymentPreflightService(
             db,
             organization_id=app.organization_id,
+            principal_id=principal_id,
             candidate_graphs_by_app_id={app.id: graph_snapshot},
             candidate_deployment_types_by_app_id={app.id: deployment_type},
         ).preview(
@@ -286,16 +311,100 @@ class DeploymentService:
         app: App,
         deployment_type: DeploymentType,
         graph_snapshot: dict,
+        principal_id: uuid.UUID | None = None,
     ) -> DeploymentPreflightResponse:
         return KnowledgeDeploymentPreflightService(
             db,
             organization_id=app.organization_id,
+            principal_id=principal_id,
             candidate_graphs_by_app_id={app.id: graph_snapshot},
             candidate_deployment_types_by_app_id={app.id: deployment_type},
         ).enforce_active_publish(
             deployment_type=deployment_type,
             graph_snapshot=graph_snapshot,
         )
+
+    @staticmethod
+    def _enforce_inactive_preflight(
+        db: Session,
+        *,
+        app: App,
+        deployment_type: DeploymentType,
+        graph_snapshot: dict,
+        principal_id: uuid.UUID | None = None,
+    ) -> DeploymentPreflightResponse:
+        return KnowledgeDeploymentPreflightService(
+            db,
+            organization_id=app.organization_id,
+            principal_id=principal_id,
+            candidate_graphs_by_app_id={app.id: graph_snapshot},
+            candidate_deployment_types_by_app_id={app.id: deployment_type},
+        ).enforce_inactive_save(
+            deployment_type=deployment_type,
+            graph_snapshot=graph_snapshot,
+        )
+
+    @staticmethod
+    def _enforce_deployment_configuration_preflight(
+        db: Session,
+        *,
+        app: App,
+        deployment_type: DeploymentType,
+        graph_snapshot: dict,
+        principal_id: uuid.UUID,
+        is_active: bool,
+    ) -> DeploymentPreflightResponse:
+        if is_active:
+            return DeploymentService._enforce_knowledge_preflight(
+                db,
+                app=app,
+                deployment_type=deployment_type,
+                graph_snapshot=graph_snapshot,
+                principal_id=principal_id,
+            )
+        return DeploymentService._enforce_inactive_preflight(
+            db,
+            app=app,
+            deployment_type=deployment_type,
+            graph_snapshot=graph_snapshot,
+            principal_id=principal_id,
+        )
+
+    @staticmethod
+    def enforce_authenticated_configuration_preflight(
+        db: Session,
+        *,
+        graph_snapshot: dict,
+        organization_id: uuid.UUID | None,
+        principal_id: uuid.UUID,
+    ) -> DeploymentPreflightResponse:
+        return KnowledgeDeploymentPreflightService(
+            db,
+            organization_id=organization_id,
+            principal_id=principal_id,
+        ).enforce_authenticated_run(graph_snapshot=graph_snapshot)
+
+    @staticmethod
+    def _enforce_graph_structure_before_binding(
+        db: Session,
+        *,
+        app: App,
+        deployment_type: DeploymentType,
+        graph_snapshot: dict,
+        principal_id: uuid.UUID,
+        is_active: bool,
+    ) -> None:
+        try:
+            validate_workflow_graph(graph_snapshot)
+        except WorkflowGraphValidationError:
+            DeploymentService._enforce_deployment_configuration_preflight(
+                db,
+                app=app,
+                deployment_type=deployment_type,
+                graph_snapshot=graph_snapshot,
+                principal_id=principal_id,
+                is_active=is_active,
+            )
 
     @staticmethod
     def _resolve_graph_snapshot(
@@ -1115,18 +1224,16 @@ class DeploymentService:
         if new_state:
             if not app:
                 raise HTTPException(status_code=404, detail="App not found")
-            WorkflowService.validate_mail_credential_references(
-                db,
-                deployment.graph_snapshot,
-                user_id=str(user_id) if user_id is not None else "",
-                organization_id=getattr(app, "organization_id", None),
-                require_resolved=True,
-            )
             DeploymentService._enforce_knowledge_preflight(
                 db,
                 app=app,
                 deployment_type=deployment.type,
                 graph_snapshot=deployment.graph_snapshot,
+                principal_id=(uuid.UUID(str(user_id)) if user_id is not None else None),
+            )
+            WorkflowService.validate_external_node_storage_boundaries(
+                deployment.graph_snapshot,
+                require_resolved=False,
             )
 
         deployment.is_active = new_state

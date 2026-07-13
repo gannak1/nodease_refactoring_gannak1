@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from apps.gateway.application.deployment.models import (
     KnowledgeBaseSnapshot,
     KnowledgeCollectionPreflightSnapshot,
+    MailCredentialSnapshot,
     WorkflowNodeTargetSnapshot,
 )
 from apps.shared.db.models.app import App
@@ -16,6 +17,10 @@ from apps.shared.db.models.knowledge import (
     KnowledgeBase,
     KnowledgeCollection,
     KnowledgeCollectionItem,
+)
+from apps.shared.db.models.mail_credential import (
+    MAIL_CREDENTIAL_ACTIVE,
+    MailCredential,
 )
 from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
 from apps.shared.domain.knowledge_runtime_candidates import (
@@ -27,6 +32,10 @@ from apps.shared.services.knowledge_resource_eligibility import (
     knowledge_collection_anonymous_public_predicates,
     knowledge_collection_operational_predicates,
     retrieval_visible_chunk_exists,
+)
+from apps.shared.permissions import mail_credential_auth_state_allows
+from apps.shared.services.permissions import (
+    get_effective_mail_credential_auth_states,
 )
 
 
@@ -231,13 +240,9 @@ class SqlAlchemyDeploymentPreflightRepository:
             workflow_id=getattr(app, "workflow_id", None),
             deployment_id=deployment.id if deployment is not None else None,
             deployment_version=(
-                getattr(deployment, "version", None)
-                if deployment is not None
-                else None
+                getattr(deployment, "version", None) if deployment is not None else None
             ),
-            deployment_type=(
-                deployment.type.value if deployment is not None else None
-            ),
+            deployment_type=(deployment.type.value if deployment is not None else None),
             active_graph_snapshot=(
                 deployment.graph_snapshot if deployment is not None else None
             ),
@@ -288,6 +293,47 @@ class SqlAlchemyDeploymentPreflightRepository:
             active_graph_snapshot=deployment.graph_snapshot,
             active_pointer_valid=active_exists,
         )
+
+    def get_mail_credential_snapshots(
+        self,
+        mail_credential_ids: Iterable[uuid.UUID],
+        organization_id: uuid.UUID | None,
+        principal_id: uuid.UUID | None,
+    ) -> dict[uuid.UUID, MailCredentialSnapshot]:
+        ids = _dedupe_ids(mail_credential_ids)
+        if not ids or organization_id is None:
+            return {}
+        rows = (
+            self.db.query(MailCredential)
+            .filter(
+                MailCredential.id.in_(ids),
+                MailCredential.organization_id == organization_id,
+                MailCredential.status == MAIL_CREDENTIAL_ACTIVE,
+            )
+            .all()
+        )
+        auth_states = (
+            get_effective_mail_credential_auth_states(
+                self.db,
+                principal_id,
+                (row.id for row in rows),
+                organization_id,
+            )
+            if principal_id is not None
+            else {}
+        )
+        return {
+            row.id: MailCredentialSnapshot(
+                provider=row.provider,
+                auth_type=row.auth_type,
+                usable_by_principal=mail_credential_auth_state_allows(
+                    auth_states.get(row.id, "none"),
+                    "use",
+                ),
+                effective_auth_state=auth_states.get(row.id, "none"),
+            )
+            for row in rows
+        }
 
 
 def _dedupe_ids(values: Iterable[uuid.UUID]) -> list[uuid.UUID]:

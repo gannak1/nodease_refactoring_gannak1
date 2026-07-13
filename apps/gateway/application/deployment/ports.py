@@ -7,6 +7,7 @@ from typing import Protocol
 from .models import (
     KnowledgeBaseSnapshot,
     KnowledgeCollectionPreflightSnapshot,
+    MailCredentialSnapshot,
     WorkflowNodeTargetSnapshot,
 )
 
@@ -42,3 +43,21 @@ class DeploymentPreflightRepository(Protocol):
         deployment_id: uuid.UUID,
         organization_id: uuid.UUID | None,
     ) -> WorkflowNodeTargetSnapshot | None: ...
+
+    def get_mail_credential_snapshots(
+        self,
+        mail_credential_ids: Iterable[uuid.UUID],
+        organization_id: uuid.UUID | None,
+        principal_id: uuid.UUID | None,
+    ) -> Mapping[uuid.UUID, MailCredentialSnapshot]: ...
+
+
+class PermissionDenialAuditPort(Protocol):
+    def record_mail_credential_use_denied(
+        self,
+        *,
+        principal_id: uuid.UUID,
+        organization_id: uuid.UUID,
+        credential_id: uuid.UUID,
+        effective_auth_state: str,
+    ) -> None: ...

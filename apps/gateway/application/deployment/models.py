@@ -28,6 +28,20 @@ class KnowledgeCollectionPreflightSnapshot:
 
 
 @dataclass(frozen=True)
+class MailCredentialSnapshot:
+    provider: str
+    auth_type: str
+    usable_by_principal: bool
+    effective_auth_state: str
+
+
+@dataclass(frozen=True)
+class NodeCatalogSnapshot:
+    side_effect: str
+    implemented: bool
+
+
+@dataclass(frozen=True)
 class WorkflowNodeTargetSnapshot:
     app_id: uuid.UUID
     active_graph_snapshot: dict | None

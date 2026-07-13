@@ -16,6 +16,7 @@ from apps.shared.db.models.knowledge import (
     KnowledgeCollection,
     KnowledgeCollectionItem,
 )
+from apps.shared.db.models.mail_credential import MailCredential
 from apps.shared.db.models.schedule import Schedule
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
@@ -114,7 +115,6 @@ def test_preflight_allows_public_collection_kb_for_public_surface():
                     id=collection_id,
                     organization_id=organization_id,
                     lifecycle_state="active",
-                    source_identity_id=None,
                     safe_metadata={"visibility": "public"},
                 )
             ],
@@ -159,7 +159,6 @@ def test_preflight_blocks_source_managed_kb_even_if_collection_is_public():
                     id=collection_id,
                     organization_id=organization_id,
                     lifecycle_state="active",
-                    source_identity_id=None,
                     safe_metadata={"visibility": "public"},
                 )
             ],
@@ -413,9 +412,7 @@ def test_preflight_hides_unavailable_selected_collection(collection_scope):
                         else organization_id
                     ),
                     lifecycle_state=(
-                        "archived"
-                        if collection_scope == "archived"
-                        else "active"
+                        "archived" if collection_scope == "archived" else "active"
                     ),
                     source_identity_id=None,
                     safe_metadata={"visibility": "public"},
@@ -504,6 +501,7 @@ def test_workflow_node_preflight_uses_data_app_id_for_target_lookup():
     )
     graph = {
         "nodes": [
+            {"id": "start", "type": "startNode", "data": {}},
             {
                 "id": "workflow-1",
                 "type": "workflowNode",
@@ -513,7 +511,7 @@ def test_workflow_node_preflight_uses_data_app_id_for_target_lookup():
                 },
             }
         ],
-        "edges": [],
+        "edges": [{"source": "start", "target": "workflow-1"}],
     }
 
     result = KnowledgeDeploymentPreflightService(
@@ -853,6 +851,39 @@ def test_enforced_collection_preflight_keeps_safe_409_envelope():
     assert str(collection_id) not in str(detail)
 
 
+def test_authenticated_configuration_preflight_uses_workflow_409_envelope():
+    service = KnowledgeDeploymentPreflightService(
+        _Db({}),
+        organization_id=uuid.uuid4(),
+        principal_id=uuid.uuid4(),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        service.enforce_authenticated_run(
+            graph_snapshot={
+                "nodes": [
+                    {"id": "start", "type": "startNode", "data": {}},
+                    {
+                        "id": "mail-1",
+                        "type": "mailNode",
+                        "data": {
+                            "title": "Mail",
+                            "credential_id": None,
+                            "configuration_state": "unresolved",
+                        },
+                    }
+                ],
+                "edges": [{"source": "start", "target": "mail-1"}],
+            }
+        )
+
+    assert exc_info.value.status_code == 409
+    error = exc_info.value.detail["error"]
+    assert error["code"] == "workflow.configuration_preflight.blocked"
+    assert error["reason_code"] == "node_configuration_unresolved"
+    assert error["required_actions"] == ["complete_node_configuration"]
+
+
 def test_preflight_audience_classifies_every_deployment_type():
     assert {
         deployment_type: KnowledgeDeploymentPreflightService.server_derived_audience(
@@ -864,7 +895,6 @@ def test_preflight_audience_classifies_every_deployment_type():
         DeploymentType.WEBAPP: "anonymous_public",
         DeploymentType.WIDGET: "anonymous_public",
         DeploymentType.CHATBOT: "anonymous_public",
-        DeploymentType.INTERNAL_CHATBOT: "authenticated_user",
         DeploymentType.MCP: "anonymous_public",
         DeploymentType.WORKFLOW_NODE: "workflow_node_inherited",
         DeploymentType.SCHEDULE: "anonymous_public",
@@ -950,7 +980,96 @@ def test_create_preserves_preflight_http_exception(monkeypatch):
     assert exc_info.value.detail["error"]["code"] == "deployment.preflight.blocked"
 
 
-def test_inactive_create_rejects_mail_inline_secret_snapshot(monkeypatch):
+@pytest.mark.parametrize("is_active", (True, False))
+def test_create_binding_error_prefers_common_preflight_envelope(
+    monkeypatch,
+    is_active,
+):
+    app_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    actor_id = uuid.uuid4()
+    app = App(
+        id=app_id,
+        workflow_id=workflow_id,
+        organization_id=uuid.uuid4(),
+        url_slug="app-slug",
+        auth_secret="existing-secret",
+        created_by=actor_id,
+    )
+    workflow = _row(
+        id=workflow_id,
+        organization_id=app.organization_id,
+        app_id=app.id,
+        created_by=actor_id,
+    )
+    db = _Db({App: [app], Workflow: [workflow]})
+    expected = HTTPException(
+        status_code=409,
+        detail={"error": {"code": "deployment.preflight.blocked"}},
+    )
+    calls = []
+
+    monkeypatch.setattr(
+        deployment_module,
+        "has_workflow_permission",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        DeploymentService,
+        "bind_workflow_node_targets",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            HTTPException(
+                status_code=422,
+                detail={"code": "workflow_graph_invalid"},
+            )
+        ),
+    )
+
+    def block(name):
+        def _block(*args, **kwargs):
+            calls.append(name)
+            raise expected
+
+        return _block
+
+    monkeypatch.setattr(
+        DeploymentService,
+        "_enforce_knowledge_preflight",
+        block("active"),
+    )
+    monkeypatch.setattr(
+        DeploymentService,
+        "_enforce_inactive_preflight",
+        block("inactive"),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        DeploymentService.create_deployment(
+            db,
+            DeploymentCreate(
+                app_id=app_id,
+                type=DeploymentType.API,
+                graph_snapshot={
+                    "nodes": [
+                        {"id": "start", "type": "startNode", "data": {}},
+                    ],
+                    "edges": [],
+                },
+                is_active=is_active,
+            ),
+            user_id=actor_id,
+            runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["error"]["code"] == "deployment.preflight.blocked"
+    assert calls == ["active" if is_active else "inactive"]
+    assert db.rows_for(WorkflowDeployment) == []
+
+
+def test_inactive_create_rejects_mail_inline_secret_with_common_preflight_error(
+    monkeypatch,
+):
     app_id = uuid.uuid4()
     workflow_id = uuid.uuid4()
     organization_id = uuid.uuid4()
@@ -978,33 +1097,103 @@ def test_inactive_create_rejects_mail_inline_secret_snapshot(monkeypatch):
         DeploymentService.create_deployment(
             db,
             DeploymentCreate(
-                app_id=app_id,
-                graph_snapshot={
-                    "nodes": [
-                        {
-                            "id": "mail-1",
+                    app_id=app_id,
+                    graph_snapshot={
+                        "nodes": [
+                            {
+                                "id": "start-1",
+                                "type": "startNode",
+                                "data": {},
+                            },
+                            {
+                                "id": "mail-1",
                             "type": "mailNode",
                             "data": {
                                 "title": "Mail",
                                 "credential_id": None,
                                 "app_password": "synthetic-only",
                             },
-                        }
-                    ],
-                    "edges": [],
-                },
+                            }
+                        ],
+                        "edges": [
+                            {
+                                "id": "start-mail",
+                                "source": "start-1",
+                                "target": "mail-1",
+                            }
+                        ],
+                    },
                 is_active=False,
             ),
             user_id=actor_id,
             runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
         )
 
-    assert exc_info.value.status_code == 422
-    assert exc_info.value.detail == "mail.credential_reference_required"
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["error"]["code"] == "deployment.preflight.blocked"
+    assert any(
+        "node_configuration_invalid" in node["reason_codes"]
+        for node in exc_info.value.detail["error"]["preflight"]["nodes"]
+    )
     assert db.rows_for(WorkflowDeployment) == []
 
 
-def test_inactive_create_rejects_unresolved_mail_snapshot(monkeypatch):
+def test_inactive_create_preserves_unresolved_mail_snapshot(monkeypatch):
+    app_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    actor_id = uuid.uuid4()
+    app = App(
+        id=app_id,
+        workflow_id=workflow_id,
+        organization_id=organization_id,
+        url_slug="app-slug",
+        auth_secret="existing-secret",
+        created_by=actor_id,
+    )
+    workflow = _row(
+        id=workflow_id,
+        organization_id=organization_id,
+        app_id=app_id,
+        created_by=actor_id,
+    )
+    db = _Db({App: [app], Workflow: [workflow]})
+    monkeypatch.setattr(
+        deployment_module, "has_workflow_permission", lambda *a, **k: True
+    )
+
+    deployment = DeploymentService.create_deployment(
+        db,
+        DeploymentCreate(
+            app_id=app_id,
+            graph_snapshot={
+                "nodes": [
+                    {"id": "start", "type": "startNode", "data": {}},
+                    {
+                        "id": "mail-1",
+                        "type": "mailNode",
+                        "data": {
+                            "title": "Mail",
+                            "credential_id": None,
+                            "configuration_state": "unresolved",
+                        },
+                    }
+                ],
+                "edges": [{"source": "start", "target": "mail-1"}],
+            },
+            is_active=False,
+        ),
+        user_id=actor_id,
+        runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+    )
+
+    assert deployment.is_active is False
+    assert db.rows_for(WorkflowDeployment) == [deployment]
+
+
+def test_inactive_create_rejects_unavailable_mail_reference(
+    monkeypatch,
+):
     app_id = uuid.uuid4()
     workflow_id = uuid.uuid4()
     organization_id = uuid.uuid4()
@@ -1035,17 +1224,18 @@ def test_inactive_create_rejects_unresolved_mail_snapshot(monkeypatch):
                 app_id=app_id,
                 graph_snapshot={
                     "nodes": [
+                        {"id": "start", "type": "startNode", "data": {}},
                         {
                             "id": "mail-1",
                             "type": "mailNode",
                             "data": {
                                 "title": "Mail",
-                                "credential_id": None,
-                                "configuration_state": "unresolved",
+                                "credential_id": str(uuid.uuid4()),
+                                "configuration_state": "resolved",
                             },
-                        }
+                        },
                     ],
-                    "edges": [],
+                    "edges": [{"source": "start", "target": "mail-1"}],
                 },
                 is_active=False,
             ),
@@ -1053,8 +1243,52 @@ def test_inactive_create_rejects_unresolved_mail_snapshot(monkeypatch):
             runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
         )
 
-    assert exc_info.value.status_code == 422
-    assert exc_info.value.detail == "mail.credential_reference_required"
+    assert exc_info.value.status_code == 409
+    assert (
+        exc_info.value.detail["error"]["reason_code"]
+        == "mail_credential_unavailable"
+    )
+    assert db.rows_for(WorkflowDeployment) == []
+
+
+def test_inactive_create_rejects_malformed_graph(monkeypatch):
+    app_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    actor_id = uuid.uuid4()
+    app = App(
+        id=app_id,
+        workflow_id=workflow_id,
+        organization_id=organization_id,
+        url_slug="app-slug",
+        auth_secret="existing-secret",
+        created_by=actor_id,
+    )
+    workflow = _row(
+        id=workflow_id,
+        organization_id=organization_id,
+        app_id=app_id,
+        created_by=actor_id,
+    )
+    db = _Db({App: [app], Workflow: [workflow]})
+    monkeypatch.setattr(
+        deployment_module, "has_workflow_permission", lambda *a, **k: True
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        DeploymentService.create_deployment(
+            db,
+            DeploymentCreate(
+                app_id=app_id,
+                graph_snapshot={"nodes": "invalid", "edges": []},
+                is_active=False,
+            ),
+            user_id=actor_id,
+            runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["error"]["code"] == "deployment.preflight.blocked"
     assert db.rows_for(WorkflowDeployment) == []
 
 
@@ -1352,7 +1586,7 @@ def test_workflow_node_toggle_removes_legacy_schedule_surface(monkeypatch):
     assert scheduler.added == []
 
 
-def test_toggle_rejects_legacy_mail_inline_secret_before_activation(monkeypatch):
+def test_toggle_rejects_legacy_mail_inline_secret_with_common_preflight_error():
     app_id = uuid.uuid4()
     deployment_id = uuid.uuid4()
     organization_id = uuid.uuid4()
@@ -1369,6 +1603,7 @@ def test_toggle_rejects_legacy_mail_inline_secret_before_activation(monkeypatch)
         is_active=False,
         graph_snapshot={
             "nodes": [
+                {"id": "start", "type": "startNode", "data": {}},
                 {
                     "id": "mail-1",
                     "type": "mailNode",
@@ -1379,15 +1614,10 @@ def test_toggle_rejects_legacy_mail_inline_secret_before_activation(monkeypatch)
                     },
                 }
             ],
-            "edges": [],
+            "edges": [{"source": "start", "target": "mail-1"}],
         },
     )
     db = _Db({App: [app], WorkflowDeployment: [deployment], Schedule: []})
-    monkeypatch.setattr(
-        DeploymentService,
-        "_enforce_knowledge_preflight",
-        lambda *a, **k: pytest.fail("Mail validation must run first"),
-    )
 
     with pytest.raises(HTTPException) as exc_info:
         DeploymentService.toggle_deployment(
@@ -1398,12 +1628,16 @@ def test_toggle_rejects_legacy_mail_inline_secret_before_activation(monkeypatch)
             user_id=actor_id,
         )
 
-    assert exc_info.value.status_code == 422
-    assert exc_info.value.detail == "mail.credential_reference_required"
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["error"]["code"] == "deployment.preflight.blocked"
+    assert any(
+        "node_configuration_invalid" in node["reason_codes"]
+        for node in exc_info.value.detail["error"]["preflight"]["nodes"]
+    )
     assert deployment.is_active is False
 
 
-def test_toggle_rejects_unresolved_mail_before_activation(monkeypatch):
+def test_toggle_rejects_unresolved_mail_with_common_preflight(monkeypatch):
     app_id = uuid.uuid4()
     deployment_id = uuid.uuid4()
     organization_id = uuid.uuid4()
@@ -1434,10 +1668,22 @@ def test_toggle_rejects_unresolved_mail_before_activation(monkeypatch):
         },
     )
     db = _Db({App: [app], WorkflowDeployment: [deployment], Schedule: []})
+
+    def _block_preflight(*args, **kwargs):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": {
+                    "code": "deployment.preflight.blocked",
+                    "reason_code": "mail_execution_subject_required",
+                }
+            },
+        )
+
     monkeypatch.setattr(
         DeploymentService,
         "_enforce_knowledge_preflight",
-        lambda *a, **k: pytest.fail("Mail validation must run first"),
+        _block_preflight,
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -1449,8 +1695,8 @@ def test_toggle_rejects_unresolved_mail_before_activation(monkeypatch):
             user_id=actor_id,
         )
 
-    assert exc_info.value.status_code == 422
-    assert exc_info.value.detail == "mail.credential_reference_required"
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["error"]["code"] == "deployment.preflight.blocked"
     assert deployment.is_active is False
 
 
@@ -1484,6 +1730,7 @@ def test_delete_active_deployment_does_not_auto_promote_other_deployment():
 def _llm_graph(kb_id: uuid.UUID) -> dict:
     return {
         "nodes": [
+            {"id": "start", "type": "startNode", "data": {}},
             {
                 "id": "llm-1",
                 "type": "llmNode",
@@ -1492,35 +1739,37 @@ def _llm_graph(kb_id: uuid.UUID) -> dict:
                 },
             }
         ],
-        "edges": [],
+        "edges": [{"source": "start", "target": "llm-1"}],
     }
 
 
 def _collection_graph(collection_id: uuid.UUID) -> dict:
     return {
         "nodes": [
+            {"id": "start", "type": "startNode", "data": {}},
             {
-                "id": "llm-1",
+                "id": "llm-collection",
                 "type": "llmNode",
                 "data": {
                     "knowledgeCollections": [{"id": str(collection_id)}]
                 },
-            }
+            },
         ],
-        "edges": [],
+        "edges": [{"source": "start", "target": "llm-collection"}],
     }
 
 
 def _workflow_node_graph(app_id: uuid.UUID) -> dict:
     return {
         "nodes": [
+            {"id": "start", "type": "startNode", "data": {}},
             {
                 "id": "workflow-1",
                 "type": "workflowNode",
                 "data": {"appId": str(app_id)},
             }
         ],
-        "edges": [],
+        "edges": [{"source": "start", "target": "workflow-1"}],
     }
 
 
@@ -1538,15 +1787,6 @@ class _Db:
         self.rolled_back = False
 
     def query(self, model, *rest):
-        if (
-            getattr(model, "class_", None) is KnowledgeCollectionItem
-            and getattr(model, "key", None) == "collection_id"
-            and rest
-        ):
-            return _CollectionAggregateQuery(
-                self.rows_by_model.setdefault(KnowledgeCollectionItem, []),
-                self.rows_by_model.setdefault(KnowledgeBase, []),
-            )
         if model in {
             App,
             Workflow,
@@ -1555,6 +1795,7 @@ class _Db:
             KnowledgeBase,
             KnowledgeCollection,
             KnowledgeCollectionItem,
+            MailCredential,
         }:
             return _Query(self.rows_by_model.setdefault(model, []))
         return _ScalarQuery(self.max_deployment_version)
@@ -1632,9 +1873,6 @@ class _Query:
         self.expressions.extend(expressions)
         return self
 
-    def join(self, *args, **kwargs):
-        return self
-
     def all(self):
         return [row for row in self.rows if self._matches(row)]
 
@@ -1654,53 +1892,6 @@ class _Query:
         return all(
             _matches_expression(row, expression) for expression in self.expressions
         )
-
-
-class _CollectionAggregateQuery:
-    def __init__(self, items, knowledge_bases):
-        self.items = items
-        self.knowledge_bases = knowledge_bases
-        self.expressions = []
-
-    def join(self, *args, **kwargs):
-        return self
-
-    def filter(self, *expressions):
-        self.expressions.extend(expressions)
-        return self
-
-    def group_by(self, *args, **kwargs):
-        return self
-
-    def all(self):
-        knowledge_bases_by_id = {
-            knowledge_base.id: knowledge_base
-            for knowledge_base in self.knowledge_bases
-        }
-        grouped: dict[uuid.UUID, list[SimpleNamespace]] = {}
-        for item in self.items:
-            knowledge_base = knowledge_bases_by_id.get(item.knowledge_base_id)
-            if knowledge_base is None:
-                continue
-            if not all(
-                _matches_expression(item, expression)
-                and _matches_expression(knowledge_base, expression)
-                for expression in self.expressions
-            ):
-                continue
-            grouped.setdefault(item.collection_id, []).append(knowledge_base)
-        return [
-            (
-                collection_id,
-                len(knowledge_bases),
-                sum(
-                    getattr(knowledge_base, "source_identity_id", None)
-                    is not None
-                    for knowledge_base in knowledge_bases
-                ),
-            )
-            for collection_id, knowledge_bases in grouped.items()
-        ]
 
 
 def _matches_expression(row, expression):
@@ -1727,8 +1918,6 @@ def _matches_expression(row, expression):
 def _right_value(right):
     if hasattr(right, "value"):
         return right.value
-    if str(right).lower() == "null":
-        return None
     if str(right).lower() == "true":
         return True
     if str(right).lower() == "false":

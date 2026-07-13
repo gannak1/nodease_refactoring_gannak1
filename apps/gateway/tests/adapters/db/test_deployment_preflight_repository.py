@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from sqlalchemy.dialects import postgresql
 
+from apps.gateway.adapters.db import deployment_preflight_repository as repository_module
 from apps.gateway.adapters.db.deployment_preflight_repository import (
     SqlAlchemyDeploymentPreflightRepository,
 )
@@ -178,3 +179,62 @@ def test_collection_preflight_excludes_source_deleted_parent():
     sql = _compiled_criteria(db.queries[0])
     assert "knowledge_collections.lifecycle_state = 'active'" in sql
     assert "knowledge_collections.sync_state != 'source_deleted'" in sql
+
+
+class _Session:
+    def __init__(self, rows):
+        self.rows = rows
+        self.query_count = 0
+
+    def query(self, *args):
+        self.query_count += 1
+        return _Query(self.rows)
+
+
+def test_mail_snapshots_use_one_bulk_permission_decision(monkeypatch):
+    organization_id = uuid.uuid4()
+    principal_id = uuid.uuid4()
+    credential_ids = [uuid.uuid4(), uuid.uuid4()]
+    rows = [
+        SimpleNamespace(
+            id=credential_id,
+            provider="imap",
+            auth_type="password",
+        )
+        for credential_id in credential_ids
+    ]
+    session = _Session(rows)
+    calls = []
+
+    def _bulk(db, user_id, ids, scoped_organization_id):
+        materialized_ids = tuple(ids)
+        calls.append((db, user_id, materialized_ids, scoped_organization_id))
+        return {
+            credential_ids[0]: "operator",
+            credential_ids[1]: "viewer",
+        }
+
+    monkeypatch.setattr(
+        repository_module,
+        "get_effective_mail_credential_auth_states",
+        _bulk,
+    )
+
+    result = SqlAlchemyDeploymentPreflightRepository(
+        session
+    ).get_mail_credential_snapshots(
+        credential_ids,
+        organization_id,
+        principal_id,
+    )
+
+    assert session.query_count == 1
+    assert len(calls) == 1
+    assert calls[0][1:] == (
+        principal_id,
+        tuple(credential_ids),
+        organization_id,
+    )
+    assert result[credential_ids[0]].usable_by_principal is True
+    assert result[credential_ids[1]].usable_by_principal is False
+    assert result[credential_ids[1]].effective_auth_state == "viewer"
