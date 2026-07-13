@@ -92,6 +92,7 @@ def _create_schema(engine) -> None:
         CREATE TABLE knowledge_collections (
             id UUID PRIMARY KEY,
             organization_id UUID NOT NULL,
+            source_identity_id UUID NULL,
             lifecycle_state VARCHAR(50) NOT NULL,
             sync_state VARCHAR(50) NOT NULL,
             is_system_managed BOOLEAN NOT NULL,
@@ -734,6 +735,45 @@ def test_repeatable_read_snapshot_does_not_mix_concurrent_membership_change(
             text("SELECT id FROM snapshot_write_probe WHERE id = :probe_id"),
             {"probe_id": probe_id},
         ).scalar_one() == probe_id
+
+
+@pytest.mark.skipif(
+    os.getenv(RUN_ENV) != "1",
+    reason=f"set {RUN_ENV}=1 to run disposable Knowledge public policy evidence",
+)
+def test_anonymous_snapshot_excludes_source_managed_public_collection(
+    disposable_snapshot_database,
+):
+    engine = disposable_snapshot_database
+    organization_id, collection_id, _knowledge_base_id = (
+        _seed_ready_public_collection(engine)
+    )
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE knowledge_collections "
+                "SET source_identity_id = :source_identity_id "
+                "WHERE organization_id = :organization_id "
+                "AND id = :collection_id"
+            ),
+            {
+                "source_identity_id": uuid4(),
+                "organization_id": organization_id,
+                "collection_id": collection_id,
+            },
+        )
+    session_factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    request = KnowledgeRuntimeCandidateRequest(
+        audience=AnonymousPublicAudience(organization_id=organization_id),
+        collection_ids=(collection_id,),
+    )
+
+    snapshot = PostgresKnowledgeRuntimeCandidateSnapshotAdapter(
+        session_factory=session_factory
+    ).load_snapshot(request)
+
+    assert snapshot.collection_streams == ()
+    assert snapshot.policy_excluded_count == 1
 
 
 @pytest.mark.skipif(
