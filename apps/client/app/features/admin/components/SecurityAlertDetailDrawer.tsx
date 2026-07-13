@@ -107,9 +107,10 @@ export function SecurityAlertDetailDrawer({
     onNotFoundRef.current = onNotFound;
   }, [onNotFound]);
 
-  const loadDetail = useCallback(async () => {
+  const loadDetail = useCallback(async (mode: 'background' | 'authoritative') => {
     const sequence = ++detailSequenceRef.current;
     const canPreserveCurrentDetail =
+      mode === 'background' &&
       loadedDetailAlertIdRef.current === alertId;
     if (!canPreserveCurrentDetail) {
       loadedDetailAlertIdRef.current = null;
@@ -150,7 +151,7 @@ export function SecurityAlertDetailDrawer({
   }, [alertId]);
 
   useEffect(() => {
-    loadDetail();
+    loadDetail('background');
     return () => {
       detailSequenceRef.current += 1;
     };
@@ -279,10 +280,14 @@ export function SecurityAlertDetailDrawer({
         isAxiosError(mutationError) &&
         mutationError.response?.status === 409
       ) {
-        const latest = await loadDetail();
-        if (latest) onChanged?.(latest);
-        setMutationFeedback('다른 관리자가 상태를 변경했습니다.');
-        return true;
+        const latest = await loadDetail('authoritative');
+        if (latest) {
+          onChanged?.(latest);
+          setMutationFeedback('다른 관리자가 상태를 변경했습니다.');
+          return true;
+        }
+        setMutationFeedback(null);
+        return false;
       }
       setMutationFeedback('상태 변경에 실패했습니다. 다시 시도해 주세요.');
       return false;

@@ -106,6 +106,12 @@ const forbiddenError = () => {
   return error;
 };
 
+const retryableError = () => {
+  const error = new AxiosError('raw server detail');
+  error.response = { status: 500 } as AxiosResponse;
+  return error;
+};
+
 const openDetail = {
   ...detail,
   status: 'open' as const,
@@ -613,6 +619,38 @@ describe('SecurityAlertDetailDrawer', () => {
     expect(await screen.findByText('확인됨')).toBeInTheDocument();
     expect(mockedDetail).toHaveBeenCalledTimes(2);
     expect(screen.queryByText('raw conflict')).not.toBeInTheDocument();
+  });
+
+  it('409 이후 최신 상세 재조회가 실패하면 stale 상세와 작업 버튼을 제거한다', async () => {
+    mockedDetail
+      .mockResolvedValueOnce(openDetail)
+      .mockRejectedValueOnce(retryableError());
+    mockedEvidence.mockResolvedValue({ total: 0, items: [] });
+    mockedAcknowledge.mockRejectedValue(conflictError());
+
+    render(
+      <SecurityAlertDetailDrawer
+        alertId={detail.id}
+        members={members}
+        onClose={vi.fn()}
+        onNotFound={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: '확인' }));
+
+    expect(
+      await screen.findByText('보안 알림 상세를 불러오지 못했습니다.'),
+    ).toBeInTheDocument();
+    expect(mockedDetail).toHaveBeenCalledTimes(2);
+    expect(
+      screen.queryByRole('button', { name: '확인' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('다른 관리자가 상태를 변경했습니다.'),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText('raw conflict')).not.toBeInTheDocument();
+    expect(screen.queryByText('raw server detail')).not.toBeInTheDocument();
   });
 
   it('확인 요청이 403이면 cached detail과 drawer URL을 닫는다', async () => {

@@ -107,7 +107,7 @@ Legacy `pii_policy_blocked`는 읽기와 reconciliation 단계에서 `rag.pii_ev
 
 다른 organization, actor, rule version, policy reason은 합산하지 않는다. 동일 audit은 여러 규칙의 조건을 각각 만족할 수 있지만 같은 규칙에서 두 번 계산하지 않는다.
 
-운영 반영 전 검증은 같은 evaluator를 사용하는 read-only replay로 수행할 수 있다. Replay는 지정 기간 이전의 최대 rule window만 lookback으로 읽고 지정 기간 event의 rule별 발화 횟수를 safe aggregate로 반환한다. Alert, evidence, lifecycle audit, notification과 reconciliation watermark는 변경하지 않으며 raw audit payload, target과 actor를 출력하지 않는다.
+운영 반영 전 검증은 같은 evaluator를 사용하는 read-only replay로 수행할 수 있다. Replay는 지정 기간 이전의 최대 rule window만 lookback으로 읽고 지정 기간 event의 rule별 발화 횟수를 safe aggregate로 반환한다. Lookback 구간과 지정 평가 구간은 각각 bounded query로 완전하게 읽어야 하며, 어느 구간이든 limit을 초과하면 불완전한 집계를 반환하지 않고 safe reason code로 실패한다. Alert, evidence, lifecycle audit, notification과 reconciliation watermark는 변경하지 않으며 raw audit payload, target과 actor를 출력하지 않는다.
 
 Distinct target은 `(target_type, target_id)` 조합이다. Target이 없거나 scope 안전성이 확인되지 않으면 `multi_resource_permission_probe`에서 제외한다.
 

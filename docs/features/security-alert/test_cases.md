@@ -297,6 +297,8 @@ Given 관리자가 organization과 기간을 지정해 rule replay를 실행할 
 When 저장된 audit를 평가하면,
 Then lookback window를 포함해 실제 evaluator와 같은 결과를 계산하고 지정 기간의 rule별 발화 횟수만 safe aggregate로 반환해야 한다.
 
+Lookback 구간 또는 지정 평가 구간의 audit가 설정된 limit을 초과하면 불완전한 집계를 성공으로 반환하지 않고 safe reason code로 실패해야 한다.
+
 그리고 replay는 Alert, evidence, lifecycle audit, notification과 watermark를 생성·변경하지 않아야 하며 raw audit payload, target, actor 정보를 출력하지 않아야 한다.
 
 ## Detailed Test Matrix
@@ -339,6 +341,7 @@ Then lookback window를 포함해 실제 evaluator와 같은 결과를 계산하
 | SAL-TC-U021 | AC-32 | v1 rule registry 조회 | 세 규칙의 version/window/threshold/severity/count mode/grouping과 최대 window가 단일 계약과 일치 |
 | SAL-TC-U022 | AC-32 | threshold 직전/도달 audit sequence replay | 지정 기간 event만 평가하되 lookback을 사용하고 rule별 발화 횟수 집계 정확 |
 | SAL-TC-U023 | AC-32 | replay 전후 입력 audit와 safe output 비교 | 입력 불변, DB mutation 경로 없음, 출력에 aggregate count 외 raw event/target/actor 없음 |
+| SAL-TC-U024 | AC-32 | lookback 또는 지정 평가 구간의 audit 수가 각각 replay limit을 초과 | evaluator를 실행하거나 부분 count를 반환하지 않고 `security_alert.replay_limit_exceeded`로 실패, raw event 정보 미노출 |
 
 ### Audit Producer Contract Tests
 
@@ -482,6 +485,7 @@ Then lookback window를 포함해 실제 evaluator와 같은 결과를 계산하
 | SAL-TC-C021 | AC-19, AC-27 | 연결된 감사 기록과 Audit detail 표시 | safe 권한 거부 정보가 있으면 시도한 작업·필요 권한·거부 사유를 사용자 문장과 라벨로 표시하고 canonical action과 safe ID는 보조 정보로 유지, raw metadata 미노출 |
 | SAL-TC-C022 | AC-16 | 열린 detail에서 acknowledge, reopen, resolve가 각각 403 | cached detail과 해결 dialog 제거, drawer close callback으로 `alertId` URL 제거, action button 미노출 |
 | SAL-TC-C023 | AC-24 | occurrence 증가 notification으로 같은 scope의 list/detail/evidence background refresh가 지연되거나 재시도 가능한 오류로 실패 | 기존 table/detail/evidence와 발생 횟수를 유지하고 initial loading/error 전용 화면으로 교체하지 않으며 성공 응답만 한 번에 반영 |
+| SAL-TC-C024 | AC-14 | mutation 409 뒤 최신 detail 재조회가 재시도 가능한 오류로 실패 | stale detail과 mutation action 제거, safe detail 오류 표시, 이전 version으로 추가 mutation 불가 |
 
 ### End-To-End Tests
 

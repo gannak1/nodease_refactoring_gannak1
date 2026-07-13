@@ -179,7 +179,7 @@ Color만으로 severity나 status를 구분하지 않고 항상 text label을 �
 - 재시도 가능한 오류는 safe message와 `다시 시도`를 표시한다.
 - `403`은 관리 권한이 없음을 표시하고 목록과 cached alert를 제거한다.
 - `404` detail 오류는 alert 존재 여부를 설명하지 않는다.
-- `409 stale_state` mutation 오류는 최신 detail을 다시 조회한 뒤 `다른 관리자가 상태를 변경했습니다.`를 표시한다.
+- `409 stale_state` mutation 오류는 최신 detail을 다시 조회한 뒤 `다른 관리자가 상태를 변경했습니다.`를 표시한다. 최신 detail 재조회가 실패하면 stale detail과 상태 변경 action을 제거하고 safe 오류를 표시한다.
 - API raw error, stack, response body를 그대로 출력하지 않는다.
 
 ## Security Alert Detail Drawer
@@ -379,7 +379,7 @@ Security Alert detail
 - Detail cache는 organization ID와 alert ID를 함께 사용한다.
 - Organization 전환 시 이전 scope cache를 화면에 재사용하지 않는다.
 - Mutation 성공 response를 우선 반영하고 summary/list를 재조회해 최종 정합성을 맞춘다.
-- `409 stale_state`에서는 optimistic 값을 유지하지 않고 server detail을 재조회한다.
+- `409 stale_state`에서는 optimistic 값을 유지하지 않고 server detail을 재조회한다. 이 재조회는 기존 데이터를 유지하는 background refresh와 구분하며, 실패 시 stale version으로 추가 mutation을 허용하지 않는다.
 - Raw alert metadata나 resolution reason을 local storage에 저장하지 않는다.
 
 ## Component Test Expectations
