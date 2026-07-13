@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
+import { AxiosError, type AxiosResponse } from 'axios';
 
 const routerMock = vi.hoisted(() => ({
   push: vi.fn(),
@@ -39,6 +40,12 @@ vi.mock('../../auth/api/authApi', () => ({
   },
 }));
 
+vi.mock('sonner', () => ({
+  toast: {
+    warning: vi.fn(),
+  },
+}));
+
 vi.mock('@/lib/apiClient', () => ({
   apiClient: {
     get: vi.fn(),
@@ -53,15 +60,29 @@ vi.mock('@/lib/activeOrganization', () => ({
 }));
 
 vi.mock('../../notifications/api/notificationsApi', () => ({
+  NOTIFICATIONS_REFRESH_EVENT: 'nodease-notifications-refresh',
   notificationsApi: {
     listNotifications: vi.fn(),
     createEventSource: vi.fn(),
   },
 }));
 
+vi.mock('../../admin/api/adminApi', () => ({
+  adminApi: {
+    getSecurityAlertSummary: vi.fn(),
+  },
+}));
+
 vi.mock('../../notifications/components/NotificationOverlay', () => ({
-  NotificationOverlay: ({ onClose }: { onClose: () => void }) => (
+  NotificationOverlay: ({
+    onClose,
+    securityAlertSummary,
+  }: {
+    onClose: () => void;
+    securityAlertSummary?: { open_count: number } | null;
+  }) => (
     <div role="dialog" aria-label="알림">
+      <span>보안 알림 {securityAlertSummary?.open_count ?? 0}개</span>
       <button onClick={onClose}>닫기</button>
     </div>
   ),
@@ -71,6 +92,8 @@ import { authApi } from '../../auth/api/authApi';
 import { apiClient } from '@/lib/apiClient';
 import { notificationsApi } from '../../notifications/api/notificationsApi';
 import type { ModuleOperationAppSummary } from '../../app/api/moduleOperationsApi';
+import { adminApi } from '../../admin/api/adminApi';
+import { toast } from 'sonner';
 import Sidebar from './Sidebar';
 
 type SidebarOrganizationFixture = {
@@ -129,6 +152,11 @@ const mockSidebarDefaults = ({
   );
   vi.mocked(authApi.me).mockResolvedValue(currentUserResponse);
   vi.mocked(notificationsApi.listNotifications).mockResolvedValue({ items: [] });
+  vi.mocked(adminApi.getSecurityAlertSummary).mockResolvedValue({
+    open_count: 2,
+    high_open_count: 1,
+    recent_items: [],
+  });
   vi.mocked(notificationsApi.createEventSource).mockReturnValue(
     fakeEventSource() as unknown as EventSource,
   );
@@ -167,11 +195,11 @@ describe('Sidebar notifications', () => {
     expect(screen.getByRole('dialog', { name: '알림' })).toBeInTheDocument();
   });
 
-  it('SSE notifications.changed 이벤트를 받으면 알림 목록을 재조회한다', async () => {
-    let listener: EventListener | null = null;
+  it('SSE notifications.changed 이벤트를 받으면 초대와 Security Alert summary를 재조회한다', async () => {
+    const listeners = new Map<string, EventListener>();
     const source = {
-      addEventListener: vi.fn((_event: string, callback: EventListener) => {
-        listener = callback;
+      addEventListener: vi.fn((event: string, callback: EventListener) => {
+        listeners.set(event, callback);
       }),
       close: vi.fn(),
     };
@@ -184,13 +212,183 @@ describe('Sidebar notifications', () => {
     await waitFor(() =>
       expect(notificationsApi.listNotifications).toHaveBeenCalledTimes(1),
     );
+    await waitFor(() =>
+      expect(adminApi.getSecurityAlertSummary).toHaveBeenCalledTimes(1),
+    );
     act(() => {
-      listener?.(new Event('notifications.changed'));
+      listeners.get('notifications.changed')?.(
+        new CustomEvent('notifications.changed', {
+          detail: { open_count: 999, secret: 'payload-must-not-be-used' },
+        }),
+      );
     });
 
     await waitFor(() =>
       expect(notificationsApi.listNotifications).toHaveBeenCalledTimes(2),
     );
+    await waitFor(() =>
+      expect(adminApi.getSecurityAlertSummary).toHaveBeenCalledTimes(2),
+    );
+  });
+
+  it('SSE 재연결 open 이벤트에서 영속 API를 다시 조회하고 열린 Admin 화면에 알린다', async () => {
+    const listeners = new Map<string, EventListener>();
+    const source = {
+      addEventListener: vi.fn((event: string, callback: EventListener) => {
+        listeners.set(event, callback);
+      }),
+      close: vi.fn(),
+    };
+    const adminRefreshListener = vi.fn();
+    window.addEventListener(
+      'nodease-notifications-refresh',
+      adminRefreshListener,
+    );
+    vi.mocked(notificationsApi.createEventSource).mockReturnValue(
+      source as unknown as EventSource,
+    );
+
+    render(<Sidebar />);
+
+    await waitFor(() =>
+      expect(adminApi.getSecurityAlertSummary).toHaveBeenCalledTimes(1),
+    );
+    act(() => {
+      listeners.get('open')?.(new Event('open'));
+    });
+
+    await waitFor(() =>
+      expect(notificationsApi.listNotifications).toHaveBeenCalledTimes(2),
+    );
+    await waitFor(() =>
+      expect(adminApi.getSecurityAlertSummary).toHaveBeenCalledTimes(2),
+    );
+    expect(adminRefreshListener).toHaveBeenCalledTimes(1);
+    window.removeEventListener(
+      'nodease-notifications-refresh',
+      adminRefreshListener,
+    );
+  });
+
+  it('manager는 Security Alert summary를 조회하고 open badge를 표시한다', async () => {
+    render(<Sidebar />);
+
+    await waitFor(() =>
+      expect(adminApi.getSecurityAlertSummary).toHaveBeenCalledTimes(1),
+    );
+    fireEvent.click(await screen.findByText('홍길동'));
+    expect(
+      screen.getByLabelText('미확인 보안 알림 2개'),
+    ).toBeInTheDocument();
+  });
+
+  it('일반 member는 Security Alert summary를 요청하거나 badge를 보지 않는다', async () => {
+    mockSidebarDefaults({ currentOrganization: memberOrganization });
+
+    render(<Sidebar />);
+
+    await screen.findByText('Beta');
+    expect(adminApi.getSecurityAlertSummary).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText('홍길동'));
+    expect(
+      screen.queryByLabelText(/미확인 보안 알림/),
+    ).not.toBeInTheDocument();
+  });
+
+  it('SSE 재조회에서 403이면 manager UI와 이전 badge를 제거한다', async () => {
+    const listeners = new Map<string, EventListener>();
+    vi.mocked(notificationsApi.createEventSource).mockReturnValue({
+      addEventListener: vi.fn((event: string, callback: EventListener) => {
+        listeners.set(event, callback);
+      }),
+      close: vi.fn(),
+    } as unknown as EventSource);
+    const forbidden = new AxiosError('Forbidden');
+    forbidden.response = { status: 403 } as AxiosResponse;
+    vi.mocked(adminApi.getSecurityAlertSummary)
+      .mockResolvedValueOnce({
+        open_count: 2,
+        high_open_count: 1,
+        recent_items: [],
+      })
+      .mockRejectedValueOnce(forbidden);
+
+    render(<Sidebar />);
+
+    await waitFor(() =>
+      expect(adminApi.getSecurityAlertSummary).toHaveBeenCalledTimes(1),
+    );
+    expect(await screen.findByRole('link', { name: '관리' })).toBeInTheDocument();
+    act(() => {
+      listeners.get('notifications.changed')?.(new Event('notifications.changed'));
+    });
+
+    await waitFor(() =>
+      expect(screen.queryByRole('link', { name: '관리' })).not.toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByText('홍길동'));
+    expect(
+      screen.queryByLabelText(/미확인 보안 알림/),
+    ).not.toBeInTheDocument();
+  });
+
+  it('같은 alert occurrence SSE toast는 client cooldown 안에 한 번만 표시한다', async () => {
+    const listeners = new Map<string, EventListener>();
+    vi.mocked(notificationsApi.createEventSource).mockReturnValue({
+      addEventListener: vi.fn((event: string, callback: EventListener) => {
+        listeners.set(event, callback);
+      }),
+      close: vi.fn(),
+    } as unknown as EventSource);
+    const summaryItem = {
+      id: 'alert-1',
+      rule_id: 'repeated_permission_denied' as const,
+      severity: 'medium' as const,
+      actor: {
+        id: 'user-1',
+        display_name: '김사용자',
+        state: 'active' as const,
+      },
+      occurrence_count: 5,
+      last_detected_at: '2026-07-13T00:05:00Z',
+    };
+    vi.mocked(adminApi.getSecurityAlertSummary)
+      .mockResolvedValueOnce({
+        open_count: 1,
+        high_open_count: 0,
+        recent_items: [summaryItem],
+      })
+      .mockResolvedValueOnce({
+        open_count: 1,
+        high_open_count: 0,
+        recent_items: [{ ...summaryItem, occurrence_count: 6 }],
+      })
+      .mockResolvedValueOnce({
+        open_count: 1,
+        high_open_count: 0,
+        recent_items: [{ ...summaryItem, occurrence_count: 7 }],
+      });
+
+    render(<Sidebar />);
+    await waitFor(() =>
+      expect(adminApi.getSecurityAlertSummary).toHaveBeenCalledTimes(1),
+    );
+
+    act(() => {
+      listeners.get('notifications.changed')?.(new Event('notifications.changed'));
+    });
+    await waitFor(() =>
+      expect(adminApi.getSecurityAlertSummary).toHaveBeenCalledTimes(2),
+    );
+    expect(toast.warning).toHaveBeenCalledWith('새 보안 알림이 있습니다.');
+
+    act(() => {
+      listeners.get('notifications.changed')?.(new Event('notifications.changed'));
+    });
+    await waitFor(() =>
+      expect(adminApi.getSecurityAlertSummary).toHaveBeenCalledTimes(3),
+    );
+    expect(toast.warning).toHaveBeenCalledTimes(1);
   });
 });
 

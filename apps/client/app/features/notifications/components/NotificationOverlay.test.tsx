@@ -27,6 +27,25 @@ const notification = {
   created_at: '2026-07-06T10:00:00.000Z',
 };
 
+const securityAlertSummary = {
+  open_count: 2,
+  high_open_count: 1,
+  recent_items: [
+    {
+      id: 'alert-1',
+      rule_id: 'repeated_permission_denied' as const,
+      severity: 'medium' as const,
+      actor: {
+        id: 'user-1',
+        display_name: '김사용자',
+        state: 'active' as const,
+      },
+      occurrence_count: 5,
+      last_detected_at: '2026-07-13T10:00:00.000Z',
+    },
+  ],
+};
+
 afterEach(() => {
   vi.clearAllMocks();
 });
@@ -109,6 +128,112 @@ describe('NotificationOverlay', () => {
       />,
     );
 
-    expect(screen.getByText('새 알림이 없습니다.')).toBeInTheDocument();
+    expect(screen.getByText('새 조직 초대가 없습니다.')).toBeInTheDocument();
+  });
+
+  it('manager에게 보안 알림과 조직 초대를 서로 다른 section으로 표시한다', () => {
+    render(
+      <NotificationOverlay
+        notifications={[notification]}
+        loading={false}
+        error={null}
+        onClose={vi.fn()}
+        onRefresh={vi.fn()}
+        showSecurityAlerts
+        securityAlertSummary={securityAlertSummary}
+        securityAlertsLoading={false}
+        securityAlertsError={null}
+        onRefreshSecurityAlerts={vi.fn()}
+        onSelectSecurityAlert={vi.fn()}
+        onViewAllSecurityAlerts={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByRole('region', { name: '보안 알림' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('region', { name: '조직 초대' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('반복된 권한 거부')).toBeInTheDocument();
+    expect(screen.getByText('김사용자 · 5회')).toBeInTheDocument();
+    expect(screen.getByText('Acme')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '확인' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '해결' })).not.toBeInTheDocument();
+  });
+
+  it('보안 알림 item과 모두 보기는 deep link callback을 호출한다', () => {
+    const onClose = vi.fn();
+    const onSelectSecurityAlert = vi.fn();
+    const onViewAllSecurityAlerts = vi.fn();
+    render(
+      <NotificationOverlay
+        notifications={[]}
+        loading={false}
+        error={null}
+        onClose={onClose}
+        onRefresh={vi.fn()}
+        showSecurityAlerts
+        securityAlertSummary={securityAlertSummary}
+        securityAlertsLoading={false}
+        securityAlertsError={null}
+        onRefreshSecurityAlerts={vi.fn()}
+        onSelectSecurityAlert={onSelectSecurityAlert}
+        onViewAllSecurityAlerts={onViewAllSecurityAlerts}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /반복된 권한 거부/ }));
+    expect(onClose).toHaveBeenCalled();
+    expect(onSelectSecurityAlert).toHaveBeenCalledWith('alert-1');
+
+    fireEvent.click(screen.getByRole('button', { name: '보안 알림 모두 보기' }));
+    expect(onViewAllSecurityAlerts).toHaveBeenCalled();
+  });
+
+  it('보안 알림 조회 실패가 정상적인 조직 초대를 숨기지 않는다', () => {
+    render(
+      <NotificationOverlay
+        notifications={[notification]}
+        loading={false}
+        error={null}
+        onClose={vi.fn()}
+        onRefresh={vi.fn()}
+        showSecurityAlerts
+        securityAlertSummary={null}
+        securityAlertsLoading={false}
+        securityAlertsError="보안 알림을 불러오지 못했습니다."
+        onRefreshSecurityAlerts={vi.fn()}
+        onSelectSecurityAlert={vi.fn()}
+        onViewAllSecurityAlerts={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('보안 알림을 불러오지 못했습니다.')).toBeInTheDocument();
+    expect(screen.getByText('Acme')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /수락/ })).toBeInTheDocument();
+  });
+
+  it('일반 member에게 보안 알림 section을 표시하지 않는다', () => {
+    render(
+      <NotificationOverlay
+        notifications={[]}
+        loading={false}
+        error={null}
+        onClose={vi.fn()}
+        onRefresh={vi.fn()}
+        showSecurityAlerts={false}
+        securityAlertSummary={securityAlertSummary}
+        securityAlertsLoading={false}
+        securityAlertsError={null}
+        onRefreshSecurityAlerts={vi.fn()}
+        onSelectSecurityAlert={vi.fn()}
+        onViewAllSecurityAlerts={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.queryByRole('region', { name: '보안 알림' }),
+    ).not.toBeInTheDocument();
   });
 });

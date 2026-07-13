@@ -3,6 +3,8 @@
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useCallback, useState, useEffect, useRef } from 'react';
+import { isAxiosError } from 'axios';
+import { toast } from 'sonner';
 import { authApi } from '../../auth/api/authApi';
 import {
   Bell,
@@ -27,9 +29,14 @@ import {
   setActiveOrganizationId,
 } from '@/lib/activeOrganization';
 import { apiClient } from '@/lib/apiClient';
-import { notificationsApi } from '../../notifications/api/notificationsApi';
+import {
+  NOTIFICATIONS_REFRESH_EVENT,
+  notificationsApi,
+} from '../../notifications/api/notificationsApi';
 import { NotificationOverlay } from '../../notifications/components/NotificationOverlay';
 import type { NotificationItem } from '../../notifications/types/Notification';
+import { adminApi } from '../../admin/api/adminApi';
+import type { SecurityAlertSummaryResponse } from '../../admin/types/SecurityAlert';
 
 const navigationItems = [
   {
@@ -71,6 +78,8 @@ const navigationItems = [
   },
 ];
 
+const SECURITY_ALERT_TOAST_COOLDOWN_MS = 60_000;
+
 type SidebarOrganization = {
   id: string;
   name: string;
@@ -99,6 +108,16 @@ export default function Sidebar() {
   const [notificationsError, setNotificationsError] = useState<string | null>(
     null,
   );
+  const [securityAlertSummary, setSecurityAlertSummary] =
+    useState<SecurityAlertSummaryResponse | null>(null);
+  const [securityAlertsLoading, setSecurityAlertsLoading] = useState(false);
+  const [securityAlertsError, setSecurityAlertsError] = useState<string | null>(
+    null,
+  );
+  const securityAlertLoadSequenceRef = useRef(0);
+  const securityAlertSnapshotRef = useRef<Map<string, number>>(new Map());
+  const securityAlertSnapshotInitializedRef = useRef(false);
+  const securityAlertToastAtRef = useRef<Map<string, number>>(new Map());
   const dropdownRef = useRef<HTMLDivElement>(null);
   const organizationDropdownRef = useRef<HTMLDivElement>(null);
 
@@ -113,6 +132,76 @@ export default function Sidebar() {
       setNotificationsError('알림을 불러오지 못했습니다.');
     } finally {
       setNotificationsLoading(false);
+    }
+  }, []);
+
+  const clearSecurityAlertSummary = useCallback(() => {
+    securityAlertLoadSequenceRef.current += 1;
+    setSecurityAlertSummary(null);
+    setSecurityAlertsLoading(false);
+    setSecurityAlertsError(null);
+    securityAlertSnapshotRef.current = new Map();
+    securityAlertSnapshotInitializedRef.current = false;
+    securityAlertToastAtRef.current = new Map();
+  }, []);
+
+  const loadSecurityAlertSummary = useCallback(async (notify = false) => {
+    const sequence = ++securityAlertLoadSequenceRef.current;
+    setSecurityAlertSummary(null);
+    setSecurityAlertsLoading(true);
+    setSecurityAlertsError(null);
+    try {
+      const data = await adminApi.getSecurityAlertSummary();
+      if (sequence === securityAlertLoadSequenceRef.current) {
+        const previousSnapshot = securityAlertSnapshotRef.current;
+        if (notify && securityAlertSnapshotInitializedRef.current) {
+          const now = Date.now();
+          let shouldNotify = false;
+          for (const item of data.recent_items) {
+            const previousCount = previousSnapshot.get(item.id);
+            const changed =
+              previousCount === undefined ||
+              item.occurrence_count > previousCount;
+            const lastToastAt = securityAlertToastAtRef.current.get(item.id);
+            if (
+              changed &&
+              (lastToastAt === undefined ||
+                now - lastToastAt >= SECURITY_ALERT_TOAST_COOLDOWN_MS)
+            ) {
+              securityAlertToastAtRef.current.set(item.id, now);
+              shouldNotify = true;
+            }
+          }
+          for (const [alertId, lastToastAt] of securityAlertToastAtRef.current) {
+            if (now - lastToastAt >= SECURITY_ALERT_TOAST_COOLDOWN_MS) {
+              securityAlertToastAtRef.current.delete(alertId);
+            }
+          }
+          if (shouldNotify) {
+            toast.warning('새 보안 알림이 있습니다.');
+          }
+        }
+        securityAlertSnapshotRef.current = new Map(
+          data.recent_items.map((item) => [item.id, item.occurrence_count]),
+        );
+        securityAlertSnapshotInitializedRef.current = true;
+        setSecurityAlertSummary(data);
+      }
+    } catch (loadError) {
+      if (sequence === securityAlertLoadSequenceRef.current) {
+        setSecurityAlertSummary(null);
+        setSecurityAlertsError('보안 알림을 불러오지 못했습니다.');
+        if (isAxiosError(loadError) && loadError.response?.status === 403) {
+          securityAlertSnapshotRef.current = new Map();
+          securityAlertSnapshotInitializedRef.current = false;
+          securityAlertToastAtRef.current = new Map();
+          setIsOrganizationManager(false);
+        }
+      }
+    } finally {
+      if (sequence === securityAlertLoadSequenceRef.current) {
+        setSecurityAlertsLoading(false);
+      }
     }
   }, []);
 
@@ -137,11 +226,33 @@ export default function Sidebar() {
 
   useEffect(() => {
     loadNotifications();
+  }, [loadNotifications]);
 
+  const refreshNotificationsFromSource = useCallback((notify: boolean) => {
+    loadNotifications();
+    if (isOrganizationManager) {
+      loadSecurityAlertSummary(notify);
+    }
+    window.dispatchEvent(new Event(NOTIFICATIONS_REFRESH_EVENT));
+  }, [isOrganizationManager, loadNotifications, loadSecurityAlertSummary]);
+
+  const handleNotificationsChanged = useCallback(() => {
+    refreshNotificationsFromSource(true);
+  }, [refreshNotificationsFromSource]);
+
+  const handleNotificationsOpen = useCallback(() => {
+    refreshNotificationsFromSource(false);
+  }, [refreshNotificationsFromSource]);
+
+  useEffect(() => {
     let eventSource: EventSource | null = null;
     try {
       eventSource = notificationsApi.createEventSource();
-      eventSource.addEventListener('notifications.changed', loadNotifications);
+      eventSource.addEventListener(
+        'notifications.changed',
+        handleNotificationsChanged,
+      );
+      eventSource.addEventListener('open', handleNotificationsOpen);
     } catch {
       // SSE 연결 실패는 초기/수동 조회로 보완한다.
     }
@@ -149,10 +260,11 @@ export default function Sidebar() {
     return () => {
       eventSource?.close();
     };
-  }, [loadNotifications]);
+  }, [handleNotificationsChanged, handleNotificationsOpen]);
 
   useEffect(() => {
     const fetchOrganization = async () => {
+      clearSecurityAlertSummary();
       try {
         const organizationId = getStoredActiveOrganizationId();
         if (!organizationId) {
@@ -176,6 +288,7 @@ export default function Sidebar() {
         setIsOrganizationManager(isManager);
         if (isManager) {
           setCanSeeOperationsNav(true);
+          loadSecurityAlertSummary();
         } else {
           try {
             const operationsResponse = await apiClient.get('/apps/operations', {
@@ -210,7 +323,7 @@ export default function Sidebar() {
         ACTIVE_ORGANIZATION_CHANGED_EVENT,
         fetchOrganization,
       );
-  }, []);
+  }, [clearSecurityAlertSummary, loadSecurityAlertSummary]);
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -248,6 +361,7 @@ export default function Sidebar() {
     }
 
     setActiveOrganizationId(organization.id);
+    clearSecurityAlertSummary();
     setActiveOrganizationIdState(organization.id);
     setOrganizationName(organization.name);
     setIsOrganizationManager(organization.is_manager === true);
@@ -469,6 +583,7 @@ export default function Sidebar() {
           >
             <div className="overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-lg">
               <button
+                aria-label="알림"
                 onClick={() => {
                   setIsDropdownOpen(false);
                   setIsNotificationsOpen(true);
@@ -477,6 +592,15 @@ export default function Sidebar() {
               >
                 <Bell className="w-4 h-4" />
                 <span>알림</span>
+                {isOrganizationManager &&
+                  (securityAlertSummary?.open_count ?? 0) > 0 && (
+                    <span
+                      aria-label={`미확인 보안 알림 ${securityAlertSummary!.open_count}개`}
+                      className="ml-auto rounded-full bg-red-600 px-2 py-0.5 text-xs font-semibold text-white"
+                    >
+                      {securityAlertSummary!.open_count}
+                    </span>
+                  )}
               </button>
               <button
                 onClick={handleLogout}
@@ -496,6 +620,19 @@ export default function Sidebar() {
           error={notificationsError}
           onClose={() => setIsNotificationsOpen(false)}
           onRefresh={loadNotifications}
+          showSecurityAlerts={isOrganizationManager}
+          securityAlertSummary={securityAlertSummary}
+          securityAlertsLoading={securityAlertsLoading}
+          securityAlertsError={securityAlertsError}
+          onRefreshSecurityAlerts={() => loadSecurityAlertSummary(false)}
+          onSelectSecurityAlert={(alertId) =>
+            router.push(
+              `/dashboard/admin?tab=security-alerts&alertId=${alertId}`,
+            )
+          }
+          onViewAllSecurityAlerts={() =>
+            router.push('/dashboard/admin?tab=security-alerts')
+          }
         />
       )}
     </aside>
