@@ -1,7 +1,7 @@
 # Organization Component Spec
 
 Status: Draft
-Verified Against: feature/mba-188 @ 59d1cc51
+Verified Against: feature/mba-127 @ 258b26a9
 
 검증 값은 ActorAccessDrawer/confirm과 관련 organization API wrapper에 적용한다. 기존 organization 관리 UI의 나머지 섹션은 각 구현 이력의 기준을 따른다.
 
