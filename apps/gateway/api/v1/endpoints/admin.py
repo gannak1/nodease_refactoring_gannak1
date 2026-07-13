@@ -102,12 +102,14 @@ def _resolve_security_alert_organization(
     request: Request,
     x_organization_id: str | None,
     current_user: User,
+    requested_operation: str,
 ):
     return resolve_security_alert_manager_organization(
         db,
         request,
         x_organization_id,
         current_user.id,
+        requested_operation,
     )
 
 
@@ -593,7 +595,7 @@ def list_security_alerts(
     current_user: User = Depends(get_current_user),
 ):
     organization_id = _resolve_security_alert_organization(
-        db, request, x_organization_id, current_user
+        db, request, x_organization_id, current_user, "security_alert.list"
     )
     period = SecurityAlertService.resolve_period(request, start_at, end_at)
     return SecurityAlertService.list_alerts(
@@ -624,7 +626,7 @@ def get_security_alert_summary(
     current_user: User = Depends(get_current_user),
 ):
     organization_id = _resolve_security_alert_organization(
-        db, request, x_organization_id, current_user
+        db, request, x_organization_id, current_user, "security_alert.summary"
     )
     return SecurityAlertService.get_summary(db, organization_id=organization_id)
 
@@ -641,7 +643,7 @@ def get_security_alert_detail(
     current_user: User = Depends(get_current_user),
 ):
     organization_id = _resolve_security_alert_organization(
-        db, request, x_organization_id, current_user
+        db, request, x_organization_id, current_user, "security_alert.detail"
     )
     return SecurityAlertService.get_detail(
         db,
@@ -665,7 +667,11 @@ def list_security_alert_audit_logs(
     current_user: User = Depends(get_current_user),
 ):
     organization_id = _resolve_security_alert_organization(
-        db, request, x_organization_id, current_user
+        db,
+        request,
+        x_organization_id,
+        current_user,
+        "security_alert.evidence.list",
     )
     return SecurityAlertService.list_evidence(
         db,
@@ -690,7 +696,11 @@ def acknowledge_security_alert_endpoint(
     current_user: User = Depends(get_current_user),
 ):
     organization_id = _resolve_security_alert_organization(
-        db, request, x_organization_id, current_user
+        db,
+        request,
+        x_organization_id,
+        current_user,
+        "security_alert.acknowledge",
     )
     return _run_security_alert_mutation(
         request,
@@ -718,7 +728,7 @@ def resolve_security_alert_endpoint(
     current_user: User = Depends(get_current_user),
 ):
     organization_id = _resolve_security_alert_organization(
-        db, request, x_organization_id, current_user
+        db, request, x_organization_id, current_user, "security_alert.resolve"
     )
     return _run_security_alert_mutation(
         request,
@@ -748,7 +758,7 @@ def reopen_security_alert_endpoint(
     current_user: User = Depends(get_current_user),
 ):
     organization_id = _resolve_security_alert_organization(
-        db, request, x_organization_id, current_user
+        db, request, x_organization_id, current_user, "security_alert.reopen"
     )
     return _run_security_alert_mutation(
         request,

@@ -94,6 +94,9 @@ class SecurityAlertAuditLogItem(BaseModel):
     target_id: str | None
     status: AuditStatus
     request_id: str | None = None
+    required_permission: str | None = None
+    requested_operation: str | None = None
+    denial_reason: str | None = None
 
 
 class SecurityAlertAuditLogListResponse(BaseModel):

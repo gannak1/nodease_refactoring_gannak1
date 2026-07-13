@@ -33,7 +33,11 @@ def test_current_organization_manager_is_allowed(monkeypatch):
     )
 
     result = security_alert_access.resolve_security_alert_manager_organization(
-        object(), _request(), str(organization_id), user_id
+        object(),
+        _request(),
+        str(organization_id),
+        user_id,
+        "security_alert.list",
     )
 
     assert result == organization_id
@@ -63,7 +67,11 @@ def test_non_manager_roles_are_denied_even_with_organization_scope(
 
     with pytest.raises(HTTPException) as exc:
         security_alert_access.resolve_security_alert_manager_organization(
-            object(), _request(), str(organization_id), uuid4()
+            object(),
+            _request(),
+            str(organization_id),
+            uuid4(),
+            "security_alert.list",
         )
 
     assert caller_kind  # 각 역할은 manager 권한과 별개라는 계약을 표시한다.
@@ -72,8 +80,14 @@ def test_non_manager_roles_are_denied_even_with_organization_scope(
     assert getattr(exc.value, "audit_recorded", False) is True
     assert len(recorded) == 1
     assert recorded[0]["action"] == "permission.denied"
-    assert "target_type" not in recorded[0]
-    assert "target_id" not in recorded[0]
+    assert recorded[0]["target_type"] == "organization"
+    assert recorded[0]["target_id"] == organization_id
+    assert recorded[0]["metadata"]["required_permission"] == "security_alert.manage"
+    assert recorded[0]["metadata"]["requested_operation"] == "security_alert.list"
+    assert (
+        recorded[0]["metadata"]["denial_reason"]
+        == "organization_manager_required"
+    )
     assert "alert_id" not in str(recorded[0])
 
 
@@ -107,7 +121,11 @@ def test_inactive_membership_is_hidden_by_active_organization_resolution(
 
     with pytest.raises(HTTPException) as exc:
         security_alert_access.resolve_security_alert_manager_organization(
-            object(), _request(), str(uuid4()), uuid4()
+            object(),
+            _request(),
+            str(uuid4()),
+            uuid4(),
+            "security_alert.list",
         )
 
     assert membership_state

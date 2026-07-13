@@ -33,10 +33,13 @@ AUDIT_RESOURCE_TYPE = "audit"
 AUDIT_READ_ACTION = "read"
 DETAIL_METADATA_KEYS = {
     "affected_resource_source_count",
+    "denial_reason",
     "organization_id",
     "policy_reason",
     "reason",
     "request_id",
+    "requested_operation",
+    "required_permission",
     "requested_action",
     "resource_id",
     "resource_type",
@@ -51,11 +54,25 @@ _DETAIL_UUID_KEYS = {
     "team_id",
 }
 _DETAIL_STRING_KEYS = {
+    "denial_reason",
     "reason",
     "request_id",
+    "requested_operation",
+    "required_permission",
     "requested_action",
     "resource_type",
 }
+_DETAIL_REQUIRED_PERMISSIONS = {"security_alert.manage"}
+_DETAIL_REQUESTED_OPERATIONS = {
+    "security_alert.list",
+    "security_alert.summary",
+    "security_alert.detail",
+    "security_alert.evidence.list",
+    "security_alert.acknowledge",
+    "security_alert.resolve",
+    "security_alert.reopen",
+}
+_DETAIL_DENIAL_REASONS = {"organization_manager_required"}
 _DETAIL_RESOURCE_TYPES = {
     "workflow",
     "knowledge_base",
@@ -407,6 +424,12 @@ def _safe_detail_metadata_value(key: str, value: Any) -> Any | None:
         return value if value in _DETAIL_POLICY_REASONS else None
     if key == "resource_type":
         return value if value in _DETAIL_RESOURCE_TYPES else None
+    if key == "required_permission":
+        return value if value in _DETAIL_REQUIRED_PERMISSIONS else None
+    if key == "requested_operation":
+        return value if value in _DETAIL_REQUESTED_OPERATIONS else None
+    if key == "denial_reason":
+        return value if value in _DETAIL_DENIAL_REASONS else None
     if key in _DETAIL_STRING_KEYS:
         return value if isinstance(value, str) else None
     if key == "summary":

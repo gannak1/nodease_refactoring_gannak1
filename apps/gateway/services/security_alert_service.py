@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -40,8 +41,12 @@ from apps.shared.services.security_alert_lifecycle import (
     reopen_security_alert,
     resolve_security_alert,
 )
+from apps.shared.services.notification_pubsub import (
+    publish_notifications_changed_to_organization_managers,
+)
 
 KST = ZoneInfo("Asia/Seoul")
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -453,6 +458,34 @@ def _safe_audit_item(
         and bool(audit.target_id)
     )
     request_id = metadata.get("request_id")
+    required_permission = (
+        metadata.get("required_permission")
+        if organization_matches
+        and audit.action == "permission.denied"
+        and metadata.get("required_permission") == "security_alert.manage"
+        else None
+    )
+    requested_operation = (
+        metadata.get("requested_operation")
+        if required_permission
+        and metadata.get("requested_operation")
+        in {
+            "security_alert.list",
+            "security_alert.summary",
+            "security_alert.detail",
+            "security_alert.evidence.list",
+            "security_alert.acknowledge",
+            "security_alert.resolve",
+            "security_alert.reopen",
+        }
+        else None
+    )
+    denial_reason = (
+        metadata.get("denial_reason")
+        if required_permission
+        and metadata.get("denial_reason") == "organization_manager_required"
+        else None
+    )
     return SecurityAlertAuditLogItem(
         id=audit.id,
         occurred_at=audit.occurred_at,
@@ -464,6 +497,9 @@ def _safe_audit_item(
         target_id=audit.target_id if target_is_safe else None,
         status=audit.status,
         request_id=request_id if isinstance(request_id, str) else None,
+        required_permission=required_permission,
+        requested_operation=requested_operation,
+        denial_reason=denial_reason,
     )
 
 
@@ -485,6 +521,16 @@ def _detail_then_commit(
     except Exception:
         db.rollback()
         raise
+    try:
+        publish_notifications_changed_to_organization_managers(
+            db,
+            organization_id,
+        )
+    except Exception as error:
+        logger.warning(
+            "Failed to publish security alert lifecycle notification: error_type=%s",
+            type(error).__name__,
+        )
     return detail
 
 

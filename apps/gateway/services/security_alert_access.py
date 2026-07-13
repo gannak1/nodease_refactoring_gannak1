@@ -16,6 +16,7 @@ def resolve_security_alert_manager_organization(
     request: Request,
     raw_organization_id: str | None,
     user_id: UUID,
+    requested_operation: str,
 ) -> UUID:
     """현재 active organization의 owner/manager 경계를 강제한다."""
     organization_id = resolve_active_organization_id(
@@ -25,16 +26,21 @@ def resolve_security_alert_manager_organization(
         user_id,
     )
     if not has_organization_manager_permission(db, user_id, organization_id):
-        # Alert ID를 알기 전에 기록해 hidden target 존재 여부를 남기지 않는다.
+        # 사용자가 이미 접근 중인 organization만 safe target으로 기록한다.
+        # Alert ID는 조회 전에 기록하지 않아 hidden target 존재 여부를 남기지 않는다.
         record_audit(
             action=AuditAction.PERMISSION_DENIED,
             category="action",
             actor_id=user_id,
             actor_type="user",
+            target_type="organization",
+            target_id=organization_id,
             status="failure",
             metadata={
                 "organization_id": str(organization_id),
                 "required_permission": "security_alert.manage",
+                "requested_operation": requested_operation,
+                "denial_reason": "organization_manager_required",
                 "permission_action": "manage",
                 "policy_result": "deny",
             },

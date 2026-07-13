@@ -304,6 +304,9 @@ def _audit(organization_id, **overrides):
         "audit_metadata": {
             "organization_id": str(organization_id),
             "request_id": "safe-request-id",
+            "required_permission": "security_alert.manage",
+            "requested_operation": "security_alert.list",
+            "denial_reason": "organization_manager_required",
             "email": "secret@example.com",
             "token": "not-a-real-token",
         },
@@ -380,6 +383,9 @@ def test_evidence_returns_only_linked_safe_projection(monkeypatch):
     assert serialized["target_type"] == "workflow"
     assert serialized["target_id"] == audit.target_id
     assert serialized["request_id"] == "safe-request-id"
+    assert serialized["required_permission"] == "security_alert.manage"
+    assert serialized["requested_operation"] == "security_alert.list"
+    assert serialized["denial_reason"] == "organization_manager_required"
     assert "audit_metadata" not in serialized
     assert "before" not in serialized
     assert "after" not in serialized
@@ -474,6 +480,68 @@ def test_acknowledge_commits_transition_and_canonical_audit(monkeypatch):
     assert db.commits == 1
     assert db.rollbacks == 0
     assert [audit.action for audit in db.added] == ["security_alert.acknowledged"]
+
+
+def test_lifecycle_notification_is_published_after_commit(monkeypatch):
+    alert = _alert()
+    db = _LifecycleSession(alert)
+    events = []
+    original_commit = db.commit
+
+    def commit():
+        original_commit()
+        events.append("commit")
+
+    db.commit = commit
+    _prepare_lifecycle_service(monkeypatch, alert)
+    monkeypatch.setattr(
+        module,
+        "publish_notifications_changed_to_organization_managers",
+        lambda db, organization_id: events.append(("publish", organization_id)),
+        raising=False,
+    )
+
+    SecurityAlertService.acknowledge(
+        db,
+        request=_request(),
+        organization_id=alert.organization_id,
+        alert_id=alert.id,
+        manager_id=uuid4(),
+        expected_version=1,
+    )
+
+    assert events == ["commit", ("publish", alert.organization_id)]
+
+
+def test_lifecycle_notification_failure_does_not_rollback_commit(monkeypatch):
+    alert = _alert()
+    db = _LifecycleSession(alert)
+    publish_attempts = []
+    _prepare_lifecycle_service(monkeypatch, alert)
+
+    def fail_publish(db, organization_id):
+        publish_attempts.append(organization_id)
+        raise RuntimeError("notification unavailable")
+
+    monkeypatch.setattr(
+        module,
+        "publish_notifications_changed_to_organization_managers",
+        fail_publish,
+        raising=False,
+    )
+
+    SecurityAlertService.acknowledge(
+        db,
+        request=_request(),
+        organization_id=alert.organization_id,
+        alert_id=alert.id,
+        manager_id=uuid4(),
+        expected_version=1,
+    )
+
+    assert publish_attempts == [alert.organization_id]
+    assert db.commits == 1
+    assert db.rollbacks == 0
 
 
 def test_resolve_uses_sanitizer_and_commits_sanitized_reason(monkeypatch):

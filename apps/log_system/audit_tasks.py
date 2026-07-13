@@ -22,6 +22,9 @@ from apps.shared.services.security_alert_reconciliation import (
     SQLAlchemySecurityAlertReconciliationRepository,
     reconcile_security_alert_batch,
 )
+from apps.shared.services.notification_pubsub import (
+    publish_notifications_changed_to_organization_managers,
+)
 from apps.shared.services.security_alert_rule_evaluator import (
     build_security_alert_cooldown_candidates,
     evaluate_security_alert_rules,
@@ -173,12 +176,18 @@ def record_audit_log(self, data: Dict[str, Any]):
 def detect_security_alert(self, audit_id: str) -> Dict[str, Any]:
     session = SessionLocal()
     parsed_audit_id = _to_uuid(audit_id)
+    changed_organization_ids: set[uuid.UUID] = set()
     try:
-        candidate_count = _process_security_alert_audit(session, parsed_audit_id)
+        candidate_count = _process_security_alert_audit(
+            session,
+            parsed_audit_id,
+            changed_organization_ids=changed_organization_ids,
+        )
         if candidate_count is None:
             return {"status": "missing", "audit_id": audit_id}
 
         session.commit()
+        _publish_security_alert_updates(session, changed_organization_ids)
         return {
             "status": "processed",
             "audit_id": audit_id,
@@ -194,6 +203,8 @@ def detect_security_alert(self, audit_id: str) -> Dict[str, Any]:
 def _process_security_alert_audit(
     db: Any,
     audit_id: uuid.UUID | None,
+    *,
+    changed_organization_ids: set[uuid.UUID] | None = None,
 ) -> int | None:
     context = _load_security_alert_detection_context(db, audit_id)
     if context is None:
@@ -204,6 +215,7 @@ def _process_security_alert_audit(
         current_event=current_event,
         window_events=window_events,
         activation_started_at=activation_started_at,
+        changed_organization_ids=changed_organization_ids,
     )
 
 
@@ -213,6 +225,7 @@ def _evaluate_and_aggregate_security_alerts(
     current_event: Any,
     window_events: list[Any],
     activation_started_at: datetime,
+    changed_organization_ids: set[uuid.UUID] | None = None,
 ) -> int:
     threshold_candidates = evaluate_security_alert_rules(
         current_event=current_event,
@@ -230,13 +243,35 @@ def _evaluate_and_aggregate_security_alerts(
         {candidate.detection_key: candidate for candidate in threshold_candidates}
     )
     for candidate in candidates_by_key.values():
-        aggregate_security_alert_detection(
+        alert = aggregate_security_alert_detection(
             db,
             candidate=candidate,
             audit_logs=window_events,
             detected_at=current_event.occurred_at,
         )
+        organization_id = getattr(alert, "organization_id", None)
+        if organization_id is None:
+            organization_id = getattr(candidate, "organization_id", None)
+        if organization_id is not None and changed_organization_ids is not None:
+            changed_organization_ids.add(organization_id)
     return len(threshold_candidates)
+
+
+def _publish_security_alert_updates(
+    db: Any,
+    organization_ids: set[uuid.UUID],
+) -> None:
+    for organization_id in organization_ids:
+        try:
+            publish_notifications_changed_to_organization_managers(
+                db,
+                organization_id,
+            )
+        except Exception as error:
+            logger.warning(
+                "[Security Alert] notification publish failed: error_type=%s",
+                type(error).__name__,
+            )
 
 
 def _load_security_alert_detection_context(
@@ -294,12 +329,14 @@ def _security_alert_activation_started_at(db: Any, current_event: Any) -> dateti
 )
 def reconcile_security_alerts(self) -> Dict[str, Any]:
     session = SessionLocal()
+    changed_organization_ids: set[uuid.UUID] = set()
     try:
         repository = SQLAlchemySecurityAlertReconciliationRepository(
             session,
             process_audit=lambda audit: _process_reconciliation_audit(
                 session,
                 audit,
+                changed_organization_ids=changed_organization_ids,
             ),
         )
         result = reconcile_security_alert_batch(
@@ -307,6 +344,7 @@ def reconcile_security_alerts(self) -> Dict[str, Any]:
             processor_name=_SECURITY_ALERT_PROCESSOR,
             overlap=_SECURITY_ALERT_RECONCILIATION_OVERLAP,
         )
+        _publish_security_alert_updates(session, changed_organization_ids)
         return {
             "status": "processed",
             "processed_count": result.processed_count,
@@ -318,5 +356,14 @@ def reconcile_security_alerts(self) -> Dict[str, Any]:
         session.close()
 
 
-def _process_reconciliation_audit(db: Any, audit: AuditLog) -> None:
-    _process_security_alert_audit(db, audit.id)
+def _process_reconciliation_audit(
+    db: Any,
+    audit: AuditLog,
+    *,
+    changed_organization_ids: set[uuid.UUID] | None = None,
+) -> None:
+    _process_security_alert_audit(
+        db,
+        audit.id,
+        changed_organization_ids=changed_organization_ids,
+    )

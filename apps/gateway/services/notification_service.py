@@ -1,5 +1,3 @@
-import json
-import logging
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -9,27 +7,12 @@ from apps.shared.db.models.organization_membership import (
     ORGANIZATION_MEMBERSHIP_INVITED,
     OrganizationMembership,
 )
-from apps.shared.pubsub import get_redis_client
 from apps.shared.schemas.notification import NotificationItemResponse
-
-logger = logging.getLogger(__name__)
-
-
-NOTIFICATION_EVENT_CHANGED = "notifications.changed"
-
-
-def notification_channel(user_id: Any) -> str:
-    return f"notifications:user:{user_id}"
-
-
-def publish_notifications_changed(user_id: Any) -> None:
-    try:
-        get_redis_client().publish(
-            notification_channel(user_id),
-            json.dumps({"type": NOTIFICATION_EVENT_CHANGED}),
-        )
-    except Exception:
-        logger.warning("Failed to publish notification change", exc_info=True)
+from apps.shared.services.notification_pubsub import (
+    NOTIFICATION_EVENT_CHANGED,
+    notification_channel,
+    publish_notifications_changed,
+)
 
 
 class NotificationService:
