@@ -32,12 +32,18 @@ class CostOptimizerRecommendationVerificationService:
         node_id: str,
         recommendation_ids: list[str],
         baseline_mode: str,
+        recommendation_policy_version: str | None = None,
+        recommendation_fingerprint: str | None = None,
+        node_config_fingerprint: str | None = None,
     ) -> str:
         payload = {
             "workflow_id": str(workflow_id),
             "node_id": node_id,
             "recommendation_ids": sorted(recommendation_ids),
             "baseline_mode": baseline_mode,
+            "recommendation_policy_version": recommendation_policy_version,
+            "recommendation_fingerprint": recommendation_fingerprint,
+            "node_config_fingerprint": node_config_fingerprint,
         }
         serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         return hashlib.sha256(serialized.encode("utf-8")).hexdigest()

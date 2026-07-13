@@ -172,8 +172,9 @@ export interface CostOptimizerRecommendationApplyRequest {
 export interface CostOptimizerRecommendationVerifyRequest {
   recommendation_ids: string[];
   baseline_mode: 'latest_success';
-  recommendation_policy_version?: string;
-  node_config_fingerprint?: string;
+  recommendation_policy_version: string;
+  recommendation_fingerprint: string;
+  node_config_fingerprint: string;
 }
 
 export interface CostOptimizerMetricComparison {
@@ -226,6 +227,7 @@ interface CostOptimizerRecommendationVerificationCommon {
   verification_context?: {
     node_config_fingerprint?: string | null;
     recommendation_policy_version?: string | null;
+    recommendation_fingerprint?: string | null;
   };
 }
 
@@ -477,6 +479,7 @@ export interface CostOptimizerParameterRecommendation {
 export interface CostOptimizerParameterRecommendationsResponse {
   analysis_stage: 'insufficient_logs' | 'recommendations_available' | string;
   policy_version: string;
+  recommendation_fingerprint: string;
   recommendations: CostOptimizerParameterRecommendation[];
   warnings?: Array<{
     code?: string;

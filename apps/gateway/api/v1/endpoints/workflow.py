@@ -215,6 +215,7 @@ class CostOptimizerRecommendationVerifyRequest(BaseModel):
     # 프론트가 추천 목록을 조회한 시점의 값을 함께 보내면 이전 modal state를
     # 재사용한 요청을 stale로 막을 수 있다. 기존 클라이언트 호환을 위해 선택값이다.
     recommendation_policy_version: str | None = None
+    recommendation_fingerprint: str | None = None
     node_config_fingerprint: str | None = None
 
 
@@ -1201,20 +1202,14 @@ SENSITIVE_CANDIDATE_PROMPT_FIELDS = (
     "user_prompt",
     "assistant_prompt",
 )
-SENSITIVE_RAG_SUMMARY_KEYS = {
-    "content",
-    "raw_content",
-    "chunk_content",
-    "raw_chunk_content",
-    "chunks",
-    "raw_chunks",
-    "source_metadata",
-    "raw_source_metadata",
-    "metadata",
-    "raw_metadata",
-    "document_name",
-    "filename",
-    "file_name",
+SAFE_COST_OPTIMIZER_RAG_SUMMARY_KEYS = {
+    "retrieved_chunk_count",
+    "knowledge_base_count",
+    "context_token_estimate",
+    "evidence_sufficient",
+    "source_summary",
+    "score_summary",
+    "hierarchy_fallback",
 }
 COST_OPTIMIZER_SAFE_SUMMARY_MAX_LIST_ITEMS = 20
 COST_OPTIMIZER_SAFE_SUMMARY_MAX_STRING_CHARS = 200
@@ -1290,18 +1285,36 @@ def _safe_cost_optimizer_rag_summary(value: Any) -> Any:
     safe_value = _safe_cost_optimizer_value(value)
     if isinstance(safe_value, dict):
         return {
-            key: _safe_cost_optimizer_rag_summary(item)
+            key: _safe_cost_optimizer_rag_summary_value(item)
             for key, item in safe_value.items()
-            if str(key).lower() not in SENSITIVE_RAG_SUMMARY_KEYS
+            if str(key) in SAFE_COST_OPTIMIZER_RAG_SUMMARY_KEYS
         }
-    if isinstance(safe_value, list):
+    return None
+
+
+def _safe_cost_optimizer_rag_summary_value(value: Any) -> Any:
+    """허용된 RAG 집계값 안에서도 원문 객체가 다시 섞이지 않게 제한한다."""
+    if isinstance(value, dict):
+        return {
+            str(key)[:COST_OPTIMIZER_SAFE_SUMMARY_MAX_STRING_CHARS]: (
+                _safe_cost_optimizer_rag_summary_value(item)
+            )
+            for key, item in list(value.items())[
+                :COST_OPTIMIZER_SAFE_SUMMARY_MAX_LIST_ITEMS
+            ]
+            if isinstance(item, (str, int, float, bool)) or item is None
+        }
+    if isinstance(value, list):
         return [
-            _safe_cost_optimizer_rag_summary(item)
-            for item in safe_value[:COST_OPTIMIZER_SAFE_SUMMARY_MAX_LIST_ITEMS]
+            _safe_cost_optimizer_rag_summary_value(item)
+            for item in value[:COST_OPTIMIZER_SAFE_SUMMARY_MAX_LIST_ITEMS]
+            if isinstance(item, (str, int, float, bool)) or item is None
         ]
-    if isinstance(safe_value, str):
-        return safe_value[:COST_OPTIMIZER_SAFE_SUMMARY_MAX_STRING_CHARS]
-    return safe_value
+    if isinstance(value, str):
+        return value[:COST_OPTIMIZER_SAFE_SUMMARY_MAX_STRING_CHARS]
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return None
 
 
 def _preview_baseline_payload(value: Any) -> str:
@@ -3979,6 +3992,9 @@ def _verify_cost_optimizer_recommendations(
         node_id=node_id,
         recommendation_ids=request_body.recommendation_ids,
         baseline_mode=request_body.baseline_mode,
+        recommendation_policy_version=request_body.recommendation_policy_version,
+        recommendation_fingerprint=request_body.recommendation_fingerprint,
+        node_config_fingerprint=request_body.node_config_fingerprint,
     )
     claim = CostOptimizerRecommendationVerificationService.claim(
         db,
@@ -4005,12 +4021,19 @@ def _verify_cost_optimizer_recommendations(
         current_policy_version = str(
             recommendations_payload.get("policy_version") or ""
         )
+        current_recommendation_fingerprint = str(
+            recommendations_payload.get("recommendation_fingerprint") or ""
+        )
         if (
             request_body.node_config_fingerprint
             and request_body.node_config_fingerprint != current_fingerprint
         ) or (
             request_body.recommendation_policy_version
             and request_body.recommendation_policy_version != current_policy_version
+        ) or (
+            request_body.recommendation_fingerprint
+            and request_body.recommendation_fingerprint
+            != current_recommendation_fingerprint
         ):
             response = _cost_optimizer_stale_verification_response(
                 "recommendation_stale"
@@ -4220,6 +4243,7 @@ def _verify_cost_optimizer_recommendations(
             "verification_context": {
                 "node_config_fingerprint": current_fingerprint,
                 "recommendation_policy_version": current_policy_version,
+                "recommendation_fingerprint": current_recommendation_fingerprint,
             },
         }
         CostOptimizerRecommendationVerificationService.complete(

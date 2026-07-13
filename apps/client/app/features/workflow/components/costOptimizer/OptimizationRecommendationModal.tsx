@@ -530,6 +530,16 @@ export function OptimizationRecommendationModal({
   const hasRenderableVerification = Boolean(
     verification && verification.result.verification_status !== 'stale',
   );
+  const requiresExperimentVerification = selectedRecommendations.some(
+    (recommendation) => recommendation.apply_mode !== 'direct_policy_update',
+  );
+  const hasOnlyDirectPolicyUpdates =
+    selectedRecommendations.length > 0 &&
+    !requiresExperimentVerification;
+  const canApplyDirectRecommendations =
+    hasOnlyDirectPolicyUpdates &&
+    !isLoadingRecommendations &&
+    !isApplyingRecommendations;
   const canRunAction =
     Boolean(workflowId && selectedNodeId && candidateSettings) &&
     selectedRecommendations.length > 0 &&
@@ -559,13 +569,24 @@ export function OptimizationRecommendationModal({
     if (!workflowId || !selectedNodeId || !candidateSettings) return;
     setActionError('');
     setIsApplyConfirmationOpen(false);
+    const profile = recommendationResponse?.profile;
+    const nodeConfigFingerprint =
+      profile && typeof profile.node_config_fingerprint === 'string'
+        ? profile.node_config_fingerprint
+        : '';
+    const recommendationPolicyVersion = recommendationResponse?.policy_version || '';
+    const recommendationFingerprint =
+      recommendationResponse?.recommendation_fingerprint || '';
+    if (
+      !nodeConfigFingerprint ||
+      !recommendationPolicyVersion ||
+      !recommendationFingerprint
+    ) {
+      setActionError('추천 정보가 최신성 검증 값을 포함하지 않습니다. 추천을 다시 불러오세요.');
+      return;
+    }
     setIsVerifyingRecommendations(true);
     try {
-      const profile = recommendationResponse?.profile;
-      const nodeConfigFingerprint =
-        profile && typeof profile.node_config_fingerprint === 'string'
-          ? profile.node_config_fingerprint
-          : undefined;
       const result = await workflowApi.verifyCostOptimizerRecommendations(
         workflowId,
         selectedNodeId,
@@ -574,7 +595,8 @@ export function OptimizationRecommendationModal({
             (recommendation) => recommendation.parameter_key,
           ),
           baseline_mode: 'latest_success',
-          recommendation_policy_version: recommendationResponse?.policy_version,
+          recommendation_policy_version: recommendationPolicyVersion,
+          recommendation_fingerprint: recommendationFingerprint,
           node_config_fingerprint: nodeConfigFingerprint,
         },
         createIdempotencyKey(),
@@ -603,7 +625,7 @@ export function OptimizationRecommendationModal({
     setActionError('');
     setIsApplyingRecommendations(true);
     try {
-      if (verification) {
+      if (verification && !isVerificationStale) {
         if (!canApplyVerification || !verification.result.comparison_id) {
           throw new Error('verification_apply_not_allowed');
         }
@@ -625,6 +647,18 @@ export function OptimizationRecommendationModal({
         onMarkForReview?.(
           verification.result.applied_recommendation_ids || selectedIds,
         );
+        return;
+      }
+
+      if (canApplyDirectRecommendations) {
+        const recommendationIds = selectedRecommendations.map(
+          (recommendation) => recommendation.parameter_key,
+        );
+        await workflowApi.applyCostOptimizerRecommendations(workflowId, selectedNodeId, {
+          recommendation_ids: recommendationIds,
+        });
+        onApplyPatches?.(selectedPatches);
+        onMarkForReview?.(recommendationIds);
         return;
       }
 
@@ -873,7 +907,7 @@ export function OptimizationRecommendationModal({
           >
             닫기
           </button>
-          {hasRenderableVerification ? (
+          {hasRenderableVerification && !isVerificationStale ? (
             <>
               <button
                 type="button"
@@ -902,6 +936,16 @@ export function OptimizationRecommendationModal({
                     : '적용하기'}
               </button>
             </>
+          ) : hasOnlyDirectPolicyUpdates ? (
+            <button
+              type="button"
+              disabled={!canApplyDirectRecommendations}
+              onClick={handleApplyRecommendations}
+              className="inline-flex items-center gap-2 rounded-md bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+            >
+              <Wand2 className="h-4 w-4" />
+              {isApplyingRecommendations ? '적용 중' : '적용하기'}
+            </button>
           ) : (
             <>
               <button

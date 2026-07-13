@@ -22,6 +22,7 @@ vi.mock('next/navigation', () => ({
 const recommendationResponse = {
   analysis_stage: 'recommendations_available',
   policy_version: 'recommendation-v2',
+  recommendation_fingerprint: 'recommendations-fingerprint',
   recommendations: [
     {
       recommendation_type: 'llm_parameter',
@@ -185,6 +186,8 @@ describe('FR-013 추천 설정 인라인 검증 모달', () => {
           recommendation_ids: ['max_tokens'],
           baseline_mode: 'latest_success',
           recommendation_policy_version: 'recommendation-v2',
+          recommendation_fingerprint: 'recommendations-fingerprint',
+          node_config_fingerprint: 'node-fingerprint',
         }),
         expect.any(String),
       );
@@ -258,5 +261,66 @@ describe('FR-013 추천 설정 인라인 검증 모달', () => {
     expect(screen.queryByText('A BASELINE')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '적용하기' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '다시 테스트하기' })).toBeEnabled();
+  });
+
+  it('검증 뒤 추천 선택이 바뀌면 현재 선택으로 다시 테스트할 수 있다', async () => {
+    workflowApiMock.getCostOptimizerParameterRecommendations.mockResolvedValueOnce({
+      ...recommendationResponse,
+      recommendations: [
+        ...recommendationResponse.recommendations,
+        {
+          recommendation_type: 'llm_parameter',
+          parameter_key: 'temperature',
+          current_value: 0.7,
+          suggested_value: 0.2,
+          apply_mode: 'experiment_required',
+          candidate_patch: { parameters: { temperature: 0.2 } },
+          reason: '출력 안정성을 높입니다.',
+        },
+      ],
+    });
+    renderModal();
+
+    fireEvent.click(await screen.findByRole('button', { name: '테스트하기' }));
+    await screen.findByRole('button', { name: '적용하기' });
+    fireEvent.click(screen.getByText('출력 안정성 높이기'));
+
+    expect(screen.getByRole('button', { name: '다시 테스트하기' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: '다시 테스트하기' }));
+
+    await waitFor(() => {
+      expect(workflowApiMock.verifyCostOptimizerRecommendations).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('direct policy 추천은 baseline 검증 없이 즉시 적용한다', async () => {
+    workflowApiMock.getCostOptimizerParameterRecommendations.mockResolvedValueOnce({
+      ...recommendationResponse,
+      analysis_stage: 'insufficient_logs',
+      recommendations: [
+        {
+          recommendation_type: 'model_routing_policy',
+          parameter_key: 'model_routing.enable',
+          current_value: false,
+          suggested_value: true,
+          apply_mode: 'direct_policy_update',
+          candidate_patch: { auto_model_routing: true },
+          reason: '자동 모델 라우팅을 사용합니다.',
+        },
+      ],
+    });
+    workflowApiMock.applyCostOptimizerRecommendations.mockResolvedValueOnce({ applied: true });
+    renderModal();
+
+    fireEvent.click(await screen.findByRole('button', { name: '적용하기' }));
+
+    await waitFor(() => {
+      expect(workflowApiMock.applyCostOptimizerRecommendations).toHaveBeenCalledWith(
+        'workflow-1',
+        'llm-triage',
+        { recommendation_ids: ['model_routing.enable'] },
+      );
+    });
+    expect(workflowApiMock.verifyCostOptimizerRecommendations).not.toHaveBeenCalled();
   });
 });

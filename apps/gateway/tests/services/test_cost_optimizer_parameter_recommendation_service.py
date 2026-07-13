@@ -6,6 +6,7 @@ import pytest
 
 from apps.gateway.services.cost_optimizer_parameter_recommendation_service import (
     CostOptimizerParameterRecommendationService,
+    _node_config_fingerprint,
     _resolve_operation_cohort,
 )
 from apps.shared.db.models.app import App
@@ -100,6 +101,23 @@ def test_fr12_returns_insufficient_logs_until_deployed_samples_reach_threshold()
     ] == ["model_routing.enable"]
     assert response["profile"]["sample_count"] == 19
     assert response["warnings"][0]["code"] == "operation_logs_insufficient"
+
+
+def test_fr12_recommendation_response_includes_freshness_fingerprints():
+    workflow_id = uuid4()
+    workflow = _workflow(workflow_id, max_tokens=4096)
+    db = _RecommendationDb(workflow_runs=[], node_runs=[], usage_logs=[])
+
+    response = CostOptimizerParameterRecommendationService.recommend(
+        db,
+        workflow=workflow,
+        node_id="llm-triage",
+    )
+
+    assert response["profile"]["node_config_fingerprint"] == (
+        _node_config_fingerprint(workflow.graph["nodes"][0]["data"])
+    )
+    assert len(response["recommendation_fingerprint"]) == 64
 
 
 def test_fr12_recommends_enabling_model_routing_even_with_insufficient_logs():

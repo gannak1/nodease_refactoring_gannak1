@@ -40,6 +40,7 @@ describe('FR-013 추천 설정 인라인 검증 API client', () => {
           recommendation_ids: string[];
           baseline_mode: 'latest_success';
           recommendation_policy_version?: string;
+          recommendation_fingerprint?: string;
           node_config_fingerprint?: string;
         },
         idempotencyKey: string,
@@ -53,6 +54,7 @@ describe('FR-013 추천 설정 인라인 검증 API client', () => {
         recommendation_ids: ['max_tokens', 'rag.top_k'],
         baseline_mode: 'latest_success',
         recommendation_policy_version: 'recommendation-v2',
+        recommendation_fingerprint: 'recommendations-fingerprint',
         node_config_fingerprint: 'node-fingerprint',
       },
       'verify-1',
@@ -64,6 +66,7 @@ describe('FR-013 추천 설정 인라인 검증 API client', () => {
         recommendation_ids: ['max_tokens', 'rag.top_k'],
         baseline_mode: 'latest_success',
         recommendation_policy_version: 'recommendation-v2',
+        recommendation_fingerprint: 'recommendations-fingerprint',
         node_config_fingerprint: 'node-fingerprint',
       },
       { headers: { 'Idempotency-Key': 'verify-1' } },

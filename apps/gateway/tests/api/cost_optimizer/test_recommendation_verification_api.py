@@ -360,6 +360,51 @@ class TestRecommendationInlineVerificationApi:
         run_candidate.assert_not_called()
         complete.assert_called_once()
 
+    def test_fr13_verify_stale_recommendation_payload_does_not_create_candidate(self):
+        workflow_id = uuid4()
+        workflow = _workflow_with_llm_node(workflow_id, uuid4())
+        verification = SimpleNamespace(id=uuid4())
+
+        with (
+            patch.object(
+                workflow_endpoint.CostOptimizerRecommendationVerificationService,
+                "claim",
+                return_value=RecommendationVerificationClaim(record=verification),
+            ),
+            patch.object(
+                workflow_endpoint.CostOptimizerRecommendationVerificationService,
+                "complete",
+            ) as complete,
+            patch.object(
+                workflow_endpoint.CostOptimizerParameterRecommendationService,
+                "recommend",
+                return_value={
+                    "policy_version": "current-policy",
+                    "recommendation_fingerprint": "current-recommendations",
+                    "recommendations": [],
+                },
+            ),
+            patch.object(workflow_endpoint, "_run_cost_optimizer_candidate") as run_candidate,
+        ):
+            result = workflow_endpoint._verify_cost_optimizer_recommendations(
+                db=SimpleNamespace(),
+                workflow=workflow,
+                node_id="llm-triage",
+                current_user=SimpleNamespace(id=uuid4()),
+                request=SimpleNamespace(),
+                request_body=workflow_endpoint.CostOptimizerRecommendationVerifyRequest(
+                    recommendation_ids=["max_tokens"],
+                    baseline_mode="latest_success",
+                    recommendation_fingerprint="outdated-recommendations",
+                ),
+                idempotency_key="fr13-stale-recommendations-001",
+            )
+
+        assert result["verification_status"] == "stale"
+        assert result["apply"]["reasons"] == ["recommendation_stale"]
+        run_candidate.assert_not_called()
+        complete.assert_called_once()
+
     def test_fr13_latest_baseline_uses_active_deployment_when_trace_config_was_redacted(
         self,
     ):

@@ -2447,25 +2447,28 @@ class TestCostOptimizerCompareApi:
     def test_fr9_rag_summary_safe_value_has_bounded_size_and_redaction(self):
         summary = {
             "retrieved_chunk_count": 30,
-            "source_summary": [f"source-{index}" for index in range(25)],
-            "score_summary": {
-                "max": 0.98,
-                "debug_text": "x" * 500,
-            },
+            "context_token_estimate": 640,
+            "evidence_sufficient": True,
             "raw_chunk_content": "must-not-store",
             "source_metadata": {"filename": "hidden.md"},
+            "rawChunkContent": "camel-case-must-not-store",
+            "sourceMetadata": {"filename": "camel-hidden.md"},
+            "score_summary": {"max": 0.98},
         }
 
         safe_summary = workflow_endpoint._safe_cost_optimizer_rag_summary(summary)
 
-        assert safe_summary["retrieved_chunk_count"] == 30
-        assert len(safe_summary["source_summary"]) == 20
-        assert len(safe_summary["score_summary"]["debug_text"]) == 200
+        assert safe_summary == {
+            "retrieved_chunk_count": 30,
+            "context_token_estimate": 640,
+            "evidence_sufficient": True,
+            "score_summary": {"max": 0.98},
+        }
         serialized = str(safe_summary)
         assert "must-not-store" not in serialized
         assert "hidden.md" not in serialized
-        assert "raw_chunk_content" not in serialized
-        assert "source_metadata" not in serialized
+        assert "camel-case-must-not-store" not in serialized
+        assert "camel-hidden.md" not in serialized
 
     def test_fr9_compare_marks_cost_unavailable_when_model_price_is_missing(self):
         workflow_id = uuid4()
