@@ -36,6 +36,13 @@ from sqlalchemy.orm import Session
 COLLECTION_PERMISSION_ACTIONS = {"read", "route", "manage", "sync"}
 SOURCE_ACL_PASS_STATE = "fresh"
 SOURCE_ACL_FAIL_STATES = {"stale", "unmapped", "ambiguous", "unverified", "revoked"}
+SOURCE_RETRIEVAL_PERMISSION_ACTIONS = {
+    "read",
+    "view",
+    "use",
+    "retrieve",
+    "search",
+}
 
 
 class KnowledgePermissionHelper:
@@ -108,10 +115,69 @@ class KnowledgePermissionHelper:
         collections: Iterable[KnowledgeCollection],
         action: str,
     ) -> dict[uuid.UUID, KnowledgePermissionDecision]:
-        return {
-            collection.id: self.evaluate_collection_action(collection, action)
-            for collection in collections
+        collection_list = list(collections)
+        if not collection_list:
+            return {}
+
+        # Lightweight test/fake helpers historically provide only the single-row
+        # hook. Production sessions always take the bounded bulk path below.
+        if self.db is None:
+            return {
+                collection.id: self.evaluate_collection_action(collection, action)
+                for collection in collection_list
+            }
+
+        if action not in COLLECTION_PERMISSION_ACTIONS:
+            return {
+                collection.id: self._denied(
+                    reason_code="permission.invalid_action",
+                    external_reason_code="resource.hidden",
+                )
+                for collection in collection_list
+            }
+
+        organization_auth_state = self._organization_auth_state()
+        in_scope_by_id = {
+            collection.id: self._collection_in_scope(collection)
+            for collection in collection_list
         }
+        allowed_collection_ids: set[uuid.UUID] = set()
+        if organization_auth_state == ORGANIZATION_AUTH_MEMBER:
+            scoped_collection_ids = [
+                collection.id
+                for collection in collection_list
+                if in_scope_by_id[collection.id]
+            ]
+            if scoped_collection_ids:
+                allowed_collection_ids = self._bulk_collection_action_ids(
+                    scoped_collection_ids,
+                    action,
+                )
+
+        decisions: dict[uuid.UUID, KnowledgePermissionDecision] = {}
+        for collection in collection_list:
+            if not in_scope_by_id[collection.id]:
+                decisions[collection.id] = self._denied(reason_code="resource.hidden")
+            elif organization_auth_state == AUTH_STATE_MANAGER:
+                decisions[collection.id] = self._allowed(
+                    effective_auth_state=AUTH_STATE_MANAGER,
+                    safe_metadata=self._collection_safe_metadata(collection),
+                )
+            elif organization_auth_state != ORGANIZATION_AUTH_MEMBER:
+                decisions[collection.id] = self._denied(reason_code="resource.hidden")
+            elif collection.id not in allowed_collection_ids:
+                decisions[collection.id] = self._denied(
+                    resource_visibility="visible",
+                    reason_code=f"collection_{action}_denied",
+                    external_reason_code="permission.denied",
+                    safe_metadata=self._collection_safe_metadata(collection),
+                )
+            else:
+                decisions[collection.id] = self._allowed(
+                    effective_auth_state=AUTH_STATE_OPERATOR,
+                    safe_metadata=self._collection_safe_metadata(collection),
+                )
+        return decisions
 
     def evaluate_kb_use(self, kb: KnowledgeBase) -> KnowledgePermissionDecision:
         if not self._kb_in_scope(kb):
@@ -368,6 +434,23 @@ class KnowledgePermissionHelper:
                 ),
             )
 
+        source_permission_action = getattr(
+            provenance,
+            "source_permission_action",
+            None,
+        )
+        if (
+            not isinstance(source_permission_action, str)
+            or source_permission_action.strip().lower()
+            not in SOURCE_RETRIEVAL_PERMISSION_ACTIONS
+        ):
+            return self._source_denied(
+                source_acl_state=SOURCE_ACL_PASS_STATE,
+                requester_source_authorization="allowed",
+                freshness_epoch=freshness_epoch,
+                reason_code="source_authorization.operation_unverified",
+            )
+
         return self._allowed(
             source_acl_state=SOURCE_ACL_PASS_STATE,
             requester_source_authorization="allowed",
@@ -618,6 +701,57 @@ class KnowledgePermissionHelper:
             .first()
             is not None
         )
+
+    def _bulk_collection_action_ids(
+        self,
+        collection_ids: Iterable[uuid.UUID],
+        action: str,
+    ) -> set[uuid.UUID]:
+        bounded_collection_ids = list(dict.fromkeys(collection_ids))
+        if not bounded_collection_ids:
+            return set()
+
+        team_rows = (
+            self.db.query(
+                TeamKnowledgeCollectionPermission.knowledge_collection_id,
+            )
+            .join(
+                TeamMembership,
+                TeamMembership.team_id == TeamKnowledgeCollectionPermission.team_id,
+            )
+            .join(Team, Team.id == TeamKnowledgeCollectionPermission.team_id)
+            .filter(
+                TeamMembership.user_id == self.user_id,
+                TeamMembership.grantee_organization_id == self.organization_id,
+                TeamKnowledgeCollectionPermission.grantee_organization_id
+                == self.organization_id,
+                TeamMembership.grantee_organization_id
+                == TeamKnowledgeCollectionPermission.grantee_organization_id,
+                Team.organization_id == self.organization_id,
+                Team.is_active.is_(True),
+                TeamKnowledgeCollectionPermission.knowledge_collection_id.in_(
+                    bounded_collection_ids
+                ),
+                TeamKnowledgeCollectionPermission.permission_action == action,
+            )
+            .all()
+        )
+        direct_rows = (
+            self.db.query(
+                UserKnowledgeCollectionPermission.knowledge_collection_id,
+            )
+            .filter(
+                UserKnowledgeCollectionPermission.user_id == self.user_id,
+                UserKnowledgeCollectionPermission.grantee_organization_id
+                == self.organization_id,
+                UserKnowledgeCollectionPermission.knowledge_collection_id.in_(
+                    bounded_collection_ids
+                ),
+                UserKnowledgeCollectionPermission.permission_action == action,
+            )
+            .all()
+        )
+        return {row[0] for row in [*team_rows, *direct_rows]}
 
     def _active_team_ids(self) -> set[uuid.UUID]:
         if self._team_ids_cache is not None:

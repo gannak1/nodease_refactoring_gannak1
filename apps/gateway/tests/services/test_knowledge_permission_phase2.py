@@ -72,12 +72,14 @@ def _source_provenance(
     *,
     source_acl_state="fresh",
     requester_source_authorization="allowed",
+    source_permission_action="read",
     freshness_epoch=1,
     expires_at=None,
 ):
     return SimpleNamespace(
         source_acl_state=source_acl_state,
         requester_source_authorization=requester_source_authorization,
+        source_permission_action=source_permission_action,
         freshness_epoch=freshness_epoch,
         freshness_expires_at=expires_at
         if expires_at is not None
