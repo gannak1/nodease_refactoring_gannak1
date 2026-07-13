@@ -121,13 +121,14 @@ Response `200`:
 }
 ```
 
-- 목록 기준은 요청 organization scope 안의 App primary workflow(`apps.workflow_id`) 전체다. 기간 안에 `llm_usage_logs` row가 없는 workflow도 응답 item으로 반환하며 `prompt_tokens=0`, `completion_tokens=0`, `call_count=0`, `total_cost=0`이다.
+- 목록 기준은 App과 Workflow의 organization이 모두 요청 organization과 일치하는 App primary workflow(`apps.workflow_id`) 전체다. App/Workflow organization이 불일치하거나 primary Workflow를 확인할 수 없으면 해당 item을 반환하지 않는다. 기간 안에 eligible `llm_usage_logs` row가 없는 workflow도 응답 item으로 반환하며 `prompt_tokens=0`, `completion_tokens=0`, `call_count=0`, `total_cost=0`이다.
 - `total`은 기간 안에 usage가 있는 workflow 수가 아니라 organization scope 안의 응답 대상 App primary workflow 수다.
+- usage 합산은 `llm_usage_logs.organization_id`가 요청 organization과 같거나 NULL인 row만 허용한다. NULL은 legacy/migration compatibility로 포함하고, 다른 organization UUID가 명시된 row는 비용, token, call count에서 제외한다. 이 조건은 zero-usage row를 보존하도록 outer join의 `ON` 절에 적용한다.
 - `total_cost`가 NULL인 usage row는 0으로 합산한다.
 - `workflow_name`은 primary workflow를 가리키는 App의 `apps.name`을 사용한다. `workflows` 테이블 자체에는 이름 컬럼이 없으므로 App 이름이 관리자 화면의 workflow 표시명이다.
 - 정렬은 `total_cost` 내림차순 고정이며, 비용이 같은 row는 `workflow_name` 오름차순과 `workflow_id` 오름차순으로 안정적으로 정렬한다 (FR-012 비용 큰 workflow 탐색).
 - 항목에서 해당 workflow 화면으로 이동하는 진입은 클라이언트 라우팅이며, 비교/최적화 실행 API는 [cost-optimizer](../cost-optimizer/api_spec.md) 범위다.
-- workflow별 예산/사용률 필드는 [budget-management api_spec](../budget-management/api_spec.md)의 `budget` 블록 정의를 따른다. 활성 예산이 없으면 `budget`은 null이다.
+- workflow별 예산/사용률 필드는 [budget-management api_spec](../budget-management/api_spec.md)의 `budget` 블록 정의를 따른다. 관리자 projection의 `budget.current_month_cost`도 요청 organization과 같은 usage 또는 NULL legacy usage만 포함한다. 활성 예산이 없으면 `budget`은 null이다.
 
 ### GET /admin/summary
 

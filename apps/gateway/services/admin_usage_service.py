@@ -7,10 +7,11 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
-from sqlalchemy import and_, func
+from sqlalchemy import and_, func, or_
 
 from apps.shared.db.models.app import App
 from apps.shared.db.models.llm import LLMUsageLog
+from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_budget import WorkflowBudget
 from apps.shared.schemas.admin_usage import (
     AdminBudgetSummaryBlock,
@@ -130,7 +131,11 @@ def _aggregate_workflow_usage_fake(
     aggregates = _primary_workflow_zero_items(db, organization_id)
     for usage in db.usage_logs:
         aggregate = aggregates.get(usage.workflow_id)
-        if aggregate is None or not _is_usage_in_period(usage, period):
+        if (
+            aggregate is None
+            or not _is_usage_in_period(usage, period)
+            or not _is_usage_in_organization(usage, organization_id)
+        ):
             continue
         _add_usage(aggregate, usage)
 
@@ -154,10 +159,16 @@ def _primary_workflow_zero_items(
 ) -> dict[Any, dict[str, Any]]:
     """목록 기준은 usage 유무가 아니라 organization scope 안의
     App primary workflow(apps.workflow_id) 전체다 (FR-012, BGT-REQ-020)."""
+    workflow_organizations = {
+        workflow.id: workflow.organization_id
+        for workflow in getattr(db, "workflows", [])
+    }
     return {
         app.workflow_id: _empty_usage_item(app.workflow_id, app.name)
         for app in db.apps
-        if app.organization_id == organization_id and app.workflow_id is not None
+        if app.organization_id == organization_id
+        and app.workflow_id is not None
+        and workflow_organizations.get(app.workflow_id) == organization_id
     }
 
 
@@ -207,10 +218,21 @@ def _aggregate_workflow_usage_query(
             call_count,
             total_cost,
         )
+        .join(
+            Workflow,
+            and_(
+                Workflow.id == App.workflow_id,
+                Workflow.organization_id == organization_id,
+            ),
+        )
         .outerjoin(
             LLMUsageLog,
             and_(
                 LLMUsageLog.workflow_id == App.workflow_id,
+                or_(
+                    LLMUsageLog.organization_id == organization_id,
+                    LLMUsageLog.organization_id.is_(None),
+                ),
                 *_usage_in_period_conditions(period),
             ),
         )
@@ -291,6 +313,10 @@ def _is_usage_in_period(usage: Any, period: AdminUsagePeriod) -> bool:
     return period.start_at <= usage.created_at < period.end_at
 
 
+def _is_usage_in_organization(usage: Any, organization_id: Any) -> bool:
+    return usage.organization_id is None or usage.organization_id == organization_id
+
+
 def _empty_usage_item(workflow_id: Any, workflow_name: str) -> dict[str, Any]:
     return {
         "workflow_id": workflow_id,
@@ -346,6 +372,7 @@ def _budget_summary_block(
             db,
             workflow_id=budget.workflow_id,
             now=now,
+            organization_id=organization_id,
         )
         status = WorkflowBudgetService.classify_budget_usage(
             current_cost=current_cost,
@@ -382,6 +409,7 @@ def _workflow_budget_block(
         db,
         workflow_id=workflow_id,
         now=now,
+        organization_id=organization_id,
     )
     monthly_budget = AdminUsageService.coalesce_cost(budget.monthly_budget_usd)
     status = WorkflowBudgetService.classify_budget_usage(

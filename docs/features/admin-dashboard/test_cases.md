@@ -34,6 +34,8 @@ Verified Against: feature/mba-188 @ 59d1cc51
 - Given 조직 A에 App primary workflow가 여러 개 있다, When `GET /admin/usage/workflows`를 호출하면, Then 기간 안의 usage 존재 여부와 무관하게 조직 A의 App primary workflow 전체가 반환된다.
 - Given 기간 안에 usage row가 없는 workflow, When 집계를 조회하면, Then 해당 workflow는 응답에 포함되고 prompt/completion tokens, `call_count`, `total_cost`가 모두 0이다.
 - Given 조직 A의 `llm_usage_logs`, When 집계를 조회하면, Then workflow별 합계(prompt/completion tokens, call_count, total_cost)가 원천 row 합산과 일치하고, `total_cost`가 NULL인 row는 0으로 합산된다.
+- Given 조직 A primary workflow에 조직 A usage, NULL organization legacy usage, 조직 B로 명시된 usage가 함께 있다, When 조직 A로 조회하면, Then 조직 A와 NULL usage만 합산하고 조직 B usage는 token, call count, 비용과 budget 상태에서 제외한다.
+- Given 조직 A App의 `workflow_id`가 조직 B Workflow를 가리키거나 존재하지 않는 Workflow를 가리킨다, When 조직 A로 조회하면, Then 해당 App은 목록과 `total`에서 제외되고 workflow 이름, usage, budget link를 노출하지 않는다.
 - Given 집계 결과, Then 목록은 `total_cost` 내림차순이고, 비용이 같은 row는 workflow 이름/id 순서로 안정 정렬되며, 비용 값은 반올림 없이 원본 정밀도로 반환된다.
 - Given 조직 B의 usage 데이터, When 조직 A로 조회하면, Then 조직 B의 workflow는 응답에 포함되지 않는다.
 
@@ -170,7 +172,9 @@ Verified Against: feature/mba-188 @ 59d1cc51
   - Given usage row가 없는 workflow, When 집계하면, Then prompt tokens/completion tokens/call_count/total_cost는 모두 0이다.
   - Given App primary workflow가 있을 때, When 집계 응답 item을 만들면, Then `workflow_name`은 primary workflow를 가리키는 `App.name`이다.
   - Given `total_cost`가 `NULL`인 row, When 집계하면, Then 0으로 합산한다.
-  - Given 조직 B의 workflow 또는 usage row, When 조직 A로 조회하면, Then 응답에 포함하지 않는다.
+  - Given 조직 B UUID가 명시된 usage row와 NULL organization legacy row가 조직 A primary workflow에 함께 있다, When 조직 A로 조회하면, Then 전자는 제외하고 후자는 합산한다.
+  - Given App organization은 A지만 primary Workflow organization이 B이거나 Workflow row가 없다, When 조직 A로 조회하면, Then 해당 App은 응답과 `total`에서 제외한다.
+  - Given organization eligibility가 없는 usage만 있는 정상 primary workflow, When 조직 A로 조회하면, Then workflow row는 유지하고 사용량 필드는 0이다.
   - Given 집계 결과, When 정렬하면, Then `total_cost` 내림차순이고 동률은 workflow 이름/id 오름차순이다.
   - Given 비용 값 `12.345678`, When 응답 모델을 만들면, Then service 응답은 `12.345678` 원본 정밀도를 유지한다.
   - Given page/limit, When 응답을 만들면, Then `total`은 usage row가 있는 workflow 수가 아니라 응답 대상 App primary workflow 전체 건수이고 `items`는 page slice다.

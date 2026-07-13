@@ -119,8 +119,9 @@ Side effects:
 }
 ```
 
-- 응답 item은 organization scope 안의 App primary workflow(`apps.workflow_id`) 전체를 대상으로 한다. 기간 안에 usage row가 없는 workflow도 item으로 반환하며 `prompt_tokens=0`, `completion_tokens=0`, `call_count=0`, `total_cost=0`이다.
+- 응답 item은 App과 Workflow의 organization이 모두 요청 organization과 일치하는 App primary workflow(`apps.workflow_id`) 전체를 대상으로 한다. App/Workflow organization이 불일치하거나 Workflow row가 없으면 item과 `total`에서 제외한다. 기간 안에 eligible usage row가 없는 workflow도 item으로 반환하며 `prompt_tokens=0`, `completion_tokens=0`, `call_count=0`, `total_cost=0`이다.
 - `total`은 기간 안에 usage row가 있는 workflow 수가 아니라 응답 대상 App primary workflow 수다.
+- 조회 기간 usage와 `budget.current_month_cost`는 `llm_usage_logs.organization_id`가 요청 organization과 같거나 NULL인 row만 합산한다. 명시적 타 organization row는 관리자 projection에서 제외한다. NULL legacy usage를 포함하는 호환 계약은 유지한다.
 - `budget`은 활성 예산(`is_enabled=true` ∧ `monthly_budget_usd > 0`)이 없으면 null이다.
 - `budget` 블록은 query의 `startAt`/`endAt` 기간 필터와 무관하게 항상 당월(KST) 기준으로 계산한다 (BGT-REQ-020). `total_cost`는 기존대로 조회 기간 기준이다.
 - 활성 예산이 있고 당월 usage row가 없으면 `budget.current_month_cost=0`, `usage_ratio=0`, `status="normal"`이다.

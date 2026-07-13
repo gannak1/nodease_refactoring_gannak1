@@ -38,9 +38,12 @@ Verified Against: feature/mba-147 @ e1a04e9
 - Given 기간 안에 usage row가 없는 workflow, When `GET /admin/usage/workflows`를 호출하면, Then 해당 workflow는 응답에 포함되고 prompt/completion tokens, `call_count`, `total_cost`는 모두 0이다.
 - Given 활성 예산 workflow, When `GET /admin/usage/workflows`를 호출하면, Then 항목의 `budget` 블록에 `monthly_budget_usd`, `current_month_cost`, `usage_ratio`, `status`가 포함된다.
 - Given 활성 예산 workflow에 당월 usage row가 없다, When `GET /admin/usage/workflows`를 호출하면, Then `budget.current_month_cost=0`, `budget.usage_ratio=0`, `budget.status="normal"`이다.
+- Given 조직 A primary workflow에 조직 B로 명시된 당월 usage와 NULL organization legacy usage가 함께 있다, When 조직 A로 조회하면, Then `budget.current_month_cost`는 조직 B usage를 제외하고 NULL usage를 포함한다.
+- Given 조직 A App이 조직 B Workflow를 primary workflow로 가리킨다, When 조직 A로 조회하면, Then 해당 item과 budget 설정 진입점은 반환되지 않는다.
 - Given 지난달 기간 필터(`startAt`/`endAt`)로 usage를 조회, When 응답을 확인하면, Then `total_cost`는 지난달 기준이지만 `budget` 블록은 당월(KST) 기준이다.
 - Given 예산 미설정 workflow, When usage를 조회하면, Then `budget`은 null이고 오류가 아니다.
 - Given 활성 예산 workflow 5개 중 at_risk 1개, exceeded 1개, When `GET /admin/summary`를 호출하면, Then `budget`은 `{budgeted_workflow_count: 5, at_risk_count: 1, exceeded_count: 1, ratio: 0.4}`다.
+- Given 조직 A 활성 예산 workflow에 조직 B로 명시된 고비용 usage가 있다, When 조직 A의 `GET /admin/summary`를 호출하면, Then 해당 usage는 at_risk/exceeded 판정에 반영되지 않는다. NULL organization legacy usage는 계속 반영한다.
 - Given 활성 예산 workflow가 0개인 조직, When summary를 조회하면, Then `budget`은 null이다.
 - Given 활성 예산이 있는 App, When member가 `GET /apps`를 호출하면, Then 항목의 `budget_status`에 `usage_ratio`, `status`만 포함되고 예산 금액/비용 원문은 포함되지 않는다.
 - Given 활성 예산이 있는 App, When organization manager 또는 workflow `write` 이상 사용자가 `GET /apps/operations`를 호출하면, Then row의 `app.budget_status`에 `usage_ratio`, `status`만 포함되고 `/dashboard/mymodule`은 이 값을 표시 원천으로 사용한다.
@@ -159,8 +162,8 @@ Gateway service/helper 대상 (기존 pytest 패턴). 함수명은 구현 시 �
 ### 집계/조회 응답
 
 - admin summary budget 블록 — at_risk/exceeded 카운트, `ratio` 계산, 분모 = 활성 예산 workflow 수, 활성 예산 0개 → null, 비활성 예산 workflow는 분모/분자 모두 제외.
-- `GET /admin/usage/workflows` 목록 — organization scope 안의 App primary workflow 전체를 반환, usage row가 없는 workflow도 prompt/completion tokens/call_count/total_cost 0으로 포함, `total`은 usage row 보유 workflow 수가 아니라 응답 대상 primary workflow 수, 비용 내림차순과 동률 안정 정렬.
-- `GET /admin/usage/workflows` budget 블록 — 기간 필터와 무관하게 당월 기준, 미설정 null, 활성 예산이 있지만 당월 usage row가 없으면 current_month_cost/usage_ratio 0과 `normal`.
+- `GET /admin/usage/workflows` 목록 — App과 Workflow organization이 모두 요청 organization과 일치하는 primary workflow 전체를 반환, same-organization 또는 NULL legacy usage만 합산, usage row가 없는 workflow도 prompt/completion tokens/call_count/total_cost 0으로 포함, `total`은 usage row 보유 workflow 수가 아니라 응답 대상 primary workflow 수, 비용 내림차순과 동률 안정 정렬.
+- `GET /admin/usage/workflows` budget 블록 — 기간 필터와 무관하게 당월 기준, same-organization 또는 NULL legacy usage만 합산, 명시적 타 organization usage 제외, 미설정 null, 활성 예산이 있지만 eligible 당월 usage row가 없으면 current_month_cost/usage_ratio 0과 `normal`.
 - `GET /admin/workflow-budgets` 목록 — 조직 scope 필터, `updated_at` 내림차순, pagination.
 - `GET /apps` budget_status — 목록 전체가 primary workflow id 기준 grouped query 1회로 계산 (N+1 없음), 사용량 합산은 실행 차단과 동일하게 `workflow_id`+KST 월 경계 기준(`llm_usage_logs.organization_id` 필터 없음), `usage_ratio`/`status`만 포함 (금액 필드 부재 검증), `workflow_id` null인 App은 null, 같은 `app_id`의 과거/보조 workflow 예산은 무시.
 - `GET /apps/operations` app budget_status — operations page/batch의 primary workflow id 기준으로 grouped query 1회 계산, 같은 workflow의 NULL organization legacy usage를 포함, `row.app.budget_status` shape는 `GET /apps`와 동일, 권한 없는 row에는 예산 상태를 노출하지 않음, `workflows.app_id` 역참조로 후보를 확장하지 않음.

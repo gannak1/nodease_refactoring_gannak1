@@ -16,7 +16,9 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import pytest
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Query, Session
 from sqlalchemy.sql.operators import eq
 
 from apps.shared.audit.actions import AuditAction
@@ -153,6 +155,86 @@ def test_get_current_month_cost_uses_kst_month_boundaries_and_null_as_zero():
 
     assert cost == Decimal("0.5")
     assert isinstance(cost, Decimal)
+
+
+def test_get_current_month_cost_optional_organization_projection_excludes_conflicts():
+    service = _service()
+    organization_id = uuid4()
+    other_organization_id = uuid4()
+    workflow_id = uuid4()
+    created_at = datetime(2026, 7, 10, 0, 0, tzinfo=timezone.utc)
+    db = _UsageDb(
+        usage_logs=[
+            _usage_log(
+                organization_id,
+                workflow_id,
+                total_cost=Decimal("10.000000"),
+                created_at=created_at,
+            ),
+            _usage_log(
+                None,
+                workflow_id,
+                total_cost=Decimal("20.000000"),
+                created_at=created_at,
+            ),
+            _usage_log(
+                other_organization_id,
+                workflow_id,
+                total_cost=Decimal("100.000000"),
+                created_at=created_at,
+            ),
+        ]
+    )
+    now = datetime(2026, 7, 15, 9, 0, tzinfo=KST)
+
+    scoped = service.get_current_month_cost(
+        db,
+        workflow_id=workflow_id,
+        now=now,
+        organization_id=organization_id,
+    )
+    unscoped = service.get_current_month_cost(
+        db,
+        workflow_id=workflow_id,
+        now=now,
+    )
+
+    assert scoped == Decimal("30.000000")
+    assert unscoped == Decimal("130.000000")
+
+
+def test_current_month_cost_sql_applies_optional_organization_projection(monkeypatch):
+    from apps.gateway.services.admin_usage_service import AdminUsagePeriod
+    from apps.gateway.services.workflow_budget_service import _current_month_cost_query
+
+    organization_id = uuid4()
+    captured_sql = {}
+
+    def capture_scalar(query):
+        captured_sql["query"] = str(
+            query.statement.compile(dialect=postgresql.dialect())
+        )
+        return Decimal("30.000000")
+
+    monkeypatch.setattr(Query, "scalar", capture_scalar)
+    db = Session()
+
+    try:
+        cost = _current_month_cost_query(
+            db,
+            workflow_id=uuid4(),
+            period=AdminUsagePeriod(
+                start_at=datetime(2026, 7, 1, 0, 0, tzinfo=timezone.utc),
+                end_at=datetime(2026, 8, 1, 0, 0, tzinfo=timezone.utc),
+            ),
+            organization_id=organization_id,
+        )
+    finally:
+        db.close()
+
+    assert cost == Decimal("30.000000")
+    assert "llm_usage_logs.organization_id" in captured_sql["query"]
+    assert "llm_usage_logs.organization_id IS NULL" in captured_sql["query"]
 
 
 def test_get_current_month_cost_returns_zero_for_no_usage():
@@ -329,6 +411,12 @@ def test_organization_summary_returns_budget_block_from_active_budgets():
                 total_cost=Decimal("10.000000"),
                 created_at=datetime(2026, 7, 10, 0, 0, tzinfo=timezone.utc),
             ),
+            _usage_log(
+                uuid4(),
+                at_risk_workflow_id,
+                total_cost=Decimal("1000.000000"),
+                created_at=datetime(2026, 7, 10, 0, 0, tzinfo=timezone.utc),
+            ),
         ],
         workflows=[
             SimpleNamespace(
@@ -399,6 +487,12 @@ def test_workflow_usage_items_include_current_month_budget_block():
                 organization_id,
                 workflow_id,
                 total_cost=Decimal("95.000000"),
+                created_at=datetime(2026, 7, 10, 0, 0, tzinfo=timezone.utc),
+            ),
+            _usage_log(
+                uuid4(),
+                workflow_id,
+                total_cost=Decimal("500.000000"),
                 created_at=datetime(2026, 7, 10, 0, 0, tzinfo=timezone.utc),
             ),
         ],
