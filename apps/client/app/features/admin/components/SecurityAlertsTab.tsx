@@ -95,6 +95,7 @@ export function SecurityAlertsTab({
   const detailTriggerRef = useRef<HTMLElement | null>(null);
   const onCloseAlertRef = useRef(onCloseAlert);
   const listRequestSequenceRef = useRef(0);
+  const loadedListRequestContextRef = useRef<string | null>(null);
   const [form, setForm] = useState<FilterForm>(EMPTY_FORM);
   const [applied, setApplied] = useState<{
     filters: SecurityAlertListParams;
@@ -127,17 +128,24 @@ export function SecurityAlertsTab({
     if (!selectedAlertId) setSelectedActorId(null);
   }, [selectedAlertId]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (preserveCurrentData = false) => {
     const sequence = ++listRequestSequenceRef.current;
     const requestContext = listRequestContext;
+    const canPreserveCurrentData =
+      preserveCurrentData &&
+      loadedListRequestContextRef.current === requestContext;
     const isCurrentRequest = () =>
       sequence === listRequestSequenceRef.current &&
       requestContext === currentListRequestContextRef.current;
-    setLoading(true);
+    if (!canPreserveCurrentData) {
+      loadedListRequestContextRef.current = null;
+      setLoading(true);
+      setItems([]);
+      setTotal(0);
+    }
     setError(null);
-    setItems([]);
-    setTotal(0);
     if (!organizationId) {
+      loadedListRequestContextRef.current = null;
       setLoading(false);
       return;
     }
@@ -155,9 +163,13 @@ export function SecurityAlertsTab({
       }
       setItems(data.items);
       setTotal(data.total);
+      loadedListRequestContextRef.current = requestContext;
     } catch (loadError) {
       if (!isCurrentRequest()) return;
       if (isAxiosError(loadError) && loadError.response?.status === 403) {
+        loadedListRequestContextRef.current = null;
+        setItems([]);
+        setTotal(0);
         setError('forbidden');
         setSelectedActorId(null);
         onCloseAlertRef.current?.();
@@ -170,12 +182,12 @@ export function SecurityAlertsTab({
   }, [applied, listRequestContext, organizationId]);
 
   useEffect(() => {
-    load();
+    load(false);
   }, [load]);
 
   useEffect(() => {
     const refresh = () => {
-      load();
+      load(true);
       setRefreshToken((current) => current + 1);
     };
     window.addEventListener(NOTIFICATIONS_REFRESH_EVENT, refresh);
@@ -341,7 +353,7 @@ export function SecurityAlertsTab({
           </p>
           <button
             type="button"
-            onClick={load}
+            onClick={() => load(false)}
             className="h-9 rounded-md border border-slate-300 px-4 text-sm font-semibold text-slate-700"
           >
             다시 시도
@@ -462,7 +474,7 @@ export function SecurityAlertsTab({
           onClose={() => onCloseAlert?.()}
           onAfterClose={() => detailTriggerRef.current?.focus()}
           onNotFound={() => onAlertNotFound?.()}
-          onChanged={() => load()}
+          onChanged={() => load(true)}
           onManageActor={(actorId) => {
             setSelectedActorId(actorId);
           }}

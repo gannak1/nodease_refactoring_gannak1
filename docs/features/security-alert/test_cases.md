@@ -227,6 +227,8 @@ Threshold 전 event처럼 Alert가 생성·갱신되지 않은 경우에는 even
 
 SSE reconnect나 event 누락 이후에도 영속 API 재조회로 현재 상태를 복구해야 한다.
 
+같은 organization·filter·page·alert의 background refresh가 진행되는 동안에는 현재 목록, detail과 evidence를 유지하고 성공 응답으로 한 번에 교체해야 한다. Organization·filter·page·alert scope 변경이나 권한 회수에서는 이전 scope 데이터를 유지하면 안 된다.
+
 ### AC-25 Reconciliation Recovery
 
 Given 실시간 task publish 실패, worker 중단 또는 window 경계 누락이 있을 때,
@@ -477,6 +479,7 @@ Then lookback window를 포함해 실제 evaluator와 같은 결과를 계산하
 | SAL-TC-C020 | AC-19, AC-30 | Security Alert evidence의 `상세 보기` 선택 | 기존 Audit detail API 호출, Alert drawer보다 높은 layer에 상세 표시, close 후 row focus 복원 |
 | SAL-TC-C021 | AC-19, AC-27 | 연결된 감사 기록과 Audit detail 표시 | safe 권한 거부 정보가 있으면 시도한 작업·필요 권한·거부 사유를 사용자 문장과 라벨로 표시하고 canonical action과 safe ID는 보조 정보로 유지, raw metadata 미노출 |
 | SAL-TC-C022 | AC-16 | 열린 detail에서 acknowledge, reopen, resolve가 각각 403 | cached detail과 해결 dialog 제거, drawer close callback으로 `alertId` URL 제거, action button 미노출 |
+| SAL-TC-C023 | AC-24 | occurrence 증가 notification으로 같은 scope의 list/detail/evidence background refresh가 지연 | 기존 table/detail/evidence와 발생 횟수를 응답 전까지 유지하고 initial loading 화면 없이 성공 응답으로 한 번에 교체 |
 
 ### End-To-End Tests
 

@@ -250,6 +250,54 @@ describe('SecurityAlertDetailDrawer', () => {
     });
   });
 
+  it('refresh token background refresh 중 기존 상세와 evidence를 유지한다', async () => {
+    const detailRefreshRequest = deferred<typeof detail>();
+    const evidenceRefreshRequest = deferred<SecurityAlertAuditLogListResponse>();
+    mockedDetail
+      .mockResolvedValueOnce(detail)
+      .mockReturnValueOnce(detailRefreshRequest.promise);
+    mockedEvidence
+      .mockResolvedValueOnce({ total: 1, items: [evidence] })
+      .mockReturnValueOnce(evidenceRefreshRequest.promise);
+
+    const { rerender } = render(
+      <SecurityAlertDetailDrawer
+        alertId={detail.id}
+        members={members}
+        onClose={vi.fn()}
+        onNotFound={vi.fn()}
+        refreshToken={0}
+      />,
+    );
+    expect(await screen.findByText('반복된 정책 차단')).toBeInTheDocument();
+    expect(await screen.findByText('permission.denied')).toBeInTheDocument();
+
+    rerender(
+      <SecurityAlertDetailDrawer
+        alertId={detail.id}
+        members={members}
+        onClose={vi.fn()}
+        onNotFound={vi.fn()}
+        refreshToken={1}
+      />,
+    );
+    await waitFor(() => expect(mockedDetail).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mockedEvidence).toHaveBeenCalledTimes(2));
+
+    expect(screen.getByText('반복된 정책 차단')).toBeInTheDocument();
+    expect(screen.getByText('permission.denied')).toBeInTheDocument();
+    expect(
+      screen.queryByText('보안 알림 상세를 불러오는 중...'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('연결된 감사 기록을 불러오는 중...'),
+    ).not.toBeInTheDocument();
+
+    detailRefreshRequest.resolve({ ...detail, occurrence_count: 4 });
+    evidenceRefreshRequest.resolve({ total: 1, items: [evidence] });
+    expect(await screen.findByText('4')).toBeInTheDocument();
+  });
+
   it('alert 전환 전에 시작한 늦은 evidence 응답은 현재 alert를 덮어쓰지 않는다', async () => {
     const nextAlertId = '223e4567-e89b-42d3-a456-426614174000';
     const oldAlertRequest = deferred<SecurityAlertAuditLogListResponse>();

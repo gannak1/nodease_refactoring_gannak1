@@ -128,6 +128,7 @@ Security Alert는 검증된 organization 안에서 인증 사용자가 짧은 �
 - SAL-REQ-069: Rule ID/version, action, window, threshold, severity, count mode와 policy-reason grouping은 하나의 server-owned rule registry를 source of truth로 사용해야 한다. Evaluator, aggregation threshold 확인과 worker 최대 조회 window는 별도 상수를 중복 정의하지 않고 같은 registry를 읽어야 한다.
 - SAL-REQ-070: 운영 반영 전 rule replay는 지정한 organization과 기간의 audit를 읽기 전용으로 평가하고 rule별 발화 횟수의 safe aggregate만 반환해야 한다. Replay는 Security Alert, evidence, lifecycle audit, notification, watermark를 생성·변경하거나 raw audit payload와 target을 출력하지 않아야 한다.
 - SAL-REQ-071: 최초 alert는 `episode_count=1`과 `last_episode_started_at=first_detected_at`으로 시작해야 한다. Cooldown 종료 후 threshold 재충족 시 새 evidence가 실제 연결된 transaction만 episode count를 한 번 증가시키고 마지막 episode 시작 시각을 threshold event time으로 갱신해야 한다. 이 시각은 notification 전달 성공 시각을 의미하지 않는다.
+- SAL-REQ-072: SSE 또는 notification 신호에 따른 같은 organization·filter·page·alert의 background refresh는 현재 목록, 상세와 evidence를 응답 전까지 유지하고 성공 응답으로 한 번에 교체해야 한다. Organization, filter, page 또는 alert scope가 바뀌거나 현재 권한이 회수된 경우에는 이전 scope 데이터를 유지하면 안 된다.
 
 ## Non-Functional Requirements
 

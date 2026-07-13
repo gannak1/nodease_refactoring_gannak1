@@ -83,6 +83,8 @@ export function SecurityAlertDetailDrawer({
   const auditTriggerRef = useRef<HTMLElement | null>(null);
   const detailSequenceRef = useRef(0);
   const evidenceSequenceRef = useRef(0);
+  const loadedDetailAlertIdRef = useRef<string | null>(null);
+  const loadedEvidenceScopeRef = useRef<string | null>(null);
   const onNotFoundRef = useRef(onNotFound);
   const [detail, setDetail] = useState<SecurityAlertDetail | null>(null);
   const [detailError, setDetailError] = useState<'forbidden' | 'unknown' | null>(
@@ -107,18 +109,30 @@ export function SecurityAlertDetailDrawer({
 
   const loadDetail = useCallback(async () => {
     const sequence = ++detailSequenceRef.current;
-    setDetail(null);
+    const canPreserveCurrentDetail =
+      loadedDetailAlertIdRef.current === alertId;
+    if (!canPreserveCurrentDetail) {
+      loadedDetailAlertIdRef.current = null;
+      setDetail(null);
+    }
     setDetailError(null);
     try {
       const data = await adminApi.getSecurityAlertDetail(alertId);
       if (sequence !== detailSequenceRef.current) return null;
       setDetail(data);
+      loadedDetailAlertIdRef.current = alertId;
       return data;
     } catch (loadError) {
       if (sequence !== detailSequenceRef.current) return null;
       if (isAxiosError(loadError) && loadError.response?.status === 404) {
+        loadedDetailAlertIdRef.current = null;
+        setDetail(null);
         onNotFoundRef.current();
         return null;
+      }
+      if (isAxiosError(loadError) && loadError.response?.status === 403) {
+        loadedDetailAlertIdRef.current = null;
+        setDetail(null);
       }
       setDetailError(
         isAxiosError(loadError) && loadError.response?.status === 403
@@ -143,13 +157,19 @@ export function SecurityAlertDetailDrawer({
   const loadEvidence = useCallback(async () => {
     const sequence = ++evidenceSequenceRef.current;
     const requestContext = evidenceRequestContext;
+    const evidenceScope = `${alertId}:${evidencePage}`;
+    const canPreserveCurrentEvidence =
+      loadedEvidenceScopeRef.current === evidenceScope;
     const isCurrentRequest = () =>
       sequence === evidenceSequenceRef.current &&
       requestContext === currentEvidenceRequestContextRef.current;
-    setEvidenceLoading(true);
+    if (!canPreserveCurrentEvidence) {
+      loadedEvidenceScopeRef.current = null;
+      setEvidenceLoading(true);
+      setEvidence([]);
+      setEvidenceTotal(0);
+    }
     setEvidenceError(false);
-    setEvidence([]);
-    setEvidenceTotal(0);
     try {
       const data = await adminApi.listSecurityAlertAuditLogs(alertId, {
         page: evidencePage,
@@ -158,6 +178,7 @@ export function SecurityAlertDetailDrawer({
       if (!isCurrentRequest()) return;
       setEvidence(data.items);
       setEvidenceTotal(data.total);
+      loadedEvidenceScopeRef.current = evidenceScope;
     } catch {
       if (isCurrentRequest()) setEvidenceError(true);
     } finally {
@@ -239,6 +260,7 @@ export function SecurityAlertDetailDrawer({
         isAxiosError(mutationError) &&
         mutationError.response?.status === 403
       ) {
+        loadedDetailAlertIdRef.current = null;
         setDetail(null);
         setMutationFeedback(null);
         setResolveOpen(false);
