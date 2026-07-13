@@ -308,18 +308,6 @@ export const nodeRegistry: NodeDefinition[] = [
     description: 'Slack으로 메시지를 전송합니다.',
     defaultData: () => ({
       title: 'slack',
-      method: 'POST',
-      url: 'https://slack.com/api/chat.postMessage',
-      headers: [{ key: 'Content-Type', value: 'application/json' }],
-      body: JSON.stringify(
-        {
-          text: '',
-        },
-        null,
-        2,
-      ),
-      timeout: 5000,
-      authType: 'bearer',
       authConfig: {},
       referenced_variables: [],
       message: '',

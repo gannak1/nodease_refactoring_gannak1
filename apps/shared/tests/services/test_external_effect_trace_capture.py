@@ -112,3 +112,44 @@ def test_provider_trace_record_drops_raw_encrypted_payload() -> None:
         trace_metadata=metadata,
     )
     assert "opaque-response" not in str(records)
+
+
+def test_dedicated_slack_summary_uses_safe_section_and_new_operation() -> None:
+    metadata = {
+        "slack": {
+            "delivery_mode": "api",
+            "delivery_status": "delivered",
+            "status_code": 200,
+            "request_size": 18,
+            "response_size": 32,
+            "latency_ms": 7,
+            "message_ref": "must-not-survive",
+            "url": "must-not-survive",
+        },
+        "external_effect": {
+            "provider": "slack",
+            "operation": "slack.chat.post_message",
+            "outcome": "succeeded",
+            "replay_decision": "reuse_result",
+        },
+    }
+
+    summary = durable_provider_summary(
+        node_type="slackPostNode",
+        process_data={},
+        trace_metadata=metadata,
+    )
+
+    assert summary == {
+        "external_effect": {
+            "provider": "slack",
+            "operation": "slack.chat.post_message",
+            "status": 200,
+            "request_size": 18,
+            "response_size": 32,
+            "latency_ms": 7,
+            "outcome": "succeeded",
+            "replay_decision": "reuse_result",
+        }
+    }
+    assert "must-not-survive" not in str(summary)

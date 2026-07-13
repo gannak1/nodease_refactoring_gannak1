@@ -9,6 +9,8 @@ export type GraphValidationIssueCode =
   | 'TRIGGER_NODE_HAS_INCOMING_EDGE'
   | 'TERMINAL_NODE_HAS_OUTGOING_EDGE'
   | 'INVALID_CONDITION_SOURCE_HANDLE'
+  | 'SLACK_LEGACY_CONFIGURATION'
+  | 'SLACK_REMOVED_OUTPUT_SELECTOR'
   | 'DUPLICATE_EDGE'
   | 'CYCLE_DETECTED';
 
@@ -241,6 +243,131 @@ const getDirectEdgeIssues = (
   return issues;
 };
 
+const getAllWorkflowNodes = (nodes: AppNode[]): AppNode[] => {
+  const pending = [...nodes];
+  const collected: AppNode[] = [];
+  const seen = new Set<object>();
+  while (pending.length > 0) {
+    const node = pending.pop();
+    if (!node || seen.has(node)) continue;
+    seen.add(node);
+    collected.push(node);
+    const data = node.data as Record<string, unknown>;
+    const subGraph = data.subGraph;
+    if (!subGraph || typeof subGraph !== 'object') continue;
+    const nestedNodes = (subGraph as { nodes?: unknown }).nodes;
+    if (Array.isArray(nestedNodes)) pending.push(...(nestedNodes as AppNode[]));
+  }
+  return collected;
+};
+
+const getSlackCompatibilityIssues = (
+  nodes: AppNode[],
+): GraphValidationIssue[] =>
+  getAllWorkflowNodes(nodes).flatMap((node) => {
+    if (node.type !== 'slackPostNode') return [];
+    const data = node.data as Record<string, unknown>;
+    const mode = data.slackMode === 'webhook' ? 'webhook' : 'api';
+    const hasLegacyAuthType =
+      mode === 'api'
+        ? data.authType !== undefined && data.authType !== 'bearer'
+        : data.authType !== undefined && data.authType !== 'none';
+    const issues: GraphValidationIssue[] = [];
+    const hasCustomLegacyConfig =
+      (data.method !== undefined && data.method !== 'POST') ||
+      (Array.isArray(data.headers) && data.headers.length > 0) ||
+      (typeof data.body === 'string' && data.body.trim() !== '') ||
+      (data.timeout !== undefined && data.timeout !== 5000) ||
+      hasLegacyAuthType ||
+      (mode === 'api' &&
+        data.url !== undefined &&
+        data.url !== '' &&
+        data.url !== 'https://slack.com/api/chat.postMessage');
+    if (hasCustomLegacyConfig) {
+      issues.push({
+        level: 'warning',
+        code: 'SLACK_LEGACY_CONFIGURATION',
+        message:
+          'Slack 노드의 기존 HTTP 설정은 새 전송 런타임에서 사용되지 않습니다.',
+        nodeId: node.id,
+      });
+    }
+    return issues;
+  });
+
+const hasRemovedSlackSelector = (
+  value: unknown,
+  slackNodeModes: Map<string, 'api' | 'webhook'>,
+  seen: Set<object>,
+): boolean => {
+  if (!value || typeof value !== 'object') return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return value.some((item) =>
+      hasRemovedSlackSelector(item, slackNodeModes, seen),
+    );
+  }
+  const record = value as Record<string, unknown>;
+  return Object.entries(record).some(([key, item]) => {
+    if (
+      (key.endsWith('_selector') || key.endsWith('_selectors')) &&
+      hasUnsupportedSlackSelector(item, slackNodeModes)
+    ) {
+      return true;
+    }
+    return hasRemovedSlackSelector(item, slackNodeModes, seen);
+  });
+};
+
+const hasUnsupportedSlackSelector = (
+  value: unknown,
+  slackNodeModes: Map<string, 'api' | 'webhook'>,
+): boolean => {
+  if (!Array.isArray(value) || value.length === 0) return false;
+  if (value.every((item) => typeof item === 'string')) {
+    const sourceMode = slackNodeModes.get(String(value[0] || ''));
+    const outputKey = String(value[1] || '');
+    return (
+      sourceMode !== undefined &&
+      (['data', 'headers'].includes(outputKey) ||
+        (sourceMode === 'webhook' && outputKey === 'message_ref'))
+    );
+  }
+  return value.some((item) =>
+    hasUnsupportedSlackSelector(item, slackNodeModes),
+  );
+};
+
+const getRemovedSlackSelectorIssues = (
+  nodes: AppNode[],
+): GraphValidationIssue[] => {
+  const allNodes = getAllWorkflowNodes(nodes);
+  const slackNodeModes = new Map<string, 'api' | 'webhook'>(
+    allNodes
+      .filter((node) => node.type === 'slackPostNode')
+      .map((node) => [
+        node.id,
+        (node.data as Record<string, unknown>).slackMode === 'webhook'
+          ? 'webhook'
+          : 'api',
+      ]),
+  );
+  return allNodes.flatMap((node) => {
+    return hasRemovedSlackSelector(node.data, slackNodeModes, new Set())
+      ? [
+          {
+            level: 'error',
+            code: 'SLACK_REMOVED_OUTPUT_SELECTOR' as const,
+            message:
+              'Slack 노드는 data/headers 출력을 제공하지 않으며 Webhook 모드에서는 message_ref를 제공하지 않습니다.',
+            nodeId: node.id,
+          },
+        ]
+      : [];
+  });
+};
+
 export const validateWorkflowGraph = (
   graph: Pick<GraphSnapshot, 'nodes' | 'edges'>,
 ): GraphValidationResult => {
@@ -264,7 +391,12 @@ export const validateWorkflowGraph = (
       ]
     : [];
 
-  const allIssues = [...directIssues, ...cycleIssue];
+  const allIssues = [
+    ...directIssues,
+    ...getSlackCompatibilityIssues(nodes),
+    ...getRemovedSlackSelectorIssues(nodes),
+    ...cycleIssue,
+  ];
   const errors = allIssues.filter((issue) => issue.level === 'error');
   const warnings = allIssues.filter((issue) => issue.level === 'warning');
 

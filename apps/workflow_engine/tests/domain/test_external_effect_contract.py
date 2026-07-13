@@ -43,6 +43,29 @@ def test_production_profiles_are_conservative() -> None:
     assert all(profile.key_field is None for profile in (http, slack, github))
 
 
+def test_dedicated_slack_profiles_reuse_only_safe_local_results() -> None:
+    registry = provider_contract_registry(include_test_profiles=False)
+    api = registry.get(
+        "slack",
+        "slack.chat.post_message",
+        "slack.chat.post_message.v1",
+    )
+    webhook = registry.get(
+        "slack",
+        "slack.incoming_webhook.post",
+        "slack.incoming_webhook.post.v1",
+    )
+
+    for profile in (api, webhook):
+        assert profile.provider_replay is ProviderReplayCapability.UNKNOWN
+        assert profile.result_reuse is ResultReuseCapability.SUPPORTED
+        assert profile.key_transport == "unknown"
+        assert profile.key_field is None
+        assert profile.replay_projection_semantics == (
+            "slack.delivery.replay_projection.v1"
+        )
+
+
 def test_fake_profile_is_not_in_production_registry() -> None:
     registry = provider_contract_registry(include_test_profiles=False)
 

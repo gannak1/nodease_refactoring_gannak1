@@ -86,7 +86,7 @@ SAFE_SIDE_EFFECT_NOTICE = (
 )
 SLACK_CHANNEL_UNRESOLVED_WARNING = (
     "Slack 채널이 아직 선택되지 않아 Slack node는 채널 미정 상태로 생성됩니다. "
-    "저장 후 실행 전에 Slack 채널과 credential 참조를 확인해야 합니다."
+    "저장 후 실행 전에 Slack 채널과 연동 인증 정보를 확인해야 합니다."
 )
 GITHUB_CONFIGURATION_UNRESOLVED_WARNING = (
     "GitHub credential과 repository와 PR 대상이 설정되지 않아 GitHub node는 미설정 상태로 생성됩니다. "
@@ -172,7 +172,7 @@ CAPABILITY_OUTPUT_KEYS = {
     "llm": "text",
     "knowledge_backed_llm": "text",
     "github_pr_comment": "comment_url",
-    "slack_send": "data",
+    "slack_send": "delivery_status",
     "answer": "answer",
 }
 CAPABILITY_PURPOSES = {
@@ -3906,12 +3906,6 @@ class AgentBuilderService:
         elif capability == "slack_send":
             data = {
                 "title": "Slack 전송",
-                "method": "POST",
-                "url": "https://slack.com/api/chat.postMessage",
-                "headers": [{"key": "Content-Type", "value": "application/json"}],
-                "body": json.dumps({"text": "{{result}}"}, ensure_ascii=False),
-                "timeout": 5000,
-                "authType": "bearer",
                 "authConfig": {},
                 "referenced_variables": [
                     {"name": "result", "value_selector": source_selector}

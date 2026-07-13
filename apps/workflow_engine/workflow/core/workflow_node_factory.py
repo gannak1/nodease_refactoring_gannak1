@@ -35,6 +35,7 @@ from apps.workflow_engine.workflow.nodes.schedule import (
     ScheduleTriggerNode,
     ScheduleTriggerNodeData,
 )
+from apps.workflow_engine.workflow.nodes.slack import SlackPostNode, SlackPostNodeData
 from apps.workflow_engine.workflow.nodes.start import StartNode, StartNodeData
 from apps.workflow_engine.workflow.nodes.template.entities import TemplateNodeData
 from apps.workflow_engine.workflow.nodes.template.template_node import TemplateNode
@@ -67,7 +68,7 @@ class NodeFactory:
         "conditionNode": (ConditionNode, ConditionNodeData),
         "llmNode": (LLMNode, LLMNodeData),
         "httpRequestNode": (HttpRequestNode, HttpRequestNodeData),
-        "slackPostNode": (HttpRequestNode, HttpRequestNodeData),
+        "slackPostNode": (SlackPostNode, SlackPostNodeData),
         "githubNode": (GithubNode, GithubNodeData),
         "mailNode": (MailNode, MailNodeData),
         "gmailDraftNode": (GmailDraftNode, GmailDraftNodeData),

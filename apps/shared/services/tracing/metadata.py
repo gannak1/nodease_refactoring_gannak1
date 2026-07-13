@@ -139,7 +139,7 @@ COMMON_SPAN_FIELDS = {
 SPAN_TOP_LEVEL_BY_NODE_TYPE = {
     "llmNode": {"llm", "rag"},
     "httpRequestNode": {"http", "external_effect"},
-    "slackPostNode": {"http", "external_effect"},
+    "slackPostNode": {"http", "slack", "external_effect"},
     "githubNode": {"http", "external_effect"},
     "codeNode": {"sandbox"},
     "workflowNode": {"workflow"},
@@ -255,6 +255,18 @@ SPAN_SECTION_FIELDS = {
         "source_tier_policy",
         "source_tier_used",
         "stored_result_count",
+    },
+    "slack": {
+        "delivery_mode",
+        "delivery_status",
+        "has_message_ref",
+        "latency_ms",
+        "provider_reason",
+        "provider_retryable",
+        "request_size",
+        "response_size",
+        "retry_after_seconds",
+        "status_code",
     },
     "sandbox": {
         "execution_time_ms",

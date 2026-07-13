@@ -3723,6 +3723,10 @@ def test_agent_builder_preview_generates_valid_slack_node_when_requested(monkeyp
     slack_node = nodes_by_type["slackPostNode"]
     assert slack_node["data"]["channel"] == ""
     assert slack_node["data"]["authConfig"] == {}
+    assert "body" not in slack_node["data"]
+    assert "headers" not in slack_node["data"]
+    assert "timeout" not in slack_node["data"]
+    assert "delivery_status" == service_module.CAPABILITY_OUTPUT_KEYS["slack_send"]
     assert any(
         edge.get("source") == nodes_by_type["llmNode"]["id"]
         and edge.get("target") == slack_node["id"]

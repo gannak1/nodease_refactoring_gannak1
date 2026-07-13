@@ -20,6 +20,10 @@ from apps.shared.domain.mail_credential import (
     validate_mail_node_credential_boundary,
     validate_mail_processing_node_boundary,
 )
+from apps.shared.domain.slack_delivery import (
+    SlackGraphBoundaryError,
+    validate_slack_graph_boundary,
+)
 from apps.shared.schemas.workflow import WorkflowCreateRequest, WorkflowDraftRequest
 from apps.shared.services.permission_audit import record_resource_permission_denied
 from apps.shared.services.permissions import (
@@ -195,6 +199,16 @@ class WorkflowService:
             if isinstance(request, WorkflowDraftRequest)
             else request.get("nodes", [])
         )
+        try:
+            validate_slack_graph_boundary(
+                nodes,
+                require_resolved=require_resolved,
+                allow_legacy_selectors=not require_resolved,
+            )
+        except SlackGraphBoundaryError as exc:
+            raise HTTPException(
+                status_code=422, detail="slack.graph_configuration_invalid"
+            ) from exc
         mail_nodes = [
             node
             for node in WorkflowService._iter_workflow_nodes(nodes)

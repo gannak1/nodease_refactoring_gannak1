@@ -20,6 +20,15 @@ _PROVIDER_OPERATION_BY_NODE_TYPE = {
     "slackPostNode": ("slack", "slack.http.request"),
     "githubNode": ("github", "github.issue_comment.create"),
 }
+_PROVIDER_OPERATIONS_BY_NODE_TYPE = {
+    "slackPostNode": frozenset(
+        {
+            "slack.http.request",
+            "slack.chat.post_message",
+            "slack.incoming_webhook.post",
+        }
+    ),
+}
 _DEFERRED_CONTAINER_NODE_TYPES = frozenset({"workflowNode", "loopNode"})
 
 
@@ -98,14 +107,31 @@ def durable_provider_summary(
     if node_type not in _PROVIDER_OPERATION_BY_NODE_TYPE:
         return {}
 
-    expected_provider, expected_operation = _PROVIDER_OPERATION_BY_NODE_TYPE[node_type]
+    expected_provider, default_operation = _PROVIDER_OPERATION_BY_NODE_TYPE[node_type]
     metadata = trace_metadata if isinstance(trace_metadata, dict) else {}
     http = metadata.get("http") if isinstance(metadata.get("http"), dict) else {}
+    slack = metadata.get("slack") if isinstance(metadata.get("slack"), dict) else {}
     effect = (
         metadata.get("external_effect")
         if isinstance(metadata.get("external_effect"), dict)
         else {}
     )
+    allowed_operations = _PROVIDER_OPERATIONS_BY_NODE_TYPE.get(
+        node_type,
+        frozenset({default_operation}),
+    )
+    effect_operation = effect.get("operation")
+    if (
+        effect.get("provider") == expected_provider
+        and effect_operation in allowed_operations
+    ):
+        expected_operation = effect_operation
+    elif node_type == "slackPostNode" and slack.get("delivery_mode") == "api":
+        expected_operation = "slack.chat.post_message"
+    elif node_type == "slackPostNode" and slack.get("delivery_mode") == "webhook":
+        expected_operation = "slack.incoming_webhook.post"
+    else:
+        expected_operation = default_operation
     summary: dict[str, Any] = {
         "provider": expected_provider,
         "operation": expected_operation,
@@ -119,7 +145,8 @@ def durable_provider_summary(
     if method in _HTTP_METHODS:
         summary["method"] = method
 
-    status = http.get("status_code")
+    provider_metadata = slack if node_type == "slackPostNode" and slack else http
+    status = provider_metadata.get("status_code")
     if (
         not isinstance(status, bool)
         and isinstance(status, int)
@@ -128,7 +155,7 @@ def durable_provider_summary(
         summary["status"] = status
 
     for field in ("request_size", "response_size", "latency_ms"):
-        value = _safe_non_negative_int(http.get(field))
+        value = _safe_non_negative_int(provider_metadata.get(field))
         if value is not None:
             summary[field] = value
 

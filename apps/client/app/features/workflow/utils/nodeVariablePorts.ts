@@ -126,17 +126,22 @@ const outputInfoByType: Partial<
     status: {
       label: '상태 코드',
       dataType: 'number',
-      description: 'Slack API/Webhook HTTP 응답 상태 코드입니다.',
+      description: '검증된 Slack 전달의 HTTP 상태 코드입니다.',
     },
-    data: {
-      label: '응답 데이터',
-      dataType: 'unknown',
-      description: 'Slack API/Webhook 응답 본문입니다.',
+    delivery_status: {
+      label: '전달 상태',
+      dataType: 'string',
+      description: 'Slack 전달이 검증된 상태입니다.',
     },
-    headers: {
-      label: '응답 헤더',
-      dataType: 'object',
-      description: 'Slack API/Webhook HTTP 응답 헤더입니다.',
+    delivery_mode: {
+      label: '전달 방식',
+      dataType: 'string',
+      description: 'API 또는 incoming webhook 전달 방식입니다.',
+    },
+    message_ref: {
+      label: '메시지 참조',
+      dataType: 'string',
+      description: 'API mode에서만 제공되는 제한된 메시지 참조입니다.',
     },
   },
   githubNode: {
@@ -453,6 +458,12 @@ export const getNodeOutputVariables = (node?: AppNode | null) => {
     }
   }
 
+  if (node.type === 'slackPostNode') {
+    const slackKeys = ['status', 'delivery_status', 'delivery_mode'];
+    if (data.slackMode !== 'webhook') slackKeys.push('message_ref');
+    for (const key of slackKeys) outputs.push(toNodeOutput(node, key));
+  }
+
   const fallbackByType: Partial<
     Record<NonNullable<AppNode['type']>, string[]>
   > = {
@@ -460,7 +471,6 @@ export const getNodeOutputVariables = (node?: AppNode | null) => {
     codeNode: ['result'],
     templateNode: ['text'],
     httpRequestNode: ['status', 'data', 'headers'],
-    slackPostNode: ['status', 'data', 'headers'],
     githubNode: [
       'pr_title',
       'pr_body',
