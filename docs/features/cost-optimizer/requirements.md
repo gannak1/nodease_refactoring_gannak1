@@ -660,7 +660,7 @@ RAG context가 prompt token의 대부분을 차지하고, evidence 충분성이 
 - 성공한 `workflow_node_runs`다.
 - input, output, usage를 복원할 수 있다.
 - Cost Optimizer candidate 실행이 아니다.
-- 현재 활성 deployment와 node 설정 fingerprint가 같은 운영 실행이다.
+- 현재 draft와 node 설정 fingerprint가 같은 활성 deployment의 exact `deployment_id`를 가진 운영 실행이다. 실행 로그의 `process_data`는 보안 마스킹될 수 있으므로 baseline cohort를 다시 판정하는 원천으로 사용하지 않는다.
 
 baseline을 찾지 못하면 LLM 호출을 시작하지 않고 `비교 가능한 최신 성공 기록이 없습니다.`를 표시한다. 빠른 검증이 시작된 뒤에는 exact `baseline_node_run_id`를 결과에 고정하며, 실행 도중 더 최신 로그가 생겨도 baseline을 바꾸지 않는다.
 

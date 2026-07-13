@@ -360,7 +360,9 @@ class TestRecommendationInlineVerificationApi:
         run_candidate.assert_not_called()
         complete.assert_called_once()
 
-    def test_fr13_latest_baseline_uses_only_active_deployment_and_matching_config(self):
+    def test_fr13_latest_baseline_uses_active_deployment_when_trace_config_was_redacted(
+        self,
+    ):
         workflow_id = uuid4()
         deployment_id = uuid4()
         workflow = _workflow_with_llm_node(workflow_id, uuid4())
@@ -377,9 +379,23 @@ class TestRecommendationInlineVerificationApi:
             "usage_available": True,
             "compare_available": True,
         }
-        matching_new = {**matching_old, "baseline_id": str(uuid4()), "run_started_at": "2026-07-11T10:00:00+00:00"}
-        wrong_deployment = {**matching_new, "baseline_id": str(uuid4()), "deployment_id": str(uuid4())}
-        wrong_config = {**matching_new, "baseline_id": str(uuid4()), "node_config_fingerprint": "other"}
+        redacted_fingerprint = workflow_endpoint._node_config_fingerprint(
+            {
+                "model_id": "gpt-4.1",
+                "parameters": {"max_tokens": "[REDACTED]"},
+            }
+        )
+        matching_new = {
+            **matching_old,
+            "baseline_id": str(uuid4()),
+            "run_started_at": "2026-07-11T10:00:00+00:00",
+            "node_config_fingerprint": redacted_fingerprint,
+        }
+        wrong_deployment = {
+            **matching_new,
+            "baseline_id": str(uuid4()),
+            "deployment_id": str(uuid4()),
+        }
 
         with (
             patch.object(
@@ -390,7 +406,7 @@ class TestRecommendationInlineVerificationApi:
             patch.object(
                 workflow_endpoint,
                 "_cost_optimizer_baseline_rows",
-                return_value=[wrong_deployment, wrong_config, matching_old, matching_new],
+                return_value=[wrong_deployment, matching_old, matching_new],
             ),
         ):
             baseline = workflow_endpoint.get_cost_optimizer_latest_operation_baseline(
@@ -398,6 +414,88 @@ class TestRecommendationInlineVerificationApi:
             )
 
         assert baseline["baseline_id"] == matching_new["baseline_id"]
+
+    def test_fr13_draft_deployment_mismatch_returns_stale_without_candidate_execution(
+        self,
+    ):
+        workflow_id = uuid4()
+        workflow = _workflow_with_llm_node(workflow_id, uuid4())
+        verification = SimpleNamespace(id=uuid4())
+        candidate = workflow_endpoint.CostOptimizerCandidateRequest(
+            model_id="gpt-4.1-mini",
+            parameters={"max_tokens": 800},
+            output_format={"type": "text"},
+        )
+
+        with (
+            patch.object(
+                workflow_endpoint.CostOptimizerRecommendationVerificationService,
+                "claim",
+                return_value=RecommendationVerificationClaim(record=verification),
+            ),
+            patch.object(
+                workflow_endpoint.CostOptimizerRecommendationVerificationService,
+                "complete",
+            ) as complete,
+            patch.object(
+                workflow_endpoint.CostOptimizerParameterRecommendationService,
+                "recommend",
+                return_value={
+                    "policy_version": "llm-parameter-recommendation-rules-v1",
+                    "recommendations": [{"parameter_key": "max_tokens"}],
+                },
+            ),
+            patch.object(
+                workflow_endpoint,
+                "_cost_optimizer_candidate_from_recommendations",
+                return_value=(candidate, ["max_tokens"]),
+            ),
+            patch.object(
+                workflow_endpoint,
+                "_materialize_cost_optimizer_candidate_model_routing_policy",
+                return_value=candidate,
+            ),
+            patch.object(workflow_endpoint, "_validate_cost_optimizer_candidate_shape"),
+            patch.object(
+                workflow_endpoint,
+                "_ensure_cost_optimizer_candidate_knowledge_available",
+            ),
+            patch.object(
+                workflow_endpoint,
+                "_ensure_cost_optimizer_candidate_models_available",
+            ),
+            patch.object(
+                workflow_endpoint,
+                "_resolve_operation_cohort",
+                return_value={"status": "draft_not_deployed", "deployment_id": None},
+            ),
+            patch.object(
+                workflow_endpoint,
+                "_cost_optimizer_baseline_rows",
+            ) as baseline_rows,
+            patch.object(
+                workflow_endpoint,
+                "_run_cost_optimizer_candidate",
+            ) as run_candidate,
+        ):
+            result = workflow_endpoint._verify_cost_optimizer_recommendations(
+                db=SimpleNamespace(),
+                workflow=workflow,
+                node_id="llm-triage",
+                current_user=SimpleNamespace(id=uuid4()),
+                request=SimpleNamespace(),
+                request_body=workflow_endpoint.CostOptimizerRecommendationVerifyRequest(
+                    recommendation_ids=["max_tokens"],
+                    baseline_mode="latest_success",
+                ),
+                idempotency_key="fr13-draft-deployment-stale-001",
+            )
+
+        assert result["verification_status"] == "stale"
+        assert result["apply"]["reasons"] == ["recommendation_stale"]
+        baseline_rows.assert_not_called()
+        run_candidate.assert_not_called()
+        complete.assert_called_once()
 
 
 class TestRecommendationVerificationIdempotency:

@@ -9,6 +9,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from apps.shared.db.models.app import App
 from apps.shared.db.models.llm import LLMUsageLog
 from apps.shared.db.models.workflow_run import (
     NodeRunStatus,
@@ -880,7 +881,7 @@ def _resolve_operation_cohort(
     """추천 표본을 현재 활성 배포 node 설정 하나로 한정한다.
 
     테스트용 in-memory DB는 active_deployment를 선택적으로 제공한다. 실제 DB에서는
-    workflow.app_id의 활성 deployment snapshot을 기준으로 한다.
+    App.active_deployment_id가 가리키는 deployment snapshot을 기준으로 한다.
     """
     if hasattr(db, "workflow_runs"):
         deployment = getattr(db, "active_deployment", None)
@@ -890,13 +891,19 @@ def _resolve_operation_cohort(
         app_id = getattr(workflow, "app_id", None)
         if app_id is None:
             return {"status": "deployment_unavailable", "deployment_id": None}
+
+        app = db.query(App).filter(App.id == app_id).first()
+        active_deployment_id = getattr(app, "active_deployment_id", None)
+        if active_deployment_id is None:
+            return {"status": "deployment_unavailable", "deployment_id": None}
+
         deployment = (
             db.query(WorkflowDeployment)
             .filter(
+                WorkflowDeployment.id == active_deployment_id,
                 WorkflowDeployment.app_id == app_id,
                 WorkflowDeployment.is_active.is_(True),
             )
-            .order_by(WorkflowDeployment.version.desc())
             .first()
         )
         if deployment is None:

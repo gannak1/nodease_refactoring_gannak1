@@ -435,6 +435,8 @@ latest baseline은 다음 필터를 모두 적용한 뒤 `WorkflowNodeRun.starte
 - Cost Optimizer candidate/quality judge 실행 제외
 - current draft와 활성 deployment node setting fingerprint 일치
 
+마지막 fingerprint 검사는 current draft와 활성 deployment snapshot 사이에서 수행한다. Baseline 실행은 exact active `deployment_id`로 같은 불변 snapshot 실행임을 판정하며, 보안 마스킹된 `WorkflowNodeRun.process_data.node_options` fingerprint를 추가 필터로 사용하지 않는다.
+
 ### Response
 
 ```json

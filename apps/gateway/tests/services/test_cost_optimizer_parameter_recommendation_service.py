@@ -6,7 +6,10 @@ import pytest
 
 from apps.gateway.services.cost_optimizer_parameter_recommendation_service import (
     CostOptimizerParameterRecommendationService,
+    _resolve_operation_cohort,
 )
+from apps.shared.db.models.app import App
+from apps.shared.db.models.workflow_deployment import WorkflowDeployment
 from apps.shared.db.models.workflow_run import NodeRunStatus, RunStatus, RunTriggerMode
 
 
@@ -533,6 +536,44 @@ def test_fr12_blocks_parameter_recommendations_when_current_draft_differs_from_a
     )
 
 
+def test_fr12_operation_cohort_uses_app_active_deployment_pointer():
+    workflow_id = uuid4()
+    app_id = uuid4()
+    active_deployment_id = uuid4()
+    stale_deployment_id = uuid4()
+    current_graph = _workflow(workflow_id, max_tokens=512).graph
+    active_deployment = SimpleNamespace(
+        id=active_deployment_id,
+        app_id=app_id,
+        version=1,
+        is_active=True,
+        graph_snapshot=current_graph,
+    )
+    stale_deployment = SimpleNamespace(
+        id=stale_deployment_id,
+        app_id=app_id,
+        version=2,
+        is_active=True,
+        graph_snapshot=_workflow(workflow_id, max_tokens=4096).graph,
+    )
+    db = _ActiveDeploymentPointerDb(
+        app=SimpleNamespace(id=app_id, active_deployment_id=active_deployment_id),
+        deployments=[active_deployment, stale_deployment],
+    )
+
+    cohort = _resolve_operation_cohort(
+        db,
+        workflow=SimpleNamespace(id=workflow_id, app_id=app_id),
+        node_id="llm-triage",
+        current_node_data=current_graph["nodes"][0]["data"],
+    )
+
+    assert cohort == {
+        "status": "active_deployment",
+        "deployment_id": active_deployment_id,
+    }
+
+
 def test_fr12_ignores_dynamic_model_routing_policy_state_in_deployment_fingerprint():
     """배포 뒤 active policy만 갱신된 것은 draft 설정 drift로 보지 않는다."""
     workflow_id = uuid4()
@@ -719,3 +760,53 @@ class _RecommendationDb:
         self.node_runs = node_runs
         self.usage_logs = usage_logs
         self.active_deployment = active_deployment
+
+
+class _ActiveDeploymentPointerQuery:
+    def __init__(self, *, model, app, deployments):
+        self.model = model
+        self.app = app
+        self.deployments = deployments
+        self.criteria = []
+
+    def filter(self, *criteria):
+        self.criteria.extend(criteria)
+        return self
+
+    def order_by(self, *args):
+        return self
+
+    def first(self):
+        if self.model is App:
+            return self.app
+        if self.model is not WorkflowDeployment:
+            return None
+
+        deployment_ids = {
+            getattr(getattr(criterion, "right", None), "value", None)
+            for criterion in self.criteria
+            if getattr(getattr(criterion, "left", None), "name", None) == "id"
+        }
+        if deployment_ids:
+            return next(
+                (
+                    deployment
+                    for deployment in self.deployments
+                    if deployment.id in deployment_ids
+                ),
+                None,
+            )
+        return max(self.deployments, key=lambda deployment: deployment.version)
+
+
+class _ActiveDeploymentPointerDb:
+    def __init__(self, *, app, deployments):
+        self.app = app
+        self.deployments = deployments
+
+    def query(self, model):
+        return _ActiveDeploymentPointerQuery(
+            model=model,
+            app=self.app,
+            deployments=self.deployments,
+        )

@@ -1566,14 +1566,15 @@ def get_cost_optimizer_latest_operation_baseline(
         raise HTTPException(status_code=409, detail="cost_optimizer.recommendation_stale")
 
     expected_deployment_id = str(cohort.get("deployment_id"))
-    expected_fingerprint = _node_config_fingerprint(node_data)
+    # 현재 draft와 활성 배포 snapshot의 설정 일치는 cohort 해석에서 이미
+    # 확인한다. 실행 로그의 process_data는 보안 마스킹된 값일 수 있으므로,
+    # 같은 불변 배포 ID를 가진 운영 실행을 다시 fingerprint로 제외하지 않는다.
     candidates = [
         row
         for row in _cost_optimizer_baseline_rows(db, workflow, node_id)
         if _has_cost_optimizer_baseline_result(row)
         and row.get("compare_available")
         and row.get("deployment_id") == expected_deployment_id
-        and row.get("node_config_fingerprint") == expected_fingerprint
     ]
     if not candidates:
         raise HTTPException(status_code=400, detail="cost_optimizer.no_baseline")

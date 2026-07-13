@@ -145,7 +145,7 @@ FR-011 모델 라우팅은 정책 기반 자동 라우팅으로 다룬다. 자�
 | ID | 영역 | Given | When | Then |
 | --- | --- | --- | --- | --- |
 | FR-013-R01 | modal flow | 추천 row가 선택되어 있다 | `테스트하기`를 클릭한다 | 기존 Cost Optimizer route로 즉시 이동하지 않고 모달 안에서 baseline 조회와 candidate 실행 상태를 표시한다. |
-| FR-013-R02 | latest baseline | 같은 active deployment/config cohort에 input/output/usage를 복원할 수 있는 성공 run과 더 최신의 실패·candidate run이 있다 | 빠른 검증을 요청한다 | 조건을 만족하는 가장 최근 성공 운영 node run 하나를 baseline으로 고정하고 실패·candidate run은 제외한다. |
+| FR-013-R02 | latest baseline | 같은 active deployment/config cohort에 input/output/usage를 복원할 수 있는 성공 run과 더 최신의 실패·candidate run이 있다. 과거 성공 run의 `process_data.node_options.parameters.max_tokens`가 공통 redaction으로 마스킹된 경우도 포함한다. | 빠른 검증을 요청한다 | exact active `deployment_id` 조건을 만족하는 가장 최근 성공 운영 node run 하나를 baseline으로 고정하고 실패·candidate run은 제외한다. 마스킹된 process data fingerprint만으로 동일 배포 run을 제외하지 않는다. |
 | FR-013-R03 | no baseline | 비교 가능한 최신 성공 run이 없다 | 빠른 검증을 요청한다 | provider를 호출하지 않고 `비교 가능한 최신 성공 기록이 없습니다.`를 표시한다. |
 | FR-013-R04 | hybrid execution | baseline이 확정되고 recommendation id가 유효하다 | 빠른 검증을 실행한다 | A는 재실행하지 않고 동일 input으로 B만 한 번 실행하며 experiment/candidate row와 usage를 저장한다. |
 | FR-013-R05 | recommendation freshness | recommendation policy version 또는 node setting fingerprint가 응답 이후 바뀌었다 | 빠른 검증을 요청한다 | `stale`로 거부하고 이전 candidate patch를 실행하지 않는다. |
@@ -171,6 +171,7 @@ FR-011 모델 라우팅은 정책 기반 자동 라우팅으로 다룬다. 자�
 | FR-013-R25 | route session reset | 한 LLM node의 비교 결과를 본 상태에서 workflow/node/deep link URL이 바뀐다 | 같은 route 컴포넌트가 새 식별자로 렌더링된다 | 이전 baseline, compare result, 선택 이력을 표시하지 않고 새 node의 baseline 선택 상태로 초기화한다. |
 | FR-013-R26 | explicit history filter | 결과 분석 이력 패널에서 실행자·모델·기간 필터를 입력한다 | 입력 중에는 대기하고 `필터 적용`을 실행한다 | 입력 중 추가 목록 요청을 보내지 않고 적용 시점에 정규화된 query로 한 번 조회한다. |
 | FR-013-R27 | stale response shape | recommendation policy version 또는 node fingerprint가 현재 상태와 다르다 | 빠른 검증 API를 호출한다 | provider를 호출하지 않고 `verification_status=stale`, null comparison/candidate/baseline과 `apply.allowed=false`를 반환하며, 프론트는 결과 값을 읽지 않고 재시도 안내를 표시한다. |
+| FR-013-R28 | draft/deployment mismatch | current draft의 target node 설정과 `App.active_deployment_id`가 가리키는 deployment snapshot 설정이 다르다 | 빠른 검증 API를 호출한다 | baseline 또는 candidate/provider 호출을 시작하지 않고 `verification_status=stale`로 종료한다. 단순히 `is_active=true`인 최신 deployment를 active pointer 대신 사용하지 않는다. |
 
 ## FR-001 LLM 노드 단위 A/B 테스트 진입
 ## Knowledge/RAG Compare Tests
