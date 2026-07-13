@@ -5,6 +5,7 @@ from typing import Any
 from apps.gateway.application.deployment.schedule_models import (
     SchedulePublishRequest,
 )
+from apps.shared.services.workflow_task_publisher import send_workflow_task
 
 
 class CeleryScheduleTaskPublisher:
@@ -12,7 +13,8 @@ class CeleryScheduleTaskPublisher:
         self.celery_app = celery_app
 
     def publish(self, request: SchedulePublishRequest) -> None:
-        self.celery_app.send_task(
+        send_workflow_task(
+            self.celery_app,
             "workflow.execute_scheduled_deployment",
             args=[str(request.claim_id)],
             task_id=request.task_id,

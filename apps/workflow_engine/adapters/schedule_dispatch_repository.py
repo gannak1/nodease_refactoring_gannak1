@@ -218,7 +218,10 @@ class SqlAlchemyScheduleAdmissionRepository:
             return False
         now = kwargs["now"]
         claim.status = STATUS_DEAD_LETTERED
-        claim.safe_reason_code = REASON_EXECUTION_FAILED_AFTER_ADMISSION
+        claim.safe_reason_code = kwargs.get(
+            "reason",
+            REASON_EXECUTION_FAILED_AFTER_ADMISSION,
+        )
         claim.lease_owner = None
         claim.execution_deadline_at = None
         claim.completed_at = now

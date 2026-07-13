@@ -28,6 +28,7 @@ from apps.gateway.services.cost_optimizer_parameter_recommendation_service impor
 )
 from apps.gateway.services.llm_service import LLMService
 from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
+from apps.gateway.services.deployment_service import DeploymentService
 from apps.gateway.services.workflow_service import WorkflowService
 from apps.shared.audit.actions import AuditAction
 from apps.shared.celery_app import celery_app
@@ -44,6 +45,9 @@ from apps.shared.db.models.model_routing_policy import (
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
+from apps.shared.domain.external_effect_error import (
+    safe_external_effect_error_payload,
+)
 from apps.shared.permissions import workflow_auth_state_allows
 from apps.workflow_engine.services.model_router import ModelCandidate, ModelRouter
 from apps.workflow_engine.services.model_routing_policy_refresh import (
@@ -76,6 +80,7 @@ from apps.shared.services.permissions import (
     has_knowledge_base_permission,
 )
 from apps.shared.services.cost_optimizer_retention import CostOptimizerRetentionService
+from apps.shared.services.workflow_task_publisher import send_workflow_task
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -88,6 +93,47 @@ COST_OPTIMIZER_ALLOWED_TASK_TYPES = {
     "reason",
 }
 COST_OPTIMIZER_BASELINE_INPUT_NODE_ID = "__cost_optimizer_baseline_input__"
+
+
+def _safe_task_error(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    code = value.get("code")
+    retryable = value.get("retryable")
+    if not isinstance(code, str) or not isinstance(retryable, bool):
+        return None
+    is_external_effect_error = code.startswith("external_effect.")
+    if is_external_effect_error:
+        return safe_external_effect_error_payload(value)
+    payload: dict[str, Any] = {
+        "code": code,
+        "message": str(value.get("message") or code),
+        "retryable": retryable,
+    }
+    if isinstance(value.get("node_id"), str):
+        payload["node_id"] = value["node_id"]
+    return payload
+
+
+def _safe_stream_event(value: Any) -> dict[str, Any]:
+    generic_error = {
+        "type": "error",
+        "data": {"message": "workflow.execution_failed"},
+    }
+    if not isinstance(value, dict) or not isinstance(value.get("type"), str):
+        return generic_error
+    if value["type"] != "error":
+        return value
+    data = value.get("data")
+    if not isinstance(data, dict):
+        return generic_error
+    code = data.get("code")
+    if isinstance(code, str) and code.startswith("external_effect."):
+        safe_error = _safe_task_error(data)
+        if safe_error is None:
+            return generic_error
+        return {"type": "error", "data": safe_error}
+    return value
 
 
 class WorkflowCompareRequest(BaseModel):
@@ -2877,6 +2923,7 @@ def _run_cost_optimizer_candidate(
     cost_optimizer_candidate_id: UUID,
     current_user: User,
     request: Request,
+    db: Session,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     candidate_workflow_run_id = uuid4()
@@ -2896,9 +2943,18 @@ def _run_cost_optimizer_candidate(
         candidate,
         baseline["input"],
     )
+    patched_graph = DeploymentService.bind_workflow_node_targets(
+        db,
+        patched_graph,
+        app=SimpleNamespace(
+            id=getattr(workflow, "app_id", workflow.id),
+            organization_id=getattr(workflow, "organization_id", None),
+        ),
+    )
 
     try:
-        task = celery_app.send_task(
+        task = send_workflow_task(
+            celery_app,
             "workflow.execute",
             args=[patched_graph, baseline["input"], context],
             kwargs={"is_deployed": False},
@@ -2916,7 +2972,8 @@ def _run_cost_optimizer_candidate(
             "schema_validation": {"status": "skipped", "errors": []},
             "latency_ms": latency_ms,
             "trace": {},
-            "error_message": str(exc) or type(exc).__name__,
+            "error_message": getattr(exc, "code", "workflow.execution_failed"),
+            "error_detail": None,
         }
 
     latency_ms = int((time.perf_counter() - started) * 1000)
@@ -2954,11 +3011,13 @@ def _run_cost_optimizer_candidate(
             if isinstance(safe_output, dict)
             else {},
             "error_message": None,
+            "error_detail": None,
         }
 
     failed_output = _safe_cost_optimizer_value(
         _extract_cost_optimizer_node_output(task_result, node_id)
     )
+    error_detail = _safe_task_error(task_result.get("error"))
     return {
         "label": candidate.label,
         "settings": candidate.model_dump(mode="json"),
@@ -2971,7 +3030,10 @@ def _run_cost_optimizer_candidate(
         "trace": _build_cost_optimizer_candidate_trace(failed_output)
         if isinstance(failed_output, dict)
         else {},
-        "error_message": task_result.get("error") or "Workflow execution failed",
+        "error_message": (
+            error_detail["code"] if error_detail else "Workflow execution failed"
+        ),
+        "error_detail": error_detail,
     }
 
 
@@ -3086,6 +3148,7 @@ def _format_compare_variant(
     status: str,
     outputs: Any = None,
     error: str | None = None,
+    error_detail: dict[str, Any] | None = None,
     latency_ms: int | None = None,
 ) -> dict[str, Any]:
     node_output = _extract_node_result(outputs, node_id)
@@ -3096,6 +3159,7 @@ def _format_compare_variant(
         "value": value,
         "status": status,
         "error": error,
+        "error_detail": error_detail,
         "outputs": outputs,
         "node_output": node_output,
         "model": node_output.get("model") if isinstance(node_output, dict) else None,
@@ -3189,7 +3253,8 @@ def refresh_model_routing_policy_endpoint(
         try:
             # DB에 남은 pending 요청은 이전 publish 실패 또는 broker 재시도의
             # 복구 경로일 수 있으므로 manual 요청으로 다시 발행한다.
-            celery_app.send_task(
+            send_workflow_task(
+                celery_app,
                 "workflow.model_routing.refresh_policy",
                 args=[str(policy.id), "manual_refresh"],
             )
@@ -3213,7 +3278,8 @@ def refresh_model_routing_policy_endpoint(
     policy.judge_user_id = current_user.id
     db.commit()
     try:
-        celery_app.send_task(
+        send_workflow_task(
+            celery_app,
             "workflow.model_routing.refresh_policy",
             args=[str(policy.id), "manual_refresh"],
         )
@@ -3541,6 +3607,7 @@ def compare_cost_optimizer_candidate(
         cost_optimizer_candidate_id=candidate_row.id,
         current_user=current_user,
         request=request,
+        db=db,
     )
     diff = _build_cost_optimizer_diff(baseline, candidate_result)
     downstream_compatibility = _resolve_cost_optimizer_downstream_compatibility(
@@ -4218,7 +4285,16 @@ def compare_workflow_variants(
             patched_graph = _patch_compare_graph(
                 graph, request_body.node_id, request_body.compare_type, value
             )
-            task = celery_app.send_task(
+            patched_graph = DeploymentService.bind_workflow_node_targets(
+                db,
+                patched_graph,
+                app=SimpleNamespace(
+                    id=workflow.app_id,
+                    organization_id=workflow.organization_id,
+                ),
+            )
+            task = send_workflow_task(
+                celery_app,
                 "workflow.execute",
                 args=[patched_graph, request_body.inputs, base_context],
                 kwargs={"is_deployed": False},
@@ -4234,13 +4310,19 @@ def compare_workflow_variants(
                     outputs=task_result.get("result", {}),
                     latency_ms=latency_ms,
                 )
+            error_detail = _safe_task_error(task_result.get("error"))
             return _format_compare_variant(
                 label=label,
                 value=value,
                 node_id=request_body.node_id,
                 status="failed",
                 outputs=task_result.get("result", {}),
-                error=task_result.get("error") or "Workflow execution failed",
+                error=(
+                    error_detail["code"]
+                    if error_detail
+                    else "Workflow execution failed"
+                ),
+                error_detail=error_detail,
                 latency_ms=latency_ms,
             )
         except Exception as exc:
@@ -4250,7 +4332,7 @@ def compare_workflow_variants(
                 value=value,
                 node_id=request_body.node_id,
                 status="failed",
-                error=str(exc),
+                error=getattr(exc, "code", "workflow.execution_failed"),
                 latency_ms=latency_ms,
             )
 
@@ -4307,6 +4389,14 @@ async def execute_workflow(
             raise HTTPException(
                 status_code=404, detail=f"Workflow '{workflow_id}' draft not found"
             )
+        graph = DeploymentService.bind_workflow_node_targets(
+            db,
+            graph,
+            app=SimpleNamespace(
+                id=workflow.app_id,
+                organization_id=workflow.organization_id,
+            ),
+        )
 
         # execution_context 구성
         execution_context = {
@@ -4326,7 +4416,8 @@ async def execute_workflow(
         }
 
         # Celery 태스크 호출 (workflow.execute)
-        task = celery_app.send_task(
+        task = send_workflow_task(
+            celery_app,
             "workflow.execute",
             args=[graph, user_input, execution_context],
             kwargs={"is_deployed": False},
@@ -4338,21 +4429,25 @@ async def execute_workflow(
         if result.get("status") == "success":
             return result.get("result", {})
         else:
-            raise HTTPException(status_code=500, detail="Workflow execution failed")
+            raise HTTPException(
+                status_code=500,
+                detail=_safe_task_error(result.get("error"))
+                or "Workflow execution failed",
+            )
 
     except celery_app.backend.TimeoutError:
         raise HTTPException(status_code=504, detail="Workflow execution timed out")
     except HTTPException:
         raise
-    except ValueError as e:
+    except ValueError:
         # 노드 검증 실패 등의 입력 오류
-        raise HTTPException(status_code=400, detail=str(e))
-    except NotImplementedError as e:
+        raise HTTPException(status_code=400, detail="Workflow validation failed")
+    except NotImplementedError:
         # 미지원 노드 등
-        raise HTTPException(status_code=501, detail=str(e))
-    except Exception as e:
+        raise HTTPException(status_code=501, detail="Workflow feature is not supported")
+    except Exception:
         # 그 외 서버 에러
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Workflow execution failed")
 
 
 @router.post("/{workflow_id}/stream")
@@ -4452,6 +4547,14 @@ async def stream_workflow(
             status_code=404, detail=f"Workflow '{workflow_id}' draft not found"
         )
     validate_execution_graph(graph)
+    graph = DeploymentService.bind_workflow_node_targets(
+        db,
+        graph,
+        app=SimpleNamespace(
+            id=workflow.app_id,
+            organization_id=workflow.organization_id,
+        ),
+    )
 
     # 4. [NEW] Gateway에서 run_id 생성 (Celery 태스크에 전달)
     external_run_id = str(uuid.uuid4())
@@ -4489,7 +4592,8 @@ async def stream_workflow(
             pubsub.subscribe(channel)
 
             # 2. 구독 완료 후 Celery 태스크 시작 (중요!)
-            celery_app.send_task(
+            send_workflow_task(
+                celery_app,
                 "workflow.stream",
                 args=[graph, user_input, execution_context, external_run_id],
             )
@@ -4498,7 +4602,7 @@ async def stream_workflow(
             # 3. 이벤트 수신 및 SSE 전송
             for message in pubsub.listen():
                 if message["type"] == "message":
-                    event = json.loads(message["data"])
+                    event = _safe_stream_event(json.loads(message["data"]))
                     # SSE 포맷: "data: {json_content}\n\n"
                     yield f"data: {json.dumps(event)}\n\n"
 
@@ -4508,9 +4612,12 @@ async def stream_workflow(
                             f"[Gateway] 스트리밍 종료 - type: {event.get('type')}"
                         )
                         break
-        except Exception as e:
+        except Exception:
             # 구독 중 에러 발생 시 에러 이벤트 전송
-            error_event = {"type": "error", "data": {"message": str(e)}}
+            error_event = {
+                "type": "error",
+                "data": {"message": "workflow.stream_unavailable"},
+            }
             yield f"data: {json.dumps(error_event)}\n\n"
         finally:
             pubsub.unsubscribe(channel)

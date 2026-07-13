@@ -1,7 +1,16 @@
+import logging
 # asyncio import removed - [GEVENT] migration
 from typing import Any, Dict, List
 
 from apps.shared.db.models.app import App
+from apps.shared.domain.workflow_execution_identity import InvocationSegment
+from apps.shared.domain.workflow_node_binding import (
+    MAX_WORKFLOW_NODE_DEPTH,
+    canonical_snapshot_sha256,
+    graph_has_external_effect,
+    workflow_node_references,
+)
+from apps.shared.services.workflow_node_catalog import node_side_effect_mapping
 from apps.shared.domain.deployment_runtime_policy import (
     SURFACE_WORKFLOW_NODE_CHILD_RUN,
     is_deployment_type_allowed_for_surface,
@@ -12,12 +21,14 @@ from apps.workflow_engine.workflow.nodes.base.node import Node
 
 from .entities import WorkflowNodeData
 
+
+logger = logging.getLogger(__name__)
+
 # 참고: 순환 참조를 피하기 위해 WorkflowEngine은 메서드 내부에서 임포트합니다.
 # 하지만 WorkflowEngine은 NodeFactory에 의존하고, NodeFactory는 Node에 의존합니다...
 # 순환 의존성이 발생할 가능성이 높습니다.
 # 따라서 _run 메서드 내부에서 임포트를 처리합니다.
 
-MAX_WORKFLOW_NODE_DEPTH = 3
 _WORKFLOW_NODE_DEPTH_CONTEXT_KEY = "workflow_node_depth"
 _WORKFLOW_NODE_VISITED_APP_IDS_CONTEXT_KEY = "workflow_node_visited_app_ids"
 
@@ -104,14 +115,9 @@ class WorkflowNode(Node[WorkflowNodeData]):
                     "[WorkflowNode] Target App is unavailable"
                 )
 
-            if not app.active_deployment_id:
-                raise WorkflowNodeConfigurationError(
-                    f"[WorkflowNode] App {app.name} has no active deployment"
-                )
-
             from apps.shared.db.models.workflow_deployment import WorkflowDeployment
 
-            deployment = (
+            active_deployment = (
                 db.query(WorkflowDeployment)
                 .filter(
                     WorkflowDeployment.id == app.active_deployment_id,
@@ -121,14 +127,59 @@ class WorkflowNode(Node[WorkflowNodeData]):
                 .first()
             )
 
-            if not deployment or not is_deployment_type_allowed_for_surface(
-                deployment.type,
+            if not active_deployment or not is_deployment_type_allowed_for_surface(
+                active_deployment.type,
                 SURFACE_WORKFLOW_NODE_CHILD_RUN,
                 policy=get_deployment_runtime_policy(),
             ):
                 raise WorkflowNodeConfigurationError(
-                    f"[WorkflowNode] Active deployment not found for app {app.name}"
+                    "workflow_node.target_unavailable"
                 )
+
+            binding = (
+                self._runtime_control.workflow_node_binding
+                if self._runtime_control is not None
+                else None
+            )
+            if binding is not None:
+                if binding.target_app_id != app.id:
+                    raise WorkflowNodeConfigurationError(
+                        "workflow_node.binding_mismatch"
+                    )
+                deployment = (
+                    db.query(WorkflowDeployment)
+                    .filter(
+                        WorkflowDeployment.id == binding.deployment_id,
+                        WorkflowDeployment.app_id == app.id,
+                    )
+                    .first()
+                )
+                if (
+                    deployment is None
+                    or deployment.version != binding.deployment_version
+                    or not is_deployment_type_allowed_for_surface(
+                        deployment.type,
+                        SURFACE_WORKFLOW_NODE_CHILD_RUN,
+                        policy=get_deployment_runtime_policy(),
+                    )
+                    or canonical_snapshot_sha256(deployment.graph_snapshot)
+                    != binding.snapshot_sha256
+                ):
+                    raise WorkflowNodeConfigurationError(
+                        "workflow_node.binding_mismatch"
+                    )
+            else:
+                deployment = active_deployment
+                if self._legacy_closure_has_external_effect(
+                    db,
+                    deployment.graph_snapshot,
+                    organization_id=app.organization_id,
+                    depth=current_depth + 1,
+                    visited={*visited_app_ids, target_app_key},
+                ):
+                    raise WorkflowNodeConfigurationError(
+                        "workflow_node.child_redeployment_required"
+                    )
 
             graph = deployment.graph_snapshot
             if not graph:
@@ -162,12 +213,28 @@ class WorkflowNode(Node[WorkflowNodeData]):
             # parent_run_id를 전달하여 서브 워크플로우의 노드 실행 기록이 부모 워크플로우와 연결되도록 함
             parent_run_id = self.execution_context.get("workflow_run_id")
             sub_execution_context = dict(self.execution_context)
+            sub_execution_context["organization_id"] = str(app.organization_id)
+            sub_execution_context["app_id"] = str(app.id)
+            sub_execution_context["workflow_id"] = str(app.workflow_id)
+            sub_execution_context["deployment_id"] = str(deployment.id)
+            sub_execution_context["workflow_version"] = deployment.version
             sub_execution_context[_WORKFLOW_NODE_DEPTH_CONTEXT_KEY] = current_depth + 1
             sub_execution_context[_WORKFLOW_NODE_VISITED_APP_IDS_CONTEXT_KEY] = list(
                 visited_app_ids | {target_app_key}
             )
 
             # 서브 워크플로우도 세션 객체 대신 factory를 통해 필요한 시점에 세션을 엽니다.
+            control = self._runtime_control
+            execution_id = control.execution_id if control is not None else None
+            invocation_path_prefix = None
+            if control is not None:
+                invocation_path_prefix = control.invocation_path_prefix + (
+                    InvocationSegment(
+                        "subworkflow",
+                        self.id,
+                        str(deployment.id),
+                    ),
+                )
             engine = WorkflowEngine(
                 graph,
                 sub_workflow_inputs,
@@ -176,20 +243,102 @@ class WorkflowNode(Node[WorkflowNodeData]):
                 db=db,
                 parent_run_id=parent_run_id,
                 is_subworkflow=True,  # [FIX] 서브 워크플로우 표시 - Redis 이벤트 발행 스킵
+                execution_id=execution_id,
+                invocation_path_prefix=invocation_path_prefix,
+                task_deadline=(control.task_deadline if control is not None else None),
             )
 
             # [동기 전환] 직접 동기적으로 서브 워크플로우 실행
             try:
                 result = engine.execute()
+                if engine._external_effect_output_sensitive:
+                    self._trace_metadata = {
+                        "external_effect_output": {"sensitive": True}
+                    }
             finally:
-                engine.cleanup()
+                try:
+                    engine.cleanup()
+                except Exception as exc:
+                    logger.warning(
+                        "Workflow-node child cleanup failed: error_type=%s",
+                        type(exc).__name__,
+                    )
         finally:
             if should_close_session and db is not None:
-                db.close()
+                try:
+                    db.close()
+                except Exception as exc:
+                    logger.warning(
+                        "Workflow-node session close failed: error_type=%s",
+                        type(exc).__name__,
+                    )
 
         # 출력 통일: 항상 'result' 키로 반환
         # 서브 워크플로우의 출력값 구조와 관계없이 일관된 출력 제공
         return {"result": result}
+
+    def _legacy_closure_has_external_effect(
+        self,
+        db,
+        graph: dict | None,
+        *,
+        organization_id,
+        depth: int,
+        visited: set[str],
+    ) -> bool:
+        if not isinstance(graph, dict) or graph_has_external_effect(
+            graph,
+            node_side_effect_mapping(),
+        ):
+            return True
+        references = workflow_node_references(graph)
+        if not references:
+            return False
+        if depth >= MAX_WORKFLOW_NODE_DEPTH:
+            return True
+
+        from apps.shared.db.models.workflow_deployment import WorkflowDeployment
+
+        for reference in references:
+            target_key = str(reference.target_app_id)
+            if target_key in visited:
+                return True
+            target_app = (
+                db.query(App)
+                .filter(
+                    App.id == reference.target_app_id,
+                    App.organization_id == organization_id,
+                )
+                .first()
+            )
+            if target_app is None or target_app.active_deployment_id is None:
+                return True
+            target_deployment = (
+                db.query(WorkflowDeployment)
+                .filter(
+                    WorkflowDeployment.id == target_app.active_deployment_id,
+                    WorkflowDeployment.app_id == target_app.id,
+                    WorkflowDeployment.is_active.is_(True),
+                )
+                .first()
+            )
+            if (
+                target_deployment is None
+                or not is_deployment_type_allowed_for_surface(
+                    target_deployment.type,
+                    SURFACE_WORKFLOW_NODE_CHILD_RUN,
+                    policy=get_deployment_runtime_policy(),
+                )
+                or self._legacy_closure_has_external_effect(
+                    db,
+                    target_deployment.graph_snapshot,
+                    organization_id=organization_id,
+                    depth=depth + 1,
+                    visited={*visited, target_key},
+                )
+            ):
+                return True
+        return False
 
     def _borrow_db_session(self):
         session_factory = self.execution_context.get("db_session_factory")

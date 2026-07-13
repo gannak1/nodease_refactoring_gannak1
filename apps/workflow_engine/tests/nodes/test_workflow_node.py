@@ -4,11 +4,17 @@ WorkflowNode 테스트 [GEVENT] Sync 버전
 워크플로우 내에서 다른 워크플로우를 실행하는 WorkflowNode의 동작을 테스트합니다.
 """
 
+import uuid
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
 from apps.shared.db.models.workflow_deployment import DeploymentType
+from apps.shared.domain.workflow_node_binding import (
+    WorkflowNodeBinding,
+    canonical_snapshot_sha256,
+)
+from apps.workflow_engine.domain.execution import NodeExecutionControl
 from apps.workflow_engine.workflow.errors import WorkflowNodeConfigurationError
 from apps.workflow_engine.workflow.nodes.base.entities import NodeStatus
 from apps.workflow_engine.workflow.nodes.workflow import WorkflowNode
@@ -57,6 +63,140 @@ def test_workflow_node_initialization():
     assert len(node.data.inputs) == 2
     assert node.status == NodeStatus.IDLE
     assert node.node_type == "workflowNode"
+
+
+def test_bound_workflow_node_keeps_original_deployment_after_active_change() -> None:
+    organization_id = uuid.uuid4()
+    parent_app_id = uuid.uuid4()
+    target_app_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    bound_deployment_id = uuid.uuid4()
+    active_deployment_id = uuid.uuid4()
+    bound_graph = {
+        "nodes": [{"id": "bound", "type": "startNode", "data": {}}],
+        "edges": [],
+    }
+    active_graph = {
+        "nodes": [{"id": "active", "type": "startNode", "data": {}}],
+        "edges": [],
+    }
+    app = Mock(
+        id=target_app_id,
+        organization_id=organization_id,
+        workflow_id=workflow_id,
+        active_deployment_id=active_deployment_id,
+    )
+    active_deployment = Mock(
+        id=active_deployment_id,
+        app_id=target_app_id,
+        version=2,
+        type=DeploymentType.WORKFLOW_NODE,
+        graph_snapshot=active_graph,
+    )
+    bound_deployment = Mock(
+        id=bound_deployment_id,
+        app_id=target_app_id,
+        version=1,
+        type=DeploymentType.WORKFLOW_NODE,
+        graph_snapshot=bound_graph,
+    )
+    binding = WorkflowNodeBinding(
+        container_path=(),
+        workflow_node_id="workflow-node",
+        target_app_id=target_app_id,
+        deployment_id=bound_deployment_id,
+        deployment_version=1,
+        snapshot_sha256=canonical_snapshot_sha256(bound_graph),
+    )
+    control = NodeExecutionControl(
+        execution_id=uuid.uuid4(),
+        invocation_path_prefix=(),
+        external_effect_context=None,
+        workflow_node_binding=binding,
+    )
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.side_effect = [
+        app,
+        active_deployment,
+        bound_deployment,
+    ]
+    node = WorkflowNode(
+        id="workflow-node",
+        data=WorkflowNodeData(
+            title="Bound child",
+            workflowId=str(workflow_id),
+            appId=str(target_app_id),
+            inputs=[],
+        ),
+        execution_context={
+            "db": db,
+            "organization_id": str(organization_id),
+            "app_id": str(parent_app_id),
+        },
+    )
+
+    with patch(
+        "apps.workflow_engine.workflow.core.workflow_engine.WorkflowEngine"
+    ) as engine_type:
+        engine_type.return_value.execute.return_value = {"answer": "bound"}
+        engine_type.return_value.cleanup = Mock()
+
+        result = node.execute({}, runtime_control=control)
+
+    assert result == {"result": {"answer": "bound"}}
+    assert engine_type.call_args.args[0] == bound_graph
+    assert engine_type.call_args.args[0] != active_graph
+
+
+def test_bound_workflow_node_respects_broken_active_pointer_kill_switch() -> None:
+    organization_id = uuid.uuid4()
+    target_app_id = uuid.uuid4()
+    deployment_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    graph = {"nodes": [], "edges": []}
+    app = Mock(
+        id=target_app_id,
+        organization_id=organization_id,
+        workflow_id=workflow_id,
+        active_deployment_id=uuid.uuid4(),
+    )
+    binding = WorkflowNodeBinding(
+        container_path=(),
+        workflow_node_id="workflow-node",
+        target_app_id=target_app_id,
+        deployment_id=deployment_id,
+        deployment_version=1,
+        snapshot_sha256=canonical_snapshot_sha256(graph),
+    )
+    control = NodeExecutionControl(
+        execution_id=uuid.uuid4(),
+        invocation_path_prefix=(),
+        external_effect_context=None,
+        workflow_node_binding=binding,
+    )
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.side_effect = [app, None]
+    node = WorkflowNode(
+        id="workflow-node",
+        data=WorkflowNodeData(
+            title="Bound child",
+            workflowId=str(workflow_id),
+            appId=str(target_app_id),
+            inputs=[],
+        ),
+        execution_context={
+            "db": db,
+            "organization_id": str(organization_id),
+        },
+    )
+
+    with pytest.raises(
+        WorkflowNodeConfigurationError,
+        match="workflow_node.target_unavailable",
+    ):
+        node.execute({}, runtime_control=control)
+
+    assert db.query.call_count == 2
 
 
 def test_workflow_node_execution_with_input_mapping():
@@ -228,7 +368,7 @@ def test_workflow_node_error_no_active_deployment():
     # When / Then
     with pytest.raises(
         WorkflowNodeConfigurationError,
-        match="has no active deployment",
+        match="workflow_node.target_unavailable",
     ):
         node.execute({})
 
@@ -322,7 +462,7 @@ def test_workflow_node_rejects_active_deployment_without_workflow_node_type():
 
     with pytest.raises(
         WorkflowNodeConfigurationError,
-        match="Active deployment not found",
+        match="workflow_node.target_unavailable",
     ):
         node.execute({})
 

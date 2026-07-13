@@ -7,6 +7,7 @@ import pytest
 from apps.shared.domain.schedule_dispatch import ScheduleDispatchSettings
 from apps.workflow_engine import tasks
 from apps.workflow_engine.application import schedule_dispatch as application
+from apps.workflow_engine.domain.external_effect import ExternalEffectError
 from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
 
 
@@ -338,6 +339,69 @@ def test_scheduled_task_engine_failure_is_finalized_without_celery_retry(
         )
     ]
     _assert_logs_redact(caplog, claim_id, "provider raw detail")
+
+
+def test_scheduled_external_effect_outcome_unknown_uses_existing_claim_reason(
+    monkeypatch,
+):
+    claim_id = uuid.uuid4()
+    task_id = f"schedule:{uuid.uuid4()}"
+    finalized = []
+    signals = []
+
+    class _UseCase:
+        def __init__(self, **kwargs):
+            pass
+
+        def admit(self, **kwargs):
+            return application.ScheduleAdmissionResult(
+                "admitted", plan=_plan(claim_id, task_id)
+            )
+
+        def finalize(self, **kwargs):
+            finalized.append(kwargs["failure_reason"])
+            return True
+
+    monkeypatch.setattr(tasks, "SessionLocal", _Session)
+    monkeypatch.setattr(
+        tasks,
+        "get_schedule_dispatch_settings",
+        lambda: ScheduleDispatchSettings(mode="claim"),
+    )
+    monkeypatch.setattr(application, "ScheduledDeploymentExecutionUseCase", _UseCase)
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.core.workflow_engine.WorkflowEngine",
+        _Engine,
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_sync_knowledge_bases_for_execution_subject",
+        lambda *a, **k: {"skipped": True},
+    )
+    monkeypatch.setattr(
+        tasks,
+        "emit_schedule_dispatch_signal",
+        lambda _logger, event, **kwargs: signals.append((event, kwargs)),
+    )
+    _Engine.error = ExternalEffectError(
+        "external_effect.outcome_unknown",
+        retryable=False,
+        node_id="http-1",
+    )
+    try:
+        with pytest.raises(
+            NonRetryableWorkflowError,
+            match="external_effect.outcome_unknown",
+        ):
+            tasks._execute_scheduled_deployment_claim(
+                str(claim_id),
+                task_id=task_id,
+            )
+    finally:
+        _Engine.error = None
+
+    assert finalized == ["execution_outcome_unknown"]
+    assert signals[0][1]["reason"] == "execution_outcome_unknown"
 
 
 def test_scheduled_task_emits_terminal_budget_admission_signal(monkeypatch):

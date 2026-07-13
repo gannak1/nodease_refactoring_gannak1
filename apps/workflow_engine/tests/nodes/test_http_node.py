@@ -14,7 +14,11 @@ HTTP Request Node 최소 테스트 [GEVENT] Sync 버전
 
 import os
 import sys
+import uuid
 from unittest.mock import Mock, patch
+
+import httpx
+import pytest
 
 # Add project root to sys.path
 sys.path.append(
@@ -22,6 +26,11 @@ sys.path.append(
 )
 
 from apps.workflow_engine.workflow.nodes.base.entities import NodeStatus
+from apps.workflow_engine.domain.execution import NodeExecutionControl
+from apps.workflow_engine.domain.external_effect import (
+    EffectInvocationFailure,
+    ExternalEffectError,
+)
 from apps.workflow_engine.workflow.nodes.http import (
     HttpRequestNode,
     HttpRequestNodeData,
@@ -71,7 +80,7 @@ def test_http_node_basic_get():
         client_instance.request.assert_called_with(
             method="GET",
             url="https://api.example.com/users",
-            headers={},
+            headers=[],
             content=None,
         )
 
@@ -79,6 +88,96 @@ def test_http_node_basic_get():
     assert outputs["status"] == 200
     assert outputs["data"]["id"] == 1
     assert node.status == NodeStatus.COMPLETED
+
+
+def test_legacy_read_only_http_without_publisher_identity_remains_compatible():
+    node = HttpRequestNode(
+        id="http-1",
+        data=HttpRequestNodeData(
+            title="Legacy GET",
+            method=HttpMethod.GET,
+            url="https://api.example.com/users",
+            referenced_variables=[],
+        ),
+    )
+    control = NodeExecutionControl(
+        execution_id=uuid.uuid4(),
+        invocation_path_prefix=(),
+        external_effect_context=None,
+        external_effect_enforced=False,
+    )
+    response = MockResponse(200, {"ok": True})
+
+    with patch("httpx.Client") as mock_client:
+        client = mock_client.return_value
+        client.__enter__ = Mock(return_value=client)
+        client.__exit__ = Mock(return_value=False)
+        client.request = Mock(return_value=response)
+
+        output = node.execute({}, runtime_control=control)
+
+    assert output["data"] == {"ok": True}
+    client.request.assert_called_once()
+
+
+def test_legacy_mutating_http_without_publisher_identity_is_blocked():
+    node = HttpRequestNode(
+        id="http-1",
+        data=HttpRequestNodeData(
+            title="Legacy POST",
+            method=HttpMethod.POST,
+            url="https://api.example.com/items",
+            body='{"value": 1}',
+            referenced_variables=[],
+        ),
+    )
+    control = NodeExecutionControl(
+        execution_id=uuid.uuid4(),
+        invocation_path_prefix=(),
+        external_effect_context=None,
+        external_effect_enforced=False,
+    )
+
+    with (
+        patch("httpx.Client") as mock_client,
+        pytest.raises(ExternalEffectError) as captured,
+    ):
+        node.execute({}, runtime_control=control)
+
+    assert captured.value.code == "external_effect.identity_invalid"
+    mock_client.assert_not_called()
+
+
+def test_failed_http_provider_call_keeps_safe_trace_summary_without_payload():
+    node = HttpRequestNode(
+        id="http-1",
+        data=HttpRequestNodeData(
+            title="POST",
+            method=HttpMethod.POST,
+            url="https://api.example.com/items",
+            body='{"opaque":"request"}',
+            referenced_variables=[],
+        ),
+    )
+    request = httpx.Request("POST", "https://api.example.com/items")
+
+    with (
+        patch("httpx.Client") as mock_client,
+        pytest.raises(EffectInvocationFailure),
+    ):
+        client = mock_client.return_value
+        client.__enter__ = Mock(return_value=client)
+        client.__exit__ = Mock(return_value=False)
+        client.request.side_effect = httpx.ReadTimeout(
+            "opaque provider failure",
+            request=request,
+        )
+        node.execute({})
+
+    assert node._trace_metadata["http"]["method"] == "POST"
+    assert node._trace_metadata["http"]["response_size"] == 0
+    assert "opaque provider failure" not in str(node._trace_metadata)
+    assert "opaque" not in str(node._trace_metadata)
 
 
 def test_http_node_post_with_body():
@@ -141,8 +240,8 @@ def test_http_node_bearer_auth():
 
         # Call check
         call_args = client_instance.request.call_args
-        headers = call_args.kwargs["headers"]
-        assert headers["Authorization"] == "Bearer my-token"
+        headers = dict(call_args.kwargs["headers"])
+        assert headers["authorization"] == "Bearer my-token"
 
     # Then
     assert outputs["status"] == 200

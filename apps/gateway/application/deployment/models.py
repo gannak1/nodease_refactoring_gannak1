@@ -22,6 +22,12 @@ class KnowledgeBaseSnapshot:
 class WorkflowNodeTargetSnapshot:
     app_id: uuid.UUID
     active_graph_snapshot: dict | None
+    organization_id: uuid.UUID | None = None
+    workflow_id: uuid.UUID | None = None
+    deployment_id: uuid.UUID | None = None
+    deployment_version: int | None = None
+    deployment_type: str | None = None
+    active_pointer_valid: bool = False
 
 
 @dataclass(frozen=True)

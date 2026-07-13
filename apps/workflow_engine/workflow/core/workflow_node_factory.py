@@ -107,4 +107,6 @@ class NodeFactory:
 
         NodeClass, DataClass = NodeFactory.NODE_REGISTRY[schema.type]
         data = DataClass(**schema.data)
-        return NodeClass(schema.id, data, execution_context=context)
+        node = NodeClass(schema.id, data, execution_context=context)
+        node.runtime_node_type = schema.type
+        return node

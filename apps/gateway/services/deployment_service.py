@@ -31,10 +31,26 @@ from apps.shared.domain.deployment_runtime_policy import (
     is_deployment_type_allowed_for_surface,
     is_deployment_type_allowed_for_trigger,
 )
+from apps.shared.domain.external_effect_error import (
+    safe_external_effect_error_payload,
+)
 from apps.shared.schemas.deployment import DeploymentCreate, DeploymentPreflightResponse
 from apps.shared.services.permissions import has_workflow_permission
+from apps.shared.services.workflow_task_publisher import send_workflow_task
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_deployment_error_detail(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return "Workflow execution failed"
+    code = value.get("code")
+    if isinstance(code, str) and code.startswith("external_effect."):
+        return (
+            safe_external_effect_error_payload(value)
+            or "Workflow execution failed"
+        )
+    return value
 
 
 def _deployment_type_allowed_for_slug_trigger(
@@ -102,6 +118,11 @@ class DeploymentService:
             db,
             workflow.id,
             deployment_in.graph_snapshot,
+        )
+        graph_snapshot = DeploymentService.bind_workflow_node_targets(
+            db,
+            graph_snapshot,
+            app=app,
         )
         WorkflowService.validate_mail_credential_references(
             db,
@@ -277,6 +298,32 @@ class DeploymentService:
                 detail="Cannot deploy workflow without graph data. Please save the workflow first.",
             )
         return graph_snapshot
+
+    @staticmethod
+    def bind_workflow_node_targets(
+        db: Session,
+        graph_snapshot: dict,
+        *,
+        app: App,
+    ) -> dict:
+        from apps.gateway.composition.deployment import (
+            build_workflow_node_binding_use_case,
+        )
+        from apps.shared.domain.workflow_node_binding import WorkflowNodeBindingError
+
+        try:
+            return build_workflow_node_binding_use_case(
+                db,
+                organization_id=app.organization_id,
+            ).bind_graph(graph_snapshot, root_app_id=app.id)
+        except WorkflowNodeBindingError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": exc.code,
+                    "message": "Workflow-node target could not be fixed for execution.",
+                },
+            ) from None
 
     @staticmethod
     def list_deployments(
@@ -663,7 +710,8 @@ class DeploymentService:
                 }
 
             # Celery 태스크 호출 (workflow.execute)
-            task = celery_app.send_task(
+            task = send_workflow_task(
+                celery_app,
                 "workflow.execute",
                 args=[graph_data, dispatch_inputs, execution_context],
                 kwargs={"is_deployed": True},
@@ -697,7 +745,8 @@ class DeploymentService:
             if result.get("status") == "success":
                 return {"status": "success", "results": result.get("result", {})}
             else:
-                raise HTTPException(status_code=500, detail="Workflow execution failed")
+                detail = _safe_deployment_error_detail(result.get("error"))
+                raise HTTPException(status_code=500, detail=detail)
 
         except TimeoutError as e:
             logger.warning(

@@ -1,7 +1,6 @@
 # Workflow API Spec
 
 Status: Draft
-Verified Against: feature/mba-216 @ 745d9071
 
 ## Endpoints
 
@@ -27,7 +26,7 @@ Workflow test stream은 별도 계약 전 Conversation Memory session을 자동 
 
 Workflow run list/detail 또는 node execution log가 run actor를 포함하는 경우 `user_id`는 `UUID | null`이다. Null은 canonical schedule claim에서 내부 입력 `schedule`이 저장 계약 `trigger_mode="scheduler"`로 정규화된 system execution에서만 허용한다. Client는 null을 App creator로 대체하지 않고 actor를 표시하는 화면에서는 `System`으로 표현한다. Manual/API/webhook 등 기존 user-attributed run의 non-null 계약은 유지한다.
 
-Schedule claim id, idempotency key와 outcome review state는 public workflow API response에 추가하지 않는다. Internal Worker correlation은 user-visible output이나 raw durable trace에 포함하지 않는다.
+Schedule claim id, external-effect 내부 identity, provider-visible idempotency key와 outcome review state는 public workflow API response에 추가하지 않는다. Internal Worker correlation은 user-visible output이나 raw durable trace에 포함하지 않는다.
 
 ### 1. 실행 편의성
 
@@ -36,7 +35,7 @@ Schedule claim id, idempotency key와 outcome review state는 public workflow AP
   - `node_start`: `{ node_id }`
   - `node_finish`: `{ node_id, node_type, output, latency_ms, total_tokens, total_cost }`
   - `workflow_finish`: 최종 workflow output
-  - `error`: `{ message, node_id? }`
+  - `error`: `{ message, node_id?, code?, retryable? }`. 기존 오류는 선택 필드를 생략할 수 있지만, MBA-190의 `external_effect.result_unavailable`, `external_effect.identity_conflict`, `external_effect.outcome_unknown`은 `code`와 `retryable=false`를 반드시 포함한다.
 - Gateway는 `X-Organization-Id`가 전달된 테스트 실행 요청에서 active organization membership을 검증하고, 해당 organization이 workflow의 organization과 다르면 scope 밖 resource로 보고 `404`로 숨긴다. Header가 없는 legacy 호출은 기존 workflow row organization 기준 permission check를 유지한다.
 - `node_finish` 이벤트의 node-level summary 표준 필드:
   - `latency_ms`: 노드 실행 소요 시간. 서버/엔진 기준 millisecond 단위 값.
@@ -203,6 +202,24 @@ Example detail response:
 - workflow execute 권한이 없으면 403으로 거부한다.
 - workflow가 active organization scope 밖이면 404로 숨긴다.
 - 스트리밍 중 노드 오류가 발생하면 `error` 이벤트에 `node_id`가 포함될 수 있으며, 프론트는 해당 노드를 실패로 표시한다.
+
+### MBA-190 외부 부수효과 안전 종료
+
+- MBA-190은 신규 endpoint를 추가하거나 성공 응답의 node output schema를 바꾸지 않는다.
+- WorkflowNode target deployment binding은 server-owned internal command/snapshot metadata이며 request field나 response field가 아니다. Client가 같은 이름의 graph metadata를 보내도 서버가 제거·재계산하고 draft/deployment graph 조회, node output, SSE, 오류 응답에 반환하지 않는다.
+- `execution_id`, `node_invocation_id`, `effect_input_digest`, provider-visible key와 key fingerprint는 어떤 MBA-190 API/SSE payload에도 추가하지 않는다.
+- 외부 작업의 성공 사실은 저장돼 있지만 안전하게 재사용할 node 결과가 없는 중복 전달은 provider를 다시 호출하지 않고 기존 실행 실패 경로로 종료한다.
+- 같은 external effect identity로 재진입했지만 provider, operation, contract version, 두 지원 수준 또는 `effect_input_digest`가 최초 attempt와 다르면 provider나 저장 결과를 사용하지 않고 `external_effect.identity_conflict`로 종료한다.
+- Provider effect 생성 여부가 불명확하고 frozen replay capability가 `unsupported|unknown`이거나 replay deadline이 끝났으면 provider를 다시 호출하지 않고 `external_effect.outcome_unknown`으로 종료한다.
+- Frozen decision이 `replay_same_key`여도 기존 Celery retry budget이 소진되면 ledger decision을 `stop`으로 닫고 기존 safe error 원인은 보존하며 API에는 `external_effect.outcome_unknown`, `retryable=false`를 반환한다. `retry_before_effect` budget 소진은 provider를 호출하지 않고 기존 allowlisted safe provider failure를 사용한다.
+- 스트리밍 실행의 `error` 이벤트는 최소 고정 code인 `external_effect.result_unavailable`, `external_effect.identity_conflict`, `external_effect.outcome_unknown` 중 해당 값, digest를 만들 수 없는 준비 실패의 `external_effect.prepare_failed`, claim/repository 대기 재시도 소진의 `external_effect.claim_wait`, 또는 `failed_before_effect + stop`의 기존 allowlisted provider/configuration code를 전달할 수 있다. 모든 경우 safe `message`, terminal 오류의 `retryable=false`와 해당 node를 식별할 수 있을 때 `node_id`를 함께 포함한다.
+- 스트리밍이 아닌 Celery task는 non-retryable 외부 effect 오류를 `{"status":"error","error":<safe payload>}` 내부 JSON-safe result로 반환한다. `POST /api/v1/workflows/{workflow_id}/execute`, `POST /api/v1/deployments/{deployment_id}/run`, `POST /api/v1/run/{url_slug}`, `POST /api/v1/run-public/{url_slug}`은 기존 실패 status `500`과 top-level `detail` envelope을 유지하고 그 안에 `code`, `message`, `retryable=false`, optional `node_id`를 mapping한다.
+- `POST /api/v1/workflows/{workflow_id}/compare`는 기존처럼 HTTP `200` 안에서 해당 variant를 `status=failed`로 두고 기존 `error` 문자열에 safe message, additive `error_detail`에 safe payload를 넣는다. `POST /api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/compare`도 HTTP `200` experiment response 안의 해당 candidate에 기존 `error_message`와 additive `error_detail`을 사용한다. 이 두 additive field를 화면에 표시하는 UI 변경은 MBA-190 범위가 아니다.
+- Webhook은 provider 처리 전 접수 응답을 그대로 유지하고 사후 external-effect 실패로 응답을 바꾸지 않는다. Caller가 사용하지 않는 Celery result에는 safe payload를 보존하고 raw provider 오류를 log하지 않는다. Schedule claim에는 새 `external_effect.*` reason을 추가하지 않는다. `external_effect.outcome_unknown`은 기존 `execution_outcome_unknown`, `external_effect.result_unavailable`과 `external_effect.identity_conflict`는 기존 `execution_failed_after_admission`으로 finalization한다. 구체 code는 task-local safe error와 허용된 trace에 두고 claim이나 identity-conflict winner row를 덮어쓰지 않는다. Terminal attempt에 적용 가능한 allowlisted `error_code`는 저장할 수 있다. Schedule claim 상태와 retry 계약은 바꾸지 않는다.
+- Node/application error, Workflow Engine, Celery task result, Pub/Sub와 Gateway는 오류를 단순 message 문자열이나 custom exception attribute로만 전달하지 않고 네 필드를 끝까지 보존한다. Non-retryable 오류에는 generic Celery retry를 호출하지 않는다.
+- 세 최소 고정 code의 `message`는 결과를 안전하게 다시 제공할 수 없음, 실행 내용이 최초 attempt와 일치하지 않음, 또는 외부 작업 결과를 확인할 수 없음 중 해당하는 일반 문구만 사용한다. 다른 allowlisted provider/configuration code도 code-owned 일반 문구만 사용한다. Provider 원본 응답, 요청 본문/header, `effect_input_digest`, 내부 identity, provider-visible key와 provider exception 원문은 포함하지 않는다.
+- `external_effect.retry_allowed`는 Worker 내부 재시도 제어 신호이며 public error allowlist에 포함하지 않는다. Gateway는 모든 동기 실행, deployment/public URL, Compare/Cost Optimizer와 SSE에서 public allowlist와 `retryable=false`를 함께 검증하고, 조건을 만족하지 않는 `external_effect.*` payload를 기존 generic 실행 실패로 치환한다.
+- Celery serialization/broker publish 실패도 각 endpoint의 기존 HTTP status와 실패 envelope을 유지하되 raw exception message, traceback, graph/input/context 또는 credential marker를 응답과 log에 넣지 않는다. MBA-190은 이를 위한 새 public error code를 추가하지 않고 기존 generic publish/execution failure를 code-owned 일반 문구로 반환한다.
 
 ### 4. 노드 실행 기록 패널 추가
 

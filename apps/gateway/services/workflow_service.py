@@ -492,7 +492,11 @@ class WorkflowService:
         # workflow.graph는 DB의 JSONB 타입 컬럼이며, 파이썬에서는 딕셔너리(dict)로 변환되어 반환됩니다.
         # 구조 예시: {"nodes": [...], "edges": [...], "viewport": {...}}
         # 이 데이터는 WorkflowEngine의 초기화 인자로 전달되어 실행에 사용됩니다.
-        data = workflow.graph if workflow.graph else {}
+        from apps.shared.domain.workflow_node_binding import (
+            strip_workflow_node_bindings,
+        )
+
+        data = strip_workflow_node_bindings(workflow.graph)
 
         if workflow.features:
             data["features"] = workflow.features

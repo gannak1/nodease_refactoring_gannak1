@@ -23,6 +23,7 @@ from apps.shared.domain.deployment_runtime_policy import (
     is_deployment_type_allowed_for_surface,
 )
 from apps.shared.db.session import get_db
+from apps.shared.services.workflow_task_publisher import send_workflow_task
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -285,14 +286,17 @@ def run_webhook_workflow(
 
         # Celery 태스크로 워크플로우 실행 위임 (비동기, 결과 대기 안 함)
         # 배포 그래프 데이터는 Celery Worker에서 조회
-        celery_app.send_task(
+        send_workflow_task(
+            celery_app,
             "workflow.execute_by_deployment",
             args=[deployment_id, payload, execution_context],
         )
 
-    except Exception as e:
-        logger.error(f"[Webhook Error] Failed to send Celery task: {str(e)}")
-        logger.exception("Failed to send Celery task")
+    except Exception as exc:
+        logger.error(
+            "Webhook workflow publish failed: error_type=%s",
+            type(exc).__name__,
+        )
 
 
 @router.post("/hooks/{url_slug}")

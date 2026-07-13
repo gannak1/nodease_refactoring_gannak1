@@ -4,8 +4,8 @@ import json
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
-
 
 _CATALOG_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "workflow_node_catalog.json"
@@ -85,6 +85,15 @@ def agent_builder_supported_capabilities() -> set[str]:
         and node.get("agent_builder_supported") is True
         for capability in node.get("capabilities") or []
     }
+
+
+def node_side_effect_mapping():
+    return MappingProxyType(
+        {
+            str(node["node_type"]): str(node.get("side_effect") or "external_write")
+            for node in load_workflow_node_catalog()["nodes"]
+        }
+    )
 
 
 def node_type_for_capability(capability: str) -> str | None:

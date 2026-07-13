@@ -1,3 +1,4 @@
+import logging
 from typing import Any, Dict, List, Literal, Optional
 
 from jinja2 import BaseLoader, Environment, TemplateSyntaxError, UndefinedError
@@ -5,6 +6,11 @@ from pydantic import BaseModel, Field
 
 from apps.workflow_engine.workflow.nodes.base.entities import BaseNodeData
 from apps.workflow_engine.workflow.nodes.base.node import Node
+from apps.shared.domain.workflow_execution_identity import InvocationSegment
+from apps.workflow_engine.domain.external_effect import ExternalEffectError
+
+
+logger = logging.getLogger(__name__)
 
 
 class LoopNodeInput(BaseModel):
@@ -59,7 +65,7 @@ class LoopNode(Node[LoopNodeData]):
             loader=BaseLoader(),
             autoescape=False,  # 자동 이스케이프 비활성화
         )
-        self._subgraph_engine = None  # 재사용할 엔진
+        self._subgraph_engine = None
 
     def _render_template(self, template: str, context: Dict[str, Any]) -> Any:
         """
@@ -137,9 +143,14 @@ class LoopNode(Node[LoopNodeData]):
                 )
 
                 # 서브그래프 실행 (스코프 기반, 동기)
-                result = self._execute_subgraph_scoped(context)
+                result = self._execute_subgraph_scoped(
+                    context,
+                    iteration_index=iteration_count,
+                )
                 results.append(result)
 
+            except ExternalEffectError:
+                raise
             except Exception as e:
                 # 오류 처리 전략 적용
                 if self.data.error_strategy == "end":
@@ -175,7 +186,12 @@ class LoopNode(Node[LoopNodeData]):
             # 암시적: 모든 외부 변수 전달
             return inputs.copy()
 
-    def _execute_subgraph_scoped(self, context: Dict[str, Any]) -> Dict[str, Any]:
+    def _execute_subgraph_scoped(
+        self,
+        context: Dict[str, Any],
+        *,
+        iteration_index: int,
+    ) -> Dict[str, Any]:
         """
         스코프 기반 서브그래프 실행.
 
@@ -185,26 +201,52 @@ class LoopNode(Node[LoopNodeData]):
         """
         from apps.workflow_engine.workflow.core.workflow_engine import WorkflowEngine
 
-        # 첫 실행 시에만 엔진 생성
-        if self._subgraph_engine is None:
-            self._subgraph_engine = WorkflowEngine(
-                graph={
-                    "nodes": self.data.subGraph["nodes"],
-                    "edges": self.data.subGraph.get("edges", []),
-                },
-                user_input=context,
-                execution_context=self.execution_context.copy(),
-                is_deployed=False,
-                db=self.execution_context.get("db"),
-                workflow_timeout=300,
+        control = self._runtime_control
+        execution_id = control.execution_id if control is not None else None
+        invocation_path_prefix = None
+        if control is not None:
+            invocation_path_prefix = control.invocation_path_prefix + (
+                InvocationSegment("loop", self.id, str(iteration_index)),
             )
-
-        # 컨텍스트 업데이트 (스코프 변경)
-        self._subgraph_engine.user_input = context
-
-        # 실행
-        result = self._subgraph_engine.execute()
-        return result
+        engine = WorkflowEngine(
+            graph={
+                "nodes": self.data.subGraph["nodes"],
+                "edges": self.data.subGraph.get("edges", []),
+            },
+            user_input=context,
+            execution_context=self.execution_context.copy(),
+            is_deployed=False,
+            db=self.execution_context.get("db"),
+            workflow_timeout=300,
+            execution_id=execution_id,
+            invocation_path_prefix=invocation_path_prefix,
+            workflow_node_bindings=(
+                control.workflow_node_bindings if control is not None else None
+            ),
+            binding_container_path=(
+                control.binding_container_path + (("loop", self.id),)
+                if control is not None
+                else ()
+            ),
+            task_deadline=control.task_deadline if control is not None else None,
+        )
+        self._subgraph_engine = engine
+        try:
+            result = engine.execute()
+            if engine._external_effect_output_sensitive:
+                self._trace_metadata = {
+                    "external_effect_output": {"sensitive": True}
+                }
+            return result
+        finally:
+            try:
+                engine.cleanup()
+            except Exception as exc:
+                logger.warning(
+                    "Loop child cleanup failed: error_type=%s",
+                    type(exc).__name__,
+                )
+            self._subgraph_engine = None
 
     def _resolve_variable(
         self, value_selector: List[str], inputs: Dict[str, Any]

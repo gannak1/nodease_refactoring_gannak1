@@ -25,3 +25,10 @@ class DeploymentPreflightRepository(Protocol):
         app_id: uuid.UUID,
         organization_id: uuid.UUID | None,
     ) -> WorkflowNodeTargetSnapshot | None: ...
+
+    def get_workflow_node_deployment(
+        self,
+        app_id: uuid.UUID,
+        deployment_id: uuid.UUID,
+        organization_id: uuid.UUID | None,
+    ) -> WorkflowNodeTargetSnapshot | None: ...

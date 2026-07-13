@@ -29,12 +29,15 @@ def test_schedule_publisher_sends_only_claim_locator_with_deterministic_task_id(
     assert celery.calls == [
         (
             ("workflow.execute_scheduled_deployment",),
-            {
-                "args": [str(request.claim_id)],
-                "task_id": request.task_id,
-                "retry": False,
-                "ignore_result": True,
-            },
+                {
+                    "args": [str(request.claim_id)],
+                    "kwargs": {},
+                    "task_id": request.task_id,
+                    "retry": False,
+                    "ignore_result": True,
+                    "argsrepr": "[workflow arguments redacted]",
+                    "kwargsrepr": "{workflow arguments redacted}",
+                },
         )
     ]
     assert request.lease_owner not in str(celery.calls)

@@ -16,8 +16,15 @@ class FakeCeleryApp:
     def __init__(self):
         self.calls = []
 
-    def send_task(self, name, args=None, kwargs=None):
-        self.calls.append({"name": name, "args": args or [], "kwargs": kwargs or {}})
+    def send_task(self, name, args=None, kwargs=None, **options):
+        self.calls.append(
+            {
+                "name": name,
+                "args": args or [],
+                "kwargs": kwargs or {},
+                "options": options,
+            }
+        )
         return FakeTask()
 
 

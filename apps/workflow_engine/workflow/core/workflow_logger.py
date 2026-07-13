@@ -20,6 +20,11 @@ from typing import Any, Dict, Optional
 
 from apps.shared.celery_app import celery_app
 from apps.shared.db.session import SessionLocal
+from apps.shared.services.external_effect_trace_capture import (
+    defers_provider_capture_until_finish,
+    durable_provider_summary,
+    uses_metadata_only_provider_capture,
+)
 from apps.shared.services.tracing.metadata import TraceMetadataSanitizer
 from apps.shared.services.tracing.mail_payload import sanitize_mail_trace_payload
 from apps.shared.services.tracing.payload import TracePayloadService
@@ -339,14 +344,19 @@ class WorkflowLogger:
 
         # [FIX] Deterministic Log ID 생성
         log_id = uuid.uuid4()
+        metadata_only = uses_metadata_only_provider_capture(node_type, process_data)
+        deferred_capture = defers_provider_capture_until_finish(node_type)
+        suppress_initial_payload = metadata_only or deferred_capture
         trace_inputs = sanitize_mail_trace_payload(
             node_type=node_type,
             payload_kind="input",
-            value=inputs,
+            value={} if suppress_initial_payload else inputs,
             mail_sensitive_lineage=mail_sensitive_lineage,
         )
         payload_records, summary, policy_context = self._prepare_payloads(
-            [
+            []
+            if deferred_capture
+            else [
                 {
                     "payload_kind": "input",
                     "payload": trace_inputs,
@@ -365,8 +375,12 @@ class WorkflowLogger:
             redacted_inputs = self._redact_compat_value(
                 trace_inputs, payload_kind="input", app_id=self.app_id
             )
-        redacted_process_data = self._redact_compat_value(
-            process_data or {}, payload_kind="process_data", app_id=self.app_id
+        redacted_process_data = (
+            {}
+            if suppress_initial_payload
+            else self._redact_compat_value(
+                process_data or {}, payload_kind="process_data", app_id=self.app_id
+            )
         )
 
         data = {
@@ -407,8 +421,19 @@ class WorkflowLogger:
         if not self.workflow_run_id or not log_id:
             return
 
+        provider_summary = durable_provider_summary(
+            node_type=node_type,
+            process_data=process_data,
+            trace_metadata=trace_metadata,
+        )
+        metadata_only = provider_summary is not None
+        deferred_capture = defers_provider_capture_until_finish(node_type)
         normalized_outputs = (
-            outputs if isinstance(outputs, dict) else {"result": outputs}
+            provider_summary
+            if provider_summary is not None
+            else outputs
+            if isinstance(outputs, dict)
+            else {"result": outputs}
         )
         trace_outputs = sanitize_mail_trace_payload(
             node_type=node_type,
@@ -424,7 +449,21 @@ class WorkflowLogger:
                 "workflow_node_run_id": log_id,
             }
         ]
-        if not mail_sensitive_lineage:
+        if deferred_capture and not metadata_only:
+            payload_items.append(
+                {
+                    "payload_kind": "input",
+                    "payload": sanitize_mail_trace_payload(
+                        node_type=node_type,
+                        payload_kind="input",
+                        value=inputs or {},
+                        mail_sensitive_lineage=mail_sensitive_lineage,
+                    ),
+                    "scope": "span",
+                    "workflow_node_run_id": log_id,
+                }
+            )
+        if not mail_sensitive_lineage and not metadata_only:
             payload_items.extend(trace_payloads or [])
         payload_records, summary, _ = self._prepare_payloads(
             payload_items,
@@ -442,14 +481,18 @@ class WorkflowLogger:
         trace_inputs = sanitize_mail_trace_payload(
             node_type=node_type,
             payload_kind="input",
-            value=inputs or {},
+            value={} if metadata_only else inputs or {},
             mail_sensitive_lineage=mail_sensitive_lineage,
         )
         redacted_inputs = self._redact_compat_value(
             trace_inputs, payload_kind="input", app_id=self.app_id
         )
-        redacted_process_data = self._redact_compat_value(
-            process_data or {}, payload_kind="process_data", app_id=self.app_id
+        redacted_process_data = (
+            {}
+            if metadata_only
+            else self._redact_compat_value(
+                process_data or {}, payload_kind="process_data", app_id=self.app_id
+            )
         )
         enriched_metadata = self._metadata_with_payload_refs(
             trace_metadata, payload_records
@@ -457,6 +500,8 @@ class WorkflowLogger:
         sanitized_metadata = TraceMetadataSanitizer.sanitize_span_metadata(
             node_type, enriched_metadata
         )
+        if metadata_only:
+            sanitized_metadata["external_effect_output"] = {"sensitive": True}
 
         data = {
             "log_id": log_id,
@@ -502,21 +547,37 @@ class WorkflowLogger:
         if not self.workflow_run_id or not log_id:
             return
 
+        sensitive_output = uses_metadata_only_provider_capture(
+            node_type,
+            process_data,
+            trace_metadata,
+        )
+        metadata_only = defers_provider_capture_until_finish(node_type) or sensitive_output
         trace_inputs = sanitize_mail_trace_payload(
             node_type=node_type,
             payload_kind="input",
-            value=inputs or {},
+            value={} if metadata_only else inputs or {},
             mail_sensitive_lineage=mail_sensitive_lineage,
         )
         redacted_inputs = self._redact_compat_value(
             trace_inputs, payload_kind="input", app_id=self.app_id
         )
-        redacted_process_data = self._redact_compat_value(
-            process_data or {}, payload_kind="process_data", app_id=self.app_id
+        redacted_process_data = (
+            {}
+            if metadata_only
+            else self._redact_compat_value(
+                process_data or {}, payload_kind="process_data", app_id=self.app_id
+            )
         )
         redacted_error = self._redact_compat_value(
             error_message, payload_kind="error", app_id=self.app_id
         )
+
+        sanitized_metadata = TraceMetadataSanitizer.sanitize_span_metadata(
+            node_type, trace_metadata or {}
+        )
+        if sensitive_output:
+            sanitized_metadata["external_effect_output"] = {"sensitive": True}
 
         data = {
             "log_id": log_id,
@@ -534,9 +595,7 @@ class WorkflowLogger:
                 if started_at
                 else None
             ),
-            "trace_metadata": TraceMetadataSanitizer.sanitize_span_metadata(
-                node_type, trace_metadata or {}
-            ),
+            "trace_metadata": sanitized_metadata,
             "sequence": sequence,
             "retry_count": retry_count,
         }

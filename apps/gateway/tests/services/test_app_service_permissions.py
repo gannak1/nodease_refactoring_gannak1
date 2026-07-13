@@ -290,3 +290,20 @@ def test_clone_app_rejects_cross_app_active_deployment_pointer(monkeypatch):
             uuid.uuid4(),
             organization_id=uuid.uuid4(),
         )
+
+
+def test_clone_graph_cleanup_removes_workflow_node_binding_metadata():
+    cleaned = AppService._clean_graph_data(
+        {
+            "nodes": [],
+            "edges": [],
+            "_nodease_runtime": {
+                "workflow_node_bindings": {
+                    "version": "workflow-node-bindings.v1",
+                    "entries": [],
+                }
+            },
+        }
+    )
+
+    assert "_nodease_runtime" not in cleaned

@@ -201,6 +201,17 @@ Status: Draft
 | Admin Dashboard | Organization 관리자와 권한을 가진 감사자가 audit log, LLM usage/cost, 사용자 접근 상태를 확인하는 운영 화면이다. Security Alert 탭의 조회·상태 변경은 현재 organization owner/manager에게만 허용하며 audit 전용 권한과 구분한다. |
 | Gateway | `apps/gateway/` FastAPI 서비스. 인증된 API 진입점과 resource permission enforcement 경계다. |
 | Workflow Engine | `apps/workflow_engine/` Celery worker. Workflow 실행과 node runtime을 담당한다. |
+| External Effect | Workflow node가 Nodease 밖의 상태를 바꾸는 작업이다. 같은 logical 실행의 중복 전달이나 재시도에서 이 작업이 다시 수행되지 않도록 [ADR-0035](decisions/ADR-0035-external-effect-idempotency-boundary.md)의 영속 기록, 외부 서비스 중복 방지 지원 수준과 결과 재사용 지원 수준을 적용한다. |
+| External Effect Slot | 한 node invocation에서 provider에 보내려 한 외부 작업의 안정된 자리다. Organization scope 안의 `execution_id + node_invocation_id + effect_sequence`로 DB에서 하나만 허용하며, `effect_sequence`는 operation과 무관한 0-based 순번이다. Operation이 재시도 중 바뀌어도 새 자리로 우회하지 못한다. |
+| External Effect Attempt | 하나의 External Effect 수행 여부를 판단하기 위해 External Effect Slot에 영속적으로 저장하는 기록이다. Full logical identity에는 slot과 frozen `operation`이 포함되며 현재 node의 App/Workflow provenance, 준비, 외부 서비스 호출 시작, 최종 결과, 당시 provider contract, effect input digest와 안전한 자동 재호출 마지막 시각을 보존한다. Raw 외부 서비스 요청·응답 저장소는 아니다. |
+| Provider Contract Profile | 특정 외부 서비스 operation의 중복 방지와 결과 재사용 계약을 version별로 고정한 정적 정보다. Key 전달 위치·header 이름 또는 body JSON Pointer·형식·최대 길이·보존 기간, effect success/rejection과 duplicate 응답 의미, 공식 문서 근거를 포함한다. 확인되지 않은 값은 추측하지 않으며 이미 사용한 version은 의미를 바꾸거나 제거하지 않고 새 version만 추가한다. |
+| Provider Replay Capability | 결과가 불명확한 외부 서비스 호출을 최초 key로 안전하게 다시 호출할 수 있는지를 나타내는 지원 수준이다. 공식 계약과 통합 테스트가 있으면 `supported`, 지원하지 않음이 확인되면 `unsupported`, 충분히 검증되지 않았으면 `unknown`이다. `unknown`은 자동 재호출을 막는다. Generic HTTP에 사용자가 idempotency header를 입력한 것만으로 `supported`가 되지 않는다. |
+| Replay Deadline | External Effect Attempt를 만들 때 DB 시각과 당시 Provider Contract Profile의 보존 기간으로 확정하는 자동 재호출 마지막 시각이다. 이후 배포의 현재 규칙으로 다시 계산하지 않으며 경계 시각부터 외부 서비스 자동 재호출을 금지한다. |
+| Result Reuse Capability | 성공한 node 결과를 민감한 원문 없이 안전하게 저장해 중복 전달에서 다시 반환할 수 있는지를 나타내는 지원 수준이다. 가능하면 `supported`, 불가능하면 `unavailable`이며, `unavailable`인 성공 실행의 중복 전달은 외부 서비스를 다시 호출하지 않고 `external_effect.result_unavailable` 오류로 종료한다. |
+| Execution ID | 하나의 logical workflow 실행을 식별하는 server-issued UUID다. Draft test, 배포/API/public/webhook, schedule, stream, subworkflow와 compare 실행에 공통으로 사용하고 Celery 재시도나 중복 전달에서도 유지하며 `workflow_run_id`와 같은 관찰용 식별자와 구분한다. |
+| Node Invocation ID | logical workflow 실행 안에서 실제 node 호출 한 번을 식별하는 server-issued UUID다. Loop 반복과 subworkflow 호출 경로마다 다르게 발급하고, 같은 호출의 재시도에서는 유지한다. |
+| External Effect Context | 외부 작업을 안전하게 기록하기 위해 Runtime이 내부에서만 전달하는 불변 값이다. 검증된 Organization/App/Workflow와 Execution/Node Invocation 식별자를 담으며 일반 workflow input, template, LLM prompt/tool input이나 node output에 합치지 않는다. |
+| WorkflowNode Target Binding | Parent workflow의 retry나 duplicate delivery가 child app의 새 active deployment를 선택하지 않도록, server가 최초 command 또는 immutable deployment snapshot에 고정하는 target deployment ID/version/snapshot hash 정보다. Client 입력이나 public graph 응답이 아니며 Runtime이 canonical DB snapshot과 다시 검증한다. |
 | Log System | `apps/log_system/` Celery worker. audit/trace/log 계열 비동기 처리를 담당한다. |
 | Sandbox | `apps/sandbox/` NSJail 기반 격리 코드 실행 서비스. |
 | Shared | `apps/shared/` 공통 패키지. DB model, schema, permission service, llm_client, tracing/audit utility를 포함한다. |

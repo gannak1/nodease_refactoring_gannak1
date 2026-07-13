@@ -6,6 +6,10 @@ from jinja2 import Environment
 
 from apps.workflow_engine.workflow.nodes.base.node import Node
 from apps.workflow_engine.workflow.nodes.github.entities import GithubNodeData
+from apps.workflow_engine.adapters.providers.github import (
+    GithubCommentEffectAdapter,
+    GithubCommentRequest,
+)
 
 _jinja_env = Environment(autoescape=False)
 
@@ -65,6 +69,7 @@ class GithubNode(Node[GithubNodeData]):
             action = data.action
 
             if action == "get_pr":
+                self._guard_read_only_effect_slot()
                 # PR 정보 가져오기
                 pr_response = requests.get(
                     f"{base_url}/pulls/{pr_number}",
@@ -112,6 +117,22 @@ class GithubNode(Node[GithubNodeData]):
 
                 if not comment_body:
                     raise ValueError("댓글 내용이 비어있습니다.")
+
+                if self._runtime_control is not None:
+                    adapter = GithubCommentEffectAdapter()
+                    output = self._run_external_effect(
+                        adapter,
+                        GithubCommentRequest(
+                            token=token,
+                            repo_owner=repo_owner,
+                            repo_name=repo_name,
+                            pr_number=pr_number,
+                            comment_body=comment_body,
+                        ),
+                    )
+                    self._capture_provider_trace(adapter)
+                    self._trace_payloads = []
+                    return output
 
                 # Issue comments API 사용 (PR은 내부적으로 Issue)
                 comment_response = requests.post(

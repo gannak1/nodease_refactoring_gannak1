@@ -363,6 +363,9 @@ class TestModelRoutingPolicyApi:
         send_task.assert_called_once_with(
             "workflow.model_routing.refresh_policy",
             args=[str(policy.id), "manual_refresh"],
+            kwargs={},
+            argsrepr="[workflow arguments redacted]",
+            kwargsrepr="{workflow arguments redacted}",
         )
 
     def test_fr11_manual_refresh_restores_policy_when_broker_publish_fails(self):
@@ -449,6 +452,9 @@ class TestModelRoutingPolicyApi:
         send_task.assert_called_once_with(
             "workflow.model_routing.refresh_policy",
             args=[str(policy.id), "manual_refresh"],
+            kwargs={},
+            argsrepr="[workflow arguments redacted]",
+            kwargsrepr="{workflow arguments redacted}",
         )
         db.commit.assert_not_called()
 
@@ -1811,7 +1817,7 @@ class TestCostOptimizerCompareApi:
                     },
                 }
 
-        def fake_send_task(name, args, kwargs=None):
+        def fake_send_task(name, args, kwargs=None, **options):
             sent_tasks.append({"name": name, "args": args, "kwargs": kwargs or {}})
             return FakeTask()
 
@@ -2025,7 +2031,7 @@ class TestCostOptimizerCompareApi:
                     },
                 }
 
-        def fake_send_task(name, args, kwargs):
+        def fake_send_task(name, args, kwargs, **options):
             sent_tasks.append({"name": name, "args": args, "kwargs": kwargs})
             return FakeTask()
 
@@ -2650,7 +2656,7 @@ class TestCostOptimizerCompareApi:
                     },
                 }
 
-        def fake_send_task(name, args, kwargs=None):
+        def fake_send_task(name, args, kwargs=None, **options):
             sent_tasks.append({"name": name, "args": args, "kwargs": kwargs or {}})
             return FakeTask()
 
@@ -2808,7 +2814,8 @@ class TestCostOptimizerCompareApi:
         payload = response.json()
         assert payload["baseline"]["baseline_id"] == str(baseline_id)
         assert payload["candidate"]["status"] == "failed"
-        assert "candidate execution timed out" in payload["candidate"]["error_message"]
+        assert payload["candidate"]["error_message"] == "workflow.execution_failed"
+        assert payload["candidate"]["error_detail"] is None
         experiment = next(
             item for item in added if isinstance(item, CostOptimizerExperiment)
         )

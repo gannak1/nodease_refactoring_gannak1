@@ -26,6 +26,9 @@ EXPECTED_IMPLEMENTED_NODE_TYPES = {
     "workflowNode",
 }
 EXPECTED_AGENT_BUILDER_NODE_TYPES = EXPECTED_IMPLEMENTED_NODE_TYPES - {"loopNode"}
+COMMON_EXTERNAL_EFFECT_NODES = {"httpRequestNode", "slackPostNode", "githubNode"}
+MAIL_LEDGER_EXTERNAL_EFFECT_NODES = {"gmailDraftNode", "mailAcknowledgeNode"}
+FAIL_CLOSED_EXTERNAL_EFFECT_NODES = {"pluginNode"}
 
 
 def test_workflow_node_catalog_excludes_product_unavailable_nodes_from_builder_allowlist():
@@ -54,6 +57,21 @@ def test_workflow_node_catalog_declares_safe_generation_contract_for_every_node(
             assert set(node["required_configuration"]) <= set(
                 node.get("configuration_labels") or {}
             )
+
+
+def test_external_write_nodes_have_an_explicit_idempotency_owner() -> None:
+    catalog = load_workflow_node_catalog()
+    external_write_nodes = {
+        node["node_type"]
+        for node in catalog["nodes"]
+        if node["side_effect"] == "external_write"
+    }
+
+    assert external_write_nodes == (
+        COMMON_EXTERNAL_EFFECT_NODES
+        | MAIL_LEDGER_EXTERNAL_EFFECT_NODES
+        | FAIL_CLOSED_EXTERNAL_EFFECT_NODES
+    )
 
 
 def test_workflow_node_catalog_declares_connection_policy_for_every_node():

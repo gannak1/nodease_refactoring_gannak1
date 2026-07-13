@@ -1835,6 +1835,11 @@ class AgentBuilderService:
             workflow,
             runtime_kb_bindings=runtime_kb_bindings,
         )
+        from apps.shared.domain.workflow_node_binding import (
+            strip_workflow_node_bindings,
+        )
+
+        save_graph = strip_workflow_node_bindings(save_graph)
         generated_node_ids = set(
             (draft.draft_metadata or {}).get("generated_node_ids") or []
         )

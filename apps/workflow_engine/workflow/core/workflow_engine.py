@@ -4,6 +4,7 @@ WorkflowEngine - Gevent-based Workflow Execution Engine
 [GEVENT] Migrated from asyncio to gevent for Celery gevent pool compatibility.
 """
 
+import logging
 import time
 import uuid
 from typing import Any, Dict, List, Optional, Union
@@ -16,7 +17,26 @@ from sqlalchemy.orm import Session
 from apps.shared.pubsub import publish_workflow_event  # [GEVENT] Use sync version
 from apps.shared.schemas.workflow import EdgeSchema, NodeSchema
 from apps.shared.db.session import SessionLocal
+from apps.shared.domain.workflow_execution_identity import (
+    InvocationSegment,
+    derive_node_invocation_id,
+    ensure_execution_id,
+)
+from apps.shared.domain.workflow_node_binding import (
+    WorkflowNodeBinding,
+    parse_workflow_node_bindings,
+)
+from apps.shared.services.external_effect_trace_capture import (
+    durable_provider_summary,
+    uses_metadata_only_provider_capture,
+)
 from apps.shared.services.tracing.metadata import TraceMetadataSanitizer
+from apps.workflow_engine.domain.execution import NodeExecutionControl
+from apps.workflow_engine.domain.external_effect import (
+    ExternalEffectContext,
+    ExternalEffectError,
+    ExternalEffectRetrySignal,
+)
 from apps.workflow_engine.workflow.core.workflow_logger import WorkflowLogger
 from apps.workflow_engine.workflow.core.workflow_node_factory import NodeFactory
 from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
@@ -39,6 +59,11 @@ class WorkflowEngine:
         parent_run_id: Optional[str] = None,
         workflow_timeout: int = 600,
         is_subworkflow: bool = False,
+        execution_id: uuid.UUID | str | None = None,
+        invocation_path_prefix: tuple[InvocationSegment, ...] | None = None,
+        workflow_node_bindings: tuple[WorkflowNodeBinding, ...] | None = None,
+        binding_container_path: tuple[tuple[str, str], ...] = (),
+        task_deadline: float | None = None,
     ):
         """
         WorkflowEngine 초기화
@@ -56,9 +81,11 @@ class WorkflowEngine:
             is_subworkflow: 서브 워크플로우 여부
         """
         if isinstance(graph, dict):
+            parsed_bindings = parse_workflow_node_bindings(graph)
             nodes = [NodeSchema(**node) for node in graph.get("nodes", [])]
             edges = [EdgeSchema(**edge) for edge in graph.get("edges", [])]
         elif isinstance(graph, tuple) and len(graph) == 2:
+            parsed_bindings = None
             nodes = [
                 node if isinstance(node, NodeSchema) else NodeSchema(**node)
                 for node in graph[0]
@@ -73,14 +100,38 @@ class WorkflowEngine:
             )
 
         self.is_deployed = is_deployed
+        self.workflow_node_bindings = tuple(
+            workflow_node_bindings
+            if workflow_node_bindings is not None
+            else (parsed_bindings or ())
+        )
+        self.binding_container_path = tuple(binding_container_path)
+        self.task_deadline = task_deadline
         self.node_schemas = {node.id: node for node in nodes}
         self.node_instances = {}
         self.edges = edges
         self.user_input = user_input if user_input is not None else {}
         self.execution_context = dict(execution_context) if execution_context else {}
+        queued_execution_id = self.execution_context.pop("execution_id", None)
+        selected_execution_id = execution_id or queued_execution_id
+        self._execution_identity_trusted = selected_execution_id is not None
+        self.execution_id = ensure_execution_id(selected_execution_id)
+        if invocation_path_prefix is None:
+            root_scope = str(
+                self.execution_context.get("workflow_id") or uuid.UUID(int=0)
+            )
+            self.invocation_path_prefix = (InvocationSegment("root", "", root_scope),)
+        else:
+            self.invocation_path_prefix = tuple(invocation_path_prefix)
+            if (
+                not self.invocation_path_prefix
+                or self.invocation_path_prefix[0].kind != "root"
+            ):
+                raise ValueError("invalid invocation path prefix")
         self.workflow_timeout = workflow_timeout
         self.start_time = 0.0
         self._node_sequence = 0
+        self._node_submit_ordinals: dict[str, int] = {}
 
         self.execution_context.pop("db", None)
         if "db_session_factory" not in self.execution_context:
@@ -93,6 +144,18 @@ class WorkflowEngine:
         self.data_dependencies = {}
         self._build_optimized_graph()
         self._mail_sensitive_node_ids = self._descendants_of_type("mailNode")
+        direct_provider_node_ids = {
+            node_id
+            for node_id, schema in self.node_schemas.items()
+            if uses_metadata_only_provider_capture(
+                schema.type,
+                dict(schema.data or {}),
+            )
+        }
+        self._external_effect_sensitive_node_ids = self._descendants_of_nodes(
+            direct_provider_node_ids
+        )
+        self._external_effect_output_sensitive = False
 
         # 타입별 노드 인덱스
         self.nodes_by_type = {}
@@ -115,12 +178,20 @@ class WorkflowEngine:
     def cleanup(self):
         """실행 완료 후 메모리 정리"""
         for node_instance in self.node_instances.values():
-            if (
-                hasattr(node_instance, "_subgraph_engine")
-                and node_instance._subgraph_engine
-            ):
-                node_instance._subgraph_engine.cleanup()
-                node_instance._subgraph_engine = None
+            try:
+                if (
+                    hasattr(node_instance, "_subgraph_engine")
+                    and node_instance._subgraph_engine
+                ):
+                    node_instance._subgraph_engine.cleanup()
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "Workflow child cleanup failed: error_type=%s",
+                    type(exc).__name__,
+                )
+            finally:
+                if hasattr(node_instance, "_subgraph_engine"):
+                    node_instance._subgraph_engine = None
 
         self.node_instances.clear()
         self.node_schemas.clear()
@@ -132,6 +203,9 @@ class WorkflowEngine:
         self.user_input = None
         self.logger = None
         self.edges = None
+        self._node_submit_ordinals.clear()
+        self._external_effect_sensitive_node_ids.clear()
+        self.workflow_node_bindings = ()
 
     def execute(self) -> Dict[str, Any]:
         """
@@ -147,6 +221,20 @@ class WorkflowEngine:
             if event["type"] == "workflow_finish":
                 final_context = event["data"]
             elif event["type"] == "error":
+                event_data = event["data"]
+                error_payload = (
+                    event_data
+                    if isinstance(event_data, dict) and event_data.get("code")
+                    else event_data.get("error")
+                    if isinstance(event_data, dict)
+                    else None
+                )
+                if isinstance(error_payload, dict) and error_payload.get("code"):
+                    raise ExternalEffectError(
+                        str(error_payload["code"]),
+                        retryable=bool(error_payload.get("retryable", False)),
+                        node_id=error_payload.get("node_id"),
+                    )
                 if event["data"].get("non_retryable"):
                     raise NonRetryableWorkflowError(event["data"]["message"])
                 raise ValueError(event["data"]["message"])
@@ -310,6 +398,7 @@ class WorkflowEngine:
                         result_data = greenlet.get()
                         node_result = result_data["result"]
                         results[node_id] = node_result
+                        self._propagate_external_effect_output_sensitivity(node_id)
 
                     except Exception as e:
                         for g in running_greenlets:
@@ -348,11 +437,18 @@ class WorkflowEngine:
 
             # 워크플로우 종료
             run_id = self.execution_context.get("workflow_run_id")
+            self._external_effect_output_sensitive = bool(
+                self._provider_output_source_ids(results)
+            )
             if stream_mode:
                 final_context = dict(results)
                 if not self.is_subworkflow:
                     self.logger.update_run_log_finish(
-                        final_context,
+                        self._durable_run_outputs(
+                            final_context,
+                            all_results=results,
+                            stream_mode=True,
+                        ),
                         mail_sensitive_lineage=bool(self._mail_sensitive_node_ids),
                     )
                 if run_id and not self.is_subworkflow:
@@ -362,33 +458,51 @@ class WorkflowEngine:
                 final_result = self._get_answer_node_result(results)
                 if not self.is_subworkflow:
                     self.logger.update_run_log_finish(
-                        final_result,
+                        self._durable_run_outputs(
+                            final_result,
+                            all_results=results,
+                            stream_mode=False,
+                        ),
                         mail_sensitive_lineage=bool(self._mail_sensitive_node_ids),
                     )
                 if run_id and not self.is_subworkflow:
                     publish_workflow_event(run_id, "workflow_finish", final_result)
                 yield {"type": "workflow_finish", "data": final_result}
 
+        except ExternalEffectRetrySignal as e:
+            if not self.is_subworkflow:
+                self.logger.update_run_log_error(e.code)
+            raise
         except Exception as e:
             run_id = self.execution_context.get("workflow_run_id")
+            safe_error_code = self._error_code(e)
+            safe_payload = e.to_payload() if isinstance(e, ExternalEffectError) else None
             if not stream_mode:
                 if not self.is_subworkflow:
-                    self.logger.update_run_log_error(str(e))
+                    self.logger.update_run_log_error(safe_error_code)
                 if run_id and not self.is_subworkflow:
-                    publish_workflow_event(run_id, "error", {"message": str(e)})
-                raise e
+                    event_data = safe_payload or {"message": safe_error_code}
+                    publish_workflow_event(run_id, "error", event_data)
+                raise
             else:
-                error_msg = str(e)
+                error_msg = safe_error_code
                 if not self.is_subworkflow:
                     self.logger.update_run_log_error(error_msg)
                 if run_id and not self.is_subworkflow:
-                    publish_workflow_event(run_id, "error", {"message": error_msg})
+                    event_data = safe_payload or {"message": error_msg}
+                    publish_workflow_event(run_id, "error", event_data)
+                yielded_error = {
+                    "message": error_msg,
+                    "non_retryable": isinstance(
+                        e, (NonRetryableWorkflowError, ExternalEffectError)
+                    )
+                    and not bool(getattr(e, "retryable", False)),
+                }
+                if safe_payload is not None:
+                    yielded_error.update(safe_payload)
                 yield {
                     "type": "error",
-                    "data": {
-                        "message": error_msg,
-                        "non_retryable": isinstance(e, NonRetryableWorkflowError),
-                    },
+                    "data": yielded_error,
                 }
 
     def _submit_node(
@@ -425,6 +539,11 @@ class WorkflowEngine:
 
         if not self.is_subworkflow:
             node_options_snapshot = self._extract_node_options(node_schema)
+            if node_id in self._external_effect_sensitive_node_ids:
+                node_options_snapshot = {
+                    **node_options_snapshot,
+                    "_external_effect_output_sensitive": True,
+                }
             log_id = self.logger.create_node_log(
                 node_id,
                 node_schema.type,
@@ -441,6 +560,14 @@ class WorkflowEngine:
                 "started_at": started_at,
                 "sequence": sequence,
             }
+
+        ordinal = self._node_submit_ordinals.get(node_id, 0)
+        self._node_submit_ordinals[node_id] = ordinal + 1
+        runtime_control = self._node_execution_control(
+            node_id,
+            ordinal=ordinal,
+            node_run_id=log_id,
+        )
 
         # Redis Pub/Sub 이벤트 발행
         run_id = self.execution_context.get("workflow_run_id")
@@ -480,6 +607,7 @@ class WorkflowEngine:
                         node_options_snapshot,
                         started_at,
                         sequence,
+                        runtime_control,
                     )
 
             except gevent.Timeout:
@@ -568,6 +696,7 @@ class WorkflowEngine:
         node_options_snapshot=None,
         started_at=None,
         sequence=None,
+        runtime_control: NodeExecutionControl | None = None,
     ):
         """
         개별 노드를 실행하는 작업
@@ -576,7 +705,7 @@ class WorkflowEngine:
         """
         try:
             # 노드 실행 (핵심) - 동기 실행
-            result = node_instance.execute(inputs)
+            result = node_instance.execute(inputs, runtime_control=runtime_control)
             from datetime import datetime, timezone
 
             finished_at = datetime.now(timezone.utc)
@@ -609,12 +738,16 @@ class WorkflowEngine:
             return result
 
         except Exception as e:
-            error_msg = str(e)
+            error_msg = self._error_code(e)
             from datetime import datetime, timezone
 
             finished_at = datetime.now(timezone.utc)
             trace_metadata = self._build_error_trace_metadata(
-                node_schema.type, started_at, finished_at, e
+                node_schema.type,
+                started_at,
+                finished_at,
+                e,
+                node_instance=node_instance,
             )
             if not self.is_subworkflow:
                 self.logger.update_node_log_error(
@@ -645,14 +778,17 @@ class WorkflowEngine:
         finished_at,
         error: Exception,
         error_code: Optional[str] = None,
+        node_instance=None,
     ) -> Dict[str, Any]:
         safe_error_code = error_code or self._error_code(error)
-        metadata: Dict[str, Any] = {
-            "error": {
-                "type": "node_error",
-                "error_type": type(error).__name__,
-                "error_code": safe_error_code,
-            }
+        metadata: Dict[str, Any] = TraceMetadataSanitizer.sanitize_span_metadata(
+            node_type,
+            getattr(node_instance, "_trace_metadata", {}) or {},
+        )
+        metadata["error"] = {
+            "type": "node_error",
+            "error_type": type(error).__name__,
+            "error_code": safe_error_code,
         }
         if started_at and finished_at:
             metadata["latency_ms"] = int(
@@ -671,9 +807,82 @@ class WorkflowEngine:
 
     @staticmethod
     def _error_code(error: Exception) -> str:
+        code = getattr(error, "code", None)
+        if isinstance(code, str) and code:
+            return code
         if isinstance(error, TimeoutError):
             return "timeout"
         return "node_error"
+
+    def _node_execution_control(
+        self,
+        node_id: str,
+        *,
+        ordinal: int,
+        node_run_id: str | uuid.UUID | None,
+    ) -> NodeExecutionControl:
+        node_segment = InvocationSegment("node", node_id, str(ordinal))
+        node_invocation_id = derive_node_invocation_id(
+            self.execution_id,
+            self.invocation_path_prefix + (node_segment,),
+        )
+        effect_context = self._external_effect_context(
+            node_id,
+            node_invocation_id=node_invocation_id,
+            node_run_id=node_run_id,
+        )
+        workflow_node_binding = next(
+            (
+                binding
+                for binding in self.workflow_node_bindings
+                if binding.container_path == self.binding_container_path
+                and binding.workflow_node_id == node_id
+            ),
+            None,
+        )
+        return NodeExecutionControl(
+            execution_id=self.execution_id,
+            invocation_path_prefix=self.invocation_path_prefix,
+            external_effect_context=effect_context,
+            task_deadline=self.task_deadline,
+            workflow_node_binding=workflow_node_binding,
+            workflow_node_bindings=self.workflow_node_bindings,
+            binding_container_path=self.binding_container_path,
+            external_effect_enforced=self._execution_identity_trusted,
+        )
+
+    def _external_effect_context(
+        self,
+        node_id: str,
+        *,
+        node_invocation_id: uuid.UUID,
+        node_run_id: str | uuid.UUID | None,
+    ) -> ExternalEffectContext | None:
+        if not self._execution_identity_trusted:
+            return None
+        try:
+            organization_id = uuid.UUID(str(self.execution_context["organization_id"]))
+            app_id = uuid.UUID(str(self.execution_context["app_id"]))
+            workflow_id = uuid.UUID(str(self.execution_context["workflow_id"]))
+            workflow_run_raw = self.execution_context.get("workflow_run_id")
+            workflow_run_id = (
+                uuid.UUID(str(workflow_run_raw)) if workflow_run_raw else None
+            )
+            canonical_node_run_id = (
+                uuid.UUID(str(node_run_id)) if node_run_id else None
+            )
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return None
+        return ExternalEffectContext(
+            organization_id=organization_id,
+            app_id=app_id,
+            workflow_id=workflow_id,
+            execution_id=self.execution_id,
+            node_invocation_id=node_invocation_id,
+            workflow_run_id=workflow_run_id,
+            node_run_id=canonical_node_run_id,
+            node_id=node_id,
+        )
 
     def _build_node_trace_metadata(
         self,
@@ -958,6 +1167,13 @@ class WorkflowEngine:
         self._analyze_data_dependencies()
 
     def _descendants_of_type(self, node_type: str) -> set[str]:
+        return self._descendants_of_nodes(
+            node_id
+            for node_id, schema in self.node_schemas.items()
+            if schema.type == node_type
+        )
+
+    def _descendants_of_nodes(self, source_node_ids) -> set[str]:
         forward_dependencies: dict[str, set[str]] = {
             node_id: set(targets)
             for node_id, targets in self.adjacency_list.items()
@@ -965,11 +1181,7 @@ class WorkflowEngine:
         for target_id, source_ids in self.data_dependencies.items():
             for source_id in source_ids:
                 forward_dependencies.setdefault(source_id, set()).add(target_id)
-        pending = [
-            node_id
-            for node_id, schema in self.node_schemas.items()
-            if schema.type == node_type
-        ]
+        pending = list(source_node_ids)
         descendants: set[str] = set()
         while pending:
             node_id = pending.pop()
@@ -978,6 +1190,68 @@ class WorkflowEngine:
             descendants.add(node_id)
             pending.extend(forward_dependencies.get(node_id, ()))
         return descendants
+
+    def _durable_run_outputs(
+        self,
+        outputs: Any,
+        *,
+        all_results: Dict[str, Any],
+        stream_mode: bool,
+    ) -> Any:
+        provider_node_ids = self._provider_output_source_ids(all_results)
+        if not provider_node_ids:
+            return outputs
+
+        protected_node_ids = self._descendants_of_nodes(provider_node_ids)
+        if stream_mode:
+            durable_outputs = dict(outputs) if isinstance(outputs, dict) else {}
+            for node_id in protected_node_ids:
+                if node_id not in durable_outputs:
+                    continue
+                if node_id not in provider_node_ids:
+                    durable_outputs[node_id] = {}
+                    continue
+                schema = self.node_schemas[node_id]
+                durable_outputs[node_id] = durable_provider_summary(
+                    node_type=schema.type,
+                    process_data=dict(schema.data or {}),
+                    trace_metadata=getattr(
+                        self.node_instances.get(node_id), "_trace_metadata", {}
+                    ),
+                ) or {}
+            return durable_outputs
+
+        answer_node_ids = set(self.nodes_by_type.get("answerNode", ()))
+        if answer_node_ids & protected_node_ids:
+            return {}
+        return outputs
+
+    def _provider_output_source_ids(
+        self,
+        all_results: Dict[str, Any],
+    ) -> set[str]:
+        return {
+            node_id
+            for node_id, schema in self.node_schemas.items()
+            if node_id in all_results
+            and uses_metadata_only_provider_capture(
+                schema.type,
+                dict(schema.data or {}),
+                getattr(self.node_instances.get(node_id), "_trace_metadata", {}),
+            )
+        }
+
+    def _propagate_external_effect_output_sensitivity(self, node_id: str) -> None:
+        schema = self.node_schemas.get(node_id)
+        if schema is None or not uses_metadata_only_provider_capture(
+            schema.type,
+            dict(schema.data or {}),
+            getattr(self.node_instances.get(node_id), "_trace_metadata", {}),
+        ):
+            return
+        self._external_effect_sensitive_node_ids.update(
+            self._descendants_of_nodes((node_id,))
+        )
 
     def _is_mail_sensitive_node(self, node_id: str) -> bool:
         return node_id in getattr(self, "_mail_sensitive_node_ids", set())
