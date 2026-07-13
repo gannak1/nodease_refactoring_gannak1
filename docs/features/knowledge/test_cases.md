@@ -247,7 +247,7 @@ Status: Draft
 - Organization 또는 KB가 바뀌거나 modal scope가 닫히는 동안 이전 검색 요청이 완료되어도 해당 결과는 새 scope에 표시되지 않는다. 오류 UI는 raw backend/provider/source detail을 표시하지 않는다.
 - AI 답변은 현재 organization에서 조회된 유효한 chat model이 선택된 경우에만 요청하며, 모델이 없거나 목록 응답 shape가 잘못되면 generation model이 빈 요청을 전송하지 않는다.
 - 초기부터 `completed`인 document settings 화면은 자동 이동하지 않는다. 같은 document scope에서 `indexing|processing`을 관찰한 뒤 `completed`에 도달한 경우에만 KB 상세 이동을 한 번 예약한다. 이 active 상태는 현재 화면의 성공한 process/approval 요청 또는 처음부터 처리 중인 문서를 관찰하면서 시작될 수 있다.
-- 비용 승인 취소, process/approval 요청 실패, `failed` 완료는 이동 intent를 만들지 않는다. 이전 active organization/KB/document의 늦은 initial fetch, process/approval, SSE 또는 polling 결과는 현재 화면의 status/progress/edit gate를 변경하거나 이동을 예약하지 않는다.
+- 비용 승인 취소, process/approval 요청 실패, `failed` 완료는 이동 intent를 만들지 않는다. Organization 전환 직후 이전 render의 handler는 process/analyze/preview/approval 요청을 시작하지 않으며, 이전 active organization/KB/document의 늦은 initial fetch, process/approval, SSE 또는 polling 결과는 현재 화면의 status/progress/edit gate를 변경하거나 이동을 예약하지 않는다.
 
 ## Retrieval And Agent Tests
 
