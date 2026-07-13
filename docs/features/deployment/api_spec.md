@@ -1,7 +1,7 @@
 # Deployment API Spec
 
 Status: Draft
-Verified Against: `feature/mba-233 @ 90da2f84`
+Verified Against: `feature/mba-233 @ b4ff694f`
 
 ## Endpoints
 
@@ -142,7 +142,7 @@ Response는 hidden KB/Collection/child id, name, label, path, exact denied/membe
 
 Public `type="chatbot"`은 항상 `public_chatbot` audience로 preflight하므로 private KB 후보가 있으면 activation이 차단된다. 별도 authenticated internal Chatbot surface는 public Chatbot audience를 완화하거나 login cookie를 public route에 선택적으로 붙이는 방식으로 제공하지 않는다. 해당 기능은 별도 deployment access policy와 runtime/session namespace가 구현된 뒤 독립 preflight를 사용한다.
 
-Selected Collection 검사는 selected ID와 active organization으로 범위를 제한한다. Missing, inactive, deleted, cross-organization Collection은 존재 여부를 구분하지 않고 `knowledge_collection_unavailable`로 처리한다. Anonymous-public surface에서 active private Collection은 차단되며, public Collection 자체 또는 active member가 source-managed이면 별도 public source exposure primitive가 없는 현재 구현에서 fail-closed한다. Child ID나 exact membership count는 preflight port/result로 전달하지 않는다.
+Selected Collection 검사는 selected ID와 active organization으로 범위를 제한하고 active lifecycle과 `sync_state != source_deleted`를 요구한다. Missing, inactive, deleted, source-deleted, cross-organization Collection은 존재 여부를 구분하지 않고 `knowledge_collection_unavailable`로 처리한다. Direct KB는 같은 lifecycle/sync 경계와 retrieval-visible completed chunk readiness를 통과해야 한다. Anonymous-public surface에서 active private Collection은 차단되며, public Collection 자체 또는 active member가 source-managed이면 별도 public source exposure primitive가 없는 현재 구현에서 fail-closed한다. Child ID나 exact membership count는 preflight port/result로 전달하지 않는다.
 
 Conversation Memory target activation은 explicit input/output mapping, node Memory policy, immutable deployment/snapshot binding, Memory contract/storage generation과 capable Worker routing을 함께 검사한다. Schedule/webhook/API batch, workflow-node direct run과 일반 authenticated deployment run은 target session을 암묵적으로 생성하지 않는다.
 

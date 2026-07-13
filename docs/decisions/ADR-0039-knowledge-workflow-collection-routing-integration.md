@@ -48,17 +48,21 @@ Client capability, preflight 결과를 실행 권한으로 사용하면 Collecti
 
 ### Builder picker와 save authorization
 
-- Direct KB picker는 기존 active-organization, effective KB `use`, source gate와
+- Direct KB picker는 기존 active-organization, active lifecycle,
+  `sync_state != source_deleted`, effective KB `use`, source gate와
   retrieval-selectable 조건을 통과한 `/knowledge/llm-selectable`을 사용한다.
 - Collection picker는 별도 authenticated endpoint를 사용하고, active organization의
-  active Collection 중 current editor가 Collection `route`를 가진 항목만 반환한다.
+  active lifecycle이며 `sync_state != source_deleted`인 Collection 중 current editor가
+  Collection `route`를 가진 항목만 반환한다.
   Response는 UUID와 display-policy-approved optional safe label만 허용한다.
 - Collection 관리 목록의 `read/manage/sync`, Knowledge domain 관리 action, raw name,
   description, child ID/count, source metadata와 permission row를 picker authority나
   response로 사용하지 않는다.
 - 모든 editable graph persistence path는 structural validation 뒤 current editor 기준
   direct KB effective `use`와 selected Collection `route`를 다시 확인한다. Direct
-  source-managed KB는 기존 source authorization gate도 통과해야 한다.
+  source-managed KB는 기존 source authorization gate도 통과해야 한다. Direct KB와
+  selected Collection은 active lifecycle이고 `sync_state != source_deleted`여야 하며,
+  direct KB는 retrieval-visible completed chunk를 가져야 한다.
 - Save authorization은 Collection child를 열거하거나 child KB/source permission을
   평가하지 않는다. Child authorization은 invocation-time MBA-232 resolver가 소유한다.
 - Graph와 success audit write는 기존 transaction 안에서 원자적으로 처리한다. 권한
@@ -70,8 +74,9 @@ Client capability, preflight 결과를 실행 권한으로 사용하면 Collecti
 
 ### Deployment preflight
 
-- Preflight는 두 목록의 shape/limit와 selected resource의 organization/lifecycle,
-  deployment type에서 server-derived한 audience 정책을 검증한다.
+- Preflight는 두 목록의 shape/limit와 selected resource의 organization/lifecycle/sync,
+  direct KB retrieval-visible readiness, deployment type에서 server-derived한 audience
+  정책을 검증한다.
 - Anonymous surface는 private Collection/KB와 public exposure primitive가 없는
   source-managed content를 active deployment에 올리지 못한다.
 - `workflow_node_inherited`는 owner나 credential principal로 대체하지 않고 inherited
@@ -91,6 +96,8 @@ Client capability, preflight 결과를 실행 권한으로 사용하면 Collecti
   audience로 fallback하지 않는다.
 - Resolver가 반환한 ordered canonical KB ID만 기존 bounded retrieval fan-out에
   전달한다. Direct와 여러 Collection에서 중복된 KB는 한 번만 검색한다.
+- `source_deleted` parent Collection은 route permission이나 남아 있는 membership과
+  무관하게 invocation snapshot에서 제외한다.
 - Policy상 candidate 0개는 retrieval/embedding/provider를 호출하지 않는 safe
   no-result다. Resolver infrastructure failure는 `ragFailurePolicy`로 정상 empty
   result로 낮추지 않고 raw exception 없는 retryable workflow failure로 전파한다.

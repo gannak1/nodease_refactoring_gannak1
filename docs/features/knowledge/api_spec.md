@@ -8,7 +8,7 @@ Status: Draft
 | Method | Path | 목적 | 권한 경계 |
 | --- | --- | --- | --- |
 | GET | `/api/v1/knowledge` | 현재 KB 목록 | Active organization에서 KB `read`가 허용된 active KB만 반환하고 unauthorized row/count는 생략한다 |
-| GET | `/api/v1/knowledge/llm-selectable` | Workflow LLM node RAG picker용 KB 후보 목록 | `X-Organization-Id` active organization 필수. active organization 안에서 caller가 KB `use` 권한을 가진 KB만 반환한다. 반환 후보는 retrieval-visible `completed` document chunk가 1개 이상 있어야 하며, runtime은 실행 시점 execution subject 기준으로 다시 권한을 평가한다 |
+| GET | `/api/v1/knowledge/llm-selectable` | Workflow LLM node RAG picker용 KB 후보 목록 | `X-Organization-Id` active organization 필수. active lifecycle이고 `sync_state != source_deleted`이며 caller가 KB `use` 권한을 가진 KB만 반환한다. 반환 후보는 retrieval-visible `completed` document chunk가 1개 이상 있어야 하며, runtime은 실행 시점 execution subject 기준으로 다시 권한을 평가한다 |
 | POST | `/api/v1/knowledge` | 빈 KB 생성 | Active organization에 KB, 생성자의 user-direct `manager`, canonical audit를 한 transaction에서 생성한다. 필수 schema가 준비되지 않으면 `503 knowledge.schema_not_ready`로 fail-closed 처리한다 |
 | GET | `/api/v1/knowledge/{kb_id}` | 현재 KB 상세와 문서 상태 | Active organization + KB `read`. Detail capability는 `can_read/use/write/read_content/manage`와 파생 UI flag로 반환한다 |
 | GET | `/api/v1/knowledge/{kb_id}/documents/{document_id}/edit-config` | Document preview/process 설정 복원 | Active organization + KB `write`. Bounded property/aggregate/serialized-size allowlist만 반환하고 read detail과 encrypted source config를 재사용하지 않는다. 성공 응답은 `Cache-Control: no-store`다 |
@@ -138,7 +138,7 @@ Request context:
 | --- | --- |
 | Authentication | 로그인 사용자 필수 |
 | Organization | `X-Organization-Id`로 해석한 active organization |
-| Permission | active Collection에 대한 current user effective `route` |
+| Permission | active lifecycle이고 `sync_state != source_deleted`인 Collection에 대한 current user effective `route` |
 
 서버는 organization/lifecycle과 effective `route`를 SQL query scope에 먼저 적용한 뒤
 최신순 최대 500개를 반환한다. Unauthorized 최근 row를 먼저 500개로 자른 뒤
@@ -163,8 +163,9 @@ Response:
 organization ID, lifecycle/source/system-managed field, member KB ID, exact child count,
 permission row/capability, hidden/unavailable total을 포함하지 않는다. `read`, `manage`,
 `sync` 또는 Knowledge domain action만 있고 `route`가 없는 Collection은 반환하지 않는다.
-다른 organization, inactive/archived/deleted Collection은 존재 여부를 구분하지 않고
-생략한다. Schema/DB failure는 raw SQL/exception 없이 fixed safe error envelope로 닫는다.
+다른 organization, inactive/archived/deleted 또는 `source_deleted` Collection은 존재
+여부를 구분하지 않고 생략한다. Schema/DB failure는 raw SQL/exception 없이 fixed safe
+error envelope로 닫는다.
 
 ### MBA-233 Editable Graph Reference Authorization
 
@@ -175,7 +176,7 @@ reference를 다시 authorize한다.
 | Reference | Save-time gate |
 | --- | --- |
 | Direct KB | same organization, active, `sync_state != source_deleted`, retrieval-selectable, effective KB `use`, applicable materialized source authorization |
-| Selected Collection | same organization, active, effective Collection `route` |
+| Selected Collection | same organization, active, `sync_state != source_deleted`, effective Collection `route` |
 
 Collection child membership/KB/source authorization은 save-time에 열거하지 않는다.
 Graph에 direct KB와 Collection reference가 모두 없으면 구조 검증 뒤 authorization context와

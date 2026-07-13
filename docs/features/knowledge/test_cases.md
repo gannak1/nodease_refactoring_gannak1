@@ -101,7 +101,8 @@ Status: Draft
   rollback하고 safe generic error만 반환한다. Knowledge reference가 없는 root/nested legacy
   graph는 null organization/invalid legacy user identifier로 permission service를 만들지 않지만,
   malformed empty-list shape는 422 구조 오류로 유지한다. 과거 completed chunk가 남은
-  `source_deleted` direct KB는 save와 preflight 모두 거부한다.
+  `source_deleted` direct KB와 route grant/membership이 남은 `source_deleted` parent
+  Collection은 picker, save, preflight와 runtime 모두 거부한다.
 - Collection route는 있지만 child KB/source access가 전부 denied인 graph는 save할 수
   있고 runtime에서 zero candidate/no provider로 닫힌다. Save-time에 child membership이나
   source를 query하면 테스트 실패다.
@@ -113,12 +114,15 @@ Status: Draft
   검증한다. Anonymous private Collection/direct KB와 source public exposure primitive가
   없는 source-managed content는 fixed blocker이고 hidden child ID/count를 반환하지 않는다.
   Direct/public-membership/Collection aggregate query 모두 `source_deleted` KB를 제외하는
-  PostgreSQL predicate를 사용하며 runtime resolver eligibility와 어긋나면 테스트 실패다.
+  PostgreSQL predicate를 사용하고 direct KB에는 retrieval-visible completed chunk
+  readiness를 적용하며 runtime resolver eligibility와 어긋나면 테스트 실패다.
   빠른 SQL compile test는 INNER JOIN 대상/조직 ON 조건/lifecycle/sync predicate를 검증하고,
   opt-in disposable PostgreSQL test는 active, source-deleted, archived, cross-organization,
   organization-mismatched membership이 실제 반환 집합과 candidate count에서 올바르게
   포함·제외되는지 migration 적용 스키마에서 검증한다. 같은 실제 DB 테스트에서 최근
   unauthorized 500개 뒤의 authorized Collection과 501개 authorized 결과 cap도 검증한다.
+  Source-deleted parent Collection은 route permission이 남아 있어도 picker cap, save,
+  preflight와 runtime candidate stream 어느 곳에도 포함되지 않아야 한다.
 - 모든 production execution surface는 same resolver dependency를 주입한다. Direct-only,
   Collection-only와 mixed invocation은 resolver를 정확히 한 번 호출하며 ordered canonical
   candidate마다 retrieval을 최대 한 번 실행한다.

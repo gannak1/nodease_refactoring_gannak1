@@ -2,7 +2,7 @@
 
 Status: Draft
 Related Features: workflow, llm-credentials, audit-tracing, knowledge, chatbot-deployment, conversation-memory
-Verified Against: `feature/mba-233 @ 90da2f84`
+Verified Against: `feature/mba-233 @ b4ff694f`
 
 ## Purpose
 
@@ -77,7 +77,7 @@ Webhook capture helper는 public webhook 실행 표면이 아니라 로그인한
 - DEP-REQ-052 (Target Memory): Public browser Chatbot의 exact Origin/embed/CSP allowlist는 deployment-owned versioned config여야 하며 client hint, wildcard 또는 environment fallback이 enforcement를 완화하지 않아야 한다. 이 config contract가 구현되기 전 browser session surface를 허용해서는 안 된다.
 - DEP-REQ-053 (Target Memory): Deployment runtime은 execution subject, credential principal, billing principal과 audit actor를 별도로 서버에서 파생해야 한다. App/deployment creator를 subject 또는 public audit actor로 합성하지 않아야 하며 Conversation Access Grant는 session 접근에만 사용해야 한다.
 - DEP-REQ-054 (MBA-233): Deployment preflight는 LLM node의 `knowledgeBases`와 `knowledgeCollections`를 동일한 shared strict parser로 검사한다. 각 목록은 최대 20개이며 canonical UUID와 허용된 display field shape만 받는다. malformed 또는 over-limit graph는 inactive preview에서도 warning으로 낮추지 않는 configuration blocker다.
-- DEP-REQ-055 (MBA-233): Preflight repository는 명시적으로 선택된 ID와 active organization에 한정해 active KB/Collection lifecycle을 검사한다. Anonymous-public surface는 private Collection을 차단하고, 별도 public source exposure primitive가 없는 동안 source-managed Collection 또는 active source-managed member가 있는 public Collection도 `source_public_exposure_required`로 차단한다.
+- DEP-REQ-055 (MBA-233): Preflight repository는 명시적으로 선택된 ID와 active organization에 한정해 active lifecycle과 `sync_state != source_deleted`인 KB/Collection을 검사하고, direct KB에는 save-time과 같은 retrieval-visible completed chunk readiness를 적용한다. Anonymous-public surface는 private Collection을 차단하고, 별도 public source exposure primitive가 없는 동안 source-managed Collection 또는 active source-managed member가 있는 public Collection도 `source_public_exposure_required`로 차단한다.
 - DEP-REQ-056 (MBA-233): `workflow_node` preflight는 current owner/creator/credential을 subject로 합성하지 않고 inherited-subject warning을 반환한다. Embedded `subGraph`와 bound workflow-node target graph에도 같은 strict reference와 audience 규칙을 적용하며, embedded graph 순회는 비정상적인 깊이에서도 호출 스택에 의존하지 않는다.
 - DEP-REQ-057 (MBA-233): Candidate budget preflight는 selected Collection의 same-organization active member aggregate만 내부적으로 사용하고 child ID를 application result나 API에 반환하지 않는다. Direct configured count와 bounded aggregate가 runtime 후보 예산 20을 넘을 수 있으면 `knowledge_candidate_budget_limited` warning과 bucket/boolean만 반환한다. Collection overlap으로 인한 보수적 과대 경고는 허용하지만 exact unique/hidden count를 노출해서는 안 된다.
 - DEP-REQ-058 (MBA-233): `knowledge_candidate_budget_limited`는 non-blocking warning이다. Client는 active create를 계속하고 성공 화면에 fixed reason/action과 bucket 기반 경고를 text로 표시한다. `blocked` 결과에서는 create를 호출하지 않는다.

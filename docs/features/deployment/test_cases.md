@@ -1,7 +1,7 @@
 # Deployment Test Cases
 
 Status: Draft
-Verified Against: `feature/mba-233 @ 90da2f84`
+Verified Against: `feature/mba-233 @ b4ff694f`
 
 ## Unit Tests
 
@@ -9,7 +9,7 @@ Verified Against: `feature/mba-233 @ 90da2f84`
 - Pure preflight use case는 repository port snapshot만으로 결과를 만들고 active blocker는 HTTPException이 아닌 typed `DeploymentPreflightBlocked`를 반환한다. Compatibility facade만 이를 기존 409 envelope으로 mapping한다.
 - Preflight graph scanner는 shared strict parser로 root/embedded LLM node의 direct KB와 Collection 목록을 검사한다. Malformed shape와 20개 초과는 active/inactive 여부와 무관한 fixed non-downgradable blocker다.
 - Embedded `subGraph` 순회는 반복 방식이며 호출 스택보다 깊은 입력에서도 같은 Collection audience policy를 적용한다.
-- Selected Collection repository projection은 selected IDs, active organization, active lifecycle로 제한하고 same-organization active KB aggregate만 계산한다. Child ID를 application result로 반환하거나 Collection별 N+1 query를 만들지 않는다.
+- Selected Collection repository projection은 selected IDs, active organization, active lifecycle, `sync_state != source_deleted`로 제한하고 same-organization active/retrieval-visible KB aggregate만 계산한다. Direct KB preflight도 retrieval-visible completed chunk가 없는 KB를 generic unavailable로 처리한다. Child ID를 application result로 반환하거나 Collection별 N+1 query를 만들지 않는다.
 - Anonymous-public preflight는 private Collection과 source-managed Collection/member를 fail-closed하고, public manual Collection은 통과시킨다. Missing/inactive/cross-org는 하나의 generic unavailable code로 처리한다.
 - Candidate budget 가능성은 bucket/boolean warning으로만 반환되고 active create를 차단하지 않는다. Client success step은 warning을 text status로 표시한다.
 - Runtime audience resolver는 `api`, `webapp`, `widget`, `chatbot`, `mcp`, `schedule`, `webhook`를 anonymous public-only로 판정한다.
