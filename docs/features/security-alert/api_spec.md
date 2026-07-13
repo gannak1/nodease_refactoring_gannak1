@@ -46,13 +46,14 @@ Actor 표시값은 Alert row에 snapshot으로 저장하지 않고 현재 organi
 
 ```json
 {
-  "id": "<uuid>",
+  "id": "<uuid|null>",
   "display_name": "홍길동",
   "state": "active"
 }
 ```
 
 `state`는 `active`, `suspended`, `removed`, `deleted` 중 하나다. 표시할 수 있는 이름이 없으면 `display_name`은 `null`이다. Email은 반환하지 않는다.
+Alert subject actor는 opaque ID를 유지한다. Acknowledge/resolve 처리자는 user 삭제 후 FK `SET NULL`이 적용될 수 있으므로 deleted lifecycle projection의 `id`도 `null`일 수 있다.
 
 ### Lifecycle Version
 
@@ -375,9 +376,10 @@ Error response는 가능한 경우 다음 safe shape을 사용한다.
 {
   "error": {
     "code": "stale_state",
-    "message": "Security alert state changed. Refresh and try again."
-  },
-  "request_id": "<string>"
+    "message": "Security alert state changed. Refresh and try again.",
+    "request_id": "<string>",
+    "details": {}
+  }
 }
 ```
 
