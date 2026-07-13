@@ -7,6 +7,9 @@ __pycache__/
 *.egg-info/
 **/*.egg-info/
 
+# Celery Beat local scheduler state
+celerybeat-schedule*
+
 # Node
 apps/client/.next/
 **/node_modules/
