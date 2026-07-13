@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from apps.gateway.application.knowledge_administration.domain_permissions import (
@@ -164,22 +165,25 @@ class SqlAlchemyKnowledgeDomainPermissionRepository:
         return row.id, created
 
     def revoke(self, command: DomainPermissionCommand) -> uuid.UUID | None:
-        model, subject_column = self._model_and_subject_column(command.subject_type)
-        row = (
-            self.db.query(model)
-            .filter(
-                model.organization_id == command.organization_id,
-                subject_column == command.subject_id,
-                model.permission_action == command.permission_action,
-            )
-            .with_for_update()
-            .first()
-        )
+        row = self.db.execute(self._revoke_statement(command)).scalar_one_or_none()
         if row is None:
             return None
         permission_id = row.id
         self.db.delete(row)
         return permission_id
+
+    @classmethod
+    def _revoke_statement(cls, command: DomainPermissionCommand):
+        model, subject_column = cls._model_and_subject_column(command.subject_type)
+        return (
+            select(model)
+            .where(
+                model.organization_id == command.organization_id,
+                subject_column == command.subject_id,
+                model.permission_action == command.permission_action,
+            )
+            .with_for_update()
+        )
 
     @staticmethod
     def _model_and_subject_column(subject_type: DomainSubjectType):
