@@ -4,7 +4,7 @@ Status: Draft
 
 이 문서는 [requirements.md](requirements.md), [api_spec.md](api_spec.md), [component_spec.md](component_spec.md), [ADR-0028](../../decisions/ADR-0028-security-alert-detection-and-lifecycle.md)의 검증 기준을 정의한다.
 
-현재 초안은 기능 완료를 판단하기 위한 인수조건을 먼저 고정한다. Unit, service, API, worker, component, E2E 상세 test matrix는 이 인수조건을 기준으로 확장한다.
+현재 backend 구현은 MBA-212의 rule evaluator, Alert 집계 transaction, 실시간 Celery detector, PostgreSQL watermark/overlap reconciliation, 60초 Beat schedule과 로컬·Docker Beat 실행 연결을 포함한다. 실제 PostgreSQL 테스트는 Alert·evidence·detected audit 원자성, overlap 중복 방지, UUID cursor, 활성화 경계, rollback/retry를 검증한다. MBA-213/214 API·notification·client 검증은 아직 남아 있다.
 
 ## Acceptance Criteria
 
@@ -347,7 +347,7 @@ Scope 밖 404, validation 실패, desired-state no-op에는 target-aware audit�
 | SAL-TC-S016 | AC-16, AC-17 | 조회 중 membership을 다른 transaction에서 suspend/강등 | 다음 authorization check부터 차단, cross-org data 없음 |
 | SAL-TC-S017 | AC-27 | actor user 삭제/SET NULL 또는 membership removed | alert 보존, safe deleted/removed projection 반환 |
 | SAL-TC-S018 | AC-18 | filter와 pagination에 충분한 다중 alert | total은 filter 적용 전체 수, page item 중복/누락 없음 |
-| SAL-TC-S019 | AC-12 | Disposable PostgreSQL 빈 DB에 `a06b7c8d9e10`과 `a17c8d9e0f21`을 순서대로 upgrade 후 schema introspection | `security_alerts`, `security_alert_audit_events`, 모든 column/FK/index/check/unique constraint가 명세와 일치 |
+| SAL-TC-S019 | AC-12 | Disposable PostgreSQL 빈 DB에 `a06b7c8d9e10`, `a17c8d9e0f21`, `b28d9e0f1a32`를 순서대로 upgrade 후 schema introspection | Security Alert 3개 table과 모든 column/FK/index/check/unique constraint가 명세와 일치 |
 | SAL-TC-S020 | AC-12 | Disposable PostgreSQL head DB에 기존 organization/user/audit row를 넣고 `fd2e3f4a5b67`까지 downgrade | Security Alert table·index·constraint만 제거되고 기존 organization/user/audit row와 schema는 보존 |
 | SAL-TC-S021 | AC-10, AC-13 | 최소 필수값으로 Security Alert model 생성 | status `open`, occurrence count 0 이상, lifecycle version 1 이상, UTC created/updated timestamp가 model·DB default 계약과 일치 |
 | SAL-TC-S022 | AC-10, AC-13, AC-15 | unknown severity/status/resolution type, 음수 occurrence, 0 이하 lifecycle version을 ORM 우회 insert | DB check constraint가 각 invalid row를 거부 |
@@ -362,6 +362,7 @@ Scope 밖 404, validation 실패, desired-state no-op에는 target-aware audit�
 | SAL-TC-S031 | AC-07, AC-17 | Alert organization과 다른 organization provenance의 audit를 객체 또는 `audit_log_id`로 evidence 연결 | 두 입력 경로 모두 연결과 occurrence 증가를 거부하고 alert/audit row는 불변 |
 | SAL-TC-S032 | AC-12, AC-15 | Resolution reason 정규화·redaction 성공과 sanitizer/audit insert 실패 주입 | 성공 시 sanitized non-blank reason만 저장, 실패 시 status/version/reason/canonical audit 전체 rollback |
 | SAL-TC-S033 | AC-12, AC-18 | Alert row가 있는 `a06b7c8d9e10` DB를 `a17c8d9e0f21`로 upgrade한 뒤 index revision만 downgrade | Upgrade는 filter index 4개를 생성하고 기존 alert/evidence를 보존하며 downgrade는 해당 index만 제거하고 table/data를 유지 |
+| SAL-TC-S034 | AC-25 | Watermark cursor 두 필드를 하나만 저장하거나 activation/cursor를 재시작 뒤 다시 조회 | 불완전 cursor는 DB check로 거부하고 완전 cursor와 활성화 시각은 PostgreSQL에 durable하게 보존 |
 
 ### API Tests
 

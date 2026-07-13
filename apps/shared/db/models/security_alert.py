@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
+from apps.shared.db.base import Base
 from sqlalchemy import (
     CheckConstraint,
     DateTime,
@@ -16,9 +17,6 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
-
-from apps.shared.db.base import Base
-
 
 _STATUS_FIELDS_CHECK_SQL = (
     "(status = 'open' AND acknowledged_by IS NULL "
@@ -199,5 +197,40 @@ class SecurityAlertAuditEvent(Base):
         DateTime(timezone=True),
         nullable=False,
         default=_utc_now,
+        server_default=text("now()"),
+    )
+
+
+class SecurityAlertReconciliationWatermark(Base):
+    __tablename__ = "security_alert_reconciliation_watermarks"
+    __table_args__ = (
+        CheckConstraint(
+            "(cursor_occurred_at IS NULL AND cursor_audit_log_id IS NULL) OR "
+            "(cursor_occurred_at IS NOT NULL AND cursor_audit_log_id IS NOT NULL)",
+            name="ck_security_alert_reconciliation_cursor_pair",
+        ),
+    )
+
+    processor_name: Mapped[str] = mapped_column(String(100), primary_key=True)
+    activation_started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    cursor_occurred_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    cursor_audit_log_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PGUUID(as_uuid=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utc_now,
+        server_default=text("now()"),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utc_now,
+        onupdate=_utc_now,
         server_default=text("now()"),
     )

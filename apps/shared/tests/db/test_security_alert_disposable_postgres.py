@@ -11,27 +11,33 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Barrier
+from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine, inspect, text
-from sqlalchemy.exc import IntegrityError, OperationalError
-from sqlalchemy.orm import Session
-
+from apps.log_system import audit_tasks
 from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.security_alert import SecurityAlert
+from apps.shared.services.security_alert_aggregation import (
+    aggregate_security_alert_detection,
+)
+from apps.shared.services.security_alert_evidence import link_security_alert_evidence
 from apps.shared.services.security_alert_lifecycle import (
     SecurityAlertStaleStateError,
     acknowledge_security_alert,
     reopen_security_alert,
     resolve_security_alert,
 )
-from apps.shared.services.security_alert_evidence import link_security_alert_evidence
-
+from apps.shared.services.security_alert_rule_evaluator import (
+    build_security_alert_detection_key,
+)
 from apps.shared.tests.helpers.disposable_postgres import (
     DisposablePostgresConfig,
     DisposablePostgresConfigurationError,
     quote_disposable_database_name,
 )
+from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.orm import Session
 
 ROOT_DIR = Path(__file__).resolve().parents[4]
 RUN_ENV = "NODEASE_RUN_SECURITY_ALERT_DB_TEST"
@@ -165,6 +171,80 @@ def _seed_evidence_race_rows(
             )
 
 
+def _seed_aggregation_rows(
+    engine,
+    *,
+    user_id,
+    organization_id,
+    audit_ids,
+    now,
+) -> None:
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO users "
+                "(id, email, name, social_provider, created_at, updated_at) "
+                "VALUES (:id, :email, 'Aggregation Actor', 'local', :now, :now)"
+            ),
+            {
+                "id": user_id,
+                "email": f"security-alert-aggregation-{user_id}@example.invalid",
+                "now": now,
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO organization "
+                "(id, name, options, flags, created_by, is_active, "
+                "created_at, updated_at) VALUES "
+                "(:id, 'Aggregation Organization', '{}'::jsonb, 0, "
+                ":created_by, true, :now, :now)"
+            ),
+            {
+                "id": organization_id,
+                "created_by": user_id,
+                "now": now,
+            },
+        )
+        for index, audit_id in enumerate(audit_ids):
+            connection.execute(
+                text(
+                    "INSERT INTO audit_logs "
+                    "(id, occurred_at, actor_id, actor_type, category, action, "
+                    "target_type, target_id, status, audit_metadata) VALUES "
+                    "(:id, :occurred_at, :actor_id, 'user', 'action', "
+                    "'permission.denied', 'workflow', :target_id, 'failure', "
+                    "jsonb_build_object('organization_id', :organization_id))"
+                ),
+                {
+                    "id": audit_id,
+                    "occurred_at": now + timedelta(seconds=index),
+                    "actor_id": user_id,
+                    "target_id": str(uuid.uuid4()),
+                    "organization_id": str(organization_id),
+                },
+            )
+
+
+def _aggregation_candidate(*, organization_id, actor_id):
+    rule_id = "repeated_permission_denied"
+    rule_version = "v1"
+    return SimpleNamespace(
+        organization_id=organization_id,
+        subject_actor_id=actor_id,
+        rule_id=rule_id,
+        rule_version=rule_version,
+        severity="medium",
+        policy_reason=None,
+        detection_key=build_security_alert_detection_key(
+            organization_id=organization_id,
+            actor_id=actor_id,
+            rule_id=rule_id,
+            rule_version=rule_version,
+        ),
+    )
+
+
 @contextmanager
 def _disposable_database():
     try:
@@ -234,14 +314,50 @@ def test_security_alert_migration_creates_real_postgres_schema():
             connection.execute(text(f"CREATE DATABASE {quoted_database}"))
         database_created = True
         _enable_vector_extension(database, config)
+        migration_started_at = datetime.now(timezone.utc)
         _run_alembic(database, config)
 
         engine = create_engine(config.database_url(database))
         try:
             schema = inspect(engine)
-            assert {"security_alerts", "security_alert_audit_events"} <= set(
-                schema.get_table_names()
-            )
+            assert {
+                "security_alerts",
+                "security_alert_audit_events",
+                "security_alert_reconciliation_watermarks",
+            } <= set(schema.get_table_names())
+
+            watermark_columns = {
+                column["name"]: column
+                for column in schema.get_columns(
+                    "security_alert_reconciliation_watermarks"
+                )
+            }
+            assert watermark_columns["processor_name"]["nullable"] is False
+            assert watermark_columns["activation_started_at"]["nullable"] is False
+            with engine.connect() as connection:
+                initial_watermark = connection.execute(
+                    text(
+                        "SELECT processor_name, activation_started_at, "
+                        "cursor_occurred_at, cursor_audit_log_id "
+                        "FROM security_alert_reconciliation_watermarks"
+                    )
+                ).one()
+            assert initial_watermark.processor_name == "security-alert-v1"
+            assert initial_watermark.activation_started_at >= migration_started_at
+            assert initial_watermark.cursor_occurred_at is None
+            assert initial_watermark.cursor_audit_log_id is None
+            watermark_checks = {
+                check["name"]
+                for check in schema.get_check_constraints(
+                    "security_alert_reconciliation_watermarks"
+                )
+            }
+            assert "ck_security_alert_reconciliation_cursor_pair" in watermark_checks
+
+            audit_indexes = {
+                index["name"] for index in schema.get_indexes("audit_logs")
+            }
+            assert "ix_audit_logs_occurred_at_id" in audit_indexes
 
             evidence_foreign_keys = {
                 tuple(foreign_key["constrained_columns"]): foreign_key
@@ -389,10 +505,625 @@ def test_security_alert_downgrade_removes_only_feature_schema_and_keeps_data():
             assert tables_after == tables_before - {
                 "security_alerts",
                 "security_alert_audit_events",
+                "security_alert_reconciliation_watermarks",
             }
             assert user_count == 1
             assert organization_count == 1
             assert audit_count == 1
+        finally:
+            engine.dispose()
+
+
+@pytest.mark.skipif(
+    os.getenv(RUN_ENV) != "1",
+    reason=f"set {RUN_ENV}=1 to run disposable PostgreSQL integration tests",
+)
+def test_aggregation_creates_alert_evidence_and_detected_audit_in_postgres():
+    with _disposable_database() as (database, config):
+        engine = create_engine(config.database_url(database))
+        actor_id = uuid.uuid4()
+        organization_id = uuid.uuid4()
+        audit_ids = tuple(uuid.uuid4() for _ in range(5))
+        now = datetime.now(timezone.utc)
+        candidate = _aggregation_candidate(
+            organization_id=organization_id,
+            actor_id=actor_id,
+        )
+
+        try:
+            _seed_aggregation_rows(
+                engine,
+                user_id=actor_id,
+                organization_id=organization_id,
+                audit_ids=audit_ids,
+                now=now,
+            )
+
+            with Session(engine, autoflush=False) as session:
+                audit_logs = (
+                    session.query(AuditLog)
+                    .filter(AuditLog.id.in_(audit_ids))
+                    .order_by(AuditLog.occurred_at, AuditLog.id)
+                    .all()
+                )
+                alert = aggregate_security_alert_detection(
+                    session,
+                    candidate=candidate,
+                    audit_logs=audit_logs,
+                    detected_at=now + timedelta(seconds=4),
+                )
+                session.commit()
+                alert_id = alert.id
+
+            with engine.connect() as connection:
+                stored = connection.execute(
+                    text(
+                        "SELECT occurrence_count FROM security_alerts "
+                        "WHERE id = :alert_id"
+                    ),
+                    {"alert_id": alert_id},
+                ).one()
+                evidence_count = connection.execute(
+                    text(
+                        "SELECT count(*) FROM security_alert_audit_events "
+                        "WHERE security_alert_id = :alert_id"
+                    ),
+                    {"alert_id": alert_id},
+                ).scalar_one()
+                detected_audit_count = connection.execute(
+                    text(
+                        "SELECT count(*) FROM audit_logs "
+                        "WHERE action = 'security_alert.detected' "
+                        "AND target_id = :target_id"
+                    ),
+                    {"target_id": str(alert_id)},
+                ).scalar_one()
+
+            assert stored.occurrence_count == 5
+            assert evidence_count == 5
+            assert detected_audit_count == 1
+        finally:
+            engine.dispose()
+
+
+@pytest.mark.skipif(
+    os.getenv(RUN_ENV) != "1",
+    reason=f"set {RUN_ENV}=1 to run disposable PostgreSQL integration tests",
+)
+def test_realtime_worker_creates_alert_on_fifth_denial_in_postgres(monkeypatch):
+    with _disposable_database() as (database, config):
+        engine = create_engine(config.database_url(database))
+        actor_id = uuid.uuid4()
+        organization_id = uuid.uuid4()
+        audit_ids = tuple(uuid.uuid4() for _ in range(5))
+        now = datetime.now(timezone.utc)
+
+        try:
+            _seed_aggregation_rows(
+                engine,
+                user_id=actor_id,
+                organization_id=organization_id,
+                audit_ids=audit_ids,
+                now=now,
+            )
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "UPDATE audit_logs SET target_id = :target_id "
+                        "WHERE id = ANY(:audit_ids)"
+                    ),
+                    {
+                        "target_id": str(uuid.uuid4()),
+                        "audit_ids": list(audit_ids),
+                    },
+                )
+                connection.execute(
+                    text(
+                        "UPDATE security_alert_reconciliation_watermarks "
+                        "SET activation_started_at = :activation_started_at, "
+                        "cursor_occurred_at = NULL, cursor_audit_log_id = NULL "
+                        "WHERE processor_name = 'security-alert-v1'"
+                    ),
+                    {"activation_started_at": now - timedelta(seconds=1)},
+                )
+
+            monkeypatch.setattr(
+                audit_tasks,
+                "SessionLocal",
+                lambda: Session(engine, autoflush=False),
+            )
+
+            fourth_result = audit_tasks.detect_security_alert.run(str(audit_ids[3]))
+            with engine.connect() as connection:
+                alert_count_after_four = connection.execute(
+                    text("SELECT count(*) FROM security_alerts")
+                ).scalar_one()
+
+            fifth_result = audit_tasks.detect_security_alert.run(str(audit_ids[4]))
+            with engine.connect() as connection:
+                alert = connection.execute(
+                    text(
+                        "SELECT id, occurrence_count FROM security_alerts "
+                        "WHERE rule_id = 'repeated_permission_denied'"
+                    )
+                ).one()
+                evidence_count = connection.execute(
+                    text(
+                        "SELECT count(*) FROM security_alert_audit_events "
+                        "WHERE security_alert_id = :alert_id"
+                    ),
+                    {"alert_id": alert.id},
+                ).scalar_one()
+                detected_audit_count = connection.execute(
+                    text(
+                        "SELECT count(*) FROM audit_logs "
+                        "WHERE action = 'security_alert.detected' "
+                        "AND target_id = :target_id"
+                    ),
+                    {"target_id": str(alert.id)},
+                ).scalar_one()
+
+            assert fourth_result["candidate_count"] == 0
+            assert alert_count_after_four == 0
+            assert fifth_result["candidate_count"] == 1
+            assert alert.occurrence_count == 5
+            assert evidence_count == 5
+            assert detected_audit_count == 1
+        finally:
+            engine.dispose()
+
+
+@pytest.mark.skipif(
+    os.getenv(RUN_ENV) != "1",
+    reason=f"set {RUN_ENV}=1 to run disposable PostgreSQL integration tests",
+)
+def test_reconciliation_recovers_missed_denials_and_advances_cursor_in_postgres(
+    monkeypatch,
+):
+    with _disposable_database() as (database, config):
+        engine = create_engine(config.database_url(database))
+        actor_id = uuid.uuid4()
+        organization_id = uuid.uuid4()
+        audit_ids = tuple(uuid.uuid4() for _ in range(5))
+        now = datetime.now(timezone.utc)
+
+        try:
+            _seed_aggregation_rows(
+                engine,
+                user_id=actor_id,
+                organization_id=organization_id,
+                audit_ids=audit_ids,
+                now=now,
+            )
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "UPDATE audit_logs SET target_id = :target_id "
+                        "WHERE id = ANY(:audit_ids)"
+                    ),
+                    {
+                        "target_id": str(uuid.uuid4()),
+                        "audit_ids": list(audit_ids),
+                    },
+                )
+                connection.execute(
+                    text(
+                        "UPDATE security_alert_reconciliation_watermarks "
+                        "SET activation_started_at = :activation_started_at, "
+                        "cursor_occurred_at = NULL, cursor_audit_log_id = NULL "
+                        "WHERE processor_name = 'security-alert-v1'"
+                    ),
+                    {"activation_started_at": now - timedelta(seconds=1)},
+                )
+
+            monkeypatch.setattr(
+                audit_tasks,
+                "SessionLocal",
+                lambda: Session(engine, autoflush=False),
+            )
+
+            result = audit_tasks.reconcile_security_alerts.run()
+
+            with engine.connect() as connection:
+                alert = connection.execute(
+                    text(
+                        "SELECT id, occurrence_count FROM security_alerts "
+                        "WHERE rule_id = 'repeated_permission_denied'"
+                    )
+                ).one()
+                evidence_count = connection.execute(
+                    text(
+                        "SELECT count(*) FROM security_alert_audit_events "
+                        "WHERE security_alert_id = :alert_id"
+                    ),
+                    {"alert_id": alert.id},
+                ).scalar_one()
+                watermark = connection.execute(
+                    text(
+                        "SELECT cursor_occurred_at, cursor_audit_log_id "
+                        "FROM security_alert_reconciliation_watermarks "
+                        "WHERE processor_name = 'security-alert-v1'"
+                    )
+                ).one()
+                latest_audit = connection.execute(
+                    text(
+                        "SELECT occurred_at, id FROM audit_logs "
+                        "WHERE id = ANY(:audit_ids) "
+                        "ORDER BY occurred_at DESC, id DESC LIMIT 1"
+                    ),
+                    {"audit_ids": list(audit_ids)},
+                ).one()
+
+            assert result == {"status": "processed", "processed_count": 5}
+            assert alert.occurrence_count == 5
+            assert evidence_count == 5
+            assert watermark.cursor_occurred_at == latest_audit.occurred_at
+            assert watermark.cursor_audit_log_id == latest_audit.id
+        finally:
+            engine.dispose()
+
+
+@pytest.mark.skipif(
+    os.getenv(RUN_ENV) != "1",
+    reason=f"set {RUN_ENV}=1 to run disposable PostgreSQL integration tests",
+)
+def test_reconciliation_overlap_uuid_cursor_and_activation_boundary_in_postgres(
+    monkeypatch,
+):
+    with _disposable_database() as (database, config):
+        engine = create_engine(config.database_url(database))
+        actor_id = uuid.uuid4()
+        organization_id = uuid.uuid4()
+        audit_ids = tuple(uuid.UUID(int=index) for index in range(1, 7))
+        activation_started_at = datetime.now(timezone.utc)
+
+        try:
+            _seed_aggregation_rows(
+                engine,
+                user_id=actor_id,
+                organization_id=organization_id,
+                audit_ids=audit_ids,
+                now=activation_started_at,
+            )
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "UPDATE audit_logs SET occurred_at = :before "
+                        "WHERE id = :before_id"
+                    ),
+                    {
+                        "before": activation_started_at - timedelta(seconds=1),
+                        "before_id": audit_ids[0],
+                    },
+                )
+                connection.execute(
+                    text(
+                        "UPDATE audit_logs SET occurred_at = :at_activation, "
+                        "target_id = :target_id WHERE id = ANY(:audit_ids)"
+                    ),
+                    {
+                        "at_activation": activation_started_at,
+                        "target_id": str(uuid.uuid4()),
+                        "audit_ids": list(audit_ids[1:]),
+                    },
+                )
+                connection.execute(
+                    text(
+                        "UPDATE security_alert_reconciliation_watermarks SET "
+                        "activation_started_at = :activation_started_at, "
+                        "cursor_occurred_at = :cursor_occurred_at, "
+                        "cursor_audit_log_id = :cursor_audit_log_id "
+                        "WHERE processor_name = 'security-alert-v1'"
+                    ),
+                    {
+                        "activation_started_at": activation_started_at,
+                        "cursor_occurred_at": activation_started_at,
+                        "cursor_audit_log_id": audit_ids[3],
+                    },
+                )
+
+            monkeypatch.setattr(
+                audit_tasks,
+                "SessionLocal",
+                lambda: Session(engine, autoflush=False),
+            )
+
+            first_result = audit_tasks.reconcile_security_alerts.run()
+            with engine.connect() as connection:
+                first_alert = connection.execute(
+                    text(
+                        "SELECT id, occurrence_count FROM security_alerts "
+                        "WHERE rule_id = 'repeated_permission_denied'"
+                    )
+                ).one()
+                first_evidence_count = connection.execute(
+                    text(
+                        "SELECT count(*) FROM security_alert_audit_events "
+                        "WHERE security_alert_id = :alert_id"
+                    ),
+                    {"alert_id": first_alert.id},
+                ).scalar_one()
+                first_cursor = connection.execute(
+                    text(
+                        "SELECT cursor_occurred_at, cursor_audit_log_id "
+                        "FROM security_alert_reconciliation_watermarks "
+                        "WHERE processor_name = 'security-alert-v1'"
+                    )
+                ).one()
+
+            second_result = audit_tasks.reconcile_security_alerts.run()
+            with engine.connect() as connection:
+                second_alert = connection.execute(
+                    text(
+                        "SELECT occurrence_count FROM security_alerts "
+                        "WHERE id = :alert_id"
+                    ),
+                    {"alert_id": first_alert.id},
+                ).one()
+                second_evidence_count = connection.execute(
+                    text(
+                        "SELECT count(*) FROM security_alert_audit_events "
+                        "WHERE security_alert_id = :alert_id"
+                    ),
+                    {"alert_id": first_alert.id},
+                ).scalar_one()
+                before_evidence_count = connection.execute(
+                    text(
+                        "SELECT count(*) FROM security_alert_audit_events "
+                        "WHERE audit_log_id = :before_id"
+                    ),
+                    {"before_id": audit_ids[0]},
+                ).scalar_one()
+
+            assert first_result["processed_count"] == 5
+            assert first_alert.occurrence_count == 5
+            assert first_evidence_count == 5
+            assert first_cursor.cursor_occurred_at == activation_started_at
+            assert first_cursor.cursor_audit_log_id == audit_ids[-1]
+            assert second_result["processed_count"] >= 5
+            assert second_alert.occurrence_count == 5
+            assert second_evidence_count == 5
+            assert before_evidence_count == 0
+        finally:
+            engine.dispose()
+
+
+@pytest.mark.skipif(
+    os.getenv(RUN_ENV) != "1",
+    reason=f"set {RUN_ENV}=1 to run disposable PostgreSQL integration tests",
+)
+def test_reconciliation_failure_rolls_back_alert_cursor_then_retries_once(
+    monkeypatch,
+):
+    with _disposable_database() as (database, config):
+        engine = create_engine(config.database_url(database))
+        actor_id = uuid.uuid4()
+        organization_id = uuid.uuid4()
+        audit_ids = tuple(uuid.uuid4() for _ in range(6))
+        now = datetime.now(timezone.utc)
+
+        try:
+            _seed_aggregation_rows(
+                engine,
+                user_id=actor_id,
+                organization_id=organization_id,
+                audit_ids=audit_ids,
+                now=now,
+            )
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "UPDATE audit_logs SET target_id = :target_id "
+                        "WHERE id = ANY(:audit_ids)"
+                    ),
+                    {
+                        "target_id": str(uuid.uuid4()),
+                        "audit_ids": list(audit_ids),
+                    },
+                )
+                connection.execute(
+                    text(
+                        "UPDATE security_alert_reconciliation_watermarks "
+                        "SET activation_started_at = :activation_started_at, "
+                        "cursor_occurred_at = NULL, cursor_audit_log_id = NULL "
+                        "WHERE processor_name = 'security-alert-v1'"
+                    ),
+                    {"activation_started_at": now - timedelta(seconds=1)},
+                )
+
+            monkeypatch.setattr(
+                audit_tasks,
+                "SessionLocal",
+                lambda: Session(engine, autoflush=False),
+            )
+            original_process = audit_tasks._process_reconciliation_audit
+            process_count = 0
+            failure = RuntimeError("synthetic reconciliation failure")
+            retries = []
+
+            class _RetryRequested(Exception):
+                pass
+
+            def fail_after_alert(db, audit):
+                nonlocal process_count
+                process_count += 1
+                if process_count == 6:
+                    raise failure
+                original_process(db, audit)
+
+            def request_retry(**kwargs):
+                retries.append(kwargs)
+                raise _RetryRequested
+
+            monkeypatch.setattr(
+                audit_tasks,
+                "_process_reconciliation_audit",
+                fail_after_alert,
+            )
+            monkeypatch.setattr(
+                audit_tasks.reconcile_security_alerts,
+                "retry",
+                request_retry,
+            )
+
+            with pytest.raises(_RetryRequested):
+                audit_tasks.reconcile_security_alerts.run()
+
+            with engine.connect() as connection:
+                rolled_back_alerts = connection.execute(
+                    text("SELECT count(*) FROM security_alerts")
+                ).scalar_one()
+                rolled_back_evidence = connection.execute(
+                    text("SELECT count(*) FROM security_alert_audit_events")
+                ).scalar_one()
+                rolled_back_detected_audits = connection.execute(
+                    text(
+                        "SELECT count(*) FROM audit_logs "
+                        "WHERE action = 'security_alert.detected'"
+                    )
+                ).scalar_one()
+                rolled_back_cursor = connection.execute(
+                    text(
+                        "SELECT cursor_occurred_at, cursor_audit_log_id "
+                        "FROM security_alert_reconciliation_watermarks "
+                        "WHERE processor_name = 'security-alert-v1'"
+                    )
+                ).one()
+
+            assert len(retries) == 1
+            assert retries[0]["countdown"] == 1
+            assert retries[0]["exc"] is not failure
+            assert str(failure) not in str(retries[0]["exc"])
+            assert rolled_back_alerts == 0
+            assert rolled_back_evidence == 0
+            assert rolled_back_detected_audits == 0
+            assert rolled_back_cursor.cursor_occurred_at is None
+            assert rolled_back_cursor.cursor_audit_log_id is None
+
+            monkeypatch.setattr(
+                audit_tasks,
+                "_process_reconciliation_audit",
+                original_process,
+            )
+            retry_result = audit_tasks.reconcile_security_alerts.run()
+
+            with engine.connect() as connection:
+                stored_alert = connection.execute(
+                    text(
+                        "SELECT id, occurrence_count FROM security_alerts "
+                        "WHERE rule_id = 'repeated_permission_denied'"
+                    )
+                ).one()
+                stored_evidence = connection.execute(
+                    text(
+                        "SELECT count(*) FROM security_alert_audit_events "
+                        "WHERE security_alert_id = :alert_id"
+                    ),
+                    {"alert_id": stored_alert.id},
+                ).scalar_one()
+                stored_detected_audits = connection.execute(
+                    text(
+                        "SELECT count(*) FROM audit_logs "
+                        "WHERE action = 'security_alert.detected'"
+                    )
+                ).scalar_one()
+
+            assert retry_result["processed_count"] == 6
+            assert stored_alert.occurrence_count == 6
+            assert stored_evidence == 6
+            assert stored_detected_audits == 1
+        finally:
+            engine.dispose()
+
+
+@pytest.mark.skipif(
+    os.getenv(RUN_ENV) != "1",
+    reason=f"set {RUN_ENV}=1 to run disposable PostgreSQL integration tests",
+)
+def test_concurrent_same_detection_key_reuses_partial_unique_winner():
+    with _disposable_database() as (database, config):
+        engine = create_engine(config.database_url(database))
+        actor_id = uuid.uuid4()
+        organization_id = uuid.uuid4()
+        audit_ids = tuple(uuid.uuid4() for _ in range(5))
+        now = datetime.now(timezone.utc)
+        candidate = _aggregation_candidate(
+            organization_id=organization_id,
+            actor_id=actor_id,
+        )
+        ready = Barrier(2)
+
+        try:
+            _seed_aggregation_rows(
+                engine,
+                user_id=actor_id,
+                organization_id=organization_id,
+                audit_ids=audit_ids,
+                now=now,
+            )
+
+            def aggregate_once():
+                with Session(engine, autoflush=False) as session:
+                    session.connection(
+                        execution_options={"isolation_level": "READ COMMITTED"}
+                    )
+                    audit_logs = (
+                        session.query(AuditLog)
+                        .filter(AuditLog.id.in_(audit_ids))
+                        .order_by(AuditLog.occurred_at, AuditLog.id)
+                        .all()
+                    )
+                    assert (
+                        session.query(SecurityAlert)
+                        .filter(
+                            SecurityAlert.detection_key
+                            == candidate.detection_key,
+                            SecurityAlert.status.in_(("open", "acknowledged")),
+                        )
+                        .count()
+                        == 0
+                    )
+                    ready.wait(timeout=5)
+                    try:
+                        alert = aggregate_security_alert_detection(
+                            session,
+                            candidate=candidate,
+                            audit_logs=audit_logs,
+                            detected_at=now + timedelta(seconds=4),
+                        )
+                        session.commit()
+                        return alert.id
+                    except IntegrityError:
+                        session.rollback()
+                        return "integrity_error"
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                results = list(executor.map(lambda _: aggregate_once(), range(2)))
+
+            with engine.connect() as connection:
+                alert_count = connection.execute(
+                    text(
+                        "SELECT count(*) FROM security_alerts "
+                        "WHERE detection_key = :detection_key "
+                        "AND status IN ('open', 'acknowledged')"
+                    ),
+                    {"detection_key": candidate.detection_key},
+                ).scalar_one()
+                evidence_count = connection.execute(
+                    text("SELECT count(*) FROM security_alert_audit_events")
+                ).scalar_one()
+                detected_audit_count = connection.execute(
+                    text(
+                        "SELECT count(*) FROM audit_logs "
+                        "WHERE action = 'security_alert.detected'"
+                    )
+                ).scalar_one()
+
+            assert "integrity_error" not in results
+            assert len(set(results)) == 1
+            assert alert_count == 1
+            assert evidence_count == 5
+            assert detected_audit_count == 1
         finally:
             engine.dispose()
 

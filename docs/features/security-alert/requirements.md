@@ -86,7 +86,7 @@ Security Alert는 검증된 organization 안에서 인증 사용자가 짧은 �
 - SAL-REQ-036: Audit 저장 성공 이후 별도 비동기 task가 실시간 탐지를 수행해야 한다. 탐지는 원래 authorization 판단이나 사용자 응답을 지연하거나 변경해서는 안 된다.
 - SAL-REQ-037: 탐지 실패 시 원본 audit을 삭제하거나 authorization 결과를 바꾸지 않고 탐지 작업만 재시도해야 한다.
 - SAL-REQ-038: Reconciliation은 실시간 task와 같은 eligible-event 정규화와 rule 평가 함수를 사용해야 한다.
-- SAL-REQ-039: Reconciliation은 `(occurred_at, audit_log.id)` cursor와 overlap window를 사용해 worker 중단, publish 실패, 경계 시각 누락을 복구해야 한다.
+- SAL-REQ-039: Reconciliation은 PostgreSQL watermark table에 기능 활성화 시각과 `(occurred_at, audit_log.id)` cursor를 durable하게 저장하고 overlap window를 사용해 worker 중단, publish 실패, 경계 시각 누락을 복구해야 한다. Batch가 완전히 성공한 뒤에만 cursor를 전진해야 한다.
 - SAL-REQ-040: 실시간 task, retry, reconciliation이 같은 audit을 동시에 처리해도 evidence, occurrence, 활성 alert가 중복 생성되지 않아야 한다. 서로 다른 audit을 같은 활성 alert에 동시에 연결해도 occurrence를 유실하지 않고 `last_detected_at`은 가장 최신 event time을 유지해야 한다.
 - SAL-REQ-041: Alert 생성 또는 활성 alert 갱신 commit 이후 notification 변경 신호를 발행해야 한다.
 - SAL-REQ-042: Notification 발행 실패는 alert transaction을 rollback하지 않아야 하며 별도로 재시도할 수 있어야 한다.

@@ -18,13 +18,13 @@ Status: Draft
 | PostgreSQL | 컨테이너/chart | pgvector 포함 영속 저장소 |
 | Redis | 컨테이너/chart | Celery broker/result, Pub/Sub |
 
-Security Alert MVP는 [ADR-0028](decisions/ADR-0028-security-alert-detection-and-lifecycle.md)의 target architecture로 다음 컴포넌트를 추가한다. MBA-223의 audit normalization과 MBA-211의 alert/evidence 영속 모델·lifecycle service는 구현됐으며, MBA-212의 detector/reconciler, MBA-213의 관리자 API, MBA-214의 notification/client 표면은 후속 target component로 아직 제공하지 않는다.
+Security Alert MVP는 [ADR-0028](decisions/ADR-0028-security-alert-detection-and-lifecycle.md)의 architecture를 따른다. MBA-223의 audit normalization, MBA-211의 alert/evidence 영속 모델·lifecycle service, MBA-212의 실시간 detector와 PostgreSQL watermark 기반 reconciler는 구현됐다. Reconciliation은 Celery Beat에 60초 주기로 등록되며 로컬 개발 스크립트와 Docker Compose가 Worker와 분리된 Beat 프로세스를 실행한다. MBA-213의 관리자 API와 MBA-214의 notification/client 표면은 후속 target component다.
 
 | 구성요소 | 위치 | 책임 |
 | --- | --- | --- |
 | Security Alert Audit Normalizer | audit producer와 shared contract | 탐지 대상 `permission.denied`의 검증된 organization provenance와 `policy.block`의 canonical `policy_reason`을 제공한다 |
 | Security Alert Detector | Log System Celery task/application boundary | 저장된 eligible audit를 동일 rule evaluator로 실시간 평가하고 alert/evidence를 원자적으로 생성·갱신한다 |
-| Security Alert Reconciler | Log System periodic Celery task | durable cursor와 overlap window로 실시간 처리 누락을 복구하며 기능 활성화 이전 audit은 backfill하지 않는다 |
+| Security Alert Reconciler | Log System periodic Celery task | PostgreSQL watermark의 durable cursor와 overlap window로 실시간 처리 누락을 복구하며 기능 활성화 이전 audit은 backfill하지 않는다 |
 | Security Alert Admin Service | Gateway application/service boundary | organization owner/manager 전용 alert 조회·상태 변경, safe evidence projection, lifecycle audit transaction을 제공한다 |
 | Security Alert Notification Projection | Gateway/Client notification boundary | 영속 alert를 source of truth로 두고 Sidebar summary와 `notifications.changed` 재조회 신호를 제공한다 |
 
@@ -66,9 +66,11 @@ graph LR
     G --> R[(Redis)]
     R --> WE[Workflow Engine]
     R --> LS[Log System]
-    LS --> SAD["Security Alert Detector<br/>(target)"]
+    LS --> SAD["Security Alert Detector"]
+    LS --> SAR["Security Alert Reconciler"]
     SAD --> PG
     SAD --> R
+    SAR --> PG
     WE --> PG
     LS --> PG
     WE --> SB[Sandbox]
@@ -82,7 +84,7 @@ graph LR
 2. Gateway는 인증과 organization scope, resource permission을 판정한 뒤 동기 응답하거나 Celery task를 발행한다. Turn admission처럼 DB mutation과 task 발행 사이 유실을 허용할 수 없는 target flow는 직접 publish 대신 같은 transaction의 durable outbox/dispatch job을 사용한다.
 3. Workflow 실행은 Workflow Engine이 수행하고, 실행 시 user/organization/workflow/run/node 식별자를 포함한 execution context를 전달받는다.
 4. audit/trace 기록은 Log System worker가 비동기로 처리한다.
-5. Security Alert target flow는 audit 저장 성공 뒤 detector가 eligible event를 평가하고 alert/evidence/`security_alert.detected` audit을 같은 transaction에 기록한다. Commit 뒤 Redis notification 갱신 신호를 발행하며, periodic reconciler가 실시간 누락을 같은 evaluator와 idempotency key로 복구한다.
+5. Security Alert flow는 audit 저장 성공 뒤 `security_alert.detect` task를 `log` queue에 발행한다. Detector는 eligible event를 평가하고 alert/evidence/`security_alert.detected` audit을 같은 transaction에 기록한다. `security_alert.reconcile`은 migration이 만든 `security-alert-v1` watermark, 1분 overlap, `(occurred_at, audit_log.id)` cursor를 사용해 같은 evaluator와 idempotency key로 실시간 누락을 복구한다. Alert commit 이후 Redis notification 갱신 신호는 MBA-214 target이며 현재 MBA-212 구현 범위에는 포함되지 않는다.
 6. Knowledge 자동 수집은 connector adapter가 직접 네트워크를 열지 않고 `OutboundEgressGuard` 또는 승인된 client/dialer factory를 통과한다. MCP/API source도 LLM 임의 tool-use가 아니라 server-side Knowledge Source Connector allowlist adapter로만 호출한다. Retrieval/Agent 요청은 collection routing scope와 KB permission helper/source ACL helper 결과로 만든 safe candidate set만 사용한다.
 7. Target Conversation Memory session은 canonical deployment ID/version 또는 snapshot hash, conversation mapping과 node Memory policy version에 고정한다. Gateway가 pending Turn과 durable dispatch job을 같은 transaction에 저장한 뒤 Dispatcher가 versioned Worker task를 발행한다. Workflow Engine은 `AdmitExecution(dispatch_id)`으로 중복 admission을 제거하고 task capability를 side effect 전에 검증한다. LLM Credential/egress 경계가 main-generation `ProviderExecutionCapability`를 먼저 발급하고 Memory는 같은 capability에 binding된 context lease를 만든다. Provider adapter는 해당 capability와 provider attempt로 lease를 claim하고 current authorization을 재검증한 뒤 reference-only plan을 materialize하며 outbound 호출 직전에 provider-start marker를 기록한다. Log System은 observer이며 conversation source of truth가 아니다.
 

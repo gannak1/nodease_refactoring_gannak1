@@ -224,6 +224,39 @@ services:
     networks:
       - moduly-network
 
+  # Log System (Celery Beat)
+  log_system_beat:
+    build:
+      context: ..
+      dockerfile: docker/log_system/Dockerfile
+    container_name: moduly-log-system-beat
+    entrypoint:
+      - celery
+      - -A
+      - apps.log_system.main
+      - beat
+      - --loglevel=info
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: admin
+      DB_PASSWORD: admin123
+      DB_NAME: moduly_local
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: 0
+      REDIS_PASSWORD: ""
+      REDIS_URL: redis://redis:6379/0
+      PYTHONUNBUFFERED: 1
+      PYTHONPATH: /app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - moduly-network
+
   # Frontend (Next.js)
   frontend:
     build:

@@ -73,7 +73,11 @@ from apps.shared.db.models.permission_request import (
 )
 from apps.shared.db.models.schedule import Schedule
 from apps.shared.db.models.schedule_dispatch import ScheduleDispatchClaim
-from apps.shared.db.models.security_alert import SecurityAlert, SecurityAlertAuditEvent
+from apps.shared.db.models.security_alert import (
+    SecurityAlert,
+    SecurityAlertAuditEvent,
+    SecurityAlertReconciliationWatermark,
+)
 from apps.shared.db.models.team import (
     Team,
     TeamAssignmentMixin,
@@ -148,6 +152,7 @@ __all__ = [
     "ScheduleDispatchClaim",
     "SecurityAlert",
     "SecurityAlertAuditEvent",
+    "SecurityAlertReconciliationWatermark",
     "Organization",
     "OrganizationMembership",
     "ORGANIZATION_MEMBERSHIP_INVITED",
