@@ -70,7 +70,7 @@ class DomainPermissionRepositoryPort(Protocol):
         self, organization_id: uuid.UUID
     ) -> list[DomainPermissionProjection]: ...
 
-    def lock_subject(
+    def lock_active_subject_for_grant(
         self,
         organization_id: uuid.UUID,
         subject_type: DomainSubjectType,
@@ -135,7 +135,7 @@ class KnowledgeDomainPermissionUseCase:
         self, command: DomainPermissionCommand
     ) -> DomainPermissionMutationResult:
         self._authorize_and_validate(command)
-        if self.repository.lock_subject(
+        if self.repository.lock_active_subject_for_grant(
             command.organization_id,
             command.subject_type,
             command.subject_id,
@@ -164,14 +164,6 @@ class KnowledgeDomainPermissionUseCase:
         self, command: DomainPermissionCommand
     ) -> DomainPermissionMutationResult:
         self._authorize_and_validate(command, require_future_expiry=False)
-        if self.repository.lock_subject(
-            command.organization_id,
-            command.subject_type,
-            command.subject_id,
-        ) is None:
-            self.unit_of_work.rollback()
-            raise DomainPermissionSubjectHidden()
-
         try:
             permission_id = self.repository.revoke(command)
             if permission_id is None:

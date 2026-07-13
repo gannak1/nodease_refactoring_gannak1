@@ -29,11 +29,15 @@ class FakeRepository:
         self.existing = existing
         self.saved = []
         self.deleted = []
+        self.subject_lock_calls = []
 
     def list_permissions(self, organization_id):
         return []
 
-    def lock_subject(self, organization_id, subject_type, subject_id):
+    def lock_active_subject_for_grant(
+        self, organization_id, subject_type, subject_id
+    ):
+        self.subject_lock_calls.append((organization_id, subject_type, subject_id))
         if not self.subject_exists:
             return None
         return "Knowledge Team"
@@ -148,11 +152,63 @@ def test_audit_failure_rolls_back_permission_mutation():
 
 def test_revoke_absent_permission_is_idempotent_without_audit():
     audit = FakeAudit()
-    use_case, uow = _use_case(repository=FakeRepository(existing=None), audit=audit)
+    repository = FakeRepository(subject_exists=False, existing=None)
+    use_case, uow = _use_case(repository=repository, audit=audit)
 
     result = use_case.revoke(_command(expires_at=None))
 
     assert result.status == "unchanged"
     assert audit.events == []
+    assert repository.subject_lock_calls == []
     assert uow.rollback_count == 1
     assert uow.commit_count == 0
+
+
+def test_manager_can_revoke_existing_permission_for_inactive_subject():
+    permission_id = uuid.uuid4()
+    repository = FakeRepository(subject_exists=False, existing=permission_id)
+    audit = FakeAudit()
+    use_case, uow = _use_case(repository=repository, audit=audit)
+    command = _command(expires_at=None)
+
+    result = use_case.revoke(command)
+
+    assert result.status == "deleted"
+    assert result.permission_id == permission_id
+    assert repository.subject_lock_calls == []
+    assert repository.deleted == [command]
+    assert audit.events == [
+        {
+            "command": command,
+            "permission_id": permission_id,
+            "operation": "deleted",
+        }
+    ]
+    assert uow.flush_count == 1
+    assert uow.commit_count == 1
+    assert uow.rollback_count == 0
+
+
+def test_inactive_subject_revoke_rolls_back_when_audit_fails():
+    repository = FakeRepository(subject_exists=False, existing=uuid.uuid4())
+    use_case, uow = _use_case(repository=repository, audit=FakeAudit(fails=True))
+
+    with pytest.raises(DomainPermissionPersistenceFailed):
+        use_case.revoke(_command(expires_at=None))
+
+    assert repository.subject_lock_calls == []
+    assert uow.flush_count == 0
+    assert uow.commit_count == 0
+    assert uow.rollback_count == 1
+
+
+def test_non_manager_cannot_revoke_domain_permission():
+    repository = FakeRepository(subject_exists=False, existing=uuid.uuid4())
+    use_case, uow = _use_case(allowed=False, repository=repository)
+
+    with pytest.raises(OrganizationManagerRequired):
+        use_case.revoke(_command(expires_at=None))
+
+    assert repository.deleted == []
+    assert repository.subject_lock_calls == []
+    assert uow.rollback_count == 1

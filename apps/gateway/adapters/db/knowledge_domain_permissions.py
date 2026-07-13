@@ -88,7 +88,7 @@ class SqlAlchemyKnowledgeDomainPermissionRepository:
         )
         return projections
 
-    def lock_subject(
+    def lock_active_subject_for_grant(
         self,
         organization_id: uuid.UUID,
         subject_type: DomainSubjectType,
