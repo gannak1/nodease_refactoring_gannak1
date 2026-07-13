@@ -69,6 +69,7 @@ class WorkflowEngine:
         parent_run_id: Optional[str] = None,
         workflow_timeout: int = 600,
         is_subworkflow: bool = False,
+        entry_node_id: str | None = None,
         execution_id: uuid.UUID | str | None = None,
         invocation_path_prefix: tuple[InvocationSegment, ...] | None = None,
         workflow_node_bindings: tuple[WorkflowNodeBinding, ...] | None = None,
@@ -90,6 +91,7 @@ class WorkflowEngine:
             parent_run_id: 부모 워크플로우의 run_id
             workflow_timeout: 워크플로우 전체 실행 제한 시간 (초)
             is_subworkflow: 서브 워크플로우 여부
+            entry_node_id: Loop body처럼 trigger 대신 사용할 검증된 진입 노드 ID
         """
         if isinstance(graph, dict):
             parsed_bindings = parse_workflow_node_bindings(graph)
@@ -206,7 +208,7 @@ class WorkflowEngine:
         # 로깅 관련 초기화
         self.logger = WorkflowLogger(db)
         self.parent_run_id = parent_run_id
-        self.start_node_id = None
+        self.start_node_id = entry_node_id
         self.is_subworkflow = is_subworkflow
 
         # 그래프 구조 검증
@@ -1115,6 +1117,11 @@ class WorkflowEngine:
 
     def _check_start_nodes(self):
         """시작 노드 유효성 검사 및 ID 캐싱"""
+        if self.start_node_id is not None:
+            entry_node = self.node_schemas.get(self.start_node_id)
+            if entry_node is None or entry_node.type == "note":
+                raise ValueError("워크플로우 진입 노드가 유효하지 않습니다.")
+            return
         start_nodes = []
         TRIGGER_TYPES = ["startNode", "webhookTrigger", "scheduleTrigger"]
 

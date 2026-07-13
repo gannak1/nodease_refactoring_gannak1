@@ -206,6 +206,7 @@ def test_resolved_api_rejects_noncanonical_token_or_channel(field, value):
     "payload",
     [
         {"message": "", "blocks": None, "attachments": None},
+        {"message": "   ", "blocks": None, "attachments": None},
         {"message": "", "blocks": [], "attachments": []},
         {"message": "", "blocks": "[]", "attachments": "[]"},
     ],

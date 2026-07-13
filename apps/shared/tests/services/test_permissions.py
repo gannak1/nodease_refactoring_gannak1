@@ -14,6 +14,8 @@ from apps.shared.services.permissions import (
     get_effective_knowledge_base_auth_state,
     get_effective_knowledge_domain_actions,
     get_effective_llm_credential_auth_state,
+    get_effective_mail_credential_auth_state,
+    get_effective_mail_credential_auth_states,
     get_effective_workflow_auth_state,
     get_workflow_permission_sources,
     has_active_organization_membership,
@@ -56,6 +58,11 @@ class FakeDb:
 class FakeSqlAlchemyRow:
     def __init__(self, auth_state):
         self._mapping = {"auth_state": auth_state}
+
+
+class FakeMappedRow:
+    def __init__(self, **values):
+        self._mapping = values
 
 
 def _active_user(user_id):
@@ -255,6 +262,194 @@ def test_audit_only_states_fail_closed_for_resource_permissions():
     assert workflow_auth_state_allows("auditor", "read") is False
     assert workflow_auth_state_allows("raw_auditor", "execute") is False
     assert llm_credential_auth_state_allows("raw_auditor", "use") is False
+
+
+def test_bulk_mail_credential_auth_states_combine_team_and_direct_grants():
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    credential_a = uuid.uuid4()
+    credential_b = uuid.uuid4()
+    db = FakeDb(
+        first_values=[
+            _active_user(user_id),
+            _active_organization(organization_id),
+            _organization_member(),
+        ],
+        all_values=[
+            [
+                FakeMappedRow(id=credential_a),
+                FakeMappedRow(id=credential_b),
+            ],
+            [
+                FakeMappedRow(
+                    mail_credential_id=credential_a,
+                    auth_state="viewer",
+                ),
+                FakeMappedRow(
+                    mail_credential_id=credential_b,
+                    auth_state="operator",
+                ),
+            ],
+            [
+                FakeMappedRow(
+                    mail_credential_id=credential_a,
+                    auth_state="builder",
+                )
+            ],
+        ],
+    )
+
+    result = get_effective_mail_credential_auth_states(
+        db,
+        user_id,
+        [credential_a, credential_b, credential_a],
+        organization_id,
+    )
+
+    assert result == {
+        credential_a: "builder",
+        credential_b: "operator",
+    }
+    assert db.first_values == []
+    assert db.all_values == []
+
+
+def test_bulk_mail_credential_auth_state_matches_scalar_decision():
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    credential_id = uuid.uuid4()
+    credential = SimpleNamespace(
+        id=credential_id,
+        organization_id=organization_id,
+    )
+    scalar_db = FakeDb(
+        first_values=[
+            credential,
+            _active_user(user_id),
+            _active_organization(organization_id),
+            _organization_member(),
+        ],
+        all_values=[
+            [FakeSqlAlchemyRow("operator")],
+            [FakeSqlAlchemyRow("viewer")],
+        ],
+    )
+    bulk_db = FakeDb(
+        first_values=[
+            _active_user(user_id),
+            _active_organization(organization_id),
+            _organization_member(),
+        ],
+        all_values=[
+            [FakeMappedRow(id=credential_id)],
+            [
+                FakeMappedRow(
+                    mail_credential_id=credential_id,
+                    auth_state="operator",
+                )
+            ],
+            [
+                FakeMappedRow(
+                    mail_credential_id=credential_id,
+                    auth_state="viewer",
+                )
+            ],
+        ],
+    )
+
+    scalar = get_effective_mail_credential_auth_state(
+        scalar_db,
+        user_id,
+        credential_id,
+        organization_id,
+    )
+    bulk = get_effective_mail_credential_auth_states(
+        bulk_db,
+        user_id,
+        [credential_id],
+        organization_id,
+    )
+
+    assert bulk == {credential_id: scalar}
+
+
+def test_bulk_mail_credential_auth_states_exclude_cross_scope_ids():
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    scoped_id = uuid.uuid4()
+    hidden_id = uuid.uuid4()
+    db = FakeDb(
+        first_values=[
+            _active_user(user_id),
+            _active_organization(organization_id),
+            _organization_member("manager"),
+        ],
+        all_values=[[FakeMappedRow(id=scoped_id)]],
+    )
+
+    result = get_effective_mail_credential_auth_states(
+        db,
+        user_id,
+        [scoped_id, hidden_id],
+        organization_id,
+    )
+
+    assert result == {scoped_id: "manager"}
+
+
+def test_revoked_mail_credential_has_no_scalar_permission() -> None:
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    credential_id = uuid.uuid4()
+    db = FakeDb(
+        first_values=[
+            SimpleNamespace(
+                id=credential_id,
+                organization_id=organization_id,
+                status="revoked",
+            )
+        ]
+    )
+
+    assert (
+        get_effective_mail_credential_auth_state(
+            db,
+            user_id,
+            credential_id,
+            organization_id,
+        )
+        == "none"
+    )
+    assert db.first_values == []
+
+
+def test_bulk_mail_credential_auth_states_exclude_revoked_rows() -> None:
+    user_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    active_id = uuid.uuid4()
+    revoked_id = uuid.uuid4()
+    db = FakeDb(
+        first_values=[
+            _active_user(user_id),
+            _active_organization(organization_id),
+            _organization_member("manager"),
+        ],
+        all_values=[
+            [
+                FakeMappedRow(id=active_id, status="active"),
+                FakeMappedRow(id=revoked_id, status="revoked"),
+            ]
+        ],
+    )
+
+    result = get_effective_mail_credential_auth_states(
+        db,
+        user_id,
+        [active_id, revoked_id],
+        organization_id,
+    )
+
+    assert result == {active_id: "manager"}
 
 
 def test_active_organization_membership_requires_active_organization():

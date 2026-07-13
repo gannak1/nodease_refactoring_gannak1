@@ -4,10 +4,14 @@ from typing import Any, Dict, List, Literal, Optional
 from jinja2 import BaseLoader, Environment, TemplateSyntaxError, UndefinedError
 from pydantic import BaseModel, Field
 
+from apps.shared.domain.workflow_execution_identity import InvocationSegment
+from apps.shared.domain.workflow_graph import (
+    WorkflowGraphValidationError,
+    validate_loop_subgraph,
+)
+from apps.workflow_engine.domain.external_effect import ExternalEffectError
 from apps.workflow_engine.workflow.nodes.base.entities import BaseNodeData
 from apps.workflow_engine.workflow.nodes.base.node import Node
-from apps.shared.domain.workflow_execution_identity import InvocationSegment
-from apps.workflow_engine.domain.external_effect import ExternalEffectError
 
 
 logger = logging.getLogger(__name__)
@@ -117,6 +121,10 @@ class LoopNode(Node[LoopNodeData]):
         # 1. 서브그래프 검증
         if not self.data.subGraph or not self.data.subGraph.get("nodes"):
             return {"error": "No subgraph defined", "results": []}
+        try:
+            entry_node_id = validate_loop_subgraph(self.data.subGraph)
+        except WorkflowGraphValidationError:
+            raise ValueError("workflow_graph_invalid") from None
 
         # 2. 하이브리드 입력 매핑
         mapped_inputs = self._map_inputs_hybrid(inputs)
@@ -146,6 +154,7 @@ class LoopNode(Node[LoopNodeData]):
                 result = self._execute_subgraph_scoped(
                     context,
                     iteration_index=iteration_count,
+                    entry_node_id=entry_node_id,
                 )
                 results.append(result)
 
@@ -191,6 +200,7 @@ class LoopNode(Node[LoopNodeData]):
         context: Dict[str, Any],
         *,
         iteration_index: int,
+        entry_node_id: str,
     ) -> Dict[str, Any]:
         """
         스코프 기반 서브그래프 실행.
@@ -218,6 +228,7 @@ class LoopNode(Node[LoopNodeData]):
             is_deployed=False,
             db=self.execution_context.get("db"),
             workflow_timeout=300,
+            entry_node_id=entry_node_id,
             execution_id=execution_id,
             invocation_path_prefix=invocation_path_prefix,
             workflow_node_bindings=(
