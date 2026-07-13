@@ -4,6 +4,28 @@ from types import SimpleNamespace
 from apps.workflow_engine.workflow.core.workflow_logger import WorkflowLogger
 
 
+def _passthrough_payloads(
+    self,
+    payloads,
+    default_scope,
+    app_id=None,
+    default_node_run_id=None,
+):
+    records = [
+        {
+            "id": str(uuid.uuid4()),
+            "payload_kind": item["payload_kind"],
+            "redacted_payload": item["payload"],
+        }
+        for item in payloads
+    ]
+    return (
+        records,
+        {"redaction_applied": False, "pii_detected": False},
+        {"redaction": SimpleNamespace(id=None)},
+    )
+
+
 def test_policy_failure_disables_payload_capture_and_redacts_compat_fields(monkeypatch):
     captured = {}
 
@@ -363,6 +385,7 @@ def test_safe_container_finish_captures_deferred_input(monkeypatch):
         captured["data"] = data
 
     monkeypatch.setattr(WorkflowLogger, "_submit_log", capture_submit)
+    monkeypatch.setattr(WorkflowLogger, "_prepare_payloads", _passthrough_payloads)
     logger = WorkflowLogger()
     logger.workflow_run_id = uuid.uuid4()
 
@@ -392,6 +415,7 @@ def test_sensitive_container_finish_never_captures_deferred_input(monkeypatch):
         captured["data"] = data
 
     monkeypatch.setattr(WorkflowLogger, "_submit_log", capture_submit)
+    monkeypatch.setattr(WorkflowLogger, "_prepare_payloads", _passthrough_payloads)
     logger = WorkflowLogger()
     logger.workflow_run_id = uuid.uuid4()
 
