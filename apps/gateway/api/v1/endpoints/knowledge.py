@@ -43,6 +43,10 @@ from apps.gateway.services.knowledge_collection_service import (
     KnowledgeCollectionService,
     KnowledgeCollectionServiceError,
 )
+from apps.gateway.services.knowledge_collection_picker_query_service import (
+    KnowledgeCollectionPickerQueryService,
+    KnowledgeCollectionPickerUnavailable,
+)
 from apps.gateway.services.knowledge_document_content_service import (
     KnowledgeDocumentContentService,
 )
@@ -90,6 +94,7 @@ from apps.shared.schemas.knowledge import (
     KnowledgeCollectionItemReorderRequest,
     KnowledgeCollectionItemsResponse,
     KnowledgeCollectionLinkCandidatesResponse,
+    KnowledgeCollectionLLMSelectableResponse,
     KnowledgeCollectionListResponse,
     KnowledgeCollectionPermissionGrantRequest,
     KnowledgeCollectionPermissionBundleGrantRequest,
@@ -510,6 +515,40 @@ def list_llm_selectable_knowledge_bases(
         organization_id=organization_id,
         schema_ready=True,
     )
+
+
+@router.get(
+    "/llm-selectable-collections",
+    response_model=KnowledgeCollectionLLMSelectableResponse,
+)
+def list_llm_selectable_knowledge_collections(
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return only active Collections the current editor may route through."""
+
+    organization_id = resolve_active_organization_id(
+        db,
+        request,
+        x_organization_id,
+        current_user.id,
+    )
+    service = KnowledgeCollectionPickerQueryService(
+        db,
+        user_id=current_user.id,
+        organization_id=organization_id,
+    )
+    try:
+        return service.list_llm_selectable()
+    except KnowledgeCollectionPickerUnavailable:
+        raise_api_error(
+            request,
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "knowledge.collection_picker_unavailable",
+            "Knowledge Collection candidates are temporarily unavailable.",
+        )
 
 
 @router.post("/candidates/resolve", response_model=KnowledgeCandidateResolution)

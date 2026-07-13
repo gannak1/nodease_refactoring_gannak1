@@ -56,6 +56,10 @@ from apps.shared.db.models.workflow import Workflow
 from apps.shared.domain.external_effect_error import (
     safe_external_effect_error_payload,
 )
+from apps.shared.domain.workflow_knowledge_references import (
+    WorkflowKnowledgeReferenceError,
+    parse_workflow_knowledge_references,
+)
 from apps.shared.permissions import workflow_auth_state_allows
 from apps.workflow_engine.services.model_router import ModelCandidate, ModelRouter
 from apps.workflow_engine.services.model_routing_policy_refresh import (
@@ -3288,6 +3292,14 @@ def _run_cost_optimizer_candidate(
 
 
 def validate_execution_graph(graph: dict):
+    try:
+        parse_workflow_knowledge_references(graph)
+    except WorkflowKnowledgeReferenceError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": exc.reason_code, "field": exc.field_path},
+        ) from exc
+
     nodes = graph.get("nodes") or []
     edges = graph.get("edges") or []
     node_map = {
@@ -3468,6 +3480,12 @@ def patch_model_routing_policy_endpoint(
     legacy_policy["refresh"] = legacy_refresh
     node_data["model_routing_policy"] = legacy_policy
     node["data"] = node_data
+    WorkflowService.validate_knowledge_references(
+        db,
+        next_graph,
+        user_id=current_user.id,
+        organization_id=workflow.organization_id,
+    )
     workflow.graph = next_graph
 
     policy = _get_model_routing_policy_for_workflow(db, workflow, node_id)
@@ -3783,11 +3801,18 @@ def apply_cost_optimizer_recommendations(
         SimpleNamespace(id=workflow.id, graph=current_graph),
         node_id,
     )
-    workflow.graph = _patch_cost_optimizer_candidate_graph(
+    next_graph = _patch_cost_optimizer_candidate_graph(
         current_graph,
         node_id,
         candidate_settings,
     )
+    WorkflowService.validate_knowledge_references(
+        db,
+        next_graph,
+        user_id=current_user.id,
+        organization_id=workflow.organization_id,
+    )
+    workflow.graph = next_graph
     db.commit()
     try:
         db.refresh(workflow)
@@ -4442,11 +4467,18 @@ def apply_cost_optimizer_candidate(
         SimpleNamespace(id=workflow.id, graph=current_graph),
         node_id,
     )
-    workflow.graph = _patch_cost_optimizer_candidate_graph(
+    next_graph = _patch_cost_optimizer_candidate_graph(
         current_graph,
         node_id,
         candidate_settings,
     )
+    WorkflowService.validate_knowledge_references(
+        db,
+        next_graph,
+        user_id=current_user.id,
+        organization_id=workflow.organization_id,
+    )
+    workflow.graph = next_graph
     if applied_candidate_row is not None:
         applied_at = datetime.now(timezone.utc)
         for candidate_row in comparison_candidate_rows:

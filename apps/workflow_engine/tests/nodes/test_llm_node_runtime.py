@@ -26,6 +26,9 @@ from apps.shared.db.models.knowledge import (  # noqa: E402
     SourceType,
 )
 from apps.shared.db.models.llm import LLMModel  # noqa: E402
+from apps.shared.domain.workflow_knowledge_references import (  # noqa: E402
+    WorkflowKnowledgeReferenceError,
+)
 from apps.shared.schemas.rag import ChunkPreview  # noqa: E402
 from apps.shared.services.rag_evidence_policy import RAGEvidenceDecision  # noqa: E402
 from apps.shared.services.tracing.metadata import TraceMetadataSanitizer  # noqa: E402
@@ -1761,7 +1764,7 @@ def test_llm_node_rag_operational_failure_uses_safe_no_result(monkeypatch):
     assert result["metadata"]["rag"]["insufficiency_reason"] == "operational_error"
 
 
-def test_llm_node_rag_options_are_capped_during_validation():
+def test_llm_node_rejects_over_limit_kbs_without_silent_slicing():
     data = LLMNodeData(
         title="LLM",
         provider="openai",
@@ -1774,10 +1777,12 @@ def test_llm_node_rag_options_are_capped_during_validation():
         ],
     )
 
-    data.validate()
+    with pytest.raises(WorkflowKnowledgeReferenceError) as error:
+        data.validate()
 
+    assert error.value.reason_code == "knowledge_reference_limit_exceeded"
     assert data.topK == MAX_RAG_CHUNKS_PER_KB
-    assert len(data.knowledgeBases) == MAX_RAG_RETRIEVAL_KBS
+    assert len(data.knowledgeBases) == MAX_RAG_RETRIEVAL_KBS + 5
 
 
 def test_llm_node_rag_partial_retrieval_failure_uses_safe_partial_result(

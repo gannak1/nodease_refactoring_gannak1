@@ -119,6 +119,12 @@ class DeploymentService:
             workflow.id,
             deployment_in.graph_snapshot,
         )
+        WorkflowService.validate_knowledge_references(
+            db,
+            graph_snapshot,
+            user_id=user_id,
+            organization_id=workflow.organization_id,
+        )
         graph_snapshot = DeploymentService.bind_workflow_node_targets(
             db,
             graph_snapshot,

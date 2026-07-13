@@ -142,6 +142,17 @@ class KnowledgeCollectionListResponse(BaseModel):
     can_change_public_visibility: bool = False
 
 
+class KnowledgeCollectionLLMSelectableItem(BaseModel):
+    id: UUID
+    safe_label: str | None = None
+
+
+class KnowledgeCollectionLLMSelectableResponse(BaseModel):
+    collections: list[KnowledgeCollectionLLMSelectableItem] = Field(
+        default_factory=list
+    )
+
+
 class KnowledgeCollectionItemLinkRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

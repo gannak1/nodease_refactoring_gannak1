@@ -961,6 +961,13 @@ def test_owner_or_manager_without_membership_can_create_and_list_apps_and_workfl
 
 def test_active_member_can_manage_app_draft_after_creating_app(monkeypatch):
     _patch_audit(monkeypatch)
+    # Knowledge reference authorization is covered by its focused service/API
+    # tests; this route fake intentionally models only App/Workflow RBAC rows.
+    monkeypatch.setattr(
+        WorkflowService,
+        "validate_knowledge_references",
+        lambda *args, **kwargs: None,
+    )
     # App 생성 권한 판정(ADR-0016)은 전용 테스트에서 검증한다. 이 테스트의
     # 관심사는 생성 후 draft manage 권한이므로 생성 능력은 허용으로 고정한다.
     monkeypatch.setattr(

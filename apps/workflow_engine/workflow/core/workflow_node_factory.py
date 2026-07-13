@@ -1,6 +1,10 @@
 from typing import Dict
 
 from apps.shared.schemas.workflow import NodeSchema
+from apps.shared.domain.workflow_knowledge_references import (
+    WorkflowKnowledgeReferenceError,
+    parse_llm_knowledge_references,
+)
 from apps.shared.domain.mail_credential import (
     validate_mail_node_credential_boundary,
     validate_mail_processing_node_boundary,
@@ -49,6 +53,7 @@ from apps.workflow_engine.workflow.nodes.variable_extraction import (
     VariableExtractionNode,
     VariableExtractionNodeData,
 )
+from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
 
 
 class NodeFactory:
@@ -105,6 +110,11 @@ class NodeFactory:
             validate_mail_node_credential_boundary(schema.data)
         elif schema.type in {"gmailDraftNode", "mailAcknowledgeNode"}:
             validate_mail_processing_node_boundary(schema.type, schema.data)
+        elif schema.type == "llmNode":
+            try:
+                parse_llm_knowledge_references(schema.data)
+            except WorkflowKnowledgeReferenceError as exc:
+                raise NonRetryableWorkflowError(exc.reason_code) from exc
 
         NodeClass, DataClass = NodeFactory.NODE_REGISTRY[schema.type]
         data = DataClass(**schema.data)

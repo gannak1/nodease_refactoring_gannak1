@@ -1,7 +1,14 @@
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
+from apps.shared.domain.knowledge_runtime_candidates import (
+    MAX_RUNTIME_COLLECTION_REFERENCES,
+    MAX_RUNTIME_DIRECT_KB_REFERENCES,
+)
+from apps.shared.domain.workflow_knowledge_references import (
+    parse_llm_knowledge_references,
+)
 from apps.workflow_engine.workflow.nodes.base.entities import BaseNodeData
 
 
@@ -18,15 +25,25 @@ class LLMVariable(BaseModel):
 
 
 class KnowledgeBaseRef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     id: str
     name: str
+
+
+class KnowledgeCollectionRef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    safeLabel: Optional[str] = None
 
 
 EvidenceSufficiencyPolicy = Literal["minimum_evidence", "strict_citation"]
 RAGFailurePolicy = Literal["safe_no_result", "fail_node"]
 SourceTierPolicy = Literal["tie_break", "off"]
 QueryRewriteMode = Literal["off", "template", "llm_assisted"]
-MAX_RAG_RETRIEVAL_KBS = 20
+MAX_RAG_RETRIEVAL_KBS = MAX_RUNTIME_DIRECT_KB_REFERENCES
+MAX_RAG_COLLECTIONS = MAX_RUNTIME_COLLECTION_REFERENCES
 MAX_RAG_CHUNKS_PER_KB = 8
 MAX_RAG_QUERY_REWRITE_TEMPLATE_LENGTH = 512
 
@@ -71,6 +88,10 @@ class LLMNodeData(BaseNodeData):
     knowledgeBases: List[KnowledgeBaseRef] = Field(
         default_factory=list,
         description="검색할 지식 베이스 목록",
+    )
+    knowledgeCollections: List[KnowledgeCollectionRef] = Field(
+        default_factory=list,
+        description="실행 시점에 멤버십을 해석할 지식 컬렉션 목록",
     )
     scoreThreshold: float = Field(default=0.5, description="유사도 점수 임계값")
     topK: int = Field(default=3, description="상위 K개 문서 반환")
@@ -174,8 +195,18 @@ class LLMNodeData(BaseNodeData):
             self.topK = 1
         if self.topK > MAX_RAG_CHUNKS_PER_KB:
             self.topK = MAX_RAG_CHUNKS_PER_KB
-        if len(self.knowledgeBases) > MAX_RAG_RETRIEVAL_KBS:
-            self.knowledgeBases = self.knowledgeBases[:MAX_RAG_RETRIEVAL_KBS]
+        parse_llm_knowledge_references(
+            {
+                "knowledgeBases": [
+                    reference.model_dump(mode="python")
+                    for reference in self.knowledgeBases
+                ],
+                "knowledgeCollections": [
+                    reference.model_dump(mode="python")
+                    for reference in self.knowledgeCollections
+                ],
+            }
+        )
 
         if self.queryRewriteMode == "llm_assisted":
             raise ValueError("llm_assisted query rewrite는 아직 사용할 수 없습니다.")
