@@ -57,6 +57,15 @@ Main generation과 Memory summary provider adapter는 Workflow admission 안에�
 
 ## Components
 
+### Slack Delivery
+
+- `SlackPostNodePanel`은 delivery mode, mode별 token 또는 Webhook URL, channel, message와 blocks를 편집한다. 이 token/Webhook URL은 현재 graph 내부의 전용 Slack credential 입력이며, generic HTTP endpoint, header, body, auth, timeout 입력은 제공하지 않는다. Credential reference 전환은 ADR-0037의 별도 후속 범위다.
+- `SlackPostNode` runtime은 mode별 `SlackEffectAdapter`를 `Node._run_external_effect()`에 전달한다. ADR-0035의 공통 executor가 durable claim/replay를 소유하고 adapter가 endpoint policy, strict response parser, safe failure taxonomy와 trace summary를 소유한다.
+- Slack node output handle은 공통 `status`, `delivery_status`, `delivery_mode`와 API mode의 `message_ref`만 제공한다. Webhook mode는 검증 가능한 message reference가 없으므로 `message_ref` selector를 제공하지 않으며, `data`, `headers` selector는 새 graph에서 허용하지 않는다.
+- frontend validation은 legacy HTTP 설정을 migration 경고로 표시하고 모든 `*_selector`/`*_selectors` 실행 필드의 제거된 output은 오류로 차단한다. 사용자의 명시 migration command 없이는 legacy field를 제거하거나 active snapshot을 바꾸지 않는다. Backend draft save는 과거 selector를 보존할 수 있지만 deployment validation은 제거된 `data`/`headers` 및 Webhook `message_ref` selector를 차단하며, 기존 active snapshot은 runtime에서 safe migration-required error로 종료한다.
+- Agent Builder preview/apply path는 dedicated Slack config와 `delivery_status` downstream selector만 생성한다. frontend와 backend deployment validation은 제거된 selector를 fail-closed한다.
+- execution logger는 Slack node의 raw configuration, request, response, `message_ref` 원문과 error cause를 기록하지 않는다. 별도 Slack observer나 ledger를 두지 않고 공통 external-effect attempt가 중첩 실행, Loop error propagation, terminal result reuse와 no-replay를 소유한다.
+
 ### Mail Credential 설정
 
 - `MailNodePanel`은 active organization에서 현재 사용자가 `use`할 수 있는 safe Mail credential option을 조회해 picker로 표시한다.
