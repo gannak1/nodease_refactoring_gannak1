@@ -10,6 +10,10 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict
 
+from apps.log_system.domain.run_trigger import (
+    RunTriggerContractError,
+    normalize_run_trigger_mode,
+)
 from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.logger import record_audit
 from apps.shared.celery_app import celery_app
@@ -87,6 +91,24 @@ def _schedule_model_routing_run_record_after_llm_node_log(
 
 class PermanentLogContractError(ValueError):
     pass
+
+
+def _normalize_workflow_run_trigger_mode(data: Dict[str, Any]) -> RunTriggerMode:
+    trigger_mode = data.get("trigger_mode")
+    if isinstance(trigger_mode, RunTriggerMode):
+        return trigger_mode
+
+    try:
+        canonical = normalize_run_trigger_mode(
+            trigger_mode,
+            is_deployed=bool(data.get("is_deployed")),
+        )
+    except RunTriggerContractError:
+        raise PermanentLogContractError(
+            "workflow run trigger mode is invalid"
+        ) from None
+
+    return RunTriggerMode(canonical)
 
 
 def _retry_workflow_run_log_task(task, *, operation: str, error: Exception) -> None:
@@ -310,30 +332,7 @@ def create_run_log(self, data: Dict[str, Any]):
     session = SessionLocal()
     run_id = None
     try:
-        # 트리거 모드 정규화
-        trigger_mode = data.get("trigger_mode")
-        if isinstance(trigger_mode, str):
-            trigger_mode = trigger_mode.strip().lower()
-
-        trigger_mode_map = {
-            "manual": RunTriggerMode.MANUAL,
-            "api": RunTriggerMode.API,
-            "app": RunTriggerMode.API,
-            "deployed": RunTriggerMode.API,
-            "schedule": RunTriggerMode.SCHEDULER,
-            "scheduler": RunTriggerMode.SCHEDULER,
-        }
-
-        normalized_trigger = None
-        if isinstance(trigger_mode, RunTriggerMode):
-            normalized_trigger = trigger_mode
-        elif isinstance(trigger_mode, str):
-            normalized_trigger = trigger_mode_map.get(trigger_mode)
-
-        if normalized_trigger is None:
-            normalized_trigger = (
-                RunTriggerMode.API if data.get("is_deployed") else RunTriggerMode.MANUAL
-            )
+        normalized_trigger = _normalize_workflow_run_trigger_mode(data)
 
         # UUID 변환
         run_id = _deserialize_uuid(data["run_id"])

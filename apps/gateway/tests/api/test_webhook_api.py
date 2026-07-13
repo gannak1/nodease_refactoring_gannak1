@@ -88,6 +88,69 @@ class TestWebhookApi(unittest.TestCase):
         webhook_endpoint.ensure_workflow_permission = lambda *args, **kwargs: None
         return original_ensure
 
+    @patch.object(webhook_endpoint, "send_workflow_task")
+    def test_run_webhook_workflow_preserves_webhook_trigger_contract(
+        self,
+        mock_send_workflow_task,
+    ):
+        deployment_id = str(uuid4())
+        workflow_id = str(uuid4())
+        app_id = str(uuid4())
+        organization_id = str(uuid4())
+        actor_id = str(uuid4())
+        payload = {"event": "created"}
+
+        webhook_endpoint.run_webhook_workflow(
+            deployment_id,
+            payload,
+            actor_id,
+            workflow_id,
+            app_id,
+            organization_id,
+        )
+
+        mock_send_workflow_task.assert_called_once()
+        call = mock_send_workflow_task.call_args
+        self.assertEqual(call.args[1], "workflow.execute_by_deployment")
+        task_args = call.kwargs["args"]
+        self.assertEqual(task_args[0], deployment_id)
+        self.assertIs(task_args[1], payload)
+        self.assertEqual(
+            task_args[2],
+            {
+                "user_id": actor_id,
+                "workflow_id": workflow_id,
+                "organization_id": organization_id,
+                "app_id": app_id,
+                "trigger_mode": "webhook",
+                "deployment_id": deployment_id,
+            },
+        )
+
+    @patch.object(webhook_endpoint, "send_workflow_task")
+    def test_run_webhook_workflow_publish_error_does_not_log_raw_details(
+        self,
+        mock_send_workflow_task,
+    ):
+        raw_payload_marker = "raw-webhook-payload-marker"
+        raw_error_marker = "raw-publish-error-marker"
+        mock_send_workflow_task.side_effect = RuntimeError(raw_error_marker)
+
+        with self.assertLogs(webhook_endpoint.logger.name, level="ERROR") as logs:
+            webhook_endpoint.run_webhook_workflow(
+                str(uuid4()),
+                {"message": raw_payload_marker},
+                str(uuid4()),
+                str(uuid4()),
+                str(uuid4()),
+                str(uuid4()),
+            )
+
+        rendered = "\n".join(logs.output)
+        self.assertIn("error_type=RuntimeError", rendered)
+        self.assertNotIn(raw_error_marker, rendered)
+        self.assertNotIn(raw_payload_marker, rendered)
+
     def test_capture_lifecycle_returns_redacted_preview_once(self):
         """캡처 시작 -> 웹훅 수신 -> 상태 조회 시나리오 테스트"""
 

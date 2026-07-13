@@ -18,6 +18,9 @@ Audit와 trace는 workflow 실행, RAG retrieval, LLM 호출, permission/policy 
 ## Functional Requirements
 
 - Audit metadata는 raw secret, credential value, raw source content, raw source ACL, raw source id/url/path/title을 저장하지 않는다. Raw/compliance access audit도 safe reference, decision, reason code, retention/legal-hold summary 같은 allowlist만 저장한다.
+- WorkflowRun의 실행 진입점은 Log System 저장 경계에서 canonical `manual`/`api`/`webhook`/`scheduler`/`app`으로 정규화한다. Gateway webhook의 `webhook`은 `WEBHOOK`, `schedule`/`scheduler`는 `SCHEDULER`로 저장해야 하며 webhook을 deployed fallback의 `API`로 오분류해서는 안 된다.
+- String compatibility alias는 `test`/`manual_compare`/`cost_optimizer_compare`를 `manual`, `app`/`deployed`/`api_secret`을 `api`로 분류한다. 이미 `RunTriggerMode` enum인 입력은 exact 값을 보존한다. Trigger 누락 또는 `None`인 legacy payload만 `is_deployed`에 따라 API/MANUAL fallback을 허용한다.
+- 명시적인 blank, unknown 또는 비문자열 trigger는 WorkflowRun mutation 전에 permanent contract error로 fail-closed한다. 이 오류는 transient storage retry 대상이 아니며 raw trigger, task payload, workflow input 또는 secret을 error/log/retry payload에 포함하지 않는다.
 - RAG retrieval 성공은 `rag.retrieve`, standalone answer lifecycle은 `rag.answer.*`로 구분한다. `rag.retrieve` metadata에는 canonical `organization_id`를 포함해 system schedule과 interactive 실행 모두 조직 scope 감사 조회에서 추적 가능해야 한다.
 - Standalone answer는 `rag_answer_runs`와 `correlation_id`로 trace/usage/audit을 느슨하게 연결하고, trace/usage table에 RAG 전용 FK를 만들지 않는다.
 - Knowledge source sync, source ACL mapping, partial result, egress guard failure는 sanitized reason code와 retryability 중심으로 기록한다.

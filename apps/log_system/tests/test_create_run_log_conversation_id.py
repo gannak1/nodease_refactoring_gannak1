@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
 from apps.log_system import tasks as log_tasks
 from apps.shared.db.models.workflow_run import RunStatus, RunTriggerMode, WorkflowRun
 
@@ -45,21 +46,25 @@ def _base_data(**overrides):
 class _CaptureSession:
     def __init__(self):
         self.added = []
+        self.flush_count = 0
+        self.commit_count = 0
+        self.rollback_count = 0
+        self.close_count = 0
 
     def add(self, obj):
         self.added.append(obj)
 
     def flush(self):
-        pass
+        self.flush_count += 1
 
     def commit(self):
-        pass
+        self.commit_count += 1
 
     def rollback(self):
-        pass
+        self.rollback_count += 1
 
     def close(self):
-        pass
+        self.close_count += 1
 
 
 class _RetryRequested(Exception):
@@ -102,6 +107,77 @@ def test_missing_conversation_id_is_none(monkeypatch):
     assert run.conversation_id is None
 
 
+@pytest.mark.parametrize(
+    ("trigger_mode", "is_deployed", "expected"),
+    [
+        ("webhook", True, RunTriggerMode.WEBHOOK),
+        ("manual", False, RunTriggerMode.MANUAL),
+        ("app", True, RunTriggerMode.API),
+        ("deployed", True, RunTriggerMode.API),
+        ("schedule", True, RunTriggerMode.SCHEDULER),
+        ("scheduler", True, RunTriggerMode.SCHEDULER),
+        (None, True, RunTriggerMode.API),
+        (None, False, RunTriggerMode.MANUAL),
+    ],
+)
+def test_trigger_mode_is_persisted_as_canonical_enum(
+    monkeypatch,
+    trigger_mode,
+    is_deployed,
+    expected,
+):
+    run = _run_create_run_log(
+        _base_data(trigger_mode=trigger_mode, is_deployed=is_deployed),
+        monkeypatch,
+    )
+
+    assert run.trigger_mode == expected
+
+
+@pytest.mark.parametrize("trigger_mode", list(RunTriggerMode))
+def test_trigger_mode_enum_input_is_preserved(monkeypatch, trigger_mode):
+    run = _run_create_run_log(
+        _base_data(trigger_mode=trigger_mode),
+        monkeypatch,
+    )
+
+    assert run.trigger_mode == trigger_mode
+
+
+@pytest.mark.parametrize(
+    "trigger_mode",
+    ["", "future_surface_marker", 1, True, [], {}],
+)
+def test_invalid_trigger_rolls_back_without_insert_or_retry(
+    monkeypatch,
+    trigger_mode,
+):
+    session = _CaptureSession()
+    monkeypatch.setattr(log_tasks, "SessionLocal", lambda: session)
+    monkeypatch.setattr(
+        log_tasks,
+        "_retry_workflow_run_log_task",
+        lambda *args, **kwargs: pytest.fail("permanent contract error was retried"),
+    )
+
+    with pytest.raises(
+        log_tasks.PermanentLogContractError,
+        match="^workflow run trigger mode is invalid$",
+    ) as exc_info:
+        log_tasks.create_run_log.__wrapped__(
+            _base_data(trigger_mode=trigger_mode)
+        )
+
+    rendered_input = str(trigger_mode)
+    if rendered_input:
+        assert rendered_input not in str(exc_info.value)
+    assert session.added == []
+    assert session.flush_count == 0
+    assert session.commit_count == 0
+    assert session.rollback_count == 1
+    assert session.close_count == 1
+
+
 def test_system_schedule_run_allows_null_executor_with_correlation(monkeypatch):
     run = _run_create_run_log(
         _base_data(
@@ -117,8 +193,6 @@ def test_system_schedule_run_allows_null_executor_with_correlation(monkeypatch):
 
 
 def test_null_executor_without_schedule_correlation_is_rejected(monkeypatch):
-    import pytest
-
     with pytest.raises(ValueError):
         _run_create_run_log(
             _base_data(user_id=None, trigger_mode="manual"),
@@ -127,8 +201,6 @@ def test_null_executor_without_schedule_correlation_is_rejected(monkeypatch):
 
 
 def test_workflow_run_log_retry_redacts_raw_exception(caplog):
-    import pytest
-
     task = _RetryTask()
     raw_detail = "credential=do-not-log"
 
