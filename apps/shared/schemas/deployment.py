@@ -42,6 +42,8 @@ class DeploymentPreflightSummary(BaseModel):
     blocked_reason: Optional[str] = None
     affected_node_count: int = 0
     affected_kb_count_bucket: str = "0"
+    affected_collection_count_bucket: str = "0"
+    candidate_budget_limited: bool = False
 
 
 class DeploymentPreflightRequiredAction(BaseModel):
@@ -55,6 +57,8 @@ class DeploymentPreflightNodeResult(BaseModel):
     status: DeploymentPreflightStatus
     reason_codes: list[str] = Field(default_factory=list)
     knowledge_base_count_bucket: str = "0"
+    knowledge_collection_count_bucket: str = "0"
+    candidate_budget_limited: bool = False
 
 
 class DeploymentPreflightResponse(BaseModel):

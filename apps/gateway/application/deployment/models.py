@@ -19,6 +19,15 @@ class KnowledgeBaseSnapshot:
 
 
 @dataclass(frozen=True)
+class KnowledgeCollectionPreflightSnapshot:
+    id: uuid.UUID
+    public: bool
+    source_managed: bool
+    has_source_managed_members: bool
+    candidate_member_count: int
+
+
+@dataclass(frozen=True)
 class WorkflowNodeTargetSnapshot:
     app_id: uuid.UUID
     active_graph_snapshot: dict | None
@@ -43,6 +52,8 @@ class PreflightNodeResult:
     status: PreflightStatus
     reason_codes: tuple[str, ...]
     knowledge_base_count_bucket: str
+    knowledge_collection_count_bucket: str
+    candidate_budget_limited: bool
 
 
 @dataclass(frozen=True)
@@ -50,6 +61,8 @@ class PreflightSummary:
     blocked_reason: str | None
     affected_node_count: int
     affected_kb_count_bucket: str
+    affected_collection_count_bucket: str
+    candidate_budget_limited: bool
 
 
 @dataclass(frozen=True)

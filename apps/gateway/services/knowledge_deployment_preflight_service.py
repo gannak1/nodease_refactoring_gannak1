@@ -117,6 +117,12 @@ def _response_schema(result: DeploymentPreflightResult) -> DeploymentPreflightRe
             blocked_reason=result.safe_summary.blocked_reason,
             affected_node_count=result.safe_summary.affected_node_count,
             affected_kb_count_bucket=result.safe_summary.affected_kb_count_bucket,
+            affected_collection_count_bucket=(
+                result.safe_summary.affected_collection_count_bucket
+            ),
+            candidate_budget_limited=(
+                result.safe_summary.candidate_budget_limited
+            ),
         ),
         required_actions=[
             DeploymentPreflightRequiredAction(
@@ -133,6 +139,10 @@ def _response_schema(result: DeploymentPreflightResult) -> DeploymentPreflightRe
                 status=node.status,
                 reason_codes=list(node.reason_codes),
                 knowledge_base_count_bucket=node.knowledge_base_count_bucket,
+                knowledge_collection_count_bucket=(
+                    node.knowledge_collection_count_bucket
+                ),
+                candidate_budget_limited=node.candidate_budget_limited,
             )
             for node in result.nodes
         ],

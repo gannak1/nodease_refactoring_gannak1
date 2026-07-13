@@ -14,6 +14,28 @@ afterEach(() => {
 });
 
 describe('SuccessStep', () => {
+  it('shows a non-blocking preflight warning after a successful deployment', () => {
+    render(
+      <SuccessStep
+        deploymentType="api"
+        onClose={vi.fn()}
+        result={{
+          success: true,
+          version: 1,
+          message:
+            '배포 전 검사 경고가 있습니다.\n실행 시 지식 후보가 제한될 수 있습니다.',
+        }}
+      />,
+    );
+
+    expect(screen.getByRole('status')).toHaveTextContent(
+      '배포 전 검사 경고가 있습니다.',
+    );
+    expect(screen.getByRole('status')).toHaveTextContent(
+      '실행 시 지식 후보가 제한될 수 있습니다.',
+    );
+  });
+
   it('distinguishes public chatbot link from authenticated internal run link', () => {
     render(
       <SuccessStep

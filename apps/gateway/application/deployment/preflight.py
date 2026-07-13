@@ -4,9 +4,19 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 
+from apps.shared.domain.knowledge_runtime_candidates import (
+    MAX_RUNTIME_CANDIDATE_BUDGET,
+)
+from apps.shared.domain.workflow_knowledge_references import (
+    WorkflowKnowledgeReferenceError,
+    parse_llm_knowledge_references,
+    parse_workflow_knowledge_references,
+)
+
 from .errors import DeploymentPreflightBlocked
 from .models import (
     DeploymentPreflightResult,
+    KnowledgeCollectionPreflightSnapshot,
     PreflightAudience,
     PreflightNodeResult,
     PreflightRequiredAction,
@@ -16,17 +26,33 @@ from .models import (
 from .ports import DeploymentPreflightRepository
 
 PUBLIC_REQUIRED_ACTIONS = {
+    "knowledge_reference_invalid": PreflightRequiredAction(
+        action="fix_invalid_knowledge_references",
+        label="잘못된 지식 참조 형식을 수정하세요",
+    ),
+    "knowledge_reference_limit_exceeded": PreflightRequiredAction(
+        action="reduce_knowledge_references",
+        label="LLM 노드의 지식 참조 수를 허용 범위로 줄이세요",
+    ),
     "private_kb_requires_execution_subject": PreflightRequiredAction(
         action="remove_private_kb_or_use_authenticated_run",
         label="Private KB를 제거하거나 인증 실행 경로를 사용하세요",
     ),
     "source_public_exposure_required": PreflightRequiredAction(
-        action="approve_source_public_exposure_or_remove_kb",
-        label="Source 공개 승인 정책을 추가하거나 해당 KB를 제거하세요",
+        action="approve_source_public_exposure_or_remove_reference",
+        label="Source 공개 승인 정책을 추가하거나 해당 지식 참조를 제거하세요",
     ),
     "knowledge_base_unavailable": PreflightRequiredAction(
         action="remove_unavailable_kb_reference",
         label="사용할 수 없는 KB 참조를 제거하세요",
+    ),
+    "private_collection_requires_execution_subject": PreflightRequiredAction(
+        action="remove_private_collection_or_use_authenticated_run",
+        label="Private Collection을 제거하거나 인증 실행 경로를 사용하세요",
+    ),
+    "knowledge_collection_unavailable": PreflightRequiredAction(
+        action="remove_unavailable_collection_reference",
+        label="사용할 수 없는 Collection 참조를 제거하세요",
     ),
     "workflow_node_target_unavailable": PreflightRequiredAction(
         action="fix_workflow_node_target_or_remove_reference",
@@ -43,9 +69,15 @@ WARNING_REQUIRED_ACTIONS = {
         action="verify_parent_execution_subject",
         label="상위 워크플로우 실행 주체가 KB 권한을 제공하는지 확인하세요",
     ),
+    "knowledge_candidate_budget_limited": PreflightRequiredAction(
+        action="review_knowledge_candidate_selection",
+        label="실행 후보 제한을 고려해 KB와 Collection 선택을 검토하세요",
+    ),
 }
 
 NON_DOWNGRADABLE_REASON_CODES = {
+    "knowledge_reference_invalid",
+    "knowledge_reference_limit_exceeded",
     "workflow_node_target_unavailable",
     "workflow_node_cycle_detected",
 }
@@ -68,6 +100,8 @@ class _PreflightIssue:
     severity: PreflightStatus
     reason_code: str
     knowledge_base_count: int = 0
+    knowledge_collection_count: int = 0
+    candidate_budget_limited: bool = False
 
 
 class DeploymentPreflightUseCase:
@@ -95,8 +129,13 @@ class DeploymentPreflightUseCase:
         graph_snapshot: dict,
         audience_hint: PreflightAudience | None = None,
         is_active: bool = True,
+        trusted_audience_override: PreflightAudience | None = None,
     ) -> DeploymentPreflightResult:
-        audience = self._effective_audience(deployment_type, audience_hint)
+        audience = self._effective_audience(
+            deployment_type,
+            audience_hint,
+            trusted_audience_override,
+        )
         issues = self._evaluate_graph(
             graph_snapshot,
             audience=audience,
@@ -133,7 +172,10 @@ class DeploymentPreflightUseCase:
         self,
         deployment_type: str,
         audience_hint: PreflightAudience | None,
+        trusted_audience_override: PreflightAudience | None,
     ) -> PreflightAudience:
+        if trusted_audience_override == "authenticated_user":
+            return "authenticated_user"
         derived = self.server_derived_audience(deployment_type)
         if audience_hint == "anonymous_public":
             return "anonymous_public"
@@ -147,56 +189,78 @@ class DeploymentPreflightUseCase:
         depth: int,
         visited_app_ids: set[uuid.UUID],
     ) -> list[_PreflightIssue]:
-        if not isinstance(graph_snapshot, dict):
-            return []
-        nodes = graph_snapshot.get("nodes")
-        if not isinstance(nodes, list):
-            return []
-
+        configuration_issue = self._graph_configuration_issue(graph_snapshot)
+        if configuration_issue is not None:
+            return [configuration_issue]
         issues: list[_PreflightIssue] = []
-        for node in nodes:
-            if not isinstance(node, dict):
-                continue
-            node_id = self._safe_node_id(node)
-            node_type = self._safe_node_type(node)
-            data = node.get("data")
-            if not isinstance(data, dict):
-                data = {}
+        pending_graphs = [graph_snapshot]
+        while pending_graphs:
+            current_graph = pending_graphs.pop()
+            for node in current_graph.get("nodes", []):
+                node_id = self._safe_node_id(node)
+                node_type = self._safe_node_type(node)
+                data = node.get("data")
+                if not isinstance(data, dict):
+                    data = {}
 
-            kb_ids, invalid_count = self._extract_knowledge_base_ids(data)
-            if invalid_count:
-                issues.append(
-                    _PreflightIssue(
-                        node_id=node_id,
-                        node_type=node_type,
-                        severity=(
-                            "blocked" if audience == "anonymous_public" else "warning"
-                        ),
-                        reason_code="knowledge_base_unavailable",
-                        knowledge_base_count=invalid_count,
-                    )
-                )
-            if kb_ids:
-                issues.extend(
-                    self._evaluate_kb_references(
-                        kb_ids,
-                        node_id=node_id,
-                        node_type=node_type,
-                        audience=audience,
-                    )
-                )
+                if node_type == "llmNode":
+                    references = parse_llm_knowledge_references(data)
+                    direct_ids = list(references.direct_kb_ids)
+                    collection_ids = list(references.collection_ids)
+                    if direct_ids:
+                        issues.extend(
+                            self._evaluate_kb_references(
+                                direct_ids,
+                                node_id=node_id,
+                                node_type=node_type,
+                                audience=audience,
+                            )
+                        )
+                    collection_snapshots: Mapping[
+                        uuid.UUID, KnowledgeCollectionPreflightSnapshot
+                    ] = {}
+                    if collection_ids:
+                        collection_issues, collection_snapshots = (
+                            self._evaluate_collection_references(
+                                collection_ids,
+                                node_id=node_id,
+                                node_type=node_type,
+                                audience=audience,
+                            )
+                        )
+                        issues.extend(collection_issues)
+                    if self._candidate_budget_may_be_limited(
+                        direct_ids,
+                        collection_snapshots,
+                    ):
+                        issues.append(
+                            _PreflightIssue(
+                                node_id=node_id,
+                                node_type=node_type,
+                                severity="warning",
+                                reason_code="knowledge_candidate_budget_limited",
+                                knowledge_collection_count=len(
+                                    collection_snapshots
+                                ),
+                                candidate_budget_limited=True,
+                            )
+                        )
 
-            if node_type == "workflowNode":
-                issues.extend(
-                    self._evaluate_workflow_node_target(
-                        data,
-                        node_id=node_id,
-                        node_type=node_type,
-                        audience=audience,
-                        depth=depth,
-                        visited_app_ids=visited_app_ids,
+                subgraph = data.get("subGraph")
+                if isinstance(subgraph, dict):
+                    pending_graphs.append(subgraph)
+
+                if node_type == "workflowNode":
+                    issues.extend(
+                        self._evaluate_workflow_node_target(
+                            data,
+                            node_id=node_id,
+                            node_type=node_type,
+                            audience=audience,
+                            depth=depth,
+                            visited_app_ids=visited_app_ids,
+                        )
                     )
-                )
         return issues
 
     def _evaluate_kb_references(
@@ -207,35 +271,49 @@ class DeploymentPreflightUseCase:
         node_type: str,
         audience: PreflightAudience,
     ) -> list[_PreflightIssue]:
-        if audience == "workflow_node_inherited":
-            return [
-                _PreflightIssue(
-                    node_id=node_id,
-                    node_type=node_type,
-                    severity="warning",
-                    reason_code="workflow_node_execution_subject_inherited",
-                    knowledge_base_count=len(kb_ids),
-                )
-            ]
-        if audience == "authenticated_user":
-            return []
-
         kbs_by_id = self.repository.get_active_knowledge_bases(
             kb_ids,
             self.organization_id,
         )
+        missing_count = sum(kb_id not in kbs_by_id for kb_id in kb_ids)
+        issues: list[_PreflightIssue] = []
+        if missing_count:
+            issues.append(
+                _PreflightIssue(
+                    node_id=node_id,
+                    node_type=node_type,
+                    severity="blocked",
+                    reason_code="knowledge_base_unavailable",
+                    knowledge_base_count=missing_count,
+                )
+            )
+
+        active_ids = [kb_id for kb_id in kb_ids if kb_id in kbs_by_id]
+        if audience == "workflow_node_inherited":
+            if active_ids:
+                issues.append(
+                    _PreflightIssue(
+                        node_id=node_id,
+                        node_type=node_type,
+                        severity="warning",
+                        reason_code="workflow_node_execution_subject_inherited",
+                        knowledge_base_count=len(active_ids),
+                    )
+                )
+            return issues
+        if audience == "authenticated_user":
+            return issues
+
         public_eligible_ids = (
             self.repository.get_public_runtime_eligible_knowledge_base_ids(
-                kb_ids,
+                active_ids,
                 self.organization_id,
             )
         )
         issue_counts: dict[str, int] = {}
-        for kb_id in kb_ids:
-            kb = kbs_by_id.get(kb_id)
-            if kb is None:
-                reason_code = "knowledge_base_unavailable"
-            elif kb_id not in public_eligible_ids:
+        for kb_id in active_ids:
+            kb = kbs_by_id[kb_id]
+            if kb_id not in public_eligible_ids:
                 reason_code = "private_kb_requires_execution_subject"
             elif kb.source_managed:
                 reason_code = "source_public_exposure_required"
@@ -243,16 +321,130 @@ class DeploymentPreflightUseCase:
                 continue
             issue_counts[reason_code] = issue_counts.get(reason_code, 0) + 1
 
-        return [
-            _PreflightIssue(
-                node_id=node_id,
-                node_type=node_type,
+        issues.extend(
+            [
+                _PreflightIssue(
+                    node_id=node_id,
+                    node_type=node_type,
+                    severity="blocked",
+                    reason_code=reason_code,
+                    knowledge_base_count=count,
+                )
+                for reason_code, count in sorted(issue_counts.items())
+            ]
+        )
+        return issues
+
+    def _evaluate_collection_references(
+        self,
+        collection_ids: list[uuid.UUID],
+        *,
+        node_id: str | None,
+        node_type: str,
+        audience: PreflightAudience,
+    ) -> tuple[
+        list[_PreflightIssue],
+        Mapping[uuid.UUID, KnowledgeCollectionPreflightSnapshot],
+    ]:
+        collections_by_id = self.repository.get_active_knowledge_collections(
+            collection_ids,
+            self.organization_id,
+        )
+        missing_count = sum(
+            collection_id not in collections_by_id
+            for collection_id in collection_ids
+        )
+        issues: list[_PreflightIssue] = []
+        if missing_count:
+            issues.append(
+                _PreflightIssue(
+                    node_id=node_id,
+                    node_type=node_type,
+                    severity="blocked",
+                    reason_code="knowledge_collection_unavailable",
+                    knowledge_collection_count=missing_count,
+                )
+            )
+
+        active_ids = [
+            collection_id
+            for collection_id in collection_ids
+            if collection_id in collections_by_id
+        ]
+        if audience == "workflow_node_inherited":
+            if active_ids:
+                issues.append(
+                    _PreflightIssue(
+                        node_id=node_id,
+                        node_type=node_type,
+                        severity="warning",
+                        reason_code="workflow_node_execution_subject_inherited",
+                        knowledge_collection_count=len(active_ids),
+                    )
+                )
+            return issues, collections_by_id
+        if audience == "authenticated_user":
+            return issues, collections_by_id
+
+        issue_counts: dict[str, int] = {}
+        for collection_id in active_ids:
+            collection = collections_by_id[collection_id]
+            if not collection.public:
+                reason_code = "private_collection_requires_execution_subject"
+            elif (
+                collection.source_managed
+                or collection.has_source_managed_members
+            ):
+                reason_code = "source_public_exposure_required"
+            else:
+                continue
+            issue_counts[reason_code] = issue_counts.get(reason_code, 0) + 1
+        issues.extend(
+            [
+                _PreflightIssue(
+                    node_id=node_id,
+                    node_type=node_type,
+                    severity="blocked",
+                    reason_code=reason_code,
+                    knowledge_collection_count=count,
+                )
+                for reason_code, count in sorted(issue_counts.items())
+            ]
+        )
+        return issues, collections_by_id
+
+    @staticmethod
+    def _candidate_budget_may_be_limited(
+        direct_ids: list[uuid.UUID],
+        collections_by_id: Mapping[
+            uuid.UUID, KnowledgeCollectionPreflightSnapshot
+        ],
+    ) -> bool:
+        conservative_candidate_count = len(direct_ids) + sum(
+            max(snapshot.candidate_member_count, 0)
+            for snapshot in collections_by_id.values()
+        )
+        return conservative_candidate_count > MAX_RUNTIME_CANDIDATE_BUDGET
+
+    @staticmethod
+    def _graph_configuration_issue(
+        graph_snapshot: object,
+    ) -> _PreflightIssue | None:
+        try:
+            parse_workflow_knowledge_references(graph_snapshot)
+        except WorkflowKnowledgeReferenceError as exc:
+            reason_code = (
+                "knowledge_reference_limit_exceeded"
+                if exc.reason_code == "knowledge_reference_limit_exceeded"
+                else "knowledge_reference_invalid"
+            )
+            return _PreflightIssue(
+                node_id=None,
+                node_type="llmNode",
                 severity="blocked",
                 reason_code=reason_code,
-                knowledge_base_count=count,
             )
-            for reason_code, count in sorted(issue_counts.items())
-        ]
+        return None
 
     def _evaluate_workflow_node_target(
         self,
@@ -341,8 +533,21 @@ class DeploymentPreflightUseCase:
         elif any(issue.severity == "warning" for issue in issues):
             status = "warning"
 
-        first_reason = next((issue.reason_code for issue in issues), None)
+        first_reason = next(
+            (
+                issue.reason_code
+                for issue in issues
+                if issue.severity == "blocked"
+            ),
+            next((issue.reason_code for issue in issues), None),
+        )
         affected_kb_count = sum(issue.knowledge_base_count for issue in issues)
+        affected_collection_count = sum(
+            issue.knowledge_collection_count for issue in issues
+        )
+        candidate_budget_limited = any(
+            issue.candidate_budget_limited for issue in issues
+        )
         warnings = tuple(
             dict.fromkeys(
                 issue.reason_code
@@ -357,6 +562,10 @@ class DeploymentPreflightUseCase:
                 blocked_reason=first_reason,
                 affected_node_count=len(node_results),
                 affected_kb_count_bucket=self._bucket_count(affected_kb_count),
+                affected_collection_count_bucket=self._bucket_count(
+                    affected_collection_count
+                ),
+                candidate_budget_limited=candidate_budget_limited,
             ),
             required_actions=self._required_actions(issues),
             warnings=warnings,
@@ -389,6 +598,16 @@ class DeploymentPreflightUseCase:
                     knowledge_base_count_bucket=self._bucket_count(
                         sum(issue.knowledge_base_count for issue in node_issues)
                     ),
+                    knowledge_collection_count_bucket=self._bucket_count(
+                        sum(
+                            issue.knowledge_collection_count
+                            for issue in node_issues
+                        )
+                    ),
+                    candidate_budget_limited=any(
+                        issue.candidate_budget_limited
+                        for issue in node_issues
+                    ),
                 )
             )
         return tuple(results)
@@ -419,24 +638,6 @@ class DeploymentPreflightUseCase:
             else issue
             for issue in issues
         ]
-
-    @staticmethod
-    def _extract_knowledge_base_ids(data: dict) -> tuple[list[uuid.UUID], int]:
-        raw_values = data.get("knowledgeBases")
-        if not isinstance(raw_values, list):
-            return [], 0
-
-        ids: list[uuid.UUID] = []
-        invalid_count = 0
-        for value in raw_values:
-            raw_id = value.get("id") if isinstance(value, dict) else value
-            parsed = DeploymentPreflightUseCase._uuid_or_none(raw_id)
-            if parsed is None:
-                invalid_count += 1
-                continue
-            if parsed not in ids:
-                ids.append(parsed)
-        return ids, invalid_count
 
     @staticmethod
     def _safe_node_id(node: dict) -> str | None:

@@ -176,6 +176,265 @@ def test_preflight_blocks_source_managed_kb_even_if_collection_is_public():
     assert result.safe_summary.blocked_reason == "source_public_exposure_required"
 
 
+@pytest.mark.parametrize("visibility", [None, "private"])
+def test_preflight_blocks_private_selected_collection(visibility):
+    organization_id = uuid.uuid4()
+    collection_id = uuid.uuid4()
+    safe_metadata = {} if visibility is None else {"visibility": visibility}
+    db = _Db(
+        {
+            KnowledgeCollection: [
+                _row(
+                    id=collection_id,
+                    organization_id=organization_id,
+                    lifecycle_state="active",
+                    source_identity_id=None,
+                    safe_metadata=safe_metadata,
+                )
+            ],
+        }
+    )
+
+    result = KnowledgeDeploymentPreflightService(
+        db,
+        organization_id=organization_id,
+    ).preview(
+        deployment_type=DeploymentType.API,
+        graph_snapshot=_collection_graph(collection_id),
+    )
+
+    assert result.status == "blocked"
+    assert result.safe_summary.blocked_reason == (
+        "private_collection_requires_execution_subject"
+    )
+    assert result.safe_summary.affected_collection_count_bucket == "1"
+
+
+def test_preflight_allows_public_manual_selected_collection():
+    organization_id = uuid.uuid4()
+    collection_id = uuid.uuid4()
+    kb_id = uuid.uuid4()
+    db = _Db(
+        {
+            KnowledgeCollection: [
+                _row(
+                    id=collection_id,
+                    organization_id=organization_id,
+                    lifecycle_state="active",
+                    source_identity_id=None,
+                    safe_metadata={"visibility": "public"},
+                )
+            ],
+            KnowledgeCollectionItem: [
+                _row(
+                    organization_id=organization_id,
+                    collection_id=collection_id,
+                    knowledge_base_id=kb_id,
+                )
+            ],
+            KnowledgeBase: [
+                _row(
+                    id=kb_id,
+                    organization_id=organization_id,
+                    lifecycle_state="active",
+                    source_identity_id=None,
+                )
+            ],
+        }
+    )
+
+    result = KnowledgeDeploymentPreflightService(
+        db,
+        organization_id=organization_id,
+    ).preview(
+        deployment_type=DeploymentType.CHATBOT,
+        graph_snapshot=_collection_graph(collection_id),
+    )
+
+    assert result.status == "passed"
+    assert result.nodes == []
+
+
+def test_preflight_blocks_public_collection_with_source_managed_member():
+    organization_id = uuid.uuid4()
+    collection_id = uuid.uuid4()
+    kb_id = uuid.uuid4()
+    db = _Db(
+        {
+            KnowledgeCollection: [
+                _row(
+                    id=collection_id,
+                    organization_id=organization_id,
+                    lifecycle_state="active",
+                    source_identity_id=None,
+                    safe_metadata={"visibility": "public"},
+                )
+            ],
+            KnowledgeCollectionItem: [
+                _row(
+                    organization_id=organization_id,
+                    collection_id=collection_id,
+                    knowledge_base_id=kb_id,
+                )
+            ],
+            KnowledgeBase: [
+                _row(
+                    id=kb_id,
+                    organization_id=organization_id,
+                    lifecycle_state="active",
+                    source_identity_id=uuid.uuid4(),
+                )
+            ],
+        }
+    )
+
+    result = KnowledgeDeploymentPreflightService(
+        db,
+        organization_id=organization_id,
+    ).preview(
+        deployment_type=DeploymentType.WEBHOOK,
+        graph_snapshot=_collection_graph(collection_id),
+    )
+
+    assert result.status == "blocked"
+    assert result.safe_summary.blocked_reason == "source_public_exposure_required"
+    assert str(collection_id) not in result.model_dump_json()
+    assert str(kb_id) not in result.model_dump_json()
+
+
+def test_collection_preflight_aggregate_excludes_cross_org_member_facts():
+    organization_id = uuid.uuid4()
+    collection_id = uuid.uuid4()
+    kb_id = uuid.uuid4()
+    db = _Db(
+        {
+            KnowledgeCollection: [
+                _row(
+                    id=collection_id,
+                    organization_id=organization_id,
+                    lifecycle_state="active",
+                    source_identity_id=None,
+                    safe_metadata={"visibility": "public"},
+                )
+            ],
+            KnowledgeCollectionItem: [
+                _row(
+                    organization_id=organization_id,
+                    collection_id=collection_id,
+                    knowledge_base_id=kb_id,
+                )
+            ],
+            KnowledgeBase: [
+                _row(
+                    id=kb_id,
+                    organization_id=uuid.uuid4(),
+                    lifecycle_state="active",
+                    source_identity_id=uuid.uuid4(),
+                )
+            ],
+        }
+    )
+
+    result = KnowledgeDeploymentPreflightService(
+        db,
+        organization_id=organization_id,
+    ).preview(
+        deployment_type=DeploymentType.API,
+        graph_snapshot=_collection_graph(collection_id),
+    )
+
+    assert result.status == "passed"
+
+
+def test_collection_preflight_returns_bucketed_candidate_budget_warning():
+    organization_id = uuid.uuid4()
+    collection_id = uuid.uuid4()
+    kb_ids = [uuid.uuid4() for _index in range(21)]
+    db = _Db(
+        {
+            KnowledgeCollection: [
+                _row(
+                    id=collection_id,
+                    organization_id=organization_id,
+                    lifecycle_state="active",
+                    source_identity_id=None,
+                    safe_metadata={"visibility": "public"},
+                )
+            ],
+            KnowledgeCollectionItem: [
+                _row(
+                    organization_id=organization_id,
+                    collection_id=collection_id,
+                    knowledge_base_id=kb_id,
+                )
+                for kb_id in kb_ids
+            ],
+            KnowledgeBase: [
+                _row(
+                    id=kb_id,
+                    organization_id=organization_id,
+                    lifecycle_state="active",
+                    source_identity_id=None,
+                )
+                for kb_id in kb_ids
+            ],
+        }
+    )
+
+    result = KnowledgeDeploymentPreflightService(
+        db,
+        organization_id=organization_id,
+    ).preview(
+        deployment_type=DeploymentType.API,
+        graph_snapshot=_collection_graph(collection_id),
+    )
+
+    assert result.status == "warning"
+    assert result.safe_summary.candidate_budget_limited is True
+    assert result.safe_summary.affected_collection_count_bucket == "1"
+    assert result.nodes[0].candidate_budget_limited is True
+    assert all(str(kb_id) not in result.model_dump_json() for kb_id in kb_ids)
+
+
+@pytest.mark.parametrize("collection_scope", ["cross_org", "archived"])
+def test_preflight_hides_unavailable_selected_collection(collection_scope):
+    organization_id = uuid.uuid4()
+    collection_id = uuid.uuid4()
+    db = _Db(
+        {
+            KnowledgeCollection: [
+                _row(
+                    id=collection_id,
+                    organization_id=(
+                        uuid.uuid4()
+                        if collection_scope == "cross_org"
+                        else organization_id
+                    ),
+                    lifecycle_state=(
+                        "archived"
+                        if collection_scope == "archived"
+                        else "active"
+                    ),
+                    source_identity_id=None,
+                    safe_metadata={"visibility": "public"},
+                )
+            ],
+        }
+    )
+
+    result = KnowledgeDeploymentPreflightService(
+        db,
+        organization_id=organization_id,
+    ).preview(
+        deployment_type=DeploymentType.API,
+        graph_snapshot=_collection_graph(collection_id),
+    )
+
+    assert result.status == "blocked"
+    assert result.safe_summary.blocked_reason == "knowledge_collection_unavailable"
+    assert str(collection_id) not in result.model_dump_json()
+
+
 @pytest.mark.parametrize("kb_scope", ["cross_org", "archived"])
 def test_preflight_hides_kb_outside_active_organization_scope(kb_scope):
     organization_id = uuid.uuid4()
@@ -555,6 +814,41 @@ def test_enforced_preflight_raises_409_error_envelope():
 
     assert exc_info.value.status_code == 409
     assert exc_info.value.detail["error"]["code"] == "deployment.preflight.blocked"
+
+
+def test_enforced_collection_preflight_keeps_safe_409_envelope():
+    organization_id = uuid.uuid4()
+    collection_id = uuid.uuid4()
+    db = _Db(
+        {
+            KnowledgeCollection: [
+                _row(
+                    id=collection_id,
+                    organization_id=organization_id,
+                    lifecycle_state="active",
+                    source_identity_id=None,
+                    safe_metadata={},
+                )
+            ]
+        }
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        KnowledgeDeploymentPreflightService(
+            db,
+            organization_id=organization_id,
+        ).enforce_active_publish(
+            deployment_type=DeploymentType.CHATBOT,
+            graph_snapshot=_collection_graph(collection_id),
+        )
+
+    assert exc_info.value.status_code == 409
+    detail = exc_info.value.detail["error"]
+    assert detail["code"] == "deployment.preflight.blocked"
+    assert detail["reason_code"] == (
+        "private_collection_requires_execution_subject"
+    )
+    assert str(collection_id) not in str(detail)
 
 
 def test_preflight_audience_classifies_every_deployment_type():
@@ -1190,7 +1484,24 @@ def _llm_graph(kb_id: uuid.UUID) -> dict:
             {
                 "id": "llm-1",
                 "type": "llmNode",
-                "data": {"knowledgeBases": [{"id": str(kb_id)}]},
+                "data": {
+                    "knowledgeBases": [{"id": str(kb_id), "name": "KB"}]
+                },
+            }
+        ],
+        "edges": [],
+    }
+
+
+def _collection_graph(collection_id: uuid.UUID) -> dict:
+    return {
+        "nodes": [
+            {
+                "id": "llm-1",
+                "type": "llmNode",
+                "data": {
+                    "knowledgeCollections": [{"id": str(collection_id)}]
+                },
             }
         ],
         "edges": [],
@@ -1224,6 +1535,15 @@ class _Db:
         self.rolled_back = False
 
     def query(self, model, *rest):
+        if (
+            getattr(model, "class_", None) is KnowledgeCollectionItem
+            and getattr(model, "key", None) == "collection_id"
+            and rest
+        ):
+            return _CollectionAggregateQuery(
+                self.rows_by_model.setdefault(KnowledgeCollectionItem, []),
+                self.rows_by_model.setdefault(KnowledgeBase, []),
+            )
         if model in {
             App,
             Workflow,
@@ -1328,6 +1648,53 @@ class _Query:
         return all(
             _matches_expression(row, expression) for expression in self.expressions
         )
+
+
+class _CollectionAggregateQuery:
+    def __init__(self, items, knowledge_bases):
+        self.items = items
+        self.knowledge_bases = knowledge_bases
+        self.expressions = []
+
+    def join(self, *args, **kwargs):
+        return self
+
+    def filter(self, *expressions):
+        self.expressions.extend(expressions)
+        return self
+
+    def group_by(self, *args, **kwargs):
+        return self
+
+    def all(self):
+        knowledge_bases_by_id = {
+            knowledge_base.id: knowledge_base
+            for knowledge_base in self.knowledge_bases
+        }
+        grouped: dict[uuid.UUID, list[SimpleNamespace]] = {}
+        for item in self.items:
+            knowledge_base = knowledge_bases_by_id.get(item.knowledge_base_id)
+            if knowledge_base is None:
+                continue
+            if not all(
+                _matches_expression(item, expression)
+                and _matches_expression(knowledge_base, expression)
+                for expression in self.expressions
+            ):
+                continue
+            grouped.setdefault(item.collection_id, []).append(knowledge_base)
+        return [
+            (
+                collection_id,
+                len(knowledge_bases),
+                sum(
+                    getattr(knowledge_base, "source_identity_id", None)
+                    is not None
+                    for knowledge_base in knowledge_bases
+                ),
+            )
+            for collection_id, knowledge_bases in grouped.items()
+        ]
 
 
 def _matches_expression(row, expression):

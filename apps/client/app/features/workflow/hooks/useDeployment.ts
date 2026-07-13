@@ -124,6 +124,10 @@ export function useDeployment({
             message: formatDeploymentPreflightMessage(preflight),
           };
         }
+        const preflightWarning =
+          preflight.status === 'warning'
+            ? formatDeploymentPreflightMessage(preflight)
+            : undefined;
 
         const response = await workflowApi.createDeployment({
           app_id: activeWorkflow.appId,
@@ -144,6 +148,7 @@ export function useDeployment({
           input_schema: response.input_schema ?? null,
           output_schema: response.output_schema ?? null,
           graph_snapshot: { nodes }, // webhook trigger 감지용
+          message: preflightWarning,
         };
 
         if (deploymentType === 'webapp') {

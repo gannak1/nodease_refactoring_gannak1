@@ -307,3 +307,58 @@ def test_clone_graph_cleanup_removes_workflow_node_binding_metadata():
     )
 
     assert "_nodease_runtime" not in cleaned
+
+
+def test_public_graph_cleanup_removes_kb_and_collection_refs_recursively():
+    direct_kb_id = str(uuid.uuid4())
+    collection_id = str(uuid.uuid4())
+    graph = {
+        "nodes": [
+            {
+                "id": "llm-root",
+                "type": "llmNode",
+                "data": {
+                    "knowledgeBases": [{"id": direct_kb_id, "name": "Private"}],
+                    "knowledgeCollections": [
+                        {"id": collection_id, "safeLabel": "Private group"}
+                    ],
+                    "user_prompt": "safe prompt",
+                },
+            },
+            {
+                "id": "loop-1",
+                "type": "loopNode",
+                "data": {
+                    "subGraph": {
+                        "nodes": [
+                            {
+                                "id": "llm-child",
+                                "type": "llmNode",
+                                "data": {
+                                    "knowledgeBases": [
+                                        {"id": direct_kb_id, "name": "Private"}
+                                    ],
+                                    "knowledgeCollections": [
+                                        {
+                                            "id": collection_id,
+                                            "safeLabel": "Private group",
+                                        }
+                                    ],
+                                },
+                            }
+                        ],
+                        "edges": [],
+                    }
+                },
+            },
+        ],
+        "edges": [],
+    }
+
+    cleaned = AppService._clean_graph_data(graph)
+    serialized = str(cleaned)
+
+    assert direct_kb_id not in serialized
+    assert collection_id not in serialized
+    assert "Private group" not in serialized
+    assert cleaned["nodes"][0]["data"]["user_prompt"] == "safe prompt"

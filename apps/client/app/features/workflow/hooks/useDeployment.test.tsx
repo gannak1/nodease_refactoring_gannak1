@@ -66,6 +66,8 @@ describe('useDeployment', () => {
         blocked_reason: null,
         affected_node_count: 0,
         affected_kb_count_bucket: '0',
+        affected_collection_count_bucket: '0',
+        candidate_budget_limited: false,
       },
       required_actions: [],
       warnings: [],
@@ -108,6 +110,8 @@ describe('useDeployment', () => {
         blocked_reason: 'private_kb_requires_execution_subject',
         affected_node_count: 1,
         affected_kb_count_bucket: '1',
+        affected_collection_count_bucket: '0',
+        candidate_budget_limited: false,
       },
       required_actions: [
         {
@@ -130,5 +134,38 @@ describe('useDeployment', () => {
       'private_kb_requires_execution_subject',
     );
     expect(mockedWorkflowApi.createDeployment).not.toHaveBeenCalled();
+  });
+
+  it('warning preflight deploys and returns a safe warning message', async () => {
+    mockedWorkflowApi.preflightDeployment.mockResolvedValueOnce({
+      status: 'warning',
+      audience: 'anonymous_public',
+      safe_summary: {
+        blocked_reason: 'knowledge_candidate_budget_limited',
+        affected_node_count: 1,
+        affected_kb_count_bucket: '0',
+        affected_collection_count_bucket: '1',
+        candidate_budget_limited: true,
+      },
+      required_actions: [
+        {
+          action: 'review_knowledge_candidate_selection',
+          label: 'KB와 Collection 선택을 검토하세요',
+        },
+      ],
+      warnings: ['knowledge_candidate_budget_limited'],
+      nodes: [],
+    });
+    const { result } = renderDeploymentHook();
+
+    let deploymentResult: Awaited<ReturnType<typeof result.current.handleDeploy>>;
+    await act(async () => {
+      deploymentResult = await result.current.handleDeploy('candidate warning');
+    });
+
+    expect(deploymentResult!.success).toBe(true);
+    expect(deploymentResult!.message).toContain('배포 전 검사 경고');
+    expect(deploymentResult!.message).toContain('최대 후보 수');
+    expect(mockedWorkflowApi.createDeployment).toHaveBeenCalledTimes(1);
   });
 });
