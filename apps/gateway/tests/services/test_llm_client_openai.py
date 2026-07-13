@@ -5,6 +5,7 @@ OpenAIClient 단위 테스트.
 - 토큰 카운트가 최소 1 이상으로 계산되는지 검증
 """
 
+from copy import deepcopy
 import pathlib
 import sys
 
@@ -144,14 +145,19 @@ async def test_openai_invoke_uses_responses_for_new_model_families(monkeypatch):
         credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
     )
 
-    resp = await client.invoke(
-        messages,
-        max_tokens=10,
-        top_p=0.9,
-        presence_penalty=0.5,
-        frequency_penalty=0.5,
-        stop=["END"],
-    )
+    parameters = {
+        "max_tokens": 10,
+        "top_p": 0.9,
+        "presence_penalty": 0.5,
+        "frequency_penalty": 0.5,
+        "stop": ["END"],
+        "text": {"verbosity": "low"},
+        "response_format": {"type": "json_object"},
+    }
+    original_parameters = deepcopy(parameters)
+    original_messages = deepcopy(messages)
+
+    resp = await client.invoke(messages, **parameters)
 
     assert requested_urls == ["https://api.openai.com/v1/responses"]
     assert requested_payloads[0]["max_output_tokens"] == 10
@@ -159,6 +165,12 @@ async def test_openai_invoke_uses_responses_for_new_model_families(monkeypatch):
     assert "max_completion_tokens" not in requested_payloads[0]
     for parameter in ("top_p", "presence_penalty", "frequency_penalty", "stop"):
         assert parameter not in requested_payloads[0]
+    assert requested_payloads[0]["text"] == {
+        "verbosity": "low",
+        "format": {"type": "json_object"},
+    }
+    assert parameters == original_parameters
+    assert messages == original_messages
     assert resp["choices"][0]["message"]["content"] == "hello"
     assert resp["usage"]["prompt_tokens"] == 2
     assert resp["usage"]["completion_tokens"] == 3
@@ -495,7 +507,12 @@ def test_openai_invoke_sync_responses_strips_unsupported_generation_params(monke
         "presence_penalty": 0.0,
         "frequency_penalty": 0.0,
         "stop": [],
+        "text": {"verbosity": "low"},
+        "response_format": {"type": "json_object"},
     }
+    original_parameters = deepcopy(default_parameters)
+    messages = [{"role": "user", "content": "hi"}]
+    original_messages = deepcopy(messages)
 
     class MockResponse:
         status_code = 200
@@ -531,11 +548,16 @@ def test_openai_invoke_sync_responses_strips_unsupported_generation_params(monke
         credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
     )
 
-    client.invoke_sync([{"role": "user", "content": "hi"}], **default_parameters)
+    client.invoke_sync(messages, **default_parameters)
 
-    assert default_parameters["top_p"] == 1.0
+    assert default_parameters == original_parameters
+    assert messages == original_messages
     assert requested["payload"]["max_output_tokens"] == 4096
     assert requested["payload"]["temperature"] == 1
+    assert requested["payload"]["text"] == {
+        "verbosity": "low",
+        "format": {"type": "json_object"},
+    }
     for parameter in ("top_p", "presence_penalty", "frequency_penalty", "stop"):
         assert parameter not in requested["payload"]
 

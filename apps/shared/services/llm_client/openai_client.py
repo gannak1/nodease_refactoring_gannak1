@@ -340,8 +340,7 @@ class OpenAIClient(BaseLLMClient):
         response_format = responses_payload.pop("response_format", None)
         if response_format:
             text_options = responses_payload.get("text")
-            if not isinstance(text_options, dict):
-                text_options = {}
+            text_options = dict(text_options) if isinstance(text_options, dict) else {}
             text_options.setdefault("format", response_format)
             responses_payload["text"] = text_options
 
