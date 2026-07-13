@@ -154,6 +154,27 @@ const deferred = <T,>() => {
   return { promise, resolve };
 };
 
+class FakeEventSource {
+  static readonly CLOSED = 2;
+  static instances: FakeEventSource[] = [];
+
+  readyState = 1;
+  onmessage: ((event: { data: string }) => void) | null = null;
+  onerror: (() => void) | null = null;
+
+  constructor() {
+    FakeEventSource.instances.push(this);
+  }
+
+  close() {
+    this.readyState = FakeEventSource.CLOSED;
+  }
+
+  static reset() {
+    FakeEventSource.instances = [];
+  }
+}
+
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
@@ -198,22 +219,7 @@ describe('DocumentSettingsPage request scoping', () => {
   });
 
   it('schedules the existing redirect after observed processing completes', async () => {
-    class FakeEventSource {
-      static readonly CLOSED = 2;
-      static latest: FakeEventSource | null = null;
-
-      readyState = 1;
-      onmessage: ((event: { data: string }) => void) | null = null;
-      onerror: (() => void) | null = null;
-
-      constructor() {
-        FakeEventSource.latest = this;
-      }
-
-      close() {
-        this.readyState = FakeEventSource.CLOSED;
-      }
-    }
+    FakeEventSource.reset();
     vi.stubGlobal('EventSource', FakeEventSource);
     const timeoutSpy = vi.spyOn(globalThis, 'setTimeout');
     mocks.getDocument.mockResolvedValue({
@@ -226,10 +232,11 @@ describe('DocumentSettingsPage request scoping', () => {
     render(<DocumentSettingsPage />);
 
     await waitFor(() => {
-      expect(FakeEventSource.latest).not.toBeNull();
+      expect(FakeEventSource.instances).toHaveLength(1);
     });
+    const [eventSource] = FakeEventSource.instances;
     act(() => {
-      FakeEventSource.latest?.onmessage?.({
+      eventSource.onmessage?.({
         data: JSON.stringify({ status: 'completed', progress: 100 }),
       });
     });
@@ -315,12 +322,105 @@ describe('DocumentSettingsPage request scoping', () => {
     });
     expect(screen.getByTestId('chunk-size')).toHaveTextContent('1000');
   });
+
+  it('ignores a progress event from the document left behind after navigation', async () => {
+    FakeEventSource.reset();
+    vi.stubGlobal('EventSource', FakeEventSource);
+    mocks.getDocument.mockImplementation(
+      (_kbId: string, documentId: string) =>
+        Promise.resolve({
+          ...documentResponse(documentId),
+          status: documentId === 'document-1' ? 'processing' : 'pending',
+        }),
+    );
+
+    const { rerender } = render(<DocumentSettingsPage />);
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    const [oldEventSource] = FakeEventSource.instances;
+
+    mocks.params = { id: 'kb-1', documentId: 'document-2' };
+    rerender(<DocumentSettingsPage />);
+    await waitFor(() => {
+      expect(screen.getByTestId('file-source')).toHaveAttribute(
+        'data-filename',
+        'document-2.pdf',
+      );
+      expect(screen.getByRole('button', { name: '처리 시작' })).toBeEnabled();
+    });
+
+    act(() => {
+      oldEventSource.onmessage?.({
+        data: JSON.stringify({ status: 'completed', progress: 100 }),
+      });
+    });
+
+    expect(screen.getByRole('button', { name: '처리 시작' })).toBeEnabled();
+    expect(mocks.push).not.toHaveBeenCalled();
+  });
+
+  it('ignores a late polling response from the document left behind', async () => {
+    vi.useFakeTimers();
+    const oldPollingRequest = deferred<ReturnType<typeof documentResponse>>();
+    let firstDocumentReads = 0;
+    mocks.getDocument.mockImplementation(
+      (_kbId: string, documentId: string) => {
+        if (documentId === 'document-2') {
+          return Promise.resolve(documentResponse(documentId));
+        }
+        firstDocumentReads += 1;
+        if (firstDocumentReads === 1) {
+          return Promise.resolve({
+            ...documentResponse(documentId),
+            status: 'waiting_for_approval',
+          });
+        }
+        return oldPollingRequest.promise;
+      },
+    );
+
+    const { rerender } = render(<DocumentSettingsPage />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByTestId('file-source')).toHaveAttribute(
+      'data-filename',
+      'document-1.pdf',
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+    });
+    expect(firstDocumentReads).toBe(2);
+
+    mocks.params = { id: 'kb-1', documentId: 'document-2' };
+    rerender(<DocumentSettingsPage />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    await act(async () => {
+      oldPollingRequest.resolve({
+        ...documentResponse('document-1'),
+        status: 'completed',
+      });
+      await oldPollingRequest.promise;
+    });
+
+    expect(screen.getByTestId('file-source')).toHaveAttribute(
+      'data-filename',
+      'document-2.pdf',
+    );
+    expect(screen.getByRole('button', { name: '처리 시작' })).toBeEnabled();
+    expect(mocks.push).not.toHaveBeenCalled();
+  });
 });
 
 
 describe('DocumentSettingsPage completion redirect', () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    FakeEventSource.reset();
+    vi.stubGlobal('EventSource', FakeEventSource);
   });
 
   it('keeps an already-completed document settings page open', async () => {
@@ -342,6 +442,45 @@ describe('DocumentSettingsPage completion redirect', () => {
   });
 
   it('returns to the knowledge base after this page starts processing and it completes', async () => {
+    let processProps: Parameters<typeof useDocumentProcess>[0] | undefined;
+    const handleSaveClick = vi.fn();
+    mocks.getDocument.mockResolvedValue({
+      ...documentResponse('doc-1'),
+      filename: 'guide.md',
+    });
+    mockedUseDocumentProcess.mockImplementation((props) => {
+      processProps = props;
+      return createDocumentProcessResult(
+        handleSaveClick,
+      ) as ReturnType<typeof useDocumentProcess>;
+    });
+
+    await act(async () => {
+      render(<DocumentSettingsPage />);
+    });
+
+    expect(screen.getByRole('heading', { name: 'guide.md' })).toBeVisible();
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: '처리 시작' }));
+    });
+    expect(handleSaveClick).toHaveBeenCalledOnce();
+
+    act(() => {
+      processProps?.setStatus('indexing');
+    });
+    expect(screen.getByRole('button', { name: '처리 중...' })).toBeDisabled();
+    act(() => {
+      processProps?.setProgress(100);
+      processProps?.setStatus('completed');
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    expect(mocks.push).toHaveBeenCalledWith('/dashboard/knowledge/kb-1');
+  });
+
+  it('does not redirect when a processing attempt never enters an active state', async () => {
     mocks.getDocument.mockResolvedValue({
       ...documentResponse('doc-1'),
       filename: 'guide.md',
@@ -356,15 +495,13 @@ describe('DocumentSettingsPage completion redirect', () => {
     await act(async () => {
       render(<DocumentSettingsPage />);
     });
-
-    expect(screen.getByRole('heading', { name: 'guide.md' })).toBeVisible();
     act(() => {
       fireEvent.click(screen.getByRole('button', { name: '처리 시작' }));
     });
-
     await act(async () => {
       await vi.advanceTimersByTimeAsync(3000);
     });
-    expect(mocks.push).toHaveBeenCalledWith('/dashboard/knowledge/kb-1');
+
+    expect(mocks.push).not.toHaveBeenCalled();
   });
 });

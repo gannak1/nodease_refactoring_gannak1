@@ -1,16 +1,22 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { processDocument, analyzeDocument, toastError } = vi.hoisted(() => ({
+const {
+  processDocument,
+  analyzeDocument,
+  confirmDocumentParsing,
+  toastError,
+} = vi.hoisted(() => ({
   processDocument: vi.fn(),
   analyzeDocument: vi.fn(),
+  confirmDocumentParsing: vi.fn(),
   toastError: vi.fn(),
 }));
 
 vi.mock('@/app/features/knowledge/api/knowledgeApi', () => ({
   knowledgeApi: {
     analyzeDocument,
-    confirmDocumentParsing: vi.fn(),
+    confirmDocumentParsing,
     previewDocumentChunking: vi.fn(),
     processDocument,
   },
@@ -94,5 +100,48 @@ describe('useDocumentProcess edit configuration gate', () => {
     );
     const request = processDocument.mock.calls[0][2];
     expect(request).not.toHaveProperty('api_config');
+  });
+
+  it('does not enter indexing state when the processing request fails', async () => {
+    processDocument.mockRejectedValueOnce(new Error('INTERNAL_SENTINEL'));
+    const setStatus = vi.fn();
+    const setProgress = vi.fn();
+    const { result } = renderHook(() =>
+      useDocumentProcess({ ...props, setStatus, setProgress }),
+    );
+
+    act(() => result.current.handleSaveClick());
+
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith('저장에 실패했습니다.'),
+    );
+    expect(setStatus).not.toHaveBeenCalled();
+    expect(setProgress).not.toHaveBeenCalled();
+  });
+
+  it('enters indexing only after waiting approval is confirmed successfully', async () => {
+    const setStatus = vi.fn();
+    const setProgress = vi.fn();
+    const waitingDocument = {
+      ...props.document,
+      status: 'waiting_for_approval' as const,
+    };
+    confirmDocumentParsing.mockRejectedValueOnce(
+      new Error('INTERNAL_SENTINEL'),
+    );
+    const { result } = renderHook(() =>
+      useDocumentProcess({
+        ...props,
+        document: waitingDocument,
+        setStatus,
+        setProgress,
+      }),
+    );
+
+    await act(async () => result.current.handleConfirmCost());
+
+    expect(toastError).toHaveBeenCalledWith('처리 재개 실패');
+    expect(setStatus).not.toHaveBeenCalled();
+    expect(setProgress).not.toHaveBeenCalled();
   });
 });

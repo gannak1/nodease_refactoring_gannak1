@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { toast } from 'sonner';
-import axios from 'axios';
 import {
   knowledgeApi,
   DocumentPreviewRequest,
@@ -164,12 +163,8 @@ export function useDocumentProcess({
       } else {
         toast.success('데이터 처리를 시작합니다.');
       }
-    } catch (error: unknown) {
-      console.error('[Debug] Save failed:', error);
-      const errorMessage = axios.isAxiosError(error)
-        ? error.response?.data?.detail || '저장에 실패했습니다.'
-        : '저장에 실패했습니다.';
-      toast.error(errorMessage);
+    } catch {
+      toast.error('저장에 실패했습니다.');
     }
   };
 
@@ -190,12 +185,8 @@ export function useDocumentProcess({
       // 서버에서 필터링된 결과를 그대로 사용 (클라이언트 필터링 로직 제거)
       setPreviewSegments(response.segments);
       toast.success(`청킹 미리보기 완료 (${response.segments.length}개 청크)`);
-    } catch (error: unknown) {
-      console.error(error);
-      const errorMessage = axios.isAxiosError(error)
-        ? error.response?.data?.detail || '미리보기 생성 실패'
-        : '미리보기 생성 실패';
-      toast.error(errorMessage);
+    } catch {
+      toast.error('미리보기 생성 실패');
     } finally {
       setIsPreviewLoading(false);
     }
@@ -216,8 +207,7 @@ export function useDocumentProcess({
       }
       setPendingAction(action);
       setShowCostConfirm(true);
-    } catch (error) {
-      console.error(error);
+    } catch {
       toast.error('문서 분석에 실패했습니다.');
     } finally {
       setAnalyzingAction(null);
@@ -232,11 +222,11 @@ export function useDocumentProcess({
     // waiting_for_approval 상태에서 재개하는 경우
     if (document?.status === 'waiting_for_approval') {
       try {
-        setStatus('indexing');
         await knowledgeApi.confirmDocumentParsing(documentId, 'llamaparse');
+        setStatus('indexing');
+        setProgress(0);
         toast.success('처리를 재개합니다.');
-      } catch (e) {
-        console.error(e);
+      } catch {
         toast.error('처리 재개 실패');
       }
       return;
