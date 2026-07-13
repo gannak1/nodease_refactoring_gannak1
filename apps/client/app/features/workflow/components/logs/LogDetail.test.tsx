@@ -1,8 +1,19 @@
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import {
+  act,
+  cleanup,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { LogDetail } from './LogDetail';
 import { workflowApi } from '../../api/workflowApi';
-import type { LLMTrace, WorkflowRun } from '@/app/features/workflow/types/Api';
+import type {
+  LLMTrace,
+  WorkflowNodeRun,
+  WorkflowRun,
+} from '@/app/features/workflow/types/Api';
 
 vi.mock('../../api/workflowApi', () => ({
   workflowApi: {
@@ -63,6 +74,59 @@ beforeEach(() => {
 });
 
 describe('LogDetail', () => {
+  it('배포 실행 LLM trace에서 사용자가 이해할 수 있는 모델 선택 근거를 보여준다', async () => {
+    vi.mocked(workflowApi.getWorkflowRunLlmTraces).mockResolvedValue({
+      total: 0,
+      limit: 500,
+      offset: 0,
+      items: [],
+    });
+    const run = createRun('run-routing');
+    const llmNodeRun = run.node_runs?.[0] as WorkflowNodeRun;
+    llmNodeRun.outputs = {
+      ...llmNodeRun.outputs,
+      model: 'gpt-4.1',
+    };
+    llmNodeRun.trace_metadata = {
+      llm: {
+        selected_model: 'gpt-4.1',
+        fallback_model: 'gpt-4.1-mini',
+        decision_source: 'active_policy',
+        matched_cohort_id: 'high_risk',
+        semantic_route_label: '보안 및 SLA 고위험',
+        semantic_match_status: 'matched',
+        semantic_decision_source: 'safety_override',
+        semantic_lexical_score: 1,
+        semantic_lexical_signal_count: 1,
+        semantic_safety_override: true,
+        policy_version: 'routing-policy-v10',
+        route_catalog_version: 'ticket-routing-v7',
+        judge_called: false,
+      },
+    };
+
+    await act(async () => {
+      render(<LogDetail run={run} />);
+    });
+
+    const routingDetails = screen.getByText('자동 라우팅').closest('dl');
+    expect(routingDetails).not.toBeNull();
+    const routing = within(routingDetails as HTMLElement);
+    expect(routing.getByText('보안 및 SLA 고위험')).toBeInTheDocument();
+    expect(routing.getByText('gpt-4.1')).toBeInTheDocument();
+    expect(
+      routing.getByText(
+        '정책의 안전 조건 1개와 일치해 안전 유형을 우선했습니다.',
+      ),
+    ).toBeInTheDocument();
+    expect(
+      routing.getByText(
+        '비용 절감보다 사고 대응 품질을 우선해 검증된 모델을 선택했습니다.',
+      ),
+    ).toBeInTheDocument();
+    expect(routing.getByText('실행 중 Judge 호출 안 함')).toBeInTheDocument();
+  });
+
   it('run 전환 시 이전 LLM trace state를 즉시 초기화한다', async () => {
     let resolveSecondTrace: (
       value: Awaited<ReturnType<typeof workflowApi.getWorkflowRunLlmTraces>>,

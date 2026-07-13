@@ -23,6 +23,7 @@ import { getNodeDuration } from './shared/nodeUtils';
 import { CollapsibleSection } from './shared/CollapsibleSection';
 import { NodeOptionsDisplay } from './shared/NodeOptionsDisplay';
 import { workflowApi } from '../../api/workflowApi';
+import { ModelRoutingDecisionDetails } from '../modelRouting/ModelRoutingDecisionDetails';
 
 interface LogDetailProps {
   run: WorkflowRun;
@@ -309,6 +310,12 @@ export const LogDetail = ({
                     options={selectedNode.process_data.node_options}
                   />
                 )}
+                {selectedNode.node_type === 'llmNode' ? (
+                  <ModelRoutingDecisionDetails
+                    output={selectedNode.outputs}
+                    traceMetadata={selectedNode.trace_metadata}
+                  />
+                ) : null}
                 <InputDataSection data={selectedNode.inputs} />
                 <OutputDataSection data={selectedNode.outputs} />
                 {selectedNode.error_message && (
@@ -399,6 +406,12 @@ export const LogDetail = ({
                     options={selectedNode.process_data.node_options}
                   />
                 )}
+                {selectedNode.node_type === 'llmNode' ? (
+                  <ModelRoutingDecisionDetails
+                    output={selectedNode.outputs}
+                    traceMetadata={selectedNode.trace_metadata}
+                  />
+                ) : null}
                 <InputDataSection data={selectedNode.inputs} />
                 <OutputDataSection data={selectedNode.outputs} />
                 {selectedNode.error_message && (
