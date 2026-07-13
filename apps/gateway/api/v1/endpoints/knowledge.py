@@ -1629,12 +1629,14 @@ def get_document_edit_config(
     kb_id: UUID,
     document_id: UUID,
     request: Request,
+    response: Response,
     x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Return a bounded edit projection to an authorized KB writer."""
 
+    response.headers["Cache-Control"] = "no-store"
     _, doc = _authorized_knowledge_document(
         kb_id,
         document_id,

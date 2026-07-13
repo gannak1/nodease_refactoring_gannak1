@@ -21,10 +21,22 @@ _MAX_TABLES = 200
 _MAX_COLUMNS_PER_TABLE = 500
 _MAX_JOIN_EDGES = 20
 _MAX_TEMPLATE_LENGTH = 20_000
+_MAX_AGGREGATE_ITEMS = 5_000
+_MAX_PROJECTED_CONFIG_BYTES = 256_000
 
 
 class _EditConfigUnavailable(ValueError):
     pass
+
+
+class _ProjectionBudget:
+    def __init__(self) -> None:
+        self.items = 0
+
+    def consume(self, count: int) -> None:
+        self.items += count
+        if self.items > _MAX_AGGREGATE_ITEMS:
+            raise _EditConfigUnavailable
 
 
 def project_document_edit_config(document: Any) -> dict[str, object]:
@@ -76,6 +88,7 @@ def project_document_edit_config(document: Any) -> dict[str, object]:
         elif source_type == "API":
             projected["api_config"] = _api_config(meta)
 
+        _enforce_serialized_budget(projected)
         return projected
     except (TypeError, ValueError, json.JSONDecodeError):
         return _unavailable(source_type)
@@ -201,6 +214,7 @@ def _decoded_mapping(value: Any) -> Mapping[str, Any]:
 
 def _db_config(meta: Mapping[str, Any]) -> dict[str, object]:
     config = _decoded_mapping(meta.get("db_config"))
+    budget = _ProjectionBudget()
     connection_id = config.get("connection_id", meta.get("connection_id"))
     try:
         projected_connection_id = UUID(str(connection_id))
@@ -208,10 +222,14 @@ def _db_config(meta: Mapping[str, Any]) -> dict[str, object]:
         raise _EditConfigUnavailable from exc
 
     selected_from_rows, sensitive_from_rows = _selection_rows(
-        config.get("selections")
+        config.get("selections"),
+        budget,
     )
-    selected_items = _string_list_mapping(config.get("selected_items"))
-    sensitive_columns = _string_list_mapping(config.get("sensitive_columns"))
+    selected_items = _string_list_mapping(config.get("selected_items"), budget)
+    sensitive_columns = _string_list_mapping(
+        config.get("sensitive_columns"),
+        budget,
+    )
 
     if selected_from_rows:
         if selected_items and selected_items != selected_from_rows:
@@ -230,17 +248,21 @@ def _db_config(meta: Mapping[str, Any]) -> dict[str, object]:
         "connection_id": projected_connection_id,
         "selected_items": selected_items,
         "sensitive_columns": sensitive_columns,
-        "aliases": _aliases(config.get("aliases")),
+        "aliases": _aliases(config.get("aliases"), budget),
         "template": template,
-        "join_config": _join_config(config.get("join_config")),
+        "join_config": _join_config(config.get("join_config"), budget),
     }
 
 
-def _selection_rows(value: Any) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+def _selection_rows(
+    value: Any,
+    budget: _ProjectionBudget,
+) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
     if value is None:
         return {}, {}
     if not isinstance(value, list) or len(value) > _MAX_TABLES:
         raise _EditConfigUnavailable
+    budget.consume(len(value))
 
     selected: dict[str, list[str]] = {}
     sensitive: dict[str, list[str]] = {}
@@ -250,8 +272,11 @@ def _selection_rows(value: Any) -> tuple[dict[str, list[str]], dict[str, list[st
         table_name = _identifier(row.get("table_name"))
         if table_name in selected:
             raise _EditConfigUnavailable
-        columns = _string_list(row.get("columns"))
-        sensitive_columns = _string_list(row.get("sensitive_columns", []))
+        columns = _string_list(row.get("columns"), budget)
+        sensitive_columns = _string_list(
+            row.get("sensitive_columns", []),
+            budget,
+        )
         if not set(sensitive_columns).issubset(columns):
             raise _EditConfigUnavailable
         selected[table_name] = columns
@@ -260,17 +285,25 @@ def _selection_rows(value: Any) -> tuple[dict[str, list[str]], dict[str, list[st
     return selected, sensitive
 
 
-def _string_list_mapping(value: Any) -> dict[str, list[str]]:
+def _string_list_mapping(
+    value: Any,
+    budget: _ProjectionBudget,
+) -> dict[str, list[str]]:
     if value is None:
         return {}
     if not isinstance(value, Mapping) or len(value) > _MAX_TABLES:
         raise _EditConfigUnavailable
-    return {_identifier(key): _string_list(items) for key, items in value.items()}
+    budget.consume(len(value))
+    return {
+        _identifier(key): _string_list(items, budget)
+        for key, items in value.items()
+    }
 
 
-def _string_list(value: Any) -> list[str]:
+def _string_list(value: Any, budget: _ProjectionBudget) -> list[str]:
     if not isinstance(value, list) or len(value) > _MAX_COLUMNS_PER_TABLE:
         raise _EditConfigUnavailable
+    budget.consume(len(value))
     projected = [_identifier(item) for item in value]
     if len(set(projected)) != len(projected):
         raise _EditConfigUnavailable
@@ -285,11 +318,12 @@ def _identifier(value: Any) -> str:
     )
 
 
-def _aliases(value: Any) -> dict[str, dict[str, str]]:
+def _aliases(value: Any, budget: _ProjectionBudget) -> dict[str, dict[str, str]]:
     if value is None:
         return {}
     if not isinstance(value, Mapping) or len(value) > _MAX_TABLES:
         raise _EditConfigUnavailable
+    budget.consume(len(value))
     projected: dict[str, dict[str, str]] = {}
     for table, table_aliases in value.items():
         table_name = _identifier(table)
@@ -297,6 +331,7 @@ def _aliases(value: Any) -> dict[str, dict[str, str]]:
             raise _EditConfigUnavailable
         if len(table_aliases) > _MAX_COLUMNS_PER_TABLE:
             raise _EditConfigUnavailable
+        budget.consume(len(table_aliases) * 2)
         projected[table_name] = {
             _identifier(column): _bounded_text(alias, maximum=512)
             for column, alias in table_aliases.items()
@@ -304,7 +339,7 @@ def _aliases(value: Any) -> dict[str, dict[str, str]]:
     return projected
 
 
-def _join_config(value: Any) -> dict[str, object]:
+def _join_config(value: Any, budget: _ProjectionBudget) -> dict[str, object]:
     if value is None:
         return {"enabled": False, "base_table": None, "joins": []}
     if not isinstance(value, Mapping):
@@ -319,6 +354,7 @@ def _join_config(value: Any) -> dict[str, object]:
     joins = value.get("joins", [])
     if not isinstance(joins, list) or len(joins) > _MAX_JOIN_EDGES:
         raise _EditConfigUnavailable
+    budget.consume(len(joins) * 4)
 
     projected_joins = []
     for join in joins:
@@ -365,3 +401,14 @@ def _optional_encrypted_value(value: Any) -> str | None:
     if not isinstance(value, str) or not value or len(value) > _MAX_CONFIG_TEXT_LENGTH:
         raise _EditConfigUnavailable
     return value
+
+
+def _enforce_serialized_budget(value: Mapping[str, object]) -> None:
+    serialized = json.dumps(
+        value,
+        default=str,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(serialized) > _MAX_PROJECTED_CONFIG_BYTES:
+        raise _EditConfigUnavailable

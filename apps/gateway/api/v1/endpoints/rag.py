@@ -847,7 +847,14 @@ async def get_document_progress(
             # 1초 대기 (서버 부하 방지)
             await asyncio.sleep(1)
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-store",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/proxy/preview")

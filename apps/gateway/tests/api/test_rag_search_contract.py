@@ -220,6 +220,8 @@ def test_document_progress_authorizes_read_before_opening_stream(monkeypatch):
     )
 
     assert response.media_type == "text/event-stream"
+    assert response.headers["cache-control"] == "no-cache, no-store"
+    assert response.headers["x-accel-buffering"] == "no"
     assert captured["authorization"] == (
         request,
         db,

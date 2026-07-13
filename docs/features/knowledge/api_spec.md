@@ -11,7 +11,7 @@ Status: Draft
 | GET | `/api/v1/knowledge/llm-selectable` | Workflow LLM node RAG picker용 KB 후보 목록 | `X-Organization-Id` active organization 필수. active organization 안에서 caller가 KB `use` 권한을 가진 KB만 반환한다. 반환 후보는 retrieval-visible `completed` document chunk가 1개 이상 있어야 하며, runtime은 실행 시점 execution subject 기준으로 다시 권한을 평가한다 |
 | POST | `/api/v1/knowledge` | 빈 KB 생성 | Active organization에 KB, 생성자의 user-direct `manager`, canonical audit를 한 transaction에서 생성한다. 필수 schema가 준비되지 않으면 `503 knowledge.schema_not_ready`로 fail-closed 처리한다 |
 | GET | `/api/v1/knowledge/{kb_id}` | 현재 KB 상세와 문서 상태 | Active organization + KB `read`. Detail capability는 `can_read/use/write/read_content/manage`와 파생 UI flag로 반환한다 |
-| GET | `/api/v1/knowledge/{kb_id}/documents/{document_id}/edit-config` | Document preview/process 설정 복원 | Active organization + KB `write`. Bounded property allowlist만 반환하고 read detail과 encrypted source config를 재사용하지 않는다 |
+| GET | `/api/v1/knowledge/{kb_id}/documents/{document_id}/edit-config` | Document preview/process 설정 복원 | Active organization + KB `write`. Bounded property/aggregate/serialized-size allowlist만 반환하고 read detail과 encrypted source config를 재사용하지 않는다. 성공 응답은 `Cache-Control: no-store`다 |
 | GET | `/api/v1/knowledge/{kb_id}/safe-metadata` | allowlisted KB recommendation metadata 조회 | active organization, KB `manage`; 권한 없는 resource는 404로 숨긴다 |
 | PATCH | `/api/v1/knowledge/{kb_id}/safe-metadata` | `safe_label`, `kb_safe_description`, `kb_safe_topics` 수정 | active organization, KB `manage`, sanitizer, audit. 일반 KB 설정 PATCH와 분리한다 |
 | POST | `/api/v1/knowledge/{kb_id}/archive`, `/restore` | Manual KB lifecycle 전이 | KB `manage` 또는 domain `lifecycle_manage`; source-managed KB는 source-owned로 차단 |
@@ -23,7 +23,7 @@ Status: Draft
 | POST | `/api/v1/rag/search-test/chat` | 검색+답변 테스트 | active organization, KB use, LLM credential |
 | POST | `/api/v1/rag/agent/answer` | 명시 `knowledge_base_id` 기반 standalone Agent answer | KB use, generation model/credential use |
 | POST | `/api/v1/rag/agent/answer/stream` | standalone Agent answer SSE | KB use, generation model/credential use |
-| GET | `/api/v1/rag/document/{document_id}/progress?organizationId={active_organization_id}` | 문서 처리 상태 SSE | Native EventSource의 custom header 제약 때문에 active organization을 query parameter로 전달한다. Gateway는 stream 생성 전에 active organization + KB `read`를 검증하며, 권한 없는 document의 상태·오류·Redis progress를 노출하지 않는다 |
+| GET | `/api/v1/rag/document/{document_id}/progress?organizationId={active_organization_id}` | 문서 처리 상태 SSE | Native EventSource의 custom header 제약 때문에 active organization을 query parameter로 전달한다. Gateway는 stream 생성 전에 active organization + KB `read`를 검증하며, 권한 없는 document의 상태·오류·Redis progress를 노출하지 않는다. 응답은 `Cache-Control: no-cache, no-store`, `X-Accel-Buffering: no`를 사용한다 |
 | GET | `/api/v1/permissions/knowledge-bases/{knowledge_base_id}` | KB에 부여된 team/user direct permission 목록 | manager 또는 KB `manage`, active organization |
 | PUT | `/api/v1/permissions/knowledge-bases/{knowledge_base_id}/teams/{team_id}` | team KB permission 생성/갱신 | manager 또는 KB `manage`, active organization |
 | PUT | `/api/v1/permissions/knowledge-bases/{knowledge_base_id}/users/{user_id}` | user direct KB permission 생성/갱신 | manager 또는 KB `manage`, active organization |
@@ -43,12 +43,17 @@ sensitive-column marking, alias, template와 join shape만 허용한다. API sou
 configured/header/body presence 같은 safe summary만 반환하고 URL/header/body 원문,
 encrypted field, connection credential/detail은 반환하지 않는다. Stored config가
 malformed 또는 bound 밖이면 raw fallback 대신 `editable=false`와 safe reason code를
-반환하고 Client는 preview/process를 차단한다.
+반환하고 Client는 preview/process를 차단한다. 개별 field cap을 모두 통과하더라도
+aggregate item 또는 serialized response budget을 초과하면 같은 unavailable 결과로
+닫는다. Client는 권한과 hydration 상태를 현재 KB/document id scope에 결박하고, route
+전환 뒤 늦게 도착한 이전 scope 응답이나 fetch failure로 action을 다시 열지 않는다.
 
 KB detail/direct document의 `error_message`와 progress SSE의 `message`/`error`는
 persisted 원문이 아니다. Gateway가 status를 fixed public message로 투영하며 failure는
 generic safe message만 반환한다. SSE progress는 0..100 범위로 제한하고 unauthorized
 또는 concurrent-delete path에서도 raw DB/Redis/exception text를 event에 넣지 않는다.
+Redis progress는 `indexing`/`processing`에서만 사용하며 `pending`과
+`waiting_for_approval`은 stale Redis 값과 무관하게 0이다.
 
 ## Target Endpoint Groups
 
@@ -434,7 +439,7 @@ Workflow Builder가 LLM node의 RAG 옵션을 구성할 때 다음 목표 옵션
 
 `documents[].meta_info`와 `GET /api/v1/knowledge/{kb_id}/documents/{document_id}`의
 `meta_info`는 동일한 fail-closed projection을 사용한다. 허용 후보는 bounded
-`progress`/`processing_progress`, safe processing step/timestamp,
+`progress`/`processing_progress`, safe processing timestamp,
 `processing_recovered_from_timeout`, bounded `chunking_mode`/`strategy`/
 `upload_method`와 non-negative finite numeric `cost_estimate`다. 각 field는 기대
 type, 범위, 길이 또는 enum 검증을 통과해야 한다. `api_config` 전체와

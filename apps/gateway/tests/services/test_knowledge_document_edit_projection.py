@@ -182,3 +182,54 @@ def test_malformed_edit_projection_fails_closed_without_partial_fallback(documen
         "safe_reason_code": "document.edit_config_unavailable",
         "source_type": document.source_type,
     }
+
+
+def test_db_edit_projection_rejects_aggregate_item_budget_overflow():
+    connection_id = uuid.uuid4()
+    selected_items = {
+        f"table_{table_index}": [
+            f"column_{column_index}" for column_index in range(500)
+        ]
+        for table_index in range(11)
+    }
+
+    projected = project_document_edit_config(
+        _document(
+            source_type="DB",
+            meta_info={
+                "connection_id": str(connection_id),
+                "db_config": {"selected_items": selected_items},
+            },
+        )
+    )
+
+    assert projected == {
+        "editable": False,
+        "safe_reason_code": "document.edit_config_unavailable",
+        "source_type": "DB",
+    }
+
+
+def test_db_edit_projection_rejects_serialized_response_budget_overflow():
+    connection_id = uuid.uuid4()
+    aliases = {
+        "large_table": {
+            f"column_{column_index}": "x" * 512 for column_index in range(500)
+        }
+    }
+
+    projected = project_document_edit_config(
+        _document(
+            source_type="DB",
+            meta_info={
+                "connection_id": str(connection_id),
+                "db_config": {"aliases": aliases},
+            },
+        )
+    )
+
+    assert projected == {
+        "editable": False,
+        "safe_reason_code": "document.edit_config_unavailable",
+        "source_type": "DB",
+    }

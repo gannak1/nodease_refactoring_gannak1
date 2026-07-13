@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
-from fastapi import BackgroundTasks, HTTPException
+from fastapi import BackgroundTasks, HTTPException, Response
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -998,10 +998,12 @@ def test_document_edit_config_requires_write_and_returns_bounded_projection(
         authorize,
     )
 
+    response_headers = Response()
     response = knowledge_endpoint.get_document_edit_config(
         kb_id=knowledge_base_id,
         document_id=document_id,
         request=SimpleNamespace(),
+        response=response_headers,
         x_organization_id=str(organization_id),
         db=object(),
         current_user=SimpleNamespace(id=user_id),
@@ -1024,6 +1026,7 @@ def test_document_edit_config_requires_write_and_returns_bounded_projection(
     serialized = repr(body)
     assert "opaque-url-ciphertext" not in serialized
     assert "opaque-body-ciphertext" not in serialized
+    assert response_headers.headers["cache-control"] == "no-store"
 
 
 @pytest.mark.asyncio

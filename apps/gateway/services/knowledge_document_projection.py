@@ -118,6 +118,8 @@ def project_safe_document_progress(status: Any, redis_progress: Any) -> int:
         return 100
     if public_status == "failed":
         return 0
+    if public_status not in {"indexing", "processing"}:
+        return 0
     if isinstance(redis_progress, bool):
         return 0
     if isinstance(redis_progress, int):

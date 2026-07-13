@@ -233,11 +233,15 @@ organization predicate와 row lock 누락을 잡지 못했다.
   필요한 bounded allowlist만 반환한다. `connection_id`는 opaque UUID reference로만
   허용하며 API URL/header/body, encrypted value, credential, connection secret/raw
   connection detail은 반환하지 않는다. Malformed legacy config는 raw fallback하지
-  않고 safe unavailable response로 닫으며 Client는 저장을 차단한다.
+  않고 safe unavailable response로 닫으며 Client는 저장을 차단한다. Nested field별
+  cap 외에도 aggregate item/serialized response budget을 적용하고 성공 응답은
+  `Cache-Control: no-store`로 중간 저장을 금지한다. Client 권한/config readiness는
+  현재 KB/document scope에 결박하고 늦게 도착한 이전 request 결과는 폐기한다.
 - KB detail/direct document detail의 `error_message`와 progress SSE의 processing
   step/error는 persisted raw string을 그대로 사용하지 않는다. Status에 대응하는
   fixed public message와 generic failure message만 반환하고, legacy exception string은
-  DB 내부에 남아 있어도 response/SSE에 나타나지 않는다.
+  DB 내부에 남아 있어도 response/SSE에 나타나지 않는다. Progress SSE는
+  `Cache-Control: no-cache, no-store`와 proxy buffering disable header를 사용한다.
 - Domain revoke adapter는 organization, subject, action predicate와 `FOR UPDATE`를
   포함한 statement를 실행한다. Unit contract는 PostgreSQL dialect로 statement와
   bind value를 검증한다. Opt-in disposable PostgreSQL test는 cross-organization

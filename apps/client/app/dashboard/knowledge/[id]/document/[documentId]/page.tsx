@@ -1,5 +1,5 @@
 'use client';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   FileText,
@@ -108,12 +108,22 @@ export default function DocumentSettingsPage() {
   const [joinConfig, setJoinConfig] = useState<JoinConfig | null>(null); // JOIN 설정 상태
   const [canEditDocument, setCanEditDocument] = useState(false);
   const [isEditConfigReady, setIsEditConfigReady] = useState(false);
+  const [permissionScope, setPermissionScope] = useState<string | null>(null);
+  const [editConfigScope, setEditConfigScope] = useState<string | null>(null);
+  const fetchGeneration = useRef(0);
+  const currentDocumentScope = `${kbId}:${documentId}`;
+  const canEditCurrentDocument =
+    canEditDocument && permissionScope === currentDocumentScope;
+  const isCurrentEditConfigReady =
+    isEditConfigReady && editConfigScope === currentDocumentScope;
 
   // 작업 불가능 조건: (전략이 llamaparse인데 키가 없으면)
   const isActionDisabled =
     parsingStrategy === 'llamaparse' && !isKeyLoading && !hasLlamaParseKey;
   const isEditActionDisabled =
-    isActionDisabled || !canEditDocument || !isEditConfigReady;
+    isActionDisabled ||
+    !canEditCurrentDocument ||
+    !isCurrentEditConfigReady;
 
   // 실시간 진행 상태
   const [progress, setProgress] = useState(0);
@@ -184,6 +194,45 @@ export default function DocumentSettingsPage() {
   }, [status, documentId]);
   // 초기 데이터 로드
   useEffect(() => {
+    const generation = ++fetchGeneration.current;
+    const requestScope = `${kbId}:${documentId}`;
+    let cancelled = false;
+    const isStale = () =>
+      cancelled || fetchGeneration.current !== generation;
+
+    setIsLoading(true);
+    setDocument(null);
+    setKbName('');
+    setStatus('');
+    setErrorMessage(null);
+    setProgress(0);
+    setCanEditDocument(false);
+    setPermissionScope(null);
+    setIsEditConfigReady(false);
+    setEditConfigScope(null);
+    setApiConfigSummary(null);
+    setChunkSize(1000);
+    setChunkOverlap(200);
+    setSegmentIdentifier('\\n\\n');
+    setRemoveUrlsEmails(false);
+    setRemoveWhitespace(true);
+    setParsingStrategy('general');
+    setChunkingMode('flat');
+    setEnableAutoChunking(true);
+    setSelectedDbItems({});
+    setSensitiveColumns({});
+    setAliases({});
+    setTemplate('');
+    setConnectionId('');
+    setJoinConfig(null);
+    setSelectionMode('all');
+    setRangeStart('');
+    setRangeEnd('');
+    setKeywordFilter('');
+    setIsEditingConnection(false);
+    setConnectionDetails(null);
+    setIsLoadingDetails(false);
+
     const fetchDocument = async () => {
       try {
         // KB 정보와 문서 정보를 병렬로 조회
@@ -191,10 +240,12 @@ export default function DocumentSettingsPage() {
           knowledgeApi.getKnowledgeBase(kbId),
           knowledgeApi.getDocument(kbId, documentId),
         ]);
+        if (isStale()) return;
 
         setKbName(kbData.name);
         const canWrite = kbData.can_write === true;
         setCanEditDocument(canWrite);
+        setPermissionScope(requestScope);
         if (targetDoc) {
           setDocument(targetDoc);
           setStatus(targetDoc.status);
@@ -217,6 +268,7 @@ export default function DocumentSettingsPage() {
                 kbId,
                 documentId,
               );
+              if (isStale()) return;
               const sourceType = targetDoc.source_type || 'FILE';
               const hasRequiredSourceConfig =
                 (sourceType !== 'DB' || Boolean(editConfig.db_config)) &&
@@ -272,7 +324,9 @@ export default function DocumentSettingsPage() {
               }
               setApiConfigSummary(editConfig.api_config ?? null);
               setIsEditConfigReady(true);
+              setEditConfigScope(requestScope);
             } catch {
+              if (isStale()) return;
               console.warn('Document edit configuration request failed.');
               toast.warning(
                 '기존 문서 설정을 불러오지 못해 수정 작업을 차단했습니다.',
@@ -284,15 +338,21 @@ export default function DocumentSettingsPage() {
           router.push(`/dashboard/knowledge/${kbId}`);
         }
       } catch {
+        if (isStale()) return;
         console.warn('Document detail request failed.');
         toast.error('문서 정보를 불러오는데 실패했습니다.');
       } finally {
-        setIsLoading(false);
+        if (!isStale()) {
+          setIsLoading(false);
+        }
       }
     };
     if (kbId && documentId) {
       fetchDocument();
     }
+    return () => {
+      cancelled = true;
+    };
   }, [kbId, documentId, router]);
   // useDocumentProcess Hook 사용
   const {
@@ -314,8 +374,8 @@ export default function DocumentSettingsPage() {
     document,
     setStatus,
     setProgress,
-    canEditDocument,
-    editConfigReady: isEditConfigReady,
+    canEditDocument: canEditCurrentDocument,
+    editConfigReady: isCurrentEditConfigReady,
     settings: {
       chunkSize,
       chunkOverlap,
@@ -341,7 +401,7 @@ export default function DocumentSettingsPage() {
 
   // DB 연결 저장 핸들러
   const handleConnectionRequest = async (config: DBConfig) => {
-    if (!canEditDocument || !isEditConfigReady) {
+    if (!canEditCurrentDocument || !isCurrentEditConfigReady) {
       toast.error('기존 문서 설정을 복원한 뒤 다시 시도해 주세요.');
       return false;
     }
@@ -364,7 +424,7 @@ export default function DocumentSettingsPage() {
   };
 
   const handleEditConnection = async () => {
-    if (!canEditDocument || !isEditConfigReady) {
+    if (!canEditCurrentDocument || !isCurrentEditConfigReady) {
       toast.error('기존 문서 설정을 복원한 뒤 다시 시도해 주세요.');
       return;
     }
@@ -503,7 +563,7 @@ export default function DocumentSettingsPage() {
     if (!document) return null;
     if (
       (document.source_type === 'DB' || document.source_type === 'API') &&
-      !isEditConfigReady
+      !isCurrentEditConfigReady
     ) {
       return (
         <div className="flex h-full items-center justify-center p-6 text-center text-sm text-gray-600 dark:text-gray-300">

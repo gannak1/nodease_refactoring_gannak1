@@ -142,6 +142,8 @@ def test_document_status_and_message_projection_fail_closed_for_unknown_status()
         ("processing", 101, 0),
         ("processing", "1000", 0),
         ("processing", True, 0),
+        ("pending", 100, 0),
+        ("waiting_for_approval", b"100", 0),
         ("completed", "not-a-number", 100),
         ("failed", 75, 0),
     ],
