@@ -1,7 +1,7 @@
 # Auth API Spec
 
 Status: Draft
-Verified Against: feature/mba-234 @ 7d8249d5
+Verified Against: feature/mba-234 @ 647913b9
 
 기본 경로: `/api/v1`
 

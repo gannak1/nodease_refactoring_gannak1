@@ -2,7 +2,7 @@
 
 Status: Draft
 Related Features: workflow, llm-credentials, audit-tracing, knowledge, chatbot-deployment, conversation-memory
-Verified Against: `feature/mba-233 @ b4ff694f`
+Verified Against: `feature/mba-234 @ 647913b9`
 
 ## Purpose
 
@@ -40,7 +40,7 @@ Webhook capture helper는 public webhook 실행 표면이 아니라 로그인한
 - DEP-REQ-015: Scheduler는 Celery dispatch 전에 `Schedule.id`와 `deployment_id`가 일치하는 canonical DB row를 확인해야 한다. Row가 삭제되었거나 불일치하면 stale local job을 제거하고 budget check, queue dispatch, `last_run_at`/`next_run_at` update를 수행하지 않아야 한다.
 - DEP-REQ-016: Deployment ID 기반 Worker는 queue 입력의 tenant/resource 식별자를 권한 source of truth로 사용하지 않아야 한다. `workflow_id`, `organization_id`, `app_id`, deployment id/version, runtime credential owner는 DB의 current active Deployment/App에서 재구성하고, queue에서는 검증된 trigger와 제한된 correlation metadata만 전달받아야 한다. Subject 없는 webhook/schedule 실행에 queue 입력으로 `execution_subject`를 주입할 수 없다.
 - DEP-REQ-017: Deployment preflight policy/use case는 FastAPI, SQLAlchemy, concrete adapter를 import하지 않아야 한다. SQLAlchemy adapter는 organization/lifecycle/workflow-node owner/type/active 조건을 pure snapshot으로 변환하고, outer composition root가 port implementation을 주입해야 한다. Existing service facade는 typed application block을 기존 `409 deployment.preflight.blocked` HTTP contract로만 mapping해야 한다.
-- Internal Chatbot execution extension: `internal_chatbot`은 authenticated deployment run/run-info surface에서만 실행·조회한다. Gateway는 대상 workflow organization의 active membership과 workflow `execute` 권한을 dispatch 전에 확인하고, `X-Organization-Id`가 전달되면 배포 앱 organization과의 일치도 확인한 뒤 현재 로그인 사용자를 runtime `execution_subject`로 전달한다.
+- Internal Chatbot execution extension: `internal_chatbot`은 authenticated deployment run/run-info surface에서만 실행·조회한다. Gateway는 대상 workflow organization의 active membership과 workflow `execute` 권한을 dispatch 전에 확인하고, `X-Organization-Id`가 전달되면 배포 앱 organization과의 일치도 확인한 뒤 현재 로그인 사용자를 runtime `execution_subject`로 전달한다. Preflight는 `authenticated_user` audience에서도 direct KB와 Collection의 organization/lifecycle/sync/retrieval readiness를 조회하며, private 여부만으로 차단하지 않는 것과 unavailable reference를 허용하는 것을 혼동하지 않는다.
 - DEP-REQ-018: 동일 schedule occurrence는 persisted `Schedule.next_run_at`에서 얻은 `schedule_id + scheduled_for`로 식별하고 durable claim을 정확히 하나만 생성해야 한다. 여러 Gateway replica가 동시에 due row를 처리해도 unique constraint와 row lock으로 한 winner만 claim해야 한다.
 - DEP-REQ-019: Claim 생성, budget allow/block/unavailable 판단, 필요한 policy audit와 `Schedule.next_run_at` 전진은 application use case가 소유하는 한 DB transaction에서 commit해야 한다. Repository, audit, queue adapter는 독립 commit/rollback을 수행하지 않아야 한다.
 - DEP-REQ-020: Claim commit 뒤 broker publish는 at-least-once로 처리한다. Deterministic idempotency/task id, bounded lease/recovery와 attempt cap을 사용하고 broker network call 중 DB row lock을 유지하지 않아야 한다.

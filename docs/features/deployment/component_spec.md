@@ -1,7 +1,7 @@
 # Deployment Component Spec
 
 Status: Draft
-Verified Against: `feature/mba-233 @ 90da2f84`
+Verified Against: `feature/mba-234 @ 647913b9`
 
 ## Screens
 
@@ -20,7 +20,7 @@ Verified Against: `feature/mba-233 @ 90da2f84`
 - 게시하기 메뉴는 공개 `chatbot`과 `internal_chatbot`을 별도 항목으로 제공한다.
 - `SuccessStep`은 공개 챗봇에는 `/embed/chat/{url_slug}` 링크만, 내부 챗봇에는 `/modules/{workflow_id}/run?deploymentId={deployment_id}` 인증 링크만 표시한다. 내부 챗봇 결과에는 public REST API secret/test panel을 표시하지 않는다.
 - Target Conversation Memory preflight snapshot includes immutable deployment version/snapshot hash, conversation mapping and node Memory policy version, contract/storage generation and required Worker capability. Runtime revalidates the same binding and never resolves an existing session through the latest active deployment pointer.
-- Public Chatbot and future authenticated internal Chatbot use separate runtime policy/composition dependencies. They may share a visual Client component, but not auth/CORS/Origin, access permission, preflight audience or session namespace.
+- Public Chatbot and authenticated internal Chatbot use separate runtime policy/composition dependencies. They may share a visual Client component, but not auth/CORS/Origin, access permission, preflight audience or session namespace.
 - Exact public Origin/embed/CSP allowlist is a deployment-owned versioned policy adapter. Memory or Client code must not read environment fallback to widen it.
 
 ### Internal Schedule Dispatch Components

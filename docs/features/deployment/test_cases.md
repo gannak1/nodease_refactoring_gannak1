@@ -1,7 +1,7 @@
 # Deployment Test Cases
 
 Status: Draft
-Verified Against: `feature/mba-233 @ b4ff694f`
+Verified Against: `feature/mba-234 @ 647913b9`
 
 ## Unit Tests
 
@@ -14,7 +14,7 @@ Verified Against: `feature/mba-233 @ b4ff694f`
 - Candidate budget 가능성은 bucket/boolean warning으로만 반환되고 active create를 차단하지 않는다. Client success step은 warning을 text status로 표시한다.
 - Runtime audience resolver는 `api`, `webapp`, `widget`, `chatbot`, `mcp`, `schedule`, `webhook`를 anonymous public-only로 판정한다.
 - `internal_chatbot`은 authenticated run/run-info surface에서만 허용하고 public info와 public app run surface에서는 fail-closed로 거부한다.
-- `internal_chatbot` preflight는 server-derived audience를 `authenticated_user`로 판정하며 private KB 참조만으로 활성 배포를 차단하지 않는다.
+- `internal_chatbot` preflight는 server-derived audience를 `authenticated_user`로 판정하며 private KB 참조만으로 활성 배포를 차단하지 않는다. 다만 repository를 조회해 direct KB와 Collection의 organization/lifecycle/sync/retrieval readiness를 검증하고 unavailable reference는 차단한다.
 - `internal_chatbot` authenticated run은 current user를 `execution_subject`로 Runtime에 전달하고, 챗봇 `memory_mode`와 deployment/user 기준 conversation namespace를 적용한다.
 - `workflow_node` direct public/API/webhook/authenticated run execution is rejected. Subworkflow audience resolver는 parent execution subject를 상속하고, subject가 없으면 anonymous public-only로 판정한다.
 - Workflow-node target resolver는 `workflowNode.data.appId`를 사용하고 `workflowId`로 target app을 찾지 않는다.
