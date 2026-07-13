@@ -55,6 +55,9 @@ class Team(Base):
         UUID(as_uuid=True), ForeignKey("organization.id"), nullable=False, index=True
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    options: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
     flags: Mapped[int] = mapped_column(
         BigInteger, nullable=False, default=0, server_default=text("0")
     )
@@ -594,6 +597,9 @@ class UserKnowledgeCollectionPermission(Base):
         nullable=False,
         default=lambda: datetime.now(timezone.utc),
     )
+    options: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
     flags: Mapped[int] = mapped_column(
         BigInteger, nullable=False, default=0, server_default=text("0")
     )
@@ -656,9 +662,6 @@ class TeamKnowledgeDomainPermission(Base):
     expires_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
-    options: Mapped[dict] = mapped_column(
-        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
-    )
     flags: Mapped[int] = mapped_column(
         BigInteger, nullable=False, default=0, server_default=text("0")
     )
@@ -713,9 +716,6 @@ class UserKnowledgeDomainPermission(Base):
     )
     expires_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
-    )
-    options: Mapped[dict] = mapped_column(
-        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
     flags: Mapped[int] = mapped_column(
         BigInteger, nullable=False, default=0, server_default=text("0")
