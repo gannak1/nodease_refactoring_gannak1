@@ -1,7 +1,7 @@
 # Workflow Component Spec
 
 Status: Draft
-Verified Against: TBD
+Verified Against: `feature/mba-219 @ 7baedb4d`
 
 ## Condition Exit Layout
 
