@@ -4,7 +4,7 @@ from uuid import UUID
 
 from apps.shared.db.models.workflow_deployment import DeploymentType
 from apps.shared.domain.workflow_node_binding import strip_workflow_node_bindings
-from pydantic import BaseModel, Field, field_serializer
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 DeploymentPreflightStatus = Literal["passed", "warning", "blocked"]
 DeploymentPreflightAudience = Literal[
@@ -117,3 +117,21 @@ class DeploymentRunInfoResponse(BaseModel):
     type: str
     input_schema: Optional[dict] = None
     output_schema: Optional[dict] = None
+
+
+class DeploymentConversationControl(BaseModel):
+    """인증 실행의 legacy conversation namespace용 bounded client control."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    client_id: UUID
+
+
+class AuthenticatedDeploymentRunRequest(BaseModel):
+    """인증 배포 실행 요청. Conversation control은 업무 inputs와 분리한다."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Endpoint가 기존 400 계약을 유지하며 object 여부를 판정한다.
+    inputs: Any = Field(default_factory=dict)
+    conversation: Optional[DeploymentConversationControl] = None

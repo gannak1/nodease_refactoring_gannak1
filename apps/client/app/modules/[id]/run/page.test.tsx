@@ -79,11 +79,12 @@ describe('AuthenticatedDeploymentRunPage', () => {
     await waitFor(() => {
       expect(mockedWorkflowApi.runDeployment).toHaveBeenCalledWith(
         'deployment-1',
-        expect.objectContaining({
+        {
           question: '개발팀 신입 연봉 기준을 알려줘',
-          memory_mode: true,
-          conversation_id: expect.any(String),
-        }),
+        },
+        expect.stringMatching(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+        ),
       );
     });
     expect(
@@ -142,5 +143,29 @@ describe('AuthenticatedDeploymentRunPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '실행' }));
     expect(mockedWorkflowApi.runDeployment).not.toHaveBeenCalled();
+  });
+
+  it('문서화되지 않은 backend detail 원문을 실행 오류로 표시하지 않는다', async () => {
+    mockedWorkflowApi.runDeployment.mockRejectedValueOnce({
+      response: {
+        status: 400,
+        data: { detail: 'source_url=https://private.example/internal' },
+      },
+    });
+
+    render(<AuthenticatedDeploymentRunPage />);
+    await screen.findByRole('heading', { name: '사내 문서 질문 응답 봇' });
+
+    fireEvent.change(screen.getByLabelText('질문'), {
+      target: { value: '질문' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '실행' }));
+
+    expect(
+      await screen.findByText('실행 입력이 올바르지 않습니다.'),
+    ).toBeVisible();
+    expect(
+      screen.queryByText('source_url=https://private.example/internal'),
+    ).not.toBeInTheDocument();
   });
 });

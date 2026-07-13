@@ -34,13 +34,27 @@ const readErrorMessage = (error: unknown) => {
     typeof (error as { response?: { status?: unknown } }).response?.status ===
       'number'
   ) {
-    const response = (error as {
-      response: { status: number; data?: { detail?: unknown } };
-    }).response;
+    const response = (error as { response: { status: number } }).response;
+    if (response.status === 400 || response.status === 422) {
+      return '실행 입력이 올바르지 않습니다.';
+    }
+    if (response.status === 401) return '로그인이 필요합니다.';
+    if (response.status === 403) return '이 배포를 실행할 권한이 없습니다.';
+    if (response.status === 404) {
+      return '현재 조직에서 실행 가능한 배포를 찾을 수 없습니다.';
+    }
+    if (response.status === 409) {
+      return '배포 상태가 변경되었습니다. 화면을 새로고침해 주세요.';
+    }
+    if (response.status === 429) {
+      return '현재 실행 한도를 초과했습니다. 잠시 후 다시 시도해 주세요.';
+    }
+    if (response.status === 504) {
+      return '배포 실행 시간이 초과되었습니다. 잠시 후 다시 시도해 주세요.';
+    }
     if (response.status >= 500) {
       return '배포 실행 중 서버 오류가 발생했습니다. 실행 로그를 확인하세요.';
     }
-    if (typeof response.data?.detail === 'string') return response.data.detail;
   }
 
   return '배포 실행에 실패했습니다.';
@@ -74,7 +88,19 @@ const makeConversationId = () => {
   if (typeof globalThis.crypto?.randomUUID === 'function') {
     return globalThis.crypto.randomUUID();
   }
-  return `demo-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  const bytes = new Uint8Array(16);
+  if (typeof globalThis.crypto?.getRandomValues === 'function') {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Math.floor(Math.random() * 256);
+    }
+  }
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (value) => value.toString(16).padStart(2, '0'));
+  return `${hex.slice(0, 4).join('')}-${hex.slice(4, 6).join('')}-${hex.slice(6, 8).join('')}-${hex.slice(8, 10).join('')}-${hex.slice(10).join('')}`;
 };
 
 export default function AuthenticatedDeploymentRunPage() {
@@ -170,15 +196,17 @@ export default function AuthenticatedDeploymentRunPage() {
         if (coerced !== undefined) payload[variable.name] = coerced;
       }
 
-      if (
+      const usesConversationControl =
         deployment?.type === 'chatbot' ||
-        deployment?.type === 'internal_chatbot'
-      ) {
-        payload.memory_mode = true;
-        payload.conversation_id = conversationId;
-      }
+        deployment?.type === 'internal_chatbot';
 
-      setRunResult(await workflowApi.runDeployment(deploymentId, payload));
+      setRunResult(
+        await workflowApi.runDeployment(
+          deploymentId,
+          payload,
+          usesConversationControl ? conversationId : undefined,
+        ),
+      );
     } catch (error) {
       setRunError(
         error instanceof Error && !('response' in error)

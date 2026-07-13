@@ -542,9 +542,13 @@ export const workflowApi = {
   runDeployment: async (
     deploymentId: string,
     inputs: Record<string, unknown>,
+    clientConversationId?: string,
   ) => {
     const response = await api.post(`/deployments/${deploymentId}/run`, {
       inputs,
+      ...(clientConversationId
+        ? { conversation: { client_id: clientConversationId } }
+        : {}),
     });
     return response.data as { status: string; results?: unknown };
   },

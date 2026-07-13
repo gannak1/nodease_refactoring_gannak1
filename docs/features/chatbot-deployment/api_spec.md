@@ -4,7 +4,7 @@ Status: Draft
 
 챗봇 배포는 기존 배포/공개 실행 엔드포인트의 계약을 확장한다. 현재 `internal_chatbot`은 인증 deployment run/run-info endpoint에서 active membership·workflow `execute` 확인과 로그인 사용자의 execution subject 전달을 적용한다. Target private-RAG 내부 Chatbot access grant와 session namespace는 이 current contract 위에 추가되는 후속 기능이며, 동일한 완성 상태로 간주하지 않는다.
 
-아래 `inputs.memory_mode`, client `conversation_id`와 execution-log 조회는 Legacy Current Implementation이다. 목표 session/grant/envelope/API 계약은 [Conversation Memory API spec](../conversation-memory/api_spec.md)을 따른다. Target 전환 후 신규 Client는 legacy reserved input을 보내지 않는다.
+공개 route의 `inputs.memory_mode`, client `conversation_id`와 execution-log 조회는 Legacy Current Implementation이다. 인증 내부 route는 업무 `inputs`와 분리한 bounded `conversation.client_id`를 사용하지만 persistence/reader는 여전히 legacy execution-log 기반이다. 목표 session/grant/envelope/API 계약은 [Conversation Memory API spec](../conversation-memory/api_spec.md)을 따른다.
 
 ## Endpoints
 
@@ -29,7 +29,7 @@ Status: Draft
 ## Target Runtime Surface Separation
 
 - `public_chatbot`: Public Conversation Access Grant만 사용하고 login cookie가 있어도 anonymous public-only RAG로 평가한다.
-- `authenticated_internal_chatbot`: 현재는 cookie authentication/CSRF, active membership, workflow `execute`, current user KB permission으로 실행한다. Target에서는 별도 내부 Chatbot 이용 권한, exact Origin과 독립 session namespace를 추가한다.
+- `authenticated_internal_chatbot`: 현재는 cookie authentication, configured credentialed JSON/CORS 경계, active membership, workflow `execute`, current user KB permission으로 실행한다. 현재 구현을 CSRF token/exact-Origin 완료로 표현하지 않는다. Target에서는 별도 내부 Chatbot 이용 권한, CSRF token, exact Origin과 독립 Conversation Session namespace를 추가한다.
 - 두 surface는 시각 Chatbot component만 재사용한다. Public route의 authentication/audience를 조건부 완화하거나 public grant를 execution subject로 승격하지 않는다.
 - Public exact Origin/embed/CSP allowlist는 deployment-owned versioned config다. Config contract가 구현되기 전 client/environment fallback으로 browser session surface를 허용하지 않는다.
 
@@ -84,9 +84,10 @@ Request body:
 ```json
 {
   "inputs": {
-    "<first_input_variable>": "사용자 메시지",
-    "memory_mode": true,
-    "conversation_id": "3f1c… (UUIDv4)"
+    "<first_input_variable>": "사용자 메시지"
+  },
+  "conversation": {
+    "client_id": "3f1c0000-0000-4000-8000-000000000000"
   }
 }
 ```
@@ -95,9 +96,11 @@ Request body:
 - `X-Organization-Id`가 있으면 해당 active organization scope와 배포 앱의 organization이 일치해야 한다. 불일치 시 resource-hiding 정책에 따라 404를 반환한다.
 - 서버는 `execution_context.execution_subject = {"type": "user", "id": current_user.id}`를 주입한다.
 - LLM node RAG는 이 `execution_subject` 기준으로 Knowledge `use` 권한과 source ACL gate를 다시 평가한다.
-- `deployment.type`이 `internal_chatbot`이면 서버가 `memory_mode`를 항상 True로 강제한다.
-- `memory_mode`, `conversation_id` 처리 규칙은 공개 챗봇 실행과 동일하다.
-- 인증 내부 실행에서 `conversation_id`가 있으면 서버는 `deployment_id + execution_subject + client_conversation_id`를 해시한 내부 id로 바꿔 사용자 간 memory context가 섞이지 않게 한다. 공개 실행은 기존 visitor conversation id를 유지한다.
+- `conversation.client_id`는 UUID이며 extra field를 허용하지 않는다. Chatbot이 아닌 deployment에 전달하면 `400`으로 거부한다.
+- `deployment.type`이 `chatbot` 또는 `internal_chatbot`이면 서버가 `memory_mode`를 항상 True로 강제하므로 신규 내부 Client는 `memory_mode`를 업무 `inputs`에 보내지 않는다.
+- 인증 내부 실행에서 서버는 `deployment_id + execution_subject + client_id`를 domain-separated versioned digest로 바꿔 사용자·배포 간 memory context가 섞이지 않게 한다. raw `client_id`는 dispatch context, 응답, audit와 log에 기록하지 않는다.
+- `inputs`에 workflow schema가 선언한 `conversation_id` 또는 `memory_mode`가 있으면 업무 입력으로 보존한다. typed control과 선언되지 않은 legacy `inputs.conversation_id`를 동시에 보내는 모호한 요청은 `400`으로 거부한다.
+- 기존 인증 caller의 legacy reserved input은 schema collision이 없는 범위에서만 임시 호환하며 string, 최대 255자, control character 금지 조건을 적용한다. 공개 실행은 기존 visitor conversation id 계약을 유지한다.
 
 Response: `{"status": "success", "results": { ... }}`.
 
@@ -112,7 +115,7 @@ Response: `{"status": "success", "results": { ... }}`.
 
 ## Errors
 
-- 공개 실행과 current generic 인증 실행 모두 404 배포 없음/비활성, 429 예산 초과, 504 타임아웃, 500 엔진 실패를 반환할 수 있다. 엔진 실패 응답 detail은 provider 오류, credential, raw payload를 노출하지 않는 고정된 safe message여야 한다. Generic 인증 실행은 추가로 400 `inputs must be an object`, 401/403 인증·권한 오류를 반환할 수 있다. Target authenticated internal Chatbot의 별도 permission/error contract는 해당 기능 구현 문서에서 확정한다.
+- 공개 실행과 current generic 인증 실행 모두 404 배포 없음/비활성, 429 예산 초과, 504 타임아웃, 500 엔진 실패를 반환할 수 있다. 엔진 실패 응답 detail은 provider 오류, credential, raw payload를 노출하지 않는 고정된 safe message여야 한다. Generic 인증 실행은 추가로 400 invalid/non-object input, invalid/conflicting conversation control, non-Chatbot conversation control과 401/403 인증·권한 오류를 반환할 수 있다. Client는 문서화되지 않은 임의 `detail` string을 그대로 표시하지 않는다. Target authenticated internal Chatbot의 별도 permission/error contract는 해당 기능 구현 문서에서 확정한다.
 
 ## Permissions
 

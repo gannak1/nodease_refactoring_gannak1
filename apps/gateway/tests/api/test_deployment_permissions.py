@@ -16,6 +16,7 @@ from apps.shared.domain.deployment_runtime_policy import (
     SURFACE_PUBLIC_INFO,
 )
 from apps.shared.schemas.deployment import (
+    AuthenticatedDeploymentRunRequest,
     DeploymentPreflightRequest,
     DeploymentPreflightResponse,
 )
@@ -442,6 +443,7 @@ def test_run_authenticated_deployment_authorizes_execute_and_forwards_inputs(
         created_by=uuid.uuid4(),
     )
     current_user = SimpleNamespace(id=uuid.uuid4())
+    client_conversation_id = uuid.uuid4()
     checked = []
     captured = {}
 
@@ -464,7 +466,10 @@ def test_run_authenticated_deployment_authorizes_execute_and_forwards_inputs(
             deployment_id=str(deployment.id),
             request=SimpleNamespace(headers={"x-request-id": "req-1"}),
             runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
-            request_body={"inputs": {"question": "개발팀 커밋 컨벤션은?"}},
+            request_body=AuthenticatedDeploymentRunRequest(
+                inputs={"question": "개발팀 커밋 컨벤션은?"},
+                conversation={"client_id": client_conversation_id},
+            ),
             db=FakeModelDb({WorkflowDeployment: deployment, App: app}),
             current_user=current_user,
         )
@@ -474,6 +479,7 @@ def test_run_authenticated_deployment_authorizes_execute_and_forwards_inputs(
     assert checked == [(current_user.id, workflow_id, "execute")]
     assert captured["deployment_id"] == str(deployment.id)
     assert captured["user_inputs"] == {"question": "개발팀 커밋 컨벤션은?"}
+    assert captured["client_conversation_id"] == str(client_conversation_id)
     assert captured["current_user_id"] == current_user.id
     assert captured["request_id"] == "req-1"
 
@@ -523,7 +529,9 @@ def test_run_authenticated_deployment_forwards_middleware_request_id(
                 state=SimpleNamespace(request_id="middleware-req-1"),
             ),
             runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
-            request_body={"inputs": {"question": "개발팀 커밋 컨벤션은?"}},
+            request_body=AuthenticatedDeploymentRunRequest(
+                inputs={"question": "개발팀 커밋 컨벤션은?"}
+            ),
             db=FakeModelDb({WorkflowDeployment: deployment, App: app}),
             current_user=current_user,
         )
@@ -607,7 +615,9 @@ def test_run_authenticated_deployment_rejects_non_object_inputs(monkeypatch):
                 deployment_id=str(deployment.id),
                 request=SimpleNamespace(headers={}),
                 runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
-                request_body={"inputs": "not-an-object"},
+                request_body=AuthenticatedDeploymentRunRequest(
+                    inputs="not-an-object"
+                ),
                 db=FakeModelDb({WorkflowDeployment: deployment, App: app}),
                 current_user=SimpleNamespace(id=uuid.uuid4()),
             )
@@ -657,7 +667,7 @@ def test_run_authenticated_deployment_masks_active_organization_mismatch(
                 deployment_id=str(deployment.id),
                 request=SimpleNamespace(headers={}),
                 runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
-                request_body={"inputs": {}},
+                request_body=AuthenticatedDeploymentRunRequest(),
                 x_organization_id=str(active_organization_id),
                 db=FakeModelDb({WorkflowDeployment: deployment, App: app}),
                 current_user=SimpleNamespace(id=uuid.uuid4()),

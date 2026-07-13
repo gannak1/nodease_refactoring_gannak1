@@ -7,7 +7,7 @@ Related Features: deployment, workflow, conversation-memory, llm-credentials, au
 
 `시작 입력 노드`(코드 타입 `startNode`)로 시작하는 워크플로우를 **공개 챗봇** 또는 로그인 사용자 권한을 적용하는 **내부 챗봇**으로 배포하는 기능을 제공한다. 챗봇은 사용자와 여러 턴에 걸쳐 대화하며, **이전 대화 맥락을 기억**한다.
 
-이 feature는 [deployment](../deployment/requirements.md)의 배포 타입/공개 실행 표면 위에 챗봇 전용 배포 타입과 방문자별 대화 격리 기억을 additive로 추가한다. 채팅 UI는 기존 임베드 챗 페이지(`app/embed/chat/[urlSlug]`)를 재사용한다.
+이 feature는 [deployment](../deployment/requirements.md)의 배포 타입/공개 실행 표면 위에 챗봇 전용 배포 타입과 방문자별 대화 격리 기억을 additive로 추가한다. 공개 챗봇은 기존 임베드 챗 페이지(`app/embed/chat/[urlSlug]`)를 사용하고, 인증 내부 챗봇은 별도 실행 페이지(`app/modules/[id]/run`)를 사용한다.
 
 ## Contract Status
 
@@ -28,8 +28,10 @@ CBOT-REQ-004~007의 global `memory_mode`, client UUID와 execution-log memory는
 - CBOT-REQ-003a: 공개 챗봇 활성 배포 생성/전환은 deployment preflight를 통과해야 한다. `/run-public`은 사용자 execution subject를 주입하지 않으므로 private KB 후보가 있으면 `409 deployment.preflight.blocked`로 활성화를 차단한다.
 - CBOT-REQ-003b: 내부 챗봇은 인증 deployment run/run-info endpoint만 사용한다. Gateway는 대상 workflow organization의 active membership과 workflow `execute` 권한을 확인하고, `X-Organization-Id`가 전달되면 배포 앱 organization과의 일치도 확인한 뒤 현재 로그인 사용자를 runtime `execution_subject`로 전달한다.
 - CBOT-REQ-003c: 비로그인 사용자가 내부 챗봇 실행 링크를 열어 run-info에서 `401`을 받으면 클라이언트는 `/auth/login?next=<원래 path+query+hash>`로 이동한다. 이메일/비밀번호 로그인 성공 후 같은 origin의 안전한 `next`로 복귀하고, 외부 또는 프로토콜 상대 URL은 `/dashboard`로 fallback한다.
+- CBOT-REQ-003d: 인증 실행 요청은 업무 `inputs`와 별도의 top-level `conversation.client_id`에 canonical UUID를 전달한다. Gateway는 이 값을 deployment와 current user에 결박한 versioned internal namespace로 바꾸며, raw client id를 workflow input, response, audit 또는 log에 노출하지 않는다.
+- CBOT-REQ-003e: 인증 실행의 `conversation.client_id`는 Chatbot deployment에서만 허용한다. `inputs`에 선언된 `conversation_id` 또는 `memory_mode` workflow 변수는 업무 입력으로 보존하며, typed control과 선언되지 않은 legacy reserved control이 동시에 오면 모호한 요청으로 거부한다.
 - CBOT-REQ-004 (Legacy Current Implementation): 챗봇 배포의 실행은 **기억모드(memory_mode)를 항상 ON** 으로 강제한다. 이 강제는 서버(`run_deployment`)가 `deployment.type in {chatbot, internal_chatbot}`을 근거로 수행하며, 클라이언트가 보낸 `memory_mode` 값과 무관하다.
-- CBOT-REQ-005 (Legacy Current Implementation): 챗봇 페이지는 방문자별 `conversation_id`를 브라우저 `localStorage`(`nodease_chat_conv_{url_slug}`)에 생성/유지하고, 매 실행 요청의 `inputs`에 `conversation_id`와 `memory_mode: true`를 담아 보낸다. 서버는 이 두 값을 dispatch 전에 `inputs`에서 제거(pop)하여 워크플로우 입력을 오염시키지 않고 `execution_context`로만 전달한다.
+- CBOT-REQ-005 (Legacy Current Implementation): 공개 챗봇 페이지는 방문자별 `conversation_id`를 브라우저 `localStorage`(`nodease_chat_conv_{url_slug}`)에 생성/유지하고, 매 실행 요청의 `inputs`에 `conversation_id`와 `memory_mode: true`를 담아 보낸다. 공개 legacy 서버 경로는 이 두 값을 dispatch 전에 `inputs`에서 제거(pop)하여 `execution_context`로 전달한다. 인증 내부 페이지는 page-session UUID를 별도 `conversation.client_id`로 보내므로 이 reserved-input 계약을 신규 호출에 복제하지 않는다.
 - CBOT-REQ-006 (Legacy Current Implementation): 기억 조회는 방문자별로 격리한다. `execution_context.conversation_id`가 있으면 기억 요약은 `workflow_id + conversation_id + status=SUCCESS` 실행 이력으로 스코프하고 `user_id` 필터를 사용하지 않는다. `conversation_id`가 없으면 기존 `workflow_id + user_id` 스코프를 유지한다(하위호환).
 - CBOT-REQ-007 (Legacy Current Implementation): 실행 이력(`workflow_runs`)에는 방문자별 격리 키로 `conversation_id`(nullable, indexed)를 저장한다. 저장 경로는 기존 `correlation_id`와 동일하게 `execution_context → workflow_logger → log_system`을 따른다.
 - CBOT-REQ-008 (Target): Chatbot deployment는 Conversation Session surface를 제공할 수 있지만 모든 LLM node의 Memory를 강제하지 않는다. Node별 versioned Memory config의 기본값은 OFF다.
@@ -51,6 +53,7 @@ CBOT-REQ-004~007의 global `memory_mode`, client UUID와 execution-log memory는
 - Legacy `conversation_id`는 비인증 클라이언트 값이며 UUIDv4의 추정 곤란성에만 의존한다. Target contract에서는 public Access Grant가 session 접근 capability다.
 - Legacy 기억은 성공(`SUCCESS`)한 `llmNode` 실행 이력과 `MEMORY_RUN_LIMIT`(5)을 사용한다. Target contract에서는 dedicated store, node별 window/summary policy와 current authorization을 사용한다.
 - Legacy `conversation_id`/`memory_mode` business input collision은 target conversation envelope migration으로 제거한다.
+- 현재 인증 실행은 typed conversation control을 사용해 신규 내부 호출의 reserved-input collision을 제거한다. 공개 legacy route와 명시적 compatibility fallback은 Target Conversation Session migration 전까지 별도로 표시한다.
 
 ## Open Questions
 

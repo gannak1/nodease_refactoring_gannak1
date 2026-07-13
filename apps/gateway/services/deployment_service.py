@@ -40,6 +40,14 @@ from apps.shared.services.workflow_task_publisher import send_workflow_task
 
 logger = logging.getLogger(__name__)
 
+_CHATBOT_DEPLOYMENT_TYPES = {
+    DeploymentType.CHATBOT,
+    DeploymentType.INTERNAL_CHATBOT,
+}
+_LEGACY_CONVERSATION_INPUT = "conversation_id"
+_LEGACY_MEMORY_MODE_INPUT = "memory_mode"
+_MAX_LEGACY_CONVERSATION_ID_LENGTH = 255
+
 
 def _safe_deployment_error_detail(value: Any) -> Any:
     if not isinstance(value, dict):
@@ -560,6 +568,7 @@ class DeploymentService:
         db: Session,
         deployment_id: uuid.UUID | str,
         user_inputs: Dict[str, Any],
+        client_conversation_id: Optional[str],
         current_user_id: uuid.UUID | str,
         runtime_policy: DeploymentRuntimePolicy,
         request_id: Optional[str] = None,
@@ -578,6 +587,15 @@ class DeploymentService:
             runtime_policy=runtime_policy,
         )
 
+        if (
+            client_conversation_id is not None
+            and deployment.type not in _CHATBOT_DEPLOYMENT_TYPES
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Conversation control is only supported for chatbot deployments",
+            )
+
         return await DeploymentService._execute_deployment_snapshot(
             db=db,
             app=app,
@@ -586,6 +604,8 @@ class DeploymentService:
             trigger_mode="app",
             actor_user_id=current_user_id,
             execution_subject_user_id=current_user_id,
+            client_conversation_id=client_conversation_id,
+            separate_conversation_control=True,
             request_id=request_id,
             correlation_id=correlation_id,
         )
@@ -654,6 +674,8 @@ class DeploymentService:
         trigger_mode: str,
         actor_user_id: uuid.UUID | str | None,
         execution_subject_user_id: uuid.UUID | str | None,
+        client_conversation_id: Optional[str] = None,
+        separate_conversation_control: bool = False,
         request_id: Optional[str] = None,
         correlation_id: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -672,15 +694,46 @@ class DeploymentService:
             # 로깅을 위한 컨텍스트 주입
             # memory_mode 추가 (챗봇 기억 모드 지원)
             dispatch_inputs = dict(user_inputs or {})
-            memory_mode_enabled = dispatch_inputs.pop("memory_mode", False)
+            declared_inputs = DeploymentService._declared_input_names(deployment)
+            legacy_memory_is_business_input = (
+                separate_conversation_control
+                and _LEGACY_MEMORY_MODE_INPUT in declared_inputs
+            )
+            legacy_conversation_is_business_input = (
+                separate_conversation_control
+                and _LEGACY_CONVERSATION_INPUT in declared_inputs
+            )
+
+            if (
+                client_conversation_id is not None
+                and not legacy_conversation_is_business_input
+                and _LEGACY_CONVERSATION_INPUT in dispatch_inputs
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Conflicting conversation controls",
+                )
+
+            memory_mode_enabled = (
+                False
+                if legacy_memory_is_business_input
+                else dispatch_inputs.pop(_LEGACY_MEMORY_MODE_INPUT, False)
+            )
             if isinstance(memory_mode_enabled, str):
                 memory_mode_enabled = memory_mode_enabled.lower() == "true"
 
             # 방문자별 대화 격리용 conversation_id (챗봇 멀티턴 기억).
             # memory_mode와 동일하게 dispatch 전에 pop하여 워크플로우 입력 오염을 막는다.
-            conversation_id = dispatch_inputs.pop("conversation_id", None)
+            conversation_id = client_conversation_id
+            if conversation_id is None and not legacy_conversation_is_business_input:
+                conversation_id = dispatch_inputs.pop(
+                    _LEGACY_CONVERSATION_INPUT,
+                    None,
+                )
             if conversation_id is not None:
-                conversation_id = str(conversation_id)
+                conversation_id = DeploymentService._validate_client_conversation_id(
+                    conversation_id
+                )
                 if execution_subject_user_id:
                     conversation_id = DeploymentService._authenticated_conversation_id(
                         deployment_id=deployment.id,
@@ -689,10 +742,7 @@ class DeploymentService:
                     )
 
             # 챗봇 배포는 기억모드가 항상 켜져 있어야 한다 (클라이언트 값과 무관하게 서버가 강제).
-            if deployment.type in {
-                DeploymentType.CHATBOT,
-                DeploymentType.INTERNAL_CHATBOT,
-            }:
+            if deployment.type in _CHATBOT_DEPLOYMENT_TYPES:
                 memory_mode_enabled = True
 
             execution_context = {
@@ -802,9 +852,46 @@ class DeploymentService:
         client_conversation_id: str,
     ) -> str:
         digest = hashlib.sha256(
-            f"{deployment_id}:{subject_id}:{client_conversation_id}".encode("utf-8")
+            (
+                "nodease:authenticated-conversation:v1:"
+                f"{deployment_id}:{subject_id}:{client_conversation_id}"
+            ).encode("utf-8")
         ).hexdigest()
-        return f"auth:{digest}"
+        return f"auth:v1:{digest}"
+
+    @staticmethod
+    def _validate_client_conversation_id(value: Any) -> str:
+        if not isinstance(value, str):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid conversation control",
+            )
+        normalized = value.strip()
+        if (
+            not normalized
+            or len(normalized) > _MAX_LEGACY_CONVERSATION_ID_LENGTH
+            or any(ord(character) < 32 or ord(character) == 127 for character in normalized)
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid conversation control",
+            )
+        return normalized
+
+    @staticmethod
+    def _declared_input_names(deployment: WorkflowDeployment) -> set[str]:
+        input_schema = getattr(deployment, "input_schema", None)
+        if not isinstance(input_schema, dict):
+            return set()
+        variables = input_schema.get("variables")
+        if not isinstance(variables, list):
+            return set()
+        return {
+            name
+            for variable in variables
+            if isinstance(variable, dict)
+            and isinstance((name := variable.get("name")), str)
+        }
 
     @staticmethod
     def _extract_input_schema(graph_snapshot: dict) -> dict | None:
