@@ -32,7 +32,7 @@ Verified Against: feature/mba-147 @ e1a04e9
 - Given `total_cost`가 NULL인 usage row, When 당월 비용을 합산하면, Then 0으로 합산된다.
 - Given KST 월 경계 근처의 usage row (예: KST 7월 1일 00:30 = UTC 6월 30일 15:30 저장), When 7월 사용률을 계산하면, Then 해당 row는 7월 집계에 포함된다.
 
-### AC-4. 사용률 조회 응답 (BGT-REQ-020~023)
+### AC-4. 사용률 조회 응답 (BGT-REQ-020~024)
 
 - Given 조직 A에 App primary workflow가 여러 개 있다, When `GET /admin/usage/workflows`를 호출하면, Then 기간 안의 usage 존재 여부와 무관하게 조직 A의 App primary workflow 전체가 반환된다.
 - Given 기간 안에 usage row가 없는 workflow, When `GET /admin/usage/workflows`를 호출하면, Then 해당 workflow는 응답에 포함되고 prompt/completion tokens, `call_count`, `total_cost`는 모두 0이다.
@@ -44,6 +44,8 @@ Verified Against: feature/mba-147 @ e1a04e9
 - Given 예산 미설정 workflow, When usage를 조회하면, Then `budget`은 null이고 오류가 아니다.
 - Given 활성 예산 workflow 5개 중 at_risk 1개, exceeded 1개, When `GET /admin/summary`를 호출하면, Then `budget`은 `{budgeted_workflow_count: 5, at_risk_count: 1, exceeded_count: 1, ratio: 0.4}`다.
 - Given 조직 A 활성 예산 workflow에 조직 B로 명시된 고비용 usage가 있다, When 조직 A의 `GET /admin/summary`를 호출하면, Then 해당 usage는 at_risk/exceeded 판정에 반영되지 않는다. NULL organization legacy usage는 계속 반영한다.
+- Given 조직 A 예산 workflow에 조직 A usage, NULL legacy usage, 조직 B로 명시된 usage가 함께 있다, When 조직 A의 `GET /admin/workflow-budgets/{workflow_id}`를 호출하면, Then `current_month_cost`, `usage_ratio`, `status`는 조직 A와 NULL usage만 반영한다.
+- Given 같은 혼합 usage가 있다, When 조직 A의 `PUT /admin/workflow-budgets/{workflow_id}`로 예산을 저장하면, Then 저장 응답의 `current_month_cost`, `usage_ratio`, `status`도 조직 A와 NULL usage만 반영한다.
 - Given 활성 예산 workflow가 0개인 조직, When summary를 조회하면, Then `budget`은 null이다.
 - Given 활성 예산이 있는 App, When member가 `GET /apps`를 호출하면, Then 항목의 `budget_status`에 `usage_ratio`, `status`만 포함되고 예산 금액/비용 원문은 포함되지 않는다.
 - Given 활성 예산이 있는 App, When organization manager 또는 workflow `write` 이상 사용자가 `GET /apps/operations`를 호출하면, Then row의 `app.budget_status`에 `usage_ratio`, `status`만 포함되고 `/dashboard/mymodule`은 이 값을 표시 원천으로 사용한다.
