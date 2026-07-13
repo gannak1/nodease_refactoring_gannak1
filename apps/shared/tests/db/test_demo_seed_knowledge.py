@@ -468,6 +468,48 @@ def test_demo_seed_chat_models_use_gpt_5_4_family():
     }
 
 
+def test_model_router_demo_workflow_enables_versioned_semantic_cohorts():
+    graph = demo_seed._model_router_ticket_ops_graph()
+    llm_node = next(node for node in graph["nodes"] if node["id"] == "llm-triage")
+    data = llm_node["data"]
+
+    assert data["auto_model_routing"] is True
+    assert data["model_id"] == "gpt-4.1"
+    assert data["fallback_model_id"] == "gpt-4.1-mini"
+    semantic_router = data["model_routing_context"]["semantic_router"]
+    assert semantic_router["route_catalog_version"] == "demo-ticket-routing-v7"
+    assert semantic_router["encoder_model_id"] == demo_seed.DEMO_EMBEDDING_MODEL
+    assert semantic_router["input_paths"] == ["webhook-ticket.message"]
+    assert semantic_router["aggregation"] == "centroid"
+    assert semantic_router["min_margin"] == 0.005
+
+    routes = semantic_router["routes"]
+    assert {route["cohort_id"] for route in routes} == {
+        "routine_support",
+        "account_billing",
+        "high_risk",
+    }
+    high_risk = next(route for route in routes if route["cohort_id"] == "high_risk")
+    assert high_risk["safety_override"] is True
+    assert high_risk["lexical_override_threshold"] == 1.0
+    assert {signal["term"] for signal in high_risk["lexical_signals"]} >= {
+        "계정 탈취",
+        "변조",
+        "unauthorized access",
+    }
+    assert all(len(route["utterances"]) >= 12 for route in routes)
+    utterances = [
+        utterance for route in routes for utterance in route["utterances"]
+    ]
+    assert len(utterances) == len(set(utterances))
+    assert all(0 < route["threshold"] < 1 for route in routes)
+    assert {route["cohort_id"]: route["threshold"] for route in routes} == {
+        "routine_support": 0.35,
+        "account_billing": 0.38,
+        "high_risk": 0.34,
+    }
+
+
 def test_ticket_ops_input_schema_matches_webhook_mappings():
     graph = demo_seed._ticket_ops_graph()
 
