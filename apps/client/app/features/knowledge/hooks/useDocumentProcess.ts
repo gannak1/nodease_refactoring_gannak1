@@ -16,6 +16,8 @@ interface UseDocumentProcessProps {
   document: DocumentResponse | null;
   setStatus: (status: string) => void;
   setProgress: (progress: number) => void;
+  canEditDocument: boolean;
+  editConfigReady: boolean;
   settings: {
     chunkSize: number;
     chunkOverlap: number;
@@ -23,6 +25,7 @@ interface UseDocumentProcessProps {
     removeUrlsEmails: boolean;
     removeWhitespace: boolean;
     parsingStrategy: 'general' | 'llamaparse';
+    chunkingMode: 'flat' | 'hierarchical';
     selectedDbItems: Record<string, string[]>;
     sensitiveColumns?: Record<string, string[]>;
     aliases?: Record<string, Record<string, string>>;
@@ -44,6 +47,8 @@ export function useDocumentProcess({
   document,
   setStatus,
   setProgress,
+  canEditDocument,
+  editConfigReady,
   settings,
   connectionId: connectionIdOverride,
   selectionMode = 'all',
@@ -81,6 +86,21 @@ export function useDocumentProcess({
       },
     );
 
+    const dbConfig =
+      document?.source_type === 'DB'
+        ? {
+            selections,
+            selected_items: settings.selectedDbItems,
+            sensitive_columns: settings.sensitiveColumns,
+            aliases: settings.aliases,
+            template: settings.template,
+            join_config: settings.joinConfig || undefined,
+            ...(connectionIdOverride
+              ? { connection_id: connectionIdOverride }
+              : {}),
+          }
+        : null;
+
     return {
       chunk_size: settings.chunkSize,
       chunk_overlap: settings.chunkOverlap,
@@ -89,17 +109,8 @@ export function useDocumentProcess({
       remove_whitespace: settings.removeWhitespace,
       strategy: strategy,
       source_type: document?.source_type || 'FILE',
-      db_config: {
-        selections,
-        selected_items: settings.selectedDbItems,
-        sensitive_columns: settings.sensitiveColumns,
-        aliases: settings.aliases,
-        template: settings.template,
-        join_config: settings.joinConfig || undefined,
-        ...(connectionIdOverride
-          ? { connection_id: connectionIdOverride }
-          : {}),
-      },
+      chunking_mode: settings.chunkingMode,
+      db_config: dbConfig,
       // 자동 청킹 설정
       enable_auto_chunking: settings.enableAutoChunking ?? true,
       // 필터링 파라미터 전송
@@ -114,6 +125,14 @@ export function useDocumentProcess({
 
   // 유효성 검사 헬퍼
   const validateRequest = () => {
+    if (!canEditDocument) {
+      toast.error('이 문서를 수정할 권한이 없습니다.');
+      return false;
+    }
+    if (!editConfigReady) {
+      toast.error('기존 문서 설정을 불러온 뒤 다시 시도해 주세요.');
+      return false;
+    }
     if (selectionMode === 'range') {
       if (!rangeStart || !rangeEnd) {
         toast.error('번호를 입력해주세요');
@@ -184,6 +203,7 @@ export function useDocumentProcess({
 
   // 비용 승인 핸들러
   const handleAnalyzeAndProceed = async (action: 'preview' | 'save') => {
+    if (!validateRequest()) return;
     setAnalyzingAction(action);
     try {
       const result = await knowledgeApi.analyzeDocument(documentId);
@@ -207,6 +227,7 @@ export function useDocumentProcess({
   // 5. 비용 승인 확인
   const handleConfirmCost = async () => {
     setShowCostConfirm(false);
+    if (!validateRequest()) return;
 
     // waiting_for_approval 상태에서 재개하는 경우
     if (document?.status === 'waiting_for_approval') {

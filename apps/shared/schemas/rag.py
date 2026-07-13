@@ -150,6 +150,66 @@ class DocumentResponse(BaseModel):
     meta_info: Optional[dict] = None
 
 
+class DocumentDbJoinEdgeEditConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    from_table: str
+    to_table: str
+    from_column: str
+    to_column: str
+
+
+class DocumentDbJoinEditConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    base_table: Optional[str] = None
+    joins: List[DocumentDbJoinEdgeEditConfig] = Field(default_factory=list)
+
+
+class DocumentDbEditConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    connection_id: UUID
+    selected_items: Dict[str, List[str]] = Field(default_factory=dict)
+    sensitive_columns: Dict[str, List[str]] = Field(default_factory=dict)
+    aliases: Dict[str, Dict[str, str]] = Field(default_factory=dict)
+    template: Optional[str] = None
+    join_config: DocumentDbJoinEditConfig = Field(
+        default_factory=DocumentDbJoinEditConfig
+    )
+
+
+class DocumentApiEditConfigSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    configured: bool
+    method: Literal["GET", "POST"]
+    safe_label: str
+    has_headers: bool
+    has_body: bool
+
+
+class DocumentEditConfigResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    editable: bool
+    safe_reason_code: Optional[Literal["document.edit_config_unavailable"]] = None
+    source_type: Literal["FILE", "API", "DB"]
+    chunk_size: Optional[int] = None
+    chunk_overlap: Optional[int] = None
+    segment_identifier: Optional[str] = None
+    remove_urls_emails: Optional[bool] = None
+    remove_whitespace: Optional[bool] = None
+    strategy: Optional[Literal["general", "llamaparse"]] = None
+    chunking_mode: Optional[ChunkingMode] = None
+    selection_mode: Optional[Literal["all", "range", "keyword"]] = None
+    chunk_range: Optional[str] = None
+    keyword_filter: Optional[str] = None
+    db_config: Optional[DocumentDbEditConfig] = None
+    api_config: Optional[DocumentApiEditConfigSummary] = None
+
+
 class KnowledgeBaseDetailResponse(KnowledgeBaseResponse):
     documents: List[DocumentResponse]
     can_edit_settings: bool = True

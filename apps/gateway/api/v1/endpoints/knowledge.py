@@ -46,6 +46,9 @@ from apps.gateway.services.knowledge_collection_service import (
 from apps.gateway.services.knowledge_document_content_service import (
     KnowledgeDocumentContentService,
 )
+from apps.gateway.services.knowledge_document_edit_projection import (
+    project_document_edit_config,
+)
 from apps.gateway.services.knowledge_document_projection import (
     project_safe_document_metadata,
 )
@@ -103,6 +106,7 @@ from apps.shared.schemas.knowledge import (
     KnowledgeRAGRecommendationResponse,
 )
 from apps.shared.schemas.rag import (
+    DocumentEditConfigResponse,
     DocumentPreviewRequest,
     DocumentPreviewResponse,
     DocumentResponse,
@@ -1613,6 +1617,32 @@ def get_document(
         source_type=doc.source_type,
         meta_info=project_safe_document_metadata(doc.meta_info),
     )
+
+
+@router.get(
+    "/{kb_id}/documents/{document_id}/edit-config",
+    response_model=DocumentEditConfigResponse,
+)
+def get_document_edit_config(
+    kb_id: UUID,
+    document_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return a bounded edit projection to an authorized KB writer."""
+
+    _, doc = _authorized_knowledge_document(
+        kb_id,
+        document_id,
+        "write",
+        request,
+        x_organization_id,
+        db,
+        current_user,
+    )
+    return DocumentEditConfigResponse(**project_document_edit_config(doc))
 
 
 @router.get("/{kb_id}/documents/{document_id}/content")
