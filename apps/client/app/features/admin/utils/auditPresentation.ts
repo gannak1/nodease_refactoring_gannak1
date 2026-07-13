@@ -1,4 +1,8 @@
 import { auditActionLabel } from './auditActionLabel';
+import {
+  isSecurityAlertOperation,
+  type SecurityAlertOperation,
+} from '../types/SecurityAlert';
 
 const TARGET_TYPE_LABELS: Record<string, string> = {
   organization: '조직',
@@ -13,7 +17,7 @@ const TARGET_TYPE_LABELS: Record<string, string> = {
   user: '사용자',
 };
 
-const SECURITY_ALERT_OPERATION_LABELS: Record<string, string> = {
+const SECURITY_ALERT_OPERATION_LABELS: Record<SecurityAlertOperation, string> = {
   'security_alert.list': '보안 알림 목록 조회',
   'security_alert.summary': '보안 알림 요약 조회',
   'security_alert.detail': '보안 알림 상세 조회',
@@ -74,10 +78,11 @@ export function auditEventSummary({
   );
   if (action === 'permission.denied' || action === 'auth.permission_denied') {
     if (requiredPermission === 'security_alert.manage') {
-      const operation = requestedOperation
-        ? SECURITY_ALERT_OPERATION_LABELS[requestedOperation]
-        : null;
-      return `${operation || '보안 알림 관리 기능 사용'}를 시도했지만 조직 관리자 권한이 필요해 거부되었습니다.`;
+      const operationWithParticle =
+        requestedOperation && isSecurityAlertOperation(requestedOperation)
+          ? `${SECURITY_ALERT_OPERATION_LABELS[requestedOperation]}를`
+          : '보안 알림 관련 작업을';
+      return `${operationWithParticle} 시도했지만 조직 관리자 권한이 필요해 거부되었습니다.`;
     }
     return `${target}에 대한 접근이 거부되었습니다.`;
   }
@@ -107,7 +112,11 @@ export function auditMetadataValueLabel(key: string, value: unknown) {
   if (key === 'required_permission' && value === 'security_alert.manage') {
     return '조직 관리자 권한';
   }
-  if (key === 'requested_operation' && typeof value === 'string') {
+  if (
+    key === 'requested_operation' &&
+    typeof value === 'string' &&
+    isSecurityAlertOperation(value)
+  ) {
     return SECURITY_ALERT_OPERATION_LABELS[value] || value;
   }
   if (key === 'denial_reason' && value === 'organization_manager_required') {

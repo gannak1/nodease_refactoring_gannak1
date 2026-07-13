@@ -233,6 +233,7 @@ Unknown reason은 원문을 사용자 문장으로 만들지 않고 `알 수 없
 - Audit detail drawer는 Security Alert detail보다 높은 layer에 표시하고, 닫으면 Security Alert detail과 선택했던 row focus를 복원한다.
 - Evidence loading/error는 alert detail 전체 loading/error와 분리한다.
 - Evidence가 없으면 `연결된 감사 기록이 없습니다.`를 표시하되 alert 자체를 invalid로 단정하지 않는다.
+- Security Alert 관리 권한 거부의 `requested_operation`은 고정 operation 타입과 라벨 매핑으로 표시한다. Operation이 없는 이전 기록은 `보안 알림 관련 작업`을 fallback으로 사용한다.
 
 ## Lifecycle Actions
 

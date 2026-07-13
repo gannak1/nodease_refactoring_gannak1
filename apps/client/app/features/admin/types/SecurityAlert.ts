@@ -15,6 +15,25 @@ export type SecurityAlertActorState =
   | 'removed'
   | 'deleted';
 
+export const SECURITY_ALERT_OPERATIONS = {
+  LIST: 'security_alert.list',
+  SUMMARY: 'security_alert.summary',
+  DETAIL: 'security_alert.detail',
+  EVIDENCE_LIST: 'security_alert.evidence.list',
+  ACKNOWLEDGE: 'security_alert.acknowledge',
+  RESOLVE: 'security_alert.resolve',
+  REOPEN: 'security_alert.reopen',
+} as const;
+
+export type SecurityAlertOperation =
+  (typeof SECURITY_ALERT_OPERATIONS)[keyof typeof SECURITY_ALERT_OPERATIONS];
+
+export function isSecurityAlertOperation(
+  value: string,
+): value is SecurityAlertOperation {
+  return (Object.values(SECURITY_ALERT_OPERATIONS) as string[]).includes(value);
+}
+
 export type SecurityAlertSafeActor = {
   id: string | null;
   display_name: string | null;
@@ -88,7 +107,7 @@ export type SecurityAlertAuditLogItem = {
   status: 'success' | 'failure';
   request_id: string | null;
   required_permission?: string | null;
-  requested_operation?: string | null;
+  requested_operation?: SecurityAlertOperation | null;
   denial_reason?: string | null;
 };
 

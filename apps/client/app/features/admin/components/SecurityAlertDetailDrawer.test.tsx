@@ -16,7 +16,7 @@ vi.mock('../api/adminApi', () => ({
 import { adminApi } from '../api/adminApi';
 import { SecurityAlertDetailDrawer } from './SecurityAlertDetailDrawer';
 import type { OrganizationMember } from '../../organization/types/Organization';
-import type { SecurityAlertAuditLogListResponse } from '../types/SecurityAlert';
+import type { SecurityAlertAuditLogItem, SecurityAlertAuditLogListResponse } from '../types/SecurityAlert';
 
 const mockedDetail = vi.mocked(adminApi.getSecurityAlertDetail);
 const mockedEvidence = vi.mocked(adminApi.listSecurityAlertAuditLogs);
@@ -86,7 +86,7 @@ const evidence = {
   required_permission: 'security_alert.manage',
   requested_operation: 'security_alert.list',
   denial_reason: 'organization_manager_required',
-};
+} satisfies SecurityAlertAuditLogItem;
 
 const notFoundError = () => {
   const error = new AxiosError('raw server detail');
