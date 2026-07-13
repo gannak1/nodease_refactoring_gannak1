@@ -12,23 +12,31 @@ class _Query:
         self.rows = rows
         self.filters = []
         self.limit_value = None
+        self.events = []
 
     def options(self, *_args):
+        self.events.append("options")
         return self
 
     def filter(self, *criteria):
+        self.events.append("filter")
         self.filters.extend(criteria)
         return self
 
     def order_by(self, *_args):
+        self.events.append("order_by")
         return self
 
     def limit(self, value):
+        self.events.append("limit")
         self.limit_value = value
         return self
 
     def all(self):
-        return self.rows
+        self.events.append("all")
+        if self.limit_value is None:
+            return self.rows
+        return self.rows[: self.limit_value]
 
 
 class _Db:
@@ -52,6 +60,22 @@ def _collection(*, organization_id, safe_metadata=None, source_identity=None):
     )
 
 
+def _scope_to_ids(monkeypatch, service, allowed_ids):
+    allowed_ids = set(allowed_ids)
+
+    def _scope(query, action):
+        assert action == "route"
+        query.events.append("permission_scope")
+        query.rows = [row for row in query.rows if row.id in allowed_ids]
+        return query
+
+    monkeypatch.setattr(
+        service.permission_helper,
+        "scope_collection_query_for_action",
+        _scope,
+    )
+
+
 def test_picker_returns_only_route_allowed_minimal_projection(monkeypatch):
     organization_id = uuid.uuid4()
     allowed = _collection(
@@ -68,14 +92,7 @@ def test_picker_returns_only_route_allowed_minimal_projection(monkeypatch):
         user_id=uuid.uuid4(),
         organization_id=organization_id,
     )
-    monkeypatch.setattr(
-        service.permission_helper,
-        "bulk_evaluate_collection_action",
-        lambda collections, action: {
-            allowed.id: SimpleNamespace(allowed=True),
-            denied.id: SimpleNamespace(allowed=False),
-        },
-    )
+    _scope_to_ids(monkeypatch, service, [allowed.id])
 
     response = service.list_llm_selectable()
 
@@ -84,6 +101,14 @@ def test_picker_returns_only_route_allowed_minimal_projection(monkeypatch):
     }
     assert db.query_value.limit_value == MAX_LLM_SELECTABLE_COLLECTION_SCAN
     assert len(db.query_value.filters) == 2
+    assert db.query_value.events == [
+        "options",
+        "filter",
+        "permission_scope",
+        "order_by",
+        "limit",
+        "all",
+    ]
     assert "RAW COLLECTION NAME" not in response.model_dump_json()
     assert "RAW DESCRIPTION" not in response.model_dump_json()
 
@@ -112,18 +137,57 @@ def test_source_managed_label_requires_active_approved_display_policy(monkeypatc
         user_id=uuid.uuid4(),
         organization_id=organization_id,
     )
-    monkeypatch.setattr(
-        service.permission_helper,
-        "bulk_evaluate_collection_action",
-        lambda collections, action: {
-            collection.id: SimpleNamespace(allowed=True)
-            for collection in collections
-        },
-    )
+    _scope_to_ids(monkeypatch, service, [approved.id, unapproved.id])
 
     response = service.list_llm_selectable()
 
     assert [item.safe_label for item in response.collections] == [
         "공개 승인 라벨",
         None,
+    ]
+
+
+def test_permission_scope_is_applied_before_scan_limit(monkeypatch):
+    organization_id = uuid.uuid4()
+    denied_recent = [
+        _collection(organization_id=organization_id) for _ in range(500)
+    ]
+    allowed_older = _collection(
+        organization_id=organization_id,
+        safe_metadata={"safe_label": "older allowed"},
+    )
+    db = _Db([*denied_recent, allowed_older])
+    service = KnowledgeCollectionPickerQueryService(
+        db,
+        user_id=uuid.uuid4(),
+        organization_id=organization_id,
+    )
+    _scope_to_ids(monkeypatch, service, [allowed_older.id])
+
+    response = service.list_llm_selectable()
+
+    assert [item.id for item in response.collections] == [allowed_older.id]
+    assert db.query_value.events.index("permission_scope") < db.query_value.events.index(
+        "limit"
+    )
+
+
+def test_permission_scoped_result_is_capped_at_scan_limit(monkeypatch):
+    organization_id = uuid.uuid4()
+    allowed = [
+        _collection(organization_id=organization_id) for _ in range(501)
+    ]
+    db = _Db(allowed)
+    service = KnowledgeCollectionPickerQueryService(
+        db,
+        user_id=uuid.uuid4(),
+        organization_id=organization_id,
+    )
+    _scope_to_ids(monkeypatch, service, [row.id for row in allowed])
+
+    response = service.list_llm_selectable()
+
+    assert len(response.collections) == MAX_LLM_SELECTABLE_COLLECTION_SCAN
+    assert [item.id for item in response.collections] == [
+        row.id for row in allowed[:MAX_LLM_SELECTABLE_COLLECTION_SCAN]
     ]

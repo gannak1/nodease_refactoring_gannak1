@@ -22,6 +22,8 @@ from apps.shared.domain.mail_credential import (
 )
 from apps.shared.domain.workflow_knowledge_references import (
     WorkflowKnowledgeReferenceError,
+    aggregate_workflow_knowledge_reference_ids,
+    parse_workflow_knowledge_references,
 )
 from apps.shared.domain.slack_delivery import (
     SlackGraphBoundaryError,
@@ -206,13 +208,29 @@ class WorkflowService:
         request: WorkflowDraftRequest | Mapping[str, Any],
         *,
         user_id: str | UUID,
-        organization_id: UUID,
+        organization_id: UUID | None,
     ) -> None:
         graph = (
             request.model_dump(mode="python")
             if isinstance(request, WorkflowDraftRequest)
             else dict(request)
         )
+        try:
+            parsed_nodes = parse_workflow_knowledge_references(graph)
+            direct_ids, collection_ids = aggregate_workflow_knowledge_reference_ids(
+                parsed_nodes
+            )
+        except WorkflowKnowledgeReferenceError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": exc.reason_code, "field": exc.field_path},
+            ) from exc
+
+        # Legacy workflows may not have organization scope. A graph with no
+        # Knowledge intent needs neither authorization context nor a DB query.
+        if not direct_ids and not collection_ids:
+            return
+
         try:
             user_uuid = uuid.UUID(str(user_id))
             organization_uuid = uuid.UUID(str(organization_id))
@@ -231,7 +249,7 @@ class WorkflowService:
             organization_id=organization_uuid,
         )
         try:
-            service.validate_editable_graph(graph)
+            service.validate_parsed_references(parsed_nodes)
         except WorkflowKnowledgeReferenceError as exc:
             raise HTTPException(
                 status_code=422,

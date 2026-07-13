@@ -64,11 +64,20 @@ class WorkflowKnowledgeReferenceService:
         graph: dict,
     ) -> tuple[WorkflowNodeKnowledgeReferences, ...]:
         parsed_nodes = parse_workflow_knowledge_references(graph)
+        self.validate_parsed_references(parsed_nodes)
+        return parsed_nodes
+
+    def validate_parsed_references(
+        self,
+        parsed_nodes: tuple[WorkflowNodeKnowledgeReferences, ...],
+    ) -> None:
+        """Authorize one structurally validated graph reference snapshot."""
+
         direct_ids, collection_ids = aggregate_workflow_knowledge_reference_ids(
             parsed_nodes
         )
         if not direct_ids and not collection_ids:
-            return parsed_nodes
+            return
 
         try:
             direct_kbs = self._load_direct_kbs(direct_ids)
@@ -119,8 +128,6 @@ class WorkflowKnowledgeReferenceService:
                     )
                 )
 
-        return parsed_nodes
-
     def _load_direct_kbs(
         self,
         direct_ids: tuple[uuid.UUID, ...],
@@ -133,6 +140,7 @@ class WorkflowKnowledgeReferenceService:
                 KnowledgeBase.id.in_(direct_ids),
                 KnowledgeBase.organization_id == self.organization_id,
                 KnowledgeBase.lifecycle_state == "active",
+                KnowledgeBase.sync_state != "source_deleted",
             )
             .all()
         )
@@ -172,6 +180,7 @@ class WorkflowKnowledgeReferenceService:
                 KnowledgeBase.id.in_(direct_ids),
                 KnowledgeBase.organization_id == self.organization_id,
                 KnowledgeBase.lifecycle_state == "active",
+                KnowledgeBase.sync_state != "source_deleted",
                 Document.status == "completed",
                 or_(
                     and_(

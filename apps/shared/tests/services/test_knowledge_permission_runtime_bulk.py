@@ -3,9 +3,16 @@ from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
+from apps.shared.db.models.knowledge import KnowledgeCollection
 from apps.shared.db.models.organization_membership import ORGANIZATION_AUTH_MEMBER
-from apps.shared.permissions import AUTH_STATE_MANAGER, AUTH_STATE_OPERATOR
+from apps.shared.permissions import (
+    AUTH_STATE_MANAGER,
+    AUTH_STATE_NONE,
+    AUTH_STATE_OPERATOR,
+)
 from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.orm import Session
 
 ORG_ID = UUID(int=100)
 USER_ID = UUID(int=101)
@@ -61,6 +68,26 @@ class _BulkCollectionHelper(KnowledgePermissionHelper):
         raise AssertionError("bulk evaluation must not call the single-row path")
 
 
+class _CollectionScopeHelper(KnowledgePermissionHelper):
+    def __init__(self, *, auth_state):
+        super().__init__(Session(), user_id=USER_ID, organization_id=ORG_ID)
+        self.auth_state = auth_state
+
+    def _organization_auth_state(self):
+        return self.auth_state
+
+
+def _collection_scope_sql(helper, action="route"):
+    query = helper.db.query(KnowledgeCollection)
+    scoped = helper.scope_collection_query_for_action(query, action)
+    return str(
+        scoped.statement.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+
+
 def test_bulk_collection_route_uses_one_bulk_permission_projection():
     collections = [_collection(1), _collection(2)]
     helper = _BulkCollectionHelper()
@@ -97,6 +124,50 @@ def test_bulk_collection_invalid_action_is_fixed_safe_denial():
     assert decision.reason_code == "permission.invalid_action"
     assert decision.external_reason_code == "resource.hidden"
     assert helper.bulk_calls == []
+
+
+def test_collection_query_scope_manager_does_not_require_permission_rows():
+    sql = _collection_scope_sql(
+        _CollectionScopeHelper(auth_state=AUTH_STATE_MANAGER)
+    ).lower()
+
+    assert "user_knowledge_collection_permissions" not in sql
+    assert "team_knowledge_collection_permissions" not in sql
+
+
+def test_collection_query_scope_member_accepts_direct_or_active_team_route():
+    sql = _collection_scope_sql(
+        _CollectionScopeHelper(auth_state=ORGANIZATION_AUTH_MEMBER)
+    ).lower()
+
+    assert "user_knowledge_collection_permissions" in sql
+    assert "team_knowledge_collection_permissions" in sql
+    assert "team_memberships" in sql
+    assert "teams" in sql
+    assert "permission_action = 'route'" in sql
+    assert str(USER_ID) in sql
+    assert str(ORG_ID) in sql
+    assert "teams.is_active is true" in sql
+
+
+def test_collection_query_scope_non_member_fails_closed():
+    sql = _collection_scope_sql(
+        _CollectionScopeHelper(auth_state=AUTH_STATE_NONE)
+    ).lower()
+
+    assert "where false" in sql
+    assert "user_knowledge_collection_permissions" not in sql
+
+
+def test_collection_query_scope_invalid_action_fails_closed_before_auth_lookup():
+    helper = _CollectionScopeHelper(auth_state=AUTH_STATE_MANAGER)
+    helper._organization_auth_state = lambda: (_ for _ in ()).throw(
+        AssertionError("invalid action must not evaluate organization authorization")
+    )
+
+    sql = _collection_scope_sql(helper, action="content").lower()
+
+    assert "where false" in sql
 
 
 class _SourceActionHelper(KnowledgePermissionHelper):

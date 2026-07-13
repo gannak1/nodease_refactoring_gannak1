@@ -47,23 +47,26 @@ class KnowledgeCollectionPickerQueryService:
 
     def list_llm_selectable(self) -> KnowledgeCollectionLLMSelectableResponse:
         try:
-            collections = (
+            query = (
                 self.db.query(KnowledgeCollection)
                 .options(selectinload(KnowledgeCollection.source_identity))
                 .filter(
                     KnowledgeCollection.organization_id == self.organization_id,
                     KnowledgeCollection.lifecycle_state == "active",
                 )
+            )
+            query = self.permission_helper.scope_collection_query_for_action(
+                query,
+                "route",
+            )
+            collections = (
+                query
                 .order_by(
                     KnowledgeCollection.created_at.desc(),
                     KnowledgeCollection.id.asc(),
                 )
                 .limit(MAX_LLM_SELECTABLE_COLLECTION_SCAN)
                 .all()
-            )
-            decisions = self.permission_helper.bulk_evaluate_collection_action(
-                collections,
-                "route",
             )
         except SQLAlchemyError as exc:
             raise KnowledgeCollectionPickerUnavailable(
@@ -77,8 +80,6 @@ class KnowledgeCollectionPickerQueryService:
                     safe_label=self._approved_safe_label(collection),
                 )
                 for collection in collections
-                if decisions.get(collection.id) is not None
-                and decisions[collection.id].allowed
             ]
         )
 

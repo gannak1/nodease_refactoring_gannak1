@@ -2,7 +2,10 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
+from sqlalchemy.dialects import postgresql
 
+from apps.gateway.services.workflow_service import WorkflowService
 from apps.gateway.services.workflow_knowledge_reference_service import (
     WorkflowKnowledgeReferenceService,
     WorkflowKnowledgeReferenceUnavailable,
@@ -119,3 +122,170 @@ def test_empty_graph_does_not_query_permission_or_collection_children(monkeypatc
     )
 
     assert service.validate_editable_graph({"nodes": []}) == ()
+
+
+@pytest.mark.parametrize(
+    "graph",
+    [
+        {"nodes": []},
+        {
+            "nodes": [
+                {
+                    "id": "llm",
+                    "type": "llmNode",
+                    "data": {"knowledgeBases": [], "knowledgeCollections": []},
+                }
+            ]
+        },
+        {
+            "nodes": [
+                {
+                    "id": "loop",
+                    "type": "loopNode",
+                    "data": {"subGraph": {"nodes": []}},
+                }
+            ]
+        },
+    ],
+)
+def test_workflow_service_skips_context_validation_for_graph_without_knowledge_refs(
+    monkeypatch,
+    graph,
+):
+    monkeypatch.setattr(
+        "apps.gateway.services.workflow_service.WorkflowKnowledgeReferenceService",
+        lambda *args, **kwargs: pytest.fail("authorization service must not be built"),
+    )
+
+    WorkflowService.validate_knowledge_references(
+        object(),
+        graph,
+        user_id="legacy-user-without-uuid",
+        organization_id=None,
+    )
+
+
+def test_workflow_service_still_rejects_malformed_empty_knowledge_shape_without_org():
+    graph = {
+        "nodes": [
+            {
+                "id": "llm",
+                "type": "llmNode",
+                "data": {
+                    "knowledgeBases": "not-a-list",
+                    "knowledgeCollections": [],
+                },
+            }
+        ]
+    }
+
+    with pytest.raises(HTTPException) as error:
+        WorkflowService.validate_knowledge_references(
+            object(),
+            graph,
+            user_id="legacy-user-without-uuid",
+            organization_id=None,
+        )
+
+    assert error.value.status_code == 422
+    assert error.value.detail == {
+        "code": "knowledge_reference_list_invalid",
+        "field": "graph.nodes[0].data.knowledgeBases",
+    }
+
+
+def test_workflow_service_requires_context_when_knowledge_reference_exists():
+    graph = {
+        "nodes": [
+            {
+                "id": "llm",
+                "type": "llmNode",
+                "data": {
+                    "knowledgeBases": [
+                        {"id": str(uuid.uuid4()), "name": "KB"}
+                    ],
+                    "knowledgeCollections": [],
+                },
+            }
+        ]
+    }
+
+    with pytest.raises(HTTPException) as error:
+        WorkflowService.validate_knowledge_references(
+            object(),
+            graph,
+            user_id=uuid.uuid4(),
+            organization_id=None,
+        )
+
+    assert error.value.status_code == 422
+    assert error.value.detail == {
+        "code": "knowledge_reference_context_invalid",
+        "field": "graph",
+    }
+
+
+class _CriteriaQuery:
+    def __init__(self):
+        self.criteria = []
+
+    def select_from(self, *_args):
+        return self
+
+    def join(self, *_args):
+        return self
+
+    def outerjoin(self, *_args):
+        return self
+
+    def filter(self, *criteria):
+        self.criteria.extend(criteria)
+        return self
+
+    def distinct(self):
+        return self
+
+    def all(self):
+        return []
+
+
+class _CriteriaDb:
+    def __init__(self):
+        self.queries = []
+
+    def query(self, *_args):
+        query = _CriteriaQuery()
+        self.queries.append(query)
+        return query
+
+
+def _compiled_criteria(query):
+    return " ".join(
+        str(
+            criterion.compile(
+                dialect=postgresql.dialect(),
+                compile_kwargs={"literal_binds": True},
+            )
+        )
+        for criterion in query.criteria
+    )
+
+
+@pytest.mark.parametrize(
+    "method_name",
+    ["_load_direct_kbs", "_retrieval_ready_ids"],
+)
+def test_save_time_direct_kb_queries_exclude_source_deleted(method_name):
+    db = _CriteriaDb()
+    service = WorkflowKnowledgeReferenceService(
+        db,
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+    )
+
+    result = getattr(service, method_name)((uuid.uuid4(),))
+
+    assert result == ([] if method_name == "_load_direct_kbs" else set())
+    sql = _compiled_criteria(db.queries[0])
+    assert "knowledge_bases.lifecycle_state = 'active'" in sql
+    assert "knowledge_bases.sync_state != 'source_deleted'" in sql

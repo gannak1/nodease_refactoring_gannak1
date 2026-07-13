@@ -41,6 +41,7 @@ class SqlAlchemyDeploymentPreflightRepository:
                 KnowledgeBase.id.in_(ids),
                 KnowledgeBase.organization_id == organization_id,
                 KnowledgeBase.lifecycle_state == "active",
+                KnowledgeBase.sync_state != "source_deleted",
             )
             .all()
         )
@@ -63,9 +64,20 @@ class SqlAlchemyDeploymentPreflightRepository:
 
         items = (
             self.db.query(KnowledgeCollectionItem)
+            .join(
+                KnowledgeBase,
+                and_(
+                    KnowledgeBase.id == KnowledgeCollectionItem.knowledge_base_id,
+                    KnowledgeBase.organization_id
+                    == KnowledgeCollectionItem.organization_id,
+                ),
+            )
             .filter(
                 KnowledgeCollectionItem.organization_id == organization_id,
                 KnowledgeCollectionItem.knowledge_base_id.in_(ids),
+                KnowledgeBase.organization_id == organization_id,
+                KnowledgeBase.lifecycle_state == "active",
+                KnowledgeBase.sync_state != "source_deleted",
             )
             .all()
         )
@@ -138,6 +150,7 @@ class SqlAlchemyDeploymentPreflightRepository:
                 ),
                 KnowledgeBase.organization_id == organization_id,
                 KnowledgeBase.lifecycle_state == "active",
+                KnowledgeBase.sync_state != "source_deleted",
             )
             .group_by(KnowledgeCollectionItem.collection_id)
             .all()

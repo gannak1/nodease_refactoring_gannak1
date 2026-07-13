@@ -1629,6 +1629,9 @@ class _Query:
         self.expressions.extend(expressions)
         return self
 
+    def join(self, *args, **kwargs):
+        return self
+
     def all(self):
         return [row for row in self.rows if self._matches(row)]
 
