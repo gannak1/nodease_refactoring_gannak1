@@ -1019,3 +1019,49 @@ def test_runtime_context_treats_collection_only_node_as_knowledge_enabled():
     )
 
     assert context.knowledge_enabled is True
+
+
+def test_semantic_query_text_uses_only_configured_business_input_paths():
+    """A35: cohort embedding에는 문의 본문만 넣고 주변 metadata는 제외한다."""
+    inputs = {
+        "webhook-ticket": {
+            "message": "결제 영수증을 다시 받고 싶습니다.",
+            "customerTier": "enterprise",
+        },
+        "experimentRunId": "must-not-be-embedded",
+    }
+
+    text = ModelRouter.semantic_query_text(
+        inputs,
+        {"input_paths": ["webhook-ticket.message"]},
+    )
+
+    assert text == "결제 영수증을 다시 받고 싶습니다."
+    assert "enterprise" not in text
+    assert "experimentRunId" not in text
+
+
+def test_semantic_query_text_does_not_flatten_payload_when_configured_path_is_missing():
+    """A35: 지정 본문이 없으면 다른 필드로 임의 분류하지 않는다."""
+    text = ModelRouter.semantic_query_text(
+        {"webhook-ticket": {"customerTier": "enterprise"}},
+        {"input_paths": ["webhook-ticket.message"]},
+    )
+
+    assert text == ""
+
+
+def test_operational_profile_segment_keeps_safe_semantic_cohort_id():
+    conditions = ModelRouter._segment_conditions(
+        {
+            "matched_cohort_id": "routine_support",
+            "semantic_similarity": 0.88,
+            "raw_input": "저장하면 안 되는 원문",
+            "output_format": "json",
+        }
+    )
+
+    assert conditions == {
+        "semantic_cohort_id": "routine_support",
+        "output_format": "json",
+    }

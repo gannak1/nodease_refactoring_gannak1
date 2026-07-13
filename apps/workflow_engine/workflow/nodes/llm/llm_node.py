@@ -421,17 +421,28 @@ class LLMNode(Node[LLMNodeData]):
 
         try:
             available_model_ids = self._available_routing_model_ids(db_session)
+            semantic_query_vector = self._resolve_semantic_query_vector(
+                policy=policy,
+                inputs=inputs,
+                db_session=db_session,
+            )
             decision = ModelRouter.resolve_policy(
                 policy,
                 inputs=inputs,
                 node_data=self.data,
                 available_model_ids=available_model_ids,
+                semantic_query_vector=semantic_query_vector,
             )
             selected_model_id = decision.selected_model_id
             fallback_model_id = decision.fallback_model_id
             matched_rule_id = decision.matched_rule_id
             reason_code = decision.reason_code
             routing_context = decision.runtime_context.as_metadata()
+            semantic_metadata = (
+                decision.semantic_match.as_metadata()
+                if decision.semantic_match is not None
+                else {}
+            )
         except ModelRoutingUnavailableError as exc:
             # active policy가 있는데 실행 주체가 사용할 모델이 하나도 없으면
             # 저장 모델로 되돌아가 provider 호출을 시도하지 않는다. credential
@@ -445,7 +456,7 @@ class LLMNode(Node[LLMNodeData]):
         if fallback_model_id == selected_model_id:
             fallback_model_id = None
 
-        return selected_model_id, fallback_model_id, {
+        metadata = {
             "enabled": True,
             "policy_id": policy.get("policy_id"),
             "policy_version": policy.get("policy_version"),
@@ -457,6 +468,62 @@ class LLMNode(Node[LLMNodeData]):
             "runtime_context": routing_context,
             "judge_called": False,
         }
+        if decision.semantic_match is not None:
+            metadata["matched_cohort_id"] = decision.semantic_match.cohort_id
+            metadata.update(semantic_metadata)
+        return selected_model_id, fallback_model_id, metadata
+
+    def _resolve_semantic_query_vector(
+        self,
+        *,
+        policy: dict[str, Any],
+        inputs: dict[str, Any],
+        db_session,
+    ) -> tuple[float, ...] | None:
+        """Embed one runtime input only when the active policy has a route catalog."""
+        active_policy = policy.get("active_policy")
+        active_policy = active_policy if isinstance(active_policy, dict) else {}
+        semantic_router = active_policy.get("semantic_router")
+        if not isinstance(semantic_router, dict) or not semantic_router:
+            return None
+
+        encoder = semantic_router.get("encoder")
+        encoder_model_id = semantic_router.get("encoder_model_id")
+        if not encoder_model_id and isinstance(encoder, dict):
+            encoder_model_id = encoder.get("model_id")
+        encoder_model_id = str(encoder_model_id or "").strip()
+        if not encoder_model_id or db_session is None:
+            return None
+
+        query_text = ModelRouter.semantic_query_text(inputs, semantic_router)
+        if not query_text:
+            return None
+
+        user_id = self._resolve_credential_principal_user()
+        if user_id is None:
+            return None
+
+        try:
+            organization_id = self._require_runtime_organization_id(
+                user_id,
+                encoder_model_id,
+            )
+            runtime_selection = LLMService.get_runtime_client_for_user(
+                db_session,
+                user_id=user_id,
+                model_id=encoder_model_id,
+                organization_id=organization_id,
+            )
+            vector = runtime_selection.client.embed_sync(query_text)
+            if not isinstance(vector, (list, tuple)) or not vector:
+                return None
+            return tuple(float(value) for value in vector)
+        except Exception as exc:
+            logger.warning(
+                "[LLMNode] Semantic routing embedding unavailable: error_type=%s",
+                type(exc).__name__,
+            )
+            return None
 
     def _available_routing_model_ids(self, db_session) -> list[str] | None:
         """현재 execution subject가 실제로 호출할 수 있는 모델만 policy 평가에 넘긴다."""

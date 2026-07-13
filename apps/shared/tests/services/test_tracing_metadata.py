@@ -152,6 +152,22 @@ def test_llm_span_metadata_preserves_safe_runtime_policy_outcome_fields():
                 "fallback_used": True,
                 "policy_id": "policy-1",
                 "matched_rule_id": "short-json",
+                "matched_cohort_id": "routine_support",
+                "cohort_matcher": "hybrid",
+                "semantic_route_label": "단순 사용·안내 문의",
+                "semantic_candidate_cohort_id": "routine_support",
+                "semantic_candidate_label": "단순 사용·안내 문의",
+                "semantic_similarity": 0.88,
+                "semantic_threshold": 0.75,
+                "semantic_runner_up_score": 0.51,
+                "semantic_margin": 0.37,
+                "semantic_match_status": "matched",
+                "semantic_decision_source": "safety_override",
+                "semantic_lexical_score": 2.0,
+                "semantic_lexical_signal_count": 2,
+                "semantic_safety_override": True,
+                "route_catalog_version": "ticket-routing-v1",
+                "semantic_encoder_model": "text-embedding-test",
                 "decision_source": "active_policy",
                 "reason_code": "quality_gate_passed",
                 "judge_called": False,
@@ -161,6 +177,8 @@ def test_llm_span_metadata_preserves_safe_runtime_policy_outcome_fields():
                 "schema_required": True,
                 "knowledge_enabled": False,
                 "raw_input": "secret input",
+                "query_vector": [0.1, 0.2, 0.3],
+                "matched_lexical_signals": ["credential leak"],
             }
         },
     )
@@ -169,7 +187,19 @@ def test_llm_span_metadata_preserves_safe_runtime_policy_outcome_fields():
     assert metadata["llm"]["finish_reason"] == "stop"
     assert metadata["llm"]["repetition_rate"] == 0.125
     assert metadata["llm"]["input_length_bucket"] == "short"
+    assert metadata["llm"]["matched_cohort_id"] == "routine_support"
+    assert metadata["llm"]["semantic_candidate_cohort_id"] == "routine_support"
+    assert metadata["llm"]["semantic_candidate_label"] == "단순 사용·안내 문의"
+    assert metadata["llm"]["semantic_similarity"] == 0.88
+    assert metadata["llm"]["semantic_match_status"] == "matched"
+    assert metadata["llm"]["semantic_decision_source"] == "safety_override"
+    assert metadata["llm"]["semantic_lexical_score"] == 2.0
+    assert metadata["llm"]["semantic_lexical_signal_count"] == 2
+    assert metadata["llm"]["semantic_safety_override"] is True
+    assert metadata["llm"]["route_catalog_version"] == "ticket-routing-v1"
     assert "raw_input" not in metadata["llm"]
+    assert "query_vector" not in metadata["llm"]
+    assert "matched_lexical_signals" not in metadata["llm"]
 
 
 def test_rag_metadata_preserves_payload_reference_and_summarizes_evidence():

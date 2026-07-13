@@ -12,7 +12,12 @@ from apps.shared.db.models.model_routing_policy import (
 )
 from apps.shared.db.models.app import App
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
-from apps.shared.db.models.workflow_run import NodeRunStatus, WorkflowNodeRun, WorkflowRun
+from apps.shared.db.models.workflow_run import (
+    NodeRunStatus,
+    RunStatus,
+    WorkflowNodeRun,
+    WorkflowRun,
+)
 from apps.workflow_engine.services.model_routing_policy_lifecycle import (
     ModelRoutingPolicyLifecycleService,
 )
@@ -20,6 +25,10 @@ from apps.workflow_engine.services.model_routing_policy_refresh import (
     ModelRoutingPolicyRefreshService,
 )
 from apps.workflow_engine.services.llm_service import LLMService
+
+
+class ModelRoutingRunLogPendingError(RuntimeError):
+    """Workflow는 끝났지만 자동 라우팅 node 완료 로그가 아직 반영되지 않았다."""
 
 
 class ModelRoutingPolicyStore:
@@ -214,15 +223,44 @@ class ModelRoutingPolicyStore:
             for node in (graph.get("nodes") or [])
             if isinstance(node, dict) and isinstance(node.get("data"), dict)
         }
+        auto_routing_node_ids = {
+            node_id
+            for node_id, node_data in node_data_by_id.items()
+            if bool(node_data.get("auto_model_routing"))
+        }
+        if not auto_routing_node_ids:
+            return []
         node_runs = (
             db.query(WorkflowNodeRun)
             .filter(WorkflowNodeRun.workflow_run_id == workflow_run.id)
             .filter(WorkflowNodeRun.node_type == "llmNode")
-            .filter(WorkflowNodeRun.status == NodeRunStatus.SUCCESS)
+            .filter(WorkflowNodeRun.node_id.in_(auto_routing_node_ids))
             .all()
         )
+        node_runs_by_id = {str(node_run.node_id): node_run for node_run in node_runs}
+        workflow_status = getattr(workflow_run.status, "value", workflow_run.status)
+        if workflow_status == RunStatus.SUCCESS.value:
+            pending_node_ids = {
+                node_id
+                for node_id in auto_routing_node_ids
+                if node_id not in node_runs_by_id
+                or node_runs_by_id[node_id].status == NodeRunStatus.RUNNING
+            }
+            if pending_node_ids:
+                raise ModelRoutingRunLogPendingError(
+                    "auto-routing node completion logs are not ready"
+                )
+
+        successful_node_runs = [
+            node_run
+            for node_run in node_runs
+            if node_run.status == NodeRunStatus.SUCCESS
+        ]
         scheduled: list[uuid.UUID] = []
-        for node_run in sorted(node_runs, key=lambda item: str(item.node_id)):
+        for node_run in sorted(
+            successful_node_runs,
+            key=lambda item: str(item.node_id),
+        ):
             node_data = node_data_by_id.get(node_run.node_id)
             if not isinstance(node_data, dict):
                 continue

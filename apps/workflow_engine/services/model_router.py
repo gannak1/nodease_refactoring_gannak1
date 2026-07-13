@@ -21,6 +21,11 @@ from apps.shared.db.models.workflow_run import (
     WorkflowNodeRun,
     WorkflowRun,
 )
+from apps.workflow_engine.services.model_routing_semantic_router import (
+    SemanticRouteMatch,
+    SemanticRouteMatcher,
+    semantic_catalog_from_policy,
+)
 
 
 OPERATIONAL_TRIGGER_MODES = {
@@ -285,6 +290,7 @@ class ModelRoutingPolicyDecision:
     reason_code: str
     runtime_context: ModelRoutingRuntimeContext
     decision_source: str = "active_policy"
+    semantic_match: Optional[SemanticRouteMatch] = None
 
 
 class ModelRoutingUnavailableError(ValueError):
@@ -303,6 +309,7 @@ class ModelRouter:
         "prompt_length_bucket",
         "node_task",
         "keyword_any",
+        "semantic_cohort_id",
     }
     COLD_START_MAX_USABLE_RUNS = 20
     OPTIMIZED_MIN_USABLE_RUNS = 90
@@ -386,6 +393,7 @@ class ModelRouter:
         inputs: dict[str, Any],
         node_data: Any,
         available_model_ids: Optional[Iterable[str]] = None,
+        semantic_query_vector: Optional[Iterable[float]] = None,
     ) -> ModelRoutingPolicyDecision:
         active_policy = policy.get("active_policy") if isinstance(policy, dict) else None
         active_policy = active_policy if isinstance(active_policy, dict) else {}
@@ -406,6 +414,25 @@ class ModelRouter:
             else None
         )
         runtime_context = cls.infer_runtime_context(inputs, node_data)
+        semantic_match = None
+        semantic_router = active_policy.get("semantic_router")
+        if isinstance(semantic_router, dict) and semantic_router:
+            try:
+                semantic_catalog = semantic_catalog_from_policy(semantic_router)
+                if semantic_catalog is not None:
+                    if semantic_query_vector is not None:
+                        semantic_match = SemanticRouteMatcher.match(
+                            semantic_catalog,
+                            query_vector=tuple(semantic_query_vector),
+                            query_text=cls.semantic_query_text(
+                                inputs,
+                                semantic_router,
+                            ),
+                        )
+                    else:
+                        semantic_match = SemanticRouteMatch.unavailable(semantic_catalog)
+            except (TypeError, ValueError):
+                semantic_match = None
         rules = active_policy.get("rules")
         normalized_rules = [
             rule
@@ -415,7 +442,13 @@ class ModelRouter:
         normalized_rules.sort(key=cls._rule_sort_key)
 
         for rule in normalized_rules:
-            if not cls._matches_rule(rule.get("when"), runtime_context):
+            if not cls._matches_rule(
+                rule.get("when"),
+                runtime_context,
+                semantic_cohort_id=(
+                    semantic_match.cohort_id if semantic_match is not None else None
+                ),
+            ):
                 continue
             selected_model = cls._first_non_empty(rule.get("selected_model_id"))
             rule_fallback_model = cls._first_non_empty(rule.get("fallback_model_id"))
@@ -437,6 +470,7 @@ class ModelRouter:
                 reason_code=cls._first_non_empty(rule.get("reason_code"))
                 or "policy_rule_matched",
                 runtime_context=runtime_context,
+                semantic_match=semantic_match,
             )
 
         selected_model = cls._first_available_model(
@@ -462,12 +496,22 @@ class ModelRouter:
             allowed_models,
             exclude=selected_model,
         )
+        default_reason = "policy_default"
+        if semantic_match is not None:
+            default_reason = (
+                "semantic_matched_no_rule_default"
+                if semantic_match.status == "matched"
+                else f"semantic_{semantic_match.status}_default"
+            )
+        elif isinstance(semantic_router, dict) and semantic_router:
+            default_reason = "semantic_unavailable_default"
         return ModelRoutingPolicyDecision(
             selected_model_id=selected_model,
             fallback_model_id=resolved_fallback,
             matched_rule_id=None,
-            reason_code="policy_default",
+            reason_code=default_reason,
             runtime_context=runtime_context,
+            semantic_match=semantic_match,
         )
 
     @classmethod
@@ -523,6 +567,48 @@ class ModelRouter:
             prompt_length_bucket=cls._length_bucket(prompt_length),
             node_task=node_task,
         )
+
+    @classmethod
+    def semantic_query_text(
+        cls,
+        inputs: dict[str, Any],
+        semantic_router: dict[str, Any],
+    ) -> str:
+        """Extract only configured business fields for semantic classification."""
+        if "input_paths" not in semantic_router:
+            return cls._flatten_text(inputs).strip()
+        paths = semantic_router.get("input_paths")
+        if not isinstance(paths, list):
+            return ""
+
+        parts: list[str] = []
+        for raw_path in paths:
+            path = str(raw_path or "").strip()
+            if not path:
+                continue
+            value = cls._value_at_path(inputs, path)
+            text = cls._flatten_text(value).strip()
+            if text:
+                parts.append(text)
+        return "\n".join(parts)
+
+    @staticmethod
+    def _value_at_path(value: Any, path: str) -> Any:
+        current = value
+        for segment in path.split("."):
+            if isinstance(current, dict):
+                if segment not in current:
+                    return None
+                current = current[segment]
+                continue
+            if isinstance(current, (list, tuple)) and segment.isdigit():
+                index = int(segment)
+                if index >= len(current):
+                    return None
+                current = current[index]
+                continue
+            return None
+        return current
 
     @classmethod
     def collect_profile(cls, db: Session, context: ModelRouterContext) -> NodeRunProfile:
@@ -694,11 +780,17 @@ class ModelRouter:
             "prompt_length_bucket",
             "node_task",
         )
-        return {
+        conditions = {
             key: llm_metadata[key]
             for key in allowed
             if key in llm_metadata and llm_metadata[key] is not None
         }
+        matched_cohort_id = str(
+            llm_metadata.get("matched_cohort_id") or ""
+        ).strip()
+        if matched_cohort_id:
+            conditions["semantic_cohort_id"] = matched_cohort_id
+        return conditions
 
     @classmethod
     def collect_candidates(
@@ -748,7 +840,11 @@ class ModelRouter:
 
     @classmethod
     def _matches_rule(
-        cls, when: Any, runtime_context: ModelRoutingRuntimeContext
+        cls,
+        when: Any,
+        runtime_context: ModelRoutingRuntimeContext,
+        *,
+        semantic_cohort_id: Optional[str] = None,
     ) -> bool:
         if when in (None, {}, []):
             return True
@@ -757,6 +853,7 @@ class ModelRouter:
         if any(key not in cls.POLICY_CONDITION_KEYS for key in when):
             return False
         context = runtime_context.as_metadata()
+        context["semantic_cohort_id"] = semantic_cohort_id
         for key in (
             "intent",
             "customer_facing",
@@ -767,6 +864,7 @@ class ModelRouter:
             "input_length_bucket",
             "prompt_length_bucket",
             "node_task",
+            "semantic_cohort_id",
         ):
             if key not in when:
                 continue
