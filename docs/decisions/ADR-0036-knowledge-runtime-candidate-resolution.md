@@ -107,6 +107,12 @@ freshness/expiry, requester authorization과 저장된 source action이 일치�
 Missing, inactive, stale, expired, unmapped, ambiguous, unverified, revoked, denied,
 unknown, mismatched fact는 해당 KB를 제외한다.
 
+Runtime retrieval과 호환되는 materialized source action은 공백과 대소문자를
+정규화한 `read`, `view`, `use`, `retrieve`, `search`다. `NULL`, 빈 값, 쓰기·관리
+동작 또는 알 수 없는 동작은 retrieval 승인을 의미한다고 추론하지 않고
+`source_authorization.operation_unverified`로 제외한다. Provider별 action을 이
+집합으로 매핑하는 책임은 provenance 생산 경계에 있다.
+
 MBA-232 resolver는 connector client, `check_access_batch`, single `check_access`, HTTP
 client 또는 runtime source-authorization cache를 호출하거나 구현하지 않는다. Live
 재확인과 short-lived cache는 별도 source authorization 이슈에서 결정한다. Candidate
