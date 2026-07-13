@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { isAxiosError } from 'axios';
 import {
   AppWindow,
+  ArrowLeft,
   Check,
   KeyRound,
   Loader2,
@@ -63,6 +64,7 @@ type ActorAccessDrawerProps = {
   resources: ActorAccessResourceCatalogItem[];
   onClose: () => void;
   onChanged?: () => void;
+  returnLabel?: string;
 };
 
 export function ActorAccessDrawer({
@@ -72,6 +74,7 @@ export function ActorAccessDrawer({
   resources,
   onClose,
   onChanged,
+  returnLabel,
 }: ActorAccessDrawerProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const confirmRef = useRef<HTMLDivElement>(null);
@@ -469,14 +472,25 @@ export function ActorAccessDrawer({
             >
               <RefreshCw className="h-4 w-4" />
             </button>
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-md p-2 text-slate-500 hover:bg-slate-100"
-              aria-label="행위자 접근 관리 닫기"
-            >
-              <X className="h-4 w-4" />
-            </button>
+            {returnLabel ? (
+              <button
+                type="button"
+                onClick={onClose}
+                className="inline-flex h-9 items-center gap-1.5 rounded-md px-2 text-sm font-semibold text-slate-600 hover:bg-slate-100"
+              >
+                <ArrowLeft className="h-4 w-4" />
+                {returnLabel}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded-md p-2 text-slate-500 hover:bg-slate-100"
+                aria-label="행위자 접근 관리 닫기"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
           </div>
         </header>
 

@@ -224,9 +224,12 @@ Unknown reason은 원문을 사용자 문장으로 만들지 않고 `알 수 없
 ### Related Audit Evidence
 
 - Detail drawer 안에서 `/audit-logs`를 별도 pagination으로 조회한다.
-- Audit occurred time, action, safe target, status를 표시한다.
+- Audit occurred time과 함께 `현재 조직에 대한 접근이 거부되었습니다.` 같은 사용자용 설명을 먼저 표시한다.
+- Safe 권한 거부 정보가 있으면 `보안 알림 목록 조회를 시도했지만 조직 관리자 권한이 필요해 거부되었습니다.`처럼 시도한 작업과 원인을 표시한다. 기존 기록처럼 정보가 없으면 일반 설명으로 대체한다.
+- Canonical action과 safe target ID는 조사 가능하도록 보조 정보로 유지하고, target type과 status는 사용자용 라벨로 표시한다.
 - Raw metadata, before/after를 표시하지 않는다.
 - Audit row의 `상세 보기`는 기존 Audit detail 경로를 사용하되 기존 audit 권한과 allowlist를 다시 적용한다.
+- Audit detail drawer는 Security Alert detail보다 높은 layer에 표시하고, 닫으면 Security Alert detail과 선택했던 row focus를 복원한다.
 - Evidence loading/error는 alert detail 전체 loading/error와 분리한다.
 - Evidence가 없으면 `연결된 감사 기록이 없습니다.`를 표시하되 alert 자체를 invalid로 단정하지 않는다.
 
@@ -247,6 +250,7 @@ Resolved alert는 reopen하지 않는다. 재발은 새 threshold를 충족한 �
 - `확인` action은 current `version`을 `expected_version`으로 전송한다.
 - 성공하면 detail과 목록 item을 응답 값으로 갱신하고 Sidebar summary를 재조회한다.
 - 요청 중 같은 action을 중복 제출할 수 없게 한다.
+- Acknowledge, reopen, resolve가 `403`을 반환하면 stale detail과 해결 dialog를 비우고 drawer를 닫아 URL의 `alertId`를 제거한다. 같은 action button을 남겨 반복 요청하게 해서는 안 된다.
 
 ### Reopen
 
@@ -294,13 +298,13 @@ Security Alert detail
 
 - `사용자 접근 관리`는 safe actor가 현재 organization member로 해석되고 manager가 관리 가능한 경우에만 활성화한다.
 - Actor가 deleted/removed이거나 현재 profile을 조회할 수 없으면 disabled 상태와 safe 이유를 표시한다.
-- Button을 누르면 Security Alert detail drawer를 닫고 기존 `ActorAccessDrawer`를 연다.
+- Button을 누르면 현재 `alertId` URL 상태를 유지한 채 Security Alert detail drawer를 잠시 숨기고 기존 `ActorAccessDrawer`를 연다.
 - 두 drawer를 동시에 표시하지 않는다.
-- ActorAccessDrawer를 닫으면 Security Alert 목록으로 돌아가며 원래 alert detail을 자동으로 다시 열지 않는다.
+- ActorAccessDrawer 상단에는 `보안 알림 상세로 돌아가기` action을 표시한다. 이 action 또는 Escape로 닫으면 유지한 `alertId`의 Security Alert detail을 다시 열고 최신 상세를 재조회한다.
 - 기존 actor access API, stale precondition, confirm, reason, policy block, canonical audit 계약을 그대로 재사용한다.
 - 가능한 수동 조치는 organization membership 정지, role 변경, team 제거, direct permission 회수, App 생성 권한 회수다.
 - 자기 자신, 마지막 manager, manager override 같은 기존 보호 정책을 우회하지 않는다.
-- 수동 조치 성공 후 Security Alert를 자동 resolve하지 않는다. 관리자가 alert detail을 다시 열고 별도로 resolve해야 한다.
+- 수동 조치 성공 후 Security Alert를 자동 resolve하지 않는다. 돌아온 alert detail에서 관리자가 별도로 resolve해야 한다.
 
 ## Sidebar Notification Overlay
 
@@ -338,12 +342,16 @@ Security Alert detail
 
 - 기존 `/api/v1/notifications/stream`과 `notifications.changed` event를 재사용한다.
 - Event payload를 alert source of truth로 사용하지 않는다.
-- Event 수신 시 현재 사용자 권한에 따라 invitation 목록과 Security Alert summary를 각각 재조회한다.
-- Security Alert tab 또는 detail이 열려 있으면 적용 중인 filter/page를 유지한 채 필요한 목록/detail도 재조회한다.
-- Alert occurrence 반복이 toast를 무제한 만들지 않도록 같은 alert에 client cooldown을 적용한다.
-- SSE reconnect 후 summary/list 조회로 누락된 event를 복구한다.
+- Worker는 Alert 생성 또는 새 evidence에 의한 occurrence 갱신이 실제로 commit된 organization만 event 발행 대상으로 추가한다. Threshold 전 event처럼 aggregation 결과가 없으면 발행하지 않는다.
+- 수신자 집합은 현재 manager 권한 판정과 일치해야 하며 active manager membership과 membership 없는 유효한 organization `created_by`/`managed_by`를 포함한다. Suspended, removed, deactivated owner는 제외하고 중복 user는 한 번만 발행한다.
+- Event 수신 시 invitation 목록은 항상 재조회하고, 현재 organization manager이면 Security Alert summary도 재조회한다. 별도 client refresh event로 열려 있는 Security Alert 목록/detail도 다시 조회한다.
+- Security Alert tab 또는 detail 재조회는 적용 중인 filter, 현재 page, evidence page를 유지한다.
+- 최초 summary snapshot은 toast를 만들지 않는다. 이후 `notifications.changed` 재조회 결과에서 새 alert가 생기거나 같은 alert의 `occurrence_count`가 증가했을 때만 빨간색 경고 아이콘과 `새 보안 알림이 있습니다.`라는 일반 문구를 표시한다.
+- 같은 alert의 toast에는 60초 client cooldown을 적용한다. 여러 alert가 한 번에 바뀌어도 한 번의 summary refresh에서는 toast 하나만 표시한다.
+- SSE `open` event는 invitation과 권한에 맞는 Security Alert summary/list/detail을 재조회해 초기 연결과 reconnect 누락을 복구하되 toast는 만들지 않는다.
 - Active organization 전환 시 이전 organization summary, 목록, detail을 즉시 제거하고 새 scope를 조회한다.
-- Membership/manager 권한 회수로 summary가 403이면 Security Alert badge와 cached UI를 제거한다.
+- Active organization 전환 시 이전 summary snapshot과 toast cooldown도 제거한다.
+- Membership/manager 권한 회수로 summary가 403이면 manager UI를 숨기고 Security Alert badge, 목록, detail cache와 선택된 detail을 제거한다. Invitation source는 계속 독립적으로 동작한다.
 
 ## Accessibility
 
@@ -381,6 +389,7 @@ Security Alert detail
 - ActorAccessDrawer 전환 시 두 drawer가 겹치지 않고 focus가 안전하다.
 - Owner/manager에게만 Security Alert tab, badge, overlay section이 보인다.
 - Security Alert source 오류가 invitation section을 숨기지 않는다.
-- `notifications.changed` 수신과 reconnect 후 summary/list를 재조회한다.
+- `notifications.changed` 수신과 reconnect 후 invitation, 권한에 맞는 summary, 열린 list/detail을 재조회한다.
+- 최초/reconnect 조회는 toast를 만들지 않고, 새 alert 또는 occurrence 증가만 일반 문구로 알리며 같은 alert는 60초 안에 한 번만 알린다.
 - Active organization 전환과 권한 회수 시 이전 scope 데이터가 제거된다.
 - 기존 invitation 수락/거절과 Audit/ActorAccess 흐름이 회귀하지 않는다.

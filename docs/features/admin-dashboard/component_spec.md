@@ -59,6 +59,7 @@ Verified Against: feature/mba-188 @ 59d1cc51
 
 - 화면 오른쪽 사이드 드로어. 목록 맥락을 유지한 채 상세를 보여준다.
 - 표시 필드: actor, action(canonical 문자열과 파생 라벨), target, status, timestamp, allowlist metadata(`request_id`, sanitized `reason`, `requested_action`, `policy_reason` 등).
+- Security Alert 관리자 API 권한 거부는 safe metadata를 이용해 시도한 작업과 조직 관리자 권한 필요 사유를 사용자 문장과 한국어 라벨로 먼저 표시한다. 기존 기록처럼 정보가 없으면 일반 접근 거부 설명을 표시한다.
 - Supported access-management event는 target/action allowlist 기반 `change_summary.before/after`를 표시한다. Unknown target/action은 변경 요약 영역을 표시하지 않는다.
 - raw payload, secret 계열 값은 표시하지 않는다 (NFR-004). raw payload 접근 UI는 이 feature 범위가 아니다 (trace visibility policy).
 - 데이터 원천: `GET /admin/audit-logs/{id}`.

@@ -238,6 +238,46 @@ def test_sanitize_audit_metadata_removes_secret_keys_recursively():
     }
 
 
+def test_detail_exposes_only_allowlisted_permission_denial_context(monkeypatch):
+    AdminAuditLogService, _ = _service()
+    organization_id = uuid4()
+    log = _audit_log(
+        organization_id=organization_id,
+        actor_id=uuid4(),
+        action="permission.denied",
+        target_type="organization",
+        target_id=str(organization_id),
+        status=AuditStatus.FAILURE,
+        occurred_at=datetime(2026, 7, 13, 9, tzinfo=timezone.utc),
+        audit_metadata={
+            "organization_id": str(organization_id),
+            "required_permission": "security_alert.manage",
+            "requested_operation": "security_alert.list",
+            "denial_reason": "organization_manager_required",
+            "raw_path": "/api/v1/admin/security-alerts?secret=must-not-leak",
+        },
+    )
+    monkeypatch.setattr(
+        "apps.gateway.services.admin_audit_log_service.AdminPermissionGuard.require_audit_reader",
+        lambda *args: None,
+    )
+
+    detail = AdminAuditLogService.get_audit_log_detail(
+        _AuditLogSession([log]),
+        current_user=SimpleNamespace(id=uuid4()),
+        organization_id=organization_id,
+        audit_log_id=log.id,
+    )
+
+    assert detail.audit_metadata == {
+        "organization_id": str(organization_id),
+        "required_permission": "security_alert.manage",
+        "requested_operation": "security_alert.list",
+        "denial_reason": "organization_manager_required",
+    }
+    assert "must-not-leak" not in str(detail.audit_metadata)
+
+
 def test_detail_metadata_rejects_nested_or_malformed_typed_values(monkeypatch):
     AdminAuditLogService, _ = _service()
     organization_id = uuid4()

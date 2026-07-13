@@ -108,6 +108,30 @@ afterEach(() => {
 });
 
 describe('ActorAccessDrawer', () => {
+  it('호출 화면이 지정한 돌아가기 action을 표시한다', async () => {
+    mockedProfile.mockResolvedValue(profile);
+    mockedTeams.mockResolvedValue({ total: 0, items: [] });
+    mockedResources.mockResolvedValue({ total: 0, items: [] });
+    const onClose = vi.fn();
+
+    render(
+      <ActorAccessDrawer
+        organizationId="org-1"
+        userId="user-1"
+        teams={[]}
+        resources={[]}
+        returnLabel="보안 알림 상세로 돌아가기"
+        onClose={onClose}
+      />,
+    );
+
+    await screen.findByText('김멤버 · member@example.com');
+    fireEvent.click(
+      screen.getByRole('button', { name: '보안 알림 상세로 돌아가기' }),
+    );
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it('profile 확인 후 team과 현재 resource tab을 bounded page로 조회한다', async () => {
     renderDrawer();
 

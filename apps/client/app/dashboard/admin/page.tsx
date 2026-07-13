@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { isAxiosError } from 'axios';
 import {
   AlertTriangle,
@@ -26,7 +27,14 @@ import { ACTIVE_ORGANIZATION_CHANGED_EVENT } from '@/lib/activeOrganization';
 import { AdminSummaryCards } from '@/app/features/admin/components/AdminSummaryCards';
 import { AuditSearchTab } from '@/app/features/admin/components/AuditSearchTab';
 import { PermissionRequestsTab } from '@/app/features/admin/components/PermissionRequestsTab';
+import { SecurityAlertsTab } from '@/app/features/admin/components/SecurityAlertsTab';
 import { UsageTab } from '@/app/features/admin/components/UsageTab';
+import {
+  buildAdminTabUrl,
+  isAdminTabVisible,
+  parseAdminUrlState,
+  type AdminTab,
+} from '@/app/features/admin/utils/adminUrlState';
 import { authApi } from '@/app/features/auth/api/authApi';
 import { organizationApi } from '@/app/features/organization/api/organizationApi';
 import { ActiveOrganizationMemberPicker } from '@/app/features/organization/components/ActiveOrganizationMemberPicker';
@@ -53,17 +61,6 @@ import {
   mailCredentialApi,
   type MailCredentialOption,
 } from '@/app/features/workflow/api/mailCredentialApi';
-
-type AdminTab =
-  | 'members'
-  | 'teams'
-  | 'permissions'
-  | 'permission-requests'
-  | 'usage'
-  | 'credentials'
-  | 'knowledge'
-  | 'audit'
-  | 'organization';
 
 type TeamResponse = {
   id: string;
@@ -151,6 +148,7 @@ const tabs: Array<{ key: AdminTab; label: string }> = [
   { key: 'usage', label: '비용' },
   { key: 'credentials', label: 'LLM Credentials' },
   { key: 'knowledge', label: '지식 기반' },
+  { key: 'security-alerts', label: '보안 알림' },
   { key: 'audit', label: '감사 로그' },
   { key: 'organization', label: '조직 설정' },
 ];
@@ -193,7 +191,15 @@ const paginate = <T,>(items: T[], page: number) =>
   items.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
 export default function AdminConsolePage() {
-  const [activeTab, setActiveTab] = useState<AdminTab>('members');
+  const pathname = usePathname();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const searchParamsString = searchParams.toString();
+  const adminUrlState = useMemo(
+    () => parseAdminUrlState(new URLSearchParams(searchParamsString)),
+    [searchParamsString],
+  );
+  const [activeTab, setActiveTab] = useState<AdminTab>(adminUrlState.tab);
   const [organization, setOrganization] = useState<OrganizationResponse | null>(
     null,
   );
@@ -226,6 +232,46 @@ export default function AdminConsolePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    setActiveTab(adminUrlState.tab);
+    if (adminUrlState.notice) setNotice(adminUrlState.notice);
+    if (adminUrlState.normalizedQuery) {
+      router.replace(
+        `${pathname}?${adminUrlState.normalizedQuery.toString()}`,
+        { scroll: false },
+      );
+    }
+  }, [adminUrlState, pathname, router]);
+
+  const selectAdminTab = (tab: AdminTab) => {
+    setActiveTab(tab);
+    router.push(
+      buildAdminTabUrl(
+        pathname,
+        new URLSearchParams(searchParamsString),
+        tab,
+      ),
+      { scroll: false },
+    );
+  };
+
+  useEffect(() => {
+    if (
+      organization &&
+      !isAdminTabVisible(activeTab, organization.is_manager === true)
+    ) {
+      setActiveTab('members');
+      router.replace(
+        buildAdminTabUrl(
+          pathname,
+          new URLSearchParams(searchParamsString),
+          'members',
+        ),
+        { scroll: false },
+      );
+    }
+  }, [activeTab, organization, pathname, router, searchParamsString]);
 
   const [memberQuery, setMemberQuery] = useState('');
   const [memberStateFilter, setMemberStateFilter] = useState<
@@ -1045,10 +1091,17 @@ export default function AdminConsolePage() {
 
           <div className="border-b border-slate-200">
             <nav className="-mb-px flex gap-5 overflow-x-auto">
-              {tabs.map((tab) => (
+              {tabs
+                .filter((tab) =>
+                  isAdminTabVisible(
+                    tab.key,
+                    organization?.is_manager === true,
+                  ),
+                )
+                .map((tab) => (
                 <button
                   key={tab.key}
-                  onClick={() => setActiveTab(tab.key)}
+                  onClick={() => selectAdminTab(tab.key)}
                   className={`whitespace-nowrap border-b-2 px-1 pb-3 text-sm font-semibold ${
                     activeTab === tab.key
                       ? 'border-slate-950 text-slate-950'
@@ -1057,7 +1110,7 @@ export default function AdminConsolePage() {
                 >
                   {tab.label}
                 </button>
-              ))}
+                ))}
             </nav>
           </div>
 
@@ -1194,7 +1247,7 @@ export default function AdminConsolePage() {
               onManagePermission={(credentialId) => {
                 setSelectedCredentialId(credentialId);
                 setPermissionResourceType('llm_credential');
-                setActiveTab('permissions');
+                selectAdminTab('permissions');
               }}
               onSync={(credential) =>
                 runAction(() => syncCredentialModels(credential))
@@ -1218,7 +1271,7 @@ export default function AdminConsolePage() {
               onManagePermissions={(knowledgeBaseId) => {
                 setSelectedKnowledgeBaseId(knowledgeBaseId);
                 setPermissionResourceType('knowledge_base');
-                setActiveTab('permissions');
+                selectAdminTab('permissions');
               }}
             />
           )}
@@ -1226,6 +1279,74 @@ export default function AdminConsolePage() {
             <PermissionRequestsTab members={members} />
           )}
           {activeTab === 'usage' && <UsageTab />}
+          {activeTab === 'security-alerts' &&
+            organization?.is_manager === true && (
+              <SecurityAlertsTab
+                members={members}
+                organizationId={organization.id}
+                selectedAlertId={adminUrlState.alertId}
+                teams={teams.map((team) => ({
+                  id: team.id,
+                  name: team.name,
+                  is_active: team.is_active,
+                }))}
+                resources={[
+                  ...apps
+                    .filter((item) => item.workflow_id)
+                    .map((item) => ({
+                      id: item.workflow_id!,
+                      name: item.name,
+                      resourceType: 'workflow' as const,
+                    })),
+                  ...knowledgeBases.map((item) => ({
+                    id: item.id,
+                    name: item.name,
+                    resourceType: 'knowledge_base' as const,
+                  })),
+                  ...credentials.map((item) => ({
+                    id: item.id,
+                    name: item.credential_name,
+                    resourceType: 'llm_credential' as const,
+                  })),
+                  ...mailCredentials.map((item) => ({
+                    id: item.id,
+                    name: item.credential_name,
+                    resourceType: 'mail_credential' as const,
+                  })),
+                ]}
+                onSelectAlert={(alertId) => {
+                  const nextSearchParams = new URLSearchParams(
+                    searchParamsString,
+                  );
+                  nextSearchParams.set('tab', 'security-alerts');
+                  nextSearchParams.set('alertId', alertId);
+                  router.push(`${pathname}?${nextSearchParams.toString()}`, {
+                    scroll: false,
+                  });
+                }}
+                onCloseAlert={() => {
+                  const nextSearchParams = new URLSearchParams(
+                    searchParamsString,
+                  );
+                  nextSearchParams.delete('alertId');
+                  router.replace(
+                    `${pathname}?${nextSearchParams.toString()}`,
+                    { scroll: false },
+                  );
+                }}
+                onAlertNotFound={() => {
+                  setNotice('알림을 찾을 수 없습니다.');
+                  const nextSearchParams = new URLSearchParams(
+                    searchParamsString,
+                  );
+                  nextSearchParams.delete('alertId');
+                  router.replace(
+                    `${pathname}?${nextSearchParams.toString()}`,
+                    { scroll: false },
+                  );
+                }}
+              />
+            )}
           {activeTab === 'audit' && (
             <AuditSearchTab
               members={members}

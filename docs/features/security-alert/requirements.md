@@ -121,6 +121,10 @@ Security Alert는 검증된 organization 안에서 인증 사용자가 짧은 �
 - SAL-REQ-062: Actor 이름과 이메일 snapshot을 Security Alert row에 복사하지 않아야 한다. 표시가 필요하면 현재 organization 권한 경계 안에서 safe user projection을 조회해야 한다.
 - SAL-REQ-063: Actor가 삭제됐거나 표시할 수 없으면 opaque actor ID 또는 삭제된 사용자 상태로 표시해야 한다.
 - SAL-REQ-064: Related audit는 raw `audit_metadata`, `before`, `after`를 그대로 반환하지 않고 audit-tracing allowlist를 따른 safe projection만 제공해야 한다.
+- SAL-REQ-065: Security Alert 관리자 API의 권한 거부 기록은 관리자가 원인을 이해할 수 있도록 고정 allowlist의 필요 권한, 시도한 작업, 거부 사유를 제공해야 한다. Raw URL/path/query, header, request body, exception은 기록하거나 반환하지 않아야 한다.
+- SAL-REQ-066: `notifications.changed`는 Alert 생성, 새 evidence에 의한 occurrence 갱신 또는 lifecycle 상태 변경이 실제로 commit된 경우에만 발행해야 한다. Threshold 전 event처럼 Alert가 변경되지 않은 경우에는 발행하지 않아야 한다.
+- SAL-REQ-067: Security Alert notification 수신자는 현재 관리자 API 권한 판정과 같은 집합이어야 한다. Active manager membership뿐 아니라 membership이 없는 유효한 `Organization.created_by`/`managed_by`를 포함하고 suspended, removed, deactivated 사용자는 제외해야 한다.
+- SAL-REQ-068: 열린 detail에서 acknowledge, reopen, resolve가 현재 권한 회수로 `403`을 반환하면 Client는 cached detail과 해결 dialog를 비우고 선택된 `alertId` URL을 닫아야 한다.
 
 ## Non-Functional Requirements
 
@@ -146,8 +150,12 @@ Security Alert는 검증된 organization 안에서 인증 사용자가 짧은 �
 
 ## Delivery Dependencies
 
-- MBA-223: 탐지 대상 audit organization/reason 정규화
-- MBA-211: Alert/evidence 영속 모델과 lifecycle
-- MBA-212: 실시간 탐지와 reconciliation
-- MBA-213: 관리자 조회·상태 변경 API
-- MBA-214: Admin Dashboard, Sidebar, SSE
+| Issue | Scope | Implementation Status |
+| --- | --- | --- |
+| MBA-223 | 탐지 대상 audit organization/reason 정규화 | 구현됨 |
+| MBA-211 | Alert/evidence 영속 모델과 lifecycle | 구현됨 |
+| MBA-212 | 실시간 탐지와 reconciliation | 구현됨 |
+| MBA-213 | 관리자 조회·상태 변경 API | 구현됨 |
+| MBA-214 | Admin Dashboard, Sidebar, SSE | 구현됨 |
+
+문서 상태는 `Draft`를 유지한다. SAL-REQ-042의 notification 발행 실패 후 durable한 별도 재시도 수단과 실제 Redis/SSE End-to-End·PostgreSQL concurrency gate 검증이 아직 남아 있다. 현재 구현은 Alert transaction을 보존하고 안전한 오류 유형만 기록하며, reconnect와 영속 API 재조회로 client 상태를 복구한다.

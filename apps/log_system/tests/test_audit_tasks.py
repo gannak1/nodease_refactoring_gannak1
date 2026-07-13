@@ -261,6 +261,155 @@ def test_sal_tc_w001_fifth_denial_is_evaluated_and_aggregated(monkeypatch):
     assert session.closed == 1
 
 
+def test_security_alert_detection_publishes_manager_refresh_after_commit(monkeypatch):
+    now = datetime(2026, 7, 12, 0, 10, tzinfo=timezone.utc)
+    organization_id = uuid4()
+    current = AuditLog(
+        id=uuid4(),
+        occurred_at=now,
+        actor_id=uuid4(),
+        actor_type="user",
+        category="action",
+        action="permission.denied",
+        target_type="workflow",
+        target_id=str(uuid4()),
+        status="failure",
+        audit_metadata={"organization_id": str(organization_id)},
+    )
+    candidate = SimpleNamespace(
+        rule_id="repeated_permission_denied",
+        detection_key="threshold-key",
+        organization_id=organization_id,
+    )
+    alert = SimpleNamespace(id=uuid4(), organization_id=organization_id)
+    events = []
+    session = _Session(existing=current, events=events)
+    monkeypatch.setattr(audit_tasks, "SessionLocal", lambda: session)
+    monkeypatch.setattr(
+        audit_tasks,
+        "_load_security_alert_detection_context",
+        lambda db, audit_id: (current, [current], now - timedelta(minutes=10)),
+    )
+    monkeypatch.setattr(
+        audit_tasks,
+        "evaluate_security_alert_rules",
+        lambda **kwargs: (candidate,),
+    )
+    monkeypatch.setattr(
+        audit_tasks,
+        "build_security_alert_cooldown_candidates",
+        lambda **kwargs: (),
+    )
+    monkeypatch.setattr(
+        audit_tasks,
+        "aggregate_security_alert_detection",
+        lambda *args, **kwargs: alert,
+    )
+    monkeypatch.setattr(
+        audit_tasks,
+        "publish_notifications_changed_to_organization_managers",
+        lambda db, scoped_organization_id: events.append(
+            ("publish", scoped_organization_id)
+        ),
+        raising=False,
+    )
+
+    audit_tasks.detect_security_alert.run(str(current.id))
+
+    assert events == ["commit", ("publish", organization_id)]
+
+
+def test_security_alert_detection_skips_refresh_without_alert_change(monkeypatch):
+    now = datetime(2026, 7, 12, 0, 10, tzinfo=timezone.utc)
+    organization_id = uuid4()
+    current = AuditLog(
+        id=uuid4(),
+        occurred_at=now,
+        actor_id=uuid4(),
+        actor_type="user",
+        category="action",
+        action="permission.denied",
+        target_type="workflow",
+        target_id=str(uuid4()),
+        status="failure",
+        audit_metadata={"organization_id": str(organization_id)},
+    )
+    candidate = SimpleNamespace(
+        rule_id="repeated_permission_denied",
+        detection_key="below-threshold-key",
+        organization_id=organization_id,
+    )
+    events = []
+    session = _Session(existing=current, events=events)
+    monkeypatch.setattr(audit_tasks, "SessionLocal", lambda: session)
+    monkeypatch.setattr(
+        audit_tasks,
+        "_load_security_alert_detection_context",
+        lambda db, audit_id: (current, [current], now - timedelta(minutes=10)),
+    )
+    monkeypatch.setattr(
+        audit_tasks,
+        "evaluate_security_alert_rules",
+        lambda **kwargs: (),
+    )
+    monkeypatch.setattr(
+        audit_tasks,
+        "build_security_alert_cooldown_candidates",
+        lambda **kwargs: (candidate,),
+    )
+    monkeypatch.setattr(
+        audit_tasks,
+        "aggregate_security_alert_detection",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        audit_tasks,
+        "publish_notifications_changed_to_organization_managers",
+        lambda db, scoped_organization_id: events.append(
+            ("publish", scoped_organization_id)
+        ),
+    )
+
+    result = audit_tasks.detect_security_alert.run(str(current.id))
+
+    assert result["candidate_count"] == 0
+    assert events == ["commit"]
+
+
+def test_reconciliation_publishes_manager_refresh_after_batch_commit(monkeypatch):
+    organization_id = uuid4()
+    audit = AuditLog(id=uuid4())
+    events = []
+    session = _Session(events=events)
+    monkeypatch.setattr(audit_tasks, "SessionLocal", lambda: session)
+
+    def reconcile(repository, **kwargs):
+        repository.process_security_alert_audit(audit)
+        repository.commit()
+        return SimpleNamespace(processed_count=1)
+
+    monkeypatch.setattr(audit_tasks, "reconcile_security_alert_batch", reconcile)
+    monkeypatch.setattr(
+        audit_tasks,
+        "_process_security_alert_audit",
+        lambda db, audit_id, *, changed_organization_ids: (
+            changed_organization_ids.add(organization_id)
+        ),
+    )
+    monkeypatch.setattr(
+        audit_tasks,
+        "publish_notifications_changed_to_organization_managers",
+        lambda db, scoped_organization_id: events.append(
+            ("publish", scoped_organization_id)
+        ),
+    )
+
+    result = audit_tasks.reconcile_security_alerts.run()
+
+    assert result == {"status": "processed", "processed_count": 1}
+    assert events == ["commit", ("publish", organization_id)]
+
+
 def test_cooldown_candidate_is_aggregated_without_threshold_candidate(monkeypatch):
     now = datetime(2026, 7, 12, 0, 10, tzinfo=timezone.utc)
     current = AuditLog(
