@@ -234,6 +234,46 @@ _PRODUCTION_PROFILES = (
         replay_projection_semantics=None,
     ),
     ProviderContractProfile(
+        provider="slack",
+        operation="slack.chat.post_message",
+        contract_version="slack.chat.post_message.v1",
+        provider_replay=ProviderReplayCapability.UNKNOWN,
+        result_reuse=ResultReuseCapability.SUPPORTED,
+        key_transport="unknown",
+        key_field=None,
+        key_format=None,
+        key_max_length=None,
+        retention=None,
+        duplicate_semantics=(
+            "Slack does not accept a Nodease idempotency key; a completed local "
+            "attempt reuses only the stored safe result projection"
+        ),
+        official_reference="https://docs.slack.dev/reference/methods/chat.postMessage/",
+        request_semantics="slack.chat.post_message.request.v1",
+        response_semantics="slack.chat.post_message.response.v1",
+        replay_projection_semantics="slack.delivery.replay_projection.v1",
+    ),
+    ProviderContractProfile(
+        provider="slack",
+        operation="slack.incoming_webhook.post",
+        contract_version="slack.incoming_webhook.post.v1",
+        provider_replay=ProviderReplayCapability.UNKNOWN,
+        result_reuse=ResultReuseCapability.SUPPORTED,
+        key_transport="unknown",
+        key_field=None,
+        key_format=None,
+        key_max_length=None,
+        retention=None,
+        duplicate_semantics=(
+            "Slack does not accept a Nodease idempotency key; a completed local "
+            "attempt reuses only the stored safe result projection"
+        ),
+        official_reference="https://docs.slack.dev/messaging/sending-messages-using-incoming-webhooks/",
+        request_semantics="slack.incoming_webhook.post.request.v1",
+        response_semantics="slack.incoming_webhook.post.response.v1",
+        replay_projection_semantics="slack.delivery.replay_projection.v1",
+    ),
+    ProviderContractProfile(
         provider="github",
         operation="github.issue_comment.create",
         contract_version="github.issue_comment.create.v1",
