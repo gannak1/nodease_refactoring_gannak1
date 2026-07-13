@@ -1,12 +1,12 @@
 # Cost Optimizer Component Spec
 
 Status: Draft
-Verified Against: feature/mba-198 @ 391b00b347920184b44658528d2929a75d5d3923
+Verified Against: feature/mba-198 @ 25ac2dde3ee0e71125c85749362569d7a95b45c1
 
 ## Purpose
 
 이 문서는 `requirements.md`의 FR-001부터 FR-013까지를 화면과 컴포넌트 관점에서 구현 가능한 형태로 정리한다.
-FR-011 모델 라우팅은 LLM 노드 상세 화면의 `자동 모델 라우팅` 토글과 policy status panel로 다룬다. 자동 라우팅 ON 상태에서는 실행 시점에 active policy로 모델을 선택하고, judge LLM은 정책 갱신 시점에만 호출한다.
+FR-011은 LLM 노드 상세 화면의 자동 라우팅 컨트롤과 Workflow-Aware 분석 상태로 다룬다. 사용자는 단순 ON/OFF가 아니라 `이 node가 라우팅에 적합한지`, `어떤 evidence가 부족한지`, `어떤 cohort에서 어떤 모델을 쓰는지`, `예상 순절감과 품질 근거가 무엇인지`를 확인할 수 있어야 한다.
 
 Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상세 화면에서 시작하는 LLM 노드 단위 A/B 테스트 흐름이다.
 
@@ -26,7 +26,7 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 | FR-008 | Apply candidate action | 선택한 B 후보 설정을 현재 LLM 노드 draft에 적용한다. |
 | FR-009 | Cost/usage display | 비교 실행 비용이 기록된다는 사실과 후보별 비용을 표시한다. |
 | FR-010 | Permission-gated UI | builder 이상이 아니면 A/B 테스트와 적용 액션을 막는다. |
-| FR-011 | Model routing policy controls / model-routing route | LLM 노드 상세 화면에서 자동 모델 라우팅 ON/OFF와 정책 상태를 표시하고, 전용 model-routing 화면에서 검증된 후보 실험 이력 기반 추천을 보여준다. |
+| FR-011 | Workflow-Aware routing controls / analysis / decision trace | 자동 라우팅 ON/OFF, 라우팅 적합성, evidence gap, cohort별 policy, 예상 순절감, 실제 선택 모델과 fallback 근거를 보여준다. |
 | FR-012 | Optimization recommendation modal | LLM 노드 상세 화면의 `최적화` 버튼으로 추천 모달을 열고, 추천 근거와 위험도를 확인한 뒤 직접 정책 적용 또는 A/B 후보 실험으로 연결한다. |
 | FR-013 | Recommendation verification / compare quality row | 추천 모달과 일반 결과 분석 화면에서 baseline 대비 candidate 비용·속도·token·품질 점수·schema·downstream 결과를 보여주고 적용 또는 이력 재조회로 연결한다. |
 
@@ -46,7 +46,8 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 | FR-008 | Apply candidate action | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr8-apply-flow.test.tsx` | 통과 |
 | FR-009 | Cost/usage metric display, experiment history | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx`, `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerHistoryPanel.tsx`, `apps/client/app/features/workflow/hooks/useCostOptimizerHistory.ts` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr9-usage-display.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr9-experiment-history-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr9-history-model.test.ts` | 통과 |
 | FR-010 | Permission-gated UI | `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerEntryAction.tsx`, `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr1-entry-action.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | 통과 |
-| FR-011 | Model routing policy controls, model-routing recommendation route, refresh result summary | `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx`, `apps/client/app/features/workflow/api/workflowApi.ts`, `apps/client/app/features/workflow/types/Api.ts`, `apps/client/app/modules/[id]/model-routing/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr3-llm-node-routing.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | policy toggle/주기 저장, manual refresh 요청, 마지막 judge 결과·비용 표시 검증 |
+| FR-011 | 기존 policy controls와 model-routing route | `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx`, `apps/client/app/modules/[id]/model-routing/[nodeId]/page.tsx` | 기반 구현 완료 | 기존 Cost Optimizer frontend tests | 토글, 주기, policy 상태, 추천 route 통과 |
+| FR-011 | 적합성/evidence/policy diff/decision trace UI | 기존 model-routing route와 실행 로그 panel 확장 | 구현 필요 | Workflow-Aware routing component tests | 미작성 |
 | FR-012 | Optimization recommendation modal | `apps/client/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal.tsx`, `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr8-apply-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | 통과 기록 있음 |
 | FR-013 | Recommendation verification, compare quality row, history restore | `apps/client/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal.tsx`, `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerHistoryPanel.tsx`, `apps/client/app/features/workflow/hooks/useCostOptimizerHistory.ts`, `apps/client/app/features/workflow/api/workflowApi.ts`, `apps/client/app/features/workflow/types/Api.ts`, `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-inline-verification.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-verification-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | modal 검증, 일반 compare 품질 행, 평가 불가, 단건 비교 이력 복원 통과 |
 
@@ -206,9 +207,84 @@ workspace는 B 후보 실험 루프를 같은 화면 안에서 지원한다.
 
 B 후보 재실행을 위해 baseline picker를 다시 열거나 workspace를 닫게 해서는 안 된다.
 
-### Model Routing Policy Controls
+### Workflow-Aware Adaptive Routing Controls
 
 관련 FR: FR-011
+
+#### 목표 사용자 흐름
+
+1. 사용자가 LLM node에서 `자동 모델 라우팅`을 켠다.
+2. 시스템은 먼저 라우팅 적합성을 분석한다.
+3. 후보가 있지만 증거가 부족하면 `Replay로 검증하기`를 안내한다.
+4. Cost Optimizer Replay에서 후보가 품질/효율 gate를 통과하면 policy proposal을
+   만든다.
+5. 사용자는 예상 순절감, 품질 근거, cohort별 선택 모델과 fallback을 확인한다.
+6. 검증된 policy가 active가 되면 일반 실행은 저장 policy로 모델을 선택한다.
+7. 실행 로그에서 실제 선택 모델, matched cohort/rule, fallback과 policy version을
+   확인한다.
+
+#### Routing analysis panel
+
+기존 model-routing route의 첫 화면은 모델 추천 한 건보다 라우팅 가능 여부를 먼저
+보여준다.
+
+| 분석 상태 | 주 표시 | 기본 액션 |
+| --- | --- | --- |
+| `eligible` | 검증 후보 수, 예상 순절감, 적용 가능한 cohort | policy proposal 확인 |
+| `needs_evidence` | 부족한 모델/cohort/sample과 필요한 품질 검증 | Replay로 검증하기 |
+| `fixed_model_recommended` | 현재 모델 유지 이유와 라우팅 예상 실익 부족 | 현재 모델 유지 |
+| `blocked` | 권한, credential, capability, schema 계약 문제의 safe reason | 설정/권한 확인 |
+
+`fixed_model_recommended`를 실패처럼 빨간 오류로 표시하지 않는다. 이 결과는 한
+모델을 유지하는 것이 더 안전하고 경제적이라는 정상 최적화 판단이다.
+
+#### Evidence summary
+
+Evidence는 `운영`과 `Replay`를 별도 행 또는 segmented view로 표시한다.
+
+- 운영: 실제 traffic sample, 입력군 비중, 현재 모델 비용/latency/품질
+- Replay: 후보별 paired sample, schema/downstream/quality gate, 비교 비용
+- 후속 Shadow/Canary는 계약만 예약하고 현재 화면에는 미구현 badge로 노출하지 않는다.
+
+Sample 수를 하나로 합쳐 `총 28회`처럼 표시하지 않는다. `운영 20회`,
+`Replay 8쌍`처럼 출처와 단위를 함께 표시한다.
+
+#### Policy proposal
+
+Policy proposal은 다음을 보여준다.
+
+- 기본 모델과 fallback
+- cohort 조건과 선택 모델
+- 현재 policy 대비 변경점
+- evidence version과 gate profile version
+- cohort별 예상 비용/latency/품질 변화
+- traffic share를 반영한 전체 예상 순절감
+- 근거 부족으로 현재 모델을 유지하는 cohort
+
+Judge 설명은 보조 문구로 표시한다. UI는 Judge 추천을 최종 결정처럼 표현하지 않고,
+Hard Gate와 deterministic optimizer가 검증했다는 상태를 별도로 보여준다.
+
+#### Runtime decision trace
+
+실행 로그의 LLM node 상세에는 다음을 표시한다.
+
+- 실제 선택 모델
+- fallback 모델과 fallback 사용 여부
+- matched cohort/rule
+- 선택 reason code의 사용자 친화 문구
+- policy/evidence/gate profile version
+- `실행 중 Judge 호출 안 함`
+
+이 정보가 없으면 `자동 라우팅 ON` badge만으로 모델이 실제 바뀌었는지 증명할 수
+없으므로 시연 완료로 보지 않는다.
+
+#### 오늘 저녁과 밤의 UI 경계
+
+오늘 저녁 backend core 구현에서는 기존 policy panel이 새 analysis/policy response를
+깨지지 않게 받을 타입과 최소 상태 표시까지만 보장한다. 밤에는 적합성 panel,
+evidence summary, policy diff, activation/rollback, runtime decision trace를 연결한다.
+
+#### 현재 구현 호환 controls
 
 LLM 노드 상세 화면은 자동 모델 라우팅을 별도 route가 아니라 노드 설정 안의 정책 컨트롤로 제공한다.
 
