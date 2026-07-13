@@ -15,6 +15,14 @@ import type {
   AdminOrganizationSummary,
   AdminWorkflowUsageResponse,
 } from '../types/AdminUsage';
+import type {
+  ResolveSecurityAlertInput,
+  SecurityAlertAuditLogListResponse,
+  SecurityAlertDetail,
+  SecurityAlertListParams,
+  SecurityAlertListResponse,
+  SecurityAlertSummaryResponse,
+} from '../types/SecurityAlert';
 
 export type AuditLogListParams = AuditLogSearchFilters & {
   page?: number;
@@ -107,6 +115,76 @@ export const adminApi = {
 
   getOrganizationSummary: async (): Promise<AdminOrganizationSummary> => {
     const response = await apiClient.get('/admin/summary');
+    return response.data;
+  },
+
+  listSecurityAlerts: async (
+    params: SecurityAlertListParams = {},
+  ): Promise<SecurityAlertListResponse> => {
+    const response = await apiClient.get('/admin/security-alerts', {
+      params: compactParams(params),
+    });
+    return response.data;
+  },
+
+  getSecurityAlertSummary:
+    async (): Promise<SecurityAlertSummaryResponse> => {
+      const response = await apiClient.get('/admin/security-alerts/summary');
+      return response.data;
+    },
+
+  getSecurityAlertDetail: async (
+    alertId: string,
+  ): Promise<SecurityAlertDetail> => {
+    const response = await apiClient.get(`/admin/security-alerts/${alertId}`);
+    return response.data;
+  },
+
+  listSecurityAlertAuditLogs: async (
+    alertId: string,
+    params: { page?: number; limit?: number } = {},
+  ): Promise<SecurityAlertAuditLogListResponse> => {
+    const response = await apiClient.get(
+      `/admin/security-alerts/${alertId}/audit-logs`,
+      { params: compactParams(params) },
+    );
+    return response.data;
+  },
+
+  acknowledgeSecurityAlert: async (
+    alertId: string,
+    expectedVersion: number,
+  ): Promise<SecurityAlertDetail> => {
+    const response = await apiClient.post(
+      `/admin/security-alerts/${alertId}/acknowledge`,
+      { expected_version: expectedVersion },
+    );
+    return response.data;
+  },
+
+  reopenSecurityAlert: async (
+    alertId: string,
+    expectedVersion: number,
+  ): Promise<SecurityAlertDetail> => {
+    const response = await apiClient.post(
+      `/admin/security-alerts/${alertId}/reopen`,
+      { expected_version: expectedVersion },
+    );
+    return response.data;
+  },
+
+  resolveSecurityAlert: async (
+    alertId: string,
+    input: ResolveSecurityAlertInput,
+  ): Promise<SecurityAlertDetail> => {
+    const response = await apiClient.post(
+      `/admin/security-alerts/${alertId}/resolve`,
+      {
+        expected_version: input.expectedVersion,
+        resolution_type: input.resolutionType,
+        reason: input.reason,
+      },
+    );
     return response.data;
   },
 };

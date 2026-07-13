@@ -144,3 +144,107 @@ describe('adminApi.getOrganizationSummary', () => {
     expect(result).toEqual(summary);
   });
 });
+
+describe('adminApi Security Alert queries', () => {
+  it('빈 값을 제외한 필터와 pagination으로 보안 알림 목록을 조회한다', async () => {
+    mockedGet.mockResolvedValueOnce({ data: { total: 0, items: [] } });
+
+    const result = await adminApi.listSecurityAlerts({
+      page: 2,
+      limit: 20,
+      severity: 'high',
+      status: 'open',
+      ruleId: 'repeated_permission_denied',
+      actorId: 'actor-1',
+      startAt: '2026-07-01T00:00:00+09:00',
+      endAt: '',
+    });
+
+    expect(mockedGet).toHaveBeenCalledWith('/admin/security-alerts', {
+      params: {
+        page: 2,
+        limit: 20,
+        severity: 'high',
+        status: 'open',
+        ruleId: 'repeated_permission_denied',
+        actorId: 'actor-1',
+        startAt: '2026-07-01T00:00:00+09:00',
+      },
+    });
+    expect(result).toEqual({ total: 0, items: [] });
+  });
+
+  it('Sidebar용 open alert 요약을 별도 endpoint에서 조회한다', async () => {
+    const summary = { open_count: 2, high_open_count: 1, recent_items: [] };
+    mockedGet.mockResolvedValueOnce({ data: summary });
+
+    const result = await adminApi.getSecurityAlertSummary();
+
+    expect(mockedGet).toHaveBeenCalledWith('/admin/security-alerts/summary');
+    expect(result).toEqual(summary);
+  });
+
+  it('alert 상세와 연결된 safe audit evidence를 각각 조회한다', async () => {
+    mockedGet
+      .mockResolvedValueOnce({ data: { id: 'alert-1' } })
+      .mockResolvedValueOnce({ data: { total: 1, items: [{ id: 'audit-1' }] } });
+
+    await adminApi.getSecurityAlertDetail('alert-1');
+    const evidence = await adminApi.listSecurityAlertAuditLogs('alert-1', {
+      page: 2,
+      limit: 10,
+    });
+
+    expect(mockedGet).toHaveBeenNthCalledWith(1, '/admin/security-alerts/alert-1');
+    expect(mockedGet).toHaveBeenNthCalledWith(
+      2,
+      '/admin/security-alerts/alert-1/audit-logs',
+      { params: { page: 2, limit: 10 } },
+    );
+    expect(evidence).toEqual({ total: 1, items: [{ id: 'audit-1' }] });
+  });
+});
+
+describe('adminApi Security Alert lifecycle actions', () => {
+  it('현재 lifecycle version으로 확인과 미확인 전환을 요청한다', async () => {
+    mockedPost.mockResolvedValue({ data: { id: 'alert-1', version: 4 } });
+
+    await adminApi.acknowledgeSecurityAlert('alert-1', 2);
+    await adminApi.reopenSecurityAlert('alert-1', 3);
+
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/admin/security-alerts/alert-1/acknowledge',
+      { expected_version: 2 },
+    );
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/admin/security-alerts/alert-1/reopen',
+      { expected_version: 3 },
+    );
+  });
+
+  it('해결 결과와 사유를 canonical request field로 전송한다', async () => {
+    mockedPost.mockResolvedValueOnce({
+      data: { id: 'alert-1', status: 'resolved', version: 5 },
+    });
+
+    const result = await adminApi.resolveSecurityAlert('alert-1', {
+      expectedVersion: 4,
+      resolutionType: 'false_positive',
+      reason: '확인 결과 정상적인 접근이었습니다.',
+    });
+
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/admin/security-alerts/alert-1/resolve',
+      {
+        expected_version: 4,
+        resolution_type: 'false_positive',
+        reason: '확인 결과 정상적인 접근이었습니다.',
+      },
+    );
+    expect(result).toEqual({
+      id: 'alert-1',
+      status: 'resolved',
+      version: 5,
+    });
+  });
+});

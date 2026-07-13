@@ -1,0 +1,76 @@
+import { describe, expect, it } from 'vitest';
+import {
+  buildAdminTabUrl,
+  isAdminTabVisible,
+  parseAdminUrlState,
+} from './adminUrlState';
+
+const ALERT_ID = '123e4567-e89b-42d3-a456-426614174000';
+
+describe('parseAdminUrlState', () => {
+  it('Security Alert deep link의 tab과 UUID alertId를 복원한다', () => {
+    const state = parseAdminUrlState(
+      new URLSearchParams(`tab=security-alerts&alertId=${ALERT_ID}`),
+    );
+
+    expect(state).toEqual({
+      tab: 'security-alerts',
+      alertId: ALERT_ID,
+      notice: null,
+      normalizedQuery: null,
+    });
+  });
+
+  it('지원하지 않는 tab은 members로 정규화하고 alertId를 제거한다', () => {
+    const state = parseAdminUrlState(
+      new URLSearchParams(`tab=unknown&alertId=${ALERT_ID}`),
+    );
+
+    expect(state.tab).toBe('members');
+    expect(state.alertId).toBeNull();
+    expect(state.normalizedQuery?.toString()).toBe('tab=members');
+  });
+
+  it('UUID가 아닌 alertId는 제거하고 safe 안내를 반환한다', () => {
+    const state = parseAdminUrlState(
+      new URLSearchParams('tab=security-alerts&alertId=not-a-uuid'),
+    );
+
+    expect(state.tab).toBe('security-alerts');
+    expect(state.alertId).toBeNull();
+    expect(state.notice).toBe('알림을 찾을 수 없습니다.');
+    expect(state.normalizedQuery?.toString()).toBe('tab=security-alerts');
+  });
+});
+
+describe('buildAdminTabUrl', () => {
+  it('선택한 tab을 URL에 반영하고 다른 tab이면 alertId를 제거한다', () => {
+    const url = buildAdminTabUrl(
+      '/dashboard/admin',
+      new URLSearchParams(`tab=security-alerts&alertId=${ALERT_ID}`),
+      'audit',
+    );
+
+    expect(url).toBe('/dashboard/admin?tab=audit');
+  });
+
+  it('Security Alert tab을 다시 선택하면 유효한 alertId를 유지한다', () => {
+    const url = buildAdminTabUrl(
+      '/dashboard/admin',
+      new URLSearchParams(`tab=security-alerts&alertId=${ALERT_ID}`),
+      'security-alerts',
+    );
+
+    expect(url).toBe(
+      `/dashboard/admin?tab=security-alerts&alertId=${ALERT_ID}`,
+    );
+  });
+});
+
+describe('isAdminTabVisible', () => {
+  it('보안 알림 탭은 manager에게만 표시한다', () => {
+    expect(isAdminTabVisible('security-alerts', true)).toBe(true);
+    expect(isAdminTabVisible('security-alerts', false)).toBe(false);
+    expect(isAdminTabVisible('members', false)).toBe(true);
+  });
+});

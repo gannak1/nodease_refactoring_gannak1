@@ -81,7 +81,8 @@ describe('AuditSearchTab', () => {
     expect(await screen.findByText('workflow.deploy')).toBeInTheDocument();
     const table = screen.getByRole('table');
     expect(within(table).getByText('Workflow 배포')).toBeInTheDocument();
-    expect(within(table).getByText('success')).toBeInTheDocument();
+    expect(within(table).getByText('성공')).toBeInTheDocument();
+    expect(within(table).getByText('Workflow · wf-1')).toBeInTheDocument();
     expect(
       within(table).getByText('김관리 (admin@example.com)'),
     ).toBeInTheDocument();
@@ -160,6 +161,11 @@ describe('AuditSearchTab', () => {
     });
     expect(drawer).toBeInTheDocument();
     expect(mockedDetail).toHaveBeenCalledWith('log-access-1');
+    expect(
+      await screen.findByText(
+        '조직 멤버 · membership-1에서 멤버 정보 변경 작업이 완료되었습니다.',
+      ),
+    ).toBeInTheDocument();
     expect(await screen.findByText('데모 배포')).toBeInTheDocument();
     expect(screen.getByText('req-1')).toBeInTheDocument();
     expect(screen.getByText('변경 요약')).toBeInTheDocument();

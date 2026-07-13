@@ -13,6 +13,10 @@ import type {
   AuditLogStatus,
 } from '../types/AdminAudit';
 import { auditActionLabel } from '../utils/auditActionLabel';
+import {
+  auditStatusLabel,
+  auditTargetLabel,
+} from '../utils/auditPresentation';
 import { AdminPagination } from './AdminPagination';
 import { AuditDetailDrawer } from './AuditDetailDrawer';
 import { ActorAccessDrawer } from './ActorAccessDrawer';
@@ -269,7 +273,7 @@ export function AuditSearchTab({
                   행위자
                 </th>
                 <th scope="col" className="px-3 py-2 font-semibold">
-                  Action
+                  작업
                 </th>
                 <th scope="col" className="px-3 py-2 font-semibold">
                   대상
@@ -341,20 +345,20 @@ export function AuditSearchTab({
                     </td>
                     <td className="px-3 py-3">
                       <span className="flex flex-wrap items-center gap-1.5">
+                        {label && (
+                          <span className="text-slate-800">{label}</span>
+                        )}
                         <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs">
                           {item.action}
                         </code>
-                        {label && (
-                          <span className="text-xs text-slate-600">
-                            {label}
-                          </span>
-                        )}
                       </span>
                     </td>
                     <td className="px-3 py-3 text-slate-700">
-                      {item.target_type
-                        ? `${item.target_type}${item.target_id ? ` · ${item.target_id}` : ''}`
-                        : '-'}
+                      {auditTargetLabel(
+                        item.target_type,
+                        item.target_id,
+                        organizationId,
+                      )}
                     </td>
                     <td className="px-3 py-3">
                       <span
@@ -364,7 +368,7 @@ export function AuditSearchTab({
                             : 'bg-emerald-50 text-emerald-700'
                         }`}
                       >
-                        {item.status}
+                        {auditStatusLabel(item.status, item.action)}
                       </span>
                     </td>
                   </tr>
@@ -385,6 +389,7 @@ export function AuditSearchTab({
       {selectedLogId && (
         <AuditDetailDrawer
           auditLogId={selectedLogId}
+          currentOrganizationId={organizationId}
           actorName={
             items.find((item) => item.id === selectedLogId)?.actor_id
               ? memberNamesByUserId.get(

@@ -5,10 +5,19 @@ import { X } from 'lucide-react';
 import { adminApi } from '../api/adminApi';
 import type { AuditLogDetailResponse } from '../types/AdminAudit';
 import { auditActionLabel } from '../utils/auditActionLabel';
+import {
+  auditEventSummary,
+  auditMetadataLabel,
+  auditMetadataValueLabel,
+  auditStatusLabel,
+  auditTargetLabel,
+} from '../utils/auditPresentation';
 
 type AuditDetailDrawerProps = {
   auditLogId: string;
   actorName?: string | null;
+  currentOrganizationId?: string | null;
+  stacked?: boolean;
   onClose: () => void;
   onAfterClose?: () => void;
 };
@@ -22,6 +31,8 @@ const formatMetadataValue = (value: unknown) =>
 export function AuditDetailDrawer({
   auditLogId,
   actorName,
+  currentOrganizationId,
+  stacked = false,
   onClose,
   onAfterClose,
 }: AuditDetailDrawerProps) {
@@ -84,7 +95,9 @@ export function AuditDetailDrawer({
   const metadataEntries = detail ? Object.entries(detail.audit_metadata) : [];
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end">
+    <div
+      className={`fixed inset-0 flex justify-end ${stacked ? 'z-[140]' : 'z-50'}`}
+    >
       <div
         className="absolute inset-0 bg-slate-950/30"
         onClick={close}
@@ -120,6 +133,28 @@ export function AuditDetailDrawer({
         )}
         {detail && (
           <dl className="flex flex-col gap-4 px-5 py-5 text-sm">
+            <div>
+              <dt className="sr-only">설명</dt>
+              <dd className="rounded-md bg-blue-50 px-3 py-3 text-sm font-medium text-blue-950">
+                {auditEventSummary({
+                  action: detail.action,
+                  status: detail.status,
+                  targetType: detail.target_type,
+                  targetId: detail.target_id,
+                  currentOrganizationId,
+                  requiredPermission:
+                    typeof detail.audit_metadata.required_permission ===
+                    'string'
+                      ? detail.audit_metadata.required_permission
+                      : null,
+                  requestedOperation:
+                    typeof detail.audit_metadata.requested_operation ===
+                    'string'
+                      ? detail.audit_metadata.requested_operation
+                      : null,
+                })}
+              </dd>
+            </div>
             <DetailField
               label="발생 시각"
               value={
@@ -137,22 +172,24 @@ export function AuditDetailDrawer({
               }
             />
             <DetailField
-              label="Action"
+              label="작업"
               value={
                 <span className="flex flex-wrap items-center gap-2">
+                  {label && <span className="text-slate-900">{label}</span>}
                   <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs">
                     {detail.action}
                   </code>
-                  {label && <span className="text-slate-700">{label}</span>}
                 </span>
               }
             />
             <DetailField
               label="대상"
               value={
-                detail.target_type
-                  ? `${detail.target_type}${detail.target_id ? ` · ${detail.target_id}` : ''}`
-                  : '-'
+                auditTargetLabel(
+                  detail.target_type,
+                  detail.target_id,
+                  currentOrganizationId,
+                )
               }
             />
             <DetailField
@@ -165,7 +202,7 @@ export function AuditDetailDrawer({
                       : 'bg-emerald-50 text-emerald-700'
                   }`}
                 >
-                  {detail.status}
+                  {auditStatusLabel(detail.status, detail.action)}
                 </span>
               }
             />
@@ -189,16 +226,16 @@ export function AuditDetailDrawer({
             {metadataEntries.length > 0 && (
               <div>
                 <dt className="text-xs font-semibold uppercase text-slate-500">
-                  Metadata
+                  추가 정보
                 </dt>
                 <dd className="mt-2 flex flex-col gap-1 rounded-md border border-slate-200 bg-slate-50 p-3">
                   {metadataEntries.map(([key, value]) => (
                     <div key={key} className="flex gap-2 text-xs">
                       <span className="shrink-0 font-medium text-slate-500">
-                        {key}
+                        {auditMetadataLabel(key)}
                       </span>
                       <span className="break-all text-slate-800">
-                        {formatMetadataValue(value)}
+                        {auditMetadataValueLabel(key, value)}
                       </span>
                     </div>
                   ))}
