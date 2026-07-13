@@ -4,7 +4,9 @@ Status: Draft
 
 이 문서는 [requirements.md](requirements.md), [api_spec.md](api_spec.md), [component_spec.md](component_spec.md), [ADR-0028](../../decisions/ADR-0028-security-alert-detection-and-lifecycle.md)의 검증 기준을 정의한다.
 
-현재 backend 구현은 MBA-212의 rule evaluator, Alert 집계 transaction, 실시간 Celery detector, PostgreSQL watermark/overlap reconciliation, 60초 Beat schedule과 로컬·Docker Beat 실행 연결을 포함한다. 실제 PostgreSQL 테스트는 Alert·evidence·detected audit 원자성, overlap 중복 방지, UUID cursor, 활성화 경계, rollback/retry를 검증한다. MBA-213/214 API·notification·client 검증은 아직 남아 있다.
+현재 구현은 MBA-223의 audit 정규화부터 MBA-211~214의 영속 모델·lifecycle, 실시간 탐지·reconciliation, 관리자 API, Admin Dashboard·Sidebar·SSE 재조회까지 포함한다. 관련 자동 검증은 Client test/lint/build, Gateway Security Alert API/service 35건, Log System 관련 20건, Shared 관련 27건과 notification publisher 2건을 통과했다.
+
+문서 상태는 `Draft`를 유지한다. 실제 Redis를 연결한 SSE End-to-End, 전체 PostgreSQL concurrency acceptance gate, SAL-REQ-042의 durable notification publish retry는 아직 완료되지 않았다. 전체 Log System suite의 Redis 연결 테스트와 전체 Shared suite의 선택 의존성도 환경 제약으로 별도 확인이 필요하다.
 
 ## Acceptance Criteria
 
@@ -167,6 +169,8 @@ Then 실제 연결된 audit만 paginated safe projection으로 반환해야 한�
 
 Raw `audit_metadata`, `before`, `after`, hidden target, email, IP, user-agent, exception, request body, token, credential, trace/document payload는 반환하지 않아야 한다.
 
+Security Alert 관리자 API의 권한 거부 evidence와 Audit detail에는 고정 allowlist의 필요 권한, 시도한 작업, 거부 사유만 표시되고 raw URL/path/query/header/body는 노출되지 않아야 한다.
+
 ### AC-20 Sidebar Badge And Summary
 
 Given organization에 `open`, `acknowledged`, `resolved` alert가 함께 있을 때,
@@ -197,6 +201,11 @@ Invalid UUID 또는 404 alert는 다른 organization 존재 여부를 노출하�
 Given 관리 가능한 actor의 Security Alert detail이 열려 있을 때,
 When `사용자 접근 관리`를 선택하면,
 Then Security Alert drawer를 닫고 기존 `ActorAccessDrawer`를 열어야 하며 두 drawer를 동시에 표시하지 않아야 한다.
+
+When `ActorAccessDrawer`를 닫으면,
+Then 원래 `alertId`를 유지한 채 Security Alert detail을 다시 열고 최신 상세를 재조회해야 한다.
+
+이 전환으로 열린 `ActorAccessDrawer`는 `보안 알림 상세로 돌아가기` action을 표시해야 한다.
 
 기존 actor access 보호 정책을 그대로 적용하고 수동 조치 성공만으로 alert를 자동 resolve하지 않아야 한다.
 
@@ -324,6 +333,7 @@ Scope 밖 404, validation 실패, desired-state no-op에는 target-aware audit�
 | SAL-TC-P012 | AC-03, AC-31 | Legacy `pii_policy_blocked`, canonical PII reason, unknown legacy reason 정규화 | Legacy PII만 canonical 값으로 mapping하고 append-only 원본 row와 metadata는 불변, unknown은 allowlist 입력이 아님 |
 | SAL-TC-P013 | AC-27, AC-31 | 각 producer 입력에 synthetic email/IP/user-agent/exception/request/secret marker 포함 | 신규 audit metadata와 log에 marker가 없고 safe opaque ID와 canonical code만 남음 |
 | SAL-TC-P014 | AC-31 | Hidden 404, validation 실패, desired-state no-op 경로 실행 | Target-aware `permission.denied`/`policy.block` audit가 생성되지 않음 |
+| SAL-TC-P015 | AC-04, AC-16, AC-31 | 일반 member/auditor/raw auditor가 현재 organization의 Security Alert 관리자 API 호출 | 403과 함께 organization safe target을 가진 eligible `permission.denied` 한 건 기록, Alert ID·존재 여부 없음 |
 
 ### Service And Database Tests
 
@@ -408,7 +418,7 @@ Scope 밖 404, validation 실패, desired-state no-op에는 target-aware audit�
 | SAL-TC-W015 | AC-10 | 서로 다른 worker가 같은 detection key의 서로 다른 threshold event를 동시에 처리 | active unique 보장, count 유실 없음, 안전한 retry |
 | SAL-TC-W016 | AC-07 | 여러 organization/actor queue event가 interleave | key별 독립 결과 |
 | SAL-TC-W017 | AC-11 | resolve commit 직전/직후 event를 각각 처리 | event 귀속이 commit 순서와 fresh threshold 계약에 일치 |
-| SAL-TC-W018 | AC-26 | Redis/SSE publish adapter 실패 | alert commit 유지, publish retry 기록, raw payload log 없음 |
+| SAL-TC-W018 | AC-26 | Redis/SSE publish adapter 또는 수신자 조회 실패 | alert commit 유지, durable retry scheduling 또는 동등한 복구 기록, raw payload·raw exception log 없음 |
 | SAL-TC-W019 | AC-27 | worker exception에 synthetic secret marker 포함 | durable log/metric에 marker와 raw exception 없음 |
 | SAL-TC-W020 | AC-29 | threshold event부터 notification publish까지 측정 | 정상 경로 60초 이내 |
 
@@ -425,15 +435,18 @@ Scope 밖 404, validation 실패, desired-state no-op에는 target-aware audit�
 | SAL-TC-C007 | AC-13 | status별 detail action render | open/acknowledged/resolved action matrix와 일치 |
 | SAL-TC-C008 | AC-15 | resolve dialog blank/length/control validation과 server failure | invalid submit 방지, 실패 시 입력 유지, raw error 미노출 |
 | SAL-TC-C009 | AC-14 | mutation 409 | optimistic 상태 폐기, detail 재조회, stale 안내 |
-| SAL-TC-C010 | AC-23 | 사용자 접근 관리 선택 | Alert drawer 닫힘 후 ActorAccessDrawer 하나만 열림, close 후 목록 복귀 |
+| SAL-TC-C010 | AC-23 | 사용자 접근 관리 선택 후 ActorAccessDrawer 닫기 | Alert drawer를 숨기고 ActorAccessDrawer 하나만 열며 `alertId` 유지, close 후 원래 Alert detail 재조회·복귀 |
 | SAL-TC-C011 | AC-23 | deleted/removed/unmanageable actor | 접근 관리 disabled와 safe 설명, 자동 resolve 없음 |
 | SAL-TC-C012 | AC-20, AC-21 | 보안 alert와 invitation 동시 overlay | 두 section 독립 렌더, open badge 정확, invitation action 유지 |
 | SAL-TC-C013 | AC-21 | Security Alert item/모두 보기 click | overlay 닫고 정확한 deep link로 이동 |
-| SAL-TC-C014 | AC-24 | `notifications.changed` 수신 | summary와 열린 list/detail 재조회, payload를 직접 state로 사용하지 않음 |
-| SAL-TC-C015 | AC-24 | SSE reconnect와 한 source API 실패 | 재조회 복구, 다른 notification section 유지 |
-| SAL-TC-C016 | AC-16, AC-24 | active organization 전환 또는 manager 권한 회수 | 이전 cache/list/detail/badge 제거 |
+| SAL-TC-C014 | AC-24 | `notifications.changed` 수신 | invitation, manager summary와 열린 list/detail 재조회, filter/page 유지, payload를 직접 state로 사용하지 않음 |
+| SAL-TC-C015 | AC-24 | 최초 연결/SSE reconnect와 한 source API 실패 | toast 없이 재조회 복구, 다른 notification section 유지 |
+| SAL-TC-C016 | AC-16, AC-24 | active organization 전환 또는 manager 권한 회수 | 이전 snapshot/cooldown/cache/list/detail/badge 제거, invitation source 유지 |
 | SAL-TC-C017 | AC-30 | keyboard로 tab→filter→row→drawer→dialog 조작 | focus trap/restore, Escape, accessible label 정상 |
 | SAL-TC-C018 | AC-30 | severity/status render | color 없이 text로 의미 전달 |
+| SAL-TC-C019 | AC-24, AC-27 | 새 alert와 같은 alert occurrence 증가 event를 연속 수신 | 최초 snapshot/reconnect는 toast 없음, 일반 문구만 표시, 같은 alert는 60초 안에 한 번만 toast |
+| SAL-TC-C020 | AC-19, AC-30 | Security Alert evidence의 `상세 보기` 선택 | 기존 Audit detail API 호출, Alert drawer보다 높은 layer에 상세 표시, close 후 row focus 복원 |
+| SAL-TC-C021 | AC-19, AC-27 | 연결된 감사 기록과 Audit detail 표시 | safe 권한 거부 정보가 있으면 시도한 작업·필요 권한·거부 사유를 사용자 문장과 라벨로 표시하고 canonical action과 safe ID는 보조 정보로 유지, raw metadata 미노출 |
 
 ### End-To-End Tests
 

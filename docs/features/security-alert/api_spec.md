@@ -280,7 +280,10 @@ Sidebar 전용 bounded projection이다. Query parameter를 받지 않는다.
       "target_type": "workflow",
       "target_id": "<opaque-id>",
       "status": "failure",
-      "request_id": "<string|null>"
+      "request_id": "<string|null>",
+      "required_permission": "security_alert.manage",
+      "requested_operation": "security_alert.list",
+      "denial_reason": "organization_manager_required"
     }
   ]
 }
@@ -289,6 +292,8 @@ Sidebar 전용 bounded projection이다. Query parameter를 받지 않는다.
 - Alert evidence로 실제 연결된 audit만 반환한다.
 - 정렬은 `occurred_at DESC`, 같은 시각이면 `id DESC`다.
 - Generic `audit_metadata`, `before`, `after`, `change_summary`를 반환하지 않는다.
+- Security Alert 관리자 API에서 생성된 eligible `permission.denied`에 한해 `required_permission`, `requested_operation`, `denial_reason`을 고정 allowlist 값으로 반환한다. 해당하지 않는 기록은 각 field가 null이다.
+- `requested_operation`은 `list`, `summary`, `detail`, `evidence.list`, `acknowledge`, `resolve`, `reopen`에 대응하는 canonical 값만 허용하며 raw URL/path/query나 request body는 포함하지 않는다.
 - Target이 safe projection 조건을 만족하지 않으면 `target_type`, `target_id`는 null로 반환한다.
 - Audit detail이 필요하면 기존 `/api/v1/admin/audit-logs/{audit_log_id}` 권한과 allowlist를 다시 통과해야 한다.
 
@@ -396,7 +401,7 @@ Error response는 가능한 경우 다음 safe shape을 사용한다.
 
 ### Audit On Errors
 
-- Scope 안 owner/manager 권한 부족은 target scope 확인 전 target-aware metadata 없이 `permission.denied`를 기록한다.
+- Scope 안 owner/manager 권한 부족은 사용자가 이미 접근 중인 organization만 safe target으로 `permission.denied`를 기록한다. Alert ID나 alert 존재 여부는 기록하지 않는다.
 - 다른 organization, hidden 404, validation 실패에는 target-aware Security Alert audit을 만들지 않는다.
 - `409 stale_state`에는 lifecycle mutation과 `security_alert.*` audit을 만들지 않는다.
 - Lifecycle mutation audit persistence가 실패하면 mutation도 rollback하고 safe `500 audit.persistence_failed`를 반환한다.
@@ -404,7 +409,9 @@ Error response는 가능한 경우 다음 safe shape을 사용한다.
 ## Notification Boundary
 
 - Alert 생성, 활성 alert occurrence 갱신, acknowledge, resolve, reopen commit 이후 `notifications.changed`를 권한 있는 현재 organization manager 대상 channel에 발행한다.
-- SSE payload는 alert detail이나 evidence를 source of truth로 전달하지 않는다.
-- Client는 event를 받으면 summary와 필요한 목록/detail을 재조회한다.
-- Publish 실패는 이미 commit된 Alert/lifecycle mutation을 rollback하지 않는다.
-- Reconnect와 missed event 복구는 영속 summary/list 조회가 담당한다.
+- 수신자는 active membership, manager 권한, 활성 사용자 조건을 모두 만족하는 현재 organization 사용자로 매번 계산한다.
+- Redis message는 event type만 포함하며, SSE는 `event: notifications.changed`와 빈 `data: {}`만 전달한다. Alert ID, detail, evidence, organization ID, raw metadata는 payload에 넣지 않는다.
+- Client는 event payload를 상태로 사용하지 않고 invitation과 Security Alert summary를 각각 재조회한다. 열려 있는 Security Alert 목록/detail은 현재 filter와 page를 유지한 채 다시 조회한다.
+- Publish 또는 수신자 조회 실패는 이미 commit된 Alert/lifecycle mutation을 rollback하지 않는다. 로그에는 raw exception이나 alert payload 대신 안전한 오류 유형만 기록한다.
+- Reconnect와 missed event 복구는 영속 summary/list/detail 조회가 담당한다. Reconnect 자체는 사용자 toast를 만들지 않는다.
+- 현재 구현에는 publish 실패를 durable queue에 저장해 다시 보내는 별도 retry adapter가 없다. SAL-REQ-042 완료를 위해 후속 구현과 검증이 필요하다.
