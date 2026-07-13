@@ -154,6 +154,7 @@ Status: Draft
 | ORG-TC-E030 | 일반 member는 Security Alert summary를 요청하거나 badge를 보면 안 된다. | manager false인데 summary 호출/cache badge가 남는다. | Invitation만 유지, Security Alert section/badge 없음. |
 | ORG-TC-E031 | Security Alert item은 Admin deep link로 이동해야 한다. | Overlay 안에서 lifecycle mutation을 하거나 잘못된 tab으로 이동한다. | Overlay close 후 `tab=security-alerts&alertId=<uuid>` 이동. |
 | ORG-TC-E032 | active organization 전환과 manager 권한 회수는 alert cache를 제거해야 한다. | 이전 조직 badge/detail이 새 scope에 남는다. | 이전 summary 제거 후 권한 있는 새 scope만 재조회. |
+| ORG-TC-E033 | SettingsPage는 역할별 Access/LLM Credentials tab만 유지하고 Activity를 제거해야 한다. | manager/member에게 잘못된 tab이 보이거나 초기 load, refresh, permission grant에서 `/users/me/audit-logs`를 요청한다. | manager는 Access/LLM Credentials, member는 LLM Credentials만 표시하고 Activity UI와 audit 요청은 없다. |
 
 ## Permission Tests
 
