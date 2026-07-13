@@ -35,6 +35,7 @@ Status: Draft
 | ORG-TC-U008 | removed member 재초대는 기존 membership을 invited로 되살려야 한다. | 새 duplicate membership을 만들거나 removed 상태가 유지된다. | 기존 row의 state가 invited로 변경된다. |
 | ORG-TC-U008a | invited member의 초대 거절은 membership을 removed로 바꾸고 audit을 기록해야 한다. | 거절 후 invited가 유지되거나 `organization.member.decline` audit이 없다. | state `removed`, audit 기록. |
 | ORG-TC-U008b | notification service는 invited membership만 organization invitation 알림으로 파생해야 한다. | active/suspended/removed membership이 알림으로 표시된다. | invited organization만 `organization.invitation` 반환. |
+| ORG-TC-U008c | 관리자가 invited member를 제거하면 commit 이후 대상 사용자 notification을 갱신해야 한다. | commit 전/실패 후 발행하거나 active/suspended/already removed 제거에도 발행하거나 publish 실패가 제거를 rollback한다. | invited 제거 commit 후 대상 user channel에 한 번 발행, commit 실패와 non-invited 제거에는 미발행, publish 실패는 committed 제거 유지. |
 | ORG-TC-U009 | invited/removed member는 PATCH로 active/suspended 전환할 수 없어야 한다. | invited 또는 removed member update가 성공한다. | `409`. |
 | ORG-TC-U010 | member update는 빈 update와 no-op audit을 구분해야 한다. | 빈 body가 성공하거나 no-op PATCH가 audit row를 만든다. | 빈 body는 `400`, no-op은 audit 없음. |
 | ORG-TC-U011 | 자기 자신 또는 마지막 active manager의 상태/권한 변경은 거부해야 한다. | self update 또는 마지막 manager 강등/제거가 성공한다. | `400` 또는 `409`. |

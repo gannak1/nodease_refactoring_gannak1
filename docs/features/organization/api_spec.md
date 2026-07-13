@@ -275,7 +275,7 @@ event: notifications.changed
 data: {}
 ```
 
-초대 생성/수락/거절 이후 현재 사용자 channel에 발행된다. Security Alert 생성·활성 alert 갱신·lifecycle 변경도 권한 있는 현재 organization manager 대상 notification 갱신을 발행할 수 있다. 클라이언트는 event payload를 source of truth로 사용하지 않고 `GET /notifications`와, 현재 owner/manager인 경우 `/api/v1/admin/security-alerts/summary`를 source별로 재조회한다. Security Alert publish 실패와 reconnect 복구 경계는 [Security Alert API spec](../security-alert/api_spec.md)이 소유한다.
+초대 생성/수락/거절 또는 관리자가 invited membership을 제거한 transaction이 commit된 이후 대상 사용자 channel에 발행된다. Active/suspended/already removed membership 제거에는 발행하지 않는다. Notification publish 실패는 이미 commit된 membership 변경을 rollback하지 않는다. Security Alert 생성·활성 alert 갱신·lifecycle 변경도 권한 있는 현재 organization manager 대상 notification 갱신을 발행할 수 있다. 클라이언트는 event payload를 source of truth로 사용하지 않고 `GET /notifications`와, 현재 owner/manager인 경우 `/api/v1/admin/security-alerts/summary`를 source별로 재조회한다. Security Alert publish 실패와 reconnect 복구 경계는 [Security Alert API spec](../security-alert/api_spec.md)이 소유한다.
 
 ### `PATCH /organizations/{organization_id}/members/{user_id}`
 
@@ -295,6 +295,8 @@ data: {}
 요청 header: matching `X-Organization-Id`.
 
 성공 응답: `200 OK`, `OrganizationMemberRemoveResponse`.
+
+제거 전 membership이 `invited`인 경우 commit 성공 후 대상 사용자에게 `notifications.changed`를 발행한다. 이미 commit된 제거는 notification publish 실패로 rollback하지 않는다.
 
 ```json
 {
