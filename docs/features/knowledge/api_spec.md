@@ -1,7 +1,7 @@
 # Knowledge API Spec
 
 Status: Draft
-이 문서는 Knowledge feature의 현재 API baseline과 목표 KB 통합 API 계약을 함께 기록한다. MBA-105 목표 API는 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)의 임시 구현 baseline, Workflow RAG anonymous public-only runtime은 [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md), MCP/API source connector와 incremental sync 경계는 [ADR-0020](../../decisions/ADR-0020-knowledge-mcp-incremental-sync-boundary.md), MBA-231 위임 관리와 KB RBAC cutover는 [ADR-0034](../../decisions/ADR-0034-knowledge-delegated-administration-and-rbac-boundary.md), 세부 구현 기준은 [implementation_baseline.md](implementation_baseline.md)를 따른다. Knowledge Skill 관련 API 경계는 [ADR-0015](../../decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)를 따른다.
+이 문서는 Knowledge feature의 현재 API baseline과 목표 KB 통합 API 계약을 함께 기록한다. MBA-105 목표 API는 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)의 임시 구현 baseline, Workflow RAG anonymous public-only runtime은 [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md), MCP/API source connector와 incremental sync 경계는 [ADR-0020](../../decisions/ADR-0020-knowledge-mcp-incremental-sync-boundary.md), MBA-231 위임 관리와 KB RBAC cutover는 [ADR-0034](../../decisions/ADR-0034-knowledge-delegated-administration-and-rbac-boundary.md), direct KB와 명시 selected Collection의 internal runtime resolver는 [ADR-0036](../../decisions/ADR-0036-knowledge-runtime-candidate-resolution.md), 세부 구현 기준은 [implementation_baseline.md](implementation_baseline.md)를 따른다. Knowledge Skill 관련 API 경계는 [ADR-0015](../../decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)를 따른다.
 
 ## Current Baseline Endpoints
 
@@ -68,10 +68,63 @@ Redis progress는 `indexing`/`processing`에서만 사용하며 `pending`과
 | Raw/compliance view | `/api/v1/knowledge/kbs/{kb_id}/raw-artifacts/*` | Raw/compliance gate 이후 선택적 protected raw content access. RAG answer API에서 사용하지 않음 |
 | Source connectors | `/api/v1/knowledge/sources/*` | Source connection, sync, tombstone, ACL status, remediation |
 | Knowledge skills | `/api/v1/knowledge/skills/*` | Provider-neutral skill registry, version, freshness/eval status, safe metadata. 주 사용처는 빌더 단계 LLM node의 RAG 옵션 구성 |
-| 실행 시점 RAG retrieval | 내부 service call | Workflow LLM node의 RAG 옵션 실행 시 collection-routed 또는 KB-candidate-routed retrieval. Builder/preflight 후보 조회는 `/api/v1/knowledge/candidates/resolve`를 사용할 수 있지만, runtime retrieval은 내부 service boundary로 다시 권한을 평가한다 |
+| 실행 시점 RAG candidate resolution/retrieval | 내부 service call | MBA-232는 direct KB + 명시 selected Collection을 current audience로 재평가하는 Workflow Engine internal resolver contract만 제공한다. Builder/preflight `/api/v1/knowledge/candidates/resolve`, public API, graph/LLM/retrieval wiring은 분리하며 실제 연결은 MBA-233 범위다 |
 | Knowledge domain permissions | `/api/v1/knowledge/domain-permissions`, `/api/v1/knowledge/domain-capabilities` | Organization manager가 Team/User 관리 action을 위임하고 caller의 safe capability를 조회 |
 
 공개 HTTP path가 필요한 경우에는 별도 API gate review에서 path 이름과 JSON/SSE shape를 확정한다. MBA-105의 필수 계약은 collection listing(`collection.read`), collection routing(`collection.route`), KB content permission, source ACL state, document version citation identity의 분리다. Skill authoring, test, submit-for-review, publish/deprecate, Workflow Playground skill binding API는 아직 승인된 계약이 아니다.
+
+### MBA-232 Workflow Runtime Candidate Resolver
+
+이 계약은 public HTTP request/response가 아니라 Workflow Engine 내부 application/port
+contract다. Gateway의 Builder/deployment-preview `KnowledgeCandidateResolver`와 다른
+책임을 가진다. MBA-232에서 `/api/v1/*` path, Workflow graph field, Client schema,
+deployment preflight와 LLM node wiring은 추가하거나 변경하지 않는다.
+
+Input:
+
+| 필드 | 규칙 |
+| --- | --- |
+| `audience` | `AuthenticatedAudience(organization_id, user_id)` 또는 `AnonymousPublicAudience(organization_id)` closed union. Owner/builder/deployment owner/credential principal/service account fallback 금지 |
+| `direct_kb_ids` | Server-owned configured order. Duplicate는 first position 유지. Defensive cap 20 |
+| `collection_ids` | Server-owned 명시 selected Collection configured order. Missing/empty는 stream 0개이며 organization-wide fallback 금지. Defensive cap 20 |
+| `candidate_budget` | Server-owned unique KB cap. 1 이상 20 이하 |
+| `candidate_scan_cap` | Server operations cap. Selected Collection을 공정하게 scan하며 response에 exact hidden 구조를 노출하지 않음 |
+
+Authenticated resolution은 direct KB에 KB `use`와 applicable materialized source gate를
+요구하고 Collection `route`는 요구하지 않는다. Collection child는 active Collection
+`route`, membership, child KB `use`, applicable materialized source gate를 모두 요구한다.
+Knowledge domain permission과 Collection `read/manage/sync`는 이 gate를 대체하지 않는다.
+
+Anonymous resolution은 selected active public Collection child 또는 active public
+Collection에 연결된 direct manual KB만 허용한다. Team/User/domain grant를 사용하지
+않는다. Source/connector public exposure primitive가 현재 없으므로 source-managed KB는
+모두 제외한다.
+
+Output:
+
+| 필드 | 규칙 |
+| --- | --- |
+| `status` | `resolved` 또는 `safe_no_result` |
+| `candidates` | 최대 20개의 authorized canonical KB identity와 internal first provenance. Direct configured order 우선, Collection round-robin, canonical KB dedupe |
+| `routing_mode` | `direct`, `collection`, `mixed`, `none` 중 fixed safe value |
+| count summary | Configured/evaluated/eligible 수의 safe bucket만 허용. Hidden/denied exact count 금지 |
+| `budget_limited` / warning | Deterministic budget 또는 bounded scan 도달 여부와 fixed safe warning |
+
+Candidate policy exclusion은 safe omission이고 candidate 0개는 provider/retrieval 전
+`safe_no_result`다. DB session, PostgreSQL snapshot, repository 또는 authorization helper
+infrastructure failure는 partial candidate를 반환하지 않는 typed retryable
+whole-resolution error다. Error는 fixed code/retryability만 가지며 raw SQL/exception,
+identifier, source metadata 또는 payload를 포함하지 않는다. Partial KB retrieval timeout은
+이 internal resolver output이 아니라 MBA-233/downstream Retrieval Orchestrator 계약이다.
+
+Resolver adapter는 invocation마다 fresh PostgreSQL transaction을 열고 첫 query 전에
+`REPEATABLE READ, READ ONLY`를 적용한다. Current Collection/membership/KB
+lifecycle/readiness/permission/materialized provenance는 같은 snapshot에서 읽고 candidate
+또는 authorization 결과를 invocation 사이에 cache하지 않는다. Live connector
+`check_access*`와 runtime source authorization cache는 MBA-232에서 호출하지 않는다.
+Membership은 configured Collection별 ordered LATERAL cap을 먼저 적용한 bounded
+intermediate relation에서 round-robin ranking한다. Source-policy/provenance expiry는 같은
+transaction에서 한 번 읽은 `transaction_timestamp()`를 전체 invocation에 재사용한다.
 
 ### KB Permission Endpoints
 
@@ -184,7 +237,7 @@ cross-organization, deleted 또는 invisible resource는 `404 resource.hidden`,
 same-scope visible resource의 action 부족은 `403 permission.denied`다. 목록은
 unauthorized row와 hidden count를 반환하지 않는다.
 
-Builder와 deployment preflight가 사용할 MBA-105 candidate resolver contract는 다음 shape를 지켜야 한다.
+Builder와 deployment preflight가 사용할 Gateway MBA-105 candidate resolver contract는 다음 shape를 지켜야 한다. 이 contract의 missing Collection scope fallback과 safe metadata response는 위 MBA-232 Workflow runtime resolver에 적용하지 않는다.
 
 | 필드 | 규칙 |
 | --- | --- |
@@ -398,14 +451,14 @@ MBA-176에서 source/connector public exposure approval primitive가 아직 구�
 
 ### Workflow Runtime RAG Execution Subject
 
-Workflow runtime에서 RAG를 호출하는 API나 내부 service call은 가능한 경우 `execution_subject`를 명시한다. `execution_subject`는 interactive user, workflow runner, 승인된 service account, 업무상 지정된 operator처럼 권한 평가에 사용할 주체다. MVP에서 `execution_subject`가 없으면 retrieval은 실패가 아니라 anonymous public-only로 낮아진다.
+Workflow runtime에서 RAG를 호출하는 API나 내부 service call은 server-resolved execution audience를 명시한다. MBA-232 contract는 interactive/current user를 `AuthenticatedAudience`로, subject 부재를 synthetic identity 없는 `AnonymousPublicAudience`로 표현한다. 승인된 service account/operator audience는 별도 lifecycle/approval 계약 전까지 MBA-232 closed union에 포함하지 않는다. Subject가 없으면 retrieval은 실패가 아니라 anonymous public-only로 낮아진다.
 
 필수 계약:
 
 | 항목 | 규칙 |
 | --- | --- |
-| `execution_subject` | Workflow run context에서 명시적으로 resolve한 actor/service account. 있으면 KB permission과 source ACL 평가 기준 |
-| `subject_resolution_reason` | interactive run, deployment service account, assigned operator, anonymous public-only 등 sanitized reason. 현재 MVP runtime은 reason field 없이도 subject 부재를 anonymous public-only로 해석할 수 있다 |
+| `execution_subject` | Workflow run context에서 명시적으로 resolve한 current user. 있으면 `AuthenticatedAudience`의 KB permission과 materialized source authorization 평가 기준 |
+| `subject_resolution_reason` | interactive user 또는 anonymous public-only 같은 sanitized reason. Service account/assigned operator는 별도 승인 전 MBA-232에 입력할 수 없다 |
 | `workflow_owner_id` | 감사/소유권 표시에는 사용할 수 있지만, 명시 설정 없이 retrieval 권한 fallback으로 사용하지 않는다 |
 | missing subject | Anonymous public-only retrieval. Active public collection에 연결된 active KB만 후보로 남기며 silent owner/user_id fallback은 금지 |
 | ambiguous or unsupported subject | Private retrieval fail-closed. Anonymous downgrade가 안전하게 판정되지 않으면 safe no-result 또는 failure policy를 따른다 |
@@ -533,7 +586,8 @@ A/B 테스트, 비용 최적화, trace side panel은 다음 redaction-safe summa
 | Explicit KB mode | active organization, generation model/credential visibility, credential `use`, verified credential-model relation, KB visibility/resource hiding, KB use helper, source-managed KB의 source ACL/requester authorization, final evidence policy |
 | 빌더 단계 Knowledge Skill mode | active organization, skill visibility, skill safe metadata display, skill freshness/eval gate. Skill visibility는 collection route, KB permission, source ACL gate를 대체하지 않는다 |
 | 실행 시점 LLM node의 RAG 옵션 | execution subject가 있으면 해당 subject 기준 KB permission/source ACL gate와 final evidence policy. execution subject가 없으면 anonymous public-only gate와 final evidence policy. Explicit KB mode는 collection route를 생략할 수 있지만 KB visibility/use/source ACL/final evidence gate 또는 anonymous public-only gate를 생략하지 않는다. 빌더 단계 skill selection이나 workflow 작성자 권한을 실행 시점 data access로 전파하지 않는다 |
-| Anonymous public-only Workflow RAG | active organization, active Knowledge Collection with `safe_metadata.visibility == "public"`, active linked KB, source-managed KB의 valid public exposure approval, final evidence policy. Public exposure approval primitive가 없으면 source-managed 후보는 `source_public_exposure_required`로 blocked. Workflow owner/deployment owner/app creator/`user_id` fallback 금지 |
+| MBA-232 runtime selected Collection | explicit authenticated/anonymous audience, 명시 selected active Collection, authenticated `route` + child KB `use` + materialized source provenance 또는 anonymous public membership, active/ready KB, deterministic budget. Missing/empty Collection IDs는 fallback 없음 |
+| Anonymous public-only Workflow RAG | active organization, active Knowledge Collection with `safe_metadata.visibility == "public"`, active linked manual KB, final evidence policy. Public exposure approval primitive가 없는 MBA-232에서는 source-managed 후보를 모두 제외한다. Workflow owner/deployment owner/app creator/`user_id` fallback 금지 |
 | Collection management | `collection.manage`; 기존 KB linking에는 `kb.manage`도 필요 |
 | Collection sync/remediation | `collection.sync` 또는 organization/admin operation policy. Raw content access를 의미하지 않는다 |
 | Raw content/export | Dedicated raw/compliance endpoint only. Raw/compliance permission, source-managed KB의 fresh source ACL, retention/legal-hold/purge check, response 전 raw access audit이 필요하다. 최종 enum 이름은 RBAC ADR에서 확정한다 |
@@ -552,11 +606,12 @@ Resource hiding/no-result/evidence insufficiency API matrix는 [ADR-0017](../../
 - Permission/source ACL gate를 통과한 뒤 발생한 source/connector operational failure.
 - Auto mode에서 권한 있는 candidate가 없는 경우.
 - Anonymous public-only mode에서 public candidate가 없는 경우.
+- MBA-232 snapshot/repository/authorization infrastructure failure. 이 경우 candidate partial result를 만들지 않고 retrieval/provider 전에 fixed safe retryable error로 종료한다.
 - 권한 gate 이후 evidence가 없는 경우.
 - Evidence score, citation coverage, source tier policy 기준으로 근거가 부족한 경우.
 - Evidence sufficiency policy가 `policy_filtered` 또는 `operational_partial` reason을 반환하는 경우.
 
-기준은 hidden KB/version/chunk identity를 드러내는 answer run, `rag.retrieve` success audit, citation id, trace metadata, durable summary를 만들지 않는 것이다. Scope 밖, organization mismatch, hidden deleted/archived resource, existence inference가 가능한 requester source authorization denied 또는 source ACL stale/unmapped/ambiguous/unverified/revoked 상태는 resource-hidden/404 또는 safe no-result로 닫는다. Partial result는 permission/source ACL/final evidence gates 이후 발생한 operational failure에만 허용한다.
+기준은 hidden KB/version/chunk identity를 드러내는 answer run, `rag.retrieve` success audit, citation id, trace metadata, durable summary를 만들지 않는 것이다. Scope 밖, organization mismatch, hidden deleted/archived resource, existence inference가 가능한 requester source authorization denied 또는 source ACL stale/unmapped/ambiguous/unverified/revoked 상태는 resource-hidden/404 또는 safe no-result로 닫는다. MBA-232 candidate resolver의 DB/snapshot/authorization infrastructure failure에는 partial result를 허용하지 않는다. Partial result는 complete candidate authorization 이후 downstream retrieval에서 발생한 operational failure에만 허용한다.
 
 JSON/pre-stream error envelope는 `error.code`, `error.reason_code`, `error.message`, optional `correlation_id`, optional `retryable`만 포함한다. Hidden/resource-hidden path의 `message`는 generic text를 사용하고 target KB id/name/source path/count를 포함하지 않는다. Hidden/resource-hidden path의 external `reason_code`는 `resource.hidden`으로 일반화하며, `source_authorization.denied` 또는 `source_acl.stale/unmapped/ambiguous/unverified/revoked` 같은 세부 reason은 이미 존재가 authorized context에서 보이는 resource, admin/remediation context, 또는 내부 safe audit/trace allowlist에서만 사용할 수 있다. Stream 시작 후에는 HTTP status를 바꾸지 않고 `event: error` terminal event에 같은 semantic `code`/`reason_code`/`correlation_id`/`retryable` allowlist를 넣는다.
 

@@ -61,6 +61,27 @@ Status: Draft
 - Collection role bundle은 Viewer=`read`, Workflow Router=`read+route`, Maintainer=`read+manage`, Sync Operator=`read+sync` explicit row를 한 transaction에서 적용한다. 일부 row 또는 audit 저장 실패 시 bundle 전체를 rollback하고 KB `use` row를 만들지 않는다.
 - Domain `catalog_manage` actor는 private manual Collection과 membership을 관리할 수 있지만 public membership 변경은 Organization manager acknowledgement 없이는 차단된다. Source public exposure primitive가 없으면 source-managed KB의 public link/visibility 전환은 `source_public_exposure_required`로 fail-closed된다.
 
+## MBA-232 Workflow Runtime Candidate Resolver Tests
+
+- Shared runtime contract는 `AuthenticatedAudience(organization_id, user_id)`와 `AnonymousPublicAudience(organization_id)`만 허용하고 optional subject, owner, builder, deployment owner, credential principal, service account fallback을 표현하지 않는다.
+- Runtime `collection_ids` missing/empty는 Collection stream 0개다. Gateway Builder resolver의 route-safe subset/direct-KB fallback을 호출하거나 organization 전체 Collection을 query하면 테스트 실패다.
+- Direct KB는 Collection route 없이 KB `use`와 applicable materialized source gate를 통과할 수 있다. Collection child는 selected active Collection `route`와 독립적인 child KB `use`/source gate를 모두 통과해야 한다.
+- Collection `read/manage/sync`와 Knowledge domain `catalog_manage`, `permission_delegate`, `lifecycle_manage`, `sync_manage`만 가진 actor는 runtime candidate를 얻지 못한다.
+- Direct candidates는 configured order를 유지하고 남은 budget은 selected Collection configured order의 round-robin으로 채운다. Collection 내부 tie-break는 item rank, item created time, KB UUID다.
+- Direct와 여러 Collection에 중복된 KB는 canonical KB UUID로 한 번만 반환하고 처음 허용된 provenance를 유지한다. Duplicate를 건너뛴 뒤 뒤쪽 unique KB로 budget을 계속 채운다.
+- Candidate budget 19/20 boundary는 deterministic success이고 21 이상의 direct/Collection reference 또는 budget 20 초과 request는 configuration validation에서 silent truncation 없이 차단한다. Dynamic membership overflow는 fixed `candidate_budget_limited` safe warning을 반환한다.
+- `KnowledgeCollectionItem`에는 lifecycle을 가정하지 않는다. Present row는 linked, unlink/missing은 후보 없음이며 Collection과 child KB lifecycle을 따로 검증한다.
+- Active ready version 또는 documented completed-document unversioned legacy chunk fallback만 ready다. Archived/deleted/source_deleted/non-ready/pre-finalized 후보는 identity 없이 제외한다.
+- Authenticated source-managed KB는 active/fresh/unexpired/matching materialized `SourceAuthorizationProvenance`가 필요하다. Missing/inactive/stale/unmapped/ambiguous/unverified/revoked/denied/unknown/expired/organization-requester-KB-source mismatch는 fail-closed다.
+- MBA-232 adapter는 connector client, HTTP client, `check_access_batch`, single `check_access`, runtime source authorization cache를 0회 호출한다.
+- Anonymous selected Collection child는 active public Collection의 active/ready manual KB만 허용한다. Direct manual KB도 하나 이상의 active public Collection membership이 필요하다. Source public exposure primitive가 없는 동안 source-managed KB는 public membership과 authenticated provenance가 있어도 모두 제외한다.
+- PostgreSQL adapter는 fresh transaction의 첫 query 전에 `REPEATABLE READ, READ ONLY`를 적용한다. Path-scoped PostgreSQL CI의 two-transaction test에서 resolver 시작 뒤 membership/Collection route/KB use/organization membership/source provenance/Collection lifecycle/KB lifecycle 변경이 commit되어도 current invocation은 한 snapshot만 보고 다음 invocation이 변경을 본다.
+- Source-policy/provenance expiry는 timezone-aware PostgreSQL transaction timestamp 하나로 전체 invocation을 평가한다. KB 순회 중 wall clock이 만료 경계를 지나도 같은 invocation에서 서로 다른 evaluation time을 사용하면 테스트 실패다.
+- Snapshot/repository/authorization infrastructure exception은 fixed safe retryable whole-resolution failure다. 이미 평가한 candidate partial set, raw SQL/exception, identifier, source metadata, exact count를 반환하거나 retrieval/provider mock을 호출하면 테스트 실패다.
+- Candidate 0개는 `safe_no_result`, budget 제한은 successful warning이며 downstream partial retrieval failure와 구분한다.
+- Query count는 candidate/Collection 수에 비례하는 N+1이 아니고 selected 20 Collections/5,000 membership fixture에서도 scan/memory/result가 bounded하고 fair해야 한다. Membership SQL은 Collection별 LATERAL cap을 global window보다 먼저 적용하고 outer `LIMIT`만으로 boundedness를 주장하지 않는다.
+- Shared pure policy는 SQLAlchemy/FastAPI/Celery/Gateway/Workflow Engine concrete package를 import하지 않고 Workflow Engine runtime retrieval production code는 `apps.gateway.*`를 import하지 않는다.
+
 ## Knowledge Base API Tests
 
 - KB create는 blank name을 DB insert 전에 거부하고 safe validation reason code만 반환한다.
@@ -156,7 +177,7 @@ Status: Draft
 
 - Auto mode는 collection route helper와 KB permission/source ACL helper 결과로 candidate set을 만든다.
 - Auto mode의 collection/KB cap은 authorization 전 임의 row cap이 아니라 route/use/source ACL helper를 통과한 authorized subset에 적용한다.
-- Auto mode에서 명시 `collection_ids`가 없으면 organization 전체 collection이 아니라 actor가 route할 수 있는 collection subset에서 시작한다.
+- Builder/recommendation Auto mode에서 명시 `collection_ids`가 없으면 organization 전체 collection이 아니라 actor가 route할 수 있는 collection subset에서 시작한다. MBA-232 Workflow runtime은 missing/empty Collection scope를 0개로 유지하며 이 fallback을 사용하지 않는다.
 - Router는 authorized safe candidate와 safe metadata만 받는다.
 - Router는 raw source ACL fact, hidden KB id, raw source title/path/url, exact hidden count, raw content를 받지 않는다.
 - Knowledge RAG Recommendation Adapter는 `KnowledgeCandidateResolver`가 반환한 safe KB candidate만 ranking하고, permission/source ACL row를 직접 조회하거나 해석하지 않는다.
@@ -179,7 +200,7 @@ Status: Draft
 - 권한 확인된 KB에 document row나 pre-finalized chunk artifact가 있지만 active ready version 또는 legacy retrieval-visible chunk가 없으면, Recommendation/Builder picker는 이를 권한 없음이나 숨겨진 KB처럼 조용히 숨기지 않고 `candidate_not_ready` 또는 `indexing_in_progress` 수준의 safe warning/disabled option으로 표시해야 한다.
 - KB detail response의 `documents[].chunk_count`와 LLM node Knowledge Base picker의 selectable-ready 판단은 같은 retrieval-visible 기준을 사용해야 한다. Active ready document version이 있으면 해당 version chunk만 세고, active version pointer가 없는 legacy KB는 legacy unversioned chunk만 fallback으로 센다.
 - Completed가 아닌 document, `ready`가 아닌 active/pending version, superseded/failed/pre-finalized version chunk, active version과 연결되지 않은 stale chunk는 `documents[].chunk_count`와 selectable-ready 판단에 포함하지 않는다.
-- Auto mode에서 route-allowed collection link 후보가 없고 client가 collection scope를 명시하지 않은 경우, resolver는 직접 권한 확인된 retrieval-visible KB를 fallback 후보로 반환할 수 있다. 명시적으로 빈 collection scope를 보낸 경우에는 direct fallback을 적용하지 않고 후보 없음으로 유지해야 한다.
+- Builder/recommendation Auto mode에서 route-allowed collection link 후보가 없고 client가 collection scope를 명시하지 않은 경우, Gateway resolver는 직접 권한 확인된 retrieval-visible KB를 fallback 후보로 반환할 수 있다. 명시적으로 빈 collection scope를 보낸 경우에는 direct fallback을 적용하지 않고 후보 없음으로 유지해야 한다. 이 동작을 MBA-232 Workflow runtime resolver에 재사용하면 테스트 실패다.
 - 기존 active ready version은 유지되지만 sync state가 `stale` 또는 `failed`인 KB는 후보로 남을 수 있으며, safe warning과 score penalty 또는 낮은 confidence가 함께 반환되어야 한다.
 - Adapter unavailable이고 권한 확인된 safe 후보 선택지가 있으면 `status=clarification_required`, `fallback_reason=adapter_unavailable`, `clarification_options`를 반환해야 한다. Safe 후보 선택지도 없으면 `status=unavailable`과 safe fallback reason으로 닫아야 한다.
 - Recommendation provenance는 `recommendation_strategy`, `safe_reason_code`, `used_signals`, safe matched terms, bucketed counts 같은 allowlist만 포함하고 raw source title/path/url, hidden id/name, exact denied count를 포함하지 않는다.
@@ -192,6 +213,7 @@ Status: Draft
 - `subject_type="organization"` source-policy KB use grant는 active organization member에게만 적용되고 removed/suspended/invited/non-member user에게는 적용되지 않는다.
 - Runtime source authorization은 `check_access_batch`를 우선 사용하고, batch 미지원 source의 single `check_access` fallback은 bounded concurrency, per-call timeout, aggregate timeout을 강제한다.
 - `check_access_batch`가 일부 `denied`, `unknown`, timeout을 반환하면 해당 evidence만 fail-closed 제외되고 raw source error나 denied item title/path는 응답/trace/log에 남지 않는다.
+- 위 두 live runtime source authorization 항목은 후속 target flow다. MBA-232 candidate resolver test는 materialized provenance만 소비하고 live batch/single/cache 호출이 전혀 없음을 별도로 고정한다.
 - 운영 `general RAG`도 KB permission/source ACL/final evidence gate를 통과한다. Test fixture에서 권한 없는 문서는 `general`, `permission_scoped`, `task_aware` 모든 mode의 prompt/citation/trace에 들어가지 않는다.
 - `general RAG`는 authorized resource 안의 broad retrieval로 동작하고, `task_aware` 또는 `permission_scoped` mode는 같은 authorized resource 안에서 더 작은 evidence set을 선택한다.
 - Query rewrite가 켜져도 user query와 safe skill/template만 입력으로 사용하며, 권한 없는 KB/문서를 candidate로 만들지 못한다.
@@ -294,7 +316,7 @@ Status: Draft
 
 - Bulk permission helper는 per-KB database query 없이 user-candidate lookup과 KB-centric lookup을 처리한다.
 - Candidate cap은 stable ordering으로 큰 candidate set을 deterministic하게 잘라낸다.
-- Candidate cache key는 permission/freshness epoch를 포함하고 ACL revocation 시 invalidation된다.
+- MBA-232 runtime candidate ID/authorization은 invocation 사이에 cache하지 않는다. 향후 별도 승인된 candidate cache는 permission/freshness revision을 포함하고 ACL revocation 시 invalidation되어야 한다.
 - Runtime access cache key는 mapping epoch와 source ACL freshness epoch를 포함하고, source item/document version 단위로 분리된다.
 - Skill candidate cache key는 skill version, freshness state, eval state, source version reference를 포함하고 stale skill/source-tier 변경 시 invalidation된다.
 - 단일 filtered vector/keyword query를 우선한다. Bounded fanout을 사용하면 concurrency와 timeout cap을 강제한다.

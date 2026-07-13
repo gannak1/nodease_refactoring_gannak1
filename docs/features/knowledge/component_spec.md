@@ -1,7 +1,7 @@
 # Knowledge Component Spec
 
 Status: Draft
-MBA-105 구현 baseline, 운영 기본값, permission helper output, active version finalization, resource hiding matrix는 [implementation_baseline.md](implementation_baseline.md)를 따른다. Workflow RAG에서 `execution_subject`가 없는 MVP public-only runtime은 [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md)을 따른다. MCP/API source connector와 incremental sync 경계는 [ADR-0020](../../decisions/ADR-0020-knowledge-mcp-incremental-sync-boundary.md)을 따른다.
+MBA-105 구현 baseline, 운영 기본값, permission helper output, active version finalization, resource hiding matrix는 [implementation_baseline.md](implementation_baseline.md)를 따른다. Workflow RAG에서 `execution_subject`가 없는 MVP public-only runtime은 [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md)을 따른다. MCP/API source connector와 incremental sync 경계는 [ADR-0020](../../decisions/ADR-0020-knowledge-mcp-incremental-sync-boundary.md)을 따른다. Direct KB와 명시 selected Collection의 Workflow runtime candidate 해석은 [ADR-0036](../../decisions/ADR-0036-knowledge-runtime-candidate-resolution.md)을 따른다.
 
 ## Domain Components
 
@@ -27,6 +27,7 @@ MBA-105 구현 baseline, 운영 기본값, permission helper output, active vers
 | Artifact Cleanup Reconciler | DB state와 object storage/vector index/external artifact cleanup을 outbox 기반으로 맞춘다 | DB commit 전 physical delete를 수행하지 않고 retry 가능한 cleanup만 실행한다 |
 | Knowledge Permission Helper | Collection `read`, collection `route`, KB use, source ACL freshness/requester authorization을 bulk 평가한다 | Router와 controller는 permission row가 아니라 helper 결과를 소비해야 한다 |
 | Knowledge Administration Application | Organization manager의 domain grant/revoke, active subject grant validation, stale grant permission-row revoke와 transaction-bound audit를 조율한다 | Grant subject lock과 revoke permission-row lock을 분리하고 controller가 subject 활성 상태를 추정하지 않는다 |
+| Workflow Runtime Knowledge Candidate Resolver | Direct KB와 명시 selected Collection을 current authenticated/anonymous audience, lifecycle/readiness, route/use/source gate로 해석하고 direct-first/Collection-round-robin 20-KB set을 만든다 | Shared pure policy + Workflow Engine application/port + PostgreSQL snapshot adapter다. Gateway Builder resolver를 import하지 않고 retrieval/provider를 호출하지 않는다 |
 | Knowledge Collection Management Service | Manual Collection CRUD, item link/unlink/reorder, permission grant/revoke, visibility transition을 조율한다 | Controller에 business logic을 두지 않고, Collection 권한과 KB content 권한을 분리해서 검증한다 |
 | Knowledge Document Response Projector | 내부 `documents.meta_info`에서 safe operational field만 allowlist projection한다 | Encrypted config, connection/source identifier, DB/source config와 unknown nested field를 API response로 전달하지 않는다 |
 | Knowledge RAG Recommendation Adapter | `StructuredRequest` 기반 safe intent summary, node purpose summary, knowledge requirement, pending resolution reference를 받아 safe KB recommendation과 LLM node RAG option 후보를 만든다 | Raw natural language 전체를 받지 않고 권한 판단을 직접 하지 않는다. HTTP/serialized boundary에서는 `KnowledgeCandidateResolver`가 만든 server-issued reference만 사용하고, full safe candidate set 객체는 같은 backend 내부 service call에서만 ranking input으로 사용할 수 있다. 초기 구현은 `candidate_type=knowledge_base`만 반환하고 Collection은 safe summary metadata로만 제공한다 |
@@ -39,6 +40,36 @@ MBA-105 구현 baseline, 운영 기본값, permission helper output, active vers
 | Retrieval Orchestrator | 선택된 KB들에 대해 metadata/hierarchy retrieval을 실행하고 merge/rerank한다 | Authorized redacted evidence만 사용한다 |
 | Audit/Trace Summarizer | Redaction-safe audit/trace/answer summary를 만든다 | Raw content/title/path/url은 제외하고, raw/compliance audit은 safe reference, decision, reason만 저장한다 |
 | RAG Answer Retention Worker | Terminal answer run의 retention purge를 수행하고 aggregate audit을 남긴다 | requested/running row를 삭제하지 않고 동시 purge를 row lock/marker로 방지한다 |
+
+### MBA-232 Runtime Candidate Resolver Boundary
+
+구성요소는 다음으로 분리한다.
+
+| Layer | 책임 | 금지 |
+| --- | --- | --- |
+| Shared pure contract/policy | explicit audience/request/snapshot/result, direct-first/round-robin/dedupe/budget, safe bucket | SQLAlchemy, FastAPI, Celery, Gateway/Workflow concrete import |
+| Workflow Engine application use case/port | request validation, snapshot port 1회 호출, pure policy 적용, whole-resolution failure mapping | SQL query, Gateway response schema, provider/retrieval side effect |
+| PostgreSQL outbound adapter | fresh `REPEATABLE READ, READ ONLY` transaction, selected Collection별 pre-window LATERAL cap, fixed transaction evaluation time, membership/readiness/permission/materialized provenance bulk projection | organization-wide discovery, live connector/source call, cross-invocation cache |
+| Workflow Engine composition | session factory, adapter와 use case 조립 | LLM node business policy와 graph parsing |
+
+Gateway의 기존 `KnowledgeCandidateResolver`는 Builder recommendation/deployment
+preview 경계다. Missing Collection scope에서 route-safe subset 또는 direct-KB fallback을
+사용할 수 있으나 MBA-232 runtime resolver에는 적용하지 않는다. Runtime
+missing/empty Collection IDs는 Collection stream 0개다. Builder/preflight adapter,
+Workflow graph와 LLM node/retrieval wiring은 MBA-233에서 연결한다.
+
+Runtime audience는 `AuthenticatedAudience(organization_id, user_id)`와
+`AnonymousPublicAudience(organization_id)`의 closed union이다. Anonymous audience에
+owner/builder/deployment owner/credential principal/service account를 합성하지 않는다.
+Source-managed authenticated 후보는 materialized `SourceAuthorizationProvenance`만
+사용하고 live `check_access*`/cache를 호출하지 않는다. Public exposure primitive가
+없는 동안 source-managed anonymous 후보는 모두 제외한다.
+
+`KnowledgeCollectionItem`은 lifecycle을 갖지 않는다. Present row만 membership이고
+Collection/child KB lifecycle과 KB readiness를 별도로 평가한다. Snapshot/repository/
+authorization infrastructure failure는 partial candidate를 반환하지 않는 retryable
+whole-resolution failure다. Budget cap은 successful safe warning이며 downstream
+retrieval timeout과 구분한다.
 
 Conversation Memory target adapter는 Knowledge Permission Helper의 bulk 결과를 `decision`, `principal_kind`, opaque `authorization_decision_revision`, `resource_revision`, `policy_revision`, `evaluated_at` contract로 투영한다. Source-managed KB의 source ACL revision은 decision revision에 반영한다. Lifecycle, KB permission, source ACL 중 필요한 revision이 없으면 allow를 추정하지 않고 `unknown`을 반환한다. Anonymous public audience에는 subject ID/revision을 합성하지 않는다.
 
@@ -137,15 +168,17 @@ Purge는 일반 KB lifecycle state가 아니다. Retention/legal-hold purge, raw
 
 ### Runtime Collection Retrieval
 
-1. Workflow runtime이 execution subject 또는 anonymous public-only context와 active organization을 검증한다.
-2. Listing surface에는 collection `read`, routing scope에는 collection `route`를 bulk 평가한다.
-3. Collection route scope와 KB permission helper/source ACL freshness/requester authorization 결과로 safe KB candidate set을 만든다.
-4. `query_rewrite_mode`가 켜져 있으면 user query와 safe skill/template만 사용해 검색용 query를 만든다. Rewrite는 safe candidate set을 넓히지 않는다.
-5. Retrieval orchestrator는 active ready version을 검색하고 evidence를 merge한다.
-6. Source-of-Truth Tier는 authorized evidence 안에서 ranking, tie-break, conflict resolution hint로만 사용한다.
-7. Final evidence policy와 evidence sufficiency check는 LLM prompt, answer generation, citation preview emission 전에 실행한다.
-8. 근거가 부족하면 추측 답변을 만들지 않고 safe no-result 또는 insufficient-evidence response로 닫는다.
-9. Answer/citation/audit/trace summary는 redaction-safe allowlist만 사용한다.
+1. Workflow runtime이 server-owned canonical organization과 explicit authenticated audience 또는 anonymous public audience를 구성한다. Optional user/owner fallback은 사용하지 않는다.
+2. MBA-232 resolver는 configured direct KB와 명시 selected Collection만 받아 fresh PostgreSQL `REPEATABLE READ, READ ONLY` snapshot을 연다. Missing/empty Collection scope는 0개다.
+3. Authenticated audience에서는 direct KB `use`, selected Collection `route`와 각 child KB `use`, applicable materialized source provenance를 bulk 평가한다. Anonymous audience에서는 active public Collection membership을 평가하고 source-managed KB를 fail-closed 제외한다.
+4. Active lifecycle, `source_deleted` exclusion, active ready version 또는 documented legacy retrieval-visible fallback을 적용한다. Collection item은 row presence만 membership으로 보고 parent/child lifecycle을 별도로 평가한다.
+5. Direct configured order를 먼저 유지하고 selected Collection configured order의 round-robin으로 남은 20-KB budget을 채운다. Canonical KB ID로 dedupe하고 first provenance를 보존한다.
+6. Candidate 0개는 provider/retrieval 전 `safe_no_result`, budget 제한은 fixed safe warning을 가진 성공이다. Snapshot/repository/authorization infrastructure failure는 partial candidate 없이 retryable whole-resolution failure다.
+7. MBA-233에서 연결되는 Retrieval Orchestrator는 resolved active/ready KB만 검색하고 evidence를 merge한다. `query_rewrite_mode`는 safe candidate set을 넓히지 않는다.
+8. Source-of-Truth Tier는 authorized evidence 안에서 ranking, tie-break, conflict resolution hint로만 사용한다.
+9. Final evidence policy와 evidence sufficiency check는 LLM prompt, answer generation, citation preview emission 전에 실행한다.
+10. 근거가 부족하면 추측 답변을 만들지 않고 safe no-result 또는 insufficient-evidence response로 닫는다.
+11. Answer/citation/audit/trace summary는 redaction-safe allowlist만 사용한다.
 
 ### Explicit KB Retrieval
 
@@ -201,7 +234,7 @@ Purge는 일반 KB lifecycle state가 아니다. Retention/legal-hold purge, raw
 - 초기 candidate cap은 `max_candidate_kbs=5000`, `max_route_collections=20`, `max_retrieval_kbs=20`, `max_chunks_per_kb=8`, `max_total_chunks=50`이다. 이 값은 운영 baseline이며 제품의 고정 계약이 아니다.
 - Candidate cap, fanout concurrency, timeout, partial failure behavior는 [implementation_baseline.md](implementation_baseline.md)의 baseline을 시작점으로 삼고, operations policy로 조정 가능해야 하며 운영 배포 전에 load test를 거쳐야 한다.
 - 가능한 경우 KB/version filter를 포함한 단일 vector/keyword query를 우선한다. Backend가 지원하지 못하면 concurrency와 timeout cap이 있는 bounded per-KB fanout을 사용한다.
-- Candidate cache key에는 permission/freshness epoch를 포함해 ACL revocation이 stale candidate를 무효화해야 한다.
+- MBA-232 runtime resolver는 candidate ID/authorization을 invocation 사이에 cache하지 않는다. 향후 candidate cache를 별도 승인할 경우 permission/freshness revision을 포함해 ACL revocation이 stale candidate를 무효화해야 한다.
 - Skill candidate cache key에는 skill version, freshness state, eval state, source version reference를 포함해 stale skill이나 source tier 변경이 즉시 무효화되어야 한다.
 - Query rewrite cache를 둘 경우 key에는 rewrite mode, safe template id, skill version, permission/freshness epoch를 포함해야 하며 raw rewritten query를 durable cache key나 trace key로 사용하지 않는다.
 - `llm_assisted` query rewrite는 추가 latency와 LLM cost를 만든다. 운영 배포 전 rewrite timeout, token/cost budget, fallback, load shedding, usage logging 기준을 load test에 포함한다.

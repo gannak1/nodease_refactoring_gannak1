@@ -1,0 +1,84 @@
+name: Test Knowledge Runtime PostgreSQL
+
+on:
+  pull_request:
+    paths:
+      - "apps/shared/domain/knowledge_runtime_candidates.py"
+      - "apps/shared/services/knowledge_permission_service.py"
+      - "apps/shared/tests/db/test_knowledge_runtime_snapshot_disposable_postgres.py"
+      - "apps/shared/tests/domain/test_knowledge_runtime_candidates.py"
+      - "apps/shared/tests/services/test_knowledge_permission_runtime_bulk.py"
+      - "apps/workflow_engine/adapters/knowledge_runtime_candidates.py"
+      - "apps/workflow_engine/application/runtime_retrieval/**"
+      - "apps/workflow_engine/composition/runtime_retrieval.py"
+      - "apps/workflow_engine/tests/adapters/test_postgres_knowledge_runtime_candidate_adapter.py"
+      - ".github/workflows/test-knowledge-runtime-postgres.yml"
+  push:
+    branches:
+      - dev
+    paths:
+      - "apps/shared/domain/knowledge_runtime_candidates.py"
+      - "apps/shared/services/knowledge_permission_service.py"
+      - "apps/shared/tests/db/test_knowledge_runtime_snapshot_disposable_postgres.py"
+      - "apps/shared/tests/domain/test_knowledge_runtime_candidates.py"
+      - "apps/shared/tests/services/test_knowledge_permission_runtime_bulk.py"
+      - "apps/workflow_engine/adapters/knowledge_runtime_candidates.py"
+      - "apps/workflow_engine/application/runtime_retrieval/**"
+      - "apps/workflow_engine/composition/runtime_retrieval.py"
+      - "apps/workflow_engine/tests/adapters/test_postgres_knowledge_runtime_candidate_adapter.py"
+      - ".github/workflows/test-knowledge-runtime-postgres.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  knowledge-runtime-postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: "5432"
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      NODEASE_DISPOSABLE_DB_MAINTENANCE_DB: postgres
+      NODEASE_RUN_DISPOSABLE_DB_TEST: "1"
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: |
+          uv sync --project apps/workflow_engine --extra dev --frozen
+          uv pip install --python apps/workflow_engine/.venv/bin/python -e apps/shared
+
+      - name: Run runtime snapshot and SQL contract evidence
+        run: >-
+          apps/workflow_engine/.venv/bin/python -m pytest
+          apps/shared/tests/db/test_knowledge_runtime_snapshot_disposable_postgres.py
+          apps/workflow_engine/tests/adapters/test_postgres_knowledge_runtime_candidate_adapter.py
+          -q
