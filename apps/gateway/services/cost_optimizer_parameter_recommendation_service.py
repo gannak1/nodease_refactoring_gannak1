@@ -9,6 +9,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from apps.shared.db.models.app import App
 from apps.shared.db.models.llm import LLMUsageLog
 from apps.shared.db.models.workflow_run import (
     NodeRunStatus,
@@ -81,11 +82,11 @@ class CostOptimizerParameterRecommendationService:
         routing_recommendations = cls._recommend_model_routing_controls(node_data)
 
         if cohort["status"] == "draft_not_deployed":
-            return {
-                "analysis_stage": "draft_not_deployed",
-                "policy_version": POLICY_VERSION,
-                "recommendations": routing_recommendations,
-                "warnings": [
+            return _recommendation_response(
+                analysis_stage="draft_not_deployed",
+                node_data=node_data,
+                recommendations=routing_recommendations,
+                warnings=[
                     {
                         "code": "draft_config_not_deployed",
                         "message": (
@@ -95,22 +96,22 @@ class CostOptimizerParameterRecommendationService:
                         ),
                     }
                 ],
-                "profile": {"sample_count": 0},
-            }
+                profile={"sample_count": 0},
+            )
 
         if cohort["status"] == "deployment_unavailable":
-            return {
-                "analysis_stage": "deployment_unavailable",
-                "policy_version": POLICY_VERSION,
-                "recommendations": routing_recommendations,
-                "warnings": [
+            return _recommendation_response(
+                analysis_stage="deployment_unavailable",
+                node_data=node_data,
+                recommendations=routing_recommendations,
+                warnings=[
                     {
                         "code": "active_deployment_unavailable",
                         "message": "활성 배포 설정을 찾지 못해 파라미터 추천을 만들지 않았습니다.",
                     }
                 ],
-                "profile": {"sample_count": 0},
-            }
+                profile={"sample_count": 0},
+            )
 
         samples = cls._collect_samples(
             db,
@@ -121,11 +122,11 @@ class CostOptimizerParameterRecommendationService:
 
         profile = _profile(samples)
         if profile["successful_usage_sample_count"] < MIN_OPERATION_SAMPLES:
-            return {
-                "analysis_stage": "insufficient_logs",
-                "policy_version": POLICY_VERSION,
-                "recommendations": routing_recommendations,
-                "warnings": [
+            return _recommendation_response(
+                analysis_stage="insufficient_logs",
+                node_data=node_data,
+                recommendations=routing_recommendations,
+                warnings=[
                     {
                         "code": "operation_logs_insufficient",
                         "message": (
@@ -134,13 +135,13 @@ class CostOptimizerParameterRecommendationService:
                         ),
                     }
                 ],
-                "profile": {
+                profile={
                     "sample_count": profile["sample_count"],
                     "successful_usage_sample_count": profile[
                         "successful_usage_sample_count"
                     ],
                 },
-            }
+            )
 
         recommendations: list[dict[str, Any]] = [*routing_recommendations]
         max_tokens = cls._recommend_max_tokens(node_data, profile, warnings)
@@ -174,12 +175,12 @@ class CostOptimizerParameterRecommendationService:
                 }
             )
 
-        return {
-            "analysis_stage": "recommendations_available",
-            "policy_version": POLICY_VERSION,
-            "recommendations": recommendations,
-            "warnings": warnings,
-            "profile": {
+        return _recommendation_response(
+            analysis_stage="recommendations_available",
+            node_data=node_data,
+            recommendations=recommendations,
+            warnings=warnings,
+            profile={
                 "sample_count": profile["sample_count"],
                 "successful_usage_sample_count": profile[
                     "successful_usage_sample_count"
@@ -188,7 +189,7 @@ class CostOptimizerParameterRecommendationService:
                 "downstream_fail_rate": profile["downstream_fail_rate"],
                 "truncation_rate": profile["truncation_rate"],
             },
-        }
+        )
 
     @staticmethod
     def _recommend_model_routing_controls(
@@ -880,7 +881,7 @@ def _resolve_operation_cohort(
     """추천 표본을 현재 활성 배포 node 설정 하나로 한정한다.
 
     테스트용 in-memory DB는 active_deployment를 선택적으로 제공한다. 실제 DB에서는
-    workflow.app_id의 활성 deployment snapshot을 기준으로 한다.
+    App.active_deployment_id가 가리키는 deployment snapshot을 기준으로 한다.
     """
     if hasattr(db, "workflow_runs"):
         deployment = getattr(db, "active_deployment", None)
@@ -890,13 +891,19 @@ def _resolve_operation_cohort(
         app_id = getattr(workflow, "app_id", None)
         if app_id is None:
             return {"status": "deployment_unavailable", "deployment_id": None}
+
+        app = db.query(App).filter(App.id == app_id).first()
+        active_deployment_id = getattr(app, "active_deployment_id", None)
+        if active_deployment_id is None:
+            return {"status": "deployment_unavailable", "deployment_id": None}
+
         deployment = (
             db.query(WorkflowDeployment)
             .filter(
+                WorkflowDeployment.id == active_deployment_id,
                 WorkflowDeployment.app_id == app_id,
                 WorkflowDeployment.is_active.is_(True),
             )
-            .order_by(WorkflowDeployment.version.desc())
             .first()
         )
         if deployment is None:
@@ -947,6 +954,40 @@ def _node_config_fingerprint(node_data: dict[str, Any]) -> str:
         )
     serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _recommendation_response(
+    *,
+    analysis_stage: str,
+    node_data: dict[str, Any],
+    recommendations: list[dict[str, Any]],
+    warnings: list[dict[str, str]],
+    profile: dict[str, Any],
+) -> dict[str, Any]:
+    """조회 시점의 node 설정과 추천 payload를 검증 가능한 식별자로 고정한다."""
+    fingerprint_payload = {
+        "policy_version": POLICY_VERSION,
+        "recommendations": recommendations,
+    }
+    serialized = json.dumps(
+        fingerprint_payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
+    return {
+        "analysis_stage": analysis_stage,
+        "policy_version": POLICY_VERSION,
+        "recommendation_fingerprint": hashlib.sha256(
+            serialized.encode("utf-8")
+        ).hexdigest(),
+        "recommendations": recommendations,
+        "warnings": warnings,
+        "profile": {
+            **profile,
+            "node_config_fingerprint": _node_config_fingerprint(node_data),
+        },
+    }
 
 
 def _parameters(node_data: dict[str, Any]) -> dict[str, Any]:

@@ -115,8 +115,8 @@ Conversation Memory는 현재 4개 데모 축의 완료 조건이 아니라 후�
 
 1. 또 다른 author 페르소나가 Nodease에 로그인한다.
 2. author는 `내 워크플로우` 화면에서 본인이 운영 중인 workflow 목록을 확인한다.
-3. author는 workflow 목록에서 예산 사용률이 높은 workflow를 확인하고, 예산 90%에 근접한 workflow를 선택한다.
-4. 선택한 workflow는 예산 90%에 근접했지만 실행 기록은 10회 미만이다.
+3. author는 workflow 목록에서 예산 사용률이 높은 workflow를 확인하고, 예산 80%에 근접한 workflow를 선택한다.
+4. 선택한 workflow는 예산 80%에 근접했지만 실행 기록은 10회 미만이다.
 5. author는 사용 횟수에 비해 비용이 높다고 판단하고 해당 workflow의 tracing 화면으로 이동한다.
 6. 실행 상세 화면에서 노드별 trace를 확인한다.
 7. LLM 노드의 prompt tokens, completion tokens, total cost, latency를 확인하고, 비용 대부분이 LLM 노드에서 발생하는 것을 확인한다.
@@ -132,7 +132,7 @@ RAG 보안 경계: 어떤 RAG 모드에서도 권한 없는 문서는 검색 후
 
 목표 KB 통합 구조에서는 source-managed KB가 mbased KB `use`와 fresh source ACL/requester authorization을 모두 통과한 경우에만 evidence로 사용된다. 자동 수집, collection routing, source ACL materialization, resource hiding API matrix는 [ADR-0017](decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)의 임시 baseline을 기준으로 MBA-105에서 구현한다.
 
-후순위: `내 워크플로우` 상단 알림 패널(예산 초과로 정지된 workflow 개수, 예산 90% 육박 workflow 리스트)은 후순위 구현 항목이다. 구현이 완료되면 이 시나리오에 단계로 다시 추가한다.
+후순위: `내 워크플로우` 상단 알림 패널(예산 초과로 정지된 workflow 개수, 예산 80% 육박 workflow 리스트)은 후순위 구현 항목이다. 구현이 완료되면 이 시나리오에 단계로 다시 추가한다.
 
 이 시나리오는 Nodease의 비용 최적화가 단순히 싼 모델로 바꾸는 기능이 아니라, workflow trace를 기반으로 병목 노드를 찾고, 작업 유형·권한·RAG 범위·출력 정책을 함께 조정하는 운영 흐름임을 보여준다.
 
@@ -188,7 +188,7 @@ RAG 보안 경계: 어떤 RAG 모드에서도 권한 없는 문서는 검색 후
 
 24. 기존 author 계정으로 전환한다.
 25. author는 `내 워크플로우` 화면에서 workflow 목록과 예산 사용률을 확인한다.
-26. author는 예산 90%에 육박한 workflow를 선택한다.
+26. author는 예산 80%에 육박한 workflow를 선택한다.
 27. 해당 workflow의 실행 기록이 10회 미만임에도 비용이 높다는 것을 확인한다.
 28. workflow report의 tracing 화면에서 노드별 비용을 확인한다.
 29. LLM 노드가 비용 대부분을 차지하는 것을 확인한다.

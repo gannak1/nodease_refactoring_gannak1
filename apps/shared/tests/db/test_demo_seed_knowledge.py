@@ -237,6 +237,19 @@ def test_demo_seed_chat_models_use_gpt_5_4_family():
     }
 
 
+def test_ticket_ops_input_schema_matches_webhook_mappings():
+    graph = demo_seed._ticket_ops_graph()
+
+    schema = demo_seed._input_schema_from_graph(graph)
+
+    assert schema == {
+        "variables": [
+            {"name": "message", "type": "text", "label": "message"},
+            {"name": "customerTier", "type": "text", "label": "customerTier"},
+        ]
+    }
+
+
 def test_schema_readiness_reports_stale_demo_db_columns():
     gaps = seed_demo_script.schema_readiness_gaps(
         FakeSchemaInspector(
@@ -383,6 +396,8 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     security_alert_watermark_revision = script.get_revision("b28d9e0f1a32")
     knowledge_permissions_revision = script.get_revision("b39e0f1a2b43")
     external_effect_revision = script.get_revision("fe3f4a5b6c78")
+    recommendation_revision = script.get_revision("fc9a1b2c3d4e")
+    repair_revision = script.get_revision("fd0e1f2a3b4c")
 
     assert safe_metadata_revision.down_revision == "fa7b8c9d0e12"
     assert set(merged_revision.down_revision) == {"fa7c8d9e0f12", "ff3a4b5c6d78"}
@@ -394,7 +409,9 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     assert security_alert_watermark_revision.down_revision == "a17c8d9e0f21"
     assert knowledge_permissions_revision.down_revision == "b28d9e0f1a32"
     assert external_effect_revision.down_revision == "b39e0f1a2b43"
-    assert script.get_heads() == ["fe3f4a5b6c78"]
+    assert recommendation_revision.down_revision == "fe3f4a5b6c78"
+    assert repair_revision.down_revision == "fc9a1b2c3d4e"
+    assert script.get_heads() == ["fd0e1f2a3b4c"]
 
 
 def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():

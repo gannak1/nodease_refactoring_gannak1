@@ -4,6 +4,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -15,16 +16,21 @@ const searchParamsMock = vi.hoisted(() => ({
   get: vi.fn(),
 }));
 
+const paramsMock = vi.hoisted(() => ({
+  current: { id: 'workflow-1', nodeId: 'llm-1' },
+}));
+
 const workflowApiMock = vi.hoisted(() => ({
   getDraftWorkflow: vi.fn(),
   getCostOptimizerAvailability: vi.fn(),
   getCostOptimizerLatestBaseline: vi.fn(),
   compareCostOptimizerCandidate: vi.fn(),
   listCostOptimizerExperiments: vi.fn(),
+  getCostOptimizerExperimentCandidate: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
-  useParams: () => ({ id: 'workflow-1', nodeId: 'llm-1' }),
+  useParams: () => paramsMock.current,
   useRouter: () => routerMock,
   useSearchParams: () => searchParamsMock,
 }));
@@ -179,6 +185,7 @@ const loadPlaygroundPage = async () => {
 describe('FR-006 Cost Optimizer playground mode switch', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    paramsMock.current = { id: 'workflow-1', nodeId: 'llm-1' };
     searchParamsMock.get.mockReturnValue(null);
     global.ResizeObserver = class ResizeObserver {
       observe = vi.fn();
@@ -255,6 +262,19 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
         error_message: null,
       },
       diff: {},
+      quality_evaluation: {
+        status: 'completed',
+        baseline: { score: 86 },
+        candidate: { score: 82 },
+        delta: -4,
+        dimensions: {
+          clarity_consistency: { baseline: 86, candidate: 82, delta: -4 },
+        },
+        confidence: 'medium',
+        safe_summary:
+          '후보 출력의 품질 점수가 기준 출력보다 낮게 평가되었습니다.',
+        judge_cost: 0.00008,
+      },
       downstream_compatibility: {
         state: 'compatible',
         label: '검증 가능',
@@ -279,6 +299,17 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
               latency_ms: 940,
               schema_status: 'pass',
               downstream_state: 'compatible',
+              quality_evaluation: {
+                status: 'completed',
+                baseline: { score: 74 },
+                candidate: { score: 79 },
+                delta: 5,
+                dimensions: {},
+                confidence: 'high',
+                safe_summary:
+                  '후보 출력의 품질 점수가 기준 출력보다 높게 평가되었습니다.',
+                judge_cost: 0.00008,
+              },
               is_applied: false,
               created_at: '2026-07-05T02:00:00Z',
             },
@@ -361,6 +392,125 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
     ).toBeInTheDocument();
     expect(workflowApiMock.getCostOptimizerLatestBaseline).not.toHaveBeenCalled();
     expect(screen.queryByText('B candidate')).not.toBeInTheDocument();
+  });
+
+  it('상세 분석 deep link는 저장된 experiment 후보를 선택한 결과 분석 화면을 연다', async () => {
+    searchParamsMock.get.mockImplementation((key: string) => {
+      if (key === 'comparisonId') return 'comparison-inline-1';
+      if (key === 'candidateId') return 'candidate-inline-1';
+      return null;
+    });
+    workflowApiMock.getCostOptimizerExperimentCandidate.mockResolvedValue({
+      experiment_id: 'comparison-inline-1',
+      workflow_id: 'workflow-1',
+      node_id: 'llm-1',
+      created_at: '2026-07-11T10:10:00Z',
+      baseline_summary: {
+        baseline_id: 'baseline-inline-1',
+        workflow_run_id: 'run-inline-1',
+        model: 'gpt-4.1',
+        cost: 0.02,
+        total_tokens: 1800,
+        latency_ms: 4200,
+      },
+      candidate: {
+        candidate_id: 'candidate-inline-1',
+        name: '추천 설정 검증',
+        status: 'schema_failed',
+        model_id: 'gpt-4.1-mini',
+        total_cost: 0.004,
+        total_tokens: 700,
+        latency_ms: 1700,
+        schema_status: 'failed',
+        downstream_state: 'incompatible',
+        created_at: '2026-07-11T10:11:00Z',
+      },
+    });
+    workflowApiMock.listCostOptimizerExperiments.mockResolvedValue({
+      total: 1,
+      limit: 20,
+      offset: 0,
+      items: [
+        {
+          experiment_id: 'different-success-experiment',
+          workflow_id: 'workflow-1',
+          node_id: 'llm-1',
+          candidates: [
+            {
+              candidate_id: 'different-success-candidate',
+              status: 'success',
+            },
+          ],
+        },
+      ],
+    });
+    const CostOptimizerPlaygroundPage = await loadPlaygroundPage();
+
+    render(<CostOptimizerPlaygroundPage />);
+
+    expect(
+      await screen.findByText('선택한 이전 실험'),
+    ).toBeInTheDocument();
+    expect(
+      workflowApiMock.getCostOptimizerExperimentCandidate,
+    ).toHaveBeenCalledWith(
+      'workflow-1',
+      'llm-1',
+      'comparison-inline-1',
+      'candidate-inline-1',
+    );
+    expect(screen.getAllByText('추천 설정 검증').length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: '결과 분석' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(
+      screen.queryByRole('button', { name: '테스트 baseline 선택' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('route의 workflow와 node가 바뀌면 이전 baseline과 비교 결과를 초기화한다', async () => {
+    const CostOptimizerPlaygroundPage = await loadPlaygroundPage();
+    const { rerender } = render(<CostOptimizerPlaygroundPage />);
+
+    await waitFor(() => {
+      expect(workflowApiMock.getDraftWorkflow).toHaveBeenCalledWith(
+        'workflow-1',
+      );
+    });
+    fireEvent.click(
+      screen.getByRole('button', { name: '테스트 baseline 선택' }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'B 후보 실행' }));
+    expect(
+      await screen.findByRole('table', { name: '핵심 지표 비교' }),
+    ).toBeInTheDocument();
+
+    paramsMock.current = { id: 'workflow-2', nodeId: 'llm-2' };
+    workflowApiMock.getDraftWorkflow.mockResolvedValueOnce({
+      name: '두 번째 워크플로우',
+      nodes: [
+        {
+          id: 'llm-2',
+          type: 'llmNode',
+          position: { x: 0, y: 0 },
+          data: { model_id: 'gpt-4.1-mini', parameters: {} },
+        },
+      ],
+    });
+    rerender(<CostOptimizerPlaygroundPage />);
+
+    await waitFor(() => {
+      expect(workflowApiMock.getDraftWorkflow).toHaveBeenCalledWith(
+        'workflow-2',
+      );
+    });
+    expect(
+      screen.getByRole('button', { name: '테스트 baseline 선택' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('table', { name: '핵심 지표 비교' }),
+    ).not.toBeInTheDocument();
   });
 
   it('추천 테스트 진입은 baseline 선택 후에만 추천 설정을 B 후보에 반영한다', async () => {
@@ -756,12 +906,23 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
       screen.getByRole('columnheader', { name: '테스트명' }),
     ).toBeInTheDocument();
     expect(screen.getAllByText('방금 실행').length).toBeGreaterThan(0);
-    expect(screen.getByText('적용 후보로 적합')).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: '주의 필요' }),
+    ).toBeInTheDocument();
     expect(screen.getByRole('table', { name: '핵심 지표 비교' })).toBeInTheDocument();
     expect(screen.getByText('입력 토큰')).toBeInTheDocument();
     expect(screen.getByText('출력 토큰')).toBeInTheDocument();
     expect(screen.getByText('전체 토큰')).toBeInTheDocument();
     expect(screen.getByText('실행 시간')).toBeInTheDocument();
+    expect(screen.getByText('출력 품질 점수')).toBeInTheDocument();
+    expect(screen.getByText('86점')).toBeInTheDocument();
+    expect(screen.getByText('82점')).toBeInTheDocument();
+    expect(
+      screen.getByText('4점 하락 · 신뢰도 보통'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTitle(/품질 평가 비용 \$0\.00008/),
+    ).toBeInTheDocument();
     expect(screen.getByText('출력 스키마')).toBeInTheDocument();
     expect(screen.getAllByText('후속 노드 영향').length).toBeGreaterThan(0);
     expect(screen.getByRole('heading', { name: '출력 품질 비교' })).toBeInTheDocument();
@@ -770,6 +931,124 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
     expect(screen.getAllByText('approvalRequired').length).toBeGreaterThan(0);
     expect(screen.getAllByText(/baseline output/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/candidate output/).length).toBeGreaterThan(0);
+  });
+
+  it('품질 평가가 unavailable이면 핵심 지표 행과 실제 발생한 judge 비용을 유지한다', async () => {
+    workflowApiMock.compareCostOptimizerCandidate.mockResolvedValueOnce({
+      comparison_id: 'comparison-unavailable',
+      workflow_id: 'workflow-1',
+      node_id: 'llm-1',
+      baseline: {
+        baseline_id: 'baseline-1',
+        usage: { total_tokens: 249, total_cost: 0.0012, latency_ms: 1600 },
+      },
+      candidate: {
+        label: 'B',
+        status: 'success',
+        output: { text: 'candidate output' },
+        usage: { total_tokens: 128, total_cost: 0.00042, latency_ms: 940 },
+        latency_ms: 940,
+      },
+      diff: {},
+      quality_evaluation: {
+        status: 'unavailable',
+        baseline: { score: null },
+        candidate: { score: null },
+        delta: null,
+        dimensions: {},
+        confidence: 'unavailable',
+        safe_summary: '품질 평가 응답을 해석하지 못했습니다.',
+        judge_cost: 0.00008,
+      },
+      downstream_compatibility: {
+        state: 'compatible',
+        label: '검증 가능',
+        message: 'downstream compatible',
+      },
+    });
+    const CostOptimizerPlaygroundPage = await loadPlaygroundPage();
+
+    render(<CostOptimizerPlaygroundPage />);
+
+    await waitFor(() => {
+      expect(workflowApiMock.getDraftWorkflow).toHaveBeenCalledWith(
+        'workflow-1',
+      );
+    });
+    fireEvent.click(
+      screen.getByRole('button', { name: '테스트 baseline 선택' }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'B 후보 실행' }));
+
+    const metricsTable = await screen.findByRole('table', {
+      name: '핵심 지표 비교',
+    });
+    expect(
+      within(metricsTable).getByText('출력 품질 점수'),
+    ).toBeInTheDocument();
+    expect(within(metricsTable).getAllByText('평가 불가')).toHaveLength(3);
+    expect(
+      within(metricsTable).getByTitle(
+        /품질 평가 응답을 해석하지 못했습니다.*품질 평가 비용 \$0\.00008/,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('후보 품질 점수가 높아도 confidence가 낮으면 경고하되 적용은 차단하지 않는다', async () => {
+    workflowApiMock.compareCostOptimizerCandidate.mockResolvedValueOnce({
+      comparison_id: 'comparison-low-confidence',
+      workflow_id: 'workflow-1',
+      node_id: 'llm-1',
+      baseline: {
+        baseline_id: 'baseline-1',
+        usage: { total_tokens: 249, total_cost: 0.0012, latency_ms: 1600 },
+      },
+      candidate: {
+        label: 'B',
+        status: 'success',
+        output: { text: 'candidate output' },
+        usage: { total_tokens: 128, total_cost: 0.00042, latency_ms: 940 },
+        latency_ms: 940,
+      },
+      diff: {},
+      quality_evaluation: {
+        status: 'completed',
+        baseline: { score: 82 },
+        candidate: { score: 86 },
+        delta: 4,
+        dimensions: {},
+        confidence: 'low',
+        safe_summary:
+          '후보 출력의 품질 점수가 기준 출력보다 높게 평가되었습니다.',
+        judge_cost: 0.00008,
+      },
+      downstream_compatibility: {
+        state: 'compatible',
+        label: '검증 가능',
+        message: 'downstream compatible',
+      },
+    });
+    const CostOptimizerPlaygroundPage = await loadPlaygroundPage();
+
+    render(<CostOptimizerPlaygroundPage />);
+
+    await waitFor(() => {
+      expect(workflowApiMock.getDraftWorkflow).toHaveBeenCalledWith(
+        'workflow-1',
+      );
+    });
+    fireEvent.click(
+      screen.getByRole('button', { name: '테스트 baseline 선택' }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'B 후보 실행' }));
+
+    expect(
+      await screen.findByRole('heading', { name: '주의 필요' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('4점 상승 · 신뢰도 낮음')).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: '이 설정으로 노드 적용하기' }),
+    ).toBeEnabled();
   });
 
   it('이전 실험 이력은 접고 펼칠 수 있으며 선택한 이력 summary를 Inspector에서 보여준다', async () => {
@@ -813,6 +1092,14 @@ describe('FR-006 Cost Optimizer playground mode switch', () => {
     expect(screen.getAllByText('gpt-4.1-mini').length).toBeGreaterThan(0);
     expect(
       screen.getByText(/이전 실험 이력 API가 제공하는 summary 기준입니다/),
+    ).toBeInTheDocument();
+    const metricsTable = screen.getByRole('table', {
+      name: '핵심 지표 비교',
+    });
+    expect(within(metricsTable).getByText('74점')).toBeInTheDocument();
+    expect(within(metricsTable).getByText('79점')).toBeInTheDocument();
+    expect(
+      within(metricsTable).getByText('5점 상승 · 신뢰도 높음'),
     ).toBeInTheDocument();
   });
 

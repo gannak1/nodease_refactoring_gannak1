@@ -1,16 +1,16 @@
 # Cost Optimizer Component Spec
 
 Status: Draft
-Verified Against: feature/mba-166 @ 034a716
+Verified Against: feature/mba-198 @ 25ac2dde3ee0e71125c85749362569d7a95b45c1
 
 ## Purpose
 
-이 문서는 `requirements.md`의 FR-001부터 FR-012까지를 화면과 컴포넌트 관점에서 구현 가능한 형태로 정리한다.
-FR-011 모델 라우팅은 LLM 노드 상세 화면의 `자동 모델 라우팅` 토글과 policy status panel로 다룬다. 자동 라우팅 ON 상태에서는 실행 시점에 active policy로 모델을 선택하고, judge LLM은 정책 갱신 시점에만 호출한다.
+이 문서는 `requirements.md`의 FR-001부터 FR-013까지를 화면과 컴포넌트 관점에서 구현 가능한 형태로 정리한다.
+FR-011은 LLM 노드 상세 화면의 자동 라우팅 컨트롤과 Workflow-Aware 분석 상태로 다룬다. 사용자는 단순 ON/OFF가 아니라 `이 node가 라우팅에 적합한지`, `어떤 evidence가 부족한지`, `어떤 cohort에서 어떤 모델을 쓰는지`, `예상 순절감과 품질 근거가 무엇인지`를 확인할 수 있어야 한다.
 
 Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상세 화면에서 시작하는 LLM 노드 단위 A/B 테스트 흐름이다.
 
-현재 구현 기준으로 `최적화`와 `비교 분석 테스트`는 LLM 노드 상세 상단의 별도 액션이다. `최적화`는 추천 모달을 열고, 추천 모달의 `테스트하기`는 baseline을 자동 선택하지 않은 채 Cost Optimizer workspace로 이동한다. `비교 분석 테스트`는 사용자가 baseline 목록에서 기준 실행을 직접 선택하는 전용 workspace로 이동한다.
+현재 구현 기준으로 `최적화`와 `비교 분석 테스트`는 LLM 노드 상세 상단의 별도 액션이다. `비교 분석 테스트`는 사용자가 baseline 목록에서 기준 실행을 직접 선택하는 전용 workspace로 이동한다. FR-013의 `최적화` 추천 모달 `테스트하기`는 별도 workspace로 즉시 이동하지 않고, 최신 비교 가능한 성공 실행을 자동 baseline으로 사용해 모달 안에서 빠른 검증 결과를 보여준다.
 
 ## FR Mapping
 
@@ -26,8 +26,9 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 | FR-008 | Apply candidate action | 선택한 B 후보 설정을 현재 LLM 노드 draft에 적용한다. |
 | FR-009 | Cost/usage display | 비교 실행 비용이 기록된다는 사실과 후보별 비용을 표시한다. |
 | FR-010 | Permission-gated UI | builder 이상이 아니면 A/B 테스트와 적용 액션을 막는다. |
-| FR-011 | Model routing policy controls / model-routing route | LLM 노드 상세 화면에서 자동 모델 라우팅 ON/OFF와 정책 상태를 표시하고, 전용 model-routing 화면에서 검증된 후보 실험 이력 기반 추천을 보여준다. |
+| FR-011 | Workflow-Aware routing controls / analysis / decision trace | 자동 라우팅 ON/OFF, 라우팅 적합성, evidence gap, cohort별 policy, 예상 순절감, 실제 선택 모델과 fallback 근거를 보여준다. |
 | FR-012 | Optimization recommendation modal | LLM 노드 상세 화면의 `최적화` 버튼으로 추천 모달을 열고, 추천 근거와 위험도를 확인한 뒤 직접 정책 적용 또는 A/B 후보 실험으로 연결한다. |
+| FR-013 | Recommendation verification / compare quality row | 추천 모달과 일반 결과 분석 화면에서 baseline 대비 candidate 비용·속도·token·품질 점수·schema·downstream 결과를 보여주고 적용 또는 이력 재조회로 연결한다. |
 
 ## Implementation Tracking
 
@@ -43,10 +44,12 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 | FR-006 | A/B compare workspace, Inspector | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | 통과 |
 | FR-007 | Downstream compatibility badge | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr7-downstream-compatibility.test.tsx` | 통과 |
 | FR-008 | Apply candidate action | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr8-apply-flow.test.tsx` | 통과 |
-| FR-009 | Cost/usage metric display | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr9-usage-display.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr9-experiment-history-api-client.test.ts` | 통과 |
+| FR-009 | Cost/usage metric display, experiment history | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx`, `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerHistoryPanel.tsx`, `apps/client/app/features/workflow/hooks/useCostOptimizerHistory.ts` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr9-usage-display.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr9-experiment-history-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr9-history-model.test.ts` | 통과 |
 | FR-010 | Permission-gated UI | `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerEntryAction.tsx`, `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr1-entry-action.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | 통과 |
-| FR-011 | Model routing policy controls, model-routing recommendation route, refresh result summary | `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx`, `apps/client/app/features/workflow/api/workflowApi.ts`, `apps/client/app/features/workflow/types/Api.ts`, `apps/client/app/modules/[id]/model-routing/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr3-llm-node-routing.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | policy toggle/주기 저장, manual refresh 요청, 마지막 judge 결과·비용 표시 검증 |
+| FR-011 | 기존 policy controls와 model-routing route | `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx`, `apps/client/app/modules/[id]/model-routing/[nodeId]/page.tsx` | 기반 구현 완료 | 기존 Cost Optimizer frontend tests | 토글, 주기, policy 상태, 추천 route 통과 |
+| FR-011 | 적합성/evidence/policy diff/decision trace UI | 기존 model-routing route와 실행 로그 panel 확장 | 구현 필요 | Workflow-Aware routing component tests | 미작성 |
 | FR-012 | Optimization recommendation modal | `apps/client/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal.tsx`, `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr8-apply-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | 통과 기록 있음 |
+| FR-013 | Recommendation verification, compare quality row, history restore | `apps/client/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal.tsx`, `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerHistoryPanel.tsx`, `apps/client/app/features/workflow/hooks/useCostOptimizerHistory.ts`, `apps/client/app/features/workflow/api/workflowApi.ts`, `apps/client/app/features/workflow/types/Api.ts`, `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-inline-verification.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-verification-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | modal 검증, 일반 compare 품질 행, 평가 불가, 단건 비교 이력 복원 통과 |
 
 ## Screens
 
@@ -87,7 +90,7 @@ A/B 테스트 진입 액션은 LLM 노드 상세 패널의 상단 헤더 우측 
 
 관련 FR: FR-002, FR-004, FR-005
 
-`비교 분석 테스트` 또는 추천 모달의 `테스트하기`를 누르면 A baseline 선택 화면을 먼저 연다.
+`비교 분석 테스트`를 누르면 A baseline 선택 화면을 먼저 연다. 추천 모달의 `테스트하기`는 FR-013 빠른 검증 경로로 분리되어 최신 성공 baseline을 서버에서 자동 확정한다.
 
 현재 baseline 선택 화면은 최신 로그 CTA로 baseline을 자동 고정하지 않는다. 화면은 검색/필터/정렬 가능한 baseline log picker를 바로 보여주고, 사용자가 특정 row를 직접 선택해야 A/B workspace가 열린다.
 
@@ -204,9 +207,84 @@ workspace는 B 후보 실험 루프를 같은 화면 안에서 지원한다.
 
 B 후보 재실행을 위해 baseline picker를 다시 열거나 workspace를 닫게 해서는 안 된다.
 
-### Model Routing Policy Controls
+### Workflow-Aware Adaptive Routing Controls
 
 관련 FR: FR-011
+
+#### 목표 사용자 흐름
+
+1. 사용자가 LLM node에서 `자동 모델 라우팅`을 켠다.
+2. 시스템은 먼저 라우팅 적합성을 분석한다.
+3. 후보가 있지만 증거가 부족하면 `Replay로 검증하기`를 안내한다.
+4. Cost Optimizer Replay에서 후보가 품질/효율 gate를 통과하면 policy proposal을
+   만든다.
+5. 사용자는 예상 순절감, 품질 근거, cohort별 선택 모델과 fallback을 확인한다.
+6. 검증된 policy가 active가 되면 일반 실행은 저장 policy로 모델을 선택한다.
+7. 실행 로그에서 실제 선택 모델, matched cohort/rule, fallback과 policy version을
+   확인한다.
+
+#### Routing analysis panel
+
+기존 model-routing route의 첫 화면은 모델 추천 한 건보다 라우팅 가능 여부를 먼저
+보여준다.
+
+| 분석 상태 | 주 표시 | 기본 액션 |
+| --- | --- | --- |
+| `eligible` | 검증 후보 수, 예상 순절감, 적용 가능한 cohort | policy proposal 확인 |
+| `needs_evidence` | 부족한 모델/cohort/sample과 필요한 품질 검증 | Replay로 검증하기 |
+| `fixed_model_recommended` | 현재 모델 유지 이유와 라우팅 예상 실익 부족 | 현재 모델 유지 |
+| `blocked` | 권한, credential, capability, schema 계약 문제의 safe reason | 설정/권한 확인 |
+
+`fixed_model_recommended`를 실패처럼 빨간 오류로 표시하지 않는다. 이 결과는 한
+모델을 유지하는 것이 더 안전하고 경제적이라는 정상 최적화 판단이다.
+
+#### Evidence summary
+
+Evidence는 `운영`과 `Replay`를 별도 행 또는 segmented view로 표시한다.
+
+- 운영: 실제 traffic sample, 입력군 비중, 현재 모델 비용/latency/품질
+- Replay: 후보별 paired sample, schema/downstream/quality gate, 비교 비용
+- 후속 Shadow/Canary는 계약만 예약하고 현재 화면에는 미구현 badge로 노출하지 않는다.
+
+Sample 수를 하나로 합쳐 `총 28회`처럼 표시하지 않는다. `운영 20회`,
+`Replay 8쌍`처럼 출처와 단위를 함께 표시한다.
+
+#### Policy proposal
+
+Policy proposal은 다음을 보여준다.
+
+- 기본 모델과 fallback
+- cohort 조건과 선택 모델
+- 현재 policy 대비 변경점
+- evidence version과 gate profile version
+- cohort별 예상 비용/latency/품질 변화
+- traffic share를 반영한 전체 예상 순절감
+- 근거 부족으로 현재 모델을 유지하는 cohort
+
+Judge 설명은 보조 문구로 표시한다. UI는 Judge 추천을 최종 결정처럼 표현하지 않고,
+Hard Gate와 deterministic optimizer가 검증했다는 상태를 별도로 보여준다.
+
+#### Runtime decision trace
+
+실행 로그의 LLM node 상세에는 다음을 표시한다.
+
+- 실제 선택 모델
+- fallback 모델과 fallback 사용 여부
+- matched cohort/rule
+- 선택 reason code의 사용자 친화 문구
+- policy/evidence/gate profile version
+- `실행 중 Judge 호출 안 함`
+
+이 정보가 없으면 `자동 라우팅 ON` badge만으로 모델이 실제 바뀌었는지 증명할 수
+없으므로 시연 완료로 보지 않는다.
+
+#### 오늘 저녁과 밤의 UI 경계
+
+오늘 저녁 backend core 구현에서는 기존 policy panel이 새 analysis/policy response를
+깨지지 않게 받을 타입과 최소 상태 표시까지만 보장한다. 밤에는 적합성 panel,
+evidence summary, policy diff, activation/rollback, runtime decision trace를 연결한다.
+
+#### 현재 구현 호환 controls
 
 LLM 노드 상세 화면은 자동 모델 라우팅을 별도 route가 아니라 노드 설정 안의 정책 컨트롤로 제공한다.
 
@@ -368,7 +446,7 @@ B 후보 실행 결과에는 다음을 표시한다.
 
 B 후보 설정이 마지막 실행 이후 변경되면 기존 실행 결과는 stale 상태로 표시한다. 이때 결과는 참고용으로 남기되, 현재 설정에 대한 결과가 아니므로 `B 후보 실행`을 다시 유도한다.
 
-B 후보 실행 버튼을 누르면 비교 리포트가 생성된다. 리포트는 A baseline과 B candidate의 출력, 비용, 토큰, latency, schema 검증 상태, retrieval summary, downstream 호환성 상태를 함께 보여준다. 사용자는 리포트를 본 뒤 B 후보 설정을 현재 노드에 적용할지 선택한다.
+B 후보 실행 버튼을 누르면 비교 리포트가 생성된다. 리포트는 A baseline과 B candidate의 출력, 비용, 토큰, latency, 출력 품질 점수와 confidence, schema 검증 상태, retrieval summary, downstream 호환성 상태를 함께 보여준다. 사용자는 리포트를 본 뒤 B 후보 설정을 현재 노드에 적용할지 선택한다.
 
 stale 상태는 다음 필드 중 하나라도 마지막 B 실행 이후 변경되면 발생한다.
 
@@ -429,6 +507,8 @@ stale 상태는 다음 필드 중 하나라도 마지막 B 실행 이후 변경�
 - 방금 실행한 후보는 자동 선택하고 `방금 실행` 또는 `최신` badge를 표시한다.
 - 이력 패널을 접으면 제목, 선택된 실험 요약, `펼치기` 액션만 남긴다.
 - 이력 조회 실패 시 패널 안에 실패 안내를 표시하되, 이미 보유한 compare result가 있으면 아래 결과 분석은 유지한다.
+- `comparisonId/candidateId` deep link는 이력 목록에서 검색하지 않고 단건 상세 API로 복원한다. 필터 목록이 다시 조회되거나 선택 후보가 첫 20개 밖에 있어도 상세 선택은 유지한다.
+- workflow, node 또는 deep link query가 바뀌면 이전 baseline, compare result, 선택 이력을 재사용하지 않고 새 화면 세션으로 초기화한다.
 
 상단 판단 요약은 B 후보를 현재 노드에 적용해도 되는지 먼저 말해준다. 상태는 다음 3개 라벨을 사용한다.
 
@@ -441,6 +521,7 @@ stale 상태는 다음 필드 중 하나라도 마지막 B 실행 이후 변경�
 - 비용 변화율
 - prompt/completion/total token 변화율
 - latency 변화
+- 출력 품질 점수 변화와 confidence
 - B 실행 상태
 - JSON schema 검증 상태
 - downstream 호환성 상태
@@ -454,11 +535,14 @@ stale 상태는 다음 필드 중 하나라도 마지막 B 실행 이후 변경�
 | completion tokens | baseline completion tokens | candidate completion tokens | 증감 |
 | total tokens | baseline total tokens | candidate total tokens | 증감 |
 | latency | baseline latency | candidate latency | 증감 |
+| 출력 품질 점수 | baseline quality score 또는 `평가 불가` | candidate quality score 또는 `평가 불가` | 점수 상승/하락과 confidence |
 | 실행 상태 | baseline status | candidate status | 성공/실패 변화 |
 | Schema | baseline 기준 또는 `-` | candidate schema status | 통과/실패/미사용 |
 | Downstream | baseline downstream | current compatibility | 검증 가능/주의 필요/검증 불가 |
 
 출력 품질 비교는 A 출력과 B 출력을 나란히 보여준다.
+
+`출력 품질 점수`는 `핵심 지표 비교` 안에서 schema와 downstream보다 먼저 표시한다. completed 평가에서는 `86점`, `82점`, `4점 하락 · 신뢰도 보통`처럼 실제 값과 방향을 함께 표시하고 변화값 tooltip에는 safe summary와 별도 품질 평가 비용을 노출한다. judge를 실행할 수 없으면 행을 숨기지 않고 A/B 값을 `평가 불가`, 변화값을 safe summary로 표시한다. 품질 점수 하락 또는 낮은 confidence는 `주의 필요` 판단 근거지만 단독으로 후보 적용을 차단하지 않는다.
 
 - text 출력이면 전체 텍스트를 줄바꿈과 내부 스크롤로 표시한다.
 - JSON 출력이면 field 단위로 펼쳐서 볼 수 있어야 한다.
@@ -487,6 +571,8 @@ B 실행 결과가 없으면 B 결과 영역에는 `B 실행 후 결과 분석�
 - Schema 상태
 - Downstream 상태
 
+필터 입력값은 즉시 서버 query로 사용하지 않는다. 사용자가 `필터 적용`을 실행할 때 입력값을 한 번에 적용하며, `초기화`는 기본값인 성공 후보 조건으로 돌아간다. 이 방식은 실행자나 모델을 입력하는 매 keystroke마다 목록 API가 호출되는 것을 막는다.
+
 ### Parameter Recommendation Modal
 
 관련 FR: FR-012
@@ -513,34 +599,89 @@ B 실행 결과가 없으면 B 결과 영역에는 `B 실행 후 결과 분석�
 | 예상 효과 | 비용, token, latency 중 설명 가능한 효과 |
 | 근거 | sample 수, p95 token, context token 비중, schema/downstream 성공률 같은 safe summary |
 | 위험도 | `낮음`, `중간`, `높음` |
-| 액션 | `후보 실험 만들기`, `정책 갱신`, `보류` |
+| 액션 | `테스트하기`, `정책 갱신`, `보류` |
 
-파라미터 추천 row의 기본 액션은 `후보 실험 만들기`다.
+파라미터 추천 row의 기본 액션은 `테스트하기`다.
 
 - `max_tokens`, `temperature`, `top_p`, `frequency_penalty`, RAG context 설정은 직접 draft에 적용하지 않는다.
-- 사용자가 row를 선택하고 `후보 실험 만들기`를 누르면 현재 LLM node 설정 복사본에 `candidate_patch`를 merge한 B candidate를 만들고 기존 A/B workspace로 이동한다.
-- A/B workspace에서 B 후보를 실행하고 결과 분석을 확인한 뒤에만 `현재 노드에 적용`을 사용할 수 있다.
+- 사용자가 row를 선택하고 `테스트하기`를 누르면 현재 LLM node 설정 복사본에 `candidate_patch`를 merge한 B candidate를 만들고 모달 안에서 빠른 검증을 실행한다.
+- 빠른 검증이 끝난 뒤에만 `적용하기`와 `상세 비교 분석하기`를 사용할 수 있다.
 
-모달 하단 버튼은 다음을 사용한다.
+검증 전 모달 하단 버튼은 다음을 사용한다.
 
 | 버튼 | 동작 |
 | --- | --- |
-| `선택 항목으로 실험 만들기` | 선택된 파라미터 추천 row를 B candidate patch로 변환하고 Cost Optimizer A/B workspace로 이동한다. |
-| `정책 갱신 적용` | 자동 모델 라우팅 정책처럼 draft node parameter를 직접 바꾸지 않는 항목에만 활성화한다. |
-| `나가기` | 변경 없이 모달을 닫는다. |
+| `테스트하기` | 최신 비교 가능한 성공 실행을 A로 고정하고 선택한 추천 patch가 적용된 B를 한 번 실행한다. 실제 LLM 비용 안내 후 실행한다. |
+| `닫기` | 변경 없이 모달을 닫는다. |
 
-`바로 적용`이라는 단일 버튼은 사용하지 않는다. 파라미터 추천은 품질 저하 가능성이 있으므로 직접 적용과 후보 실험 생성을 UI에서 분리해야 한다.
+검증 완료 후 모달 하단 버튼은 다음을 사용한다.
 
-추천 근거는 raw prompt, raw completion, raw Knowledge chunk content, credential 원문을 표시하지 않는다. 긴 output 예시는 기존 A/B 결과 화면에서만 확인한다.
+| 버튼 | 동작 |
+| --- | --- |
+| `적용하기` | 빠른 검증에서 실행한 exact B candidate settings를 current draft에 적용한다. schema/downstream hard gate를 통과해야 한다. |
+| `상세 비교 분석하기` | 같은 experiment/candidate를 기존 Cost Optimizer 결과 분석 화면에서 열며 후보를 다시 실행하지 않는다. |
+| `닫기` | draft를 바꾸지 않고 모달만 닫는다. 검증 결과는 experiment history에 남는다. |
+
+`바로 적용`이라는 단일 버튼은 사용하지 않는다. 파라미터 추천은 품질 저하 가능성이 있으므로 빠른 검증 전 상태와 검증 완료 후 적용을 UI에서 분리해야 한다.
+
+추천 근거는 raw prompt, raw completion, raw Knowledge chunk content, credential 원문을 표시하지 않는다. 빠른 검증은 output 전체를 기본 화면에 펼치지 않고 품질 점수와 deterministic gate 요약을 우선 표시하며, 전체 output은 `상세 비교 분석하기`에서 확인한다.
 
 추천 상태는 다음과 같이 표시한다.
 
 | 상태 | 조건 | UI |
 | --- | --- | --- |
-| `추천 가능` | sample 수와 usage/trace summary가 충분하다 | 추천 row와 `후보 실험 만들기` 활성화 |
+| `추천 가능` | sample 수와 usage/trace summary가 충분하다 | 추천 row와 `테스트하기` 활성화 |
 | `근거 부족` | 운영 로그 또는 usage/trace가 부족하다 | 필요한 추가 실행 조건 표시 |
-| `실험 필요` | 추천 근거는 있으나 품질 gate를 확인해야 한다 | A/B 후보 생성 CTA |
+| `실험 필요` | 추천 근거는 있으나 품질 gate를 확인해야 한다 | 빠른 검증 CTA |
 | `적용 비추천` | schema/downstream 실패, 비용 악화, RAG evidence 부족이 확인된다 | CTA 비활성화 또는 경고 |
+
+### Recommendation Inline Verification
+
+관련 FR: FR-013
+
+`테스트하기`를 누르면 추천 목록 아래 또는 같은 modal body 안에 빠른 검증 panel을 연다. 모달 전체를 새 페이지처럼 교체하지 않고, 선택 추천과 기준 실행 정보를 위에서 다시 확인할 수 있어야 한다.
+
+패널은 다음 순서로 구성한다.
+
+1. `A 기준 실행`: `최신 비교 가능한 성공 기록` 라벨, 실행 시각, 실행 모델, deployment, baseline cost/latency/token을 표시한다.
+2. `추천 설정`: 선택한 recommendation label과 current → suggested 변경 요약을 표시한다.
+3. `핵심 지표 비교`: 비용, 실행 시간, token, 출력 품질 점수를 각각 독립된 A/B horizontal bar로 표시한다.
+4. `안전성 검사`: JSON schema 상태와 downstream 호환성 상태를 표시한다.
+5. `이번 테스트 비용`: candidate 실행 비용, quality judge 비용, 신규 발생 합계를 표시한다.
+6. `판단 요약`: 비용 절감 여부와 품질·schema·downstream 위험을 분리해 표시한다.
+
+막대그래프는 다음 규칙을 따른다.
+
+- A baseline은 중립색, B candidate는 강조색을 사용한다.
+- 비용·latency·token 감소는 긍정, 증가는 주의 색상으로 표시한다.
+- 품질 점수는 증가가 긍정이지만, confidence가 낮으면 색상만으로 추천하지 않고 `신뢰도 낮음`을 함께 표시한다.
+- 서로 다른 단위는 하나의 공통 chart axis에 놓지 않는다.
+- 실제 값과 delta를 항상 텍스트로 표시해 막대 길이만으로 판단하지 않게 한다.
+
+품질 점수 card는 baseline score, candidate score, delta, confidence와 짧은 safe rationale을 표시한다. 평가가 불가능하면 card를 숨기지 않고 `품질 평가 불가`와 사유를 표시한다.
+
+JSON schema card는 output format이 JSON인 경우에만 활성화한다.
+
+- schema 있음: `통과` 또는 `실패`, 실패 field/type 요약
+- JSON이지만 schema 없음: `스키마 미설정`
+- text output: `검사 대상 아님`
+
+downstream card는 `사용 가능`, `주의 필요`, `사용 불가`, `확인 불가`와 직접 검사한 후속 node 수를 표시한다. 상세 field/selector 차이는 기존 결과 분석 Inspector에서 확인한다.
+
+모달 container는 `max-height`를 유지하고 body만 `overflow-y-auto`로 스크롤한다. footer는 body scroll 밖에 두어 `적용하기`, `상세 비교 분석하기`, `닫기`가 항상 보이게 한다.
+
+상태 전이는 다음과 같다.
+
+| 상태 | UI |
+| --- | --- |
+| `idle` | 추천 목록과 `테스트하기` 표시 |
+| `resolving_baseline` | 최신 성공 baseline을 찾는 중, 중복 실행 차단 |
+| `running_candidate` | B candidate 실행 중, 실제 비용 발생 안내 |
+| `evaluating_quality` | candidate 결과는 유지하고 품질 judge 진행 상태 표시 |
+| `completed` | chart, gate, 비용, 하단 3개 버튼 표시 |
+| `partial` | candidate는 성공했지만 judge 평가 불가 등 일부 결과만 표시 |
+| `failed` | 실패 단계와 safe error를 표시하고 다시 테스트 허용 |
+| `stale` | 추천 선택 또는 node draft가 바뀌어 적용 비활성화, 재실행 요구 |
 
 ### Candidate Settings Mapping
 
@@ -692,6 +833,19 @@ Inspector는 탭 구조를 사용한다.
 4. 사용자가 최신 로그 또는 이전 로그를 선택한다.
 5. baseline input을 복원할 수 없으면 비교 불가 안내를 표시하고 A/B compare workspace로 이동하지 않는다.
 6. baseline이 선택되면 A/B compare workspace로 이동한다.
+
+### Verify Recommended Settings In Modal
+
+관련 FR: FR-012, FR-013
+
+1. 사용자가 `최적화`를 눌러 추천 모달을 연다.
+2. 검증할 추천 row를 선택하고 `테스트하기`를 누른다.
+3. 실제 candidate와 품질 judge 호출 비용이 발생한다는 안내를 확인한다.
+4. 서버가 최신 비교 가능한 성공 baseline을 고정한다.
+5. 같은 input으로 B candidate만 실행하고 semantic quality judge를 수행한다.
+6. 모달은 A 기준 안내, metric bar, 품질 점수, JSON schema, downstream, 이번 테스트 비용을 표시한다.
+7. 사용자는 `적용하기`, `상세 비교 분석하기`, `닫기` 중 하나를 선택한다.
+8. 상세 분석은 같은 comparison/candidate를 열며 candidate를 다시 실행하지 않는다.
 
 ### Run Candidate B
 

@@ -169,6 +169,101 @@ export interface CostOptimizerRecommendationApplyRequest {
   recommendation_ids: string[];
 }
 
+export interface CostOptimizerRecommendationVerifyRequest {
+  recommendation_ids: string[];
+  baseline_mode: 'latest_success';
+  recommendation_policy_version: string;
+  recommendation_fingerprint: string;
+  node_config_fingerprint: string;
+}
+
+export interface CostOptimizerMetricComparison {
+  baseline: number | null;
+  candidate: number | null;
+  delta?: number | null;
+  change_rate?: number | null;
+}
+
+export interface CostOptimizerQualityEvaluation {
+  status: string;
+  baseline?: { score?: number | null };
+  candidate?: { score?: number | null };
+  delta?: number | null;
+  dimensions?: Record<
+    string,
+    {
+      baseline?: number | null;
+      candidate?: number | null;
+      delta?: number | null;
+    }
+  >;
+  confidence?: string | null;
+  confidence_score?: number | null;
+  safe_summary?: string | null;
+  judge_cost?: number | null;
+  judge_usage_log_id?: string | null;
+}
+
+interface CostOptimizerRecommendationVerificationCommon {
+  applied_recommendation_ids?: string[];
+  metrics: Record<string, CostOptimizerMetricComparison>;
+  quality_evaluation: CostOptimizerQualityEvaluation;
+  schema_validation: {
+    status: string;
+    issues?: Array<{ code?: string; message?: string } | string>;
+  };
+  downstream_compatibility: CostOptimizerDownstreamCompatibility;
+  incurred_cost: {
+    candidate_execution_cost?: number | null;
+    quality_judge_cost?: number | null;
+    total_new_cost?: number | null;
+    currency?: string | null;
+  };
+  apply: {
+    allowed: boolean;
+    requires_confirmation: boolean;
+    reasons: string[];
+  };
+  verification_context?: {
+    node_config_fingerprint?: string | null;
+    recommendation_policy_version?: string | null;
+    recommendation_fingerprint?: string | null;
+  };
+}
+
+interface CostOptimizerRecommendationVerificationResult
+  extends CostOptimizerRecommendationVerificationCommon {
+  verification_status: 'completed' | 'partial' | 'failed';
+  comparison_id: string | null;
+  candidate_id: string | null;
+  baseline: {
+    label: string;
+    workflow_node_run_id?: string | null;
+    executed_at?: string | null;
+    model?: string | null;
+    deployment_id?: string | null;
+    metrics: Record<string, number | null | undefined>;
+  };
+  candidate: {
+    status: string;
+    model?: string | null;
+    metrics: Record<string, number | null | undefined>;
+  };
+}
+
+interface CostOptimizerRecommendationVerificationStale
+  extends CostOptimizerRecommendationVerificationCommon {
+  verification_status: 'stale';
+  comparison_id: null;
+  candidate_id: null;
+  baseline: null;
+  candidate: null;
+}
+
+export type CostOptimizerRecommendationVerificationResponse =
+  | CostOptimizerRecommendationVerificationResult
+  | CostOptimizerRecommendationVerificationStale;
+
 export interface ModelRoutingPolicyResponse {
   enabled: boolean;
   status: 'off' | 'collecting' | 'active' | 'refreshing' | 'pending_review' | 'failed';
@@ -274,6 +369,7 @@ export interface CostOptimizerCompareResponse {
     error_message?: string | null;
   };
   diff?: Record<string, unknown>;
+  quality_evaluation?: CostOptimizerQualityEvaluation;
   downstream_compatibility?: CostOptimizerDownstreamCompatibility;
 }
 
@@ -316,6 +412,7 @@ export interface CostOptimizerCandidateSummary {
   output_preview?: string | null;
   schema_status?: string | null;
   downstream_state?: string | null;
+  quality_evaluation?: CostOptimizerQualityEvaluation;
   is_applied?: boolean;
   created_at?: string | null;
 }
@@ -359,6 +456,13 @@ export interface CostOptimizerExperimentListResponse {
   items: CostOptimizerExperimentSummary[];
 }
 
+export type CostOptimizerExperimentCandidateDetail = Omit<
+  CostOptimizerExperimentSummary,
+  'candidates'
+> & {
+  candidate: CostOptimizerCandidateSummary;
+};
+
 export interface CostOptimizerParameterRecommendation {
   recommendation_type: 'llm_parameter' | string;
   parameter_key: string;
@@ -375,6 +479,7 @@ export interface CostOptimizerParameterRecommendation {
 export interface CostOptimizerParameterRecommendationsResponse {
   analysis_stage: 'insufficient_logs' | 'recommendations_available' | string;
   policy_version: string;
+  recommendation_fingerprint: string;
   recommendations: CostOptimizerParameterRecommendation[];
   warnings?: Array<{
     code?: string;

@@ -560,11 +560,11 @@ LLM은 개인정보 처리 기준, 접근 신청 절차, 보존 기간 같은 �
 
 민감 정보 접근 요청이 탐지되면 audit trace에 정책 차단 이벤트를 남기고 관리자 검토 대상으로 분류한다.
 """,
-    "internal_budget_alert_runbook": """# 워크플로우 예산 90% 알림 운영 Runbook
+    "internal_budget_alert_runbook": """# 워크플로우 예산 80% 알림 운영 Runbook
 
 ## 알림 기준
 
-관리자 운영 콘솔은 월 예산 사용률이 90% 이상인 워크플로우를 비용 위험 대상으로 표시한다.
+관리자 운영 콘솔은 월 예산 사용률이 80% 이상인 워크플로우를 비용 위험 대상으로 표시한다.
 관리자는 대상 워크플로우를 일괄 선택해 운영자에게 비용 점검 알림을 보낼 수 있다.
 
 ## 알림 내용
@@ -856,14 +856,14 @@ INTERNAL_DOCUMENT_SPECS = (
     ),
     DemoKnowledgeSeedSpec(
         key="internal_budget_alert_runbook",
-        name="사내문서: 워크플로우 예산 90% 알림 Runbook",
+        name="사내문서: 워크플로우 예산 80% 알림 Runbook",
         description="관리자 예산 알림과 운영자 후속 분석 절차를 설명하는 운영문서 KB",
-        filename="워크플로우 예산 90퍼센트 알림 Runbook.md",
-        summary="예산 90% 이상 워크플로우 알림과 운영자 분석 진입 절차를 안내합니다.",
+        filename="워크플로우 예산 80퍼센트 알림 Runbook.md",
+        summary="예산 80% 이상 워크플로우 알림과 운영자 분석 진입 절차를 안내합니다.",
         source_tier="internal_ops",
         classification="internal_runbook",
         tags=("internal", "llmops", "budget"),
-        keywords=("예산 90%", "일괄 알림", "운영자", "워크플로우 분석", "LLM 노드 비용"),
+        keywords=("예산 80%", "일괄 알림", "운영자", "워크플로우 분석", "LLM 노드 비용"),
         collection_key="internal_onboarding",
         content=INTERNAL_DOCUMENT_CONTENT["internal_budget_alert_runbook"],
     ),
@@ -1964,6 +1964,44 @@ def _input_schema(variable_name: str, label: str = "입력") -> dict[str, Any]:
     return {"variables": [{"name": variable_name, "type": "text", "label": label}]}
 
 
+def _input_schema_from_graph(graph: dict[str, Any]) -> dict[str, Any] | None:
+    """배포 입력 schema가 graph의 시작 노드 계약과 어긋나지 않게 생성한다."""
+    for node in graph.get("nodes", []) if isinstance(graph, dict) else []:
+        if not isinstance(node, dict):
+            continue
+        node_data = node.get("data")
+        if not isinstance(node_data, dict):
+            continue
+
+        if node.get("type") == "startNode":
+            variables = node_data.get("variables") or []
+            normalized = [
+                {
+                    "name": variable.get("name", ""),
+                    "type": variable.get("type", "string"),
+                    "label": variable.get("label", variable.get("name", "")),
+                }
+                for variable in variables
+                if isinstance(variable, dict) and variable.get("name")
+            ]
+            return {"variables": normalized} if normalized else None
+
+        if node.get("type") == "webhookTrigger":
+            mappings = node_data.get("variable_mappings") or []
+            normalized = [
+                {
+                    "name": mapping.get("variable_name", ""),
+                    "type": "text",
+                    "label": mapping.get("label", mapping.get("variable_name", "")),
+                }
+                for mapping in mappings
+                if isinstance(mapping, dict) and mapping.get("variable_name")
+            ]
+            return {"variables": normalized} if normalized else None
+
+    return None
+
+
 def _output_schema() -> dict[str, Any]:
     return {"outputs": [{"variable": "answer_text", "label": "답변"}]}
 
@@ -2563,7 +2601,7 @@ def _upsert_app_workflow(
                 "type": deployment_type,
                 "graph_snapshot": graph,
                 "config": _demo_options(f"deployment-{key}"),
-                "input_schema": _input_schema("message", "문의"),
+                "input_schema": _input_schema_from_graph(graph),
                 "output_schema": _output_schema(),
                 "description": "최종 시연용 배포 버전",
                 "created_by": USER_IDS[owner_key],
@@ -2623,8 +2661,8 @@ def _seed_apps_and_workflows(db: Session) -> dict[str, Workflow]:
 
     # 운영 현황 상단 위험 패널 확인용 추가 앱.
     for key, name, owner in [
-        ("ticket_ops_warning", "예산 90% 근접 티켓 처리 A", "author"),
-        ("ticket_ops_risk", "예산 90% 근접 티켓 처리 B", "author"),
+        ("ticket_ops_warning", "예산 80% 근접 티켓 처리 A", "author"),
+        ("ticket_ops_risk", "예산 80% 근접 티켓 처리 B", "author"),
         ("ticket_ops_paused", "예산 초과로 정지된 워크플로우", "author"),
     ]:
         workflows[key] = _upsert_app_workflow(

@@ -1,14 +1,14 @@
 # Cost Optimizer Test Cases
 
 Status: Draft
-Verified Against: feature/mba-166 @ 034a716
+Verified Against: feature/mba-198 @ 25ac2dde3ee0e71125c85749362569d7a95b45c1
 
 ## Purpose
 
-이 문서는 `requirements.md`의 FR-001부터 FR-012까지를 테스트 관점에서 검증 가능한 형태로 정리한다.
-FR-011 모델 라우팅은 정책 기반 자동 라우팅으로 다룬다. 자동 라우팅 ON 상태의 workflow runtime은 active policy를 사용해 모델을 선택하고, judge LLM은 정책 갱신 시점에만 호출한다.
+이 문서는 `requirements.md`의 FR-001부터 FR-013까지를 테스트 관점에서 검증 가능한 형태로 정리한다.
+FR-011은 Workflow-Aware Adaptive Routing으로 다룬다. 기존 policy/runtime 테스트는 회귀 테스트로 유지하고, 실제 DB의 Cost Optimizer Replay evidence가 candidate validation, policy proposal, active policy, runtime 모델 선택까지 이어지는 통합 테스트를 새 완료 기준으로 사용한다.
 
-테스트는 LLM 노드 단위 Cost Optimizer 흐름을 기준으로 한다. workflow 전체 A/B 테스트와 최적화 에이전트는 이 문서의 1차 검증 범위가 아니다. 모델 라우팅은 LLM 노드 상세 화면의 자동 라우팅 토글, active policy runtime 선택, 20회 운영 로그 누적 갱신, 수동 정책 갱신, metadata redaction을 검증한다.
+테스트는 LLM 노드 단위 Cost Optimizer 흐름을 기준으로 한다. 모델 라우팅은 자동 라우팅 토글과 active policy 평가뿐 아니라, operational/replay evidence 출처 분리, Hard Gate, 적합성 분석, candidate 품질 gate, 결정론적 optimizer와 decision trace를 검증한다. 고정 20회는 호환 trigger 테스트일 뿐 adaptive routing 완료 기준이 아니다.
 
 현재 구현 기준으로 baseline 선택 UI는 최신 baseline을 자동 고정하지 않는다. 테스트는 baseline 목록에서 사용자가 row를 직접 선택한 뒤 B candidate 영역이 열리는 흐름을 기준으로 한다.
 
@@ -26,8 +26,9 @@ FR-011 모델 라우팅은 정책 기반 자동 라우팅으로 다룬다. 자�
 | FR-008 | Apply candidate action | PATCH apply | B 후보 설정을 current draft에 적용 | 작성 완료 | 통과 |
 | FR-009 | Cost/usage display | llm usage logging | 비교 실행 비용/토큰/latency 기록과 표시 | 작성 완료 | 통과 |
 | FR-010 | Permission-gated UI | builder permission enforcement | builder 이상 권한 강제 | 작성 완료 | 통과 |
-| FR-011 | Model routing policy controls / model-routing route | Model Routing Policy Contract | 자동 라우팅 ON/OFF, active policy runtime 선택, judge 매 실행 호출 금지, 운영 표본 누적·품질 gate·judge usage 추적 기반 정책 갱신 | 작성 완료 | 통과 |
+| FR-011 | Workflow-Aware routing controls / analysis / trace | Workflow-Aware Routing Contract | 기존 policy/runtime 회귀 + DB Replay evidence에서 validated candidate, policy, runtime 선택까지 연결 | 일부 작성 | 기존 회귀 통과, 새 통합 테스트 미작성 |
 | FR-012 | Optimization recommendation modal | Parameter recommendation API | 운영 로그 기반 추천 조회, `direct_policy_update` 적용, 일반 추천의 A/B 후보 실험 연결 | 작성 완료 | 부분 통과 |
+| FR-013 | Recommendation verification / compare quality row | Recommendation verification·compare API | 최신 성공 또는 사용자 선택 baseline, candidate 1회 실행, 품질 judge, schema/downstream gate, 품질 점수 이력, 적용/상세 분석 연결 | Gateway/frontend 테스트 작성 완료 | Gateway/frontend targeted test 통과 |
 
 ## Test Implementation Tracking
 
@@ -70,15 +71,55 @@ FR-011 모델 라우팅은 정책 기반 자동 라우팅으로 다룬다. 자�
 | FR-011 | Trace metadata | `apps/shared/tests/services/test_tracing_metadata.py` | model routing decision summary가 safe metadata allowlist로 보존되고 raw prompt/secret은 제거됨 | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/shared/tests/services/test_tracing_metadata.py` | 통과 |
 | FR-011 | Policy lifecycle | `apps/workflow_engine/tests/services/test_model_routing_policy_lifecycle.py`, `apps/workflow_engine/tests/services/test_model_routing_policy_tasks.py`, `apps/log_system/tests/test_model_routing_policy_hook.py` | target LLM node가 성공한 terminal workflow 완료 뒤에만 운영 표본 집계, downstream trace 확정, 중복 방지, 설정 횟수 도달 시 refresh task 1회 예약을 검증 | 작성 완료 | `apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/workflow_engine/tests/services/test_model_routing_policy_lifecycle.py apps/workflow_engine/tests/services/test_model_routing_policy_tasks.py apps/log_system/tests/test_model_routing_policy_hook.py` | 통과 |
 | FR-011 | Persisted refresh | `apps/workflow_engine/tests/services/test_model_routing_policy_refresh.py`, `apps/workflow_engine/tests/services/test_model_routing_policy_refresh_task.py` | judge confidence/운영 품질 gate, segment 근거 없는 조건 rule 차단, 현재 judge 사용자의 credential로 실행 가능한 후보 제한, 기존 policy 보존, judge usage log 연결을 검증 | 작성 완료 | `apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/workflow_engine/tests/services/test_model_routing_policy_refresh.py apps/workflow_engine/tests/services/test_model_routing_policy_refresh_task.py` | 통과 |
-| FR-011 | Policy routing E2E | `apps/workflow_engine/tests/e2e/test_model_routing_policy_e2e.py` | 61회 실행 동안 20/40/60회에만 judge refresh가 발생하고, 각 실행은 저장된 rule set으로 모델을 선택하는 흐름 | 작성 완료 | `apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/workflow_engine/tests/e2e/test_model_routing_policy_e2e.py` | 통과 |
+| FR-011 | Synthetic policy evaluator regression | `apps/workflow_engine/tests/e2e/test_model_routing_policy_e2e.py` | 미리 주입한 모델 profile로 61회 동안 refresh trigger와 저장 rule evaluator를 검증한다. 실제 Replay evidence 획득 E2E로 보지 않는다. | 작성 완료 | `apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/workflow_engine/tests/e2e/test_model_routing_policy_e2e.py` | 통과 |
+| FR-011 | Evidence adapters | `apps/workflow_engine/tests/services/test_model_routing_evidence.py` | operational/replay 출처 분리, candidate fingerprint, schema/downstream/quality safe summary | 미작성 | `apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/workflow_engine/tests/services/test_model_routing_evidence.py` | 미실행 |
+| FR-011 | Eligibility/optimizer | `apps/workflow_engine/tests/services/test_model_routing_eligibility.py`, `apps/workflow_engine/tests/services/test_model_routing_policy_optimizer.py` | fixed model 권고, Hard Gate, validated 후보만 policy에 반영, 예상 순절감 | 미작성 | 두 targeted pytest 파일 실행 | 미실행 |
+| FR-011 | DB adaptive routing integration | `apps/workflow_engine/tests/integration/test_workflow_aware_adaptive_routing.py` | 실제 experiment/candidate row에서 proposal, active policy, 서로 다른 cohort runtime 모델과 trace까지 연결 | 미작성 | PostgreSQL integration pytest | 미실행 |
+| FR-011 | Workflow-Aware UI | `apps/client/app/features/workflow/tests/costOptimizer/fr11-workflow-aware-routing.test.tsx` | 적합성/evidence gap/policy diff/decision trace UI | 미작성 | targeted Vitest | 미실행 |
 | FR-011 | Gateway policy API | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | GET/PATCH/POST policy의 builder 권한, 상태 조회, 주기 변경, refresh 예약과 마지막 갱신 safe summary를 검증 | 작성 완료 | `apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
 | FR-011 | Actual provider verification | `scripts/verify_model_router_actual.py` | fake LLM client 없이 실제 provider 응답과 usage를 기록하고, OpenAI/Anthropic/Google preset 또는 명시 모델로 LLM judge 품질평가를 실행한 뒤 `workflow_node_runs.trace_metadata.schema_status/downstream_status`에 반영하고 cheap/mid/high 라우팅 판정을 검증 | 수동 검증 대기 | `apps/workflow_engine/.venv/Scripts/python.exe scripts/verify_model_router_actual.py --dry-run`, 실제 호출은 `apps/workflow_engine/.venv/Scripts/python.exe scripts/verify_model_router_actual.py --provider <provider>` | 로컬 계정에서 OpenAI/Anthropic/Google credential 사용 권한이 없어 dry-run이 `credential_use_denied`/`credential_not_available`로 중단됨. 실제 provider 호출은 실행하지 않음 |
 | FR-012 | Gateway/service | `apps/gateway/tests/api/cost_optimizer/test_parameter_recommendations_api.py`, `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 운영 로그/trace 기반 LLM 파라미터 추천 룰셋, safe evidence, `direct_policy_update` 적용 경계 | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/api/cost_optimizer/test_parameter_recommendations_api.py` | 통과 기록 있음 |
 | FR-012 | Frontend component/API client | `apps/client/app/features/workflow/tests/costOptimizer/fr8-apply-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | 최적화 추천 모달, 추천 row 선택, 테스트하기 CTA, `direct_policy_update`만 직접 적용 | 작성 완료 | 관련 targeted test | 통과 기록 있음 |
+| FR-013 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-inline-verification.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | 모달 내부 state 전이, 기준 실행 안내, 독립 metric bar, schema/downstream/quality 상태, scroll/sticky footer, apply/detail/close 액션, comparison/candidate deep link 결과 분석 진입 | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr13-recommendation-inline-verification.test.tsx app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | 통과 |
+| FR-013 | Frontend API client | `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-verification-api-client.test.ts` | verify endpoint, Idempotency-Key, response type, 상세 분석 deep link | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr13-recommendation-verification-api-client.test.ts` | 통과 |
+| FR-013 | Gateway API/service | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py`, `apps/gateway/tests/api/cost_optimizer/test_recommendation_verification_api.py`, `apps/gateway/tests/services/test_cost_optimizer_output_quality_service.py` | latest success 또는 사용자 선택 baseline, recommendation stale 검증, candidate/judge usage, 품질 평가와 이력, schema/downstream gate, apply payload | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py apps/gateway/tests/api/cost_optimizer/test_recommendation_verification_api.py apps/gateway/tests/services/test_cost_optimizer_output_quality_service.py` | 통과 |
 
-## Model Routing Policy Tests
+## Workflow-Aware Adaptive Routing Tests
 
-이 섹션은 FR-011 정책 기반 자동 모델 라우팅을 검증하는 테스트다. 자동 라우팅 ON 상태의 workflow runtime은 저장된 active policy rule만 평가한다. 런타임 코드는 SLA, 보상, 다운로드 같은 도메인 키워드 목록을 내장하지 않는다. 현재 judge refresh에는 raw 입력이 없으므로 `keyword_any`를 새로 만들지 않고, safe segment 성능 근거가 있는 일반 조건 rule만 자동 반영한다.
+이 섹션은 FR-011의 새 완료 기준이다. 단위 테스트에서 모델별 profile dict를 미리
+주입해 rule evaluator를 통과시키는 것만으로 E2E 통과로 판정하지 않는다.
+
+### Adaptive evidence pipeline
+
+| ID | 검증 영역 | Given | When | Then |
+| --- | --- | --- | --- | --- |
+| FR-011-A01 | source separation | 같은 node에 운영 run 20개와 Replay candidate 8개가 있다 | evidence를 수집한다 | `operational=20`, `replay=8`로 분리하며 합산 sample count를 운영 품질 표본처럼 사용하지 않는다. |
+| FR-011-A02 | replay adapter | candidate가 성공하고 schema/downstream/quality 결과와 비용/latency를 가진다 | Replay evidence를 정규화한다 | baseline/candidate model, cohort, paired metric, source, fingerprint를 가진 safe summary를 만든다. raw prompt/output은 포함하지 않는다. |
+| FR-011-A03 | stale replay | candidate의 node fingerprint가 현재 deployment와 비교 불가능하다 | evidence를 수집한다 | candidate를 `rejected` 또는 evidence gap으로 분류하고 policy 입력에서 제외한다. |
+| FR-011-A04 | credential Hard Gate | 조직에는 모델이 있지만 execution subject가 credential `use` 권한이 없다 | candidate를 수집한다 | scoring 전에 후보와 fallback에서 제외한다. |
+| FR-011-A05 | capability Hard Gate | 모델이 node의 context/output/schema/tool 요구사항을 만족하지 않는다 | candidate를 수집한다 | `blocked_capability` reason으로 제외한다. |
+| FR-011-A06 | eligibility eligible | 실행 가능한 검증 후보가 둘 이상이고 품질 계약과 예상 순절감 근거가 있다 | 적합성을 분석한다 | `eligible`과 근거/evidence gap/예상 순절감을 반환한다. |
+| FR-011-A07 | fixed model | 후보가 하나뿐이거나 라우팅 평가 비용까지 포함한 순절감이 0 이하이다 | 적합성을 분석한다 | 오류가 아닌 `fixed_model_recommended`를 반환하고 rule을 만들지 않는다. |
+| FR-011-A08 | needs evidence | 후보는 있으나 paired Replay 또는 품질 score가 부족하다 | 적합성을 분석한다 | `needs_evidence`와 필요한 모델/cohort/sample을 반환한다. |
+| FR-011-A09 | structured quality gate | JSON/schema node 후보가 schema 또는 downstream contract에 실패한다 | candidate를 검증한다 | 비용이 싸도 `rejected`이고 active policy에 포함하지 않는다. |
+| FR-011-A10 | free-form quality gate | 자유형 출력 후보의 Judge score/confidence가 gate보다 낮다 | candidate를 검증한다 | Judge 설명은 저장할 수 있지만 후보는 `validated`가 되지 않는다. |
+| FR-011-A11 | deterministic optimizer | 두 validated 후보가 있고 cohort별 품질/비용/latency와 traffic share가 있다 | proposal을 생성한다 | 품질 floor를 먼저 적용한 뒤 예상 순절감이 가장 큰 검증 후보를 선택한다. Judge JSON을 직접 policy로 사용하지 않는다. |
+| FR-011-A12 | cohort retention | 한 cohort만 저비용 후보의 근거가 충분하다 | proposal을 생성한다 | 해당 cohort만 새 모델 rule을 만들고 나머지는 현재 모델을 유지한다. |
+| FR-011-A13 | evidence-free refresh | 새 validated evidence나 drift가 없다 | refresh를 실행한다 | `kept_current`이고 policy/evidence version을 불필요하게 변경하지 않는다. |
+| FR-011-A14 | replay trigger | 새 validated Replay candidate가 저장된다 | refresh eligibility를 평가한다 | 고정 N회를 기다리지 않고 `validated_replay_created` 재평가 대상이 된다. |
+| FR-011-A15 | runtime isolation | active policy가 있다 | 일반 workflow를 실행한다 | Judge/optimizer/evidence query를 호출하지 않고 저장 rule만 평가하며 `judge_called=false`를 남긴다. |
+| FR-011-A16 | decision trace | cohort rule로 후보 모델이 선택된다 | node run trace를 저장한다 | strategy, selected/fallback model, matched cohort/rule, policy/evidence/gate version, reason을 확인할 수 있다. |
+| FR-011-A17 | actual DB path | DB에 baseline experiment와 validated candidate를 만들고 refresh한다 | 서로 다른 두 cohort 입력으로 runtime을 실행한다 | 검증 cohort는 후보 모델, 근거 부족 cohort는 현재 모델을 선택하며 실제 trace가 이를 증명한다. |
+| FR-011-A18 | gate failure E2E | 더 싼 후보가 schema 또는 quality gate에 실패한다 | DB 통합 흐름을 실행한다 | 후보가 active policy에 들어가지 않고 현재 모델이 유지된다. |
+| FR-011-A19 | provider fallback | selected model 호출이 실패하고 검증된 사용 가능 fallback이 있다 | runtime을 실행한다 | fallback을 한 번 사용하고 원인 code를 trace에 남긴다. 미검증/권한 없는 모델로 확장하지 않는다. |
+| FR-011-A20 | secret safety | evidence와 Judge input 원천에 raw prompt/output/RAG chunk/credential이 있다 | safe summary를 생성한다 | 원문과 secret이 API, update row, trace, test snapshot에 남지 않는다. |
+
+### 기존 policy/runtime 회귀 테스트
+
+아래 테스트는 현재 구현 기반을 보호한다. 이 테스트가 모두 통과해도 A01~A20의
+evidence pipeline이 없으면 Workflow-Aware Adaptive Routing 구현 완료로 표시하지
+않는다. 자동 라우팅 ON 상태의 workflow runtime은 저장된 active policy rule만
+평가하며, 런타임 코드는 도메인 키워드 목록을 내장하지 않는다.
 
 | ID | 라우팅 상태 | Given | When | Then |
 | --- | --- | --- | --- | --- |
@@ -135,6 +176,39 @@ FR-011 모델 라우팅은 정책 기반 자동 라우팅으로 다룬다. 자�
 | FR-012-R16 | terminal failure quality gate | 성공 usage 20건과 terminal schema/downstream 실패 run이 함께 있다 | 파라미터 추천 API를 호출한다 | 실패 run을 품질 실패율에 포함하고 `max_tokens` 또는 RAG context 축소 추천을 만들지 않는다. |
 | FR-012-R17 | deployment/config cohort | 현재 draft node 설정이 활성 deployment snapshot과 다르거나 다른 deployment run이 섞여 있다 | 파라미터 추천 API를 호출한다 | `draft_not_deployed` 또는 warning을 반환하고, 다른 설정의 token/cost 표본을 현재값 추천에 사용하지 않는다. |
 | FR-012-R18 | incomplete quality signal | structured output node의 schema signal 또는 RAG node의 retrieval summary가 일부 run에서 누락됐다 | 파라미터 추천 API를 호출한다 | schema/RAG 축소 추천을 만들지 않고 signal incomplete warning을 반환한다. |
+
+## FR-013 Cost Optimizer 후보 검증 및 출력 품질 평가
+
+| ID | 영역 | Given | When | Then |
+| --- | --- | --- | --- | --- |
+| FR-013-R01 | modal flow | 추천 row가 선택되어 있다 | `테스트하기`를 클릭한다 | 기존 Cost Optimizer route로 즉시 이동하지 않고 모달 안에서 baseline 조회와 candidate 실행 상태를 표시한다. |
+| FR-013-R02 | latest baseline | 같은 active deployment/config cohort에 input/output/usage를 복원할 수 있는 성공 run과 더 최신의 실패·candidate run이 있다. 과거 성공 run의 `process_data.node_options.parameters.max_tokens`가 공통 redaction으로 마스킹된 경우도 포함한다. | 빠른 검증을 요청한다 | exact active `deployment_id` 조건을 만족하는 가장 최근 성공 운영 node run 하나를 baseline으로 고정하고 실패·candidate run은 제외한다. 마스킹된 process data fingerprint만으로 동일 배포 run을 제외하지 않는다. |
+| FR-013-R03 | no baseline | 비교 가능한 최신 성공 run이 없다 | 빠른 검증을 요청한다 | provider를 호출하지 않고 `비교 가능한 최신 성공 기록이 없습니다.`를 표시한다. |
+| FR-013-R04 | hybrid execution | baseline이 확정되고 recommendation id가 유효하다 | 빠른 검증을 실행한다 | A는 재실행하지 않고 동일 input으로 B만 한 번 실행하며 experiment/candidate row와 usage를 저장한다. |
+| FR-013-R05 | recommendation freshness | recommendation policy version 또는 node setting fingerprint가 응답 이후 바뀌었다 | 빠른 검증을 요청한다 | `stale`로 거부하고 이전 candidate patch를 실행하지 않는다. |
+| FR-013-R06 | duplicate submit | 동일 Idempotency-Key로 요청이 재전송된다 | verify endpoint가 처리한다 | candidate와 quality judge를 중복 호출하지 않고 첫 verification 결과를 반환한다. |
+| FR-013-R07 | metric chart | A/B usage가 있다 | 결과 panel을 렌더링한다 | 비용, latency, token, 품질 점수를 서로 다른 metric card의 A/B 막대와 실제 값/delta로 표시한다. 다른 단위를 하나의 axis에 섞지 않는다. |
+| FR-013-R08 | baseline context | 결과 panel을 렌더링한다 | 사용자가 A 기준을 확인한다 | `최신 비교 가능한 성공 기록`, 실행 시각, 모델, baseline cost/latency/token을 표시한다. |
+| FR-013-R09 | quality judge | baseline/candidate output과 동일 input, node 목적이 있다 | 품질 평가를 실행한다 | A를 정답으로 취급하지 않는 blind pairwise judge가 두 variant의 0~100 점수, dimension, confidence, safe summary를 반환한다. |
+| FR-013-R10 | quality unavailable | candidate는 성공했지만 judge credential/model이 없거나 judge 호출이 실패했다 | 응답을 만든다 | `partial`과 `품질 평가 불가`를 반환하고 비용·latency·token·schema·downstream 결과는 유지한다. |
+| FR-013-R11 | JSON schema | candidate output format이 JSON이고 schema가 있다 | candidate output을 검증한다 | parse/schema 통과는 `passed`, 누락 field/type mismatch는 `failed`와 safe issue summary를 반환한다. |
+| FR-013-R12 | non-JSON schema | output format이 text이거나 JSON schema가 없다 | 결과 panel을 렌더링한다 | text는 `검사 대상 아님`, schema 없는 JSON은 `스키마 미설정`으로 표시하며 실패로 오인시키지 않는다. |
+| FR-013-R13 | downstream | candidate output을 직접 참조하는 후속 노드가 있다 | 기존 contract validator를 실행한다 | `compatible`, `warning`, `incompatible`, `unknown`과 검사 node 수를 반환한다. incompatible은 적용을 막는다. |
+| FR-013-R14 | incurred cost | candidate 실행과 quality judge 호출이 완료됐다 | 결과 panel을 렌더링한다 | candidate cost, judge cost, 신규 발생 합계를 구분하고 과거 baseline 비용은 합계에 더하지 않는다. 가격 정보가 없으면 0이 아닌 `계산 불가`로 표시한다. |
+| FR-013-R15 | apply gate | candidate 성공, schema passed/not-applicable, downstream compatible이고 result가 stale하지 않다 | `적용하기`를 누른다 | exact comparison/candidate settings를 기존 apply API로 current draft에 적용한다. |
+| FR-013-R16 | quality warning | candidate quality score가 baseline보다 낮거나 confidence가 low다 | `적용하기`를 누른다 | 품질 점수만으로 hard block하지 않고 경고와 명시적 확인을 요구한다. |
+| FR-013-R17 | detail analysis | 빠른 검증 결과가 있다 | `상세 비교 분석하기`를 누른다 | 같은 comparison_id/candidate_id의 기존 결과 분석 화면을 열며 B를 다시 실행하거나 LLM 비용을 중복 발생시키지 않는다. |
+| FR-013-R18 | scroll/footer | recommendation, chart, gate, cost content가 modal max height를 넘는다 | modal을 스크롤한다 | body만 세로 스크롤되고 `적용하기`, `상세 비교 분석하기`, `닫기` footer는 계속 접근 가능하다. |
+| FR-013-R19 | selection changed | 빠른 검증 이후 추천 선택 또는 target node draft가 바뀐다 | 기존 결과로 적용을 시도한다 | 결과를 `stale`로 표시하고 적용을 비활성화하며 다시 테스트하도록 안내한다. |
+| FR-013-R20 | manual compare quality | 사용자가 baseline을 직접 선택했고 B candidate 실행이 성공한다 | 일반 compare API를 호출한다 | 같은 A/B 출력에 blind pairwise judge를 실행하고 `quality_evaluation`의 baseline/candidate 0~100 점수, delta, confidence, safe summary를 compare 응답과 candidate 이력에 저장한다. |
+| FR-013-R21 | result analysis quality row | compare 응답 또는 선택한 이전 실험에 품질 평가가 있다 | 결과 분석 화면의 핵심 지표 표를 렌더링한다 | `출력 품질 점수` 행에 A/B 점수, 상승·하락 방향, confidence를 표시한다. judge가 unavailable이면 행을 유지하고 `평가 불가`를 표시한다. |
+| FR-013-R22 | judge response contract | judge provider 호출은 완료됐지만 JSON, 필수 dimension 또는 confidence가 유효하지 않다 | 품질 결과를 정규화한다 | 점수는 `unavailable`로 처리하고, 이미 발생한 judge usage/cost와 usage log id는 candidate에 기록한다. 계약에 없는 추가 dimension은 총점에서 제외한다. |
+| FR-013-R23 | judge payload safety | 동일 입력과 A/B 출력에 credential 변형, 실행 metadata, raw RAG chunk 또는 과대 payload가 있다 | judge payload를 만든다 | 공통 fail-closed redaction과 depth/item/string 제한을 provider 호출 전에 적용하고, A/B 위치를 무작위로 바꾼 뒤 결과를 원래 variant로 복원한다. |
+| FR-013-R24 | detail deep link | 선택 candidate가 이력 첫 20개 밖이거나 `schema_failed/failed` 상태다 | `comparisonId/candidateId` 결과 분석 URL을 연다 | 단건 상세 API로 exact candidate를 복원하고, 기본 성공 이력 목록 조회가 완료돼도 선택 결과를 유지한다. B와 judge를 다시 실행하지 않는다. |
+| FR-013-R25 | route session reset | 한 LLM node의 비교 결과를 본 상태에서 workflow/node/deep link URL이 바뀐다 | 같은 route 컴포넌트가 새 식별자로 렌더링된다 | 이전 baseline, compare result, 선택 이력을 표시하지 않고 새 node의 baseline 선택 상태로 초기화한다. |
+| FR-013-R26 | explicit history filter | 결과 분석 이력 패널에서 실행자·모델·기간 필터를 입력한다 | 입력 중에는 대기하고 `필터 적용`을 실행한다 | 입력 중 추가 목록 요청을 보내지 않고 적용 시점에 정규화된 query로 한 번 조회한다. |
+| FR-013-R27 | stale response shape | recommendation policy version 또는 node fingerprint가 현재 상태와 다르다 | 빠른 검증 API를 호출한다 | provider를 호출하지 않고 `verification_status=stale`, null comparison/candidate/baseline과 `apply.allowed=false`를 반환하며, 프론트는 결과 값을 읽지 않고 재시도 안내를 표시한다. |
+| FR-013-R28 | draft/deployment mismatch | current draft의 target node 설정과 `App.active_deployment_id`가 가리키는 deployment snapshot 설정이 다르다 | 빠른 검증 API를 호출한다 | baseline 또는 candidate/provider 호출을 시작하지 않고 `verification_status=stale`로 종료한다. 단순히 `is_active=true`인 최신 deployment를 active pointer 대신 사용하지 않는다. |
 
 ## FR-001 LLM 노드 단위 A/B 테스트 진입
 ## Knowledge/RAG Compare Tests
@@ -432,6 +506,7 @@ FR-011 모델 라우팅은 정책 기반 자동 라우팅으로 다룬다. 자�
 - usage log에는 workflow id, node id, model, prompt tokens, completion tokens, total tokens, cost, latency, status가 포함된다.
 - Cost Optimizer 비교 실행에서 생성되는 usage log는 `cost_optimizer_candidate_id`로 B candidate row를 직접 참조한다.
 - `GET /cost-optimizer/experiments`는 같은 workflow/node 기준으로 저장된 experiment와 candidate summary를 조회한다.
+- candidate 상태·모델·적용 여부·schema·downstream 필터를 전달하면 조건에 맞는 experiment만 조회하고, 응답의 각 `candidates` 배열에서도 일치하지 않는 후보를 제외한다.
 - Cost Optimizer experiment/candidate summary는 trace metadata retention 기준으로 만료일을 계산하고, 만료된 experiment를 정리하면 candidate도 함께 정리된다.
 - RAG safe summary는 raw chunk content/source metadata/document filename 계열 값을 제거하고, list 값은 20개, string 값은 200자로 제한한다.
 - 비용 계산이 불가능한 모델은 response에 비용 불가 상태를 명확히 반환한다.

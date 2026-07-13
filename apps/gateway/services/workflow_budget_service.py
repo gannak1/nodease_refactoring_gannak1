@@ -26,6 +26,9 @@ from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.llm import LLMUsageLog
 from apps.shared.db.models.workflow_budget import WorkflowBudget
 
+BUDGET_AT_RISK_RATIO = Decimal("0.8")
+BUDGET_EXCEEDED_RATIO = Decimal("1.0")
+
 
 class WorkflowBudgetService:
     """Workflow monthly LLM budget helpers."""
@@ -41,9 +44,9 @@ class WorkflowBudgetService:
             return None
 
         ratio = _to_decimal(current_cost) / budget
-        if ratio > Decimal("1.0"):
+        if ratio > BUDGET_EXCEEDED_RATIO:
             return "exceeded"
-        if ratio >= Decimal("0.9"):
+        if ratio >= BUDGET_AT_RISK_RATIO:
             return "at_risk"
         return "normal"
 

@@ -1,12 +1,12 @@
 # Cost Optimizer API Spec
 
 Status: Draft
-Verified Against: feature/mba-166 @ 034a716
+Verified Against: feature/mba-198 @ 25ac2dde3ee0e71125c85749362569d7a95b45c1
 
 ## Purpose
 
-이 문서는 `requirements.md`의 FR-001부터 FR-012까지를 API 계약 관점에서 정리한다.
-FR-011 모델 라우팅은 정책 기반 자동 라우팅으로 다룬다. 자동 라우팅 ON 상태의 workflow runtime은 저장된 active policy를 사용해 모델을 선택한다. Judge LLM은 매 실행마다 호출하지 않고 정책 갱신 endpoint 또는 background job에서만 호출한다.
+이 문서는 `requirements.md`의 FR-001부터 FR-013까지를 API 계약 관점에서 정리한다.
+FR-011은 [ADR-0038](../../decisions/ADR-0038-workflow-aware-adaptive-routing.md)의 Workflow-Aware Adaptive Routing으로 다룬다. Runtime은 저장된 active policy만 평가한다. Policy refresh는 운영 로그와 Cost Optimizer Replay evidence를 분리해 읽고, Hard Gate와 결정론적 optimizer를 통과한 후보만 policy에 반영한다. Judge LLM은 매 실행마다 호출하지 않으며 policy의 최종 결정권자가 아니다.
 
 Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baseline 실행 로그를 선택하고, 같은 입력으로 B 후보 설정을 실행한 뒤, 선택한 후보를 현재 draft에 적용하는 흐름을 지원한다.
 
@@ -28,8 +28,9 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | FR-008 | 선택한 B 후보 설정을 current draft target LLM node에 적용한다. |
 | FR-009 | 비교 실행에서 발생한 LLM usage/cost를 기록한다. |
 | FR-010 | builder 이상 권한을 API에서 강제한다. |
-| FR-011 | policy 조회/설정/refresh API와 배포 후 run 완료 event가 policy table을 관리한다. runtime은 active policy만 평가하고 judge 호출은 하지 않는다. |
+| FR-011 | policy 조회/설정/refresh API와 배포 후 run event가 policy table을 관리한다. 운영/Replay evidence의 출처를 구분하고, Hard Gate·적합성 분석·품질 gate·결정론적 optimizer를 통과한 policy만 runtime에 제공한다. |
 | FR-012 | 운영 로그와 trace summary를 분석해 LLM 파라미터/모델 라우팅 추천을 반환한다. `direct_policy_update`만 즉시 적용하고, 일반 파라미터 조정은 A/B candidate 생성 경로로 보낸다. |
+| FR-013 | 추천 빠른 검증과 사용자가 baseline을 고르는 일반 compare 모두 candidate 실행 후 semantic 품질 평가를 수행하고 점수·confidence·safe summary를 응답과 이력에 저장한다. |
 
 ## Endpoints
 
@@ -39,13 +40,16 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/baselines/latest` | 최신 baseline 실행 로그 조회 | FR-002, FR-004, FR-007 | builder 이상 |
 | GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/baselines` | baseline 실행 로그 목록 검색/필터/정렬 | FR-002, FR-004, FR-007 | builder 이상 |
 | GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/experiments` | 과거 experiment/candidate 결과 목록 조회 | FR-006, FR-009, FR-010 | builder 이상 |
+| GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/experiments/{experiment_id}/candidates/{candidate_id}` | 결과 분석 deep link용 experiment/candidate 단건 safe summary 조회 | FR-006, FR-009, FR-010, FR-013 | builder 이상 |
 | GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/parameter-recommendations` | 운영 로그 기반 LLM 파라미터/모델 라우팅 추천 조회 | FR-012 | builder 이상 |
 | PATCH | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/apply-recommendations` | `direct_policy_update` 추천을 현재 draft에 즉시 적용 | FR-012 | builder 이상 |
-| POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/compare` | 선택 baseline input으로 B 후보 실행 | FR-003, FR-004, FR-005, FR-006, FR-009, FR-010 | builder 이상 |
+| POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/recommendations/verify` | 최신 성공 baseline으로 추천 candidate를 한 번 실행하고 품질·schema·downstream·신규 비용을 평가 | FR-013 | builder 이상 |
+| POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/compare` | 선택 baseline input으로 B 후보를 실행하고 A/B 출력 품질을 평가 | FR-003, FR-004, FR-005, FR-006, FR-009, FR-010, FR-013 | builder 이상 |
 | PATCH | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/apply` | 선택한 B 후보 설정을 current draft에 적용 | FR-008, FR-010 | builder 이상 |
 | GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy` | 현재 policy 상태, 누적 운영 run 수, active/pending policy 조회 | FR-011 | builder 이상 |
 | PATCH | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy` | 자동 라우팅 ON/OFF와 정책 점검 주기 변경 | FR-011 | builder 이상 |
 | POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy/refresh` | 수동 policy refresh 작업을 예약 | FR-011 | builder 이상 |
+| GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/analysis` | **계획**: 라우팅 적합성, candidate gate 결과, evidence gap, 예상 순절감 safe summary 조회 | FR-011 | builder 이상 |
 
 ## Implementation Tracking
 
@@ -63,16 +67,18 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | FR-008 | `PATCH apply` | `apps/gateway/api/v1/endpoints/workflow.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
 | FR-009 | LLM usage/cost logging/history | `apps/gateway/api/v1/endpoints/workflow.py`, `apps/workflow_engine/`, `apps/shared/db/models/cost_optimizer.py`, `apps/shared/services/cost_optimizer_retention.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py`, `apps/workflow_engine/tests/nodes/test_llm_node_runtime.py`, `apps/shared/tests/services/test_cost_optimizer_retention.py` | 통과 |
 | FR-010 | builder permission enforcement | `apps/gateway/api/v1/endpoints/workflow.py`, `apps/gateway/auth/permissions.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
-| FR-011 | policy persistence, event idempotency, refresh task, runtime lookup, judge usage tracking | `apps/shared/db/models/model_routing_policy.py`, `apps/gateway/api/v1/endpoints/workflow.py`, `apps/workflow_engine/tasks.py`, `apps/workflow_engine/services/model_routing_policy_refresh.py`, `apps/workflow_engine/services/model_routing_policy_refresh_task.py`, `apps/workflow_engine/workflow/nodes/llm/llm_node.py` | 구현 완료 | `apps/workflow_engine/tests/services/test_model_routing_policy_lifecycle.py`, `apps/workflow_engine/tests/services/test_model_routing_policy_refresh.py`, `apps/workflow_engine/tests/services/test_model_routing_policy_refresh_task.py`, `apps/workflow_engine/tests/services/test_model_routing_policy_tasks.py`, `apps/workflow_engine/tests/nodes/test_llm_node_runtime.py`, `apps/log_system/tests/test_model_routing_policy_hook.py`, `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 관련 targeted test 통과 |
+| FR-011 | policy persistence, runtime evaluator, event idempotency, refresh task, credential guard, trace | `apps/shared/db/models/model_routing_policy.py`, `apps/gateway/api/v1/endpoints/workflow.py`, `apps/workflow_engine/tasks.py`, `apps/workflow_engine/services/model_routing_policy_refresh.py`, `apps/workflow_engine/services/model_routing_policy_refresh_task.py`, `apps/workflow_engine/workflow/nodes/llm/llm_node.py` | 기반 구현 완료 | 기존 FR-011 targeted tests | 통과 |
+| FR-011 | shared contract, operational/replay evidence adapter, eligibility analyzer, deterministic optimizer, policy analysis API | `apps/shared/schemas/model_routing.py`, `apps/workflow_engine/services/model_routing_evidence.py`, `apps/workflow_engine/services/model_routing_eligibility.py`, `apps/shared/services/model_routing_policy_optimizer.py`, 기존 refresh service와 Gateway endpoint | 구현 필요 | `test_model_routing_evidence.py`, `test_model_routing_eligibility.py`, `test_model_routing_policy_optimizer.py`, DB integration test | 미작성 |
 | FR-012 | LLM parameter recommendation contract | `apps/gateway/services/cost_optimizer_parameter_recommendation_service.py`, `apps/gateway/api/v1/endpoints/workflow.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_parameter_recommendations_api.py`, `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 기록 있음 |
+| FR-013 | Recommendation/compare verification orchestration, quality judge, history summary, modal/result-analysis UI | `apps/gateway/services/cost_optimizer_recommendation_verification_service.py`, `apps/gateway/services/cost_optimizer_output_quality_service.py`, `apps/gateway/api/v1/endpoints/workflow.py`, `apps/shared/db/models/cost_optimizer.py`, `apps/client/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal.tsx`, `apps/client/app/features/workflow/api/workflowApi.ts`, `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py`, `apps/gateway/tests/api/cost_optimizer/test_recommendation_verification_api.py`, `apps/gateway/tests/services/test_cost_optimizer_output_quality_service.py`, `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-inline-verification.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-verification-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | Gateway/frontend targeted test 통과 |
 
 ## Model Routing Policy Contract
 
-이 섹션은 FR-011 정책 기반 자동 모델 라우팅의 API 계약이다. 자동 라우팅 ON 상태의 일반 LLM node 실행은 active policy를 읽어 모델을 선택하고, judge LLM은 호출하지 않는다. Judge LLM 호출은 policy refresh 작업에서만 수행한다.
+이 섹션은 FR-011 Workflow-Aware Adaptive Routing의 API 계약이다. 자동 라우팅 ON 상태의 일반 LLM node 실행은 active policy를 읽어 모델을 선택하고, Judge LLM을 호출하지 않는다.
 
 이 계약의 source of truth는 `llm_node_model_routing_policies`다. Cost Optimizer candidate의 policy JSON은 compare/apply 호환을 위한 candidate snapshot이며, 일반 배포 실행은 policy table의 active policy만 사용한다. Gateway의 `GET/PATCH/POST /model-routing/policy`는 이 table과 refresh task를 관리하고, Workflow Engine의 `LLMNode._resolve_model_routing_policy()`는 runtime DB lookup 결과를 `ModelRouter.resolve_policy()`에 전달한다.
 
-Policy refresh는 모델 변경을 의미하지 않는다. `auto_n_runs` 또는 `manual_refresh`는 active policy 재평가 trigger이며, 검증된 저비용 후보가 품질 gate를 통과한 경우에만 active policy를 변경한다. 변경 후보가 없으면 `kept_current`로 기록하고 기존 active policy를 유지한다.
+Policy refresh는 모델 변경을 의미하지 않는다. Refresh는 출처가 구분된 operational/replay evidence를 다시 읽고 policy를 재평가한다. Hard Gate와 품질/효율 gate를 통과한 `validated` 후보가 있을 때만 deterministic optimizer가 policy proposal을 만든다. 변경 후보가 없으면 `kept_current`로 기록하고 기존 active policy를 유지한다.
 
 예상 service/API entrypoint:
 
@@ -80,6 +86,119 @@ Policy refresh는 모델 변경을 의미하지 않는다. `auto_n_runs` 또는 
 ModelRoutingPolicyService.resolve_for_runtime(context) -> ModelRoutingDecision
 ModelRoutingPolicyService.refresh_policy(context) -> ModelRoutingPolicyUpdate
 ```
+
+### Shared Contracts
+
+다음 계약은 Gateway, Workflow Engine, test fixture가 같은 의미를 사용하도록 shared
+schema 또는 동일한 명시적 dataclass/Pydantic model로 정의한다.
+
+#### `RoutingEvidenceSummary`
+
+```json
+{
+  "evidence_version": "sha256-safe-summary",
+  "source": "replay",
+  "workflow_id": "uuid",
+  "deployment_id": "uuid-or-null",
+  "node_id": "llm-triage",
+  "cohort_id": "json-schema-short-no-rag",
+  "conditions": {
+    "output_format": "json",
+    "schema_required": true,
+    "knowledge_enabled": false,
+    "input_length_bucket": "short"
+  },
+  "models": [
+    {
+      "model_id": "gpt-4.1-mini",
+      "sample_count": 8,
+      "success_rate": 1.0,
+      "schema_pass_rate": 1.0,
+      "downstream_success_rate": 1.0,
+      "quality_score_avg": 91.4,
+      "quality_confidence": "high",
+      "avg_cost": 0.00018,
+      "avg_latency_ms": 720,
+      "fallback_rate": 0.0
+    }
+  ]
+}
+```
+
+`source`는 `operational`, `replay`, `shadow`, `canary` 중 하나다. 서로 다른 source의
+sample count를 하나의 운영 sample count처럼 합산하지 않는다.
+
+#### `RoutingEligibility`
+
+```json
+{
+  "status": "eligible",
+  "reason_codes": ["multiple_validated_candidates", "positive_net_saving"],
+  "candidate_count": 3,
+  "validated_candidate_count": 2,
+  "evidence_gaps": [],
+  "estimated_net_saving": {
+    "amount_per_1000_runs": 1.84,
+    "currency": "USD",
+    "includes_evaluation_overhead": true
+  }
+}
+```
+
+`status`는 `eligible`, `needs_evidence`, `fixed_model_recommended`, `blocked` 중
+하나다. `fixed_model_recommended`는 오류가 아니라 현재 node에 adaptive routing의
+실익이 낮다는 정상 분석 결과다.
+
+#### `RoutingPolicySnapshot`
+
+```json
+{
+  "strategy": "workflow_aware_adaptive",
+  "policy_version": "router-policy-v5",
+  "evidence_version": "sha256-safe-summary",
+  "gate_profile_version": "routing-gate-v1",
+  "default_model_id": "gpt-4.1",
+  "fallback_model_id": "gpt-4.1",
+  "rules": [
+    {
+      "id": "json-schema-short-no-rag",
+      "cohort_id": "json-schema-short-no-rag",
+      "priority": 10,
+      "when": {
+        "output_format": "json",
+        "schema_required": true,
+        "knowledge_enabled": false,
+        "input_length_bucket": "short"
+      },
+      "selected_model_id": "gpt-4.1-mini",
+      "fallback_model_id": "gpt-4.1",
+      "reason_code": "validated_quality_floor_positive_net_saving"
+    }
+  ]
+}
+```
+
+Policy의 모델은 모두 현재 execution subject가 사용할 수 있고, 해당 cohort에서
+검증된 candidate여야 한다. Judge가 반환한 JSON을 이 contract로 바로 저장하지
+않는다.
+
+### Evidence And Refresh Rules
+
+Refresh 입력은 다음 두 adapter 결과다.
+
+- `OperationalEvidenceAdapter`: 배포 후 terminal 운영 run과 canonical trace
+- `ReplayEvidenceAdapter`: Cost Optimizer experiment/candidate의 동일 입력 비교 결과
+
+Replay candidate는 `status=completed`, schema/downstream/quality gate 통과,
+비교 가능한 node fingerprint를 만족할 때만 `validated` 후보가 될 수 있다.
+
+Refresh trigger는 `validated_replay_created`, `evidence_threshold_reached`,
+`model_availability_changed`, `quality_drift`, `manual_refresh`, 호환용
+`auto_n_runs`를 허용한다. Trigger는 재평가 사유일 뿐 모델 변경 보장이 아니다.
+
+Judge는 자유형 출력 품질 점수 또는 safe 설명을 제공한다. 최종 proposal은
+`ModelRoutingPolicyOptimizer`가 Hard Gate, gate profile, cohort traffic share,
+관측 비용/latency와 fallback overhead를 다시 검증해 만든다.
 
 ### Policy Status
 
@@ -103,6 +222,9 @@ ModelRoutingPolicyService.refresh_policy(context) -> ModelRoutingPolicyUpdate
   "policy_id": "uuid",
   "policy_version": "router-policy-v4",
   "active_policy": {
+    "strategy": "workflow_aware_adaptive",
+    "evidence_version": "sha256-safe-summary",
+    "gate_profile_version": "routing-gate-v1",
     "default_model_id": "gpt-4.1-mini",
     "fallback_model_id": "gpt-4.1",
     "rules": [
@@ -119,6 +241,11 @@ ModelRoutingPolicyService.refresh_policy(context) -> ModelRoutingPolicyUpdate
         "fallback_model_id": "gpt-4.1"
       }
     ]
+  },
+  "eligibility": {
+    "status": "eligible",
+    "reason_codes": ["multiple_validated_candidates"],
+    "evidence_gaps": []
   },
   "refresh": {
     "refresh_every_runs": 20,
@@ -208,7 +335,7 @@ POST 응답은 비동기 task가 예약됐다는 뜻일 뿐 judge 결과가 아�
 | --- | --- | --- |
 | `id` | UUID | policy update id |
 | `policy_id` | UUID | 대상 policy |
-| `trigger` | string | `auto_20_runs` 또는 `manual_refresh` |
+| `trigger` | string | `validated_replay_created`, `evidence_threshold_reached`, `model_availability_changed`, `quality_drift`, `manual_refresh`, 호환용 `auto_n_runs` |
 | `status` | string | `applied`, `kept_current`, `pending_review`, `failed` |
 | `eligible_run_count` | integer | judge 입력에 포함한 운영 run count |
 | `excluded_run_count` | integer | 제외한 run count |
@@ -241,11 +368,15 @@ LLM node 실행 시점 metadata는 선택 결과와 추천/품질 판단에 필�
 {
   "llm": {
     "model": "gpt-4.1-mini",
+    "strategy": "workflow_aware_adaptive",
     "policy_id": "uuid",
     "policy_version": "router-policy-v4",
+    "evidence_version": "sha256-safe-summary",
+    "gate_profile_version": "routing-gate-v1",
     "selected_model": "gpt-4.1-mini",
     "fallback_model": "gpt-4.1",
     "decision_source": "active_policy",
+    "matched_cohort_id": "json-schema-short-no-rag",
     "matched_rule_id": "short-json-no-knowledge",
     "reason_code": "short_structured_input_uses_low_cost_model",
     "judge_called": false,
@@ -279,7 +410,7 @@ LLM node 실행 시점 metadata는 선택 결과와 추천/품질 판단에 필�
 
 ```json
 {
-  "trigger": "auto_20_runs",
+  "trigger": "auto_n_runs",
   "judge_model": "gpt-4.1-mini",
   "prompt_version": "model-routing-policy-judge-v1",
   "eligible_run_count": 20,
@@ -396,7 +527,157 @@ LLMParameterRecommendationService.recommend(
 
 RAG context 추천은 `prompt_tokens` 중 retrieval context 비중과 RAG trace summary를 사용한다. author prompt를 줄이지 않고 `topK`, `retrievedContextMaxChars`, `retrievedContextCompression`만 후보로 제안한다.
 
-파라미터 추천 API는 current draft를 수정하지 않는다. 사용자가 추천 row를 선택하면 프론트는 `candidate_patch`를 현재 B candidate 복사본에 merge하고 기존 A/B compare flow로 이동한다.
+파라미터 추천 API는 current draft를 수정하지 않는다. FR-013에서 사용자가 추천 row를 선택하면 서버가 recommendation id를 다시 검증하고 `candidate_patch`를 current node 설정 복사본에 merge해 모달 내부 빠른 검증을 실행한다.
+
+## Recommendation Inline Verification Contract
+
+관련 FR: FR-013
+
+빠른 검증 endpoint는 추천 조회, 최신 baseline 확정, candidate 실행, deterministic gate, semantic quality judge, usage 합계를 orchestration한다. 프론트가 임의로 candidate patch를 다시 조립해 보내지 않고 recommendation id를 전달하며, 서버는 현재 recommendation service 결과와 대조해 stale 또는 변조된 추천을 차단한다.
+
+### Request
+
+```json
+{
+  "recommendation_ids": ["max_tokens", "rag.top_k"],
+  "baseline_mode": "latest_success"
+}
+```
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `recommendation_ids` | string[] | yes | 현재 recommendation response에서 사용자가 선택한 row key. 빈 배열은 허용하지 않는다. |
+| `baseline_mode` | `latest_success` | yes | target node의 최신 비교 가능한 성공 운영 실행을 서버가 고른다. |
+| `recommendation_policy_version` | string | no | modal이 추천 목록을 조회한 시점의 policy version. 현재 서버 version과 다르면 stale로 반환한다. |
+| `node_config_fingerprint` | string | no | modal이 추천 목록을 조회한 시점의 target node 설정 fingerprint. 현재 draft와 다르면 stale로 반환한다. |
+| `Idempotency-Key` header | string | yes | 더블 클릭·네트워크 재시도로 candidate/judge LLM 호출이 중복되는 것을 막는다. |
+
+서버는 요청 처리 시작 시 exact `baseline_node_run_id`, current node setting fingerprint, recommendation policy version을 고정한다. 이후 더 최신 실행이나 draft 변경이 생겨도 이번 결과의 기준은 바뀌지 않는다.
+
+latest baseline은 다음 필터를 모두 적용한 뒤 `WorkflowNodeRun.started_at DESC` 첫 row다.
+
+- 현재 workflow, node, active deployment
+- `WorkflowNodeRun.status=success`
+- input/output/usage available
+- Cost Optimizer candidate/quality judge 실행 제외
+- current draft와 활성 deployment node setting fingerprint 일치
+
+마지막 fingerprint 검사는 current draft와 활성 deployment snapshot 사이에서 수행한다. Baseline 실행은 exact active `deployment_id`로 같은 불변 snapshot 실행임을 판정하며, 보안 마스킹된 `WorkflowNodeRun.process_data.node_options` fingerprint를 추가 필터로 사용하지 않는다.
+
+### Response
+
+```json
+{
+  "verification_status": "completed",
+  "comparison_id": "uuid",
+  "candidate_id": "uuid",
+  "baseline": {
+    "workflow_node_run_id": "workflow-node-run-uuid",
+    "label": "최신 비교 가능한 성공 기록",
+    "executed_at": "2026-07-11T12:00:00Z",
+    "model": "gpt-4.1",
+    "metrics": {"total_tokens": 1086, "cost": 0.02937, "latency_ms": 32900}
+  },
+  "candidate": {
+    "status": "success",
+    "model": "gpt-4.1-mini",
+    "metrics": {"total_tokens": 563, "cost": 0.000332, "latency_ms": 3600}
+  },
+  "metrics": {
+    "cost": {"baseline": 0.02937, "candidate": 0.000332, "delta": -0.029038, "change_rate": -0.9887},
+    "latency_ms": {"baseline": 32900, "candidate": 3600, "delta": -29300, "change_rate": -0.8906},
+    "total_tokens": {"baseline": 1086, "candidate": 563, "delta": -523, "change_rate": -0.4816}
+  },
+  "quality_evaluation": {
+    "status": "completed",
+    "baseline": {"score": 86},
+    "candidate": {"score": 82},
+    "delta": -4,
+    "confidence": "medium",
+    "dimensions": {
+      "instruction_fulfillment": {"baseline": 88, "candidate": 84, "delta": -4},
+      "relevance_completeness": {"baseline": 85, "candidate": 80, "delta": -5},
+      "clarity_consistency": {"baseline": 85, "candidate": 82, "delta": -3}
+    },
+    "safe_summary": "후보 출력의 품질 점수가 기준 출력보다 낮게 평가되었습니다."
+  },
+  "schema_validation": {"status": "passed", "issues": []},
+  "downstream_compatibility": {"status": "compatible", "checked_node_count": 2},
+  "incurred_cost": {
+    "candidate_execution_cost": 0.000332,
+    "quality_judge_cost": 0.00008,
+    "total_new_cost": 0.000412,
+    "currency": "USD"
+  },
+  "apply": {"allowed": true, "requires_confirmation": true, "reasons": ["quality_score_decreased"]}
+}
+```
+
+`verification_status`는 `completed`, `partial`, `failed`, `stale` 중 하나다. candidate 실행이 성공하고 judge만 실패하면 `partial`이며 deterministic 결과와 candidate usage는 유지한다.
+
+freshness 검증에 실패한 `stale` 응답은 candidate 실행과 judge 호출을 시작하지 않는다. 따라서 실행 결과 식별자와 A/B 결과는 `null`이며, 프론트는 이 상태를 completed/partial/failed 결과와 구분해 결과 panel 대신 재조회 안내를 표시해야 한다.
+
+```json
+{
+  "verification_status": "stale",
+  "comparison_id": null,
+  "candidate_id": null,
+  "baseline": null,
+  "candidate": null,
+  "metrics": {},
+  "quality_evaluation": {
+    "status": "unavailable",
+    "safe_summary": "추천 설정이 최신 node 설정과 일치하지 않습니다."
+  },
+  "schema_validation": {"status": "not_applicable", "issues": []},
+  "downstream_compatibility": {"state": "unknown"},
+  "incurred_cost": {
+    "candidate_execution_cost": null,
+    "quality_judge_cost": null,
+    "total_new_cost": null,
+    "currency": "USD"
+  },
+  "apply": {
+    "allowed": false,
+    "requires_confirmation": false,
+    "reasons": ["recommendation_stale"]
+  }
+}
+```
+
+### Output Quality Judge
+
+품질 평가는 baseline을 정답으로 취급하지 않는 blind pairwise 평가다. 서버는 A/B 순서를 무작위로 바꾸고 응답에서 원래 variant에 다시 매핑한다.
+
+judge 입력은 다음 범위로 제한한다.
+
+- target node의 user-visible 목적과 output contract
+- 복원된 동일 input
+- baseline output과 candidate output
+- JSON schema 또는 RAG evidence summary가 있으면 해당 safe contract
+
+동일 input과 output은 평가에 필요한 user-visible 값만 전달한다. `usage`, 실행 `metadata`, credential·secret 계열 필드와 raw RAG chunk는 Judge payload에서 제거하고, RAG 정보는 허용된 summary 필드만 전달한다.
+
+judge 출력은 0~100 점수, dimension 점수, confidence, safe summary다. raw judge prompt/output은 API response, audit metadata, 일반 trace에 노출하지 않는다. judge 호출은 현재 사용자가 실행 가능한 provider/model credential로 수행하며 usage/cost를 candidate experiment에 `quality_judge` 역할로 연결한다.
+
+응답은 요청한 모든 dimension과 confidence를 포함해야 한다. 필수 값이 없거나 JSON을 해석할 수 없으면 `quality_evaluation.status=unavailable`로 처리하고 점수를 반환하지 않는다. 계약에 없는 추가 dimension은 무시한다. provider 응답을 이미 받은 경우에는 해석 실패와 무관하게 실제 judge usage/cost와 usage log id를 기록하고 반환한다.
+
+schema/downstream 결과는 judge 점수와 별도로 계산한다.
+
+| 조건 | `schema_validation.status` |
+| --- | --- |
+| text output | `not_applicable` |
+| JSON output, schema 없음 | `not_configured` |
+| JSON parse/schema 통과 | `passed` |
+| JSON parse 또는 schema 실패 | `failed` |
+
+적용 hard block은 candidate 실행 실패, `schema_validation=failed`, `downstream=incompatible`, stale fingerprint다. 품질 점수 감소 또는 confidence low는 hard block이 아니라 `requires_confirmation=true`와 reason code로 반환한다.
+
+빠른 검증은 기존 Cost Optimizer experiment/candidate row를 생성하고 candidate LLM usage를 연결한다. quality judge usage도 별도 역할로 연결해 `incurred_cost.total_new_cost`에 포함한다. baseline cost는 과거 비용이므로 신규 비용 합계에서 제외한다.
+
+같은 `created_by + Idempotency-Key` 요청은 `cost_optimizer_recommendation_verifications`에 저장한다. 완료된 동일 요청은 저장한 safe response를 반환하고, 실행 중인 동일 요청은 중복 candidate/judge 호출 없이 `verification_in_progress`으로 거부한다. 이 레코드에는 raw prompt/completion/RAG chunk를 저장하지 않는다.
+
+`상세 비교 분석하기`는 response의 `comparison_id`와 `candidate_id`로 기존 결과 분석 화면을 연다. 같은 candidate를 다시 실행하지 않는다. `적용하기`는 기존 `PATCH /cost-optimizer/apply`를 exact `comparison_id`와 검증된 candidate settings로 호출한다.
 
 ### Actual Provider Verification Contract
 
@@ -790,7 +1071,7 @@ Response:
 
 ### GET experiments
 
-관련 FR: FR-006, FR-009, FR-010
+관련 FR: FR-006, FR-009, FR-010, FR-013
 
 `GET /api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/experiments`
 
@@ -809,6 +1090,8 @@ Query:
 | `schema_status` | string optional | `not_checked`, `pass`, `failed` |
 | `downstream_state` | string optional | `compatible`, `warning`, `incompatible`, `unknown` |
 | `limit`, `offset` | integer | pagination |
+
+candidate 조건 중 하나 이상을 전달하면 서버는 조건에 맞는 candidate가 있는 experiment만 선택하고, 각 `items[].candidates`에도 같은 조건과 일치하는 candidate만 포함한다. 한 experiment 안의 다른 상태·모델 후보를 함께 반환하지 않는다.
 
 Response:
 
@@ -830,7 +1113,8 @@ Response:
       "created_at": "2026-07-05T01:30:00+00:00",
       "usage_summary": {
         "total_tokens": 240,
-        "cost": 0.0006
+        "cost": 0.0006,
+        "quality_judge_cost": 0.00008
       },
       "candidates": [
         {
@@ -845,6 +1129,16 @@ Response:
           "latency_ms": 1200,
           "schema_status": "pass",
           "downstream_state": "compatible",
+          "quality_evaluation": {
+            "status": "completed",
+            "baseline": {"score": 86},
+            "candidate": {"score": 82},
+            "delta": -4,
+            "dimensions": {},
+            "confidence": "medium",
+            "safe_summary": "후보 출력의 품질 점수가 기준 출력보다 낮게 평가되었습니다.",
+            "judge_cost": 0.00008
+          },
           "is_applied": false,
           "created_at": "2026-07-05T01:30:00+00:00"
         }
@@ -856,13 +1150,51 @@ Response:
 
 이 응답은 summary 조회용이다. raw prompt, credential 원문, secret payload는 포함하지 않는다. 상세 trace 원천은 기존 trace/usage 조회 경계에서 권한과 redaction 정책을 거쳐 조회한다.
 
+### GET experiment candidate detail
+
+관련 FR: FR-006, FR-009, FR-010, FR-013
+
+`GET /api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/experiments/{experiment_id}/candidates/{candidate_id}`
+
+`comparisonId`와 `candidateId`를 포함한 결과 분석 deep link를 목록 pagination이나 현재 필터와 무관하게 복원한다. 서버는 workflow, node, organization 범위 안에서 experiment와 candidate를 함께 확인하고, builder 이상 권한이 없거나 범위 밖이면 `404 resource.not_found` 또는 기존 권한 오류를 반환한다.
+
+응답은 `GET experiments`의 experiment safe summary에서 `candidates` 목록을 제거하고, 요청한 후보 하나를 `candidate`에 담는다.
+
+```json
+{
+  "experiment_id": "uuid",
+  "workflow_id": "uuid",
+  "node_id": "llm-triage",
+  "baseline_summary": {
+    "baseline_id": "uuid",
+    "model": "gpt-4.1",
+    "cost": 0.0012,
+    "total_tokens": 249,
+    "latency_ms": 1600
+  },
+  "candidate": {
+    "candidate_id": "uuid",
+    "status": "schema_failed",
+    "model_id": "gpt-4.1-mini",
+    "quality_evaluation": {
+      "status": "completed",
+      "baseline": { "score": 86 },
+      "candidate": { "score": 82 },
+      "confidence": "medium"
+    }
+  }
+}
+```
+
+이 endpoint도 목록과 동일한 redaction 경계를 사용한다. candidate settings 원문, credential, raw trace, raw RAG chunk는 추가로 노출하지 않는다.
+
 ### POST compare
 
-관련 FR: FR-003, FR-004, FR-005, FR-006, FR-009, FR-010
+관련 FR: FR-003, FR-004, FR-005, FR-006, FR-009, FR-010, FR-013
 
 `POST /api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/compare`
 
-A baseline input을 사용해 B 후보 설정을 실행한다. A baseline은 재실행하지 않는다.
+A baseline input을 사용해 B 후보 설정을 실행한다. A baseline은 재실행하지 않는다. B candidate 실행이 성공하면 Recommendation Inline Verification과 같은 `CostOptimizerOutputQualityService`로 동일 입력의 A/B 출력을 평가한다. candidate 실행이 실패하면 judge를 호출하지 않고 `quality_evaluation.status=unavailable`을 반환한다.
 
 `baseline_id`는 `workflow_node_runs.id`다. 해당 baseline의 target LLM node input을 복원할 수 없으면 API는 B 후보 실행을 시작하지 않고 `400 cost_optimizer.baseline_input_unavailable`을 반환한다.
 
@@ -991,6 +1323,20 @@ Response:
     "token_delta": -360,
     "latency_delta_ms": -500
   },
+  "quality_evaluation": {
+    "status": "completed",
+    "baseline": {"score": 86},
+    "candidate": {"score": 82},
+    "delta": -4,
+    "confidence": "medium",
+    "dimensions": {
+      "instruction_fulfillment": {"baseline": 88, "candidate": 84, "delta": -4},
+      "relevance_completeness": {"baseline": 85, "candidate": 80, "delta": -5},
+      "clarity_consistency": {"baseline": 85, "candidate": 82, "delta": -3}
+    },
+    "safe_summary": "후보 출력의 품질 점수가 기준 출력보다 낮게 평가되었습니다.",
+    "judge_cost": 0.00008
+  },
   "downstream_compatibility": {
     "state": "compatible",
     "label": "검증 가능",
@@ -1000,6 +1346,8 @@ Response:
 ```
 
 비교 실행에서 발생한 LLM call은 `llm_usage_logs`에 기록되어야 한다. 또한 비교 실행 자체도 `comparison_id`로 재조회하거나 추적할 수 있도록 저장한다.
+
+품질 judge usage는 같은 candidate에 `quality_judge` 역할로 연결하고, 품질 평가 safe summary는 `cost_optimizer_candidates.diff_summary.quality_evaluation`에 저장한다. experiment history의 candidate summary는 `quality_evaluation`을 반환해 결과 분석 화면에서 이전 실험을 선택해도 같은 품질 점수 행을 복원할 수 있어야 한다. judge 실패는 candidate 실행 실패로 취급하지 않으며 `quality_evaluation.status=unavailable`과 safe summary를 반환한다.
 
 JSON schema 검증에 실패한 경우에도 HTTP response는 200으로 반환할 수 있다. 이 경우 후보 LLM call은 성공한 것이므로 비용/토큰/시간을 반환하고, `candidate.usage.status` 또는 `candidate.schema_validation.status`를 `schema_failed`로 표시한다. schema 실패 후보는 apply API에서 거부한다.
 
@@ -1087,7 +1435,7 @@ Response:
 | 400 | `cost_optimizer.baseline_input_unavailable` | baseline input을 복원할 수 없음 | FR-004 |
 | 400 | `cost_optimizer.downstream_ack_required` | downstream warning 확인 없이 적용 요청 | FR-007, FR-008 |
 | 403 | `permission.denied` | builder 이상 권한 없음 | FR-010 |
-| 404 | `resource.not_found` | workflow, node, baseline이 없거나 scope 밖임 | FR-001, FR-002 |
+| 404 | `resource.not_found` | workflow, node, baseline, experiment 또는 candidate가 없거나 요청한 workflow/node/organization scope 밖임 | FR-001, FR-002, FR-006, FR-009, FR-013 |
 | 422 | `cost_optimizer.model_unavailable` | 사용할 수 없는 credential/model 후보 | FR-003, FR-010 |
 | 422 | `cost_optimizer.knowledge_unavailable` | 사용할 수 없거나 접근 권한이 없는 Knowledge Base 후보 | FR-003, FR-010 |
 | 500 | `cost_optimizer.compare_failed` | B 후보 실행 결과를 failed candidate로 기록할 수 없는 예기치 않은 서버 오류 | FR-006 |
@@ -1106,6 +1454,8 @@ Cost Optimizer API는 builder 이상 권한을 요구한다.
 
 - A/B 테스트 진입 가능 여부 조회: builder 이상
 - baseline 조회: builder 이상
+- experiment/candidate 이력 목록 조회: builder 이상
+- experiment/candidate 단건 상세 조회: builder 이상
 - B 후보 실행: builder 이상
 - 후보 적용: builder 이상
 

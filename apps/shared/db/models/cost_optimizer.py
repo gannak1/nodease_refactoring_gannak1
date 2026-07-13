@@ -2,7 +2,17 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, text
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -202,4 +212,64 @@ class CostOptimizerCandidate(Base):
 
     experiment: Mapped["CostOptimizerExperiment"] = relationship(
         "CostOptimizerExperiment", back_populates="candidates"
+    )
+
+
+class CostOptimizerRecommendationVerification(Base):
+    """추천 설정 빠른 검증의 멱등 요청과 safe 결과를 보관한다."""
+
+    __tablename__ = "cost_optimizer_recommendation_verifications"
+    __table_args__ = (
+        UniqueConstraint(
+            "created_by",
+            "idempotency_key",
+            name="uq_cost_optimizer_recommendation_verification_user_key",
+        ),
+        Index(
+            "ix_cost_optimizer_recommendation_verification_lookup",
+            "workflow_id",
+            "node_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False
+    )
+    workflow_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("workflows.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    node_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    created_by: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="running")
+    experiment_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("cost_optimizer_experiments.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    candidate_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("cost_optimizer_candidates.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    response_summary: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
     )

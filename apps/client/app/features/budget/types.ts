@@ -1,5 +1,15 @@
 export type BudgetUsageStatus = 'normal' | 'at_risk' | 'exceeded';
 
+export const budgetStatusLabel: Record<BudgetUsageStatus, string> = {
+  normal: '정상',
+  at_risk: '위험',
+  exceeded: '초과',
+};
+
+export const isBudgetAtRisk = (
+  status?: BudgetUsageStatus | null,
+) => status === 'at_risk' || status === 'exceeded';
+
 export type BudgetStatusPayload = {
   usage_ratio: number;
   status: BudgetUsageStatus;

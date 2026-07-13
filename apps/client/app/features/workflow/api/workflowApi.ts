@@ -21,11 +21,14 @@ import {
   CostOptimizerBaselineListResponse,
   CostOptimizerCompareRequest,
   CostOptimizerCompareResponse,
+  CostOptimizerExperimentCandidateDetail,
   CostOptimizerExperimentListParams,
   CostOptimizerExperimentListResponse,
   CostOptimizerLatestBaselineResponse,
   CostOptimizerParameterRecommendationsResponse,
   CostOptimizerRecommendationApplyRequest,
+  CostOptimizerRecommendationVerificationResponse,
+  CostOptimizerRecommendationVerifyRequest,
   ModelRoutingPolicyPatchRequest,
   ModelRoutingPolicyRefreshResponse,
   ModelRoutingPolicyResponse,
@@ -359,12 +362,38 @@ export const workflowApi = {
     return response.data;
   },
 
+  getCostOptimizerExperimentCandidate: async (
+    workflowId: string,
+    nodeId: string,
+    experimentId: string,
+    candidateId: string,
+  ): Promise<CostOptimizerExperimentCandidateDetail> => {
+    const response = await api.get(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/cost-optimizer/experiments/${experimentId}/candidates/${candidateId}`,
+    );
+    return response.data;
+  },
+
   getCostOptimizerParameterRecommendations: async (
     workflowId: string,
     nodeId: string,
   ): Promise<CostOptimizerParameterRecommendationsResponse> => {
     const response = await api.get(
       `/workflows/${workflowId}/llm-nodes/${nodeId}/cost-optimizer/parameter-recommendations`,
+    );
+    return response.data;
+  },
+
+  verifyCostOptimizerRecommendations: async (
+    workflowId: string,
+    nodeId: string,
+    data: CostOptimizerRecommendationVerifyRequest,
+    idempotencyKey: string,
+  ): Promise<CostOptimizerRecommendationVerificationResponse> => {
+    const response = await api.post(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/cost-optimizer/recommendations/verify`,
+      data,
+      { headers: { 'Idempotency-Key': idempotencyKey } },
     );
     return response.data;
   },

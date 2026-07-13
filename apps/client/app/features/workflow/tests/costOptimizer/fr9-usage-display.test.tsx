@@ -10,6 +10,7 @@ const workflowApiMock = vi.hoisted(() => ({
   getCostOptimizerAvailability: vi.fn(),
   compareCostOptimizerCandidate: vi.fn(),
   listCostOptimizerExperiments: vi.fn(),
+  getCostOptimizerExperimentCandidate: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
@@ -317,6 +318,8 @@ describe('FR-009 Cost Optimizer usage display', () => {
     await waitFor(() => {
       expect(workflowApiMock.listCostOptimizerExperiments).toHaveBeenCalled();
     });
+    const initialRequestCount =
+      workflowApiMock.listCostOptimizerExperiments.mock.calls.length;
 
     fireEvent.click(screen.getByRole('button', { name: '펼치기' }));
     fireEvent.change(screen.getByLabelText('시작일'), {
@@ -331,6 +334,11 @@ describe('FR-009 Cost Optimizer usage display', () => {
     fireEvent.change(screen.getByLabelText('적용 여부'), {
       target: { value: 'false' },
     });
+
+    expect(workflowApiMock.listCostOptimizerExperiments).toHaveBeenCalledTimes(
+      initialRequestCount,
+    );
+    fireEvent.click(screen.getByRole('button', { name: '필터 적용' }));
 
     await waitFor(() => {
       expect(workflowApiMock.listCostOptimizerExperiments).toHaveBeenLastCalledWith(

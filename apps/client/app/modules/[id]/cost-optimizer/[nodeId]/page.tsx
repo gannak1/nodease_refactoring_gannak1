@@ -4,7 +4,6 @@ import {
   useCallback,
   useEffect,
   useMemo,
-  useRef,
   useState,
   type KeyboardEvent,
   type PointerEvent,
@@ -20,9 +19,21 @@ import {
 } from 'lucide-react';
 
 import { CostOptimizerBaselineSelection } from '@/app/features/workflow/components/costOptimizer/CostOptimizerBaselineSelection';
+import { CostOptimizerHistoryPanel } from '@/app/features/workflow/components/costOptimizer/CostOptimizerHistoryPanel';
 import { CostOptimizerOutputPreviewPanel } from '@/app/features/workflow/components/costOptimizer/CostOptimizerPreviewViewer';
 import { fieldLabelsFromOutputFormat } from '@/app/features/workflow/components/costOptimizer/costOptimizerPreviewLabels';
+import { baselineFromExperimentSummary } from '@/app/features/workflow/components/costOptimizer/costOptimizerHistoryModel';
 import { NodeSettingsComparisonPanel } from '@/app/features/workflow/components/costOptimizer/NodeSettingsComparisonPanel';
+import {
+  downstreamLabelOf,
+  downstreamStateLabelOf,
+  formatCandidateCost,
+  formatContextDateTime,
+  formatCost,
+  formatLatency,
+  formatMetric,
+  schemaStatusLabelOf,
+} from '@/app/features/workflow/components/costOptimizer/costOptimizerPresentation';
 import {
   applyCandidatePatchesToDraft,
   baselineOptionsOf,
@@ -38,16 +49,8 @@ import {
   type SettingsTab,
 } from '@/app/features/workflow/components/costOptimizer/costOptimizerPlaygroundModel';
 import { workflowApi } from '@/app/features/workflow/api/workflowApi';
-import {
-  fitPanelWidths,
-  getDefaultPanelWidthsForLayout,
-  getNodeEditorMaxLayoutWidth,
-  type HorizontalResizeHandle,
-  NODE_EDITOR_PANEL_WIDTHS,
-  type NodeEditorPanelWidths,
-  resizePanelWidths,
-  sumPanelWidths,
-} from '@/app/features/workflow/utils/nodeEditorPanelLayout';
+import { useCostOptimizerHistory } from '@/app/features/workflow/hooks/useCostOptimizerHistory';
+import { useResizableNodeEditorPanels } from '@/app/features/workflow/hooks/useResizableNodeEditorPanels';
 import type {
   CostOptimizerBaselineRow,
   CostOptimizerCompareResponse,
@@ -58,10 +61,6 @@ import type { AppNode, LLMNodeData } from '@/app/features/workflow/types/Nodes';
 
 type PlaygroundMode = 'setup' | 'report';
 type InspectorTab = 'settings-diff' | 'trace' | 'downstream';
-type SelectedHistoryTarget =
-  | { type: 'current' }
-  | { type: 'history'; experimentId: string; candidateId: string }
-  | null;
 
 const inspectorTabs: Array<{ value: InspectorTab; label: string }> = [
   { value: 'settings-diff', label: '설정 차이' },
@@ -69,52 +68,6 @@ const inspectorTabs: Array<{ value: InspectorTab; label: string }> = [
   { value: 'downstream', label: '후속 노드 영향' },
 ];
 
-const formatMetric = (value: number, suffix = '') => {
-  if (!Number.isFinite(value)) return '-';
-  return `${value.toLocaleString('ko-KR')}${suffix}`;
-};
-
-const formatCost = (value: number) => {
-  if (!Number.isFinite(value)) return '-';
-  return `$${value.toFixed(6).replace(/0+$/, '').replace(/\.$/, '')}`;
-};
-
-const formatCandidateCost = (value: number | null | undefined) =>
-  value === null || value === undefined ? '비용 계산 불가' : formatCost(value);
-
-const formatShortId = (value: string | null | undefined) =>
-  value ? value.slice(0, 8) : '-';
-
-const formatLatency = (latencyMs: number) => {
-  if (!Number.isFinite(latencyMs)) return '-';
-  if (latencyMs < 1000) return `${latencyMs}ms`;
-  return `${(latencyMs / 1000).toFixed(1)}s`;
-};
-
-const formatContextDateTime = (value: string | null | undefined) => {
-  if (!value) return '-';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-
-  return new Intl.DateTimeFormat('ko-KR', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(date);
-};
-
-const downstreamLabelOf = (
-  compatibility: CostOptimizerDownstreamCompatibility | null | undefined,
-) => {
-  if (!compatibility) return '판정 전';
-  if (compatibility.label) return compatibility.label;
-  if (compatibility.state === 'compatible') return '검증 가능';
-  if (compatibility.state === 'warning') return '주의 필요';
-  if (compatibility.state === 'incompatible') return '검증 불가';
-  return '판정 전';
-};
 
 const downstreamToneOf = (
   compatibility: CostOptimizerDownstreamCompatibility | null | undefined,
@@ -465,27 +418,70 @@ const metricChangeDetailOf = (
   };
 };
 
+const formatQualityScore = (value: number | null | undefined) =>
+  typeof value === 'number' && Number.isFinite(value)
+    ? `${Math.round(value)}점`
+    : '평가 불가';
+
+const qualityConfidenceLabelOf = (confidence: string | null | undefined) => {
+  if (confidence === 'high') return '높음';
+  if (confidence === 'medium') return '보통';
+  if (confidence === 'low') return '낮음';
+  return '평가 불가';
+};
+
+const qualityScoreChangeDetailOf = (
+  baselineValue: number | null | undefined,
+  candidateValue: number | null | undefined,
+  confidence: string | null | undefined,
+  safeSummary: string | null | undefined,
+  judgeCost: number | null | undefined,
+) => {
+  const judgeCostDetail =
+    typeof judgeCost === 'number' && Number.isFinite(judgeCost)
+      ? `품질 평가 비용 ${formatCost(judgeCost)}`
+      : null;
+  const detail = [
+    safeSummary || '동일 rubric의 A/B 출력 품질 비교 결과입니다.',
+    judgeCostDetail,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  if (
+    typeof baselineValue !== 'number' ||
+    !Number.isFinite(baselineValue) ||
+    typeof candidateValue !== 'number' ||
+    !Number.isFinite(candidateValue)
+  ) {
+    return {
+      summary: '평가 불가',
+      detail,
+      tone: 'text-slate-500',
+    };
+  }
+
+  const diff = candidateValue - baselineValue;
+  const confidenceLabel = qualityConfidenceLabelOf(confidence);
+  const direction = diff > 0 ? '상승' : diff < 0 ? '하락' : '동일';
+  const scoreChange = diff === 0 ? '동일' : `${Math.abs(diff)}점 ${direction}`;
+  return {
+    summary: `${scoreChange} · 신뢰도 ${confidenceLabel}`,
+    detail,
+    tone:
+      diff > 0
+        ? 'text-emerald-700'
+        : diff < 0
+          ? 'text-amber-700'
+          : 'text-slate-600',
+  };
+};
+
 const candidateStatusLabelOf = (status: string | null | undefined) => {
   if (status === 'success') return '성공';
   if (status === 'schema_failed') return 'Schema 실패';
   if (status === 'failed') return '실패';
   if (status === 'running') return '실행 중';
   return status || '-';
-};
-
-const downstreamStateLabelOf = (state: string | null | undefined) => {
-  if (state === 'compatible') return '검증 가능';
-  if (state === 'warning') return '주의 필요';
-  if (state === 'incompatible') return '검증 불가';
-  if (state === 'unknown') return '판정 전';
-  return state || '-';
-};
-
-const schemaStatusLabelOf = (status: string | null | undefined) => {
-  if (status === 'schema_failed' || status === 'failed') return '실패';
-  if (status === 'valid' || status === 'pass') return '통과';
-  if (status === 'skipped' || status === 'not_checked') return '검증 안 함';
-  return '검증 안 함';
 };
 
 const schemaStatusToneOf = (status: string | null | undefined) => {
@@ -642,13 +638,50 @@ const PanelResizeHandle = ({
   </div>
 );
 
+interface CostOptimizerPlaygroundContentProps {
+  workflowId: string;
+  nodeId: string;
+  recommendationPresetKey: string | null;
+  comparisonId: string | null;
+  candidateId: string | null;
+}
+
 export default function CostOptimizerPlaygroundPage() {
-  const router = useRouter();
   const params = useParams<{ id: string; nodeId: string }>();
   const searchParams = useSearchParams();
   const workflowId = params.id;
   const nodeId = params.nodeId;
   const recommendationPresetKey = searchParams.get('recommendationPresetKey');
+  const comparisonId = searchParams.get('comparisonId');
+  const candidateId = searchParams.get('candidateId');
+  const sessionKey = [
+    workflowId,
+    nodeId,
+    recommendationPresetKey,
+    comparisonId,
+    candidateId,
+  ].join(':');
+
+  return (
+    <CostOptimizerPlaygroundContent
+      key={sessionKey}
+      workflowId={workflowId}
+      nodeId={nodeId}
+      recommendationPresetKey={recommendationPresetKey}
+      comparisonId={comparisonId}
+      candidateId={candidateId}
+    />
+  );
+}
+
+function CostOptimizerPlaygroundContent({
+  workflowId,
+  nodeId,
+  recommendationPresetKey,
+  comparisonId,
+  candidateId,
+}: CostOptimizerPlaygroundContentProps) {
+  const router = useRouter();
 
   const [targetNode, setTargetNode] = useState<AppNode | null>(null);
   const [workflowNodes, setWorkflowNodes] = useState<AppNode[]>([]);
@@ -678,33 +711,14 @@ export default function CostOptimizerPlaygroundPage() {
   const [applySuccess, setApplySuccess] = useState(false);
   const [isApplyDialogOpen, setIsApplyDialogOpen] = useState(false);
   const [isStale, setIsStale] = useState(false);
-  const [historyCandidateStatus, setHistoryCandidateStatus] =
-    useState('success');
-  const [historyModel, setHistoryModel] = useState('');
-  const [historyDateFrom, setHistoryDateFrom] = useState('');
-  const [historyDateTo, setHistoryDateTo] = useState('');
-  const [historyCreatedBy, setHistoryCreatedBy] = useState('');
-  const [historyIsApplied, setHistoryIsApplied] = useState('');
-  const [historySchemaStatus, setHistorySchemaStatus] = useState('');
-  const [historyDownstreamState, setHistoryDownstreamState] = useState('');
-  const [historyItems, setHistoryItems] = useState<
-    CostOptimizerExperimentSummary[]
-  >([]);
-  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
-  const [historyError, setHistoryError] = useState('');
-  const [isHistoryCollapsed, setIsHistoryCollapsed] = useState(true);
-  const [selectedHistoryTarget, setSelectedHistoryTarget] =
-    useState<SelectedHistoryTarget>(null);
-  const [panelWidths, setPanelWidths] = useState<NodeEditorPanelWidths>(
-    NODE_EDITOR_PANEL_WIDTHS.default,
-  );
-  const [layoutWidth, setLayoutWidth] = useState<number>(
-    sumPanelWidths(NODE_EDITOR_PANEL_WIDTHS.default) +
-      NODE_EDITOR_PANEL_WIDTHS.resizeHandleWidth * 2,
-  );
-  const [isResizableLayout, setIsResizableLayout] = useState(true);
-  const layoutShellRef = useRef<HTMLElement>(null);
-  const hasCustomPanelWidthsRef = useRef(false);
+  const {
+    layoutShellRef,
+    isResizableLayout,
+    fittedPanelWidths,
+    fittedLayoutWidth,
+    handleHorizontalResizeStart,
+    handleHorizontalResizeKeyDown,
+  } = useResizableNodeEditorPanels();
 
   useEffect(() => {
     let active = true;
@@ -767,98 +781,35 @@ export default function CostOptimizerPlaygroundPage() {
     };
   }, [nodeId, recommendationPresetKey, workflowId]);
 
-  useEffect(() => {
-    if (!baseline || activeMode !== 'report') return;
-
-    const historyApi = workflowApi as typeof workflowApi & {
-      listCostOptimizerExperiments?: typeof workflowApi.listCostOptimizerExperiments;
-    };
-    if (typeof historyApi.listCostOptimizerExperiments !== 'function') {
-      return;
-    }
-
-    let active = true;
-    const loadHistory = async () => {
-      setIsLoadingHistory(true);
-      setHistoryError('');
-      try {
-        const response = await historyApi.listCostOptimizerExperiments(
-          workflowId,
-          nodeId,
-          {
-            baseline_id: baseline.baseline_id,
-            date_from: historyDateFrom
-              ? `${historyDateFrom}T00:00:00`
-              : undefined,
-            date_to: historyDateTo ? `${historyDateTo}T23:59:59` : undefined,
-            created_by: historyCreatedBy.trim() || undefined,
-            candidate_status: historyCandidateStatus || undefined,
-            model: historyModel.trim() || undefined,
-            is_applied:
-              historyIsApplied === '' ? undefined : historyIsApplied === 'true',
-            schema_status: historySchemaStatus || undefined,
-            downstream_state: historyDownstreamState || undefined,
-            limit: 20,
-            offset: 0,
-          },
-        );
-        if (!active) return;
-        setHistoryItems(response.items || []);
-      } catch {
-        if (!active) return;
-        setHistoryItems([]);
-        setHistoryError('이전 실험 이력을 불러오지 못했습니다.');
-      } finally {
-        if (active) setIsLoadingHistory(false);
-      }
-    };
-
-    void loadHistory();
-
-    return () => {
-      active = false;
-    };
-  }, [
-    activeMode,
-    baseline,
-    historyCandidateStatus,
-    historyCreatedBy,
-    historyDateFrom,
-    historyDateTo,
-    historyDownstreamState,
-    historyIsApplied,
-    historyModel,
-    historySchemaStatus,
-    nodeId,
-    workflowId,
-  ]);
-
-  useEffect(() => {
-    const layoutShell = layoutShellRef.current;
-    if (!layoutShell) return;
-
-    const updateLayoutWidth = () => {
-      const shellWidth = layoutShell.getBoundingClientRect().width;
-      const nextLayoutWidth = getNodeEditorMaxLayoutWidth(shellWidth);
-      const minResizableWidth =
-        sumPanelWidths(NODE_EDITOR_PANEL_WIDTHS.min) +
-        NODE_EDITOR_PANEL_WIDTHS.resizeHandleWidth * 2;
-      const nextIsResizableLayout = nextLayoutWidth >= minResizableWidth;
-
-      setIsResizableLayout(nextIsResizableLayout);
-      setLayoutWidth(nextLayoutWidth);
-
-      if (!hasCustomPanelWidthsRef.current) {
-        setPanelWidths(getDefaultPanelWidthsForLayout(nextLayoutWidth));
-      }
-    };
-
-    updateLayoutWidth();
-    const resizeObserver = new ResizeObserver(updateLayoutWidth);
-    resizeObserver.observe(layoutShell);
-
-    return () => resizeObserver.disconnect();
+  const handleDeepLinkResolved = useCallback(
+    (experiment: CostOptimizerExperimentSummary) => {
+      const historyBaseline = baselineFromExperimentSummary(
+        workflowId,
+        nodeId,
+        experiment,
+      );
+      if (!historyBaseline) return;
+      setBaseline(historyBaseline);
+      setActiveMode('report');
+    },
+    [nodeId, workflowId],
+  );
+  const handleDeepLinkError = useCallback((message: string) => {
+    setLoadError(message);
   }, []);
+  const history = useCostOptimizerHistory({
+    enabled: !isLoadingNode && !loadError,
+    workflowId,
+    nodeId,
+    baselineId: baseline?.baseline_id || null,
+    isReportMode: activeMode === 'report',
+    deepLinkExperimentId: comparisonId,
+    deepLinkCandidateId: candidateId,
+    onDeepLinkResolved: handleDeepLinkResolved,
+    onDeepLinkError: handleDeepLinkError,
+  });
+  const clearHistorySelection = history.clearSelection;
+  const selectCurrentHistory = history.selectCurrent;
 
   const nodeTitle = useMemo(() => {
     const data = targetNode?.data as { title?: string; label?: string } | null;
@@ -881,12 +832,12 @@ export default function CostOptimizerPlaygroundPage() {
       setActiveMode('setup');
       setIsStale(false);
       setCompareResult(null);
-      setSelectedHistoryTarget(null);
+      clearHistorySelection();
       setCandidateError('');
       setApplyError('');
       setApplySuccess(false);
     },
-    [recommendationPresetKey, targetNode],
+    [clearHistorySelection, recommendationPresetKey, targetNode],
   );
 
   const baselineNodeOptions = baselineOptionsOf(baseline);
@@ -1002,7 +953,7 @@ export default function CostOptimizerPlaygroundPage() {
         },
       );
       setCompareResult(response);
-      setSelectedHistoryTarget({ type: 'current' });
+      selectCurrentHistory();
       setActiveInspectorTab(
         response.downstream_compatibility?.state === 'warning' ||
           response.downstream_compatibility?.state === 'incompatible'
@@ -1066,10 +1017,6 @@ export default function CostOptimizerPlaygroundPage() {
     }
   };
 
-  const fittedPanelWidths = fitPanelWidths(panelWidths, layoutWidth);
-  const fittedLayoutWidth =
-    sumPanelWidths(fittedPanelWidths) +
-    NODE_EDITOR_PANEL_WIDTHS.resizeHandleWidth * 2;
   const candidateResult = compareResult?.candidate ?? null;
   const candidateUsage = candidateResult?.usage;
   const candidateTotalTokens = readNumber(candidateUsage, [
@@ -1126,34 +1073,7 @@ export default function CostOptimizerPlaygroundPage() {
     downstreamCompatibility?.contract_check?.checked_node_ids || [];
   const downstreamWarnings =
     downstreamCompatibility?.contract_check?.warnings || [];
-  const historyRows = useMemo(
-    () => {
-      const rows = historyItems.flatMap((experiment) =>
-        experiment.candidates.map((historyCandidate) => ({
-          experiment,
-          candidate: historyCandidate,
-        })),
-      );
-      return rows.sort((a, b) => {
-        const aTime = new Date(
-          a.candidate.created_at || a.experiment.created_at || 0,
-        ).getTime();
-        const bTime = new Date(
-          b.candidate.created_at || b.experiment.created_at || 0,
-        ).getTime();
-        return bTime - aTime;
-      });
-    },
-    [historyItems],
-  );
-  const selectedHistoryRow =
-    selectedHistoryTarget?.type === 'history'
-      ? historyRows.find(
-          (row) =>
-            row.experiment.experiment_id === selectedHistoryTarget.experimentId &&
-            row.candidate.candidate_id === selectedHistoryTarget.candidateId,
-        ) ?? null
-      : null;
+  const selectedHistoryRow = history.selectedHistoryRow;
   const selectedHistoryBaseline =
     selectedHistoryRow?.experiment.baseline_summary ?? null;
   const activeCandidateMetrics = selectedHistoryRow
@@ -1212,6 +1132,20 @@ export default function CostOptimizerPlaygroundPage() {
   const activeDownstreamTone = selectedHistoryRow
     ? downstreamStateToneOf(activeDownstreamState)
     : downstreamToneOf(downstreamCompatibility);
+  const activeQualityEvaluation = selectedHistoryRow
+    ? selectedHistoryRow.candidate.quality_evaluation
+    : compareResult?.quality_evaluation;
+  const activeBaselineQualityScore =
+    activeQualityEvaluation?.baseline?.score ?? null;
+  const activeCandidateQualityScore =
+    activeQualityEvaluation?.candidate?.score ?? null;
+  const activeQualityChange = qualityScoreChangeDetailOf(
+    activeBaselineQualityScore,
+    activeCandidateQualityScore,
+    activeQualityEvaluation?.confidence,
+    activeQualityEvaluation?.safe_summary,
+    activeQualityEvaluation?.judge_cost,
+  );
   const schemaStatusLabel = activeSchemaStatusLabel;
   const baselineCost = activeBaselineMetrics.cost;
   const baselineTotalTokens = activeBaselineMetrics.totalTokens;
@@ -1275,6 +1209,16 @@ export default function CostOptimizerPlaygroundPage() {
     const isSchemaFailed = schemaStatusLabel === '실패';
     const isDownstreamIncompatible = activeDownstreamState === 'incompatible';
     const isDownstreamWarning = activeDownstreamState === 'warning';
+    const hasQualityScores =
+      typeof activeBaselineQualityScore === 'number' &&
+      typeof activeCandidateQualityScore === 'number';
+    const hasQualityWarning =
+      Boolean(activeQualityEvaluation) &&
+      (activeQualityEvaluation?.status !== 'completed' ||
+        !hasQualityScores ||
+        activeQualityEvaluation?.confidence === 'low' ||
+        (hasQualityScores &&
+          activeCandidateQualityScore < activeBaselineQualityScore));
     const isCandidateFailed =
       Boolean(activeCandidateStatus) && activeCandidateStatus !== 'success';
 
@@ -1288,7 +1232,8 @@ export default function CostOptimizerPlaygroundPage() {
       hasCostWorsening ||
       hasTokenWorsening ||
       hasLatencyWorsening ||
-      isDownstreamWarning
+      isDownstreamWarning ||
+      hasQualityWarning
     ) {
       return {
         label: '주의 필요',
@@ -1318,6 +1263,7 @@ export default function CostOptimizerPlaygroundPage() {
       activeCandidateLatency,
       formatLatency,
     )}`,
+    `출력 품질: ${activeQualityChange.summary}`,
     `B 실행 상태: ${candidateStatusLabelOf(activeCandidateStatus)}`,
     `Schema: ${schemaStatusLabel}`,
     `Downstream: ${activeDownstreamLabel}`,
@@ -1394,6 +1340,12 @@ export default function CostOptimizerPlaygroundPage() {
       ),
     },
     {
+      label: '출력 품질 점수',
+      baseline: formatQualityScore(activeBaselineQualityScore),
+      candidate: formatQualityScore(activeCandidateQualityScore),
+      change: activeQualityChange,
+    },
+    {
       label: '실행 상태',
       baseline: '성공',
       candidate: candidateStatusLabelOf(activeCandidateStatus),
@@ -1438,19 +1390,6 @@ export default function CostOptimizerPlaygroundPage() {
             },
     },
   ];
-  const selectedHistorySummary = (() => {
-    if (selectedHistoryTarget?.type === 'current' && candidateResult) {
-      return `선택: 방금 실행 · ${candidate.model_id || '-'} · ${formatCandidateCost(
-        candidateTotalCost,
-      )}`;
-    }
-    if (selectedHistoryRow) {
-      return `선택: ${selectedHistoryRow.candidate.name || '이름 없는 후보'} · ${
-        selectedHistoryRow.candidate.model_id || '-'
-      } · ${formatCandidateCost(selectedHistoryRow.candidate.total_cost)}`;
-    }
-    return '선택: 없음';
-  })();
   const canApplyCurrentCandidate =
     Boolean(candidateResult) &&
     candidateResult?.status === 'success' &&
@@ -1471,71 +1410,6 @@ export default function CostOptimizerPlaygroundPage() {
     if (isApplyingCandidate) return '후보 설정을 적용하는 중입니다.';
     return 'B 후보 설정 전체를 현재 LLM 노드 draft에 적용합니다.';
   })();
-  const isCurrentHistorySelected =
-    selectedHistoryTarget?.type === 'current' ||
-    (!selectedHistoryTarget && Boolean(candidateResult));
-  const isSelectedHistoryCandidate = (
-    experimentId: string,
-    candidateId: string,
-  ) =>
-    selectedHistoryTarget?.type === 'history' &&
-    selectedHistoryTarget.experimentId === experimentId &&
-    selectedHistoryTarget.candidateId === candidateId;
-
-  const updateHorizontalPanelWidths = useCallback(
-    (handle: HorizontalResizeHandle, deltaX: number) => {
-      hasCustomPanelWidthsRef.current = true;
-      setPanelWidths((current) =>
-        resizePanelWidths(handle, current, deltaX, layoutWidth),
-      );
-    },
-    [layoutWidth],
-  );
-
-  const handleHorizontalResizeStart = useCallback(
-    (handle: HorizontalResizeHandle, event: PointerEvent<HTMLDivElement>) => {
-      event.preventDefault();
-      event.currentTarget.setPointerCapture(event.pointerId);
-
-      const startX = event.clientX;
-      const startWidths = fittedPanelWidths;
-
-      const handlePointerMove = (moveEvent: globalThis.PointerEvent) => {
-        const deltaX = moveEvent.clientX - startX;
-        hasCustomPanelWidthsRef.current = true;
-        setPanelWidths(
-          resizePanelWidths(handle, startWidths, deltaX, layoutWidth),
-        );
-      };
-
-      const handlePointerUp = () => {
-        window.removeEventListener('pointermove', handlePointerMove);
-        window.removeEventListener('pointerup', handlePointerUp);
-        document.body.style.cursor = '';
-        document.body.style.userSelect = '';
-      };
-
-      document.body.style.cursor = 'col-resize';
-      document.body.style.userSelect = 'none';
-      window.addEventListener('pointermove', handlePointerMove);
-      window.addEventListener('pointerup', handlePointerUp);
-    },
-    [fittedPanelWidths, layoutWidth],
-  );
-
-  const handleHorizontalResizeKeyDown = useCallback(
-    (handle: HorizontalResizeHandle, event: KeyboardEvent<HTMLDivElement>) => {
-      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-      event.preventDefault();
-      const direction = event.key === 'ArrowLeft' ? -1 : 1;
-      updateHorizontalPanelWidths(
-        handle,
-        direction * NODE_EDITOR_PANEL_WIDTHS.keyboardStep,
-      );
-    },
-    [updateHorizontalPanelWidths],
-  );
-
   return (
     <main className="flex h-screen flex-col overflow-hidden bg-slate-100 text-slate-950">
       <header className="sticky top-0 z-10 border-b border-slate-200 bg-white/95 px-6 py-4 shadow-sm backdrop-blur">
@@ -1676,7 +1550,7 @@ export default function CostOptimizerPlaygroundPage() {
                       setActiveMode('setup');
                       setIsStale(false);
                       setCompareResult(null);
-                      setSelectedHistoryTarget(null);
+                      clearHistorySelection();
                       setCandidateError('');
                       setApplyError('');
                       setApplySuccess(false);
@@ -1948,332 +1822,24 @@ export default function CostOptimizerPlaygroundPage() {
               </p>
             </div>
 
-            <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <h3 className="text-sm font-bold">이전 실험 이력</h3>
-                  <p className="mt-1 text-xs leading-relaxed text-slate-500">
-                    결과 분석 기준으로 볼 후보 실행을 확인합니다. 방금 실행한
-                    후보는 자동 선택 상태로 표시합니다.
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-600">
-                    {selectedHistorySummary}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setIsHistoryCollapsed((current) => !current)
+            <CostOptimizerHistoryPanel
+              history={history}
+              currentRow={
+                candidateResult
+                  ? {
+                      baselineId: baseline?.baseline_id,
+                      baselineModel: baseline?.model,
+                      testName: testName.trim() || 'B',
+                      model: candidate.model_id,
+                      totalCost: candidateTotalCost,
+                      totalTokens: candidateTotalTokens,
+                      latencyMs: candidateLatency,
+                      schemaLabel: schemaStatusLabel,
+                      downstreamLabel: downstreamLabelOf(downstreamCompatibility),
                     }
-                    className="rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"
-                  >
-                    {isHistoryCollapsed ? '펼치기' : '접기'}
-                  </button>
-                </div>
-              </div>
-
-              {isHistoryCollapsed ? (
-                <p className="mt-4 rounded-md border border-slate-200 bg-slate-50 px-3 py-3 text-xs font-semibold text-slate-600">
-                  {selectedHistorySummary}
-                </p>
-              ) : (
-                <>
-                <div className="grid gap-2 text-xs sm:grid-cols-4 lg:grid-cols-8">
-                  <label className="grid gap-1 font-semibold text-slate-600">
-                    시작일
-                    <input
-                      type="date"
-                      value={historyDateFrom}
-                      onChange={(event) =>
-                        setHistoryDateFrom(event.target.value)
-                      }
-                      className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-900"
-                    />
-                  </label>
-                  <label className="grid gap-1 font-semibold text-slate-600">
-                    종료일
-                    <input
-                      type="date"
-                      value={historyDateTo}
-                      onChange={(event) => setHistoryDateTo(event.target.value)}
-                      className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-900"
-                    />
-                  </label>
-                  <label className="grid gap-1 font-semibold text-slate-600">
-                    실행자
-                    <input
-                      value={historyCreatedBy}
-                      onChange={(event) =>
-                        setHistoryCreatedBy(event.target.value)
-                      }
-                      placeholder="user id"
-                      className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-900"
-                    />
-                  </label>
-                  <label className="grid gap-1 font-semibold text-slate-600">
-                    적용 여부
-                    <select
-                      value={historyIsApplied}
-                      onChange={(event) =>
-                        setHistoryIsApplied(event.target.value)
-                      }
-                      className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-900"
-                    >
-                      <option value="">전체</option>
-                      <option value="true">적용됨</option>
-                      <option value="false">미적용</option>
-                    </select>
-                  </label>
-                  <label className="grid gap-1 font-semibold text-slate-600">
-                    후보 상태
-                    <select
-                      value={historyCandidateStatus}
-                      onChange={(event) =>
-                        setHistoryCandidateStatus(event.target.value)
-                      }
-                      className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-900"
-                    >
-                      <option value="">전체</option>
-                      <option value="success">성공</option>
-                      <option value="failed">실패</option>
-                      <option value="schema_failed">Schema 실패</option>
-                      <option value="running">실행 중</option>
-                    </select>
-                  </label>
-                  <label className="grid gap-1 font-semibold text-slate-600">
-                    모델 필터
-                    <input
-                      value={historyModel}
-                      onChange={(event) => setHistoryModel(event.target.value)}
-                      placeholder="예: gpt-4.1-mini"
-                      className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-900"
-                    />
-                  </label>
-                  <label className="grid gap-1 font-semibold text-slate-600">
-                    Schema 상태
-                    <select
-                      value={historySchemaStatus}
-                      onChange={(event) =>
-                        setHistorySchemaStatus(event.target.value)
-                      }
-                      className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-900"
-                    >
-                      <option value="">전체</option>
-                      <option value="not_checked">미검사</option>
-                      <option value="pass">통과</option>
-                      <option value="failed">실패</option>
-                    </select>
-                  </label>
-                  <label className="grid gap-1 font-semibold text-slate-600">
-                    Downstream 상태
-                    <select
-                      value={historyDownstreamState}
-                      onChange={(event) =>
-                        setHistoryDownstreamState(event.target.value)
-                      }
-                      className="h-9 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-900"
-                    >
-                      <option value="">전체</option>
-                      <option value="compatible">검증 가능</option>
-                      <option value="warning">주의 필요</option>
-                      <option value="incompatible">검증 불가</option>
-                      <option value="unknown">판정 전</option>
-                    </select>
-                  </label>
-                </div>
-
-              {historyError ? (
-                <p className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">
-                  {historyError}
-                </p>
-              ) : null}
-
-              <div className="mt-4 max-h-72 overflow-auto rounded-lg border border-slate-200">
-                <table className="min-w-full text-left text-xs">
-                  <thead className="sticky top-0 bg-slate-50 text-slate-500">
-                    <tr>
-                      <th className="px-3 py-2 font-bold">실행 시각</th>
-                      <th className="px-3 py-2 font-bold">Baseline</th>
-                      <th className="px-3 py-2 font-bold">테스트명</th>
-                      <th className="px-3 py-2 font-bold">모델</th>
-                      <th className="px-3 py-2 font-bold">비용</th>
-                      <th className="px-3 py-2 font-bold">토큰</th>
-                      <th className="px-3 py-2 font-bold">시간</th>
-                      <th className="px-3 py-2 font-bold">Schema</th>
-                      <th className="px-3 py-2 font-bold">Downstream</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {candidateResult ? (
-                      <tr
-                        onClick={() =>
-                          setSelectedHistoryTarget({ type: 'current' })
-                        }
-                        className={`cursor-pointer border-l-4 ${
-                          isCurrentHistorySelected
-                            ? 'border-emerald-500 bg-emerald-50/70'
-                            : 'border-transparent hover:bg-slate-50'
-                        }`}
-                      >
-                        <td className="px-3 py-2 font-semibold text-slate-700">
-                          방금 실행
-                        </td>
-                        <td className="px-3 py-2 text-slate-600">
-                          <div className="font-semibold">
-                            {formatShortId(baseline?.baseline_id)}
-                          </div>
-                          <div className="text-[11px] text-slate-400">
-                            {baseline?.model || '-'}
-                          </div>
-                        </td>
-                        <td className="px-3 py-2">
-                          <button
-                            type="button"
-                            aria-label="방금 실행 선택"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              setSelectedHistoryTarget({ type: 'current' });
-                            }}
-                            className="text-left font-semibold text-slate-900 hover:text-emerald-700"
-                          >
-                            <span className="rounded-full border border-emerald-200 bg-white px-2 py-1 text-[11px] font-bold text-emerald-700">
-                              방금 실행
-                            </span>{' '}
-                            {testName.trim() || 'B'}
-                          </button>
-                        </td>
-                        <td className="px-3 py-2">{candidate.model_id || '-'}</td>
-                        <td className="px-3 py-2">
-                          {formatCandidateCost(candidateTotalCost)}
-                        </td>
-                        <td className="px-3 py-2">
-                          {candidateTotalTokens === null
-                            ? '-'
-                            : formatMetric(candidateTotalTokens)}
-                        </td>
-                        <td className="px-3 py-2">
-                          {candidateLatency === null
-                            ? '-'
-                            : formatLatency(candidateLatency)}
-                        </td>
-                        <td className="px-3 py-2">{schemaStatusLabel}</td>
-                        <td className="px-3 py-2">
-                          {downstreamLabelOf(downstreamCompatibility)}
-                        </td>
-                      </tr>
-                    ) : null}
-                    {historyRows.map(({ experiment, candidate: historyCandidate }) => (
-                        <tr
-                          key={`${experiment.experiment_id}-${historyCandidate.candidate_id}`}
-                          onClick={() =>
-                            setSelectedHistoryTarget({
-                              type: 'history',
-                              experimentId: experiment.experiment_id,
-                              candidateId: historyCandidate.candidate_id,
-                            })
-                          }
-                          className={`cursor-pointer border-l-4 ${
-                            isSelectedHistoryCandidate(
-                              experiment.experiment_id,
-                              historyCandidate.candidate_id,
-                            )
-                              ? 'border-emerald-500 bg-emerald-50/70'
-                              : 'border-transparent hover:bg-slate-50'
-                          }`}
-                        >
-                          <td className="px-3 py-2 text-slate-600">
-                            {formatContextDateTime(
-                              historyCandidate.created_at ||
-                                experiment.created_at,
-                            )}
-                          </td>
-                          <td className="px-3 py-2 text-slate-600">
-                            <div className="font-semibold">
-                              {formatShortId(
-                                experiment.baseline_summary?.baseline_id ||
-                                  experiment.baseline_node_run_id,
-                              )}
-                            </div>
-                            <div className="text-[11px] text-slate-400">
-                              {experiment.baseline_summary?.model || '-'}
-                            </div>
-                          </td>
-                          <td className="px-3 py-2 font-semibold text-slate-900">
-                            <button
-                              type="button"
-                              aria-label={`${
-                                historyCandidate.name || '이름 없는 후보'
-                              } 선택`}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                setSelectedHistoryTarget({
-                                  type: 'history',
-                                  experimentId: experiment.experiment_id,
-                                  candidateId: historyCandidate.candidate_id,
-                                });
-                              }}
-                              className="text-left font-semibold text-slate-900 hover:text-emerald-700"
-                            >
-                              {historyCandidate.name || '이름 없는 후보'}
-                            </button>
-                          </td>
-                          <td className="px-3 py-2">
-                            {historyCandidate.model_id || '-'}
-                          </td>
-                          <td className="px-3 py-2">
-                            {formatCandidateCost(historyCandidate.total_cost)}
-                          </td>
-                          <td className="px-3 py-2">
-                            {typeof historyCandidate.total_tokens === 'number'
-                              ? formatMetric(historyCandidate.total_tokens)
-                              : '-'}
-                          </td>
-                          <td className="px-3 py-2">
-                            {typeof historyCandidate.latency_ms === 'number'
-                              ? formatLatency(historyCandidate.latency_ms)
-                              : '-'}
-                          </td>
-                          <td className="px-3 py-2">
-                            {schemaStatusLabelOf(
-                              historyCandidate.schema_status,
-                            )}
-                          </td>
-                          <td className="px-3 py-2">
-                            {downstreamStateLabelOf(
-                              historyCandidate.downstream_state,
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    {!candidateResult &&
-                    !isLoadingHistory &&
-                    historyRows.length === 0 ? (
-                      <tr>
-                        <td
-                          colSpan={9}
-                          className="px-3 py-6 text-center font-semibold text-slate-500"
-                        >
-                          조건에 맞는 이전 실험 이력이 없습니다.
-                        </td>
-                      </tr>
-                    ) : null}
-                    {isLoadingHistory ? (
-                      <tr>
-                        <td
-                          colSpan={9}
-                          className="px-3 py-6 text-center font-semibold text-slate-500"
-                        >
-                          이전 실험 이력을 불러오는 중입니다.
-                        </td>
-                      </tr>
-                    ) : null}
-                  </tbody>
-                </table>
-              </div>
-                </>
-              )}
-            </section>
+                  : null
+              }
+            />
 
             {!candidateResult && !selectedHistoryRow ? (
               <section className="rounded-lg border border-dashed border-amber-200 bg-amber-50 p-5 text-sm font-semibold leading-relaxed text-amber-800">
@@ -2334,7 +1900,10 @@ export default function CostOptimizerPlaygroundPage() {
                             <td className="px-3 py-2">{row.baseline}</td>
                             <td className="px-3 py-2">{row.candidate}</td>
                             <td className="px-3 py-2">
-                              <div className={`font-bold ${row.change.tone}`}>
+                              <div
+                                className={`font-bold ${row.change.tone}`}
+                                title={row.change.detail}
+                              >
                                 {row.change.summary}
                               </div>
                             </td>
