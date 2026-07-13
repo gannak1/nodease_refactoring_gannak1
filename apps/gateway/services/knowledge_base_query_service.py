@@ -257,6 +257,8 @@ class KnowledgeBaseQueryService:
         user_id: UUID,
         organization_id: UUID | None,
         schema_ready: bool = False,
+        top_k: int | None = None,
+        similarity_threshold: float | None = None,
     ) -> KnowledgeBaseResponse:
         if not schema_ready:
             self.ensure_schema_ready(KNOWLEDGE_BASE_MUTATION_COLUMNS)
@@ -270,6 +272,12 @@ class KnowledgeBaseQueryService:
             embedding_model=embedding_model,
             organization_id=organization_id,
             user_id=user_id,
+            **({"top_k": top_k} if top_k is not None else {}),
+            **(
+                {"similarity_threshold": similarity_threshold}
+                if similarity_threshold is not None
+                else {}
+            ),
         )
         creator_permission = UserKnowledgePermission(
             id=uuid.uuid4(),
@@ -444,6 +452,86 @@ class KnowledgeBaseQueryService:
             )
         return response
 
+    def list_authorized(
+        self,
+        *,
+        user_id: UUID,
+        organization_id: UUID,
+        schema_ready: bool = False,
+    ) -> list[KnowledgeBaseResponse]:
+        """List active KBs whose safe metadata is readable by the caller."""
+
+        if not schema_ready:
+            self.ensure_schema_ready(KNOWLEDGE_BASE_MUTATION_COLUMNS)
+        kbs = (
+            self.db.query(KnowledgeBase)
+            .filter(
+                KnowledgeBase.organization_id == organization_id,
+                KnowledgeBase.lifecycle_state == "active",
+            )
+            .order_by(KnowledgeBase.created_at.desc())
+            .all()
+        )
+        if not kbs:
+            return []
+        helper = self._permission_helper_factory(
+            self.db,
+            user_id=user_id,
+            organization_id=organization_id,
+        )
+        decisions = helper.bulk_evaluate_kb_action(kbs, "read")
+        allowed = [
+            kb
+            for kb in kbs
+            if decisions.get(kb.id) is not None and decisions[kb.id].allowed
+        ]
+        if not allowed:
+            return []
+
+        stats = self._document_stats_by_kb_id([kb.id for kb in allowed])
+        responses = []
+        for kb in allowed:
+            document_count, last_updated_at, source_types = stats.get(
+                kb.id, (0, None, [])
+            )
+            responses.append(
+                KnowledgeBaseResponse(
+                    id=kb.id,
+                    organization_id=kb.organization_id,
+                    name=kb.name,
+                    description=kb.description,
+                    safe_metadata=_safe_metadata_dict(kb.safe_metadata),
+                    document_count=document_count,
+                    created_at=kb.created_at,
+                    updated_at=_max_datetime_or_now(
+                        kb.updated_at, last_updated_at, kb.created_at
+                    ),
+                    source_types=_clean_source_types(source_types),
+                    embedding_model=kb.embedding_model or DEFAULT_EMBEDDING_MODEL,
+                )
+            )
+        return responses
+
+    def _document_stats_by_kb_id(
+        self,
+        knowledge_base_ids: list[UUID],
+    ) -> dict[UUID, tuple[int, datetime | None, list]]:
+        rows = (
+            self.db.query(
+                Document.knowledge_base_id,
+                func.count(Document.id),
+                func.max(Document.updated_at),
+                func.array_agg(Document.source_type),
+            )
+            .filter(Document.knowledge_base_id.in_(knowledge_base_ids))
+            .group_by(Document.knowledge_base_id)
+            .all()
+        )
+        return {
+            kb_id: (int(count or 0), last_updated_at, source_types or [])
+            for kb_id, count, last_updated_at, source_types in rows
+        }
+
     def get_detail(
         self,
         kb_id: UUID,
@@ -453,6 +541,11 @@ class KnowledgeBaseQueryService:
         has_organization_id: bool,
         can_edit_settings: bool = True,
         can_manage_safe_metadata: bool = True,
+        can_read: bool = True,
+        can_use: bool = False,
+        can_write: bool = False,
+        can_read_content: bool = False,
+        can_manage: bool = False,
     ) -> KnowledgeBaseDetailResponse:
         organization_id_column = (
             KnowledgeBase.organization_id
@@ -582,6 +675,11 @@ class KnowledgeBaseQueryService:
             documents=doc_responses,
             can_edit_settings=can_edit_settings,
             can_manage_safe_metadata=can_manage_safe_metadata,
+            can_read=can_read,
+            can_use=can_use,
+            can_write=can_write,
+            can_read_content=can_read_content,
+            can_manage=can_manage,
         )
 
     def get_llm_rag_selectability(

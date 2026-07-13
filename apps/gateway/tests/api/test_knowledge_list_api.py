@@ -117,109 +117,134 @@ class FakeDetailKnowledgeDb:
         return FakeDetailQuery(all_value=self.doc_rows)
 
 
-def test_knowledge_list_handles_documentless_legacy_kb_without_500(monkeypatch):
-    kb_id = uuid.uuid4()
-    row = (
-        kb_id,
-        None,
-        "문서 없는 KB",
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
-    fake_db = FakeKnowledgeDb([row])
+def test_knowledge_list_uses_active_org_authorized_service(monkeypatch):
+    organization_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    captured = {}
+
+    class FakeAuthorizedService:
+        def list_authorized(self, *, user_id, organization_id, schema_ready):
+            captured["service"] = (user_id, organization_id, schema_ready)
+            return []
+
     monkeypatch.setattr(
         knowledge_endpoint,
-        "_table_has_column",
-        lambda _db, _table_name, _column_name: False,
+        "_ensure_knowledge_schema_columns",
+        lambda *_args, **_kwargs: captured.setdefault("schema_checked", True),
+    )
+    def fake_resolve(_db, _request, raw, caller_id):
+        captured["resolver"] = (raw, caller_id)
+        return organization_id
+
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "resolve_active_organization_id",
+        fake_resolve,
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_knowledge_base_query_service",
+        lambda _db: FakeAuthorizedService(),
     )
 
     response = knowledge_endpoint.list_knowledge_bases(
-        request=None,
-        x_organization_id=None,
-        db=fake_db,
-        current_user=SimpleNamespace(id=uuid.uuid4()),
+        request=SimpleNamespace(),
+        x_organization_id=str(organization_id),
+        db=object(),
+        current_user=SimpleNamespace(id=user_id),
     )
 
-    assert all(
-        entity is not knowledge_endpoint.KnowledgeBase
-        for entity in fake_db.query_entities
-    )
-    assert len(response) == 1
-    assert response[0].id == kb_id
-    assert response[0].organization_id is None
-    assert response[0].document_count == 0
-    assert response[0].source_types == []
-    assert response[0].embedding_model == DEFAULT_EMBEDDING_MODEL
-    assert response[0].created_at is not None
-    assert response[0].updated_at is not None
+    assert response == []
+    assert captured["schema_checked"] is True
+    assert captured["resolver"] == (str(organization_id), user_id)
+    assert captured["service"] == (user_id, organization_id, True)
 
 
-def test_knowledge_list_normalizes_source_type_values(monkeypatch):
+def test_knowledge_list_returns_authorized_service_projection(monkeypatch):
     kb_id = uuid.uuid4()
     organization_id = uuid.uuid4()
-    created_at = datetime(2026, 7, 7, 1, tzinfo=timezone.utc)
-    kb_updated_at = datetime(2026, 7, 7, 2, tzinfo=timezone.utc)
-    doc_updated_at = datetime(2026, 7, 7, 3, tzinfo=timezone.utc)
-    row = (
-        kb_id,
-        organization_id,
-        "휴가 정책 KB",
-        "휴가 정책",
-        "custom-embedding",
-        created_at,
-        kb_updated_at,
-        2,
-        doc_updated_at,
-        [SourceType.FILE, "API", None, SourceType.FILE],
+    now = datetime(2026, 7, 7, 1, tzinfo=timezone.utc)
+    expected = SimpleNamespace(
+        id=kb_id,
+        organization_id=organization_id,
+        name="휴가 정책 KB",
+        description="휴가 정책",
+        safe_metadata={},
+        document_count=2,
+        created_at=now,
+        updated_at=now,
+        source_types=["FILE", "API"],
+        embedding_model="custom-embedding",
+    )
+
+    class FakeAuthorizedService:
+        def list_authorized(self, **_kwargs):
+            return [expected]
+
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_ensure_knowledge_schema_columns",
+        lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
         knowledge_endpoint,
-        "_table_has_column",
-        lambda _db, _table_name, _column_name: True,
+        "resolve_active_organization_id",
+        lambda *_args, **_kwargs: organization_id,
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_knowledge_base_query_service",
+        lambda _db: FakeAuthorizedService(),
     )
 
     response = knowledge_endpoint.list_knowledge_bases(
-        request=None,
+        request=SimpleNamespace(),
         x_organization_id=None,
-        db=FakeKnowledgeDb([row]),
+        db=object(),
         current_user=SimpleNamespace(id=uuid.uuid4()),
     )
 
-    assert len(response) == 1
-    assert response[0].organization_id == organization_id
-    assert response[0].document_count == 2
-    assert response[0].created_at == created_at
-    assert response[0].updated_at == doc_updated_at
-    assert response[0].source_types == ["FILE", "API"]
-    assert response[0].embedding_model == "custom-embedding"
+    assert response == [expected]
 
 
-def test_knowledge_list_route_returns_legacy_safe_response(monkeypatch):
+def test_knowledge_list_route_returns_authorized_safe_response(monkeypatch):
     kb_id = uuid.uuid4()
-    row = (
-        kb_id,
-        None,
-        "문서 없는 KB",
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
-    fake_db = FakeKnowledgeDb([row])
+    organization_id = uuid.uuid4()
+    now = datetime(2026, 7, 7, 1, tzinfo=timezone.utc)
+
+    class FakeAuthorizedService:
+        def list_authorized(self, **_kwargs):
+            return [
+                {
+                    "id": kb_id,
+                    "organization_id": organization_id,
+                    "name": "문서 없는 KB",
+                    "description": None,
+                    "safe_metadata": {},
+                    "document_count": 0,
+                    "created_at": now,
+                    "updated_at": now,
+                    "source_types": [],
+                    "embedding_model": DEFAULT_EMBEDDING_MODEL,
+                }
+            ]
+
     monkeypatch.setattr(
         knowledge_endpoint,
-        "_table_has_column",
-        lambda _db, _table_name, _column_name: False,
+        "_ensure_knowledge_schema_columns",
+        lambda *_args, **_kwargs: None,
     )
-    app.dependency_overrides[knowledge_endpoint.get_db] = lambda: fake_db
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "resolve_active_organization_id",
+        lambda *_args, **_kwargs: organization_id,
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_knowledge_base_query_service",
+        lambda _db: FakeAuthorizedService(),
+    )
+    app.dependency_overrides[knowledge_endpoint.get_db] = lambda: object()
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=uuid.uuid4())
     try:
         response = TestClient(app).get("/api/v1/knowledge")
@@ -231,13 +256,13 @@ def test_knowledge_list_route_returns_legacy_safe_response(monkeypatch):
     assert body == [
         {
             "id": str(kb_id),
-            "organization_id": None,
+            "organization_id": str(organization_id),
             "name": "문서 없는 KB",
             "description": None,
             "safe_metadata": {},
             "document_count": 0,
-            "created_at": body[0]["created_at"],
-            "updated_at": body[0]["updated_at"],
+            "created_at": now.isoformat().replace("+00:00", "Z"),
+            "updated_at": now.isoformat().replace("+00:00", "Z"),
             "source_types": [],
             "embedding_model": DEFAULT_EMBEDDING_MODEL,
         }
@@ -245,39 +270,14 @@ def test_knowledge_list_route_returns_legacy_safe_response(monkeypatch):
 
 
 def test_knowledge_list_scopes_to_active_organization_header(monkeypatch):
-    kb_id = uuid.uuid4()
     organization_id = uuid.uuid4()
     user_id = uuid.uuid4()
-    row = (
-        kb_id,
-        organization_id,
-        "조직 KB",
-        None,
-        "text-embedding-3-small",
-        datetime(2026, 7, 7, 1, tzinfo=timezone.utc),
-        None,
-        0,
-        None,
-        [],
-    )
     captured = {}
 
     monkeypatch.setattr(
         knowledge_endpoint,
-        "_knowledge_schema_missing_columns",
-        lambda _db, _required: {},
-    )
-    monkeypatch.setattr(
-        knowledge_endpoint,
-        "get_user_primary_organization_id",
-        lambda _db, _user_id: uuid.uuid4(),
-    )
-    monkeypatch.setattr(
-        knowledge_endpoint,
-        "_table_has_column",
-        lambda _db, table_name, column_name: (
-            table_name == "knowledge_bases" and column_name == "organization_id"
-        ),
+        "_ensure_knowledge_schema_columns",
+        lambda *_args, **_kwargs: None,
     )
 
     def fake_resolve_active_organization_id(db, request, raw, current_user_id):
@@ -291,19 +291,30 @@ def test_knowledge_list_scopes_to_active_organization_header(monkeypatch):
         fake_resolve_active_organization_id,
     )
 
+    class FakeAuthorizedService:
+        def list_authorized(self, *, user_id, organization_id, schema_ready):
+            captured["service"] = (user_id, organization_id, schema_ready)
+            return []
+
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_knowledge_base_query_service",
+        lambda _db: FakeAuthorizedService(),
+    )
+
     response = knowledge_endpoint.list_knowledge_bases(
-        request=None,
+        request=SimpleNamespace(),
         x_organization_id=str(organization_id),
-        db=FakeKnowledgeDb([row]),
+        db=object(),
         current_user=SimpleNamespace(id=user_id),
     )
 
     assert captured == {
         "raw": str(organization_id),
         "current_user_id": user_id,
+        "service": (user_id, organization_id, True),
     }
-    assert len(response) == 1
-    assert response[0].organization_id == organization_id
+    assert response == []
 
 
 def test_llm_selectable_knowledge_route_uses_active_org_and_service(monkeypatch):
@@ -724,49 +735,18 @@ def test_knowledge_create_reports_schema_introspection_failure_without_insert(
     assert fake_db.committed is False
 
 
-def test_knowledge_detail_uses_scoped_safe_column_query(monkeypatch):
+def test_knowledge_detail_uses_read_gate_and_returns_capabilities(monkeypatch):
     knowledge_base_id = uuid.uuid4()
     organization_id = uuid.uuid4()
     user_id = uuid.uuid4()
     now = datetime(2026, 7, 7, 1, tzinfo=timezone.utc)
     doc_id = uuid.uuid4()
-    fake_db = FakeDetailKnowledgeDb(
-        (
-            knowledge_base_id,
-            organization_id,
-            "사내 정책 KB",
-            "테스트 상세",
-            "text-embedding-3-small",
-            now,
-            None,
-            None,
-        ),
-        [
-            (
-                doc_id,
-                "policy.pdf",
-                "completed",
-                now,
-                None,
-                None,
-                SourceType.FILE,
-                {"category": "policy"},
-            )
-        ],
-    )
     captured = {}
 
     monkeypatch.setattr(
         knowledge_endpoint,
-        "_knowledge_schema_missing_columns",
-        lambda _db, _required: {},
-    )
-    monkeypatch.setattr(
-        knowledge_endpoint,
-        "_table_has_column",
-        lambda _db, table_name, column_name: (
-            table_name == "knowledge_bases" and column_name == "organization_id"
-        ),
+        "_ensure_knowledge_schema_columns",
+        lambda *_args, **_kwargs: None,
     )
 
     def fake_resolve_active_organization_id(db, request, raw, current_user_id):
@@ -779,7 +759,72 @@ def test_knowledge_detail_uses_scoped_safe_column_query(monkeypatch):
         "resolve_active_organization_id",
         fake_resolve_active_organization_id,
     )
-    app.dependency_overrides[knowledge_endpoint.get_db] = lambda: fake_db
+
+    kb = SimpleNamespace(id=knowledge_base_id)
+
+    class FakeAuthorizationService:
+        def load_kb(self, kb_id, action):
+            captured["authorization"] = (kb_id, action)
+            return kb
+
+        def capabilities(self, loaded_kb):
+            assert loaded_kb is kb
+            return SimpleNamespace(
+                can_read=True,
+                can_use=True,
+                can_write=True,
+                can_read_content=True,
+                can_manage=False,
+            )
+
+    class FakeDetailService:
+        def get_detail(self, kb_id, **kwargs):
+            captured["detail"] = (kb_id, kwargs)
+            return {
+                "id": knowledge_base_id,
+                "organization_id": organization_id,
+                "name": "사내 정책 KB",
+                "description": "테스트 상세",
+                "safe_metadata": {},
+                "document_count": 1,
+                "created_at": now,
+                "updated_at": now,
+                "source_types": ["FILE"],
+                "embedding_model": "text-embedding-3-small",
+                "documents": [
+                    {
+                        "id": doc_id,
+                        "filename": "policy.pdf",
+                        "status": "completed",
+                        "created_at": now,
+                        "updated_at": now,
+                        "error_message": None,
+                        "chunk_count": 0,
+                        "token_count": 0,
+                        "source_type": "FILE",
+                        "meta_info": {},
+                    }
+                ],
+                "can_edit_settings": True,
+                "can_manage_safe_metadata": False,
+                "can_read": True,
+                "can_use": True,
+                "can_write": True,
+                "can_read_content": True,
+                "can_manage": False,
+            }
+
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_knowledge_authorization_service",
+        lambda *_args, **_kwargs: FakeAuthorizationService(),
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_knowledge_base_query_service",
+        lambda _db: FakeDetailService(),
+    )
+    app.dependency_overrides[knowledge_endpoint.get_db] = lambda: object()
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
     try:
         response = TestClient(app).get(
@@ -793,6 +838,22 @@ def test_knowledge_detail_uses_scoped_safe_column_query(monkeypatch):
     assert captured == {
         "raw": str(organization_id),
         "current_user_id": user_id,
+        "authorization": (knowledge_base_id, "read"),
+        "detail": (
+            knowledge_base_id,
+            {
+                "user_id": None,
+                "organization_scope": organization_id,
+                "has_organization_id": True,
+                "can_edit_settings": True,
+                "can_manage_safe_metadata": False,
+                "can_read": True,
+                "can_use": True,
+                "can_write": True,
+                "can_read_content": True,
+                "can_manage": False,
+            },
+        ),
     }
     body = response.json()
     assert body["id"] == str(knowledge_base_id)
@@ -801,47 +862,16 @@ def test_knowledge_detail_uses_scoped_safe_column_query(monkeypatch):
     assert body["source_types"] == ["FILE"]
     assert body["documents"][0]["id"] == str(doc_id)
     assert body["documents"][0]["chunk_count"] == 0
-    assert all(
-        entity is not knowledge_endpoint.KnowledgeBase
-        for query_entities in fake_db.query_entities
-        for entity in query_entities
-    )
+    assert body["can_write"] is True
+    assert body["can_manage"] is False
 
 
-def test_knowledge_detail_uses_legacy_safe_query_without_organization_column(
-    monkeypatch,
-):
+def test_knowledge_detail_fails_closed_when_required_schema_is_missing(monkeypatch):
     knowledge_base_id = uuid.uuid4()
-    now = datetime(2026, 7, 7, 1, tzinfo=timezone.utc)
-    doc_id = uuid.uuid4()
-    fake_db = FakeDetailKnowledgeDb(
-        (
-            knowledge_base_id,
-            None,
-            "레거시 KB",
-            None,
-            None,
-            now,
-            None,
-            None,
-        ),
-        [
-            (
-                doc_id,
-                "legacy.pdf",
-                "completed",
-                now,
-                None,
-                None,
-                None,
-                None,
-            )
-        ],
-    )
     monkeypatch.setattr(
         knowledge_endpoint,
-        "_table_has_column",
-        lambda _db, _table_name, _column_name: False,
+        "_knowledge_schema_missing_columns",
+        lambda *_args, **_kwargs: {"knowledge_bases": ["organization_id"]},
     )
     monkeypatch.setattr(
         knowledge_endpoint,
@@ -849,23 +879,16 @@ def test_knowledge_detail_uses_legacy_safe_query_without_organization_column(
         lambda *_args, **_kwargs: pytest.fail("organization resolver not expected"),
     )
 
-    app.dependency_overrides[knowledge_endpoint.get_db] = lambda: fake_db
+    app.dependency_overrides[knowledge_endpoint.get_db] = lambda: object()
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=uuid.uuid4())
     try:
         response = TestClient(app).get(f"/api/v1/knowledge/{knowledge_base_id}")
     finally:
         app.dependency_overrides = {}
 
-    assert response.status_code == 200
+    assert response.status_code == 503
     body = response.json()
-    assert body["id"] == str(knowledge_base_id)
-    assert body["organization_id"] is None
-    assert body["embedding_model"] == DEFAULT_EMBEDDING_MODEL
-    assert body["source_types"] == []
-    assert body["documents"][0]["chunk_count"] == 0
-    assert body["documents"][0]["source_type"] == "FILE"
-    assert all(
-        entity is not knowledge_endpoint.KnowledgeBase
-        for query_entities in fake_db.query_entities
-        for entity in query_entities
-    )
+    assert body["error"]["code"] == "knowledge.schema_not_ready"
+    assert body["error"]["details"]["missing_columns"] == {
+        "knowledge_bases": ["organization_id"]
+    }

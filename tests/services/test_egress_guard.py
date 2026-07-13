@@ -832,11 +832,22 @@ def test_analyze_document_returns_safe_error(monkeypatch):
             raise RuntimeError("path=C:/secret/file.pdf")
 
     monkeypatch.setattr(rag_endpoint, "IngestionService", FailingIngestionService)
+    monkeypatch.setattr(
+        rag_endpoint,
+        "_authorize_knowledge_document_action",
+        lambda *_args, **_kwargs: (object(), object()),
+    )
+    request = SimpleNamespace(
+        state=SimpleNamespace(request_id="req"),
+        url=SimpleNamespace(path="/api/v1/rag/document/document-id/analyze"),
+    )
 
     with pytest.raises(Exception) as exc_info:
         asyncio.run(
             rag_endpoint.analyze_document(
                 document_id="document-id",
+                request=request,
+                x_organization_id="33333333-3333-3333-3333-333333333333",
                 db=object(),
                 current_user=SimpleNamespace(id="user-id"),
             )
@@ -896,7 +907,7 @@ def test_safe_document_filename_strips_path_and_rejects_active_extension():
     assert getattr(exc_info.value, "status_code", None) == 400
 
 
-def test_upload_existing_kb_requires_owner_or_write_permission(monkeypatch):
+def test_upload_existing_kb_requires_write_permission_without_owner_bypass(monkeypatch):
     user_id = "11111111-1111-1111-1111-111111111111"
     owner_id = "22222222-2222-2222-2222-222222222222"
     org_id = "33333333-3333-3333-3333-333333333333"
@@ -910,40 +921,66 @@ def test_upload_existing_kb_requires_owner_or_write_permission(monkeypatch):
         id=kb_id,
         user_id=owner_id,
         organization_id=org_id,
+        embedding_model="text-embedding-3-small",
     )
-    monkeypatch.setattr(rag_endpoint, "has_organization_scope_access", lambda *a, **k: True)
+
+    class DeniedAuthorizationService:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def load_kb(self, requested_kb_id, action):
+            assert requested_kb_id == kb_id
+            assert action == "write"
+            raise rag_endpoint.KnowledgePermissionDenied
+
     monkeypatch.setattr(
         rag_endpoint,
-        "get_effective_knowledge_base_auth_state",
-        lambda *a, **k: "none",
-    )
-    monkeypatch.setattr(
-        rag_endpoint,
-        "record_resource_permission_denied",
-        lambda **kwargs: None,
+        "KnowledgeAuthorizationService",
+        DeniedAuthorizationService,
     )
 
     with pytest.raises(Exception) as denied:
-        rag_endpoint._authorize_upload_knowledge_base_write(
+        rag_endpoint._get_or_create_knowledge_base(
             request,
             db=object(),
             user=user,
-            kb=kb,
+            organization_id=org_id,
+            kb_id=kb_id,
+            name=None,
+            description=None,
+            ai_model=None,
+            top_k=5,
+            similarity_threshold=0.7,
+            file=None,
         )
 
     assert getattr(denied.value, "status_code", None) == 403
 
+    class AllowedAuthorizationService(DeniedAuthorizationService):
+        def load_kb(self, requested_kb_id, action):
+            assert requested_kb_id == kb_id
+            assert action == "write"
+            return kb
+
     monkeypatch.setattr(
         rag_endpoint,
-        "get_effective_knowledge_base_auth_state",
-        lambda *a, **k: "builder",
+        "KnowledgeAuthorizationService",
+        AllowedAuthorizationService,
     )
-    rag_endpoint._authorize_upload_knowledge_base_write(
+    result = rag_endpoint._get_or_create_knowledge_base(
         request,
         db=object(),
         user=user,
-        kb=kb,
+        organization_id=org_id,
+        kb_id=kb_id,
+        name=None,
+        description=None,
+        ai_model=None,
+        top_k=5,
+        similarity_threshold=0.7,
+        file=None,
     )
+    assert result == (kb_id, "text-embedding-3-small")
 
 
 def test_uploaded_active_content_is_not_served_inline():

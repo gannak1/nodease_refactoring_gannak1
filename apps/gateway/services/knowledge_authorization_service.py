@@ -94,8 +94,14 @@ class KnowledgeAuthorizationService:
         knowledge_base_id: uuid.UUID,
         document_id: uuid.UUID,
         action: str,
+        *,
+        domain_action: str | None = None,
     ) -> tuple[KnowledgeBase, Document]:
-        kb = self.load_kb(knowledge_base_id, action)
+        kb = self.load_kb(
+            knowledge_base_id,
+            action,
+            domain_action=domain_action,
+        )
         document = (
             self.db.query(Document)
             .filter(

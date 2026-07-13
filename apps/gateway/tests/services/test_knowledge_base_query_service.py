@@ -16,6 +16,7 @@ from apps.gateway.services.knowledge_base_query_service import (
     evaluate_llm_rag_selectability,
 )
 from apps.shared.db.models.knowledge import SourceType
+from apps.shared.schemas.knowledge import KnowledgePermissionDecision
 from apps.shared.services.knowledge_schema_readiness import (
     KnowledgeSchemaReadinessResult,
 )
@@ -65,6 +66,28 @@ class FakeSelectableDb:
     def query(self, *entities):
         self.query_entities.append(entities)
         return FakeKnowledgeQuery(self.kbs)
+
+
+class FakeAuthorizedListDb:
+    def __init__(self, kbs, document_stats):
+        self.kbs = kbs
+        self.document_stats = document_stats
+        self.query_count = 0
+
+    def query(self, *_entities):
+        self.query_count += 1
+        rows = self.kbs if self.query_count == 1 else self.document_stats
+        return FakeKnowledgeQuery(rows)
+
+
+class FakeAuthorizedPermissionHelper:
+    def __init__(self, decisions):
+        self.decisions = decisions
+        self.actions = []
+
+    def bulk_evaluate_kb_action(self, kbs, action):
+        self.actions.append((list(kbs), action))
+        return self.decisions
 
 
 class FakeDetailQuery:
@@ -245,6 +268,94 @@ def test_list_normalizes_string_array_source_types():
     )
 
     assert response[0].source_types == ["FILE", "API"]
+
+
+def test_list_authorized_returns_only_active_org_kbs_with_read_permission():
+    organization_id = uuid.uuid4()
+    allowed_id = uuid.uuid4()
+    denied_id = uuid.uuid4()
+    now = datetime(2026, 7, 13, 1, tzinfo=timezone.utc)
+    document_updated_at = datetime(2026, 7, 13, 2, tzinfo=timezone.utc)
+    allowed = SimpleNamespace(
+        id=allowed_id,
+        organization_id=organization_id,
+        lifecycle_state="active",
+        source_identity_id=None,
+        name="읽기 허용 KB",
+        description=None,
+        safe_metadata={"safe_label": "허용"},
+        embedding_model="text-embedding-3-small",
+        created_at=now,
+        updated_at=now,
+    )
+    denied = SimpleNamespace(
+        id=denied_id,
+        organization_id=organization_id,
+        lifecycle_state="active",
+        source_identity_id=None,
+        name="읽기 거부 KB",
+        description=None,
+        safe_metadata={},
+        embedding_model="text-embedding-3-small",
+        created_at=now,
+        updated_at=now,
+    )
+    permission_helper = FakeAuthorizedPermissionHelper(
+        {
+            allowed_id: KnowledgePermissionDecision(
+                allowed=True,
+                resource_visibility="visible",
+            ),
+            denied_id: KnowledgePermissionDecision(allowed=False),
+        }
+    )
+    db = FakeAuthorizedListDb(
+        [allowed, denied],
+        [(allowed_id, 2, document_updated_at, [SourceType.FILE, "API"])],
+    )
+
+    response = KnowledgeBaseQueryService(
+        db,
+        permission_helper_factory=lambda *_args, **_kwargs: permission_helper,
+    ).list_authorized(
+        user_id=uuid.uuid4(),
+        organization_id=organization_id,
+        schema_ready=True,
+    )
+
+    assert permission_helper.actions == [([allowed, denied], "read")]
+    assert [item.id for item in response] == [allowed_id]
+    assert response[0].document_count == 2
+    assert response[0].updated_at == document_updated_at
+    assert response[0].source_types == ["FILE", "API"]
+    assert response[0].safe_metadata == {"safe_label": "허용"}
+    assert db.query_count == 2
+
+
+def test_list_authorized_does_not_query_document_stats_when_all_kbs_are_hidden():
+    organization_id = uuid.uuid4()
+    kb = SimpleNamespace(
+        id=uuid.uuid4(),
+        organization_id=organization_id,
+        lifecycle_state="active",
+        source_identity_id=None,
+    )
+    permission_helper = FakeAuthorizedPermissionHelper(
+        {kb.id: KnowledgePermissionDecision(allowed=False)}
+    )
+    db = FakeAuthorizedListDb([kb], [])
+
+    response = KnowledgeBaseQueryService(
+        db,
+        permission_helper_factory=lambda *_args, **_kwargs: permission_helper,
+    ).list_authorized(
+        user_id=uuid.uuid4(),
+        organization_id=organization_id,
+        schema_ready=True,
+    )
+
+    assert response == []
+    assert db.query_count == 1
 
 
 def test_get_detail_maps_documents_without_full_kb_orm_load():

@@ -252,23 +252,28 @@ def test_search_test_chat_passes_top_k_and_organization_id(monkeypatch):
 def test_get_or_create_knowledge_base_uses_active_organization(monkeypatch):
     organization_id = uuid.uuid4()
     user_id = uuid.uuid4()
-    added = {}
+    captured = {}
+    kb_id = uuid.uuid4()
 
-    class FakeDb:
-        def add(self, value):
-            added["kb"] = value
+    class FakeCreateService:
+        def __init__(self, db):
+            captured["db"] = db
 
-        def commit(self):
-            added["committed"] = True
-
-        def refresh(self, value):
-            value.id = uuid.uuid4()
+        def create(self, payload, **kwargs):
+            captured["payload"] = payload
+            captured["kwargs"] = kwargs
+            return SimpleNamespace(
+                id=kb_id,
+                embedding_model="text-embedding-3-small",
+            )
 
     monkeypatch.setattr(rag, "has_organization_scope_access", lambda *args: True)
+    monkeypatch.setattr(rag, "KnowledgeBaseQueryService", FakeCreateService)
+    fake_db = object()
 
-    kb_id, model = rag._get_or_create_knowledge_base(
+    created_kb_id, model = rag._get_or_create_knowledge_base(
         _request(),
-        FakeDb(),
+        fake_db,
         SimpleNamespace(id=user_id),
         organization_id,
         None,
@@ -280,11 +285,17 @@ def test_get_or_create_knowledge_base_uses_active_organization(monkeypatch):
         None,
     )
 
-    assert kb_id == added["kb"].id
+    assert created_kb_id == kb_id
     assert model == "text-embedding-3-small"
-    assert added["kb"].organization_id == organization_id
-    assert added["kb"].user_id == user_id
-    assert added["committed"] is True
+    assert captured["db"] is fake_db
+    assert captured["payload"].name == "KB"
+    assert captured["payload"].description == "desc"
+    assert captured["kwargs"] == {
+        "user_id": user_id,
+        "organization_id": organization_id,
+        "top_k": 5,
+        "similarity_threshold": 0.7,
+    }
 
 
 def _agent_answer_payload() -> RAGAgentAnswerRequest:
