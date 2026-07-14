@@ -1,7 +1,7 @@
 # Connectors API Spec
 
 Status: Draft
-Verified Against: feature/mba-246 @ 785c423f38016c263fb7c8ab1661fbe1478761a8
+Verified Against: feature/mba-246 @ 899915842e2691a44b9bbf0b6322807a165857dd
 
 기본 경로: `/api/v1`
 
@@ -25,7 +25,7 @@ Verified Against: feature/mba-246 @ 785c423f38016c263fb7c8ab1661fbe1478761a8
 | `connection_name` | `string` | 예 | 연결 식별용 별칭이다. 저장되지 않는다. |
 | `type` | literal `"postgres"` | 예 | 다른 타입은 `422 validation.failed`다. |
 | `host` | `string` | 예 | DB host이다. |
-| `port` | literal `5432` | 아니오 | 기본값은 `5432`이며 다른 port는 strict validation 실패다. |
+| `port` | `integer (1..65535)` | 아니오 | 기본값은 `5432`다. 서버의 deployment-managed allowlist 밖 port는 `connector.target_not_allowed`로 실패한다. |
 | `database` | `string` | 예 | DB 이름이다. |
 | `username` | `string` | 예 | DB 사용자명이다. |
 | `password` | `string` | 예 | DB 비밀번호이다. 테스트 요청에서는 저장하지 않는다. |
@@ -58,7 +58,7 @@ Expected target/SSH/connection 실패는 `200 OK`, `success=false`로 반환한�
 1. 로그인과 active organization membership을 검증한다.
 2. Actual body, media type, UTF-8 JSON object와 strict field를 검증한다.
 3. Redis에서 user/organization/network rate와 global/organization/user concurrency lease를 원자적으로 획득한다.
-4. Host와 전체 DNS 결과가 public인지 검사하고 validated IP 하나로 연결을 고정한다.
+4. Port가 서버의 deployment-managed allowlist에 있는지 admission 전에 확인한다. Host와 전체 DNS 결과가 public인지 검사하고 validated IP 하나로 연결을 고정한다.
 5. 시스템 CA bundle의 실제 파일 경로를 명시한 TLS `verify-full`, connect 5초, statement 3초, API 10초 안에서 read-only `SELECT 1`을 한 번 수행한다. CA bundle이 없으면 DNS 전에 safe failure로 닫는다.
 6. Actual work 중 owner-safe heartbeat로 lease를 연장하고, safe result 반환 뒤에도 blocking work가 남아 있으면 completion까지 유지한 다음 owner lease를 해제한다.
 
@@ -70,6 +70,8 @@ Initial admission limits:
 | Organization | aligned 60초당 30 / active 4 |
 | Request network | aligned 60초당 20 |
 | Global | active 16 |
+
+Port allowlist는 `CONNECTOR_TEST_ALLOWED_PORTS`의 중복 없는 `1..65535` 정수 1~16개다. 기본·production은 `5432`, local development/demo는 현재 Docker PostgreSQL publish port인 `5432,54322,55432`를 사용한다. 이 설정은 서버/Helm 소유이며 request body로 확장할 수 없다.
 
 Security environment settings:
 

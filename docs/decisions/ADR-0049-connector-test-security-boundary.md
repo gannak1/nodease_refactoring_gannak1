@@ -15,7 +15,7 @@ Related ADRs: [ADR-0008](ADR-0008-audit-action-naming-standard.md), [ADR-0009](A
 2. 인증과 organization scope를 통과한 요청만 body를 읽는다. Gateway는 actual JSON body 32 KiB, 전체 receive 5초를 적용하고 repository edge는 exact route에 32 KiB, 5초 idle receive와 request-target log 억제를 적용한다.
 3. 구조 검증을 통과한 요청은 Redis의 단일 atomic acquire에서 user/organization/network fixed-window rate와 user/organization/global concurrency lease를 함께 판정한다. Redis 장애 또는 transport peer 부재는 network 전에 fail-closed한다.
 4. Admission identity는 dedicated key와 scope domain tag로 HMAC-SHA256 처리한다. Redis에는 digest와 최소 128-bit owner token만 저장한다. 실행 중 owner는 Redis time 기준 heartbeat로 lease를 연장하고, 완료 시 정확한 owner member만 제거한다. Process crash 때만 TTL로 회수한다.
-5. V1 strict probe는 public address로만 resolve되는 PostgreSQL host와 port `5432`만 허용한다. 모든 DNS 결과를 검증하고 실제 libpq 연결은 검증된 한 IP에 고정한다.
+5. V1 strict probe는 public address로만 resolve되는 PostgreSQL host와 deployment-managed port allowlist만 허용한다. 기본·production allowlist는 `5432`, local development/demo allowlist는 현재 Docker PostgreSQL publish port인 `5432,54322,55432`다. 요청자는 allowlist를 확장할 수 없다. 모든 DNS 결과를 검증하고 실제 libpq 연결은 검증된 한 IP에 고정한다.
 6. Public credential 전송은 시스템 CA bundle의 실제 파일 경로를 명시한 TLS `verify-full`을 사용한다. CA bundle이 없으면 DNS 전에 fail-closed한다. 요청당 connection attempt는 한 번이고, query는 read-only `SELECT 1`, result는 one-row scalar로 제한한다. Connect 5초, statement 3초, API 10초, lease 30초를 적용한다.
 7. SSH-enabled test는 host-key와 approved private-network 정책이 도입되기 전까지 `connector.ssh_probe_not_supported`로 network 전에 거부한다. 기존 persisted connector create/schema compatibility를 이 결정으로 제거하지 않는다.
 8. Expected target/connection 실패는 기존 `200 {success:false}` UX를 유지하되 server-owned static message와 allowlist reason code만 반환한다. 인증, ingress, admission과 schema 오류는 표준 HTTP error envelope을 사용한다.
@@ -33,7 +33,7 @@ Related ADRs: [ADR-0008](ADR-0008-audit-action-naming-standard.md), [ADR-0009](A
 | Organization concurrency | 4 |
 | Global concurrency | 16 |
 
-제한값은 positive bounded environment setting으로 조정할 수 있지만 `0`, non-finite 값, 과도한 상한이나 누락으로 production 경계를 비활성화할 수 없다. Rate window/user/organization/network rate 상한은 각각 `300/100/1000/1000`, concurrency 상한은 `128`, connect/statement/API/lease timeout 상한은 각각 `10/10/30/120`초다. Timeout 간 `connect < API`, `statement < API < lease` 관계도 유지한다.
+제한값은 positive bounded environment setting으로 조정할 수 있지만 `0`, non-finite 값, 과도한 상한이나 누락으로 production 경계를 비활성화할 수 없다. Rate window/user/organization/network rate 상한은 각각 `300/100/1000/1000`, concurrency 상한은 `128`, connect/statement/API/lease timeout 상한은 각각 `10/10/30/120`초다. Timeout 간 `connect < API`, `statement < API < lease` 관계도 유지한다. `CONNECTOR_TEST_ALLOWED_PORTS`는 중복 없는 `1..65535` 정수 1~16개만 허용하고 invalid 설정은 Gateway startup을 실패시킨다.
 
 Production admission HMAC key가 없거나 32 byte보다 짧으면 Gateway는 시작하지 않는다. Helm 배포는 별도 `secrets.connectorTestAdmissionHmacKey`를 32 byte 이상으로 제공해야 하며 auth/session key를 재사용하지 않는다.
 
@@ -55,6 +55,10 @@ Multi-replica 전체 상한을 보장하지 못하고 장애를 우회 조건으
 
 Public bastion 뒤 private target, SSH host-key와 remote target 승인이 정의되지 않아 채택하지 않았다.
 
+### 개발·데모에서 모든 포트 허용
+
+환경 이름만으로 outbound network oracle 경계를 제거할 수 있어 채택하지 않았다. 개발·데모도 설치자가 관리하는 정확한 port allowlist를 사용한다.
+
 ### 모든 connector outbound path를 한 번에 변경
 
 Connection ownership, create/schema/runtime compatibility와 Knowledge ingestion까지 범위가 확대되므로 unauthenticated test surface를 우선 닫는다.
@@ -62,9 +66,10 @@ Connection ownership, create/schema/runtime compatibility와 Knowledge ingestion
 ## 영향
 
 - `/connectors/test` caller는 로그인과 active organization header가 필요하다.
-- Custom DB port와 SSH-enabled test는 V1에서 실패한다.
+- Deployment allowlist 밖 DB port와 SSH-enabled test는 V1에서 실패한다.
 - Redis가 connector test의 필수 security dependency가 된다.
 - Helm 배포자는 `secrets.connectorTestAdmissionHmacKey`를 32 byte 이상의 별도 secret으로 provisioning해야 한다.
+- Helm 배포자는 `connectorTest.allowedPorts`로 1~16개의 정확한 허용 포트를 정한다. 기본·production은 `5432`다.
 - Connection row schema와 create/detail/schema owner 계약은 변경하지 않는다.
 - Client는 raw Axios/backend detail 대신 canonical status/reason만 표시한다.
 - DB migration은 없다.

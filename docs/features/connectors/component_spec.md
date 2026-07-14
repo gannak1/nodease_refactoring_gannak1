@@ -1,7 +1,7 @@
 # Connectors Component Spec
 
 Status: Draft
-Verified Against: feature/mba-246 @ 785c423f38016c263fb7c8ab1661fbe1478761a8
+Verified Against: feature/mba-246 @ 899915842e2691a44b9bbf0b6322807a165857dd
 
 ## Screens
 
@@ -39,7 +39,7 @@ File/page artifact connector는 egress guard 이후에도 artifact content를 tr
 
 - 출처: `apps/client/app/features/knowledge/components/create-knowledge-modal/DBConnectionForm.tsx`
 - 책임: PostgreSQL DB 연결 정보와 선택적 SSH tunnel 정보를 입력하고 연결 테스트를 실행한다.
-- Strict test는 public PostgreSQL port `5432`만 지원한다. SSH 입력은 create/schema compatibility를 위해 유지하지만 `ssh.enabled=true` test는 safe 미지원 결과를 표시한다.
+- Strict test는 public PostgreSQL과 deployment-managed port allowlist만 지원한다. UI 기본값은 `5432`이고 allowlist 밖 port는 safe target-policy 실패로 표시한다. SSH 입력은 create/schema compatibility를 위해 유지하지만 `ssh.enabled=true` test는 safe 미지원 결과를 표시한다.
 - 소비자:
   - `CreateKnowledgeModal`
   - Knowledge document DB source 설정 화면의 connection edit flow

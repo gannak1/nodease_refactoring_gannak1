@@ -1,7 +1,7 @@
 # Connectors Test Cases
 
 Status: Draft
-Verified Against: feature/mba-246 @ 785c423f38016c263fb7c8ab1661fbe1478761a8
+Verified Against: feature/mba-246 @ 899915842e2691a44b9bbf0b6322807a165857dd
 
 ## Minimum Failure Rule
 
@@ -72,7 +72,7 @@ Verified Against: feature/mba-246 @ 785c423f38016c263fb7c8ab1661fbe1478761a8
 | CONN-TC-A024 | Connector test actual body는 32 KiB와 total 5초로 제한되어야 한다. | Exact/over, missing/duplicate/invalid/understated length, chunked crossing, slow stream을 보낸다. | Exact는 parse, over는 413, invalid는 400, slow는 408; admission/probe 0회. |
 | CONN-TC-A025 | Connector test media/JSON은 strict해야 한다. | Wrong/duplicate content type, compressed body, BOM, invalid UTF-8/JSON, NaN, non-object root다. | `400/415`, raw body 비노출. |
 | CONN-TC-A026 | SSH-enabled test는 network 전에 거부되어야 한다. | Valid SSH credential shape와 `enabled=true`다. | `200`, `connector.ssh_probe_not_supported`, DNS/probe 0회. |
-| CONN-TC-A027 | Public PostgreSQL strict target만 허용해야 한다. | Non-5432, private/loopback/link-local/metadata/CGNAT/reserved/mapped/mixed DNS target이다. | `422` 또는 `connector.target_not_allowed`, DB connect 0회. |
+| CONN-TC-A027 | Public PostgreSQL과 deployment-managed port allowlist만 허용해야 한다. | Allowlist 밖 port, private/loopback/link-local/metadata/CGNAT/reserved/mapped/mixed DNS target이다. | `connector.target_not_allowed`, admission/DNS/DB connect 0회. |
 | CONN-TC-A028 | Connector test timeout 뒤 실제 blocking work가 끝날 때까지 lease를 유지해야 한다. | API 10초를 넘긴 future가 background에서 계속 실행되거나 실행 중 heartbeat가 필요하다. | Safe timeout 반환, owner-safe renewal 지속, completion 전 lease release 0회, completion 후 정확히 1회. |
 | CONN-TC-A029 | Admission 장애와 capacity 부족은 fail-closed해야 한다. | Redis timeout/script error, transport peer 없음, distributed/local concurrency full이다. | `429/503`, DNS/DB connect 0회, process-local unlimited fallback 없음. |
 | CONN-TC-A030 | Connector test audit는 bounded metadata만 가져야 한다. | Success/target denial/driver failure/timeout이다. | `connection.test`, organization/actor/result/reason/duration만 기록하고 target/credential/network 원문 없음. |
@@ -111,6 +111,7 @@ Verified Against: feature/mba-246 @ 785c423f38016c263fb7c8ab1661fbe1478761a8
 | CONN-TC-X003 | Redis admission은 multi-replica 경쟁에서도 rate/concurrency 상한을 넘지 않아야 한다. | 마지막 slot을 병렬 acquire하거나 wrong owner release, long-running heartbeat, stale lease, clock skew를 만든다. | Redis time/atomic script 기준 정확한 winner, owner-safe renew/release와 crash-only TTL recovery. |
 | CONN-TC-X004 | Admission key/member는 opaque해야 한다. | Redis key/hash/zset에 raw organization/user/network ID, host/database/username/password가 관찰된다. | HMAC identity와 random owner token만 존재. |
 | CONN-TC-X005 | Strict probe는 validated IP 한 곳에 시스템 CA bundle의 실제 파일 경로를 명시한 TLS `verify-full`로 한 번만 연결해야 한다. | Multiple public DNS, rebinding, first-attempt failure, plaintext/downgrade 또는 CA bundle 누락을 유도한다. | Pinned one-attempt, no fallback/retry, system CA와 hostname certificate 검증. CA 누락은 DNS 전에 safe failure. |
+| CONN-TC-X006 | Port allowlist는 배포 관리자만 bounded 설정할 수 있어야 한다. | Empty token, duplicate, non-integer, `0`, `65536`, 17개 port를 설정하거나 request로 allowlist 밖 port를 보낸다. | Invalid 설정은 startup 실패. Request는 safe target-policy 실패이며 admission/DNS/probe 0회. |
 
 ## Knowledge Source Connector Target Tests
 
