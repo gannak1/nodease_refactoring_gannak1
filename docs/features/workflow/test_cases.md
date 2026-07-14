@@ -731,6 +731,10 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 
 ## E2E Tests
 
+- `팀별 온보딩 문서 접근 제어 데모`는 active Internal Chatbot으로 seed되고 플랫폼개발팀·영업팀은 `operator`, People 팀은 `manager` Workflow 권한을 가진다.
+- 같은 배포를 김서연과 이준호가 실행할 때 LLM node의 direct KB 설정은 같아도 runtime candidate resolver 결과는 execution subject의 Team Knowledge 권한에 따라 달라야 한다. Workflow owner나 People 관리자 권한으로 fallback하면 실패한다.
+- 수동 PDF가 아직 업로드되지 않은 빈 KB 상태에서는 LLM node가 다른 팀 자료를 추측하지 않고 safe no-evidence 응답으로 닫혀야 한다.
+
 - 배포된 workflow의 LLM node의 RAG 옵션은 execution subject가 있으면 해당 subject 기준으로 KB permission/source ACL gate를 다시 평가하고, subject가 없으면 anonymous public-only gate를 사용한다. Builder actor 권한으로 fallback하지 않는다.
 - Evidence sufficiency가 insufficient인 경우 workflow는 추측 답변을 생성하지 않고 safe no-result 응답 또는 명시된 분기 결과를 반환한다.
 - Query rewrite가 켜진 LLM node의 RAG 옵션도 권한 없는 KB 또는 requester source authorization denied 문서를 prompt, citation, trace에 포함하지 않는다.

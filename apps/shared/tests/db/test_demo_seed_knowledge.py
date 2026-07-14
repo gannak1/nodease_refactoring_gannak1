@@ -223,6 +223,125 @@ def test_department_onboarding_app_is_active_internal_chatbot(monkeypatch):
     assert call["deployment_type"] is demo_seed.DeploymentType.INTERNAL_CHATBOT
 
 
+def test_team_onboarding_access_control_users_match_presentation_scenario():
+    specs = {spec.key: spec for spec in demo_seed.USER_SPECS}
+
+    assert specs["onboarding_platform_rookie"].email == "seoyeon.kim@nodease.demo"
+    assert specs["onboarding_platform_rookie"].name == "김서연"
+    assert specs["onboarding_platform_rookie"].teams == ("onboarding_platform",)
+    assert specs["onboarding_sales_rookie"].email == "junho.lee@nodease.demo"
+    assert specs["onboarding_sales_rookie"].name == "이준호"
+    assert specs["onboarding_sales_rookie"].teams == ("onboarding_sales",)
+    assert specs["onboarding_people_manager"].email == "jimin.park@nodease.demo"
+    assert specs["onboarding_people_manager"].name == "박지민"
+    assert specs["onboarding_people_manager"].teams == ("onboarding_people",)
+    assert (
+        specs["onboarding_people_manager"].organization_auth_state
+        == demo_seed.ORGANIZATION_AUTH_MANAGER
+    )
+
+
+def test_team_onboarding_access_control_kbs_are_manual_upload_placeholders():
+    assert demo_seed.MANUAL_ONBOARDING_KB_SPECS == {
+        "onboarding_company_common": (
+            "온보딩 문서: 회사 공통",
+            "company_common_onboarding.pdf",
+        ),
+        "onboarding_platform": (
+            "온보딩 문서: 플랫폼개발팀",
+            "platform_team_onboarding_v4.pdf",
+        ),
+        "onboarding_sales": (
+            "온보딩 문서: 영업팀",
+            "sales_team_onboarding_v2.pdf",
+        ),
+        "onboarding_finance": (
+            "온보딩 문서: 재무팀",
+            "finance_team_onboarding_v3.pdf",
+        ),
+    }
+    assert not set(demo_seed.MANUAL_ONBOARDING_KB_SPECS).intersection(
+        spec.key for spec in demo_seed.DEMO_DOCUMENT_SPECS
+    )
+
+
+def test_team_onboarding_access_control_permissions_are_fail_closed_by_team():
+    scenario_teams = {
+        "onboarding_platform",
+        "onboarding_sales",
+        "onboarding_people",
+        "onboarding_finance",
+    }
+    scenario_kbs = set(demo_seed.MANUAL_ONBOARDING_KB_SPECS)
+    actual = {
+        (kb_key, team_key, auth_state)
+        for kb_key, team_key, auth_state in demo_seed._demo_team_knowledge_permission_specs()
+        if kb_key in scenario_kbs and team_key in scenario_teams
+    }
+
+    assert actual == {
+        ("onboarding_company_common", "onboarding_platform", "operator"),
+        ("onboarding_company_common", "onboarding_sales", "operator"),
+        ("onboarding_company_common", "onboarding_finance", "operator"),
+        ("onboarding_company_common", "onboarding_people", "manager"),
+        ("onboarding_platform", "onboarding_platform", "operator"),
+        ("onboarding_platform", "onboarding_people", "manager"),
+        ("onboarding_sales", "onboarding_sales", "operator"),
+        ("onboarding_sales", "onboarding_people", "manager"),
+        ("onboarding_finance", "onboarding_finance", "operator"),
+        ("onboarding_finance", "onboarding_people", "manager"),
+    }
+
+
+def test_team_onboarding_access_control_graph_references_manual_kbs():
+    graph = demo_seed._team_onboarding_access_control_graph()
+    llm_node = next(node for node in graph["nodes"] if node["id"] == "llm-answer")
+
+    assert [item["id"] for item in llm_node["data"]["knowledgeBases"]] == [
+        str(demo_seed.KB_IDS[key])
+        for key in demo_seed.MANUAL_ONBOARDING_KB_SPECS
+    ]
+    assert "추측하지" in llm_node["data"]["system_prompt"]
+
+
+def test_team_onboarding_access_control_app_is_active_internal_chatbot(monkeypatch):
+    calls = {}
+
+    def capture(
+        _db,
+        key,
+        name,
+        description,
+        owner_key,
+        graph,
+        *,
+        deployed,
+        deployment_type=demo_seed.DeploymentType.API,
+    ):
+        calls[key] = {
+            "name": name,
+            "description": description,
+            "owner_key": owner_key,
+            "graph": graph,
+            "deployed": deployed,
+            "deployment_type": deployment_type,
+        }
+        return key
+
+    monkeypatch.setattr(demo_seed, "_upsert_app_workflow", capture)
+
+    workflows = demo_seed._seed_apps_and_workflows(object())
+
+    assert workflows["team_onboarding_access_control"] == (
+        "team_onboarding_access_control"
+    )
+    call = calls["team_onboarding_access_control"]
+    assert call["name"] == "팀별 온보딩 문서 접근 제어 데모"
+    assert call["owner_key"] == "onboarding_people_manager"
+    assert call["deployed"] is True
+    assert call["deployment_type"] is demo_seed.DeploymentType.INTERNAL_CHATBOT
+
+
 def test_demo_summary_reports_seeded_knowledge_documents():
     summary = demo_seed.demo_summary("demo")
 

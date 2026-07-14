@@ -29,6 +29,10 @@ Verified Against: `origin/dev @ 32fb602f`
 
 ## Permission And RBAC Tests
 
+- Team onboarding demo seed는 회사 공통 PDF용 빈 KB를 플랫폼개발·영업·재무·People 팀에 부여하고, 각 팀 전용 빈 KB는 해당 팀과 People 팀에만 부여한다. 플랫폼개발팀 사용자의 runtime 후보에 영업·재무 KB가 포함되거나 영업팀 사용자의 후보에 플랫폼개발·재무 KB가 포함되면 실패한다.
+- Team onboarding demo의 네 KB는 reset 직후 document/chunk가 0건이어야 한다. PDF는 발표자가 직접 업로드하며 seed가 원문이나 가짜 chunk를 대신 만들면 실패한다.
+- 현재 demo seed는 document-level KB 권한만 보장한다. 같은 PDF 안의 chunk별 동적 `role_acl`을 권한 경계로 주장하지 않으며 manager-only 내용은 별도 KB로 분리해야 한다.
+
 - Document progress SSE는 stream을 열기 전에 active organization과 KB `read`를 검증한다. 권한 없는 actor나 다른 organization context는 document status, safe error, Redis progress를 한 건도 수신하지 못한다.
 - KB hard delete는 Organization manager와 acknowledgement가 있어도 approved retention/legal-hold checker가 없으면 storage/DB mutation 전에 fail-closed한다. 삭제 mechanics transaction 테스트는 explicit allow checker를 주입하며 production eligibility 증거로 취급하지 않는다.
 - Collection `read`, `route`, `manage`, `sync`만으로는 하위 KB content retrieval 권한이 생기지 않는다.

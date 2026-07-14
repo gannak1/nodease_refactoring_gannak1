@@ -139,6 +139,9 @@ USER_IDS = {
     "removed": _uuid(9),
     "developer": _uuid(10),
     "planning": _uuid(11),
+    "onboarding_platform_rookie": _uuid(12),
+    "onboarding_sales_rookie": _uuid(13),
+    "onboarding_people_manager": _uuid(14),
 }
 
 TEAM_IDS = {
@@ -151,6 +154,10 @@ TEAM_IDS = {
     "tester_member": _uuid(206),
     "department_development": _uuid(207),
     "department_planning": _uuid(208),
+    "onboarding_platform": _uuid(209),
+    "onboarding_sales": _uuid(210),
+    "onboarding_people": _uuid(211),
+    "onboarding_finance": _uuid(212),
 }
 
 KB_IDS = {
@@ -174,11 +181,16 @@ KB_IDS = {
     "internal_developer_compensation_band": _uuid(335),
     "internal_compensation_access_policy": _uuid(336),
     "internal_planning_onboarding_guide": _uuid(337),
+    "onboarding_company_common": _uuid(338),
+    "onboarding_platform": _uuid(339),
+    "onboarding_sales": _uuid(340),
+    "onboarding_finance": _uuid(341),
 }
 
 COLLECTION_IDS = {
     "legal_public": _uuid(360),
     "internal_onboarding": _uuid(361),
+    "team_onboarding_access_control": _uuid(362),
 }
 
 # author의 승인된 App 생성 권한 신청 이력 (ADR-0016).
@@ -218,6 +230,10 @@ TEAM_LLM_PERMISSION_IDS = {
     "customer_support_ops": _uuid(933),
     "department_development": _uuid(934),
     "department_planning": _uuid(935),
+    "onboarding_platform": _uuid(936),
+    "onboarding_sales": _uuid(937),
+    "onboarding_people": _uuid(938),
+    "onboarding_finance": _uuid(939),
 }
 
 USER_LLM_PERMISSION_IDS = {
@@ -268,6 +284,10 @@ COLLECTION_ITEM_IDS = {
     "internal_developer_compensation_band": _uuid(385),
     "internal_compensation_access_policy": _uuid(386),
     "internal_planning_onboarding_guide": _uuid(387),
+    "onboarding_company_common": _uuid(388),
+    "onboarding_platform": _uuid(389),
+    "onboarding_sales": _uuid(390),
+    "onboarding_finance": _uuid(391),
 }
 
 APP_IDS = {
@@ -278,6 +298,7 @@ APP_IDS = {
     "ticket_ops_paused": _uuid(404),
     "test_inquiry": _uuid(405),
     "department_onboarding_chatbot": _uuid(406),
+    "team_onboarding_access_control": _uuid(407),
     "model_router_ticket_ops": uuid.UUID("91000000-0000-0000-0000-000000000001"),
 }
 
@@ -307,6 +328,9 @@ TEAM_PERMISSION_IDS = {
     "model_router_ticket": _uuid(804),
     "department_onboarding_development": _uuid(805),
     "department_onboarding_planning": _uuid(806),
+    "team_onboarding_platform": _uuid(807),
+    "team_onboarding_sales": _uuid(808),
+    "team_onboarding_people": _uuid(809),
 }
 
 
@@ -337,6 +361,28 @@ class DemoKnowledgeSeedSpec:
     legal_required_tokens: tuple[str, ...] = ()
     chunk_size: int = 1000
     chunk_overlap: int = 150
+
+
+# PDF는 발표자가 UI에서 직접 업로드한다. Seed는 문서별 권한 경계가 되는
+# 빈 Knowledge Base와 예상 파일명만 준비한다.
+MANUAL_ONBOARDING_KB_SPECS = {
+    "onboarding_company_common": (
+        "온보딩 문서: 회사 공통",
+        "company_common_onboarding.pdf",
+    ),
+    "onboarding_platform": (
+        "온보딩 문서: 플랫폼개발팀",
+        "platform_team_onboarding_v4.pdf",
+    ),
+    "onboarding_sales": (
+        "온보딩 문서: 영업팀",
+        "sales_team_onboarding_v2.pdf",
+    ),
+    "onboarding_finance": (
+        "온보딩 문서: 재무팀",
+        "finance_team_onboarding_v3.pdf",
+    ),
+}
 
 
 USER_SPECS = [
@@ -428,6 +474,30 @@ USER_SPECS = [
         ORGANIZATION_AUTH_MEMBER,
         (),
     ),
+    DemoUserSpec(
+        "onboarding_platform_rookie",
+        "seoyeon.kim@nodease.demo",
+        "김서연",
+        ORGANIZATION_MEMBERSHIP_ACTIVE,
+        ORGANIZATION_AUTH_MEMBER,
+        ("onboarding_platform",),
+    ),
+    DemoUserSpec(
+        "onboarding_sales_rookie",
+        "junho.lee@nodease.demo",
+        "이준호",
+        ORGANIZATION_MEMBERSHIP_ACTIVE,
+        ORGANIZATION_AUTH_MEMBER,
+        ("onboarding_sales",),
+    ),
+    DemoUserSpec(
+        "onboarding_people_manager",
+        "jimin.park@nodease.demo",
+        "박지민",
+        ORGANIZATION_MEMBERSHIP_ACTIVE,
+        ORGANIZATION_AUTH_MANAGER,
+        ("onboarding_people",),
+    ),
 ]
 
 DEMO_EMAILS = tuple(spec.email for spec in USER_SPECS)
@@ -456,6 +526,22 @@ TEAM_SPECS = {
     "department_planning": (
         "기획팀",
         "공통 온보딩과 기획팀 전용 Knowledge를 사용하는 데모 팀",
+    ),
+    "onboarding_platform": (
+        "플랫폼개발팀",
+        "회사 공통 및 플랫폼개발팀 온보딩 문서를 사용하는 데모 팀",
+    ),
+    "onboarding_sales": (
+        "영업팀",
+        "회사 공통 및 영업팀 온보딩 문서를 사용하는 데모 팀",
+    ),
+    "onboarding_people": (
+        "People 팀",
+        "팀별 온보딩 문서와 권한 및 감사 로그를 관리하는 데모 팀",
+    ),
+    "onboarding_finance": (
+        "재무팀",
+        "회사 공통 및 재무팀 온보딩 문서를 사용하는 권한 경계 데모 팀",
     ),
 }
 
@@ -1066,6 +1152,7 @@ def demo_summary(profile: str = "demo") -> dict[str, Any]:
         "apps": [
             "사내 문서 질문 응답 봇",
             "부서별 온보딩 RAG 챗봇",
+            "팀별 온보딩 문서 접근 제어 데모",
             "Enterprise 고객 티켓 처리",
             "테스트용 문의 응답 워크플로우",
         ],
@@ -1080,6 +1167,9 @@ def demo_summary(profile: str = "demo") -> dict[str, Any]:
             "internal_markdown_docs": len(INTERNAL_DOCUMENT_SPECS),
             "embedding_model": DEMO_EMBEDDING_MODEL,
             "fixture": DEMO_KNOWLEDGE_FIXTURE_PATH.as_posix(),
+        },
+        "manual_knowledge_placeholders": {
+            key: filename for key, (_, filename) in MANUAL_ONBOARDING_KB_SPECS.items()
         },
     }
 
@@ -1644,6 +1734,9 @@ def _edge(
 def _knowledge_base_ref(key: str) -> dict[str, str]:
     if key == "hr":
         return {"id": str(KB_IDS[key]), "name": "사내 인사·복지 지식베이스"}
+    manual_spec = MANUAL_ONBOARDING_KB_SPECS.get(key)
+    if manual_spec is not None:
+        return {"id": str(KB_IDS[key]), "name": manual_spec[0]}
     spec = next((item for item in DEMO_DOCUMENT_SPECS if item.key == key), None)
     if spec is None:
         raise KeyError(f"Unknown demo knowledge base key: {key}")
@@ -1827,6 +1920,97 @@ def _department_onboarding_chatbot_graph() -> dict[str, Any]:
                 120,
                 {
                     **_base_node_data("응답", "최종 답변을 반환합니다.", 3),
+                    "outputs": [
+                        {
+                            "variable": "answer_text",
+                            "label": "답변",
+                            "value_selector": ["llm-answer", "text"],
+                        }
+                    ],
+                },
+            ),
+        ],
+        "edges": [
+            _edge("edge-start-llm", "start-question", "llm-answer"),
+            _edge("edge-llm-answer", "llm-answer", "answer"),
+        ],
+        "viewport": {"x": 40, "y": 80, "zoom": 0.85},
+    }
+
+
+def _team_onboarding_access_control_graph() -> dict[str, Any]:
+    knowledge_bases = [
+        _knowledge_base_ref(key) for key in MANUAL_ONBOARDING_KB_SPECS
+    ]
+    return {
+        "nodes": [
+            _node(
+                "start-question",
+                "startNode",
+                120,
+                120,
+                {
+                    **_base_node_data(
+                        "온보딩 질문 입력",
+                        "로그인한 사용자의 팀별 온보딩 질문을 입력받습니다.",
+                        1,
+                    ),
+                    "triggerType": "manual",
+                    "trigger_type": "manual",
+                    "variables": [
+                        {
+                            "id": "question",
+                            "name": "question",
+                            "label": "질문",
+                            "type": "paragraph",
+                            "required": True,
+                            "maxLength": 1200,
+                            "max_length": 1200,
+                        }
+                    ],
+                },
+            ),
+            _node(
+                "llm-answer",
+                "llmNode",
+                540,
+                120,
+                {
+                    **_base_node_data(
+                        "권한 기반 온보딩 검색 및 답변",
+                        "실행 사용자의 KB 권한으로 검색 후보를 제한한 뒤 답변합니다.",
+                        2,
+                        ["model_id", "knowledgeBases", "user_prompt"],
+                    ),
+                    "provider": "openai",
+                    "model_id": DEMO_CHAT_MINI_MODEL,
+                    "system_prompt": (
+                        "현재 로그인한 사용자에게 허용된 온보딩 문서만 근거로 답변합니다. "
+                        "첫 주 일정과 접근 권한 신청 절차를 구분하고, 사용한 문서의 파일명을 "
+                        "출처로 표시합니다. 검색 근거가 없으면 추측하지 말고 현재 권한으로 "
+                        "확인 가능한 문서가 없다고 안전하게 안내합니다. 권한이 없는 다른 팀 "
+                        "문서의 존재나 세부 내용을 추론하거나 노출하지 않습니다."
+                    ),
+                    "user_prompt": "질문: {{ question }}",
+                    "referenced_variables": [
+                        {
+                            "name": "question",
+                            "value_selector": ["start-question", "question"],
+                        }
+                    ],
+                    "knowledgeBases": knowledge_bases,
+                    "scoreThreshold": 0.3,
+                    "topK": 4,
+                    "parameters": {"temperature": 0.1, "max_tokens": 900},
+                },
+            ),
+            _node(
+                "answer",
+                "answerNode",
+                960,
+                120,
+                {
+                    **_base_node_data("응답", "권한이 적용된 최종 답변을 반환합니다.", 3),
                     "outputs": [
                         {
                             "variable": "answer_text",
@@ -2532,6 +2716,20 @@ def _demo_team_knowledge_permission_specs() -> list[tuple[str, str, str]]:
             "internal_benefits",
         )
     )
+    knowledge_permission_specs.extend(
+        [
+            ("onboarding_company_common", "onboarding_platform", "operator"),
+            ("onboarding_company_common", "onboarding_sales", "operator"),
+            ("onboarding_company_common", "onboarding_finance", "operator"),
+            ("onboarding_company_common", "onboarding_people", "manager"),
+            ("onboarding_platform", "onboarding_platform", "operator"),
+            ("onboarding_platform", "onboarding_people", "manager"),
+            ("onboarding_sales", "onboarding_sales", "operator"),
+            ("onboarding_sales", "onboarding_people", "manager"),
+            ("onboarding_finance", "onboarding_finance", "operator"),
+            ("onboarding_finance", "onboarding_people", "manager"),
+        ]
+    )
     return knowledge_permission_specs
 
 
@@ -2549,6 +2747,19 @@ def _demo_team_knowledge_collection_permission_specs() -> list[tuple[str, str, s
     collection_permission_specs.extend(
         ("internal_onboarding", "tester_builder", action)
         for action in ("read", "route")
+    )
+    for team_key in (
+        "onboarding_platform",
+        "onboarding_sales",
+        "onboarding_finance",
+    ):
+        collection_permission_specs.extend(
+            ("team_onboarding_access_control", team_key, action)
+            for action in ("read", "route")
+        )
+    collection_permission_specs.extend(
+        ("team_onboarding_access_control", "onboarding_people", action)
+        for action in ("read", "route", "manage", "sync")
     )
     return collection_permission_specs
 
@@ -2604,6 +2815,30 @@ def _seed_knowledge(db: Session) -> None:
                 "user_id": USER_IDS["admin"],
             },
         )
+    for key, (name, expected_filename) in MANUAL_ONBOARDING_KB_SPECS.items():
+        _upsert_by_id(
+            db,
+            KnowledgeBase,
+            KB_IDS[key],
+            {
+                "organization_id": ORG_ID,
+                "name": name,
+                "description": (
+                    f"발표자가 {expected_filename} 파일을 직접 업로드하는 빈 데모 KB"
+                ),
+                "safe_metadata": {
+                    **_demo_options(f"manual-onboarding-kb-{key}"),
+                    "expected_filename": expected_filename,
+                    "document_seed_mode": "manual_upload",
+                },
+                "embedding_model": DEMO_EMBEDDING_MODEL,
+                "top_k": 5,
+                "similarity_threshold": 0.3,
+                "sync_state": "manual",
+                "lifecycle_state": "active",
+                "user_id": USER_IDS["onboarding_people_manager"],
+            },
+        )
     db.flush()
 
     _upsert_by_id(
@@ -2649,6 +2884,27 @@ def _seed_knowledge(db: Session) -> None:
             "created_by": USER_IDS["admin"],
         },
     )
+    _upsert_by_id(
+        db,
+        KnowledgeCollection,
+        COLLECTION_IDS["team_onboarding_access_control"],
+        {
+            "organization_id": ORG_ID,
+            "name": "팀별 온보딩 접근 제어 문서",
+            "description": "회사 공통 및 팀별 온보딩 PDF를 권한 경계별로 묶은 데모 컬렉션",
+            "source_identity_id": None,
+            "source_connector_ref": "local.manual.team-onboarding-access-control",
+            "is_system_managed": False,
+            "sync_state": "manual",
+            "lifecycle_state": "active",
+            "safe_metadata": {
+                **_demo_options("collection-team-onboarding-access-control"),
+                "visibility": "private",
+                "document_seed_mode": "manual_upload",
+            },
+            "created_by": USER_IDS["onboarding_people_manager"],
+        },
+    )
     db.flush()
 
     for rank, spec in enumerate(DEMO_DOCUMENT_SPECS):
@@ -2668,6 +2924,29 @@ def _seed_knowledge(db: Session) -> None:
                     **_demo_options(f"collection-item-{spec.key}"),
                     "classification": spec.classification,
                     "source_tier": spec.source_tier,
+                },
+            },
+        )
+
+    for rank, (key, (_, expected_filename)) in enumerate(
+        MANUAL_ONBOARDING_KB_SPECS.items()
+    ):
+        _upsert_by_id(
+            db,
+            KnowledgeCollectionItem,
+            COLLECTION_ITEM_IDS[key],
+            {
+                "organization_id": ORG_ID,
+                "collection_id": COLLECTION_IDS[
+                    "team_onboarding_access_control"
+                ],
+                "knowledge_base_id": KB_IDS[key],
+                "safe_source_path_ref": expected_filename,
+                "rank": rank,
+                "safe_metadata": {
+                    **_demo_options(f"collection-item-{key}"),
+                    "expected_filename": expected_filename,
+                    "document_seed_mode": "manual_upload",
                 },
             },
         )
@@ -3007,6 +3286,16 @@ def _seed_apps_and_workflows(db: Session) -> dict[str, Workflow]:
             deployed=True,
             deployment_type=DeploymentType.INTERNAL_CHATBOT,
         ),
+        "team_onboarding_access_control": _upsert_app_workflow(
+            db,
+            "team_onboarding_access_control",
+            "팀별 온보딩 문서 접근 제어 데모",
+            "플랫폼개발팀·영업팀·People 팀 사용자의 Knowledge 권한 차이를 보여주는 내부 챗봇",
+            "onboarding_people_manager",
+            _team_onboarding_access_control_graph(),
+            deployed=True,
+            deployment_type=DeploymentType.INTERNAL_CHATBOT,
+        ),
         "ticket_ops": _upsert_app_workflow(
             db,
             "ticket_ops",
@@ -3124,6 +3413,45 @@ def _seed_permissions(db: Session) -> None:
                 "auth_state": "operator",
                 "assigned_by": USER_IDS["admin"],
                 "options": _demo_options("permission-department-onboarding-planning"),
+                "flags": 0,
+            },
+        ),
+        (
+            TEAM_PERMISSION_IDS["team_onboarding_platform"],
+            TeamWorkflowPermission,
+            {
+                "grantee_organization_id": ORG_ID,
+                "team_id": TEAM_IDS["onboarding_platform"],
+                "workflow_id": WORKFLOW_IDS["team_onboarding_access_control"],
+                "auth_state": "operator",
+                "assigned_by": USER_IDS["onboarding_people_manager"],
+                "options": _demo_options("permission-team-onboarding-platform"),
+                "flags": 0,
+            },
+        ),
+        (
+            TEAM_PERMISSION_IDS["team_onboarding_sales"],
+            TeamWorkflowPermission,
+            {
+                "grantee_organization_id": ORG_ID,
+                "team_id": TEAM_IDS["onboarding_sales"],
+                "workflow_id": WORKFLOW_IDS["team_onboarding_access_control"],
+                "auth_state": "operator",
+                "assigned_by": USER_IDS["onboarding_people_manager"],
+                "options": _demo_options("permission-team-onboarding-sales"),
+                "flags": 0,
+            },
+        ),
+        (
+            TEAM_PERMISSION_IDS["team_onboarding_people"],
+            TeamWorkflowPermission,
+            {
+                "grantee_organization_id": ORG_ID,
+                "team_id": TEAM_IDS["onboarding_people"],
+                "workflow_id": WORKFLOW_IDS["team_onboarding_access_control"],
+                "auth_state": "manager",
+                "assigned_by": USER_IDS["admin"],
+                "options": _demo_options("permission-team-onboarding-people"),
                 "flags": 0,
             },
         ),
@@ -3254,6 +3582,20 @@ def _seed_permissions(db: Session) -> None:
             "auth_state": "manager",
             "assigned_by": USER_IDS["admin"],
             "options": _demo_options("audit-permission-admin"),
+            "flags": 0,
+        },
+    )
+    _upsert_by_id(
+        db,
+        TeamAuditPermission,
+        _uuid(871),
+        {
+            "grantee_organization_id": ORG_ID,
+            "team_id": TEAM_IDS["onboarding_people"],
+            "target_organization_id": ORG_ID,
+            "auth_state": "manager",
+            "assigned_by": USER_IDS["admin"],
+            "options": _demo_options("audit-permission-onboarding-people"),
             "flags": 0,
         },
     )

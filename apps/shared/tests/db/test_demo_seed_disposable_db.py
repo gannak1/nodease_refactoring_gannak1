@@ -152,6 +152,9 @@ def _snapshot_department_onboarding_rbac(
             demo_seed.KB_IDS["internal_developer_onboarding_rules"],
             demo_seed.KB_IDS["internal_planning_onboarding_guide"],
         )
+        team_onboarding_kb_ids = tuple(
+            demo_seed.KB_IDS[key] for key in demo_seed.MANUAL_ONBOARDING_KB_SPECS
+        )
 
         def resolve_for(user_key: str) -> set[uuid.UUID]:
             resolution = resolver.resolve(
@@ -217,6 +220,42 @@ def _snapshot_department_onboarding_rbac(
                     ]
                 },
             ).one()
+            team_onboarding_workflow_permission_count = conn.execute(
+                text(
+                    "SELECT COUNT(*) FROM team_workflow_permissions "
+                    "WHERE workflow_id = :workflow_id "
+                    "AND team_id IN (:platform_team_id, :sales_team_id, :people_team_id)"
+                ),
+                {
+                    "workflow_id": demo_seed.WORKFLOW_IDS[
+                        "team_onboarding_access_control"
+                    ],
+                    "platform_team_id": demo_seed.TEAM_IDS["onboarding_platform"],
+                    "sales_team_id": demo_seed.TEAM_IDS["onboarding_sales"],
+                    "people_team_id": demo_seed.TEAM_IDS["onboarding_people"],
+                },
+            ).scalar_one()
+            manual_onboarding_document_count = conn.execute(
+                text(
+                    "SELECT COUNT(*) FROM documents "
+                    "WHERE knowledge_base_id = ANY(:knowledge_base_ids)"
+                ),
+                {"knowledge_base_ids": list(team_onboarding_kb_ids)},
+            ).scalar_one()
+
+            def onboarding_permissions_for(team_key: str) -> set[uuid.UUID]:
+                rows = conn.execute(
+                    text(
+                        "SELECT knowledge_base_id FROM team_knowledge_permissions "
+                        "WHERE team_id = :team_id "
+                        "AND knowledge_base_id = ANY(:knowledge_base_ids)"
+                    ),
+                    {
+                        "team_id": demo_seed.TEAM_IDS[team_key],
+                        "knowledge_base_ids": list(team_onboarding_kb_ids),
+                    },
+                ).all()
+                return {row[0] for row in rows}
 
         return {
             "developer_candidates": resolve_for("developer"),
@@ -227,6 +266,19 @@ def _snapshot_department_onboarding_rbac(
             "planning_document_status": planning_document[0],
             "planning_chunk_count": planning_document[1],
             "planning_embedding_dimension": planning_document[2],
+            "platform_onboarding_permissions": onboarding_permissions_for(
+                "onboarding_platform"
+            ),
+            "sales_onboarding_permissions": onboarding_permissions_for(
+                "onboarding_sales"
+            ),
+            "people_onboarding_permissions": onboarding_permissions_for(
+                "onboarding_people"
+            ),
+            "team_onboarding_workflow_permission_count": (
+                team_onboarding_workflow_permission_count
+            ),
+            "manual_onboarding_document_count": manual_onboarding_document_count,
         }
     finally:
         engine.dispose()
@@ -313,6 +365,19 @@ def test_demo_seed_is_idempotent_in_disposable_postgres_database():
             rbac_state["planning_embedding_dimension"]
             == demo_seed.DEMO_EMBEDDING_DIMENSION
         )
+        assert rbac_state["platform_onboarding_permissions"] == {
+            demo_seed.KB_IDS["onboarding_company_common"],
+            demo_seed.KB_IDS["onboarding_platform"],
+        }
+        assert rbac_state["sales_onboarding_permissions"] == {
+            demo_seed.KB_IDS["onboarding_company_common"],
+            demo_seed.KB_IDS["onboarding_sales"],
+        }
+        assert rbac_state["people_onboarding_permissions"] == {
+            demo_seed.KB_IDS[key] for key in demo_seed.MANUAL_ONBOARDING_KB_SPECS
+        }
+        assert rbac_state["team_onboarding_workflow_permission_count"] == 3
+        assert rbac_state["manual_onboarding_document_count"] == 0
     except OperationalError:
         raise pytest.fail.Exception(
             "disposable PostgreSQL is unavailable or rejected the connection; "
