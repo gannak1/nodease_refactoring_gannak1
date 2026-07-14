@@ -1070,24 +1070,32 @@ export default function AdminConsolePage() {
               label="활성 멤버"
               value={memberCounts.active}
               icon={Users}
+              href="/dashboard/admin?tab=organization-structure&view=members"
+              linkAriaLabel="활성 멤버 조직 구성 멤버 보기에서 확인"
               description={`초대 ${memberCounts.invited} · 정지 ${memberCounts.suspended} · 제거 ${memberCounts.removed}`}
             />
             <DashboardSummaryCard
               label="활성 팀"
               value={activeTeams.length}
               icon={Building2}
+              href="/dashboard/admin?tab=organization-structure&view=teams"
+              linkAriaLabel="활성 팀 조직 구성 팀 보기에서 확인"
               description={`팀 배정 ${totalTeamAssignments}건`}
             />
             <DashboardSummaryCard
               label="LLM Credentials"
               value={credentials.length}
               icon={Key}
+              href="/dashboard/admin?tab=credentials"
+              linkAriaLabel="LLM Credentials 탭에서 확인"
               description={`${providers.length}개 provider 기준`}
             />
             <DashboardSummaryCard
               label="지식 기반"
               value={knowledgeBases.length}
               icon={Database}
+              href="/dashboard/admin?tab=knowledge"
+              linkAriaLabel="지식 기반 탭에서 확인"
               description="팀/사용자 권한 관리 가능"
             />
           </div>

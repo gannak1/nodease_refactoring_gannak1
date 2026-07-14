@@ -26,9 +26,14 @@ describe('AdminSummaryCards', () => {
 
     render(<AdminSummaryCards />);
 
-    expect(await screen.findByText('$123.46')).toBeInTheDocument();
-    expect(screen.getByText(/2026-07/)).toBeInTheDocument();
+    expect(await screen.findByText('$123.46')).toHaveClass('mt-2', 'text-2xl');
+    expect(screen.getByText(/2026-07/)).toHaveClass('mt-2', 'text-sm');
     expect(screen.getByText('예산 미설정')).toBeInTheDocument();
+    expect(
+      screen.getByRole('link', {
+        name: '이번 달 LLM 비용 비용 탭에서 확인',
+      }),
+    ).toHaveAttribute('href', '/dashboard/admin?tab=usage');
   });
 
   it('요약 조회 실패 시 오류 상태를 표시한다', async () => {
@@ -37,7 +42,7 @@ describe('AdminSummaryCards', () => {
     render(<AdminSummaryCards />);
 
     expect(
-      await screen.findByText('요약을 불러오지 못했습니다'),
-    ).toBeInTheDocument();
+      await screen.findAllByText('요약을 불러오지 못했습니다'),
+    ).toHaveLength(2);
   });
 });

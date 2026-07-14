@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import Link from 'next/link';
 import type { LucideIcon } from 'lucide-react';
 
 type DashboardPageHeaderProps = {
@@ -47,7 +48,11 @@ type DashboardSummaryCardProps = {
   value: string | number;
   icon: LucideIcon;
   iconClassName?: string;
+  valueClassName?: string;
+  descriptionClassName?: string;
   description?: string;
+  href?: string;
+  linkAriaLabel?: string;
 };
 
 export function DashboardSummaryCard({
@@ -55,22 +60,48 @@ export function DashboardSummaryCard({
   value,
   icon: Icon,
   iconClassName = 'text-blue-600',
+  valueClassName = 'mt-1 text-lg',
+  descriptionClassName = 'mt-1 text-xs',
   description,
+  href,
+  linkAriaLabel,
 }: DashboardSummaryCardProps) {
-  return (
-    <div className="rounded-lg border border-slate-200 bg-white p-5">
+  const content = (
+    <>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-sm font-medium text-slate-500">{label}</p>
-          <p className="mt-1 truncate text-lg font-semibold text-slate-950">
+          <p
+            className={`truncate font-semibold text-slate-950 ${valueClassName}`}
+          >
             {value}
           </p>
           {description && (
-            <p className="mt-1 text-xs text-slate-500">{description}</p>
+            <p className={`text-slate-500 ${descriptionClassName}`}>
+              {description}
+            </p>
           )}
         </div>
         <Icon className={`h-5 w-5 shrink-0 ${iconClassName}`} />
       </div>
+    </>
+  );
+
+  if (href) {
+    return (
+      <Link
+        href={href}
+        aria-label={linkAriaLabel || `${label} 상세 보기`}
+        className="rounded-lg border border-slate-200 bg-white p-5 transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
+      >
+        {content}
+      </Link>
+    );
+  }
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-5">
+      {content}
     </div>
   );
 }

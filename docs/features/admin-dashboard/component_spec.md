@@ -39,11 +39,17 @@ Verified Against: feature/mba-188 @ 59d1cc51
 
 ### AdminSummaryCards (FR-015)
 
-- 기존 `DashboardSummaryCard`를 재사용한 카드 2장: "이번 달 LLM 비용", "예산 위험 workflow".
-- 비용은 USD 소수점 2자리로 표시한다 (표시 직전 1회 반올림).
+- 상단 1/2 폭 카드 2장: 기존 `DashboardSummaryCard`를 사용하는 "이번 달 LLM 비용"과 상태별 개수를 표시하는 전용 "예산 위험 workflow" 카드. 두 카드의 높이와 정보 밀도를 맞추고, 데스크톱 2열과 모바일 1열 배치는 유지한다.
+- 비용은 USD 소수점 2자리로 표시하고, 예산 위험 개수와 같은 `text-2xl` 크기를 사용한다 (표시 직전 1회 반올림). 비용 값과 날짜 설명은 각각 `mt-2` 간격을 사용하고, 날짜 설명은 상태 요약과 같은 `text-sm` 크기로 표시해 두 카드의 행 기준선을 맞춘다.
 - 예산 카드가 의존하는 판정/분모는 [budget-management](../budget-management/requirements.md)(PRD FR-051)를 따른다.
-- API의 `budget` 블록이 있으면 비율을 정수 %로 표시하고, 보조 문구에 `위험 <n> · 초과 <n> · 예산 설정 <n>개`를 표시한다.
+- API의 `budget` 블록이 있으면 대표 값은 비율이 아니라 `at_risk_count + exceeded_count`를 계산한 `<n>개 위험`으로 표시한다.
+- 상태 요약은 노란색 점과 `예산 임박 <at_risk_count>`, 빨간색 점과 `예산 초과 <exceeded_count>` 텍스트를 함께 사용한다. 의미를 색상만으로 전달하지 않는다.
+- 활성 예산은 있지만 위험/초과 workflow가 0개면 `<0개 위험>`과 상태별 0건을 표시한다.
 - API의 `budget` 블록이 null이면 카드에 "예산 미설정" 상태를 표시한다.
+- 카드 전체를 클릭하면 `/dashboard/admin?tab=usage`로 이동한다. 별도 링크 문구는 표시하지 않고, 접근 가능한 이름으로 이동 목적을 제공해 키보드로 접근할 수 있어야 한다.
+- 이번 달 LLM 비용 카드도 카드 전체를 클릭하면 `/dashboard/admin?tab=usage`로 이동한다.
+- 하단 요약 카드 전체를 클릭하면 활성 멤버는 `/dashboard/admin?tab=organization-structure&view=members`, 활성 팀은 `/dashboard/admin?tab=organization-structure&view=teams`, LLM Credentials는 `/dashboard/admin?tab=credentials`, 지식 기반은 `/dashboard/admin?tab=knowledge`로 이동한다. 모든 링크는 별도 링크 문구 없이 접근 가능한 이름과 키보드 포커스 표시를 제공한다.
+- 요약 조회 중에는 기존 집계 중 상태를 유지하고, 실패하면 "요약을 불러오지 못했습니다"를 표시한다.
 - 데이터 원천: `GET /admin/summary`.
 
 ### AuditSearchTab (FR-011)

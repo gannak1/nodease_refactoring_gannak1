@@ -43,6 +43,7 @@ Verified Against: feature/mba-147 @ e1a04e9
 - Given 지난달 기간 필터(`startAt`/`endAt`)로 usage를 조회, When 응답을 확인하면, Then `total_cost`는 지난달 기준이지만 `budget` 블록은 당월(KST) 기준이다.
 - Given 예산 미설정 workflow, When usage를 조회하면, Then `budget`은 null이고 오류가 아니다.
 - Given 활성 예산 workflow 5개 중 at_risk 1개, exceeded 1개, When `GET /admin/summary`를 호출하면, Then `budget`은 `{budgeted_workflow_count: 5, at_risk_count: 1, exceeded_count: 1, ratio: 0.4}`다.
+- Given 활성 예산 workflow는 있지만 모두 normal, When `GET /admin/summary`를 호출하면, Then `at_risk_count`, `exceeded_count`, `ratio`는 모두 0이다.
 - Given 조직 A 활성 예산 workflow에 조직 B로 명시된 고비용 usage가 있다, When 조직 A의 `GET /admin/summary`를 호출하면, Then 해당 usage는 at_risk/exceeded 판정에 반영되지 않는다. NULL organization legacy usage는 계속 반영한다.
 - Given 조직 A 예산 workflow에 조직 A usage, NULL legacy usage, 조직 B로 명시된 usage가 함께 있다, When 조직 A의 `GET /admin/workflow-budgets/{workflow_id}`를 호출하면, Then `current_month_cost`, `usage_ratio`, `status`는 조직 A와 NULL usage만 반영한다.
 - Given 같은 혼합 usage가 있다, When 조직 A의 `PUT /admin/workflow-budgets/{workflow_id}`로 예산을 저장하면, Then 저장 응답의 `current_month_cost`, `usage_ratio`, `status`도 조직 A와 NULL usage만 반영한다.

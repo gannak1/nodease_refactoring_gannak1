@@ -149,7 +149,8 @@ Response `200`:
 }
 ```
 
-- `budget` 블록의 판정(사용률 80% 이상 위험, 100% 초과 초과)과 `ratio`의 분모(활성 예산 workflow 수)는 [budget-management api_spec](../budget-management/api_spec.md)을 따른다. 활성 예산 workflow가 0개면 `budget`은 null이다.
+- `budget` 블록의 판정(사용률 80% 이상 위험, 100% 초과 초과)과 `ratio`의 분모(활성 예산 workflow 수)는 [budget-management api_spec](../budget-management/api_spec.md)을 따른다. `ratio`는 기존 소비자 호환을 위해 유지하지만 관리 대시보드 카드의 대표 값으로 사용하지 않는다.
+- 활성 예산 workflow가 0개면 `budget` 전체가 null이다.
 - Security Alert open count와 최근 alert는 `/admin/security-alerts/summary`가 제공한다. 비용/예산 `/admin/summary` 응답에 섞지 않는다.
 
 ### GET /admin/permission-requests

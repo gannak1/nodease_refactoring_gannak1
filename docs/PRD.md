@@ -98,7 +98,7 @@ Conversation Memory는 현재 4개 데모 축의 완료 조건이 아니라 후�
 2. 관리자는 관리자 화면에서 audit 목록 탭으로 이동한다.
 3. 관리자는 권한 신청, 권한 승인, workflow 생성, workflow 배포, workflow 실행 기록을 확인한다.
 4. 관리자는 이번 달 조직에서 사용한 LLM 비용을 숫자로 확인한다.
-5. 관리자는 예산을 초과했거나 예산 위험 구간에 들어간 workflow 비율을 확인한다.
+5. 관리자는 예산을 초과했거나 예산 위험 구간에 들어간 workflow 개수를 확인한다.
 6. 관리자는 필요하면 특정 audit log를 열어본다. 
 7. 관리자는 상세에서 actor, action, target, status, timestamp를 확인한다.
 8. 관리자는 user actor를 선택해 current organization의 membership, role, team/direct permission source를 확인한다.
@@ -180,7 +180,7 @@ RAG 보안 경계: 어떤 RAG 모드에서도 권한 없는 문서는 검색 후
 21. 관리자가 admin 화면으로 돌아간다.
 22. 관리자는 audit 목록에서 권한 신청, 권한 승인, Agent Builder 적용 및 저장, workflow 배포, 실행 기록을 확인한다.
 23. 이번 달 조직 LLM 사용 비용을 확인한다.
-24. 예산 초과 workflow 비율을 확인한다.
+24. 예산 위험/초과 workflow 개수를 확인한다.
 
 보안 이상 접근 탐지와 관리자 대응 흐름은 시나리오 2에서 별도로 확인한다. 비용 위험 알림은 Security Alert와 섞지 않는다.
 
@@ -222,7 +222,7 @@ Nodease는 단순히 AI 답변을 생성하는 도구가 아니다. 조직 내 �
 - FR-012: workflow별 LLM 사용량/비용 집계 표시
 - FR-013: 검증된 organization과 인증 actor가 있는 `permission.denied` 및 보안 allowlist `policy.block`을 시간 window와 임계값 기준으로 탐지해 영속 Security Alert로 저장한다. Organization owner/manager는 Sidebar open badge와 Admin Dashboard `보안 알림` 탭에서 alert와 안전한 audit 근거를 확인하고 `open/acknowledged/resolved` lifecycle을 관리한다. 자동 사용자 차단은 하지 않고 기존 actor access management를 통한 수동 조치만 제공한다 ([ADR-0028](decisions/ADR-0028-security-alert-detection-and-lifecycle.md), [Security Alert requirements](features/security-alert/requirements.md)).
 - FR-014: workflow 생성/배포 권한 신청 목록 조회와 승인/거절, 부여된 App 생성 권한의 목록 조회와 회수
-- FR-015: 조직 월간 비용, 예산 위험 workflow 비율 요약. 비용·예산 위험은 FR-013 Security Alert 탐지 입력과 분리한다.
+- FR-015: 조직 월간 비용과 예산 위험/초과 workflow 개수 요약. 비용·예산 위험은 FR-013 Security Alert 탐지 입력과 분리한다.
 - FR-016: Audit log의 user actor를 current organization member access profile과 연결하고 membership, role, team/App-creation/direct/team-inherited permission source를 조회
 - FR-017: Organization manager가 actor access 항목을 하나씩 정지·재활성화, role 변경, team/direct/App-creation 권한 회수·재부여하고 optional reason을 기록. Audit `auditor`/`raw_auditor`는 조회 전용
 - FR-018: Access-management audit detail에 target별 allowlist로 만든 안전한 변경 전후 상태를 표시하고 raw before/after, secret, hidden resource는 제외

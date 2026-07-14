@@ -177,4 +177,33 @@ describe('AdminConsolePage 조직 구성 상태 보존', () => {
     ).not.toBeInTheDocument();
     expect(apiClientMock.get).not.toHaveBeenCalled();
   });
+
+  it('요약 카드에서 연결된 관리 탭으로 이동할 수 있다', async () => {
+    render(<AdminConsolePage />);
+
+    expect(
+      await screen.findByRole('link', {
+        name: '활성 멤버 조직 구성 멤버 보기에서 확인',
+      }),
+    ).toHaveAttribute(
+      'href',
+      '/dashboard/admin?tab=organization-structure&view=members',
+    );
+    expect(
+      screen.getByRole('link', {
+        name: '활성 팀 조직 구성 팀 보기에서 확인',
+      }),
+    ).toHaveAttribute(
+      'href',
+      '/dashboard/admin?tab=organization-structure&view=teams',
+    );
+    expect(
+      screen.getByRole('link', {
+        name: 'LLM Credentials 탭에서 확인',
+      }),
+    ).toHaveAttribute('href', '/dashboard/admin?tab=credentials');
+    expect(
+      screen.getByRole('link', { name: '지식 기반 탭에서 확인' }),
+    ).toHaveAttribute('href', '/dashboard/admin?tab=knowledge');
+  });
 });
