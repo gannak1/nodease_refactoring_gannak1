@@ -20,6 +20,11 @@ from pathlib import Path
 from typing import Any
 
 from apps.shared.audit.actions import AuditAction
+from apps.shared.db.models.agent_builder import (
+    AgentBuilderDraft,
+    AgentBuilderRequest,
+    AgentBuilderSession,
+)
 from apps.shared.db.models.app import App
 from apps.shared.db.models.audit_log import (
     ActorType,
@@ -4435,6 +4440,13 @@ def reset_test_data(db: Session) -> None:
         )
         .all()
     ] or list(TEST_USER_IDS.values())
+
+    # Test reset clears transient builder state child-first while preserving
+    # demo and unrelated organizations.
+    for model in (AgentBuilderDraft, AgentBuilderRequest, AgentBuilderSession):
+        db.query(model).filter(model.organization_id == TEST_ORG_ID).delete(
+            synchronize_session=False
+        )
 
     db.query(AuditLog).filter(
         AuditLog.audit_metadata["demo_seed_key"].astext.like("test-%")

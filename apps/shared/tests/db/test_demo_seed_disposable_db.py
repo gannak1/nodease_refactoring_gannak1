@@ -6,6 +6,11 @@ from pathlib import Path
 
 import pytest
 from apps.shared.db import demo_seed
+from apps.shared.db.models.agent_builder import (
+    AgentBuilderDraft,
+    AgentBuilderRequest,
+    AgentBuilderSession,
+)
 from apps.shared.domain.knowledge_runtime_candidates import (
     AuthenticatedAudience,
     KnowledgeRuntimeCandidateRequest,
@@ -130,6 +135,105 @@ def _snapshot_counts(
                     text("SELECT COUNT(*) FROM knowledge_ingestion_outbox")
                 ).scalar_one(),
             }
+    finally:
+        engine.dispose()
+
+
+def _insert_agent_builder_state(
+    database: str,
+    config: DisposablePostgresConfig,
+    *,
+    organization_id: uuid.UUID,
+    user_id: uuid.UUID,
+    workflow_id: uuid.UUID,
+    app_id: uuid.UUID,
+) -> dict[str, uuid.UUID]:
+    row_ids = {
+        "session": uuid.uuid4(),
+        "request": uuid.uuid4(),
+        "draft": uuid.uuid4(),
+    }
+    engine = create_engine(config.database_url(database))
+    local_session = sessionmaker(bind=engine)
+    try:
+        with local_session.begin() as db:
+            db.add_all(
+                [
+                    AgentBuilderSession(
+                        id=row_ids["session"],
+                        organization_id=organization_id,
+                        user_id=user_id,
+                        workflow_id=workflow_id,
+                        app_id=app_id,
+                        status="active",
+                    ),
+                    AgentBuilderRequest(
+                        id=row_ids["request"],
+                        session_id=row_ids["session"],
+                        organization_id=organization_id,
+                        user_id=user_id,
+                        status="completed",
+                        message_summary="disposable reset contract",
+                        structured_request={},
+                        response_payload={},
+                    ),
+                    AgentBuilderDraft(
+                        id=row_ids["draft"],
+                        request_id=row_ids["request"],
+                        session_id=row_ids["session"],
+                        organization_id=organization_id,
+                        user_id=user_id,
+                        draft_mode="create",
+                        workflow_id=workflow_id,
+                        app_id=app_id,
+                        preview_graph={},
+                        node_detail_previews=[],
+                        validation_result={},
+                        draft_metadata={},
+                        status="ready",
+                    ),
+                ]
+            )
+    finally:
+        engine.dispose()
+    return row_ids
+
+
+def _agent_builder_state_exists(
+    database: str,
+    config: DisposablePostgresConfig,
+    row_ids: dict[str, uuid.UUID],
+) -> dict[str, bool]:
+    engine = create_engine(config.database_url(database))
+    local_session = sessionmaker(bind=engine)
+    try:
+        with local_session() as db:
+            return {
+                "session": db.get(AgentBuilderSession, row_ids["session"])
+                is not None,
+                "request": db.get(AgentBuilderRequest, row_ids["request"])
+                is not None,
+                "draft": db.get(AgentBuilderDraft, row_ids["draft"]) is not None,
+            }
+    finally:
+        engine.dispose()
+
+
+def _test_profile_baseline_exists(
+    database: str,
+    config: DisposablePostgresConfig,
+) -> bool:
+    engine = create_engine(config.database_url(database))
+    local_session = sessionmaker(bind=engine)
+    try:
+        with local_session() as db:
+            return all(
+                (
+                    db.get(demo_seed.Organization, demo_seed.TEST_ORG_ID),
+                    db.get(demo_seed.App, demo_seed.TEST_APP_ID),
+                    db.get(demo_seed.Workflow, demo_seed.TEST_WORKFLOW_ID),
+                )
+            )
     finally:
         engine.dispose()
 
@@ -472,7 +576,7 @@ def _snapshot_department_onboarding_rbac(
     os.getenv(RUN_ENV) != "1",
     reason=f"set {RUN_ENV}=1 to run disposable PostgreSQL seed smoke",
 )
-def test_demo_seed_is_idempotent_in_disposable_postgres_database():
+def test_seed_profile_resets_are_scoped_and_idempotent_in_disposable_postgres():
     try:
         config = DisposablePostgresConfig.from_environment()
     except DisposablePostgresConfigurationError:
@@ -527,6 +631,14 @@ def test_demo_seed_is_idempotent_in_disposable_postgres_database():
             knowledge_base_id=non_demo_kb_id,
             key_prefix="user-created-reset-test",
         )
+        demo_agent_builder_ids = _insert_agent_builder_state(
+            database,
+            config,
+            organization_id=demo_seed.ORG_ID,
+            user_id=demo_seed.USER_IDS["admin"],
+            workflow_id=demo_seed.WORKFLOW_IDS["hr_bot_example"],
+            app_id=demo_seed.APP_IDS["hr_bot_example"],
+        )
 
         _run_seed_command(
             ["scripts/seed_demo.py", "--profile", "demo", "--reset"],
@@ -541,6 +653,40 @@ def test_demo_seed_is_idempotent_in_disposable_postgres_database():
             second_id=non_demo_outbox_id,
         )
         rbac_state = _snapshot_department_onboarding_rbac(database, config)
+        demo_agent_builder_after_demo_reset = _agent_builder_state_exists(
+            database, config, demo_agent_builder_ids
+        )
+
+        _run_seed_command(
+            ["scripts/seed_demo.py", "--profile", "test", "--reset"],
+            database=database,
+            config=config,
+        )
+        test_agent_builder_ids = _insert_agent_builder_state(
+            database,
+            config,
+            organization_id=demo_seed.TEST_ORG_ID,
+            user_id=demo_seed.TEST_USER_IDS["builder"],
+            workflow_id=demo_seed.TEST_WORKFLOW_ID,
+            app_id=demo_seed.TEST_APP_ID,
+        )
+        _run_seed_command(
+            ["scripts/seed_demo.py", "--profile", "test", "--reset"],
+            database=database,
+            config=config,
+        )
+        _run_seed_command(
+            ["scripts/seed_demo.py", "--profile", "test", "--reset"],
+            database=database,
+            config=config,
+        )
+        test_agent_builder_after_reset = _agent_builder_state_exists(
+            database, config, test_agent_builder_ids
+        )
+        demo_agent_builder_after_test_reset = _agent_builder_state_exists(
+            database, config, demo_agent_builder_ids
+        )
+        test_profile_baseline_exists = _test_profile_baseline_exists(database, config)
 
         assert reset_counts["knowledge_bases"] > 0
         assert reset_counts["documents"] > 0
@@ -555,6 +701,10 @@ def test_demo_seed_is_idempotent_in_disposable_postgres_database():
         assert reset_counts["document_chunk_kb_orphans"] == 0
         assert reset_counts["document_kb_orphans"] == 0
         assert remaining_outbox_ids == {non_demo_outbox_id}
+        assert all(demo_agent_builder_after_demo_reset.values())
+        assert not any(test_agent_builder_after_reset.values())
+        assert all(demo_agent_builder_after_test_reset.values())
+        assert test_profile_baseline_exists
         assert rbac_state["developer_candidates"] == {
             demo_seed.KB_IDS["internal_onboarding"],
             demo_seed.KB_IDS["internal_developer_onboarding_rules"],

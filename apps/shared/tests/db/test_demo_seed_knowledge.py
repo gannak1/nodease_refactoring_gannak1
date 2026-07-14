@@ -42,7 +42,8 @@ class ResetRecorderQuery:
         self.session = session
         self.target = target
 
-    def filter(self, *_criteria):
+    def filter(self, *criteria):
+        self.session.filter_criteria.setdefault(self.target, []).extend(criteria)
         return self
 
     def all(self):
@@ -58,6 +59,7 @@ class ResetRecorderQuery:
 class ResetRecorderSession:
     def __init__(self):
         self.deleted_targets = []
+        self.filter_criteria = {}
 
     def query(self, target):
         return ResetRecorderQuery(self, target)
@@ -765,6 +767,40 @@ def test_profile_reset_preserves_organization(
     reset_function(db)
 
     assert demo_seed.Organization not in db.deleted_targets
+
+
+def test_test_profile_reset_clears_agent_builder_state_child_first(monkeypatch):
+    db = ResetRecorderSession()
+    monkeypatch.setattr(demo_seed, "_adopt_existing_test_user_ids", lambda _db: None)
+    monkeypatch.setattr(demo_seed, "seed_test_data", lambda _db: None)
+
+    demo_seed.reset_test_data(db)
+
+    targets = (
+        demo_seed.AgentBuilderDraft,
+        demo_seed.AgentBuilderRequest,
+        demo_seed.AgentBuilderSession,
+    )
+    assert [db.deleted_targets.index(model) for model in targets] == sorted(
+        db.deleted_targets.index(model) for model in targets
+    )
+    for model in targets:
+        condition = db.filter_criteria[model][0].compile()
+        assert f"{model.__tablename__}.organization_id" in str(condition)
+        assert list(condition.params.values()) == [demo_seed.TEST_ORG_ID]
+
+
+def test_demo_profile_reset_preserves_agent_builder_state(monkeypatch):
+    db = ResetRecorderSession()
+    monkeypatch.setattr(demo_seed, "validate_demo_seed_prerequisites", lambda: None)
+    monkeypatch.setattr(demo_seed, "_adopt_existing_demo_user_ids", lambda _db: None)
+    monkeypatch.setattr(demo_seed, "seed_demo_data", lambda _db: None)
+
+    demo_seed.reset_demo_data(db)
+
+    assert demo_seed.AgentBuilderDraft not in db.deleted_targets
+    assert demo_seed.AgentBuilderRequest not in db.deleted_targets
+    assert demo_seed.AgentBuilderSession not in db.deleted_targets
 
 
 def test_demo_runtime_credential_grants_agent_builder_user_permission(monkeypatch):
