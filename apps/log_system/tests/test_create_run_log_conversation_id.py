@@ -268,6 +268,7 @@ def test_update_run_finish_clears_previous_error_message(monkeypatch):
     monkeypatch.setattr(log_tasks, "SessionLocal", lambda: session)
     monkeypatch.setattr(log_tasks, "_insert_trace_payloads", lambda *a, **k: None)
     monkeypatch.setattr(log_tasks, "_record_workflow_execute_audit", lambda *a, **k: None)
+    monkeypatch.setattr(log_tasks, "_schedule_model_routing_run_record", lambda *a, **k: None)
 
     result = log_tasks.update_run_log_finish.__wrapped__(
         {
