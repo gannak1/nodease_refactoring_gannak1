@@ -37,7 +37,7 @@ describe('AdminSummaryCards', () => {
     render(<AdminSummaryCards />);
 
     expect(
-      await screen.findByText('요약을 불러오지 못했습니다'),
-    ).toBeInTheDocument();
+      await screen.findAllByText('요약을 불러오지 못했습니다'),
+    ).toHaveLength(2);
   });
 });
