@@ -216,7 +216,7 @@ describe('TestSidebar execution comparison', () => {
     expect(screen.queryByText('노드별 실행 결과')).not.toBeInTheDocument();
   });
 
-  it('비교 모드를 종료하면 고정한 기준 실행을 해제한다', async () => {
+  it('단일 결과로 전환해도 이전 실행 비교 분석을 유지한다', async () => {
     mocks.getWorkflowRuns.mockResolvedValue({
       total: 1,
       items: [runSummary('baseline-run', '2026-07-13T01:00:00Z')],
@@ -246,12 +246,28 @@ describe('TestSidebar execution comparison', () => {
     fireEvent.click(
       await screen.findByRole('button', { name: '기준으로 고정' }),
     );
-    expect(await screen.findByText('기준 실행 고정됨')).toBeVisible();
+    expect(
+      await screen.findByRole('button', {
+        name: '문의 분류 노드 상세 비교하기',
+      }),
+    ).toBeVisible();
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: '문의 분류 노드 상세 비교하기',
+      }),
+    );
+    expect(
+      screen.getByRole('heading', { name: '문의 분류 상세 비교' }),
+    ).toBeVisible();
+    expect(mocks.getWorkflowRun).toHaveBeenCalledTimes(2);
 
     fireEvent.click(screen.getByRole('button', { name: '단일 결과' }));
     fireEvent.click(screen.getByRole('button', { name: '실행 비교' }));
 
-    expect(await screen.findByText('기준 실행 선택')).toBeVisible();
+    expect(
+      screen.getByRole('heading', { name: '문의 분류 상세 비교' }),
+    ).toBeVisible();
+    expect(mocks.getWorkflowRun).toHaveBeenCalledTimes(2);
   });
 
   it('최신 실행을 자동 선택하지 않고 사용자가 기준 실행을 명시적으로 고정한다', async () => {

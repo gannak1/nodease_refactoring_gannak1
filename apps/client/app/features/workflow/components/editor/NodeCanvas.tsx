@@ -60,6 +60,7 @@ import { getSnapBackgroundGap } from '../../utils/gridSnap';
 import { hasIncomingHandle } from '../../utils/validateWorkflowGraph';
 import { WORKFLOW_NODE_SIZE } from '../../utils/workflowCanvasGeometry';
 import { AgentBuilderPanel } from '../agentBuilder/AgentBuilderPanel';
+import { copyTestExecutionLocationQueryParams } from '../../utils/testExecutionLocation';
 
 const MIN_ZOOM = 0.4;
 const MAX_ZOOM = 1.6;
@@ -1125,8 +1126,16 @@ export default function NodeCanvas() {
           onClick={() => {
             if (isAgentBuilderPreviewMode) return;
             const query = new URLSearchParams({ tab: 'logs' });
-            if (testExecutionRunId) query.set('testRun', testExecutionRunId);
-            if (testSelectedNodeId) query.set('testNode', testSelectedNodeId);
+            const testExecutionQuery = new URLSearchParams(
+              window.location.search,
+            );
+            if (testExecutionRunId) {
+              testExecutionQuery.set('testRun', testExecutionRunId);
+            }
+            if (testSelectedNodeId) {
+              testExecutionQuery.set('testNode', testSelectedNodeId);
+            }
+            copyTestExecutionLocationQueryParams(testExecutionQuery, query);
             router.push(`/modules/${activeWorkflowId}/report?${query.toString()}`);
           }}
           disabled={isAgentBuilderPreviewMode}

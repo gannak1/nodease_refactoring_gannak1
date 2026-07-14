@@ -7,6 +7,7 @@ import { LogTab } from '@/app/features/workflow/components/editor/tabs/LogTab';
 import { MonitoringTab } from '@/app/features/workflow/components/editor/tabs/MonitoringTab';
 import { useWorkflowAppSync } from '@/app/features/workflow/hooks/useWorkflowAppSync';
 import { useWorkflowStore } from '@/app/features/workflow/store/useWorkflowStore';
+import { copyTestExecutionLocationQueryParams } from '@/app/features/workflow/utils/testExecutionLocation';
 
 type ReportTab = 'logs' | 'monitoring';
 type ReportTabButtonProps = {
@@ -50,16 +51,13 @@ export default function WorkflowReportPage() {
   const workflowId = String(params.id || '');
   const activeTab = getReportTab(searchParams.get('tab'));
   const runId = searchParams.get('runId');
-  const testRun = searchParams.get('testRun');
-  const testNode = searchParams.get('testNode');
   const projectApp = useWorkflowStore((state) => state.projectApp);
 
   const navigateToTab = (tab: ReportTab, nextRunId?: string) => {
     const query = new URLSearchParams();
     query.set('tab', tab);
     if (nextRunId) query.set('runId', nextRunId);
-    if (testRun) query.set('testRun', testRun);
-    if (testNode) query.set('testNode', testNode);
+    copyTestExecutionLocationQueryParams(searchParams, query);
     router.push(`/modules/${workflowId}/report?${query.toString()}`);
   };
 
@@ -71,8 +69,7 @@ export default function WorkflowReportPage() {
             type="button"
             onClick={() => {
               const query = new URLSearchParams();
-              if (testRun) query.set('testRun', testRun);
-              if (testNode) query.set('testNode', testNode);
+              copyTestExecutionLocationQueryParams(searchParams, query);
               const suffix = query.size > 0 ? `?${query.toString()}` : '';
               router.push(`/modules/${workflowId}${suffix}`);
             }}

@@ -26,7 +26,9 @@ type ExecutionComparisonPanelProps = {
   baselineRunId: string | null;
   currentRunId: string | null;
   currentExecutionError?: string | null;
+  selectedNodeId?: string | null;
   onBaselineRunIdChange: (runId: string | null) => void;
+  onSelectedNodeIdChange?: (nodeId: string | null) => void;
 };
 
 type NodeSnapshot = {
@@ -413,7 +415,9 @@ export function ExecutionComparisonPanel({
   baselineRunId,
   currentRunId,
   currentExecutionError,
+  selectedNodeId: selectedNodeIdProp,
   onBaselineRunIdChange,
+  onSelectedNodeIdChange,
 }: ExecutionComparisonPanelProps) {
   const latestNodesRef = useRef(nodes);
   const nodeDefinitionKey = comparisonNodeDefinitionKey(nodes);
@@ -428,8 +432,20 @@ export function ExecutionComparisonPanel({
   const [currentBundle, setCurrentBundle] = useState<RunBundle | null>(null);
   const [isComparisonLoading, setIsComparisonLoading] = useState(false);
   const [comparisonError, setComparisonError] = useState<string | null>(null);
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [internalSelectedNodeId, setInternalSelectedNodeId] = useState<
+    string | null
+  >(null);
   const [reloadKey, setReloadKey] = useState(0);
+  const isSelectedNodeControlled = selectedNodeIdProp !== undefined;
+  const selectedNodeId = isSelectedNodeControlled
+    ? selectedNodeIdProp
+    : internalSelectedNodeId;
+  const selectNodeId = (nodeId: string | null) => {
+    if (!isSelectedNodeControlled) {
+      setInternalSelectedNodeId(nodeId);
+    }
+    onSelectedNodeIdChange?.(nodeId);
+  };
 
   useEffect(() => {
     latestNodesRef.current = nodes;
@@ -462,7 +478,9 @@ export function ExecutionComparisonPanel({
   }, [baselineRunId, page, statusFilter, triggerFilter, workflowId]);
 
   useEffect(() => {
-    setSelectedNodeId(null);
+    if (!isSelectedNodeControlled) {
+      setInternalSelectedNodeId(null);
+    }
     if (!baselineRunId) {
       setBaselineBundle(null);
       setCurrentBundle(null);
@@ -502,7 +520,14 @@ export function ExecutionComparisonPanel({
     return () => {
       cancelled = true;
     };
-  }, [baselineRunId, currentRunId, nodeDefinitionKey, reloadKey, workflowId]);
+  }, [
+    baselineRunId,
+    currentRunId,
+    isSelectedNodeControlled,
+    nodeDefinitionKey,
+    reloadKey,
+    workflowId,
+  ]);
 
   const comparisonNodes = useMemo(() => {
     if (!baselineBundle || !currentBundle) return [];
@@ -711,7 +736,7 @@ export function ExecutionComparisonPanel({
           <div className="space-y-4">
             <button
               type="button"
-              onClick={() => setSelectedNodeId(null)}
+              onClick={() => selectNodeId(null)}
               className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
             >
               <ArrowLeft className="h-3.5 w-3.5" /> 노드 비교 목록으로
@@ -861,7 +886,7 @@ export function ExecutionComparisonPanel({
                       <button
                         type="button"
                         aria-label={`${title} 노드 상세 비교하기`}
-                        onClick={() => setSelectedNodeId(nodeId)}
+                        onClick={() => selectNodeId(nodeId)}
                         className="mt-3 w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-gray-700 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
                       >
                         노드 상세 비교하기

@@ -48,6 +48,14 @@ import { FinalResponseCard } from '../execution/FinalResponseCard';
 import { deploymentApiErrorMessage } from '../../utils/deploymentPreflightMessage';
 import { ModelRoutingDecisionDetails } from '../modelRouting/ModelRoutingDecisionDetails';
 import { restoreTestExecutionFromWorkflowRun } from '../../utils/testExecutionRestore';
+import {
+  TEST_COMPARISON_BASELINE_QUERY_KEY,
+  TEST_COMPARISON_ENABLED_VALUE,
+  TEST_COMPARISON_NODE_QUERY_KEY,
+  TEST_COMPARISON_QUERY_KEY,
+  TEST_NODE_QUERY_KEY,
+  TEST_RUN_QUERY_KEY,
+} from '../../utils/testExecutionLocation';
 import { ExecutionComparisonPanel } from './ExecutionComparisonPanel';
 
 export { ModelRoutingDecisionDetails } from '../modelRouting/ModelRoutingDecisionDetails';
@@ -67,10 +75,15 @@ const TEST_SIDEBAR_MAX_WIDTH = 640;
 const TEST_SIDEBAR_VIEWPORT_GUTTER = 24;
 const TEST_SIDEBAR_MIN_CANVAS_WIDTH = 420;
 const TEST_SIDEBAR_KEYBOARD_STEP = 20;
-const TEST_RUN_QUERY_KEY = 'testRun';
-const TEST_NODE_QUERY_KEY = 'testNode';
+const TEST_RUN_RESTORE_MAX_ATTEMPTS = 6;
+const TEST_RUN_RESTORE_RETRY_DELAY_MS = 400;
 
 type PreflightStatus = 'idle' | 'validating' | 'saving';
+type ComparisonLocationUpdate = {
+  comparisonMode?: boolean;
+  baselineRunId?: string | null;
+  comparisonNodeId?: string | null;
+};
 
 export const TEST_INPUT_CLASS_NAME =
   'w-full px-3 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-100 dark:placeholder:text-gray-500';
@@ -100,34 +113,77 @@ const getHttpStatus = (error: unknown) => {
   return undefined;
 };
 
+const waitForTestRunRestore = (durationMs: number) =>
+  new Promise((resolve) => setTimeout(resolve, durationMs));
+
 const readTestExecutionLocation = () => {
   if (typeof window === 'undefined') {
-    return { runId: null, nodeId: null };
+    return {
+      runId: null,
+      nodeId: null,
+      comparisonMode: false,
+      baselineRunId: null,
+      comparisonNodeId: null,
+    };
   }
 
   const searchParams = new URLSearchParams(window.location.search);
   return {
     runId: searchParams.get(TEST_RUN_QUERY_KEY),
     nodeId: searchParams.get(TEST_NODE_QUERY_KEY),
+    comparisonMode:
+      searchParams.get(TEST_COMPARISON_QUERY_KEY) ===
+      TEST_COMPARISON_ENABLED_VALUE,
+    baselineRunId: searchParams.get(TEST_COMPARISON_BASELINE_QUERY_KEY),
+    comparisonNodeId: searchParams.get(TEST_COMPARISON_NODE_QUERY_KEY),
   };
+};
+
+const setSearchParam = (
+  searchParams: URLSearchParams,
+  key: string,
+  value: string | null,
+) => {
+  if (value) {
+    searchParams.set(key, value);
+  } else {
+    searchParams.delete(key);
+  }
 };
 
 const replaceTestExecutionLocation = (
   runId: string | null,
   nodeId: string | null,
+  comparisonUpdate: ComparisonLocationUpdate = {},
 ) => {
   if (typeof window === 'undefined') return;
 
   const url = new URL(window.location.href);
-  if (runId) {
-    url.searchParams.set(TEST_RUN_QUERY_KEY, runId);
-  } else {
-    url.searchParams.delete(TEST_RUN_QUERY_KEY);
+  setSearchParam(url.searchParams, TEST_RUN_QUERY_KEY, runId);
+  setSearchParam(url.searchParams, TEST_NODE_QUERY_KEY, nodeId);
+
+  if ('comparisonMode' in comparisonUpdate) {
+    setSearchParam(
+      url.searchParams,
+      TEST_COMPARISON_QUERY_KEY,
+      comparisonUpdate.comparisonMode
+        ? TEST_COMPARISON_ENABLED_VALUE
+        : null,
+    );
   }
-  if (nodeId) {
-    url.searchParams.set(TEST_NODE_QUERY_KEY, nodeId);
-  } else {
-    url.searchParams.delete(TEST_NODE_QUERY_KEY);
+  if ('baselineRunId' in comparisonUpdate) {
+    setSearchParam(
+      url.searchParams,
+      TEST_COMPARISON_BASELINE_QUERY_KEY,
+      comparisonUpdate.baselineRunId ?? null,
+    );
+  }
+  if ('comparisonNodeId' in comparisonUpdate) {
+    setSearchParam(
+      url.searchParams,
+      TEST_COMPARISON_NODE_QUERY_KEY,
+      comparisonUpdate.comparisonNodeId ?? null,
+    );
   }
   window.history.replaceState(window.history.state, '', url);
 };
@@ -176,7 +232,12 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     GraphValidationIssue[]
   >([]);
   const [isComparisonMode, setIsComparisonMode] = useState(false);
+  const [hasOpenedComparisonPanel, setHasOpenedComparisonPanel] =
+    useState(false);
   const [comparisonBaselineRunId, setComparisonBaselineRunId] = useState<
+    string | null
+  >(null);
+  const [comparisonSelectedNodeId, setComparisonSelectedNodeId] = useState<
     string | null
   >(null);
   const [localSelectedTestNodeId, setLocalSelectedTestNodeId] = useState<
@@ -191,6 +252,12 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   const clearResizeListenersRef = React.useRef<(() => void) | null>(null);
   const nodeStartedAtRef = React.useRef<Record<string, number>>({});
   const restoredRunRef = React.useRef<string | null>(null);
+  const latestNodesRef = React.useRef(nodes);
+  const currentTestExecutionRef = React.useRef({
+    runId: testExecutionRunId,
+    nodeResults: testNodeResults,
+    selectedNodeId: testSelectedNodeId,
+  });
   const isExecuting = testExecutionStatus === 'running';
   const selectedTestNodeId = testSelectedNodeId ?? localSelectedTestNodeId;
   const selectExecutionNode = (nodeId: string | null) => {
@@ -243,14 +310,47 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   );
 
   useEffect(() => {
+    latestNodesRef.current = nodes;
+  }, [nodes]);
+
+  useEffect(() => {
+    if (!activeWorkflowId) return;
+
+    const location = readTestExecutionLocation();
+    if (
+      !location.comparisonMode &&
+      !location.baselineRunId &&
+      !location.comparisonNodeId
+    ) {
+      return;
+    }
+
+    setComparisonBaselineRunId(location.baselineRunId);
+    setComparisonSelectedNodeId(location.comparisonNodeId);
+    if (location.comparisonMode) {
+      setHasOpenedComparisonPanel(true);
+      setIsComparisonMode(true);
+    }
+  }, [activeWorkflowId]);
+
+  useEffect(() => {
+    currentTestExecutionRef.current = {
+      runId: testExecutionRunId,
+      nodeResults: testNodeResults,
+      selectedNodeId: testSelectedNodeId,
+    };
+  }, [testExecutionRunId, testNodeResults, testSelectedNodeId]);
+
+  useEffect(() => {
     const { runId, nodeId } = readTestExecutionLocation();
     if (!runId || !activeWorkflowId || nodes.length === 0) return;
 
-    if (testExecutionRunId === runId) {
+    const currentExecution = currentTestExecutionRef.current;
+    if (currentExecution.runId === runId) {
       if (
         nodeId &&
-        testNodeResults.some((result) => result.nodeId === nodeId) &&
-        nodeId !== testSelectedNodeId
+        currentExecution.nodeResults.some((result) => result.nodeId === nodeId) &&
+        nodeId !== currentExecution.selectedNodeId
       ) {
         setLocalSelectedTestNodeId(nodeId);
         selectTestExecutionNode?.(nodeId);
@@ -260,41 +360,64 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
 
     const restoreKey = `${activeWorkflowId}:${runId}`;
     if (restoredRunRef.current === restoreKey) return;
-    restoredRunRef.current = restoreKey;
 
     let cancelled = false;
-    workflowApi
-      .getWorkflowRun(activeWorkflowId, runId)
-      .then((run) => {
-        if (cancelled) return;
-        const restored = restoreTestExecutionFromWorkflowRun(run, nodes);
-        restoreTestExecution(restored);
-        if (
-          nodeId &&
-          restored.nodeResults.some((result) => result.nodeId === nodeId)
-        ) {
-          setLocalSelectedTestNodeId(nodeId);
-          selectTestExecutionNode?.(nodeId);
+    const restore = async () => {
+      for (
+        let attempt = 0;
+        attempt < TEST_RUN_RESTORE_MAX_ATTEMPTS;
+        attempt += 1
+      ) {
+        try {
+          const run = await workflowApi.getWorkflowRun(activeWorkflowId, runId);
+          if (cancelled) return;
+
+          const restored = restoreTestExecutionFromWorkflowRun(
+            run,
+            latestNodesRef.current,
+          );
+          restoreTestExecution(restored);
+
+          if (
+            nodeId &&
+            restored.nodeResults.some((result) => result.nodeId === nodeId)
+          ) {
+            setLocalSelectedTestNodeId(nodeId);
+            selectTestExecutionNode?.(nodeId);
+          }
+
+          if (run.status.toLowerCase() !== 'running') {
+            restoredRunRef.current = restoreKey;
+            return;
+          }
+        } catch (error) {
+          if (getHttpStatus(error) !== 404) {
+            if (!cancelled) {
+              toast.error('이전 테스트 실행 기록을 불러오지 못했습니다.');
+            }
+            return;
+          }
         }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          toast.error('이전 테스트 실행 기록을 불러오지 못했습니다.');
+
+        if (attempt < TEST_RUN_RESTORE_MAX_ATTEMPTS - 1) {
+          await waitForTestRunRestore(TEST_RUN_RESTORE_RETRY_DELAY_MS);
+          if (cancelled) return;
         }
-      });
+      }
+
+      if (!cancelled) {
+        toast.error(
+          '이전 테스트 실행 기록이 아직 준비되지 않았습니다. 잠시 후 다시 시도하세요.',
+        );
+      }
+    };
+
+    void restore();
 
     return () => {
       cancelled = true;
     };
-  }, [
-    activeWorkflowId,
-    nodes,
-    restoreTestExecution,
-    selectTestExecutionNode,
-    testExecutionRunId,
-    testNodeResults,
-    testSelectedNodeId,
-  ]);
+  }, [activeWorkflowId, nodes.length, restoreTestExecution, selectTestExecutionNode]);
 
   const outputLabelByNodeId = useMemo(() => {
     const labelMap = new Map<string, Map<string, string>>();
@@ -1066,6 +1189,22 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     resetTestExecution();
   };
 
+  const handleComparisonBaselineRunIdChange = (runId: string | null) => {
+    setComparisonBaselineRunId(runId);
+    setComparisonSelectedNodeId(null);
+    replaceTestExecutionLocation(testExecutionRunId, testSelectedNodeId, {
+      baselineRunId: runId,
+      comparisonNodeId: null,
+    });
+  };
+
+  const handleComparisonSelectedNodeIdChange = (nodeId: string | null) => {
+    setComparisonSelectedNodeId(nodeId);
+    replaceTestExecutionLocation(testExecutionRunId, testSelectedNodeId, {
+      comparisonNodeId: nodeId,
+    });
+  };
+
   const getVariableDisplayName = (variable: WorkflowVariable) =>
     variable.label?.trim() || variable.name;
 
@@ -1111,7 +1250,11 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
             aria-pressed={!isComparisonMode}
             onClick={() => {
               setIsComparisonMode(false);
-              setComparisonBaselineRunId(null);
+              replaceTestExecutionLocation(
+                testExecutionRunId,
+                testSelectedNodeId,
+                { comparisonMode: false },
+              );
             }}
             className={`rounded-md px-3 py-2 text-xs font-semibold transition-colors ${
               !isComparisonMode
@@ -1125,7 +1268,13 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
             type="button"
             aria-pressed={isComparisonMode}
             onClick={() => {
+              setHasOpenedComparisonPanel(true);
               setIsComparisonMode(true);
+              replaceTestExecutionLocation(
+                testExecutionRunId,
+                testSelectedNodeId,
+                { comparisonMode: true },
+              );
               setClampedTestSidebarWidth(maxTestSidebarWidth);
             }}
             className={`inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-2 text-xs font-semibold transition-colors ${
@@ -1141,15 +1290,19 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-6">
-        {isComparisonMode && activeWorkflowId ? (
-          <ExecutionComparisonPanel
-            workflowId={activeWorkflowId}
-            nodes={nodes}
-            baselineRunId={comparisonBaselineRunId}
-            currentRunId={testExecutionRunId}
-            currentExecutionError={testExecutionError}
-            onBaselineRunIdChange={setComparisonBaselineRunId}
-          />
+        {hasOpenedComparisonPanel && activeWorkflowId ? (
+          <div className={isComparisonMode ? undefined : 'hidden'}>
+            <ExecutionComparisonPanel
+              workflowId={activeWorkflowId}
+              nodes={nodes}
+              baselineRunId={comparisonBaselineRunId}
+              currentRunId={testExecutionRunId}
+              currentExecutionError={testExecutionError}
+              selectedNodeId={comparisonSelectedNodeId}
+              onBaselineRunIdChange={handleComparisonBaselineRunIdChange}
+              onSelectedNodeIdChange={handleComparisonSelectedNodeIdChange}
+            />
+          </div>
         ) : null}
         {isExecuting ? (
           /* Execution Progress - Show node results as they come in */
