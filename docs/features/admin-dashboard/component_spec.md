@@ -28,9 +28,11 @@ Verified Against: feature/mba-188 @ 59d1cc51
 | 비용 탭 | workflow별 사용량/비용 집계 | organization owner/manager |
 | 보안 알림 탭 | 영속 Security Alert 검색·상세·safe evidence·상태 변경 | organization owner/manager |
 | 조직 구성 탭 | member/team 내부 보기 전환. 상세 계약은 [organization component spec](../organization/component_spec.md)의 MBA-141 목표 계약을 따른다 | organization owner/manager |
-| 기존 탭들 (권한/credential/knowledge/조직 설정) | 이 feature의 감사/비용/권한신청 범위 밖에서는 기존 구현 유지. MBA-176은 기존 권한/knowledge 탭을 확장해 KB team/user direct permission 관리를 추가한다 | 기존 기준 유지 |
+| 기존 탭들 (권한/credential/knowledge) | 이 feature의 감사/비용/권한신청 범위 밖에서는 기존 구현 유지. MBA-176은 기존 권한/knowledge 탭을 확장해 KB team/user direct permission 관리를 추가한다 | 기존 기준 유지 |
 
 `보안 알림` 탭은 `감사 로그` 앞에 두고 내부 key `security-alerts`를 사용한다. `/dashboard/admin?tab=security-alerts&alertId=<uuid>` deep link, 목록/filter/detail drawer, resolve dialog, 기존 ActorAccessDrawer handoff의 상세 계약은 [Security Alert component spec](../security-alert/component_spec.md)이 소유한다. Security Alert detail과 ActorAccessDrawer는 동시에 열지 않으며, 사용자 접근 조치 성공만으로 alert를 자동 resolve하지 않는다.
+
+별도 `조직 설정` 상위 탭은 제공하지 않는다. 기존 `/dashboard/admin?tab=organization` 주소는 `/dashboard/admin?tab=organization-structure&view=members`로 정규화한다. `/dashboard/settings`의 Access/LLM Credentials 화면은 이 변경과 무관하게 유지한다.
 
 - (후순위) `auditor`/`raw_auditor` 전용 사용자에게는 감사 로그 탭만 노출하고 기본 탭을 감사 로그로 한다. 요약 카드와 나머지 탭은 렌더링하지 않는다. 현재 데모 시나리오에서 auditor 전용 계정을 사용하지 않으므로 이 노출 제어는 후순위로 미룬다. 구현 전까지 admin 페이지 접근은 기존 organization manager 게이트를 유지한다.
 - 프론트 노출 제어는 UX 보조이며 최종 차단은 Gateway가 수행한다 (NFR-001). 권한 없는 API 응답(403)은 안내 문구로 처리한다. auditor 전용 노출 제어가 후순위인 동안에도 이 서버 경계는 그대로 적용된다.

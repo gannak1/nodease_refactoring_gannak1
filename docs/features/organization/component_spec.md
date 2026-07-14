@@ -47,6 +47,7 @@ Verified Against: feature/mba-127 @ 258b26a9
   - 기본 보기는 `멤버`다.
   - canonical URL은 `?tab=organization-structure&view=members|teams`다.
   - 기존 `?tab=members`, `?tab=teams` deep link는 각각 대응하는 canonical URL로 정규화한다.
+  - 별도 `조직 설정` 상위 tab은 제공하지 않는다. 기존 `?tab=organization` deep link는 `?tab=organization-structure&view=members`로 정규화한다.
   - member와 team의 검색, filter, pagination state는 서로 독립적으로 유지한다.
 
 ### SettingsPage
@@ -158,6 +159,7 @@ Verified Against: feature/mba-127 @ 258b26a9
   - `tab=organization-structure&view=teams`: team 보기
   - `view`가 없거나 지원하지 않는 값이면 `members`를 기본값으로 사용한다.
   - legacy `tab=members|teams`는 의미가 같은 canonical URL로 교체한다.
+  - 제거된 legacy `tab=organization`은 `tab=organization-structure&view=members`로 교체한다.
 - 상태:
   - 보기 전환과 browser history 이동은 URL 상태를 따른다.
   - member/team 검색, filter, pagination은 각 보기별 state를 유지하며 다른 보기로 전환해도 초기화하지 않는다.
@@ -290,16 +292,6 @@ Verified Against: feature/mba-127 @ 258b26a9
   - 선택 가능한 resource, active team, active member가 없으면 grant button이 disabled다.
   - Knowledge Base user direct grant는 `viewer`, `operator`, `builder`, `manager`만 허용하고 `none`은 DELETE revoke로 표현한다.
   - 조직 멤버십은 grant 대상 조건일 뿐 KB 사용 권한이 아니라는 상태/문구를 유지한다.
-
-### OrganizationTab
-
-- 출처: `apps/client/app/dashboard/admin/page.tsx`
-- 책임: 현재 organization 설정 요약을 표시한다.
-- 렌더링:
-  - organization name
-  - warning: `조직명 수정, 기본 팀, 위험 action은 정책과 API 범위 확정 후 연결합니다.`
-- 제한:
-  - backend에는 organization name/options PATCH가 있으나 현재 AdminConsolePage에서는 organization 수정 form이 연결되어 있지 않다.
 
 ### AppCreatePermissionRequestForm
 
