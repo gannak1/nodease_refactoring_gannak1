@@ -64,6 +64,82 @@ class TestCostOptimizerAvailabilityApi:
     def teardown_method(self):
         app.dependency_overrides = {}
 
+    def test_fr11_routing_preview_uses_execute_permission_and_returns_safe_summary(self):
+        workflow_id = uuid4()
+        user_id = uuid4()
+        db = MagicMock()
+        workflow = _workflow_with_nodes(
+            workflow_id,
+            uuid4(),
+            [
+                {
+                    "id": "llm-triage",
+                    "type": "llmNode",
+                    "data": {"model_id": "gpt-4.1", "auto_model_routing": True},
+                }
+            ],
+        )
+        deployment = SimpleNamespace(id=uuid4(), version=2)
+        preview = {
+            "deployment_version": 2,
+            "policy_version": "router-policy-v4",
+            "decision_source": "matched_rule",
+            "selected_model_id": "gpt-4o-mini",
+            "fallback_model_id": "gpt-4.1-mini",
+            "default_model_id": "gpt-4.1",
+            "configured_fallback_model_id": "gpt-4.1-mini",
+            "matched_cohort": {"id": "routine-support", "label": "단순 사용 안내"},
+            "matched_rule_id": "route-routine-support",
+            "reason_code": "validated_quality_floor_cost_reduction",
+            "availability": "available",
+            "semantic_evaluation": "not_required",
+            "draft_matches_deployment": False,
+        }
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        unsafe_preview = {
+            **preview,
+            "inputs": {"message": "이 값은 응답에 포함되면 안 됩니다."},
+        }
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+            return_value=workflow,
+        ) as ensure_permission, patch(
+            "apps.gateway.api.v1.endpoints.workflow._active_deployment_for_workflow",
+            return_value=deployment,
+        ), patch(
+            "apps.gateway.api.v1.endpoints.workflow.ModelRoutingPreviewService.preview",
+            return_value=unsafe_preview,
+        ) as preview_service:
+            response = self.client.post(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage/model-routing/preview",
+                json={
+                    "inputs": {
+                        "message": "영수증을 다시 받고 싶습니다.",
+                        "customerTier": "business",
+                    }
+                },
+            )
+
+        assert response.status_code == 200
+        assert response.json() == preview
+        assert "inputs" not in response.json()
+        ensure_permission.assert_called_once_with(
+            db, SimpleNamespace(id=user_id), str(workflow_id), "execute"
+        )
+        preview_service.assert_called_once_with(
+            db,
+            workflow=workflow,
+            deployment=deployment,
+            node_id="llm-triage",
+            inputs={
+                "message": "영수증을 다시 받고 싶습니다.",
+                "customerTier": "business",
+            },
+        )
+
     def test_fr1_llm_node_availability_returns_available_for_builder(self):
         workflow_id = uuid4()
         organization_id = uuid4()

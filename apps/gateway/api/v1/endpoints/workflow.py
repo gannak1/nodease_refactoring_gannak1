@@ -35,6 +35,10 @@ from apps.gateway.services.cost_optimizer_output_quality_service import (
 from apps.gateway.services.cost_optimizer_recommendation_verification_service import (
     CostOptimizerRecommendationVerificationService,
 )
+from apps.gateway.services.model_routing_preview_service import (
+    ModelRoutingPreviewBlockedError,
+    ModelRoutingPreviewService,
+)
 from apps.gateway.services.llm_service import LLMService
 from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
 from apps.gateway.services.deployment_service import DeploymentService
@@ -272,6 +276,29 @@ class ModelRoutingPreviewRequest(BaseModel):
     """편집 화면에서 입력만 받아 배포 policy를 read-only로 평가한다."""
 
     inputs: dict[str, Any] = Field(default_factory=dict)
+
+
+class ModelRoutingPreviewCohortResponse(BaseModel):
+    id: str | None = None
+    label: str | None = None
+
+
+class ModelRoutingPreviewResponse(BaseModel):
+    """미리보기 endpoint가 raw input 없이 내보내는 고정 safe summary."""
+
+    deployment_version: int
+    policy_version: str | None = None
+    decision_source: Literal["matched_rule", "default_model", "fallback_model"]
+    selected_model_id: str
+    fallback_model_id: str | None = None
+    default_model_id: str | None = None
+    configured_fallback_model_id: str | None = None
+    matched_cohort: ModelRoutingPreviewCohortResponse | None = None
+    matched_rule_id: str | None = None
+    reason_code: str
+    availability: Literal["available", "fallback"]
+    semantic_evaluation: Literal["not_required", "embedding_used", "unavailable"]
+    draft_matches_deployment: bool
 
 
 def _raise_invalid_cost_optimizer_candidate() -> None:
@@ -1054,6 +1081,32 @@ def _get_latest_model_routing_policy_update(
 def _canonical_json_hash(value: Any) -> str:
     payload = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _remove_retired_cohort_from_active_policy(
+    active_policy: Any,
+    *,
+    cohort_key: str,
+) -> dict[str, Any]:
+    """삭제한 입력군이 runtime policy에 남아 계속 매칭되는 것을 막는다."""
+    policy = copy.deepcopy(active_policy) if isinstance(active_policy, dict) else {}
+    router = policy.get("semantic_router")
+    if isinstance(router, dict):
+        router["routes"] = [
+            route
+            for route in router.get("routes") or []
+            if not isinstance(route, dict)
+            or str(route.get("cohort_id") or "") != cohort_key
+        ]
+        policy["semantic_router"] = router
+    policy["rules"] = [
+        rule
+        for rule in policy.get("rules") or []
+        if not isinstance(rule, dict)
+        or str((rule.get("when") or {}).get("semantic_cohort_id") or "")
+        != cohort_key
+    ]
+    return policy
 
 
 def _cost_optimizer_downstream_contracts_for_consumer(
@@ -3690,7 +3743,10 @@ def get_model_routing_policy_endpoint(
     )
 
 
-@router.post("/{workflow_id}/llm-nodes/{node_id}/model-routing/preview")
+@router.post(
+    "/{workflow_id}/llm-nodes/{node_id}/model-routing/preview",
+    response_model=ModelRoutingPreviewResponse,
+)
 def preview_model_routing_policy_endpoint(
     workflow_id: str,
     node_id: str,
@@ -3700,7 +3756,6 @@ def preview_model_routing_policy_endpoint(
 ):
     """현재 active deployment policy가 고를 모델을 실행 없이 보여준다."""
     workflow = ensure_workflow_permission(db, current_user, workflow_id, "execute")
-    _ensure_cost_optimizer_llm_node(workflow, node_id)
     deployment = _active_deployment_for_workflow(db, workflow)
     if deployment is None:
         raise HTTPException(status_code=409, detail="model_routing.policy_not_ready")
@@ -3985,6 +4040,10 @@ def retire_model_routing_cohort_endpoint(
     cohort.status = "retired"
     cohort.required = False
     cohort.retired_at = datetime.now(timezone.utc)
+    policy.active_policy = _remove_retired_cohort_from_active_policy(
+        policy.active_policy,
+        cohort_key=str(cohort.cohort_key),
+    )
     db.commit()
     return {"id": str(cohort.id), "status": cohort.status}
 
