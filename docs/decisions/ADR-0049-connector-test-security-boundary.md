@@ -16,7 +16,7 @@ Related ADRs: [ADR-0008](ADR-0008-audit-action-naming-standard.md), [ADR-0009](A
 3. 구조 검증을 통과한 요청은 Redis의 단일 atomic acquire에서 user/organization/network fixed-window rate와 user/organization/global concurrency lease를 함께 판정한다. Redis 장애 또는 transport peer 부재는 network 전에 fail-closed한다.
 4. Admission identity는 dedicated key와 scope domain tag로 HMAC-SHA256 처리한다. Redis에는 digest와 최소 128-bit owner token만 저장한다. 실행 중 owner는 Redis time 기준 heartbeat로 lease를 연장하고, 완료 시 정확한 owner member만 제거한다. Process crash 때만 TTL로 회수한다.
 5. V1 strict probe는 public address로만 resolve되는 PostgreSQL host와 port `5432`만 허용한다. 모든 DNS 결과를 검증하고 실제 libpq 연결은 검증된 한 IP에 고정한다.
-6. Public credential 전송은 TLS `verify-full`을 사용한다. 요청당 connection attempt는 한 번이고, query는 read-only `SELECT 1`, result는 one-row scalar로 제한한다. Connect 5초, statement 3초, API 10초, lease 30초를 적용한다.
+6. Public credential 전송은 시스템 신뢰 CA를 명시한 TLS `verify-full`을 사용한다. 요청당 connection attempt는 한 번이고, query는 read-only `SELECT 1`, result는 one-row scalar로 제한한다. Connect 5초, statement 3초, API 10초, lease 30초를 적용한다.
 7. SSH-enabled test는 host-key와 approved private-network 정책이 도입되기 전까지 `connector.ssh_probe_not_supported`로 network 전에 거부한다. 기존 persisted connector create/schema compatibility를 이 결정으로 제거하지 않는다.
 8. Expected target/connection 실패는 기존 `200 {success:false}` UX를 유지하되 server-owned static message와 allowlist reason code만 반환한다. 인증, ingress, admission과 schema 오류는 표준 HTTP error envelope을 사용한다.
 9. Admission 이후 결과는 `connection.test` action으로 best-effort audit한다. Organization, actor, result, reason code와 coarse duration만 기록하며 host/IP/port/database/username/credential, raw network identity와 exception text를 기록하지 않는다. Post-probe audit 실패는 network probe를 재시도하지 않는다.

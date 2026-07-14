@@ -1,7 +1,7 @@
 # Connectors Requirements
 
 Status: Draft
-Verified Against: feature/mba-246 @ 3ee48d4280daa163e86c7e1a2bd28cef81d6b75a
+Verified Against: feature/mba-246 @ ad87043689613c70adaf47acf281904bf5ed91d9
 Related Features: workflow, organization, audit-tracing, knowledge, conversation-memory
 
 ## Purpose
@@ -68,7 +68,7 @@ Connectors 기능은 외부 데이터 소스에 접속하기 위한 연결 정�
 - CONN-REQ-041: Admission identity는 scope-separated HMAC digest만 Redis에 저장해야 하며 raw organization/user/network identity, connection config와 secret을 key/member에 저장하지 않아야 한다. Owner-safe heartbeat는 실제 probe 실행 중 lease를 연장하고 process crash 때만 TTL recovery가 일어나야 한다.
 - CONN-REQ-042: Redis/admission 장애, transport peer 부재와 local executor capacity 부족은 probe 전에 fail-closed해야 한다. Process-local unlimited fallback은 허용하지 않는다.
 - CONN-REQ-043: Strict test는 `postgres`, public-only target, port `5432`만 허용하고 모든 DNS 결과를 검증한 뒤 한 validated IP로 실제 연결을 고정해야 한다.
-- CONN-REQ-044: Strict test는 TLS `verify-full`, connect 5초, statement 3초, API 10초, distributed lease 30초, 요청당 한 번의 connection attempt, read-only `SELECT 1`과 one-row scalar result를 적용해야 한다.
+- CONN-REQ-044: Strict test는 시스템 신뢰 CA를 명시한 TLS `verify-full`, connect 5초, statement 3초, API 10초, distributed lease 30초, 요청당 한 번의 connection attempt, read-only `SELECT 1`과 one-row scalar result를 적용해야 한다.
 - CONN-REQ-045: `ssh.enabled=true` connector test는 approved host-key/private-network 정책 전까지 network 전에 `connector.ssh_probe_not_supported`로 거부해야 한다. 이 제한은 기존 create/schema compatibility를 자동 제거하지 않는다.
 - CONN-REQ-046: Expected target/connection 실패는 static message와 allowlist reason code만 반환해야 하며 host/IP/port/database/username/password/private key/DSN/driver exception을 response, audit, application/client/edge log에 노출하지 않아야 한다.
 - CONN-REQ-047: Admission 뒤 결과는 `connection.test` audit으로 organization, actor, result, canonical reason과 coarse duration만 기록해야 한다. Audit publish 실패는 probe를 자동 재시도하거나 성공 결과를 실패로 바꾸지 않아야 한다.
