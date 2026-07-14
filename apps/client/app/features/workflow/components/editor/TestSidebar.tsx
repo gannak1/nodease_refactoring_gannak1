@@ -194,6 +194,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   const {
     isTestPanelOpen,
     toggleTestPanel,
+    openTestPanel,
     nodes,
     activeWorkflowId,
     setNodes,
@@ -371,6 +372,8 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     }
 
     historyLocationChangeRef.current = false;
+    // URL에 실행 식별자가 있으면 아직 DB 조회가 지연 중이어도 복원 상태를 보여준다.
+    openTestPanel();
 
     const currentExecution = currentTestExecutionRef.current;
     if (
@@ -378,13 +381,14 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
       currentExecution.status !== 'running'
     ) {
       setTestRunRestoreState('idle');
-      if (
+      const selectedNodeId =
         nodeId &&
-        currentExecution.nodeResults.some((result) => result.nodeId === nodeId) &&
-        nodeId !== currentExecution.selectedNodeId
-      ) {
-        setLocalSelectedTestNodeId(nodeId);
-        selectTestExecutionNode?.(nodeId);
+        currentExecution.nodeResults.some((result) => result.nodeId === nodeId)
+          ? nodeId
+          : null;
+      if (selectedNodeId !== currentExecution.selectedNodeId) {
+        setLocalSelectedTestNodeId(selectedNodeId);
+        selectTestExecutionNode?.(selectedNodeId);
       }
       return;
     }
@@ -413,13 +417,12 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
           );
           restoreTestExecution(restored);
 
-          if (
-            nodeId &&
-            restored.nodeResults.some((result) => result.nodeId === nodeId)
-          ) {
-            setLocalSelectedTestNodeId(nodeId);
-            selectTestExecutionNode?.(nodeId);
-          }
+          const selectedNodeId =
+            nodeId && restored.nodeResults.some((result) => result.nodeId === nodeId)
+              ? nodeId
+              : null;
+          setLocalSelectedTestNodeId(selectedNodeId);
+          selectTestExecutionNode?.(selectedNodeId);
 
           if (run.status.toLowerCase() !== 'running') {
             restoredRunRef.current = restoreKey;
@@ -459,6 +462,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   }, [
     activeWorkflowId,
     nodes.length,
+    openTestPanel,
     restoreTestExecution,
     resetTestExecution,
     selectTestExecutionNode,

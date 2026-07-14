@@ -191,6 +191,57 @@ def _serialize_workflow_sse_event(event: dict[str, Any]) -> str:
     return f"data: {json.dumps(event)}\n\n"
 
 
+def _stream_workflow_events(
+    *,
+    external_run_id: str,
+    celery: Any,
+    graph: dict[str, Any],
+    user_input: dict[str, Any],
+    execution_context: dict[str, Any],
+):
+    """Redis 구독과 task 발행을 완료한 뒤 workflow SSE 이벤트를 전달한다."""
+    from apps.shared.pubsub import get_redis_client
+
+    client = get_redis_client()
+    pubsub = client.pubsub()
+    channel = f"workflow:{external_run_id}"
+
+    try:
+        # 구독을 먼저 완료해야 Worker가 즉시 발행한 첫 이벤트를 놓치지 않는다.
+        pubsub.subscribe(channel)
+        # 복원용 run_id를 브라우저에 알리기 전에 task를 큐에 올린다.
+        send_workflow_task(
+            celery,
+            "workflow.stream",
+            args=[graph, user_input, execution_context, external_run_id],
+        )
+        logger.info("[Gateway] Celery 태스크 시작됨")
+
+        yield _serialize_workflow_sse_event(
+            _workflow_stream_started_event(external_run_id)
+        )
+
+        for message in pubsub.listen():
+            if message["type"] == "message":
+                event = _safe_stream_event(json.loads(message["data"]))
+                yield _serialize_workflow_sse_event(event)
+
+                if event.get("type") in ("workflow_finish", "error"):
+                    logger.info(
+                        f"[Gateway] 스트리밍 종료 - type: {event.get('type')}"
+                    )
+                    break
+    except Exception:
+        error_event = {
+            "type": "error",
+            "data": {"message": "workflow.stream_unavailable"},
+        }
+        yield _serialize_workflow_sse_event(error_event)
+    finally:
+        pubsub.unsubscribe(channel)
+        pubsub.close()
+
+
 class WorkflowCompareRequest(BaseModel):
     node_id: str
     compare_type: Literal["model", "prompt"]
@@ -6320,56 +6371,14 @@ async def stream_workflow(
             _test_routing_policy_context(db, workflow=workflow, graph=graph)
         )
 
-    # 6. Redis Pub/Sub 구독 및 SSE 스트리밍
-    # Race Condition 방지: 구독 완료 후 Celery 태스크 시작
-    def event_generator():
-        """Redis Pub/Sub을 구독하여 SSE 이벤트로 변환"""
-        from apps.shared.pubsub import get_redis_client
-
-        client = get_redis_client()
-        pubsub = client.pubsub()
-        channel = f"workflow:{external_run_id}"
-
-        try:
-            # 1. 먼저 Redis 채널 구독
-            pubsub.subscribe(channel)
-
-            # 2. 구독 완료 후 Celery 태스크 시작 (중요!)
-            # 브라우저는 이 식별자로 권한이 확인된 실행 기록을 다시 조회해,
-            # 새로고침 뒤에도 테스트 결과 사이드바를 복원할 수 있다.
-            yield _serialize_workflow_sse_event(
-                _workflow_stream_started_event(external_run_id)
-            )
-            send_workflow_task(
-                celery_app,
-                "workflow.stream",
-                args=[graph, user_input, execution_context, external_run_id],
-            )
-            logger.info("[Gateway] Celery 태스크 시작됨")
-
-            # 3. 이벤트 수신 및 SSE 전송
-            for message in pubsub.listen():
-                if message["type"] == "message":
-                    event = _safe_stream_event(json.loads(message["data"]))
-                    # SSE 포맷: "data: {json_content}\n\n"
-                    yield _serialize_workflow_sse_event(event)
-
-                    # workflow_finish 또는 error 시 종료
-                    if event.get("type") in ("workflow_finish", "error"):
-                        logger.info(
-                            f"[Gateway] 스트리밍 종료 - type: {event.get('type')}"
-                        )
-                        break
-        except Exception:
-            # 구독 중 에러 발생 시 에러 이벤트 전송
-            error_event = {
-                "type": "error",
-                "data": {"message": "workflow.stream_unavailable"},
-            }
-            yield _serialize_workflow_sse_event(error_event)
-        finally:
-            pubsub.unsubscribe(channel)
-            pubsub.close()
-
     # 7. StreamingResponse 반환
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        _stream_workflow_events(
+            external_run_id=external_run_id,
+            celery=celery_app,
+            graph=graph,
+            user_input=user_input,
+            execution_context=execution_context,
+        ),
+        media_type="text/event-stream",
+    )

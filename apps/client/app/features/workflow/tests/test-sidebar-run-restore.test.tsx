@@ -2,11 +2,14 @@ import { act, cleanup, render, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { TestSidebar } from '../components/editor/TestSidebar';
+import { useWorkflowStore } from '../store/useWorkflowStore';
 
 const mocks = vi.hoisted(() => ({
   getWorkflowRun: vi.fn(),
+  openTestPanel: vi.fn(),
   restoreTestExecution: vi.fn(),
   resetTestExecution: vi.fn(),
+  selectTestExecutionNode: vi.fn(),
 }));
 
 vi.mock('@xyflow/react', () => ({
@@ -24,6 +27,7 @@ vi.mock('../store/useWorkflowStore', () => {
   const state = {
     isTestPanelOpen: false,
     toggleTestPanel: vi.fn(),
+    openTestPanel: mocks.openTestPanel,
     nodes: [
       {
         id: 'llm-triage',
@@ -54,7 +58,7 @@ vi.mock('../store/useWorkflowStore', () => {
     setTestUploading: vi.fn(),
     setCurrentExecutingNode: vi.fn(),
     setTestExecutionRunId: vi.fn(),
-    selectTestExecutionNode: vi.fn(),
+    selectTestExecutionNode: mocks.selectTestExecutionNode,
     addTestNodeResult: vi.fn(),
     finishTestExecution: vi.fn(),
     failTestExecution: vi.fn(),
@@ -71,8 +75,20 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   mocks.getWorkflowRun.mockReset();
+  mocks.openTestPanel.mockReset();
   mocks.restoreTestExecution.mockReset();
   mocks.resetTestExecution.mockReset();
+  mocks.selectTestExecutionNode.mockReset();
+  Object.assign(useWorkflowStore.getState(), {
+    testExecutionStatus: 'idle',
+    testExecutionRunId: null,
+    testSelectedNodeId: null,
+    testExecutionStartedAt: null,
+    testExecutionFinishedAt: null,
+    testExecutionResult: null,
+    testNodeResults: [],
+    testExecutionError: null,
+  });
   window.history.replaceState({}, '', '/modules/workflow-1');
 });
 
@@ -145,6 +161,51 @@ describe('TestSidebar saved run restore', () => {
         status: 'success',
       }),
     );
+  });
+
+  it('URL에 testNode가 없으면 실행 전체 결과를 위해 선택 노드를 비운다', async () => {
+    const runId = '28222222-2222-2222-2222-222222222222';
+    Object.assign(useWorkflowStore.getState(), {
+      testExecutionStatus: 'success',
+      testExecutionRunId: runId,
+      testSelectedNodeId: 'llm-triage',
+      testNodeResults: [
+        {
+          nodeId: 'llm-triage',
+          nodeType: 'llmNode',
+          status: 'success',
+          duration: 10,
+          output: { answer: '노드 결과' },
+        },
+      ],
+    });
+    window.history.replaceState(
+      {},
+      '',
+      `/modules/workflow-1?testRun=${runId}`,
+    );
+
+    render(<TestSidebar />);
+
+    await waitFor(() => {
+      expect(mocks.selectTestExecutionNode).toHaveBeenCalledWith(null);
+    });
+    expect(mocks.getWorkflowRun).not.toHaveBeenCalled();
+  });
+
+  it('복원 기록이 아직 없을 때에도 테스트 실행 패널을 열어 재시도 상태를 보여준다', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/modules/workflow-1?testRun=29222222-2222-2222-2222-222222222222',
+    );
+    mocks.getWorkflowRun.mockRejectedValue({ response: { status: 404 } });
+
+    render(<TestSidebar />);
+
+    await waitFor(() => {
+      expect(mocks.openTestPanel).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('진행 중인 실행은 실행 중으로 표시하고 완료될 때까지 다시 조회한다', async () => {
