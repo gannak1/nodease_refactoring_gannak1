@@ -293,8 +293,8 @@ class ModelRoutingPolicyStore:
             pending_node_ids = {
                 node_id
                 for node_id in auto_routing_node_ids
-                if node_id not in node_runs_by_id
-                or node_runs_by_id[node_id].status == NodeRunStatus.RUNNING
+                if node_id in node_runs_by_id
+                and node_runs_by_id[node_id].status == NodeRunStatus.RUNNING
             }
             if pending_node_ids:
                 raise ModelRoutingRunLogPendingError(

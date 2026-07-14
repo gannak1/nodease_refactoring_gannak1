@@ -442,6 +442,8 @@ class TestModelRoutingPolicyApi:
             validation_budget_usd=3,
             max_cohorts=6,
             judge_user_id=None,
+            execution_subject_user_id=user_id,
+            organization_id=workflow.organization_id,
         )
         (
             db.query.return_value.filter.return_value.filter.return_value.first.return_value
@@ -458,6 +460,10 @@ class TestModelRoutingPolicyApi:
         ), patch(
             "apps.gateway.api.v1.endpoints.workflow._model_routing_adaptive_summary",
             return_value=workflow_endpoint._empty_model_routing_adaptive_summary(),
+        ), patch(
+            "apps.gateway.api.v1.endpoints.workflow.WorkflowRuntimeLLMService."
+            "get_runtime_available_model_ids_for_user",
+            return_value=["gpt-4.1-mini", "gpt-4.1"],
         ):
             response = self.client.patch(
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage/model-routing/policy",
@@ -478,6 +484,67 @@ class TestModelRoutingPolicyApi:
         assert policy.active_policy["default_model_id"] == "gpt-4.1-mini"
         assert policy.active_policy["fallback_model_id"] == "gpt-4.1"
         db.commit.assert_called_once()
+
+    def test_fr11_policy_patch_rejects_model_unavailable_to_execution_subject(self):
+        """배포 실행자가 쓸 수 없는 모델은 active policy에 저장하면 안 된다."""
+        workflow_id = uuid4()
+        organization_id = uuid4()
+        editor_id = uuid4()
+        execution_subject_id = uuid4()
+        db = MagicMock()
+        workflow = _workflow_with_nodes(
+            workflow_id,
+            organization_id,
+            [
+                {
+                    "id": "llm-triage",
+                    "type": "llmNode",
+                    "data": {
+                        "auto_model_routing": True,
+                        "model_id": "gpt-4.1",
+                    },
+                }
+            ],
+        )
+        policy = SimpleNamespace(
+            enabled=True,
+            active_policy={"default_model_id": "gpt-4.1", "rules": []},
+            execution_subject_user_id=execution_subject_id,
+            organization_id=organization_id,
+            refresh_every_runs=20,
+            validation_budget_usd=3,
+            max_cohorts=6,
+            judge_user_id=None,
+        )
+        (
+            db.query.return_value.filter.return_value.filter.return_value.first.return_value
+        ) = None
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=editor_id)
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+            return_value=workflow,
+        ), patch(
+            "apps.gateway.api.v1.endpoints.workflow._get_model_routing_policy_for_workflow",
+            return_value=policy,
+        ), patch(
+            "apps.gateway.api.v1.endpoints.workflow.WorkflowRuntimeLLMService."
+            "get_runtime_available_model_ids_for_user",
+            return_value=["gpt-4.1"],
+        ):
+            response = self.client.patch(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage/model-routing/policy",
+                json={
+                    "enabled": True,
+                    "default_model_id": "gpt-4.1-mini",
+                    "fallback_model_id": "gpt-4.1",
+                },
+            )
+
+        assert response.status_code == 422
+        assert response.json()["detail"] == "model_routing.policy_model_unavailable"
+        assert policy.active_policy["default_model_id"] == "gpt-4.1"
 
     def test_fr11_cohort_wizard_suggests_fields_from_representative_query(self):
         """대표 문의만 주면 마법사가 사람이 수정 가능한 입력군 초안을 반환한다."""
@@ -553,7 +620,7 @@ class TestModelRoutingPolicyApi:
                 {
                     "id": "llm-triage",
                     "type": "llmNode",
-                    "data": {"auto_model_routing": True, "model_id": "gpt-4.1"},
+                    "data": {"auto_model_routing": True, "model_id": "draft-model"},
                 }
             ],
         )
@@ -571,6 +638,20 @@ class TestModelRoutingPolicyApi:
             source="manual",
             status="proposed",
         )
+        deployment = SimpleNamespace(
+            graph_snapshot={
+                "nodes": [
+                    {
+                        "id": "llm-triage",
+                        "type": "llmNode",
+                        "data": {
+                            "auto_model_routing": True,
+                            "model_id": "deployed-model",
+                        },
+                    }
+                ]
+            }
+        )
         app.dependency_overrides[get_db] = lambda: db
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
@@ -580,6 +661,9 @@ class TestModelRoutingPolicyApi:
         ) as ensure_deployer, patch(
             "apps.gateway.api.v1.endpoints.workflow._get_model_routing_policy_for_workflow",
             return_value=policy,
+        ), patch(
+            "apps.gateway.api.v1.endpoints.workflow._active_deployment_for_workflow",
+            return_value=deployment,
         ), patch(
             "apps.gateway.api.v1.endpoints.workflow.WorkflowRuntimeLLMService."
             "get_runtime_available_embedding_model_ids_for_user",
@@ -630,6 +714,7 @@ class TestModelRoutingPolicyApi:
             organization_id=organization_id,
         )
         assert create_cohort.call_args.kwargs["policy"] is policy
+        assert create_cohort.call_args.kwargs["node_data"]["model_id"] == "deployed-model"
         assert create_cohort.call_args.kwargs["cohort_key"] == "billing_issue"
         assert create_cohort.call_args.kwargs["fixed"] is True
         db.commit.assert_called_once()

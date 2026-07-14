@@ -3829,7 +3829,6 @@ def patch_model_routing_policy_endpoint(
         user_id=current_user.id,
         organization_id=workflow.organization_id,
     )
-    workflow.graph = next_graph
 
     policy = _get_model_routing_policy_for_workflow(db, workflow, node_id)
     workflow_budget = (
@@ -3850,6 +3849,29 @@ def patch_model_routing_policy_endpoint(
             detail="model_routing.validation_budget_exceeds_workflow_budget",
         )
     if policy is not None:
+        if "default_model_id" in request_fields or "fallback_model_id" in request_fields:
+            execution_subject_id = policy.execution_subject_user_id
+            organization_id = policy.organization_id or workflow.organization_id
+            if execution_subject_id is None or organization_id is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="model_routing.execution_subject_unavailable",
+                )
+            available_model_ids = set(
+                WorkflowRuntimeLLMService.get_runtime_available_model_ids_for_user(
+                    db,
+                    user_id=execution_subject_id,
+                    organization_id=organization_id,
+                )
+            )
+            policy_model_ids = {configured_model_id}
+            if fallback_model_id is not None:
+                policy_model_ids.add(fallback_model_id)
+            if not policy_model_ids.issubset(available_model_ids):
+                raise HTTPException(
+                    status_code=422,
+                    detail="model_routing.policy_model_unavailable",
+                )
         policy.enabled = request_body.enabled
         policy.refresh_every_runs = request_body.refresh_every_runs
         policy.validation_budget_usd = request_body.validation_budget_usd
@@ -3870,6 +3892,7 @@ def patch_model_routing_policy_endpoint(
             policy.status = "active"
         else:
             policy.status = "collecting"
+    workflow.graph = next_graph
     db.commit()
     return _model_routing_policy_response(
         policy,
@@ -3944,11 +3967,19 @@ def create_model_routing_cohort_endpoint(
 ):
     """직접 등록한 입력군을 policy에 추가하고 이후 운영/Replay 검증 대상으로 둔다."""
     workflow = ensure_workflow_permission(db, current_user, workflow_id, "deploy")
-    node = _ensure_cost_optimizer_llm_node(workflow, node_id)
-    node_data = node.get("data") if isinstance(node.get("data"), dict) else {}
     policy = _get_model_routing_policy_for_workflow(db, workflow, node_id)
     if policy is None or not policy.enabled:
         raise HTTPException(status_code=409, detail="model_routing.policy_not_ready")
+    deployment = _active_deployment_for_workflow(db, workflow)
+    if deployment is None:
+        raise HTTPException(status_code=409, detail="model_routing.policy_not_ready")
+    # 입력군과 evidence는 draft가 아닌 실제 배포 snapshot의 설정 지문으로 묶인다.
+    # 그래야 이후 validation planner가 같은 fingerprint로 해당 입력군을 찾는다.
+    node = _ensure_cost_optimizer_llm_node(
+        SimpleNamespace(id=workflow.id, graph=deployment.graph_snapshot or {}),
+        node_id,
+    )
+    node_data = node.get("data") if isinstance(node.get("data"), dict) else {}
     subject_id = policy.execution_subject_user_id or current_user.id
     organization_id = policy.organization_id or workflow.organization_id
     if organization_id is None:

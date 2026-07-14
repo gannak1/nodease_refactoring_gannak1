@@ -16,6 +16,7 @@ LLM_RUNTIME_RELEVANT_KEYS = (
     "user_prompt",
     "assistant_prompt",
     "knowledgeBases",
+    "knowledgeCollections",
     "topK",
     "scoreThreshold",
     "retrievedContextMaxChars",

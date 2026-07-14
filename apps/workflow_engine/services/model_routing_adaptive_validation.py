@@ -197,6 +197,7 @@ class AdaptiveValidationResultService:
             if not cohort_id or not model_id or not fallback_model_id:
                 continue
             adaptive_rules_by_cohort[str(cohort_id)] = {
+                "id": f"adaptive-cohort-{cohort_id}",
                 "when": {"semantic_cohort_id": str(cohort_id)},
                 "selected_model_id": str(model_id),
                 "fallback_model_id": str(fallback_model_id),

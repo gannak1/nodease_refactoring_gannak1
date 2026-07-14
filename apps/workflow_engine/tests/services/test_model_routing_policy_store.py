@@ -134,6 +134,73 @@ def test_successful_run_waits_until_auto_routing_node_log_is_terminal():
         )
 
 
+def test_successful_run_does_not_wait_for_auto_routing_node_in_an_unselected_branch():
+    """조건 분기로 실행되지 않은 LLM node는 완료 로그를 기다리면 안 된다."""
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    workflow_run = SimpleNamespace(
+        id=uuid4(),
+        workflow_id=uuid4(),
+        deployment_id=uuid4(),
+        trigger_mode="webhook",
+        status="success",
+    )
+    deployment = SimpleNamespace(
+        graph_snapshot={
+            "nodes": [
+                {
+                    "id": "llm-selected",
+                    "type": "llmNode",
+                    "data": {"auto_model_routing": True},
+                },
+                {
+                    "id": "llm-unselected-branch",
+                    "type": "llmNode",
+                    "data": {"auto_model_routing": True},
+                },
+            ]
+        }
+    )
+    selected_node = SimpleNamespace(
+        node_id="llm-selected",
+        status=NodeRunStatus.SUCCESS,
+    )
+    db = MagicMock()
+    db.query.side_effect = [
+        _Query(first_value=workflow_run),
+        _Query(first_value=deployment),
+        _Query(all_value=[selected_node]),
+    ]
+    policy = SimpleNamespace(id=uuid4())
+
+    with (
+        patch.object(
+            ModelRoutingPolicyStore,
+            "ensure_policy_for_deployed_node",
+            return_value=policy,
+        ),
+        patch.object(ModelRoutingPolicyStore, "_record_policy_event", return_value=True),
+        patch.object(
+            ModelRoutingPolicyStore,
+            "_lock_policy_for_update",
+            return_value=policy,
+        ),
+        patch(
+            "apps.workflow_engine.services.model_routing_policy_store.ModelRoutingPolicyLifecycleService.apply_run_event",
+            return_value=SimpleNamespace(should_enqueue_refresh=False),
+        ),
+    ):
+        assert (
+            ModelRoutingPolicyStore.record_completed_deployed_run(
+                db,
+                workflow_run_id=workflow_run.id,
+            )
+            == []
+        )
+
+
 def test_record_completed_run_counts_only_successful_llm_node_runs():
     """실패/실행 중인 LLM node run은 정책 갱신 표본에 포함하지 않는다."""
     from apps.workflow_engine.services.model_routing_policy_store import (
