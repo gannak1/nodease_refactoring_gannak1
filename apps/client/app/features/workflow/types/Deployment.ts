@@ -15,6 +15,19 @@ export type DeploymentPreflightAudience =
   | 'authenticated_user'
   | 'workflow_node_inherited';
 
+export interface DeploymentBrowserAccessPolicy {
+  contract_version: 'deployment_browser_access.v1';
+  embedding: {
+    enabled: boolean;
+    parent_origins: string[];
+  };
+}
+
+export interface DeploymentBrowserAccessRevisionCreate {
+  browser_access_policy: DeploymentBrowserAccessPolicy;
+  is_active?: boolean;
+}
+
 // 입력 변수 스키마 타입
 export interface InputVariable {
   name: string;
@@ -43,6 +56,7 @@ export interface DeploymentBase {
   description?: string | null;
   config?: Record<string, any>;
   is_active: boolean;
+  browser_access_policy?: DeploymentBrowserAccessPolicy | null;
 }
 
 export interface DeploymentCreate extends DeploymentBase {
@@ -83,6 +97,7 @@ export interface DeploymentPreflightResponse {
     knowledge_collection_count_bucket?: string;
     candidate_budget_limited?: boolean;
   }>;
+  normalized_browser_access_policy?: DeploymentBrowserAccessPolicy | null;
 }
 
 export interface DeploymentResponse extends DeploymentBase {

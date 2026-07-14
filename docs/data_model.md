@@ -351,6 +351,7 @@ workflow 단위 월간 LLM 예산 ([features/budget-management](features/budget-
 | type | DeploymentType enum | NOT NULL — deployment type (api/webapp/widget/mcp/workflow_node/schedule/webhook/chatbot/internal_chatbot) |
 | graph_snapshot | JSONB | NOT NULL — 배포 시점 graph 고정본. MBA-190 이후 server가 계산한 WorkflowNode target deployment ID/version/snapshot-hash internal binding을 포함할 수 있다. MBA-233 LLM node의 `knowledgeBases`/`knowledgeCollections` configured intent도 보존하되 public graph 응답에서는 internal binding과 두 Knowledge reference 목록을 제거한다 |
 | config / input_schema / output_schema | JSONB | NULL |
+| browser_access_policy | JSONB | NULL — `chatbot`/`widget` immutable version의 `deployment_browser_access.v1` parent embedding policy. Legacy null/malformed/unknown은 unrestricted가 아니라 disabled로 해석하고 public projection은 CSP에 필요한 canonical parent source만 반환한다 ([ADR-0043](decisions/ADR-0043-deployment-browser-origin-and-embedding-boundary.md)) |
 | description | VARCHAR | NULL |
 | created_by | UUID | NOT NULL, FK→users.id |
 | created_at | DATETIME | NOT NULL |

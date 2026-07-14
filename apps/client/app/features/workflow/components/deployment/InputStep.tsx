@@ -1,84 +1,114 @@
 'use client';
 
+import { Loader2 } from 'lucide-react';
+
+import type {
+  DeploymentBrowserAccessPolicy,
+  DeploymentType,
+} from '../../types/Deployment';
+import { buildBrowserAccessPolicyDraft } from '../../utils/browserAccessPolicy';
+import { BrowserAccessPolicyEditor } from './BrowserAccessPolicyEditor';
+
 interface InputStepProps {
-  deploymentType: string;
+  deploymentType: DeploymentType;
+  deploymentTypeLabel: string;
   description: string;
   onDescriptionChange: (value: string) => void;
+  embeddingEnabled: boolean;
+  parentOrigins: string[];
+  onEmbeddingEnabledChange: (enabled: boolean) => void;
+  onParentOriginChange: (index: number, value: string) => void;
+  onAddParentOrigin: () => void;
+  onRemoveParentOrigin: (index: number) => void;
   onCancel: () => void;
-  onSubmit: () => void;
+  onSubmit: (policy?: DeploymentBrowserAccessPolicy) => void;
   isDeploying: boolean;
 }
 
 export function InputStep({
   deploymentType,
+  deploymentTypeLabel,
   description,
   onDescriptionChange,
+  embeddingEnabled,
+  parentOrigins,
+  onEmbeddingEnabledChange,
+  onParentOriginChange,
+  onAddParentOrigin,
+  onRemoveParentOrigin,
   onCancel,
   onSubmit,
   isDeploying,
 }: InputStepProps) {
+  const supportsEmbeddingPolicy = ['chatbot', 'widget'].includes(
+    deploymentType,
+  );
+  const policyResult = supportsEmbeddingPolicy
+    ? buildBrowserAccessPolicyDraft(embeddingEnabled, parentOrigins)
+    : null;
+  const validationError = policyResult?.error || null;
+
   return (
     <>
-      <div className="px-6 py-4 border-b border-gray-200">
+      <div className="border-b border-gray-200 px-6 py-4">
         <h2 className="text-xl font-semibold text-gray-800">
-          {deploymentType} 배포
+          {deploymentTypeLabel} 배포
         </h2>
-        <p className="text-sm text-gray-600 mt-1">
+        <p className="mt-1 text-sm text-gray-600">
           현재 워크플로우를 배포하여 사용할 수 있게 만듭니다.
         </p>
       </div>
 
-      <div className="p-6">
-        <label className="block text-sm font-medium text-gray-700 mb-2">
-          배포 설명 (선택)
-        </label>
-        <textarea
-          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 h-32 resize-none"
-          placeholder="이번 배포에 대한 설명을 적어주세요 (예: V1.0 출시)"
-          value={description}
-          onChange={(e) => onDescriptionChange(e.target.value)}
-        />
+      <div className="max-h-[65vh] space-y-6 overflow-y-auto p-6">
+        <div>
+          <label
+            className="mb-2 block text-sm font-medium text-gray-700"
+            htmlFor="deployment-description"
+          >
+            배포 설명 (선택)
+          </label>
+          <textarea
+            id="deployment-description"
+            className="h-28 w-full resize-none rounded-md border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            placeholder="이번 배포에 대한 설명"
+            value={description}
+            onChange={(event) => onDescriptionChange(event.target.value)}
+            disabled={isDeploying}
+          />
+        </div>
+
+        {supportsEmbeddingPolicy && (
+          <BrowserAccessPolicyEditor
+            headingId="deployment-browser-access-heading"
+            enabled={embeddingEnabled}
+            parentOrigins={parentOrigins}
+            validationError={validationError}
+            disabled={isDeploying}
+            onEnabledChange={onEmbeddingEnabledChange}
+            onParentOriginChange={onParentOriginChange}
+            onAddParentOrigin={onAddParentOrigin}
+            onRemoveParentOrigin={onRemoveParentOrigin}
+          />
+        )}
       </div>
 
-      <div className="px-6 py-4 border-t border-gray-200 flex justify-end gap-3">
+      <div className="flex justify-end gap-3 border-t border-gray-200 px-6 py-4">
         <button
+          type="button"
           onClick={onCancel}
-          className="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+          disabled={isDeploying}
+          className="rounded-md bg-gray-100 px-4 py-2 text-gray-700 transition-colors hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-60"
         >
           취소
         </button>
         <button
-          onClick={onSubmit}
-          disabled={isDeploying}
-          className="px-4 py-2 text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center gap-2"
+          type="button"
+          onClick={() => onSubmit(policyResult?.policy || undefined)}
+          disabled={isDeploying || Boolean(validationError)}
+          className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-400"
         >
-          {isDeploying ? (
-            <>
-              <svg
-                className="animate-spin h-4 w-4 text-white"
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-              >
-                <circle
-                  className="opacity-25"
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="currentColor"
-                  strokeWidth="4"
-                />
-                <path
-                  className="opacity-75"
-                  fill="currentColor"
-                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                />
-              </svg>
-              배포중...
-            </>
-          ) : (
-            '다음'
-          )}
+          {isDeploying && <Loader2 className="h-4 w-4 animate-spin" />}
+          {isDeploying ? '배포 중...' : '배포'}
         </button>
       </div>
     </>

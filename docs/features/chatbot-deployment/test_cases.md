@@ -56,6 +56,11 @@ Verified Against: `origin/dev @ 32fb602f`
 - `POST /deployments/{deployment_id}/run`은 `application/json`만 허용하고 Content-Type 누락, `text/plain`, form-urlencoded, multipart 요청을 415로 거부하며 실행 service를 호출하지 않는다.
 - Credentialed CORS preflight는 configured origin에 allow-origin/allow-credentials를 반환하고 unlisted origin에는 allow-origin을 반환하지 않으며 실행 service를 호출하지 않는다. Wildcard·malformed CORS 설정은 Gateway 시작 전에 거부한다.
 - `GET /deployments/public/{slug}/info` → `type: "chatbot"` 직렬화 확인.
+- Chatbot/Widget create에서 omitted browser policy는 canonical disabled로 저장되고 enabled policy는 exact canonical origins로 응답한다. Internal Chatbot/other type의 non-null policy는 fixed 422다.
+- Preflight는 Knowledge passed/warning/blocked와 별개로 valid canonical `normalized_browser_access_policy`를 반환하고 malformed policy는 inactive preview에서도 422다.
+- Browser policy revision은 source graph/config/input/output/description을 보존하고 새 inactive version을 만들며 source/current draft/active pointer를 변경하지 않는다. Active revision은 기존 preflight와 single-active transaction을 사용한다.
+- Public browser policy projection은 active app ownership/type을 검증하고 safe field만 반환한다. Null/malformed/unknown policy는 disabled, inactive/wrong type/cross-app pointer는 safe 404다.
+- Public info/run response는 endpoint-level wildcard ACAO를 추가하지 않는다. No Origin과 unlisted/null Origin에 CORS grant가 없고 configured first-party origin만 global CORS 계약을 따른다.
 
 ## E2E Tests
 
@@ -96,6 +101,19 @@ Verified Against: `origin/dev @ 32fb602f`
 - Missing/null/unlisted Origin, wildcard, client audience/config와 environment fallback은 public browser session 생성 전에 거부된다.
 - Session은 deployment version/snapshot과 mapping/Memory policy version에 고정되고 active deployment 교체 후 자동 rebind하지 않는다.
 - Public request/grant lifecycle audit actor는 `actor_id=null`, `actor_type='public'`, 비동기 purge completion은 `actor_type='system'`이며 app owner, credential/billing principal과 Access Grant reference가 actor로 기록되지 않는다.
+
+## Browser Embedding Security Tests
+
+- Exact HTTPS origin, default port, UTS #46 non-transitional IDN, canonical IPv4/IPv6를 정규화한다.
+- Wildcard/null/local scheme/userinfo/path/query/fragment/control/trailing-dot/legacy IP, invalid IDNA, production HTTP, canonical duplicate, 21개와 4097-byte header value를 거부한다.
+- Dev/test HTTP는 exact `localhost`, `127.0.0.1`, `[::1]`만 허용하고 missing/unknown environment는 production으로 닫는다.
+- Allowed parent에서 iframe document와 relative info/run API가 성공하고 unlisted parent에서는 browser가 CSP로 frame을 차단한다.
+- 중첩 iframe은 top-level/intermediate ancestor가 모두 allowlist에 있을 때만 성공한다.
+- Request Origin/Referer/Host/query와 Gateway projection timeout/404/5xx/malformed response는 allowlist를 넓히지 않고 `'none'`을 유지한다.
+- Login cookie가 있는 public iframe과 없는 iframe 모두 anonymous public-only이며 private KB audience로 승격하지 않는다.
+- External parent script가 Gateway public endpoint를 직접 fetch해도 deployment parent 기반 ACAO를 받지 않는다.
+- Widget도 공유 `/embed/chat` route에서 같은 allowed/denied parent 결과를 가지되 Conversation Session을 생성하지 않는다.
+- Release B rollback artifact는 broad `http: https: file: data:`를 복원하지 않고 dynamic policy 또는 deny-all `'none'`을 유지한다.
 
 ## Edge Cases
 

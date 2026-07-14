@@ -1376,6 +1376,10 @@ def test_inactive_create_does_not_mutate_active_surface(monkeypatch):
 
     assert deployment.is_active is False
     assert deployment.version == 3
+    assert deployment.browser_access_policy == {
+        "contract_version": "deployment_browser_access.v1",
+        "embedding": {"enabled": False, "parent_origins": []},
+    }
     assert app.active_deployment_id == active_deployment_id
     assert not db.rows_for(Schedule)
 
@@ -1981,7 +1985,7 @@ class _Query:
     def join(self, *args, **kwargs):
         return self
 
-    def with_for_update(self):
+    def with_for_update(self, *args, **kwargs):
         return self
 
     def populate_existing(self):

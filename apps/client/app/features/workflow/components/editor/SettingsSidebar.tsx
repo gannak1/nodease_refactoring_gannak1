@@ -345,10 +345,15 @@ export function SettingsSidebar() {
                   );
                 }
 
-                // Widget
-                if (deploy.type === 'widget') {
+                // Public Chatbot / Widget
+                if (deploy.type === 'widget' || deploy.type === 'chatbot') {
+                  if (!deploy.url_slug) {
+                    return null;
+                  }
+                  const publicUrl = `${origin}/embed/chat/${deploy.url_slug}`;
+                  const embedding = deploy.browser_access_policy?.embedding;
                   const embedCode = `<iframe
-  src="${origin}/embed/chat/${deploy.url_slug}"
+  src="${publicUrl}"
   width="100%"
   height="600"
   frameborder="0"
@@ -360,7 +365,9 @@ export function SettingsSidebar() {
                     >
                       <div className="flex items-center justify-between">
                         <span className="px-2 py-0.5 rounded text-xs font-medium bg-gray-200 text-gray-700">
-                          WIDGET
+                          {deploy.type === 'widget'
+                            ? 'WIDGET'
+                            : 'PUBLIC CHATBOT'}
                         </span>
                         <span className="text-xs text-gray-500">
                           v{deploy.version}
@@ -368,21 +375,57 @@ export function SettingsSidebar() {
                       </div>
 
                       <div>
-                        <div className="text-xs font-semibold text-gray-700 mb-1">
-                          💬 웹사이트 임베딩 코드
+                        <div className="mb-1 text-xs font-semibold text-gray-700">
+                          직접 링크
                         </div>
-                        <div className="relative group">
-                          <pre className="text-[10px] p-3 bg-gray-800 text-gray-100 rounded-lg font-mono overflow-x-auto whitespace-pre-wrap break-all">
-                            {embedCode}
-                          </pre>
+                        <div className="flex items-center gap-2 rounded border border-gray-300 bg-white px-2 py-1.5">
+                          <div className="min-w-0 flex-1 truncate font-mono text-xs text-blue-600">
+                            {publicUrl}
+                          </div>
                           <button
-                            onClick={() => copyToClipboard(embedCode)}
-                            className="absolute top-2 right-2 p-1.5 bg-gray-700 text-gray-300 rounded hover:bg-gray-600 opacity-0 group-hover:opacity-100 transition-opacity"
+                            type="button"
+                            title="직접 링크 복사"
+                            onClick={() => copyToClipboard(publicUrl)}
+                            className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
                           >
-                            <Copy className="w-3 h-3" />
+                            <Copy className="h-3.5 w-3.5" />
                           </button>
                         </div>
                       </div>
+
+                      <div className="text-xs text-gray-600">
+                        {embedding?.enabled
+                          ? `허용 origin ${embedding.parent_origins.length}개 · 집행 중`
+                          : 'iframe 표시 차단'}
+                      </div>
+
+                      {embedding?.enabled && (
+                        <div>
+                          <div className="mb-1 text-xs font-semibold text-gray-700">
+                            웹사이트 임베딩 코드
+                          </div>
+                          <div className="group relative">
+                            <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded-lg bg-gray-800 p-3 font-mono text-[10px] text-gray-100">
+                              {embedCode}
+                            </pre>
+                            <button
+                              type="button"
+                              title="임베딩 코드 복사"
+                              onClick={() => copyToClipboard(embedCode)}
+                              className="absolute right-2 top-2 rounded bg-gray-700 p-1.5 text-gray-300 opacity-0 transition-opacity hover:bg-gray-600 group-hover:opacity-100"
+                            >
+                              <Copy className="h-3 w-3" />
+                            </button>
+                          </div>
+                          <div className="mt-2 space-y-1 font-mono text-[10px] text-gray-500">
+                            {embedding.parent_origins.map((parentOrigin) => (
+                              <div className="break-all" key={parentOrigin}>
+                                {parentOrigin}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 }

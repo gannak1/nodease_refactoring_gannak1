@@ -12,17 +12,7 @@ const nextConfig: NextConfig = {
 
   async headers() {
     return [
-      // 1. 임베딩 페이지: 어디서든 허용
-      {
-        source: '/embed/:path*',
-        headers: [
-          {
-            key: 'Content-Security-Policy',
-            value: 'frame-ancestors http: https: file: data:',
-          },
-        ],
-      },
-      // 2. 공유 페이지: 어디서든 허용
+      // 1. 공유 페이지: 기존 제품 계약 유지
       {
         source: '/shared/:path*',
         headers: [
@@ -32,7 +22,7 @@ const nextConfig: NextConfig = {
           },
         ],
       },
-      // 3. [수정됨] 나머지 페이지: 임베딩 및 공유 페이지를 '제외한' 모든 경로
+      // 2. 나머지 페이지: 임베딩 및 공유 페이지를 '제외한' 모든 경로
       // 정규식 설명: (?!embed|shared) -> embed나 shared로 시작하지 않는 모든 경로
       {
         source: '/((?!embed|shared).*)',

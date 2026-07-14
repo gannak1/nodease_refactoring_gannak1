@@ -198,3 +198,23 @@ def _response_schema(result: DeploymentPreflightResult) -> DeploymentPreflightRe
             for node in result.nodes
         ],
     )
+
+
+def deployment_preflight_blocked_http_exception(
+    result: DeploymentPreflightResult,
+) -> HTTPException:
+    response = _response_schema(result)
+    return HTTPException(
+        status_code=409,
+        detail={
+            "error": {
+                "code": "deployment.preflight.blocked",
+                "message": "Deployment preflight blocked activation",
+                "reason_code": response.safe_summary.blocked_reason,
+                "required_actions": [
+                    action.action for action in response.required_actions
+                ],
+                "preflight": response.model_dump(mode="json"),
+            }
+        },
+    )

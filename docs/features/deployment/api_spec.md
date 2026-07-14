@@ -9,9 +9,12 @@ Verified Against: `feature/mba-254 @ 95e821ef`
 | --- | --- | --- | --- |
 | POST | `/api/v1/deployments/preflight` | 배포 graph snapshot과 deployment type 기준으로 runtime availability를 검사한다 | 로그인 + workflow deploy/manage 권한 |
 | POST | `/api/v1/deployments` | 배포 생성. `is_active=true`이면 blocking preflight를 통과해야 한다 | 로그인 + workflow deploy/manage 권한 |
+| POST | `/api/v1/deployments/{source_deployment_id}/browser-access-revisions` | source snapshot을 복제한 browser policy 새 version 생성 | 로그인 + workflow deploy/manage 권한 |
 | PATCH | `/api/v1/deployments/{deployment_id}/toggle` | 배포 활성/비활성 전환. 활성화 시 blocking preflight를 통과해야 한다 | 로그인 + workflow deploy/manage 권한 |
 | DELETE | `/api/v1/deployments/{deployment_id}` | 배포 삭제. active 삭제 시 자동 승격하지 않는다 | 로그인 + workflow deploy/manage 권한 |
+| GET | `/api/v1/deployments?app_id={app_id}` | 배포 이력과 App 소유 `url_slug` 조회 | 로그인 + workflow read 권한 |
 | GET | `/api/v1/deployments/public/{url_slug}/info` | Public app 화면용 safe metadata 조회 | 인증 없음. 기본 policy는 `webapp`, `widget`, `chatbot`만 허용 |
+| GET | `/api/v1/deployments/public/{url_slug}/browser-access` | Public Chatbot/Widget iframe CSP safe projection | 인증 없음. active `widget`/`chatbot`만 허용 |
 | GET | `/api/v1/deployments/{deployment_id}/run-info` | 로그인 사용자 실행 화면에 필요한 safe deployment metadata 조회 | 로그인 + workflow execute 권한 |
 | POST | `/api/v1/deployments/{deployment_id}/run` | 로그인 사용자를 execution subject로 활성 deployment snapshot 실행 | 로그인 + workflow execute 권한 |
 | POST | `/api/v1/hooks/{url_slug}` | Public webhook trigger execution or pending capture ingestion | Exactly one App secret source: Bearer primary or `X-Webhook-Secret` compatibility header |
@@ -20,6 +23,10 @@ Verified Against: `feature/mba-254 @ 95e821ef`
 | POST | `/api/v1/hooks/{url_slug}/capture/cancel?capture_id=...` | Cancel a pending capture session | User session + same requester + target workflow `deploy` permission + capture nonce |
 
 ## Request And Response Models
+
+### `GET /api/v1/deployments?app_id={app_id}`
+
+각 deployment 응답은 App 소유 `url_slug`를 포함해 Client가 공개 공유 URL을 구성할 수 있게 한다. `auth_secret`은 이 목록 조합 과정에서 주입하지 않는다. 저장된 `browser_access_policy`가 malformed이거나 알 수 없는 version이면 목록 전체를 실패시키지 않고 disabled V1 policy로 정규화한다.
 
 ### `GET /api/v1/deployments/public/{url_slug}/info`
 
@@ -41,7 +48,14 @@ Request body:
     "nodes": [],
     "edges": []
   },
-  "audience": "anonymous_public"
+  "audience": "anonymous_public",
+  "browser_access_policy": {
+    "contract_version": "deployment_browser_access.v1",
+    "embedding": {
+      "enabled": false,
+      "parent_origins": []
+    }
+  }
 }
 ```
 
@@ -53,6 +67,7 @@ Request body:
 | `is_active` | no | Preview context. Defaults to `true`; inactive create may warn but does not activate |
 | `graph_snapshot` | no | If omitted, server resolves the current App primary Workflow snapshot candidate after acquiring the lifecycle lock. If supplied, the Gateway also binds the request to the server-observed primary; a primary change while waiting for the lock returns `409 deployment.graph_snapshot_stale` instead of deploying the stale client graph under the new primary |
 | `audience` | no | UI hint only. Security decisions use server-derived audience in create/enable paths |
+| `browser_access_policy` | no | `chatbot`/`widget` immutable parent embedding policy. Other type의 non-null 값은 422 |
 
 Conversation-capable target snapshot은 별도 server-derived metadata로 immutable deployment version 또는 snapshot hash, conversation mapping version, node Memory policy version, `memory_contract_version`, `storage_generation`을 포함한다. Client `config`나 `audience`가 이 binding을 선택하거나 기존 session을 current active deployment로 rebind할 수 없다.
 
@@ -88,7 +103,14 @@ Preview response uses `200 OK` even when blocked:
       "knowledge_collection_count_bucket": "1",
       "candidate_budget_limited": false
     }
-  ]
+  ],
+  "normalized_browser_access_policy": {
+    "contract_version": "deployment_browser_access.v1",
+    "embedding": {
+      "enabled": false,
+      "parent_origins": []
+    }
+  }
 }
 ```
 
@@ -148,6 +170,8 @@ MBA-219 managed configuration reason/action은 다음 값을 추가한다.
 
 Missing, revoked, cross-organization과 permission-denied Mail credential은 `mail_credential_unavailable` 하나로 정규화한다. Non-null unavailable credential, `node_configuration_invalid`, `workflow_graph_invalid`, WorkflowNode target/cycle 오류와 `node_configuration_validator_unavailable`은 `is_active=false`에서도 blocked로 유지한다. `credential_id=null`은 `configuration_state=unresolved`인 경우 inactive warning 보존 대상이며, 구버전 Client node에서 상태 필드가 아예 없는 null reference도 같은 warning으로 호환한다. 명시적 null 상태는 invalid다. 최상위 graph는 명시적 trigger/start node 하나, Loop body는 incoming executable edge가 없는 실행 진입점 하나를 요구한다. 모든 node는 유한한 숫자 좌표의 `position`, 모든 edge는 비어 있지 않은 string `id`를 가져야 한다. Graph 상한은 최상위와 모든 Loop subgraph 합산 node 1,000개, edge 5,000개, subgraph depth 16이다.
 
+Browser policy validation은 Knowledge status와 독립적이다. Malformed browser policy는 inactive preview에서도 `422`이고, valid Chatbot/Widget policy는 Knowledge 결과가 passed/warning/blocked여도 server canonical `normalized_browser_access_policy`를 반환한다. Non-embed-capable type은 이 field가 null이다.
+
 ### Create / Activation Blocking
 
 `POST /api/v1/deployments`에서 `is_active=true`이거나, `PATCH /api/v1/deployments/{deployment_id}/toggle`이 inactive deployment를 active로 바꾸는 경우 server-derived audience로 blocking preflight를 실행한다.
@@ -161,6 +185,26 @@ Public `type="chatbot"`은 항상 `public_chatbot` audience로 preflight하므�
 Selected Collection 검사는 selected ID와 active organization으로 범위를 제한하고 active lifecycle과 `sync_state != source_deleted`를 요구한다. Missing, inactive, deleted, source-deleted, cross-organization Collection은 존재 여부를 구분하지 않고 `knowledge_collection_unavailable`로 처리한다. Direct KB는 같은 lifecycle/sync 경계와 retrieval-visible completed chunk readiness를 통과해야 한다. Anonymous-public surface에서 active private Collection은 차단되며, public Collection 자체 또는 active member가 source-managed이면 별도 public source exposure primitive가 없는 현재 구현에서 fail-closed한다. Child ID나 exact membership count는 preflight port/result로 전달하지 않는다.
 
 Conversation Memory target activation은 explicit input/output mapping, node Memory policy, immutable deployment/snapshot binding, Memory contract/storage generation과 capable Worker routing을 함께 검사한다. Schedule/webhook/API batch, workflow-node direct run과 일반 authenticated deployment run은 target session을 암묵적으로 생성하지 않는다.
+
+### Browser Access Versioning
+
+`browser_access_policy`는 [ADR-0043](../../decisions/ADR-0043-deployment-browser-origin-and-embedding-boundary.md)의 dedicated deployment-version field다. 신규 `chatbot`/`widget` create에서 생략하면 disabled canonical V1 policy를 저장하고 legacy null/malformed/unknown은 public projection과 Client CSP에서 disabled로 해석한다. `internal_chatbot`과 다른 type의 non-null policy는 `422 deployment.browser_access.not_supported`다.
+
+Policy-only 변경은 active row를 PATCH하지 않고 다음 endpoint를 사용한다.
+
+```http
+POST /api/v1/deployments/{source_deployment_id}/browser-access-revisions
+```
+
+Request는 required `browser_access_policy`와 optional `is_active=false`를 갖는다. Source deployment의 app/type/graph/config/input/output/description을 복제해 새 version을 만들며 source/current workflow draft를 변경하지 않는다. Active 요청은 기존 blocking preflight와 App lifecycle lock을 적용한다. Response는 `201 DeploymentResponse`다.
+
+Public CSP projection:
+
+```http
+GET /api/v1/deployments/public/{url_slug}/browser-access
+```
+
+Active pointer, app ownership, active 상태와 `type in {chatbot, widget}`을 모두 통과한 경우 contract version, deployment version, enabled와 canonical `frame_ancestors`만 반환한다. Graph, config, secret, organization/KB/internal ID는 반환하지 않는다. Legacy invalid policy는 200 disabled, missing/inactive/wrong type은 safe 404이며 `Cache-Control: no-store`다.
 
 Schedule records and scheduler jobs are created only for active `type="schedule"` deployments. A `scheduleTrigger` node inside any other deployment type, including `workflow_node`, does not create a schedule surface.
 
@@ -340,7 +384,7 @@ Blocking preflight failure:
 - Public/API/webhook/schedule/chatbot/mcp surfaces do not receive user KB permission unless a future service account/assigned operator policy explicitly provides an execution subject.
 - `internal_chatbot` run/run-info requires active membership in the workflow organization and workflow `execute` permission. When `X-Organization-Id` is supplied, it must also match the deployment app organization. Run dispatch sets the current user as `execution_subject`.
 - `internal_chatbot` preflight derives `authenticated_user` server-side, so a private KB reference alone does not block activation; runtime still rechecks the current user's KB permission and source ACL.
-- Public Chatbot exact Origin/embed/CSP allowlist is deployment-owned versioned configuration. Client hints, wildcard, or environment fallback cannot widen it; the browser Conversation Session surface remains unavailable until this contract is implemented.
+- Public `chatbot`/`widget` parent embedding origins are deployment-owned versioned configuration and are enforced only through CSP `frame-ancestors`. They do not grant direct API CORS access, and client hints, wildcard, or environment fallback cannot widen them.
 - Conversation Access Grant proves only public session access. It cannot become an execution subject, credential/billing principal, or audit actor.
 - `workflow_node` deployment is not directly executable through public/API/webhook URL surfaces or authenticated deployment `run`/`run-info` endpoints. Workflow-node target inspection uses `workflowNode.data.appId` and inherits parent execution subject at runtime.
 - Workflow-node target active deployment must belong to the target app, be active, and have `type="workflow_node"`. Runtime also requires a non-null parent organization context matching the target app organization.

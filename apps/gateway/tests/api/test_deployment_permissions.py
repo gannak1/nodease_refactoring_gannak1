@@ -232,6 +232,11 @@ def test_preview_deployment_preflight_authorizes_deploy_and_returns_result(monke
     )
 
     assert result.status == "passed"
+    assert result.normalized_browser_access_policy is not None
+    assert result.normalized_browser_access_policy.model_dump() == {
+        "contract_version": "deployment_browser_access.v1",
+        "embedding": {"enabled": False, "parent_origins": []},
+    }
     assert checked == [(current_user.id, workflow_id, "deploy")]
     assert captured["resolve"] == (workflow_id, graph)
     assert captured["preview"]["app"] == app
@@ -419,6 +424,7 @@ def test_public_deployment_info_policy_is_replaceable_at_fastapi_composition_bou
 
     assert response.status_code == 200
     assert response.json()["type"] == DeploymentType.API.value
+    assert "access-control-allow-origin" not in response.headers
     assert DEFAULT_DEPLOYMENT_RUNTIME_POLICY.allowed_types_by_surface[
         SURFACE_PUBLIC_INFO
     ] == {"webapp", "widget", "chatbot"}

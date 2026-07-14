@@ -2,7 +2,10 @@
 
 import { useState, useEffect } from 'react';
 import { DeploymentStep, DeploymentResult } from './types';
-import { DeploymentType } from '../../types/Deployment';
+import type {
+  DeploymentBrowserAccessPolicy,
+  DeploymentType,
+} from '../../types/Deployment';
 import { InputStep } from './InputStep';
 import { SuccessStep } from './SuccessStep';
 import { ErrorStep } from './ErrorStep';
@@ -11,7 +14,10 @@ interface Props {
   isOpen: boolean;
   onClose: () => void;
   deploymentType: DeploymentType;
-  onDeploy: (description: string) => Promise<DeploymentResult>;
+  onDeploy: (
+    description: string,
+    browserAccessPolicy?: DeploymentBrowserAccessPolicy,
+  ) => Promise<DeploymentResult>;
 }
 
 // ========== Main Component ==========
@@ -27,6 +33,8 @@ export function DeploymentFlowModal({
   const [deploymentResult, setDeploymentResult] =
     useState<DeploymentResult | null>(null);
   const [isDeploying, setIsDeploying] = useState(false);
+  const [embeddingEnabled, setEmbeddingEnabled] = useState(false);
+  const [parentOrigins, setParentOrigins] = useState<string[]>(['']);
 
   // Reset state when modal opens
   useEffect(() => {
@@ -34,6 +42,8 @@ export function DeploymentFlowModal({
       setCurrentStep('input');
       setDescription('');
       setDeploymentResult(null);
+      setEmbeddingEnabled(false);
+      setParentOrigins(['']);
     }
   }, [isOpen]);
 
@@ -57,11 +67,13 @@ export function DeploymentFlowModal({
   }, [isOpen, isDeploying, onClose]);
 
   // Handle deployment submission
-  const handleSubmit = async () => {
+  const handleSubmit = async (
+    browserAccessPolicy?: DeploymentBrowserAccessPolicy,
+  ) => {
     setIsDeploying(true);
 
     try {
-      const result = await onDeploy(description);
+      const result = await onDeploy(description, browserAccessPolicy);
       setDeploymentResult(result);
 
       if (result.success) {
@@ -151,9 +163,35 @@ export function DeploymentFlowModal({
         <div className="flex-1 transition-all duration-300">
           {currentStep === 'input' && (
             <InputStep
-              deploymentType={getDeploymentTypeName()}
+              deploymentType={deploymentType}
+              deploymentTypeLabel={getDeploymentTypeName()}
               description={description}
               onDescriptionChange={setDescription}
+              embeddingEnabled={embeddingEnabled}
+              parentOrigins={parentOrigins}
+              onEmbeddingEnabledChange={(enabled) => {
+                setEmbeddingEnabled(enabled);
+                if (enabled && parentOrigins.length === 0) {
+                  setParentOrigins(['']);
+                }
+              }}
+              onParentOriginChange={(index, value) =>
+                setParentOrigins((current) =>
+                  current.map((origin, originIndex) =>
+                    originIndex === index ? value : origin,
+                  ),
+                )
+              }
+              onAddParentOrigin={() =>
+                setParentOrigins((current) => [...current, ''])
+              }
+              onRemoveParentOrigin={(index) =>
+                setParentOrigins((current) =>
+                  current.length === 1
+                    ? ['']
+                    : current.filter((_, originIndex) => originIndex !== index),
+                )
+              }
               onCancel={onClose}
               onSubmit={handleSubmit}
               isDeploying={isDeploying}

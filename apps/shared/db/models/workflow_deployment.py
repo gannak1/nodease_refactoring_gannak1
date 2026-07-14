@@ -66,6 +66,12 @@ class WorkflowDeployment(Base):
     # 배포 설정. 예시: {"rate_limit": 100, "timeout": 30}
     config: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True, default={})
 
+    # iframe parent policy. Legacy rows remain null and resolve fail-closed.
+    browser_access_policy: Mapped[Optional[dict]] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+
     # 입출력 스키마 (graph_snapshot에서 자동 추출하여 저장)
     input_schema: Mapped[Optional[dict]] = mapped_column(
         JSONB, nullable=True, comment="StartNode 입력 변수 스키마"

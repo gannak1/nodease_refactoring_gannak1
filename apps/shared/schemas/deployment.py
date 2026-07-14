@@ -4,7 +4,16 @@ from uuid import UUID
 
 from apps.shared.db.models.workflow_deployment import DeploymentType
 from apps.shared.domain.workflow_node_binding import strip_workflow_node_bindings
-from pydantic import BaseModel, ConfigDict, Field, field_serializer
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictStr,
+    ValidationError,
+    field_serializer,
+    field_validator,
+)
 
 DeploymentPreflightStatus = Literal["passed", "warning", "blocked"]
 DeploymentPreflightAudience = Literal[
@@ -12,6 +21,43 @@ DeploymentPreflightAudience = Literal[
     "authenticated_user",
     "workflow_node_inherited",
 ]
+BrowserAccessContractVersion = Literal["deployment_browser_access.v1"]
+
+
+class DeploymentBrowserEmbeddingPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: StrictBool
+    parent_origins: list[StrictStr] = Field(default_factory=list)
+
+
+class DeploymentBrowserAccessPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    contract_version: BrowserAccessContractVersion
+    embedding: DeploymentBrowserEmbeddingPolicy
+
+
+class DeploymentBrowserAccessRevisionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    browser_access_policy: DeploymentBrowserAccessPolicy
+    is_active: StrictBool = False
+
+
+class DeploymentBrowserAccessProjectionEmbedding(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: StrictBool
+    frame_ancestors: list[StrictStr] = Field(default_factory=list, max_length=20)
+
+
+class DeploymentBrowserAccessProjection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    contract_version: BrowserAccessContractVersion
+    deployment_version: int = Field(ge=1)
+    embedding: DeploymentBrowserAccessProjectionEmbedding
 
 
 class DeploymentBase(BaseModel):
@@ -22,6 +68,7 @@ class DeploymentBase(BaseModel):
     description: Optional[str] = None
     config: Optional[Dict[str, Any]] = {}
     is_active: bool = True
+    browser_access_policy: Optional[DeploymentBrowserAccessPolicy] = None
 
 
 class DeploymentCreate(DeploymentBase):
@@ -72,6 +119,7 @@ class DeploymentPreflightResponse(BaseModel):
     )
     warnings: list[str] = Field(default_factory=list)
     nodes: list[DeploymentPreflightNodeResult] = Field(default_factory=list)
+    normalized_browser_access_policy: Optional[DeploymentBrowserAccessPolicy] = None
 
 
 class DeploymentResponse(DeploymentBase):
@@ -87,6 +135,22 @@ class DeploymentResponse(DeploymentBase):
 
     class Config:
         from_attributes = True
+
+    @field_validator("browser_access_policy", mode="before")
+    @classmethod
+    def normalize_malformed_persisted_browser_access_policy(cls, value):
+        if value is None or isinstance(value, DeploymentBrowserAccessPolicy):
+            return value
+        try:
+            return DeploymentBrowserAccessPolicy.model_validate(value)
+        except ValidationError:
+            return {
+                "contract_version": "deployment_browser_access.v1",
+                "embedding": {
+                    "enabled": False,
+                    "parent_origins": [],
+                },
+            }
 
     @field_serializer("graph_snapshot")
     def serialize_graph_snapshot(self, value: Dict[str, Any]) -> Dict[str, Any]:
