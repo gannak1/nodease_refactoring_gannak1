@@ -33,6 +33,7 @@ vi.mock('../store/useWorkflowStore', () => {
   const state = {
     isTestPanelOpen: true,
     toggleTestPanel: vi.fn(),
+    openTestPanel: vi.fn(),
     nodes: [
       {
         id: 'llm-triage',
