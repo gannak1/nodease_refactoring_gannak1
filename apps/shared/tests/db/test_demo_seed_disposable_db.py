@@ -5,13 +5,25 @@ import uuid
 from pathlib import Path
 
 import pytest
+from apps.shared.db import demo_seed
+from apps.shared.domain.knowledge_runtime_candidates import (
+    AuthenticatedAudience,
+    KnowledgeRuntimeCandidateRequest,
+)
 from apps.shared.tests.helpers.disposable_postgres import (
     DisposablePostgresConfig,
     DisposablePostgresConfigurationError,
     quote_disposable_database_name,
 )
+from apps.workflow_engine.adapters.knowledge_runtime_candidates import (
+    PostgresKnowledgeRuntimeCandidateSnapshotAdapter,
+)
+from apps.workflow_engine.application.runtime_retrieval.knowledge_candidates import (
+    KnowledgeRuntimeCandidateResolver,
+)
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import sessionmaker
 
 ROOT_DIR = Path(__file__).resolve().parents[4]
 RUN_ENV = "NODEASE_RUN_DISPOSABLE_DB_TEST"
@@ -29,6 +41,7 @@ def _run_seed_command(
         root_dir=ROOT_DIR,
         extra={
             "NODEASE_DEMO_REGENERATE_KNOWLEDGE_FIXTURE": "0",
+            "NODEASE_DEMO_ENABLE_RUNTIME_OPENAI_CREDENTIAL": "0",
         },
     )
     result = subprocess.run(
@@ -118,6 +131,107 @@ def _snapshot_counts(
         engine.dispose()
 
 
+def _snapshot_department_onboarding_rbac(
+    database: str,
+    config: DisposablePostgresConfig,
+) -> dict[str, object]:
+    engine = create_engine(config.database_url(database))
+    try:
+        session_factory = sessionmaker(
+            bind=engine,
+            autoflush=False,
+            expire_on_commit=False,
+        )
+        resolver = KnowledgeRuntimeCandidateResolver(
+            snapshot_port=PostgresKnowledgeRuntimeCandidateSnapshotAdapter(
+                session_factory=session_factory
+            )
+        )
+        selected_kb_ids = (
+            demo_seed.KB_IDS["internal_onboarding"],
+            demo_seed.KB_IDS["internal_developer_onboarding_rules"],
+            demo_seed.KB_IDS["internal_planning_onboarding_guide"],
+        )
+
+        def resolve_for(user_key: str) -> set[uuid.UUID]:
+            resolution = resolver.resolve(
+                KnowledgeRuntimeCandidateRequest(
+                    audience=AuthenticatedAudience(
+                        organization_id=demo_seed.ORG_ID,
+                        user_id=demo_seed.USER_IDS[user_key],
+                    ),
+                    direct_kb_ids=selected_kb_ids,
+                )
+            )
+            return {candidate.knowledge_base_id for candidate in resolution.candidates}
+
+        with engine.connect() as conn:
+            deployment_type = conn.execute(
+                text(
+                    "SELECT CAST(type AS TEXT) FROM workflow_deployments "
+                    "WHERE id = :deployment_id"
+                ),
+                {
+                    "deployment_id": demo_seed.DEPLOYMENT_IDS[
+                        "department_onboarding_chatbot"
+                    ]
+                },
+            ).scalar_one()
+            workflow_permission_count = conn.execute(
+                text(
+                    "SELECT COUNT(*) FROM team_workflow_permissions "
+                    "WHERE workflow_id = :workflow_id "
+                    "AND team_id IN (:development_team_id, :planning_team_id) "
+                    "AND auth_state = 'operator'"
+                ),
+                {
+                    "workflow_id": demo_seed.WORKFLOW_IDS[
+                        "department_onboarding_chatbot"
+                    ],
+                    "development_team_id": demo_seed.TEAM_IDS["department_development"],
+                    "planning_team_id": demo_seed.TEAM_IDS["department_planning"],
+                },
+            ).scalar_one()
+            runtime_llm_permission_count = conn.execute(
+                text(
+                    "SELECT COUNT(*) FROM team_llm_permissions "
+                    "WHERE team_id IN (:development_team_id, :planning_team_id)"
+                ),
+                {
+                    "development_team_id": demo_seed.TEAM_IDS["department_development"],
+                    "planning_team_id": demo_seed.TEAM_IDS["department_planning"],
+                },
+            ).scalar_one()
+            planning_document = conn.execute(
+                text(
+                    "SELECT d.status, COUNT(c.id), "
+                    "MIN(vector_dims(c.embedding)) "
+                    "FROM documents d "
+                    "JOIN document_chunks c ON c.document_id = d.id "
+                    "WHERE d.id = :document_id "
+                    "GROUP BY d.status"
+                ),
+                {
+                    "document_id": demo_seed.DOCUMENT_IDS[
+                        "internal_planning_onboarding_guide"
+                    ]
+                },
+            ).one()
+
+        return {
+            "developer_candidates": resolve_for("developer"),
+            "planning_candidates": resolve_for("planning"),
+            "deployment_type": deployment_type,
+            "workflow_permission_count": workflow_permission_count,
+            "runtime_llm_permission_count": runtime_llm_permission_count,
+            "planning_document_status": planning_document[0],
+            "planning_chunk_count": planning_document[1],
+            "planning_embedding_dimension": planning_document[2],
+        }
+    finally:
+        engine.dispose()
+
+
 @pytest.mark.skipif(
     os.getenv(RUN_ENV) != "1",
     reason=f"set {RUN_ENV}=1 to run disposable PostgreSQL seed smoke",
@@ -170,6 +284,7 @@ def test_demo_seed_is_idempotent_in_disposable_postgres_database():
             config=config,
         )
         second_reset_counts = _snapshot_counts(database, config)
+        rbac_state = _snapshot_department_onboarding_rbac(database, config)
 
         assert reset_counts["knowledge_bases"] > 0
         assert reset_counts["documents"] > 0
@@ -178,6 +293,26 @@ def test_demo_seed_is_idempotent_in_disposable_postgres_database():
         assert reset_counts["document_chunk_document_orphans"] == 0
         assert reset_counts["document_chunk_kb_orphans"] == 0
         assert reset_counts["document_kb_orphans"] == 0
+        assert rbac_state["developer_candidates"] == {
+            demo_seed.KB_IDS["internal_onboarding"],
+            demo_seed.KB_IDS["internal_developer_onboarding_rules"],
+        }
+        assert rbac_state["planning_candidates"] == {
+            demo_seed.KB_IDS["internal_onboarding"],
+            demo_seed.KB_IDS["internal_planning_onboarding_guide"],
+        }
+        assert (
+            rbac_state["deployment_type"]
+            == demo_seed.DeploymentType.INTERNAL_CHATBOT.name
+        )
+        assert rbac_state["workflow_permission_count"] == 2
+        assert rbac_state["runtime_llm_permission_count"] == 0
+        assert rbac_state["planning_document_status"] == "completed"
+        assert rbac_state["planning_chunk_count"] > 0
+        assert (
+            rbac_state["planning_embedding_dimension"]
+            == demo_seed.DEMO_EMBEDDING_DIMENSION
+        )
     except OperationalError:
         raise pytest.fail.Exception(
             "disposable PostgreSQL is unavailable or rejected the connection; "

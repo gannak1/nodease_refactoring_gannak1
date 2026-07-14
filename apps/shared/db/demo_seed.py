@@ -137,6 +137,8 @@ USER_IDS = {
     "invited": _uuid(7),
     "suspended": _uuid(8),
     "removed": _uuid(9),
+    "developer": _uuid(10),
+    "planning": _uuid(11),
 }
 
 TEAM_IDS = {
@@ -147,6 +149,8 @@ TEAM_IDS = {
     "finance_restricted": _uuid(204),
     "tester_builder": _uuid(205),
     "tester_member": _uuid(206),
+    "department_development": _uuid(207),
+    "department_planning": _uuid(208),
 }
 
 KB_IDS = {
@@ -169,6 +173,7 @@ KB_IDS = {
     "internal_developer_commit_convention": _uuid(334),
     "internal_developer_compensation_band": _uuid(335),
     "internal_compensation_access_policy": _uuid(336),
+    "internal_planning_onboarding_guide": _uuid(337),
 }
 
 COLLECTION_IDS = {
@@ -211,6 +216,8 @@ TEAM_LLM_PERMISSION_IDS = {
     "ai_builder_onboarding": _uuid(931),
     "hr_knowledge_users": _uuid(932),
     "customer_support_ops": _uuid(933),
+    "department_development": _uuid(934),
+    "department_planning": _uuid(935),
 }
 
 USER_LLM_PERMISSION_IDS = {
@@ -239,6 +246,7 @@ DOCUMENT_IDS = {
     "internal_developer_commit_convention": _uuid(354),
     "internal_developer_compensation_band": _uuid(355),
     "internal_compensation_access_policy": _uuid(356),
+    "internal_planning_onboarding_guide": _uuid(357),
 }
 
 COLLECTION_ITEM_IDS = {
@@ -259,6 +267,7 @@ COLLECTION_ITEM_IDS = {
     "internal_developer_commit_convention": _uuid(384),
     "internal_developer_compensation_band": _uuid(385),
     "internal_compensation_access_policy": _uuid(386),
+    "internal_planning_onboarding_guide": _uuid(387),
 }
 
 APP_IDS = {
@@ -268,6 +277,7 @@ APP_IDS = {
     "ticket_ops_risk": _uuid(403),
     "ticket_ops_paused": _uuid(404),
     "test_inquiry": _uuid(405),
+    "department_onboarding_chatbot": _uuid(406),
     "model_router_ticket_ops": uuid.UUID("91000000-0000-0000-0000-000000000001"),
 }
 
@@ -295,6 +305,8 @@ TEAM_PERMISSION_IDS = {
     "test_builder": _uuid(802),
     "test_member": _uuid(803),
     "model_router_ticket": _uuid(804),
+    "department_onboarding_development": _uuid(805),
+    "department_onboarding_planning": _uuid(806),
 }
 
 
@@ -377,6 +389,22 @@ USER_SPECS = [
         ("tester_member",),
     ),
     DemoUserSpec(
+        "developer",
+        "dev@nodease.demo",
+        "개발팀 사용자 정개발",
+        ORGANIZATION_MEMBERSHIP_ACTIVE,
+        ORGANIZATION_AUTH_MEMBER,
+        ("department_development",),
+    ),
+    DemoUserSpec(
+        "planning",
+        "planning@nodease.demo",
+        "기획팀 사용자 김기획",
+        ORGANIZATION_MEMBERSHIP_ACTIVE,
+        ORGANIZATION_AUTH_MEMBER,
+        ("department_planning",),
+    ),
+    DemoUserSpec(
         "invited",
         "invited@nodease.demo",
         "초대대기 한지민",
@@ -421,6 +449,14 @@ TEAM_SPECS = {
     "finance_restricted": ("재무 제한 문서팀", "민감 재무 문서 권한 대조용 팀"),
     "tester_builder": ("테스트 빌더팀", "자유 기능 확인용 빌더 팀"),
     "tester_member": ("테스트 일반팀", "일반 멤버 권한 제한 확인용 팀"),
+    "department_development": (
+        "개발팀",
+        "공통 온보딩과 개발팀 전용 Knowledge를 사용하는 데모 팀",
+    ),
+    "department_planning": (
+        "기획팀",
+        "공통 온보딩과 기획팀 전용 Knowledge를 사용하는 데모 팀",
+    ),
 }
 
 
@@ -496,7 +532,7 @@ TEST_TEAM_SPECS = {
 }
 
 INTERNAL_DOCUMENT_CONTENT = {
-    "internal_onboarding": """# 신입사원 온보딩 안내
+    "internal_onboarding": """# 신입사원 공통 인사·휴가 정책
 
 ## 첫 주 진행 순서
 
@@ -509,6 +545,19 @@ AI 빌더 사용이 필요한 경우 App 생성 권한 신청을 제출하고, �
 2. 인사 포털 프로필 확인
 3. 보안 서약과 개인정보 처리 안내 확인
 4. 사내 문서 질문 응답 봇 테스트 실행
+
+## 공통 휴가 절차
+
+휴가는 사내 인사 포털의 근태/휴가 메뉴에서 신청한다.
+긴급하지 않은 휴가는 사용 기간, 사유, 대체 업무 담당자를 입력하고 팀 리더 승인을 받는다.
+가족돌봄휴가는 연차휴가와 이어서 사용할 수 있으며 개인별 병가 기록이나 휴직 사유는 일반 RAG에서 조회하지 않는다.
+
+## 휴가와 프로젝트 운영 규정이 충돌할 때
+
+휴가 제도와 승인 절차를 먼저 확인하고 프로젝트 일정은 대체 담당자, 인수인계 범위와 변경 일정을 정해 조정한다.
+팀 내부 프로젝트 규정만으로 승인된 휴가 제도를 무효화하지 않는다.
+판단이 어려우면 팀 리더와 HR 담당자에게 함께 확인하고 합의한 담당자, 일정 변경과 후속 조치를 프로젝트 기록에 남긴다.
+긴급한 휴가는 업무 복귀 후 인수인계와 일정 변경 기록을 보완할 수 있다.
 
 ## RAG 사용 안내
 
@@ -707,6 +756,30 @@ RAG 기반 사내 문서 질문 응답 봇은 공개 가능한 보상 밴드, �
 개인 보상정보 조회 시도는 audit log에 정책 차단 이벤트로 남긴다.
 반복적인 민감정보 요청은 관리자 검토 대상으로 분류한다.
 """,
+    "internal_planning_onboarding_guide": """# 기획팀 신입 온보딩 가이드
+
+## 첫 주 진행 순서
+
+기획팀 신입사원은 담당 제품의 목표, 사용자 문제, 핵심 지표와 현재 로드맵을 확인한다.
+첫 주에는 제품 브리프를 읽고 담당 PM과 함께 사용자 여정, 주요 가설, 의사결정 이력을 검토한다.
+
+## 기획 문서 작성 기준
+
+PRD에는 문제 정의, 대상 사용자, 가설, 성공 지표, 비목표, 출시 범위와 검증 계획을 포함한다.
+요구사항은 구현 방법보다 검증 가능한 사용자 행동과 완료 조건을 먼저 작성한다.
+중요한 범위 변경은 회의 메모에만 남기지 않고 PRD 결정 로그와 Linear 이슈에 함께 반영한다.
+
+## 협업 절차
+
+개발 착수 전 디자인·개발 담당자와 acceptance criteria를 합의한다.
+출시 전에는 분석 이벤트, 권한별 사용자 흐름, 오류·빈 상태와 롤백 기준을 점검한다.
+고객 인터뷰 원문과 개인 식별 정보는 승인된 저장소에만 보관하며 일반 RAG 문서에 복사하지 않는다.
+
+## 첫 달 완료 기준
+
+첫 달에는 작은 개선 과제 하나를 문제 정의부터 출시 후 지표 확인까지 수행한다.
+결과 보고서는 `가설-근거-결정-결과-후속 조치` 순서로 정리한다.
+""",
 }
 
 LEGAL_DOCUMENT_SPECS = (
@@ -808,14 +881,22 @@ LEGAL_DOCUMENT_SPECS = (
 INTERNAL_DOCUMENT_SPECS = (
     DemoKnowledgeSeedSpec(
         key="internal_onboarding",
-        name="사내문서: 신입사원 온보딩 안내",
-        description="신입사원 권한 승인과 AI 빌더 사용 절차를 안내하는 사내문서 KB",
-        filename="신입사원 온보딩 안내.md",
-        summary="입사 첫 주 절차, 권한 신청, RAG 사용 범위를 안내합니다.",
+        name="사내문서: 신입사원 공통 인사·휴가 정책",
+        description="신입사원 공통 온보딩, 휴가 신청과 프로젝트 일정 충돌 절차를 안내하는 사내문서 KB",
+        filename="신입사원 공통 인사 휴가 정책.md",
+        summary="입사 첫 주, 휴가 신청, 프로젝트 일정 충돌과 RAG 사용 범위를 안내합니다.",
         source_tier="internal",
         classification="internal_policy",
-        tags=("internal", "onboarding", "ai-builder"),
-        keywords=("신입사원", "온보딩", "권한 신청", "AI 빌더", "사내 문서 질문 응답 봇"),
+        tags=("internal", "onboarding", "hr", "leave", "ai-builder"),
+        keywords=(
+            "신입사원",
+            "온보딩",
+            "인사",
+            "휴가",
+            "프로젝트 운영 규정",
+            "권한 신청",
+            "AI 빌더",
+        ),
         collection_key="internal_onboarding",
         content=INTERNAL_DOCUMENT_CONTENT["internal_onboarding"],
     ),
@@ -886,7 +967,7 @@ INTERNAL_DOCUMENT_SPECS = (
     ),
     DemoKnowledgeSeedSpec(
         key="internal_developer_onboarding_rules",
-        name="사내문서: 개발팀 신입 온보딩 및 업무 내규",
+        name="사내문서: 개발팀 온보딩 가이드",
         description="개발팀 신입사원의 첫 달 업무 내규, 권한, PR 흐름을 안내하는 사내문서 KB",
         filename="개발팀 신입 온보딩 및 업무 내규.md",
         summary="개발팀 신입 온보딩, repository 접근, PR 리뷰 흐름을 안내합니다.",
@@ -936,6 +1017,27 @@ INTERNAL_DOCUMENT_SPECS = (
         collection_key="internal_onboarding",
         content=INTERNAL_DOCUMENT_CONTENT["internal_compensation_access_policy"],
     ),
+    DemoKnowledgeSeedSpec(
+        key="internal_planning_onboarding_guide",
+        name="사내문서: 기획팀 온보딩 가이드",
+        description="기획팀 신입사원의 PRD, 지표, 협업과 출시 검증 절차를 안내하는 사내문서 KB",
+        filename="기획팀 신입 온보딩 가이드.md",
+        summary="기획팀 신입사원의 PRD 작성, 협업, 지표 검증과 정보 취급 기준을 안내합니다.",
+        source_tier="internal",
+        classification="internal_policy",
+        tags=("internal", "planning", "onboarding", "prd"),
+        keywords=(
+            "기획팀",
+            "신입",
+            "온보딩",
+            "PRD",
+            "성공 지표",
+            "acceptance criteria",
+            "로드맵",
+        ),
+        collection_key="internal_onboarding",
+        content=INTERNAL_DOCUMENT_CONTENT["internal_planning_onboarding_guide"],
+    ),
 )
 
 DEMO_DOCUMENT_SPECS = LEGAL_DOCUMENT_SPECS + INTERNAL_DOCUMENT_SPECS
@@ -963,6 +1065,7 @@ def demo_summary(profile: str = "demo") -> dict[str, Any]:
         "teams": [name for name, _ in TEAM_SPECS.values()],
         "apps": [
             "사내 문서 질문 응답 봇",
+            "부서별 온보딩 RAG 챗봇",
             "Enterprise 고객 티켓 처리",
             "테스트용 문의 응답 워크플로우",
         ],
@@ -1619,6 +1722,102 @@ def _hr_bot_graph() -> dict[str, Any]:
                     "scoreThreshold": 0.3,
                     "topK": 4,
                     "parameters": {"temperature": 0.2, "max_tokens": 800},
+                },
+            ),
+            _node(
+                "answer",
+                "answerNode",
+                960,
+                120,
+                {
+                    **_base_node_data("응답", "최종 답변을 반환합니다.", 3),
+                    "outputs": [
+                        {
+                            "variable": "answer_text",
+                            "label": "답변",
+                            "value_selector": ["llm-answer", "text"],
+                        }
+                    ],
+                },
+            ),
+        ],
+        "edges": [
+            _edge("edge-start-llm", "start-question", "llm-answer"),
+            _edge("edge-llm-answer", "llm-answer", "answer"),
+        ],
+        "viewport": {"x": 40, "y": 80, "zoom": 0.85},
+    }
+
+
+def _department_onboarding_knowledge_base_refs() -> list[dict[str, str]]:
+    return [
+        _knowledge_base_ref(key)
+        for key in (
+            "internal_onboarding",
+            "internal_developer_onboarding_rules",
+            "internal_planning_onboarding_guide",
+        )
+    ]
+
+
+def _department_onboarding_chatbot_graph() -> dict[str, Any]:
+    return {
+        "nodes": [
+            _node(
+                "start-question",
+                "startNode",
+                120,
+                120,
+                {
+                    **_base_node_data(
+                        "온보딩 질문 입력",
+                        "로그인 사용자의 부서별 온보딩 질문을 입력받습니다.",
+                        1,
+                    ),
+                    "triggerType": "manual",
+                    "trigger_type": "manual",
+                    "variables": [
+                        {
+                            "id": "question",
+                            "name": "question",
+                            "label": "질문",
+                            "type": "paragraph",
+                            "required": True,
+                            "maxLength": 1200,
+                            "max_length": 1200,
+                        }
+                    ],
+                },
+            ),
+            _node(
+                "llm-answer",
+                "llmNode",
+                540,
+                120,
+                {
+                    **_base_node_data(
+                        "권한 기반 온보딩 답변",
+                        "현재 사용자가 사용할 수 있는 공통·부서 문서만 근거로 답변합니다.",
+                        2,
+                        ["model_id", "knowledgeBases", "user_prompt"],
+                    ),
+                    "provider": "openai",
+                    "model_id": DEMO_CHAT_MINI_MODEL,
+                    "system_prompt": (
+                        "현재 사용자에게 허용된 온보딩 문서만 근거로 간결하게 답변합니다. "
+                        "근거가 없으면 추측하지 말고 확인 가능한 문서가 없다고 안내합니다."
+                    ),
+                    "user_prompt": "질문: {{ question }}",
+                    "referenced_variables": [
+                        {
+                            "name": "question",
+                            "value_selector": ["start-question", "question"],
+                        }
+                    ],
+                    "knowledgeBases": _department_onboarding_knowledge_base_refs(),
+                    "scoreThreshold": 0.3,
+                    "topK": 3,
+                    "parameters": {"temperature": 0.2, "max_tokens": 700},
                 },
             ),
             _node(
@@ -2306,6 +2505,23 @@ def _demo_team_knowledge_permission_specs() -> list[tuple[str, str, str]]:
             ("internal_budget_alert_runbook", "customer_support_ops", "operator"),
             ("internal_cost_optimization_playbook", "platform_admin", "manager"),
             ("internal_cost_optimization_playbook", "customer_support_ops", "operator"),
+            ("internal_onboarding", "department_development", "operator"),
+            ("internal_onboarding", "department_planning", "operator"),
+            (
+                "internal_developer_onboarding_rules",
+                "department_development",
+                "operator",
+            ),
+            (
+                "internal_planning_onboarding_guide",
+                "platform_admin",
+                "manager",
+            ),
+            (
+                "internal_planning_onboarding_guide",
+                "department_planning",
+                "operator",
+            ),
         ]
     )
     knowledge_permission_specs.extend(
@@ -2781,6 +2997,16 @@ def _seed_apps_and_workflows(db: Session) -> dict[str, Workflow]:
             _hr_bot_graph(),
             deployed=False,
         ),
+        "department_onboarding_chatbot": _upsert_app_workflow(
+            db,
+            "department_onboarding_chatbot",
+            "부서별 온보딩 RAG 챗봇",
+            "개발팀과 기획팀 사용자의 Knowledge 권한 차이를 확인하는 내부 챗봇",
+            "admin",
+            _department_onboarding_chatbot_graph(),
+            deployed=True,
+            deployment_type=DeploymentType.INTERNAL_CHATBOT,
+        ),
         "ticket_ops": _upsert_app_workflow(
             db,
             "ticket_ops",
@@ -2870,6 +3096,34 @@ def _seed_permissions(db: Session) -> None:
                 "auth_state": "operator",
                 "assigned_by": USER_IDS["admin"],
                 "options": _demo_options("permission-hr-bot"),
+                "flags": 0,
+            },
+        ),
+        (
+            TEAM_PERMISSION_IDS["department_onboarding_development"],
+            TeamWorkflowPermission,
+            {
+                "grantee_organization_id": ORG_ID,
+                "team_id": TEAM_IDS["department_development"],
+                "workflow_id": WORKFLOW_IDS["department_onboarding_chatbot"],
+                "auth_state": "operator",
+                "assigned_by": USER_IDS["admin"],
+                "options": _demo_options(
+                    "permission-department-onboarding-development"
+                ),
+                "flags": 0,
+            },
+        ),
+        (
+            TEAM_PERMISSION_IDS["department_onboarding_planning"],
+            TeamWorkflowPermission,
+            {
+                "grantee_organization_id": ORG_ID,
+                "team_id": TEAM_IDS["department_planning"],
+                "workflow_id": WORKFLOW_IDS["department_onboarding_chatbot"],
+                "auth_state": "operator",
+                "assigned_by": USER_IDS["admin"],
+                "options": _demo_options("permission-department-onboarding-planning"),
                 "flags": 0,
             },
         ),

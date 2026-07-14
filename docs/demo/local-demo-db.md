@@ -201,6 +201,8 @@ apps/gateway/.venv/Scripts/python.exe scripts/seed_demo.py --profile demo --rese
 | `tester.manager@nodease.demo` | 테스트 관리자 | manager 권한 확인 |
 | `tester.builder@nodease.demo` | 테스트 빌더 | workflow 생성/편집/배포와 비민감 사내 onboarding/휴가/복지 KB 후보 선택 확인. runtime credential opt-in seed에서는 Agent Builder intent model `operator` 권한 포함 |
 | `tester.member@nodease.demo` | 테스트 멤버 | 일반 member 화면과 권한 제한 확인 |
+| `dev@nodease.demo` | 개발팀 사용자 정개발 | 공통·개발팀 온보딩 KB만 사용하는 내부 챗봇 권한 확인 |
+| `planning@nodease.demo` | 기획팀 사용자 김기획 | 공통·기획팀 온보딩 KB만 사용하는 내부 챗봇 권한 확인 |
 | `invited@nodease.demo` | 초대대기 한지민 | invited 상태 UI 확인 |
 | `suspended@nodease.demo` | 정지회원 최유진 | suspended 상태 UI 확인 |
 | `removed@nodease.demo` | 제거회원 정하늘 | removed 상태 UI 확인 |
@@ -212,6 +214,7 @@ Demo 조직:
 Demo 주요 workflow:
 
 - `사내 문서 질문 응답 봇`
+- `부서별 온보딩 RAG 챗봇`
 - `Enterprise 고객 티켓 처리`
 - `테스트용 문의 응답 워크플로우`
 - 비용 위험 표시용 workflow 3종
@@ -234,18 +237,30 @@ Public 법령 자료:
 
 Private 사내문서 자료:
 
-- `신입사원 온보딩 안내`
+- `신입사원 공통 인사·휴가 정책`
 - `휴가·근태·가족돌봄휴가 운영 정책`
 - `복지·교육비 지원 정책`
 - `개인정보 및 인사기록 접근 정책`
 - `워크플로우 예산 80% 알림 운영 Runbook`
 - `Workflow LLM 비용 최적화 Playbook`
-- `개발팀 신입 온보딩 및 업무 내규`
+- `개발팀 온보딩 가이드`
+- `기획팀 온보딩 가이드`
 - `개발팀 커밋·브랜치·PR 컨벤션`
 - `개발 직군 신입 보상 밴드 및 공개 가능 범위`
 - `개인 보상정보 및 인사기록 조회 제한 정책`
 
 사내문서는 `사내 온보딩·운영 문서 컬렉션`에 연결된다. HR/온보딩 문서는 `인사 지식 활용팀`과 `AI 빌더 온보딩팀`, 운영 runbook은 `고객지원 운영팀`, 전체 관리는 `플랫폼 관리팀`에 부여한다. 민감 재무 예시 문서는 기존처럼 일반 RAG `use` 권한을 주지 않는다.
+
+`부서별 온보딩 RAG 챗봇`은 공통·개발·기획 KB 세 개를 LLM node에 direct reference로 저장한다. runtime candidate resolver가 로그인 사용자의 active organization/team membership과 KB `use` 권한을 다시 확인하므로 실제 검색 후보는 다음과 같이 제한된다.
+
+| 로그인 사용자 | 검색 가능한 온보딩 KB | 검색에서 제외되는 KB |
+| --- | --- | --- |
+| `dev@nodease.demo` | 공통, 개발팀 | 기획팀 |
+| `planning@nodease.demo` | 공통, 기획팀 | 개발팀 |
+
+두 팀 모두 전용 Workflow `operator` 권한을 갖는다. 실제 LLM provider 호출에 필요한 team credential `operator` 권한은 `--enable-runtime-openai-credential` opt-in seed에서만 생성한다. 기본 seed의 non-secret demo credential metadata는 실행 credential이 아니다.
+
+반복 가능한 A/B 권한 시연에는 seed된 `부서별 온보딩 RAG 챗봇`을 사용한다. 발표 중 AI Builder로 새 Workflow를 만드는 경우에는 새 Workflow/Deployment ID가 생성되므로, 내부 챗봇으로 배포한 뒤 개발팀과 기획팀에 새 Workflow `operator` 권한을 부여해야 두 계정이 같은 실행 링크를 사용할 수 있다. seed된 전용 챗봇의 팀 권한은 새 Workflow에 자동 상속되지 않는다.
 
 기본 reset은 fixture를 사용하므로 법령 PDF 원본이 없어도 RAG 검색용 chunk와 embedding을 생성한다. 원본 PDF 재생성 모드에서는 로컬 `local/legal-docs-labor/`에 법령 PDF가 있어야 한다. 사내문서 원본은 `local/demo-scenario-2026-07-08/internal-docs/`에서 사람이 확인할 수 있다.
 같은 법령의 PDF가 여러 개 있으면 seed는 파일명 끝의 시행일 `YYYYMMDD`가 가장 큰 PDF를 선택한다.
@@ -259,6 +274,36 @@ Private 사내문서 자료:
 일반 사용자의 실행 흐름을 보여줄 때는 챗봇 배포 성공 화면에서 생성된 내부 실행 링크(`/modules/{workflow_id}/run?deploymentId={deployment_id}`)를 사용한다. 이 경로는 공개 챗봇 URL이 아니라 로그인 사용자의 workflow `execute` 권한과 RAG `execution_subject`를 적용한다. `/dashboard/mymodule`은 작성자/관리자가 운영 현황과 비용/최적화 신호를 보는 화면이므로, 실행 전용 일반 사용자 시연 경로로 사용하지 않는다.
 
 공개 공유 URL(`/run-public`, `/embed/chat`)은 anonymous public-only RAG 경계 확인용이다. 사내 private 문서 접근 시연에는 사용하지 않는다.
+
+`부서별 온보딩 RAG 챗봇`
+
+두 계정으로 같은 내부 실행 링크에 번갈아 로그인하고 다음 공통 질문을 실행한다.
+
+```text
+신입 사원 온보딩 문서를 찾아줘.
+```
+
+개발팀 계정에서만 근거가 있어야 하는 질문:
+
+```text
+개발팀 신입의 repository 접근과 PR 리뷰 절차를 알려줘.
+```
+
+기획팀 계정에서만 근거가 있어야 하는 질문:
+
+```text
+기획팀 PRD에 포함해야 할 항목과 출시 전 검증 절차를 알려줘.
+```
+
+반대 부서 질문에서는 상대 부서 KB 이름, citation, 문서 내용이 노출되면 안 된다. 허용된 공통 문서에도 답이 없다면 runtime은 추측 답변 대신 no-evidence 응답을 반환해야 한다.
+
+공통 정책과 부서별 프로젝트 운영 규정을 함께 참조하는 질문:
+
+```text
+휴가 규정과 프로젝트 운영 규정이 충돌하는데, 이 경우 어떤 절차를 따라야 해?
+```
+
+두 계정 모두 공통 휴가 절차를 근거로 답하되, 개발팀 계정은 개발팀 인수인계·PR 흐름, 기획팀 계정은 기획 문서·출시 검증 절차 범위 안에서만 답해야 한다.
 
 정상 사내 문서 질문:
 
