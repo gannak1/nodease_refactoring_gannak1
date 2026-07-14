@@ -1,3 +1,4 @@
+import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
@@ -18,7 +19,21 @@ from apps.workflow_engine.adapters.knowledge_runtime_candidates import (
     KnowledgeRuntimeCandidateSnapshotError,
     PostgresKnowledgeRuntimeCandidateSnapshotAdapter,
 )
+from apps.workflow_engine.application.runtime_retrieval.knowledge_candidates import (
+    KnowledgeRuntimeCandidateResolver,
+)
+from apps.workflow_engine.workflow.nodes.llm.entities import (
+    KnowledgeBaseRef,
+    KnowledgeCollectionRef,
+    LLMNodeData,
+)
+from apps.workflow_engine.workflow.nodes.llm.llm_node import (
+    RAG_NO_EVIDENCE_MESSAGE,
+    LLMNode,
+    WorkflowRAGFanoutResult,
+)
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 
 RUN_ENV = "NODEASE_RUN_DISPOSABLE_DB_TEST"
@@ -536,6 +551,275 @@ def _seed_authenticated_collection(engine, *, source_managed: bool):
     }
 
 
+def _seed_authenticated_user_matrix(engine):
+    organization_ids = {"a": uuid4(), "b": uuid4()}
+    user_ids = {
+        "dev_a": uuid4(),
+        "planning_a": uuid4(),
+        "direct_a": uuid4(),
+        "none_a": uuid4(),
+        "dev_b": uuid4(),
+    }
+    team_ids = {"dev_a": uuid4(), "planning_a": uuid4(), "dev_b": uuid4()}
+    collection_ids = {"department_a": uuid4(), "department_b": uuid4()}
+    knowledge_base_ids = {
+        "common_a": uuid4(),
+        "dev_a": uuid4(),
+        "planning_a": uuid4(),
+        "direct_a": uuid4(),
+        "hidden_a": uuid4(),
+        "common_b": uuid4(),
+    }
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO users (id, email, name, social_provider) "
+                "VALUES (:id, :email, :name, 'test')"
+            ),
+            [
+                {
+                    "id": user_id,
+                    "email": f"{alias}-{user_id.hex}@test.invalid",
+                    "name": alias,
+                }
+                for alias, user_id in user_ids.items()
+            ],
+        )
+        connection.execute(
+            text(
+                "INSERT INTO organization (id, is_active) "
+                "VALUES (:id, true)"
+            ),
+            [{"id": organization_id} for organization_id in organization_ids.values()],
+        )
+        connection.execute(
+            text(
+                "INSERT INTO organization_memberships "
+                "(id, organization_id, user_id, membership_state, "
+                "organization_auth_state) VALUES "
+                "(:id, :organization_id, :user_id, 'active', 'member')"
+            ),
+            [
+                {
+                    "id": uuid4(),
+                    "organization_id": organization_ids["a"],
+                    "user_id": user_ids[alias],
+                }
+                for alias in ("dev_a", "planning_a", "direct_a", "none_a")
+            ]
+            + [
+                {
+                    "id": uuid4(),
+                    "organization_id": organization_ids["b"],
+                    "user_id": user_ids["dev_b"],
+                }
+            ],
+        )
+        connection.execute(
+            text(
+                "INSERT INTO teams (id, organization_id, is_active) "
+                "VALUES (:id, :organization_id, true)"
+            ),
+            [
+                {
+                    "id": team_ids["dev_a"],
+                    "organization_id": organization_ids["a"],
+                },
+                {
+                    "id": team_ids["planning_a"],
+                    "organization_id": organization_ids["a"],
+                },
+                {
+                    "id": team_ids["dev_b"],
+                    "organization_id": organization_ids["b"],
+                },
+            ],
+        )
+        connection.execute(
+            text(
+                "INSERT INTO team_memberships "
+                "(id, grantee_organization_id, team_id, user_id) "
+                "VALUES (:id, :organization_id, :team_id, :user_id)"
+            ),
+            [
+                {
+                    "id": uuid4(),
+                    "organization_id": organization_ids["a"],
+                    "team_id": team_ids["dev_a"],
+                    "user_id": user_ids["dev_a"],
+                },
+                {
+                    "id": uuid4(),
+                    "organization_id": organization_ids["a"],
+                    "team_id": team_ids["planning_a"],
+                    "user_id": user_ids["planning_a"],
+                },
+                {
+                    "id": uuid4(),
+                    "organization_id": organization_ids["b"],
+                    "team_id": team_ids["dev_b"],
+                    "user_id": user_ids["dev_b"],
+                },
+            ],
+        )
+        connection.execute(
+            text(
+                "INSERT INTO knowledge_collections "
+                "(id, organization_id, lifecycle_state, sync_state, "
+                "is_system_managed, safe_metadata) VALUES "
+                "(:id, :organization_id, 'active', 'manual', false, "
+                "'{\"visibility\": \"private\"}'::jsonb)"
+            ),
+            [
+                {
+                    "id": collection_ids["department_a"],
+                    "organization_id": organization_ids["a"],
+                },
+                {
+                    "id": collection_ids["department_b"],
+                    "organization_id": organization_ids["b"],
+                },
+            ],
+        )
+
+        version_ids = {alias: uuid4() for alias in knowledge_base_ids}
+        connection.execute(
+            text(
+                "INSERT INTO knowledge_bases "
+                "(id, organization_id, active_document_version_id, "
+                "source_identity_id, sync_state, lifecycle_state) VALUES "
+                "(:id, :organization_id, :version_id, NULL, 'manual', 'active')"
+            ),
+            [
+                {
+                    "id": knowledge_base_id,
+                    "organization_id": (
+                        organization_ids["b"]
+                        if alias.endswith("_b")
+                        else organization_ids["a"]
+                    ),
+                    "version_id": version_ids[alias],
+                }
+                for alias, knowledge_base_id in knowledge_base_ids.items()
+            ],
+        )
+        connection.execute(
+            text(
+                "INSERT INTO document_versions "
+                "(id, organization_id, knowledge_base_id, status) "
+                "VALUES (:id, :organization_id, :knowledge_base_id, 'ready')"
+            ),
+            [
+                {
+                    "id": version_ids[alias],
+                    "organization_id": (
+                        organization_ids["b"]
+                        if alias.endswith("_b")
+                        else organization_ids["a"]
+                    ),
+                    "knowledge_base_id": knowledge_base_id,
+                }
+                for alias, knowledge_base_id in knowledge_base_ids.items()
+            ],
+        )
+        connection.execute(
+            text(
+                "INSERT INTO knowledge_collection_items "
+                "(id, organization_id, collection_id, knowledge_base_id, "
+                "rank, created_at) VALUES "
+                "(:id, :organization_id, :collection_id, :knowledge_base_id, "
+                ":rank, clock_timestamp())"
+            ),
+            [
+                {
+                    "id": uuid4(),
+                    "organization_id": organization_ids["a"],
+                    "collection_id": collection_ids["department_a"],
+                    "knowledge_base_id": knowledge_base_ids[alias],
+                    "rank": rank,
+                }
+                for rank, alias in enumerate(
+                    ("common_a", "dev_a", "planning_a", "hidden_a")
+                )
+            ]
+            + [
+                {
+                    "id": uuid4(),
+                    "organization_id": organization_ids["b"],
+                    "collection_id": collection_ids["department_b"],
+                    "knowledge_base_id": knowledge_base_ids["common_b"],
+                    "rank": 0,
+                }
+            ],
+        )
+        connection.execute(
+            text(
+                "INSERT INTO team_knowledge_collection_permissions "
+                "(knowledge_collection_id, team_id, grantee_organization_id, "
+                "permission_action) VALUES "
+                "(:collection_id, :team_id, :organization_id, 'route')"
+            ),
+            [
+                {
+                    "collection_id": collection_ids["department_a"],
+                    "team_id": team_ids["dev_a"],
+                    "organization_id": organization_ids["a"],
+                },
+                {
+                    "collection_id": collection_ids["department_a"],
+                    "team_id": team_ids["planning_a"],
+                    "organization_id": organization_ids["a"],
+                },
+                {
+                    "collection_id": collection_ids["department_b"],
+                    "team_id": team_ids["dev_b"],
+                    "organization_id": organization_ids["b"],
+                },
+            ],
+        )
+        connection.execute(
+            text(
+                "INSERT INTO team_knowledge_permissions "
+                "(knowledge_base_id, team_id, grantee_organization_id, auth_state) "
+                "VALUES (:knowledge_base_id, :team_id, :organization_id, 'operator')"
+            ),
+            [
+                {
+                    "knowledge_base_id": knowledge_base_ids[kb_alias],
+                    "team_id": team_ids[team_alias],
+                    "organization_id": organization_ids[organization_alias],
+                }
+                for team_alias, organization_alias, kb_alias in (
+                    ("dev_a", "a", "common_a"),
+                    ("dev_a", "a", "dev_a"),
+                    ("planning_a", "a", "common_a"),
+                    ("planning_a", "a", "planning_a"),
+                    ("dev_b", "b", "common_b"),
+                )
+            ],
+        )
+        connection.execute(
+            text(
+                "INSERT INTO user_knowledge_permissions "
+                "(knowledge_base_id, user_id, grantee_organization_id, auth_state) "
+                "VALUES (:knowledge_base_id, :user_id, :organization_id, 'operator')"
+            ),
+            {
+                "knowledge_base_id": knowledge_base_ids["direct_a"],
+                "user_id": user_ids["direct_a"],
+                "organization_id": organization_ids["a"],
+            },
+        )
+
+    return {
+        "organizations": organization_ids,
+        "users": user_ids,
+        "collections": collection_ids,
+        "knowledge_bases": knowledge_base_ids,
+    }
+
+
 def _apply_authenticated_mutation(connection, mutation, seeded):
     params = {
         "organization_id": seeded["organization_id"],
@@ -612,28 +896,219 @@ def disposable_snapshot_database():
     engine = None
     database_created = False
     try:
-        with admin_engine.connect() as connection:
-            connection.execute(text(f"CREATE DATABASE {quoted_database}"))
-        database_created = True
-        engine = create_engine(config.database_url(database), pool_size=2)
-        _create_schema(engine)
+        try:
+            with admin_engine.connect() as connection:
+                connection.execute(text(f"CREATE DATABASE {quoted_database}"))
+            database_created = True
+            engine = create_engine(config.database_url(database), pool_size=2)
+            _create_schema(engine)
+        except SQLAlchemyError:
+            raise pytest.fail.Exception(
+                "disposable PostgreSQL setup failed",
+                pytrace=False,
+            ) from None
         yield engine
     finally:
         if engine is not None:
             engine.dispose()
-        if database_created:
-            with admin_engine.connect() as connection:
-                connection.execute(
-                    text(
-                        "SELECT pg_terminate_backend(pid) "
-                        "FROM pg_stat_activity "
-                        "WHERE datname = :database "
-                        "AND pid <> pg_backend_pid()"
+        try:
+            if database_created:
+                with admin_engine.connect() as connection:
+                    connection.execute(
+                        text(
+                            "SELECT pg_terminate_backend(pid) "
+                            "FROM pg_stat_activity "
+                            "WHERE datname = :database "
+                            "AND pid <> pg_backend_pid()"
+                        ),
+                        {"database": database},
+                    )
+                    connection.execute(text(f"DROP DATABASE {quoted_database}"))
+        except SQLAlchemyError:
+            raise pytest.fail.Exception(
+                "disposable PostgreSQL cleanup failed",
+                pytrace=False,
+            ) from None
+        finally:
+            admin_engine.dispose()
+
+
+class _ProviderMustNotRun:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def invoke_sync(self, **_kwargs):
+        self.calls += 1
+        raise AssertionError("LLM provider must not run without usable evidence")
+
+
+@pytest.mark.skipif(
+    os.getenv(RUN_ENV) != "1",
+    reason=f"set {RUN_ENV}=1 to run disposable Knowledge user matrix evidence",
+)
+def test_internal_chatbot_user_matrix_reaches_llm_node_with_authorized_candidates_only(
+    disposable_snapshot_database,
+    monkeypatch,
+):
+    engine = disposable_snapshot_database
+    seeded = _seed_authenticated_user_matrix(engine)
+    session_factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    resolver = KnowledgeRuntimeCandidateResolver(
+        snapshot_port=PostgresKnowledgeRuntimeCandidateSnapshotAdapter(
+            session_factory=session_factory
+        )
+    )
+    organizations = seeded["organizations"]
+    users = seeded["users"]
+    collections = seeded["collections"]
+    kbs = seeded["knowledge_bases"]
+    direct_kb_ids = (kbs["direct_a"], kbs["hidden_a"])
+    collection_ids = (collections["department_a"], collections["department_b"])
+
+    matrix = (
+        (
+            "dev_a",
+            organizations["a"],
+            ((kbs["common_a"], "collection"), (kbs["dev_a"], "collection")),
+        ),
+        (
+            "planning_a",
+            organizations["a"],
+            (
+                (kbs["common_a"], "collection"),
+                (kbs["planning_a"], "collection"),
+            ),
+        ),
+        ("direct_a", organizations["a"], ((kbs["direct_a"], "direct"),)),
+        ("none_a", organizations["a"], ()),
+        ("dev_b", organizations["a"], ()),
+        ("dev_b", organizations["b"], ((kbs["common_b"], "collection"),)),
+    )
+
+    for user_alias, organization_id, expected in matrix:
+        resolution = resolver.resolve(
+            KnowledgeRuntimeCandidateRequest(
+                audience=AuthenticatedAudience(
+                    organization_id=organization_id,
+                    user_id=users[user_alias],
+                ),
+                direct_kb_ids=direct_kb_ids,
+                collection_ids=collection_ids,
+            )
+        )
+
+        assert tuple(
+            (candidate.knowledge_base_id, candidate.provenance.kind)
+            for candidate in resolution.candidates
+        ) == expected
+        assert resolution.policy_excluded_count_bucket in {
+            "0",
+            "1",
+            "2-10",
+            "11-100",
+            "100+",
+        }
+        assert str(kbs["hidden_a"]) not in repr(resolution)
+
+    node_cases = (
+        ("dev_a", (kbs["common_a"], kbs["dev_a"])),
+        ("planning_a", (kbs["common_a"], kbs["planning_a"])),
+        ("none_a", ()),
+    )
+    for user_alias, expected_kb_ids in node_cases:
+        provider = _ProviderMustNotRun()
+        node = LLMNode(
+            "llm-mba-238",
+            LLMNodeData(
+                title="LLM",
+                provider="openai",
+                model_id="gpt-4o",
+                user_prompt="policy question",
+                knowledgeBases=[
+                    KnowledgeBaseRef(id=str(kbs["direct_a"]), name="Direct"),
+                    KnowledgeBaseRef(
+                        id=str(kbs["hidden_a"]),
+                        name="DENIED_SENTINEL_HIDDEN",
                     ),
-                    {"database": database},
+                ],
+                knowledgeCollections=[
+                    KnowledgeCollectionRef(
+                        id=str(collections["department_a"]),
+                        safeLabel="Department A",
+                    ),
+                    KnowledgeCollectionRef(
+                        id=str(collections["department_b"]),
+                        safeLabel="DENIED_SENTINEL_CROSS_ORG",
+                    ),
+                ],
+            ),
+            execution_context={
+                "user_id": str(users[user_alias]),
+                "organization_id": str(organizations["a"]),
+                "execution_subject": {
+                    "type": "user",
+                    "id": str(users[user_alias]),
+                },
+                "db": object(),
+            },
+        )
+        node.bind_knowledge_runtime_candidate_resolver(resolver)
+        node._client_override = provider  # noqa: SLF001
+        precompute_calls = []
+        fanout_calls = []
+
+        if expected_kb_ids:
+            monkeypatch.setattr(
+                node,
+                "_precompute_rag_query_vectors_by_kb",
+                lambda *args, **kwargs: precompute_calls.append(
+                    tuple(kwargs["knowledge_base_ids"])
                 )
-                connection.execute(text(f"DROP DATABASE {quoted_database}"))
-        admin_engine.dispose()
+                or ({}, 0, False),
+            )
+
+            def capture_fanout(**kwargs):
+                fanout_calls.append(tuple(kwargs["knowledge_base_ids"]))
+                return WorkflowRAGFanoutResult(results=[], failed_count=0)
+
+            monkeypatch.setattr(node, "_run_rag_retrieval_fanout", capture_fanout)
+        else:
+            monkeypatch.setattr(
+                node,
+                "_precompute_rag_query_vectors_by_kb",
+                lambda *args, **kwargs: pytest.fail(
+                    "embedding must not run for zero candidates"
+                ),
+            )
+            monkeypatch.setattr(
+                node,
+                "_run_rag_retrieval_fanout",
+                lambda **kwargs: pytest.fail(
+                    "retrieval must not run for zero candidates"
+                ),
+            )
+
+        result = node._run({})  # noqa: SLF001
+
+        assert provider.calls == 0
+        assert result["text"] == RAG_NO_EVIDENCE_MESSAGE
+        assert fanout_calls == (
+            [tuple(str(kb_id) for kb_id in expected_kb_ids)]
+            if expected_kb_ids
+            else []
+        )
+        assert precompute_calls == fanout_calls
+
+        public_projection = json.dumps(
+            {"result": result, "trace": node._trace_payloads},  # noqa: SLF001
+            ensure_ascii=False,
+            default=str,
+        )
+        assert "DENIED_SENTINEL" not in public_projection
+        assert all(
+            str(resource_id) not in public_projection
+            for resource_id in (*kbs.values(), *collections.values())
+        )
 
 
 class _PausingSnapshotAdapter(PostgresKnowledgeRuntimeCandidateSnapshotAdapter):

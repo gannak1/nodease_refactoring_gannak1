@@ -315,6 +315,8 @@ def test_authenticated_run_uses_current_user_execution_subject(
     app_row, deployment_row = _deployed_app(deployment_type)
     current_user_id = uuid4()
     client_conversation_id = str(uuid4())
+    forged_user_id = str(uuid4())
+    forged_organization_id = str(uuid4())
     db = _Db(rows=[app_row, deployment_row])
     budget_calls = []
     evaluated_surfaces = []
@@ -341,7 +343,12 @@ def test_authenticated_run_uses_current_user_execution_subject(
         db,
         deployment_row.id,
         current_user_id,
-        {"question": "안녕"},
+        {
+            "question": "안녕",
+            "user_id": forged_user_id,
+            "organization_id": forged_organization_id,
+            "execution_subject": {"type": "user", "id": forged_user_id},
+        },
         monkeypatch,
         client_conversation_id=client_conversation_id,
     )
@@ -357,7 +364,13 @@ def test_authenticated_run_uses_current_user_execution_subject(
     assert ctx["memory_mode"] is True
     assert ctx["conversation_id"].startswith("auth:v1:")
     assert client_conversation_id not in ctx["conversation_id"]
-    assert sent_inputs == {"question": "안녕"}
+    assert sent_inputs == {
+        "question": "안녕",
+        "user_id": forged_user_id,
+        "organization_id": forged_organization_id,
+        "execution_subject": {"type": "user", "id": forged_user_id},
+    }
+    assert ctx["organization_id"] == str(app_row.organization_id)
     assert budget_calls == [
         {
             "workflow_id": app_row.workflow_id,

@@ -1,7 +1,7 @@
 # Workflow Test Cases
 
 Status: Draft
-Verified Against: `feature/mba-219 @ 5b1cf366`
+Verified Against: `origin/dev @ 32fb602f`
 
 ## Test File Mapping
 
@@ -473,6 +473,21 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - Public graph, node option display, trace/log/audit/error/SSE는 Collection identity와 child
   structure를 노출하지 않는다. Runtime trace는 routing mode와 count/limit/failure safe
   summary만 허용한다.
+
+## MBA-238 Authenticated Subject To RAG Integration Tests
+
+- 인증 내부 챗봇의 serialized `execution_context.execution_subject`는 LLM node에서
+  `AuthenticatedAudience`로 해석되고, organization과 user ID가 production candidate
+  resolver 요청까지 그대로 유지되어야 한다.
+- 같은 graph를 서로 다른 로그인 사용자가 실행하면 resolver가 각 사용자의 PostgreSQL
+  team/user permission으로 후보를 다시 계산해야 한다. workflow owner, deployment creator,
+  credential principal 또는 직전 실행 사용자의 후보를 fallback/cache하면 테스트 실패다.
+- LLM node의 retrieval fan-out은 resolver가 확정한 canonical 후보만 받아야 한다. 권한 없는
+  direct KB와 Collection child는 vector search 전에 제외되고 provider prompt, citation,
+  trace와 audit에 나타나지 않아야 한다.
+- candidate 0 경로의 provider 미호출, resolver 1회 호출, Collection child identity redaction은
+  기존 LLM node regression을 재사용하고, MBA-238에서는 production PostgreSQL adapter와
+  연결된 사용자별 통합 경로만 추가한다.
 
 ## API Tests
 
