@@ -1249,6 +1249,11 @@ def test_llm_node_uses_fallback_model_on_failure(monkeypatch):
     assert fallback_client.calls
     assert result["text"] == "fallback ok"
     assert result["model"] == "fallback-model"
+    assert result["metadata"]["model_routing"] == {
+        "fallback_used": True,
+        "fallback_from_model": "primary-model",
+        "fallback_reason_code": "provider_call_failed",
+    }
     assert service_calls == [
         {"model_id": "primary-model", "organization_id": organization_id},
         {"model_id": "fallback-model", "organization_id": organization_id},
@@ -1333,6 +1338,11 @@ def test_llm_node_logs_fallback_model_when_primary_client_selection_fails(
     assert fallback_client.calls
     assert result["text"] == "fallback ok"
     assert result["model"] == "fallback-model"
+    assert result["metadata"]["model_routing"] == {
+        "fallback_used": True,
+        "fallback_from_model": "primary-model",
+        "fallback_reason_code": "runtime_client_unavailable",
+    }
     assert data.model_id == "primary-model"
     assert service_calls == [
         {"model_id": "primary-model", "organization_id": organization_id},

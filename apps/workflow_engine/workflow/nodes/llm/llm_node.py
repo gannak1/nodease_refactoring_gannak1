@@ -615,11 +615,16 @@ class LLMNode(Node[LLMNodeData]):
         selected_model_id, fallback_model_id, model_routing_metadata = (
             self._resolve_model_routing_policy(inputs, db_session)
         )
+        # 자동 라우팅을 끈 노드도 provider fallback은 사용할 수 있다. 이 경우에도
+        # 실제 대체 실행 정보를 안전하게 남길 수 있도록 빈 metadata로 정규화한다.
+        model_routing_metadata = dict(model_routing_metadata or {})
+        routed_model_id = selected_model_id
         routing_context = ModelRouter.infer_runtime_context(
             inputs,
             self.data,
         ).as_metadata()
         fallback_used = False
+        fallback_reason_code = None
 
         try:
             if client_override:
@@ -678,6 +683,7 @@ class LLMNode(Node[LLMNodeData]):
                             selected_credential_id = runtime_selection.credential_id
                             selected_model_id = runtime_selection.model_id
                             fallback_used = True
+                            fallback_reason_code = "runtime_client_unavailable"
                             # The fallback is now the active client. Do not invoke
                             # the same provider a second time if this call fails.
                             fallback_model_id = None
@@ -937,6 +943,7 @@ class LLMNode(Node[LLMNodeData]):
                     raise fallback_error from primary_error
                 used_model_id = fallback_model_id
                 fallback_used = True
+                fallback_reason_code = "provider_call_failed"
 
             # OpenAI 응답 포맷에서 텍스트/usage 추출 (missing 시 안전하게 빈 값)
             text = ""
@@ -1052,6 +1059,15 @@ class LLMNode(Node[LLMNodeData]):
                             runtime_summary=knowledge_result.trace_summary,
                         ),
                         "scope": "span",
+                    }
+                )
+
+            if fallback_used:
+                model_routing_metadata.update(
+                    {
+                        "fallback_used": True,
+                        "fallback_from_model": routed_model_id,
+                        "fallback_reason_code": fallback_reason_code,
                     }
                 )
 
