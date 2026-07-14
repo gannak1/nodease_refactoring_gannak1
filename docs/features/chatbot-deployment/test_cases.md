@@ -43,6 +43,11 @@ Verified Against: `origin/dev @ 32fb602f`
 - `SuccessStep`은 선택한 챗봇 유형에 맞는 공개 링크 또는 사내 인증 링크만 표시하고 두 보안 경계를 한 배포 결과에서 섞지 않는다. 내부 챗봇에는 public REST API endpoint/secret/test panel을 표시하지 않는다.
 - 공개 챗봇 공유 링크 설명은 private Knowledge 접근을 암시하지 않는다.
 - 내부 실행 페이지는 `internal_chatbot`을 실행할 때 업무 `inputs`와 별도의 non-empty canonical `conversation.client_id`를 전송하고 client-controlled `memory_mode`를 보내지 않는다.
+- 내부 챗봇 실행 페이지는 사용자 선택기 없이 대화 내용을 위에, 질문 입력창과 전송 버튼을 아래에 표시한다.
+- 내부 챗봇 실행 페이지 우상단은 현재 로그인 사용자 이름과 사용자 권한 적용 상태를 함께 표시한다. 사용자 정보 조회 실패 시 이름은 생략하되 실행 화면과 권한 상태 표시는 유지한다.
+- 내부 챗봇 실행 페이지는 같은 화면에서 보낸 사용자 질문과 응답을 순서대로 누적하고, 전송 성공 후 질문 입력창을 비운다.
+- 내부 챗봇 질문 composer는 입력과 전송 버튼을 세로 중앙 정렬한다. 질문 입력은 내부 스크롤 없이 줄 수에 맞춰 높이가 늘어나고 전송 후 한 줄 높이로 돌아가며, 최종 응답도 카드 내부 스크롤 없이 전체 내용을 펼쳐 표시한다.
+- 챗봇이 아닌 인증 배포는 여러 입력 변수를 지원하는 기존 실행 폼과 결과 영역을 유지한다.
 - 내부 실행 페이지는 backend의 문서화되지 않은 임의 `detail` string을 표시하지 않고 status별 fixed safe message를 사용한다.
 - 내부 실행 링크에서 `401`을 받으면 `/auth/login?next=<원래 내부 실행 경로>`로 이동하고, 이메일/비밀번호와 Google OAuth 로그인 성공 후 safe same-origin `next` 경로로 복귀한다.
 - 절대 URL, `//host`, backslash, dot segment, control character, malformed 또는 과다 중첩 encoding처럼 안전하지 않은 `next` 값은 무시하고 `/dashboard`로 이동한다. Google OAuth return context는 10분 만료와 1회 소비를 검증한다.

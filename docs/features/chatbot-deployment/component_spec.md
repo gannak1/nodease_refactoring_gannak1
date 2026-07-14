@@ -20,7 +20,7 @@ Status: Draft
 - 기존 deployment의 parent policy 변경은 in-place edit이 아니라 browser-access revision endpoint로 새 inactive version을 만든다. 사용자가 별도로 활성화하기 전 current active pointer는 유지한다.
 - `SuccessStep`은 embedding disabled면 direct link만 표시하고 enabled면 iframe snippet과 bounded parent origin 요약을 함께 표시한다. Parent 목록을 CORS/API 권한으로 설명하지 않는다.
 - 챗봇 페이지(`app/embed/chat/[urlSlug]/page.tsx`): 메시지 버블/입력창/환영 메시지/입력 중 표시(기존). 전송 시 `POST /api/v1/run-public/{urlSlug}`를 사용하며, private Knowledge/RAG 후보를 workflow owner 권한으로 넓히지 않는다.
-- 인증 내부 실행 페이지(`app/modules/[id]/run/page.tsx`): `GET /api/v1/deployments/{deployment_id}/run-info`와 JSON `POST /api/v1/deployments/{deployment_id}/run`을 사용한다. `internal_chatbot`은 page-session UUID를 top-level `conversation.client_id`로 보내고 업무 `inputs`에는 `memory_mode`/`conversation_id` control을 추가하지 않는다. LLM node RAG는 로그인 사용자를 execution subject로 전달받는다.
+- 인증 내부 실행 페이지(`app/modules/[id]/run/page.tsx`): `GET /api/v1/deployments/{deployment_id}/run-info`와 JSON `POST /api/v1/deployments/{deployment_id}/run`을 사용한다. `internal_chatbot`은 사용자 선택기 없이 대화 내역을 위에 누적하고 질문 composer를 아래에 배치한다. 페이지 우상단 권한 배지는 `authApi.me()`로 확인한 현재 로그인 사용자 이름과 사용자 권한 적용 상태를 함께 표시하며, 사용자 정보 조회 실패 시 이름만 생략한다. 질문 입력과 전송 버튼은 세로 중앙 정렬한다. 질문 입력은 내부 스크롤 없이 줄 수에 맞춰 자동으로 높아지고 전송 후 한 줄 높이로 돌아가며, 최종 응답은 카드 내부 스크롤 없이 전체 내용을 펼친다. page-session UUID를 top-level `conversation.client_id`로 보내고 업무 `inputs`에는 `memory_mode`/`conversation_id` control을 추가하지 않는다. LLM node RAG는 로그인 사용자를 execution subject로 전달받는다. 챗봇이 아닌 배포는 다중 입력용 기존 form/result layout을 유지한다.
 - 인증 내부 실행 오류: 문서화된 HTTP status를 fixed 사용자 메시지로 mapping하고, 알 수 없는 `response.data.detail` 원문을 화면에 표시하지 않는다.
 - 인증 복귀: run-info가 `401`을 반환하면 원래 path/query/hash를 인코딩한 `/auth/login?next=...`로 이동한다. 공통 redirect helper가 API interceptor와 page handler의 중복 이동을 조정한다. 이메일/비밀번호와 Google OAuth 로그인 성공 후 safe same-origin `next`로 복귀하고 외부·malformed URL은 `/dashboard`로 닫는다.
 
@@ -28,7 +28,7 @@ Status: Draft
 
 - 공개 `conversationId`: 방문자별 대화 격리 키. 마운트 시 `localStorage['nodease_chat_conv_' + urlSlug]`에서 읽고 없으면 `crypto.randomUUID()`로 생성/저장한다. `localStorage` 접근 불가(프라이빗 모드 등) 시 세션 한정 임시 id를 사용한다.
 - 내부 `conversationId`: 내부 실행 페이지 마운트 시 생성하는 canonical UUID다. `localStorage`에 저장하지 않고 top-level `conversation.client_id`로만 전송한다. 서버가 deployment/current user에 결박한 `auth:v1` namespace로 바꾼다.
-- `messages`: 현재 브라우저 세션의 대화 표시용(React state). 서버 기억은 `conversation_id` 기반 실행 이력 요약으로 별도 유지된다.
+- `messages`: 현재 브라우저 세션에서 성공한 사용자 질문과 assistant 응답을 순서대로 표시하는 React state다. 전송 중인 질문은 pending 상태로 별도 표시하고 성공 후 입력창을 비운다. 서버 기억은 `conversation_id` 기반 실행 이력 요약으로 별도 유지된다.
 
 두 state 설명은 Legacy Current Implementation이다. Target Client는 [Conversation Memory component spec](../conversation-memory/component_spec.md)의 server-issued Access Grant/session 및 transcript projection을 사용한다. 같은 채팅 시각 컴포넌트는 재사용하되 public/authenticated backend surface, API/auth adapter, CORS/Origin, deployment access policy, session namespace와 secret storage는 분리한다.
 

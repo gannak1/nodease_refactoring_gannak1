@@ -5,10 +5,15 @@ import type { FinalResponsePreview } from '../../utils/testExecutionFinalRespons
 
 export function FinalResponseCard({
   preview,
+  expandContent = false,
 }: {
   preview: FinalResponsePreview;
+  expandContent?: boolean;
 }) {
   const titleId = useId();
+  const responseContainerClassName = `mt-3 rounded-md border border-emerald-200 bg-white p-3 dark:border-emerald-800 dark:bg-emerald-950/40${
+    expandContent ? '' : ' max-h-56 overflow-y-auto'
+  }`;
 
   return (
     <section
@@ -37,7 +42,7 @@ export function FinalResponseCard({
               최종 사용자에게 표시할 응답이 비어 있습니다.
             </p>
           ) : preview.kind === 'json' ? (
-            <div className="mt-3 max-h-56 overflow-y-auto rounded-md border border-emerald-200 bg-white p-3 dark:border-emerald-800 dark:bg-emerald-950/40">
+            <div className={responseContainerClassName}>
               {preview.items.length > 0 ? (
                 <dl className="space-y-2">
                   {preview.items.map((item) => (
@@ -58,7 +63,7 @@ export function FinalResponseCard({
               )}
             </div>
           ) : (
-            <div className="mt-3 max-h-56 overflow-y-auto rounded-md border border-emerald-200 bg-white p-3 dark:border-emerald-800 dark:bg-emerald-950/40">
+            <div className={responseContainerClassName}>
               <p className="whitespace-pre-wrap break-words text-sm leading-6 text-gray-900 dark:text-gray-100">
                 {preview.text}
               </p>

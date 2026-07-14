@@ -61,9 +61,12 @@ vi.mock('../store/useWorkflowStore', () => {
     failTestExecution: vi.fn(),
     resetTestExecution: vi.fn(),
   };
-  const useWorkflowStore = Object.assign(vi.fn(() => state), {
-    getState: vi.fn(() => state),
-  });
+  const useWorkflowStore = Object.assign(
+    vi.fn(() => state),
+    {
+      getState: vi.fn(() => state),
+    },
+  );
   return { useWorkflowStore };
 });
 
@@ -110,6 +113,24 @@ describe('TestSidebar final response card', () => {
     expect(
       screen.getByText('개발팀 커밋 컨벤션은 feat: 설명 형식입니다.'),
     ).toBeVisible();
+  });
+
+  it('전체 펼침 옵션에서는 응답 영역에 내부 스크롤을 만들지 않는다', () => {
+    render(
+      <FinalResponseCard
+        expandContent
+        preview={{
+          kind: 'text',
+          text: '길이가 긴 최종 응답 전체 내용',
+          isEmpty: false,
+          sourceLabel: '답변',
+        }}
+      />,
+    );
+
+    const responseContainer =
+      screen.getByText('길이가 긴 최종 응답 전체 내용').parentElement;
+    expect(responseContainer).not.toHaveClass('max-h-56', 'overflow-y-auto');
   });
 
   it('JSON 응답은 raw dump 대신 필드 preview로 표시한다', () => {
