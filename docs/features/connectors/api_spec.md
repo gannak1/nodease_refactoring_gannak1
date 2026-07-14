@@ -1,7 +1,7 @@
 # Connectors API Spec
 
 Status: Draft
-Verified Against: feature/mba-120 @ 7a7032e
+Verified Against: feature/mba-246 @ 3ee48d4280daa163e86c7e1a2bd28cef81d6b75a
 
 기본 경로: `/api/v1`
 
@@ -9,7 +9,7 @@ Verified Against: feature/mba-120 @ 7a7032e
 
 | 메서드 | 경로 | 설명 | 인증 |
 | --- | --- | --- | --- |
-| POST | `/connectors/test` | DB/SSH 연결 정보를 저장하지 않고 실제 DB 접속 가능 여부를 테스트한다. | 현재 구현상 공개 |
+| POST | `/connectors/test` | Strict public PostgreSQL 연결 정보를 저장하지 않고 실제 접속 가능 여부를 테스트한다. | `auth_token`, active `X-Organization-Id` |
 | POST | `/connectors` | DB/SSH 연결을 테스트한 뒤 secret을 암호화해 `connections`에 저장한다. | `auth_token` 쿠키 필요 |
 | GET | `/connectors/{connection_id}` | 저장된 connection 상세를 조회한다. Secret은 반환하지 않는다. | `auth_token` 쿠키 및 owner |
 | GET | `/connectors/{connection_id}/schema` | 저장된 connection secret을 서버에서 복호화해 DB schema를 조회한다. | `auth_token` 쿠키 및 owner |
@@ -18,18 +18,18 @@ Verified Against: feature/mba-120 @ 7a7032e
 
 ### `POST /connectors/test`
 
-요청 본문: `DBConnectionTestRequest`
+요청 본문: `ConnectorTestRequest`. 인증과 organization scope 확인 뒤 actual body 32 KiB와 전체 receive 5초를 적용한다.
 
 | 필드 | 타입 | 필수 | 비고 |
 | --- | --- | --- | --- |
 | `connection_name` | `string` | 예 | 연결 식별용 별칭이다. 저장되지 않는다. |
-| `type` | `string` | 예 | 현재 Gateway `SupportedDBType` 기준 `postgres`만 지원한다. |
+| `type` | literal `"postgres"` | 예 | 다른 타입은 `422 validation.failed`다. |
 | `host` | `string` | 예 | DB host이다. |
-| `port` | `integer` | 아니오 | 기본값은 `5432`이다. |
+| `port` | literal `5432` | 아니오 | 기본값은 `5432`이며 다른 port는 strict validation 실패다. |
 | `database` | `string` | 예 | DB 이름이다. |
 | `username` | `string` | 예 | DB 사용자명이다. |
 | `password` | `string` | 예 | DB 비밀번호이다. 테스트 요청에서는 저장하지 않는다. |
-| `ssh` | `SSHConfig \| null` | 아니오 | SSH tunnel 설정이다. `enabled=false`이면 Gateway에서 비활성화한다. |
+| `ssh` | `SSHConfig \| null` | 아니오 | Legacy request shape를 파싱하지만 `enabled=true`는 network 전에 safe 실패다. |
 
 `SSHConfig`:
 
@@ -48,9 +48,47 @@ Verified Against: feature/mba-120 @ 7a7032e
 | 필드 | 타입 | 비고 |
 | --- | --- | --- |
 | `success` | `boolean` | 연결 성공 여부이다. |
-| `message` | `string` | 사용자 표시용 메시지이다. 현재 구현은 일부 raw exception 문자열을 포함할 수 있다. |
+| `message` | `string` | Server-owned static 사용자 표시용 메시지다. Raw target/driver detail을 포함하지 않는다. |
+| `reason_code` | `string \| null` | 실패 시 allowlist canonical reason code다. |
 
-지원하지 않는 DB 타입도 현재 구현에서는 HTTP 오류가 아니라 `200 OK`, `success=false`로 반환한다.
+Expected target/SSH/connection 실패는 `200 OK`, `success=false`로 반환한다. Schema, 인증, organization, ingress와 admission 오류는 아래 HTTP 오류 계약을 따른다.
+
+처리 순서:
+
+1. 로그인과 active organization membership을 검증한다.
+2. Actual body, media type, UTF-8 JSON object와 strict field를 검증한다.
+3. Redis에서 user/organization/network rate와 global/organization/user concurrency lease를 원자적으로 획득한다.
+4. Host와 전체 DNS 결과가 public인지 검사하고 validated IP 하나로 연결을 고정한다.
+5. TLS `verify-full`, connect 5초, statement 3초, API 10초 안에서 read-only `SELECT 1`을 한 번 수행한다.
+6. Actual work 중 owner-safe heartbeat로 lease를 연장하고, safe result 반환 뒤에도 blocking work가 남아 있으면 completion까지 유지한 다음 owner lease를 해제한다.
+
+Initial admission limits:
+
+| Scope | Rate / concurrency |
+| --- | --- |
+| User | aligned 60초당 5 / active 1 |
+| Organization | aligned 60초당 30 / active 4 |
+| Request network | aligned 60초당 20 |
+| Global | active 16 |
+
+Security environment settings:
+
+| 환경변수 | 기본값 | 허용 범위/관계 |
+| --- | --- | --- |
+| `CONNECTOR_TEST_RATE_WINDOW_SECONDS` | `60` | `1..300` |
+| `CONNECTOR_TEST_USER_RATE_LIMIT` | `5` | `1..100`, organization rate 이하 |
+| `CONNECTOR_TEST_ORGANIZATION_RATE_LIMIT` | `30` | `1..1000` |
+| `CONNECTOR_TEST_NETWORK_RATE_LIMIT` | `20` | `1..1000` |
+| `CONNECTOR_TEST_USER_CONCURRENCY_LIMIT` | `1` | `1..128`, organization/global 이하 |
+| `CONNECTOR_TEST_ORGANIZATION_CONCURRENCY_LIMIT` | `4` | `1..128`, global 이하 |
+| `CONNECTOR_TEST_GLOBAL_CONCURRENCY_LIMIT` | `16` | `1..128` |
+| `CONNECTOR_TEST_CONNECT_TIMEOUT_SECONDS` | `5` | `1..10`, API timeout 미만 |
+| `CONNECTOR_TEST_STATEMENT_TIMEOUT_SECONDS` | `3` | `1..10`, API timeout 미만 |
+| `CONNECTOR_TEST_RESPONSE_TIMEOUT_SECONDS` | `10` | finite `0 < value <= 30`, connect/statement보다 크고 lease보다 작음 |
+| `CONNECTOR_TEST_LEASE_TTL_SECONDS` | `30` | `1..120`, API timeout보다 큼 |
+| `CONNECTOR_TEST_ADMISSION_HMAC_KEY` | local-only fallback | Production에서 별도 32 byte 이상 key 필수 |
+
+Invalid security setting은 Gateway startup을 실패시킨다. Helm 배포는 `secrets.connectorTestAdmissionHmacKey`로 별도 key를 제공한다.
 
 ### `POST /connectors`
 
@@ -173,28 +211,41 @@ HTTP 예외는 Gateway 공통 `detail` 응답을 사용하고, 검증 오류는 
 
 | 상태 | 엔드포인트 | 상세 / 본문 | 조건 |
 | --- | --- | --- | --- |
-| 200 | `POST /connectors/test` | `{ "success": false, "message": "지원하지 않는 DB 타입입니다: ..." }` | 지원하지 않는 DB 타입이다. |
-| 200 | `POST /connectors/test` | `{ "success": false, "message": "..." }` | adapter `check`가 false를 반환하거나 예외를 던진다. |
+| 200 | `POST /connectors/test` | `success=false`, `connector.ssh_probe_not_supported` | SSH-enabled test다. Network는 열지 않는다. |
+| 200 | `POST /connectors/test` | `success=false`, `connector.target_not_allowed` | Public/port/host target policy를 통과하지 못한다. |
+| 200 | `POST /connectors/test` | `success=false`, `connector.connection_timeout` | API probe deadline을 초과한다. |
+| 200 | `POST /connectors/test` | `success=false`, `connector.connection_failed` | Driver 연결/검증이 실패한다. |
+| 400 | `POST /connectors/test` | `organization.required` | `X-Organization-Id`가 없다. |
+| 400 | `POST /connectors/test` | `connector.test_payload_invalid` | Invalid length/UTF-8/JSON/root/disconnect다. |
+| 401 | `POST /connectors/test` | Auth 공통 envelope | 로그인 정보가 없거나 유효하지 않다. |
+| 404 | `POST /connectors/test` | `resource.not_found` | Active organization scope 밖이다. |
+| 408 | `POST /connectors/test` | `connector.test_payload_timeout` | Body receive 5초를 초과한다. |
+| 413 | `POST /connectors/test` | `connector.test_payload_too_large` | Declared 또는 actual body가 32 KiB를 초과한다. |
+| 415 | `POST /connectors/test` | `connector.test_media_type_not_supported` | 단일 JSON/identity media 계약을 위반한다. |
+| 422 | `POST /connectors/test` | `validation.failed` | Organization UUID 또는 strict request field가 유효하지 않다. |
+| 429 | `POST /connectors/test` | `connector.test_rate_limited` | Rate를 초과한다. `Retry-After`를 포함한다. |
+| 429 | `POST /connectors/test` | `connector.test_busy` | Distributed/local concurrency가 가득 찼다. `Retry-After`를 포함한다. |
+| 503 | `POST /connectors/test` | `connector.admission_unavailable` | Redis 또는 trusted transport identity를 사용할 수 없다. |
 | 400 | `POST /connectors` | `지원하지 않는 DB타입입니다.` | 지원하지 않는 DB 타입이다. |
-| 400 | `POST /connectors` | `DB 연결 테스트 중 오류 발생: ...` | 저장 전 접속 테스트가 실패하거나 timeout/adapter 예외가 발생한다. |
-| 500 | `POST /connectors` | `암호화 처리 중 오류 발생: ...` | secret 암호화에 실패한다. |
+| 400 | `POST /connectors` | Safe timeout/connection message 또는 `connector.connection_failed` | 저장 전 접속 테스트가 실패하거나 timeout/adapter 예외가 발생한다. |
+| 500 | `POST /connectors` | `connection_config.encrypt_failed` | secret 암호화에 실패한다. |
 | 404 | `GET /connectors/{connection_id}`, `GET /connectors/{connection_id}/schema` | `Connection not found` | connection id를 찾을 수 없다. |
 | 403 | `GET /connectors/{connection_id}`, `GET /connectors/{connection_id}/schema` | `Not authorized` | connection owner가 아니다. |
-| 500 | `GET /connectors/{connection_id}/schema` | `Decryption failed: ...` | 저장된 secret 복호화에 실패한다. |
+| 500 | `GET /connectors/{connection_id}/schema` | `connection_config.decrypt_failed` | 저장된 secret 복호화에 실패한다. |
 | 400 | `GET /connectors/{connection_id}/schema` | `Unsupported DB type` | 저장된 connection type에 맞는 adapter가 없다. |
-| 400 | `GET /connectors/{connection_id}/schema` | `Failed to fetch schema: ...` | schema introspection이 실패한다. |
+| 400 | `GET /connectors/{connection_id}/schema` | `connector.schema_fetch_failed` | schema introspection이 실패한다. |
 | 422 | `POST /connectors/test`, `POST /connectors` | 검증 오류 envelope | 요청 본문이 Pydantic 검증에 실패한다. |
 
-`POST /connectors`, 상세 조회, schema 조회의 인증 실패 응답은 Auth 공통 dependency의 `auth_token` 쿠키 검증 결과를 따른다.
+Connector test의 429 `Retry-After`는 Redis state에서 계산한 1..60초 값이다. `POST /connectors`, 상세 조회, schema 조회의 인증 실패 응답은 Auth 공통 dependency의 `auth_token` 쿠키 검증 결과를 따른다.
 
 ## Permissions
 
-- `POST /connectors/test`는 현재 구현상 `get_current_user`를 요구하지 않는다.
+- `POST /connectors/test`는 `get_current_user`와 active `X-Organization-Id` membership을 요구한다. Active member/manager 모두 test할 수 있다.
 - `POST /connectors`는 `auth_token` 쿠키로 현재 사용자를 식별해야 하며, 생성된 row의 `user_id`는 현재 사용자 ID이다.
 - `GET /connectors/{connection_id}`와 `GET /connectors/{connection_id}/schema`는 current user가 `connections.user_id`와 같을 때만 허용한다.
 - 현재 connectors API는 organization/team resource permission table을 사용하지 않는다.
 - 현재 `connections`에는 `organization_id`가 없으므로 workflow/KB 권한이 connection 사용 권한을 자동으로 대체하지 않는다.
-- Connection 생성은 `connection.create` audit action으로 기록된다. 연결 테스트, 상세 조회, schema 조회는 현재 endpoint-level audit action을 기록하지 않는다.
+- Connection 생성은 `connection.create`, admitted 연결 테스트 결과는 `connection.test` audit action으로 기록된다. Test audit에는 organization/actor/result/reason/coarse duration만 허용한다.
 - Knowledge source connector와 KB retrieval 권한은 Knowledge feature 책임이다.
 
 ## Target Knowledge Connector API Boundary

@@ -1,7 +1,7 @@
 # Connectors Requirements
 
 Status: Draft
-Verified Against: feature/mba-120 @ 7a7032e
+Verified Against: feature/mba-246 @ 3ee48d4280daa163e86c7e1a2bd28cef81d6b75a
 Related Features: workflow, organization, audit-tracing, knowledge, conversation-memory
 
 ## Purpose
@@ -58,15 +58,33 @@ Connectors 기능은 외부 데이터 소스에 접속하기 위한 연결 정�
 - CONN-REQ-034: PostgreSQL schema introspection은 table, column, foreign key 개수 상한을 적용하고, 잘린 결과는 safe truncation marker로 표시해야 한다.
 - CONN-REQ-035: DB row fetch 경로는 SELECT-only guard, dangerous function/keyword blocklist, read-only transaction, statement timeout, batch size cap, total row cap을 적용해야 한다.
 
+### Secure Connection Test Requirements
+
+- CONN-REQ-036: `POST /connectors/test`는 로그인 사용자와 `X-Organization-Id`의 active organization membership을 요구해야 한다. Invited/suspended/removed 또는 scope 밖 organization은 network와 admission 전에 fail-closed해야 한다.
+- CONN-REQ-037: Active organization member/manager는 connection test capability를 갖지만, 이 capability는 connection create/use/manage 권한을 부여하지 않아야 한다.
+- CONN-REQ-038: Gateway는 인증과 organization scope 확인 뒤 connector test actual JSON body를 최대 32 KiB, 전체 5초로 읽어야 한다. Declared length는 early hint이고 actual streamed bytes가 최종 기준이어야 한다.
+- CONN-REQ-039: Connector test ingress는 단일 `application/json`, identity encoding, UTF-8 object root만 허용하고 duplicate/invalid length, BOM, invalid JSON, non-finite number, disconnect를 safe reason code로 거부해야 한다.
+- CONN-REQ-040: Connector test는 Redis atomic admission에서 aligned 60초 window당 user 5, organization 30, network 20 rate와 user 1, organization 4, global 16 concurrency를 적용해야 한다. 환경 설정은 문서화된 positive/finite 상한과 scope/timeout 관계를 벗어나면 Gateway startup을 실패시켜야 한다.
+- CONN-REQ-041: Admission identity는 scope-separated HMAC digest만 Redis에 저장해야 하며 raw organization/user/network identity, connection config와 secret을 key/member에 저장하지 않아야 한다. Owner-safe heartbeat는 실제 probe 실행 중 lease를 연장하고 process crash 때만 TTL recovery가 일어나야 한다.
+- CONN-REQ-042: Redis/admission 장애, transport peer 부재와 local executor capacity 부족은 probe 전에 fail-closed해야 한다. Process-local unlimited fallback은 허용하지 않는다.
+- CONN-REQ-043: Strict test는 `postgres`, public-only target, port `5432`만 허용하고 모든 DNS 결과를 검증한 뒤 한 validated IP로 실제 연결을 고정해야 한다.
+- CONN-REQ-044: Strict test는 TLS `verify-full`, connect 5초, statement 3초, API 10초, distributed lease 30초, 요청당 한 번의 connection attempt, read-only `SELECT 1`과 one-row scalar result를 적용해야 한다.
+- CONN-REQ-045: `ssh.enabled=true` connector test는 approved host-key/private-network 정책 전까지 network 전에 `connector.ssh_probe_not_supported`로 거부해야 한다. 이 제한은 기존 create/schema compatibility를 자동 제거하지 않는다.
+- CONN-REQ-046: Expected target/connection 실패는 static message와 allowlist reason code만 반환해야 하며 host/IP/port/database/username/password/private key/DSN/driver exception을 response, audit, application/client/edge log에 노출하지 않아야 한다.
+- CONN-REQ-047: Admission 뒤 결과는 `connection.test` audit으로 organization, actor, result, canonical reason과 coarse duration만 기록해야 한다. Audit publish 실패는 probe를 자동 재시도하거나 성공 결과를 실패로 바꾸지 않아야 한다.
+- CONN-REQ-048: Repository edge는 connector-test exact route에 32 KiB, 5초 idle receive, buffering off와 request-target log 억제를 적용해야 한다. Gateway actual-byte/total-deadline guard는 유지해야 한다.
+
 ## Policies And Edge Cases
 
-- 현재 `POST /connectors/test`는 Gateway 코드상 `get_current_user`를 요구하지 않는다.
+- `POST /connectors/test`는 active organization context를 요구한다. 이 endpoint의 test capability는 현재 user-owned connection의 create/use/manage 권한과 분리된다.
 - 현재 `POST /connectors`는 `get_current_user`를 요구하지만 resource permission table을 사용하지 않는다.
 - 현재 `GET /connectors/{connection_id}`와 `GET /connectors/{connection_id}/schema`는 없는 connection에 `404`, owner mismatch에 `403`을 반환한다.
 - create/test/schema 실패 메시지는 raw host, database, secret, driver detail을 응답에 포함하지 않아야 한다.
 - 현재 schema 조회는 SQLAlchemy inspector를 사용해 schema metadata를 읽는다.
 - schema 조회 cap은 UX용 metadata preview 범위를 제한하기 위한 것이며, connector가 전체 DB inventory를 durable storage, audit, trace, log에 저장해도 된다는 의미가 아니다.
 - SSH tunnel compatibility는 기존 workflow DB connector 기능을 보존하기 위한 경계다. Knowledge source ingestion의 기본 경계와 다르며, SSH tunnel 허용은 remote shell command 실행 허용으로 해석하지 않는다.
+- SSH tunnel compatibility는 create/schema/runtime의 기존 계약에 한정된다. Strict `/connectors/test`는 ADR-0043에 따라 SSH를 열지 않는다.
+- Production Gateway는 32 byte 이상의 별도 connector-test admission HMAC key를 요구한다. Helm에서는 `secrets.connectorTestAdmissionHmacKey`로 provisioning하고 auth/session key와 재사용하지 않는다.
 - 현재 `DbProcessor`는 Knowledge DB source ingestion에서 저장된 `connection_id`를 조회하고 선택된 테이블/컬럼 기반 SQL을 생성한다. 이 ingestion lifecycle은 Knowledge feature 책임이다.
 - `connections`에는 `created_at/updated_at`과 `organization_id`가 없다.
 

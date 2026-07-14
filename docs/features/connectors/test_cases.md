@@ -1,7 +1,7 @@
 # Connectors Test Cases
 
 Status: Draft
-Verified Against: dev @ 7a7032e8da3f721a00d93c6fbff02122397456f3
+Verified Against: feature/mba-246 @ 3ee48d4280daa163e86c7e1a2bd28cef81d6b75a
 
 ## Minimum Failure Rule
 
@@ -47,7 +47,7 @@ Verified Against: dev @ 7a7032e8da3f721a00d93c6fbff02122397456f3
 | ID | 검증 조건 | 최소 실패 조건 | 기대 결과 |
 | --- | --- | --- | --- |
 | CONN-TC-A001 | `POST /connectors/test`는 필수 필드를 요구해야 한다. | `host`, `database`, `username`, `password`, `connection_name`, `type` 중 하나가 없다. | `422` 검증 오류 envelope. |
-| CONN-TC-A002 | `POST /connectors/test`는 지원하지 않는 타입을 저장 없이 거부해야 한다. | `type="mysql"`이다. | `200`, `success=false`, 저장 row 없음. |
+| CONN-TC-A002 | `POST /connectors/test`는 지원하지 않는 타입을 저장 없이 거부해야 한다. | `type="mysql"`이다. | `422 validation.failed`, 저장 row 없음. |
 | CONN-TC-A003 | `POST /connectors/test` 성공은 저장 row를 만들지 않아야 한다. | adapter check가 true인데 `connections` row count가 증가한다. | 테스트 실패. |
 | CONN-TC-A004 | `POST /connectors/test` 실패는 `success=false`를 반환해야 한다. | adapter check가 false이거나 예외를 던진다. | `success=false`. |
 | CONN-TC-A005 | `POST /connectors`는 인증을 요구해야 한다. | `auth_token` 쿠키 없이 요청한다. | Auth dependency의 401 응답. |
@@ -68,6 +68,14 @@ Verified Against: dev @ 7a7032e8da3f721a00d93c6fbff02122397456f3
 | CONN-TC-A020 | `POST /connectors/test` 실패는 raw host/database/secret/driver detail을 노출하지 않아야 한다. | adapter가 secret 포함 예외를 던진다. | `success=false`, safe message와 safe `reason_code`. |
 | CONN-TC-A021 | `POST /connectors` 저장 전 connection check 실패는 raw host/database/secret/driver detail을 노출하지 않아야 한다. | adapter가 secret 포함 예외를 던진다. | `400`, safe `reason_code`, 저장 row 없음. |
 | CONN-TC-A022 | `GET /connectors/{id}/schema` fetch 실패는 raw host/database/secret/driver detail을 노출하지 않아야 한다. | adapter가 secret 포함 예외를 던진다. | `400`, safe `reason_code`. |
+| CONN-TC-A023 | Connector test는 인증과 active organization을 network 전에 요구해야 한다. | auth 없음, header 없음/invalid, scope 밖, invited/suspended/removed membership 중 하나다. | `401/400/422/404`, admission/DNS/probe 0회. |
+| CONN-TC-A024 | Connector test actual body는 32 KiB와 total 5초로 제한되어야 한다. | Exact/over, missing/duplicate/invalid/understated length, chunked crossing, slow stream을 보낸다. | Exact는 parse, over는 413, invalid는 400, slow는 408; admission/probe 0회. |
+| CONN-TC-A025 | Connector test media/JSON은 strict해야 한다. | Wrong/duplicate content type, compressed body, BOM, invalid UTF-8/JSON, NaN, non-object root다. | `400/415`, raw body 비노출. |
+| CONN-TC-A026 | SSH-enabled test는 network 전에 거부되어야 한다. | Valid SSH credential shape와 `enabled=true`다. | `200`, `connector.ssh_probe_not_supported`, DNS/probe 0회. |
+| CONN-TC-A027 | Public PostgreSQL strict target만 허용해야 한다. | Non-5432, private/loopback/link-local/metadata/CGNAT/reserved/mapped/mixed DNS target이다. | `422` 또는 `connector.target_not_allowed`, DB connect 0회. |
+| CONN-TC-A028 | Connector test timeout 뒤 실제 blocking work가 끝날 때까지 lease를 유지해야 한다. | API 10초를 넘긴 future가 background에서 계속 실행되거나 실행 중 heartbeat가 필요하다. | Safe timeout 반환, owner-safe renewal 지속, completion 전 lease release 0회, completion 후 정확히 1회. |
+| CONN-TC-A029 | Admission 장애와 capacity 부족은 fail-closed해야 한다. | Redis timeout/script error, transport peer 없음, distributed/local concurrency full이다. | `429/503`, DNS/DB connect 0회, process-local unlimited fallback 없음. |
+| CONN-TC-A030 | Connector test audit는 bounded metadata만 가져야 한다. | Success/target denial/driver failure/timeout이다. | `connection.test`, organization/actor/result/reason/duration만 기록하고 target/credential/network 원문 없음. |
 
 ## Component And Hook Tests
 
@@ -80,6 +88,7 @@ Verified Against: dev @ 7a7032e8da3f721a00d93c6fbff02122397456f3
 | CONN-TC-C005 | `connectorApi`는 클라이언트 `authType`을 Gateway `auth_type`으로 매핑해야 한다. | `authType="key"`인데 payload `auth_type`이 `"password"`이다. | 테스트 실패. |
 | CONN-TC-C006 | `DBConnectionForm` 입력 변경은 부모 `onChange` 호출과 test status 초기화를 해야 한다. | 한 필드 변경 후 `onChange`가 호출되지 않거나 `testStatus`가 `idle`이 아니다. | 테스트 실패. |
 | CONN-TC-C007 | `DBConnectionForm` 연결 테스트는 pending/success/error 상태를 표시해야 한다. | 테스트 pending인데 버튼이 활성 상태이거나, 성공/실패 결과 메시지가 표시되지 않는다. | 테스트 실패. |
+| CONN-TC-C008 | `DBConnectionForm`은 `Retry-After` cooldown을 bounded 적용해야 한다. | `429` 뒤 즉시 중복 요청하거나 비정상 header가 무제한 disable을 만든다. | `1..60`초만 재시도 비활성화하고 raw error/header를 표시하지 않는다. |
 | CONN-TC-C008 | `DBSchemaSelector`는 connection id로 schema를 조회해야 한다. | `connectionId`가 있는데 `connectorApi.getSchema`가 호출되지 않는다. | 테스트 실패. |
 | CONN-TC-C009 | `DBSchemaSelector`는 schema 조회 실패를 toast로 표시해야 한다. | `getSchema`가 reject된다. | `테이블 정보를 불러오는데 실패했습니다.` 표시. |
 | CONN-TC-C010 | `DBSchemaSelector`는 최대 2개 테이블 제한을 적용해야 한다. | 2개 테이블이 선택된 상태에서 3번째 테이블을 선택한다. | 선택 차단, 제한 toast. |
@@ -89,7 +98,7 @@ Verified Against: dev @ 7a7032e8da3f721a00d93c6fbff02122397456f3
 
 | ID | 검증 조건 | 최소 실패 조건 | 기대 결과 |
 | --- | --- | --- | --- |
-| CONN-TC-P001 | `POST /connectors/test` 현재 동작은 인증 없는 호출 가능 여부를 명시적으로 고정해야 한다. | 문서/테스트 갱신 없이 인증 요구 여부가 바뀐다. | 문서/테스트 업데이트 필요. |
+| CONN-TC-P001 | `POST /connectors/test`는 active organization member/manager만 호출해야 한다. | 미인증 또는 active scope 밖 사용자가 probe를 시작한다. | Network 전 차단. |
 | CONN-TC-P002 | 저장된 connection 상세/schema는 owner mismatch를 거부해야 한다. | 다른 사용자의 connection id로 상세 또는 schema를 요청한다. | `403`, `Not authorized`. |
 | CONN-TC-P003 | 현재 user-owned `connections`는 workflow/KB 권한만으로 자동 공유되지 않아야 한다. | workflow/KB 접근 권한만 있는 사용자가 다른 사용자의 connection을 사용한다. | 테스트 실패 또는 403/404. |
 
@@ -97,8 +106,11 @@ Verified Against: dev @ 7a7032e8da3f721a00d93c6fbff02122397456f3
 
 | ID | 검증 조건 | 최소 실패 조건 | 기대 결과 |
 | --- | --- | --- | --- |
-| CONN-TC-X001 | Current gap: `connectorApi`는 connector create/test 실패 시 raw Axios error 객체를 `console.error`에 전달한다. | Axios error의 request config/data에 DB password, SSH password, private key가 포함된다. | 현재 구현은 client console log secret 비노출을 보장하지 않으므로 production 전 sanitize 필요. |
+| CONN-TC-X001 | `connectorApi`는 connector create/test 실패 시 raw Axios error 객체를 console에 전달하지 않아야 한다. | Axios error의 request config/data에 DB password, SSH password, private key가 포함된다. | Operation과 status만 safe warning으로 남기고 sentinel은 UI/console에 없음. |
 | CONN-TC-X002 | Secret 원문은 문서, fixture, audit metadata에 남지 않아야 한다. | DB password, SSH password, private key 원문이 문서, 테스트 fixture, audit metadata 중 하나에서 관찰된다. | 테스트 실패. |
+| CONN-TC-X003 | Redis admission은 multi-replica 경쟁에서도 rate/concurrency 상한을 넘지 않아야 한다. | 마지막 slot을 병렬 acquire하거나 wrong owner release, long-running heartbeat, stale lease, clock skew를 만든다. | Redis time/atomic script 기준 정확한 winner, owner-safe renew/release와 crash-only TTL recovery. |
+| CONN-TC-X004 | Admission key/member는 opaque해야 한다. | Redis key/hash/zset에 raw organization/user/network ID, host/database/username/password가 관찰된다. | HMAC identity와 random owner token만 존재. |
+| CONN-TC-X005 | Strict probe는 validated IP 한 곳에 TLS `verify-full`로 한 번만 연결해야 한다. | Multiple public DNS, rebinding, first-attempt failure, plaintext/downgrade를 유도한다. | Pinned one-attempt, no fallback/retry, hostname certificate 검증. |
 
 ## Knowledge Source Connector Target Tests
 

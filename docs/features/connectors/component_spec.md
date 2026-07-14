@@ -1,7 +1,7 @@
 # Connectors Component Spec
 
 Status: Draft
-Verified Against: feature/mba-120 @ 7a7032e
+Verified Against: feature/mba-246 @ 3ee48d4280daa163e86c7e1a2bd28cef81d6b75a
 
 ## Screens
 
@@ -33,12 +33,13 @@ File/page artifact connector는 egress guard 이후에도 artifact content를 tr
 - 경계:
   - React 상태를 소유하지 않는다.
   - Secret redaction을 직접 수행하지 않는다. Secret 비노출은 Gateway 응답 계약에 의존한다.
-  - API 오류를 일부 `{ success: false, message }`로 변환하지만, 모든 호출의 오류를 공통 envelope로 정규화하지는 않는다.
+  - API 오류는 status와 allowlist reason code만 `{ success: false, message, status?, reasonCode? }`로 정규화한다. Raw Axios error, request config와 backend diagnostic은 console/UI에 전달하지 않는다.
 
 ### `DBConnectionForm`
 
 - 출처: `apps/client/app/features/knowledge/components/create-knowledge-modal/DBConnectionForm.tsx`
 - 책임: PostgreSQL DB 연결 정보와 선택적 SSH tunnel 정보를 입력하고 연결 테스트를 실행한다.
+- Strict test는 public PostgreSQL port `5432`만 지원한다. SSH 입력은 create/schema compatibility를 위해 유지하지만 `ssh.enabled=true` test는 safe 미지원 결과를 표시한다.
 - 소비자:
   - `CreateKnowledgeModal`
   - Knowledge document DB source 설정 화면의 connection edit flow
@@ -98,7 +99,8 @@ File/page artifact connector는 egress guard 이후에도 artifact content를 tr
 
 ### `CreateKnowledgeModal` DB Flow
 
-- 연결 테스트는 `connectorApi.testConnection`의 `success` 값에 따라 success/error toast와 boolean 결과를 반환한다.
+- 연결 테스트는 `connectorApi.testConnection`의 safe result에 따라 success/error toast를 표시하고 `success`, optional `retryAfter` 결과를 폼에 반환한다.
+- `401/404`는 인증/organization context 오류, `429`는 잠시 후 재시도, `503`은 test service 일시 불가의 고정 메시지로 표시한다. Backend raw message는 표시하지 않는다.
 - DB source 제출 전 `host`, `port`, `database`, `username`, `password`를 검증하고 누락 시 alert로 중단한다.
 - `connectorApi.createConnector`가 success와 id를 반환하면 Knowledge source payload에 connection id를 포함한다.
 - connection 생성이 실패하거나 예외가 발생하면 toast를 표시하고 Knowledge source 제출을 중단한다.
@@ -118,9 +120,10 @@ File/page artifact connector는 egress guard 이후에도 artifact content를 tr
 2. 사용자가 `연결 테스트`를 클릭한다.
 3. `DBConnectionForm`은 부모 `onTestConnection(config)`를 호출한다.
 4. `CreateKnowledgeModal`은 `connectorApi.testConnection(config)`를 호출한다.
-5. `connectorApi`는 클라이언트 `DBConfig`를 Gateway `DBConnectionTestRequest`로 매핑해 `POST /connectors/test`를 호출한다.
+5. `connectorApi`는 클라이언트 `DBConfig`를 Gateway strict `ConnectorTestRequest`로 매핑해 `POST /connectors/test`를 호출한다.
 6. 성공하면 success toast와 `연결 성공!` 상태가 표시된다.
 7. 실패하면 error toast와 `연결 실패` 상태가 표시된다.
+8. Pending 중 중복 클릭을 막고, `429 Retry-After`가 있으면 bounded cooldown 동안 재시도를 비활성화한다.
 
 ### Connection Create During DB Source Submit
 
