@@ -2,7 +2,7 @@
 
 Status: Draft
 Related Features: workflow, llm-credentials, audit-tracing, knowledge, chatbot-deployment, conversation-memory
-Verified Against: `feature/mba-219 @ 5b1cf366`
+Verified Against: `feature/mba-254 @ 95e821ef`
 
 ## Purpose
 
@@ -106,7 +106,7 @@ Webhook capture helper는 public webhook 실행 표면이 아니라 로그인한
 - DEP-REQ-080 (MBA-219): Mail managed validator는 Worker Mail schema와 같은 공통 `title`, folder allowlist, `max_results` 범위와 integer 여부, boolean, filter/date/reference, selector와 processing mode shape를 검사해야 한다. Shared validator가 통과한 Mail data는 Worker schema에서도 통과해야 한다.
 - DEP-REQ-081 (MBA-219): Preview endpoint는 permission-denied audit을 만들지 않아야 한다. Active/inactive create, activation과 authenticated execution enforcement가 same-organization active Mail credential의 `use` 거부를 확인하면 외부 응답은 unavailable로 숨기면서 요청당 resource별 정확히 한 번 `permission.denied`를 기록해야 한다.
 - DEP-REQ-082 (MBA-219): Mail credential preflight는 organization/user/membership 상태를 credential마다 다시 조회하지 않아야 한다. Direct/team grant를 active same-organization credential ID 집합으로 조회하고 기존 scalar effective auth-state와 같은 결과를 반환해야 한다. Scalar와 bulk 판정은 revoked credential의 잔존 grant를 모두 `none`으로 처리해야 한다.
-- DEP-REQ-083: Deployment 생성과 활성/비활성 toggle은 Agent Builder App primary 전환과 같은 App lifecycle row lock을 사용해야 한다. Lock 획득 뒤 identity map cache를 우회해 App primary와 deployment state를 canonical DB 값으로 다시 읽고 active snapshot/pointer를 갱신하며, read-only run/run-info 요청에는 exclusive lifecycle lock을 적용하지 않는다. 이 직렬화는 동시 write command의 순서를 보장하지만 immutable source Workflow ID가 없는 과거 inactive Deployment의 provenance를 새로 만들어내지는 않는다. 따라서 App에 Workflow row가 둘 이상이면 provenance 없는 inactive Deployment activation을 `409 deployment.reactivation_provenance_unavailable`로 차단하고 현재 primary에서 새 Deployment 생성을 요구한다.
+- DEP-REQ-083: Deployment 생성과 활성/비활성 toggle은 Agent Builder App primary 전환과 같은 App lifecycle row lock을 사용해야 한다. Lock 획득 뒤 identity map cache를 우회해 App primary와 deployment state를 canonical DB 값으로 다시 읽고 active snapshot/pointer를 갱신하며, read-only run/run-info 요청에는 exclusive lifecycle lock을 적용하지 않는다. 명시적 client `graph_snapshot` 생성 요청은 Gateway가 잠금 전에 관찰한 primary Workflow ID에 binding하고, 잠금 대기 중 primary가 바뀌면 `409 deployment.graph_snapshot_stale`로 차단해야 한다. 이 직렬화는 동시 write command의 순서를 보장하지만 immutable source Workflow ID가 없는 과거 inactive Deployment의 provenance를 새로 만들어내지는 않는다. 따라서 App에 Workflow row가 둘 이상이면 provenance 없는 inactive Deployment activation을 `409 deployment.reactivation_provenance_unavailable`로 차단하고 현재 primary에서 새 Deployment 생성을 요구한다.
 
 ## Runtime Audience Matrix
 

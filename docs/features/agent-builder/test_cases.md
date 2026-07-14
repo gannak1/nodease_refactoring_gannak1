@@ -142,7 +142,7 @@ Status: Draft
 - 같은 workflow의 apply/save 성공 후 server graph reconcile로 `app_id`가 `null`에서 실제 값으로 채워져도 Agent Builder panel은 열린 상태와 기존 대화를 유지한다.
 - 새 workflow draft는 생성 시점 App primary `workflow_id`를 server-owned expected value로 저장한다. Apply/save 시 App row를 잠근 뒤 current primary와 비교하며 값이 다르거나 expected metadata가 없거나 손상되었으면 새 Workflow를 만들지 않고 safe stale/metadata block으로 닫는다.
 - 대상 App에 `active_deployment_id`가 있으면 새 workflow apply/save는 기존 배포를 자동 비활성화하지 않고 `APP_ACTIVE_DEPLOYMENT_CONFLICT`로 차단한다. App primary, 배포, 권한은 변경되지 않아야 한다.
-- Primary 전환이 App lifecycle lock을 먼저 획득한 상태에서 active Deployment 생성이 시작되면 배포 생성은 대기하고, 전환 commit 뒤 새 primary graph를 snapshot으로 사용해야 한다. Deployment 생성이 먼저 active pointer를 commit하면 apply/save는 최신 pointer를 보고 차단되어야 한다.
+- Primary 전환이 App lifecycle lock을 먼저 획득한 상태에서 active Deployment 생성이 시작되면 배포 생성은 대기한다. Snapshot을 생략한 요청은 전환 commit 뒤 새 primary graph를 사용하고, old primary를 관찰한 명시적 client snapshot 요청은 `409 deployment.graph_snapshot_stale`로 종료해야 한다. Deployment 생성이 먼저 active pointer를 commit하면 apply/save는 최신 pointer를 보고 차단되어야 한다.
 - App 객체가 같은 DB session identity map에 이전 primary 상태로 남아 있어도 lifecycle lock query는 `populate_existing` 또는 동등한 강제 갱신으로 commit된 최신 primary와 active deployment pointer를 반환해야 한다.
 - App에 둘 이상의 Workflow 이력이 있고 Deployment에 immutable source Workflow provenance가 없으면 inactive Deployment activation은 `409 deployment.reactivation_provenance_unavailable`로 차단되고, 현재 primary에서 생성한 새 Deployment만 활성화할 수 있어야 한다.
 - Deployment toggle도 같은 App lifecycle lock을 사용하고 lock 이후 deployment state를 다시 읽어야 한다. Read-only run/run-info 조회는 exclusive lifecycle lock을 사용하지 않아야 한다.
@@ -151,6 +151,8 @@ Status: Draft
 - 새 workflow apply/save 성공 시 기존 primary의 같은 organization user/team Workflow permission과 option/flag를 새 Workflow로 승계하고 적용 actor의 manager 권한을 보장한다. DB session의 workflow scope와 App의 primary `workflow_id`가 `saved_workflow_id`로 같은 transaction에서 갱신되며, 새 route에서 같은 server-issued session id와 redaction된 대화를 복구한다.
 - Direct Workflow 권한 PUT/DELETE가 old primary를 관찰한 뒤 전환에 밀리면 App lock 획득 후 `409 workflow.primary_changed`로 종료하고 old Workflow만 변경한 성공 응답을 반환하지 않아야 한다. 요청 시작부터 이미 non-primary였던 Workflow mutation은 기존 Workflow-scoped 계약을 유지한다.
 - Source Workflow direct permission revoke가 먼저 permission scope lock을 획득하면 apply/save는 revoke commit 이후 snapshot을 읽어 회수된 user/team grant를 새 Workflow에 복제하지 않아야 한다. Legacy Workflow permission API와 중앙 Access Management direct mutation은 같은 scope lock을 사용해야 한다.
+- User direct Workflow permission PUT/DELETE와 중앙 Access Management mutation은 access subject를 App보다 먼저 잠그고, App 이후 Workflow permission scope를 잠가야 한다. 서로 반대 순서로 subject/App을 기다리는 deadlock 경로가 없어야 한다.
+- Organization member 제거가 source permission scope에서 in-flight primary 전환을 기다리는 동안 target Workflow grant가 생성되면, subject lock은 permission FK 참조를 막아 deadlock을 만들지 않아야 한다. 제거 transaction은 scope 집합을 다시 조회해 target scope도 잠근 뒤 old/target grant를 모두 삭제해야 하며, 제거된 membership과 새 primary grant가 함께 남아서는 안 된다.
 - 권한 승계, apply/save audit 또는 commit이 실패하면 transaction을 rollback하고 기존 App primary와 권한을 유지한다.
 - Refresh 후 session 복구는 redaction된 사용자 message summary와 assistant response를 함께 복구하고, secret-like user input 원문을 다시 표시하지 않는다.
 - 최신 request가 `failed`, `unsupported`, `validation_failed`이고 session에 과거 ready draft가 남아 있어도 backend는 request ID가 다른 top-level `draft_preview`를 반환하지 않으며 client도 이를 도안 생성 미리보기로 복구하지 않는다. 최신 request와 draft의 `request_id`가 일치하면 정상적으로 preview를 복구한다.
