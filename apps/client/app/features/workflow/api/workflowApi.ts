@@ -34,6 +34,10 @@ import {
   CostOptimizerRecommendationVerificationResponse,
   CostOptimizerRecommendationVerifyRequest,
   ModelRoutingPolicyPatchRequest,
+  ModelRoutingCohortCreateRequest,
+  ModelRoutingCohortCreateResponse,
+  ModelRoutingCohortSuggestionRequest,
+  ModelRoutingCohortSuggestionResponse,
   ModelRoutingPolicyRefreshResponse,
   ModelRoutingPolicyResponse,
   WorkflowPermissionResponse,
@@ -438,6 +442,40 @@ export const workflowApi = {
       `/workflows/${workflowId}/llm-nodes/${nodeId}/model-routing/policy/refresh`,
     );
     return response.data;
+  },
+
+  suggestModelRoutingCohort: async (
+    workflowId: string,
+    nodeId: string,
+    data: ModelRoutingCohortSuggestionRequest,
+  ): Promise<ModelRoutingCohortSuggestionResponse> => {
+    const response = await api.post(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/model-routing/cohorts/suggest`,
+      data,
+    );
+    return response.data;
+  },
+
+  createModelRoutingCohort: async (
+    workflowId: string,
+    nodeId: string,
+    data: ModelRoutingCohortCreateRequest,
+  ): Promise<ModelRoutingCohortCreateResponse> => {
+    const response = await api.post(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/model-routing/cohorts`,
+      data,
+    );
+    return response.data;
+  },
+
+  deleteModelRoutingCohort: async (
+    workflowId: string,
+    nodeId: string,
+    cohortId: string,
+  ): Promise<void> => {
+    await api.delete(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/model-routing/cohorts/${cohortId}`,
+    );
   },
 
   // 5. 새 워크플로우 생성
