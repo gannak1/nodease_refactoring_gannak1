@@ -86,6 +86,7 @@ def test_probe_pins_public_ip_enforces_tls_and_runs_constant_read_only_query(
     assert dict(url.query) == {
         "hostaddr": "203.0.113.20",
         "sslmode": "verify-full",
+        "sslrootcert": "system",
     }
     assert captured["guard"] == (
         "db.example.com",

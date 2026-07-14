@@ -35,6 +35,7 @@ ENV PYTHONUNBUFFERED=1
 
 # 실행 시 필요한 최소 라이브러리 설치
 RUN apt-get update && apt-get install -y \
+    ca-certificates \
     libpq5 \
     curl \
     postgresql-client \

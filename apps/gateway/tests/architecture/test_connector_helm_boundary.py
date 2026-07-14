@@ -27,3 +27,12 @@ def test_helm_requires_and_injects_dedicated_connector_admission_key() -> None:
     assert "CONNECTOR_TEST_ADMISSION_HMAC_KEY" in gateway_template
     assert "connectorTestAdmissionHmacKey:" in values
     assert "connectorTestAdmissionHmacKey:" in local_values
+
+
+def test_gateway_image_provides_system_ca_for_strict_postgres_probe() -> None:
+    dockerfile = (
+        Path(__file__).parents[4] / "docker" / "gateway" / "Dockerfile"
+    ).read_text(encoding="utf-8")
+
+    assert "ca-certificates" in dockerfile
+    assert "libpq5" in dockerfile

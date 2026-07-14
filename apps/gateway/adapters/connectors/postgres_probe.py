@@ -76,7 +76,11 @@ class StrictPostgresConnectorProbe:
                 host=host,
                 port=port,
                 database=command.database,
-                query={"hostaddr": host_address, "sslmode": "verify-full"},
+                query={
+                    "hostaddr": host_address,
+                    "sslmode": "verify-full",
+                    "sslrootcert": "system",
+                },
             )
             engine = create_engine(
                 url,
