@@ -52,6 +52,10 @@ class _SubjectQuery:
     def order_by(self, *_args, **_kwargs):
         return self
 
+    def limit(self, value):
+        self.rows = self.rows[:value]
+        return self
+
     def all(self):
         return self.rows
 
@@ -96,6 +100,7 @@ def _collection(collection_id=None):
         description=None,
         is_system_managed=False,
         source_identity_id=None,
+        source_connector_ref=None,
         sync_state="manual",
         lifecycle_state="active",
         safe_metadata={},
@@ -287,6 +292,30 @@ def test_public_membership_requires_org_manager_ack_and_blocks_source_managed_li
     }
 
 
+def test_public_membership_blocks_source_managed_collection_even_for_manual_kb(
+    monkeypatch,
+):
+    service = _service(monkeypatch)
+    collection = _collection()
+    collection.safe_metadata = {"visibility": "public"}
+    collection.source_connector_ref = "opaque-connector-ref"
+    manual_kb = SimpleNamespace(id=uuid.uuid4(), source_identity_id=None)
+    monkeypatch.setattr(service, "_require_org_manager", lambda: None)
+
+    with pytest.raises(KnowledgeCollectionServiceError) as exc_info:
+        service._require_collection_membership_mutation(
+            collection,
+            kb=manual_kb,
+            acknowledged_public_runtime_exposure=True,
+            adds_public_exposure=True,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.details == {
+        "policy_reason": "source_public_exposure_required"
+    }
+
+
 def test_collection_role_bundle_writes_explicit_actions_in_one_transaction(monkeypatch):
     db = _FakeDb()
     service = KnowledgeCollectionService(
@@ -297,7 +326,7 @@ def test_collection_role_bundle_writes_explicit_actions_in_one_transaction(monke
     collection = _collection()
     actions = []
 
-    monkeypatch.setattr(service, "_collection_or_hidden", lambda _id: collection)
+    monkeypatch.setattr(service, "_locked_collection_or_hidden", lambda _id: collection)
     monkeypatch.setattr(
         service,
         "_require_collection_permission_authority",
@@ -356,11 +385,40 @@ def test_domain_delegation_subjects_return_safe_team_and_user_labels(monkeypatch
     )
     monkeypatch.setattr(service, "_require_org_manager", lambda: None)
 
-    result = service.list_domain_delegation_subjects()
+    team_result = service.list_domain_delegation_subjects(subject_type="team")
+    user_result = service.list_domain_delegation_subjects(subject_type="user")
 
-    assert result.teams[0].subject_safe_label == "Knowledge Team"
-    assert result.users[0].subject_safe_label == "User"
-    assert "@" not in str(result.model_dump())
+    assert team_result.subjects[0].subject_safe_label == "Knowledge Team"
+    assert user_result.subjects[0].subject_safe_label == "User"
+    assert "@" not in str(user_result.model_dump())
+
+
+def test_domain_subject_authority_is_checked_before_page_validation(monkeypatch):
+    service = _service(monkeypatch)
+    monkeypatch.setattr(
+        service,
+        "_require_org_manager",
+        lambda: (_ for _ in ()).throw(
+            KnowledgeCollectionServiceError(
+                403,
+                "permission.denied",
+                "Organization manager permission is required.",
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        service,
+        "_delegation_subjects_response",
+        lambda **kwargs: pytest.fail("page validation must follow authority"),
+    )
+
+    with pytest.raises(KnowledgeCollectionServiceError) as exc_info:
+        service.list_domain_delegation_subjects(
+            subject_type="invalid",
+            limit="not-a-number",
+        )
+
+    assert exc_info.value.status_code == 403
 
 
 def test_update_collection_rejects_blank_name_after_normalization(monkeypatch):
@@ -435,7 +493,7 @@ def test_team_manage_revoke_allows_when_alternate_management_path_exists(monkeyp
 def test_public_visibility_requires_acknowledgement(monkeypatch):
     service = _service(monkeypatch)
     collection = _collection()
-    monkeypatch.setattr(service, "_collection_or_hidden", lambda collection_id: collection)
+    monkeypatch.setattr(service, "_locked_collection_or_hidden", lambda collection_id: collection)
     monkeypatch.setattr(service, "_require_org_manager", lambda: None)
 
     with pytest.raises(KnowledgeCollectionServiceError) as exc_info:
@@ -456,7 +514,7 @@ def test_public_visibility_blocks_source_managed_items_without_approval_primitiv
 ):
     service = _service(monkeypatch)
     collection = _collection()
-    monkeypatch.setattr(service, "_collection_or_hidden", lambda collection_id: collection)
+    monkeypatch.setattr(service, "_locked_collection_or_hidden", lambda collection_id: collection)
     monkeypatch.setattr(service, "_require_org_manager", lambda: None)
     monkeypatch.setattr(
         service,
@@ -480,13 +538,15 @@ def test_public_visibility_blocks_source_managed_items_without_approval_primitiv
     }
 
 
+@pytest.mark.parametrize("source_field", ["source_identity_id", "source_connector_ref"])
 def test_public_visibility_blocks_source_managed_collection_without_approval_primitive(
     monkeypatch,
+    source_field,
 ):
     service = _service(monkeypatch)
     collection = _collection()
-    collection.source_identity_id = uuid.uuid4()
-    monkeypatch.setattr(service, "_collection_or_hidden", lambda collection_id: collection)
+    setattr(collection, source_field, uuid.uuid4())
+    monkeypatch.setattr(service, "_locked_collection_or_hidden", lambda collection_id: collection)
     monkeypatch.setattr(service, "_require_org_manager", lambda: None)
 
     with pytest.raises(KnowledgeCollectionServiceError) as exc_info:
@@ -505,11 +565,65 @@ def test_public_visibility_blocks_source_managed_collection_without_approval_pri
     }
 
 
+def test_bulk_authority_prefers_resource_manage_over_domain_delegate(monkeypatch):
+    service = _service(monkeypatch)
+    collections = [_collection(), _collection()]
+    monkeypatch.setattr(service, "_is_org_manager", lambda: False)
+    monkeypatch.setattr(
+        service,
+        "_has_domain_action",
+        lambda action: action == "permission_delegate",
+    )
+    monkeypatch.setattr(
+        service.permission_helper,
+        "bulk_evaluate_collection_action",
+        lambda candidates, action, include_archived=False: {
+            candidate.id: SimpleNamespace(
+                allowed=True,
+                external_reason_code="permission.allowed",
+            )
+            for candidate in candidates
+        },
+    )
+
+    authority = service._require_bulk_collection_permission_authority(collections)
+
+    assert authority == "resource_manager"
+
+
+def test_management_item_projection_rechecks_mutation_not_read_authority(monkeypatch):
+    service = _service(monkeypatch)
+    collection = _collection()
+    calls = []
+    expected = SimpleNamespace(order_revision="safe-revision")
+    monkeypatch.setattr(
+        service,
+        "_collection_or_hidden",
+        lambda collection_id: collection,
+    )
+    monkeypatch.setattr(
+        service,
+        "_require_collection_membership_candidate_access",
+        lambda candidate: calls.append(candidate.id),
+    )
+    monkeypatch.setattr(service, "_ordered_collection_items", lambda collection_id: [])
+    monkeypatch.setattr(
+        service,
+        "_items_response",
+        lambda collection_id, items: expected,
+    )
+
+    result = service.list_items_management_response(collection.id)
+
+    assert result is expected
+    assert calls == [collection.id]
+
+
 def test_public_visibility_sets_only_candidate_flag(monkeypatch):
     db = _FakeDb()
     service = _service(monkeypatch, db=db)
     collection = _collection()
-    monkeypatch.setattr(service, "_collection_or_hidden", lambda collection_id: collection)
+    monkeypatch.setattr(service, "_locked_collection_or_hidden", lambda collection_id: collection)
     monkeypatch.setattr(service, "_require_org_manager", lambda: None)
     monkeypatch.setattr(service, "_collection_response", _collection_response)
 
@@ -532,7 +646,7 @@ def test_link_item_requires_collection_manage_and_kb_manage(monkeypatch):
     collection = _collection()
     kb = SimpleNamespace(id=uuid.uuid4(), lifecycle_state="active")
     calls = []
-    monkeypatch.setattr(service, "_collection_or_hidden", lambda collection_id: collection)
+    monkeypatch.setattr(service, "_locked_collection_or_hidden", lambda collection_id: collection)
     monkeypatch.setattr(
         service,
         "_require_collection_action",

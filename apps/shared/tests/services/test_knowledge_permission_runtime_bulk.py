@@ -112,6 +112,43 @@ def test_bulk_collection_manager_override_skips_permission_rows():
     assert helper.single_calls == []
 
 
+def test_archived_collection_is_hidden_by_default_but_available_to_admin_path():
+    collection = _collection(1)
+    collection.lifecycle_state = "archived"
+    helper = _BulkCollectionHelper(auth_state=AUTH_STATE_MANAGER)
+
+    runtime_decision = helper.evaluate_collection_action(collection, "read")
+    administration_decision = helper.evaluate_collection_action(
+        collection,
+        "read",
+        include_archived=True,
+    )
+
+    assert runtime_decision.allowed is False
+    assert runtime_decision.external_reason_code == "resource.hidden"
+    assert administration_decision.allowed is True
+
+
+def test_bulk_archived_collection_requires_explicit_administration_scope():
+    collection = _collection(1)
+    collection.lifecycle_state = "archived"
+    helper = _BulkCollectionHelper()
+
+    runtime_decision = helper.bulk_evaluate_collection_action(
+        [collection],
+        "manage",
+    )[collection.id]
+    administration_decision = helper.bulk_evaluate_collection_action(
+        [collection],
+        "manage",
+        include_archived=True,
+    )[collection.id]
+
+    assert runtime_decision.allowed is False
+    assert administration_decision.allowed is True
+    assert helper.bulk_calls == [((collection.id,), "manage")]
+
+
 def test_bulk_collection_invalid_action_is_fixed_safe_denial():
     collection = _collection(1)
     helper = _BulkCollectionHelper()

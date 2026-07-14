@@ -7,11 +7,15 @@ from fastapi.testclient import TestClient
 from apps.gateway.api.v1.endpoints import knowledge as knowledge_endpoint
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.main import app
+from apps.gateway.application.knowledge_administration.collection_operations import (
+    CollectionStateConflict,
+)
 from apps.gateway.services.knowledge_collection_service import (
     KnowledgeCollectionServiceError,
 )
-from apps.shared.schemas.knowledge import KnowledgeCollectionLLMSelectableResponse
 from apps.shared.schemas.knowledge import (
+    KnowledgeCollectionItemsResponse,
+    KnowledgeCollectionLLMSelectableResponse,
     KnowledgeCollectionResponse,
     KnowledgeCollectionVisibilityResponse,
 )
@@ -260,3 +264,136 @@ def test_collection_visibility_route_returns_safe_summary(monkeypatch):
     assert body["collection"]["visibility"] == "public"
     assert body["public_runtime_effect"] == "anonymous_public_only_candidate"
     assert "exact_denied_count" not in str(body)
+
+
+def test_collection_restore_route_passes_active_organization_to_use_case(monkeypatch):
+    organization_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    collection_id = uuid.uuid4()
+    captured = {}
+
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "resolve_active_organization_id",
+        lambda db, request, raw, current_user_id: organization_id,
+    )
+
+    class FakeUseCase:
+        def restore(self, command):
+            captured["command"] = command
+
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "build_knowledge_collection_lifecycle_and_order_use_case",
+        lambda db: FakeUseCase(),
+    )
+    app.dependency_overrides[knowledge_endpoint.get_db] = lambda: object()
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+    try:
+        response = TestClient(app).post(
+            f"/api/v1/knowledge/collections/{collection_id}/restore",
+            headers={"X-Organization-Id": str(organization_id)},
+        )
+    finally:
+        app.dependency_overrides = {}
+
+    assert response.status_code == 204
+    assert captured["command"].actor_id == user_id
+    assert captured["command"].organization_id == organization_id
+    assert captured["command"].collection_id == collection_id
+
+
+def test_collection_reorder_stale_revision_uses_safe_conflict_envelope(monkeypatch):
+    organization_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    collection_id = uuid.uuid4()
+
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "resolve_active_organization_id",
+        lambda db, request, raw, current_user_id: organization_id,
+    )
+
+    class FakeUseCase:
+        def reorder(self, command):
+            raise CollectionStateConflict("collection_order_stale")
+
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "build_knowledge_collection_lifecycle_and_order_use_case",
+        lambda db: FakeUseCase(),
+    )
+    app.dependency_overrides[knowledge_endpoint.get_db] = lambda: object()
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+    try:
+        response = TestClient(app).patch(
+            f"/api/v1/knowledge/collections/{collection_id}/items/reorder",
+            json={
+                "items": [{"item_id": str(uuid.uuid4()), "rank": 0}],
+                "expected_order_revision": f"ord_v1_{'0' * 64}",
+            },
+            headers={"X-Organization-Id": str(organization_id)},
+        )
+    finally:
+        app.dependency_overrides = {}
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"]["code"] == "conflict"
+    assert body["error"]["details"] == {"reason": "collection_order_stale"}
+    assert collection_id.hex not in str(body)
+
+
+def test_empty_collection_reorder_returns_management_projection(monkeypatch):
+    organization_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    collection_id = uuid.uuid4()
+    revision = f"ord_v1_{'0' * 64}"
+    captured = {}
+
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "resolve_active_organization_id",
+        lambda db, request, raw, current_user_id: organization_id,
+    )
+
+    class FakeUseCase:
+        def reorder(self, command):
+            captured["command"] = command
+
+    class FakeService:
+        def __init__(self, db, *, user_id, organization_id):
+            captured["service_user_id"] = user_id
+            captured["service_organization_id"] = organization_id
+
+        def list_items_management_response(self, requested_collection_id):
+            captured["projection_collection_id"] = requested_collection_id
+            return KnowledgeCollectionItemsResponse(
+                items=[],
+                order_revision=revision,
+            )
+
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "build_knowledge_collection_lifecycle_and_order_use_case",
+        lambda db: FakeUseCase(),
+    )
+    monkeypatch.setattr(knowledge_endpoint, "KnowledgeCollectionService", FakeService)
+    app.dependency_overrides[knowledge_endpoint.get_db] = lambda: object()
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+    try:
+        response = TestClient(app).patch(
+            f"/api/v1/knowledge/collections/{collection_id}/items/reorder",
+            json={
+                "items": [],
+                "expected_order_revision": revision,
+            },
+            headers={"X-Organization-Id": str(organization_id)},
+        )
+    finally:
+        app.dependency_overrides = {}
+
+    assert response.status_code == 200
+    assert captured["command"].items == ()
+    assert captured["projection_collection_id"] == collection_id
+    assert response.json()["items"] == []
