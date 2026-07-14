@@ -1,13 +1,14 @@
 # Workflow Test Cases
 
 Status: Draft
-Verified Against: `origin/dev @ 32fb602f`
+Verified Against: `feature/mba-198 @ 92669f3`
 
 ## Test File Mapping
 
 - Top-aligned workflow ranks, boundary-centered BaseNode handles, Default/input alignment, and downward Condition branches: `apps/client/app/features/workflow/utils/nodeHandleLayout.test.ts`, `apps/client/app/features/workflow/utils/arrangeConditionNodes.test.ts`, `apps/shared/tests/test_workflow_layout.py`
 
 - 실행 편의성: `apps/client/app/features/workflow/tests/execution-convenience.test.ts`
+- 테스트 실행 사이드바 폭 조절: `apps/client/app/features/workflow/tests/test-sidebar-resize.test.tsx`
 - 노드 조작 편의성: `apps/client/app/features/workflow/tests/node-panel-resize.test.ts`
 - 워크플로우 조작 편의성: `apps/client/app/features/workflow/tests/workflow-delete-reconnect.test.tsx`
 - 노드 실행 기록 패널 추가: `apps/client/app/features/workflow/tests/node-execution-log-panel.todo.test.ts`
@@ -113,6 +114,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 | 1 | 실행 편의성 | 서버 실행 시간과 화면 완료 시간을 서로 다른 라벨로 표시 | 통과 | `TestSidebar`가 `서버 실행`/`화면 완료` 라벨을 분리하고 summary unit test 완료 | `apps/client/app/features/workflow/tests/execution-convenience.test.ts`, `apps/client/app/features/workflow/components/editor/TestSidebar.tsx` |
 | 1 | 실행 편의성 | 테스트 실행 중복 클릭 방지 또는 기존 stream 정리 | 통과 | 실행 중/업로드/저장 중/권한 없음 disabled 조건 unit test 완료 | `apps/client/app/features/workflow/tests/execution-convenience.test.ts` |
 | 1 | 실행 편의성 | stream 실패 시 사용자에게 실패 상태 표시 | 통과 | 실패 상태 store transition unit test와 `TestSidebar` 실패 UI 구현 완료 | `apps/client/app/features/workflow/store/useWorkflowStore.test.ts`, `apps/client/app/features/workflow/components/editor/TestSidebar.tsx` |
+| 1 | 실행 편의성 | 테스트 실행 사이드바 기본 폭·드래그 최대 폭·키보드 최소 폭 제한 | 통과 | 기본 `480px`, `380px`~`640px` clamp, 왼쪽 handle pointer/keyboard 조작 unit test 완료 | `apps/client/app/features/workflow/tests/test-sidebar-resize.test.tsx`, `apps/client/app/features/workflow/components/editor/TestSidebar.tsx` |
 | 1 | 노드 조작 편의성 | 3패널 기본 표시 | 통과 | 기본 3패널 폭 산출 unit test와 `NodeFullscreenEditor` grid 구현 완료 | `apps/client/app/features/workflow/tests/node-panel-resize.test.ts`, `apps/client/app/features/workflow/components/editor/NodeFullscreenEditor.tsx` |
 | 1 | 노드 조작 편의성 | 3패널 resize 계산의 min/max clamp | 통과 | layout 계산 unit test 완료 | `apps/client/app/features/workflow/tests/node-panel-resize.test.ts` |
 | 1 | 노드 조작 편의성 | viewport width 90% 안에서 편집 화면 표시 | 통과 | layout 계산 unit test 완료. 실제 DOM 폭은 수동 QA 필요 | `apps/client/app/features/workflow/tests/node-panel-resize.test.ts` |
@@ -338,6 +340,8 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - 서버 실행 시간과 화면 완료 시간은 `서버 실행`, `화면 완료`처럼 서로 다른 라벨로 구분된다.
 - 캔버스에는 별도 테스트 실행 요약 패널이 표시되지 않는다.
 - 다시 테스트하기를 누르면 이전 실행 요약이 초기화되고 새 실행 결과로 갱신된다.
+- 테스트 실행 사이드바는 기본 `480px`로 열리고, 왼쪽 handle을 드래그해 `380px`~`640px` 범위에서 폭을 조정할 수 있다.
+- 테스트 실행 사이드바 폭은 keyboard `ArrowLeft`/`ArrowRight`와 `Home`/`End`로도 조정할 수 있으며, 패널을 닫고 다시 열어도 같은 편집 세션에서는 유지된다.
 
 ### 2. 노드 조작 편의성
 

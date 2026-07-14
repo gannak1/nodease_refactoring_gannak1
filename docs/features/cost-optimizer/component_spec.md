@@ -1,11 +1,11 @@
 # Cost Optimizer Component Spec
 
 Status: Draft
-Verified Against: feature/mba-198 @ 25ac2dde3ee0e71125c85749362569d7a95b45c1
+Verified Against: feature/mba-198 @ 92669f3
 
 ## Purpose
 
-이 문서는 `requirements.md`의 FR-001부터 FR-013까지를 화면과 컴포넌트 관점에서 구현 가능한 형태로 정리한다.
+이 문서는 `requirements.md`의 FR-001부터 FR-014까지를 화면과 컴포넌트 관점에서 구현 가능한 형태로 정리한다.
 FR-011은 LLM 노드 상세 화면의 자동 라우팅 컨트롤과 Workflow-Aware 분석 상태로 다룬다. 사용자는 단순 ON/OFF가 아니라 `이 node가 라우팅에 적합한지`, `어떤 evidence가 부족한지`, `어떤 cohort에서 어떤 모델을 쓰는지`, `예상 순절감과 품질 근거가 무엇인지`를 확인할 수 있어야 한다.
 
 Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상세 화면에서 시작하는 LLM 노드 단위 A/B 테스트 흐름이다.
@@ -29,6 +29,7 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 | FR-011 | Workflow-Aware routing controls / analysis / decision trace | 자동 라우팅 ON/OFF, 라우팅 적합성, evidence gap, semantic cohort별 policy, 예상 순절감, 실제 선택 모델과 Route 점수/fallback 근거를 보여준다. |
 | FR-012 | Optimization recommendation modal | LLM 노드 상세 화면의 `최적화` 버튼으로 추천 모달을 열고, 추천 근거와 위험도를 확인한 뒤 직접 정책 적용 또는 A/B 후보 실험으로 연결한다. |
 | FR-013 | Recommendation verification / compare quality row | 추천 모달과 일반 결과 분석 화면에서 baseline 대비 candidate 비용·속도·token·품질 점수·schema·downstream 결과를 보여주고 적용 또는 이력 재조회로 연결한다. |
+| FR-014 | 배포별 자동 파라미터 최적화 | 배포 모달에서 운영 로그 수집·점검 주기·월간 검증 예산을 설정하고, 내 모듈 운영 현황에서는 비용 위험과 분리된 자동 최적화 상태를 관리한다. |
 
 ## Implementation Tracking
 
@@ -52,6 +53,29 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 | FR-011 | 적합성/evidence/policy diff UI | 기존 model-routing route 확장 | 구현 필요 | Workflow-Aware routing component tests | 미작성 |
 | FR-012 | Optimization recommendation modal | `apps/client/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal.tsx`, `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr8-apply-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | 통과 기록 있음 |
 | FR-013 | Recommendation verification, compare quality row, history restore | `apps/client/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal.tsx`, `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerHistoryPanel.tsx`, `apps/client/app/features/workflow/hooks/useCostOptimizerHistory.ts`, `apps/client/app/features/workflow/api/workflowApi.ts`, `apps/client/app/features/workflow/types/Api.ts`, `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-inline-verification.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-verification-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | modal 검증, 일반 compare 품질 행, 평가 불가, 단건 비교 이력 복원 통과 |
+| FR-014 | Deployment optimization step / management | `apps/client/app/features/workflow/components/deployment/ParameterOptimizationStep.tsx`, `apps/client/app/features/workflow/components/deployment/AutomaticOptimizationManagementModal.tsx`, `apps/client/app/dashboard/mymodule/page.tsx` | 구현 완료 | deployment modal/management targeted tests | 통과 |
+
+## FR-014 배포별 자동 파라미터 최적화 UI
+
+### 배포 모달
+
+배포 흐름은 `배포 설명 → 운영 비용 자동 최적화 → 결과` 세 단계다. 두 번째 단계는 선택형이며, 사용자가 끄면 배포 설정과 실행 동작은 기존과 동일하다.
+
+- `운영 비용 자동 최적화 사용`: 체크 스위치. 대상 LLM node가 없으면 비활성화한다.
+- `최적화 대상 LLM 노드`: 현재 graph의 LLM node만 나열한다. 전체 선택/해제와 개별 선택을 제공한다.
+- `자동 점검 주기`: `20~200회`, 10회 단위 slider. 성공한 배포 후 운영 실행 수를 기준으로 한다.
+- `월간 검증 예산`: `$0.5~$10`, $0.5 단위 slider. 일반 workflow 운영 비용과 분리해 설명한다.
+- 안내 문구는 응답 길이/RAG context만 다루며 모델 라우팅, 모델 선택, prompt는 바꾸지 않는다는 점을 분명히 표시한다.
+
+### 내 모듈 운영 현황
+
+기존 비용·추세·예산 사용률·비용 위험 신호는 변경하지 않는다. 기존 `최적화` 컬럼은 `자동 최적화` 컬럼으로 교체한다.
+
+- 수집 상태: `수집 중 14 / 50회`처럼 현재 수집 수와 점검 주기를 보여준다.
+- 검증 예산: `월 검증 $0.18 / $3.00`처럼 별도 지출과 한도를 보여준다. 이 값은 대상 node의 추천 `테스트하기`에서 실제 후보 실행과 품질 judge에 든 새 비용만 반영하며, 운영 실행 비용·기준 로그 조회 비용은 포함하지 않는다.
+- `관리`: 배포 권한이 있는 사용자만 표시하며, modal에서 사용 여부·점검 주기·월간 검증 예산을 수정한다.
+- 관리 modal은 대상 node 수와 현재 수집 상태를 읽기 전용으로 표시한다. 대상 node 변경은 재배포 snapshot의 책임이다.
+- 배포가 없으면 `배포 후 설정`, 사용하지 않으면 `미사용`을 표시한다.
 
 ## Screens
 
@@ -278,6 +302,8 @@ Hard Gate와 deterministic optimizer가 검증했다는 상태를 별도로 보�
 - fallback 모델과 fallback 사용 여부
 - 사용자 친화적인 입력 유형 이름과 matched cohort/rule
 - 의미 유사도, 통과 기준, 2위와의 점수 차이
+- 현재 policy에 등록된 모든 입력군의 유사도 순위와 각 입력군의 통과 기준
+- 입력군 선택에 필요한 1위·2위 최소 점수 차이 기준
 - 의미 유사도 판정인지 policy 안전 override인지 구분하는 선택 근거
 - 안전 override가 적용된 경우 signal 원문 대신 매칭 개수와 안전 우선 적용 상태
 - 선택 reason code의 사용자 친화 문구
@@ -304,8 +330,10 @@ Hard Gate와 deterministic optimizer가 검증했다는 상태를 별도로 보�
 ```
 
 Frontend는 raw query, embedding vector, 대표 문장 원문을 trace 화면에 노출하지
-않는다. `semantic_similarity`, `semantic_threshold`, `semantic_margin`은 백엔드가
-제공한 safe number만 표시한다.
+않는다. `semantic_similarity`, `semantic_threshold`, `semantic_margin`,
+`semantic_min_margin`, `semantic_cohort_scores[]`의 safe number와 입력군 이름만
+표시한다. 입력군 목록은 유사도 내림차순으로 표시하고, 선택된 행 또는 가장 가까운 행을
+구분한다.
 `semantic_decision_source=safety_override`이면 전문 점수 대신
 `정책의 안전 조건과 일치해 고성능 모델을 선택함`으로 설명한다. Catalog의 signal
 원문도 화면에 노출하지 않는다.
@@ -326,16 +354,22 @@ Frontend는 raw query, embedding vector, 대표 문장 원문을 trace 화면에
 
 - 상세 header에는 `테스트 결과로 돌아가기` 버튼과 `{노드명} 실행 상세` 제목을 표시한다.
 - 모든 node 상세에는 상태, 실행 시간, 비용, 출력 데이터를 표시한다. 긴 출력은 줄임표로
-  자르지 않고 scrollable code block으로 보여준다.
+  자르지 않고 scrollable code block으로 보여준다. 자동 라우팅 상세가 있으면 출력 데이터를
+  먼저, 그 다음 `배포 정책 기준 테스트`와 판정 근거를 표시한다.
 - LLM node output에 `metadata.model_routing`이 있으면 `ModelRoutingDecisionDetails`를
-  재사용해 입력 유형, 가장 가까운 입력 유형, 매칭 결과, 최초 선택 모델, 판단/선택 이유,
-  policy version을 보여준다.
+  재사용해 입력 유형, 가장 가까운 입력 유형, 모든 입력군의 유사도·선택 기준·최소 점수 차이,
+  매칭 결과, 최초 선택 모델, 판단/선택 이유, policy version을 보여준다.
 - `semantic_match_status=no_match|ambiguous|unavailable`이면 `기준 미달로 기본 모델 사용`
   라벨과 유사도/기준 미달 또는 판정 불가 사유를 보여준다.
 - `fallback_used=true`이면 계획된 fallback 설명과 별도로 `실제 대체 실행` block에서
   `fallback_from_model`, `fallback_reason_code`, 실제 output model을 표시한다.
 - 자동 라우팅 trace가 있는 테스트 실행에는 `이 테스트 실행은 자동 라우팅 정책의 학습 및
   갱신 횟수에 포함되지 않습니다.`를 표시한다.
+- trace의 `policy_source=active_deployment`와 `included_in_policy_learning=false`이면 공통
+  상세 컴포넌트 header를 `배포 정책 기준 테스트`로 표시한다. 활성 배포 policy를 읽었지만
+  테스트 결과는 운영 학습에 포함하지 않았다는 뜻이다.
+- 현재 draft와 활성 deployment의 node 설정이 다르면 배포 policy를 적용하지 않는다. 이 경우
+  기존 `자동 라우팅` 상세에서 저장 모델 사용 사유를 표시한다.
 
 #### Backend core와 UI 연결 경계
 

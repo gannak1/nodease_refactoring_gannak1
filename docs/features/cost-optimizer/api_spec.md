@@ -1,11 +1,11 @@
 # Cost Optimizer API Spec
 
 Status: Draft
-Verified Against: feature/mba-198 @ 25ac2dde3ee0e71125c85749362569d7a95b45c1
+Verified Against: feature/mba-198 @ 92669f3
 
 ## Purpose
 
-이 문서는 `requirements.md`의 FR-001부터 FR-013까지를 API 계약 관점에서 정리한다.
+이 문서는 `requirements.md`의 FR-001부터 FR-014까지를 API 계약 관점에서 정리한다.
 FR-011은 [ADR-0038](../../decisions/ADR-0038-workflow-aware-adaptive-routing.md)의 Workflow-Aware Adaptive Routing으로 다룬다. Runtime은 저장된 active policy만 평가한다. Policy refresh는 운영 로그와 Cost Optimizer Replay evidence를 분리해 읽고, Hard Gate와 결정론적 optimizer를 통과한 후보만 policy에 반영한다. Judge LLM은 매 실행마다 호출하지 않으며 policy의 최종 결정권자가 아니다.
 
 Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baseline 실행 로그를 선택하고, 같은 입력으로 B 후보 설정을 실행한 뒤, 선택한 후보를 현재 draft에 적용하는 흐름을 지원한다.
@@ -31,6 +31,7 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | FR-011 | policy 조회/설정/refresh/preview API와 배포 후 run event가 policy table을 관리한다. 운영/Replay evidence의 출처를 구분하고, Hard Gate·적합성 분석·품질 gate·결정론적 optimizer를 통과한 policy만 runtime에 제공한다. |
 | FR-012 | 운영 로그와 trace summary를 분석해 LLM 파라미터/모델 라우팅 추천을 반환한다. `direct_policy_update`만 즉시 적용하고, 일반 파라미터 조정은 A/B candidate 생성 경로로 보낸다. |
 | FR-013 | 추천 빠른 검증과 사용자가 baseline을 고르는 일반 compare 모두 candidate 실행 후 semantic 품질 평가를 수행하고 점수·confidence·safe summary를 응답과 이력에 저장한다. |
+| FR-014 | 배포별 자동 파라미터 최적화 설정과 수집/예산 safe summary를 제공한다. 비용 위험 신호와 모델 라우팅 정책은 포함하지 않는다. |
 
 ## Endpoints
 
@@ -55,6 +56,8 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | PATCH | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts/{cohort_id}` | 직접 입력군의 이름/key/대표 문의/고정 여부를 수정하고 재검증 대기로 전환 | FR-011 | builder 이상 |
 | DELETE | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts/{cohort_id}` | 직접/자동 입력군을 retired로 전환하고 이후 라우팅에서 제외 | FR-011 | builder 이상 |
 | GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/analysis` | **계획**: 라우팅 적합성, candidate gate 결과, evidence gap, 예상 순절감 safe summary 조회 | FR-011 | builder 이상 |
+| GET | `/api/v1/deployments/{deployment_id}/parameter-optimization` | 배포별 자동 파라미터 최적화의 대상 노드 수, 운영 수집 수, 점검 상태, 월간 검증 예산/사용액 조회 | FR-014 | workflow read |
+| PATCH | `/api/v1/deployments/{deployment_id}/parameter-optimization` | 재배포 없이 자동 최적화 사용 여부, 대상 LLM node, 점검 주기, 월간 검증 예산 수정 | FR-014 | workflow deploy |
 
 ## Implementation Tracking
 
@@ -77,6 +80,28 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | FR-011 | 실제 DB Replay evidence에서 proposal·active policy까지 이어지는 자동 통합과 분석 API | 기존 refresh service와 Gateway endpoint 확장 | 구현 필요 | PostgreSQL integration test | 미작성 |
 | FR-012 | LLM parameter recommendation contract | `apps/gateway/services/cost_optimizer_parameter_recommendation_service.py`, `apps/gateway/api/v1/endpoints/workflow.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_parameter_recommendations_api.py`, `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 기록 있음 |
 | FR-013 | Recommendation/compare verification orchestration, quality judge, history summary, modal/result-analysis UI | `apps/gateway/services/cost_optimizer_recommendation_verification_service.py`, `apps/gateway/services/cost_optimizer_output_quality_service.py`, `apps/gateway/api/v1/endpoints/workflow.py`, `apps/shared/db/models/cost_optimizer.py`, `apps/client/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal.tsx`, `apps/client/app/features/workflow/api/workflowApi.ts`, `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py`, `apps/gateway/tests/api/cost_optimizer/test_recommendation_verification_api.py`, `apps/gateway/tests/services/test_cost_optimizer_output_quality_service.py`, `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-inline-verification.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-verification-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | Gateway/frontend targeted test 통과 |
+| FR-014 | deployment config, plan persistence, operations summary, verification spend guard | `apps/shared/db/models/deployment_parameter_optimization.py`, `apps/gateway/services/deployment_parameter_optimization_service.py`, `apps/gateway/api/v1/endpoints/deployment.py`, `apps/gateway/api/v1/endpoints/workflow.py`, `apps/gateway/services/app_service.py` | 수집/상태/예산 설정과 실제 검증 비용 누적 구현 | `apps/gateway/tests/services/test_deployment_parameter_optimization_service.py`, `apps/gateway/tests/api/cost_optimizer/test_recommendation_verification_api.py`, operations API targeted test | 통과 |
+
+## Deployment Parameter Optimization Contract
+
+`DeploymentCreate`와 `DeploymentPreflightRequest`는 선택적으로 아래 `parameter_optimization` object를 받는다.
+
+```json
+{
+  "enabled": true,
+  "node_ids": ["llm-triage"],
+  "check_every_runs": 50,
+  "monthly_validation_budget_usd": 3.0
+}
+```
+
+`node_ids`가 비어 있으면 해당 deployment snapshot의 모든 `llmNode`를 뜻한다. 지정한 node id가 snapshot에 없거나 LLM node가 아니면 `422 deployment.parameter_optimization_invalid_node`으로 거부한다. LLM node가 하나도 없으면 `422 deployment.parameter_optimization_no_llm_node`으로 거부한다.
+
+상태 응답은 raw prompt, completion, credential, recommendation patch를 포함하지 않는다. 목록 API의 `automatic_optimization`은 node id를 제외한 safe summary만 반환하고, 상세 관리 API는 설정을 유지하기 위해 `node_ids`를 함께 반환한다.
+
+`POST /cost-optimizer/recommendations/verify`는 latest operation baseline의 `deployment_id`가 enabled plan을 가리키고 target `node_id`가 plan의 대상일 때만 월간 검증 예산을 확인한다. 이미 사용액이 한도 이상이면 `409 deployment.parameter_optimization_validation_budget_exhausted`로 후보 LLM 실행 전에 차단한다.
+
+후보 실행이 끝나면 실제로 확인된 `candidate_execution_cost`와 `quality_judge_cost`만 합산해 `validation_spend_usd`에 기록한다. baseline 읽기, 일반 compare, 일반 배포 실행 비용은 이 필드에 기록하지 않는다. quality judge 비용이 없거나 계산할 수 없어도 확인 가능한 후보 실행 비용은 기록한다.
 
 ## Model Routing Policy Contract
 
@@ -96,13 +121,15 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 
 복제된 policy의 `semantic_router.routes[].cohort_id`와 rule의 `when.semantic_cohort_id`는 새 cohort row ID로 재작성한다. 따라서 새 deployment의 `GET /model-routing/policy`와 cohort API는 이전 version의 상태를 참조하지 않고 새 version에 귀속된 동일한 routing 상태를 반환한다.
 
-### Routing Preview Contract (UI 미연결)
+### Routing Preview Contract
 
 `POST /workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/preview`는 현재 **active deployment**가
-고를 모델만 계산하는 API 전용 계약이다. 현재 Test Sidebar UI는 이 endpoint를 호출하지
-않으며, 테스트 실행 후 실제 trace를 상세 보기로 표시한다. 권한은 workflow
-`execute`다. endpoint는 current draft node를 기준으로 판단하지 않으며, deployment
-snapshot의 target LLM node와 해당 deployment/node의 persisted active policy를 사용한다.
+고를 모델만 계산하는 API 전용 계약이다. Test Sidebar는 이 endpoint를 별도로 호출하지
+않는다. 대신 stream request에 `use_active_deployment_routing_policy=true`를 넣어 현재 draft와
+활성 deployment snapshot의 LLM node fingerprint가 같은 경우에만 해당 deployment/node의
+persisted active policy를 실제 테스트 실행에 읽게 한다. 권한은 workflow `execute`다.
+테스트 실행은 `deployment_id`를 갖지 않으므로 운영 run/usage event, 입력군 traffic, refresh
+counter에는 포함되지 않는다.
 
 Request:
 
@@ -154,11 +181,15 @@ Celery refresh task를 생성하거나 변경하지 않는다.
 | `semantic_route_label` | 기준을 통과해 매칭된 입력군 이름 |
 | `semantic_candidate_label` | 기준에는 미달했지만 가장 가까웠던 입력군 이름 |
 | `semantic_similarity`, `semantic_threshold` | 입력군 매칭 점수와 통과 기준. 운영 traffic 비중/성공 확률이 아니다. |
+| `semantic_cohort_scores` | 현재 policy에 등록된 모든 입력군의 safe 점수 목록. 각 항목은 `label`, `similarity`, `threshold`만 포함하며, 입력 원문과 embedding vector는 포함하지 않는다. |
+| `semantic_min_margin` | 1위와 2위 점수 차이에 요구되는 최소 기준이다. 점수 차이가 이 값보다 작으면 `ambiguous`로 처리한다. |
 | `semantic_match_status` | `matched`, `no_match`, `ambiguous`, `unavailable` 중 하나 |
 | `fallback_used` | 실제 실행 중 fallback이 수행됐는지 여부 |
 | `fallback_from_model` | 실제 fallback 이전에 호출하려던 모델 |
 | `fallback_reason_code` | `runtime_client_unavailable`, `provider_call_failed` 같은 safe 실패 분류 |
 | `policy_version` | 실행에 사용한 저장 policy 버전 |
+| `policy_source` | `active_deployment`이면 테스트 실행이 활성 배포 policy를 읽었음을 뜻한다. |
+| `included_in_policy_learning` | 테스트 정책 실행은 항상 `false`다. |
 | `judge_called` | 일반 runtime은 항상 `false`; Judge는 실행 시점 모델 선택에 사용하지 않는다. |
 
 다음 상태는 `409` safe error code로 반환한다.
@@ -666,6 +697,21 @@ LLM node 실행 시점 metadata는 선택 결과와 추천/품질 판단에 필�
     "semantic_threshold": 0.75,
     "semantic_runner_up_score": 0.51,
     "semantic_margin": 0.37,
+    "semantic_min_margin": 0.05,
+    "semantic_cohort_scores": [
+      {
+        "cohort_id": "json-schema-short-no-rag",
+        "label": "단순 사용·안내 문의",
+        "similarity": 0.88,
+        "threshold": 0.75
+      },
+      {
+        "cohort_id": "high-risk-support",
+        "label": "보안·보상·장애 문의",
+        "similarity": 0.51,
+        "threshold": 0.75
+      }
+    ],
     "semantic_match_status": "matched",
     "semantic_decision_source": "safety_override",
     "semantic_lexical_score": 1.5,

@@ -1,11 +1,11 @@
 # Cost Optimizer Test Cases
 
 Status: Draft
-Verified Against: feature/mba-198 @ 25ac2dde3ee0e71125c85749362569d7a95b45c1
+Verified Against: feature/mba-198 @ 92669f3
 
 ## Purpose
 
-이 문서는 `requirements.md`의 FR-001부터 FR-013까지를 테스트 관점에서 검증 가능한 형태로 정리한다.
+이 문서는 `requirements.md`의 FR-001부터 FR-014까지를 테스트 관점에서 검증 가능한 형태로 정리한다.
 FR-011은 Workflow-Aware Adaptive Routing으로 다룬다. 기존 policy/runtime 테스트는 회귀 테스트로 유지하고, 실제 DB의 Cost Optimizer Replay evidence가 candidate validation, policy proposal, active policy, runtime 모델 선택까지 이어지는 통합 테스트를 새 완료 기준으로 사용한다.
 
 테스트는 LLM 노드 단위 Cost Optimizer 흐름을 기준으로 한다. 모델 라우팅은 자동 라우팅 토글과 active policy 평가뿐 아니라, operational/replay evidence 출처 분리, Hard Gate, 적합성 분석, candidate 품질 gate, 결정론적 optimizer와 decision trace를 검증한다. 고정 20회는 호환 trigger 테스트일 뿐 adaptive routing 완료 기준이 아니다.
@@ -29,6 +29,7 @@ FR-011은 Workflow-Aware Adaptive Routing으로 다룬다. 기존 policy/runtime
 | FR-011 | Workflow-Aware routing controls / analysis / trace | Workflow-Aware Routing Contract | policy/runtime 회귀, semantic matcher/optimizer, 60건 실배포 선택과 실제 배포 로그 decision trace까지 연결. DB Replay evidence에서 active policy까지 이어지는 별도 통합 테스트는 남음 | 일부 작성 | semantic/runtime/trace/60건 실배포 통과, DB Replay 통합 테스트 미작성 |
 | FR-012 | Optimization recommendation modal | Parameter recommendation API | 운영 로그 기반 추천 조회, `direct_policy_update` 적용, 일반 추천의 A/B 후보 실험 연결 | 작성 완료 | 부분 통과 |
 | FR-013 | Recommendation verification / compare quality row | Recommendation verification·compare API | 최신 성공 또는 사용자 선택 baseline, candidate 1회 실행, 품질 judge, schema/downstream gate, 품질 점수 이력, 적용/상세 분석 연결 | Gateway/frontend 테스트 작성 완료 | Gateway/frontend targeted test 통과 |
+| FR-014 | 배포별 자동 파라미터 최적화 | deployment config / operations summary | 배포 모달 설정, 대상 LLM node 검증, 배포 후 운영 실행 수집, 별도 예산/관리 UI | Gateway/frontend targeted test 작성 완료 | 통과 |
 
 ## Test Implementation Tracking
 
@@ -82,7 +83,7 @@ FR-011은 Workflow-Aware Adaptive Routing으로 다룬다. 기존 policy/runtime
 | FR-011 | DB adaptive routing integration | 실제 PostgreSQL + worker가 만든 Replay row에서 proposal, active policy, 서로 다른 cohort runtime 모델과 trace까지 연결 | 부분 완료 | 실제 Provider 50회 실험 보고서 | 통과한 deployment/seed에 한정됨. 독립 PostgreSQL integration pytest는 미작성 |
 | FR-011 | Workflow-Aware analysis UI | `apps/client/app/features/workflow/tests/costOptimizer/fr11-workflow-aware-routing.test.tsx` | 적합성/evidence gap/policy diff UI | 미작성 | targeted Vitest | 미실행 |
 | FR-011 | Semantic cohort matcher | `apps/workflow_engine/tests/services/test_model_routing_semantic_router.py`, `apps/workflow_engine/tests/services/test_model_routing_semantic_catalog.py` | Aurelio식 representative embedding `top_k`/Route별 평균/threshold/min-margin, 안전 조건 override와 보수적 fallback | 작성 완료 | targeted pytest | 통과 |
-| FR-011 | Semantic routing trace UI | `apps/client/app/features/workflow/tests/costOptimizer/fr11-semantic-routing-trace.test.tsx`, `apps/client/app/features/workflow/components/logs/LogDetail.test.tsx` | 사용자 친화 Route label, 점수/기준/margin, 선택 모델과 근거, 안전 override, 불확실 입력의 기본 모델 유지 표시를 테스트 실행과 배포 로그 양쪽에서 검증 | 작성 완료 | targeted Vitest | 통과(5 tests) |
+| FR-011 | Semantic routing trace UI | `apps/client/app/features/workflow/tests/costOptimizer/fr11-semantic-routing-trace.test.tsx`, `apps/client/app/features/workflow/components/logs/LogDetail.test.tsx` | 사용자 친화 Route label, 모든 입력군의 유사도/개별 기준/최소 점수 차이, 선택 모델과 근거, 안전 override, 불확실 입력의 기본 모델 유지 표시를 테스트 실행과 배포 로그 양쪽에서 검증 | 작성 완료 | targeted Vitest | 통과 (5 tests) |
 | FR-011 | 50 deployed query experiment | `scripts/experiment_adaptive_model_routing_50_holdout.py` | 실제 배포 40건으로 자동 입력군을 발견하고, 입력군별 후보 실제 Replay 5회와 LLM Judge gate를 마친 뒤, 겹치지 않는 holdout 50건의 cohort/model/trace/fallback을 보고서로 저장 | 작성 완료 | `--confirm-live --reset-adaptive-state` 실제 Provider 실행 | 50/50 성공, trace 50/50, 자동 입력군 2개는 `gpt-5.4-nano` 40건, 고위험 10건은 `gpt-4.1`, fallback 0. 보고서 경로는 `reports/model-routing/adaptive-routing-run-b46d0c6d30924f1bbde73c9857fe1969.md` |
 | FR-011 | Gateway policy API | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | GET/PATCH/POST policy의 builder 권한, 상태 조회, 주기 변경, refresh 예약과 마지막 갱신 safe summary를 검증 | 작성 완료 | `apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
 | FR-011 | Actual provider verification | `scripts/verify_model_router_actual.py` | fake LLM client 없이 실제 provider 응답과 usage를 기록하고, OpenAI/Anthropic/Google preset 또는 명시 모델로 LLM judge 품질평가를 실행한 뒤 `workflow_node_runs.trace_metadata.schema_status/downstream_status`에 반영하고 cheap/mid/high 라우팅 판정을 검증 | 수동 검증 대기 | `apps/workflow_engine/.venv/Scripts/python.exe scripts/verify_model_router_actual.py --dry-run`, 실제 호출은 `apps/workflow_engine/.venv/Scripts/python.exe scripts/verify_model_router_actual.py --provider <provider>` | 로컬 계정에서 OpenAI/Anthropic/Google credential 사용 권한이 없어 dry-run이 `credential_use_denied`/`credential_not_available`로 중단됨. 실제 provider 호출은 실행하지 않음 |
@@ -91,6 +92,8 @@ FR-011은 Workflow-Aware Adaptive Routing으로 다룬다. 기존 policy/runtime
 | FR-013 | Frontend component | `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-inline-verification.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | 모달 내부 state 전이, 기준 실행 안내, 독립 metric bar, schema/downstream/quality 상태, scroll/sticky footer, apply/detail/close 액션, comparison/candidate deep link 결과 분석 진입 | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr13-recommendation-inline-verification.test.tsx app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | 통과 |
 | FR-013 | Frontend API client | `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-verification-api-client.test.ts` | verify endpoint, Idempotency-Key, response type, 상세 분석 deep link | 작성 완료 | `cd apps/client && npm run test -- --run app/features/workflow/tests/costOptimizer/fr13-recommendation-verification-api-client.test.ts` | 통과 |
 | FR-013 | Gateway API/service | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py`, `apps/gateway/tests/api/cost_optimizer/test_recommendation_verification_api.py`, `apps/gateway/tests/services/test_cost_optimizer_output_quality_service.py` | latest success 또는 사용자 선택 baseline, recommendation stale 검증, candidate/judge usage, 품질 평가와 이력, schema/downstream gate, apply payload | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py apps/gateway/tests/api/cost_optimizer/test_recommendation_verification_api.py apps/gateway/tests/services/test_cost_optimizer_output_quality_service.py` | 통과 |
+| FR-014 | deployment/service | `apps/gateway/tests/services/test_deployment_parameter_optimization_service.py` | 대상 LLM node만 저장하고 비 LLM/missing node는 거부하며, 대상 node의 실제 검증 비용만 누적하고 한도 도달 뒤 새 검증을 차단 | 작성 완료 | targeted pytest | 통과 |
+| FR-014 | frontend deployment/manage | `apps/client/app/features/workflow/components/deployment/DeploymentFlowModal.test.tsx`, `AutomaticOptimizationManagementModal.test.tsx` | 배포 3단계에서 자동 최적화 설정 전달, 관리 modal에서 대상 node를 보존한 채 주기/예산 수정 | 작성 완료 | targeted Vitest | 통과 |
 
 ## Workflow-Aware Adaptive Routing Tests
 
@@ -193,8 +196,10 @@ evidence pipeline이 없으면 Workflow-Aware Adaptive Routing 구현 완료로 
 | FR-011-P04 | preview blocked | default/fallback model 모두 실행 주체에게 사용 불가하다 | preview API를 호출한다 | `409 model_routing.no_available_model` safe error를 반환한다. |
 | FR-011-P05 | preview deployment boundary | current draft의 target node 설정이 deployment snapshot과 다르다 | preview API를 호출한다 | draft가 아니라 deployment snapshot/persisted policy를 평가하고 `draft_matches_deployment=false`를 반환한다. |
 | FR-011-P06 | preview no side effect | preview를 한 번 호출한다 | DB write/task spy를 확인한다 | workflow run, node run, usage log, policy event, refresh counter, refresh task가 생성 또는 변경되지 않는다. |
-| FR-011-P07 | Test Sidebar 실행 노드 상세 | 자동 라우팅 trace가 있는 LLM node 테스트 실행이 완료됐다 | 해당 node의 `상세 보기`를 누른다 | 페이지 이동 없이 같은 Sidebar에서 상태·시간·비용·전체 출력·입력군 매칭·선택 이유·policy version을 표시한다. 테스트 실행은 정책 학습/갱신에 포함되지 않는다는 안내를 표시하고, `테스트 결과로 돌아가기`로 목록에 복귀한다. |
+| FR-011-P07 | Test Sidebar 실행 노드 상세 | 자동 라우팅 trace가 있는 LLM node 테스트 실행이 완료됐다 | 해당 node의 `상세 보기`를 누른다 | 페이지 이동 없이 같은 Sidebar에서 상태·시간·비용·전체 출력을 먼저 표시한 뒤, 등록된 모든 입력군의 유사도·개별 기준·최소 점수 차이·입력군 매칭·선택 이유·policy version을 표시한다. raw input/vector는 노출하지 않는다. 테스트 실행은 정책 학습/갱신에 포함되지 않는다는 안내를 표시하고, `테스트 결과로 돌아가기`로 목록에 복귀한다. |
 | FR-011-P08 | Test Sidebar 실제 fallback | 자동 라우팅 LLM node가 primary 호출 실패 뒤 fallback으로 성공했다 | node 상세를 연다 | 최초 선택 모델, 안전한 실패 사유, 실제 사용한 fallback 모델을 `실제 대체 실행` block으로 표시한다. 계획된 fallback만 있는 정상 실행과 혼동하지 않는다. |
+| FR-011-P09 | Test Sidebar 배포 정책 실행 | 자동 라우팅 LLM node의 현재 draft 설정 fingerprint가 활성 deployment snapshot과 같고 active policy row가 있다 | Test Sidebar에서 실행한다 | stream context는 해당 deployment policy lookup만 허용하고 runtime trace에 `decision_source=test_policy_preview`, `policy_source=active_deployment`, `included_in_policy_learning=false`를 남긴다. workflow run의 `deployment_id`는 비워 운영 표본/refresh counter에 포함하지 않는다. |
+| FR-011-P10 | Test Sidebar 정책 stale 차단 | current draft의 자동 라우팅 LLM node 설정 fingerprint가 활성 deployment snapshot과 다르다 | Test Sidebar에서 실행한다 | Gateway는 해당 node를 policy preview 대상에서 제외한다. runtime은 저장 모델로 실행하며 오래된 deployment policy를 평가하지 않는다. |
 
 ## LLM Parameter Recommendation Tests
 

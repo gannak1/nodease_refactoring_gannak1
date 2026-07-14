@@ -1,7 +1,7 @@
 # Workflow Component Spec
 
 Status: Draft
-Verified Against: `feature/mba-219 @ 5b1cf366`
+Verified Against: `feature/mba-198 @ 92669f3`
 
 ## Condition Exit Layout
 
@@ -114,6 +114,10 @@ Main generation과 Memory summary provider adapter는 Workflow admission 안에�
 
 - `TestSidebar`
   - 테스트 입력값을 받고 기존 workflow stream 실행을 시작한다.
+  - 오른쪽에 고정되며 기본 폭은 `480px`이다. 왼쪽 세로 handle을 드래그해 `380px`에서 `640px` 사이로 폭을 조정한다.
+  - 화면 폭이 최소 sidebar 폭과 canvas 가시 영역을 동시에 보장하지 못하면 handle을 숨기고 현재 화면 안에 들어오는 폭으로 표시한다.
+  - handle은 keyboard focus가 가능하며 `ArrowLeft`/`ArrowRight`로 `20px`씩, `Home`/`End`로 최소/최대 폭을 조절한다.
+  - 조정 폭은 같은 편집 세션의 패널 close/open 동안 유지한다.
   - 실행 중/완료된 노드별 상태, 소요 시간, 비용, 토큰 사용량을 표시한다.
   - 완료된 노드의 소요 시간, 비용, 토큰 사용량은 `node_finish` 이벤트의 `latency_ms`, `total_cost`, `total_tokens` 표준 필드를 우선 사용한다.
   - 표준 필드가 없으면 소요 시간은 프론트 수신 시각 기준 fallback을 사용할 수 있고, 비용/토큰은 `-`로 표시한다.
