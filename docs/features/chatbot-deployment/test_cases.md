@@ -1,6 +1,7 @@
 # Chatbot Deployment Test Cases
 
 Status: Draft
+Verified Against: `origin/dev @ 32fb602f`
 
 ## Unit Tests
 
@@ -71,6 +72,18 @@ Status: Draft
 - 인증 내부 실행은 `execute` 권한 없는 사용자에게 거부한다.
 - 공개 실행은 무인증 표면이므로 private Knowledge/RAG 후보를 anonymous public-only 경계 밖으로 확장하지 않는다.
 - 공개 챗봇 활성화 preflight는 client-supplied audience hint로 우회할 수 없다.
+
+## MBA-238 Internal Chatbot Subject Integrity Tests
+
+- 인증 실행 request body의 top-level `user_id`, `organization_id`, `execution_subject`와 기타
+  unknown field는 schema validation에서 거부하고 실행 service를 호출하지 않는다.
+- Gateway가 dispatch하는 subject는 현재 로그인 사용자여야 하며 deployment creator,
+  workflow owner 또는 request input으로 대체되지 않는다. Organization은 server가 조회한
+  deployment app organization을 사용한다.
+- `X-Organization-Id`가 app organization과 다르면 workflow permission check와 dispatch 전에
+  resource-hiding 응답으로 차단한다.
+- Gateway subject dispatch의 기존 service/API 테스트를 재사용하고, Knowledge 후보 차이는
+  production PostgreSQL resolver와 Workflow LLM node 통합 테스트에서 검증한다.
 
 ## Target Runtime Boundary Tests
 

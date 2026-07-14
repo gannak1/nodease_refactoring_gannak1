@@ -1,6 +1,7 @@
 # Knowledge Test Cases
 
 Status: Draft
+Verified Against: `origin/dev @ 32fb602f`
 이 문서는 현재 RAG 동작과 목표 KB 통합 모델에 필요한 테스트 범위를 함께 기록한다. MBA-105 목표 모델 테스트는 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)과 [implementation_baseline.md](implementation_baseline.md)의 임시 baseline을 기준으로 구현 blocker가 된다.
 
 ## Unit Tests
@@ -148,6 +149,25 @@ Status: Draft
 - Worker-first canary는 구 task drain 뒤 Gateway write와 Client를 순서대로 노출하고,
   rollback은 Client/Gateway write 중지와 drain 뒤 Worker를 되돌린다. 구 Worker가
   Collection graph를 소비할 수 있는 상태에서는 rollout/rollback acceptance가 실패다.
+
+## MBA-238 Internal Chatbot User Permission Integration Tests
+
+- 실제 PostgreSQL production candidate adapter에서 같은 organization의 Dev Team 사용자,
+  Planning Team 사용자, user-direct `operator` 사용자와 Knowledge 권한이 없는 사용자를
+  한 fixture로 비교한다. 각 사용자는 자신의 team-bound 또는 user-direct KB `use`와
+  선택한 Collection `route`를 모두 충족한 후보만 얻어야 한다.
+- 다른 organization의 사용자와 동명 리소스는 target organization 후보에 포함되지 않는다.
+  이 격리는 in-memory query fake가 아니라 실제 organization, membership, permission
+  predicate로 검증한다.
+- Runtime resolver가 반환하지 않은 KB는 embedding 또는 vector retrieval 입력에 전달되지
+  않는다. 최종 후보가 0개이면 embedding, retrieval, LLM provider를 모두 건너뛰고 표준
+  no-evidence 응답을 반환한다.
+- Collection 유래 evidence와 권한 필터 관측값에는 child KB/Collection identity, raw content,
+  정확한 denied count가 없어야 한다. 허용/거부 synthetic marker는 응답, citation,
+  trace summary와 audit projection 전체에서 검사한다.
+- 기존 MBA-232/MBA-233/MBA-241 테스트가 snapshot, bounded scan, resolver failure,
+  citation redaction을 이미 검증하면 해당 테스트를 acceptance evidence로 재사용하고 같은
+  단위 테스트를 MBA-238 이름으로 복제하지 않는다.
 
 ## Knowledge Base API Tests
 
