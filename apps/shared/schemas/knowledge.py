@@ -157,7 +157,7 @@ class KnowledgeCollectionItemLinkRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     knowledge_base_id: UUID
-    rank: int = Field(default=0, ge=0)
+    rank: int | None = Field(default=None, ge=0, deprecated=True)
     acknowledged_public_runtime_exposure: bool = False
 
 
@@ -174,6 +174,12 @@ class KnowledgeCollectionItemResponse(BaseModel):
 
 class KnowledgeCollectionItemsResponse(BaseModel):
     items: list[KnowledgeCollectionItemResponse] = Field(default_factory=list)
+    order_revision: str = Field(
+        ...,
+        pattern=r"^ord_v1_[0-9a-f]{64}$",
+    )
+    reorder_supported: bool = True
+    safe_reason_code: Literal["item_reorder_limit_exceeded"] | None = None
 
 
 class KnowledgeCollectionItemReorderEntry(BaseModel):
@@ -187,7 +193,11 @@ class KnowledgeCollectionItemReorderRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     items: list[KnowledgeCollectionItemReorderEntry] = Field(
-        ..., min_length=1, max_length=500
+        ..., max_length=500
+    )
+    expected_order_revision: str = Field(
+        ...,
+        pattern=r"^ord_v1_[0-9a-f]{64}$",
     )
     acknowledged_public_runtime_exposure: bool = False
 
@@ -219,6 +229,32 @@ class KnowledgeCollectionPermissionBundleGrantRequest(BaseModel):
     role_bundle: KnowledgeCollectionRoleBundle
 
 
+class KnowledgeCollectionPermissionBulkBundleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    collection_ids: list[UUID] = Field(..., min_length=1, max_length=50)
+    operation: Literal["grant", "revoke"]
+    subject_type: Literal["team", "user"]
+    subject_id: UUID
+    role_bundle: KnowledgeCollectionRoleBundle
+
+    @field_validator("collection_ids")
+    @classmethod
+    def validate_unique_collection_ids(cls, value: list[UUID]) -> list[UUID]:
+        if len(set(value)) != len(value):
+            raise ValueError("collection_ids must be unique")
+        return value
+
+
+class KnowledgeCollectionPermissionBulkBundleResponse(BaseModel):
+    operation: Literal["grant", "revoke"]
+    subject_type: Literal["team", "user"]
+    role_bundle: KnowledgeCollectionRoleBundle
+    target_count_bucket: Literal["0", "1", "2-10", "11-50"]
+    changed_count_bucket: Literal["0", "1", "2-10", "11-50"]
+    unchanged_count_bucket: Literal["0", "1", "2-10", "11-50"]
+
+
 class KnowledgeCollectionPermissionResponse(BaseModel):
     permission_id: UUID
     subject_type: Literal["team", "user"]
@@ -240,8 +276,8 @@ class KnowledgeDelegationSubject(BaseModel):
 
 
 class KnowledgeDelegationSubjectsResponse(BaseModel):
-    teams: list[KnowledgeDelegationSubject] = Field(default_factory=list)
-    users: list[KnowledgeDelegationSubject] = Field(default_factory=list)
+    subjects: list[KnowledgeDelegationSubject] = Field(default_factory=list)
+    next_cursor: str | None = None
 
 
 class KnowledgeCollectionVisibilityRequest(BaseModel):

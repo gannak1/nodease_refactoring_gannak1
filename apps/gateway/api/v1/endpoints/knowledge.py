@@ -26,8 +26,21 @@ from apps.gateway.application.knowledge_administration.domain_permissions import
     DomainPermissionSubjectHidden,
     OrganizationManagerRequired,
 )
+from apps.gateway.application.knowledge_administration.collection_operations import (
+    CollectionHidden,
+    CollectionInputInvalid,
+    CollectionItemRank,
+    CollectionOperationCommand,
+    CollectionPermissionDenied,
+    CollectionPersistenceFailed,
+    CollectionPolicyBlocked,
+    CollectionPolicyDenied,
+    CollectionStateConflict,
+    ReorderCollectionItemsCommand,
+)
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.composition.knowledge_administration import (
+    build_knowledge_collection_lifecycle_and_order_use_case,
     build_knowledge_domain_permission_use_case,
 )
 from apps.gateway.utils.api_errors import raise_api_error
@@ -98,6 +111,8 @@ from apps.shared.schemas.knowledge import (
     KnowledgeCollectionListResponse,
     KnowledgeCollectionPermissionGrantRequest,
     KnowledgeCollectionPermissionBundleGrantRequest,
+    KnowledgeCollectionPermissionBulkBundleRequest,
+    KnowledgeCollectionPermissionBulkBundleResponse,
     KnowledgeCollectionPermissionsResponse,
     KnowledgeCollectionResponse,
     KnowledgeCollectionUpdateRequest,
@@ -300,6 +315,61 @@ def _raise_collection_service_error(
         exc.message,
         exc.details,
     )
+
+
+def _raise_collection_operation_error(request: Request, exc: Exception) -> None:
+    if isinstance(exc, CollectionHidden):
+        raise_api_error(
+            request,
+            status.HTTP_404_NOT_FOUND,
+            "resource.hidden",
+            "Resource not found.",
+        )
+    if isinstance(exc, CollectionPermissionDenied):
+        raise_api_error(
+            request,
+            status.HTTP_403_FORBIDDEN,
+            "permission.denied",
+            "Knowledge Collection permission is required.",
+        )
+    if isinstance(exc, CollectionPolicyDenied):
+        raise_api_error(
+            request,
+            status.HTTP_403_FORBIDDEN,
+            "policy.denied",
+            "System-managed collections cannot be manually changed.",
+        )
+    if isinstance(exc, CollectionPolicyBlocked):
+        raise_api_error(
+            request,
+            status.HTTP_409_CONFLICT,
+            "policy.blocked",
+            "Knowledge Collection change is blocked by policy.",
+            {"policy_reason": exc.reason_code},
+        )
+    if isinstance(exc, CollectionInputInvalid):
+        raise_api_error(
+            request,
+            status.HTTP_400_BAD_REQUEST,
+            "validation.failed",
+            "Knowledge Collection request is invalid.",
+        )
+    if isinstance(exc, CollectionStateConflict):
+        raise_api_error(
+            request,
+            status.HTTP_409_CONFLICT,
+            "conflict",
+            "Knowledge Collection state changed. Reload and try again.",
+            {"reason": exc.reason_code},
+        )
+    if isinstance(exc, CollectionPersistenceFailed):
+        raise_api_error(
+            request,
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "knowledge.collection_write_failed",
+            "Knowledge Collection change could not be saved.",
+        )
+    raise exc
 
 
 def _raise_domain_permission_error(request: Request, exc: Exception) -> None:
@@ -758,13 +828,22 @@ def list_knowledge_domain_permissions(
 )
 def list_knowledge_domain_delegation_subjects(
     request: Request,
+    subject_type: str | None = Query(default=None),
+    query: str | None = Query(default=None),
+    cursor: str | None = Query(default=None),
+    limit: str = Query(default="25"),
     x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     service = _knowledge_collection_service(db, request, x_organization_id, current_user)
     try:
-        return service.list_domain_delegation_subjects()
+        return service.list_domain_delegation_subjects(
+            subject_type=subject_type,
+            query=query,
+            cursor=cursor,
+            limit=limit,
+        )
     except KnowledgeCollectionServiceError as exc:
         _raise_collection_service_error(request, exc)
 
@@ -945,6 +1024,24 @@ def list_knowledge_collections(
 
 
 @router.post(
+    "/collection-permissions/bulk-bundles",
+    response_model=KnowledgeCollectionPermissionBulkBundleResponse,
+)
+def mutate_knowledge_collection_permission_bundles(
+    permission_request: KnowledgeCollectionPermissionBulkBundleRequest,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = _knowledge_collection_service(db, request, x_organization_id, current_user)
+    try:
+        return service.mutate_permission_bundle_bulk(permission_request)
+    except KnowledgeCollectionServiceError as exc:
+        _raise_collection_service_error(request, exc)
+
+
+@router.post(
     "/collections",
     response_model=KnowledgeCollectionResponse,
     status_code=status.HTTP_201_CREATED,
@@ -1002,11 +1099,60 @@ def archive_knowledge_collection(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    service = _knowledge_collection_service(db, request, x_organization_id, current_user)
+    organization_id = resolve_active_organization_id(
+        db, request, x_organization_id, current_user.id
+    )
     try:
-        service.archive_collection(collection_id)
-    except KnowledgeCollectionServiceError as exc:
-        _raise_collection_service_error(request, exc)
+        build_knowledge_collection_lifecycle_and_order_use_case(db).archive(
+            CollectionOperationCommand(
+                actor_id=current_user.id,
+                organization_id=organization_id,
+                collection_id=collection_id,
+            )
+        )
+    except (
+        CollectionHidden,
+        CollectionPermissionDenied,
+        CollectionPolicyBlocked,
+        CollectionPolicyDenied,
+        CollectionStateConflict,
+        CollectionPersistenceFailed,
+    ) as exc:
+        _raise_collection_operation_error(request, exc)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/collections/{collection_id}/restore",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def restore_knowledge_collection(
+    collection_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = resolve_active_organization_id(
+        db, request, x_organization_id, current_user.id
+    )
+    try:
+        build_knowledge_collection_lifecycle_and_order_use_case(db).restore(
+            CollectionOperationCommand(
+                actor_id=current_user.id,
+                organization_id=organization_id,
+                collection_id=collection_id,
+            )
+        )
+    except (
+        CollectionHidden,
+        CollectionPermissionDenied,
+        CollectionPolicyBlocked,
+        CollectionPolicyDenied,
+        CollectionStateConflict,
+        CollectionPersistenceFailed,
+    ) as exc:
+        _raise_collection_operation_error(request, exc)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -1023,7 +1169,7 @@ def list_knowledge_collection_items(
 ):
     service = _knowledge_collection_service(db, request, x_organization_id, current_user)
     try:
-        return KnowledgeCollectionItemsResponse(items=service.list_items(collection_id))
+        return service.list_items_response(collection_id)
     except KnowledgeCollectionServiceError as exc:
         _raise_collection_service_error(request, exc)
 
@@ -1042,8 +1188,7 @@ def link_knowledge_collection_item(
 ):
     service = _knowledge_collection_service(db, request, x_organization_id, current_user)
     try:
-        item = service.link_item(collection_id, item_request)
-        return KnowledgeCollectionItemsResponse(items=[item])
+        return service.link_item(collection_id, item_request)
     except KnowledgeCollectionServiceError as exc:
         _raise_collection_service_error(request, exc)
 
@@ -1060,11 +1205,40 @@ def reorder_knowledge_collection_items(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    service = _knowledge_collection_service(db, request, x_organization_id, current_user)
+    organization_id = resolve_active_organization_id(
+        db, request, x_organization_id, current_user.id
+    )
     try:
-        return KnowledgeCollectionItemsResponse(
-            items=service.reorder_items(collection_id, reorder_request)
+        build_knowledge_collection_lifecycle_and_order_use_case(db).reorder(
+            ReorderCollectionItemsCommand(
+                actor_id=current_user.id,
+                organization_id=organization_id,
+                collection_id=collection_id,
+                expected_order_revision=reorder_request.expected_order_revision,
+                items=tuple(
+                    CollectionItemRank(item_id=item.item_id, rank=item.rank)
+                    for item in reorder_request.items
+                ),
+                acknowledged_public_runtime_exposure=(
+                    reorder_request.acknowledged_public_runtime_exposure
+                ),
+            )
         )
+        return KnowledgeCollectionService(
+            db,
+            user_id=current_user.id,
+            organization_id=organization_id,
+        ).list_items_management_response(collection_id)
+    except (
+        CollectionHidden,
+        CollectionPermissionDenied,
+        CollectionPolicyBlocked,
+        CollectionPolicyDenied,
+        CollectionStateConflict,
+        CollectionInputInvalid,
+        CollectionPersistenceFailed,
+    ) as exc:
+        _raise_collection_operation_error(request, exc)
     except KnowledgeCollectionServiceError as exc:
         _raise_collection_service_error(request, exc)
 
@@ -1144,13 +1318,23 @@ def list_knowledge_collection_permissions(
 def list_knowledge_collection_delegation_subjects(
     collection_id: UUID,
     request: Request,
+    subject_type: str | None = Query(default=None),
+    query: str | None = Query(default=None),
+    cursor: str | None = Query(default=None),
+    limit: str = Query(default="25"),
     x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     service = _knowledge_collection_service(db, request, x_organization_id, current_user)
     try:
-        return service.list_delegation_subjects(collection_id)
+        return service.list_delegation_subjects(
+            collection_id,
+            subject_type=subject_type,
+            query=query,
+            cursor=cursor,
+            limit=limit,
+        )
     except KnowledgeCollectionServiceError as exc:
         _raise_collection_service_error(request, exc)
 
@@ -1197,6 +1381,26 @@ def grant_knowledge_collection_permission_bundle(
         )
     except KnowledgeCollectionServiceError as exc:
         _raise_collection_service_error(request, exc)
+
+
+@router.post(
+    "/collections/{collection_id}/permissions/bundles/revoke",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def revoke_knowledge_collection_permission_bundle(
+    collection_id: UUID,
+    permission_request: KnowledgeCollectionPermissionBundleGrantRequest,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    service = _knowledge_collection_service(db, request, x_organization_id, current_user)
+    try:
+        service.revoke_permission_bundle(collection_id, permission_request)
+    except KnowledgeCollectionServiceError as exc:
+        _raise_collection_service_error(request, exc)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.delete(
