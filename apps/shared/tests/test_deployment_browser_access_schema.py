@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -10,6 +12,7 @@ from apps.shared.schemas.deployment import (
     DeploymentBrowserAccessRevisionCreate,
     DeploymentCreate,
     DeploymentPreflightResponse,
+    DeploymentResponse,
 )
 from pydantic import ValidationError
 
@@ -161,3 +164,36 @@ def test_public_projection_contains_only_safe_browser_fields() -> None:
                 "app_id": str(uuid4()),
             }
         )
+
+
+@pytest.mark.parametrize(
+    "malformed_policy",
+    [
+        {**_policy(), "contract_version": "deployment_browser_access.v2"},
+        {**_policy(), "unexpected": True},
+        {"embedding": "invalid"},
+    ],
+)
+def test_deployment_response_normalizes_malformed_persisted_policy(
+    malformed_policy,
+) -> None:
+    persisted_row = SimpleNamespace(
+        id=uuid4(),
+        app_id=uuid4(),
+        version=1,
+        type=DeploymentType.CHATBOT,
+        graph_snapshot={"nodes": [], "edges": []},
+        created_by=uuid4(),
+        created_at=datetime.now(timezone.utc),
+        browser_access_policy=malformed_policy,
+    )
+    response = DeploymentResponse.model_validate(persisted_row)
+
+    assert response.browser_access_policy is not None
+    assert response.browser_access_policy.model_dump() == {
+        "contract_version": "deployment_browser_access.v1",
+        "embedding": {
+            "enabled": False,
+            "parent_origins": [],
+        },
+    }

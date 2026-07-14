@@ -10,7 +10,9 @@ from pydantic import (
     Field,
     StrictBool,
     StrictStr,
+    ValidationError,
     field_serializer,
+    field_validator,
 )
 
 DeploymentPreflightStatus = Literal["passed", "warning", "blocked"]
@@ -133,6 +135,22 @@ class DeploymentResponse(DeploymentBase):
 
     class Config:
         from_attributes = True
+
+    @field_validator("browser_access_policy", mode="before")
+    @classmethod
+    def normalize_malformed_persisted_browser_access_policy(cls, value):
+        if value is None or isinstance(value, DeploymentBrowserAccessPolicy):
+            return value
+        try:
+            return DeploymentBrowserAccessPolicy.model_validate(value)
+        except ValidationError:
+            return {
+                "contract_version": "deployment_browser_access.v1",
+                "embedding": {
+                    "enabled": False,
+                    "parent_origins": [],
+                },
+            }
 
     @field_serializer("graph_snapshot")
     def serialize_graph_snapshot(self, value: Dict[str, Any]) -> Dict[str, Any]:

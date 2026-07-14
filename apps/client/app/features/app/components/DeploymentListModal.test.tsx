@@ -122,4 +122,33 @@ describe('DeploymentListModal browser access revision', () => {
     ).not.toBeInTheDocument();
     expect(screen.queryByText(/iframe 표시/)).not.toBeInTheDocument();
   });
+
+  it('marks an inactive enabled revision as pending activation', async () => {
+    mockedAppApi.getDeployments.mockResolvedValueOnce([
+      {
+        ...chatbotDeployment,
+        is_active: false,
+        browser_access_policy: {
+          contract_version: 'deployment_browser_access.v1',
+          embedding: {
+            enabled: true,
+            parent_origins: ['https://portal.example.com'],
+          },
+        },
+      },
+    ]);
+
+    render(
+      <DeploymentListModal
+        appId="app-1"
+        appName="Support bot"
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(
+      await screen.findByText('허용 origin 1개 · 활성화 후 적용'),
+    ).toBeVisible();
+    expect(screen.queryByText(/집행 중/)).not.toBeInTheDocument();
+  });
 });

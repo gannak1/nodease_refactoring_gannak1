@@ -36,6 +36,7 @@ export interface Deployment {
   app_id: string;
   version: number;
   type: DeploymentType;
+  url_slug?: string;
   description?: string;
   is_active: boolean;
   created_at: string;

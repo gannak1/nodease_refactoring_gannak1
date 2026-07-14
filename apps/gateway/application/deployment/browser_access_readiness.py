@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -70,6 +71,8 @@ def build_browser_access_readiness_report(
 def _policy_state(candidate: BrowserAccessReadinessCandidate) -> str:
     if candidate.browser_access_policy is None:
         return "legacy_null"
+    if not isinstance(candidate.browser_access_policy, Mapping):
+        return "malformed"
     try:
         policy = normalize_browser_access_policy(
             candidate.deployment_type,

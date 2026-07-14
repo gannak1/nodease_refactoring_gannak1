@@ -119,6 +119,11 @@ def test_public_projection_query_requires_exact_active_pointer_owner_state_and_t
     assert result.deployment_version == 5
     assert result.deployment_type == "chatbot"
     query = db.queries[0]
+    assert tuple(column.key for column in query.model_args) == (
+        "version",
+        "type",
+        "browser_access_policy",
+    )
     sql = _compiled_criteria(query)
     assert "apps.url_slug = 'public-chatbot'" in sql
     assert "apps.active_deployment_id = workflow_deployments.id" in sql

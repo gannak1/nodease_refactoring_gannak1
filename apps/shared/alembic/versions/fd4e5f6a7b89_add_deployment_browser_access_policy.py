@@ -1,7 +1,7 @@
 """Add immutable deployment browser access policy.
 
 Revision ID: fd4e5f6a7b89
-Revises: 0f4a5b6c7d89
+Revises: c7f8a9b0d123
 Create Date: 2026-07-14 00:00:00.000000
 """
 
@@ -13,7 +13,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision: str = "fd4e5f6a7b89"
-down_revision: Union[str, Sequence[str], None] = "0f4a5b6c7d89"
+down_revision: Union[str, Sequence[str], None] = "c7f8a9b0d123"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

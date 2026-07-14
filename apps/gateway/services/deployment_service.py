@@ -551,6 +551,11 @@ class DeploymentService:
             .all()
         )
 
+        # The slug belongs to App but is part of the authenticated deployment
+        # response contract used to construct share URLs.
+        for deployment in deployments:
+            deployment.url_slug = app.url_slug
+
         return deployments
 
     @staticmethod

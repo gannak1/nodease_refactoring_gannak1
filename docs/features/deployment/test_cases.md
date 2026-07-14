@@ -5,6 +5,7 @@ Verified Against: `feature/mba-254 @ 95e821ef`
 
 ## Unit Tests
 
+- Readiness inventory는 object가 아닌 JSONB policy와 malformed/unknown contract를 예외로 중단하지 않고 `malformed`로 집계하며 raw policy 값을 출력하지 않는다.
 - Deployment application package는 FastAPI, SQLAlchemy, DB model, concrete adapter/service/composition module을 import하지 않는다.
 - Pure preflight use case는 repository port snapshot만으로 결과를 만들고 active blocker는 HTTPException이 아닌 typed `DeploymentPreflightBlocked`를 반환한다. Compatibility facade만 이를 기존 409 envelope으로 mapping한다.
 - Preflight graph scanner는 shared strict parser로 root/embedded LLM node의 direct KB와 Collection 목록을 검사한다. Malformed shape와 20개 초과는 active/inactive 여부와 무관한 fixed non-downgradable blocker다.
@@ -35,6 +36,7 @@ Verified Against: `feature/mba-254 @ 95e821ef`
 
 ## API Tests
 
+- Authenticated deployment list는 App `url_slug`를 각 deployment 응답에 포함하되 App `auth_secret`을 목록 조합 과정에서 주입하지 않는다.
 - `POST /api/v1/deployments/preflight`는 blocked 결과도 `200 OK`와 `status="blocked"`로 반환한다.
 - `POST /api/v1/deployments/preflight` with `is_active=false`는 null unresolved blocker만 `status="warning"`으로 반환하되 required action은 유지한다. Non-null unavailable credential과 structural blocker는 `status="blocked"`다.
 - Client Mail node 기본 데이터는 `credential_id=null`과 `configuration_state=unresolved`를 함께 생성한다. 이 형태의 draft 저장은 허용하지만 credential을 선택하기 전 실행·활성화는 configuration preflight에서 차단한다. 구버전 Client가 만든 null Mail node는 상태 필드가 없어도 draft 저장과 inactive warning이 가능하지만 명시적 null 상태는 invalid다.
@@ -95,6 +97,9 @@ Verified Against: `feature/mba-254 @ 95e821ef`
 - Webhook capture deletes the session after the captured status is read once.
 
 ## E2E Tests
+
+- Workflow 설정 사이드바는 deployment list의 App `url_slug`로 공개 Chatbot/Widget URL을 구성하고 slug 누락 시 `/embed/chat/undefined` 링크와 복사 동작을 렌더링하지 않는다.
+- 배포 목록은 enabled policy라도 비활성 revision이면 `활성화 후 적용`, 활성 revision이면 `집행 중`으로 구분한다.
 
 - Deployment modal은 preflight preview가 blocked인 경우 safe reason과 required actions를 표시하고 hidden KB identity를 표시하지 않는다.
 - Inactive save 후 activation을 시도하면 같은 preflight blocker가 사용자에게 표시된다.
@@ -160,7 +165,10 @@ Verified Against: `feature/mba-254 @ 95e821ef`
 - Missing/null/unlisted Origin, wildcard, client config와 environment fallback은 public browser session activation/create를 허용하지 않는다. Versioned deployment allowlist만 통과한다.
 - `browser_access_policy` create/preflight/revision은 같은 canonical validator와 fixed error code를 사용하고 Client local normalization은 server result를 덮어쓰지 않는다.
 - Browser policy revision은 source immutable deployment snapshot을 복제한 새 version이며 default inactive, source row/current draft/active pointer 불변과 transaction-bound audit를 검증한다.
+- Active browser policy revision은 일반 create/toggle과 같은 composed node catalog 및 actor principal preflight를 사용해 unresolved external node를 활성화하지 않는다.
+- Deployment 관리 list/detail 응답은 legacy unknown/malformed browser policy를 canonical disabled policy로 대체하고 response validation 500을 만들지 않는다.
 - Public browser projection은 active pointer, app ownership, active 상태와 Chatbot/Widget type을 함께 검증하고 null/malformed policy를 disabled로 닫으며 graph/config/secret/organization/KB identity를 노출하지 않는다.
+- Public browser projection query는 version/type/policy만 조회하고 graph/config/schema JSONB를 로드하지 않는다.
 - Next embed response는 exact parent CSP 또는 `'none'` 하나만 반환하고 broad static CSP/XFO 충돌/cache stale을 만들지 않는다. Gateway lookup timeout/error도 fail-open하지 않는다.
 - Public info/run의 수동 wildcard CORS 제거 후 same-origin iframe은 정상이고 external direct JavaScript는 deployment parent 목록으로 ACAO를 얻지 못한다.
 - Browser access readiness report는 current active pointer의 `chatbot`/`widget`만 분류하고 `legacy_null`, `malformed`, `disabled`, `enabled` count와 safe deployment ID/version/type만 출력한다. Raw origin, app/organization identity, graph/config와 secret은 출력하지 않는다.

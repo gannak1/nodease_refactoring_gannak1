@@ -1,22 +1,31 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 
 from sqlalchemy.orm import Session
 
-from apps.gateway.adapters.db.deployment_preflight_repository import (
-    SqlAlchemyDeploymentPreflightRepository,
-)
 from apps.gateway.application.deployment.browser_access_models import (
     BrowserAccessSourceSnapshot,
 )
 from apps.gateway.application.deployment.preflight import DeploymentPreflightUseCase
 from apps.gateway.services.workflow_service import WorkflowService
 
+BrowserAccessPreflightFactory = Callable[
+    [BrowserAccessSourceSnapshot, uuid.UUID],
+    DeploymentPreflightUseCase,
+]
+
 
 class DeploymentBrowserAccessActivationGuard:
-    def __init__(self, db: Session) -> None:
+    def __init__(
+        self,
+        db: Session,
+        *,
+        preflight_factory: BrowserAccessPreflightFactory,
+    ) -> None:
         self.db = db
+        self.preflight_factory = preflight_factory
 
     def enforce(
         self,
@@ -31,21 +40,7 @@ class DeploymentBrowserAccessActivationGuard:
             organization_id=source.organization_id,
             require_resolved=True,
         )
-        _build_preflight_use_case(self.db, source).enforce_active_publish(
+        self.preflight_factory(source, actor_id).enforce_active_publish(
             deployment_type=source.deployment_type,
             graph_snapshot=source.graph_snapshot,
         )
-
-
-def _build_preflight_use_case(
-    db: Session,
-    source: BrowserAccessSourceSnapshot,
-) -> DeploymentPreflightUseCase:
-    return DeploymentPreflightUseCase(
-        SqlAlchemyDeploymentPreflightRepository(db),
-        organization_id=source.organization_id,
-        candidate_graphs_by_app_id={source.app_id: source.graph_snapshot},
-        candidate_deployment_types_by_app_id={
-            source.app_id: source.deployment_type
-        },
-    )

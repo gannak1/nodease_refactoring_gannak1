@@ -347,6 +347,9 @@ export function SettingsSidebar() {
 
                 // Public Chatbot / Widget
                 if (deploy.type === 'widget' || deploy.type === 'chatbot') {
+                  if (!deploy.url_slug) {
+                    return null;
+                  }
                   const publicUrl = `${origin}/embed/chat/${deploy.url_slug}`;
                   const embedding = deploy.browser_access_policy?.embedding;
                   const embedCode = `<iframe

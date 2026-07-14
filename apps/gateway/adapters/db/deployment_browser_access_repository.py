@@ -148,7 +148,11 @@ class SqlAlchemyDeploymentBrowserAccessRepository:
         url_slug: str,
     ) -> ActiveBrowserAccessSnapshot | None:
         deployment = (
-            self.db.query(WorkflowDeployment)
+            self.db.query(
+                WorkflowDeployment.version,
+                WorkflowDeployment.type,
+                WorkflowDeployment.browser_access_policy,
+            )
             .join(
                 App,
                 and_(

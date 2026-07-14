@@ -88,7 +88,22 @@ def build_browser_access_revision_use_case(
             db,
             scheduler_service=scheduler_service,
         ),
-        DeploymentBrowserAccessActivationGuard(db),
+        DeploymentBrowserAccessActivationGuard(
+            db,
+            preflight_factory=lambda source, actor_id: (
+                build_deployment_preflight_use_case(
+                    db,
+                    organization_id=source.organization_id,
+                    principal_id=actor_id,
+                    candidate_graphs_by_app_id={
+                        source.app_id: source.graph_snapshot
+                    },
+                    candidate_deployment_types_by_app_id={
+                        source.app_id: source.deployment_type
+                    },
+                )
+            ),
+        ),
         SqlAlchemyDeploymentBrowserAccessAuditRecorder(db, actor=actor),
         SqlAlchemyUnitOfWork(db),
     )

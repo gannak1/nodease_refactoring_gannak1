@@ -12,6 +12,7 @@ Verified Against: `feature/mba-254 @ 95e821ef`
 | POST | `/api/v1/deployments/{source_deployment_id}/browser-access-revisions` | source snapshot을 복제한 browser policy 새 version 생성 | 로그인 + workflow deploy/manage 권한 |
 | PATCH | `/api/v1/deployments/{deployment_id}/toggle` | 배포 활성/비활성 전환. 활성화 시 blocking preflight를 통과해야 한다 | 로그인 + workflow deploy/manage 권한 |
 | DELETE | `/api/v1/deployments/{deployment_id}` | 배포 삭제. active 삭제 시 자동 승격하지 않는다 | 로그인 + workflow deploy/manage 권한 |
+| GET | `/api/v1/deployments?app_id={app_id}` | 배포 이력과 App 소유 `url_slug` 조회 | 로그인 + workflow read 권한 |
 | GET | `/api/v1/deployments/public/{url_slug}/info` | Public app 화면용 safe metadata 조회 | 인증 없음. 기본 policy는 `webapp`, `widget`, `chatbot`만 허용 |
 | GET | `/api/v1/deployments/public/{url_slug}/browser-access` | Public Chatbot/Widget iframe CSP safe projection | 인증 없음. active `widget`/`chatbot`만 허용 |
 | GET | `/api/v1/deployments/{deployment_id}/run-info` | 로그인 사용자 실행 화면에 필요한 safe deployment metadata 조회 | 로그인 + workflow execute 권한 |
@@ -22,6 +23,10 @@ Verified Against: `feature/mba-254 @ 95e821ef`
 | POST | `/api/v1/hooks/{url_slug}/capture/cancel?capture_id=...` | Cancel a pending capture session | User session + same requester + target workflow `deploy` permission + capture nonce |
 
 ## Request And Response Models
+
+### `GET /api/v1/deployments?app_id={app_id}`
+
+각 deployment 응답은 App 소유 `url_slug`를 포함해 Client가 공개 공유 URL을 구성할 수 있게 한다. `auth_secret`은 이 목록 조합 과정에서 주입하지 않는다. 저장된 `browser_access_policy`가 malformed이거나 알 수 없는 version이면 목록 전체를 실패시키지 않고 disabled V1 policy로 정규화한다.
 
 ### `GET /api/v1/deployments/public/{url_slug}/info`
 

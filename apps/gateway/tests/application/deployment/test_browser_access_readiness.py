@@ -67,3 +67,20 @@ def test_non_production_http_policy_is_not_ready_for_enforcement() -> None:
     ).safe_dict()
 
     assert report["counts"]["malformed"] == 1
+
+
+def test_non_object_json_values_are_reported_as_malformed() -> None:
+    malformed_values = ([{}], "invalid", 1, True)
+
+    report = build_browser_access_readiness_report(
+        [
+            _candidate(f"deployment-malformed-{index}", value)
+            for index, value in enumerate(malformed_values)
+        ]
+    ).safe_dict()
+
+    assert report["counts"]["total"] == len(malformed_values)
+    assert report["counts"]["malformed"] == len(malformed_values)
+    assert {
+        item["policy_state"] for item in report["deployments"]
+    } == {"malformed"}
