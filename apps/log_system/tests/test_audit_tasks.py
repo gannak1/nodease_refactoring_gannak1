@@ -399,10 +399,12 @@ def test_reconciliation_dispatches_persisted_refresh_after_batch_commit(monkeypa
     organization_id = uuid4()
     audit = AuditLog(id=uuid4())
     events = []
+    reconcile_kwargs = []
     session = _Session(events=events)
     monkeypatch.setattr(audit_tasks, "SessionLocal", lambda: session)
 
     def reconcile(repository, **kwargs):
+        reconcile_kwargs.append(kwargs)
         repository.process_security_alert_audit(audit)
         repository.commit()
         return SimpleNamespace(processed_count=1)
@@ -424,6 +426,13 @@ def test_reconciliation_dispatches_persisted_refresh_after_batch_commit(monkeypa
 
     assert result == {"status": "processed", "processed_count": 1}
     assert events == [("enqueue", organization_id), "commit", "dispatch"]
+    assert reconcile_kwargs == [
+        {
+            "processor_name": "security-alert-v1",
+            "replay_horizon": audit_tasks.SECURITY_ALERT_MAX_WINDOW,
+            "batch_size": 100,
+        }
+    ]
 
 
 def test_cooldown_candidate_is_aggregated_without_threshold_candidate(monkeypatch):

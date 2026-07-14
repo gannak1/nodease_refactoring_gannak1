@@ -6,6 +6,7 @@ from typing import Optional
 
 from apps.shared.db.base import Base
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -224,6 +225,10 @@ class SecurityAlertReconciliationWatermark(Base):
             "(cursor_occurred_at IS NOT NULL AND cursor_audit_log_id IS NOT NULL)",
             name="ck_security_alert_reconciliation_cursor_pair",
         ),
+        CheckConstraint(
+            "reconciliation_generation >= 0",
+            name="ck_security_alert_reconcile_generation_nonnegative",
+        ),
     )
 
     processor_name: Mapped[str] = mapped_column(String(100), primary_key=True)
@@ -236,6 +241,12 @@ class SecurityAlertReconciliationWatermark(Base):
     cursor_audit_log_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         PGUUID(as_uuid=True), nullable=True
     )
+    reconciliation_generation: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -247,6 +258,47 @@ class SecurityAlertReconciliationWatermark(Base):
         nullable=False,
         default=_utc_now,
         onupdate=_utc_now,
+        server_default=text("now()"),
+    )
+
+
+class SecurityAlertReconciliationReceipt(Base):
+    __tablename__ = "security_alert_reconciliation_receipts"
+    __table_args__ = (
+        CheckConstraint(
+            "discovered_generation >= 0 AND evaluated_generation >= 0",
+            name="ck_security_alert_receipt_generations_nonnegative",
+        ),
+        CheckConstraint(
+            "evaluated_generation >= discovered_generation",
+            name="ck_security_alert_receipt_evaluation_order",
+        ),
+    )
+
+    processor_name: Mapped[str] = mapped_column(
+        String(100),
+        primary_key=True,
+    )
+    audit_log_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        primary_key=True,
+    )
+    discovered_generation: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+    evaluated_generation: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+    processed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utc_now,
         server_default=text("now()"),
     )
 

@@ -7,7 +7,7 @@ record_audit가 발행한 `audit.record`를 소비합니다. (기존 log_system/
 
 import logging
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Dict, NoReturn, Optional
 
 from apps.shared.celery_app import celery_app
@@ -45,7 +45,7 @@ _SECURITY_ALERT_NOTIFICATION_OUTBOX_TASK = (
     "security_alert.notification_outbox.deliver"
 )
 _SECURITY_ALERT_PROCESSOR = "security-alert-v1"
-_SECURITY_ALERT_RECONCILIATION_OVERLAP = timedelta(minutes=1)
+_SECURITY_ALERT_RECONCILIATION_BATCH_SIZE = 100
 
 
 class SecurityAlertTaskRetryError(RuntimeError):
@@ -355,7 +355,8 @@ def reconcile_security_alerts(self) -> Dict[str, Any]:
         result = reconcile_security_alert_batch(
             repository,
             processor_name=_SECURITY_ALERT_PROCESSOR,
-            overlap=_SECURITY_ALERT_RECONCILIATION_OVERLAP,
+            replay_horizon=SECURITY_ALERT_MAX_WINDOW,
+            batch_size=_SECURITY_ALERT_RECONCILIATION_BATCH_SIZE,
         )
         _dispatch_security_alert_updates(changed_organization_ids)
         return {

@@ -9,7 +9,7 @@ Security Alert는 검증된 organization 안에서 인증 사용자가 짧은 �
 
 이 기능의 source of truth는 개별 차단 사건을 저장하는 `audit_logs`와 탐지 결과 및 대응 상태를 저장하는 Security Alert다. Alert는 실제 침해를 확정하지 않고 관리자가 조사해야 할 위험 신호를 나타낸다.
 
-탐지와 lifecycle 정책은 [ADR-0028](../../decisions/ADR-0028-security-alert-detection-and-lifecycle.md)을 따른다. Canonical audit action naming은 [ADR-0008](../../decisions/ADR-0008-audit-action-naming-standard.md), organization scope 밖 resource hiding은 [ADR-0010](../../decisions/ADR-0010-resource-access-403-404-policy.md)을 따른다.
+탐지와 lifecycle 정책은 [ADR-0028](../../decisions/ADR-0028-security-alert-detection-and-lifecycle.md), late-arrival reconciliation은 [ADR-0042](../../decisions/ADR-0042-security-alert-reconciliation-receipts.md)를 따른다. Canonical audit action naming은 [ADR-0008](../../decisions/ADR-0008-audit-action-naming-standard.md), organization scope 밖 resource hiding은 [ADR-0010](../../decisions/ADR-0010-resource-access-403-404-policy.md)을 따른다.
 
 ## User Stories
 
@@ -86,7 +86,7 @@ Security Alert는 검증된 organization 안에서 인증 사용자가 짧은 �
 - SAL-REQ-036: Audit 저장 성공 이후 별도 비동기 task가 실시간 탐지를 수행해야 한다. 탐지는 원래 authorization 판단이나 사용자 응답을 지연하거나 변경해서는 안 된다.
 - SAL-REQ-037: 탐지 실패 시 원본 audit을 삭제하거나 authorization 결과를 바꾸지 않고 탐지 작업만 재시도해야 한다.
 - SAL-REQ-038: Reconciliation은 실시간 task와 같은 eligible-event 정규화와 rule 평가 함수를 사용해야 한다.
-- SAL-REQ-039: Reconciliation은 PostgreSQL watermark table에 기능 활성화 시각과 `(occurred_at, audit_log.id)` cursor를 durable하게 저장하고 overlap window를 사용해 worker 중단, publish 실패, 경계 시각 누락을 복구해야 한다. Batch가 완전히 성공한 뒤에만 cursor를 전진해야 한다.
+- SAL-REQ-039: Reconciliation은 PostgreSQL watermark의 기능 활성화 시각·batch generation과 processor별 audit receipt의 발견·최종 평가 generation을 durable하게 저장해야 한다. 활성화 이후 receipt가 없는 audit는 event-time cursor보다 과거에 늦게 commit돼도 처리 대상이어야 한다. 늦은 eligible audit가 기존 판단을 바꿀 수 있으므로 같은 organization·actor·action 범위에서 해당 audit부터 최대 rule window 안의 receipt 보유 후속 audit도 다시 평가하되 다른 organization·actor·action 범위와 window 밖 audit는 재평가하지 않아야 한다. 한 실행은 `(occurred_at, audit_log.id)` 순서로 최대 100건만 처리하고 성공한 batch의 receipt·generation·event-time cursor와 Alert/evidence·notification Outbox 변경만 같은 transaction에서 commit해야 한다. 실패한 batch는 모두 rollback하고 다음 retry 또는 1분 주기 실행이 같은 backlog부터 이어서 처리해야 한다. Rule window 평가는 계속 `occurred_at`을 사용해야 한다.
 - SAL-REQ-040: 실시간 task, retry, reconciliation이 같은 audit을 동시에 처리해도 evidence, occurrence, 활성 alert가 중복 생성되지 않아야 한다. 서로 다른 audit을 같은 활성 alert에 동시에 연결해도 occurrence를 유실하지 않고 `last_detected_at`은 가장 최신 event time을 유지해야 한다.
 - SAL-REQ-041: Alert 생성 또는 활성 alert 갱신 commit 이후 notification 변경 신호를 발행해야 한다.
 - SAL-REQ-042: Notification 발행 요청은 Alert 생성·occurrence/episode 갱신·lifecycle 변경과 같은 DB transaction의 durable Outbox에 기록해야 한다. Redis 발행 또는 현재 manager 수신자 조회 실패는 Alert transaction을 rollback하지 않고 최대 5회 재시도한 뒤 dead-letter로 보존해야 한다.

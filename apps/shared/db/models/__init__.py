@@ -87,6 +87,7 @@ from apps.shared.db.models.security_alert import (
     SecurityAlert,
     SecurityAlertAuditEvent,
     SecurityAlertNotificationOutbox,
+    SecurityAlertReconciliationReceipt,
     SecurityAlertReconciliationWatermark,
 )
 from apps.shared.db.models.team import (
@@ -177,6 +178,7 @@ __all__ = [
     "SecurityAlert",
     "SecurityAlertAuditEvent",
     "SecurityAlertNotificationOutbox",
+    "SecurityAlertReconciliationReceipt",
     "SecurityAlertReconciliationWatermark",
     "Organization",
     "OrganizationMembership",
