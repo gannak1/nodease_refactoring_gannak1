@@ -1072,6 +1072,7 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     security_alert_generation_revision = script.get_revision("2b6c7d8e9f02")
     current_merge_revision = script.get_revision("c7f8a9b0d123")
     deployment_browser_policy_revision = script.get_revision("fd4e5f6a7b89")
+    collection_sync_revision = script.get_revision("a7b8c9d0e1f2")
 
     assert safe_metadata_revision.down_revision == "fa7b8c9d0e12"
     assert set(merged_revision.down_revision) == {"fa7c8d9e0f12", "ff3a4b5c6d78"}
@@ -1116,8 +1117,10 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
         "a6f4d2c8e1b7",
     }
     assert deployment_browser_policy_revision.down_revision == "c7f8a9b0d123"
+    assert collection_sync_revision.down_revision == "b8e5f4a3c2d2"
     assert "2b6c7d8e9f02" in ancestry
     assert "a6f4d2c8e1b7" in ancestry
+    assert script.get_heads() == ["a7b8c9d0e1f2"]
 
 
 def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():

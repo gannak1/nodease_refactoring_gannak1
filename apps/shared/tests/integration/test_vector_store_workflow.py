@@ -74,6 +74,15 @@ class FakeSession:
     def close(self):
         pass
 
+    def get_bind(self):
+        class _Dialect:
+            name = "sqlite"
+
+        class _Bind:
+            dialect = _Dialect()
+
+        return _Bind()
+
 
 # ------------------------------------------------------------------
 # Integration Test
