@@ -15,6 +15,7 @@ from apps.gateway.auth.permissions import (
     recorded_permission_denied_exception,
 )
 from apps.gateway.services.app_service import AppService
+from apps.gateway.services.app_lifecycle_lock import lock_app_for_lifecycle
 from apps.gateway.services.agent_builder_intent_service import (
     AgentBuilderIntentExtraction,
     AgentBuilderIntentExtractionError,
@@ -27,6 +28,7 @@ from apps.gateway.services.knowledge_rag_recommendation_service import (
     KnowledgeRAGRecommendationService,
 )
 from apps.gateway.services.llm_service import LLMService
+from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
 from apps.gateway.services.workflow_service import WorkflowService
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.agent_builder import (
@@ -1872,6 +1874,21 @@ class AgentBuilderService:
                     metadata_base,
                     stale_state="active_deployment_present",
                     notice="활성 배포가 있는 App에서는 primary workflow를 바로 교체할 수 없습니다. 기존 배포를 먼저 해제해주세요.",
+                )
+            if expected_primary_workflow_id is not None and (
+                WorkflowBudgetService.has_active_budget(
+                    self.db,
+                    workflow_id=expected_primary_workflow_id,
+                    organization_id=self.organization_id,
+                )
+            ):
+                return self._block_apply(
+                    draft,
+                    apply_id,
+                    "APP_WORKFLOW_BUDGET_CONFLICT",
+                    metadata_base,
+                    stale_state="active_workflow_budget_present",
+                    notice="활성 예산이 있는 App에서는 primary workflow를 바로 교체할 수 없습니다. 예산 lifecycle 정책을 먼저 확인해주세요.",
                 )
             source_primary_workflow_id = expected_primary_workflow_id
 
@@ -4957,14 +4974,10 @@ class AgentBuilderService:
     def _lock_app_for_apply(self, app_id: uuid.UUID) -> App:
         if not isinstance(self.db, Session):
             return self._app_in_active_org(app_id)
-        app = (
-            self.db.query(App)
-            .filter(
-                App.id == app_id,
-                App.organization_id == self.organization_id,
-            )
-            .with_for_update()
-            .first()
+        app = lock_app_for_lifecycle(
+            self.db,
+            app_id,
+            organization_id=self.organization_id,
         )
         if app is None:
             raise HTTPException(status_code=404, detail="App not found")

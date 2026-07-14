@@ -13,6 +13,9 @@ from apps.gateway.adapters.db.access_management_locking import (
 from apps.gateway.services.auth_service import AuthService
 from apps.gateway.services.audit_records import add_data_change_audit
 from apps.gateway.services.resource_permission_registry import resource_permission_spec
+from apps.gateway.services.workflow_permission_lock import (
+    lock_workflow_permission_scope,
+)
 from apps.gateway.utils.api_errors import (
     auth_error_code,
     auth_error_message,
@@ -1509,6 +1512,11 @@ def _upsert_team_workflow_permission(
     assigned_at: datetime,
 ) -> TeamWorkflowPermission:
     """team-workflow 권한을 원자적으로 생성/수정하고 감사 로그를 남긴다."""
+    lock_workflow_permission_scope(
+        db,
+        organization_id=organization_id,
+        workflow_id=workflow_id,
+    )
     _lock_permission_key(
         db, "team_workflow_permission", organization_id, workflow_id, team_id
     )
@@ -1582,6 +1590,11 @@ def _upsert_user_workflow_permission(
 ) -> UserWorkflowPermission:
     """user-workflow 권한을 원자적으로 생성/수정하고 감사 로그를 남긴다."""
     _lock_active_direct_permission_subject(db, organization_id, user_id)
+    lock_workflow_permission_scope(
+        db,
+        organization_id=organization_id,
+        workflow_id=workflow_id,
+    )
     _lock_permission_key(
         db, "user_workflow_permission", organization_id, workflow_id, user_id
     )
@@ -2440,6 +2453,15 @@ def delete_team_workflow_permission(
         team_id,
     )
 
+    lock_workflow_permission_scope(
+        db,
+        organization_id=organization_id,
+        workflow_id=workflow_id,
+    )
+    _lock_permission_key(
+        db, "team_workflow_permission", organization_id, workflow_id, team_id
+    )
+
     permission = (
         db.query(TeamWorkflowPermission)
         .filter(
@@ -2608,6 +2630,11 @@ def delete_user_workflow_permission(
     )
 
     _lock_direct_permission_cleanup_subject(db, organization_id, user_id)
+    lock_workflow_permission_scope(
+        db,
+        organization_id=organization_id,
+        workflow_id=workflow_id,
+    )
     _lock_permission_key(
         db, "user_workflow_permission", organization_id, workflow_id, user_id
     )

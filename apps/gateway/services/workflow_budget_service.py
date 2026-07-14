@@ -18,6 +18,7 @@ from apps.gateway.services.admin_usage_service import (
     _total_cost_sum,
 )
 from apps.gateway.services.audit_records import add_action_audit
+from apps.gateway.services.workflow_budget_lock import lock_workflow_budget_scope
 from apps.shared.domain.workflow_budget import BudgetExecutionDecision
 from apps.shared.services.workflow_budget_execution import (
     evaluate_workflow_budget_execution,
@@ -74,6 +75,24 @@ class WorkflowBudgetService:
         )
 
     @staticmethod
+    def has_active_budget(
+        db: Session,
+        *,
+        workflow_id: Any,
+        organization_id: Any,
+    ) -> bool:
+        lock_workflow_budget_scope(
+            db,
+            workflow_id=workflow_id,
+            organization_id=organization_id,
+        )
+        budget = _find_budget(db, workflow_id, organization_id=organization_id)
+        return budget is not None and _active_budget_amount(
+            budget.monthly_budget_usd,
+            budget.is_enabled,
+        ) is not None
+
+    @staticmethod
     def upsert_budget(
         db: Session,
         organization_id: Any,
@@ -84,6 +103,11 @@ class WorkflowBudgetService:
     ) -> WorkflowBudget:
         amount = _to_decimal(monthly_budget_usd)
         enabled = bool(is_enabled)
+        lock_workflow_budget_scope(
+            db,
+            workflow_id=workflow_id,
+            organization_id=organization_id,
+        )
         existing = _find_budget(db, workflow_id, organization_id=organization_id)
 
         if existing is None:

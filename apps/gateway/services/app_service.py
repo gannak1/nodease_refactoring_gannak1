@@ -11,6 +11,9 @@ from sqlalchemy.orm import Session, joinedload
 from apps.gateway.services.admin_usage_service import AdminUsageService, KST
 from apps.gateway.services.organization_context import ensure_user_default_organization
 from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
+from apps.gateway.services.workflow_permission_lock import (
+    lock_workflow_permission_scope,
+)
 from apps.shared.db.models.app import App
 from apps.shared.db.models.llm import LLMUsageLog
 from apps.shared.db.models.team import TeamWorkflowPermission, UserWorkflowPermission
@@ -166,6 +169,11 @@ class AppService:
 
         actor_permission = None
         if source_workflow_id is not None:
+            lock_workflow_permission_scope(
+                db,
+                organization_id=organization_id,
+                workflow_id=source_workflow_id,
+            )
             user_permissions = (
                 db.query(UserWorkflowPermission)
                 .filter(

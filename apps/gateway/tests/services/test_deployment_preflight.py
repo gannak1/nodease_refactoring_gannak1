@@ -1553,6 +1553,18 @@ def test_workflow_node_toggle_removes_legacy_schedule_surface(monkeypatch):
     )
     db = _Db({App: [app], WorkflowDeployment: [deployment], Schedule: [schedule]})
     scheduler = _Scheduler()
+    lock_calls = []
+    original_lock = deployment_module.lock_app_for_lifecycle
+
+    def tracked_app_lock(db_arg, app_id_arg, **kwargs):
+        lock_calls.append(app_id_arg)
+        return original_lock(db_arg, app_id_arg, **kwargs)
+
+    monkeypatch.setattr(
+        deployment_module,
+        "lock_app_for_lifecycle",
+        tracked_app_lock,
+    )
 
     monkeypatch.setattr(
         DeploymentService,
@@ -1569,6 +1581,7 @@ def test_workflow_node_toggle_removes_legacy_schedule_surface(monkeypatch):
 
     assert deployment.is_active is True
     assert app.active_deployment_id == deployment_id
+    assert lock_calls == [app_id]
     assert db.rows_for(Schedule) == []
     assert scheduler.removed == [schedule_id]
     assert scheduler.added == []
@@ -1877,6 +1890,9 @@ class _Query:
         return self
 
     def join(self, *args, **kwargs):
+        return self
+
+    def with_for_update(self):
         return self
 
     def all(self):

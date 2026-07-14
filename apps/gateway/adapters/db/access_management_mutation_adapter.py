@@ -22,6 +22,9 @@ from apps.gateway.application.access_management.models import (
 )
 from apps.gateway.application.access_management.policies import strongest_auth_state
 from apps.gateway.services.resource_permission_registry import resource_permission_spec
+from apps.gateway.services.workflow_permission_lock import (
+    lock_workflow_permission_scope,
+)
 from apps.shared.audit.manual_ownership import register_manual_audit_ownership
 from apps.shared.db.models.app import App
 from apps.shared.db.models.knowledge import KnowledgeBase
@@ -232,6 +235,11 @@ class SqlAlchemyAccessManagementMutationAdapter:
             return None
 
         if resource_type == "workflow":
+            lock_workflow_permission_scope(
+                self.db,
+                organization_id=organization_id,
+                workflow_id=resource.id,
+            )
             app = (
                 self.db.query(App)
                 .filter(

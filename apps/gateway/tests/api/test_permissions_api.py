@@ -107,6 +107,14 @@ class TestPermissionsApi(unittest.TestCase):
             str(session.upsert_statement.compile(dialect=postgresql.dialect())),
         )
         self.assertTrue(session.committed)
+        self.assertEqual(len(session.lock_statements), 2)
+        scope_lock = str(
+            session.lock_statements[0].compile(
+                dialect=postgresql.dialect(),
+                compile_kwargs={"literal_binds": True},
+            )
+        )
+        self.assertIn("workflow_permission_scope", scope_lock)
         self.assertIsNotNone(session.lock_statement)
         self.assertIn(
             "pg_advisory_xact_lock",
@@ -2517,6 +2525,14 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertEqual(session.deleted, [existing_permission])
         self.assertTrue(session.committed)
         self.assertFalse(session.scalars_called)
+        self.assertEqual(len(session.lock_statements), 2)
+        scope_lock = str(
+            session.lock_statements[0].compile(
+                dialect=postgresql.dialect(),
+                compile_kwargs={"literal_binds": True},
+            )
+        )
+        self.assertIn("workflow_permission_scope", scope_lock)
         self.assertNotIn(TeamMembership, session.query_calls)
         _assert_organization_scope_filters(
             self, session.organization_query, organization_id
@@ -2943,6 +2959,18 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertEqual(session.deleted, [existing_permission])
         self.assertTrue(session.committed)
         self.assertFalse(session.scalars_called)
+        scope_locks = [
+            str(
+                statement.compile(
+                    dialect=postgresql.dialect(),
+                    compile_kwargs={"literal_binds": True},
+                )
+            )
+            for statement in session.lock_statements
+        ]
+        self.assertTrue(
+            any("workflow_permission_scope" in lock for lock in scope_locks)
+        )
         self.assertIsNotNone(session.lock_statement)
         self.assertIn(
             "pg_advisory_xact_lock",
@@ -4076,6 +4104,7 @@ class _Session:
         self.user_llm_upsert_result = user_llm_upsert_result
         self.upsert_statement = None
         self.lock_statement = None
+        self.lock_statements = []
         self.query_calls = []
         self.added = []
         self.deleted = []
@@ -4383,6 +4412,7 @@ class _Session:
     def execute(self, statement):
         """advisory lock statement를 기록한다."""
         self.lock_statement = statement
+        self.lock_statements.append(statement)
         return None
 
     def commit(self):

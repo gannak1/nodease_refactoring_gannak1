@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from sqlalchemy import and_, desc, func
 from sqlalchemy.orm import Session
 
+from apps.gateway.services.app_lifecycle_lock import lock_app_for_lifecycle
 from apps.gateway.services.knowledge_deployment_preflight_service import (
     KnowledgeDeploymentPreflightService,
 )
@@ -104,7 +105,7 @@ class DeploymentService:
             HTTPException: 워크플로우를 찾을 수 없거나 권한이 없는 경우
         """
         # 1. App 조회 및 권한 확인
-        app = db.query(App).filter(App.id == deployment_in.app_id).first()
+        app = lock_app_for_lifecycle(db, deployment_in.app_id)
         if not app:
             raise HTTPException(status_code=404, detail="App not found")
 
@@ -1217,7 +1218,8 @@ class DeploymentService:
         if not deployment:
             raise HTTPException(status_code=404, detail="Deployment not found")
 
-        app = db.query(App).filter(App.id == deployment.app_id).first()
+        app = lock_app_for_lifecycle(db, deployment.app_id)
+        db.refresh(deployment)
 
         # 2. is_active 토글
         new_state = not deployment.is_active

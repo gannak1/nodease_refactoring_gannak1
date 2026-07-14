@@ -2,6 +2,7 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.sql.operators import eq
 
 from apps.gateway.services import app_service
@@ -55,12 +56,16 @@ class _ModelDb:
     def __init__(self, rows_by_model):
         self.rows_by_model = rows_by_model
         self.added = []
+        self.executed = []
 
     def query(self, model):
         return _FilteringQuery(self.rows_by_model.get(model, []))
 
     def add(self, row):
         self.added.append(row)
+
+    def execute(self, statement):
+        self.executed.append(statement)
 
 
 def test_app_read_allows_primary_workflow_reader(monkeypatch):
@@ -169,6 +174,15 @@ def test_primary_workflow_permission_inheritance_preserves_collaborators():
     assert inherited_teams[0].auth_state == "operator"
     assert inherited_teams[0].options == {"channel": "operations"}
     assert all(row.workflow_id == target_workflow.id for row in db.added)
+    assert len(db.executed) == 1
+    compiled_lock = str(
+        db.executed[0].compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    assert "pg_advisory_xact_lock" in compiled_lock
+    assert "workflow_permission_scope" in compiled_lock
 
 
 def test_primary_workflow_permission_inheritance_grants_actor_without_source():

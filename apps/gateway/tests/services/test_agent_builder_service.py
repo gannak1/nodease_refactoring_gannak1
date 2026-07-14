@@ -3677,6 +3677,11 @@ def test_agent_builder_new_workflow_promotes_app_primary(monkeypatch):
         "_inherit_primary_workflow_permissions",
         lambda *args, **kwargs: None,
     )
+    monkeypatch.setattr(
+        service_module.WorkflowBudgetService,
+        "has_active_budget",
+        lambda *args, **kwargs: False,
+    )
     monkeypatch.setattr(svc, "_runtime_kb_bindings_for_apply", lambda _draft: [])
     monkeypatch.setattr(
         service_module.WorkflowService,
@@ -3882,6 +3887,72 @@ def test_agent_builder_new_workflow_blocks_active_deployment(monkeypatch):
     assert not any(isinstance(row, service_module.Workflow) for row in db.added)
 
 
+def test_agent_builder_new_workflow_blocks_active_primary_budget(monkeypatch):
+    db = FakeDb()
+    app_id = uuid.uuid4()
+    old_workflow_id = uuid.uuid4()
+    graph = {"nodes": [], "edges": []}
+    app = SimpleNamespace(
+        id=app_id,
+        workflow_id=old_workflow_id,
+        active_deployment_id=None,
+    )
+    draft = SimpleNamespace(
+        id=uuid.uuid4(),
+        request_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+        draft_mode="new_workflow",
+        base_graph_hash=calculate_graph_hash(graph),
+        base_workflow_updated_at=None,
+        preview_graph=graph,
+        status="ready",
+        workflow_id=None,
+        app_id=app_id,
+        draft_metadata={
+            service_module.EXPECTED_APP_PRIMARY_WORKFLOW_ID: str(old_workflow_id)
+        },
+        expires_at=None,
+    )
+    svc = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    budget_checks = []
+    monkeypatch.setattr(svc, "_draft_or_404", lambda _draft_id: draft)
+    monkeypatch.setattr(svc, "_app_in_active_org", lambda _app_id: app)
+    monkeypatch.setattr(
+        service_module.AppService,
+        "access_denial_status",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        service_module.WorkflowBudgetService,
+        "has_active_budget",
+        lambda *args, **kwargs: budget_checks.append(kwargs) or True,
+    )
+
+    response = svc.apply_draft(
+        draft.id,
+        AgentBuilderApplyRequest(
+            action="apply_and_save",
+            client_preview_graph_hash=calculate_graph_hash(graph),
+        ),
+    )
+
+    assert response.outcome == "blocked"
+    assert response.block_reason == "APP_WORKFLOW_BUDGET_CONFLICT"
+    assert response.stale_state == "active_workflow_budget_present"
+    assert budget_checks == [
+        {
+            "workflow_id": old_workflow_id,
+            "organization_id": svc.organization_id,
+        }
+    ]
+    assert app.workflow_id == old_workflow_id
+    assert not any(isinstance(row, service_module.Workflow) for row in db.added)
+
+
 def test_agent_builder_new_workflow_rolls_back_permission_inheritance_failure(
     monkeypatch,
 ):
@@ -3933,6 +4004,11 @@ def test_agent_builder_new_workflow_rolls_back_permission_inheritance_failure(
         service_module.AppService,
         "_inherit_primary_workflow_permissions",
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("db failure")),
+    )
+    monkeypatch.setattr(
+        service_module.WorkflowBudgetService,
+        "has_active_budget",
+        lambda *args, **kwargs: False,
     )
     monkeypatch.setattr(svc, "_runtime_kb_bindings_for_apply", lambda _draft: [])
     monkeypatch.setattr(

@@ -1,8 +1,11 @@
 import os
 import subprocess
 import sys
+import threading
 import uuid
+from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -13,6 +16,11 @@ from apps.gateway.services.agent_builder_service import (
     EXPECTED_APP_PRIMARY_WORKFLOW_ID,
     AgentBuilderService,
     calculate_graph_hash,
+)
+from apps.gateway.services.deployment_service import DeploymentService
+from apps.gateway.services.workflow_budget_lock import lock_workflow_budget_scope
+from apps.gateway.services.workflow_permission_lock import (
+    lock_workflow_permission_scope,
 )
 from apps.shared.db.models.agent_builder import (
     AgentBuilderDraft,
@@ -29,11 +37,16 @@ from apps.shared.db.models.team import (
 )
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
+from apps.shared.db.models.workflow_budget import WorkflowBudget
 from apps.shared.db.models.workflow_deployment import (
     DeploymentType,
     WorkflowDeployment,
 )
 from apps.shared.schemas.agent_builder import AgentBuilderApplyRequest
+from apps.shared.schemas.deployment import DeploymentCreate
+from apps.shared.domain.deployment_runtime_policy import (
+    DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+)
 from apps.shared.tests.helpers.disposable_postgres import (
     DisposablePostgresConfig,
     DisposablePostgresConfigurationError,
@@ -335,7 +348,11 @@ def test_new_workflow_apply_atomically_promotes_primary_and_inherits_permissions
         ),
     )
 
-    assert response.outcome == "saved"
+    assert response.outcome == "saved", (
+        response.block_reason,
+        response.stale_state,
+        response.notices,
+    )
     db_session.refresh(app)
     assert app.workflow_id == response.saved_workflow_id
     inherited_users = (
@@ -425,3 +442,394 @@ def test_new_workflow_apply_blocks_before_insert_when_active_deployment_exists(
     db_session.refresh(app)
     assert app.workflow_id == old_workflow.id
     assert app.active_deployment_id == deployment.id
+
+
+def test_new_workflow_apply_blocks_when_primary_has_active_budget(db_session):
+    actor, _collaborator, organization, app, old_workflow, _team = _app_context(
+        db_session
+    )
+    db_session.add(
+        WorkflowBudget(
+            organization_id=organization.id,
+            workflow_id=old_workflow.id,
+            monthly_budget_usd=Decimal("100.00"),
+            is_enabled=True,
+            created_by=actor.id,
+        )
+    )
+    draft = _ready_new_workflow_draft(
+        db_session,
+        actor=actor,
+        organization=organization,
+        app=app,
+        expected_primary_workflow_id=old_workflow.id,
+    )
+    workflow_count_before = db_session.query(Workflow).count()
+
+    response = AgentBuilderService(
+        db_session,
+        user=actor,
+        organization_id=organization.id,
+    ).apply_draft(
+        draft.id,
+        AgentBuilderApplyRequest(
+            action="apply_and_save",
+            client_preview_graph_hash=calculate_graph_hash(draft.preview_graph),
+        ),
+    )
+
+    assert response.outcome == "blocked"
+    assert response.block_reason == "APP_WORKFLOW_BUDGET_CONFLICT"
+    assert db_session.query(Workflow).count() == workflow_count_before
+    db_session.refresh(app)
+    assert app.workflow_id == old_workflow.id
+
+
+def test_budget_commit_precedes_primary_transition_snapshot(db_session, monkeypatch):
+    actor, _collaborator, organization, app, old_workflow, _team = _app_context(
+        db_session
+    )
+    draft = _ready_new_workflow_draft(
+        db_session,
+        actor=actor,
+        organization=organization,
+        app=app,
+        expected_primary_workflow_id=old_workflow.id,
+    )
+    actor_id = actor.id
+    organization_id = organization.id
+    app_id = app.id
+    workflow_id = old_workflow.id
+    draft_id = draft.id
+    workflow_count_before = db_session.query(Workflow).count()
+    db_session.commit()
+
+    bind = db_session.get_bind()
+    session_factory = sessionmaker(bind=bind, expire_on_commit=False)
+    budget_lock_attempted = threading.Event()
+    apply_finished = threading.Event()
+    apply_result = {}
+
+    from apps.gateway.services import workflow_budget_service as budget_module
+
+    original_budget_lock = budget_module.lock_workflow_budget_scope
+
+    def signaled_budget_lock(db, **kwargs):
+        budget_lock_attempted.set()
+        return original_budget_lock(db, **kwargs)
+
+    monkeypatch.setattr(
+        budget_module,
+        "lock_workflow_budget_scope",
+        signaled_budget_lock,
+    )
+
+    budget_db = session_factory()
+    lock_workflow_budget_scope(
+        budget_db,
+        organization_id=organization_id,
+        workflow_id=workflow_id,
+    )
+    budget_db.add(
+        WorkflowBudget(
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            monthly_budget_usd=Decimal("100.00"),
+            is_enabled=True,
+            created_by=actor_id,
+        )
+    )
+    budget_db.flush()
+
+    def apply_transition():
+        try:
+            with session_factory() as apply_db:
+                apply_draft = apply_db.get(AgentBuilderDraft, draft_id)
+                apply_actor = apply_db.get(User, actor_id)
+                apply_result["response"] = AgentBuilderService(
+                    apply_db,
+                    user=apply_actor,
+                    organization_id=organization_id,
+                ).apply_draft(
+                    apply_draft.id,
+                    AgentBuilderApplyRequest(
+                        action="apply_and_save",
+                        client_preview_graph_hash=calculate_graph_hash(
+                            apply_draft.preview_graph
+                        ),
+                    ),
+                )
+        except Exception as exc:  # pragma: no cover - asserted in main thread
+            apply_result["error"] = exc
+        finally:
+            apply_finished.set()
+
+    thread = threading.Thread(target=apply_transition, daemon=True)
+    thread.start()
+    try:
+        assert budget_lock_attempted.wait(timeout=5)
+        assert apply_finished.wait(timeout=0.2) is False
+    finally:
+        budget_db.commit()
+        budget_db.close()
+
+    assert apply_finished.wait(timeout=10)
+    thread.join(timeout=1)
+    assert "error" not in apply_result
+    response = apply_result["response"]
+    assert response.outcome == "blocked"
+    assert response.block_reason == "APP_WORKFLOW_BUDGET_CONFLICT"
+
+    db_session.expire_all()
+    final_app = db_session.get(App, app_id)
+    assert final_app.workflow_id == workflow_id
+    assert db_session.query(Workflow).count() == workflow_count_before
+
+
+def test_deployment_create_waits_for_primary_transition_app_lock(
+    db_session,
+    monkeypatch,
+):
+    actor, _collaborator, organization, app, old_workflow, _team = _app_context(
+        db_session
+    )
+    draft = _ready_new_workflow_draft(
+        db_session,
+        actor=actor,
+        organization=organization,
+        app=app,
+        expected_primary_workflow_id=old_workflow.id,
+    )
+    actor_id = actor.id
+    organization_id = organization.id
+    app_id = app.id
+    draft_id = draft.id
+    db_session.commit()
+
+    bind = db_session.get_bind()
+    session_factory = sessionmaker(bind=bind, expire_on_commit=False)
+    apply_lock_acquired = threading.Event()
+    allow_apply_to_continue = threading.Event()
+    apply_finished = threading.Event()
+    deployment_lock_attempted = threading.Event()
+    deployment_finished = threading.Event()
+    apply_result = {}
+    deployment_result = {}
+
+    from apps.gateway.services import agent_builder_service as agent_builder_module
+    from apps.gateway.services import deployment_service as deployment_module
+
+    original_apply_lock = agent_builder_module.lock_app_for_lifecycle
+    original_deployment_lock = deployment_module.lock_app_for_lifecycle
+
+    def gated_apply_lock(db, target_app_id, **kwargs):
+        locked_app = original_apply_lock(db, target_app_id, **kwargs)
+        apply_lock_acquired.set()
+        if not allow_apply_to_continue.wait(timeout=10):
+            raise RuntimeError("test synchronization timeout")
+        return locked_app
+
+    def signaled_deployment_lock(db, target_app_id, **kwargs):
+        deployment_lock_attempted.set()
+        return original_deployment_lock(db, target_app_id, **kwargs)
+
+    monkeypatch.setattr(
+        agent_builder_module,
+        "lock_app_for_lifecycle",
+        gated_apply_lock,
+    )
+    monkeypatch.setattr(
+        deployment_module,
+        "lock_app_for_lifecycle",
+        signaled_deployment_lock,
+    )
+    from apps.gateway.services import scheduler_service as scheduler_module
+
+    monkeypatch.setattr(
+        scheduler_module,
+        "get_scheduler_service",
+        lambda: SimpleNamespace(
+            add_schedule=lambda *args, **kwargs: None,
+            remove_schedule=lambda *args, **kwargs: None,
+        ),
+    )
+
+    def apply_transition():
+        try:
+            with session_factory() as apply_db:
+                apply_draft = apply_db.get(AgentBuilderDraft, draft_id)
+                apply_actor = apply_db.get(User, actor_id)
+                apply_result["response"] = AgentBuilderService(
+                    apply_db,
+                    user=apply_actor,
+                    organization_id=organization_id,
+                ).apply_draft(
+                    apply_draft.id,
+                    AgentBuilderApplyRequest(
+                        action="apply_and_save",
+                        client_preview_graph_hash=calculate_graph_hash(
+                            apply_draft.preview_graph
+                        ),
+                    ),
+                )
+        except Exception as exc:  # pragma: no cover - asserted in main thread
+            apply_result["error"] = exc
+        finally:
+            apply_finished.set()
+
+    def create_deployment():
+        try:
+            with session_factory() as deployment_db:
+                deployment = DeploymentService.create_deployment(
+                    deployment_db,
+                    DeploymentCreate(
+                        app_id=app_id,
+                        type=DeploymentType.API,
+                        graph_snapshot=None,
+                        is_active=True,
+                    ),
+                    user_id=actor_id,
+                    runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+                )
+                deployment_result["deployment_id"] = deployment.id
+        except Exception as exc:  # pragma: no cover - asserted in main thread
+            deployment_result["error"] = exc
+        finally:
+            deployment_finished.set()
+
+    apply_thread = threading.Thread(target=apply_transition, daemon=True)
+    apply_thread.start()
+    assert apply_lock_acquired.wait(timeout=5)
+
+    deployment_thread = threading.Thread(target=create_deployment, daemon=True)
+    deployment_thread.start()
+    try:
+        assert deployment_lock_attempted.wait(timeout=5)
+        assert deployment_finished.wait(timeout=0.2) is False
+    finally:
+        allow_apply_to_continue.set()
+
+    assert apply_finished.wait(timeout=10)
+    assert deployment_finished.wait(timeout=10)
+    apply_thread.join(timeout=1)
+    deployment_thread.join(timeout=1)
+    assert "error" not in apply_result
+    assert "error" not in deployment_result
+    response = apply_result["response"]
+    assert response.outcome == "saved", (
+        response.block_reason,
+        response.stale_state,
+        response.notices,
+    )
+
+    db_session.expire_all()
+    final_app = db_session.get(App, app_id)
+    deployment = db_session.get(
+        WorkflowDeployment,
+        deployment_result["deployment_id"],
+    )
+    saved_workflow = db_session.get(Workflow, response.saved_workflow_id)
+    assert final_app.workflow_id == response.saved_workflow_id
+    assert final_app.active_deployment_id == deployment.id
+    assert deployment.graph_snapshot == saved_workflow.graph
+
+
+def test_permission_revoke_commits_before_inheritance_snapshot(
+    db_session,
+    monkeypatch,
+):
+    actor, collaborator, organization, app, old_workflow, _team = _app_context(
+        db_session
+    )
+    draft = _ready_new_workflow_draft(
+        db_session,
+        actor=actor,
+        organization=organization,
+        app=app,
+        expected_primary_workflow_id=old_workflow.id,
+    )
+    db_session.commit()
+
+    bind = db_session.get_bind()
+    session_factory = sessionmaker(bind=bind, expire_on_commit=False)
+    inheritance_lock_attempted = threading.Event()
+    apply_finished = threading.Event()
+    apply_result = {}
+
+    from apps.gateway.services import app_service as app_service_module
+
+    original_permission_lock = app_service_module.lock_workflow_permission_scope
+
+    def signaled_permission_lock(db, **kwargs):
+        inheritance_lock_attempted.set()
+        return original_permission_lock(db, **kwargs)
+
+    monkeypatch.setattr(
+        app_service_module,
+        "lock_workflow_permission_scope",
+        signaled_permission_lock,
+    )
+
+    revoke_db = session_factory()
+    lock_workflow_permission_scope(
+        revoke_db,
+        organization_id=organization.id,
+        workflow_id=old_workflow.id,
+    )
+    revoked = (
+        revoke_db.query(UserWorkflowPermission)
+        .filter(
+            UserWorkflowPermission.grantee_organization_id == organization.id,
+            UserWorkflowPermission.workflow_id == old_workflow.id,
+            UserWorkflowPermission.user_id == collaborator.id,
+        )
+        .one()
+    )
+    revoke_db.delete(revoked)
+
+    def apply_transition():
+        try:
+            with session_factory() as apply_db:
+                apply_draft = apply_db.get(AgentBuilderDraft, draft.id)
+                apply_actor = apply_db.get(User, actor.id)
+                apply_result["response"] = AgentBuilderService(
+                    apply_db,
+                    user=apply_actor,
+                    organization_id=organization.id,
+                ).apply_draft(
+                    apply_draft.id,
+                    AgentBuilderApplyRequest(
+                        action="apply_and_save",
+                        client_preview_graph_hash=calculate_graph_hash(
+                            apply_draft.preview_graph
+                        ),
+                    ),
+                )
+        except Exception as exc:  # pragma: no cover - asserted in main thread
+            apply_result["error"] = exc
+        finally:
+            apply_finished.set()
+
+    thread = threading.Thread(target=apply_transition, daemon=True)
+    thread.start()
+    assert inheritance_lock_attempted.wait(timeout=5)
+    assert apply_finished.wait(timeout=0.2) is False
+    revoke_db.commit()
+    revoke_db.close()
+
+    assert apply_finished.wait(timeout=10)
+    thread.join(timeout=1)
+    assert "error" not in apply_result
+    response = apply_result["response"]
+    assert response.outcome == "saved"
+
+    db_session.expire_all()
+    inherited_collaborator = (
+        db_session.query(UserWorkflowPermission)
+        .filter(
+            UserWorkflowPermission.workflow_id == response.saved_workflow_id,
+            UserWorkflowPermission.user_id == collaborator.id,
+        )
+        .first()
+    )
+    assert inherited_collaborator is None

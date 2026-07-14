@@ -125,6 +125,85 @@ def test_classify_budget_usage_excludes_inactive_budgets(kwargs):
     )
 
 
+def test_has_active_budget_locks_scope_before_reading_budget():
+    service = _service()
+    organization_id = uuid4()
+    workflow_id = uuid4()
+    budget = WorkflowBudget(
+        id=uuid4(),
+        organization_id=organization_id,
+        workflow_id=workflow_id,
+        monthly_budget_usd=Decimal("100.00"),
+        is_enabled=True,
+    )
+    db = _Db([budget])
+
+    assert (
+        service.has_active_budget(
+            db,
+            workflow_id=workflow_id,
+            organization_id=organization_id,
+        )
+        is True
+    )
+    assert len(db.executed) == 1
+    compiled = str(
+        db.executed[0].compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    assert "pg_advisory_xact_lock" in compiled
+    assert "workflow_budget_scope" in compiled
+
+
+@pytest.mark.parametrize(
+    ("amount", "is_enabled"),
+    [
+        (Decimal("0.00"), True),
+        (Decimal("100.00"), False),
+    ],
+)
+def test_has_active_budget_excludes_inactive_budget(amount, is_enabled):
+    service = _service()
+    organization_id = uuid4()
+    workflow_id = uuid4()
+    db = _Db(
+        [
+            WorkflowBudget(
+                id=uuid4(),
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+                monthly_budget_usd=amount,
+                is_enabled=is_enabled,
+            )
+        ]
+    )
+
+    assert (
+        service.has_active_budget(
+            db,
+            workflow_id=workflow_id,
+            organization_id=organization_id,
+        )
+        is False
+    )
+
+
+def test_has_active_budget_returns_false_when_budget_is_missing():
+    service = _service()
+    db = _Db([])
+
+    assert (
+        service.has_active_budget(
+            db,
+            workflow_id=uuid4(),
+            organization_id=uuid4(),
+        )
+        is False
+    )
+
+
 # --- get_current_month_cost (BGT-REQ-011) ------------------------------------
 
 
@@ -758,6 +837,7 @@ class _Db:
         self.added = []
         self.commits = 0
         self.rollbacks = 0
+        self.executed = []
 
     def query(self, model, *rest):
         return _Query([row for row in self.rows if isinstance(row, model)])
@@ -765,6 +845,9 @@ class _Db:
     def add(self, obj):
         self.added.append(obj)
         self.rows.append(obj)
+
+    def execute(self, statement):
+        self.executed.append(statement)
 
     def flush(self):
         pass

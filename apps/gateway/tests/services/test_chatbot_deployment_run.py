@@ -638,6 +638,28 @@ def test_deployment_run_info_uses_dedicated_runtime_surface(monkeypatch):
     ]
 
 
+def test_deployment_run_info_does_not_acquire_lifecycle_write_lock(monkeypatch):
+    from apps.gateway.services import deployment_service as deployment_module
+
+    app_row, deployment_row = _deployed_app(DeploymentType.CHATBOT)
+    db = _Db(rows=[app_row, deployment_row])
+    monkeypatch.setattr(
+        deployment_module,
+        "lock_app_for_lifecycle",
+        lambda *args, **kwargs: pytest.fail(
+            "read-only runtime lookup must not acquire an App write lock"
+        ),
+    )
+
+    result = deployment_module.DeploymentService.get_deployment_run_info(
+        db,
+        deployment_row.id,
+        runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+    )
+
+    assert result["deployment_id"] == deployment_row.id
+
+
 def test_deployment_run_info_rejects_workflow_node_deployment():
     from apps.gateway.services import deployment_service as deployment_module
 
