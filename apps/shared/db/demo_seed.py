@@ -965,8 +965,8 @@ def demo_summary(profile: str = "demo") -> dict[str, Any]:
         "reset_scope": "demo seed fixed UUID rows only",
         "credentials": (
             "non-secret demo metadata row by default; pass "
-            "--enable-runtime-openai-credential to seed the local .env "
-            "OPENAI_API_KEY as a runtime credential"
+            "--enable-runtime-openai-credential to validate OPENAI_API_KEY or "
+            "prompt securely before seeding a runtime credential"
         ),
         "knowledge_documents": {
             "public_law_pdfs": len(LEGAL_DOCUMENT_SPECS),

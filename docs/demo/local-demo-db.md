@@ -167,7 +167,11 @@ HR 온보딩 챗봇은 여러 사내문서/법령 KB를 동시에 검색한다. 
 - 기본 seed에는 비용 탭/요약 카드 집계용 non-secret demo credential metadata row가 포함될 수 있으나, 실제 provider 호출용 key가 아니다.
 - 실제 workflow LLM/RAG runtime 실행에는 `gpt-5.4`, `gpt-5.4-mini`, `text-embedding-3-small`을 사용할 수 있는 organization-scoped verified credential relation과 `operator` 이상 LLM permission이 필요하다.
 
-발표 전 실제 브라우저 smoke/E2E처럼 workflow runtime까지 검증해야 하면 disposable demo DB에서만 다음 옵션을 사용한다. 이 옵션은 repo root `.env` 또는 실행 환경의 `OPENAI_API_KEY`를 로컬 DB의 demo runtime credential에 저장한다. seed는 key 값을 출력하지 않지만, 현재 구현의 `llm_credentials.encrypted_config`는 이름과 달리 평문 JSON 저장이라는 알려진 한계가 있으므로 운영/공유 DB에서 사용하지 않는다.
+발표 전 실제 브라우저 smoke/E2E처럼 workflow runtime까지 검증해야 하면 disposable demo DB에서만 다음 옵션을 사용한다. 이 옵션은 먼저 실행 환경의 `OPENAI_API_KEY`를 사용하고, 없으면 터미널에서 key를 숨김 입력으로 받는다. 입력한 key를 `.env`나 CLI 인자에 쓰지 않으며, seed는 key 값을 출력하지 않는다.
+
+seed는 `text-embedding-3-small`에 짧은 검증 요청을 보내 1536차원 embedding을 받는지 확인한 뒤 실행한다. 이 요청에는 소량의 API 비용이 발생한다. 검증에 실패하면 raw provider 응답 없이 한 번만 경고하고 `Continue seeding with this key anyway? [Y/n]`을 표시한다. Enter 또는 `y`는 제공한 key로 계속 진행하고, `n`은 DB/schema 변경 전에 종료한다. 비대화형 실행에서 검증 실패 후 확인을 받을 수 없으면 seed는 종료한다.
+
+실제 runtime credential을 seed하면 key는 로컬 DB의 demo credential에 저장된다. 현재 구현의 `llm_credentials.encrypted_config`는 이름과 달리 평문 JSON 저장이라는 알려진 한계가 있으므로 운영/공유 DB에서 사용하지 않는다.
 
 ```powershell
 apps/gateway/.venv/Scripts/python.exe scripts/seed_demo.py --profile demo --reset --enable-runtime-openai-credential
