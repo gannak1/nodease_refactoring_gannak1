@@ -133,12 +133,102 @@ def test_hr_bot_graph_references_seeded_rag_kbs():
     assert str(demo_seed.KB_IDS["legal_equal_employment"]) in kb_ids
 
 
+def test_department_onboarding_graph_references_exact_rbac_demo_kbs():
+    graph = demo_seed._department_onboarding_chatbot_graph()
+    llm_node = next(node for node in graph["nodes"] if node["id"] == "llm-answer")
+
+    assert llm_node["data"]["model_id"] == demo_seed.DEMO_CHAT_MINI_MODEL
+    assert llm_node["data"]["scoreThreshold"] == 0.3
+    assert llm_node["data"]["topK"] == 3
+    assert [item["id"] for item in llm_node["data"]["knowledgeBases"]] == [
+        str(demo_seed.KB_IDS["internal_onboarding"]),
+        str(demo_seed.KB_IDS["internal_developer_onboarding_rules"]),
+        str(demo_seed.KB_IDS["internal_planning_onboarding_guide"]),
+    ]
+
+
+def test_department_onboarding_users_belong_to_only_their_department_team():
+    specs = {spec.key: spec for spec in demo_seed.USER_SPECS}
+
+    assert specs["developer"].email == "dev@nodease.demo"
+    assert specs["developer"].teams == ("department_development",)
+    assert specs["developer"].membership_state == demo_seed.ORGANIZATION_MEMBERSHIP_ACTIVE
+    assert specs["planning"].email == "planning@nodease.demo"
+    assert specs["planning"].teams == ("department_planning",)
+    assert specs["planning"].membership_state == demo_seed.ORGANIZATION_MEMBERSHIP_ACTIVE
+    assert demo_seed.USER_IDS["developer"] != demo_seed.USER_IDS["planning"]
+    assert demo_seed.TEAM_IDS["department_development"] != demo_seed.TEAM_IDS[
+        "department_planning"
+    ]
+
+
+def test_department_onboarding_knowledge_permissions_are_fail_closed_by_team():
+    department_teams = {"department_development", "department_planning"}
+    department_specs = {
+        (kb_key, team_key, auth_state)
+        for kb_key, team_key, auth_state in demo_seed._demo_team_knowledge_permission_specs()
+        if team_key in department_teams
+    }
+
+    assert department_specs == {
+        ("internal_onboarding", "department_development", "operator"),
+        ("internal_onboarding", "department_planning", "operator"),
+        (
+            "internal_developer_onboarding_rules",
+            "department_development",
+            "operator",
+        ),
+        (
+            "internal_planning_onboarding_guide",
+            "department_planning",
+            "operator",
+        ),
+    }
+
+
+def test_department_onboarding_app_is_active_internal_chatbot(monkeypatch):
+    calls = {}
+
+    def capture(
+        _db,
+        key,
+        name,
+        description,
+        owner_key,
+        graph,
+        *,
+        deployed,
+        deployment_type=demo_seed.DeploymentType.API,
+    ):
+        calls[key] = {
+            "name": name,
+            "description": description,
+            "owner_key": owner_key,
+            "graph": graph,
+            "deployed": deployed,
+            "deployment_type": deployment_type,
+        }
+        return key
+
+    monkeypatch.setattr(demo_seed, "_upsert_app_workflow", capture)
+
+    workflows = demo_seed._seed_apps_and_workflows(object())
+
+    assert workflows["department_onboarding_chatbot"] == (
+        "department_onboarding_chatbot"
+    )
+    call = calls["department_onboarding_chatbot"]
+    assert call["owner_key"] == "admin"
+    assert call["deployed"] is True
+    assert call["deployment_type"] is demo_seed.DeploymentType.INTERNAL_CHATBOT
+
+
 def test_demo_summary_reports_seeded_knowledge_documents():
     summary = demo_seed.demo_summary("demo")
 
     assert summary["knowledge_documents"] == {
         "public_law_pdfs": 7,
-        "internal_markdown_docs": 10,
+        "internal_markdown_docs": 11,
         "embedding_model": demo_seed.DEMO_EMBEDDING_MODEL,
         "fixture": demo_seed.DEMO_KNOWLEDGE_FIXTURE_PATH.as_posix(),
     }
@@ -452,6 +542,17 @@ def test_demo_runtime_credential_grants_agent_builder_user_permission(monkeypatc
     assert user_permissions[demo_seed.USER_IDS["tester_builder"]]["auth_state"] == (
         "operator"
     )
+    team_permissions = {
+        values["team_id"]: values
+        for model, _row_id, values in upserts
+        if model is demo_seed.TeamLLMPermission
+    }
+    assert team_permissions[demo_seed.TEAM_IDS["department_development"]][
+        "auth_state"
+    ] == "operator"
+    assert team_permissions[demo_seed.TEAM_IDS["department_planning"]][
+        "auth_state"
+    ] == "operator"
 
 
 def test_demo_seed_chat_models_use_gpt_5_4_family():
@@ -687,6 +788,7 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     security_alert_receipt_revision = script.get_revision("1a5b6c7d8e91")
     security_alert_generation_revision = script.get_revision("2b6c7d8e9f02")
     current_merge_revision = script.get_revision("c7f8a9b0d123")
+    deployment_browser_policy_revision = script.get_revision("fd4e5f6a7b89")
 
     assert safe_metadata_revision.down_revision == "fa7b8c9d0e12"
     assert set(merged_revision.down_revision) == {"fa7c8d9e0f12", "ff3a4b5c6d78"}
@@ -730,9 +832,10 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
         "2b6c7d8e9f02",
         "a6f4d2c8e1b7",
     }
+    assert deployment_browser_policy_revision.down_revision == "c7f8a9b0d123"
     assert "2b6c7d8e9f02" in ancestry
     assert "a6f4d2c8e1b7" in ancestry
-    assert script.get_heads() == ["c7f8a9b0d123"]
+    assert script.get_heads() == ["fd4e5f6a7b89"]
 
 
 def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():
@@ -764,6 +867,11 @@ def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():
         assert (key, "customer_support_ops", "operator") in permission_specs
     for key in private_keys:
         assert (key, "platform_admin", "manager") in permission_specs
+    assert {
+        "internal_onboarding",
+        "internal_developer_onboarding_rules",
+        "internal_planning_onboarding_guide",
+    } <= document_keys
     assert (
         "internal_developer_compensation_band",
         "ai_builder_onboarding",
@@ -845,6 +953,31 @@ def test_committed_knowledge_fixture_matches_demo_seed_contract():
     for document_key, chunks in fixture["chunks_by_document"].items():
         assert chunks, document_key
         assert len(chunks[0]["embedding"]) == demo_seed.DEMO_EMBEDDING_DIMENSION
+
+
+def test_committed_fixture_supports_department_onboarding_demo_questions():
+    fixture = demo_seed._read_demo_knowledge_fixture()
+
+    common_content = "\n".join(
+        chunk["content"]
+        for chunk in fixture["chunks_by_document"]["internal_onboarding"]
+    )
+    developer_content = "\n".join(
+        chunk["content"]
+        for chunk in fixture["chunks_by_document"][
+            "internal_developer_onboarding_rules"
+        ]
+    )
+    planning_content = "\n".join(
+        chunk["content"]
+        for chunk in fixture["chunks_by_document"][
+            "internal_planning_onboarding_guide"
+        ]
+    )
+
+    assert "휴가와 프로젝트 운영 규정이 충돌할 때" in common_content
+    assert "repository 접근 권한" in developer_content
+    assert "PRD에는 문제 정의" in planning_content
 
 
 def test_committed_knowledge_fixture_does_not_contain_secret_like_values():
