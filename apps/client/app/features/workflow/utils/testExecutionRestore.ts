@@ -3,7 +3,7 @@ import type { Node } from '../types/Workflow';
 import type { RestoredTestExecution, TestNodeResult } from '../store/useWorkflowStore';
 import { readCost, readTokenUsage } from './testExecutionSummary';
 
-const toTimestamp = (value?: string) => {
+const toTimestamp = (value?: string | null) => {
   if (!value) return null;
   const timestamp = Date.parse(value);
   return Number.isFinite(timestamp) ? timestamp : null;

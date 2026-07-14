@@ -85,7 +85,9 @@ describe('workflowApi.executeWorkflowStream', () => {
     await workflowApi.executeWorkflowStream(
       'workflow-1',
       { question: 'hello' },
-      (event) => events.push(event),
+      (event) => {
+        events.push(event);
+      },
     );
 
     expect(events).toEqual([

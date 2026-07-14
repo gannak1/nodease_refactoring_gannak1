@@ -571,7 +571,7 @@ export interface WorkflowNodeRun {
   trace_metadata?: Record<string, unknown>;
   error_message?: string;
   started_at: string;
-  finished_at?: string;
+  finished_at?: string | null;
   duration?: number;
 }
 
@@ -586,7 +586,7 @@ export interface WorkflowRun {
   outputs?: Record<string, any>;
   error_message?: string;
   started_at: string;
-  finished_at?: string;
+  finished_at?: string | null;
   duration?: number;
   workflow_version?: number;
   deployment_id?: string | null;
