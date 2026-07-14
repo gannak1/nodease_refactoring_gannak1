@@ -4648,10 +4648,7 @@ def reset_demo_data(db: Session) -> None:
     ).delete(synchronize_session=False)
 
     db.query(KnowledgeIngestionOutbox).filter(
-        or_(
-            KnowledgeIngestionOutbox.organization_id == ORG_ID,
-            KnowledgeIngestionOutbox.knowledge_base_id.in_(kb_ids),
-        )
+        KnowledgeIngestionOutbox.knowledge_base_id.in_(kb_ids)
     ).delete(synchronize_session=False)
     db.query(KnowledgeCollectionItem).filter(
         KnowledgeCollectionItem.collection_id.in_(list(COLLECTION_IDS.values()))

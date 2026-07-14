@@ -178,10 +178,68 @@ def _insert_demo_user_knowledge_permission(
         engine.dispose()
 
 
-def _insert_demo_knowledge_ingestion_outbox(
+def _insert_non_demo_knowledge_base(
     database: str,
     config: DisposablePostgresConfig,
-) -> None:
+) -> uuid.UUID:
+    knowledge_base_id = uuid.uuid4()
+    engine = create_engine(config.database_url(database))
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO knowledge_bases (
+                        id,
+                        organization_id,
+                        name,
+                        description,
+                        safe_metadata,
+                        embedding_model,
+                        top_k,
+                        similarity_threshold,
+                        sync_state,
+                        lifecycle_state,
+                        user_id,
+                        created_at,
+                        updated_at
+                    ) VALUES (
+                        :id,
+                        :organization_id,
+                        :name,
+                        'demo reset 범위 검증용 사용자 생성 KB',
+                        '{}'::jsonb,
+                        'text-embedding-3-small',
+                        5,
+                        0.7,
+                        'manual',
+                        'active',
+                        :user_id,
+                        NOW(),
+                        NOW()
+                    )
+                    """
+                ),
+                {
+                    "id": knowledge_base_id,
+                    "organization_id": demo_seed.ORG_ID,
+                    "name": f"user-created-reset-test-{knowledge_base_id}",
+                    "user_id": demo_seed.USER_IDS["admin"],
+                },
+            )
+    finally:
+        engine.dispose()
+    return knowledge_base_id
+
+
+def _insert_knowledge_ingestion_outbox(
+    database: str,
+    config: DisposablePostgresConfig,
+    *,
+    knowledge_base_id: uuid.UUID,
+    key_prefix: str,
+) -> uuid.UUID:
+    outbox_id = uuid.uuid4()
     engine = create_engine(config.database_url(database))
     try:
         with engine.begin() as conn:
@@ -220,12 +278,35 @@ def _insert_demo_knowledge_ingestion_outbox(
                     """
                 ),
                 {
-                    "id": uuid.uuid4(),
+                    "id": outbox_id,
                     "organization_id": demo_seed.ORG_ID,
-                    "knowledge_base_id": demo_seed.KB_IDS["onboarding_platform"],
-                    "idempotency_key": f"demo-reset-test:{uuid.uuid4()}",
+                    "knowledge_base_id": knowledge_base_id,
+                    "idempotency_key": f"{key_prefix}:{uuid.uuid4()}",
                 },
             )
+    finally:
+        engine.dispose()
+    return outbox_id
+
+
+def _existing_knowledge_ingestion_outbox_ids(
+    database: str,
+    config: DisposablePostgresConfig,
+    *,
+    first_id: uuid.UUID,
+    second_id: uuid.UUID,
+) -> set[uuid.UUID]:
+    engine = create_engine(config.database_url(database))
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT id FROM knowledge_ingestion_outbox "
+                    "WHERE id IN (:first_id, :second_id)"
+                ),
+                {"first_id": first_id, "second_id": second_id},
+            ).all()
+            return {row[0] for row in rows}
     finally:
         engine.dispose()
 
@@ -433,7 +514,19 @@ def test_demo_seed_is_idempotent_in_disposable_postgres_database():
         )
         seeded_counts = _snapshot_counts(database, config)
         _insert_demo_user_knowledge_permission(database, config)
-        _insert_demo_knowledge_ingestion_outbox(database, config)
+        non_demo_kb_id = _insert_non_demo_knowledge_base(database, config)
+        demo_outbox_id = _insert_knowledge_ingestion_outbox(
+            database,
+            config,
+            knowledge_base_id=demo_seed.KB_IDS["onboarding_platform"],
+            key_prefix="demo-reset-test",
+        )
+        non_demo_outbox_id = _insert_knowledge_ingestion_outbox(
+            database,
+            config,
+            knowledge_base_id=non_demo_kb_id,
+            key_prefix="user-created-reset-test",
+        )
 
         _run_seed_command(
             ["scripts/seed_demo.py", "--profile", "demo", "--reset"],
@@ -441,16 +534,27 @@ def test_demo_seed_is_idempotent_in_disposable_postgres_database():
             config=config,
         )
         second_reset_counts = _snapshot_counts(database, config)
+        remaining_outbox_ids = _existing_knowledge_ingestion_outbox_ids(
+            database,
+            config,
+            first_id=demo_outbox_id,
+            second_id=non_demo_outbox_id,
+        )
         rbac_state = _snapshot_department_onboarding_rbac(database, config)
 
         assert reset_counts["knowledge_bases"] > 0
         assert reset_counts["documents"] > 0
         assert reset_counts["document_chunks"] > 0
-        assert reset_counts == seeded_counts == second_reset_counts
+        assert reset_counts == seeded_counts
+        assert second_reset_counts == {
+            **seeded_counts,
+            "knowledge_bases": seeded_counts["knowledge_bases"] + 1,
+            "knowledge_ingestion_outbox": 1,
+        }
         assert reset_counts["document_chunk_document_orphans"] == 0
         assert reset_counts["document_chunk_kb_orphans"] == 0
         assert reset_counts["document_kb_orphans"] == 0
-        assert second_reset_counts["knowledge_ingestion_outbox"] == 0
+        assert remaining_outbox_ids == {non_demo_outbox_id}
         assert rbac_state["developer_candidates"] == {
             demo_seed.KB_IDS["internal_onboarding"],
             demo_seed.KB_IDS["internal_developer_onboarding_rules"],
