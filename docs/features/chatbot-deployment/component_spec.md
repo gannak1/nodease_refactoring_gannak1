@@ -15,6 +15,10 @@ Status: Draft
 - `useDeployment.handleDeploy`: `chatbot`은 `${origin}/embed/chat/{url_slug}` 공개 링크만 결과에 넣고, `internal_chatbot`은 `${origin}/modules/{workflow_id}/run?deploymentId={deployment_id}` 인증 실행 링크만 넣는다.
 - `DeploymentFlowModal.getDeploymentTypeName`: `chatbot` → `"공개 챗봇"`, `internal_chatbot` → `"내부 챗봇"`.
 - `SuccessStep`: `chatbot`은 공개 챗봇 공유 카드만, `internal_chatbot`은 사내 인증 실행 카드만 표시해 두 보안 경계를 한 배포 결과에서 섞지 않는다.
+- 공개 `chatbot`과 `widget` 배포 form은 “외부 사이트에 삽입 허용” toggle과 exact parent origin 목록 editor를 제공한다. 기본값은 disabled이고 enabled 상태에서 1~20개 origin이 없으면 submit하지 않는다. `internal_chatbot`, `webapp`과 다른 type에는 표시하지 않는다.
+- Client validation과 normalized preview는 UX-only다. Deployment preflight가 반환한 `normalized_browser_access_policy`를 final preview와 create request에 사용하고 local parser 결과로 Gateway rejection을 완화하지 않는다.
+- 기존 deployment의 parent policy 변경은 in-place edit이 아니라 browser-access revision endpoint로 새 inactive version을 만든다. 사용자가 별도로 활성화하기 전 current active pointer는 유지한다.
+- `SuccessStep`은 embedding disabled면 direct link만 표시하고 enabled면 iframe snippet과 bounded parent origin 요약을 함께 표시한다. Parent 목록을 CORS/API 권한으로 설명하지 않는다.
 - 챗봇 페이지(`app/embed/chat/[urlSlug]/page.tsx`): 메시지 버블/입력창/환영 메시지/입력 중 표시(기존). 전송 시 `POST /api/v1/run-public/{urlSlug}`를 사용하며, private Knowledge/RAG 후보를 workflow owner 권한으로 넓히지 않는다.
 - 인증 내부 실행 페이지(`app/modules/[id]/run/page.tsx`): `GET /api/v1/deployments/{deployment_id}/run-info`와 JSON `POST /api/v1/deployments/{deployment_id}/run`을 사용한다. `internal_chatbot`은 page-session UUID를 top-level `conversation.client_id`로 보내고 업무 `inputs`에는 `memory_mode`/`conversation_id` control을 추가하지 않는다. LLM node RAG는 로그인 사용자를 execution subject로 전달받는다.
 - 인증 내부 실행 오류: 문서화된 HTTP status를 fixed 사용자 메시지로 mapping하고, 알 수 없는 `response.data.detail` 원문을 화면에 표시하지 않는다.
@@ -37,7 +41,9 @@ Status: Draft
 
 Target interaction은 conversation envelope과 idempotency key를 사용하고 node별 Memory config를 deployment snapshot에서 읽는다. UI가 모든 node Memory를 강제하거나 client state를 transcript source of truth로 사용하지 않는다.
 
-Public Client는 deployment-owned exact Origin/embed/CSP policy가 확인된 surface만 사용한다. Login 상태를 감지해 public adapter를 authenticated mode로 바꾸지 않으며, 내부 Chatbot link/component는 별도 access bootstrap 성공 후에만 렌더링한다.
+Public Client는 deployment-owned parent embedding policy가 확인된 surface만 iframe으로 제공한다. 이 정책은 CSP `frame-ancestors`에만 사용하고 direct API CORS 허용으로 재사용하지 않는다. Login 상태를 감지해 public adapter를 authenticated mode로 바꾸지 않으며, 내부 Chatbot link/component는 별도 access bootstrap 성공 후에만 렌더링한다.
+
+`/embed/chat/{urlSlug}` document는 계속 relative info/run API만 사용한다. Parent origin, `document.referrer`, request Origin과 current location을 API body/header/query 또는 policy fallback으로 보내지 않는다.
 
 ## Accessibility
 

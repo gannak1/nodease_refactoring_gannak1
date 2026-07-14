@@ -13,8 +13,10 @@ Status: Draft
 | POST | `/api/v1/deployments` | 배포 생성. `type: "chatbot"` 또는 `"internal_chatbot"` 지원 | 로그인 + workflow `deploy` 권한 |
 | GET | `/api/v1/deployments/{deployment_id}/run-info` | 실행 화면용 safe 배포 정보 조회. secret/graph snapshot 제외 | 로그인 + workflow `execute` 권한 |
 | POST | `/api/v1/deployments/{deployment_id}/run` | 활성 배포 snapshot을 로그인 사용자 권한 주체로 실행 | 로그인 + workflow `execute` 권한 + `application/json` |
-| GET | `/api/v1/deployments/public/{url_slug}/info` | 공개 배포 정보(`type: "chatbot"` 포함) | 없음 (Legacy Current Implementation: CORS *) |
-| POST | `/api/v1/run-public/{url_slug}` | 챗봇 공개 실행. `inputs.conversation_id`/`inputs.memory_mode` 수용 | 없음 (Legacy Current Implementation: CORS *) |
+| POST | `/api/v1/deployments/{source_deployment_id}/browser-access-revisions` | source snapshot을 복제해 browser policy 새 version 생성 | 로그인 + workflow `deploy` 권한 |
+| GET | `/api/v1/deployments/public/{url_slug}/browser-access` | iframe CSP용 active policy safe projection | 없음, `Cache-Control: no-store` |
+| GET | `/api/v1/deployments/public/{url_slug}/info` | 공개 배포 정보(`type: "chatbot"` 포함) | 없음. Endpoint-level wildcard CORS 없음 |
+| POST | `/api/v1/run-public/{url_slug}` | 챗봇 공개 실행. `inputs.conversation_id`/`inputs.memory_mode` 수용 | 없음. Endpoint-level wildcard CORS 없음 |
 
 ## Request And Response Models
 
@@ -31,7 +33,72 @@ Status: Draft
 - `public_chatbot`: Public Conversation Access Grant만 사용하고 login cookie가 있어도 anonymous public-only RAG로 평가한다.
 - `authenticated_internal_chatbot`: 현재는 cookie authentication, configured credentialed JSON/CORS 경계, active membership, workflow `execute`, current user KB permission으로 실행한다. 현재 구현을 CSRF token/exact-Origin 완료로 표현하지 않는다. Target에서는 별도 내부 Chatbot 이용 권한, CSRF token, exact Origin과 독립 Conversation Session namespace를 추가한다.
 - 두 surface는 시각 Chatbot component만 재사용한다. Public route의 authentication/audience를 조건부 완화하거나 public grant를 execution subject로 승격하지 않는다.
-- Public exact Origin/embed/CSP allowlist는 deployment-owned versioned config다. Config contract가 구현되기 전 client/environment fallback으로 browser session surface를 허용하지 않는다.
+- Public iframe parent는 [ADR-0043](../../decisions/ADR-0043-deployment-browser-origin-and-embedding-boundary.md)의 deployment-owned versioned `browser_access_policy`와 CSP `frame-ancestors`가 소유한다. Iframe first-party API와 external direct JavaScript CORS는 별도 경계이며 client/environment fallback으로 parent를 허용하지 않는다.
+
+## Browser Access Policy
+
+`POST /api/v1/deployments`와 `POST /api/v1/deployments/preflight`는 다음 optional field를 받는다.
+
+```json
+{
+  "browser_access_policy": {
+    "contract_version": "deployment_browser_access.v1",
+    "embedding": {
+      "enabled": true,
+      "parent_origins": ["https://portal.example.com"]
+    }
+  }
+}
+```
+
+- `chatbot`/`widget`에서 생략하면 disabled + empty origins canonical policy를 저장한다.
+- `internal_chatbot`과 다른 deployment type에서 non-null policy를 보내면 `422 deployment.browser_access.not_supported`다.
+- `enabled=true`는 canonical parent 1~20개, `enabled=false`는 empty list만 허용한다.
+- Production은 exact HTTPS, dev/test HTTP는 `localhost`, `127.0.0.1`, `[::1]`만 허용한다.
+- Server는 UTS #46 non-transitional + STD3 DNS A-label, canonical IPv4/IPv6와 default port를 정규화한다.
+- wildcard/null/local scheme/path/query/fragment/userinfo/control/trailing-dot/legacy IP, canonical duplicate와 4096-byte CSP value 초과를 거부한다.
+- Preflight response는 valid `chatbot`/`widget` 입력의 canonical `normalized_browser_access_policy`를 `passed`, `warning`, `blocked` 상태와 별개로 반환한다. Client normalization은 저장 권위가 아니다.
+
+### Browser Policy Revision
+
+```http
+POST /api/v1/deployments/{source_deployment_id}/browser-access-revisions
+Content-Type: application/json
+
+{
+  "browser_access_policy": {
+    "contract_version": "deployment_browser_access.v1",
+    "embedding": {
+      "enabled": true,
+      "parent_origins": ["https://new-portal.example.com"]
+    }
+  },
+  "is_active": false
+}
+```
+
+Response는 `201 DeploymentResponse`다. Source의 app/type/graph snapshot/config/input/output schema/description을 복제하고 새 version과 policy를 저장하며 source row를 수정하지 않는다. `is_active=false`가 기본값이고 active 요청은 기존 activation preflight/lifecycle lock/single-active transaction을 사용한다. Missing/cross-scope source는 기존 safe 404, wrong type은 422다.
+
+### Public Browser Policy Projection
+
+```http
+GET /api/v1/deployments/public/{url_slug}/browser-access
+```
+
+```json
+{
+  "contract_version": "deployment_browser_access.v1",
+  "deployment_version": 3,
+  "embedding": {
+    "enabled": true,
+    "frame_ancestors": ["https://portal.example.com"]
+  }
+}
+```
+
+Gateway는 active pointer, app ownership, active 상태와 `type in {chatbot, widget}`을 함께 검사한다. Legacy null 또는 malformed/unknown persisted policy는 raw 값을 노출하지 않고 disabled projection을 반환한다. Missing/inactive/wrong type은 safe 404다. Response에는 graph, secret, app/organization/KB/internal ID가 없으며 wildcard CORS를 추가하지 않는다.
+
+Next `/embed/chat/{slug}` response boundary는 projection을 최대 1초 안에 server-to-server로 조회하고 valid enabled policy만 exact `frame-ancestors`로 렌더링한다. 모든 failure는 `'none'`, response는 no-store다. 중첩 frame에서는 모든 ancestor가 목록에 있어야 한다.
 
 ### POST /api/v1/run-public/{url_slug} (Legacy Chatbot Memory)
 

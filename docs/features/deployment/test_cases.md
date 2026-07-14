@@ -158,4 +158,9 @@ Verified Against: `feature/mba-254 @ 95e821ef`
 - Future authenticated internal Chatbot policy는 public route, public Access Grant, generic workflow execute 권한만으로 우회할 수 없고 별도 access permission/runtime namespace를 요구한다.
 - API/webapp/widget/MCP/workflow-node/schedule/webhook와 일반 authenticated deployment run은 explicit future contract 없이 Conversation Session을 생성하지 않는다.
 - Missing/null/unlisted Origin, wildcard, client config와 environment fallback은 public browser session activation/create를 허용하지 않는다. Versioned deployment allowlist만 통과한다.
+- `browser_access_policy` create/preflight/revision은 같은 canonical validator와 fixed error code를 사용하고 Client local normalization은 server result를 덮어쓰지 않는다.
+- Browser policy revision은 source immutable deployment snapshot을 복제한 새 version이며 default inactive, source row/current draft/active pointer 불변과 transaction-bound audit를 검증한다.
+- Public browser projection은 active pointer, app ownership, active 상태와 Chatbot/Widget type을 함께 검증하고 null/malformed policy를 disabled로 닫으며 graph/config/secret/organization/KB identity를 노출하지 않는다.
+- Next embed response는 exact parent CSP 또는 `'none'` 하나만 반환하고 broad static CSP/XFO 충돌/cache stale을 만들지 않는다. Gateway lookup timeout/error도 fail-open하지 않는다.
+- Public info/run의 수동 wildcard CORS 제거 후 same-origin iframe은 정상이고 external direct JavaScript는 deployment parent 목록으로 ACAO를 얻지 못한다.
 - Runtime principal mapping은 authenticated execution subject, credential principal, billing principal과 audit actor를 구분하며 public actor에 app/deployment creator를 합성하지 않는다.
