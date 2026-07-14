@@ -279,6 +279,7 @@ Audit metadata에는 credential 원문, raw KB content, raw source path/url/titl
 | `WORKFLOW_PERMISSION_REQUIRED` | 기존 workflow read/write 권한 부족 |
 | `APP_CREATE_PERMISSION_REQUIRED` | 새 workflow 생성 scope 권한 부족 |
 | `APP_ACTIVE_DEPLOYMENT_CONFLICT` | 대상 App에 기존 active deployment pointer가 있어 primary 전환을 안전하게 수행할 수 없음 |
+| `APP_WORKFLOW_BUDGET_CONFLICT` | 대상 App의 현재 primary Workflow에 활성 예산이 있어 명시적 예산 lifecycle 정책 없이 primary를 교체할 수 없음. 응답은 예산 금액·당월 비용을 포함하지 않음 |
 | `DRAFT_VALIDATION_FAILED` | draft validation 실패 |
 | `KB_CANDIDATE_UNAVAILABLE` | 권한 확인된 KB 후보 없음 |
 | `KB_CANDIDATE_AMBIGUOUS` | KB 후보가 여러 개이며 자동 선택 불가 |

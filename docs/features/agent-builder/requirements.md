@@ -247,7 +247,11 @@ Stale check는 draft 생성 시점의 `base_graph_hash`와 workflow `version` �
 
 기존 App에 `new_workflow` draft를 적용하는 것은 App primary Workflow 전환이다. Backend는 draft 생성 시점의 App primary Workflow ID를 server-owned expected value로 저장하고, apply/save 시 App row를 잠근 뒤 현재 값과 비교해야 한다. 값이 다르면 stale draft로 차단하며 last-write-wins로 primary를 덮어쓰지 않는다. 대상 App에 active deployment pointer가 있으면 기존 배포를 자동 비활성화하거나 서로 다른 Workflow identity를 결합하지 않고 `APP_ACTIVE_DEPLOYMENT_CONFLICT`로 차단한다.
 
-Primary 전환이 허용되면 기존 primary Workflow에 속한 같은 organization의 직접 사용자·팀 Workflow 권한을 새 Workflow로 승계하고, 적용 actor의 manager 권한을 보장한다. 새 Workflow 생성, 권한 승계, App primary 갱신, Agent Builder session 재연결, apply/save audit는 같은 transaction에서 완료되어야 한다. 차단 또는 실패 시 기존 App primary와 권한 상태를 유지한다.
+Primary 전환, Deployment 생성, Deployment 활성/비활성 전환은 같은 App lifecycle row lock을 사용해 write command를 직렬화해야 한다. Deployment 생성은 lock 획득 뒤 App의 현재 primary를 다시 읽어 snapshot을 만들며, 실행과 run-info 같은 read-only runtime 표면은 exclusive lifecycle lock을 사용해 동일 App 실행을 직렬화해서는 안 된다. 현재 Deployment schema에는 immutable source Workflow ID가 없으므로 과거 inactive Deployment 재활성화의 provenance 검증은 이 lock만으로 완성된 것으로 간주하지 않는다.
+
+기존 primary에 활성 WorkflowBudget이 있으면 primary 전환은 예산 row나 당월 usage를 임의 복제·초기화하지 않고 `APP_WORKFLOW_BUDGET_CONFLICT`로 차단해야 한다. 활성 예산 확인과 예산 upsert는 같은 organization/Workflow advisory transaction scope를 사용해 검사와 동시 변경을 직렬화한다. 사용자 안내와 audit-safe block metadata에는 예산 금액이나 당월 비용 원문을 포함하지 않는다.
+
+Primary 전환이 허용되면 기존 primary Workflow에 속한 같은 organization의 직접 사용자·팀 Workflow 권한을 새 Workflow로 승계하고, 적용 actor의 manager 권한을 보장한다. 승계 snapshot과 direct Workflow 권한 PUT·DELETE는 같은 organization/Workflow permission scope lock을 공유해, 먼저 commit된 revoke가 새 primary에서 되살아나지 않게 해야 한다. 새 Workflow 생성, 권한 승계, App primary 갱신, Agent Builder session 재연결, apply/save audit는 같은 transaction에서 완료되어야 한다. 차단 또는 실패 시 기존 App primary와 권한 상태를 유지한다.
 
 Preview Mode는 `actualEditorGraph`와 `previewGraph`를 섞지 않아야 한다. 진단을 위해 draft id, request id, apply id, session id, workflow id 또는 새 workflow 생성 scope, preview graph hash, base graph hash, latest graph hash, workflow version 또는 updated_at, draft mode, apply/save outcome, block reason, failure reason, permission recheck outcome, stale state, validation state, saved workflow id, timestamp를 audit-safe metadata로 추적할 수 있어야 한다. Audit metadata에는 credential 원문, raw KB content, raw source path/url/title, hidden KB/resource detail, raw provider response, secret-like user input 원문을 포함하지 않는다.
 

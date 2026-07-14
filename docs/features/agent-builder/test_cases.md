@@ -142,7 +142,11 @@ Status: Draft
 - 같은 workflow의 apply/save 성공 후 server graph reconcile로 `app_id`가 `null`에서 실제 값으로 채워져도 Agent Builder panel은 열린 상태와 기존 대화를 유지한다.
 - 새 workflow draft는 생성 시점 App primary `workflow_id`를 server-owned expected value로 저장한다. Apply/save 시 App row를 잠근 뒤 current primary와 비교하며 값이 다르거나 expected metadata가 없거나 손상되었으면 새 Workflow를 만들지 않고 safe stale/metadata block으로 닫는다.
 - 대상 App에 `active_deployment_id`가 있으면 새 workflow apply/save는 기존 배포를 자동 비활성화하지 않고 `APP_ACTIVE_DEPLOYMENT_CONFLICT`로 차단한다. App primary, 배포, 권한은 변경되지 않아야 한다.
+- Primary 전환이 App lifecycle lock을 먼저 획득한 상태에서 active Deployment 생성이 시작되면 배포 생성은 대기하고, 전환 commit 뒤 새 primary graph를 snapshot으로 사용해야 한다. Deployment 생성이 먼저 active pointer를 commit하면 apply/save는 최신 pointer를 보고 차단되어야 한다.
+- Deployment toggle도 같은 App lifecycle lock을 사용하고 lock 이후 deployment state를 다시 읽어야 한다. Read-only run/run-info 조회는 exclusive lifecycle lock을 사용하지 않아야 한다.
+- 기존 primary에 활성 WorkflowBudget이 있으면 새 workflow apply/save는 `APP_WORKFLOW_BUDGET_CONFLICT`로 차단되고 새 Workflow·권한 row를 생성하지 않아야 한다. 비활성 또는 0 이하 예산은 차단하지 않으며 응답·audit에는 예산 금액과 당월 비용을 포함하지 않는다.
 - 새 workflow apply/save 성공 시 기존 primary의 같은 organization user/team Workflow permission과 option/flag를 새 Workflow로 승계하고 적용 actor의 manager 권한을 보장한다. DB session의 workflow scope와 App의 primary `workflow_id`가 `saved_workflow_id`로 같은 transaction에서 갱신되며, 새 route에서 같은 server-issued session id와 redaction된 대화를 복구한다.
+- Source Workflow direct permission revoke가 먼저 permission scope lock을 획득하면 apply/save는 revoke commit 이후 snapshot을 읽어 회수된 user/team grant를 새 Workflow에 복제하지 않아야 한다. Legacy Workflow permission API와 중앙 Access Management direct mutation은 같은 scope lock을 사용해야 한다.
 - 권한 승계, apply/save audit 또는 commit이 실패하면 transaction을 rollback하고 기존 App primary와 권한을 유지한다.
 - Refresh 후 session 복구는 redaction된 사용자 message summary와 assistant response를 함께 복구하고, secret-like user input 원문을 다시 표시하지 않는다.
 - 최신 request가 `failed`, `unsupported`, `validation_failed`이고 session에 과거 ready draft가 남아 있어도 backend는 request ID가 다른 top-level `draft_preview`를 반환하지 않으며 client도 이를 도안 생성 미리보기로 복구하지 않는다. 최신 request와 draft의 `request_id`가 일치하면 정상적으로 preview를 복구한다.
@@ -163,7 +167,7 @@ Status: Draft
 - 전체 교체 draft는 기존 workflow read/write 권한과 교체 validation을 모두 만족해야 저장된다.
 - 저장되지 않은 editor 변경이 있으면 MVP에서는 draft 생성, Preview Mode 진입, 또는 `적용 및 저장`이 차단되고 저장/폐기 안내가 표시된다.
 - 후속 확장 전까지 client graph snapshot만으로 unsaved editor graph를 draft base로 자동 포함하지 않는다.
-- `DRAFT_METADATA_NOT_FOUND`, `DRAFT_METADATA_EXPIRED`, `WORKFLOW_PERMISSION_REQUIRED`, `APP_CREATE_PERMISSION_REQUIRED`, `APP_ACTIVE_DEPLOYMENT_CONFLICT`, `DRAFT_STALE`, `DRAFT_VALIDATION_FAILED`, `ORGANIZATION_CONTEXT_MISMATCH`, `UNSAVED_EDITOR_CHANGES`는 `outcome=blocked`와 `block_reason`으로 한국어 차단 안내를 표시한다.
+- `DRAFT_METADATA_NOT_FOUND`, `DRAFT_METADATA_EXPIRED`, `WORKFLOW_PERMISSION_REQUIRED`, `APP_CREATE_PERMISSION_REQUIRED`, `APP_ACTIVE_DEPLOYMENT_CONFLICT`, `APP_WORKFLOW_BUDGET_CONFLICT`, `DRAFT_STALE`, `DRAFT_VALIDATION_FAILED`, `ORGANIZATION_CONTEXT_MISMATCH`, `UNSAVED_EDITOR_CHANGES`는 `outcome=blocked`와 `block_reason`으로 한국어 차단 안내를 표시한다.
 - `SAVE_FAILED`는 `outcome=failed`와 `failure_reason`으로 한국어 실패 안내를 표시한다.
 - `outcome=saved`는 apply/save audit 기록 성공을 전제로 하며, `audit_recorded=false`인 저장 성공 응답은 허용되지 않는다.
 - workflow graph 저장 시도 후 apply/save audit 기록이 실패하면 `SAVE_FAILED` 또는 동등한 safe failure로 처리되고 Preview Mode가 유지되며 actual editor graph는 변경되지 않는다.

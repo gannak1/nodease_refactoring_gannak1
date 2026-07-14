@@ -79,6 +79,8 @@ Verified Against: `feature/mba-219 @ 5b1cf366`
 - Active `type=workflow_node` deployment graph에 `scheduleTrigger`가 있어도 schedule record나 scheduler job을 생성하지 않는다.
 - Scheduler startup query와 dispatch 시점은 모두 schedule deployment가 해당 app의 현재 `active_deployment_id`인지 재확인한다. Queue에는 graph가 아니라 deployment id를 넣고, worker가 실행 직전 active/type/app/current pointer를 다시 확인해 enqueue 후 삭제/비활성/stale/non-current가 된 deployment를 retry 없이 종료한다.
 - APScheduler에 job이 남아 있어도 `Schedule.id + deployment_id` row가 없으면 queue와 budget service를 호출하지 않고 local job을 제거한다. Worker queue context에 다른 organization/workflow/app/deployment/version 또는 execution subject를 넣어도 DB의 canonical App/Deployment context로 덮어쓰거나 제거하고 correlation allowlist만 보존한다.
+- Agent Builder primary 전환과 active Deployment 생성이 겹치면 두 경로는 같은 App row lock으로 직렬화된다. Primary 전환이 먼저 commit되면 배포 snapshot은 새 primary graph를 사용하고, active Deployment 생성이 먼저 commit되면 primary 전환은 active pointer를 확인해 차단된다.
+- Deployment toggle은 App lifecycle lock 획득 뒤 deployment state를 refresh한 다음 단일 active pointer 정책을 적용한다. Run/run-info read path는 이 exclusive lock을 사용하지 않아 동일 App의 동시 실행 요청을 직렬화하지 않는다.
 - Invalid cron/timezone 활성화는 safe `422 deployment.schedule_configuration_invalid`로 실패하고 parser 원문을 노출하지 않으며 schedule/deployment partial mutation을 남기지 않는다.
 - Public route 목록에는 schedule claim 조회, status mutation, outcome acknowledgment 또는 redrive endpoint가 없어야 한다.
 - Blocking preflight 예외는 broad catch에서 generic `400`으로 변환되지 않는다.

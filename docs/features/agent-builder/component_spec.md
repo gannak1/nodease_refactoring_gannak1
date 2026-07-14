@@ -151,6 +151,7 @@ MBA-145 MVP에서는 Knowledge Skill body/checklist를 prompt context로 직접 
 - 공통 외부 호출 차단 안내는 draft `safety_notices`에 한 번만 유지한다. 외부 연동 node의 미해결 설정은 `configuration_issues`에서 node별 표시명과 필요한 파라미터 목록으로 구분하며, 같은 type의 node가 여러 개여도 합치지 않는다. Session restore는 저장된 preview graph에서 이 목록을 다시 파생한다.
 - `적용 및 저장` 성공 시 Preview Mode를 종료하고 editor는 저장된 최신 workflow graph를 표시한다. 이 성공 상태는 backend 저장과 apply/save audit 기록 성공을 모두 통과한 경우에만 사용한다.
 - `적용 및 저장` 차단 또는 실패 시 Preview Mode를 유지하고 actual editor graph를 변경하지 않는다.
+- `APP_ACTIVE_DEPLOYMENT_CONFLICT`와 `APP_WORKFLOW_BUDGET_CONFLICT`는 `apply_blocked`로 표시하고, 기존 배포 해제 또는 예산 lifecycle 확인이라는 안전한 다음 조치만 안내한다. 예산 금액, 당월 비용, 권한 subject 목록은 표시하지 않는다.
 - Stale check는 backend가 base graph hash와 workflow version/updated_at을 최신 값과 비교해 수행한다. Frontend의 stale warning은 사용자 안내일 뿐 최종 판정이 아니다.
 - Apply/save audit은 draft preview 생성, Preview Mode 진입, 적용 및 저장 요청, 저장 차단, 저장 성공, 저장 실패, 취소 event를 구분한다. Audit payload는 safe metadata만 포함한다.
 
