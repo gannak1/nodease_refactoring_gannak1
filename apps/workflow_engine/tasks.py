@@ -220,7 +220,7 @@ def refresh_model_routing_policy(self, policy_id: str, trigger: str = "manual_re
 @celery_app.task(
     name="workflow.model_routing.validate_batch",
     bind=True,
-    max_retries=1,
+    max_retries=12,
     base=RedactedWorkflowTask,
 )
 def validate_model_routing_batch(self, batch_id: str):
@@ -236,6 +236,10 @@ def validate_model_routing_batch(self, batch_id: str):
             batch_id=batch_id,
         )
         session.commit()
+        if getattr(batch, "status", None) == "running":
+            # 다른 worker가 아직 유효한 lease를 가진 item을 실행 중이면 finalization을
+            # 하지 않는다. lease가 만료되면 다음 retry가 item을 retry로 복구한다.
+            raise self.retry(countdown=30)
         return {
             "status": getattr(batch, "status", "not_found"),
             "batch_id": str(getattr(batch, "id", "")) if batch is not None else None,
@@ -243,6 +247,8 @@ def validate_model_routing_batch(self, batch_id: str):
             if batch is not None
             else 0,
         }
+    except Retry:
+        raise
     except Exception as exc:
         session.rollback()
         logger.error("[Model-Routing] validation batch failed: %s", exc)

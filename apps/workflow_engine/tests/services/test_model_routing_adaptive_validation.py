@@ -1,5 +1,6 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -414,3 +415,79 @@ def test_empty_validation_plan_releases_refresh_lease_for_the_next_observation_w
     assert policy.refresh_requested_at is None
     assert policy.eligible_runs_since_last_refresh == 0
     db.flush.assert_called_once()
+
+
+def test_completed_validation_batch_is_not_reused_for_a_new_refresh_cycle():
+    """종료된 batch는 재실행하지 않고 caller가 refresh lease를 닫을 수 있어야 한다."""
+    assert (
+        AdaptiveModelRoutingValidationService._should_reuse_existing_batch(
+            SimpleNamespace(status="completed")
+        )
+        is False
+    )
+    assert (
+        AdaptiveModelRoutingValidationService._should_reuse_existing_batch(
+            SimpleNamespace(status="pending")
+        )
+        is True
+    )
+
+
+def test_stale_running_validation_item_is_recovered_but_fresh_item_is_left_running():
+    now = datetime(2026, 7, 14, tzinfo=timezone.utc)
+    stale = SimpleNamespace(
+        execution_summary={"_lease_started_at": (now - timedelta(minutes=6)).isoformat()}
+    )
+    fresh = SimpleNamespace(
+        execution_summary={"_lease_started_at": (now - timedelta(seconds=30)).isoformat()}
+    )
+
+    assert AdaptiveModelRoutingValidationService._is_stale_running_item(stale, now=now) is True
+    assert AdaptiveModelRoutingValidationService._is_stale_running_item(fresh, now=now) is False
+
+
+def test_downstream_contract_checks_condition_answer_and_slack_consumers():
+    graph = {
+        "nodes": [
+            {"id": "llm", "type": "llmNode", "data": {}},
+            {
+                "id": "condition",
+                "type": "conditionNode",
+                "data": {"cases": [{"conditions": [{"variable_selector": ["llm", "approved"]}]}]},
+            },
+            {
+                "id": "answer",
+                "type": "answerNode",
+                "data": {"outputs": [{"value_selector": ["llm", "reply"]}]},
+            },
+            {
+                "id": "slack",
+                "type": "slackPostNode",
+                "data": {"referenced_variables": [{"value_selector": ["llm", "reply"]}]},
+            },
+        ],
+        "edges": [
+            {"source": "llm", "target": "condition"},
+            {"source": "llm", "target": "answer"},
+            {"source": "llm", "target": "slack"},
+        ],
+    }
+
+    assert AdaptiveModelRoutingValidationService._downstream_passed(
+        graph, "llm", {"approved": True, "reply": "done"}
+    ) is True
+    assert AdaptiveModelRoutingValidationService._downstream_passed(
+        graph, "llm", {"approved": True}
+    ) is False
+
+
+def test_monthly_budget_limit_follows_the_latest_policy_setting():
+    policy = SimpleNamespace(id=uuid.uuid4(), validation_budget_usd=Decimal("1.5"))
+    budget = SimpleNamespace(limit_usd=Decimal("3"))
+    db = MagicMock()
+    db.query.return_value.filter.return_value.filter.return_value.with_for_update.return_value.first.return_value = budget
+
+    resolved = AdaptiveModelRoutingValidationService._locked_monthly_budget(db, policy)
+
+    assert resolved is budget
+    assert budget.limit_usd == Decimal("1.5")

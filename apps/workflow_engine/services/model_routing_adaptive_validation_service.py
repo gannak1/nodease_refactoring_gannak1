@@ -13,7 +13,7 @@ import json
 import logging
 import time
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Iterable
 
@@ -71,6 +71,9 @@ class AdaptiveModelRoutingValidationService:
     MAX_CANDIDATES_PER_COHORT = 2
     MAX_VALIDATING_COHORTS = 4
     QUALITY_JUDGE_MAX_TOKENS = 700
+    RUNNING_ITEM_LEASE = timedelta(minutes=5)
+    _TERMINAL_BATCH_STATUSES = {"completed", "failed", "cancelled"}
+    _TERMINAL_ITEM_STATUSES = {"completed", "failed", "skipped_unavailable"}
 
     @classmethod
     def complete_refresh_without_batch(
@@ -219,7 +222,10 @@ class AdaptiveModelRoutingValidationService:
             .first()
         )
         if existing is not None:
-            return existing
+            # pending/running만 중복 task가 함께 처리하도록 재사용한다. 종료 batch는
+            # 새 evidence가 없는 같은 refresh cycle에서 다시 실행하지 않고 caller가
+            # refresh lease를 정상 종료하게 한다.
+            return existing if cls._should_reuse_existing_batch(existing) else None
 
         batch = LLMNodeModelRoutingValidationBatch(
             policy_id=policy.id,
@@ -271,7 +277,7 @@ class AdaptiveModelRoutingValidationService:
             .filter(LLMNodeModelRoutingValidationBatch.id == uuid.UUID(str(batch_id)))
             .first()
         )
-        if batch is None or batch.status in {"completed", "failed", "cancelled"}:
+        if batch is None or batch.status in cls._TERMINAL_BATCH_STATUSES:
             return batch
         policy = (
             db.query(LLMNodeModelRoutingPolicy)
@@ -286,8 +292,12 @@ class AdaptiveModelRoutingValidationService:
         node_data = cls._node_data(deployment.graph_snapshot if deployment else {}, policy.node_id)
         subject_id = cls._execution_subject(policy)
         if not isinstance(node_data, dict) or subject_id is None:
-            batch.status = "failed"
-            batch.error_summary = {"reason_code": "execution_subject_unavailable"}
+            cls._fail_batch_and_release_refresh(
+                db,
+                batch=batch,
+                policy=policy,
+                reason_code="execution_subject_unavailable",
+            )
             return batch
 
         batch.status = "running"
@@ -313,7 +323,23 @@ class AdaptiveModelRoutingValidationService:
                 .with_for_update()
                 .first()
             )
-            if item is None or item.status not in {"pending", "retry"}:
+            if item is None:
+                continue
+            if item.status == "running":
+                if cls._is_stale_running_item(item):
+                    item.status = "retry"
+                    item.execution_summary = {
+                        **(
+                            item.execution_summary
+                            if isinstance(item.execution_summary, dict)
+                            else {}
+                        ),
+                        "reason_code": "stale_execution_lease_recovered",
+                    }
+                    db.commit()
+                else:
+                    continue
+            if item.status not in {"pending", "retry"}:
                 continue
             batch = (
                 db.query(LLMNodeModelRoutingValidationBatch)
@@ -352,6 +378,14 @@ class AdaptiveModelRoutingValidationService:
             # 이 item을 실행 중으로 먼저 확정해 worker retry/중복 delivery가 같은
             # provider Replay를 동시에 시작하지 않게 한다. 잠금은 바로 해제한다.
             item.status = "running"
+            item.execution_summary = {
+                **(
+                    item.execution_summary
+                    if isinstance(item.execution_summary, dict)
+                    else {}
+                ),
+                "_lease_started_at": datetime.now(timezone.utc).isoformat(),
+            }
             db.commit()
             result = cls._execute_validation_item(
                 db,
@@ -395,8 +429,16 @@ class AdaptiveModelRoutingValidationService:
         deployment = cls._deployment(db, policy)
         node_data = cls._node_data(deployment.graph_snapshot if deployment else {}, policy.node_id)
         if not isinstance(node_data, dict):
-            batch.status = "failed"
-            batch.error_summary = {"reason_code": "target_node_unavailable"}
+            cls._fail_batch_and_release_refresh(
+                db,
+                batch=batch,
+                policy=policy,
+                reason_code="target_node_unavailable",
+            )
+            return batch
+        if cls._batch_has_nonterminal_items(db, batch=batch):
+            batch.status = "running"
+            db.flush()
             return batch
         cls._finalize_batch(
             db,
@@ -1110,7 +1152,91 @@ class AdaptiveModelRoutingValidationService:
             )
             db.add(budget)
             db.flush()
+        else:
+            # 같은 달에도 정책 설정은 즉시 효력이 있어야 한다. 사용자가 예산을 낮춘
+            # 경우 기존 monthly row의 예전 한도로 추가 Replay가 예약되면 안 된다.
+            budget.limit_usd = Decimal(str(policy.validation_budget_usd or 3))
         return budget
+
+    @classmethod
+    def _fail_batch_and_release_refresh(
+        cls,
+        db: Session,
+        *,
+        batch: LLMNodeModelRoutingValidationBatch,
+        policy: LLMNodeModelRoutingPolicy,
+        reason_code: str,
+    ) -> None:
+        """실행 불가 batch가 refresh lease와 예약 예산을 남기지 않게 정리한다."""
+        batch.status = "failed"
+        batch.error_summary = {"reason_code": reason_code}
+        batch.completed_at = datetime.now(timezone.utc)
+        budget = cls._locked_monthly_budget(db, policy)
+        budget.reserved_usd = max(
+            Decimal("0"),
+            Decimal(str(budget.reserved_usd or 0))
+            - Decimal(str(batch.reserved_cost or 0)),
+        )
+        policy.last_refresh_result = "failed"
+        policy.last_refreshed_at = datetime.now(timezone.utc)
+        requested_at = policy.refresh_requested_at
+        policy.status = "active" if policy.active_policy else "collecting"
+        if requested_at is not None:
+            ModelRoutingPolicyLifecycleService.complete_refresh_cycle(
+                policy,
+                eligible_runs_since_last_refresh=cls._remaining_run_event_count(
+                    db,
+                    policy=policy,
+                    requested_at=requested_at,
+                ),
+            )
+        db.flush()
+
+    @classmethod
+    def _batch_has_nonterminal_items(
+        cls,
+        db: Session,
+        *,
+        batch: LLMNodeModelRoutingValidationBatch,
+    ) -> bool:
+        return (
+            db.query(LLMNodeModelRoutingValidationItem)
+            .filter(LLMNodeModelRoutingValidationItem.batch_id == batch.id)
+            .filter(
+                ~LLMNodeModelRoutingValidationItem.status.in_(
+                    cls._TERMINAL_ITEM_STATUSES
+                )
+            )
+            .count()
+            > 0
+        )
+
+    @staticmethod
+    def _should_reuse_existing_batch(batch: Any) -> bool:
+        return batch is not None and str(getattr(batch, "status", "")).lower() in {
+            "pending",
+            "running",
+        }
+
+    @classmethod
+    def _is_stale_running_item(
+        cls,
+        item: LLMNodeModelRoutingValidationItem | Any,
+        *,
+        now: datetime | None = None,
+    ) -> bool:
+        summary = (
+            item.execution_summary
+            if isinstance(getattr(item, "execution_summary", None), dict)
+            else {}
+        )
+        try:
+            started = datetime.fromisoformat(str(summary.get("_lease_started_at")))
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            return True
+        return (now or datetime.now(timezone.utc)) - started >= cls.RUNNING_ITEM_LEASE
 
     @staticmethod
     def _locked_policy(db: Session, policy_id: str | uuid.UUID):
@@ -1211,21 +1337,68 @@ class AdaptiveModelRoutingValidationService:
         nodes = {str(node.get("id")): node for node in graph.get("nodes", []) if isinstance(node, dict)}
         for consumer_id in consumers:
             node = nodes.get(consumer_id, {})
-            data = node.get("data") if isinstance(node.get("data"), dict) else {}
-            if str(node.get("type")) == "variableExtractionNode":
-                selector = (data.get("source_selector") or [None, "text"])
-                if not selector or selector[0] != node_id:
-                    continue
-                text = output.get(str(selector[1] if len(selector) > 1 else "text"))
-                try:
-                    payload = json.loads(text) if isinstance(text, str) else text
-                except json.JSONDecodeError:
+            for contract in cls._downstream_contracts_for_consumer(node_id, node):
+                if not cls._downstream_contract_satisfied(output, contract):
                     return False
-                for mapping in data.get("mappings") or []:
-                    path = mapping.get("json_path") if isinstance(mapping, dict) else None
-                    if path and not cls._json_path_exists(payload, str(path)):
-                        return False
         return True
+
+    @staticmethod
+    def _downstream_contracts_for_consumer(
+        target_node_id: str,
+        consumer: dict[str, Any],
+    ) -> list[dict[str, str]]:
+        """Cost Optimizer compare와 같은 direct consumer 계약만 검증한다."""
+        consumer_type = str(consumer.get("type") or "")
+        data = consumer.get("data") if isinstance(consumer.get("data"), dict) else {}
+        contracts: list[dict[str, str]] = []
+        if consumer_type == "variableExtractionNode":
+            source_selector = data.get("source_selector") or []
+            if not source_selector or source_selector[0] != target_node_id:
+                return contracts
+            selector = str(source_selector[1] if len(source_selector) > 1 else "text")
+            for mapping in data.get("mappings") or []:
+                path = str(mapping.get("json_path") or "").strip() if isinstance(mapping, dict) else ""
+                if path:
+                    contracts.append({"kind": "json_path", "selector": selector, "path": path})
+            return contracts
+        selectors_by_type = {
+            "conditionNode": [
+                condition.get("variable_selector") or []
+                for case in data.get("cases") or []
+                if isinstance(case, dict)
+                for condition in case.get("conditions") or []
+                if isinstance(condition, dict)
+            ],
+            "answerNode": [
+                item.get("value_selector") or []
+                for item in data.get("outputs") or []
+                if isinstance(item, dict)
+            ],
+            "slackPostNode": [
+                item.get("value_selector") or []
+                for item in data.get("referenced_variables") or []
+                if isinstance(item, dict)
+            ],
+        }
+        for selector in selectors_by_type.get(consumer_type, []):
+            if isinstance(selector, list) and len(selector) > 1 and selector[0] == target_node_id:
+                contracts.append({"kind": "selector", "key": str(selector[1])})
+        return contracts
+
+    @classmethod
+    def _downstream_contract_satisfied(
+        cls,
+        output: dict[str, Any],
+        contract: dict[str, str],
+    ) -> bool:
+        if contract.get("kind") == "selector":
+            return contract.get("key") in output
+        value = output.get(contract.get("selector", "text"))
+        try:
+            payload = json.loads(value) if isinstance(value, str) else value
+        except json.JSONDecodeError:
+            return False
+        return cls._json_path_exists(payload, str(contract.get("path") or ""))
 
     @staticmethod
     def _json_path_exists(payload: Any, path: str) -> bool:

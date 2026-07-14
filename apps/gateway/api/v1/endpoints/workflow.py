@@ -268,6 +268,12 @@ class ModelRoutingPolicyRefreshRequest(BaseModel):
     pass
 
 
+class ModelRoutingPreviewRequest(BaseModel):
+    """편집 화면에서 입력만 받아 배포 policy를 read-only로 평가한다."""
+
+    inputs: dict[str, Any] = Field(default_factory=dict)
+
+
 def _raise_invalid_cost_optimizer_candidate() -> None:
     raise HTTPException(status_code=400, detail="cost_optimizer.invalid_candidate")
 
@@ -3684,6 +3690,32 @@ def get_model_routing_policy_endpoint(
     )
 
 
+@router.post("/{workflow_id}/llm-nodes/{node_id}/model-routing/preview")
+def preview_model_routing_policy_endpoint(
+    workflow_id: str,
+    node_id: str,
+    request_body: ModelRoutingPreviewRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """현재 active deployment policy가 고를 모델을 실행 없이 보여준다."""
+    workflow = ensure_workflow_permission(db, current_user, workflow_id, "execute")
+    _ensure_cost_optimizer_llm_node(workflow, node_id)
+    deployment = _active_deployment_for_workflow(db, workflow)
+    if deployment is None:
+        raise HTTPException(status_code=409, detail="model_routing.policy_not_ready")
+    try:
+        return ModelRoutingPreviewService.preview(
+            db,
+            workflow=workflow,
+            deployment=deployment,
+            node_id=node_id,
+            inputs=request_body.inputs,
+        )
+    except ModelRoutingPreviewBlockedError as exc:
+        raise HTTPException(status_code=409, detail=exc.code) from exc
+
+
 @router.patch("/{workflow_id}/llm-nodes/{node_id}/model-routing/policy")
 def patch_model_routing_policy_endpoint(
     workflow_id: str,
@@ -3701,6 +3733,8 @@ def patch_model_routing_policy_endpoint(
     node_data = node.get("data") if isinstance(node.get("data"), dict) else {}
     node_data["auto_model_routing"] = request_body.enabled
     request_fields = request_body.model_fields_set
+    if "default_model_id" in request_fields and request_body.default_model_id is None:
+        raise HTTPException(status_code=422, detail="model_routing.default_model_required")
     configured_model_id = str(
         request_body.default_model_id
         if "default_model_id" in request_fields

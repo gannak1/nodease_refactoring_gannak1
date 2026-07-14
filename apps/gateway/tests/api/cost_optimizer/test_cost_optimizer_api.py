@@ -570,7 +570,17 @@ class TestModelRoutingPolicyApi:
             uuid4(),
             [{"id": "llm-triage", "type": "llmNode", "data": {}}],
         )
-        policy = SimpleNamespace(id=policy_id, enabled=True)
+        policy = SimpleNamespace(
+            id=policy_id,
+            enabled=True,
+            active_policy={
+                "semantic_router": {"routes": [{"cohort_id": "billing"}, {"cohort_id": "other"}]},
+                "rules": [
+                    {"when": {"semantic_cohort_id": "billing"}, "selected_model_id": "gpt-4.1-mini"},
+                    {"when": {"semantic_cohort_id": "other"}, "selected_model_id": "gpt-4.1"},
+                ],
+            },
+        )
         cohort = SimpleNamespace(
             id=cohort_id,
             policy_id=policy_id,
@@ -578,6 +588,7 @@ class TestModelRoutingPolicyApi:
             required=True,
             retired_at=None,
             safety_protected=False,
+            cohort_key="billing",
         )
         (
             db.query.return_value.filter.return_value.filter.return_value.one_or_none.return_value
@@ -601,7 +612,35 @@ class TestModelRoutingPolicyApi:
         assert cohort.status == "retired"
         assert cohort.required is False
         assert cohort.retired_at is not None
+        assert policy.active_policy["semantic_router"]["routes"] == [{"cohort_id": "other"}]
+        assert policy.active_policy["rules"] == [
+            {"when": {"semantic_cohort_id": "other"}, "selected_model_id": "gpt-4.1"}
+        ]
         db.commit.assert_called_once()
+
+    def test_fr11_policy_patch_rejects_explicit_null_default_model(self):
+        workflow_id = uuid4()
+        user_id = uuid4()
+        db = MagicMock()
+        workflow = _workflow_with_nodes(
+            workflow_id,
+            uuid4(),
+            [{"id": "llm-triage", "type": "llmNode", "data": {"model_id": "gpt-4.1"}}],
+        )
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+            return_value=workflow,
+        ):
+            response = self.client.patch(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage/model-routing/policy",
+                json={"enabled": True, "default_model_id": None},
+            )
+
+        assert response.status_code == 422
+        assert response.json()["detail"] == "model_routing.default_model_required"
 
     def test_fr11_manual_refresh_marks_policy_and_schedules_task(self):
         workflow_id = uuid4()
