@@ -1,7 +1,7 @@
 # Connectors API Spec
 
 Status: Draft
-Verified Against: feature/mba-246 @ ad87043689613c70adaf47acf281904bf5ed91d9
+Verified Against: feature/mba-246 @ 785c423f38016c263fb7c8ab1661fbe1478761a8
 
 기본 경로: `/api/v1`
 
@@ -59,7 +59,7 @@ Expected target/SSH/connection 실패는 `200 OK`, `success=false`로 반환한�
 2. Actual body, media type, UTF-8 JSON object와 strict field를 검증한다.
 3. Redis에서 user/organization/network rate와 global/organization/user concurrency lease를 원자적으로 획득한다.
 4. Host와 전체 DNS 결과가 public인지 검사하고 validated IP 하나로 연결을 고정한다.
-5. 시스템 신뢰 CA를 명시한 TLS `verify-full`, connect 5초, statement 3초, API 10초 안에서 read-only `SELECT 1`을 한 번 수행한다.
+5. 시스템 CA bundle의 실제 파일 경로를 명시한 TLS `verify-full`, connect 5초, statement 3초, API 10초 안에서 read-only `SELECT 1`을 한 번 수행한다. CA bundle이 없으면 DNS 전에 safe failure로 닫는다.
 6. Actual work 중 owner-safe heartbeat로 lease를 연장하고, safe result 반환 뒤에도 blocking work가 남아 있으면 completion까지 유지한 다음 owner lease를 해제한다.
 
 Initial admission limits:

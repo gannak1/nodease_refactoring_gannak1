@@ -1,7 +1,7 @@
 # Connectors Test Cases
 
 Status: Draft
-Verified Against: feature/mba-246 @ ad87043689613c70adaf47acf281904bf5ed91d9
+Verified Against: feature/mba-246 @ 785c423f38016c263fb7c8ab1661fbe1478761a8
 
 ## Minimum Failure Rule
 
@@ -110,7 +110,7 @@ Verified Against: feature/mba-246 @ ad87043689613c70adaf47acf281904bf5ed91d9
 | CONN-TC-X002 | Secret 원문은 문서, fixture, audit metadata에 남지 않아야 한다. | DB password, SSH password, private key 원문이 문서, 테스트 fixture, audit metadata 중 하나에서 관찰된다. | 테스트 실패. |
 | CONN-TC-X003 | Redis admission은 multi-replica 경쟁에서도 rate/concurrency 상한을 넘지 않아야 한다. | 마지막 slot을 병렬 acquire하거나 wrong owner release, long-running heartbeat, stale lease, clock skew를 만든다. | Redis time/atomic script 기준 정확한 winner, owner-safe renew/release와 crash-only TTL recovery. |
 | CONN-TC-X004 | Admission key/member는 opaque해야 한다. | Redis key/hash/zset에 raw organization/user/network ID, host/database/username/password가 관찰된다. | HMAC identity와 random owner token만 존재. |
-| CONN-TC-X005 | Strict probe는 validated IP 한 곳에 시스템 신뢰 CA를 명시한 TLS `verify-full`로 한 번만 연결해야 한다. | Multiple public DNS, rebinding, first-attempt failure, plaintext/downgrade 또는 CA trust source 누락을 유도한다. | Pinned one-attempt, no fallback/retry, system CA와 hostname certificate 검증. |
+| CONN-TC-X005 | Strict probe는 validated IP 한 곳에 시스템 CA bundle의 실제 파일 경로를 명시한 TLS `verify-full`로 한 번만 연결해야 한다. | Multiple public DNS, rebinding, first-attempt failure, plaintext/downgrade 또는 CA bundle 누락을 유도한다. | Pinned one-attempt, no fallback/retry, system CA와 hostname certificate 검증. CA 누락은 DNS 전에 safe failure. |
 
 ## Knowledge Source Connector Target Tests
 
