@@ -63,6 +63,15 @@ def test_security_alert_models_are_registered_with_expected_table_names():
     assert watermark_model.__tablename__ == "security_alert_reconciliation_watermarks"
 
 
+def test_security_alert_reconciliation_models_track_batch_generations():
+    _, _, watermark_model = _security_alert_models()
+    receipt_model = _security_alert_reconciliation_receipt_model()
+
+    assert watermark_model.__table__.c.reconciliation_generation.nullable is False
+    assert receipt_model.__table__.c.discovered_generation.nullable is False
+    assert receipt_model.__table__.c.evaluated_generation.nullable is False
+
+
 def test_security_alert_model_declares_required_columns_and_defaults():
     alert_model, _, _ = _security_alert_models()
     table = alert_model.__table__
@@ -227,6 +236,7 @@ def test_security_alert_watermark_declares_durable_cursor_contract():
         "activation_started_at",
         "cursor_occurred_at",
         "cursor_audit_log_id",
+        "reconciliation_generation",
         "created_at",
         "updated_at",
     }
@@ -234,12 +244,15 @@ def test_security_alert_watermark_declares_durable_cursor_contract():
     assert table.c.activation_started_at.nullable is False
     assert table.c.cursor_occurred_at.nullable is True
     assert table.c.cursor_audit_log_id.nullable is True
+    assert table.c.reconciliation_generation.nullable is False
+    assert str(table.c.reconciliation_generation.server_default.arg) == "0"
     assert not table.c.cursor_audit_log_id.foreign_keys
     assert table.c.activation_started_at.type.timezone is True
     assert table.c.cursor_occurred_at.type.timezone is True
 
     checks = _constraint_names(table, CheckConstraint)
     assert "ck_security_alert_reconciliation_cursor_pair" in checks
+    assert "ck_security_alert_reconcile_generation_nonnegative" in checks
 
 
 def test_security_alert_watermark_migration_adds_cursor_table_and_scan_index():
@@ -266,6 +279,8 @@ def test_security_alert_reconciliation_receipt_declares_processed_contract():
     assert set(table.columns.keys()) == {
         "processor_name",
         "audit_log_id",
+        "discovered_generation",
+        "evaluated_generation",
         "processed_at",
     }
     assert [column.name for column in table.primary_key.columns] == [
@@ -273,8 +288,18 @@ def test_security_alert_reconciliation_receipt_declares_processed_contract():
         "audit_log_id",
     ]
     assert not table.c.audit_log_id.foreign_keys
+    assert table.c.discovered_generation.nullable is False
+    assert table.c.evaluated_generation.nullable is False
+    assert str(table.c.discovered_generation.server_default.arg) == "0"
+    assert str(table.c.evaluated_generation.server_default.arg) == "0"
     assert table.c.processed_at.nullable is False
     assert table.c.processed_at.type.timezone is True
+    checks = _constraint_names(table, CheckConstraint)
+    assert (
+        "ck_security_alert_receipt_generations_nonnegative"
+        in checks
+    )
+    assert "ck_security_alert_receipt_evaluation_order" in checks
 
 
 def test_security_alert_reconciliation_receipt_migration_is_additive():
@@ -287,6 +312,19 @@ def test_security_alert_reconciliation_receipt_migration_is_additive():
     assert 'down_revision: Union[str, Sequence[str], None] = "0f4a5b6c7d89"' in source
     assert '"security_alert_reconciliation_receipts"' in source
     assert 'drop_table("security_alert_reconciliation_receipts")' in source
+
+
+def test_security_alert_reconciliation_generation_migration_is_additive():
+    path = Path(
+        "apps/shared/alembic/versions/"
+        "2b6c7d8e9f02_add_security_alert_reconciliation_generations.py"
+    )
+    source = path.read_text(encoding="utf-8")
+
+    assert 'down_revision: Union[str, Sequence[str], None] = "1a5b6c7d8e91"' in source
+    assert '"reconciliation_generation"' in source
+    assert '"discovered_generation"' in source
+    assert '"evaluated_generation"' in source
 
 
 def test_security_alert_notification_outbox_declares_durable_delivery_contract():
