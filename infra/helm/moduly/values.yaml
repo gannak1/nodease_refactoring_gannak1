@@ -309,6 +309,9 @@ secrets:
   # JWT secret key
   secretKey: "changeme_secret_key_for_jwt"
   
+  # Required HMAC key for connector test admission identity digests (32+ bytes).
+  connectorTestAdmissionHmacKey: ""
+
   # Master encryption key (generate with: openssl rand -base64 32)
   masterKey: ""
   encryptionKey: ""

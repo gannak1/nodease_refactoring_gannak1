@@ -269,6 +269,9 @@ secrets:
   # JWT secret key
   secretKey: ""
   
+  # Required HMAC key for connector test admission identity digests (32+ bytes).
+  connectorTestAdmissionHmacKey: ""
+
   # Master encryption keys
   masterKey: ""
   encryptionKey: ""

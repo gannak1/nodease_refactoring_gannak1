@@ -21,6 +21,20 @@ const withStatus = (message: string, status?: number) =>
 
 const SAFE_MESSAGE_BY_REASON_CODE: Record<string, string> = {
   'connector.connection_failed': 'DB 연결에 실패했습니다.',
+  'connector.connection_timeout': 'DB 연결 확인 시간이 초과되었습니다.',
+  'connector.target_not_allowed': '허용되지 않은 DB 연결 대상입니다.',
+  'connector.ssh_probe_not_supported': 'SSH 연결 테스트는 지원하지 않습니다.',
+  'connector.test_rate_limited': '연결 테스트 요청이 너무 많습니다.',
+  'connector.test_busy': '연결 테스트 처리 용량이 사용 중입니다.',
+  'connector.admission_unavailable':
+    '연결 테스트 서비스를 일시적으로 사용할 수 없습니다.',
+  'connector.test_payload_invalid':
+    '연결 테스트 요청 형식이 올바르지 않습니다.',
+  'connector.test_payload_timeout':
+    '연결 테스트 요청 전송 시간이 초과되었습니다.',
+  'connector.test_payload_too_large': '연결 테스트 요청 크기가 너무 큽니다.',
+  'connector.test_media_type_not_supported':
+    '연결 테스트 요청 형식이 지원되지 않습니다.',
   'connection_config.encrypt_failed': 'DB 연결 정보 암호화에 실패했습니다.',
 };
 
@@ -43,6 +57,7 @@ const reasonCodeFromPayload = (payload: unknown): string | undefined => {
     reason_code?: unknown;
     reasonCode?: unknown;
     detail?: unknown;
+    error?: unknown;
   };
   if (
     typeof data.reason_code === 'string' &&
@@ -55,7 +70,11 @@ const reasonCodeFromPayload = (payload: unknown): string | undefined => {
   )
     return data.reasonCode;
   if (typeof data.detail === 'object' && data.detail !== null) {
-    const detail = data.detail as { reason_code?: unknown; reasonCode?: unknown };
+    const detail = data.detail as {
+      reason_code?: unknown;
+      reasonCode?: unknown;
+      error?: unknown;
+    };
     if (
       typeof detail.reason_code === 'string' &&
       detail.reason_code in SAFE_MESSAGE_BY_REASON_CODE
@@ -66,6 +85,16 @@ const reasonCodeFromPayload = (payload: unknown): string | undefined => {
       detail.reasonCode in SAFE_MESSAGE_BY_REASON_CODE
     )
       return detail.reasonCode;
+    if (typeof detail.error === 'object' && detail.error !== null) {
+      const code = (detail.error as { code?: unknown }).code;
+      if (typeof code === 'string' && code in SAFE_MESSAGE_BY_REASON_CODE)
+        return code;
+    }
+  }
+  if (typeof data.error === 'object' && data.error !== null) {
+    const code = (data.error as { code?: unknown }).code;
+    if (typeof code === 'string' && code in SAFE_MESSAGE_BY_REASON_CODE)
+      return code;
   }
   return undefined;
 };
@@ -73,6 +102,24 @@ const reasonCodeFromPayload = (payload: unknown): string | undefined => {
 const responsePayload = (error: unknown): unknown => {
   if (typeof error !== 'object' || error === null) return undefined;
   return (error as { response?: { data?: unknown } }).response?.data;
+};
+
+const retryAfterFromError = (error: unknown): number | undefined => {
+  if (typeof error !== 'object' || error === null) return undefined;
+  const headers = (error as { response?: { headers?: unknown } }).response
+    ?.headers;
+  if (typeof headers !== 'object' || headers === null) return undefined;
+  const candidate = headers as {
+    get?: (name: string) => unknown;
+    'retry-after'?: unknown;
+    'Retry-After'?: unknown;
+  };
+  const rawValue =
+    typeof candidate.get === 'function'
+      ? candidate.get('retry-after')
+      : (candidate['retry-after'] ?? candidate['Retry-After']);
+  if (typeof rawValue !== 'string' || !/^\d+$/.test(rawValue)) return undefined;
+  return Math.max(1, Math.min(60, Number(rawValue)));
 };
 
 const safeFailureMessage = (
@@ -94,11 +141,12 @@ type ConnectorCreationResult = {
   reasonCode?: string;
 };
 
-type ConnectionTestResult = {
+export type ConnectionTestResult = {
   success: boolean;
   message: string;
   status?: number;
   reasonCode?: string;
+  retryAfter?: number;
 };
 
 export const connectorApi = {
@@ -177,9 +225,7 @@ export const connectorApi = {
    * @param config - DB 연결 정보
    * @returns 성공 여부 및 메시지
    */
-  testConnection: async (
-    config: DBConfig,
-  ): Promise<ConnectionTestResult> => {
+  testConnection: async (config: DBConfig): Promise<ConnectionTestResult> => {
     try {
       const payload = {
         connection_name: config.connectionName,
@@ -215,6 +261,8 @@ export const connectorApi = {
     } catch (error) {
       const status = getHttpStatus(error);
       const reasonCode = reasonCodeFromPayload(responsePayload(error));
+      const retryAfter =
+        status === 429 ? retryAfterFromError(error) : undefined;
       logConnectorApiFailure('testConnection', error);
       return {
         success: false,
@@ -224,6 +272,7 @@ export const connectorApi = {
         }),
         ...(status ? { status } : {}),
         ...(reasonCode ? { reasonCode } : {}),
+        ...(retryAfter ? { retryAfter } : {}),
       };
     }
   },
