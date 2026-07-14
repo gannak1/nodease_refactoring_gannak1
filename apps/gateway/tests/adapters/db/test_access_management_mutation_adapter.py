@@ -1,11 +1,13 @@
 import uuid
 from datetime import datetime, timezone
 
+import pytest
 from sqlalchemy.dialects import postgresql
 
 from apps.gateway.adapters.db.access_management_mutation_adapter import (
     SqlAlchemyAccessManagementMutationAdapter,
 )
+from apps.gateway.application.access_management.errors import WorkflowPrimaryChanged
 from apps.gateway.application.access_management.models import (
     MemberSnapshot,
     ResourceDescriptor,
@@ -414,7 +416,7 @@ def test_workflow_resource_lock_uses_app_lifecycle_before_permission_scope():
     assert "workflow_permission_scope" in compiled
 
 
-def test_workflow_resource_lock_hides_primary_change_before_permission_scope(
+def test_workflow_resource_lock_propagates_primary_change_before_permission_scope(
     monkeypatch,
 ):
     organization_id = uuid.uuid4()
@@ -441,11 +443,11 @@ def test_workflow_resource_lock_hides_primary_change_before_permission_scope(
         _raise_primary_changed,
     )
 
-    result = SqlAlchemyAccessManagementMutationAdapter(session).lock_resource(
-        organization_id,
-        "workflow",
-        workflow.id,
-    )
+    with pytest.raises(WorkflowPrimaryChanged):
+        SqlAlchemyAccessManagementMutationAdapter(session).lock_resource(
+            organization_id,
+            "workflow",
+            workflow.id,
+        )
 
-    assert result is None
     assert "workflow-permission-scope-lock" not in session.events

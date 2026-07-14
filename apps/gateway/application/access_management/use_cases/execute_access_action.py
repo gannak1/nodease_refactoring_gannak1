@@ -11,6 +11,7 @@ from ..errors import (
     PolicyBlocked,
     ResourceHidden,
     StaleState,
+    WorkflowPrimaryChanged,
 )
 from ..models import (
     AccessActionCommand,
@@ -177,11 +178,15 @@ class ExecuteAccessAction:
                 raise InputValidationError(
                     "resource_type and resource_id are required."
                 )
-            resource = self.resource_scope.lock_resource(
-                command.organization_id,
-                command.resource_type,
-                command.resource_id,
-            )
+            try:
+                resource = self.resource_scope.lock_resource(
+                    command.organization_id,
+                    command.resource_type,
+                    command.resource_id,
+                )
+            except WorkflowPrimaryChanged:
+                self.unit_of_work.rollback()
+                raise
             if resource is None:
                 self.unit_of_work.rollback()
                 raise ResourceHidden("Resource not found.")

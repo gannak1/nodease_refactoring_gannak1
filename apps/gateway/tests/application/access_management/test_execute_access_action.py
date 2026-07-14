@@ -14,6 +14,7 @@ from apps.gateway.application.access_management.errors import (
     SelfControlForbidden,
     StaleState,
     TargetUserInactive,
+    WorkflowPrimaryChanged,
 )
 from apps.gateway.application.access_management.models import (
     AccessActionCommand,
@@ -343,6 +344,33 @@ def test_direct_permission_mutation_locks_subject_before_resource():
     assert adapter.events.index("lock.member:False") < adapter.events.index(
         "lock.resource"
     )
+
+
+def test_workflow_primary_change_rolls_back_and_propagates_stable_error():
+    member = _member()
+    use_case, adapter, audit, _, _, uow = _use_case(member)
+
+    def _raise_primary_changed(*args, **kwargs):
+        adapter.events.append("lock.resource")
+        raise WorkflowPrimaryChanged()
+
+    adapter.lock_resource = _raise_primary_changed
+
+    with pytest.raises(WorkflowPrimaryChanged):
+        use_case.execute(
+            _command(
+                member,
+                "direct_permission.grant",
+                resource_type="workflow",
+                resource_id=adapter.resource.resource_id,
+                auth_state="viewer",
+                expected_auth_state="none",
+            )
+        )
+
+    assert uow.rollbacks == 1
+    assert adapter.mutations == []
+    assert audit.mutations == []
 
 
 @pytest.mark.parametrize(

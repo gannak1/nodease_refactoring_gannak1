@@ -17,6 +17,7 @@ from apps.gateway.application.access_management.errors import (
     ResourceHidden,
     SelfControlForbidden,
     StaleState,
+    WorkflowPrimaryChanged,
 )
 from apps.gateway.application.access_management.models import AccessActionCommand
 from apps.gateway.composition.access_management import AccessManagementApplication
@@ -87,7 +88,10 @@ def _raise_access_management_error(
         status_code = 403
     elif isinstance(exc, SelfControlForbidden):
         status_code = 400
-    elif isinstance(exc, (PolicyBlocked, StaleState, LastActiveManager)):
+    elif isinstance(
+        exc,
+        (PolicyBlocked, StaleState, LastActiveManager, WorkflowPrimaryChanged),
+    ):
         status_code = 409
     elif isinstance(exc, InputValidationError):
         status_code = 422

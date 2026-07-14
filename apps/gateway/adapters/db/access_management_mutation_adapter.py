@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from apps.gateway.adapters.db.access_management_locking import (
     lock_access_subject_rows,
 )
+from apps.gateway.application.access_management.errors import WorkflowPrimaryChanged
 from apps.gateway.services.app_lifecycle_lock import (
     AppPrimaryChangedDuringMutationError,
     lock_app_for_workflow_mutation,
@@ -245,8 +246,8 @@ class SqlAlchemyAccessManagementMutationAdapter:
                     workflow_id=resource.id,
                     organization_id=organization_id,
                 )
-            except AppPrimaryChangedDuringMutationError:
-                return None
+            except AppPrimaryChangedDuringMutationError as exc:
+                raise WorkflowPrimaryChanged() from exc
             if app is None:
                 return None
             lock_workflow_permission_scope(
