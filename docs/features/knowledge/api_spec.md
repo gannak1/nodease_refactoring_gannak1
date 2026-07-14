@@ -274,6 +274,16 @@ Domain subject 응답은 active Team/User의 opaque id와 safe label만 반환�
 raw principal, source identity를 포함하지 않는다. UI는 Team을 기본 선택으로 두고
 User direct domain grant는 예외 경로로 제공한다.
 
+Collection 관리 Client는 domain-derived control의 canonical source로
+`GET /api/v1/knowledge/domain-capabilities`를 사용한다. 특히 private Manual
+Collection 생성은 `can_create_collection`, public visibility control은
+`can_change_public_visibility`를 각각 사용하고 Organization role이나 `actions` 배열을
+Client에서 다시 조합하지 않는다. Collection list의 같은 이름 capability는 기존
+관리 projection 호환을 위해 유지하고 정상 상태에서는 domain capability와 일치해야
+하지만, 두 응답이 일시적으로 불일치하면 Client는 domain capability를 따르고 최종
+인가 판단은 POST/visibility API가 다시 수행한다. Capability refresh가 실패하면
+Client는 이전 허용 상태를 유지하지 않고 fail-closed한다.
+
 ### MBA-231 KB Object/Property Authorization Inventory
 
 | Surface/path group | Gate | Scope/hidden response | Response boundary | Audit |

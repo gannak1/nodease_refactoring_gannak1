@@ -66,7 +66,7 @@ describe('KnowledgeCollectionManager', () => {
         },
       ],
       can_create_collection: false,
-      can_change_public_visibility: false,
+      can_change_public_visibility: true,
     });
     knowledgeApiMock.getKnowledgeCollectionItems.mockResolvedValueOnce({
       items: [
@@ -112,7 +112,7 @@ describe('KnowledgeCollectionManager', () => {
     });
   });
 
-  it('uses delegated catalog and permission capabilities with Team-first bundles', async () => {
+  it('uses delegated domain capability for collection creation and Team-first bundles', async () => {
     knowledgeApiMock.getKnowledgeDomainCapabilities.mockResolvedValueOnce({
       actions: ['catalog_manage', 'permission_delegate', 'lifecycle_manage'],
       can_manage_domain_permissions: false,
@@ -144,7 +144,7 @@ describe('KnowledgeCollectionManager', () => {
           updated_at: '2026-07-07T00:00:00Z',
         },
       ],
-      can_create_collection: true,
+      can_create_collection: false,
       can_change_public_visibility: false,
     });
     knowledgeApiMock.getKnowledgeCollectionItems.mockResolvedValue({ items: [] });
@@ -188,6 +188,41 @@ describe('KnowledgeCollectionManager', () => {
         role_bundle: 'viewer',
       }),
     );
+  });
+
+  it('fails closed when delegated capability refresh fails', async () => {
+    knowledgeApiMock.getKnowledgeDomainCapabilities
+      .mockResolvedValueOnce({
+        actions: ['catalog_manage'],
+        can_manage_domain_permissions: false,
+        can_create_collection: true,
+        can_delegate_permissions: false,
+        can_manage_lifecycle: false,
+        can_manage_sync: false,
+        can_change_public_visibility: false,
+      })
+      .mockRejectedValueOnce(new Error('transient capability failure'));
+    knowledgeApiMock.getKnowledgeCollectionsResponse.mockResolvedValue({
+      collections: [],
+      can_create_collection: false,
+      can_change_public_visibility: false,
+    });
+    knowledgeApiMock.createKnowledgeCollection.mockResolvedValue({
+      id: 'collection-new',
+    });
+
+    render(<KnowledgeCollectionManager />);
+
+    const nameInput = await screen.findByRole('textbox', { name: '관리용 이름' });
+    const safeLabelInput = screen.getByRole('textbox', {
+      name: '안전 표시 이름',
+    });
+    fireEvent.change(nameInput, { target: { value: '위임 Collection' } });
+    fireEvent.change(safeLabelInput, { target: { value: '안전한 표시 이름' } });
+    fireEvent.click(screen.getByRole('button', { name: '생성' }));
+
+    expect(await screen.findByText('요청을 처리하지 못했습니다.')).toBeInTheDocument();
+    expect(screen.queryByText('Collection 생성')).not.toBeInTheDocument();
   });
 
   it('requires a safe display label when creating a manual collection', async () => {

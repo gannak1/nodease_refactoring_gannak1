@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { workflowApi } from '@/app/features/workflow/api/workflowApi';
 import { useWorkflowStore } from '@/app/features/workflow/store/useWorkflowStore';
+import type { DeploymentParameterOptimizationConfig } from '@/app/features/workflow/types/Deployment';
 import { useDeployment } from './useDeployment';
 
 vi.mock('@/app/features/workflow/api/workflowApi', () => ({
@@ -14,7 +15,7 @@ vi.mock('@/app/features/workflow/api/workflowApi', () => ({
 
 const mockedWorkflowApi = vi.mocked(workflowApi);
 const initialStoreState = useWorkflowStore.getState();
-const disabledParameterOptimization = {
+const disabledParameterOptimization: DeploymentParameterOptimizationConfig = {
   enabled: false,
   node_ids: [],
   check_every_runs: 50,

@@ -36,6 +36,15 @@ const errorText = (error: unknown) => {
   return '요청을 처리하지 못했습니다.';
 };
 
+const CLOSED_COLLECTION_CAPABILITIES: CollectionCapabilities = {
+  can_create_collection: false,
+  can_change_public_visibility: false,
+  can_manage_catalog: false,
+  can_delegate_permissions: false,
+  can_manage_lifecycle: false,
+  can_manage_domain_permissions: false,
+};
+
 export default function KnowledgeCollectionManager() {
   const [collections, setCollections] = useState<KnowledgeCollectionResponse[]>(
     [],
@@ -58,12 +67,7 @@ export default function KnowledgeCollectionManager() {
   const [domainSubjects, setDomainSubjects] =
     useState<KnowledgeDelegationSubjectsResponse>({ teams: [], users: [] });
   const [capabilities, setCapabilities] = useState<CollectionCapabilities>({
-    can_create_collection: false,
-    can_change_public_visibility: false,
-    can_manage_catalog: false,
-    can_delegate_permissions: false,
-    can_manage_lifecycle: false,
-    can_manage_domain_permissions: false,
+    ...CLOSED_COLLECTION_CAPABILITIES,
   });
   const [isLoading, setIsLoading] = useState(true);
   const [isDetailLoading, setIsDetailLoading] = useState(false);
@@ -106,8 +110,9 @@ export default function KnowledgeCollectionManager() {
       ]);
       setCollections(data.collections);
       setCapabilities({
-        can_create_collection: data.can_create_collection,
-        can_change_public_visibility: data.can_change_public_visibility,
+        can_create_collection: domainCapabilities.can_create_collection,
+        can_change_public_visibility:
+          domainCapabilities.can_change_public_visibility,
         can_manage_catalog: domainCapabilities.can_create_collection,
         can_delegate_permissions:
           domainCapabilities.can_delegate_permissions,
@@ -128,6 +133,7 @@ export default function KnowledgeCollectionManager() {
       }
       setSelectedId((currentId) => currentId ?? data.collections[0]?.id ?? null);
     } catch (error) {
+      setCapabilities({ ...CLOSED_COLLECTION_CAPABILITIES });
       setErrorMessage(errorText(error));
     } finally {
       setIsLoading(false);
