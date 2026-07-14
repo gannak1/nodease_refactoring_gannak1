@@ -159,7 +159,7 @@ describe('KnowledgeCollectionManager', () => {
   });
 
   it('uses delegated domain capability for collection creation and Team-first bundles', async () => {
-    knowledgeApiMock.getKnowledgeDomainCapabilities.mockResolvedValueOnce({
+    knowledgeApiMock.getKnowledgeDomainCapabilities.mockResolvedValue({
       actions: ['catalog_manage', 'permission_delegate', 'lifecycle_manage'],
       can_manage_domain_permissions: false,
       can_create_collection: true,
