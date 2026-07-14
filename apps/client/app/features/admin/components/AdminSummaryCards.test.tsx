@@ -26,8 +26,8 @@ describe('AdminSummaryCards', () => {
 
     render(<AdminSummaryCards />);
 
-    expect(await screen.findByText('$123.46')).toBeInTheDocument();
-    expect(screen.getByText(/2026-07/)).toBeInTheDocument();
+    expect(await screen.findByText('$123.46')).toHaveClass('mt-2', 'text-2xl');
+    expect(screen.getByText(/2026-07/)).toHaveClass('mt-2', 'text-sm');
     expect(screen.getByText('예산 미설정')).toBeInTheDocument();
   });
 

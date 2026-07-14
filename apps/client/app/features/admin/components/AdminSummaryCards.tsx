@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import { ArrowRight, DollarSign, PiggyBank } from 'lucide-react';
+import { DollarSign, PiggyBank } from 'lucide-react';
 import { DashboardSummaryCard } from '../../dashboard/components/DashboardSurface';
 import { adminApi } from '../api/adminApi';
 import type {
@@ -116,6 +116,8 @@ export function AdminSummaryCards() {
           summary ? formatCost(summary.total_cost) : failed ? '-' : '집계 중'
         }
         icon={DollarSign}
+        valueClassName="mt-2 text-2xl"
+        descriptionClassName="mt-2 text-sm"
         description={
           summary
             ? `${summary.month} · USD · KST 달력 월 기준`

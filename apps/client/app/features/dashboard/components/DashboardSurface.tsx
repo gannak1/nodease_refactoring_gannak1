@@ -47,6 +47,8 @@ type DashboardSummaryCardProps = {
   value: string | number;
   icon: LucideIcon;
   iconClassName?: string;
+  valueClassName?: string;
+  descriptionClassName?: string;
   description?: string;
 };
 
@@ -55,6 +57,8 @@ export function DashboardSummaryCard({
   value,
   icon: Icon,
   iconClassName = 'text-blue-600',
+  valueClassName = 'mt-1 text-lg',
+  descriptionClassName = 'mt-1 text-xs',
   description,
 }: DashboardSummaryCardProps) {
   return (
@@ -62,11 +66,15 @@ export function DashboardSummaryCard({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-sm font-medium text-slate-500">{label}</p>
-          <p className="mt-1 truncate text-lg font-semibold text-slate-950">
+          <p
+            className={`truncate font-semibold text-slate-950 ${valueClassName}`}
+          >
             {value}
           </p>
           {description && (
-            <p className="mt-1 text-xs text-slate-500">{description}</p>
+            <p className={`text-slate-500 ${descriptionClassName}`}>
+              {description}
+            </p>
           )}
         </div>
         <Icon className={`h-5 w-5 shrink-0 ${iconClassName}`} />
