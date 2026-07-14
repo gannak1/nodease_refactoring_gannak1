@@ -777,6 +777,43 @@ def test_profile_reset_deletes_agent_builder_sessions_before_organization(
     assert list(session_condition.params.values()) == [organization_id]
 
 
+def test_demo_reset_deletes_knowledge_permissions_before_resources(monkeypatch):
+    db = ResetRecorderSession()
+    monkeypatch.setattr(demo_seed, "validate_demo_seed_prerequisites", lambda: None)
+    monkeypatch.setattr(demo_seed, "_adopt_existing_demo_user_ids", lambda _db: None)
+    monkeypatch.setattr(demo_seed, "seed_demo_data", lambda _db: None)
+
+    demo_seed.reset_demo_data(db)
+
+    assert db.deleted_targets.index(demo_seed.UserKnowledgePermission) < (
+        db.deleted_targets.index(demo_seed.KnowledgeBase)
+    )
+    assert db.deleted_targets.index(demo_seed.TeamKnowledgeDomainPermission) < (
+        db.deleted_targets.index(demo_seed.Team)
+    )
+    assert db.deleted_targets.index(demo_seed.UserKnowledgeDomainPermission) < (
+        db.deleted_targets.index(demo_seed.Organization)
+    )
+
+
+def test_test_reset_deletes_dynamic_workflow_permissions(monkeypatch):
+    db = ResetRecorderSession()
+    monkeypatch.setattr(demo_seed, "_adopt_existing_test_user_ids", lambda _db: None)
+    monkeypatch.setattr(demo_seed, "seed_test_data", lambda _db: None)
+
+    demo_seed.reset_test_data(db)
+
+    assert db.deleted_targets.index(demo_seed.UserWorkflowPermission) < (
+        db.deleted_targets.index(demo_seed.Workflow)
+    )
+    team_permission_condition = db.filter_criteria[
+        demo_seed.TeamWorkflowPermission
+    ][0].compile()
+    assert "team_workflow_permissions.grantee_organization_id" in str(
+        team_permission_condition
+    )
+
+
 def test_demo_runtime_credential_grants_agent_builder_user_permission(monkeypatch):
     upserts = []
 

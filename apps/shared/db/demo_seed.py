@@ -62,13 +62,16 @@ from apps.shared.db.models.permission_request import (
 from apps.shared.db.models.team import (
     Team,
     TeamAuditPermission,
+    TeamKnowledgeDomainPermission,
     TeamKnowledgeCollectionPermission,
     TeamKnowledgePermission,
     TeamLLMPermission,
     TeamMembership,
     TeamWorkflowPermission,
+    TeamKnowledgeDomainPermission,
     UserKnowledgePermission,
     UserLLMPermission,
+    UserKnowledgeDomainPermission,
     UserWorkflowPermission,
 )
 from apps.shared.db.models.user import User
@@ -4463,7 +4466,16 @@ def reset_test_data(db: Session) -> None:
     )
     db.flush()
     db.query(TeamWorkflowPermission).filter(
-        TeamWorkflowPermission.id.in_(list(TEST_PERMISSION_IDS.values()))
+        or_(
+            TeamWorkflowPermission.grantee_organization_id == TEST_ORG_ID,
+            TeamWorkflowPermission.workflow_id.in_(workflow_ids),
+        )
+    ).delete(synchronize_session=False)
+    db.query(UserWorkflowPermission).filter(
+        or_(
+            UserWorkflowPermission.grantee_organization_id == TEST_ORG_ID,
+            UserWorkflowPermission.workflow_id.in_(workflow_ids),
+        )
     ).delete(synchronize_session=False)
     db.query(WorkflowDeployment).filter(
         (WorkflowDeployment.id == TEST_DEPLOYMENT_ID)
@@ -4614,6 +4626,7 @@ def reset_demo_data(db: Session) -> None:
         UserWorkflowPermission,
         TeamKnowledgePermission,
         TeamKnowledgeCollectionPermission,
+        UserKnowledgePermission,
         TeamLLMPermission,
         TeamAuditPermission,
         UserLLMPermission,
@@ -4632,6 +4645,11 @@ def reset_demo_data(db: Session) -> None:
             UserKnowledgePermission.assigned_by.in_(user_ids),
         )
     ).delete(synchronize_session=False)
+
+    for model in (TeamKnowledgeDomainPermission, UserKnowledgeDomainPermission):
+        db.query(model).filter(model.organization_id == ORG_ID).delete(
+            synchronize_session=False
+        )
 
     # 시연 중 라이브로 만든 권한 신청/App 생성 권한도 함께 지워
     # 시나리오 1(차단 -> 신청 -> 승인)을 반복 시연할 수 있게 한다 (ADR-0016).
