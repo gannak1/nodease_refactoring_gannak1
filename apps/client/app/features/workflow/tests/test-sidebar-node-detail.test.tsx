@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { TestSidebar } from '../components/editor/TestSidebar';
@@ -90,6 +96,25 @@ vi.mock('../store/useWorkflowStore', () => {
 afterEach(() => cleanup());
 
 describe('TestSidebar node execution details', () => {
+  it('LLM 노드가 아닌 실행 결과 카드와 상세에는 비용·토큰을 표시하지 않는다', () => {
+    render(<TestSidebar />);
+
+    const startCard = screen.getByText('입력').closest('div.overflow-hidden');
+    expect(startCard).not.toBeNull();
+    expect(within(startCard as HTMLElement).getByText('시간')).toBeVisible();
+    expect(
+      within(startCard as HTMLElement).queryByText('비용'),
+    ).not.toBeInTheDocument();
+    expect(
+      within(startCard as HTMLElement).queryByText('토큰'),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '입력 상세 보기' }));
+    expect(screen.getByRole('heading', { name: '입력 실행 상세' })).toBeVisible();
+    expect(screen.getByText('실행 시간')).toBeVisible();
+    expect(screen.queryByText('비용')).not.toBeInTheDocument();
+  });
+
   it('실행 전 정책 미리보기 없이 실행 결과의 LLM 노드를 같은 사이드바에서 상세 보기로 전환한다', () => {
     render(<TestSidebar />);
 

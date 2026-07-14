@@ -26,6 +26,7 @@ type ExecutionComparisonPanelProps = {
   nodes: Node[];
   baselineRunId: string | null;
   currentRunId: string | null;
+  currentExecutionStatus?: string | null;
   currentExecutionError?: string | null;
   selectedNodeId?: string | null;
   onBaselineRunIdChange: (runId: string | null) => void;
@@ -52,6 +53,9 @@ type RunBundle = {
 };
 
 const PAGE_SIZE = 10;
+const CURRENT_RUN_COMPARISON_RETRY_DELAYS_MS = [
+  400, 800, 1_200, 2_000, 3_000, 4_000,
+] as const;
 
 const isFiniteNumber = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value);
@@ -69,6 +73,13 @@ const getHttpStatus = (error: unknown) => {
   }
   return undefined;
 };
+
+class RunBundleNotReadyError extends Error {
+  constructor() {
+    super('workflow run node logs are not ready');
+    this.name = 'RunBundleNotReadyError';
+  }
+}
 
 const modelFromOutput = (output: unknown) => {
   if (!isRecord(output)) return undefined;
@@ -218,17 +229,22 @@ const loadRunBundle = async (
   workflowId: string,
   runId: string,
   nodes: Node[],
-  attempts = 1,
+  options: {
+    requireTerminal?: boolean;
+    retryDelaysMs?: readonly number[];
+  } = {},
 ): Promise<RunBundle> => {
   let lastError: unknown;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
+  const retryDelaysMs = options.retryDelaysMs ?? [];
+
+  for (let attempt = 0; attempt <= retryDelaysMs.length; attempt += 1) {
     try {
       const run = await workflowApi.getWorkflowRun(workflowId, runId);
       if (
-        attempts > 1 &&
+        options.requireTerminal &&
         (run.status === 'running' || (run.node_runs ?? []).length === 0)
       ) {
-        throw new Error('workflow run node logs are not ready');
+        throw new RunBundleNotReadyError();
       }
       let traces: LLMTrace[] = [];
       let traceAvailability: RunBundle['traceAvailability'] = 'available';
@@ -249,7 +265,11 @@ const loadRunBundle = async (
       return toRunBundle(run, nodes, traces, traceAvailability);
     } catch (error) {
       lastError = error;
-      if (attempt < attempts - 1) await wait(400 * (attempt + 1));
+      const retryDelay = retryDelaysMs[attempt];
+      const shouldRetry =
+        error instanceof RunBundleNotReadyError || getHttpStatus(error) === 404;
+      if (retryDelay === undefined || !shouldRetry) throw error;
+      await wait(retryDelay);
     }
   }
   throw lastError;
@@ -340,6 +360,8 @@ function ValueViewer({ value }: { value: unknown }) {
 }
 
 function MetricGrid({ snapshot }: { snapshot?: NodeSnapshot }) {
+  const hasLlmUsageMetrics = snapshot?.nodeType === 'llmNode';
+
   return (
     <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
       <div>
@@ -348,24 +370,28 @@ function MetricGrid({ snapshot }: { snapshot?: NodeSnapshot }) {
           {runStatusLabel(snapshot?.status)}
         </dd>
       </div>
-      <div>
-        <dt className="text-gray-500">비용</dt>
-        <dd className="mt-0.5 font-semibold text-gray-900 dark:text-gray-100">
-          {formatCost(snapshot?.totalCost)}
-        </dd>
-      </div>
+      {hasLlmUsageMetrics ? (
+        <div>
+          <dt className="text-gray-500">비용</dt>
+          <dd className="mt-0.5 font-semibold text-gray-900 dark:text-gray-100">
+            {formatCost(snapshot?.totalCost)}
+          </dd>
+        </div>
+      ) : null}
       <div>
         <dt className="text-gray-500">실행 시간</dt>
         <dd className="mt-0.5 font-semibold text-gray-900 dark:text-gray-100">
           {formatLatency(snapshot?.durationMs)}
         </dd>
       </div>
-      <div>
-        <dt className="text-gray-500">토큰</dt>
-        <dd className="mt-0.5 font-semibold text-gray-900 dark:text-gray-100">
-          {formatTokens(snapshot?.totalTokens)}
-        </dd>
-      </div>
+      {hasLlmUsageMetrics ? (
+        <div>
+          <dt className="text-gray-500">토큰</dt>
+          <dd className="mt-0.5 font-semibold text-gray-900 dark:text-gray-100">
+            {formatTokens(snapshot?.totalTokens)}
+          </dd>
+        </div>
+      ) : null}
     </dl>
   );
 }
@@ -441,7 +467,7 @@ function OverallMetricComparison({
     <div
       data-testid={testId}
       role="group"
-      aria-label={`${label} A/B 비교`}
+      aria-label={`${label} 기준 실행과 현재 실행 비교`}
       className="rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900"
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -454,10 +480,12 @@ function OverallMetricComparison({
       </div>
       <div className="mt-3 space-y-2">
         <div className="grid grid-cols-[72px_minmax(0,1fr)_auto] items-center gap-2 text-[11px]">
-          <span className="font-semibold text-slate-500">A baseline</span>
-          <div className="h-2 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+          <span className="font-semibold text-slate-500">기준 실행</span>
+          <div className="h-3 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
             <div
-              className="h-full rounded-full bg-slate-400 dark:bg-slate-500"
+              data-testid={`${testId}-baseline-bar`}
+              aria-label={`${label} 기준 실행 가로 막대`}
+              className="h-full rounded-full bg-slate-400 transition-[width] dark:bg-slate-500"
               style={{ width: comparisonBarWidth(baselineValue, maxValue) }}
             />
           </div>
@@ -467,11 +495,13 @@ function OverallMetricComparison({
         </div>
         <div className="grid grid-cols-[72px_minmax(0,1fr)_auto] items-center gap-2 text-[11px]">
           <span className="font-semibold text-blue-700 dark:text-blue-300">
-            B candidate
+            현재 실행
           </span>
-          <div className="h-2 overflow-hidden rounded-full bg-blue-50 dark:bg-blue-950/40">
+          <div className="h-3 overflow-hidden rounded-full bg-blue-50 dark:bg-blue-950/40">
             <div
-              className="h-full rounded-full bg-blue-500 dark:bg-blue-400"
+              data-testid={`${testId}-current-bar`}
+              aria-label={`${label} 현재 실행 가로 막대`}
+              className="h-full rounded-full bg-blue-500 transition-[width] dark:bg-blue-400"
               style={{ width: comparisonBarWidth(candidateValue, maxValue) }}
             />
           </div>
@@ -495,8 +525,8 @@ function OverallExecutionComparison({
     <div className="rounded-lg border border-gray-200 bg-slate-50/60 p-3 dark:border-gray-700 dark:bg-gray-800/30">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-gray-500">
-          <span>A baseline · {formatRunTime(baseline.run.started_at)}</span>
-          <span>B candidate · {formatRunTime(current.run.started_at)}</span>
+          <span>기준 실행 · {formatRunTime(baseline.run.started_at)}</span>
+          <span>현재 실행 · {formatRunTime(current.run.started_at)}</span>
         </div>
         <div className="flex flex-wrap gap-2">
           <span
@@ -504,18 +534,21 @@ function OverallExecutionComparison({
               baseline.run.status,
             )}`}
           >
-            A baseline: {runStatusLabel(baseline.run.status)}
+            기준 실행: {runStatusLabel(baseline.run.status)}
           </span>
           <span
             className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${runStatusBadgeClass(
               current.run.status,
             )}`}
           >
-            B candidate: {runStatusLabel(current.run.status)}
+            현재 실행: {runStatusLabel(current.run.status)}
           </span>
         </div>
       </div>
-      <div className="mt-3 grid gap-3 lg:grid-cols-3">
+      <div
+        data-testid="overall-execution-metrics"
+        className="mt-3 flex flex-col gap-3"
+      >
         <OverallMetricComparison
           testId="overall-execution-metric-cost"
           label="비용"
@@ -586,6 +619,7 @@ export function ExecutionComparisonPanel({
   nodes,
   baselineRunId,
   currentRunId,
+  currentExecutionStatus,
   currentExecutionError,
   selectedNodeId: selectedNodeIdProp,
   onBaselineRunIdChange,
@@ -612,6 +646,7 @@ export function ExecutionComparisonPanel({
   const selectedNodeId = isSelectedNodeControlled
     ? selectedNodeIdProp
     : internalSelectedNodeId;
+  const isCurrentExecutionRunning = currentExecutionStatus === 'running';
   const selectNodeId = (nodeId: string | null) => {
     if (!isSelectedNodeControlled) {
       setInternalSelectedNodeId(nodeId);
@@ -663,6 +698,9 @@ export function ExecutionComparisonPanel({
     let cancelled = false;
     setIsComparisonLoading(true);
     setComparisonError(null);
+    if (isCurrentExecutionRunning) {
+      setCurrentBundle(null);
+    }
     const comparisonNodes = latestNodesRef.current;
     const baselineRequest = loadRunBundle(
       workflowId,
@@ -670,8 +708,13 @@ export function ExecutionComparisonPanel({
       comparisonNodes,
     );
     const currentRequest =
-      currentRunId && currentRunId !== baselineRunId
-        ? loadRunBundle(workflowId, currentRunId, comparisonNodes, 3)
+      !isCurrentExecutionRunning &&
+      currentRunId &&
+      currentRunId !== baselineRunId
+        ? loadRunBundle(workflowId, currentRunId, comparisonNodes, {
+            requireTerminal: true,
+            retryDelaysMs: CURRENT_RUN_COMPARISON_RETRY_DELAYS_MS,
+          })
         : Promise.resolve(null);
 
     Promise.all([baselineRequest, currentRequest])
@@ -694,7 +737,9 @@ export function ExecutionComparisonPanel({
     };
   }, [
     baselineRunId,
+    currentExecutionStatus,
     currentRunId,
+    isCurrentExecutionRunning,
     isSelectedNodeControlled,
     nodeDefinitionKey,
     reloadKey,
@@ -853,10 +898,10 @@ export function ExecutionComparisonPanel({
   );
   const traceNotRecordedLabels = [
     baselineBundle?.traceAvailability === 'not_recorded'
-      ? 'A baseline'
+      ? '기준 실행'
       : null,
     currentBundle?.traceAvailability === 'not_recorded'
-      ? 'B candidate'
+      ? '현재 실행'
       : null,
   ].filter((label): label is string => label !== null);
 
@@ -926,6 +971,11 @@ export function ExecutionComparisonPanel({
         <div className="rounded-lg border border-dashed border-gray-300 bg-white p-4 text-sm text-gray-600 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300">
           기준 실행은 유지됩니다. 노드를 수정한 뒤 현재 설정으로 다시
           테스트하세요.
+        </div>
+      ) : isCurrentExecutionRunning ? (
+        <div className="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-700 dark:border-blue-900 dark:bg-blue-950/20 dark:text-blue-200">
+          <Loader2 className="h-4 w-4 animate-spin" /> 현재 실행이 완료되면
+          비교 결과를 준비합니다.
         </div>
       ) : isComparisonLoading ? (
         <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white p-4 text-sm text-gray-600 dark:border-gray-700 dark:bg-gray-900">

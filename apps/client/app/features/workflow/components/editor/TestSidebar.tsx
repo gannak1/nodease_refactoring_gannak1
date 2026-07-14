@@ -773,6 +773,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   const renderNodeExecutionSummary = (
     summary: (typeof nodeExecutionSummaries)[number],
   ) => {
+    const hasLlmUsageMetrics = summary.nodeType === 'llmNode';
     const isRunning = summary.status === 'running';
     const isFailure = summary.status === 'failure';
     const statusLabel = isRunning ? '실행 중' : isFailure ? '실패' : '성공';
@@ -827,7 +828,11 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
             ) : null}
           </div>
         </div>
-        <dl className="grid grid-cols-3 gap-2 bg-white px-4 py-3 text-xs dark:bg-gray-900">
+        <dl
+          className={`grid gap-2 bg-white px-4 py-3 text-xs dark:bg-gray-900 ${
+            hasLlmUsageMetrics ? 'grid-cols-3' : 'grid-cols-1'
+          }`}
+        >
           <div>
             <dt className="flex items-center gap-1 text-gray-500">
               <Clock className="h-3.5 w-3.5" />
@@ -837,21 +842,25 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
               {formatLatency(summary.latencyMs)}
             </dd>
           </div>
-          <div>
-            <dt className="flex items-center gap-1 text-gray-500">
-              <Coins className="h-3.5 w-3.5" />
-              비용
-            </dt>
-            <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
-              {formatCost(summary.totalCost)}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-gray-500">토큰</dt>
-            <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
-              {formatTokens(summary.totalTokens)}
-            </dd>
-          </div>
+          {hasLlmUsageMetrics ? (
+            <>
+              <div>
+                <dt className="flex items-center gap-1 text-gray-500">
+                  <Coins className="h-3.5 w-3.5" />
+                  비용
+                </dt>
+                <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
+                  {formatCost(summary.totalCost)}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-gray-500">토큰</dt>
+                <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
+                  {formatTokens(summary.totalTokens)}
+                </dd>
+              </div>
+            </>
+          ) : null}
         </dl>
       </div>
     );
@@ -860,8 +869,9 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   const renderNodeExecutionDetail = (
     summary: (typeof nodeExecutionSummaries)[number],
   ) => {
+    const hasLlmUsageMetrics = summary.nodeType === 'llmNode';
     const hasRoutingTrace =
-      summary.nodeType === 'llmNode' &&
+      hasLlmUsageMetrics &&
       typeof summary.output === 'object' &&
       summary.output !== null &&
       !Array.isArray(summary.output) &&
@@ -888,7 +898,11 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
           </h3>
         </div>
 
-        <dl className="grid grid-cols-3 gap-3 rounded-lg border border-gray-200 bg-gray-50 p-4 text-xs dark:border-gray-700 dark:bg-gray-800/60">
+        <dl
+          className={`grid gap-3 rounded-lg border border-gray-200 bg-gray-50 p-4 text-xs dark:border-gray-700 dark:bg-gray-800/60 ${
+            hasLlmUsageMetrics ? 'grid-cols-3' : 'grid-cols-2'
+          }`}
+        >
           <div>
             <dt className="text-gray-500">상태</dt>
             <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
@@ -901,12 +915,14 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
               {formatLatency(summary.latencyMs)}
             </dd>
           </div>
-          <div>
-            <dt className="text-gray-500">비용</dt>
-            <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
-              {formatCost(summary.totalCost)}
-            </dd>
-          </div>
+          {hasLlmUsageMetrics ? (
+            <div>
+              <dt className="text-gray-500">비용</dt>
+              <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
+                {formatCost(summary.totalCost)}
+              </dd>
+            </div>
+          ) : null}
         </dl>
 
         <section>
@@ -1379,6 +1395,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
               nodes={nodes}
               baselineRunId={comparisonBaselineRunId}
               currentRunId={testExecutionRunId}
+              currentExecutionStatus={testExecutionStatus}
               currentExecutionError={testExecutionError}
               selectedNodeId={comparisonSelectedNodeId}
               onBaselineRunIdChange={handleComparisonBaselineRunIdChange}

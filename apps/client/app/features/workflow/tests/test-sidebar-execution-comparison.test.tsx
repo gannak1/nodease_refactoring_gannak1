@@ -4,6 +4,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from '@testing-library/react';
 import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -163,6 +164,62 @@ function ComparisonHarness() {
         }
         baselineRunId={baselineRunId}
         currentRunId={currentRunId}
+        onBaselineRunIdChange={setBaselineRunId}
+      />
+    </>
+  );
+}
+
+function NonLlmComparisonHarness() {
+  const [baselineRunId, setBaselineRunId] = useState<string | null>(null);
+
+  return (
+    <ExecutionComparisonPanel
+      workflowId="workflow-1"
+      nodes={
+        [
+          {
+            id: 'webhook-start',
+            type: 'webhookTrigger',
+            position: { x: 0, y: 0 },
+            data: { title: '고객 티켓 수신' },
+          },
+        ] as never
+      }
+      baselineRunId={baselineRunId}
+      currentRunId="current-run"
+      onBaselineRunIdChange={setBaselineRunId}
+    />
+  );
+}
+
+function RunningComparisonHarness() {
+  const [baselineRunId, setBaselineRunId] = useState<string | null>(null);
+  const [currentExecutionStatus, setCurrentExecutionStatus] = useState('running');
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setCurrentExecutionStatus('success')}
+      >
+        현재 실행 완료
+      </button>
+      <ExecutionComparisonPanel
+        workflowId="workflow-1"
+        nodes={
+          [
+            {
+              id: 'llm-triage',
+              type: 'llmNode',
+              position: { x: 0, y: 0 },
+              data: { title: '문의 분류' },
+            },
+          ] as never
+        }
+        baselineRunId={baselineRunId}
+        currentRunId="current-run"
+        currentExecutionStatus={currentExecutionStatus}
         onBaselineRunIdChange={setBaselineRunId}
       />
     </>
@@ -355,7 +412,7 @@ describe('TestSidebar execution comparison', () => {
     expect(screen.getByText('LLM')).toBeVisible();
   });
 
-  it('전체 실행 비교에서 수치 지표는 A/B 막대로, 상태는 별도 배지로 표시한다', async () => {
+  it('전체 실행 비교에서 수치 지표는 세로로 쌓은 가로 막대로, 상태는 별도 배지로 표시한다', async () => {
     mocks.getWorkflowRuns.mockResolvedValue({
       total: 1,
       items: [runSummary('baseline-run', '2026-07-13T01:00:00Z')],
@@ -388,13 +445,66 @@ describe('TestSidebar execution comparison', () => {
     expect(
       await screen.findByRole('heading', { name: '전체 실행 비교' }),
     ).toBeVisible();
+    expect(screen.getByTestId('overall-execution-metrics')).toHaveClass(
+      'flex-col',
+    );
     expect(screen.getByTestId('overall-execution-metric-cost')).toHaveTextContent(
       '50.0% 감소',
     );
+    expect(
+      screen.getByTestId('overall-execution-metric-cost-baseline-bar'),
+    ).toHaveStyle({ width: '100%' });
+    expect(
+      screen.getByTestId('overall-execution-metric-cost-current-bar'),
+    ).toHaveStyle({ width: '50%' });
     expect(screen.getByTestId('overall-execution-metric-duration')).toBeVisible();
     expect(screen.getByTestId('overall-execution-metric-tokens')).toBeVisible();
-    expect(screen.getByText('A baseline: 성공')).toBeVisible();
-    expect(screen.getByText('B candidate: 성공')).toBeVisible();
+    expect(screen.getByText('기준 실행: 성공')).toBeVisible();
+    expect(screen.getByText('현재 실행: 성공')).toBeVisible();
+  });
+
+  it('현재 실행 중에는 비교 조회 오류 대신 완료 대기 안내를 표시한다', async () => {
+    mocks.getWorkflowRuns.mockResolvedValue({
+      total: 1,
+      items: [runSummary('baseline-run', '2026-07-13T01:00:00Z')],
+    });
+    mocks.getWorkflowRun.mockImplementation(
+      (_workflowId: string, runId: string) =>
+        Promise.resolve(
+          runId === 'baseline-run'
+            ? runDetail('baseline-run', 'gpt-4.1', '기존 문의', '기존 답변')
+            : runDetail(
+                'current-run',
+                'gpt-4.1-mini',
+                '현재 문의',
+                '현재 답변',
+              ),
+        ),
+    );
+    mocks.getWorkflowRunLlmTraces.mockResolvedValue({
+      total: 0,
+      limit: 100,
+      offset: 0,
+      items: [],
+    });
+
+    render(<RunningComparisonHarness />);
+    fireEvent.click(
+      await screen.findByRole('button', { name: '기준으로 고정' }),
+    );
+
+    expect(
+      await screen.findByText('현재 실행이 완료되면 비교 결과를 준비합니다.'),
+    ).toBeVisible();
+    expect(
+      screen.queryByText('실행 비교 데이터를 불러오지 못했습니다.'),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '현재 실행 완료' }));
+
+    expect(
+      await screen.findByRole('heading', { name: '전체 실행 비교' }),
+    ).toBeVisible();
   });
 
   it('현재 테스트를 다시 실행해도 고정한 기준 실행을 유지한다', async () => {
@@ -563,7 +673,7 @@ describe('TestSidebar execution comparison', () => {
       screen.queryByText('일부 LLM trace를 불러오지 못했습니다.'),
     ).not.toBeInTheDocument();
     expect(
-      screen.getByText('LLM trace 기록 없음: A baseline, B candidate'),
+      screen.getByText('LLM trace 기록 없음: 기준 실행, 현재 실행'),
     ).toBeVisible();
   });
 
@@ -626,5 +736,58 @@ describe('TestSidebar execution comparison', () => {
     expect(screen.getByText('모델 라우팅 비교')).toBeVisible();
     expect(screen.getAllByText('gpt-4.1').length).toBeGreaterThan(0);
     expect(screen.getAllByText('gpt-4.1-mini').length).toBeGreaterThan(0);
+  });
+
+  it('LLM 노드가 아닌 비교 카드에는 비용과 토큰을 표시하지 않는다', async () => {
+    mocks.getWorkflowRuns.mockResolvedValue({
+      total: 1,
+      items: [runSummary('baseline-run', '2026-07-13T01:00:00Z')],
+    });
+    mocks.getWorkflowRun.mockImplementation(
+      (_workflowId: string, runId: string) => {
+        const detail =
+          runId === 'baseline-run'
+            ? runDetail('baseline-run', 'gpt-4.1', '기존 문의', '수신 완료')
+            : runDetail('current-run', 'gpt-4.1-mini', '현재 문의', '수신 완료');
+
+        return Promise.resolve({
+          ...detail,
+          node_runs: detail.node_runs.map((nodeRun) => ({
+            ...nodeRun,
+            node_id: 'webhook-start',
+            node_type: 'webhookTrigger',
+            outputs: { received: true },
+          })),
+        });
+      },
+    );
+    mocks.getWorkflowRunLlmTraces.mockResolvedValue({
+      total: 0,
+      limit: 100,
+      offset: 0,
+      items: [],
+    });
+
+    render(<NonLlmComparisonHarness />);
+    fireEvent.click(
+      await screen.findByRole('button', { name: '기준으로 고정' }),
+    );
+
+    const nodeCard = (await screen.findByText('고객 티켓 수신')).closest(
+      'article',
+    );
+    expect(nodeCard).not.toBeNull();
+    expect(
+      within(nodeCard as HTMLElement).getAllByText('상태'),
+    ).toHaveLength(2);
+    expect(
+      within(nodeCard as HTMLElement).getAllByText('실행 시간'),
+    ).toHaveLength(2);
+    expect(within(nodeCard as HTMLElement).queryAllByText('비용')).toHaveLength(
+      0,
+    );
+    expect(within(nodeCard as HTMLElement).queryAllByText('토큰')).toHaveLength(
+      0,
+    );
   });
 });

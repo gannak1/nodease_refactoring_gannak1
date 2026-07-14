@@ -106,7 +106,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 | Priority | 영역 | 테스트/요구 항목 | 현재 상태 | 미구현/미통과 사유 | 대응 파일 |
 | --- | --- | --- | --- | --- | --- |
 | 1 | 실행 편의성 | 노드 output token/cost 읽기와 `-` fallback 표시 | 통과 | 구현 및 unit test 완료 | `apps/client/app/features/workflow/tests/execution-convenience.test.ts` |
-| 1 | 실행 편의성 | 노드별 실행 상태, 시간, 비용, 토큰 표시 | 통과 | node summary parser와 `TestSidebar` 표시 경로 구현 완료 | `apps/client/app/features/workflow/tests/execution-convenience.test.ts`, `apps/client/app/features/workflow/components/editor/TestSidebar.tsx` |
+| 1 | 실행 편의성 | 노드별 실행 상태·시간과 LLM 사용량 표시 | 통과 | 모든 노드는 상태·시간을 표시하고, `llmNode`만 비용·토큰을 표시한다. node summary parser와 `TestSidebar` 표시 경로 구현 완료 | `apps/client/app/features/workflow/tests/execution-convenience.test.ts`, `apps/client/app/features/workflow/tests/test-sidebar-node-detail.test.tsx`, `apps/client/app/features/workflow/components/editor/TestSidebar.tsx` |
 | 1 | 실행 편의성 | `node_finish` 표준 필드 `latency_ms`, `total_tokens`, `total_cost` 우선 표시 | 통과 | 프론트 summary parser unit test 완료. Gateway/engine API contract test는 별도 API test infra에서 다룬다. | `apps/client/app/features/workflow/tests/execution-convenience.test.ts` |
 | 1 | 실행 편의성 | 최종 서버 실행 시간, 화면 완료 시간, 비용, 토큰 요약 표시 | 통과 | workflow-level summary 우선 사용과 node 합산 fallback unit test 완료 | `apps/client/app/features/workflow/tests/execution-convenience.test.ts` |
 | 1 | 실행 편의성 | 테스트 성공 후 최종 사용자가 받는 `최종 응답` 카드 표시 | 통과 | 사용자 응답 형태의 workflow output, answer/response node, LLM output fallback helper와 카드 render test 완료. 전체 node 실행 컨텍스트는 Answer node 출력보다 우선하지 않는다. | `apps/client/app/features/workflow/tests/testExecutionFinalResponse.test.ts`, `apps/client/app/features/workflow/tests/test-sidebar-final-response-card.test.tsx`, `apps/client/app/features/workflow/components/editor/TestSidebar.tsx` |
@@ -125,8 +125,9 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 | 1 | 실행 비교 | 단일 결과 전환 중 기존 비교 분석 유지 | 통과 | 같은 TestSidebar 세션에서 단일 결과를 거쳐 다시 실행 비교를 열어도 기준 실행, 선택 상세와 이미 불러온 분석을 유지한다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
 | 1 | 실행 비교 | 보고 화면 왕복 뒤 비교 상세 복원 | 통과 | URL에 보존한 현재 실행, 기준 실행, 비교 모드, 선택 노드를 읽어 보고 화면 복귀 뒤 동일한 노드 상세 비교를 다시 표시한다 | `apps/client/app/features/workflow/tests/test-sidebar-comparison-restore.test.tsx` |
 | 1 | 실행 비교 | 실시간 노드 상태 갱신 중 비교 화면 유지 | 통과 | 같은 실행과 같은 노드 표시 정보를 유지한 상태 갱신은 비교 API 재조회와 로딩 화면 전환을 만들지 않는다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
-| 1 | 실행 비교 | 전체 실행 A/B 수치 막대와 상태 배지 | 통과 | 비용·실행 시간·전체 토큰은 동일 기준 막대와 변화율로, 상태는 A/B 배지로 분리해 표시한다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
-| 1 | 실행 비교 | 노드 목록 지표와 상세 비교 | 통과 | 목록에는 노드 이름·사람용 유형명·상태·비용·시간·토큰을 표시하고 상세에는 입력·출력·라우팅 근거를 양쪽으로 표시한다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
+| 1 | 실행 비교 | 전체 실행 기준·현재 가로 막대와 상태 배지 | 통과 | 비용·실행 시간·전체 토큰을 세로로 쌓고, 각 항목에서 기준 실행·현재 실행의 가로 막대와 변화율을 표시한다. 상태는 별도 배지로 분리한다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
+| 1 | 실행 비교 | 현재 실행 중 비교 대기와 완료 뒤 자동 동기화 | 통과 | 현재 실행이 `running`인 동안에는 비교 조회 오류 대신 완료 대기 안내를 표시하고, terminal 상태 전환 뒤 비교 결과를 자동으로 읽는다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
+| 1 | 실행 비교 | 노드 목록 지표와 상세 비교 | 통과 | 목록에는 노드 이름·사람용 유형명·상태·시간을 표시하고, `llmNode`에만 비용·토큰을 추가한다. 상세에는 입력·출력을 양쪽으로 표시하고 LLM 노드에는 라우팅 근거를 추가한다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
 | 1 | 실행 비교 | LLM trace 기록 없음과 조회 실패 구분 | 통과 | `404`/빈 trace는 `LLM trace 기록 없음`으로 표시하고, `403`/`5xx`/네트워크 실패는 비교를 유지하면서 근거 일부 누락 경고를 표시한다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
 | 1 | 노드 조작 편의성 | 3패널 기본 표시 | 통과 | 기본 3패널 폭 산출 unit test와 `NodeFullscreenEditor` grid 구현 완료 | `apps/client/app/features/workflow/tests/node-panel-resize.test.ts`, `apps/client/app/features/workflow/components/editor/NodeFullscreenEditor.tsx` |
 | 1 | 노드 조작 편의성 | 3패널 resize 계산의 min/max clamp | 통과 | layout 계산 unit test 완료 | `apps/client/app/features/workflow/tests/node-panel-resize.test.ts` |
@@ -346,7 +347,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 
 - 빌더가 워크플로우 테스트를 실행하면 테스트 실행 사이드바에 노드별 상태가 표시된다.
 - 실행 중인 노드는 `실행 중`, 완료된 노드는 `성공`, 실패한 노드는 `실패`로 표시된다.
-- `node_finish` 이벤트에 토큰/비용 표준 필드가 있으면 테스트 실행 사이드바에 토큰 수와 비용이 표시된다.
+- `llmNode`의 `node_finish` 이벤트에 토큰/비용 표준 필드가 있으면 테스트 실행 사이드바에 토큰 수와 비용이 표시된다. 다른 노드는 해당 값이 없어도 빈 비용·토큰 칸을 표시하지 않는다.
 - 테스트 성공 후 테스트 실행 사이드바 상단에 최종 사용자가 받는 `최종 응답` 카드가 표시된다.
 - JSON 최종 응답은 카드에서 읽기 쉬운 preview로 표시되고, 원본 JSON은 노드별 실행 결과 상세 영역에 유지된다.
 - 테스트 완료 후 테스트 실행 사이드바 마지막 영역에 서버 실행 시간, 화면 완료 시간, 전체 비용, 전체 토큰 사용량이 표시된다.
