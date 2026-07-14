@@ -1,7 +1,7 @@
 # Knowledge API Spec
 
 Status: Draft
-이 문서는 Knowledge feature의 현재 API baseline과 목표 KB 통합 API 계약을 함께 기록한다. MBA-105 목표 API는 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)의 임시 구현 baseline, Workflow RAG anonymous public-only runtime은 [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md), MCP/API source connector와 incremental sync 경계는 [ADR-0020](../../decisions/ADR-0020-knowledge-mcp-incremental-sync-boundary.md), MBA-231 위임 관리와 KB RBAC cutover는 [ADR-0034](../../decisions/ADR-0034-knowledge-delegated-administration-and-rbac-boundary.md), direct KB와 명시 selected Collection의 internal runtime resolver는 [ADR-0036](../../decisions/ADR-0036-knowledge-runtime-candidate-resolution.md), 세부 구현 기준은 [implementation_baseline.md](implementation_baseline.md)를 따른다. Knowledge Skill 관련 API 경계는 [ADR-0015](../../decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)를 따른다.
+이 문서는 Knowledge feature의 현재 API baseline과 목표 KB 통합 API 계약을 함께 기록한다. MBA-105 목표 API는 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)의 임시 구현 baseline, Workflow RAG anonymous public-only runtime은 [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md), MCP/API source connector와 incremental sync 경계는 [ADR-0020](../../decisions/ADR-0020-knowledge-mcp-incremental-sync-boundary.md), MBA-231 위임 관리와 KB RBAC cutover는 [ADR-0034](../../decisions/ADR-0034-knowledge-delegated-administration-and-rbac-boundary.md), direct KB와 명시 selected Collection의 internal runtime resolver는 [ADR-0036](../../decisions/ADR-0036-knowledge-runtime-candidate-resolution.md), KC 운영 관리 계약은 [ADR-0044](../../decisions/ADR-0044-knowledge-collection-operational-management-boundary.md), 세부 구현 기준은 [implementation_baseline.md](implementation_baseline.md)를 따른다. Knowledge Skill 관련 API 경계는 [ADR-0015](../../decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)를 따른다.
 
 ## Current Baseline Endpoints
 
@@ -248,7 +248,7 @@ authority가 남아 있는지 검증한다.
 | --- | --- | --- | --- |
 | GET | `/api/v1/knowledge/domain-capabilities` | 현재 actor의 effective domain action과 UI capability 조회 | active organization member |
 | GET | `/api/v1/knowledge/domain-permissions` | Team/User domain grant 목록 | Organization manager |
-| GET | `/api/v1/knowledge/domain-delegation-subjects` | Team-first safe 위임 대상 목록 | Organization manager |
+| GET | `/api/v1/knowledge/domain-delegation-subjects` | bounded Team/User safe 위임 대상 page | Organization manager |
 | PUT | `/api/v1/knowledge/domain-permissions/teams/{team_id}/{permission_action}` | Team domain grant upsert | Organization manager |
 | DELETE | `/api/v1/knowledge/domain-permissions/teams/{team_id}/{permission_action}` | Team domain grant revoke | Organization manager |
 | PUT | `/api/v1/knowledge/domain-permissions/users/{user_id}/{permission_action}` | User domain grant upsert | Organization manager |
@@ -471,6 +471,7 @@ Manual Collection 관리 API는 Knowledge 관리 영역에서 사용한다. Work
 | GET | `/api/v1/knowledge/collections/{collection_id}` | Collection 상세 | `collection.read`, Knowledge domain 관리 action, 또는 organization manager override |
 | PATCH | `/api/v1/knowledge/collections/{collection_id}` | safe name/description/metadata 수정 | `collection.manage`, private manual Collection의 domain `catalog_manage`, 또는 organization manager override |
 | DELETE | `/api/v1/knowledge/collections/{collection_id}` | physical delete가 아니라 archive 전이 | `collection.manage`, domain `lifecycle_manage`, 또는 organization manager override |
+| POST | `/api/v1/knowledge/collections/{collection_id}/restore` | archived manual Collection을 active로 복구 | `collection.manage`, domain `lifecycle_manage`, 또는 organization manager override |
 
 List response는 `collections`, `can_create_collection`, `can_change_public_visibility`를 포함한다. 각 Collection row는 `id`, `name`, `description`, `is_system_managed`, `sync_state`, `lifecycle_state`, `visibility`, bucketed linked/active KB count, caller action flags, `safe_metadata`, timestamps만 포함한다. Raw source title/path/url/principal, hidden KB name/id, exact denied count는 반환하지 않는다.
 
@@ -479,6 +480,8 @@ Create request는 `name`, optional `description`, optional allowlisted `safe_met
 Update request는 visibility를 바꾸지 않는다. Public/private 전환은 별도 visibility endpoint만 사용한다. Manual Collection 관리 UI는 현재 `safe_metadata`를 보존하면서 `safe_label`을 교체해 label 수정이 다른 허용 metadata를 제거하지 않게 한다. Label이 없는 기존 Manual Collection은 raw `name` 자동 복사나 일괄 backfill 없이 edit surface에서 명시적으로 보완한다. System-managed Collection은 connector/sync가 소유하므로 manual update는 safe override가 승인된 field로 제한한다.
 
 `safe_metadata.safe_label`은 표시용 metadata일 뿐 권한이나 runtime capability가 아니다. Collection picker는 저장된 manual safe label을 다시 정제해 반환하고 값이 없으면 `null`을 반환한다. Raw Collection `name`/`description`을 fallback으로 반환하지 않으며 Client는 `null`에 generic `지식 Collection` label만 사용할 수 있다.
+
+List의 `lifecycle_state` query는 `active`, `archived`, `deleted` 중 하나이며 관리 UI는 active와 archived를 별도 page로 조회한다. Archive와 restore는 Collection row를 잠근 뒤 상태와 권한을 다시 평가한다. Restore는 manual archived Collection만 `active`로 전이하며 active Collection에는 새 mutation/audit 없이 idempotent `204`를 반환한다. `deleted` 또는 organization 밖 대상은 hidden 처리하고 system-managed Collection은 source owner 경계로 거부하며 `sync_state=source_deleted`는 safe `409`로 차단한다. Restore는 기존 permission과 membership을 보존하지만 새 permission, child KB `use`, Workflow `route`를 만들지 않는다.
 
 ### Collection Item Management
 
@@ -490,19 +493,27 @@ Update request는 visibility를 바꾸지 않는다. Public/private 전환은 �
 | PATCH | `/api/v1/knowledge/collections/{collection_id}/items/reorder` | deterministic rank 변경 | private: `collection.manage` 또는 `catalog_manage`; public: Organization manager + acknowledgement |
 | GET | `/api/v1/knowledge/collections/{collection_id}/link-candidates` | link 가능한 KB 후보 | 해당 membership mutation 권한의 safe 후보만 반환 |
 
-Item response는 `item_id`, `knowledge_base_id`, safe label, lifecycle/sync state, rank, caller action flags만 포함한다. Safe label은 유효한 `KnowledgeBase.safe_metadata.safe_label`, display-policy-approved source safe label, caller가 독립 KB `read`를 통과한 manual KB `name` 순으로 선택하고, 모두 사용할 수 없으면 generic `Knowledge Base`를 반환한다. Domain `catalog_manage`만으로 raw manual KB `name`을 fallback하지 않으며 link-candidate response도 같은 projection을 사용한다. `can_use_kb=false`인 item이 보일 수 있지만, 이는 runtime retrieval 가능성을 의미하지 않는다. Link/unlink는 같은 organization KB만 허용하며 archived/deleted KB는 link 대상에서 제외한다. Private Collection membership은 `collection.manage` + KB `manage`, 또는 domain `catalog_manage`로 관리할 수 있다. Public Collection의 link/unlink/reorder는 visibility 변경과 같은 public exposure mutation이므로 Organization manager와 `acknowledged_public_runtime_exposure=true`를 요구한다. Duplicate link는 MVP에서 idempotent success로 처리할 수 있다.
+`GET /items`, link와 reorder 성공 response는 `items`, opaque `order_revision`, `reorder_supported`, optional fixed `safe_reason_code`를 포함하고 항상 최신 전체 ordered item projection을 반환한다. 각 item은 `item_id`, `knowledge_base_id`, safe label, lifecycle/sync state, rank, caller action flags만 포함한다. Safe label은 유효한 `KnowledgeBase.safe_metadata.safe_label`, display-policy-approved source safe label, caller가 독립 KB `read`를 통과한 manual KB `name` 순으로 선택하고, 모두 사용할 수 없으면 generic `Knowledge Base`를 반환한다. Domain `catalog_manage`만으로 raw manual KB `name`을 fallback하지 않으며 link-candidate response도 같은 projection을 사용한다. `can_use_kb=false`인 item이 보일 수 있지만, 이는 runtime retrieval 가능성을 의미하지 않는다. Link/unlink는 같은 organization KB만 허용하며 archived/deleted KB는 link 대상에서 제외한다. Private Collection membership은 `collection.manage` + KB `manage`, 또는 domain `catalog_manage`로 관리할 수 있다. Public Collection의 link/unlink/reorder는 visibility 변경과 같은 public exposure mutation이므로 Organization manager와 `acknowledged_public_runtime_exposure=true`를 요구한다. Duplicate link는 MVP에서 idempotent success로 처리할 수 있다.
+
+Reorder request는 현재 전체 item을 `{item_id, rank}`로 보내고 `expected_order_revision`을 반드시 포함한다. Item id와 rank는 각각 unique이고 rank는 정확히 `0..N-1`이어야 한다. 서버는 Collection과 membership row를 잠근 뒤 current revision, 현재 전체 item set과 request를 비교한다. Stale revision, 누락·추가 item 또는 concurrent link/unlink는 어떤 rank도 바꾸지 않는 safe `409`다. 같은 순서의 no-op은 새 audit를 만들지 않는다. 초기 관리 surface는 item 500개 이하만 reorder하며 초과 response는 `reorder_supported=false`, `safe_reason_code=item_reorder_limit_exceeded`로 고정한다. `order_revision`은 권한이나 조회 capability가 아니다.
 
 ### Collection Permission Management
 
 | Method | Path | 목적 | 권한 |
 | --- | --- | --- | --- |
 | GET | `/api/v1/knowledge/collections/{collection_id}/permissions` | permission grant 목록 | `collection.manage`, domain `permission_delegate`, 또는 organization manager |
-| GET | `/api/v1/knowledge/collections/{collection_id}/delegation-subjects` | active Team/User safe 대상 목록 | permission 변경과 동일 |
+| GET | `/api/v1/knowledge/collections/{collection_id}/delegation-subjects` | bounded active Team/User safe 대상 page | permission 변경과 동일 |
 | POST | `/api/v1/knowledge/collections/{collection_id}/permissions` | team/user 단일 action grant | permission 변경과 동일 |
 | POST | `/api/v1/knowledge/collections/{collection_id}/permissions/bundles` | role bundle을 explicit action row로 원자 적용 | permission 변경과 동일 |
+| POST | `/api/v1/knowledge/collections/{collection_id}/permissions/bundles/revoke` | bundle action 집합의 explicit row를 원자 회수 | permission 변경과 동일 |
 | DELETE | `/api/v1/knowledge/collections/{collection_id}/permissions/{permission_id}` | grant revoke | permission 변경과 동일 |
+| POST | `/api/v1/knowledge/collection-permissions/bulk-bundles` | 같은 subject/bundle을 1~50개 Collection에 원자 grant/revoke | 모든 target에 permission 변경 authority |
 
-단일 grant request는 `subject_type=team|user`, `subject_id`, `permission_action=read|route|manage|sync`만 허용한다. Bundle request의 `role_bundle`은 `viewer`, `workflow_router`, `maintainer`, `sync_operator`이며 각각 ADR-0034의 explicit action 집합을 한 transaction에서 upsert한다. 별도 role row나 inheritance를 만들지 않는다. Domain delegator의 self/own-Team grant는 `409 policy.blocked`로 차단하고, 마지막 manage 경로 회수는 safe denial 또는 Organization manager recovery를 요구한다.
+단일 grant request는 `subject_type=team|user`, `subject_id`, `permission_action=read|route|manage|sync`만 허용한다. Bundle request의 `role_bundle`은 `viewer`, `workflow_router`, `maintainer`, `sync_operator`이며 각각 ADR-0034의 explicit action 집합을 한 transaction에서 upsert한다. 별도 role row나 inheritance를 만들지 않는다. Bundle revoke는 저장된 role을 찾지 않고 현재 존재하는 매핑 action row만 삭제한다. 따라서 Maintainer(`read+manage`)를 부여한 뒤 Viewer(`read`)를 회수하면 `manage` row는 유지되며 UI도 이를 다시 Maintainer role로 추론하지 않는다. 없는 row의 회수는 idempotent unchanged다. Domain delegator의 self/own-Team grant는 `409 policy.blocked`로 차단하고, 마지막 manage 경로 회수는 safe denial 또는 Organization manager recovery를 요구한다.
+
+Delegation subject query는 `subject_type=team|user`를 필수로 받고 optional `query`(정규화된 safe prefix, 최대 100자), opaque `cursor`, `limit`(기본 25, 최대 50)를 사용한다. Response는 `subjects[{subject_type, subject_id, subject_safe_label}]`와 optional `next_cursor`만 반환한다. 서버는 endpoint별 authority를 먼저 검증한 뒤 current organization의 active Team 또는 active member User를 UUID keyset으로 `limit + 1` 조회한다. Team/User name만 검색하고 email, login principal, raw source identity와 total count는 검색하거나 반환하지 않는다. 같은 page 계약을 Organization manager 전용 `/api/v1/knowledge/domain-delegation-subjects`에도 적용하며 cursor는 subject type과 정규화된 query가 바뀌면 거부한다.
+
+Bulk bundle request는 `collection_ids`(unique, 1~50), `operation=grant|revoke`, `subject_type`, `subject_id`, `role_bundle`을 받는다. 서버는 UUID 정렬 순서로 Collection을 잠그고 모든 target의 organization scope, permission authority, self/own-Team grant 차단과 last-manage revoke 조건을 mutation 전에 검증한다. 하나라도 실패하면 permission과 audit 전체를 rollback한다. Grant는 active subject만 허용하고 revoke는 inactive Team 또는 removed/deactivated User의 기존 row 정리를 허용한다. Response는 `operation`, `subject_type`, `role_bundle`, `target_count_bucket`, `changed_count_bucket`, `unchanged_count_bucket`만 반환하고 Collection/subject id, label 또는 실패 target index를 반복하지 않는다.
 
 ### Public Visibility
 

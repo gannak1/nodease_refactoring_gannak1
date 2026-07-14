@@ -63,6 +63,7 @@ ADR 본문은 작성 시점의 결정 과정을 보존하는 기록 문서다. `
 | [ADR-0041](ADR-0041-public-webhook-ingress-security-boundary.md) | Accepted | Public webhook ingress 보안 경계 | Public webhook은 query secret을 거부하고 단일 Bearer 또는 `X-Webhook-Secret` header만 허용한다. 인증 뒤 queue admission 전에 1 MiB, 5초, depth 20, 10,000 JSON node 제한을 적용하며 Repository Nginx와 production ingress도 query/header safe logging과 path-specific body guard를 검증한다. |
 | [ADR-0042](ADR-0042-security-alert-reconciliation-receipts.md) | Accepted | Security Alert reconciliation receipt 경계 | Processor별 receipt 부재를 미처리 audit의 durable 기준으로 사용한다. Event-time cursor는 rule 평가 순서와 관찰값으로 유지하고 late commit 발견 correctness에는 사용하지 않는다. |
 | [ADR-0043](ADR-0043-deployment-browser-origin-and-embedding-boundary.md) | Accepted | Deployment browser origin과 iframe embedding 경계 | Public Chatbot/Widget parent origin을 immutable deployment policy와 CSP `frame-ancestors`로 집행하고 first-party iframe API와 external direct JavaScript CORS를 분리한다. Missing/malformed policy와 projection 장애는 `'none'`으로 닫으며 public endpoint wildcard CORS를 제거한다. |
+| [ADR-0044](ADR-0044-knowledge-collection-operational-management-boundary.md) | Accepted | Knowledge Collection 운영 관리 경계 | MBA-264는 manual Collection restore, exact revision reorder, bounded Team/User subject page, action-set bundle revoke와 1~50개 Collection atomic bulk 권한 변경을 Collection-first lock·transaction-bound audit 경계로 구현한다. KC sync 실행은 MBA-265로 분리한다. |
 
 ## 참고 보고서
 
