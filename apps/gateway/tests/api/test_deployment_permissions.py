@@ -484,6 +484,51 @@ def test_run_authenticated_deployment_authorizes_execute_and_forwards_inputs(
     assert captured["request_id"] == "req-1"
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("user_id", str(uuid.uuid4())),
+        ("organization_id", str(uuid.uuid4())),
+        (
+            "execution_subject",
+            {"type": "user", "id": str(uuid.uuid4())},
+        ),
+    ],
+)
+def test_authenticated_run_rejects_top_level_execution_context_override(
+    monkeypatch,
+    field,
+    value,
+):
+    current_user = SimpleNamespace(id=uuid.uuid4())
+    test_app = FastAPI()
+    test_app.include_router(deployment_endpoint.router, prefix="/deployments")
+    test_app.dependency_overrides[deployment_endpoint.get_db] = lambda: object()
+    test_app.dependency_overrides[deployment_endpoint.get_current_user] = (
+        lambda: current_user
+    )
+    test_app.dependency_overrides[get_deployment_runtime_policy] = (
+        lambda: DEFAULT_DEPLOYMENT_RUNTIME_POLICY
+    )
+
+    async def fail_run_service(**_kwargs):
+        raise AssertionError("invalid request must not reach deployment execution")
+
+    monkeypatch.setattr(
+        deployment_endpoint.DeploymentService,
+        "run_authenticated_deployment",
+        fail_run_service,
+    )
+
+    response = TestClient(test_app).post(
+        f"/deployments/{uuid.uuid4()}/run",
+        json={"inputs": {"question": "safe"}, field: value},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["type"] == "extra_forbidden"
+
+
 def test_run_authenticated_deployment_forwards_middleware_request_id(
     monkeypatch,
 ):
