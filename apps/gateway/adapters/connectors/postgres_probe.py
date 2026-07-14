@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import ssl
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL
@@ -23,6 +25,13 @@ from apps.shared.services.egress_guard import (
 )
 
 _URL_HOST_MARKERS = ("://", "/", "@", "?", "#")
+
+
+def _system_ca_file() -> str:
+    ca_file = ssl.get_default_verify_paths().cafile
+    if not ca_file or not Path(ca_file).is_file():
+        raise ConnectorProbeFailed()
+    return ca_file
 
 
 class StrictPostgresConnectorProbe:
@@ -64,6 +73,7 @@ class StrictPostgresConnectorProbe:
             if not host_input or any(marker in host_input for marker in _URL_HOST_MARKERS):
                 raise ConnectorTargetNotAllowed()
 
+            ca_file = _system_ca_file()
             host, port, host_address = ensure_network_target_allowed(
                 host_input,
                 command.port,
@@ -79,7 +89,7 @@ class StrictPostgresConnectorProbe:
                 query={
                     "hostaddr": host_address,
                     "sslmode": "verify-full",
-                    "sslrootcert": "system",
+                    "sslrootcert": ca_file,
                 },
             )
             engine = create_engine(

@@ -73,6 +73,7 @@ def test_probe_pins_public_ip_enforces_tls_and_runs_constant_read_only_query(
 
     monkeypatch.setattr(probe_module, "ensure_network_target_allowed", fake_guard)
     monkeypatch.setattr(probe_module, "create_engine", fake_create_engine)
+    monkeypatch.setattr(probe_module, "_system_ca_file", lambda: "/system/ca.pem")
     probe = StrictPostgresConnectorProbe(ConnectorTestPolicy())
 
     try:
@@ -86,7 +87,7 @@ def test_probe_pins_public_ip_enforces_tls_and_runs_constant_read_only_query(
     assert dict(url.query) == {
         "hostaddr": "203.0.113.20",
         "sslmode": "verify-full",
-        "sslrootcert": "system",
+        "sslrootcert": "/system/ca.pem",
     }
     assert captured["guard"] == (
         "db.example.com",
@@ -99,6 +100,26 @@ def test_probe_pins_public_ip_enforces_tls_and_runs_constant_read_only_query(
     }
     assert engine.connection.statements == ["SET TRANSACTION READ ONLY", "SELECT 1"]
     assert engine.disposed is True
+
+
+def test_probe_fails_closed_before_dns_when_system_ca_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def no_ca_file() -> str:
+        raise ConnectorProbeFailed()
+
+    def guard(*_args, **_kwargs):
+        pytest.fail("DNS guard must not run")
+
+    monkeypatch.setattr(probe_module, "_system_ca_file", no_ca_file)
+    monkeypatch.setattr(probe_module, "ensure_network_target_allowed", guard)
+    probe = StrictPostgresConnectorProbe(ConnectorTestPolicy())
+
+    try:
+        with pytest.raises(ConnectorProbeFailed):
+            probe._probe_sync(command())
+    finally:
+        probe.shutdown()
 
 
 @pytest.mark.parametrize(
