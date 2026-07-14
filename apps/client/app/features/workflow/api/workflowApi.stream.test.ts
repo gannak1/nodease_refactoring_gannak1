@@ -72,6 +72,28 @@ describe('workflowApi.executeWorkflowStream', () => {
     expect(events).toEqual([{ type: 'workflow_finish' }]);
   });
 
+  it('실제 SSE 빈 줄 구분자로 이어진 workflow_start와 node_start를 각각 파싱한다', async () => {
+    const events: unknown[] = [];
+    const fetchMock: MockedFunction<typeof fetch> = vi.fn(async () =>
+      streamResponse([
+        'data: {"type":"workflow_start","data":{"run_id":"run-1"}}\n\n' +
+          'data: {"type":"node_start","data":{"node_id":"llm-1"}}\n\n',
+      ]),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await workflowApi.executeWorkflowStream(
+      'workflow-1',
+      { question: 'hello' },
+      (event) => events.push(event),
+    );
+
+    expect(events).toEqual([
+      { type: 'workflow_start', data: { run_id: 'run-1' } },
+      { type: 'node_start', data: { node_id: 'llm-1' } },
+    ]);
+  });
+
   it('does not set Content-Type manually for FormData stream requests', async () => {
     setActiveOrganizationId('org-1');
     const fetchMock: MockedFunction<typeof fetch> = vi.fn(async () =>

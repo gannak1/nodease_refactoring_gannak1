@@ -370,39 +370,176 @@ function MetricGrid({ snapshot }: { snapshot?: NodeSnapshot }) {
   );
 }
 
-function RunSide({ label, bundle }: { label: string; bundle: RunBundle }) {
+const runDurationMs = (run: WorkflowRun) =>
+  isFiniteNumber(run.duration) ? run.duration * 1000 : undefined;
+
+const comparisonBarWidth = (value: number | undefined, maxValue: number) => {
+  if (!isFiniteNumber(value) || value <= 0 || maxValue <= 0) return '0%';
+  return `${Math.max((value / maxValue) * 100, 6)}%`;
+};
+
+const comparisonDelta = (
+  baselineValue: number | undefined,
+  candidateValue: number | undefined,
+) => {
+  if (!isFiniteNumber(baselineValue) || !isFiniteNumber(candidateValue)) {
+    return { label: '변화 계산 불가', tone: 'text-gray-500' };
+  }
+  if (baselineValue === 0) {
+    return candidateValue === 0
+      ? { label: '변화 없음', tone: 'text-gray-500' }
+      : { label: '기준값 없음', tone: 'text-gray-500' };
+  }
+
+  const percent = ((candidateValue - baselineValue) / baselineValue) * 100;
+  if (Math.abs(percent) < 0.05) {
+    return { label: '변화 없음', tone: 'text-gray-500' };
+  }
+
+  return {
+    label: `${Math.abs(percent).toFixed(1)}% ${percent < 0 ? '감소' : '증가'}`,
+    tone: percent < 0 ? 'text-emerald-700' : 'text-amber-700',
+  };
+};
+
+const runStatusBadgeClass = (status: string | undefined) => {
+  switch ((status ?? '').toLowerCase()) {
+    case 'success':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+    case 'failed':
+    case 'failure':
+      return 'border-red-200 bg-red-50 text-red-700';
+    case 'running':
+      return 'border-blue-200 bg-blue-50 text-blue-700';
+    default:
+      return 'border-gray-200 bg-gray-50 text-gray-600';
+  }
+};
+
+type OverallMetricComparisonProps = {
+  label: string;
+  testId: string;
+  baselineValue: number | undefined;
+  candidateValue: number | undefined;
+  format: (value: number | undefined) => string;
+  isLowerBetter?: boolean;
+};
+
+function OverallMetricComparison({
+  label,
+  testId,
+  baselineValue,
+  candidateValue,
+  format,
+  isLowerBetter = false,
+}: OverallMetricComparisonProps) {
+  const maxValue = Math.max(baselineValue ?? 0, candidateValue ?? 0);
+  const delta = comparisonDelta(baselineValue, candidateValue);
+  const deltaTone = isLowerBetter ? delta.tone : 'text-slate-600';
+
   return (
-    <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-800/60">
-      <p className="text-[11px] font-semibold text-gray-500">{label}</p>
-      <p className="mt-1 text-xs font-semibold text-gray-900 dark:text-gray-100">
-        {formatRunTime(bundle.run.started_at)}
-      </p>
-      <dl className="mt-3 grid grid-cols-2 gap-2 text-[11px]">
-        <div>
-          <dt className="text-gray-500">상태</dt>
-          <dd className="font-semibold">{runStatusLabel(bundle.run.status)}</dd>
+    <div
+      data-testid={testId}
+      role="group"
+      aria-label={`${label} A/B 비교`}
+      className="rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs font-semibold text-gray-900 dark:text-gray-100">
+          {label}
+        </p>
+        <span className={`text-xs font-semibold ${deltaTone}`}>
+          {delta.label}
+        </span>
+      </div>
+      <div className="mt-3 space-y-2">
+        <div className="grid grid-cols-[72px_minmax(0,1fr)_auto] items-center gap-2 text-[11px]">
+          <span className="font-semibold text-slate-500">A baseline</span>
+          <div className="h-2 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+            <div
+              className="h-full rounded-full bg-slate-400 dark:bg-slate-500"
+              style={{ width: comparisonBarWidth(baselineValue, maxValue) }}
+            />
+          </div>
+          <span className="font-semibold text-slate-700 dark:text-slate-200">
+            {format(baselineValue)}
+          </span>
         </div>
-        <div>
-          <dt className="text-gray-500">비용</dt>
-          <dd className="font-semibold">{formatCost(bundle.run.total_cost)}</dd>
+        <div className="grid grid-cols-[72px_minmax(0,1fr)_auto] items-center gap-2 text-[11px]">
+          <span className="font-semibold text-blue-700 dark:text-blue-300">
+            B candidate
+          </span>
+          <div className="h-2 overflow-hidden rounded-full bg-blue-50 dark:bg-blue-950/40">
+            <div
+              className="h-full rounded-full bg-blue-500 dark:bg-blue-400"
+              style={{ width: comparisonBarWidth(candidateValue, maxValue) }}
+            />
+          </div>
+          <span className="font-semibold text-blue-800 dark:text-blue-200">
+            {format(candidateValue)}
+          </span>
         </div>
-        <div>
-          <dt className="text-gray-500">실행 시간</dt>
-          <dd className="font-semibold">
-            {formatLatency(
-              isFiniteNumber(bundle.run.duration)
-                ? bundle.run.duration * 1000
-                : undefined,
-            )}
-          </dd>
+      </div>
+    </div>
+  );
+}
+
+function OverallExecutionComparison({
+  baseline,
+  current,
+}: {
+  baseline: RunBundle;
+  current: RunBundle;
+}) {
+  return (
+    <div className="rounded-lg border border-gray-200 bg-slate-50/60 p-3 dark:border-gray-700 dark:bg-gray-800/30">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-gray-500">
+          <span>A baseline · {formatRunTime(baseline.run.started_at)}</span>
+          <span>B candidate · {formatRunTime(current.run.started_at)}</span>
         </div>
-        <div>
-          <dt className="text-gray-500">토큰</dt>
-          <dd className="font-semibold">
-            {formatTokens(bundle.run.total_tokens)}
-          </dd>
+        <div className="flex flex-wrap gap-2">
+          <span
+            className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${runStatusBadgeClass(
+              baseline.run.status,
+            )}`}
+          >
+            A baseline: {runStatusLabel(baseline.run.status)}
+          </span>
+          <span
+            className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${runStatusBadgeClass(
+              current.run.status,
+            )}`}
+          >
+            B candidate: {runStatusLabel(current.run.status)}
+          </span>
         </div>
-      </dl>
+      </div>
+      <div className="mt-3 grid gap-3 lg:grid-cols-3">
+        <OverallMetricComparison
+          testId="overall-execution-metric-cost"
+          label="비용"
+          baselineValue={baseline.run.total_cost}
+          candidateValue={current.run.total_cost}
+          format={formatCost}
+          isLowerBetter
+        />
+        <OverallMetricComparison
+          testId="overall-execution-metric-duration"
+          label="실행 시간"
+          baselineValue={runDurationMs(baseline.run)}
+          candidateValue={runDurationMs(current.run)}
+          format={formatLatency}
+          isLowerBetter
+        />
+        <OverallMetricComparison
+          testId="overall-execution-metric-tokens"
+          label="전체 토큰"
+          baselineValue={baseline.run.total_tokens}
+          candidateValue={current.run.total_tokens}
+          format={formatTokens}
+        />
+      </div>
     </div>
   );
 }
@@ -714,6 +851,14 @@ export function ExecutionComparisonPanel({
   const hasUnavailableTrace = [baselineBundle, currentBundle].some(
     (bundle) => bundle?.traceAvailability === 'unavailable',
   );
+  const traceNotRecordedLabels = [
+    baselineBundle?.traceAvailability === 'not_recorded'
+      ? 'A baseline'
+      : null,
+    currentBundle?.traceAvailability === 'not_recorded'
+      ? 'B candidate'
+      : null,
+  ].filter((label): label is string => label !== null);
 
   return (
     <section className="mb-5 space-y-4">
@@ -742,6 +887,18 @@ export function ExecutionComparisonPanel({
       {currentExecutionError ? (
         <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700">
           현재 실행 실패: {currentExecutionError}
+        </div>
+      ) : null}
+
+      {traceNotRecordedLabels.length > 0 ? (
+        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-300">
+          <p className="font-semibold text-slate-800 dark:text-slate-100">
+            LLM trace 기록 없음: {traceNotRecordedLabels.join(', ')}
+          </p>
+          <p className="mt-1 leading-5">
+            해당 실행은 노드 실행 기록으로 비교합니다. 모델·토큰·비용·라우팅
+            근거는 일부 표시되지 않을 수 있습니다.
+          </p>
         </div>
       ) : null}
 
@@ -894,9 +1051,11 @@ export function ExecutionComparisonPanel({
               <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
                 전체 실행 비교
               </h3>
-              <div className="mt-2 grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-3">
-                <RunSide label="기준 실행" bundle={baselineBundle} />
-                <RunSide label="현재 실행" bundle={currentBundle} />
+              <div className="mt-2">
+                <OverallExecutionComparison
+                  baseline={baselineBundle}
+                  current={currentBundle}
+                />
               </div>
             </div>
 

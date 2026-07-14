@@ -75,10 +75,12 @@ const TEST_SIDEBAR_MAX_WIDTH = 640;
 const TEST_SIDEBAR_VIEWPORT_GUTTER = 24;
 const TEST_SIDEBAR_MIN_CANVAS_WIDTH = 420;
 const TEST_SIDEBAR_KEYBOARD_STEP = 20;
-const TEST_RUN_RESTORE_MAX_ATTEMPTS = 6;
-const TEST_RUN_RESTORE_RETRY_DELAY_MS = 400;
+const TEST_RUN_RESTORE_RETRY_DELAYS_MS = [
+  400, 800, 1_200, 2_000, 3_000, 4_000, 5_000, 6_000,
+] as const;
 
 type PreflightStatus = 'idle' | 'validating' | 'saving';
+type TestRunRestoreState = 'idle' | 'restoring' | 'delayed' | 'failed';
 type ComparisonLocationUpdate = {
   comparisonMode?: boolean;
   baselineRunId?: string | null;
@@ -240,6 +242,11 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   const [comparisonSelectedNodeId, setComparisonSelectedNodeId] = useState<
     string | null
   >(null);
+  const [testExecutionLocationRevision, setTestExecutionLocationRevision] =
+    useState(0);
+  const [testRunRestoreState, setTestRunRestoreState] =
+    useState<TestRunRestoreState>('idle');
+  const [testRunRestoreRetry, setTestRunRestoreRetry] = useState(0);
   const [localSelectedTestNodeId, setLocalSelectedTestNodeId] = useState<
     string | null
   >(null);
@@ -252,9 +259,11 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   const clearResizeListenersRef = React.useRef<(() => void) | null>(null);
   const nodeStartedAtRef = React.useRef<Record<string, number>>({});
   const restoredRunRef = React.useRef<string | null>(null);
+  const historyLocationChangeRef = React.useRef(false);
   const latestNodesRef = React.useRef(nodes);
   const currentTestExecutionRef = React.useRef({
     runId: testExecutionRunId,
+    status: testExecutionStatus,
     nodeResults: testNodeResults,
     selectedNodeId: testSelectedNodeId,
   });
@@ -310,6 +319,16 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   );
 
   useEffect(() => {
+    const syncLocationState = () => {
+      historyLocationChangeRef.current = true;
+      setTestExecutionLocationRevision((value) => value + 1);
+    };
+
+    window.addEventListener('popstate', syncLocationState);
+    return () => window.removeEventListener('popstate', syncLocationState);
+  }, []);
+
+  useEffect(() => {
     latestNodesRef.current = nodes;
   }, [nodes]);
 
@@ -317,36 +336,48 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     if (!activeWorkflowId) return;
 
     const location = readTestExecutionLocation();
-    if (
-      !location.comparisonMode &&
-      !location.baselineRunId &&
-      !location.comparisonNodeId
-    ) {
-      return;
-    }
-
     setComparisonBaselineRunId(location.baselineRunId);
     setComparisonSelectedNodeId(location.comparisonNodeId);
-    if (location.comparisonMode) {
-      setHasOpenedComparisonPanel(true);
-      setIsComparisonMode(true);
-    }
-  }, [activeWorkflowId]);
+    setHasOpenedComparisonPanel(location.comparisonMode);
+    setIsComparisonMode(location.comparisonMode);
+  }, [activeWorkflowId, testExecutionLocationRevision]);
 
   useEffect(() => {
     currentTestExecutionRef.current = {
       runId: testExecutionRunId,
+      status: testExecutionStatus,
       nodeResults: testNodeResults,
       selectedNodeId: testSelectedNodeId,
     };
-  }, [testExecutionRunId, testNodeResults, testSelectedNodeId]);
+  }, [
+    testExecutionRunId,
+    testExecutionStatus,
+    testNodeResults,
+    testSelectedNodeId,
+  ]);
 
   useEffect(() => {
     const { runId, nodeId } = readTestExecutionLocation();
-    if (!runId || !activeWorkflowId || nodes.length === 0) return;
+    if (!runId || !activeWorkflowId || nodes.length === 0) {
+      if (!runId && historyLocationChangeRef.current) {
+        historyLocationChangeRef.current = false;
+        restoredRunRef.current = null;
+        setLocalSelectedTestNodeId(null);
+        selectTestExecutionNode?.(null);
+        resetTestExecution();
+      }
+      setTestRunRestoreState('idle');
+      return;
+    }
+
+    historyLocationChangeRef.current = false;
 
     const currentExecution = currentTestExecutionRef.current;
-    if (currentExecution.runId === runId) {
+    if (
+      currentExecution.runId === runId &&
+      currentExecution.status !== 'running'
+    ) {
+      setTestRunRestoreState('idle');
       if (
         nodeId &&
         currentExecution.nodeResults.some((result) => result.nodeId === nodeId) &&
@@ -359,13 +390,17 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     }
 
     const restoreKey = `${activeWorkflowId}:${runId}`;
-    if (restoredRunRef.current === restoreKey) return;
+    if (restoredRunRef.current === restoreKey) {
+      setTestRunRestoreState('idle');
+      return;
+    }
 
     let cancelled = false;
     const restore = async () => {
+      setTestRunRestoreState('restoring');
       for (
         let attempt = 0;
-        attempt < TEST_RUN_RESTORE_MAX_ATTEMPTS;
+        attempt <= TEST_RUN_RESTORE_RETRY_DELAYS_MS.length;
         attempt += 1
       ) {
         try {
@@ -388,24 +423,28 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
 
           if (run.status.toLowerCase() !== 'running') {
             restoredRunRef.current = restoreKey;
+            setTestRunRestoreState('idle');
             return;
           }
         } catch (error) {
           if (getHttpStatus(error) !== 404) {
             if (!cancelled) {
+              setTestRunRestoreState('failed');
               toast.error('이전 테스트 실행 기록을 불러오지 못했습니다.');
             }
             return;
           }
         }
 
-        if (attempt < TEST_RUN_RESTORE_MAX_ATTEMPTS - 1) {
-          await waitForTestRunRestore(TEST_RUN_RESTORE_RETRY_DELAY_MS);
+        const retryDelay = TEST_RUN_RESTORE_RETRY_DELAYS_MS[attempt];
+        if (retryDelay !== undefined) {
+          await waitForTestRunRestore(retryDelay);
           if (cancelled) return;
         }
       }
 
       if (!cancelled) {
+        setTestRunRestoreState('delayed');
         toast.error(
           '이전 테스트 실행 기록이 아직 준비되지 않았습니다. 잠시 후 다시 시도하세요.',
         );
@@ -417,7 +456,15 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     return () => {
       cancelled = true;
     };
-  }, [activeWorkflowId, nodes.length, restoreTestExecution, selectTestExecutionNode]);
+  }, [
+    activeWorkflowId,
+    nodes.length,
+    restoreTestExecution,
+    resetTestExecution,
+    selectTestExecutionNode,
+    testExecutionLocationRevision,
+    testRunRestoreRetry,
+  ]);
 
   const outputLabelByNodeId = useMemo(() => {
     const labelMap = new Map<string, Map<string, string>>();
@@ -926,6 +973,8 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     }
 
     selectExecutionNode(null);
+    restoredRunRef.current = null;
+    setTestRunRestoreState('idle');
     replaceTestExecutionLocation(null, null);
     setValidationErrors([]);
     setPreflightStatus('validating');
@@ -1049,9 +1098,6 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
           inputsWithMemory as Record<string, any>,
           async (event) => {
             resetStreamIdleTimeout();
-            // 시각적 피드백을 위한 지연
-            await new Promise((resolve) => setTimeout(resolve, 500));
-
             const { type, data } = event;
 
             if (type === 'workflow_start') {
@@ -1059,7 +1105,10 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                 setTestExecutionRunId(data.run_id);
                 replaceTestExecutionLocation(data.run_id, null);
               }
+              return;
             } else if (type === 'node_start') {
+              // 노드 상태 변화만 짧게 늦춰 시각적 피드백을 유지한다.
+              await new Promise((resolve) => setTimeout(resolve, 500));
               nodeStartedAtRef.current[data.node_id] = performance.now();
               setCurrentExecutingNode(data.node_id);
               updateNodeData(data.node_id, {
@@ -1082,6 +1131,8 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                 );
               }
             } else if (type === 'node_finish') {
+              // 노드 상태 변화만 짧게 늦춰 시각적 피드백을 유지한다.
+              await new Promise((resolve) => setTimeout(resolve, 500));
               const startedAt = nodeStartedAtRef.current[data.node_id];
               const fallbackLatencyMs = startedAt
                 ? Math.round(performance.now() - startedAt)
@@ -1115,8 +1166,10 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                 totalCost: metrics.totalCost,
               });
             } else if (type === 'workflow_finish') {
+              // 최종 결과를 즉시 반영해 완료 시점을 늦추지 않는다.
               finalResult = data;
             } else if (type === 'error') {
+              // 오류는 즉시 보여야 사용자가 재실행 여부를 판단할 수 있다.
               if (data.node_id) {
                 const startedAt = nodeStartedAtRef.current[data.node_id];
                 const latencyMs = startedAt
@@ -1183,6 +1236,8 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
 
   const handleReset = () => {
     selectExecutionNode(null);
+    restoredRunRef.current = null;
+    setTestRunRestoreState('idle');
     replaceTestExecutionLocation(null, null);
     setValidationErrors([]);
     setPreflightStatus('idle');
@@ -1290,6 +1345,33 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-6">
+        {testRunRestoreState === 'restoring' && !isExecuting ? (
+          <div className="mb-4 flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 p-3 text-xs text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            저장된 테스트 실행 기록을 불러오는 중입니다.
+          </div>
+        ) : null}
+        {testRunRestoreState === 'delayed' ||
+        testRunRestoreState === 'failed' ? (
+          <div className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+            <p>
+              {testRunRestoreState === 'delayed'
+                ? '실행 기록이 아직 준비되지 않았습니다.'
+                : '실행 기록을 불러오는 중 오류가 발생했습니다.'}
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                restoredRunRef.current = null;
+                setTestRunRestoreState('idle');
+                setTestRunRestoreRetry((value) => value + 1);
+              }}
+              className="shrink-0 rounded-md border border-amber-300 bg-white px-2.5 py-1.5 font-semibold text-amber-800 hover:bg-amber-100 dark:bg-gray-900 dark:text-amber-200"
+            >
+              다시 시도
+            </button>
+          </div>
+        ) : null}
         {hasOpenedComparisonPanel && activeWorkflowId ? (
           <div className={isComparisonMode ? undefined : 'hidden'}>
             <ExecutionComparisonPanel

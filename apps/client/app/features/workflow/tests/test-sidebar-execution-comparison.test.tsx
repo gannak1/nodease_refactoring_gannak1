@@ -96,14 +96,20 @@ const runDetail = (
   model: string,
   input: string,
   output: string,
-) => ({
-  ...runSummary(
-    id,
-    id === 'baseline-run' ? '2026-07-13T01:00:00Z' : '2026-07-14T01:00:00Z',
-  ),
-  inputs: { message: input },
-  outputs: { answer: output },
-  node_runs: [
+) => {
+  const isBaseline = id === 'baseline-run';
+
+  return {
+    ...runSummary(
+      id,
+      isBaseline ? '2026-07-13T01:00:00Z' : '2026-07-14T01:00:00Z',
+    ),
+    duration: isBaseline ? 2 : 1,
+    total_tokens: isBaseline ? 120 : 60,
+    total_cost: isBaseline ? 0.0012 : 0.0006,
+    inputs: { message: input },
+    outputs: { answer: output },
+    node_runs: [
     {
       id: `${id}-node-run`,
       node_id: 'llm-triage',
@@ -130,8 +136,9 @@ const runDetail = (
       finished_at: '2026-07-14T01:00:02Z',
       duration: id === 'baseline-run' ? 2 : 1,
     },
-  ],
-});
+    ],
+  };
+};
 
 function ComparisonHarness() {
   const [baselineRunId, setBaselineRunId] = useState<string | null>(null);
@@ -348,6 +355,48 @@ describe('TestSidebar execution comparison', () => {
     expect(screen.getByText('LLM')).toBeVisible();
   });
 
+  it('전체 실행 비교에서 수치 지표는 A/B 막대로, 상태는 별도 배지로 표시한다', async () => {
+    mocks.getWorkflowRuns.mockResolvedValue({
+      total: 1,
+      items: [runSummary('baseline-run', '2026-07-13T01:00:00Z')],
+    });
+    mocks.getWorkflowRun.mockImplementation(
+      (_workflowId: string, runId: string) =>
+        Promise.resolve(
+          runId === 'baseline-run'
+            ? runDetail('baseline-run', 'gpt-4.1', '기존 문의', '기존 답변')
+            : runDetail(
+                'current-run',
+                'gpt-4.1-mini',
+                '현재 문의',
+                '현재 답변',
+              ),
+        ),
+    );
+    mocks.getWorkflowRunLlmTraces.mockResolvedValue({
+      total: 0,
+      limit: 100,
+      offset: 0,
+      items: [],
+    });
+
+    render(<ComparisonHarness />);
+    fireEvent.click(
+      await screen.findByRole('button', { name: '기준으로 고정' }),
+    );
+
+    expect(
+      await screen.findByRole('heading', { name: '전체 실행 비교' }),
+    ).toBeVisible();
+    expect(screen.getByTestId('overall-execution-metric-cost')).toHaveTextContent(
+      '50.0% 감소',
+    );
+    expect(screen.getByTestId('overall-execution-metric-duration')).toBeVisible();
+    expect(screen.getByTestId('overall-execution-metric-tokens')).toBeVisible();
+    expect(screen.getByText('A baseline: 성공')).toBeVisible();
+    expect(screen.getByText('B candidate: 성공')).toBeVisible();
+  });
+
   it('현재 테스트를 다시 실행해도 고정한 기준 실행을 유지한다', async () => {
     mocks.getWorkflowRuns.mockResolvedValue({
       total: 1,
@@ -513,6 +562,9 @@ describe('TestSidebar execution comparison', () => {
     expect(
       screen.queryByText('일부 LLM trace를 불러오지 못했습니다.'),
     ).not.toBeInTheDocument();
+    expect(
+      screen.getByText('LLM trace 기록 없음: A baseline, B candidate'),
+    ).toBeVisible();
   });
 
   it('노드 목록은 상태·비용·시간·토큰만 보여주고 상세에서 입력·출력·라우팅을 비교한다', async () => {

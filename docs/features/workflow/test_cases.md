@@ -117,7 +117,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 | 1 | 실행 편의성 | 테스트 실행 사이드바 기본 폭·드래그 최대 폭·키보드 최소 폭 제한 | 통과 | 기본 `480px`, `380px`~`640px` clamp, 왼쪽 handle pointer/keyboard 조작 unit test 완료 | `apps/client/app/features/workflow/tests/test-sidebar-resize.test.tsx`, `apps/client/app/features/workflow/components/editor/TestSidebar.tsx` |
 | 1 | 실행 편의성 | 같은 workflow 재동기화 뒤 최신 테스트 실행 상태 유지 | 통과 | 같은 `activeWorkflowId` 재설정은 TestSidebar 실행 상태를 idle로 초기화하지 않는다 | `apps/client/app/features/workflow/store/useWorkflowStore.test.ts` |
 | 1 | 실행 편의성 | 저장된 workflow run을 TestSidebar 복원 상태로 변환 | 통과 | node run status/duration/usage/cost/safe trace metadata를 복원하고 duration을 ms로 변환한다. `running` run은 실패로 바꾸지 않는다. | `apps/client/app/features/workflow/tests/test-execution-restore.test.ts` |
-| 1 | 실행 편의성 | 실행 기록 생성 지연 중 TestSidebar 복원 재시도 | 통과 | 초기 `404`와 `running` run은 제한된 재조회 뒤 terminal 결과로 복원하며, 재시도 한도 전에는 오류를 표시하지 않는다 | `apps/client/app/features/workflow/tests/test-sidebar-run-restore.test.tsx` |
+| 1 | 실행 편의성 | 실행 기록 생성 지연·브라우저 히스토리 중 TestSidebar 복원 | 통과 | 초기 `404`와 `running` run은 점차 긴 제한된 재조회 뒤 terminal 결과로 복원하며, 재시도 한도 전에는 오류를 표시하지 않는다. 앞으로/뒤로가기로 새 `testRun`을 복원하고 `testRun`이 사라지면 이전 결과를 초기화한다. | `apps/client/app/features/workflow/tests/test-sidebar-run-restore.test.tsx` |
 | 1 | 실행 편의성 | stream 시작 시 복원용 run id와 실제 SSE record delimiter 전달 | 통과 | Gateway `workflow_start` event는 UUID만 포함하고 각 event를 실제 `\n\n` record delimiter로 끝내 다음 JSON event와 분리한다 | `apps/gateway/tests/api/test_workflow_stream_start_contract.py` |
 | 1 | 실행 비교 | 기준 실행 목록 서버 필터 | 통과 | status와 trigger mode를 limit 전에 적용하고 다른 workflow run을 노출하지 않는다 | `apps/gateway/tests/api/test_workflow_run_comparison_api.py` |
 | 1 | 실행 비교 | 최신 실행 자동 선택 금지와 명시적 기준 고정 | 통과 | 비교 모드 진입 시 선택이 비어 있고 사용자가 기준 고정 버튼을 눌러야 상세를 조회한다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
@@ -125,8 +125,9 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 | 1 | 실행 비교 | 단일 결과 전환 중 기존 비교 분석 유지 | 통과 | 같은 TestSidebar 세션에서 단일 결과를 거쳐 다시 실행 비교를 열어도 기준 실행, 선택 상세와 이미 불러온 분석을 유지한다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
 | 1 | 실행 비교 | 보고 화면 왕복 뒤 비교 상세 복원 | 통과 | URL에 보존한 현재 실행, 기준 실행, 비교 모드, 선택 노드를 읽어 보고 화면 복귀 뒤 동일한 노드 상세 비교를 다시 표시한다 | `apps/client/app/features/workflow/tests/test-sidebar-comparison-restore.test.tsx` |
 | 1 | 실행 비교 | 실시간 노드 상태 갱신 중 비교 화면 유지 | 통과 | 같은 실행과 같은 노드 표시 정보를 유지한 상태 갱신은 비교 API 재조회와 로딩 화면 전환을 만들지 않는다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
+| 1 | 실행 비교 | 전체 실행 A/B 수치 막대와 상태 배지 | 통과 | 비용·실행 시간·전체 토큰은 동일 기준 막대와 변화율로, 상태는 A/B 배지로 분리해 표시한다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
 | 1 | 실행 비교 | 노드 목록 지표와 상세 비교 | 통과 | 목록에는 노드 이름·사람용 유형명·상태·비용·시간·토큰을 표시하고 상세에는 입력·출력·라우팅 근거를 양쪽으로 표시한다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
-| 1 | 실행 비교 | LLM trace 기록 없음과 조회 실패 구분 | 통과 | `404`/빈 trace는 기록 없음으로 처리하고, `403`/`5xx`/네트워크 실패는 비교를 유지하면서 근거 일부 누락 경고를 표시한다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
+| 1 | 실행 비교 | LLM trace 기록 없음과 조회 실패 구분 | 통과 | `404`/빈 trace는 `LLM trace 기록 없음`으로 표시하고, `403`/`5xx`/네트워크 실패는 비교를 유지하면서 근거 일부 누락 경고를 표시한다 | `apps/client/app/features/workflow/tests/test-sidebar-execution-comparison.test.tsx` |
 | 1 | 노드 조작 편의성 | 3패널 기본 표시 | 통과 | 기본 3패널 폭 산출 unit test와 `NodeFullscreenEditor` grid 구현 완료 | `apps/client/app/features/workflow/tests/node-panel-resize.test.ts`, `apps/client/app/features/workflow/components/editor/NodeFullscreenEditor.tsx` |
 | 1 | 노드 조작 편의성 | 3패널 resize 계산의 min/max clamp | 통과 | layout 계산 unit test 완료 | `apps/client/app/features/workflow/tests/node-panel-resize.test.ts` |
 | 1 | 노드 조작 편의성 | viewport width 90% 안에서 편집 화면 표시 | 통과 | layout 계산 unit test 완료. 실제 DOM 폭은 수동 QA 필요 | `apps/client/app/features/workflow/tests/node-panel-resize.test.ts` |

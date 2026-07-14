@@ -1,4 +1,4 @@
-import { cleanup, render, waitFor } from '@testing-library/react';
+import { act, cleanup, render, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { TestSidebar } from '../components/editor/TestSidebar';
@@ -6,6 +6,7 @@ import { TestSidebar } from '../components/editor/TestSidebar';
 const mocks = vi.hoisted(() => ({
   getWorkflowRun: vi.fn(),
   restoreTestExecution: vi.fn(),
+  resetTestExecution: vi.fn(),
 }));
 
 vi.mock('@xyflow/react', () => ({
@@ -58,7 +59,7 @@ vi.mock('../store/useWorkflowStore', () => {
     finishTestExecution: vi.fn(),
     failTestExecution: vi.fn(),
     restoreTestExecution: mocks.restoreTestExecution,
-    resetTestExecution: vi.fn(),
+    resetTestExecution: mocks.resetTestExecution,
   };
   const useWorkflowStore = Object.assign(vi.fn(() => state), {
     getState: vi.fn(() => state),
@@ -68,8 +69,10 @@ vi.mock('../store/useWorkflowStore', () => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   mocks.getWorkflowRun.mockReset();
   mocks.restoreTestExecution.mockReset();
+  mocks.resetTestExecution.mockReset();
   window.history.replaceState({}, '', '/modules/workflow-1');
 });
 
@@ -191,5 +194,123 @@ describe('TestSidebar saved run restore', () => {
     expect(mocks.restoreTestExecution).toHaveBeenLastCalledWith(
       expect.objectContaining({ status: 'success' }),
     );
+  });
+
+  it('초기 Worker 지연이 길어도 제한된 복원 시간 안에서 terminal run을 다시 불러온다', async () => {
+    vi.useFakeTimers();
+    window.history.replaceState(
+      {},
+      '',
+      '/modules/workflow-1?testRun=44444444-4444-4444-4444-444444444444',
+    );
+    mocks.getWorkflowRun
+      .mockRejectedValueOnce({ response: { status: 404 } })
+      .mockRejectedValueOnce({ response: { status: 404 } })
+      .mockRejectedValueOnce({ response: { status: 404 } })
+      .mockRejectedValueOnce({ response: { status: 404 } })
+      .mockRejectedValueOnce({ response: { status: 404 } })
+      .mockRejectedValueOnce({ response: { status: 404 } })
+      .mockResolvedValueOnce({
+        id: '44444444-4444-4444-4444-444444444444',
+        workflow_id: 'workflow-1',
+        user_id: 'user-1',
+        status: 'success',
+        trigger_mode: 'manual',
+        outputs: { answer: '늦게 준비됨' },
+        started_at: '2026-07-14T01:00:00.000Z',
+        finished_at: '2026-07-14T01:00:12.000Z',
+        node_runs: [],
+      });
+
+    render(<TestSidebar />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_000);
+    });
+
+    expect(mocks.getWorkflowRun).toHaveBeenCalledTimes(7);
+    expect(mocks.restoreTestExecution).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: '44444444-4444-4444-4444-444444444444',
+        status: 'success',
+      }),
+    );
+  });
+
+  it('브라우저 앞으로/뒤로가기 URL 변경을 새 실행 기록으로 다시 복원한다', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/modules/workflow-1?testRun=55555555-5555-4555-8555-555555555555',
+    );
+    mocks.getWorkflowRun.mockImplementation(
+      (_workflowId: string, runId: string) =>
+        Promise.resolve({
+          id: runId,
+          workflow_id: 'workflow-1',
+          user_id: 'user-1',
+          status: 'success',
+          trigger_mode: 'manual',
+          outputs: { answer: runId },
+          started_at: '2026-07-14T01:00:00.000Z',
+          finished_at: '2026-07-14T01:00:01.000Z',
+          node_runs: [],
+        }),
+    );
+
+    render(<TestSidebar />);
+    await waitFor(() => {
+      expect(mocks.restoreTestExecution).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runId: '55555555-5555-4555-8555-555555555555',
+        }),
+      );
+    });
+
+    window.history.pushState(
+      {},
+      '',
+      '/modules/workflow-1?testRun=66666666-6666-4666-8666-666666666666',
+    );
+    window.dispatchEvent(new PopStateEvent('popstate'));
+
+    await waitFor(() => {
+      expect(mocks.restoreTestExecution).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runId: '66666666-6666-4666-8666-666666666666',
+        }),
+      );
+    });
+  });
+
+  it('브라우저 뒤로가기로 testRun이 사라지면 이전 실행 결과를 초기화한다', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/modules/workflow-1?testRun=77777777-7777-4777-8777-777777777777',
+    );
+    mocks.getWorkflowRun.mockResolvedValue({
+      id: '77777777-7777-4777-8777-777777777777',
+      workflow_id: 'workflow-1',
+      user_id: 'user-1',
+      status: 'success',
+      trigger_mode: 'manual',
+      outputs: { answer: '복원됨' },
+      started_at: '2026-07-14T01:00:00.000Z',
+      finished_at: '2026-07-14T01:00:01.000Z',
+      node_runs: [],
+    });
+
+    render(<TestSidebar />);
+    await waitFor(() => {
+      expect(mocks.restoreTestExecution).toHaveBeenCalled();
+    });
+
+    window.history.pushState({}, '', '/modules/workflow-1');
+    window.dispatchEvent(new PopStateEvent('popstate'));
+
+    await waitFor(() => {
+      expect(mocks.resetTestExecution).toHaveBeenCalledTimes(1);
+    });
   });
 });
