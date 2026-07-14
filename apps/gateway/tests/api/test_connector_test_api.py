@@ -95,7 +95,13 @@ def test_openapi_keeps_strict_request_body_contract() -> None:
 
     assert operation["requestBody"]["required"] is True
     assert schema["properties"]["type"]["const"] == "postgres"
-    assert schema["properties"]["port"]["const"] == 5432
+    assert schema["properties"]["port"] == {
+        "default": 5432,
+        "maximum": 65535,
+        "minimum": 1,
+        "title": "Port",
+        "type": "integer",
+    }
     assert schema["additionalProperties"] is False
 
 
@@ -105,7 +111,7 @@ def test_valid_request_builds_command_without_ssh_credentials(client) -> None:
     response = http.post(
         "/api/v1/connectors/test",
         headers={"X-Organization-Id": str(organization_id)},
-        json=payload(),
+        json=payload(port=55432),
     )
 
     assert response.status_code == 200
@@ -117,6 +123,7 @@ def test_valid_request_builds_command_without_ssh_credentials(client) -> None:
     command = use_case.commands[0]
     assert command.actor_id == user.id
     assert command.organization_id == organization_id
+    assert command.port == 55432
     assert command.password == "placeholder-secret"
     assert command.network_address
 
@@ -125,7 +132,8 @@ def test_valid_request_builds_command_without_ssh_credentials(client) -> None:
     "invalid_payload",
     [
         payload(type="mysql"),
-        payload(port=5433),
+        payload(port=0),
+        payload(port=65536),
         payload(extra="not-allowed"),
         payload(password=""),
     ],

@@ -53,7 +53,7 @@ class ConnectorTestRequest(BaseModel):
     connection_name: str = Field(min_length=1, max_length=100)
     type: Literal["postgres"]
     host: str = Field(min_length=1, max_length=253)
-    port: Literal[5432] = 5432
+    port: int = Field(default=5432, ge=1, le=65535, strict=True)
     database: str = Field(min_length=1, max_length=128)
     username: str = Field(min_length=1, max_length=128)
     password: SecretStr = Field(min_length=1, max_length=1024)

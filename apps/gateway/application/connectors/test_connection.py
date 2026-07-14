@@ -44,6 +44,8 @@ class TestConnectorConnection:
     async def execute(self, command: ConnectorTestCommand) -> ConnectorTestResult:
         if command.ssh_enabled:
             return failure_result("connector.ssh_probe_not_supported")
+        if command.port not in self._policy.allowed_ports:
+            return failure_result("connector.target_not_allowed")
 
         lease = await self._admission.acquire(command)
         started_at = time.monotonic()

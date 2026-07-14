@@ -25,11 +25,20 @@ def test_connector_test_schema_accepts_strict_postgres_shape() -> None:
     assert "placeholder-secret" not in repr(model)
 
 
+def test_connector_test_schema_accepts_bounded_custom_port() -> None:
+    request_payload = payload()
+    request_payload["port"] = 55432
+
+    assert ConnectorTestRequest.model_validate(request_payload).port == 55432
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
         ("type", "mysql"),
-        ("port", 5433),
+        ("port", 0),
+        ("port", 65536),
+        ("port", "55432"),
         ("connection_name", ""),
         ("host", "h" * 254),
         ("database", "d" * 129),

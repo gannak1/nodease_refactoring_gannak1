@@ -77,7 +77,7 @@ class StrictPostgresConnectorProbe:
             host, port, host_address = ensure_network_target_allowed(
                 host_input,
                 command.port,
-                allowed_ports=frozenset({5432}),
+                allowed_ports=self._policy.allowed_ports,
             )
             url = URL.create(
                 drivername="postgresql+psycopg2",

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True, slots=True)
 class ConnectorTestPolicy:
+    allowed_ports: frozenset[int] = frozenset({5432})
     rate_window_seconds: int = 60
     user_rate_limit: int = 5
     organization_rate_limit: int = 30
@@ -20,6 +21,18 @@ class ConnectorTestPolicy:
     lease_ttl_seconds: int = 30
 
     def __post_init__(self) -> None:
+        if not isinstance(self.allowed_ports, frozenset) or not self.allowed_ports:
+            raise ValueError("allowed_ports must be a non-empty frozenset")
+        if len(self.allowed_ports) > 16:
+            raise ValueError("allowed_ports must not contain more than 16 ports")
+        if any(
+            isinstance(port, bool)
+            or not isinstance(port, int)
+            or port < 1
+            or port > 65535
+            for port in self.allowed_ports
+        ):
+            raise ValueError("allowed_ports must contain valid TCP ports")
         positive_values = {
             "rate_window_seconds": self.rate_window_seconds,
             "user_rate_limit": self.user_rate_limit,

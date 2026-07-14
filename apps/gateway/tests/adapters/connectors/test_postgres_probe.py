@@ -17,13 +17,13 @@ from apps.gateway.application.connectors.models import (
 from apps.shared.services.egress_guard import EgressGuardError
 
 
-def command(*, host: str = "db.example.com") -> ConnectorTestCommand:
+def command(*, host: str = "db.example.com", port: int = 5432) -> ConnectorTestCommand:
     return ConnectorTestCommand(
         organization_id=uuid4(),
         actor_id=uuid4(),
         network_address="203.0.113.9",
         host=host,
-        port=5432,
+        port=port,
         database="app",
         username="app-user",
         password="placeholder-secret",
@@ -64,7 +64,7 @@ def test_probe_pins_public_ip_enforces_tls_and_runs_constant_read_only_query(
 
     def fake_guard(host: str, port: int, *, allowed_ports):
         captured["guard"] = (host, port, allowed_ports)
-        return "db.example.com", 5432, "203.0.113.20"
+        return "db.example.com", 55432, "203.0.113.20"
 
     def fake_create_engine(url, **kwargs):
         captured["url"] = url
@@ -74,16 +74,17 @@ def test_probe_pins_public_ip_enforces_tls_and_runs_constant_read_only_query(
     monkeypatch.setattr(probe_module, "ensure_network_target_allowed", fake_guard)
     monkeypatch.setattr(probe_module, "create_engine", fake_create_engine)
     monkeypatch.setattr(probe_module, "_system_ca_file", lambda: "/system/ca.pem")
-    probe = StrictPostgresConnectorProbe(ConnectorTestPolicy())
+    policy = ConnectorTestPolicy(allowed_ports=frozenset({5432, 55432}))
+    probe = StrictPostgresConnectorProbe(policy)
 
     try:
-        assert probe._probe_sync(command()) is True
+        assert probe._probe_sync(command(port=55432)) is True
     finally:
         probe.shutdown()
 
     url = captured["url"]
     assert url.host == "db.example.com"
-    assert url.port == 5432
+    assert url.port == 55432
     assert dict(url.query) == {
         "hostaddr": "203.0.113.20",
         "sslmode": "verify-full",
@@ -91,8 +92,8 @@ def test_probe_pins_public_ip_enforces_tls_and_runs_constant_read_only_query(
     }
     assert captured["guard"] == (
         "db.example.com",
-        5432,
-        frozenset({5432}),
+        55432,
+        frozenset({5432, 55432}),
     )
     assert captured["kwargs"]["connect_args"] == {
         "connect_timeout": 5,

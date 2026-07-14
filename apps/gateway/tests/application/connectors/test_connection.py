@@ -23,13 +23,13 @@ from apps.gateway.application.connectors.test_connection import (
 )
 
 
-def command(*, ssh_enabled: bool = False) -> ConnectorTestCommand:
+def command(*, ssh_enabled: bool = False, port: int = 5432) -> ConnectorTestCommand:
     return ConnectorTestCommand(
         organization_id=uuid4(),
         actor_id=uuid4(),
         network_address="203.0.113.10",
         host="db.example.com",
-        port=5432,
+        port=port,
         database="app",
         username="app-user",
         password="placeholder-secret",
@@ -104,9 +104,11 @@ def use_case(
     probe: FakeProbe,
     audit: FakeAudit,
     *,
+    allowed_ports: frozenset[int] = frozenset({5432}),
     response_timeout: float = 10,
 ) -> ConnectorConnectionUseCase:
     policy = ConnectorTestPolicy(
+        allowed_ports=allowed_ports,
         connect_timeout_seconds=0.001,
         statement_timeout_seconds=0.001,
         response_timeout_seconds=response_timeout,
@@ -139,6 +141,20 @@ async def test_ssh_is_rejected_before_admission_probe_and_audit() -> None:
     result = await use_case(admission, probe, audit).execute(command(ssh_enabled=True))
 
     assert result.reason_code == "connector.ssh_probe_not_supported"
+    assert admission.acquired == []
+    assert probe.calls == []
+    assert audit.calls == []
+
+
+@pytest.mark.asyncio
+async def test_disallowed_port_is_rejected_before_admission_probe_and_audit() -> None:
+    admission = FakeAdmission()
+    probe = FakeProbe()
+    audit = FakeAudit()
+
+    result = await use_case(admission, probe, audit).execute(command(port=55432))
+
+    assert result.reason_code == "connector.target_not_allowed"
     assert admission.acquired == []
     assert probe.calls == []
     assert audit.calls == []

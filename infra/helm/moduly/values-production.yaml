@@ -259,6 +259,10 @@ sandbox:
 # IMPORTANT: In production, use external secrets management (AWS Secrets Manager, etc.)
 # These should NOT be committed to git.
 
+connectorTest:
+  allowedPorts:
+    - 5432
+
 secrets:
   # Database password (from AWS Secrets Manager)
   dbPassword: ""  # Override with --set or external secrets

@@ -16,6 +16,15 @@ def test_default_policy_matches_documented_limits() -> None:
     assert policy.user_concurrency_limit == 1
     assert policy.organization_concurrency_limit == 4
     assert policy.global_concurrency_limit == 16
+    assert policy.allowed_ports == frozenset({5432})
+
+
+def test_policy_parses_deployment_managed_allowed_ports() -> None:
+    policy = connector_test_policy_from_environment(
+        {"CONNECTOR_TEST_ALLOWED_PORTS": "5432, 54322,55432"}
+    )
+
+    assert policy.allowed_ports == frozenset({5432, 54322, 55432})
 
 
 def test_production_requires_strong_admission_hmac_key() -> None:
@@ -58,6 +67,16 @@ def test_production_requires_strong_admission_hmac_key() -> None:
         {"CONNECTOR_TEST_STATEMENT_TIMEOUT_SECONDS": "11"},
         {"CONNECTOR_TEST_RESPONSE_TIMEOUT_SECONDS": "31"},
         {"CONNECTOR_TEST_LEASE_TTL_SECONDS": "121"},
+        {"CONNECTOR_TEST_ALLOWED_PORTS": "5432,"},
+        {"CONNECTOR_TEST_ALLOWED_PORTS": "5432,5432"},
+        {"CONNECTOR_TEST_ALLOWED_PORTS": "0"},
+        {"CONNECTOR_TEST_ALLOWED_PORTS": "65536"},
+        {"CONNECTOR_TEST_ALLOWED_PORTS": "not-a-port"},
+        {
+            "CONNECTOR_TEST_ALLOWED_PORTS": ",".join(
+                str(port) for port in range(10000, 10017)
+            )
+        },
     ],
 )
 def test_invalid_security_limits_fail_startup(environment: dict[str, str]) -> None:

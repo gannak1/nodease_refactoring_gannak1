@@ -29,6 +29,7 @@ def connector_test_policy_from_environment(
     environ: Mapping[str, str],
 ) -> ConnectorTestPolicy:
     return ConnectorTestPolicy(
+        allowed_ports=_ports(environ, "CONNECTOR_TEST_ALLOWED_PORTS", {5432}),
         rate_window_seconds=_integer(environ, "CONNECTOR_TEST_RATE_WINDOW_SECONDS", 60),
         user_rate_limit=_integer(environ, "CONNECTOR_TEST_USER_RATE_LIMIT", 5),
         organization_rate_limit=_integer(
@@ -119,6 +120,27 @@ def _integer(environ: Mapping[str, str], name: str, default: int) -> int:
         return int(raw_value)
     except ValueError as exc:
         raise RuntimeError(f"{name} must be an integer") from exc
+
+
+def _ports(
+    environ: Mapping[str, str],
+    name: str,
+    default: set[int],
+) -> frozenset[int]:
+    raw_value = environ.get(name)
+    if raw_value is None or raw_value.strip() == "":
+        return frozenset(default)
+
+    parts = [part.strip() for part in raw_value.split(",")]
+    if any(not part for part in parts):
+        raise RuntimeError(f"{name} must be a comma-separated port list")
+    try:
+        ports = [int(part) for part in parts]
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a comma-separated port list") from exc
+    if len(set(ports)) != len(ports):
+        raise RuntimeError(f"{name} must not contain duplicate ports")
+    return frozenset(ports)
 
 
 def _float(environ: Mapping[str, str], name: str, default: float) -> float:

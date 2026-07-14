@@ -1,5 +1,6 @@
 {{- if .Values.gateway.enabled }}
 {{- include "moduly.validateScheduleDispatchMode" . }}
+{{- $connectorTestAllowedPorts := required "connectorTest.allowedPorts is required" .Values.connectorTest.allowedPorts }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -121,6 +122,8 @@ spec:
             secretKeyRef:
               name: {{ include "moduly.secretName" . }}
               key: CONNECTOR_TEST_ADMISSION_HMAC_KEY
+        - name: CONNECTOR_TEST_ALLOWED_PORTS
+          value: {{ join "," $connectorTestAllowedPorts | quote }}
         
         # Sandbox configuration
         - name: SANDBOX_URL

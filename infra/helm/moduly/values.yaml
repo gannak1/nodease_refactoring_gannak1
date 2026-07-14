@@ -30,6 +30,11 @@ scheduleDispatch:
   retentionDays: 30
   deadLetterRetentionDays: 180
 
+# Deployment-managed strict connector-test port allowlist.
+connectorTest:
+  allowedPorts:
+    - 5432
+
 # =============================================================================
 # Application Services
 # =============================================================================
