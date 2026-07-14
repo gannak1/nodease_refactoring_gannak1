@@ -11,6 +11,7 @@ from typing import Any, List, Literal, Optional
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from celery.exceptions import TimeoutError as CeleryTimeoutError
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import Date, Integer, cast, func, or_
@@ -6168,7 +6169,7 @@ async def execute_workflow(
                 or "Workflow execution failed",
             )
 
-    except celery_app.backend.TimeoutError:
+    except CeleryTimeoutError:
         raise HTTPException(status_code=504, detail="Workflow execution timed out")
     except HTTPException:
         raise

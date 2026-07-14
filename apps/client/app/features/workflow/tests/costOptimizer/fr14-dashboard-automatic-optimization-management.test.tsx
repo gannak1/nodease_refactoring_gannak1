@@ -1,16 +1,16 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import MyModulePage from '@/app/dashboard/mymodule/page';
 
 const routerMock = vi.hoisted(() => ({ push: vi.fn() }));
-const sharedModalState = vi.hoisted(() => ({
-  props: null as null | {
-    workflowId: string;
-    workflowName?: string;
-    llmNodes: Array<{ id: string; candidateDraft?: unknown }>;
-  },
-}));
 
 vi.mock('next/navigation', () => ({
   useRouter: () => routerMock,
@@ -30,24 +30,9 @@ vi.mock('@/lib/apiClient', () => ({
 
 vi.mock('@/app/features/workflow/api/workflowApi', () => ({
   workflowApi: {
-    getDraftWorkflow: vi.fn(),
-    getCostOptimizerParameterRecommendations: vi.fn(),
+    getDeploymentParameterOptimization: vi.fn(),
   },
 }));
-
-vi.mock(
-  '@/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal',
-  () => ({
-    OptimizationRecommendationModal: (props: {
-      workflowId: string;
-      workflowName?: string;
-      llmNodes: Array<{ id: string; candidateDraft?: unknown }>;
-    }) => {
-      sharedModalState.props = props;
-      return <div data-testid="shared-optimization-recommendation-modal" />;
-    },
-  }),
-);
 
 const { moduleOperationsApi } = await import(
   '@/app/features/app/api/moduleOperationsApi'
@@ -55,10 +40,9 @@ const { moduleOperationsApi } = await import(
 const { apiClient } = await import('@/lib/apiClient');
 const { workflowApi } = await import('@/app/features/workflow/api/workflowApi');
 
-describe('FR-013 내 모듈 추천 모달 연결', () => {
+describe('FR-014 내 모듈 자동 최적화 관리', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    sharedModalState.props = null;
     vi.mocked(moduleOperationsApi.listModuleOperations).mockResolvedValue([
       {
         app: {
@@ -78,6 +62,7 @@ describe('FR-013 내 모듈 추천 모달 연결', () => {
         deploymentState: 'active',
         latestRun: { state: 'success' },
         permissionStatus: 'loaded',
+        permission: { can_deploy: true },
         permissionSources: [],
         dataQuality: {
           permissionSourcesUnavailable: false,
@@ -88,26 +73,17 @@ describe('FR-013 내 모듈 추천 모달 연결', () => {
     vi.mocked(apiClient.get).mockResolvedValue({
       data: { id: 'org-1', name: '데모 조직', is_manager: true },
     } as never);
-    vi.mocked(workflowApi.getDraftWorkflow).mockResolvedValue({
-      graph: {
-        nodes: [
-          {
-            id: 'llm-triage',
-            type: 'llmNode',
-            data: {
-              title: '티켓 처리 판단',
-              model_id: 'gpt-4.1',
-              parameters: { max_tokens: 1200, temperature: 0.2 },
-            },
-          },
-        ],
-      },
-    } as never);
     vi.mocked(
-      workflowApi.getCostOptimizerParameterRecommendations,
+      workflowApi.getDeploymentParameterOptimization,
     ).mockResolvedValue({
-      recommendations: [],
-      warnings: [],
+      enabled: true,
+      status: 'collecting',
+      node_ids: ['llm-triage'],
+      node_count: 1,
+      collected_runs: 12,
+      check_every_runs: 50,
+      validation_spend_usd: 0,
+      monthly_validation_budget_usd: 3,
     } as never);
   });
 
@@ -115,30 +91,22 @@ describe('FR-013 내 모듈 추천 모달 연결', () => {
     cleanup();
   });
 
-  it('예산 위험 workflow의 최적화 권장은 공유 inline 검증 모달에 현재 LLM 설정을 전달한다', async () => {
+  it('배포된 workflow의 자동 최적화 관리는 해당 배포 설정을 불러온다', async () => {
     render(<MyModulePage />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '최적화 권장' }));
+    fireEvent.click(await screen.findByRole('button', { name: '관리' }));
 
     await waitFor(() => {
-      expect(
-        screen.getByTestId('shared-optimization-recommendation-modal'),
-      ).toBeInTheDocument();
+      expect(workflowApi.getDeploymentParameterOptimization).toHaveBeenCalledWith(
+        'deployment-1',
+      );
     });
 
-    expect(sharedModalState.props).toMatchObject({
-      workflowId: 'workflow-1',
-      workflowName: '예산 위험 티켓 처리',
-      llmNodes: [
-        {
-          id: 'llm-triage',
-          candidateDraft: expect.objectContaining({
-            model_id: 'gpt-4.1',
-            max_tokens: 1200,
-          }),
-        },
-      ],
+    const dialog = await screen.findByRole('dialog', {
+      name: '자동 최적화 관리',
     });
+    expect(dialog).toBeInTheDocument();
+    expect(within(dialog).getByText('예산 위험 티켓 처리')).toBeInTheDocument();
     expect(routerMock.push).not.toHaveBeenCalled();
   });
 
@@ -175,8 +143,5 @@ describe('FR-013 내 모듈 추천 모달 연결', () => {
     const usage = (await screen.findAllByText('81%')).at(-1)!;
     expect(usage.parentElement).toHaveTextContent('정상');
     expect(usage.parentElement).not.toHaveTextContent('위험');
-    expect(
-      screen.queryByRole('button', { name: '최적화 권장' }),
-    ).not.toBeInTheDocument();
   });
 });
