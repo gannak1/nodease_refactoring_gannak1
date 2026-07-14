@@ -59,6 +59,7 @@ export function auditEventSummary({
   status,
   targetType,
   targetId,
+  targetDisplayLabel,
   currentOrganizationId,
   requiredPermission,
   requestedOperation,
@@ -67,15 +68,14 @@ export function auditEventSummary({
   status: 'success' | 'failure';
   targetType: string | null;
   targetId: string | null;
+  targetDisplayLabel?: string | null;
   currentOrganizationId?: string | null;
   requiredPermission?: string | null;
   requestedOperation?: string | null;
 }) {
-  const target = auditTargetLabel(
-    targetType,
-    targetId,
-    currentOrganizationId,
-  );
+  const target =
+    targetDisplayLabel ||
+    auditTargetLabel(targetType, targetId, currentOrganizationId);
   if (action === 'permission.denied' || action === 'auth.permission_denied') {
     if (requiredPermission === 'security_alert.manage') {
       const operationWithParticle =

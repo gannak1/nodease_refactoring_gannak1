@@ -19,6 +19,7 @@ import {
 } from '../utils/auditPresentation';
 import { AdminPagination } from './AdminPagination';
 import { AuditDetailDrawer } from './AuditDetailDrawer';
+import { AuditReferenceDisplay } from './AuditReferenceDisplay';
 import { ActorAccessDrawer } from './ActorAccessDrawer';
 import type {
   ActorAccessResourceCatalogItem,
@@ -295,6 +296,10 @@ export function AuditSearchTab({
                           member.membership_state === 'suspended'),
                     )
                   : null;
+                const actorLabel = item.actor_display?.label ||
+                  (item.actor_id
+                    ? memberNamesByUserId.get(item.actor_id)
+                    : undefined);
                 return (
                   <tr
                     key={item.id}
@@ -319,12 +324,17 @@ export function AuditSearchTab({
                     </td>
                     <td className="px-3 py-3 text-slate-700">
                       <span className="flex items-center gap-1.5">
-                        <span className="min-w-0 truncate">
-                          {(item.actor_id &&
-                            memberNamesByUserId.get(item.actor_id)) ||
-                            item.actor_id ||
-                            item.actor_type}
-                        </span>
+                        {item.actor_id && actorLabel ? (
+                          <AuditReferenceDisplay
+                            label={actorLabel}
+                            id={item.actor_id}
+                            copyLabel="행위자 ID 복사"
+                          />
+                        ) : (
+                          <span className="min-w-0 truncate">
+                            {item.actor_id || item.actor_type}
+                          </span>
+                        )}
                         {canManageActors && organizationId && actorMember && (
                           <button
                             type="button"
@@ -354,10 +364,18 @@ export function AuditSearchTab({
                       </span>
                     </td>
                     <td className="px-3 py-3 text-slate-700">
-                      {auditTargetLabel(
-                        item.target_type,
-                        item.target_id,
-                        organizationId,
+                      {item.target_display && item.target_id ? (
+                        <AuditReferenceDisplay
+                          label={item.target_display.label}
+                          id={item.target_id}
+                          copyLabel="대상 ID 복사"
+                        />
+                      ) : (
+                        auditTargetLabel(
+                          item.target_type,
+                          item.target_id,
+                          organizationId,
+                        )
                       )}
                     </td>
                     <td className="px-3 py-3">
