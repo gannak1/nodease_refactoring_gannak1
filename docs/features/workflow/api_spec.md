@@ -137,8 +137,8 @@ TestSidebar restore contract:
 - 브라우저 새로고침 또는 보고 화면에서 editor로 돌아온 뒤 Client는 `GET /api/v1/workflows/{workflow_id}/runs/{testRun}`을 호출한다.
 - Gateway는 기존 workflow read permission을 적용한다. 권한이 없거나 해당 workflow에 속하지 않는 run은 복원하지 않는다.
 - `WorkflowNodeRun.duration`은 초 단위이며 Client는 표시 전에 millisecond로 변환한다. `trace_metadata`는 노드 상세의 safe model-routing 설명을 복원하는 데만 사용한다.
-- `workflow_start`는 durable run 기록 생성보다 먼저 도착할 수 있다. Client는 초기 `404` 또는 `running` 응답을 실패로 바꾸지 않고, 짧은 간격으로 제한된 횟수만 재조회한다. terminal run을 정상 복원한 뒤에만 해당 URL run을 복원 완료로 고정한다.
-- 재시도 한도를 넘겨도 기존 실행을 `failure`로 덮어쓰지 않는다. Client는 기록 준비 지연 안내만 표시한다.
+- `workflow_start`는 durable run 기록 생성보다 먼저 도착할 수 있다. Client는 초기 `404` 또는 `running` 응답을 실패로 바꾸지 않고, 점차 길어지는 제한된 간격으로 재조회한다. terminal run을 정상 복원한 뒤에만 해당 URL run을 복원 완료로 고정한다.
+- 재시도 한도를 넘겨도 기존 실행을 `failure`로 덮어쓰지 않는다. Client는 기록 준비 지연 안내와 명시적 재시도 action을 표시한다. 브라우저 앞으로/뒤로가기로 `testRun` query가 바뀌면 Client는 새 URL을 다시 읽고, `testRun`이 제거된 경우 이전 복원 결과를 초기화한다.
 
 TestSidebar execution comparison contract:
 
@@ -147,7 +147,7 @@ TestSidebar execution comparison contract:
 - 비교 대상 실행은 stream의 `workflow_start.run_id`로 식별한다. 상세 로그 반영이 지연되면 Client는 동기화 중 상태를 표시하고 기존 기준 실행을 변경하지 않는다.
 - 양쪽 실행은 같은 `workflow_id`의 read permission 경계를 통과해야 한다. 다른 workflow의 run id는 `404`로 숨긴다.
 - 노드별 비용·토큰·지연은 node run output/trace metadata와 LLM trace safe summary를 조합하되 credential id와 raw prompt를 표시하지 않는다.
-- LLM trace endpoint의 `404` 또는 빈 목록은 `기록 없음`으로 처리한다. `403`, `5xx`, 네트워크 오류는 node run 비교를 중단하지 않되 `비교 근거 일부를 불러오지 못함` 경고를 표시한다. 이 경우 모델 라우팅·토큰·비용 근거 일부가 누락될 수 있다.
+- LLM trace endpoint의 `404` 또는 빈 목록은 화면에 `LLM trace 기록 없음`으로 표시하고 node run 비교를 유지한다. `403`, `5xx`, 네트워크 오류는 node run 비교를 중단하지 않되 `비교 근거 일부를 불러오지 못함` 경고를 표시한다. 이 경우 모델 라우팅·토큰·비용 근거 일부가 누락될 수 있다.
 
 Example `node_finish` event data with node-level summary:
 
