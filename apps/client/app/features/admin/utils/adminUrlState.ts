@@ -5,8 +5,7 @@ export type AdminTab =
   | 'credentials'
   | 'knowledge'
   | 'security-alerts'
-  | 'audit'
-  | 'organization';
+  | 'audit';
 
 export type OrganizationStructureView = 'members' | 'teams';
 
@@ -21,7 +20,6 @@ export const ADMIN_TAB_ITEMS: ReadonlyArray<{
   { key: 'knowledge', label: '지식 기반' },
   { key: 'security-alerts', label: '보안 알림' },
   { key: 'audit', label: '감사 로그' },
-  { key: 'organization', label: '조직 설정' },
 ];
 
 const ADMIN_TABS = new Set(ADMIN_TAB_ITEMS.map(({ key }) => key));
