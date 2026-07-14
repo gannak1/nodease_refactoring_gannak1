@@ -77,6 +77,12 @@ const projectedAuditItem = {
   },
 };
 
+const deletedActorAuditItem = {
+  ...projectedAuditItem,
+  id: 'log-deleted-actor-1',
+  actor_id: null,
+};
+
 const forbiddenError = () => {
   const error = new AxiosError('Forbidden');
   error.response = { status: 403 } as AxiosResponse;
@@ -134,6 +140,36 @@ describe('AuditSearchTab', () => {
     expect(
       within(table).getByRole('button', { name: '대상 ID 복사' }),
     ).toBeInTheDocument();
+  });
+
+  it('actor ID가 삭제된 감사 로그는 스냅샷 이름만 목록과 상세에 표시한다', async () => {
+    mockedList.mockResolvedValue({ total: 1, items: [deletedActorAuditItem] });
+    mockedDetail.mockResolvedValue({
+      ...deletedActorAuditItem,
+      audit_metadata: {},
+    });
+
+    render(<AuditSearchTab members={members} />);
+
+    const table = await screen.findByRole('table');
+    expect(
+      within(table).getByText('감사 당시 이름 (historical@example.com)'),
+    ).toBeInTheDocument();
+    expect(
+      within(table).queryByRole('button', { name: '행위자 ID 복사' }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(within(table).getByText('workflow.deploy'));
+
+    const drawer = await screen.findByRole('dialog', {
+      name: '감사 로그 상세',
+    });
+    expect(
+      within(drawer).getByText('감사 당시 이름 (historical@example.com)'),
+    ).toBeInTheDocument();
+    expect(
+      within(drawer).queryByRole('button', { name: '행위자 ID 복사' }),
+    ).not.toBeInTheDocument();
   });
 
   it('검색 결과가 없으면 빈 목록 안내를 표시한다', async () => {

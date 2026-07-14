@@ -324,12 +324,18 @@ export function AuditSearchTab({
                     </td>
                     <td className="px-3 py-3 text-slate-700">
                       <span className="flex items-center gap-1.5">
-                        {item.actor_id && actorLabel ? (
-                          <AuditReferenceDisplay
-                            label={actorLabel}
-                            id={item.actor_id}
-                            copyLabel="행위자 ID 복사"
-                          />
+                        {actorLabel ? (
+                          item.actor_id ? (
+                            <AuditReferenceDisplay
+                              label={actorLabel}
+                              id={item.actor_id}
+                              copyLabel="행위자 ID 복사"
+                            />
+                          ) : (
+                            <span className="min-w-0 truncate text-slate-800">
+                              {actorLabel}
+                            </span>
+                          )
                         ) : (
                           <span className="min-w-0 truncate">
                             {item.actor_id || item.actor_type}

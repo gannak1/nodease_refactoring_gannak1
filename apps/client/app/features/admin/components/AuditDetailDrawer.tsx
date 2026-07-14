@@ -168,12 +168,18 @@ export function AuditDetailDrawer({
             <DetailField
               label="행위자"
               value={
-                detail.actor_id && (detail.actor_display?.label || actorName) ? (
-                  <AuditReferenceDisplay
-                    label={detail.actor_display?.label || actorName!}
-                    id={detail.actor_id}
-                    copyLabel="행위자 ID 복사"
-                  />
+                detail.actor_display?.label || actorName ? (
+                  detail.actor_id ? (
+                    <AuditReferenceDisplay
+                      label={detail.actor_display?.label || actorName!}
+                      id={detail.actor_id}
+                      copyLabel="행위자 ID 복사"
+                    />
+                  ) : (
+                    <span className="text-slate-800">
+                      {detail.actor_display?.label || actorName}
+                    </span>
+                  )
                 ) : (
                   detail.actor_id || `${detail.actor_type} (id 없음)`
                 )
