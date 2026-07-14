@@ -6,6 +6,7 @@ from apps.shared.domain.workflow_knowledge_references import (
     parse_llm_knowledge_references,
 )
 from apps.shared.domain.mail_credential import (
+    MAIL_NODE_UI_METADATA_FIELDS,
     validate_mail_node_credential_boundary,
     validate_mail_processing_node_boundary,
 )
@@ -113,10 +114,21 @@ class NodeFactory:
                 f"Available types: {list(NodeFactory.NODE_REGISTRY.keys())}"
             )
 
+        runtime_data = schema.data
         if schema.type == "mailNode":
             validate_mail_node_credential_boundary(schema.data)
+            runtime_data = {
+                key: value
+                for key, value in schema.data.items()
+                if key not in MAIL_NODE_UI_METADATA_FIELDS
+            }
         elif schema.type in {"gmailDraftNode", "mailAcknowledgeNode"}:
             validate_mail_processing_node_boundary(schema.type, schema.data)
+            runtime_data = {
+                key: value
+                for key, value in schema.data.items()
+                if key not in MAIL_NODE_UI_METADATA_FIELDS
+            }
         elif schema.type == "llmNode":
             try:
                 parse_llm_knowledge_references(schema.data)
@@ -124,7 +136,7 @@ class NodeFactory:
                 raise NonRetryableWorkflowError(exc.reason_code) from exc
 
         NodeClass, DataClass = NodeFactory.NODE_REGISTRY[schema.type]
-        data = DataClass(**schema.data)
+        data = DataClass(**runtime_data)
         node = NodeClass(schema.id, data, execution_context=context)
         if schema.type == "llmNode" and runtime_dependencies is not None:
             resolver = (

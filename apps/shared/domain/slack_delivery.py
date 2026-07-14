@@ -271,7 +271,8 @@ def _valid_channel_template(value: Any) -> bool:
 
 
 def _has_delivery_payload(data: Mapping[str, Any]) -> bool:
-    if data.get("message"):
+    message = data.get("message")
+    if isinstance(message, str) and bool(message.strip()):
         return True
     return any(
         _is_nonempty_json_array(data.get(field)) for field in ("blocks", "attachments")

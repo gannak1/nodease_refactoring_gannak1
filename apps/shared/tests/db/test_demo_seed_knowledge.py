@@ -403,6 +403,7 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     security_alert_outbox_revision = script.get_revision("c05d6e7f8a90")
     internal_chatbot_revision = script.get_revision("fc9d0e1f2a34")
     index_alignment_revision = script.get_revision("fd3e4f5a6b78")
+    configuration_preflight_revision = script.get_revision("0f4a5b6c7d89")
 
     assert safe_metadata_revision.down_revision == "fa7b8c9d0e12"
     assert set(merged_revision.down_revision) == {"fa7c8d9e0f12", "ff3a4b5c6d78"}
@@ -420,12 +421,24 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     assert security_alert_outbox_revision.down_revision == "fe4a5b6c7d89"
     assert internal_chatbot_revision.down_revision == "c05d6e7f8a90"
     assert index_alignment_revision.down_revision == "fc9d0e1f2a34"
-    assert script.get_heads() == ["fd3e4f5a6b78"]
+    assert configuration_preflight_revision.down_revision == "fd3e4f5a6b78"
 
     internal_chatbot_source = Path(internal_chatbot_revision.path).read_text(
         encoding="utf-8"
     )
     assert 'op.execute("COMMIT")' not in internal_chatbot_source
+
+    heads = script.get_heads()
+    assert len(heads) == 1
+    ancestry = {
+        revision.revision
+        for revision in script.iterate_revisions(heads[0], "base")
+    }
+    assert "fa7c8d9e0f12" in ancestry
+    assert "c05d6e7f8a90" in ancestry
+    assert "fc9d0e1f2a34" in ancestry
+    assert "fd3e4f5a6b78" in ancestry
+    assert "0f4a5b6c7d89" in ancestry
 
 
 def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():

@@ -1,6 +1,7 @@
 # Workflow API Spec
 
 Status: Draft
+Verified Against: `feature/mba-219 @ 5b1cf366`
 
 ## Endpoints
 
@@ -247,6 +248,46 @@ Example detail response:
 
 이 endpoint의 소유 계약은 [Deployment API Spec](../deployment/api_spec.md)을 따른다. `internal_chatbot` run-info는 secret과 graph snapshot을 제외한 safe metadata만 반환하고, run은 current user를 `execution_subject`로 전달한다. 서버는 챗봇 memory mode를 강제하고 인증 `conversation_id`를 deployment와 execution subject 기준으로 namespace 처리한다. 공개 `/api/v1/run-public/{url_slug}`의 `chatbot`은 execution subject 없이 anonymous public-only 경계를 유지한다.
 
+## MBA-219 Configuration Preflight
+
+`POST /api/v1/workflows/{workflow_id}/execute`, `POST /api/v1/workflows/{workflow_id}/stream`과 Compare는 workflow execute 권한, Cost Optimizer candidate는 기존 write/builder 권한과 active organization 검증 뒤 Celery task publish 전에 같은 authenticated configuration preflight를 수행한다. Stream은 SSE response와 Redis subscribe를 시작하기 전에 검사한다. Compare/Cost Optimizer는 base graph가 blocked이면 variant/candidate task를 만들기 전에 request-level error로 종료한다.
+
+Managed node는 `mailNode`, `gmailDraftNode`, `mailAcknowledgeNode`, `slackPostNode`다. 최상위 graph, Loop `subGraph`와 WorkflowNode target snapshot에 current user audience/principal을 전달한다. LLM, HTTP와 GitHub는 이번 범위에서 기존 runtime-authoritative 정책을 유지한다. External node가 registry에 없거나 `implemented=false`이면 실행 전에 fail-closed한다.
+
+Blocking response:
+
+```json
+{
+  "detail": {
+    "error": {
+      "code": "workflow.configuration_preflight.blocked",
+      "message": "Workflow configuration preflight blocked execution",
+      "reason_code": "mail_credential_unavailable",
+      "required_actions": ["select_available_mail_credential"],
+      "preflight": {
+        "status": "blocked",
+        "audience": "authenticated_user",
+        "safe_summary": {
+          "blocked_reason": "mail_credential_unavailable",
+          "affected_node_count": 1,
+          "affected_kb_count_bucket": "0"
+        }
+      }
+    }
+  }
+}
+```
+
+- HTTP status는 `409 Conflict`다.
+- Missing, revoked, cross-organization과 permission-denied Mail credential은 모두 `mail_credential_unavailable`이다.
+- Response는 credential ID/name/email, token, Slack Webhook URL/channel/message/body, raw target와 raw exception을 포함하지 않는다.
+- Preview는 durable permission audit을 만들지 않는다. Create/toggle 및 authenticated execution enforcement에서 확인된 same-organization `use` 거부만 resource별 정확히 한 번 `permission.denied`로 기록한다.
+- Preflight는 provider에 연결하거나 secret을 복호화하지 않는다.
+- Runtime은 resource scope/status/use, secret, egress와 provider 계약을 다시 검사한다.
+- Node `position` 누락·비유한/비숫자 좌표, 비어 있거나 누락된 edge `id`, malformed edge, dangling endpoint, cycle, 진입점/isolation 오류와 합산 node 1,000개, edge 5,000개 또는 Loop subgraph depth 16 초과는 resource lookup과 task publish 전에 `workflow_graph_invalid`로 차단한다. 최상위 graph는 명시적 trigger/start node 하나, Loop body는 incoming executable edge가 없는 실행 진입점 하나를 요구한다.
+- Mail data의 `title`, folder, `max_results`, boolean, filter/date/reference와 processing mode는 Worker schema와 같은 타입·범위로 검사한다.
+- Compare와 Cost Optimizer candidate는 preflight를 통과한 server-bound graph에서 파생하며 task 직전에 WorkflowNode target을 다시 binding하지 않는다. Recommendation verification의 완료된 동일 Idempotency-Key safe response는 workflow 권한과 active organization scope를 확인한 뒤 현재 node/graph preflight와 task 없이 replay한다.
+
 ## Errors
 
 ### 1. 실행 편의성
@@ -254,6 +295,7 @@ Example detail response:
 - workflow execute 권한이 없으면 403으로 거부한다.
 - workflow가 active organization scope 밖이면 404로 숨긴다.
 - 스트리밍 중 노드 오류가 발생하면 `error` 이벤트에 `node_id`가 포함될 수 있으며, 프론트는 해당 노드를 실패로 표시한다.
+- MBA-219 configuration blocker는 task 또는 SSE가 시작된 뒤 `error` event로 보내지 않고 시작 전 `409 workflow.configuration_preflight.blocked` JSON으로 반환한다.
 
 ### MBA-190 외부 부수효과 안전 종료
 
@@ -306,17 +348,18 @@ Example detail response:
 
 ## Mail Node 저장 계약
 
-- Mail node data는 `credential_id: UUID | null`과 `configuration_state: resolved | unresolved`만 credential 설정으로 허용한다.
+- Mail node data는 `credential_id: UUID | null`과 `configuration_state: resolved | unresolved`만 신규 credential 설정으로 허용한다. 구버전 Client가 저장한 `credential_id=null` node에서 `configuration_state`가 아예 없으면 draft 호환을 위해 unresolved로 해석하며, 명시적 null이나 다른 값은 허용하지 않는다.
 - `displayNumber`와 `visibleProperties`는 정해진 형식과 값만 갖는 UI metadata로 허용한다.
 - `password`, `token`, `email`, `encrypted_secret` 같은 inline Mail identity/secret field가 최상위 또는 중첩 `subGraph`에 있으면 workflow 저장은 `422 mail.credential_reference_required`로 실패한다.
 - Non-null `credential_id`는 active organization의 active Mail credential이어야 하며 저장 요청자에게 `use` 권한이 있어야 한다. Organization 밖 reference는 `404`, 같은 organization의 권한 부족은 `403`으로 처리한다.
-- `credential_id=null`인 unresolved draft는 preview/apply-save를 위해 저장할 수 있지만 deployment snapshot 생성과 기존 deployment 활성화는 `422 mail.credential_reference_required`로 차단한다. Legacy snapshot runtime도 provider 연결 전에 같은 reason으로 차단한다.
+- Null credential과 unresolved selector는 draft 저장에서 보존할 수 있다. 상태 필드가 누락된 구버전 null Mail node도 이 저장 호환에만 포함한다. Test/active/schedule readiness는 MBA-219 공통 preflight가 다시 평가하며 interactive test의 resource failure는 존재 여부를 숨기기 위해 `mail_credential_unavailable`로 정규화한다.
+- `credential_id=null`인 unresolved draft와 상태 필드가 누락된 구버전 null draft는 preview/apply-save를 위해 저장할 수 있다. Active deployment create/toggle과 authenticated test는 공통 preflight에서 `409 deployment.preflight.blocked` 또는 `409 workflow.configuration_preflight.blocked`로 차단한다. Legacy snapshot runtime도 provider 연결 전에 safe reason으로 다시 차단한다.
 - `mailNode.processing_mode`는 `search_only | durable`이며 누락 시 `search_only`다. `durable`과 `mark_as_read=true` 조합은 `422 mail.processing_configuration_invalid`로 거부한다.
 - 단일 `gmailDraftNode`에 직접 연결되는 source Mail node는 `processing_mode=durable`, `max_results=1`이어야 하며 `processing_ref_selector=[mail_node_id, "processing_ref"]`를 사용한다.
 - `gmailDraftNode` data는 `credential_id`, `configuration_state`, `processing_ref_selector`, `reply_body_selector`와 제한된 UI metadata만 허용한다.
 - `mailAcknowledgeNode` data는 `processing_ref_selector`, `required_effect_ref_selectors`와 제한된 UI metadata만 허용한다.
 - Draft/Acknowledge node에 raw provider message/draft id, recipient override, MIME, token, arbitrary status boolean이나 non-empty `parameters`가 있으면 `422 mail.processing_configuration_invalid`로 거부한다.
-- Draft/Acknowledge selector가 존재하지 않는 node, 잘못된 output key, 선행 경로 밖 node 또는 서로 다른 Mail processing source를 가리키면 배포를 `422 mail.processing_configuration_invalid`로 거부한다. Gmail Draft credential은 source Mail credential과 같고 `provider=gmail`, `auth_type=oauth2`여야 한다.
+- Draft/Acknowledge selector가 존재하지 않는 node, 잘못된 output key, 선행 경로 밖 node 또는 서로 다른 Mail processing source를 가리키면 draft 저장은 `422 mail.processing_configuration_invalid`로, active deployment와 authenticated execution은 공통 preflight `409`로 거부한다. Gmail Draft credential은 source Mail credential과 같고 `provider=gmail`, `auth_type=oauth2`여야 한다.
 - OAuth Gmail credential의 Mail 조회와 acknowledgement는 `gmail.modify` 기반 고정 Gmail REST API를 사용한다. `gmail.compose`-only credential은 재인가 전 실행할 수 없고 OAuth credential에는 IMAP fallback이 없다.
 - Gmail REST message id는 durable source reference에 암호화 저장되며 `mailNode` output에는 포함되지 않는다.
 
@@ -324,7 +367,7 @@ Example detail response:
 
 - `slackPostNode.data`는 `slackMode`, `channel`, `message`, `blocks`, `attachments`, `thread_ts`, `username`, `icon_emoji`, `referenced_variables`와 제한된 UI metadata를 canonical 설정으로 허용한다. 기존 `url`, `authConfig.token`, `method`, `headers`, `body`, `timeout`, `authType`은 명시된 legacy 읽기 호환 범위에서만 허용하며 endpoint/header/body/timeout의 실행 source로 사용하지 않는다.
 - Backend draft 저장은 명시 migration을 위해 모든 `*_selector`/`*_selectors` 실행 필드의 제거된 `data`/`headers` output 또는 Webhook mode의 `message_ref` 참조를 보존할 수 있다. Client graph validation은 이를 오류로 표시하고 Deployment validation은 `422 slack.graph_configuration_invalid`, 기존 active snapshot runtime은 `slack.legacy_selector_requires_migration`으로 fail-closed한다. API mode의 `message_ref` 참조는 계속 허용한다.
-- API mode deployment는 static token과 channel을 요구한다. Webhook mode deployment는 query, fragment, userinfo, custom port가 없는 정확한 `https://hooks.slack.com/services/{segment}/{segment}/{segment}` 형식만 허용하며, API mode에서 남은 `channel`은 사용하지 않는 호환 잔여값으로 무시한다. 두 mode 모두 `message`, 비어 있지 않은 `blocks`, 비어 있지 않은 `attachments` 중 하나 이상을 요구한다. URL과 token은 API 응답, 공개 graph projection, node log, trace metadata에 포함하지 않는다.
+- API mode deployment는 static token과 channel을 요구한다. Webhook mode deployment는 query, fragment, userinfo, custom port가 없는 정확한 `https://hooks.slack.com/services/{segment}/{segment}/{segment}` 형식만 허용하며, API mode에서 남은 `channel`은 사용하지 않는 호환 잔여값으로 무시한다. 두 mode 모두 공백이 아닌 `message`, 비어 있지 않은 `blocks`, 비어 있지 않은 `attachments` 중 하나 이상을 요구한다. URL과 token은 API 응답, 공개 graph projection, node log, trace metadata에 포함하지 않는다.
 - Slack message template은 실제 전송 필드에서 사용한 등록 `referenced_variables`의 `{{name}}` 단순 치환만 지원한다. 미사용 reference는 input을 조회하지 않는다. `blocks`/`attachments`의 JSON template 값은 JSON 문맥에 맞게 escape한 뒤 strict parse하며, 동적 JSON key, Jinja expression, attribute access, filter, statement와 control flow는 `slack.template_render_failed`, `slack.template_value_invalid` 또는 `slack.payload_invalid`로 거부한다.
 - 성공 output은 공통 `status`, `delivery_status`, `delivery_mode`를 제공한다. API mode만 검증된 `message_ref`를 제공하며 Webhook mode에서는 `message_ref` selector를 제공하지 않는다. Legacy `data`와 `headers` output은 제공하지 않는다.
 - Slack API/Webhook은 각각 `slack.chat.post_message.v1`, `slack.incoming_webhook.post.v1` profile과 ADR-0035의 공통 `ExternalEffectExecutor`를 사용한다. 성공 시 safe output projection을 durable attempt에 저장해 동일 execution slot 재진입에서 provider 호출 없이 재사용한다. `429`와 확인된 rejection은 `failed_before_effect + stop`, 결과가 불명확한 응답/transport 실패는 `effect_outcome_unknown + stop`이며 `Retry-After`는 bounded trace hint일 뿐 generic workflow retry를 허용하지 않는다. 실패는 raw response 대신 공통 safe external-effect code로 반환한다.

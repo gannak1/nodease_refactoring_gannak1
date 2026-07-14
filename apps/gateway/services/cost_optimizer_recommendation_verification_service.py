@@ -84,6 +84,25 @@ class CostOptimizerRecommendationVerificationService:
             return cls._claim_existing(existing, request_fingerprint)
         return RecommendationVerificationClaim(record=record)
 
+    @classmethod
+    def replay_existing(
+        cls,
+        db: Any,
+        *,
+        user_id: Any,
+        idempotency_key: str,
+        request_fingerprint: str,
+    ) -> dict[str, Any] | None:
+        """Return a completed safe response without creating a new claim."""
+        existing = cls._find(
+            db,
+            user_id=user_id,
+            idempotency_key=idempotency_key,
+        )
+        if existing is None:
+            return None
+        return cls._claim_existing(existing, request_fingerprint).replay_response
+
     @staticmethod
     def complete(
         db: Any,

@@ -14,14 +14,33 @@ export function formatDeploymentPreflightMessage(
 
   return [
     preflight.status === 'warning'
-      ? `배포 전 검사 경고가 있습니다. (${reason})`
-      : `배포 전 검사에서 차단되었습니다. (${reason})`,
+      ? `실행 준비 검사 경고가 있습니다. (${reason})`
+      : `실행 준비 검사에서 차단되었습니다. (${reason})`,
     affected !== '0' ? `영향 KB 수: ${affected}` : null,
     affectedCollections !== '0'
       ? `영향 Collection 수: ${affectedCollections}`
       : null,
     preflight.safe_summary.candidate_budget_limited
       ? '실행 시 지식 후보가 최대 후보 수로 제한될 수 있습니다.'
+      : null,
+    actions.length ? `필요 조치: ${actions.join(', ')}` : null,
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+function formatSafePreflightFields(
+  blockedReason: string | null | undefined,
+  affectedKbCountBucket: string,
+  actionLabels: string[],
+): string {
+  const reason = blockedReason || 'deployment_preflight_blocked';
+  const actions = actionLabels.filter(Boolean);
+
+  return [
+    `실행 준비 검사에서 차단되었습니다. (${reason})`,
+    affectedKbCountBucket !== '0'
+      ? `영향 KB 수: ${affectedKbCountBucket}`
       : null,
     actions.length ? `필요 조치: ${actions.join(', ')}` : null,
   ]
@@ -42,11 +61,9 @@ export function deploymentApiErrorMessage(
   }
   const detailObject = asRecord(detail);
   const detailError = asRecord(detailObject.error);
-  const preflight = detailError.preflight as
-    | DeploymentPreflightResponse
-    | undefined;
-  if (preflight?.status === 'blocked') {
-    return formatDeploymentPreflightMessage(preflight);
+  const preflightMessage = safeBlockedPreflightMessage(detailError.preflight);
+  if (preflightMessage) {
+    return preflightMessage;
   }
   if (typeof detailError.message === 'string') {
     return detailError.message;
@@ -55,6 +72,28 @@ export function deploymentApiErrorMessage(
     return errorObject.message;
   }
   return fallback;
+}
+
+function safeBlockedPreflightMessage(value: unknown): string | null {
+  const preflight = asRecord(value);
+  if (preflight.status !== 'blocked') return null;
+
+  const summary = asRecord(preflight.safe_summary);
+  const affected = summary.affected_kb_count_bucket;
+  const blockedReason = summary.blocked_reason;
+  const actions = preflight.required_actions;
+  if (
+    typeof affected !== 'string' ||
+    (blockedReason !== null && typeof blockedReason !== 'string') ||
+    !Array.isArray(actions)
+  ) {
+    return null;
+  }
+
+  const actionLabels = actions
+    .map((action) => asRecord(action).label)
+    .filter((label): label is string => typeof label === 'string' && !!label);
+  return formatSafePreflightFields(blockedReason, affected, actionLabels);
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

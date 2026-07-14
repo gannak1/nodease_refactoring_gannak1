@@ -1,6 +1,7 @@
 # Workflow Test Cases
 
 Status: Draft
+Verified Against: `feature/mba-219 @ 5b1cf366`
 
 ## Test File Mapping
 
@@ -51,7 +52,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - Mail node editor는 safe credential option을 표시하고 선택 시 graph에 `credential_id`만 저장한다.
 - Client node, panel, visible properties와 실행 로그 설정 요약은 email/password/token/ciphertext와 credential UUID를 렌더링하지 않고 연결 상태만 표시한다.
 - Workflow 저장은 최상위와 중첩 `subGraph`의 inline Mail secret field, 잘못된 UUID, 다른 organization reference, revoked credential과 `use` 권한 없는 reference를 provider 호출 없이 거부한다. 제한된 UI metadata는 허용한다.
-- Agent Builder가 생성한 unresolved Mail node는 preview/apply-save가 가능하지만 deployment 생성·활성화와 runtime 실행은 credential reference를 요구한다.
+- Agent Builder가 생성한 unresolved Mail node는 preview/apply-save가 가능하지만 deployment 생성·활성화와 runtime 실행은 credential reference를 요구한다. `configuration_state` 도입 전 Client가 만든 `credential_id=null` Mail node는 상태 필드가 누락돼도 draft 저장과 inactive warning은 유지하며, 명시적 null 상태는 invalid이고 실행은 unresolved로 차단한다.
 - 기존 Mail graph는 `processing_mode`가 없으면 `search_only`로 역직렬화된다.
 - Durable Mail graph는 `mark_as_read=true`를 거부하고 Mail Acknowledge node가 required effect 성공 뒤에만 읽음 처리한다.
 - Gmail Draft node는 processing/reply selectors와 OAuth credential만 허용하고 send/recipient/MIME/provider id field를 거부한다.
@@ -75,7 +76,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - editor, save/deploy validation, Agent Builder는 generic HTTP Slack 설정과 `data`/`headers` selector를 새 graph에 만들지 않는다. `value_selector`, `variable_selector`, `source_selector`, 단일·복수형 Mail selector를 포함한 모든 `*_selector`/`*_selectors` 필드에서 제거된 raw output을 탐지하고, Client/deployment/legacy runtime에서 차단한다. Webhook mode의 `message_ref`도 차단하되 API mode의 `message_ref`는 허용한다. Backend draft와 명시 migration은 과거 snapshot을 자동 변형하지 않는다.
 - unit, adapter, runtime, client validation 및 authenticated browser smoke는 API/webhook success/failure, legacy compatibility, no-retry, safe observability, output selector와 migration warning을 각각 검증한다.
 - Slack template은 실제 사용된 `{{name}}` 등록 변수만 조회하며 미사용 reference의 누락 input은 무시한다. JSON 문자열 안의 quote/bracket payload는 escape 후에도 원래 scalar로 남고 구조를 바꾸지 못해야 한다. Jinja attribute/global 접근, expression, filter, statement/control flow와 동적 JSON key는 provider 호출 전에 거부한다.
-- deployment validation은 canonical commercial webhook URL과 mode별 credential을 검사하고, `message`/비어 있지 않은 `blocks`/비어 있지 않은 `attachments` 중 하나 이상을 요구한다. Webhook mode의 숨은 레거시 `channel`은 무시하며 request payload에 포함하지 않는다. Client는 API mode에서 URL을 요구하지 않으며 API/Webhook mode별 output과 nested legacy selector 경고를 다르게 표시한다.
+- deployment validation은 canonical commercial webhook URL과 mode별 credential을 검사하고, 공백이 아닌 `message`/비어 있지 않은 `blocks`/비어 있지 않은 `attachments` 중 하나 이상을 요구한다. Webhook mode의 숨은 레거시 `channel`은 무시하며 request payload에 포함하지 않는다. Client는 API mode에서 URL을 요구하지 않으며 API/Webhook mode별 output과 nested legacy selector 경고를 다르게 표시한다.
 - DNS/egress preflight와 HTTP connect/read는 각각 bounded timeout을 가지며, provider 실패 trace는 raw payload 없이 safe outcome과 status만 보존한다.
 - IMAP resolver는 private/loopback/metadata target과 `143/993` 이외 포트를 거부하고, `143`에서는 로그인 전에 STARTTLS를 강제한다. DNS 검증 IP에 socket 연결을 고정하면서 TLS hostname 검증은 canonical hostname으로 수행한다.
 - Legacy inline password graph는 validation error에 secret 값을 포함하지 않고 fail-closed한다.
@@ -366,6 +367,15 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 
 - 같은 workflow를 두 브라우저 세션에서 열고 각각 수정하면 충돌 또는 최신 상태 갱신 안내가 표시된다.
 - 테스트 실행 버튼을 연속 클릭해도 실행 사이드바에는 하나의 실행 흐름만 표시된다.
+- `/execute`와 `/stream`은 unresolved/invalid Mail 또는 Slack, unavailable Mail credential을 workflow task publish 전에 `409 workflow.configuration_preflight.blocked`로 차단한다. Stream은 Redis subscribe와 SSE response 시작 전 같은 JSON error를 반환한다.
+- 한 Slack node의 unresolved 설정과 다른 node를 가리키는 legacy `data`/`headers` 또는 Webhook `message_ref` selector가 함께 있으면 unresolved와 invalid를 모두 보존하고 inactive에서도 invalid로 차단한다.
+- Mail `title`, folder, `max_results`, boolean, filter/date/reference와 processing mode의 잘못된 타입·범위는 Worker Pydantic 실패까지 전달되지 않고 같은 preflight 409로 차단한다.
+- Node `position` 누락·비유한/비숫자 좌표, edge `id` 누락·빈 값, dangling edge, cycle, duplicate node ID, 진입점 오류와 고립 node는 최상위와 Loop subgraph에서 `workflow_graph_invalid`로 차단한다. 최상위 graph의 명시적 trigger/start 하나와 Loop body의 incoming executable edge가 없는 실행 진입점 하나는 통과하고, Loop body에 별도 trigger가 없어도 실행 진입점이 유일하면 허용한다. Loop의 implicit entry 일반 노드는 매 iteration의 `loop.item`, `loop.index`와 외부 입력을 첫 실행 context로 받으며, 후속 노드는 완료된 선행 결과를 받는다. 합산 node 1,000개, edge 5,000개와 Loop subgraph depth 16은 통과하고 각각 1개 초과하면 차단하며 task publish는 0회다.
+- Compare와 Cost Optimizer compare/recommendation verification은 base graph configuration preflight가 blocked이면 variant/candidate Celery task를 하나도 발행하지 않고 request-level safe 409를 반환한다. 성공 경로는 preflight가 검사한 server-bound graph를 재사용하고 task 직전에 WorkflowNode target을 다시 binding하지 않는다. 완료된 recommendation verification idempotent replay는 workflow 권한과 active organization scope를 확인하되 현재 node/graph preflight와 task를 다시 시작하지 않는다.
+- Configuration preflight는 workflow execute 권한과 active organization 검증 이후에 실행되며 권한 없는 요청의 hidden resource를 조회하거나 노출하지 않는다.
+- Preview permission denial은 audit 0건이고 execute/stream/Compare/Cost Optimizer enforcement는 same-organization denial을 resource별 정확히 한 번 감사한다. 감사 metadata는 검증된 organization과 middleware request ID를 포함하되 raw path/header는 포함하지 않는다.
+- 여러 Mail credential을 포함한 graph도 scalar permission과 같은 allow/deny 결과를 내며 organization/user/membership query가 credential마다 증가하지 않는다. Revoked credential의 잔존 grant는 scalar/bulk 모두 `none`이다.
+- Test Sidebar는 safe required action label을 표시하고 credential ID/name/email, Slack token/Webhook URL/channel/payload와 raw response object를 표시하지 않는다.
 - 테스트 실행 중 노드 설정을 수정한 뒤 결과가 도착해도 현재 편집 중인 설정값이 실행 결과 payload로 덮어써지지 않는다.
 - 저장 중 네트워크 지연이 발생한 뒤 이전 저장 응답이 늦게 도착해도 최신 화면 상태가 이전 상태로 되돌아가지 않는다.
 
@@ -486,6 +496,9 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - Public/API/webhook/schedule/공개 `chatbot`/MCP surface는 subject가 없으므로 private KB 후보가 있으면 활성 배포 create/toggle에서 `409 deployment.preflight.blocked`를 반환한다.
 - `internal_chatbot` preflight는 `authenticated_user` audience이므로 private KB 참조만으로 차단하지 않지만, Gateway는 workflow organization active membership과 workflow `execute`를 dispatch 전에 검사하고 `X-Organization-Id`가 있으면 app organization 일치도 확인한다. Runtime은 current user 기준 KB permission/source ACL을 다시 검사한다.
 - 공개/내부 챗봇 배포는 타입과 결과 링크를 분리한다. 내부 실행은 memory mode와 non-empty conversation id를 전송하고, `401` 인증 복귀는 path/query/hash를 보존하되 open redirect 입력은 `/dashboard`로 닫는다.
+- MBA-219 managed preflight는 Mail/Gmail Draft/Mail Acknowledge/Slack을 최상위 graph와 다단계 Loop `subGraph`, WorkflowNode target에서 같은 audience/principal로 검사한다. Missing/revoked/cross-organization/permission-denied Mail credential은 모두 `mail_credential_unavailable`로 보인다.
+- Catalog external node가 registry에 없거나 `implemented=false`이면 test/active/schedule 전에 `node_configuration_validator_unavailable`로 차단한다. LLM/HTTP/GitHub는 runtime-authoritative로 명시돼 unclassified fallback을 사용하지 않는다.
+- Preflight가 provider network adapter나 secret decrypt helper를 호출하지 않으며, 통과 뒤 runtime에서 credential revoke/permission 회수를 다시 차단한다.
 - Workflow-node runtime은 parent execution context를 상속한다. Parent subject가 있으면 해당 subject 기준 KB permission/source ACL을 사용하고, subject가 없으면 anonymous public-only로 낮춘다.
 - Workflow-node preflight는 `workflowNode.data.appId`로 target app active deployment를 찾는다. `workflowId`로 target을 잘못 해석하면 테스트 실패다.
 

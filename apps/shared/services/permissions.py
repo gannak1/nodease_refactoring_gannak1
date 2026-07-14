@@ -1,10 +1,14 @@
 import uuid
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from apps.shared.db.models.knowledge import KnowledgeBase
 from apps.shared.db.models.llm import LLMCredential
-from apps.shared.db.models.mail_credential import MailCredential
+from apps.shared.db.models.mail_credential import (
+    MAIL_CREDENTIAL_ACTIVE,
+    MailCredential,
+)
 from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.organization_membership import (
     ORGANIZATION_AUTH_MANAGER,
@@ -282,9 +286,16 @@ def _mail_credential_scope(
         return None, None
 
     credential = (
-        db.query(MailCredential).filter(MailCredential.id == credential_uuid).first()
+        db.query(MailCredential)
+        .filter(
+            MailCredential.id == credential_uuid,
+            MailCredential.status == MAIL_CREDENTIAL_ACTIVE,
+        )
+        .first()
     )
-    if not credential:
+    if not credential or getattr(credential, "status", MAIL_CREDENTIAL_ACTIVE) != (
+        MAIL_CREDENTIAL_ACTIVE
+    ):
         return None, None
 
     credential_organization_uuid = coerce_uuid(credential.organization_id)
@@ -697,6 +708,101 @@ def get_effective_mail_credential_auth_state(
     return _strongest_auth_state(direct_rows, effective_state)
 
 
+def get_effective_mail_credential_auth_states(
+    db: Session,
+    user_id: Any,
+    mail_credential_ids: Iterable[Any],
+    organization_id: Any,
+) -> dict[uuid.UUID, str]:
+    """Resolve Mail credential auth states with a fixed number of queries."""
+    user_uuid = coerce_uuid(user_id)
+    organization_uuid = coerce_uuid(organization_id)
+    requested_ids = {
+        credential_id
+        for raw_id in mail_credential_ids
+        if (credential_id := coerce_uuid(raw_id)) is not None
+    }
+    if user_uuid is None or organization_uuid is None or not requested_ids:
+        return {}
+
+    scoped_rows = (
+        db.query(MailCredential.id, MailCredential.status)
+        .filter(
+            MailCredential.id.in_(requested_ids),
+            MailCredential.organization_id == organization_uuid,
+            MailCredential.status == MAIL_CREDENTIAL_ACTIVE,
+        )
+        .all()
+    )
+    scoped_ids: set[uuid.UUID] = set()
+    for row in scoped_rows:
+        raw_id, status = _mail_credential_scope_values(row)
+        credential_id = coerce_uuid(raw_id)
+        if status == MAIL_CREDENTIAL_ACTIVE and credential_id is not None:
+            scoped_ids.add(credential_id)
+    if not scoped_ids:
+        return {}
+
+    organization_auth_state = get_organization_auth_state(
+        db,
+        user_uuid,
+        organization_uuid,
+    )
+    if organization_auth_state == AUTH_STATE_MANAGER:
+        return {credential_id: AUTH_STATE_MANAGER for credential_id in scoped_ids}
+    if organization_auth_state != ORGANIZATION_AUTH_MEMBER:
+        return {credential_id: AUTH_STATE_NONE for credential_id in scoped_ids}
+
+    team_rows = (
+        db.query(
+            TeamMailCredentialPermission.mail_credential_id,
+            TeamMailCredentialPermission.auth_state,
+        )
+        .join(
+            TeamMembership,
+            TeamMembership.team_id == TeamMailCredentialPermission.team_id,
+        )
+        .join(Team, Team.id == TeamMailCredentialPermission.team_id)
+        .filter(
+            TeamMembership.user_id == user_uuid,
+            TeamMailCredentialPermission.mail_credential_id.in_(scoped_ids),
+            Team.is_active.is_(True),
+            TeamMembership.grantee_organization_id == organization_uuid,
+            TeamMailCredentialPermission.grantee_organization_id
+            == organization_uuid,
+            TeamMembership.grantee_organization_id
+            == TeamMailCredentialPermission.grantee_organization_id,
+            Team.organization_id == organization_uuid,
+        )
+        .all()
+    )
+    direct_rows = (
+        db.query(
+            UserMailCredentialPermission.mail_credential_id,
+            UserMailCredentialPermission.auth_state,
+        )
+        .filter(
+            UserMailCredentialPermission.user_id == user_uuid,
+            UserMailCredentialPermission.mail_credential_id.in_(scoped_ids),
+            UserMailCredentialPermission.grantee_organization_id
+            == organization_uuid,
+        )
+        .all()
+    )
+
+    result = {credential_id: AUTH_STATE_NONE for credential_id in scoped_ids}
+    for row in (*team_rows, *direct_rows):
+        credential_id, auth_state = _resource_auth_state_values(row)
+        credential_uuid = coerce_uuid(credential_id)
+        if credential_uuid not in result:
+            continue
+        result[credential_uuid] = stronger_resource_auth_state(
+            result[credential_uuid],
+            auth_state,
+        )
+    return result
+
+
 def has_mail_credential_permission(
     db: Session,
     user_id: Any,
@@ -711,6 +817,37 @@ def has_mail_credential_permission(
         organization_id=organization_id,
     )
     return mail_credential_auth_state_allows(auth_state, action)
+
+
+def _mail_credential_scope_values(row: Any) -> tuple[Any, str]:
+    mapping = getattr(row, "_mapping", None)
+    if mapping is not None:
+        return (
+            mapping.get("id"),
+            mapping.get("status", MAIL_CREDENTIAL_ACTIVE),
+        )
+    if isinstance(row, tuple):
+        return (
+            row[0] if row else None,
+            row[1] if len(row) >= 2 else MAIL_CREDENTIAL_ACTIVE,
+        )
+    return getattr(row, "id", row), getattr(
+        row,
+        "status",
+        MAIL_CREDENTIAL_ACTIVE,
+    )
+
+
+def _resource_auth_state_values(row: Any) -> tuple[Any, Any]:
+    mapping = getattr(row, "_mapping", None)
+    if mapping is not None:
+        return (
+            mapping.get("mail_credential_id"),
+            mapping.get("auth_state", AUTH_STATE_NONE),
+        )
+    if isinstance(row, tuple) and len(row) >= 2:
+        return row[0], row[1]
+    return None, AUTH_STATE_NONE
 
 
 def get_effective_knowledge_base_auth_state(

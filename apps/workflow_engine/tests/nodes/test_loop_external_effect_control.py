@@ -11,7 +11,17 @@ def test_loop_continue_does_not_turn_external_effect_error_into_output(monkeypat
             title="Loop",
             loop_key="items",
             error_strategy="continue",
-            subGraph={"nodes": [{"id": "placeholder"}], "edges": []},
+            subGraph={
+                "nodes": [
+                    {
+                        "id": "body",
+                        "type": "templateNode",
+                        "position": {"x": 0, "y": 0},
+                        "data": {},
+                    }
+                ],
+                "edges": [],
+            },
         ),
     )
 

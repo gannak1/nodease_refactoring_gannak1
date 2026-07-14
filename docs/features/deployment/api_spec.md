@@ -1,7 +1,7 @@
 # Deployment API Spec
 
 Status: Draft
-Verified Against: `feature/mba-234 @ 647913b9`
+Verified Against: `feature/mba-219 @ 5b1cf366`
 
 ## Endpoints
 
@@ -58,7 +58,7 @@ Conversation-capable target snapshot은 별도 server-derived metadata로 immuta
 
 Preview response uses `200 OK` even when blocked:
 
-When `is_active=false`, preview reflects inactive-save context by returning audience/lifecycle activation blockers as `status="warning"` while keeping safe reason codes and required actions. Malformed or over-limit Knowledge reference configuration and existing workflow-node structural errors remain blocked. Create with `is_active=true` and later activation/toggle use blocking `409` enforcement.
+`is_active=false` preview는 Knowledge audience/lifecycle activation blocker와 null unresolved 같은 실제 미완성 managed configuration을 safe reason/action이 있는 `status="warning"`으로 낮출 수 있다. Malformed 또는 over-limit Knowledge reference, non-null unavailable Mail credential, `node_configuration_invalid`, malformed graph, workflow-node structural error와 validator unavailable은 `status="blocked"`를 유지한다. `is_active=true` 생성과 이후 활성화/toggle은 blocking `409` enforcement를 사용한다.
 
 ```json
 {
@@ -132,13 +132,29 @@ MBA-233 Knowledge reason/action code는 다음과 같다.
 
 `knowledge_candidate_budget_limited`만 있는 preview는 `status="warning"`이며 active create를 차단하지 않는다. Runtime의 실제 candidate resolution이 current permission, membership, lifecycle, readiness, source policy와 dedupe를 다시 적용하므로 preflight boolean은 capability나 exact count가 아니다.
 
-Response는 hidden KB/Collection/child id, name, label, path, exact denied/member count, raw graph/source metadata, raw exception을 포함하지 않는다. Public graph projection은 root와 embedded subgraph의 두 Knowledge reference 배열도 제거한다.
+Response는 hidden KB/Collection/child id, name, label, path, exact denied/member count, raw graph/source metadata, Mail credential ID/name/email, Slack token/Webhook URL/channel/payload와 raw exception을 포함하지 않는다. Public graph projection은 root와 embedded subgraph의 두 Knowledge reference 배열도 제거한다.
+
+MBA-219 managed configuration reason/action은 다음 값을 추가한다.
+
+| Reason code | Required action |
+| --- | --- |
+| `node_configuration_unresolved` | `complete_node_configuration` |
+| `node_configuration_invalid` | `fix_node_configuration` |
+| `mail_credential_unavailable` | `select_available_mail_credential` |
+| `mail_execution_subject_required` | `use_authenticated_execution_surface` |
+| `mail_execution_subject_inherited` | `verify_parent_execution_subject` |
+| `node_configuration_validator_unavailable` | `remove_or_update_unsupported_node` |
+| `workflow_graph_invalid` | `fix_workflow_graph` |
+
+Missing, revoked, cross-organization과 permission-denied Mail credential은 `mail_credential_unavailable` 하나로 정규화한다. Non-null unavailable credential, `node_configuration_invalid`, `workflow_graph_invalid`, WorkflowNode target/cycle 오류와 `node_configuration_validator_unavailable`은 `is_active=false`에서도 blocked로 유지한다. `credential_id=null`은 `configuration_state=unresolved`인 경우 inactive warning 보존 대상이며, 구버전 Client node에서 상태 필드가 아예 없는 null reference도 같은 warning으로 호환한다. 명시적 null 상태는 invalid다. 최상위 graph는 명시적 trigger/start node 하나, Loop body는 incoming executable edge가 없는 실행 진입점 하나를 요구한다. 모든 node는 유한한 숫자 좌표의 `position`, 모든 edge는 비어 있지 않은 string `id`를 가져야 한다. Graph 상한은 최상위와 모든 Loop subgraph 합산 node 1,000개, edge 5,000개, subgraph depth 16이다.
 
 ### Create / Activation Blocking
 
 `POST /api/v1/deployments`에서 `is_active=true`이거나, `PATCH /api/v1/deployments/{deployment_id}/toggle`이 inactive deployment를 active로 바꾸는 경우 server-derived audience로 blocking preflight를 실행한다.
 
-`is_active=false` 생성은 저장 가능하지만 active deployment 교체, public URL 활성화, schedule job 생성 같은 실행 부작용을 만들지 않는다.
+`is_active=false` 생성은 null unresolved 등 허용된 warning만 저장할 수 있으며 active deployment 교체, public URL 활성화, schedule job 생성 같은 실행 부작용을 만들지 않는다. 임의 non-null UUID, revoked/cross-organization/permission-denied credential은 저장하지 않는다.
+
+`POST /api/v1/deployments/preflight` preview는 durable `permission.denied` audit을 만들지 않는다. Create/toggle enforcement에서 same-organization active credential의 `use` 거부가 확인되면 response에는 상세 원인을 노출하지 않고 resource별 audit을 정확히 한 번 기록한다.
 
 Public `type="chatbot"`은 항상 `public_chatbot` audience로 preflight하므로 private KB 후보가 있으면 activation이 차단된다. `internal_chatbot`은 public Chatbot audience를 완화하거나 login cookie를 public route에 선택적으로 붙이지 않고 별도 authenticated surface와 runtime/session namespace를 사용한다. Server-derived `authenticated_user` preflight는 private 여부만으로 차단하지 않지만 direct KB와 Collection의 organization/lifecycle/sync/retrieval readiness는 계속 조회하고, missing 또는 unavailable reference는 generic blocker로 닫는다.
 
@@ -147,6 +163,8 @@ Selected Collection 검사는 selected ID와 active organization으로 범위를
 Conversation Memory target activation은 explicit input/output mapping, node Memory policy, immutable deployment/snapshot binding, Memory contract/storage generation과 capable Worker routing을 함께 검사한다. Schedule/webhook/API batch, workflow-node direct run과 일반 authenticated deployment run은 target session을 암묵적으로 생성하지 않는다.
 
 Schedule records and scheduler jobs are created only for active `type="schedule"` deployments. A `scheduleTrigger` node inside any other deployment type, including `workflow_node`, does not create a schedule surface.
+
+Mail, Gmail Draft, Mail Acknowledge와 Slack node는 active create/toggle에서 같은 semantic validator registry를 사용한다. Public/API/webhook/schedule 같은 subject 없는 deployment type의 Mail node는 `mail_execution_subject_required`로 차단한다. `workflow_node` 자체는 activation actor의 Mail resource usability를 검사하고 parent execution subject 상속 warning을 반환할 수 있다. LLM, HTTP와 GitHub는 이번 범위에서 기존 runtime-authoritative 정책을 유지한다.
 
 ### Public Webhook Trigger Request
 
@@ -258,6 +276,8 @@ MBA-187은 public Schedule API request/response와 public claim 조회 endpoint�
 동일 occurrence는 deterministic Celery task id를 사용하지만 broker publish 자체는 at-least-once다. Worker가 claim을 `running`으로 admission한 경우에만 engine을 시작하며 duplicate delivery는 성공 응답을 새로 만들거나 workflow를 다시 실행하지 않는다. Admission 이후 outcome unknown은 자동 replay하지 않는다.
 
 Schedule 생성/활성화에서 cron expression 또는 timezone이 유효하지 않으면 safe `422 deployment.schedule_configuration_invalid`를 반환한다. Parser exception, timezone path 또는 raw configuration detail은 응답과 audit에 포함하지 않는다. Legacy invalid schedule은 background reconciliation에서 다른 schedule을 막지 않고 해당 row만 safe하게 격리한다.
+
+Pending claim의 canonical deployment graph가 configuration preflight에서 blocked이면 budget 평가와 broker publish 전에 claim을 `canceled`로 전이하고 `safe_reason_code="configuration_preflight_blocked"`를 기록한다. 기존 `schedule_dispatch.canceled` audit에는 같은 safe reason만 기록하며 node/resource 상세는 기록하지 않는다. Preflight infrastructure failure는 transaction을 rollback하고 claim을 설정 오류로 영구 취소하거나 task를 발행하지 않는다.
 
 Claim 조회, 상태 변경, outcome acknowledgment와 redrive는 public API로 노출하지 않는다. Outcome acknowledgment는 protected operational CLI/job이 application use case를 호출한다.
 

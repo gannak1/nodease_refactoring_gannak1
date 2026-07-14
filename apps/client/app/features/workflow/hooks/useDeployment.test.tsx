@@ -203,7 +203,7 @@ describe('useDeployment', () => {
     });
 
     expect(deploymentResult!.success).toBe(true);
-    expect(deploymentResult!.message).toContain('배포 전 검사 경고');
+    expect(deploymentResult!.message).toContain('실행 준비 검사 경고');
     expect(deploymentResult!.message).toContain('최대 후보 수');
     expect(mockedWorkflowApi.createDeployment).toHaveBeenCalledTimes(1);
   });

@@ -12,6 +12,7 @@ from apps.shared.domain.schedule_dispatch import (
     MODE_DRAIN,
     REASON_BROKER_ENQUEUE_FAILED,
     REASON_BUDGET_BLOCKED,
+    REASON_CONFIGURATION_PREFLIGHT_BLOCKED,
     REASON_EXECUTION_OUTCOME_UNKNOWN,
     RESOLUTION_CONFIRMED_COMPLETED,
     SCHEDULE_CONFIGURATION_INVALID,
@@ -147,6 +148,19 @@ def test_configuration_quarantine_code_is_allowlisted():
 def test_claim_state_requires_claimed_at():
     with pytest.raises(ScheduleDispatchDomainError, match="claimed_at is required"):
         _state(claimed_at=None).validate()
+
+
+def test_configuration_preflight_reason_is_valid_only_for_canceled_claim():
+    _state(
+        status=STATUS_CANCELED,
+        safe_reason_code=REASON_CONFIGURATION_PREFLIGHT_BLOCKED,
+        completed_at=NOW,
+    ).validate()
+
+    with pytest.raises(ScheduleDispatchDomainError, match="invalid pending reason"):
+        _state(
+            safe_reason_code=REASON_CONFIGURATION_PREFLIGHT_BLOCKED,
+        ).validate()
 
 
 @pytest.mark.parametrize(

@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { nodeTypes } from '../components/nodes';
-import { getImplementedNodes } from './nodeRegistry';
+import { getImplementedNodes, getNodeDefinition } from './nodeRegistry';
 
 type CatalogNode = {
   node_type: string;
@@ -46,5 +46,14 @@ describe('workflow node capability catalog', () => {
     expect(sorted(builderTypes)).toEqual(
       sorted(implementedTypes.filter((nodeType) => nodeType !== 'loopNode')),
     );
+  });
+
+  it('creates an explicitly unresolved Mail draft before credential selection', () => {
+    const data = getNodeDefinition('mail')?.defaultData();
+
+    expect(data).toMatchObject({
+      credential_id: null,
+      configuration_state: 'unresolved',
+    });
   });
 });

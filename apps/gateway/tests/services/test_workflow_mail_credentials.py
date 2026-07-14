@@ -63,6 +63,34 @@ def test_unresolved_mail_reference_can_be_saved_for_preview():
     db.query.assert_not_called()
 
 
+def test_legacy_unresolved_mail_reference_without_state_remains_draft_compatible():
+    db = MagicMock()
+    request = _request(
+        {
+            "title": "Mail",
+            "credential_id": None,
+        }
+    )
+
+    WorkflowService.validate_mail_credential_references(
+        db,
+        request,
+        user_id=str(uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    db.query.assert_not_called()
+    with pytest.raises(HTTPException) as exc:
+        WorkflowService.validate_mail_credential_references(
+            db,
+            request,
+            user_id=str(uuid.uuid4()),
+            organization_id=uuid.uuid4(),
+            require_resolved=True,
+        )
+    assert exc.value.detail == "mail.credential_reference_required"
+
+
 def test_deployment_validation_rejects_unresolved_mail_reference():
     with pytest.raises(HTTPException) as exc:
         WorkflowService.validate_mail_credential_references(
@@ -336,9 +364,7 @@ def _durable_draft_graph(credential_id: uuid.UUID) -> dict:
                         "mail-source",
                         "processing_ref",
                     ],
-                    "required_effect_ref_selectors": [
-                        ["draft-effect", "draft_ref"]
-                    ],
+                    "required_effect_ref_selectors": [["draft-effect", "draft_ref"]],
                 },
             },
         ],

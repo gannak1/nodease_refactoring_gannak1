@@ -4,6 +4,8 @@ import uuid
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from apps.gateway.application.deployment.schedule_dispatch import (
     ScheduleDispatchUseCase,
 )
@@ -19,6 +21,7 @@ from apps.shared.domain.deployment_runtime_policy import (
 )
 from apps.shared.domain.schedule_dispatch import (
     MODE_CLAIM,
+    REASON_CONFIGURATION_PREFLIGHT_BLOCKED,
     REASON_ENQUEUE_ATTEMPTS_EXHAUSTED,
     REASON_ORGANIZATION_SCOPE_MISMATCH,
     ScheduleDispatchSettings,
@@ -50,6 +53,7 @@ def _context(claim, **overrides):
         "deployment_type": DeploymentType.SCHEDULE,
         "deployment_active": True,
         "deployment_current": True,
+        "graph_snapshot": {"nodes": [], "edges": []},
     }
     values.update(overrides)
     return DispatchCanonicalContext(**values)
@@ -132,9 +136,21 @@ class _Repository:
 class _Budget:
     def __init__(self, status="allowed"):
         self.status = status
+        self.calls = []
 
     def evaluate(self, **kwargs):
+        self.calls.append(kwargs)
         return BudgetExecutionDecision(status=self.status)
+
+
+class _ConfigurationPreflight:
+    def __init__(self, ready=True):
+        self.ready = ready
+        self.calls = []
+
+    def is_ready(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.ready
 
 
 class _Audit:
@@ -169,6 +185,7 @@ def test_valid_claim_is_leased_and_prepared_for_deterministic_publish():
     requests = _use_case().prepare_publish_batch(
         repository=repository,
         budget=_Budget(),
+        configuration_preflight=_ConfigurationPreflight(),
         audit=_Audit(),
         uow=_Uow(),
         owner="opaque-owner",
@@ -198,6 +215,7 @@ def test_dispatch_lease_uses_fresh_db_clock_after_budget_evaluation():
     _use_case().prepare_publish_batch(
         repository=repository,
         budget=_Budget(),
+        configuration_preflight=_ConfigurationPreflight(),
         audit=_Audit(),
         uow=_Uow(),
         owner="opaque-owner",
@@ -219,6 +237,7 @@ def test_canonical_organization_mismatch_cancels_before_publish():
     requests = _use_case().prepare_publish_batch(
         repository=repository,
         budget=_Budget(),
+        configuration_preflight=_ConfigurationPreflight(),
         audit=audit,
         uow=_Uow(),
         owner="opaque-owner",
@@ -237,6 +256,7 @@ def test_budget_unavailable_is_not_published():
     requests = _use_case().prepare_publish_batch(
         repository=repository,
         budget=_Budget("unavailable"),
+        configuration_preflight=_ConfigurationPreflight(),
         audit=audit,
         uow=_Uow(),
         owner="opaque-owner",
@@ -257,6 +277,7 @@ def test_budget_block_records_canonical_policy_audit():
     requests = _use_case().prepare_publish_batch(
         repository=repository,
         budget=_Budget("blocked"),
+        configuration_preflight=_ConfigurationPreflight(),
         audit=audit,
         uow=_Uow(),
         owner="opaque-owner",
@@ -280,6 +301,7 @@ def test_pending_claim_at_attempt_limit_is_dead_lettered_without_publish():
     requests = _use_case().prepare_publish_batch(
         repository=repository,
         budget=_Budget(),
+        configuration_preflight=_ConfigurationPreflight(),
         audit=audit,
         uow=_Uow(),
         owner="opaque-owner",
@@ -304,6 +326,7 @@ def test_final_budget_unavailable_attempt_is_dead_lettered_at_exact_limit():
     requests = _use_case().prepare_publish_batch(
         repository=repository,
         budget=_Budget("unavailable"),
+        configuration_preflight=_ConfigurationPreflight(),
         audit=audit,
         uow=_Uow(),
         owner="opaque-owner",
@@ -321,13 +344,18 @@ def test_final_budget_unavailable_attempt_is_dead_lettered_at_exact_limit():
 def test_publish_result_is_recorded_in_separate_transaction():
     claim = _claim()
     repository = _Repository(claim, _context(claim))
-    request = _use_case().prepare_publish_batch(
-        repository=repository,
-        budget=_Budget(),
-        audit=_Audit(),
-        uow=_Uow(),
-        owner="opaque-owner",
-    ).requests[0]
+    request = (
+        _use_case()
+        .prepare_publish_batch(
+            repository=repository,
+            budget=_Budget(),
+            configuration_preflight=_ConfigurationPreflight(),
+            audit=_Audit(),
+            uow=_Uow(),
+            owner="opaque-owner",
+        )
+        .requests[0]
+    )
     result_uow = _Uow()
 
     result = _use_case().record_publish_result(
@@ -361,13 +389,18 @@ def test_publish_deadline_clock_is_read_after_claim_lock():
             return super().record_publish_accepted(**kwargs)
 
     repository = _OrderedRepository(claim, _context(claim))
-    request = _use_case().prepare_publish_batch(
-        repository=repository,
-        budget=_Budget(),
-        audit=_Audit(),
-        uow=_Uow(),
-        owner="opaque-owner",
-    ).requests[0]
+    request = (
+        _use_case()
+        .prepare_publish_batch(
+            repository=repository,
+            budget=_Budget(),
+            configuration_preflight=_ConfigurationPreflight(),
+            audit=_Audit(),
+            uow=_Uow(),
+            owner="opaque-owner",
+        )
+        .requests[0]
+    )
     events.clear()
 
     _use_case().record_publish_result(
@@ -378,6 +411,68 @@ def test_publish_deadline_clock_is_read_after_claim_lock():
     )
 
     assert events == ["lock", "clock", "accepted"]
+
+
+def test_configuration_preflight_block_cancels_before_budget_and_publish():
+    claim = _claim()
+    context = _context(claim)
+    repository = _Repository(claim, context)
+    preflight = _ConfigurationPreflight(ready=False)
+    budget = _Budget()
+    audit = _Audit()
+
+    batch = _use_case().prepare_publish_batch(
+        repository=repository,
+        budget=budget,
+        configuration_preflight=preflight,
+        audit=audit,
+        uow=_Uow(),
+        owner="opaque-owner",
+    )
+
+    assert batch.requests == ()
+    assert budget.calls == []
+    assert repository.dispatching == []
+    assert repository.terminal[0][1]["reason"] == (
+        REASON_CONFIGURATION_PREFLIGHT_BLOCKED
+    )
+    assert audit.events[0] == {
+        "organization_id": claim.organization_id,
+        "claim_id": claim.claim_id,
+        "action": "schedule_dispatch.canceled",
+        "reason": REASON_CONFIGURATION_PREFLIGHT_BLOCKED,
+    }
+    assert preflight.calls == [
+        {
+            "graph_snapshot": context.graph_snapshot,
+            "organization_id": claim.organization_id,
+        }
+    ]
+
+
+def test_configuration_preflight_infrastructure_failure_rolls_back():
+    claim = _claim()
+    repository = _Repository(claim, _context(claim))
+    uow = _Uow()
+
+    class _FailingPreflight:
+        def is_ready(self, **kwargs):
+            raise RuntimeError("preflight unavailable")
+
+    with pytest.raises(RuntimeError, match="preflight unavailable"):
+        _use_case().prepare_publish_batch(
+            repository=repository,
+            budget=_Budget(),
+            configuration_preflight=_FailingPreflight(),
+            audit=_Audit(),
+            uow=uow,
+            owner="opaque-owner",
+        )
+
+    assert uow.commits == 0
+    assert uow.rollbacks == 1
+    assert repository.dispatching == []
+    assert repository.terminal == []
 
 
 def test_terminal_publish_failure_returns_dead_letter_reason():
@@ -432,10 +527,13 @@ def test_critical_recovery_scans_delivery_and_execution_deadlines():
     assert recovery.enqueue_attempts_exhausted == 0
     assert recovery.execution_outcome_unknown == 2
 
-    assert _use_case().cleanup_terminal_claims(
-        repository=repository,
-        uow=_Uow(),
-    ) == 3
+    assert (
+        _use_case().cleanup_terminal_claims(
+            repository=repository,
+            uow=_Uow(),
+        )
+        == 3
+    )
 
 
 def test_recovery_reports_each_missing_workflow_run_once_without_replay():

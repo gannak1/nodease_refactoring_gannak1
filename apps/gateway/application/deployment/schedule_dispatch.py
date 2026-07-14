@@ -12,6 +12,7 @@ from apps.gateway.application.deployment.schedule_models import (
 )
 from apps.gateway.application.deployment.schedule_ports import (
     BudgetDecisionPort,
+    ScheduleConfigurationPreflightPort,
     ScheduleDispatchAuditRecorderPort,
     ScheduleDispatchRepositoryPort,
     ScheduleDispatchUnitOfWork,
@@ -25,6 +26,7 @@ from apps.shared.domain.schedule_dispatch import (
     REASON_APP_NOT_FOUND,
     REASON_BUDGET_BLOCKED,
     REASON_BUDGET_EVALUATION_FAILED,
+    REASON_CONFIGURATION_PREFLIGHT_BLOCKED,
     REASON_DEPLOYMENT_INACTIVE,
     REASON_DEPLOYMENT_NOT_CURRENT,
     REASON_DEPLOYMENT_NOT_FOUND,
@@ -58,6 +60,7 @@ class ScheduleDispatchUseCase:
         *,
         repository: ScheduleDispatchRepositoryPort,
         budget: BudgetDecisionPort,
+        configuration_preflight: ScheduleConfigurationPreflightPort,
         audit: ScheduleDispatchAuditRecorderPort,
         uow: ScheduleDispatchUnitOfWork,
         owner: str,
@@ -88,6 +91,25 @@ class ScheduleDispatchUseCase:
                         claim_id=claim.claim_id,
                         action="schedule_dispatch.canceled",
                         reason=reason,
+                    )
+                    continue
+
+                if not configuration_preflight.is_ready(
+                    graph_snapshot=context.graph_snapshot,
+                    organization_id=claim.organization_id,
+                ):
+                    transition_now = repository.database_now()
+                    repository.mark_pre_dispatch_terminal(
+                        claim,
+                        status=STATUS_CANCELED,
+                        reason=REASON_CONFIGURATION_PREFLIGHT_BLOCKED,
+                        now=transition_now,
+                    )
+                    audit.record_policy_result(
+                        organization_id=claim.organization_id,
+                        claim_id=claim.claim_id,
+                        action="schedule_dispatch.canceled",
+                        reason=REASON_CONFIGURATION_PREFLIGHT_BLOCKED,
                     )
                     continue
 

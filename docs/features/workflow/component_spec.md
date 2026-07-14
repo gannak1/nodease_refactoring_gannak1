@@ -1,7 +1,7 @@
 # Workflow Component Spec
 
 Status: Draft
-
+Verified Against: `feature/mba-219 @ 5b1cf366`
 
 ## Condition Exit Layout
 
@@ -87,6 +87,16 @@ Main generation과 Memory summary provider adapter는 Workflow admission 안에�
 - frontend validation은 legacy HTTP 설정을 migration 경고로 표시하고 모든 `*_selector`/`*_selectors` 실행 필드의 제거된 output은 오류로 차단한다. 사용자의 명시 migration command 없이는 legacy field를 제거하거나 active snapshot을 바꾸지 않는다. Backend draft save는 과거 selector를 보존할 수 있지만 deployment validation은 제거된 `data`/`headers` 및 Webhook `message_ref` selector를 차단하며, 기존 active snapshot은 runtime에서 safe migration-required error로 종료한다.
 - Agent Builder preview/apply path는 dedicated Slack config와 `delivery_status` downstream selector만 생성한다. frontend와 backend deployment validation은 제거된 selector를 fail-closed한다.
 - execution logger는 Slack node의 raw configuration, request, response, `message_ref` 원문과 error cause를 기록하지 않는다. 별도 Slack observer나 ledger를 두지 않고 공통 external-effect attempt가 중첩 실행, Loop error propagation, terminal result reuse와 no-replay를 소유한다.
+
+### Configuration Preflight
+
+- Deployment preflight application의 node validator registry가 Mail/Gmail Draft/Mail Acknowledge/Slack semantic readiness를 소유한다. Workflow endpoint, `WorkflowService`와 Client component에 같은 execution readiness 규칙을 복제하지 않는다.
+- Catalog loader는 Gateway composition에서 immutable node side-effect mapping을 만들고 application use case에 주입한다. Application은 catalog 파일/loader, FastAPI, SQLAlchemy와 concrete service를 import하지 않는다.
+- Repository adapter는 Mail credential을 organization-scoped active resource, provider/auth type, current principal `use` boolean과 enforcing deny 감사에 필요한 내부 effective auth state만 가진 snapshot으로 변환한다. Secret, email, display name, endpoint와 ciphertext는 application model에 들어가지 않으며 내부 auth state는 public preflight projection에 포함하지 않는다.
+- Shared graph validator가 최상위의 명시적 trigger/start 진입점과 Loop body의 단일 implicit 진입점을 포함한 structural contract를 소유하고 endpoint, preflight와 Loop runtime이 같은 판정을 사용한다. Mail permission adapter는 organization 상태와 direct/team grant를 bulk 조회한다.
+- Preview는 audit port를 호출하지 않는다. Enforcing use case만 내부 same-organization permission-denial decision을 audit port에 전달하고 public preflight projection에는 resource identity나 effective state를 넣지 않는다.
+- Test Sidebar는 stream 시작 전 `409 workflow.configuration_preflight.blocked` 응답의 safe required action label을 표시한다. Generic 실행 실패 문구만 표시하거나 raw response object를 렌더링하지 않는다.
+- Compare와 Cost Optimizer는 base graph preflight가 blocked이면 variant/candidate publisher를 시작하지 않는다. 정상 graph의 기존 결과 projection은 유지한다.
 
 ### Mail Credential 설정
 
@@ -182,6 +192,7 @@ Main generation과 Memory summary provider adapter는 Workflow admission 안에�
 - `success`: 전체 실행 성공 상태. 테스트 실행 사이드바는 마지막 실행 결과와 전체 요약을 유지한다.
 - `failure`: 전체 실행 실패 상태. 실패한 노드가 식별되면 해당 노드를 실패로 표시하고, 전체 실패 상태를 함께 표시한다.
 - `uploading/preflight`: 파일 업로드, 그래프 검증, 드래프트 저장 중에는 테스트 실행 준비 상태로 본다.
+- Configuration preflight 차단은 기존 failure 상태를 사용하되 서버가 제공한 safe 설정 보완 action을 오류 문구로 표시한다. Task/SSE가 시작된 것으로 표현하거나 별도 실행 결과를 만들지 않는다.
 
 ### 2. 노드 조작 편의성
 

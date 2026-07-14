@@ -1,7 +1,7 @@
 # Deployment Component Spec
 
 Status: Draft
-Verified Against: `feature/mba-234 @ 647913b9`
+Verified Against: `feature/mba-219 @ 5b1cf366`
 
 ## Screens
 
@@ -16,6 +16,7 @@ Verified Against: `feature/mba-234 @ 647913b9`
 - If preview returns `warning`, deployment creation continues. The successful deployment result carries only the formatted safe warning, and `SuccessStep` displays it in an amber text banner with `role="status"`.
 - Collection preflight copy may show affected Collection count bucket and candidate-budget-limited boolean. It never renders selected Collection/child identifiers, labels, membership, or exact hidden counts.
 - Existing activation toggle controls surface `deployment.preflight.blocked` responses without showing hidden KB identity.
+- `DeploymentFlowModal`과 activation toggle은 기존 preflight response에서 MBA-219의 generic node reason/action을 함께 표시한다. Mail credential identity, Slack token/Webhook URL/channel/payload와 raw configuration은 렌더링하지 않는다.
 - Active delete controls do not need preflight display in MBA-176 because delete no longer auto-promotes another deployment.
 - 게시하기 메뉴는 공개 `chatbot`과 `internal_chatbot`을 별도 항목으로 제공한다.
 - `SuccessStep`은 공개 챗봇에는 `/embed/chat/{url_slug}` 링크만, 내부 챗봇에는 `/modules/{workflow_id}/run?deploymentId={deployment_id}` 인증 링크만 표시한다. 내부 챗봇 결과에는 public REST API secret/test panel을 표시하지 않는다.
@@ -36,6 +37,7 @@ Verified Against: `feature/mba-234 @ 647913b9`
 - `SchedulerService`는 periodic tick lifecycle만 담당하는 inbound adapter다.
 - Deployment application의 occurrence/dispatch use case가 claim, budget decision, next-run advancement, audit와 publish state transition을 조율한다.
 - Existing `apps/gateway/composition/deployment.py`가 preflight와 분리된 schedule dispatch builder로 SQLAlchemy repository/UnitOfWork, schedule audit recorder, next-fire calculator와 Celery publisher를 주입한다.
+- MBA-219 schedule dependency builder는 같은 DB session의 configuration preflight port를 추가로 주입한다. Schedule application use case는 deployment preflight concrete class를 import하지 않고 canonical graph snapshot과 organization만 port에 전달한다.
 - Workflow Engine Celery task는 claim locator를 application use case로 전달하고 result를 task outcome으로 mapping한다. `apps/workflow_engine/composition/schedule_dispatch.py`가 DB adapter, audit, runtime policy use case와 engine 생성을 조립하며 task 본문은 세션 수명과 단계 호출만 담당한다.
 - Public claim 조회/redrive UI는 제공하지 않는다. Outcome unknown acknowledgment는 protected operational job/CLI에서만 수행한다.
 - 기존 deployment list/modal은 claim status나 idempotency key를 사용자에게 표시하지 않는다.
@@ -52,6 +54,7 @@ Verified Against: `feature/mba-234 @ 647913b9`
 - Coordinated rollout은 동일 commit의 Log System image를 migration 이후, schedule claim admission 이전에 배포·검증한다. `disabled` 최초 도입에 한해서만 기존 Gateway/Worker Deployment의 fingerprint annotation 누락을 bootstrap으로 취급한다.
 - Helm/raw Kubernetes manifest는 mode와 모든 dispatch batch/lease/deadline/retry/retention 값을 포함한 canonical `nodease.io/schedule-dispatch-fingerprint` pod annotation을 기록하고 Downward API로 `SCHEDULE_DISPATCH_MODE_FINGERPRINT`를 주입한다. `claim`/`drain` process는 fingerprint가 없거나 실제 전체 설정과 다르면 fail-fast한다. Docker Compose는 같은 canonical 값을 직접 주입한다.
 - Scheduler tick은 critical recovery, occurrence claim, pending dispatch를 먼저 수행한다. WorkflowRun visibility와 terminal cleanup은 각각 독립 UnitOfWork의 optional maintenance로 실행되어 실패가 dispatch를 중단하지 않는다.
+- Pending dispatch는 canonical deployment/type/current-pointer 검증 뒤 configuration preflight를 budget보다 먼저 수행한다. Known blocker는 같은 UoW에서 `canceled + configuration_preflight_blocked`와 기존 canceled audit을 기록하고 publish batch에 넣지 않는다. Adapter/infrastructure exception은 UoW를 rollback해 fail-open을 막는다.
 - `disabled`에서는 critical dispatch를 실행하지 않지만 schema-ready 환경의 visibility, retention cleanup과 pending/running age signal은 계속 실행한다.
 - Coordinated production rollout은 mutable commit tag를 deployment identity로 사용하지 않는다. 기존 tag digest를 재사용하거나 신규 push digest를 확정한 뒤 Logger/Gateway/Worker manifest를 `repository@sha256`로 렌더링하고 실제 container imageID까지 검증한다.
 - Schedule Celery publisher/task는 `ignore_result`를 사용하고 workflow output, RAG evidence, sync 상세를 result backend에 저장하지 않는다.
@@ -75,8 +78,10 @@ Verified Against: `feature/mba-234 @ 647913b9`
 
 - Preview endpoint의 blocked response는 API 오류가 아니라 검사 결과로 처리하며, active create 요청을 보내지 않는다.
 - Preview endpoint의 warning response는 active create를 계속하고 성공 결과에 safe warning text를 결합한다. Candidate budget warning을 배포 실패로 바꾸지 않는다.
-- `is_active=false` 저장은 blocked preview가 있더라도 허용할 수 있지만, 현재 deployment modal은 active create만 제공한다.
+- `is_active=false` 저장은 허용된 Knowledge activation warning과 null unresolved managed configuration warning을 보존할 수 있다. Non-null unavailable Mail credential, malformed graph, workflow-node structural 오류와 unsupported external validator처럼 inactive에서도 blocked인 결과는 저장하지 않는다. 현재 deployment modal은 active create만 제공한다.
 - Active create 또는 activation toggle에서 `409 deployment.preflight.blocked`가 오면 error/blocked message로 safe reason과 required actions를 보여준다.
+- Inactive preview는 null unresolved Mail/Slack configuration을 warning으로 표시하고 active create/toggle은 같은 문제를 blocked로 표시한다. Non-null unavailable credential, malformed graph와 unsupported external node는 inactive에서도 blocked로 표시한다.
+- Shared graph validator는 endpoint, preflight와 Loop runtime이 최상위의 명시적 trigger/start 및 Loop body의 단일 implicit 진입점을 포함한 같은 structural contract를 사용하게 한다. Mail resource adapter는 bulk permission decision을 사용하며, preview는 무감사이고 enforcing facade는 확인된 same-organization permission denial을 정확히 한 번 감사한다.
 - Workflow-node 대상은 node 설정의 target app 기준으로 검사된다는 점을 내부 상태에서 유지한다. UI copy는 workflow id나 hidden target identity를 노출하지 않는다.
 - 내부 실행 페이지가 `401`을 받으면 현재 path/query/hash를 safe `next`로 보존해 로그인 화면으로 이동한다. 이메일/비밀번호 로그인만 same-origin `next`로 복귀하며 unsafe URL은 `/dashboard`로 닫는다.
 

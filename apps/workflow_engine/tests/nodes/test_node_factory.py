@@ -2,6 +2,8 @@
 NodeFactory 테스트: 노드가 올바르게 생성되는지 검증 [GEVENT] Sync 버전
 """
 
+import uuid
+
 import pytest
 
 from apps.shared.schemas.workflow import NodeSchema, Position
@@ -32,6 +34,31 @@ def test_factory_creates_start_node():
     assert node.data.trigger_type == "manual"
     assert node.status == NodeStatus.IDLE
     assert node.node_type == "startNode"
+
+
+def test_factory_accepts_validated_mail_ui_metadata_without_runtime_fields():
+    credential_id = uuid.uuid4()
+    schema = NodeSchema(
+        id="mail-1",
+        type="mailNode",
+        position=Position(x=0, y=0),
+        data={
+            "title": "Mail",
+            "credential_id": str(credential_id),
+            "configuration_state": "resolved",
+            "folder": "INBOX",
+            "max_results": 10,
+            "unread_only": True,
+            "displayNumber": 2,
+            "visibleProperties": ["credential_id", "folder"],
+        },
+    )
+
+    node = NodeFactory.create(schema)
+
+    assert node.data.credential_id == credential_id
+    assert not hasattr(node.data, "displayNumber")
+    assert not hasattr(node.data, "visibleProperties")
 
 
 def test_factory_raises_error_for_unimplemented_node():

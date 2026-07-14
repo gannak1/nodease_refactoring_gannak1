@@ -29,6 +29,7 @@ class KnowledgeDeploymentPreflightService:
         db: Session,
         *,
         organization_id: uuid.UUID | None,
+        principal_id: uuid.UUID | None = None,
         candidate_graphs_by_app_id: dict[uuid.UUID, dict] | None = None,
         candidate_deployment_types_by_app_id: dict[
             uuid.UUID, DeploymentType
@@ -43,6 +44,7 @@ class KnowledgeDeploymentPreflightService:
         self.use_case = build_deployment_preflight_use_case(
             db,
             organization_id=organization_id,
+            principal_id=principal_id,
             candidate_graphs_by_app_id=candidate_graphs_by_app_id,
             candidate_deployment_types_by_app_id=candidate_types,
         )
@@ -75,22 +77,71 @@ class KnowledgeDeploymentPreflightService:
                 graph_snapshot=graph_snapshot,
             )
         except DeploymentPreflightBlocked as exc:
-            response = _response_schema(exc.result)
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error": {
-                        "code": "deployment.preflight.blocked",
-                        "message": "Deployment preflight blocked activation",
-                        "reason_code": response.safe_summary.blocked_reason,
-                        "required_actions": [
-                            action.action for action in response.required_actions
-                        ],
-                        "preflight": response.model_dump(mode="json"),
-                    }
-                },
-            ) from exc
+            self._raise_http_blocked(
+                exc,
+                code="deployment.preflight.blocked",
+                message="Deployment preflight blocked activation",
+            )
         return _response_schema(result)
+
+    def enforce_inactive_save(
+        self,
+        *,
+        deployment_type: DeploymentType,
+        graph_snapshot: dict,
+    ) -> DeploymentPreflightResponse:
+        try:
+            result = self.use_case.enforce_inactive_save(
+                deployment_type=_deployment_type_value(deployment_type),
+                graph_snapshot=graph_snapshot,
+            )
+        except DeploymentPreflightBlocked as exc:
+            self._raise_http_blocked(
+                exc,
+                code="deployment.preflight.blocked",
+                message="Deployment preflight blocked inactive save",
+            )
+        return _response_schema(result)
+
+    def enforce_authenticated_run(
+        self,
+        *,
+        graph_snapshot: dict,
+    ) -> DeploymentPreflightResponse:
+        try:
+            result = self.use_case.enforce_authenticated_run(
+                graph_snapshot=graph_snapshot,
+            )
+        except DeploymentPreflightBlocked as exc:
+            self._raise_http_blocked(
+                exc,
+                code="workflow.configuration_preflight.blocked",
+                message="Workflow configuration preflight blocked execution",
+            )
+        return _response_schema(result)
+
+    @staticmethod
+    def _raise_http_blocked(
+        exc: DeploymentPreflightBlocked,
+        *,
+        code: str,
+        message: str,
+    ) -> None:
+        response = _response_schema(exc.result)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": {
+                    "code": code,
+                    "message": message,
+                    "reason_code": response.safe_summary.blocked_reason,
+                    "required_actions": [
+                        action.action for action in response.required_actions
+                    ],
+                    "preflight": response.model_dump(mode="json"),
+                }
+            },
+        ) from exc
 
     @staticmethod
     def server_derived_audience(

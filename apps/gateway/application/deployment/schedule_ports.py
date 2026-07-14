@@ -191,6 +191,15 @@ class BudgetDecisionPort(Protocol):
     ) -> BudgetExecutionDecision: ...
 
 
+class ScheduleConfigurationPreflightPort(Protocol):
+    def is_ready(
+        self,
+        *,
+        graph_snapshot: dict | None,
+        organization_id: uuid.UUID,
+    ) -> bool: ...
+
+
 class ScheduleDispatchAuditRecorderPort(Protocol):
     def record_budget_block(
         self,

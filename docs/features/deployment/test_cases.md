@@ -1,7 +1,7 @@
 # Deployment Test Cases
 
 Status: Draft
-Verified Against: `feature/mba-234 @ 647913b9`
+Verified Against: `feature/mba-219 @ 5b1cf366`
 
 ## Unit Tests
 
@@ -12,6 +12,9 @@ Verified Against: `feature/mba-234 @ 647913b9`
 - Selected Collection repository projection은 selected IDs, active organization, active lifecycle, `sync_state != source_deleted`로 제한하고 same-organization active/retrieval-visible KB aggregate만 계산한다. Direct KB preflight도 retrieval-visible completed chunk가 없는 KB를 generic unavailable로 처리한다. Child ID를 application result로 반환하거나 Collection별 N+1 query를 만들지 않는다.
 - Anonymous-public preflight는 private Collection과 source-managed Collection/member를 fail-closed하고, public manual Collection은 통과시킨다. Missing/inactive/cross-org는 하나의 generic unavailable code로 처리한다.
 - Candidate budget 가능성은 bucket/boolean warning으로만 반환되고 active create를 차단하지 않는다. Client success step은 warning을 text status로 표시한다.
+- MBA-219 node configuration evaluator는 FastAPI, SQLAlchemy, concrete service와 catalog loader를 import하지 않고 composition이 주입한 immutable node side-effect mapping과 resource snapshot port만 사용한다.
+- Mail/Gmail Draft/Mail Acknowledge/Slack은 managed validator, LLM/HTTP/GitHub는 runtime-authoritative로 명시된다. External node가 registry에 없거나 `implemented=false`이면 실행 표면에서 `node_configuration_validator_unavailable`로 차단한다.
+- 최상위 graph와 다단계 Loop `subGraph`, WorkflowNode target graph의 managed node를 같은 audience/principal로 검사한다. Malformed nested graph와 nesting 한도 초과는 `workflow_graph_invalid`로 차단한다.
 - Runtime audience resolver는 `api`, `webapp`, `widget`, `chatbot`, `mcp`, `schedule`, `webhook`를 anonymous public-only로 판정한다.
 - `internal_chatbot`은 authenticated run/run-info surface에서만 허용하고 public info와 public app run surface에서는 fail-closed로 거부한다.
 - `internal_chatbot` preflight는 server-derived audience를 `authenticated_user`로 판정하며 private KB 참조만으로 활성 배포를 차단하지 않는다. 다만 repository를 조회해 direct KB와 Collection의 organization/lifecycle/sync/retrieval readiness를 검증하고 unavailable reference는 차단한다.
@@ -33,10 +36,17 @@ Verified Against: `feature/mba-234 @ 647913b9`
 ## API Tests
 
 - `POST /api/v1/deployments/preflight`는 blocked 결과도 `200 OK`와 `status="blocked"`로 반환한다.
-- `POST /api/v1/deployments/preflight` with `is_active=false`는 inactive 저장 context를 반영해 활성화 blocker를 `status="warning"`으로 반환하되 required action은 유지한다.
+- `POST /api/v1/deployments/preflight` with `is_active=false`는 null unresolved blocker만 `status="warning"`으로 반환하되 required action은 유지한다. Non-null unavailable credential과 structural blocker는 `status="blocked"`다.
+- Client Mail node 기본 데이터는 `credential_id=null`과 `configuration_state=unresolved`를 함께 생성한다. 이 형태의 draft 저장은 허용하지만 credential을 선택하기 전 실행·활성화는 configuration preflight에서 차단한다. 구버전 Client가 만든 null Mail node는 상태 필드가 없어도 draft 저장과 inactive warning이 가능하지만 명시적 null 상태는 invalid다.
 - `POST /api/v1/deployments` with `is_active=true`는 private KB가 anonymous/public 실행 surface에 포함되면 `409 deployment.preflight.blocked`를 반환한다.
 - `POST /api/v1/deployments` with `is_active=false`는 같은 graph를 저장할 수 있지만 active deployment 교체, public URL 활성화, schedule job 생성을 하지 않는다.
 - Inactive deployment activation/toggle은 private KB preflight 실패 시 `409 deployment.preflight.blocked`를 반환한다.
+- Active create/toggle은 unresolved/invalid Mail 또는 Slack, unavailable Mail credential, subject 없는 Mail surface를 기존 `409 deployment.preflight.blocked` envelope으로 차단하며 task/schedule/active-pointer side effect를 만들지 않는다.
+- `is_active=false` preview/create는 null unresolved configuration과 상태 필드가 누락된 구버전 null Mail node만 warning으로 보존한다. Slack unresolved와 다른 legacy selector invalid가 함께 있으면 두 issue를 모두 유지하고 blocked한다. Invalid Mail/Slack 조합, 임의 non-null UUID, revoked/cross-organization/permission-denied credential, malformed graph와 validator unavailable은 blocked로 유지한다.
+- Missing/revoked/cross-organization/permission-denied Mail credential은 모두 `mail_credential_unavailable`이며 response에 credential ID/name/email과 permission 상세가 없다.
+- Node `position` 누락·잘못된 좌표와 edge `id` 누락·빈 값, dangling edge, cycle, duplicate node ID, 진입점 오류와 고립 실행 node는 최상위와 Loop subgraph에서 `workflow_graph_invalid`로 차단되고 inactive deployment row와 task를 만들지 않는다. 최상위 graph는 명시적 trigger/start 하나를 요구하고 Loop body는 별도 trigger 없이 incoming executable edge가 없는 실행 진입점 하나를 허용한다. 합산 node 1,000개, edge 5,000개와 depth 16 경계는 통과하며 각각 1개 초과하면 같은 reason으로 차단한다.
+- Preview permission denial은 audit 0건이며 create/toggle enforcement의 same-organization denial은 resource별 `permission.denied` 정확히 1건이다.
+- 여러 Mail credential preflight는 scalar permission과 같은 결과를 내고 organization/user/membership query를 credential마다 반복하지 않는다. Scalar/bulk 모두 revoked credential의 잔존 grant를 운영 권한으로 집계하지 않는다.
 - Active deployment delete는 다른 deployment를 자동 active로 승격하지 않는다.
 - Public/API run endpoint, webhook endpoint, authenticated deployment run/run-info endpoint는 `workflow_node` active deployment를 직접 실행하거나 실행 정보를 노출하지 않는다.
 - Public info와 public/API slug run은 `App.active_deployment_id`가 가리키는 deployment의 `app_id`가 요청 app과 일치할 때만 노출하거나 실행한다. 다른 app 소유 deployment를 가리키는 stale/corrupt pointer는 safe 404로 닫고 task를 dispatch하지 않는다.
@@ -88,6 +98,8 @@ Verified Against: `feature/mba-234 @ 647913b9`
 - 공개/내부 챗봇 배포 결과는 각각 공개 링크와 인증 내부 링크만 표시하며, 내부 링크의 `401`은 safe `next`를 보존해 이메일/비밀번호 로그인 후 원래 링크로 복귀한다. 상세 assertion은 [chatbot-deployment test cases](../chatbot-deployment/test_cases.md)를 따른다.
 - Disposable PostgreSQL에 연결한 dispatcher 두 개가 같은 occurrence를 동시에 처리해도 claim은 하나이고 `next_run_at`은 한 번만 전진한다.
 - Duplicate Celery task를 Worker 두 개가 받아도 stable workflow run identity 하나와 engine admission 한 번만 발생한다.
+- Schedule dispatch가 managed node blocker를 발견하면 budget과 Celery publisher 호출은 0회이고 claim은 `canceled + configuration_preflight_blocked`, audit은 기존 `schedule_dispatch.canceled`와 safe reason만 가진다.
+- Schedule preflight adapter가 infrastructure exception을 내면 UoW가 rollback되고 publish request가 생성되지 않는다.
 - Disposable pgvector PostgreSQL CI는 실제 Alembic head에서 두 dispatcher session과 두 Worker admission session을 동시에 실행해 각각 winner가 하나임을 필수 검증한다. Opt-in skip만 존재하고 CI에서 실행되지 않는 상태는 완료 증거로 인정하지 않는다.
 - Broker publish 전후 장애와 Worker admission 전 종료는 bounded recovery되고, admission 후 종료는 outcome unknown으로 격리되어 자동 replay되지 않는다.
 - Migration-first, disabled rollout, drain, claim activation과 역순 rollback rehearsal에서 legacy direct dispatcher와 claim dispatcher가 동시에 활성화되지 않는다.
@@ -103,6 +115,7 @@ Verified Against: `feature/mba-234 @ 647913b9`
 - Claim model은 generic ORM audit listener 대상이 아니며 raw input, graph, prompt/evidence, credential/provider response와 raw exception column이 없다.
 - Dead-letter reason/correlation DB constraint는 admission 전 reason에 run/start correlation을 금지하고 admission 후 reason에 task/enqueue/start/run correlation을 모두 요구한다. 기존 모순 row가 있으면 migration은 값을 추측해 보정하지 않고 constraint 교체 전에 fail-closed한다.
 - 실제 PostgreSQL은 null safe reason의 canceled/dead-lettered claim, null resolution의 completed outcome review, null task id의 system schedule WorkflowRun을 모두 거부한다.
+- MBA-219 migration은 schedule claim table과 최신 safe-reason constraint를 만든 revision의 후손에 있어야 한다. 실제 PostgreSQL은 canceled claim의 `configuration_preflight_blocked`를 허용하지만 pending/dispatching/enqueued/running/succeeded/dead-lettered 상태의 같은 reason은 거부한다. 해당 reason row가 남아 있으면 downgrade는 constraint DDL 전에 fail-closed한다.
 - `pending`/`dispatching`/`enqueued`에 `workflow_run_id`를 직접 기록하면 domain과 실제 PostgreSQL check constraint가 모두 거부한다. 한 claim의 publish 결과 write 실패 뒤에도 같은 prepared batch의 다음 claim은 publish/result 처리를 계속하며, terminal finalization 일시 실패는 engine call 1회를 유지한 채 fresh session write만 bounded 재시도한다.
 - Gateway/Worker startup readiness는 같은 shared helper 결과를 사용하고 introspection 실패, stale head, 필수 column 누락을 safe하게 거부한다. Concurrent migration은 advisory lock owner 하나만 진행하며 contender는 bounded wait 안에서 owner가 끝나면 이어서 진행하고 제한 시간을 넘기면 DDL 전에 실패한다.
 - 기존 운영 Deployment에 fingerprint annotation이 없는 최초 `disabled` rollout은 bootstrap으로 진행되지만, `drain`/`claim` desired mode에서 annotation 누락은 fail-closed한다.

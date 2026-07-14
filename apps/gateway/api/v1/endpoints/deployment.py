@@ -182,6 +182,7 @@ def preview_deployment_preflight(
         graph_snapshot=graph_snapshot,
         audience_hint=preflight_in.audience,
         is_active=preflight_in.is_active,
+        principal_id=current_user.id,
     )
 
 
