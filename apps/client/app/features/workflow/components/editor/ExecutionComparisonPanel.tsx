@@ -47,6 +47,7 @@ type NodeSnapshot = {
 type RunBundle = {
   run: WorkflowRun;
   nodes: Map<string, NodeSnapshot>;
+  traceAvailability: 'available' | 'not_recorded' | 'unavailable';
 };
 
 const PAGE_SIZE = 10;
@@ -56,6 +57,17 @@ const isFiniteNumber = (value: unknown): value is number =>
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const getHttpStatus = (error: unknown) => {
+  if (
+    isRecord(error) &&
+    isRecord(error.response) &&
+    typeof error.response.status === 'number'
+  ) {
+    return error.response.status;
+  }
+  return undefined;
+};
 
 const modelFromOutput = (output: unknown) => {
   if (!isRecord(output)) return undefined;
@@ -155,6 +167,7 @@ const toRunBundle = (
   run: WorkflowRun,
   workflowNodes: Node[],
   traces: LLMTrace[],
+  traceAvailability: RunBundle['traceAvailability'],
 ): RunBundle => {
   const traceByNode = aggregateTraces(traces);
   const snapshots = new Map<string, NodeSnapshot>();
@@ -185,7 +198,7 @@ const toRunBundle = (
     });
   }
 
-  return { run, nodes: snapshots };
+  return { run, nodes: snapshots, traceAvailability };
 };
 
 const wait = (durationMs: number) =>
@@ -207,11 +220,23 @@ const loadRunBundle = async (
       ) {
         throw new Error('workflow run node logs are not ready');
       }
-      const traces = await workflowApi
-        .getWorkflowRunLlmTraces(workflowId, runId, { limit: 100 })
-        .then((response) => response.items)
-        .catch(() => [] as LLMTrace[]);
-      return toRunBundle(run, nodes, traces);
+      let traces: LLMTrace[] = [];
+      let traceAvailability: RunBundle['traceAvailability'] = 'available';
+      try {
+        const response = await workflowApi.getWorkflowRunLlmTraces(
+          workflowId,
+          runId,
+          { limit: 100 },
+        );
+        traces = response.items;
+        if (traces.length === 0) {
+          traceAvailability = 'not_recorded';
+        }
+      } catch (traceError) {
+        traceAvailability =
+          getHttpStatus(traceError) === 404 ? 'not_recorded' : 'unavailable';
+      }
+      return toRunBundle(run, nodes, traces, traceAvailability);
     } catch (error) {
       lastError = error;
       if (attempt < attempts - 1) await wait(400 * (attempt + 1));
@@ -676,6 +701,9 @@ export function ExecutionComparisonPanel({
   const selectedComparison = selectedNodeId
     ? comparisonNodes.find((item) => item.nodeId === selectedNodeId)
     : null;
+  const hasUnavailableTrace = [baselineBundle, currentBundle].some(
+    (bundle) => bundle?.traceAvailability === 'unavailable',
+  );
 
   return (
     <section className="mb-5 space-y-4">
@@ -704,6 +732,26 @@ export function ExecutionComparisonPanel({
       {currentExecutionError ? (
         <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700">
           현재 실행 실패: {currentExecutionError}
+        </div>
+      ) : null}
+
+      {hasUnavailableTrace ? (
+        <div
+          role="alert"
+          className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200"
+        >
+          <div className="flex items-start gap-2">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            <div>
+              <p className="font-semibold">
+                일부 LLM trace를 불러오지 못했습니다.
+              </p>
+              <p className="mt-1 leading-5">
+                노드 실행 기록으로 비교는 계속 표시하지만, 모델·토큰·비용 또는
+                라우팅 근거 일부가 빠질 수 있습니다.
+              </p>
+            </div>
+          </div>
         </div>
       ) : null}
 

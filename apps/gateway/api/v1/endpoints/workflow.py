@@ -185,6 +185,11 @@ def _workflow_stream_started_event(run_id: str) -> dict[str, Any]:
     return {"type": "workflow_start", "data": {"run_id": run_id}}
 
 
+def _serialize_workflow_sse_event(event: dict[str, Any]) -> str:
+    """하나의 workflow 이벤트를 실제 빈 줄로 끝나는 SSE record로 직렬화한다."""
+    return f"data: {json.dumps(event)}\n\n"
+
+
 class WorkflowCompareRequest(BaseModel):
     node_id: str
     compare_type: Literal["model", "prompt"]
@@ -6331,7 +6336,9 @@ async def stream_workflow(
             # 2. 구독 완료 후 Celery 태스크 시작 (중요!)
             # 브라우저는 이 식별자로 권한이 확인된 실행 기록을 다시 조회해,
             # 새로고침 뒤에도 테스트 결과 사이드바를 복원할 수 있다.
-            yield f"data: {json.dumps(_workflow_stream_started_event(external_run_id))}\\n\\n"
+            yield _serialize_workflow_sse_event(
+                _workflow_stream_started_event(external_run_id)
+            )
             send_workflow_task(
                 celery_app,
                 "workflow.stream",
@@ -6344,7 +6351,7 @@ async def stream_workflow(
                 if message["type"] == "message":
                     event = _safe_stream_event(json.loads(message["data"]))
                     # SSE 포맷: "data: {json_content}\n\n"
-                    yield f"data: {json.dumps(event)}\n\n"
+                    yield _serialize_workflow_sse_event(event)
 
                     # workflow_finish 또는 error 시 종료
                     if event.get("type") in ("workflow_finish", "error"):
@@ -6358,7 +6365,7 @@ async def stream_workflow(
                 "type": "error",
                 "data": {"message": "workflow.stream_unavailable"},
             }
-            yield f"data: {json.dumps(error_event)}\n\n"
+            yield _serialize_workflow_sse_event(error_event)
         finally:
             pubsub.unsubscribe(channel)
             pubsub.close()

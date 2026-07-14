@@ -97,7 +97,7 @@ export type TestNodeResult = {
 
 export type RestoredTestExecution = {
   runId: string;
-  status: 'success' | 'failure';
+  status: 'running' | 'success' | 'failure';
   startedAt: number | null;
   finishedAt: number | null;
   workflowResult: unknown;

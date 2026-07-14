@@ -414,6 +414,78 @@ describe('TestSidebar execution comparison', () => {
     ).toBeVisible();
   });
 
+  it('LLM trace 조회 실패를 비교 근거 누락 경고로 표시한다', async () => {
+    mocks.getWorkflowRuns.mockResolvedValue({
+      total: 1,
+      items: [runSummary('baseline-run', '2026-07-13T01:00:00Z')],
+    });
+    mocks.getWorkflowRun.mockImplementation(
+      (_workflowId: string, runId: string) =>
+        Promise.resolve(
+          runId === 'baseline-run'
+            ? runDetail('baseline-run', 'gpt-4.1', '기존 문의', '기존 답변')
+            : runDetail(
+                'current-run',
+                'gpt-4.1-mini',
+                '현재 문의',
+                '현재 답변',
+              ),
+        ),
+    );
+    mocks.getWorkflowRunLlmTraces.mockRejectedValue({
+      response: { status: 500 },
+    });
+
+    render(<ComparisonHarness />);
+    fireEvent.click(
+      await screen.findByRole('button', { name: '기준으로 고정' }),
+    );
+
+    expect(
+      await screen.findByText('일부 LLM trace를 불러오지 못했습니다.'),
+    ).toBeVisible();
+    expect(
+      screen.queryByText('실행 비교 데이터를 불러오지 못했습니다.'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('LLM trace 404는 기록 없음으로 처리하고 장애 경고를 표시하지 않는다', async () => {
+    mocks.getWorkflowRuns.mockResolvedValue({
+      total: 1,
+      items: [runSummary('baseline-run', '2026-07-13T01:00:00Z')],
+    });
+    mocks.getWorkflowRun.mockImplementation(
+      (_workflowId: string, runId: string) =>
+        Promise.resolve(
+          runId === 'baseline-run'
+            ? runDetail('baseline-run', 'gpt-4.1', '기존 문의', '기존 답변')
+            : runDetail(
+                'current-run',
+                'gpt-4.1-mini',
+                '현재 문의',
+                '현재 답변',
+              ),
+        ),
+    );
+    mocks.getWorkflowRunLlmTraces.mockRejectedValue({
+      response: { status: 404 },
+    });
+
+    render(<ComparisonHarness />);
+    fireEvent.click(
+      await screen.findByRole('button', { name: '기준으로 고정' }),
+    );
+
+    expect(
+      await screen.findByRole('button', {
+        name: '문의 분류 노드 상세 비교하기',
+      }),
+    ).toBeVisible();
+    expect(
+      screen.queryByText('일부 LLM trace를 불러오지 못했습니다.'),
+    ).not.toBeInTheDocument();
+  });
+
   it('노드 목록은 상태·비용·시간·토큰만 보여주고 상세에서 입력·출력·라우팅을 비교한다', async () => {
     mocks.getWorkflowRuns.mockResolvedValue({
       total: 1,

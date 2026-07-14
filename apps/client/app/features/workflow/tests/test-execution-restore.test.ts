@@ -67,4 +67,24 @@ describe('test execution restore', () => {
       }),
     ]);
   });
+
+  it('진행 중인 workflow run은 실패가 아니라 실행 중 상태로 복원한다', () => {
+    const restored = restoreTestExecutionFromWorkflowRun(
+      {
+        id: '22222222-2222-2222-2222-222222222222',
+        workflow_id: 'workflow-1',
+        user_id: 'user-1',
+        status: 'running',
+        trigger_mode: 'manual',
+        outputs: {},
+        started_at: '2026-07-14T01:00:00.000Z',
+        finished_at: null,
+        node_runs: [],
+      },
+      [],
+    );
+
+    expect(restored.status).toBe('running');
+    expect(restored.finishedAt).toBeNull();
+  });
 });

@@ -9,8 +9,18 @@ const toTimestamp = (value?: string) => {
   return Number.isFinite(timestamp) ? timestamp : null;
 };
 
-const restoredStatus = (status: string): 'success' | 'failure' =>
-  status.toLowerCase() === 'success' ? 'success' : 'failure';
+const restoredStatus = (
+  status: string,
+): RestoredTestExecution['status'] => {
+  switch (status.toLowerCase()) {
+    case 'running':
+      return 'running';
+    case 'success':
+      return 'success';
+    default:
+      return 'failure';
+  }
+};
 
 const withTraceMetadata = (nodeRun: WorkflowNodeRun): unknown => {
   const output = nodeRun.outputs;
