@@ -172,8 +172,7 @@ describe('FR-013 내 모듈 추천 모달 연결', () => {
 
     render(<MyModulePage />);
 
-    const usage = (await screen.findAllByText('81%')).at(-1);
-    expect(usage).toBeDefined();
+    const usage = (await screen.findAllByText('81%')).at(-1)!;
     expect(usage.parentElement).toHaveTextContent('정상');
     expect(usage.parentElement).not.toHaveTextContent('위험');
     expect(

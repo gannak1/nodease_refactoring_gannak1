@@ -105,8 +105,11 @@ import DocumentSettingsPage from './page';
 import { useDocumentProcess } from '@/app/features/knowledge/hooks/useDocumentProcess';
 
 const mockedUseDocumentProcess = vi.mocked(useDocumentProcess);
+type DocumentProcessResult = ReturnType<typeof useDocumentProcess>;
 
-const createDocumentProcessResult = (handleSaveClick = vi.fn()) => ({
+const createDocumentProcessResult = (
+  handleSaveClick: DocumentProcessResult['handleSaveClick'] = vi.fn(),
+): DocumentProcessResult => ({
   isAnalyzing: false,
   analyzingAction: null,
   isPreviewLoading: false,
@@ -116,6 +119,7 @@ const createDocumentProcessResult = (handleSaveClick = vi.fn()) => ({
   setAnalyzeResult: vi.fn(),
   setPendingAction: vi.fn(),
   previewSegments: [],
+  setPreviewSegments: vi.fn(),
   handleSaveClick,
   handlePreviewClick: vi.fn(),
   handleConfirmCost: vi.fn(),
@@ -192,9 +196,7 @@ beforeEach(() => {
   mocks.activeOrganizationId = 'org-1';
   mocks.getKnowledgeBase.mockResolvedValue(knowledgeBase);
   mocks.getDocumentEditConfig.mockResolvedValue(editConfig(1000));
-  mockedUseDocumentProcess.mockReturnValue(
-    createDocumentProcessResult() as ReturnType<typeof useDocumentProcess>,
-  );
+  mockedUseDocumentProcess.mockReturnValue(createDocumentProcessResult());
 });
 
 afterEach(() => {
@@ -504,9 +506,7 @@ describe('DocumentSettingsPage completion redirect', () => {
     });
     mockedUseDocumentProcess.mockImplementation((props) => {
       processProps = props;
-      return createDocumentProcessResult(
-        handleSaveClick,
-      ) as ReturnType<typeof useDocumentProcess>;
+      return createDocumentProcessResult(handleSaveClick);
     });
 
     await act(async () => {
@@ -543,7 +543,7 @@ describe('DocumentSettingsPage completion redirect', () => {
       createDocumentProcessResult(() => {
         props.setStatus('completed');
         props.setProgress(100);
-      }) as ReturnType<typeof useDocumentProcess>,
+      }),
     );
 
     await act(async () => {

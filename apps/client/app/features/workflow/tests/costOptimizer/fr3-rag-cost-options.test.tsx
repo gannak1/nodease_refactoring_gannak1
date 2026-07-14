@@ -243,7 +243,6 @@ describe('FR-003 RAG cost optimization options', () => {
     vi.mocked(fetchEligibleKnowledgeBases).mockResolvedValueOnce({
       bases: [],
       detailsById: {},
-      preserveSelectionIds: [],
     });
 
     render(
