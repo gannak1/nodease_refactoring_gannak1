@@ -287,6 +287,7 @@ Purge는 일반 KB lifecycle state가 아니다. Retention/legal-hold purge, raw
 
 - Raw source id/url/title/path, raw source ACL, raw content, prompt/completion, provider raw response, credential value, secret은 audit/trace/log에서 제외한다. Raw/compliance access log는 safe reference와 decision만 저장한다.
 - Internal document metadata는 encrypted value도 credential-bearing configuration으로 취급한다. KB/document read response는 allowlist projector를 통과하고 unknown field는 default deny하며, API config와 connection/source identifier는 response, error, audit, trace, log로 복사하지 않는다.
+- KC sync panel은 `can_sync || can_manage_sync` authority가 있고 `sync_supported=true`인 active Collection에서만 실행을 활성화한다. `can_sync`는 권한, `sync_supported`는 현재 adapter 능력이므로 어느 하나도 다른 하나를 대신하지 않는다. Panel은 latest/specific job을 3초 bounded polling하고 status, 범주형 progress, fixed safe reason만 표시하며 exact child count/identity나 source/connection/config 오류를 DOM에 만들지 않는다. Request가 진행 중이거나 job이 queued/running이면 ref 기반 double-submit gate와 disabled 상태를 함께 적용한다.
 - Domain revoke는 inactive subject 복원을 요구하지 않는다. Existing permission row를 organization scope 안에서 lock/delete하고 audit와 원자 commit해 stale delegated capability를 제거한다.
 - Domain revoke repository는 organization/subject/action predicate와 `FOR UPDATE`를 하나의 SQL statement로 유지한다. Compile contract와 opt-in disposable PostgreSQL test가 cross-org isolation, audit rollback, concurrent exactly-one delete/audit를 검증한다.
 - Collection membership 관리 capability는 KB label read capability가 아니다. Safe label이 없으면 독립 KB `read`를 통과한 caller만 manual KB `name`을 볼 수 있다.

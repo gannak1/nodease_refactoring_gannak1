@@ -503,6 +503,11 @@ MBA-265는 KC `sync` action과 domain `sync_manage`를 durable asynchronous job�
 초기 실행 대상은 active Manual Collection에 연결된 active/non-source-managed DB document이며,
 신규 connector protocol이나 source-managed sync를 포함하지 않는다.
 
+Collection management response의 `can_sync`는 caller 권한이고 `sync_supported`는 현재 adapter가
+해당 Collection 유형을 실행할 수 있는지 나타내는 safe boolean이다. UI는 두 값이 모두 참일
+때만 실행 버튼을 활성화한다. 이 boolean은 source/connection identity나 unsupported target
+count를 공개하지 않는다.
+
 | Method | Path | 목적 | 권한 |
 | --- | --- | --- | --- |
 | POST | `/api/v1/knowledge/collections/{collection_id}/sync-jobs` | KC sync job 생성 또는 기존 single-flight job 재사용 | Organization manager, Collection `sync`, domain `sync_manage` |
@@ -549,6 +554,11 @@ Gateway는 job/audit/Collection pending commit 뒤 `workflow.knowledge_collectio
 task를 발행한다. Publish 실패는 raw broker 오류를 반환하지 않고 `dispatch_deferred=true`인
 queued job을 유지한다. Recovery task가 due/stale job을 다시 발행하므로 API caller가 새 key로
 반복 요청할 필요가 없다.
+
+Legacy DB connection은 organization column이 없으므로 worker가 connection owner의 current
+active organization membership과 지원 DB type을 검증한다. 문서당 source row limit은 1,000으로
+상한 처리한다. Connection identifier, selection/SQL, credential과 processor 원문 오류는 job
+response·task result·audit·log에 포함하지 않는다.
 
 ### Collection Permission Management
 

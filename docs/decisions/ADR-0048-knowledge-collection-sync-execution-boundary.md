@@ -60,13 +60,23 @@ Option 3과 option 5를 채택한다.
 - System/source-managed Collection, source-managed child, API connector sync는 승인된 adapter가
   없는 동안 fail-closed 한다. FILE은 외부 sync 대상이 아니다.
 - Target cap은 100, 한 delivery의 batch는 5, document concurrency는 1이다.
+- Legacy `connections`에는 organization column이 없으므로 stored DB connection의 owner가 현재
+  organization의 active member인지 worker가 검증한다. 불일치·inactive owner·지원하지 않는 DB
+  type은 configuration failure로 닫고 connection/config 식별자는 외부로 투영하지 않는다.
+- 문서 한 건의 source row limit은 초기 실행에서 최대 1,000으로 강제해 기존 저장 설정이 더
+  크더라도 단일 job이 외부 DB와 embedding provider를 무제한 점유하지 않게 한다.
+- Stored DB selection의 table/column/JOIN 값은 SQL fragment가 아니라 PostgreSQL 단일
+  identifier로 인용한다. JOIN edge는 snapshot에 선택된 두 table만 참조할 수 있고 `LIMIT`은
+  bounded integer로 정규화한다. 저장 metadata가 변조되었더라도 임의 expression, 추가 table,
+  statement를 실행하지 않고 configuration failure로 닫는다.
 
 ### Idempotency and single-flight
 
 - Client는 canonical UUID `Idempotency-Key`를 보낸다. DB에는 SHA-256 hash만 저장한다.
 - Organization+Collection+request hash unique는 같은 request retry를 기존 job으로 결합한다.
 - Queued/running job은 Collection별 PostgreSQL partial unique constraint로 하나만 허용한다.
-- Celery task ID는 deterministic 보조 수단이며 job status/lease가 execution authority다.
+- Celery delivery ID는 dedupe authority로 사용하지 않는다. Continuation/recovery delivery는
+  broker가 각 ID를 생성하고, job status/lease가 모든 중복 판정의 execution authority다.
 
 ### Commit, dispatch, lease and retry
 
@@ -75,9 +85,16 @@ Option 3과 option 5를 채택한다.
 - Publish 실패는 queued job으로 남고 periodic recovery가 재발행한다.
 - Task는 `acks_late`와 `reject_on_worker_lost`를 사용하되 business retry는 DB item attempt,
   next retry와 lease가 소유한다.
+- Job claim 상한은 target 수의 정상 batch claim, 각 item의 최대 retry claim, stale recovery 5회를
+  모두 수용하도록 target snapshot에서 계산한다. 100개 target의 초기 상한은 225이며 30분 overall
+  deadline이 별도 시간 상한으로 유지된다.
 - Unexpired running duplicate와 terminal redelivery는 no-op한다. Stale lease는 recovery가
   bounded retry하거나 deadline/max recovery 뒤 failed 처리한다.
 - Target apply와 item success/progress는 가능한 한 같은 DB commit에 포함한다.
+- KC sync와 기존 ingestion이 같은 document chunks를 교체하는 경로는 shared vector store의
+  PostgreSQL transaction advisory lock으로 document 단위 직렬화한다. Lock key는 document UUID의
+  namespaced digest에서 만들고 transaction commit/rollback과 함께 자동 해제한다. 모든 writer는
+  advisory lock을 document/Collection/KB row lock보다 먼저 획득해 잠금 순서를 통일한다.
 
 ### Status, partial failure and retention
 
@@ -109,6 +126,8 @@ sync는 MCP/API connector, source revision, ACL/public exposure와 content safet
 - Gateway와 Workflow Engine에 각각 application/port/adapter/composition boundary가 생긴다.
 - Celery Beat는 due/stale job recovery와 terminal retention cleanup task를 실행한다.
 - Client는 polling 기반 safe status panel을 제공한다.
+- Collection management projection은 권한인 `can_sync`와 현재 adapter 지원 여부인
+  `sync_supported`를 분리해 UI가 unsupported source를 실행 가능하다고 표시하지 않게 한다.
 - Sync Operator는 child content를 읽지 않고 운영 refresh를 요청할 수 있지만 raw child 결과를
   볼 수 없다.
 - System/source-managed KC sync는 connector 구현 전까지 정책 오류로 남는다.
