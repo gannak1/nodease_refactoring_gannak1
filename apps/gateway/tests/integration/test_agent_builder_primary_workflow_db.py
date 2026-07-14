@@ -39,6 +39,10 @@ from apps.shared.tests.helpers.disposable_postgres import (
     DisposablePostgresConfigurationError,
     quote_disposable_database_name,
 )
+from apps.workflow_engine.tasks import (
+    PermanentDeploymentExecutionError,
+    _canonical_workflow_execution_context,
+)
 
 
 ROOT_DIR = Path(__file__).resolve().parents[4]
@@ -352,6 +356,28 @@ def test_new_workflow_apply_atomically_promotes_primary_and_inherits_permissions
     assert inherited_team.auth_state == "operator"
     assert inherited_team.options == {"source": "team"}
     assert draft.request.session.workflow_id == response.saved_workflow_id
+
+    execution_context = _canonical_workflow_execution_context(
+        db_session,
+        {
+            "workflow_id": str(response.saved_workflow_id),
+            "execution_id": str(uuid.uuid4()),
+        },
+    )
+    assert execution_context["workflow_id"] == str(response.saved_workflow_id)
+    assert execution_context["app_id"] == str(app.id)
+
+    with pytest.raises(
+        PermanentDeploymentExecutionError,
+        match="workflow execution identity is invalid",
+    ):
+        _canonical_workflow_execution_context(
+            db_session,
+            {
+                "workflow_id": str(old_workflow.id),
+                "execution_id": str(uuid.uuid4()),
+            },
+        )
 
 
 def test_new_workflow_apply_blocks_before_insert_when_active_deployment_exists(
