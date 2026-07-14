@@ -117,6 +117,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 | 1 | 노드 조작 편의성 | 3패널 resize 계산의 min/max clamp | 통과 | layout 계산 unit test 완료 | `apps/client/app/features/workflow/tests/node-panel-resize.test.ts` |
 | 1 | 노드 조작 편의성 | viewport width 90% 안에서 편집 화면 표시 | 통과 | layout 계산 unit test 완료. 실제 DOM 폭은 수동 QA 필요 | `apps/client/app/features/workflow/tests/node-panel-resize.test.ts` |
 | 1 | 노드 조작 편의성 | 기본 패널 폭을 부모 영역 기준 28/52/20 비율로 계산 | 통과 | layout 계산 unit test 완료 | `apps/client/app/features/workflow/tests/node-panel-resize.test.ts` |
+| 1 | 노드 조작 편의성 | Knowledge 보조 패널을 열어도 중앙/우측 독립 스크롤과 캔버스 wheel 격리 유지 | 통과 | 전체화면 3패널 높이/overflow/nowheel component contract test 완료. 실제 wheel 스크롤은 수동 QA 병행 | `apps/client/app/features/workflow/tests/node-fullscreen-scroll.test.tsx`, `apps/client/app/features/workflow/components/editor/NodeFullscreenEditor.tsx` |
 | 1 | 워크플로우 조작 편의성 | Delete/Backspace로 선택 노드 삭제 | 통과 | shortcut hook test 완료 | `apps/client/app/features/workflow/tests/workflow-delete-reconnect.test.tsx` |
 | 1 | 워크플로우 조작 편의성 | A -> B -> C 구조에서 B 삭제 시 A -> C 자동 재연결 | 통과 | store unit test 완료 | `apps/client/app/features/workflow/tests/workflow-delete-reconnect.test.tsx` |
 | 1 | 워크플로우 조작 편의성 | 입력 필드 focus 중 Backspace/Delete가 노드 삭제로 동작하지 않음 | 통과 | shortcut hook test 완료 | `apps/client/app/features/workflow/tests/workflow-delete-reconnect.test.tsx` |
@@ -254,6 +255,8 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - 왼쪽 패널 폭을 늘리면 가운데와 오른쪽 패널 폭이 비슷한 비율로 줄어든다.
 - 전체 편집 영역은 viewport width의 90%를 초과하지 않는다.
 - 패널 폭 계산은 실제 렌더된 부모 영역 폭이 바뀌면 그 폭을 기준으로 다시 clamp된다.
+- Knowledge 보조 패널이 열리면 3패널 본문은 NodeCanvas 가용 높이 안에 유지되고 가운데와 오른쪽 패널은 독립적인 scroll boundary를 가진다.
+- 노드 전체화면 편집 영역은 `nowheel` 경계를 가져 wheel 입력이 캔버스 확대/축소 handler로 전달되지 않는다.
 - reset 동작이 있다면 패널 폭이 기본 비율로 복구된다.
 
 ### 3. 워크플로우 조작 편의성
@@ -343,6 +346,8 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - 노드 상세 편집 화면은 넓은 화면에서 고정 px 기본값에 갇히지 않고 부모 영역 기준 최대 90% 폭을 사용한다.
 - 사용자가 왼쪽 패널 resizer를 드래그하면 왼쪽 패널은 넓어지고 가운데/오른쪽 패널은 같이 줄어든다.
 - 패널을 최대/최소 폭까지 드래그해도 UI가 겹치거나 화면 밖으로 밀려나지 않는다.
+- LLM Knowledge 보조 패널을 연 뒤 가운데 설정과 오른쪽 Knowledge 목록을 각각 끝까지 스크롤할 수 있고, 이 동작이 캔버스 zoom을 변경하지 않는다.
+- 브라우저 높이와 패널 폭을 변경한 뒤에도 가운데/오른쪽의 독립 스크롤이 유지된다.
 - 노드 상세 편집 화면을 닫았다가 같은 세션에서 다시 열었을 때 세션 내 비율 유지 정책이 의도대로 동작한다.
 
 ### 3. 워크플로우 조작 편의성

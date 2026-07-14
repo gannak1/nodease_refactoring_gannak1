@@ -655,7 +655,7 @@ export function NodeFullscreenEditor() {
 
   return (
     <div
-      className="absolute inset-0 isolate z-[70] flex flex-col overflow-hidden bg-white"
+      className="nowheel absolute inset-0 isolate z-[70] flex flex-col overflow-hidden bg-white"
       data-canvas-shortcut-scope="blocked"
     >
       {/* 헤더 */}
@@ -840,14 +840,14 @@ export function NodeFullscreenEditor() {
 
       {/* 본문: 가로 3분할 */}
       <VariableInsertionProvider>
-        <div className="flex flex-1 justify-center overflow-hidden bg-slate-100">
+        <div className="flex h-full min-h-0 flex-1 justify-center overflow-hidden bg-slate-100">
           <div
             ref={layoutShellRef}
-            className="flex min-h-0 w-full justify-center overflow-hidden"
+            className="flex h-full min-h-0 w-full justify-center overflow-hidden"
           >
             <div
               ref={layoutRef}
-              className="grid min-h-0 max-w-[90vw] overflow-hidden bg-white"
+              className="grid h-full min-h-0 max-w-[90vw] overflow-hidden bg-white"
               style={{
                 width: `${fittedLayoutWidth}px`,
                 gridTemplateColumns: `${fittedPanelWidths.left}px 8px ${fittedPanelWidths.center}px 8px ${fittedPanelWidths.right}px`,
@@ -1015,7 +1015,7 @@ export function NodeFullscreenEditor() {
             />
 
             {/* 중앙: 노드 상세 설정 */}
-            <div className="min-w-0 overflow-y-auto border-x border-slate-200 p-6">
+            <div className="min-h-0 min-w-0 overflow-y-auto border-x border-slate-200 p-6">
               <div className="mx-auto w-full max-w-[720px]">
                 <NodeInlinePanel
                   node={node}
@@ -1036,7 +1036,7 @@ export function NodeFullscreenEditor() {
             />
 
             {/* 우측: 추후 사용을 위해 비워둠 */}
-            <div className="flex min-w-0 flex-col bg-slate-50">
+            <div className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-slate-50">
               {rightPanelTabs.length > 0 && (
                 <div className="flex min-h-11 items-end gap-0 overflow-x-auto border-b border-slate-200 bg-slate-100 px-2 pt-2">
                   {rightPanelTabs.map((tab) => (
