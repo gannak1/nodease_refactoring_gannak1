@@ -49,6 +49,66 @@ def _workflow():
     )
 
 
+def test_test_routing_policy_context_uses_only_nodes_matching_active_deployment(
+    monkeypatch,
+):
+    workflow = _workflow()
+    workflow.graph = {
+        "nodes": [
+            {
+                "id": "llm-matching",
+                "type": "llmNode",
+                "data": {
+                    "auto_model_routing": True,
+                    "model_id": "gpt-4.1",
+                    "user_prompt": "{{message}}",
+                },
+            },
+            {
+                "id": "llm-changed",
+                "type": "llmNode",
+                "data": {
+                    "auto_model_routing": True,
+                    "model_id": "gpt-4.1-mini",
+                    "user_prompt": "changed {{message}}",
+                },
+            },
+        ],
+        "edges": [],
+    }
+    deployment = SimpleNamespace(
+        id=uuid.uuid4(),
+        graph_snapshot={
+            "nodes": [
+                workflow.graph["nodes"][0],
+                {
+                    **workflow.graph["nodes"][1],
+                    "data": {
+                        **workflow.graph["nodes"][1]["data"],
+                        "user_prompt": "deployed {{message}}",
+                    },
+                },
+            ],
+            "edges": [],
+        },
+    )
+    monkeypatch.setattr(
+        workflow_endpoint,
+        "_active_deployment_for_workflow",
+        lambda *_args, **_kwargs: deployment,
+    )
+
+    context = workflow_endpoint._test_routing_policy_context(
+        object(), workflow=workflow, graph=workflow.graph
+    )
+
+    assert context == {
+        "routing_policy_deployment_id": str(deployment.id),
+        "routing_policy_preview_node_ids": ["llm-matching"],
+        "routing_policy_preview": True,
+    }
+
+
 def _blocked(*args, **kwargs):
     raise HTTPException(
         status_code=409,

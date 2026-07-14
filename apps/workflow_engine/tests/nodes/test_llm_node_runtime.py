@@ -3795,6 +3795,66 @@ def test_auto_model_routing_prefers_persisted_policy_over_legacy_node_json(monke
     assert metadata["judge_called"] is False
 
 
+def test_test_execution_uses_matching_deployment_policy_without_becoming_deployed(
+    monkeypatch,
+):
+    """테스트는 배포 정책을 읽지만 운영 run/학습 실행으로 표시하지 않는다."""
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    persisted = SimpleNamespace(
+        id=uuid.uuid4(),
+        enabled=True,
+        status="active",
+        policy_version="router-policy-v10",
+        active_policy={
+            "default_model_id": "gpt-4.1-mini",
+            "fallback_model_id": "gpt-4.1",
+            "rules": [],
+        },
+        refresh_every_runs=20,
+        eligible_runs_since_last_refresh=5,
+    )
+    captured = {}
+    monkeypatch.setattr(
+        ModelRoutingPolicyStore,
+        "get_runtime_policy",
+        lambda _db, **kwargs: captured.update(kwargs) or persisted,
+    )
+    node = LLMNode(
+        "llm-1",
+        LLMNodeData(
+            title="test policy routing",
+            model_id="gpt-4.1",
+            auto_model_routing=True,
+            user_prompt="hello",
+            referenced_variables=[],
+            parameters={},
+        ),
+        execution_context={
+            "workflow_id": str(uuid.uuid4()),
+            "routing_policy_deployment_id": str(uuid.uuid4()),
+            "routing_policy_preview": True,
+            "routing_policy_preview_node_ids": ["llm-1"],
+        },
+    )
+    monkeypatch.setattr(
+        node,
+        "_available_routing_model_ids",
+        lambda _db: ["gpt-4.1-mini", "gpt-4.1"],
+    )
+
+    selected, fallback, metadata = node._resolve_model_routing_policy({}, object())
+
+    assert selected == "gpt-4.1-mini"
+    assert fallback == "gpt-4.1"
+    assert captured["deployment_id"] == node.execution_context["routing_policy_deployment_id"]
+    assert metadata["decision_source"] == "test_policy_preview"
+    assert metadata["policy_source"] == "active_deployment"
+    assert metadata["included_in_policy_learning"] is False
+
+
 def test_llm_node_blocks_policy_when_no_model_is_usable_by_execution_subject(
     monkeypatch,
 ):

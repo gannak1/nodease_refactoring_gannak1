@@ -373,6 +373,25 @@ class LLMNode(Node[LLMNodeData]):
 
         policy = self.data.model_routing_policy or {}
         is_deployed_execution = bool(self.execution_context.get("deployment_id"))
+        policy_deployment_id = self.execution_context.get("deployment_id")
+        preview_node_ids = self.execution_context.get("routing_policy_preview_node_ids")
+        is_policy_preview_node = (
+            self.execution_context.get("routing_policy_preview") is True
+            and isinstance(preview_node_ids, list)
+            and self.id in preview_node_ids
+        )
+        if is_policy_preview_node:
+            policy_deployment_id = self.execution_context.get(
+                "routing_policy_deployment_id"
+            )
+        preview_metadata = (
+            {
+                "policy_source": "active_deployment",
+                "included_in_policy_learning": False,
+            }
+            if is_policy_preview_node
+            else {}
+        )
         if db_session is not None:
             from apps.workflow_engine.services.model_routing_policy_store import (
                 ModelRoutingPolicyStore,
@@ -381,7 +400,7 @@ class LLMNode(Node[LLMNodeData]):
             persisted_policy = ModelRoutingPolicyStore.get_runtime_policy(
                 db_session,
                 workflow_id=self.execution_context.get("workflow_id"),
-                deployment_id=self.execution_context.get("deployment_id"),
+                deployment_id=policy_deployment_id,
                 node_id=self.id,
             )
             if persisted_policy is not None and persisted_policy.enabled:
@@ -406,6 +425,7 @@ class LLMNode(Node[LLMNodeData]):
                 "decision_source": "stored_model",
                 "reason_code": "policy_unavailable",
                 "judge_called": False,
+                **preview_metadata,
             }
 
         active_policy = policy.get("active_policy")
@@ -417,6 +437,7 @@ class LLMNode(Node[LLMNodeData]):
                 "decision_source": "stored_model",
                 "reason_code": "active_policy_unavailable",
                 "judge_called": False,
+                **preview_metadata,
             }
 
         try:
@@ -462,12 +483,15 @@ class LLMNode(Node[LLMNodeData]):
             "policy_version": policy.get("policy_version"),
             "selected_model": selected_model_id,
             "fallback_model": fallback_model_id,
-            "decision_source": "active_policy",
+            "decision_source": (
+                "test_policy_preview" if is_policy_preview_node else "active_policy"
+            ),
             "matched_rule_id": matched_rule_id,
             "reason_code": reason_code,
             "runtime_context": routing_context,
             "judge_called": False,
         }
+        metadata.update(preview_metadata)
         if decision.semantic_match is not None:
             metadata["matched_cohort_id"] = decision.semantic_match.cohort_id
             metadata.update(semantic_metadata)

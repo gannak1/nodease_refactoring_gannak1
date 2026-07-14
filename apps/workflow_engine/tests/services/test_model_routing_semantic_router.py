@@ -214,6 +214,25 @@ def test_semantic_matcher_returns_safe_trace_metadata_without_vectors():
     assert "representative_vectors" not in metadata
 
 
+def test_semantic_matcher_trace_includes_all_cohort_scores_and_margin_gate():
+    """상세 화면은 모든 입력군의 safe 점수와 최소 점수 차이를 표시한다."""
+    metadata = SemanticRouteMatcher.match(
+        _catalog(),
+        query_vector=(1.0, 0.0, 0.0),
+    ).as_metadata()
+
+    scores = metadata["semantic_cohort_scores"]
+    assert [score["cohort_id"] for score in scores] == [
+        "routine_support",
+        "high_risk_support",
+    ]
+    assert scores[0]["label"] == "단순 사용·안내 문의"
+    assert scores[0]["similarity"] > scores[1]["similarity"]
+    assert scores[0]["threshold"] == 0.75
+    assert metadata["semantic_min_margin"] == 0.05
+    assert "embedding" not in str(scores)
+
+
 def test_semantic_catalog_requires_supported_aggregation():
     """지원하지 않는 집계 방식은 조용히 다른 의미로 계산하지 않는다."""
     try:

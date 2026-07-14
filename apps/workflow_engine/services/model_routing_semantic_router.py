@@ -114,6 +114,24 @@ class SemanticRouteCatalog:
 
 
 @dataclass(frozen=True)
+class SemanticCohortScore:
+    """Trace 화면에 표시할 입력군별 safe 유사도 정보다."""
+
+    cohort_id: str
+    label: str
+    similarity: float
+    threshold: float
+
+    def as_metadata(self) -> dict[str, object]:
+        return {
+            "cohort_id": self.cohort_id,
+            "label": self.label,
+            "similarity": self.similarity,
+            "threshold": self.threshold,
+        }
+
+
+@dataclass(frozen=True)
 class SemanticRouteMatch:
     status: MatchStatus
     cohort_id: str | None
@@ -131,6 +149,8 @@ class SemanticRouteMatch:
     lexical_signal_count: int = 0
     safety_override: bool = False
     matcher: Literal["semantic", "hybrid"] = "semantic"
+    candidate_scores: tuple[SemanticCohortScore, ...] = ()
+    min_margin: float | None = None
 
     @classmethod
     def unavailable(cls, catalog: SemanticRouteCatalog) -> "SemanticRouteMatch":
@@ -148,6 +168,7 @@ class SemanticRouteMatch:
             encoder_model_id=catalog.encoder_model_id,
             decision_source="unavailable",
             matcher=_matcher_name(catalog),
+            min_margin=catalog.min_margin,
         )
 
     def as_metadata(self) -> dict[str, object | None]:
@@ -162,6 +183,10 @@ class SemanticRouteMatch:
             "semantic_threshold": self.threshold,
             "semantic_runner_up_score": self.runner_up_score,
             "semantic_margin": self.margin,
+            "semantic_min_margin": self.min_margin,
+            "semantic_cohort_scores": [
+                score.as_metadata() for score in self.candidate_scores
+            ],
             "route_catalog_version": self.catalog_version,
             "semantic_encoder_model": self.encoder_model_id,
             "semantic_decision_source": self.decision_source,
@@ -229,6 +254,8 @@ class SemanticRouteMatcher:
         if not route_scores:
             raise ValueError("catalog has no scorable representatives")
 
+        candidate_scores = _candidate_scores(catalog, query, route_scores)
+
         sparse_matches = _score_lexical_routes(catalog, query_text)
         matched_safety_routes = [
             (score, count, route)
@@ -279,6 +306,8 @@ class SemanticRouteMatcher:
                 lexical_signal_count=signal_count,
                 safety_override=True,
                 matcher=_matcher_name(catalog),
+                candidate_scores=candidate_scores,
+                min_margin=catalog.min_margin,
             )
 
         top_score, top_route = route_scores[0]
@@ -315,6 +344,8 @@ class SemanticRouteMatcher:
             lexical_signal_count=best_sparse_count,
             safety_override=False,
             matcher=_matcher_name(catalog),
+            candidate_scores=candidate_scores,
+            min_margin=catalog.min_margin,
         )
 
 
@@ -443,6 +474,49 @@ def _aggregate(scores: Sequence[float], aggregation: Aggregation) -> float:
     if aggregation == "max":
         return max(scores)
     return sum(scores)
+
+
+def _candidate_scores(
+    catalog: SemanticRouteCatalog,
+    query: Vector,
+    routing_scores: Sequence[tuple[float, SemanticRouteDefinition]],
+) -> tuple[SemanticCohortScore, ...]:
+    """Keep a safe, complete per-cohort diagnostic without changing selection."""
+    routing_score_by_cohort = {
+        route.cohort_id: score for score, route in routing_scores
+    }
+    scores: list[SemanticCohortScore] = []
+
+    for route in catalog.routes:
+        score = routing_score_by_cohort.get(route.cohort_id)
+        if score is None:
+            if catalog.aggregation == "centroid":
+                score = _cosine_similarity(
+                    query,
+                    route.centroid_vector or _centroid(route.representative_vectors),
+                )
+            else:
+                representative_scores = sorted(
+                    (
+                        _cosine_similarity(query, vector)
+                        for vector in route.representative_vectors
+                    ),
+                    reverse=True,
+                )[: catalog.top_k]
+                score = _aggregate(representative_scores, catalog.aggregation)
+
+        scores.append(
+            SemanticCohortScore(
+                cohort_id=route.cohort_id,
+                label=route.label,
+                similarity=float(score),
+                threshold=route.threshold,
+            )
+        )
+
+    return tuple(
+        sorted(scores, key=lambda item: (-item.similarity, item.cohort_id))
+    )
 
 
 def _centroid(vectors: Sequence[Sequence[float]]) -> Vector:

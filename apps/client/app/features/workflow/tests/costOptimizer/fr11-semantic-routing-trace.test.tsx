@@ -25,6 +25,21 @@ describe('FR-011 semantic model routing trace', () => {
               semantic_threshold: 0.75,
               semantic_runner_up_score: 0.51,
               semantic_margin: 0.37,
+              semantic_min_margin: 0.05,
+              semantic_cohort_scores: [
+                {
+                  cohort_id: 'routine_support',
+                  label: '단순 사용·안내 문의',
+                  similarity: 0.88,
+                  threshold: 0.75,
+                },
+                {
+                  cohort_id: 'high_risk_support',
+                  label: '보안·보상·장애 문의',
+                  similarity: 0.51,
+                  threshold: 0.75,
+                },
+              ],
               semantic_match_status: 'matched',
               route_catalog_version: 'ticket-routing-v1',
               policy_version: 'routing-policy-v3',
@@ -36,7 +51,12 @@ describe('FR-011 semantic model routing trace', () => {
     );
 
     expect(screen.getByText('입력 유형')).toBeVisible();
-    expect(screen.getByText('단순 사용·안내 문의')).toBeVisible();
+    expect(screen.getAllByText('단순 사용·안내 문의')).toHaveLength(2);
+    expect(screen.getByText('입력군별 유사도')).toBeVisible();
+    expect(screen.getByText('보안·보상·장애 문의')).toBeVisible();
+    expect(screen.getByText('88%')).toBeVisible();
+    expect(screen.getByText('51%')).toBeVisible();
+    expect(screen.getAllByText('선택 기준 75%')).toHaveLength(2);
     expect(
       screen.getByText('유사도 88% (선택 기준 75%, 2위와 차이 37%p)'),
     ).toBeVisible();
@@ -128,7 +148,9 @@ describe('FR-011 semantic model routing trace', () => {
 
     expect(screen.getByText('보안 및 SLA 고위험')).toBeVisible();
     expect(
-      screen.getByText('정책의 안전 조건 2개와 일치해 안전 유형을 우선했습니다.'),
+      screen.getByText(
+        '정책의 안전 조건 2개와 일치해 안전 유형을 우선했습니다.',
+      ),
     ).toBeVisible();
     expect(
       screen.getByText(
