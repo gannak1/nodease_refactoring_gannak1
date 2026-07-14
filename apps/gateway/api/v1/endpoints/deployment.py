@@ -505,17 +505,12 @@ def get_deployment_info_public(
     공유 페이지에서 입력 폼을 동적으로 생성하기 위해
     input_schema와 output_schema를 조회합니다.
 
-    CORS: 모든 출처 허용 (Release A 임베딩 호환)
     """
     from fastapi import HTTPException
 
     from apps.shared.db.models.app import App
     from apps.shared.db.models.workflow_deployment import WorkflowDeployment
     from apps.shared.schemas.deployment import DeploymentInfoResponse
-
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "*"
 
     # 1. url_slug로 App 조회
     app = db.query(App).filter(App.url_slug == url_slug).first()

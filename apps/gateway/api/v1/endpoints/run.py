@@ -62,13 +62,7 @@ async def run_workflow_public(
     배포된 워크플로우를 URL Slug로 실행합니다 (웹 앱/임베딩: 공개 접근).
     - url_slug: workflow_deployments 생성시 만들어진 고유 주소
 
-    CORS: 모든 출처 허용 (임베딩 위젯 지원)
     """
-    # CORS 헤더 추가 (임베딩 위젯 지원)
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "*"
-
     # 웹 앱/임베딩: 공개 접근 (인증 불필요)
     return await DeploymentService.run_deployment(
         db=db,

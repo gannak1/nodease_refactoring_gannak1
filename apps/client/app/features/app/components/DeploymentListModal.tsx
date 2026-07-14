@@ -190,8 +190,8 @@ export default function DeploymentListModal({
                             <span>
                               {deployment.browser_access_policy?.embedding
                                 .enabled
-                              ? `허용 origin ${deployment.browser_access_policy.embedding.parent_origins.length}개 · 집행 대기`
-                              : '차단 정책 · 집행 대기'}
+                              ? `허용 origin ${deployment.browser_access_policy.embedding.parent_origins.length}개 · 집행 중`
+                              : 'iframe 표시 차단'}
                             </span>
                           </div>
                         )}

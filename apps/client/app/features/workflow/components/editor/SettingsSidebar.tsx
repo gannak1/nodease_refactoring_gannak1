@@ -392,8 +392,8 @@ export function SettingsSidebar() {
 
                       <div className="text-xs text-gray-600">
                         {embedding?.enabled
-                          ? `허용 origin ${embedding.parent_origins.length}개 · 집행 대기`
-                          : '차단 정책 · 집행 대기'}
+                          ? `허용 origin ${embedding.parent_origins.length}개 · 집행 중`
+                          : 'iframe 표시 차단'}
                       </div>
 
                       {embedding?.enabled && (

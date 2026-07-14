@@ -204,7 +204,7 @@ ${authHeader}  -d '{
               웹사이트 임베딩 코드
             </label>
             <p className="mb-3 text-xs font-medium text-amber-700">
-              브라우저 제한 집행 대기
+              브라우저 제한 집행 중
             </p>
             <div className="relative">
               <pre className="p-4 bg-gray-900 rounded-lg text-xs text-gray-300 font-mono overflow-x-auto whitespace-pre leading-relaxed border border-gray-700">

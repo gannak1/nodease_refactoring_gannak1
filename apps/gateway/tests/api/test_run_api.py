@@ -46,7 +46,7 @@ def test_public_run_forwards_injected_runtime_policy_at_fastapi_boundary(
         "status": "success",
         "results": {"answer": "ok"},
     }
-    assert response.headers["access-control-allow-origin"] == "*"
+    assert "access-control-allow-origin" not in response.headers
     assert captured == {
         "db": db,
         "url_slug": "injected-policy-app",

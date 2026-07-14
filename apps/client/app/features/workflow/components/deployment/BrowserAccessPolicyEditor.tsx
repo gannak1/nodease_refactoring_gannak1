@@ -39,8 +39,8 @@ export function BrowserAccessPolicyEditor({
           </h3>
           <p className="mt-1 text-xs text-gray-500">
             {enabled
-              ? '허용 origin 저장됨 · 집행 대기'
-              : '차단 정책 저장됨 · 집행 대기'}
+              ? '허용 origin만 iframe 표시 가능'
+              : 'iframe 표시 차단'}
           </p>
         </div>
         <button
