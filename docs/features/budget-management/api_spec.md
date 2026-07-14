@@ -147,6 +147,7 @@ Side effects:
 
 - `budgeted_workflow_count`: 조직의 활성 예산 workflow 수 (`ratio`의 분모).
 - `ratio` = (`at_risk_count` + `exceeded_count`) / `budgeted_workflow_count`.
+- `ratio`는 기존 소비자 호환을 위해 유지한다. 관리 대시보드 카드의 대표 값은 `at_risk_count + exceeded_count`다.
 - 활성 예산 workflow가 0개면 `budget`은 null이다 (클라이언트는 "예산 미설정" 표시, BGT-REQ-021).
 
 ### GET /apps, GET /apps/operations (확장)

@@ -55,6 +55,10 @@ Verified Against: feature/mba-188 @ 59d1cc51
 - Given KST 월 경계 근처의 usage row (예: KST 7월 1일 00:30 = UTC 6월 30일 15:30 저장), When 7월 요약을 조회하면, Then 해당 row는 7월 집계에 포함된다.
 - Given 활성 예산 workflow가 없는 조직, When 요약을 조회하면, Then `budget` 블록은 null이고 이는 오류가 아니다.
 - Given 예산이 설정된 workflow, When 사용률이 80% 이상이면 위험, 100%를 초과하면 초과로 분류되고, 반올림 전 값으로 판정된다. 예산 미설정 workflow는 판정 대상에서 제외된다.
+- Given 위험 1개와 초과 1개가 있는 조직, When 상단 예산 카드를 확인하면, Then 대표 값은 비율이 아니라 `2개 위험`이고 노란색 점의 `예산 임박 1`, 빨간색 점의 `예산 초과 1` 텍스트가 표시된다.
+- Given 활성 예산은 있지만 위험/초과 workflow가 없는 조직, When 카드를 확인하면, Then `0개 위험`, `예산 임박 0`, `예산 초과 0`이 표시된다.
+- Given 예산 카드를 확인, Then 가장 위험한 workflow 미리보기나 개별 workflow 사용액은 표시하지 않고 월간 비용 카드와 비슷한 높이를 유지한다.
+- Given 예산 카드를 키보드 또는 포인터로 선택, Then `/dashboard/admin?tab=usage`로 이동하고 링크 목적이 텍스트로 제공된다.
 
 ### AC-5. 권한 경계
 
