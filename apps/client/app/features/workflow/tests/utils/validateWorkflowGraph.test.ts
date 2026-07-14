@@ -38,6 +38,12 @@ describe('validateWorkflowGraph', () => {
       ...node('loop', 'loopNode', 'Loop'),
       data: {
         title: 'Loop',
+        loop_key: 'items',
+        inputs: [],
+        outputs: [],
+        parallel_mode: false,
+        error_strategy: 'end',
+        flatten_output: false,
         subGraph: { nodes: [nestedLlm], edges: [] },
       },
     } as AppNode;
@@ -175,6 +181,12 @@ describe('validateWorkflowGraph', () => {
       ...node('loop', 'loopNode', 'Loop'),
       data: {
         title: 'Loop',
+        loop_key: 'items',
+        inputs: [],
+        outputs: [],
+        parallel_mode: false,
+        error_strategy: 'end',
+        flatten_output: false,
         subGraph: { nodes: [nestedSlack, nestedConsumer], edges: [] },
       },
     } as AppNode;

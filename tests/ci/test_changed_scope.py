@@ -1,0 +1,195 @@
+from pathlib import Path
+
+import pytest
+
+from scripts.ci.changed_scope import (
+    changed_python_files,
+    classify_paths,
+    normalize_repo_path,
+    parse_name_status_z,
+)
+
+
+def test_docs_only_keeps_runtime_jobs_disabled():
+    scope = classify_paths(
+        [
+            "docs/README.md",
+            "docs/features/workflow/requirements.md",
+            "docs/examples/sample.py",
+        ]
+    )
+
+    assert scope.docs_only is True
+    assert scope.python_lint is False
+    assert scope.client is False
+    assert scope.gateway_tests is False
+    assert scope.workflow_tests is False
+
+
+def test_client_change_selects_only_client_runtime_job():
+    scope = classify_paths(["apps/client/app/dashboard/page.tsx"])
+
+    assert scope.client is True
+    assert scope.python_lint is False
+    assert scope.gateway_tests is False
+
+
+def test_shared_schema_change_expands_to_consumers_and_root_tests():
+    scope = classify_paths(["apps/shared/schemas/organization_membership.py"])
+
+    assert scope.python_lint is True
+    assert scope.shared_tests is True
+    assert scope.gateway_tests is True
+    assert scope.workflow_tests is True
+    assert scope.log_tests is True
+    assert scope.root_tests is True
+    assert scope.broad_python is False
+    assert scope.github_outputs()["gateway_job"] == "true"
+
+
+def test_migration_change_selects_graph_consumers_and_postgres_contracts():
+    scope = classify_paths(["apps/shared/alembic/versions/abc_add_table.py"])
+
+    assert scope.shared_tests is True
+    assert scope.gateway_tests is True
+    assert scope.workflow_tests is True
+    assert scope.knowledge_postgres is True
+    assert scope.workflow_postgres is True
+
+
+def test_knowledge_runtime_change_selects_knowledge_postgres():
+    scope = classify_paths(
+        ["apps/workflow_engine/application/runtime_retrieval/knowledge_candidates.py"]
+    )
+
+    assert scope.workflow_tests is True
+    assert scope.knowledge_postgres is True
+    assert scope.workflow_postgres is False
+
+
+def test_schedule_change_selects_workflow_postgres():
+    scope = classify_paths(["apps/shared/domain/schedule_dispatch.py"])
+
+    assert scope.shared_tests is True
+    assert scope.workflow_postgres is True
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "apps/shared/services/external_effect_trace_capture.py",
+        "apps/shared/services/knowledge_ingestion_outbox.py",
+        "apps/shared/services/knowledge_ingestion_outbox_processor.py",
+        "apps/shared/services/rag_answer_retention.py",
+    ],
+)
+def test_log_system_direct_shared_service_selects_log_tests(path: str):
+    scope = classify_paths([path])
+
+    assert scope.shared_tests is True
+    assert scope.log_tests is True
+
+
+def test_ci_control_change_selects_smoke_jobs_and_postgres_contracts():
+    scope = classify_paths(["scripts/ci/changed_scope.py"])
+
+    assert scope.client is True
+    assert scope.gateway_tests is True
+    assert scope.workflow_tests is True
+    assert scope.shared_tests is True
+    assert scope.log_tests is True
+    assert scope.sandbox_tests is True
+    assert scope.root_tests is True
+    assert scope.broad_python is True
+    assert scope.knowledge_postgres is True
+    assert scope.workflow_postgres is True
+
+
+def test_trusted_guard_change_is_treated_as_ci_control():
+    scope = classify_paths([".github/workflows/pr-ci-control-guard.yml"])
+
+    assert scope.broad_python is True
+    assert scope.knowledge_postgres is True
+    assert scope.workflow_postgres is True
+
+
+def test_deployment_workflow_does_not_pull_runtime_tests_into_pr_gate():
+    scope = classify_paths([".github/workflows/deploy-eks-gateway.yml"])
+
+    assert scope.client is False
+    assert scope.gateway_tests is False
+    assert scope.broad_python is False
+
+
+def test_unrelated_workflow_still_fails_closed_with_postgres_change():
+    scope = classify_paths(
+        [
+            "apps/shared/domain/schedule_dispatch.py",
+            ".github/workflows/custom-runtime-check.yml",
+        ]
+    )
+
+    assert scope.workflow_postgres is True
+    assert scope.broad_python is True
+    assert scope.client is True
+
+
+def test_unknown_path_fails_closed_to_broad_smoke_jobs():
+    scope = classify_paths(["new_runtime/bootstrap.conf"])
+
+    assert scope.client is True
+    assert scope.broad_python is True
+    assert scope.root_tests is True
+
+
+def test_empty_diff_fails_closed():
+    scope = classify_paths([])
+
+    assert scope.client is True
+    assert scope.broad_python is True
+    assert scope.knowledge_postgres is True
+    assert scope.workflow_postgres is True
+
+
+def test_name_status_parser_preserves_both_sides_of_rename():
+    raw = b"M\0docs/README.md\0R100\0apps/gateway/old.py\0apps/shared/new.py\0"
+
+    assert parse_name_status_z(raw) == [
+        "docs/README.md",
+        "apps/gateway/old.py",
+        "apps/shared/new.py",
+    ]
+
+
+def test_python_file_selection_excludes_deleted_files(tmp_path: Path):
+    existing = tmp_path / "apps" / "shared" / "service.py"
+    existing.parent.mkdir(parents=True)
+    existing.write_text("VALUE = 1\n", encoding="utf-8")
+
+    assert changed_python_files(
+        ["apps/shared/service.py", "apps/shared/deleted.py", "docs/README.md"],
+        tmp_path,
+    ) == ["apps/shared/service.py"]
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/etc/passwd", "C:/Windows/system.ini", "../outside.py"],
+)
+def test_path_normalization_rejects_paths_outside_repository(path: str):
+    with pytest.raises(ValueError):
+        normalize_repo_path(path)
+
+
+def test_python_file_selection_rejects_symlink(tmp_path: Path):
+    target = tmp_path / "target.py"
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+    link = tmp_path / "apps" / "shared" / "linked.py"
+    link.parent.mkdir(parents=True)
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("symlink creation is not available")
+
+    with pytest.raises(ValueError, match="must not be a symlink"):
+        changed_python_files(["apps/shared/linked.py"], tmp_path)

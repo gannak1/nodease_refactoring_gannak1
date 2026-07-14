@@ -1,0 +1,161 @@
+name: Trusted CI Control
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+  issue_comment:
+    types:
+      - created
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: write
+
+concurrency:
+  group: trusted-ci-control-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  ci_control_review:
+    name: ci-control-review
+    if: >-
+      github.event_name == 'pull_request_target' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       github.event.comment.body == '/recheck-ci-control')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Enforce trusted CI control policy
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const { owner, repo } = context.repo;
+            const pullNumber =
+              context.payload.pull_request?.number ?? context.payload.issue?.number;
+            if (!pullNumber) {
+              core.setFailed("Pull request number is unavailable.");
+              return;
+            }
+
+            const { data: pull } = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: pullNumber,
+            });
+            const targetUrl =
+              `${process.env.GITHUB_SERVER_URL}/${owner}/${repo}/actions/runs/` +
+              process.env.GITHUB_RUN_ID;
+            const statusContext = "trusted-ci-control/base-policy";
+            const setStatus = (state, description) =>
+              github.rest.repos.createCommitStatus({
+                owner,
+                repo,
+                sha: pull.head.sha,
+                state,
+                context: statusContext,
+                description,
+                target_url: targetUrl,
+              });
+
+            await setStatus("pending", "Evaluating base-trusted CI control policy.");
+
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner,
+              repo,
+              pull_number: pullNumber,
+              per_page: 100,
+            });
+            if (files.length !== pull.changed_files) {
+              await setStatus(
+                "failure",
+                "Could not enumerate every changed file; review is required.",
+              );
+              core.setFailed(
+                `Expected ${pull.changed_files} changed files but received ${files.length}.`,
+              );
+              return;
+            }
+            const isCiControlPath = (path) =>
+              Boolean(path) &&
+              (path.startsWith(".github/workflows/") ||
+                path.startsWith(".github/actions/") ||
+                path.startsWith("scripts/ci/") ||
+                path.startsWith("tests/ci/"));
+            const changesCiControl = files.some(
+              (file) =>
+                isCiControlPath(file.filename) ||
+                isCiControlPath(file.previous_filename),
+            );
+
+            if (!changesCiControl) {
+              await setStatus("success", "No CI control paths changed.");
+              return;
+            }
+
+            const reviews = await github.paginate(github.rest.pulls.listReviews, {
+              owner,
+              repo,
+              pull_number: pullNumber,
+              per_page: 100,
+            });
+            const latestDecisionByReviewer = new Map();
+            for (const review of reviews) {
+              if (
+                !review.user ||
+                review.user.id === pull.user.id ||
+                review.state === "COMMENTED"
+              ) {
+                continue;
+              }
+              latestDecisionByReviewer.set(review.user.id, review);
+            }
+
+            let approvedByWriter = false;
+            for (const review of latestDecisionByReviewer.values()) {
+              if (
+                review.state !== "APPROVED" ||
+                review.commit_id !== pull.head.sha
+              ) {
+                continue;
+              }
+              try {
+                const { data: permission } =
+                  await github.rest.repos.getCollaboratorPermissionLevel({
+                    owner,
+                    repo,
+                    username: review.user.login,
+                  });
+                if (["admin", "maintain", "write"].includes(permission.permission)) {
+                  approvedByWriter = true;
+                  break;
+                }
+              } catch (error) {
+                core.warning(
+                  `Could not verify reviewer permission for ${review.user.login}.`,
+                );
+              }
+            }
+
+            if (!approvedByWriter) {
+              await setStatus(
+                "failure",
+                "Fresh approval from a write maintainer is required.",
+              );
+              core.setFailed(
+                "CI control changes require an independent approval on the current head. " +
+                  "After approval, comment /recheck-ci-control on the pull request.",
+              );
+              return;
+            }
+
+            await setStatus(
+              "success",
+              "CI control change approved on the current head.",
+            );
