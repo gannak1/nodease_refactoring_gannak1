@@ -123,7 +123,7 @@ Main generation과 Memory summary provider adapter는 Workflow admission 안에�
   - 표준 필드가 없으면 소요 시간은 프론트 수신 시각 기준 fallback을 사용할 수 있고, 비용/토큰은 `-`로 표시한다.
   - 노드별 상세 output은 필요할 때 JSON 형태로 확인할 수 있다.
   - 성공 결과 상단에는 `최종 응답` 카드를 표시한다.
-  - `최종 응답` 카드는 최종 사용자가 받는 응답 preview를 표시하며, workflow output, answer/response node output, LLM node text output 순서로 fallback한다.
+  - `최종 응답` 카드는 최종 사용자가 받는 응답 preview를 표시하며, 사용자 응답 형태의 workflow output, answer/response node output, LLM node text output 순서로 fallback한다. `workflow output`이 현재 graph의 node id만 key로 갖는 전체 실행 컨텍스트이면 최종 응답으로 사용하지 않고 answer/response node output을 우선한다.
   - JSON 최종 응답은 raw JSON dump 대신 key/value preview로 표시하고, 원본 JSON은 노드별 실행 결과 상세 output에 유지한다.
   - 최종 응답 preview 추출은 `TestSidebar` 렌더링과 분리된 helper에서 수행한다.
   - 워크플로우 테스트가 완료되면 마지막 영역에 서버 실행 시간, 화면 완료 시간, 전체 비용, 전체 토큰 사용량을 최종 요약으로 표시한다.
@@ -137,7 +137,7 @@ Main generation과 Memory summary provider adapter는 Workflow admission 안에�
   - 사용자가 `기준으로 고정`을 누른 실행과 비교 패널의 필터·선택 상세는 같은 TestSidebar 세션에서 `단일 결과`와 `실행 비교`를 오가도 유지한다. `기준 변경`을 누르기 전까지 기준 실행을 지우지 않으며, `다시 테스트하기`와 현재 workflow 재실행도 기준 실행을 지우지 않는다.
   - 테스트 실행에서 보고 화면으로 이동할 때는 현재 실행, 기준 실행, 비교 모드, 선택한 비교 노드를 URL query로 함께 전달한다. 보고 화면의 탭 이동과 `워크플로우 편집` 복귀도 같은 query를 보존하며, 복귀한 TestSidebar는 비교 상세를 다시 조회해 복원한다.
   - 기준만 있고 현재 실행이 없으면 기준 실행 시각과 `현재 설정으로 테스트를 실행하세요` 안내를 표시한다.
-  - 현재 실행이 완료되면 workflow canvas를 유지한 채 노드별 비교 목록을 표시한다. 각 노드는 성공 여부, 비용, 실행 시간, 토큰만 양쪽 값으로 보여준다.
+  - 현재 실행이 완료되면 workflow canvas를 유지한 채 노드별 비교 목록을 표시한다. 각 노드는 이름과 node registry의 사람용 유형명, 성공 여부, 비용, 실행 시간, 토큰을 양쪽 값으로 보여준다.
   - stream의 노드 상태·관측값 갱신만으로는 현재 비교 데이터를 다시 조회하거나 로딩 화면으로 전환하지 않으며, 열어 둔 노드 상세도 유지한다. 기준/현재 실행 식별자, 노드 식별·표시 정보 또는 사용자의 재시도 요청이 바뀔 때만 비교 데이터를 다시 읽는다.
   - LLM trace가 없으면 비교는 node run 기록만으로 계속 표시한다. trace API가 권한·서버·네트워크 오류로 실패하면 `일부 LLM trace를 불러오지 못했습니다` 경고를 표시해 모델 라우팅·토큰·비용 근거 일부가 누락됐음을 알린다.
   - `노드 상세 비교하기`를 누르면 페이지 이동 없이 TestSidebar 내부 상세로 전환한다. 상세는 양쪽 상태·비용·실행 시간·토큰, 입력, 출력과 LLM node의 모델 라우팅 선택 모델·입력군·매칭 규칙·fallback·정책 버전·학습 포함 여부를 비교한다.

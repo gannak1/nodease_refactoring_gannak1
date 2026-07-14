@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 
 import { workflowApi } from '../../api/workflowApi';
+import { getNodeDefinitionByType } from '../../config/nodeRegistry';
 import type { LLMTrace, WorkflowNodeRun, WorkflowRun } from '../../types/Api';
 import type { Node } from '../../types/Workflow';
 import {
@@ -116,6 +117,15 @@ const nodeTitle = (node: Node | undefined, nodeRun: WorkflowNodeRun) => {
   if (typeof data?.title === 'string' && data.title.trim()) return data.title;
   if (typeof data?.name === 'string' && data.name.trim()) return data.name;
   return nodeRun.node_id;
+};
+
+const nodeTypeLabel = (
+  baseline?: NodeSnapshot,
+  current?: NodeSnapshot,
+) => {
+  const nodeType = current?.nodeType || baseline?.nodeType;
+  if (!nodeType) return '유형 정보 없음';
+  return getNodeDefinitionByType(nodeType)?.name || nodeType;
 };
 
 const comparisonNodeDefinitionKey = (nodes: Node[]) =>
@@ -897,6 +907,7 @@ export function ExecutionComparisonPanel({
               <div className="mt-2 space-y-3">
                 {comparisonNodes.map(({ nodeId, baseline, current }) => {
                   const title = current?.title ?? baseline?.title ?? nodeId;
+                  const typeLabel = nodeTypeLabel(baseline, current);
                   const statusFailed = [baseline?.status, current?.status].some(
                     (status) =>
                       ['failed', 'failure'].includes(
@@ -913,9 +924,17 @@ export function ExecutionComparisonPanel({
                         <StatusIcon
                           className={`h-4 w-4 ${statusFailed ? 'text-red-500' : 'text-green-600'}`}
                         />
-                        <h4 className="min-w-0 flex-1 truncate text-sm font-semibold text-gray-900 dark:text-gray-100">
-                          {title}
-                        </h4>
+                        <div className="min-w-0 flex-1">
+                          <h4 className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">
+                            {title}
+                          </h4>
+                          <p
+                            aria-label={`${title} 노드 유형`}
+                            className="mt-0.5 text-[11px] font-medium text-gray-500 dark:text-gray-400"
+                          >
+                            {typeLabel}
+                          </p>
+                        </div>
                       </div>
                       <div className="mt-3 grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-3">
                         <div className="rounded border border-gray-100 bg-gray-50 p-2 dark:border-gray-700 dark:bg-gray-800/60">

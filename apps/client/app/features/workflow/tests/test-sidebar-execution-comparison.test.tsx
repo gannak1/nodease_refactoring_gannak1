@@ -319,6 +319,35 @@ describe('TestSidebar execution comparison', () => {
     expect(screen.getByText('기준 실행 고정됨')).toBeVisible();
   });
 
+  it('노드별 비교 목록에서 노드 이름과 유형을 함께 표시한다', async () => {
+    mocks.getWorkflowRuns.mockResolvedValue({
+      total: 1,
+      items: [runSummary('baseline-run', '2026-07-13T01:00:00Z')],
+    });
+    mocks.getWorkflowRun.mockImplementation(
+      (_workflowId: string, runId: string) =>
+        Promise.resolve(
+          runId === 'baseline-run'
+            ? runDetail('baseline-run', 'gpt-4.1', '기존 문의', '기존 답변')
+            : runDetail('current-run', 'gpt-4.1-mini', '현재 문의', '현재 답변'),
+        ),
+    );
+    mocks.getWorkflowRunLlmTraces.mockResolvedValue({
+      total: 0,
+      limit: 100,
+      offset: 0,
+      items: [],
+    });
+
+    render(<ComparisonHarness />);
+    fireEvent.click(
+      await screen.findByRole('button', { name: '기준으로 고정' }),
+    );
+
+    expect(await screen.findByText('문의 분류')).toBeVisible();
+    expect(screen.getByText('LLM')).toBeVisible();
+  });
+
   it('현재 테스트를 다시 실행해도 고정한 기준 실행을 유지한다', async () => {
     mocks.getWorkflowRuns.mockResolvedValue({
       total: 1,
