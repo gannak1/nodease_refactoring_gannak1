@@ -11,6 +11,8 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0f4a5b6c7d89"
+# fd3e4f5a6b78 is on the merged single-head lineage descending from the
+# schedule constraint owner ff5c6d7e8f90.
 down_revision: Union[str, Sequence[str], None] = "fd3e4f5a6b78"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

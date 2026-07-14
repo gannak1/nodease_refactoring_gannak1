@@ -1375,12 +1375,7 @@ class WorkflowEngine:
 
     def _get_context(self, node_id: str, results: Dict) -> Dict[str, Any]:
         """현재 노드가 실행에 필요한 모든 입력 데이터를 구성"""
-        node_schema = self.node_schemas.get(node_id)
-        if node_schema and node_schema.type in [
-            "startNode",
-            "webhookTrigger",
-            "scheduleTrigger",
-        ]:
+        if node_id == self.start_node_id:
             return self.user_input
 
         return dict(results)

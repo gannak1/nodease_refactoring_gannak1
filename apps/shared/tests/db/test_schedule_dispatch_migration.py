@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import importlib
 import inspect
+from pathlib import Path
 
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from apps.shared.alembic.schedule_dispatch_downgrade import (
     DESTRUCTIVE_DOWNGRADE_ENV,
     assert_schedule_configuration_quarantine_downgrade_is_safe,
@@ -392,6 +395,25 @@ def test_configuration_preflight_reason_migration_extends_current_head():
     assert "configuration_preflight_blocked" not in migration._safe_reason_constraint(
         include_configuration_preflight=False
     )
+
+
+def test_configuration_preflight_reason_descends_from_schedule_constraint_owner():
+    root = Path(__file__).resolve().parents[4]
+    config = Config(str(root / "apps" / "shared" / "alembic.ini"))
+    config.set_main_option(
+        "script_location",
+        str(root / "apps" / "shared" / "alembic"),
+    )
+    script = ScriptDirectory.from_config(config)
+
+    ancestry = {
+        revision.revision
+        for revision in script.iterate_revisions("0f4a5b6c7d89", "base")
+    }
+
+    assert "fd3e4f5a6b78" in ancestry
+    assert "ff5c6d7e8f90" in ancestry
+    assert "fa8b9c0d1e23" in ancestry
 
 
 @pytest.mark.parametrize("blocking_row", (None, 1))

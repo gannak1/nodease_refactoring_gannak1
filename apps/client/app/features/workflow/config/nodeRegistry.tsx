@@ -365,6 +365,7 @@ export const nodeRegistry: NodeDefinition[] = [
     defaultData: () => ({
       title: '메일 검색',
       credential_id: null,
+      configuration_state: 'unresolved',
       folder: 'INBOX',
       max_results: 10,
       unread_only: false,
