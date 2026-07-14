@@ -1,3 +1,4 @@
+import hashlib
 import logging
 from typing import Any, Dict, List
 from uuid import UUID
@@ -11,9 +12,29 @@ from apps.shared.services.rag_hierarchy import (
     document_chunking_mode,
 )
 from apps.shared.utils.encryption import encryption_manager
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
+
+
+def acquire_document_write_lock(db: Session, document_id: UUID) -> None:
+    """Serialize all PostgreSQL chunk replacements before any document row lock."""
+    bind = db.get_bind()
+    if bind is None or bind.dialect.name != "postgresql":
+        return
+    lock_key = int.from_bytes(
+        hashlib.blake2b(
+            b"knowledge-vector-store-v1\x00" + document_id.bytes,
+            digest_size=8,
+        ).digest(),
+        byteorder="big",
+        signed=True,
+    )
+    db.execute(
+        text("SELECT pg_advisory_xact_lock(:lock_key)"),
+        {"lock_key": lock_key},
+    )
 
 
 class VectorStoreService:
@@ -33,6 +54,9 @@ class VectorStoreService:
         document_id: UUID,
         chunks: List[Dict[str, Any]],
         model_name: str = "text-embedding-3-small",
+        *,
+        commit: bool = True,
+        allow_empty_replace: bool = False,
     ):
         """
         청크 리스트를 받아 증분 업데이트(Incremental Update) 방식으로 저장
@@ -40,14 +64,24 @@ class VectorStoreService:
         2. 해시 비교를 통해 변경된 청크만 선별 임베딩 (비용 절감)
         3. 기존 청크 삭제 후 일괄 저장 (원자성 보장)
         """
-        import hashlib
-
+        acquire_document_write_lock(self.db, document_id)
         doc = self.db.query(Document).filter(Document.id == document_id).first()
         if not doc:
-            raise ValueError(f"Document {document_id} not found")
+            raise ValueError("document_not_found")
+
+        if not chunks and not allow_empty_replace:
+            logger.warning("[벡터저장] 저장할 청크 없음")
+            return
 
         if not chunks:
-            logger.warning(f"[벡터저장] 저장할 청크 없음: 문서 {document_id}")
+            self.db.query(DocumentChunk).filter(
+                DocumentChunk.document_id == document_id
+            ).delete()
+            doc.embedding_model = model_name
+            if commit:
+                self.db.commit()
+            else:
+                self.db.flush()
             return
 
         if document_chunking_mode(doc.meta_info) == CHUNKING_MODE_HIERARCHICAL:
@@ -55,7 +89,7 @@ class VectorStoreService:
         if contains_non_flat_payload(chunks):
             raise RuntimeError("VectorStoreService does not accept hierarchical chunks")
 
-        logger.info(f"[벡터저장] {len(chunks)}개 청크 처리 시작: 문서 {document_id}")
+        logger.info("[벡터저장] %s개 청크 처리 시작", len(chunks))
 
         # 1. 기존 청크 로드 및 해시 맵 구축
         existing_chunks = (
@@ -150,9 +184,12 @@ class VectorStoreService:
                     )
                     for idx, emb in zip(indices, embeddings):
                         final_embeddings[idx] = emb
-                except Exception as e:
-                    logger.error(f"[벡터저장] 임베딩 실패: {e}")
-                    raise RuntimeError(f"임베딩 생성 실패로 동기화 중단: {e}")
+                except Exception as exc:
+                    logger.error(
+                        "Vector embedding failed: error_type=%s",
+                        type(exc).__name__,
+                    )
+                    raise RuntimeError("embedding_generation_failed") from exc
 
         # 4. DocumentChunk 저장 (Atomic Swap)
         new_document_chunks = []
@@ -194,6 +231,9 @@ class VectorStoreService:
         self.db.bulk_save_objects(new_document_chunks)
 
         doc.embedding_model = model_name
-        self.db.commit()
+        if commit:
+            self.db.commit()
+        else:
+            self.db.flush()
 
         logger.info(f"[벡터저장] 총 {len(new_document_chunks)}개 청크 저장 완료")

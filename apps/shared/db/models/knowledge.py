@@ -4,6 +4,10 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from apps.shared.db.base import Base
+from apps.shared.domain.knowledge_collection_sync import (
+    DEFAULT_ITEM_MAX_ATTEMPTS,
+    DEFAULT_JOB_MAX_ATTEMPTS,
+)
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
@@ -13,6 +17,7 @@ from sqlalchemy import (
     Enum,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -143,6 +148,11 @@ class KnowledgeCollection(Base):
 
     __tablename__ = "knowledge_collections"
     __table_args__ = (
+        UniqueConstraint(
+            "id",
+            "organization_id",
+            name="uq_knowledge_collections_id_organization_id",
+        ),
         UniqueConstraint(
             "organization_id",
             "name",
@@ -280,6 +290,254 @@ class KnowledgeCollectionItem(Base):
     knowledge_base: Mapped["KnowledgeBase"] = relationship("KnowledgeBase")
 
 
+class KnowledgeCollectionSyncJob(Base):
+    """Durable Collection sync request, lease, and terminal summary."""
+
+    __tablename__ = "knowledge_collection_sync_jobs"
+    __table_args__ = (
+        UniqueConstraint(
+            "id",
+            "organization_id",
+            name="uq_knowledge_collection_sync_jobs_id_org",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "collection_id",
+            "request_key_hash",
+            name="uq_knowledge_collection_sync_jobs_request",
+        ),
+        ForeignKeyConstraint(
+            ["collection_id", "organization_id"],
+            ["knowledge_collections.id", "knowledge_collections.organization_id"],
+            name="fk_knowledge_collection_sync_jobs_collection_org",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'succeeded', 'partially_failed', 'failed', 'cancelled')",
+            name="ck_knowledge_collection_sync_jobs_status",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0 AND max_attempts > 0",
+            name="ck_knowledge_collection_sync_jobs_attempts",
+        ),
+        CheckConstraint(
+            "total_count >= 0 AND completed_count >= 0 AND failed_count >= 0 "
+            "AND skipped_count >= 0 "
+            "AND completed_count + failed_count + skipped_count <= total_count",
+            name="ck_knowledge_collection_sync_jobs_counts",
+        ),
+        CheckConstraint(
+            "(status = 'running' AND lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL) "
+            "OR (status <> 'running' AND lease_owner IS NULL AND lease_expires_at IS NULL)",
+            name="ck_knowledge_collection_sync_jobs_lease",
+        ),
+        Index(
+            "uq_knowledge_collection_sync_jobs_active",
+            "organization_id",
+            "collection_id",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running')"),
+        ),
+        Index(
+            "ix_knowledge_collection_sync_jobs_due",
+            "status",
+            "next_retry_at",
+        ),
+        Index(
+            "ix_knowledge_collection_sync_jobs_lease",
+            "status",
+            "lease_expires_at",
+        ),
+        Index(
+            "ix_knowledge_collection_sync_jobs_retention",
+            "status",
+            "completed_at",
+        ),
+        Index(
+            "ix_knowledge_collection_sync_jobs_org_collection_requested",
+            "organization_id",
+            "collection_id",
+            "requested_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organization.id"), nullable=False
+    )
+    collection_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    requested_by: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    request_key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_snapshot_revision: Mapped[str] = mapped_column(String(64), nullable=False)
+    previous_sync_state: Mapped[str] = mapped_column(String(50), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="queued", server_default=text("'queued'")
+    )
+    total_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    completed_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    failed_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    skipped_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    retryable: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    safe_reason_code: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    max_attempts: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=DEFAULT_JOB_MAX_ATTEMPTS,
+        server_default=text(str(DEFAULT_JOB_MAX_ATTEMPTS)),
+    )
+    lease_owner: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    lease_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    next_retry_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    execution_deadline_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
+class KnowledgeCollectionSyncJobItem(Base):
+    """Internal child target snapshot. Never project child identity to sync APIs."""
+
+    __tablename__ = "knowledge_collection_sync_job_items"
+    __table_args__ = (
+        UniqueConstraint(
+            "job_id",
+            "document_id",
+            name="uq_knowledge_collection_sync_job_items_document",
+        ),
+        UniqueConstraint(
+            "job_id",
+            "position",
+            name="uq_knowledge_collection_sync_job_items_position",
+        ),
+        ForeignKeyConstraint(
+            ["job_id", "organization_id"],
+            ["knowledge_collection_sync_jobs.id", "knowledge_collection_sync_jobs.organization_id"],
+            name="fk_knowledge_collection_sync_job_items_job_org",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["collection_id", "organization_id"],
+            ["knowledge_collections.id", "knowledge_collections.organization_id"],
+            name="fk_knowledge_collection_sync_job_items_collection_org",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["knowledge_base_id", "organization_id"],
+            ["knowledge_bases.id", "knowledge_bases.organization_id"],
+            name="fk_knowledge_collection_sync_job_items_kb_org",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["document_id", "knowledge_base_id"],
+            ["documents.id", "documents.knowledge_base_id"],
+            name="fk_knowledge_collection_sync_job_items_document_kb",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'running', 'succeeded', 'failed', 'skipped')",
+            name="ck_knowledge_collection_sync_job_items_status",
+        ),
+        CheckConstraint(
+            "position >= 0 AND attempt_count >= 0 AND max_attempts > 0",
+            name="ck_knowledge_collection_sync_job_items_counters",
+        ),
+        Index(
+            "ix_knowledge_collection_sync_job_items_job_status_position",
+            "job_id",
+            "status",
+            "position",
+        ),
+        Index(
+            "ix_knowledge_collection_sync_job_items_kb_org",
+            "knowledge_base_id",
+            "organization_id",
+        ),
+        Index(
+            "ix_knowledge_collection_sync_job_items_document",
+            "document_id",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    job_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    collection_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    knowledge_base_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=False,
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="pending", server_default=text("'pending'")
+    )
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    max_attempts: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=DEFAULT_ITEM_MAX_ATTEMPTS,
+        server_default=text(str(DEFAULT_ITEM_MAX_ATTEMPTS)),
+    )
+    retryable: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    safe_reason_code: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
 class KnowledgeSourceIdentity(Base):
     """Protected source item identity. Raw source values must not be user-facing."""
 
@@ -359,6 +617,13 @@ class Document(Base):
     """
 
     __tablename__ = "documents"
+    __table_args__ = (
+        UniqueConstraint(
+            "id",
+            "knowledge_base_id",
+            name="uq_documents_id_knowledge_base_id",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False

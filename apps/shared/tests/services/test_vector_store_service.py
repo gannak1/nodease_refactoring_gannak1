@@ -188,3 +188,52 @@ def test_vector_store_rejects_non_flat_payload(service, mock_document):
             mock_document.id,
             [{"content": "x", "metadata": {}, "chunk_level": "child"}],
         )
+
+
+def test_empty_sync_result_replaces_chunks_inside_caller_transaction(
+    service, mock_db, mock_document
+):
+    service.save_chunks(
+        mock_document.id,
+        [],
+        commit=False,
+        allow_empty_replace=True,
+    )
+
+    mock_db.query.return_value.filter.return_value.delete.assert_called_once()
+    mock_db.flush.assert_called_once()
+    mock_db.commit.assert_not_called()
+
+
+def test_postgres_document_replacement_acquires_transaction_lock(
+    service, mock_db, mock_document
+):
+    mock_db.get_bind.return_value.dialect.name = "postgresql"
+
+    service.save_chunks(
+        mock_document.id,
+        [],
+        commit=False,
+        allow_empty_replace=True,
+    )
+
+    statement, parameters = mock_db.execute.call_args.args
+    assert "pg_advisory_xact_lock" in str(statement)
+    assert isinstance(parameters["lock_key"], int)
+
+
+def test_embedding_failure_uses_sanitized_exception_and_log(
+    service, mock_document, mock_embedding_service, caplog
+):
+    mock_embedding_service.embed_batch.side_effect = RuntimeError(
+        "credential-bearing provider detail"
+    )
+
+    with pytest.raises(RuntimeError, match="^embedding_generation_failed$"):
+        service.save_chunks(
+            mock_document.id,
+            [{"content": "new content", "metadata": {}}],
+            commit=False,
+        )
+
+    assert "credential-bearing provider detail" not in caplog.text
