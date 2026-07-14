@@ -1175,6 +1175,13 @@ class KnowledgeCollectionService:
             can_route=permissions["route"],
             can_manage=permissions["manage"],
             can_sync=permissions["sync"],
+            sync_supported=(
+                collection.lifecycle_state == "active"
+                and collection.sync_state != "source_deleted"
+                and not collection.is_system_managed
+                and collection.source_identity_id is None
+                and not collection.source_connector_ref
+            ),
             safe_metadata=safe_metadata,
             created_at=collection.created_at,
             updated_at=collection.updated_at,

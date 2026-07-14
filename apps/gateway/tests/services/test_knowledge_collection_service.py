@@ -157,6 +157,29 @@ def _collection_response(collection):
     )
 
 
+def test_collection_projection_separates_sync_authority_from_adapter_support(
+    monkeypatch,
+):
+    service = _service(monkeypatch)
+    collection = _collection()
+    monkeypatch.setattr(service, "_linked_kb_count", lambda collection_id: 0)
+    monkeypatch.setattr(service, "_active_kb_count", lambda collection_id: 0)
+    monkeypatch.setattr(
+        service.permission_helper,
+        "evaluate_collection_action",
+        lambda collection, action: SimpleNamespace(allowed=True),
+    )
+
+    supported = service._collection_response(collection)
+    assert supported.can_sync is True
+    assert supported.sync_supported is True
+
+    collection.source_identity_id = uuid.uuid4()
+    unsupported = service._collection_response(collection)
+    assert unsupported.can_sync is True
+    assert unsupported.sync_supported is False
+
+
 def test_safe_metadata_rejects_raw_source_keys(monkeypatch):
     service = _service(monkeypatch)
 
