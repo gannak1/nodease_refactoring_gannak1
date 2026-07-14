@@ -17,6 +17,8 @@ from sqlalchemy.orm import Session
 
 from apps.shared.db.models.model_routing_cohort import (
     LLMNodeModelRoutingCohort,
+    LLMNodeModelRoutingCohortExample,
+    LLMNodeModelRoutingModelEvidence,
     LLMNodeModelRoutingObservation,
 )
 from apps.shared.db.models.model_routing_policy import LLMNodeModelRoutingPolicy
@@ -314,6 +316,93 @@ class AdaptiveModelRoutingCohortStore:
                 ordinal=1,
             )
         )
+        db.flush()
+        return cohort
+
+    @classmethod
+    def update_manual_cohort(
+        cls,
+        db: Session,
+        *,
+        cohort: LLMNodeModelRoutingCohort,
+        policy: LLMNodeModelRoutingPolicy,
+        node_data: dict[str, Any],
+        label: str,
+        cohort_key: str,
+        representative_query: str,
+        fixed: bool,
+        encoder_model_id: str,
+        embed: EmbeddingFunction,
+    ) -> LLMNodeModelRoutingCohort:
+        """직접 등록 입력군을 새 의미 기준으로 다시 검증 대기 상태로 만든다.
+
+        대표 문의를 바꾸면 centroid와 기존 품질 증거가 더 이상 같은 입력군을
+        설명하지 않는다. 따라서 기존 route/evidence를 즉시 사용하지 않고,
+        운영 관찰과 Replay 검증을 다시 거치도록 상태를 초기화한다.
+        """
+        if cohort.source != "manual":
+            raise ValueError("model_routing.cohort_auto_read_only")
+
+        normalized_label = " ".join(str(label or "").split())[:255]
+        normalized_key = str(cohort_key or "").strip().lower()[:128]
+        normalized_query = " ".join(str(representative_query or "").split())[:2000]
+        if not normalized_label or not normalized_key or not normalized_query:
+            raise ValueError("model_routing.cohort_invalid")
+
+        cohorts = cls._live_cohorts(db, policy_id=policy.id)
+        if any(
+            item.id != cohort.id and str(item.cohort_key) == normalized_key
+            for item in cohorts
+        ):
+            raise ValueError("model_routing.cohort_key_exists")
+
+        vector = cls._embedding(embed, normalized_query)
+        if not vector:
+            raise ValueError("model_routing.cohort_embedding_failed")
+
+        now = datetime.now(timezone.utc)
+        cohort.cohort_key = normalized_key
+        cohort.label = normalized_label
+        cohort.label_en = normalized_key
+        cohort.required = bool(fixed)
+        cohort.encoder_model_id = str(encoder_model_id)
+        cohort.centroid_embedding = vector
+        cohort.status = "proposed"
+        cohort.observation_count = 0
+        cohort.review_window_count = 0
+        cohort.low_share_streak = 0
+        cohort.last_traffic_share = Decimal("0")
+        cohort.node_config_fingerprint = llm_node_config_fingerprint(node_data)
+        cohort.last_seen_at = now
+        cohort.dormant_since = None
+        cohort.retired_at = None
+
+        example = (
+            db.query(LLMNodeModelRoutingCohortExample)
+            .filter(LLMNodeModelRoutingCohortExample.cohort_id == cohort.id)
+            .filter(LLMNodeModelRoutingCohortExample.ordinal == 1)
+            .one_or_none()
+        )
+        if example is None:
+            db.add(
+                LLMNodeModelRoutingCohortExample(
+                    cohort_id=cohort.id,
+                    synthetic_text=normalized_query,
+                    embedding=vector,
+                    ordinal=1,
+                )
+            )
+        else:
+            example.synthetic_text = normalized_query
+            example.embedding = vector
+
+        for evidence in (
+            db.query(LLMNodeModelRoutingModelEvidence)
+            .filter(LLMNodeModelRoutingModelEvidence.cohort_id == cohort.id)
+            .all()
+        ):
+            evidence.status = "expired"
+            evidence.expires_at = now
         db.flush()
         return cohort
 

@@ -57,6 +57,7 @@ from apps.shared.db.models.model_routing_policy import (
 )
 from apps.shared.db.models.model_routing_cohort import (
     LLMNodeModelRoutingCohort,
+    LLMNodeModelRoutingCohortExample,
     LLMNodeModelRoutingModelEvidence,
     LLMNodeModelRoutingValidationBatch,
     LLMNodeModelRoutingValidationBudgetMonth,
@@ -266,6 +267,10 @@ class ModelRoutingCohortCreateRequest(ModelRoutingCohortSuggestRequest):
     label: str = Field(min_length=1, max_length=255)
     key: str = Field(min_length=1, max_length=128)
     fixed: bool = False
+
+
+class ModelRoutingCohortUpdateRequest(ModelRoutingCohortCreateRequest):
+    """사용자 직접 입력군의 표시값과 대표 문의를 갱신한다."""
 
 
 class ModelRoutingPolicyRefreshRequest(BaseModel):
@@ -902,6 +907,19 @@ def _model_routing_adaptive_summary(
             .all()
         )
     }
+    representative_query_by_cohort = {
+        str(row.cohort_id): row.synthetic_text
+        for row in (
+            db.query(LLMNodeModelRoutingCohortExample)
+            .filter(
+                LLMNodeModelRoutingCohortExample.cohort_id.in_(
+                    [item.id for item in cohorts] or [UUID(int=0)]
+                )
+            )
+            .filter(LLMNodeModelRoutingCohortExample.ordinal == 1)
+            .all()
+        )
+    }
     budget = (
         db.query(LLMNodeModelRoutingValidationBudgetMonth)
         .filter(LLMNodeModelRoutingValidationBudgetMonth.policy_id == policy.id)
@@ -937,6 +955,7 @@ def _model_routing_adaptive_summary(
                 "key": cohort.cohort_key,
                 "label": cohort.label,
                 "label_en": cohort.label_en,
+                "representative_query": representative_query_by_cohort.get(str(cohort.id)),
                 "source": cohort.source,
                 "status": cohort.status,
                 "required": cohort.required,
@@ -4034,6 +4053,108 @@ def create_model_routing_cohort_endpoint(
         "id": str(cohort.id),
         "key": cohort.cohort_key,
         "label": cohort.label,
+        "representative_query": request_body.representative_query,
+        "source": cohort.source,
+        "status": cohort.status,
+    }
+
+
+@router.patch("/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts/{cohort_id}")
+def update_model_routing_cohort_endpoint(
+    workflow_id: str,
+    node_id: str,
+    cohort_id: str,
+    request_body: ModelRoutingCohortUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """직접 등록 입력군만 수정하고 기존 route/evidence를 재검증 대기로 돌린다."""
+    workflow = ensure_workflow_permission(db, current_user, workflow_id, "deploy")
+    policy = _get_model_routing_policy_for_workflow(db, workflow, node_id)
+    deployment = _active_deployment_for_workflow(db, workflow)
+    if policy is None or not policy.enabled or deployment is None:
+        raise HTTPException(status_code=409, detail="model_routing.policy_not_ready")
+    try:
+        cohort_uuid = UUID(cohort_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="model_routing.cohort_not_found") from exc
+    cohort = (
+        db.query(LLMNodeModelRoutingCohort)
+        .filter(LLMNodeModelRoutingCohort.id == cohort_uuid)
+        .filter(LLMNodeModelRoutingCohort.policy_id == policy.id)
+        .one_or_none()
+    )
+    if cohort is None or cohort.status == "retired":
+        raise HTTPException(status_code=404, detail="model_routing.cohort_not_found")
+    if cohort.source != "manual":
+        raise HTTPException(status_code=409, detail="model_routing.cohort_auto_read_only")
+
+    node = _ensure_cost_optimizer_llm_node(
+        SimpleNamespace(id=workflow.id, graph=deployment.graph_snapshot or {}),
+        node_id,
+    )
+    node_data = node.get("data") if isinstance(node.get("data"), dict) else {}
+    subject_id = policy.execution_subject_user_id or current_user.id
+    organization_id = policy.organization_id or workflow.organization_id
+    if organization_id is None:
+        raise HTTPException(status_code=409, detail="model_routing.organization_required")
+    embedding_models = WorkflowRuntimeLLMService.get_runtime_available_embedding_model_ids_for_user(
+        db,
+        user_id=subject_id,
+        organization_id=organization_id,
+    )
+    if not embedding_models:
+        raise HTTPException(status_code=422, detail="model_routing.embedding_unavailable")
+    encoder_model_id = ModelRoutingPolicyStore._preferred_embedding_model(
+        node_data,
+        embedding_models,
+    )
+    previous_key = str(cohort.cohort_key)
+    try:
+        runtime = WorkflowRuntimeLLMService.get_runtime_client_for_user(
+            db,
+            user_id=subject_id,
+            model_id=encoder_model_id,
+            organization_id=organization_id,
+        )
+        cohort = AdaptiveModelRoutingCohortStore.update_manual_cohort(
+            db,
+            cohort=cohort,
+            policy=policy,
+            node_data=node_data,
+            label=request_body.label,
+            cohort_key=_normalize_model_routing_cohort_key(
+                request_body.key,
+                request_body.representative_query,
+            ),
+            representative_query=request_body.representative_query,
+            fixed=request_body.fixed,
+            encoder_model_id=encoder_model_id,
+            embed=runtime.client.embed_sync,
+        )
+        policy.active_policy = _remove_retired_cohort_from_active_policy(
+            policy.active_policy,
+            cohort_key=previous_key,
+        )
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        db.rollback()
+        logger.warning(
+            "[Model-Routing] manual cohort update failed: error_type=%s",
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=422,
+            detail="model_routing.cohort_update_failed",
+        ) from exc
+    return {
+        "id": str(cohort.id),
+        "key": cohort.cohort_key,
+        "label": cohort.label,
+        "representative_query": request_body.representative_query,
         "source": cohort.source,
         "status": cohort.status,
     }

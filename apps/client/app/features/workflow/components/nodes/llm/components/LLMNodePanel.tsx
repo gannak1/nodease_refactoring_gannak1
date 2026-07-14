@@ -366,6 +366,9 @@ export function LLMNodePanel({
       : 6;
   });
   const [isManualCohortFormOpen, setIsManualCohortFormOpen] = useState(false);
+  const [editingManualCohortId, setEditingManualCohortId] = useState<string | null>(
+    null,
+  );
   const [manualCohort, setManualCohort] = useState({
     label: '',
     key: '',
@@ -836,13 +839,24 @@ export function LLMNodePanel({
     }
     try {
       setIsManualCohortCreating(true);
-      await workflowApi.createModelRoutingCohort(activeWorkflowId, nodeId, {
+      const request = {
         label: manualCohort.label.trim(),
         key: manualCohort.key.trim(),
         representative_query: manualCohort.representativeQuery.trim(),
         fixed: manualCohort.fixed,
-      });
+      };
+      if (editingManualCohortId) {
+        await workflowApi.updateModelRoutingCohort(
+          activeWorkflowId,
+          nodeId,
+          editingManualCohortId,
+          request,
+        );
+      } else {
+        await workflowApi.createModelRoutingCohort(activeWorkflowId, nodeId, request);
+      }
       setManualCohort({ label: '', key: '', representativeQuery: '', fixed: false });
+      setEditingManualCohortId(null);
       setIsManualCohortFormOpen(false);
       await loadRoutingPolicy();
       setRoutingPolicyError(null);
@@ -855,11 +869,57 @@ export function LLMNodePanel({
     }
   }, [
     activeWorkflowId,
+    editingManualCohortId,
     isManualCohortCreating,
     loadRoutingPolicy,
     manualCohort,
     nodeId,
   ]);
+
+  const openManualCohortForm = useCallback(() => {
+    setEditingManualCohortId(null);
+    setManualCohort({ label: '', key: '', representativeQuery: '', fixed: false });
+    setIsManualCohortFormOpen(true);
+  }, []);
+
+  const handleManualCohortEdit = useCallback(
+    (cohort: {
+      id: string;
+      label: string;
+      key: string;
+      representative_query: string | null;
+      required: boolean;
+    }) => {
+      setEditingManualCohortId(cohort.id);
+      setManualCohort({
+        label: cohort.label,
+        key: cohort.key,
+        representativeQuery: cohort.representative_query || '',
+        fixed: cohort.required,
+      });
+      setIsManualCohortFormOpen(true);
+    },
+    [],
+  );
+
+  const handleAutoCohortConvert = useCallback(
+    (cohort: {
+      label: string;
+      key: string;
+      representative_query: string | null;
+    }) => {
+      setEditingManualCohortId(null);
+      setManualCohort({
+        label: cohort.label,
+        key: cohort.key,
+        representativeQuery: cohort.representative_query || '',
+        fixed: false,
+      });
+      setIsManualCohortFormOpen(true);
+      setRoutingPolicyError(null);
+    },
+    [],
+  );
 
   const handleManualCohortDelete = useCallback(
     async (cohort: { id: string; label: string }) => {
@@ -1587,26 +1647,44 @@ export function LLMNodePanel({
                       </span>
                     </div>
                     {adaptiveRoutingSummary.cohorts.length === 0 ? (
-                      <p className="mt-3 rounded border border-dashed border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-500">
-                        서로 다른 운영 입력이 두 점검 구간에서 충분히 쌓이면 입력군을 자동으로 발견합니다.
-                      </p>
+                      <div className="mt-3 rounded border border-dashed border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-500">
+                        <p>
+                          입력군이 없어 현재 모든 요청은 기본 모델로 처리합니다. 서로 다른 운영 입력이 두 점검 구간에서 충분히 쌓이면 입력군을 자동으로 발견합니다.
+                        </p>
+                        <button
+                          type="button"
+                          className="nodrag mt-2 font-semibold text-slate-700 underline underline-offset-2 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-60"
+                          onClick={openManualCohortForm}
+                          disabled={!persistedRoutingPolicy?.policy_id}
+                        >
+                          대표 문의로 입력군 만들기
+                        </button>
+                      </div>
                     ) : (
                       <ul className="mt-3 space-y-2">
                         {adaptiveRoutingSummary.cohorts.slice(0, 6).map((cohort) => (
                           <li
                             key={cohort.id}
-                            className="flex items-center justify-between gap-3 rounded border border-slate-200 bg-white px-2.5 py-2 text-[11px]"
+                            className="flex items-start justify-between gap-3 rounded border border-slate-200 bg-white px-2.5 py-2 text-[11px]"
                           >
-                            <span className="min-w-0">
-                              <span className="block truncate font-semibold text-slate-800">
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="truncate font-semibold text-slate-800">
                                 {cohort.label}
-                              </span>
-                              <span className="mt-0.5 block text-slate-500">
+                                </span>
+                                <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600">
+                                  {cohort.source === 'manual' ? '사용자 등록' : '자동 발견'}
+                                </span>
+                              </div>
+                              <p className="mt-1 whitespace-pre-wrap break-words leading-relaxed text-slate-600">
+                                대표 문의: {cohort.representative_query || '대표 문의를 준비 중입니다.'}
+                              </p>
+                              <p className="mt-1 text-slate-500">
                                 {cohort.key} · {cohort.source === 'manual' ? '직접 등록' : '자동 발견'} ·{' '}
                                 {cohort.observation_count}회
-                              </span>
-                            </span>
-                            <span className="shrink-0 text-right">
+                              </p>
+                            </div>
+                            <div className="shrink-0 text-right">
                               <span className="block font-semibold text-slate-700">
                                 {cohort.status}
                               </span>
@@ -1616,17 +1694,38 @@ export function LLMNodePanel({
                               <span className="block text-slate-500">
                                 {cohort.required ? '고정됨' : '자동 관리'}
                               </span>
-                            </span>
-                            {!cohort.safety_protected ? (
-                              <button
-                                type="button"
-                                className="nodrag shrink-0 rounded border border-rose-200 bg-white px-2 py-1 text-[11px] font-semibold text-rose-700 hover:bg-rose-50"
-                                onClick={() => handleManualCohortDelete(cohort)}
-                                aria-label={`${cohort.label} 입력군 삭제`}
-                              >
-                                삭제
-                              </button>
-                            ) : null}
+                              <div className="mt-2 flex justify-end gap-1.5">
+                                {cohort.source === 'manual' ? (
+                                  <button
+                                    type="button"
+                                    className="nodrag rounded border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100"
+                                    onClick={() => handleManualCohortEdit(cohort)}
+                                    aria-label={`${cohort.label} 수정`}
+                                  >
+                                    수정
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    className="nodrag rounded border border-violet-300 bg-violet-50 px-2 py-1 text-[11px] font-semibold text-violet-800 hover:bg-violet-100"
+                                    onClick={() => handleAutoCohortConvert(cohort)}
+                                    aria-label={`${cohort.label} 사용자 입력군으로 전환`}
+                                  >
+                                    사용자 입력군으로 전환
+                                  </button>
+                                )}
+                                {!cohort.safety_protected ? (
+                                  <button
+                                    type="button"
+                                    className="nodrag rounded border border-rose-200 bg-white px-2 py-1 text-[11px] font-semibold text-rose-700 hover:bg-rose-50"
+                                    onClick={() => handleManualCohortDelete(cohort)}
+                                    aria-label={`${cohort.label} 입력군 삭제`}
+                                  >
+                                    삭제
+                                  </button>
+                                ) : null}
+                              </div>
+                            </div>
                           </li>
                         ))}
                       </ul>
@@ -1646,9 +1745,14 @@ export function LLMNodePanel({
                         <button
                           type="button"
                           className="nodrag rounded border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
-                          onClick={() =>
-                            setIsManualCohortFormOpen((current) => !current)
-                          }
+                          onClick={() => {
+                            if (isManualCohortFormOpen) {
+                              setIsManualCohortFormOpen(false);
+                              setEditingManualCohortId(null);
+                            } else {
+                              openManualCohortForm();
+                            }
+                          }}
                           disabled={!persistedRoutingPolicy?.policy_id}
                         >
                           {isManualCohortFormOpen ? '닫기' : '직접 입력군 추가'}
@@ -1661,6 +1765,16 @@ export function LLMNodePanel({
                       ) : null}
                       {isManualCohortFormOpen ? (
                         <div className="mt-3 space-y-2 rounded border border-slate-200 bg-white p-3">
+                          <p className="text-[11px] font-semibold text-slate-800">
+                            {editingManualCohortId
+                              ? '사용자 입력군 수정'
+                              : '사용자 입력군 등록'}
+                          </p>
+                          {editingManualCohortId ? (
+                            <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] leading-relaxed text-amber-800">
+                              대표 문의를 바꾸면 기존 모델 검증 결과는 다시 확인해야 합니다. 이 입력군은 검증 대기 상태로 전환됩니다.
+                            </p>
+                          ) : null}
                           <label className="block text-[11px] font-medium text-slate-700">
                             대표 문의
                             <textarea
@@ -1754,7 +1868,13 @@ export function LLMNodePanel({
                                 isManualCohortCreating
                               }
                             >
-                              {isManualCohortCreating ? '등록 중' : '입력군 추가'}
+                              {isManualCohortCreating
+                                ? editingManualCohortId
+                                  ? '수정 중'
+                                  : '등록 중'
+                                : editingManualCohortId
+                                  ? '입력군 수정'
+                                  : '입력군 추가'}
                             </button>
                           </div>
                         </div>

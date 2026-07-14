@@ -37,11 +37,12 @@ import {
   ModelRoutingPolicyPatchRequest,
   ModelRoutingCohortCreateRequest,
   ModelRoutingCohortCreateResponse,
+  ModelRoutingCohortUpdateRequest,
+  ModelRoutingCohortUpdateResponse,
   ModelRoutingCohortSuggestionRequest,
   ModelRoutingCohortSuggestionResponse,
   ModelRoutingPolicyRefreshResponse,
   ModelRoutingPolicyResponse,
-  ModelRoutingPreviewResponse,
   WorkflowPermissionResponse,
   LLMTraceListResponse,
   WorkflowResponse,
@@ -424,18 +425,6 @@ export const workflowApi = {
     return response.data;
   },
 
-  previewModelRouting: async (
-    workflowId: string,
-    nodeId: string,
-    inputs: Record<string, unknown>,
-  ): Promise<ModelRoutingPreviewResponse> => {
-    const response = await api.post(
-      `/workflows/${workflowId}/llm-nodes/${nodeId}/model-routing/preview`,
-      { inputs },
-    );
-    return response.data;
-  },
-
   patchModelRoutingPolicy: async (
     workflowId: string,
     nodeId: string,
@@ -477,6 +466,19 @@ export const workflowApi = {
   ): Promise<ModelRoutingCohortCreateResponse> => {
     const response = await api.post(
       `/workflows/${workflowId}/llm-nodes/${nodeId}/model-routing/cohorts`,
+      data,
+    );
+    return response.data;
+  },
+
+  updateModelRoutingCohort: async (
+    workflowId: string,
+    nodeId: string,
+    cohortId: string,
+    data: ModelRoutingCohortUpdateRequest,
+  ): Promise<ModelRoutingCohortUpdateResponse> => {
+    const response = await api.patch(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/model-routing/cohorts/${cohortId}`,
       data,
     );
     return response.data;

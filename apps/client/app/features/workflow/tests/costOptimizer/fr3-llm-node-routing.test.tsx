@@ -18,6 +18,7 @@ const workflowApiMock = vi.hoisted(() => ({
   refreshModelRoutingPolicy: vi.fn(),
   suggestModelRoutingCohort: vi.fn(),
   createModelRoutingCohort: vi.fn(),
+  updateModelRoutingCohort: vi.fn(),
   deleteModelRoutingCohort: vi.fn(),
 }));
 
@@ -492,6 +493,94 @@ describe('FR-003 LLM node model routing optimization entry', () => {
         },
       );
     });
+  });
+
+  it('입력군 목록에 합성 대표 문의를 표시하고 생성 방식에 맞는 관리 동작을 제공한다', async () => {
+    workflowApiMock.getModelRoutingPolicy.mockResolvedValue({
+      enabled: true,
+      status: 'active',
+      policy_id: 'policy-persisted',
+      policy_version: 'router-policy-v5',
+      active_policy: { default_model_id: 'gpt-4.1', rules: [] },
+      pending_policy: null,
+      refresh: {
+        refresh_every_runs: 20,
+        eligible_runs_since_last_refresh: 2,
+        next_refresh_after_runs: 18,
+        last_refresh_result: null,
+        last_refresh_at: null,
+      },
+      last_update: null,
+      adaptive: {
+        validation_budget_usd: 3,
+        max_cohorts: 6,
+        active_cohort_count: 2,
+        budget_month: null,
+        spent_usd: 0,
+        reserved_usd: 0,
+        remaining_usd: 3,
+        cohorts: [
+          {
+            id: 'manual-cohort',
+            key: 'billing_support',
+            label: '결제 문의',
+            label_en: 'billing support',
+            representative_query: '결제는 완료됐지만 청구서가 발행되지 않았습니다.',
+            source: 'manual',
+            status: 'proposed',
+            required: false,
+            safety_protected: false,
+            observation_count: 1,
+            review_window_count: 0,
+            traffic_share: 0,
+            validated_model_id: null,
+          },
+          {
+            id: 'auto-cohort',
+            key: 'account_access',
+            label: '계정 접근 문의',
+            label_en: 'account access',
+            representative_query: null,
+            source: 'auto',
+            status: 'active',
+            required: false,
+            safety_protected: false,
+            observation_count: 12,
+            review_window_count: 2,
+            traffic_share: 0.4,
+            validated_model_id: 'gpt-4.1-mini',
+          },
+        ],
+        latest_batch: null,
+      },
+    });
+    const node = createLlmNode({ auto_model_routing: true });
+    useWorkflowStore.setState(
+      { ...useWorkflowStore.getState(), nodes: [node] },
+      true,
+    );
+
+    render(<NodeInlinePanel node={node} />);
+    await waitFor(() => {
+      expect(workflowApiMock.getModelRoutingPolicy).toHaveBeenCalledWith(
+        'workflow-1',
+        'llm-1',
+      );
+    });
+    expect(
+      await screen.findByText(
+        '대표 문의: 결제는 완료됐지만 청구서가 발행되지 않았습니다.',
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('대표 문의: 대표 문의를 준비 중입니다.'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: '결제 문의 수정' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: '계정 접근 문의 사용자 입력군으로 전환' }),
+    ).toBeInTheDocument();
   });
 
   it('자동 모델 라우팅 토글 변경을 노드 데이터에 반영한다', async () => {
