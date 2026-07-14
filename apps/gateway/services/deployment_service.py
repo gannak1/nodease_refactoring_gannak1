@@ -44,6 +44,9 @@ from apps.shared.domain.workflow_graph import (
 )
 from apps.shared.schemas.deployment import DeploymentCreate, DeploymentPreflightResponse
 from apps.shared.services.permissions import has_workflow_permission
+from apps.shared.services.model_routing_policy_inheritance import (
+    ModelRoutingPolicyInheritanceService,
+)
 from apps.shared.services.workflow_task_publisher import send_workflow_task
 
 logger = logging.getLogger(__name__)
@@ -253,6 +256,16 @@ class DeploymentService:
 
             # 8.1. 같은 앱의 기존 배포를 모두 비활성화 (단일 활성화 정책)
             if db_obj.is_active:
+                # 정책과 입력군은 배포 snapshot에 귀속된다. 재배포 시 이전 활성
+                # snapshot의 검증 근거를 먼저 새 snapshot으로 복제해야 UI와 runtime이
+                # 같은 정책을 계속 조회할 수 있다.
+                ModelRoutingPolicyInheritanceService.inherit_for_deployment(
+                    db,
+                    workflow_id=workflow.id,
+                    source_deployment_id=app.active_deployment_id,
+                    target_deployment_id=db_obj.id,
+                    target_graph=graph_snapshot,
+                )
                 from apps.gateway.services.scheduler_service import (
                     get_scheduler_service,
                 )
