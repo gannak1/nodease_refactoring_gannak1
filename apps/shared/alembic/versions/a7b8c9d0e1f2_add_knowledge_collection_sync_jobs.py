@@ -1,7 +1,7 @@
 """add knowledge collection sync jobs
 
 Revision ID: a7b8c9d0e1f2
-Revises: fd4e5f6a7b89
+Revises: b8e5f4a3c2d2
 """
 
 from collections.abc import Sequence
@@ -12,7 +12,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision: str = "a7b8c9d0e1f2"
-down_revision: str | Sequence[str] | None = "fd4e5f6a7b89"
+down_revision: str | Sequence[str] | None = "b8e5f4a3c2d2"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

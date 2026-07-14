@@ -167,7 +167,7 @@ def test_collection_projection_separates_sync_authority_from_adapter_support(
     monkeypatch.setattr(
         service.permission_helper,
         "evaluate_collection_action",
-        lambda collection, action: SimpleNamespace(allowed=True),
+        lambda collection, action, **_kwargs: SimpleNamespace(allowed=True),
     )
 
     supported = service._collection_response(collection)
