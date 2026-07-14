@@ -56,6 +56,7 @@ Verified Against: feature/mba-188 @ 59d1cc51
 
 - 필터 바: 행위자(기존 `ActiveOrganizationMemberPicker` 재사용), action(canonical action 문자열 입력/선택), 대상 타입/ID, 기간(`startAt`/`endAt`, KST 기준 입력), status. 필터 초기화 버튼을 둔다.
 - 결과 테이블 컬럼: 발생 시각(사용자 로컬 시간대 렌더링), 행위자, action(사용자 친화 라벨 병기 — canonical action에서 파생), 대상, status 배지.
+- 행위자와 대상은 safe display label을 먼저 표시하고 canonical UUID를 보조 text와 복사 가능한 값으로 병기한다. Display가 없으면 UUID만 표시한다.
 - Pagination: `page`/`limit` 기반, 기존 목록 패턴을 따른다.
 - 행 클릭 → `AuditDetailDrawer` 열림.
 - User actor cell은 별도 button으로 렌더링한다. Organization manager가 active/suspended current organization member actor를 선택하면 row click propagation을 중단하고 `ActorAccessDrawer`를 연다.
@@ -66,6 +67,7 @@ Verified Against: feature/mba-188 @ 59d1cc51
 
 - 화면 오른쪽 사이드 드로어. 목록 맥락을 유지한 채 상세를 보여준다.
 - 표시 필드: actor, action(canonical 문자열과 파생 라벨), target, status, timestamp, allowlist metadata(`request_id`, sanitized `reason`, `requested_action`, `policy_reason` 등).
+- Actor/target과 `resolved_references`가 있는 allowlisted metadata/change summary UUID는 표시명을 먼저, UUID를 보조값으로 함께 표시한다. Resolver 실패는 상세 전체 오류가 아니라 ID-only fallback이다.
 - Security Alert 관리자 API 권한 거부는 safe metadata를 이용해 시도한 작업과 조직 관리자 권한 필요 사유를 사용자 문장과 한국어 라벨로 먼저 표시한다. 기존 기록처럼 정보가 없으면 일반 접근 거부 설명을 표시한다.
 - Supported access-management event는 target/action allowlist 기반 `change_summary.before/after`를 표시한다. Unknown target/action은 변경 요약 영역을 표시하지 않는다.
 - raw payload, secret 계열 값은 표시하지 않는다 (NFR-004). raw payload 접근 UI는 이 feature 범위가 아니다 (trace visibility policy).

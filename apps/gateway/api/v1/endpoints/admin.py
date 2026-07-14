@@ -35,7 +35,7 @@ from apps.shared.schemas.admin_usage import (
     AdminOrganizationSummaryResponse,
     AdminWorkflowUsageResponse,
 )
-from apps.shared.schemas.audit import AuditLogDetailResponse, AuditLogListResponse
+from apps.shared.schemas.audit import AdminAuditLogListResponse, AuditLogDetailResponse
 from apps.shared.schemas.permission_request import (
     AppCreationPermissionListResponse,
     AppCreationPermissionResponse,
@@ -252,7 +252,7 @@ def _serialize_workflow_budget(
     )
 
 
-@router.get("/audit-logs", response_model=AuditLogListResponse)
+@router.get("/audit-logs", response_model=AdminAuditLogListResponse)
 def list_audit_logs(
     request: Request,
     page: int = Query(default=1, ge=1),

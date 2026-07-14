@@ -20,6 +20,13 @@ Verified Against: feature/mba-188 @ 59d1cc51
 - Unknown target/action 또는 empty summary면 렌더링하지 않는다.
 - Raw JSON toggle이나 generic payload inspector를 제공하지 않는다.
 
+### SafeDisplayReference
+
+- Audit 목록과 상세에서 사람이 읽을 수 있는 label을 먼저 표시하고 canonical UUID를 보조 text와 복사 가능한 값으로 함께 표시한다.
+- Actor는 감사 시점 snapshot label을 우선하고, target은 current organization의 allowlisted current label을 사용한다.
+- Display projection이 없거나 대상이 삭제된 경우 오류를 표시하지 않고 기존 UUID만 표시한다.
+- Allowlisted metadata/change summary의 UUID는 detail `resolved_references`에 일치하는 항목이 있을 때만 같은 방식으로 병기한다.
+
 ### AuditRecorder
 
 - UI component가 아니라 backend outbound adapter contract다.
@@ -30,6 +37,7 @@ Verified Against: feature/mba-188 @ 59d1cc51
 
 - Change summary available: before/after를 구분해 표시한다.
 - Change summary unavailable: 기존 audit detail만 표시하며 오류로 취급하지 않는다.
+- Display unavailable: ID-only fallback을 표시하며 목록/detail 조회 실패로 취급하지 않는다.
 - Historical/system/null actor: audit detail은 표시하고 actor management control은 제공하지 않는다.
 - Sanitization failure: raw payload fallback 없이 summary를 생략하거나 safe error state를 반환한다.
 

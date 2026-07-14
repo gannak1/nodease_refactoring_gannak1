@@ -31,6 +31,10 @@ Status: Draft
 - Audit detail `change_summary`는 정확한 target/action 조합의 allowlist field만 반환한다. Target만 맞고 action이 다르거나 unknown target/action이면 null이다.
 - Create는 `after`, delete는 `before`, update는 양쪽 complete safe snapshot의 organization provenance가 request organization과 일치할 때만 `change_summary`를 반환한다. 한쪽 provenance가 누락되거나 다르면 null이다.
 - Audit detail allowlist metadata는 UUID/scalar/canonical enum/count type까지 검증한다. 기존 sanitized JSON `summary` 외 허용 key가 nested object이거나 malformed UUID, unknown policy/resource type 또는 boolean count면 해당 field를 생략하고 list/detail을 실패시키지 않는다.
+- Audit list/detail은 canonical actor/target ID를 유지하면서 safe `actor_display`/`target_display`를 additive하게 반환한다. Actor snapshot의 name/email scalar를 우선하고 snapshot이 없을 때만 current same-organization member를 사용한다.
+- Organization/user/team/workflow primary App/App/Knowledge Base target은 current organization과 target-type allowlist를 통과할 때만 current safe name을 반환한다. Cross-organization, hidden, deleted, malformed, unsupported target은 display를 생략하고 ID-only fallback을 유지한다.
+- 한 page의 target display resolution은 target type별 batch query를 사용하고 audit row 수만큼 query가 증가하지 않는다. Resolver 오류는 list/detail 전체 실패가 아니라 display 생략으로 처리한다.
+- Detail의 allowlisted metadata/change summary UUID는 `resolved_references`에 포함된 same-organization safe reference만 병기할 수 있고, map에 없는 UUID나 hidden resource를 추론하지 않는다.
 - Audit `auditor`/`raw_auditor`는 audit list/detail을 조회할 수 있지만 actor access profile/team-membership/resource/action API는 `403`이다.
 - Security Alert evidence API는 실제 연결된 audit만 `AuditLogSchema` 수준으로 반환하고 generic metadata/before/after/change summary를 inline 노출하지 않는다.
 - Audit `auditor`/`raw_auditor` only user는 기존 audit list/detail을 조회할 수 있어도 Security Alert list/detail/evidence/lifecycle API는 `403`이어야 한다.
@@ -87,7 +91,7 @@ Status: Draft
 - Audit/trace retention 정책은 raw artifact retention 정책을 대체하지 않는다.
 - Redaction service 장애 시 raw payload를 fallback으로 저장하지 않는다.
 - Generic AuditLog before/after에 allowlist 밖 column 또는 nested secret이 있어도 change summary에 포함하지 않는다.
-- Stored organization provenance가 request organization과 다르거나 필요한 snapshot에 없으면 change summary는 null이고, historical same-org target은 opaque id만 반환하며 name/path를 resolve하지 않는다.
+- Stored organization provenance가 request organization과 다르거나 필요한 snapshot에 없으면 change summary는 null이다. Safe display resolver도 request organization 검증에 실패하면 name/path를 반환하지 않고 opaque ID만 유지한다.
 - Concurrent last-manager 또는 permission mutation은 applied mutation당 canonical audit 한 건만 남긴다.
 - Memory event에 `organization_id`가 누락되면 organization-scoped 성공 event로 수용하지 않고 mutation 또는 outbox가 fail-closed 한다.
 - Management reason은 blank를 null로 정규화하고 500자 초과 또는 forbidden control character를 거부한다.

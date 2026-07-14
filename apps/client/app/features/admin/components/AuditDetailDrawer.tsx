@@ -12,6 +12,7 @@ import {
   auditStatusLabel,
   auditTargetLabel,
 } from '../utils/auditPresentation';
+import { AuditReferenceDisplay } from './AuditReferenceDisplay';
 
 type AuditDetailDrawerProps = {
   auditLogId: string;
@@ -141,6 +142,7 @@ export function AuditDetailDrawer({
                   status: detail.status,
                   targetType: detail.target_type,
                   targetId: detail.target_id,
+                  targetDisplayLabel: detail.target_display?.label,
                   currentOrganizationId,
                   requiredPermission:
                     typeof detail.audit_metadata.required_permission ===
@@ -166,9 +168,21 @@ export function AuditDetailDrawer({
             <DetailField
               label="행위자"
               value={
-                actorName ||
-                detail.actor_id ||
-                `${detail.actor_type} (id 없음)`
+                detail.actor_display?.label || actorName ? (
+                  detail.actor_id ? (
+                    <AuditReferenceDisplay
+                      label={detail.actor_display?.label || actorName!}
+                      id={detail.actor_id}
+                      copyLabel="행위자 ID 복사"
+                    />
+                  ) : (
+                    <span className="text-slate-800">
+                      {detail.actor_display?.label || actorName}
+                    </span>
+                  )
+                ) : (
+                  detail.actor_id || `${detail.actor_type} (id 없음)`
+                )
               }
             />
             <DetailField
@@ -185,10 +199,18 @@ export function AuditDetailDrawer({
             <DetailField
               label="대상"
               value={
-                auditTargetLabel(
-                  detail.target_type,
-                  detail.target_id,
-                  currentOrganizationId,
+                detail.target_display && detail.target_id ? (
+                  <AuditReferenceDisplay
+                    label={detail.target_display.label}
+                    id={detail.target_id}
+                    copyLabel="대상 ID 복사"
+                  />
+                ) : (
+                  auditTargetLabel(
+                    detail.target_type,
+                    detail.target_id,
+                    currentOrganizationId,
+                  )
                 )
               }
             />
@@ -215,10 +237,12 @@ export function AuditDetailDrawer({
                   <Snapshot
                     label="변경 전"
                     value={detail.change_summary.before}
+                    resolvedReferences={detail.resolved_references}
                   />
                   <Snapshot
                     label="변경 후"
                     value={detail.change_summary.after}
+                    resolvedReferences={detail.resolved_references}
                   />
                 </dd>
               </div>
@@ -234,9 +258,12 @@ export function AuditDetailDrawer({
                       <span className="shrink-0 font-medium text-slate-500">
                         {auditMetadataLabel(key)}
                       </span>
-                      <span className="break-all text-slate-800">
-                        {auditMetadataValueLabel(key, value)}
-                      </span>
+                      <ResolvedValue
+                        fieldKey={key}
+                        value={value}
+                        resolvedReferences={detail.resolved_references}
+                        fallback={auditMetadataValueLabel(key, value)}
+                      />
                     </div>
                   ))}
                 </dd>
@@ -252,9 +279,11 @@ export function AuditDetailDrawer({
 function Snapshot({
   label,
   value,
+  resolvedReferences,
 }: {
   label: string;
   value: Record<string, unknown> | null;
+  resolvedReferences?: AuditLogDetailResponse['resolved_references'];
 }) {
   if (!value) return null;
   return (
@@ -267,14 +296,42 @@ function Snapshot({
             className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)] gap-2 text-xs"
           >
             <span className="truncate font-medium text-slate-500">{key}</span>
-            <span className="break-all text-slate-800">
-              {formatMetadataValue(fieldValue)}
-            </span>
+            <ResolvedValue
+              fieldKey={key}
+              value={fieldValue}
+              resolvedReferences={resolvedReferences}
+              fallback={formatMetadataValue(fieldValue)}
+            />
           </div>
         ))}
       </div>
     </div>
   );
+}
+
+function ResolvedValue({
+  fieldKey,
+  value,
+  resolvedReferences,
+  fallback,
+}: {
+  fieldKey: string;
+  value: unknown;
+  resolvedReferences?: AuditLogDetailResponse['resolved_references'];
+  fallback: string;
+}) {
+  const reference =
+    typeof value === 'string' ? resolvedReferences?.[value] : undefined;
+  if (reference && typeof value === 'string') {
+    return (
+      <AuditReferenceDisplay
+        label={reference.label}
+        id={value}
+        copyLabel={`${fieldKey} ID 복사`}
+      />
+    );
+  }
+  return <span className="break-all text-slate-800">{fallback}</span>;
 }
 
 function DetailField({

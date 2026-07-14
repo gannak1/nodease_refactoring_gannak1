@@ -72,9 +72,36 @@ Retry/idempotency/reconciliation은 위 logical action을 중복 생성하지 �
 
 Target/action이 allowlist에 없거나 safe field가 없으면 null을 반환한다. DB `before`/`after`의 allowlist 밖 key, nested payload, secret 계열 값은 반환하지 않는다.
 
-MBA-188 manual audit은 update에도 target별 complete safe snapshot을 저장한다. Create는 `after`, delete는 `before`, update는 `before`와 `after`의 `organization_id`/`grantee_organization_id`가 모두 request organization과 일치해야 summary를 반환한다. Historical same-organization opaque UUID는 유지할 수 있지만 current resource name/path를 resolve하지 않는다. 필요한 snapshot의 organization provenance가 없거나 다르면 null이다.
+MBA-188 manual audit은 update에도 target별 complete safe snapshot을 저장한다. Create는 `after`, delete는 `before`, update는 `before`와 `after`의 `organization_id`/`grantee_organization_id`가 모두 request organization과 일치해야 summary를 반환한다. 필요한 snapshot의 organization provenance가 없거나 다르면 null이다. MBA-259 safe display projection은 이 raw snapshot 계약과 분리하며, current organization과 target-type allowlist를 통과한 current resource의 safe name만 별도 응답 field로 resolve한다. 삭제·미확인·미지원 resource는 opaque UUID만 유지한다.
 
 `policy.block` failure event는 row 변경이 아니므로 `change_summary`가 null이다. Audit detail의 공통 metadata allowlist는 `organization_id`, `request_id`, sanitized `reason`, existing safe `summary`, `target_user_id`, `requested_action`, `policy_reason`, `resource_type`, `resource_id`, `team_id`, advisory `affected_resource_source_count`다. Security Alert 관리자 API의 `permission.denied`는 정확한 고정값 `required_permission=security_alert.manage`, allowlisted `requested_operation`, `denial_reason=organization_manager_required`를 추가로 허용한다. Schedule operations 전용 `operation_correlation_id`, `outcome_resolution_code`는 정확한 `schedule_dispatch.outcome_reviewed + schedule_dispatch_claim` action/target 조합에서만 추가로 허용한다. UUID field는 유효한 UUID, count는 boolean이 아닌 0 이상 integer, string field와 resource/policy reason은 정해진 scalar/enum 값일 때만 반환한다. Operation correlation은 `github-run:<decimal-id>` 또는 `k8s-job:<uuid>` 형식과 길이 제한을 통과해야 하고 outcome resolution은 `confirmed_completed`, `confirmed_failed_no_replay`, `accepted_unknown_no_replay`만 허용한다. 기존 `summary`는 secret-like key를 재귀 제거한 JSON scalar/list/object 계약을 유지하고, 그 외 허용 key의 nested object나 잘못된 타입은 생략한다. Resource/team field는 scope를 확인한 policy block 또는 applied team action에서만 기록한다. 임의 nested request body, raw URL/path/query/header, target name/email, expected/current snapshot은 포함하지 않는다.
+
+### Safe display projection
+
+Audit list/detail item은 기존 ID와 함께 optional `actor_display`와 `target_display`를 additive하게 반환한다.
+
+```json
+{
+  "actor_id": "<uuid|null>",
+  "actor_display": {
+    "label": "홍길동 (hong@example.com)",
+    "source": "event_snapshot"
+  },
+  "target_type": "workflow",
+  "target_id": "<uuid|null>",
+  "target_display": {
+    "label": "고객문의 봇",
+    "source": "current_resource"
+  }
+}
+```
+
+- `source`는 `event_snapshot`, `current_resource` 중 하나다.
+- User actor는 `audit_metadata.actor`의 유효한 `name`/`email` snapshot을 우선한다. Snapshot이 없으면 current organization의 member user를 batch 조회할 수 있다. System/null actor는 display object 없이 client의 고정 라벨을 사용한다.
+- 1차 target allowlist는 `organization`, `user`, `team`, `workflow`, `app`, `knowledge_base`다. Workflow label은 same-organization primary App name이다.
+- Target과 current-member fallback은 request organization에 속하는 row만 resolve한다. Cross-organization, hidden, deleted, malformed, unsupported reference는 display object를 생략한다.
+- `resolved_references`는 detail의 allowlisted metadata/change summary에 포함된 지원 UUID를 UUID key의 display map으로 제공할 수 있다. Map에 없는 UUID는 ID-only로 렌더링하며 raw metadata를 추가 공개하지 않는다.
+- List page의 current resource resolution은 target type별 batch query를 사용하며 row별 query를 허용하지 않는다. 기존 UUID filter와 ID 값은 그대로 유지한다.
 
 `schedule_dispatch.outcome_reviewed`는 `category="action"`, `status="success"`, `actor_id=null`, `actor_type="system"`, `target_type="schedule_dispatch_claim"`, exact claim target id를 사용한다. `before`/`after`와 `change_summary`는 null이다. Claim의 durable `organization_id`가 request organization과 일치하는 audit만 list/detail에서 조회할 수 있다. Metadata의 operation correlation과 resolution은 운영 검토 완료를 설명하지만 workflow 성공/실패 재판정 또는 redrive 승인을 의미하지 않는다.
 

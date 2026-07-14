@@ -1,14 +1,21 @@
 export type AuditLogStatus = 'success' | 'failure';
 
+export type AuditDisplayReference = {
+  label: string;
+  source: 'event_snapshot' | 'current_resource';
+};
+
 export type AuditLogItem = {
   id: string;
   occurred_at: string;
   actor_id: string | null;
+  actor_display?: AuditDisplayReference | null;
   actor_type: string;
   category: string;
   action: string;
   target_type: string | null;
   target_id: string | null;
+  target_display?: AuditDisplayReference | null;
   status: AuditLogStatus;
   request_id?: string | null;
 };
@@ -20,6 +27,7 @@ export type AuditLogListResponse = {
 
 export type AuditLogDetailResponse = AuditLogItem & {
   audit_metadata: Record<string, unknown>;
+  resolved_references?: Record<string, AuditDisplayReference>;
   change_summary?: {
     before: Record<string, unknown> | null;
     after: Record<string, unknown> | null;

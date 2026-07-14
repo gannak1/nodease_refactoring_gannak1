@@ -882,7 +882,7 @@ def test_remove_invited_member_keeps_commit_when_notification_publish_fails(
             raise RuntimeError("redis unavailable")
 
     monkeypatch.setattr(
-        "apps.gateway.services.notification_service.get_redis_client",
+        "apps.shared.services.notification_pubsub.get_redis_client",
         lambda: FailingRedis(),
     )
     monkeypatch.setattr(

@@ -25,6 +25,11 @@ Verified Against: feature/mba-188 @ 59d1cc51
 - Given 행위자/action/대상/기간/status 필터, When 각각 또는 조합(AND)으로 조회하면, Then 조건에 맞는 row만 반환된다. action 값은 canonical action 문자열 기준이다 ([ADR-0008](../../decisions/ADR-0008-audit-action-naming-standard.md)).
 - Given `startAt`/`endAt` 기간 필터, When `occurred_at`이 `startAt`과 정확히 같은 row와 `endAt`과 정확히 같은 row가 있으면, Then 전자는 포함되고 후자는 제외된다 (`[start, end)`).
 - Given 개별 로그 상세 조회, When `GET /admin/audit-logs/{id}`를 호출하면, Then actor, action, target, status, timestamp와 allowlist metadata만 반환되고 raw payload/secret 계열 값은 포함되지 않는다.
+- Given 저장된 user actor snapshot과 same-organization allowlisted target, When 목록/상세를 조회하면, Then canonical UUID를 유지한 채 actor/target safe display projection을 함께 반환하고 UI는 표시명과 UUID를 병기한다.
+- Given snapshot 없는 current member actor 또는 organization/user/team/workflow primary App/App/Knowledge Base target, When 조회하면, Then current organization 범위의 안전한 이름만 반환한다.
+- Given 삭제·미확인·미지원·cross-organization target 또는 display resolver 실패, When 조회하면, Then 이름을 노출하지 않고 UUID-only fallback을 유지하며 목록/상세 전체는 정상 응답한다.
+- Given 한 page에 같은 target type의 audit가 여러 건, When 목록을 조회하면, Then 표시명은 batch resolution되고 row별 N+1 조회를 만들지 않는다.
+- Given allowlisted metadata/change summary UUID, When detail `resolved_references`가 해당 UUID를 안전하게 resolve하면, Then UI는 표시명과 UUID를 병기하고 map에 없는 UUID는 추론하지 않는다.
 - Given Security Alert 관리자 API의 `permission.denied`, When 상세를 조회하면, Then 고정 allowlist의 시도한 작업·필요 권한·거부 사유가 사용자 문장으로 표시되고 raw URL/path/query/header/body는 포함되지 않는다.
 - Given audit 권한 없는 조직 member, When 검색/상세를 호출하면, Then `403`과 `permission.denied` audit이 기록된다.
 

@@ -62,6 +62,27 @@ const accessAuditItem = {
   target_id: 'membership-1',
 };
 
+const projectedAuditItem = {
+  ...auditItem,
+  id: 'log-projected-1',
+  actor_id: '11111111-1111-4111-8111-111111111111',
+  actor_display: {
+    label: '감사 당시 이름 (historical@example.com)',
+    source: 'event_snapshot' as const,
+  },
+  target_id: '22222222-2222-4222-8222-222222222222',
+  target_display: {
+    label: '고객문의 봇',
+    source: 'current_resource' as const,
+  },
+};
+
+const deletedActorAuditItem = {
+  ...projectedAuditItem,
+  id: 'log-deleted-actor-1',
+  actor_id: null,
+};
+
 const forbiddenError = () => {
   const error = new AxiosError('Forbidden');
   error.response = { status: 403 } as AxiosResponse;
@@ -95,6 +116,60 @@ describe('AuditSearchTab', () => {
       auditItem.occurred_at,
     );
     expect(mockedList).toHaveBeenCalledWith({ page: 1, limit: 20 });
+  });
+
+  it('safe 표시명을 먼저 보여주고 canonical UUID와 복사 버튼을 병기한다', async () => {
+    mockedList.mockResolvedValue({ total: 1, items: [projectedAuditItem] });
+
+    render(<AuditSearchTab members={members} />);
+
+    const table = await screen.findByRole('table');
+    expect(
+      within(table).getByText('감사 당시 이름 (historical@example.com)'),
+    ).toBeInTheDocument();
+    expect(within(table).getByText('고객문의 봇')).toBeInTheDocument();
+    expect(
+      within(table).getByText('11111111-1111-4111-8111-111111111111'),
+    ).toBeInTheDocument();
+    expect(
+      within(table).getByText('22222222-2222-4222-8222-222222222222'),
+    ).toBeInTheDocument();
+    expect(
+      within(table).getByRole('button', { name: '행위자 ID 복사' }),
+    ).toBeInTheDocument();
+    expect(
+      within(table).getByRole('button', { name: '대상 ID 복사' }),
+    ).toBeInTheDocument();
+  });
+
+  it('actor ID가 삭제된 감사 로그는 스냅샷 이름만 목록과 상세에 표시한다', async () => {
+    mockedList.mockResolvedValue({ total: 1, items: [deletedActorAuditItem] });
+    mockedDetail.mockResolvedValue({
+      ...deletedActorAuditItem,
+      audit_metadata: {},
+    });
+
+    render(<AuditSearchTab members={members} />);
+
+    const table = await screen.findByRole('table');
+    expect(
+      within(table).getByText('감사 당시 이름 (historical@example.com)'),
+    ).toBeInTheDocument();
+    expect(
+      within(table).queryByRole('button', { name: '행위자 ID 복사' }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(within(table).getByText('workflow.deploy'));
+
+    const drawer = await screen.findByRole('dialog', {
+      name: '감사 로그 상세',
+    });
+    expect(
+      within(drawer).getByText('감사 당시 이름 (historical@example.com)'),
+    ).toBeInTheDocument();
+    expect(
+      within(drawer).queryByRole('button', { name: '행위자 ID 복사' }),
+    ).not.toBeInTheDocument();
   });
 
   it('검색 결과가 없으면 빈 목록 안내를 표시한다', async () => {
@@ -178,6 +253,39 @@ describe('AuditSearchTab', () => {
         screen.queryByRole('dialog', { name: '감사 로그 상세' }),
       ).not.toBeInTheDocument(),
     );
+  });
+
+  it('상세 metadata와 변경 요약 UUID에도 안전하게 resolve된 이름을 병기한다', async () => {
+    const organizationId = '33333333-3333-4333-8333-333333333333';
+    mockedList.mockResolvedValue({ total: 1, items: [projectedAuditItem] });
+    mockedDetail.mockResolvedValue({
+      ...projectedAuditItem,
+      audit_metadata: { organization_id: organizationId },
+      change_summary: {
+        before: { organization_id: organizationId },
+        after: { organization_id: organizationId },
+      },
+      resolved_references: {
+        [organizationId]: {
+          label: 'Nodease 개발팀',
+          source: 'current_resource',
+        },
+      },
+    });
+
+    render(<AuditSearchTab members={members} />);
+
+    fireEvent.click(await screen.findByText('workflow.deploy'));
+
+    const drawer = await screen.findByRole('dialog', {
+      name: '감사 로그 상세',
+    });
+    expect(
+      within(drawer).getByText('감사 당시 이름 (historical@example.com)'),
+    ).toBeInTheDocument();
+    expect(within(drawer).getByText('고객문의 봇')).toBeInTheDocument();
+    expect(within(drawer).getAllByText('Nodease 개발팀')).toHaveLength(3);
+    expect(within(drawer).getAllByText(organizationId)).toHaveLength(3);
   });
 
   it('행위자 관리 버튼은 row 상세 클릭과 분리되고 닫은 뒤 focus를 돌려준다', async () => {

@@ -10,13 +10,15 @@ from fastapi import HTTPException
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
+from apps.gateway.services.admin_audit_display_service import AdminAuditDisplayService
 from apps.shared.db.models.audit_log import AuditLog, AuditStatus
 from apps.shared.db.models.team import Team, TeamAuditPermission, TeamMembership
 from apps.shared.db.models.user import User
 from apps.shared.schemas.audit import (
+    AdminAuditLogListResponse,
+    AdminAuditLogSchema,
+    AuditDisplayReference,
     AuditLogDetailResponse,
-    AuditLogListResponse,
-    AuditLogSchema,
 )
 from apps.shared.permissions import AUTH_STATE_NONE
 from apps.shared.schemas.permission import AUDIT_AUTH_STATE_RANK
@@ -238,7 +240,7 @@ class AdminAuditLogService:
         filters: AdminAuditLogFilters | None = None,
         page: int = 1,
         limit: int = 20,
-    ) -> AuditLogListResponse:
+    ) -> AdminAuditLogListResponse:
         AdminPermissionGuard.require_audit_reader(db, current_user, organization_id)
         filters = filters or AdminAuditLogFilters()
         query = _filtered_query(db, organization_id, filters)
@@ -249,9 +251,17 @@ class AdminAuditLogService:
             .limit(limit)
             .all()
         )
-        return AuditLogListResponse(
+        displays = AdminAuditDisplayService.resolve(db, organization_id, items)
+        return AdminAuditLogListResponse(
             total=total,
-            items=[_list_item(item) for item in items],
+            items=[
+                _list_item(
+                    item,
+                    actor_display=displays.actors.get(item.id),
+                    target_display=displays.targets.get(item.id),
+                )
+                for item in items
+            ],
         )
 
     @staticmethod
@@ -270,10 +280,24 @@ class AdminAuditLogService:
         )
         if item is None:
             raise HTTPException(status_code=404, detail="Audit log not found")
+        audit_metadata = _detail_metadata(item)
+        change_summary = _change_summary(item, organization_id)
+        displays = AdminAuditDisplayService.resolve(
+            db,
+            organization_id,
+            [item],
+            detail_metadata=audit_metadata,
+            change_summary=change_summary,
+        )
         return AuditLogDetailResponse(
-            **_list_item(item).model_dump(),
-            audit_metadata=_detail_metadata(item),
-            change_summary=_change_summary(item, organization_id),
+            **_list_item(
+                item,
+                actor_display=displays.actors.get(item.id),
+                target_display=displays.targets.get(item.id),
+            ).model_dump(),
+            audit_metadata=audit_metadata,
+            change_summary=change_summary,
+            resolved_references=displays.references,
         )
 
     @staticmethod
@@ -358,17 +382,24 @@ def _filtered_query(
     return query
 
 
-def _list_item(item: AuditLog) -> AuditLogSchema:
+def _list_item(
+    item: AuditLog,
+    *,
+    actor_display: AuditDisplayReference | None = None,
+    target_display: AuditDisplayReference | None = None,
+) -> AdminAuditLogSchema:
     request_id = (item.audit_metadata or {}).get("request_id")
-    return AuditLogSchema(
+    return AdminAuditLogSchema(
         id=item.id,
         occurred_at=item.occurred_at,
         actor_id=item.actor_id,
+        actor_display=actor_display,
         actor_type=item.actor_type,
         category=item.category,
         action=item.action,
         target_type=item.target_type,
         target_id=item.target_id,
+        target_display=target_display,
         status=item.status,
         request_id=request_id if isinstance(request_id, str) else None,
     )

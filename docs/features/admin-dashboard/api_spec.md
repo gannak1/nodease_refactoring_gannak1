@@ -37,7 +37,7 @@ Verified Against: feature/mba-188 @ 59d1cc51
 
 Query: `page`, `limit`, `actorId`(UUID), `action`(canonical action 문자열, [ADR-0008](../../decisions/ADR-0008-audit-action-naming-standard.md)), `targetType`, `targetId`, `status`(`success`/`failure`), `startAt`, `endAt`
 
-Response `200`: 기존 `AuditLogListResponse` 재사용.
+Response `200`: 기존 user audit 계약을 바꾸지 않는 admin 전용 `AdminAuditLogListResponse`를 사용한다.
 
 ```json
 {
@@ -47,11 +47,13 @@ Response `200`: 기존 `AuditLogListResponse` 재사용.
       "id": "<uuid>",
       "occurred_at": "<datetime>",
       "actor_id": "<uuid|null>",
+      "actor_display": { "label": "홍길동 (hong@example.com)", "source": "event_snapshot" },
       "actor_type": "user",
       "category": "<category>",
       "action": "workflow.deploy",
       "target_type": "workflow",
       "target_id": "<id|null>",
+      "target_display": { "label": "고객문의 봇", "source": "current_resource" },
       "status": "success",
       "request_id": "<string|null>"
     }
@@ -61,9 +63,11 @@ Response `200`: 기존 `AuditLogListResponse` 재사용.
 
 정렬은 `occurred_at` 내림차순 고정. 필터는 각각 독립이며 조합(AND)으로 적용된다.
 
+`actor_display`/`target_display`는 optional safe display projection이다. 기존 UUID는 canonical 값으로 유지한다. User actor는 감사 시점 snapshot을 우선하며, target은 same-organization organization/user/team/workflow primary App/App/Knowledge Base의 current safe name만 batch resolve한다. 조회 실패·삭제·미지원·scope 밖 resource는 display를 생략한다.
+
 ### GET /admin/audit-logs/{audit_log_id}
 
-Response `200`: 목록 항목과 동일한 필드 + `audit_metadata` 중 allowlist 값만 포함한다. 허용 key는 `organization_id`, `request_id`, sanitized `reason`, existing safe `summary`, `target_user_id`, `requested_action`, `policy_reason`, `resource_type`, `resource_id`, `team_id`, advisory `affected_resource_source_count`다. UUID field는 유효한 UUID, count는 boolean이 아닌 0 이상 integer, reason/request/action은 string, resource/policy reason은 canonical allowlist 값일 때만 반환한다. 기존 `summary`는 secret-like key를 재귀 제거한 JSON scalar/list/object 계약을 유지하고, 그 외 허용 key의 nested object나 잘못된 타입은 생략한다. Resource/team field는 scope를 확인한 policy block 또는 applied team action에서만 기록한다. raw payload, secret 계열 값, target name/email, expected/current snapshot은 포함하지 않는다 (NFR-004). raw payload 접근은 이 API가 아니라 trace visibility policy와 `raw_auditor` 권한의 별도 경로다.
+Response `200`: 목록 항목과 동일한 필드 + `audit_metadata` 중 allowlist 값과 optional `resolved_references`를 포함한다. 허용 key는 `organization_id`, `request_id`, sanitized `reason`, existing safe `summary`, `target_user_id`, `requested_action`, `policy_reason`, `resource_type`, `resource_id`, `team_id`, advisory `affected_resource_source_count`다. UUID field는 유효한 UUID, count는 boolean이 아닌 0 이상 integer, reason/request/action은 string, resource/policy reason은 canonical allowlist 값일 때만 반환한다. `resolved_references`는 이 allowlist metadata와 `change_summary`에 이미 노출된 UUID 중 same-organization safe resolver가 확인한 값만 UUID key로 제공한다. 기존 `summary`는 secret-like key를 재귀 제거한 JSON scalar/list/object 계약을 유지하고, 그 외 허용 key의 nested object나 잘못된 타입은 생략한다. Resource/team field는 scope를 확인한 policy block 또는 applied team action에서만 기록한다. raw payload, secret 계열 값, raw target name/email snapshot, expected/current snapshot은 포함하지 않는다 (NFR-004). raw payload 접근은 이 API가 아니라 trace visibility policy와 `raw_auditor` 권한의 별도 경로다.
 
 응답은 optional `change_summary`를 additive하게 포함한다.
 
