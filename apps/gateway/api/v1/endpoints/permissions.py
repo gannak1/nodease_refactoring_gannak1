@@ -1626,7 +1626,6 @@ def _upsert_user_workflow_permission(
     assigned_at: datetime,
 ) -> UserWorkflowPermission:
     """user-workflow 권한을 원자적으로 생성/수정하고 감사 로그를 남긴다."""
-    _lock_active_direct_permission_subject(db, organization_id, user_id)
     lock_workflow_permission_scope(
         db,
         organization_id=organization_id,
@@ -2376,6 +2375,7 @@ def put_user_workflow_permission(
         workflow_id,
         user_id,
     )
+    _lock_active_direct_permission_subject(db, organization_id, user_id)
     _lock_workflow_mutation_app_scope(
         request,
         db,
@@ -2683,6 +2683,7 @@ def delete_user_workflow_permission(
         user_id,
         require_active_target=False,
     )
+    _lock_direct_permission_cleanup_subject(db, organization_id, user_id)
     _lock_workflow_mutation_app_scope(
         request,
         db,
@@ -2690,7 +2691,6 @@ def delete_user_workflow_permission(
         workflow=workflow,
     )
 
-    _lock_direct_permission_cleanup_subject(db, organization_id, user_id)
     lock_workflow_permission_scope(
         db,
         organization_id=organization_id,

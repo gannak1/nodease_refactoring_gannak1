@@ -255,7 +255,7 @@ class _LockQuery:
         self.session.events.append(f"order:{self.name}")
         return self
 
-    def with_for_update(self):
+    def with_for_update(self, **_kwargs):
         self.session.events.append(f"lock:{self.name}")
         return self
 
@@ -343,7 +343,7 @@ class _ResourceQuery:
     def filter(self, *args):
         return self
 
-    def with_for_update(self):
+    def with_for_update(self, **_kwargs):
         self.session.events.append(f"row-lock:{self.name}")
         return self
 

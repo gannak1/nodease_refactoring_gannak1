@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
@@ -23,6 +24,7 @@ from apps.gateway.services.app_lifecycle_lock import (
     lock_app_for_workflow_mutation,
 )
 from apps.gateway.services.deployment_service import DeploymentService
+from apps.gateway.services.organization_member_service import OrganizationMemberService
 from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
 from apps.gateway.services.workflow_budget_lock import lock_workflow_budget_scope
 from apps.gateway.services.workflow_permission_lock import (
@@ -35,7 +37,10 @@ from apps.shared.db.models.agent_builder import (
 )
 from apps.shared.db.models.app import App
 from apps.shared.db.models.organization import Organization
-from apps.shared.db.models.organization_membership import OrganizationMembership
+from apps.shared.db.models.organization_membership import (
+    ORGANIZATION_MEMBERSHIP_REMOVED,
+    OrganizationMembership,
+)
 from apps.shared.db.models.team import (
     Team,
     TeamWorkflowPermission,
@@ -740,9 +745,15 @@ def test_budget_commit_precedes_primary_transition_snapshot(db_session, monkeypa
     assert db_session.query(Workflow).count() == workflow_count_before
 
 
+@pytest.mark.parametrize(
+    "explicit_snapshot",
+    [False, True],
+    ids=["server-resolved", "client-snapshot"],
+)
 def test_deployment_create_waits_for_primary_transition_app_lock(
     db_session,
     monkeypatch,
+    explicit_snapshot,
 ):
     actor, _collaborator, organization, app, old_workflow, _team = _app_context(
         db_session
@@ -758,6 +769,7 @@ def test_deployment_create_waits_for_primary_transition_app_lock(
     organization_id = organization.id
     app_id = app.id
     draft_id = draft.id
+    old_graph_snapshot = old_workflow.graph
     db_session.commit()
 
     bind = db_session.get_bind()
@@ -839,10 +851,13 @@ def test_deployment_create_waits_for_primary_transition_app_lock(
                     DeploymentCreate(
                         app_id=app_id,
                         type=DeploymentType.API,
-                        graph_snapshot=None,
+                        graph_snapshot=(
+                            old_graph_snapshot if explicit_snapshot else None
+                        ),
                         is_active=True,
                     ),
                     user_id=actor_id,
+                    observed_workflow_id=old_workflow.id,
                     runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
                 )
                 deployment_result["deployment_id"] = deployment.id
@@ -868,7 +883,6 @@ def test_deployment_create_waits_for_primary_transition_app_lock(
     apply_thread.join(timeout=1)
     deployment_thread.join(timeout=1)
     assert "error" not in apply_result
-    assert "error" not in deployment_result
     response = apply_result["response"]
     assert response.outcome == "saved", (
         response.block_reason,
@@ -878,14 +892,22 @@ def test_deployment_create_waits_for_primary_transition_app_lock(
 
     db_session.expire_all()
     final_app = db_session.get(App, app_id)
-    deployment = db_session.get(
-        WorkflowDeployment,
-        deployment_result["deployment_id"],
-    )
     saved_workflow = db_session.get(Workflow, response.saved_workflow_id)
     assert final_app.workflow_id == response.saved_workflow_id
-    assert final_app.active_deployment_id == deployment.id
-    assert deployment.graph_snapshot == saved_workflow.graph
+    if explicit_snapshot:
+        error = deployment_result.get("error")
+        assert isinstance(error, HTTPException)
+        assert error.status_code == 409
+        assert error.detail["code"] == "deployment.graph_snapshot_stale"
+        assert final_app.active_deployment_id is None
+    else:
+        assert "error" not in deployment_result
+        deployment = db_session.get(
+            WorkflowDeployment,
+            deployment_result["deployment_id"],
+        )
+        assert final_app.active_deployment_id == deployment.id
+        assert deployment.graph_snapshot == saved_workflow.graph
 
 
 def test_permission_revoke_commits_before_inheritance_snapshot(
@@ -987,6 +1009,182 @@ def test_permission_revoke_commits_before_inheritance_snapshot(
         .first()
     )
     assert inherited_collaborator is None
+
+
+def test_member_removal_revokes_permission_created_by_inflight_transition(
+    db_session,
+    monkeypatch,
+):
+    actor, collaborator, organization, app, old_workflow, _team = _app_context(
+        db_session
+    )
+    removal_manager = _user("removal-manager")
+    db_session.add(removal_manager)
+    db_session.flush()
+    db_session.add(
+        OrganizationMembership(
+            organization_id=organization.id,
+            user_id=removal_manager.id,
+            membership_state="active",
+            organization_auth_state="manager",
+            invited_by=actor.id,
+        )
+    )
+    actor_membership = (
+        db_session.query(OrganizationMembership)
+        .filter(
+            OrganizationMembership.organization_id == organization.id,
+            OrganizationMembership.user_id == actor.id,
+        )
+        .one()
+    )
+    actor_membership.organization_auth_state = "member"
+    actor_workflow_permission = (
+        db_session.query(UserWorkflowPermission)
+        .filter(
+            UserWorkflowPermission.grantee_organization_id == organization.id,
+            UserWorkflowPermission.workflow_id == old_workflow.id,
+            UserWorkflowPermission.user_id == actor.id,
+        )
+        .one()
+    )
+    actor_workflow_permission.auth_state = "manager"
+    draft = _ready_new_workflow_draft(
+        db_session,
+        actor=actor,
+        organization=organization,
+        app=app,
+        expected_primary_workflow_id=old_workflow.id,
+    )
+    actor_id = actor.id
+    collaborator_id = collaborator.id
+    removal_manager_id = removal_manager.id
+    organization_id = organization.id
+    old_workflow_id = old_workflow.id
+    draft_id = draft.id
+    db_session.commit()
+
+    session_factory = sessionmaker(
+        bind=db_session.get_bind(),
+        expire_on_commit=False,
+    )
+    inheritance_scope_acquired = threading.Event()
+    allow_inheritance_to_continue = threading.Event()
+    removal_scope_attempted = threading.Event()
+    apply_finished = threading.Event()
+    removal_finished = threading.Event()
+    apply_result = {}
+    removal_result = {}
+
+    from apps.gateway.services import app_service as app_service_module
+    from apps.gateway.services import (
+        organization_member_service as member_service_module,
+    )
+
+    original_inheritance_lock = app_service_module.lock_workflow_permission_scope
+    original_removal_lock = member_service_module.lock_workflow_permission_scope
+
+    def gated_inheritance_lock(db, **kwargs):
+        result = original_inheritance_lock(db, **kwargs)
+        if kwargs["workflow_id"] == old_workflow_id:
+            inheritance_scope_acquired.set()
+            if not allow_inheritance_to_continue.wait(timeout=10):
+                raise RuntimeError("test synchronization timeout")
+        return result
+
+    def signaled_removal_lock(db, **kwargs):
+        removal_scope_attempted.set()
+        return original_removal_lock(db, **kwargs)
+
+    monkeypatch.setattr(
+        app_service_module,
+        "lock_workflow_permission_scope",
+        gated_inheritance_lock,
+    )
+    monkeypatch.setattr(
+        member_service_module,
+        "lock_workflow_permission_scope",
+        signaled_removal_lock,
+    )
+
+    def apply_transition():
+        try:
+            with session_factory() as apply_db:
+                apply_draft = apply_db.get(AgentBuilderDraft, draft_id)
+                apply_actor = apply_db.get(User, actor_id)
+                apply_result["response"] = AgentBuilderService(
+                    apply_db,
+                    user=apply_actor,
+                    organization_id=organization_id,
+                ).apply_draft(
+                    apply_draft.id,
+                    AgentBuilderApplyRequest(
+                        action="apply_and_save",
+                        client_preview_graph_hash=calculate_graph_hash(
+                            apply_draft.preview_graph
+                        ),
+                    ),
+                )
+        except Exception as exc:  # pragma: no cover - asserted in main thread
+            apply_result["error"] = exc
+        finally:
+            apply_finished.set()
+
+    def remove_member():
+        try:
+            with session_factory() as removal_db:
+                removal_actor = removal_db.get(User, removal_manager_id)
+                removal_result["response"] = OrganizationMemberService.remove_member(
+                    removal_db,
+                    removal_actor,
+                    organization_id,
+                    collaborator_id,
+                )
+        except Exception as exc:  # pragma: no cover - asserted in main thread
+            removal_result["error"] = exc
+        finally:
+            removal_finished.set()
+
+    apply_thread = threading.Thread(target=apply_transition, daemon=True)
+    apply_thread.start()
+    assert inheritance_scope_acquired.wait(timeout=5), apply_result
+
+    removal_thread = threading.Thread(target=remove_member, daemon=True)
+    removal_thread.start()
+    try:
+        assert removal_scope_attempted.wait(timeout=5)
+        assert removal_finished.wait(timeout=0.2) is False
+    finally:
+        allow_inheritance_to_continue.set()
+
+    assert apply_finished.wait(timeout=10)
+    assert removal_finished.wait(timeout=10)
+    apply_thread.join(timeout=1)
+    removal_thread.join(timeout=1)
+    assert "error" not in apply_result
+    assert "error" not in removal_result
+    assert apply_result["response"].outcome == "saved"
+    assert removal_result["response"].status == "removed"
+
+    db_session.expire_all()
+    membership = (
+        db_session.query(OrganizationMembership)
+        .filter(
+            OrganizationMembership.organization_id == organization_id,
+            OrganizationMembership.user_id == collaborator_id,
+        )
+        .one()
+    )
+    assert membership.membership_state == ORGANIZATION_MEMBERSHIP_REMOVED
+    assert (
+        db_session.query(UserWorkflowPermission)
+        .filter(
+            UserWorkflowPermission.grantee_organization_id == organization_id,
+            UserWorkflowPermission.user_id == collaborator_id,
+        )
+        .count()
+        == 0
+    )
 
 
 def test_permission_revoke_rejects_primary_changed_after_scope_observation(

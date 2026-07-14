@@ -45,7 +45,8 @@ def lock_access_subject_rows(
                 == ORGANIZATION_AUTH_MANAGER,
             )
             .order_by(OrganizationMembership.id.asc())
-            .with_for_update()
+            # Serialize subject mutations without blocking permission FK checks.
+            .with_for_update(key_share=True)
             .all()
         )
         if locked_manager_memberships:
@@ -57,7 +58,7 @@ def lock_access_subject_rows(
                 db.query(User)
                 .filter(User.id.in_(tuple(user_order)))
                 .order_by(case(user_order, value=User.id))
-                .with_for_update()
+                .with_for_update(key_share=True)
                 .all()
             )
             locked_users = {user.id: user for user in users}
@@ -83,7 +84,7 @@ def lock_access_subject_rows(
                 OrganizationMembership.organization_id == organization_id,
                 OrganizationMembership.user_id == user_id,
             )
-            .with_for_update()
+            .with_for_update(key_share=True)
             .first()
         )
     if membership is None or (
@@ -94,7 +95,12 @@ def lock_access_subject_rows(
 
     user = locked_users.get(user_id)
     if user is None:
-        user = db.query(User).filter(User.id == user_id).with_for_update().first()
+        user = (
+            db.query(User)
+            .filter(User.id == user_id)
+            .with_for_update(key_share=True)
+            .first()
+        )
     if user is None:
         return None
     return LockedAccessSubjectRows(

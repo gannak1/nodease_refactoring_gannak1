@@ -2226,6 +2226,54 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertFalse(session.committed)
         self.assertIn(("rollback", None), session.operations)
 
+    def test_put_user_workflow_permission_locks_subject_before_app_scope(self):
+        actor_id = uuid4()
+        target_user_id = uuid4()
+        organization_id = uuid4()
+        workflow_id = uuid4()
+        session = _Session(
+            organization=_organization(
+                id=organization_id,
+                created_by=target_user_id,
+                managed_by=actor_id,
+            ),
+            workflow=_workflow(id=workflow_id, organization_id=organization_id),
+            target_user=SimpleNamespace(id=target_user_id),
+            target_membership=_membership(
+                user_id=target_user_id,
+                organization_id=organization_id,
+            ),
+            user_upsert_result=_user_workflow_permission(
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+                user_id=target_user_id,
+                auth_state="builder",
+                assigned_by=actor_id,
+            ),
+        )
+        lock_order = []
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.permissions."
+            "_lock_active_direct_permission_subject",
+            side_effect=lambda *args, **kwargs: lock_order.append("subject"),
+        ), patch(
+            "apps.gateway.api.v1.endpoints.permissions."
+            "_lock_workflow_mutation_app_scope",
+            side_effect=lambda *args, **kwargs: lock_order.append("app"),
+        ):
+            response = self._put_user_permission(
+                session=session,
+                user_id=actor_id,
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+                target_user_id=target_user_id,
+                payload={"auth_state": "builder"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(lock_order, ["subject", "app"])
+
     def test_put_user_workflow_permission_allows_workflow_manager(self):
         # organization manager가 아니어도 workflow manager면 user direct 권한을 부여할 수 있다.
         actor_id = uuid4()
@@ -3025,6 +3073,50 @@ class TestPermissionsApi(unittest.TestCase):
         )
         self.assertEqual(audit.audit_metadata["request_id"], "req-test")
         _assert_audit_added_before_commit(self, session)
+
+    def test_delete_user_workflow_permission_locks_subject_before_app_scope(self):
+        actor_id = uuid4()
+        target_user_id = uuid4()
+        organization_id = uuid4()
+        workflow_id = uuid4()
+        existing_permission = _user_workflow_permission(
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            user_id=target_user_id,
+            auth_state="builder",
+            assigned_by=actor_id,
+        )
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=actor_id),
+            workflow=_workflow(id=workflow_id, organization_id=organization_id),
+            target_user=SimpleNamespace(id=target_user_id),
+            target_membership=_membership(
+                user_id=target_user_id,
+                organization_id=organization_id,
+            ),
+            existing_user_permission=existing_permission,
+        )
+        lock_order = []
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.permissions."
+            "_lock_direct_permission_cleanup_subject",
+            side_effect=lambda *args, **kwargs: lock_order.append("subject"),
+        ), patch(
+            "apps.gateway.api.v1.endpoints.permissions."
+            "_lock_workflow_mutation_app_scope",
+            side_effect=lambda *args, **kwargs: lock_order.append("app"),
+        ):
+            response = self._delete_user_permission(
+                session=session,
+                user_id=actor_id,
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+                target_user_id=target_user_id,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(lock_order, ["subject", "app"])
 
     def test_delete_user_workflow_permission_allows_workflow_manager(self):
         # organization manager가 아니어도 workflow manager면 user direct permission 회수가 가능하다.
@@ -3978,7 +4070,7 @@ class _Query:
         self.order_by_values.extend(args)
         return self
 
-    def with_for_update(self):
+    def with_for_update(self, **_kwargs):
         """Production row-lock query chain을 보존하는 테스트 더블이다."""
         return self
 

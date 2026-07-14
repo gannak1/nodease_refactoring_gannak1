@@ -153,6 +153,7 @@ def create_deployment(
         db,
         deployment_in,
         current_user.id,
+        observed_workflow_id=app.workflow_id,
         runtime_policy=runtime_policy,
     )
 

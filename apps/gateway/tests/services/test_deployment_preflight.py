@@ -932,6 +932,42 @@ def test_preflight_audience_hint_cannot_relax_public_surface():
     assert result.status == "blocked"
 
 
+def test_create_rejects_explicit_snapshot_after_primary_change():
+    app_id = uuid.uuid4()
+    old_workflow_id = uuid.uuid4()
+    current_workflow_id = uuid.uuid4()
+    actor_id = uuid.uuid4()
+    app = App(
+        id=app_id,
+        workflow_id=current_workflow_id,
+        organization_id=uuid.uuid4(),
+        created_by=actor_id,
+    )
+    db = _Db({App: [app], WorkflowDeployment: []})
+
+    with pytest.raises(HTTPException) as exc_info:
+        DeploymentService.create_deployment(
+            db,
+            DeploymentCreate(
+                app_id=app_id,
+                graph_snapshot={"nodes": [], "edges": []},
+            ),
+            user_id=actor_id,
+            observed_workflow_id=old_workflow_id,
+            runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == {
+        "code": "deployment.graph_snapshot_stale",
+        "message": (
+            "The App primary Workflow changed. Refresh the deployment snapshot "
+            "and try again."
+        ),
+    }
+    assert db.rows_for(WorkflowDeployment) == []
+
+
 def test_create_preserves_preflight_http_exception(monkeypatch):
     app_id = uuid.uuid4()
     workflow_id = uuid.uuid4()
@@ -974,6 +1010,7 @@ def test_create_preserves_preflight_http_exception(monkeypatch):
                 is_active=True,
             ),
             user_id=app.created_by,
+            observed_workflow_id=workflow_id,
             runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
         )
 
@@ -1057,6 +1094,7 @@ def test_create_binding_error_prefers_common_preflight_envelope(
                 is_active=is_active,
             ),
             user_id=actor_id,
+            observed_workflow_id=workflow_id,
             runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
         )
 
@@ -1115,6 +1153,7 @@ def test_inactive_create_rejects_mail_inline_secret_with_common_preflight_error(
                 is_active=False,
             ),
             user_id=actor_id,
+            observed_workflow_id=workflow_id,
             runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
         )
 
@@ -1173,6 +1212,7 @@ def test_inactive_create_preserves_unresolved_mail_snapshot(monkeypatch):
             is_active=False,
         ),
         user_id=actor_id,
+        observed_workflow_id=workflow_id,
         runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
     )
 
@@ -1229,6 +1269,7 @@ def test_inactive_create_rejects_unavailable_mail_reference(
                 is_active=False,
             ),
             user_id=actor_id,
+            observed_workflow_id=workflow_id,
             runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
         )
 
@@ -1272,6 +1313,7 @@ def test_inactive_create_rejects_malformed_graph(monkeypatch):
                 is_active=False,
             ),
             user_id=actor_id,
+            observed_workflow_id=workflow_id,
             runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
         )
 
@@ -1328,6 +1370,7 @@ def test_inactive_create_does_not_mutate_active_surface(monkeypatch):
             is_active=False,
         ),
         user_id=app.created_by,
+        observed_workflow_id=workflow_id,
         runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
     )
 
@@ -1391,6 +1434,7 @@ def test_active_schedule_create_rolls_back_on_invalid_schedule_configuration(
                 is_active=True,
             ),
             user_id=app.created_by,
+            observed_workflow_id=workflow_id,
             runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
         )
 
@@ -1451,6 +1495,7 @@ def test_active_schedule_create_hides_unexpected_scheduler_error(monkeypatch):
                 is_active=True,
             ),
             user_id=app.created_by,
+            observed_workflow_id=workflow_id,
             runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
         )
 
@@ -1515,6 +1560,7 @@ def test_workflow_node_create_does_not_create_schedule_surface(monkeypatch):
             is_active=True,
         ),
         user_id=app.created_by,
+        observed_workflow_id=workflow_id,
         runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
     )
 

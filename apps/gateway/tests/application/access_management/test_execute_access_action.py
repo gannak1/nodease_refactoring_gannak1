@@ -324,6 +324,27 @@ def test_existing_row_id_aba_precedes_same_desired_direct_noop():
     assert len(audit.blocks) == 1
 
 
+def test_direct_permission_mutation_locks_subject_before_resource():
+    member = _member()
+    use_case, adapter, _, _, _, _ = _use_case(member)
+
+    result = use_case.execute(
+        _command(
+            member,
+            "direct_permission.grant",
+            resource_type="workflow",
+            resource_id=adapter.resource.resource_id,
+            auth_state="viewer",
+            expected_absent=True,
+        )
+    )
+
+    assert result.status == "applied"
+    assert adapter.events.index("lock.member:False") < adapter.events.index(
+        "lock.resource"
+    )
+
+
 @pytest.mark.parametrize(
     "setup,command",
     [

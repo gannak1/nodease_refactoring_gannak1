@@ -88,6 +88,7 @@ class DeploymentService:
         deployment_in: DeploymentCreate,
         user_id: uuid.UUID,
         *,
+        observed_workflow_id: uuid.UUID,
         runtime_policy: DeploymentRuntimePolicy,
     ) -> WorkflowDeployment:
         """
@@ -108,6 +109,21 @@ class DeploymentService:
         app = lock_app_for_lifecycle(db, deployment_in.app_id)
         if not app:
             raise HTTPException(status_code=404, detail="App not found")
+
+        if (
+            deployment_in.graph_snapshot is not None
+            and app.workflow_id != observed_workflow_id
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "deployment.graph_snapshot_stale",
+                    "message": (
+                        "The App primary Workflow changed. Refresh the deployment "
+                        "snapshot and try again."
+                    ),
+                },
+            )
 
         # 2. Workflow 조회 및 권한 체크
         workflow = db.query(Workflow).filter(Workflow.id == app.workflow_id).first()
