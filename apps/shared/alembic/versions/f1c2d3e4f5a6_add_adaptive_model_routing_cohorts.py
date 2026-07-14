@@ -1,7 +1,7 @@
 """Add adaptive model routing cohorts, evidence, and validation budgets.
 
 Revision ID: f1c2d3e4f5a6
-Revises: fd0e1f2a3b4c
+Revises: 0f4a5b6c7d89
 Create Date: 2026-07-14 12:00:00.000000
 
 The new rows intentionally retain only input hashes and embedding vectors.  Raw
@@ -27,7 +27,7 @@ from apps.shared.db.models.model_routing_cohort import (
 
 
 revision: str = "f1c2d3e4f5a6"
-down_revision: Union[str, Sequence[str], None] = "fd0e1f2a3b4c"
+down_revision: Union[str, Sequence[str], None] = "0f4a5b6c7d89"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

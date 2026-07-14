@@ -465,6 +465,7 @@ def test_demo_seed_chat_models_use_gpt_5_4_family():
         demo_seed.DEMO_MODEL_ROUTER_CHEAP_MODEL,
         demo_seed.DEMO_MODEL_ROUTER_BALANCED_MODEL,
         demo_seed.DEMO_EMBEDDING_MODEL,
+        demo_seed.DEMO_MODEL_ROUTER_EMBEDDING_MODEL,
     }
 
 
@@ -478,7 +479,10 @@ def test_model_router_demo_workflow_enables_versioned_semantic_cohorts():
     assert data["fallback_model_id"] == "gpt-4.1-mini"
     semantic_router = data["model_routing_context"]["semantic_router"]
     assert semantic_router["route_catalog_version"] == "demo-ticket-routing-v7"
-    assert semantic_router["encoder_model_id"] == demo_seed.DEMO_EMBEDDING_MODEL
+    assert (
+        semantic_router["encoder_model_id"]
+        == demo_seed.DEMO_MODEL_ROUTER_EMBEDDING_MODEL
+    )
     assert semantic_router["input_paths"] == ["webhook-ticket.message"]
     assert semantic_router["aggregation"] == "centroid"
     assert semantic_router["min_margin"] == 0.005
@@ -495,6 +499,8 @@ def test_model_router_demo_workflow_enables_versioned_semantic_cohorts():
     assert {signal["term"] for signal in high_risk["lexical_signals"]} >= {
         "계정 탈취",
         "변조",
+        "법무 검토",
+        "환불 분쟁",
         "unauthorized access",
     }
     assert all(len(route["utterances"]) >= 12 for route in routes)
@@ -676,6 +682,8 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     internal_chatbot_revision = script.get_revision("fc9d0e1f2a34")
     index_alignment_revision = script.get_revision("fd3e4f5a6b78")
     configuration_preflight_revision = script.get_revision("0f4a5b6c7d89")
+    adaptive_routing_revision = script.get_revision("f1c2d3e4f5a6")
+    adaptive_routing_controls_revision = script.get_revision("a6f4d2c8e1b7")
 
     assert safe_metadata_revision.down_revision == "fa7b8c9d0e12"
     assert set(merged_revision.down_revision) == {"fa7c8d9e0f12", "ff3a4b5c6d78"}
@@ -711,6 +719,9 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     assert "fc9d0e1f2a34" in ancestry
     assert "fd3e4f5a6b78" in ancestry
     assert "0f4a5b6c7d89" in ancestry
+    assert adaptive_routing_revision.down_revision == "0f4a5b6c7d89"
+    assert adaptive_routing_controls_revision.down_revision == "f1c2d3e4f5a6"
+    assert script.get_heads() == ["a6f4d2c8e1b7"]
 
 
 def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():

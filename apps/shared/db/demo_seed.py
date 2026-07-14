@@ -98,6 +98,9 @@ DEMO_MODEL_ROUTER_CHEAP_MODEL = "gpt-4o-mini"
 DEMO_MODEL_ROUTER_BALANCED_MODEL = "gpt-4.1-mini"
 DEMO_EMBEDDING_MODEL = "text-embedding-3-small"
 DEMO_EMBEDDING_DIMENSION = 1536
+# 모델 라우팅은 문서 검색과 달리 입력 문의의 의미상 군집을 구분해야 한다.
+# RAG 문서용 small 임베딩을 바꾸지 않고, routing catalog에만 더 정밀한 encoder를 쓴다.
+DEMO_MODEL_ROUTER_EMBEDDING_MODEL = "text-embedding-3-large"
 DEMO_REPO_ROOT = Path(__file__).resolve().parents[3]
 DEMO_LEGAL_DOCS_LABOR_DIR = DEMO_REPO_ROOT / "local" / "legal-docs-labor"
 DEMO_INTERNAL_DOCS_DIR = (
@@ -200,6 +203,7 @@ CREDENTIAL_MODEL_REL_IDS = {
     DEMO_MODEL_ROUTER_FALLBACK_MODEL: _uuid(925),
     DEMO_MODEL_ROUTER_CHEAP_MODEL: _uuid(926),
     DEMO_MODEL_ROUTER_BALANCED_MODEL: _uuid(927),
+    DEMO_MODEL_ROUTER_EMBEDDING_MODEL: _uuid(928),
 }
 
 TEAM_LLM_PERMISSION_IDS = {
@@ -1873,7 +1877,7 @@ def _model_router_ticket_ops_graph() -> dict[str, Any]:
                     "risk_level": "medium",
                     "semantic_router": {
                         "route_catalog_version": "demo-ticket-routing-v7",
-                        "encoder_model_id": DEMO_EMBEDDING_MODEL,
+                        "encoder_model_id": DEMO_MODEL_ROUTER_EMBEDDING_MODEL,
                         "input_paths": ["webhook-ticket.message"],
                         "top_k": 8,
                         "aggregation": "centroid",
@@ -1964,6 +1968,8 @@ def _model_router_ticket_ops_graph() -> dict[str, Any]:
                                     {"term": "대규모 장애", "weight": 1.0},
                                     {"term": "규제 위반", "weight": 1.0},
                                     {"term": "법정 신고", "weight": 1.0},
+                                    {"term": "법무 검토", "weight": 1.0},
+                                    {"term": "환불 분쟁", "weight": 1.0},
                                     {"term": "감사 로그 삭제", "weight": 1.0},
                                     {"term": "감사 기록 위조", "weight": 1.0},
                                     {"term": "원장 손상", "weight": 1.0},
@@ -2634,6 +2640,12 @@ def _ensure_openai_provider_and_models(db: Session) -> tuple[LLMProvider, dict[s
             Decimal("0.000000"),
             8191,
         ),
+        DEMO_MODEL_ROUTER_EMBEDDING_MODEL: (
+            "embedding",
+            Decimal("0.000130"),
+            Decimal("0.000000"),
+            8191,
+        ),
     }
     models: dict[str, LLMModel] = {}
     for model_id, (
@@ -3160,9 +3172,15 @@ def _seed_llm_credential(
     ]
     if runtime_credential_enabled:
         relation_model_names.append(DEMO_EMBEDDING_MODEL)
+        relation_model_names.append(DEMO_MODEL_ROUTER_EMBEDDING_MODEL)
     else:
         db.query(LLMRelCredentialModel).filter(
-            LLMRelCredentialModel.id == CREDENTIAL_MODEL_REL_IDS[DEMO_EMBEDDING_MODEL]
+            LLMRelCredentialModel.id.in_(
+                [
+                    CREDENTIAL_MODEL_REL_IDS[DEMO_EMBEDDING_MODEL],
+                    CREDENTIAL_MODEL_REL_IDS[DEMO_MODEL_ROUTER_EMBEDDING_MODEL],
+                ]
+            )
         ).delete(synchronize_session=False)
         _delete_demo_runtime_llm_permissions(db)
 
