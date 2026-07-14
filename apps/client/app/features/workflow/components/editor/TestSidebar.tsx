@@ -16,6 +16,7 @@ import {
   AlertCircle,
   Clock,
   Coins,
+  Route,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { StartNodeData, WorkflowVariable } from '../../types/Nodes';
@@ -44,6 +45,8 @@ import {
 import { FinalResponseCard } from '../execution/FinalResponseCard';
 import { deploymentApiErrorMessage } from '../../utils/deploymentPreflightMessage';
 import { ModelRoutingDecisionDetails } from '../modelRouting/ModelRoutingDecisionDetails';
+import { ModelRoutingPreviewPanel } from '../modelRouting/ModelRoutingPreviewPanel';
+import type { ModelRoutingPreviewResponse } from '../../types/Api';
 
 export { ModelRoutingDecisionDetails } from '../modelRouting/ModelRoutingDecisionDetails';
 
@@ -122,6 +125,15 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   const [validationErrors, setValidationErrors] = useState<
     GraphValidationIssue[]
   >([]);
+  const [routingPreview, setRoutingPreview] =
+    useState<ModelRoutingPreviewResponse | null>(null);
+  const [routingPreviewError, setRoutingPreviewError] = useState<string | null>(
+    null,
+  );
+  const [isRoutingPreviewing, setIsRoutingPreviewing] = useState(false);
+  const [routingPreviewNodeId, setRoutingPreviewNodeId] = useState<string | null>(
+    null,
+  );
   const nodeStartedAtRef = React.useRef<Record<string, number>>({});
   const isExecuting = testExecutionStatus === 'running';
   const isPreparing =
@@ -138,6 +150,34 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     isPreparing,
     canExecute,
   });
+
+  const routingPreviewNodes = useMemo(
+    () => nodes.filter((node) => node.type === 'llmNode'),
+    [nodes],
+  );
+  const routingPreviewNode =
+    routingPreviewNodes.find((node) => node.id === routingPreviewNodeId) ??
+    (routingPreviewNodes.length === 1 ? routingPreviewNodes[0] : null);
+  const routingPreviewDisabledMessage = !canExecute
+    ? '현재 권한으로는 라우팅 미리보기를 확인할 수 없습니다.'
+    : routingPreviewNodes.length === 0
+      ? '라우팅 미리보기를 확인할 LLM 노드가 없습니다.'
+      : !routingPreviewNode
+        ? '라우팅 판단을 확인할 LLM 노드를 선택해 주세요.'
+        : null;
+
+  useEffect(() => {
+    if (routingPreviewNodes.length === 0) {
+      setRoutingPreviewNodeId(null);
+      return;
+    }
+
+    if (routingPreviewNodes.some((node) => node.id === routingPreviewNodeId)) {
+      return;
+    }
+
+    setRoutingPreviewNodeId(routingPreviewNodes[0].id);
+  }, [routingPreviewNodeId, routingPreviewNodes]);
 
   const outputLabelByNodeId = useMemo(() => {
     const labelMap = new Map<string, Map<string, string>>();
@@ -249,10 +289,75 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     return () => window.clearTimeout(timeout);
   }, [isTestPanelOpen]);
 
+  useEffect(() => {
+    setRoutingPreview(null);
+    setRoutingPreviewError(null);
+  }, [inputs, routingPreviewNode?.id]);
+
   if (!isTestPanelOpen) return null;
 
   const handleChange = (name: string, value: any) => {
     setInputs((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const routingPreviewErrorMessage = (error: unknown) => {
+    const detail =
+      typeof error === 'object' &&
+      error !== null &&
+      'response' in error &&
+      typeof (error as { response?: { data?: { detail?: unknown } } }).response
+        ?.data?.detail === 'string'
+        ? (error as { response: { data: { detail: string } } }).response.data
+            .detail
+        : '';
+    const messages: Record<string, string> = {
+      'model_routing.disabled': '자동 모델 라우팅을 켠 뒤 배포하면 미리보기를 사용할 수 있습니다.',
+      'model_routing.policy_not_ready':
+        '아직 활성 정책이 없습니다. 배포 후 운영 실행 또는 정책 갱신이 필요합니다.',
+      'model_routing.execution_subject_unavailable':
+        '배포 실행 주체를 확인할 수 없어 실제 배포 기준으로 모델을 고를 수 없습니다.',
+      'model_routing.no_available_model':
+        '기본 모델과 대체 모델 모두 현재 배포 실행 주체가 사용할 수 없습니다.',
+    };
+    return messages[detail] || '라우팅 미리보기를 불러오지 못했습니다.';
+  };
+
+  const handleRoutingPreview = async () => {
+    if (!activeWorkflowId || !routingPreviewNode || !canExecute) return;
+    if (Object.values(files).some((file) => file !== null)) {
+      setRoutingPreview(null);
+      setRoutingPreviewError(
+        '파일 입력은 업로드 주소가 필요해 현재 라우팅 미리보기에서 확인할 수 없습니다.',
+      );
+      return;
+    }
+
+    let previewInputs: Record<string, unknown> = { ...inputs };
+    if (startNode?.type === 'webhookTrigger') {
+      try {
+        previewInputs = JSON.parse(String(inputs.__json_payload__ || ''));
+      } catch {
+        setRoutingPreview(null);
+        setRoutingPreviewError('유효한 JSON 웹훅 페이로드를 입력해 주세요.');
+        return;
+      }
+    }
+
+    setIsRoutingPreviewing(true);
+    setRoutingPreviewError(null);
+    try {
+      const preview = await workflowApi.previewModelRouting(
+        activeWorkflowId,
+        routingPreviewNode.id,
+        previewInputs,
+      );
+      setRoutingPreview(preview);
+    } catch (previewError) {
+      setRoutingPreview(null);
+      setRoutingPreviewError(routingPreviewErrorMessage(previewError));
+    } finally {
+      setIsRoutingPreviewing(false);
+    }
   };
 
   const buildObservability = (
@@ -912,6 +1017,66 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                 </div>
               )}
             </div>
+
+            <details
+              open
+              className="group border-t border-gray-200 pt-4 dark:border-gray-800"
+            >
+              <summary className="cursor-pointer list-none text-sm font-medium text-gray-900 marker:hidden dark:text-gray-200">
+                <span>라우팅 판단</span>
+                <span className="ml-2 text-xs font-normal text-gray-400 group-open:hidden">
+                  펼치기
+                </span>
+                <span className="ml-2 text-xs font-normal text-gray-400 group-open:inline hidden">
+                  접기
+                </span>
+              </summary>
+              <div className="mt-3 space-y-3">
+                <div>
+                <p className="mt-1 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
+                  입력을 실제로 실행하지 않고, 현재 배포 정책이 선택할 모델만 확인합니다.
+                </p>
+                </div>
+              {routingPreviewNodes.length > 1 && (
+                <div>
+                  <label
+                    htmlFor="routing-preview-node"
+                    className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300"
+                  >
+                    미리보기 대상 LLM 노드
+                  </label>
+                  <select
+                    id="routing-preview-node"
+                    value={routingPreviewNodeId ?? ''}
+                    onChange={(event) =>
+                      setRoutingPreviewNodeId(event.target.value || null)
+                    }
+                    className={TEST_INPUT_CLASS_NAME}
+                  >
+                    {routingPreviewNodes.map((node) => {
+                      const title = String(node.data?.title || '').trim();
+                      return (
+                        <option key={node.id} value={node.id}>
+                          {title || node.id}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+              )}
+              {routingPreviewDisabledMessage && (
+                <p className="rounded-md border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300">
+                  {routingPreviewDisabledMessage}
+                </p>
+              )}
+              {routingPreviewError && (
+                <p className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+                  {routingPreviewError}
+                </p>
+              )}
+              {routingPreview && <ModelRoutingPreviewPanel preview={routingPreview} />}
+              </div>
+            </details>
           </div>
         ) : (
           /* Execution Result */
@@ -976,29 +1141,55 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
       {/* Footer */}
       <div className="px-6 py-4 border-t border-gray-200 bg-gray-50 dark:bg-gray-900 dark:border-gray-800">
         {!hasExecutionResult && !error ? (
-          <button
-            onClick={handleExecute}
-            disabled={isExecuteActionDisabled}
-            className="w-full px-4 py-2 text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center justify-center gap-2 font-medium"
-          >
-            {isExecuting || isTestUploading || isPreparing ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                {isTestUploading
-                  ? '파일 업로드 중...'
-                  : preflightStatus === 'validating'
-                    ? '검증 중...'
-                    : preflightStatus === 'saving'
-                      ? '저장 중...'
-                      : '테스트 실행 중...'}
-              </>
-            ) : (
-              <>
-                <Play className="w-4 h-4" />
-                {canExecute ? '테스트 실행하기' : '테스트 실행 권한 없음'}
-              </>
-            )}
-          </button>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={handleRoutingPreview}
+              disabled={
+                Boolean(routingPreviewDisabledMessage) ||
+                isRoutingPreviewing ||
+                isExecuting ||
+                isPreparing
+              }
+              title={routingPreviewDisabledMessage || undefined}
+              className="px-3 py-2 text-emerald-700 bg-white border border-emerald-300 hover:bg-emerald-50 disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center justify-center gap-2 text-sm font-medium dark:bg-gray-800 dark:border-emerald-800 dark:text-emerald-300"
+            >
+              {isRoutingPreviewing ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  판단 중...
+                </>
+              ) : (
+                <>
+                  <Route className="w-4 h-4" />
+                  라우팅 미리보기
+                </>
+              )}
+            </button>
+            <button
+              onClick={handleExecute}
+              disabled={isExecuteActionDisabled}
+              className="px-3 py-2 text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center justify-center gap-2 text-sm font-medium"
+            >
+              {isExecuting || isTestUploading || isPreparing ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  {isTestUploading
+                    ? '파일 업로드 중...'
+                    : preflightStatus === 'validating'
+                      ? '검증 중...'
+                      : preflightStatus === 'saving'
+                        ? '저장 중...'
+                        : '테스트 실행 중...'}
+                </>
+              ) : (
+                <>
+                  <Play className="w-4 h-4" />
+                  {canExecute ? '테스트 실행하기' : '테스트 실행 권한 없음'}
+                </>
+              )}
+            </button>
+          </div>
         ) : (
           <button
             onClick={handleReset}

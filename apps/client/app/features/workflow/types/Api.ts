@@ -379,6 +379,25 @@ export interface ModelRoutingPolicyRefreshResponse {
   scheduled: boolean;
 }
 
+export interface ModelRoutingPreviewResponse {
+  deployment_version: number;
+  policy_version: string | null;
+  decision_source: 'matched_rule' | 'default_model' | 'fallback_model';
+  selected_model_id: string;
+  fallback_model_id: string | null;
+  default_model_id: string | null;
+  configured_fallback_model_id: string | null;
+  matched_cohort: {
+    id: string | null;
+    label: string | null;
+  } | null;
+  matched_rule_id: string | null;
+  reason_code: string;
+  availability: 'available' | 'fallback';
+  semantic_evaluation: 'not_required' | 'embedding_used' | 'unavailable';
+  draft_matches_deployment: boolean;
+}
+
 export interface CostOptimizerDownstreamCompatibility {
   state: string;
   label?: string;

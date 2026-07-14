@@ -40,6 +40,7 @@ import {
   ModelRoutingCohortSuggestionResponse,
   ModelRoutingPolicyRefreshResponse,
   ModelRoutingPolicyResponse,
+  ModelRoutingPreviewResponse,
   WorkflowPermissionResponse,
   LLMTraceListResponse,
   WorkflowResponse,
@@ -418,6 +419,18 @@ export const workflowApi = {
   ): Promise<ModelRoutingPolicyResponse> => {
     const response = await api.get(
       `/workflows/${workflowId}/llm-nodes/${nodeId}/model-routing/policy`,
+    );
+    return response.data;
+  },
+
+  previewModelRouting: async (
+    workflowId: string,
+    nodeId: string,
+    inputs: Record<string, unknown>,
+  ): Promise<ModelRoutingPreviewResponse> => {
+    const response = await api.post(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/model-routing/preview`,
+      { inputs },
     );
     return response.data;
   },
