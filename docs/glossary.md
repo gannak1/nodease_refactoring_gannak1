@@ -195,7 +195,7 @@ Status: Draft
 | Rule Version | Threshold나 detection key 의미 변경 전후의 alert를 섞지 않기 위한 rule 계약 버전. Security Alert MVP는 `v1`을 사용한다. |
 | Alert Evidence | Security Alert 판단 근거가 된 `audit_logs` row와 alert의 연결. 원본 metadata를 복사하지 않고 safe audit projection으로 조회한다. |
 | Cooldown | 같은 detection key의 반복 event가 alert를 계속 새로 만들지 않도록 기존 활성 alert에 occurrence와 evidence를 모으는 기간. Security Alert MVP는 마지막 탐지 기준 30분 sliding cooldown을 사용한다. |
-| Reconciliation | 실시간 탐지 task가 놓친 audit를 durable cursor와 overlap window로 다시 처리하는 복구 작업. 동일 evaluator와 idempotency 계약을 사용하며 기능 활성화 이전 audit은 backfill하지 않는다. |
+| Reconciliation | 실시간 탐지 task가 놓친 audit를 processor별 처리 receipt로 찾는 복구 작업. Receipt가 없는 과거 audit가 늦게 저장되면 해당 audit와 같은 organization·actor·action 범위에서 최대 rule window 안의 후속 audit를 다시 평가하며, 기능 활성화 이전 audit은 backfill하지 않는다. |
 
 ## Operations And Integrations
 

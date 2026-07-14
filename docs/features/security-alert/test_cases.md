@@ -232,8 +232,10 @@ SSE reconnect나 event 누락 이후에도 영속 API 재조회로 현재 상태
 ### AC-25 Reconciliation Recovery
 
 Given 실시간 task publish 실패, worker 중단 또는 window 경계 누락이 있을 때,
-When reconciliation이 `(occurred_at, audit_log.id)` cursor와 overlap window로 실행되면,
+When reconciliation이 기능 활성화 이후 processor receipt가 없는 audit를 `(occurred_at, audit_log.id)` 순서로 실행하면,
 Then 활성화 시점 이후 누락된 eligible event를 복구하고 중복 occurrence 없이 실시간 처리와 같은 결과를 만들어야 한다.
+
+이미 전진한 event-time cursor와 overlap보다 과거인 audit가 늦게 commit돼도 receipt가 없으면 다음 reconciliation에서 처리해야 한다. 늦은 eligible audit와 같은 organization·actor·action 범위에서 최대 rule window 안에 이미 receipt가 있는 후속 audit도 다시 평가해 threshold 판단을 복구하고, 다른 organization·actor·action 범위와 window 밖 audit는 재평가하지 않아야 한다. Worker가 처리 또는 commit 전에 중단되면 receipt도 없어야 하며 재시작 후 같은 audit부터 복구해야 한다.
 
 기능 활성화 이전 audit은 처리하지 않아야 한다.
 
@@ -444,7 +446,7 @@ Lookback 구간 또는 지정 평가 구간의 audit가 설정된 limit을 초�
 | SAL-TC-W008 | AC-10 | cooldown 안 occurrence 연속 처리 | 활성 alert 한 건과 정확한 count/last time |
 | SAL-TC-W009 | AC-10 | event가 occurred_at 역순으로 도착 | window와 last time이 event time 계약에 맞고 count 유실 없음 |
 | SAL-TC-W010 | AC-25 | 실시간 publish가 누락된 audit를 reconciliation이 스캔 | 누락 event 복구 |
-| SAL-TC-W011 | AC-25 | reconciliation overlap 구간을 연속 두 번 실행 | 두 번째 실행에서 중복 증가 없음 |
+| SAL-TC-W011 | AC-25 | receipt를 기록한 reconciliation을 연속 두 번 실행 | 두 번째 실행은 같은 audit를 다시 평가하지 않고 중복 증가 없음 |
 | SAL-TC-W012 | AC-25 | cursor와 같은 occurred_at의 여러 UUID | `(occurred_at,id)` 순서로 모두 처리하고 누락 없음 |
 | SAL-TC-W013 | AC-25 | 활성화 시점 직전/정확한 시점/직후 audit | 정책에 맞춰 이전 제외, 활성화 이후만 포함 |
 | SAL-TC-W014 | AC-09, AC-25 | 실시간 task와 reconciliation이 동일 audit를 동시에 처리 | evidence/count 한 번, alert 한 건 |
@@ -457,6 +459,8 @@ Lookback 구간 또는 지정 평가 구간의 audit가 설정된 limit을 초�
 | SAL-TC-W021 | AC-24 | Threshold 전 cooldown candidate의 aggregation 결과가 `None` | Alert 변경은 없고 commit 후 `notifications.changed` 발행도 없음 |
 | SAL-TC-W022 | AC-16, AC-24 | Active manager membership과 membership 없는 `created_by`/`managed_by`, suspended/deactivated owner 혼합 | 현재 manager 권한 사용자만 중복 없이 수신자에 포함 |
 | SAL-TC-W023 | AC-09, AC-26 | 실시간 task와 reconciliation이 같은 organization/idempotency key의 Outbox를 독립 PostgreSQL transaction에서 동시에 enqueue | Outbox 한 건을 공유하고 unique 충돌이 alert/evidence 바깥 transaction을 rollback하지 않음 |
+| SAL-TC-W024 | AC-25 | cursor와 1분 overlap보다 과거 `occurred_at` audit가 첫 scan commit 이후 DB에 저장되고 worker 재시작 | receipt가 없으므로 다음 scan에서 처리하고 성공 receipt 기록, 이후 scan은 중복 처리 없음 |
+| SAL-TC-W025 | AC-25 | 이미 receipt가 있는 후속 audit의 rule window 안에 과거 audit가 늦게 저장됨 | 같은 organization·actor·action 범위의 후속 audit만 다시 평가해 새 threshold 결과를 복구하고, 다른 범위와 window 밖 audit는 재평가하지 않음 |
 
 ### Component Tests
 
@@ -517,7 +521,7 @@ Lookback 구간 또는 지정 평가 구간의 audit가 설정된 limit을 초�
 | Lost-update prevention | SAL-TC-S011, SAL-TC-W008 | occurrence와 lifecycle 변경이 서로를 덮어쓰지 않음 |
 | Lifecycle optimistic concurrency | SAL-TC-S010, SAL-TC-A018, SAL-TC-E009 | 동시 상태 변경 중 하나만 성공 |
 | Resolve/event race | SAL-TC-S015, SAL-TC-W017 | event가 기존 alert와 새 threshold에 중복 귀속되지 않음 |
-| Reconciliation overlap | SAL-TC-W011, SAL-TC-W012 | cursor 경계 누락과 중복 없음 |
+| Reconciliation recovery | SAL-TC-W011, SAL-TC-W012, SAL-TC-W024, SAL-TC-W025 | receipt 중복 방지, 안정적인 event 순서와 late-arrival threshold 복구 |
 | Outbox idempotency | SAL-TC-W023 | 동시 enqueue가 한 row로 수렴하고 alert/evidence transaction을 보존 |
 
 PostgreSQL concurrency gate를 실행하지 못한 경우 PR에서 미실행 이유와 남은 위험을 명시해야 하며, SQLite 결과만으로 위 gate를 통과 처리하면 안 된다.

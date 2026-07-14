@@ -61,6 +61,7 @@ ADR 본문은 작성 시점의 결정 과정을 보존하는 기록 문서다. `
 | [ADR-0039](ADR-0039-knowledge-workflow-collection-routing-integration.md) | Accepted | Workflow Knowledge Collection 라우팅 통합 | MBA-233은 additive `knowledgeCollections` graph, route-safe Builder picker, save-time `use`/`route` 재검증, deployment preflight와 MBA-232 resolver의 LLM/retrieval 연결을 구현한다. Worker-first drain 뒤 Client를 노출하고 public projection과 durable observability에서 Collection identity를 제거한다. |
 | [ADR-0040](ADR-0040-agent-builder-unified-model-recommendation.md) | Accepted | Agent Builder 통합 model 추천과 선택 경계 | Header와 generated LLM node가 동일한 권한 후보와 `최신 세대 → general/mini/nano/pro` 순서를 공유한다. Gateway의 순수 추천 정책이 두 경로를 함께 정렬하며, 확실한 특수 목적 모델은 제외하고 이름을 해석하지 못한 verified chat 모델은 안정적인 후순위로 유지한다. |
 | [ADR-0041](ADR-0041-public-webhook-ingress-security-boundary.md) | Accepted | Public webhook ingress 보안 경계 | Public webhook은 query secret을 거부하고 단일 Bearer 또는 `X-Webhook-Secret` header만 허용한다. 인증 뒤 queue admission 전에 1 MiB, 5초, depth 20, 10,000 JSON node 제한을 적용하며 Repository Nginx와 production ingress도 query/header safe logging과 path-specific body guard를 검증한다. |
+| [ADR-0042](ADR-0042-security-alert-reconciliation-receipts.md) | Accepted | Security Alert reconciliation receipt 경계 | Processor별 receipt 부재를 미처리 audit의 durable 기준으로 사용한다. Event-time cursor는 rule 평가 순서와 관찰값으로 유지하고 late commit 발견 correctness에는 사용하지 않는다. |
 
 ## 참고 보고서
 
