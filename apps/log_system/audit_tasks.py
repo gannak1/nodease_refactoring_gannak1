@@ -45,6 +45,7 @@ _SECURITY_ALERT_NOTIFICATION_OUTBOX_TASK = (
     "security_alert.notification_outbox.deliver"
 )
 _SECURITY_ALERT_PROCESSOR = "security-alert-v1"
+_SECURITY_ALERT_RECONCILIATION_BATCH_SIZE = 100
 
 
 class SecurityAlertTaskRetryError(RuntimeError):
@@ -355,6 +356,7 @@ def reconcile_security_alerts(self) -> Dict[str, Any]:
             repository,
             processor_name=_SECURITY_ALERT_PROCESSOR,
             replay_horizon=SECURITY_ALERT_MAX_WINDOW,
+            batch_size=_SECURITY_ALERT_RECONCILIATION_BATCH_SIZE,
         )
         _dispatch_security_alert_updates(changed_organization_ids)
         return {
