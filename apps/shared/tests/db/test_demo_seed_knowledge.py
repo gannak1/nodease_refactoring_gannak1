@@ -1,6 +1,8 @@
 import gzip
 import json
+import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from apps.shared.db import demo_seed
@@ -142,6 +144,13 @@ def test_demo_summary_reports_seeded_knowledge_documents():
     }
 
 
+def test_demo_summary_describes_secure_runtime_credential_input():
+    credentials = demo_seed.demo_summary("demo")["credentials"]
+
+    assert "OPENAI_API_KEY" in credentials
+    assert ".env" not in credentials
+
+
 def test_demo_seed_prerequisites_use_precomputed_fixture_without_openai(
     tmp_path, monkeypatch
 ):
@@ -198,6 +207,227 @@ def test_demo_seed_runtime_credential_opt_in_requires_openai_key(tmp_path, monke
 
     with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
         demo_seed.validate_demo_seed_prerequisites()
+
+
+def test_runtime_openai_key_uses_environment_without_prompt(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "runtime-credential-value")
+    monkeypatch.setattr(
+        seed_demo_script.getpass,
+        "getpass",
+        lambda _prompt: pytest.fail("environment key must not prompt"),
+    )
+
+    assert (
+        seed_demo_script.resolve_runtime_openai_api_key()
+        == "runtime-credential-value"
+    )
+
+
+def test_runtime_openai_key_prompts_without_environment(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        seed_demo_script.sys,
+        "stdin",
+        SimpleNamespace(isatty=lambda: True),
+    )
+    monkeypatch.setattr(
+        seed_demo_script.getpass,
+        "getpass",
+        lambda _prompt: "prompted-runtime-value",
+    )
+
+    assert (
+        seed_demo_script.resolve_runtime_openai_api_key()
+        == "prompted-runtime-value"
+    )
+    assert os.environ["OPENAI_API_KEY"] == "prompted-runtime-value"
+
+
+def test_runtime_openai_key_requires_environment_when_non_interactive(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        seed_demo_script.sys,
+        "stdin",
+        SimpleNamespace(isatty=lambda: False),
+    )
+
+    with pytest.raises(RuntimeError, match="OPENAI_API_KEY is required"):
+        seed_demo_script.resolve_runtime_openai_api_key()
+
+
+def test_runtime_openai_key_validation_requires_expected_embedding_dimension(
+    monkeypatch,
+):
+    class ValidEmbeddingClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def embed_sync(self, _text):
+            return [0.0] * demo_seed.DEMO_EMBEDDING_DIMENSION
+
+    monkeypatch.setattr(seed_demo_script, "OpenAIClient", ValidEmbeddingClient)
+
+    assert seed_demo_script.validate_runtime_openai_api_key(
+        "runtime-credential-value"
+    )
+
+
+def test_runtime_openai_key_validation_rejects_wrong_embedding_dimension(monkeypatch):
+    class WrongDimensionClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def embed_sync(self, _text):
+            return [0.0]
+
+    monkeypatch.setattr(seed_demo_script, "OpenAIClient", WrongDimensionClient)
+
+    assert not seed_demo_script.validate_runtime_openai_api_key(
+        "runtime-credential-value"
+    )
+
+
+def test_runtime_openai_validation_failure_warns_once_and_continues_on_enter(
+    monkeypatch,
+    capsys,
+):
+    monkeypatch.setattr(
+        seed_demo_script,
+        "resolve_runtime_openai_api_key",
+        lambda: "runtime-credential-value",
+    )
+    monkeypatch.setattr(
+        seed_demo_script,
+        "validate_runtime_openai_api_key",
+        lambda _key: False,
+    )
+    monkeypatch.setattr(
+        seed_demo_script.sys,
+        "stdin",
+        SimpleNamespace(isatty=lambda: True),
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt: "")
+
+    assert (
+        seed_demo_script.prepare_runtime_openai_credential()
+        == "runtime-credential-value"
+    )
+
+    captured = capsys.readouterr()
+    assert captured.err.count("OpenAI API key could not be verified") == 1
+    assert "runtime-credential-value" not in captured.err
+    assert "runtime-credential-value" not in captured.out
+
+
+def test_runtime_openai_validation_failure_stops_on_no(monkeypatch):
+    monkeypatch.setattr(
+        seed_demo_script,
+        "resolve_runtime_openai_api_key",
+        lambda: "runtime-credential-value",
+    )
+    monkeypatch.setattr(
+        seed_demo_script,
+        "validate_runtime_openai_api_key",
+        lambda _key: False,
+    )
+    monkeypatch.setattr(
+        seed_demo_script.sys,
+        "stdin",
+        SimpleNamespace(isatty=lambda: True),
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+
+    with pytest.raises(SystemExit, match="OpenAI API key verification was not accepted"):
+        seed_demo_script.prepare_runtime_openai_credential()
+
+
+def test_runtime_openai_validation_failure_requires_tty_confirmation(monkeypatch):
+    monkeypatch.setattr(
+        seed_demo_script,
+        "resolve_runtime_openai_api_key",
+        lambda: "runtime-credential-value",
+    )
+    monkeypatch.setattr(
+        seed_demo_script,
+        "validate_runtime_openai_api_key",
+        lambda _key: False,
+    )
+    monkeypatch.setattr(
+        seed_demo_script.sys,
+        "stdin",
+        SimpleNamespace(isatty=lambda: False),
+    )
+
+    with pytest.raises(RuntimeError, match="interactive confirmation"):
+        seed_demo_script.prepare_runtime_openai_credential()
+
+
+def test_dry_run_skips_runtime_openai_credential_preparation(monkeypatch, capsys):
+    monkeypatch.setattr(
+        seed_demo_script.sys,
+        "argv",
+        [
+            "seed_demo.py",
+            "--profile",
+            "demo",
+            "--dry-run",
+            "--enable-runtime-openai-credential",
+        ],
+    )
+    monkeypatch.setattr(
+        seed_demo_script,
+        "prepare_runtime_openai_credential",
+        lambda: pytest.fail("dry-run must not prompt or validate a credential"),
+    )
+
+    seed_demo_script.main()
+
+    assert '"profile": "demo"' in capsys.readouterr().out
+
+
+def test_demo_seed_prepares_runtime_credential_before_seed(monkeypatch):
+    events = []
+
+    class FakeSession:
+        def close(self):
+            events.append("close")
+
+    monkeypatch.setattr(
+        seed_demo_script.sys,
+        "argv",
+        [
+            "seed_demo.py",
+            "--profile",
+            "demo",
+            "--skip-schema",
+            "--enable-runtime-openai-credential",
+        ],
+    )
+    monkeypatch.setattr(
+        seed_demo_script,
+        "prepare_runtime_openai_credential",
+        lambda: events.append("prepare"),
+    )
+    monkeypatch.setattr(
+        seed_demo_script,
+        "validate_demo_seed_prerequisites",
+        lambda: events.append("prerequisites"),
+    )
+    monkeypatch.setattr(
+        seed_demo_script,
+        "check_demo_schema_readiness",
+        lambda: events.append("schema"),
+    )
+    monkeypatch.setattr(seed_demo_script, "SessionLocal", lambda: FakeSession())
+    monkeypatch.setattr(
+        seed_demo_script,
+        "seed_demo_data",
+        lambda _db: events.append("seed"),
+    )
+
+    seed_demo_script.main()
+
+    assert events == ["prepare", "prerequisites", "schema", "seed", "close"]
 
 
 def test_demo_runtime_credential_grants_agent_builder_user_permission(monkeypatch):

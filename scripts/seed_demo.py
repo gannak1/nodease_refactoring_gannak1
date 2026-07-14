@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
 import sys
@@ -19,6 +20,8 @@ from sqlalchemy import inspect, text  # noqa: E402
 
 from apps.shared.db.base import Base  # noqa: E402
 from apps.shared.db.demo_seed import (  # noqa: E402
+    DEMO_EMBEDDING_DIMENSION,
+    DEMO_EMBEDDING_MODEL,
     DEMO_ENABLE_RUNTIME_OPENAI_CREDENTIAL_ENV,
     DEMO_REGENERATE_KNOWLEDGE_FIXTURE_ENV,
     demo_summary,
@@ -29,6 +32,7 @@ from apps.shared.db.demo_seed import (  # noqa: E402
     validate_demo_seed_prerequisites,
 )
 from apps.shared.db.session import SessionLocal, engine  # noqa: E402
+from apps.shared.services.llm_client.openai_client import OpenAIClient  # noqa: E402
 from apps.shared.services.knowledge_schema_readiness import (  # noqa: E402
     check_knowledge_schema_readiness_with_inspector,
 )
@@ -36,6 +40,10 @@ from apps.shared.services.alembic_readiness import (  # noqa: E402
     check_alembic_readiness_with_inspector,
 )
 import apps.shared.db.models  # noqa: E402, F401
+
+
+OPENAI_API_BASE_URL = "https://api.openai.com/v1"
+OPENAI_KEY_VALIDATION_INPUT = "Nodease demo seed credential verification."
 
 
 REQUIRED_DEMO_SCHEMA_COLUMNS: dict[str, set[str]] = {
@@ -328,6 +336,66 @@ def check_demo_schema_readiness() -> None:
         raise DemoSchemaReadinessError(format_schema_readiness_error(gaps))
 
 
+def resolve_runtime_openai_api_key() -> str:
+    """Return the runtime key from the environment or a hidden terminal prompt."""
+    api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    if api_key:
+        return api_key
+
+    if not sys.stdin.isatty():
+        raise RuntimeError(
+            "OPENAI_API_KEY is required in a non-interactive environment. "
+            "Set the environment variable or run this command from a terminal."
+        )
+
+    try:
+        api_key = getpass.getpass("OpenAI API key: ").strip()
+    except (EOFError, KeyboardInterrupt) as exc:
+        raise RuntimeError("OpenAI API key input was cancelled.") from exc
+    if not api_key:
+        raise RuntimeError("OpenAI API key is required.")
+
+    os.environ["OPENAI_API_KEY"] = api_key
+    return api_key
+
+
+def validate_runtime_openai_api_key(api_key: str) -> bool:
+    """Check that the key can create the embedding used by demo RAG search."""
+    try:
+        client = OpenAIClient(
+            model_id=DEMO_EMBEDDING_MODEL,
+            credentials={"apiKey": api_key, "baseUrl": OPENAI_API_BASE_URL},
+        )
+        embedding = client.embed_sync(OPENAI_KEY_VALIDATION_INPUT)
+    except Exception:
+        return False
+    return isinstance(embedding, list) and len(embedding) == DEMO_EMBEDDING_DIMENSION
+
+
+def prepare_runtime_openai_credential() -> str:
+    """Resolve and validate the demo runtime key without logging secret values."""
+    api_key = resolve_runtime_openai_api_key()
+    if validate_runtime_openai_api_key(api_key):
+        print("[OK] OpenAI embedding credential verified.")
+        return api_key
+
+    print(
+        "[WARN] OpenAI API key could not be verified. "
+        "The demo seed may not be able to perform live RAG search.",
+        file=sys.stderr,
+    )
+    if not sys.stdin.isatty():
+        raise RuntimeError(
+            "OpenAI API key verification requires an interactive confirmation. "
+            "Set OPENAI_API_KEY and run the seed from a terminal."
+        )
+
+    answer = input("Continue seeding with this key anyway? [Y/n] ").strip().lower()
+    if answer in {"n", "no"}:
+        raise SystemExit("OpenAI API key verification was not accepted; seed cancelled.")
+    return api_key
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Seed Nodease final demo data into the local database."
@@ -381,8 +449,8 @@ def parse_args() -> argparse.Namespace:
         "--enable-runtime-openai-credential",
         action="store_true",
         help=(
-            "Seed repo root .env OPENAI_API_KEY as the local demo runtime "
-            "OpenAI credential. Use only for disposable demo databases."
+            "Validate OPENAI_API_KEY or prompt securely, then seed it as the local "
+            "demo runtime OpenAI credential. Use only for disposable demo databases."
         ),
     )
     args = parser.parse_args()
@@ -408,6 +476,8 @@ def main() -> None:
         return
 
     if args.profile == "demo":
+        if args.enable_runtime_openai_credential:
+            prepare_runtime_openai_credential()
         validate_demo_seed_prerequisites()
 
     if not args.skip_schema:
