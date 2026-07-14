@@ -225,6 +225,8 @@ B 후보 재실행을 위해 baseline picker를 다시 열거나 workspace를 �
 8. 실행 로그에서 실제 선택 모델, matched cohort/rule, fallback과 policy version을
    확인한다.
 
+후보 검증 결과에서 provider가 요청 후보와 다른 모델을 실제 실행한 경우, 후보 모델명만 성공으로 표시하면 안 된다. 분석 화면은 `요청 모델 -> 실제 실행 모델`과 `fallback 발생`을 함께 표시하고, 해당 후보를 `검증 제외` 상태로 표시한다. 이 경우 schema, downstream, 품질 점수가 있어도 policy 적용 후보로 선택할 수 없다.
+
 #### Routing analysis panel
 
 기존 model-routing route의 첫 화면은 모델 추천 한 건보다 라우팅 가능 여부를 먼저
@@ -341,8 +343,8 @@ LLM 노드 상세 화면은 자동 모델 라우팅을 별도 route가 아니라
 
 자동 라우팅 ON 상태:
 
-- 기본 모델 선택 UI를 숨긴다.
-- fallback 모델 선택 UI를 숨긴다.
+- `기본 모델 (규칙 미일치 시)` 선택 UI를 표시한다. 이 값은 입력군 rule과 매칭되지 않은 요청의 기본 모델이며, policy table의 `active_policy.default_model_id`와 node draft의 `model_id`를 함께 갱신한다.
+- `기본 대체 모델` 선택 UI를 표시한다. 이 값은 기본 모델 호출 실패 시에만 사용하며, `active_policy.fallback_model_id`와 node draft의 `fallback_model_id`를 함께 갱신한다.
 - active policy 상태 panel을 표시한다. panel은 `GET /model-routing/policy` 응답을 우선 사용한다.
 - runtime은 active policy를 사용해 모델을 선택한다.
 - active policy가 없으면 `collecting` 상태로 표시하고, runtime은 node에 저장된 `model_id`/`fallback_model_id`를 그대로 사용한다. bootstrap은 새 모델이나 rule을 만들지 않는다.
@@ -384,7 +386,20 @@ LLM 노드 상세 화면은 자동 모델 라우팅을 별도 route가 아니라
 
 현재 구현은 policy 조회 응답의 `last_update` safe summary를 사용해 `최근 정책 점검`, 자동/수동 갱신 여부, `반영됨`/보류/실패 상태, judge 모델과 judge 비용을 표시한다. 사용자는 judge usage log id를 원문 로그로 열람하지 않고 추적 식별자로만 확인한다.
 
-자동 라우팅 토글과 점검 주기 slider는 local draft만 바꾸지 않는다. 사용자가 토글을 바꾸거나 slider 조작을 마치면 `PATCH /model-routing/policy`로 `enabled`, `refresh_every_runs`를 저장한다. 현재 배포가 없거나 현재 deployment snapshot에 자동 라우팅 ON 설정이 포함되지 않은 경우에는 draft 설정은 저장되지만 policy panel은 `collecting`으로 남고, 해당 설정을 포함해 다시 배포한 뒤 target LLM node가 성공한 terminal 운영 workflow 완료가 policy row를 생성한다.
+자동 라우팅 토글과 점검 주기 slider는 local draft만 바꾸지 않는다. 사용자가 토글을 바꾸거나 slider 조작을 마치면 `PATCH /model-routing/policy`로 `enabled`, `refresh_every_runs`, `validation_budget_usd`, `max_cohorts`를 저장한다. 현재 배포가 없거나 현재 deployment snapshot에 자동 라우팅 ON 설정이 포함되지 않은 경우에는 draft 설정은 저장되지만 policy panel은 `collecting`으로 남고, 해당 설정을 포함해 다시 배포한 뒤 target LLM node가 성공한 terminal 운영 workflow 완료가 policy row를 생성한다.
+
+자동 라우팅 ON panel에는 입력군 제어 영역을 추가한다.
+
+- `입력군 관리`은 자동 정책 점검 주기와 월간 검증 한도보다 위에 표시한다.
+- `입력군 최대 개수` slider: `1~12`, 기본값 `6`, 권장 범위 `3~6`을 표시한다.
+- count badge: `proposed`, `validating`, `validated_waiting`, `active` 상태의 개수만 `현재/최대`로 표시한다. 휴면/종료 입력군은 이력 목록에는 남지만 자리를 차지하지 않는다.
+- 입력군 목록: 한국어 이름, 변수명, source(`직접 등록`/`자동 발견`), 관찰 수, lifecycle, 고정 여부, 검증된 기본 모델 또는 `검증 대기`를 표시한다. 검증된 기본 모델은 읽기 전용이며 사용자가 직접 고르지 않는다.
+- 직접 등록: 대표 문의를 입력하고 `입력군 마법사`를 누르면 한국어 이름과 영문 변수명 초안을 채운다. 사용자는 두 값을 수정하고 `입력군 고정` 여부를 정한 뒤 `입력군 추가`를 누른다.
+- 입력군 고정: 고정된 입력군은 traffic이 줄어도 자동 휴면/종료 처리하지 않는다. 고정하지 않은 직접 등록 입력군은 lifecycle 정책을 따른다.
+- 삭제: safety-protected 입력군을 제외한 입력군은 `삭제`할 수 있다. 삭제는 DB 이력을 물리적으로 지우지 않고 `retired`로 전환하며, 이후 요청은 전체 기본 정책으로 처리한다.
+- 직접 등록은 policy row가 생성된 뒤에만 활성화한다. 첫 배포 운영 실행 전에는 대표 문장 embedding과 policy 연결을 할 수 없으므로 disabled 안내를 표시한다.
+- 대표 문의는 설정 데이터로 DB에 저장된다. UI는 secret, 실제 고객 원문, credential 정보를 넣지 말아야 한다는 안내를 제공해야 한다.
+- 직접/자동 입력군 모두 등록 직후 실행 모델을 바꾸지 않는다. 운영 관찰과 candidate Replay/Judge gate가 통과해 `active` rule이 된 뒤에만 runtime 선택에 참여한다.
 
 - 모델 목록 API: `GET /api/v1/llm/my-models`
 - 모델 선택 컴포넌트: 기존 `ModelSelectDropdown` 계열을 우선 재사용한다.

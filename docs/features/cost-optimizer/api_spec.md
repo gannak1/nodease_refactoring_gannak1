@@ -47,8 +47,11 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/compare` | 선택 baseline input으로 B 후보를 실행하고 A/B 출력 품질을 평가 | FR-003, FR-004, FR-005, FR-006, FR-009, FR-010, FR-013 | builder 이상 |
 | PATCH | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/apply` | 선택한 B 후보 설정을 current draft에 적용 | FR-008, FR-010 | builder 이상 |
 | GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy` | 현재 policy 상태, 누적 운영 run 수, active/pending policy 조회 | FR-011 | builder 이상 |
-| PATCH | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy` | 자동 라우팅 ON/OFF와 정책 점검 주기 변경 | FR-011 | builder 이상 |
+| PATCH | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy` | 자동 라우팅 ON/OFF, 규칙 미일치 시 기본 모델/대체 모델, 정책 점검 주기, 월간 검증 예산, 입력군 최대 개수 변경 | FR-011 | builder 이상 |
 | POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy/refresh` | 수동 policy refresh 작업을 예약 | FR-011 | builder 이상 |
+| POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts/suggest` | 대표 문의로 입력군 이름/영문 key 초안 생성 | FR-011 | builder 이상 |
+| POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts` | 사용자가 확정한 직접 입력군 생성 | FR-011 | builder 이상 |
+| DELETE | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts/{cohort_id}` | 직접/자동 입력군을 retired로 전환하고 이후 라우팅에서 제외 | FR-011 | builder 이상 |
 | GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/analysis` | **계획**: 라우팅 적합성, candidate gate 결과, evidence gap, 예상 순절감 safe summary 조회 | FR-011 | builder 이상 |
 
 ## Implementation Tracking
@@ -382,7 +385,9 @@ active policy에 그대로 보존하고 Judge 응답 정규화 뒤 다시 결합
 ```json
 {
   "enabled": true,
-  "refresh_every_runs": 20
+  "refresh_every_runs": 20,
+  "validation_budget_usd": 3,
+  "max_cohorts": 6
 }
 ```
 
@@ -412,13 +417,17 @@ POST 응답은 비동기 task가 예약됐다는 뜻일 뿐 judge 결과가 아�
 | `id` | UUID | policy id |
 | `organization_id` | UUID | organization scope |
 | `workflow_id` | UUID | 대상 workflow |
+| `deployment_id` | UUID | policy가 적용되는 배포 snapshot |
 | `node_id` | string | 대상 LLM node |
+| `execution_subject_user_id` | UUID nullable | 배포 runtime에서 credential 사용 권한을 판정할 실행 주체 |
 | `enabled` | boolean | 자동 라우팅 ON/OFF |
 | `status` | string | `off`, `collecting`, `active`, `refreshing`, `pending_review`, `failed` |
 | `policy_version` | string | active policy version |
 | `active_policy` | JSONB | 실행 시점 모델 선택 rule safe snapshot |
 | `pending_policy` | JSONB nullable | gate 미통과 또는 검토 보류 정책안 |
 | `refresh_every_runs` | integer | 기본값 20 |
+| `validation_budget_usd` | decimal | node별 월간 자동 Replay/Judge 검증 예산, 기본값 3 USD |
+| `max_cohorts` | integer | 자동/직접 입력군 최대 개수, `1~12`, 기본값 6 |
 | `last_refreshed_at` | datetime nullable | 마지막 정책 갱신 시각 |
 | `last_refresh_result` | string nullable | `applied`, `kept_current`, `pending_review`, `failed` |
 | `eligible_runs_since_last_refresh` | integer | 마지막 갱신 이후 중복 제거된 배포 후 운영 실행 수 |
@@ -456,6 +465,69 @@ POST 응답은 비동기 task가 예약됐다는 뜻일 뿐 judge 결과가 아�
 | `created_at` | datetime | 기록 시각 |
 
 `(policy_id, workflow_run_id)`는 unique다. Celery retry, webhook 재전달, 완료 hook 중복 호출이 있어도 한 workflow run은 policy 누적 수를 한 번만 증가시킨다.
+
+#### Adaptive cohort persistence
+
+`llm_node_model_routing_cohorts`는 policy별 입력군의 label, source(`auto`/`manual`),
+lifecycle, centroid vector, traffic share, 검증 모델을 보관한다. `proposed`,
+`validating`, `validated_waiting`, `active`만 `max_cohorts` 한도를 사용한다.
+`dormant`와 `retired`는 과거 trend를 설명하는 이력이라 새 입력군의 자리를 차지하지
+않는다.
+
+`..._observations`는 배포 후 성공한 node run의 input hash와 embedding vector만
+보관한다. raw 운영 입력은 저장하지 않는다. `..._cohort_examples`는 사용자가 직접
+등록한 대표 문장만 보관하는 설정 데이터이며, secret이나 실제 고객 원문은 입력하면
+안 된다. `..._model_evidence`, `..._validation_batches`, `..._validation_items`,
+`..._validation_cost_events`, `..._validation_budget_months`는 candidate Replay/Judge
+결과와 월간 비용 한도를 보관한다.
+
+### Cohort wizard and direct registration
+
+`POST /model-routing/cohorts/suggest` request:
+
+```json
+{ "representative_query": "세금계산서를 다시 발급받고 싶습니다." }
+```
+
+응답은 사용자가 수정 가능한 `{ "label", "key", "representative_query" }`다. wizard는
+분류 초안만 만든다. 입력군을 바로 활성화하거나 실행 모델을 바꾸지 않는다.
+
+`POST /model-routing/cohorts` request:
+
+```json
+{
+  "representative_query": "세금계산서를 다시 발급받고 싶습니다.",
+  "label": "세금계산서 재발행 문의",
+  "key": "invoice-reissue",
+  "fixed": false
+}
+```
+
+이 endpoint는 persisted enabled policy와 실행 주체가 사용할 수 있는 embedding model을
+요구한다. 성공하면 `source=manual`, `status=proposed` row를 만들고, 이후 운영 관찰과
+Replay gate를 통과해야만 active routing rule로 승격된다. policy row가 아직 없으면
+`409 model_routing.policy_not_ready`를 반환한다.
+
+`fixed=true`인 입력군은 운영 트래픽이 줄어도 자동 휴면 또는 종료 처리하지 않는다.
+`DELETE /model-routing/cohorts/{cohort_id}`는 row와 검증 이력을 물리 삭제하지 않고
+`status=retired`로 바꾼다. retired 입력군은 이후 정책 규칙과 Replay 검증 대상에서 제외된다.
+
+`PATCH /model-routing/policy`는 자동 라우팅의 공통 설정과 함께 아래 값을 받을 수 있다.
+
+```json
+{
+  "enabled": true,
+  "refresh_every_runs": 20,
+  "validation_budget_usd": 3,
+  "max_cohorts": 6,
+  "default_model_id": "gpt-4.1-mini",
+  "fallback_model_id": "gpt-4.1"
+}
+```
+
+`default_model_id`는 어떤 입력군 rule에도 매칭되지 않은 요청에 사용한다. `fallback_model_id`는
+기본 모델 호출이 실패했을 때만 사용하며 기본 모델과 같을 수 없다. 두 값은 workflow draft의
+LLM node 설정과 persisted active policy에 함께 반영된다.
 
 ### Runtime Metadata
 
@@ -536,6 +608,8 @@ Semantic Route catalog로 판정하고, 자동 반영 rule은 동일 cohort의 �
 ```
 
 Judge 입력에는 raw prompt, raw output, raw input, credential 원문, API key, encrypted config, raw trace payload, raw RAG chunk content를 포함하지 않는다. 입력은 모델별 비용/token/latency 평균, schema/downstream/fallback/retry safe summary, 현재 사용자 기준 candidate model 사용 가능성, 그리고 일반 feature 조건별 segment 성능 summary로 제한한다.
+
+Adaptive candidate validation item의 `execution_summary`는 `requested_model_id`, `actual_model_id`, `fallback_used`를 함께 보관한다. provider가 요청한 후보와 다른 모델로 fallback 실행한 경우 `fallback_used=true`로 기록하며, 해당 Replay는 후보 모델의 검증 표본이나 active policy 승격 근거로 사용할 수 없다. 이 값은 raw provider 응답이 아니라 safe model id와 boolean만 저장한다.
 
 ## LLM Parameter Recommendation Contract
 
