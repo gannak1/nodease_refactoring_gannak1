@@ -8,6 +8,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import AuthenticatedDeploymentRunPage from './page';
+import { authApi } from '@/app/features/auth/api/authApi';
 import { workflowApi } from '@/app/features/workflow/api/workflowApi';
 
 const { routerPush, routerReplace } = vi.hoisted(() => ({
@@ -28,10 +29,33 @@ vi.mock('@/app/features/workflow/api/workflowApi', () => ({
   },
 }));
 
+vi.mock('@/app/features/auth/api/authApi', () => ({
+  authApi: {
+    me: vi.fn(),
+  },
+}));
+
+const mockedAuthApi = vi.mocked(authApi);
 const mockedWorkflowApi = vi.mocked(workflowApi);
 
 describe('AuthenticatedDeploymentRunPage', () => {
   beforeEach(() => {
+    mockedAuthApi.me.mockResolvedValue({
+      user: {
+        id: 'user-1',
+        name: '김서연',
+        email: 'seoyeon.kim@nodease.demo',
+        emailVerified: true,
+        role: 'user',
+        isActive: true,
+        createdAt: '2026-07-14T00:00:00Z',
+        updatedAt: '2026-07-14T00:00:00Z',
+      },
+      session: {
+        token: '[REDACTED]',
+        expiresAt: '2026-07-15T00:00:00Z',
+      },
+    });
     mockedWorkflowApi.getDeploymentRunInfo.mockResolvedValue({
       deployment_id: 'deployment-1',
       app_id: 'app-1',
@@ -74,6 +98,8 @@ describe('AuthenticatedDeploymentRunPage', () => {
     ).toBeVisible();
     expect(screen.getByRole('main')).toHaveClass('h-full', 'overflow-y-auto');
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
+    expect(await screen.findByText('김서연')).toBeVisible();
+    expect(mockedAuthApi.me).toHaveBeenCalledOnce();
     expect(screen.getByRole('region', { name: '대화 내용' })).toBeVisible();
     expect(screen.getByLabelText('질문')).toHaveAttribute('rows', '1');
     expect(
@@ -144,6 +170,18 @@ describe('AuthenticatedDeploymentRunPage', () => {
     );
 
     expect(routerPush).toHaveBeenCalledWith('/dashboard');
+  });
+
+  it('사용자 정보 조회가 실패해도 권한 상태와 실행 화면을 유지한다', async () => {
+    mockedAuthApi.me.mockRejectedValueOnce(new Error('profile unavailable'));
+
+    render(<AuthenticatedDeploymentRunPage />);
+
+    expect(
+      await screen.findByRole('heading', { name: '사내 문서 질문 응답 봇' }),
+    ).toBeVisible();
+    expect(screen.getByText('사용자 권한 적용')).toBeVisible();
+    expect(screen.queryByText('김서연')).not.toBeInTheDocument();
   });
 
   it('비로그인 사용자는 원래 내부 실행 링크를 보존한 로그인 화면으로 이동한다', async () => {

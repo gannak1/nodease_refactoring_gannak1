@@ -12,6 +12,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 
+import { authApi } from '@/app/features/auth/api/authApi';
 import { workflowApi } from '@/app/features/workflow/api/workflowApi';
 import { FinalResponseCard } from '@/app/features/workflow/components/execution/FinalResponseCard';
 import type {
@@ -123,6 +124,7 @@ export default function AuthenticatedDeploymentRunPage() {
   const deploymentId = searchParams.get('deploymentId') || '';
   const [deployment, setDeployment] =
     useState<DeploymentRunInfoResponse | null>(null);
+  const [currentUserName, setCurrentUserName] = useState('');
   const [inputs, setInputs] = useState<Record<string, unknown>>({});
   const [conversationId] = useState(makeConversationId);
   const [isLoading, setIsLoading] = useState(true);
@@ -166,6 +168,23 @@ export default function AuthenticatedDeploymentRunPage() {
   useEffect(() => {
     if (chatInputRef.current) resizeChatInput(chatInputRef.current);
   }, [chatVariable, inputs]);
+
+  useEffect(() => {
+    let active = true;
+
+    authApi
+      .me()
+      .then((userInfo) => {
+        if (active) setCurrentUserName(userInfo.user?.name?.trim() || '');
+      })
+      .catch(() => {
+        if (active) setCurrentUserName('');
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -305,9 +324,16 @@ export default function AuthenticatedDeploymentRunPage() {
               {title}
             </h1>
           </div>
-          <span className="inline-flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700">
+          <span className="inline-flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-emerald-700">
             <ShieldCheck className="h-4 w-4" />
-            사용자 권한 적용
+            <span className="flex flex-col leading-tight">
+              {currentUserName && (
+                <span className="text-sm font-semibold text-slate-900">
+                  {currentUserName}
+                </span>
+              )}
+              <span className="text-xs font-semibold">사용자 권한 적용</span>
+            </span>
           </span>
         </header>
 
