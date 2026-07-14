@@ -34,10 +34,14 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     del app
+    from apps.gateway.composition.connectors import (
+        require_connector_test_security_ready,
+    )
     from apps.shared.audit.listeners import register_audit_listeners
 
     register_audit_listeners()
     require_mail_credential_keyring_ready()
+    require_connector_test_security_ready()
 
     dispatch_settings = schedule_dispatch_settings_from_environment(os.environ)
     require_schedule_dispatch_migration_ready(
@@ -108,3 +112,9 @@ async def lifespan(app: FastAPI):
             "SchedulerService shutdown failed: error_type=%s",
             type(exc).__name__,
         )
+
+    from apps.gateway.composition.connectors import (
+        shutdown_connector_test_application,
+    )
+
+    shutdown_connector_test_application()

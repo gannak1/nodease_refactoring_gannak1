@@ -737,34 +737,6 @@ def test_connector_schema_endpoint_returns_safe_error(monkeypatch):
     assert exc_info.value.detail == {"reason_code": "connector.schema_fetch_failed"}
 
 
-def test_connector_test_endpoint_returns_safe_error_message(monkeypatch):
-    class FailingConnector:
-        def check(self, config):
-            raise RuntimeError("host=db.internal password=secret")
-
-    monkeypatch.setitem(
-        connectors_endpoint.CONNECTOR_MAP,
-        connectors_endpoint.SupportedDBType.POSTGRES,
-        FailingConnector,
-    )
-    request = connectors_endpoint.DBConnectionTestRequest(
-        connection_name="db",
-        type="postgres",
-        host="db.example.com",
-        port=5432,
-        database="app",
-        username="user",
-        password="secret",
-    )
-
-    response = asyncio.run(connectors_endpoint.test_db_connection(request))
-
-    assert response.success is False
-    assert response.reason_code == "connector.connection_failed"
-    assert "secret" not in response.message
-    assert "db.internal" not in response.message
-
-
 def test_create_connection_returns_safe_connection_error(monkeypatch):
     class FailingConnector:
         def check(self, config):

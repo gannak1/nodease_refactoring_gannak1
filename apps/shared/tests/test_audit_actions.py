@@ -22,3 +22,7 @@ def test_organization_membership_audit_actions_are_defined():
     assert AuditAction.ORGANIZATION_MEMBER_DECLINE == "organization.member.decline"
     assert AuditAction.ORGANIZATION_MEMBER_UPDATE == "organization.member.update"
     assert AuditAction.ORGANIZATION_MEMBER_REMOVE == "organization.member.remove"
+
+
+def test_connector_test_audit_action_is_defined():
+    assert AuditAction.CONNECTION_TEST == "connection.test"

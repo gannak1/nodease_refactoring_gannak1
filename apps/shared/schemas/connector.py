@@ -1,6 +1,6 @@
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 
 # SSH 설정 스키마
@@ -25,6 +25,39 @@ class DBConnectionTestRequest(BaseModel):
     username: str
     password: str
     ssh: Optional[SSHConfig] = None
+
+
+class ConnectorTestSSHConfig(BaseModel):
+    """Bounded legacy SSH shape for the strict connection-test endpoint."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    host: Optional[str] = Field(default=None, min_length=1, max_length=253)
+    port: int = Field(default=22, ge=1, le=65535)
+    username: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    auth_type: Literal["password", "key"] = "password"
+    password: Optional[SecretStr] = Field(default=None, min_length=1, max_length=1024)
+    private_key: Optional[SecretStr] = Field(
+        default=None,
+        min_length=1,
+        max_length=16 * 1024,
+    )
+
+
+class ConnectorTestRequest(BaseModel):
+    """Strict, non-persistent contract for ``POST /connectors/test``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    connection_name: str = Field(min_length=1, max_length=100)
+    type: Literal["postgres"]
+    host: str = Field(min_length=1, max_length=253)
+    port: Literal[5432] = 5432
+    database: str = Field(min_length=1, max_length=128)
+    username: str = Field(min_length=1, max_length=128)
+    password: SecretStr = Field(min_length=1, max_length=1024)
+    ssh: Optional[ConnectorTestSSHConfig] = None
 
 
 # 테스트 결과 응답 스키마
