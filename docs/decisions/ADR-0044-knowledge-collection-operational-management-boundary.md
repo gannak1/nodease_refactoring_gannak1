@@ -62,10 +62,20 @@ Collection/KB content-plane 분리는 유지하면서 lifecycle, order와 permis
 - Link, unlink, reorder와 visibility mutation은 같은 Collection-first lock protocol을
   사용한다.
 - GET, link와 reorder 성공 response는 최신 전체 ordered projection과 revision을
-  반환하고 unlink는 `204` 뒤 재조회를 유지한다.
+  반환하고 unlink는 `204` 뒤 재조회를 유지한다. 독립 action 모델에서 `manage`가
+  `read`를 암묵적으로 만들지 않으므로 link/reorder 성공 projection은 완료된 mutation
+  authority를 다시 확인하는 safe management projection을 사용한다.
+- Legacy link request의 optional `rank`는 호환 목적으로만 수용하고 무시한다. 신규 item은
+  Collection lock 아래 current ordered set의 끝에 추가하고 전체 rank를 연속값으로
+  정규화한다. 명시 순서 변경은 revision을 요구하는 reorder endpoint만 담당한다.
 - 초기 reorder surface는 500개 이하만 지원한다. 초과 상태는
   `item_reorder_limit_exceeded` fixed reason으로 비활성화한다.
-- Current order와 같은 request는 no-op이며 새 audit를 만들지 않는다.
+- Empty Collection을 포함해 current 전체 set을 제출할 수 있고 current order와 같은
+  request는 no-op이며 새 audit를 만들지 않는다.
+- Public Collection의 reorder와 public 노출을 추가하는 link는 Organization manager
+  acknowledgement 뒤에도 source identity/connector 또는 source-managed child가 있으면
+  public exposure approval primitive 부재 상태에서 `source_public_exposure_required`로
+  fail-closed한다.
 
 ### Bounded delegation subjects
 
@@ -96,14 +106,23 @@ Collection/KB content-plane 분리는 유지하면서 lifecycle, order와 permis
   User의 기존 row를 정리할 수 있다.
 - Target별 authorization 의미는 유지하되 organization/permission projection은 bounded
   bulk query로 읽어 target 수만큼 N+1 query를 만들지 않는다.
+- Actor가 모든 target의 effective Collection `manage`를 가진 경우 domain
+  `permission_delegate`도 보유했더라도 resource-manager authority를 우선한다. 일부
+  target에만 `manage`가 있으면 domain-delegate 정책을 적용해 self/own-Team grant를
+  차단한다.
 - 성공한 각 Collection mutation에는 같은 transaction의 canonical audit를 남긴다.
   Response와 audit metadata는 raw subject/Collection label, target id 목록과 exact hidden
   count를 포함하지 않고 fixed operation/action과 safe count bucket만 사용한다.
 
 ### Architecture and data model
 
-- 신규 flow는 FastAPI endpoint → Knowledge administration application use case →
-  repository/audit port → SQLAlchemy/audit adapter → Unit of Work 순서를 따른다.
+- Lifecycle과 exact order flow는 FastAPI endpoint → Knowledge administration
+  application use case → repository/audit port → SQLAlchemy/audit adapter → Unit of Work
+  순서를 따른다.
+- Subject page, bundle revoke와 multi-Collection permission bulk는 기존 Gateway
+  Collection management service의 authorization/audit helper와 permission row model을
+  확장한다. 이 범위에서 별도 permission application 계층으로 대규모 이동하지 않으며
+  endpoint는 request/response mapping만 담당한다.
 - Controller는 request parsing, authentication dependency, use case 호출과 safe error
   mapping만 담당한다.
 - Existing lifecycle, membership rank와 Team/User Collection permission table을
@@ -127,6 +146,7 @@ bundle을 role provenance로 잘못 해석하는 문제를 피하고, all-or-not
 
 - Reorder Client는 전체 item set과 current revision을 보내야 하므로 legacy request는
   validation failure가 된다.
+- Legacy link `rank`는 deprecated 호환 입력이며 실제 삽입 위치를 결정하지 않는다.
 - Delegation subject Client는 subject type과 page contract를 사용해야 하며 전체 목록을
   한 번에 받을 수 없다.
 - Bundle revoke 뒤 action 조합은 어떤 role을 부여했던 기록이 아니라 현재 explicit
@@ -144,8 +164,8 @@ bundle을 role provenance로 잘못 해석하는 문제를 피하고, all-or-not
 - `docs/features/knowledge/{requirements,api_spec,component_spec,test_cases}.md`
 - `apps/shared/schemas/knowledge.py`
 - `apps/gateway/application/knowledge_administration/`
-- `apps/gateway/adapters/db/knowledge_collection_management.py`
-- `apps/gateway/adapters/audit/knowledge_collection_management.py`
+- `apps/gateway/adapters/db/knowledge_collection_operations.py`
+- `apps/gateway/adapters/audit/knowledge_collection_operations.py`
 - `apps/gateway/composition/knowledge_administration.py`
 - `apps/gateway/api/v1/endpoints/knowledge.py`
 - `apps/gateway/services/knowledge_collection_service.py`
@@ -154,15 +174,15 @@ bundle을 role provenance로 잘못 해석하는 문제를 피하고, all-or-not
 
 ## Implementation State
 
-이 ADR은 MBA-264의 승인된 목표 계약이다. ADR을 추가하는 문서 커밋 시점에는 기존
-archive, partial reorder, unbounded subject list와 action-row revoke baseline이 남아
-있다. 구현 완료 여부는 코드와 관련 자동화 검증 결과로 판정하며 문서 자체가 완료를
-의미하지 않는다.
+MBA-264 구현은 manual restore, exact revision reorder, bounded subject page, bundle
+revoke, multi-Collection atomic bulk와 해당 Client 관리 surface를 연결한다. 기존 DB row를
+재사용하므로 migration은 추가하지 않는다. 구현 완료 판정은 관련 Gateway/Shared/Client
+자동화와 disposable PostgreSQL 동시성·rollback 검증 결과를 함께 사용한다.
 
 ## Follow-up Review Notes
 
-- 실제 PostgreSQL에서 organization predicate, `FOR UPDATE`, concurrent
-  restore/reorder/bulk와 audit rollback을 fake condition 없이 검증한다.
+- Disposable PostgreSQL 검증은 organization predicate, 실제 `FOR UPDATE`, concurrent
+  restore/reorder/bulk와 audit rollback을 fake condition 없이 실행한다.
 - Subject prefix query의 `EXPLAIN (ANALYZE, BUFFERS)`를 확인하고 index가 필요하면 근거와
   함께 별도 additive migration을 검토한다.
 - MBA-265에서 `sync` action을 실제 비동기 실행에 연결할 때 idempotency, retry,
