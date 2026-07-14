@@ -126,6 +126,9 @@ def _snapshot_counts(
                         """
                     )
                 ).scalar_one(),
+                "knowledge_ingestion_outbox": conn.execute(
+                    text("SELECT COUNT(*) FROM knowledge_ingestion_outbox")
+                ).scalar_one(),
             }
     finally:
         engine.dispose()
@@ -169,6 +172,58 @@ def _insert_demo_user_knowledge_permission(
                     "organization_id": demo_seed.ORG_ID,
                     "user_id": demo_seed.USER_IDS["admin"],
                     "knowledge_base_id": demo_seed.KB_IDS["onboarding_platform"],
+                },
+            )
+    finally:
+        engine.dispose()
+
+
+def _insert_demo_knowledge_ingestion_outbox(
+    database: str,
+    config: DisposablePostgresConfig,
+) -> None:
+    engine = create_engine(config.database_url(database))
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO knowledge_ingestion_outbox (
+                        id,
+                        organization_id,
+                        knowledge_base_id,
+                        event_type,
+                        idempotency_key,
+                        status,
+                        attempt_count,
+                        max_attempts,
+                        retryable,
+                        target_ref,
+                        safe_metadata,
+                        created_at,
+                        updated_at
+                    ) VALUES (
+                        :id,
+                        :organization_id,
+                        :knowledge_base_id,
+                        'finalize_version',
+                        :idempotency_key,
+                        'pending',
+                        0,
+                        5,
+                        true,
+                        '{}'::jsonb,
+                        '{}'::jsonb,
+                        NOW(),
+                        NOW()
+                    )
+                    """
+                ),
+                {
+                    "id": uuid.uuid4(),
+                    "organization_id": demo_seed.ORG_ID,
+                    "knowledge_base_id": demo_seed.KB_IDS["onboarding_platform"],
+                    "idempotency_key": f"demo-reset-test:{uuid.uuid4()}",
                 },
             )
     finally:
@@ -378,6 +433,7 @@ def test_demo_seed_is_idempotent_in_disposable_postgres_database():
         )
         seeded_counts = _snapshot_counts(database, config)
         _insert_demo_user_knowledge_permission(database, config)
+        _insert_demo_knowledge_ingestion_outbox(database, config)
 
         _run_seed_command(
             ["scripts/seed_demo.py", "--profile", "demo", "--reset"],
@@ -394,6 +450,7 @@ def test_demo_seed_is_idempotent_in_disposable_postgres_database():
         assert reset_counts["document_chunk_document_orphans"] == 0
         assert reset_counts["document_chunk_kb_orphans"] == 0
         assert reset_counts["document_kb_orphans"] == 0
+        assert second_reset_counts["knowledge_ingestion_outbox"] == 0
         assert rbac_state["developer_candidates"] == {
             demo_seed.KB_IDS["internal_onboarding"],
             demo_seed.KB_IDS["internal_developer_onboarding_rules"],

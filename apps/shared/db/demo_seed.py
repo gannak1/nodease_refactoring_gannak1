@@ -33,6 +33,7 @@ from apps.shared.db.models.knowledge import (
     KnowledgeBase,
     KnowledgeCollection,
     KnowledgeCollectionItem,
+    KnowledgeIngestionOutbox,
     SourceType,
 )
 from apps.shared.db.models.llm import (
@@ -4646,6 +4647,12 @@ def reset_demo_data(db: Session) -> None:
         LLMCredential.id == LEGACY_DEMO_LLM_CREDENTIAL_ID
     ).delete(synchronize_session=False)
 
+    db.query(KnowledgeIngestionOutbox).filter(
+        or_(
+            KnowledgeIngestionOutbox.organization_id == ORG_ID,
+            KnowledgeIngestionOutbox.knowledge_base_id.in_(kb_ids),
+        )
+    ).delete(synchronize_session=False)
     db.query(KnowledgeCollectionItem).filter(
         KnowledgeCollectionItem.collection_id.in_(list(COLLECTION_IDS.values()))
     ).delete(synchronize_session=False)
@@ -4677,9 +4684,6 @@ def reset_demo_data(db: Session) -> None:
         )
     ).delete(synchronize_session=False)
     db.query(Team).filter(Team.id.in_(team_ids)).delete(synchronize_session=False)
-    db.query(Organization).filter(Organization.id == ORG_ID).delete(
-        synchronize_session=False
-    )
 
     db.commit()
     seed_demo_data(db)
