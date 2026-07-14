@@ -1078,6 +1078,45 @@ describe('워크플로우 관리 테스트', () => {
     expect(state.isTestUploading).toBe(false);
   });
 
+  it('setActiveWorkflowIdSafe는 같은 workflow를 다시 열어도 최신 테스트 실행 결과를 초기화하지 않는다', () => {
+    useWorkflowStore.setState({
+      workflows: [
+        {
+          id: 'wf-1',
+          appId: 'app-1',
+          nodes: [createMockNode('n1')],
+          edges: [],
+          features: { nextNodeDisplayNumber: 10 },
+        },
+      ],
+      activeWorkflowId: 'wf-1',
+      nodes: [createMockNode('n1')],
+      edges: [],
+      features: { nextNodeDisplayNumber: 10 },
+      isTestPanelOpen: true,
+      testExecutionStatus: 'success',
+      testExecutionStartedAt: 1_000,
+      testExecutionFinishedAt: 2_000,
+      testExecutionResult: { answer: 'previous test result' },
+      testNodeResults: [
+        { nodeId: 'n1', nodeType: 'llmNode', output: { text: 'done' } },
+      ],
+      testExecutionError: null,
+      currentExecutingNodeId: null,
+      isTestUploading: false,
+    });
+
+    useWorkflowStore.getState().setActiveWorkflowIdSafe('wf-1');
+
+    const state = useWorkflowStore.getState();
+    expect(state.isTestPanelOpen).toBe(true);
+    expect(state.testExecutionStatus).toBe('success');
+    expect(state.testExecutionResult).toEqual({ answer: 'previous test result' });
+    expect(state.testNodeResults).toEqual([
+      { nodeId: 'n1', nodeType: 'llmNode', output: { text: 'done' } },
+    ]);
+  });
+
   it('setActiveWorkflowIdSafe는 대상 workflow가 없으면 id만 변경한다', () => {
     const currentNodes = [createMockNode('draft-node')];
     const currentEdges = [createMockEdge('edge-1', 'draft-node', 'n1')];

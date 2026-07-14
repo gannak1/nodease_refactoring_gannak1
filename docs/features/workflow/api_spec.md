@@ -8,6 +8,9 @@ Verified Against: `feature/mba-219 @ 5b1cf366`
 | Method | Path | Description | Auth |
 | --- | --- | --- | --- |
 | POST | `/api/v1/workflows/{workflow_id}/stream` | 테스트 실행 스트리밍 이벤트를 반환한다. 기존 구현을 사용한다. | workflow execute 권한 |
+| GET | `/api/v1/workflows/{workflow_id}/runs` | 저장된 workflow run 목록을 조회한다. `page`, `limit`, optional `status`, `trigger_mode`로 기준 실행 후보를 좁힌다. | workflow read 권한 |
+| GET | `/api/v1/workflows/{workflow_id}/runs/{run_id}` | 저장된 workflow run 및 node run을 조회한다. TestSidebar 복원과 실행 비교는 이 기존 상세 API를 사용한다. | workflow read 권한 |
+| GET | `/api/v1/workflows/{workflow_id}/runs/{run_id}/llm-traces` | 선택한 실행의 LLM node 비용·토큰·지연 정보를 조회한다. 실행 비교는 raw prompt가 아닌 safe usage summary만 사용한다. | workflow read 권한 |
 | GET | `/api/v1/workflows/{workflow_id}/nodes/{node_id}/execution-logs` | 현재 노드가 실행된 workflow run 목록을 최신순으로 조회한다. 목록 row에 필요한 node-level preview를 포함한다. | workflow read 권한 |
 | GET | `/api/v1/workflows/{workflow_id}/nodes/{node_id}/execution-logs/{run_id}` | 선택한 workflow run 안의 현재 노드 input/output/trace/usage 상세를 조회한다. | workflow read 권한 |
 | GET | `/api/v1/deployments/{deployment_id}/run-info` | 내부 실행 화면용 safe deployment metadata를 반환한다. | 로그인 + workflow execute 권한 |
@@ -81,6 +84,7 @@ Schedule claim id, external-effect 내부 identity, provider-visible idempotency
 
 - 이번 UI 변경은 신규 API를 추가하지 않는다.
 - 프론트는 기존 스트리밍 이벤트를 사용한다.
+  - `workflow_start`: `{ run_id }`. 실행 결과 복원용 식별자만 포함하며 input/output/credential은 포함하지 않는다.
   - `node_start`: `{ node_id }`
   - `node_finish`: `{ node_id, node_type, output, latency_ms, total_tokens, total_cost }`
   - `workflow_finish`: 최종 workflow output
@@ -96,7 +100,6 @@ Schedule claim id, external-effect 내부 identity, provider-visible idempotency
 - 화면 완료 시간은 프론트가 테스트 실행 시작 상태로 전환된 시각과 `workflow_finish` 또는 최종 오류 처리 시각의 차이로 계산한다. 이 값은 API response 필드가 아니며 DB에 저장하지 않는다.
 - 서버 실행 시간은 백엔드/엔진이 기록한 workflow-level duration을 사용한다. 현재 저장 기준은 `workflow_runs.duration`이며, 단위는 초다.
 - `workflow_finish` 이벤트가 workflow-level summary를 제공하는 경우 프론트는 다음 필드를 우선 사용한다.
-  - `run_id`: 연결된 workflow run id.
   - `duration`: 서버 실행 시간. `workflow_runs.duration`과 같은 초 단위 값.
   - `total_tokens`: 서버가 집계한 전체 토큰 사용량.
   - `total_cost`: 서버가 집계한 전체 비용.
@@ -126,6 +129,21 @@ Client-only screen completion summary example:
 ```
 
 `screen_completion_duration_ms`는 API response가 아니라 프론트 UI 상태에서 계산되는 값이다.
+
+TestSidebar restore contract:
+
+- Client는 `testRun=<workflow_run_id>`와 optional `testNode=<node_id>`만 같은 workflow의 editor/report URL query에 보관한다.
+- 브라우저 새로고침 또는 보고 화면에서 editor로 돌아온 뒤 Client는 `GET /api/v1/workflows/{workflow_id}/runs/{testRun}`을 호출한다.
+- Gateway는 기존 workflow read permission을 적용한다. 권한이 없거나 해당 workflow에 속하지 않는 run은 복원하지 않는다.
+- `WorkflowNodeRun.duration`은 초 단위이며 Client는 표시 전에 millisecond로 변환한다. `trace_metadata`는 노드 상세의 safe model-routing 설명을 복원하는 데만 사용한다.
+
+TestSidebar execution comparison contract:
+
+- 기준 실행 후보 목록은 `GET /runs`의 서버 필터를 사용한다. Client가 raw input/output 문자열을 검색 인덱스로 만들지 않는다.
+- Client는 사용자가 선택한 `baseline_run_id`로 상세와 LLM trace를 조회하며 최신 실행을 자동 고정하지 않는다.
+- 비교 대상 실행은 stream의 `workflow_start.run_id`로 식별한다. 상세 로그 반영이 지연되면 Client는 동기화 중 상태를 표시하고 기존 기준 실행을 변경하지 않는다.
+- 양쪽 실행은 같은 `workflow_id`의 read permission 경계를 통과해야 한다. 다른 workflow의 run id는 `404`로 숨긴다.
+- 노드별 비용·토큰·지연은 node run output/trace metadata와 LLM trace safe summary를 조합하되 credential id와 raw prompt를 표시하지 않는다.
 
 Example `node_finish` event data with node-level summary:
 

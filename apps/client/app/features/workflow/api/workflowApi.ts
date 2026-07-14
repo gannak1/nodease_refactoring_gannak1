@@ -566,7 +566,12 @@ export const workflowApi = {
   },
 
   // [NEW] 워크플로우 실행 이력 조회
-  getWorkflowRuns: async (workflowId: string, page = 1, limit = 20) => {
+  getWorkflowRuns: async (
+    workflowId: string,
+    page = 1,
+    limit = 20,
+    filters?: { status?: string; trigger_mode?: string },
+  ) => {
     if (isMockWorkflowId(workflowId)) {
       return {
         ...mockWorkflowRuns,
@@ -575,7 +580,7 @@ export const workflowApi = {
     }
 
     const response = await api.get(`/workflows/${workflowId}/runs`, {
-      params: { page, limit },
+      params: { page, limit, ...filters },
     });
     return response.data as WorkflowRunListResponse;
   },

@@ -177,6 +177,8 @@ export default function NodeCanvas() {
     fullscreenNodeId,
     syncNodeFullscreenFromUrl,
     testExecutionStatus,
+    testExecutionRunId,
+    testSelectedNodeId,
     isTestUploading,
     hasUnsavedChanges,
     agentBuilderPreview,
@@ -1120,10 +1122,13 @@ export default function NodeCanvas() {
         </button>
         <div className="mx-1 h-4 w-px bg-slate-200" />
         <button
-          onClick={() =>
-            !isAgentBuilderPreviewMode &&
-            router.push(`/modules/${activeWorkflowId}/report?tab=logs`)
-          }
+          onClick={() => {
+            if (isAgentBuilderPreviewMode) return;
+            const query = new URLSearchParams({ tab: 'logs' });
+            if (testExecutionRunId) query.set('testRun', testExecutionRunId);
+            if (testSelectedNodeId) query.set('testNode', testSelectedNodeId);
+            router.push(`/modules/${activeWorkflowId}/report?${query.toString()}`);
+          }}
           disabled={isAgentBuilderPreviewMode}
           className={`flex h-full items-center gap-1.5 rounded-md px-3 text-[13px] font-semibold transition-colors ${
             isAgentBuilderPreviewMode

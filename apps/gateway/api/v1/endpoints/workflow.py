@@ -100,6 +100,7 @@ from apps.workflow_engine.services.model_routing_policy_store import (
 from apps.shared.db.models.workflow_run import (
     NodeRunStatus,
     RunStatus,
+    RunTriggerMode,
     WorkflowNodeRun,
     WorkflowRun,
 )
@@ -177,6 +178,11 @@ def _safe_stream_event(value: Any) -> dict[str, Any]:
             return generic_error
         return {"type": "error", "data": safe_error}
     return value
+
+
+def _workflow_stream_started_event(run_id: str) -> dict[str, Any]:
+    """클라이언트가 테스트 실행 기록을 다시 조회할 수 있게 식별자만 전달한다."""
+    return {"type": "workflow_start", "data": {"run_id": run_id}}
 
 
 class WorkflowCompareRequest(BaseModel):
@@ -5446,8 +5452,10 @@ def apply_cost_optimizer_candidate(
 @router.get("/{workflow_id}/runs", response_model=WorkflowRunListResponse)
 def get_workflow_runs(
     workflow_id: str,
-    page: int = 1,
-    limit: int = 20,
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    status: Optional[RunStatus] = Query(None),
+    trigger_mode: Optional[RunTriggerMode] = Query(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -5458,13 +5466,19 @@ def get_workflow_runs(
 
     ensure_workflow_permission(db, current_user, workflow_id, "read")
 
-    total = db.query(WorkflowRun).filter(WorkflowRun.workflow_id == workflow_id).count()
-
-    runs = (
+    query = (
         db.query(WorkflowRun)
         .options(noload(WorkflowRun.node_runs))
         .filter(WorkflowRun.workflow_id == workflow_id)
-        .order_by(WorkflowRun.started_at.desc())
+    )
+    if status is not None:
+        query = query.filter(WorkflowRun.status == status)
+    if trigger_mode is not None:
+        query = query.filter(WorkflowRun.trigger_mode == trigger_mode)
+
+    total = query.count()
+    runs = (
+        query.order_by(WorkflowRun.started_at.desc())
         .offset(skip)
         .limit(limit)
         .all()
@@ -6315,6 +6329,9 @@ async def stream_workflow(
             pubsub.subscribe(channel)
 
             # 2. 구독 완료 후 Celery 태스크 시작 (중요!)
+            # 브라우저는 이 식별자로 권한이 확인된 실행 기록을 다시 조회해,
+            # 새로고침 뒤에도 테스트 결과 사이드바를 복원할 수 있다.
+            yield f"data: {json.dumps(_workflow_stream_started_event(external_run_id))}\\n\\n"
             send_workflow_task(
                 celery_app,
                 "workflow.stream",

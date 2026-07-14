@@ -50,12 +50,16 @@ export default function WorkflowReportPage() {
   const workflowId = String(params.id || '');
   const activeTab = getReportTab(searchParams.get('tab'));
   const runId = searchParams.get('runId');
+  const testRun = searchParams.get('testRun');
+  const testNode = searchParams.get('testNode');
   const projectApp = useWorkflowStore((state) => state.projectApp);
 
   const navigateToTab = (tab: ReportTab, nextRunId?: string) => {
     const query = new URLSearchParams();
     query.set('tab', tab);
     if (nextRunId) query.set('runId', nextRunId);
+    if (testRun) query.set('testRun', testRun);
+    if (testNode) query.set('testNode', testNode);
     router.push(`/modules/${workflowId}/report?${query.toString()}`);
   };
 
@@ -65,7 +69,13 @@ export default function WorkflowReportPage() {
         <div className="flex min-w-0 items-center gap-3">
           <button
             type="button"
-            onClick={() => router.push(`/modules/${workflowId}`)}
+            onClick={() => {
+              const query = new URLSearchParams();
+              if (testRun) query.set('testRun', testRun);
+              if (testNode) query.set('testNode', testNode);
+              const suffix = query.size > 0 ? `?${query.toString()}` : '';
+              router.push(`/modules/${workflowId}${suffix}`);
+            }}
             className="flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-600 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
           >
             <ArrowLeft className="h-4 w-4" />

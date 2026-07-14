@@ -18,6 +18,7 @@ import {
   ChevronRight,
   Clock,
   Coins,
+  GitCompareArrows,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { StartNodeData, WorkflowVariable } from '../../types/Nodes';
@@ -46,6 +47,8 @@ import {
 import { FinalResponseCard } from '../execution/FinalResponseCard';
 import { deploymentApiErrorMessage } from '../../utils/deploymentPreflightMessage';
 import { ModelRoutingDecisionDetails } from '../modelRouting/ModelRoutingDecisionDetails';
+import { restoreTestExecutionFromWorkflowRun } from '../../utils/testExecutionRestore';
+import { ExecutionComparisonPanel } from './ExecutionComparisonPanel';
 
 export { ModelRoutingDecisionDetails } from '../modelRouting/ModelRoutingDecisionDetails';
 
@@ -64,6 +67,8 @@ const TEST_SIDEBAR_MAX_WIDTH = 640;
 const TEST_SIDEBAR_VIEWPORT_GUTTER = 24;
 const TEST_SIDEBAR_MIN_CANVAS_WIDTH = 420;
 const TEST_SIDEBAR_KEYBOARD_STEP = 20;
+const TEST_RUN_QUERY_KEY = 'testRun';
+const TEST_NODE_QUERY_KEY = 'testNode';
 
 type PreflightStatus = 'idle' | 'validating' | 'saving';
 
@@ -95,6 +100,38 @@ const getHttpStatus = (error: unknown) => {
   return undefined;
 };
 
+const readTestExecutionLocation = () => {
+  if (typeof window === 'undefined') {
+    return { runId: null, nodeId: null };
+  }
+
+  const searchParams = new URLSearchParams(window.location.search);
+  return {
+    runId: searchParams.get(TEST_RUN_QUERY_KEY),
+    nodeId: searchParams.get(TEST_NODE_QUERY_KEY),
+  };
+};
+
+const replaceTestExecutionLocation = (
+  runId: string | null,
+  nodeId: string | null,
+) => {
+  if (typeof window === 'undefined') return;
+
+  const url = new URL(window.location.href);
+  if (runId) {
+    url.searchParams.set(TEST_RUN_QUERY_KEY, runId);
+  } else {
+    url.searchParams.delete(TEST_RUN_QUERY_KEY);
+  }
+  if (nodeId) {
+    url.searchParams.set(TEST_NODE_QUERY_KEY, nodeId);
+  } else {
+    url.searchParams.delete(TEST_NODE_QUERY_KEY);
+  }
+  window.history.replaceState(window.history.state, '', url);
+};
+
 export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   const {
     isTestPanelOpen,
@@ -109,6 +146,8 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     envVariables,
     runtimeVariables,
     testExecutionStatus,
+    testExecutionRunId,
+    testSelectedNodeId,
     testExecutionStartedAt,
     testExecutionFinishedAt,
     testExecutionResult,
@@ -119,9 +158,12 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     beginTestExecution,
     setTestUploading,
     setCurrentExecutingNode,
+    setTestExecutionRunId,
+    selectTestExecutionNode,
     addTestNodeResult,
     finishTestExecution,
     failTestExecution,
+    restoreTestExecution,
     resetTestExecution,
   } = useWorkflowStore();
   const { setCenter, getViewport } = useReactFlow();
@@ -133,9 +175,13 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   const [validationErrors, setValidationErrors] = useState<
     GraphValidationIssue[]
   >([]);
-  const [selectedTestNodeId, setSelectedTestNodeId] = useState<string | null>(
-    null,
-  );
+  const [isComparisonMode, setIsComparisonMode] = useState(false);
+  const [comparisonBaselineRunId, setComparisonBaselineRunId] = useState<
+    string | null
+  >(null);
+  const [localSelectedTestNodeId, setLocalSelectedTestNodeId] = useState<
+    string | null
+  >(null);
   const [testSidebarWidth, setTestSidebarWidth] = useState(
     TEST_SIDEBAR_DEFAULT_WIDTH,
   );
@@ -144,7 +190,13 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   );
   const clearResizeListenersRef = React.useRef<(() => void) | null>(null);
   const nodeStartedAtRef = React.useRef<Record<string, number>>({});
+  const restoredRunRef = React.useRef<string | null>(null);
   const isExecuting = testExecutionStatus === 'running';
+  const selectedTestNodeId = testSelectedNodeId ?? localSelectedTestNodeId;
+  const selectExecutionNode = (nodeId: string | null) => {
+    setLocalSelectedTestNodeId(nodeId);
+    selectTestExecutionNode?.(nodeId);
+  };
   const isPreparing =
     preflightStatus === 'validating' || preflightStatus === 'saving';
   const executionResult = testExecutionResult;
@@ -189,6 +241,60 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     },
     [],
   );
+
+  useEffect(() => {
+    const { runId, nodeId } = readTestExecutionLocation();
+    if (!runId || !activeWorkflowId || nodes.length === 0) return;
+
+    if (testExecutionRunId === runId) {
+      if (
+        nodeId &&
+        testNodeResults.some((result) => result.nodeId === nodeId) &&
+        nodeId !== testSelectedNodeId
+      ) {
+        setLocalSelectedTestNodeId(nodeId);
+        selectTestExecutionNode?.(nodeId);
+      }
+      return;
+    }
+
+    const restoreKey = `${activeWorkflowId}:${runId}`;
+    if (restoredRunRef.current === restoreKey) return;
+    restoredRunRef.current = restoreKey;
+
+    let cancelled = false;
+    workflowApi
+      .getWorkflowRun(activeWorkflowId, runId)
+      .then((run) => {
+        if (cancelled) return;
+        const restored = restoreTestExecutionFromWorkflowRun(run, nodes);
+        restoreTestExecution(restored);
+        if (
+          nodeId &&
+          restored.nodeResults.some((result) => result.nodeId === nodeId)
+        ) {
+          setLocalSelectedTestNodeId(nodeId);
+          selectTestExecutionNode?.(nodeId);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          toast.error('이전 테스트 실행 기록을 불러오지 못했습니다.');
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeWorkflowId,
+    nodes,
+    restoreTestExecution,
+    selectTestExecutionNode,
+    testExecutionRunId,
+    testNodeResults,
+    testSelectedNodeId,
+  ]);
 
   const outputLabelByNodeId = useMemo(() => {
     const labelMap = new Map<string, Map<string, string>>();
@@ -400,9 +506,19 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     resultOutputByNodeId.set(result.nodeId, result.output);
   }
 
-  const nodeExecutionSummaries = nodes
-    .map((node) => {
-      const data = node.data as {
+  const nodeResultById = new Map(
+    nodeResults.map((result) => [result.nodeId, result]),
+  );
+  const executionNodeIds = new Set([
+    ...nodes.map((node) => node.id),
+    ...nodeResults.map((result) => result.nodeId),
+  ]);
+  const nodeExecutionSummaries = Array.from(executionNodeIds)
+    .map((nodeId) => {
+      const node = nodes.find((item) => item.id === nodeId);
+      const storedResult = nodeResultById.get(nodeId);
+      if (!node && !storedResult) return null;
+      const data = node?.data as {
         title?: string;
         name?: string;
         status?: string;
@@ -413,23 +529,39 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
           latency_ms?: number;
         };
       };
-      const output = resultOutputByNodeId.get(node.id);
+      const output = resultOutputByNodeId.get(nodeId);
       const status =
-        currentExecutingNodeId === node.id
+        currentExecutingNodeId === nodeId
           ? 'running'
-          : data.observability?.status || data.status || 'idle';
+          : storedResult?.status ||
+            data.observability?.status ||
+            data.status ||
+            'idle';
 
       return {
-        nodeId: node.id,
-        nodeType: node.type || 'node',
-        title: data.title || data.name || getNodeDisplayName(node.id),
+        nodeId,
+        nodeType: storedResult?.nodeType || node?.type || 'node',
+        title:
+          storedResult?.title ||
+          data.title ||
+          data.name ||
+          getNodeDisplayName(nodeId),
         status,
         output,
-        latencyMs: data.observability?.latency_ms,
-        totalTokens: data.observability?.total_tokens ?? readTokenUsage(output),
-        totalCost: data.observability?.total_cost ?? readCost(output),
+        latencyMs: storedResult?.latencyMs ?? data.observability?.latency_ms,
+        totalTokens:
+          storedResult?.totalTokens ??
+          data.observability?.total_tokens ??
+          readTokenUsage(output),
+        totalCost:
+          storedResult?.totalCost ??
+          data.observability?.total_cost ??
+          readCost(output),
       };
     })
+    .filter(
+      (summary): summary is NonNullable<typeof summary> => summary !== null,
+    )
     .filter((summary) =>
       ['running', 'success', 'failure'].includes(summary.status),
     );
@@ -511,7 +643,13 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                 type="button"
                 aria-label={`${summary.title} 상세 보기`}
                 title="상세 보기"
-                onClick={() => setSelectedTestNodeId(summary.nodeId)}
+                onClick={() => {
+                  selectExecutionNode(summary.nodeId);
+                  replaceTestExecutionLocation(
+                    testExecutionRunId,
+                    summary.nodeId,
+                  );
+                }}
                 className="rounded-md border border-gray-200 bg-white p-1.5 text-gray-500 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300 dark:hover:border-blue-800 dark:hover:bg-blue-950/30"
               >
                 <ChevronRight className="h-4 w-4" />
@@ -567,7 +705,10 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
             type="button"
             aria-label="테스트 결과로 돌아가기"
             title="테스트 결과로 돌아가기"
-            onClick={() => setSelectedTestNodeId(null)}
+            onClick={() => {
+              selectExecutionNode(null);
+              replaceTestExecutionLocation(testExecutionRunId, null);
+            }}
             className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
           >
             <ArrowLeft className="h-3.5 w-3.5" />
@@ -661,7 +802,8 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
       return;
     }
 
-    setSelectedTestNodeId(null);
+    selectExecutionNode(null);
+    replaceTestExecutionLocation(null, null);
     setValidationErrors([]);
     setPreflightStatus('validating');
 
@@ -789,7 +931,12 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
 
             const { type, data } = event;
 
-            if (type === 'node_start') {
+            if (type === 'workflow_start') {
+              if (typeof data?.run_id === 'string') {
+                setTestExecutionRunId(data.run_id);
+                replaceTestExecutionLocation(data.run_id, null);
+              }
+            } else if (type === 'node_start') {
               nodeStartedAtRef.current[data.node_id] = performance.now();
               setCurrentExecutingNode(data.node_id);
               updateNodeData(data.node_id, {
@@ -838,6 +985,11 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                 nodeId: data.node_id,
                 nodeType: data.node_type,
                 output: data.output,
+                title: getNodeDisplayName(data.node_id),
+                status: 'success',
+                latencyMs: metrics.latencyMs,
+                totalTokens: metrics.totalTokens,
+                totalCost: metrics.totalCost,
               });
             } else if (type === 'workflow_finish') {
               finalResult = data;
@@ -850,6 +1002,14 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                 updateNodeData(data.node_id, {
                   status: 'failure',
                   observability: buildObservability(null, 'failure', latencyMs),
+                });
+                addTestNodeResult({
+                  nodeId: data.node_id,
+                  nodeType: data.node_type || 'node',
+                  output: {},
+                  title: getNodeDisplayName(data.node_id),
+                  status: 'failure',
+                  latencyMs,
                 });
               }
               toast.error(`모듈 실행 실패: ${data.message}`);
@@ -899,7 +1059,8 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   };
 
   const handleReset = () => {
-    setSelectedTestNodeId(null);
+    selectExecutionNode(null);
+    replaceTestExecutionLocation(null, null);
     setValidationErrors([]);
     setPreflightStatus('idle');
     resetTestExecution();
@@ -931,21 +1092,65 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
         </div>
       )}
       {/* Header */}
-      <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between dark:border-gray-800">
-        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2">
-          <Play className="w-5 h-5 text-blue-600" />
-          테스트 실행
-        </h2>
-        <button
-          onClick={toggleTestPanel}
-          className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-full transition-colors dark:hover:bg-gray-800"
-        >
-          <X className="w-5 h-5" />
-        </button>
+      <div className="border-b border-gray-200 px-6 py-4 dark:border-gray-800">
+        <div className="flex items-center justify-between">
+          <h2 className="flex items-center gap-2 text-lg font-semibold text-gray-900 dark:text-gray-100">
+            <Play className="h-5 w-5 text-blue-600" />
+            테스트 실행
+          </h2>
+          <button
+            onClick={toggleTestPanel}
+            className="rounded-full p-2 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="mt-3 grid grid-cols-2 rounded-lg border border-gray-200 bg-gray-50 p-1 dark:border-gray-700 dark:bg-gray-800">
+          <button
+            type="button"
+            aria-pressed={!isComparisonMode}
+            onClick={() => {
+              setIsComparisonMode(false);
+              setComparisonBaselineRunId(null);
+            }}
+            className={`rounded-md px-3 py-2 text-xs font-semibold transition-colors ${
+              !isComparisonMode
+                ? 'bg-white text-gray-900 shadow-sm dark:bg-gray-900 dark:text-gray-100'
+                : 'text-gray-500 hover:text-gray-800 dark:text-gray-300'
+            }`}
+          >
+            단일 결과
+          </button>
+          <button
+            type="button"
+            aria-pressed={isComparisonMode}
+            onClick={() => {
+              setIsComparisonMode(true);
+              setClampedTestSidebarWidth(maxTestSidebarWidth);
+            }}
+            className={`inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-2 text-xs font-semibold transition-colors ${
+              isComparisonMode
+                ? 'bg-white text-blue-700 shadow-sm dark:bg-gray-900 dark:text-blue-300'
+                : 'text-gray-500 hover:text-gray-800 dark:text-gray-300'
+            }`}
+          >
+            <GitCompareArrows className="h-3.5 w-3.5" /> 실행 비교
+          </button>
+        </div>
       </div>
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-6">
+        {isComparisonMode && activeWorkflowId ? (
+          <ExecutionComparisonPanel
+            workflowId={activeWorkflowId}
+            nodes={nodes}
+            baselineRunId={comparisonBaselineRunId}
+            currentRunId={testExecutionRunId}
+            currentExecutionError={testExecutionError}
+            onBaselineRunIdChange={setComparisonBaselineRunId}
+          />
+        ) : null}
         {isExecuting ? (
           /* Execution Progress - Show node results as they come in */
           <div className="space-y-4">
@@ -1135,7 +1340,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
               )}
             </div>
           </div>
-        ) : (
+        ) : isComparisonMode ? null : (
           /* Execution Result */
           <div className="space-y-6">
             {error ? (
