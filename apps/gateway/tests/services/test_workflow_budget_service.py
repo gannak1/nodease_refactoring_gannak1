@@ -21,8 +21,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Query, Session
 from sqlalchemy.sql.operators import eq
 
+from apps.gateway.services.app_lifecycle_lock import (
+    AppPrimaryChangedDuringMutationError,
+)
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.audit_log import AuditLog
+from apps.shared.db.models.app import App
+from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_budget import WorkflowBudget
 
 KST = ZoneInfo("Asia/Seoul")
@@ -363,6 +368,7 @@ def test_upsert_budget_creates_row_and_records_created_audit():
     workflow_id = uuid4()
     actor_id = uuid4()
     db = _Db()
+    _add_primary_workflow_scope(db, organization_id, workflow_id, actor_id)
 
     budget = service.upsert_budget(
         db,
@@ -391,6 +397,35 @@ def test_upsert_budget_creates_row_and_records_created_audit():
     assert db.commits >= 1
 
 
+def test_upsert_budget_rejects_non_primary_workflow_without_writing_budget():
+    service = _service()
+    organization_id = uuid4()
+    workflow_id = uuid4()
+    actor_id = uuid4()
+    db = _Db()
+    app, _workflow = _add_primary_workflow_scope(
+        db,
+        organization_id,
+        workflow_id,
+        actor_id,
+    )
+    app.workflow_id = uuid4()
+
+    with pytest.raises(AppPrimaryChangedDuringMutationError):
+        service.upsert_budget(
+            db,
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            actor_id=actor_id,
+            monthly_budget_usd=Decimal("100.00"),
+            is_enabled=True,
+        )
+
+    assert db.added_of(WorkflowBudget) == []
+    assert db.commits == 0
+    assert db.executed == []
+
+
 def test_upsert_budget_updates_existing_row_and_records_updated_audit():
     service = _service()
     organization_id = uuid4()
@@ -401,6 +436,7 @@ def test_upsert_budget_updates_existing_row_and_records_updated_audit():
         organization_id, workflow_id, Decimal("100.00"), created_by=creator_id
     )
     db = _Db(rows=[existing])
+    _add_primary_workflow_scope(db, organization_id, workflow_id, updater_id)
 
     budget = service.upsert_budget(
         db,
@@ -427,6 +463,7 @@ def test_upsert_budget_disable_keeps_row_and_records_updated_audit():
     workflow_id = uuid4()
     existing = _budget_row(organization_id, workflow_id, Decimal("100.00"))
     db = _Db(rows=[existing])
+    _add_primary_workflow_scope(db, organization_id, workflow_id, existing.created_by)
 
     budget = service.upsert_budget(
         db,
@@ -452,6 +489,7 @@ def test_upsert_budget_noop_records_no_audit():
     workflow_id = uuid4()
     existing = _budget_row(organization_id, workflow_id, Decimal("100.00"))
     db = _Db(rows=[existing])
+    _add_primary_workflow_scope(db, organization_id, workflow_id, existing.created_by)
 
     budget = service.upsert_budget(
         db,
@@ -474,6 +512,7 @@ def test_upsert_budget_create_race_falls_back_to_update():
     workflow_id = uuid4()
     competing = _budget_row(organization_id, workflow_id, Decimal("50.00"))
     db = _RacyDb(competing_row=competing)
+    _add_primary_workflow_scope(db, organization_id, workflow_id, competing.created_by)
 
     budget = service.upsert_budget(
         db,
@@ -490,6 +529,34 @@ def test_upsert_budget_create_race_falls_back_to_update():
     assert [audit.action for audit in db.added_of(AuditLog)] == [
         AuditAction.WORKFLOW_BUDGET_UPDATED
     ]
+
+
+def test_upsert_budget_create_race_rechecks_primary_after_rollback():
+    service = _service()
+    organization_id = uuid4()
+    workflow_id = uuid4()
+    competing = _budget_row(organization_id, workflow_id, Decimal("50.00"))
+    db = _RacyPrimaryChangedDb(competing_row=competing)
+    app, _workflow = _add_primary_workflow_scope(
+        db,
+        organization_id,
+        workflow_id,
+        competing.created_by,
+    )
+    db.app = app
+
+    with pytest.raises(AppPrimaryChangedDuringMutationError):
+        service.upsert_budget(
+            db,
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            actor_id=uuid4(),
+            monthly_budget_usd=Decimal("100.00"),
+            is_enabled=True,
+        )
+
+    assert competing.monthly_budget_usd == Decimal("50.00")
+    assert db.added_of(AuditLog) == []
 
 
 # --- admin summary/usage budget 블록 (BGT-REQ-020~021) ------------------------
@@ -801,6 +868,9 @@ class _Query:
     def with_for_update(self, **kwargs):
         return self
 
+    def populate_existing(self):
+        return self
+
     def all(self):
         return [item for item in self.items if self._matches(item)]
 
@@ -894,3 +964,29 @@ class _RacyDb(_Db):
                     '"uq_workflow_budgets_workflow_id"'
                 ),
             )
+
+
+class _RacyPrimaryChangedDb(_RacyDb):
+    def rollback(self):
+        super().rollback()
+        self.app.workflow_id = uuid4()
+
+
+def _add_primary_workflow_scope(db, organization_id, workflow_id, actor_id):
+    app = App(
+        id=uuid4(),
+        organization_id=organization_id,
+        name="Budget primary scope",
+        workflow_id=workflow_id,
+        url_slug=f"budget-primary-{uuid4().hex}",
+        auth_secret="test-placeholder",
+        created_by=actor_id,
+    )
+    workflow = Workflow(
+        id=workflow_id,
+        organization_id=organization_id,
+        app_id=app.id,
+        created_by=actor_id,
+    )
+    db.rows.extend([app, workflow])
+    return app, workflow

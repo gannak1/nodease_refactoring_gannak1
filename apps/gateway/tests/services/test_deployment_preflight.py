@@ -1587,6 +1587,49 @@ def test_workflow_node_toggle_removes_legacy_schedule_surface(monkeypatch):
     assert scheduler.added == []
 
 
+def test_toggle_blocks_reactivation_when_deployment_workflow_is_ambiguous(monkeypatch):
+    app_id = uuid.uuid4()
+    deployment_id = uuid.uuid4()
+    app = _row(
+        id=app_id,
+        organization_id=uuid.uuid4(),
+        active_deployment_id=None,
+    )
+    deployment = _row(
+        id=deployment_id,
+        app_id=app_id,
+        type=DeploymentType.API,
+        is_active=False,
+        graph_snapshot={"nodes": [], "edges": []},
+    )
+    db = _Db(
+        {App: [app], WorkflowDeployment: [deployment], Schedule: []},
+        max_deployment_version=2,
+    )
+    monkeypatch.setattr(
+        DeploymentService,
+        "_enforce_knowledge_preflight",
+        lambda *args, **kwargs: pytest.fail("provenance guard must run first"),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        DeploymentService.toggle_deployment(
+            db,
+            deployment_id,
+            _Scheduler(),
+            runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+            user_id=uuid.uuid4(),
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == (
+        "deployment.reactivation_provenance_unavailable"
+    )
+    assert deployment.is_active is False
+    assert app.active_deployment_id is None
+    assert db.committed is False
+
+
 def test_toggle_rejects_legacy_mail_inline_secret_with_common_preflight_error():
     app_id = uuid.uuid4()
     deployment_id = uuid.uuid4()
@@ -1893,6 +1936,9 @@ class _Query:
         return self
 
     def with_for_update(self):
+        return self
+
+    def populate_existing(self):
         return self
 
     def all(self):

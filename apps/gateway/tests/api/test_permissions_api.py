@@ -11,6 +11,10 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.sql.operators import is_
 
 from apps.gateway.main import app
+from apps.gateway.services.app_lifecycle_lock import (
+    AppPrimaryChangedDuringMutationError,
+)
+from apps.shared.db.models.app import App
 from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.knowledge import KnowledgeBase
 from apps.shared.db.models.llm import LLMCredential
@@ -137,6 +141,35 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertEqual(audit["after"]["auth_state"], "builder")
         self.assertEqual(audit["metadata"]["request_id"], "req-test")
         self.assertEqual(audit["metadata"]["actor"]["id"], str(user_id))
+
+    def test_put_team_workflow_permission_rejects_primary_changed_while_waiting(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        workflow_id = uuid4()
+        team_id = uuid4()
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=user_id),
+            workflow=_workflow(id=workflow_id, organization_id=organization_id),
+            team=_team(id=team_id, organization_id=organization_id),
+        )
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.permissions.lock_app_for_workflow_mutation",
+            side_effect=AppPrimaryChangedDuringMutationError,
+        ):
+            response = self._put_permission(
+                session=session,
+                user_id=user_id,
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+                team_id=team_id,
+                payload={"auth_state": "viewer"},
+            )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["error"]["code"], "workflow.primary_changed")
+        self.assertIn(("rollback", None), session.operations)
+        self.assertFalse(session.scalars_called)
 
     def test_list_workflow_permissions_returns_team_and_user_entries_for_manager(self):
         user_id = uuid4()
@@ -3949,6 +3982,10 @@ class _Query:
         """Production row-lock query chain을 보존하는 테스트 더블이다."""
         return self
 
+    def populate_existing(self):
+        """Identity-map refresh query chain을 보존하는 테스트 더블이다."""
+        return self
+
     def first(self):
         """첫 fake row를 반환하고 필요하면 SQLAlchemy 조건을 흉내 낸다."""
         if self.first_result is None:
@@ -4052,6 +4089,18 @@ class _Session:
             apply_filters=True,
         )
         self.workflow_query = _Query(first_result=workflow, apply_filters=True)
+        app_row = None
+        if workflow is not None:
+            app_row = App(
+                id=workflow.app_id,
+                organization_id=workflow.organization_id,
+                name="Workflow App",
+                workflow_id=workflow.id,
+                url_slug=f"workflow-app-{workflow.app_id}",
+                auth_secret="test-placeholder",
+                created_by=workflow.created_by,
+            )
+        self.app_query = _Query(first_result=app_row, apply_filters=True)
         self.knowledge_base_query = _Query(
             first_result=knowledge_base,
             apply_filters=True,
@@ -4136,6 +4185,8 @@ class _Session:
             return self.membership_query
         if model is Workflow:
             return self.workflow_query
+        if model is App:
+            return self.app_query
         if model is KnowledgeBase:
             return self.knowledge_base_query
         if model is LLMCredential:
@@ -4790,6 +4841,8 @@ def _column_value(obj, column):
     value_by_column = {
         "organization.id": getattr(obj, "id", missing),
         "organization.is_active": getattr(obj, "is_active", missing),
+        "apps.id": getattr(obj, "id", missing),
+        "apps.organization_id": getattr(obj, "organization_id", missing),
         "organization_memberships.user_id": getattr(obj, "user_id", missing),
         "organization_memberships.organization_id": getattr(
             obj,

@@ -76,6 +76,7 @@ Verified Against: feature/mba-147 @ e1a04e9
 - Given 기존 예산 row, When 두 요청이 동시에 서로 다른 값으로 PUT하면, Then 최종 상태는 어느 한쪽 값과 정확히 일치하고 (두 값이 섞이지 않음) 각 갱신마다 `workflow_budget.updated`가 기록된다.
 - Given App primary Workflow에 활성 예산이 있다, When Agent Builder `new_workflow` apply/save로 primary 교체를 요청하면, Then `APP_WORKFLOW_BUDGET_CONFLICT`로 차단되고 예산·usage·App primary는 변경되지 않으며 응답에 금액 원문이 없다.
 - Given primary 전환의 활성 예산 확인과 같은 Workflow budget upsert가 경합한다, When 두 transaction이 실행되면, Then 같은 advisory scope lock으로 직렬화되고 5xx나 부분 복제가 발생하지 않는다.
+- Given budget PUT이 App의 old primary를 관찰한 뒤 primary 전환에 밀리거나 이미 non-primary인 Workflow를 대상으로 한다, When App lifecycle lock을 획득해 canonical primary를 재검증하면, Then `409 workflow.primary_changed`로 실패하고 old Workflow 예산 row와 audit을 만들지 않는다.
 - Given 예산 수정/비활성화와 `GET /apps` 또는 `GET /apps/operations` 조회가 동시에 발생하면, Then 조회 응답은 5xx 없이 완료되고 `budget_status`는 수정 전 값, 수정 후 값, 또는 비활성화 후 null 중 하나로 일관되게 반환된다.
 - Given workflow 삭제로 예산 row가 cascade 삭제되는 중 `GET /apps/operations`가 실행되면, Then 권한/목록 조회에서 이미 제외된 row는 반환하지 않고, 응답 대상 App에서 예산을 찾을 수 없으면 `budget_status=null`로 처리한다.
 - Given workflow `execute` 전용 사용자가 `GET /apps/operations`를 호출하면, Then 해당 workflow row와 예산 상태는 응답에 포함되지 않는다.

@@ -10,6 +10,9 @@ from apps.gateway.application.access_management.models import (
     MemberSnapshot,
     ResourceDescriptor,
 )
+from apps.gateway.services.app_lifecycle_lock import (
+    AppPrimaryChangedDuringMutationError,
+)
 from apps.gateway.services.resource_permission_registry import resource_permission_spec
 from apps.shared.audit.manual_ownership import is_manually_audited
 from apps.shared.db.models.app import App
@@ -344,6 +347,9 @@ class _ResourceQuery:
         self.session.events.append(f"row-lock:{self.name}")
         return self
 
+    def populate_existing(self):
+        return self
+
     def first(self):
         self.session.events.append(f"read:{self.name}")
         return self.row
@@ -368,7 +374,7 @@ class _ResourceSession:
         self.lock_statements.append(statement)
 
 
-def test_workflow_resource_lock_joins_permission_scope_before_app_read():
+def test_workflow_resource_lock_uses_app_lifecycle_before_permission_scope():
     organization_id = uuid.uuid4()
     app = App(
         id=uuid.uuid4(),
@@ -394,8 +400,10 @@ def test_workflow_resource_lock_joins_permission_scope_before_app_read():
     assert session.events == [
         "row-lock:workflow",
         "read:workflow",
-        "workflow-permission-scope-lock",
         "read:app",
+        "row-lock:app",
+        "read:app",
+        "workflow-permission-scope-lock",
     ]
     compiled = str(
         session.lock_statements[0].compile(
@@ -404,3 +412,40 @@ def test_workflow_resource_lock_joins_permission_scope_before_app_read():
         )
     )
     assert "workflow_permission_scope" in compiled
+
+
+def test_workflow_resource_lock_hides_primary_change_before_permission_scope(
+    monkeypatch,
+):
+    organization_id = uuid.uuid4()
+    app = App(
+        id=uuid.uuid4(),
+        organization_id=organization_id,
+        name="Stale workflow permission scope",
+        created_by=uuid.uuid4(),
+    )
+    workflow = Workflow(
+        id=uuid.uuid4(),
+        organization_id=organization_id,
+        app_id=app.id,
+        created_by=app.created_by,
+    )
+    session = _ResourceSession(workflow, app)
+
+    def _raise_primary_changed(*args, **kwargs):
+        raise AppPrimaryChangedDuringMutationError
+
+    monkeypatch.setattr(
+        "apps.gateway.adapters.db.access_management_mutation_adapter."
+        "lock_app_for_workflow_mutation",
+        _raise_primary_changed,
+    )
+
+    result = SqlAlchemyAccessManagementMutationAdapter(session).lock_resource(
+        organization_id,
+        "workflow",
+        workflow.id,
+    )
+
+    assert result is None
+    assert "workflow-permission-scope-lock" not in session.events

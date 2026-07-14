@@ -8,6 +8,10 @@ from sqlalchemy.orm import Session
 from apps.gateway.adapters.db.access_management_locking import (
     lock_access_subject_rows,
 )
+from apps.gateway.services.app_lifecycle_lock import (
+    AppPrimaryChangedDuringMutationError,
+    lock_app_for_workflow_mutation,
+)
 from apps.gateway.application.access_management.models import (
     AppCreationPermissionSnapshot,
     AppliedMutationDescriptor,
@@ -26,7 +30,6 @@ from apps.gateway.services.workflow_permission_lock import (
     lock_workflow_permission_scope,
 )
 from apps.shared.audit.manual_ownership import register_manual_audit_ownership
-from apps.shared.db.models.app import App
 from apps.shared.db.models.knowledge import KnowledgeBase
 from apps.shared.db.models.llm import LLMCredential
 from apps.shared.db.models.mail_credential import MailCredential
@@ -235,21 +238,22 @@ class SqlAlchemyAccessManagementMutationAdapter:
             return None
 
         if resource_type == "workflow":
+            try:
+                app = lock_app_for_workflow_mutation(
+                    self.db,
+                    app_id=resource.app_id,
+                    workflow_id=resource.id,
+                    organization_id=organization_id,
+                )
+            except AppPrimaryChangedDuringMutationError:
+                return None
+            if app is None:
+                return None
             lock_workflow_permission_scope(
                 self.db,
                 organization_id=organization_id,
                 workflow_id=resource.id,
             )
-            app = (
-                self.db.query(App)
-                .filter(
-                    App.id == resource.app_id,
-                    App.organization_id == organization_id,
-                )
-                .first()
-            )
-            if app is None:
-                return None
             resource_name = app.name
         elif resource_type == "knowledge_base":
             resource_name = resource.name

@@ -18,6 +18,10 @@ from apps.gateway.services.admin_usage_service import (
     _total_cost_sum,
 )
 from apps.gateway.services.audit_records import add_action_audit
+from apps.gateway.services.app_lifecycle_lock import (
+    AppPrimaryChangedDuringMutationError,
+    lock_app_for_workflow_mutation,
+)
 from apps.gateway.services.workflow_budget_lock import lock_workflow_budget_scope
 from apps.shared.domain.workflow_budget import BudgetExecutionDecision
 from apps.shared.services.workflow_budget_execution import (
@@ -25,10 +29,15 @@ from apps.shared.services.workflow_budget_execution import (
 )
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.llm import LLMUsageLog
+from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_budget import WorkflowBudget
 
 BUDGET_AT_RISK_RATIO = Decimal("0.8")
 BUDGET_EXCEEDED_RATIO = Decimal("1.0")
+
+
+class WorkflowBudgetScopeUnavailableError(RuntimeError):
+    """The canonical Workflow/App scope disappeared before a budget mutation."""
 
 
 class WorkflowBudgetService:
@@ -103,7 +112,7 @@ class WorkflowBudgetService:
     ) -> WorkflowBudget:
         amount = _to_decimal(monthly_budget_usd)
         enabled = bool(is_enabled)
-        lock_workflow_budget_scope(
+        _lock_budget_mutation_scope(
             db,
             workflow_id=workflow_id,
             organization_id=organization_id,
@@ -124,7 +133,16 @@ class WorkflowBudgetService:
                 db.flush()
             except IntegrityError:
                 db.rollback()
-                existing = _find_budget(db, workflow_id, organization_id=organization_id)
+                # rollback releases both the App row lock and the advisory lock.
+                # Rebuild the full scope before touching the competing row.
+                _lock_budget_mutation_scope(
+                    db,
+                    workflow_id=workflow_id,
+                    organization_id=organization_id,
+                )
+                existing = _find_budget(
+                    db, workflow_id, organization_id=organization_id
+                )
                 if existing is None:
                     raise
                 return _update_budget(
@@ -250,6 +268,40 @@ def _normalize_workflow_id(value: Any):
         return uuid.UUID(str(value))
     except (TypeError, ValueError):
         return value
+
+
+def _lock_budget_mutation_scope(
+    db: Session,
+    *,
+    workflow_id: Any,
+    organization_id: Any,
+) -> None:
+    workflow = (
+        db.query(Workflow)
+        .filter(
+            Workflow.id == workflow_id,
+            Workflow.organization_id == organization_id,
+        )
+        .populate_existing()
+        .first()
+    )
+    if workflow is None:
+        raise WorkflowBudgetScopeUnavailableError
+    app = lock_app_for_workflow_mutation(
+        db,
+        app_id=workflow.app_id,
+        workflow_id=workflow_id,
+        organization_id=organization_id,
+    )
+    if app is None:
+        raise WorkflowBudgetScopeUnavailableError
+    if app.workflow_id != workflow_id:
+        raise AppPrimaryChangedDuringMutationError
+    lock_workflow_budget_scope(
+        db,
+        workflow_id=workflow_id,
+        organization_id=organization_id,
+    )
 
 
 def _find_budget(db: Session, workflow_id: Any, organization_id: Any = None):

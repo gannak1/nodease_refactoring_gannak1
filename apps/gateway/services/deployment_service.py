@@ -1226,6 +1226,24 @@ class DeploymentService:
         if new_state:
             if not app:
                 raise HTTPException(status_code=404, detail="App not found")
+            workflow_count = (
+                db.query(func.count(Workflow.id))
+                .filter(Workflow.app_id == app.id)
+                .scalar()
+                or 0
+            )
+            if workflow_count > 1:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "deployment.reactivation_provenance_unavailable",
+                        "message": (
+                            "This deployment cannot be reactivated because its "
+                            "source Workflow cannot be verified. Create a new "
+                            "deployment from the current primary Workflow."
+                        ),
+                    },
+                )
             DeploymentService._enforce_knowledge_preflight(
                 db,
                 app=app,

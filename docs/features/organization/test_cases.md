@@ -57,6 +57,7 @@ Status: Draft
 | ORG-TC-U026 | management reason은 durable 저장 전에 fail-closed sanitize되어야 한다. | secret/PII가 raw reason으로 저장되거나 sanitizer 실패 뒤 mutation이 commit된다. | redacted reason 또는 전체 rollback. |
 | ORG-TC-U027 | notification projection은 invitation과 Security Alert source를 섞지 않아야 한다. | `GET /notifications` item에 Security Alert가 들어가거나 summary가 invitation membership을 반환한다. | Invitation endpoint는 invited membership만, Security Alert summary는 별도 source. |
 | ORG-TC-U028 | Sidebar Security Alert badge는 open만 세야 한다. | acknowledged/resolved alert가 badge에 포함된다. | Manager summary의 open count만 badge 표시. |
+| ORG-TC-U029 | Workflow direct permission mutation은 App lifecycle lock을 permission scope보다 먼저 획득하고 primary 교체를 재검증해야 한다. | old primary를 관찰한 PUT/DELETE가 전환 뒤 old Workflow만 변경하고 성공한다. | `409 workflow.primary_changed`, permission/audit 불변. |
 
 ## API Tests
 

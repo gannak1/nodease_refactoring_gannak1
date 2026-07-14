@@ -16,6 +16,9 @@ from fastapi.testclient import TestClient
 
 from apps.gateway.api.v1.endpoints import admin as admin_endpoint
 from apps.gateway.main import app
+from apps.gateway.services.app_lifecycle_lock import (
+    AppPrimaryChangedDuringMutationError,
+)
 from apps.shared.db.models.workflow_budget import WorkflowBudget
 from apps.shared.schemas.workflow_budget import WorkflowBudgetResponse
 
@@ -149,3 +152,47 @@ def test_budget_upsert_rejects_unknown_fields_before_service(monkeypatch):
 
     assert response.status_code == 422
     assert service_called is False
+
+
+def test_budget_upsert_rejects_primary_changed_while_waiting(monkeypatch):
+    client = TestClient(app)
+    workflow_id = uuid4()
+    organization_id = uuid4()
+    rollback_calls = []
+    db = SimpleNamespace(rollback=lambda: rollback_calls.append(True))
+    app.dependency_overrides[admin_endpoint.get_db] = lambda: db
+    app.dependency_overrides[admin_endpoint.get_current_user] = lambda: SimpleNamespace(
+        id=uuid4()
+    )
+    monkeypatch.setattr(
+        admin_endpoint,
+        "_resolve_managed_organization",
+        lambda *args, **kwargs: organization_id,
+    )
+    monkeypatch.setattr(
+        admin_endpoint,
+        "_workflow_name_in_scope",
+        lambda *args, **kwargs: "예산 워크플로우",
+    )
+    monkeypatch.setattr(
+        admin_endpoint.WorkflowBudgetService,
+        "upsert_budget",
+        staticmethod(
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AppPrimaryChangedDuringMutationError()
+            )
+        ),
+    )
+
+    try:
+        response = client.put(
+            f"/api/v1/admin/workflow-budgets/{workflow_id}",
+            headers={"X-Organization-Id": str(organization_id)},
+            json={"monthly_budget_usd": 100.0, "is_enabled": True},
+        )
+    finally:
+        app.dependency_overrides = {}
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "workflow.primary_changed"
+    assert rollback_calls == [True]

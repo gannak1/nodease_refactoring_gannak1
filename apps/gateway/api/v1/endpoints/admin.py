@@ -11,6 +11,9 @@ from apps.gateway.services.admin_audit_log_service import (
     AdminAuditLogService,
 )
 from apps.gateway.services.admin_usage_service import KST, AdminUsageService
+from apps.gateway.services.app_lifecycle_lock import (
+    AppPrimaryChangedDuringMutationError,
+)
 from apps.gateway.services.app_creation_permission_service import (
     AppCreationPermissionService,
 )
@@ -23,7 +26,10 @@ from apps.gateway.services.security_alert_service import (
     SecurityAlertFilters,
     SecurityAlertService,
 )
-from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
+from apps.gateway.services.workflow_budget_service import (
+    WorkflowBudgetScopeUnavailableError,
+    WorkflowBudgetService,
+)
 from apps.gateway.utils.api_errors import raise_api_error
 from apps.shared.db.models.app import App
 from apps.shared.db.models.audit_log import AuditStatus
@@ -436,14 +442,31 @@ def upsert_workflow_budget(
         db, request, x_organization_id, current_user
     )
     workflow_name = _workflow_name_in_scope(db, organization_id, workflow_id)
-    budget = WorkflowBudgetService.upsert_budget(
-        db,
-        organization_id=organization_id,
-        workflow_id=workflow_id,
-        actor_id=current_user.id,
-        monthly_budget_usd=body.monthly_budget_usd,
-        is_enabled=body.is_enabled,
-    )
+    try:
+        budget = WorkflowBudgetService.upsert_budget(
+            db,
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            actor_id=current_user.id,
+            monthly_budget_usd=body.monthly_budget_usd,
+            is_enabled=body.is_enabled,
+        )
+    except AppPrimaryChangedDuringMutationError:
+        db.rollback()
+        raise_api_error(
+            request,
+            409,
+            "workflow.primary_changed",
+            "The App primary Workflow changed. Refresh and try again.",
+        )
+    except WorkflowBudgetScopeUnavailableError:
+        db.rollback()
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Workflow not found.",
+        )
     return _serialize_workflow_budget(
         db, budget, workflow_name, include_usage=True
     )

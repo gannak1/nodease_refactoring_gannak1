@@ -17,7 +17,13 @@ from apps.gateway.services.agent_builder_service import (
     AgentBuilderService,
     calculate_graph_hash,
 )
+from apps.gateway.services.app_lifecycle_lock import (
+    AppPrimaryChangedDuringMutationError,
+    lock_app_for_lifecycle,
+    lock_app_for_workflow_mutation,
+)
 from apps.gateway.services.deployment_service import DeploymentService
+from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
 from apps.gateway.services.workflow_budget_lock import lock_workflow_budget_scope
 from apps.gateway.services.workflow_permission_lock import (
     lock_workflow_permission_scope,
@@ -485,6 +491,154 @@ def test_new_workflow_apply_blocks_when_primary_has_active_budget(db_session):
     assert app.workflow_id == old_workflow.id
 
 
+def test_app_lifecycle_lock_refreshes_stale_identity_map(db_session):
+    actor, _collaborator, organization, app, old_workflow, _team = _app_context(
+        db_session
+    )
+    actor_id = actor.id
+    organization_id = organization.id
+    app_id = app.id
+    db_session.commit()
+
+    session_factory = sessionmaker(
+        bind=db_session.get_bind(),
+        expire_on_commit=False,
+    )
+    stale_db = session_factory()
+    try:
+        stale_app = stale_db.get(App, app_id)
+        assert stale_app.workflow_id == old_workflow.id
+
+        with session_factory() as update_db:
+            replacement = Workflow(
+                organization_id=organization_id,
+                app_id=app_id,
+                created_by=actor_id,
+                graph={"nodes": [], "edges": []},
+            )
+            update_db.add(replacement)
+            update_db.flush()
+            update_db.get(App, app_id).workflow_id = replacement.id
+            update_db.commit()
+            replacement_id = replacement.id
+
+        locked_app = lock_app_for_lifecycle(
+            stale_db,
+            app_id,
+            organization_id=organization_id,
+        )
+
+        assert locked_app is stale_app
+        assert locked_app.workflow_id == replacement_id
+    finally:
+        stale_db.rollback()
+        stale_db.close()
+
+
+def test_budget_upsert_rejects_primary_changed_after_scope_observation(
+    db_session,
+    monkeypatch,
+):
+    actor, _collaborator, organization, app, old_workflow, _team = _app_context(
+        db_session
+    )
+    draft = _ready_new_workflow_draft(
+        db_session,
+        actor=actor,
+        organization=organization,
+        app=app,
+        expected_primary_workflow_id=old_workflow.id,
+    )
+    actor_id = actor.id
+    organization_id = organization.id
+    app_id = app.id
+    old_workflow_id = old_workflow.id
+    draft_id = draft.id
+    db_session.commit()
+
+    session_factory = sessionmaker(
+        bind=db_session.get_bind(),
+        expire_on_commit=False,
+    )
+    mutation_observed_primary = threading.Event()
+    allow_mutation_to_lock = threading.Event()
+    mutation_finished = threading.Event()
+    mutation_result = {}
+
+    from apps.gateway.services import app_lifecycle_lock as lifecycle_lock_module
+
+    original_lock = lifecycle_lock_module.lock_app_for_lifecycle
+
+    def gated_mutation_lock(db, target_app_id, **kwargs):
+        mutation_observed_primary.set()
+        if not allow_mutation_to_lock.wait(timeout=10):
+            raise RuntimeError("test synchronization timeout")
+        return original_lock(db, target_app_id, **kwargs)
+
+    monkeypatch.setattr(
+        lifecycle_lock_module,
+        "lock_app_for_lifecycle",
+        gated_mutation_lock,
+    )
+
+    def upsert_budget():
+        try:
+            with session_factory() as budget_db:
+                WorkflowBudgetService.upsert_budget(
+                    budget_db,
+                    organization_id=organization_id,
+                    workflow_id=old_workflow_id,
+                    actor_id=actor_id,
+                    monthly_budget_usd=Decimal("100.00"),
+                    is_enabled=True,
+                )
+        except Exception as exc:  # pragma: no cover - asserted in main thread
+            mutation_result["error"] = exc
+        finally:
+            mutation_finished.set()
+
+    thread = threading.Thread(target=upsert_budget, daemon=True)
+    thread.start()
+    try:
+        assert mutation_observed_primary.wait(timeout=5)
+        with session_factory() as apply_db:
+            apply_draft = apply_db.get(AgentBuilderDraft, draft_id)
+            apply_actor = apply_db.get(User, actor_id)
+            response = AgentBuilderService(
+                apply_db,
+                user=apply_actor,
+                organization_id=organization_id,
+            ).apply_draft(
+                apply_draft.id,
+                AgentBuilderApplyRequest(
+                    action="apply_and_save",
+                    client_preview_graph_hash=calculate_graph_hash(
+                        apply_draft.preview_graph
+                    ),
+                ),
+            )
+        assert response.outcome == "saved"
+    finally:
+        allow_mutation_to_lock.set()
+
+    assert mutation_finished.wait(timeout=10)
+    thread.join(timeout=1)
+    assert isinstance(
+        mutation_result.get("error"),
+        AppPrimaryChangedDuringMutationError,
+    )
+
+    db_session.expire_all()
+    final_app = db_session.get(App, app_id)
+    assert final_app.workflow_id == response.saved_workflow_id
+    assert (
+        db_session.query(WorkflowBudget)
+        .filter(WorkflowBudget.workflow_id == old_workflow_id)
+        .first()
+        is None
+    )
+
+
 def test_budget_commit_precedes_primary_transition_snapshot(db_session, monkeypatch):
     actor, _collaborator, organization, app, old_workflow, _team = _app_context(
         db_session
@@ -833,3 +987,127 @@ def test_permission_revoke_commits_before_inheritance_snapshot(
         .first()
     )
     assert inherited_collaborator is None
+
+
+def test_permission_revoke_rejects_primary_changed_after_scope_observation(
+    db_session,
+    monkeypatch,
+):
+    actor, collaborator, organization, app, old_workflow, _team = _app_context(
+        db_session
+    )
+    draft = _ready_new_workflow_draft(
+        db_session,
+        actor=actor,
+        organization=organization,
+        app=app,
+        expected_primary_workflow_id=old_workflow.id,
+    )
+    actor_id = actor.id
+    collaborator_id = collaborator.id
+    organization_id = organization.id
+    app_id = app.id
+    old_workflow_id = old_workflow.id
+    draft_id = draft.id
+    db_session.commit()
+
+    session_factory = sessionmaker(
+        bind=db_session.get_bind(),
+        expire_on_commit=False,
+    )
+    mutation_observed_primary = threading.Event()
+    allow_mutation_to_lock = threading.Event()
+    mutation_finished = threading.Event()
+    mutation_result = {}
+
+    from apps.gateway.services import app_lifecycle_lock as lifecycle_lock_module
+
+    original_lock = lifecycle_lock_module.lock_app_for_lifecycle
+
+    def gated_mutation_lock(db, target_app_id, **kwargs):
+        mutation_observed_primary.set()
+        if not allow_mutation_to_lock.wait(timeout=10):
+            raise RuntimeError("test synchronization timeout")
+        return original_lock(db, target_app_id, **kwargs)
+
+    monkeypatch.setattr(
+        lifecycle_lock_module,
+        "lock_app_for_lifecycle",
+        gated_mutation_lock,
+    )
+
+    def revoke_permission():
+        try:
+            with session_factory() as permission_db:
+                lock_app_for_workflow_mutation(
+                    permission_db,
+                    app_id=app_id,
+                    workflow_id=old_workflow_id,
+                    organization_id=organization_id,
+                )
+                lock_workflow_permission_scope(
+                    permission_db,
+                    organization_id=organization_id,
+                    workflow_id=old_workflow_id,
+                )
+                permission = (
+                    permission_db.query(UserWorkflowPermission)
+                    .filter(
+                        UserWorkflowPermission.workflow_id == old_workflow_id,
+                        UserWorkflowPermission.user_id == collaborator_id,
+                    )
+                    .one()
+                )
+                permission_db.delete(permission)
+                permission_db.commit()
+        except Exception as exc:  # pragma: no cover - asserted in main thread
+            mutation_result["error"] = exc
+        finally:
+            mutation_finished.set()
+
+    thread = threading.Thread(target=revoke_permission, daemon=True)
+    thread.start()
+    try:
+        assert mutation_observed_primary.wait(timeout=5)
+        with session_factory() as apply_db:
+            apply_draft = apply_db.get(AgentBuilderDraft, draft_id)
+            apply_actor = apply_db.get(User, actor_id)
+            response = AgentBuilderService(
+                apply_db,
+                user=apply_actor,
+                organization_id=organization_id,
+            ).apply_draft(
+                apply_draft.id,
+                AgentBuilderApplyRequest(
+                    action="apply_and_save",
+                    client_preview_graph_hash=calculate_graph_hash(
+                        apply_draft.preview_graph
+                    ),
+                ),
+            )
+        assert response.outcome == "saved"
+    finally:
+        allow_mutation_to_lock.set()
+
+    assert mutation_finished.wait(timeout=10)
+    thread.join(timeout=1)
+    assert isinstance(
+        mutation_result.get("error"),
+        AppPrimaryChangedDuringMutationError,
+    )
+
+    db_session.expire_all()
+    rows = (
+        db_session.query(UserWorkflowPermission)
+        .filter(
+            UserWorkflowPermission.user_id == collaborator_id,
+            UserWorkflowPermission.workflow_id.in_(
+                [old_workflow_id, response.saved_workflow_id]
+            ),
+        )
+        .all()
+    )
+    assert {row.workflow_id for row in rows} == {
+        old_workflow_id,
+        response.saved_workflow_id,
+    }

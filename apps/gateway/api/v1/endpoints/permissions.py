@@ -12,6 +12,10 @@ from apps.gateway.adapters.db.access_management_locking import (
 )
 from apps.gateway.services.auth_service import AuthService
 from apps.gateway.services.audit_records import add_data_change_audit
+from apps.gateway.services.app_lifecycle_lock import (
+    AppPrimaryChangedDuringMutationError,
+    lock_app_for_workflow_mutation,
+)
 from apps.gateway.services.resource_permission_registry import resource_permission_spec
 from apps.gateway.services.workflow_permission_lock import (
     lock_workflow_permission_scope,
@@ -84,6 +88,39 @@ def _authenticate(
             exc.status_code,
             auth_error_code(exc, auth_token),
             auth_error_message(exc),
+        )
+
+
+def _lock_workflow_mutation_app_scope(
+    request: Request,
+    db: Session,
+    *,
+    organization_id: UUID,
+    workflow: Workflow,
+) -> None:
+    """Hold the App lifecycle lock while mutating a Workflow permission."""
+    try:
+        app = lock_app_for_workflow_mutation(
+            db,
+            app_id=workflow.app_id,
+            workflow_id=workflow.id,
+            organization_id=organization_id,
+        )
+    except AppPrimaryChangedDuringMutationError:
+        db.rollback()
+        raise_api_error(
+            request,
+            409,
+            "workflow.primary_changed",
+            "The App primary Workflow changed. Refresh and try again.",
+        )
+    if app is None:
+        db.rollback()
+        raise_api_error(
+            request,
+            404,
+            "resource.not_found",
+            "Workflow not found.",
         )
 
 
@@ -2201,13 +2238,19 @@ def put_team_workflow_permission(
     """team에 workflow 권한을 부여하거나 갱신하는 PUT endpoint."""
     current_user = _authenticate(request, db, auth_token)
     organization_id = parse_organization_id(request, x_organization_id)
-    _authorize_team_workflow_permission_change(
+    _, workflow, _ = _authorize_team_workflow_permission_change(
         request,
         db,
         current_user,
         organization_id,
         workflow_id,
         team_id,
+    )
+    _lock_workflow_mutation_app_scope(
+        request,
+        db,
+        organization_id=organization_id,
+        workflow=workflow,
     )
 
     now = datetime.now(timezone.utc)
@@ -2325,13 +2368,19 @@ def put_user_workflow_permission(
     current_user = _authenticate(request, db, auth_token)
     organization_id = parse_organization_id(request, x_organization_id)
     # scope, 대상 user 상태, 부여자 권한을 모두 통과해야 permission row를 만든다.
-    _authorize_user_workflow_permission_change(
+    _, workflow, _ = _authorize_user_workflow_permission_change(
         request,
         db,
         current_user,
         organization_id,
         workflow_id,
         user_id,
+    )
+    _lock_workflow_mutation_app_scope(
+        request,
+        db,
+        organization_id=organization_id,
+        workflow=workflow,
     )
 
     now = datetime.now(timezone.utc)
@@ -2444,13 +2493,19 @@ def delete_team_workflow_permission(
     """team의 workflow 권한을 회수하는 DELETE endpoint."""
     current_user = _authenticate(request, db, auth_token)
     organization_id = parse_organization_id(request, x_organization_id)
-    _authorize_team_workflow_permission_change(
+    _, workflow, _ = _authorize_team_workflow_permission_change(
         request,
         db,
         current_user,
         organization_id,
         workflow_id,
         team_id,
+    )
+    _lock_workflow_mutation_app_scope(
+        request,
+        db,
+        organization_id=organization_id,
+        workflow=workflow,
     )
 
     lock_workflow_permission_scope(
@@ -2619,7 +2674,7 @@ def delete_user_workflow_permission(
     """user의 workflow 직접 권한을 회수하는 DELETE endpoint."""
     current_user = _authenticate(request, db, auth_token)
     organization_id = parse_organization_id(request, x_organization_id)
-    _authorize_user_workflow_permission_change(
+    _, workflow, _ = _authorize_user_workflow_permission_change(
         request,
         db,
         current_user,
@@ -2627,6 +2682,12 @@ def delete_user_workflow_permission(
         workflow_id,
         user_id,
         require_active_target=False,
+    )
+    _lock_workflow_mutation_app_scope(
+        request,
+        db,
+        organization_id=organization_id,
+        workflow=workflow,
     )
 
     _lock_direct_permission_cleanup_subject(db, organization_id, user_id)
