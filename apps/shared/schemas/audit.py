@@ -1,9 +1,14 @@
 from datetime import datetime
-from typing import Any, List, Optional
+from typing import Any, List, Literal, Optional
 from uuid import UUID
 
 from apps.shared.db.models.audit_log import ActorType, AuditCategory, AuditStatus
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class AuditDisplayReference(BaseModel):
+    label: str
+    source: Literal["event_snapshot", "current_resource"]
 
 
 class AuditLogSchema(BaseModel):
@@ -26,11 +31,24 @@ class AuditLogListResponse(BaseModel):
     items: List[AuditLogSchema]
 
 
+class AdminAuditLogSchema(AuditLogSchema):
+    actor_display: AuditDisplayReference | None = None
+    target_display: AuditDisplayReference | None = None
+
+
+class AdminAuditLogListResponse(BaseModel):
+    total: int
+    items: List[AdminAuditLogSchema]
+
+
 class AuditChangeSummary(BaseModel):
     before: dict[str, Any] | None = None
     after: dict[str, Any] | None = None
 
 
-class AuditLogDetailResponse(AuditLogSchema):
+class AuditLogDetailResponse(AdminAuditLogSchema):
     audit_metadata: dict[str, Any] = Field(default_factory=dict)
     change_summary: AuditChangeSummary | None = None
+    resolved_references: dict[str, AuditDisplayReference] = Field(
+        default_factory=dict
+    )

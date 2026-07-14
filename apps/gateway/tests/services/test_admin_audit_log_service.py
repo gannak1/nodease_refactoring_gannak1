@@ -9,13 +9,18 @@ from fastapi import HTTPException
 from sqlalchemy.sql import operators as sqlalchemy_operators
 
 from apps.shared.audit.actions import AuditAction
+from apps.shared.db.models.app import App
 from apps.shared.db.models.audit_log import (
     ActorType,
     AuditCategory,
     AuditLog,
     AuditStatus,
 )
-from apps.shared.db.models.team import TeamAuditPermission
+from apps.shared.db.models.knowledge import KnowledgeBase, KnowledgeSourceIdentity
+from apps.shared.db.models.organization import Organization
+from apps.shared.db.models.organization_membership import OrganizationMembership
+from apps.shared.db.models.team import Team, TeamAuditPermission
+from apps.shared.db.models.user import User
 
 
 ADMIN_AUDIT_SERVICE = "apps.gateway.services.admin_audit_log_service"
@@ -120,6 +125,388 @@ def test_list_audit_logs_scopes_filters_and_sorts_descending(monkeypatch):
     assert [item.id for item in result.items] == [newer_match.id, older_match.id]
     assert db.query_for(AuditLog).offset_value == 0
     assert db.query_for(AuditLog).limit_value == 20
+
+
+def test_list_audit_logs_adds_snapshot_actor_and_batch_target_displays(monkeypatch):
+    AdminAuditLogService, _ = _service()
+    organization_id = uuid4()
+    actor_id = uuid4()
+    workflow_id = uuid4()
+    logs = [
+        _audit_log(
+            organization_id=organization_id,
+            actor_id=actor_id,
+            action="workflow.deploy",
+            target_type="workflow",
+            target_id=str(workflow_id),
+            status=AuditStatus.SUCCESS,
+            occurred_at=datetime(2026, 7, 2, hour, tzinfo=timezone.utc),
+            audit_metadata={
+                "organization_id": str(organization_id),
+                "actor": {
+                    "name": "감사 당시 이름",
+                    "email": "historical@example.com",
+                },
+            },
+        )
+        for hour in (9, 10)
+    ]
+    db = _AuditLogSession(
+        logs,
+        display_rows={
+            App: [
+                SimpleNamespace(
+                    id=uuid4(),
+                    organization_id=organization_id,
+                    workflow_id=workflow_id,
+                    name="고객문의 봇",
+                )
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        "apps.gateway.services.admin_audit_log_service.AdminPermissionGuard.require_audit_reader",
+        lambda *args: None,
+    )
+
+    result = AdminAuditLogService.list_audit_logs(
+        db,
+        current_user=SimpleNamespace(id=uuid4()),
+        organization_id=organization_id,
+    )
+
+    assert [item.actor_id for item in result.items] == [actor_id, actor_id]
+    assert [item.target_id for item in result.items] == [
+        str(workflow_id),
+        str(workflow_id),
+    ]
+    assert [item.actor_display.model_dump() for item in result.items] == [
+        {
+            "label": "감사 당시 이름 (historical@example.com)",
+            "source": "event_snapshot",
+        },
+        {
+            "label": "감사 당시 이름 (historical@example.com)",
+            "source": "event_snapshot",
+        },
+    ]
+    assert [item.target_display.model_dump() for item in result.items] == [
+        {"label": "고객문의 봇", "source": "current_resource"},
+        {"label": "고객문의 봇", "source": "current_resource"},
+    ]
+    assert db.query_counts[App] == 1
+
+
+def test_list_display_uses_current_member_fallback_and_hides_cross_org_target(
+    monkeypatch,
+):
+    AdminAuditLogService, _ = _service()
+    organization_id = uuid4()
+    other_organization_id = uuid4()
+    actor_id = uuid4()
+    knowledge_base_id = uuid4()
+    log = _audit_log(
+        organization_id=organization_id,
+        actor_id=actor_id,
+        action="knowledge.update",
+        target_type="knowledge_base",
+        target_id=str(knowledge_base_id),
+        status=AuditStatus.SUCCESS,
+        occurred_at=datetime(2026, 7, 2, 9, tzinfo=timezone.utc),
+        audit_metadata={"organization_id": str(organization_id)},
+    )
+    db = _AuditLogSession(
+        [log],
+        display_rows={
+            OrganizationMembership: [
+                SimpleNamespace(
+                    organization_id=organization_id,
+                    user_id=actor_id,
+                    membership_state="suspended",
+                )
+            ],
+            User: [
+                SimpleNamespace(
+                    id=actor_id,
+                    name="현재 이름",
+                    email="current@example.com",
+                    deactivated_at=None,
+                )
+            ],
+            KnowledgeBase: [
+                SimpleNamespace(
+                    id=knowledge_base_id,
+                    organization_id=other_organization_id,
+                    name="다른 조직 지식",
+                )
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        "apps.gateway.services.admin_audit_log_service.AdminPermissionGuard.require_audit_reader",
+        lambda *args: None,
+    )
+
+    item = AdminAuditLogService.list_audit_logs(
+        db,
+        current_user=SimpleNamespace(id=uuid4()),
+        organization_id=organization_id,
+    ).items[0]
+
+    assert item.actor_display.model_dump() == {
+        "label": "현재 이름 (current@example.com)",
+        "source": "current_resource",
+    }
+    assert item.target_display is None
+
+
+def test_list_display_hides_deactivated_user_and_inactive_team(monkeypatch):
+    AdminAuditLogService, _ = _service()
+    organization_id = uuid4()
+    actor_id = uuid4()
+    team_id = uuid4()
+    log = _audit_log(
+        organization_id=organization_id,
+        actor_id=actor_id,
+        action="team.update",
+        target_type="team",
+        target_id=str(team_id),
+        status=AuditStatus.SUCCESS,
+        occurred_at=datetime(2026, 7, 2, 9, tzinfo=timezone.utc),
+        audit_metadata={"organization_id": str(organization_id)},
+    )
+    db = _AuditLogSession(
+        [log],
+        display_rows={
+            OrganizationMembership: [
+                SimpleNamespace(
+                    organization_id=organization_id,
+                    user_id=actor_id,
+                    membership_state="active",
+                )
+            ],
+            User: [
+                SimpleNamespace(
+                    id=actor_id,
+                    name="비활성 사용자",
+                    email="deactivated@example.com",
+                    deactivated_at=datetime(2026, 7, 1, tzinfo=timezone.utc),
+                )
+            ],
+            Team: [
+                SimpleNamespace(
+                    id=team_id,
+                    organization_id=organization_id,
+                    name="비활성 팀",
+                    is_active=False,
+                )
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        "apps.gateway.services.admin_audit_log_service.AdminPermissionGuard.require_audit_reader",
+        lambda *args: None,
+    )
+
+    item = AdminAuditLogService.list_audit_logs(
+        db,
+        current_user=SimpleNamespace(id=uuid4()),
+        organization_id=organization_id,
+    ).items[0]
+
+    assert item.actor_display is None
+    assert item.target_display is None
+
+
+def test_list_display_uses_only_approved_knowledge_base_safe_labels(monkeypatch):
+    AdminAuditLogService, _ = _service()
+    organization_id = uuid4()
+    manual_kb_id = uuid4()
+    source_kb_id = uuid4()
+    hidden_source_kb_id = uuid4()
+    approved_source_id = uuid4()
+    unreviewed_source_id = uuid4()
+    logs = [
+        _audit_log(
+            organization_id=organization_id,
+            actor_id=None,
+            action="knowledge.update",
+            target_type="knowledge_base",
+            target_id=str(target_id),
+            status=AuditStatus.SUCCESS,
+            occurred_at=datetime(2026, 7, 2, hour, tzinfo=timezone.utc),
+            audit_metadata={"organization_id": str(organization_id)},
+        )
+        for hour, target_id in enumerate(
+            (manual_kb_id, source_kb_id, hidden_source_kb_id),
+            start=9,
+        )
+    ]
+    db = _AuditLogSession(
+        logs,
+        display_rows={
+            KnowledgeBase: [
+                SimpleNamespace(
+                    id=manual_kb_id,
+                    organization_id=organization_id,
+                    name="/private/manual-source.pdf",
+                    safe_metadata={"safe_label": "안전한 사내 문서"},
+                    source_identity_id=None,
+                    lifecycle_state="active",
+                ),
+                SimpleNamespace(
+                    id=source_kb_id,
+                    organization_id=organization_id,
+                    name="https://source.invalid/private-title",
+                    safe_metadata={"safe_label": "사용하면 안 되는 수동 라벨"},
+                    source_identity_id=approved_source_id,
+                    lifecycle_state="active",
+                ),
+                SimpleNamespace(
+                    id=hidden_source_kb_id,
+                    organization_id=organization_id,
+                    name="secret-source-title",
+                    safe_metadata={"safe_label": "사용하면 안 되는 수동 라벨"},
+                    source_identity_id=unreviewed_source_id,
+                    lifecycle_state="active",
+                ),
+            ],
+            KnowledgeSourceIdentity: [
+                SimpleNamespace(
+                    id=approved_source_id,
+                    organization_id=organization_id,
+                    display_policy_state="approved",
+                    is_active=True,
+                    safe_display_name="승인된 소스 문서",
+                ),
+                SimpleNamespace(
+                    id=unreviewed_source_id,
+                    organization_id=organization_id,
+                    display_policy_state="unreviewed",
+                    is_active=True,
+                    safe_display_name="미승인 소스 문서",
+                ),
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        "apps.gateway.services.admin_audit_log_service.AdminPermissionGuard.require_audit_reader",
+        lambda *args: None,
+    )
+
+    items = AdminAuditLogService.list_audit_logs(
+        db,
+        current_user=SimpleNamespace(id=uuid4()),
+        organization_id=organization_id,
+    ).items
+    displays = {item.target_id: item.target_display for item in items}
+
+    assert displays[str(manual_kb_id)].label == "안전한 사내 문서"
+    assert displays[str(source_kb_id)].label == "승인된 소스 문서"
+    assert displays[str(hidden_source_kb_id)] is None
+    assert db.query_counts[KnowledgeBase] == 1
+    assert db.query_counts[KnowledgeSourceIdentity] == 1
+
+
+def test_detail_resolves_only_allowlisted_same_org_references(monkeypatch):
+    AdminAuditLogService, _ = _service()
+    organization_id = uuid4()
+    user_id = uuid4()
+    team_id = uuid4()
+    workflow_id = uuid4()
+    before = {
+        "grantee_organization_id": str(organization_id),
+        "user_id": str(user_id),
+        "workflow_id": str(workflow_id),
+        "auth_state": "viewer",
+    }
+    after = dict(before, auth_state="operator")
+    log = _audit_log(
+        organization_id=organization_id,
+        actor_id=uuid4(),
+        action="user_workflow_permission.updated",
+        target_type="user_workflow_permission",
+        target_id=str(uuid4()),
+        status=AuditStatus.SUCCESS,
+        occurred_at=datetime(2026, 7, 2, 9, tzinfo=timezone.utc),
+        before=before,
+        after=after,
+        audit_metadata={
+            "organization_id": str(organization_id),
+            "target_user_id": str(user_id),
+            "team_id": str(team_id),
+            "resource_type": "workflow",
+            "resource_id": str(workflow_id),
+        },
+    )
+    db = _AuditLogSession(
+        [log],
+        display_rows={
+            Organization: [
+                SimpleNamespace(id=organization_id, name="Nodease 개발팀")
+            ],
+            OrganizationMembership: [
+                SimpleNamespace(
+                    organization_id=organization_id,
+                    user_id=user_id,
+                    membership_state="active",
+                )
+            ],
+            User: [
+                SimpleNamespace(
+                    id=user_id,
+                    name="김사용",
+                    email="member@example.com",
+                    deactivated_at=None,
+                )
+            ],
+            Team: [
+                SimpleNamespace(
+                    id=team_id,
+                    organization_id=organization_id,
+                    name="플랫폼팀",
+                    is_active=True,
+                )
+            ],
+            App: [
+                SimpleNamespace(
+                    id=uuid4(),
+                    organization_id=organization_id,
+                    workflow_id=workflow_id,
+                    name="권한 검토 Workflow",
+                )
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        "apps.gateway.services.admin_audit_log_service.AdminPermissionGuard.require_audit_reader",
+        lambda *args: None,
+    )
+
+    detail = AdminAuditLogService.get_audit_log_detail(
+        db,
+        current_user=SimpleNamespace(id=uuid4()),
+        organization_id=organization_id,
+        audit_log_id=log.id,
+    )
+
+    assert {
+        key: value.model_dump() for key, value in detail.resolved_references.items()
+    } == {
+        str(organization_id): {
+            "label": "Nodease 개발팀",
+            "source": "current_resource",
+        },
+        str(user_id): {
+            "label": "김사용 (member@example.com)",
+            "source": "current_resource",
+        },
+        str(team_id): {"label": "플랫폼팀", "source": "current_resource"},
+        str(workflow_id): {
+            "label": "권한 검토 Workflow",
+            "source": "current_resource",
+        },
+    }
 
 
 def test_resolve_period_treats_naive_datetime_as_kst_and_rejects_invalid_range():
@@ -702,14 +1089,53 @@ def test_require_audit_reader_records_permission_denied_audit(monkeypatch):
 
 class _AuditLogSession:
     # SQLAlchemy Session의 query(AuditLog)만 흉내 내는 최소 테스트 더블이다.
-    def __init__(self, logs):
+    def __init__(self, logs, display_rows=None):
         self._queries = {AuditLog: _AuditLogQuery(logs)}
+        self.display_rows = display_rows or {}
+        self.query_counts = {}
 
     def query(self, model):
-        return self._queries[model]
+        if model in self._queries:
+            return self._queries[model]
+        self.query_counts[model] = self.query_counts.get(model, 0) + 1
+        return _DisplayQuery(self.display_rows.get(model, []))
 
     def query_for(self, model):
         return self._queries[model]
+
+
+class _DisplayQuery:
+    def __init__(self, rows):
+        self.rows = list(rows)
+
+    def filter(self, *conditions):
+        self.rows = [
+            row
+            for row in self.rows
+            if all(_matches_display_condition(row, condition) for condition in conditions)
+        ]
+        return self
+
+    def all(self):
+        return self.rows
+
+
+def _matches_display_condition(row, condition):
+    clauses = getattr(condition, "clauses", None)
+    if clauses is not None:
+        return all(_matches_display_condition(row, clause) for clause in clauses)
+    field = str(condition.left).rsplit(".", 1)[-1]
+    value = getattr(condition.right, "value", None)
+    actual = getattr(row, field)
+    if condition.operator is eq:
+        return actual == value
+    if condition.operator is sqlalchemy_operators.in_op:
+        return actual in value
+    if condition.operator is sqlalchemy_operators.is_:
+        right = str(condition.right).lower()
+        expected = True if right == "true" else False if right == "false" else None
+        return actual is expected
+    raise AssertionError(f"Unsupported display filter condition: {condition}")
 
 
 class _AuditLogQuery:
