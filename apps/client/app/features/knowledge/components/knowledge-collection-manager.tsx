@@ -72,10 +72,12 @@ export default function KnowledgeCollectionManager() {
   const [form, setForm] = useState<CollectionFormState>({
     name: '',
     description: '',
+    safeLabel: '',
   });
   const [editForm, setEditForm] = useState<CollectionFormState>({
     name: '',
     description: '',
+    safeLabel: '',
   });
   const [grantForm, setGrantForm] = useState<GrantFormState>({
     subject_type: 'team',
@@ -182,6 +184,10 @@ export default function KnowledgeCollectionManager() {
     setEditForm({
       name: selectedCollection.name,
       description: selectedCollection.description ?? '',
+      safeLabel:
+        typeof selectedCollection.safe_metadata.safe_label === 'string'
+          ? selectedCollection.safe_metadata.safe_label
+          : '',
     });
     setAcknowledgePublic(false);
     loadCollectionDetail(selectedCollection, capabilities);
@@ -195,15 +201,18 @@ export default function KnowledgeCollectionManager() {
   };
 
   const createCollection = async () => {
-    if (!form.name.trim()) return;
+    if (!form.name.trim() || !form.safeLabel.trim()) return;
     setIsSaving(true);
     setErrorMessage(null);
     try {
       const created = await knowledgeApi.createKnowledgeCollection({
         name: form.name.trim(),
         description: form.description.trim() || null,
+        safe_metadata: {
+          safe_label: form.safeLabel.trim(),
+        },
       });
-      setForm({ name: '', description: '' });
+      setForm({ name: '', description: '', safeLabel: '' });
       await loadCollections();
       setSelectedId(created.id);
     } catch (error) {
@@ -214,13 +223,23 @@ export default function KnowledgeCollectionManager() {
   };
 
   const updateCollection = async () => {
-    if (!selectedCollection || !editForm.name.trim()) return;
+    if (
+      !selectedCollection ||
+      !editForm.name.trim() ||
+      !editForm.safeLabel.trim()
+    ) {
+      return;
+    }
     setIsSaving(true);
     setErrorMessage(null);
     try {
       await knowledgeApi.updateKnowledgeCollection(selectedCollection.id, {
         name: editForm.name.trim(),
         description: editForm.description.trim() || null,
+        safe_metadata: {
+          ...selectedCollection.safe_metadata,
+          safe_label: editForm.safeLabel.trim(),
+        },
       });
       await refreshSelected();
     } catch (error) {

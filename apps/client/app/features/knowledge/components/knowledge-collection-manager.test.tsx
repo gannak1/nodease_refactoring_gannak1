@@ -30,7 +30,7 @@ vi.mock('@/app/features/knowledge/api/knowledgeApi', () => ({
 
 describe('KnowledgeCollectionManager', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
   });
 
   it('keeps read-only item view available without calling manage-only APIs', async () => {
@@ -60,7 +60,7 @@ describe('KnowledgeCollectionManager', () => {
           can_route: false,
           can_manage: false,
           can_sync: false,
-          safe_metadata: {},
+          safe_metadata: { safe_label: '인사 정책' },
           created_at: '2026-07-07T00:00:00Z',
           updated_at: '2026-07-07T00:00:00Z',
         },
@@ -86,6 +86,12 @@ describe('KnowledgeCollectionManager', () => {
     render(<KnowledgeCollectionManager />);
 
     expect(await screen.findByText('휴가 정책')).toBeInTheDocument();
+    expect(
+      screen.getByRole('textbox', { name: '안전 표시 이름' }),
+    ).toHaveValue('인사 정책');
+    expect(
+      screen.getByRole('textbox', { name: '안전 표시 이름' }),
+    ).toBeDisabled();
     expect(screen.queryByText('Collection 생성')).not.toBeInTheDocument();
     expect(
       screen.getByText('공개 상태 전환은 organization manager만 수행할 수 있습니다.'),
@@ -181,6 +187,141 @@ describe('KnowledgeCollectionManager', () => {
         subject_id: 'team-1',
         role_bundle: 'viewer',
       }),
+    );
+  });
+
+  it('requires a safe display label when creating a manual collection', async () => {
+    knowledgeApiMock.getKnowledgeDomainCapabilities.mockResolvedValue({
+      actions: ['catalog_manage'],
+      can_manage_domain_permissions: false,
+      can_create_collection: true,
+      can_delegate_permissions: false,
+      can_manage_lifecycle: false,
+      can_manage_sync: false,
+      can_change_public_visibility: false,
+    });
+    knowledgeApiMock.getKnowledgeCollectionsResponse.mockResolvedValue({
+      collections: [],
+      can_create_collection: true,
+      can_change_public_visibility: false,
+    });
+    knowledgeApiMock.createKnowledgeCollection.mockResolvedValue({
+      id: 'collection-new',
+    });
+
+    render(<KnowledgeCollectionManager />);
+
+    const createButton = await screen.findByRole('button', { name: '생성' });
+    const nameInput = screen.getByRole('textbox', { name: '관리용 이름' });
+    const safeLabelInput = screen.getByRole('textbox', {
+      name: '안전 표시 이름',
+    });
+    expect(createButton).toBeDisabled();
+
+    fireEvent.change(nameInput, { target: { value: '  HR 관리 이름  ' } });
+    expect(createButton).toBeDisabled();
+
+    fireEvent.change(safeLabelInput, {
+      target: { value: '  사내 인사 문서  ' },
+    });
+    fireEvent.click(createButton);
+
+    await waitFor(() =>
+      expect(knowledgeApiMock.createKnowledgeCollection).toHaveBeenCalledWith({
+        name: 'HR 관리 이름',
+        description: null,
+        safe_metadata: { safe_label: '사내 인사 문서' },
+      }),
+    );
+  });
+
+  it('requires explicit remediation for a legacy collection and preserves metadata', async () => {
+    knowledgeApiMock.getKnowledgeDomainCapabilities.mockResolvedValue({
+      actions: [],
+      can_manage_domain_permissions: false,
+      can_create_collection: false,
+      can_delegate_permissions: false,
+      can_manage_lifecycle: false,
+      can_manage_sync: false,
+      can_change_public_visibility: false,
+    });
+    knowledgeApiMock.getKnowledgeCollectionsResponse.mockResolvedValue({
+      collections: [
+        {
+          id: 'collection-legacy',
+          organization_id: 'org-1',
+          name: '관리 전용 원본 이름',
+          description: '기존 Collection',
+          is_system_managed: false,
+          sync_state: 'manual',
+          lifecycle_state: 'active',
+          visibility: 'private',
+          linked_kb_count_bucket: '0',
+          active_kb_count_bucket: '0',
+          can_read: true,
+          can_route: true,
+          can_manage: true,
+          can_sync: false,
+          safe_metadata: {
+            collection_safe_topics: ['policy'],
+          },
+          created_at: '2026-07-07T00:00:00Z',
+          updated_at: '2026-07-07T00:00:00Z',
+        },
+      ],
+      can_create_collection: false,
+      can_change_public_visibility: false,
+    });
+    knowledgeApiMock.getKnowledgeCollectionItems.mockResolvedValue({
+      items: [],
+    });
+    knowledgeApiMock.getKnowledgeCollectionLinkCandidates.mockResolvedValue({
+      candidates: [],
+    });
+    knowledgeApiMock.getKnowledgeCollectionPermissions.mockResolvedValue({
+      permissions: [],
+    });
+    knowledgeApiMock.getKnowledgeCollectionDelegationSubjects.mockResolvedValue(
+      {
+        teams: [],
+        users: [],
+      },
+    );
+    knowledgeApiMock.updateKnowledgeCollection.mockResolvedValue({
+      id: 'collection-legacy',
+    });
+
+    render(<KnowledgeCollectionManager />);
+
+    expect(
+      await screen.findByText(
+        'Workflow에서 이 Collection을 구분할 수 있도록 안전 표시 이름을 입력하세요.',
+      ),
+    ).toBeInTheDocument();
+    const safeLabelInput = screen.getByRole('textbox', {
+      name: '안전 표시 이름',
+    });
+    const saveButton = screen.getByRole('button', { name: '저장' });
+    expect(safeLabelInput).toHaveValue('');
+    expect(saveButton).toBeDisabled();
+
+    fireEvent.change(safeLabelInput, {
+      target: { value: '  사내 정책 자료  ' },
+    });
+    fireEvent.click(saveButton);
+
+    await waitFor(() =>
+      expect(knowledgeApiMock.updateKnowledgeCollection).toHaveBeenCalledWith(
+        'collection-legacy',
+        {
+          name: '관리 전용 원본 이름',
+          description: '기존 Collection',
+          safe_metadata: {
+            collection_safe_topics: ['policy'],
+            safe_label: '사내 정책 자료',
+          },
+        },
+      ),
     );
   });
 });

@@ -1272,6 +1272,24 @@ class KnowledgeCollectionService:
                 key_text = str(key)
                 if key_text == "visibility":
                     continue
+                if key_text == "safe_label":
+                    if not isinstance(value, str):
+                        raise KnowledgeCollectionServiceError(
+                            400,
+                            "validation.failed",
+                            "safe_metadata.safe_label must be a string.",
+                            {"field": "safe_metadata.safe_label"},
+                        )
+                    safe_label = safe_label_from_text(value)
+                    if not safe_label:
+                        raise KnowledgeCollectionServiceError(
+                            400,
+                            "validation.failed",
+                            "safe_metadata.safe_label must contain display-safe text.",
+                            {"field": "safe_metadata.safe_label"},
+                        )
+                    sanitized["safe_label"] = safe_label
+                    continue
                 if safe_metadata_key_is_forbidden(key_text):
                     raise KnowledgeCollectionServiceError(
                         400,

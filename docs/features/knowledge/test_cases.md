@@ -364,6 +364,8 @@ Verified Against: `origin/dev @ 32fb602f`
 ## API And UI Tests
 
 - Manual Collection CRUD API는 organization manager 또는 domain `catalog_manage`만 private Collection을 생성할 수 있게 하고, delegated create가 public metadata를 보내도 private로 저장한다. Collection content `read`가 없는 domain 관리자는 허용 action 수행에 필요한 safe 관리 projection만 받는다.
+- Manual Collection 관리 UI는 생성·편집 가능한 Collection에 관리용 `name`과 별도의 nonblank 안전 표시 이름을 요구하고 request의 `safe_metadata.safe_label`로 전송해야 한다. Gateway는 제공된 label을 string으로 제한하고 공통 sanitizer와 255자 cap을 적용하며 control character·secret-like text·URL·email·path를 제거해야 한다. 타입이 잘못되거나 정제 후 안전 텍스트가 남지 않으면 입력값을 echo하지 않는 `400 validation.failed`여야 한다. Update는 기존 허용 safe metadata와 DB-owned visibility를 보존해야 한다.
+- `safe_metadata.safe_label`이 없는 기존 Manual Collection은 관리 edit surface에 보완 필요 상태로 표시하고 raw `name`을 자동 복사하지 않아야 한다. 보완 전 route-safe picker는 `safe_label=null`을 반환하고 Client는 generic `지식 Collection`만 표시해야 한다. 서로 다른 안전 표시명을 저장한 route-allowed Collection은 LLM node picker에서 각각 구분되어야 하며 label 유무가 `route` 또는 child KB `use` 권한을 만들지 않아야 한다.
 - Collection update/archive는 resource `manage`, 해당 domain action, 또는 organization manager를 허용하고 system-managed Collection의 source-owned field는 manual update로 바꾸지 못한다.
 - Duplicate Collection safe name은 raw DB constraint나 internal value 없이 safe conflict response로 닫힌다.
 - Collection item link는 `collection.manage`와 대상 KB `manage`를 모두 요구한다. 둘 중 하나만 있으면 실패하고 hidden KB id/name을 오류에 포함하지 않는다.

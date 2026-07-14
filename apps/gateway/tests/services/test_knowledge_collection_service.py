@@ -129,6 +129,65 @@ def test_safe_metadata_rejects_raw_source_keys(monkeypatch):
     assert exc_info.value.code == "validation.failed"
 
 
+def test_safe_metadata_sanitizes_collection_label_and_preserves_other_metadata(
+    monkeypatch,
+):
+    service = _service(monkeypatch)
+
+    sanitized = service._sanitize_safe_metadata(
+        {
+            "safe_label": "  사내 규정 \x00 https://example.invalid/private  ",
+            "collection_safe_topics": ["policy"],
+            "visibility": "private",
+        },
+        preserve_visibility="public",
+    )
+
+    assert sanitized == {
+        "safe_label": "사내 규정",
+        "collection_safe_topics": ["policy"],
+        "visibility": "public",
+    }
+
+
+def test_safe_metadata_caps_collection_label_length(monkeypatch):
+    service = _service(monkeypatch)
+
+    sanitized = service._sanitize_safe_metadata({"safe_label": "가" * 300})
+
+    assert sanitized["safe_label"] == "가" * 255
+
+
+@pytest.mark.parametrize("value", [None, 1, [], {}])
+def test_safe_metadata_rejects_non_string_collection_label(monkeypatch, value):
+    service = _service(monkeypatch)
+
+    with pytest.raises(KnowledgeCollectionServiceError) as exc_info:
+        service._sanitize_safe_metadata({"safe_label": value})
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.code == "validation.failed"
+    assert exc_info.value.details == {"field": "safe_metadata.safe_label"}
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["   \t  ", "https://example.invalid/private"],
+)
+def test_safe_metadata_rejects_collection_label_without_display_safe_text(
+    monkeypatch,
+    value,
+):
+    service = _service(monkeypatch)
+
+    with pytest.raises(KnowledgeCollectionServiceError) as exc_info:
+        service._sanitize_safe_metadata({"safe_label": value})
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.code == "validation.failed"
+    assert exc_info.value.details == {"field": "safe_metadata.safe_label"}
+
+
 def test_create_collection_rejects_blank_name_after_normalization(monkeypatch):
     service = _service(monkeypatch)
     monkeypatch.setattr(service, "_require_org_manager_or_domain", lambda action: None)

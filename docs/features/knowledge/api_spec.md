@@ -464,9 +464,11 @@ Manual Collection 관리 API는 Knowledge 관리 영역에서 사용한다. Work
 
 List response는 `collections`, `can_create_collection`, `can_change_public_visibility`를 포함한다. 각 Collection row는 `id`, `name`, `description`, `is_system_managed`, `sync_state`, `lifecycle_state`, `visibility`, bucketed linked/active KB count, caller action flags, `safe_metadata`, timestamps만 포함한다. Raw source title/path/url/principal, hidden KB name/id, exact denied count는 반환하지 않는다.
 
-Create request는 `name`, optional `description`, optional allowlisted `safe_metadata`만 받는다. Client는 `is_system_managed=true`, source identity, raw source URL/path/title, permission row를 create body에 넣을 수 없다. Duplicate safe name은 safe `409 conflict`로 반환한다.
+Create request는 `name`, optional `description`, optional allowlisted `safe_metadata`만 받는다. Manual Collection 관리 UI는 새 Collection에 관리용 `name`과 별도 nonblank `safe_metadata.safe_label`을 함께 보내지만, 기존 API/internal caller 호환성을 위해 request schema에서 label 자체는 optional이다. 제공된 `safe_label`은 string이어야 하며 Gateway가 공통 safe-text sanitizer, 255자 cap, control character·secret-like text·URL·email·path 제거를 적용한다. 정제 후 안전한 텍스트가 남지 않거나 타입이 잘못되면 입력값을 echo하지 않는 `400 validation.failed`로 거부한다. Client는 `is_system_managed=true`, source identity, raw source URL/path/title, permission row를 create body에 넣을 수 없다. Duplicate safe name은 safe `409 conflict`로 반환한다.
 
-Update request는 visibility를 바꾸지 않는다. Public/private 전환은 별도 visibility endpoint만 사용한다. System-managed Collection은 connector/sync가 소유하므로 manual update는 safe override가 승인된 field로 제한한다.
+Update request는 visibility를 바꾸지 않는다. Public/private 전환은 별도 visibility endpoint만 사용한다. Manual Collection 관리 UI는 현재 `safe_metadata`를 보존하면서 `safe_label`을 교체해 label 수정이 다른 허용 metadata를 제거하지 않게 한다. Label이 없는 기존 Manual Collection은 raw `name` 자동 복사나 일괄 backfill 없이 edit surface에서 명시적으로 보완한다. System-managed Collection은 connector/sync가 소유하므로 manual update는 safe override가 승인된 field로 제한한다.
+
+`safe_metadata.safe_label`은 표시용 metadata일 뿐 권한이나 runtime capability가 아니다. Collection picker는 저장된 manual safe label을 다시 정제해 반환하고 값이 없으면 `null`을 반환한다. Raw Collection `name`/`description`을 fallback으로 반환하지 않으며 Client는 `null`에 generic `지식 Collection` label만 사용할 수 있다.
 
 ### Collection Item Management
 

@@ -38,6 +38,7 @@ export type CollectionCapabilities = {
 export type CollectionFormState = {
   name: string;
   description: string;
+  safeLabel: string;
 };
 
 export type GrantFormState = {
@@ -260,33 +261,61 @@ function CollectionCreatePanel({
         <h2 className="text-sm font-bold text-slate-900">Collection 생성</h2>
       </div>
       <div className="space-y-3">
-        <input
-          value={form.name}
-          onChange={(event) =>
-            setForm((current) => ({
-              ...current,
-              name: event.target.value,
-            }))
-          }
-          placeholder="Collection 이름"
-          className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
-        />
-        <textarea
-          value={form.description}
-          onChange={(event) =>
-            setForm((current) => ({
-              ...current,
-              description: event.target.value,
-            }))
-          }
-          placeholder="설명"
-          rows={3}
-          className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
-        />
+        <label className="block space-y-1">
+          <span className="text-xs font-semibold text-slate-700">
+            관리용 이름
+          </span>
+          <input
+            value={form.name}
+            onChange={(event) =>
+              setForm((current) => ({
+                ...current,
+                name: event.target.value,
+              }))
+            }
+            placeholder="Collection 이름"
+            className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
+          />
+        </label>
+        <label className="block space-y-1">
+          <span className="text-xs font-semibold text-slate-700">
+            안전 표시 이름
+          </span>
+          <input
+            value={form.safeLabel}
+            onChange={(event) =>
+              setForm((current) => ({
+                ...current,
+                safeLabel: event.target.value,
+              }))
+            }
+            maxLength={255}
+            placeholder="Workflow에서 표시할 이름"
+            className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
+          />
+        </label>
+        <p className="text-xs leading-5 text-slate-500">
+          Workflow picker에는 관리용 이름 대신 이 안전 표시 이름만 노출됩니다.
+        </p>
+        <label className="block space-y-1">
+          <span className="text-xs font-semibold text-slate-700">설명</span>
+          <textarea
+            value={form.description}
+            onChange={(event) =>
+              setForm((current) => ({
+                ...current,
+                description: event.target.value,
+              }))
+            }
+            placeholder="설명"
+            rows={3}
+            className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
+          />
+        </label>
         <button
           type="button"
           onClick={onCreate}
-          disabled={isSaving || !form.name.trim()}
+          disabled={isSaving || !form.name.trim() || !form.safeLabel.trim()}
           className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-blue-600 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
         >
           {isSaving ? (
@@ -547,33 +576,73 @@ function CollectionInfoPanel({
     <div className="rounded-lg border border-slate-200 p-4">
       <h3 className="mb-3 text-sm font-bold text-slate-900">정보</h3>
       <div className="space-y-3">
-        <input
-          value={editForm.name}
-          onChange={(event) =>
-            setEditForm((current) => ({
-              ...current,
-              name: event.target.value,
-            }))
-          }
-          disabled={!isEditable}
-          className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm disabled:bg-slate-50"
-        />
-        <textarea
-          value={editForm.description}
-          onChange={(event) =>
-            setEditForm((current) => ({
-              ...current,
-              description: event.target.value,
-            }))
-          }
-          disabled={!isEditable}
-          rows={3}
-          className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm disabled:bg-slate-50"
-        />
+        <label className="block space-y-1">
+          <span className="text-xs font-semibold text-slate-700">
+            관리용 이름
+          </span>
+          <input
+            value={editForm.name}
+            onChange={(event) =>
+              setEditForm((current) => ({
+                ...current,
+                name: event.target.value,
+              }))
+            }
+            disabled={!isEditable}
+            className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm disabled:bg-slate-50"
+          />
+        </label>
+        <label className="block space-y-1">
+          <span className="text-xs font-semibold text-slate-700">
+            안전 표시 이름
+          </span>
+          <input
+            value={editForm.safeLabel}
+            onChange={(event) =>
+              setEditForm((current) => ({
+                ...current,
+                safeLabel: event.target.value,
+              }))
+            }
+            disabled={!isEditable}
+            maxLength={255}
+            className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm disabled:bg-slate-50"
+          />
+        </label>
+        {isEditable && !editForm.safeLabel.trim() && (
+          <p
+            role="status"
+            className="flex items-start gap-2 rounded-md bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800"
+          >
+            <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+            Workflow에서 이 Collection을 구분할 수 있도록 안전 표시 이름을
+            입력하세요.
+          </p>
+        )}
+        <label className="block space-y-1">
+          <span className="text-xs font-semibold text-slate-700">설명</span>
+          <textarea
+            value={editForm.description}
+            onChange={(event) =>
+              setEditForm((current) => ({
+                ...current,
+                description: event.target.value,
+              }))
+            }
+            disabled={!isEditable}
+            rows={3}
+            className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm disabled:bg-slate-50"
+          />
+        </label>
         <button
           type="button"
           onClick={onUpdateCollection}
-          disabled={isSaving || !isEditable || !editForm.name.trim()}
+          disabled={
+            isSaving ||
+            !isEditable ||
+            !editForm.name.trim() ||
+            !editForm.safeLabel.trim()
+          }
           className="inline-flex items-center gap-2 rounded-md bg-slate-900 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
         >
           <Check className="h-4 w-4" />
