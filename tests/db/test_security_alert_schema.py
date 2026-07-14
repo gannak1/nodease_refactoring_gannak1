@@ -47,6 +47,11 @@ def _security_alert_notification_outbox_model():
     return getattr(module, "SecurityAlertNotificationOutbox")
 
 
+def _security_alert_reconciliation_receipt_model():
+    module = importlib.import_module("apps.shared.db.models.security_alert")
+    return getattr(module, "SecurityAlertReconciliationReceipt")
+
+
 def test_security_alert_models_are_registered_with_expected_table_names():
     alert_model, evidence_model, watermark_model = _security_alert_models()
 
@@ -250,6 +255,38 @@ def test_security_alert_watermark_migration_adds_cursor_table_and_scan_index():
     assert source.index('drop_index("ix_audit_logs_occurred_at_id"') < source.index(
         'drop_table("security_alert_reconciliation_watermarks")'
     )
+
+
+def test_security_alert_reconciliation_receipt_declares_processed_contract():
+    receipt_model = _security_alert_reconciliation_receipt_model()
+    table = receipt_model.__table__
+
+    assert shared_models.SecurityAlertReconciliationReceipt is receipt_model
+    assert table.name == "security_alert_reconciliation_receipts"
+    assert set(table.columns.keys()) == {
+        "processor_name",
+        "audit_log_id",
+        "processed_at",
+    }
+    assert [column.name for column in table.primary_key.columns] == [
+        "processor_name",
+        "audit_log_id",
+    ]
+    assert not table.c.audit_log_id.foreign_keys
+    assert table.c.processed_at.nullable is False
+    assert table.c.processed_at.type.timezone is True
+
+
+def test_security_alert_reconciliation_receipt_migration_is_additive():
+    path = Path(
+        "apps/shared/alembic/versions/"
+        "1a5b6c7d8e91_add_security_alert_reconciliation_receipts.py"
+    )
+    source = path.read_text(encoding="utf-8")
+
+    assert 'down_revision: Union[str, Sequence[str], None] = "0f4a5b6c7d89"' in source
+    assert '"security_alert_reconciliation_receipts"' in source
+    assert 'drop_table("security_alert_reconciliation_receipts")' in source
 
 
 def test_security_alert_notification_outbox_declares_durable_delivery_contract():
