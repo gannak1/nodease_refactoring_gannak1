@@ -369,6 +369,9 @@ export function LLMNodePanel({
   const [editingManualCohortId, setEditingManualCohortId] = useState<string | null>(
     null,
   );
+  const [convertingAutoCohortId, setConvertingAutoCohortId] = useState<string | null>(
+    null,
+  );
   const [manualCohort, setManualCohort] = useState({
     label: '',
     key: '',
@@ -845,7 +848,14 @@ export function LLMNodePanel({
         representative_query: manualCohort.representativeQuery.trim(),
         fixed: manualCohort.fixed,
       };
-      if (editingManualCohortId) {
+      if (convertingAutoCohortId) {
+        await workflowApi.convertModelRoutingCohortToManual(
+          activeWorkflowId,
+          nodeId,
+          convertingAutoCohortId,
+          request,
+        );
+      } else if (editingManualCohortId) {
         await workflowApi.updateModelRoutingCohort(
           activeWorkflowId,
           nodeId,
@@ -857,6 +867,7 @@ export function LLMNodePanel({
       }
       setManualCohort({ label: '', key: '', representativeQuery: '', fixed: false });
       setEditingManualCohortId(null);
+      setConvertingAutoCohortId(null);
       setIsManualCohortFormOpen(false);
       await loadRoutingPolicy();
       setRoutingPolicyError(null);
@@ -869,6 +880,7 @@ export function LLMNodePanel({
     }
   }, [
     activeWorkflowId,
+    convertingAutoCohortId,
     editingManualCohortId,
     isManualCohortCreating,
     loadRoutingPolicy,
@@ -878,6 +890,7 @@ export function LLMNodePanel({
 
   const openManualCohortForm = useCallback(() => {
     setEditingManualCohortId(null);
+    setConvertingAutoCohortId(null);
     setManualCohort({ label: '', key: '', representativeQuery: '', fixed: false });
     setIsManualCohortFormOpen(true);
   }, []);
@@ -891,6 +904,7 @@ export function LLMNodePanel({
       required: boolean;
     }) => {
       setEditingManualCohortId(cohort.id);
+      setConvertingAutoCohortId(null);
       setManualCohort({
         label: cohort.label,
         key: cohort.key,
@@ -904,11 +918,13 @@ export function LLMNodePanel({
 
   const handleAutoCohortConvert = useCallback(
     (cohort: {
+      id: string;
       label: string;
       key: string;
       representative_query: string | null;
     }) => {
       setEditingManualCohortId(null);
+      setConvertingAutoCohortId(cohort.id);
       setManualCohort({
         label: cohort.label,
         key: cohort.key,
@@ -1749,6 +1765,7 @@ export function LLMNodePanel({
                             if (isManualCohortFormOpen) {
                               setIsManualCohortFormOpen(false);
                               setEditingManualCohortId(null);
+                              setConvertingAutoCohortId(null);
                             } else {
                               openManualCohortForm();
                             }
@@ -1766,11 +1783,11 @@ export function LLMNodePanel({
                       {isManualCohortFormOpen ? (
                         <div className="mt-3 space-y-2 rounded border border-slate-200 bg-white p-3">
                           <p className="text-[11px] font-semibold text-slate-800">
-                            {editingManualCohortId
+                            {editingManualCohortId || convertingAutoCohortId
                               ? '사용자 입력군 수정'
                               : '사용자 입력군 등록'}
                           </p>
-                          {editingManualCohortId ? (
+                          {editingManualCohortId || convertingAutoCohortId ? (
                             <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] leading-relaxed text-amber-800">
                               대표 문의를 바꾸면 기존 모델 검증 결과는 다시 확인해야 합니다. 이 입력군은 검증 대기 상태로 전환됩니다.
                             </p>
@@ -1869,10 +1886,10 @@ export function LLMNodePanel({
                               }
                             >
                               {isManualCohortCreating
-                                ? editingManualCohortId
+                                ? editingManualCohortId || convertingAutoCohortId
                                   ? '수정 중'
                                   : '등록 중'
-                                : editingManualCohortId
+                                : editingManualCohortId || convertingAutoCohortId
                                   ? '입력군 수정'
                                   : '입력군 추가'}
                             </button>

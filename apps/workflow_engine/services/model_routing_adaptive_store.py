@@ -403,8 +403,54 @@ class AdaptiveModelRoutingCohortStore:
         ):
             evidence.status = "expired"
             evidence.expires_at = now
+        # 수정 전 대표 문의에 매칭됐던 운영 관찰값은 새 입력군의 품질 증거가 아니다.
+        # 유지하면 validation planner가 과거 문의로 새 정의를 바로 검증해 버린다.
+        (
+            db.query(LLMNodeModelRoutingObservation)
+            .filter(LLMNodeModelRoutingObservation.policy_id == policy.id)
+            .filter(LLMNodeModelRoutingObservation.matched_cohort_id == cohort.id)
+            .update(
+                {
+                    "matched_cohort_id": None,
+                    "match_status": "unmatched",
+                },
+                synchronize_session=False,
+            )
+        )
         db.flush()
         return cohort
+
+    @classmethod
+    def convert_auto_cohort_to_manual(
+        cls,
+        db: Session,
+        *,
+        cohort: LLMNodeModelRoutingCohort,
+        policy: LLMNodeModelRoutingPolicy,
+        node_data: dict[str, Any],
+        label: str,
+        cohort_key: str,
+        representative_query: str,
+        fixed: bool,
+        encoder_model_id: str,
+        embed: EmbeddingFunction,
+    ) -> LLMNodeModelRoutingCohort:
+        """자동 발견 row를 유지한 채 사용자가 관리하는 입력군으로 전환한다."""
+        if cohort.source != "auto":
+            raise ValueError("model_routing.cohort_not_auto")
+        cohort.source = "manual"
+        return cls.update_manual_cohort(
+            db,
+            cohort=cohort,
+            policy=policy,
+            node_data=node_data,
+            label=label,
+            cohort_key=cohort_key,
+            representative_query=representative_query,
+            fixed=fixed,
+            encoder_model_id=encoder_model_id,
+            embed=embed,
+        )
 
     @classmethod
     def build_runtime_catalog(

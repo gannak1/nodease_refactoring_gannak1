@@ -496,6 +496,19 @@ export const workflowApi = {
     return response.data;
   },
 
+  convertModelRoutingCohortToManual: async (
+    workflowId: string,
+    nodeId: string,
+    cohortId: string,
+    data: ModelRoutingCohortUpdateRequest,
+  ): Promise<ModelRoutingCohortUpdateResponse> => {
+    const response = await api.post(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/model-routing/cohorts/${cohortId}/convert-to-manual`,
+      data,
+    );
+    return response.data;
+  },
+
   deleteModelRoutingCohort: async (
     workflowId: string,
     nodeId: string,

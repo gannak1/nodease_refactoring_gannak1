@@ -14,6 +14,7 @@ from apps.shared.db.models.model_routing_cohort import (
     LLMNodeModelRoutingModelEvidence,
 )
 from apps.shared.db.models.model_routing_policy import LLMNodeModelRoutingPolicy
+from apps.shared.services.node_config_fingerprint import llm_node_config_fingerprint
 
 
 class ModelRoutingPolicyInheritanceService:
@@ -38,7 +39,7 @@ class ModelRoutingPolicyInheritanceService:
         if source_deployment_id is None or source_deployment_id == target_deployment_id:
             return 0
 
-        target_routing_nodes = cls._automatic_routing_node_ids(target_graph)
+        target_routing_nodes = cls._automatic_routing_node_data(target_graph)
         if not target_routing_nodes:
             return 0
 
@@ -50,7 +51,14 @@ class ModelRoutingPolicyInheritanceService:
         )
         inherited_count = 0
         for source_policy in source_policies:
-            if source_policy.node_id not in target_routing_nodes:
+            target_node_data = target_routing_nodes.get(source_policy.node_id)
+            if target_node_data is None:
+                continue
+            if not cls._can_inherit_node_state(
+                db,
+                source_policy_id=source_policy.id,
+                target_node_data=target_node_data,
+            ):
                 continue
             existing_target = (
                 db.query(LLMNodeModelRoutingPolicy)
@@ -97,12 +105,12 @@ class ModelRoutingPolicyInheritanceService:
         return inherited_count
 
     @staticmethod
-    def _automatic_routing_node_ids(graph: dict[str, Any]) -> set[str]:
+    def _automatic_routing_node_data(graph: dict[str, Any]) -> dict[str, dict[str, Any]]:
         nodes = graph.get("nodes") if isinstance(graph, dict) else None
         if not isinstance(nodes, list):
-            return set()
+            return {}
         return {
-            str(node.get("id"))
+            str(node["id"]): node["data"]
             for node in nodes
             if isinstance(node, dict)
             and node.get("type") == "llmNode"
@@ -110,6 +118,39 @@ class ModelRoutingPolicyInheritanceService:
             and node["data"].get("auto_model_routing") is True
             and node.get("id")
         }
+
+    @staticmethod
+    def _can_inherit_node_state(
+        db: Session,
+        *,
+        source_policy_id: UUID,
+        target_node_data: dict[str, Any],
+    ) -> bool:
+        """새 snapshot과 같은 LLM 설정으로 검증한 정책만 재사용한다."""
+        target_fingerprint = llm_node_config_fingerprint(target_node_data)
+        source_cohorts = (
+            db.query(LLMNodeModelRoutingCohort)
+            .filter(LLMNodeModelRoutingCohort.policy_id == source_policy_id)
+            .all()
+        )
+        if not source_cohorts:
+            return False
+        if any(
+            str(cohort.node_config_fingerprint or "") != target_fingerprint
+            for cohort in source_cohorts
+        ):
+            return False
+
+        source_cohort_ids = [cohort.id for cohort in source_cohorts]
+        source_evidence = (
+            db.query(LLMNodeModelRoutingModelEvidence)
+            .filter(LLMNodeModelRoutingModelEvidence.cohort_id.in_(source_cohort_ids))
+            .all()
+        )
+        return all(
+            str(evidence.node_config_fingerprint or "") == target_fingerprint
+            for evidence in source_evidence
+        )
 
     @classmethod
     def _inherit_cohorts_and_evidence(

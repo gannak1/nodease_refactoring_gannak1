@@ -284,6 +284,10 @@ def test_manual_cohort_edit_reembeds_and_invalidates_previous_evidence():
         def one_or_none(self):
             return self._one
 
+        def update(self, _values, synchronize_session=False):
+            self.synchronize_session = synchronize_session
+            return 0
+
     class _Db:
         def __init__(self):
             self.added = []
@@ -292,6 +296,7 @@ def test_manual_cohort_edit_reembeds_and_invalidates_previous_evidence():
                     _Query(rows=[cohort]),
                     _Query(one=example),
                     _Query(rows=[evidence]),
+                    _Query(),
                 ]
             )
 
@@ -325,3 +330,84 @@ def test_manual_cohort_edit_reembeds_and_invalidates_previous_evidence():
     assert updated.centroid_embedding == [1.0, 0.0]
     assert example.synthetic_text == "결제는 완료됐지만 청구서가 발행되지 않았습니다."
     assert evidence.status == "expired"
+
+
+def test_manual_cohort_edit_unmatches_observations_from_the_previous_definition():
+    """FR-011: 수정 전 대표 문의의 관찰값은 새 입력군 검증에 재사용하지 않는다."""
+    cohort = LLMNodeModelRoutingCohort(
+        id=uuid4(),
+        policy_id=uuid4(),
+        cohort_key="billing_support",
+        label="결제 문의",
+        label_en="billing_support",
+        source="manual",
+        status="active",
+        required=False,
+        safety_protected=False,
+        encoder_model_id="text-embedding-3-large",
+        centroid_embedding=[0.5, 0.5],
+    )
+
+    class _Query:
+        def __init__(self, *, rows=None, one=None):
+            self._rows = rows or []
+            self._one = one
+
+        def filter(self, *_args):
+            return self
+
+        def order_by(self, *_args):
+            return self
+
+        def all(self):
+            return self._rows
+
+        def one_or_none(self):
+            return self._one
+
+        def update(self, values, synchronize_session=False):
+            self.updated_values = values
+            self.synchronize_session = synchronize_session
+            return 5
+
+    observation_query = _Query()
+
+    class _Db:
+        def __init__(self):
+            self._queries = iter(
+                [
+                    _Query(rows=[cohort]),
+                    _Query(one=SimpleNamespace(ordinal=1)),
+                    _Query(rows=[]),
+                    observation_query,
+                ]
+            )
+
+        def query(self, *_args):
+            return next(self._queries)
+
+        def add(self, _value):
+            pass
+
+        def flush(self):
+            pass
+
+    db = _Db()
+    AdaptiveModelRoutingCohortStore.update_manual_cohort(
+        db,
+        cohort=cohort,
+        policy=SimpleNamespace(id=cohort.policy_id),
+        node_data={"model_id": "gpt-4.1"},
+        label="청구서 발행 문의",
+        cohort_key="invoice_issue",
+        representative_query="결제는 완료됐지만 청구서가 발행되지 않았습니다.",
+        fixed=False,
+        encoder_model_id="text-embedding-3-large",
+        embed=lambda _text: [1.0, 0.0],
+    )
+
+    assert observation_query.updated_values == {
+        "matched_cohort_id": None,
+        "match_status": "unmatched",
+    }
+    assert observation_query.synchronize_session is False

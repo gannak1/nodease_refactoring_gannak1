@@ -1641,6 +1641,7 @@ def test_active_redeployment_inherits_model_routing_state(monkeypatch):
             is_active=True,
         ),
         user_id=app.created_by,
+        observed_workflow_id=workflow_id,
         runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
     )
 

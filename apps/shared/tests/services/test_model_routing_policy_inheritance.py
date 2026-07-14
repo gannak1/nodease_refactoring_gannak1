@@ -11,6 +11,7 @@ from apps.shared.db.models.model_routing_policy import LLMNodeModelRoutingPolicy
 from apps.shared.services.model_routing_policy_inheritance import (
     ModelRoutingPolicyInheritanceService,
 )
+from apps.shared.services.node_config_fingerprint import llm_node_config_fingerprint
 
 
 def test_inherits_policy_cohorts_and_evidence_for_same_llm_node():
@@ -46,6 +47,14 @@ def test_inherits_policy_cohorts_and_evidence_for_same_llm_node():
         validation_budget_usd=3,
         max_cohorts=6,
     )
+    node_data = {
+        "auto_model_routing": True,
+        "model_id": "gpt-4.1",
+        "system_prompt": "고객 문의를 처리합니다.",
+        "user_prompt": "{{message}}",
+        "knowledgeBases": [],
+    }
+    node_fingerprint = llm_node_config_fingerprint(node_data)
     source_cohort = LLMNodeModelRoutingCohort(
         id=uuid4(),
         policy_id=source_policy.id,
@@ -62,13 +71,13 @@ def test_inherits_policy_cohorts_and_evidence_for_same_llm_node():
         review_window_count=2,
         low_share_streak=0,
         last_traffic_share=0.5,
-        node_config_fingerprint="fingerprint-v1",
+        node_config_fingerprint=node_fingerprint,
     )
     source_evidence = LLMNodeModelRoutingModelEvidence(
         id=uuid4(),
         cohort_id=source_cohort.id,
         model_id="gpt-4o-mini",
-        node_config_fingerprint="fingerprint-v1",
+        node_config_fingerprint=node_fingerprint,
         evidence_version="evidence-v1",
         status="validated",
         sample_count=4,
@@ -108,7 +117,7 @@ def test_inherits_policy_cohorts_and_evidence_for_same_llm_node():
                 {
                     "id": "llm-triage",
                     "type": "llmNode",
-                    "data": {"auto_model_routing": True},
+                    "data": node_data,
                 }
             ]
         },
@@ -160,6 +169,68 @@ def test_inherits_policy_cohorts_and_evidence_for_same_llm_node():
     assert target_evidence.status == "validated"
     assert target_evidence.quality_summary == source_evidence.quality_summary
     assert target_evidence.quality_summary is not source_evidence.quality_summary
+
+
+def test_skips_inheritance_when_target_llm_configuration_changed():
+    """FR-011: 같은 node id여도 설정이 바뀌면 이전 정책을 물려받지 않는다."""
+    workflow_id = uuid4()
+    source_deployment_id = uuid4()
+    target_deployment_id = uuid4()
+    source_data = {
+        "auto_model_routing": True,
+        "model_id": "gpt-4.1",
+        "system_prompt": "고객 문의를 처리합니다.",
+        "user_prompt": "{{message}}",
+        "knowledgeBases": [],
+    }
+    source_policy = LLMNodeModelRoutingPolicy(
+        id=uuid4(),
+        workflow_id=workflow_id,
+        deployment_id=source_deployment_id,
+        node_id="llm-triage",
+        organization_id=uuid4(),
+        enabled=True,
+        active_policy={"default_model_id": "gpt-4.1-mini"},
+    )
+    source_cohort = LLMNodeModelRoutingCohort(
+        id=uuid4(),
+        policy_id=source_policy.id,
+        cohort_key="routine_support",
+        label="단순 안내 문의",
+        label_en="routine_support",
+        source="manual",
+        status="active",
+        required=False,
+        safety_protected=False,
+        encoder_model_id="text-embedding-3-large",
+        centroid_embedding=[0.1, 0.2],
+        node_config_fingerprint=llm_node_config_fingerprint(source_data),
+    )
+    db = _Db(
+        {
+            LLMNodeModelRoutingPolicy: [source_policy],
+            LLMNodeModelRoutingCohort: [source_cohort],
+        }
+    )
+
+    inherited = ModelRoutingPolicyInheritanceService.inherit_for_deployment(
+        db,
+        workflow_id=workflow_id,
+        source_deployment_id=source_deployment_id,
+        target_deployment_id=target_deployment_id,
+        target_graph={
+            "nodes": [
+                {
+                    "id": "llm-triage",
+                    "type": "llmNode",
+                    "data": {**source_data, "model_id": "gpt-5.4-mini"},
+                }
+            ]
+        },
+    )
+
+    assert inherited == 0
+    assert db.rows_for(LLMNodeModelRoutingPolicy) == [source_policy]
 
 
 def test_skips_inheritance_when_target_node_disables_automatic_routing():
