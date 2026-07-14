@@ -589,7 +589,7 @@ def test_get_agent_answer_options_returns_safe_credential_option_schema(monkeypa
     assert "updated_at" not in option["credential"]
 
 
-def test_agent_builder_model_options_prefer_openai_gpt_5_5_then_provider_order(
+def test_agent_builder_model_options_use_unified_recommendation_order(
     monkeypatch,
 ):
     user_id = uuid.uuid4()
@@ -630,6 +630,8 @@ def test_agent_builder_model_options_prefer_openai_gpt_5_5_then_provider_order(
         option("google", "gemini-3.5-flash", "Gemini 3.5 Flash", "google"),
         option("anthropic", "claude-sonnet-5", "Claude Sonnet 5", "anthropic"),
         option("openai", "gpt-5.5-pro", "GPT-5.5 Pro", "openai"),
+        option("openai", "gpt-5.3-codex", "GPT-5.3 Codex", "openai"),
+        option("openai", "gpt-custom", "GPT Custom", "openai"),
         option(
             "openai",
             "models/gpt-5.5",
@@ -679,10 +681,11 @@ def test_agent_builder_model_options_prefer_openai_gpt_5_5_then_provider_order(
         item.model.model_id_for_api_call for item in groups[0].options
     ] == [
         "gpt-5.5",
-        "gpt-5.5-pro",
         "models/gpt-5.5",
+        "gpt-5.5-pro",
         "gpt-5.4-mini",
         "o4-mini",
+        "gpt-custom",
     ]
     assert [
         item.model.model_id_for_api_call for item in groups[1].options
@@ -701,7 +704,63 @@ def test_agent_builder_model_options_prefer_openai_gpt_5_5_then_provider_order(
     )
     assert [
         item.model.model_id_for_api_call for item in fallback_groups[0].options
-    ] == ["gpt-5.5-pro", "models/gpt-5.5", "gpt-5.4-mini", "o4-mini"]
+    ] == [
+        "models/gpt-5.5",
+        "gpt-5.5-pro",
+        "gpt-5.4-mini",
+        "o4-mini",
+        "gpt-custom",
+    ]
+
+
+def test_agent_builder_options_collapse_duplicate_relations_to_best_priority(
+    monkeypatch,
+):
+    model_id = uuid.uuid4()
+    credential_id = uuid.uuid4()
+
+    def option(priority):
+        return SimpleNamespace(
+            provider_name="openai",
+            model=SimpleNamespace(
+                id=model_id,
+                model_id_for_api_call="gpt-5.5",
+                name="GPT-5.5",
+            ),
+            credential=SimpleNamespace(
+                id=credential_id,
+                credential_name="openai-credential",
+            ),
+            relation_priority=priority,
+        )
+
+    options = [option(0), option(9)]
+    monkeypatch.setattr(
+        LLMService,
+        "get_agent_answer_options",
+        lambda *args, **kwargs: options,
+    )
+    monkeypatch.setattr(
+        llm_service,
+        "LLMIntentModelProviderResponse",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+
+    groups = LLMService.get_agent_builder_model_option_groups(
+        object(),
+        uuid.uuid4(),
+        uuid.uuid4(),
+    )
+    recommendation = LLMService.get_agent_builder_draft_model_recommendation(
+        object(),
+        uuid.uuid4(),
+        uuid.uuid4(),
+    )
+
+    assert len(groups[0].options) == 1
+    assert groups[0].options[0].relation_priority == 0
+    assert recommendation is not None
+    assert recommendation.relation_priority == 0
 
 
 def test_agent_builder_draft_model_recommendation_prefers_openai_gpt_5_5(
@@ -786,7 +845,7 @@ def test_agent_builder_draft_model_recommendation_uses_nano_when_mini_is_absent(
     assert recommendation.model.model_id_for_api_call == "gpt-5.5-nano"
 
 
-def test_agent_builder_draft_model_recommendation_rejects_preferred_aliases(
+def test_agent_builder_draft_model_recommendation_normalizes_aliases_and_snapshots(
     monkeypatch,
 ):
     user_id = uuid.uuid4()
@@ -827,7 +886,7 @@ def test_agent_builder_draft_model_recommendation_rejects_preferred_aliases(
 
     assert recommendation is not None
     assert recommendation.provider_name == "openai"
-    assert recommendation.model.model_id_for_api_call == "gpt-5.5-mini"
+    assert recommendation.model.model_id_for_api_call == "models/gpt-5.5"
 
 
 def test_agent_builder_draft_model_recommendation_returns_none_without_authorized_option(

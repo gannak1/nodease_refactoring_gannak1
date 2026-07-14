@@ -1,14 +1,16 @@
 # MBA-240 Agent Builder GPT-5.5 기본 모델 설계
 
-Status: Draft
+Status: Superseded
+
+이 문서는 MBA-240 당시 OpenAI `gpt-5.5` 정확 일치 기본값을 도입한 배경과 구현 범위를 보존하는 역사 기록이다. 현재 구현은 [MBA-256 통합 모델 추천 정책 설계](mba-256_unified_model_recommendation_design.md)와 [ADR-0040](../../decisions/ADR-0040-agent-builder-unified-model-recommendation.md)의 공통 추천 정책으로 이 문서의 정확 일치 예외와 분리된 fallback을 대체한다.
 
 ## 목적
 
 새 Agent Builder에서 사용할 기본 모델을 provider가 OpenAI이고 정확한 API 모델 ID가 `gpt-5.5`인 후보로 변경한다. 사용자의 권한과 credential-model 관계를 우회하지 않으며, 기존 Agent의 저장 모델과 사용자의 모델 변경 기능을 보존한다.
 
-이 문서는 MBA-240의 구현 경계를 정의한다. Agent Builder Header와 생성 LLM node의 전체 추천 정책을 하나로 통합하는 일은 후속 MBA-256에서 다룬다.
+이 문서는 MBA-240 당시의 구현 경계를 정의한다. Agent Builder Header와 생성 LLM node의 전체 추천 정책을 하나로 통합하는 일은 후속 MBA-256에서 다루기로 했다.
 
-MBA-240은 제품 기본값을 빠르게 바꾸기 위한 임시 정확 일치 예외다. ADR-0025의 일반적인 세대/tier 선택 정책은 이번 작업에서 변경하지 않으며, 일반 정책 갱신과 두 경로의 통합은 MBA-256에서 수행한다.
+MBA-240은 제품 기본값을 빠르게 바꾸기 위한 임시 정확 일치 예외였다. 당시에는 ADR-0025의 일반적인 세대/tier 선택 정책을 변경하지 않았고, 이후 MBA-256에서 일반 정책 갱신과 두 경로의 통합을 수행하도록 범위를 분리했다.
 
 ## 문제 정의
 
@@ -70,9 +72,9 @@ Endpoint는 인증 및 active organization context를 연결하고 request/respo
 
 ### LLMService
 
-`LLMService`는 permission-aware model 후보 조회와 Agent Builder 전용 모델 정렬을 이미 소유한다. MBA-240의 정확 일치 선호 기준도 이 책임 안에 둔다.
+`LLMService`는 permission-aware model 후보 조회와 Agent Builder 전용 모델 정렬을 이미 소유하고 있었다. MBA-240의 정확 일치 선호 기준도 당시 이 책임 안에 두었다.
 
-Header option 정렬과 draft recommendation 정렬은 OpenAI `gpt-5.5` 정확 일치 여부를 판단하는 작은 공통 helper만 공유한다. 각 경로의 fallback 순서는 기존 함수를 유지한다. 이 방식은 작은 정책 값의 중복을 제거하면서도 목적이 다른 정렬 정책을 억지로 결합하지 않는다.
+Header option 정렬과 draft recommendation 정렬은 OpenAI `gpt-5.5` 정확 일치 여부를 판단하는 작은 공통 helper만 공유했다. 각 경로의 fallback 순서는 기존 함수를 유지했다. 이 방식은 작은 정책 값의 중복을 제거하면서도 당시 목적이 다른 정렬 정책을 결합하지 않는 선택이었다.
 
 ### AgentBuilderService
 
@@ -151,14 +153,14 @@ Draft graph schema를 변경하지 않는다. 새 LLM node의 기존 `model_id` 
 
 ## 권위 문서 반영
 
-Accepted ADR인 `ADR-0025`에는 MBA-240의 OpenAI `gpt-5.5` 정확 일치 우선 조건을 한정적으로 반영한다. 기존의 "최신 세대, 높은 tier" 및 "mini 우선" 결정은 정확 일치 후보가 없을 때의 fallback으로 유지한다. 다음 Agent Builder feature 문서에는 MBA-240의 한정된 변경과 MBA-256 후속 정리 범위를 명시한다.
+MBA-240 당시 Accepted ADR인 `ADR-0025`에는 OpenAI `gpt-5.5` 정확 일치 우선 조건을 한정적으로 반영했다. 기존의 "최신 세대, 높은 tier" 및 "mini 우선" 결정은 정확 일치 후보가 없을 때의 fallback으로 유지했으며, 당시 Agent Builder feature 문서에는 MBA-240의 한정된 변경과 MBA-256 후속 정리 범위를 명시했다.
 
 - `requirements.md`: Header 기본과 신규 node 기본, 기존 node 보존
 - `api_spec.md`: option 정렬 의미와 draft recommendation 의미
 - `component_spec.md`: Header의 초기 선택 표시
 - `test_cases.md`: 정확 일치, fallback, 권한 제외, 기존 graph 보존
 
-코드와 테스트를 실제 검증한 뒤에만 해당 문서의 `Verified Against`를 갱신한다. ADR-0025의 전체 fallback 정책 통합은 MBA-256에서 수행한다.
+이 역사 문서의 `Verified Against`는 MBA-240 코드와 테스트를 실제 검증한 근거 없이 갱신하지 않는다. 통합 정책의 목표와 구현 검증 기준은 MBA-256 설계와 ADR-0040에서 관리한다.
 
 ## 범위 제외
 
@@ -173,8 +175,8 @@ Accepted ADR인 `ADR-0025`에는 MBA-240의 OpenAI `gpt-5.5` 정확 일치 우�
 
 ## 후속 작업과의 경계
 
-MBA-256은 Header와 생성 LLM node의 일반적인 모델 추천 정책을 하나로 통일하는 후속 작업이다. MBA-240은 `gpt-5.5`라는 정확한 기본값만 두 현재 경로에 일관되게 적용하고, `gpt-5.5`가 없을 때의 서로 다른 fallback을 유지한다. 따라서 MBA-256이 수행할 정책 객체 통합, provider/tier 순서 통일, 공통 테스트 행렬 확장은 이번 범위에 포함하지 않는다.
+MBA-256은 Header와 생성 LLM node의 일반적인 모델 추천 정책을 하나로 통일해 이 문서의 임시 fallback 분리를 대체했다. MBA-240은 `gpt-5.5`라는 정확한 기본값만 당시 두 경로에 일관되게 적용하고, `gpt-5.5`가 없을 때의 서로 다른 fallback을 유지한 작업으로 기록한다. 정책 객체 통합, provider/tier 순서 통일, 공통 테스트 행렬 확장은 MBA-256에서 수행했다.
 
 ## 운영 준비 조건
 
-제품에서 `GPT-5.5`가 실제 기본값으로 보이려면 active organization의 OpenAI credential에 active chat model `gpt-5.5`와 verified relation이 있어야 한다. Agent Builder는 이 catalog 또는 relation을 자동 생성하지 않는다. 시연 및 배포 검증 환경은 해당 관계가 준비되었는지 별도로 확인해야 하며, 준비되지 않았을 때는 권한을 우회하지 않고 기존 fallback을 사용한다.
+제품에서 `GPT-5.5`가 실제 추천값으로 보이려면 active organization의 OpenAI credential에 active chat model `gpt-5.5`와 verified relation이 있어야 한다. Agent Builder는 이 catalog 또는 relation을 자동 생성하지 않는다. 시연 및 배포 검증 환경은 해당 관계가 준비되었는지 별도로 확인해야 하며, 준비되지 않았을 때는 권한을 우회하지 않고 MBA-256 통합 추천 순서의 다음 자격 후보를 사용한다.

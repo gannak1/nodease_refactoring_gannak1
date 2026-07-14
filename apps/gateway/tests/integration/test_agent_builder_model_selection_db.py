@@ -1,10 +1,14 @@
 import copy
 import json
 import uuid
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy.orm import Session
 
+from apps.gateway.services.agent_builder_intent_service import (
+    LLMAgentBuilderIntentExtractor,
+)
 from apps.gateway.services.agent_builder_service import (
     AgentBuilderService,
     calculate_graph_hash,
@@ -220,7 +224,9 @@ def test_agent_builder_selected_model_rechecks_db_permission_and_relation(db_ses
         "other_organization",
         "inactive_model",
         "invalid_credential",
+        "non_chat_model",
         "unverified_relation",
+        "provider_mismatch",
     ],
 )
 def test_agent_builder_default_excludes_unavailable_gpt_5_5(
@@ -264,16 +270,28 @@ def test_agent_builder_default_excludes_unavailable_gpt_5_5(
     )
     db_session.add(provider)
     db_session.flush()
+    credential_provider = provider
+    if excluded_state == "provider_mismatch":
+        credential_provider = LLMProvider(
+            name="anthropic",
+            description="Agent Builder mismatched credential provider",
+            type="system",
+            base_url="https://example.invalid/v1",
+            auth_type="api_key",
+            doc_url="https://example.invalid/docs",
+        )
+        db_session.add(credential_provider)
+        db_session.flush()
     model = LLMModel(
         provider_id=provider.id,
         model_id_for_api_call="gpt-5.5",
         name="GPT-5.5",
-        type="chat",
+        type="embedding" if excluded_state == "non_chat_model" else "chat",
         context_window=8192,
         is_active=excluded_state != "inactive_model",
     )
     credential = LLMCredential(
-        provider_id=provider.id,
+        provider_id=credential_provider.id,
         user_id=manager.id,
         organization_id=(
             other_organization.id
@@ -615,7 +633,9 @@ def test_agent_builder_apply_save_persists_layout_models_and_audit_without_execu
     }
 
 
-def test_new_agent_generation_apply_and_reload_persists_gpt_5_5(db_session):
+def test_header_selection_stays_in_planner_while_new_agent_persists_recommendation(
+    db_session,
+):
     actor = _user("new-agent-default-model")
     db_session.add(actor)
     db_session.flush()
@@ -726,12 +746,52 @@ def test_new_agent_generation_apply_and_reload_persists_gpt_5_5(db_session):
     )
     db_session.add(session)
     db_session.flush()
+
+    runtime_calls = []
+
+    class IntentClient:
+        def invoke_sync(self, *args, **kwargs):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "request_type": "new_workflow",
+                                    "draft_mode": "new_workflow",
+                                    "intent_summary": "입력을 LLM으로 요약",
+                                    "ordered_capabilities": [
+                                        "start_input",
+                                        "llm",
+                                        "answer",
+                                    ],
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+
+    def runtime_loader(**kwargs):
+        runtime_calls.append(kwargs)
+        return SimpleNamespace(client=IntentClient())
+
+    intent_extractor = LLMAgentBuilderIntentExtractor(
+        db=db_session,
+        user_id=actor.id,
+        organization_id=organization.id,
+        credential_id=credential.id,
+        model_id=pro_model.id,
+        runtime_loader=runtime_loader,
+        knowledge_context_loader=lambda **kwargs: [],
+    )
     service = AgentBuilderService(
         db_session,
         user=actor,
         organization_id=organization.id,
+        intent_extractor=intent_extractor,
     )
-    structured = service._build_structured_request(  # noqa: SLF001
+    structured = service._structure_request(  # noqa: SLF001
         AgentBuilderMessageRequest(message="새 워크플로우로 입력을 LLM으로 요약해줘"),
         workflow=None,
     )
@@ -743,7 +803,18 @@ def test_new_agent_generation_apply_and_reload_persists_gpt_5_5(db_session):
     generated_llm = next(
         node for node in preview_graph["nodes"] if node["type"] == "llmNode"
     )
+    assert len(runtime_calls) == 1
+    assert runtime_calls[0]["credential_id"] == credential.id
+    assert runtime_calls[0]["model_id"] == pro_model.id
     assert generated_llm["data"]["model_id"] == "gpt-5.5"
+    persisted_input = json.dumps(
+        {
+            "structured_request": structured.model_dump(mode="json"),
+            "preview_graph": preview_graph,
+        }
+    )
+    assert str(credential.id) not in persisted_input
+    assert str(pro_model.id) not in persisted_input
 
     request = AgentBuilderRequest(
         session_id=session.id,
