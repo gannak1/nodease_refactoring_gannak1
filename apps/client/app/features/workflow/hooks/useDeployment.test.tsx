@@ -14,6 +14,12 @@ vi.mock('@/app/features/workflow/api/workflowApi', () => ({
 
 const mockedWorkflowApi = vi.mocked(workflowApi);
 const initialStoreState = useWorkflowStore.getState();
+const disabledParameterOptimization = {
+  enabled: false,
+  node_ids: [],
+  check_every_runs: 50,
+  monthly_validation_budget_usd: 3,
+};
 
 const renderDeploymentHook = () =>
   renderHook(() =>
@@ -91,7 +97,10 @@ describe('useDeployment', () => {
     >;
     await act(async () => {
       deploymentResult =
-        await result.current.handleDeploy('사내 문서 질문 응답 봇');
+        await result.current.handleDeploy(
+          '사내 문서 질문 응답 봇',
+          disabledParameterOptimization,
+        );
     });
 
     expect(mockedWorkflowApi.createDeployment).toHaveBeenCalledWith(
@@ -133,13 +142,17 @@ describe('useDeployment', () => {
     act(() => result.current.handlePublishAsChatbot());
 
     await act(async () => {
-      await result.current.handleDeploy('canonical policy', {
-        contract_version: 'deployment_browser_access.v1',
-        embedding: {
-          enabled: true,
-          parent_origins: ['https://EXAMPLE.com:443'],
+      await result.current.handleDeploy(
+        'canonical policy',
+        disabledParameterOptimization,
+        {
+          contract_version: 'deployment_browser_access.v1',
+          embedding: {
+            enabled: true,
+            parent_origins: ['https://EXAMPLE.com:443'],
+          },
         },
-      });
+      );
     });
 
     expect(mockedWorkflowApi.preflightDeployment).toHaveBeenCalledWith(
@@ -191,7 +204,10 @@ describe('useDeployment', () => {
     >;
     await act(async () => {
       deploymentResult =
-        await result.current.handleDeploy('사내 문서 질문 응답 봇');
+        await result.current.handleDeploy(
+          '사내 문서 질문 응답 봇',
+          disabledParameterOptimization,
+        );
     });
 
     expect(mockedWorkflowApi.preflightDeployment).toHaveBeenCalledWith(
@@ -236,7 +252,10 @@ describe('useDeployment', () => {
       ReturnType<typeof result.current.handleDeploy>
     >;
     await act(async () => {
-      deploymentResult = await result.current.handleDeploy('private kb');
+      deploymentResult = await result.current.handleDeploy(
+        'private kb',
+        disabledParameterOptimization,
+      );
     });
 
     expect(deploymentResult!.success).toBe(false);
@@ -272,7 +291,10 @@ describe('useDeployment', () => {
       ReturnType<typeof result.current.handleDeploy>
     >;
     await act(async () => {
-      deploymentResult = await result.current.handleDeploy('candidate warning');
+      deploymentResult = await result.current.handleDeploy(
+        'candidate warning',
+        disabledParameterOptimization,
+      );
     });
 
     expect(deploymentResult!.success).toBe(true);
