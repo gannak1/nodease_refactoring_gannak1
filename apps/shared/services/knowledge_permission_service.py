@@ -89,13 +89,18 @@ class KnowledgePermissionHelper:
         self,
         collection: KnowledgeCollection,
         action: str,
+        *,
+        include_archived: bool = False,
     ) -> KnowledgePermissionDecision:
         if action not in COLLECTION_PERMISSION_ACTIONS:
             return self._denied(
                 reason_code="permission.invalid_action",
                 external_reason_code="resource.hidden",
             )
-        if not self._collection_in_scope(collection):
+        if not self._collection_in_scope(
+            collection,
+            include_archived=include_archived,
+        ):
             return self._denied(reason_code="resource.hidden")
 
         organization_auth_state = self._organization_auth_state()
@@ -124,6 +129,8 @@ class KnowledgePermissionHelper:
         self,
         collections: Iterable[KnowledgeCollection],
         action: str,
+        *,
+        include_archived: bool = False,
     ) -> dict[uuid.UUID, KnowledgePermissionDecision]:
         collection_list = list(collections)
         if not collection_list:
@@ -133,7 +140,11 @@ class KnowledgePermissionHelper:
         # hook. Production sessions always take the bounded bulk path below.
         if self.db is None:
             return {
-                collection.id: self.evaluate_collection_action(collection, action)
+                collection.id: self.evaluate_collection_action(
+                    collection,
+                    action,
+                    include_archived=include_archived,
+                )
                 for collection in collection_list
             }
 
@@ -148,7 +159,10 @@ class KnowledgePermissionHelper:
 
         organization_auth_state = self._organization_auth_state()
         in_scope_by_id = {
-            collection.id: self._collection_in_scope(collection)
+            collection.id: self._collection_in_scope(
+                collection,
+                include_archived=include_archived,
+            )
             for collection in collection_list
         }
         allowed_collection_ids: set[uuid.UUID] = set()
@@ -857,11 +871,18 @@ class KnowledgePermissionHelper:
             self.organization_id,
         )
 
-    def _collection_in_scope(self, collection: KnowledgeCollection) -> bool:
+    def _collection_in_scope(
+        self,
+        collection: KnowledgeCollection,
+        *,
+        include_archived: bool = False,
+    ) -> bool:
+        lifecycle_state = getattr(collection, "lifecycle_state", "active")
         return (
             collection is not None
             and collection.organization_id == self.organization_id
-            and getattr(collection, "lifecycle_state", "active") == "active"
+            and lifecycle_state != "deleted"
+            and (lifecycle_state == "active" or include_archived)
         )
 
     def _kb_in_scope(

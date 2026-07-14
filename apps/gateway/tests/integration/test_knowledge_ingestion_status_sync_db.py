@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from apps.gateway.api.v1.endpoints import knowledge as knowledge_endpoint
@@ -23,7 +24,10 @@ PUBLIC_PROCESSING_FAILURE_MESSAGE = (
 
 @pytest.fixture
 def db_session():
-    connection = engine.connect()
+    try:
+        connection = engine.connect()
+    except OperationalError:
+        pytest.skip("PostgreSQL integration database is unavailable")
     transaction = connection.begin()
     db = Session(bind=connection, join_transaction_mode="create_savepoint")
     try:

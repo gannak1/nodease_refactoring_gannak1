@@ -1,3 +1,5 @@
+# ruff: noqa: E402
+
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -5,6 +7,16 @@ from threading import Event
 from uuid import UUID, uuid4
 
 import pytest
+
+RUN_ENV = "NODEASE_RUN_DISPOSABLE_DB_TEST"
+DB_PREFIX = "nodease_knowledge_snapshot_test"
+
+if os.getenv(RUN_ENV) != "1":
+    pytest.skip(
+        f"set {RUN_ENV}=1 to run disposable Knowledge snapshot evidence",
+        allow_module_level=True,
+    )
+
 from apps.shared.domain.knowledge_runtime_candidates import (
     AnonymousPublicAudience,
     AuthenticatedAudience,
@@ -35,9 +47,6 @@ from apps.workflow_engine.workflow.nodes.llm.llm_node import (
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
-
-RUN_ENV = "NODEASE_RUN_DISPOSABLE_DB_TEST"
-DB_PREFIX = "nodease_knowledge_snapshot_test"
 
 
 def _create_schema(engine) -> None:

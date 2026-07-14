@@ -1,7 +1,7 @@
 # Knowledge Test Cases
 
 Status: Draft
-Verified Against: `origin/dev @ 32fb602f`
+Verified Against: `feature/mba-264 @ 8832d23b`
 이 문서는 현재 RAG 동작과 목표 KB 통합 모델에 필요한 테스트 범위를 함께 기록한다. MBA-105 목표 모델 테스트는 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)과 [implementation_baseline.md](implementation_baseline.md)의 임시 baseline을 기준으로 구현 blocker가 된다.
 
 ## Unit Tests
@@ -410,6 +410,28 @@ Verified Against: `origin/dev @ 32fb602f`
 - Collection 관리 UI는 `can_manage_collection`, `can_manage_kb`, `can_use_kb`를 혼동하지 않고, item list에 보이는 KB가 runtime retrieval 가능성을 보장하지 않는다는 상태를 표현한다.
 - Collection 관리 UI는 raw source title/path/url/principal, hidden KB name/id, exact denied count를 표시하지 않는다.
 - Collection list는 safe redacted name/description과 non-color text label이 있는 state badge를 표시한다.
+- Collection lifecycle list는 active와 archived query를 분리한다. Archived manual Collection restore는 Organization manager, Collection `manage`, domain `lifecycle_manage`에서 허용하고 active restore retry는 새 mutation/audit 없는 `204`여야 한다. Deleted/cross-organization 대상은 hidden, system-managed 대상은 source-owner policy denial, `source_deleted` 대상은 safe conflict로 처리한다.
+- Archive와 restore는 실제 PostgreSQL에서 같은 Collection row를 `FOR UPDATE`로 잠근다. 두 concurrent restore는 상태 전이와 canonical audit를 한 번만 만들고 audit flush/commit 실패는 lifecycle mutation과 audit를 모두 rollback한다. Restore가 permission, membership, child KB `use` 또는 Workflow `route` row를 만들면 테스트 실패다.
+- Item GET, link와 reorder success response는 최신 전체 ordered item projection, `order_revision`, `reorder_supported`, optional fixed `safe_reason_code`를 같은 의미로 반환한다. Unlink 204 뒤 GET revision은 이전 값과 달라야 한다.
+- Reorder는 current 전체 item id set, unique item id, unique contiguous `0..N-1` rank와 `expected_order_revision`을 요구한다. Duplicate item overwrite, partial request, missing/foreign/extra item, duplicate/gapped/negative rank, malformed 또는 다른 Collection revision은 아무 mutation 없이 거부한다. Current order no-op에는 새 audit를 만들지 않는다. Deleted/cross-organization target은 authority 또는 item order 조회 전에 hidden `404`로 처리한다.
+- Item 0개와 1개는 stable revision을 만들 수 있고 500개는 reorder 가능하다. 501개부터 `reorder_supported=false`, `safe_reason_code=item_reorder_limit_exceeded`이며 mutation을 허용하지 않는다. Token은 권한이나 item 조회 capability로 사용되지 않는다.
+- Empty Collection reorder는 `items=[]`와 current revision을 수용해 no-op safe projection을 반환한다. Link의 legacy `rank` 값은 삽입 위치를 바꾸지 않고 새 item은 끝에 append되며 전체 rank가 연속값으로 정규화되어야 한다.
+- Link/reorder mutation authority는 있지만 별도 Collection `read`가 없는 actor도 mutation commit 뒤 safe management projection을 받아야 한다. 성공한 DB mutation 뒤 response projection의 권한 오류로 실패 응답을 반환하면 테스트 실패다.
+- PostgreSQL concurrent reorder/reorder는 먼저 commit한 한 요청만 성공하고 두 번째는 lock 뒤 stale conflict가 된다. Reorder/link, reorder/unlink, reorder/visibility도 같은 Collection-first lock protocol을 사용해 membership set, rank, public acknowledgement가 stale 판단으로 우회되지 않아야 한다. 최종 rank는 contiguous하고 audit failure는 전체 rank를 rollback한다.
+- Public Collection/KB의 source identity뿐 아니라 Collection `source_connector_ref`도 public link/reorder/visibility에서 같은 `source_public_exposure_required` fail-closed 정책을 적용한다.
+- Delegation subject endpoint는 authority 확인 전 Team/User SELECT를 실행하지 않는다. Collection endpoint는 Organization manager, Collection `manage`, domain `permission_delegate`; domain endpoint는 Organization manager를 먼저 검증한다.
+- Subject page는 `subject_type=team|user`, safe prefix query 100자 이하, opaque cursor, 기본 limit 25/최대 50을 적용한다. Current organization active Team과 active member User만 반환하고 inactive/cross-organization row, email, login principal, raw source identity와 total count를 포함하지 않는다.
+- Subject prefix search는 whitespace와 case를 일관되게 처리하고 `%`, `_`, quote를 SQL wildcard/injection으로 해석하지 않는다. 동일 safe label은 UUID keyset tie-break로 page 간 duplicate/skip 없이 반환한다. Subject type/query가 다른 cursor와 malformed/oversized cursor는 입력값을 echo하지 않는 bounded safe error다.
+- Subject combobox는 Team을 기본값으로 두고 debounce, loading, empty, error/retry, next-page, stale response 폐기와 keyboard navigation을 제공한다. Type/query 변경 시 stale selection을 정리하고 email/raw UUID를 visible label fallback으로 사용하지 않는다.
+- Bundle revoke는 Viewer=`read`, Workflow Router=`read+route`, Maintainer=`read+manage`, Sync Operator=`read+sync`의 현재 explicit row만 한 transaction에서 제거한다. 없는 row는 unchanged이며 Maintainer grant 뒤 Viewer revoke 결과는 `manage`만 남는다. UI/API가 이를 저장된 Maintainer role로 추론하면 테스트 실패다.
+- Bundle grant/revoke 일부 row 또는 audit 저장 실패는 전체 rollback한다. Grant는 active subject만 허용하고 inactive Team/removed User의 기존 permission은 revoke할 수 있다. 어떤 bundle도 child KB `use`를 만들지 않는다.
+- Domain `permission_delegate` actor의 self/own-active-Team bundle grant는 차단하고 revoke는 last-manage 검증 뒤 허용한다. Current actor의 마지막 `manage` 경로를 제거하는 single/bundle/bulk revoke는 Organization manager recovery가 아닌 경우 전체 거부하며 independent manage path가 있으면 허용한다.
+- 모든 bulk target에 effective Collection `manage`가 있는 actor는 domain `permission_delegate`도 함께 보유했다는 이유만으로 self/own-Team grant가 차단되지 않는다. 일부 target에만 resource `manage`가 있으면 domain-delegate self-escalation 차단을 적용한다.
+- Multi-Collection bulk bundle은 unique Collection id 1~50개와 한 subject/bundle/operation만 받는다. 0개, 51개, duplicate/malformed id와 invalid enum은 mutation 전에 거부한다. Collection을 UUID 순으로 잠그고 모든 target의 organization/authority/last-manage를 사전 검증하며 한 target 실패 시 permission/audit 전체를 rollback한다.
+- Bulk response는 operation, subject type, bundle과 target/changed/unchanged count bucket만 포함하고 Collection/subject id, label, 실패 index나 exact hidden count를 반환하지 않는다. 11~50개 count는 `11-50` bucket을 사용하고 response validation은 permission/audit commit 전에 완료한다. 1, 2, 50개 grant/revoke와 retry는 duplicate permission row 없이 deterministic해야 한다.
+- PostgreSQL bulk 검증은 cross-organization target 혼합, N-1 authorized + 1 unauthorized, 한 target의 last-manage 실패, 반대 순서 target을 가진 concurrent request와 audit failure를 포함한다. Query/lock capture는 organization predicate와 실제 `FOR UPDATE`를 확인하고 target 수만큼 authorization query가 늘어나는 N+1을 허용하지 않는다.
+- Permission UI는 Team row와 User direct row를 분리한다. 같은 action에 두 source가 있을 때 direct revoke 뒤 Team effective allow가 남는 사실을 표시하고 revoke success를 전체 접근 차단으로 잘못 표현하지 않는다.
+- MBA-264는 Collection sync 실행 endpoint/job/UI, explicit deny, per-Collection expiry, bundle 저장 row, child KB `use` 자동 grant와 Workflow graph/runtime 변경을 추가하지 않는다.
 - Source metadata에서 유래한 system-managed collection display name/description은 storage/display 전에 redaction, cap, display-policy approval을 거친다.
 - KB detail은 hidden source path를 누출하지 않으면서 sync failed, source ACL stale, source deleted, archived, deleted state를 구분한다.
 - Remediation queue는 raw connector exception string이 아니라 safe reason code와 retryability를 표시한다.

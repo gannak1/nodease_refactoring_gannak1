@@ -1,20 +1,24 @@
 import uuid
 
+import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from sqlalchemy import inspect, text
-
 from apps.shared.alembic.versions import (
     fa7c8d9e0f12_add_knowledge_base_safe_metadata as revision,
 )
 from apps.shared.db.session import engine
+from sqlalchemy import inspect, text
+from sqlalchemy.exc import OperationalError
 
 
 def test_safe_metadata_revision_upgrades_and_downgrades_in_isolated_schema(
     monkeypatch,
 ):
     schema = f"test_safe_metadata_{uuid.uuid4().hex}"
-    connection = engine.connect()
+    try:
+        connection = engine.connect()
+    except OperationalError:
+        pytest.skip("PostgreSQL integration database is unavailable")
     transaction = connection.begin()
     try:
         connection.execute(text(f'CREATE SCHEMA "{schema}"'))

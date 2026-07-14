@@ -22,12 +22,17 @@ import { knowledgeApi, RAGAgentStreamEvent } from './knowledgeApi';
 import { apiClient } from '@/lib/apiClient';
 import { getStoredActiveOrganizationId } from '@/lib/activeOrganization';
 
-const streamResponse = (chunks: Array<string | Uint8Array>, status = 200): Response => {
+const streamResponse = (
+  chunks: Array<string | Uint8Array>,
+  status = 200,
+): Response => {
   const encoder = new TextEncoder();
   const body = new ReadableStream({
     start(controller) {
       for (const chunk of chunks) {
-        controller.enqueue(typeof chunk === 'string' ? encoder.encode(chunk) : chunk);
+        controller.enqueue(
+          typeof chunk === 'string' ? encoder.encode(chunk) : chunk,
+        );
       }
       controller.close();
     },
@@ -51,7 +56,9 @@ afterEach(() => {
 
 describe('knowledgeApi.getProgressUrl', () => {
   it('includes the active organization for native EventSource authorization', () => {
-    vi.mocked(getStoredActiveOrganizationId).mockReturnValueOnce('org/with space');
+    vi.mocked(getStoredActiveOrganizationId).mockReturnValueOnce(
+      'org/with space',
+    );
 
     expect(knowledgeApi.getProgressUrl('document-1')).toBe(
       'http://localhost:8000/api/v1/rag/document/document-1/progress?organizationId=org%2Fwith%20space',
@@ -128,7 +135,9 @@ describe('knowledgeApi.streamAgentAnswer', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    await knowledgeApi.streamAgentAnswer(payload, (event) => events.push(event));
+    await knowledgeApi.streamAgentAnswer(payload, (event) =>
+      events.push(event),
+    );
 
     expect(fetchMock).toHaveBeenCalledWith(
       'http://localhost:8000/api/v1/rag/agent/answer/stream',
@@ -183,7 +192,9 @@ describe('knowledgeApi.streamAgentAnswer', () => {
       ),
     );
 
-    await knowledgeApi.streamAgentAnswer(payload, (event) => events.push(event));
+    await knowledgeApi.streamAgentAnswer(payload, (event) =>
+      events.push(event),
+    );
 
     expect(events).toEqual([
       {
@@ -219,8 +230,7 @@ describe('knowledgeApi.streamAgentAnswer', () => {
   it('flushes the decoder before parsing the final buffered event', async () => {
     const events: RAGAgentStreamEvent[] = [];
     const encoded = new TextEncoder().encode(
-      'event: summary\n' +
-        'data: {"answer_run_id":"run-1","message":"완료"}',
+      'event: summary\n' + 'data: {"answer_run_id":"run-1","message":"완료"}',
     );
     vi.stubGlobal(
       'fetch',
@@ -232,7 +242,9 @@ describe('knowledgeApi.streamAgentAnswer', () => {
       ),
     );
 
-    await knowledgeApi.streamAgentAnswer(payload, (event) => events.push(event));
+    await knowledgeApi.streamAgentAnswer(payload, (event) =>
+      events.push(event),
+    );
 
     expect(events).toEqual([
       {
@@ -256,7 +268,9 @@ describe('knowledgeApi.streamAgentAnswer', () => {
       ),
     );
 
-    await knowledgeApi.streamAgentAnswer(payload, (event) => events.push(event));
+    await knowledgeApi.streamAgentAnswer(payload, (event) =>
+      events.push(event),
+    );
 
     expect(events).toEqual([
       {
@@ -283,7 +297,9 @@ describe('knowledgeApi.streamAgentAnswer', () => {
       ),
     );
 
-    await knowledgeApi.streamAgentAnswer(payload, (event) => events.push(event));
+    await knowledgeApi.streamAgentAnswer(payload, (event) =>
+      events.push(event),
+    );
 
     expect(events).toEqual([
       {
@@ -296,16 +312,20 @@ describe('knowledgeApi.streamAgentAnswer', () => {
   it('uses sanitized HTTP error messages from the API envelope', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () =>
-        new Response(
-          JSON.stringify({
-            error: { code: 'permission.denied', message: 'Permission denied.' },
-          }),
-          {
-            status: 403,
-            headers: { 'Content-Type': 'application/json' },
-          },
-        ),
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              error: {
+                code: 'permission.denied',
+                message: 'Permission denied.',
+              },
+            }),
+            {
+              status: 403,
+              headers: { 'Content-Type': 'application/json' },
+            },
+          ),
       ),
     );
 
@@ -514,16 +534,83 @@ describe('knowledgeApi collection management', () => {
     );
   });
 
+  it('restores an archived Collection through the lifecycle endpoint', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ data: undefined });
+
+    await knowledgeApi.restoreKnowledgeCollection('collection-1');
+
+    expect(apiClient.post).toHaveBeenCalledWith(
+      '/knowledge/collections/collection-1/restore',
+    );
+  });
+
+  it('sends the exact item set with the current order revision', async () => {
+    vi.mocked(apiClient.patch).mockResolvedValueOnce({
+      data: {
+        items: [],
+        order_revision: `ord_v1_${'a'.repeat(64)}`,
+        reorder_supported: true,
+      },
+    });
+
+    await knowledgeApi.reorderKnowledgeCollectionItems(
+      'collection-1',
+      [{ item_id: 'item-1', rank: 0 }],
+      `ord_v1_${'0'.repeat(64)}`,
+      true,
+    );
+
+    expect(apiClient.patch).toHaveBeenCalledWith(
+      '/knowledge/collections/collection-1/items/reorder',
+      {
+        items: [{ item_id: 'item-1', rank: 0 }],
+        expected_order_revision: `ord_v1_${'0'.repeat(64)}`,
+        acknowledged_public_runtime_exposure: true,
+      },
+    );
+  });
+
+  it('loads a bounded Collection delegation subject page', async () => {
+    vi.mocked(apiClient.get).mockResolvedValueOnce({
+      data: { subjects: [], next_cursor: 'next-page' },
+    });
+
+    await knowledgeApi.getKnowledgeCollectionDelegationSubjects(
+      'collection-1',
+      {
+        subject_type: 'user',
+        query: 'Alpha',
+        cursor: 'current-page',
+        limit: 25,
+      },
+    );
+
+    expect(apiClient.get).toHaveBeenCalledWith(
+      '/knowledge/collections/collection-1/delegation-subjects',
+      {
+        params: {
+          subject_type: 'user',
+          query: 'Alpha',
+          cursor: 'current-page',
+          limit: 25,
+        },
+      },
+    );
+  });
+
   it('applies Collection role bundles through the transactional endpoint', async () => {
     vi.mocked(apiClient.post).mockResolvedValueOnce({
       data: { permissions: [] },
     });
 
-    await knowledgeApi.grantKnowledgeCollectionPermissionBundle('collection-1', {
-      subject_type: 'team',
-      subject_id: 'team-1',
-      role_bundle: 'workflow_router',
-    });
+    await knowledgeApi.grantKnowledgeCollectionPermissionBundle(
+      'collection-1',
+      {
+        subject_type: 'team',
+        subject_id: 'team-1',
+        role_bundle: 'workflow_router',
+      },
+    );
 
     expect(apiClient.post).toHaveBeenCalledWith(
       '/knowledge/collections/collection-1/permissions/bundles',
@@ -531,6 +618,58 @@ describe('knowledgeApi collection management', () => {
         subject_type: 'team',
         subject_id: 'team-1',
         role_bundle: 'workflow_router',
+      },
+    );
+  });
+
+  it('revokes one bundle and applies a multi-Collection bundle atomically', async () => {
+    vi.mocked(apiClient.post)
+      .mockResolvedValueOnce({ data: undefined })
+      .mockResolvedValueOnce({
+        data: {
+          operation: 'grant',
+          subject_type: 'team',
+          role_bundle: 'viewer',
+          target_count_bucket: '2-10',
+          changed_count_bucket: '2-10',
+          unchanged_count_bucket: '0',
+        },
+      });
+
+    await knowledgeApi.revokeKnowledgeCollectionPermissionBundle(
+      'collection-1',
+      {
+        subject_type: 'team',
+        subject_id: 'team-1',
+        role_bundle: 'viewer',
+      },
+    );
+    await knowledgeApi.mutateKnowledgeCollectionPermissionBundles({
+      collection_ids: ['collection-1', 'collection-2'],
+      operation: 'grant',
+      subject_type: 'team',
+      subject_id: 'team-1',
+      role_bundle: 'viewer',
+    });
+
+    expect(apiClient.post).toHaveBeenNthCalledWith(
+      1,
+      '/knowledge/collections/collection-1/permissions/bundles/revoke',
+      {
+        subject_type: 'team',
+        subject_id: 'team-1',
+        role_bundle: 'viewer',
+      },
+    );
+    expect(apiClient.post).toHaveBeenNthCalledWith(
+      2,
+      '/knowledge/collection-permissions/bulk-bundles',
+      {
+        collection_ids: ['collection-1', 'collection-2'],
+        operation: 'grant',
+        subject_type: 'team',
+        subject_id: 'team-1',
+        role_bundle: 'viewer',
       },
     );
   });

@@ -1,9 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   knowledgeApi,
-  KnowledgeCollectionItemResponse,
+  KnowledgeCollectionItemsResponse,
   KnowledgeCollectionLinkCandidate,
   KnowledgeCollectionPermissionResponse,
   KnowledgeCollectionResponse,
@@ -50,22 +50,42 @@ export default function KnowledgeCollectionManager() {
     [],
   );
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [items, setItems] = useState<KnowledgeCollectionItemResponse[]>([]);
-  const [candidates, setCandidates] = useState<KnowledgeCollectionLinkCandidate[]>(
-    [],
+  const [lifecycleState, setLifecycleState] = useState<'active' | 'archived'>(
+    'active',
   );
+  const [selectedBulkIds, setSelectedBulkIds] = useState<string[]>([]);
+  const [itemData, setItemData] =
+    useState<KnowledgeCollectionItemsResponse | null>(null);
+  const [candidates, setCandidates] = useState<
+    KnowledgeCollectionLinkCandidate[]
+  >([]);
   const [permissions, setPermissions] = useState<
     KnowledgeCollectionPermissionResponse[]
   >([]);
-  const [subjects, setSubjects] = useState<KnowledgeDelegationSubjectsResponse>({
-    teams: [],
-    users: [],
-  });
+  const [subjects, setSubjects] = useState<KnowledgeDelegationSubjectsResponse>(
+    {
+      subjects: [],
+      next_cursor: null,
+    },
+  );
   const [domainPermissions, setDomainPermissions] = useState<
     KnowledgeDomainPermissionListResponse['permissions']
   >([]);
   const [domainSubjects, setDomainSubjects] =
-    useState<KnowledgeDelegationSubjectsResponse>({ teams: [], users: [] });
+    useState<KnowledgeDelegationSubjectsResponse>({
+      subjects: [],
+      next_cursor: null,
+    });
+  const [collectionSubjectQuery, setCollectionSubjectQuery] = useState('');
+  const [domainSubjectQuery, setDomainSubjectQuery] = useState('');
+  const [isSubjectLoading, setIsSubjectLoading] = useState(false);
+  const [isDomainSubjectLoading, setIsDomainSubjectLoading] = useState(false);
+  const [subjectLoadFailed, setSubjectLoadFailed] = useState(false);
+  const [domainSubjectLoadFailed, setDomainSubjectLoadFailed] = useState(false);
+  const [subjectRetryVersion, setSubjectRetryVersion] = useState(0);
+  const [domainSubjectRetryVersion, setDomainSubjectRetryVersion] = useState(0);
+  const collectionSubjectRequestVersion = useRef(0);
+  const domainSubjectRequestVersion = useRef(0);
   const [capabilities, setCapabilities] = useState<CollectionCapabilities>({
     ...CLOSED_COLLECTION_CAPABILITIES,
   });
@@ -96,7 +116,8 @@ export default function KnowledgeCollectionManager() {
   });
 
   const selectedCollection = useMemo(
-    () => collections.find((collection) => collection.id === selectedId) ?? null,
+    () =>
+      collections.find((collection) => collection.id === selectedId) ?? null,
     [collections, selectedId],
   );
 
@@ -105,7 +126,9 @@ export default function KnowledgeCollectionManager() {
     setErrorMessage(null);
     try {
       const [data, domainCapabilities] = await Promise.all([
-        knowledgeApi.getKnowledgeCollectionsResponse(),
+        knowledgeApi.getKnowledgeCollectionsResponse({
+          lifecycle_state: lifecycleState,
+        }),
         knowledgeApi.getKnowledgeDomainCapabilities(),
       ]);
       setCollections(data.collections);
@@ -114,72 +137,82 @@ export default function KnowledgeCollectionManager() {
         can_change_public_visibility:
           domainCapabilities.can_change_public_visibility,
         can_manage_catalog: domainCapabilities.can_create_collection,
-        can_delegate_permissions:
-          domainCapabilities.can_delegate_permissions,
+        can_delegate_permissions: domainCapabilities.can_delegate_permissions,
         can_manage_lifecycle: domainCapabilities.can_manage_lifecycle,
         can_manage_domain_permissions:
           domainCapabilities.can_manage_domain_permissions,
       });
       if (domainCapabilities.can_manage_domain_permissions) {
-        const [permissionData, subjectData] = await Promise.all([
-          knowledgeApi.getKnowledgeDomainPermissions(),
-          knowledgeApi.getKnowledgeDomainDelegationSubjects(),
-        ]);
+        const permissionData =
+          await knowledgeApi.getKnowledgeDomainPermissions();
         setDomainPermissions(permissionData.permissions);
-        setDomainSubjects(subjectData);
       } else {
         setDomainPermissions([]);
-        setDomainSubjects({ teams: [], users: [] });
+        setDomainSubjects({ subjects: [], next_cursor: null });
       }
-      setSelectedId((currentId) => currentId ?? data.collections[0]?.id ?? null);
+      setSelectedId((currentId) =>
+        data.collections.some((collection) => collection.id === currentId)
+          ? currentId
+          : (data.collections[0]?.id ?? null),
+      );
+      setSelectedBulkIds((currentIds) =>
+        currentIds.filter((id) =>
+          data.collections.some(
+            (collection) =>
+              collection.id === id &&
+              (collection.can_manage ||
+                domainCapabilities.can_delegate_permissions),
+          ),
+        ),
+      );
     } catch (error) {
       setCapabilities({ ...CLOSED_COLLECTION_CAPABILITIES });
       setErrorMessage(errorText(error));
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [lifecycleState]);
 
-  const loadCollectionDetail = useCallback(async (
-    collection: KnowledgeCollectionResponse,
-    currentCapabilities: CollectionCapabilities,
-  ) => {
-    setIsDetailLoading(true);
-    setErrorMessage(null);
-    try {
-      const canManageCatalog =
-        collection.can_manage || currentCapabilities.can_manage_catalog;
-      const canDelegate =
-        collection.can_manage || currentCapabilities.can_delegate_permissions;
-      const [itemData, candidateData, permissionData, subjectData] =
-        await Promise.all([
-          collection.can_read || canManageCatalog
-            ? knowledgeApi.getKnowledgeCollectionItems(collection.id)
-            : Promise.resolve({ items: [] }),
-          canManageCatalog
-            ? knowledgeApi.getKnowledgeCollectionLinkCandidates(collection.id)
-            : Promise.resolve({ candidates: [] }),
-          canDelegate
-            ? knowledgeApi.getKnowledgeCollectionPermissions(collection.id)
-            : Promise.resolve({ permissions: [] }),
-          canDelegate
-            ? knowledgeApi.getKnowledgeCollectionDelegationSubjects(collection.id)
-            : Promise.resolve({ teams: [], users: [] }),
-        ]);
-      setItems(itemData.items);
-      setCandidates(candidateData.candidates);
-      setPermissions(permissionData.permissions);
-      setSubjects(subjectData);
-    } catch (error) {
-      setItems([]);
-      setCandidates([]);
-      setPermissions([]);
-      setSubjects({ teams: [], users: [] });
-      setErrorMessage(errorText(error));
-    } finally {
-      setIsDetailLoading(false);
-    }
-  }, []);
+  const loadCollectionDetail = useCallback(
+    async (
+      collection: KnowledgeCollectionResponse,
+      currentCapabilities: CollectionCapabilities,
+    ) => {
+      setIsDetailLoading(true);
+      setErrorMessage(null);
+      try {
+        const canManageCatalog =
+          collection.can_manage || currentCapabilities.can_manage_catalog;
+        const canDelegate =
+          collection.can_manage || currentCapabilities.can_delegate_permissions;
+        const [nextItemData, candidateData, permissionData] = await Promise.all(
+          [
+            collection.can_read || canManageCatalog
+              ? knowledgeApi.getKnowledgeCollectionItems(collection.id)
+              : Promise.resolve(null),
+            collection.lifecycle_state === 'active' && canManageCatalog
+              ? knowledgeApi.getKnowledgeCollectionLinkCandidates(collection.id)
+              : Promise.resolve({ candidates: [] }),
+            canDelegate
+              ? knowledgeApi.getKnowledgeCollectionPermissions(collection.id)
+              : Promise.resolve({ permissions: [] }),
+          ],
+        );
+        setItemData(nextItemData);
+        setCandidates(candidateData.candidates);
+        setPermissions(permissionData.permissions);
+      } catch (error) {
+        setItemData(null);
+        setCandidates([]);
+        setPermissions([]);
+        setSubjects({ subjects: [], next_cursor: null });
+        setErrorMessage(errorText(error));
+      } finally {
+        setIsDetailLoading(false);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     loadCollections();
@@ -195,14 +228,225 @@ export default function KnowledgeCollectionManager() {
           ? selectedCollection.safe_metadata.safe_label
           : '',
     });
-    setAcknowledgePublic(false);
     loadCollectionDetail(selectedCollection, capabilities);
   }, [capabilities, loadCollectionDetail, selectedCollection]);
+
+  useEffect(() => {
+    setAcknowledgePublic(false);
+    setCollectionSubjectQuery('');
+    setSubjects({ subjects: [], next_cursor: null });
+    setGrantForm((current) => ({ ...current, subject_id: '' }));
+  }, [selectedId]);
+
+  useEffect(() => {
+    if (
+      !selectedCollection ||
+      !(selectedCollection.can_manage || capabilities.can_delegate_permissions)
+    ) {
+      collectionSubjectRequestVersion.current += 1;
+      setSubjects({ subjects: [], next_cursor: null });
+      setIsSubjectLoading(false);
+      setSubjectLoadFailed(false);
+      return;
+    }
+    let cancelled = false;
+    const requestVersion = ++collectionSubjectRequestVersion.current;
+    const timer = window.setTimeout(async () => {
+      setIsSubjectLoading(true);
+      setSubjectLoadFailed(false);
+      setErrorMessage(null);
+      try {
+        const response =
+          await knowledgeApi.getKnowledgeCollectionDelegationSubjects(
+            selectedCollection.id,
+            {
+              subject_type: grantForm.subject_type,
+              query: collectionSubjectQuery.trim() || undefined,
+              limit: 25,
+            },
+          );
+        if (
+          !cancelled &&
+          collectionSubjectRequestVersion.current === requestVersion
+        ) {
+          setSubjects(response);
+          setSubjectLoadFailed(false);
+        }
+      } catch (error) {
+        if (
+          !cancelled &&
+          collectionSubjectRequestVersion.current === requestVersion
+        ) {
+          setSubjects({ subjects: [], next_cursor: null });
+          setSubjectLoadFailed(true);
+          setErrorMessage(errorText(error));
+        }
+      } finally {
+        if (
+          !cancelled &&
+          collectionSubjectRequestVersion.current === requestVersion
+        ) {
+          setIsSubjectLoading(false);
+        }
+      }
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      if (collectionSubjectRequestVersion.current === requestVersion) {
+        collectionSubjectRequestVersion.current += 1;
+      }
+    };
+  }, [
+    capabilities.can_delegate_permissions,
+    collectionSubjectQuery,
+    grantForm.subject_type,
+    selectedCollection,
+    subjectRetryVersion,
+  ]);
+
+  useEffect(() => {
+    if (!capabilities.can_manage_domain_permissions) {
+      domainSubjectRequestVersion.current += 1;
+      setIsDomainSubjectLoading(false);
+      setDomainSubjectLoadFailed(false);
+      return;
+    }
+    let cancelled = false;
+    const requestVersion = ++domainSubjectRequestVersion.current;
+    const timer = window.setTimeout(async () => {
+      setIsDomainSubjectLoading(true);
+      setDomainSubjectLoadFailed(false);
+      setErrorMessage(null);
+      try {
+        const response =
+          await knowledgeApi.getKnowledgeDomainDelegationSubjects({
+            subject_type: domainGrantForm.subject_type,
+            query: domainSubjectQuery.trim() || undefined,
+            limit: 25,
+          });
+        if (
+          !cancelled &&
+          domainSubjectRequestVersion.current === requestVersion
+        ) {
+          setDomainSubjects(response);
+          setDomainSubjectLoadFailed(false);
+        }
+      } catch (error) {
+        if (
+          !cancelled &&
+          domainSubjectRequestVersion.current === requestVersion
+        ) {
+          setDomainSubjects({ subjects: [], next_cursor: null });
+          setDomainSubjectLoadFailed(true);
+          setErrorMessage(errorText(error));
+        }
+      } finally {
+        if (
+          !cancelled &&
+          domainSubjectRequestVersion.current === requestVersion
+        ) {
+          setIsDomainSubjectLoading(false);
+        }
+      }
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      if (domainSubjectRequestVersion.current === requestVersion) {
+        domainSubjectRequestVersion.current += 1;
+      }
+    };
+  }, [
+    capabilities.can_manage_domain_permissions,
+    domainGrantForm.subject_type,
+    domainSubjectQuery,
+    domainSubjectRetryVersion,
+  ]);
 
   const refreshSelected = async () => {
     await loadCollections();
     if (selectedCollection) {
       await loadCollectionDetail(selectedCollection, capabilities);
+    }
+  };
+
+  const loadMoreCollectionSubjects = async () => {
+    if (!selectedCollection || !subjects.next_cursor || isSubjectLoading)
+      return;
+    const requestVersion = ++collectionSubjectRequestVersion.current;
+    setIsSubjectLoading(true);
+    try {
+      const response =
+        await knowledgeApi.getKnowledgeCollectionDelegationSubjects(
+          selectedCollection.id,
+          {
+            subject_type: grantForm.subject_type,
+            query: collectionSubjectQuery.trim() || undefined,
+            cursor: subjects.next_cursor,
+            limit: 25,
+          },
+        );
+      if (collectionSubjectRequestVersion.current === requestVersion) {
+        setSubjects((current) => ({
+          subjects: [
+            ...current.subjects,
+            ...response.subjects.filter(
+              (candidate) =>
+                !current.subjects.some(
+                  (subject) => subject.subject_id === candidate.subject_id,
+                ),
+            ),
+          ],
+          next_cursor: response.next_cursor,
+        }));
+      }
+    } catch (error) {
+      if (collectionSubjectRequestVersion.current === requestVersion) {
+        setSubjectLoadFailed(true);
+        setErrorMessage(errorText(error));
+      }
+    } finally {
+      if (collectionSubjectRequestVersion.current === requestVersion) {
+        setIsSubjectLoading(false);
+      }
+    }
+  };
+
+  const loadMoreDomainSubjects = async () => {
+    if (!domainSubjects.next_cursor || isDomainSubjectLoading) return;
+    const requestVersion = ++domainSubjectRequestVersion.current;
+    setIsDomainSubjectLoading(true);
+    try {
+      const response = await knowledgeApi.getKnowledgeDomainDelegationSubjects({
+        subject_type: domainGrantForm.subject_type,
+        query: domainSubjectQuery.trim() || undefined,
+        cursor: domainSubjects.next_cursor,
+        limit: 25,
+      });
+      if (domainSubjectRequestVersion.current === requestVersion) {
+        setDomainSubjects((current) => ({
+          subjects: [
+            ...current.subjects,
+            ...response.subjects.filter(
+              (candidate) =>
+                !current.subjects.some(
+                  (subject) => subject.subject_id === candidate.subject_id,
+                ),
+            ),
+          ],
+          next_cursor: response.next_cursor,
+        }));
+      }
+    } catch (error) {
+      if (domainSubjectRequestVersion.current === requestVersion) {
+        setDomainSubjectLoadFailed(true);
+        setErrorMessage(errorText(error));
+      }
+    } finally {
+      if (domainSubjectRequestVersion.current === requestVersion) {
+        setIsDomainSubjectLoading(false);
+      }
     }
   };
 
@@ -270,23 +514,66 @@ export default function KnowledgeCollectionManager() {
     }
   };
 
+  const restoreCollection = async () => {
+    if (!selectedCollection) return;
+    setIsSaving(true);
+    setErrorMessage(null);
+    try {
+      await knowledgeApi.restoreKnowledgeCollection(selectedCollection.id);
+      setSelectedId(null);
+      await loadCollections();
+    } catch (error) {
+      setErrorMessage(errorText(error));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   const linkCandidate = async (candidateId: string) => {
     if (!selectedCollection) return;
     setIsSaving(true);
     setErrorMessage(null);
     try {
-      await knowledgeApi.linkKnowledgeCollectionItem(selectedCollection.id, {
-        knowledge_base_id: candidateId,
-        acknowledged_public_runtime_exposure:
-          selectedCollection.visibility === 'public' && acknowledgePublic,
-      });
-      await loadCollectionDetail(
-        selectedCollection,
-        capabilities,
+      const response = await knowledgeApi.linkKnowledgeCollectionItem(
+        selectedCollection.id,
+        {
+          knowledge_base_id: candidateId,
+          acknowledged_public_runtime_exposure:
+            selectedCollection.visibility === 'public' && acknowledgePublic,
+        },
       );
+      setItemData(response);
+      const candidateData =
+        await knowledgeApi.getKnowledgeCollectionLinkCandidates(
+          selectedCollection.id,
+        );
+      setCandidates(candidateData.candidates);
       await loadCollections();
     } catch (error) {
       setErrorMessage(errorText(error));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const reorderItems = async (
+    orderedItems: { item_id: string; rank: number }[],
+    expectedOrderRevision: string,
+  ) => {
+    if (!selectedCollection) return;
+    setIsSaving(true);
+    setErrorMessage(null);
+    try {
+      const response = await knowledgeApi.reorderKnowledgeCollectionItems(
+        selectedCollection.id,
+        orderedItems,
+        expectedOrderRevision,
+        selectedCollection.visibility === 'public' && acknowledgePublic,
+      );
+      setItemData(response);
+    } catch (error) {
+      setErrorMessage(errorText(error));
+      throw error;
     } finally {
       setIsSaving(false);
     }
@@ -302,10 +589,7 @@ export default function KnowledgeCollectionManager() {
         itemId,
         selectedCollection.visibility === 'public' && acknowledgePublic,
       );
-      await loadCollectionDetail(
-        selectedCollection,
-        capabilities,
-      );
+      await loadCollectionDetail(selectedCollection, capabilities);
       await loadCollections();
     } catch (error) {
       setErrorMessage(errorText(error));
@@ -331,10 +615,47 @@ export default function KnowledgeCollectionManager() {
         subject_id: '',
         role_bundle: 'viewer',
       });
-      await loadCollectionDetail(
-        selectedCollection,
-        capabilities,
+      await loadCollections();
+    } catch (error) {
+      setErrorMessage(errorText(error));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const revokePermissionBundle = async () => {
+    if (!selectedCollection || !grantForm.subject_id.trim()) return;
+    setIsSaving(true);
+    setErrorMessage(null);
+    try {
+      await knowledgeApi.revokeKnowledgeCollectionPermissionBundle(
+        selectedCollection.id,
+        {
+          ...grantForm,
+          subject_id: grantForm.subject_id.trim(),
+        },
       );
+      await loadCollections();
+    } catch (error) {
+      setErrorMessage(errorText(error));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const mutatePermissionBundleBulk = async (operation: 'grant' | 'revoke') => {
+    if (selectedBulkIds.length === 0 || !grantForm.subject_id.trim()) return;
+    setIsSaving(true);
+    setErrorMessage(null);
+    try {
+      await knowledgeApi.mutateKnowledgeCollectionPermissionBundles({
+        collection_ids: selectedBulkIds,
+        operation,
+        subject_type: grantForm.subject_type,
+        subject_id: grantForm.subject_id.trim(),
+        role_bundle: grantForm.role_bundle,
+      });
+      await loadCollections();
     } catch (error) {
       setErrorMessage(errorText(error));
     } finally {
@@ -351,10 +672,7 @@ export default function KnowledgeCollectionManager() {
         selectedCollection.id,
         permissionId,
       );
-      await loadCollectionDetail(
-        selectedCollection,
-        capabilities,
-      );
+      await loadCollections();
     } catch (error) {
       setErrorMessage(errorText(error));
     } finally {
@@ -362,16 +680,21 @@ export default function KnowledgeCollectionManager() {
     }
   };
 
-  const updateVisibility = async (visibility: KnowledgeCollectionVisibility) => {
+  const updateVisibility = async (
+    visibility: KnowledgeCollectionVisibility,
+  ) => {
     if (!selectedCollection) return;
     setIsSaving(true);
     setErrorMessage(null);
     try {
-      await knowledgeApi.updateKnowledgeCollectionVisibility(selectedCollection.id, {
-        visibility,
-        acknowledged_public_runtime_exposure:
-          visibility === 'public' ? acknowledgePublic : true,
-      });
+      await knowledgeApi.updateKnowledgeCollectionVisibility(
+        selectedCollection.id,
+        {
+          visibility,
+          acknowledged_public_runtime_exposure:
+            visibility === 'public' ? acknowledgePublic : true,
+        },
+      );
       setAcknowledgePublic(false);
       await refreshSelected();
     } catch (error) {
@@ -379,6 +702,25 @@ export default function KnowledgeCollectionManager() {
     } finally {
       setIsSaving(false);
     }
+  };
+
+  const toggleBulkCollection = (collectionId: string) => {
+    setSelectedBulkIds((current) => {
+      if (current.includes(collectionId)) {
+        return current.filter((id) => id !== collectionId);
+      }
+      return current.length >= 50 ? current : [...current, collectionId];
+    });
+  };
+
+  const updateCollectionSubjectQuery = (query: string) => {
+    setCollectionSubjectQuery(query);
+    setGrantForm((current) => ({ ...current, subject_id: '' }));
+  };
+
+  const updateDomainSubjectQuery = (query: string) => {
+    setDomainSubjectQuery(query);
+    setDomainGrantForm((current) => ({ ...current, subject_id: '' }));
   };
 
   const grantDomainPermission = async () => {
@@ -432,11 +774,19 @@ export default function KnowledgeCollectionManager() {
       {capabilities.can_manage_domain_permissions && (
         <DomainDelegationPanel
           form={domainGrantForm}
+          hasSubjectLoadError={domainSubjectLoadFailed}
+          isSubjectLoading={isDomainSubjectLoading}
           isSaving={isSaving}
           permissions={domainPermissions}
+          subjectQuery={domainSubjectQuery}
           subjects={domainSubjects}
           onGrant={grantDomainPermission}
+          onLoadMoreSubjects={loadMoreDomainSubjects}
+          onRetrySubjects={() =>
+            setDomainSubjectRetryVersion((current) => current + 1)
+          }
           onRevoke={revokeDomainPermission}
+          onSubjectQueryChange={updateDomainSubjectQuery}
           setForm={setDomainGrantForm}
         />
       )}
@@ -448,9 +798,13 @@ export default function KnowledgeCollectionManager() {
           form={form}
           isLoading={isLoading}
           isSaving={isSaving}
+          lifecycleState={lifecycleState}
+          selectedBulkIds={selectedBulkIds}
           selectedId={selectedId}
           onCreate={createCollection}
           onSelect={setSelectedId}
+          onLifecycleStateChange={setLifecycleState}
+          onToggleBulkCollection={toggleBulkCollection}
           setForm={setForm}
         />
 
@@ -463,14 +817,27 @@ export default function KnowledgeCollectionManager() {
             editForm={editForm}
             grantForm={grantForm}
             isDetailLoading={isDetailLoading}
+            hasSubjectLoadError={subjectLoadFailed}
+            isSubjectLoading={isSubjectLoading}
             isSaving={isSaving}
-            items={items}
+            itemData={itemData}
             permissions={permissions}
+            selectedBulkCount={selectedBulkIds.length}
+            subjectQuery={collectionSubjectQuery}
             subjects={subjects}
             onArchive={archiveCollection}
+            onBulkPermission={mutatePermissionBundleBulk}
             onGrantPermission={grantPermission}
             onLinkCandidate={linkCandidate}
+            onLoadMoreSubjects={loadMoreCollectionSubjects}
+            onRetrySubjects={() =>
+              setSubjectRetryVersion((current) => current + 1)
+            }
+            onReorderItems={reorderItems}
             onRevokePermission={revokePermission}
+            onRevokePermissionBundle={revokePermissionBundle}
+            onRestore={restoreCollection}
+            onSubjectQueryChange={updateCollectionSubjectQuery}
             onUnlinkItem={unlinkItem}
             onUpdateCollection={updateCollection}
             onUpdateVisibility={updateVisibility}
