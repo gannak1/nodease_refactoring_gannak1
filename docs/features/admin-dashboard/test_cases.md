@@ -61,6 +61,9 @@ Verified Against: feature/mba-188 @ 59d1cc51
 - Given 활성 예산은 있지만 위험/초과 workflow가 없는 조직, When 카드를 확인하면, Then `0개 위험`, `예산 임박 0`, `예산 초과 0`이 표시된다.
 - Given 예산 카드를 확인, Then 가장 위험한 workflow 미리보기나 개별 workflow 사용액은 표시하지 않고 월간 비용 카드와 비슷한 높이를 유지한다.
 - Given 예산 카드를 키보드 또는 포인터로 선택, Then `/dashboard/admin?tab=usage`로 이동하고 접근 가능한 이름으로 링크 목적이 제공된다.
+- Given 이번 달 LLM 비용 카드를 키보드 또는 포인터로 선택, Then `/dashboard/admin?tab=usage`로 이동하고 접근 가능한 이름으로 링크 목적이 제공된다.
+- Given 활성 멤버 또는 활성 팀 카드를 키보드 또는 포인터로 선택, Then 각각 `/dashboard/admin?tab=organization-structure&view=members` 또는 `view=teams`로 이동하고 접근 가능한 이름으로 링크 목적이 제공된다.
+- Given LLM Credentials 또는 지식 기반 카드를 키보드 또는 포인터로 선택, Then 각각 `/dashboard/admin?tab=credentials` 또는 `/dashboard/admin?tab=knowledge`로 이동하고 접근 가능한 이름으로 링크 목적이 제공된다.
 
 ### AC-5. 권한 경계
 

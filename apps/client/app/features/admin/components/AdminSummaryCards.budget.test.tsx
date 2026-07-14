@@ -47,10 +47,11 @@ describe('AdminSummaryCards 예산 카드', () => {
     expect(
       screen.queryByText('현재 위험한 workflow가 없습니다'),
     ).not.toBeInTheDocument();
-    expect(screen.getByRole('link')).toHaveAttribute(
-      'href',
-      '/dashboard/admin?tab=usage',
-    );
+    expect(
+      screen.getByRole('link', {
+        name: '예산 위험 workflow 비용 탭에서 확인',
+      }),
+    ).toHaveAttribute('href', '/dashboard/admin?tab=usage');
     expect(screen.queryByText('예산 미설정')).not.toBeInTheDocument();
   });
 

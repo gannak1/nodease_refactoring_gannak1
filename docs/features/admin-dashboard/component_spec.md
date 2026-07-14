@@ -47,6 +47,8 @@ Verified Against: feature/mba-188 @ 59d1cc51
 - 활성 예산은 있지만 위험/초과 workflow가 0개면 `<0개 위험>`과 상태별 0건을 표시한다.
 - API의 `budget` 블록이 null이면 카드에 "예산 미설정" 상태를 표시한다.
 - 카드 전체를 클릭하면 `/dashboard/admin?tab=usage`로 이동한다. 별도 링크 문구는 표시하지 않고, 접근 가능한 이름으로 이동 목적을 제공해 키보드로 접근할 수 있어야 한다.
+- 이번 달 LLM 비용 카드도 카드 전체를 클릭하면 `/dashboard/admin?tab=usage`로 이동한다.
+- 하단 요약 카드 전체를 클릭하면 활성 멤버는 `/dashboard/admin?tab=organization-structure&view=members`, 활성 팀은 `/dashboard/admin?tab=organization-structure&view=teams`, LLM Credentials는 `/dashboard/admin?tab=credentials`, 지식 기반은 `/dashboard/admin?tab=knowledge`로 이동한다. 모든 링크는 별도 링크 문구 없이 접근 가능한 이름과 키보드 포커스 표시를 제공한다.
 - 요약 조회 중에는 기존 집계 중 상태를 유지하고, 실패하면 "요약을 불러오지 못했습니다"를 표시한다.
 - 데이터 원천: `GET /admin/summary`.
 

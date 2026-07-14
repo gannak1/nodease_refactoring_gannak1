@@ -116,6 +116,8 @@ export function AdminSummaryCards() {
           summary ? formatCost(summary.total_cost) : failed ? '-' : '집계 중'
         }
         icon={DollarSign}
+        href="/dashboard/admin?tab=usage"
+        linkAriaLabel="이번 달 LLM 비용 비용 탭에서 확인"
         valueClassName="mt-2 text-2xl"
         descriptionClassName="mt-2 text-sm"
         description={
