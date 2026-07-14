@@ -32,6 +32,9 @@ MBA-105 구현 baseline, 운영 기본값, permission helper output, active vers
 | Knowledge Collection Administration Application | Restore와 exact reorder의 authorization·lock·audit·transaction 순서를 port 경계로 조율한다 | Endpoint나 Client가 lifecycle, order revision 또는 persistence policy를 판단하지 않는다 |
 | Collection Management PostgreSQL Adapter | Lifecycle/order용 organization-scoped row projection, Collection-first `FOR UPDATE`와 membership lock을 제공한다 | Raw principal을 projection하지 않고 repository port 밖으로 ORM entity를 전달하지 않는다 |
 | Collection Management Audit Adapter | 변경된 Collection마다 allowlisted canonical data-change audit를 같은 transaction에 추가한다 | Raw subject/Collection label, request payload, hidden target list와 exact count를 저장하지 않는다 |
+| Knowledge Collection Sync Request Application | Current actor 권한, Collection/source eligibility, idempotency와 single-flight를 검증하고 job/target snapshot/audit를 원자 저장한다 | Gateway application/port/adapter 경계다. Commit 뒤 job UUID만 Celery에 발행하고 source config를 task payload로 만들지 않는다 |
+| Knowledge Collection Sync Worker Application | Job lease, fresh worker-start authorization, deterministic DB target batch, retry/partial/terminal 집계와 recovery를 조율한다 | Workflow Engine application/port/adapter 경계다. Celery redelivery가 아니라 PostgreSQL job/item 상태가 execution source of truth다 |
+| Knowledge Collection Sync Status Projector | Internal job/item 상태를 safe status/progress/reason/timestamp로 축소한다 | Exact child count와 KB/document/source identity, raw exception/config를 default-deny한다 |
 | Knowledge Document Response Projector | 내부 `documents.meta_info`에서 safe operational field만 allowlist projection한다 | Encrypted config, connection/source identifier, DB/source config와 unknown nested field를 API response로 전달하지 않는다 |
 | Knowledge RAG Recommendation Adapter | `StructuredRequest` 기반 safe intent summary, node purpose summary, knowledge requirement, pending resolution reference를 받아 safe KB recommendation과 LLM node RAG option 후보를 만든다 | Raw natural language 전체를 받지 않고 권한 판단을 직접 하지 않는다. HTTP/serialized boundary에서는 `KnowledgeCandidateResolver`가 만든 server-issued reference만 사용하고, full safe candidate set 객체는 같은 backend 내부 service call에서만 ranking input으로 사용할 수 있다. 초기 구현은 `candidate_type=knowledge_base`만 반환하고 Collection은 safe summary metadata로만 제공한다 |
 | Knowledge Skill Registry | Provider-neutral Knowledge Skill, version, owner/review state, freshness/eval status를 관리한다 | Skill은 빌더 단계 LLM node의 RAG 옵션 후보이며 권한 source나 source of truth가 아니다 |
@@ -159,6 +162,8 @@ Knowledge Collection 관리 UI는 Workflow Builder가 아니라 Knowledge 관리
 - Collection role preset은 Viewer, Workflow Router, Maintainer, Sync Operator를 제공하되 저장 시 explicit action row를 transactionally 적용하고 KB `use`가 포함되지 않음을 표시한다. Bundle 회수도 같은 action 집합의 현재 row를 한 번에 제거하며 저장된 role이나 inheritance처럼 표현하지 않는다.
 - Bulk permission 관리: 같은 subject와 bundle을 선택한 1~50개 Collection에 grant/revoke를 한 요청으로 적용한다. UI는 all-or-nothing임을 설명하고 partial success를 만들거나 표시하지 않으며 성공/실패에서 hidden target identity를 노출하지 않는다.
 - Permission row는 Team과 User direct source를 분리해 표시한다. User direct row 회수 뒤 Team grant가 남을 수 있음을 안내하고 action 조합을 role provenance로 재구성하지 않는다.
+- Collection sync panel: active Manual Collection에서 `collection.can_sync` 또는 domain `can_manage_sync`가 있을 때만 요청 버튼을 제공한다. 한 click의 UUID idempotency key를 요청 확정까지 재사용하고 queued/running job에서는 중복 click을 막는다. Detail 진입 시 latest job을 조회하고 queued/running 동안 3초 polling하며 terminal, unmount, Collection 변경 시 polling을 중단한다.
+- Sync 상태는 `queued/running/succeeded/partially_failed/failed/cancelled` text label과 `none/started/progressing/most/complete` 범주형 progress를 표시한다. Safe reason은 Client 고정 문구로 매핑하고 raw server detail을 그대로 렌더하지 않는다.
 
 금지 surface:
 

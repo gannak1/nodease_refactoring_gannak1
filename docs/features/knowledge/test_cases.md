@@ -432,6 +432,17 @@ Verified Against: `feature/mba-264 @ 8832d23b`
 - PostgreSQL bulk 검증은 cross-organization target 혼합, N-1 authorized + 1 unauthorized, 한 target의 last-manage 실패, 반대 순서 target을 가진 concurrent request와 audit failure를 포함한다. Query/lock capture는 organization predicate와 실제 `FOR UPDATE`를 확인하고 target 수만큼 authorization query가 늘어나는 N+1을 허용하지 않는다.
 - Permission UI는 Team row와 User direct row를 분리한다. 같은 action에 두 source가 있을 때 direct revoke 뒤 Team effective allow가 남는 사실을 표시하고 revoke success를 전체 접근 차단으로 잘못 표현하지 않는다.
 - MBA-264는 Collection sync 실행 endpoint/job/UI, explicit deny, per-Collection expiry, bundle 저장 row, child KB `use` 자동 grant와 Workflow graph/runtime 변경을 추가하지 않는다.
+- KC sync request는 Organization manager, effective Collection `sync`, domain `sync_manage`를 허용하고 Collection `manage`만 있는 actor를 거부한다. Request와 worker claim 양쪽에서 current authority를 평가하며 requested actor identity는 bypass가 아니다.
+- KC sync request의 UUID idempotency key는 hash로만 저장하고 같은 organization/Collection/key의 동시 요청은 job 하나만 만든다. 다른 key의 동시 요청도 queued/running partial unique single-flight에 따라 active job 하나만 남기며 terminal 뒤 새 요청은 허용한다.
+- Job, deterministic target item, Collection `pending`, requested audit 중 하나라도 실패하면 transaction 전체를 rollback한다. Celery publish는 commit 뒤 호출하고 publish failure는 raw broker detail 없이 queued job으로 복구 가능해야 한다.
+- Worker task payload와 result는 job UUID와 safe summary만 포함한다. Active Manual Collection의 active/non-source-managed DB document만 실행하며 system/source-managed Collection, source-managed child, API connector sync를 성공처럼 처리하지 않는다.
+- Celery duplicate delivery는 unexpired running lease나 terminal job에서 target adapter를 호출하지 않는다. Worker loss 뒤 stale lease recovery는 running item을 bounded retry로 되돌리고, target apply와 item success/progress commit 뒤 발생한 redelivery는 같은 target을 다시 적용하지 않는다.
+- Concurrent permission revoke가 worker의 fresh authorization query 전에 commit되면 job은 cancelled되고 target을 실행하지 않는다. Authorization query 뒤 commit된 revoke는 이미 시작한 batch를 중간 중단하지 않고 다음 claim부터 반영한다. 이 순서는 실제 PostgreSQL lock/barrier test로 검증한다.
+- Target unlink, KB archive/delete/source-managed 전환, document 삭제/type 변경은 hidden identity를 노출하지 않는 skipped/partial 상태로 처리한다. Job 생성 뒤 새 membership은 기존 snapshot에 추가하지 않는다.
+- 일부 child의 max retry 실패를 `succeeded`로 표시하지 않는다. Success+failure/changed target은 `partially_failed`와 Collection `stale`, all failure는 `failed`, all success는 `succeeded`와 `synced`로 집계한다.
+- Sync status API/UI는 status, 범주형 progress, allowlisted safe reason, retryability와 timestamp만 사용한다. Exact target/success/failure count, job item, KB/document/source identity, raw connection/config/SQL/credential/payload/exception은 응답, DOM, audit, trace, log에 없어야 한다.
+- Client는 한 사용자 동작에서 같은 idempotency key를 재사용하고 queued/running 중 double submit을 막는다. Latest/specific polling은 3초 간격으로 terminal/unmount/Collection 변경 시 중단하고 이전 Collection의 늦은 response를 폐기한다.
+- Disposable PostgreSQL test는 active-job partial unique index, organization predicate, exactly-one claim, `SKIP LOCKED` recovery, audit rollback, concurrent revoke linearization과 terminal retention cleanup을 검증한다. Fake `.filter()`가 predicate를 버리는 test로 대체하지 않는다.
 - Source metadata에서 유래한 system-managed collection display name/description은 storage/display 전에 redaction, cap, display-policy approval을 거친다.
 - KB detail은 hidden source path를 누출하지 않으면서 sync failed, source ACL stale, source deleted, archived, deleted state를 구분한다.
 - Remediation queue는 raw connector exception string이 아니라 safe reason code와 retryability를 표시한다.
