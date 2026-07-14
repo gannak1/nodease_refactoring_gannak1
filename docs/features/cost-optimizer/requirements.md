@@ -423,6 +423,31 @@ Cost Optimizer는 LLM 노드의 workflow 맥락과 검증된 실행 증거를 �
 증거나 Cost Optimizer Replay 결과가 생기면 policy를 재평가하고, 일반 실행은 이미
 검증되어 저장된 active policy만 평가한다.
 
+#### 운영 정책 미리보기
+
+편집 화면의 테스트 입력은 배포 후 운영 표본과 다른 용도다. 사용자는 실제 LLM
+답변을 생성하거나 비용을 쓰기 전에, **현재 배포본이라면 이 입력에서 어떤 모델을
+선택할지** 확인할 수 있어야 한다.
+
+- Test Sidebar는 `라우팅 미리보기`로 target LLM node와 현재 입력을 보낸다. 여러
+  LLM node가 있으면 사용자가 대상 node를 선택하며, 자동 라우팅 ON/OFF 판단은
+  deployment snapshot을 기준으로 한다.
+- 판단 기준은 current draft가 아니라 active deployment의 graph snapshot, 해당
+  deployment/node의 persisted active policy, deployment의 고정 execution subject가
+  사용할 수 있는 credential/model이다.
+- semantic cohort policy라면 입력 본문을 embedding해 cohort만 판단할 수 있다. 이는
+  embedding 비용이 발생할 수 있으나 LLM completion은 생성하지 않는다.
+- 응답은 deployment version, policy version, 선택 모델, 기본 모델과 기본 대체 모델,
+  matched cohort/rule, safe reason code, availability, draft/deployment 차이만 포함한다.
+  입력 원문, credential, embedding vector, raw trace는 반환하지 않는다.
+- 미리보기 요청은 `workflow_runs`, `workflow_node_runs`, usage log, policy run event를
+  만들거나 변경하지 않으며, 정책 갱신 카운터와 refresh task에도 영향을 주지 않는다.
+- 자동 라우팅이 deployment snapshot에서 꺼져 있으면 `disabled`, active policy가
+  아직 없으면 `policy_not_ready`, 기본 모델과 대체 모델을 모두 쓸 수 없으면
+  `no_available_model` 상태를 명확히 표시한다.
+- draft와 deployment가 다르면 미리보기 결과는 유효하지만, 아직 배포되지 않은 수정은
+  결과에 반영되지 않았음을 표시한다.
+
 #### 해결해야 하는 현재 공백
 
 현재 구현은 다음 기반을 제공한다.

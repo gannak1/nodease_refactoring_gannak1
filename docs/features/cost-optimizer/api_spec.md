@@ -28,7 +28,7 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | FR-008 | 선택한 B 후보 설정을 current draft target LLM node에 적용한다. |
 | FR-009 | 비교 실행에서 발생한 LLM usage/cost를 기록한다. |
 | FR-010 | builder 이상 권한을 API에서 강제한다. |
-| FR-011 | policy 조회/설정/refresh API와 배포 후 run event가 policy table을 관리한다. 운영/Replay evidence의 출처를 구분하고, Hard Gate·적합성 분석·품질 gate·결정론적 optimizer를 통과한 policy만 runtime에 제공한다. |
+| FR-011 | policy 조회/설정/refresh/preview API와 배포 후 run event가 policy table을 관리한다. 운영/Replay evidence의 출처를 구분하고, Hard Gate·적합성 분석·품질 gate·결정론적 optimizer를 통과한 policy만 runtime에 제공한다. |
 | FR-012 | 운영 로그와 trace summary를 분석해 LLM 파라미터/모델 라우팅 추천을 반환한다. `direct_policy_update`만 즉시 적용하고, 일반 파라미터 조정은 A/B candidate 생성 경로로 보낸다. |
 | FR-013 | 추천 빠른 검증과 사용자가 baseline을 고르는 일반 compare 모두 candidate 실행 후 semantic 품질 평가를 수행하고 점수·confidence·safe summary를 응답과 이력에 저장한다. |
 
@@ -47,6 +47,7 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/compare` | 선택 baseline input으로 B 후보를 실행하고 A/B 출력 품질을 평가 | FR-003, FR-004, FR-005, FR-006, FR-009, FR-010, FR-013 | builder 이상 |
 | PATCH | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/apply` | 선택한 B 후보 설정을 current draft에 적용 | FR-008, FR-010 | builder 이상 |
 | GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy` | 현재 policy 상태, 누적 운영 run 수, active/pending policy 조회 | FR-011 | builder 이상 |
+| POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/preview` | active deployment policy를 기록 없이 한 번 평가해 선택 모델과 근거를 반환 | FR-011 | execute |
 | PATCH | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy` | 자동 라우팅 ON/OFF, 규칙 미일치 시 기본 모델/대체 모델, 정책 점검 주기, 월간 검증 예산, 입력군 최대 개수 변경 | FR-011 | builder 이상 |
 | POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy/refresh` | 수동 policy refresh 작업을 예약 | FR-011 | builder 이상 |
 | POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts/suggest` | 대표 문의로 입력군 이름/영문 key 초안 생성 | FR-011 | builder 이상 |
@@ -81,6 +82,62 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 이 섹션은 FR-011 Workflow-Aware Adaptive Routing의 API 계약이다. 자동 라우팅 ON 상태의 일반 LLM node 실행은 active policy를 읽어 모델을 선택하고, Judge LLM을 호출하지 않는다.
 
 이 계약의 source of truth는 `llm_node_model_routing_policies`다. Cost Optimizer candidate의 policy JSON은 compare/apply 호환을 위한 candidate snapshot이며, 일반 배포 실행은 policy table의 active policy만 사용한다. Gateway의 `GET/PATCH/POST /model-routing/policy`는 이 table과 refresh task를 관리하고, Workflow Engine의 `LLMNode._resolve_model_routing_policy()`는 runtime DB lookup 결과를 `ModelRouter.resolve_policy()`에 전달한다.
+
+### Routing Preview Contract
+
+`POST /workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/preview`는 Test Sidebar의
+입력으로 현재 **active deployment**가 고를 모델만 계산한다. 권한은 workflow
+`execute`다. endpoint는 current draft node를 기준으로 판단하지 않으며, deployment
+snapshot의 target LLM node와 해당 deployment/node의 persisted active policy를 사용한다.
+
+Request:
+
+```json
+{
+  "inputs": {
+    "message": "결제 영수증을 다시 받고 싶습니다.",
+    "customerTier": "business"
+  }
+}
+```
+
+Response은 safe summary만 반환한다.
+
+```json
+{
+  "deployment_version": 2,
+  "policy_version": "router-policy-v4",
+  "decision_source": "matched_rule",
+  "selected_model_id": "gpt-4o-mini",
+  "fallback_model_id": "gpt-4.1-mini",
+  "default_model_id": "gpt-4.1",
+  "configured_fallback_model_id": "gpt-4.1-mini",
+  "matched_cohort": {"id": "routine-support", "label": "단순 사용 안내"},
+  "matched_rule_id": "route-routine-support",
+  "reason_code": "validated_quality_floor_cost_reduction",
+  "availability": "available",
+  "semantic_evaluation": "embedding_used",
+  "draft_matches_deployment": false
+}
+```
+
+`decision_source`는 `matched_rule`, `default_model`, `fallback_model` 중 하나다.
+semantic cohort를 계산해야 하면 execution subject 권한의 embedding client를 한 번
+호출할 수 있지만, completion 호출은 하지 않는다. request의 raw input, credential,
+embedding vector, raw trace는 저장하거나 response에 넣지 않는다. 이 endpoint는
+`workflow_runs`, `workflow_node_runs`, usage log, policy run event, refresh counter,
+Celery refresh task를 생성하거나 변경하지 않는다.
+
+다음 상태는 `409` safe error code로 반환한다.
+
+| Code | 의미 |
+| --- | --- |
+| `model_routing.disabled` | deployment snapshot에서 자동 라우팅이 꺼져 있다. |
+| `model_routing.policy_not_ready` | active deployment 또는 persisted active policy가 없다. |
+| `model_routing.execution_subject_unavailable` | deployment의 고정 실행 주체를 확인할 수 없다. |
+| `model_routing.no_available_model` | 기본 모델과 대체 모델을 execution subject가 모두 사용할 수 없다. |
+| `model_routing.deployed_node_not_found` | target node가 active deployment snapshot에 없다. |
+| `model_routing.deployed_node_invalid` | target node가 LLM node가 아니거나 설정 형식이 올바르지 않다. |
 
 Policy refresh는 모델 변경을 의미하지 않는다. Refresh는 출처가 구분된 operational/replay evidence를 다시 읽고 policy를 재평가한다. Hard Gate와 품질/효율 gate를 통과한 `validated` 후보가 있을 때만 deterministic optimizer가 policy proposal을 만든다. 변경 후보가 없으면 `kept_current`로 기록하고 기존 active policy를 유지한다.
 

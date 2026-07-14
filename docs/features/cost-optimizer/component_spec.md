@@ -48,6 +48,7 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 | FR-010 | Permission-gated UI | `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerEntryAction.tsx`, `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr1-entry-action.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | 통과 |
 | FR-011 | 기존 policy controls와 model-routing route | `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx`, `apps/client/app/modules/[id]/model-routing/[nodeId]/page.tsx` | 기반 구현 완료 | 기존 Cost Optimizer frontend tests | 토글, 주기, policy 상태, 추천 route 통과 |
 | FR-011 | Runtime decision trace UI | `apps/client/app/features/workflow/components/modelRouting/ModelRoutingDecisionDetails.tsx`, `apps/client/app/features/workflow/components/editor/TestSidebar.tsx`, `apps/client/app/features/workflow/components/logs/LogDetail.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr11-semantic-routing-trace.test.tsx`, `apps/client/app/features/workflow/components/logs/LogDetail.test.tsx` | 통과 |
+| FR-011 | Test Sidebar routing preview | `apps/client/app/features/workflow/components/editor/TestSidebar.tsx`, `apps/client/app/features/workflow/components/modelRouting/ModelRoutingPreviewPanel.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr11-routing-preview.test.tsx`, `apps/client/app/features/workflow/tests/test-sidebar-routing-preview.test.tsx` | 통과 |
 | FR-011 | 적합성/evidence/policy diff UI | 기존 model-routing route 확장 | 구현 필요 | Workflow-Aware routing component tests | 미작성 |
 | FR-012 | Optimization recommendation modal | `apps/client/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal.tsx`, `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr8-apply-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | 통과 기록 있음 |
 | FR-013 | Recommendation verification, compare quality row, history restore | `apps/client/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal.tsx`, `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerHistoryPanel.tsx`, `apps/client/app/features/workflow/hooks/useCostOptimizerHistory.ts`, `apps/client/app/features/workflow/api/workflowApi.ts`, `apps/client/app/features/workflow/types/Api.ts`, `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-inline-verification.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-verification-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | modal 검증, 일반 compare 품질 행, 평가 불가, 단건 비교 이력 복원 통과 |
@@ -317,6 +318,31 @@ Frontend는 raw query, embedding vector, 대표 문장 원문을 trace 화면에
 표시 계약으로 해석한다. 배포 실행 로그에서는 사용자가 LLM node를 선택했을 때 노드
 설정 다음에 이 설명을 표시한다. 두 화면이 서로 다른 reason 해석을 갖지 않도록 별도
 복사본을 만들지 않는다.
+
+#### Test Sidebar 라우팅 미리보기
+
+Test Sidebar의 입력 폼 아래에는 실제 테스트와 분리된 `라우팅 판단` 영역을 둔다.
+`라우팅 미리보기` 버튼은 실제 LLM 답변을 실행하지 않고 active deployment policy를
+한 번 평가한다. 버튼은 기존 `테스트 실행하기`와 나란히 표시하며 둘을 합치지 않는다.
+`라우팅 판단`은 기본으로 펼쳐 두되, 사용자가 접어 테스트 입력과 실제 실행 결과를
+우선 볼 수 있어야 한다.
+
+- LLM node가 하나면 해당 node를 대상으로 사용한다. 여러 개면 `미리보기 대상 LLM
+  노드` select를 표시해 사용자가 선택한다. 자동 라우팅 ON/OFF는 current draft가
+  아니라 API가 deployment snapshot으로 판단한다.
+- 결과 panel은 `라우팅 판단 미리보기`, `배포 v{version} 정책 기준`, `미리보기`
+  badge를 표시한다.
+- 결과에는 선택 모델, `규칙 미일치 시 기본 모델`, `기본 모델 실패 시 대체 모델`,
+  matched cohort, matched rule, 사용자 친화 reason, policy version을 표시한다.
+  규칙 미일치면 `규칙 미일치`와 기본 모델 규칙을 표시한다.
+- current draft node fingerprint가 deployment snapshot과 다르면 amber warning으로
+  `현재 편집 내용은 아직 배포되지 않아 미리보기에 반영되지 않았습니다.`를 표시한다.
+- 입력이 바뀌거나 대상 node를 바꾸면 이전 preview 결과를 지운다.
+- 자동 라우팅 OFF, policy 준비 전, execution subject 부재, 기본/대체 모델 모두
+  사용 불가 상태는 버튼 비활성 또는 safe 안내 문구로 표시한다.
+- panel 하단에는 `실제 LLM 답변, 실행 로그, LLM 사용량 로그, 정책 점검 카운터를
+  만들지 않습니다.`를 항상 표시한다. semantic cohort 판단으로 embedding이 필요한
+  경우에는 작은 embedding 비용이 발생할 수 있음을 함께 안내한다.
 
 #### Backend core와 UI 연결 경계
 
