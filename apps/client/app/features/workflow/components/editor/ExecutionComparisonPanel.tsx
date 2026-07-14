@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   ArrowLeft,
@@ -103,6 +103,21 @@ const nodeTitle = (node: Node | undefined, nodeRun: WorkflowNodeRun) => {
   if (typeof data?.name === 'string' && data.name.trim()) return data.name;
   return nodeRun.node_id;
 };
+
+const comparisonNodeDefinitionKey = (nodes: Node[]) =>
+  nodes
+    .map((node) => {
+      const data = node.data as { title?: unknown; name?: unknown } | undefined;
+      const title =
+        typeof data?.title === 'string'
+          ? data.title
+          : typeof data?.name === 'string'
+            ? data.name
+            : '';
+      return JSON.stringify([node.id, node.type ?? '', title]);
+    })
+    .sort()
+    .join('\u001f');
 
 const aggregateTraces = (traces: LLMTrace[]) => {
   const byNode = new Map<
@@ -400,6 +415,8 @@ export function ExecutionComparisonPanel({
   currentExecutionError,
   onBaselineRunIdChange,
 }: ExecutionComparisonPanelProps) {
+  const latestNodesRef = useRef(nodes);
+  const nodeDefinitionKey = comparisonNodeDefinitionKey(nodes);
   const [page, setPage] = useState(1);
   const [statusFilter, setStatusFilter] = useState('success');
   const [triggerFilter, setTriggerFilter] = useState('manual');
@@ -413,6 +430,10 @@ export function ExecutionComparisonPanel({
   const [comparisonError, setComparisonError] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+
+  useEffect(() => {
+    latestNodesRef.current = nodes;
+  }, [nodes]);
 
   useEffect(() => {
     if (baselineRunId) return;
@@ -452,10 +473,15 @@ export function ExecutionComparisonPanel({
     let cancelled = false;
     setIsComparisonLoading(true);
     setComparisonError(null);
-    const baselineRequest = loadRunBundle(workflowId, baselineRunId, nodes);
+    const comparisonNodes = latestNodesRef.current;
+    const baselineRequest = loadRunBundle(
+      workflowId,
+      baselineRunId,
+      comparisonNodes,
+    );
     const currentRequest =
       currentRunId && currentRunId !== baselineRunId
-        ? loadRunBundle(workflowId, currentRunId, nodes, 3)
+        ? loadRunBundle(workflowId, currentRunId, comparisonNodes, 3)
         : Promise.resolve(null);
 
     Promise.all([baselineRequest, currentRequest])
@@ -476,7 +502,7 @@ export function ExecutionComparisonPanel({
     return () => {
       cancelled = true;
     };
-  }, [baselineRunId, currentRunId, nodes, reloadKey, workflowId]);
+  }, [baselineRunId, currentRunId, nodeDefinitionKey, reloadKey, workflowId]);
 
   const comparisonNodes = useMemo(() => {
     if (!baselineBundle || !currentBundle) return [];

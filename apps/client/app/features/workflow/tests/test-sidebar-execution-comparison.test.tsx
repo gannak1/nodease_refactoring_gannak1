@@ -162,6 +162,43 @@ function ComparisonHarness() {
   );
 }
 
+function LiveExecutionComparisonHarness() {
+  const [baselineRunId, setBaselineRunId] = useState<string | null>(null);
+  const [nodes, setNodes] = useState([
+    {
+      id: 'llm-triage',
+      type: 'llmNode',
+      position: { x: 0, y: 0 },
+      data: { title: '문의 분류', status: 'idle' },
+    },
+  ]);
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => {
+          setNodes((currentNodes) =>
+            currentNodes.map((node) => ({
+              ...node,
+              data: { ...node.data, status: 'running' },
+            })),
+          );
+        }}
+      >
+        실시간 상태 갱신
+      </button>
+      <ExecutionComparisonPanel
+        workflowId="workflow-1"
+        nodes={nodes as never}
+        baselineRunId={baselineRunId}
+        currentRunId="current-run"
+        onBaselineRunIdChange={setBaselineRunId}
+      />
+    </>
+  );
+}
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
@@ -304,6 +341,61 @@ describe('TestSidebar execution comparison', () => {
     expect(
       screen.queryByRole('button', { name: '기준으로 고정' }),
     ).not.toBeInTheDocument();
+  });
+
+  it('실시간 노드 상태 갱신으로 실행 비교를 다시 로드하지 않는다', async () => {
+    mocks.getWorkflowRuns.mockResolvedValue({
+      total: 1,
+      items: [runSummary('baseline-run', '2026-07-13T01:00:00Z')],
+    });
+    mocks.getWorkflowRun.mockImplementation(
+      (_workflowId: string, runId: string) =>
+        Promise.resolve(
+          runId === 'baseline-run'
+            ? runDetail('baseline-run', 'gpt-4.1', '기존 문의', '기존 답변')
+            : runDetail(
+                'current-run',
+                'gpt-4.1-mini',
+                '현재 문의',
+                '현재 답변',
+              ),
+        ),
+    );
+    mocks.getWorkflowRunLlmTraces.mockResolvedValue({
+      total: 0,
+      limit: 100,
+      offset: 0,
+      items: [],
+    });
+
+    render(<LiveExecutionComparisonHarness />);
+    fireEvent.click(
+      await screen.findByRole('button', { name: '기준으로 고정' }),
+    );
+    expect(
+      await screen.findByRole('button', {
+        name: '문의 분류 노드 상세 비교하기',
+      }),
+    ).toBeVisible();
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: '문의 분류 노드 상세 비교하기',
+      }),
+    );
+    expect(
+      screen.getByRole('heading', { name: '문의 분류 상세 비교' }),
+    ).toBeVisible();
+    expect(mocks.getWorkflowRun).toHaveBeenCalledTimes(2);
+
+    fireEvent.click(screen.getByRole('button', { name: '실시간 상태 갱신' }));
+
+    expect(mocks.getWorkflowRun).toHaveBeenCalledTimes(2);
+    expect(
+      screen.queryByText('현재 실행 기록을 동기화하는 중입니다.'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: '문의 분류 상세 비교' }),
+    ).toBeVisible();
   });
 
   it('노드 목록은 상태·비용·시간·토큰만 보여주고 상세에서 입력·출력·라우팅을 비교한다', async () => {
