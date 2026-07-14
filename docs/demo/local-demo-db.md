@@ -87,9 +87,11 @@ apps/gateway/.venv/bin/python scripts/seed_demo.py --profile test --reset
 
 동작:
 
-- `노디즈 테스트 조직` 아래 테스트 계정, 팀, workflow, 권한만 삭제하고 다시 만든다.
+- `노디즈 테스트 조직` 아래 test profile 고정 UUID 계정, 팀, workflow, 권한을 삭제하고 다시 만든다.
+- test 조직의 Agent Builder 임시 Draft, Request, Session은 QA 기준 상태 복원을 위해 함께 제거한다.
 - demo profile 데이터는 건드리지 않는다.
-- 팀원이 기능 구현 중 테스트 데이터를 직접 변경했더라도 이 명령으로 테스트 기준 상태를 다시 덮어쓸 수 있다.
+- 팀원이 고정 test seed 데이터를 직접 변경했더라도 이 명령으로 테스트 기준 상태를 다시 덮어쓸 수 있다.
+- 임의로 생성한 모든 동적 데이터를 비우는 명령은 아니다. 전체 초기화가 필요하면 아래 `--drop-existing-data --yes` 경로를 사용한다.
 
 새로운 기능의 고정 테스트 더미 데이터가 필요하면 `apps/shared/db/demo_seed.py`의 test profile seed 영역에 추가한다. 최종 발표용 데이터가 아니라면 demo profile에 바로 넣지 않는다.
 

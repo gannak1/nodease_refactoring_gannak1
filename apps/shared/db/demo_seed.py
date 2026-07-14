@@ -20,6 +20,11 @@ from pathlib import Path
 from typing import Any
 
 from apps.shared.audit.actions import AuditAction
+from apps.shared.db.models.agent_builder import (
+    AgentBuilderDraft,
+    AgentBuilderRequest,
+    AgentBuilderSession,
+)
 from apps.shared.db.models.app import App
 from apps.shared.db.models.audit_log import (
     ActorType,
@@ -4436,6 +4441,13 @@ def reset_test_data(db: Session) -> None:
         .all()
     ] or list(TEST_USER_IDS.values())
 
+    # Test reset clears transient builder state child-first while preserving
+    # demo and unrelated organizations.
+    for model in (AgentBuilderDraft, AgentBuilderRequest, AgentBuilderSession):
+        db.query(model).filter(model.organization_id == TEST_ORG_ID).delete(
+            synchronize_session=False
+        )
+
     db.query(AuditLog).filter(
         AuditLog.audit_metadata["demo_seed_key"].astext.like("test-%")
     ).delete(synchronize_session=False)
@@ -4486,9 +4498,6 @@ def reset_test_data(db: Session) -> None:
         )
     ).delete(synchronize_session=False)
     db.query(Team).filter(Team.id.in_(list(TEST_TEAM_IDS.values()))).delete(
-        synchronize_session=False
-    )
-    db.query(Organization).filter(Organization.id == TEST_ORG_ID).delete(
         synchronize_session=False
     )
     db.commit()
@@ -4586,7 +4595,6 @@ def reset_demo_data(db: Session) -> None:
             UserKnowledgePermission.assigned_by.in_(user_ids),
         )
     ).delete(synchronize_session=False)
-
     # 시연 중 라이브로 만든 권한 신청/App 생성 권한도 함께 지워
     # 시나리오 1(차단 -> 신청 -> 승인)을 반복 시연할 수 있게 한다 (ADR-0016).
     db.query(PermissionRequest).filter(
