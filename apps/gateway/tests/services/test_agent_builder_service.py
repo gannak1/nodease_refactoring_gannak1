@@ -1568,7 +1568,7 @@ def test_submit_message_allows_new_workflow_draft_from_existing_workflow_context
     monkeypatch.setattr(
         svc,
         "_app_in_active_org",
-        lambda _: SimpleNamespace(id=app_id),
+        lambda _: SimpleNamespace(id=app_id, workflow_id=workflow_id),
     )
     monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
     monkeypatch.setattr(
@@ -1595,6 +1595,9 @@ def test_submit_message_allows_new_workflow_draft_from_existing_workflow_context
     assert draft.base_workflow_updated_at is None
     assert draft.draft_metadata["workflow_id"] is None
     assert draft.draft_metadata["workflow_scope"] == "new_workflow"
+    assert draft.draft_metadata[service_module.EXPECTED_APP_PRIMARY_WORKFLOW_ID] == str(
+        workflow_id
+    )
 
 
 def test_submit_message_splices_named_existing_target_and_apply_removes_old_edge(
@@ -3628,7 +3631,11 @@ def test_agent_builder_new_workflow_promotes_app_primary(monkeypatch):
         ],
         "edges": [{"id": "start-answer", "source": "start", "target": "answer"}],
     }
-    app = SimpleNamespace(id=app_id, workflow_id=old_workflow_id)
+    app = SimpleNamespace(
+        id=app_id,
+        workflow_id=old_workflow_id,
+        active_deployment_id=None,
+    )
     draft = SimpleNamespace(
         id=uuid.uuid4(),
         request_id=uuid.uuid4(),
@@ -3640,7 +3647,9 @@ def test_agent_builder_new_workflow_promotes_app_primary(monkeypatch):
         status="ready",
         workflow_id=None,
         app_id=app_id,
-        draft_metadata={},
+        draft_metadata={
+            service_module.EXPECTED_APP_PRIMARY_WORKFLOW_ID: str(old_workflow_id)
+        },
         expires_at=None,
     )
     svc = AgentBuilderService(
@@ -3665,7 +3674,7 @@ def test_agent_builder_new_workflow_promotes_app_primary(monkeypatch):
     )
     monkeypatch.setattr(
         service_module.AppService,
-        "_grant_workflow_manager_permission",
+        "_inherit_primary_workflow_permissions",
         lambda *args, **kwargs: None,
     )
     monkeypatch.setattr(svc, "_runtime_kb_bindings_for_apply", lambda _draft: [])
@@ -3696,6 +3705,259 @@ def test_agent_builder_new_workflow_promotes_app_primary(monkeypatch):
     assert response.outcome == "saved"
     assert app.workflow_id == response.saved_workflow_id
     assert app.workflow_id != old_workflow_id
+
+
+@pytest.mark.parametrize(
+    ("draft_metadata", "expected_stale_state"),
+    [
+        ({}, "app_primary_expected_missing"),
+        (
+            {service_module.EXPECTED_APP_PRIMARY_WORKFLOW_ID: "not-a-uuid"},
+            "app_primary_expected_invalid",
+        ),
+    ],
+)
+def test_agent_builder_new_workflow_blocks_missing_or_invalid_primary_metadata(
+    monkeypatch,
+    draft_metadata,
+    expected_stale_state,
+):
+    db = FakeDb()
+    app_id = uuid.uuid4()
+    old_workflow_id = uuid.uuid4()
+    graph = {"nodes": [], "edges": []}
+    app = SimpleNamespace(
+        id=app_id,
+        workflow_id=old_workflow_id,
+        active_deployment_id=None,
+    )
+    draft = SimpleNamespace(
+        id=uuid.uuid4(),
+        request_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+        draft_mode="new_workflow",
+        base_graph_hash=calculate_graph_hash(graph),
+        base_workflow_updated_at=None,
+        preview_graph=graph,
+        status="ready",
+        workflow_id=None,
+        app_id=app_id,
+        draft_metadata=draft_metadata,
+        expires_at=None,
+    )
+    svc = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    monkeypatch.setattr(svc, "_draft_or_404", lambda _draft_id: draft)
+    monkeypatch.setattr(svc, "_app_in_active_org", lambda _app_id: app)
+    monkeypatch.setattr(
+        service_module.AppService,
+        "access_denial_status",
+        lambda *args, **kwargs: None,
+    )
+
+    response = svc.apply_draft(
+        draft.id,
+        AgentBuilderApplyRequest(
+            action="apply_and_save",
+            client_preview_graph_hash=calculate_graph_hash(graph),
+        ),
+    )
+
+    assert response.outcome == "blocked"
+    assert response.block_reason == "DRAFT_METADATA_NOT_FOUND"
+    assert response.stale_state == expected_stale_state
+    assert app.workflow_id == old_workflow_id
+    assert not any(isinstance(row, service_module.Workflow) for row in db.added)
+
+
+def test_agent_builder_new_workflow_blocks_stale_app_primary(monkeypatch):
+    db = FakeDb()
+    app_id = uuid.uuid4()
+    expected_workflow_id = uuid.uuid4()
+    current_workflow_id = uuid.uuid4()
+    graph = {"nodes": [], "edges": []}
+    app = SimpleNamespace(
+        id=app_id,
+        workflow_id=current_workflow_id,
+        active_deployment_id=None,
+    )
+    draft = SimpleNamespace(
+        id=uuid.uuid4(),
+        request_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+        draft_mode="new_workflow",
+        base_graph_hash=calculate_graph_hash(graph),
+        base_workflow_updated_at=None,
+        preview_graph=graph,
+        status="ready",
+        workflow_id=None,
+        app_id=app_id,
+        draft_metadata={
+            service_module.EXPECTED_APP_PRIMARY_WORKFLOW_ID: str(expected_workflow_id)
+        },
+        expires_at=None,
+    )
+    svc = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    monkeypatch.setattr(svc, "_draft_or_404", lambda _draft_id: draft)
+    monkeypatch.setattr(svc, "_app_in_active_org", lambda _app_id: app)
+    monkeypatch.setattr(
+        service_module.AppService,
+        "access_denial_status",
+        lambda *args, **kwargs: None,
+    )
+
+    response = svc.apply_draft(
+        draft.id,
+        AgentBuilderApplyRequest(
+            action="apply_and_save",
+            client_preview_graph_hash=calculate_graph_hash(graph),
+        ),
+    )
+
+    assert response.outcome == "blocked"
+    assert response.block_reason == "DRAFT_STALE"
+    assert response.stale_state == "app_primary_changed"
+    assert app.workflow_id == current_workflow_id
+    assert not any(isinstance(row, service_module.Workflow) for row in db.added)
+
+
+def test_agent_builder_new_workflow_blocks_active_deployment(monkeypatch):
+    db = FakeDb()
+    app_id = uuid.uuid4()
+    old_workflow_id = uuid.uuid4()
+    graph = {"nodes": [], "edges": []}
+    app = SimpleNamespace(
+        id=app_id,
+        workflow_id=old_workflow_id,
+        active_deployment_id=uuid.uuid4(),
+    )
+    draft = SimpleNamespace(
+        id=uuid.uuid4(),
+        request_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+        draft_mode="new_workflow",
+        base_graph_hash=calculate_graph_hash(graph),
+        base_workflow_updated_at=None,
+        preview_graph=graph,
+        status="ready",
+        workflow_id=None,
+        app_id=app_id,
+        draft_metadata={
+            service_module.EXPECTED_APP_PRIMARY_WORKFLOW_ID: str(old_workflow_id)
+        },
+        expires_at=None,
+    )
+    svc = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    monkeypatch.setattr(svc, "_draft_or_404", lambda _draft_id: draft)
+    monkeypatch.setattr(svc, "_app_in_active_org", lambda _app_id: app)
+    monkeypatch.setattr(
+        service_module.AppService,
+        "access_denial_status",
+        lambda *args, **kwargs: None,
+    )
+
+    response = svc.apply_draft(
+        draft.id,
+        AgentBuilderApplyRequest(
+            action="apply_and_save",
+            client_preview_graph_hash=calculate_graph_hash(graph),
+        ),
+    )
+
+    assert response.outcome == "blocked"
+    assert response.block_reason == "APP_ACTIVE_DEPLOYMENT_CONFLICT"
+    assert response.stale_state == "active_deployment_present"
+    assert app.workflow_id == old_workflow_id
+    assert not any(isinstance(row, service_module.Workflow) for row in db.added)
+
+
+def test_agent_builder_new_workflow_rolls_back_permission_inheritance_failure(
+    monkeypatch,
+):
+    db = FakeDb()
+    app_id = uuid.uuid4()
+    old_workflow_id = uuid.uuid4()
+    graph = {"nodes": [], "edges": []}
+    app = SimpleNamespace(
+        id=app_id,
+        workflow_id=old_workflow_id,
+        active_deployment_id=None,
+    )
+    draft = SimpleNamespace(
+        id=uuid.uuid4(),
+        request_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+        draft_mode="new_workflow",
+        base_graph_hash=calculate_graph_hash(graph),
+        base_workflow_updated_at=None,
+        preview_graph=graph,
+        status="ready",
+        workflow_id=None,
+        app_id=app_id,
+        draft_metadata={
+            service_module.EXPECTED_APP_PRIMARY_WORKFLOW_ID: str(old_workflow_id)
+        },
+        expires_at=None,
+    )
+    svc = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    def flush_with_workflow_id():
+        for row in db.added:
+            if isinstance(row, service_module.Workflow) and row.id is None:
+                row.id = uuid.uuid4()
+
+    db.flush = flush_with_workflow_id
+    monkeypatch.setattr(svc, "_draft_or_404", lambda _draft_id: draft)
+    monkeypatch.setattr(svc, "_app_in_active_org", lambda _app_id: app)
+    monkeypatch.setattr(
+        service_module.AppService,
+        "access_denial_status",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        service_module.AppService,
+        "_inherit_primary_workflow_permissions",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("db failure")),
+    )
+    monkeypatch.setattr(svc, "_runtime_kb_bindings_for_apply", lambda _draft: [])
+    monkeypatch.setattr(
+        service_module.WorkflowService,
+        "validate_mail_credential_references",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        service_module,
+        "add_action_audit",
+        lambda *args, **kwargs: None,
+    )
+
+    response = svc.apply_draft(
+        draft.id,
+        AgentBuilderApplyRequest(
+            action="apply_and_save",
+            client_preview_graph_hash=calculate_graph_hash(graph),
+        ),
+    )
+
+    assert response.outcome == "failed"
+    assert response.failure_reason == "SAVE_FAILED"
+    assert db.rollbacks == 1
+    assert app.workflow_id == old_workflow_id
 
 
 def test_agent_builder_preview_splices_generated_chain_into_selected_edge(monkeypatch):
