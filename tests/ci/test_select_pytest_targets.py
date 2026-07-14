@@ -1,4 +1,6 @@
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -9,6 +11,20 @@ def _write(repo: Path, relative: str) -> None:
     path = repo / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("def test_placeholder():\n    pass\n", encoding="utf-8")
+
+
+def test_selector_module_entrypoint_is_runnable():
+    repo_root = Path(__file__).resolve().parents[2]
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "scripts.ci.select_pytest_targets", "--help"],
+        cwd=repo_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_selects_changed_test_file_directly(tmp_path: Path):

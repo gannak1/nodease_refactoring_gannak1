@@ -26,19 +26,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      docs_only: ${{ steps.classify.outputs.docs_only }}
-      python_lint: ${{ steps.classify.outputs.python_lint }}
-      client: ${{ steps.classify.outputs.client }}
-      gateway_tests: ${{ steps.classify.outputs.gateway_tests }}
-      gateway_job: ${{ steps.classify.outputs.gateway_job }}
-      workflow_tests: ${{ steps.classify.outputs.workflow_tests }}
-      shared_tests: ${{ steps.classify.outputs.shared_tests }}
-      log_tests: ${{ steps.classify.outputs.log_tests }}
-      sandbox_tests: ${{ steps.classify.outputs.sandbox_tests }}
-      root_tests: ${{ steps.classify.outputs.root_tests }}
-      knowledge_postgres: ${{ steps.classify.outputs.knowledge_postgres }}
-      workflow_postgres: ${{ steps.classify.outputs.workflow_postgres }}
-      broad_python: ${{ steps.classify.outputs.broad_python }}
+      docs_only: ${{ steps.scope_outputs.outputs.docs_only }}
+      python_lint: ${{ steps.scope_outputs.outputs.python_lint }}
+      client: ${{ steps.scope_outputs.outputs.client }}
+      gateway_tests: ${{ steps.scope_outputs.outputs.gateway_tests }}
+      gateway_job: ${{ steps.scope_outputs.outputs.gateway_job }}
+      workflow_tests: ${{ steps.scope_outputs.outputs.workflow_tests }}
+      shared_tests: ${{ steps.scope_outputs.outputs.shared_tests }}
+      log_tests: ${{ steps.scope_outputs.outputs.log_tests }}
+      sandbox_tests: ${{ steps.scope_outputs.outputs.sandbox_tests }}
+      root_tests: ${{ steps.scope_outputs.outputs.root_tests }}
+      knowledge_postgres: ${{ steps.scope_outputs.outputs.knowledge_postgres }}
+      workflow_postgres: ${{ steps.scope_outputs.outputs.workflow_postgres }}
+      broad_python: ${{ steps.scope_outputs.outputs.broad_python }}
     steps:
       - name: Checkout pull request merge
         uses: actions/checkout@v4
@@ -50,13 +50,88 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      - name: Detect CI control changes outside the selector
+        id: ci_control
+        shell: bash
+        run: |
+          changed=false
+          while IFS= read -r -d '' path; do
+            case "$path" in
+              .github/workflows/pr-ci-control-guard.yml|.github/workflows/pr-quality-gate.yml|.github/actions/*|scripts/ci/*|tests/ci/*)
+                changed=true
+                break
+                ;;
+            esac
+          done < <(git diff --name-only --no-renames -z "$BASE_SHA" "$HEAD_SHA" --)
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+
       - name: Classify changed paths
         id: classify
         run: >-
-          python scripts/ci/changed_scope.py
+          python -m scripts.ci.changed_scope
           --base "$BASE_SHA"
           --head "$HEAD_SHA"
           --github-output "$GITHUB_OUTPUT"
+
+      - name: Fail closed for CI control changes
+        id: scope_outputs
+        shell: bash
+        env:
+          CI_CONTROL_CHANGED: ${{ steps.ci_control.outputs.changed }}
+          CLASSIFIED_DOCS_ONLY: ${{ steps.classify.outputs.docs_only }}
+          CLASSIFIED_PYTHON_LINT: ${{ steps.classify.outputs.python_lint }}
+          CLASSIFIED_CLIENT: ${{ steps.classify.outputs.client }}
+          CLASSIFIED_GATEWAY_TESTS: ${{ steps.classify.outputs.gateway_tests }}
+          CLASSIFIED_GATEWAY_JOB: ${{ steps.classify.outputs.gateway_job }}
+          CLASSIFIED_WORKFLOW_TESTS: ${{ steps.classify.outputs.workflow_tests }}
+          CLASSIFIED_SHARED_TESTS: ${{ steps.classify.outputs.shared_tests }}
+          CLASSIFIED_LOG_TESTS: ${{ steps.classify.outputs.log_tests }}
+          CLASSIFIED_SANDBOX_TESTS: ${{ steps.classify.outputs.sandbox_tests }}
+          CLASSIFIED_ROOT_TESTS: ${{ steps.classify.outputs.root_tests }}
+          CLASSIFIED_KNOWLEDGE_POSTGRES: ${{ steps.classify.outputs.knowledge_postgres }}
+          CLASSIFIED_WORKFLOW_POSTGRES: ${{ steps.classify.outputs.workflow_postgres }}
+          CLASSIFIED_BROAD_PYTHON: ${{ steps.classify.outputs.broad_python }}
+        run: |
+          emit_boolean() {
+            local name="$1"
+            local value="$2"
+            if [[ "$value" != "true" && "$value" != "false" ]]; then
+              echo "::error::$name output is missing or invalid"
+              exit 1
+            fi
+            printf '%s=%s\n' "$name" "$value" >> "$GITHUB_OUTPUT"
+          }
+
+          if [[ "$CI_CONTROL_CHANGED" == "true" ]]; then
+            emit_boolean docs_only false
+            emit_boolean python_lint true
+            emit_boolean client true
+            emit_boolean gateway_tests true
+            emit_boolean gateway_job true
+            emit_boolean workflow_tests true
+            emit_boolean shared_tests true
+            emit_boolean log_tests true
+            emit_boolean sandbox_tests true
+            emit_boolean root_tests true
+            emit_boolean knowledge_postgres true
+            emit_boolean workflow_postgres true
+            emit_boolean broad_python true
+            exit 0
+          fi
+
+          emit_boolean docs_only "$CLASSIFIED_DOCS_ONLY"
+          emit_boolean python_lint "$CLASSIFIED_PYTHON_LINT"
+          emit_boolean client "$CLASSIFIED_CLIENT"
+          emit_boolean gateway_tests "$CLASSIFIED_GATEWAY_TESTS"
+          emit_boolean gateway_job "$CLASSIFIED_GATEWAY_JOB"
+          emit_boolean workflow_tests "$CLASSIFIED_WORKFLOW_TESTS"
+          emit_boolean shared_tests "$CLASSIFIED_SHARED_TESTS"
+          emit_boolean log_tests "$CLASSIFIED_LOG_TESTS"
+          emit_boolean sandbox_tests "$CLASSIFIED_SANDBOX_TESTS"
+          emit_boolean root_tests "$CLASSIFIED_ROOT_TESTS"
+          emit_boolean knowledge_postgres "$CLASSIFIED_KNOWLEDGE_POSTGRES"
+          emit_boolean workflow_postgres "$CLASSIFIED_WORKFLOW_POSTGRES"
+          emit_boolean broad_python "$CLASSIFIED_BROAD_PYTHON"
 
   alembic_graph:
     name: alembic-single-head
@@ -100,7 +175,7 @@ jobs:
         shell: bash
         run: |
           mapfile -d '' files < <(
-            python scripts/ci/changed_scope.py \
+            python -m scripts.ci.changed_scope \
               --base "$BASE_SHA" \
               --head "$HEAD_SHA" \
               --python-files0
@@ -189,7 +264,7 @@ jobs:
       - name: Run selected Gateway tests
         if: needs.scope.outputs.gateway_tests == 'true'
         run: >-
-          python scripts/ci/select_pytest_targets.py
+          python -m scripts.ci.select_pytest_targets
           --component gateway
           --base "$BASE_SHA"
           --head "$HEAD_SHA"
@@ -199,7 +274,7 @@ jobs:
       - name: Run selected root tests
         if: needs.scope.outputs.root_tests == 'true'
         run: >-
-          python scripts/ci/select_pytest_targets.py
+          python -m scripts.ci.select_pytest_targets
           --component root
           --base "$BASE_SHA"
           --head "$HEAD_SHA"
@@ -239,7 +314,7 @@ jobs:
 
       - name: Run selected Workflow Engine tests
         run: >-
-          python scripts/ci/select_pytest_targets.py
+          python -m scripts.ci.select_pytest_targets
           --component workflow_engine
           --base "$BASE_SHA"
           --head "$HEAD_SHA"
@@ -281,7 +356,7 @@ jobs:
 
       - name: Run selected Shared tests
         run: >-
-          python scripts/ci/select_pytest_targets.py
+          python -m scripts.ci.select_pytest_targets
           --component shared
           --base "$BASE_SHA"
           --head "$HEAD_SHA"
@@ -321,7 +396,7 @@ jobs:
 
       - name: Run selected Log System tests
         run: >-
-          python scripts/ci/select_pytest_targets.py
+          python -m scripts.ci.select_pytest_targets
           --component log_system
           --base "$BASE_SHA"
           --head "$HEAD_SHA"
@@ -361,7 +436,7 @@ jobs:
 
       - name: Run selected Sandbox tests
         run: >-
-          python scripts/ci/select_pytest_targets.py
+          python -m scripts.ci.select_pytest_targets
           --component sandbox
           --base "$BASE_SHA"
           --head "$HEAD_SHA"

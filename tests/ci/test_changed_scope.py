@@ -74,6 +74,22 @@ def test_schedule_change_selects_workflow_postgres():
     assert scope.workflow_postgres is True
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "apps/shared/services/external_effect_trace_capture.py",
+        "apps/shared/services/knowledge_ingestion_outbox.py",
+        "apps/shared/services/knowledge_ingestion_outbox_processor.py",
+        "apps/shared/services/rag_answer_retention.py",
+    ],
+)
+def test_log_system_direct_shared_service_selects_log_tests(path: str):
+    scope = classify_paths([path])
+
+    assert scope.shared_tests is True
+    assert scope.log_tests is True
+
+
 def test_ci_control_change_selects_smoke_jobs_and_postgres_contracts():
     scope = classify_paths(["scripts/ci/changed_scope.py"])
 
@@ -84,6 +100,14 @@ def test_ci_control_change_selects_smoke_jobs_and_postgres_contracts():
     assert scope.log_tests is True
     assert scope.sandbox_tests is True
     assert scope.root_tests is True
+    assert scope.broad_python is True
+    assert scope.knowledge_postgres is True
+    assert scope.workflow_postgres is True
+
+
+def test_trusted_guard_change_is_treated_as_ci_control():
+    scope = classify_paths([".github/workflows/pr-ci-control-guard.yml"])
+
     assert scope.broad_python is True
     assert scope.knowledge_postgres is True
     assert scope.workflow_postgres is True

@@ -52,6 +52,13 @@ _WORKFLOW_POSTGRES_PATTERNS = (
     ".github/workflows/test-schedule-dispatch-postgres.yml",
 )
 
+_LOG_SYSTEM_SHARED_SERVICE_PATTERNS = (
+    "apps/shared/services/external_effect_trace_capture.py",
+    "apps/shared/services/knowledge_ingestion_outbox.py",
+    "apps/shared/services/knowledge_ingestion_outbox_processor.py",
+    "apps/shared/services/rag_answer_retention.py",
+)
+
 _DOCUMENTATION_ROOT_FILES = {
     "AGENTS.md",
     "CONTRIBUTING.md",
@@ -187,7 +194,12 @@ def _is_deployment_only_path(path: str) -> bool:
 
 def _is_ci_control_path(path: str) -> bool:
     return (
-        path == ".github/workflows/pr-quality-gate.yml"
+        path
+        in {
+            ".github/workflows/pr-ci-control-guard.yml",
+            ".github/workflows/pr-quality-gate.yml",
+        }
+        or path.startswith(".github/actions/")
         or path.startswith("scripts/ci/")
         or path.startswith("tests/ci/")
     )
@@ -257,6 +269,8 @@ def classify_paths(raw_paths: Iterable[str]) -> ChangeScope:
                 scope.log_tests = True
                 scope.knowledge_postgres = True
                 scope.workflow_postgres = True
+            if _matches_any(path, _LOG_SYSTEM_SHARED_SERVICE_PATTERNS):
+                scope.log_tests = True
             if any(
                 marker in path
                 for marker in ("audit", "tracing", "security_alert", "celery")
