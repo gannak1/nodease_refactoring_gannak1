@@ -278,6 +278,7 @@ Audit metadata에는 credential 원문, raw KB content, raw source path/url/titl
 | `ACTIVE_ORGANIZATION_REQUIRED` | active organization context가 없음 |
 | `WORKFLOW_PERMISSION_REQUIRED` | 기존 workflow read/write 권한 부족 |
 | `APP_CREATE_PERMISSION_REQUIRED` | 새 workflow 생성 scope 권한 부족 |
+| `APP_ACTIVE_DEPLOYMENT_CONFLICT` | 대상 App에 기존 active deployment pointer가 있어 primary 전환을 안전하게 수행할 수 없음 |
 | `DRAFT_VALIDATION_FAILED` | draft validation 실패 |
 | `KB_CANDIDATE_UNAVAILABLE` | 권한 확인된 KB 후보 없음 |
 | `KB_CANDIDATE_AMBIGUOUS` | KB 후보가 여러 개이며 자동 선택 불가 |
@@ -285,7 +286,7 @@ Audit metadata에는 credential 원문, raw KB content, raw source path/url/titl
 | `DRAFT_METADATA_NOT_FOUND` | apply 대상 draft metadata 없음 |
 | `DRAFT_METADATA_EXPIRED` | apply 대상 draft metadata가 만료됨 |
 | `DRAFT_NOT_APPLICABLE` | 이미 저장, 만료, 또는 terminal 처리된 draft라 다시 적용할 수 없음. Preview 취소 audit만으로 ready draft가 terminal 처리되지는 않음 |
-| `DRAFT_STALE` | 최신 graph/context와 draft base가 맞지 않음 |
+| `DRAFT_STALE` | 최신 graph/context 또는 App primary와 draft 생성 시점의 expected base가 맞지 않음 |
 | `UNSAVED_EDITOR_CHANGES` | 현재 editor에 저장되지 않은 변경이 있어 apply/save 차단 |
 | `SAVE_FAILED` | backend 저장 시도 또는 apply/save audit 기록 실패 |
 | `ORGANIZATION_CONTEXT_MISMATCH` | draft 생성 시 active organization과 apply 시 active organization이 다름 |

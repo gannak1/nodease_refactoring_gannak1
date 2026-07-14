@@ -93,6 +93,8 @@ Frontend는 저장 성공 응답만으로 local `previewGraph`를 actual editor 
 
 Apply/save가 차단되거나 실패하면 Preview Mode를 유지하고 `actualEditorGraph`를 변경하지 않는다. Backend response는 `blocked`에 `block_reason`, `failed`에 `failure_reason`을 사용해 차단과 저장 시도 실패 또는 apply/save audit 기록 실패를 구분한다. Frontend는 block reason 또는 failure reason을 표시하고, 사용자가 재시도, 취소, 또는 채팅 후속 요청으로 draft 수정을 선택할 수 있게 한다.
 
+`new_workflow` apply/save에서 Agent Builder application service는 draft에 저장된 expected App primary를 사용해 optimistic concurrency를 확인한다. Apply 시 App row를 잠그고 현재 primary가 달라졌거나 active deployment pointer가 있으면 새 Workflow를 생성하기 전에 차단한다. 전환 가능한 경우 기존 primary의 organization-scoped user/team Workflow permission을 새 Workflow로 승계하고 actor manager 권한, App primary pointer, session rebind, audit를 같은 transaction에서 확정한다. Deployment provenance와 App 전용 ACL의 구조 변경은 이 컴포넌트의 bug-fix 책임에 포함하지 않는다.
+
 ## Knowledge Adapter Integration
 
 Agent Builder는 Knowledge DB를 직접 조회하지 않는다.

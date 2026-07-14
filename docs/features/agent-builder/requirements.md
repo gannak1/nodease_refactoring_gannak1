@@ -245,6 +245,10 @@ Stale check는 draft 생성 시점의 `base_graph_hash`와 workflow `version` �
 
 저장 차단 또는 저장 시도 실패 시 Preview Mode를 유지하고 `actualEditorGraph`를 변경하지 않는다. 사용자는 차단 사유 또는 실패 사유를 확인한 뒤 재시도, 취소, 또는 채팅 후속 요청으로 draft 수정을 선택할 수 있어야 한다. `blocked` outcome은 draft metadata 없음, draft metadata 만료, workflow read/write 권한 부족, app 또는 workflow 생성 scope 권한 부족, stale draft, validation 실패, active organization mismatch, 저장되지 않은 editor 변경 같은 차단 사유를 `block_reason`으로 표현한다. `failed` outcome은 backend 저장 시도 실패 또는 apply/save audit 기록 실패 같은 실패 사유를 `failure_reason`으로 표현한다.
 
+기존 App에 `new_workflow` draft를 적용하는 것은 App primary Workflow 전환이다. Backend는 draft 생성 시점의 App primary Workflow ID를 server-owned expected value로 저장하고, apply/save 시 App row를 잠근 뒤 현재 값과 비교해야 한다. 값이 다르면 stale draft로 차단하며 last-write-wins로 primary를 덮어쓰지 않는다. 대상 App에 active deployment pointer가 있으면 기존 배포를 자동 비활성화하거나 서로 다른 Workflow identity를 결합하지 않고 `APP_ACTIVE_DEPLOYMENT_CONFLICT`로 차단한다.
+
+Primary 전환이 허용되면 기존 primary Workflow에 속한 같은 organization의 직접 사용자·팀 Workflow 권한을 새 Workflow로 승계하고, 적용 actor의 manager 권한을 보장한다. 새 Workflow 생성, 권한 승계, App primary 갱신, Agent Builder session 재연결, apply/save audit는 같은 transaction에서 완료되어야 한다. 차단 또는 실패 시 기존 App primary와 권한 상태를 유지한다.
+
 Preview Mode는 `actualEditorGraph`와 `previewGraph`를 섞지 않아야 한다. 진단을 위해 draft id, request id, apply id, session id, workflow id 또는 새 workflow 생성 scope, preview graph hash, base graph hash, latest graph hash, workflow version 또는 updated_at, draft mode, apply/save outcome, block reason, failure reason, permission recheck outcome, stale state, validation state, saved workflow id, timestamp를 audit-safe metadata로 추적할 수 있어야 한다. Audit metadata에는 credential 원문, raw KB content, raw source path/url/title, hidden KB/resource detail, raw provider response, secret-like user input 원문을 포함하지 않는다.
 
 Apply/save audit event는 draft preview 생성, Preview Mode 진입, 적용 및 저장 요청, 저장 차단, 저장 성공, 저장 실패, 취소를 구분해야 한다. 저장 성공 event는 workflow graph 저장 완료와 audit 기록 성공을 함께 의미하지만 workflow 실행, Knowledge Base retrieval, Slack 전송, workflow node credential 사용/변경, 외부 시스템 변경을 의미하지 않는다.
