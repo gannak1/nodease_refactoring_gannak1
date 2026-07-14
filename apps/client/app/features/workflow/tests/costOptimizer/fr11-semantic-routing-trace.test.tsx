@@ -137,4 +137,31 @@ describe('FR-011 semantic model routing trace', () => {
     ).toBeVisible();
     expect(screen.queryByText(/credential leak/i)).not.toBeInTheDocument();
   });
+
+  it('실제 fallback이 발생하면 최초 모델, 안전한 실패 이유, 실제 대체 모델을 구분한다', () => {
+    render(
+      <ModelRoutingDecisionDetails
+        output={{
+          model: 'gpt-5.6-terra',
+          metadata: {
+            fallback_used: true,
+            model_routing: {
+              selected_model: 'gpt-5.6-luna',
+              fallback_model: 'gpt-5.6-terra',
+              fallback_used: true,
+              fallback_from_model: 'gpt-5.6-luna',
+              fallback_reason_code: 'provider_call_failed',
+              decision_source: 'active_policy',
+              reason_code: 'quality_gate_passed_cost_reduction',
+            },
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('실제 대체 실행')).toBeVisible();
+    expect(screen.getByText('최초 선택: gpt-5.6-luna')).toBeVisible();
+    expect(screen.getByText('사유: Provider 호출 실패')).toBeVisible();
+    expect(screen.getByText('실제 사용: gpt-5.6-terra')).toBeVisible();
+  });
 });

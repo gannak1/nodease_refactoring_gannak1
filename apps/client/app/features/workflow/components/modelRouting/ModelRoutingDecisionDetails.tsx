@@ -1,6 +1,10 @@
 type ModelRoutingSummary = {
   selectedModel?: string;
   fallbackModel?: string;
+  fallbackUsed?: boolean;
+  fallbackFromModel?: string;
+  fallbackReasonCode?: string;
+  actualModel?: string;
   decisionSource?: string;
   reasonCode?: string;
   policyVersion?: string;
@@ -65,11 +69,20 @@ const modelRoutingSummaryOf = ({
   const routing = routingRecordOf(output, traceMetadata);
   if (!routing) return null;
   const outputRecord = isRecord(output) ? output : null;
+  const outputMetadata = isRecord(outputRecord?.metadata)
+    ? outputRecord.metadata
+    : null;
   const summary = {
     selectedModel:
       stringValue(routing.selected_model) ||
       stringValue(outputRecord?.model),
     fallbackModel: stringValue(routing.fallback_model),
+    fallbackUsed:
+      booleanValue(routing.fallback_used) ??
+      booleanValue(outputMetadata?.fallback_used),
+    fallbackFromModel: stringValue(routing.fallback_from_model),
+    fallbackReasonCode: stringValue(routing.fallback_reason_code),
+    actualModel: stringValue(outputRecord?.model),
     decisionSource: stringValue(routing.decision_source),
     reasonCode: stringValue(routing.reason_code),
     policyVersion: stringValue(routing.policy_version),
@@ -102,6 +115,17 @@ const modelRoutingSummaryOf = ({
 
 const formatRoutingPercent = (value: number): string =>
   `${Math.round(value * 1000) / 10}%`;
+
+const fallbackReasonText = (reasonCode?: string): string => {
+  switch (reasonCode) {
+    case 'runtime_client_unavailable':
+      return '모델 호출 준비 실패';
+    case 'provider_call_failed':
+      return 'Provider 호출 실패';
+    default:
+      return '호출 실패';
+  }
+};
 
 const semanticJudgementText = (summary: ModelRoutingSummary): string => {
   if (
@@ -216,6 +240,16 @@ export function ModelRoutingDecisionDetails({
           </dd>
         </div>
       ) : null}
+      {['ambiguous', 'no_match', 'unavailable'].includes(
+        summary.semanticMatchStatus || '',
+      ) ? (
+        <div>
+          <dt className="text-gray-500">매칭 결과</dt>
+          <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
+            기준 미달로 기본 모델 사용
+          </dd>
+        </div>
+      ) : null}
       <div>
         <dt className="text-gray-500">선택 모델</dt>
         <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
@@ -241,6 +275,18 @@ export function ModelRoutingDecisionDetails({
             호출 실패 시 검증된 {summary.fallbackModel} 모델로 한 번
             전환합니다.
           </dd>
+        </div>
+      ) : null}
+      {summary.fallbackUsed ? (
+        <div className="sm:col-span-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-gray-900 dark:border-amber-800 dark:bg-amber-950/20 dark:text-gray-100">
+          <dt className="font-semibold text-amber-800 dark:text-amber-200">
+            실제 대체 실행
+          </dt>
+          <dd className="mt-1">
+            최초 선택: {summary.fallbackFromModel || summary.selectedModel || '-'}
+          </dd>
+          <dd>사유: {fallbackReasonText(summary.fallbackReasonCode)}</dd>
+          <dd>실제 사용: {summary.actualModel || summary.fallbackModel || '-'}</dd>
         </div>
       ) : null}
       {summary.policyVersion || summary.routeCatalogVersion ? (
