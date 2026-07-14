@@ -14,6 +14,10 @@ from apps.gateway.services.app_lifecycle_lock import lock_app_for_lifecycle
 from apps.gateway.services.knowledge_deployment_preflight_service import (
     KnowledgeDeploymentPreflightService,
 )
+from apps.gateway.services.deployment_parameter_optimization_service import (
+    DeploymentParameterOptimizationConfigurationError,
+    DeploymentParameterOptimizationService,
+)
 from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
 from apps.gateway.services.workflow_service import WorkflowService
 from apps.gateway.application.deployment.schedule_errors import (
@@ -44,6 +48,9 @@ from apps.shared.domain.workflow_graph import (
 )
 from apps.shared.schemas.deployment import DeploymentCreate, DeploymentPreflightResponse
 from apps.shared.services.permissions import has_workflow_permission
+from apps.shared.services.model_routing_policy_inheritance import (
+    ModelRoutingPolicyInheritanceService,
+)
 from apps.shared.services.workflow_task_publisher import send_workflow_task
 
 logger = logging.getLogger(__name__)
@@ -228,13 +235,19 @@ class DeploymentService:
         output_schema = DeploymentService._extract_output_schema(graph_snapshot)
 
         # 8. 배포 모델 생성
+        deployment_config = dict(deployment_in.config or {})
+        if deployment_in.parameter_optimization is not None:
+            deployment_config["parameter_optimization"] = (
+                deployment_in.parameter_optimization.model_dump(mode="json")
+            )
+
         db_obj = WorkflowDeployment(
             app_id=deployment_in.app_id,
             version=new_version,
             type=deployment_in.type,
             # url_slug, auth_secret 제거 (App 모델에서 관리)
             graph_snapshot=graph_snapshot,
-            config=deployment_in.config,
+            config=deployment_config,
             browser_access_policy=(
                 browser_access_policy.to_dict()
                 if browser_access_policy is not None
@@ -253,6 +266,16 @@ class DeploymentService:
 
             # 8.1. 같은 앱의 기존 배포를 모두 비활성화 (단일 활성화 정책)
             if db_obj.is_active:
+                # 정책과 입력군은 배포 snapshot에 귀속된다. 재배포 시 이전 활성
+                # snapshot의 검증 근거를 먼저 새 snapshot으로 복제해야 UI와 runtime이
+                # 같은 정책을 계속 조회할 수 있다.
+                ModelRoutingPolicyInheritanceService.inherit_for_deployment(
+                    db,
+                    workflow_id=workflow.id,
+                    source_deployment_id=app.active_deployment_id,
+                    target_deployment_id=db_obj.id,
+                    target_graph=graph_snapshot,
+                )
                 from apps.gateway.services.scheduler_service import (
                     get_scheduler_service,
                 )
@@ -275,6 +298,14 @@ class DeploymentService:
                     scheduler_service = get_scheduler_service()
                     scheduler_service.add_schedule(schedule, db)
 
+            DeploymentParameterOptimizationService.configure_for_deployment(
+                db,
+                deployment=db_obj,
+                workflow_id=workflow.id,
+                graph_snapshot=graph_snapshot,
+                config=deployment_in.parameter_optimization,
+            )
+
             db.commit()
             db.refresh(db_obj)
 
@@ -285,6 +316,9 @@ class DeploymentService:
 
             return db_obj
 
+        except DeploymentParameterOptimizationConfigurationError as exc:
+            db.rollback()
+            raise HTTPException(status_code=422, detail=str(exc)) from None
         except ScheduleConfigurationError:
             db.rollback()
             raise HTTPException(

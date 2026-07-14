@@ -89,4 +89,26 @@ describe('workflowApi.executeWorkflowStream', () => {
     expect(headers.get('X-Organization-Id')).toBe('org-1');
     expect(init.body).toBe(formData);
   });
+
+  it('requests the active deployment policy for an automatic-routing test', async () => {
+    const fetchMock: MockedFunction<typeof fetch> = vi.fn(async () =>
+      streamResponse(['data: {"type":"workflow_finish"}\n\n']),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await workflowApi.executeWorkflowStream(
+      'workflow-1',
+      { question: 'hello' },
+      undefined,
+      { useActiveDeploymentRoutingPolicy: true },
+    );
+
+    expect(getFetchInit(fetchMock).body).toBe(
+      JSON.stringify({
+        inputs: { question: 'hello' },
+        graph_snapshot: undefined,
+        use_active_deployment_routing_policy: true,
+      }),
+    );
+  });
 });

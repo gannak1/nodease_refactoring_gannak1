@@ -106,6 +106,7 @@ def test_active_policy_adds_only_validated_cohort_rules_and_keeps_baseline_defau
     assert policy["default_model_id"] == "gpt-4.1"
     assert policy["rules"] == [
         {
+            "id": "adaptive-cohort-billing",
             "when": {"semantic_cohort_id": "billing"},
             "selected_model_id": "gpt-4.1-mini",
             "fallback_model_id": "gpt-4.1",
@@ -266,6 +267,51 @@ def test_active_policy_projection_keeps_other_validated_cohort_when_one_cohort_i
         "invoice": "gpt-5.4-nano",
         "slack": "gpt-5-mini",
     }
+
+
+def test_validation_batch_restores_cohort_status_when_execution_cannot_start():
+    """일시적인 실행 주체 오류 뒤에도 입력군은 다음 점검에서 다시 검증돼야 한다."""
+    cohort_id = uuid.uuid4()
+    cohort = SimpleNamespace(id=cohort_id, status="validating")
+    batch = SimpleNamespace(
+        candidate_plan={
+            "cohort_status_before_validation": {
+                str(cohort_id): "validated_waiting",
+            }
+        },
+        reserved_cost=Decimal("0.10"),
+        status="pending",
+        error_summary=None,
+        completed_at=None,
+    )
+    policy = SimpleNamespace(
+        id=uuid.uuid4(),
+        active_policy=None,
+        refresh_requested_at=None,
+        status="refreshing",
+        last_refresh_result=None,
+        last_refreshed_at=None,
+    )
+    cohort_query = MagicMock()
+    cohort_query.filter.return_value = cohort_query
+    cohort_query.all.return_value = [cohort]
+    db = MagicMock()
+    db.query.return_value = cohort_query
+
+    with patch.object(
+        AdaptiveModelRoutingValidationService,
+        "_locked_monthly_budget",
+        return_value=SimpleNamespace(reserved_usd=Decimal("0.10")),
+    ):
+        AdaptiveModelRoutingValidationService._fail_batch_and_release_refresh(
+            db,
+            batch=batch,
+            policy=policy,
+            reason_code="execution_subject_unavailable",
+        )
+
+    assert batch.status == "failed"
+    assert cohort.status == "validated_waiting"
 
 
 def test_finalize_batch_flushes_activated_cohorts_before_runtime_catalog_projection():
@@ -431,6 +477,78 @@ def test_completed_validation_batch_is_not_reused_for_a_new_refresh_cycle():
         )
         is True
     )
+
+
+def test_execute_batch_does_not_finalize_a_batch_completed_by_another_worker():
+    """행 잠금 대기 뒤 완료 상태가 됐으면 비용/정책을 다시 확정하면 안 된다."""
+    batch_id = uuid.uuid4()
+    initial_batch = SimpleNamespace(
+        id=batch_id,
+        policy_id=uuid.uuid4(),
+        status="running",
+    )
+    completed_batch = SimpleNamespace(
+        id=batch_id,
+        policy_id=initial_batch.policy_id,
+        status="completed",
+    )
+    policy = SimpleNamespace(id=initial_batch.policy_id, node_id="llm-triage")
+
+    def query_result(*, first=None, all_rows=None):
+        result = MagicMock()
+        result.filter.return_value = result
+        result.order_by.return_value = result
+        result.with_for_update.return_value = result
+        result.first.return_value = first
+        result.all.return_value = all_rows or []
+        return result
+
+    db = MagicMock()
+    db.query.side_effect = [
+        query_result(first=initial_batch),
+        query_result(first=policy),
+        query_result(all_rows=[]),
+        query_result(first=completed_batch),
+    ]
+
+    with (
+        patch.object(
+            AdaptiveModelRoutingValidationService,
+            "_deployment",
+            return_value=SimpleNamespace(graph_snapshot={}),
+        ),
+        patch.object(
+            AdaptiveModelRoutingValidationService,
+            "_node_data",
+            return_value={"model_id": "gpt-4.1"},
+        ),
+        patch.object(
+            AdaptiveModelRoutingValidationService,
+            "_execution_subject",
+            return_value=uuid.uuid4(),
+        ),
+        patch.object(
+            AdaptiveModelRoutingValidationService,
+            "_locked_policy",
+            return_value=policy,
+        ),
+        patch.object(
+            AdaptiveModelRoutingValidationService,
+            "_batch_has_nonterminal_items",
+            return_value=False,
+        ),
+        patch.object(
+            AdaptiveModelRoutingValidationService,
+            "_finalize_batch",
+        ) as finalize_batch,
+    ):
+        result = AdaptiveModelRoutingValidationService.execute_batch(
+            db,
+            batch_id=batch_id,
+        )
+
+    assert result is completed_batch
+    finalize_batch.assert_not_called()
 
 
 def test_stale_running_validation_item_is_recovered_but_fresh_item_is_left_running():

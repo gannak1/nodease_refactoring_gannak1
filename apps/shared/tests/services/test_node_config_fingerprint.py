@@ -30,3 +30,17 @@ def test_llm_node_fingerprint_tracks_model_routing_refresh_interval():
     }
 
     assert llm_node_config_fingerprint(first) != llm_node_config_fingerprint(second)
+
+
+def test_llm_node_fingerprint_tracks_knowledge_collections():
+    """RAG collection 교체는 같은 검증 evidence를 재사용하면 안 된다."""
+    first = {
+        "model_id": "gpt-4.1",
+        "knowledgeCollections": [{"id": "collection-a"}],
+    }
+    second = {
+        "model_id": "gpt-4.1",
+        "knowledgeCollections": [{"id": "collection-b"}],
+    }
+
+    assert llm_node_config_fingerprint(first) != llm_node_config_fingerprint(second)

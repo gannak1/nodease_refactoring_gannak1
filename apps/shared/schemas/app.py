@@ -109,6 +109,20 @@ class AppOperationLatestRunSummary(BaseModel):
     error_message: Optional[str] = None
 
 
+class AppOperationAutomaticOptimizationSummary(BaseModel):
+    """운영 현황 목록에서만 사용하는 배포별 자동 최적화 safe summary."""
+
+    enabled: bool = False
+    status: Literal[
+        "disabled", "collecting", "ready", "paused", "budget_exhausted", "failed"
+    ] = "disabled"
+    node_count: int = 0
+    collected_runs: int = 0
+    check_every_runs: int = 50
+    validation_spend_usd: float = 0.0
+    monthly_validation_budget_usd: float = 3.0
+
+
 class AppOperationRow(BaseModel):
     app: AppOperationAppSummary
     permission: Optional[AppOperationPermissionSummary] = None
@@ -117,3 +131,4 @@ class AppOperationRow(BaseModel):
     permission_error: Optional[str] = None
     deployment: AppOperationDeploymentSummary
     latest_run: AppOperationLatestRunSummary
+    automatic_optimization: AppOperationAutomaticOptimizationSummary | None = None

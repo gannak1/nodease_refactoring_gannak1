@@ -314,6 +314,8 @@ export interface ModelRoutingPolicyResponse {
       key: string;
       label: string;
       label_en: string | null;
+      /** 운영 원문이 아닌 입력군 매칭 기준의 합성 대표 문의 */
+      representative_query: string | null;
       source: 'manual' | 'auto' | string;
       status: 'proposed' | 'validating' | 'validated_waiting' | 'active' | 'dormant' | 'retired' | string;
       required: boolean;
@@ -368,34 +370,20 @@ export interface ModelRoutingCohortCreateResponse {
   id: string;
   key: string;
   label: string;
+  representative_query: string;
   source: 'manual' | 'auto' | string;
   status: string;
 }
+
+export type ModelRoutingCohortUpdateRequest = ModelRoutingCohortCreateRequest;
+
+export type ModelRoutingCohortUpdateResponse = ModelRoutingCohortCreateResponse;
 
 export interface ModelRoutingPolicyRefreshResponse {
   policy_id: string;
   status: 'refreshing';
   trigger: 'manual_refresh';
   scheduled: boolean;
-}
-
-export interface ModelRoutingPreviewResponse {
-  deployment_version: number;
-  policy_version: string | null;
-  decision_source: 'matched_rule' | 'default_model' | 'fallback_model';
-  selected_model_id: string;
-  fallback_model_id: string | null;
-  default_model_id: string | null;
-  configured_fallback_model_id: string | null;
-  matched_cohort: {
-    id: string | null;
-    label: string | null;
-  } | null;
-  matched_rule_id: string | null;
-  reason_code: string;
-  availability: 'available' | 'fallback';
-  semantic_evaluation: 'not_required' | 'embedding_used' | 'unavailable';
-  draft_matches_deployment: boolean;
 }
 
 export interface CostOptimizerDownstreamCompatibility {

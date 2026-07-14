@@ -227,6 +227,12 @@ class AdaptiveModelRoutingValidationService:
             # refresh lease를 정상 종료하게 한다.
             return existing if cls._should_reuse_existing_batch(existing) else None
 
+        planned_cohort_ids = {uuid.UUID(item.cohort_id) for item in plan.items}
+        previous_cohort_statuses = {
+            str(cohort.id): str(cohort.status)
+            for cohort in cohorts
+            if cohort.id in planned_cohort_ids
+        }
         batch = LLMNodeModelRoutingValidationBatch(
             policy_id=policy.id,
             policy_update_id=policy_update_id,
@@ -238,6 +244,9 @@ class AdaptiveModelRoutingValidationService:
                 "judge_model_id": judge_model_id,
                 "node_config_fingerprint": fingerprint,
                 "item_count": len(plan.items),
+                # batch 시작 뒤 실행 주체/배포가 일시적으로 불가능해져도 cohort가
+                # validating 상태에 고착되지 않도록 원래 lifecycle 상태를 남긴다.
+                "cohort_status_before_validation": previous_cohort_statuses,
             },
             total_items=len(plan.items),
             reserved_cost=Decimal(str(plan.reserved_cost_usd)),
@@ -255,7 +264,6 @@ class AdaptiveModelRoutingValidationService:
                     status="pending",
                 )
             )
-        planned_cohort_ids = {uuid.UUID(item.cohort_id) for item in plan.items}
         for cohort in cohorts:
             if cohort.id in planned_cohort_ids:
                 cohort.status = "validating"
@@ -425,6 +433,11 @@ class AdaptiveModelRoutingValidationService:
         )
         policy = cls._locked_policy(db, batch.policy_id) if batch is not None else None
         if batch is None or policy is None:
+            return batch
+        # 다른 worker가 같은 batch의 모든 item을 처리하고 완료했을 수 있다. 행
+        # 잠금에서 깨어난 뒤 상태를 다시 확인하지 않으면 예산/active policy를
+        # 같은 batch에 대해 두 번 확정하게 된다.
+        if batch.status in cls._TERMINAL_BATCH_STATUSES:
             return batch
         deployment = cls._deployment(db, policy)
         node_data = cls._node_data(deployment.graph_snapshot if deployment else {}, policy.node_id)
@@ -1171,6 +1184,7 @@ class AdaptiveModelRoutingValidationService:
         batch.status = "failed"
         batch.error_summary = {"reason_code": reason_code}
         batch.completed_at = datetime.now(timezone.utc)
+        cls._restore_cohort_statuses_after_failed_batch(db, batch=batch)
         budget = cls._locked_monthly_budget(db, policy)
         budget.reserved_usd = max(
             Decimal("0"),
@@ -1191,6 +1205,48 @@ class AdaptiveModelRoutingValidationService:
                 ),
             )
         db.flush()
+
+    @classmethod
+    def _restore_cohort_statuses_after_failed_batch(
+        cls,
+        db: Session,
+        *,
+        batch: LLMNodeModelRoutingValidationBatch,
+    ) -> None:
+        """실행 전 실패한 batch가 입력군을 validating에 남기지 않게 복구한다."""
+        plan = batch.candidate_plan if isinstance(batch.candidate_plan, dict) else {}
+        previous_by_id = plan.get("cohort_status_before_validation")
+        previous_by_id = previous_by_id if isinstance(previous_by_id, dict) else {}
+        cohort_ids: set[uuid.UUID] = set()
+        for raw_id in previous_by_id:
+            try:
+                cohort_ids.add(uuid.UUID(str(raw_id)))
+            except (TypeError, ValueError):
+                continue
+        if not cohort_ids:
+            # 이전 버전에서 생성된 batch에는 lifecycle snapshot이 없으므로 item을
+            # 기준으로 복구한다. 이 경우 재검증 가능 상태인 proposed로 되돌린다.
+            cohort_ids = {
+                row.cohort_id
+                for row in (
+                    db.query(LLMNodeModelRoutingValidationItem)
+                    .filter(LLMNodeModelRoutingValidationItem.batch_id == batch.id)
+                    .all()
+                )
+            }
+        if not cohort_ids:
+            return
+        cohorts = (
+            db.query(LLMNodeModelRoutingCohort)
+            .filter(LLMNodeModelRoutingCohort.id.in_(cohort_ids))
+            .all()
+        )
+        restorable_statuses = {"proposed", "validated_waiting"}
+        for cohort in cohorts:
+            if cohort.status != "validating":
+                continue
+            previous = str(previous_by_id.get(str(cohort.id)) or "proposed")
+            cohort.status = previous if previous in restorable_statuses else "proposed"
 
     @classmethod
     def _batch_has_nonterminal_items(

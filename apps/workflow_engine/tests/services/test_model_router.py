@@ -102,6 +102,14 @@ def _candidate(model_id: str, price: float) -> ModelCandidate:
     )
 
 
+def test_workflow_chat_model_allowlist_includes_gpt_56_aliases():
+    """FR-011: Gateway에서 노출한 GPT-5.6 모델은 routing 후보에도 남는다."""
+    for model_id in ("gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
+        assert ModelRouter.is_workflow_chat_model(
+            SimpleNamespace(model_id_for_api_call=model_id, type="chat")
+        )
+
+
 def test_cold_start_high_risk_uses_conservative_model():
     """운영 로그가 부족하고 고객-facing/RAG 위험이 있으면 cheap 모델을 고르지 않는다."""
     decision = ModelRouter.resolve(

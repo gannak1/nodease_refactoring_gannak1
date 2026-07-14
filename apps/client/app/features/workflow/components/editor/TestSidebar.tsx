@@ -14,9 +14,10 @@ import {
   Loader2,
   CheckCircle,
   AlertCircle,
+  ArrowLeft,
+  ChevronRight,
   Clock,
   Coins,
-  Route,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { StartNodeData, WorkflowVariable } from '../../types/Nodes';
@@ -45,8 +46,6 @@ import {
 import { FinalResponseCard } from '../execution/FinalResponseCard';
 import { deploymentApiErrorMessage } from '../../utils/deploymentPreflightMessage';
 import { ModelRoutingDecisionDetails } from '../modelRouting/ModelRoutingDecisionDetails';
-import { ModelRoutingPreviewPanel } from '../modelRouting/ModelRoutingPreviewPanel';
-import type { ModelRoutingPreviewResponse } from '../../types/Api';
 
 export { ModelRoutingDecisionDetails } from '../modelRouting/ModelRoutingDecisionDetails';
 
@@ -59,6 +58,12 @@ type TestSidebarProps = {
 };
 
 const STREAM_IDLE_TIMEOUT_MS = 60_000;
+const TEST_SIDEBAR_DEFAULT_WIDTH = 480;
+const TEST_SIDEBAR_MIN_WIDTH = 380;
+const TEST_SIDEBAR_MAX_WIDTH = 640;
+const TEST_SIDEBAR_VIEWPORT_GUTTER = 24;
+const TEST_SIDEBAR_MIN_CANVAS_WIDTH = 420;
+const TEST_SIDEBAR_KEYBOARD_STEP = 20;
 
 type PreflightStatus = 'idle' | 'validating' | 'saving';
 
@@ -66,6 +71,9 @@ export const TEST_INPUT_CLASS_NAME =
   'w-full px-3 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-100 dark:placeholder:text-gray-500';
 const testTextAreaClassName = `${TEST_INPUT_CLASS_NAME} min-h-[100px]`;
 const testJsonTextAreaClassName = `${TEST_INPUT_CLASS_NAME} min-h-[200px] font-mono text-sm`;
+
+const clamp = (value: number, min: number, max: number) =>
+  Math.min(Math.max(value, min), max);
 
 const cloneDraft = (value: WorkflowDraftRequest): WorkflowDraftRequest => {
   if (typeof structuredClone === 'function') {
@@ -125,15 +133,16 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   const [validationErrors, setValidationErrors] = useState<
     GraphValidationIssue[]
   >([]);
-  const [routingPreview, setRoutingPreview] =
-    useState<ModelRoutingPreviewResponse | null>(null);
-  const [routingPreviewError, setRoutingPreviewError] = useState<string | null>(
+  const [selectedTestNodeId, setSelectedTestNodeId] = useState<string | null>(
     null,
   );
-  const [isRoutingPreviewing, setIsRoutingPreviewing] = useState(false);
-  const [routingPreviewNodeId, setRoutingPreviewNodeId] = useState<string | null>(
-    null,
+  const [testSidebarWidth, setTestSidebarWidth] = useState(
+    TEST_SIDEBAR_DEFAULT_WIDTH,
   );
+  const [viewportWidth, setViewportWidth] = useState(() =>
+    typeof window === 'undefined' ? 0 : window.innerWidth,
+  );
+  const clearResizeListenersRef = React.useRef<(() => void) | null>(null);
   const nodeStartedAtRef = React.useRef<Record<string, number>>({});
   const isExecuting = testExecutionStatus === 'running';
   const isPreparing =
@@ -151,33 +160,35 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     canExecute,
   });
 
-  const routingPreviewNodes = useMemo(
-    () => nodes.filter((node) => node.type === 'llmNode'),
-    [nodes],
+  const maxTestSidebarWidth = Math.min(
+    TEST_SIDEBAR_MAX_WIDTH,
+    Math.max(0, viewportWidth - TEST_SIDEBAR_VIEWPORT_GUTTER),
   );
-  const routingPreviewNode =
-    routingPreviewNodes.find((node) => node.id === routingPreviewNodeId) ??
-    (routingPreviewNodes.length === 1 ? routingPreviewNodes[0] : null);
-  const routingPreviewDisabledMessage = !canExecute
-    ? '현재 권한으로는 라우팅 미리보기를 확인할 수 없습니다.'
-    : routingPreviewNodes.length === 0
-      ? '라우팅 미리보기를 확인할 LLM 노드가 없습니다.'
-      : !routingPreviewNode
-        ? '라우팅 판단을 확인할 LLM 노드를 선택해 주세요.'
-        : null;
+  const minTestSidebarWidth = Math.min(
+    TEST_SIDEBAR_MIN_WIDTH,
+    maxTestSidebarWidth,
+  );
+  const renderedTestSidebarWidth = clamp(
+    testSidebarWidth,
+    minTestSidebarWidth,
+    maxTestSidebarWidth,
+  );
+  const canResizeTestSidebar =
+    viewportWidth >= TEST_SIDEBAR_MIN_WIDTH + TEST_SIDEBAR_MIN_CANVAS_WIDTH;
 
   useEffect(() => {
-    if (routingPreviewNodes.length === 0) {
-      setRoutingPreviewNodeId(null);
-      return;
-    }
+    const syncViewportWidth = () => setViewportWidth(window.innerWidth);
 
-    if (routingPreviewNodes.some((node) => node.id === routingPreviewNodeId)) {
-      return;
-    }
+    window.addEventListener('resize', syncViewportWidth);
+    return () => window.removeEventListener('resize', syncViewportWidth);
+  }, []);
 
-    setRoutingPreviewNodeId(routingPreviewNodes[0].id);
-  }, [routingPreviewNodeId, routingPreviewNodes]);
+  useEffect(
+    () => () => {
+      clearResizeListenersRef.current?.();
+    },
+    [],
+  );
 
   const outputLabelByNodeId = useMemo(() => {
     const labelMap = new Map<string, Map<string, string>>();
@@ -289,75 +300,70 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     return () => window.clearTimeout(timeout);
   }, [isTestPanelOpen]);
 
-  useEffect(() => {
-    setRoutingPreview(null);
-    setRoutingPreviewError(null);
-  }, [inputs, routingPreviewNode?.id]);
-
   if (!isTestPanelOpen) return null;
+
+  const setClampedTestSidebarWidth = (width: number) => {
+    setTestSidebarWidth(clamp(width, minTestSidebarWidth, maxTestSidebarWidth));
+  };
+
+  const handleTestSidebarResizeStart = (
+    event: React.PointerEvent<HTMLDivElement>,
+  ) => {
+    if (!canResizeTestSidebar) return;
+
+    event.preventDefault();
+    clearResizeListenersRef.current?.();
+
+    const startClientX = event.clientX;
+    const startWidth = renderedTestSidebarWidth;
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      setClampedTestSidebarWidth(startWidth + startClientX - moveEvent.clientX);
+    };
+    const clearResizeListeners = () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', clearResizeListeners);
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      clearResizeListenersRef.current = null;
+    };
+
+    clearResizeListenersRef.current = clearResizeListeners;
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', clearResizeListeners, { once: true });
+  };
+
+  const handleTestSidebarResizeKeyDown = (
+    event: React.KeyboardEvent<HTMLDivElement>,
+  ) => {
+    if (!canResizeTestSidebar) return;
+
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      setClampedTestSidebarWidth(
+        renderedTestSidebarWidth - TEST_SIDEBAR_KEYBOARD_STEP,
+      );
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      setClampedTestSidebarWidth(
+        renderedTestSidebarWidth + TEST_SIDEBAR_KEYBOARD_STEP,
+      );
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      setClampedTestSidebarWidth(minTestSidebarWidth);
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      setClampedTestSidebarWidth(maxTestSidebarWidth);
+    }
+  };
 
   const handleChange = (name: string, value: any) => {
     setInputs((prev) => ({ ...prev, [name]: value }));
-  };
-
-  const routingPreviewErrorMessage = (error: unknown) => {
-    const detail =
-      typeof error === 'object' &&
-      error !== null &&
-      'response' in error &&
-      typeof (error as { response?: { data?: { detail?: unknown } } }).response
-        ?.data?.detail === 'string'
-        ? (error as { response: { data: { detail: string } } }).response.data
-            .detail
-        : '';
-    const messages: Record<string, string> = {
-      'model_routing.disabled': '자동 모델 라우팅을 켠 뒤 배포하면 미리보기를 사용할 수 있습니다.',
-      'model_routing.policy_not_ready':
-        '아직 활성 정책이 없습니다. 배포 후 운영 실행 또는 정책 갱신이 필요합니다.',
-      'model_routing.execution_subject_unavailable':
-        '배포 실행 주체를 확인할 수 없어 실제 배포 기준으로 모델을 고를 수 없습니다.',
-      'model_routing.no_available_model':
-        '기본 모델과 대체 모델 모두 현재 배포 실행 주체가 사용할 수 없습니다.',
-    };
-    return messages[detail] || '라우팅 미리보기를 불러오지 못했습니다.';
-  };
-
-  const handleRoutingPreview = async () => {
-    if (!activeWorkflowId || !routingPreviewNode || !canExecute) return;
-    if (Object.values(files).some((file) => file !== null)) {
-      setRoutingPreview(null);
-      setRoutingPreviewError(
-        '파일 입력은 업로드 주소가 필요해 현재 라우팅 미리보기에서 확인할 수 없습니다.',
-      );
-      return;
-    }
-
-    let previewInputs: Record<string, unknown> = { ...inputs };
-    if (startNode?.type === 'webhookTrigger') {
-      try {
-        previewInputs = JSON.parse(String(inputs.__json_payload__ || ''));
-      } catch {
-        setRoutingPreview(null);
-        setRoutingPreviewError('유효한 JSON 웹훅 페이로드를 입력해 주세요.');
-        return;
-      }
-    }
-
-    setIsRoutingPreviewing(true);
-    setRoutingPreviewError(null);
-    try {
-      const preview = await workflowApi.previewModelRouting(
-        activeWorkflowId,
-        routingPreviewNode.id,
-        previewInputs,
-      );
-      setRoutingPreview(preview);
-    } catch (previewError) {
-      setRoutingPreview(null);
-      setRoutingPreviewError(routingPreviewErrorMessage(previewError));
-    } finally {
-      setIsRoutingPreviewing(false);
-    }
   };
 
   const buildObservability = (
@@ -377,9 +383,6 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   };
 
   const resultOutputByNodeId = new Map<string, unknown>();
-  for (const result of nodeResults) {
-    resultOutputByNodeId.set(result.nodeId, result.output);
-  }
   if (
     executionResult &&
     typeof executionResult === 'object' &&
@@ -390,6 +393,11 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     )) {
       resultOutputByNodeId.set(nodeId, output);
     }
+  }
+  // 스트림의 node_finish 결과에는 routing/usage 메타데이터가 더 풍부하므로
+  // workflow 최종 결과의 축약 output보다 우선합니다.
+  for (const result of nodeResults) {
+    resultOutputByNodeId.set(result.nodeId, result.output);
   }
 
   const nodeExecutionSummaries = nodes
@@ -454,6 +462,11 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     hasExecutionResult,
     error,
   });
+  const selectedNodeExecutionSummary = selectedTestNodeId
+    ? nodeExecutionSummaries.find(
+        (summary) => summary.nodeId === selectedTestNodeId,
+      )
+    : null;
 
   const renderNodeExecutionSummary = (
     summary: (typeof nodeExecutionSummaries)[number],
@@ -484,14 +497,27 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
             </div>
             <div className="mt-1 text-xs text-gray-500">{summary.nodeType}</div>
           </div>
-          <span
-            className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-1 text-xs font-semibold ${statusClassName}`}
-          >
-            <StatusIcon
-              className={`h-3.5 w-3.5 ${isRunning ? 'animate-spin' : ''}`}
-            />
-            {statusLabel}
-          </span>
+          <div className="flex shrink-0 items-center gap-1">
+            <span
+              className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs font-semibold ${statusClassName}`}
+            >
+              <StatusIcon
+                className={`h-3.5 w-3.5 ${isRunning ? 'animate-spin' : ''}`}
+              />
+              {statusLabel}
+            </span>
+            {!isRunning ? (
+              <button
+                type="button"
+                aria-label={`${summary.title} 상세 보기`}
+                title="상세 보기"
+                onClick={() => setSelectedTestNodeId(summary.nodeId)}
+                className="rounded-md border border-gray-200 bg-white p-1.5 text-gray-500 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300 dark:hover:border-blue-800 dark:hover:bg-blue-950/30"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </button>
+            ) : null}
+          </div>
         </div>
         <dl className="grid grid-cols-3 gap-2 bg-white px-4 py-3 text-xs dark:bg-gray-900">
           <div>
@@ -519,14 +545,77 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
             </dd>
           </div>
         </dl>
-        <ModelRoutingDecisionDetails output={summary.output} />
-        {summary.output !== undefined && (
-          <div className="max-h-40 overflow-x-auto border-t border-gray-100 bg-white p-3 dark:border-gray-800 dark:bg-gray-900">
-            <pre className="text-xs font-mono text-gray-600 dark:text-gray-300">
-              {stringifyOutputForDisplay(summary.nodeId, summary.output)}
-            </pre>
+      </div>
+    );
+  };
+
+  const renderNodeExecutionDetail = (
+    summary: (typeof nodeExecutionSummaries)[number],
+  ) => {
+    const hasRoutingTrace =
+      summary.nodeType === 'llmNode' &&
+      typeof summary.output === 'object' &&
+      summary.output !== null &&
+      !Array.isArray(summary.output) &&
+      typeof (summary.output as { metadata?: { model_routing?: unknown } })
+        .metadata?.model_routing === 'object';
+
+    return (
+      <div className="space-y-5">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            aria-label="테스트 결과로 돌아가기"
+            title="테스트 결과로 돌아가기"
+            onClick={() => setSelectedTestNodeId(null)}
+            className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+          </button>
+          <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">
+            {summary.title} 실행 상세
+          </h3>
+        </div>
+
+        <dl className="grid grid-cols-3 gap-3 rounded-lg border border-gray-200 bg-gray-50 p-4 text-xs dark:border-gray-700 dark:bg-gray-800/60">
+          <div>
+            <dt className="text-gray-500">상태</dt>
+            <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
+              {summary.status === 'failure' ? '실패' : '성공'}
+            </dd>
           </div>
-        )}
+          <div>
+            <dt className="text-gray-500">실행 시간</dt>
+            <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
+              {formatLatency(summary.latencyMs)}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-gray-500">비용</dt>
+            <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
+              {formatCost(summary.totalCost)}
+            </dd>
+          </div>
+        </dl>
+
+        <section>
+          <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+            출력 데이터
+          </h4>
+          <pre className="mt-2 max-h-[420px] overflow-auto rounded-lg border border-gray-200 bg-gray-50 p-4 text-xs leading-5 text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200">
+            {stringifyOutputForDisplay(summary.nodeId, summary.output)}
+          </pre>
+        </section>
+
+        {hasRoutingTrace ? (
+          <div className="space-y-3">
+            <p className="rounded-md border border-blue-200 bg-blue-50 p-3 text-xs leading-relaxed text-blue-800 dark:border-blue-900 dark:bg-blue-950/20 dark:text-blue-200">
+              이 테스트 실행은 자동 라우팅 정책의 학습 및 갱신 횟수에 포함되지
+              않습니다.
+            </p>
+            <ModelRoutingDecisionDetails output={summary.output} />
+          </div>
+        ) : null}
       </div>
     );
   };
@@ -572,6 +661,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
       return;
     }
 
+    setSelectedTestNodeId(null);
     setValidationErrors([]);
     setPreflightStatus('validating');
 
@@ -766,7 +856,13 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
               throw new Error(data.message);
             }
           },
-          { signal: abortController.signal, graphSnapshot },
+          {
+            signal: abortController.signal,
+            graphSnapshot,
+            // 테스트 결과는 운영 정책 학습에 포함하지 않지만, 현재 draft와
+            // 같은 활성 배포 정책은 실제 실행처럼 평가해 확인한다.
+            useActiveDeploymentRoutingPolicy: true,
+          },
         );
       } catch (streamError) {
         if (streamTimedOut) {
@@ -803,6 +899,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   };
 
   const handleReset = () => {
+    setSelectedTestNodeId(null);
     setValidationErrors([]);
     setPreflightStatus('idle');
     resetTestExecution();
@@ -812,7 +909,27 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     variable.label?.trim() || variable.name;
 
   return (
-    <div className="absolute top-18 right-2 bottom-2 w-[400px] bg-white border-l border-gray-200 shadow-xl z-50 flex flex-col rounded-xl animate-in slide-in-from-right duration-200 dark:bg-gray-900 dark:border-gray-800">
+    <div
+      data-testid="test-execution-sidebar"
+      className="absolute top-18 right-2 bottom-2 z-50 flex min-w-0 flex-col rounded-xl border-l border-gray-200 bg-white shadow-xl animate-in slide-in-from-right duration-200 dark:border-gray-800 dark:bg-gray-900"
+      style={{ width: `${renderedTestSidebarWidth}px` }}
+    >
+      {canResizeTestSidebar && (
+        <div
+          role="separator"
+          aria-label="테스트 실행 패널 너비 조절"
+          aria-orientation="vertical"
+          aria-valuemin={minTestSidebarWidth}
+          aria-valuemax={maxTestSidebarWidth}
+          aria-valuenow={renderedTestSidebarWidth}
+          tabIndex={0}
+          onPointerDown={handleTestSidebarResizeStart}
+          onKeyDown={handleTestSidebarResizeKeyDown}
+          className="group absolute inset-y-0 -left-1 z-10 w-3 touch-none cursor-col-resize outline-none"
+        >
+          <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-transparent transition-colors group-hover:bg-blue-300 group-focus-visible:bg-blue-500" />
+        </div>
+      )}
       {/* Header */}
       <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between dark:border-gray-800">
         <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2">
@@ -1017,66 +1134,6 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                 </div>
               )}
             </div>
-
-            <details
-              open
-              className="group border-t border-gray-200 pt-4 dark:border-gray-800"
-            >
-              <summary className="cursor-pointer list-none text-sm font-medium text-gray-900 marker:hidden dark:text-gray-200">
-                <span>라우팅 판단</span>
-                <span className="ml-2 text-xs font-normal text-gray-400 group-open:hidden">
-                  펼치기
-                </span>
-                <span className="ml-2 text-xs font-normal text-gray-400 group-open:inline hidden">
-                  접기
-                </span>
-              </summary>
-              <div className="mt-3 space-y-3">
-                <div>
-                <p className="mt-1 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
-                  입력을 실제로 실행하지 않고, 현재 배포 정책이 선택할 모델만 확인합니다.
-                </p>
-                </div>
-              {routingPreviewNodes.length > 1 && (
-                <div>
-                  <label
-                    htmlFor="routing-preview-node"
-                    className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300"
-                  >
-                    미리보기 대상 LLM 노드
-                  </label>
-                  <select
-                    id="routing-preview-node"
-                    value={routingPreviewNodeId ?? ''}
-                    onChange={(event) =>
-                      setRoutingPreviewNodeId(event.target.value || null)
-                    }
-                    className={TEST_INPUT_CLASS_NAME}
-                  >
-                    {routingPreviewNodes.map((node) => {
-                      const title = String(node.data?.title || '').trim();
-                      return (
-                        <option key={node.id} value={node.id}>
-                          {title || node.id}
-                        </option>
-                      );
-                    })}
-                  </select>
-                </div>
-              )}
-              {routingPreviewDisabledMessage && (
-                <p className="rounded-md border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300">
-                  {routingPreviewDisabledMessage}
-                </p>
-              )}
-              {routingPreviewError && (
-                <p className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
-                  {routingPreviewError}
-                </p>
-              )}
-              {routingPreview && <ModelRoutingPreviewPanel preview={routingPreview} />}
-              </div>
-            </details>
           </div>
         ) : (
           /* Execution Result */
@@ -1114,26 +1171,29 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
               </div>
             )}
 
-            {hasExecutionResult && (
-              <div className="space-y-4">
-                {showFinalResponseCard && (
-                  <FinalResponseCard preview={finalResponsePreview} />
-                )}
-                {renderExecutionTotalSummary()}
-                <h3 className="text-sm font-medium text-gray-900 mb-3 dark:text-gray-200">
-                  노드별 실행 결과
-                </h3>
-                <div className="space-y-3">
-                  {nodeExecutionSummaries.length > 0 ? (
-                    nodeExecutionSummaries.map(renderNodeExecutionSummary)
-                  ) : (
-                    <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-500 dark:border-gray-700 dark:bg-gray-800">
-                      노드별 실행 결과가 없습니다.
-                    </div>
+            {hasExecutionResult &&
+              (selectedNodeExecutionSummary ? (
+                renderNodeExecutionDetail(selectedNodeExecutionSummary)
+              ) : (
+                <div className="space-y-4">
+                  {showFinalResponseCard && (
+                    <FinalResponseCard preview={finalResponsePreview} />
                   )}
+                  {renderExecutionTotalSummary()}
+                  <h3 className="text-sm font-medium text-gray-900 mb-3 dark:text-gray-200">
+                    노드별 실행 결과
+                  </h3>
+                  <div className="space-y-3">
+                    {nodeExecutionSummaries.length > 0 ? (
+                      nodeExecutionSummaries.map(renderNodeExecutionSummary)
+                    ) : (
+                      <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-500 dark:border-gray-700 dark:bg-gray-800">
+                        노드별 실행 결과가 없습니다.
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            )}
+              ))}
           </div>
         )}
       </div>
@@ -1141,31 +1201,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
       {/* Footer */}
       <div className="px-6 py-4 border-t border-gray-200 bg-gray-50 dark:bg-gray-900 dark:border-gray-800">
         {!hasExecutionResult && !error ? (
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              onClick={handleRoutingPreview}
-              disabled={
-                Boolean(routingPreviewDisabledMessage) ||
-                isRoutingPreviewing ||
-                isExecuting ||
-                isPreparing
-              }
-              title={routingPreviewDisabledMessage || undefined}
-              className="px-3 py-2 text-emerald-700 bg-white border border-emerald-300 hover:bg-emerald-50 disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed rounded-lg transition-colors flex items-center justify-center gap-2 text-sm font-medium dark:bg-gray-800 dark:border-emerald-800 dark:text-emerald-300"
-            >
-              {isRoutingPreviewing ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  판단 중...
-                </>
-              ) : (
-                <>
-                  <Route className="w-4 h-4" />
-                  라우팅 미리보기
-                </>
-              )}
-            </button>
+          <div>
             <button
               onClick={handleExecute}
               disabled={isExecuteActionDisabled}

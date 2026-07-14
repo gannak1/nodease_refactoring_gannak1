@@ -1,0 +1,115 @@
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { TestSidebar } from '../components/editor/TestSidebar';
+
+const testStore = vi.hoisted(() => ({
+  state: null as { isTestPanelOpen: boolean } | null,
+}));
+
+vi.mock('@xyflow/react', () => ({
+  useReactFlow: () => ({
+    setCenter: vi.fn(),
+    getViewport: vi.fn(() => ({ zoom: 1 })),
+  }),
+}));
+
+vi.mock('../store/useWorkflowStore', () => {
+  const state = {
+    isTestPanelOpen: true,
+    toggleTestPanel: vi.fn(),
+    nodes: [],
+    activeWorkflowId: 'workflow-1',
+    setNodes: vi.fn(),
+    updateNodeData: vi.fn(),
+    workflowAccess: { can_execute: true },
+    edges: [],
+    features: {},
+    envVariables: [],
+    runtimeVariables: [],
+    testExecutionStatus: 'idle',
+    testExecutionStartedAt: null,
+    testExecutionFinishedAt: null,
+    testExecutionResult: null,
+    testNodeResults: [],
+    testExecutionError: null,
+    currentExecutingNodeId: null,
+    isTestUploading: false,
+    beginTestExecution: vi.fn(),
+    setTestUploading: vi.fn(),
+    setCurrentExecutingNode: vi.fn(),
+    addTestNodeResult: vi.fn(),
+    finishTestExecution: vi.fn(),
+    failTestExecution: vi.fn(),
+    resetTestExecution: vi.fn(),
+  };
+  const useWorkflowStore = Object.assign(
+    vi.fn(() => state),
+    { getState: vi.fn(() => state) },
+  );
+  testStore.state = state;
+  return { useWorkflowStore };
+});
+
+afterEach(() => {
+  if (testStore.state) {
+    testStore.state.isTestPanelOpen = true;
+  }
+  cleanup();
+});
+
+describe('TestSidebar resize', () => {
+  it('기본 너비를 기존보다 넓은 480px로 표시한다', () => {
+    render(<TestSidebar />);
+
+    expect(screen.getByTestId('test-execution-sidebar')).toHaveStyle({
+      width: '480px',
+    });
+  });
+
+  it('왼쪽 handle을 드래그해 넓히되 최대 640px를 넘지 않는다', () => {
+    render(<TestSidebar />);
+
+    const handle = screen.getByRole('separator', {
+      name: '테스트 실행 패널 너비 조절',
+    });
+    fireEvent.pointerDown(handle, { pointerId: 1, clientX: 800 });
+    fireEvent.pointerMove(window, { pointerId: 1, clientX: 560 });
+    fireEvent.pointerUp(window, { pointerId: 1 });
+
+    expect(screen.getByTestId('test-execution-sidebar')).toHaveStyle({
+      width: '640px',
+    });
+  });
+
+  it('키보드 조작으로도 최소 너비 아래로 줄지 않는다', () => {
+    render(<TestSidebar />);
+
+    const handle = screen.getByRole('separator', {
+      name: '테스트 실행 패널 너비 조절',
+    });
+    fireEvent.keyDown(handle, { key: 'Home' });
+
+    expect(screen.getByTestId('test-execution-sidebar')).toHaveStyle({
+      width: '380px',
+    });
+  });
+
+  it('같은 편집 세션에서 닫았다 다시 열어도 조정한 너비를 유지한다', () => {
+    const { rerender } = render(<TestSidebar />);
+    const handle = screen.getByRole('separator', {
+      name: '테스트 실행 패널 너비 조절',
+    });
+    fireEvent.keyDown(handle, { key: 'End' });
+
+    testStore.state!.isTestPanelOpen = false;
+    rerender(<TestSidebar />);
+    expect(screen.queryByTestId('test-execution-sidebar')).toBeNull();
+
+    testStore.state!.isTestPanelOpen = true;
+    rerender(<TestSidebar />);
+    expect(screen.getByTestId('test-execution-sidebar')).toHaveStyle({
+      width: '640px',
+    });
+  });
+});

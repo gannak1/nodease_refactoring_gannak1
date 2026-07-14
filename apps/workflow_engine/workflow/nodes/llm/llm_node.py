@@ -373,6 +373,25 @@ class LLMNode(Node[LLMNodeData]):
 
         policy = self.data.model_routing_policy or {}
         is_deployed_execution = bool(self.execution_context.get("deployment_id"))
+        policy_deployment_id = self.execution_context.get("deployment_id")
+        preview_node_ids = self.execution_context.get("routing_policy_preview_node_ids")
+        is_policy_preview_node = (
+            self.execution_context.get("routing_policy_preview") is True
+            and isinstance(preview_node_ids, list)
+            and self.id in preview_node_ids
+        )
+        if is_policy_preview_node:
+            policy_deployment_id = self.execution_context.get(
+                "routing_policy_deployment_id"
+            )
+        preview_metadata = (
+            {
+                "policy_source": "active_deployment",
+                "included_in_policy_learning": False,
+            }
+            if is_policy_preview_node
+            else {}
+        )
         if db_session is not None:
             from apps.workflow_engine.services.model_routing_policy_store import (
                 ModelRoutingPolicyStore,
@@ -381,7 +400,7 @@ class LLMNode(Node[LLMNodeData]):
             persisted_policy = ModelRoutingPolicyStore.get_runtime_policy(
                 db_session,
                 workflow_id=self.execution_context.get("workflow_id"),
-                deployment_id=self.execution_context.get("deployment_id"),
+                deployment_id=policy_deployment_id,
                 node_id=self.id,
             )
             if persisted_policy is not None and persisted_policy.enabled:
@@ -406,6 +425,7 @@ class LLMNode(Node[LLMNodeData]):
                 "decision_source": "stored_model",
                 "reason_code": "policy_unavailable",
                 "judge_called": False,
+                **preview_metadata,
             }
 
         active_policy = policy.get("active_policy")
@@ -417,6 +437,7 @@ class LLMNode(Node[LLMNodeData]):
                 "decision_source": "stored_model",
                 "reason_code": "active_policy_unavailable",
                 "judge_called": False,
+                **preview_metadata,
             }
 
         try:
@@ -462,12 +483,15 @@ class LLMNode(Node[LLMNodeData]):
             "policy_version": policy.get("policy_version"),
             "selected_model": selected_model_id,
             "fallback_model": fallback_model_id,
-            "decision_source": "active_policy",
+            "decision_source": (
+                "test_policy_preview" if is_policy_preview_node else "active_policy"
+            ),
             "matched_rule_id": matched_rule_id,
             "reason_code": reason_code,
             "runtime_context": routing_context,
             "judge_called": False,
         }
+        metadata.update(preview_metadata)
         if decision.semantic_match is not None:
             metadata["matched_cohort_id"] = decision.semantic_match.cohort_id
             metadata.update(semantic_metadata)
@@ -615,11 +639,16 @@ class LLMNode(Node[LLMNodeData]):
         selected_model_id, fallback_model_id, model_routing_metadata = (
             self._resolve_model_routing_policy(inputs, db_session)
         )
+        # 자동 라우팅을 끈 노드도 provider fallback은 사용할 수 있다. 이 경우에도
+        # 실제 대체 실행 정보를 안전하게 남길 수 있도록 빈 metadata로 정규화한다.
+        model_routing_metadata = dict(model_routing_metadata or {})
+        routed_model_id = selected_model_id
         routing_context = ModelRouter.infer_runtime_context(
             inputs,
             self.data,
         ).as_metadata()
         fallback_used = False
+        fallback_reason_code = None
 
         try:
             if client_override:
@@ -678,6 +707,7 @@ class LLMNode(Node[LLMNodeData]):
                             selected_credential_id = runtime_selection.credential_id
                             selected_model_id = runtime_selection.model_id
                             fallback_used = True
+                            fallback_reason_code = "runtime_client_unavailable"
                             # The fallback is now the active client. Do not invoke
                             # the same provider a second time if this call fails.
                             fallback_model_id = None
@@ -937,6 +967,7 @@ class LLMNode(Node[LLMNodeData]):
                     raise fallback_error from primary_error
                 used_model_id = fallback_model_id
                 fallback_used = True
+                fallback_reason_code = "provider_call_failed"
 
             # OpenAI 응답 포맷에서 텍스트/usage 추출 (missing 시 안전하게 빈 값)
             text = ""
@@ -1052,6 +1083,15 @@ class LLMNode(Node[LLMNodeData]):
                             runtime_summary=knowledge_result.trace_summary,
                         ),
                         "scope": "span",
+                    }
+                )
+
+            if fallback_used:
+                model_routing_metadata.update(
+                    {
+                        "fallback_used": True,
+                        "fallback_from_model": routed_model_id,
+                        "fallback_reason_code": fallback_reason_code,
                     }
                 )
 

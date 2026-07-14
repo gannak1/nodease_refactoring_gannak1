@@ -9,6 +9,9 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from apps.gateway.services.admin_usage_service import AdminUsageService, KST
+from apps.gateway.services.deployment_parameter_optimization_service import (
+    DeploymentParameterOptimizationService,
+)
 from apps.gateway.services.organization_context import ensure_user_default_organization
 from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
 from apps.gateway.services.workflow_permission_lock import (
@@ -494,6 +497,16 @@ class AppService:
         deployment_history = AppService._deployment_history_by_app_id(
             db, [app.id for app in candidate_apps]
         )
+        automatic_optimization_by_deployment_id = (
+            DeploymentParameterOptimizationService.summaries_by_deployment_id(
+                db,
+                [
+                    app.active_deployment_id
+                    for app in candidate_apps
+                    if app.active_deployment_id
+                ],
+            )
+        )
         workflow_ids = [app.workflow_id for app in candidate_apps if app.workflow_id]
         AppService._attach_budget_statuses(
             db,
@@ -519,6 +532,7 @@ class AppService:
                 owner_names,
                 latest_runs,
                 deployment_history,
+                automatic_optimization_by_deployment_id,
                 permission_sources_by_workflow_id,
                 db,
             )
@@ -571,6 +585,7 @@ class AppService:
         owner_names: dict[Any, str | None],
         latest_runs: dict[Any, WorkflowRun],
         deployment_history: dict[Any, WorkflowDeployment],
+        automatic_optimization_by_deployment_id: dict[Any, dict[str, Any]],
         permission_sources_by_workflow_id: dict[Any, list],
         db: Session,
     ) -> AppOperationRow:
@@ -622,6 +637,9 @@ class AppService:
             ),
             latest_run=AppService._operation_latest_run_summary(
                 latest_runs.get(app.workflow_id)
+            ),
+            automatic_optimization=automatic_optimization_by_deployment_id.get(
+                app.active_deployment_id
             ),
         )
 

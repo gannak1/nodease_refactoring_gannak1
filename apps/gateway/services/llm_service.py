@@ -85,6 +85,10 @@ class LLMService:
 
     # 사용자 친화적인 모델 표시 이름
     MODEL_DISPLAY_NAMES = {
+        "gpt-5.6": "GPT-5.6 Sol",
+        "gpt-5.6-sol": "GPT-5.6 Sol",
+        "gpt-5.6-terra": "GPT-5.6 Terra",
+        "gpt-5.6-luna": "GPT-5.6 Luna",
         "gpt-5.5": "GPT-5.5",
         "gpt-5.5-pro": "GPT-5.5 Pro",
         "gpt-5.4-pro": "GPT-5.4 Pro",
@@ -131,7 +135,12 @@ class LLMService:
         # ==================== OpenAI 채팅 모델 ====================
         # 가격 출처: https://developers.openai.com/api/docs/pricing
         # 아래 가격은 1K 토큰 기준입니다. 공식 pricing의 1M 토큰 가격을 환산합니다.
-        # --- GPT-5.5 / GPT-5.4 시리즈 ---
+        # --- GPT-5.6 / GPT-5.5 / GPT-5.4 시리즈 ---
+        # GPT-5.6 alias는 Sol tier를 가리킵니다.
+        "gpt-5.6": {"input": 0.005, "output": 0.030},
+        "gpt-5.6-sol": {"input": 0.005, "output": 0.030},
+        "gpt-5.6-terra": {"input": 0.0025, "output": 0.015},
+        "gpt-5.6-luna": {"input": 0.001, "output": 0.006},
         "gpt-5.5": {"input": 0.005, "output": 0.030},
         "gpt-5.5-pro": {"input": 0.030, "output": 0.180},
         "gpt-5.4": {"input": 0.0025, "output": 0.015},

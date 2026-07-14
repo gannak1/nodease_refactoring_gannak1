@@ -24,6 +24,14 @@ describe('isWorkflowChatModelOption', () => {
     expect(
       isWorkflowChatModelOption(
         model({
+          model_id_for_api_call: 'gpt-5.6-terra',
+          name: 'GPT-5.6 Terra',
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      isWorkflowChatModelOption(
+        model({
           model_id_for_api_call: 'claude-sonnet-5',
           name: 'Claude Sonnet 5',
           provider_name: 'Anthropic',

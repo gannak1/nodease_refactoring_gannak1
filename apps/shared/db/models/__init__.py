@@ -19,6 +19,9 @@ from apps.shared.db.models.cost_optimizer import (
     CostOptimizerCandidate,
     CostOptimizerExperiment,
 )
+from apps.shared.db.models.deployment_parameter_optimization import (
+    DeploymentParameterOptimizationPlan,
+)
 from apps.shared.db.models.knowledge import (
     Document,
     DocumentChunk,
@@ -140,6 +143,7 @@ __all__ = [
     "Connection",
     "CostOptimizerExperiment",
     "CostOptimizerCandidate",
+    "DeploymentParameterOptimizationPlan",
     "Document",
     "DocumentChunk",
     "DocumentVersion",

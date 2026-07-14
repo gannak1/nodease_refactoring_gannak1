@@ -30,6 +30,10 @@ from apps.gateway.services.knowledge_deployment_preflight_service import (
 from apps.gateway.services.organization_context import resolve_active_organization_id
 from apps.gateway.utils.audit import audit
 from apps.gateway.services.deployment_service import DeploymentService
+from apps.gateway.services.deployment_parameter_optimization_service import (
+    DeploymentParameterOptimizationConfigurationError,
+    DeploymentParameterOptimizationService,
+)
 from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.context import AuditActor, clear_current_actor, set_current_actor
 from apps.shared.audit.logger import record_audit
@@ -50,6 +54,8 @@ from apps.shared.schemas.deployment import (
     DeploymentCreate,
     DeploymentPreflightRequest,
     DeploymentPreflightResponse,
+    DeploymentParameterOptimizationConfig,
+    DeploymentParameterOptimizationStatus,
     DeploymentResponse,
     DeploymentRunInfoResponse,
 )
@@ -407,7 +413,10 @@ def get_authenticated_deployment_run_info(
     """
     로그인 사용자 실행 화면에 필요한 safe 배포 정보를 조회합니다.
     """
-    _, app, workflow_id = _deployment_app_and_workflow_id(db, deployment_id)
+    deployment, app, workflow_id = _deployment_app_and_workflow_id(
+        db,
+        deployment_id,
+    )
     _ensure_app_matches_active_organization(
         db,
         request,
@@ -418,7 +427,7 @@ def get_authenticated_deployment_run_info(
     ensure_workflow_permission(db, current_user, workflow_id, "execute")
     return DeploymentService.get_deployment_run_info(
         db,
-        deployment_id,
+        deployment.id,
         runtime_policy=runtime_policy,
     )
 
@@ -487,6 +496,64 @@ def get_deployment(
     workflow_id = _deployment_workflow_id(db, deployment_id)
     ensure_workflow_permission(db, current_user, workflow_id, "read")
     return DeploymentService.get_deployment(db, deployment_id)
+
+
+@router.get(
+    "/{deployment_id}/parameter-optimization",
+    response_model=DeploymentParameterOptimizationStatus,
+)
+def get_deployment_parameter_optimization(
+    deployment_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """현재 배포의 LLM 파라미터 자동 최적화 수집·예산 상태를 조회합니다."""
+    deployment, _, workflow_id = _deployment_app_and_workflow_id(db, deployment_id)
+    ensure_workflow_permission(db, current_user, workflow_id, "read")
+    return DeploymentParameterOptimizationService.summary_for_deployment(
+        db,
+        deployment.id,
+    )
+
+
+@router.patch(
+    "/{deployment_id}/parameter-optimization",
+    response_model=DeploymentParameterOptimizationStatus,
+)
+def update_deployment_parameter_optimization(
+    deployment_id: str,
+    config: DeploymentParameterOptimizationConfig,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """배포를 다시 만들지 않고 자동 최적화의 수집 주기와 검증 예산을 조정합니다."""
+    deployment, _, workflow_id = _deployment_app_and_workflow_id(db, deployment_id)
+    ensure_workflow_permission(db, current_user, workflow_id, "deploy")
+
+    try:
+        deployment_config = dict(deployment.config or {})
+        deployment_config["parameter_optimization"] = config.model_dump(mode="json")
+        deployment.config = deployment_config
+        if config.enabled:
+            DeploymentParameterOptimizationService.update_plan(
+                db,
+                deployment=deployment,
+                workflow_id=workflow_id,
+                config=config,
+            )
+        else:
+            DeploymentParameterOptimizationService.disable_plan(
+                db,
+                deployment_id=deployment.id,
+            )
+        db.commit()
+    except DeploymentParameterOptimizationConfigurationError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    return DeploymentParameterOptimizationService.summary_for_deployment(
+        db,
+        deployment.id,
+    )
 
 
 @router.get("/public/{url_slug}/info")

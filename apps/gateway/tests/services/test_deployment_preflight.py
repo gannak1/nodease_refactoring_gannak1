@@ -1574,6 +1574,87 @@ def test_workflow_node_create_does_not_create_schedule_surface(monkeypatch):
     assert scheduler.added == []
 
 
+def test_active_redeployment_inherits_model_routing_state(monkeypatch):
+    app_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    previous_deployment_id = uuid.uuid4()
+    app = App(
+        id=app_id,
+        workflow_id=workflow_id,
+        organization_id=uuid.uuid4(),
+        active_deployment_id=previous_deployment_id,
+        url_slug="routing-slug",
+        auth_secret="existing-secret",
+        created_by=uuid.uuid4(),
+    )
+    workflow = _row(
+        id=workflow_id,
+        organization_id=app.organization_id,
+        app_id=app.id,
+        created_by=app.created_by,
+    )
+    previous_deployment = _row(
+        id=previous_deployment_id,
+        app_id=app_id,
+        is_active=True,
+        version=1,
+    )
+    db = _Db(
+        {App: [app], Workflow: [workflow], WorkflowDeployment: [previous_deployment], Schedule: []},
+        max_deployment_version=1,
+    )
+    inherited = []
+    monkeypatch.setattr(
+        deployment_module, "has_workflow_permission", lambda *a, **k: True
+    )
+    monkeypatch.setattr(
+        DeploymentService,
+        "_enforce_knowledge_preflight",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "apps.gateway.services.scheduler_service.get_scheduler_service",
+        lambda: _Scheduler(),
+    )
+    monkeypatch.setattr(
+        deployment_module.ModelRoutingPolicyInheritanceService,
+        "inherit_for_deployment",
+        lambda _db, **kwargs: inherited.append(kwargs) or 1,
+    )
+
+    deployment = DeploymentService.create_deployment(
+        db,
+        DeploymentCreate(
+            app_id=app_id,
+            type=DeploymentType.WEBHOOK,
+            graph_snapshot={
+                "nodes": [
+                    _node("trigger", "webhookTrigger"),
+                    _node(
+                        "llm-triage",
+                        "llmNode",
+                        {"auto_model_routing": True},
+                    ),
+                ],
+                "edges": [_edge("trigger", "llm-triage", "trigger-llm")],
+            },
+            is_active=True,
+        ),
+        user_id=app.created_by,
+        observed_workflow_id=workflow_id,
+        runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+    )
+
+    assert inherited == [
+        {
+            "workflow_id": workflow_id,
+            "source_deployment_id": previous_deployment_id,
+            "target_deployment_id": deployment.id,
+            "target_graph": deployment.graph_snapshot,
+        }
+    ]
+
+
 def test_workflow_node_toggle_removes_legacy_schedule_surface(monkeypatch):
     app_id = uuid.uuid4()
     deployment_id = uuid.uuid4()

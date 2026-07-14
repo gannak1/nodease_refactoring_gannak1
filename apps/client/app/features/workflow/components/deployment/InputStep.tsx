@@ -23,6 +23,7 @@ interface InputStepProps {
   onCancel: () => void;
   onSubmit: (policy?: DeploymentBrowserAccessPolicy) => void;
   isDeploying: boolean;
+  submitLabel?: string;
 }
 
 export function InputStep({
@@ -39,6 +40,7 @@ export function InputStep({
   onCancel,
   onSubmit,
   isDeploying,
+  submitLabel = '배포',
 }: InputStepProps) {
   const supportsEmbeddingPolicy = ['chatbot', 'widget'].includes(
     deploymentType,
@@ -108,7 +110,7 @@ export function InputStep({
           className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-400"
         >
           {isDeploying && <Loader2 className="h-4 w-4 animate-spin" />}
-          {isDeploying ? '배포 중...' : '배포'}
+          {isDeploying ? '배포 중...' : submitLabel}
         </button>
       </div>
     </>

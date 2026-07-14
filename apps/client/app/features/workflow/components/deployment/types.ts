@@ -4,7 +4,12 @@ import {
   OutputSchema,
 } from '../../types/Deployment';
 
-export type DeploymentStep = 'input' | 'success' | 'error';
+export type DeploymentStep = 'input' | 'optimization' | 'success' | 'error';
+
+export type DeploymentOptimizationNode = {
+  id: string;
+  title: string;
+};
 
 export interface DeploymentResult {
   success: boolean;
