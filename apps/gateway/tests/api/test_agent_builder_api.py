@@ -1,5 +1,6 @@
 import uuid
 from types import SimpleNamespace
+from uuid import UUID
 
 from fastapi.testclient import TestClient
 
@@ -7,7 +8,6 @@ from apps.gateway.api.v1.endpoints import agent_builder as agent_builder_endpoin
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.main import app
 from apps.shared.schemas.agent_builder import (
-    AgentBuilderApplyResponse,
     AgentBuilderMessageResponse,
     AgentBuilderSessionResponse,
 )
@@ -18,18 +18,7 @@ def test_agent_builder_session_uses_header_resolved_organization(monkeypatch):
     user_id = uuid.uuid4()
     captured = {}
 
-    monkeypatch.setattr(
-        agent_builder_endpoint,
-        "resolve_active_organization_id",
-        lambda db, request, raw, current_user_id: organization_id,
-    )
-
     class FakeService:
-        def __init__(self, db, *, user, organization_id, intent_extractor):
-            captured["user_id"] = user.id
-            captured["organization_id"] = organization_id
-            captured["intent_extractor"] = intent_extractor
-
         def create_or_restore_session(self, payload):
             captured["payload_has_organization_id"] = hasattr(payload, "organization_id")
             return AgentBuilderSessionResponse(
@@ -38,7 +27,16 @@ def test_agent_builder_session_uses_header_resolved_organization(monkeypatch):
                 status="active",
             )
 
-    monkeypatch.setattr(agent_builder_endpoint, "AgentBuilderService", FakeService)
+    class FakeComposition:
+        def orchestration(self):
+            return FakeService()
+
+    def fake_compose(*, db, request, raw_organization_id, current_user):
+        captured["user_id"] = current_user.id
+        captured["organization_id"] = UUID(raw_organization_id)
+        return FakeComposition()
+
+    monkeypatch.setattr(agent_builder_endpoint, "compose_agent_builder", fake_compose)
     app.dependency_overrides[agent_builder_endpoint.get_db] = lambda: object()
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
     try:
@@ -65,17 +63,7 @@ def test_agent_builder_message_contract_does_not_accept_body_organization(monkey
     session_id = uuid.uuid4()
     captured = {}
 
-    monkeypatch.setattr(
-        agent_builder_endpoint,
-        "resolve_active_organization_id",
-        lambda db, request, raw, current_user_id: organization_id,
-    )
-
     class FakeService:
-        def __init__(self, db, *, user, organization_id, intent_extractor):
-            captured["organization_id"] = organization_id
-            captured["intent_extractor"] = intent_extractor
-
         def submit_message(self, session_id_arg, payload):
             captured["session_id"] = session_id_arg
             captured["payload_has_organization_id"] = hasattr(payload, "organization_id")
@@ -86,7 +74,15 @@ def test_agent_builder_message_contract_does_not_accept_body_organization(monkey
                 warnings=["테스트"],
             )
 
-    monkeypatch.setattr(agent_builder_endpoint, "AgentBuilderService", FakeService)
+    class FakeComposition:
+        def orchestration(self, **kwargs):
+            return FakeService()
+
+    def fake_compose(*, db, request, raw_organization_id, current_user):
+        captured["organization_id"] = UUID(raw_organization_id)
+        return FakeComposition()
+
+    monkeypatch.setattr(agent_builder_endpoint, "compose_agent_builder", fake_compose)
     app.dependency_overrides[agent_builder_endpoint.get_db] = lambda: object()
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
     try:
@@ -120,21 +116,15 @@ def test_agent_builder_model_options_use_active_organization(monkeypatch):
         }
     ]
 
-    monkeypatch.setattr(
-        agent_builder_endpoint,
-        "resolve_active_organization_id",
-        lambda db, request, raw, current_user_id: organization_id,
-    )
+    class FakeComposition:
+        def model_options(self):
+            return expected
 
-    def get_options(db, checked_user_id, checked_organization_id):
-        captured["args"] = (checked_user_id, checked_organization_id)
-        return expected
+    def fake_compose(*, db, request, raw_organization_id, current_user):
+        captured["args"] = (current_user.id, UUID(raw_organization_id))
+        return FakeComposition()
 
-    monkeypatch.setattr(
-        agent_builder_endpoint.LLMService,
-        "get_agent_builder_model_option_groups",
-        get_options,
-    )
+    monkeypatch.setattr(agent_builder_endpoint, "compose_agent_builder", fake_compose)
     app.dependency_overrides[agent_builder_endpoint.get_db] = lambda: object()
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
     try:
@@ -158,20 +148,7 @@ def test_agent_builder_message_passes_explicit_intent_model_selection(monkeypatc
     model_id = uuid.uuid4()
     captured = {}
 
-    monkeypatch.setattr(
-        agent_builder_endpoint,
-        "resolve_active_organization_id",
-        lambda db, request, raw, current_user_id: organization_id,
-    )
-
-    class FakeExtractor:
-        def __init__(self, **kwargs):
-            captured["extractor"] = kwargs
-
     class FakeService:
-        def __init__(self, db, *, user, organization_id, intent_extractor):
-            pass
-
         def submit_message(self, session_id_arg, payload):
             return AgentBuilderMessageResponse(
                 request_id=uuid.uuid4(),
@@ -179,10 +156,16 @@ def test_agent_builder_message_passes_explicit_intent_model_selection(monkeypatc
                 warnings=["테스트"],
             )
 
+    class FakeComposition:
+        def orchestration(self, **kwargs):
+            captured["extractor"] = kwargs
+            return FakeService()
+
     monkeypatch.setattr(
-        agent_builder_endpoint, "LLMAgentBuilderIntentExtractor", FakeExtractor
+        agent_builder_endpoint,
+        "compose_agent_builder",
+        lambda **kwargs: FakeComposition(),
     )
-    monkeypatch.setattr(agent_builder_endpoint, "AgentBuilderService", FakeService)
     app.dependency_overrides[agent_builder_endpoint.get_db] = lambda: object()
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
     try:
@@ -201,8 +184,8 @@ def test_agent_builder_message_passes_explicit_intent_model_selection(monkeypatc
         app.dependency_overrides = {}
 
     assert response.status_code == 200
-    assert captured["extractor"]["credential_id"] == credential_id
-    assert captured["extractor"]["model_id"] == model_id
+    assert captured["extractor"]["intent_credential_id"] == credential_id
+    assert captured["extractor"]["intent_model_id"] == model_id
 
 
 def test_agent_builder_message_rejects_raw_graph_payload_without_echo(monkeypatch):
@@ -211,21 +194,11 @@ def test_agent_builder_message_rejects_raw_graph_payload_without_echo(monkeypatc
     session_id = uuid.uuid4()
     called = {"submit": False}
 
-    monkeypatch.setattr(
-        agent_builder_endpoint,
-        "resolve_active_organization_id",
-        lambda db, request, raw, current_user_id: organization_id,
-    )
+    def forbidden_compose(**kwargs):
+        called["submit"] = True
+        raise AssertionError("raw graph payload must not reach composition")
 
-    class FakeService:
-        def __init__(self, db, *, user, organization_id, intent_extractor):
-            pass
-
-        def submit_message(self, session_id_arg, payload):
-            called["submit"] = True
-            raise AssertionError("raw graph payload must not reach service")
-
-    monkeypatch.setattr(agent_builder_endpoint, "AgentBuilderService", FakeService)
+    monkeypatch.setattr(agent_builder_endpoint, "compose_agent_builder", forbidden_compose)
     app.dependency_overrides[agent_builder_endpoint.get_db] = lambda: object()
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
     try:
@@ -247,27 +220,17 @@ def test_agent_builder_message_rejects_raw_graph_payload_without_echo(monkeypatc
     assert "secret-token-123" not in response.text
 
 
-def test_agent_builder_apply_rejects_raw_graph_payload_without_echo(monkeypatch):
+def test_legacy_agent_builder_apply_route_is_removed_without_echo(monkeypatch):
     organization_id = uuid.uuid4()
     user_id = uuid.uuid4()
     draft_id = uuid.uuid4()
     called = {"apply": False}
 
-    monkeypatch.setattr(
-        agent_builder_endpoint,
-        "resolve_active_organization_id",
-        lambda db, request, raw, current_user_id: organization_id,
-    )
+    def forbidden_compose(**kwargs):
+        called["apply"] = True
+        raise AssertionError("removed route must not reach composition")
 
-    class FakeService:
-        def __init__(self, db, *, user, organization_id, intent_extractor):
-            pass
-
-        def apply_draft(self, draft_id_arg, payload):
-            called["apply"] = True
-            raise AssertionError("raw graph payload must not reach service")
-
-    monkeypatch.setattr(agent_builder_endpoint, "AgentBuilderService", FakeService)
+    monkeypatch.setattr(agent_builder_endpoint, "compose_agent_builder", forbidden_compose)
     app.dependency_overrides[agent_builder_endpoint.get_db] = lambda: object()
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
     try:
@@ -284,49 +247,6 @@ def test_agent_builder_apply_rejects_raw_graph_payload_without_echo(monkeypatch)
     finally:
         app.dependency_overrides = {}
 
-    assert response.status_code == 422
+    assert response.status_code == 404
     assert called["apply"] is False
     assert "secret-token-123" not in response.text
-
-
-def test_agent_builder_apply_response_can_save_only_with_audit_recorded(monkeypatch):
-    organization_id = uuid.uuid4()
-    user_id = uuid.uuid4()
-    draft_id = uuid.uuid4()
-    workflow_id = uuid.uuid4()
-
-    monkeypatch.setattr(
-        agent_builder_endpoint,
-        "resolve_active_organization_id",
-        lambda db, request, raw, current_user_id: organization_id,
-    )
-
-    class FakeService:
-        def __init__(self, db, *, user, organization_id, intent_extractor):
-            pass
-
-        def apply_draft(self, draft_id_arg, payload):
-            assert draft_id_arg == draft_id
-            return AgentBuilderApplyResponse(
-                apply_id=uuid.uuid4(),
-                outcome="saved",
-                saved_workflow_id=workflow_id,
-                audit_recorded=True,
-            )
-
-    monkeypatch.setattr(agent_builder_endpoint, "AgentBuilderService", FakeService)
-    app.dependency_overrides[agent_builder_endpoint.get_db] = lambda: object()
-    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
-    try:
-        response = TestClient(app).post(
-            f"/api/v1/agent-builder/drafts/{draft_id}/apply",
-            json={"action": "apply_and_save"},
-            headers={"X-Organization-Id": str(organization_id)},
-        )
-    finally:
-        app.dependency_overrides = {}
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["outcome"] == "saved"
-    assert body["audit_recorded"] is True

@@ -24,6 +24,10 @@ from apps.shared.domain.deployment_runtime_policy import (
     DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
 )
 from apps.shared.schemas.deployment import DeploymentCreate
+from apps.shared.services.workflow_configuration_preflight import (
+    WorkflowConfigurationIssue,
+    WorkflowConfigurationPreflightError,
+)
 
 
 def test_preflight_blocks_private_kb_for_public_surface():
@@ -54,6 +58,28 @@ def test_preflight_blocks_private_kb_for_public_surface():
     assert result.safe_summary.blocked_reason == "private_kb_requires_execution_subject"
     assert result.safe_summary.affected_kb_count_bucket == "1"
     assert str(kb_id) not in result.model_dump_json()
+
+
+def test_unresolved_configuration_uses_workflow_409_preflight_envelope():
+    blocked = DeploymentService.workflow_configuration_preflight_blocked(
+        WorkflowConfigurationPreflightError(
+            "test",
+            [
+                WorkflowConfigurationIssue(
+                    node_id="node-safe-id",
+                    node_type="slackPostNode",
+                    missing_parameters=("credential", "channel"),
+                )
+            ],
+        )
+    )
+
+    assert blocked.status_code == 409
+    assert blocked.detail["error"]["code"] == "workflow.configuration_preflight.blocked"
+    assert blocked.detail["error"]["reason_code"] == "node_configuration_unresolved"
+    assert blocked.detail["error"]["required_actions"] == [
+        "complete_node_configuration"
+    ]
 
 
 def test_inactive_preflight_preview_downgrades_public_blockers_to_warning():
@@ -1158,7 +1184,10 @@ def test_inactive_create_rejects_mail_inline_secret_with_common_preflight_error(
         )
 
     assert exc_info.value.status_code == 409
-    assert exc_info.value.detail["error"]["code"] == "deployment.preflight.blocked"
+    assert (
+        exc_info.value.detail["error"]["code"]
+        == "workflow.configuration_preflight.blocked"
+    )
     assert any(
         "node_configuration_invalid" in node["reason_codes"]
         for node in exc_info.value.detail["error"]["preflight"]["nodes"]
@@ -1278,6 +1307,63 @@ def test_inactive_create_rejects_unavailable_mail_reference(
         exc_info.value.detail["error"]["reason_code"] == "mail_credential_unavailable"
     )
     assert db.rows_for(WorkflowDeployment) == []
+
+
+def test_create_preserves_mail_credential_permission_denial(monkeypatch):
+    app_id = uuid.uuid4()
+    workflow_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    actor_id = uuid.uuid4()
+    app = App(
+        id=app_id,
+        workflow_id=workflow_id,
+        organization_id=organization_id,
+        url_slug="app-slug",
+        auth_secret="existing-secret",
+        created_by=actor_id,
+    )
+    workflow = _row(
+        id=workflow_id,
+        organization_id=organization_id,
+        app_id=app_id,
+        created_by=actor_id,
+    )
+    db = _Db({App: [app], Workflow: [workflow]})
+    monkeypatch.setattr(
+        deployment_module, "has_workflow_permission", lambda *a, **k: True
+    )
+    monkeypatch.setattr(
+        DeploymentService,
+        "_enforce_graph_structure_before_binding",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        DeploymentService,
+        "bind_workflow_node_targets",
+        lambda _db, graph, **_kwargs: graph,
+    )
+    monkeypatch.setattr(
+        deployment_module.WorkflowService,
+        "validate_mail_credential_references",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            HTTPException(status_code=403, detail="mail.credential_permission_denied")
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        DeploymentService.create_deployment(
+            db,
+            DeploymentCreate(
+                app_id=app_id,
+                graph_snapshot={"nodes": [], "edges": []},
+                is_active=True,
+            ),
+            user_id=actor_id,
+            runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "mail.credential_permission_denied"
 
 
 def test_inactive_create_rejects_malformed_graph(monkeypatch):
@@ -1804,7 +1890,10 @@ def test_toggle_rejects_legacy_mail_inline_secret_with_common_preflight_error():
         )
 
     assert exc_info.value.status_code == 409
-    assert exc_info.value.detail["error"]["code"] == "deployment.preflight.blocked"
+    assert (
+        exc_info.value.detail["error"]["code"]
+        == "workflow.configuration_preflight.blocked"
+    )
     assert any(
         "node_configuration_invalid" in node["reason_codes"]
         for node in exc_info.value.detail["error"]["preflight"]["nodes"]
@@ -1872,7 +1961,10 @@ def test_toggle_rejects_unresolved_mail_with_common_preflight(monkeypatch):
         )
 
     assert exc_info.value.status_code == 409
-    assert exc_info.value.detail["error"]["code"] == "deployment.preflight.blocked"
+    assert (
+        exc_info.value.detail["error"]["code"]
+        == "workflow.configuration_preflight.blocked"
+    )
     assert deployment.is_active is False
 
 

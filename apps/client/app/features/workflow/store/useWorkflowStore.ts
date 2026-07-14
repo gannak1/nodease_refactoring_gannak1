@@ -36,6 +36,11 @@ import {
   type SnapGridSize,
   snapPositionChanges,
 } from '../utils/gridSnap';
+import {
+  applyAgentBuilderOperations,
+  type AgentBuilderGraphMutation,
+} from '../components/agentBuilder/agentBuilderGraphMutation';
+import type { AgentBuilderParameterGroup } from '../api/agentBuilderApi';
 
 export type { SnapGridSize } from '../utils/gridSnap';
 
@@ -52,22 +57,10 @@ export interface Workflow {
   };
 }
 
-export type AgentBuilderValidationResult = {
-  valid: boolean;
-  issues?: Array<{ code: string; message: string; path?: string | null }>;
-};
-
-export type AgentBuilderPreviewState = {
-  draftId: string;
-  previewGraph: {
-    nodes: Node[];
-    edges: Edge[];
-    viewport?: { x: number; y: number; zoom: number };
-  };
-  nodeDetailPreviews: Array<Record<string, unknown>>;
-  validationResult: AgentBuilderValidationResult;
-  baseGraphHash?: string | null;
-  draftMode: 'new_workflow' | 'modify_workflow' | 'replace_workflow';
+export type CanonicalDraftMetadata = {
+  workflowId: string;
+  graphHash: string;
+  updatedAt: string;
 };
 
 const createIdleTestExecutionState = () => ({
@@ -158,7 +151,11 @@ type WorkflowState = {
 
   // === 노드 전체화면 설정(NDV) 상태 ===
   fullscreenNodeId: string | null;
-  openNodeFullscreen: (nodeId: string) => void;
+  fullscreenNodeSettingsSection: 'routing' | 'connection' | null;
+  openNodeFullscreen: (
+    nodeId: string,
+    section?: 'routing' | 'connection',
+  ) => void;
   closeNodeFullscreen: () => void;
   syncNodeFullscreenFromUrl: (nodeId: string | null) => void;
 
@@ -181,7 +178,14 @@ type WorkflowState = {
   envVariables: EnvVariable[]; // 환경 변수
   runtimeVariables: RuntimeVariable[]; // 런타임 변수
   hasUnsavedChanges: boolean;
-  agentBuilderPreview: AgentBuilderPreviewState | null;
+  isAgentBuilderMutationSaving: boolean;
+  pendingAgentBuilderRevert: PersistedAgentBuilderOperation | null;
+  recoveredAgentBuilderParameterGroup: {
+    sessionId: string;
+    parameterGroup: AgentBuilderParameterGroup | null;
+  } | null;
+  agentBuilderHistoryNotice: string | null;
+  canonicalDraftMetadata: Record<string, CanonicalDraftMetadata>;
 
   // === ReactFlow 액션 ===
   onNodesChange: OnNodesChange;
@@ -252,7 +256,10 @@ type WorkflowState = {
 
   // === 시작노드 검증 핼퍼 ===
   getStartNodeType: () =>
-    'startNode' | 'webhookTrigger' | 'scheduleTrigger' | null;
+    | 'startNode'
+    | 'webhookTrigger'
+    | 'scheduleTrigger'
+    | null;
   getStartNodeCount: () => number;
   canPublish: () => boolean;
 
@@ -261,8 +268,49 @@ type WorkflowState = {
   setEnvVariables: (vars: EnvVariable[]) => void;
   setRuntimeVariables: (vars: RuntimeVariable[]) => void;
   setHasUnsavedChanges: (hasUnsavedChanges: boolean) => void;
-  setAgentBuilderPreview: (preview: AgentBuilderPreviewState) => void;
-  clearAgentBuilderPreview: () => void;
+  setCanonicalDraftMetadata: (metadata: CanonicalDraftMetadata) => void;
+  ingestCanonicalDraftMetadata: (
+    value: unknown,
+    workflowId?: string,
+  ) => CanonicalDraftMetadata | null;
+  getCanonicalDraftMetadata: (
+    workflowId?: string,
+  ) => CanonicalDraftMetadata | null;
+  clearCanonicalDraftMetadata: (workflowId?: string) => void;
+  applyAgentBuilderGraphMutation: (
+    mutation: AgentBuilderGraphMutation,
+    sessionId?: string,
+    canonicalBaseGraph?: { nodes: Node[]; edges: Edge[] },
+  ) => void;
+  rollbackLatestAgentBuilderGraphMutation: () => void;
+  setAgentBuilderMutationSaving: (saving: boolean) => void;
+  markLatestAgentBuilderMutationPersisted: (
+    operation: PersistedAgentBuilderOperation,
+  ) => void;
+  markLatestAgentBuilderMutationAcknowledged: (
+    operationId: string,
+    completionEligible?: boolean,
+  ) => void;
+  setAgentBuilderParameterHistory: (
+    sessionId: string,
+    parameterGroup: AgentBuilderParameterGroup | null,
+    lastManuallyConfiguredTaskId?: string | null,
+    completionEligible?: boolean,
+  ) => void;
+  refreshNextAgentBuilderRevertBoundary: (
+    boundary: Pick<
+      PersistedAgentBuilderOperation,
+      'resultGraphHash' | 'workflowUpdatedAt'
+    >,
+  ) => void;
+  clearPendingAgentBuilderRevert: () => void;
+  setRecoveredAgentBuilderParameterGroup: (
+    recovery: {
+      sessionId: string;
+      parameterGroup: AgentBuilderParameterGroup | null;
+    } | null,
+  ) => void;
+  clearAgentBuilderHistoryNotice: () => void;
   updateNodeData: (nodeId: string, newData: Record<string, unknown>) => void;
   setWorkflowData: (
     data: {
@@ -279,9 +327,32 @@ type WorkflowState = {
   ) => void;
 };
 
+export type PersistedAgentBuilderOperation = {
+  operationId: string;
+  resultGraphHash: string;
+  workflowUpdatedAt: string;
+  sessionId: string;
+  revertGraph?: {
+    nodes: Node[];
+    edges: Edge[];
+  };
+};
+
 type GraphSnapshot = {
   nodes: Node[];
   edges: Edge[];
+  agentBuilderOperation?: PersistedAgentBuilderOperation;
+  agentBuilderHistory?: AgentBuilderHistoryContext;
+};
+
+type AgentBuilderHistoryContext = {
+  sessionId?: string;
+  latestOperationId?: string;
+  acknowledged: boolean;
+  completionEligible: boolean;
+  parameterGroup: AgentBuilderParameterGroup | null;
+  lastManuallyConfiguredTaskId: string | null;
+  presentation: 'none' | 'active' | 'completed' | 'reopened' | 'canceled';
 };
 
 const HISTORY_LIMIT = 50;
@@ -317,6 +388,116 @@ const cloneGraph = (nodes: Node[], edges: Edge[]): GraphSnapshot => ({
   edges: structuredClone(edges),
 });
 
+const canonicalDraftMetadataFrom = (
+  value: unknown,
+  fallbackWorkflowId?: string,
+): CanonicalDraftMetadata | null => {
+  if (!value || typeof value !== 'object') return null;
+  const graphHash = (value as { graph_hash?: unknown }).graph_hash;
+  const updatedAt = (value as { updated_at?: unknown }).updated_at;
+  const workflowId =
+    (value as { workflow_id?: unknown }).workflow_id ?? fallbackWorkflowId;
+
+  return typeof workflowId === 'string' &&
+    typeof graphHash === 'string' &&
+    typeof updatedAt === 'string'
+    ? { workflowId, graphHash, updatedAt }
+    : null;
+};
+
+const STRUCTURAL_AGENT_BUILDER_MUTATIONS = new Set<
+  AgentBuilderGraphMutation['kind']
+>(['initial_graph', 'graph_edit', 'replace_workflow']);
+
+const findLatestAgentBuilderBoundaryIndex = (
+  stack: GraphSnapshot[],
+  sessionId?: string,
+) => {
+  for (let index = stack.length - 1; index >= 0; index -= 1) {
+    const snapshot = stack[index];
+    if (!snapshot.agentBuilderHistory && !snapshot.agentBuilderOperation) {
+      continue;
+    }
+    const boundarySessionId =
+      snapshot.agentBuilderHistory?.sessionId ??
+      snapshot.agentBuilderOperation?.sessionId;
+    if (!sessionId || !boundarySessionId || boundarySessionId === sessionId) {
+      return index;
+    }
+  }
+  return -1;
+};
+
+const reopenParameterGroup = (
+  parameterGroup: AgentBuilderParameterGroup,
+  taskId: string,
+): AgentBuilderParameterGroup | null => {
+  if (!parameterGroup.tasks.some((task) => task.task_id === taskId)) {
+    return null;
+  }
+  return {
+    ...structuredClone(parameterGroup),
+    status: 'active',
+    tasks: parameterGroup.tasks.map((task) =>
+      task.task_id === taskId
+        ? { ...structuredClone(task), status: 'active' }
+        : structuredClone(task),
+    ),
+  };
+};
+
+const REENTERABLE_PARAMETER_STATUSES = new Set([
+  'completed',
+  'skipped',
+  'deferred',
+]);
+
+const latestReenterableParameterTaskId = (
+  parameterGroup: AgentBuilderParameterGroup | null,
+) =>
+  parameterGroup?.tasks.reduce<
+    AgentBuilderParameterGroup['tasks'][number] | null
+  >((latest, task) => {
+    if (
+      !REENTERABLE_PARAMETER_STATUSES.has(task.status)
+    ) {
+      return latest;
+    }
+    if (!latest || task.stable_order > latest.stable_order) return task;
+    if (
+      task.stable_order === latest.stable_order &&
+      task.task_id.localeCompare(latest.task_id) > 0
+    ) {
+      return task;
+    }
+    return latest;
+  }, null)?.task_id ?? null;
+
+const parameterPresentation = (
+  parameterGroup: AgentBuilderParameterGroup | null,
+  lastManuallyConfiguredTaskId: string | null,
+  completionEligible: boolean,
+): AgentBuilderHistoryContext['presentation'] => {
+  if (!parameterGroup) return 'none';
+  if (parameterGroup.status === 'canceled') return 'canceled';
+  if (
+    completionEligible &&
+    parameterGroup.status === 'completed' &&
+    lastManuallyConfiguredTaskId
+  ) {
+    return 'completed';
+  }
+  if (
+    parameterGroup.status === 'active' ||
+    parameterGroup.tasks.some((task) =>
+      ['active', 'invalid'].includes(task.status),
+    )
+  ) {
+    return 'active';
+  }
+  return 'none';
+};
+
 const syncActiveWorkflow = (
   workflows: Workflow[],
   activeWorkflowId: string,
@@ -338,9 +519,13 @@ const isDraggingPositionChange = (change: NodeChange) =>
   'dragging' in change &&
   change.dragging === true;
 
+const isPersistedNodeChange = (change: NodeChange) =>
+  change.type !== 'select' && change.type !== 'dimensions';
+
 const shouldRecordCompletedNodeChanges = (changes: NodeChange[]) =>
   changes.some(
-    (change) => change.type !== 'select' && !isDraggingPositionChange(change),
+    (change) =>
+      isPersistedNodeChange(change) && !isDraggingPositionChange(change),
   );
 
 const REFERENCE_FIELD_KEYS = new Set([
@@ -553,6 +738,8 @@ type InternalWorkflowState = WorkflowState & {
   copiedNodes: Node[];
   copiedEdges: Edge[];
   pendingDragStartSnapshot: GraphSnapshot | null;
+  pendingAgentBuilderApplySnapshot: GraphSnapshot | null;
+  pendingAgentBuilderApplyCreatedBoundary: boolean;
 };
 
 const removeLegacyDeletableFlag = (node: Node): Node => {
@@ -620,6 +807,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
 
   // === 노드 전체화면 설정(NDV) 상태 ===
   fullscreenNodeId: null,
+  fullscreenNodeSettingsSection: null,
   numberConnection: null,
 
   runTrigger: 0,
@@ -634,11 +822,17 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
   copiedNodes: [],
   copiedEdges: [],
   pendingDragStartSnapshot: null,
+  pendingAgentBuilderApplySnapshot: null,
+  pendingAgentBuilderApplyCreatedBoundary: false,
   features: createDefaultFeatures(),
   envVariables: [],
   runtimeVariables: [],
   hasUnsavedChanges: false,
-  agentBuilderPreview: null,
+  isAgentBuilderMutationSaving: false,
+  pendingAgentBuilderRevert: null,
+  recoveredAgentBuilderParameterGroup: null,
+  agentBuilderHistoryNotice: null,
+  canonicalDraftMetadata: {},
 
   // === Inner Node Selection ===
   selectedInnerNode: null,
@@ -730,16 +924,12 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
       ...edge,
       target: numberedNode.id,
     };
-    const validation = validateConnection(
-      nextNodes as AppNode[],
-      edges,
-      {
-        source: nextEdge.source,
-        sourceHandle: nextEdge.sourceHandle ?? null,
-        target: nextEdge.target,
-        targetHandle: nextEdge.targetHandle ?? null,
-      },
-    );
+    const validation = validateConnection(nextNodes as AppNode[], edges, {
+      source: nextEdge.source,
+      sourceHandle: nextEdge.sourceHandle ?? null,
+      target: nextEdge.target,
+      targetHandle: nextEdge.targetHandle ?? null,
+    });
 
     if (!validation.ok) {
       return null;
@@ -791,7 +981,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
     );
     const isDragging = changes.some(isDraggingPositionChange);
     const shouldRecord = shouldRecordCompletedNodeChanges(changes);
-    const hasMeaningfulChange = changes.some((change) => change.type !== 'select');
+    const hasMeaningfulChange = changes.some(isPersistedNodeChange);
     const historySnapshot = pendingDragStartSnapshot
       ? pendingDragStartSnapshot
       : cloneGraph(currentNodes, currentEdges);
@@ -827,7 +1017,9 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
       currentNodes,
       newEdges,
     );
-    const hasMeaningfulChange = changes.some((change) => change.type !== 'select');
+    const hasMeaningfulChange = changes.some(
+      (change) => change.type !== 'select',
+    );
     set((state) => ({
       edges: newEdges,
       workflows: updatedWorkflows,
@@ -879,12 +1071,325 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
     }));
   },
 
+  applyAgentBuilderGraphMutation: (mutation, sessionId, canonicalBaseGraph) => {
+    const { nodes, edges, workflows, activeWorkflowId } = get();
+    const baseNodes: Node[] = canonicalBaseGraph
+      ? canonicalBaseGraph.nodes.map((node) => {
+          const editorNode = nodes.find((current) => current.id === node.id);
+          const displayNumber = (editorNode?.data as Record<string, unknown>)
+            ?.displayNumber;
+          const canonicalNode = structuredClone(node) as Node;
+          return typeof displayNumber === 'number'
+            ? ({
+                ...structuredClone(node),
+                data: {
+                  ...structuredClone(node.data),
+                  displayNumber,
+                },
+              } as Node)
+            : canonicalNode;
+        })
+      : nodes;
+    const baseEdges = canonicalBaseGraph
+      ? structuredClone(canonicalBaseGraph.edges)
+      : edges;
+    const next = applyAgentBuilderOperations(
+      baseNodes,
+      baseEdges,
+      mutation.operations,
+    );
+    const beforeMutation = cloneGraph(baseNodes, baseEdges);
+    set((state) => {
+      // Agent Builder operations come from the canonical server graph, which
+      // deliberately excludes editor-only display numbers. Restore them only
+      // in the canvas state so every generated node retains visible handles.
+      const numbered = assignMissingNodeDisplayNumbers(next.nodes, state.features);
+      const existingBoundaryIndex = STRUCTURAL_AGENT_BUILDER_MUTATIONS.has(
+        mutation.kind,
+      )
+        ? -1
+        : findLatestAgentBuilderBoundaryIndex(state.undoStack, sessionId);
+      const createdBoundary = existingBoundaryIndex < 0;
+      const undoStack = createdBoundary
+        ? [
+            ...state.undoStack.slice(-(HISTORY_LIMIT - 1)),
+            {
+              ...beforeMutation,
+              agentBuilderHistory: {
+                sessionId,
+                latestOperationId: mutation.operation_id,
+                acknowledged: false,
+                completionEligible: false,
+                parameterGroup: null,
+                lastManuallyConfiguredTaskId: null,
+                presentation: 'none' as const,
+              },
+            },
+          ]
+        : state.undoStack;
+      return {
+        nodes: numbered.nodes,
+        edges: next.edges,
+        features: numbered.features,
+        workflows: syncActiveWorkflow(
+          workflows,
+          activeWorkflowId,
+          numbered.nodes,
+          next.edges,
+          numbered.features,
+        ),
+        hasUnsavedChanges: true,
+        undoStack,
+        redoStack: [],
+        pendingDragStartSnapshot: null,
+        pendingAgentBuilderApplySnapshot: beforeMutation,
+        pendingAgentBuilderApplyCreatedBoundary: createdBoundary,
+        agentBuilderHistoryNotice: null,
+      };
+    });
+  },
+
+  rollbackLatestAgentBuilderGraphMutation: () =>
+    set((state) => {
+      const previous =
+        state.pendingAgentBuilderApplySnapshot ??
+        state.undoStack[state.undoStack.length - 1];
+      if (!previous) return {};
+      return {
+        nodes: previous.nodes,
+        edges: previous.edges,
+        workflows: syncActiveWorkflow(
+          state.workflows,
+          state.activeWorkflowId,
+          previous.nodes,
+          previous.edges,
+        ),
+        hasUnsavedChanges: false,
+        undoStack: state.pendingAgentBuilderApplyCreatedBoundary
+          ? state.undoStack.slice(0, -1)
+          : state.undoStack,
+        redoStack: [],
+        pendingAgentBuilderRevert: null,
+        pendingDragStartSnapshot: null,
+        pendingAgentBuilderApplySnapshot: null,
+        pendingAgentBuilderApplyCreatedBoundary: false,
+      };
+    }),
+
+  setAgentBuilderMutationSaving: (saving) =>
+    set({ isAgentBuilderMutationSaving: saving }),
+
+  markLatestAgentBuilderMutationPersisted: (operation) =>
+    set((state) => {
+      const index = findLatestAgentBuilderBoundaryIndex(
+        state.undoStack,
+        operation.sessionId,
+      );
+      if (index < 0) return {};
+      const undoStack = [...state.undoStack];
+      const snapshot = undoStack[index];
+      const existingOperation = snapshot.agentBuilderOperation;
+      const originalRevertGraph =
+        existingOperation?.revertGraph ?? operation.revertGraph;
+      undoStack[index] = {
+        ...snapshot,
+        agentBuilderOperation: {
+          ...operation,
+          operationId: existingOperation?.operationId ?? operation.operationId,
+          sessionId: existingOperation?.sessionId ?? operation.sessionId,
+          ...(originalRevertGraph ? { revertGraph: originalRevertGraph } : {}),
+        },
+        agentBuilderHistory: {
+          sessionId: operation.sessionId,
+          latestOperationId: operation.operationId,
+          acknowledged: false,
+          completionEligible:
+            snapshot.agentBuilderHistory?.completionEligible ?? false,
+          parameterGroup: snapshot.agentBuilderHistory?.parameterGroup ?? null,
+          lastManuallyConfiguredTaskId:
+            snapshot.agentBuilderHistory?.lastManuallyConfiguredTaskId ?? null,
+          presentation: snapshot.agentBuilderHistory?.presentation ?? 'none',
+        },
+      };
+      return {
+        undoStack,
+        pendingAgentBuilderApplySnapshot: null,
+        pendingAgentBuilderApplyCreatedBoundary: false,
+      };
+    }),
+
+  markLatestAgentBuilderMutationAcknowledged: (
+    operationId,
+    completionEligible = false,
+  ) =>
+    set((state) => {
+      const index = state.undoStack.findLastIndex(
+        (snapshot) =>
+          snapshot.agentBuilderOperation?.operationId === operationId ||
+          snapshot.agentBuilderHistory?.latestOperationId === operationId,
+      );
+      if (index < 0) return {};
+      const undoStack = [...state.undoStack];
+      const snapshot = undoStack[index];
+      undoStack[index] = {
+        ...snapshot,
+        agentBuilderHistory: {
+          sessionId:
+            snapshot.agentBuilderHistory?.sessionId ??
+            snapshot.agentBuilderOperation?.sessionId,
+          latestOperationId:
+            snapshot.agentBuilderHistory?.latestOperationId ?? operationId,
+          acknowledged: true,
+          completionEligible:
+            completionEligible ||
+            snapshot.agentBuilderHistory?.completionEligible ||
+            false,
+          parameterGroup: snapshot.agentBuilderHistory?.parameterGroup ?? null,
+          lastManuallyConfiguredTaskId:
+            snapshot.agentBuilderHistory?.lastManuallyConfiguredTaskId ?? null,
+          presentation: snapshot.agentBuilderHistory?.presentation ?? 'none',
+        },
+      };
+      return { undoStack };
+    }),
+
+  setAgentBuilderParameterHistory: (
+    sessionId,
+    parameterGroup,
+    _lastManuallyConfiguredTaskId,
+    completionEligible = false,
+  ) =>
+    set((state) => {
+      const index = findLatestAgentBuilderBoundaryIndex(
+        state.undoStack,
+        sessionId,
+      );
+      if (index < 0) return {};
+      const undoStack = [...state.undoStack];
+      const snapshot = undoStack[index];
+      const reentryTaskId = latestReenterableParameterTaskId(parameterGroup);
+      undoStack[index] = {
+        ...snapshot,
+        agentBuilderHistory: {
+          sessionId,
+          latestOperationId:
+            snapshot.agentBuilderHistory?.latestOperationId ??
+            snapshot.agentBuilderOperation?.operationId,
+          acknowledged: snapshot.agentBuilderHistory?.acknowledged ?? false,
+          completionEligible,
+          parameterGroup: parameterGroup
+            ? structuredClone(parameterGroup)
+            : null,
+          lastManuallyConfiguredTaskId: reentryTaskId,
+          presentation: parameterPresentation(
+            parameterGroup,
+            reentryTaskId,
+            completionEligible,
+          ),
+        },
+      };
+      return { undoStack };
+    }),
+
+  refreshNextAgentBuilderRevertBoundary: (boundary) =>
+    set((state) => {
+      const index = state.undoStack.length - 1;
+      if (index < 0) return {};
+      const snapshot = state.undoStack[index];
+      const operation = snapshot.agentBuilderOperation;
+      if (
+        !operation ||
+        operation.resultGraphHash !== boundary.resultGraphHash
+      ) {
+        return {};
+      }
+      const undoStack = [...state.undoStack];
+      undoStack[index] = {
+        ...snapshot,
+        agentBuilderOperation: {
+          ...operation,
+          workflowUpdatedAt: boundary.workflowUpdatedAt,
+        },
+      };
+      return { undoStack };
+    }),
+
+  clearPendingAgentBuilderRevert: () =>
+    set({ pendingAgentBuilderRevert: null }),
+  setRecoveredAgentBuilderParameterGroup: (recovery) =>
+    set({ recoveredAgentBuilderParameterGroup: recovery }),
+  clearAgentBuilderHistoryNotice: () =>
+    set({ agentBuilderHistoryNotice: null }),
+
   undo: () => {
-    const { undoStack, nodes, edges, activeWorkflowId } = get();
+    const {
+      undoStack,
+      nodes,
+      edges,
+      activeWorkflowId,
+      pendingAgentBuilderRevert,
+      isAgentBuilderMutationSaving,
+    } = get();
+    if (pendingAgentBuilderRevert || isAgentBuilderMutationSaving) return;
     const previous = undoStack[undoStack.length - 1];
     if (!previous) return;
 
-    const current = cloneGraph(nodes, edges);
+    const history = previous.agentBuilderHistory;
+    if (
+      previous.agentBuilderOperation &&
+      history &&
+      (!history.acknowledged || !history.completionEligible)
+    ) {
+      set({
+        agentBuilderHistoryNotice:
+          'Agent Builder 저장 확인이 끝난 뒤 Workflow Undo를 사용할 수 있습니다.',
+      });
+      return;
+    }
+    if (
+      previous.agentBuilderOperation &&
+      history?.acknowledged &&
+      history.presentation === 'completed' &&
+      history.parameterGroup?.status === 'completed' &&
+      history.lastManuallyConfiguredTaskId
+    ) {
+      const reopenedGroup = reopenParameterGroup(
+        history.parameterGroup,
+        history.lastManuallyConfiguredTaskId,
+      );
+      if (reopenedGroup) {
+        const nextUndoStack = [...undoStack];
+        nextUndoStack[nextUndoStack.length - 1] = {
+          ...previous,
+          agentBuilderHistory: {
+            ...history,
+            presentation: 'reopened',
+          },
+        };
+        set({
+          undoStack: nextUndoStack,
+          recoveredAgentBuilderParameterGroup: {
+            sessionId:
+              history.sessionId ?? previous.agentBuilderOperation.sessionId,
+            parameterGroup: reopenedGroup,
+          },
+          agentBuilderHistoryNotice:
+            '마지막 재편집 가능 설정 항목을 다시 열었습니다. Workflow graph와 저장 상태는 변경되지 않았습니다.',
+        });
+        return;
+      }
+    }
+
+    const current = {
+      ...cloneGraph(nodes, edges),
+      agentBuilderOperation: previous.agentBuilderOperation,
+      agentBuilderHistory: previous.agentBuilderHistory
+        ? {
+            ...previous.agentBuilderHistory,
+            presentation: 'canceled' as const,
+          }
+        : undefined,
+    };
     set((state) => ({
       nodes: previous.nodes,
       edges: previous.edges,
@@ -897,16 +1402,83 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
       hasUnsavedChanges: true,
       undoStack: undoStack.slice(0, -1),
       redoStack: [...state.redoStack.slice(-(HISTORY_LIMIT - 1)), current],
+      pendingAgentBuilderRevert:
+        previous.agentBuilderOperation ?? state.pendingAgentBuilderRevert,
       pendingDragStartSnapshot: null,
+      pendingAgentBuilderApplySnapshot: null,
+      pendingAgentBuilderApplyCreatedBoundary: false,
+      ...(history
+        ? {
+            recoveredAgentBuilderParameterGroup: {
+              sessionId:
+                history.sessionId ??
+                previous.agentBuilderOperation?.sessionId ??
+                '',
+              parameterGroup: null,
+            },
+            agentBuilderHistoryNotice:
+              'Agent Builder 실행 전 workflow로 되돌렸습니다. 설정 작업은 취소됩니다.',
+          }
+        : {}),
     }));
   },
 
   redo: () => {
-    const { redoStack, nodes, edges, activeWorkflowId } = get();
+    const {
+      undoStack,
+      redoStack,
+      nodes,
+      edges,
+      activeWorkflowId,
+      pendingAgentBuilderRevert,
+      isAgentBuilderMutationSaving,
+    } = get();
+    if (pendingAgentBuilderRevert || isAgentBuilderMutationSaving) return;
+    const currentBoundary = undoStack[undoStack.length - 1];
+    const currentHistory = currentBoundary?.agentBuilderHistory;
+    if (
+      currentHistory?.presentation === 'reopened' &&
+      currentHistory.parameterGroup?.status === 'completed'
+    ) {
+      const nextUndoStack = [...undoStack];
+      nextUndoStack[nextUndoStack.length - 1] = {
+        ...currentBoundary,
+        agentBuilderHistory: {
+          ...currentHistory,
+          presentation: 'completed',
+        },
+      };
+      set({
+        undoStack: nextUndoStack,
+        recoveredAgentBuilderParameterGroup: {
+          sessionId:
+            currentHistory.sessionId ??
+            currentBoundary.agentBuilderOperation?.sessionId ??
+            '',
+          parameterGroup: structuredClone(currentHistory.parameterGroup),
+        },
+        agentBuilderHistoryNotice:
+          '다시 연 설정 항목을 닫고 Agent Builder 완료 상태로 돌아왔습니다.',
+      });
+      return;
+    }
     const next = redoStack[redoStack.length - 1];
     if (!next) return;
 
-    const current = cloneGraph(nodes, edges);
+    const current = {
+      ...cloneGraph(nodes, edges),
+      ...(next.agentBuilderOperation
+        ? { agentBuilderOperation: next.agentBuilderOperation }
+        : {}),
+      ...(next.agentBuilderHistory
+        ? {
+            agentBuilderHistory: {
+              ...next.agentBuilderHistory,
+              presentation: 'canceled' as const,
+            },
+          }
+        : {}),
+    };
     set((state) => ({
       nodes: next.nodes,
       edges: next.edges,
@@ -919,7 +1491,25 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
       hasUnsavedChanges: true,
       undoStack: [...state.undoStack.slice(-(HISTORY_LIMIT - 1)), current],
       redoStack: redoStack.slice(0, -1),
+      pendingAgentBuilderRevert: next.agentBuilderOperation
+        ? null
+        : state.pendingAgentBuilderRevert,
       pendingDragStartSnapshot: null,
+      pendingAgentBuilderApplySnapshot: null,
+      pendingAgentBuilderApplyCreatedBoundary: false,
+      ...(next.agentBuilderHistory
+        ? {
+            recoveredAgentBuilderParameterGroup: {
+              sessionId:
+                next.agentBuilderHistory.sessionId ??
+                next.agentBuilderOperation?.sessionId ??
+                '',
+              parameterGroup: null,
+            },
+            agentBuilderHistoryNotice:
+              'Agent Builder 최종 graph를 다시 적용했습니다. 취소된 설정 작업은 다시 시작하지 않습니다.',
+          }
+        : {}),
     }));
   },
 
@@ -936,8 +1526,14 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
   },
 
   pasteCopiedNodes: () => {
-    const { copiedNodes, copiedEdges, nodes, edges, activeWorkflowId, features } =
-      get();
+    const {
+      copiedNodes,
+      copiedEdges,
+      nodes,
+      edges,
+      activeWorkflowId,
+      features,
+    } = get();
     if (copiedNodes.length === 0) return;
 
     const { duplicatedNodes, duplicatedEdges } = buildDuplicatedGraphElements(
@@ -1123,9 +1719,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
 
   toggleVersionHistory: () =>
     set((state) => ({
-      isVersionHistoryOpen: state.agentBuilderPreview
-        ? false
-        : !state.isVersionHistoryOpen,
+      isVersionHistoryOpen: !state.isVersionHistoryOpen,
       isSettingsOpen: false,
       isTestPanelOpen: false,
     })),
@@ -1144,6 +1738,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
       isSettingsOpen: false,
       isVersionHistoryOpen: false,
       fullscreenNodeId: null,
+      fullscreenNodeSettingsSection: null,
     });
   },
 
@@ -1225,10 +1820,11 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
     }),
 
   // === 노드 전체화면 설정(NDV) 액션 ===
-  openNodeFullscreen: (nodeId) => {
+  openNodeFullscreen: (nodeId, section) => {
     updateNodeFullscreenUrl(nodeId, 'push');
     set({
       fullscreenNodeId: nodeId,
+      fullscreenNodeSettingsSection: section ?? null,
       isSettingsOpen: false,
       isVersionHistoryOpen: false,
       isTestPanelOpen: false,
@@ -1237,12 +1833,13 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
 
   closeNodeFullscreen: () => {
     updateNodeFullscreenUrl(null, 'replace');
-    set({ fullscreenNodeId: null });
+    set({ fullscreenNodeId: null, fullscreenNodeSettingsSection: null });
   },
 
   syncNodeFullscreenFromUrl: (nodeId) =>
     set({
       fullscreenNodeId: nodeId,
+      fullscreenNodeSettingsSection: null,
       ...(nodeId
         ? {
             isSettingsOpen: false,
@@ -1271,7 +1868,6 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
   cancelNumberConnection: () => set({ numberConnection: null }),
 
   previewVersion: (version) => {
-    if (get().agentBuilderPreview) return;
     // 현재 스냅샷을 노드/엣지에 적용 (미리보기)
     const snapshot = version.graph_snapshot;
     set({
@@ -1314,12 +1910,17 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
         snapshotFeatures || {},
       );
 
-      await workflowApi.syncDraftWorkflow(activeWorkflowId, {
+      const canonical = await workflowApi.getDraftWorkflow(activeWorkflowId);
+      get().ingestCanonicalDraftMetadata(canonical, activeWorkflowId);
+      const saveResponse = await workflowApi.syncDraftWorkflow(activeWorkflowId, {
         nodes: normalized.nodes,
         edges: snapshot.edges || [],
         viewport: { x: 0, y: 0, zoom: 1 }, // 뷰포트는 초기화하거나 스냅샷에서 가져옴
         features: normalized.features,
+        expected_graph_hash: canonical.graph_hash,
+        expected_updated_at: canonical.updated_at,
       });
+      get().ingestCanonicalDraftMetadata(saveResponse, activeWorkflowId);
 
       // 2. Store, local state 업데이트
       const { workflows } = get();
@@ -1417,11 +2018,20 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
         nodes: workflow.nodes,
         edges: workflow.edges,
         features: workflow.features,
-        agentBuilderPreview: null,
         fullscreenNodeId: null,
+        fullscreenNodeSettingsSection: null,
         undoStack: [],
         redoStack: [],
-        ...(isSameWorkflow ? {} : createIdleTestExecutionState()),
+        ...(isSameWorkflow
+          ? {}
+          : {
+              pendingAgentBuilderRevert: null,
+              recoveredAgentBuilderParameterGroup: null,
+              agentBuilderHistoryNotice: null,
+              pendingAgentBuilderApplySnapshot: null,
+              pendingAgentBuilderApplyCreatedBoundary: false,
+              ...createIdleTestExecutionState(),
+            }),
       });
     }
   },
@@ -1436,11 +2046,20 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
     if (!workflow) {
       set({
         activeWorkflowId: id,
-        agentBuilderPreview: null,
         fullscreenNodeId: null,
+        fullscreenNodeSettingsSection: null,
         undoStack: [],
         redoStack: [],
-        ...(isSameWorkflow ? {} : createIdleTestExecutionState()),
+        ...(isSameWorkflow
+          ? {}
+          : {
+              pendingAgentBuilderRevert: null,
+              recoveredAgentBuilderParameterGroup: null,
+              agentBuilderHistoryNotice: null,
+              pendingAgentBuilderApplySnapshot: null,
+              pendingAgentBuilderApplyCreatedBoundary: false,
+              ...createIdleTestExecutionState(),
+            }),
       });
       return;
     }
@@ -1451,11 +2070,20 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
     set({
       activeWorkflowId: id,
       features: workflow.features,
-      agentBuilderPreview: null,
       fullscreenNodeId: null,
+      fullscreenNodeSettingsSection: null,
       undoStack: [],
       redoStack: [],
-      ...(isSameWorkflow ? {} : createIdleTestExecutionState()),
+      ...(isSameWorkflow
+        ? {}
+        : {
+            pendingAgentBuilderRevert: null,
+            recoveredAgentBuilderParameterGroup: null,
+            agentBuilderHistoryNotice: null,
+            pendingAgentBuilderApplySnapshot: null,
+            pendingAgentBuilderApplyCreatedBoundary: false,
+            ...createIdleTestExecutionState(),
+          }),
       ...(hasLoadedWorkflowData
         ? { nodes: workflow.nodes, edges: workflow.edges }
         : {}),
@@ -1474,8 +2102,8 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
         nodes: newActive.nodes,
         edges: newActive.edges,
         features: newActive.features,
-        agentBuilderPreview: null,
         fullscreenNodeId: null,
+        fullscreenNodeSettingsSection: null,
       });
     } else {
       set({ workflows: filteredWorkflows });
@@ -1533,16 +2161,32 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
   setRuntimeVariables: (runtimeVariables) =>
     set({ runtimeVariables, hasUnsavedChanges: true }),
   setHasUnsavedChanges: (hasUnsavedChanges) => set({ hasUnsavedChanges }),
-  setAgentBuilderPreview: (preview) =>
-    set({
-      agentBuilderPreview: preview,
-      isVersionHistoryOpen: false,
-      isSettingsOpen: false,
-      isTestPanelOpen: false,
-      fullscreenNodeId: null,
-      previewingVersion: null,
+  setCanonicalDraftMetadata: (metadata) =>
+    set((state) => ({
+      canonicalDraftMetadata: {
+        ...state.canonicalDraftMetadata,
+        [metadata.workflowId]: metadata,
+      },
+    })),
+  ingestCanonicalDraftMetadata: (value, workflowId) => {
+    const metadata = canonicalDraftMetadataFrom(value, workflowId);
+    if (metadata) {
+      get().setCanonicalDraftMetadata(metadata);
+    }
+    return metadata;
+  },
+  getCanonicalDraftMetadata: (workflowId) => {
+    const targetId = workflowId || get().activeWorkflowId;
+    return targetId ? get().canonicalDraftMetadata[targetId] ?? null : null;
+  },
+  clearCanonicalDraftMetadata: (workflowId) =>
+    set((state) => {
+      const targetId = workflowId || state.activeWorkflowId;
+      if (!targetId || !state.canonicalDraftMetadata[targetId]) return {};
+      const next = { ...state.canonicalDraftMetadata };
+      delete next[targetId];
+      return { canonicalDraftMetadata: next };
     }),
-  clearAgentBuilderPreview: () => set({ agentBuilderPreview: null }),
 
   updateNodeData: (nodeId, newData) => {
     set({
@@ -1600,7 +2244,9 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
 
     const { activeWorkflowId, workflows } = get();
     const targetId = workflowId || activeWorkflowId;
-    const shouldLoadIntoEditor = Boolean(targetId) && targetId === activeWorkflowId;
+    const canonicalMetadata = canonicalDraftMetadataFrom(data, targetId);
+    const shouldLoadIntoEditor =
+      Boolean(targetId) && targetId === activeWorkflowId;
 
     if (shouldLoadIntoEditor && targetId) {
       set({
@@ -1611,9 +2257,21 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
         envVariables: data.envVariables || [],
         runtimeVariables: data.runtimeVariables || [],
         hasUnsavedChanges: false,
-        agentBuilderPreview: null,
         undoStack: [],
         redoStack: [],
+        pendingAgentBuilderRevert: null,
+        recoveredAgentBuilderParameterGroup: null,
+        agentBuilderHistoryNotice: null,
+        pendingAgentBuilderApplySnapshot: null,
+        pendingAgentBuilderApplyCreatedBoundary: false,
+        ...(canonicalMetadata
+          ? {
+              canonicalDraftMetadata: {
+                ...get().canonicalDraftMetadata,
+                [canonicalMetadata.workflowId]: canonicalMetadata,
+              },
+            }
+          : {}),
       });
     }
 
@@ -1647,6 +2305,10 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
         ];
       }
       set({ workflows: updatedWorkflows });
+    }
+
+    if (canonicalMetadata && !shouldLoadIntoEditor) {
+      get().setCanonicalDraftMetadata(canonicalMetadata);
     }
   },
 }));

@@ -9,14 +9,21 @@ from fastapi.testclient import TestClient
 
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.api.v1.endpoints import workflow as workflow_endpoint
+from apps.gateway.application.agent_builder.graph_mutation_builder import (
+    canonical_graph_hash,
+)
 from apps.gateway.main import app
 from apps.gateway.services.workflow_service import WorkflowService
 from apps.shared.db.models.cost_optimizer import (
     CostOptimizerCandidate,
     CostOptimizerExperiment,
 )
+from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_run import NodeRunStatus
 from apps.shared.db.session import get_db
+
+
+_TEST_UPDATED_AT = datetime(2026, 7, 14, 12, 0, tzinfo=timezone.utc)
 
 
 def _workflow_with_nodes(workflow_id, organization_id, nodes):
@@ -24,11 +31,40 @@ def _workflow_with_nodes(workflow_id, organization_id, nodes):
         id=workflow_id,
         organization_id=organization_id,
         graph={
-            "nodes": nodes,
+            "nodes": [
+                {"position": {"x": 0, "y": index * 120}, **node}
+                for index, node in enumerate(nodes)
+            ],
             "edges": [],
             "viewport": {"x": 0, "y": 0, "zoom": 1},
         },
+        updated_at=_TEST_UPDATED_AT,
     )
+
+
+def _cas_payload(workflow, payload):
+    updated_at = getattr(workflow, "updated_at", None) or _TEST_UPDATED_AT
+    workflow.updated_at = updated_at
+    return {
+        **payload,
+        "expected_graph_hash": canonical_graph_hash(workflow.graph),
+        "expected_updated_at": updated_at.isoformat(),
+    }
+
+
+def _configure_workflow_lock_query(db, workflow):
+    existing_query = db.query.return_value
+    query = MagicMock()
+    query.filter.return_value.with_for_update.return_value.first.return_value = workflow
+    query.locked = True
+
+    def query_for(model, *args, **kwargs):
+        if model is Workflow:
+            return query
+        return existing_query
+
+    db.query.side_effect = query_for
+    return query
 
 
 def _available_model_option(
@@ -474,13 +510,14 @@ class TestModelRoutingPolicyApi:
         (
             db.query.return_value.filter.return_value.filter.return_value.first.return_value
         ) = None
+        lock_query = _configure_workflow_lock_query(db, workflow)
         app.dependency_overrides[get_db] = lambda: db
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
         with patch(
             "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
             return_value=workflow,
-        ), patch(
+        ) as ensure_builder, patch(
             "apps.gateway.api.v1.endpoints.workflow._get_model_routing_policy_for_workflow",
             return_value=policy,
         ), patch(
@@ -493,14 +530,17 @@ class TestModelRoutingPolicyApi:
         ):
             response = self.client.patch(
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage/model-routing/policy",
-                json={
-                    "enabled": True,
-                    "refresh_every_runs": 20,
-                    "validation_budget_usd": 3,
-                    "max_cohorts": 6,
-                    "default_model_id": "gpt-4.1-mini",
-                    "fallback_model_id": "gpt-4.1",
-                },
+                json=_cas_payload(
+                    workflow,
+                    {
+                        "enabled": True,
+                        "refresh_every_runs": 20,
+                        "validation_budget_usd": 3,
+                        "max_cohorts": 6,
+                        "default_model_id": "gpt-4.1-mini",
+                        "fallback_model_id": "gpt-4.1",
+                    },
+                ),
             )
 
         assert response.status_code == 200
@@ -509,10 +549,132 @@ class TestModelRoutingPolicyApi:
         assert node_data["fallback_model_id"] == "gpt-4.1"
         assert policy.active_policy["default_model_id"] == "gpt-4.1-mini"
         assert policy.active_policy["fallback_model_id"] == "gpt-4.1"
+        assert lock_query.locked is True
+        assert ensure_builder.call_count == 2
         db.commit.assert_called_once()
 
+    def test_fr11_policy_patch_uses_locked_cas_and_returns_metadata(self):
+        workflow_id = uuid4()
+        organization_id = uuid4()
+        user_id = uuid4()
+        db = MagicMock()
+        workflow = _workflow_with_nodes(
+            workflow_id,
+            organization_id,
+            [
+                {
+                    "id": "llm-triage",
+                    "type": "llmNode",
+                    "data": {
+                        "model_id": "gpt-4.1-mini",
+                        "auto_model_routing": False,
+                    },
+                }
+            ],
+        )
+        lock_query = _configure_workflow_lock_query(db, workflow)
+        (
+            db.query.return_value.filter.return_value.filter.return_value.first.return_value
+        ) = None
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+            return_value=workflow,
+        ) as ensure_builder, patch(
+            "apps.gateway.api.v1.endpoints.workflow."
+            "_get_model_routing_policy_for_workflow",
+            return_value=None,
+        ):
+            response = self.client.patch(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
+                "/model-routing/policy",
+                json=_cas_payload(
+                    workflow,
+                    {"enabled": True, "refresh_every_runs": 45},
+                ),
+            )
+
+        assert response.status_code == 200, response.json()
+        assert lock_query.locked is True
+        assert ensure_builder.call_count == 2
+        assert workflow.graph["nodes"][0]["data"]["auto_model_routing"] is True
+        assert (
+            workflow.graph["nodes"][0]["data"]["model_routing_policy"]["refresh"][
+                "refresh_every_runs"
+            ]
+            == 45
+        )
+        assert response.json()["graph_hash"] == canonical_graph_hash(workflow.graph)
+        assert response.json()["updated_at"] == workflow.updated_at.isoformat()
+        db.commit.assert_called_once()
+
+    def test_fr11_policy_patch_rejects_stale_acknowledged_graph(self):
+        workflow_id = uuid4()
+        organization_id = uuid4()
+        user_id = uuid4()
+        db = MagicMock()
+        stale_workflow = _workflow_with_nodes(
+            workflow_id,
+            organization_id,
+            [
+                {
+                    "id": "llm-triage",
+                    "type": "llmNode",
+                    "data": {
+                        "model_id": "gpt-4.1-mini",
+                        "auto_model_routing": False,
+                    },
+                }
+            ],
+        )
+        acknowledged_workflow = _workflow_with_nodes(
+            workflow_id,
+            organization_id,
+            [
+                {
+                    "id": "llm-triage",
+                    "type": "llmNode",
+                    "data": {
+                        "model_id": "gpt-4.1-mini",
+                        "system_prompt": "agent builder acknowledged prompt",
+                        "auto_model_routing": False,
+                    },
+                }
+            ],
+        )
+        acknowledged_workflow.updated_at = datetime(
+            2026, 7, 14, 12, 5, tzinfo=timezone.utc
+        )
+        lock_query = _configure_workflow_lock_query(db, acknowledged_workflow)
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+            return_value=stale_workflow,
+        ):
+            response = self.client.patch(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
+                "/model-routing/policy",
+                json=_cas_payload(
+                    stale_workflow,
+                    {"enabled": True, "refresh_every_runs": 45},
+                ),
+            )
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "stale_graph"
+        assert lock_query.locked is True
+        assert acknowledged_workflow.graph["nodes"][0]["data"] == {
+            "model_id": "gpt-4.1-mini",
+            "system_prompt": "agent builder acknowledged prompt",
+            "auto_model_routing": False,
+        }
+        db.commit.assert_not_called()
+
     def test_fr11_policy_patch_rejects_model_unavailable_to_execution_subject(self):
-        """배포 실행자가 쓸 수 없는 모델은 active policy에 저장하면 안 된다."""
         workflow_id = uuid4()
         organization_id = uuid4()
         editor_id = uuid4()
@@ -532,6 +694,7 @@ class TestModelRoutingPolicyApi:
                 }
             ],
         )
+        lock_query = _configure_workflow_lock_query(db, workflow)
         policy = SimpleNamespace(
             enabled=True,
             active_policy={"default_model_id": "gpt-4.1", "rules": []},
@@ -561,16 +724,21 @@ class TestModelRoutingPolicyApi:
         ):
             response = self.client.patch(
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage/model-routing/policy",
-                json={
-                    "enabled": True,
-                    "default_model_id": "gpt-4.1-mini",
-                    "fallback_model_id": "gpt-4.1",
-                },
+                json=_cas_payload(
+                    workflow,
+                    {
+                        "enabled": True,
+                        "default_model_id": "gpt-4.1-mini",
+                        "fallback_model_id": "gpt-4.1",
+                    },
+                ),
             )
 
         assert response.status_code == 422
         assert response.json()["detail"] == "model_routing.policy_model_unavailable"
         assert policy.active_policy["default_model_id"] == "gpt-4.1"
+        assert lock_query.locked is True
+        db.commit.assert_not_called()
 
     def test_fr11_cohort_wizard_suggests_fields_from_representative_query(self):
         """대표 문의만 주면 마법사가 사람이 수정 가능한 입력군 초안을 반환한다."""
@@ -1098,6 +1266,7 @@ class TestModelRoutingPolicyApi:
             uuid4(),
             [{"id": "llm-triage", "type": "llmNode", "data": {"model_id": "gpt-4.1"}}],
         )
+        _configure_workflow_lock_query(db, workflow)
         app.dependency_overrides[get_db] = lambda: db
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
@@ -1107,7 +1276,10 @@ class TestModelRoutingPolicyApi:
         ):
             response = self.client.patch(
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage/model-routing/policy",
-                json={"enabled": True, "default_model_id": None},
+                json=_cas_payload(
+                    workflow,
+                    {"enabled": True, "default_model_id": None},
+                ),
             )
 
         assert response.status_code == 422
@@ -1302,7 +1474,11 @@ class TestModelRoutingPolicyApi:
                 "PATCH",
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
                 "/cost-optimizer/apply-recommendations",
-                {"recommendation_ids": ["max_tokens"]},
+                {
+                    "recommendation_ids": ["max_tokens"],
+                    "expected_graph_hash": "a" * 64,
+                    "expected_updated_at": _TEST_UPDATED_AT.isoformat(),
+                },
             ),
             (
                 "POST",
@@ -1318,6 +1494,8 @@ class TestModelRoutingPolicyApi:
                     "comparison_id": str(uuid4()),
                     "candidate_settings": candidate,
                     "acknowledge_downstream_warning": True,
+                    "expected_graph_hash": "a" * 64,
+                    "expected_updated_at": _TEST_UPDATED_AT.isoformat(),
                 },
             ),
         ]
@@ -1420,6 +1598,7 @@ class TestModelRoutingPolicyApi:
             "profile": {"sample_count": 20},
         }
 
+        _configure_workflow_lock_query(db, workflow)
         app.dependency_overrides[get_db] = lambda: db
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
@@ -1437,7 +1616,10 @@ class TestModelRoutingPolicyApi:
             response = self.client.patch(
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
                 "/cost-optimizer/apply-recommendations",
-                json={"recommendation_ids": ["max_tokens"]},
+                json=_cas_payload(
+                    workflow,
+                    {"recommendation_ids": ["max_tokens"]},
+                ),
             )
 
         assert response.status_code == 400
@@ -1445,7 +1627,7 @@ class TestModelRoutingPolicyApi:
         assert workflow.graph["nodes"][0]["data"]["parameters"]["max_tokens"] == 2000
         assert workflow.graph["nodes"][0]["data"]["parameters"]["temperature"] == 0.2
         db.commit.assert_not_called()
-        ensure_builder.assert_called_once()
+        assert ensure_builder.call_count == 2
         assert ensure_builder.call_args.args[3] == "write"
         recommend.assert_called_once_with(db, workflow=workflow, node_id="llm-triage")
 
@@ -1499,6 +1681,7 @@ class TestModelRoutingPolicyApi:
             "profile": {"sample_count": 20},
         }
 
+        _configure_workflow_lock_query(db, workflow)
         app.dependency_overrides[get_db] = lambda: db
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
@@ -1532,10 +1715,16 @@ class TestModelRoutingPolicyApi:
             response = self.client.patch(
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
                 "/cost-optimizer/apply-recommendations",
-                json={"recommendation_ids": ["model_routing.refresh_interval_shorten"]},
+                json=_cas_payload(
+                    workflow,
+                    {"recommendation_ids": ["model_routing.refresh_interval_shorten"]},
+                ),
             )
 
         assert response.status_code == 200
+        assert response.json()["graph_hash"] == canonical_graph_hash(workflow.graph)
+        assert response.json()["updated_at"] == workflow.updated_at.isoformat()
+        assert "updated_draft_revision" not in response.json()
         node_data = workflow.graph["nodes"][0]["data"]
         assert node_data["model_id"] == "gpt-4.1-mini"
         assert node_data["fallback_model_id"] == "gpt-4.1"
@@ -1543,6 +1732,93 @@ class TestModelRoutingPolicyApi:
             node_data["model_routing_policy"]["refresh"]["refresh_every_runs"] == 20
         )
         db.commit.assert_called_once()
+
+    def test_fr12_apply_recommendations_rejects_stale_acknowledged_graph(self):
+        workflow_id = uuid4()
+        organization_id = uuid4()
+        user_id = uuid4()
+        db = MagicMock()
+        stale_workflow = _workflow_with_nodes(
+            workflow_id,
+            organization_id,
+            [
+                {
+                    "id": "llm-triage",
+                    "type": "llmNode",
+                    "data": {
+                        "model_id": "gpt-4.1-mini",
+                        "parameters": {"max_tokens": 2000, "temperature": 0.2},
+                    },
+                }
+            ],
+        )
+        acknowledged_workflow = _workflow_with_nodes(
+            workflow_id,
+            organization_id,
+            [
+                {
+                    "id": "llm-triage",
+                    "type": "llmNode",
+                    "data": {
+                        "model_id": "gpt-4.1-mini",
+                        "system_prompt": "agent builder acknowledged prompt",
+                        "parameters": {"max_tokens": 1600, "temperature": 0.2},
+                    },
+                }
+            ],
+        )
+        acknowledged_workflow.updated_at = datetime(
+            2026, 7, 14, 12, 5, tzinfo=timezone.utc
+        )
+        service_payload = {
+            "analysis_stage": "recommendations_available",
+            "policy_version": "llm-parameter-recommendation-rules-v1",
+            "recommendations": [
+                {
+                    "recommendation_type": "llm_parameter",
+                    "parameter_key": "max_tokens",
+                    "current_value": 2000,
+                    "suggested_value": 600,
+                    "apply_mode": "direct_policy_update",
+                    "candidate_patch": {"parameters": {"max_tokens": 600}},
+                }
+            ],
+            "warnings": [],
+            "profile": {"sample_count": 20},
+        }
+        lock_query = _configure_workflow_lock_query(db, acknowledged_workflow)
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+            return_value=stale_workflow,
+        ), patch(
+            "apps.gateway.api.v1.endpoints.workflow."
+            "CostOptimizerParameterRecommendationService.recommend",
+            return_value=service_payload,
+        ), patch(
+            "apps.gateway.api.v1.endpoints.workflow.LLMService.get_my_available_models",
+            return_value=_available_model_options("gpt-4.1-mini"),
+        ):
+            response = self.client.patch(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
+                "/cost-optimizer/apply-recommendations",
+                json=_cas_payload(
+                    stale_workflow,
+                    {"recommendation_ids": ["max_tokens"]},
+                ),
+            )
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "stale_graph"
+        assert lock_query.locked is True
+        assert acknowledged_workflow.graph["nodes"][0]["data"] == {
+            "model_id": "gpt-4.1-mini",
+            "system_prompt": "agent builder acknowledged prompt",
+            "parameters": {"max_tokens": 1600, "temperature": 0.2},
+        }
+        db.commit.assert_not_called()
 
     def test_fr12_apply_recommendations_updates_model_routing_policy_controls(self):
         workflow_id = uuid4()
@@ -1598,6 +1874,7 @@ class TestModelRoutingPolicyApi:
             "profile": {"sample_count": 20},
         }
 
+        _configure_workflow_lock_query(db, workflow)
         app.dependency_overrides[get_db] = lambda: db
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
@@ -1631,15 +1908,20 @@ class TestModelRoutingPolicyApi:
             response = self.client.patch(
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
                 "/cost-optimizer/apply-recommendations",
-                json={
-                    "recommendation_ids": [
-                        "model_routing.enable",
-                        "model_routing.refresh_interval_shorten",
-                    ]
-                },
+                json=_cas_payload(
+                    workflow,
+                    {
+                        "recommendation_ids": [
+                            "model_routing.enable",
+                            "model_routing.refresh_interval_shorten",
+                        ]
+                    },
+                ),
             )
 
         assert response.status_code == 200
+        assert response.json()["graph_hash"] == canonical_graph_hash(workflow.graph)
+        assert response.json()["updated_at"] == workflow.updated_at.isoformat()
         node_data = workflow.graph["nodes"][0]["data"]
         assert node_data["auto_model_routing"] is True
         assert (
@@ -4033,6 +4315,7 @@ class TestCostOptimizerApplyApi:
             },
         )
 
+        _configure_workflow_lock_query(db, workflow)
         app.dependency_overrides[get_db] = lambda: db
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
@@ -4058,18 +4341,19 @@ class TestCostOptimizerApplyApi:
             response = self.client.patch(
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
                 "/cost-optimizer/apply",
-                json={
-                    "comparison_id": str(comparison_id),
-                    "candidate_settings": candidate_settings,
-                    "acknowledge_downstream_warning": True,
-                },
+                json=_cas_payload(
+                    workflow,
+                    {
+                        "comparison_id": str(comparison_id),
+                        "candidate_settings": candidate_settings,
+                        "acknowledge_downstream_warning": True,
+                    },
+                ),
             )
 
         assert response.status_code == 200
         validate_knowledge_references.assert_called_once()
-        ensure_builder.assert_called_once_with(
-            db, SimpleNamespace(id=user_id), str(workflow_id), "write"
-        )
+        assert ensure_builder.call_count == 2
         target_data = workflow.graph["nodes"][0]["data"]
         assert target_data["model_id"] == "gpt-4.1-mini"
         assert target_data["fallback_model_id"] == "gpt-4.1"
@@ -4092,6 +4376,124 @@ class TestCostOptimizerApplyApi:
         assert target_data["answerGroundingCheck"] == "basic"
         assert db.commit.called
         assert response.json()["applied"] is True
+        assert response.json()["graph_hash"] == canonical_graph_hash(workflow.graph)
+        assert response.json()["updated_at"] == workflow.updated_at.isoformat()
+        assert "updated_draft_revision" not in response.json()
+
+    def test_fr8_apply_candidate_rejects_stale_acknowledged_graph(self):
+        workflow_id = uuid4()
+        organization_id = uuid4()
+        app_id = uuid4()
+        user_id = uuid4()
+        comparison_id = uuid4()
+        db = MagicMock()
+        candidate_settings = {
+            "label": "B",
+            "model_id": "gpt-4.1-mini",
+            "parameters": {"max_tokens": 800, "temperature": 0.1},
+        }
+        request_candidate = workflow_endpoint.CostOptimizerCandidateRequest(
+            **candidate_settings
+        )
+        stored_candidate = SimpleNamespace(
+            experiment_id=comparison_id,
+            candidate_settings=workflow_endpoint._safe_cost_optimizer_candidate_settings(
+                request_candidate
+            ),
+            status="success",
+            schema_status="pass",
+            downstream_compatibility={"state": "compatible"},
+            is_applied=False,
+            applied_at=None,
+            applied_by=None,
+        )
+        _configure_cost_optimizer_experiment_query(
+            db,
+            SimpleNamespace(
+                id=comparison_id,
+                workflow_id=workflow_id,
+                node_id="llm-triage",
+                organization_id=organization_id,
+                candidates=[stored_candidate],
+            ),
+        )
+        stale_workflow = SimpleNamespace(
+            id=workflow_id,
+            organization_id=organization_id,
+            app_id=app_id,
+            updated_at=_TEST_UPDATED_AT,
+            graph={
+                "nodes": [
+                    {
+                        "id": "llm-triage",
+                        "type": "llmNode",
+                        "position": {"x": 100, "y": 120},
+                        "data": {"model_id": "gpt-4.1"},
+                    }
+                ],
+                "edges": [],
+            },
+        )
+        acknowledged_workflow = SimpleNamespace(
+            id=workflow_id,
+            organization_id=organization_id,
+            app_id=app_id,
+            updated_at=datetime(2026, 7, 14, 12, 5, tzinfo=timezone.utc),
+            graph={
+                "nodes": [
+                    {
+                        "id": "llm-triage",
+                        "type": "llmNode",
+                        "position": {"x": 100, "y": 120},
+                        "data": {
+                            "model_id": "gpt-4.1",
+                            "system_prompt": "agent builder acknowledged prompt",
+                            "parameters": {"max_tokens": 1600},
+                        },
+                    }
+                ],
+                "edges": [],
+            },
+        )
+        lock_query = _configure_workflow_lock_query(db, acknowledged_workflow)
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with (
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+                return_value=stale_workflow,
+            ),
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow.LLMService.get_my_available_models",
+                return_value=_available_model_options("gpt-4.1-mini"),
+            ),
+        ):
+            response = self.client.patch(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
+                "/cost-optimizer/apply",
+                json=_cas_payload(
+                    stale_workflow,
+                    {
+                        "comparison_id": str(comparison_id),
+                        "candidate_settings": candidate_settings,
+                        "acknowledge_downstream_warning": True,
+                    },
+                ),
+            )
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "stale_graph"
+        assert lock_query.locked is True
+        assert acknowledged_workflow.graph["nodes"][0]["data"] == {
+            "model_id": "gpt-4.1",
+            "system_prompt": "agent builder acknowledged prompt",
+            "parameters": {"max_tokens": 1600},
+        }
+        assert stored_candidate.is_applied is False
+        assert stored_candidate.applied_at is None
+        assert stored_candidate.applied_by is None
+        db.commit.assert_not_called()
 
     def test_fr8_apply_candidate_without_knowledge_preserves_existing_rag_selection(
         self,
@@ -4162,6 +4564,7 @@ class TestCostOptimizerApplyApi:
             },
         )
 
+        _configure_workflow_lock_query(db, workflow)
         app.dependency_overrides[get_db] = lambda: db
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
@@ -4182,10 +4585,13 @@ class TestCostOptimizerApplyApi:
             response = self.client.patch(
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
                 "/cost-optimizer/apply",
-                json={
-                    "comparison_id": str(comparison_id),
-                    "candidate_settings": candidate_settings,
-                },
+                json=_cas_payload(
+                    workflow,
+                    {
+                        "comparison_id": str(comparison_id),
+                        "candidate_settings": candidate_settings,
+                    },
+                ),
             )
 
         assert response.status_code == 200, response.json()
@@ -4261,6 +4667,7 @@ class TestCostOptimizerApplyApi:
             },
         )
 
+        _configure_workflow_lock_query(db, workflow)
         app.dependency_overrides[get_db] = lambda: db
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
@@ -4277,11 +4684,14 @@ class TestCostOptimizerApplyApi:
             response = self.client.patch(
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
                 "/cost-optimizer/apply",
-                json={
-                    "comparison_id": str(comparison_id),
-                    "candidate_settings": candidate_settings,
-                    "acknowledge_downstream_warning": True,
-                },
+                json=_cas_payload(
+                    workflow,
+                    {
+                        "comparison_id": str(comparison_id),
+                        "candidate_settings": candidate_settings,
+                        "acknowledge_downstream_warning": True,
+                    },
+                ),
             )
 
         assert response.status_code == 200
@@ -4317,6 +4727,7 @@ class TestCostOptimizerApplyApi:
             },
         )
 
+        _configure_workflow_lock_query(db, workflow)
         app.dependency_overrides[get_db] = lambda: db
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
@@ -4333,10 +4744,13 @@ class TestCostOptimizerApplyApi:
             response = self.client.patch(
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
                 "/cost-optimizer/apply",
-                json={
-                    "candidate_settings": candidate_settings,
-                    "acknowledge_downstream_warning": True,
-                },
+                json=_cas_payload(
+                    workflow,
+                    {
+                        "candidate_settings": candidate_settings,
+                        "acknowledge_downstream_warning": True,
+                    },
+                ),
             )
 
         assert response.status_code == 400
@@ -4388,6 +4802,7 @@ class TestCostOptimizerApplyApi:
             },
         )
 
+        _configure_workflow_lock_query(db, workflow)
         app.dependency_overrides[get_db] = lambda: db
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
@@ -4404,11 +4819,14 @@ class TestCostOptimizerApplyApi:
             response = self.client.patch(
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
                 "/cost-optimizer/apply",
-                json={
-                    "comparison_id": str(comparison_id),
-                    "candidate_settings": candidate_settings,
-                    "acknowledge_downstream_warning": True,
-                },
+                json=_cas_payload(
+                    workflow,
+                    {
+                        "comparison_id": str(comparison_id),
+                        "candidate_settings": candidate_settings,
+                        "acknowledge_downstream_warning": True,
+                    },
+                ),
             )
 
         assert response.status_code == 400
@@ -4474,6 +4892,7 @@ class TestCostOptimizerApplyApi:
             },
         )
 
+        _configure_workflow_lock_query(db, workflow)
         app.dependency_overrides[get_db] = lambda: db
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
@@ -4490,11 +4909,14 @@ class TestCostOptimizerApplyApi:
             response = self.client.patch(
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
                 "/cost-optimizer/apply",
-                json={
-                    "comparison_id": str(comparison_id),
-                    "candidate_settings": requested_candidate,
-                    "acknowledge_downstream_warning": True,
-                },
+                json=_cas_payload(
+                    workflow,
+                    {
+                        "comparison_id": str(comparison_id),
+                        "candidate_settings": requested_candidate,
+                        "acknowledge_downstream_warning": True,
+                    },
+                ),
             )
 
         assert response.status_code == 400
@@ -4553,6 +4975,7 @@ class TestCostOptimizerApplyApi:
             },
         )
 
+        _configure_workflow_lock_query(db, workflow)
         app.dependency_overrides[get_db] = lambda: db
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
@@ -4569,11 +4992,14 @@ class TestCostOptimizerApplyApi:
             response = self.client.patch(
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
                 "/cost-optimizer/apply",
-                json={
-                    "comparison_id": str(comparison_id),
-                    "candidate_settings": candidate_settings,
-                    "acknowledge_downstream_warning": True,
-                },
+                json=_cas_payload(
+                    workflow,
+                    {
+                        "comparison_id": str(comparison_id),
+                        "candidate_settings": candidate_settings,
+                        "acknowledge_downstream_warning": True,
+                    },
+                ),
             )
 
         assert response.status_code == 400
@@ -4650,6 +5076,7 @@ class TestCostOptimizerApplyApi:
             },
         )
 
+        _configure_workflow_lock_query(db, workflow)
         app.dependency_overrides[get_db] = lambda: db
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
@@ -4666,11 +5093,14 @@ class TestCostOptimizerApplyApi:
             response = self.client.patch(
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
                 "/cost-optimizer/apply",
-                json={
-                    "comparison_id": str(comparison_id),
-                    "candidate_settings": candidate_settings,
-                    "acknowledge_downstream_warning": True,
-                },
+                json=_cas_payload(
+                    workflow,
+                    {
+                        "comparison_id": str(comparison_id),
+                        "candidate_settings": candidate_settings,
+                        "acknowledge_downstream_warning": True,
+                    },
+                ),
             )
 
         assert response.status_code == 400
@@ -4729,6 +5159,7 @@ class TestCostOptimizerApplyApi:
             },
         )
 
+        _configure_workflow_lock_query(db, workflow)
         app.dependency_overrides[get_db] = lambda: db
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
 
@@ -4745,11 +5176,14 @@ class TestCostOptimizerApplyApi:
             response = self.client.patch(
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage"
                 "/cost-optimizer/apply",
-                json={
-                    "comparison_id": str(comparison_id),
-                    "candidate_settings": candidate_settings,
-                    "acknowledge_downstream_warning": False,
-                },
+                json=_cas_payload(
+                    workflow,
+                    {
+                        "comparison_id": str(comparison_id),
+                        "candidate_settings": candidate_settings,
+                        "acknowledge_downstream_warning": False,
+                    },
+                ),
             )
 
         assert response.status_code == 400

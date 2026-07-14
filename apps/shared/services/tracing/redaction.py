@@ -65,6 +65,13 @@ SECRET_VALUE_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("bearer_token", re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")),
     ("api_key_value", re.compile(r"(?i)\b(?:api[_-]?key|token|secret)\s*[:=]\s*['\"]?[^'\"\s,}]+")),
     (
+        "github_token",
+        re.compile(r"\b(?:github_pat_|gh[oprsu]_)[A-Za-z0-9_]{20,}\b"),
+    ),
+    ("aws_access_key", re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")),
+    ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
+    ("slack_token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{8,}\b")),
+    (
         "private_key",
         re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.S),
     ),

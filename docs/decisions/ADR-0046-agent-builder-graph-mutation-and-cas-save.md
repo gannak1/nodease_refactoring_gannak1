@@ -1,0 +1,180 @@
+# ADR-0046: Agent Builder GraphMutation and CAS save
+
+Status: Accepted
+
+Related ADRs: [ADR-0019](ADR-0019-agent-builder-preview-apply-save-boundary.md), [ADR-0024](ADR-0024-agent-builder-node-capability-catalog.md), [ADR-0026](ADR-0026-agent-builder-intent-and-connection-validation.md), [ADR-0045](ADR-0045-agent-builder-direct-edit-parameter-guidance.md)
+
+## Context
+
+MBA-228은 Agent Builder가 workflow graph를 실제 editor에 직접 적용하고 일반 workflow draft 저장을 거쳐 확정하는 구조를 채택한다. 그러나 현재 코드와 API에는 문서가 전제하던 공통 `GraphPatch` schema, 저장 revision, mutation acknowledgement가 없다. 현재 workflow draft 저장은 마지막 요청이 이전 값을 덮어쓰며 저장된 graph hash와 `updated_at`도 반환하지 않는다.
+
+이 상태에서 frontend가 graph를 먼저 적용하고 저장 성공 뒤 별도 acknowledgement만 보내면 다음 문제가 생긴다.
+
+- 같은 workflow를 편집하는 다른 사용자나 autosync가 중간에 저장해도 충돌을 감지하지 못한다.
+- 최초 생성, parameter 변경과 Knowledge binding이 서로 다른 optional payload와 복구 분기를 만든다.
+- 저장 실패 또는 acknowledgement 응답 유실 뒤 parameter task와 실제 workflow graph가 서로 다른 상태로 복구될 수 있다.
+- 기존 Preview session과 direct-edit session이 섞이면 이전 draft를 새 protocol로 적용할 수 있다.
+- unresolved 외부 action node가 저장된 뒤 실행 또는 배포 경계에서 차단되지 않을 수 있다.
+
+따라서 MBA-228 안에서 공통 graph mutation 계약과 compare-and-swap 저장 경계를 함께 도입한다.
+
+## Decision
+
+### 1. Common Mutation Contract
+
+Agent Builder가 workflow graph를 바꾸는 모든 응답은 `GraphMutation`을 사용한다.
+
+`kind`는 다음 값만 허용한다.
+
+- `initial_graph`: 빈 workflow 또는 새 workflow에 최초 graph를 구성한다.
+- `graph_edit`: 기존 workflow의 구조를 변경한다. Parameter task 생성 여부는 별도 `generation_mode`가 결정한다.
+- `replace_workflow`: 비어 있지 않은 기존 workflow의 edge/node 전체를 typed remove operation으로 제거하고 새 workflow의 node/edge를 typed add operation으로 구성한다.
+- `parameter_update`: 하나의 typed parameter decision을 node data에 반영한다.
+- `knowledge_binding`: 확정된 Knowledge Base 선택을 기존 graph에 반영한다.
+
+`operations`는 discriminated union이며 다음 operation만 허용한다.
+
+- `add_node`
+- `remove_node`
+- `add_edge`
+- `remove_edge`
+- `replace_node_data`
+
+임의 JSON Patch path, raw workflow snapshot과 node type별 optional mutation field는 허용하지 않는다. `replace_workflow`도 raw graph payload를 받지 않고 공통 discriminated operation만 사용한다.
+
+### 2. API Mutation And Persisted Safe Envelope
+
+발급 API 응답의 `GraphMutation`은 client가 한 번 적용할 typed `operations`와 다음 metadata를 포함한다.
+
+- `operation_id`
+- `workflow_id`
+- `kind`
+- `status`
+- `catalog_version`
+- non-null `base_graph_hash`
+- non-null `expected_workflow_updated_at`
+- server가 발급 전에 candidate graph를 검증하고 계산한 non-null `expected_result_graph_hash`
+- typed `operations`
+- `affected_node_ids`
+- 선택적 `completion_context.parameter_task_id`
+- 선택적 `completion_context.knowledge_resolution_id`
+
+Full typed `operations`는 API 응답 전용이며 DB, session 또는 request payload에 저장하지 않는다. 기존 `AgentBuilderRequest.response_payload`에는 `operations`를 제외한 위 식별자·hash·affected node·completion context와 저장 뒤 server가 확정하는 `result_graph_hash`만 safe operation envelope로 저장한다. Parameter 값, raw graph snapshot, raw Knowledge metadata, credential 또는 secret도 envelope에 포함하지 않는다. 별도 Agent Builder table, encrypted operation payload 또는 replay store를 만들지 않는다.
+
+Lifecycle은 `pending_apply -> pending_save -> pending_ack -> acknowledged` 순서다. 권한, stale, schema 또는 graph validation 실패는 `blocked`로 닫고, 저장된 결과가 persisted Undo로 복구되면 원 operation을 최종 상태 `reverted`로 전환한다. `reverted`는 GraphMutation kind가 아니다. 같은 `operation_id`의 적용, 저장, acknowledgement와 revert는 idempotent해야 하며 이미 acknowledged되거나 reverted된 operation을 새 operation처럼 다시 적용하지 않는다.
+
+### 3. Frontend Transaction
+
+Frontend의 단일 editor adapter가 모든 `GraphMutation`을 dry-run validation한다. 최초 `initial_graph`, `graph_edit` 또는 `replace_workflow`는 Agent Builder 시작 전 snapshot과 최종 graph snapshot을 가진 Workflow history boundary 하나를 만든다. `replace_workflow`의 시작 snapshot은 교체 전 기존 graph 전체다. 이후 `parameter_update`와 `knowledge_binding`은 같은 dispatcher와 CAS 저장 경계를 사용하지만 독립 history entry를 추가하지 않고 boundary의 final snapshot/hash를 acknowledgement 결과로 갱신한다. 일반 수동 editor 변경은 별도 history entry로 boundary 뒤에 쌓인다.
+
+Agent Builder transaction 동안 일반 autosync는 같은 graph를 별도로 저장하지 않는다. local apply 또는 저장이 실패하면 acknowledgement를 보내지 않고 parameter task나 Knowledge selection을 완료로 전환하지 않는다.
+
+### 4. CAS Workflow Draft Save
+
+Direct-edit session은 기존 Workflow Editor 생성 흐름으로 만들어진 workflow row를 대상으로 한다. 새 workflow도 저장된 빈 workflow shell에 `initial_graph` mutation을 적용하며 Agent Builder session/message endpoint가 workflow row를 별도로 생성하지 않는다.
+
+Agent Builder mutation이 사용하는 일반 workflow draft 저장 요청에는 `mutation_context`를 추가한다.
+
+- `operation_id`
+- `expected_base_graph_hash`
+- `expected_workflow_updated_at`
+- `catalog_version`
+
+Server는 workflow row를 write lock으로 조회하고 권한을 다시 확인한 뒤 현재 canonical graph hash와 `updated_at`을 두 기대값과 비교한다. 둘 중 하나라도 다르면 저장하지 않고 stale conflict를 반환한다. 일치하면 request candidate graph의 canonical hash가 발급 시 safe envelope에 기록한 `expected_result_graph_hash`와 같은지 확인하고, 동일한 catalog connection/schema validation과 derived configuration validation을 다시 수행한 뒤 한 transaction으로 저장한다. Server-stored typed operations를 재생해 비교하지 않는다.
+
+일반 editor save도 현재 canonical graph hash와 workflow `updated_at`을 optimistic concurrency 입력으로 전달한다. Server는 모든 editor save에서 workflow row를 write lock으로 조회하고 두 기대값이 일치할 때만 저장하며 뒤늦은 autosync는 `409 stale_graph`로 닫는다. Frontend는 Agent Builder 저장, 일반 autosync, version 복원, test 전 저장과 Undo/Redo가 공유하는 canonical metadata 상태 하나를 사용하고 성공한 canonical GET/POST마다 이를 갱신한다. Out-of-band 저장 뒤 오래된 metadata로 autosync를 계속하거나 stale 오류를 조용히 무시하지 않는다. `mutation_context`는 Agent Builder safe operation envelope와 candidate hash를 추가 검증하는 additive 경계이며 일반 저장도 silent overwrite 예외가 아니다.
+
+Workflow graph를 함께 바꾸는 Model Routing policy PATCH와 Cost Optimizer candidate/recommendation apply도 out-of-band 예외가 아니다. 이 API들은 현재 canonical `expected_graph_hash`와 `expected_updated_at`을 필수로 받고, 권한 확인 뒤 workflow row를 write lock으로 다시 조회한 상태에서 같은 CAS를 검증한다. Graph 변경과 policy/candidate 부가 상태 변경은 같은 transaction으로 확정하며 성공 응답의 `graph_hash`와 `updated_at`으로 frontend 공통 canonical metadata를 갱신한다.
+
+### 5. Canonical Save Result
+
+저장 성공 응답은 최소 다음 값을 반환한다.
+
+- `workflow_id`
+- canonical persisted `graph_hash`
+- persisted `updated_at`
+- `operation_id`
+
+현재 Workflow model에 존재하지 않는 `workflow_version` 또는 `revision`을 문서나 응답에서 만들지 않는다. `graph_hash`는 저장된 nodes와 edges의 stable-id 정렬 및 object-key 정렬 canonical JSON에 대한 SHA-256이며 viewport는 제외한다. Server가 저장 뒤 다시 계산한 값만 canonical 결과다.
+
+Agent Builder와 일반 editor draft save 응답 및 canonical draft read 응답은 persisted `graph_hash`와 `updated_at`을 같은 이름으로 반환한다. Recovery test는 production endpoint가 반환하지 않는 metadata를 fixture에 임의로 추가하지 않는다.
+
+### 6. Acknowledgement
+
+Frontend는 저장 성공 응답의 `workflow_id`, `graph_hash`, `updated_at`을 동일한 `operation_id` acknowledgement에 전달한다. Backend는 operation metadata와 현재 저장 graph를 다시 대조하고 일치할 때만 `acknowledged`로 전환한다.
+
+Acknowledgement는 graph를 다시 저장하지 않는다. 성공 뒤에만 연결된 parameter task 또는 Knowledge resolution을 완료하고 다음 task를 활성화한다. 이미 canonical graph에 반영된 자동 추천값의 `confirm`은 관련 structural operation이 acknowledged인 경우에만 GraphMutation이나 workflow 저장 없이 task를 완료하며, 같은 operation 재시도는 같은 결과를 반환한다. 원래 mutation 제출 흐름에서 acknowledgement 응답만 유실되면 같은 payload로 정확히 한 번 재시도할 수 있고, 중복 acknowledgement는 같은 결과를 반환한다. 두 번째 결과도 불명확하거나 복구·수동 재확인 경로에 진입한 뒤에는 acknowledgement를 다시 보내지 않고 canonical session 조회로만 `acknowledged|pending_ack|unapplied|stale`를 판정한다.
+
+### 7. Agent Builder History Boundary, Persisted Undo And Redo
+
+모든 필수 Knowledge 선택과 parameter 확인이 끝나고 모든 Agent Builder graph save와 acknowledgement가 끝난 명시적 완료 상태에서만 history boundary Undo를 시작한다. 저장되지 않았거나 acknowledgement가 불명확한 operation은 완료 boundary로 노출하지 않고 canonical operation과 workflow 상태를 먼저 복구한다.
+
+ParameterTask가 있으면 boundary의 첫 Undo는 graph 저장 없이 `completed|skipped|deferred` 중 재편집 가능하고 `stable_order`가 가장 큰 task를 client presentation에서 다시 표시하는 parameter 재진입 단계다. Graph, 기존 parameter 값과 persisted task status/version은 그대로 유지한다. ParameterTask 사이 이동은 backend가 반환한 `next_task_id`를 client-only presentation cursor로 소비하는 `이전 항목` control로 처리하며 Workflow history를 소비하지 않는다. Parameter 재진입 상태의 다음 Undo 또는 task가 없는 완료 상태의 첫 Undo는 일반 workflow draft 저장 endpoint에 boundary operation id, `action=revert`, boundary의 최종 graph hash, 현재 workflow `updated_at`을 전달한다. Server는 write lock과 권한 재확인 뒤 current canonical graph hash가 boundary final hash와 일치하고 복구 candidate hash가 시작 전 base hash와 일치할 때만 저장한다. 다른 수동 편집이 있으면 그 편집의 일반 history entry가 먼저 Undo되어야 하며 stale 상태를 덮어쓰지 않는다.
+
+Graph 복구, boundary 상태 전환, 모든 ParameterTask/Knowledge resolution의 `canceled` 처리와 기존 transaction-bound audit insert는 같은 DB transaction에서 commit한다. 생성 node/edge, parameter 설정과 KB binding을 포함한 Agent Builder 결과 전체를 시작 전 snapshot으로 복구한다. `replace_workflow` candidate는 교체 전 graph 전체여야 한다. `parameter_update`와 `knowledge_binding`별 persisted revert 및 Workflow Undo 계약은 폐기한다. 전체 복구 뒤 reload 전 Redo는 client memory의 final snapshot을 다시 적용하고 CAS 저장하되 canceled task/Knowledge 흐름을 재실행하지 않는다. 전체 Redo 뒤 다시 Undo하면 canceled task UI에 재진입하지 않고 같은 boundary의 시작 전 graph로 바로 복구한다. Parameter 재진입 상태의 Redo는 graph 저장 없이 UI만 완료 상태로 닫는다. Redo stack과 재진입 표시는 reload 뒤 복구하지 않는다.
+
+Revert와 Redo는 같은 boundary operation id, action, candidate graph hash와 expected CAS hash/`updated_at`을 가진 재요청에 대해 멱등하다. 최초 canonical graph hash/`updated_at`을 반환하고 graph write, task/Knowledge 전환과 audit를 반복하지 않는다. Client는 network outcome이 불명확하면 같은 context를 한 번 자동 재시도하며, 두 번째 결과도 불명확하면 canonical workflow와 boundary 상태를 조회해 반영됨, 미반영 또는 stale로 판정할 때까지 memory history와 pending context를 보존한다.
+
+Acknowledgement 응답 유실 뒤 session recovery에서 같은 operation이 이미 `acknowledged`이고 canonical graph hash/`updated_at`이 일치하면 client history boundary도 acknowledged로 reconcile한다. Acknowledgement와 audit를 중복 생성하지 않으며 hash 또는 timestamp가 다르면 완료로 추측하지 않고 stale/conflict로 닫는다.
+
+Acknowledgement가 성공한 뒤 즉시 session read만 실패하면 client는 acknowledgement를 반복하거나 boundary를 미완료로 영구 고정하지 않는다. `completion_confirming` presentation과 pending history를 유지하고 canonical session을 제한적으로 재조회해 terminal 상태를 확인한다. Save/session 결과가 불명확할 때 canonical graph를 다시 표시하더라도 일반 workflow load로 Undo/Redo와 pending context를 초기화하지 않으며 `applied|unapplied|stale` 판정 전까지 비파괴적으로 보존한다. Canonical graph가 operation의 base hash와 expected result hash 어느 쪽에도 일치하지 않는 제3 상태여도 destructive workflow load를 호출하지 않고 history boundary, redo memory, pending revert와 apply snapshot을 유지한다.
+
+### 8. Recovery And Protocol Migration
+
+Session protocol은 MBA-228 단일 기능 PR의 additive migration으로 추가하는 nullable `AgentBuilderSession.protocol_version`에 저장한다. 신규 direct-edit session은 `direct_edit_v1`을 기록하고 기존 null row는 legacy Preview session으로 분류한다. Legacy row를 backfill하지 않는다. 이 session-level marker로 request가 하나도 없는 session도 안전하게 분류한다. 기존 Preview session은 `stale_protocol`로 복구하고 안전한 대화 이력만 표시한다. 이전 preview/draft는 적용하거나 GraphMutation으로 변환하지 않으며 사용자가 요청을 다시 제출해야 한다.
+
+Migration revision은 구현 시점의 단일 Alembic head 뒤에 연결한다. MBA-228 release evidence에는 single-head 검사, disposable 기존 DB의 `upgrade head`, null/direct protocol read, request 없는 session 복구와 schema downgrade 없이 additive migration을 유지하는 검증을 포함한다. Preview는 fallback이 아니며 기존 결과는 parity characterization fixture로만 사용한다. Preview API/UI는 direct-edit parity와 필수 integration/E2E 검증을 통과한 뒤 같은 기능 PR에서 제거한다.
+
+Frontend와 Gateway의 서로 다른 revision이 동시에 동작하는 운영 전환, 단계적 rollout/rollback, session creation gate와 독립 image artifact는 이 기능 프로토콜의 일부가 아니다. 해당 무중단 배포 계약은 별도 배포 ADR과 후속 이슈에서 정의한다.
+
+`generation_mode`, catalog version, safe operation envelope와 task safe state는 기존 `AgentBuilderRequest.response_payload`에 저장한다. Full typed operations와 parameter 값은 저장하지 않는다. Repository는 SQLAlchemy가 nested JSON 변경을 놓치지 않도록 current payload를 복사해 새 전체 객체를 만들고 column에 재할당한다. 새 request에서 `generation_mode`가 없으면 `configure_and_generate`를 사용하며 한 request가 시작된 뒤 mode를 바꾸지 않는다. Generation mode는 session column이나 workflow graph에 저장하지 않는다.
+
+Full operations 응답을 받은 뒤 CAS 저장 전에 client 응답이나 page state가 유실되면 server는 mutation을 재생할 수 없다. 해당 safe envelope를 `blocked`와 machine reason `operation_payload_unavailable`로 닫는다. Initial/graph-edit request는 재생성하고 parameter decision은 현재 task/version에서 새 operation id로 다시 입력해야 하며 이전 envelope를 자동 적용하지 않는다. `before_graph` Knowledge 선택이 structural mutation을 발급한 경우에는 completion context의 resolution을 `unapplied`로 되돌리고 blocked structural boundary가 새 선택 operation을 막지 않게 정리한다. 반대로 CAS 저장은 완료됐지만 acknowledgement 응답만 유실된 경우에는 persisted workflow graph hash, `expected_result_graph_hash`, saved `result_graph_hash`, operation id와 workflow `updated_at`을 대조해 acknowledgement와 후속 task 상태를 복구한다.
+
+### 9. Audit And Runtime Boundary
+
+Mutation 발급, CAS 저장 결과, stale/permission/validation 차단, acknowledgement와 task/resolution 전환은 safe operation/workflow/node 식별자와 machine reason만 audit한다. Parameter 값 원문, raw user message, raw URL/path, raw Knowledge metadata, credential config와 secret은 mutation metadata, audit, trace 또는 repair prompt에 저장하지 않는다.
+
+Canonical graph를 client가 non-destructive recovery로 다시 적용할 때는 server graph에 없는 editor-only presentation metadata를 복구할 수 있다. `displayNumber` 같은 metadata는 local node rendering에만 쓰고 canonical graph hash, CAS candidate, acknowledgement 또는 server 저장 graph에 포함하지 않는다. recovery는 Workflow history boundary, pending operation, redo memory를 초기화하거나 삭제하지 않는다.
+
+Workflow graph CAS save와 persisted revert save는 기존 transaction-bound `add_action_audit`를 같은 SQLAlchemy session으로 호출한다. Graph write와 canonical audit insert 중 하나라도 실패하면 같은 transaction을 rollback하고 저장 성공을 반환하지 않는다. MBA-228에서는 이 경계에 신규 durable outbox, worker 또는 audit table을 추가하지 않는다.
+
+GraphMutation 생성, local 적용, 저장과 acknowledgement 중 workflow 실행, Knowledge retrieval, 외부 action 호출 또는 credential 사용은 발생하지 않는다.
+
+Node `configuration_state`는 client 또는 마지막 task action이 정하는 입력값이 아니라 Catalog `required_configuration` 전체에서 server가 계산하는 파생 상태다. 생성, parameter set/defer/skip, persisted Undo, recovery와 workflow test/run·deployment preflight마다 다시 계산한다. 필수 설정 하나라도 missing, deferred 또는 invalid면 `unresolved`이고 모두 유효할 때만 `resolved`다. Optional skipped parameter는 Catalog가 required로 선언하지 않은 한 unresolved 원인이 아니다. 계산 결과는 표시와 저장을 위해 graph에 materialize할 수 있지만 client 값은 권위로 신뢰하지 않는다. `unresolved` 외부 action node는 editor에서 저장할 수 있지만 server-side workflow test/run과 deployment create/activate preflight에서 차단한다. 모든 차단 surface는 HTTP `409`, `workflow.configuration_preflight.blocked`와 safe reason/action을 포함한 공통 preflight projection을 반환한다. Preflight는 catalog required configuration과 저장 graph만 검사하며 credential provider나 외부 API를 호출하지 않는다.
+
+### 10. Planner Calls
+
+정상 request는 planner provider를 한 번 호출한다. Schema-valid 결과가 semantic invariant만 위반하면 safe machine code만 사용해 repair를 최대 한 번 호출할 수 있으므로 provider 호출 총수는 최대 두 번이다. Provider, JSON 또는 schema 실패에는 repair하지 않고 fail-closed한다. Parameter, Knowledge와 task 전환은 planner를 다시 호출하지 않는다.
+
+### 11. Parameter Decision Concurrency
+
+각 Parameter task는 request `response_payload` 안에 단조 증가하는 `task_version`을 가진다. Decision request는 client-generated `operation_id`와 `expected_task_version`을 전달한다. Backend는 parent `AgentBuilderRequest` row를 write lock으로 조회하고 task id, version과 action별 허용 status를 확인한 뒤 같은 transaction에서 task state와 새 payload 객체를 저장한다. 일반 진행 decision은 active task만 변경하고, 값 설정 `set`은 `active|completed|skipped|deferred|invalid`에 허용하며 `pending|canceled`에는 허용하지 않는다. Optional `skip`은 graph를 바꾸거나 GraphMutation을 발급하지 않고 acknowledgement 없이 task를 `skipped`로 전환한 뒤 다음 task를 활성화한다. Required task의 skip은 거부한다.
+
+같은 `operation_id`와 동일 payload의 `confirm|set|defer|skip|cancel` 재시도는 기존 safe operation 결과를 그대로 반환하고 GraphMutation 재구성, next task activation, commit 또는 audit를 반복하지 않는다. Catalog validation으로 `invalid`가 된 `set`도 safe operation 결과로 기록해 응답 유실 재시도에서 같은 validation issue와 task 상태를 반환한다. 같은 operation id에 다른 payload가 오면 충돌로 거부한다. Client는 같은 group/task/version 취소 재시도에 operation id를 재사용하고 응답이 불명확하면 canonical session의 `canceled` 상태를 reconcile한다. 같은 task/version에 서로 다른 operation이 동시에 도착하면 먼저 잠금을 획득해 commit한 요청만 GraphMutation 또는 task transition을 만들고, 나중 요청은 `409 task_conflict`로 닫는다. 중복 next task activation, duplicate GraphMutation과 nested JSON in-place mutation은 허용하지 않는다. Commit 뒤 새 session에서 request를 다시 조회해도 같은 task/version/operation 상태가 복구되어야 한다.
+
+## Consequences
+
+- Agent Builder 시작 전 graph와 최종 graph는 하나의 Workflow history boundary이며, parameter 변경과 Knowledge binding은 별도 Undo entry를 만들지 않고 같은 boundary의 final snapshot/hash만 갱신한다. 모든 mutation은 같은 lifecycle, recovery와 audit 경계를 사용한다.
+- 같은 workflow의 동시 편집은 첫 CAS 저장만 성공하고 뒤 요청은 stale conflict가 된다. 실시간 merge, CRDT와 silent overwrite는 제공하지 않는다.
+- 이 동시성 경계는 동일한 단일 session의 순차 stale 재현만으로 완료 판정하지 않고, 독립 PostgreSQL session/transaction의 autosync 대 autosync 및 autosync 대 Agent Builder 저장 경쟁으로 검증한다.
+- 같은 parameter task/version의 동시 decision은 첫 commit만 성공하고 뒤 요청은 task conflict가 된다. 동일 operation 재시도는 같은 결과를 반환한다.
+- 일반 workflow save API에는 Agent Builder용 additive `mutation_context`와 canonical 저장 결과가 추가된다.
+- Full typed operations는 응답 유실 뒤 server에서 재생할 수 없지만 request/session 저장소에 graph 변경 원문이나 parameter 값을 남기지 않는다. CAS 저장 전 유실은 재생성·재입력하고 저장 뒤 acknowledgement 유실만 canonical graph와 hash로 복구한다.
+- Preview protocol을 direct-edit protocol과 병행 fallback으로 운영하지 않는다. Legacy 미적용 작업은 `stale_protocol`로 닫고 재생성한다.
+- unresolved graph는 편집·저장할 수 있지만 실행·배포할 수 없다.
+
+## Non-Goals
+
+- 실시간 공동 편집, 자동 merge 또는 CRDT
+- Agent Builder 전용 신규 DB table이나 독립 server
+- raw credential 또는 secret 입력·저장
+- workflow 생성 중 외부 action 실행
+- runtime에 존재하지 않는 신규 node capability 추가
+- Agent Builder intent model 표시 순서 변경
+## 2026-07-14 Correction: Canonical Layout Mutation
+
+- `initial_graph`, `replace_workflow`, `graph_edit` mutation은 server auto-layout 결과를 candidate graph에 적용한다.
+- 새 node 위치는 `add_node.node.position`에, 기존 node가 이동한 위치는 `replace_node_position` typed operation에 포함한다.
+- client는 server가 발급한 위치 operation만 적용하고 저장 후 viewport를 맞출 수는 있어도 별도의 client layout 저장을 수행하지 않는다.
+- mutation 적용 전 client는 canonical draft graph를 base로 사용한다. 화면에 남은 stale node는 server operation의 base가 될 수 없다. 동일 node의 display number는 화면 전용 값으로만 보존한다.

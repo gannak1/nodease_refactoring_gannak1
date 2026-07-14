@@ -4,6 +4,7 @@ OpenAI용 LLM 클라이언트.
 실제 SDK 대신 HTTP 호출로 동작하며, 응답/에러를 단순 래핑합니다.
 """
 
+import copy
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -71,6 +72,15 @@ class OpenAIClient(BaseLLMClient):
         "frequency_penalty",
         "stop",
     )
+    _JSON_SCHEMA_PREFIXES = (
+        "gpt-5",
+        "gpt-4.5",
+        "gpt-4.1",
+        "gpt-4o",
+        "o1",
+        "o3",
+        "o4",
+    )
     _LEGACY_COMPLETIONS_PREFIXES = (
         "text-davinci",
         "text-curie",
@@ -89,6 +99,49 @@ class OpenAIClient(BaseLLMClient):
 
     def _should_use_responses_endpoint(self) -> bool:
         return self._clean_model_id.startswith(self._RESPONSES_ENDPOINT_PREFIXES)
+
+    @classmethod
+    def _strict_json_schema(cls, schema: Dict[str, Any]) -> Dict[str, Any]:
+        strict_schema = copy.deepcopy(schema)
+
+        def normalize(value: Any) -> None:
+            if isinstance(value, list):
+                for item in value:
+                    normalize(item)
+                return
+            if not isinstance(value, dict):
+                return
+
+            value.pop("default", None)
+            properties = value.get("properties")
+            if value.get("type") == "object" or isinstance(properties, dict):
+                if isinstance(properties, dict):
+                    value["required"] = list(properties)
+                value["additionalProperties"] = False
+
+            for child in value.values():
+                normalize(child)
+
+        normalize(strict_schema)
+        return strict_schema
+
+    def build_json_schema_response_format(
+        self,
+        *,
+        name: str,
+        schema: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        if not self._clean_model_id.startswith(self._JSON_SCHEMA_PREFIXES):
+            return None
+        strict_schema = self._strict_json_schema(schema)
+        definition = {
+            "name": name,
+            "schema": strict_schema,
+            "strict": True,
+        }
+        if self._should_use_responses_endpoint():
+            return {"type": "json_schema", **definition}
+        return {"type": "json_schema", "json_schema": definition}
 
     def _should_try_legacy_completions(self) -> bool:
         return self._clean_model_id.startswith(self._LEGACY_COMPLETIONS_PREFIXES)

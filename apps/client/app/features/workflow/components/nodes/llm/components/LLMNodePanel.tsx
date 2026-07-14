@@ -5,6 +5,10 @@ import { getUpstreamNodes } from '../../../../utils/getUpstreamNodes';
 import { UnregisteredVariablesAlert } from '../../../ui/UnregisteredVariablesAlert';
 import { ValidationAlert } from '../../../ui/ValidationAlert';
 import { useWorkflowStore } from '@/app/features/workflow/store/useWorkflowStore';
+import {
+  ingestWorkflowDraftCASResult,
+  resolveWorkflowDraftCASExpectation,
+} from '@/app/features/workflow/utils/workflowDraftCAS';
 import { CollapsibleSection } from '../../ui/CollapsibleSection';
 import {
   HelpCircle,
@@ -306,6 +310,9 @@ export function LLMNodePanel({
   data,
   onOpenKnowledgeBaseSettings,
 }: LLMNodePanelProps) {
+  const fullscreenNodeSettingsSection = useWorkflowStore(
+    (state) => state.fullscreenNodeSettingsSection,
+  );
   const openSettingsTab = useCallback(() => {
     window.open('/dashboard/settings', '_blank', 'noopener,noreferrer');
   }, []);
@@ -333,6 +340,19 @@ export function LLMNodePanel({
   const [activeSettingsTab, setActiveSettingsTab] = useState<
     'basic' | 'advanced'
   >('basic');
+
+  useEffect(() => {
+    if (fullscreenNodeSettingsSection !== 'routing') return;
+    setActiveSettingsTab('basic');
+    const animationFrame = window.requestAnimationFrame(() => {
+      document
+        .querySelector<HTMLElement>(
+          `[data-agent-builder-node-settings-section="routing"][data-node-id="${nodeId}"]`,
+        )
+        ?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    });
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [fullscreenNodeSettingsSection, nodeId]);
   const [isOptimizationModalOpen, setIsOptimizationModalOpen] = useState(false);
   const [appliedRecommendationIds, setAppliedRecommendationIds] = useState<
     string[]
@@ -679,6 +699,9 @@ export function LLMNodePanel({
     ) => {
       if (!activeWorkflowId) return;
       try {
+        const expectation = await resolveWorkflowDraftCASExpectation(
+          activeWorkflowId,
+        );
         const policy = await workflowApi.patchModelRoutingPolicy(
           activeWorkflowId,
           nodeId,
@@ -689,8 +712,10 @@ export function LLMNodePanel({
             max_cohorts: maxCohorts,
             default_model_id: defaultModelId,
             fallback_model_id: fallbackModelId,
+            ...expectation,
           },
         );
+        ingestWorkflowDraftCASResult(activeWorkflowId, policy);
         setPersistedRoutingPolicy(policy);
         setRoutingPolicyError(null);
       } catch {
@@ -1339,7 +1364,11 @@ export function LLMNodePanel({
         </div>
       ) : (
         <>
-      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+      <div
+        data-agent-builder-node-settings-section="routing"
+        data-node-id={nodeId}
+        className="rounded-lg border border-slate-200 bg-slate-50 p-3"
+      >
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="text-xs font-bold text-slate-900">

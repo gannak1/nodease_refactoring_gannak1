@@ -1,3 +1,4 @@
+import logging
 import uuid
 from collections.abc import Iterable, Mapping
 from typing import Any
@@ -36,12 +37,33 @@ from apps.shared.services.permission_audit import record_resource_permission_den
 from apps.shared.services.permissions import (
     get_effective_mail_credential_auth_state,
     has_mail_credential_permission,
+    has_workflow_permission,
 )
 from apps.gateway.services.workflow_knowledge_reference_service import (
     WorkflowKnowledgeReferenceAuthorizationUnavailable,
     WorkflowKnowledgeReferenceService,
     WorkflowKnowledgeReferenceUnavailable,
 )
+from apps.gateway.adapters.db.agent_builder_repository import (
+    AgentBuilderRepository,
+    AgentBuilderRepositoryError,
+)
+from apps.gateway.application.agent_builder.workflow_cas import (
+    WorkflowDraftCASService,
+    WorkflowMutationConflict,
+)
+from apps.gateway.application.agent_builder.graph_mutation_builder import (
+    canonical_graph_hash,
+)
+from apps.gateway.application.agent_builder.parameter_tasks import (
+    refresh_parameter_group_configuration,
+)
+from apps.gateway.services.audit_records import add_action_audit
+from apps.shared.audit.actions import AuditAction
+from apps.shared.schemas.agent_builder import GraphMutationSafeEnvelope
+
+
+logger = logging.getLogger(__name__)
 
 
 class WorkflowService:
@@ -147,8 +169,13 @@ class WorkflowService:
         Returns:
             저장된 Workflow 객체
         """
-        # 기존 워크플로우 찾기
-        workflow = db.query(Workflow).filter(Workflow.id == workflow_id).first()
+        mutation_context = (
+            request.mutation_context
+            if isinstance(request, WorkflowDraftRequest)
+            else None
+        )
+        query = db.query(Workflow).filter(Workflow.id == workflow_id).with_for_update()
+        workflow = query.first()
 
         # workflow 없으면 error 반환
         if not workflow:
@@ -162,7 +189,282 @@ class WorkflowService:
             request,
             user_id=user_id,
             organization_id=workflow.organization_id,
+            require_retrieval_ready=mutation_context is None,
         )
+
+        if mutation_context is not None:
+            try:
+                user_uuid = uuid.UUID(str(user_id))
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(status_code=403, detail="Forbidden") from exc
+            if not has_workflow_permission(
+                db,
+                user_uuid,
+                workflow.id,
+                "write",
+                organization_id=workflow.organization_id,
+            ):
+                raise HTTPException(status_code=403, detail="Forbidden")
+            repository = AgentBuilderRepository()
+            saved_retry = False
+            boundary = None
+            try:
+                request_row, raw_envelope = repository.load_request_for_operation(
+                    db,
+                    operation_id=mutation_context.operation_id,
+                    workflow_id=workflow.id,
+                    organization_id=workflow.organization_id,
+                    user_id=user_uuid,
+                    for_update=True,
+                )
+                envelope = GraphMutationSafeEnvelope.model_validate(raw_envelope)
+                if mutation_context.action == "revert":
+                    boundary = repository.load_history_boundary(request_row)
+                    if (
+                        isinstance(boundary, dict)
+                        and boundary.get("status") not in {"completed", "reverted"}
+                    ):
+                        raise WorkflowMutationConflict(
+                            "history_boundary_incomplete"
+                        )
+                    retried_action = (
+                        WorkflowDraftCASService.validate_history_action_retry(
+                            workflow=workflow,
+                            request=request,
+                            boundary=boundary,
+                        )
+                        if isinstance(boundary, dict)
+                        else None
+                    )
+                    pre_run = (
+                        boundary.get("pre_run_snapshot")
+                        if isinstance(boundary, dict)
+                        else None
+                    )
+                    if retried_action is not None:
+                        validated = retried_action
+                        saved_retry = True
+                    elif (
+                        isinstance(boundary, dict)
+                        and boundary.get("status") == "reverted"
+                        and isinstance(pre_run, dict)
+                        and canonical_graph_hash(workflow.graph)
+                        == pre_run.get("graph_hash")
+                    ):
+                        validated = WorkflowDraftCASService.validate_reverted_retry(
+                            workflow=workflow,
+                            request=request,
+                            boundary=boundary,
+                        )
+                        saved_retry = True
+                    else:
+                        if isinstance(boundary, dict):
+                            raw_envelope = repository.history_boundary_envelope(
+                                request_row,
+                                mutation_context.operation_id,
+                            )
+                            envelope = GraphMutationSafeEnvelope.model_validate(
+                                raw_envelope
+                            )
+                        WorkflowDraftCASService.validate_expected_draft_state(
+                            workflow=workflow,
+                            request=request,
+                        )
+                        validated = WorkflowDraftCASService.validate_revert_candidate(
+                            workflow=workflow,
+                            request=request,
+                            envelope=envelope,
+                        )
+                elif mutation_context.action == "redo":
+                    boundary = repository.load_history_boundary(request_row)
+                    if boundary is None:
+                        raise WorkflowMutationConflict("history_boundary_not_found")
+                    retried_action = (
+                        WorkflowDraftCASService.validate_history_action_retry(
+                            workflow=workflow,
+                            request=request,
+                            boundary=boundary,
+                        )
+                    )
+                    if retried_action is not None:
+                        validated = retried_action
+                        saved_retry = True
+                    else:
+                        WorkflowDraftCASService.validate_expected_draft_state(
+                            workflow=workflow,
+                            request=request,
+                        )
+                        validated = WorkflowDraftCASService.validate_redo_candidate(
+                            workflow=workflow,
+                            request=request,
+                            boundary=boundary,
+                        )
+                else:  # apply
+                    if envelope.status in {"pending_ack", "acknowledged"}:
+                        validated = WorkflowDraftCASService.validate_saved_retry(
+                            workflow=workflow,
+                            request=request,
+                            envelope=envelope,
+                        )
+                        saved_retry = True
+                    else:
+                        WorkflowDraftCASService.validate_expected_draft_state(
+                            workflow=workflow,
+                            request=request,
+                        )
+                        validated = WorkflowDraftCASService.validate_candidate(
+                            workflow=workflow,
+                            request=request,
+                            envelope=envelope,
+                        )
+                        repository.mark_envelope_pending_save(
+                            request_row,
+                            validated.operation_id,
+                        )
+            except (AgentBuilderRepositoryError, WorkflowMutationConflict) as exc:
+                code = exc.code if isinstance(exc, WorkflowMutationConflict) else str(exc)
+                logger.warning(
+                    "agent_builder_workflow_mutation_conflict "
+                    "workflow_id=%s operation_id=%s action=%s code=%s",
+                    workflow.id,
+                    mutation_context.operation_id,
+                    mutation_context.action,
+                    code,
+                )
+                raise HTTPException(status_code=409, detail=code) from exc
+
+            if saved_retry:
+                parameter_group = (
+                    repository.load_latest_parameter_group(request_row)
+                    if mutation_context.action == "revert"
+                    else None
+                )
+                return {
+                    "status": "success",
+                    "workflow_id": str(workflow.id),
+                    "operation_id": str(validated.operation_id),
+                    "graph_hash": validated.graph_hash,
+                    "updated_at": workflow.updated_at.isoformat(),
+                    "parameter_group": (
+                        parameter_group.model_dump(mode="json")
+                        if parameter_group is not None
+                        else None
+                    ),
+                }
+
+            WorkflowService.validate_mail_credential_references(
+                db,
+                request,
+                user_id=user_id,
+                organization_id=workflow.organization_id,
+            )
+            workflow.graph = validated.graph
+            workflow.features = request.features if request.features else {}
+            workflow.env_variables = (
+                [value.model_dump() for value in request.env_variables]
+                if request.env_variables
+                else []
+            )
+            workflow.runtime_variables = (
+                [value.model_dump() for value in request.runtime_variables]
+                if request.runtime_variables
+                else []
+            )
+            workflow.updated_by = user_uuid
+            try:
+                db.flush()
+                db.refresh(workflow)
+                reverted_parameter_group = None
+                if mutation_context.action == "revert":
+                    repository.mark_envelope_reverted(
+                        request_row,
+                        validated.operation_id,
+                    )
+                    reverted_parameter_group = repository.revert_completion_state(
+                        request_row,
+                        raw_envelope,
+                    )
+                    reverted_parameter_group = refresh_parameter_group_configuration(
+                        reverted_parameter_group,
+                        validated.graph,
+                    )
+                    if reverted_parameter_group is not None:
+                        repository.store_parameter_group(
+                            request_row,
+                            reverted_parameter_group,
+                        )
+                elif mutation_context.action == "apply":
+                    repository.mark_envelope_saved(
+                        request_row,
+                        operation_id=validated.operation_id,
+                        result_graph_hash=validated.graph_hash,
+                        workflow_updated_at=workflow.updated_at,
+                    )
+                else:  # redo keeps the reverted task/Knowledge lifecycle canceled.
+                    repository.advance_history_boundary_final(
+                        request_row,
+                        graph_hash=validated.graph_hash,
+                        workflow_updated_at=workflow.updated_at,
+                    )
+                if mutation_context.action in {"revert", "redo"}:
+                    repository.record_history_boundary_action(
+                        request_row,
+                        operation_id=validated.operation_id,
+                        action=mutation_context.action,
+                        candidate_graph_hash=validated.graph_hash,
+                        expected_base_graph_hash=(
+                            mutation_context.expected_base_graph_hash
+                        ),
+                        expected_workflow_updated_at=(
+                            mutation_context.expected_workflow_updated_at
+                        ),
+                        result_graph_hash=validated.graph_hash,
+                        result_workflow_updated_at=workflow.updated_at,
+                    )
+                add_action_audit(
+                    db,
+                    (
+                        AuditAction.AGENT_BUILDER_GRAPH_MUTATION_REVERTED
+                        if mutation_context.action == "revert"
+                        else AuditAction.AGENT_BUILDER_APPLY_SAVE_SUCCEEDED
+                    ),
+                    user_uuid,
+                    "workflow",
+                    workflow.id,
+                    organization_id=workflow.organization_id,
+                    metadata={
+                        "operation_id": validated.operation_id,
+                        "graph_hash": validated.graph_hash,
+                        "catalog_version": 3,
+                        "mutation_action": mutation_context.action,
+                    },
+                )
+                db.commit()
+                db.refresh(workflow)
+            except Exception:
+                db.rollback()
+                raise
+            return {
+                "status": "success",
+                "workflow_id": str(workflow.id),
+                "operation_id": str(validated.operation_id),
+                "graph_hash": validated.graph_hash,
+                "updated_at": workflow.updated_at.isoformat(),
+                "parameter_group": (
+                    reverted_parameter_group.model_dump(mode="json")
+                    if mutation_context.action == "revert"
+                    and reverted_parameter_group is not None
+                    else None
+                ),
+            }
+
+        try:
+            WorkflowDraftCASService.validate_expected_draft_state(
+                workflow=workflow,
+                request=request,
+            )
+        except WorkflowMutationConflict as exc:
+            raise HTTPException(status_code=409, detail=exc.code) from exc
 
         WorkflowService.validate_mail_credential_references(
             db,
@@ -201,7 +503,9 @@ class WorkflowService:
         return {
             "status": "success",
             "message": "Draft saved to PostgreSQL",
-            "workflow_id": workflow_id,
+            "workflow_id": str(workflow.id),
+            "graph_hash": canonical_graph_hash(workflow.graph),
+            "updated_at": workflow.updated_at.isoformat(),
         }
 
     @staticmethod
@@ -211,6 +515,7 @@ class WorkflowService:
         *,
         user_id: str | UUID,
         organization_id: UUID | None,
+        require_retrieval_ready: bool = True,
     ) -> None:
         graph = (
             request.model_dump(mode="python")
@@ -251,7 +556,10 @@ class WorkflowService:
             organization_id=organization_uuid,
         )
         try:
-            service.validate_parsed_references(parsed_nodes)
+            service.validate_parsed_references(
+                parsed_nodes,
+                require_retrieval_ready=require_retrieval_ready,
+            )
         except WorkflowKnowledgeReferenceError as exc:
             raise HTTPException(
                 status_code=422,
@@ -455,7 +763,7 @@ class WorkflowService:
                 ) from exc
 
     @staticmethod
-    def get_draft(db: Session, workflow_id: str):
+    def get_draft(db: Session, workflow_id: str, *, include_metadata: bool = False):
         """
         워크플로우 초안을 PostgreSQL에서 조회합니다.
         """
@@ -477,5 +785,10 @@ class WorkflowService:
 
         if workflow.features:
             data["features"] = workflow.features
+
+        if include_metadata:
+            data["workflow_id"] = str(workflow.id)
+            data["graph_hash"] = canonical_graph_hash(workflow.graph)
+            data["updated_at"] = workflow.updated_at.isoformat()
 
         return data

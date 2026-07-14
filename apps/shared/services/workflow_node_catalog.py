@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+import copy
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -14,6 +16,21 @@ _CATALOG_PATH = (
 _CONNECTION_ROLES = {"entry", "intermediate", "branch", "terminal"}
 _CONNECTION_CARDINALITIES = {"forbidden", "allowed", "required"}
 _OUTGOING_HANDLE_POLICIES = {"standard", "condition_cases", "unrestricted"}
+_PARAMETER_INPUT_TYPES = {
+    "boolean",
+    "code",
+    "credential_ref",
+    "json",
+    "number",
+    "resource_ref",
+    "select",
+    "text",
+    "textarea",
+    "variable_selector",
+}
+_DEFER_POLICIES = {"forbidden", "allow_unresolved"}
+_PARAMETER_SENSITIVITIES = {"safe", "reference_only", "secret_forbidden"}
+_OUTPUT_MODES = {"static", "parameter_names"}
 
 
 @dataclass(frozen=True)
@@ -27,8 +44,13 @@ class WorkflowConnectionPolicyIssue:
 @lru_cache(maxsize=1)
 def load_workflow_node_catalog() -> dict[str, Any]:
     catalog = json.loads(_CATALOG_PATH.read_text(encoding="utf-8"))
+    validate_workflow_node_catalog(catalog)
+    return catalog
+
+
+def validate_workflow_node_catalog(catalog: dict[str, Any]) -> None:
     nodes = catalog.get("nodes")
-    if catalog.get("version") != 2 or not isinstance(nodes, list):
+    if catalog.get("version") != 3 or not isinstance(nodes, list):
         raise RuntimeError("Invalid workflow node capability catalog")
 
     node_types = [str(node.get("node_type") or "") for node in nodes]
@@ -57,7 +79,77 @@ def load_workflow_node_catalog() -> dict[str, Any]:
             raise RuntimeError("Workflow node catalog has an invalid outgoing policy")
         if policy.get("outgoing_handles") not in _OUTGOING_HANDLE_POLICIES:
             raise RuntimeError("Workflow node catalog has an invalid handle policy")
-    return catalog
+        parameters = node.get("parameters")
+        if not isinstance(parameters, list):
+            raise RuntimeError("Workflow node catalog is missing parameter definitions")
+        parameter_keys = [
+            str(parameter.get("key") or "")
+            for parameter in parameters
+            if isinstance(parameter, dict)
+        ]
+        if len(parameter_keys) != len(parameters) or any(
+            not key for key in parameter_keys
+        ):
+            raise RuntimeError("Workflow node catalog has an invalid parameter key")
+        if len(parameter_keys) != len(set(parameter_keys)):
+            raise RuntimeError("Workflow node catalog has duplicate parameter keys")
+        required_configuration = node.get("required_configuration") or []
+        if not isinstance(required_configuration, list) or not set(
+            map(str, required_configuration)
+        ).issubset(set(parameter_keys)):
+            raise RuntimeError(
+                "Workflow node catalog required configuration has no parameter"
+            )
+        for parameter in parameters:
+            if parameter.get("input_type") not in _PARAMETER_INPUT_TYPES:
+                raise RuntimeError("Workflow node catalog has an invalid input type")
+            if not isinstance(parameter.get("required"), bool):
+                raise RuntimeError("Workflow node catalog parameter required is invalid")
+            if (
+                "agent_builder_task" in parameter
+                and not isinstance(parameter["agent_builder_task"], bool)
+            ):
+                raise RuntimeError(
+                    "Workflow node catalog agent builder task flag is invalid"
+                )
+            if parameter.get("defer_policy", "forbidden") not in _DEFER_POLICIES:
+                raise RuntimeError("Workflow node catalog has an invalid defer policy")
+            if parameter.get("sensitivity", "safe") not in _PARAMETER_SENSITIVITIES:
+                raise RuntimeError("Workflow node catalog parameter sensitivity is invalid")
+            validation = parameter.get("validation", {})
+            if not isinstance(validation, dict):
+                raise RuntimeError("Workflow node catalog parameter validation is invalid")
+        outputs = node.get("outputs")
+        if not isinstance(outputs, list):
+            raise RuntimeError("Workflow node catalog is missing output contracts")
+        output_capabilities: set[str] = set()
+        for output in outputs:
+            if not isinstance(output, dict):
+                raise RuntimeError("Workflow node catalog output contract is invalid")
+            capability = str(output.get("capability") or "")
+            if capability not in node.get("capabilities", []):
+                raise RuntimeError("Workflow node catalog output capability is invalid")
+            if capability in output_capabilities:
+                raise RuntimeError("Workflow node catalog has duplicate output contracts")
+            output_capabilities.add(capability)
+            mode = output.get("mode")
+            if mode not in _OUTPUT_MODES:
+                raise RuntimeError("Workflow node catalog output mode is invalid")
+            if mode == "static" and not all(
+                isinstance(key, str) and key for key in output.get("keys", [])
+            ):
+                raise RuntimeError("Workflow node catalog static output keys are invalid")
+            if mode == "parameter_names":
+                if output.get("parameter_key") not in parameter_keys:
+                    raise RuntimeError(
+                        "Workflow node catalog dynamic output parameter is invalid"
+                    )
+                if not isinstance(output.get("name_key"), str):
+                    raise RuntimeError(
+                        "Workflow node catalog dynamic output name key is invalid"
+                    )
+        if set(node.get("capabilities") or []) != output_capabilities:
+            raise RuntimeError("Workflow node catalog is missing capability outputs")
 
 
 def implemented_node_types() -> set[str]:
@@ -108,6 +200,213 @@ def node_definition(node_type: str) -> dict[str, Any] | None:
         if node.get("node_type") == node_type:
             return node
     return None
+
+
+def node_parameter_definitions(node_type: str) -> list[dict[str, Any]]:
+    definition = node_definition(node_type)
+    if definition is None:
+        return []
+    return [
+        {
+            **dict(parameter),
+            "defer_policy": parameter.get("defer_policy", "forbidden"),
+            "agent_builder_task": parameter.get("agent_builder_task", True),
+            "sensitivity": parameter.get(
+                "sensitivity",
+                "reference_only"
+                if parameter.get("input_type") in {"resource_ref", "credential_ref"}
+                else "safe",
+            ),
+            "validation": dict(parameter.get("validation") or {}),
+        }
+        for parameter in definition.get("parameters") or []
+        if isinstance(parameter, dict)
+    ]
+
+
+def parameter_definition(node_type: str, parameter_key: str) -> dict[str, Any] | None:
+    return next(
+        (
+            parameter
+            for parameter in node_parameter_definitions(node_type)
+            if str(parameter.get("key")) == parameter_key
+        ),
+        None,
+    )
+
+
+def validate_node_parameter_value(
+    node_type: str,
+    parameter_key: str,
+    value: Any,
+) -> list[str]:
+    parameter = parameter_definition(node_type, parameter_key)
+    if parameter is None:
+        return ["unknown_parameter"]
+    input_type = str(parameter.get("input_type") or "")
+    validation = dict(parameter.get("validation") or {})
+    if value is None:
+        return ["required"] if parameter.get("required") else []
+    if input_type in {"text", "textarea", "code"}:
+        if not isinstance(value, str):
+            return ["invalid_type"]
+        if len(value) < int(validation.get("min_length", 0)):
+            return ["too_short"]
+        if len(value) > int(validation.get("max_length", 1_000_000)):
+            return ["too_long"]
+        pattern = validation.get("pattern")
+        if pattern and re.fullmatch(str(pattern), value) is None:
+            return ["pattern_mismatch"]
+    elif input_type == "number":
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return ["invalid_type"]
+        if "min" in validation and value < validation["min"]:
+            return ["below_minimum"]
+        if "max" in validation and value > validation["max"]:
+            return ["above_maximum"]
+    elif input_type == "boolean" and not isinstance(value, bool):
+        return ["invalid_type"]
+    options = validation.get("options")
+    if isinstance(options, list) and value not in options:
+        return ["option_not_allowed"]
+    return []
+
+
+def capability_output_contract(capability: str) -> dict[str, Any] | None:
+    for node in load_workflow_node_catalog()["nodes"]:
+        for output in node.get("outputs") or []:
+            if output.get("capability") == capability:
+                return dict(output)
+    return None
+
+
+def capability_output_keys(
+    capability: str,
+    node_data: dict[str, Any] | None,
+) -> list[str]:
+    contract = capability_output_contract(capability)
+    if contract is None:
+        return []
+    if contract.get("mode") == "static":
+        return list(dict.fromkeys(str(key) for key in contract.get("keys") or []))
+
+    data = node_data if isinstance(node_data, dict) else {}
+    values = data.get(str(contract.get("parameter_key") or ""))
+    if not isinstance(values, list):
+        return []
+    name_key = str(contract.get("name_key") or "")
+    return list(
+        dict.fromkeys(
+            str(item[name_key])
+            for item in values
+            if isinstance(item, dict) and item.get(name_key)
+        )
+    )
+
+
+def node_output_keys(
+    node_type: str,
+    node_data: dict[str, Any] | None,
+) -> list[str]:
+    definition = node_definition(node_type)
+    if definition is None:
+        return []
+    return list(
+        dict.fromkeys(
+            key
+            for capability in definition.get("capabilities") or []
+            for key in capability_output_keys(str(capability), node_data)
+        )
+    )
+
+
+def classify_catalog_version(catalog_version: Any) -> str:
+    return "current" if catalog_version == 3 else "legacy_stale"
+
+
+def _configuration_value_is_present(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, set, dict)):
+        return bool(value)
+    return True
+
+
+def node_parameter_is_configured(
+    node_type: str,
+    parameter_key: str,
+    node_data: dict[str, Any] | None,
+) -> bool:
+    data = node_data if isinstance(node_data, dict) else {}
+    if node_type == "githubNode" and parameter_key == "credential":
+        return _configuration_value_is_present(data.get("api_token"))
+    if node_type == "slackPostNode" and parameter_key == "credential":
+        auth_config = data.get("authConfig")
+        return (
+            data.get("authType") == "bearer"
+            and isinstance(auth_config, dict)
+            and _configuration_value_is_present(auth_config.get("token"))
+        )
+    if node_type == "slackPostNode" and parameter_key == "channel":
+        body = data.get("body")
+        if isinstance(body, str):
+            try:
+                body = json.loads(body)
+            except (TypeError, ValueError):
+                body = None
+        return isinstance(body, dict) and _configuration_value_is_present(
+            body.get("channel")
+        )
+    return _configuration_value_is_present(data.get(parameter_key))
+
+
+def apply_node_parameter_value(
+    node_type: str,
+    parameter_key: str,
+    node_data: dict[str, Any],
+    value: Any,
+) -> dict[str, Any]:
+    data = copy.deepcopy(node_data)
+    data[parameter_key] = copy.deepcopy(value)
+    if node_type == "slackPostNode" and parameter_key == "channel":
+        body = data.get("body")
+        if isinstance(body, str):
+            try:
+                body = json.loads(body)
+            except (TypeError, ValueError):
+                body = {}
+        if not isinstance(body, dict):
+            body = {}
+        body["channel"] = value
+        data["body"] = json.dumps(body, ensure_ascii=False)
+    return data
+
+
+def derive_node_configuration_state(
+    node_type: str, node_data: dict[str, Any] | None
+) -> str:
+    definition = node_definition(node_type)
+    if definition is None:
+        return "unresolved"
+    data = node_data if isinstance(node_data, dict) else {}
+    deferred = {
+        str(key)
+        for key in data.get("_deferred_parameters", [])
+        if isinstance(key, str)
+    }
+    for key in definition.get("required_configuration") or []:
+        if (
+            str(key) in deferred
+            or not node_parameter_is_configured(node_type, str(key), data)
+            or (
+                node_type not in {"githubNode", "slackPostNode"}
+                and validate_node_parameter_value(node_type, str(key), data.get(key))
+            )
+        ):
+            return "unresolved"
+    return "resolved"
 
 
 def connection_policy_for_node_type(node_type: str) -> dict[str, str] | None:
@@ -185,8 +484,12 @@ def validate_workflow_graph_connections(
         if (
             source_policy
             and source_policy.get("outgoing_handles") == "condition_cases"
-            and str(edge.get("sourceHandle") or "default")
-            not in _condition_source_handles(source_node)
+            and (
+                not isinstance(edge.get("sourceHandle"), str)
+                or not edge.get("sourceHandle")
+                or edge["sourceHandle"]
+                not in _condition_source_handles(source_node)
+            )
         ):
             issues.append(
                 WorkflowConnectionPolicyIssue(

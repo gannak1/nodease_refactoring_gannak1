@@ -38,4 +38,31 @@ export interface WorkflowDraftRequest {
   features?: Features;
   envVariables?: EnvVariable[];
   runtimeVariables?: RuntimeVariable[];
+  mutation_context?: {
+    operation_id: string;
+    action: 'apply' | 'revert' | 'redo';
+    expected_base_graph_hash: string;
+    expected_workflow_updated_at: string;
+    catalog_version: 3;
+  };
+}
+
+export interface WorkflowDraftSaveRequest extends WorkflowDraftRequest {
+  expected_graph_hash: string;
+  expected_updated_at: string;
+}
+
+export interface WorkflowDraftResponse extends WorkflowDraftRequest {
+  workflow_id: string;
+  graph_hash: string;
+  updated_at: string;
+}
+
+export interface WorkflowDraftSaveResponse {
+  status: 'success';
+  workflow_id: string;
+  graph_hash: string;
+  updated_at: string;
+  operation_id?: string;
+  parameter_group?: unknown;
 }

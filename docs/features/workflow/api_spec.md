@@ -74,6 +74,56 @@ Reason/action은 fixed allowlist만 사용하며 Collection/child UUID, label, e
 permission/source detail을 반환하지 않는다. Malformed/over-limit graph와 anonymous
 private/source-public-exposure 위반은 active publish에서 non-downgradable blocker다.
 
+### Agent Builder GraphMutation CAS draft save
+
+일반 editor와 Agent Builder는 같은 optimistic-concurrency 저장 경계를 사용한다. 모든 저장은 current canonical metadata에서 얻은 `expected_graph_hash`와 `expected_updated_at`을 포함하며, Agent Builder가 발급한 operation은 같은 payload에 추가 `mutation_context`를 포함한다.
+
+```json
+{
+  "nodes": [],
+  "edges": [],
+  "viewport": {"x": 0, "y": 0, "zoom": 1},
+  "features": {},
+  "envVariables": [],
+  "runtimeVariables": [],
+  "expected_graph_hash": "sha256",
+  "expected_updated_at": "ISO-8601",
+  "mutation_context": {
+    "operation_id": "uuid",
+    "action": "apply",
+    "expected_base_graph_hash": "sha256",
+    "expected_workflow_updated_at": "ISO-8601",
+    "catalog_version": 3
+  }
+}
+```
+
+Gateway는 모든 save에서 workflow row를 write lock으로 조회하고 active organization/write 권한을 재확인한다. Current canonical graph hash와 `updated_at`이 공통 기대값과 모두 일치해야 한다. Agent Builder save는 추가로 request graph의 canonical hash가 persisted safe operation envelope의 `expected_result_graph_hash`와 같은지 검증한 뒤 catalog/connection/schema validation을 확인한다. Full typed GraphMutation operations는 DB에 저장하거나 이 endpoint에서 재생하지 않는다. Graph write와 기존 `add_action_audit`의 canonical audit insert는 같은 SQLAlchemy session과 transaction에서 확정하며 둘 중 하나라도 실패하면 전체를 rollback한다. 이 경계에 신규 audit outbox나 worker를 추가하지 않는다.
+
+성공 응답:
+
+```json
+{
+  "status": "success",
+  "workflow_id": "uuid",
+  "operation_id": "uuid",
+  "graph_hash": "sha256",
+  "updated_at": "ISO-8601"
+}
+```
+
+Canonical graph hash는 persisted nodes/edges를 stable id와 object key 순으로 정렬한 JSON의 SHA-256이며 node position/data는 포함하고 viewport는 제외한다. 현재 Workflow model에 없는 version/revision 값을 응답에 추가하지 않는다. Expected hash 또는 `updated_at`이 다르면 graph를 쓰지 않고 `409 stale_graph`를 반환한다. Silent overwrite, 자동 merge와 강제 덮어쓰기는 허용하지 않는다. Mutation context 없는 일반 editor save도 같은 CAS를 통과하고 canonical metadata를 반환하지만 Agent Builder acknowledgement 대상은 아니다.
+
+Canonical draft GET 응답도 실제 persisted `workflow_id`, server-calculated `graph_hash`, DB `updated_at`을 반환한다. Agent Builder save/acknowledgement, 일반 autosync, version 복원, test 전 저장, Undo/Redo와 응답 유실 복구는 frontend의 같은 canonical metadata 상태를 공유하고 성공한 GET/POST마다 갱신한다. Canonical 재조회는 pending Agent Builder history를 초기화하지 않는 비파괴 동기화로 처리한다. Out-of-band 저장 뒤 stale metadata를 계속 사용하거나 일반 autosync의 `409 stale_graph`를 조용히 무시하지 않는다.
+
+Graph를 변경하는 `PATCH /workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy`, `PATCH .../cost-optimizer/apply`, `PATCH .../cost-optimizer/apply-recommendations`도 request body에 `expected_graph_hash`와 `expected_updated_at`을 필수로 포함한다. Gateway는 write lock 뒤 공통 CAS를 검증하고 graph와 연관 policy/candidate 상태를 한 transaction으로 저장한다. 세 API는 성공 응답에 canonical `graph_hash`와 `updated_at`을 반환하며 frontend는 이를 공통 Workflow store에 반영한다. 기대값이 다르면 부가 상태와 graph를 모두 쓰지 않고 `409 stale_graph`를 반환한다.
+
+Acknowledged Agent Builder persisted Undo는 최초 `initial_graph`/`graph_edit`/`replace_workflow` operation id를 단일 history boundary로 사용한다. 후속 `parameter_update`/`knowledge_binding` acknowledgement는 새 history entry를 만들지 않고 boundary의 최신 final graph hash와 `updated_at`만 갱신한다. 완료 상태의 첫 Undo는 `completed|skipped|deferred` 중 최대 stable order task를 client presentation에서 표시할 뿐 persisted task 상태와 graph를 바꾸지 않으므로 이 endpoint를 호출하지 않는다. Parameter UI가 열린 상태의 다음 Undo 또는 task가 없는 완료 상태의 첫 Undo는 같은 endpoint에 `action="revert"`, boundary operation id, 최신 final graph hash와 current `updated_at`을 전달하고 request graph에는 실행 전 전체 graph를 넣는다. 성공하면 graph와 audit를 같은 transaction에 저장하고 boundary를 `reverted`로 전환하며 모든 ParameterTask/Knowledge resolution을 `canceled`로 닫는다. `parameter_update`/`knowledge_binding` operation id의 개별 revert는 validation failure로 거부한다. Reload 전 전체 Redo는 `action="redo"`와 같은 boundary operation id를 사용해 client memory의 final graph를 CAS 저장하되 canceled task/Knowledge 상태는 변경하지 않는다. 그 뒤 다시 Undo하면 parameter 재진입 없이 같은 boundary를 즉시 revert한다. 동일 operation/action/candidate/expected CAS context 재시도는 중복 write, 상태 전환과 audit 없이 같은 canonical graph hash/`updated_at`을 반환한다. Redo stack과 ParameterTask 재진입 표시는 reload 뒤 복구하지 않는다.
+
+### Unresolved external-action preflight
+
+Workflow test/run과 deployment create/activate는 저장 graph의 catalog required configuration 전체에서 `configuration_state`를 server-side로 다시 계산한다. 하나라도 missing/deferred/invalid인 외부 action node가 있으면 실행 또는 배포 전에 safe node id/type과 machine reason만 포함한 validation error로 차단한다. Client가 저장한 상태값은 권위가 아니며 이 검사 자체는 credential 사용이나 Slack/GitHub/HTTP/Mail 외부 호출을 수행하지 않는다.
+
 ### Workflow run actor compatibility
 
 Workflow run list/detail 또는 node execution log가 run actor를 포함하는 경우 `user_id`는 `UUID | null`이다. Null은 canonical schedule claim에서 내부 입력 `schedule`이 저장 계약 `trigger_mode="scheduler"`로 정규화된 system execution에서만 허용한다. Client는 null을 App creator로 대체하지 않고 actor를 표시하는 화면에서는 `System`으로 표현한다. Manual/API/webhook 등 기존 user-attributed run의 non-null 계약은 유지한다.

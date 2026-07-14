@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "nodes": [
     {
       "node_type": "startNode",
@@ -7,8 +7,12 @@
       "agent_builder_supported": true,
       "connection_policy": {"role": "entry", "incoming": "forbidden", "outgoing": "allowed", "outgoing_handles": "standard"},
       "capabilities": ["start_input"],
+      "outputs": [{"capability": "start_input", "mode": "parameter_names", "parameter_key": "variables", "name_key": "name", "value_type": "unknown"}],
       "side_effect": "none",
-      "required_configuration": []
+      "required_configuration": [],
+      "parameters": [
+        {"key": "variables", "label": "입력 변수", "input_type": "json", "required": false, "defer_policy": "forbidden", "default": [], "agent_builder_task": false}
+      ]
     },
     {
       "node_type": "webhookTrigger",
@@ -16,8 +20,12 @@
       "agent_builder_supported": true,
       "connection_policy": {"role": "entry", "incoming": "forbidden", "outgoing": "allowed", "outgoing_handles": "standard"},
       "capabilities": ["webhook_trigger"],
+      "outputs": [{"capability": "webhook_trigger", "mode": "parameter_names", "parameter_key": "variable_mappings", "name_key": "variable_name", "value_type": "unknown"}],
       "side_effect": "none",
-      "required_configuration": []
+      "required_configuration": [],
+      "parameters": [
+        {"key": "variable_mappings", "label": "Webhook 변수 매핑", "input_type": "json", "required": false, "defer_policy": "forbidden", "default": []}
+      ]
     },
     {
       "node_type": "scheduleTrigger",
@@ -25,12 +33,17 @@
       "agent_builder_supported": true,
       "connection_policy": {"role": "entry", "incoming": "forbidden", "outgoing": "allowed", "outgoing_handles": "standard"},
       "capabilities": ["schedule_trigger"],
+      "outputs": [{"capability": "schedule_trigger", "mode": "static", "keys": ["triggered_at", "schedule_id"], "value_type": "text"}],
       "side_effect": "none",
       "required_configuration": ["cron_expression", "timezone"],
       "configuration_labels": {
         "cron_expression": "실행 일정",
         "timezone": "Timezone"
-      }
+      },
+      "parameters": [
+        {"key": "cron_expression", "label": "실행 일정", "input_type": "text", "required": true, "defer_policy": "forbidden", "validation": {"min_length": 1, "max_length": 255}},
+        {"key": "timezone", "label": "Timezone", "input_type": "text", "required": true, "defer_policy": "forbidden", "default": "UTC", "validation": {"min_length": 1, "max_length": 64}}
+      ]
     },
     {
       "node_type": "llmNode",
@@ -38,9 +51,17 @@
       "agent_builder_supported": true,
       "connection_policy": {"role": "intermediate", "incoming": "allowed", "outgoing": "allowed", "outgoing_handles": "standard"},
       "capabilities": ["llm", "knowledge_backed_llm"],
+      "outputs": [
+        {"capability": "llm", "mode": "static", "keys": ["text"], "value_type": "text"},
+        {"capability": "knowledge_backed_llm", "mode": "static", "keys": ["text"], "value_type": "text"}
+      ],
       "side_effect": "external_read",
       "required_configuration": ["model_id"],
-      "configuration_labels": {"model_id": "LLM model"}
+      "configuration_labels": {"model_id": "LLM model"},
+      "parameters": [
+        {"key": "model_id", "label": "LLM model", "input_type": "resource_ref", "required": true, "defer_policy": "allow_unresolved"},
+        {"key": "knowledgeBases", "label": "Knowledge Bases", "input_type": "resource_ref", "required": false, "defer_policy": "forbidden"}
+      ]
     },
     {
       "node_type": "workflowNode",
@@ -48,12 +69,17 @@
       "agent_builder_supported": true,
       "connection_policy": {"role": "intermediate", "incoming": "allowed", "outgoing": "allowed", "outgoing_handles": "standard"},
       "capabilities": ["workflow_call"],
+      "outputs": [{"capability": "workflow_call", "mode": "static", "keys": ["result"], "value_type": "unknown"}],
       "side_effect": "local_execution",
       "required_configuration": ["workflowId", "appId"],
       "configuration_labels": {
         "workflowId": "Target workflow",
         "appId": "Target app"
-      }
+      },
+      "parameters": [
+        {"key": "workflowId", "label": "Target workflow", "input_type": "resource_ref", "required": true, "defer_policy": "allow_unresolved"},
+        {"key": "appId", "label": "Target app", "input_type": "resource_ref", "required": true, "defer_policy": "allow_unresolved"}
+      ]
     },
     {
       "node_type": "codeNode",
@@ -61,9 +87,13 @@
       "agent_builder_supported": true,
       "connection_policy": {"role": "intermediate", "incoming": "allowed", "outgoing": "allowed", "outgoing_handles": "standard"},
       "capabilities": ["code_execution"],
+      "outputs": [{"capability": "code_execution", "mode": "static", "keys": ["result"], "value_type": "unknown"}],
       "side_effect": "local_execution",
       "required_configuration": ["code"],
-      "configuration_labels": {"code": "실행 코드"}
+      "configuration_labels": {"code": "실행 코드"},
+      "parameters": [
+        {"key": "code", "label": "실행 코드", "input_type": "code", "required": true, "defer_policy": "forbidden", "validation": {"min_length": 1, "max_length": 100000}}
+      ]
     },
     {
       "node_type": "conditionNode",
@@ -71,9 +101,13 @@
       "agent_builder_supported": true,
       "connection_policy": {"role": "branch", "incoming": "allowed", "outgoing": "allowed", "outgoing_handles": "condition_cases"},
       "capabilities": ["condition"],
+      "outputs": [{"capability": "condition", "mode": "static", "keys": ["selected_handle", "matched_case_id"], "value_type": "unknown"}],
       "side_effect": "none",
       "required_configuration": ["cases"],
-      "configuration_labels": {"cases": "분기 조건"}
+      "configuration_labels": {"cases": "분기 조건"},
+      "parameters": [
+        {"key": "cases", "label": "분기 조건", "input_type": "json", "required": true, "defer_policy": "forbidden"}
+      ]
     },
     {
       "node_type": "fileExtractionNode",
@@ -81,9 +115,13 @@
       "agent_builder_supported": true,
       "connection_policy": {"role": "intermediate", "incoming": "allowed", "outgoing": "allowed", "outgoing_handles": "standard"},
       "capabilities": ["file_extraction"],
+      "outputs": [{"capability": "file_extraction", "mode": "parameter_names", "parameter_key": "referenced_variables", "name_key": "name", "value_type": "text"}],
       "side_effect": "none",
       "required_configuration": ["referenced_variables"],
-      "configuration_labels": {"referenced_variables": "입력 파일"}
+      "configuration_labels": {"referenced_variables": "입력 파일"},
+      "parameters": [
+        {"key": "referenced_variables", "label": "입력 파일", "input_type": "variable_selector", "required": true, "defer_policy": "forbidden"}
+      ]
     },
     {
       "node_type": "variableExtractionNode",
@@ -91,12 +129,17 @@
       "agent_builder_supported": true,
       "connection_policy": {"role": "intermediate", "incoming": "allowed", "outgoing": "allowed", "outgoing_handles": "standard"},
       "capabilities": ["variable_extraction"],
+      "outputs": [{"capability": "variable_extraction", "mode": "parameter_names", "parameter_key": "mappings", "name_key": "name", "value_type": "unknown"}],
       "side_effect": "none",
       "required_configuration": ["source_selector", "mappings"],
       "configuration_labels": {
         "source_selector": "입력 변수",
         "mappings": "추출 규칙"
-      }
+      },
+      "parameters": [
+        {"key": "source_selector", "label": "입력 변수", "input_type": "variable_selector", "required": true, "defer_policy": "forbidden"},
+        {"key": "mappings", "label": "추출 규칙", "input_type": "json", "required": true, "defer_policy": "forbidden"}
+      ]
     },
     {
       "node_type": "answerNode",
@@ -104,9 +147,13 @@
       "agent_builder_supported": true,
       "connection_policy": {"role": "terminal", "incoming": "allowed", "outgoing": "forbidden", "outgoing_handles": "standard"},
       "capabilities": ["answer"],
+      "outputs": [{"capability": "answer", "mode": "parameter_names", "parameter_key": "outputs", "name_key": "variable", "value_type": "unknown"}],
       "side_effect": "none",
       "required_configuration": ["outputs"],
-      "configuration_labels": {"outputs": "응답 출력"}
+      "configuration_labels": {"outputs": "응답 출력"},
+      "parameters": [
+        {"key": "outputs", "label": "응답 출력", "input_type": "json", "required": true, "defer_policy": "forbidden", "agent_builder_task": false}
+      ]
     },
     {
       "node_type": "loopNode",
@@ -114,12 +161,17 @@
       "agent_builder_supported": false,
       "connection_policy": {"role": "branch", "incoming": "allowed", "outgoing": "allowed", "outgoing_handles": "unrestricted"},
       "capabilities": ["loop"],
+      "outputs": [{"capability": "loop", "mode": "static", "keys": ["results"], "value_type": "array"}],
       "side_effect": "local_execution",
       "required_configuration": ["loop_key", "subGraph"],
       "configuration_labels": {
         "loop_key": "반복 대상",
         "subGraph": "반복 내부 workflow"
-      }
+      },
+      "parameters": [
+        {"key": "loop_key", "label": "반복 대상", "input_type": "variable_selector", "required": true, "defer_policy": "forbidden"},
+        {"key": "subGraph", "label": "반복 내부 workflow", "input_type": "json", "required": true, "defer_policy": "forbidden"}
+      ]
     },
     {
       "node_type": "httpRequestNode",
@@ -127,9 +179,13 @@
       "agent_builder_supported": true,
       "connection_policy": {"role": "intermediate", "incoming": "allowed", "outgoing": "allowed", "outgoing_handles": "standard"},
       "capabilities": ["http_request"],
+      "outputs": [{"capability": "http_request", "mode": "static", "keys": ["status", "headers", "data"], "value_type": "unknown"}],
       "side_effect": "external_write",
       "required_configuration": ["url"],
-      "configuration_labels": {"url": "Request URL"}
+      "configuration_labels": {"url": "Request URL"},
+      "parameters": [
+        {"key": "url", "label": "Request URL", "input_type": "text", "required": true, "defer_policy": "allow_unresolved", "sensitivity": "secret_forbidden", "validation": {"min_length": 8, "max_length": 2048, "pattern": "https?://.+"}}
+      ]
     },
     {
       "node_type": "slackPostNode",
@@ -137,12 +193,17 @@
       "agent_builder_supported": true,
       "connection_policy": {"role": "intermediate", "incoming": "allowed", "outgoing": "allowed", "outgoing_handles": "standard"},
       "capabilities": ["slack_send"],
+      "outputs": [{"capability": "slack_send", "mode": "static", "keys": ["status", "headers", "data"], "value_type": "unknown"}],
       "side_effect": "external_write",
       "required_configuration": ["credential", "channel"],
       "configuration_labels": {
         "credential": "Slack credential",
         "channel": "Slack channel"
-      }
+      },
+      "parameters": [
+        {"key": "credential", "label": "Slack credential", "input_type": "credential_ref", "required": true, "defer_policy": "allow_unresolved", "agent_builder_task": false},
+        {"key": "channel", "label": "Slack channel", "input_type": "text", "required": true, "defer_policy": "allow_unresolved", "validation": {"min_length": 1, "max_length": 255}}
+      ]
     },
     {
       "node_type": "templateNode",
@@ -150,9 +211,13 @@
       "agent_builder_supported": true,
       "connection_policy": {"role": "intermediate", "incoming": "allowed", "outgoing": "allowed", "outgoing_handles": "standard"},
       "capabilities": ["template_render"],
+      "outputs": [{"capability": "template_render", "mode": "static", "keys": ["text"], "value_type": "text"}],
       "side_effect": "none",
       "required_configuration": ["template"],
-      "configuration_labels": {"template": "Template"}
+      "configuration_labels": {"template": "Template"},
+      "parameters": [
+        {"key": "template", "label": "Template", "input_type": "textarea", "required": true, "defer_policy": "forbidden"}
+      ]
     },
     {
       "node_type": "githubNode",
@@ -160,6 +225,10 @@
       "agent_builder_supported": true,
       "connection_policy": {"role": "intermediate", "incoming": "allowed", "outgoing": "allowed", "outgoing_handles": "standard"},
       "capabilities": ["github_pr_read", "github_pr_comment"],
+      "outputs": [
+        {"capability": "github_pr_read", "mode": "static", "keys": ["pr_title", "pr_body", "pr_state", "pr_number", "files_count", "files", "diff_url"], "value_type": "unknown"},
+        {"capability": "github_pr_comment", "mode": "static", "keys": ["comment_id", "comment_url", "comment_body"], "value_type": "unknown"}
+      ],
       "side_effect": "external_write",
       "required_configuration": ["credential", "repo_owner", "repo_name", "pr_number"],
       "configuration_labels": {
@@ -167,7 +236,13 @@
         "repo_owner": "Repository owner",
         "repo_name": "Repository name",
         "pr_number": "PR 번호"
-      }
+      },
+      "parameters": [
+        {"key": "credential", "label": "GitHub credential", "input_type": "credential_ref", "required": true, "defer_policy": "allow_unresolved", "agent_builder_task": false},
+        {"key": "repo_owner", "label": "Repository owner", "input_type": "text", "required": true, "defer_policy": "allow_unresolved"},
+        {"key": "repo_name", "label": "Repository name", "input_type": "text", "required": true, "defer_policy": "allow_unresolved"},
+        {"key": "pr_number", "label": "PR 번호", "input_type": "number", "required": true, "defer_policy": "allow_unresolved", "validation": {"min": 1}}
+      ]
     },
     {
       "node_type": "mailNode",
@@ -175,11 +250,15 @@
       "agent_builder_supported": true,
       "connection_policy": {"role": "intermediate", "incoming": "allowed", "outgoing": "allowed", "outgoing_handles": "standard"},
       "capabilities": ["mail_search"],
+      "outputs": [{"capability": "mail_search", "mode": "static", "keys": ["emails", "processing_ref", "processing_refs"], "value_type": "unknown"}],
       "side_effect": "external_read",
       "required_configuration": ["credential_id"],
       "configuration_labels": {
         "credential_id": "Mail credential"
-      }
+      },
+      "parameters": [
+        {"key": "credential_id", "label": "Mail credential", "input_type": "credential_ref", "required": true, "defer_policy": "allow_unresolved"}
+      ]
     },
     {
       "node_type": "gmailDraftNode",
@@ -187,13 +266,19 @@
       "agent_builder_supported": true,
       "connection_policy": {"role": "intermediate", "incoming": "allowed", "outgoing": "allowed", "outgoing_handles": "standard"},
       "capabilities": ["gmail_reply_draft_create"],
+      "outputs": [{"capability": "gmail_reply_draft_create", "mode": "static", "keys": ["draft_ref", "processing_ref"], "value_type": "text"}],
       "side_effect": "external_write",
       "required_configuration": ["credential_id", "processing_ref_selector", "reply_body_selector"],
       "configuration_labels": {
         "credential_id": "Gmail credential",
         "processing_ref_selector": "Mail processing",
         "reply_body_selector": "Reply body"
-      }
+      },
+      "parameters": [
+        {"key": "credential_id", "label": "Gmail credential", "input_type": "credential_ref", "required": true, "defer_policy": "allow_unresolved"},
+        {"key": "processing_ref_selector", "label": "Mail processing", "input_type": "variable_selector", "required": true, "defer_policy": "forbidden"},
+        {"key": "reply_body_selector", "label": "Reply body", "input_type": "variable_selector", "required": true, "defer_policy": "forbidden"}
+      ]
     },
     {
       "node_type": "mailAcknowledgeNode",
@@ -201,12 +286,17 @@
       "agent_builder_supported": true,
       "connection_policy": {"role": "terminal", "incoming": "allowed", "outgoing": "forbidden", "outgoing_handles": "standard"},
       "capabilities": ["mail_terminal_acknowledgement"],
+      "outputs": [{"capability": "mail_terminal_acknowledgement", "mode": "static", "keys": ["processing_ref", "status"], "value_type": "text"}],
       "side_effect": "external_write",
       "required_configuration": ["processing_ref_selector", "required_effect_ref_selectors"],
       "configuration_labels": {
         "processing_ref_selector": "Mail processing",
         "required_effect_ref_selectors": "Required effects"
-      }
+      },
+      "parameters": [
+        {"key": "processing_ref_selector", "label": "Mail processing", "input_type": "variable_selector", "required": true, "defer_policy": "forbidden"},
+        {"key": "required_effect_ref_selectors", "label": "Required effects", "input_type": "variable_selector", "required": true, "defer_policy": "forbidden"}
+      ]
     },
     {
       "node_type": "pluginNode",
@@ -214,8 +304,13 @@
       "agent_builder_supported": false,
       "connection_policy": {"role": "intermediate", "incoming": "allowed", "outgoing": "allowed", "outgoing_handles": "standard"},
       "capabilities": [],
+      "outputs": [],
       "side_effect": "external_write",
-      "required_configuration": ["pluginId"]
+      "required_configuration": ["pluginId"],
+      "configuration_labels": {"pluginId": "Plugin"},
+      "parameters": [
+        {"key": "pluginId", "label": "Plugin", "input_type": "resource_ref", "required": true, "defer_policy": "allow_unresolved"}
+      ]
     }
   ]
 }

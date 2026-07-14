@@ -1,0 +1,429 @@
+from __future__ import annotations
+
+from collections.abc import Callable
+from typing import Any
+from uuid import UUID, uuid4
+
+from fastapi import HTTPException
+from sqlalchemy.orm import Session
+
+from apps.gateway.adapters.db.agent_builder_repository import (
+    AgentBuilderRepository,
+    AgentBuilderRepositoryError,
+)
+from apps.gateway.application.agent_builder.knowledge_timing import (
+    KnowledgeTimingResolver,
+)
+from apps.gateway.services.audit_records import add_action_audit
+from apps.shared.audit.actions import AuditAction
+from apps.shared.db.models.agent_builder import AgentBuilderRequest, AgentBuilderSession
+from apps.shared.db.models.workflow import Workflow
+from apps.shared.schemas.agent_builder import (
+    AgentBuilderKnowledgeSelectionRequest,
+    AgentBuilderKnowledgeSelectionResponse,
+    AgentBuilderParameterGroup,
+    AgentBuilderStructuredRequest,
+    GraphMutationSafeEnvelope,
+)
+from apps.shared.services.permissions import has_workflow_permission
+
+
+class KnowledgeSelectionService:
+    def __init__(
+        self,
+        db: Session,
+        *,
+        user_id: UUID,
+        organization_id: UUID,
+        recommendation_resolver: Callable[..., dict[str, Any]],
+        no_knowledge_candidate_id: str,
+        before_graph_builder: Callable[..., dict[str, Any]] | None = None,
+        repository: AgentBuilderRepository | None = None,
+    ) -> None:
+        self.db = db
+        self.user_id = user_id
+        self.organization_id = organization_id
+        self.recommendation_resolver = recommendation_resolver
+        self.before_graph_builder = before_graph_builder
+        self.no_knowledge_candidate_id = no_knowledge_candidate_id
+        self.repository = repository or AgentBuilderRepository()
+
+    @staticmethod
+    def _target_node_id(
+        *,
+        payload: dict[str, Any],
+        request_row: AgentBuilderRequest,
+        workflow: Workflow,
+        target_step_id: str,
+    ) -> str:
+        direct = dict(payload.get("safe_step_node_ids") or {})
+        if direct.get(target_step_id):
+            return str(direct[target_step_id])
+        for raw_group in payload.get("parameter_groups") or []:
+            if not isinstance(raw_group, dict):
+                continue
+            group = AgentBuilderParameterGroup.model_validate(raw_group)
+            task = next(
+                (task for task in group.tasks if task.step_id == target_step_id),
+                None,
+            )
+            if task is not None:
+                return task.node_id
+        affected = {
+            str(node_id)
+            for envelope in payload.get("operation_envelopes") or []
+            if isinstance(envelope, dict)
+            for node_id in envelope.get("affected_node_ids") or []
+        }
+        candidates = [
+            str(node.get("id"))
+            for node in (workflow.graph or {}).get("nodes") or []
+            if node.get("type") == "llmNode" and str(node.get("id")) in affected
+        ]
+        if len(candidates) == 1:
+            return candidates[0]
+        raise HTTPException(status_code=422, detail="catalog_validation_failed")
+
+    @staticmethod
+    def _candidate_options_for_resolution(
+        payload: dict[str, Any],
+        resolution_id: str,
+    ) -> list[dict[str, Any]]:
+        direct_resolution = payload.get("knowledge_resolution")
+        if not isinstance(direct_resolution, dict):
+            return []
+        direct_resolution_id = direct_resolution.get("resolution_id")
+        direct_candidates = (
+            direct_resolution.get("candidates")
+            if isinstance(direct_resolution.get("candidates"), list)
+            else []
+        )
+        return [
+            option
+            for option in direct_candidates
+            if isinstance(option, dict)
+            and (
+                str(option.get("resolution_id")) == resolution_id
+                or (
+                    option.get("resolution_id") is None
+                    and direct_resolution_id is not None
+                    and str(direct_resolution_id) == resolution_id
+                )
+            )
+        ]
+
+    @staticmethod
+    def _direct_resolution_matches(
+        payload: dict[str, Any],
+        resolution_id: str,
+    ) -> bool:
+        direct_resolution = payload.get("knowledge_resolution")
+        if not isinstance(direct_resolution, dict):
+            return False
+        if direct_resolution.get("resolution_id") is not None:
+            return str(direct_resolution.get("resolution_id")) == resolution_id
+        return bool(
+            KnowledgeSelectionService._candidate_options_for_resolution(
+                payload,
+                resolution_id,
+            )
+        )
+
+    @staticmethod
+    def _placement_for_resolution(
+        structured: AgentBuilderStructuredRequest,
+        *,
+        payload: dict[str, Any],
+        resolution_id: str,
+        options: list[dict[str, Any]],
+    ):
+        requirement_ids = {
+            str(option.get("requirement_id"))
+            for option in options
+            if option.get("requirement_id")
+        }
+        direct_resolution = payload.get("knowledge_resolution")
+        if isinstance(direct_resolution, dict) and direct_resolution.get(
+            "requirement_id"
+        ):
+            requirement_ids.add(str(direct_resolution["requirement_id"]))
+        pending_target_step = next(
+            (
+                item.target_step_ref
+                for item in structured.pending_resolution
+                if item.slot_type == "knowledge_base"
+                and item.resolution_id == resolution_id
+            ),
+            None,
+        )
+        if pending_target_step:
+            requirement_ids.update(
+                requirement.requirement_id
+                for requirement in structured.knowledge_requirements
+                if requirement.target_step_ref == pending_target_step
+            )
+        if requirement_ids:
+            matched = next(
+                (
+                    item
+                    for item in structured.knowledge_placements
+                    if item.requirement_id in requirement_ids
+                ),
+                None,
+            )
+            if matched is not None:
+                return matched
+        if pending_target_step:
+            matched = next(
+                (
+                    item
+                    for item in structured.knowledge_placements
+                    if pending_target_step
+                    in {
+                        item.target_step_id,
+                        item.knowledge_step_id,
+                        item.upstream_step_id,
+                        item.downstream_step_id,
+                    }
+                ),
+                None,
+            )
+            if matched is not None:
+                return matched
+        if len(structured.knowledge_placements) == 1:
+            return structured.knowledge_placements[0]
+        return None
+
+    def select(
+        self,
+        session_id: UUID,
+        selection: AgentBuilderKnowledgeSelectionRequest,
+    ) -> AgentBuilderKnowledgeSelectionResponse:
+        session = (
+            self.db.query(AgentBuilderSession)
+            .filter(
+                AgentBuilderSession.id == session_id,
+                AgentBuilderSession.user_id == self.user_id,
+                AgentBuilderSession.organization_id == self.organization_id,
+            )
+            .first()
+        )
+        if (
+            session is None
+            or session.protocol_version != "direct_edit_v1"
+            or session.workflow_id is None
+        ):
+            raise HTTPException(status_code=404, detail="resource_not_found")
+        workflow = (
+            self.db.query(Workflow)
+            .filter(
+                Workflow.id == session.workflow_id,
+                Workflow.organization_id == self.organization_id,
+            )
+            .first()
+        )
+        if workflow is None:
+            raise HTTPException(status_code=404, detail="resource_not_found")
+        if not has_workflow_permission(
+            self.db,
+            self.user_id,
+            workflow.id,
+            "write",
+            organization_id=self.organization_id,
+        ):
+            raise HTTPException(status_code=403, detail="permission_denied")
+
+        rows = (
+            self.db.query(AgentBuilderRequest)
+            .filter(AgentBuilderRequest.session_id == session.id)
+            .order_by(AgentBuilderRequest.created_at.desc())
+            .with_for_update()
+            .all()
+        )
+        request_row = None
+        structured = None
+        placement = None
+        options: list[dict[str, Any]] = []
+        for candidate in rows:
+            payload = candidate.response_payload or {}
+            candidate_options = self._candidate_options_for_resolution(
+                payload,
+                selection.resolution_id,
+            )
+            if not candidate_options and not self._direct_resolution_matches(
+                payload,
+                selection.resolution_id,
+            ):
+                continue
+            try:
+                candidate_structured = AgentBuilderStructuredRequest.model_validate(
+                    candidate.structured_request
+                )
+            except Exception:
+                continue
+            candidate_placement = self._placement_for_resolution(
+                candidate_structured,
+                payload=payload,
+                resolution_id=selection.resolution_id,
+                options=candidate_options,
+            )
+            if candidate_placement is None:
+                continue
+            request_row = candidate
+            structured = candidate_structured
+            placement = candidate_placement
+            options = candidate_options
+            break
+        if request_row is None or structured is None or placement is None:
+            raise HTTPException(status_code=404, detail="resource_not_found")
+        if placement.target_step_id is None:
+            raise HTTPException(status_code=422, detail="catalog_validation_failed")
+
+        payload = request_row.response_payload or {}
+        structural_envelopes = [
+            envelope
+            for envelope in payload.get("operation_envelopes") or []
+            if isinstance(envelope, dict)
+            and envelope.get("kind")
+            in {"initial_graph", "graph_edit", "replace_workflow"}
+        ]
+        if placement.timing == "after_graph":
+            if (
+                not structural_envelopes
+                or structural_envelopes[-1].get("status") != "acknowledged"
+            ):
+                raise HTTPException(status_code=409, detail="stale_graph")
+        elif structural_envelopes:
+            raise HTTPException(status_code=409, detail="stale_graph")
+
+        option_keys = {
+            (
+                str(option.get("candidate_id")),
+                str(option.get("requirement_id")),
+            )
+            for option in options
+        }
+        for candidate in selection.selected_candidates:
+            requirement_id = candidate.requirement_id or placement.requirement_id
+            if (candidate.candidate_id, requirement_id) not in option_keys:
+                raise HTTPException(status_code=422, detail="catalog_validation_failed")
+            if candidate.resolution_id not in {None, selection.resolution_id}:
+                raise HTTPException(status_code=422, detail="catalog_validation_failed")
+
+        existing_resolution = self.repository.find_knowledge_resolution(
+            request_row,
+            selection.resolution_id,
+        )
+        if existing_resolution is not None:
+            selected_candidate_ids = list(
+                dict.fromkeys(
+                    candidate.candidate_id
+                    for candidate in selection.selected_candidates
+                )
+            )
+            if existing_resolution.get("selected_candidate_ids") != (
+                selected_candidate_ids
+            ):
+                raise HTTPException(status_code=409, detail="task_conflict")
+            if existing_resolution.get("status") != "unapplied":
+                raise HTTPException(
+                    status_code=409,
+                    detail="knowledge_resolution_already_submitted",
+                )
+
+        candidate_handles = {
+            candidate.candidate_id for candidate in selection.selected_candidates
+        }
+        if not candidate_handles:
+            candidate_handles = {self.no_knowledge_candidate_id}
+        recommendation = self.recommendation_resolver(
+            structured,
+            include_materialized_refs=True,
+            selected_candidate_handles=candidate_handles,
+        )
+        if recommendation.get("status") not in {"recommended", "ready"}:
+            raise HTTPException(status_code=422, detail="catalog_validation_failed")
+        knowledge_base_refs = [
+            {
+                "id": str(binding["knowledge_base_id"]),
+                "name": str(binding["name"]),
+            }
+            for binding in recommendation.get("bindings") or []
+            if binding.get("knowledge_base_id") and binding.get("name")
+        ]
+        if placement.timing == "before_graph":
+            if self.before_graph_builder is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail="catalog_validation_failed",
+                )
+            try:
+                issued = self.before_graph_builder(
+                    structured=structured,
+                    workflow=workflow,
+                    placement=placement,
+                    bindings=list(recommendation.get("bindings") or []),
+                    resolution_id=selection.resolution_id,
+                )
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail="catalog_validation_failed",
+                ) from exc
+            mutation = issued["mutation"]
+            parameter_group = issued.get("parameter_group")
+            if parameter_group is not None:
+                self.repository.store_parameter_group(request_row, parameter_group)
+            updated_payload = dict(request_row.response_payload or {})
+            updated_payload["safe_step_node_ids"] = dict(
+                issued.get("step_node_ids") or {}
+            )
+            request_row.response_payload = updated_payload
+        else:
+            target_node_id = self._target_node_id(
+                payload=payload,
+                request_row=request_row,
+                workflow=workflow,
+                target_step_id=placement.target_step_id,
+            )
+            mutation = KnowledgeTimingResolver().build_after_graph_mutation(
+                operation_id=uuid4(),
+                workflow_id=workflow.id,
+                graph=workflow.graph or {"nodes": [], "edges": []},
+                workflow_updated_at=workflow.updated_at,
+                target_node_id=target_node_id,
+                selected_knowledge_bases=knowledge_base_refs,
+                resolution_id=selection.resolution_id,
+            )
+        self.repository.store_envelope(
+            request_row, GraphMutationSafeEnvelope.from_mutation(mutation)
+        )
+        self.repository.store_knowledge_resolution(
+            request_row,
+            resolution_id=selection.resolution_id,
+            operation_id=mutation.operation_id,
+            timing=placement.timing,
+            selected_candidate_ids=[
+                candidate.candidate_id for candidate in selection.selected_candidates
+            ],
+        )
+        add_action_audit(
+            self.db,
+            AuditAction.AGENT_BUILDER_KNOWLEDGE_MUTATION_ISSUED,
+            self.user_id,
+            "workflow",
+            workflow.id,
+            organization_id=self.organization_id,
+            metadata={
+                "session_id": str(session.id),
+                "resolution_id": selection.resolution_id,
+                "operation_id": str(mutation.operation_id),
+                "selected_candidate_count": len(selection.selected_candidates),
+            },
+        )
+        self.db.commit()
+        return AgentBuilderKnowledgeSelectionResponse(
+            resolution_id=selection.resolution_id,
+            selected_candidates=selection.selected_candidates,
+            graph_mutation=mutation,
+        )

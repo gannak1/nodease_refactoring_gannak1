@@ -119,3 +119,19 @@ def test_explicit_sensitive_keyword_still_redacts_safe_token_count_field():
     )
 
     assert result.redacted_payload["parameters"]["max_tokens"] == "[REDACTED]"
+
+
+def test_known_provider_credential_prefixes_are_redacted_from_free_text():
+    secrets = [
+        "github_pat_" + "a" * 40,
+        "AKIA" + "A" * 16,
+        "AIza" + "a" * 35,
+    ]
+    result = TraceRedactionService.redact_payload(
+        "use " + " and ".join(secrets),
+        ResolvedRedactionPolicy(),
+        payload_kind="agent_builder_message",
+    )
+
+    assert result.secret_detected is True
+    assert all(secret not in result.redacted_payload for secret in secrets)

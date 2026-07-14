@@ -111,11 +111,17 @@ class KnowledgeRAGRecommendationService:
         request: KnowledgeRAGRecommendationRequest,
         *,
         include_materialized_refs: bool = False,
+        allow_unready_candidates: bool = False,
     ) -> KnowledgeRAGRecommendationResponse:
         resolver = self.resolver or self._resolver_for_request(request)
         recommendation_mode = self._resolved_mode(request)
         try:
-            resolution = self._resolve_candidates(resolver, request, recommendation_mode)
+            resolution = self._resolve_candidates(
+                resolver,
+                request,
+                recommendation_mode,
+                allow_unready_candidates=allow_unready_candidates,
+            )
         except Exception:
             return self._adapter_unavailable_response(request)
         try:
@@ -175,7 +181,12 @@ class KnowledgeRAGRecommendationService:
         )
         resolver = self.resolver or self._resolver_for_request(request)
         try:
-            resolution = self._resolve_candidates(resolver, request, "auto_collection")
+            resolution = self._resolve_candidates(
+                resolver,
+                request,
+                "auto_collection",
+                allow_unready_candidates=True,
+            )
             ranked = self._rank_candidates(resolution.candidates, request)[:limit]
         except Exception:
             return []
@@ -233,7 +244,12 @@ class KnowledgeRAGRecommendationService:
         resolver = self.resolver or self._resolver_for_request(request)
         recommendation_mode = self._resolved_mode(request)
         try:
-            resolution = self._resolve_candidates(resolver, request, recommendation_mode)
+            resolution = self._resolve_candidates(
+                resolver,
+                request,
+                recommendation_mode,
+                allow_unready_candidates=True,
+            )
         except Exception:
             return []
 
@@ -305,13 +321,19 @@ class KnowledgeRAGRecommendationService:
         resolver: KnowledgeCandidateResolver,
         request: KnowledgeRAGRecommendationRequest,
         recommendation_mode: str,
+        *,
+        allow_unready_candidates: bool = False,
     ):
         if recommendation_mode == "explicit_kb":
-            return resolver.resolve_explicit_kbs(request.knowledge_base_ids)
+            return resolver.resolve_explicit_kbs(
+                request.knowledge_base_ids,
+                allow_unready_candidates=allow_unready_candidates,
+            )
         return resolver.resolve_auto_collection_candidates(
             collection_ids=self._collection_scope(request),
             max_collections=request.max_collections,
             max_candidate_kbs=min(request.max_candidate_kbs, DEFAULT_MAX_CANDIDATE_KBS),
+            allow_unready_candidates=allow_unready_candidates,
         )
 
     def _collection_scope(
@@ -336,7 +358,7 @@ class KnowledgeRAGRecommendationService:
         candidates: list[KnowledgeCandidate],
         request: KnowledgeRAGRecommendationRequest,
     ) -> list[tuple[KnowledgeCandidate, float, list[str], list[str]]]:
-        terms = self._query_terms(request)
+        terms, query_source = self._ranking_terms(candidates, request)
         ranked: list[tuple[KnowledgeCandidate, float, list[str], list[str]]] = []
         for candidate in candidates:
             matched_terms = self._matched_terms(candidate, terms)
@@ -344,18 +366,21 @@ class KnowledgeRAGRecommendationService:
             availability = _AVAILABILITY_ORDER.get(candidate.runtime_availability, 1)
             freshness = self._sync_freshness_score(candidate)
             kb_relevance = self._kb_relevance(candidate, terms, matched_terms)
-            score = (
-                kb_relevance * 0.70
-                + (source_priority / 100) * 0.10
-                + (availability / 3) * 0.10
-                + freshness * 0.10
-            )
+            score = 0.0
+            if kb_relevance > 0:
+                score = (
+                    kb_relevance * 0.70
+                    + (source_priority / 100) * 0.10
+                    + (availability / 3) * 0.10
+                    + freshness * 0.10
+                )
             used_signals = self._used_signals(
                 matched_terms=matched_terms,
                 source_priority=source_priority,
                 availability=candidate.runtime_availability,
                 freshness=freshness,
-                structured_query=bool(request.safe_query_topics),
+                structured_query=query_source == "structured",
+                fallback_query=query_source == "fallback",
             )
             ranked.append(
                 (
@@ -395,7 +420,11 @@ class KnowledgeRAGRecommendationService:
                 name=kb_label,
             )
         ][:MAX_MATERIALIZED_KBS]
-        safe_reason_code = self._safe_reason_code(matched_terms, request)
+        safe_reason_code = self._safe_reason_code(
+            matched_terms,
+            request,
+            structured_query="structured_safe_query" in used_signals,
+        )
         recommendation_id = self._recommendation_id(candidate)
         threshold_result = (
             "high_confidence" if score >= 0.65 else "close_score" if score >= 0.45 else "below_threshold"
@@ -505,11 +534,13 @@ class KnowledgeRAGRecommendationService:
         self,
         matched_terms: list[str],
         request: KnowledgeRAGRecommendationRequest,
+        *,
+        structured_query: bool,
     ) -> str:
         if request.high_risk_domain != "none":
             return "high_risk_domain_requires_citation"
         if matched_terms:
-            if request.safe_query_topics:
+            if structured_query:
                 return "structured_intent_matches_safe_metadata"
             return "intent_matches_safe_metadata"
         return "safe_candidate_available"
@@ -606,6 +637,25 @@ class KnowledgeRAGRecommendationService:
             return self._structured_terms(request.safe_query_topics)
         return self._filtered_terms(request.workflow_intent, request.node_purpose)
 
+    def _ranking_terms(
+        self,
+        candidates: list[KnowledgeCandidate],
+        request: KnowledgeRAGRecommendationRequest,
+    ) -> tuple[list[str], str]:
+        structured_terms = self._query_terms(request)
+        if not request.safe_query_topics:
+            return structured_terms, "intent"
+        if any(self._matched_terms(candidate, structured_terms) for candidate in candidates):
+            return structured_terms, "structured"
+
+        fallback_terms = self._filtered_terms(
+            request.workflow_intent,
+            request.node_purpose,
+        )
+        if fallback_terms:
+            return fallback_terms, "fallback"
+        return structured_terms, "structured"
+
     def _structured_terms(self, values: list[str]) -> list[str]:
         terms: list[str] = []
         for value in values:
@@ -695,10 +745,13 @@ class KnowledgeRAGRecommendationService:
         availability: str,
         freshness: float,
         structured_query: bool = False,
+        fallback_query: bool = False,
     ) -> list[str]:
         signals: list[str] = []
         if structured_query:
             signals.append("structured_safe_query")
+        elif fallback_query:
+            signals.append("fallback_safe_query")
         if matched_terms:
             signals.append("kb_relevance_match")
         if source_priority:

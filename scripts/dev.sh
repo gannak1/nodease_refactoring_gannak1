@@ -23,8 +23,23 @@ echo "프로젝트 루트: $PROJECT_ROOT"
 # Docker Compose 파일 경로 설정 (dev 환경)
 export COMPOSE_FILE="$PROJECT_ROOT/dev/docker-compose.yml"
 
+venv_uses_python_311() {
+    local app_path=$1
+    local venv_python
+
+    if [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "win32" ]] || [[ "$OSTYPE" == "cygwin" ]]; then
+        venv_python="$app_path/.venv/Scripts/python"
+    else
+        venv_python="$app_path/.venv/bin/python"
+    fi
+
+    [ -x "$venv_python" ] && "$venv_python" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 11) else 1)' 2> /dev/null
+}
+
 # 가상환경 체크 및 자동 설정
-if [ ! -d "apps/gateway/.venv" ] || [ ! -d "apps/log_system/.venv" ] || [ ! -d "apps/workflow_engine/.venv" ]; then
+if ! venv_uses_python_311 "apps/gateway" || \
+   ! venv_uses_python_311 "apps/log_system" || \
+   ! venv_uses_python_311 "apps/workflow_engine"; then
     echo -e "${YELLOW}⚠️ 일부 가상환경이 발견되지 않았습니다. 초기 설정을 진행합니다...${NC}"
     ./scripts/setup.sh
     echo -e "${GREEN}✨ 초기 설정 완료! 서비스를 시작합니다.${NC}"

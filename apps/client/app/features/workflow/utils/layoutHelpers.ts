@@ -11,6 +11,10 @@ const ORPHAN_GAP_Y = 50;
 const MIN_ORPHAN_ROW_WIDTH = 1000;
 
 type LayoutNode = AppNode & {
+  measured?: {
+    width?: number | null;
+    height?: number | null;
+  };
   width?: number;
   height?: number;
 };
@@ -19,13 +23,19 @@ type SortKey = [number, number, number];
 
 const getLayoutNodeSize = (node: AppNode) => {
   const layoutNode = node as LayoutNode;
+  const measuredWidth = layoutNode.measured?.width;
+  const measuredHeight = layoutNode.measured?.height;
   return {
     width:
-      typeof layoutNode.width === 'number' && layoutNode.width > 0
+      typeof measuredWidth === 'number' && measuredWidth > 0
+        ? measuredWidth
+        : typeof layoutNode.width === 'number' && layoutNode.width > 0
         ? layoutNode.width
         : WORKFLOW_NODE_SIZE.width,
     height:
-      typeof layoutNode.height === 'number' && layoutNode.height > 0
+      typeof measuredHeight === 'number' && measuredHeight > 0
+        ? measuredHeight
+        : typeof layoutNode.height === 'number' && layoutNode.height > 0
         ? layoutNode.height
         : WORKFLOW_NODE_SIZE.height,
   };

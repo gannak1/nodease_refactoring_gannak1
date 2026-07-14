@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +11,7 @@ from apps.gateway.services.workflow_knowledge_reference_service import (
     WorkflowKnowledgeReferenceService,
     WorkflowKnowledgeReferenceUnavailable,
 )
+from apps.shared.schemas.workflow import WorkflowDraftRequest
 
 
 def _graph(kb_id, collection_id):
@@ -71,6 +73,30 @@ def test_editable_graph_checks_direct_use_readiness_and_collection_route(monkeyp
     assert len(parsed) == 1
     assert parsed[0].direct_kb_ids == (kb_id,)
     assert parsed[0].collection_ids == (collection_id,)
+
+
+def test_agent_builder_graph_can_persist_unready_kb_without_bypassing_use_permission(
+    monkeypatch,
+):
+    service, kb_id, collection_id = _service(monkeypatch, ready=False)
+
+    parsed = service.validate_editable_graph(
+        _graph(kb_id, collection_id),
+        require_retrieval_ready=False,
+    )
+
+    assert parsed[0].direct_kb_ids == (kb_id,)
+
+    denied_service, denied_kb_id, denied_collection_id = _service(
+        monkeypatch,
+        allow_kb=False,
+        ready=False,
+    )
+    with pytest.raises(WorkflowKnowledgeReferenceUnavailable):
+        denied_service.validate_editable_graph(
+            _graph(denied_kb_id, denied_collection_id),
+            require_retrieval_ready=False,
+        )
 
 
 @pytest.mark.parametrize(
@@ -223,6 +249,68 @@ def test_workflow_service_requires_context_when_knowledge_reference_exists():
         "code": "knowledge_reference_context_invalid",
         "field": "graph",
     }
+
+
+def test_save_draft_defers_readiness_only_for_agent_builder_mutation(monkeypatch):
+    workflow_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    updated_at = datetime.now(timezone.utc)
+    workflow = SimpleNamespace(
+        id=workflow_id,
+        organization_id=organization_id,
+        graph={"nodes": [], "edges": []},
+        updated_at=updated_at,
+    )
+
+    class _Query:
+        def filter(self, *_args):
+            return self
+
+        def with_for_update(self):
+            return self
+
+        def first(self):
+            return workflow
+
+    class _Db:
+        def query(self, *_args):
+            return _Query()
+
+    request = WorkflowDraftRequest.model_validate(
+        {
+            "nodes": [],
+            "edges": [],
+            "expected_graph_hash": "a" * 64,
+            "expected_updated_at": updated_at,
+            "mutation_context": {
+                "operation_id": str(uuid.uuid4()),
+                "action": "apply",
+                "expected_base_graph_hash": "a" * 64,
+                "expected_workflow_updated_at": updated_at,
+            },
+        }
+    )
+    captured = {}
+
+    def _capture_validation(*_args, **kwargs):
+        captured.update(kwargs)
+        raise RuntimeError("stop after validation policy")
+
+    monkeypatch.setattr(
+        WorkflowService,
+        "validate_knowledge_references",
+        staticmethod(_capture_validation),
+    )
+
+    with pytest.raises(RuntimeError, match="stop after validation policy"):
+        WorkflowService.save_draft(
+            _Db(),
+            str(workflow_id),
+            request,
+            user_id=str(uuid.uuid4()),
+        )
+
+    assert captured["require_retrieval_ready"] is False
 
 
 class _CriteriaQuery:

@@ -50,6 +50,20 @@ Knowledge 통합 목표 구조에서는 Gateway/Shared/Workflow Engine 경계에
 
 Conversation Memory 목표 구조는 [ADR-0030](decisions/ADR-0030-memory-bounded-context.md)과 [ADR-0033](decisions/ADR-0033-conversation-memory-contract-completion.md)을 따른다. 이는 현재 별도 network service가 추가되었다는 뜻이 아니라 Gateway와 Workflow Engine이 같은 domain/application contract를 사용하는 in-process bounded context다.
 
+Agent Builder direct-edit 구조는 Accepted [ADR-0045](decisions/ADR-0045-agent-builder-direct-edit-parameter-guidance.md)와 supporting [ADR-0046](decisions/ADR-0046-agent-builder-graph-mutation-and-cas-save.md)을 따른다. Agent Builder는 별도 network server가 아니라 Gateway 내부 bounded module이며 ADR-0022의 application/adapter/composition 방향을 적용한다.
+
+| 구성요소 | 책임 |
+| --- | --- |
+| Agent Builder Application | intent plan, server-loaded workflow context, GraphMutation, parameter task와 typed Knowledge placement를 조정한다. Planner가 선택별 graph를 만들지 않으며 Catalog template으로 selected/empty topology를 구성한다. FastAPI/SQLAlchemy/React Flow 타입에 의존하지 않는다. |
+| Agent Builder DB Adapter | 기존 session/request를 조회·잠근다. Nullable session `protocol_version`은 null legacy와 `direct_edit_v1`을 구분하고, request `response_payload`는 generation mode, operations를 제외한 safe operation envelope의 pending/acknowledged/reverted 상태와 모든 configurable parameter의 task version/defer policy/resolution source/skipped 상태를 보존한다. Full typed operations와 parameter 값은 저장하지 않는다. JSONB는 새 전체 객체를 재할당하고 task decision은 request row lock, operation id와 expected task version으로 직렬화한다. 신규 Agent Builder table이나 encrypted operation store는 만들지 않는다. 신규 direct-edit session에는 `direct_edit_v1`을 기록하고 null legacy row는 backfill하지 않는다. |
+| Agent Builder Intent Service | 기존 permission-aware LLM client로 자연어를 정상 한 번 구조화하고 schema-valid semantic 모순에만 최대 한 번 repair한다. parameter 값과 credential 원문을 받지 않으며 parameter/Knowledge/task 이동에는 호출되지 않는다. |
+| Agent Builder Composition | Gateway endpoint에서 application과 concrete DB/intent/audit dependency를 조립한다. 기존 `AgentBuilderService`는 전환 기간 facade로만 유지한다. |
+| Workflow Draft CAS Service | Agent Builder mutation save와 persisted revert에서 workflow row를 write lock으로 읽고 current graph hash와 `updated_at`을 기대값과 비교한다. Apply candidate hash는 persisted safe envelope의 `expected_result_graph_hash`와 비교하며 DB에서 full operations를 재생하지 않는다. 권한·catalog·graph validation 뒤 graph write와 기존 `add_action_audit` insert를 같은 transaction에 저장하고 canonical graph hash/`updated_at`을 반환한다. 일반 editor save 호환성은 유지한다. |
+| Workflow Editor Adapter | 최초 구조 mutation에서 Agent Builder 시작 전/final graph를 묶는 Workflow history boundary 하나를 만들고 해당 transaction 중 autosync를 억제한다. 후속 parameter/Knowledge mutation은 별도 history entry를 만들지 않고 acknowledgement된 final snapshot/hash만 갱신한다. 완료 첫 Undo는 마지막 parameter UI 재진입, 다음 Undo는 시작 전 snapshot CAS 복구와 전체 task/Knowledge cancel이다. Parameter 이동은 `이전 항목` control을 사용한다. Redo history는 client memory에만 유지하며 reload 전 Redo만 final graph를 CAS 저장하고 canceled 흐름은 재실행하지 않는다. |
+| Workflow Run/Deployment Preflight | Catalog required configuration 전체에서 node `configuration_state`를 서버가 다시 계산하고 unresolved 외부 action node의 실행·배포를 차단한다. 같은 계산은 생성, parameter 변경, skip, Undo와 복구에도 사용한다. 편집·저장은 허용하며 preflight는 외부 API를 호출하지 않는다. |
+
+Direct-edit protocol은 MBA-228의 단일 기능 PR에서 nullable `AgentBuilderSession.protocol_version` additive migration과 null/`direct_edit_v1` mixed read로 전환한다. 신규 session은 `direct_edit_v1`을 기록하고 기존 null Preview session은 backfill이나 자동 변환 없이 `stale_protocol`로 닫는다. Preview API/UI는 direct-edit parity와 필수 integration/E2E 검증을 통과한 뒤 제거한다. Frontend와 Gateway의 서로 다른 revision을 함께 운영하는 무중단 전환, staged rollout/rollback, 배포 gate와 image artifact 정책은 별도 배포 설계가 소유한다.
+
 | 구성요소 | 책임 |
 | --- | --- |
 | Memory Domain/Application | Conversation Session, Turn, Access Grant, final/provisional entry와 summary, dependency, lifecycle과 retention policy의 단일 업무 mutation owner |

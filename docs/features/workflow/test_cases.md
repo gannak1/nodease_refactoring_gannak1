@@ -18,11 +18,12 @@ Verified Against: `feature/mba-198 @ 92669f3`
 - 공개/내부 챗봇 UI·인증 복귀: `apps/client/app/features/workflow/hooks/useDeployment.test.tsx`, `apps/client/app/features/workflow/components/deployment/SuccessStep.test.tsx`, `apps/client/app/modules/[id]/run/page.test.tsx`, `apps/client/lib/authReturn.test.ts`, `apps/client/app/auth/login/page.test.tsx`
 - Deployment type/audience 정책: `apps/shared/tests/domain/test_deployment_runtime_policy.py`, `apps/gateway/tests/application/deployment/test_preflight_use_case.py`
 - MBA-190 외부 부수효과 멱등성: `apps/workflow_engine/tests/domain/test_external_effect_contract.py`, `apps/workflow_engine/tests/domain/test_external_effect_identity_runtime.py`, `apps/workflow_engine/tests/application/test_external_effect_executor.py`, `apps/workflow_engine/tests/adapters/test_external_effect_repository.py`, `apps/workflow_engine/tests/adapters/test_external_effect_provider_adapters.py`, `apps/workflow_engine/tests/composition/test_external_effect_readiness.py`, `apps/workflow_engine/tests/fakes/external_effects.py`, `apps/workflow_engine/tests/nodes/test_http_node.py`, `apps/workflow_engine/tests/nodes/test_loop_external_effect_control.py`, `apps/workflow_engine/tests/nodes/test_workflow_node.py`, `apps/workflow_engine/tests/services/test_workflow_engine_tracing.py`, `apps/workflow_engine/tests/services/test_workflow_logger_tracing.py`, `apps/workflow_engine/tests/test_workflow_tasks_rag_sync.py`, `apps/log_system/tests/test_node_log_retry_flow.py`, `apps/gateway/tests/api/test_workflow_execution_subject.py`, `apps/gateway/tests/api/test_workflow_external_effect_error_contract.py`, `apps/gateway/tests/application/deployment/test_workflow_node_binding.py`, `apps/shared/tests/test_external_effect_attempt_schema.py`, `apps/shared/tests/db/test_external_effect_disposable_postgres.py`, `apps/shared/tests/domain/test_workflow_execution_identity.py`, `apps/shared/tests/domain/test_workflow_node_binding.py`, `apps/shared/tests/services/test_external_effect_trace_capture.py`, `apps/shared/tests/services/test_workflow_task_publisher.py`
-- 동시성 처리: TBD. 구현/API 경계 확정 후 `apps/client/app/features/workflow/tests/workflow-concurrency.test.ts` 또는 Gateway integration test로 분리한다.
+- 동시성 처리: `apps/gateway/tests/integration/test_agent_builder_workflow_cas.py`에서 독립 PostgreSQL session/transaction으로 autosync 대 autosync 및 autosync 대 Agent Builder 저장 경쟁을 실행하고 한 요청만 성공하며 다른 요청이 `409 stale_graph`인지 검증한다.
+- 테스트 실행 전 저장: `TestSidebar` component test에서 canonical draft GET의 `graph_hash`/`updated_at`이 save request에 전달되고 성공 응답 metadata가 shared Workflow store에 반영되며 stale save는 실행을 시작하지 않는지 검증한다.
 
 `*.todo.test.ts`의 `it.todo` 항목은 아직 대응 구현 또는 API 계약이 없는 테스트 케이스다. 구현 시 같은 파일에서 실제 assertion 테스트로 전환한다.
 
-Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정책과 parity를 유지해야 한다. Start/Webhook/Schedule incoming, Answer outgoing, 잘못된 Condition source handle을 거부하고, Agent Builder apply/save도 같은 graph를 다시 거부하는지 검증한다.
+Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정책과 parity를 유지해야 한다. Start/Webhook/Schedule incoming, Answer outgoing, 잘못된 Condition source handle을 거부하고, Agent Builder direct-edit GraphMutation/CAS save도 같은 graph를 다시 거부하는지 검증한다.
 
 ## Conversation Memory Runtime Target Tests
 
@@ -53,7 +54,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - Mail node editor는 safe credential option을 표시하고 선택 시 graph에 `credential_id`만 저장한다.
 - Client node, panel, visible properties와 실행 로그 설정 요약은 email/password/token/ciphertext와 credential UUID를 렌더링하지 않고 연결 상태만 표시한다.
 - Workflow 저장은 최상위와 중첩 `subGraph`의 inline Mail secret field, 잘못된 UUID, 다른 organization reference, revoked credential과 `use` 권한 없는 reference를 provider 호출 없이 거부한다. 제한된 UI metadata는 허용한다.
-- Agent Builder가 생성한 unresolved Mail node는 preview/apply-save가 가능하지만 deployment 생성·활성화와 runtime 실행은 credential reference를 요구한다. `configuration_state` 도입 전 Client가 만든 `credential_id=null` Mail node는 상태 필드가 누락돼도 draft 저장과 inactive warning은 유지하며, 명시적 null 상태는 invalid이고 실행은 unresolved로 차단한다.
+- Agent Builder가 생성한 unresolved Mail node는 direct-edit GraphMutation/CAS save가 가능하지만 deployment 생성·활성화와 runtime 실행은 credential reference를 요구한다. Preview/apply-save 제품 경로는 사용하지 않는다. `configuration_state` 도입 전 Client가 만든 `credential_id=null` Mail node는 상태 필드가 누락돼도 draft 저장과 inactive warning은 유지하며, 명시적 null 상태는 invalid이고 실행은 unresolved로 차단한다.
 - 기존 Mail graph는 `processing_mode`가 없으면 `search_only`로 역직렬화된다.
 - Durable Mail graph는 `mark_as_read=true`를 거부하고 Mail Acknowledge node가 required effect 성공 뒤에만 읽음 처리한다.
 - Gmail Draft node는 processing/reply selectors와 OAuth credential만 허용하고 send/recipient/MIME/provider id field를 거부한다.
@@ -389,6 +390,15 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 ### 5. 동시성 처리
 
 - 같은 workflow를 두 브라우저 세션에서 열고 각각 수정하면 충돌 또는 최신 상태 갱신 안내가 표시된다.
+- 같은 base graph hash와 workflow `updated_at`으로 두 Agent Builder GraphMutation 저장을 순차 제출하면 첫 저장만 성공하고 두 번째는 `409 stale_graph`이며 첫 저장 graph를 덮어쓰지 않는다.
+- Agent Builder mutation 저장은 workflow row lock 안에서 expected graph hash와 `updated_at`을 모두 비교한다.
+- mutation request graph hash가 persisted safe operation envelope의 `expected_result_graph_hash`와 다르면 저장하지 않는다. Full typed operations를 DB에서 읽거나 재생하지 않는다.
+- Graph write와 같은 SQLAlchemy session에서 `add_action_audit` insert가 실패하면 graph, workflow `updated_at`과 operation 상태를 모두 rollback하고 성공을 반환하지 않는다.
+- Acknowledged operation의 `action=revert` 저장은 current graph가 원 result hash이고 candidate가 원 base hash일 때만 성공하며 graph와 audit를 원자적으로 저장하고 operation을 `reverted`로 전환한다.
+- Revert 전 다른 editor 저장이 있으면 `409 stale_graph`로 닫고 해당 변경을 덮어쓰지 않는다.
+- Persisted Undo는 최초 `initial_graph`/`graph_edit`/`replace_workflow`의 단일 Agent Builder history boundary로 동작한다. 후속 `parameter_update`/`knowledge_binding`은 새 Workflow history entry를 만들지 않고 final graph metadata만 전진한다. 완료 상태 첫 Undo는 graph/value와 persisted task 상태를 유지한 채 `completed|skipped|deferred` 중 최대 stable order ParameterTask UI를 다시 열고, 그 상태의 다음 Undo 또는 task가 없는 경우 첫 Undo는 `action=revert` CAS로 실행 전 graph 전체를 복구하며 모든 ParameterTask/Knowledge 흐름을 `canceled`로 닫는다. `parameter_update`/`knowledge_binding` 개별 revert는 거부한다. Reload 전 `action=redo` CAS는 final graph만 복구하고 canceled 흐름은 재실행하지 않으며, 그 뒤 Undo는 parameter 재진입 없이 즉시 boundary revert한다. 동일 revert/redo response-loss 재시도는 canonical 결과와 audit를 중복 생성하지 않고, reload 뒤에는 Redo stack과 parameter 재진입 상태가 복구되지 않는다.
+- 성공 응답은 canonical graph hash, persisted `updated_at`, workflow id와 operation id를 반환하고 workflow version/revision을 합성하지 않는다.
+- mutation context 없는 일반 editor save는 유지되지만 Agent Builder acknowledgement 근거로 거부된다.
 - 테스트 실행 버튼을 연속 클릭해도 실행 사이드바에는 하나의 실행 흐름만 표시된다.
 - `/execute`와 `/stream`은 unresolved/invalid Mail 또는 Slack, unavailable Mail credential을 workflow task publish 전에 `409 workflow.configuration_preflight.blocked`로 차단한다. Stream은 Redis subscribe와 SSE response 시작 전 같은 JSON error를 반환한다.
 - 한 Slack node의 unresolved 설정과 다른 node를 가리키는 legacy `data`/`headers` 또는 Webhook `message_ref` selector가 함께 있으면 unresolved와 invalid를 모두 보존하고 inactive에서도 invalid로 차단한다.
@@ -515,6 +525,9 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 ## API Tests
 
 - 로그인 LLM node의 RAG 옵션 실행 요청은 Knowledge service에 `execution_subject=current_user`를 전달한다.
+- Catalog required configuration 전체를 server가 다시 계산했을 때 `configuration_state=unresolved`인 Slack/GitHub/HTTP/Mail 외부 action node가 있으면 test/run과 deployment create/activate가 차단된다. Client가 `resolved`로 변조해도 통과하지 않는다.
+- unresolved graph의 draft 편집·저장은 허용하며 preflight 중 credential provider와 외부 API를 호출하지 않는다.
+- 모든 required configuration을 catalog 계약대로 채운 graph는 기존 권한과 validation을 통과한 뒤 실행·배포할 수 있다.
 - LLM node RAG 선택 UI는 legacy owner-filtered `/knowledge` 목록이 아니라 active organization, KB `use` 권한, completed retrieval-visible document chunk 기준을 통과한 LLM-selectable 후보만 표시한다. 빈 KB 또는 `pending`/`failed` 문서만 있는 KB는 경고 없이 선택 가능한 후보로 노출하지 않는다. 후보가 없으면 "완료된 문서가 있는 지식 베이스가 없습니다." 같은 safe 안내를 표시한다.
 - 인증 배포 실행 화면은 `GET /deployments/{deployment_id}/run-info` safe metadata만 사용하고, `auth_secret` 또는 `graph_snapshot`을 받지 않는다.
 - 로그인 사용자의 배포 실행 요청(`/deployments/{deployment_id}/run`)은 workflow `execute` 권한을 재검증하고, active deployment snapshot을 `execution_subject=current_user`로 실행한다.
@@ -769,3 +782,12 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - `llm_assisted` query rewrite는 별도 승인 전까지 실행 가능한 variant가 아니다. 승인 후 실패하면 승인된 fallback 정책에 따라 원 query 사용 또는 terminal error로 처리하고, raw rewritten query를 durable metadata에 저장하지 않는다.
 - 일부 authorized KB retrieval만 operational failure가 발생하면 Knowledge partial-result 정책에 맞춘 safe summary만 반환한다.
 - Workflow runtime outbound egress guard는 Knowledge source collection egress boundary와 별도 gate이므로, Knowledge source connector guard가 workflow HTTP node 전체를 보호한다고 가정하지 않는다.
+
+## Workflow Draft CAS Regression
+
+- Canonical draft GET과 successful draft POST가 실제 persisted `workflow_id`, server-calculated `graph_hash`, DB `updated_at`을 반환하고 synthetic revision을 반환하지 않는지 확인한다. Agent Builder 저장, version 복원 또는 test 전 저장 뒤 수동 편집 autosync가 직전 POST metadata를 사용하며 stale metadata로 409에 빠지지 않는지 확인한다.
+- 일반 autosync 두 개가 같은 expected hash/timestamp로 경쟁하면 row lock 뒤 하나만 성공하고 다른 요청은 `409 stale_graph`인지 확인한다.
+- 일반 autosync와 Agent Builder mutation save가 같은 base에서 경쟁해도 공통 CAS가 silent overwrite를 막고 Agent Builder의 expected-result validation은 추가로 유지되는지 확인한다.
+- Agent Builder acknowledgement 뒤 stale snapshot을 가진 Model Routing policy PATCH 또는 Cost Optimizer apply/recommendation apply가 실행되면 workflow row lock 뒤 `409 stale_graph`로 닫히고 graph와 policy/candidate 부가 상태를 모두 보존하는지 확인한다. 성공 경로는 canonical `graph_hash`와 `updated_at`을 반환하고 frontend 공통 metadata를 갱신해야 한다.
+- Canonical draft 재조회가 local Workflow history, Agent Builder pending boundary와 ambiguous save context를 초기화하지 않는지 확인한다.
+- Save/ack/revert/redo response loss에서 canonical graph metadata로 applied/unapplied/stale을 판정하고 결과 확정 전 pending history를 삭제하지 않는지 확인한다.

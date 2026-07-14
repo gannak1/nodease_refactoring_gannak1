@@ -4,9 +4,12 @@ const {
   loginAndOpenWorkflow,
   openAgentBuilder,
   requireEnvironment,
+  sendAgentBuilderPrompt,
 } = require('./helpers');
 
-test('existing GitHub target receives only the requested LLM node', async ({ page }) => {
+test('existing GitHub target receives only the requested LLM node through typed operations', async ({
+  page,
+}) => {
   requireEnvironment(
     'email',
     'password',
@@ -15,31 +18,41 @@ test('existing GitHub target receives only the requested LLM node', async ({ pag
   );
   await loginAndOpenWorkflow(page, config.structuredEditWorkflowId);
   const panel = await openAgentBuilder(page);
-  const textarea = panel.locator('textarea');
-  const messageResponsePromise = page.waitForResponse(
-    (response) =>
-      response.url().includes('/api/v1/agent-builder/sessions/') &&
-      response.url().endsWith('/messages') &&
-      response.request().method() === 'POST',
-    { timeout: 60000 },
+  await panel.getByRole('button', { name: '구조만 생성' }).click();
+  const response = await sendAgentBuilderPrompt(
+    panel,
+    page,
+    'GitHub PR 조회 노드 뒤에 LLM 노드를 삽입해줘',
   );
-  await textarea.fill('github 노드 뒤에 LLM 노드를 추가해줘');
-  const sendButton = panel.locator('svg.lucide-send').locator('..');
-  await expect(sendButton).toBeEnabled();
-  await sendButton.click();
 
-  const payload = await (await messageResponsePromise).json();
-  expect(payload.status).toBe('draft_ready');
-  expect(payload.structured_request.draft_mode).toBe('modify_workflow');
-  expect(payload.structured_request.required_capabilities).toEqual(['llm']);
-  const graph = payload.draft_preview.preview_graph;
-  const generatedNodes = graph.nodes.filter((node) =>
-    String(node.id).startsWith('agent-'),
+  const payload = await response.json();
+  expect(payload.status).toBe('graph_mutation_ready');
+  expect(payload.structured_plan.request_type).toBe('modify_workflow');
+  expect(payload.graph_mutation.kind).toBe('graph_edit');
+  expect(payload).not.toHaveProperty('draft_preview');
+
+  const operations = payload.graph_mutation.operations;
+  const addedNodes = operations
+    .filter((operation) => operation.op === 'add_node')
+    .map((operation) => operation.node);
+  expect(addedNodes.map((node) => node.type)).toEqual(['llmNode']);
+  const generatedLlmId = addedNodes[0].id;
+  const addedEdges = operations
+    .filter((operation) => operation.op === 'add_edge')
+    .map((operation) => operation.edge);
+  expect(addedEdges.map((edge) => [edge.source, edge.target])).toEqual(
+    expect.arrayContaining([
+      ['smoke-github', generatedLlmId],
+      [generatedLlmId, 'smoke-answer'],
+    ]),
   );
-  expect(generatedNodes.map((node) => node.type)).toEqual(['llmNode']);
-  const generatedLlmId = generatedNodes[0].id;
-  const edgePairs = graph.edges.map((edge) => [edge.source, edge.target]);
-  expect(edgePairs).not.toContainEqual(['smoke-github', 'smoke-answer']);
-  expect(edgePairs).toContainEqual(['smoke-github', generatedLlmId]);
-  expect(edgePairs).toContainEqual([generatedLlmId, 'smoke-answer']);
+  expect(
+    operations.some(
+      (operation) =>
+        operation.op === 'remove_edge' && operation.edge_id === 'smoke-github-answer',
+    ),
+  ).toBe(true);
+  await expect(panel.getByText('Workflow 생성 완료')).toBeVisible({
+    timeout: 60000,
+  });
 });

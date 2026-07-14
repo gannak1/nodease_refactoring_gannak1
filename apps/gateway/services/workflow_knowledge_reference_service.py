@@ -63,14 +63,21 @@ class WorkflowKnowledgeReferenceService:
     def validate_editable_graph(
         self,
         graph: dict,
+        *,
+        require_retrieval_ready: bool = True,
     ) -> tuple[WorkflowNodeKnowledgeReferences, ...]:
         parsed_nodes = parse_workflow_knowledge_references(graph)
-        self.validate_parsed_references(parsed_nodes)
+        self.validate_parsed_references(
+            parsed_nodes,
+            require_retrieval_ready=require_retrieval_ready,
+        )
         return parsed_nodes
 
     def validate_parsed_references(
         self,
         parsed_nodes: tuple[WorkflowNodeKnowledgeReferences, ...],
+        *,
+        require_retrieval_ready: bool = True,
     ) -> None:
         """Authorize one structurally validated graph reference snapshot."""
 
@@ -103,7 +110,10 @@ class WorkflowKnowledgeReferenceService:
                 direct_id not in direct_by_id
                 or decision is None
                 or not decision.allowed
-                or direct_id not in retrieval_ready_ids
+                or (
+                    require_retrieval_ready
+                    and direct_id not in retrieval_ready_ids
+                )
             ):
                 raise WorkflowKnowledgeReferenceUnavailable(
                     self._first_reference_path(

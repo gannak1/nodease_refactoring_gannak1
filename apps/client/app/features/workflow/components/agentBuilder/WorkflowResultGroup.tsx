@@ -1,0 +1,436 @@
+'use client';
+
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Settings2 } from 'lucide-react';
+
+import type { AgentBuilderParameterTask } from '../../api/agentBuilderApi';
+import type { Node } from '../../types/Workflow';
+import {
+  KnowledgeSelectionControl,
+  type KnowledgeSelectionCandidate,
+} from './KnowledgeSelectionControl';
+import {
+  NodeParameterCard,
+  type ParameterDecisionInput,
+} from './NodeParameterCard';
+
+export type WorkflowSetupStatus =
+  | 'planning'
+  | 'saving'
+  | 'awaiting_confirmation'
+  | 'configuring'
+  | 'editing'
+  | 'confirming'
+  | 'failed'
+  | 'completed';
+
+export type WorkflowKnowledgeStep = {
+  status: 'active' | 'confirming' | 'completed';
+  timing: 'before_graph' | 'after_graph';
+  question?: string | null;
+  candidates: KnowledgeSelectionCandidate[];
+  selectedCandidateIds?: string[];
+  selectedLabels?: string[];
+  errorMessage?: string | null;
+};
+
+export const WorkflowResultGroup = ({
+  tasks,
+  nodes = [],
+  routingNodeIds = [],
+  connectionNodeIds = [],
+  knowledgeStep = null,
+  setupStatus,
+  presentationTaskId = null,
+  isPresentationReentry = false,
+  focusHeadingTaskId = null,
+  onPresentationHeadingFocused,
+  onFocusNode,
+  onOpenNodeSettings,
+  onKnowledgeSubmit,
+  onDecision,
+  onCancel,
+  disabled = false,
+}: {
+  tasks: AgentBuilderParameterTask[];
+  nodes?: Node[];
+  routingNodeIds?: string[];
+  knowledgeStep?: WorkflowKnowledgeStep | null;
+  setupStatus?: WorkflowSetupStatus;
+  presentationTaskId?: string | null;
+  isPresentationReentry?: boolean;
+  focusHeadingTaskId?: string | null;
+  onPresentationHeadingFocused?: (taskId: string) => void;
+  onFocusNode: (nodeId: string) => void;
+  connectionNodeIds?: string[];
+  onOpenNodeSettings?: (
+    nodeId: string,
+    section?: 'routing' | 'connection',
+  ) => void;
+  onKnowledgeSubmit?: (selectionIds: string[]) => void;
+  onDecision: (decision: ParameterDecisionInput) => void;
+  onCancel?: () => void;
+  disabled?: boolean;
+}) => {
+  const orderedTasks = useMemo(
+    () => [...tasks].sort((a, b) => a.stable_order - b.stable_order),
+    [tasks],
+  );
+  const groups = useMemo(() => {
+    const grouped = new Map<string, AgentBuilderParameterTask[]>();
+    orderedTasks.forEach((task) => {
+      grouped.set(task.node_id, [...(grouped.get(task.node_id) || []), task]);
+    });
+    return grouped;
+  }, [orderedTasks]);
+  const canonicalActiveTask = orderedTasks.find((task) =>
+    ['active', 'invalid'].includes(task.status),
+  );
+  const presentationTask = presentationTaskId
+    ? orderedTasks.find((task) => task.task_id === presentationTaskId)
+    : null;
+  const hasBlockingKnowledgeStep =
+    knowledgeStep?.status === 'active' || knowledgeStep?.status === 'confirming';
+  const activeTask = hasBlockingKnowledgeStep
+    ? undefined
+    : (presentationTask ?? canonicalActiveTask);
+  const activeTaskIndex = activeTask ? orderedTasks.indexOf(activeTask) : -1;
+  const hasPreviousTask =
+    activeTaskIndex > 0 &&
+    orderedTasks
+      .slice(0, activeTaskIndex)
+      .some((task) =>
+        ['completed', 'skipped', 'deferred'].includes(task.status),
+      );
+  const activeTaskId = activeTask?.task_id ?? null;
+  const activeNodeId = activeTask?.node_id ?? null;
+  const [expandedSecondaryNodeId, setExpandedSecondaryNodeId] = useState<
+    string | null
+  >(null);
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+  const wasEditingTaskRef = useRef(false);
+  const editingNodeId = editingTaskId
+    ? orderedTasks.find((task) => task.task_id === editingTaskId)?.node_id ?? null
+    : null;
+  const lastFocusedTaskIdRef = useRef<string | null>(null);
+  const nodeDataById = useMemo(
+    () =>
+      new Map(
+        nodes.map((node) => [
+          node.id,
+          node.data as unknown as Record<string, unknown>,
+        ]),
+      ),
+    [nodes],
+  );
+  const routingNodes = useMemo(() => {
+    const resultNodeIds = new Set(routingNodeIds);
+    return nodes.flatMap((node) => {
+      if (node.type !== 'llmNode' || !resultNodeIds.has(node.id)) {
+        return [];
+      }
+      const data = node.data as unknown as Record<string, unknown>;
+      if (data.auto_model_routing === true) {
+        return [];
+      }
+      return [
+        {
+          id: node.id,
+          label:
+            typeof data.title === 'string' && data.title.trim().length > 0
+              ? data.title
+              : 'LLM',
+        },
+      ];
+    });
+  }, [nodes, routingNodeIds]);
+  const connectionNodes = useMemo(() => {
+    const resultNodeIds = new Set(connectionNodeIds);
+    return nodes.flatMap((node) => {
+      if (
+        !resultNodeIds.has(node.id) ||
+        !['slackPostNode', 'githubNode'].includes(node.type ?? '')
+      ) {
+        return [];
+      }
+      const data = node.data as unknown as Record<string, unknown>;
+      return [
+        {
+          id: node.id,
+          label:
+            typeof data.title === 'string' && data.title.trim().length > 0
+              ? data.title
+              : node.type === 'slackPostNode'
+                ? 'Slack'
+                : 'GitHub',
+        },
+      ];
+    });
+  }, [connectionNodeIds, nodes]);
+
+  useEffect(() => {
+    setExpandedSecondaryNodeId(null);
+  }, [activeNodeId]);
+
+  useEffect(() => {
+    if (wasEditingTaskRef.current && !editingTaskId) {
+      setExpandedSecondaryNodeId(null);
+    }
+    wasEditingTaskRef.current = Boolean(editingTaskId);
+  }, [editingTaskId]);
+
+  useEffect(() => {
+    if (!activeTaskId || !activeNodeId) {
+      lastFocusedTaskIdRef.current = null;
+      return;
+    }
+    if (lastFocusedTaskIdRef.current === activeTaskId) return;
+    lastFocusedTaskIdRef.current = activeTaskId;
+    onFocusNode(activeNodeId);
+  }, [activeNodeId, activeTaskId, onFocusNode]);
+
+  const completed = tasks.filter((task) =>
+    ['completed', 'skipped', 'deferred'].includes(task.status),
+  ).length;
+  const resolvedSetupStatus: WorkflowSetupStatus =
+    editingTaskId
+      ? 'editing'
+      : setupStatus ??
+        (activeTask?.resolution_source
+          ? 'awaiting_confirmation'
+          : activeTask
+            ? 'configuring'
+            : tasks.length > 0 && completed === tasks.length
+              ? 'completed'
+              : 'configuring');
+  const statusLabel =
+    resolvedSetupStatus === 'planning'
+      ? 'Workflow 계획 중'
+      : resolvedSetupStatus === 'saving'
+        ? 'Workflow 저장 중'
+        : resolvedSetupStatus === 'awaiting_confirmation'
+          ? hasBlockingKnowledgeStep
+            ? 'Knowledge 확인 필요'
+            : '추천값 확인 필요'
+          : resolvedSetupStatus === 'failed'
+            ? 'Workflow 설정 실패'
+            : resolvedSetupStatus === 'editing'
+              ? '설정 수정 중'
+            : resolvedSetupStatus === 'completed'
+              ? 'Workflow 생성 완료'
+              : '설정 입력 필요';
+  const effectiveStatusLabel =
+    resolvedSetupStatus === 'confirming'
+      ? 'Workflow \uD655\uC778 \uC911'
+      : statusLabel;
+  const statusClassName =
+    resolvedSetupStatus === 'completed'
+      ? 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-200'
+      : resolvedSetupStatus === 'failed'
+        ? 'border-red-200 bg-red-50 text-red-800 dark:border-red-900 dark:bg-red-950/30 dark:text-red-200'
+        : resolvedSetupStatus === 'saving' ||
+            resolvedSetupStatus === 'confirming'
+          ? 'border-blue-200 bg-blue-50 text-blue-800 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-200'
+          : 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200';
+  return (
+    <div
+      data-testid="workflow-result-group"
+      className="space-y-3 rounded-lg border border-neutral-200 bg-white p-3 dark:border-neutral-800 dark:bg-neutral-950"
+      aria-label="Workflow setup"
+      onKeyDown={(event) => event.stopPropagation()}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+          Workflow 설정
+        </h2>
+        {onCancel && canonicalActiveTask && !hasBlockingKnowledgeStep ? (
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={disabled}
+            className="rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+          >
+            설정 종료
+          </button>
+        ) : null}
+      </div>
+      <div
+        role={resolvedSetupStatus === 'failed' ? 'alert' : 'status'}
+        aria-live={resolvedSetupStatus === 'failed' ? 'assertive' : 'polite'}
+        aria-atomic="true"
+        className={`flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2 text-xs ${statusClassName}`}
+      >
+        <span className="font-medium">{effectiveStatusLabel}</span>
+        {tasks.length > 0 ? (
+          <span>
+            {completed} / {tasks.length} 완료
+          </span>
+        ) : null}
+      </div>
+
+      {routingNodes.length > 0 ? (
+        <section
+          data-testid="agent-builder-routing-guidance"
+          aria-labelledby="agent-builder-routing-guidance-heading"
+          className="border-t border-neutral-200 pt-3 dark:border-neutral-800"
+        >
+          <h3
+            id="agent-builder-routing-guidance-heading"
+            className="text-xs font-medium text-neutral-900 dark:text-neutral-100"
+          >
+            모델 자동 라우팅
+          </h3>
+          <p className="mt-1 text-xs text-neutral-600 dark:text-neutral-300">
+            모델 자동 라우팅은 LLM 노드를 선택한 뒤 Routing 설정할 수 있습니다.
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {routingNodes.map((node) => (
+              <button
+                key={node.id}
+                type="button"
+                onClick={() =>
+                  onOpenNodeSettings?.(node.id, 'routing') ?? onFocusNode(node.id)
+                }
+                className="inline-flex items-center gap-1.5 rounded border border-slate-200 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-900"
+              >
+                <Settings2 className="h-3.5 w-3.5" aria-hidden="true" />
+                {node.label} Routing 설정으로 이동
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {connectionNodes.length > 0 ? (
+        <section
+          data-testid="agent-builder-connection-guidance"
+          aria-labelledby="agent-builder-connection-guidance-heading"
+          className="border-t border-neutral-200 pt-3 dark:border-neutral-800"
+        >
+          <h3
+            id="agent-builder-connection-guidance-heading"
+            className="text-xs font-medium text-neutral-900 dark:text-neutral-100"
+          >
+            외부 연결 설정
+          </h3>
+          <p className="mt-1 text-xs text-neutral-600 dark:text-neutral-300">
+            Slack과 GitHub 연결은 이 Agent Builder에서 입력하지 않습니다. 각 노드의 기존 연결 설정에서 관리합니다.
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {connectionNodes.map((node) => (
+              <button
+                key={node.id}
+                type="button"
+                onClick={() =>
+                  onOpenNodeSettings?.(node.id, 'connection') ?? onFocusNode(node.id)
+                }
+                className="inline-flex items-center gap-1.5 rounded border border-slate-200 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-900"
+              >
+                <Settings2 className="h-3.5 w-3.5" aria-hidden="true" />
+                {node.label} 연결 설정으로 이동
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {knowledgeStep ? (
+        knowledgeStep.status !== 'completed' ? (
+          <section
+            aria-label="Knowledge setup"
+            className="space-y-3 rounded-md border border-neutral-200 p-3 dark:border-neutral-800"
+          >
+            <div>
+              <h3 className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
+                {knowledgeStep.timing === 'before_graph'
+                  ? 'Graph 생성 전 Knowledge'
+                  : 'Graph 생성 후 Knowledge'}
+              </h3>
+              {knowledgeStep.question ? (
+                <p className="mt-1 text-xs text-neutral-600 dark:text-neutral-300">
+                  {knowledgeStep.question}
+                </p>
+              ) : null}
+            </div>
+            <div data-testid="agent-builder-kb-candidate-list">
+              <KnowledgeSelectionControl
+                key={`${knowledgeStep.timing}:${knowledgeStep.candidates
+                  .map(
+                    (candidate) =>
+                      candidate.selection_id ?? candidate.candidate_id,
+                  )
+                  .join(':')}`}
+                candidates={knowledgeStep.candidates}
+                initialSelectedIds={knowledgeStep.selectedCandidateIds}
+                timing={knowledgeStep.timing}
+                errorMessage={knowledgeStep.errorMessage}
+                onSubmit={(selectionIds) => onKnowledgeSubmit?.(selectionIds)}
+                disabled={
+                  disabled ||
+                  knowledgeStep.status === 'confirming' ||
+                  !onKnowledgeSubmit
+                }
+              />
+            </div>
+          </section>
+        ) : (
+          <div className="rounded-md border border-neutral-200 px-3 py-2 text-xs text-neutral-600 dark:border-neutral-800 dark:text-neutral-300">
+            <span className="font-medium">Knowledge 설정 완료</span>
+            <span className="ml-2">
+              {(knowledgeStep.selectedLabels ?? []).length > 0
+                ? `${knowledgeStep.selectedLabels?.length}개 Knowledge Base 선택`
+                : 'Knowledge Base 없이 진행'}
+            </span>
+          </div>
+        )
+      ) : null}
+
+      {!hasBlockingKnowledgeStep && tasks.length > 0 ? (
+        <div className="flex items-center justify-between gap-3 text-xs text-neutral-500">
+          <span>노드 설정</span>
+          {onCancel && canonicalActiveTask ? (
+            <span>현재 항목 1개</span>
+          ) : null}
+        </div>
+      ) : null}
+      {!hasBlockingKnowledgeStep
+        ? [...groups.entries()].map(([nodeId, nodeTasks]) => (
+            <NodeParameterCard
+              key={nodeId}
+              nodeId={nodeId}
+              tasks={nodeTasks}
+              nodeData={nodeDataById.get(nodeId)}
+              presentationTaskId={
+                nodeId === activeNodeId ? activeTaskId : null
+              }
+              isPresentationReentry={
+                isPresentationReentry && nodeId === activeNodeId
+              }
+              isCurrent={nodeId === activeNodeId}
+              focusHeading={
+                nodeId === activeNodeId && focusHeadingTaskId === activeTaskId
+              }
+              onHeadingFocused={onPresentationHeadingFocused}
+              onEditingChange={setEditingTaskId}
+              expanded={
+                nodeId === activeNodeId ||
+                nodeId === editingNodeId ||
+                nodeId === expandedSecondaryNodeId
+              }
+              onToggle={
+                nodeId === activeNodeId
+                  ? undefined
+                  : () =>
+                      setExpandedSecondaryNodeId((current) =>
+                        current === nodeId ? null : nodeId,
+                      )
+              }
+              onDecision={onDecision}
+              hasPrevious={nodeId === activeNodeId && hasPreviousTask}
+              disabled={disabled}
+            />
+          ))
+        : null}
+    </div>
+  );
+};

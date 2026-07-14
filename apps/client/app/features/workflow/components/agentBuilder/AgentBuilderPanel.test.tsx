@@ -1,29 +1,38 @@
 ﻿import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { AgentBuilderPanel } from './AgentBuilderPanel';
+import { act, within } from '@testing-library/react';
+import { toast } from 'sonner';
+import {
+  AgentBuilderPanel,
+  isAgentBuilderSetupCompleted,
+} from './AgentBuilderPanel';
+import { calculateAgentBuilderNodeFocusViewport } from './agentBuilderNodeFocus';
 import { useWorkflowStore } from '../../store/useWorkflowStore';
 import { agentBuilderApi } from '../../api/agentBuilderApi';
+import type {
+  AgentBuilderMessageResponse,
+  AgentBuilderParameterGroup,
+} from '../../api/agentBuilderApi';
 import { workflowApi } from '../../api/workflowApi';
-import type { Edge, Node } from '../../types/Workflow';
+import type { Node } from '../../types/Workflow';
+import type { LLMNode } from '../../types/Nodes';
 
-const routerPush = vi.fn();
-const setViewport = vi.fn();
 const fitView = vi.fn();
-
-vi.mock('next/navigation', () => ({
-  useRouter: () => ({ push: routerPush }),
-}));
+const setCenter = vi.fn();
+const setViewport = vi.fn();
+const getNode = vi.fn();
 
 vi.mock('@xyflow/react', async () => {
-  const actual = await vi.importActual<typeof import('@xyflow/react')>(
-    '@xyflow/react',
-  );
+  const actual =
+    await vi.importActual<typeof import('@xyflow/react')>('@xyflow/react');
   return {
     ...actual,
     useReactFlow: () => ({
       getViewport: () => ({ x: 0, y: 0, zoom: 1 }),
-      setViewport,
       fitView,
+      setCenter,
+      setViewport,
+      getNode,
     }),
   };
 });
@@ -43,21 +52,30 @@ vi.mock('../../api/agentBuilderApi', () => ({
     getSession: vi.fn(),
     sendMessage: vi.fn(),
     cancelRequest: vi.fn(),
-    recordPreviewOpened: vi.fn(),
-    applyDraft: vi.fn(),
-    cancelDraft: vi.fn(),
+    acknowledgeMutation: vi.fn(),
+    decideParameterTask: vi.fn(),
+    selectKnowledge: vi.fn(),
+    cancelParameterGroup: vi.fn(),
   },
 }));
 
 vi.mock('../../api/workflowApi', () => ({
   workflowApi: {
-    syncDraftWorkflow: vi.fn(),
     getDraftWorkflow: vi.fn(),
-    getWorkflow: vi.fn(),
+    syncDraftWorkflow: vi.fn(),
   },
 }));
 
 const initialState = useWorkflowStore.getState();
+const canonicalSaveResponse = (
+  graphHash = 'b'.repeat(64),
+  updatedAt = '2026-07-13T00:00:01Z',
+) => ({
+  status: 'success' as const,
+  workflow_id: 'workflow-1',
+  graph_hash: graphHash,
+  updated_at: updatedAt,
+});
 
 const node = (id: string, type = 'startNode'): Node =>
   ({
@@ -67,30 +85,76 @@ const node = (id: string, type = 'startNode'): Node =>
     data: { title: id, triggerType: 'manual', variables: [] },
   }) as Node;
 
-const setPreviewState = (nodes: Node[], edges: Edge[] = []) => {
-  useWorkflowStore.setState({
-    agentBuilderPreview: {
-      draftId: 'draft-new',
-      previewGraph: {
-        nodes,
-        edges,
-        viewport: { x: 10, y: 10, zoom: 1 },
-      },
-      nodeDetailPreviews: [],
-      validationResult: { valid: true, issues: [] },
-      baseGraphHash: 'base-hash',
-      draftMode: 'new_workflow',
+const mockKnowledgeSelection = (
+  selectedCandidates: Array<{
+    candidate_id: string;
+    resolution_id: string;
+    requirement_id: string;
+  }>,
+) => {
+  vi.mocked(agentBuilderApi.selectKnowledge).mockResolvedValue({
+    resolution_id: selectedCandidates[0]?.resolution_id ?? 'resolve-kb-1',
+    selected_candidates: selectedCandidates,
+    graph_mutation: {
+      operation_id: 'operation-kb-selection',
+      kind: 'initial_graph',
+      status: 'pending_apply',
+      workflow_id: 'workflow-old',
+      base_graph_hash: 'a'.repeat(64),
+      expected_workflow_updated_at: '2026-07-13T00:00:00Z',
+      expected_result_graph_hash: 'b'.repeat(64),
+      catalog_version: 3,
+      operations: [{ op: 'add_node', node: node('answer', 'answerNode') }],
     },
+  });
+  vi.mocked(workflowApi.syncDraftWorkflow).mockResolvedValue(
+    canonicalSaveResponse(),
+  );
+  vi.mocked(agentBuilderApi.acknowledgeMutation).mockResolvedValue({
+    operation_id: 'operation-kb-selection',
+    operation_status: 'acknowledged',
+    graph_hash: 'b'.repeat(64),
+    updated_at: '2026-07-13T00:00:01Z',
+    parameter_group: null,
   });
 };
 
 describe('AgentBuilderPanel', () => {
+  it('parameter group만 끝나도 backend request/history boundary가 끝나기 전에는 완료가 아니다', () => {
+    const completedGroup = {
+      group_id: 'group-completed-locally',
+      status: 'completed',
+      tasks: [],
+    } satisfies AgentBuilderParameterGroup;
+
+    expect(
+      isAgentBuilderSetupCompleted('parameter_configuration', completedGroup),
+    ).toBe(false);
+    expect(isAgentBuilderSetupCompleted('graph_mutation_ready', completedGroup)).toBe(
+      false,
+    );
+    expect(isAgentBuilderSetupCompleted('clarification_required', completedGroup)).toBe(
+      false,
+    );
+    expect(isAgentBuilderSetupCompleted('completed', completedGroup)).toBe(true);
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     window.localStorage.clear();
     window.sessionStorage.clear();
     useWorkflowStore.setState(initialState, true);
-    vi.mocked(workflowApi.syncDraftWorkflow).mockResolvedValue({});
+    vi.mocked(workflowApi.getDraftWorkflow).mockResolvedValue({
+      nodes: [],
+      edges: [],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      workflow_id: 'workflow-1',
+      graph_hash: 'a'.repeat(64),
+      updated_at: '2026-07-13T00:00:00Z',
+    });
+    vi.mocked(workflowApi.syncDraftWorkflow).mockResolvedValue(
+      canonicalSaveResponse(),
+    );
     vi.mocked(agentBuilderApi.getModelOptions).mockResolvedValue([
       {
         provider_name: 'openai',
@@ -143,22 +207,17 @@ describe('AgentBuilderPanel', () => {
           },
         ],
       },
-      { provider_name: 'google', unavailable_reason: 'no_authorized_model', options: [] },
-      { provider_name: 'llamaparse', unavailable_reason: 'chat_model_not_supported', options: [] },
+      {
+        provider_name: 'google',
+        unavailable_reason: 'no_authorized_model',
+        options: [],
+      },
+      {
+        provider_name: 'llamaparse',
+        unavailable_reason: 'chat_model_not_supported',
+        options: [],
+      },
     ]);
-    vi.mocked(agentBuilderApi.cancelDraft).mockResolvedValue({
-      apply_id: 'apply-cancel',
-      outcome: 'canceled',
-      block_reason: 'USER_CANCELED',
-      stale_state: 'not_checked',
-      permission_recheck_outcome: 'not_checked',
-      validation_state: 'not_checked',
-      audit_recorded: true,
-      layout_optimization_applied: false,
-      notices: [
-        '도안 생성 미리보기를 닫았습니다. 실제 workflow graph는 변경되지 않았습니다.',
-      ],
-    });
   });
 
   it('Agent Builder 패널을 최소화했다가 다시 펼친다', async () => {
@@ -183,6 +242,273 @@ describe('AgentBuilderPanel', () => {
 
     fireEvent.click(screen.getByLabelText('Agent Builder 펼치기'));
     expect(screen.getByText('Agent Builder')).toBeInTheDocument();
+  });
+
+  it('mobile 폭에서 panel을 viewport 안에 두고 card/control shortcut을 canvas로 보내지 않는다', async () => {
+    const canvasShortcut = vi.fn();
+    window.addEventListener('keydown', canvasShortcut);
+    try {
+      render(
+        <AgentBuilderPanel
+          workflowId="workflow-1"
+          appId="app-1"
+          nodes={[]}
+          edges={[]}
+          hasUnsavedChanges={false}
+        />,
+      );
+
+      fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+      await screen.findByRole('button', {
+        name: /Agent Builder 모델: GPT-5.5$/,
+      });
+      const panel = screen.getByText('Agent Builder').closest('section');
+      expect(panel?.className).toContain('w-full');
+      expect(panel?.className).toContain('sm:w-[380px]');
+
+      const button = screen.getByLabelText('Agent Builder 최소화');
+      const shortcut = new KeyboardEvent('keydown', {
+        key: 'z',
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      button.dispatchEvent(shortcut);
+
+      expect(shortcut.defaultPrevented).toBe(false);
+      expect(canvasShortcut).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener('keydown', canvasShortcut);
+    }
+  });
+
+  it('Knowledge 또는 parameter 설정 중에도 새 자연어 요청 입력을 막지 않는다', async () => {
+    window.localStorage.setItem(
+      'agent-builder:workflow:workflow-1',
+      'session-active-setup',
+    );
+    vi.mocked(agentBuilderApi.getSession).mockResolvedValue({
+      session_id: 'session-active-setup',
+      workflow_id: 'workflow-1',
+      protocol_version: 'direct_edit_v1',
+      status: 'parameter_configuration',
+      messages: [],
+      parameter_group: {
+        group_id: 'group-active-setup',
+        status: 'active',
+        tasks: [
+          {
+            task_id: 'task-active-setup',
+            group_id: 'group-active-setup',
+            step_id: 'step-llm',
+            node_id: 'llm',
+            node_type: 'llmNode',
+            parameter_key: 'model',
+            label: 'Model',
+            input_type: 'text',
+            required: true,
+            defer_policy: 'forbidden',
+            status: 'active',
+            task_version: 1,
+            stable_order: 0,
+            resolution_source: null,
+            reason: 'LLM 응답을 생성합니다.',
+            input_guidance: '모델을 입력하세요.',
+          },
+        ],
+      },
+    });
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-1"
+        appId="app-1"
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+
+    const input = await screen.findByRole('textbox');
+    expect(input).not.toBeDisabled();
+    fireEvent.change(input, { target: { value: '입력 출력 노드 생성' } });
+    expect(screen.getByLabelText('Agent Builder 요청 보내기')).not.toBeDisabled();
+  });
+
+  it('panel을 제외한 mobile canvas에서 node와 겹치지 않는 최대 동적 zoom을 계산한다', () => {
+    const viewport = calculateAgentBuilderNodeFocusViewport({
+      canvasRect: {
+        left: 0,
+        top: 0,
+        right: 360,
+        bottom: 720,
+        width: 360,
+        height: 720,
+      },
+      panelRect: {
+        left: 8,
+        top: 200,
+        right: 352,
+        bottom: 700,
+        width: 344,
+        height: 500,
+      },
+      node: { x: 400, y: 300, width: 200, height: 100 },
+      padding: 24,
+      maxZoom: 1.6,
+    });
+
+    const nodeTop = 300 * viewport.zoom + viewport.y;
+    const nodeBottom = 400 * viewport.zoom + viewport.y;
+    expect(viewport.zoom).toBeCloseTo(1.52);
+    expect(nodeTop).toBeGreaterThanOrEqual(24);
+    expect(nodeBottom).toBeLessThanOrEqual(176);
+  });
+
+  it('첫 completed-boundary Undo presentation은 panel을 열고 최소화를 해제해 node를 선택·focus·scroll하되 input focus를 빼앗지 않는다', async () => {
+    const canvasNode = node('answer', 'answerNode');
+    const reopenedGroup: AgentBuilderParameterGroup = {
+      group_id: 'group-reopened',
+      status: 'active',
+      tasks: [
+        {
+          task_id: 'task-reopened',
+          group_id: 'group-reopened',
+          step_id: 'step-answer',
+          node_id: 'answer',
+          node_type: 'answerNode',
+          parameter_key: 'prompt',
+          label: 'Prompt',
+          input_type: 'text',
+          required: true,
+          defer_policy: 'forbidden',
+          status: 'active',
+          task_version: 4,
+          stable_order: 3,
+          resolution_source: 'catalog_default',
+          reason: '응답 문구를 설정합니다.',
+          input_guidance: '문구를 입력하세요.',
+          node_label: 'Answer',
+        },
+      ],
+    };
+    window.localStorage.setItem(
+      'agent-builder:workflow:workflow-1',
+      'session-reopened',
+    );
+    vi.mocked(agentBuilderApi.getSession).mockResolvedValue({
+      session_id: 'session-reopened',
+      protocol_version: 'direct_edit_v1',
+      status: 'completed',
+      messages: [],
+      parameter_group: null,
+    });
+    getNode.mockReturnValue({
+      ...canvasNode,
+      position: { x: 400, y: 300 },
+      measured: { width: 200, height: 100 },
+    });
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    const rectSpy = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: HTMLElement) {
+        if (this.classList.contains('react-flow')) {
+          return {
+            x: 0,
+            y: 0,
+            left: 0,
+            top: 0,
+            right: 1000,
+            bottom: 800,
+            width: 1000,
+            height: 800,
+            toJSON: () => ({}),
+          } as DOMRect;
+        }
+        if (this.getAttribute('aria-label') === 'Agent Builder panel') {
+          return {
+            x: 620,
+            y: 200,
+            left: 620,
+            top: 200,
+            right: 1000,
+            bottom: 800,
+            width: 380,
+            height: 600,
+            toJSON: () => ({}),
+          } as DOMRect;
+        }
+        return {
+          x: 0,
+          y: 0,
+          left: 0,
+          top: 0,
+          right: 0,
+          bottom: 0,
+          width: 0,
+          height: 0,
+          toJSON: () => ({}),
+        } as DOMRect;
+      });
+    useWorkflowStore.setState({ nodes: [canvasNode], edges: [] });
+    try {
+      render(
+        <>
+          <button type="button">Canvas command target</button>
+          <div className="react-flow" />
+          <AgentBuilderPanel
+            workflowId="workflow-1"
+            appId="app-1"
+            nodes={[canvasNode]}
+            edges={[]}
+            hasUnsavedChanges={false}
+          />
+        </>,
+      );
+
+      fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+      await waitFor(() =>
+        expect(agentBuilderApi.getSession).toHaveBeenCalledWith(
+          'session-reopened',
+        ),
+      );
+      fireEvent.click(screen.getByLabelText('Agent Builder 최소화'));
+      const canvasTarget = screen.getByRole('button', {
+        name: 'Canvas command target',
+      });
+      canvasTarget.focus();
+
+      act(() => {
+        useWorkflowStore.setState({
+          recoveredAgentBuilderParameterGroup: {
+            sessionId: 'session-reopened',
+            parameterGroup: reopenedGroup,
+          },
+          agentBuilderHistoryNotice:
+            '마지막 재편집 가능 설정 항목을 다시 열었습니다.',
+        });
+      });
+
+      expect(await screen.findByLabelText('Agent Builder panel')).toBeVisible();
+      await waitFor(() => {
+        expect(useWorkflowStore.getState().nodes[0].selected).toBe(true);
+        expect(setViewport).toHaveBeenCalled();
+        expect(scrollIntoView).toHaveBeenCalled();
+      });
+      expect(canvasTarget).toHaveFocus();
+      expect(screen.getByLabelText('Prompt')).not.toHaveFocus();
+      expect(
+        screen.getByText('마지막 재편집 가능 설정 항목을 다시 열었습니다.'),
+      ).toHaveAttribute('aria-live', 'polite');
+    } finally {
+      rectSpy.mockRestore();
+    }
   });
 
   it('credential 허용 모델을 provider 순서로 표시하고 선택 모델을 요청에 포함한다', async () => {
@@ -221,7 +547,9 @@ describe('AgentBuilderPanel', () => {
       'overflow-y-auto',
     );
     expect(
-      screen.getAllByTestId('agent-builder-model-provider').map((item) => item.textContent),
+      screen
+        .getAllByTestId('agent-builder-model-provider')
+        .map((item) => item.textContent),
     ).toEqual(['openai', 'anthropic', 'google', 'llamaparse']);
     fireEvent.click(screen.getByRole('button', { name: /Claude Sonnet 5/ }));
 
@@ -243,11 +571,669 @@ describe('AgentBuilderPanel', () => {
     });
   });
 
+  it('structure-only direct mutation을 preview 없이 editor에 적용하고 저장한다', async () => {
+    useWorkflowStore.setState({
+      nodes: [],
+      edges: [],
+      undoStack: [],
+      redoStack: [],
+    });
+    vi.mocked(agentBuilderApi.createSession).mockResolvedValue({
+      session_id: 'session-direct',
+      workflow_id: 'workflow-1',
+      protocol_version: 'direct_edit_v1',
+      status: 'active',
+      messages: [],
+    });
+    vi.mocked(agentBuilderApi.sendMessage).mockResolvedValue({
+      request_id: 'request-direct',
+      status: 'graph_mutation_ready',
+      graph_mutation: {
+        operation_id: 'operation-direct',
+        kind: 'initial_graph',
+        status: 'pending_apply',
+        generation_mode: 'structure_only',
+        workflow_id: 'workflow-1',
+        base_graph_hash: 'a'.repeat(64),
+        expected_workflow_updated_at: '2026-07-12T00:00:00Z',
+        expected_result_graph_hash: 'b'.repeat(64),
+        catalog_version: 3,
+        affected_node_ids: ['start', 'answer'],
+        operations: [
+          { op: 'add_node', node: node('start') },
+          { op: 'add_node', node: node('answer', 'answerNode') },
+          {
+            op: 'add_edge',
+            edge: { id: 'e1', source: 'start', target: 'answer' },
+          },
+        ],
+      },
+      parameter_group: null,
+      clarification_questions: [],
+      clarification_options: [],
+      warnings: [],
+    });
+    vi.mocked(workflowApi.syncDraftWorkflow).mockResolvedValue(
+      canonicalSaveResponse('b'.repeat(64), '2026-07-13T00:00:00Z'),
+    );
+    vi.mocked(agentBuilderApi.acknowledgeMutation).mockResolvedValue({
+      operation_id: 'operation-direct',
+      operation_status: 'acknowledged',
+      graph_hash: 'b'.repeat(64),
+      updated_at: '2026-07-13T00:00:00Z',
+      parameter_group: null,
+    });
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-1"
+        appId="app-1"
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+    await screen.findByRole('button', {
+      name: /Agent Builder 모델: GPT-5.5$/,
+    });
+    fireEvent.click(screen.getByRole('button', { name: '구조만 생성' }));
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: '입력과 응답 노드를 만들어줘' },
+    });
+    fireEvent.click(screen.getByLabelText('Agent Builder 요청 보내기'));
+
+    await waitFor(() => {
+      expect(agentBuilderApi.sendMessage).toHaveBeenCalledWith(
+        'session-direct',
+        expect.objectContaining({ generationMode: 'structure_only' }),
+      );
+      expect(agentBuilderApi.acknowledgeMutation).toHaveBeenCalledWith(
+        'session-direct',
+        expect.objectContaining({ operationId: 'operation-direct' }),
+      );
+    });
+    expect(useWorkflowStore.getState().nodes.map((item) => item.id)).toEqual([
+      'start',
+      'answer',
+    ]);
+    expect(screen.queryByText('도안 생성 미리보기')).not.toBeInTheDocument();
+  });
+
+  it('structure-only 결과는 새로고침 뒤에도 safe envelope의 affected node로 routing 안내를 복구한다', async () => {
+    window.localStorage.setItem(
+      'agent-builder:workflow:workflow-1',
+      'session-routing-restore',
+    );
+    vi.mocked(agentBuilderApi.getSession).mockResolvedValue({
+      session_id: 'session-routing-restore',
+      workflow_id: 'workflow-1',
+      app_id: 'app-1',
+      protocol_version: 'direct_edit_v1',
+      status: 'completed',
+      messages: [
+        {
+          kind: 'assistant',
+          request_id: 'request-routing-restore',
+          response: {
+            request_id: 'request-routing-restore',
+            status: 'completed',
+            structured_plan: null,
+            clarification_questions: [],
+            clarification_options: [],
+            validation_result: null,
+            warnings: [],
+          },
+        },
+      ],
+      active_graph_mutation: {
+        operation_id: 'operation-routing-restore',
+        status: 'acknowledged',
+        affected_node_ids: ['llm-routing-restore'],
+      },
+      parameter_group: null,
+      pending_request: null,
+    });
+
+    const restoredRoutingNode = {
+      id: 'llm-routing-restore',
+      type: 'llmNode',
+      position: { x: 0, y: 0 },
+      data: {
+        title: '복구된 LLM',
+        provider: 'openai',
+        model_id: 'gpt-5.5',
+        referenced_variables: [],
+        parameters: {},
+        auto_model_routing: false,
+      },
+    } satisfies LLMNode;
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-1"
+        appId="app-1"
+        nodes={[restoredRoutingNode]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+
+    expect(
+      await screen.findByTestId('agent-builder-routing-guidance'),
+    ).toHaveTextContent('복구된 LLM Routing 설정으로 이동');
+  });
+
+  it('direct-edit는 legacy clarification KB 후보를 설정 카드로 표시하지 않는다', async () => {
+    vi.mocked(agentBuilderApi.createSession).mockResolvedValue({
+      session_id: 'session-no-legacy-kb',
+      workflow_id: 'workflow-1',
+      app_id: 'app-1',
+      protocol_version: 'direct_edit_v1',
+      status: 'active',
+      messages: [],
+    });
+    vi.mocked(agentBuilderApi.sendMessage).mockResolvedValue({
+      request_id: 'request-no-legacy-kb',
+      status: 'clarification_required',
+      structured_plan: null,
+      clarification_questions: ['사용할 Knowledge Base를 선택해주세요.'],
+      clarification_options: [
+        {
+          type: 'knowledge_base',
+          candidate_id: 'legacy-kb-candidate',
+          resolution_id: 'legacy-kb-resolution',
+          requirement_id: 'legacy-kb-requirement',
+          safe_label: 'Legacy Knowledge 후보',
+        },
+      ],
+      validation_result: null,
+      warnings: [],
+    });
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-1"
+        appId="app-1"
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: '사내 문서를 참고해줘' },
+    });
+    fireEvent.click(screen.getByLabelText('Agent Builder 요청 보내기'));
+
+    await screen.findByText('clarification_required');
+    expect(
+      screen.queryByRole('checkbox', { name: 'Legacy Knowledge 후보' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId('agent-builder-kb-candidate-list'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('새 요청이 실패하면 이전 요청의 완료 ParameterTask를 현재 설정 결과에 섞지 않는다', async () => {
+    window.localStorage.setItem(
+      'agent-builder:workflow:workflow-1',
+      'session-old-completed-task',
+    );
+    const completedGroup: AgentBuilderParameterGroup = {
+      group_id: 'group-old-completed-task',
+      status: 'completed',
+      tasks: [
+        {
+          task_id: 'task-old-completed-task',
+          group_id: 'group-old-completed-task',
+          step_id: 'step-old-completed-task',
+          node_id: 'node-old-completed-task',
+          node_type: 'answerNode',
+          parameter_key: 'prompt',
+          label: '이전 응답 문구',
+          input_type: 'text',
+          required: true,
+          defer_policy: 'forbidden',
+          status: 'completed',
+          task_version: 1,
+          stable_order: 1,
+          resolution_source: 'catalog_default',
+          reason: '이전 요청의 설정입니다.',
+          input_guidance: '이전 문구입니다.',
+          node_label: '이전 요청 노드',
+        },
+      ],
+    };
+    vi.mocked(agentBuilderApi.getSession).mockResolvedValue({
+      session_id: 'session-old-completed-task',
+      workflow_id: 'workflow-1',
+      app_id: 'app-1',
+      protocol_version: 'direct_edit_v1',
+      status: 'completed',
+      messages: [
+        {
+          kind: 'assistant',
+          request_id: 'request-old-completed-task',
+          response: {
+            request_id: 'request-old-completed-task',
+            status: 'completed',
+            structured_plan: null,
+            clarification_questions: [],
+            clarification_options: [],
+            validation_result: null,
+            warnings: [],
+          },
+        },
+      ],
+      active_graph_mutation: null,
+      parameter_group: completedGroup,
+      pending_request: null,
+    });
+    vi.mocked(agentBuilderApi.sendMessage).mockResolvedValue({
+      request_id: 'request-new-failed',
+      status: 'failed',
+      structured_plan: null,
+      clarification_questions: [],
+      clarification_options: [],
+      validation_result: null,
+      warnings: [],
+    });
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-1"
+        appId="app-1"
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+    await screen.findByText('이전 요청 노드');
+
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: '실패할 새 요청' },
+    });
+    fireEvent.click(screen.getByLabelText('Agent Builder 요청 보내기'));
+
+    await screen.findByText('failed');
+    expect(screen.queryByText('이전 요청 노드')).not.toBeInTheDocument();
+    expect(screen.queryByText('이전 응답 문구')).not.toBeInTheDocument();
+  });
+
+  it('after-graph KB 선택은 message 재호출 없이 knowledge mutation으로 저장한다', async () => {
+    useWorkflowStore.setState({
+      nodes: [],
+      edges: [],
+      undoStack: [],
+      redoStack: [],
+    });
+    vi.mocked(agentBuilderApi.createSession).mockResolvedValue({
+      session_id: 'session-direct-kb',
+      workflow_id: 'workflow-1',
+      protocol_version: 'direct_edit_v1',
+      status: 'active',
+      messages: [],
+    });
+    vi.mocked(agentBuilderApi.sendMessage).mockResolvedValue({
+      request_id: 'request-direct-kb',
+      status: 'graph_mutation_ready',
+      graph_mutation: {
+        operation_id: 'operation-initial-kb',
+        kind: 'initial_graph',
+        status: 'pending_apply',
+        generation_mode: 'configure_and_generate',
+        workflow_id: 'workflow-1',
+        base_graph_hash: 'a'.repeat(64),
+        expected_workflow_updated_at: '2026-07-12T00:00:00Z',
+        expected_result_graph_hash: 'b'.repeat(64),
+        catalog_version: 3,
+        affected_node_ids: ['start', 'llm', 'answer'],
+        operations: [
+          { op: 'add_node', node: node('start') },
+          { op: 'add_node', node: node('llm', 'llmNode') },
+          { op: 'add_node', node: node('answer', 'answerNode') },
+          {
+            op: 'add_edge',
+            edge: { id: 'e1', source: 'start', target: 'llm' },
+          },
+          {
+            op: 'add_edge',
+            edge: { id: 'e2', source: 'llm', target: 'answer' },
+          },
+        ],
+      },
+      parameter_group: null,
+      knowledge_resolution: {
+        resolution_id: 'res-kb-1',
+        timing: 'after_graph',
+        required: true,
+        candidates: [
+          {
+            candidate_id: 'safe-rec-1',
+            resolution_id: 'res-kb-1',
+            requirement_id: 'kr_1',
+            safe_label: '휴가 정책',
+            score: 0.7,
+            reason_category: 'topic_keyword_match',
+          },
+        ],
+        selected: [],
+      },
+      clarification_questions: ['사용할 Knowledge Base를 선택해주세요.'],
+      clarification_options: [
+        {
+          type: 'knowledge_base',
+          candidate_id: 'safe-rec-1',
+          resolution_id: 'res-kb-1',
+          requirement_id: 'kr_1',
+          label: '휴가 정책',
+        },
+      ],
+      warnings: [],
+    });
+    vi.mocked(agentBuilderApi.selectKnowledge).mockResolvedValue({
+      resolution_id: 'res-kb-1',
+      selected_candidates: [
+        {
+          candidate_id: 'safe-rec-1',
+          resolution_id: 'res-kb-1',
+          requirement_id: 'kr_1',
+        },
+      ],
+      graph_mutation: {
+        operation_id: 'operation-bind-kb',
+        kind: 'knowledge_binding',
+        status: 'pending_apply',
+        generation_mode: 'configure_and_generate',
+        workflow_id: 'workflow-1',
+        base_graph_hash: 'b'.repeat(64),
+        expected_workflow_updated_at: '2026-07-13T00:00:00Z',
+        expected_result_graph_hash: 'c'.repeat(64),
+        catalog_version: 3,
+        affected_node_ids: ['llm'],
+        operations: [
+          {
+            op: 'replace_node_data',
+            node_id: 'llm',
+            data: { title: 'llm', knowledgeBases: [{ id: 'kb-1' }] },
+          },
+        ],
+      },
+    });
+    vi.mocked(workflowApi.syncDraftWorkflow)
+      .mockResolvedValueOnce(
+        canonicalSaveResponse('b'.repeat(64), '2026-07-13T00:00:00Z'),
+      )
+      .mockResolvedValueOnce(
+        canonicalSaveResponse('c'.repeat(64), '2026-07-13T00:00:01Z'),
+      );
+    vi.mocked(workflowApi.getDraftWorkflow)
+      .mockResolvedValueOnce({
+        nodes: [],
+        edges: [],
+        viewport: { x: 0, y: 0, zoom: 1 },
+        workflow_id: 'workflow-1',
+        graph_hash: 'a'.repeat(64),
+        updated_at: '2026-07-13T00:00:00Z',
+      })
+      .mockResolvedValueOnce({
+        nodes: [node('start'), node('llm', 'llmNode'), node('answer', 'answerNode')],
+        edges: [
+          { id: 'e1', source: 'start', target: 'llm' },
+          { id: 'e2', source: 'llm', target: 'answer' },
+        ],
+        viewport: { x: 0, y: 0, zoom: 1 },
+        workflow_id: 'workflow-1',
+        graph_hash: 'b'.repeat(64),
+        updated_at: '2026-07-13T00:00:00Z',
+      });
+    vi.mocked(agentBuilderApi.acknowledgeMutation)
+      .mockResolvedValueOnce({
+        operation_id: 'operation-initial-kb',
+        operation_status: 'acknowledged',
+        graph_hash: 'b'.repeat(64),
+        updated_at: '2026-07-13T00:00:00Z',
+        parameter_group: null,
+      })
+      .mockResolvedValueOnce({
+        operation_id: 'operation-bind-kb',
+        operation_status: 'acknowledged',
+        graph_hash: 'c'.repeat(64),
+        updated_at: '2026-07-13T00:00:01Z',
+        parameter_group: {
+          group_id: 'group-kb',
+          status: 'completed',
+          tasks: [
+            {
+              task_id: 'task-kb',
+              group_id: 'group-kb',
+              step_id: 'step-llm',
+              node_id: 'llm',
+              node_type: 'llmNode',
+              parameter_key: 'knowledgeBases',
+              label: 'Knowledge Bases',
+              input_type: 'resource_ref',
+              required: false,
+              defer_policy: 'allow_unresolved',
+              status: 'completed',
+              task_version: 2,
+              stable_order: 0,
+              resolution_source: 'user_request',
+              reason: '사내 문서 기반 답변에 필요합니다.',
+              input_guidance: '사용할 Knowledge Base를 선택하세요.',
+            },
+          ],
+        } satisfies AgentBuilderParameterGroup,
+      });
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-1"
+        appId="app-1"
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: '휴가 정책을 참고해 답변하는 워크플로우를 만들어줘' },
+    });
+    fireEvent.click(screen.getByLabelText('Agent Builder 요청 보내기'));
+    const afterGraphSetup = await screen.findByTestId(
+      'workflow-result-group',
+    );
+    expect(
+      within(afterGraphSetup).getByText('Graph 생성 후 Knowledge'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByRole('checkbox', { name: '휴가 정책' }),
+    ).toHaveLength(1);
+    fireEvent.click(
+      within(afterGraphSetup).getByRole('checkbox', { name: '휴가 정책' }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: '선택 적용' }));
+
+    await waitFor(() => {
+      expect(agentBuilderApi.selectKnowledge).toHaveBeenCalledWith(
+        'session-direct-kb',
+        {
+          resolutionId: 'res-kb-1',
+          selectedCandidates: [
+            {
+              candidate_id: 'safe-rec-1',
+              resolution_id: 'res-kb-1',
+              requirement_id: 'kr_1',
+            },
+          ],
+        },
+      );
+      expect(agentBuilderApi.sendMessage).toHaveBeenCalledTimes(1);
+      expect(workflowApi.syncDraftWorkflow).toHaveBeenCalledTimes(2);
+      expect(agentBuilderApi.acknowledgeMutation).toHaveBeenCalledTimes(2);
+    });
+    expect(await screen.findByText('1 / 1 완료')).toBeInTheDocument();
+    expect(screen.getByText('Workflow 생성 완료')).toBeInTheDocument();
+  });
+
+  it('before-graph KB 선택도 message를 재전송하지 않고 전용 endpoint로 해결한다', async () => {
+    vi.mocked(agentBuilderApi.createSession).mockResolvedValue({
+      session_id: 'session-before-graph-kb',
+      workflow_id: 'workflow-1',
+      protocol_version: 'direct_edit_v1',
+      status: 'active',
+      messages: [],
+    });
+    vi.mocked(agentBuilderApi.sendMessage).mockResolvedValueOnce({
+      request_id: 'request-before-graph-kb',
+      status: 'clarification_required',
+      structured_plan: null,
+      knowledge_resolution: {
+        resolution_id: 'res-before-1',
+        timing: 'before_graph',
+        required: true,
+        candidates: [
+          {
+            candidate_id: 'safe-rec-before-1',
+            resolution_id: 'res-before-1',
+            requirement_id: 'kr-before-1',
+            safe_label: '사내 문서',
+          },
+        ],
+        selected: [],
+      },
+      clarification_questions: ['사용할 Knowledge Base를 선택해주세요.'],
+      clarification_options: [
+        {
+          type: 'knowledge_base',
+          candidate_id: 'safe-rec-before-1',
+          resolution_id: 'res-before-1',
+          requirement_id: 'kr-before-1',
+          label: '사내 문서',
+        },
+      ],
+      warnings: [],
+    });
+    vi.mocked(agentBuilderApi.selectKnowledge).mockResolvedValue({
+      resolution_id: 'res-before-1',
+      selected_candidates: [
+        {
+          candidate_id: 'safe-rec-before-1',
+          resolution_id: 'res-before-1',
+          requirement_id: 'kr-before-1',
+        },
+      ],
+      graph_mutation: {
+        operation_id: 'operation-before-graph-kb',
+        kind: 'initial_graph',
+        status: 'pending_apply',
+        generation_mode: 'configure_and_generate',
+        workflow_id: 'workflow-1',
+        base_graph_hash: 'a'.repeat(64),
+        expected_workflow_updated_at: '2026-07-13T00:00:00Z',
+        expected_result_graph_hash: 'b'.repeat(64),
+        catalog_version: 3,
+        affected_node_ids: ['start', 'llm', 'answer'],
+        operations: [
+          { op: 'add_node', node: node('start') },
+          { op: 'add_node', node: node('llm', 'llmNode') },
+          { op: 'add_node', node: node('answer', 'answerNode') },
+          {
+            op: 'add_edge',
+            edge: { id: 'e1', source: 'start', target: 'llm' },
+          },
+          {
+            op: 'add_edge',
+            edge: { id: 'e2', source: 'llm', target: 'answer' },
+          },
+        ],
+      },
+    });
+    vi.mocked(workflowApi.syncDraftWorkflow).mockResolvedValue(
+      canonicalSaveResponse(),
+    );
+    vi.mocked(agentBuilderApi.acknowledgeMutation).mockResolvedValue({
+      operation_id: 'operation-before-graph-kb',
+      operation_status: 'acknowledged',
+      graph_hash: 'b'.repeat(64),
+      updated_at: '2026-07-13T00:00:01Z',
+      parameter_group: null,
+    });
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-1"
+        appId="app-1"
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: '웹훅으로 받는 사내 문서 챗봇 워크플로우를 만들어줘' },
+    });
+    fireEvent.click(screen.getByLabelText('Agent Builder 요청 보내기'));
+    const beforeGraphSetup = await screen.findByTestId(
+      'workflow-result-group',
+    );
+    expect(
+      within(beforeGraphSetup).getByText('Graph 생성 전 Knowledge'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByRole('checkbox', { name: '사내 문서' }),
+    ).toHaveLength(1);
+    fireEvent.click(
+      within(beforeGraphSetup).getByRole('checkbox', { name: '사내 문서' }),
+    );
+    fireEvent.click(
+      screen.getByRole('button', { name: '선택한 Knowledge Base로 생성' }),
+    );
+
+    await waitFor(() => {
+      expect(agentBuilderApi.selectKnowledge).toHaveBeenCalledWith(
+        'session-before-graph-kb',
+        {
+          resolutionId: 'res-before-1',
+          selectedCandidates: [
+            {
+              candidate_id: 'safe-rec-before-1',
+              resolution_id: 'res-before-1',
+              requirement_id: 'kr-before-1',
+            },
+          ],
+        },
+      );
+      expect(agentBuilderApi.sendMessage).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.queryByRole('checkbox', { name: '사내 문서' })).toBeNull();
+  });
+
   it('사용 가능한 intent model이 없으면 hidden fallback 없이 요청을 차단한다', async () => {
     vi.mocked(agentBuilderApi.getModelOptions).mockResolvedValue([
-      { provider_name: 'openai', unavailable_reason: 'no_authorized_model', options: [] },
-      { provider_name: 'anthropic', unavailable_reason: 'no_authorized_model', options: [] },
-      { provider_name: 'google', unavailable_reason: 'no_authorized_model', options: [] },
+      {
+        provider_name: 'openai',
+        unavailable_reason: 'no_authorized_model',
+        options: [],
+      },
+      {
+        provider_name: 'anthropic',
+        unavailable_reason: 'no_authorized_model',
+        options: [],
+      },
+      {
+        provider_name: 'google',
+        unavailable_reason: 'no_authorized_model',
+        options: [],
+      },
       {
         provider_name: 'llamaparse',
         unavailable_reason: 'chat_model_not_supported',
@@ -281,239 +1267,6 @@ describe('AgentBuilderPanel', () => {
     expect(agentBuilderApi.sendMessage).not.toHaveBeenCalled();
   });
 
-  it('loads the saved graph when Agent Builder creates a new workflow', async () => {
-    const oldNodes = [node('old-node')];
-    const newNodes = [
-      node('new-input'),
-      node('new-llm', 'llmNode'),
-      node('new-answer', 'answerNode'),
-    ];
-    const savedNodes = [
-      { ...node('new-input'), position: { x: 0, y: 0 } },
-      { ...node('new-llm', 'llmNode'), position: { x: 360, y: 0 } },
-      { ...node('new-answer', 'answerNode'), position: { x: 720, y: 0 } },
-    ];
-    const newEdges: Edge[] = [
-      { id: 'edge-input-llm', source: 'new-input', target: 'new-llm' },
-      { id: 'edge-llm-answer', source: 'new-llm', target: 'new-answer' },
-    ];
-
-    useWorkflowStore.setState({
-      activeWorkflowId: 'workflow-old',
-      workflows: [
-        {
-          id: 'workflow-old',
-          appId: 'app-1',
-          nodes: oldNodes,
-          edges: [],
-          features: { nextNodeDisplayNumber: 2 },
-          viewport: { x: 0, y: 0, zoom: 1 },
-        },
-      ],
-      nodes: oldNodes,
-      edges: [],
-      features: { nextNodeDisplayNumber: 2 },
-      hasUnsavedChanges: false,
-    });
-    setPreviewState(newNodes, newEdges);
-
-    vi.mocked(agentBuilderApi.applyDraft).mockResolvedValue({
-      apply_id: 'apply-1',
-      outcome: 'saved',
-      saved_workflow_id: 'workflow-new',
-      latest_graph_hash: 'new-hash',
-      stale_state: 'not_stale',
-      permission_recheck_outcome: 'allowed',
-      validation_state: 'valid',
-      audit_recorded: true,
-      layout_optimization_applied: true,
-      notices: [],
-    });
-    vi.mocked(workflowApi.getDraftWorkflow).mockResolvedValue({
-      nodes: savedNodes,
-      edges: newEdges,
-      viewport: { x: 10, y: 10, zoom: 1 },
-      features: { nextNodeDisplayNumber: 2 },
-    });
-    vi.mocked(workflowApi.getWorkflow).mockResolvedValue({
-      id: 'workflow-new',
-      app_id: 'app-1',
-      created_at: '2026-07-10T00:00:00Z',
-      updated_at: '2026-07-10T00:00:00Z',
-    });
-    window.localStorage.setItem(
-      'agent-builder:workflow:workflow-old',
-      'session-new-workflow',
-    );
-    vi.mocked(agentBuilderApi.getSession).mockResolvedValue({
-      session_id: 'session-new-workflow',
-      workflow_id: 'workflow-old',
-      app_id: 'app-1',
-      status: 'active',
-      messages: [
-        {
-          kind: 'user',
-          request_id: 'request-new-workflow',
-          content: 'Create a new workflow and keep this conversation',
-          redacted: true,
-        },
-      ],
-      pending_request: null,
-      draft_preview: null,
-    });
-
-    const { rerender, unmount } = render(
-      <AgentBuilderPanel
-        workflowId="workflow-old"
-        appId="app-1"
-        nodes={oldNodes}
-        edges={[]}
-        hasUnsavedChanges={false}
-      />,
-    );
-
-    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
-    await screen.findByText('Create a new workflow and keep this conversation');
-    fireEvent.click(screen.getByRole('button', { name: '적용 및 저장' }));
-
-    await waitFor(() => {
-      expect(routerPush).toHaveBeenCalledWith('/modules/workflow-new');
-    });
-
-    expect(agentBuilderApi.applyDraft).toHaveBeenCalledWith('draft-new', {
-      clientPreviewGraphHash: expect.any(String),
-      clientLatestGraphHash: expect.any(String),
-    });
-    expect(workflowApi.syncDraftWorkflow).not.toHaveBeenCalled();
-    expect(
-      window.localStorage.getItem('agent-builder:workflow:workflow-new'),
-    ).toBe('session-new-workflow');
-    expect(
-      window.localStorage.getItem('agent-builder:workflow:workflow-old'),
-    ).toBeNull();
-    expect(
-      window.sessionStorage.getItem('agent-builder:reopen:workflow-new'),
-    ).not.toBeNull();
-
-    const state = useWorkflowStore.getState();
-    expect(state.activeWorkflowId).toBe('workflow-new');
-    expect(state.nodes.map((item) => item.id)).toEqual([
-      'new-input',
-      'new-llm',
-      'new-answer',
-    ]);
-    expect(state.nodes.map((item) => item.position)).toEqual(
-      savedNodes.map((item) => item.position),
-    );
-    expect(
-      state.workflows.find((workflow) => workflow.id === 'workflow-new')?.nodes.map(
-        (item) => item.position,
-      ),
-    ).toEqual(savedNodes.map((item) => item.position));
-    await waitFor(() => {
-      expect(fitView).toHaveBeenCalledWith({
-        padding: 0.2,
-        duration: 300,
-        maxZoom: 1,
-      });
-    });
-
-    rerender(
-      <AgentBuilderPanel
-        workflowId="workflow-new"
-        appId="app-1"
-        nodes={savedNodes}
-        edges={newEdges}
-        hasUnsavedChanges={false}
-      />,
-    );
-    expect(
-      window.sessionStorage.getItem('agent-builder:reopen:workflow-new'),
-    ).not.toBeNull();
-
-    unmount();
-    render(
-      <AgentBuilderPanel
-        workflowId="workflow-new"
-        appId="app-1"
-        nodes={savedNodes}
-        edges={newEdges}
-        hasUnsavedChanges={false}
-      />,
-    );
-
-    await screen.findByText('Create a new workflow and keep this conversation');
-    expect(
-      window.sessionStorage.getItem('agent-builder:reopen:workflow-new'),
-    ).toBeNull();
-  });
-
-  it('workflow scope가 바뀌면 기존 preview 상태를 제거한다', async () => {
-    const oldNodes = [node('old-node')];
-    setPreviewState(oldNodes);
-
-    const { rerender } = render(
-      <AgentBuilderPanel
-        workflowId="workflow-old"
-        appId="app-1"
-        nodes={oldNodes}
-        edges={[]}
-        hasUnsavedChanges={false}
-      />,
-    );
-
-    expect(useWorkflowStore.getState().agentBuilderPreview?.draftId).toBe(
-      'draft-new',
-    );
-
-    rerender(
-      <AgentBuilderPanel
-        workflowId="workflow-next"
-        appId="app-1"
-        nodes={oldNodes}
-        edges={[]}
-        hasUnsavedChanges={false}
-      />,
-    );
-
-    await waitFor(() => {
-      expect(useWorkflowStore.getState().agentBuilderPreview).toBeNull();
-    });
-  });
-
-  it('workflow가 없는 app scope가 바뀌면 기존 preview 상태를 제거한다', async () => {
-    const oldNodes = [node('old-node')];
-    setPreviewState(oldNodes);
-
-    const { rerender } = render(
-      <AgentBuilderPanel
-        workflowId=""
-        appId="app-1"
-        nodes={oldNodes}
-        edges={[]}
-        hasUnsavedChanges={false}
-      />,
-    );
-
-    expect(useWorkflowStore.getState().agentBuilderPreview?.draftId).toBe(
-      'draft-new',
-    );
-
-    rerender(
-      <AgentBuilderPanel
-        workflowId=""
-        appId="app-2"
-        nodes={oldNodes}
-        edges={[]}
-        hasUnsavedChanges={false}
-      />,
-    );
-
-    await waitFor(() => {
-      expect(useWorkflowStore.getState().agentBuilderPreview).toBeNull();
-    });
-  });
-
   it('입력창에서 Enter를 누르면 Agent Builder 요청을 보낸다', async () => {
     vi.mocked(agentBuilderApi.createSession).mockResolvedValue({
       session_id: 'session-enter',
@@ -522,17 +1275,14 @@ describe('AgentBuilderPanel', () => {
       status: 'active',
       messages: [],
       pending_request: null,
-      draft_preview: null,
     });
     vi.mocked(agentBuilderApi.sendMessage).mockResolvedValue({
       request_id: 'request-enter',
       status: 'clarification_required',
-      structured_request: null,
+      structured_plan: null,
       clarification_questions: ['추가 정보를 알려주세요.'],
       clarification_options: [],
-      draft_preview: null,
       validation_result: null,
-      preview_prompt: null,
       warnings: [],
     });
 
@@ -556,19 +1306,72 @@ describe('AgentBuilderPanel', () => {
     });
 
     await waitFor(() => {
-      expect(agentBuilderApi.sendMessage).toHaveBeenCalledWith('session-enter', {
-        message: 'LLM 가동',
-        workflowId: 'workflow-old',
-        appId: 'app-1',
-        selectedNodeId: undefined,
-        selectedEdgeId: undefined,
-        selectedKnowledgeCandidate: undefined,
-        selectedKnowledgeCandidates: undefined,
-        intentModelSelection: {
-          credentialId: 'credential-openai',
-          modelId: 'model-openai',
+      expect(agentBuilderApi.sendMessage).toHaveBeenCalledWith(
+        'session-enter',
+        {
+          message: 'LLM 가동',
+          workflowId: 'workflow-old',
+          appId: 'app-1',
+          selectedNodeId: undefined,
+          selectedEdgeId: undefined,
+          intentModelSelection: {
+            credentialId: 'credential-openai',
+            modelId: 'model-openai',
+          },
+          generationMode: 'configure_and_generate',
         },
+      );
+    });
+  });
+
+  it('연속 Enter 입력은 하나의 요청과 사용자 메시지만 만든다', async () => {
+    vi.mocked(agentBuilderApi.createSession).mockResolvedValue({
+      session_id: 'session-submit-lock',
+      workflow_id: 'workflow-old',
+      app_id: 'app-1',
+      status: 'active',
+      messages: [],
+      pending_request: null,
+    });
+    let resolveRequest!: (value: AgentBuilderMessageResponse) => void;
+    vi.mocked(agentBuilderApi.sendMessage).mockReturnValue(
+      new Promise((resolve) => {
+        resolveRequest = resolve;
+      }),
+    );
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-old"
+        appId="app-1"
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: '중복 없이 생성' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+
+    await waitFor(() => {
+      expect(agentBuilderApi.sendMessage).toHaveBeenCalledTimes(1);
+    });
+    expect(
+      within(screen.getByTestId('agent-builder-conversation')).getAllByText(
+        '중복 없이 생성',
+      ),
+    ).toHaveLength(1);
+    await act(async () => {
+      resolveRequest({
+        request_id: 'request-submit-lock',
+        status: 'unsupported',
+        structured_plan: null,
+        clarification_questions: [],
+        clarification_options: [],
+        warnings: [],
       });
+      await Promise.resolve();
     });
   });
 
@@ -580,17 +1383,14 @@ describe('AgentBuilderPanel', () => {
       status: 'active',
       messages: [],
       pending_request: null,
-      draft_preview: null,
     });
     vi.mocked(agentBuilderApi.sendMessage).mockResolvedValue({
       request_id: 'request-user-message',
       status: 'clarification_required',
-      structured_request: null,
+      structured_plan: null,
       clarification_questions: ['추가 정보를 알려주세요.'],
       clarification_options: [],
-      draft_preview: null,
       validation_result: null,
-      preview_prompt: null,
       warnings: [],
     });
 
@@ -627,17 +1427,14 @@ describe('AgentBuilderPanel', () => {
       status: 'active',
       messages: [],
       pending_request: null,
-      draft_preview: null,
     });
     vi.mocked(agentBuilderApi.sendMessage).mockResolvedValue({
       request_id: 'request-app-hydration',
       status: 'clarification_required',
-      structured_request: null,
+      structured_plan: null,
       clarification_questions: ['추가 정보를 알려주세요.'],
       clarification_options: [],
-      draft_preview: null,
       validation_result: null,
-      preview_prompt: null,
       warnings: [],
     });
 
@@ -683,13 +1480,11 @@ describe('AgentBuilderPanel', () => {
       status: 'active',
       messages: [],
       pending_request: null,
-      draft_preview: null,
     });
-    vi.mocked(agentBuilderApi.sendMessage)
-      .mockResolvedValueOnce({
+    vi.mocked(agentBuilderApi.sendMessage).mockResolvedValueOnce({
         request_id: 'request-target-clarification',
         status: 'clarification_required',
-        structured_request: null,
+        structured_plan: null,
         clarification_questions: ['수정 대상 node를 선택해주세요.'],
         clarification_options: [
           {
@@ -705,7 +1500,6 @@ describe('AgentBuilderPanel', () => {
             label: 'GitHub PR 조회 2',
           },
         ],
-        draft_preview: null,
         validation_result: {
           valid: false,
           issues: [
@@ -715,18 +1509,15 @@ describe('AgentBuilderPanel', () => {
             },
           ],
         },
-        preview_prompt: null,
         warnings: [],
       })
       .mockResolvedValueOnce({
         request_id: 'request-target-resolved',
         status: 'draft_ready',
-        structured_request: null,
+        structured_plan: null,
         clarification_questions: [],
         clarification_options: [],
-        draft_preview: null,
         validation_result: { valid: true, issues: [] },
-        preview_prompt: null,
         warnings: [],
       });
 
@@ -761,8 +1552,6 @@ describe('AgentBuilderPanel', () => {
         expect.objectContaining({
           message: 'github 노드 뒤에 LLM 노드를 추가해줘',
           selectedNodeId: 'github-read-2',
-          selectedKnowledgeCandidate: undefined,
-          selectedKnowledgeCandidates: undefined,
         }),
       );
     });
@@ -776,12 +1565,40 @@ describe('AgentBuilderPanel', () => {
       status: 'active',
       messages: [],
       pending_request: null,
-      draft_preview: null,
     });
     vi.mocked(agentBuilderApi.sendMessage).mockResolvedValue({
       request_id: 'request-kb-options',
       status: 'clarification_required',
-      structured_request: null,
+      structured_plan: null,
+      knowledge_resolution: {
+        resolution_id: 'resolve-kb-options',
+        timing: 'before_graph',
+        required: true,
+        candidates: [
+          {
+            candidate_id: 'safe-rec-1',
+            resolution_id: 'resolve-kb-options',
+            safe_label: '휴가 정책',
+            score: 0.7,
+            reason_category: 'topic_keyword_match',
+          },
+          {
+            candidate_id: 'safe-rec-2',
+            resolution_id: 'resolve-kb-options',
+            safe_label: '인사 정책',
+            score: 0.66,
+            reason_category: 'metadata_match',
+          },
+          {
+            candidate_id: 'safe-rec-3',
+            resolution_id: 'resolve-kb-options',
+            safe_label: '총무 정책',
+            score: 0.58,
+            reason_category: 'metadata_match',
+          },
+        ],
+        selected: [],
+      },
       clarification_questions: ['사용할 Knowledge Base를 선택해주세요.'],
       clarification_options: [
         {
@@ -814,9 +1631,7 @@ describe('AgentBuilderPanel', () => {
           reason_category: 'user_selected_no_kb',
         },
       ],
-      draft_preview: null,
       validation_result: null,
-      preview_prompt: null,
       warnings: ['Knowledge Base 후보가 비슷해 자동 선택하지 않았습니다.'],
     });
 
@@ -842,12 +1657,17 @@ describe('AgentBuilderPanel', () => {
     expect(await screen.findByText('휴가 정책')).toBeTruthy();
     expect(screen.getByText('인사 정책')).toBeTruthy();
     expect(screen.getByText('총무 정책')).toBeTruthy();
-    expect(screen.queryByText('Knowledge Base 없이 생성')).toBeNull();
-    expect(screen.getByText(/점수 0.70/)).toBeTruthy();
-    expect(screen.getByText(/점수 0.66/)).toBeTruthy();
+    expect(
+      screen.queryByRole('checkbox', { name: 'Knowledge Base 없이 생성' }),
+    ).toBeNull();
+    expect(screen.getByText('0.70')).toBeTruthy();
+    expect(screen.getByText('0.66')).toBeTruthy();
     const candidateList = screen.getByTestId('agent-builder-kb-candidate-list');
-    expect(candidateList.className).toContain('max-h-[13.5rem]');
-    expect(candidateList.className).toContain('overflow-y-auto');
+    const scrollList = Array.from(candidateList.querySelectorAll('div')).find(
+      (element) => element.className.includes('max-h-[156px]'),
+    );
+    expect(scrollList?.className).toContain('max-h-[156px]');
+    expect(scrollList?.className).toContain('overflow-y-auto');
   });
 
   it('새 요청과 응답이 추가되면 대화 영역을 맨 아래로 스크롤한다', async () => {
@@ -858,17 +1678,14 @@ describe('AgentBuilderPanel', () => {
       status: 'active',
       messages: [],
       pending_request: null,
-      draft_preview: null,
     });
     vi.mocked(agentBuilderApi.sendMessage).mockResolvedValue({
       request_id: 'request-scroll',
       status: 'draft_ready',
-      structured_request: null,
+      structured_plan: null,
       clarification_questions: [],
       clarification_options: [],
-      draft_preview: null,
       validation_result: { valid: true, issues: [] },
-      preview_prompt: null,
       warnings: [],
     });
 
@@ -911,13 +1728,28 @@ describe('AgentBuilderPanel', () => {
       status: 'active',
       messages: [],
       pending_request: null,
-      draft_preview: null,
     });
     vi.mocked(agentBuilderApi.sendMessage)
       .mockResolvedValueOnce({
         request_id: 'request-kb-clarify',
         status: 'clarification_required',
-        structured_request: null,
+        structured_plan: null,
+        knowledge_resolution: {
+          resolution_id: 'resolve-kb-1',
+          timing: 'before_graph',
+          required: true,
+          candidates: [
+            {
+              candidate_id: 'safe-rec-1',
+              resolution_id: 'resolve-kb-1',
+              requirement_id: 'kr-1',
+              safe_label: '휴가 정책',
+              score: 0.7,
+              reason_category: 'topic_keyword_match',
+            },
+          ],
+          selected: [],
+        },
         clarification_questions: ['사용할 Knowledge Base를 선택해주세요.'],
         clarification_options: [
           {
@@ -930,22 +1762,16 @@ describe('AgentBuilderPanel', () => {
             reason_category: 'topic_keyword_match',
           },
         ],
-        draft_preview: null,
         validation_result: null,
-        preview_prompt: null,
-        warnings: [],
-      })
-      .mockResolvedValueOnce({
-        request_id: 'request-kb-draft',
-        status: 'draft_ready',
-        structured_request: null,
-        clarification_questions: [],
-        clarification_options: [],
-        draft_preview: null,
-        validation_result: { valid: true, issues: [] },
-        preview_prompt: null,
         warnings: [],
       });
+    mockKnowledgeSelection([
+      {
+        candidate_id: 'safe-rec-1',
+        resolution_id: 'resolve-kb-1',
+        requirement_id: 'kr-1',
+      },
+    ]);
 
     render(
       <AgentBuilderPanel
@@ -966,28 +1792,26 @@ describe('AgentBuilderPanel', () => {
       code: 'Enter',
     });
 
-    fireEvent.click(await screen.findByRole('button', { name: /휴가 정책/ }));
-    fireEvent.click(screen.getByLabelText('Agent Builder 요청 보내기'));
+    fireEvent.click(await screen.findByRole('checkbox', { name: '휴가 정책' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: '선택한 Knowledge Base로 생성' }),
+    );
 
     await waitFor(() => {
-      expect(agentBuilderApi.sendMessage).toHaveBeenLastCalledWith(
+      expect(agentBuilderApi.selectKnowledge).toHaveBeenCalledWith(
         'session-kb-confirm',
-        expect.objectContaining({
-          message: 'Find the policy knowledge base and summarize it',
-          selectedKnowledgeCandidate: {
-            candidate_id: 'safe-rec-1',
-            resolution_id: 'resolve-kb-1',
-            requirement_id: 'kr-1',
-          },
-          selectedKnowledgeCandidates: [
+        {
+          resolutionId: 'resolve-kb-1',
+          selectedCandidates: [
             {
               candidate_id: 'safe-rec-1',
               resolution_id: 'resolve-kb-1',
               requirement_id: 'kr-1',
             },
           ],
-        }),
+        },
       );
+      expect(agentBuilderApi.sendMessage).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -999,13 +1823,27 @@ describe('AgentBuilderPanel', () => {
       status: 'active',
       messages: [],
       pending_request: null,
-      draft_preview: null,
     });
-    vi.mocked(agentBuilderApi.sendMessage)
-      .mockResolvedValueOnce({
+    vi.mocked(agentBuilderApi.sendMessage).mockResolvedValue({
         request_id: 'request-kb-no-repeat-clarify',
         status: 'clarification_required',
-        structured_request: null,
+        structured_plan: null,
+        knowledge_resolution: {
+          resolution_id: 'resolve-kb-1',
+          timing: 'before_graph',
+          required: true,
+          candidates: [
+            {
+              candidate_id: 'safe-rec-1',
+              resolution_id: 'resolve-kb-1',
+              requirement_id: 'kr-1',
+              safe_label: '휴가 정책',
+              score: 0.7,
+              reason_category: 'topic_keyword_match',
+            },
+          ],
+          selected: [],
+        },
         clarification_questions: ['사용할 Knowledge Base를 선택해주세요.'],
         clarification_options: [
           {
@@ -1018,22 +1856,16 @@ describe('AgentBuilderPanel', () => {
             reason_category: 'topic_keyword_match',
           },
         ],
-        draft_preview: null,
         validation_result: null,
-        preview_prompt: null,
-        warnings: [],
-      })
-      .mockResolvedValueOnce({
-        request_id: 'request-kb-no-repeat-draft',
-        status: 'draft_ready',
-        structured_request: null,
-        clarification_questions: [],
-        clarification_options: [],
-        draft_preview: null,
-        validation_result: { valid: true, issues: [] },
-        preview_prompt: null,
         warnings: [],
       });
+    mockKnowledgeSelection([
+      {
+        candidate_id: 'safe-rec-1',
+        resolution_id: 'resolve-kb-1',
+        requirement_id: 'kr-1',
+      },
+    ]);
 
     render(
       <AgentBuilderPanel
@@ -1054,15 +1886,16 @@ describe('AgentBuilderPanel', () => {
       code: 'Enter',
     });
 
-    fireEvent.click(await screen.findByRole('button', { name: /휴가 정책/ }));
-    fireEvent.click(screen.getByLabelText('Agent Builder 요청 보내기'));
+    fireEvent.click(await screen.findByRole('checkbox', { name: '휴가 정책' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: '선택한 Knowledge Base로 생성' }),
+    );
 
     await waitFor(() => {
-      expect(agentBuilderApi.sendMessage).toHaveBeenCalledTimes(2);
+      expect(agentBuilderApi.selectKnowledge).toHaveBeenCalledTimes(1);
+      expect(agentBuilderApi.sendMessage).toHaveBeenCalledTimes(1);
     });
-    expect(
-      screen.getByLabelText('Agent Builder 요청 보내기'),
-    ).toBeDisabled();
+    expect(screen.getByLabelText('Agent Builder 요청 보내기')).toBeDisabled();
   });
 
   it('Knowledge Base 후보를 여러 개 선택해 도안 생성을 요청한다', async () => {
@@ -1073,13 +1906,35 @@ describe('AgentBuilderPanel', () => {
       status: 'active',
       messages: [],
       pending_request: null,
-      draft_preview: null,
     });
-    vi.mocked(agentBuilderApi.sendMessage)
-      .mockResolvedValueOnce({
+    vi.mocked(agentBuilderApi.sendMessage).mockResolvedValue({
         request_id: 'request-kb-multi-clarify',
         status: 'clarification_required',
-        structured_request: null,
+        structured_plan: null,
+        knowledge_resolution: {
+          resolution_id: 'resolve-kb-1',
+          timing: 'before_graph',
+          required: true,
+          candidates: [
+            {
+              candidate_id: 'safe-rec-1',
+              resolution_id: 'resolve-kb-1',
+              requirement_id: 'kr-1',
+              safe_label: '휴가 정책',
+              score: 0.7,
+              reason_category: 'topic_keyword_match',
+            },
+            {
+              candidate_id: 'safe-rec-2',
+              resolution_id: 'resolve-kb-1',
+              requirement_id: 'kr-1',
+              safe_label: '인사 정책',
+              score: 0.66,
+              reason_category: 'metadata_match',
+            },
+          ],
+          selected: [],
+        },
         clarification_questions: ['사용할 Knowledge Base를 선택해주세요.'],
         clarification_options: [
           {
@@ -1101,22 +1956,21 @@ describe('AgentBuilderPanel', () => {
             reason_category: 'metadata_match',
           },
         ],
-        draft_preview: null,
         validation_result: null,
-        preview_prompt: null,
-        warnings: [],
-      })
-      .mockResolvedValueOnce({
-        request_id: 'request-kb-multi-draft',
-        status: 'draft_ready',
-        structured_request: null,
-        clarification_questions: [],
-        clarification_options: [],
-        draft_preview: null,
-        validation_result: { valid: true, issues: [] },
-        preview_prompt: null,
         warnings: [],
       });
+    mockKnowledgeSelection([
+      {
+        candidate_id: 'safe-rec-1',
+        resolution_id: 'resolve-kb-1',
+        requirement_id: 'kr-1',
+      },
+      {
+        candidate_id: 'safe-rec-2',
+        resolution_id: 'resolve-kb-1',
+        requirement_id: 'kr-1',
+      },
+    ]);
 
     render(
       <AgentBuilderPanel
@@ -1137,17 +1991,18 @@ describe('AgentBuilderPanel', () => {
       code: 'Enter',
     });
 
-    fireEvent.click(await screen.findByRole('button', { name: /휴가 정책/ }));
-    fireEvent.click(screen.getByRole('button', { name: /인사 정책/ }));
-    fireEvent.click(screen.getByLabelText('Agent Builder 요청 보내기'));
+    fireEvent.click(await screen.findByRole('checkbox', { name: '휴가 정책' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: '인사 정책' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: '선택한 Knowledge Base로 생성' }),
+    );
 
     await waitFor(() => {
-      expect(agentBuilderApi.sendMessage).toHaveBeenLastCalledWith(
+      expect(agentBuilderApi.selectKnowledge).toHaveBeenCalledWith(
         'session-kb-multi',
-        expect.objectContaining({
-          message: 'Find the policy knowledge base and summarize it',
-          selectedKnowledgeCandidate: undefined,
-          selectedKnowledgeCandidates: [
+        {
+          resolutionId: 'resolve-kb-1',
+          selectedCandidates: [
             {
               candidate_id: 'safe-rec-1',
               resolution_id: 'resolve-kb-1',
@@ -1159,8 +2014,9 @@ describe('AgentBuilderPanel', () => {
               requirement_id: 'kr-1',
             },
           ],
-        }),
+        },
       );
+      expect(agentBuilderApi.sendMessage).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -1172,13 +2028,27 @@ describe('AgentBuilderPanel', () => {
       status: 'active',
       messages: [],
       pending_request: null,
-      draft_preview: null,
     });
-    vi.mocked(agentBuilderApi.sendMessage)
-      .mockResolvedValueOnce({
+    vi.mocked(agentBuilderApi.sendMessage).mockResolvedValue({
         request_id: 'request-kb-none-clarify',
         status: 'clarification_required',
-        structured_request: null,
+        structured_plan: null,
+        knowledge_resolution: {
+          resolution_id: 'resolve-kb-1',
+          timing: 'before_graph',
+          required: true,
+          candidates: [
+            {
+              candidate_id: 'safe-rec-1',
+              resolution_id: 'resolve-kb-1',
+              requirement_id: 'kr-1',
+              safe_label: '휴가 정책',
+              score: 0.7,
+              reason_category: 'topic_keyword_match',
+            },
+          ],
+          selected: [],
+        },
         clarification_questions: ['사용할 Knowledge Base를 선택해주세요.'],
         clarification_options: [
           {
@@ -1195,22 +2065,10 @@ describe('AgentBuilderPanel', () => {
             runtime_availability: 'available',
           },
         ],
-        draft_preview: null,
         validation_result: null,
-        preview_prompt: null,
-        warnings: [],
-      })
-      .mockResolvedValueOnce({
-        request_id: 'request-kb-none-draft',
-        status: 'draft_ready',
-        structured_request: null,
-        clarification_questions: [],
-        clarification_options: [],
-        draft_preview: null,
-        validation_result: { valid: true, issues: [] },
-        preview_prompt: null,
         warnings: [],
       });
+    mockKnowledgeSelection([]);
 
     render(
       <AgentBuilderPanel
@@ -1231,20 +2089,605 @@ describe('AgentBuilderPanel', () => {
       code: 'Enter',
     });
 
-    expect(await screen.findByRole('button', { name: /휴가 정책/ })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /Knowledge Base 없이 생성/ })).toBeNull();
-    fireEvent.click(screen.getByLabelText('Agent Builder 요청 보내기'));
+    expect(
+      await screen.findByRole('checkbox', { name: '휴가 정책' }),
+    ).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Knowledge Base 없이 생성' }),
+    );
 
     await waitFor(() => {
-      expect(agentBuilderApi.sendMessage).toHaveBeenLastCalledWith(
+      expect(agentBuilderApi.selectKnowledge).toHaveBeenCalledWith(
         'session-kb-none',
-        expect.objectContaining({
-          message: 'Find the policy knowledge base and summarize it',
-          selectedKnowledgeCandidate: undefined,
-          selectedKnowledgeCandidates: [],
-        }),
+        { resolutionId: 'resolve-kb-1', selectedCandidates: [] },
+      );
+      expect(agentBuilderApi.sendMessage).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('direct_edit_v1 empty Knowledge candidates use the top-level resolution id and ignore legacy fallback options', async () => {
+    vi.mocked(agentBuilderApi.createSession).mockResolvedValue({
+      session_id: 'session-kb-empty-direct',
+      workflow_id: 'workflow-old',
+      app_id: 'app-1',
+      protocol_version: 'direct_edit_v1',
+      status: 'active',
+      messages: [],
+      pending_request: null,
+    });
+    vi.mocked(agentBuilderApi.sendMessage).mockResolvedValue({
+      request_id: 'request-kb-empty-direct',
+      status: 'clarification_required',
+      structured_plan: null,
+      knowledge_resolution: {
+        resolution_id: 'resolve-kb-empty-direct',
+        timing: 'before_graph',
+        required: true,
+        candidates: [],
+        selected: [],
+      },
+      clarification_questions: ['사용할 Knowledge Base를 선택해주세요.'],
+      clarification_options: [
+        {
+          candidate_id: 'legacy-candidate-must-not-render',
+          resolution_id: 'legacy-resolution',
+          requirement_id: 'legacy-requirement',
+          label: 'Legacy KB 후보',
+          reason_category: 'topic_keyword_match',
+        },
+      ],
+      validation_result: null,
+      warnings: [],
+    });
+    vi.mocked(agentBuilderApi.selectKnowledge).mockResolvedValue({
+      resolution_id: 'resolve-kb-empty-direct',
+      selected_candidates: [],
+      graph_mutation: {
+        operation_id: 'operation-kb-empty-direct',
+        kind: 'initial_graph',
+        status: 'pending_apply',
+        workflow_id: 'workflow-old',
+        base_graph_hash: 'a'.repeat(64),
+        expected_workflow_updated_at: '2026-07-13T00:00:00Z',
+        expected_result_graph_hash: 'b'.repeat(64),
+        catalog_version: 3,
+        operations: [{ op: 'add_node', node: node('answer', 'answerNode') }],
+      },
+    });
+    vi.mocked(workflowApi.syncDraftWorkflow).mockResolvedValue(
+      canonicalSaveResponse('b'.repeat(64), '2026-07-13T00:00:01Z'),
+    );
+    vi.mocked(agentBuilderApi.acknowledgeMutation).mockResolvedValue({
+      operation_id: 'operation-kb-empty-direct',
+      operation_status: 'acknowledged',
+      graph_hash: 'b'.repeat(64),
+      updated_at: '2026-07-13T00:00:01Z',
+      parameter_group: null,
+    });
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-old"
+        appId="app-1"
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: 'Knowledge 없이 응답 workflow를 만들어줘' },
+    });
+    fireEvent.click(screen.getByLabelText('Agent Builder 요청 보내기'));
+
+    expect(
+      await screen.findByRole('button', { name: 'Knowledge Base 없이 생성' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('checkbox', { name: 'Legacy KB 후보' }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Knowledge Base 없이 생성' }),
+    );
+
+    await waitFor(() => {
+      expect(agentBuilderApi.selectKnowledge).toHaveBeenCalledWith(
+        'session-kb-empty-direct',
+        {
+          resolutionId: 'resolve-kb-empty-direct',
+          selectedCandidates: [],
+        },
       );
     });
+    expect(agentBuilderApi.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('Knowledge save failure reads the canonical session and keeps the selected card retryable', async () => {
+    vi.mocked(agentBuilderApi.createSession).mockResolvedValue({
+      session_id: 'session-kb-failure',
+      workflow_id: 'workflow-old',
+      app_id: 'app-1',
+      protocol_version: 'direct_edit_v1',
+      status: 'active',
+      messages: [],
+      pending_request: null,
+    });
+    const response: AgentBuilderMessageResponse = {
+      request_id: 'request-kb-failure',
+      status: 'clarification_required',
+      structured_plan: null,
+      knowledge_resolution: {
+        resolution_id: 'resolve-kb-failure',
+        timing: 'before_graph',
+        required: true,
+        candidates: [
+          {
+            candidate_id: 'safe-rec-failure',
+            resolution_id: 'resolve-kb-failure',
+            requirement_id: 'kr-failure',
+            safe_label: '휴가 정책',
+            reason_category: 'topic_keyword_match',
+          },
+        ],
+        selected: [],
+      },
+      clarification_questions: ['사용할 Knowledge Base를 선택해주세요.'],
+      clarification_options: [],
+      validation_result: null,
+      warnings: [],
+    };
+    vi.mocked(agentBuilderApi.sendMessage).mockResolvedValue(response);
+    vi.mocked(agentBuilderApi.selectKnowledge).mockRejectedValue(
+      new Error('response lost'),
+    );
+    vi.mocked(agentBuilderApi.getSession).mockResolvedValue({
+      session_id: 'session-kb-failure',
+      workflow_id: 'workflow-old',
+      protocol_version: 'direct_edit_v1',
+      status: 'clarification_required',
+      messages: [
+        {
+          kind: 'assistant',
+          request_id: response.request_id,
+          response: {
+            ...response,
+            knowledge_resolution: {
+              ...response.knowledge_resolution!,
+              candidates: [
+                {
+                  candidate_id: 'safe-rec-failure',
+                  resolution_id: 'resolve-kb-failure',
+                  requirement_id: 'kr-failure',
+                  safe_label: '휴가 정책 canonical',
+                  reason_category: 'topic_keyword_match',
+                },
+              ],
+              selected: [],
+            },
+          },
+        },
+      ],
+      pending_request: null,
+    });
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-old"
+        appId="app-1"
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: '휴가 정책으로 답변하는 workflow를 만들어줘' },
+    });
+    fireEvent.click(screen.getByLabelText('Agent Builder 요청 보내기'));
+
+    const checkbox = await screen.findByRole('checkbox', { name: '휴가 정책' });
+    fireEvent.click(checkbox);
+    fireEvent.click(
+      screen.getByRole('button', { name: '선택한 Knowledge Base로 생성' }),
+    );
+
+    await waitFor(() => {
+      expect(agentBuilderApi.getSession).toHaveBeenCalledWith(
+        'session-kb-failure',
+      );
+    });
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Knowledge Base 선택을 적용하지 못했습니다. 현재 선택은 유지됩니다. 다시 시도해주세요.',
+    );
+    expect(agentBuilderApi.sendMessage).toHaveBeenCalledTimes(1);
+    expect(
+      screen.getByRole('checkbox', { name: '휴가 정책 canonical' }),
+    ).toBeChecked();
+    expect(
+      screen.getByRole('button', { name: '선택한 Knowledge Base로 생성' }),
+    ).toBeEnabled();
+  });
+
+  it('ambiguous Knowledge selection reconciles completed canonical session and closes the stale card', async () => {
+    vi.mocked(agentBuilderApi.createSession).mockResolvedValue({
+      session_id: 'session-kb-completed-reconcile',
+      workflow_id: 'workflow-old',
+      app_id: 'app-1',
+      protocol_version: 'direct_edit_v1',
+      status: 'active',
+      messages: [],
+      pending_request: null,
+    });
+    const response: AgentBuilderMessageResponse = {
+      request_id: 'request-kb-completed-reconcile',
+      status: 'clarification_required',
+      structured_plan: null,
+      knowledge_resolution: {
+        resolution_id: 'resolve-kb-completed-reconcile',
+        timing: 'before_graph',
+        required: true,
+        candidates: [
+          {
+            candidate_id: 'safe-rec-completed-reconcile',
+            resolution_id: 'resolve-kb-completed-reconcile',
+            requirement_id: 'kr-completed-reconcile',
+            safe_label: '휴가 정책',
+          },
+        ],
+        selected: [],
+      },
+      clarification_questions: ['사용할 Knowledge Base를 선택해주세요.'],
+      clarification_options: [],
+      validation_result: null,
+      warnings: [],
+    };
+    const completedResponse: AgentBuilderMessageResponse = {
+      ...response,
+      status: 'completed',
+      knowledge_resolution: {
+        ...response.knowledge_resolution!,
+        selected: [
+          {
+            candidate_id: 'safe-rec-completed-reconcile',
+            safe_label: '휴가 정책',
+          },
+        ],
+      },
+      clarification_questions: [],
+    };
+    vi.mocked(agentBuilderApi.sendMessage).mockResolvedValue(response);
+    vi.mocked(agentBuilderApi.selectKnowledge).mockRejectedValue(
+      new Error('response lost'),
+    );
+    vi.mocked(agentBuilderApi.getSession).mockResolvedValue({
+      session_id: 'session-kb-completed-reconcile',
+      workflow_id: 'workflow-old',
+      protocol_version: 'direct_edit_v1',
+      status: 'completed',
+      messages: [
+        {
+          kind: 'assistant',
+          request_id: completedResponse.request_id,
+          response: completedResponse,
+        },
+      ],
+      parameter_group: null,
+      pending_request: null,
+    });
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-old"
+        appId="app-1"
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: '휴가 정책으로 답변하는 workflow를 만들어줘' },
+    });
+    fireEvent.click(screen.getByLabelText('Agent Builder 요청 보내기'));
+    fireEvent.click(await screen.findByRole('checkbox', { name: '휴가 정책' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: '선택한 Knowledge Base로 생성' }),
+    );
+
+    expect(await screen.findByText('Knowledge 설정 완료')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('checkbox', { name: '휴가 정책' }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText('Workflow 생성 완료')).toBeInTheDocument();
+    expect(agentBuilderApi.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('ambiguous Knowledge selection locks the card while canonical session is pending acknowledgement', async () => {
+    vi.mocked(agentBuilderApi.createSession).mockResolvedValue({
+      session_id: 'session-kb-pending-ack',
+      workflow_id: 'workflow-old',
+      app_id: 'app-1',
+      protocol_version: 'direct_edit_v1',
+      status: 'active',
+      messages: [],
+      pending_request: null,
+    });
+    const response: AgentBuilderMessageResponse = {
+      request_id: 'request-kb-pending-ack',
+      status: 'clarification_required',
+      structured_plan: null,
+      knowledge_resolution: {
+        resolution_id: 'resolve-kb-pending-ack',
+        timing: 'before_graph',
+        required: true,
+        candidates: [
+          {
+            candidate_id: 'safe-rec-pending-ack',
+            resolution_id: 'resolve-kb-pending-ack',
+            requirement_id: 'kr-pending-ack',
+            safe_label: '휴가 정책',
+          },
+        ],
+        selected: [],
+      },
+      clarification_questions: ['사용할 Knowledge Base를 선택해주세요.'],
+      clarification_options: [],
+      validation_result: null,
+      warnings: [],
+    };
+    vi.mocked(agentBuilderApi.sendMessage).mockResolvedValue(response);
+    vi.mocked(agentBuilderApi.selectKnowledge).mockRejectedValue(
+      new Error('response lost'),
+    );
+    vi.mocked(agentBuilderApi.getSession).mockResolvedValue({
+      session_id: 'session-kb-pending-ack',
+      workflow_id: 'workflow-old',
+      protocol_version: 'direct_edit_v1',
+      status: 'graph_mutation_ready',
+      messages: [
+        {
+          kind: 'assistant',
+          request_id: response.request_id,
+          response,
+        },
+      ],
+      active_graph_mutation: {
+        operation_id: 'operation-kb-pending-ack',
+        status: 'pending_ack',
+        result_graph_hash: 'b'.repeat(64),
+        saved_workflow_updated_at: '2026-07-13T00:00:01Z',
+      },
+      pending_request: null,
+    });
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-old"
+        appId="app-1"
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: '휴가 정책으로 답변하는 workflow를 만들어줘' },
+    });
+    fireEvent.click(screen.getByLabelText('Agent Builder 요청 보내기'));
+    fireEvent.click(await screen.findByRole('checkbox', { name: '휴가 정책' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: '선택한 Knowledge Base로 생성' }),
+    );
+
+    expect(await screen.findByRole('status')).toHaveTextContent('Workflow 확인 중');
+    expect(screen.getByRole('checkbox', { name: '휴가 정책' })).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: '선택한 Knowledge Base로 생성' }),
+    ).toBeDisabled();
+    expect(agentBuilderApi.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('Knowledge candidate reasons use Korean allowlisted labels and hide unknown codes', async () => {
+    vi.mocked(agentBuilderApi.createSession).mockResolvedValue({
+      session_id: 'session-kb-reasons',
+      workflow_id: 'workflow-old',
+      app_id: 'app-1',
+      protocol_version: 'direct_edit_v1',
+      status: 'active',
+      messages: [],
+      pending_request: null,
+    });
+    vi.mocked(agentBuilderApi.sendMessage).mockResolvedValue({
+      request_id: 'request-kb-reasons',
+      status: 'clarification_required',
+      structured_plan: null,
+      knowledge_resolution: {
+        resolution_id: 'resolve-kb-reasons',
+        timing: 'before_graph',
+        required: true,
+        candidates: [
+          {
+            candidate_id: 'safe-rec-known',
+            resolution_id: 'resolve-kb-reasons',
+            requirement_id: 'kr-reasons',
+            safe_label: '휴가 정책',
+            reason_category: 'topic_keyword_match',
+          },
+          {
+            candidate_id: 'safe-rec-unknown',
+            resolution_id: 'resolve-kb-reasons',
+            requirement_id: 'kr-reasons',
+            safe_label: '비공개 정책',
+            reason_category: 'internal_raw_code',
+            reason: 'raw reason must not render',
+          },
+        ],
+        selected: [],
+      },
+      clarification_questions: ['사용할 Knowledge Base를 선택해주세요.'],
+      clarification_options: [],
+      validation_result: null,
+      warnings: [],
+    });
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-old"
+        appId="app-1"
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: '휴가 정책으로 답변하는 workflow를 만들어줘' },
+    });
+    fireEvent.click(screen.getByLabelText('Agent Builder 요청 보내기'));
+
+    expect(await screen.findByText('휴가 정책')).toBeInTheDocument();
+    expect(screen.getByText('요청 주제와 일치')).toBeInTheDocument();
+    expect(screen.getByText('비공개 정책')).toBeInTheDocument();
+    expect(screen.queryByText('internal_raw_code')).not.toBeInTheDocument();
+    expect(screen.queryByText('raw reason must not render')).not.toBeInTheDocument();
+  });
+
+  it('direct_edit_v1 Knowledge는 knowledge_resolution candidates와 전용 selection endpoint만 사용하고 저장 전 대화 결과를 추가하지 않는다', async () => {
+    vi.mocked(agentBuilderApi.createSession).mockResolvedValue({
+      session_id: 'session-kb-direct',
+      workflow_id: 'workflow-old',
+      app_id: 'app-1',
+      protocol_version: 'direct_edit_v1',
+      status: 'active',
+      messages: [],
+      pending_request: null,
+    });
+    vi.mocked(agentBuilderApi.sendMessage).mockResolvedValue({
+      request_id: 'request-kb-direct',
+      status: 'clarification_required',
+      structured_plan: null,
+      knowledge_resolution: {
+        timing: 'before_graph',
+        required: true,
+        candidates: [
+          {
+            candidate_id: 'safe-rec-direct',
+            resolution_id: 'resolve-kb-direct',
+            requirement_id: 'kr-direct',
+            safe_label: '휴가 정책 v1',
+            score: 0.91,
+            reason_category: 'topic_keyword_match',
+          },
+        ],
+        selected: [],
+      },
+      clarification_questions: ['사용할 Knowledge Base를 선택해주세요.'],
+      clarification_options: [],
+      validation_result: null,
+      warnings: [],
+    });
+    vi.mocked(agentBuilderApi.selectKnowledge).mockResolvedValue({
+      resolution_id: 'resolve-kb-direct',
+      selected_candidates: [
+        {
+          candidate_id: 'safe-rec-direct',
+          resolution_id: 'resolve-kb-direct',
+          requirement_id: 'kr-direct',
+        },
+      ],
+      graph_mutation: {
+        operation_id: 'operation-kb-direct',
+        kind: 'initial_graph',
+        status: 'pending_apply',
+        workflow_id: 'workflow-old',
+        base_graph_hash: 'a'.repeat(64),
+        expected_workflow_updated_at: '2026-07-13T00:00:00Z',
+        expected_result_graph_hash: 'b'.repeat(64),
+        catalog_version: 3,
+        operations: [{ op: 'add_node', node: node('answer', 'answerNode') }],
+      },
+    });
+    vi.mocked(workflowApi.syncDraftWorkflow)
+      .mockRejectedValueOnce(new Error('save failed'))
+      .mockRejectedValueOnce(new Error('save retry failed'))
+      .mockResolvedValueOnce(
+        canonicalSaveResponse('b'.repeat(64), '2026-07-13T00:00:01Z'),
+      );
+    vi.mocked(agentBuilderApi.acknowledgeMutation).mockResolvedValue({
+      operation_id: 'operation-kb-direct',
+      operation_status: 'acknowledged',
+      graph_hash: 'b'.repeat(64),
+      updated_at: '2026-07-13T00:00:01Z',
+      parameter_group: null,
+    });
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-old"
+        appId="app-1"
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: '휴가 정책을 찾아서 요약해줘' },
+    });
+    fireEvent.click(screen.getByLabelText('Agent Builder 요청 보내기'));
+
+    fireEvent.click(
+      await screen.findByRole('checkbox', { name: '휴가 정책 v1' }),
+    );
+    fireEvent.click(
+      screen.getByRole('button', { name: '선택한 Knowledge Base로 생성' }),
+    );
+
+    await waitFor(() => {
+      expect(agentBuilderApi.selectKnowledge).toHaveBeenCalledWith(
+        'session-kb-direct',
+        {
+          resolutionId: 'resolve-kb-direct',
+          selectedCandidates: [
+            {
+              candidate_id: 'safe-rec-direct',
+              resolution_id: 'resolve-kb-direct',
+              requirement_id: 'kr-direct',
+            },
+          ],
+        },
+      );
+      expect(workflowApi.syncDraftWorkflow).toHaveBeenCalledTimes(2);
+    });
+    expect(agentBuilderApi.sendMessage).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(screen.getByRole('checkbox', { name: '휴가 정책 v1' })).toBeChecked();
+      expect(
+        screen.getByRole('button', { name: '선택한 Knowledge Base로 생성' }),
+      ).toBeEnabled();
+    });
+    expect(screen.queryByText(/Knowledge Base 선택:/)).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: '선택한 Knowledge Base로 생성' }),
+    );
+
+    await waitFor(() => {
+      expect(agentBuilderApi.acknowledgeMutation).toHaveBeenCalledTimes(1);
+    });
+    expect(await screen.findByText(/Knowledge Base 선택:/)).toHaveTextContent(
+      '휴가 정책 v1',
+    );
+    expect(agentBuilderApi.selectKnowledge).toHaveBeenCalledTimes(2);
+    expect(workflowApi.syncDraftWorkflow).toHaveBeenCalledTimes(3);
+    expect(agentBuilderApi.acknowledgeMutation).toHaveBeenCalledTimes(1);
   });
 
   it('session restore는 redacted 사용자 메시지와 assistant 응답을 함께 복원한다', async () => {
@@ -1270,18 +2713,15 @@ describe('AgentBuilderPanel', () => {
           response: {
             request_id: 'request-restore',
             status: 'clarification_required',
-            structured_request: null,
+            structured_plan: null,
             clarification_questions: ['사용할 Knowledge Base를 선택해주세요.'],
             clarification_options: [],
-            draft_preview: null,
             validation_result: null,
-            preview_prompt: null,
             warnings: [],
           },
         },
       ],
       pending_request: null,
-      draft_preview: null,
     });
 
     render(
@@ -1297,278 +2737,510 @@ describe('AgentBuilderPanel', () => {
     fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
 
     expect(await screen.findByText('휴가 정책을 찾아서 요약해줘')).toBeTruthy();
-    expect(screen.getByText('사용할 Knowledge Base를 선택해주세요.')).toBeTruthy();
-  });
-
-  it('validation을 통과하지 못한 draft에는 도안 생성 미리보기 버튼을 노출하지 않는다', async () => {
-    window.localStorage.setItem(
-      'agent-builder:workflow-old:app-1',
-      'session-1',
-    );
-    vi.mocked(agentBuilderApi.getSession).mockResolvedValue({
-      session_id: 'session-1',
-      workflow_id: 'workflow-old',
-      app_id: 'app-1',
-      status: 'active',
-      messages: [
-        {
-          request_id: 'request-1',
-          status: 'validation_failed',
-          clarification_questions: [],
-          clarification_options: [],
-          warnings: [],
-          draft_preview: {
-            draft_id: 'draft-invalid',
-            preview_graph: { nodes: [], edges: [] },
-            draft_mode: 'modify_workflow',
-            node_detail_previews: [],
-            validation_result: {
-              valid: false,
-              issues: [
-                {
-                  code: 'DRAFT_VALIDATION_FAILED',
-                  message: '도안 검증에 실패했습니다.',
-                },
-              ],
-            },
-            safety_notices: [],
-          },
-        },
-      ],
-      pending_request: null,
-      draft_preview: null,
-    });
-
-    render(
-      <AgentBuilderPanel
-        workflowId="workflow-old"
-        appId="app-1"
-        nodes={[]}
-        edges={[]}
-        hasUnsavedChanges={false}
-      />,
-    );
-
-    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
-
-    await waitFor(() => {
-      expect(agentBuilderApi.getSession).toHaveBeenCalledWith('session-1');
-    });
     expect(
-      screen.queryByRole('button', { name: '도안 생성 미리보기' }),
-    ).toBeNull();
+      screen.getByText('사용할 Knowledge Base를 선택해주세요.'),
+    ).toBeTruthy();
   });
 
-  it('도안 생성 미리보기 중에는 버튼을 비활성화하고 취소 후 같은 도안을 다시 열 수 있다', async () => {
+  it('복구된 planning 응답을 polling 결과의 같은 request terminal 응답으로 교체한다', async () => {
     window.localStorage.setItem(
-      'agent-builder:workflow-old:app-1',
-      'session-reopen',
+      'agent-builder:workflow:workflow-old',
+      'session-pending-poll',
     );
-    vi.mocked(agentBuilderApi.getSession).mockResolvedValue({
-      session_id: 'session-reopen',
-      workflow_id: 'workflow-old',
-      app_id: 'app-1',
-      status: 'active',
-      messages: [
-        {
-          request_id: 'request-reopen',
-          status: 'draft_ready',
-          clarification_questions: [],
-          clarification_options: [],
-          warnings: [],
-          draft_preview: {
-            draft_id: 'draft-reopen',
-            preview_graph: {
-              nodes: [node('preview-node')],
-              edges: [],
-              viewport: { x: 0, y: 0, zoom: 1 },
-            },
-            base_graph_hash: 'base-hash',
-            draft_mode: 'new_workflow',
-            node_detail_previews: [],
-            validation_result: { valid: true, issues: [] },
-            safety_notices: [],
-          },
-        },
-      ],
-      pending_request: null,
-      draft_preview: null,
-    });
-    vi.mocked(agentBuilderApi.recordPreviewOpened).mockResolvedValue(undefined);
-
-    render(
-      <AgentBuilderPanel
-        workflowId="workflow-old"
-        appId="app-1"
-        nodes={[]}
-        edges={[]}
-        hasUnsavedChanges={false}
-      />,
-    );
-
-    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
-
-    const previewButton = await screen.findByRole('button', {
-      name: '도안 생성 미리보기',
-    });
-    fireEvent.click(previewButton);
-
-    await waitFor(() => {
-      expect(agentBuilderApi.recordPreviewOpened).toHaveBeenCalledTimes(1);
-    });
-    expect(
-      screen.getByRole('button', { name: '도안 생성 미리보기' }),
-    ).toBeDisabled();
-
-    fireEvent.click(screen.getByRole('button', { name: '취소' }));
-
-    await waitFor(() => {
-      expect(
-        screen.getByRole('button', { name: '도안 생성 미리보기' }),
-      ).not.toBeDisabled();
-    });
-    expect(agentBuilderApi.cancelDraft).toHaveBeenCalledWith('draft-reopen');
-
-    fireEvent.click(
-      screen.getByRole('button', { name: '도안 생성 미리보기' }),
-    );
-
-    await waitFor(() => {
-      expect(agentBuilderApi.recordPreviewOpened).toHaveBeenCalledTimes(2);
-    });
-  });
-
-  it('session top-level draft_preview만 있어도 도안 생성 미리보기를 복구한다', async () => {
-    window.localStorage.setItem(
-      'agent-builder:workflow-old:app-1',
-      'session-top-level-draft',
-    );
-    vi.mocked(agentBuilderApi.getSession).mockResolvedValue({
-      session_id: 'session-top-level-draft',
-      workflow_id: 'workflow-old',
-      app_id: 'app-1',
-      status: 'active',
-      messages: [],
-      pending_request: null,
-      draft_preview: {
-        draft_id: 'draft-top-level',
-        preview_graph: {
-          nodes: [node('preview-node')],
-          edges: [],
-          viewport: { x: 0, y: 0, zoom: 1 },
-        },
-        base_graph_hash: 'base-hash',
-        draft_mode: 'new_workflow',
-        node_detail_previews: [],
-        validation_result: { valid: true, issues: [] },
-        safety_notices: [
-          '초안 생성 중에는 외부 시스템을 호출하지 않습니다.',
-        ],
-        configuration_issues: [
-          {
-            node_id: 'github-read',
-            node_type: 'githubNode',
-            node_label: 'GitHub PR 조회',
-            capability: 'github_pr_read',
-            missing_parameters: [
-              { key: 'credential', label: 'GitHub credential' },
-              { key: 'repo_owner', label: 'Repository owner' },
-              { key: 'repo_name', label: 'Repository name' },
-              { key: 'pr_number', label: 'PR 번호' },
-            ],
-          },
-          {
-            node_id: 'github-comment',
-            node_type: 'githubNode',
-            node_label: 'GitHub PR 댓글 등록',
-            capability: 'github_pr_comment',
-            missing_parameters: [
-              { key: 'credential', label: 'GitHub credential' },
-              { key: 'repo_owner', label: 'Repository owner' },
-              { key: 'repo_name', label: 'Repository name' },
-              { key: 'pr_number', label: 'PR 번호' },
-            ],
-          },
-        ],
-      },
-    });
-    vi.mocked(agentBuilderApi.recordPreviewOpened).mockResolvedValue(undefined);
-
-    render(
-      <AgentBuilderPanel
-        workflowId="workflow-old"
-        appId="app-1"
-        nodes={[]}
-        edges={[]}
-        hasUnsavedChanges={false}
-      />,
-    );
-
-    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
-
-    const previewButton = await screen.findByRole('button', {
-      name: '도안 생성 미리보기',
-    });
-    expect(screen.getByText('GitHub PR 조회')).toBeInTheDocument();
-    expect(screen.getByText('GitHub PR 댓글 등록')).toBeInTheDocument();
-    expect(screen.getAllByText('필요한 파라미터')).toHaveLength(2);
-    expect(screen.getAllByText('GitHub credential')).toHaveLength(2);
-    expect(screen.getAllByText('Repository owner')).toHaveLength(2);
-    expect(screen.getAllByText('PR 번호')).toHaveLength(2);
-    fireEvent.click(previewButton);
-
-    await waitFor(() => {
-      expect(agentBuilderApi.recordPreviewOpened).toHaveBeenCalledWith(
-        'draft-top-level',
-      );
-    });
-  });
-
-  it.each(['failed', 'unsupported', 'validation_failed'] as const)(
-    '최신 응답이 %s이면 이전 top-level draft_preview를 복구하지 않는다',
-    async (status) => {
-      window.localStorage.setItem(
-        'agent-builder:workflow-old:app-1',
-        `session-stale-${status}`,
-      );
-      vi.mocked(agentBuilderApi.getSession).mockResolvedValue({
-        session_id: `session-stale-${status}`,
+    vi.mocked(agentBuilderApi.getSession)
+      .mockResolvedValueOnce({
+        session_id: 'session-pending-poll',
         workflow_id: 'workflow-old',
-        app_id: 'app-1',
-        status: 'active',
+        protocol_version: 'direct_edit_v1',
+        status: 'planning',
         messages: [
           {
+            kind: 'user',
+            request_id: 'request-pending-poll',
+            content: '웹훅으로 받는 사내 문서 챗봇 워크플로우를 만들어줘',
+          },
+          {
             kind: 'assistant',
-            request_id: `request-latest-${status}`,
+            request_id: 'request-pending-poll',
             response: {
-              request_id: `request-latest-${status}`,
-              status,
-              structured_request: null,
+              request_id: 'request-pending-poll',
+              status: 'planning',
               clarification_questions: [],
               clarification_options: [],
-              draft_preview: null,
-              validation_result: null,
-              preview_prompt: null,
               warnings: [],
             },
           },
         ],
-        pending_request: null,
-        draft_preview: {
-          draft_id: 'draft-old-http',
-          preview_graph: {
-            nodes: [node('old-http-node')],
-            edges: [],
-            viewport: { x: 0, y: 0, zoom: 1 },
-          },
-          base_graph_hash: 'old-http-hash',
-          draft_mode: 'modify_workflow',
-          node_detail_previews: [],
-          validation_result: { valid: true, issues: [] },
-          safety_notices: [],
-          configuration_issues: [],
+        pending_request: {
+          request_id: 'request-pending-poll',
+          status: 'planning',
         },
+      })
+      .mockResolvedValue({
+        session_id: 'session-pending-poll',
+        workflow_id: 'workflow-old',
+        protocol_version: 'direct_edit_v1',
+        status: 'failed',
+        messages: [
+          {
+            kind: 'user',
+            request_id: 'request-pending-poll',
+            content: '웹훅으로 받는 사내 문서 챗봇 워크플로우를 만들어줘',
+          },
+          {
+            kind: 'assistant',
+            request_id: 'request-pending-poll',
+            response: {
+              request_id: 'request-pending-poll',
+              status: 'failed',
+              clarification_questions: [],
+              clarification_options: [],
+              warnings: ['요청을 안전한 workflow 구조로 변환하지 못했습니다.'],
+            },
+          },
+        ],
+        pending_request: null,
       });
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-old"
+        appId="app-1"
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+    expect(await screen.findByText('planning')).toBeInTheDocument();
+    expect(
+      await screen.findByText('failed', {}, { timeout: 5000 }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('planning')).toBeNull();
+    expect(agentBuilderApi.getSession).toHaveBeenCalledTimes(2);
+  });
+
+  it('session restore의 pending acknowledgement는 acknowledgement를 재전송하지 않는다', async () => {
+    window.localStorage.setItem(
+      'agent-builder:workflow-old:app-1',
+      'session-pending-ack',
+    );
+    let sessionReadCount = 0;
+    vi.mocked(agentBuilderApi.getSession).mockImplementation(async () => {
+      sessionReadCount += 1;
+      if (sessionReadCount === 1) {
+        return {
+          session_id: 'session-pending-ack',
+          workflow_id: 'workflow-old',
+          protocol_version: 'direct_edit_v1',
+          status: 'graph_mutation_ready',
+          messages: [],
+          active_graph_mutation: {
+            operation_id: 'operation-pending-ack',
+            status: 'pending_ack',
+            result_graph_hash: 'd'.repeat(64),
+            saved_workflow_updated_at: '2026-07-13T00:00:02Z',
+          },
+        };
+      }
+      return {
+        session_id: 'session-pending-ack',
+        workflow_id: 'workflow-old',
+        protocol_version: 'direct_edit_v1',
+        status: 'completed',
+        messages: [],
+        active_graph_mutation: null,
+        parameter_group: {
+          group_id: 'group-pending-ack',
+          status: 'completed',
+          tasks: [],
+        },
+      };
+    });
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-old"
+        appId="app-1"
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+
+    await waitFor(() => expect(agentBuilderApi.getSession).toHaveBeenCalledTimes(1));
+    expect(agentBuilderApi.acknowledgeMutation).not.toHaveBeenCalled();
+  });
+
+  it('pending_ack Knowledge 선택은 새로고침 뒤 선택값을 유지하고 확인 중으로 잠근다', async () => {
+    window.localStorage.setItem(
+      'agent-builder:workflow:workflow-old',
+      'session-kb-pending-recovery',
+    );
+    const response: AgentBuilderMessageResponse = {
+      request_id: 'request-kb-pending-recovery',
+      status: 'graph_mutation_ready',
+      structured_plan: null,
+      knowledge_resolution: {
+        resolution_id: 'resolve-kb-pending-recovery',
+        timing: 'after_graph',
+        required: true,
+        candidates: [
+          {
+            candidate_id: 'safe-kb-pending-recovery',
+            resolution_id: 'resolve-kb-pending-recovery',
+            requirement_id: 'kr-pending-recovery',
+            safe_label: '휴가 정책',
+          },
+        ],
+        selected: [
+          {
+            candidate_id: 'safe-kb-pending-recovery',
+            safe_label: '휴가 정책',
+          },
+        ],
+        selection_status: 'pending_ack',
+      },
+      clarification_questions: ['사용할 Knowledge Base를 선택해주세요.'],
+      clarification_options: [],
+      validation_result: null,
+      warnings: [],
+    };
+    vi.mocked(agentBuilderApi.getSession).mockResolvedValue({
+      session_id: 'session-kb-pending-recovery',
+      workflow_id: 'workflow-old',
+      app_id: 'app-1',
+      protocol_version: 'direct_edit_v1',
+      status: 'graph_mutation_ready',
+      messages: [
+        {
+          kind: 'assistant',
+          request_id: response.request_id,
+          response,
+        },
+      ],
+      active_graph_mutation: {
+        operation_id: 'operation-kb-pending-recovery',
+        status: 'pending_ack',
+        result_graph_hash: 'c'.repeat(64),
+        saved_workflow_updated_at: '2026-07-14T00:00:00Z',
+      },
+      pending_request: null,
+    });
+    vi.mocked(agentBuilderApi.acknowledgeMutation).mockRejectedValue(
+      new Error('acknowledgement unavailable'),
+    );
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-old"
+        appId="app-1"
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+
+    expect(await screen.findByText('Workflow 확인 중')).toBeInTheDocument();
+    const checkbox = screen.getByRole('checkbox', { name: '휴가 정책' });
+    expect(checkbox).toBeChecked();
+    expect(checkbox).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: '선택 적용' }),
+    ).toBeDisabled();
+    expect(agentBuilderApi.selectKnowledge).not.toHaveBeenCalled();
+  });
+
+  it('legacy stale_protocol session을 제거하고 새 direct-edit session으로 교체한다', async () => {
+    window.localStorage.setItem(
+      'agent-builder:workflow:workflow-old',
+      'session-legacy',
+    );
+    window.localStorage.setItem(
+      'agent-builder:workflow-old:app-1',
+      'session-legacy',
+    );
+    vi.mocked(agentBuilderApi.getSession).mockResolvedValue({
+      session_id: 'session-legacy',
+      workflow_id: 'workflow-old',
+      protocol_version: null,
+      status: 'stale_protocol',
+      messages: [],
+    });
+    vi.mocked(agentBuilderApi.createSession).mockResolvedValue({
+      session_id: 'session-direct-new',
+      workflow_id: 'workflow-old',
+      protocol_version: 'direct_edit_v1',
+      status: 'active',
+      messages: [],
+    });
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-old"
+        appId="app-1"
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+
+    await waitFor(() => {
+      expect(agentBuilderApi.createSession).toHaveBeenCalledWith({
+        workflowId: 'workflow-old',
+        appId: 'app-1',
+      });
+    });
+    expect(
+      window.localStorage.getItem('agent-builder:workflow:workflow-old'),
+    ).toBe('session-direct-new');
+    expect(
+      window.localStorage.getItem('agent-builder:workflow-old:app-1'),
+    ).toBeNull();
+  });
+
+  it('legacy stale_protocol session은 안전한 대화 이력을 read-only로 남기고 direct session을 한 번만 만든다', async () => {
+    window.localStorage.setItem(
+      'agent-builder:workflow:workflow-old',
+      'session-legacy-safe',
+    );
+    vi.mocked(agentBuilderApi.getSession).mockResolvedValue({
+      session_id: 'session-legacy-safe',
+      workflow_id: 'workflow-old',
+      protocol_version: null,
+      status: 'stale_protocol',
+      messages: [
+        {
+          kind: 'user',
+          request_id: 'request-legacy',
+          content: '기존 미적용 workflow 초안',
+          redacted: true,
+        },
+        {
+          kind: 'assistant',
+          request_id: 'request-legacy',
+          response: {
+            request_id: 'request-legacy',
+            status: 'stale_protocol',
+            clarification_questions: [],
+            clarification_options: [],
+            warnings: ['이전 Agent Builder 결과는 다시 적용할 수 없습니다.'],
+          },
+        },
+      ],
+    });
+    vi.mocked(agentBuilderApi.createSession).mockResolvedValue({
+      session_id: 'session-direct-safe',
+      workflow_id: 'workflow-old',
+      protocol_version: 'direct_edit_v1',
+      status: 'active',
+      messages: [],
+    });
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-old"
+        appId="app-1"
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+
+    expect(await screen.findByText('기존 미적용 workflow 초안')).toBeInTheDocument();
+    expect(screen.getByText('stale_protocol')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(agentBuilderApi.createSession).toHaveBeenCalledTimes(1);
+    });
+    expect(
+      window.localStorage.getItem('agent-builder:workflow:workflow-old'),
+    ).toBe('session-direct-safe');
+  });
+
+  it('message 전송 중 stale_protocol이면 새 session으로 한 번 재시도한다', async () => {
+    vi.mocked(agentBuilderApi.createSession)
+      .mockResolvedValueOnce({
+        session_id: 'session-stale',
+        workflow_id: 'workflow-1',
+        protocol_version: 'direct_edit_v1',
+        status: 'active',
+        messages: [],
+      })
+      .mockResolvedValueOnce({
+        session_id: 'session-recovered',
+        workflow_id: 'workflow-1',
+        protocol_version: 'direct_edit_v1',
+        status: 'active',
+        messages: [],
+      });
+    vi.mocked(agentBuilderApi.sendMessage)
+      .mockRejectedValueOnce({
+        isAxiosError: true,
+        response: { status: 409, data: { detail: 'stale_protocol' } },
+      })
+      .mockResolvedValueOnce({
+        request_id: 'request-recovered',
+        status: 'unsupported',
+        clarification_questions: [],
+        clarification_options: [],
+        warnings: [],
+      });
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-1"
+        appId="app-1"
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: '입력과 응답 노드를 만들어줘' },
+    });
+    fireEvent.click(screen.getByLabelText('Agent Builder 요청 보내기'));
+
+    await waitFor(() => {
+      expect(agentBuilderApi.sendMessage).toHaveBeenCalledTimes(2);
+    });
+    expect(agentBuilderApi.sendMessage).toHaveBeenNthCalledWith(
+      1,
+      'session-stale',
+      expect.any(Object),
+    );
+    expect(agentBuilderApi.sendMessage).toHaveBeenNthCalledWith(
+      2,
+      'session-recovered',
+      expect.any(Object),
+    );
+    expect(toast.error).not.toHaveBeenCalledWith(
+      expect.stringContaining('요청에 실패'),
+    );
+  });
+
+  it('새 session 재시도도 stale_protocol이면 원인을 구분해 표시한다', async () => {
+    vi.mocked(agentBuilderApi.createSession)
+      .mockResolvedValueOnce({
+        session_id: 'session-stale',
+        workflow_id: 'workflow-1',
+        protocol_version: 'direct_edit_v1',
+        status: 'active',
+        messages: [],
+      })
+      .mockResolvedValueOnce({
+        session_id: 'session-recovered',
+        workflow_id: 'workflow-1',
+        protocol_version: 'direct_edit_v1',
+        status: 'active',
+        messages: [],
+      });
+    vi.mocked(agentBuilderApi.sendMessage).mockRejectedValue({
+      isAxiosError: true,
+      response: { status: 409, data: { detail: 'stale_protocol' } },
+    });
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-1"
+        appId="app-1"
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: '입력과 응답 노드를 만들어줘' },
+    });
+    fireEvent.click(screen.getByLabelText('Agent Builder 요청 보내기'));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(
+        '이전 Agent Builder 세션을 새 세션으로 전환하지 못했습니다. 다시 시도해주세요.',
+      );
+    });
+    expect(agentBuilderApi.sendMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it('Gateway 502를 일반 요청 실패로 숨기지 않는다', async () => {
+    vi.mocked(agentBuilderApi.createSession).mockResolvedValue({
+      session_id: 'session-direct',
+      workflow_id: 'workflow-1',
+      protocol_version: 'direct_edit_v1',
+      status: 'active',
+      messages: [],
+    });
+    vi.mocked(agentBuilderApi.sendMessage).mockRejectedValue({
+      isAxiosError: true,
+      response: { status: 502, data: { detail: 'Bad Gateway' } },
+    });
+    vi.mocked(agentBuilderApi.getSession).mockResolvedValue({
+      session_id: 'session-direct',
+      workflow_id: 'workflow-1',
+      protocol_version: 'direct_edit_v1',
+      status: 'active',
+      messages: [],
+    });
+
+    render(
+      <AgentBuilderPanel
+        workflowId="workflow-1"
+        appId="app-1"
+        nodes={[]}
+        edges={[]}
+        hasUnsavedChanges={false}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: '입력과 응답 노드를 만들어줘' },
+    });
+    fireEvent.click(screen.getByLabelText('Agent Builder 요청 보내기'));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(
+        'Agent Builder 서버에 연결할 수 없습니다. 잠시 후 다시 시도해주세요. (HTTP 502)',
+      );
+    });
+  });
+
+  it('session 조회 5xx는 저장된 세션을 보존하고 세 번 확인 뒤 수동 재시도를 제공한다', async () => {
+    vi.useFakeTimers();
+    try {
+      window.localStorage.setItem(
+        'agent-builder:workflow:workflow-old',
+        'session-recovery-502',
+      );
+      vi.mocked(agentBuilderApi.getSession)
+        .mockRejectedValueOnce({
+          isAxiosError: true,
+          response: { status: 502, data: { detail: 'Bad Gateway' } },
+        })
+        .mockRejectedValueOnce({
+          isAxiosError: true,
+          response: { status: 502, data: { detail: 'Bad Gateway' } },
+        })
+        .mockRejectedValueOnce({
+          isAxiosError: true,
+          response: { status: 502, data: { detail: 'Bad Gateway' } },
+        })
+        .mockRejectedValueOnce({
+          isAxiosError: true,
+          response: { status: 502, data: { detail: 'Bad Gateway' } },
+        })
+        .mockResolvedValue({
+          session_id: 'session-recovery-502',
+          workflow_id: 'workflow-old',
+          protocol_version: 'direct_edit_v1',
+          status: 'active',
+          messages: [],
+        });
 
       render(
         <AgentBuilderPanel
@@ -1579,174 +3251,294 @@ describe('AgentBuilderPanel', () => {
           hasUnsavedChanges={false}
         />,
       );
-
       fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
 
-      expect(await screen.findByText(status)).toBeTruthy();
-      expect(
-        screen.queryByRole('button', { name: '도안 생성 미리보기' }),
-      ).toBeNull();
-    },
-  );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4000);
+      });
 
-  it('Preview Mode 중 새 요청을 보내면 이전 preview를 종료한다', async () => {
+      expect(agentBuilderApi.getSession).toHaveBeenCalledTimes(4);
+      expect(
+        window.localStorage.getItem('agent-builder:workflow:workflow-old'),
+      ).toBe('session-recovery-502');
+      expect(screen.getByText('결과 확인 필요')).toBeInTheDocument();
+
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Agent Builder 상태 다시 확인' }),
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(agentBuilderApi.getSession).toHaveBeenCalledTimes(5);
+      expect(screen.queryByText('결과 확인 필요')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('planning session polling은 세 번의 확인 뒤 결과 확인 필요 상태로 멈춘다', async () => {
+    vi.useFakeTimers();
+    try {
+      window.localStorage.setItem(
+        'agent-builder:workflow:workflow-old',
+        'session-planning-recovery',
+      );
+      const planningSession = {
+        session_id: 'session-planning-recovery',
+        workflow_id: 'workflow-old',
+        protocol_version: 'direct_edit_v1' as const,
+        status: 'planning',
+        messages: [
+          {
+            kind: 'assistant' as const,
+            request_id: 'request-planning-recovery',
+            response: {
+              request_id: 'request-planning-recovery',
+              status: 'planning' as const,
+              clarification_questions: [],
+              clarification_options: [],
+              warnings: [],
+            },
+          },
+        ],
+        pending_request: {
+          request_id: 'request-planning-recovery',
+          status: 'planning',
+        },
+      };
+      vi.mocked(agentBuilderApi.getSession).mockResolvedValue(planningSession);
+
+      render(
+        <AgentBuilderPanel
+          workflowId="workflow-old"
+          appId="app-1"
+          nodes={[]}
+          edges={[]}
+          hasUnsavedChanges={false}
+        />,
+      );
+      fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4000);
+      });
+
+      expect(agentBuilderApi.getSession).toHaveBeenCalledTimes(4);
+      expect(screen.getByText('결과 확인 필요')).toBeInTheDocument();
+      expect(
+        window.localStorage.getItem('agent-builder:workflow:workflow-old'),
+      ).toBe('session-planning-recovery');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('acknowledgement 확인은 canonical session만 세 번 조회한 뒤 결과 확인 필요 상태로 멈춘다', async () => {
+    vi.useFakeTimers();
+    try {
+      window.localStorage.setItem(
+        'agent-builder:workflow:workflow-old',
+        'session-ack-recovery',
+      );
+      vi.mocked(agentBuilderApi.getSession).mockResolvedValue({
+        session_id: 'session-ack-recovery',
+        workflow_id: 'workflow-old',
+        protocol_version: 'direct_edit_v1',
+        status: 'graph_mutation_ready',
+        messages: [],
+        active_graph_mutation: {
+          operation_id: 'operation-ack-recovery',
+          status: 'pending_ack',
+          result_graph_hash: 'e'.repeat(64),
+          saved_workflow_updated_at: '2026-07-15T00:00:00Z',
+        },
+      });
+      render(
+        <AgentBuilderPanel
+          workflowId="workflow-old"
+          appId="app-1"
+          nodes={[]}
+          edges={[]}
+          hasUnsavedChanges={false}
+        />,
+      );
+      fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4000);
+      });
+
+      expect(agentBuilderApi.acknowledgeMutation).not.toHaveBeenCalled();
+      expect(agentBuilderApi.getSession).toHaveBeenCalledTimes(4);
+      expect(screen.getByText('결과 확인 필요')).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('Gateway timeout 뒤 서버의 processing request를 복구해 terminal 상태까지 polling한다', async () => {
     vi.mocked(agentBuilderApi.createSession).mockResolvedValue({
-      session_id: 'session-preview-supersede',
-      workflow_id: 'workflow-old',
-      app_id: 'app-1',
+      session_id: 'session-timeout-recovery',
+      workflow_id: 'workflow-1',
+      protocol_version: 'direct_edit_v1',
       status: 'active',
       messages: [],
-      pending_request: null,
-      draft_preview: null,
     });
-    vi.mocked(agentBuilderApi.sendMessage).mockResolvedValue({
-      request_id: 'request-next',
-      status: 'draft_ready',
-      structured_request: null,
-      clarification_questions: [],
-      clarification_options: [],
-      draft_preview: null,
-      validation_result: { valid: true, issues: [] },
-      preview_prompt: null,
-      warnings: [],
+    vi.mocked(agentBuilderApi.sendMessage).mockRejectedValue({
+      isAxiosError: true,
+      response: { status: 504, data: { detail: 'Gateway Timeout' } },
     });
-    useWorkflowStore.setState({
-      agentBuilderPreview: {
-        draftId: 'draft-current',
-        previewGraph: { nodes: [node('preview-node')], edges: [] },
-        nodeDetailPreviews: [],
-        validationResult: { valid: true, issues: [] },
-        baseGraphHash: 'base-hash',
-        draftMode: 'new_workflow',
-      },
-    });
+    vi.mocked(agentBuilderApi.getSession)
+      .mockResolvedValueOnce({
+        session_id: 'session-timeout-recovery',
+        workflow_id: 'workflow-1',
+        protocol_version: 'direct_edit_v1',
+        status: 'planning',
+        messages: [
+          {
+            kind: 'assistant',
+            request_id: 'request-timeout-recovery',
+            response: {
+              request_id: 'request-timeout-recovery',
+              status: 'planning',
+              clarification_questions: [],
+              clarification_options: [],
+              warnings: [],
+            },
+          },
+        ],
+        pending_request: {
+          request_id: 'request-timeout-recovery',
+          status: 'planning',
+        },
+      })
+      .mockResolvedValue({
+        session_id: 'session-timeout-recovery',
+        workflow_id: 'workflow-1',
+        protocol_version: 'direct_edit_v1',
+        status: 'failed',
+        messages: [
+          {
+            kind: 'assistant',
+            request_id: 'request-timeout-recovery',
+            response: {
+              request_id: 'request-timeout-recovery',
+              status: 'failed',
+              clarification_questions: [],
+              clarification_options: [],
+              warnings: ['요청 처리에 실패했습니다.'],
+            },
+          },
+        ],
+        pending_request: null,
+      });
 
     render(
       <AgentBuilderPanel
-        workflowId="workflow-old"
+        workflowId="workflow-1"
         appId="app-1"
         nodes={[]}
         edges={[]}
         hasUnsavedChanges={false}
       />,
     );
-
     fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
     fireEvent.change(screen.getByRole('textbox'), {
-      target: { value: '새 도안을 만들어줘' },
+      target: { value: '웹훅으로 받는 사내 문서 챗봇 워크플로우를 만들어줘' },
     });
-    fireEvent.keyDown(screen.getByRole('textbox'), {
-      key: 'Enter',
-      code: 'Enter',
-    });
-
-    await waitFor(() => {
-      expect(agentBuilderApi.sendMessage).toHaveBeenCalled();
-    });
-    expect(useWorkflowStore.getState().agentBuilderPreview).toBeNull();
-  });
-
-  it('저장되지 않은 변경이 있으면 적용 및 저장을 호출하지 않는다', async () => {
-    setPreviewState([node('preview-node')]);
-
-    render(
-      <AgentBuilderPanel
-        workflowId="workflow-old"
-        appId="app-1"
-        nodes={[node('actual-node')]}
-        edges={[]}
-        hasUnsavedChanges
-      />,
-    );
-
-    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
-    await screen.findByRole('button', {
-      name: /Agent Builder 모델: GPT-5.5$/,
-    });
+    fireEvent.click(screen.getByLabelText('Agent Builder 요청 보내기'));
 
     expect(
-      screen.getByText(
-        '저장되지 않은 변경이 있어 초안 생성, 도안 생성 미리보기, 적용 및 저장이 차단됩니다.',
-      ),
-    ).toBeTruthy();
-    expect(
-      screen.getByRole('button', { name: '적용 및 저장' }),
-    ).toBeDisabled();
-    expect(agentBuilderApi.applyDraft).not.toHaveBeenCalled();
-    expect(useWorkflowStore.getState().agentBuilderPreview?.draftId).toBe(
-      'draft-new',
+      await screen.findByText('failed', {}, { timeout: 3000 }),
+    ).toBeInTheDocument();
+    expect(agentBuilderApi.getSession).toHaveBeenCalledTimes(2);
+    expect(toast.error).not.toHaveBeenCalledWith(
+      expect.stringContaining('HTTP 504'),
     );
   });
 
-  it('backend가 적용을 차단하면 안내를 표시하고 preview graph를 유지한다', async () => {
-    setPreviewState([node('preview-node')]);
-    vi.mocked(agentBuilderApi.applyDraft).mockResolvedValue({
-      apply_id: 'apply-blocked',
-      outcome: 'blocked',
-      block_reason: 'DRAFT_STALE',
-      stale_state: 'stale',
-      permission_recheck_outcome: 'allowed',
-      validation_state: 'valid',
-      audit_recorded: true,
-      layout_optimization_applied: false,
-      notices: ['workflow가 변경되어 도안을 다시 생성해야 합니다.'],
+  it('응답 유실 뒤 pending_request 없이 terminal session만 남아도 canonical 결과를 복구한다', async () => {
+    vi.mocked(agentBuilderApi.createSession).mockResolvedValue({
+      session_id: 'session-terminal-recovery',
+      workflow_id: 'workflow-1',
+      protocol_version: 'direct_edit_v1',
+      status: 'active',
+      messages: [],
+    });
+    vi.mocked(agentBuilderApi.sendMessage).mockRejectedValue({
+      isAxiosError: true,
+      response: { status: 504, data: { detail: 'Gateway Timeout' } },
+    });
+    vi.mocked(agentBuilderApi.getSession).mockResolvedValue({
+      session_id: 'session-terminal-recovery',
+      workflow_id: 'workflow-1',
+      protocol_version: 'direct_edit_v1',
+      status: 'failed',
+      messages: [
+        {
+          kind: 'assistant',
+          request_id: 'request-terminal-recovery',
+          response: {
+            request_id: 'request-terminal-recovery',
+            status: 'failed',
+            clarification_questions: [],
+            clarification_options: [],
+            warnings: ['요청 처리에 실패했습니다.'],
+          },
+        },
+      ],
+      pending_request: null,
     });
 
     render(
       <AgentBuilderPanel
-        workflowId="workflow-old"
+        workflowId="workflow-1"
         appId="app-1"
-        nodes={[node('actual-node')]}
+        nodes={[]}
         edges={[]}
         hasUnsavedChanges={false}
       />,
     );
-
     fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
-    fireEvent.click(screen.getByRole('button', { name: '적용 및 저장' }));
-
-    expect(
-      await screen.findByText('workflow가 변경되어 도안을 다시 생성해야 합니다.'),
-    ).toBeTruthy();
-    expect(workflowApi.getDraftWorkflow).not.toHaveBeenCalled();
-    expect(useWorkflowStore.getState().agentBuilderPreview?.draftId).toBe(
-      'draft-new',
-    );
-  });
-
-  it('backend 저장이 실패하면 실패 안내를 표시하고 preview graph를 유지한다', async () => {
-    setPreviewState([node('preview-node')]);
-    vi.mocked(agentBuilderApi.applyDraft).mockResolvedValue({
-      apply_id: 'apply-failed',
-      outcome: 'failed',
-      failure_reason: 'SAVE_FAILED',
-      stale_state: 'not_stale',
-      permission_recheck_outcome: 'allowed',
-      validation_state: 'valid',
-      audit_recorded: false,
-      layout_optimization_applied: false,
-      notices: ['초안 저장에 실패했습니다. 다시 시도해주세요.'],
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: '웹훅으로 받는 사내 문서 챗봇 워크플로우를 만들어줘' },
     });
-
-    render(
-      <AgentBuilderPanel
-        workflowId="workflow-old"
-        appId="app-1"
-        nodes={[node('actual-node')]}
-        edges={[]}
-        hasUnsavedChanges={false}
-      />,
-    );
-
-    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
-    fireEvent.click(screen.getByRole('button', { name: '적용 및 저장' }));
+    fireEvent.click(screen.getByLabelText('Agent Builder 요청 보내기'));
 
     expect(
-      await screen.findByText('초안 저장에 실패했습니다. 다시 시도해주세요.'),
-    ).toBeTruthy();
-    expect(workflowApi.getDraftWorkflow).not.toHaveBeenCalled();
-    expect(useWorkflowStore.getState().agentBuilderPreview?.draftId).toBe(
-      'draft-new',
+      await screen.findByText('failed', {}, { timeout: 5000 }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('요청 처리에 실패했습니다.')).toBeInTheDocument();
+    expect(toast.error).not.toHaveBeenCalledWith(
+      expect.stringContaining('HTTP 504'),
     );
   });
 });

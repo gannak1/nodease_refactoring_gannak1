@@ -51,25 +51,28 @@ async function loginAndOpenWorkflow(page, workflowId) {
   await expect(page.locator('.react-flow').first()).toBeVisible({ timeout: 30000 });
 }
 
-async function createPreview(panel, page, prompt) {
+async function sendAgentBuilderPrompt(panel, page, prompt) {
   const textarea = panel.locator('textarea');
   await expect(textarea).toBeEnabled({ timeout: 30000 });
   await textarea.fill(prompt);
   const sendButton = panel.locator('svg.lucide-send').locator('..');
   await expect(sendButton).toBeEnabled();
+  const responsePromise = page.waitForResponse(
+    (response) =>
+      response.url().includes('/api/v1/agent-builder/sessions/') &&
+      response.url().endsWith('/messages') &&
+      response.request().method() === 'POST',
+    { timeout: 60000 },
+  );
   await sendButton.click();
-  await expect(panel.getByText('draft_ready').last()).toBeVisible({ timeout: 60000 });
-  await panel.getByRole('button', { name: '도안 생성 미리보기' }).last().click();
-  await expect(page.getByText(/Agent Builder 도안 보기/).first()).toBeVisible({
-    timeout: 30000,
-  });
+  return responsePromise;
 }
 
 module.exports = {
   agentBuilderPanel,
   config,
-  createPreview,
   loginAndOpenWorkflow,
   openAgentBuilder,
   requireEnvironment,
+  sendAgentBuilderPrompt,
 };

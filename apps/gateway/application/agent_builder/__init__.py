@@ -1,1 +1,1 @@
-"""Agent Builder application policies."""
+"""Agent Builder direct-edit application policies and services."""

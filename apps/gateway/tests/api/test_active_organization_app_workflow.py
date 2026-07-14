@@ -16,6 +16,9 @@ from apps.gateway.services import app_service
 from apps.gateway.services import workflow_service
 from apps.gateway.services.app_service import AppService
 from apps.gateway.services.workflow_service import WorkflowService
+from apps.gateway.application.agent_builder.graph_mutation_builder import (
+    canonical_graph_hash,
+)
 from apps.shared.db.models.app import App
 from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.organization_membership import (
@@ -1011,22 +1014,38 @@ def test_active_member_can_manage_app_draft_after_creating_app(monkeypatch):
             },
         }
 
-        draft_response = TestClient(app).post(
-            f"/api/v1/workflows/{workflow_id}/draft",
-            json={"nodes": [llm_node], "edges": []},
-        )
-        assert draft_response.status_code == 200
-        assert draft_response.json()["status"] == "success"
-
         saved_workflow = next(
             workflow for workflow in session.workflows if workflow.id == workflow_id
         )
+
+        draft_response = TestClient(app).post(
+            f"/api/v1/workflows/{workflow_id}/draft",
+            json={
+                "nodes": [llm_node],
+                "edges": [],
+                "expected_graph_hash": canonical_graph_hash(saved_workflow.graph),
+                "expected_updated_at": saved_workflow.updated_at.isoformat(),
+            },
+        )
+        assert draft_response.status_code == 200
+        assert draft_response.json()["status"] == "success"
+        assert draft_response.json()["workflow_id"] == str(workflow_id)
+        assert draft_response.json()["graph_hash"] == canonical_graph_hash(
+            saved_workflow.graph
+        )
+        assert draft_response.json()["updated_at"] == saved_workflow.updated_at.isoformat()
+
         assert saved_workflow.graph["nodes"][0]["data"]["knowledgeBases"] == [
             {"id": knowledge_base_id, "name": "제품 정책"}
         ]
 
         get_response = TestClient(app).get(f"/api/v1/workflows/{workflow_id}/draft")
         assert get_response.status_code == 200
+        assert get_response.json()["workflow_id"] == str(workflow_id)
+        assert get_response.json()["graph_hash"] == canonical_graph_hash(
+            saved_workflow.graph
+        )
+        assert get_response.json()["updated_at"] == saved_workflow.updated_at.isoformat()
         assert get_response.json()["nodes"][0]["data"]["knowledgeBases"] == [
             {"id": knowledge_base_id, "name": "제품 정책"}
         ]
@@ -1201,6 +1220,9 @@ class _RouteQuery:
         return self
 
     def order_by(self, *args, **kwargs):
+        return self
+
+    def with_for_update(self):
         return self
 
     def first(self):

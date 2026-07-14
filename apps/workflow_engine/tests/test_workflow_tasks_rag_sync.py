@@ -208,6 +208,11 @@ def patch_task_dependencies(monkeypatch):
         "apps.shared.db.models.workflow",
         SimpleNamespace(Workflow=FakeWorkflow),
     )
+    monkeypatch.setitem(
+        sys.modules,
+        "apps.shared.pubsub",
+        SimpleNamespace(publish_workflow_event=lambda *_args, **_kwargs: None),
+    )
 
 
 def test_execute_workflow_skips_sync_without_execution_subject():
@@ -292,6 +297,32 @@ def test_execute_workflow_rejects_invalid_execution_identity_without_retry():
             },
             False,
         )
+
+    assert FakeWorkflowEngine.calls == []
+
+
+@pytest.mark.parametrize("task_name", ["execute_workflow", "stream_workflow"])
+def test_draft_execution_rejects_unresolved_external_action_before_engine(task_name):
+    graph = {
+        "nodes": [
+            {
+                "id": "slack-1",
+                "type": "slackPostNode",
+                "data": {"configuration_state": "resolved"},
+            }
+        ],
+        "edges": [],
+    }
+    execution_context = {
+        "workflow_id": str(FakeSession.workflow.id),
+        "execution_id": str(uuid.uuid4()),
+    }
+
+    with pytest.raises(NonRetryableWorkflowError, match="workflow_configuration_unresolved"):
+        if task_name == "execute_workflow":
+            tasks.execute_workflow.run(graph, {}, execution_context, False)
+        else:
+            tasks.stream_workflow.run(graph, {}, execution_context, "run-1")
 
     assert FakeWorkflowEngine.calls == []
 
@@ -521,7 +552,10 @@ def test_legacy_deployed_effect_requires_frozen_deployment_envelope():
                 {
                     "id": "http-1",
                     "type": "httpRequestNode",
-                    "data": {"method": "POST"},
+                    "data": {
+                        "method": "POST",
+                        "url": "https://example.test/hook",
+                    },
                 }
             ],
             "edges": [],
@@ -553,7 +587,10 @@ def test_legacy_deployed_effect_accepts_exact_snapshot_envelope():
                 {
                     "id": "http-1",
                     "type": "httpRequestNode",
-                    "data": {"method": "POST"},
+                    "data": {
+                        "method": "POST",
+                        "url": "https://example.test/hook",
+                    },
                 }
             ],
             "edges": [],
@@ -610,7 +647,10 @@ def test_legacy_deployed_redelivery_uses_frozen_deployment_after_new_activation(
             {
                 "id": "http-1",
                 "type": "httpRequestNode",
-                "data": {"method": "POST"},
+                "data": {
+                    "method": "POST",
+                    "url": "https://example.test/hook",
+                },
             }
         ],
         "edges": [],
@@ -708,6 +748,34 @@ def test_execute_by_deployment_skips_sync_without_execution_subject():
         "reason": "anonymous_public_only",
     }
     assert FakeSyncService.calls == []
+
+
+def test_deployed_execution_rejects_unresolved_external_action_before_engine():
+    graph_snapshot = {
+        "nodes": [
+            {
+                "id": "slack-1",
+                "type": "slackPostNode",
+                "data": {"configuration_state": "resolved"},
+            }
+        ],
+        "edges": [],
+    }
+    deployment, _app, trigger_mode = _active_deployment_pair(
+        graph_snapshot=graph_snapshot
+    )
+
+    with pytest.raises(NonRetryableWorkflowError, match="workflow_configuration_unresolved"):
+        tasks.execute_by_deployment.run(
+            str(deployment.id),
+            {},
+            {
+                "trigger_mode": trigger_mode,
+                "execution_id": str(uuid.uuid4()),
+            },
+        )
+
+    assert FakeWorkflowEngine.calls == []
 
 
 def test_execute_by_deployment_uses_snapshot_rag_selection():

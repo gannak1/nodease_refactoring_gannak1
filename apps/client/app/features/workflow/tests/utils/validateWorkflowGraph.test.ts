@@ -33,7 +33,7 @@ describe('validateWorkflowGraph', () => {
         title: 'Nested LLM',
         knowledgeCollections: [{ id: collectionId, safeLabel: '사내 문서' }],
       },
-    } as AppNode;
+    } as unknown as AppNode;
     const container = {
       ...node('loop', 'loopNode', 'Loop'),
       data: {
@@ -46,7 +46,7 @@ describe('validateWorkflowGraph', () => {
         flatten_output: false,
         subGraph: { nodes: [nestedLlm], edges: [] },
       },
-    } as AppNode;
+    } as unknown as AppNode;
     const mixedLlm = {
       ...node('llm', 'llmNode', 'LLM'),
       data: {
@@ -189,7 +189,7 @@ describe('validateWorkflowGraph', () => {
         flatten_output: false,
         subGraph: { nodes: [nestedSlack, nestedConsumer], edges: [] },
       },
-    } as AppNode;
+    } as unknown as AppNode;
 
     const result = validateWorkflowGraph(draft([container], []));
 
@@ -420,6 +420,48 @@ describe('validateWorkflowGraph', () => {
 
     expect(result.ok).toBe(false);
     expect(result.errors[0].code).toBe('INVALID_CONDITION_SOURCE_HANDLE');
+  });
+
+  it('blocks condition edges that omit sourceHandle instead of treating them as default', () => {
+    const condition: ConditionNode = {
+      id: 'condition',
+      type: 'conditionNode',
+      position: { x: 0, y: 0 },
+      data: {
+        title: '조건',
+        cases: [
+          {
+            id: 'case-1',
+            case_name: 'Yes',
+            conditions: [],
+            logical_operator: 'and',
+          },
+        ],
+      },
+    };
+
+    const result = validateWorkflowGraph(
+      draft(
+        [condition, node('template', 'templateNode', '템플릿')],
+        [
+          {
+            id: 'missing-handle-condition-edge',
+            source: 'condition',
+            target: 'template',
+          },
+        ],
+      ),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.errors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: 'INVALID_CONDITION_SOURCE_HANDLE',
+          edgeId: 'missing-handle-condition-edge',
+        }),
+      ]),
+    );
   });
 
   it('cleans edges that cannot be represented or executed', () => {

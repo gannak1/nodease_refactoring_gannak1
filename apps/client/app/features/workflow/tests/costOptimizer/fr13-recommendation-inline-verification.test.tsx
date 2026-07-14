@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { OptimizationRecommendationModal } from '../../components/costOptimizer/OptimizationRecommendationModal';
+import { useWorkflowStore } from '../../store/useWorkflowStore';
 import type { CostOptimizerRecommendationVerificationResponse } from '../../types/Api';
 
 const workflowApiMock = vi.hoisted(() => ({
@@ -171,7 +172,20 @@ describe('FR-013 추천 설정 인라인 검증 모달', () => {
     workflowApiMock.verifyCostOptimizerRecommendations.mockResolvedValue(
       verificationResponse,
     );
-    workflowApiMock.applyCostOptimizerCandidate.mockResolvedValue({ applied: true });
+    useWorkflowStore.setState({
+      canonicalDraftMetadata: {
+        'workflow-1': {
+          workflowId: 'workflow-1',
+          graphHash: 'a'.repeat(64),
+          updatedAt: '2026-07-14T00:00:00Z',
+        },
+      },
+    });
+    workflowApiMock.applyCostOptimizerCandidate.mockResolvedValue({
+      applied: true,
+      graph_hash: 'b'.repeat(64),
+      updated_at: '2026-07-14T00:00:01Z',
+    });
   });
 
   afterEach(() => {
@@ -235,8 +249,17 @@ describe('FR-013 추천 설정 인라인 검증 모달', () => {
             model_id: 'gpt-4.1',
             parameters: expect.objectContaining({ max_tokens: 600 }),
           }),
+          expected_graph_hash: 'a'.repeat(64),
+          expected_updated_at: '2026-07-14T00:00:00Z',
         }),
       );
+    });
+    expect(
+      useWorkflowStore.getState().getCanonicalDraftMetadata('workflow-1'),
+    ).toEqual({
+      workflowId: 'workflow-1',
+      graphHash: 'b'.repeat(64),
+      updatedAt: '2026-07-14T00:00:01Z',
     });
   });
 
@@ -315,7 +338,11 @@ describe('FR-013 추천 설정 인라인 검증 모달', () => {
         },
       ],
     });
-    workflowApiMock.applyCostOptimizerRecommendations.mockResolvedValueOnce({ applied: true });
+    workflowApiMock.applyCostOptimizerRecommendations.mockResolvedValueOnce({
+      applied: true,
+      graph_hash: 'c'.repeat(64),
+      updated_at: '2026-07-14T00:00:02Z',
+    });
     renderModal();
 
     fireEvent.click(await screen.findByRole('button', { name: '적용하기' }));
@@ -324,8 +351,19 @@ describe('FR-013 추천 설정 인라인 검증 모달', () => {
       expect(workflowApiMock.applyCostOptimizerRecommendations).toHaveBeenCalledWith(
         'workflow-1',
         'llm-triage',
-        { recommendation_ids: ['model_routing.enable'] },
+        {
+          recommendation_ids: ['model_routing.enable'],
+          expected_graph_hash: 'a'.repeat(64),
+          expected_updated_at: '2026-07-14T00:00:00Z',
+        },
       );
+    });
+    expect(
+      useWorkflowStore.getState().getCanonicalDraftMetadata('workflow-1'),
+    ).toEqual({
+      workflowId: 'workflow-1',
+      graphHash: 'c'.repeat(64),
+      updatedAt: '2026-07-14T00:00:02Z',
     });
     expect(workflowApiMock.verifyCostOptimizerRecommendations).not.toHaveBeenCalled();
   });

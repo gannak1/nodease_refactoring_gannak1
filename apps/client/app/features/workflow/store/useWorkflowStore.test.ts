@@ -18,6 +18,7 @@ import type { DeploymentResponse } from '../types/Deployment';
 import type { AnswerNode, CodeNode, Node, StartNode } from '../types/Workflow';
 import type { Edge, Connection } from '@xyflow/react';
 import { DEFAULT_NODES } from '../constants';
+import type { AgentBuilderParameterGroup } from '../api/agentBuilderApi';
 
 // API 모킹
 vi.mock('../api/workflowApi', () => ({
@@ -114,6 +115,32 @@ const createMockEdge = (
   source,
   target,
   ...handles,
+});
+
+const completedParameterGroup = (): AgentBuilderParameterGroup => ({
+  group_id: 'group-1',
+  status: 'completed',
+  tasks: [
+    {
+      task_id: 'task-manual',
+      group_id: 'group-1',
+      step_id: 'step-answer',
+      node_id: 'answer',
+      node_type: 'answerNode',
+      parameter_key: 'outputs',
+      label: '응답 출력',
+      input_type: 'text',
+      required: true,
+      defer_policy: 'forbidden',
+      status: 'completed',
+      task_version: 2,
+      stable_order: 0,
+      resolution_source: null,
+      reason: '최종 응답 값을 정합니다.',
+      input_guidance: '응답 값을 입력하세요.',
+      configuration_state: 'resolved',
+    },
+  ],
 });
 
 // ============================================================================
@@ -287,6 +314,29 @@ describe('노드 추가/삭제 테스트', () => {
     expect(state.nodes[0].position).toEqual({ x: 100, y: 200 });
   });
 
+  it('React Flow dimensions 측정은 저장 또는 Undo 변경으로 기록하지 않는다', () => {
+    const node = createMockNode('node-1');
+    useWorkflowStore.getState().setNodes([node]);
+    useWorkflowStore.setState({
+      hasUnsavedChanges: false,
+      undoStack: [],
+      redoStack: [],
+    });
+
+    useWorkflowStore.getState().onNodesChange([
+      {
+        type: 'dimensions',
+        id: 'node-1',
+        dimensions: { width: 420, height: 200 },
+      },
+    ]);
+
+    const state = useWorkflowStore.getState();
+    expect(state.nodes[0].measured).toEqual({ width: 420, height: 200 });
+    expect(state.hasUnsavedChanges).toBe(false);
+    expect(state.undoStack).toEqual([]);
+  });
+
   it('기본 10px grid snap으로 노드 위치를 보정한다', () => {
     useWorkflowStore.getState().setNodes([createMockNode('node-1')]);
 
@@ -421,6 +471,928 @@ describe('노드 추가/삭제 테스트', () => {
     expect(state.nodes[0].position).toEqual({ x: 20, y: 20 });
     expect(state.nodes[1].position).toEqual({ x: 35, y: 45 });
     expect(state.nodes[2].position).toEqual({ x: 58, y: 24 });
+  });
+});
+
+describe('Agent Builder GraphMutation transaction', () => {
+  beforeEach(() => {
+    resetStore();
+    useWorkflowStore.setState({
+      nodes: [createStartNode('start'), createAnswerNode('answer')],
+      edges: [createMockEdge('old-edge', 'start', 'answer')],
+      undoStack: [],
+      redoStack: [],
+    });
+  });
+
+  it('assigns display numbers to Agent Builder nodes so edge handles remain visible', () => {
+    useWorkflowStore.getState().applyAgentBuilderGraphMutation({
+      operation_id: 'operation-display-numbers',
+      kind: 'graph_edit',
+      expected_workflow_updated_at: '2026-07-12T00:00:00Z',
+      operations: [
+        { op: 'remove_edge', edge_id: 'old-edge' },
+        {
+          op: 'add_node',
+          node: createMockNode('llm', 'llmNode', { x: 400, y: 0 }),
+        },
+        {
+          op: 'add_edge',
+          edge: createMockEdge('start-llm', 'start', 'llm'),
+        },
+        {
+          op: 'add_edge',
+          edge: createMockEdge('llm-answer', 'llm', 'answer'),
+        },
+      ],
+    });
+
+    expect(
+      useWorkflowStore
+        .getState()
+        .nodes.map((node) => node.data.displayNumber),
+    ).toEqual([1, 2, 3]);
+  });
+
+  it('mutation 전체를 한 번의 Undo 단위로 적용한다', () => {
+    useWorkflowStore.getState().applyAgentBuilderGraphMutation({
+      operation_id: 'operation-1',
+      kind: 'graph_edit',
+      expected_workflow_updated_at: '2026-07-12T00:00:00Z',
+      operations: [
+        { op: 'remove_edge', edge_id: 'old-edge' },
+        {
+          op: 'add_node',
+          node: createMockNode('llm', 'llmNode', { x: 400, y: 0 }),
+        },
+        {
+          op: 'add_edge',
+          edge: createMockEdge('start-llm', 'start', 'llm'),
+        },
+        {
+          op: 'add_edge',
+          edge: createMockEdge('llm-answer', 'llm', 'answer'),
+        },
+      ],
+    });
+
+    expect(useWorkflowStore.getState().nodes.map((node) => node.id)).toEqual([
+      'start',
+      'answer',
+      'llm',
+    ]);
+    expect(useWorkflowStore.getState().undoStack).toHaveLength(1);
+
+    useWorkflowStore.getState().undo();
+
+    expect(useWorkflowStore.getState().nodes.map((node) => node.id)).toEqual([
+      'start',
+      'answer',
+    ]);
+    expect(useWorkflowStore.getState().edges).toEqual([
+      createMockEdge('old-edge', 'start', 'answer'),
+    ]);
+  });
+
+  it('전체 workflow 교체를 한 번의 Undo로 기존 graph까지 복구한다', () => {
+    useWorkflowStore.getState().applyAgentBuilderGraphMutation({
+      operation_id: 'operation-replace',
+      kind: 'replace_workflow',
+      expected_workflow_updated_at: '2026-07-13T00:00:00Z',
+      operations: [
+        { op: 'remove_edge', edge_id: 'old-edge' },
+        { op: 'remove_node', node_id: 'start' },
+        { op: 'remove_node', node_id: 'answer' },
+        {
+          op: 'add_node',
+          node: createMockNode('webhook', 'webhookTrigger', { x: 0, y: 0 }),
+        },
+        {
+          op: 'add_node',
+          node: createMockNode('new-answer', 'answerNode', { x: 400, y: 0 }),
+        },
+        {
+          op: 'add_edge',
+          edge: createMockEdge('new-edge', 'webhook', 'new-answer'),
+        },
+      ],
+    });
+
+    expect(useWorkflowStore.getState().nodes.map((node) => node.id)).toEqual([
+      'webhook',
+      'new-answer',
+    ]);
+    expect(useWorkflowStore.getState().undoStack).toHaveLength(1);
+
+    useWorkflowStore.getState().undo();
+
+    expect(useWorkflowStore.getState().nodes.map((node) => node.id)).toEqual([
+      'start',
+      'answer',
+    ]);
+    expect(useWorkflowStore.getState().edges).toEqual([
+      createMockEdge('old-edge', 'start', 'answer'),
+    ]);
+  });
+
+  it('operation 하나라도 실패하면 부분 적용하지 않는다', () => {
+    const before = {
+      nodes: structuredClone(useWorkflowStore.getState().nodes),
+      edges: structuredClone(useWorkflowStore.getState().edges),
+    };
+
+    expect(() =>
+      useWorkflowStore.getState().applyAgentBuilderGraphMutation({
+        operation_id: 'operation-invalid',
+        kind: 'parameter_update',
+        expected_workflow_updated_at: '2026-07-12T00:00:00Z',
+        operations: [
+          {
+            op: 'replace_node_data',
+            node_id: 'answer',
+            data: { title: 'Changed', outputs: [] },
+          },
+          { op: 'remove_node', node_id: 'missing' },
+        ],
+      }),
+    ).toThrow('missing');
+
+    expect(useWorkflowStore.getState().nodes).toEqual(before.nodes);
+    expect(useWorkflowStore.getState().edges).toEqual(before.edges);
+    expect(useWorkflowStore.getState().undoStack).toHaveLength(0);
+  });
+
+  it('acknowledged mutation Undo를 persisted revert로 표시한다', () => {
+    useWorkflowStore.getState().applyAgentBuilderGraphMutation({
+      operation_id: 'operation-persisted',
+      kind: 'graph_edit',
+      expected_workflow_updated_at: '2026-07-12T00:00:00Z',
+      operations: [
+        { op: 'remove_edge', edge_id: 'old-edge' },
+        {
+          op: 'add_node',
+          node: createMockNode('llm', 'llmNode', { x: 400, y: 0 }),
+        },
+        {
+          op: 'add_edge',
+          edge: createMockEdge('start-llm', 'start', 'llm'),
+        },
+      ],
+    });
+    useWorkflowStore.getState().markLatestAgentBuilderMutationPersisted({
+      operationId: 'operation-persisted',
+      resultGraphHash: 'b'.repeat(64),
+      workflowUpdatedAt: '2026-07-13T00:00:00Z',
+      sessionId: 'session-1',
+    });
+    useWorkflowStore
+      .getState()
+      .markLatestAgentBuilderMutationAcknowledged('operation-persisted', true);
+
+    useWorkflowStore.getState().undo();
+
+    expect(useWorkflowStore.getState().pendingAgentBuilderRevert).toEqual({
+      operationId: 'operation-persisted',
+      resultGraphHash: 'b'.repeat(64),
+      workflowUpdatedAt: '2026-07-13T00:00:00Z',
+      sessionId: 'session-1',
+    });
+
+    const graphAfterFirstUndo = structuredClone(
+      useWorkflowStore.getState().nodes,
+    );
+    useWorkflowStore.getState().undo();
+    expect(useWorkflowStore.getState().nodes).toEqual(graphAfterFirstUndo);
+    useWorkflowStore.getState().redo();
+    expect(useWorkflowStore.getState().nodes).toEqual(graphAfterFirstUndo);
+  });
+
+  it('Agent Builder 전체 실행을 pre-run에서 최종 graph까지 하나의 history 경계로 합친다', () => {
+    const preRunGraph = {
+      nodes: structuredClone(useWorkflowStore.getState().nodes),
+      edges: structuredClone(useWorkflowStore.getState().edges),
+    };
+    useWorkflowStore.getState().applyAgentBuilderGraphMutation({
+      operation_id: 'operation-first',
+      kind: 'graph_edit',
+      expected_workflow_updated_at: '2026-07-13T00:00:00Z',
+      operations: [
+        {
+          op: 'add_node',
+          node: createMockNode('first', 'llmNode', { x: 400, y: 0 }),
+        },
+      ],
+    });
+    useWorkflowStore.getState().markLatestAgentBuilderMutationPersisted({
+      operationId: 'operation-first',
+      resultGraphHash: 'a'.repeat(64),
+      workflowUpdatedAt: '2026-07-13T00:00:01Z',
+      sessionId: 'session-1',
+      revertGraph: preRunGraph,
+    });
+    useWorkflowStore
+      .getState()
+      .markLatestAgentBuilderMutationAcknowledged('operation-first');
+
+    useWorkflowStore.getState().applyAgentBuilderGraphMutation(
+      {
+        operation_id: 'operation-second',
+        kind: 'parameter_update',
+        expected_workflow_updated_at: '2026-07-13T00:00:01Z',
+        operations: [
+          {
+            op: 'replace_node_data',
+            node_id: 'answer',
+            data: { title: 'Final answer', outputs: [] },
+          },
+        ],
+      },
+      'session-1',
+    );
+    useWorkflowStore.getState().markLatestAgentBuilderMutationPersisted({
+      operationId: 'operation-second',
+      resultGraphHash: 'b'.repeat(64),
+      workflowUpdatedAt: '2026-07-13T00:00:02Z',
+      sessionId: 'session-1',
+      revertGraph: {
+        nodes: [createMockNode('wrong-intermediate')],
+        edges: [],
+      },
+    });
+    useWorkflowStore
+      .getState()
+      .markLatestAgentBuilderMutationAcknowledged('operation-second', true);
+
+    expect(useWorkflowStore.getState().undoStack).toHaveLength(1);
+    expect(
+      useWorkflowStore.getState().undoStack[0].agentBuilderOperation,
+    ).toEqual(
+      expect.objectContaining({
+        operationId: 'operation-first',
+        revertGraph: preRunGraph,
+      }),
+    );
+    expect(
+      useWorkflowStore.getState().undoStack[0].agentBuilderHistory,
+    ).toEqual(
+      expect.objectContaining({
+        latestOperationId: 'operation-second',
+        acknowledged: true,
+      }),
+    );
+
+    useWorkflowStore.getState().undo();
+
+    expect(useWorkflowStore.getState().nodes).toEqual(preRunGraph.nodes);
+    expect(useWorkflowStore.getState().edges).toEqual(preRunGraph.edges);
+    expect(useWorkflowStore.getState().pendingAgentBuilderRevert).toEqual(
+      expect.objectContaining({
+        operationId: 'operation-first',
+        revertGraph: preRunGraph,
+      }),
+    );
+  });
+
+  it('완료 후 첫 Undo는 수동 설정 이력보다 stable_order가 가장 큰 재편집 task를 다시 연다', () => {
+    useWorkflowStore.getState().applyAgentBuilderGraphMutation({
+      operation_id: 'operation-completed',
+      kind: 'graph_edit',
+      expected_workflow_updated_at: '2026-07-13T00:00:00Z',
+      operations: [
+        {
+          op: 'replace_node_data',
+          node_id: 'answer',
+          data: { title: 'Configured answer', outputs: ['value'] },
+        },
+      ],
+    });
+    useWorkflowStore.getState().markLatestAgentBuilderMutationPersisted({
+      operationId: 'operation-completed',
+      resultGraphHash: 'b'.repeat(64),
+      workflowUpdatedAt: '2026-07-13T00:00:01Z',
+      sessionId: 'session-1',
+    });
+    useWorkflowStore
+      .getState()
+      .markLatestAgentBuilderMutationAcknowledged('operation-completed');
+    const parameterGroup = completedParameterGroup();
+    parameterGroup.tasks.push(
+      {
+        ...parameterGroup.tasks[0],
+        task_id: 'task-auto',
+        parameter_key: 'automatic',
+        label: '자동 확정 값',
+        status: 'completed',
+        stable_order: 10,
+        resolution_source: 'catalog_default',
+      },
+      {
+        ...parameterGroup.tasks[0],
+        task_id: 'task-canceled',
+        parameter_key: 'canceled',
+        label: '취소된 값',
+        status: 'canceled',
+        stable_order: 20,
+      },
+    );
+    useWorkflowStore
+      .getState()
+      .setAgentBuilderParameterHistory(
+        'session-1',
+        parameterGroup,
+        'task-manual',
+        true,
+      );
+    const completedGraph = structuredClone(useWorkflowStore.getState().nodes);
+
+    useWorkflowStore.getState().undo();
+
+    expect(useWorkflowStore.getState().nodes).toEqual(completedGraph);
+    expect(useWorkflowStore.getState().undoStack).toHaveLength(1);
+    expect(useWorkflowStore.getState().pendingAgentBuilderRevert).toBeNull();
+    expect(
+      useWorkflowStore.getState().recoveredAgentBuilderParameterGroup,
+    ).toEqual({
+      sessionId: 'session-1',
+      parameterGroup: expect.objectContaining({
+        status: 'active',
+        tasks: expect.arrayContaining([
+          expect.objectContaining({ task_id: 'task-auto', status: 'active' }),
+          expect.objectContaining({
+            task_id: 'task-manual',
+            status: 'completed',
+          }),
+          expect.objectContaining({
+            task_id: 'task-canceled',
+            status: 'canceled',
+          }),
+        ]),
+      }),
+    });
+
+    useWorkflowStore.getState().redo();
+
+    expect(useWorkflowStore.getState().nodes).toEqual(completedGraph);
+    expect(
+      useWorkflowStore.getState().recoveredAgentBuilderParameterGroup,
+    ).toEqual({
+      sessionId: 'session-1',
+      parameterGroup: expect.objectContaining({ status: 'completed' }),
+    });
+    expect(useWorkflowStore.getState().redoStack).toHaveLength(0);
+  });
+
+  it('재열린 parameter UI에서 전체 Redo 뒤 다음 Undo는 task 재진입 없이 같은 boundary를 직접 복구한다', () => {
+    const preRunNodes = structuredClone(useWorkflowStore.getState().nodes);
+    useWorkflowStore.getState().applyAgentBuilderGraphMutation({
+      operation_id: 'operation-two-stage',
+      kind: 'replace_workflow',
+      expected_workflow_updated_at: '2026-07-13T00:00:00Z',
+      operations: [
+        { op: 'remove_edge', edge_id: 'old-edge' },
+        { op: 'remove_node', node_id: 'start' },
+        { op: 'remove_node', node_id: 'answer' },
+        {
+          op: 'add_node',
+          node: createMockNode('replacement', 'startNode'),
+        },
+      ],
+    });
+    useWorkflowStore.getState().markLatestAgentBuilderMutationPersisted({
+      operationId: 'operation-two-stage',
+      resultGraphHash: 'b'.repeat(64),
+      workflowUpdatedAt: '2026-07-13T00:00:01Z',
+      sessionId: 'session-1',
+      revertGraph: {
+        nodes: preRunNodes,
+        edges: [createMockEdge('old-edge', 'start', 'answer')],
+      },
+    });
+    useWorkflowStore
+      .getState()
+      .markLatestAgentBuilderMutationAcknowledged('operation-two-stage');
+    useWorkflowStore
+      .getState()
+      .setAgentBuilderParameterHistory(
+        'session-1',
+        completedParameterGroup(),
+        'task-manual',
+        true,
+      );
+    const finalNodes = structuredClone(useWorkflowStore.getState().nodes);
+
+    useWorkflowStore.getState().undo();
+    useWorkflowStore.getState().undo();
+
+    expect(useWorkflowStore.getState().nodes).toEqual(preRunNodes);
+    expect(
+      useWorkflowStore.getState().recoveredAgentBuilderParameterGroup,
+    ).toEqual({ sessionId: 'session-1', parameterGroup: null });
+    expect(
+      useWorkflowStore.getState().pendingAgentBuilderRevert,
+    ).not.toBeNull();
+
+    useWorkflowStore.getState().clearPendingAgentBuilderRevert();
+    useWorkflowStore.getState().redo();
+
+    expect(useWorkflowStore.getState().nodes).toEqual(finalNodes);
+    expect(
+      useWorkflowStore.getState().recoveredAgentBuilderParameterGroup,
+    ).toEqual({ sessionId: 'session-1', parameterGroup: null });
+    expect(
+      useWorkflowStore.getState().undoStack.at(-1)?.agentBuilderOperation,
+    ).toEqual(expect.objectContaining({ operationId: 'operation-two-stage' }));
+
+    useWorkflowStore.getState().undo();
+
+    expect(useWorkflowStore.getState().nodes).toEqual(preRunNodes);
+    expect(useWorkflowStore.getState().pendingAgentBuilderRevert).toEqual(
+      expect.objectContaining({ operationId: 'operation-two-stage' }),
+    );
+    expect(
+      useWorkflowStore.getState().recoveredAgentBuilderParameterGroup,
+    ).toEqual({ sessionId: 'session-1', parameterGroup: null });
+  });
+
+  it('완료 뒤 수동 editor 변경은 Agent Builder 경계보다 먼저 Undo된다', () => {
+    useWorkflowStore.getState().applyAgentBuilderGraphMutation({
+      operation_id: 'operation-before-manual',
+      kind: 'graph_edit',
+      expected_workflow_updated_at: '2026-07-13T00:00:00Z',
+      operations: [
+        {
+          op: 'add_node',
+          node: createMockNode('generated', 'llmNode'),
+        },
+      ],
+    });
+    useWorkflowStore.getState().markLatestAgentBuilderMutationPersisted({
+      operationId: 'operation-before-manual',
+      resultGraphHash: 'b'.repeat(64),
+      workflowUpdatedAt: '2026-07-13T00:00:01Z',
+      sessionId: 'session-1',
+    });
+    useWorkflowStore
+      .getState()
+      .markLatestAgentBuilderMutationAcknowledged('operation-before-manual');
+    useWorkflowStore
+      .getState()
+      .setAgentBuilderParameterHistory(
+        'session-1',
+        completedParameterGroup(),
+        'task-manual',
+        true,
+      );
+    const agentBuilderGraph = structuredClone(
+      useWorkflowStore.getState().nodes,
+    );
+    useWorkflowStore
+      .getState()
+      .setNodes([...agentBuilderGraph, createMockNode('manual')]);
+
+    useWorkflowStore.getState().undo();
+
+    expect(useWorkflowStore.getState().nodes).toEqual(agentBuilderGraph);
+    expect(
+      useWorkflowStore.getState().recoveredAgentBuilderParameterGroup,
+    ).toBeNull();
+
+    useWorkflowStore.getState().undo();
+    expect(
+      useWorkflowStore.getState().recoveredAgentBuilderParameterGroup,
+    ).toEqual(
+      expect.objectContaining({
+        parameterGroup: expect.objectContaining({ status: 'active' }),
+      }),
+    );
+  });
+
+  it('parameter task가 없으면 첫 Undo가 즉시 pre-run graph를 복구한다', () => {
+    useWorkflowStore.getState().applyAgentBuilderGraphMutation({
+      operation_id: 'operation-no-task',
+      kind: 'graph_edit',
+      expected_workflow_updated_at: '2026-07-13T00:00:00Z',
+      operations: [
+        { op: 'add_node', node: createMockNode('generated', 'llmNode') },
+      ],
+    });
+    useWorkflowStore.getState().markLatestAgentBuilderMutationPersisted({
+      operationId: 'operation-no-task',
+      resultGraphHash: 'b'.repeat(64),
+      workflowUpdatedAt: '2026-07-13T00:00:01Z',
+      sessionId: 'session-1',
+    });
+    useWorkflowStore
+      .getState()
+      .markLatestAgentBuilderMutationAcknowledged('operation-no-task');
+    useWorkflowStore
+      .getState()
+      .setAgentBuilderParameterHistory('session-1', null, null, true);
+
+    useWorkflowStore.getState().undo();
+
+    expect(useWorkflowStore.getState().nodes.map((item) => item.id)).toEqual([
+      'start',
+      'answer',
+    ]);
+    expect(
+      useWorkflowStore.getState().pendingAgentBuilderRevert,
+    ).not.toBeNull();
+  });
+
+  it.each(['completed', 'skipped', 'deferred'] as const)(
+    '자동 확정 또는 미설정 %s task도 stable_order 기준 첫 Undo 재진입 대상이 된다',
+    (terminalStatus) => {
+      useWorkflowStore.getState().applyAgentBuilderGraphMutation({
+        operation_id: 'operation-auto-task',
+        kind: 'graph_edit',
+        expected_workflow_updated_at: '2026-07-13T00:00:00Z',
+        operations: [
+          { op: 'add_node', node: createMockNode('generated', 'llmNode') },
+        ],
+      });
+      useWorkflowStore.getState().markLatestAgentBuilderMutationPersisted({
+        operationId: 'operation-auto-task',
+        resultGraphHash: 'b'.repeat(64),
+        workflowUpdatedAt: '2026-07-13T00:00:01Z',
+        sessionId: 'session-1',
+      });
+      useWorkflowStore
+        .getState()
+        .markLatestAgentBuilderMutationAcknowledged('operation-auto-task');
+      const parameterGroup = completedParameterGroup();
+      parameterGroup.tasks.push({
+        ...parameterGroup.tasks[0],
+        task_id: 'task-terminal-last',
+        parameter_key: 'last',
+        status: terminalStatus,
+        stable_order: 99,
+        resolution_source:
+          terminalStatus === 'completed' ? 'catalog_default' : null,
+      });
+      useWorkflowStore
+        .getState()
+        .setAgentBuilderParameterHistory(
+          'session-1',
+          parameterGroup,
+          null,
+          true,
+        );
+      const finalGraph = structuredClone(useWorkflowStore.getState().nodes);
+
+      useWorkflowStore.getState().undo();
+
+      expect(useWorkflowStore.getState().nodes).toEqual(finalGraph);
+      expect(
+        useWorkflowStore.getState().recoveredAgentBuilderParameterGroup,
+      ).toEqual({
+        sessionId: 'session-1',
+        parameterGroup: expect.objectContaining({
+          status: 'active',
+          tasks: expect.arrayContaining([
+            expect.objectContaining({
+              task_id: 'task-terminal-last',
+              status: 'active',
+            }),
+          ]),
+        }),
+      });
+      expect(useWorkflowStore.getState().pendingAgentBuilderRevert).toBeNull();
+    },
+  );
+
+  it('첫 Undo 재진입은 secret, credential, Slack/GitHub task를 제외하지 않고 stable_order만 따른다', () => {
+    useWorkflowStore.getState().applyAgentBuilderGraphMutation({
+      operation_id: 'operation-sensitive-task',
+      kind: 'graph_edit',
+      expected_workflow_updated_at: '2026-07-13T00:00:00Z',
+      operations: [
+        { op: 'add_node', node: createMockNode('generated', 'slackPostNode') },
+      ],
+    });
+    useWorkflowStore.getState().markLatestAgentBuilderMutationPersisted({
+      operationId: 'operation-sensitive-task',
+      resultGraphHash: 'b'.repeat(64),
+      workflowUpdatedAt: '2026-07-13T00:00:01Z',
+      sessionId: 'session-1',
+    });
+    useWorkflowStore
+      .getState()
+      .markLatestAgentBuilderMutationAcknowledged('operation-sensitive-task');
+    const parameterGroup = completedParameterGroup();
+    parameterGroup.tasks.push(
+      {
+        ...parameterGroup.tasks[0],
+        task_id: 'task-secret',
+        parameter_key: 'api_key',
+        input_type: 'text',
+        status: 'completed',
+        stable_order: 98,
+        sensitivity: 'secret_forbidden',
+      },
+      {
+        ...parameterGroup.tasks[0],
+        task_id: 'task-slack-credential',
+        parameter_key: 'credential_id',
+        input_type: 'credential_ref',
+        node_type: 'slackPostNode',
+        status: 'deferred',
+        stable_order: 99,
+        sensitivity: 'reference_only',
+      },
+    );
+    useWorkflowStore
+      .getState()
+      .setAgentBuilderParameterHistory('session-1', parameterGroup, null, true);
+
+    useWorkflowStore.getState().undo();
+
+    expect(
+      useWorkflowStore.getState().recoveredAgentBuilderParameterGroup,
+    ).toEqual({
+      sessionId: 'session-1',
+      parameterGroup: expect.objectContaining({
+        status: 'active',
+        tasks: expect.arrayContaining([
+          expect.objectContaining({
+            task_id: 'task-slack-credential',
+            status: 'active',
+          }),
+          expect.objectContaining({
+            task_id: 'task-secret',
+            status: 'completed',
+          }),
+        ]),
+      }),
+    });
+  });
+
+  it('parameter UI가 active이면 Ctrl+Z가 completed boundary를 소비하지 않는다', () => {
+    useWorkflowStore.getState().applyAgentBuilderGraphMutation({
+      operation_id: 'operation-active-task',
+      kind: 'graph_edit',
+      expected_workflow_updated_at: '2026-07-13T00:00:00Z',
+      operations: [
+        { op: 'add_node', node: createMockNode('generated', 'llmNode') },
+      ],
+    });
+    useWorkflowStore.getState().markLatestAgentBuilderMutationPersisted({
+      operationId: 'operation-active-task',
+      resultGraphHash: 'b'.repeat(64),
+      workflowUpdatedAt: '2026-07-13T00:00:01Z',
+      sessionId: 'session-1',
+    });
+    useWorkflowStore
+      .getState()
+      .markLatestAgentBuilderMutationAcknowledged('operation-active-task');
+    const activeGroup = completedParameterGroup();
+    activeGroup.status = 'active';
+    activeGroup.tasks[0].status = 'active';
+    useWorkflowStore
+      .getState()
+      .setAgentBuilderParameterHistory('session-1', activeGroup, null, false);
+
+    const activeGraph = structuredClone(useWorkflowStore.getState().nodes);
+    const undoCount = useWorkflowStore.getState().undoStack.length;
+
+    useWorkflowStore.getState().undo();
+
+    expect(useWorkflowStore.getState().nodes).toEqual(activeGraph);
+    expect(useWorkflowStore.getState().undoStack).toHaveLength(undoCount);
+    expect(useWorkflowStore.getState().pendingAgentBuilderRevert).toBeNull();
+    expect(
+      useWorkflowStore.getState().recoveredAgentBuilderParameterGroup,
+    ).toBeNull();
+    expect(useWorkflowStore.getState().agentBuilderHistoryNotice).toBeTruthy();
+  });
+
+  it('save/ack 진행 중에는 완료 Undo 단계를 시작하지 않는다', () => {
+    useWorkflowStore.getState().applyAgentBuilderGraphMutation({
+      operation_id: 'operation-saving',
+      kind: 'graph_edit',
+      expected_workflow_updated_at: '2026-07-13T00:00:00Z',
+      operations: [
+        { op: 'add_node', node: createMockNode('generated', 'llmNode') },
+      ],
+    });
+    useWorkflowStore.getState().markLatestAgentBuilderMutationPersisted({
+      operationId: 'operation-saving',
+      resultGraphHash: 'b'.repeat(64),
+      workflowUpdatedAt: '2026-07-13T00:00:01Z',
+      sessionId: 'session-1',
+    });
+    useWorkflowStore
+      .getState()
+      .setAgentBuilderParameterHistory(
+        'session-1',
+        completedParameterGroup(),
+        'task-manual',
+      );
+    const savingGraph = structuredClone(useWorkflowStore.getState().nodes);
+    useWorkflowStore.getState().setAgentBuilderMutationSaving(true);
+
+    useWorkflowStore.getState().undo();
+
+    expect(useWorkflowStore.getState().nodes).toEqual(savingGraph);
+    expect(
+      useWorkflowStore.getState().recoveredAgentBuilderParameterGroup,
+    ).toBeNull();
+  });
+
+  it('저장은 끝났지만 acknowledgement가 끝나지 않은 경계는 Undo하지 않는다', () => {
+    useWorkflowStore.getState().applyAgentBuilderGraphMutation({
+      operation_id: 'operation-pending-ack',
+      kind: 'graph_edit',
+      expected_workflow_updated_at: '2026-07-13T00:00:00Z',
+      operations: [
+        { op: 'add_node', node: createMockNode('generated', 'llmNode') },
+      ],
+    });
+    useWorkflowStore.getState().markLatestAgentBuilderMutationPersisted({
+      operationId: 'operation-pending-ack',
+      resultGraphHash: 'b'.repeat(64),
+      workflowUpdatedAt: '2026-07-13T00:00:01Z',
+      sessionId: 'session-1',
+    });
+    useWorkflowStore
+      .getState()
+      .setAgentBuilderParameterHistory(
+        'session-1',
+        completedParameterGroup(),
+        'task-manual',
+      );
+    const persistedGraph = structuredClone(useWorkflowStore.getState().nodes);
+
+    useWorkflowStore.getState().undo();
+
+    expect(useWorkflowStore.getState().nodes).toEqual(persistedGraph);
+    expect(useWorkflowStore.getState().pendingAgentBuilderRevert).toBeNull();
+    expect(useWorkflowStore.getState().agentBuilderHistoryNotice).toContain(
+      '확인',
+    );
+  });
+
+  it('reload 시 memory-only Redo와 parameter presentation을 복구하지 않는다', () => {
+    useWorkflowStore.setState({
+      redoStack: [{ nodes: [createMockNode('redo')], edges: [] }],
+      recoveredAgentBuilderParameterGroup: {
+        sessionId: 'session-1',
+        parameterGroup: completedParameterGroup(),
+      },
+    });
+
+    useWorkflowStore.getState().setWorkflowData(
+      {
+        nodes: [createMockNode('loaded')],
+        edges: [],
+        viewport: { x: 0, y: 0, zoom: 1 },
+      },
+      useWorkflowStore.getState().activeWorkflowId,
+    );
+
+    expect(useWorkflowStore.getState().redoStack).toEqual([]);
+    expect(
+      useWorkflowStore.getState().recoveredAgentBuilderParameterGroup,
+    ).toBeNull();
+  });
+
+  it('refreshes the next persisted Undo CAS boundary after a nested revert', () => {
+    const firstResultGraphHash = 'a'.repeat(64);
+    useWorkflowStore.setState({
+      undoStack: [
+        {
+          nodes: [],
+          edges: [],
+          agentBuilderOperation: {
+            operationId: 'operation-first',
+            resultGraphHash: firstResultGraphHash,
+            workflowUpdatedAt: '2026-07-13T00:00:01Z',
+            sessionId: 'session-1',
+          },
+        },
+      ],
+    });
+
+    useWorkflowStore.getState().refreshNextAgentBuilderRevertBoundary({
+      resultGraphHash: firstResultGraphHash,
+      workflowUpdatedAt: '2026-07-13T00:00:03Z',
+    });
+
+    expect(
+      useWorkflowStore.getState().undoStack[0].agentBuilderOperation,
+    ).toEqual(
+      expect.objectContaining({ workflowUpdatedAt: '2026-07-13T00:00:03Z' }),
+    );
+  });
+
+  it('does not refresh the next persisted Undo boundary for another graph', () => {
+    useWorkflowStore.setState({
+      undoStack: [
+        {
+          nodes: [],
+          edges: [],
+          agentBuilderOperation: {
+            operationId: 'operation-first',
+            resultGraphHash: 'a'.repeat(64),
+            workflowUpdatedAt: '2026-07-13T00:00:01Z',
+            sessionId: 'session-1',
+          },
+        },
+      ],
+    });
+
+    useWorkflowStore.getState().refreshNextAgentBuilderRevertBoundary({
+      resultGraphHash: 'b'.repeat(64),
+      workflowUpdatedAt: '2026-07-13T00:00:03Z',
+    });
+
+    expect(
+      useWorkflowStore.getState().undoStack[0].agentBuilderOperation,
+    ).toEqual(
+      expect.objectContaining({
+        workflowUpdatedAt: '2026-07-13T00:00:01Z',
+      }),
+    );
+  });
+});
+
+describe('canonical draft metadata', () => {
+  beforeEach(() => {
+    resetStore();
+    useWorkflowStore.setState({
+      activeWorkflowId: 'wf-1',
+      workflows: [
+        {
+          id: 'wf-1',
+          appId: 'app-1',
+          nodes: [],
+          edges: [],
+          features: { nextNodeDisplayNumber: 1 },
+        },
+      ],
+    });
+  });
+
+  it('stores and clears canonical graph hash metadata per workflow', () => {
+    useWorkflowStore.getState().setCanonicalDraftMetadata({
+      workflowId: 'wf-1',
+      graphHash: 'a'.repeat(64),
+      updatedAt: '2026-07-13T00:00:00Z',
+    });
+
+    expect(
+      useWorkflowStore.getState().getCanonicalDraftMetadata('wf-1'),
+    ).toEqual({
+      workflowId: 'wf-1',
+      graphHash: 'a'.repeat(64),
+      updatedAt: '2026-07-13T00:00:00Z',
+    });
+
+    useWorkflowStore.getState().clearCanonicalDraftMetadata('wf-1');
+
+    expect(
+      useWorkflowStore.getState().getCanonicalDraftMetadata('wf-1'),
+    ).toBeNull();
+  });
+
+  it('updates canonical metadata from successful version restore save', async () => {
+    vi.mocked(workflowApi.getDraftWorkflow).mockResolvedValue({
+      nodes: [],
+      edges: [],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      workflow_id: 'wf-1',
+      graph_hash: 'a'.repeat(64),
+      updated_at: '2026-07-13T00:00:00Z',
+    });
+    vi.mocked(workflowApi.syncDraftWorkflow).mockResolvedValue({
+      status: 'success',
+      workflow_id: 'wf-1',
+      graph_hash: 'b'.repeat(64),
+      updated_at: '2026-07-13T00:00:01Z',
+    });
+
+    await useWorkflowStore.getState().restoreVersion({
+      id: 'deployment-1',
+      app_id: 'app-1',
+      version: 1,
+      created_by: 'user-1',
+      created_at: '2026-07-01T00:00:00Z',
+      type: 'api',
+      is_active: false,
+      graph_snapshot: {
+        nodes: [createMockNode('restored', 'startNode')],
+        edges: [],
+        features: { nextNodeDisplayNumber: 1 },
+      },
+    } as DeploymentResponse);
+
+    expect(
+      useWorkflowStore.getState().getCanonicalDraftMetadata('wf-1'),
+    ).toEqual({
+      workflowId: 'wf-1',
+      graphHash: 'b'.repeat(64),
+      updatedAt: '2026-07-13T00:00:01Z',
+    });
   });
 });
 
@@ -1276,9 +2248,7 @@ describe('워크플로우 관리 테스트', () => {
     useWorkflowStore.getState().setCurrentExecutingNode('llm-1');
 
     vi.setSystemTime(new Date('2026-07-04T00:00:08.600Z'));
-    useWorkflowStore
-      .getState()
-      .failTestExecution('모듈 실행 실패: node error');
+    useWorkflowStore.getState().failTestExecution('모듈 실행 실패: node error');
 
     const state = useWorkflowStore.getState();
     expect(state.testExecutionStatus).toBe('failure');
@@ -1382,6 +2352,20 @@ describe('워크플로우 관리 테스트', () => {
   });
 
   it('restoreVersion은 snapshot 번호를 보정한 뒤 draft와 store에 반영한다', async () => {
+    vi.mocked(workflowApi.getDraftWorkflow).mockResolvedValue({
+      nodes: [],
+      edges: [],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      workflow_id: 'wf-1',
+      graph_hash: 'a'.repeat(64),
+      updated_at: '2026-07-13T00:00:00Z',
+    });
+    vi.mocked(workflowApi.syncDraftWorkflow).mockResolvedValue({
+      status: 'success',
+      workflow_id: 'wf-1',
+      graph_hash: 'b'.repeat(64),
+      updated_at: '2026-07-13T00:00:01Z',
+    });
     useWorkflowStore.setState({
       activeWorkflowId: 'wf-1',
       workflows: [
@@ -1480,6 +2464,22 @@ describe('UI 상태 테스트', () => {
 
     useWorkflowStore.getState().toggleVersionHistory();
     expect(useWorkflowStore.getState().isVersionHistoryOpen).toBe(true);
+  });
+
+  it('Agent Builder Routing 이동은 대상 노드의 전체화면 Routing section을 열고 닫을 때 초기화한다', () => {
+    useWorkflowStore.getState().openNodeFullscreen('llm-routing', 'routing');
+
+    expect(useWorkflowStore.getState()).toMatchObject({
+      fullscreenNodeId: 'llm-routing',
+      fullscreenNodeSettingsSection: 'routing',
+    });
+
+    useWorkflowStore.getState().closeNodeFullscreen();
+
+    expect(useWorkflowStore.getState()).toMatchObject({
+      fullscreenNodeId: null,
+      fullscreenNodeSettingsSection: null,
+    });
   });
 
   it('setProjectInfo로 프로젝트 정보를 설정할 수 있다', () => {

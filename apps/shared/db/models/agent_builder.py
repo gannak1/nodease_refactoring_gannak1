@@ -34,6 +34,9 @@ class AgentBuilderSession(Base):
     status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="active", server_default="active"
     )
+    protocol_version: Mapped[Optional[str]] = mapped_column(
+        String(32), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

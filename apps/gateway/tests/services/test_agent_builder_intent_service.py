@@ -11,10 +11,12 @@ from apps.gateway.services.agent_builder_intent_service import (
     AgentBuilderSemanticEdit,
     LLMAgentBuilderIntentExtractor,
     agent_builder_capability_guide,
+    safe_intent_extraction_reason,
 )
 from apps.gateway.services.agent_builder_service import AgentBuilderService
 from apps.gateway.services.llm_service import LLMCredentialNotAvailableError
 from apps.shared.schemas.agent_builder import AgentBuilderMessageRequest
+from apps.shared.services.llm_client.openai_client import OpenAIClient
 from apps.shared.services.workflow_node_catalog import agent_builder_supported_capabilities
 
 
@@ -44,6 +46,21 @@ class SequenceFakeLLMClient:
         return {"choices": [{"message": {"content": json.dumps(payload)}}]}
 
 
+class SchemaConstrainedFakeLLMClient(FakeLLMClient):
+    def build_json_schema_response_format(self, *, name, schema):
+        return {
+            "type": "json_schema",
+            "name": name,
+            "schema": schema,
+            "strict": True,
+        }
+
+
+class ProviderFailingFakeLLMClient:
+    def invoke_sync(self, _messages, **_kwargs):
+        raise ValueError("provider raw failure must not escape")
+
+
 class FakeIntentExtractor:
     def __init__(self, extraction):
         self.extraction = extraction
@@ -64,6 +81,23 @@ class FailingIntentExtractor:
         raise AgentBuilderIntentExtractionError("intent extraction failed")
 
 
+def test_intent_failure_reason_exposes_only_allowlisted_diagnostic_codes():
+    semantic = AgentBuilderIntentExtractionError(
+        "Agent Builder intent semantic validation failed: "
+        "KNOWLEDGE_PLACEMENT_REQUIRED,UNKNOWN_KNOWLEDGE_CANDIDATE_HANDLE"
+    )
+    unsafe = AgentBuilderIntentExtractionError(
+        "provider failed with secret-value and raw payload"
+    )
+
+    assert safe_intent_extraction_reason(semantic) == (
+        "semantic_validation_failed:KNOWLEDGE_PLACEMENT_REQUIRED,"
+        "UNKNOWN_KNOWLEDGE_CANDIDATE_HANDLE"
+    )
+    assert safe_intent_extraction_reason(unsafe) == "extraction_failed"
+    assert "secret-value" not in safe_intent_extraction_reason(unsafe)
+
+
 def _service(extractor):
     return AgentBuilderService(
         FakeDb(),
@@ -71,6 +105,15 @@ def _service(extractor):
         organization_id=uuid.uuid4(),
         intent_extractor=extractor,
     )
+
+
+def _knowledge_placement():
+    return {
+        "requirement_id": "kr_1",
+        "timing": "after_graph",
+        "effect_kind": "binding_only",
+        "target_step_id": "step_llm",
+    }
 
 
 def test_llm_intent_extractor_requests_json_and_preserves_step_order():
@@ -136,8 +179,245 @@ def test_llm_intent_extractor_requests_json_and_preserves_step_order():
     assert "json" in str(messages).lower()
     assert kwargs["response_format"]["type"] == "json_object"
     assert kwargs["temperature"] == 0
+    assert kwargs["max_tokens"] == 4000
     assert runtime_calls[0]["credential_id"] == credential_id
     assert runtime_calls[0]["model_id"] == model_id
+
+
+def test_llm_intent_extractor_uses_provider_schema_constraint_when_supported():
+    client = SchemaConstrainedFakeLLMClient(
+        {
+            "request_type": "new_workflow",
+            "draft_mode": "new_workflow",
+            "intent_summary": "웹훅 사내 문서 챗봇 workflow 생성",
+            "ordered_capabilities": [
+                "webhook_trigger",
+                "knowledge_backed_llm",
+                "answer",
+            ],
+            "knowledge_required": True,
+            "knowledge_topics": ["사내 문서"],
+            "knowledge_placements": [_knowledge_placement()],
+            "edit": None,
+        }
+    )
+    extractor = LLMAgentBuilderIntentExtractor(
+        db=FakeDb(),
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        runtime_loader=lambda **_kwargs: SimpleNamespace(client=client),
+    )
+
+    result = extractor.extract(
+        safe_message="웹훅으로 받는 사내 문서 챗봇 워크플로우를 만들어줘",
+        workflow_context={"workflow_present": False, "nodes": []},
+    )
+
+    response_format = client.calls[0][1]["response_format"]
+    assert result.request_type == "new_workflow"
+    assert response_format["type"] == "json_schema"
+    assert response_format["name"] == "agent_builder_intent"
+    assert response_format["strict"] is True
+    assert response_format["schema"]["additionalProperties"] is False
+    assert set(response_format["schema"]["properties"]) == {
+        "request_type",
+        "draft_mode",
+        "intent_summary",
+        "ordered_capabilities",
+        "parameter_guidance_hints",
+        "explicit_parameter_values",
+        "knowledge_required",
+        "knowledge_topics",
+        "knowledge_candidate_handles",
+        "knowledge_placements",
+        "integration_actions",
+        "edit",
+        "unsupported_requests",
+    }
+
+
+def test_agent_builder_explicit_value_schema_is_valid_for_openai_strict_output():
+    client = OpenAIClient(
+        model_id="gpt-5.4",
+        credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
+    )
+
+    response_format = client.build_json_schema_response_format(
+        name="agent_builder_intent",
+        schema=AgentBuilderIntentExtraction.model_json_schema(),
+    )
+    explicit_value_schema = response_format["schema"]["$defs"][
+        "AgentBuilderExplicitParameterValue"
+    ]["properties"]["value"]
+
+    assert explicit_value_schema["anyOf"]
+    assert all("type" in branch for branch in explicit_value_schema["anyOf"])
+
+
+def test_llm_intent_extractor_classifies_provider_failure_without_raw_details():
+    extractor = LLMAgentBuilderIntentExtractor(
+        db=FakeDb(),
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        runtime_loader=lambda **_kwargs: SimpleNamespace(
+            client=ProviderFailingFakeLLMClient()
+        ),
+    )
+
+    with pytest.raises(AgentBuilderIntentExtractionError) as captured:
+        extractor.extract(
+            safe_message="입력과 응답 workflow를 만들어줘",
+            workflow_context={"workflow_present": False, "nodes": []},
+        )
+
+    assert safe_intent_extraction_reason(captured.value) == "provider_call_failed"
+    assert "provider raw failure" not in str(captured.value)
+
+
+def test_llm_intent_extractor_returns_only_catalog_valid_safe_parameter_hints():
+    client = FakeLLMClient(
+        {
+            "request_type": "new_workflow",
+            "draft_mode": "new_workflow",
+            "intent_summary": "입력을 Slack으로 보냅니다.",
+            "ordered_capabilities": ["start_input", "slack_send", "answer"],
+            "parameter_guidance_hints": [
+                {
+                    "step_id": "step_slack",
+                    "parameter_key": "channel",
+                    "reason": "메시지 전달 위치가 필요합니다.",
+                    "input_guidance": "Slack channel ID를 선택하세요.",
+                },
+                {
+                    "step_id": "step_slack",
+                    "parameter_key": "unknown",
+                    "reason": "알 수 없는 값입니다.",
+                    "input_guidance": "값을 입력하세요.",
+                },
+                {
+                    "step_id": "step_slack",
+                    "parameter_key": "credential",
+                    "reason": "token=secret-value를 사용합니다.",
+                    "input_guidance": "credential을 입력하세요.",
+                },
+            ],
+        }
+    )
+    extractor = LLMAgentBuilderIntentExtractor(
+        db=FakeDb(),
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        runtime_loader=lambda **_kwargs: SimpleNamespace(client=client),
+    )
+
+    result = extractor.extract(
+        safe_message="입력을 Slack으로 보내는 workflow를 만들어줘",
+        workflow_context={"workflow_present": False, "nodes": []},
+    )
+
+    assert [hint.parameter_key for hint in result.parameter_guidance_hints] == [
+        "channel"
+    ]
+    assert "PARAMETER_GUIDE" in str(client.calls[0][0])
+
+
+def test_llm_intent_extractor_returns_only_catalog_valid_safe_explicit_values():
+    client = FakeLLMClient(
+        {
+            "request_type": "new_workflow",
+            "draft_mode": "new_workflow",
+            "intent_summary": "입력을 Slack 채널 C123으로 보냅니다.",
+            "ordered_capabilities": ["start_input", "slack_send", "answer"],
+            "explicit_parameter_values": [
+                {
+                    "step_id": "step_slack",
+                    "parameter_key": "channel",
+                    "value": "C123",
+                },
+                {
+                    "step_id": "step_slack",
+                    "parameter_key": "credential",
+                    "value": "credential-must-not-be-stored",
+                },
+                {
+                    "step_id": "step_slack",
+                    "parameter_key": "unknown",
+                    "value": "ignored",
+                },
+            ],
+        }
+    )
+    extractor = LLMAgentBuilderIntentExtractor(
+        db=FakeDb(),
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        runtime_loader=lambda **_kwargs: SimpleNamespace(client=client),
+    )
+
+    result = extractor.extract(
+        safe_message="입력을 Slack 채널 C123으로 보내는 workflow를 만들어줘",
+        workflow_context={"workflow_present": False, "nodes": []},
+    )
+
+    assert [
+        (item.step_id, item.parameter_key, item.value)
+        for item in result.explicit_parameter_values
+    ] == [("step_slack", "channel", "C123")]
+    assert "credential-must-not-be-stored" not in result.model_dump_json()
+
+
+def test_service_propagates_validated_explicit_parameter_value_to_structured_request():
+    extractor = FakeIntentExtractor(
+        AgentBuilderIntentExtraction(
+            request_type="new_workflow",
+            draft_mode="new_workflow",
+            intent_summary="입력을 Slack 채널 C123으로 보냅니다.",
+            ordered_capabilities=["start_input", "slack_send", "answer"],
+            explicit_parameter_values=[
+                {
+                    "step_id": "step_slack",
+                    "parameter_key": "channel",
+                    "value": "C123",
+                }
+            ],
+        )
+    )
+
+    structured = _service(extractor)._structure_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(
+            message="입력을 Slack 채널 C123으로 보내는 workflow를 만들어줘"
+        ),
+        None,
+    )
+
+    assert structured.explicit_parameter_values[0].parameter_key == "channel"
+    assert structured.explicit_parameter_values[0].value == "C123"
+
+
+def test_service_propagates_validated_parameter_hint_to_structured_request():
+    extractor = FakeIntentExtractor(
+        AgentBuilderIntentExtraction(
+            request_type="new_workflow",
+            draft_mode="new_workflow",
+            intent_summary="입력을 Slack으로 보냅니다.",
+            ordered_capabilities=["start_input", "slack_send", "answer"],
+            parameter_guidance_hints=[
+                {
+                    "step_id": "step_slack",
+                    "parameter_key": "channel",
+                    "reason": "메시지 전달 위치가 필요합니다.",
+                    "input_guidance": "Slack channel ID를 선택하세요.",
+                }
+            ],
+        )
+    )
+
+    structured = _service(extractor)._structure_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(message="입력을 Slack으로 보내줘"),
+        None,
+    )
+
+    assert structured.parameter_guidance_hints[0].parameter_key == "channel"
 
 
 def test_service_rejects_github_pr_create_instead_of_silently_using_http():
@@ -480,6 +760,7 @@ def test_llm_intent_extractor_passes_only_bounded_safe_kb_context():
             "knowledge_required": True,
             "knowledge_topics": ["사내 문서"],
             "knowledge_candidate_handles": ["rec-safe-1"],
+            "knowledge_placements": [_knowledge_placement()],
             "edit": None,
         }
     )
@@ -516,6 +797,7 @@ def test_llm_intent_extractor_repairs_unknown_kb_candidate_handle_once():
         "knowledge_required": True,
         "knowledge_topics": ["사내 문서"],
         "knowledge_candidate_handles": ["rec-not-issued"],
+        "knowledge_placements": [_knowledge_placement()],
         "edit": None,
     }
     valid = {**invalid, "knowledge_candidate_handles": ["rec-safe-1"]}
@@ -567,6 +849,7 @@ def test_llm_intent_extractor_repairs_semantically_invalid_result_once():
                 ],
                 "knowledge_required": True,
                 "knowledge_topics": ["사내 문서"],
+                "knowledge_placements": [_knowledge_placement()],
                 "edit": None,
             },
         ]
@@ -595,6 +878,244 @@ def test_llm_intent_extractor_repairs_semantically_invalid_result_once():
     assert "explicit existing target" in str(repair_messages)
     assert "direct object is a workflow" in str(repair_messages)
     assert "provider-only-invalid-summary-marker" not in str(repair_messages)
+
+
+def test_llm_intent_extractor_repairs_reasonless_unsupported_simple_node_flow_once():
+    client = SequenceFakeLLMClient(
+        [
+            {
+                "request_type": "unsupported",
+                "draft_mode": "new_workflow",
+                "intent_summary": "입력 응답 노드 요청",
+                "ordered_capabilities": [],
+                "unsupported_requests": [],
+                "edit": None,
+            },
+            {
+                "request_type": "new_workflow",
+                "draft_mode": "new_workflow",
+                "intent_summary": "입력을 받아 응답하는 workflow 생성",
+                "ordered_capabilities": ["start_input", "answer"],
+                "unsupported_requests": [],
+                "edit": None,
+            },
+        ]
+    )
+    extractor = LLMAgentBuilderIntentExtractor(
+        db=FakeDb(),
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        runtime_loader=lambda **_kwargs: SimpleNamespace(client=client),
+    )
+
+    result = extractor.extract(
+        safe_message="입력 응답 노드를 만들어줘",
+        workflow_context={"workflow_present": True, "nodes": []},
+    )
+
+    assert result.request_type == "new_workflow"
+    assert result.ordered_capabilities == ["start_input", "answer"]
+    assert len(client.calls) == 2
+    assert "UNSUPPORTED_SUPPORTED_FLOW_CONTRADICTION" in str(client.calls[1][0])
+    assert "입력 응답 노드를 만들어줘" in client.calls[0][0][0]["content"]
+
+
+def test_llm_intent_extractor_repairs_reasoned_unsupported_start_answer_flow_once():
+    client = SequenceFakeLLMClient(
+        [
+            {
+                "request_type": "unsupported",
+                "draft_mode": "new_workflow",
+                "intent_summary": "입력과 출력을 연결할 수 없습니다.",
+                "ordered_capabilities": [],
+                "unsupported_requests": ["현재 요청을 지원하지 않습니다."],
+                "edit": None,
+            },
+            {
+                "request_type": "new_workflow",
+                "draft_mode": "new_workflow",
+                "intent_summary": "입력과 응답 노드를 생성합니다.",
+                "ordered_capabilities": ["start_input", "answer"],
+                "unsupported_requests": [],
+                "edit": None,
+            },
+        ]
+    )
+    extractor = LLMAgentBuilderIntentExtractor(
+        db=FakeDb(),
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        runtime_loader=lambda **_kwargs: SimpleNamespace(client=client),
+    )
+
+    result = extractor.extract(
+        safe_message="입력 출력 노드 생성해줘",
+        workflow_context={"workflow_present": True, "nodes": []},
+    )
+
+    assert result.request_type == "new_workflow"
+    assert result.ordered_capabilities == ["start_input", "answer"]
+    assert len(client.calls) == 2
+    assert "UNSUPPORTED_SUPPORTED_FLOW_CONTRADICTION" in str(client.calls[1][0])
+
+
+def test_llm_intent_extractor_repairs_reasoned_unsupported_single_node_creation_once():
+    client = SequenceFakeLLMClient(
+        [
+            {
+                "request_type": "unsupported",
+                "draft_mode": "new_workflow",
+                "intent_summary": "GitHub node request cannot be classified.",
+                "ordered_capabilities": [],
+                "unsupported_requests": ["Workflow request is required."],
+                "edit": None,
+            },
+            {
+                "request_type": "new_workflow",
+                "draft_mode": "new_workflow",
+                "intent_summary": "GitHub PR 조회 node workflow를 생성합니다.",
+                "ordered_capabilities": ["github_pr_read", "answer"],
+                "integration_actions": [
+                    {
+                        "provider": "github",
+                        "resource": "pull_request",
+                        "operation": "read",
+                    }
+                ],
+                "unsupported_requests": [],
+                "edit": None,
+            },
+        ]
+    )
+    extractor = LLMAgentBuilderIntentExtractor(
+        db=FakeDb(),
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        runtime_loader=lambda **_kwargs: SimpleNamespace(client=client),
+    )
+
+    result = extractor.extract(
+        safe_message="깃허브 노드 만들어줘",
+        workflow_context={"workflow_present": True, "nodes": []},
+    )
+
+    assert result.request_type == "new_workflow"
+    assert result.ordered_capabilities == ["github_pr_read", "answer"]
+    assert result.integration_actions[0].operation == "read"
+    assert len(client.calls) == 2
+    repair_request = str(client.calls[1][0])
+    assert "UNSUPPORTED_SUPPORTED_NODE_CREATION_CONTRADICTION" in repair_request
+    assert "named supported node" in repair_request
+
+
+def test_llm_intent_extractor_accepts_recognized_unsupported_action_without_repair():
+    client = FakeLLMClient(
+        {
+            "request_type": "unsupported",
+            "draft_mode": "new_workflow",
+            "intent_summary": "GitHub PR 생성 요청",
+            "ordered_capabilities": [],
+            "unsupported_requests": [],
+            "integration_actions": [
+                {
+                    "provider": "github",
+                    "resource": "pull_request",
+                    "operation": "create",
+                }
+            ],
+            "edit": None,
+        }
+    )
+    extractor = LLMAgentBuilderIntentExtractor(
+        db=FakeDb(),
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        runtime_loader=lambda **_kwargs: SimpleNamespace(client=client),
+    )
+
+    result = extractor.extract(
+        safe_message="GitHub PR 생성 노드를 만들어줘",
+        workflow_context={"workflow_present": False, "nodes": []},
+    )
+
+    assert result.request_type == "unsupported"
+    assert result.integration_actions[0].operation == "create"
+    assert len(client.calls) == 1
+
+
+def test_llm_intent_extractor_repairs_missing_knowledge_placement_with_specific_guidance():
+    invalid = {
+        "request_type": "new_workflow",
+        "draft_mode": "new_workflow",
+        "intent_summary": "웹훅 사내 문서 챗봇 workflow 생성",
+        "ordered_capabilities": [
+            "webhook_trigger",
+            "knowledge_backed_llm",
+            "answer",
+        ],
+        "knowledge_required": True,
+        "knowledge_topics": ["사내 문서"],
+        "knowledge_placements": [],
+        "edit": None,
+    }
+    valid = {**invalid, "knowledge_placements": [_knowledge_placement()]}
+    client = SequenceFakeLLMClient([invalid, valid])
+    extractor = LLMAgentBuilderIntentExtractor(
+        db=FakeDb(),
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        runtime_loader=lambda **_kwargs: SimpleNamespace(client=client),
+    )
+
+    result = extractor.extract(
+        safe_message="웹훅으로 받는 사내 문서 챗봇 워크플로우를 만들어줘",
+        workflow_context={"workflow_present": True, "nodes": []},
+    )
+
+    assert result.request_type == "new_workflow"
+    assert result.knowledge_placements == [
+        AgentBuilderIntentExtraction.model_validate(valid).knowledge_placements[0]
+    ]
+    assert len(client.calls) == 2
+    repair_prompt = str(client.calls[1][0])
+    assert "KNOWLEDGE_PLACEMENT_REQUIRED" in repair_prompt
+    assert "knowledge_required=true requires exactly one" in repair_prompt
+
+
+def test_llm_intent_extractor_repairs_after_graph_placement_without_target_step():
+    invalid = {
+        "request_type": "new_workflow",
+        "draft_mode": "new_workflow",
+        "intent_summary": "사내 문서를 참고하는 workflow 생성",
+        "ordered_capabilities": ["start_input", "knowledge_backed_llm", "answer"],
+        "knowledge_required": True,
+        "knowledge_topics": ["사내 문서"],
+        "knowledge_placements": [
+            {
+                "requirement_id": "kr_1",
+                "timing": "after_graph",
+                "effect_kind": "binding_only",
+            }
+        ],
+        "edit": None,
+    }
+    valid = {**invalid, "knowledge_placements": [_knowledge_placement()]}
+    client = SequenceFakeLLMClient([invalid, valid])
+    extractor = LLMAgentBuilderIntentExtractor(
+        db=FakeDb(),
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        runtime_loader=lambda **_kwargs: SimpleNamespace(client=client),
+    )
+
+    result = extractor.extract(
+        safe_message="사내 문서를 참고하는 workflow를 만들어줘",
+        workflow_context={"workflow_present": False, "nodes": []},
+    )
+
+    assert result.knowledge_placements[0].target_step_id == "step_llm"
+    assert len(client.calls) == 2
+    assert "KNOWLEDGE_BINDING_TARGET_REQUIRED" in str(client.calls[1][0])
 
 
 def test_llm_intent_extractor_fails_after_one_invalid_repair():
@@ -639,6 +1160,44 @@ def test_llm_intent_extractor_does_not_echo_invalid_provider_payload():
         )
 
     assert raw_payload not in str(exc.value)
+    assert len(client.calls) == 1
+
+
+def test_llm_intent_extractor_repairs_schema_failure_once():
+    client = SequenceFakeLLMClient(
+        [
+            {
+                "request_type": "not-a-valid-request-type",
+                "draft_mode": "new_workflow",
+                "intent_summary": "invalid schema response",
+                "ordered_capabilities": [],
+                "edit": None,
+            },
+            {
+                "request_type": "new_workflow",
+                "draft_mode": "new_workflow",
+                "intent_summary": "should not be consumed",
+                "ordered_capabilities": ["start_input", "answer"],
+                "edit": None,
+            },
+        ]
+    )
+    extractor = LLMAgentBuilderIntentExtractor(
+        db=FakeDb(),
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        runtime_loader=lambda **_kwargs: SimpleNamespace(client=client),
+    )
+
+    result = extractor.extract(
+            safe_message="입력 응답 노드를 만들어줘",
+            workflow_context={"workflow_present": False, "nodes": []},
+        )
+
+    assert result.request_type == "new_workflow"
+    assert result.ordered_capabilities == ["start_input", "answer"]
+    assert len(client.calls) == 2
+    assert "SCHEMA_VALIDATION_FAILED" in str(client.calls[1][0])
 
 
 def test_llm_intent_extractor_reports_permission_aware_runtime_failure():
@@ -727,13 +1286,52 @@ def test_service_normalizes_llm_intent_with_catalog_allowlist_and_llm_order():
     assert [step.capability for step in structured.planned_steps] == [
         "webhook_trigger",
         "github_pr_read",
-        "llm",
+        "knowledge_backed_llm",
         "github_pr_comment",
         "answer",
     ]
     entry, body = svc._ordered_preview_capabilities(structured)  # noqa: SLF001
     assert entry == "webhook_trigger"
-    assert body == ["github_pr_read", "llm", "github_pr_comment"]
+    assert body == [
+        "github_pr_read",
+        "knowledge_backed_llm",
+        "github_pr_comment",
+    ]
+
+
+def test_configure_mode_adds_after_graph_knowledge_selection_for_plain_llm():
+    extractor = FakeIntentExtractor(
+        AgentBuilderIntentExtraction(
+            request_type="new_workflow",
+            draft_mode="new_workflow",
+            intent_summary="Input is summarized by an LLM and returned.",
+            ordered_capabilities=["llm"],
+            knowledge_required=False,
+        )
+    )
+    svc = _service(extractor)
+
+    structured = svc._structure_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(message="Create input, LLM, and answer nodes"),
+        workflow=None,
+    )
+
+    assert [step.capability for step in structured.planned_steps] == [
+        "start_input",
+        "knowledge_backed_llm",
+        "answer",
+    ]
+    assert structured.knowledge_requirements[0].target_step_ref == "step_llm"
+    assert structured.knowledge_placements[0].model_dump() == {
+        "requirement_id": "kr_1",
+        "timing": "after_graph",
+        "effect_kind": "binding_only",
+        "target_step_id": "step_llm",
+        "knowledge_step_id": None,
+        "upstream_step_id": None,
+        "downstream_step_id": None,
+        "empty_selection_bridge": None,
+    }
 
 
 def test_production_normalizer_keeps_explicit_workflow_creation_new_with_existing_context():
@@ -750,6 +1348,7 @@ def test_production_normalizer_keeps_explicit_workflow_creation_new_with_existin
             knowledge_required=True,
             knowledge_topics=["사내 문서"],
             knowledge_candidate_handles=["rec-safe-1"],
+            knowledge_placements=[_knowledge_placement()],
             edit=None,
         )
     )
@@ -823,8 +1422,10 @@ def test_service_uses_llm_edit_structure_for_create_wording_without_regex():
     )
 
     assert structured.draft_mode == "modify_workflow"
-    assert structured.required_capabilities == ["llm"]
-    assert [step.capability for step in structured.planned_steps] == ["llm"]
+    assert structured.required_capabilities == ["llm", "knowledge_base"]
+    assert [step.capability for step in structured.planned_steps] == [
+        "knowledge_backed_llm"
+    ]
     assert structured.edit_operations[0].placement == "after"
     assert structured.edit_operations[0].target.capabilities == [
         "github_pr_comment"
@@ -852,7 +1453,7 @@ def test_service_rejects_schema_valid_modify_without_semantic_edit():
         )
 
 
-def test_service_preserves_replace_mode_request_type():
+def test_service_normalizes_explicit_replace_mode_as_complete_workflow():
     svc = _service(
         FakeIntentExtractor(
             AgentBuilderIntentExtraction(
@@ -874,9 +1475,10 @@ def test_service_preserves_replace_mode_request_type():
     assert structured.draft_mode == "replace_workflow"
     assert [step.capability for step in structured.planned_steps] == [
         "start_input",
-        "llm",
+        "knowledge_backed_llm",
         "answer",
     ]
+    assert structured.edit_operations == []
 
 
 def test_service_rejects_selected_edge_edit_without_selected_edge_context():
@@ -1090,3 +1692,149 @@ def test_llm_structured_answer_insertion_rewires_existing_graph():
     assert ("llm", "github-comment") not in edge_pairs
     assert ("llm", answer_id) in edge_pairs
     assert (answer_id, "github-comment") in edge_pairs
+
+
+def test_natural_language_direct_edge_target_resolves_exactly_one_edge():
+    extractor = FakeIntentExtractor(
+        AgentBuilderIntentExtraction(
+            request_type="modify_workflow",
+            draft_mode="modify_workflow",
+            intent_summary="Diff와 LLM 사이에 Code node를 삽입합니다.",
+            ordered_capabilities=["code_execution"],
+            edit=AgentBuilderSemanticEdit(
+                placement="between",
+                target_reference_type="natural_language_edge",
+                source_query="Diff",
+                destination_query="LLM",
+            ),
+        )
+    )
+    svc = _service(extractor)
+    workflow = SimpleNamespace(
+        id=uuid.uuid4(),
+        graph={
+            "nodes": [
+                {"id": "diff", "type": "codeNode", "data": {"title": "Diff"}},
+                {"id": "llm", "type": "llmNode", "data": {"title": "LLM"}},
+            ],
+            "edges": [{"id": "edge-diff-llm", "source": "diff", "target": "llm"}],
+        },
+    )
+
+    structured = svc._structure_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(message="Diff와 LLM 사이에 Code node를 넣어줘"),
+        workflow,
+    )
+    resolution = svc._resolve_edit_target(  # noqa: SLF001
+        structured,
+        workflow=workflow,
+        selected_node_id=None,
+        selected_edge_id=None,
+    )
+
+    assert resolution == {
+        "status": "resolved",
+        "operation_id": "edit_1",
+        "placement": "between",
+        "edge_id": "edge-diff-llm",
+        "node_id": None,
+        "source_node_id": "diff",
+        "destination_node_id": "llm",
+        "replaced_edge_ids": ["edge-diff-llm"],
+    }
+
+
+def test_natural_language_edge_resolves_start_and_answer_aliases():
+    extractor = FakeIntentExtractor(
+        AgentBuilderIntentExtraction(
+            request_type="modify_workflow",
+            draft_mode="modify_workflow",
+            intent_summary="입력과 응답 사이에 LLM node를 삽입합니다.",
+            ordered_capabilities=["llm"],
+            edit=AgentBuilderSemanticEdit(
+                placement="between",
+                target_reference_type="natural_language_edge",
+                source_query="입력 노드",
+                destination_query="응답 노드",
+            ),
+        )
+    )
+    svc = _service(extractor)
+    workflow = SimpleNamespace(
+        id=uuid.uuid4(),
+        graph={
+            "nodes": [
+                {"id": "start", "type": "startNode", "data": {"title": "Start node"}},
+                {"id": "answer", "type": "answerNode", "data": {"title": "Answer node"}},
+            ],
+            "edges": [{"id": "edge-start-answer", "source": "start", "target": "answer"}],
+        },
+    )
+
+    structured = svc._structure_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(message="입력 응답 노드 사이에 LLM 노드 생성"),
+        workflow,
+    )
+    resolution = svc._resolve_edit_target(  # noqa: SLF001
+        structured,
+        workflow=workflow,
+        selected_node_id=None,
+        selected_edge_id=None,
+    )
+
+    assert resolution["status"] == "resolved"
+    assert resolution["edge_id"] == "edge-start-answer"
+    assert resolution["source_node_id"] == "start"
+    assert resolution["destination_node_id"] == "answer"
+
+
+@pytest.mark.parametrize(
+    "edges",
+    [
+        [],
+        [
+            {"id": "edge-diff-llm-1", "source": "diff", "target": "llm"},
+            {"id": "edge-diff-llm-2", "source": "diff", "target": "llm"},
+        ],
+    ],
+)
+def test_natural_language_direct_edge_target_requires_one_edge(edges):
+    extractor = FakeIntentExtractor(
+        AgentBuilderIntentExtraction(
+            request_type="modify_workflow",
+            draft_mode="modify_workflow",
+            intent_summary="Diff와 LLM 사이에 Code node를 삽입합니다.",
+            ordered_capabilities=["code_execution"],
+            edit=AgentBuilderSemanticEdit(
+                placement="between",
+                target_reference_type="natural_language_edge",
+                source_query="Diff",
+                destination_query="LLM",
+            ),
+        )
+    )
+    svc = _service(extractor)
+    workflow = SimpleNamespace(
+        id=uuid.uuid4(),
+        graph={
+            "nodes": [
+                {"id": "diff", "type": "codeNode", "data": {"title": "Diff"}},
+                {"id": "llm", "type": "llmNode", "data": {"title": "LLM"}},
+            ],
+            "edges": edges,
+        },
+    )
+    structured = svc._structure_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(message="Diff와 LLM 사이에 Code node를 넣어줘"),
+        workflow,
+    )
+
+    resolution = svc._resolve_edit_target(  # noqa: SLF001
+        structured,
+        workflow=workflow,
+        selected_node_id=None,
+        selected_edge_id=None,
+    )
+
+    assert resolution["status"] == "clarification_required"
+    assert resolution["options"] == []

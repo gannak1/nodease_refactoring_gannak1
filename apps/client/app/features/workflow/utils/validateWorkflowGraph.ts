@@ -210,8 +210,9 @@ const getDirectEdgeIssues = (
     }
 
     if (sourceNode.type === 'conditionNode') {
-      const sourceHandle = edge.sourceHandle || 'default';
-      if (!getConditionSourceHandles(sourceNode).has(sourceHandle)) {
+      const sourceHandle =
+        typeof edge.sourceHandle === 'string' ? edge.sourceHandle : '';
+      if (!sourceHandle || !getConditionSourceHandles(sourceNode).has(sourceHandle)) {
         issues.push(
           toIssue(
             'INVALID_CONDITION_SOURCE_HANDLE',

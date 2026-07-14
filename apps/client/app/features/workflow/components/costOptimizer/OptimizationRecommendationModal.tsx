@@ -20,6 +20,10 @@ import type {
   CostOptimizerRecommendationVerificationResponse,
 } from '../../types/Api';
 import {
+  ingestWorkflowDraftCASResult,
+  resolveWorkflowDraftCASExpectation,
+} from '../../utils/workflowDraftCAS';
+import {
   applyCandidatePatchesToDraft,
   compareRequestCandidateFromDraft,
   type CandidateDraft,
@@ -637,12 +641,19 @@ export function OptimizationRecommendationModal({
           return;
         }
         const downstreamState = verification.result.downstream_compatibility.state;
-        await workflowApi.applyCostOptimizerCandidate(workflowId, selectedNodeId, {
-          comparison_id: verification.result.comparison_id,
-          candidate_settings: verification.candidateSettings,
-          acknowledge_downstream_warning:
-            downstreamState === 'warning' || downstreamState === 'incompatible',
-        });
+        const expectation = await resolveWorkflowDraftCASExpectation(workflowId);
+        const applyResult = await workflowApi.applyCostOptimizerCandidate(
+          workflowId,
+          selectedNodeId,
+          {
+            comparison_id: verification.result.comparison_id,
+            candidate_settings: verification.candidateSettings,
+            acknowledge_downstream_warning:
+              downstreamState === 'warning' || downstreamState === 'incompatible',
+            ...expectation,
+          },
+        );
+        ingestWorkflowDraftCASResult(workflowId, applyResult);
         onApplyPatches?.(verification.patches);
         onMarkForReview?.(
           verification.result.applied_recommendation_ids || selectedIds,
@@ -654,9 +665,16 @@ export function OptimizationRecommendationModal({
         const recommendationIds = selectedRecommendations.map(
           (recommendation) => recommendation.parameter_key,
         );
-        await workflowApi.applyCostOptimizerRecommendations(workflowId, selectedNodeId, {
-          recommendation_ids: recommendationIds,
-        });
+        const expectation = await resolveWorkflowDraftCASExpectation(workflowId);
+        const applyResult = await workflowApi.applyCostOptimizerRecommendations(
+          workflowId,
+          selectedNodeId,
+          {
+            recommendation_ids: recommendationIds,
+            ...expectation,
+          },
+        );
+        ingestWorkflowDraftCASResult(workflowId, applyResult);
         onApplyPatches?.(selectedPatches);
         onMarkForReview?.(recommendationIds);
         return;
