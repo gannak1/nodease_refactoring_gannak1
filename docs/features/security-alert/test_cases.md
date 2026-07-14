@@ -237,6 +237,8 @@ Then 활성화 시점 이후 누락된 eligible event를 복구하고 중복 occ
 
 이미 전진한 event-time cursor와 overlap보다 과거인 audit가 늦게 commit돼도 receipt가 없으면 다음 reconciliation에서 처리해야 한다. 늦은 eligible audit와 같은 organization·actor·action 범위에서 최대 rule window 안에 이미 receipt가 있는 후속 audit도 다시 평가해 threshold 판단을 복구하고, 다른 organization·actor·action 범위와 window 밖 audit는 재평가하지 않아야 한다. Worker가 처리 또는 commit 전에 중단되면 receipt도 없어야 하며 재시작 후 같은 audit부터 복구해야 한다.
 
+Reconciliation 한 번은 `(occurred_at, audit_log.id)` 순서로 최대 100건만 처리해야 한다. 성공한 batch의 receipt, 평가 generation과 event-time cursor만 같은 transaction으로 commit하고, 실패한 batch는 모두 rollback해야 한다. 남은 receipt 부재 또는 재평가 대상은 다음 1분 주기 실행이 이어서 처리해야 한다. 늦은 audit와 영향받는 후속 audit 사이에 batch 경계가 있어도 durable generation으로 후속 재평가를 잃지 않아야 한다.
+
 기능 활성화 이전 audit은 처리하지 않아야 한다.
 
 ### AC-26 Notification Failure Isolation
@@ -461,6 +463,10 @@ Lookback 구간 또는 지정 평가 구간의 audit가 설정된 limit을 초�
 | SAL-TC-W023 | AC-09, AC-26 | 실시간 task와 reconciliation이 같은 organization/idempotency key의 Outbox를 독립 PostgreSQL transaction에서 동시에 enqueue | Outbox 한 건을 공유하고 unique 충돌이 alert/evidence 바깥 transaction을 rollback하지 않음 |
 | SAL-TC-W024 | AC-25 | cursor와 1분 overlap보다 과거 `occurred_at` audit가 첫 scan commit 이후 DB에 저장되고 worker 재시작 | receipt가 없으므로 다음 scan에서 처리하고 성공 receipt 기록, 이후 scan은 중복 처리 없음 |
 | SAL-TC-W025 | AC-25 | 이미 receipt가 있는 후속 audit의 rule window 안에 과거 audit가 늦게 저장됨 | 같은 organization·actor·action 범위의 후속 audit만 다시 평가해 새 threshold 결과를 복구하고, 다른 범위와 window 밖 audit는 재평가하지 않음 |
+| SAL-TC-W026 | AC-25 | receipt 없는 audit 250건을 reconciliation batch size 100으로 반복 실행 | 실행별 처리량은 100, 100, 50이고 각 성공 batch만 commit한 뒤 다음 1분 주기가 남은 backlog를 이어서 처리 |
+| SAL-TC-W027 | AC-25 | 같은 `occurred_at` audit가 UUID 정렬 중간의 batch 경계에 걸림 | `(occurred_at, audit_log.id)` 순서를 유지하며 중복과 누락 없이 다음 batch에서 이어서 처리 |
+| SAL-TC-W028 | AC-25 | 첫 batch 성공 후 다음 batch 중간에 처리 또는 commit 실패 | 첫 batch의 receipt·cursor·generation은 유지하고 실패 batch 변경은 모두 rollback하며 retry가 실패 batch부터 다시 처리 |
+| SAL-TC-W029 | AC-25 | 늦은 audit는 현재 batch 마지막이고 receipt가 있는 영향 후속 audit는 다음 batch에 위치 | 후속 audit의 durable 재평가 상태를 유지해 다음 batch에서 처리하고 rule window 밖으로 재평가 범위를 확장하지 않음 |
 
 ### Component Tests
 

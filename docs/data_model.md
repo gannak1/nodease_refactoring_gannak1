@@ -691,7 +691,7 @@ Alert와 실제 근거 audit의 연결 및 idempotency boundary다.
 
 #### `security_alert_reconciliation_watermarks`
 
-실시간 task가 놓친 audit를 복구하는 reconciliation의 기능 활성화 시각과 마지막 완료 event-time 관찰값을 PostgreSQL에 보존한다. Migration `b28d9e0f1a32`에서 테이블과 `security-alert-v1` 초기 row를 함께 생성한다. 초기 `activation_started_at`은 migration transaction의 `now()`이며 cursor 두 필드는 NULL이다. ADR-0042 이후 실제 미처리 여부는 아래 processor별 receipt가 소유한다.
+실시간 task가 놓친 audit를 복구하는 reconciliation의 기능 활성화 시각, 마지막 완료 event-time 관찰값과 성공 batch generation을 PostgreSQL에 보존한다. Migration `b28d9e0f1a32`에서 테이블과 `security-alert-v1` 초기 row를 함께 생성하고 migration `2b6c7d8e9f02`가 generation을 추가한다. 초기 `activation_started_at`은 migration transaction의 `now()`이며 cursor 두 필드는 NULL, generation은 0이다. ADR-0042 이후 실제 미처리 여부는 아래 processor별 receipt가 소유한다.
 
 | 컬럼 | 타입 | 제약/의미 |
 | --- | --- | --- |
@@ -699,29 +699,32 @@ Alert와 실제 근거 audit의 연결 및 idempotency boundary다.
 | activation_started_at | DATETIME | NOT NULL — 이 시각 이전 audit은 backfill하지 않음 |
 | cursor_occurred_at | DATETIME | NULL — 마지막 완료 audit의 UTC event time |
 | cursor_audit_log_id | UUID | NULL, FK 없음 — 같은 occurred_at 안의 안정적인 tie-breaker |
+| reconciliation_generation | BIGINT | NOT NULL, 기본값 0 — 마지막 성공 batch 번호 |
 | created_at / updated_at | DATETIME | NOT NULL |
 
 - Cursor 두 필드는 둘 다 NULL이거나 둘 다 값이 있어야 한다.
 - 초기 row 생성 시각을 기능 활성화 경계로 사용하므로 migration 이전 audit은 backfill하지 않는다.
-- Reconciler는 row를 잠근 뒤 receipt가 없는 audit와 같은 organization·actor·action 범위에서 늦은 eligible audit부터 최대 rule window 안의 후속 audit를 `(occurred_at, audit_log.id)` 순서로 평가한다. Cursor는 성공한 audit 중 가장 최신 event-time 관찰값으로만 전진하며 late-arrival discovery 하한으로 사용하지 않는다.
+- Reconciler는 row를 잠근 뒤 receipt가 없는 audit와 같은 organization·actor·action 범위에서 재평가 generation이 뒤처진 후속 audit를 `(occurred_at, audit_log.id)` 순서로 최대 100건 평가한다. Generation과 cursor는 batch가 성공할 때만 전진하고, cursor는 성공한 audit 중 가장 최신 event-time 관찰값이며 late-arrival discovery 하한으로 사용하지 않는다.
 - `audit_logs(occurred_at, id)` 복합 인덱스가 cursor scan을 지원한다.
 - Audit row의 삭제 lifecycle에 watermark가 결합되지 않도록 cursor UUID에는 FK를 두지 않는다.
 
 #### `security_alert_reconciliation_receipts`
 
-Processor가 audit 평가를 성공적으로 끝냈다는 사실을 저장하는 durable receipt다. Additive migration `1a5b6c7d8e91`에서 생성하며 기존 audit를 backfill하지 않는다.
+Processor가 audit 평가를 성공적으로 끝냈다는 사실과 late-arrival 재평가 진행 상태를 저장하는 durable receipt다. Additive migration `1a5b6c7d8e91`에서 생성하고 migration `2b6c7d8e9f02`가 generation을 추가하며 기존 audit를 backfill하지 않는다.
 
 | 컬럼 | 타입 | 제약/의미 |
 | --- | --- | --- |
 | processor_name | VARCHAR(100) | PK 일부 — rule/version별 reconciler identity |
 | audit_log_id | UUID | PK 일부, FK 없음 — 성공적으로 평가한 audit |
+| discovered_generation | BIGINT | NOT NULL, 기본값 0 — receipt가 처음 생성된 batch 번호, 재평가 시 유지 |
+| evaluated_generation | BIGINT | NOT NULL, 기본값 0 — 마지막으로 평가한 batch 번호 |
 | processed_at | DATETIME | NOT NULL — receipt commit 시각 |
 
 - Primary key `(processor_name, audit_log_id)`가 같은 processor의 중복 receipt를 막는다.
 - `activation_started_at` 이후 receipt가 없는 audit는 event-time cursor나 기존 overlap보다 과거여도 reconciliation 대상이다.
-- 늦은 eligible audit는 같은 organization·actor·action 범위에서 자신보다 뒤이면서 최대 rule window 안에 있는 receipt 보유 audit의 재평가를 유발한다. 기존 receipt는 conflict 없이 유지하며 다른 organization·actor·action 범위와 window 밖 audit는 재평가하지 않는다.
+- 늦은 eligible audit는 같은 organization·actor·action 범위에서 자신보다 뒤이면서 최대 rule window 안에 있는 receipt 보유 audit의 재평가를 유발한다. 후보의 `evaluated_generation`보다 선행 audit의 `discovered_generation`이 크면 다음 bounded batch에서도 stale 후보로 남는다. 재평가 시 기존 `discovered_generation`은 유지하고 `evaluated_generation`만 갱신해 재평가 범위가 window 밖으로 연쇄 확장되지 않게 한다.
 - Eligible하지 않은 audit도 평가가 성공했으면 receipt를 남겨 매 scan 재평가를 막는다.
-- Alert/evidence·notification Outbox 변경과 receipt insert는 같은 transaction에서 commit하며 실패하면 모두 rollback한다.
+- Alert/evidence·notification Outbox 변경, receipt upsert와 watermark generation/cursor는 같은 batch transaction에서 commit하며 실패하면 모두 rollback한다.
 - Audit row의 별도 보존·삭제 lifecycle과 결합하지 않도록 `audit_log_id`에는 FK를 두지 않는다.
 
 #### `security_alert_notification_outbox`
