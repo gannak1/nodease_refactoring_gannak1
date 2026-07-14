@@ -20,22 +20,48 @@ class _Watermark:
 
 
 class _Repository:
-    def __init__(self, *, watermark: _Watermark, audits: list[_Audit]):
+    def __init__(
+        self,
+        *,
+        watermark: _Watermark,
+        audits: list[_Audit],
+        processed_audit_ids: set[UUID] | None = None,
+    ):
         self.watermark = watermark
         self.audits = audits
         self.scan_starts = []
         self.processed_ids = set()
         self.process_attempts = []
+        self.processed_audit_ids = set(processed_audit_ids or ())
+        self.pending_processed_audit_ids = set()
         self.commits = 0
 
     def load_security_alert_watermark(self, *, processor_name):
         assert processor_name == "security-alert-v1"
         return self.watermark
 
-    def scan_security_alert_audits(self, *, started_at):
+    def scan_security_alert_audits(self, *, started_at, replay_horizon):
         self.scan_starts.append(started_at)
+        unprocessed = [
+            audit
+            for audit in self.audits
+            if audit.occurred_at >= started_at
+            and audit.id not in self.processed_audit_ids
+        ]
         return sorted(
-            (audit for audit in self.audits if audit.occurred_at >= started_at),
+            (
+                audit
+                for audit in self.audits
+                if audit.occurred_at >= started_at
+                and (
+                    audit.id not in self.processed_audit_ids
+                    or any(
+                        pending.occurred_at <= audit.occurred_at
+                        <= pending.occurred_at + replay_horizon
+                        for pending in unprocessed
+                    )
+                )
+            ),
             key=lambda audit: (audit.occurred_at, audit.id),
         )
 
@@ -43,16 +69,21 @@ class _Repository:
         self.process_attempts.append(audit.id)
         self.processed_ids.add(audit.id)
 
+    def mark_security_alert_audit_processed(self, *, audit_log_id):
+        self.pending_processed_audit_ids.add(audit_log_id)
+
     def advance_security_alert_watermark(self, *, occurred_at, audit_log_id):
         self.watermark.cursor_occurred_at = occurred_at
         self.watermark.cursor_audit_log_id = audit_log_id
 
     def commit(self):
+        self.processed_audit_ids.update(self.pending_processed_audit_ids)
+        self.pending_processed_audit_ids.clear()
         self.commits += 1
 
 
 _NOW = datetime(2026, 7, 12, 0, 10, tzinfo=timezone.utc)
-_OVERLAP = timedelta(minutes=1)
+_REPLAY_HORIZON = timedelta(minutes=10)
 
 
 def _id(number: int) -> UUID:
@@ -70,7 +101,7 @@ def _reconcile(repository: _Repository):
     return module.reconcile_security_alert_batch(
         repository,
         processor_name="security-alert-v1",
-        overlap=_OVERLAP,
+        replay_horizon=_REPLAY_HORIZON,
     )
 
 
@@ -90,7 +121,7 @@ def test_sal_tc_w010_reconciliation_recovers_missed_realtime_audits():
     assert result.processed_count == 5
 
 
-def test_sal_tc_w011_overlap_reprocessing_does_not_duplicate_occurrences():
+def test_sal_tc_w011_processed_receipt_prevents_duplicate_reconciliation():
     audits = [_audit(seconds=index, audit_id=index + 1) for index in range(5)]
     repository = _Repository(
         watermark=_Watermark(activation_started_at=_NOW),
@@ -101,8 +132,50 @@ def test_sal_tc_w011_overlap_reprocessing_does_not_duplicate_occurrences():
     _reconcile(repository)
 
     assert repository.processed_ids == {audit.id for audit in audits}
-    assert len(repository.process_attempts) > len(repository.processed_ids)
+    assert repository.process_attempts == [audit.id for audit in audits]
+    assert repository.processed_audit_ids == {audit.id for audit in audits}
     assert repository.commits == 2
+
+
+def test_sal_tc_w024_late_arrival_before_overlap_is_still_reconciled():
+    recent = _audit(seconds=600, audit_id=2)
+    late = _audit(seconds=1, audit_id=1)
+    repository = _Repository(
+        watermark=_Watermark(activation_started_at=_NOW),
+        audits=[recent],
+    )
+
+    first_result = _reconcile(repository)
+    repository.audits.append(late)
+    second_result = _reconcile(repository)
+
+    assert first_result.processed_count == 1
+    assert second_result.processed_count == 2
+    assert repository.process_attempts == [recent.id, late.id, recent.id]
+    assert repository.processed_audit_ids == {recent.id, late.id}
+    assert repository.scan_starts == [_NOW, _NOW]
+
+
+def test_sal_tc_w025_late_arrival_replays_only_the_following_rule_window():
+    inside_horizon = _audit(seconds=600, audit_id=2)
+    outside_horizon = _audit(seconds=602, audit_id=3)
+    late = _audit(seconds=1, audit_id=1)
+    repository = _Repository(
+        watermark=_Watermark(activation_started_at=_NOW),
+        audits=[inside_horizon, outside_horizon],
+    )
+
+    _reconcile(repository)
+    repository.audits.append(late)
+    result = _reconcile(repository)
+
+    assert result.processed_count == 2
+    assert repository.process_attempts == [
+        inside_horizon.id,
+        outside_horizon.id,
+        late.id,
+        inside_horizon.id,
+    ]
 
 
 def test_sal_tc_w012_same_timestamp_cursor_uses_audit_uuid_order():
