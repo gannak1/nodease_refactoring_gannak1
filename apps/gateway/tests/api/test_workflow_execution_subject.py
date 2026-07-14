@@ -147,6 +147,11 @@ def test_authenticated_execute_dispatches_draft_rag_selection(monkeypatch):
         "get_draft",
         lambda *args, **kwargs: draft_graph,
     )
+    monkeypatch.setattr(
+        workflow_endpoint.DeploymentService,
+        "enforce_authenticated_configuration_preflight",
+        lambda *args, **kwargs: None,
+    )
     monkeypatch.setattr(workflow_endpoint, "celery_app", celery)
 
     asyncio.run(

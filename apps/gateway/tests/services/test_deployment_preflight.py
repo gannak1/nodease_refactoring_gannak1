@@ -115,6 +115,7 @@ def test_preflight_allows_public_collection_kb_for_public_surface():
                     id=collection_id,
                     organization_id=organization_id,
                     lifecycle_state="active",
+                    source_identity_id=None,
                     safe_metadata={"visibility": "public"},
                 )
             ],
@@ -159,6 +160,7 @@ def test_preflight_blocks_source_managed_kb_even_if_collection_is_public():
                     id=collection_id,
                     organization_id=organization_id,
                     lifecycle_state="active",
+                    source_identity_id=None,
                     safe_metadata={"visibility": "public"},
                 )
             ],
@@ -895,6 +897,7 @@ def test_preflight_audience_classifies_every_deployment_type():
         DeploymentType.WEBAPP: "anonymous_public",
         DeploymentType.WIDGET: "anonymous_public",
         DeploymentType.CHATBOT: "anonymous_public",
+        DeploymentType.INTERNAL_CHATBOT: "authenticated_user",
         DeploymentType.MCP: "anonymous_public",
         DeploymentType.WORKFLOW_NODE: "workflow_node_inherited",
         DeploymentType.SCHEDULE: "anonymous_public",
@@ -1787,6 +1790,15 @@ class _Db:
         self.rolled_back = False
 
     def query(self, model, *rest):
+        if (
+            getattr(model, "class_", None) is KnowledgeCollectionItem
+            and getattr(model, "key", None) == "collection_id"
+            and rest
+        ):
+            return _CollectionAggregateQuery(
+                self.rows_by_model.setdefault(KnowledgeCollectionItem, []),
+                self.rows_by_model.setdefault(KnowledgeBase, []),
+            )
         if model in {
             App,
             Workflow,
@@ -1873,6 +1885,9 @@ class _Query:
         self.expressions.extend(expressions)
         return self
 
+    def join(self, *args, **kwargs):
+        return self
+
     def all(self):
         return [row for row in self.rows if self._matches(row)]
 
@@ -1892,6 +1907,52 @@ class _Query:
         return all(
             _matches_expression(row, expression) for expression in self.expressions
         )
+
+
+class _CollectionAggregateQuery:
+    def __init__(self, items, knowledge_bases):
+        self.items = items
+        self.knowledge_bases = knowledge_bases
+        self.expressions = []
+
+    def join(self, *args, **kwargs):
+        return self
+
+    def filter(self, *expressions):
+        self.expressions.extend(expressions)
+        return self
+
+    def group_by(self, *args, **kwargs):
+        return self
+
+    def all(self):
+        knowledge_bases_by_id = {
+            knowledge_base.id: knowledge_base
+            for knowledge_base in self.knowledge_bases
+        }
+        grouped: dict[uuid.UUID, list[SimpleNamespace]] = {}
+        for item in self.items:
+            knowledge_base = knowledge_bases_by_id.get(item.knowledge_base_id)
+            if knowledge_base is None:
+                continue
+            if not all(
+                _matches_expression(item, expression)
+                and _matches_expression(knowledge_base, expression)
+                for expression in self.expressions
+            ):
+                continue
+            grouped.setdefault(item.collection_id, []).append(knowledge_base)
+        return [
+            (
+                collection_id,
+                len(knowledge_bases),
+                sum(
+                    getattr(knowledge_base, "source_identity_id", None) is not None
+                    for knowledge_base in knowledge_bases
+                ),
+            )
+            for collection_id, knowledge_bases in grouped.items()
+        ]
 
 
 def _matches_expression(row, expression):
@@ -1918,6 +1979,8 @@ def _matches_expression(row, expression):
 def _right_value(right):
     if hasattr(right, "value"):
         return right.value
+    if str(right).lower() == "null":
+        return None
     if str(right).lower() == "true":
         return True
     if str(right).lower() == "false":

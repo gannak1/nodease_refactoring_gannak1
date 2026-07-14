@@ -131,12 +131,6 @@ class DeploymentService:
             workflow.id,
             deployment_in.graph_snapshot,
         )
-        WorkflowService.validate_knowledge_references(
-            db,
-            graph_snapshot,
-            user_id=user_id,
-            organization_id=workflow.organization_id,
-        )
         DeploymentService._enforce_graph_structure_before_binding(
             db,
             app=app,
@@ -144,6 +138,12 @@ class DeploymentService:
             graph_snapshot=graph_snapshot,
             principal_id=user_id,
             is_active=deployment_in.is_active,
+        )
+        WorkflowService.validate_knowledge_references(
+            db,
+            graph_snapshot,
+            user_id=user_id,
+            organization_id=workflow.organization_id,
         )
         try:
             graph_snapshot = DeploymentService.bind_workflow_node_targets(

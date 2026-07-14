@@ -14,8 +14,8 @@ export function formatDeploymentPreflightMessage(
 
   return [
     preflight.status === 'warning'
-      ? `배포 전 검사 경고가 있습니다. (${reason})`
-      : `배포 전 검사에서 차단되었습니다. (${reason})`,
+      ? `실행 준비 검사 경고가 있습니다. (${reason})`
+      : `실행 준비 검사에서 차단되었습니다. (${reason})`,
     affected !== '0' ? `영향 KB 수: ${affected}` : null,
     affectedCollections !== '0'
       ? `영향 Collection 수: ${affectedCollections}`
