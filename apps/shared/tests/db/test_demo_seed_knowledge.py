@@ -684,6 +684,9 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     configuration_preflight_revision = script.get_revision("0f4a5b6c7d89")
     adaptive_routing_revision = script.get_revision("f1c2d3e4f5a6")
     adaptive_routing_controls_revision = script.get_revision("a6f4d2c8e1b7")
+    security_alert_receipt_revision = script.get_revision("1a5b6c7d8e91")
+    security_alert_generation_revision = script.get_revision("2b6c7d8e9f02")
+    current_merge_revision = script.get_revision("c7f8a9b0d123")
 
     assert safe_metadata_revision.down_revision == "fa7b8c9d0e12"
     assert set(merged_revision.down_revision) == {"fa7c8d9e0f12", "ff3a4b5c6d78"}
@@ -721,7 +724,15 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     assert "0f4a5b6c7d89" in ancestry
     assert adaptive_routing_revision.down_revision == "0f4a5b6c7d89"
     assert adaptive_routing_controls_revision.down_revision == "f1c2d3e4f5a6"
-    assert script.get_heads() == ["a6f4d2c8e1b7"]
+    assert security_alert_receipt_revision.down_revision == "0f4a5b6c7d89"
+    assert security_alert_generation_revision.down_revision == "1a5b6c7d8e91"
+    assert set(current_merge_revision.down_revision) == {
+        "2b6c7d8e9f02",
+        "a6f4d2c8e1b7",
+    }
+    assert "2b6c7d8e9f02" in ancestry
+    assert "a6f4d2c8e1b7" in ancestry
+    assert script.get_heads() == ["c7f8a9b0d123"]
 
 
 def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():
