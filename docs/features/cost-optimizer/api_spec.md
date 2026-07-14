@@ -52,6 +52,7 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy/refresh` | 수동 policy refresh 작업을 예약 | FR-011 | builder 이상 |
 | POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts/suggest` | 대표 문의로 입력군 이름/영문 key 초안 생성 | FR-011 | builder 이상 |
 | POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts` | 사용자가 확정한 직접 입력군 생성 | FR-011 | builder 이상 |
+| PATCH | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts/{cohort_id}` | 직접 입력군의 이름/key/대표 문의/고정 여부를 수정하고 재검증 대기로 전환 | FR-011 | builder 이상 |
 | DELETE | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts/{cohort_id}` | 직접/자동 입력군을 retired로 전환하고 이후 라우팅에서 제외 | FR-011 | builder 이상 |
 | GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/analysis` | **계획**: 라우팅 적합성, candidate gate 결과, evidence gap, 예상 순절감 safe summary 조회 | FR-011 | builder 이상 |
 
@@ -83,10 +84,23 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 
 이 계약의 source of truth는 `llm_node_model_routing_policies`다. Cost Optimizer candidate의 policy JSON은 compare/apply 호환을 위한 candidate snapshot이며, 일반 배포 실행은 policy table의 active policy만 사용한다. Gateway의 `GET/PATCH/POST /model-routing/policy`는 이 table과 refresh task를 관리하고, Workflow Engine의 `LLMNode._resolve_model_routing_policy()`는 runtime DB lookup 결과를 `ModelRouter.resolve_policy()`에 전달한다.
 
-### Routing Preview Contract
+### Redeployment Inheritance Contract
 
-`POST /workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/preview`는 Test Sidebar의
-입력으로 현재 **active deployment**가 고를 모델만 계산한다. 권한은 workflow
+활성 deployment를 새 version으로 교체할 때 Gateway deployment service는 새 graph에서 `auto_model_routing=true`인 같은 LLM node의 이전 활성 policy를 새 deployment ID로 복제한다. 이 동작은 별도 public API가 아니라 deployment 생성 transaction 안의 lifecycle 계약이다.
+
+| 새 배포로 유지 | 새 배포에서 초기화 |
+| --- | --- |
+| active policy, policy version, 기본/대체 모델, semantic rule | `eligible_runs_since_last_refresh=0`, `refresh_requested_at=null` |
+| cohort label/key/lifecycle, centroid, 대표 예문 | run event, 운영 observation, 진행 중 validation batch |
+| cohort별 검증 완료 model evidence와 safe quality/efficiency summary | 이전 deployment의 월간 검증 사용량과 예약 비용 |
+
+복제된 policy의 `semantic_router.routes[].cohort_id`와 rule의 `when.semantic_cohort_id`는 새 cohort row ID로 재작성한다. 따라서 새 deployment의 `GET /model-routing/policy`와 cohort API는 이전 version의 상태를 참조하지 않고 새 version에 귀속된 동일한 routing 상태를 반환한다.
+
+### Routing Preview Contract (UI 미연결)
+
+`POST /workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/preview`는 현재 **active deployment**가
+고를 모델만 계산하는 API 전용 계약이다. 현재 Test Sidebar UI는 이 endpoint를 호출하지
+않으며, 테스트 실행 후 실제 trace를 상세 보기로 표시한다. 권한은 workflow
 `execute`다. endpoint는 current draft node를 기준으로 판단하지 않으며, deployment
 snapshot의 target LLM node와 해당 deployment/node의 persisted active policy를 사용한다.
 
@@ -127,6 +141,25 @@ semantic cohort를 계산해야 하면 execution subject 권한의 embedding cli
 embedding vector, raw trace는 저장하거나 response에 넣지 않는다. 이 endpoint는
 `workflow_runs`, `workflow_node_runs`, usage log, policy run event, refresh counter,
 Celery refresh task를 생성하거나 변경하지 않는다.
+
+### Runtime Routing Trace Contract
+
+테스트 실행과 배포 실행의 LLM output/trace metadata에는 아래 safe routing 필드를 넣을 수
+있다. 화면은 이 실제 실행 결과를 표시하며, policy를 새로 평가하지 않는다.
+
+| Field | 의미 |
+| --- | --- |
+| `selected_model` | rule 또는 기본 정책이 처음 선택한 모델 |
+| `fallback_model` | 계획된 기본 대체 모델 |
+| `semantic_route_label` | 기준을 통과해 매칭된 입력군 이름 |
+| `semantic_candidate_label` | 기준에는 미달했지만 가장 가까웠던 입력군 이름 |
+| `semantic_similarity`, `semantic_threshold` | 입력군 매칭 점수와 통과 기준. 운영 traffic 비중/성공 확률이 아니다. |
+| `semantic_match_status` | `matched`, `no_match`, `ambiguous`, `unavailable` 중 하나 |
+| `fallback_used` | 실제 실행 중 fallback이 수행됐는지 여부 |
+| `fallback_from_model` | 실제 fallback 이전에 호출하려던 모델 |
+| `fallback_reason_code` | `runtime_client_unavailable`, `provider_call_failed` 같은 safe 실패 분류 |
+| `policy_version` | 실행에 사용한 저장 policy 버전 |
+| `judge_called` | 일반 runtime은 항상 `false`; Judge는 실행 시점 모델 선택에 사용하지 않는다. |
 
 다음 상태는 `409` safe error code로 반환한다.
 
@@ -532,9 +565,11 @@ lifecycle, centroid vector, traffic share, 검증 모델을 보관한다. `propo
 않는다.
 
 `..._observations`는 배포 후 성공한 node run의 input hash와 embedding vector만
-보관한다. raw 운영 입력은 저장하지 않는다. `..._cohort_examples`는 사용자가 직접
-등록한 대표 문장만 보관하는 설정 데이터이며, secret이나 실제 고객 원문은 입력하면
-안 된다. `..._model_evidence`, `..._validation_batches`, `..._validation_items`,
+보관한다. raw 운영 입력은 저장하지 않는다. `..._cohort_examples`는 사용자 대표 문의나
+별도 안전 요약 과정이 만든 합성 대표 문장만 보관하는 설정 데이터다. 자동 발견 입력군은
+안전한 합성 대표 문장이 아직 없으면 example row가 없을 수 있으며 policy 조회는
+`representative_query: null`을 반환한다. secret이나 실제 고객 원문은 입력하면 안 된다.
+`..._model_evidence`, `..._validation_batches`, `..._validation_items`,
 `..._validation_cost_events`, `..._validation_budget_months`는 candidate Replay/Judge
 결과와 월간 비용 한도를 보관한다.
 
@@ -568,6 +603,27 @@ Replay gate를 통과해야만 active routing rule로 승격된다. policy row�
 `fixed=true`인 입력군은 운영 트래픽이 줄어도 자동 휴면 또는 종료 처리하지 않는다.
 `DELETE /model-routing/cohorts/{cohort_id}`는 row와 검증 이력을 물리 삭제하지 않고
 `status=retired`로 바꾼다. retired 입력군은 이후 정책 규칙과 Replay 검증 대상에서 제외된다.
+
+`GET /model-routing/policy`의 `adaptive.cohorts[]`는 아래 safe summary를 포함한다.
+
+```json
+{
+  "id": "uuid",
+  "key": "billing_receipt_issue",
+  "label": "영수증 발급 문의",
+  "representative_query": "결제는 완료됐는데 영수증을 다시 발급받고 싶습니다.",
+  "source": "manual",
+  "status": "proposed"
+}
+```
+
+`PATCH /model-routing/cohorts/{cohort_id}`는 `POST`와 같은
+`representative_query`, `label`, `key`, `fixed` body를 받는다. `source=manual`만
+수정할 수 있다. 수정은 대표 문의를 다시 embedding하고 기존 evidence를 `expired`로
+바꾸며, 기존 active policy의 해당 cohort rule을 제거한다. 따라서 응답의 cohort는
+`status=proposed`이며 새 운영 관찰과 Replay 검증을 거쳐야 다시 route에 참여한다.
+`source=auto` 수정 요청은 `409 model_routing.cohort_auto_read_only`를 반환한다. 자동
+입력군은 클라이언트에서 값을 복사해 새 manual cohort로 등록해야 한다.
 
 `PATCH /model-routing/policy`는 자동 라우팅의 공통 설정과 함께 아래 값을 받을 수 있다.
 

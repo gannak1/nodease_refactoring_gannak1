@@ -423,30 +423,28 @@ Cost Optimizer는 LLM 노드의 workflow 맥락과 검증된 실행 증거를 �
 증거나 Cost Optimizer Replay 결과가 생기면 policy를 재평가하고, 일반 실행은 이미
 검증되어 저장된 active policy만 평가한다.
 
-#### 운영 정책 미리보기
+#### 테스트 실행 후 실제 라우팅 상세
 
-편집 화면의 테스트 입력은 배포 후 운영 표본과 다른 용도다. 사용자는 실제 LLM
-답변을 생성하거나 비용을 쓰기 전에, **현재 배포본이라면 이 입력에서 어떤 모델을
-선택할지** 확인할 수 있어야 한다.
+Test Sidebar는 실행 전 모델을 예상하는 UI를 제공하지 않는다. 사용자는 실제 테스트를
+실행한 뒤 각 노드의 `상세 보기`를 눌러, **이번 실행에서 실제로 어떤 모델이 선택·호출됐는지**
+같은 사이드바 안에서 확인한다. 상세 보기에서 `테스트 결과로 돌아가기`를 누르면 노드별
+실행 결과 목록으로 복귀한다.
 
-- Test Sidebar는 `라우팅 미리보기`로 target LLM node와 현재 입력을 보낸다. 여러
-  LLM node가 있으면 사용자가 대상 node를 선택하며, 자동 라우팅 ON/OFF 판단은
-  deployment snapshot을 기준으로 한다.
-- 판단 기준은 current draft가 아니라 active deployment의 graph snapshot, 해당
-  deployment/node의 persisted active policy, deployment의 고정 execution subject가
-  사용할 수 있는 credential/model이다.
-- semantic cohort policy라면 입력 본문을 embedding해 cohort만 판단할 수 있다. 이는
-  embedding 비용이 발생할 수 있으나 LLM completion은 생성하지 않는다.
-- 응답은 deployment version, policy version, 선택 모델, 기본 모델과 기본 대체 모델,
-  matched cohort/rule, safe reason code, availability, draft/deployment 차이만 포함한다.
-  입력 원문, credential, embedding vector, raw trace는 반환하지 않는다.
-- 미리보기 요청은 `workflow_runs`, `workflow_node_runs`, usage log, policy run event를
-  만들거나 변경하지 않으며, 정책 갱신 카운터와 refresh task에도 영향을 주지 않는다.
-- 자동 라우팅이 deployment snapshot에서 꺼져 있으면 `disabled`, active policy가
-  아직 없으면 `policy_not_ready`, 기본 모델과 대체 모델을 모두 쓸 수 없으면
-  `no_available_model` 상태를 명확히 표시한다.
-- draft와 deployment가 다르면 미리보기 결과는 유효하지만, 아직 배포되지 않은 수정은
-  결과에 반영되지 않았음을 표시한다.
+- 실행 상세에는 상태, 실행 시간, 비용, 전체 출력 데이터를 표시한다. 출력은 임의로 자르지
+  않고 내부 스크롤 영역에서 전체 값을 확인할 수 있어야 한다.
+- 자동 모델 라우팅이 적용된 LLM node는 입력 유형, 가장 가까운 입력 유형, 입력군 매칭
+  점수와 기준, 처음 선택한 모델, 선택 이유, policy version을 표시한다. 매칭 점수는 해당
+  입력이 특정 입력군과 얼마나 가까운지를 뜻하며, 입력군의 운영 traffic 비중이나 성공 확률을
+  뜻하지 않는다.
+- 입력군 매칭이 기준에 미달하거나 애매하면 `기준 미달로 기본 모델 사용`과 그 이유를
+  표시한다. 저비용 모델을 불확실한 입력에 임의로 적용하지 않는 안전 장치다.
+- 실제 provider 호출에서 fallback이 발생했으면 최초 선택 모델, 안전한 실패 사유 코드,
+  실제 대체 실행 모델을 함께 표시한다. 계획된 fallback 모델만 있는 것과 실제 fallback이
+  발생한 것은 구분한다.
+- 테스트 실행은 배포 후 운영 실행이 아니므로 policy 학습, 입력군 traffic 집계, 정책 갱신
+  카운터에 포함하지 않는다는 안내를 표시한다.
+- trace에는 raw credential, API key, embedding vector, 입력 원문을 새로 복사해 노출하지
+  않는다. 출력 데이터는 기존 테스트 실행 권한 범위에서만 제공한다.
 
 #### 해결해야 하는 현재 공백
 
@@ -507,12 +505,15 @@ Replay는 실제 운영 traffic 비중을 증명하지 않는다. 따라서 `rep
 | `cost_optimizer_experiments`, `cost_optimizer_candidates` | 사용자가 만든 비교/Replay 이력 | 기존 Cost Optimizer 보존 정책을 따른다. |
 | `llm_node_model_routing_policies`, `llm_node_model_routing_policy_updates` | active policy와 갱신 이력 | 원문 없음 |
 | `llm_node_model_routing_cohorts`, `..._observations`, `..._model_evidence`, `..._validation_*` | 입력군 lifecycle, 비가역 관찰값, 후보 검증 결과, 월간 예산 | 운영 입력 원문 없음 |
-| `llm_node_model_routing_cohort_examples` | 사용자가 직접 등록한 대표 문장 | 사용자가 설정으로 입력한 문장만 보관하며, secret/실제 고객 원문을 입력하면 안 된다. |
+| `llm_node_model_routing_cohort_examples` | 입력군의 합성 대표 문장 | 사용자가 직접 등록한 대표 문의 또는 별도 안전 요약 과정이 만든 합성 문장만 보관한다. 운영 원문, secret, 실제 고객 식별 정보는 보관하지 않는다. |
 
 입력군은 자동 발견과 직접 등록을 함께 지원한다.
 
 - 자동 발견: 최근 40개 관찰에서 서로 다른 입력 5개 이상이 두 점검 구간에 반복되면 제안한다.
 - 직접 등록: 사용자가 대표 한국어 문의를 쓰고 마법사로 이름/영문 key 초안을 받은 뒤 수정해 저장한다. 직접 등록만으로는 즉시 저비용 모델을 사용하지 않으며, 운영 관찰과 Replay 검증을 통과해야 active rule이 된다.
+- 입력군이 0개여도 자동 라우팅을 막지 않는다. 이때 모든 요청은 `기본 모델 (규칙 미일치 시)`로 실행하고, 자동 발견 또는 직접 등록 후 검증된 rule만 별도 모델을 선택한다.
+- 대표 문의: policy 조회는 cohort별 `representative_query`를 반환한다. 자동 발견 입력군은 운영 원문을 저장하지 않으므로 안전한 합성 대표 문장이 아직 없으면 `null`을 반환하며, 화면은 준비 중 상태와 `사용자 입력군으로 전환` 액션을 표시한다.
+- 수정 경계: `source=manual` 입력군만 이름, 영문 key, 대표 문의, 고정 여부를 수정할 수 있다. 대표 문의를 바꾸면 centroid와 기존 품질 증거의 의미가 달라지므로 기존 route/evidence를 비활성화하고 `proposed` 상태에서 다시 검증한다. `source=auto`는 원본을 수정하지 않고 같은 값을 새 manual cohort 초안으로 복사해 사용자가 별도 입력군으로 등록한다.
 - 최대 개수: policy별 `1~12`, 기본 `6`, 권장 `3~6`이다. `proposed`, `validating`, `validated_waiting`, `active` 상태만 자리를 차지한다. `dormant`와 `retired`는 과거 trend 이력이므로 새 입력군 자리를 막지 않는다.
 - lifecycle: 자동 입력군은 최근 traffic share가 3개 점검 구간 연속 5% 이하이면 `dormant`, 휴면 뒤 10% 이상으로 회복하면 `active`, 90일이 지나면 `retired`가 된다. 직접 등록/필수/안전 보호 입력군은 자동 휴면 처리하지 않는다.
 
@@ -822,6 +823,8 @@ Cost Optimizer는 LLM 노드가 배포 후 운영 실행에서 모델을 자동 
 | `failed` | 정책 갱신 실패 |
 
 정책 저장 source of truth는 `llm_node_model_routing_policies`다. 이 row는 active policy, pending policy, 정책 버전, 설정된 갱신 횟수, 마지막 갱신 시각과 누적 운영 실행 수를 가진다. LLM node data의 `model_routing_policy` JSON은 이전 draft/Cost Optimizer candidate 호환용 snapshot일 뿐, 일반 배포 실행의 정책 기준이 아니다.
+
+자동 모델 라우팅이 켜진 동일 LLM node를 새 deployment version으로 다시 배포하면, 새 배포는 이전 활성 배포의 active policy, 입력군, 대표 예문, 검증 완료 모델 evidence를 이어받아야 한다. 이때 policy 안의 semantic cohort ID 참조도 새 입력군 row ID로 다시 연결해야 한다. 반면 이전 배포에서 누적한 운영 실행 수, refresh 진행 상태, run event, 운영 관찰값, 월간 Replay/Judge 검증 비용은 새 배포의 운영 이력이 아니므로 복사하지 않고 새 버전에서 0부터 다시 기록한다. 이 규칙은 새 배포 직후 입력군 목록과 직접 입력군 추가 기능이 비어 보이지 않게 하면서, 예전 버전의 실행 수로 새 버전의 정책 갱신이 조기에 예약되는 문제를 막는다.
 
 배포된 graph snapshot에서 `auto_model_routing=true`인 LLM node에 아직 policy row가 없다면 첫 실행은 node에 저장된 `model_id`와 `fallback_model_id`를 보수적으로 사용한다. graph snapshot 안의 legacy `model_routing_policy` JSON은 이 시점에 평가하지 않는다. 첫 terminal 운영 workflow 완료 후 생성되는 bootstrap policy도 저장 `model_id`/`fallback_model_id`만 보존하고 rule은 빈 배열로 둔다. bootstrap 생성은 judge refresh가 아니며, `auto_n_runs` 또는 `manual_refresh`가 policy update row를 남기는 실제 정책 갱신이다.
 
