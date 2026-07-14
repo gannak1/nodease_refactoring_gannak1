@@ -112,6 +112,7 @@ def validate_mail_node_credential_boundary(data: Any) -> None:
     if processing_mode == "durable" and data.get("mark_as_read") is True:
         raise MailNodeCredentialBoundaryError()
 
+
 def validate_mail_processing_node_boundary(
     node_type: str, data: Any, *, allow_unresolved: bool = False
 ) -> None:
@@ -337,7 +338,9 @@ def _validate_credential_reference_state(data: Mapping[str, Any]) -> None:
     if configuration_state not in (None, "resolved", "unresolved"):
         raise MailNodeCredentialBoundaryError()
     if credential_id is None:
-        if configuration_state != "unresolved":
+        # Mail nodes created before configuration_state was introduced omitted
+        # the field. Preserve that narrow draft compatibility as unresolved.
+        if "configuration_state" in data and configuration_state != "unresolved":
             raise MailNodeCredentialBoundaryError()
         return
     if configuration_state == "unresolved":

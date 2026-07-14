@@ -86,6 +86,15 @@ def test_mail_node_credential_boundary_accepts_only_reference_configuration():
     )
 
 
+def test_mail_node_boundary_accepts_legacy_null_reference_without_state():
+    validate_mail_node_credential_boundary(
+        {
+            "title": "Mail",
+            "credential_id": None,
+        }
+    )
+
+
 @pytest.mark.parametrize(
     ("field_name", "invalid_value"),
     [

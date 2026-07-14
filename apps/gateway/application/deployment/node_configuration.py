@@ -209,9 +209,7 @@ class NodeConfigurationEvaluator:
                         node,
                         "mail_credential_unavailable",
                         permission_resource_id=credential_id,
-                        permission_effective_auth_state=(
-                            snapshot.effective_auth_state
-                        ),
+                        permission_effective_auth_state=(snapshot.effective_auth_state),
                     )
                 )
                 continue
@@ -274,11 +272,13 @@ class NodeConfigurationEvaluator:
         try:
             validate_slack_graph_boundary(
                 graph_snapshot.get("nodes", []),
-                require_resolved=True,
+                require_resolved=False,
                 allow_legacy_selectors=False,
             )
         except SlackGraphBoundaryError:
-            if not issues and slack_nodes:
+            if slack_nodes and not any(
+                issue.reason_code == "node_configuration_invalid" for issue in issues
+            ):
                 issues.append(self._issue(slack_nodes[0], "node_configuration_invalid"))
         return issues
 
@@ -314,7 +314,10 @@ class NodeConfigurationEvaluator:
         if node_type == "mailNode":
             if not (
                 data.get("credential_id") is None
-                and data.get("configuration_state") == "unresolved"
+                and (
+                    data.get("configuration_state") == "unresolved"
+                    or "configuration_state" not in data
+                )
             ):
                 return False
             completed = dict(data)
@@ -333,8 +336,7 @@ class NodeConfigurationEvaluator:
                 or data.get("reply_body_selector") in (None, [])
             )
             if not (
-                has_missing_field
-                and data.get("configuration_state") == "unresolved"
+                has_missing_field and data.get("configuration_state") == "unresolved"
             ):
                 return False
             completed = dict(data)
@@ -385,7 +387,10 @@ class NodeConfigurationEvaluator:
                 auth_config.get("token") if isinstance(auth_config, Mapping) else None
             )
             if not token and isinstance(auth_config, Mapping):
-                completed["authConfig"] = {**auth_config, "token": "configuration-ready"}
+                completed["authConfig"] = {
+                    **auth_config,
+                    "token": "configuration-ready",
+                }
                 has_missing_field = True
             if not data.get("channel"):
                 completed["channel"] = "configuration-ready"

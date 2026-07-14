@@ -7,14 +7,24 @@ from apps.shared.domain.workflow_graph import (
     validate_loop_subgraph,
     validate_workflow_graph,
 )
+from apps.shared.schemas.workflow import EdgeSchema, NodeSchema
+
+
+def _node(node_id: str, node_type: str, data: dict | None = None) -> dict:
+    return {
+        "id": node_id,
+        "type": node_type,
+        "position": {"x": 0, "y": 0},
+        "data": data or {},
+    }
 
 
 def _valid_graph() -> dict:
     return {
         "nodes": [
-            {"id": "start", "type": "startNode", "data": {}},
-            {"id": "llm", "type": "llmNode", "data": {}},
-            {"id": "answer", "type": "answerNode", "data": {}},
+            _node("start", "startNode"),
+            _node("llm", "llmNode"),
+            _node("answer", "answerNode"),
         ],
         "edges": [
             {"id": "e1", "source": "start", "target": "llm"},
@@ -24,14 +34,18 @@ def _valid_graph() -> dict:
 
 
 def test_valid_workflow_graph_passes() -> None:
-    validate_workflow_graph(_valid_graph())
+    graph = _valid_graph()
+
+    validate_workflow_graph(graph)
+    assert all(NodeSchema.model_validate(node) for node in graph["nodes"])
+    assert all(EdgeSchema.model_validate(edge) for edge in graph["edges"])
 
 
 def test_loop_subgraph_uses_single_zero_incoming_node_as_entry() -> None:
     graph = {
         "nodes": [
-            {"id": "first", "type": "templateNode", "data": {}},
-            {"id": "second", "type": "llmNode", "data": {}},
+            _node("first", "templateNode"),
+            _node("second", "llmNode"),
         ],
         "edges": [{"id": "body-edge", "source": "first", "target": "second"}],
     }
@@ -42,8 +56,8 @@ def test_loop_subgraph_uses_single_zero_incoming_node_as_entry() -> None:
 def test_loop_subgraph_rejects_multiple_implicit_entries() -> None:
     graph = {
         "nodes": [
-            {"id": "first", "type": "templateNode", "data": {}},
-            {"id": "second", "type": "llmNode", "data": {}},
+            _node("first", "templateNode"),
+            _node("second", "llmNode"),
         ],
         "edges": [],
     }
@@ -56,7 +70,7 @@ def test_loop_subgraph_rejects_multiple_implicit_entries() -> None:
 
 def test_root_graph_still_requires_explicit_trigger() -> None:
     graph = {
-        "nodes": [{"id": "body", "type": "templateNode", "data": {}}],
+        "nodes": [_node("body", "templateNode")],
         "edges": [],
     }
 
@@ -83,20 +97,45 @@ def test_root_graph_still_requires_explicit_trigger() -> None:
             "workflow_cycle_detected",
         ),
         (
-            lambda graph: graph["nodes"].append(
-                {"id": "llm", "type": "llmNode", "data": {}}
-            ),
+            lambda graph: graph["nodes"].append(_node("llm", "llmNode")),
             "workflow_node_invalid",
         ),
         (
-            lambda graph: graph["nodes"].append(
-                {"id": "isolated", "type": "llmNode", "data": {}}
-            ),
+            lambda graph: graph["nodes"].append(_node("isolated", "llmNode")),
             "workflow_isolated_node",
         ),
     ],
 )
 def test_invalid_structure_fails_closed(mutate, expected_code: str) -> None:
+    graph = _valid_graph()
+    mutate(graph)
+
+    with pytest.raises(WorkflowGraphValidationError) as exc_info:
+        validate_workflow_graph(graph)
+
+    assert exc_info.value.code == expected_code
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected_code"),
+    [
+        (lambda graph: graph["nodes"][0].pop("position"), "workflow_node_invalid"),
+        (
+            lambda graph: graph["nodes"][0].update({"position": {"x": "0", "y": 0}}),
+            "workflow_node_invalid",
+        ),
+        (
+            lambda graph: graph["nodes"][0].update(
+                {"position": {"x": 10**1000, "y": 0}}
+            ),
+            "workflow_node_invalid",
+        ),
+        (lambda graph: graph["edges"][0].pop("id"), "workflow_edge_invalid"),
+    ],
+)
+def test_runtime_required_shape_fails_before_publish(
+    mutate, expected_code: str
+) -> None:
     graph = _valid_graph()
     mutate(graph)
 
@@ -115,6 +154,7 @@ def test_nested_loop_graph_uses_same_structure_contract() -> None:
     graph["nodes"][1] = {
         "id": "loop",
         "type": "loopNode",
+        "position": {"x": 0, "y": 0},
         "data": {"subGraph": nested},
     }
     graph["edges"][0]["target"] = "loop"
@@ -129,9 +169,9 @@ def test_nested_loop_graph_uses_same_structure_contract() -> None:
 def test_node_count_is_bounded() -> None:
     graph = {
         "nodes": [
-            {"id": "start", "type": "startNode", "data": {}},
+            _node("start", "startNode"),
             *[
-                {"id": f"note-{index}", "type": "note", "data": {}}
+                _node(f"note-{index}", "note")
                 for index in range(MAX_WORKFLOW_GRAPH_NODES)
             ],
         ],
@@ -147,9 +187,9 @@ def test_node_count_is_bounded() -> None:
 def test_node_count_accepts_exact_limit() -> None:
     graph = {
         "nodes": [
-            {"id": "start", "type": "startNode", "data": {}},
+            _node("start", "startNode"),
             *[
-                {"id": f"note-{index}", "type": "note", "data": {}}
+                _node(f"note-{index}", "note")
                 for index in range(MAX_WORKFLOW_GRAPH_NODES - 1)
             ],
         ],
@@ -162,8 +202,8 @@ def test_node_count_accepts_exact_limit() -> None:
 def test_edge_count_is_bounded() -> None:
     graph = {
         "nodes": [
-            {"id": "start", "type": "startNode", "data": {}},
-            {"id": "llm", "type": "llmNode", "data": {}},
+            _node("start", "startNode"),
+            _node("llm", "llmNode"),
         ],
         "edges": [
             {"id": f"edge-{index}", "source": "start", "target": "llm"}
@@ -180,8 +220,8 @@ def test_edge_count_is_bounded() -> None:
 def test_edge_count_accepts_exact_limit() -> None:
     graph = {
         "nodes": [
-            {"id": "start", "type": "startNode", "data": {}},
-            {"id": "llm", "type": "llmNode", "data": {}},
+            _node("start", "startNode"),
+            _node("llm", "llmNode"),
         ],
         "edges": [
             {"id": f"edge-{index}", "source": "start", "target": "llm"}
@@ -196,16 +236,14 @@ def test_nested_graph_depth_accepts_exact_limit_and_rejects_one_more() -> None:
     validate_workflow_graph(_nested_graph(MAX_WORKFLOW_GRAPH_NESTING_DEPTH))
 
     with pytest.raises(WorkflowGraphValidationError) as exc_info:
-        validate_workflow_graph(
-            _nested_graph(MAX_WORKFLOW_GRAPH_NESTING_DEPTH + 1)
-        )
+        validate_workflow_graph(_nested_graph(MAX_WORKFLOW_GRAPH_NESTING_DEPTH + 1))
 
     assert exc_info.value.code == "workflow_graph_too_deep"
 
 
 def _nested_graph(nesting_depth: int) -> dict:
     graph = {
-        "nodes": [{"id": "start-leaf", "type": "startNode", "data": {}}],
+        "nodes": [_node("start-leaf", "startNode")],
         "edges": [],
     }
     for depth in range(nesting_depth):
@@ -213,13 +251,9 @@ def _nested_graph(nesting_depth: int) -> dict:
         loop_id = f"loop-{depth}"
         graph = {
             "nodes": [
-                {"id": start_id, "type": "startNode", "data": {}},
-                {
-                    "id": loop_id,
-                    "type": "loopNode",
-                    "data": {"subGraph": graph},
-                },
+                _node(start_id, "startNode"),
+                _node(loop_id, "loopNode", {"subGraph": graph}),
             ],
-            "edges": [{"source": start_id, "target": loop_id}],
+            "edges": [{"id": f"edge-{depth}", "source": start_id, "target": loop_id}],
         }
     return graph

@@ -21,9 +21,7 @@ from apps.shared.domain.workflow_node_binding import (
 class _Repository:
     def __init__(self) -> None:
         self.knowledge_bases: dict[uuid.UUID, KnowledgeBaseSnapshot] = {}
-        self.collections: dict[
-            uuid.UUID, KnowledgeCollectionPreflightSnapshot
-        ] = {}
+        self.collections: dict[uuid.UUID, KnowledgeCollectionPreflightSnapshot] = {}
         self.public_ids: set[uuid.UUID] = set()
         self.targets: dict[uuid.UUID, WorkflowNodeTargetSnapshot] = {}
         self.deployments: dict[
@@ -426,9 +424,7 @@ def test_public_mail_does_not_report_permission_denial_without_a_principal():
     )
 
     reason_codes = {
-        reason
-        for node_result in result.nodes
-        for reason in node_result.reason_codes
+        reason for node_result in result.nodes for reason in node_result.reason_codes
     }
     assert result.status == "blocked"
     assert reason_codes == {"mail_execution_subject_required"}
@@ -460,7 +456,7 @@ def test_inactive_preview_downgrades_fixable_mail_configuration():
         ("", "unresolved"),
     ],
 )
-def test_inactive_preview_rejects_null_or_empty_reference_without_explicit_unresolved_state(
+def test_inactive_preview_rejects_explicit_invalid_null_or_empty_reference_state(
     credential_id,
     configuration_state,
 ):
@@ -473,10 +469,7 @@ def test_inactive_preview_rejects_null_or_empty_reference_without_explicit_unres
     graph = _mail_graph(None)
     mail_data = graph["nodes"][1]["data"]
     mail_data["credential_id"] = credential_id
-    if configuration_state is None:
-        mail_data.pop("configuration_state")
-    else:
-        mail_data["configuration_state"] = configuration_state
+    mail_data["configuration_state"] = configuration_state
 
     result = use_case.preview(
         deployment_type="workflow_node",
@@ -486,6 +479,26 @@ def test_inactive_preview_rejects_null_or_empty_reference_without_explicit_unres
 
     assert result.status == "blocked"
     assert result.safe_summary.blocked_reason == "node_configuration_invalid"
+
+
+def test_inactive_preview_treats_legacy_missing_mail_state_as_unresolved():
+    use_case = DeploymentPreflightUseCase(
+        _Repository(),
+        organization_id=uuid.uuid4(),
+        principal_id=uuid.uuid4(),
+        node_catalog_by_type=_catalog(mailNode=("external_read", True)),
+    )
+    graph = _mail_graph(None)
+    graph["nodes"][1]["data"].pop("configuration_state")
+
+    result = use_case.preview(
+        deployment_type="workflow_node",
+        graph_snapshot=graph,
+        is_active=False,
+    )
+
+    assert result.status == "warning"
+    assert result.safe_summary.blocked_reason == "node_configuration_unresolved"
 
 
 @pytest.mark.parametrize(
@@ -625,6 +638,58 @@ def test_inactive_preview_does_not_hide_invalid_slack_fields_behind_missing_valu
     assert result.safe_summary.blocked_reason == "node_configuration_invalid"
 
 
+def test_inactive_preview_preserves_slack_invalid_issue_with_unresolved_node():
+    use_case = DeploymentPreflightUseCase(
+        _Repository(),
+        organization_id=uuid.uuid4(),
+        principal_id=uuid.uuid4(),
+        node_catalog_by_type=_catalog(slackPostNode=("external_write", True)),
+    )
+    graph = _slack_graph(
+        {
+            "title": "Slack",
+            "slackMode": "api",
+            "authConfig": {},
+            "configuration_state": "unresolved",
+        }
+    )
+    graph["nodes"].append(
+        _node(
+            "slack-legacy",
+            "slackPostNode",
+            {
+                "title": "Slack legacy selector",
+                "slackMode": "api",
+                "authConfig": {"token": "configuration-ready"},
+                "channel": "C123",
+                "message": "{{legacy}}",
+                "referenced_variables": [
+                    {
+                        "name": "legacy",
+                        "value_selector": ["slack-legacy", "data"],
+                    }
+                ],
+            },
+        )
+    )
+    graph["edges"].append(_edge("start", "slack-legacy", "start-slack-legacy"))
+
+    result = use_case.preview(
+        deployment_type="workflow_node",
+        graph_snapshot=graph,
+        is_active=False,
+    )
+
+    reason_codes = {
+        reason for node_result in result.nodes for reason in node_result.reason_codes
+    }
+    assert result.status == "blocked"
+    assert reason_codes == {
+        "node_configuration_invalid",
+        "node_configuration_unresolved",
+    }
+
+
 def test_preview_does_not_audit_mail_permission_denial():
     credential_id = uuid.uuid4()
     repository = _Repository()
@@ -664,14 +729,8 @@ def test_enforcement_audits_each_denied_mail_credential_once():
     )
     audit = _PermissionDenialAudit()
     graph = _mail_graph(credential_id)
-    graph["nodes"].append(
-        {
-            "id": "mail-2",
-            "type": "mailNode",
-            "data": dict(graph["nodes"][1]["data"]),
-        }
-    )
-    graph["edges"].append({"source": "start", "target": "mail-2"})
+    graph["nodes"].append(_node("mail-2", "mailNode", dict(graph["nodes"][1]["data"])))
+    graph["edges"].append(_edge("start", "mail-2", "start-mail-2"))
     use_case = DeploymentPreflightUseCase(
         repository,
         organization_id=organization_id,
@@ -746,10 +805,10 @@ def test_unimplemented_external_node_is_not_downgraded_for_inactive_preview():
     )
     graph = {
         "nodes": [
-            {"id": "start", "type": "startNode", "data": {}},
-            {"id": "plugin-1", "type": "pluginNode", "data": {}},
+            _node("start", "startNode"),
+            _node("plugin-1", "pluginNode"),
         ],
-        "edges": [{"source": "start", "target": "plugin-1"}],
+        "edges": [_edge("start", "plugin-1", "start-plugin")],
     }
 
     result = use_case.preview(
@@ -772,10 +831,10 @@ def test_runtime_authoritative_external_node_remains_supported():
     )
     graph = {
         "nodes": [
-            {"id": "start", "type": "startNode", "data": {}},
-            {"id": "llm-1", "type": "llmNode", "data": {}},
+            _node("start", "startNode"),
+            _node("llm-1", "llmNode"),
         ],
-        "edges": [{"source": "start", "target": "llm-1"}],
+        "edges": [_edge("start", "llm-1", "start-llm")],
     }
 
     result = use_case.preview(deployment_type="api", graph_snapshot=graph)
@@ -794,8 +853,8 @@ def test_canvas_note_is_allowed_without_catalog_runtime_definition():
         deployment_type="api",
         graph_snapshot={
             "nodes": [
-                {"id": "start", "type": "startNode", "data": {}},
-                {"id": "note-1", "type": "note", "data": {}},
+                _node("start", "startNode"),
+                _node("note-1", "note"),
             ],
             "edges": [],
         },
@@ -826,14 +885,14 @@ def test_nested_loop_mail_uses_same_authenticated_principal():
     )
     graph = {
         "nodes": [
-            {"id": "start", "type": "startNode", "data": {}},
-            {
-                "id": "loop-1",
-                "type": "loopNode",
-                "data": {"subGraph": _mail_graph(credential_id)},
-            }
+            _node("start", "startNode"),
+            _node(
+                "loop-1",
+                "loopNode",
+                {"subGraph": _mail_graph(credential_id)},
+            ),
         ],
-        "edges": [{"source": "start", "target": "loop-1"}],
+        "edges": [_edge("start", "loop-1", "start-loop")],
     }
 
     result = use_case.enforce_authenticated_run(graph_snapshot=graph)
@@ -1128,26 +1187,20 @@ def test_nested_loop_collection_is_evaluated_with_parent_audience():
     )
     loop_body = {
         "nodes": [
-            {
-                "id": "llm-collection",
-                "type": "llmNode",
-                "data": {
-                    "knowledgeCollections": [{"id": str(collection_id)}]
-                },
-            }
+            _node(
+                "llm-collection",
+                "llmNode",
+                {"knowledgeCollections": [{"id": str(collection_id)}]},
+            )
         ],
         "edges": [],
     }
     graph = {
         "nodes": [
-            {"id": "start", "type": "startNode", "data": {}},
-            {
-                "id": "loop-1",
-                "type": "loopNode",
-                "data": {"subGraph": loop_body},
-            },
+            _node("start", "startNode"),
+            _node("loop-1", "loopNode", {"subGraph": loop_body}),
         ],
-        "edges": [{"source": "start", "target": "loop-1"}],
+        "edges": [_edge("start", "loop-1", "start-loop")],
     }
 
     result = DeploymentPreflightUseCase(
@@ -1168,33 +1221,25 @@ def test_nested_collection_beyond_shared_graph_depth_limit_fails_closed():
     collection_id = uuid.uuid4()
     body = {
         "nodes": [
-            {
-                "id": "llm-collection",
-                "type": "llmNode",
-                "data": {
-                    "knowledgeCollections": [{"id": str(collection_id)}]
-                },
-            }
+            _node(
+                "llm-collection",
+                "llmNode",
+                {"knowledgeCollections": [{"id": str(collection_id)}]},
+            )
         ],
         "edges": [],
     }
     for index in range(17):
         body = {
-            "nodes": [
-                {
-                    "id": f"loop-{index}",
-                    "type": "loopNode",
-                    "data": {"subGraph": body},
-                }
-            ],
+            "nodes": [_node(f"loop-{index}", "loopNode", {"subGraph": body})],
             "edges": [],
         }
     graph = {
         "nodes": [
-            {"id": "start", "type": "startNode", "data": {}},
-            {"id": "root-loop", "type": "loopNode", "data": {"subGraph": body}},
+            _node("start", "startNode"),
+            _node("root-loop", "loopNode", {"subGraph": body}),
         ],
-        "edges": [{"source": "start", "target": "root-loop"}],
+        "edges": [_edge("start", "root-loop", "start-root-loop")],
     }
     repository = _Repository()
 
@@ -1211,47 +1256,54 @@ def test_nested_collection_beyond_shared_graph_depth_limit_fails_closed():
     assert repository.calls == []
 
 
+def _node(node_id: str, node_type: str, data: dict | None = None) -> dict:
+    return {
+        "id": node_id,
+        "type": node_type,
+        "position": {"x": 0, "y": 0},
+        "data": data or {},
+    }
+
+
+def _edge(source: str, target: str, edge_id: str) -> dict:
+    return {"id": edge_id, "source": source, "target": target}
+
+
 def _llm_graph(kb_id: uuid.UUID) -> dict:
     return {
         "nodes": [
-            {"id": "start", "type": "startNode", "data": {}},
-            {
-                "id": "llm-1",
-                "type": "llmNode",
-                "data": {
-                    "knowledgeBases": [{"id": str(kb_id), "name": "KB"}]
-                },
-            }
+            _node("start", "startNode"),
+            _node(
+                "llm-1",
+                "llmNode",
+                {"knowledgeBases": [{"id": str(kb_id), "name": "KB"}]},
+            ),
         ],
-        "edges": [{"source": "start", "target": "llm-1"}],
+        "edges": [_edge("start", "llm-1", "start-llm")],
     }
 
 
 def _workflow_node_graph(app_id: uuid.UUID) -> dict:
     return {
         "nodes": [
-            {"id": "start", "type": "startNode", "data": {}},
-            {
-                "id": "workflow-1",
-                "type": "workflowNode",
-                "data": {"appId": str(app_id)},
-            }
+            _node("start", "startNode"),
+            _node("workflow-1", "workflowNode", {"appId": str(app_id)}),
         ],
-        "edges": [{"source": "start", "target": "workflow-1"}],
+        "edges": [_edge("start", "workflow-1", "start-workflow")],
     }
 
 
 def _collection_graph(references: list[dict]) -> dict:
     return {
         "nodes": [
-            {"id": "start", "type": "startNode", "data": {}},
-            {
-                "id": "llm-collection",
-                "type": "llmNode",
-                "data": {"knowledgeCollections": references},
-            },
+            _node("start", "startNode"),
+            _node(
+                "llm-collection",
+                "llmNode",
+                {"knowledgeCollections": references},
+            ),
         ],
-        "edges": [{"source": "start", "target": "llm-collection"}],
+        "edges": [_edge("start", "llm-collection", "start-collection")],
     }
 
 
@@ -1275,11 +1327,11 @@ def _collection_snapshot(
 def _mail_graph(credential_id: uuid.UUID | None) -> dict:
     return {
         "nodes": [
-            {"id": "start", "type": "startNode", "data": {}},
-            {
-                "id": "mail-1",
-                "type": "mailNode",
-                "data": {
+            _node("start", "startNode"),
+            _node(
+                "mail-1",
+                "mailNode",
+                {
                     "title": "Mail",
                     "parameters": {},
                     "credential_id": (
@@ -1290,9 +1342,9 @@ def _mail_graph(credential_id: uuid.UUID | None) -> dict:
                     ),
                     "processing_mode": "search_only",
                 },
-            }
+            ),
         ],
-        "edges": [{"source": "start", "target": "mail-1"}],
+        "edges": [_edge("start", "mail-1", "start-mail")],
     }
 
 
@@ -1300,11 +1352,11 @@ def _mail_processing_graph(credential_id: uuid.UUID) -> dict:
     processing_selector = ["mail", "processing_ref"]
     return {
         "nodes": [
-            {"id": "start", "type": "startNode", "data": {}},
-            {
-                "id": "mail",
-                "type": "mailNode",
-                "data": {
+            _node("start", "startNode"),
+            _node(
+                "mail",
+                "mailNode",
+                {
                     "title": "Mail",
                     "credential_id": str(credential_id),
                     "configuration_state": "resolved",
@@ -1312,34 +1364,34 @@ def _mail_processing_graph(credential_id: uuid.UUID) -> dict:
                     "max_results": 1,
                     "mark_as_read": False,
                 },
-            },
-            {"id": "llm", "type": "llmNode", "data": {}},
-            {
-                "id": "draft",
-                "type": "gmailDraftNode",
-                "data": {
+            ),
+            _node("llm", "llmNode"),
+            _node(
+                "draft",
+                "gmailDraftNode",
+                {
                     "title": "Gmail Draft",
                     "credential_id": str(credential_id),
                     "configuration_state": "resolved",
                     "processing_ref_selector": processing_selector,
                     "reply_body_selector": ["llm", "result"],
                 },
-            },
-            {
-                "id": "ack",
-                "type": "mailAcknowledgeNode",
-                "data": {
+            ),
+            _node(
+                "ack",
+                "mailAcknowledgeNode",
+                {
                     "title": "Mail Acknowledge",
                     "processing_ref_selector": processing_selector,
                     "required_effect_ref_selectors": [["draft", "draft_ref"]],
                 },
-            },
+            ),
         ],
         "edges": [
-            {"source": "start", "target": "mail"},
-            {"source": "mail", "target": "llm"},
-            {"source": "llm", "target": "draft"},
-            {"source": "draft", "target": "ack"},
+            _edge("start", "mail", "start-mail"),
+            _edge("mail", "llm", "mail-llm"),
+            _edge("llm", "draft", "llm-draft"),
+            _edge("draft", "ack", "draft-ack"),
         ],
     }
 
@@ -1356,10 +1408,10 @@ def _mail_processing_catalog() -> dict[str, NodeCatalogSnapshot]:
 def _slack_graph(data: dict) -> dict:
     return {
         "nodes": [
-            {"id": "start", "type": "startNode", "data": {}},
-            {"id": "slack", "type": "slackPostNode", "data": data},
+            _node("start", "startNode"),
+            _node("slack", "slackPostNode", data),
         ],
-        "edges": [{"source": "start", "target": "slack"}],
+        "edges": [_edge("start", "slack", "start-slack")],
     }
 
 

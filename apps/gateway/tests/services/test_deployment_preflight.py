@@ -503,17 +503,17 @@ def test_workflow_node_preflight_uses_data_app_id_for_target_lookup():
     )
     graph = {
         "nodes": [
-            {"id": "start", "type": "startNode", "data": {}},
-            {
-                "id": "workflow-1",
-                "type": "workflowNode",
-                "data": {
+            _node("start", "startNode"),
+            _node(
+                "workflow-1",
+                "workflowNode",
+                {
                     "appId": str(target_app_id),
                     "workflowId": str(uuid.uuid4()),
                 },
-            }
+            ),
         ],
-        "edges": [{"source": "start", "target": "workflow-1"}],
+        "edges": [_edge("start", "workflow-1", "start-workflow")],
     }
 
     result = KnowledgeDeploymentPreflightService(
@@ -847,9 +847,7 @@ def test_enforced_collection_preflight_keeps_safe_409_envelope():
     assert exc_info.value.status_code == 409
     detail = exc_info.value.detail["error"]
     assert detail["code"] == "deployment.preflight.blocked"
-    assert detail["reason_code"] == (
-        "private_collection_requires_execution_subject"
-    )
+    assert detail["reason_code"] == ("private_collection_requires_execution_subject")
     assert str(collection_id) not in str(detail)
 
 
@@ -864,18 +862,18 @@ def test_authenticated_configuration_preflight_uses_workflow_409_envelope():
         service.enforce_authenticated_run(
             graph_snapshot={
                 "nodes": [
-                    {"id": "start", "type": "startNode", "data": {}},
-                    {
-                        "id": "mail-1",
-                        "type": "mailNode",
-                        "data": {
+                    _node("start", "startNode"),
+                    _node(
+                        "mail-1",
+                        "mailNode",
+                        {
                             "title": "Mail",
                             "credential_id": None,
                             "configuration_state": "unresolved",
                         },
-                    }
+                    ),
                 ],
-                "edges": [{"source": "start", "target": "mail-1"}],
+                "edges": [_edge("start", "mail-1", "start-mail")],
             }
         )
 
@@ -1053,9 +1051,7 @@ def test_create_binding_error_prefers_common_preflight_envelope(
                 app_id=app_id,
                 type=DeploymentType.API,
                 graph_snapshot={
-                    "nodes": [
-                        {"id": "start", "type": "startNode", "data": {}},
-                    ],
+                    "nodes": [_node("start", "startNode")],
                     "edges": [],
                 },
                 is_active=is_active,
@@ -1100,32 +1096,22 @@ def test_inactive_create_rejects_mail_inline_secret_with_common_preflight_error(
         DeploymentService.create_deployment(
             db,
             DeploymentCreate(
-                    app_id=app_id,
-                    graph_snapshot={
-                        "nodes": [
+                app_id=app_id,
+                graph_snapshot={
+                    "nodes": [
+                        _node("start-1", "startNode"),
+                        _node(
+                            "mail-1",
+                            "mailNode",
                             {
-                                "id": "start-1",
-                                "type": "startNode",
-                                "data": {},
-                            },
-                            {
-                                "id": "mail-1",
-                            "type": "mailNode",
-                            "data": {
                                 "title": "Mail",
                                 "credential_id": None,
                                 "app_password": "synthetic-only",
                             },
-                            }
-                        ],
-                        "edges": [
-                            {
-                                "id": "start-mail",
-                                "source": "start-1",
-                                "target": "mail-1",
-                            }
-                        ],
-                    },
+                        ),
+                    ],
+                    "edges": [_edge("start-1", "mail-1", "start-mail")],
+                },
                 is_active=False,
             ),
             user_id=actor_id,
@@ -1171,18 +1157,18 @@ def test_inactive_create_preserves_unresolved_mail_snapshot(monkeypatch):
             app_id=app_id,
             graph_snapshot={
                 "nodes": [
-                    {"id": "start", "type": "startNode", "data": {}},
-                    {
-                        "id": "mail-1",
-                        "type": "mailNode",
-                        "data": {
+                    _node("start", "startNode"),
+                    _node(
+                        "mail-1",
+                        "mailNode",
+                        {
                             "title": "Mail",
                             "credential_id": None,
                             "configuration_state": "unresolved",
                         },
-                    }
+                    ),
                 ],
-                "edges": [{"source": "start", "target": "mail-1"}],
+                "edges": [_edge("start", "mail-1", "start-mail")],
             },
             is_active=False,
         ),
@@ -1227,18 +1213,18 @@ def test_inactive_create_rejects_unavailable_mail_reference(
                 app_id=app_id,
                 graph_snapshot={
                     "nodes": [
-                        {"id": "start", "type": "startNode", "data": {}},
-                        {
-                            "id": "mail-1",
-                            "type": "mailNode",
-                            "data": {
+                        _node("start", "startNode"),
+                        _node(
+                            "mail-1",
+                            "mailNode",
+                            {
                                 "title": "Mail",
                                 "credential_id": str(uuid.uuid4()),
                                 "configuration_state": "resolved",
                             },
-                        },
+                        ),
                     ],
-                    "edges": [{"source": "start", "target": "mail-1"}],
+                    "edges": [_edge("start", "mail-1", "start-mail")],
                 },
                 is_active=False,
             ),
@@ -1248,8 +1234,7 @@ def test_inactive_create_rejects_unavailable_mail_reference(
 
     assert exc_info.value.status_code == 409
     assert (
-        exc_info.value.detail["error"]["reason_code"]
-        == "mail_credential_unavailable"
+        exc_info.value.detail["error"]["reason_code"] == "mail_credential_unavailable"
     )
     assert db.rows_for(WorkflowDeployment) == []
 
@@ -1332,11 +1317,11 @@ def test_inactive_create_does_not_mutate_active_surface(monkeypatch):
             type=DeploymentType.CHATBOT,
             graph_snapshot={
                 "nodes": [
-                    {
-                        "id": "schedule-1",
-                        "type": "scheduleTrigger",
-                        "data": {"cron_expression": "* * * * *"},
-                    }
+                    _node(
+                        "schedule-1",
+                        "scheduleTrigger",
+                        {"cron_expression": "* * * * *"},
+                    )
                 ],
                 "edges": [],
             },
@@ -1395,11 +1380,11 @@ def test_active_schedule_create_rolls_back_on_invalid_schedule_configuration(
                 type=DeploymentType.SCHEDULE,
                 graph_snapshot={
                     "nodes": [
-                        {
-                            "id": "schedule-1",
-                            "type": "scheduleTrigger",
-                            "data": {"cron_expression": "invalid"},
-                        }
+                        _node(
+                            "schedule-1",
+                            "scheduleTrigger",
+                            {"cron_expression": "invalid"},
+                        )
                     ],
                     "edges": [],
                 },
@@ -1455,11 +1440,11 @@ def test_active_schedule_create_hides_unexpected_scheduler_error(monkeypatch):
                 type=DeploymentType.SCHEDULE,
                 graph_snapshot={
                     "nodes": [
-                        {
-                            "id": "schedule-1",
-                            "type": "scheduleTrigger",
-                            "data": {"cron_expression": "* * * * *"},
-                        }
+                        _node(
+                            "schedule-1",
+                            "scheduleTrigger",
+                            {"cron_expression": "* * * * *"},
+                        )
                     ],
                     "edges": [],
                 },
@@ -1519,11 +1504,11 @@ def test_workflow_node_create_does_not_create_schedule_surface(monkeypatch):
             type=DeploymentType.WORKFLOW_NODE,
             graph_snapshot={
                 "nodes": [
-                    {
-                        "id": "schedule-1",
-                        "type": "scheduleTrigger",
-                        "data": {"cron_expression": "* * * * *"},
-                    }
+                    _node(
+                        "schedule-1",
+                        "scheduleTrigger",
+                        {"cron_expression": "* * * * *"},
+                    )
                 ],
                 "edges": [],
             },
@@ -1551,11 +1536,11 @@ def test_workflow_node_toggle_removes_legacy_schedule_surface(monkeypatch):
         is_active=False,
         graph_snapshot={
             "nodes": [
-                {
-                    "id": "schedule-1",
-                    "type": "scheduleTrigger",
-                    "data": {"cron_expression": "* * * * *"},
-                }
+                _node(
+                    "schedule-1",
+                    "scheduleTrigger",
+                    {"cron_expression": "* * * * *"},
+                )
             ],
             "edges": [],
         },
@@ -1606,18 +1591,18 @@ def test_toggle_rejects_legacy_mail_inline_secret_with_common_preflight_error():
         is_active=False,
         graph_snapshot={
             "nodes": [
-                {"id": "start", "type": "startNode", "data": {}},
-                {
-                    "id": "mail-1",
-                    "type": "mailNode",
-                    "data": {
+                _node("start", "startNode"),
+                _node(
+                    "mail-1",
+                    "mailNode",
+                    {
                         "title": "Mail",
                         "credential_id": None,
                         "password": "synthetic-only",
                     },
-                }
+                ),
             ],
-            "edges": [{"source": "start", "target": "mail-1"}],
+            "edges": [_edge("start", "mail-1", "start-mail")],
         },
     )
     db = _Db({App: [app], WorkflowDeployment: [deployment], Schedule: []})
@@ -1657,17 +1642,18 @@ def test_toggle_rejects_unresolved_mail_with_common_preflight(monkeypatch):
         is_active=False,
         graph_snapshot={
             "nodes": [
-                {
-                    "id": "mail-1",
-                    "type": "mailNode",
-                    "data": {
+                _node("start", "startNode"),
+                _node(
+                    "mail-1",
+                    "mailNode",
+                    {
                         "title": "Mail",
                         "credential_id": None,
                         "configuration_state": "unresolved",
                     },
-                }
+                ),
             ],
-            "edges": [],
+            "edges": [_edge("start", "mail-1", "start-mail")],
         },
     )
     db = _Db({App: [app], WorkflowDeployment: [deployment], Schedule: []})
@@ -1730,49 +1716,54 @@ def test_delete_active_deployment_does_not_auto_promote_other_deployment():
     assert other_deployment in db.rows_for(WorkflowDeployment)
 
 
+def _node(node_id: str, node_type: str, data: dict | None = None) -> dict:
+    return {
+        "id": node_id,
+        "type": node_type,
+        "position": {"x": 0, "y": 0},
+        "data": data or {},
+    }
+
+
+def _edge(source: str, target: str, edge_id: str) -> dict:
+    return {"id": edge_id, "source": source, "target": target}
+
+
 def _llm_graph(kb_id: uuid.UUID) -> dict:
     return {
         "nodes": [
-            {"id": "start", "type": "startNode", "data": {}},
-            {
-                "id": "llm-1",
-                "type": "llmNode",
-                "data": {
-                    "knowledgeBases": [{"id": str(kb_id), "name": "KB"}]
-                },
-            }
+            _node("start", "startNode"),
+            _node(
+                "llm-1",
+                "llmNode",
+                {"knowledgeBases": [{"id": str(kb_id), "name": "KB"}]},
+            ),
         ],
-        "edges": [{"source": "start", "target": "llm-1"}],
+        "edges": [_edge("start", "llm-1", "start-llm")],
     }
 
 
 def _collection_graph(collection_id: uuid.UUID) -> dict:
     return {
         "nodes": [
-            {"id": "start", "type": "startNode", "data": {}},
-            {
-                "id": "llm-collection",
-                "type": "llmNode",
-                "data": {
-                    "knowledgeCollections": [{"id": str(collection_id)}]
-                },
-            },
+            _node("start", "startNode"),
+            _node(
+                "llm-collection",
+                "llmNode",
+                {"knowledgeCollections": [{"id": str(collection_id)}]},
+            ),
         ],
-        "edges": [{"source": "start", "target": "llm-collection"}],
+        "edges": [_edge("start", "llm-collection", "start-collection")],
     }
 
 
 def _workflow_node_graph(app_id: uuid.UUID) -> dict:
     return {
         "nodes": [
-            {"id": "start", "type": "startNode", "data": {}},
-            {
-                "id": "workflow-1",
-                "type": "workflowNode",
-                "data": {"appId": str(app_id)},
-            }
+            _node("start", "startNode"),
+            _node("workflow-1", "workflowNode", {"appId": str(app_id)}),
         ],
-        "edges": [{"source": "start", "target": "workflow-1"}],
+        "edges": [_edge("start", "workflow-1", "start-workflow")],
     }
 
 
@@ -1927,8 +1918,7 @@ class _CollectionAggregateQuery:
 
     def all(self):
         knowledge_bases_by_id = {
-            knowledge_base.id: knowledge_base
-            for knowledge_base in self.knowledge_bases
+            knowledge_base.id: knowledge_base for knowledge_base in self.knowledge_bases
         }
         grouped: dict[uuid.UUID, list[SimpleNamespace]] = {}
         for item in self.items:

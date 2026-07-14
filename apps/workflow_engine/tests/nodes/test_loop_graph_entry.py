@@ -19,10 +19,20 @@ def test_loop_body_uses_validated_implicit_entry(monkeypatch) -> None:
     node = _loop_node(
         subgraph={
             "nodes": [
-                {"id": "first", "type": "templateNode", "data": {}},
-                {"id": "second", "type": "llmNode", "data": {}},
+                {
+                    "id": "first",
+                    "type": "templateNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {},
+                },
+                {
+                    "id": "second",
+                    "type": "llmNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {},
+                },
             ],
-            "edges": [{"source": "first", "target": "second"}],
+            "edges": [{"id": "first-second", "source": "first", "target": "second"}],
         }
     )
     captured_entries: list[str] = []
@@ -43,8 +53,18 @@ def test_loop_structure_error_is_not_swallowed_by_continue_strategy() -> None:
     node = _loop_node(
         subgraph={
             "nodes": [
-                {"id": "first", "type": "templateNode", "data": {}},
-                {"id": "second", "type": "llmNode", "data": {}},
+                {
+                    "id": "first",
+                    "type": "templateNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {},
+                },
+                {
+                    "id": "second",
+                    "type": "llmNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {},
+                },
             ],
             "edges": [],
         },

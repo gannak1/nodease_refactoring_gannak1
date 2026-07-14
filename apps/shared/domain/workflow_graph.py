@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -86,6 +87,7 @@ def _validate_single_graph(
             raise WorkflowGraphValidationError("workflow_node_invalid")
         node_id = node.get("id")
         node_type = node.get("type")
+        position = node.get("position")
         data = node.get("data")
         if (
             not isinstance(node_id, str)
@@ -93,6 +95,7 @@ def _validate_single_graph(
             or node_id in node_by_id
             or not isinstance(node_type, str)
             or not node_type
+            or not _valid_position(position)
             or not isinstance(data, Mapping)
         ):
             raise WorkflowGraphValidationError("workflow_node_invalid")
@@ -111,6 +114,8 @@ def _validate_single_graph(
         source_id = edge.get("source")
         target_id = edge.get("target")
         reference = str(edge.get("id")) if edge.get("id") is not None else None
+        if not isinstance(edge.get("id"), str) or not edge.get("id"):
+            raise WorkflowGraphValidationError("workflow_edge_invalid", reference)
         if not isinstance(source_id, str) or not source_id:
             raise WorkflowGraphValidationError("workflow_edge_invalid", reference)
         if not isinstance(target_id, str) or not target_id:
@@ -118,11 +123,17 @@ def _validate_single_graph(
         source_node = node_by_id.get(source_id)
         target_node = node_by_id.get(target_id)
         if source_node is None:
-            raise WorkflowGraphValidationError("workflow_edge_source_missing", reference)
+            raise WorkflowGraphValidationError(
+                "workflow_edge_source_missing", reference
+            )
         if target_node is None:
-            raise WorkflowGraphValidationError("workflow_edge_target_missing", reference)
+            raise WorkflowGraphValidationError(
+                "workflow_edge_target_missing", reference
+            )
         if target_node.get("type") in SOURCE_ONLY_NODE_TYPES:
-            raise WorkflowGraphValidationError("workflow_edge_targets_source", reference)
+            raise WorkflowGraphValidationError(
+                "workflow_edge_targets_source", reference
+            )
         if source_node.get("type") in TERMINAL_NODE_TYPES:
             raise WorkflowGraphValidationError("workflow_edge_from_terminal", reference)
         adjacency[source_id].append(target_id)
@@ -143,14 +154,27 @@ def _validate_single_graph(
         ]
     else:
         entry_ids = [
-            node_id
-            for node_id in executable_ids
-            if incoming_counts[node_id] == 0
+            node_id for node_id in executable_ids if incoming_counts[node_id] == 0
         ]
     if len(entry_ids) != 1:
         raise WorkflowGraphValidationError("workflow_start_node_invalid")
     _reject_isolated_nodes(node_by_id, adjacency, entry_ids[0])
     return nested, len(nodes), len(edges), entry_ids[0]
+
+
+def _valid_position(value: Any) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    for coordinate in (value.get("x"), value.get("y")):
+        if not isinstance(coordinate, (int, float)) or isinstance(coordinate, bool):
+            return False
+        try:
+            finite = math.isfinite(coordinate)
+        except OverflowError:
+            return False
+        if not finite:
+            return False
+    return True
 
 
 def _reject_cycles(adjacency: Mapping[str, list[str]]) -> None:
