@@ -21,6 +21,7 @@ import {
   type DomainGrantFormState,
   type GrantFormState,
 } from './knowledge-collection-manager-panels';
+import { KnowledgeCollectionSyncPanel } from './knowledge-collection-sync-panel';
 
 const errorText = (error: unknown) => {
   if (
@@ -42,6 +43,7 @@ const CLOSED_COLLECTION_CAPABILITIES: CollectionCapabilities = {
   can_manage_catalog: false,
   can_delegate_permissions: false,
   can_manage_lifecycle: false,
+  can_manage_sync: false,
   can_manage_domain_permissions: false,
 };
 
@@ -139,6 +141,7 @@ export default function KnowledgeCollectionManager() {
         can_manage_catalog: domainCapabilities.can_create_collection,
         can_delegate_permissions: domainCapabilities.can_delegate_permissions,
         can_manage_lifecycle: domainCapabilities.can_manage_lifecycle,
+        can_manage_sync: domainCapabilities.can_manage_sync,
         can_manage_domain_permissions:
           domainCapabilities.can_manage_domain_permissions,
       });
@@ -809,6 +812,10 @@ export default function KnowledgeCollectionManager() {
         />
 
         <div className="min-h-[480px] rounded-lg border border-slate-200 bg-white">
+          <KnowledgeCollectionSyncPanel
+            collection={selectedCollection}
+            canManageSync={capabilities.can_manage_sync}
+          />
           <CollectionDetailPanel
             acknowledgePublic={acknowledgePublic}
             candidates={candidates}

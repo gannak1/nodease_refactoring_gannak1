@@ -93,6 +93,67 @@ describe('knowledgeApi.getDocumentEditConfig', () => {
   });
 });
 
+describe('Knowledge Collection sync API', () => {
+  it('sends a canonical idempotency header without adding source configuration', async () => {
+    const response = {
+      job: {
+        job_id: 'job-1',
+        collection_id: 'collection-1',
+        status: 'queued',
+        progress: 'none',
+        retryable: true,
+        requested_at: '2026-07-14T00:00:00Z',
+      },
+      reused: false,
+      dispatch_deferred: false,
+    };
+    vi.mocked(apiClient.post).mockResolvedValueOnce({ data: response });
+
+    await expect(
+      knowledgeApi.requestKnowledgeCollectionSync(
+        'collection-1',
+        '11111111-1111-4111-8111-111111111111',
+      ),
+    ).resolves.toEqual(response);
+    expect(apiClient.post).toHaveBeenCalledWith(
+      '/knowledge/collections/collection-1/sync-jobs',
+      {},
+      {
+        headers: {
+          'Idempotency-Key': '11111111-1111-4111-8111-111111111111',
+        },
+      },
+    );
+  });
+
+  it('loads latest and specific safe job projections', async () => {
+    vi.mocked(apiClient.get)
+      .mockResolvedValueOnce({ data: { job: null } })
+      .mockResolvedValueOnce({
+        data: {
+          job_id: 'job-1',
+          collection_id: 'collection-1',
+          status: 'succeeded',
+          progress: 'complete',
+          retryable: false,
+          requested_at: '2026-07-14T00:00:00Z',
+        },
+      });
+
+    await knowledgeApi.getLatestKnowledgeCollectionSyncJob('collection-1');
+    await knowledgeApi.getKnowledgeCollectionSyncJob('collection-1', 'job-1');
+
+    expect(apiClient.get).toHaveBeenNthCalledWith(
+      1,
+      '/knowledge/collections/collection-1/sync-jobs/latest',
+    );
+    expect(apiClient.get).toHaveBeenNthCalledWith(
+      2,
+      '/knowledge/collections/collection-1/sync-jobs/job-1',
+    );
+  });
+});
+
 describe('knowledgeApi.getDocumentContent', () => {
   it('fetches the original through the organization-scoped API client', async () => {
     const content = new Blob(['pdf'], { type: 'application/pdf' });
@@ -459,6 +520,7 @@ describe('knowledgeApi collection management', () => {
             can_route: true,
             can_manage: true,
             can_sync: false,
+            sync_supported: true,
             safe_metadata: {},
             created_at: '2026-07-07T00:00:00Z',
             updated_at: '2026-07-07T00:00:00Z',

@@ -36,6 +36,7 @@ export type CollectionCapabilities = {
   can_manage_catalog: boolean;
   can_delegate_permissions: boolean;
   can_manage_lifecycle: boolean;
+  can_manage_sync: boolean;
   can_manage_domain_permissions: boolean;
 };
 
