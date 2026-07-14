@@ -1,7 +1,7 @@
 # Deployment Test Cases
 
 Status: Draft
-Verified Against: `feature/mba-219 @ 8ca27ace`
+Verified Against: `feature/mba-219 @ 08645ea8`
 
 ## Unit Tests
 
@@ -37,6 +37,7 @@ Verified Against: `feature/mba-219 @ 8ca27ace`
 
 - `POST /api/v1/deployments/preflight`는 blocked 결과도 `200 OK`와 `status="blocked"`로 반환한다.
 - `POST /api/v1/deployments/preflight` with `is_active=false`는 null unresolved blocker만 `status="warning"`으로 반환하되 required action은 유지한다. Non-null unavailable credential과 structural blocker는 `status="blocked"`다.
+- Client Mail node 기본 데이터는 `credential_id=null`과 `configuration_state=unresolved`를 함께 생성한다. 이 형태의 draft 저장은 허용하지만 credential을 선택하기 전 실행·활성화는 configuration preflight에서 차단한다.
 - `POST /api/v1/deployments` with `is_active=true`는 private KB가 anonymous/public 실행 surface에 포함되면 `409 deployment.preflight.blocked`를 반환한다.
 - `POST /api/v1/deployments` with `is_active=false`는 같은 graph를 저장할 수 있지만 active deployment 교체, public URL 활성화, schedule job 생성을 하지 않는다.
 - Inactive deployment activation/toggle은 private KB preflight 실패 시 `409 deployment.preflight.blocked`를 반환한다.
@@ -114,7 +115,7 @@ Verified Against: `feature/mba-219 @ 8ca27ace`
 - Claim model은 generic ORM audit listener 대상이 아니며 raw input, graph, prompt/evidence, credential/provider response와 raw exception column이 없다.
 - Dead-letter reason/correlation DB constraint는 admission 전 reason에 run/start correlation을 금지하고 admission 후 reason에 task/enqueue/start/run correlation을 모두 요구한다. 기존 모순 row가 있으면 migration은 값을 추측해 보정하지 않고 constraint 교체 전에 fail-closed한다.
 - 실제 PostgreSQL은 null safe reason의 canceled/dead-lettered claim, null resolution의 completed outcome review, null task id의 system schedule WorkflowRun을 모두 거부한다.
-- MBA-219 migration 이후 실제 PostgreSQL은 canceled claim의 `configuration_preflight_blocked`를 허용하지만 pending/dispatching/enqueued/running/succeeded/dead-lettered 상태의 같은 reason은 거부한다. 해당 reason row가 남아 있으면 downgrade는 constraint DDL 전에 fail-closed한다.
+- MBA-219 migration은 schedule claim table과 최신 safe-reason constraint를 만든 revision의 후손에 있어야 한다. 실제 PostgreSQL은 canceled claim의 `configuration_preflight_blocked`를 허용하지만 pending/dispatching/enqueued/running/succeeded/dead-lettered 상태의 같은 reason은 거부한다. 해당 reason row가 남아 있으면 downgrade는 constraint DDL 전에 fail-closed한다.
 - `pending`/`dispatching`/`enqueued`에 `workflow_run_id`를 직접 기록하면 domain과 실제 PostgreSQL check constraint가 모두 거부한다. 한 claim의 publish 결과 write 실패 뒤에도 같은 prepared batch의 다음 claim은 publish/result 처리를 계속하며, terminal finalization 일시 실패는 engine call 1회를 유지한 채 fresh session write만 bounded 재시도한다.
 - Gateway/Worker startup readiness는 같은 shared helper 결과를 사용하고 introspection 실패, stale head, 필수 column 누락을 safe하게 거부한다. Concurrent migration은 advisory lock owner 하나만 진행하며 contender는 bounded wait 안에서 owner가 끝나면 이어서 진행하고 제한 시간을 넘기면 DDL 전에 실패한다.
 - 기존 운영 Deployment에 fingerprint annotation이 없는 최초 `disabled` rollout은 bootstrap으로 진행되지만, `drain`/`claim` desired mode에서 annotation 누락은 fail-closed한다.

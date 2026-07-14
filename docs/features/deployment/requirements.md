@@ -2,7 +2,7 @@
 
 Status: Draft
 Related Features: workflow, llm-credentials, audit-tracing, knowledge, chatbot-deployment, conversation-memory
-Verified Against: `feature/mba-219 @ 8ca27ace`
+Verified Against: `feature/mba-219 @ 08645ea8`
 
 ## Purpose
 

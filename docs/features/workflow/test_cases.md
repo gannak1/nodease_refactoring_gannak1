@@ -1,7 +1,7 @@
 # Workflow Test Cases
 
 Status: Draft
-Verified Against: `feature/mba-219 @ 8ca27ace`
+Verified Against: `feature/mba-219 @ 08645ea8`
 
 ## Test File Mapping
 
@@ -369,7 +369,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - 테스트 실행 버튼을 연속 클릭해도 실행 사이드바에는 하나의 실행 흐름만 표시된다.
 - `/execute`와 `/stream`은 unresolved/invalid Mail 또는 Slack, unavailable Mail credential을 workflow task publish 전에 `409 workflow.configuration_preflight.blocked`로 차단한다. Stream은 Redis subscribe와 SSE response 시작 전 같은 JSON error를 반환한다.
 - Mail `title`, folder, `max_results`, boolean, filter/date/reference와 processing mode의 잘못된 타입·범위는 Worker Pydantic 실패까지 전달되지 않고 같은 preflight 409로 차단한다.
-- Dangling edge, cycle, duplicate node ID, 진입점 오류와 고립 node는 최상위와 Loop subgraph에서 `workflow_graph_invalid`로 차단한다. 최상위 graph의 명시적 trigger/start 하나와 Loop body의 incoming executable edge가 없는 실행 진입점 하나는 통과하고, Loop body에 별도 trigger가 없어도 실행 진입점이 유일하면 허용한다. 합산 node 1,000개, edge 5,000개와 Loop subgraph depth 16은 통과하고 각각 1개 초과하면 차단하며 task publish는 0회다.
+- Dangling edge, cycle, duplicate node ID, 진입점 오류와 고립 node는 최상위와 Loop subgraph에서 `workflow_graph_invalid`로 차단한다. 최상위 graph의 명시적 trigger/start 하나와 Loop body의 incoming executable edge가 없는 실행 진입점 하나는 통과하고, Loop body에 별도 trigger가 없어도 실행 진입점이 유일하면 허용한다. Loop의 implicit entry 일반 노드는 매 iteration의 `loop.item`, `loop.index`와 외부 입력을 첫 실행 context로 받으며, 후속 노드는 완료된 선행 결과를 받는다. 합산 node 1,000개, edge 5,000개와 Loop subgraph depth 16은 통과하고 각각 1개 초과하면 차단하며 task publish는 0회다.
 - Compare와 Cost Optimizer compare/recommendation verification은 base graph configuration preflight가 blocked이면 variant/candidate Celery task를 하나도 발행하지 않고 request-level safe 409를 반환한다. 성공 경로는 preflight가 검사한 server-bound graph를 재사용하고 task 직전에 WorkflowNode target을 다시 binding하지 않는다. 완료된 recommendation verification idempotent replay는 workflow 권한과 active organization scope를 확인하되 현재 node/graph preflight와 task를 다시 시작하지 않는다.
 - Configuration preflight는 workflow execute 권한과 active organization 검증 이후에 실행되며 권한 없는 요청의 hidden resource를 조회하거나 노출하지 않는다.
 - Preview permission denial은 audit 0건이고 execute/stream/Compare/Cost Optimizer enforcement는 same-organization denial을 resource별 정확히 한 번 감사한다. 감사 metadata는 검증된 organization과 middleware request ID를 포함하되 raw path/header는 포함하지 않는다.
