@@ -58,6 +58,18 @@ describe('parseAdminUrlState', () => {
     expect(state.normalizedQuery?.toString()).toBe('tab=permissions');
   });
 
+  it('제거된 조직 설정 주소는 조직 구성의 멤버 보기로 정규화한다', () => {
+    const state = parseAdminUrlState(new URLSearchParams('tab=organization'));
+
+    expect(state.tab).toBe('organization-structure');
+    expect(state).toEqual(
+      expect.objectContaining({ organizationView: 'members' }),
+    );
+    expect(state.normalizedQuery?.toString()).toBe(
+      'tab=organization-structure&view=members',
+    );
+  });
+
   it.each([
     ['members', 'members'],
     ['teams', 'teams'],
@@ -108,6 +120,15 @@ describe('ADMIN_TAB_ITEMS', () => {
       'members',
     );
     expect(ADMIN_TAB_ITEMS.map(({ key }) => String(key))).not.toContain('teams');
+  });
+
+  it('조직 설정 메뉴를 제공하지 않는다', () => {
+    expect(ADMIN_TAB_ITEMS.map(({ key }) => String(key))).not.toContain(
+      'organization',
+    );
+    expect(ADMIN_TAB_ITEMS.map(({ label }) => label)).not.toContain(
+      '조직 설정',
+    );
   });
 });
 

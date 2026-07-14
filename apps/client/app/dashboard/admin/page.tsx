@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { isAxiosError } from 'axios';
 import {
-  AlertTriangle,
   BookOpen,
   Building2,
   Database,
@@ -1408,9 +1407,6 @@ export default function AdminConsolePage() {
               onActorAccessChanged={loadData}
             />
           )}
-          {activeTab === 'organization' && (
-            <OrganizationTab organization={organization} />
-          )}
         </>
       )}
 
@@ -2759,36 +2755,6 @@ function KnowledgeTab({
             </div>
           ))
         )}
-      </div>
-    </DashboardPanel>
-  );
-}
-
-function OrganizationTab({
-  organization,
-}: {
-  organization: OrganizationResponse | null;
-}) {
-  return (
-    <DashboardPanel title="조직 설정" icon={Building2}>
-      <div className="grid gap-4 px-5 py-5 md:grid-cols-2">
-        <div className="rounded-md border border-slate-200 bg-slate-50 p-4">
-          <p className="text-xs font-semibold uppercase text-slate-500">
-            조직명
-          </p>
-          <p className="mt-2 font-semibold text-slate-950">
-            {organization?.name || '확인 중'}
-          </p>
-        </div>
-        <div className="rounded-md border border-amber-200 bg-amber-50 p-4">
-          <div className="flex items-start gap-2">
-            <AlertTriangle className="mt-0.5 h-4 w-4 text-amber-700" />
-            <p className="text-sm leading-6 text-amber-800">
-              조직명 수정, 기본 팀, 위험 action은 정책과 API 범위 확정 후
-              연결합니다.
-            </p>
-          </div>
-        </div>
       </div>
     </DashboardPanel>
   );

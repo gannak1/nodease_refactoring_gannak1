@@ -178,6 +178,17 @@ describe('AdminConsolePage 조직 구성 상태 보존', () => {
     expect(apiClientMock.get).not.toHaveBeenCalled();
   });
 
+  it('관리자 탭에 조직 설정 메뉴를 표시하지 않는다', async () => {
+    render(<AdminConsolePage />);
+
+    expect(
+      await screen.findByRole('button', { name: '조직 구성' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: '조직 설정' }),
+    ).not.toBeInTheDocument();
+  });
+
   it('요약 카드에서 연결된 관리 탭으로 이동할 수 있다', async () => {
     render(<AdminConsolePage />);
 
