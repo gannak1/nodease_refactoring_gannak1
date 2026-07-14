@@ -42,8 +42,7 @@ class ResetRecorderQuery:
         self.session = session
         self.target = target
 
-    def filter(self, *criteria):
-        self.session.filter_criteria.setdefault(self.target, []).extend(criteria)
+    def filter(self, *_criteria):
         return self
 
     def all(self):
@@ -59,7 +58,6 @@ class ResetRecorderQuery:
 class ResetRecorderSession:
     def __init__(self):
         self.deleted_targets = []
-        self.filter_criteria = {}
 
     def query(self, target):
         return ResetRecorderQuery(self, target)
@@ -739,26 +737,23 @@ def test_demo_seed_prepares_runtime_credential_before_seed(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("reset_function", "organization_id", "adopt_function", "seed_function"),
+    ("reset_function", "adopt_function", "seed_function"),
     [
         (
             demo_seed.reset_demo_data,
-            demo_seed.ORG_ID,
             "_adopt_existing_demo_user_ids",
             "seed_demo_data",
         ),
         (
             demo_seed.reset_test_data,
-            demo_seed.TEST_ORG_ID,
             "_adopt_existing_test_user_ids",
             "seed_test_data",
         ),
     ],
 )
-def test_profile_reset_deletes_agent_builder_sessions_before_organization(
+def test_profile_reset_preserves_organization(
     monkeypatch,
     reset_function,
-    organization_id,
     adopt_function,
     seed_function,
 ):
@@ -769,49 +764,7 @@ def test_profile_reset_deletes_agent_builder_sessions_before_organization(
 
     reset_function(db)
 
-    session_delete_index = db.deleted_targets.index(demo_seed.AgentBuilderSession)
-    organization_delete_index = db.deleted_targets.index(demo_seed.Organization)
-    assert session_delete_index < organization_delete_index
-    session_condition = db.filter_criteria[demo_seed.AgentBuilderSession][0].compile()
-    assert "agent_builder_sessions.organization_id" in str(session_condition)
-    assert list(session_condition.params.values()) == [organization_id]
-
-
-def test_demo_reset_deletes_knowledge_permissions_before_resources(monkeypatch):
-    db = ResetRecorderSession()
-    monkeypatch.setattr(demo_seed, "validate_demo_seed_prerequisites", lambda: None)
-    monkeypatch.setattr(demo_seed, "_adopt_existing_demo_user_ids", lambda _db: None)
-    monkeypatch.setattr(demo_seed, "seed_demo_data", lambda _db: None)
-
-    demo_seed.reset_demo_data(db)
-
-    assert db.deleted_targets.index(demo_seed.UserKnowledgePermission) < (
-        db.deleted_targets.index(demo_seed.KnowledgeBase)
-    )
-    assert db.deleted_targets.index(demo_seed.TeamKnowledgeDomainPermission) < (
-        db.deleted_targets.index(demo_seed.Team)
-    )
-    assert db.deleted_targets.index(demo_seed.UserKnowledgeDomainPermission) < (
-        db.deleted_targets.index(demo_seed.Organization)
-    )
-
-
-def test_test_reset_deletes_dynamic_workflow_permissions(monkeypatch):
-    db = ResetRecorderSession()
-    monkeypatch.setattr(demo_seed, "_adopt_existing_test_user_ids", lambda _db: None)
-    monkeypatch.setattr(demo_seed, "seed_test_data", lambda _db: None)
-
-    demo_seed.reset_test_data(db)
-
-    assert db.deleted_targets.index(demo_seed.UserWorkflowPermission) < (
-        db.deleted_targets.index(demo_seed.Workflow)
-    )
-    team_permission_condition = db.filter_criteria[
-        demo_seed.TeamWorkflowPermission
-    ][0].compile()
-    assert "team_workflow_permissions.grantee_organization_id" in str(
-        team_permission_condition
-    )
+    assert demo_seed.Organization not in db.deleted_targets
 
 
 def test_demo_runtime_credential_grants_agent_builder_user_permission(monkeypatch):

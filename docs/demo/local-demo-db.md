@@ -65,7 +65,7 @@ apps/gateway/.venv/bin/python scripts/seed_demo.py --reset
 
 동작:
 
-- demo 전용 조직과 그 조직에 속한 seed/시연 중 생성 데이터만 삭제하고 다시 만든다.
+- demo seed가 관리하는 고정 UUID row만 삭제하고 다시 만든다.
 - 기존 로컬 DB 전체를 비우지는 않는다.
 - 최종 발표 직전에는 이 명령을 사용한다.
 

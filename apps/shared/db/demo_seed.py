@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Any
 
 from apps.shared.audit.actions import AuditAction
-from apps.shared.db.models.agent_builder import AgentBuilderSession
 from apps.shared.db.models.app import App
 from apps.shared.db.models.audit_log import (
     ActorType,
@@ -62,16 +61,13 @@ from apps.shared.db.models.permission_request import (
 from apps.shared.db.models.team import (
     Team,
     TeamAuditPermission,
-    TeamKnowledgeDomainPermission,
     TeamKnowledgeCollectionPermission,
     TeamKnowledgePermission,
     TeamLLMPermission,
     TeamMembership,
     TeamWorkflowPermission,
-    TeamKnowledgeDomainPermission,
     UserKnowledgePermission,
     UserLLMPermission,
-    UserKnowledgeDomainPermission,
     UserWorkflowPermission,
 )
 from apps.shared.db.models.user import User
@@ -4431,20 +4427,6 @@ def seed_test_data(db: Session) -> None:
 def reset_test_data(db: Session) -> None:
     """Delete fixed test profile rows, then recreate mutable QA seed data."""
     _adopt_existing_test_user_ids(db)
-    app_ids = [
-        row[0]
-        for row in db.query(App.id).filter(App.organization_id == TEST_ORG_ID).all()
-    ] or [TEST_APP_ID]
-    workflow_ids = [
-        row[0]
-        for row in db.query(Workflow.id)
-        .filter(Workflow.organization_id == TEST_ORG_ID)
-        .all()
-    ] or [TEST_WORKFLOW_ID]
-    team_ids = [
-        row[0]
-        for row in db.query(Team.id).filter(Team.organization_id == TEST_ORG_ID).all()
-    ] or list(TEST_TEAM_IDS.values())
     user_ids = [
         row[0]
         for row in db.query(User.id)
@@ -4460,31 +4442,21 @@ def reset_test_data(db: Session) -> None:
     db.query(LLMUsageLog).filter(LLMUsageLog.user_id.in_(user_ids)).delete(
         synchronize_session=False
     )
-    db.query(App).filter(App.id.in_(app_ids)).update(
+    db.query(App).filter(App.id == TEST_APP_ID).update(
         {"workflow_id": None, "active_deployment_id": None},
         synchronize_session=False,
     )
     db.flush()
     db.query(TeamWorkflowPermission).filter(
-        or_(
-            TeamWorkflowPermission.grantee_organization_id == TEST_ORG_ID,
-            TeamWorkflowPermission.workflow_id.in_(workflow_ids),
-        )
-    ).delete(synchronize_session=False)
-    db.query(UserWorkflowPermission).filter(
-        or_(
-            UserWorkflowPermission.grantee_organization_id == TEST_ORG_ID,
-            UserWorkflowPermission.workflow_id.in_(workflow_ids),
-        )
+        TeamWorkflowPermission.id.in_(list(TEST_PERMISSION_IDS.values()))
     ).delete(synchronize_session=False)
     db.query(WorkflowDeployment).filter(
-        (WorkflowDeployment.id == TEST_DEPLOYMENT_ID)
-        | (WorkflowDeployment.app_id.in_(app_ids))
+        WorkflowDeployment.id == TEST_DEPLOYMENT_ID
     ).delete(synchronize_session=False)
-    db.query(Workflow).filter(Workflow.id.in_(workflow_ids)).delete(
+    db.query(Workflow).filter(Workflow.id == TEST_WORKFLOW_ID).delete(
         synchronize_session=False
     )
-    db.query(App).filter(App.id.in_(app_ids)).delete(synchronize_session=False)
+    db.query(App).filter(App.id == TEST_APP_ID).delete(synchronize_session=False)
     db.query(PermissionRequest).filter(
         or_(
             PermissionRequest.organization_id == TEST_ORG_ID,
@@ -4513,14 +4485,7 @@ def reset_test_data(db: Session) -> None:
             OrganizationMembership.invited_by.in_(user_ids),
         )
     ).delete(synchronize_session=False)
-    db.query(Team).filter(Team.id.in_(team_ids)).delete(
-        synchronize_session=False
-    )
-    # Agent Builder 요청과 초안은 세션 FK를 통해 cascade 삭제된다.
-    db.query(AgentBuilderSession).filter(
-        AgentBuilderSession.organization_id == TEST_ORG_ID
-    ).delete(synchronize_session=False)
-    db.query(Organization).filter(Organization.id == TEST_ORG_ID).delete(
+    db.query(Team).filter(Team.id.in_(list(TEST_TEAM_IDS.values()))).delete(
         synchronize_session=False
     )
     db.commit()
@@ -4549,30 +4514,10 @@ def reset_demo_data(db: Session) -> None:
     """Delete fixed demo rows, then recreate the final demo state."""
     validate_demo_seed_prerequisites()
     _adopt_existing_demo_user_ids(db)
-    app_ids = [
-        row[0]
-        for row in db.query(App.id).filter(App.organization_id == ORG_ID).all()
-    ] or list(APP_IDS.values())
-    workflow_ids = [
-        row[0]
-        for row in db.query(Workflow.id).filter(Workflow.organization_id == ORG_ID).all()
-    ] or list(WORKFLOW_IDS.values())
-    team_ids = [
-        row[0]
-        for row in db.query(Team.id).filter(Team.organization_id == ORG_ID).all()
-    ] or list(TEAM_IDS.values())
-    kb_ids = [
-        row[0]
-        for row in db.query(KnowledgeBase.id)
-        .filter(KnowledgeBase.organization_id == ORG_ID)
-        .all()
-    ] or list(KB_IDS.values())
-    collection_ids = [
-        row[0]
-        for row in db.query(KnowledgeCollection.id)
-        .filter(KnowledgeCollection.organization_id == ORG_ID)
-        .all()
-    ] or list(COLLECTION_IDS.values())
+    app_ids = list(APP_IDS.values())
+    workflow_ids = list(WORKFLOW_IDS.values())
+    team_ids = list(TEAM_IDS.values())
+    kb_ids = list(KB_IDS.values())
     credential_ids = [
         row[0]
         for row in db.query(LLMCredential.id)
@@ -4587,17 +4532,11 @@ def reset_demo_data(db: Session) -> None:
     ]
     user_ids = existing_demo_user_ids or list(USER_IDS.values())
 
-    workflow_run_ids = [
-        row[0]
-        for row in db.query(WorkflowRun.id)
-        .filter(WorkflowRun.workflow_id.in_(workflow_ids))
-        .all()
-    ]
     db.query(TracePayloadAccessEvent).filter(
-        TracePayloadAccessEvent.workflow_run_id.in_(workflow_run_ids)
+        TracePayloadAccessEvent.workflow_run_id.in_([_uuid(2000 + i) for i in range(20)])
     ).delete(synchronize_session=False)
     db.query(TracePayload).filter(
-        TracePayload.workflow_run_id.in_(workflow_run_ids)
+        TracePayload.workflow_run_id.in_([_uuid(2000 + i) for i in range(20)])
     ).delete(synchronize_session=False)
     db.query(LLMUsageLog).filter(
         (LLMUsageLog.workflow_id.in_(workflow_ids))
@@ -4605,7 +4544,7 @@ def reset_demo_data(db: Session) -> None:
         | (LLMUsageLog.credential_id.in_(credential_ids))
     ).delete(synchronize_session=False)
     db.query(WorkflowNodeRun).filter(
-        WorkflowNodeRun.workflow_run_id.in_(workflow_run_ids)
+        WorkflowNodeRun.workflow_run_id.in_([_uuid(2000 + i) for i in range(20)])
     ).delete(synchronize_session=False)
     db.query(WorkflowRun).filter(WorkflowRun.workflow_id.in_(workflow_ids)).delete(
         synchronize_session=False
@@ -4626,7 +4565,6 @@ def reset_demo_data(db: Session) -> None:
         UserWorkflowPermission,
         TeamKnowledgePermission,
         TeamKnowledgeCollectionPermission,
-        UserKnowledgePermission,
         TeamLLMPermission,
         TeamAuditPermission,
         UserLLMPermission,
@@ -4645,12 +4583,6 @@ def reset_demo_data(db: Session) -> None:
             UserKnowledgePermission.assigned_by.in_(user_ids),
         )
     ).delete(synchronize_session=False)
-
-    for model in (TeamKnowledgeDomainPermission, UserKnowledgeDomainPermission):
-        db.query(model).filter(model.organization_id == ORG_ID).delete(
-            synchronize_session=False
-        )
-
     # 시연 중 라이브로 만든 권한 신청/App 생성 권한도 함께 지워
     # 시나리오 1(차단 -> 신청 -> 승인)을 반복 시연할 수 있게 한다 (ADR-0016).
     db.query(PermissionRequest).filter(
@@ -4715,10 +4647,10 @@ def reset_demo_data(db: Session) -> None:
         KnowledgeIngestionOutbox.knowledge_base_id.in_(kb_ids)
     ).delete(synchronize_session=False)
     db.query(KnowledgeCollectionItem).filter(
-        KnowledgeCollectionItem.collection_id.in_(collection_ids)
+        KnowledgeCollectionItem.collection_id.in_(list(COLLECTION_IDS.values()))
     ).delete(synchronize_session=False)
     db.query(KnowledgeCollection).filter(
-        KnowledgeCollection.id.in_(collection_ids)
+        KnowledgeCollection.id.in_(list(COLLECTION_IDS.values()))
     ).delete(synchronize_session=False)
     db.query(DocumentChunk).filter(DocumentChunk.knowledge_base_id.in_(kb_ids)).delete(
         synchronize_session=False
@@ -4745,13 +4677,6 @@ def reset_demo_data(db: Session) -> None:
         )
     ).delete(synchronize_session=False)
     db.query(Team).filter(Team.id.in_(team_ids)).delete(synchronize_session=False)
-    # Agent Builder 요청과 초안은 세션 FK를 통해 cascade 삭제된다.
-    db.query(AgentBuilderSession).filter(
-        AgentBuilderSession.organization_id == ORG_ID
-    ).delete(synchronize_session=False)
-    db.query(Organization).filter(Organization.id == ORG_ID).delete(
-        synchronize_session=False
-    )
 
     db.commit()
     seed_demo_data(db)
