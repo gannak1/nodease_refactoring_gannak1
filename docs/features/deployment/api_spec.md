@@ -1,7 +1,7 @@
 # Deployment API Spec
 
 Status: Draft
-Verified Against: `feature/mba-219 @ 08645ea8`
+Verified Against: `feature/mba-219 @ 5b1cf366`
 
 ## Endpoints
 
@@ -146,7 +146,7 @@ MBA-219 managed configuration reason/action은 다음 값을 추가한다.
 | `node_configuration_validator_unavailable` | `remove_or_update_unsupported_node` |
 | `workflow_graph_invalid` | `fix_workflow_graph` |
 
-Missing, revoked, cross-organization과 permission-denied Mail credential은 `mail_credential_unavailable` 하나로 정규화한다. Non-null unavailable credential, `node_configuration_invalid`, `workflow_graph_invalid`, WorkflowNode target/cycle 오류와 `node_configuration_validator_unavailable`은 `is_active=false`에서도 blocked로 유지한다. `credential_id=null`은 `configuration_state=unresolved`인 경우에만 inactive warning 보존 대상이다. 최상위 graph는 명시적 trigger/start node 하나, Loop body는 incoming executable edge가 없는 실행 진입점 하나를 요구한다. Graph 상한은 최상위와 모든 Loop subgraph 합산 node 1,000개, edge 5,000개, subgraph depth 16이다.
+Missing, revoked, cross-organization과 permission-denied Mail credential은 `mail_credential_unavailable` 하나로 정규화한다. Non-null unavailable credential, `node_configuration_invalid`, `workflow_graph_invalid`, WorkflowNode target/cycle 오류와 `node_configuration_validator_unavailable`은 `is_active=false`에서도 blocked로 유지한다. `credential_id=null`은 `configuration_state=unresolved`인 경우 inactive warning 보존 대상이며, 구버전 Client node에서 상태 필드가 아예 없는 null reference도 같은 warning으로 호환한다. 명시적 null 상태는 invalid다. 최상위 graph는 명시적 trigger/start node 하나, Loop body는 incoming executable edge가 없는 실행 진입점 하나를 요구한다. 모든 node는 유한한 숫자 좌표의 `position`, 모든 edge는 비어 있지 않은 string `id`를 가져야 한다. Graph 상한은 최상위와 모든 Loop subgraph 합산 node 1,000개, edge 5,000개, subgraph depth 16이다.
 
 ### Create / Activation Blocking
 

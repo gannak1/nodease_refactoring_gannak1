@@ -1,7 +1,7 @@
 # Workflow API Spec
 
 Status: Draft
-Verified Against: `feature/mba-219 @ 08645ea8`
+Verified Against: `feature/mba-219 @ 5b1cf366`
 
 ## Endpoints
 
@@ -284,7 +284,7 @@ Blocking response:
 - Preview는 durable permission audit을 만들지 않는다. Create/toggle 및 authenticated execution enforcement에서 확인된 same-organization `use` 거부만 resource별 정확히 한 번 `permission.denied`로 기록한다.
 - Preflight는 provider에 연결하거나 secret을 복호화하지 않는다.
 - Runtime은 resource scope/status/use, secret, egress와 provider 계약을 다시 검사한다.
-- Malformed edge, dangling endpoint, cycle, 진입점/isolation 오류와 합산 node 1,000개, edge 5,000개 또는 Loop subgraph depth 16 초과는 resource lookup과 task publish 전에 `workflow_graph_invalid`로 차단한다. 최상위 graph는 명시적 trigger/start node 하나, Loop body는 incoming executable edge가 없는 실행 진입점 하나를 요구한다.
+- Node `position` 누락·비유한/비숫자 좌표, 비어 있거나 누락된 edge `id`, malformed edge, dangling endpoint, cycle, 진입점/isolation 오류와 합산 node 1,000개, edge 5,000개 또는 Loop subgraph depth 16 초과는 resource lookup과 task publish 전에 `workflow_graph_invalid`로 차단한다. 최상위 graph는 명시적 trigger/start node 하나, Loop body는 incoming executable edge가 없는 실행 진입점 하나를 요구한다.
 - Mail data의 `title`, folder, `max_results`, boolean, filter/date/reference와 processing mode는 Worker schema와 같은 타입·범위로 검사한다.
 - Compare와 Cost Optimizer candidate는 preflight를 통과한 server-bound graph에서 파생하며 task 직전에 WorkflowNode target을 다시 binding하지 않는다. Recommendation verification의 완료된 동일 Idempotency-Key safe response는 workflow 권한과 active organization scope를 확인한 뒤 현재 node/graph preflight와 task 없이 replay한다.
 
@@ -348,12 +348,12 @@ Blocking response:
 
 ## Mail Node 저장 계약
 
-- Mail node data는 `credential_id: UUID | null`과 `configuration_state: resolved | unresolved`만 credential 설정으로 허용한다.
+- Mail node data는 `credential_id: UUID | null`과 `configuration_state: resolved | unresolved`만 신규 credential 설정으로 허용한다. 구버전 Client가 저장한 `credential_id=null` node에서 `configuration_state`가 아예 없으면 draft 호환을 위해 unresolved로 해석하며, 명시적 null이나 다른 값은 허용하지 않는다.
 - `displayNumber`와 `visibleProperties`는 정해진 형식과 값만 갖는 UI metadata로 허용한다.
 - `password`, `token`, `email`, `encrypted_secret` 같은 inline Mail identity/secret field가 최상위 또는 중첩 `subGraph`에 있으면 workflow 저장은 `422 mail.credential_reference_required`로 실패한다.
 - Non-null `credential_id`는 active organization의 active Mail credential이어야 하며 저장 요청자에게 `use` 권한이 있어야 한다. Organization 밖 reference는 `404`, 같은 organization의 권한 부족은 `403`으로 처리한다.
-- Null credential과 unresolved selector는 draft 저장에서 보존할 수 있다. Test/active/schedule readiness는 MBA-219 공통 preflight가 다시 평가하며 interactive test의 resource failure는 존재 여부를 숨기기 위해 `mail_credential_unavailable`로 정규화한다.
-- `credential_id=null`인 unresolved draft는 preview/apply-save를 위해 저장할 수 있다. Active deployment create/toggle과 authenticated test는 공통 preflight에서 `409 deployment.preflight.blocked` 또는 `409 workflow.configuration_preflight.blocked`로 차단한다. Legacy snapshot runtime도 provider 연결 전에 safe reason으로 다시 차단한다.
+- Null credential과 unresolved selector는 draft 저장에서 보존할 수 있다. 상태 필드가 누락된 구버전 null Mail node도 이 저장 호환에만 포함한다. Test/active/schedule readiness는 MBA-219 공통 preflight가 다시 평가하며 interactive test의 resource failure는 존재 여부를 숨기기 위해 `mail_credential_unavailable`로 정규화한다.
+- `credential_id=null`인 unresolved draft와 상태 필드가 누락된 구버전 null draft는 preview/apply-save를 위해 저장할 수 있다. Active deployment create/toggle과 authenticated test는 공통 preflight에서 `409 deployment.preflight.blocked` 또는 `409 workflow.configuration_preflight.blocked`로 차단한다. Legacy snapshot runtime도 provider 연결 전에 safe reason으로 다시 차단한다.
 - `mailNode.processing_mode`는 `search_only | durable`이며 누락 시 `search_only`다. `durable`과 `mark_as_read=true` 조합은 `422 mail.processing_configuration_invalid`로 거부한다.
 - 단일 `gmailDraftNode`에 직접 연결되는 source Mail node는 `processing_mode=durable`, `max_results=1`이어야 하며 `processing_ref_selector=[mail_node_id, "processing_ref"]`를 사용한다.
 - `gmailDraftNode` data는 `credential_id`, `configuration_state`, `processing_ref_selector`, `reply_body_selector`와 제한된 UI metadata만 허용한다.

@@ -1,7 +1,7 @@
 # Deployment Test Cases
 
 Status: Draft
-Verified Against: `feature/mba-219 @ 08645ea8`
+Verified Against: `feature/mba-219 @ 5b1cf366`
 
 ## Unit Tests
 
@@ -37,14 +37,14 @@ Verified Against: `feature/mba-219 @ 08645ea8`
 
 - `POST /api/v1/deployments/preflight`는 blocked 결과도 `200 OK`와 `status="blocked"`로 반환한다.
 - `POST /api/v1/deployments/preflight` with `is_active=false`는 null unresolved blocker만 `status="warning"`으로 반환하되 required action은 유지한다. Non-null unavailable credential과 structural blocker는 `status="blocked"`다.
-- Client Mail node 기본 데이터는 `credential_id=null`과 `configuration_state=unresolved`를 함께 생성한다. 이 형태의 draft 저장은 허용하지만 credential을 선택하기 전 실행·활성화는 configuration preflight에서 차단한다.
+- Client Mail node 기본 데이터는 `credential_id=null`과 `configuration_state=unresolved`를 함께 생성한다. 이 형태의 draft 저장은 허용하지만 credential을 선택하기 전 실행·활성화는 configuration preflight에서 차단한다. 구버전 Client가 만든 null Mail node는 상태 필드가 없어도 draft 저장과 inactive warning이 가능하지만 명시적 null 상태는 invalid다.
 - `POST /api/v1/deployments` with `is_active=true`는 private KB가 anonymous/public 실행 surface에 포함되면 `409 deployment.preflight.blocked`를 반환한다.
 - `POST /api/v1/deployments` with `is_active=false`는 같은 graph를 저장할 수 있지만 active deployment 교체, public URL 활성화, schedule job 생성을 하지 않는다.
 - Inactive deployment activation/toggle은 private KB preflight 실패 시 `409 deployment.preflight.blocked`를 반환한다.
 - Active create/toggle은 unresolved/invalid Mail 또는 Slack, unavailable Mail credential, subject 없는 Mail surface를 기존 `409 deployment.preflight.blocked` envelope으로 차단하며 task/schedule/active-pointer side effect를 만들지 않는다.
-- `is_active=false` preview/create는 null unresolved configuration만 warning으로 보존한다. Invalid Mail/Slack 조합, 임의 non-null UUID, revoked/cross-organization/permission-denied credential, malformed graph와 validator unavailable은 blocked로 유지한다.
+- `is_active=false` preview/create는 null unresolved configuration과 상태 필드가 누락된 구버전 null Mail node만 warning으로 보존한다. Slack unresolved와 다른 legacy selector invalid가 함께 있으면 두 issue를 모두 유지하고 blocked한다. Invalid Mail/Slack 조합, 임의 non-null UUID, revoked/cross-organization/permission-denied credential, malformed graph와 validator unavailable은 blocked로 유지한다.
 - Missing/revoked/cross-organization/permission-denied Mail credential은 모두 `mail_credential_unavailable`이며 response에 credential ID/name/email과 permission 상세가 없다.
-- Dangling edge, cycle, duplicate node ID, 진입점 오류와 고립 실행 node는 최상위와 Loop subgraph에서 `workflow_graph_invalid`로 차단되고 inactive deployment row와 task를 만들지 않는다. 최상위 graph는 명시적 trigger/start 하나를 요구하고 Loop body는 별도 trigger 없이 incoming executable edge가 없는 실행 진입점 하나를 허용한다. 합산 node 1,000개, edge 5,000개와 depth 16 경계는 통과하며 각각 1개 초과하면 같은 reason으로 차단한다.
+- Node `position` 누락·잘못된 좌표와 edge `id` 누락·빈 값, dangling edge, cycle, duplicate node ID, 진입점 오류와 고립 실행 node는 최상위와 Loop subgraph에서 `workflow_graph_invalid`로 차단되고 inactive deployment row와 task를 만들지 않는다. 최상위 graph는 명시적 trigger/start 하나를 요구하고 Loop body는 별도 trigger 없이 incoming executable edge가 없는 실행 진입점 하나를 허용한다. 합산 node 1,000개, edge 5,000개와 depth 16 경계는 통과하며 각각 1개 초과하면 같은 reason으로 차단한다.
 - Preview permission denial은 audit 0건이며 create/toggle enforcement의 same-organization denial은 resource별 `permission.denied` 정확히 1건이다.
 - 여러 Mail credential preflight는 scalar permission과 같은 결과를 내고 organization/user/membership query를 credential마다 반복하지 않는다. Scalar/bulk 모두 revoked credential의 잔존 grant를 운영 권한으로 집계하지 않는다.
 - Active deployment delete는 다른 deployment를 자동 active로 승격하지 않는다.
