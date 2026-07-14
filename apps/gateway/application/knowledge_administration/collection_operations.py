@@ -261,6 +261,9 @@ class CollectionLifecycleAndOrderUseCase:
         self, command: ReorderCollectionItemsCommand
     ) -> CollectionOrderMutationResult:
         collection = self._lock_collection(command)
+        if collection.lifecycle_state == "deleted":
+            self.unit_of_work.rollback()
+            raise CollectionHidden()
         self._require_membership_authority(command, collection)
         current = self.repository.lock_item_order(
             command.organization_id, command.collection_id

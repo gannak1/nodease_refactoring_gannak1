@@ -47,6 +47,7 @@ class _Repository:
         self.lifecycle_changes = []
         self.rank_changes = []
         self.locked_collection_ids = []
+        self.locked_item_order_ids = []
 
     def lock_collection(self, organization_id, collection_id):
         self.locked_collection_ids.append(collection_id)
@@ -58,6 +59,7 @@ class _Repository:
         self.lifecycle_changes.append(lifecycle_state)
 
     def lock_item_order(self, organization_id, collection_id):
+        self.locked_item_order_ids.append(collection_id)
         return list(self.items)
 
     def set_item_ranks(self, organization_id, collection_id, ranks):
@@ -294,6 +296,25 @@ def test_reorder_rejects_stale_revision_without_rank_change():
     assert exc_info.value.reason_code == "collection_order_stale"
     assert repository.rank_changes == []
     assert audit.records == []
+    assert unit_of_work.rollback_count == 1
+
+
+def test_reorder_hides_deleted_collection_before_item_order_access():
+    collection = _collection(lifecycle_state="deleted")
+    use_case, repository, audit, unit_of_work = _use_case(collection)
+    command = ReorderCollectionItemsCommand(
+        **_command(collection).__dict__,
+        expected_order_revision="unreachable",
+        items=(),
+    )
+
+    with pytest.raises(CollectionHidden):
+        use_case.reorder(command)
+
+    assert repository.locked_item_order_ids == []
+    assert repository.rank_changes == []
+    assert audit.records == []
+    assert unit_of_work.commit_count == 0
     assert unit_of_work.rollback_count == 1
 
 

@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from apps.shared.db.models.knowledge import KnowledgeCollection
 
@@ -28,6 +28,20 @@ def bucket_count(count: int) -> str:
     if count <= 1000:
         return "101-1000"
     return "1000+"
+
+
+def bulk_permission_count_bucket(
+    count: int,
+) -> Literal["0", "1", "2-10", "11-50"]:
+    if count < 0 or count > 50:
+        raise ValueError("bulk permission count must be between 0 and 50")
+    if count == 0:
+        return "0"
+    if count == 1:
+        return "1"
+    if count <= 10:
+        return "2-10"
+    return "11-50"
 
 
 def collection_visibility(collection: KnowledgeCollection) -> str:

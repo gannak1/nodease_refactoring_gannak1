@@ -67,6 +67,7 @@ from apps.shared.services.permissions import (
 )
 from apps.gateway.services.knowledge_collection_policy import (
     bucket_count,
+    bulk_permission_count_bucket,
     collection_visibility,
     normalize_optional_text,
     normalize_required_text,
@@ -890,10 +891,21 @@ class KnowledgeCollectionService:
                 changed_collection_ids.add(row.knowledge_collection_id)
                 self.db.delete(row)
 
-        if not changed_collection_ids:
-            self.db.rollback()
-        else:
-            try:
+        changed_count = len(changed_collection_ids)
+        try:
+            response = KnowledgeCollectionPermissionBulkBundleResponse(
+                operation=request.operation,
+                subject_type=request.subject_type,
+                role_bundle=request.role_bundle,
+                target_count_bucket=bulk_permission_count_bucket(len(collections)),
+                changed_count_bucket=bulk_permission_count_bucket(changed_count),
+                unchanged_count_bucket=bulk_permission_count_bucket(
+                    len(collections) - changed_count
+                ),
+            )
+            if not changed_collection_ids:
+                self.db.rollback()
+            else:
                 for collection in collections:
                     if collection.id not in changed_collection_ids:
                         continue
@@ -912,26 +924,18 @@ class KnowledgeCollectionService:
                         },
                     )
                 self.db.commit()
-            except IntegrityError as exc:
-                self.db.rollback()
-                raise KnowledgeCollectionServiceError(
-                    409,
-                    "conflict",
-                    "Knowledge Collection permissions changed concurrently.",
-                ) from exc
-            except Exception:
-                self.db.rollback()
-                raise
+        except IntegrityError as exc:
+            self.db.rollback()
+            raise KnowledgeCollectionServiceError(
+                409,
+                "conflict",
+                "Knowledge Collection permissions changed concurrently.",
+            ) from exc
+        except Exception:
+            self.db.rollback()
+            raise
 
-        changed_count = len(changed_collection_ids)
-        return KnowledgeCollectionPermissionBulkBundleResponse(
-            operation=request.operation,
-            subject_type=request.subject_type,
-            role_bundle=request.role_bundle,
-            target_count_bucket=bucket_count(len(collections)),
-            changed_count_bucket=bucket_count(changed_count),
-            unchanged_count_bucket=bucket_count(len(collections) - changed_count),
-        )
+        return response
 
     def revoke_permission(self, collection_id: uuid.UUID, permission_id: uuid.UUID) -> None:
         collection = self._locked_collection_or_hidden(collection_id)

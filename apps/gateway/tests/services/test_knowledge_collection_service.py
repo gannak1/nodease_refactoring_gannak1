@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import apps.gateway.services.knowledge_collection_service as knowledge_collection_service_module
 from apps.gateway.services.knowledge_collection_service import (
     KnowledgeCollectionService,
     KnowledgeCollectionServiceError,
@@ -14,6 +15,7 @@ from apps.shared.schemas.knowledge import (
     KnowledgeCollectionCreateRequest,
     KnowledgeCollectionItemLinkRequest,
     KnowledgeCollectionPermissionBundleGrantRequest,
+    KnowledgeCollectionPermissionBulkBundleRequest,
     KnowledgeCollectionResponse,
     KnowledgeCollectionUpdateRequest,
     KnowledgeCollectionVisibilityRequest,
@@ -37,6 +39,37 @@ class _FakeDb:
 
     def refresh(self, value):
         self.refreshed.append(value)
+
+
+class _BulkQuery:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def filter(self, *_args, **_kwargs):
+        return self
+
+    def order_by(self, *_args, **_kwargs):
+        return self
+
+    def with_for_update(self):
+        return self
+
+    def all(self):
+        return list(self.rows)
+
+
+class _BulkDb(_FakeDb):
+    def __init__(self, collections):
+        super().__init__()
+        self.collections = collections
+        self.rollback_count = 0
+
+    def query(self, model):
+        return _BulkQuery(self.collections if model is KnowledgeCollection else [])
+
+    def rollback(self):
+        self.rollback_count += 1
+        self.operations.append(("rollback", None))
 
 
 class _SubjectQuery:
@@ -589,6 +622,78 @@ def test_bulk_authority_prefers_resource_manage_over_domain_delegate(monkeypatch
     authority = service._require_bulk_collection_permission_authority(collections)
 
     assert authority == "resource_manager"
+
+
+@pytest.mark.parametrize("target_count", [11, 50])
+def test_bulk_permission_response_uses_request_bounded_count_bucket(
+    monkeypatch,
+    target_count,
+):
+    collections = [_collection() for _ in range(target_count)]
+    db = _BulkDb(collections)
+    service = _service(monkeypatch, db)
+    for collection in collections:
+        collection.organization_id = service.organization_id
+    monkeypatch.setattr(
+        service,
+        "_require_bulk_collection_permission_authority",
+        lambda candidates: "organization_manager",
+    )
+    monkeypatch.setattr(service, "_lock_bundle_subject", lambda *args, **kwargs: None)
+
+    response = service.mutate_permission_bundle_bulk(
+        KnowledgeCollectionPermissionBulkBundleRequest(
+            collection_ids=[collection.id for collection in collections],
+            operation="grant",
+            subject_type="user",
+            subject_id=uuid.uuid4(),
+            role_bundle="viewer",
+        )
+    )
+
+    assert response.target_count_bucket == "11-50"
+    assert response.changed_count_bucket == "11-50"
+    assert response.unchanged_count_bucket == "0"
+    assert db.committed is True
+    assert db.rollback_count == 0
+
+
+def test_bulk_permission_response_validation_failure_rolls_back_before_commit(
+    monkeypatch,
+):
+    collection = _collection()
+    db = _BulkDb([collection])
+    service = _service(monkeypatch, db)
+    collection.organization_id = service.organization_id
+    monkeypatch.setattr(
+        service,
+        "_require_bulk_collection_permission_authority",
+        lambda candidates: "organization_manager",
+    )
+    monkeypatch.setattr(service, "_lock_bundle_subject", lambda *args, **kwargs: None)
+
+    def reject_response(**_kwargs):
+        raise ValueError("simulated response validation failure")
+
+    monkeypatch.setattr(
+        knowledge_collection_service_module,
+        "KnowledgeCollectionPermissionBulkBundleResponse",
+        reject_response,
+    )
+
+    with pytest.raises(ValueError, match="^simulated response validation failure$"):
+        service.mutate_permission_bundle_bulk(
+            KnowledgeCollectionPermissionBulkBundleRequest(
+                collection_ids=[collection.id],
+                operation="grant",
+                subject_type="user",
+                subject_id=uuid.uuid4(),
+                role_bundle="viewer",
+            )
+        )
+
+    assert db.committed is False
+    assert db.rollback_count == 1
 
 
 def test_management_item_projection_rechecks_mutation_not_read_authority(monkeypatch):
