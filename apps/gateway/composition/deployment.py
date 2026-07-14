@@ -1,15 +1,26 @@
 from __future__ import annotations
 
+import os
 import uuid
 from collections.abc import Mapping
+from typing import Any
 
 from sqlalchemy.orm import Session
 
+from apps.gateway.adapters.audit.deployment_preflight import (
+    DeploymentPermissionDenialAuditRecorder,
+)
+from apps.gateway.adapters.audit.sqlalchemy_deployment_browser_access_audit import (
+    SqlAlchemyDeploymentBrowserAccessAuditRecorder,
+)
 from apps.gateway.adapters.audit.sqlalchemy_schedule_dispatch_audit import (
     SqlAlchemyScheduleDispatchAuditRecorder,
 )
-from apps.gateway.adapters.audit.deployment_preflight import (
-    DeploymentPermissionDenialAuditRecorder,
+from apps.gateway.adapters.deployment_browser_access_activation import (
+    DeploymentBrowserAccessActivationGuard,
+)
+from apps.gateway.adapters.db.deployment_browser_access_repository import (
+    SqlAlchemyDeploymentBrowserAccessRepository,
 )
 from apps.gateway.adapters.db.deployment_preflight_repository import (
     SqlAlchemyDeploymentPreflightRepository,
@@ -27,8 +38,18 @@ from apps.gateway.adapters.schedule.apscheduler_next_fire import (
 from apps.gateway.adapters.schedule.configuration_preflight import (
     ScheduleConfigurationPreflightAdapter,
 )
-from apps.gateway.application.deployment.preflight import DeploymentPreflightUseCase
+from apps.gateway.application.deployment.browser_access_models import (
+    BrowserAccessPolicy,
+)
+from apps.gateway.application.deployment.browser_access_policy import (
+    normalize_browser_access_policy,
+)
+from apps.gateway.application.deployment.browser_access_use_cases import (
+    CreateBrowserAccessRevision,
+    GetPublicBrowserAccessPolicy,
+)
 from apps.gateway.application.deployment.models import NodeCatalogSnapshot
+from apps.gateway.application.deployment.preflight import DeploymentPreflightUseCase
 from apps.gateway.application.deployment.workflow_node_binding import (
     WorkflowNodeBindingUseCase,
 )
@@ -38,6 +59,47 @@ from apps.shared.services.workflow_node_catalog import (
 )
 from apps.gateway.services.scheduler_service import ScheduleDispatchDependencies
 from apps.gateway.services.workflow_budget_service import WorkflowBudgetDecisionAdapter
+
+
+def deployment_browser_access_environment() -> str | None:
+    return os.environ.get("NODE_ENV")
+
+
+def normalize_deployment_browser_access_policy(
+    deployment_type,
+    policy,
+) -> BrowserAccessPolicy | None:
+    raw_policy = policy.model_dump(mode="python") if policy is not None else None
+    return normalize_browser_access_policy(
+        deployment_type,
+        raw_policy,
+        environment=deployment_browser_access_environment(),
+    )
+
+
+def build_browser_access_revision_use_case(
+    db: Session,
+    *,
+    actor: Any,
+    scheduler_service=None,
+) -> CreateBrowserAccessRevision:
+    return CreateBrowserAccessRevision(
+        SqlAlchemyDeploymentBrowserAccessRepository(
+            db,
+            scheduler_service=scheduler_service,
+        ),
+        DeploymentBrowserAccessActivationGuard(db),
+        SqlAlchemyDeploymentBrowserAccessAuditRecorder(db, actor=actor),
+        SqlAlchemyUnitOfWork(db),
+    )
+
+
+def build_public_browser_access_use_case(
+    db: Session,
+) -> GetPublicBrowserAccessPolicy:
+    return GetPublicBrowserAccessPolicy(
+        SqlAlchemyDeploymentBrowserAccessRepository(db)
+    )
 
 
 def build_schedule_dispatch_dependencies(

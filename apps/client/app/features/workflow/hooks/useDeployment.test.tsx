@@ -72,6 +72,10 @@ describe('useDeployment', () => {
       required_actions: [],
       warnings: [],
       nodes: [],
+      normalized_browser_access_policy: {
+        contract_version: 'deployment_browser_access.v1',
+        embedding: { enabled: false, parent_origins: [] },
+      },
     });
   });
 
@@ -82,9 +86,12 @@ describe('useDeployment', () => {
       result.current.handlePublishAsChatbot();
     });
 
-    let deploymentResult: Awaited<ReturnType<typeof result.current.handleDeploy>>;
+    let deploymentResult: Awaited<
+      ReturnType<typeof result.current.handleDeploy>
+    >;
     await act(async () => {
-      deploymentResult = await result.current.handleDeploy('사내 문서 질문 응답 봇');
+      deploymentResult =
+        await result.current.handleDeploy('사내 문서 질문 응답 봇');
     });
 
     expect(mockedWorkflowApi.createDeployment).toHaveBeenCalledWith(
@@ -92,12 +99,71 @@ describe('useDeployment', () => {
         app_id: 'app-1',
         type: 'chatbot',
         is_active: true,
+        browser_access_policy: {
+          contract_version: 'deployment_browser_access.v1',
+          embedding: { enabled: false, parent_origins: [] },
+        },
       }),
     );
-    expect(deploymentResult!.webAppUrl).toContain(
-      '/embed/chat/onboarding-bot',
-    );
+    expect(deploymentResult!.webAppUrl).toContain('/embed/chat/onboarding-bot');
     expect(deploymentResult!.internalRunUrl).toBeUndefined();
+  });
+
+  it('uses the server-normalized policy for the create request', async () => {
+    mockedWorkflowApi.preflightDeployment.mockResolvedValueOnce({
+      status: 'passed',
+      audience: 'anonymous_public',
+      safe_summary: {
+        blocked_reason: null,
+        affected_node_count: 0,
+        affected_kb_count_bucket: '0',
+      },
+      required_actions: [],
+      warnings: [],
+      nodes: [],
+      normalized_browser_access_policy: {
+        contract_version: 'deployment_browser_access.v1',
+        embedding: {
+          enabled: true,
+          parent_origins: ['https://example.com'],
+        },
+      },
+    });
+    const { result } = renderDeploymentHook();
+    act(() => result.current.handlePublishAsChatbot());
+
+    await act(async () => {
+      await result.current.handleDeploy('canonical policy', {
+        contract_version: 'deployment_browser_access.v1',
+        embedding: {
+          enabled: true,
+          parent_origins: ['https://EXAMPLE.com:443'],
+        },
+      });
+    });
+
+    expect(mockedWorkflowApi.preflightDeployment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        browser_access_policy: {
+          contract_version: 'deployment_browser_access.v1',
+          embedding: {
+            enabled: true,
+            parent_origins: ['https://EXAMPLE.com:443'],
+          },
+        },
+      }),
+    );
+    expect(mockedWorkflowApi.createDeployment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        browser_access_policy: {
+          contract_version: 'deployment_browser_access.v1',
+          embedding: {
+            enabled: true,
+            parent_origins: ['https://example.com'],
+          },
+        },
+      }),
+    );
   });
 
   it('internal chatbot deployment returns only the authenticated run link', async () => {
@@ -120,9 +186,12 @@ describe('useDeployment', () => {
       result.current.handlePublishAsInternalChatbot();
     });
 
-    let deploymentResult: Awaited<ReturnType<typeof result.current.handleDeploy>>;
+    let deploymentResult: Awaited<
+      ReturnType<typeof result.current.handleDeploy>
+    >;
     await act(async () => {
-      deploymentResult = await result.current.handleDeploy('사내 문서 질문 응답 봇');
+      deploymentResult =
+        await result.current.handleDeploy('사내 문서 질문 응답 봇');
     });
 
     expect(mockedWorkflowApi.preflightDeployment).toHaveBeenCalledWith(
@@ -163,7 +232,9 @@ describe('useDeployment', () => {
     });
     const { result } = renderDeploymentHook();
 
-    let deploymentResult: Awaited<ReturnType<typeof result.current.handleDeploy>>;
+    let deploymentResult: Awaited<
+      ReturnType<typeof result.current.handleDeploy>
+    >;
     await act(async () => {
       deploymentResult = await result.current.handleDeploy('private kb');
     });
@@ -197,7 +268,9 @@ describe('useDeployment', () => {
     });
     const { result } = renderDeploymentHook();
 
-    let deploymentResult: Awaited<ReturnType<typeof result.current.handleDeploy>>;
+    let deploymentResult: Awaited<
+      ReturnType<typeof result.current.handleDeploy>
+    >;
     await act(async () => {
       deploymentResult = await result.current.handleDeploy('candidate warning');
     });

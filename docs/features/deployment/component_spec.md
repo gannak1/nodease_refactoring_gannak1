@@ -22,6 +22,7 @@ Verified Against: `feature/mba-219 @ 5b1cf366`
 - `SuccessStep`은 공개 챗봇에는 `/embed/chat/{url_slug}` 링크만, 내부 챗봇에는 `/modules/{workflow_id}/run?deploymentId={deployment_id}` 인증 링크만 표시한다. 내부 챗봇 결과에는 public REST API secret/test panel을 표시하지 않는다.
 - Public `chatbot`/`widget` deployment form은 versioned browser access toggle과 exact parent origin editor를 제공한다. 기본 disabled, enabled 시 1~20개가 필요하며 `internal_chatbot`/다른 type에는 노출하지 않는다.
 - Preflight response의 server canonical `normalized_browser_access_policy`가 최종 preview다. Client parser는 조기 UX validation만 담당한다.
+- Release B 전 운영자는 `scripts/report_deployment_browser_access_readiness.py`의 safe JSON으로 current active public Chatbot/Widget의 `legacy_null`, `malformed`, `disabled`, `enabled` 건수와 deployment ID/version만 확인한다. 이 도구는 origin, app/organization identity, graph/config와 secret을 출력하지 않는다.
 - Existing browser policy 변경은 source deployment를 복제한 inactive revision을 만들며 activation은 기존 deployment list/toggle flow에서 명시적으로 수행한다.
 - Embed 결과는 disabled에서 direct link만, enabled에서 iframe snippet을 표시한다. Release A compatibility 기간에는 아직 집행되지 않는 policy를 `집행 대기`로 표시하고 enforcement 완료처럼 표현하지 않는다.
 - Target Conversation Memory preflight snapshot includes immutable deployment version/snapshot hash, conversation mapping and node Memory policy version, contract/storage generation and required Worker capability. Runtime revalidates the same binding and never resolves an existing session through the latest active deployment pointer.

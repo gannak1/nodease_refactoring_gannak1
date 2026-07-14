@@ -83,6 +83,7 @@ def test_layer_b_masks_sensitive_json_columns():
     assert listeners.SENSITIVE_FIELDS[WorkflowDeployment] >= {
         "graph_snapshot",
         "config",
+        "browser_access_policy",
     }
     assert listeners.SENSITIVE_FIELDS[TraceRedactionPolicy] >= {"regex_rules"}
     assert listeners.SENSITIVE_FIELDS[KnowledgeBase] >= {"safe_metadata"}

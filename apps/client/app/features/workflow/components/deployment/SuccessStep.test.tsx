@@ -99,13 +99,63 @@ describe('SuccessStep', () => {
     expect(screen.getByText('공개 챗봇 공유 링크')).toBeVisible();
     expect(
       screen.getByText(
-        '인증 없이 접근하는 공개 링크입니다. 공개 Collection에 연결된 지식만 검색됩니다.',
+        '인증 없이 접근하며 공개 Collection에 연결된 지식만 검색됩니다.',
       ),
     ).toBeVisible();
     expect(screen.queryByText('사내 인증 실행 링크')).not.toBeInTheDocument();
     expect(
       screen.getByText('http://localhost:3000/embed/chat/onboarding-bot'),
     ).toBeVisible();
+  });
+
+  it('shows iframe code and the authoritative parent origins only when enabled', () => {
+    render(
+      <SuccessStep
+        deploymentType="chatbot"
+        onClose={vi.fn()}
+        result={{
+          success: true,
+          version: 2,
+          url_slug: 'onboarding-bot',
+          webAppUrl: 'http://localhost:3000/embed/chat/onboarding-bot',
+          embedUrl: 'http://localhost:3000/embed/chat/onboarding-bot',
+          browser_access_policy: {
+            contract_version: 'deployment_browser_access.v1',
+            embedding: {
+              enabled: true,
+              parent_origins: ['https://portal.example.com'],
+            },
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('웹사이트 임베딩 코드')).toBeVisible();
+    expect(screen.getByText(/<iframe src=/)).toHaveTextContent(
+      'http://localhost:3000/embed/chat/onboarding-bot',
+    );
+    expect(screen.getByText('https://portal.example.com')).toBeVisible();
+  });
+
+  it('keeps a disabled widget limited to its direct link', () => {
+    render(
+      <SuccessStep
+        deploymentType="widget"
+        onClose={vi.fn()}
+        result={{
+          success: true,
+          version: 1,
+          webAppUrl: 'http://localhost:3000/embed/chat/support-widget',
+          browser_access_policy: {
+            contract_version: 'deployment_browser_access.v1',
+            embedding: { enabled: false, parent_origins: [] },
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('위젯 직접 링크')).toBeVisible();
+    expect(screen.queryByText('웹사이트 임베딩 코드')).not.toBeInTheDocument();
   });
 
   it('internal chatbot shows only the authenticated run link', () => {

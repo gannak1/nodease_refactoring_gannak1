@@ -6,9 +6,26 @@ from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.auth.permissions import ensure_workflow_permission
+from apps.gateway.application.deployment.browser_access_errors import (
+    BrowserAccessPolicyError,
+    BrowserAccessResourceHidden,
+)
+from apps.gateway.application.deployment.browser_access_models import (
+    BrowserAccessRevision,
+    BrowserAccessRevisionCommand,
+)
+from apps.gateway.application.deployment.errors import DeploymentPreflightBlocked
 from apps.gateway.api.deps import (
     get_deployment_runtime_policy,
     require_json_content_type,
+)
+from apps.gateway.composition.deployment import (
+    build_browser_access_revision_use_case,
+    build_public_browser_access_use_case,
+    deployment_browser_access_environment,
+)
+from apps.gateway.services.knowledge_deployment_preflight_service import (
+    deployment_preflight_blocked_http_exception,
 )
 from apps.gateway.services.organization_context import resolve_active_organization_id
 from apps.gateway.utils.audit import audit
@@ -18,7 +35,7 @@ from apps.shared.audit.context import AuditActor, clear_current_actor, set_curre
 from apps.shared.audit.logger import record_audit
 from apps.shared.db.models.app import App
 from apps.shared.db.models.user import User
-from apps.shared.db.models.workflow_deployment import WorkflowDeployment
+from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
 from apps.shared.domain.deployment_runtime_policy import (
     SURFACE_PUBLIC_INFO,
     DeploymentRuntimePolicy,
@@ -27,6 +44,9 @@ from apps.shared.domain.deployment_runtime_policy import (
 from apps.shared.db.session import get_db
 from apps.shared.schemas.deployment import (
     AuthenticatedDeploymentRunRequest,
+    DeploymentBrowserAccessPolicy,
+    DeploymentBrowserAccessProjection,
+    DeploymentBrowserAccessRevisionCreate,
     DeploymentCreate,
     DeploymentPreflightRequest,
     DeploymentPreflightResponse,
@@ -130,6 +150,41 @@ def _record_deployment_toggle_audit(
     )
 
 
+def _raise_browser_access_policy_error(exc: BrowserAccessPolicyError) -> None:
+    detail = {
+        "code": exc.code,
+        "message": "Browser access policy is invalid.",
+    }
+    if exc.origin_index is not None:
+        detail["field"] = (
+            "browser_access_policy.embedding.parent_origins"
+            f"[{exc.origin_index}]"
+        )
+    raise HTTPException(status_code=422, detail=detail) from None
+
+
+def _deployment_response_from_browser_revision(
+    revision: BrowserAccessRevision,
+) -> DeploymentResponse:
+    return DeploymentResponse(
+        id=revision.id,
+        app_id=revision.app_id,
+        version=revision.version,
+        type=DeploymentType(revision.deployment_type),
+        graph_snapshot=revision.graph_snapshot,
+        config=revision.config,
+        input_schema=revision.input_schema,
+        output_schema=revision.output_schema,
+        description=revision.description,
+        created_by=revision.created_by,
+        created_at=revision.created_at,
+        is_active=revision.is_active,
+        browser_access_policy=revision.browser_access_policy,
+        url_slug=revision.url_slug,
+        auth_secret=revision.auth_secret,
+    )
+
+
 @router.post("", response_model=DeploymentResponse)
 @audit(AuditAction.WORKFLOW_DEPLOY)
 def create_deployment(
@@ -171,12 +226,16 @@ def preview_deployment_preflight(
     if not app or not app.workflow_id:
         raise HTTPException(status_code=404, detail="App not found")
     ensure_workflow_permission(db, current_user, app.workflow_id, "deploy")
+    browser_access_policy = DeploymentService.normalize_browser_access_policy(
+        preflight_in.type,
+        preflight_in.browser_access_policy,
+    )
     graph_snapshot = DeploymentService._resolve_graph_snapshot(
         db,
         app.workflow_id,
         preflight_in.graph_snapshot,
     )
-    return DeploymentService.preview_knowledge_preflight(
+    result = DeploymentService.preview_knowledge_preflight(
         db,
         app=app,
         deployment_type=preflight_in.type,
@@ -185,6 +244,14 @@ def preview_deployment_preflight(
         is_active=preflight_in.is_active,
         principal_id=current_user.id,
     )
+    result.normalized_browser_access_policy = (
+        DeploymentBrowserAccessPolicy.model_validate(
+            browser_access_policy.to_dict()
+        )
+        if browser_access_policy is not None
+        else None
+    )
+    return result
 
 
 @router.get("", response_model=List[DeploymentResponse])
@@ -244,6 +311,84 @@ def list_workflow_nodes(
     """
     return DeploymentService.list_workflow_node_deployments(
         db, current_user.id, excluded_app_id=excluded_app_id
+    )
+
+
+@router.post(
+    "/{source_deployment_id}/browser-access-revisions",
+    response_model=DeploymentResponse,
+    status_code=201,
+)
+def create_browser_access_revision(
+    source_deployment_id: uuid.UUID,
+    revision_in: DeploymentBrowserAccessRevisionCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _, _, workflow_id = _deployment_app_and_workflow_id(
+        db,
+        str(source_deployment_id),
+    )
+    ensure_workflow_permission(db, current_user, workflow_id, "deploy")
+    scheduler_service = None
+    if revision_in.is_active:
+        from apps.gateway.services.scheduler_service import get_scheduler_service
+
+        scheduler_service = get_scheduler_service()
+    use_case = build_browser_access_revision_use_case(
+        db,
+        actor=current_user,
+        scheduler_service=scheduler_service,
+    )
+    try:
+        revision = use_case.execute(
+            BrowserAccessRevisionCommand(
+                source_deployment_id=source_deployment_id,
+                actor_id=current_user.id,
+                browser_access_policy=revision_in.browser_access_policy.model_dump(
+                    mode="python"
+                ),
+                is_active=revision_in.is_active,
+                environment=deployment_browser_access_environment(),
+            )
+        )
+    except BrowserAccessPolicyError as exc:
+        _raise_browser_access_policy_error(exc)
+    except BrowserAccessResourceHidden:
+        raise HTTPException(status_code=404, detail="Deployment not found") from None
+    except DeploymentPreflightBlocked as exc:
+        raise deployment_preflight_blocked_http_exception(exc.result) from exc
+    return _deployment_response_from_browser_revision(revision)
+
+
+@router.get(
+    "/public/{url_slug}/browser-access",
+    response_model=DeploymentBrowserAccessProjection,
+)
+def get_public_browser_access_policy(
+    url_slug: str,
+    response: Response,
+    db: Session = Depends(get_db),
+):
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        projection = build_public_browser_access_use_case(db).execute(
+            url_slug,
+            environment=deployment_browser_access_environment(),
+        )
+    except BrowserAccessResourceHidden:
+        raise HTTPException(
+            status_code=404,
+            detail="Deployment not found",
+            headers={"Cache-Control": "no-store"},
+        ) from None
+    return DeploymentBrowserAccessProjection(
+        contract_version=projection.contract_version,
+        deployment_version=projection.deployment_version,
+        embedding={
+            "enabled": projection.enabled,
+            "frame_ancestors": list(projection.frame_ancestors),
+        },
     )
 
 
@@ -360,7 +505,7 @@ def get_deployment_info_public(
     공유 페이지에서 입력 폼을 동적으로 생성하기 위해
     input_schema와 output_schema를 조회합니다.
 
-    CORS: 모든 출처 허용 (임베딩 위젯 지원)
+    CORS: 모든 출처 허용 (Release A 임베딩 호환)
     """
     from fastapi import HTTPException
 
@@ -368,7 +513,6 @@ def get_deployment_info_public(
     from apps.shared.db.models.workflow_deployment import WorkflowDeployment
     from apps.shared.schemas.deployment import DeploymentInfoResponse
 
-    # CORS 헤더 추가 (임베딩 위젯 지원)
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "*"

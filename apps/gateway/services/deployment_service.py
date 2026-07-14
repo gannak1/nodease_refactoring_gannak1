@@ -19,6 +19,9 @@ from apps.gateway.services.workflow_service import WorkflowService
 from apps.gateway.application.deployment.schedule_errors import (
     ScheduleConfigurationError,
 )
+from apps.gateway.application.deployment.browser_access_errors import (
+    BrowserAccessPolicyError,
+)
 from apps.shared.celery_app import celery_app
 from apps.shared.db.models.app import App
 from apps.shared.db.models.schedule import Schedule
@@ -142,6 +145,11 @@ class DeploymentService:
                 detail="You do not have permission to deploy this app.",
             )
 
+        browser_access_policy = DeploymentService.normalize_browser_access_policy(
+            deployment_in.type,
+            deployment_in.browser_access_policy,
+        )
+
         # 4. Draft 데이터(Snapshot) 가져오기
         graph_snapshot = DeploymentService._resolve_graph_snapshot(
             db,
@@ -181,6 +189,7 @@ class DeploymentService:
                 is_active=deployment_in.is_active,
             )
             raise
+
         DeploymentService._enforce_deployment_configuration_preflight(
             db,
             app=app,
@@ -226,6 +235,11 @@ class DeploymentService:
             # url_slug, auth_secret 제거 (App 모델에서 관리)
             graph_snapshot=graph_snapshot,
             config=deployment_in.config,
+            browser_access_policy=(
+                browser_access_policy.to_dict()
+                if browser_access_policy is not None
+                else None
+            ),
             input_schema=input_schema,
             output_schema=output_schema,
             description=deployment_in.description,
@@ -320,6 +334,29 @@ class DeploymentService:
             audience_hint=audience_hint,
             is_active=is_active,
         )
+
+    @staticmethod
+    def normalize_browser_access_policy(deployment_type, policy):
+        from apps.gateway.composition.deployment import (
+            normalize_deployment_browser_access_policy,
+        )
+
+        try:
+            return normalize_deployment_browser_access_policy(
+                deployment_type,
+                policy,
+            )
+        except BrowserAccessPolicyError as exc:
+            detail = {
+                "code": exc.code,
+                "message": "Browser access policy is invalid.",
+            }
+            if exc.origin_index is not None:
+                detail["field"] = (
+                    "browser_access_policy.embedding.parent_origins"
+                    f"[{exc.origin_index}]"
+                )
+            raise HTTPException(status_code=422, detail=detail) from None
 
     @staticmethod
     def _enforce_knowledge_preflight(
@@ -1225,17 +1262,30 @@ class DeploymentService:
         Raises:
             HTTPException: 배포를 찾을 수 없는 경우
         """
-        # 1. 배포 조회
-        deployment = (
+        # 1. 배포와 App을 공통 lifecycle 순서로 잠금
+        initial_deployment = (
             db.query(WorkflowDeployment)
             .filter(WorkflowDeployment.id == deployment_id)
             .first()
         )
-        if not deployment:
+        if not initial_deployment:
             raise HTTPException(status_code=404, detail="Deployment not found")
 
-        app = lock_app_for_lifecycle(db, deployment.app_id)
-        db.refresh(deployment)
+        app = lock_app_for_lifecycle(db, initial_deployment.app_id)
+        if not app:
+            raise HTTPException(status_code=404, detail="App not found")
+        deployment = (
+            db.query(WorkflowDeployment)
+            .filter(
+                WorkflowDeployment.id == deployment_id,
+                WorkflowDeployment.app_id == app.id,
+            )
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if not deployment:
+            raise HTTPException(status_code=404, detail="Deployment not found")
 
         # 2. is_active 토글
         new_state = not deployment.is_active
@@ -1348,13 +1398,28 @@ class DeploymentService:
         Raises:
             HTTPException: 배포를 찾을 수 없는 경우
         """
-        # 1. 배포 조회
-        deployment = (
+        # 1. 배포와 App을 공통 lifecycle 순서로 잠금
+        initial_deployment = (
             db.query(WorkflowDeployment)
             .filter(WorkflowDeployment.id == deployment_id)
             .first()
         )
-        if not deployment:
+        if not initial_deployment:
+            raise HTTPException(status_code=404, detail="Deployment not found")
+        app = lock_app_for_lifecycle(db, initial_deployment.app_id)
+        if app is None:
+            raise HTTPException(status_code=404, detail="Deployment not found")
+        deployment = (
+            db.query(WorkflowDeployment)
+            .filter(
+                WorkflowDeployment.id == deployment_id,
+                WorkflowDeployment.app_id == app.id,
+            )
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if deployment is None:
             raise HTTPException(status_code=404, detail="Deployment not found")
 
         # 2. Schedule 제거
@@ -1367,8 +1432,7 @@ class DeploymentService:
             db.delete(schedule)
 
         # 3. App의 active_deployment_id 업데이트
-        app = db.query(App).filter(App.id == deployment.app_id).first()
-        if app and str(app.active_deployment_id) == str(deployment_id):
+        if str(app.active_deployment_id) == str(deployment_id):
             app.active_deployment_id = None
 
         # 4. 배포 레코드 삭제

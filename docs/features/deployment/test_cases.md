@@ -163,4 +163,5 @@ Verified Against: `feature/mba-254 @ 95e821ef`
 - Public browser projection은 active pointer, app ownership, active 상태와 Chatbot/Widget type을 함께 검증하고 null/malformed policy를 disabled로 닫으며 graph/config/secret/organization/KB identity를 노출하지 않는다.
 - Next embed response는 exact parent CSP 또는 `'none'` 하나만 반환하고 broad static CSP/XFO 충돌/cache stale을 만들지 않는다. Gateway lookup timeout/error도 fail-open하지 않는다.
 - Public info/run의 수동 wildcard CORS 제거 후 same-origin iframe은 정상이고 external direct JavaScript는 deployment parent 목록으로 ACAO를 얻지 못한다.
+- Browser access readiness report는 current active pointer의 `chatbot`/`widget`만 분류하고 `legacy_null`, `malformed`, `disabled`, `enabled` count와 safe deployment ID/version/type만 출력한다. Raw origin, app/organization identity, graph/config와 secret은 출력하지 않는다.
 - Runtime principal mapping은 authenticated execution subject, credential principal, billing principal과 audit actor를 구분하며 public actor에 app/deployment creator를 합성하지 않는다.

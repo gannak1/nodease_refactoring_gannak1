@@ -3,7 +3,11 @@ import { workflowApi } from '@/app/features/workflow/api/workflowApi';
 import { useWorkflowStore } from '@/app/features/workflow/store/useWorkflowStore';
 import type { DeploymentResult } from '../components/deployment/types';
 import type { AppNode } from '../types/Nodes';
-import type { DeploymentType } from '../types/Deployment';
+import type {
+  DeploymentBrowserAccessPolicy,
+  DeploymentType,
+} from '../types/Deployment';
+import { disabledBrowserAccessPolicy } from '../utils/browserAccessPolicy';
 import {
   deploymentApiErrorMessage,
   formatDeploymentPreflightMessage,
@@ -111,18 +115,30 @@ export function useDeployment({
   }, []);
 
   const handleDeploy = useCallback(
-    async (description: string): Promise<DeploymentResult> => {
+    async (
+      description: string,
+      browserAccessPolicy?: DeploymentBrowserAccessPolicy,
+    ): Promise<DeploymentResult> => {
       try {
         if (!activeWorkflow?.appId) {
           throw new Error('App ID를 찾을 수 없습니다.');
         }
 
+        const supportsEmbeddingPolicy = ['chatbot', 'widget'].includes(
+          deploymentType,
+        );
+        const requestedBrowserAccessPolicy = supportsEmbeddingPolicy
+          ? browserAccessPolicy || disabledBrowserAccessPolicy()
+          : undefined;
         const preflight = await workflowApi.preflightDeployment({
           app_id: activeWorkflow.appId,
           description,
           type: deploymentType,
           config: {},
           is_active: true,
+          ...(requestedBrowserAccessPolicy
+            ? { browser_access_policy: requestedBrowserAccessPolicy }
+            : {}),
         });
         if (preflight.status === 'blocked') {
           return {
@@ -134,12 +150,24 @@ export function useDeployment({
           preflight.status === 'warning'
             ? formatDeploymentPreflightMessage(preflight)
             : undefined;
+        const normalizedBrowserAccessPolicy = supportsEmbeddingPolicy
+          ? preflight.normalized_browser_access_policy
+          : undefined;
+        if (supportsEmbeddingPolicy && !normalizedBrowserAccessPolicy) {
+          return {
+            success: false,
+            message: '서버에서 브라우저 접근 정책을 확인하지 못했습니다.',
+          };
+        }
 
         const response = await workflowApi.createDeployment({
           app_id: activeWorkflow.appId,
           description,
           type: deploymentType,
           is_active: true,
+          ...(normalizedBrowserAccessPolicy
+            ? { browser_access_policy: normalizedBrowserAccessPolicy }
+            : {}),
         });
 
         useWorkflowStore.getState().notifyDeploymentComplete();
@@ -155,6 +183,8 @@ export function useDeployment({
           output_schema: response.output_schema ?? null,
           graph_snapshot: { nodes }, // webhook trigger 감지용
           message: preflightWarning,
+          browser_access_policy:
+            response.browser_access_policy ?? normalizedBrowserAccessPolicy,
         };
 
         if (deploymentType === 'webapp') {
@@ -163,13 +193,21 @@ export function useDeployment({
           if (response.url_slug) {
             // 공개 챗봇 링크는 무인증 public-only RAG 경계를 사용한다.
             result.webAppUrl = `${window.location.origin}/embed/chat/${response.url_slug}`;
+            if (normalizedBrowserAccessPolicy?.embedding.enabled) {
+              result.embedUrl = result.webAppUrl;
+            }
           }
         } else if (deploymentType === 'internal_chatbot') {
           if (activeWorkflow.id) {
             result.internalRunUrl = `${window.location.origin}/modules/${activeWorkflow.id}/run?deploymentId=${response.id}`;
           }
         } else if (deploymentType === 'widget') {
-          result.embedUrl = `${window.location.origin}/embed/chat/${response.url_slug}`;
+          if (response.url_slug) {
+            result.webAppUrl = `${window.location.origin}/embed/chat/${response.url_slug}`;
+            if (normalizedBrowserAccessPolicy?.embedding.enabled) {
+              result.embedUrl = result.webAppUrl;
+            }
+          }
         } else if (deploymentType === 'workflow_node') {
           result.isWorkflowNode = true;
           result.auth_secret = null;
@@ -179,9 +217,12 @@ export function useDeployment({
           if (scheduleNode) {
             const data = asRecord(scheduleNode.data);
             result.cronExpression =
-              stringValue(data.cronExpression) || stringValue(data.cron_expression);
+              stringValue(data.cronExpression) ||
+              stringValue(data.cron_expression);
             result.timezone =
-              stringValue(data.timezone) || stringValue(data.time_zone) || 'Asia/Seoul';
+              stringValue(data.timezone) ||
+              stringValue(data.time_zone) ||
+              'Asia/Seoul';
           }
         }
 

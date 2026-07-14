@@ -1,4 +1,8 @@
-import { DeploymentType } from '../../workflow/types/Deployment';
+import type {
+  DeploymentBrowserAccessPolicy,
+  DeploymentBrowserAccessRevisionCreate,
+  DeploymentType,
+} from '../../workflow/types/Deployment';
 import { apiClient as api, publicApiClient } from '@/lib/apiClient';
 import type { BudgetStatusPayload } from '../../budget/types';
 
@@ -40,6 +44,7 @@ export interface Deployment {
   input_schema?: unknown;
   output_schema?: unknown;
   config?: unknown;
+  browser_access_policy?: DeploymentBrowserAccessPolicy | null;
 }
 
 export const appApi = {
@@ -108,6 +113,17 @@ export const appApi = {
   // 배포 토글 (활성화/비활성화)
   toggleDeployment: async (deploymentId: string): Promise<Deployment> => {
     const response = await api.patch(`/deployments/${deploymentId}/toggle`);
+    return response.data;
+  },
+
+  createBrowserAccessRevision: async (
+    sourceDeploymentId: string,
+    data: DeploymentBrowserAccessRevisionCreate,
+  ): Promise<Deployment> => {
+    const response = await api.post(
+      `/deployments/${sourceDeploymentId}/browser-access-revisions`,
+      data,
+    );
     return response.data;
   },
 };

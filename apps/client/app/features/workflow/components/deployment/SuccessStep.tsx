@@ -2,9 +2,9 @@
 
 import { useState } from 'react';
 import { toast } from 'sonner';
-import { Copy, Eye, EyeOff, Clock, Globe } from 'lucide-react';
-import { DeploymentResult } from './types';
-import { DeploymentType } from '../../types/Deployment';
+import { CheckCircle2, Copy, Eye, EyeOff, Clock, Globe } from 'lucide-react';
+import type { DeploymentResult } from './types';
+import type { DeploymentType } from '../../types/Deployment';
 import { formatCronExpression } from './utils';
 
 interface SuccessStepProps {
@@ -33,10 +33,13 @@ export function SuccessStep({
     typeof window !== 'undefined'
       ? window.location.origin
       : 'https://moduly-ai.cloud';
-  const frontendUrl =
-    typeof window !== 'undefined'
-      ? window.location.origin
-      : 'https://moduly-ai.cloud';
+  const embeddingPolicy = result.browser_access_policy?.embedding;
+  const parentOrigins = embeddingPolicy?.enabled
+    ? embeddingPolicy.parent_origins
+    : [];
+  const iframeCode = result.embedUrl
+    ? `<iframe src="${result.embedUrl}" width="100%" height="600" title="Nodease chatbot" frameborder="0"></iframe>`
+    : null;
   const API_URL = `${baseUrl}/api/v1/run/${result.url_slug}`;
 
   // Generate curl example
@@ -116,19 +119,7 @@ ${authHeader}  -d '{
     <>
       <div className="px-6 py-4 border-b border-gray-200 bg-green-50">
         <div className="flex items-center gap-2 text-green-700">
-          <svg
-            className="w-6 h-6"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M5 13l4 4L19 7"
-            />
-          </svg>
+          <CheckCircle2 className="h-6 w-6" />
           <h2 className="text-xl font-bold">배포 성공 (v{result.version})</h2>
         </div>
         <p className="text-sm text-green-600 mt-1 ml-8">
@@ -152,11 +143,13 @@ ${authHeader}  -d '{
             <label className="block text-sm font-semibold text-blue-900 mb-2">
               {deploymentType === 'chatbot'
                 ? '공개 챗봇 공유 링크'
-                : '웹 앱 공유 링크'}
+                : deploymentType === 'widget'
+                  ? '위젯 직접 링크'
+                  : '웹 앱 공유 링크'}
             </label>
             <p className="text-xs text-blue-700 mb-3">
-              {deploymentType === 'chatbot'
-                ? '인증 없이 접근하는 공개 링크입니다. 공개 Collection에 연결된 지식만 검색됩니다.'
+              {deploymentType === 'chatbot' || deploymentType === 'widget'
+                ? '인증 없이 접근하며 공개 Collection에 연결된 지식만 검색됩니다.'
                 : '이 링크를 공유하면 누구나 워크플로우를 사용할 수 있습니다!'}
             </p>
             <div className="flex gap-2">
@@ -204,57 +197,37 @@ ${authHeader}  -d '{
           </div>
         )}
 
-        {/* Widget Embedding Code */}
-        {result.embedUrl && (
+        {/* Public Chatbot / Widget Embedding Code */}
+        {iframeCode && embeddingPolicy?.enabled && (
           <div className="border-2 border-purple-200 rounded-lg p-4 bg-purple-50">
             <label className="block text-sm font-semibold text-purple-900 mb-2">
               웹사이트 임베딩 코드
             </label>
-            <p className="text-xs text-purple-700 mb-3">
-              아래 코드를 복사하여 웹사이트의{' '}
-              <code className="bg-purple-200 px-1 rounded">&lt;/body&gt;</code>{' '}
-              태그 직전에 붙여넣으세요!
+            <p className="mb-3 text-xs font-medium text-amber-700">
+              브라우저 제한 집행 대기
             </p>
             <div className="relative">
               <pre className="p-4 bg-gray-900 rounded-lg text-xs text-gray-300 font-mono overflow-x-auto whitespace-pre leading-relaxed border border-gray-700">
-                {`<script>
-  window.ModulyConfig = {
-    appId: '${result.url_slug}',
-    frontendUrl: '${frontendUrl}'
-  };
-</script>
-<script src="${baseUrl}/static/widget.js"></script>`}
+                {iframeCode}
               </pre>
               <button
-                onClick={() =>
-                  handleCopy(
-                    `<script>
-  window.ModulyConfig = {
-    appId: '${result.url_slug}',
-    frontendUrl: '${frontendUrl}'
-  };
-</script>
-<script src="${baseUrl}/static/widget.js"></script>`,
-                  )
-                }
+                onClick={() => handleCopy(iframeCode)}
                 className="absolute top-2 right-2 px-2 py-1 text-xs font-medium text-gray-300 bg-gray-700 hover:bg-gray-600 rounded transition-colors"
               >
                 복사
               </button>
             </div>
-            <div className="mt-3 p-3 bg-purple-100 rounded border border-purple-200">
-              <p className="text-xs text-purple-800">
-                <strong>💡 미리보기:</strong> 우하단에 채팅 버튼이 나타나며,
-                클릭하면 채팅창이 열립니다.{' '}
-                <a
-                  href={result.embedUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="underline font-semibold"
-                >
-                  테스트 페이지 열기 →
-                </a>
-              </p>
+            <div className="mt-3 rounded-md border border-purple-200 bg-purple-100 p-3">
+              <div className="text-xs font-semibold text-purple-900">
+                허용 부모 origin
+              </div>
+              <ul className="mt-2 space-y-1 font-mono text-xs text-purple-800">
+                {parentOrigins.map((origin) => (
+                  <li className="break-all" key={origin}>
+                    {origin}
+                  </li>
+                ))}
+              </ul>
             </div>
           </div>
         )}

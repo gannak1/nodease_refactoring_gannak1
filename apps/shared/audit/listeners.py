@@ -124,7 +124,7 @@ SENSITIVE_FIELDS = {
     TraceVisibilityPolicy: set(),
     User: {"password"},
     Workflow: {"env_variables", "graph", "runtime_variables"},
-    WorkflowDeployment: {"config", "graph_snapshot"},
+    WorkflowDeployment: {"browser_access_policy", "config", "graph_snapshot"},
 }
 
 # Operational cursors are not user configuration changes and have dedicated

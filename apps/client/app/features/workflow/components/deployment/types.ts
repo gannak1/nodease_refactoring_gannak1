@@ -1,4 +1,8 @@
-import { InputSchema, OutputSchema } from '../../types/Deployment';
+import {
+  DeploymentBrowserAccessPolicy,
+  InputSchema,
+  OutputSchema,
+} from '../../types/Deployment';
 
 export type DeploymentStep = 'input' | 'success' | 'error';
 
@@ -19,4 +23,5 @@ export interface DeploymentResult {
   cronExpression?: string; // Schedule trigger용
   timezone?: string; // Schedule trigger용
   graph_snapshot?: any; // 노드 타입 확인용 (webhookTrigger 등)
+  browser_access_policy?: DeploymentBrowserAccessPolicy | null;
 }
