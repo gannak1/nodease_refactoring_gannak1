@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
@@ -40,7 +41,7 @@ def test_persisted_refresh_records_judge_usage_log_reference():
         policy_version="router-policy-v1",
         refresh_every_runs=20,
         eligible_runs_since_last_refresh=20,
-        refresh_requested_at=None,
+        refresh_requested_at=datetime(2026, 7, 14, tzinfo=timezone.utc),
         last_refreshed_at=None,
         last_refresh_result=None,
         status="refreshing",
@@ -72,6 +73,11 @@ def test_persisted_refresh_records_judge_usage_log_reference():
             PersistedModelRoutingPolicyRefreshService,
             "_node_data",
             return_value={},
+        ),
+        patch.object(
+            PersistedModelRoutingPolicyRefreshService,
+            "_adaptive_semantic_router_snapshot",
+            return_value=None,
         ),
         patch(
             "apps.workflow_engine.services.model_routing_policy_refresh_task.ModelRouter.collect_candidates",
@@ -268,7 +274,7 @@ def test_persisted_refresh_activates_new_route_catalog_without_changing_model():
         policy_version="router-policy-v1",
         refresh_every_runs=20,
         eligible_runs_since_last_refresh=20,
-        refresh_requested_at=None,
+        refresh_requested_at=datetime(2026, 7, 14, tzinfo=timezone.utc),
         last_refreshed_at=None,
         last_refresh_result=None,
         status="refreshing",
@@ -324,6 +330,11 @@ def test_persisted_refresh_activates_new_route_catalog_without_changing_model():
     with (
         patch.object(
             PersistedModelRoutingPolicyRefreshService,
+            "_adaptive_semantic_router_snapshot",
+            return_value=None,
+        ),
+        patch.object(
+            PersistedModelRoutingPolicyRefreshService,
             "_semantic_router_snapshot",
             return_value=snapshot,
         ),
@@ -363,13 +374,8 @@ def test_persisted_refresh_activates_new_route_catalog_without_changing_model():
     assert refresh_request.current_policy["active_policy"]["semantic_router"] == snapshot
 
 
-def test_persisted_refresh_uses_validated_replay_optimizer_over_judge_model_choice():
-    """Judge 설명과 무관하게 검증된 Replay 계산 결과만 active rule을 결정한다."""
-    from apps.workflow_engine.services.model_router import ModelCandidate
-    from apps.workflow_engine.services.model_routing_evidence import (
-        RoutingEvidenceBatch,
-        RoutingEvidenceSample,
-    )
+def test_adaptive_refresh_defers_rule_changes_until_replay_validation_completes():
+    """자동 라우팅 refresh는 DB 상태만 짧게 갱신하고 legacy judge를 호출하지 않는다."""
     from apps.workflow_engine.services.model_routing_policy_refresh_task import (
         PersistedModelRoutingPolicyRefreshService,
     )
@@ -386,7 +392,7 @@ def test_persisted_refresh_uses_validated_replay_optimizer_over_judge_model_choi
         policy_version="router-policy-v1",
         refresh_every_runs=20,
         eligible_runs_since_last_refresh=20,
-        refresh_requested_at=None,
+        refresh_requested_at=datetime(2026, 7, 14, tzinfo=timezone.utc),
         last_refreshed_at=None,
         last_refresh_result=None,
         status="refreshing",
@@ -394,61 +400,10 @@ def test_persisted_refresh_uses_validated_replay_optimizer_over_judge_model_choi
     node_data = {
         "model_id": "gpt-4.1",
         "auto_model_routing": True,
-        "model_routing_context": {
-            "semantic_router": {
-                "route_catalog_version": "ticket-routing-v1",
-                "encoder_model_id": "text-embedding-test",
-                "routes": [{"cohort_id": "routine_support"}],
-            }
-        },
     }
     deployment = SimpleNamespace(
         graph_snapshot={"nodes": [{"id": "llm-1", "data": node_data}]}
     )
-    snapshot = {
-        "route_catalog_version": "ticket-routing-v1",
-        "encoder_model_id": "text-embedding-test",
-        "top_k": 3,
-        "aggregation": "mean",
-        "min_margin": 0.05,
-        "routes": [
-            {
-                "cohort_id": "routine_support",
-                "label": "단순 사용 문의",
-                "threshold": 0.7,
-                "representatives": [
-                    {"utterance_hash": "safe-hash", "embedding": [1.0, 0.0]}
-                ],
-            }
-        ],
-    }
-    samples = tuple(
-        RoutingEvidenceSample(
-            source="replay",
-            model_id="gpt-4o-mini",
-            semantic_cohort_id="routine_support",
-            baseline_model_id="gpt-4.1",
-            execution_succeeded=True,
-            schema_passed=True,
-            downstream_passed=True,
-            quality_score=89,
-            baseline_quality_score=90,
-            quality_confidence=0.9,
-            execution_cost=0.001,
-            baseline_execution_cost=0.01,
-            evaluation_cost=0.00002,
-            latency_ms=400,
-            baseline_latency_ms=1200,
-            candidate_id=f"candidate-{index}",
-            route_catalog_version="ticket-routing-v1",
-        )
-        for index in range(10)
-    )
-    evidence_batch = RoutingEvidenceBatch(samples=samples, excluded_reason_counts={})
-    candidates = [
-        ModelCandidate("gpt-4.1", "GPT-4.1", 0.01, 0.03),
-        ModelCandidate("gpt-4o-mini", "GPT-4o mini", 0.001, 0.002),
-    ]
     profile = SimpleNamespace(
         operational_usable_runs=20,
         as_snapshot=lambda: {
@@ -457,43 +412,15 @@ def test_persisted_refresh_uses_validated_replay_optimizer_over_judge_model_choi
             "segment_performance": [],
         },
     )
-    judge_result = SimpleNamespace(
-        status="applied",
-        policy={
-            "policy_version": "judge-policy-v99",
-            "active_policy": {
-                "default_model_id": "gpt-4.1",
-                "rules": [],
-            },
-        },
-        reason="judge explanation only",
-        judge_model_id="gpt-4.1",
-        judge_usage={},
-        metadata={"confidence": 0.9},
-        judge_credential_id=None,
-        judge_provider="openai",
-    )
     db = MagicMock()
     db.query.side_effect = [_FirstQuery(policy), _FirstQuery(deployment), _CountQuery()]
 
     with (
         patch.object(
             PersistedModelRoutingPolicyRefreshService,
-            "_semantic_router_snapshot",
-            return_value=snapshot,
+            "_resolve_semantic_router_snapshot",
+            return_value=None,
         ),
-        patch(
-            "apps.workflow_engine.services.model_routing_policy_refresh_task.ModelRouter.collect_candidates",
-            return_value=candidates,
-        ),
-        patch(
-            "apps.workflow_engine.services.model_routing_policy_refresh_task.LLMService.get_runtime_available_model_ids_for_user",
-            return_value=["gpt-4.1", "gpt-4o-mini"],
-        ),
-        patch(
-            "apps.workflow_engine.services.model_routing_policy_refresh_task.ReplayEvidenceAdapter.collect",
-            return_value=evidence_batch,
-        ) as collect_replay,
         patch(
             "apps.workflow_engine.services.model_routing_policy_refresh_task.ModelRouter.collect_profile",
             return_value=profile,
@@ -505,8 +432,7 @@ def test_persisted_refresh_uses_validated_replay_optimizer_over_judge_model_choi
         ),
         patch(
             "apps.workflow_engine.services.model_routing_policy_refresh_task.ModelRoutingPolicyRefreshService.refresh_policy",
-            return_value=judge_result,
-        ),
+        ) as refresh_policy,
     ):
         update = PersistedModelRoutingPolicyRefreshService.refresh(
             db,
@@ -514,18 +440,73 @@ def test_persisted_refresh_uses_validated_replay_optimizer_over_judge_model_choi
             trigger="manual_refresh",
         )
 
-    assert update.status == "applied"
+    assert update.status == "pending_review"
     assert policy.active_policy["default_model_id"] == "gpt-4.1"
-    assert policy.active_policy["semantic_router"] == snapshot
-    assert policy.active_policy["rules"][0]["selected_model_id"] == "gpt-4o-mini"
-    assert policy.active_policy["rules"][0]["when"] == {
-        "semantic_cohort_id": "routine_support"
-    }
-    assert policy.active_policy["rules"][0]["reason_code"] == (
-        "validated_quality_floor_cost_reduction"
+    assert policy.status == "refreshing"
+    assert policy.refresh_requested_at == datetime(2026, 7, 14, tzinfo=timezone.utc)
+    assert update.output_summary["adaptive_validation"]["judge_called"] is False
+    refresh_policy.assert_not_called()
+
+
+def test_adaptive_refresh_projects_catalog_safety_route_to_baseline_rule():
+    """FR-011-A51: catalog의 safety 표시는 baseline 고정 rule로만 투영한다."""
+    from apps.workflow_engine.services.model_routing_policy_refresh_task import (
+        PersistedModelRoutingPolicyRefreshService,
     )
-    assert update.output_summary["optimizer"]["status"] == "applied"
-    cohort_summary = update.output_summary["optimizer"]["cohort_decisions"][0]
-    assert cohort_summary["candidate_quality_lower_bound"] is not None
-    assert cohort_summary["baseline_quality_lower_bound"] is not None
-    collect_replay.assert_called_once()
+
+    rules = PersistedModelRoutingPolicyRefreshService._static_safety_rules(
+        [
+            {
+                "id": "old-adaptive",
+                "when": {"semantic_cohort_id": "invoice"},
+                "selected_model_id": "gpt-4o-mini",
+                "reason_code": "validated_adaptive_cohort",
+            }
+        ],
+        semantic_router={
+            "routes": [
+                {"cohort_id": "high_risk", "safety_override": True},
+                {"cohort_id": "billing", "safety_override": False},
+            ]
+        },
+        default_model_id="gpt-4.1",
+        fallback_model_id="gpt-4.1-mini",
+    )
+
+    assert rules[0] == {
+        "id": "safety-baseline-high_risk",
+        "when": {"semantic_cohort_id": "high_risk"},
+        "selected_model_id": "gpt-4.1",
+        "fallback_model_id": "gpt-4.1-mini",
+        "priority": 10,
+        "reason_code": "safety_override_baseline",
+    }
+    assert rules[1]["id"] == "old-adaptive"
+
+
+def test_static_safety_rule_is_not_treated_as_a_validated_adaptive_rule():
+    """고위험 baseline 고정 rule만으로 adaptive policy가 활성화됐다고 판단하면 안 된다."""
+    from apps.workflow_engine.services.model_routing_policy_refresh_task import (
+        PersistedModelRoutingPolicyRefreshService,
+    )
+
+    assert not PersistedModelRoutingPolicyRefreshService._has_active_adaptive_rule(
+        {
+            "rules": [
+                {
+                    "when": {"semantic_cohort_id": "high-risk"},
+                    "reason_code": "safety_override_baseline",
+                }
+            ]
+        }
+    )
+    assert PersistedModelRoutingPolicyRefreshService._has_active_adaptive_rule(
+        {
+            "rules": [
+                {
+                    "when": {"semantic_cohort_id": "invoice"},
+                    "reason_code": "validated_adaptive_cohort",
+                }
+            ]
+        }
+    )

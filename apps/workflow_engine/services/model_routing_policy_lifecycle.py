@@ -94,3 +94,20 @@ class ModelRoutingPolicyLifecycleService:
 
         # kept_current와 failed는 기존 active policy를 그대로 실행한다.
         policy.status = "active" if getattr(policy, "active_policy", None) else "collecting"
+
+    @staticmethod
+    def complete_refresh_cycle(
+        policy: Any,
+        *,
+        eligible_runs_since_last_refresh: int,
+    ) -> None:
+        """Replay/Judge 검증이 끝난 뒤에만 refresh lease를 해제한다.
+
+        검증 중 완료된 운영 run은 다음 주기의 표본이므로 버리지 않는다. 호출자는
+        refresh 요청 시각 이후에 생성된 run event 수를 계산해 전달한다.
+        """
+        policy.refresh_requested_at = None
+        policy.eligible_runs_since_last_refresh = max(
+            0,
+            int(eligible_runs_since_last_refresh or 0),
+        )

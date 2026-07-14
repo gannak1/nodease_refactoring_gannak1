@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
+from datetime import datetime, timezone
 
 import pytest
 
@@ -30,6 +31,64 @@ class _Query:
 
     def all(self):
         return self.all_value
+
+
+def test_claim_pending_auto_refresh_skips_delivery_after_refresh_started():
+    """같은 자동 refresh의 중복 Celery delivery는 기존 update를 보고 건너뛴다."""
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    policy = SimpleNamespace(
+        id=uuid4(),
+        enabled=True,
+        status="refreshing",
+        refresh_requested_at=datetime(2026, 7, 14, tzinfo=timezone.utc),
+    )
+    update_query = _Query(first_value=SimpleNamespace(id=uuid4()))
+    db = MagicMock()
+    db.query.return_value = update_query
+
+    with patch.object(
+        ModelRoutingPolicyStore,
+        "_lock_policy_for_update",
+        return_value=policy,
+    ):
+        claimed = ModelRoutingPolicyStore.claim_pending_auto_refresh(
+            db,
+            policy_id=policy.id,
+        )
+
+    assert claimed is None
+    assert len(update_query.filters) == 2
+
+
+def test_claim_pending_auto_refresh_allows_first_delivery_without_update():
+    """아직 update가 없으면 첫 worker만 refresh를 시작할 수 있다."""
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    policy = SimpleNamespace(
+        id=uuid4(),
+        enabled=True,
+        status="refreshing",
+        refresh_requested_at=datetime(2026, 7, 14, tzinfo=timezone.utc),
+    )
+    db = MagicMock()
+    db.query.return_value = _Query(first_value=None)
+
+    with patch.object(
+        ModelRoutingPolicyStore,
+        "_lock_policy_for_update",
+        return_value=policy,
+    ):
+        claimed = ModelRoutingPolicyStore.claim_pending_auto_refresh(
+            db,
+            policy_id=policy.id,
+        )
+
+    assert claimed is policy
 
 
 def test_successful_run_waits_until_auto_routing_node_log_is_terminal():
@@ -411,6 +470,49 @@ def test_bootstrap_policy_ignores_legacy_active_policy_and_preserves_node_models
         user_id=workflow_run.user_id,
         organization_id=organization_id,
     )
+
+
+def test_bootstrap_policy_preserves_deployment_max_cohorts_setting():
+    """배포 snapshot의 입력군 상한은 첫 persisted policy에도 그대로 저장한다."""
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    organization_id = uuid4()
+    workflow_run = SimpleNamespace(
+        workflow_id=uuid4(),
+        deployment_id=uuid4(),
+        user_id=uuid4(),
+    )
+    db = MagicMock()
+    node_data = {
+        "auto_model_routing": True,
+        "model_id": "gpt-4.1",
+        "model_routing_policy": {"max_cohorts": 8},
+    }
+
+    with (
+        patch.object(ModelRoutingPolicyStore, "get_runtime_policy", return_value=None),
+        patch.object(
+            ModelRoutingPolicyStore,
+            "_organization_id_for_run",
+            return_value=organization_id,
+        ),
+        patch.object(
+            LLMService,
+            "get_runtime_available_model_ids_for_user",
+            return_value=["gpt-4.1"],
+        ),
+    ):
+        policy = ModelRoutingPolicyStore.ensure_policy_for_deployed_node(
+            db,
+            workflow_run=workflow_run,
+            node_id="llm-1",
+            node_data=node_data,
+        )
+
+    assert policy is not None
+    assert policy.max_cohorts == 8
 
 
 def test_record_completed_run_locks_policies_in_node_id_order_before_counting():

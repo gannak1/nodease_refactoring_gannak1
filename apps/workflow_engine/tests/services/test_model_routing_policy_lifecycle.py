@@ -161,3 +161,24 @@ def test_pending_result_keeps_existing_active_policy():
     assert policy.pending_policy == proposed
     assert policy.policy_version == "router-policy-v1"
     assert policy.status == "pending_review"
+
+
+def test_completed_validation_releases_refresh_lease_and_keeps_runs_arriving_during_validation():
+    """검증 중 들어온 운영 run은 다음 갱신 주기를 위한 카운터로 보존한다."""
+    from apps.workflow_engine.services.model_routing_policy_lifecycle import (
+        ModelRoutingPolicyLifecycleService,
+    )
+
+    requested_at = datetime(2026, 7, 14, tzinfo=timezone.utc)
+    policy = SimpleNamespace(
+        refresh_requested_at=requested_at,
+        eligible_runs_since_last_refresh=27,
+    )
+
+    ModelRoutingPolicyLifecycleService.complete_refresh_cycle(
+        policy,
+        eligible_runs_since_last_refresh=7,
+    )
+
+    assert policy.refresh_requested_at is None
+    assert policy.eligible_runs_since_last_refresh == 7

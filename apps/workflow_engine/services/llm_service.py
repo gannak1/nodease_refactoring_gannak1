@@ -808,6 +808,51 @@ class LLMService:
         return sorted(model_ids)
 
     @staticmethod
+    def get_runtime_available_embedding_model_ids_for_user(
+        db: Session,
+        *,
+        user_id: uuid.UUID,
+        organization_id: uuid.UUID,
+    ) -> list[str]:
+        """실행 주체가 runtime에서 사용할 수 있는 embedding model id를 반환한다.
+
+        자동 입력군 분류도 provider 호출이므로, 화면의 단순 목록 조회 권한이 아니라
+        실제 실행과 같은 credential ``use`` 권한을 적용한다.
+        """
+        organization_uuid = LLMService._require_runtime_organization_id(organization_id)
+        rows = (
+            db.query(LLMModel, LLMCredential)
+            .join(
+                LLMRelCredentialModel,
+                LLMRelCredentialModel.model_id == LLMModel.id,
+            )
+            .join(
+                LLMCredential,
+                LLMCredential.id == LLMRelCredentialModel.credential_id,
+            )
+            .filter(
+                LLMModel.is_active == True,
+                LLMModel.type == "embedding",
+                LLMCredential.organization_id == organization_uuid,
+                LLMCredential.is_valid == True,
+                LLMRelCredentialModel.is_verified == True,
+            )
+            .all()
+        )
+        model_ids = {
+            str(model.model_id_for_api_call)
+            for model, credential in rows
+            if has_llm_credential_permission(
+                db,
+                user_id,
+                credential.id,
+                "use",
+                organization_id=organization_uuid,
+            )
+        }
+        return sorted(model_ids)
+
+    @staticmethod
     def get_client_with_any_credential(db: Session, model_id: Optional[str] = None):
         """
         [DEPRECATED] 안전성 문제로 비활성화되었습니다.

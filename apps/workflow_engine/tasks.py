@@ -149,7 +149,7 @@ def record_model_routing_operational_run(self, workflow_run_id: str):
     base=RedactedWorkflowTask,
 )
 def refresh_model_routing_policy(self, policy_id: str, trigger: str = "manual_refresh"):
-    """Judge를 한 번 호출해 persisted policy rule set만 갱신한다. runtime에서는 호출하지 않는다."""
+    """정책 초안을 갱신하고, 필요할 때만 실제 후보 Replay 검증 batch를 예약한다."""
     from apps.workflow_engine.services.model_routing_policy_refresh_task import (
         PersistedModelRoutingPolicyRefreshService,
     )
@@ -176,14 +176,76 @@ def refresh_model_routing_policy(self, policy_id: str, trigger: str = "manual_re
             trigger=trigger,
         )
         session.commit()
+        batch_id = None
+        if update is not None:
+            from apps.workflow_engine.services.model_routing_adaptive_validation_service import (
+                AdaptiveModelRoutingValidationService,
+            )
+
+            batch = AdaptiveModelRoutingValidationService.plan_batch(
+                session,
+                policy_id=policy_id,
+                trigger=trigger,
+                policy_update_id=update.id,
+            )
+            if batch is None:
+                # cohort가 아직 두 review window를 채우지 못한 첫 refresh는 정상이다.
+                # 이 경우 lease를 해제해야 다음 운영 입력이 새 refresh를 예약할 수 있다.
+                AdaptiveModelRoutingValidationService.complete_refresh_without_batch(
+                    session,
+                    policy_id=policy_id,
+                )
+            session.commit()
+            if batch is not None and batch.status == "pending":
+                batch_id = str(batch.id)
+                send_workflow_task(
+                    celery_app,
+                    "workflow.model_routing.validate_batch",
+                    args=[batch_id],
+                )
         return {
             "status": "success" if update is not None else "not_found",
             "update_id": str(update.id) if update is not None else None,
             "result": update.status if update is not None else None,
+            "validation_batch_id": batch_id,
         }
     except Exception as exc:
         session.rollback()
         logger.error("[Model-Routing] policy refresh failed: %s", exc)
+        raise self.retry(exc=exc, countdown=min(2 ** (self.request.retries + 1), 30))
+    finally:
+        session.close()
+
+
+@celery_app.task(
+    name="workflow.model_routing.validate_batch",
+    bind=True,
+    max_retries=1,
+    base=RedactedWorkflowTask,
+)
+def validate_model_routing_batch(self, batch_id: str):
+    """예약된 후보 Replay를 순차 실행해 실제 품질 증거가 있을 때만 rule을 활성화한다."""
+    from apps.workflow_engine.services.model_routing_adaptive_validation_service import (
+        AdaptiveModelRoutingValidationService,
+    )
+
+    session = SessionLocal()
+    try:
+        batch = AdaptiveModelRoutingValidationService.execute_batch(
+            session,
+            batch_id=batch_id,
+        )
+        session.commit()
+        return {
+            "status": getattr(batch, "status", "not_found"),
+            "batch_id": str(getattr(batch, "id", "")) if batch is not None else None,
+            "completed_items": int(getattr(batch, "completed_items", 0) or 0)
+            if batch is not None
+            else 0,
+        }
+    except Exception as exc:
+        session.rollback()
+        logger.error("[Model-Routing] validation batch failed: %s", exc)
         raise self.retry(exc=exc, countdown=min(2 ** (self.request.retries + 1), 30))
     finally:
         session.close()

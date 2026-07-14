@@ -1,6 +1,7 @@
 """Celery task가 사용할 persisted model-routing policy refresh orchestration."""
 
 import hashlib
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -39,6 +40,9 @@ from apps.workflow_engine.services.model_routing_semantic_catalog import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 class PersistedModelRoutingPolicyRefreshService:
     """저장된 policy를 읽고 judge refresh 결과를 policy/update row에 반영한다."""
 
@@ -69,6 +73,19 @@ class PersistedModelRoutingPolicyRefreshService:
                 .first()
             )
             node_data = cls._node_data(deployment.graph_snapshot if deployment else {}, policy.node_id)
+            # 적응형 경로의 실제 품질 판단은 후보별 Replay와 quality judge가 맡는다.
+            # 여기서 기존 policy judge를 추가로 호출하면 policy row를 잡은 DB transaction이
+            # 네트워크 응답까지 열려 있어 뒤따르는 운영 observation 기록을 막을 수 있다.
+            # 따라서 갱신 task는 짧게 "검증 계획 대기" 상태만 저장하고, 다음 task가
+            # 실제 Replay/Judge evidence를 모아 rule을 활성화한다.
+            if bool((node_data or {}).get("auto_model_routing")):
+                return cls._prepare_adaptive_refresh(
+                    db,
+                    policy=policy,
+                    update=update,
+                    node_data=node_data or {},
+                    requested_at=requested_at,
+                )
             semantic_snapshot = cls._resolve_semantic_router_snapshot(
                 db,
                 policy=policy,
@@ -286,6 +303,13 @@ class PersistedModelRoutingPolicyRefreshService:
                     )
                     policy_version = policy.policy_version
 
+            # 자동 발견 cohort 경로에서는 judge가 만든 초안을 곧바로 runtime에
+            # 적용하지 않는다. 실제 Replay 5회와 schema/downstream/품질 gate를
+            # 통과한 후보만 validation task가 active policy rule로 승격한다.
+            if bool((node_data or {}).get("auto_model_routing")) and result_status != "failed":
+                result_status = "pending_review"
+                policy_version = policy.policy_version
+
             ModelRoutingPolicyLifecycleService.apply_refresh_result(
                 policy,
                 status=result_status,
@@ -316,6 +340,142 @@ class PersistedModelRoutingPolicyRefreshService:
             update.output_summary = {"reason": "judge policy refresh failed"}
             db.flush()
             return update
+
+    @classmethod
+    def _prepare_adaptive_refresh(
+        cls,
+        db: Session,
+        *,
+        policy: LLMNodeModelRoutingPolicy,
+        update: LLMNodeModelRoutingPolicyUpdate,
+        node_data: dict[str, Any],
+        requested_at: datetime,
+    ) -> LLMNodeModelRoutingPolicyUpdate:
+        """외부 호출 없이 adaptive Replay 검증 batch를 준비한다.
+
+        이 단계는 policy row의 상태와 운영 표본 수만 짧게 확정한다. 후보 모델의
+        실제 출력 품질은 validation task에서 5회 Replay와 LLM judge로 확인한다.
+        """
+        # 자동 발견 route가 아직 없더라도 deployment에 이미 정의된 안전 semantic
+        # catalog는 활성 policy에 보존한다. 이 catalog는 model_routing_context의
+        # curated utterance를 activation 시 한 번만 embedding해 만들며, runtime은
+        # 이후 저장된 vector만 평가한다.
+        semantic_snapshot = cls._resolve_semantic_router_snapshot(
+            db,
+            policy=policy,
+            node_data=node_data,
+        )
+        if semantic_snapshot is not None:
+            active = (
+                dict(policy.active_policy)
+                if isinstance(policy.active_policy, dict)
+                else {}
+            )
+            active["semantic_router"] = semantic_snapshot
+            active["rules"] = cls._static_safety_rules(
+                active.get("rules"),
+                semantic_router=semantic_snapshot,
+                default_model_id=cls._current_default_model(policy, node_data=node_data),
+                fallback_model_id=str(node_data.get("fallback_model_id") or "").strip() or None,
+            )
+            policy.active_policy = active
+
+        profile = ModelRouter.collect_profile(
+            db,
+            ModelRouterContext(
+                workflow_id=str(policy.workflow_id),
+                node_id=policy.node_id,
+                current_model_id=node_data.get("model_id"),
+                deployment_id=str(policy.deployment_id),
+            ),
+        )
+        excluded_count = cls._excluded_run_count(db, policy, requested_at)
+        # Replay/Judge batch가 끝나기 전에는 다음 run이 같은 policy refresh를
+        # 중복 예약하면 안 된다. refresh_requested_at lease와 refreshing 상태는
+        # validation service의 finalization에서만 해제한다.
+        policy.status = "refreshing"
+        policy.last_refreshed_at = requested_at
+        policy.last_refresh_result = "pending_review"
+        update.status = "pending_review"
+        update.eligible_run_count = profile.operational_usable_runs
+        update.excluded_run_count = excluded_count
+        update.excluded_reason_summary = {
+            "missing_usage_or_output": excluded_count,
+        }
+        update.input_summary = {
+            "node_summary": cls._safe_node_summary(node_data),
+            "model_profile": profile.as_snapshot(),
+            "adaptive_validation": {
+                "replays_per_candidate": 5,
+                "judge_called": False,
+            },
+        }
+        update.output_summary = {
+            "reason": "후보별 실제 Replay와 quality judge 검증을 예약합니다.",
+            "adaptive_validation": {
+                "status": "planning",
+                "judge_called": False,
+            },
+        }
+        update.error_code = None
+        update.judge_model = None
+        update.judge_provider = None
+        update.prompt_version = None
+        update.new_policy_version = None
+        db.flush()
+        return update
+
+    @staticmethod
+    def _static_safety_rules(
+        current_rules: Any,
+        *,
+        semantic_router: dict[str, Any],
+        default_model_id: str,
+        fallback_model_id: str | None,
+    ) -> list[dict[str, Any]]:
+        """저장된 catalog의 safety route를 baseline 고정 rule로 투영한다.
+
+        도메인 키워드를 코드에 두지 않는다. catalog에서 ``safety_override``로
+        선언된 route만 읽어, 해당 입력군은 검증 전 저비용 후보로 내려가지 않게 한다.
+        """
+        existing = [rule for rule in current_rules or [] if isinstance(rule, dict)]
+        retained = [
+            rule
+            for rule in existing
+            if str(rule.get("reason_code") or "") != "safety_override_baseline"
+        ]
+        routes = semantic_router.get("routes") if isinstance(semantic_router, dict) else []
+        safety_rules: list[dict[str, Any]] = []
+        for route in routes if isinstance(routes, list) else []:
+            if not isinstance(route, dict) or not route.get("safety_override"):
+                continue
+            cohort_id = str(route.get("cohort_id") or "").strip()
+            if not cohort_id or not default_model_id:
+                continue
+            safety_rules.append(
+                {
+                    "id": f"safety-baseline-{cohort_id}",
+                    "when": {"semantic_cohort_id": cohort_id},
+                    "selected_model_id": default_model_id,
+                    "fallback_model_id": fallback_model_id,
+                    "priority": 10,
+                    "reason_code": "safety_override_baseline",
+                }
+            )
+        return [*safety_rules, *retained]
+
+    @staticmethod
+    def _has_active_adaptive_rule(active_policy: Any) -> bool:
+        """정적 안전 rule과 검증 완료된 할인 route를 구분한다."""
+        if not isinstance(active_policy, dict):
+            return False
+        return any(
+            isinstance(rule, dict)
+            and str(rule.get("reason_code") or "") == "validated_adaptive_cohort"
+            and isinstance(rule.get("when"), dict)
+            and bool(rule["when"].get("semantic_cohort_id"))
+            for rule in active_policy.get("rules") or []
+        )
 
     @staticmethod
     def _current_default_model(policy, *, node_data: dict[str, Any]) -> str:
@@ -588,6 +748,14 @@ class PersistedModelRoutingPolicyRefreshService:
         policy: LLMNodeModelRoutingPolicy,
         node_data: dict[str, Any],
     ) -> dict[str, Any] | None:
+        adaptive_snapshot = cls._adaptive_semantic_router_snapshot(
+            db,
+            policy=policy,
+            node_data=node_data,
+        )
+        if adaptive_snapshot is not None:
+            return adaptive_snapshot
+
         routing_context = node_data.get("model_routing_context")
         routing_context = (
             routing_context if isinstance(routing_context, dict) else {}
@@ -618,6 +786,39 @@ class PersistedModelRoutingPolicyRefreshService:
             user_id=policy.judge_user_id,
             organization_id=policy.organization_id,
         )
+
+    @staticmethod
+    def _adaptive_semantic_router_snapshot(
+        db: Session,
+        *,
+        policy: LLMNodeModelRoutingPolicy,
+        node_data: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """검증된 자동 입력군이 있으면 수동 catalog보다 먼저 runtime에 반영한다."""
+        try:
+            from apps.workflow_engine.services.model_routing_adaptive_store import (
+                AdaptiveModelRoutingCohortStore,
+            )
+
+            AdaptiveModelRoutingCohortStore.discover_and_advance(
+                db,
+                policy=policy,
+                node_data=node_data,
+            )
+            return AdaptiveModelRoutingCohortStore.build_runtime_catalog(
+                db,
+                policy_id=policy.id,
+                policy=policy,
+                node_data=node_data,
+            )
+        except Exception as exc:
+            # 입력군 부가 기능이 일시적으로 실패해도 기존 수동 semantic catalog와
+            # 현재 active policy 실행은 유지한다. 오류는 refresh update에 남긴다.
+            logger.warning(
+                "[Model-Routing] adaptive cohort snapshot skipped: error_type=%s",
+                type(exc).__name__,
+            )
+            return None
 
     @staticmethod
     def _safe_recent_runs(profile) -> list[dict[str, Any]]:
