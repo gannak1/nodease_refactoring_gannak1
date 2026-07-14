@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -242,6 +242,9 @@ class TestModelRoutingPolicyApi:
         ), patch(
             "apps.gateway.api.v1.endpoints.workflow._get_model_routing_policy_for_workflow",
             return_value=policy,
+        ), patch(
+            "apps.gateway.api.v1.endpoints.workflow._model_routing_adaptive_summary",
+            return_value=workflow_endpoint._empty_model_routing_adaptive_summary(),
         ):
             response = self.client.get(
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage/model-routing/policy"
@@ -301,6 +304,9 @@ class TestModelRoutingPolicyApi:
         ), patch(
             "apps.gateway.api.v1.endpoints.workflow._get_model_routing_policy_for_workflow",
             return_value=policy,
+        ), patch(
+            "apps.gateway.api.v1.endpoints.workflow._model_routing_adaptive_summary",
+            return_value=workflow_endpoint._empty_model_routing_adaptive_summary(),
         ):
             response = self.client.get(
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage/model-routing/policy"
@@ -321,6 +327,281 @@ class TestModelRoutingPolicyApi:
             "judge_cost": 0.0012,
             "created_at": "2026-07-10T00:00:00+00:00",
         }
+
+    def test_fr11_policy_patch_updates_default_and_fallback_models(self):
+        """규칙에 맞지 않는 요청의 기본 모델은 draft와 persisted policy에 함께 저장한다."""
+        workflow_id = uuid4()
+        user_id = uuid4()
+        db = MagicMock()
+        workflow = _workflow_with_nodes(
+            workflow_id,
+            uuid4(),
+            [
+                {
+                    "id": "llm-triage",
+                    "type": "llmNode",
+                    "data": {
+                        "auto_model_routing": True,
+                        "model_id": "gpt-4.1",
+                        "fallback_model_id": "gpt-4o-mini",
+                    },
+                }
+            ],
+        )
+        policy = SimpleNamespace(
+            id=uuid4(),
+            enabled=True,
+            status="active",
+            policy_version="router-policy-v4",
+            active_policy={
+                "default_model_id": "gpt-4.1",
+                "fallback_model_id": "gpt-4o-mini",
+                "rules": [],
+            },
+            pending_policy=None,
+            refresh_every_runs=20,
+            eligible_runs_since_last_refresh=0,
+            last_refresh_result=None,
+            last_refreshed_at=None,
+            validation_budget_usd=3,
+            max_cohorts=6,
+            judge_user_id=None,
+        )
+        (
+            db.query.return_value.filter.return_value.filter.return_value.first.return_value
+        ) = None
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+            return_value=workflow,
+        ), patch(
+            "apps.gateway.api.v1.endpoints.workflow._get_model_routing_policy_for_workflow",
+            return_value=policy,
+        ), patch(
+            "apps.gateway.api.v1.endpoints.workflow._model_routing_adaptive_summary",
+            return_value=workflow_endpoint._empty_model_routing_adaptive_summary(),
+        ):
+            response = self.client.patch(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage/model-routing/policy",
+                json={
+                    "enabled": True,
+                    "refresh_every_runs": 20,
+                    "validation_budget_usd": 3,
+                    "max_cohorts": 6,
+                    "default_model_id": "gpt-4.1-mini",
+                    "fallback_model_id": "gpt-4.1",
+                },
+            )
+
+        assert response.status_code == 200
+        node_data = workflow.graph["nodes"][0]["data"]
+        assert node_data["model_id"] == "gpt-4.1-mini"
+        assert node_data["fallback_model_id"] == "gpt-4.1"
+        assert policy.active_policy["default_model_id"] == "gpt-4.1-mini"
+        assert policy.active_policy["fallback_model_id"] == "gpt-4.1"
+        db.commit.assert_called_once()
+
+    def test_fr11_cohort_wizard_suggests_fields_from_representative_query(self):
+        """대표 문의만 주면 마법사가 사람이 수정 가능한 입력군 초안을 반환한다."""
+        workflow_id = uuid4()
+        organization_id = uuid4()
+        user_id = uuid4()
+        db = MagicMock()
+        workflow = _workflow_with_nodes(
+            workflow_id,
+            organization_id,
+            [{"id": "llm-triage", "type": "llmNode", "data": {}}],
+        )
+        wizard_client = SimpleNamespace(
+            invoke=AsyncMock(
+                return_value={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    '{"label":"결제 오류 문의",'
+                                    '"key":"billing_issue",'
+                                    '"representative_query":"결제가 완료됐는데 서비스 이용이 되지 않습니다."}'
+                                )
+                            }
+                        }
+                    ]
+                }
+            )
+        )
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+            return_value=workflow,
+        ) as ensure_deployer, patch(
+            "apps.gateway.api.v1.endpoints.workflow.LLMService.get_wizard_client_for_user",
+            return_value=SimpleNamespace(client=wizard_client),
+        ) as get_wizard:
+            response = self.client.post(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage/model-routing/cohorts/suggest",
+                json={"representative_query": "결제가 완료됐는데 서비스 이용이 되지 않습니다."},
+            )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "label": "결제 오류 문의",
+            "key": "billing_issue",
+            "representative_query": "결제가 완료됐는데 서비스 이용이 되지 않습니다.",
+        }
+        ensure_deployer.assert_called_once_with(
+            db, SimpleNamespace(id=user_id), str(workflow_id), "deploy"
+        )
+        get_wizard.assert_called_once_with(
+            db,
+            user_id,
+            workflow_endpoint.LLMService.EFFICIENT_MODELS,
+            organization_id=organization_id,
+            runtime_surface="model_routing_cohort_wizard",
+        )
+
+    def test_fr11_direct_cohort_is_embedded_and_saved_for_the_active_policy(self):
+        """직접 입력군 등록은 실행 주체의 임베딩 권한으로 저장 경로를 호출한다."""
+        workflow_id = uuid4()
+        organization_id = uuid4()
+        user_id = uuid4()
+        policy_id = uuid4()
+        db = MagicMock()
+        workflow = _workflow_with_nodes(
+            workflow_id,
+            organization_id,
+            [
+                {
+                    "id": "llm-triage",
+                    "type": "llmNode",
+                    "data": {"auto_model_routing": True, "model_id": "gpt-4.1"},
+                }
+            ],
+        )
+        policy = SimpleNamespace(
+            id=policy_id,
+            enabled=True,
+            execution_subject_user_id=user_id,
+            organization_id=organization_id,
+            max_cohorts=6,
+        )
+        cohort = SimpleNamespace(
+            id=uuid4(),
+            cohort_key="billing_issue",
+            label="결제 오류 문의",
+            source="manual",
+            status="proposed",
+        )
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+            return_value=workflow,
+        ) as ensure_deployer, patch(
+            "apps.gateway.api.v1.endpoints.workflow._get_model_routing_policy_for_workflow",
+            return_value=policy,
+        ), patch(
+            "apps.gateway.api.v1.endpoints.workflow.WorkflowRuntimeLLMService."
+            "get_runtime_available_embedding_model_ids_for_user",
+            return_value=["text-embedding-3-large"],
+        ) as embedding_models, patch(
+            "apps.gateway.api.v1.endpoints.workflow.ModelRoutingPolicyStore."
+            "_preferred_embedding_model",
+            return_value="text-embedding-3-large",
+        ), patch(
+            "apps.gateway.api.v1.endpoints.workflow.WorkflowRuntimeLLMService."
+            "get_runtime_client_for_user",
+            return_value=SimpleNamespace(client=SimpleNamespace(embed_sync=MagicMock())),
+        ) as get_embedding_runtime, patch(
+            "apps.gateway.api.v1.endpoints.workflow.AdaptiveModelRoutingCohortStore."
+            "create_manual_cohort",
+            return_value=cohort,
+        ) as create_cohort:
+            response = self.client.post(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage/model-routing/cohorts",
+                json={
+                    "label": "결제 오류 문의",
+                    "key": "billing_issue",
+                    "representative_query": "결제가 완료됐는데 서비스 이용이 되지 않습니다.",
+                    "fixed": True,
+                },
+            )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "id": str(cohort.id),
+            "key": "billing_issue",
+            "label": "결제 오류 문의",
+            "source": "manual",
+            "status": "proposed",
+        }
+        ensure_deployer.assert_called_once_with(
+            db, SimpleNamespace(id=user_id), str(workflow_id), "deploy"
+        )
+        embedding_models.assert_called_once_with(
+            db,
+            user_id=user_id,
+            organization_id=organization_id,
+        )
+        get_embedding_runtime.assert_called_once_with(
+            db,
+            user_id=user_id,
+            model_id="text-embedding-3-large",
+            organization_id=organization_id,
+        )
+        assert create_cohort.call_args.kwargs["policy"] is policy
+        assert create_cohort.call_args.kwargs["cohort_key"] == "billing_issue"
+        assert create_cohort.call_args.kwargs["fixed"] is True
+        db.commit.assert_called_once()
+
+    def test_fr11_cohort_delete_retires_cohort_without_deleting_history(self):
+        """삭제는 evidence를 지우지 않고 다음 라우팅 대상에서만 제외한다."""
+        workflow_id = uuid4()
+        user_id = uuid4()
+        policy_id = uuid4()
+        cohort_id = uuid4()
+        db = MagicMock()
+        workflow = _workflow_with_nodes(
+            workflow_id,
+            uuid4(),
+            [{"id": "llm-triage", "type": "llmNode", "data": {}}],
+        )
+        policy = SimpleNamespace(id=policy_id, enabled=True)
+        cohort = SimpleNamespace(
+            id=cohort_id,
+            policy_id=policy_id,
+            status="active",
+            required=True,
+            retired_at=None,
+            safety_protected=False,
+        )
+        (
+            db.query.return_value.filter.return_value.filter.return_value.one_or_none.return_value
+        ) = cohort
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+            return_value=workflow,
+        ), patch(
+            "apps.gateway.api.v1.endpoints.workflow._get_model_routing_policy_for_workflow",
+            return_value=policy,
+        ):
+            response = self.client.delete(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage/model-routing/cohorts/{cohort_id}"
+            )
+
+        assert response.status_code == 200
+        assert response.json() == {"id": str(cohort_id), "status": "retired"}
+        assert cohort.status == "retired"
+        assert cohort.required is False
+        assert cohort.retired_at is not None
+        db.commit.assert_called_once()
 
     def test_fr11_manual_refresh_marks_policy_and_schedules_task(self):
         workflow_id = uuid4()
