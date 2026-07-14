@@ -153,7 +153,7 @@ apps/gateway/.venv/Scripts/python.exe scripts/seed_demo.py --profile demo --rese
 
 ## Credential / Embedding 정책
 
-demo seed는 기본적으로 precomputed Knowledge fixture를 사용해 법령 PDF와 사내문서를 `DocumentChunk`와 `text-embedding-3-small` 1536차원 embedding까지 생성한다. 시연 workflow의 채팅 모델은 `gpt-5.4`와 `gpt-5.4-mini`를 사용한다.
+demo seed는 기본적으로 precomputed Knowledge fixture를 사용해 법령 PDF와 사내문서를 `DocumentChunk`와 `text-embedding-3-small` 1536차원 embedding까지 생성한다. `demodata/`의 팀별 온보딩 PDF 네 개도 Document로 등록하며, `--enable-runtime-openai-credential` 또는 fixture 재생성 옵션에서는 같은 실행에서 실제 파싱·embedding 생성까지 수행한다. 시연 workflow의 채팅 모델은 `gpt-5.4`와 `gpt-5.4-mini`를 사용한다.
 
 HR 온보딩 챗봇은 여러 사내문서/법령 KB를 동시에 검색한다. 사내문서는 시연용 단일 chunk가 많으므로, 기본 LLM 노드값보다 낮은 `scoreThreshold=0.3`과 `topK=4`를 seed graph에 명시해 데모 질문의 근거 문서가 안정적으로 선택되도록 한다.
 
@@ -177,7 +177,7 @@ seed는 `text-embedding-3-small`에 짧은 검증 요청을 보내 1536차원 em
 apps/gateway/.venv/Scripts/python.exe scripts/seed_demo.py --profile demo --reset --enable-runtime-openai-credential
 ```
 
-fixture 재생성과 runtime credential 준비를 한 번에 수행할 때만 두 옵션을 함께 사용한다.
+fixture 재생성과 runtime credential 준비를 한 번에 수행할 때만 두 옵션을 함께 사용한다. 이 명령은 기존 법령·사내문서 fixture 전체를 다시 만들기 때문에 `local/legal-docs-labor/` 법령 PDF 원본도 필요하다. `demodata/` PDF만 검색 가능하게 만들 목적이라면 사용하지 않는다.
 
 ```powershell
 apps/gateway/.venv/Scripts/python.exe scripts/seed_demo.py --profile demo --reset --regenerate-knowledge-fixture --enable-runtime-openai-credential
@@ -266,18 +266,18 @@ Private 사내문서 자료:
 
 ### 팀별 온보딩 접근 제어 발표 데이터
 
-`팀별 온보딩 문서 접근 제어 데모`는 PDF를 자동 생성하거나 색인하지 않는다. Seed는 아래 빈 KB, private Collection, 사용자·팀·Workflow 권한만 만든다. 발표자는 reset 후 각 KB 화면에서 대응 PDF를 직접 업로드하고 색인이 완료될 때까지 기다린다.
+`팀별 온보딩 문서 접근 제어 데모`는 `demodata/`의 아래 PDF를 대응 KB에 자동 등록한다. 검색 가능한 chunk와 embedding까지 한 번에 만들려면 `--enable-runtime-openai-credential` 옵션만 사용한다. 기존 precomputed fixture가 법령·사내문서를 채우고, 입력한 OpenAI key는 `demodata/` PDF 네 개의 embedding과 실제 workflow runtime credential에 사용된다.
 
-| 빈 Knowledge Base | 직접 업로드할 파일 | 접근 팀 |
+| Knowledge Base | 자동 등록할 파일 | 접근 팀 |
 | --- | --- | --- |
 | `온보딩 문서: 회사 공통` | `company_common_onboarding.pdf` | 플랫폼개발팀, 영업팀, 재무팀, People 팀 |
 | `온보딩 문서: 플랫폼개발팀` | `platform_team_onboarding_v4.pdf` | 플랫폼개발팀, People 팀 |
 | `온보딩 문서: 영업팀` | `sales_team_onboarding_v2.pdf` | 영업팀, People 팀 |
 | `온보딩 문서: 재무팀` | `finance_team_onboarding_v3.pdf` | 재무팀, People 팀 |
 
-현재 실행 권한 경계는 document-level KB다. 한 PDF 안의 일부 chunk만 `manager`에게 허용하는 동적 `role_acl`은 이 seed가 구현하지 않는다. 따라서 `장애 대응 및 온콜 연락망`처럼 manager-only인 내용은 발표용 PDF에서 제외하거나 별도 KB/PDF로 분리해야 한다. 같은 PDF에 넣으면 플랫폼개발팀 일반 사용자의 검색 후보가 될 수 있다.
+현재 실행 권한 경계는 document-level KB다. 한 PDF 안의 일부 chunk만 `manager`에게 허용하는 동적 `role_acl`은 지원하지 않는다. 따라서 플랫폼 PDF 원본은 보존하되, 일반 플랫폼 KB에 저장·색인하는 복사본에서는 manager-only 마지막 페이지를 제외한다. 제외된 내용을 시연하려면 후속으로 manager 전용 KB/PDF를 별도 구성해야 한다.
 
-발표 전에는 runtime credential opt-in으로 reset하고 네 PDF를 업로드한 뒤 김서연·이준호 계정으로 같은 질문을 각각 한 번 실행한다. 이 사전 실행이 Run History 비교용 안전 경로가 된다.
+발표 전에는 아래 명령으로 runtime credential 등록과 PDF embedding 생성을 함께 수행한 뒤 김서연·이준호 계정으로 같은 질문을 각각 한 번 실행한다. 이 사전 실행이 Run History 비교용 안전 경로가 된다.
 
 ```bash
 apps/gateway/.venv/bin/python scripts/seed_demo.py --profile demo --reset --enable-runtime-openai-credential

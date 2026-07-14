@@ -116,6 +116,45 @@ def test_resolve_legal_pdf_picks_latest_effective_date(tmp_path, monkeypatch):
     assert demo_seed._resolve_legal_pdf(spec) == latest_pdf
 
 
+def test_resolve_onboarding_pdf_uses_bundled_demodata(tmp_path, monkeypatch):
+    source = tmp_path / "company_common_onboarding.pdf"
+    source.write_bytes(b"%PDF-1.4\n")
+    monkeypatch.setattr(demo_seed, "DEMO_ONBOARDING_PDF_DIR", tmp_path)
+    spec = next(
+        item
+        for item in demo_seed.ONBOARDING_PDF_SPECS
+        if item.key == "onboarding_company_common"
+    )
+
+    assert demo_seed._resolve_onboarding_pdf(spec) == source
+
+
+def test_copy_onboarding_pdf_excludes_manager_only_pages(tmp_path, monkeypatch):
+    fitz = pytest.importorskip("fitz")
+    source = tmp_path / "platform_team_onboarding_v4.pdf"
+    with fitz.open() as document:
+        for page_number in range(1, 5):
+            page = document.new_page()
+            page.insert_text((72, 72), f"page-{page_number}")
+        document.save(source)
+
+    upload_dir = tmp_path / "uploads"
+    monkeypatch.setattr(demo_seed, "DEMO_UPLOAD_DIRS", (upload_dir,))
+    spec = next(
+        item
+        for item in demo_seed.ONBOARDING_PDF_SPECS
+        if item.key == "onboarding_platform"
+    )
+
+    copied_path = Path(demo_seed._copy_onboarding_pdf(spec, source))
+
+    with fitz.open(copied_path) as copied:
+        assert copied.page_count == 3
+        copied_text = "\n".join(page.get_text() for page in copied)
+    assert "page-3" in copied_text
+    assert "page-4" not in copied_text
+
+
 def test_hr_bot_graph_references_seeded_rag_kbs():
     graph = demo_seed._hr_bot_graph()
     llm_node = next(node for node in graph["nodes"] if node["id"] == "llm-answer")
@@ -241,28 +280,32 @@ def test_team_onboarding_access_control_users_match_presentation_scenario():
     )
 
 
-def test_team_onboarding_access_control_kbs_are_manual_upload_placeholders():
-    assert demo_seed.MANUAL_ONBOARDING_KB_SPECS == {
-        "onboarding_company_common": (
-            "온보딩 문서: 회사 공통",
-            "company_common_onboarding.pdf",
-        ),
-        "onboarding_platform": (
-            "온보딩 문서: 플랫폼개발팀",
-            "platform_team_onboarding_v4.pdf",
-        ),
-        "onboarding_sales": (
-            "온보딩 문서: 영업팀",
-            "sales_team_onboarding_v2.pdf",
-        ),
-        "onboarding_finance": (
-            "온보딩 문서: 재무팀",
-            "finance_team_onboarding_v3.pdf",
-        ),
+def test_team_onboarding_access_control_kbs_use_bundled_pdf_specs():
+    specs = {spec.key: spec for spec in demo_seed.ONBOARDING_PDF_SPECS}
+
+    assert {key: spec.filename for key, spec in specs.items()} == {
+        "onboarding_company_common": "company_common_onboarding.pdf",
+        "onboarding_platform": "platform_team_onboarding_v4.pdf",
+        "onboarding_sales": "sales_team_onboarding_v2.pdf",
+        "onboarding_finance": "finance_team_onboarding_v3.pdf",
     }
-    assert not set(demo_seed.MANUAL_ONBOARDING_KB_SPECS).intersection(
+    assert specs["onboarding_platform"].source_page_indexes == (0, 1, 2)
+    assert all(
+        (demo_seed.DEMO_ONBOARDING_PDF_DIR / spec.filename).is_file()
+        for spec in specs.values()
+    )
+    assert not set(specs).intersection(
         spec.key for spec in demo_seed.DEMO_DOCUMENT_SPECS
     )
+
+
+def test_onboarding_pdf_indexing_requires_a_seed_openai_key_mode(monkeypatch):
+    monkeypatch.delenv(demo_seed.DEMO_REGENERATE_KNOWLEDGE_FIXTURE_ENV, raising=False)
+    monkeypatch.delenv(demo_seed.DEMO_ENABLE_RUNTIME_OPENAI_CREDENTIAL_ENV, raising=False)
+    assert demo_seed._should_index_onboarding_pdfs() is False
+
+    monkeypatch.setenv(demo_seed.DEMO_ENABLE_RUNTIME_OPENAI_CREDENTIAL_ENV, "1")
+    assert demo_seed._should_index_onboarding_pdfs() is True
 
 
 def test_team_onboarding_access_control_permissions_are_fail_closed_by_team():
@@ -272,7 +315,7 @@ def test_team_onboarding_access_control_permissions_are_fail_closed_by_team():
         "onboarding_people",
         "onboarding_finance",
     }
-    scenario_kbs = set(demo_seed.MANUAL_ONBOARDING_KB_SPECS)
+    scenario_kbs = {spec.key for spec in demo_seed.ONBOARDING_PDF_SPECS}
     actual = {
         (kb_key, team_key, auth_state)
         for kb_key, team_key, auth_state in demo_seed._demo_team_knowledge_permission_specs()
@@ -293,13 +336,13 @@ def test_team_onboarding_access_control_permissions_are_fail_closed_by_team():
     }
 
 
-def test_team_onboarding_access_control_graph_references_manual_kbs():
+def test_team_onboarding_access_control_graph_references_bundled_pdf_kbs():
     graph = demo_seed._team_onboarding_access_control_graph()
     llm_node = next(node for node in graph["nodes"] if node["id"] == "llm-answer")
 
     assert [item["id"] for item in llm_node["data"]["knowledgeBases"]] == [
         str(demo_seed.KB_IDS[key])
-        for key in demo_seed.MANUAL_ONBOARDING_KB_SPECS
+        for key in (spec.key for spec in demo_seed.ONBOARDING_PDF_SPECS)
     ]
     assert "추측하지" in llm_node["data"]["system_prompt"]
 
@@ -348,6 +391,7 @@ def test_demo_summary_reports_seeded_knowledge_documents():
     assert summary["knowledge_documents"] == {
         "public_law_pdfs": 7,
         "internal_markdown_docs": 11,
+        "bundled_onboarding_pdfs": 4,
         "embedding_model": demo_seed.DEMO_EMBEDDING_MODEL,
         "fixture": demo_seed.DEMO_KNOWLEDGE_FIXTURE_PATH.as_posix(),
     }
@@ -375,6 +419,27 @@ def test_demo_seed_prerequisites_use_precomputed_fixture_without_openai(
         raising=False,
     )
     monkeypatch.setenv("ENCRYPTION_KEY", "present-only")
+
+    demo_seed.validate_demo_seed_prerequisites()
+
+
+def test_runtime_credential_indexes_onboarding_pdfs_without_legal_pdf_sources(
+    tmp_path, monkeypatch
+):
+    fixture_path = tmp_path / "demo_knowledge_chunks.jsonl.gz"
+    write_minimal_demo_fixture(fixture_path)
+
+    monkeypatch.setattr(demo_seed, "DEMO_KNOWLEDGE_FIXTURE_PATH", fixture_path)
+    monkeypatch.setattr(demo_seed, "_resolve_onboarding_pdf", lambda _spec: tmp_path)
+    monkeypatch.setattr(
+        demo_seed,
+        "_resolve_legal_pdf",
+        lambda _spec: pytest.fail("runtime credential mode must not require legal PDFs"),
+    )
+    monkeypatch.setenv("ENCRYPTION_KEY", "present-only")
+    monkeypatch.setenv("OPENAI_API_KEY", "runtime-credential-value")
+    monkeypatch.setenv(demo_seed.DEMO_ENABLE_RUNTIME_OPENAI_CREDENTIAL_ENV, "1")
+    monkeypatch.delenv(demo_seed.DEMO_REGENERATE_KNOWLEDGE_FIXTURE_ENV, raising=False)
 
     demo_seed.validate_demo_seed_prerequisites()
 

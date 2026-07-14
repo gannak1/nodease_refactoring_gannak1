@@ -153,7 +153,7 @@ def _snapshot_department_onboarding_rbac(
             demo_seed.KB_IDS["internal_planning_onboarding_guide"],
         )
         team_onboarding_kb_ids = tuple(
-            demo_seed.KB_IDS[key] for key in demo_seed.MANUAL_ONBOARDING_KB_SPECS
+            demo_seed.KB_IDS[spec.key] for spec in demo_seed.ONBOARDING_PDF_SPECS
         )
 
         def resolve_for(user_key: str) -> set[uuid.UUID]:
@@ -235,7 +235,7 @@ def _snapshot_department_onboarding_rbac(
                     "people_team_id": demo_seed.TEAM_IDS["onboarding_people"],
                 },
             ).scalar_one()
-            manual_onboarding_document_count = conn.execute(
+            bundled_onboarding_document_count = conn.execute(
                 text(
                     "SELECT COUNT(*) FROM documents "
                     "WHERE knowledge_base_id = ANY(:knowledge_base_ids)"
@@ -257,6 +257,16 @@ def _snapshot_department_onboarding_rbac(
                 ).all()
                 return {row[0] for row in rows}
 
+            platform_onboarding_permissions = onboarding_permissions_for(
+                "onboarding_platform"
+            )
+            sales_onboarding_permissions = onboarding_permissions_for(
+                "onboarding_sales"
+            )
+            people_onboarding_permissions = onboarding_permissions_for(
+                "onboarding_people"
+            )
+
         return {
             "developer_candidates": resolve_for("developer"),
             "planning_candidates": resolve_for("planning"),
@@ -266,19 +276,13 @@ def _snapshot_department_onboarding_rbac(
             "planning_document_status": planning_document[0],
             "planning_chunk_count": planning_document[1],
             "planning_embedding_dimension": planning_document[2],
-            "platform_onboarding_permissions": onboarding_permissions_for(
-                "onboarding_platform"
-            ),
-            "sales_onboarding_permissions": onboarding_permissions_for(
-                "onboarding_sales"
-            ),
-            "people_onboarding_permissions": onboarding_permissions_for(
-                "onboarding_people"
-            ),
+            "platform_onboarding_permissions": platform_onboarding_permissions,
+            "sales_onboarding_permissions": sales_onboarding_permissions,
+            "people_onboarding_permissions": people_onboarding_permissions,
             "team_onboarding_workflow_permission_count": (
                 team_onboarding_workflow_permission_count
             ),
-            "manual_onboarding_document_count": manual_onboarding_document_count,
+            "bundled_onboarding_document_count": bundled_onboarding_document_count,
         }
     finally:
         engine.dispose()
@@ -374,10 +378,10 @@ def test_demo_seed_is_idempotent_in_disposable_postgres_database():
             demo_seed.KB_IDS["onboarding_sales"],
         }
         assert rbac_state["people_onboarding_permissions"] == {
-            demo_seed.KB_IDS[key] for key in demo_seed.MANUAL_ONBOARDING_KB_SPECS
+            demo_seed.KB_IDS[spec.key] for spec in demo_seed.ONBOARDING_PDF_SPECS
         }
         assert rbac_state["team_onboarding_workflow_permission_count"] == 3
-        assert rbac_state["manual_onboarding_document_count"] == 0
+        assert rbac_state["bundled_onboarding_document_count"] == 4
     except OperationalError:
         raise pytest.fail.Exception(
             "disposable PostgreSQL is unavailable or rejected the connection; "

@@ -732,6 +732,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 ## E2E Tests
 
 - `팀별 온보딩 문서 접근 제어 데모`는 active Internal Chatbot으로 seed되고 플랫폼개발팀·영업팀은 `operator`, People 팀은 `manager` Workflow 권한을 가진다.
+- runtime OpenAI credential 모드의 demo seed는 fixture 재생성 없이도 `demodata/` 온보딩 PDF 네 개를 대응 KB에 실제 파싱·embedding하여 위 Internal Chatbot에서 즉시 검색 가능하게 만든다. 이 경로는 로컬 법령 PDF 원본을 요구하지 않는다.
 - 같은 배포를 김서연과 이준호가 실행할 때 LLM node의 direct KB 설정은 같아도 runtime candidate resolver 결과는 execution subject의 Team Knowledge 권한에 따라 달라야 한다. Workflow owner나 People 관리자 권한으로 fallback하면 실패한다.
 - 수동 PDF가 아직 업로드되지 않은 빈 KB 상태에서는 LLM node가 다른 팀 자료를 추측하지 않고 safe no-evidence 응답으로 닫혀야 한다.
 

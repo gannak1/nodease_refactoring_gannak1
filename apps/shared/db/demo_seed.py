@@ -106,6 +106,7 @@ DEMO_LEGAL_DOCS_LABOR_DIR = DEMO_REPO_ROOT / "local" / "legal-docs-labor"
 DEMO_INTERNAL_DOCS_DIR = (
     DEMO_REPO_ROOT / "local" / "demo-scenario-2026-07-08" / "internal-docs"
 )
+DEMO_ONBOARDING_PDF_DIR = DEMO_REPO_ROOT / "demodata"
 DEMO_KNOWLEDGE_FIXTURE_PATH = (
     DEMO_REPO_ROOT / "apps" / "shared" / "db" / "fixtures" / "demo_knowledge_chunks.jsonl.gz"
 )
@@ -263,6 +264,10 @@ DOCUMENT_IDS = {
     "internal_developer_compensation_band": _uuid(355),
     "internal_compensation_access_policy": _uuid(356),
     "internal_planning_onboarding_guide": _uuid(357),
+    "onboarding_company_common": _uuid(358),
+    "onboarding_platform": _uuid(359),
+    "onboarding_sales": _uuid(360),
+    "onboarding_finance": _uuid(361),
 }
 
 COLLECTION_ITEM_IDS = {
@@ -361,27 +366,73 @@ class DemoKnowledgeSeedSpec:
     legal_required_tokens: tuple[str, ...] = ()
     chunk_size: int = 1000
     chunk_overlap: int = 150
+    source_page_indexes: tuple[int, ...] | None = None
 
 
-# PDF는 발표자가 UI에서 직접 업로드한다. Seed는 문서별 권한 경계가 되는
-# 빈 Knowledge Base와 예상 파일명만 준비한다.
-MANUAL_ONBOARDING_KB_SPECS = {
-    "onboarding_company_common": (
-        "온보딩 문서: 회사 공통",
-        "company_common_onboarding.pdf",
+ONBOARDING_PDF_SPECS = (
+    DemoKnowledgeSeedSpec(
+        key="onboarding_company_common",
+        name="온보딩 문서: 회사 공통",
+        description="전 직원이 조회하는 공통 온보딩 절차",
+        filename="company_common_onboarding.pdf",
+        summary="첫날 일정, 공통 계정 설정, 보안 교육과 완료 기준",
+        source_tier="private",
+        classification="internal",
+        tags=("온보딩", "회사 공통", "보안 교육"),
+        keywords=("첫날 일정", "SSO", "보안 교육", "메신저"),
+        collection_key="team_onboarding_access_control",
+        chunk_size=800,
+        chunk_overlap=100,
     ),
-    "onboarding_platform": (
-        "온보딩 문서: 플랫폼개발팀",
-        "platform_team_onboarding_v4.pdf",
+    DemoKnowledgeSeedSpec(
+        key="onboarding_platform",
+        name="온보딩 문서: 플랫폼개발팀",
+        description="플랫폼개발팀 개발환경과 접근 신청 절차",
+        filename="platform_team_onboarding_v4.pdf",
+        summary="플랫폼개발팀 첫 주 일정, Git, VPN과 운영 조회 권한 신청",
+        source_tier="private",
+        classification="internal",
+        tags=("온보딩", "플랫폼", "개발환경", "접근 권한"),
+        keywords=("Git", "VPN", "운영 조회", "배포 권한"),
+        collection_key="team_onboarding_access_control",
+        chunk_size=800,
+        chunk_overlap=100,
+        # 마지막 페이지는 role_acl=manager다. 현재 runtime은 chunk ACL을
+        # 강제하지 않으므로 employee KB 복사본에서는 제외한다.
+        source_page_indexes=(0, 1, 2),
     ),
-    "onboarding_sales": (
-        "온보딩 문서: 영업팀",
-        "sales_team_onboarding_v2.pdf",
+    DemoKnowledgeSeedSpec(
+        key="onboarding_sales",
+        name="온보딩 문서: 영업팀",
+        description="영업팀 CRM과 고객 데이터 취급 온보딩 절차",
+        filename="sales_team_onboarding_v2.pdf",
+        summary="영업팀 첫 주 일정, CRM 접근, 견적 승인과 고객 데이터 취급",
+        source_tier="private",
+        classification="internal",
+        tags=("온보딩", "영업", "CRM", "고객 데이터"),
+        keywords=("CRM", "고객 계정", "견적 승인", "세일즈 플레이북"),
+        collection_key="team_onboarding_access_control",
+        chunk_size=800,
+        chunk_overlap=100,
     ),
-    "onboarding_finance": (
-        "온보딩 문서: 재무팀",
-        "finance_team_onboarding_v3.pdf",
+    DemoKnowledgeSeedSpec(
+        key="onboarding_finance",
+        name="온보딩 문서: 재무팀",
+        description="재무팀 회계 시스템과 지급 승인 온보딩 절차",
+        filename="finance_team_onboarding_v3.pdf",
+        summary="재무팀 첫 주 일정, 회계 시스템, 결산과 지급 승인 절차",
+        source_tier="private",
+        classification="confidential",
+        tags=("온보딩", "재무", "회계", "지급 승인"),
+        keywords=("회계 시스템", "결산", "지급 요청", "업무 분리"),
+        collection_key="team_onboarding_access_control",
+        chunk_size=800,
+        chunk_overlap=100,
     ),
+)
+
+ONBOARDING_KB_SPECS = {
+    spec.key: (spec.name, spec.filename) for spec in ONBOARDING_PDF_SPECS
 }
 
 
@@ -1165,11 +1216,13 @@ def demo_summary(profile: str = "demo") -> dict[str, Any]:
         "knowledge_documents": {
             "public_law_pdfs": len(LEGAL_DOCUMENT_SPECS),
             "internal_markdown_docs": len(INTERNAL_DOCUMENT_SPECS),
+            "bundled_onboarding_pdfs": len(ONBOARDING_PDF_SPECS),
             "embedding_model": DEMO_EMBEDDING_MODEL,
             "fixture": DEMO_KNOWLEDGE_FIXTURE_PATH.as_posix(),
         },
-        "manual_knowledge_placeholders": {
-            key: filename for key, (_, filename) in MANUAL_ONBOARDING_KB_SPECS.items()
+        "bundled_onboarding_pdf_sources": {
+            spec.key: (DEMO_ONBOARDING_PDF_DIR / spec.filename).as_posix()
+            for spec in ONBOARDING_PDF_SPECS
         },
     }
 
@@ -1220,6 +1273,42 @@ def _copy_demo_source_file(source_path: Path, target_filename: str) -> str:
     ) from last_error
 
 
+def _copy_onboarding_pdf(spec: DemoKnowledgeSeedSpec, source_path: Path) -> str:
+    if spec.source_page_indexes is None:
+        return _copy_demo_source_file(source_path, spec.filename)
+
+    try:
+        import fitz
+    except ImportError as error:
+        raise RuntimeError(
+            "페이지 제한 온보딩 PDF를 만들려면 PyMuPDF가 필요합니다."
+        ) from error
+
+    last_error: OSError | None = None
+    for base_dir in DEMO_UPLOAD_DIRS:
+        try:
+            base_dir.mkdir(parents=True, exist_ok=True)
+            target_path = base_dir / spec.filename
+            with fitz.open(source_path) as source_document, fitz.open() as target_document:
+                for page_index in spec.source_page_indexes:
+                    if page_index < 0 or page_index >= source_document.page_count:
+                        raise ValueError(
+                            f"{spec.filename} page index가 범위를 벗어났습니다: {page_index}"
+                        )
+                    target_document.insert_pdf(
+                        source_document,
+                        from_page=page_index,
+                        to_page=page_index,
+                    )
+                target_path.write_bytes(target_document.tobytes())
+            return target_path.as_posix()
+        except OSError as error:
+            last_error = error
+    raise RuntimeError(
+        f"demo 온보딩 PDF를 저장할 수 있는 upload 경로가 없습니다: {DEMO_UPLOAD_DIRS}"
+    ) from last_error
+
+
 def _resolve_legal_pdf(spec: DemoKnowledgeSeedSpec) -> Path:
     if not DEMO_LEGAL_DOCS_LABOR_DIR.exists():
         raise FileNotFoundError(
@@ -1242,6 +1331,15 @@ def _resolve_legal_pdf(spec: DemoKnowledgeSeedSpec) -> Path:
     )
 
 
+def _resolve_onboarding_pdf(spec: DemoKnowledgeSeedSpec) -> Path:
+    source_path = DEMO_ONBOARDING_PDF_DIR / spec.filename
+    if not source_path.is_file():
+        raise FileNotFoundError(
+            f"온보딩 PDF를 찾지 못했습니다: {source_path.as_posix()}"
+        )
+    return source_path
+
+
 def _legal_pdf_date(path: Path) -> str:
     matches = re.findall(r"\((\d{8})\)", path.name)
     return matches[-1] if matches else "00000000"
@@ -1253,6 +1351,13 @@ def _regenerate_knowledge_fixture_requested() -> bool:
 
 def _runtime_openai_credential_requested() -> bool:
     return os.getenv(DEMO_ENABLE_RUNTIME_OPENAI_CREDENTIAL_ENV) == "1"
+
+
+def _should_index_onboarding_pdfs() -> bool:
+    return (
+        _regenerate_knowledge_fixture_requested()
+        or _runtime_openai_credential_requested()
+    )
 
 
 def _demo_knowledge_fixture_exists() -> bool:
@@ -1423,7 +1528,7 @@ def _document_meta_base(
     if spec.source_tier == "public":
         match = re.search(r"\((\d{8})\)", Path(source_path).name)
         legal_effective_date = match.group(1) if match else None
-    return {
+    metadata = {
         **_demo_options(f"document-{spec.key}"),
         "summary": spec.summary,
         "classification": spec.classification,
@@ -1436,6 +1541,12 @@ def _document_meta_base(
         "remove_whitespace": True,
         "selection_mode": "all",
     }
+    if spec.source_page_indexes is not None:
+        metadata["included_source_pages"] = [
+            page_index + 1 for page_index in spec.source_page_indexes
+        ]
+        metadata["page_filter_reason"] = "unsupported_chunk_role_acl"
+    return metadata
 
 
 def _preserve_indexing_meta(
@@ -1535,6 +1646,8 @@ def _insert_demo_chunks_from_fixture(
 def _index_demo_documents_from_sources(
     db: Session,
     specs: tuple[DemoKnowledgeSeedSpec, ...],
+    *,
+    persist_fixture: bool = True,
 ) -> None:
     _require_seed_env("ENCRYPTION_KEY")
 
@@ -1632,12 +1745,17 @@ def _index_demo_documents_from_sources(
         meta = dict(doc.meta_info or {})
         meta["chunking_mode"] = chunking_result.chunking_mode
         meta["chunking_fingerprint_hash"] = chunking_result.chunking_fingerprint
-        meta["fixture_source"] = DEMO_KNOWLEDGE_FIXTURE_PATH.name
+        if persist_fixture:
+            meta["fixture_source"] = DEMO_KNOWLEDGE_FIXTURE_PATH.name
+        else:
+            meta.pop("fixture_source", None)
+            meta["indexed_from_bundled_source"] = True
         doc.meta_info = meta
         db.add(doc)
         db.flush()
 
-    _write_demo_knowledge_fixture(fixture_records)
+    if persist_fixture:
+        _write_demo_knowledge_fixture(fixture_records)
 
 
 def _index_demo_documents(
@@ -1653,6 +1771,8 @@ def _index_demo_documents(
 
 def validate_demo_seed_prerequisites() -> None:
     _require_seed_env("ENCRYPTION_KEY")
+    for spec in ONBOARDING_PDF_SPECS:
+        _resolve_onboarding_pdf(spec)
     if _runtime_openai_credential_requested():
         _require_seed_env("OPENAI_API_KEY")
     if _demo_knowledge_fixture_or_none() is not None:
@@ -1734,9 +1854,9 @@ def _edge(
 def _knowledge_base_ref(key: str) -> dict[str, str]:
     if key == "hr":
         return {"id": str(KB_IDS[key]), "name": "사내 인사·복지 지식베이스"}
-    manual_spec = MANUAL_ONBOARDING_KB_SPECS.get(key)
-    if manual_spec is not None:
-        return {"id": str(KB_IDS[key]), "name": manual_spec[0]}
+    onboarding_spec = ONBOARDING_KB_SPECS.get(key)
+    if onboarding_spec is not None:
+        return {"id": str(KB_IDS[key]), "name": onboarding_spec[0]}
     spec = next((item for item in DEMO_DOCUMENT_SPECS if item.key == key), None)
     if spec is None:
         raise KeyError(f"Unknown demo knowledge base key: {key}")
@@ -1940,7 +2060,7 @@ def _department_onboarding_chatbot_graph() -> dict[str, Any]:
 
 def _team_onboarding_access_control_graph() -> dict[str, Any]:
     knowledge_bases = [
-        _knowledge_base_ref(key) for key in MANUAL_ONBOARDING_KB_SPECS
+        _knowledge_base_ref(spec.key) for spec in ONBOARDING_PDF_SPECS
     ]
     return {
         "nodes": [
@@ -2815,21 +2935,19 @@ def _seed_knowledge(db: Session) -> None:
                 "user_id": USER_IDS["admin"],
             },
         )
-    for key, (name, expected_filename) in MANUAL_ONBOARDING_KB_SPECS.items():
+    for spec in ONBOARDING_PDF_SPECS:
         _upsert_by_id(
             db,
             KnowledgeBase,
-            KB_IDS[key],
+            KB_IDS[spec.key],
             {
                 "organization_id": ORG_ID,
-                "name": name,
-                "description": (
-                    f"발표자가 {expected_filename} 파일을 직접 업로드하는 빈 데모 KB"
-                ),
+                "name": spec.name,
+                "description": spec.description,
                 "safe_metadata": {
-                    **_demo_options(f"manual-onboarding-kb-{key}"),
-                    "expected_filename": expected_filename,
-                    "document_seed_mode": "manual_upload",
+                    **_demo_options(f"bundled-onboarding-kb-{spec.key}"),
+                    "source_filename": spec.filename,
+                    "document_seed_mode": "bundled_pdf",
                 },
                 "embedding_model": DEMO_EMBEDDING_MODEL,
                 "top_k": 5,
@@ -2893,14 +3011,14 @@ def _seed_knowledge(db: Session) -> None:
             "name": "팀별 온보딩 접근 제어 문서",
             "description": "회사 공통 및 팀별 온보딩 PDF를 권한 경계별로 묶은 데모 컬렉션",
             "source_identity_id": None,
-            "source_connector_ref": "local.manual.team-onboarding-access-control",
+            "source_connector_ref": "local.demodata.team-onboarding-access-control",
             "is_system_managed": False,
             "sync_state": "manual",
             "lifecycle_state": "active",
             "safe_metadata": {
                 **_demo_options("collection-team-onboarding-access-control"),
                 "visibility": "private",
-                "document_seed_mode": "manual_upload",
+                "document_seed_mode": "bundled_pdf",
             },
             "created_by": USER_IDS["onboarding_people_manager"],
         },
@@ -2928,25 +3046,23 @@ def _seed_knowledge(db: Session) -> None:
             },
         )
 
-    for rank, (key, (_, expected_filename)) in enumerate(
-        MANUAL_ONBOARDING_KB_SPECS.items()
-    ):
+    for rank, spec in enumerate(ONBOARDING_PDF_SPECS):
         _upsert_by_id(
             db,
             KnowledgeCollectionItem,
-            COLLECTION_ITEM_IDS[key],
+            COLLECTION_ITEM_IDS[spec.key],
             {
                 "organization_id": ORG_ID,
                 "collection_id": COLLECTION_IDS[
                     "team_onboarding_access_control"
                 ],
-                "knowledge_base_id": KB_IDS[key],
-                "safe_source_path_ref": expected_filename,
+                "knowledge_base_id": KB_IDS[spec.key],
+                "safe_source_path_ref": spec.filename,
                 "rank": rank,
                 "safe_metadata": {
-                    **_demo_options(f"collection-item-{key}"),
-                    "expected_filename": expected_filename,
-                    "document_seed_mode": "manual_upload",
+                    **_demo_options(f"collection-item-{spec.key}"),
+                    "source_filename": spec.filename,
+                    "document_seed_mode": "bundled_pdf",
                 },
             },
         )
@@ -3079,8 +3195,42 @@ def _seed_knowledge(db: Session) -> None:
             },
         )
 
+    for spec in ONBOARDING_PDF_SPECS:
+        existing = db.get(Document, DOCUMENT_IDS[spec.key])
+        source_path = _resolve_onboarding_pdf(spec)
+        file_path = _copy_onboarding_pdf(spec, source_path)
+        _upsert_by_id(
+            db,
+            Document,
+            DOCUMENT_IDS[spec.key],
+            {
+                "knowledge_base_id": KB_IDS[spec.key],
+                "filename": spec.filename,
+                "file_path": file_path,
+                "source_type": SourceType.FILE,
+                "content_hash": existing.content_hash if existing else None,
+                "status": existing.status if existing else "pending",
+                "error_message": None,
+                "chunk_size": spec.chunk_size,
+                "chunk_overlap": spec.chunk_overlap,
+                "meta_info": _preserve_indexing_meta(
+                    existing,
+                    _document_meta_base(spec, source_path.as_posix()),
+                ),
+                "embedding_model": existing.embedding_model
+                if existing and existing.embedding_model
+                else DEMO_EMBEDDING_MODEL,
+            },
+        )
+
     db.flush()
     _index_demo_documents(db, DEMO_DOCUMENT_SPECS, knowledge_fixture)
+    if _should_index_onboarding_pdfs():
+        _index_demo_documents_from_sources(
+            db,
+            ONBOARDING_PDF_SPECS,
+            persist_fixture=False,
+        )
 
 
 def _ensure_openai_provider_and_models(db: Session) -> tuple[LLMProvider, dict[str, LLMModel]]:
