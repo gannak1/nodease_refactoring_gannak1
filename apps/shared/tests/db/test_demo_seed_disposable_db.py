@@ -131,6 +131,50 @@ def _snapshot_counts(
         engine.dispose()
 
 
+def _insert_demo_user_knowledge_permission(
+    database: str,
+    config: DisposablePostgresConfig,
+) -> None:
+    engine = create_engine(config.database_url(database))
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO user_knowledge_permissions (
+                        id,
+                        grantee_organization_id,
+                        user_id,
+                        knowledge_base_id,
+                        auth_state,
+                        assigned_by,
+                        assigned_at,
+                        options,
+                        flags
+                    ) VALUES (
+                        :id,
+                        :organization_id,
+                        :user_id,
+                        :knowledge_base_id,
+                        'manager',
+                        :user_id,
+                        NOW(),
+                        '{}'::jsonb,
+                        0
+                    )
+                    """
+                ),
+                {
+                    "id": uuid.uuid4(),
+                    "organization_id": demo_seed.ORG_ID,
+                    "user_id": demo_seed.USER_IDS["admin"],
+                    "knowledge_base_id": demo_seed.KB_IDS["onboarding_platform"],
+                },
+            )
+    finally:
+        engine.dispose()
+
+
 def _snapshot_department_onboarding_rbac(
     database: str,
     config: DisposablePostgresConfig,
@@ -333,6 +377,7 @@ def test_demo_seed_is_idempotent_in_disposable_postgres_database():
             config=config,
         )
         seeded_counts = _snapshot_counts(database, config)
+        _insert_demo_user_knowledge_permission(database, config)
 
         _run_seed_command(
             ["scripts/seed_demo.py", "--profile", "demo", "--reset"],

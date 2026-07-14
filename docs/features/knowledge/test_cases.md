@@ -31,6 +31,7 @@ Verified Against: `origin/dev @ 32fb602f`
 
 - Team onboarding demo seed는 회사 공통 PDF용 빈 KB를 플랫폼개발·영업·재무·People 팀에 부여하고, 각 팀 전용 빈 KB는 해당 팀과 People 팀에만 부여한다. 플랫폼개발팀 사용자의 runtime 후보에 영업·재무 KB가 포함되거나 영업팀 사용자의 후보에 플랫폼개발·재무 KB가 포함되면 실패한다.
 - Team onboarding demo의 네 KB는 `demodata/` PDF를 Document로 등록한다. runtime OpenAI credential 옵션만 사용해도 기존 precomputed fixture가 법령·사내문서를 채우고, PDF를 실제 파싱한 `text-embedding-3-small` embedding을 생성해 reset 직후 검색 가능해야 한다. 이 경로는 로컬 법령 PDF 원본을 요구하지 않는다. 플랫폼 PDF의 manager-only 마지막 페이지는 chunk ACL을 가장하지 않고 일반 플랫폼 KB 복사본에서 제외한다.
+- Demo reset은 demo Knowledge Base 또는 demo 사용자와 연결된 `user_knowledge_permissions`를 Knowledge Base보다 먼저 삭제해야 한다. migration backfill이나 시연 중 생성된 직접 권한이 남아 있어도 외래키 오류 없이 reset 후 같은 demo 상태를 재생성해야 한다.
 - 현재 demo seed는 document-level KB 권한만 보장한다. 같은 PDF 안의 chunk별 동적 `role_acl`을 권한 경계로 주장하지 않으며 manager-only 내용은 별도 KB로 분리해야 한다.
 
 - Document progress SSE는 stream을 열기 전에 active organization과 KB `read`를 검증한다. 권한 없는 actor나 다른 organization context는 document status, safe error, Redis progress를 한 건도 수신하지 못한다.

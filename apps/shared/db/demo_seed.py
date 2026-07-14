@@ -65,6 +65,7 @@ from apps.shared.db.models.team import (
     TeamLLMPermission,
     TeamMembership,
     TeamWorkflowPermission,
+    UserKnowledgePermission,
     UserLLMPermission,
     UserWorkflowPermission,
 )
@@ -4576,6 +4577,14 @@ def reset_demo_data(db: Session) -> None:
                 model.assigned_by.in_(user_ids),
             )
         ).delete(synchronize_session=False)
+
+    db.query(UserKnowledgePermission).filter(
+        or_(
+            UserKnowledgePermission.knowledge_base_id.in_(kb_ids),
+            UserKnowledgePermission.user_id.in_(user_ids),
+            UserKnowledgePermission.assigned_by.in_(user_ids),
+        )
+    ).delete(synchronize_session=False)
 
     # 시연 중 라이브로 만든 권한 신청/App 생성 권한도 함께 지워
     # 시나리오 1(차단 -> 신청 -> 승인)을 반복 시연할 수 있게 한다 (ADR-0016).
