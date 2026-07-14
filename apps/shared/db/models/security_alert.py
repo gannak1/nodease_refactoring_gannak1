@@ -251,6 +251,25 @@ class SecurityAlertReconciliationWatermark(Base):
     )
 
 
+class SecurityAlertReconciliationReceipt(Base):
+    __tablename__ = "security_alert_reconciliation_receipts"
+
+    processor_name: Mapped[str] = mapped_column(
+        String(100),
+        primary_key=True,
+    )
+    audit_log_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        primary_key=True,
+    )
+    processed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utc_now,
+        server_default=text("now()"),
+    )
+
+
 class SecurityAlertNotificationOutbox(Base):
     __tablename__ = "security_alert_notification_outbox"
     __table_args__ = (
