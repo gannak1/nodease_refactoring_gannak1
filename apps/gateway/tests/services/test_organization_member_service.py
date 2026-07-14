@@ -10,6 +10,7 @@ from apps.gateway.services.notification_service import (
     NotificationService,
     publish_notifications_changed,
 )
+from apps.gateway.services import organization_member_service as member_service_module
 from apps.gateway.services.organization_member_service import OrganizationMemberService
 from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.context import clear_current_metadata, set_current_metadata
@@ -494,6 +495,10 @@ def test_last_manager_guard_blocks_demote_by_another_manager(monkeypatch):
     assert str(db.for_update_order_by_args[0][0]).endswith(
         "organization_memberships.id ASC"
     )
+    assert db.for_update_kwargs == [
+        {"key_share": True},
+        {"key_share": True},
+    ]
 
 
 def test_deactivated_manager_role_does_not_block_cleanup_demotion(monkeypatch):
@@ -742,6 +747,42 @@ def test_remove_member_soft_removes_and_cleans_permissions(monkeypatch):
         }
         assert "target_user_email" not in metadata
         assert target.email not in str(metadata)
+
+
+def test_member_removal_rechecks_workflow_scopes_after_wait(monkeypatch):
+    organization_id = uuid4()
+    user_id = uuid4()
+    source_permission = _user_workflow_permission(organization_id, user_id)
+    target_permission = _user_workflow_permission(organization_id, user_id)
+    db = _Db(workflow_permissions=[source_permission])
+    lock_calls = []
+
+    def add_inherited_permission_after_source_lock(
+        _db,
+        *,
+        organization_id,
+        workflow_id,
+    ):
+        lock_calls.append((organization_id, workflow_id))
+        if workflow_id == source_permission.workflow_id:
+            db.workflow_permissions.append(target_permission)
+
+    monkeypatch.setattr(
+        member_service_module,
+        "lock_workflow_permission_scope",
+        add_inherited_permission_after_source_lock,
+    )
+
+    member_service_module._lock_member_workflow_permission_scopes(
+        db,
+        organization_id=organization_id,
+        user_id=user_id,
+    )
+
+    assert lock_calls == [
+        (organization_id, source_permission.workflow_id),
+        (organization_id, target_permission.workflow_id),
+    ]
 
 
 def test_remove_invited_member_publishes_notification_after_commit(monkeypatch):
@@ -1137,6 +1178,8 @@ class _Db:
         self.audit_add_error = None
         self.for_update_calls = 0
         self.for_update_order_by_args = []
+        self.for_update_kwargs = []
+        self.executed_statements = []
 
     def query(self, *models):
         if models == (Organization, OrganizationMembership):
@@ -1186,10 +1229,11 @@ class _Db:
             )
         return _Query([], on_for_update=self._record_for_update)
 
-    def _record_for_update(self, order_by_args=()):
+    def _record_for_update(self, order_by_args=(), lock_kwargs=None):
         # 실제 DB lock 대신 서비스가 with_for_update()를 호출했는지만 기록한다.
         self.for_update_calls += 1
         self.for_update_order_by_args.append(tuple(order_by_args))
+        self.for_update_kwargs.append(dict(lock_kwargs or {}))
 
     def add(self, row):
         if isinstance(row, AuditLog):
@@ -1198,6 +1242,9 @@ class _Db:
             self.audit_logs.append(row)
         elif isinstance(row, OrganizationMembership):
             self.memberships.append(row)
+
+    def execute(self, statement):
+        self.executed_statements.append(statement)
 
     def flush(self):
         for membership in self.memberships:
@@ -1236,9 +1283,9 @@ class _Query:
         self.order_by_args.extend(args)
         return self
 
-    def with_for_update(self):
+    def with_for_update(self, **kwargs):
         if self.on_for_update is not None:
-            self.on_for_update(self.order_by_args)
+            self.on_for_update(self.order_by_args, kwargs)
         return self
 
     def all(self):

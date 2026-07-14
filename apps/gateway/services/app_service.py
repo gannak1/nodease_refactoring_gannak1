@@ -11,16 +11,23 @@ from sqlalchemy.orm import Session, joinedload
 from apps.gateway.services.admin_usage_service import AdminUsageService, KST
 from apps.gateway.services.organization_context import ensure_user_default_organization
 from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
+from apps.gateway.services.workflow_permission_lock import (
+    lock_workflow_permission_scope,
+)
 from apps.shared.db.models.app import App
 from apps.shared.db.models.llm import LLMUsageLog
-from apps.shared.db.models.team import UserWorkflowPermission
+from apps.shared.db.models.team import TeamWorkflowPermission, UserWorkflowPermission
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_budget import WorkflowBudget
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
 from apps.shared.db.models.workflow_run import WorkflowRun
-from apps.shared.permissions import AUTH_STATE_MANAGER
-from apps.shared.permissions import workflow_auth_state_allows
+from apps.shared.permissions import (
+    AUTH_STATE_MANAGER,
+    normalize_resource_auth_state,
+    stronger_resource_auth_state,
+    workflow_auth_state_allows,
+)
 from apps.shared.schemas.app import (
     AppOperationAppSummary,
     AppOperationDeploymentSummary,
@@ -136,6 +143,92 @@ class AppService:
                 assigned_by=user_id,
             )
         )
+
+    @staticmethod
+    def _inherit_primary_workflow_permissions(
+        db: Session,
+        *,
+        source_workflow_id,
+        target_workflow: Workflow,
+        actor_user_id,
+        organization_id,
+    ) -> None:
+        """Copy the current App collaboration grants to a replacement Workflow."""
+        if not organization_id:
+            return
+        if target_workflow.id is None:
+            raise ValueError(
+                "Target workflow must be flushed before permission inheritance"
+            )
+        if target_workflow.organization_id != organization_id:
+            raise ValueError(
+                "Target workflow organization must match permission organization"
+            )
+        if source_workflow_id == target_workflow.id:
+            raise ValueError("Source and target workflow must be different")
+
+        actor_permission = None
+        if source_workflow_id is not None:
+            lock_workflow_permission_scope(
+                db,
+                organization_id=organization_id,
+                workflow_id=source_workflow_id,
+            )
+            user_permissions = (
+                db.query(UserWorkflowPermission)
+                .filter(
+                    UserWorkflowPermission.grantee_organization_id == organization_id,
+                    UserWorkflowPermission.workflow_id == source_workflow_id,
+                )
+                .all()
+            )
+            for permission in user_permissions:
+                auth_state = normalize_resource_auth_state(permission.auth_state)
+                if permission.user_id == actor_user_id:
+                    auth_state = stronger_resource_auth_state(
+                        auth_state, AUTH_STATE_MANAGER
+                    )
+                inherited = UserWorkflowPermission(
+                    grantee_organization_id=organization_id,
+                    workflow_id=target_workflow.id,
+                    user_id=permission.user_id,
+                    auth_state=auth_state,
+                    assigned_by=actor_user_id,
+                    options=copy.deepcopy(permission.options),
+                    flags=permission.flags if permission.flags is not None else 0,
+                )
+                db.add(inherited)
+                if permission.user_id == actor_user_id:
+                    actor_permission = inherited
+
+            team_permissions = (
+                db.query(TeamWorkflowPermission)
+                .filter(
+                    TeamWorkflowPermission.grantee_organization_id == organization_id,
+                    TeamWorkflowPermission.workflow_id == source_workflow_id,
+                )
+                .all()
+            )
+            for permission in team_permissions:
+                db.add(
+                    TeamWorkflowPermission(
+                        grantee_organization_id=organization_id,
+                        workflow_id=target_workflow.id,
+                        team_id=permission.team_id,
+                        auth_state=normalize_resource_auth_state(permission.auth_state),
+                        assigned_by=actor_user_id,
+                        options=copy.deepcopy(permission.options),
+                        flags=permission.flags if permission.flags is not None else 0,
+                    )
+                )
+
+        if actor_permission is None:
+            AppService._grant_workflow_manager_permission(
+                db,
+                target_workflow,
+                actor_user_id,
+                organization_id,
+            )
 
     @staticmethod
     def _populate_deployment_status(db: Session, app: App):

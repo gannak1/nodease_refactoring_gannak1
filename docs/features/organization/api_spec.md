@@ -113,6 +113,8 @@ Verified Against: feature/mba-136 @ 9819d16a
 | DELETE | `/permissions/llm-credentials/{credential_id}/teams/{team_id}` | team LLM credential permission을 삭제한다. | `auth_token` cookie, manager 또는 credential manage, `X-Organization-Id` |
 | DELETE | `/permissions/llm-credentials/{credential_id}/users/{user_id}` | user direct LLM credential permission을 삭제한다. | `auth_token` cookie, manager 또는 credential manage, `X-Organization-Id` |
 
+Workflow permission PUT/DELETE는 App lifecycle row를 먼저 잠그고 요청 도중 primary가 교체됐는지 재검증한다. 요청이 current primary를 관찰한 뒤 교체에 밀린 경우 `409 workflow.primary_changed`를 반환하며 permission row와 audit을 변경하지 않는다. 요청 시작부터 이미 non-primary였던 Workflow의 permission 관리는 기존 Workflow-scoped 계약을 유지한다.
+
 ## Request And Response Models
 
 ### `GET /organizations`

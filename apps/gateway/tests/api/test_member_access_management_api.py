@@ -17,6 +17,7 @@ from apps.gateway.application.access_management.errors import (
     SelfControlForbidden,
     StaleState,
     TargetUserInactive,
+    WorkflowPrimaryChanged,
 )
 from apps.gateway.application.access_management.models import (
     AccessActionResult,
@@ -274,6 +275,32 @@ def test_action_builds_command_from_authenticated_actor_and_path_not_body():
     assert command.reason == "review"
 
 
+def test_direct_permission_action_maps_primary_change_to_retryable_conflict():
+    organization_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    use_case = _UseCase(error=WorkflowPrimaryChanged())
+    client, _ = _client(_application(action=use_case))
+
+    response = client.post(
+        f"/api/v1/organizations/{organization_id}/members/{user_id}/access-actions",
+        headers={"X-Organization-Id": str(organization_id)},
+        json={
+            "action": "direct_permission.grant",
+            "expected_membership_id": str(uuid.uuid4()),
+            "expected_user_active": True,
+            "expected_membership_state": "active",
+            "expected_organization_auth_state": "member",
+            "resource_type": "workflow",
+            "resource_id": str(uuid.uuid4()),
+            "auth_state": "viewer",
+            "expected_absent": True,
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "workflow.primary_changed"
+
+
 @pytest.mark.parametrize(
     ("error", "status", "code"),
     [
@@ -285,6 +312,7 @@ def test_action_builds_command_from_authenticated_actor_and_path_not_body():
         (MemberStateNotManageable(), 409, "member_state_not_manageable"),
         (TargetUserInactive(), 409, "target_user_inactive"),
         (StaleState(), 409, "stale_state"),
+        (WorkflowPrimaryChanged(), 409, "workflow.primary_changed"),
         (AuditPersistenceFailed(), 500, "audit.persistence_failed"),
     ],
 )

@@ -29,6 +29,11 @@ class StaleState(AccessManagementError):
     message = "The access state changed. Refresh and try again."
 
 
+class WorkflowPrimaryChanged(AccessManagementError):
+    code = "workflow.primary_changed"
+    message = "The App primary Workflow changed. Refresh and try again."
+
+
 class PolicyBlocked(AccessManagementError):
     policy_reason = "access_management.policy_blocked"
 

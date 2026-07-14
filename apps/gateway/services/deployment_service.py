@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from sqlalchemy import and_, desc, func
 from sqlalchemy.orm import Session
 
+from apps.gateway.services.app_lifecycle_lock import lock_app_for_lifecycle
 from apps.gateway.services.knowledge_deployment_preflight_service import (
     KnowledgeDeploymentPreflightService,
 )
@@ -87,6 +88,7 @@ class DeploymentService:
         deployment_in: DeploymentCreate,
         user_id: uuid.UUID,
         *,
+        observed_workflow_id: uuid.UUID,
         runtime_policy: DeploymentRuntimePolicy,
     ) -> WorkflowDeployment:
         """
@@ -104,9 +106,24 @@ class DeploymentService:
             HTTPException: 워크플로우를 찾을 수 없거나 권한이 없는 경우
         """
         # 1. App 조회 및 권한 확인
-        app = db.query(App).filter(App.id == deployment_in.app_id).first()
+        app = lock_app_for_lifecycle(db, deployment_in.app_id)
         if not app:
             raise HTTPException(status_code=404, detail="App not found")
+
+        if (
+            deployment_in.graph_snapshot is not None
+            and app.workflow_id != observed_workflow_id
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "deployment.graph_snapshot_stale",
+                    "message": (
+                        "The App primary Workflow changed. Refresh the deployment "
+                        "snapshot and try again."
+                    ),
+                },
+            )
 
         # 2. Workflow 조회 및 권한 체크
         workflow = db.query(Workflow).filter(Workflow.id == app.workflow_id).first()
@@ -1217,13 +1234,32 @@ class DeploymentService:
         if not deployment:
             raise HTTPException(status_code=404, detail="Deployment not found")
 
-        app = db.query(App).filter(App.id == deployment.app_id).first()
+        app = lock_app_for_lifecycle(db, deployment.app_id)
+        db.refresh(deployment)
 
         # 2. is_active 토글
         new_state = not deployment.is_active
         if new_state:
             if not app:
                 raise HTTPException(status_code=404, detail="App not found")
+            workflow_count = (
+                db.query(func.count(Workflow.id))
+                .filter(Workflow.app_id == app.id)
+                .scalar()
+                or 0
+            )
+            if workflow_count > 1:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "deployment.reactivation_provenance_unavailable",
+                        "message": (
+                            "This deployment cannot be reactivated because its "
+                            "source Workflow cannot be verified. Create a new "
+                            "deployment from the current primary Workflow."
+                        ),
+                    },
+                )
             DeploymentService._enforce_knowledge_preflight(
                 db,
                 app=app,

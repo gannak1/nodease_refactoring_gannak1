@@ -11,6 +11,10 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.sql.operators import is_
 
 from apps.gateway.main import app
+from apps.gateway.services.app_lifecycle_lock import (
+    AppPrimaryChangedDuringMutationError,
+)
+from apps.shared.db.models.app import App
 from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.knowledge import KnowledgeBase
 from apps.shared.db.models.llm import LLMCredential
@@ -107,6 +111,14 @@ class TestPermissionsApi(unittest.TestCase):
             str(session.upsert_statement.compile(dialect=postgresql.dialect())),
         )
         self.assertTrue(session.committed)
+        self.assertEqual(len(session.lock_statements), 2)
+        scope_lock = str(
+            session.lock_statements[0].compile(
+                dialect=postgresql.dialect(),
+                compile_kwargs={"literal_binds": True},
+            )
+        )
+        self.assertIn("workflow_permission_scope", scope_lock)
         self.assertIsNotNone(session.lock_statement)
         self.assertIn(
             "pg_advisory_xact_lock",
@@ -129,6 +141,35 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertEqual(audit["after"]["auth_state"], "builder")
         self.assertEqual(audit["metadata"]["request_id"], "req-test")
         self.assertEqual(audit["metadata"]["actor"]["id"], str(user_id))
+
+    def test_put_team_workflow_permission_rejects_primary_changed_while_waiting(self):
+        user_id = uuid4()
+        organization_id = uuid4()
+        workflow_id = uuid4()
+        team_id = uuid4()
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=user_id),
+            workflow=_workflow(id=workflow_id, organization_id=organization_id),
+            team=_team(id=team_id, organization_id=organization_id),
+        )
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.permissions.lock_app_for_workflow_mutation",
+            side_effect=AppPrimaryChangedDuringMutationError,
+        ):
+            response = self._put_permission(
+                session=session,
+                user_id=user_id,
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+                team_id=team_id,
+                payload={"auth_state": "viewer"},
+            )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["error"]["code"], "workflow.primary_changed")
+        self.assertIn(("rollback", None), session.operations)
+        self.assertFalse(session.scalars_called)
 
     def test_list_workflow_permissions_returns_team_and_user_entries_for_manager(self):
         user_id = uuid4()
@@ -2185,6 +2226,54 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertFalse(session.committed)
         self.assertIn(("rollback", None), session.operations)
 
+    def test_put_user_workflow_permission_locks_subject_before_app_scope(self):
+        actor_id = uuid4()
+        target_user_id = uuid4()
+        organization_id = uuid4()
+        workflow_id = uuid4()
+        session = _Session(
+            organization=_organization(
+                id=organization_id,
+                created_by=target_user_id,
+                managed_by=actor_id,
+            ),
+            workflow=_workflow(id=workflow_id, organization_id=organization_id),
+            target_user=SimpleNamespace(id=target_user_id),
+            target_membership=_membership(
+                user_id=target_user_id,
+                organization_id=organization_id,
+            ),
+            user_upsert_result=_user_workflow_permission(
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+                user_id=target_user_id,
+                auth_state="builder",
+                assigned_by=actor_id,
+            ),
+        )
+        lock_order = []
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.permissions."
+            "_lock_active_direct_permission_subject",
+            side_effect=lambda *args, **kwargs: lock_order.append("subject"),
+        ), patch(
+            "apps.gateway.api.v1.endpoints.permissions."
+            "_lock_workflow_mutation_app_scope",
+            side_effect=lambda *args, **kwargs: lock_order.append("app"),
+        ):
+            response = self._put_user_permission(
+                session=session,
+                user_id=actor_id,
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+                target_user_id=target_user_id,
+                payload={"auth_state": "builder"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(lock_order, ["subject", "app"])
+
     def test_put_user_workflow_permission_allows_workflow_manager(self):
         # organization manager가 아니어도 workflow manager면 user direct 권한을 부여할 수 있다.
         actor_id = uuid4()
@@ -2517,6 +2606,14 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertEqual(session.deleted, [existing_permission])
         self.assertTrue(session.committed)
         self.assertFalse(session.scalars_called)
+        self.assertEqual(len(session.lock_statements), 2)
+        scope_lock = str(
+            session.lock_statements[0].compile(
+                dialect=postgresql.dialect(),
+                compile_kwargs={"literal_binds": True},
+            )
+        )
+        self.assertIn("workflow_permission_scope", scope_lock)
         self.assertNotIn(TeamMembership, session.query_calls)
         _assert_organization_scope_filters(
             self, session.organization_query, organization_id
@@ -2943,6 +3040,18 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertEqual(session.deleted, [existing_permission])
         self.assertTrue(session.committed)
         self.assertFalse(session.scalars_called)
+        scope_locks = [
+            str(
+                statement.compile(
+                    dialect=postgresql.dialect(),
+                    compile_kwargs={"literal_binds": True},
+                )
+            )
+            for statement in session.lock_statements
+        ]
+        self.assertTrue(
+            any("workflow_permission_scope" in lock for lock in scope_locks)
+        )
         self.assertIsNotNone(session.lock_statement)
         self.assertIn(
             "pg_advisory_xact_lock",
@@ -2964,6 +3073,50 @@ class TestPermissionsApi(unittest.TestCase):
         )
         self.assertEqual(audit.audit_metadata["request_id"], "req-test")
         _assert_audit_added_before_commit(self, session)
+
+    def test_delete_user_workflow_permission_locks_subject_before_app_scope(self):
+        actor_id = uuid4()
+        target_user_id = uuid4()
+        organization_id = uuid4()
+        workflow_id = uuid4()
+        existing_permission = _user_workflow_permission(
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            user_id=target_user_id,
+            auth_state="builder",
+            assigned_by=actor_id,
+        )
+        session = _Session(
+            organization=_organization(id=organization_id, created_by=actor_id),
+            workflow=_workflow(id=workflow_id, organization_id=organization_id),
+            target_user=SimpleNamespace(id=target_user_id),
+            target_membership=_membership(
+                user_id=target_user_id,
+                organization_id=organization_id,
+            ),
+            existing_user_permission=existing_permission,
+        )
+        lock_order = []
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.permissions."
+            "_lock_direct_permission_cleanup_subject",
+            side_effect=lambda *args, **kwargs: lock_order.append("subject"),
+        ), patch(
+            "apps.gateway.api.v1.endpoints.permissions."
+            "_lock_workflow_mutation_app_scope",
+            side_effect=lambda *args, **kwargs: lock_order.append("app"),
+        ):
+            response = self._delete_user_permission(
+                session=session,
+                user_id=actor_id,
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+                target_user_id=target_user_id,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(lock_order, ["subject", "app"])
 
     def test_delete_user_workflow_permission_allows_workflow_manager(self):
         # organization manager가 아니어도 workflow manager면 user direct permission 회수가 가능하다.
@@ -3917,8 +4070,12 @@ class _Query:
         self.order_by_values.extend(args)
         return self
 
-    def with_for_update(self):
+    def with_for_update(self, **_kwargs):
         """Production row-lock query chain을 보존하는 테스트 더블이다."""
+        return self
+
+    def populate_existing(self):
+        """Identity-map refresh query chain을 보존하는 테스트 더블이다."""
         return self
 
     def first(self):
@@ -4024,6 +4181,18 @@ class _Session:
             apply_filters=True,
         )
         self.workflow_query = _Query(first_result=workflow, apply_filters=True)
+        app_row = None
+        if workflow is not None:
+            app_row = App(
+                id=workflow.app_id,
+                organization_id=workflow.organization_id,
+                name="Workflow App",
+                workflow_id=workflow.id,
+                url_slug=f"workflow-app-{workflow.app_id}",
+                auth_secret="test-placeholder",
+                created_by=workflow.created_by,
+            )
+        self.app_query = _Query(first_result=app_row, apply_filters=True)
         self.knowledge_base_query = _Query(
             first_result=knowledge_base,
             apply_filters=True,
@@ -4076,6 +4245,7 @@ class _Session:
         self.user_llm_upsert_result = user_llm_upsert_result
         self.upsert_statement = None
         self.lock_statement = None
+        self.lock_statements = []
         self.query_calls = []
         self.added = []
         self.deleted = []
@@ -4107,6 +4277,8 @@ class _Session:
             return self.membership_query
         if model is Workflow:
             return self.workflow_query
+        if model is App:
+            return self.app_query
         if model is KnowledgeBase:
             return self.knowledge_base_query
         if model is LLMCredential:
@@ -4383,6 +4555,7 @@ class _Session:
     def execute(self, statement):
         """advisory lock statement를 기록한다."""
         self.lock_statement = statement
+        self.lock_statements.append(statement)
         return None
 
     def commit(self):
@@ -4760,6 +4933,8 @@ def _column_value(obj, column):
     value_by_column = {
         "organization.id": getattr(obj, "id", missing),
         "organization.is_active": getattr(obj, "is_active", missing),
+        "apps.id": getattr(obj, "id", missing),
+        "apps.organization_id": getattr(obj, "organization_id", missing),
         "organization_memberships.user_id": getattr(obj, "user_id", missing),
         "organization_memberships.organization_id": getattr(
             obj,

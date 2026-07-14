@@ -15,6 +15,7 @@ from apps.gateway.auth.permissions import (
     recorded_permission_denied_exception,
 )
 from apps.gateway.services.app_service import AppService
+from apps.gateway.services.app_lifecycle_lock import lock_app_for_lifecycle
 from apps.gateway.services.agent_builder_intent_service import (
     AgentBuilderIntentExtraction,
     AgentBuilderIntentExtractionError,
@@ -27,6 +28,7 @@ from apps.gateway.services.knowledge_rag_recommendation_service import (
     KnowledgeRAGRecommendationService,
 )
 from apps.gateway.services.llm_service import LLMService
+from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
 from apps.gateway.services.workflow_service import WorkflowService
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.agent_builder import (
@@ -79,6 +81,7 @@ NO_KB_CANDIDATE_ID = "__agent_builder_no_kb__"
 NO_KB_CANDIDATE_LABEL = "Knowledge Base 없이 생성"
 NO_KB_CANDIDATE_WARNING = "사용자가 Knowledge Base 없이 도안 생성을 선택했습니다. LLM node는 Knowledge Base binding 없이 생성됩니다."
 AGENT_BUILDER_KB_RECOMMENDATION_LIMIT = 20
+EXPECTED_APP_PRIMARY_WORKFLOW_ID = "expected_app_primary_workflow_id"
 SAFE_SIDE_EFFECT_NOTICE = (
     "초안 생성, 미리보기, 적용 및 저장 중에는 workflow 실행, Knowledge Base 검색, "
     "Slack/GitHub/HTTP/Mail 외부 호출, workflow node credential 사용/변경, "
@@ -1339,6 +1342,18 @@ class AgentBuilderService:
                     "selected_edge_id": effective_selected_edge_id,
                 },
                 "app_id": str(app_id) if app_id else None,
+                **(
+                    {
+                        EXPECTED_APP_PRIMARY_WORKFLOW_ID: (
+                            str(app.workflow_id)
+                            if app is not None
+                            and getattr(app, "workflow_id", None) is not None
+                            else None
+                        )
+                    }
+                    if structured.draft_mode == "new_workflow"
+                    else {}
+                ),
                 "workflow_id": str(workflow.id)
                 if uses_existing_workflow_base
                 else None,
@@ -1695,6 +1710,8 @@ class AgentBuilderService:
             )
 
         workflow = None
+        app = None
+        source_primary_workflow_id = None
         latest_graph_hash = None
         draft_metadata = draft.draft_metadata or {}
         metadata_workflow_id = draft_metadata.get("workflow_id")
@@ -1791,7 +1808,7 @@ class AgentBuilderService:
                     notice="새 workflow를 생성할 app scope가 없습니다.",
                 )
             try:
-                app = self._app_in_active_org(draft.app_id)
+                app = self._lock_app_for_apply(draft.app_id)
             except HTTPException:
                 return self._block_apply(
                     draft,
@@ -1813,6 +1830,67 @@ class AgentBuilderService:
                     permission_outcome="denied",
                     notice="새 workflow를 생성할 권한이 없습니다.",
                 )
+            if EXPECTED_APP_PRIMARY_WORKFLOW_ID not in draft_metadata:
+                return self._block_apply(
+                    draft,
+                    apply_id,
+                    "DRAFT_METADATA_NOT_FOUND",
+                    metadata_base,
+                    stale_state="app_primary_expected_missing",
+                    notice="App primary 기준 정보를 확인할 수 없어 도안을 다시 생성해야 합니다.",
+                )
+            try:
+                expected_primary_value = draft_metadata.get(
+                    EXPECTED_APP_PRIMARY_WORKFLOW_ID
+                )
+                expected_primary_workflow_id = (
+                    uuid.UUID(str(expected_primary_value))
+                    if expected_primary_value is not None
+                    else None
+                )
+            except (TypeError, ValueError, AttributeError):
+                return self._block_apply(
+                    draft,
+                    apply_id,
+                    "DRAFT_METADATA_NOT_FOUND",
+                    metadata_base,
+                    stale_state="app_primary_expected_invalid",
+                    notice="App primary 기준 정보가 올바르지 않아 도안을 다시 생성해야 합니다.",
+                )
+            if app.workflow_id != expected_primary_workflow_id:
+                return self._block_apply(
+                    draft,
+                    apply_id,
+                    "DRAFT_STALE",
+                    metadata_base,
+                    stale_state="app_primary_changed",
+                    notice="App의 primary workflow가 초안 생성 이후 변경되었습니다. 도안을 다시 생성해주세요.",
+                )
+            if getattr(app, "active_deployment_id", None) is not None:
+                return self._block_apply(
+                    draft,
+                    apply_id,
+                    "APP_ACTIVE_DEPLOYMENT_CONFLICT",
+                    metadata_base,
+                    stale_state="active_deployment_present",
+                    notice="활성 배포가 있는 App에서는 primary workflow를 바로 교체할 수 없습니다. 기존 배포를 먼저 해제해주세요.",
+                )
+            if expected_primary_workflow_id is not None and (
+                WorkflowBudgetService.has_active_budget(
+                    self.db,
+                    workflow_id=expected_primary_workflow_id,
+                    organization_id=self.organization_id,
+                )
+            ):
+                return self._block_apply(
+                    draft,
+                    apply_id,
+                    "APP_WORKFLOW_BUDGET_CONFLICT",
+                    metadata_base,
+                    stale_state="active_workflow_budget_present",
+                    notice="활성 예산이 있는 App에서는 primary workflow를 바로 교체할 수 없습니다. 예산 lifecycle 정책을 먼저 확인해주세요.",
+                )
+            source_primary_workflow_id = expected_primary_workflow_id
 
         runtime_kb_bindings = self._runtime_kb_bindings_for_apply(draft)
         if isinstance(runtime_kb_bindings, str):
@@ -1885,12 +1963,14 @@ class AgentBuilderService:
                 )
                 self.db.add(workflow)
                 self.db.flush()
-                AppService._grant_workflow_manager_permission(
-                    self.db, workflow, self.user.id, self.organization_id
+                AppService._inherit_primary_workflow_permissions(
+                    self.db,
+                    source_workflow_id=source_primary_workflow_id,
+                    target_workflow=workflow,
+                    actor_user_id=self.user.id,
+                    organization_id=self.organization_id,
                 )
-                app = self._app_in_active_org(draft.app_id)
-                if app.workflow_id is None:
-                    app.workflow_id = workflow.id
+                app.workflow_id = workflow.id
             else:
                 workflow.graph = save_graph
                 workflow.updated_by = self.user.id
@@ -4890,6 +4970,18 @@ class AgentBuilderService:
         ):
             raise HTTPException(status_code=404, detail="Workflow not found")
         return workflow
+
+    def _lock_app_for_apply(self, app_id: uuid.UUID) -> App:
+        if not isinstance(self.db, Session):
+            return self._app_in_active_org(app_id)
+        app = lock_app_for_lifecycle(
+            self.db,
+            app_id,
+            organization_id=self.organization_id,
+        )
+        if app is None:
+            raise HTTPException(status_code=404, detail="App not found")
+        return app
 
     def _app_in_active_org(self, app_id: uuid.UUID | None) -> App:
         app = self.db.query(App).filter(App.id == app_id).first()

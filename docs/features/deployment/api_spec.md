@@ -1,7 +1,7 @@
 # Deployment API Spec
 
 Status: Draft
-Verified Against: `feature/mba-219 @ 5b1cf366`
+Verified Against: `feature/mba-254 @ 95e821ef`
 
 ## Endpoints
 
@@ -51,7 +51,7 @@ Request body:
 | `type` | no | `api`, `webapp`, `widget`, `chatbot`, `internal_chatbot`, `mcp`, `workflow_node`, `schedule`, `webhook`. Defaults to `api` |
 | `config` | no | Deployment-specific config. Defaults to `{}` |
 | `is_active` | no | Preview context. Defaults to `true`; inactive create may warn but does not activate |
-| `graph_snapshot` | no | If omitted, server resolves the current app/workflow deployment snapshot candidate |
+| `graph_snapshot` | no | If omitted, server resolves the current App primary Workflow snapshot candidate after acquiring the lifecycle lock. If supplied, the Gateway also binds the request to the server-observed primary; a primary change while waiting for the lock returns `409 deployment.graph_snapshot_stale` instead of deploying the stale client graph under the new primary |
 | `audience` | no | UI hint only. Security decisions use server-derived audience in create/enable paths |
 
 Conversation-capable target snapshot은 별도 server-derived metadata로 immutable deployment version 또는 snapshot hash, conversation mapping version, node Memory policy version, `memory_contract_version`, `storage_generation`을 포함한다. Client `config`나 `audience`가 이 binding을 선택하거나 기존 session을 current active deployment로 rebind할 수 없다.

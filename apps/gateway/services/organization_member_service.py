@@ -8,6 +8,9 @@ from sqlalchemy.orm import Session, joinedload
 from apps.gateway.adapters.db.access_management_locking import (
     lock_access_subject_rows,
 )
+from apps.gateway.services.workflow_permission_lock import (
+    lock_workflow_permission_scope,
+)
 from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.context import get_current_metadata
 from apps.shared.db.models.audit_log import AuditLog
@@ -59,10 +62,50 @@ ALL_MEMBER_STATES = {
     *LIST_MEMBER_STATES,
     ORGANIZATION_MEMBERSHIP_REMOVED,
 }
+_MAX_WORKFLOW_PERMISSION_SCOPE_LOCK_PASSES = 64
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _lock_member_workflow_permission_scopes(
+    db: Session,
+    *,
+    organization_id: Any,
+    user_id: Any,
+) -> None:
+    """Freeze the member's Workflow grants before organization-wide cleanup.
+
+    A primary transition can create a target grant while removal waits on the
+    source Workflow scope. Re-reading after each acquired scope closes that
+    race without taking App locks from the member-removal path.
+    """
+    locked_workflow_ids: set[Any] = set()
+    for _ in range(_MAX_WORKFLOW_PERMISSION_SCOPE_LOCK_PASSES):
+        workflow_ids = {
+            permission.workflow_id
+            for permission in db.query(UserWorkflowPermission)
+            .filter(
+                UserWorkflowPermission.grantee_organization_id == organization_id,
+                UserWorkflowPermission.user_id == user_id,
+            )
+            .all()
+        }
+        pending_workflow_ids = sorted(
+            workflow_ids - locked_workflow_ids,
+            key=str,
+        )
+        if not pending_workflow_ids:
+            return
+        for workflow_id in pending_workflow_ids:
+            lock_workflow_permission_scope(
+                db,
+                organization_id=organization_id,
+                workflow_id=workflow_id,
+            )
+            locked_workflow_ids.add(workflow_id)
+    raise RuntimeError("Workflow permission scope set did not stabilize")
 
 
 def _flush_or_conflict(db: Session, message: str) -> None:
@@ -674,6 +717,11 @@ class OrganizationMemberService:
             membership.organization_auth_state,
             active_manager_count=locked.active_manager_count,
             target_user_active=locked.user.deactivated_at is None,
+        )
+        _lock_member_workflow_permission_scopes(
+            db,
+            organization_id=organization_id,
+            user_id=user_id,
         )
         previous_state = membership.membership_state
         previous_auth_state = membership.organization_auth_state

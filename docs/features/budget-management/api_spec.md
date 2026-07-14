@@ -99,6 +99,7 @@ Side effects:
 - `created_by`는 생성 시 1회 기록하고, `updated_by`는 매 갱신 시 기록한다.
 - 기존 값과 동일한 no-op PUT은 갱신/audit 없이 현재 상태를 반환한다.
 - 동시성 (BGT-REQ-005): row가 없는 상태에서 같은 workflow에 PUT이 경합하면 `UNIQUE(workflow_id)` 제약 위에서 upsert(ON CONFLICT 갱신 또는 IntegrityError 1회 재시도)로 처리한다. row는 1개만 생성되고, 어느 요청도 5xx로 실패하지 않으며, 마지막 커밋이 최종 상태다. 별도 409는 사용하지 않는다 (권한 신청 approve/reject의 상태 전이 경합과 달리 upsert는 멱등 갱신이므로 last-write-wins가 맞다).
+- 요청 Workflow는 App lifecycle lock 획득 뒤에도 해당 App의 current primary여야 한다. Primary 전환에 밀렸거나 이미 non-primary인 Workflow이면 `409 workflow.primary_changed`를 반환하고 예산/audit을 변경하지 않는다. 이는 같은 current primary에 대한 두 budget PUT의 last-write-wins 계약과 별개의 stale resource conflict다.
 
 ### GET /admin/usage/workflows (확장)
 
