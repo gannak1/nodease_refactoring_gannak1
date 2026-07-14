@@ -390,6 +390,146 @@ class OpenAIClient(BaseLLMClient):
 
         return self._parse_responses_http_response(responses_resp)
 
+    def _invoke_chat_endpoint_sync(
+        self,
+        client: httpx.Client,
+        payload: Dict[str, Any],
+        messages: List[Dict[str, Any]],
+        timeout_seconds: int,
+    ) -> Dict[str, Any]:
+        """Gevent worker에서 asyncio loop 없이 chat/completions를 호출한다."""
+        try:
+            response = client.post(
+                self.chat_url,
+                headers=self._build_headers(),
+                json=payload,
+                timeout=timeout_seconds,
+            )
+        except httpx.RequestError as exc:
+            raise ValueError(f"{self.provider_name} 호출 실패: {exc}") from exc
+
+        if response.status_code == 400:
+            error_text = (response.text or "").lower()
+            retry_payload = dict(payload)
+            needs_retry = False
+            if "max_tokens" in error_text and "max_completion_tokens" in error_text:
+                retry_payload["max_completion_tokens"] = retry_payload.get("max_tokens")
+                retry_payload.pop("max_tokens", None)
+                needs_retry = True
+            if "temperature" in error_text and "only the default" in error_text:
+                if "temperature" in retry_payload:
+                    retry_payload["temperature"] = 1
+                    needs_retry = True
+            if "unsupported parameter" in error_text:
+                for param in (
+                    "temperature",
+                    "top_p",
+                    "presence_penalty",
+                    "frequency_penalty",
+                    "stop",
+                ):
+                    if param in error_text and param in retry_payload:
+                        retry_payload.pop(param, None)
+                        needs_retry = True
+            if needs_retry:
+                try:
+                    response = client.post(
+                        self.chat_url,
+                        headers=self._build_headers(),
+                        json=retry_payload,
+                        timeout=timeout_seconds,
+                    )
+                except httpx.RequestError as exc:
+                    raise ValueError(f"{self.provider_name} 호출 실패: {exc}") from exc
+
+        if response.status_code == 404 and "not a chat model" in (
+            response.text or ""
+        ).lower():
+            return self._invoke_non_chat_model_sync(
+                client,
+                payload=payload,
+                messages=messages,
+                timeout_seconds=timeout_seconds,
+            )
+
+        if response.status_code >= 400:
+            try:
+                error_data = response.json()
+            except ValueError:
+                error_data = {}
+            if self._has_error_response(error_data):
+                self._raise_error_response(error_data, response.status_code)
+            snippet = response.text[:200] if response.text else ""
+            raise ValueError(
+                f"{self.provider_name} 호출 실패 (status {response.status_code}): {snippet}"
+            )
+
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise ValueError(
+                f"{self.provider_name} 응답을 JSON으로 파싱할 수 없습니다."
+            ) from exc
+        if self._has_error_response(data):
+            error_text = str(data.get("error", {}).get("message", "")).lower()
+            if "not a chat model" in error_text:
+                return self._invoke_non_chat_model_sync(
+                    client,
+                    payload=payload,
+                    messages=messages,
+                    timeout_seconds=timeout_seconds,
+                )
+            self._raise_error_response(data, response.status_code)
+        return data
+
+    def _invoke_non_chat_model_sync(
+        self,
+        client: httpx.Client,
+        *,
+        payload: Dict[str, Any],
+        messages: List[Dict[str, Any]],
+        timeout_seconds: int,
+    ) -> Dict[str, Any]:
+        try:
+            return self._invoke_responses_endpoint_sync(
+                client=client,
+                payload=payload,
+                messages=messages,
+                timeout_seconds=timeout_seconds,
+            )
+        except ValueError:
+            if not self._should_try_legacy_completions():
+                raise
+
+        completion_payload = dict(payload)
+        completion_payload.pop("messages", None)
+        completion_payload["prompt"] = self._build_completion_prompt(messages)
+        if "max_completion_tokens" in completion_payload:
+            completion_payload.setdefault(
+                "max_tokens", completion_payload["max_completion_tokens"]
+            )
+            completion_payload.pop("max_completion_tokens", None)
+        try:
+            response = client.post(
+                self.completions_url,
+                headers=self._build_headers(),
+                json=completion_payload,
+                timeout=timeout_seconds,
+            )
+        except httpx.RequestError as exc:
+            raise ValueError(f"{self.provider_name} 호출 실패: {exc}") from exc
+        if response.status_code >= 400:
+            snippet = response.text[:200] if response.text else ""
+            raise ValueError(
+                f"{self.provider_name} 호출 실패 (status {response.status_code}): {snippet}"
+            )
+        try:
+            return self._convert_completion_response(response.json())
+        except ValueError as exc:
+            raise ValueError(
+                f"{self.provider_name} 응답을 JSON으로 파싱할 수 없습니다."
+            ) from exc
+
     def _parse_responses_http_response(
         self, responses_resp: httpx.Response
     ) -> Dict[str, Any]:
@@ -695,9 +835,6 @@ class OpenAIClient(BaseLLMClient):
         계열은 Responses endpoint를 사용하므로 worker sync path에서 직접
         동기 httpx.Client를 사용해 async event loop wrapper 의존을 피한다.
         """
-        if not self._should_use_responses_endpoint():
-            return super().invoke_sync(messages, **kwargs)
-
         payload: Dict[str, Any] = {
             "model": self.model_id,
             "messages": messages,
@@ -706,8 +843,15 @@ class OpenAIClient(BaseLLMClient):
         timeout_seconds = self._get_chat_timeout()
 
         with httpx.Client(timeout=60) as client:
-            return self._invoke_responses_endpoint_sync(
-                client=client,
+            if self._should_use_responses_endpoint():
+                return self._invoke_responses_endpoint_sync(
+                    client=client,
+                    payload=payload,
+                    messages=messages,
+                    timeout_seconds=timeout_seconds,
+                )
+            return self._invoke_chat_endpoint_sync(
+                client,
                 payload=payload,
                 messages=messages,
                 timeout_seconds=timeout_seconds,

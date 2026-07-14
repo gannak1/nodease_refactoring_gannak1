@@ -182,6 +182,8 @@ export interface LLMNodeData extends BaseNodeData {
       refresh_every_runs?: number;
       last_refresh_result?: string;
     };
+    validation_budget_usd?: number;
+    max_cohorts?: number;
   };
   model_routing_context?: {
     customer_facing?: boolean;

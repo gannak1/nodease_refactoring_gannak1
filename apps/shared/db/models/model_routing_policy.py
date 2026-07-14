@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Optional
 
 from apps.shared.db.base import Base
@@ -9,6 +10,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     UniqueConstraint,
 )
@@ -71,6 +73,16 @@ class LLMNodeModelRoutingPolicy(Base):
     judge_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+    # 배포 실행자가 실제로 사용할 수 있는 credential/model만 정책에 들어가게 한다.
+    execution_subject_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    validation_budget_usd: Mapped[Decimal] = mapped_column(
+        Numeric(12, 6), nullable=False, default=3
+    )
+    # 자동/직접 등록 입력군이 동시에 늘어나도 runtime catalog가 과도하게 커지지
+    # 않도록 policy 단위의 활성 입력군 상한을 보관한다.
+    max_cohorts: Mapped[int] = mapped_column(Integer, nullable=False, default=6)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )

@@ -34,6 +34,26 @@ class CostOptimizerOutputQualityService:
             "usage",
         }
     )
+    JUDGE_BLOCKED_MODEL_KEYWORDS = (
+        "embedding",
+        "image",
+        "audio",
+        "realtime",
+        "moderation",
+        "tts",
+        "whisper",
+        "transcribe",
+        "sora",
+        "search",
+        "instruct",
+    )
+    JUDGE_LEGACY_COMPLETION_PREFIXES = (
+        "ada",
+        "babbage",
+        "curie",
+        "davinci",
+        "text-",
+    )
 
     @classmethod
     def evaluate(
@@ -127,14 +147,66 @@ class CostOptimizerOutputQualityService:
     @classmethod
     def _select_judge_model(cls, *, db: Any, user_id: Any) -> str | None:
         models = LLMService.get_my_available_models(db, user_id)
-        chat_models = [
-            model
-            for model in models
-            if str(getattr(model, "type", "") or "").lower() == "chat"
-        ]
+        chat_models = cls._ordered_judge_models(models)
         if not chat_models:
             return None
         return str(getattr(chat_models[0], "model_id_for_api_call", "") or "") or None
+
+    @classmethod
+    def _ordered_judge_models(cls, models: Any) -> list[Any]:
+        """JSON 품질 평가에 적합한 모델만 남기고 균형형 모델을 우선한다."""
+
+        eligible = [model for model in models if cls._is_usable_judge_model(model)]
+        return sorted(eligible, key=cls._judge_model_rank)
+
+    @classmethod
+    def _is_usable_judge_model(cls, model: Any) -> bool:
+        model_id = cls._normalize_model_id(
+            getattr(model, "model_id_for_api_call", "")
+        )
+        model_name = str(getattr(model, "name", "") or "").lower()
+        model_type = str(getattr(model, "type", "") or "").lower()
+
+        if not model_id or model_type != "chat":
+            return False
+        if getattr(model, "is_active", True) is False:
+            return False
+        if model_id.startswith(cls.JUDGE_LEGACY_COMPLETION_PREFIXES):
+            return False
+        if any(keyword in model_id for keyword in cls.JUDGE_BLOCKED_MODEL_KEYWORDS):
+            return False
+        if any(keyword in model_name for keyword in cls.JUDGE_BLOCKED_MODEL_KEYWORDS):
+            return False
+        return True
+
+    @classmethod
+    def _judge_model_rank(cls, model: Any) -> tuple[int, str]:
+        """Provider별 고성능·비용 균형형 계열을 저가형보다 먼저 선택한다."""
+
+        model_id = cls._normalize_model_id(
+            getattr(model, "model_id_for_api_call", "")
+        )
+        if model_id == "gpt-4.1-mini":
+            priority = 0
+        elif "claude" in model_id and "sonnet" in model_id:
+            priority = 0
+        elif "gemini" in model_id and "flash" in model_id and "lite" not in model_id:
+            priority = 0
+        elif "gpt" in model_id and "mini" in model_id and "nano" not in model_id:
+            priority = 1
+        elif "claude" in model_id and "haiku" in model_id:
+            priority = 1
+        elif "gemini" in model_id and "pro" in model_id:
+            priority = 1
+        elif "nano" in model_id or "lite" in model_id:
+            priority = 3
+        else:
+            priority = 2
+        return priority, model_id
+
+    @staticmethod
+    def _normalize_model_id(model_id: Any) -> str:
+        return str(model_id or "").strip().lower().removeprefix("models/")
 
     @classmethod
     def _judge_summary(
@@ -165,12 +237,16 @@ class CostOptimizerOutputQualityService:
         models = LLMService.get_my_available_models(db, user_id)
         candidate_ids = [
             str(getattr(model, "model_id_for_api_call", "") or "")
-            for model in models
-            if str(getattr(model, "type", "") or "").lower() == "chat"
+            for model in cls._ordered_judge_models(models)
         ]
         candidate_ids = [model_id for model_id in candidate_ids if model_id]
         if preferred_model_id:
-            candidate_ids = [preferred_model_id]
+            preferred_normalized = cls._normalize_model_id(preferred_model_id)
+            candidate_ids = [
+                model_id
+                for model_id in candidate_ids
+                if cls._normalize_model_id(model_id) == preferred_normalized
+            ]
         for model_id in candidate_ids:
             try:
                 return model_id, LLMService.get_client_for_user(

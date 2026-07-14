@@ -1,7 +1,7 @@
 """배포 후 운영 실행과 모델 라우팅 policy refresh를 연결하는 lifecycle helper."""
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 
@@ -15,6 +15,8 @@ class PolicyRunEventOutcome:
 
 class ModelRoutingPolicyLifecycleService:
     """DB 저장소가 event를 만들었는지에 따라 policy state만 전이한다."""
+
+    REFRESH_REQUEST_LEASE = timedelta(minutes=10)
 
     @staticmethod
     def has_pending_refresh_request(policy: Any) -> bool:
@@ -39,20 +41,34 @@ class ModelRoutingPolicyLifecycleService:
         )
 
     @staticmethod
-    def apply_run_event(policy: Any, *, event_was_created: bool) -> PolicyRunEventOutcome:
+    def apply_run_event(
+        policy: Any,
+        *,
+        event_was_created: bool,
+        now: datetime | None = None,
+    ) -> PolicyRunEventOutcome:
         if not event_was_created or not bool(getattr(policy, "enabled", False)):
             return PolicyRunEventOutcome(should_enqueue_refresh=False)
 
+        now = now or datetime.now(timezone.utc)
         policy.eligible_runs_since_last_refresh = int(
             getattr(policy, "eligible_runs_since_last_refresh", 0) or 0
         ) + 1
         threshold = max(5, min(100, int(getattr(policy, "refresh_every_runs", 20) or 20)))
-        already_requested = getattr(policy, "refresh_requested_at", None) is not None
-        if policy.eligible_runs_since_last_refresh < threshold or already_requested:
+        requested_at = getattr(policy, "refresh_requested_at", None)
+        if requested_at is not None:
+            if requested_at.tzinfo is None:
+                requested_at = requested_at.replace(tzinfo=timezone.utc)
+            is_refreshing = str(getattr(policy, "status", "") or "").lower() == "refreshing"
+            if is_refreshing and now - requested_at >= ModelRoutingPolicyLifecycleService.REFRESH_REQUEST_LEASE:
+                policy.refresh_requested_at = now
+                return PolicyRunEventOutcome(should_enqueue_refresh=True)
+            return PolicyRunEventOutcome(should_enqueue_refresh=False)
+        if policy.eligible_runs_since_last_refresh < threshold:
             return PolicyRunEventOutcome(should_enqueue_refresh=False)
 
         policy.status = "refreshing"
-        policy.refresh_requested_at = datetime.now(timezone.utc)
+        policy.refresh_requested_at = now
         return PolicyRunEventOutcome(should_enqueue_refresh=True)
 
     @staticmethod
@@ -78,3 +94,20 @@ class ModelRoutingPolicyLifecycleService:
 
         # kept_current와 failed는 기존 active policy를 그대로 실행한다.
         policy.status = "active" if getattr(policy, "active_policy", None) else "collecting"
+
+    @staticmethod
+    def complete_refresh_cycle(
+        policy: Any,
+        *,
+        eligible_runs_since_last_refresh: int,
+    ) -> None:
+        """Replay/Judge 검증이 끝난 뒤에만 refresh lease를 해제한다.
+
+        검증 중 완료된 운영 run은 다음 주기의 표본이므로 버리지 않는다. 호출자는
+        refresh 요청 시각 이후에 생성된 run event 수를 계산해 전달한다.
+        """
+        policy.refresh_requested_at = None
+        policy.eligible_runs_since_last_refresh = max(
+            0,
+            int(eligible_runs_since_last_refresh or 0),
+        )

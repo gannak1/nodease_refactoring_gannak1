@@ -301,11 +301,75 @@ export interface ModelRoutingPolicyResponse {
     judge_cost: number | null;
     created_at: string | null;
   } | null;
+  adaptive?: {
+    validation_budget_usd: number;
+    max_cohorts: number;
+    active_cohort_count: number;
+    budget_month: string | null;
+    spent_usd: number;
+    reserved_usd: number;
+    remaining_usd: number;
+    cohorts: Array<{
+      id: string;
+      key: string;
+      label: string;
+      label_en: string | null;
+      source: 'manual' | 'auto' | string;
+      status: 'proposed' | 'validating' | 'validated_waiting' | 'active' | 'dormant' | 'retired' | string;
+      required: boolean;
+      safety_protected: boolean;
+      observation_count: number;
+      review_window_count: number;
+      traffic_share: number;
+      validated_model_id: string | null;
+    }>;
+    latest_batch: {
+      id: string;
+      status: string;
+      trigger: string;
+      total_items: number;
+      completed_items: number;
+      reserved_cost: number;
+      spent_cost: number;
+      created_at: string | null;
+    } | null;
+  };
 }
 
 export interface ModelRoutingPolicyPatchRequest {
   enabled: boolean;
   refresh_every_runs: number;
+  validation_budget_usd: number;
+  max_cohorts: number;
+  /** 규칙과 매칭되지 않은 입력에 사용하는 사용자가 지정한 기본 모델 */
+  default_model_id?: string;
+  /** 기본 모델 호출 실패 시 사용하는 사용자가 지정한 대체 모델 */
+  fallback_model_id?: string | null;
+}
+
+export interface ModelRoutingCohortSuggestionRequest {
+  representative_query: string;
+}
+
+export interface ModelRoutingCohortSuggestionResponse {
+  label: string;
+  key: string;
+  representative_query: string;
+}
+
+export interface ModelRoutingCohortCreateRequest
+  extends ModelRoutingCohortSuggestionRequest {
+  label: string;
+  key: string;
+  fixed: boolean;
+}
+
+export interface ModelRoutingCohortCreateResponse {
+  id: string;
+  key: string;
+  label: string;
+  source: 'manual' | 'auto' | string;
+  status: string;
 }
 
 export interface ModelRoutingPolicyRefreshResponse {
@@ -313,6 +377,25 @@ export interface ModelRoutingPolicyRefreshResponse {
   status: 'refreshing';
   trigger: 'manual_refresh';
   scheduled: boolean;
+}
+
+export interface ModelRoutingPreviewResponse {
+  deployment_version: number;
+  policy_version: string | null;
+  decision_source: 'matched_rule' | 'default_model' | 'fallback_model';
+  selected_model_id: string;
+  fallback_model_id: string | null;
+  default_model_id: string | null;
+  configured_fallback_model_id: string | null;
+  matched_cohort: {
+    id: string | null;
+    label: string | null;
+  } | null;
+  matched_rule_id: string | null;
+  reason_code: string;
+  availability: 'available' | 'fallback';
+  semantic_evaluation: 'not_required' | 'embedding_used' | 'unavailable';
+  draft_matches_deployment: boolean;
 }
 
 export interface CostOptimizerDownstreamCompatibility {
@@ -497,6 +580,7 @@ export interface WorkflowNodeRun {
   inputs?: Record<string, any>;
   process_data?: Record<string, any>; // 노드 옵션 스냅샷 (실행 시점 설정)
   outputs?: Record<string, any>;
+  trace_metadata?: Record<string, unknown>;
   error_message?: string;
   started_at: string;
   finished_at?: string;

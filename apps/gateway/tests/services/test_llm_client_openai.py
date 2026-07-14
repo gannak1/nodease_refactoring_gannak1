@@ -842,25 +842,42 @@ def test_openai_invoke_sync_responses_incomplete_status_is_error(monkeypatch):
         client.invoke_sync([{"role": "user", "content": "Return a json object."}])
 
 
-def test_openai_invoke_sync_legacy_model_uses_base_sync_wrapper(monkeypatch):
-    """Responses 전용이 아닌 모델은 기존 Base sync wrapper 경로를 유지한다."""
-    calls = []
+def test_openai_invoke_sync_chat_model_uses_sync_http_client(monkeypatch):
+    """Gevent worker의 chat model 호출은 공유 asyncio loop를 만들지 않는다."""
+    requests = []
 
-    def fake_run_coroutine_sync(coro_factory):
-        calls.append(coro_factory)
-        return {"choices": [{"message": {"content": "legacy"}}]}
+    def fail_async_wrapper(_coro_factory):
+        raise AssertionError("sync chat invocation must not create an asyncio loop")
 
-    def fail_sync_http_client(*_args, **_kwargs):
-        raise AssertionError("legacy sync model must use BaseLLMClient wrapper")
+    class MockResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"choices": [{"message": {"content": "chat"}}]}
+
+    class MockClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def post(self, url, **kwargs):
+            requests.append((url, kwargs))
+            return MockResponse()
 
     monkeypatch.setattr(
         BaseLLMClient,
         "_run_coroutine_sync",
-        staticmethod(fake_run_coroutine_sync),
+        staticmethod(fail_async_wrapper),
     )
     monkeypatch.setattr(
         "apps.shared.services.llm_client.openai_client.httpx.Client",
-        fail_sync_http_client,
+        MockClient,
     )
 
     client = OpenAIClient(
@@ -869,6 +886,7 @@ def test_openai_invoke_sync_legacy_model_uses_base_sync_wrapper(monkeypatch):
     )
 
     assert client.invoke_sync([{"role": "user", "content": "hi"}]) == {
-        "choices": [{"message": {"content": "legacy"}}]
+        "choices": [{"message": {"content": "chat"}}]
     }
-    assert len(calls) == 1
+    assert requests[0][0].endswith("/chat/completions")
+    assert requests[0][1]["json"]["model"] == "gpt-4o"

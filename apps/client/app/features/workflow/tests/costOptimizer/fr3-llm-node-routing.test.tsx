@@ -16,6 +16,9 @@ const workflowApiMock = vi.hoisted(() => ({
   getModelRoutingPolicy: vi.fn(),
   patchModelRoutingPolicy: vi.fn(),
   refreshModelRoutingPolicy: vi.fn(),
+  suggestModelRoutingCohort: vi.fn(),
+  createModelRoutingCohort: vi.fn(),
+  deleteModelRoutingCohort: vi.fn(),
 }));
 
 vi.mock('../../components/nodes/llm/components/ModelSelectDropdown', () => ({
@@ -38,6 +41,7 @@ vi.mock('../../components/nodes/llm/components/ModelSelectDropdown', () => ({
     >
       <option value="">모델 없음</option>
       <option value="gpt-4.1">GPT-4.1</option>
+      <option value="gpt-4.1-mini">GPT-4.1 mini</option>
     </select>
   ),
 }));
@@ -147,6 +151,17 @@ describe('FR-003 LLM node model routing optimization entry', () => {
         judge_cost: 0.0012,
         created_at: '2026-07-10T00:00:00+00:00',
       },
+      adaptive: {
+        validation_budget_usd: 3,
+        max_cohorts: 6,
+        active_cohort_count: 0,
+        budget_month: null,
+        spent_usd: 0,
+        reserved_usd: 0,
+        remaining_usd: 3,
+        cohorts: [],
+        latest_batch: null,
+      },
     });
     workflowApiMock.patchModelRoutingPolicy.mockResolvedValue({
       enabled: true,
@@ -168,6 +183,18 @@ describe('FR-003 LLM node model routing optimization entry', () => {
       status: 'refreshing',
       trigger: 'manual_refresh',
       scheduled: true,
+    });
+    workflowApiMock.suggestModelRoutingCohort.mockResolvedValue({
+      label: '결제 오류 문의',
+      key: 'billing_issue',
+      representative_query: '결제가 완료됐는데 서비스 이용이 되지 않습니다.',
+    });
+    workflowApiMock.createModelRoutingCohort.mockResolvedValue({
+      id: 'cohort-1',
+      key: 'billing_issue',
+      label: '결제 오류 문의',
+      source: 'manual',
+      status: 'proposed',
     });
     global.fetch = vi.fn(async () => ({
       ok: true,
@@ -230,7 +257,7 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     expect(screen.queryByLabelText('작업 유형')).not.toBeInTheDocument();
   });
 
-  it('자동 모델 라우팅이 켜져 있으면 직접 모델 선택 대신 active policy 상태를 보여준다', async () => {
+  it('자동 모델 라우팅이 켜져 있으면 기본 정책 모델을 설정하고 입력군 관리를 먼저 보여준다', async () => {
     const node = createLlmNode({
       auto_model_routing: true,
       model_routing_policy: {
@@ -263,9 +290,26 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     ).toBeChecked();
     expect(screen.getByText('자동 라우팅 사용 중')).toBeInTheDocument();
     expect(await screen.findByText('router-policy-v5')).toBeInTheDocument();
-    expect(screen.getByText('gpt-4.1-mini')).toBeInTheDocument();
-    expect(screen.queryByText('기본 모델')).not.toBeInTheDocument();
-    expect(screen.queryByText('대체 모델')).not.toBeInTheDocument();
+    expect(screen.getByText('기본 모델 (규칙 미일치 시)')).toBeInTheDocument();
+    expect(screen.getByText('기본 대체 모델')).toBeInTheDocument();
+    expect(
+      screen.getByRole('combobox', { name: '기본 모델을 선택하세요' }),
+    ).toHaveValue('gpt-4.1');
+
+    expect(screen.getByTestId('routing-cohort-management')).toHaveClass('order-1');
+    expect(screen.getByTestId('routing-refresh-controls')).toHaveClass('order-2');
+
+    fireEvent.change(
+      screen.getByRole('combobox', { name: '기본 모델을 선택하세요' }),
+      { target: { value: 'gpt-4.1-mini' } },
+    );
+    await waitFor(() => {
+      expect(workflowApiMock.patchModelRoutingPolicy).toHaveBeenCalledWith(
+        'workflow-1',
+        'llm-1',
+        expect.objectContaining({ default_model_id: 'gpt-4.1-mini' }),
+      );
+    });
   });
 
   it('persisted policy가 있어도 자동 정책 점검 주기 draft와 PATCH에 슬라이더 값을 사용한다', async () => {
@@ -327,15 +371,127 @@ describe('FR-003 LLM node model routing optimization entry', () => {
       expect(workflowApiMock.patchModelRoutingPolicy).toHaveBeenCalledWith(
         'workflow-1',
         'llm-1',
-        {
+        expect.objectContaining({
           enabled: true,
           refresh_every_runs: 45,
-        },
+          validation_budget_usd: 3,
+          max_cohorts: 6,
+        }),
       );
     });
     expect(
       screen.getByText(/권장: 20~50회/),
     ).toBeInTheDocument();
+  });
+
+  it('월간 모델 검증 한도를 deployment snapshot과 policy PATCH에 함께 반영한다', async () => {
+    const node = createLlmNode({ auto_model_routing: true });
+    useWorkflowStore.setState(
+      { ...useWorkflowStore.getState(), nodes: [node] },
+      true,
+    );
+
+    const { rerender } = render(<NodeInlinePanel node={node} />);
+    const budgetSlider = await screen.findByRole('slider', {
+      name: /월간 모델 검증 한도/,
+    });
+
+    fireEvent.change(budgetSlider, { target: { value: '4.5' } });
+    rerender(
+      <NodeInlinePanel node={useWorkflowStore.getState().nodes[0] as AppNode} />,
+    );
+
+    const updatedBudgetSlider = screen.getByRole('slider', {
+      name: /월간 모델 검증 한도/,
+    });
+    fireEvent.mouseUp(updatedBudgetSlider);
+
+    expect(updatedBudgetSlider).toHaveValue('4.5');
+    expect(
+      (useWorkflowStore.getState().nodes[0].data as LLMNodeData)
+        .model_routing_policy?.validation_budget_usd,
+    ).toBe(4.5);
+    await waitFor(() => {
+      expect(workflowApiMock.patchModelRoutingPolicy).toHaveBeenCalledWith(
+        'workflow-1',
+        'llm-1',
+        expect.objectContaining({ validation_budget_usd: 4.5 }),
+      );
+    });
+  });
+
+  it('입력군 최대 개수는 draft와 policy PATCH에 함께 저장한다', async () => {
+    const node = createLlmNode({ auto_model_routing: true });
+    useWorkflowStore.setState(
+      { ...useWorkflowStore.getState(), nodes: [node] },
+      true,
+    );
+
+    const { rerender } = render(<NodeInlinePanel node={node} />);
+    const slider = await screen.findByRole('slider', {
+      name: /입력군 최대 개수/,
+    });
+
+    fireEvent.change(slider, { target: { value: '8' } });
+    rerender(
+      <NodeInlinePanel node={useWorkflowStore.getState().nodes[0] as AppNode} />,
+    );
+    fireEvent.mouseUp(
+      screen.getByRole('slider', { name: /입력군 최대 개수/ }),
+    );
+
+    expect(
+      (useWorkflowStore.getState().nodes[0].data as LLMNodeData)
+        .model_routing_policy?.max_cohorts,
+    ).toBe(8);
+    await waitFor(() => {
+      expect(workflowApiMock.patchModelRoutingPolicy).toHaveBeenCalledWith(
+        'workflow-1',
+        'llm-1',
+        expect.objectContaining({ max_cohorts: 8 }),
+      );
+    });
+  });
+
+  it('대표 문의만 입력하면 입력군 마법사가 이름과 영문 키를 채우고 직접 등록한다', async () => {
+    const node = createLlmNode({ auto_model_routing: true });
+    useWorkflowStore.setState(
+      { ...useWorkflowStore.getState(), nodes: [node] },
+      true,
+    );
+    render(<NodeInlinePanel node={node} />);
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: /직접 입력군 추가/ }),
+    );
+    fireEvent.change(screen.getByLabelText('대표 문의'), {
+      target: { value: '결제가 완료됐는데 서비스 이용이 되지 않습니다.' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /입력군 마법사/ }));
+
+    await waitFor(() => {
+      expect(workflowApiMock.suggestModelRoutingCohort).toHaveBeenCalledWith(
+        'workflow-1',
+        'llm-1',
+        { representative_query: '결제가 완료됐는데 서비스 이용이 되지 않습니다.' },
+      );
+    });
+    expect(screen.getByLabelText('입력군 이름')).toHaveValue('결제 오류 문의');
+    expect(screen.getByLabelText('영문 키')).toHaveValue('billing_issue');
+
+    fireEvent.click(screen.getByRole('button', { name: /^입력군 추가$/ }));
+    await waitFor(() => {
+      expect(workflowApiMock.createModelRoutingCohort).toHaveBeenCalledWith(
+        'workflow-1',
+        'llm-1',
+        {
+          label: '결제 오류 문의',
+          key: 'billing_issue',
+          representative_query: '결제가 완료됐는데 서비스 이용이 되지 않습니다.',
+          fixed: false,
+        },
+      );
+    });
   });
 
   it('자동 모델 라우팅 토글 변경을 노드 데이터에 반영한다', async () => {

@@ -48,6 +48,12 @@ const MODEL_ROUTING_REFRESH_MIN = 5;
 const MODEL_ROUTING_REFRESH_MAX = 100;
 const MODEL_ROUTING_REFRESH_STEP = 5;
 const MODEL_ROUTING_REFRESH_RECOMMEND = [20, 50] as const;
+const MODEL_ROUTING_VALIDATION_BUDGET_MIN = 0.5;
+const MODEL_ROUTING_VALIDATION_BUDGET_MAX = 10;
+const MODEL_ROUTING_VALIDATION_BUDGET_STEP = 0.5;
+const MODEL_ROUTING_COHORT_MIN = 1;
+const MODEL_ROUTING_COHORT_MAX = 12;
+const MODEL_ROUTING_COHORT_RECOMMEND = [3, 6] as const;
 
 const extractTokenNames = (value: string) => {
   const names = new Set<string>();
@@ -339,6 +345,35 @@ export function LLMNodePanel({
   const [routingPolicyError, setRoutingPolicyError] = useState<string | null>(null);
   const [isRoutingPolicyRefreshing, setIsRoutingPolicyRefreshing] =
     useState(false);
+  const [routingValidationBudgetUsd, setRoutingValidationBudgetUsd] = useState(
+    () => {
+      const value = Number(data.model_routing_policy?.validation_budget_usd);
+      return Number.isFinite(value)
+        ? Math.min(
+            MODEL_ROUTING_VALIDATION_BUDGET_MAX,
+            Math.max(MODEL_ROUTING_VALIDATION_BUDGET_MIN, value),
+          )
+        : 3;
+    },
+  );
+  const [routingMaxCohorts, setRoutingMaxCohorts] = useState(() => {
+    const value = Number(data.model_routing_policy?.max_cohorts);
+    return Number.isFinite(value)
+      ? Math.min(
+          MODEL_ROUTING_COHORT_MAX,
+          Math.max(MODEL_ROUTING_COHORT_MIN, value),
+        )
+      : 6;
+  });
+  const [isManualCohortFormOpen, setIsManualCohortFormOpen] = useState(false);
+  const [manualCohort, setManualCohort] = useState({
+    label: '',
+    key: '',
+    representativeQuery: '',
+    fixed: false,
+  });
+  const [isCohortWizardRunning, setIsCohortWizardRunning] = useState(false);
+  const [isManualCohortCreating, setIsManualCohortCreating] = useState(false);
 
   // 모델 상태 로드
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
@@ -421,17 +456,6 @@ export function LLMNodePanel({
     const policy = persistedRoutingPolicy;
     const legacyPolicy = data.model_routing_policy;
     const activePolicy = policy?.active_policy ?? legacyPolicy?.active_policy;
-    const firstRule = activePolicy?.rules?.find(Boolean);
-    const selectedModelId =
-      firstRule?.selected_model_id ||
-      activePolicy?.default_model_id ||
-      data.model_id ||
-      '';
-    const fallbackModelId =
-      firstRule?.fallback_model_id ||
-      activePolicy?.fallback_model_id ||
-      data.fallback_model_id ||
-      '';
     const runsSinceLastRefresh =
       policy?.refresh?.eligible_runs_since_last_refresh ??
       legacyPolicy?.refresh?.runs_since_last_refresh ??
@@ -447,22 +471,35 @@ export function LLMNodePanel({
 
     return {
       status,
-      selectedModelId,
-      fallbackModelId,
       policyVersion:
         policy?.policy_version || legacyPolicy?.policy_version || '정책 없음',
-      reasonCode: firstRule?.reason_code || '정책 대기 중',
+      reasonCode: activePolicy
+        ? '입력군 규칙과 맞지 않으면 기본 정책을 사용합니다.'
+        : '정책 대기 중',
       runsSinceLastRefresh,
       refreshEveryRuns,
       lastUpdate: policy?.last_update ?? null,
     };
   }, [
     data.auto_model_routing,
-    data.fallback_model_id,
-    data.model_id,
     data.model_routing_policy,
     persistedRoutingPolicy,
   ]);
+  const adaptiveRoutingSummary = useMemo(
+    () =>
+      persistedRoutingPolicy?.adaptive ?? {
+        validation_budget_usd: routingValidationBudgetUsd,
+        max_cohorts: routingMaxCohorts,
+        active_cohort_count: 0,
+        budget_month: null,
+        spent_usd: 0,
+        reserved_usd: 0,
+        remaining_usd: routingValidationBudgetUsd,
+        cohorts: [],
+        latest_batch: null,
+      },
+    [persistedRoutingPolicy?.adaptive, routingMaxCohorts, routingValidationBudgetUsd],
+  );
   const upstreamNodes = useMemo(
     () => getUpstreamNodes(nodeId, nodes, edges),
     [nodeId, nodes, edges],
@@ -614,6 +651,10 @@ export function LLMNodePanel({
         nodeId,
       );
       setPersistedRoutingPolicy(policy);
+      if (policy.adaptive) {
+        setRoutingValidationBudgetUsd(policy.adaptive.validation_budget_usd);
+        setRoutingMaxCohorts(policy.adaptive.max_cohorts);
+      }
       setRoutingPolicyError(null);
     } catch {
       setPersistedRoutingPolicy(null);
@@ -622,7 +663,14 @@ export function LLMNodePanel({
   }, [activeWorkflowId, nodeId]);
 
   const syncRoutingPolicy = useCallback(
-    async (enabled: boolean, refreshEveryRuns: number) => {
+    async (
+      enabled: boolean,
+      refreshEveryRuns: number,
+      validationBudgetUsd: number,
+      maxCohorts: number,
+      defaultModelId: string = data.model_id || '',
+      fallbackModelId: string | null = data.fallback_model_id || null,
+    ) => {
       if (!activeWorkflowId) return;
       try {
         const policy = await workflowApi.patchModelRoutingPolicy(
@@ -631,6 +679,10 @@ export function LLMNodePanel({
           {
             enabled,
             refresh_every_runs: refreshEveryRuns,
+            validation_budget_usd: validationBudgetUsd,
+            max_cohorts: maxCohorts,
+            default_model_id: defaultModelId,
+            fallback_model_id: fallbackModelId,
           },
         );
         setPersistedRoutingPolicy(policy);
@@ -639,23 +691,197 @@ export function LLMNodePanel({
         setRoutingPolicyError('정책 설정을 저장하지 못했습니다.');
       }
     },
-    [activeWorkflowId, nodeId],
+    [activeWorkflowId, data.fallback_model_id, data.model_id, nodeId],
   );
 
   const handleAutoModelRoutingChange = useCallback(
     (enabled: boolean) => {
       handleUpdateData('auto_model_routing', enabled);
-      void syncRoutingPolicy(enabled, routingPolicySummary.refreshEveryRuns);
+      void syncRoutingPolicy(
+        enabled,
+        routingPolicySummary.refreshEveryRuns,
+        routingValidationBudgetUsd,
+        routingMaxCohorts,
+      );
     },
-    [handleUpdateData, routingPolicySummary.refreshEveryRuns, syncRoutingPolicy],
+    [
+      handleUpdateData,
+      routingPolicySummary.refreshEveryRuns,
+      routingValidationBudgetUsd,
+      routingMaxCohorts,
+      syncRoutingPolicy,
+    ],
   );
 
   const handleRoutingRefreshEveryRunsCommit = useCallback(() => {
     void syncRoutingPolicy(
       Boolean(data.auto_model_routing),
       routingPolicySummary.refreshEveryRuns,
+      routingValidationBudgetUsd,
+      routingMaxCohorts,
     );
-  }, [data.auto_model_routing, routingPolicySummary.refreshEveryRuns, syncRoutingPolicy]);
+  }, [
+    data.auto_model_routing,
+    routingPolicySummary.refreshEveryRuns,
+    routingValidationBudgetUsd,
+    routingMaxCohorts,
+    syncRoutingPolicy,
+  ]);
+
+  const handleRoutingValidationBudgetChange = useCallback(
+    (value: number) => {
+      const nextBudget = Math.min(
+        MODEL_ROUTING_VALIDATION_BUDGET_MAX,
+        Math.max(MODEL_ROUTING_VALIDATION_BUDGET_MIN, value),
+      );
+      setRoutingValidationBudgetUsd(nextBudget);
+      updateNodeData(nodeId, {
+        model_routing_policy: {
+          ...(data.model_routing_policy || {}),
+          validation_budget_usd: nextBudget,
+        },
+      });
+    },
+    [data.model_routing_policy, nodeId, updateNodeData],
+  );
+
+  const handleRoutingValidationBudgetCommit = useCallback(() => {
+    void syncRoutingPolicy(
+      Boolean(data.auto_model_routing),
+      routingPolicySummary.refreshEveryRuns,
+      routingValidationBudgetUsd,
+      routingMaxCohorts,
+    );
+  }, [
+    data.auto_model_routing,
+    routingPolicySummary.refreshEveryRuns,
+    routingValidationBudgetUsd,
+    routingMaxCohorts,
+    syncRoutingPolicy,
+  ]);
+
+  const handleRoutingMaxCohortsChange = useCallback(
+    (value: number) => {
+      const nextMaximum = Math.min(
+        MODEL_ROUTING_COHORT_MAX,
+        Math.max(MODEL_ROUTING_COHORT_MIN, value),
+      );
+      setRoutingMaxCohorts(nextMaximum);
+      updateNodeData(nodeId, {
+        model_routing_policy: {
+          ...(data.model_routing_policy || {}),
+          max_cohorts: nextMaximum,
+        },
+      });
+    },
+    [data.model_routing_policy, nodeId, updateNodeData],
+  );
+
+  const handleRoutingMaxCohortsCommit = useCallback(() => {
+    void syncRoutingPolicy(
+      Boolean(data.auto_model_routing),
+      routingPolicySummary.refreshEveryRuns,
+      routingValidationBudgetUsd,
+      routingMaxCohorts,
+    );
+  }, [
+    data.auto_model_routing,
+    routingMaxCohorts,
+    routingPolicySummary.refreshEveryRuns,
+    routingValidationBudgetUsd,
+    syncRoutingPolicy,
+  ]);
+
+  const handleManualCohortWizard = useCallback(async () => {
+    const representativeQuery = manualCohort.representativeQuery.trim();
+    if (!activeWorkflowId || !representativeQuery || isCohortWizardRunning) return;
+    try {
+      setIsCohortWizardRunning(true);
+      const suggestion = await workflowApi.suggestModelRoutingCohort(
+        activeWorkflowId,
+        nodeId,
+        { representative_query: representativeQuery },
+      );
+      setManualCohort({
+        label: suggestion.label,
+        key: suggestion.key,
+        representativeQuery: suggestion.representative_query,
+        fixed: manualCohort.fixed,
+      });
+      setRoutingPolicyError(null);
+    } catch {
+      setRoutingPolicyError(
+        '입력군 초안을 만들지 못했습니다. 대표 문의를 직접 작성해 등록할 수 있습니다.',
+      );
+    } finally {
+      setIsCohortWizardRunning(false);
+    }
+  }, [
+    activeWorkflowId,
+    isCohortWizardRunning,
+    manualCohort.fixed,
+    manualCohort.representativeQuery,
+    nodeId,
+  ]);
+
+  const handleManualCohortCreate = useCallback(async () => {
+    if (
+      !activeWorkflowId ||
+      !manualCohort.label.trim() ||
+      !manualCohort.key.trim() ||
+      !manualCohort.representativeQuery.trim() ||
+      isManualCohortCreating
+    ) {
+      return;
+    }
+    try {
+      setIsManualCohortCreating(true);
+      await workflowApi.createModelRoutingCohort(activeWorkflowId, nodeId, {
+        label: manualCohort.label.trim(),
+        key: manualCohort.key.trim(),
+        representative_query: manualCohort.representativeQuery.trim(),
+        fixed: manualCohort.fixed,
+      });
+      setManualCohort({ label: '', key: '', representativeQuery: '', fixed: false });
+      setIsManualCohortFormOpen(false);
+      await loadRoutingPolicy();
+      setRoutingPolicyError(null);
+    } catch {
+      setRoutingPolicyError(
+        '입력군을 등록하지 못했습니다. 정책 상태와 임베딩 모델 권한을 확인해 주세요.',
+      );
+    } finally {
+      setIsManualCohortCreating(false);
+    }
+  }, [
+    activeWorkflowId,
+    isManualCohortCreating,
+    loadRoutingPolicy,
+    manualCohort,
+    nodeId,
+  ]);
+
+  const handleManualCohortDelete = useCallback(
+    async (cohort: { id: string; label: string }) => {
+      if (!activeWorkflowId) return;
+      const shouldDelete = window.confirm(
+        `'${cohort.label}' 입력군을 삭제할까요? 이후 요청은 전체 기본 정책으로 처리됩니다.`,
+      );
+      if (!shouldDelete) return;
+      try {
+        await workflowApi.deleteModelRoutingCohort(
+          activeWorkflowId,
+          nodeId,
+          cohort.id,
+        );
+        await loadRoutingPolicy();
+        setRoutingPolicyError(null);
+      } catch {
+        setRoutingPolicyError('입력군을 삭제하지 못했습니다. 정책 상태를 확인해 주세요.');
+      }
+    },
+    [activeWorkflowId, loadRoutingPolicy, nodeId],
+  );
 
   const handleManualRoutingPolicyRefresh = useCallback(async () => {
     if (
@@ -730,6 +956,54 @@ export function LLMNodePanel({
       isAnthropicModelId,
       nodeId,
       updateNodeData,
+    ],
+  );
+
+  const handleRoutingDefaultModelChange = useCallback(
+    (nextModelId: string) => {
+      const nextFallbackModelId =
+        data.fallback_model_id === nextModelId
+          ? null
+          : data.fallback_model_id || null;
+      handleModelChange(nextModelId);
+      void syncRoutingPolicy(
+        true,
+        routingPolicySummary.refreshEveryRuns,
+        routingValidationBudgetUsd,
+        routingMaxCohorts,
+        nextModelId,
+        nextFallbackModelId,
+      );
+    },
+    [
+      data.fallback_model_id,
+      handleModelChange,
+      routingMaxCohorts,
+      routingPolicySummary.refreshEveryRuns,
+      routingValidationBudgetUsd,
+      syncRoutingPolicy,
+    ],
+  );
+
+  const handleRoutingFallbackModelChange = useCallback(
+    (nextFallbackModelId: string) => {
+      handleUpdateData('fallback_model_id', nextFallbackModelId);
+      void syncRoutingPolicy(
+        true,
+        routingPolicySummary.refreshEveryRuns,
+        routingValidationBudgetUsd,
+        routingMaxCohorts,
+        data.model_id || '',
+        nextFallbackModelId || null,
+      );
+    },
+    [
+      data.model_id,
+      handleUpdateData,
+      routingMaxCohorts,
+      routingPolicySummary.refreshEveryRuns,
+      routingValidationBudgetUsd,
+      syncRoutingPolicy,
     ],
   );
 
@@ -1030,7 +1304,7 @@ export function LLMNodePanel({
               </label>
 
               {data.auto_model_routing ? (
-                <div className="rounded-md border border-slate-200 bg-white p-3">
+                <div className="flex flex-col rounded-md border border-slate-200 bg-white p-3">
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <div className="text-xs font-semibold text-slate-800">
@@ -1045,23 +1319,38 @@ export function LLMNodePanel({
                       {routingPolicySummary.status}
                     </span>
                   </div>
+                  <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div className="rounded border border-slate-100 bg-slate-50 p-2">
+                      <label className="block text-[11px] font-semibold text-slate-600">
+                        기본 모델 (규칙 미일치 시)
+                      </label>
+                      <ModelSelectDropdown
+                        value={data.model_id || ''}
+                        onChange={handleRoutingDefaultModelChange}
+                        models={chatModelOptions}
+                        groupedModels={groupedModelOptions}
+                        placeholder="기본 모델을 선택하세요"
+                      />
+                    </div>
+                    <div className="rounded border border-slate-100 bg-slate-50 p-2">
+                      <label className="block text-[11px] font-semibold text-slate-600">
+                        기본 대체 모델
+                      </label>
+                      <ModelSelectDropdown
+                        value={data.fallback_model_id || ''}
+                        onChange={handleRoutingFallbackModelChange}
+                        models={fallbackCandidates}
+                        groupedModels={groupedFallbackOptions}
+                        disabled={fallbackDisabled}
+                        placeholder={
+                          fallbackDisabled
+                            ? '먼저 기본 모델을 선택하세요'
+                            : '기본 대체 모델을 선택하세요'
+                        }
+                      />
+                    </div>
+                  </div>
                   <dl className="mt-3 grid grid-cols-1 gap-2 text-[11px] sm:grid-cols-2">
-                    <div className="rounded border border-slate-100 bg-slate-50 p-2">
-                      <dt className="font-semibold text-slate-500">
-                        선택 모델
-                      </dt>
-                      <dd className="mt-1 truncate font-semibold text-slate-900">
-                        {routingPolicySummary.selectedModelId || '정책 대기 중'}
-                      </dd>
-                    </div>
-                    <div className="rounded border border-slate-100 bg-slate-50 p-2">
-                      <dt className="font-semibold text-slate-500">
-                        Fallback 모델
-                      </dt>
-                      <dd className="mt-1 truncate font-semibold text-slate-900">
-                        {routingPolicySummary.fallbackModelId || '없음'}
-                      </dd>
-                    </div>
                     <div className="rounded border border-slate-100 bg-slate-50 p-2">
                       <dt className="font-semibold text-slate-500">
                         정책 버전
@@ -1135,7 +1424,10 @@ export function LLMNodePanel({
                     />
                     자동 정책 갱신하기
                   </button>
-                  <div className="mt-3 rounded-lg border border-emerald-100 bg-emerald-50/60 p-3">
+                  <div
+                    data-testid="routing-refresh-controls"
+                    className="order-2 mt-3 rounded-lg border border-emerald-100 bg-emerald-50/60 p-3"
+                  >
                     <div className="flex items-center justify-between gap-3">
                       <div>
                         <div className="text-xs font-semibold text-emerald-900">
@@ -1196,6 +1488,277 @@ export function LLMNodePanel({
                         </span>
                         <span>보수적 갱신</span>
                       </div>
+                    </div>
+                  </div>
+                  <div className="order-3 mt-3 rounded-lg border border-indigo-100 bg-indigo-50/60 p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-xs font-semibold text-indigo-950">
+                          월간 모델 검증 한도
+                        </div>
+                        <p className="mt-0.5 text-[11px] leading-relaxed text-indigo-800">
+                          새 모델은 입력군마다 5회 실제 Replay 검증을 통과해야
+                          정책에 들어갑니다. 이 한도 안에서만 검증 비용을 사용합니다.
+                        </p>
+                      </div>
+                      <span className="shrink-0 rounded bg-white px-2 py-1 text-xs font-mono font-semibold text-indigo-800 ring-1 ring-indigo-200">
+                        ${routingValidationBudgetUsd.toFixed(1)}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={MODEL_ROUTING_VALIDATION_BUDGET_MIN}
+                      max={MODEL_ROUTING_VALIDATION_BUDGET_MAX}
+                      step={MODEL_ROUTING_VALIDATION_BUDGET_STEP}
+                      value={routingValidationBudgetUsd}
+                      onChange={(event) =>
+                        handleRoutingValidationBudgetChange(Number(event.target.value))
+                      }
+                      onMouseUp={handleRoutingValidationBudgetCommit}
+                      onTouchEnd={handleRoutingValidationBudgetCommit}
+                      onKeyUp={handleRoutingValidationBudgetCommit}
+                      className="nodrag mt-3 h-2 w-full cursor-pointer accent-indigo-600"
+                      aria-label="월간 모델 검증 한도"
+                    />
+                    <div className="mt-2 flex items-center justify-between text-[10px] text-indigo-700">
+                      <span>최소 $0.5</span>
+                      <span>
+                        이번 달 사용 ${adaptiveRoutingSummary.spent_usd.toFixed(4)} · 예약 ${adaptiveRoutingSummary.reserved_usd.toFixed(4)}
+                      </span>
+                      <span>최대 $10</span>
+                    </div>
+                  </div>
+                  <div className="order-4 mt-3 rounded-lg border border-cyan-100 bg-cyan-50/60 p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-xs font-semibold text-cyan-950">
+                          입력군 최대 개수
+                        </div>
+                        <p className="mt-0.5 text-[11px] leading-relaxed text-cyan-800">
+                          현재 자주 쓰이는 입력군만 이 개수 안에서 검증하고 라우팅합니다.
+                          휴면 입력군은 새 입력군 자리를 차지하지 않습니다.
+                        </p>
+                      </div>
+                      <span className="shrink-0 rounded bg-white px-2 py-1 text-xs font-mono font-semibold text-cyan-800 ring-1 ring-cyan-200">
+                        {routingMaxCohorts}개
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={MODEL_ROUTING_COHORT_MIN}
+                      max={MODEL_ROUTING_COHORT_MAX}
+                      step={1}
+                      value={routingMaxCohorts}
+                      onChange={(event) =>
+                        handleRoutingMaxCohortsChange(Number(event.target.value))
+                      }
+                      onMouseUp={handleRoutingMaxCohortsCommit}
+                      onTouchEnd={handleRoutingMaxCohortsCommit}
+                      onKeyUp={handleRoutingMaxCohortsCommit}
+                      className="nodrag mt-3 h-2 w-full cursor-pointer accent-cyan-600"
+                      aria-label="입력군 최대 개수"
+                    />
+                    <div className="mt-2 flex items-center justify-between text-[10px] text-cyan-800">
+                      <span>최소 {MODEL_ROUTING_COHORT_MIN}개</span>
+                      <span>
+                        권장: {MODEL_ROUTING_COHORT_RECOMMEND[0]}~
+                        {MODEL_ROUTING_COHORT_RECOMMEND[1]}개
+                      </span>
+                      <span>최대 {MODEL_ROUTING_COHORT_MAX}개</span>
+                    </div>
+                  </div>
+                  <div
+                    data-testid="routing-cohort-management"
+                    className="order-1 mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-xs font-semibold text-slate-900">
+                          입력군 관리
+                        </div>
+                        <p className="mt-0.5 text-[11px] leading-relaxed text-slate-500">
+                          운영 입력은 원문을 저장하지 않고 특징 벡터와 해시로만 묶습니다.
+                          검증된 입력군만 다른 모델 규칙을 사용할 수 있습니다.
+                        </p>
+                      </div>
+                      <span className="rounded bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 ring-1 ring-slate-200">
+                        {adaptiveRoutingSummary.active_cohort_count}/
+                        {adaptiveRoutingSummary.max_cohorts}
+                      </span>
+                    </div>
+                    {adaptiveRoutingSummary.cohorts.length === 0 ? (
+                      <p className="mt-3 rounded border border-dashed border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-500">
+                        서로 다른 운영 입력이 두 점검 구간에서 충분히 쌓이면 입력군을 자동으로 발견합니다.
+                      </p>
+                    ) : (
+                      <ul className="mt-3 space-y-2">
+                        {adaptiveRoutingSummary.cohorts.slice(0, 6).map((cohort) => (
+                          <li
+                            key={cohort.id}
+                            className="flex items-center justify-between gap-3 rounded border border-slate-200 bg-white px-2.5 py-2 text-[11px]"
+                          >
+                            <span className="min-w-0">
+                              <span className="block truncate font-semibold text-slate-800">
+                                {cohort.label}
+                              </span>
+                              <span className="mt-0.5 block text-slate-500">
+                                {cohort.key} · {cohort.source === 'manual' ? '직접 등록' : '자동 발견'} ·{' '}
+                                {cohort.observation_count}회
+                              </span>
+                            </span>
+                            <span className="shrink-0 text-right">
+                              <span className="block font-semibold text-slate-700">
+                                {cohort.status}
+                              </span>
+                              <span className="block text-slate-500">
+                                기본 모델: {cohort.validated_model_id || '검증 대기'}
+                              </span>
+                              <span className="block text-slate-500">
+                                {cohort.required ? '고정됨' : '자동 관리'}
+                              </span>
+                            </span>
+                            {!cohort.safety_protected ? (
+                              <button
+                                type="button"
+                                className="nodrag shrink-0 rounded border border-rose-200 bg-white px-2 py-1 text-[11px] font-semibold text-rose-700 hover:bg-rose-50"
+                                onClick={() => handleManualCohortDelete(cohort)}
+                                aria-label={`${cohort.label} 입력군 삭제`}
+                              >
+                                삭제
+                              </button>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {adaptiveRoutingSummary.latest_batch ? (
+                      <p className="mt-3 text-[11px] text-slate-500">
+                        최근 검증 배치: {adaptiveRoutingSummary.latest_batch.completed_items}/
+                        {adaptiveRoutingSummary.latest_batch.total_items}회 완료 ·{' '}
+                        {adaptiveRoutingSummary.latest_batch.status}
+                      </p>
+                    ) : null}
+                    <div className="mt-3 border-t border-slate-200 pt-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-xs font-semibold text-slate-800">
+                          입력군 초안
+                        </div>
+                        <button
+                          type="button"
+                          className="nodrag rounded border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                          onClick={() =>
+                            setIsManualCohortFormOpen((current) => !current)
+                          }
+                          disabled={!persistedRoutingPolicy?.policy_id}
+                        >
+                          {isManualCohortFormOpen ? '닫기' : '직접 입력군 추가'}
+                        </button>
+                      </div>
+                      {!persistedRoutingPolicy?.policy_id ? (
+                        <p className="mt-2 text-[11px] text-slate-500">
+                          첫 배포 운영 실행이 완료되면 직접 입력군을 등록할 수 있습니다.
+                        </p>
+                      ) : null}
+                      {isManualCohortFormOpen ? (
+                        <div className="mt-3 space-y-2 rounded border border-slate-200 bg-white p-3">
+                          <label className="block text-[11px] font-medium text-slate-700">
+                            대표 문의
+                            <textarea
+                              aria-label="대표 문의"
+                              value={manualCohort.representativeQuery}
+                              onChange={(event) =>
+                                setManualCohort((current) => ({
+                                  ...current,
+                                  representativeQuery: event.target.value,
+                                }))
+                              }
+                              className="nodrag mt-1 min-h-20 w-full resize-y rounded border border-slate-300 px-2 py-1.5 text-xs text-slate-800"
+                              placeholder="예: 결제가 완료됐는데 서비스 이용이 되지 않습니다."
+                            />
+                            <span className="mt-1 block text-[10px] font-normal leading-relaxed text-slate-500">
+                              대표 문의는 입력군 설정으로 저장됩니다. 실제 고객 정보, 비밀값, API 키는 넣지 마세요.
+                            </span>
+                          </label>
+                          <label className="flex items-start gap-2 rounded border border-slate-200 bg-slate-50 px-2.5 py-2 text-[11px] text-slate-700">
+                            <input
+                              type="checkbox"
+                              className="nodrag mt-0.5 h-3.5 w-3.5"
+                              checked={manualCohort.fixed}
+                              onChange={(event) =>
+                                setManualCohort((current) => ({
+                                  ...current,
+                                  fixed: event.target.checked,
+                                }))
+                              }
+                            />
+                            <span>
+                              <span className="block font-semibold">입력군 고정</span>
+                              <span className="mt-0.5 block text-slate-500">
+                                고정하면 입력량이 줄어도 자동 휴면 또는 종료 처리하지 않습니다.
+                              </span>
+                            </span>
+                          </label>
+                          <button
+                            type="button"
+                            className="nodrag inline-flex items-center gap-1 rounded border border-violet-300 bg-violet-50 px-2 py-1.5 text-[11px] font-semibold text-violet-800 hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-60"
+                            onClick={handleManualCohortWizard}
+                            disabled={
+                              !manualCohort.representativeQuery.trim() ||
+                              isCohortWizardRunning
+                            }
+                          >
+                            <Wand2 className="h-3.5 w-3.5" />
+                            {isCohortWizardRunning ? '초안 만드는 중' : '입력군 마법사'}
+                          </button>
+                          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                            <label className="block text-[11px] font-medium text-slate-700">
+                              입력군 이름
+                              <input
+                                aria-label="입력군 이름"
+                                value={manualCohort.label}
+                                onChange={(event) =>
+                                  setManualCohort((current) => ({
+                                    ...current,
+                                    label: event.target.value,
+                                  }))
+                                }
+                                className="nodrag mt-1 h-8 w-full rounded border border-slate-300 px-2 text-xs text-slate-800"
+                                placeholder="예: 결제 오류 문의"
+                              />
+                            </label>
+                            <label className="block text-[11px] font-medium text-slate-700">
+                              영문 키
+                              <input
+                                aria-label="영문 키"
+                                value={manualCohort.key}
+                                onChange={(event) =>
+                                  setManualCohort((current) => ({
+                                    ...current,
+                                    key: event.target.value,
+                                  }))
+                                }
+                                className="nodrag mt-1 h-8 w-full rounded border border-slate-300 px-2 font-mono text-xs text-slate-800"
+                                placeholder="billing_issue"
+                              />
+                            </label>
+                          </div>
+                          <div className="flex justify-end">
+                            <button
+                              type="button"
+                              className="nodrag rounded bg-slate-900 px-2.5 py-1.5 text-[11px] font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                              onClick={handleManualCohortCreate}
+                              disabled={
+                                !manualCohort.label.trim() ||
+                                !manualCohort.key.trim() ||
+                                !manualCohort.representativeQuery.trim() ||
+                                isManualCohortCreating
+                              }
+                            >
+                              {isManualCohortCreating ? '등록 중' : '입력군 추가'}
+                            </button>
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                 </div>

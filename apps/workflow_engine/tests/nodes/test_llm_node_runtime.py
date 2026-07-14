@@ -3569,6 +3569,154 @@ def test_auto_model_routing_uses_active_policy_without_judge_call(monkeypatch):
     }
 
 
+def test_auto_model_routing_embeds_query_once_and_exposes_semantic_reason(monkeypatch):
+    """FR-011-A26/A28: query 1회 embedding 결과로 Route와 모델 근거를 남긴다."""
+    calls = []
+    data = LLMNodeData(
+        title="semantic routing",
+        model_id="gpt-4.1-mini",
+        fallback_model_id="gpt-4.1",
+        auto_model_routing=True,
+        model_routing_policy={
+            "policy_id": "policy-semantic-1",
+            "policy_version": "router-policy-v5",
+            "active_policy": {
+                "default_model_id": "gpt-4.1-mini",
+                "fallback_model_id": "gpt-4.1",
+                "semantic_router": {
+                    "route_catalog_version": "ticket-routing-v1",
+                    "encoder_model_id": "text-embedding-test",
+                    "top_k": 2,
+                    "aggregation": "mean",
+                    "min_margin": 0.1,
+                    "routes": [
+                        {
+                            "cohort_id": "routine_support",
+                            "label": "단순 사용·안내 문의",
+                            "threshold": 0.6,
+                            "representatives": [
+                                {"embedding": [1.0, 0.0, 0.0]},
+                            ],
+                        },
+                        {
+                            "cohort_id": "high_risk_support",
+                            "label": "보안·보상·장애 문의",
+                            "threshold": 0.6,
+                            "representatives": [
+                                {"embedding": [0.0, 1.0, 0.0]},
+                            ],
+                        },
+                    ],
+                },
+                "rules": [
+                    {
+                        "id": "routine-low-cost",
+                        "when": {"semantic_cohort_id": "routine_support"},
+                        "selected_model_id": "gpt-4o-mini",
+                        "fallback_model_id": "gpt-4.1-mini",
+                        "reason_code": "semantic_routine_validated_low_cost",
+                    }
+                ],
+            },
+        },
+        user_prompt="{{message}}",
+        referenced_variables=[],
+        parameters={},
+    )
+    node = LLMNode("llm-semantic", data)
+    monkeypatch.setattr(
+        node,
+        "_available_routing_model_ids",
+        lambda _db: ["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"],
+    )
+
+    def fake_query_vector(*, policy, inputs, db_session):
+        calls.append((policy, inputs, db_session))
+        return (1.0, 0.0, 0.0)
+
+    monkeypatch.setattr(node, "_resolve_semantic_query_vector", fake_query_vector)
+
+    selected, fallback, metadata = node._resolve_model_routing_policy(
+        {"message": "다운로드 위치를 알려 주세요."},
+        object(),
+    )
+
+    assert len(calls) == 1
+    assert selected == "gpt-4o-mini"
+    assert fallback == "gpt-4.1-mini"
+    assert metadata["matched_rule_id"] == "routine-low-cost"
+    assert metadata["matched_cohort_id"] == "routine_support"
+    assert metadata["semantic_route_label"] == "단순 사용·안내 문의"
+    assert metadata["semantic_match_status"] == "matched"
+    assert metadata["semantic_similarity"] == pytest.approx(1.0)
+    assert metadata["semantic_threshold"] == 0.6
+    assert metadata["route_catalog_version"] == "ticket-routing-v1"
+    assert "query_vector" not in metadata
+
+
+def test_auto_model_routing_keeps_default_when_semantic_embedding_fails(monkeypatch):
+    """FR-011-A27: encoder 실패는 임의 Route 대신 검증된 default model로 닫힌다."""
+    data = LLMNodeData(
+        title="semantic routing fallback",
+        model_id="gpt-4.1-mini",
+        fallback_model_id="gpt-4.1",
+        auto_model_routing=True,
+        model_routing_policy={
+            "policy_id": "policy-semantic-1",
+            "active_policy": {
+                "default_model_id": "gpt-4.1-mini",
+                "fallback_model_id": "gpt-4.1",
+                "semantic_router": {
+                    "route_catalog_version": "ticket-routing-v1",
+                    "encoder_model_id": "text-embedding-test",
+                    "routes": [
+                        {
+                            "cohort_id": "routine_support",
+                            "label": "단순 사용·안내 문의",
+                            "threshold": 0.6,
+                            "representatives": [
+                                {"embedding": [1.0, 0.0, 0.0]},
+                            ],
+                        }
+                    ],
+                },
+                "rules": [
+                    {
+                        "id": "routine-low-cost",
+                        "when": {"semantic_cohort_id": "routine_support"},
+                        "selected_model_id": "gpt-4o-mini",
+                    }
+                ],
+            },
+        },
+        user_prompt="{{message}}",
+        referenced_variables=[],
+        parameters={},
+    )
+    node = LLMNode("llm-semantic", data)
+    monkeypatch.setattr(
+        node,
+        "_available_routing_model_ids",
+        lambda _db: ["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"],
+    )
+    monkeypatch.setattr(
+        node,
+        "_resolve_semantic_query_vector",
+        lambda **_kwargs: None,
+    )
+
+    selected, fallback, metadata = node._resolve_model_routing_policy(
+        {"message": "다운로드 위치를 알려 주세요."},
+        object(),
+    )
+
+    assert selected == "gpt-4.1-mini"
+    assert fallback == "gpt-4.1"
+    assert metadata["matched_rule_id"] is None
+    assert metadata["reason_code"] == "semantic_unavailable_default"
+    assert metadata["semantic_match_status"] == "unavailable"
+
+
 def test_auto_model_routing_prefers_persisted_policy_over_legacy_node_json(monkeypatch):
     """배포 runtime은 node data의 오래된 policy보다 DB active policy를 우선한다."""
     from apps.workflow_engine.services.model_routing_policy_store import (

@@ -1,3 +1,4 @@
+import copy
 import json
 import uuid
 from dataclasses import dataclass, field
@@ -173,13 +174,14 @@ class ModelRoutingPolicyRefreshService:
         request: ModelRoutingPolicyRefreshRequest,
         candidates: list[dict[str, Any]],
     ) -> list[dict[str, str]]:
+        current_policy = cls._judge_safe_current_policy(request.current_policy)
         payload = {
             "workflow_id": request.workflow_id,
             "node_id": request.node_id,
             "trigger": request.trigger,
             "node_summary": request.node_summary,
             "candidate_models": candidates,
-            "current_policy": request.current_policy,
+            "current_policy": current_policy,
             "recent_runs": request.recent_runs[-40:],
             "segment_profiles": request.segment_profiles[-40:],
             "required_schema": {
@@ -229,6 +231,51 @@ class ModelRoutingPolicyRefreshService:
                 "content": json.dumps(payload, ensure_ascii=False, default=str),
             },
         ]
+
+    @classmethod
+    def _judge_safe_current_policy(
+        cls,
+        current_policy: Optional[dict[str, Any]],
+    ) -> Optional[dict[str, Any]]:
+        if not isinstance(current_policy, dict):
+            return None
+        safe_policy = copy.deepcopy(current_policy)
+        active_policy = safe_policy.get("active_policy")
+        if not isinstance(active_policy, dict):
+            return safe_policy
+        semantic_router = active_policy.get("semantic_router")
+        if isinstance(semantic_router, dict):
+            active_policy["semantic_router"] = cls._semantic_router_summary(
+                semantic_router
+            )
+        return safe_policy
+
+    @staticmethod
+    def _semantic_router_summary(semantic_router: dict[str, Any]) -> dict[str, Any]:
+        routes = semantic_router.get("routes")
+        routes = routes if isinstance(routes, list) else []
+        summary = {
+            key: semantic_router.get(key)
+            for key in (
+                "route_catalog_version",
+                "encoder_model_id",
+                "top_k",
+                "aggregation",
+                "min_margin",
+            )
+            if key in semantic_router
+        }
+        summary["routes"] = [
+            {
+                "cohort_id": route.get("cohort_id"),
+                "label": route.get("label"),
+                "threshold": route.get("threshold"),
+                "representative_count": len(route.get("representatives") or []),
+            }
+            for route in routes
+            if isinstance(route, dict)
+        ]
+        return summary
 
     @classmethod
     def _normalize_generated_policy(

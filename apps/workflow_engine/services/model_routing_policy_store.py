@@ -1,6 +1,8 @@
 """모델 라우팅 policy의 DB persistence와 배포 run 완료 훅을 담당한다."""
 
+import logging
 import uuid
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError
@@ -9,10 +11,16 @@ from sqlalchemy.orm import Session
 from apps.shared.db.models.model_routing_policy import (
     LLMNodeModelRoutingPolicy,
     LLMNodeModelRoutingPolicyRunEvent,
+    LLMNodeModelRoutingPolicyUpdate,
 )
 from apps.shared.db.models.app import App
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
-from apps.shared.db.models.workflow_run import NodeRunStatus, WorkflowNodeRun, WorkflowRun
+from apps.shared.db.models.workflow_run import (
+    NodeRunStatus,
+    RunStatus,
+    WorkflowNodeRun,
+    WorkflowRun,
+)
 from apps.workflow_engine.services.model_routing_policy_lifecycle import (
     ModelRoutingPolicyLifecycleService,
 )
@@ -22,8 +30,25 @@ from apps.workflow_engine.services.model_routing_policy_refresh import (
 from apps.workflow_engine.services.llm_service import LLMService
 
 
+logger = logging.getLogger(__name__)
+
+
+class ModelRoutingRunLogPendingError(RuntimeError):
+    """Workflow는 끝났지만 자동 라우팅 node 완료 로그가 아직 반영되지 않았다."""
+
+
 class ModelRoutingPolicyStore:
     """정책 row 조회와 운영 run 누적을 한 곳에서 일관되게 처리한다."""
+
+    @staticmethod
+    def _max_cohorts(node_data: dict[str, Any]) -> int:
+        """배포 snapshot에 저장된 활성 입력군 상한을 안전한 범위로 정규화한다."""
+        policy = node_data.get("model_routing_policy")
+        value = policy.get("max_cohorts") if isinstance(policy, dict) else 6
+        try:
+            return max(1, min(12, int(value)))
+        except (TypeError, ValueError):
+            return 6
 
     @staticmethod
     def _refresh_every_runs(node_data: dict[str, Any]) -> int:
@@ -34,6 +59,21 @@ class ModelRoutingPolicyStore:
             return max(5, min(100, int(value)))
         except (TypeError, ValueError):
             return 20
+
+    @staticmethod
+    def _validation_budget_usd(node_data: dict[str, Any]) -> Decimal:
+        """배포 snapshot에 저장된 월간 검증 예산을 안전한 범위로 정규화한다."""
+        policy = node_data.get("model_routing_policy")
+        raw_value = (
+            policy.get("validation_budget_usd")
+            if isinstance(policy, dict)
+            else Decimal("3")
+        )
+        try:
+            value = Decimal(str(raw_value))
+        except (InvalidOperation, TypeError, ValueError):
+            value = Decimal("3")
+        return max(Decimal("0.5"), min(Decimal("10"), value))
 
     @classmethod
     def get_runtime_policy(
@@ -85,6 +125,8 @@ class ModelRoutingPolicyStore:
         policy_id = uuid.uuid4()
         organization_id = cls._organization_id_for_run(db, workflow_run)
         refresh_every_runs = cls._refresh_every_runs(node_data)
+        validation_budget_usd = cls._validation_budget_usd(node_data)
+        max_cohorts = cls._max_cohorts(node_data)
         configured_model_id = str(node_data.get("model_id") or "").strip()
         if not configured_model_id:
             # 실행 모델이 없는 잘못된 deployment snapshot은 policy를 만들지 않는다.
@@ -127,6 +169,9 @@ class ModelRoutingPolicyStore:
             active_policy=bootstrap["active_policy"],
             refresh_every_runs=refresh_every_runs,
             judge_user_id=workflow_run.user_id,
+            execution_subject_user_id=workflow_run.user_id,
+            validation_budget_usd=validation_budget_usd,
+            max_cohorts=max_cohorts,
         )
         try:
             with db.begin_nested():
@@ -171,6 +216,20 @@ class ModelRoutingPolicyStore:
         policy = cls._lock_policy_for_update(db, policy_id=policy_uuid)
         if not ModelRoutingPolicyLifecycleService.has_pending_refresh_request(policy):
             return None
+
+        # 동일 refresh 요청은 task 재전달로 여러 번 들어올 수 있다. policy 행을
+        # 잠근 뒤, 이 요청 시각 이후 생성된 update가 있으면 이미 다른 worker가
+        # refresh를 시작한 것이므로 중복 Judge/Replay를 막는다. 첫 worker가 commit
+        # 전에 실패하면 update도 남지 않아 Celery 재시도가 정상적으로 다시 claim한다.
+        refresh_requested_at = policy.refresh_requested_at
+        refresh_already_started = (
+            db.query(LLMNodeModelRoutingPolicyUpdate.id)
+            .filter(LLMNodeModelRoutingPolicyUpdate.policy_id == policy.id)
+            .filter(LLMNodeModelRoutingPolicyUpdate.created_at >= refresh_requested_at)
+            .first()
+        )
+        if refresh_already_started is not None:
+            return None
         return policy
 
     @staticmethod
@@ -214,15 +273,44 @@ class ModelRoutingPolicyStore:
             for node in (graph.get("nodes") or [])
             if isinstance(node, dict) and isinstance(node.get("data"), dict)
         }
+        auto_routing_node_ids = {
+            node_id
+            for node_id, node_data in node_data_by_id.items()
+            if bool(node_data.get("auto_model_routing"))
+        }
+        if not auto_routing_node_ids:
+            return []
         node_runs = (
             db.query(WorkflowNodeRun)
             .filter(WorkflowNodeRun.workflow_run_id == workflow_run.id)
             .filter(WorkflowNodeRun.node_type == "llmNode")
-            .filter(WorkflowNodeRun.status == NodeRunStatus.SUCCESS)
+            .filter(WorkflowNodeRun.node_id.in_(auto_routing_node_ids))
             .all()
         )
+        node_runs_by_id = {str(node_run.node_id): node_run for node_run in node_runs}
+        workflow_status = getattr(workflow_run.status, "value", workflow_run.status)
+        if workflow_status == RunStatus.SUCCESS.value:
+            pending_node_ids = {
+                node_id
+                for node_id in auto_routing_node_ids
+                if node_id not in node_runs_by_id
+                or node_runs_by_id[node_id].status == NodeRunStatus.RUNNING
+            }
+            if pending_node_ids:
+                raise ModelRoutingRunLogPendingError(
+                    "auto-routing node completion logs are not ready"
+                )
+
+        successful_node_runs = [
+            node_run
+            for node_run in node_runs
+            if node_run.status == NodeRunStatus.SUCCESS
+        ]
         scheduled: list[uuid.UUID] = []
-        for node_run in sorted(node_runs, key=lambda item: str(item.node_id)):
+        for node_run in sorted(
+            successful_node_runs,
+            key=lambda item: str(item.node_id),
+        ):
             node_data = node_data_by_id.get(node_run.node_id)
             if not isinstance(node_data, dict):
                 continue
@@ -238,6 +326,13 @@ class ModelRoutingPolicyStore:
             )
             if policy is None:
                 continue
+            cls._record_adaptive_observation(
+                db,
+                policy=policy,
+                workflow_run=workflow_run,
+                node_run=node_run,
+                node_data=node_data,
+            )
             event_was_created = cls._record_policy_event(
                 db,
                 policy_id=policy.id,
@@ -259,6 +354,73 @@ class ModelRoutingPolicyStore:
                 scheduled.append(policy.id)
         db.flush()
         return scheduled
+
+    @classmethod
+    def _record_adaptive_observation(
+        cls,
+        db: Session,
+        *,
+        policy: LLMNodeModelRoutingPolicy,
+        workflow_run: WorkflowRun,
+        node_run: WorkflowNodeRun,
+        node_data: dict[str, Any],
+    ) -> None:
+        """Embedding 실패가 운영 run 집계를 막지 않도록 관찰만 best-effort로 기록한다."""
+        user_id = getattr(policy, "execution_subject_user_id", None) or getattr(
+            workflow_run, "user_id", None
+        )
+        if user_id is None or policy.organization_id is None:
+            return
+        try:
+            embedding_models = LLMService.get_runtime_available_embedding_model_ids_for_user(
+                db,
+                user_id=user_id,
+                organization_id=policy.organization_id,
+            )
+            if not embedding_models:
+                return
+            encoder_model_id = cls._preferred_embedding_model(
+                node_data,
+                embedding_models,
+            )
+            selection = LLMService.get_runtime_client_for_user(
+                db,
+                user_id=user_id,
+                model_id=encoder_model_id,
+                organization_id=policy.organization_id,
+            )
+            from apps.workflow_engine.services.model_routing_adaptive_store import (
+                AdaptiveModelRoutingCohortStore,
+            )
+
+            AdaptiveModelRoutingCohortStore.record_observation(
+                db,
+                policy=policy,
+                workflow_run=workflow_run,
+                node_run=node_run,
+                node_data=node_data,
+                encoder_model_id=encoder_model_id,
+                embed=selection.client.embed_sync,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[Model-Routing] adaptive cohort observation skipped: error_type=%s",
+                type(exc).__name__,
+            )
+
+    @staticmethod
+    def _preferred_embedding_model(
+        node_data: dict[str, Any],
+        available_model_ids: list[str],
+    ) -> str:
+        context = node_data.get("model_routing_context")
+        context = context if isinstance(context, dict) else {}
+        semantic = context.get("semantic_router")
+        semantic = semantic if isinstance(semantic, dict) else {}
+        configured = str(semantic.get("encoder_model_id") or "").strip()
+        if configured in available_model_ids:
+            return configured
+        return sorted(available_model_ids)[0]
 
     @staticmethod
     def _record_policy_event(

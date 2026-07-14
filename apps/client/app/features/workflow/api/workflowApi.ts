@@ -34,8 +34,13 @@ import {
   CostOptimizerRecommendationVerificationResponse,
   CostOptimizerRecommendationVerifyRequest,
   ModelRoutingPolicyPatchRequest,
+  ModelRoutingCohortCreateRequest,
+  ModelRoutingCohortCreateResponse,
+  ModelRoutingCohortSuggestionRequest,
+  ModelRoutingCohortSuggestionResponse,
   ModelRoutingPolicyRefreshResponse,
   ModelRoutingPolicyResponse,
+  ModelRoutingPreviewResponse,
   WorkflowPermissionResponse,
   LLMTraceListResponse,
   WorkflowResponse,
@@ -418,6 +423,18 @@ export const workflowApi = {
     return response.data;
   },
 
+  previewModelRouting: async (
+    workflowId: string,
+    nodeId: string,
+    inputs: Record<string, unknown>,
+  ): Promise<ModelRoutingPreviewResponse> => {
+    const response = await api.post(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/model-routing/preview`,
+      { inputs },
+    );
+    return response.data;
+  },
+
   patchModelRoutingPolicy: async (
     workflowId: string,
     nodeId: string,
@@ -438,6 +455,40 @@ export const workflowApi = {
       `/workflows/${workflowId}/llm-nodes/${nodeId}/model-routing/policy/refresh`,
     );
     return response.data;
+  },
+
+  suggestModelRoutingCohort: async (
+    workflowId: string,
+    nodeId: string,
+    data: ModelRoutingCohortSuggestionRequest,
+  ): Promise<ModelRoutingCohortSuggestionResponse> => {
+    const response = await api.post(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/model-routing/cohorts/suggest`,
+      data,
+    );
+    return response.data;
+  },
+
+  createModelRoutingCohort: async (
+    workflowId: string,
+    nodeId: string,
+    data: ModelRoutingCohortCreateRequest,
+  ): Promise<ModelRoutingCohortCreateResponse> => {
+    const response = await api.post(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/model-routing/cohorts`,
+      data,
+    );
+    return response.data;
+  },
+
+  deleteModelRoutingCohort: async (
+    workflowId: string,
+    nodeId: string,
+    cohortId: string,
+  ): Promise<void> => {
+    await api.delete(
+      `/workflows/${workflowId}/llm-nodes/${nodeId}/model-routing/cohorts/${cohortId}`,
+    );
   },
 
   // 5. 새 워크플로우 생성
