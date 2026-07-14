@@ -156,6 +156,12 @@ const renderModal = () =>
     />,
   );
 
+const clickTestButton = async () => {
+  const button = await screen.findByRole('button', { name: '테스트하기' });
+  await waitFor(() => expect(button).toBeEnabled());
+  fireEvent.click(button);
+};
+
 describe('FR-013 추천 설정 인라인 검증 모달', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -176,7 +182,7 @@ describe('FR-013 추천 설정 인라인 검증 모달', () => {
   it('테스트하기는 페이지 이동 없이 최신 성공 기록 기준 검증 결과와 독립 metric bar를 표시한다', async () => {
     renderModal();
 
-    fireEvent.click(await screen.findByRole('button', { name: '테스트하기' }));
+    await clickTestButton();
 
     await waitFor(() => {
       expect(workflowApiMock.verifyCostOptimizerRecommendations).toHaveBeenCalledWith(
@@ -214,7 +220,7 @@ describe('FR-013 추천 설정 인라인 검증 모달', () => {
 
   it('검증한 동일 candidate 설정을 기존 apply API로 적용한다', async () => {
     renderModal();
-    fireEvent.click(await screen.findByRole('button', { name: '테스트하기' }));
+    await clickTestButton();
     await screen.findByRole('button', { name: '적용하기' });
 
     fireEvent.click(screen.getByRole('button', { name: '적용하기' }));
@@ -236,7 +242,7 @@ describe('FR-013 추천 설정 인라인 검증 모달', () => {
 
   it('상세 비교 분석하기는 같은 comparison/candidate 이력을 열고 다시 실행하지 않는다', async () => {
     renderModal();
-    fireEvent.click(await screen.findByRole('button', { name: '테스트하기' }));
+    await clickTestButton();
     await screen.findByRole('button', { name: '상세 비교 분석하기' });
 
     fireEvent.click(screen.getByRole('button', { name: '상세 비교 분석하기' }));
@@ -253,7 +259,7 @@ describe('FR-013 추천 설정 인라인 검증 모달', () => {
     );
     renderModal();
 
-    fireEvent.click(await screen.findByRole('button', { name: '테스트하기' }));
+    await clickTestButton();
 
     expect(
       await screen.findByText('추천 설정이 최신 상태가 아닙니다.'),
@@ -281,7 +287,7 @@ describe('FR-013 추천 설정 인라인 검증 모달', () => {
     });
     renderModal();
 
-    fireEvent.click(await screen.findByRole('button', { name: '테스트하기' }));
+    await clickTestButton();
     await screen.findByRole('button', { name: '적용하기' });
     fireEvent.click(screen.getByText('출력 안정성 높이기'));
 
