@@ -11,6 +11,8 @@ import { WorkflowDraftRequest } from '../types/Workflow';
 import {
   DeploymentCreate,
   DeploymentBrowserAccessRevisionCreate,
+  DeploymentParameterOptimizationConfig,
+  DeploymentParameterOptimizationSummary,
   DeploymentPreflightRequest,
   DeploymentPreflightResponse,
   DeploymentResponse,
@@ -163,7 +165,11 @@ export const workflowApi = {
     workflowId: string,
     userInput: Record<string, unknown> | FormData,
     onEvent?: (event: any) => void | Promise<void>,
-    options?: { signal?: AbortSignal; graphSnapshot?: WorkflowDraftRequest },
+    options?: {
+      signal?: AbortSignal;
+      graphSnapshot?: WorkflowDraftRequest;
+      useActiveDeploymentRoutingPolicy?: boolean;
+    },
   ) => {
     if (isMockWorkflowId(workflowId)) {
       for (const event of createMockWorkflowStreamEvents(userInput)) {
@@ -189,11 +195,17 @@ export const workflowApi = {
       if (options?.graphSnapshot) {
         userInput.set('graph_snapshot', JSON.stringify(options.graphSnapshot));
       }
+      if (options?.useActiveDeploymentRoutingPolicy) {
+        userInput.set('use_active_deployment_routing_policy', 'true');
+      }
       body = userInput;
     } else {
       body = JSON.stringify({
         inputs: userInput || {},
         graph_snapshot: options?.graphSnapshot,
+        ...(options?.useActiveDeploymentRoutingPolicy
+          ? { use_active_deployment_routing_policy: true }
+          : {}),
       });
     }
 
@@ -601,6 +613,24 @@ export const workflowApi = {
   getDeploymentRunInfo: async (deploymentId: string) => {
     const response = await api.get(`/deployments/${deploymentId}/run-info`);
     return response.data as DeploymentRunInfoResponse;
+  },
+
+  getDeploymentParameterOptimization: async (deploymentId: string) => {
+    const response = await api.get(
+      `/deployments/${deploymentId}/parameter-optimization`,
+    );
+    return response.data as DeploymentParameterOptimizationSummary;
+  },
+
+  updateDeploymentParameterOptimization: async (
+    deploymentId: string,
+    config: DeploymentParameterOptimizationConfig,
+  ) => {
+    const response = await api.patch(
+      `/deployments/${deploymentId}/parameter-optimization`,
+      config,
+    );
+    return response.data as DeploymentParameterOptimizationSummary;
   },
 
   runDeployment: async (

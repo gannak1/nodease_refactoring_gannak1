@@ -113,6 +113,11 @@ class TestRecommendationInlineVerificationApi:
                 return_value=expected,
                 create=True,
             ) as verify,
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow."
+                "_bind_and_preflight_authenticated_graph",
+                return_value=workflow.graph,
+            ),
         ):
             response = self.client.post(
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage/"
@@ -157,6 +162,11 @@ class TestRecommendationInlineVerificationApi:
                 },
                 create=True,
             ) as verify,
+            patch(
+                "apps.gateway.api.v1.endpoints.workflow."
+                "_bind_and_preflight_authenticated_graph",
+                return_value=workflow.graph,
+            ),
         ):
             response = self.client.post(
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage/"
@@ -247,6 +257,7 @@ class TestRecommendationInlineVerificationApi:
     def test_fr13_verify_runs_only_candidate_and_keeps_partial_when_judge_is_unavailable(self):
         workflow_id = uuid4()
         user_id = uuid4()
+        db = SimpleNamespace()
         workflow = _workflow_with_llm_node(workflow_id, uuid4())
         baseline = {
             "baseline_id": str(uuid4()),
@@ -332,6 +343,10 @@ class TestRecommendationInlineVerificationApi:
                 return_value=baseline,
             ),
             patch.object(
+                workflow_endpoint.DeploymentParameterOptimizationService,
+                "ensure_validation_budget_available",
+            ) as ensure_budget,
+            patch.object(
                 workflow_endpoint,
                 "_create_cost_optimizer_comparison",
                 return_value=(experiment, candidate_row),
@@ -356,9 +371,13 @@ class TestRecommendationInlineVerificationApi:
                 "_persist_cost_optimizer_comparison",
                 return_value=experiment,
             ) as persist,
+            patch.object(
+                workflow_endpoint.DeploymentParameterOptimizationService,
+                "record_validation_spend",
+            ) as record_spend,
         ):
             result = workflow_endpoint._verify_cost_optimizer_recommendations(
-                db=SimpleNamespace(),
+                db=db,
                 workflow=workflow,
                 execution_graph=workflow.graph,
                 node_id="llm-triage",
@@ -385,6 +404,17 @@ class TestRecommendationInlineVerificationApi:
         evaluate_quality.assert_called_once()
         assert evaluate_quality.call_args.kwargs["candidate_result"]["input"] == baseline["input"]
         assert persist.call_args.kwargs["quality_evaluation"] == quality
+        ensure_budget.assert_called_once_with(
+            db,
+            deployment_id=baseline["deployment_id"],
+            node_id="llm-triage",
+        )
+        record_spend.assert_called_once_with(
+            db,
+            deployment_id=baseline["deployment_id"],
+            node_id="llm-triage",
+            amount_usd=0.002,
+        )
         complete.assert_called_once()
 
     def test_fr13_verify_stale_fingerprint_does_not_create_candidate(self):

@@ -14,6 +14,10 @@ from apps.gateway.services.app_lifecycle_lock import lock_app_for_lifecycle
 from apps.gateway.services.knowledge_deployment_preflight_service import (
     KnowledgeDeploymentPreflightService,
 )
+from apps.gateway.services.deployment_parameter_optimization_service import (
+    DeploymentParameterOptimizationConfigurationError,
+    DeploymentParameterOptimizationService,
+)
 from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
 from apps.gateway.services.workflow_service import WorkflowService
 from apps.gateway.application.deployment.schedule_errors import (
@@ -231,13 +235,19 @@ class DeploymentService:
         output_schema = DeploymentService._extract_output_schema(graph_snapshot)
 
         # 8. 배포 모델 생성
+        deployment_config = dict(deployment_in.config or {})
+        if deployment_in.parameter_optimization is not None:
+            deployment_config["parameter_optimization"] = (
+                deployment_in.parameter_optimization.model_dump(mode="json")
+            )
+
         db_obj = WorkflowDeployment(
             app_id=deployment_in.app_id,
             version=new_version,
             type=deployment_in.type,
             # url_slug, auth_secret 제거 (App 모델에서 관리)
             graph_snapshot=graph_snapshot,
-            config=deployment_in.config,
+            config=deployment_config,
             browser_access_policy=(
                 browser_access_policy.to_dict()
                 if browser_access_policy is not None
@@ -288,6 +298,14 @@ class DeploymentService:
                     scheduler_service = get_scheduler_service()
                     scheduler_service.add_schedule(schedule, db)
 
+            DeploymentParameterOptimizationService.configure_for_deployment(
+                db,
+                deployment=db_obj,
+                workflow_id=workflow.id,
+                graph_snapshot=graph_snapshot,
+                config=deployment_in.parameter_optimization,
+            )
+
             db.commit()
             db.refresh(db_obj)
 
@@ -298,6 +316,9 @@ class DeploymentService:
 
             return db_obj
 
+        except DeploymentParameterOptimizationConfigurationError as exc:
+            db.rollback()
+            raise HTTPException(status_code=422, detail=str(exc)) from None
         except ScheduleConfigurationError:
             db.rollback()
             raise HTTPException(

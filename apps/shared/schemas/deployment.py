@@ -60,6 +60,30 @@ class DeploymentBrowserAccessProjection(BaseModel):
     embedding: DeploymentBrowserAccessProjectionEmbedding
 
 
+class DeploymentParameterOptimizationConfig(BaseModel):
+    """배포 후 LLM 파라미터 자동 최적화의 안전한 범위 설정."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    node_ids: list[str] = Field(default_factory=list)
+    check_every_runs: int = Field(default=50, ge=20, le=200)
+    monthly_validation_budget_usd: float = Field(default=3.0, ge=0.5, le=10.0)
+
+
+class DeploymentParameterOptimizationStatus(BaseModel):
+    enabled: bool = False
+    status: Literal[
+        "disabled", "collecting", "ready", "paused", "budget_exhausted", "failed"
+    ] = "disabled"
+    node_ids: list[str] = Field(default_factory=list)
+    node_count: int = 0
+    collected_runs: int = 0
+    check_every_runs: int = 50
+    validation_spend_usd: float = 0.0
+    monthly_validation_budget_usd: float = 3.0
+
+
 class DeploymentBase(BaseModel):
     type: DeploymentType = DeploymentType.API
     url_slug: Optional[str] = Field(
@@ -67,6 +91,7 @@ class DeploymentBase(BaseModel):
     )  # 소문자, 숫자, 하이픈만 허용
     description: Optional[str] = None
     config: Optional[Dict[str, Any]] = {}
+    parameter_optimization: DeploymentParameterOptimizationConfig | None = None
     is_active: bool = True
     browser_access_policy: Optional[DeploymentBrowserAccessPolicy] = None
 

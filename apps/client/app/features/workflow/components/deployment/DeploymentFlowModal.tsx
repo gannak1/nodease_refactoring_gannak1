@@ -1,12 +1,18 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { DeploymentStep, DeploymentResult } from './types';
+import {
+  DeploymentOptimizationNode,
+  DeploymentResult,
+  DeploymentStep,
+} from './types';
 import type {
   DeploymentBrowserAccessPolicy,
   DeploymentType,
+  DeploymentParameterOptimizationConfig,
 } from '../../types/Deployment';
 import { InputStep } from './InputStep';
+import { ParameterOptimizationStep } from './ParameterOptimizationStep';
 import { SuccessStep } from './SuccessStep';
 import { ErrorStep } from './ErrorStep';
 
@@ -14,8 +20,10 @@ interface Props {
   isOpen: boolean;
   onClose: () => void;
   deploymentType: DeploymentType;
+  llmNodes: DeploymentOptimizationNode[];
   onDeploy: (
     description: string,
+    parameterOptimization: DeploymentParameterOptimizationConfig,
     browserAccessPolicy?: DeploymentBrowserAccessPolicy,
   ) => Promise<DeploymentResult>;
 }
@@ -26,6 +34,7 @@ export function DeploymentFlowModal({
   isOpen,
   onClose,
   deploymentType,
+  llmNodes,
   onDeploy,
 }: Props) {
   const [currentStep, setCurrentStep] = useState<DeploymentStep>('input');
@@ -35,17 +44,33 @@ export function DeploymentFlowModal({
   const [isDeploying, setIsDeploying] = useState(false);
   const [embeddingEnabled, setEmbeddingEnabled] = useState(false);
   const [parentOrigins, setParentOrigins] = useState<string[]>(['']);
+  const [parameterOptimization, setParameterOptimization] =
+    useState<DeploymentParameterOptimizationConfig>({
+      enabled: false,
+      node_ids: [],
+      check_every_runs: 50,
+      monthly_validation_budget_usd: 3,
+    });
+  const [browserAccessPolicy, setBrowserAccessPolicy] =
+    useState<DeploymentBrowserAccessPolicy>();
 
   // Reset state when modal opens
   useEffect(() => {
     if (isOpen) {
       setCurrentStep('input');
       setDescription('');
+      setParameterOptimization({
+        enabled: false,
+        node_ids: llmNodes.map((node) => node.id),
+        check_every_runs: 50,
+        monthly_validation_budget_usd: 3,
+      });
       setDeploymentResult(null);
       setEmbeddingEnabled(false);
       setParentOrigins(['']);
+      setBrowserAccessPolicy(undefined);
     }
-  }, [isOpen]);
+  }, [isOpen, llmNodes]);
 
   // Handle ESC key
   useEffect(() => {
@@ -67,13 +92,17 @@ export function DeploymentFlowModal({
   }, [isOpen, isDeploying, onClose]);
 
   // Handle deployment submission
-  const handleSubmit = async (
-    browserAccessPolicy?: DeploymentBrowserAccessPolicy,
-  ) => {
+  const handleSubmit = async () => {
     setIsDeploying(true);
 
     try {
-      const result = await onDeploy(description, browserAccessPolicy);
+      const result = browserAccessPolicy
+        ? await onDeploy(
+            description,
+            parameterOptimization,
+            browserAccessPolicy,
+          )
+        : await onDeploy(description, parameterOptimization);
       setDeploymentResult(result);
 
       if (result.success) {
@@ -94,8 +123,15 @@ export function DeploymentFlowModal({
 
   // Handle retry on error
   const handleRetry = () => {
-    setCurrentStep('input');
+    setCurrentStep('optimization');
     setDeploymentResult(null);
+  };
+
+  const handleInputSubmit = (
+    nextBrowserAccessPolicy?: DeploymentBrowserAccessPolicy,
+  ) => {
+    setBrowserAccessPolicy(nextBrowserAccessPolicy);
+    setCurrentStep('optimization');
   };
 
   if (!isOpen) return null;
@@ -126,6 +162,9 @@ export function DeploymentFlowModal({
     }
   };
 
+  const stepNumber =
+    currentStep === 'input' ? 1 : currentStep === 'optimization' ? 2 : 3;
+
   return (
     <div
       role="dialog"
@@ -139,22 +178,28 @@ export function DeploymentFlowModal({
           (deploymentType === 'api' || deploymentType === 'webhook') &&
           currentStep === 'success'
             ? 'max-w-6xl'
-            : 'max-w-lg'
+            : currentStep === 'optimization'
+              ? 'max-w-2xl'
+              : 'max-w-lg'
         }`}
       >
         {/* Compact Step Indicator - Top Right Corner */}
         <div className="absolute top-4 right-4 z-10">
           <div className="bg-blue-50 border border-blue-200 rounded-full px-3 py-1 flex items-center gap-2">
             <span className="text-xs font-semibold text-blue-700">
-              {currentStep === 'input' ? 'Step 1/2' : 'Step 2/2'}
+              {stepNumber}/3
             </span>
             <div className="flex items-center gap-1">
-              <div
-                className={`w-1.5 h-1.5 rounded-full ${currentStep === 'input' ? 'bg-blue-600' : 'bg-gray-300'}`}
-              />
-              <div
-                className={`w-1.5 h-1.5 rounded-full ${currentStep === 'success' || currentStep === 'error' ? 'bg-blue-600' : 'bg-gray-300'}`}
-              />
+              {['input', 'optimization', 'result'].map((step, index) => (
+                <div
+                  key={step}
+                  className={`h-1.5 w-1.5 rounded-full ${
+                    index < stepNumber
+                      ? 'bg-blue-600'
+                      : 'bg-gray-300'
+                  }`}
+                />
+              ))}
             </div>
           </div>
         </div>
@@ -192,6 +237,19 @@ export function DeploymentFlowModal({
                     : current.filter((_, originIndex) => originIndex !== index),
                 )
               }
+              onCancel={onClose}
+              onSubmit={handleInputSubmit}
+              isDeploying={isDeploying}
+              submitLabel="다음"
+            />
+          )}
+
+          {currentStep === 'optimization' && (
+            <ParameterOptimizationStep
+              nodes={llmNodes}
+              value={parameterOptimization}
+              onChange={setParameterOptimization}
+              onBack={() => setCurrentStep('input')}
               onCancel={onClose}
               onSubmit={handleSubmit}
               isDeploying={isDeploying}

@@ -50,11 +50,38 @@ export interface OutputSchema {
   outputs: OutputVariable[];
 }
 
+export interface DeploymentParameterOptimizationConfig {
+  enabled: boolean;
+  node_ids: string[];
+  check_every_runs: number;
+  monthly_validation_budget_usd: number;
+}
+
+export type DeploymentParameterOptimizationStatus =
+  | 'disabled'
+  | 'collecting'
+  | 'ready'
+  | 'paused'
+  | 'budget_exhausted'
+  | 'failed';
+
+export interface DeploymentParameterOptimizationSummary {
+  enabled: boolean;
+  status: DeploymentParameterOptimizationStatus;
+  node_ids: string[];
+  node_count: number;
+  collected_runs: number;
+  check_every_runs: number;
+  validation_spend_usd: number;
+  monthly_validation_budget_usd: number;
+}
+
 export interface DeploymentBase {
   type: DeploymentType;
   url_slug?: string;
   description?: string | null;
   config?: Record<string, any>;
+  parameter_optimization?: DeploymentParameterOptimizationConfig | null;
   is_active: boolean;
   browser_access_policy?: DeploymentBrowserAccessPolicy | null;
 }

@@ -42,6 +42,10 @@ from apps.gateway.services.model_routing_preview_service import (
 from apps.gateway.services.llm_service import LLMService
 from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
 from apps.gateway.services.deployment_service import DeploymentService
+from apps.gateway.services.deployment_parameter_optimization_service import (
+    DeploymentParameterOptimizationBudgetExceeded,
+    DeploymentParameterOptimizationService,
+)
 from apps.gateway.services.workflow_service import WorkflowService
 from apps.shared.audit.actions import AuditAction
 from apps.shared.celery_app import celery_app
@@ -819,6 +823,55 @@ def _active_deployment_for_workflow(
         .order_by(WorkflowDeployment.created_at.desc())
         .first()
     )
+
+
+def _test_routing_policy_context(
+    db: Session,
+    *,
+    workflow: Workflow,
+    graph: dict[str, Any],
+) -> dict[str, Any]:
+    """현재 draft와 같은 LLM node에만 활성 배포 정책을 테스트로 연결한다.
+
+    테스트 실행은 deployment run이 아니므로 ``deployment_id``를 넣지 않는다.
+    이 별도 context는 runtime policy lookup에만 쓰이며 run 집계/갱신 작업은
+    기존 ``deployment_id`` 기준을 계속 사용한다.
+    """
+    deployment = _active_deployment_for_workflow(db, workflow)
+    if deployment is None or not isinstance(deployment.graph_snapshot, dict):
+        return {}
+
+    deployed_nodes = {
+        str(node.get("id")): node
+        for node in deployment.graph_snapshot.get("nodes", [])
+        if isinstance(node, dict) and node.get("type") == "llmNode"
+    }
+    matching_node_ids: list[str] = []
+    for node in graph.get("nodes", []):
+        if not isinstance(node, dict) or node.get("type") != "llmNode":
+            continue
+        node_id = str(node.get("id") or "")
+        node_data = node.get("data")
+        deployed_node = deployed_nodes.get(node_id)
+        deployed_data = deployed_node.get("data") if deployed_node else None
+        if (
+            not node_id
+            or not isinstance(node_data, dict)
+            or not isinstance(deployed_data, dict)
+            or not node_data.get("auto_model_routing")
+            or not deployed_data.get("auto_model_routing")
+        ):
+            continue
+        if _node_config_fingerprint(node_data) == _node_config_fingerprint(deployed_data):
+            matching_node_ids.append(node_id)
+
+    if not matching_node_ids:
+        return {}
+    return {
+        "routing_policy_deployment_id": str(deployment.id),
+        "routing_policy_preview_node_ids": matching_node_ids,
+        "routing_policy_preview": True,
+    }
 
 
 def _model_routing_policy_response(
@@ -4808,6 +4861,14 @@ def _verify_cost_optimizer_recommendations(
             candidate,
         )
         baseline = get_cost_optimizer_latest_operation_baseline(db, workflow, node_id)
+        try:
+            DeploymentParameterOptimizationService.ensure_validation_budget_available(
+                db,
+                deployment_id=baseline.get("deployment_id"),
+                node_id=node_id,
+            )
+        except DeploymentParameterOptimizationBudgetExceeded as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
     except HTTPException as exc:
         if exc.detail == "cost_optimizer.recommendation_stale":
             response = _cost_optimizer_stale_verification_response(
@@ -4887,13 +4948,12 @@ def _verify_cost_optimizer_recommendations(
         candidate_cost = _cost_optimizer_usage_number(candidate_usage, "cost", "total_cost")
         judge_cost = quality_evaluation.get("judge_cost")
         judge_cost = float(judge_cost) if isinstance(judge_cost, (int, float)) else None
-        total_new_cost = (
-            candidate_cost + judge_cost
-            if candidate_cost is not None and judge_cost is not None
-            else candidate_cost
-            if candidate_cost is not None and quality_evaluation.get("status") == "unavailable"
-            else None
-        )
+        known_new_costs = [
+            cost
+            for cost in (candidate_cost, judge_cost)
+            if cost is not None
+        ]
+        total_new_cost = sum(known_new_costs) if known_new_costs else None
         metrics = {
             "cost": _cost_optimizer_metric_comparison(
                 _cost_optimizer_usage_number(baseline_usage, "cost", "total_cost"),
@@ -4982,6 +5042,12 @@ def _verify_cost_optimizer_recommendations(
                 "recommendation_fingerprint": current_recommendation_fingerprint,
             },
         }
+        DeploymentParameterOptimizationService.record_validation_spend(
+            db,
+            deployment_id=baseline.get("deployment_id"),
+            node_id=node_id,
+            amount_usd=total_new_cost,
+        )
         CostOptimizerRecommendationVerificationService.complete(
             db,
             record=verification,
@@ -6040,6 +6106,7 @@ async def stream_workflow(
     content_type = request.headers.get("content-type", "")
     user_input = {}
     graph_snapshot = None
+    use_active_deployment_routing_policy = False
 
     if "multipart/form-data" in content_type:
         # FormData 파싱
@@ -6066,6 +6133,10 @@ async def stream_workflow(
             str(form.get("memory_mode", user_input.pop("memory_mode", ""))).lower()
             == "true"
         )
+        use_active_deployment_routing_policy = (
+            str(form.get("use_active_deployment_routing_policy", "")).lower()
+            == "true"
+        )
     else:
         # JSON 방식 (기존)
         try:
@@ -6076,6 +6147,9 @@ async def stream_workflow(
                 raw_inputs = body.get("inputs", {})
                 user_input = raw_inputs if isinstance(raw_inputs, dict) else {}
                 graph_snapshot = body.get("graph_snapshot")
+                use_active_deployment_routing_policy = bool(
+                    body.get("use_active_deployment_routing_policy", False)
+                )
             else:
                 user_input = body if isinstance(body, dict) else {}
 
@@ -6120,6 +6194,10 @@ async def stream_workflow(
         "request_id": _request_id_from_request(request),
         "correlation_id": request.headers.get("x-correlation-id"),
     }
+    if use_active_deployment_routing_policy:
+        execution_context.update(
+            _test_routing_policy_context(db, workflow=workflow, graph=graph)
+        )
 
     # 6. Redis Pub/Sub 구독 및 SSE 스트리밍
     # Race Condition 방지: 구독 완료 후 Celery 태스크 시작

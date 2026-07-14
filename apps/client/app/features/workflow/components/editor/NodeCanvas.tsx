@@ -1588,6 +1588,12 @@ export default function NodeCanvas() {
         isOpen={showDeployFlowModal}
         onClose={() => setShowDeployFlowModal(false)}
         deploymentType={deploymentType}
+        llmNodes={nodes
+          .filter((node) => node.type === 'llmNode')
+          .map((node) => ({
+            id: node.id,
+            title: String(node.data?.title || 'LLM 노드'),
+          }))}
         onDeploy={handleDeploy}
       />
 

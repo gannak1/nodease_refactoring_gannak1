@@ -5,6 +5,7 @@ import type { DeploymentResult } from '../components/deployment/types';
 import type { AppNode } from '../types/Nodes';
 import type {
   DeploymentBrowserAccessPolicy,
+  DeploymentParameterOptimizationConfig,
   DeploymentType,
 } from '../types/Deployment';
 import { disabledBrowserAccessPolicy } from '../utils/browserAccessPolicy';
@@ -117,6 +118,7 @@ export function useDeployment({
   const handleDeploy = useCallback(
     async (
       description: string,
+      parameterOptimization: DeploymentParameterOptimizationConfig,
       browserAccessPolicy?: DeploymentBrowserAccessPolicy,
     ): Promise<DeploymentResult> => {
       try {
@@ -135,6 +137,7 @@ export function useDeployment({
           description,
           type: deploymentType,
           config: {},
+          parameter_optimization: parameterOptimization,
           is_active: true,
           ...(requestedBrowserAccessPolicy
             ? { browser_access_policy: requestedBrowserAccessPolicy }
@@ -164,6 +167,7 @@ export function useDeployment({
           app_id: activeWorkflow.appId,
           description,
           type: deploymentType,
+          parameter_optimization: parameterOptimization,
           is_active: true,
           ...(normalizedBrowserAccessPolicy
             ? { browser_access_policy: normalizedBrowserAccessPolicy }

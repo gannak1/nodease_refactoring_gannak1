@@ -44,6 +44,24 @@ export type ModuleOperationDeployment = {
   is_active?: boolean;
 };
 
+export type ModuleAutomaticOptimizationStatus =
+  | 'disabled'
+  | 'collecting'
+  | 'ready'
+  | 'paused'
+  | 'budget_exhausted'
+  | 'failed';
+
+export type ModuleAutomaticOptimizationSummary = {
+  enabled: boolean;
+  status: ModuleAutomaticOptimizationStatus;
+  node_count: number;
+  collected_runs: number;
+  check_every_runs: number;
+  validation_spend_usd: number;
+  monthly_validation_budget_usd: number;
+};
+
 export type ModuleOperationRow = {
   app: ModuleOperationAppSummary;
   permission?: WorkflowPermissionSummary;
@@ -52,6 +70,7 @@ export type ModuleOperationRow = {
   permissionError?: string;
   deployment: ModuleOperationDeployment;
   deploymentState: ModuleOperationDeployment['state'];
+  automaticOptimization?: ModuleAutomaticOptimizationSummary | null;
   latestRun: {
     state: ModuleRunState;
     started_at?: string;
@@ -87,6 +106,8 @@ type OperationsApiRow = {
   permission_sources?: ModulePermissionSource[];
   permissionSources?: ModulePermissionSource[];
   deployment?: ModuleOperationDeployment;
+  automatic_optimization?: ModuleAutomaticOptimizationSummary | null;
+  automaticOptimization?: ModuleAutomaticOptimizationSummary | null;
   latest_run?: ModuleOperationRow['latestRun'];
   latestRun?: ModuleOperationRow['latestRun'];
 };
@@ -111,6 +132,8 @@ const normalizeOperationsApiRow = (row: OperationsApiRow): ModuleOperationRow =>
     permissionError: row.permission_error || row.permissionError,
     deployment,
     deploymentState: deployment.state,
+    automaticOptimization:
+      row.automatic_optimization ?? row.automaticOptimization ?? null,
     latestRun,
     dataQuality: {
       permissionSourcesUnavailable: false,

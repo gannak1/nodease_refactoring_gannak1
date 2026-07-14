@@ -18,7 +18,6 @@ import {
   SlidersHorizontal,
   Sparkles,
   TrendingUp,
-  Users,
 } from 'lucide-react';
 
 import CreateAppModal from '@/app/features/app/components/create-app-modal';
@@ -43,16 +42,13 @@ import {
   getModuleRunDisabledReason,
 } from '@/app/features/app/utils/moduleRunNavigation';
 import { deploymentApiErrorMessage } from '@/app/features/workflow/utils/deploymentPreflightMessage';
-import {
-  OptimizationRecommendationModal as InlineOptimizationRecommendationModal,
-  type OptimizationRecommendationNode,
-} from '@/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal';
-import {
-  candidateFromOptions,
-  type BaselineNodeOptions,
-} from '@/app/features/workflow/components/costOptimizer/costOptimizerPlaygroundModel';
+import { AutomaticOptimizationManagementModal } from '@/app/features/workflow/components/deployment/AutomaticOptimizationManagementModal';
 import { apiClient } from '@/lib/apiClient';
 import { workflowApi } from '@/app/features/workflow/api/workflowApi';
+import type {
+  DeploymentParameterOptimizationConfig,
+  DeploymentParameterOptimizationSummary,
+} from '@/app/features/workflow/types/Deployment';
 import {
   DashboardPageHeader,
   DashboardPanel,
@@ -112,6 +108,84 @@ const formatCurrency = (value?: number | null) => {
     maximumFractionDigits: 3,
   })}`;
 };
+
+const formatValidationBudget = (value: number) => `$${value.toFixed(2)}`;
+
+const automaticOptimizationStatusLabel = {
+  collecting: '수집 중',
+  ready: '점검 대기',
+  paused: '일시 중지',
+  budget_exhausted: '월 예산 도달',
+  failed: '점검 실패',
+  disabled: '미사용',
+} as const;
+
+function AutomaticOptimizationCell({
+  summary,
+  hasDeployment,
+  canManage,
+  isLoading,
+  onManage,
+}: {
+  summary: ModuleOperationRow['automaticOptimization'];
+  hasDeployment: boolean;
+  canManage: boolean;
+  isLoading: boolean;
+  onManage: () => void;
+}) {
+  if (!hasDeployment) {
+    return (
+      <span className="text-xs font-medium text-slate-400">배포 후 설정</span>
+    );
+  }
+
+  const isEnabled = Boolean(summary?.enabled);
+  const status = summary?.status || 'disabled';
+  const collectedRuns = summary?.collected_runs || 0;
+  const checkEveryRuns = summary?.check_every_runs || 50;
+  const spend = summary?.validation_spend_usd || 0;
+  const monthlyBudget = summary?.monthly_validation_budget_usd || 3;
+  const showStatusBadge = !isEnabled || status !== 'collecting';
+
+  return (
+    <>
+      {showStatusBadge && (
+        <Badge
+          className={
+            isEnabled
+              ? status === 'budget_exhausted' || status === 'failed'
+                ? 'border-amber-200 bg-amber-50 text-amber-700'
+                : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+              : 'border-slate-200 bg-slate-50 text-slate-600'
+          }
+        >
+          {automaticOptimizationStatusLabel[status]}
+        </Badge>
+      )}
+      {isEnabled && (
+        <>
+          <span className="text-xs font-medium text-slate-700">
+            {status === 'collecting'
+              ? `수집 중 ${collectedRuns} / ${checkEveryRuns}회`
+              : `수집 ${Math.min(collectedRuns, checkEveryRuns)} / ${checkEveryRuns}회`}
+          </span>
+          <span className="text-xs text-slate-500">
+            월 검증 {formatValidationBudget(spend)} /{' '}
+            {formatValidationBudget(monthlyBudget)}
+          </span>
+        </>
+      )}
+      <button
+        type="button"
+        onClick={onManage}
+        disabled={!canManage || isLoading}
+        className="w-fit rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+      >
+        {isLoading ? '불러오는 중' : '관리'}
+      </button>
+    </>
+  );
+}
 
 type CostOptimizationSignal = {
   monthlyCost: number | null;
@@ -187,62 +261,10 @@ const costSignalOf = (row: ModuleOperationRow): CostOptimizationSignal => {
   };
 };
 
-type LlmOptimizationNode = OptimizationRecommendationNode;
-
-const extractWorkflowNodes = (
-  workflow: unknown,
-): Array<Record<string, unknown>> => {
-  if (!workflow || typeof workflow !== 'object') return [];
-
-  const candidate = workflow as {
-    nodes?: unknown;
-    graph?: { nodes?: unknown };
-  };
-  const nodes = candidate.nodes || candidate.graph?.nodes || [];
-
-  return Array.isArray(nodes)
-    ? nodes.filter((node): node is Record<string, unknown> =>
-        Boolean(node && typeof node === 'object'),
-      )
-    : [];
-};
-
-const extractLlmOptimizationNodes = (
-  workflow: unknown,
-): LlmOptimizationNode[] =>
-  extractWorkflowNodes(workflow)
-    .filter((node) => node.type === 'llmNode')
-    .map((node) => {
-      const data =
-        node.data && typeof node.data === 'object'
-          ? (node.data as Record<string, unknown>)
-          : {};
-
-      return {
-        id: String(node.id || ''),
-        title: String(data.title || 'LLM 노드'),
-        candidateDraft: candidateFromOptions(data as BaselineNodeOptions),
-      };
-    })
-    .filter((node) => node.id);
-
 type OrganizationResponse = {
   id: string;
   name: string;
   is_manager?: boolean;
-};
-
-const sourceLabelOf = (row: ModuleOperationRow) => {
-  if (!row.app.workflow_id) return '권한 확인 대기';
-  if (row.permissionSources.length === 0) return '권한 출처 없음';
-
-  const [firstSource, ...rest] = row.permissionSources;
-  const sourceName =
-    firstSource.type === 'user'
-      ? '개인 직접 권한'
-      : firstSource.team_name || '권한 출처';
-
-  return rest.length > 0 ? `${sourceName} 외 ${rest.length}개` : sourceName;
 };
 
 const canEditApp = (row: ModuleOperationRow, isOrgManager: boolean) =>
@@ -283,17 +305,14 @@ export default function MyModulePage() {
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState('');
-  const [optimizationTarget, setOptimizationTarget] =
+  const [automaticOptimizationTarget, setAutomaticOptimizationTarget] =
     useState<ModuleOperationRow | null>(null);
-  const [optimizationNodes, setOptimizationNodes] = useState<
-    LlmOptimizationNode[]
-  >([]);
-  const [isResolvingOptimizationId, setIsResolvingOptimizationId] = useState<
+  const [automaticOptimizationSummary, setAutomaticOptimizationSummary] =
+    useState<DeploymentParameterOptimizationSummary | null>(null);
+  const [isLoadingAutomaticOptimizationId, setIsLoadingAutomaticOptimizationId] =
+    useState<
     string | null
   >(null);
-  const [appliedOptimizationIds, setAppliedOptimizationIds] = useState<
-    Record<string, string[]>
-  >({});
   const requestSeqRef = useRef(0);
 
   const buildListParams = useCallback(
@@ -450,40 +469,48 @@ export default function MyModulePage() {
     }
   };
 
-  const handleMarkOptimizationRecommendationsForReview = (
-    row: ModuleOperationRow,
-    recommendationIds: string[],
-  ) => {
-    setAppliedOptimizationIds((current) => ({
-      ...current,
-      [row.app.id]: recommendationIds,
-    }));
-    setOptimizationTarget(null);
-    setOptimizationNodes([]);
-  };
-
-  const handleOpenOptimizationModal = async (row: ModuleOperationRow) => {
-    if (!row.app.workflow_id) {
-      alert('연결된 workflow가 없어 LLM 노드 최적화 대상을 확인할 수 없습니다.');
+  const handleManageAutomaticOptimization = async (row: ModuleOperationRow) => {
+    const deploymentId = row.deployment.deployment_id;
+    if (!deploymentId) {
+      alert('배포된 workflow에서만 자동 최적화를 관리할 수 있습니다.');
       return;
     }
 
-    setIsResolvingOptimizationId(row.app.id);
+    setIsLoadingAutomaticOptimizationId(row.app.id);
     try {
-      const workflow = await workflowApi.getDraftWorkflow(row.app.workflow_id);
-      const llmNodes = extractLlmOptimizationNodes(workflow);
-
-      if (llmNodes.length === 0) {
-        alert('이 workflow에는 최적화할 LLM 노드가 없습니다.');
-        return;
-      }
-
-      setOptimizationNodes(llmNodes);
-      setOptimizationTarget(row);
+      const summary = await workflowApi.getDeploymentParameterOptimization(
+        deploymentId,
+      );
+      setAutomaticOptimizationSummary(summary);
+      setAutomaticOptimizationTarget(row);
     } catch {
-      alert('workflow의 LLM 노드 정보를 불러오지 못했습니다.');
+      alert('자동 최적화 설정을 불러오지 못했습니다.');
     } finally {
-      setIsResolvingOptimizationId(null);
+      setIsLoadingAutomaticOptimizationId(null);
+    }
+  };
+
+  const handleSaveAutomaticOptimization = async (
+    config: DeploymentParameterOptimizationConfig,
+  ) => {
+    if (!automaticOptimizationTarget?.deployment.deployment_id) return;
+
+    try {
+      const summary = await workflowApi.updateDeploymentParameterOptimization(
+        automaticOptimizationTarget.deployment.deployment_id,
+        config,
+      );
+      setRows((currentRows) =>
+        currentRows.map((row) =>
+          row.app.id === automaticOptimizationTarget.app.id
+            ? { ...row, automaticOptimization: summary }
+            : row,
+        ),
+      );
+      setAutomaticOptimizationSummary(summary);
+      setAutomaticOptimizationTarget(null);
+    } catch {
+      alert('자동 최적화 설정 저장에 실패했습니다.');
     }
   };
 
@@ -555,7 +582,7 @@ export default function MyModulePage() {
             description="사용률 80% 이상"
           />
           <DashboardSummaryCard
-            label="최적화 권장"
+            label="비용 위험 신호"
             value={`${summary.recommendedCount}개`}
             icon={Sparkles}
             iconClassName="text-violet-600"
@@ -652,7 +679,7 @@ export default function MyModulePage() {
                     <th className="w-[13%] px-4 py-3">월 예상 비용</th>
                     <th className="w-[13%] px-4 py-3">증가 추세</th>
                     <th className="w-[14%] px-4 py-3">예산 사용률</th>
-                    <th className="w-[14%] px-4 py-3">최적화</th>
+                    <th className="w-[14%] px-4 py-3">자동 최적화</th>
                     <th className="w-[11%] px-4 py-3">상태</th>
                     <th className="w-[14%] px-5 py-3 text-right">작업</th>
                   </tr>
@@ -666,12 +693,11 @@ export default function MyModulePage() {
                       onOpen={() => handleModuleClick(row)}
                       onEdit={() => handleEditApp(row)}
                       onToggleDeployment={() => handleToggleDeployment(row)}
-                      onOptimize={() => handleOpenOptimizationModal(row)}
-                      isResolvingOptimization={
-                        isResolvingOptimizationId === row.app.id
+                      onManageAutomaticOptimization={() =>
+                        handleManageAutomaticOptimization(row)
                       }
-                      appliedOptimizationCount={
-                        appliedOptimizationIds[row.app.id]?.length || 0
+                      isLoadingAutomaticOptimization={
+                        isLoadingAutomaticOptimizationId === row.app.id
                       }
                       isOrgManager={isOrgManager}
                     />
@@ -720,22 +746,15 @@ export default function MyModulePage() {
         />
       )}
 
-      {optimizationTarget && (
-        <InlineOptimizationRecommendationModal
-          workflowId={optimizationTarget.app.workflow_id || ''}
-          workflowName={optimizationTarget.app.name}
-          llmNodes={optimizationNodes}
-          appliedIds={appliedOptimizationIds[optimizationTarget.app.id] || []}
+      {automaticOptimizationTarget && automaticOptimizationSummary && (
+        <AutomaticOptimizationManagementModal
+          workflowName={automaticOptimizationTarget.app.name}
+          summary={automaticOptimizationSummary}
           onClose={() => {
-            setOptimizationTarget(null);
-            setOptimizationNodes([]);
+            setAutomaticOptimizationTarget(null);
+            setAutomaticOptimizationSummary(null);
           }}
-          onMarkForReview={(recommendationIds) =>
-            handleMarkOptimizationRecommendationsForReview(
-              optimizationTarget,
-              recommendationIds,
-            )
-          }
+          onSave={handleSaveAutomaticOptimization}
         />
       )}
     </div>
@@ -781,9 +800,8 @@ function ModuleOperationTableRow({
   onOpen,
   onEdit,
   onToggleDeployment,
-  onOptimize,
-  isResolvingOptimization,
-  appliedOptimizationCount,
+  onManageAutomaticOptimization,
+  isLoadingAutomaticOptimization,
   isOrgManager,
 }: {
   row: ModuleOperationRow;
@@ -791,9 +809,8 @@ function ModuleOperationTableRow({
   onOpen: () => void;
   onEdit: () => void;
   onToggleDeployment: () => void;
-  onOptimize: () => void;
-  isResolvingOptimization: boolean;
-  appliedOptimizationCount: number;
+  onManageAutomaticOptimization: () => void;
+  isLoadingAutomaticOptimization: boolean;
   isOrgManager: boolean;
 }) {
   const deploymentState = row.deploymentState;
@@ -912,35 +929,13 @@ function ModuleOperationTableRow({
       </td>
       <td className="px-4 py-4 align-top">
         <div className="flex flex-col gap-2">
-          {costSignal.recommended ? (
-            <button
-              type="button"
-              onClick={onOptimize}
-              disabled={isResolvingOptimization}
-              className="inline-flex w-fit items-center gap-1.5 rounded-md border border-violet-200 bg-violet-50 px-2 py-1 text-left text-xs font-semibold text-violet-700 transition-colors hover:border-violet-300 hover:bg-violet-100 disabled:cursor-wait disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
-            >
-              <Sparkles
-                className={`h-3.5 w-3.5 ${
-                  isResolvingOptimization ? 'animate-pulse' : ''
-                }`}
-              />
-              {isResolvingOptimization ? '확인 중' : '최적화 권장'}
-            </button>
-          ) : (
-            <Badge className="border-slate-200 bg-slate-50 text-slate-600">
-              {row.deploymentState === 'active' ? '안정 범위' : '대상 아님'}
-            </Badge>
-          )}
-          {appliedOptimizationCount > 0 && (
-            <span className="w-fit rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700">
-              추천 {appliedOptimizationCount}개 반영됨
-            </span>
-          )}
-          <span className="text-xs text-slate-500">{costSignal.reason}</span>
-          <span className="inline-flex items-center gap-1 text-xs text-slate-500">
-            <Users className="h-3.5 w-3.5" />
-            {sourceLabelOf(row)}
-          </span>
+          <AutomaticOptimizationCell
+            summary={row.automaticOptimization}
+            hasDeployment={Boolean(row.deployment.deployment_id)}
+            canManage={canToggle}
+            isLoading={isLoadingAutomaticOptimization}
+            onManage={onManageAutomaticOptimization}
+          />
         </div>
       </td>
       <td className="px-4 py-4 align-top">
