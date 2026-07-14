@@ -37,6 +37,40 @@ class FailingSchemaInspector:
         raise RuntimeError("secret raw database failure")
 
 
+class ResetRecorderQuery:
+    def __init__(self, session, target):
+        self.session = session
+        self.target = target
+
+    def filter(self, *criteria):
+        self.session.filter_criteria.setdefault(self.target, []).extend(criteria)
+        return self
+
+    def all(self):
+        return []
+
+    def delete(self, **_kwargs):
+        self.session.deleted_targets.append(self.target)
+
+    def update(self, *_args, **_kwargs):
+        return None
+
+
+class ResetRecorderSession:
+    def __init__(self):
+        self.deleted_targets = []
+        self.filter_criteria = {}
+
+    def query(self, target):
+        return ResetRecorderQuery(self, target)
+
+    def flush(self):
+        return None
+
+    def commit(self):
+        return None
+
+
 def write_minimal_demo_fixture(
     fixture_path,
     *,
@@ -702,6 +736,45 @@ def test_demo_seed_prepares_runtime_credential_before_seed(monkeypatch):
     seed_demo_script.main()
 
     assert events == ["prepare", "prerequisites", "schema", "seed", "close"]
+
+
+@pytest.mark.parametrize(
+    ("reset_function", "organization_id", "adopt_function", "seed_function"),
+    [
+        (
+            demo_seed.reset_demo_data,
+            demo_seed.ORG_ID,
+            "_adopt_existing_demo_user_ids",
+            "seed_demo_data",
+        ),
+        (
+            demo_seed.reset_test_data,
+            demo_seed.TEST_ORG_ID,
+            "_adopt_existing_test_user_ids",
+            "seed_test_data",
+        ),
+    ],
+)
+def test_profile_reset_deletes_agent_builder_sessions_before_organization(
+    monkeypatch,
+    reset_function,
+    organization_id,
+    adopt_function,
+    seed_function,
+):
+    db = ResetRecorderSession()
+    monkeypatch.setattr(demo_seed, "validate_demo_seed_prerequisites", lambda: None)
+    monkeypatch.setattr(demo_seed, adopt_function, lambda _db: None)
+    monkeypatch.setattr(demo_seed, seed_function, lambda _db: None)
+
+    reset_function(db)
+
+    session_delete_index = db.deleted_targets.index(demo_seed.AgentBuilderSession)
+    organization_delete_index = db.deleted_targets.index(demo_seed.Organization)
+    assert session_delete_index < organization_delete_index
+    session_condition = db.filter_criteria[demo_seed.AgentBuilderSession][0].compile()
+    assert "agent_builder_sessions.organization_id" in str(session_condition)
+    assert list(session_condition.params.values()) == [organization_id]
 
 
 def test_demo_runtime_credential_grants_agent_builder_user_permission(monkeypatch):
