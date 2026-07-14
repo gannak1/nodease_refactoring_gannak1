@@ -1,7 +1,7 @@
 # Cost Optimizer Component Spec
 
 Status: Draft
-Verified Against: feature/mba-198 @ 92669f3
+Verified Against: feature/mba-198 @ 40c45fcc
 
 ## Purpose
 
@@ -441,7 +441,7 @@ LLM 노드 상세 화면은 자동 모델 라우팅을 별도 route가 아니라
 
 자동 라우팅 토글과 점검 주기 slider는 local draft만 바꾸지 않는다. 사용자가 토글을 바꾸거나 slider 조작을 마치면 `PATCH /model-routing/policy`로 `enabled`, `refresh_every_runs`, `validation_budget_usd`, `max_cohorts`를 저장한다. 현재 배포가 없거나 현재 deployment snapshot에 자동 라우팅 ON 설정이 포함되지 않은 경우에는 draft 설정은 저장되지만 policy panel은 `collecting`으로 남고, 해당 설정을 포함해 다시 배포한 뒤 target LLM node가 성공한 terminal 운영 workflow 완료가 policy row를 생성한다.
 
-자동 라우팅이 켜진 노드를 다시 배포하면, 화면은 새 deployment에 복제된 policy와 입력군을 바로 조회한다. 따라서 같은 node를 재배포한 직후에도 `입력군 관리` 목록, 검증된 기본 모델, `직접 입력군 추가` 액션은 이전 version 상태를 이어서 표시한다. 단 `정책 갱신 기준`의 누적 실행 수는 새 배포의 운영 로그만 세므로 `0/{refresh_every_runs}회`부터 다시 표시한다.
+자동 라우팅이 켜진 노드를 다시 배포하면, 화면은 새 deployment snapshot의 LLM 설정 지문과 이전 cohort/evidence 지문이 모두 같을 때만 복제된 policy와 입력군을 조회한다. 따라서 같은 설정을 재배포한 직후에는 `입력군 관리` 목록, 검증된 기본 모델, `직접 입력군 추가` 액션이 이전 version 상태를 이어서 표시한다. 모델·prompt·RAG 등 실행 설정이 달라지면 이전 근거를 이어서 표시하지 않고 새 deployment에서 다시 수집한다. 어느 경우든 `정책 갱신 기준`의 누적 실행 수는 새 배포의 운영 로그만 세므로 `0/{refresh_every_runs}회`부터 다시 표시한다.
 
 자동 라우팅 ON panel에는 입력군 제어 영역을 추가한다.
 
@@ -451,7 +451,7 @@ LLM 노드 상세 화면은 자동 모델 라우팅을 별도 route가 아니라
 - 입력군 목록: 한국어 이름, 변수명, source(`직접 등록`/`자동 발견`), 합성 `대표 문의`, 관찰 수, lifecycle, 고정 여부, 검증된 기본 모델 또는 `검증 대기`를 표시한다. 대표 문의가 없는 자동 발견 입력군은 `대표 문의를 준비 중입니다.`라고 표시한다. 검증된 기본 모델은 읽기 전용이며 사용자가 직접 고르지 않는다.
 - 직접 등록: 대표 문의를 입력하고 `입력군 마법사`를 누르면 한국어 이름과 영문 변수명 초안을 채운다. 사용자는 두 값을 수정하고 `입력군 고정` 여부를 정한 뒤 `입력군 추가`를 누른다.
 - 직접 등록 입력군: `수정` 액션으로 대표 문의, 한국어 이름, 변수명, 고정 여부를 다시 편집할 수 있다. 저장 전 화면은 대표 문의 변경이 기존 검증을 무효화하고 재검증 대기로 바꾼다는 경고를 보여준다.
-- 자동 발견 입력군: 원본을 직접 수정하지 않는다. `사용자 입력군으로 전환` 액션은 현재 이름/key/대표 문의를 새 직접 등록 form에 복사한다. 자동 입력군의 대표 문의가 아직 없으면 사용자가 대표 문의를 입력한 뒤 등록해야 한다.
+- 자동 발견 입력군: 원본을 직접 수정하지 않는다. `사용자 입력군으로 전환` 액션은 같은 cohort row를 `manual`로 전환하고 현재 이름/key/대표 문의를 수정 form에 채운다. 저장 시 기존 route, observation, evidence를 재검증 대상으로 초기화한다. 자동 입력군의 대표 문의가 아직 없으면 사용자가 대표 문의를 입력한 뒤 전환해야 한다.
 - 입력군 고정: 고정된 입력군은 traffic이 줄어도 자동 휴면/종료 처리하지 않는다. 고정하지 않은 직접 등록 입력군은 lifecycle 정책을 따른다.
 - 삭제: safety-protected 입력군을 제외한 입력군은 `삭제`할 수 있다. 삭제는 DB 이력을 물리적으로 지우지 않고 `retired`로 전환하며, 이후 요청은 전체 기본 정책으로 처리한다.
 - 직접 등록은 policy row가 생성된 뒤에만 활성화한다. 첫 배포 운영 실행 전에는 대표 문장 embedding과 policy 연결을 할 수 없으므로 disabled 안내를 표시한다.

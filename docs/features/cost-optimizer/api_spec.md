@@ -1,7 +1,7 @@
 # Cost Optimizer API Spec
 
 Status: Draft
-Verified Against: feature/mba-198 @ 92669f3
+Verified Against: feature/mba-198 @ 40c45fcc
 
 ## Purpose
 
@@ -54,6 +54,7 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts/suggest` | 대표 문의로 입력군 이름/영문 key 초안 생성 | FR-011 | builder 이상 |
 | POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts` | 사용자가 확정한 직접 입력군 생성 | FR-011 | builder 이상 |
 | PATCH | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts/{cohort_id}` | 직접 입력군의 이름/key/대표 문의/고정 여부를 수정하고 재검증 대기로 전환 | FR-011 | builder 이상 |
+| POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts/{cohort_id}/convert-to-manual` | 자동 발견 입력군의 같은 row를 사용자 입력군으로 전환하고 재검증 대기로 전환 | FR-011 | builder 이상 |
 | DELETE | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts/{cohort_id}` | 직접/자동 입력군을 retired로 전환하고 이후 라우팅에서 제외 | FR-011 | builder 이상 |
 | GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/analysis` | **계획**: 라우팅 적합성, candidate gate 결과, evidence gap, 예상 순절감 safe summary 조회 | FR-011 | builder 이상 |
 | GET | `/api/v1/deployments/{deployment_id}/parameter-optimization` | 배포별 자동 파라미터 최적화의 대상 노드 수, 운영 수집 수, 점검 상태, 월간 검증 예산/사용액 조회 | FR-014 | workflow read |
@@ -119,7 +120,7 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | cohort label/key/lifecycle, centroid, 대표 예문 | run event, 운영 observation, 진행 중 validation batch |
 | cohort별 검증 완료 model evidence와 safe quality/efficiency summary | 이전 deployment의 월간 검증 사용량과 예약 비용 |
 
-복제된 policy의 `semantic_router.routes[].cohort_id`와 rule의 `when.semantic_cohort_id`는 새 cohort row ID로 재작성한다. 따라서 새 deployment의 `GET /model-routing/policy`와 cohort API는 이전 version의 상태를 참조하지 않고 새 version에 귀속된 동일한 routing 상태를 반환한다.
+상속은 이전 cohort/evidence의 `node_config_fingerprint`가 새 deployment snapshot의 같은 LLM node fingerprint와 모두 일치할 때만 허용한다. 모델, prompt, RAG, 출력 형식 등 실행 설정이 달라지면 이전 policy/evidence는 복제하지 않고 새 deployment에서 다시 수집·검증한다. 복제된 policy의 `semantic_router.routes[].cohort_id`와 rule의 `when.semantic_cohort_id`는 새 cohort row ID로 재작성한다. 따라서 새 deployment의 `GET /model-routing/policy`와 cohort API는 이전 version의 상태를 참조하지 않고 새 version에 귀속된 동일한 routing 상태를 반환한다.
 
 ### Routing Preview Contract
 
@@ -651,10 +652,13 @@ Replay gate를 통과해야만 active routing rule로 승격된다. policy row�
 `PATCH /model-routing/cohorts/{cohort_id}`는 `POST`와 같은
 `representative_query`, `label`, `key`, `fixed` body를 받는다. `source=manual`만
 수정할 수 있다. 수정은 대표 문의를 다시 embedding하고 기존 evidence를 `expired`로
-바꾸며, 기존 active policy의 해당 cohort rule을 제거한다. 따라서 응답의 cohort는
+바꾸며, 기존 active policy의 해당 cohort UUID rule을 제거한다. 수정 전 observation은
+`matched_cohort_id=null`, `match_status=unmatched`로 되돌린다. 따라서 응답의 cohort는
 `status=proposed`이며 새 운영 관찰과 Replay 검증을 거쳐야 다시 route에 참여한다.
 `source=auto` 수정 요청은 `409 model_routing.cohort_auto_read_only`를 반환한다. 자동
-입력군은 클라이언트에서 값을 복사해 새 manual cohort로 등록해야 한다.
+입력군은 `POST /model-routing/cohorts/{cohort_id}/convert-to-manual`로 같은 cohort row를
+`manual`로 전환한다. 전환도 기존 route와 관찰·evidence를 재검증 대상으로 초기화하므로
+중복 key를 가진 새 row를 만들지 않는다.
 
 `PATCH /model-routing/policy`는 자동 라우팅의 공통 설정과 함께 아래 값을 받을 수 있다.
 

@@ -2,7 +2,7 @@
 
 Status: Draft
 Related Features: workflow, llm-credentials, observability
-Verified Against: feature/mba-198 @ 92669f3
+Verified Against: feature/mba-198 @ 40c45fcc
 
 ## Purpose
 
@@ -833,7 +833,7 @@ Cost Optimizer는 LLM 노드가 배포 후 운영 실행에서 모델을 자동 
 
 정책 저장 source of truth는 `llm_node_model_routing_policies`다. 이 row는 active policy, pending policy, 정책 버전, 설정된 갱신 횟수, 마지막 갱신 시각과 누적 운영 실행 수를 가진다. LLM node data의 `model_routing_policy` JSON은 이전 draft/Cost Optimizer candidate 호환용 snapshot일 뿐, 일반 배포 실행의 정책 기준이 아니다.
 
-자동 모델 라우팅이 켜진 동일 LLM node를 새 deployment version으로 다시 배포하면, 새 배포는 이전 활성 배포의 active policy, 입력군, 대표 예문, 검증 완료 모델 evidence를 이어받아야 한다. 이때 policy 안의 semantic cohort ID 참조도 새 입력군 row ID로 다시 연결해야 한다. 반면 이전 배포에서 누적한 운영 실행 수, refresh 진행 상태, run event, 운영 관찰값, 월간 Replay/Judge 검증 비용은 새 배포의 운영 이력이 아니므로 복사하지 않고 새 버전에서 0부터 다시 기록한다. 이 규칙은 새 배포 직후 입력군 목록과 직접 입력군 추가 기능이 비어 보이지 않게 하면서, 예전 버전의 실행 수로 새 버전의 정책 갱신이 조기에 예약되는 문제를 막는다.
+자동 모델 라우팅이 켜진 동일 LLM node를 새 deployment version으로 다시 배포하면, 이전 cohort/evidence의 node 설정 지문과 새 deployment snapshot의 LLM 설정 지문이 모두 같을 때만 이전 활성 배포의 active policy, 입력군, 대표 예문, 검증 완료 모델 evidence를 이어받아야 한다. 모델, prompt, RAG, 출력 형식처럼 실행 결과에 영향을 주는 설정이 달라졌다면 이전 정책을 복제하지 않고 새 버전에서 근거를 다시 수집·검증한다. 상속하는 경우 policy 안의 semantic cohort ID 참조도 새 입력군 row ID로 다시 연결해야 한다. 반면 이전 배포에서 누적한 운영 실행 수, refresh 진행 상태, run event, 운영 관찰값, 월간 Replay/Judge 검증 비용은 새 배포의 운영 이력이 아니므로 복사하지 않고 새 버전에서 0부터 다시 기록한다. 이 규칙은 새 배포 직후 입력군 목록과 직접 입력군 추가 기능이 비어 보이지 않게 하면서, 예전 버전의 실행 수로 새 버전의 정책 갱신이 조기에 예약되는 문제를 막는다.
 
 배포된 graph snapshot에서 `auto_model_routing=true`인 LLM node에 아직 policy row가 없다면 첫 실행은 node에 저장된 `model_id`와 `fallback_model_id`를 보수적으로 사용한다. graph snapshot 안의 legacy `model_routing_policy` JSON은 이 시점에 평가하지 않는다. 첫 terminal 운영 workflow 완료 후 생성되는 bootstrap policy도 저장 `model_id`/`fallback_model_id`만 보존하고 rule은 빈 배열로 둔다. bootstrap 생성은 judge refresh가 아니며, `auto_n_runs` 또는 `manual_refresh`가 policy update row를 남기는 실제 정책 갱신이다.
 
