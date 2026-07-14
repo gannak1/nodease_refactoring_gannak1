@@ -1,7 +1,7 @@
 # PR CI 품질 게이트
 
 Status: Draft
-Verified Against: feature/mba-253 @ 8e61ed08
+Verified Against: feature/mba-253 @ eb269d62
 
 ## 목적
 
@@ -11,14 +11,14 @@ Coverage threshold는 MBA-192, Client 기존 ESLint warning 정리는 MBA-252, �
 
 ## 진입점
 
-PR 검증 진입점은 `.github/workflows/pr-quality-gate.yml`이다.
+PR 검증 진입점은 `.github/workflows/pr-quality-gate.yml`과 `.github/workflows/pr-ci-control-guard.yml`이다.
 
-- 모든 `pull_request`에 실행된다.
-- 같은 PR에 새 commit이 push되면 이전 실행을 취소한다.
-- repository content read 권한만 사용한다.
+- 품질 게이트는 모든 `pull_request`에 실행되며 repository content read 권한만 사용한다.
+- 신뢰 가드는 base 브랜치의 `pull_request_target` workflow로 실행되며 PR 코드를 checkout하거나 실행하지 않는다.
+- 신뢰 가드는 변경 파일, review, reviewer 권한만 GitHub API로 읽고 현재 PR head에 정책 status만 기록한다.
+- 같은 PR에 새 commit이 push되면 이전 실행을 취소하고 새 head를 다시 판정한다.
 - AWS credential, 배포 secret 또는 장기 credential을 요구하지 않는다.
-- `pull_request_target`을 사용하지 않는다.
-- 최종 required check 후보는 `PR Quality Gate / ci-required`다.
+- required check 후보는 `PR Quality Gate / ci-required`와 `trusted-ci-control/base-policy`다.
 
 실제 required check context는 workflow가 `dev`에 병합된 뒤 probe PR에서 확인한다. 확인 전에는 GitHub ruleset에 이름을 추측해 등록하지 않는다.
 
@@ -38,8 +38,21 @@ PR 검증 진입점은 `.github/workflows/pr-quality-gate.yml`이다.
 | `knowledge-postgres-contracts` | Knowledge runtime/DB 영향 | 실제 PostgreSQL Knowledge 계약 검사 |
 | `workflow-postgres-contracts` | migration/schedule/external effect 영향 | 실제 PostgreSQL workflow 계약 검사 |
 | `ci-required` | 항상 | 필수 job 결과를 fail-closed로 집계 |
+| `ci-control-review` | PR 생성·동기화 또는 명시적 재검증 | base 브랜치 정책으로 CI 제어 변경과 최신 승인 검증 |
 
 `ci-required`는 선택된 job의 `success`만 허용한다. 선택된 job의 `failure`, `cancelled`, 비정상 `skipped`와 scope 결과 누락은 최종 실패다. 선택되지 않은 job의 의도된 `skipped`만 허용한다.
+
+## CI 제어 신뢰 경계
+
+PR workspace의 selector 결과만으로 required gate를 결정하지 않는다.
+
+- 품질 게이트는 selector 실행 전에 `pr-quality-gate.yml`, `pr-ci-control-guard.yml`, `.github/actions/**`, `scripts/ci/**`, `tests/ci/**` 변경을 독립적으로 확인한다. 이 경로가 바뀌면 selector 출력과 무관하게 Client, Python service smoke, root, 두 PostgreSQL 계약 검사를 모두 선택한다.
+- 신뢰 가드는 base 브랜치에서 `.github/workflows/**`, `.github/actions/**`, `scripts/ci/**`, `tests/ci/**` 변경을 별도로 확인한다. rename은 이전 경로와 새 경로를 모두 검사하고, 변경 파일 전체를 열거하지 못하면 실패한다.
+- CI 제어 변경은 PR 작성자가 아닌 write 이상 권한 보유자가 현재 head commit에 남긴 `APPROVED` review가 있어야 통과한다. 이전 commit 승인은 재사용하지 않는다.
+- 승인 뒤 `/recheck-ci-control`을 PR conversation에 comment하면 base 브랜치 가드가 정책 status를 다시 계산한다.
+- 신뢰 가드는 PR source, test, build script를 checkout하거나 실행하지 않으며 repository secret을 사용하지 않는다.
+
+가드를 최초로 추가하는 PR은 base 브랜치에 가드가 아직 없으므로 자기 자신을 보호할 수 없다. 최초 승격은 독립 review와 actionlint 결과를 수동으로 확인하고, 병합 뒤 probe PR에서 status 생성과 승인 재검증을 확인해야 한다.
 
 ## 변경 범위 규칙
 
@@ -50,11 +63,13 @@ PR 검증 진입점은 `.github/workflows/pr-quality-gate.yml`이다.
 | `apps/gateway/**` | 대응 기능 test 또는 Gateway layer test |
 | `apps/workflow_engine/**` | 대응 기능 test 또는 Workflow Engine layer test |
 | `apps/shared/**` | Shared 대응 test와 실제 소비 서비스 관련 test |
+| Log System task가 직접 소비하는 Shared service | Shared, Gateway, Workflow Engine, Log System 관련 test |
 | Shared schema/DB model | Shared, Gateway, Workflow Engine, Log System, root 관련 test |
 | `apps/shared/alembic/**` | 위 Python 범위와 두 PostgreSQL 계약 test |
 | Knowledge runtime 경로 | Knowledge PostgreSQL 계약 test |
 | schedule/external effect 경로 | Workflow PostgreSQL 계약 test |
-| CI 제어 파일 | 각 서비스 smoke, Client smoke, 두 PostgreSQL 계약 test |
+| 품질 게이트 CI 제어 파일 | 각 서비스 smoke, Client smoke, 두 PostgreSQL 계약 test와 최신 독립 승인 |
+| 기타 GitHub Actions workflow | 기존 영향 범위 검사와 최신 독립 승인 |
 | 배포 workflow만 변경 | PR 공통 불변식만 실행하고 배포 검증과 분리 |
 | 알 수 없는 실행 경로 | Client와 Python smoke 범위로 fail-closed 확장 |
 
@@ -121,7 +136,7 @@ $head = git rev-parse HEAD
 변경 범위를 확인한다.
 
 ```powershell
-python scripts/ci/changed_scope.py --base $base --head $head
+python -m scripts.ci.changed_scope --base $base --head $head
 ```
 
 Alembic graph를 확인한다.
@@ -133,7 +148,7 @@ python scripts/ci/check_alembic_graph.py
 선택될 pytest target을 실행하지 않고 확인한다.
 
 ```powershell
-python scripts/ci/select_pytest_targets.py `
+python -m scripts.ci.select_pytest_targets `
   --component gateway `
   --base $base `
   --head $head `
@@ -145,6 +160,7 @@ CI helper 자체는 다음으로 검증한다.
 ```powershell
 python -m pytest tests/ci -q
 python -m ruff check scripts/ci tests/ci
+actionlint .github/workflows/pr-quality-gate.yml .github/workflows/pr-ci-control-guard.yml
 ```
 
 각 서비스 test 실행 명령은 repository `AGENTS.md`를 따른다. 전체 `scripts/test.sh`는 일반 PR의 기본 required check가 아니다.
@@ -169,6 +185,7 @@ python -m ruff check scripts/ci tests/ci
 | Python service job | Actions log에 출력된 실제 선택 target과 dependency 설치 |
 | PostgreSQL contract | migration upgrade, race, 실제 SQL 계약 |
 | `ci-required` | 선택된 하위 job의 실패, 취소 또는 비정상 skip |
+| `trusted-ci-control/base-policy` | CI 제어 경로 변경, 현재 head 승인 부재, reviewer 권한 확인 실패, 변경 파일 열거 누락 |
 
 검사가 실패했을 때 required check를 해제해 우회하지 않는다. selector 누락이면 mapping과 해당 단위 테스트를 함께 보강한다.
 
@@ -176,9 +193,10 @@ python -m ruff check scripts/ci tests/ci
 
 workflow가 `dev`에 병합되고 probe PR에서 실제 context가 확인된 뒤 다음을 적용한다.
 
-1. aggregate context를 required status check로 등록한다.
-2. required check가 최신 `dev` 기준으로 다시 실행되도록 strict 정책을 적용한다.
-3. unresolved review thread resolution을 필수로 한다.
-4. 현재 PR 경유, branch 삭제 방지, non-fast-forward 방지와 no-bypass 정책을 유지한다.
+1. `ci-required`와 base 정책 status를 required status check로 등록한다.
+2. 두 check의 expected source를 실제 probe에서 확인한 GitHub Actions app으로 제한한다.
+3. required check가 최신 `dev` 기준으로 다시 실행되도록 strict 정책을 적용한다.
+4. 최소 1명의 승인, 최신 reviewable push 승인, unresolved review thread resolution을 필수로 한다.
+5. 현재 PR 경유, branch 삭제 방지, non-fast-forward 방지와 no-bypass 정책을 유지한다.
 
 merge queue는 초기 범위가 아니다. 추후 도입하면 `merge_group` event에서도 같은 aggregate check가 생성되는지 먼저 검증한다.
