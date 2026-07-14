@@ -20,6 +20,7 @@ import {
   KnowledgeCollectionLinkCandidatesResponse,
   KnowledgeCollectionPermissionResponse,
   KnowledgeCollectionPermissionsResponse,
+  KnowledgeCollectionPermissionBulkBundleResponse,
   KnowledgeCollectionVisibility,
   KnowledgeCollectionVisibilityResponse,
   KnowledgeDelegationSubjectsResponse,
@@ -184,6 +185,7 @@ export type {
   KnowledgeCollectionLinkCandidatesResponse,
   KnowledgeCollectionPermissionResponse,
   KnowledgeCollectionPermissionsResponse,
+  KnowledgeCollectionPermissionBulkBundleResponse,
   KnowledgeCollectionVisibility,
   KnowledgeCollectionVisibilityResponse,
   KnowledgeDelegationSubjectsResponse,
@@ -484,11 +486,17 @@ export const knowledgeApi = {
       return response.data;
     },
 
-  getKnowledgeDomainDelegationSubjects:
-    async (): Promise<KnowledgeDelegationSubjectsResponse> => {
-      const response = await api.get('/knowledge/domain-delegation-subjects');
-      return response.data;
-    },
+  getKnowledgeDomainDelegationSubjects: async (params: {
+    subject_type: 'team' | 'user';
+    query?: string;
+    cursor?: string;
+    limit?: number;
+  }): Promise<KnowledgeDelegationSubjectsResponse> => {
+    const response = await api.get('/knowledge/domain-delegation-subjects', {
+      params,
+    });
+    return response.data;
+  },
 
   grantKnowledgeDomainPermission: async (data: {
     subject_type: 'team' | 'user';
@@ -530,6 +538,10 @@ export const knowledgeApi = {
     await api.delete(`/knowledge/collections/${id}`);
   },
 
+  restoreKnowledgeCollection: async (id: string): Promise<void> => {
+    await api.post(`/knowledge/collections/${id}/restore`);
+  },
+
   getKnowledgeCollectionItems: async (
     id: string,
   ): Promise<KnowledgeCollectionItemsResponse> => {
@@ -541,7 +553,6 @@ export const knowledgeApi = {
     id: string,
     data: {
       knowledge_base_id: string;
-      rank?: number;
       acknowledged_public_runtime_exposure?: boolean;
     },
   ): Promise<KnowledgeCollectionItemsResponse> => {
@@ -556,8 +567,7 @@ export const knowledgeApi = {
   ): Promise<void> => {
     await api.delete(`/knowledge/collections/${id}/items/${itemId}`, {
       params: {
-        acknowledged_public_runtime_exposure:
-          acknowledgedPublicRuntimeExposure,
+        acknowledged_public_runtime_exposure: acknowledgedPublicRuntimeExposure,
       },
     });
   },
@@ -565,14 +575,15 @@ export const knowledgeApi = {
   reorderKnowledgeCollectionItems: async (
     id: string,
     items: { item_id: string; rank: number }[],
+    expectedOrderRevision: string,
     acknowledgedPublicRuntimeExposure = false,
   ): Promise<KnowledgeCollectionItemsResponse> => {
     const response = await api.patch(
       `/knowledge/collections/${id}/items/reorder`,
       {
         items,
-        acknowledged_public_runtime_exposure:
-          acknowledgedPublicRuntimeExposure,
+        expected_order_revision: expectedOrderRevision,
+        acknowledged_public_runtime_exposure: acknowledgedPublicRuntimeExposure,
       },
     );
     return response.data;
@@ -596,9 +607,16 @@ export const knowledgeApi = {
 
   getKnowledgeCollectionDelegationSubjects: async (
     id: string,
+    params: {
+      subject_type: 'team' | 'user';
+      query?: string;
+      cursor?: string;
+      limit?: number;
+    },
   ): Promise<KnowledgeDelegationSubjectsResponse> => {
     const response = await api.get(
       `/knowledge/collections/${id}/delegation-subjects`,
+      { params },
     );
     return response.data;
   },
@@ -633,11 +651,41 @@ export const knowledgeApi = {
     return response.data;
   },
 
+  revokeKnowledgeCollectionPermissionBundle: async (
+    id: string,
+    data: {
+      subject_type: 'team' | 'user';
+      subject_id: string;
+      role_bundle: KnowledgeCollectionRoleBundle;
+    },
+  ): Promise<void> => {
+    await api.post(
+      `/knowledge/collections/${id}/permissions/bundles/revoke`,
+      data,
+    );
+  },
+
+  mutateKnowledgeCollectionPermissionBundles: async (data: {
+    collection_ids: string[];
+    operation: 'grant' | 'revoke';
+    subject_type: 'team' | 'user';
+    subject_id: string;
+    role_bundle: KnowledgeCollectionRoleBundle;
+  }): Promise<KnowledgeCollectionPermissionBulkBundleResponse> => {
+    const response = await api.post(
+      '/knowledge/collection-permissions/bulk-bundles',
+      data,
+    );
+    return response.data;
+  },
+
   revokeKnowledgeCollectionPermission: async (
     id: string,
     permissionId: string,
   ): Promise<void> => {
-    await api.delete(`/knowledge/collections/${id}/permissions/${permissionId}`);
+    await api.delete(
+      `/knowledge/collections/${id}/permissions/${permissionId}`,
+    );
   },
 
   updateKnowledgeCollectionVisibility: async (

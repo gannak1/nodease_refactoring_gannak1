@@ -213,6 +213,9 @@ export interface KnowledgeCollectionItemResponse {
 
 export interface KnowledgeCollectionItemsResponse {
   items: KnowledgeCollectionItemResponse[];
+  order_revision: string;
+  reorder_supported: boolean;
+  safe_reason_code?: 'item_reorder_limit_exceeded' | null;
 }
 
 export interface KnowledgeCollectionLinkCandidate {
@@ -245,8 +248,17 @@ export interface KnowledgeDelegationSubject {
 }
 
 export interface KnowledgeDelegationSubjectsResponse {
-  teams: KnowledgeDelegationSubject[];
-  users: KnowledgeDelegationSubject[];
+  subjects: KnowledgeDelegationSubject[];
+  next_cursor?: string | null;
+}
+
+export interface KnowledgeCollectionPermissionBulkBundleResponse {
+  operation: 'grant' | 'revoke';
+  subject_type: 'team' | 'user';
+  role_bundle: KnowledgeCollectionRoleBundle;
+  target_count_bucket: '0' | '1' | '2-10' | '11-50';
+  changed_count_bucket: '0' | '1' | '2-10' | '11-50';
+  unchanged_count_bucket: '0' | '1' | '2-10' | '11-50';
 }
 
 export interface KnowledgeDomainCapabilitiesResponse {
