@@ -336,78 +336,47 @@ ${authHeader}  -d '{
 
         {/* Webhook Trigger Deployment */}
         {isWebhookTrigger && (
-          <div className="grid grid-cols-2 gap-6">
-            {/* Left Column - URL Information */}
+          <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
             <div className="space-y-4">
               <h3 className="text-lg font-semibold text-gray-900">웹훅 URL</h3>
 
-              {/* Method 1: Integrated URL */}
-              <div className="border border-purple-200 rounded-lg p-4 bg-purple-50">
-                <label className="block text-sm font-semibold text-purple-900 mb-2">
-                  방법 1: 통합 URL
+              <div className="rounded-lg border border-purple-200 bg-purple-50 p-4">
+                <label className="mb-2 block text-sm font-semibold text-purple-900">
+                  Endpoint
                 </label>
                 <div className="flex gap-2">
-                  <code className="flex-1 p-3 bg-white border border-purple-300 rounded text-xs font-mono break-all">
-                    {baseUrl}/api/v1/hooks/{result.url_slug}?token=
-                    {result.auth_secret}
+                  <code className="flex-1 break-all rounded border border-purple-300 bg-white p-3 font-mono text-xs">
+                    {baseUrl}/api/v1/hooks/{result.url_slug}
                   </code>
                   <button
                     onClick={() =>
-                      handleCopy(
-                        `${baseUrl}/api/v1/hooks/${result.url_slug}?token=${result.auth_secret}`,
-                      )
+                      handleCopy(`${baseUrl}/api/v1/hooks/${result.url_slug}`)
                     }
-                    className="p-3 hover:bg-purple-100 rounded transition-colors text-purple-700 border border-purple-200 h-full flex items-center justify-center"
-                    title="Copy URL"
+                    className="flex h-full items-center justify-center rounded border border-purple-200 p-3 text-purple-700 transition-colors hover:bg-purple-100"
+                    title="Webhook URL 복사"
                   >
                     <Copy className="w-4 h-4" />
                   </button>
                 </div>
               </div>
 
-              {/* Method 2: Standard API */}
-              <div className="border border-purple-200 rounded-lg p-4 bg-purple-50">
-                <label className="block text-sm font-semibold text-purple-900 mb-2">
-                  방법 2: 표준 API
-                </label>
-
-                {/* URL */}
+              <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
                 <div className="mb-3">
-                  <span className="text-xs font-semibold text-gray-700 block mb-1">
-                    URL:
-                  </span>
-                  <div className="flex gap-2">
-                    <code className="flex-1 p-2 bg-white border border-purple-300 rounded text-xs font-mono break-all">
-                      {baseUrl}/api/v1/hooks/{result.url_slug}
-                    </code>
-                    <button
-                      onClick={() =>
-                        handleCopy(`${baseUrl}/api/v1/hooks/${result.url_slug}`)
-                      }
-                      className="p-2 hover:bg-gray-100 rounded transition-colors text-gray-600 border border-gray-200"
-                      title="Copy URL"
-                    >
-                      <Copy className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-
-                {/* Auth Headers */}
-                <div>
-                  <label className="text-xs font-semibold text-gray-700 block mb-1">
-                    인증 (Secret Key):
+                  <label className="mb-1 block text-xs font-semibold text-gray-700">
+                    Secret Key
                   </label>
                   <div className="flex items-center gap-2">
                     <input
                       type={showSecret ? 'text' : 'password'}
                       value={result.auth_secret || ''}
                       readOnly
-                      className="flex-1 px-2 py-1.5 text-xs border rounded bg-white font-mono"
+                      className="flex-1 rounded border bg-white px-2 py-1.5 font-mono text-xs"
                     />
                     <button
                       onClick={() => setShowSecret(!showSecret)}
-                      className="p-1.5 hover:bg-gray-100 rounded transition-colors text-gray-600 border border-gray-200"
-                      title={showSecret ? 'Hide' : 'Show'}
+                      disabled={!result.auth_secret}
+                      className="rounded border border-gray-200 p-1.5 text-gray-600 transition-colors hover:bg-gray-100 disabled:opacity-50"
+                      title={showSecret ? 'Secret 숨기기' : 'Secret 보기'}
                     >
                       {showSecret ? (
                         <EyeOff className="w-3.5 h-3.5" />
@@ -417,78 +386,53 @@ ${authHeader}  -d '{
                     </button>
                     <button
                       onClick={() => handleCopy(result.auth_secret || '')}
-                      className="p-1.5 hover:bg-gray-100 rounded transition-colors text-gray-600 border border-gray-200"
-                      title="Copy Secret"
+                      disabled={!result.auth_secret}
+                      className="rounded border border-gray-200 p-1.5 text-gray-600 transition-colors hover:bg-gray-100 disabled:opacity-50"
+                      title="Secret 복사"
                     >
                       <Copy className="w-3.5 h-3.5" />
                     </button>
                   </div>
                 </div>
+
+                <label className="mb-1 block text-xs font-semibold text-gray-700">
+                  요청 헤더
+                </label>
+                <div className="flex gap-2">
+                  <code className="flex-1 break-all rounded border border-gray-200 bg-white p-2 font-mono text-xs text-gray-700">
+                    Authorization: Bearer &lt;Secret Key&gt;
+                  </code>
+                  <button
+                    onClick={() =>
+                      handleCopy(
+                        `Authorization: Bearer ${result.auth_secret || ''}`,
+                      )
+                    }
+                    disabled={!result.auth_secret}
+                    className="rounded border border-gray-200 p-2 text-gray-600 transition-colors hover:bg-gray-100 disabled:opacity-50"
+                    title="Authorization 헤더 복사"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               </div>
             </div>
 
-            {/* Right Column - Integration Guide */}
             <div className="border-l border-gray-200 pl-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-2">
-                📖 웹훅 연동 방식 상세 안내
+              <h3 className="mb-2 text-lg font-semibold text-gray-900">
+                연동 조건
               </h3>
-              <p className="text-xs text-gray-600 mb-6 leading-relaxed">
-                사용하시는 외부 서비스의 보안 정책과 설정 환경에 맞춰 적절한
-                방식을 선택하세요.
-              </p>
-
-              <div className="space-y-6">
-                {/* Method 1 Guide */}
-                <div>
-                  <h4 className="font-bold text-gray-800 text-sm mb-2 flex items-center gap-2">
-                    <span className="w-1.5 h-1.5 rounded-full bg-purple-500"></span>
-                    방식 1. 통합 URL (토큰 포함)
-                  </h4>
-                  <ul className="space-y-2 text-xs text-gray-600 pl-3 border-l-2 border-gray-100 ml-1">
-                    <li>
-                      <span className="font-semibold text-gray-700">특징:</span>{' '}
-                      URL 경로 끝에 인증 토큰(<code>?token=...</code>)이 미리
-                      포함되어 있는 형태입니다.
-                    </li>
-                    <li>
-                      <span className="font-semibold text-gray-700">용도:</span>{' '}
-                      별도의 HTTP 헤더(Header)를 설정할 수 없고 URL 하나만 입력
-                      가능한 환경 (예: 단순 알림 봇, 노코드 툴 등)에 최적화되어
-                      있습니다.
-                    </li>
-                    <li className="text-orange-600 bg-orange-50 p-2 rounded">
-                      <span className="font-bold">⚠️ 주의:</span> URL 자체가
-                      인증 키 역할을 하므로, 외부에 노출되지 않도록 주의가
-                      필요합니다.
-                    </li>
-                  </ul>
-                </div>
-
-                {/* Method 2 Guide */}
-                <div>
-                  <h4 className="font-bold text-gray-800 text-sm mb-2 flex items-center gap-2">
-                    <span className="w-1.5 h-1.5 rounded-full bg-blue-500"></span>
-                    방식 2. 표준 API (보안 권장)
-                  </h4>
-                  <ul className="space-y-2 text-xs text-gray-600 pl-3 border-l-2 border-gray-100 ml-1">
-                    <li>
-                      <span className="font-semibold text-gray-700">특징:</span>{' '}
-                      접속 URL과 인증용 Secret Key가 엄격히 분리된 엔터프라이즈
-                      표준 방식입니다.
-                    </li>
-                    <li>
-                      <span className="font-semibold text-gray-700">용도:</span>{' '}
-                      GitHub, Jira 등 보안과 운영 안정성이 중요한 서비스 연동 시
-                      권장합니다.
-                    </li>
-                    <li className="text-blue-600 bg-blue-50 p-2 rounded">
-                      <span className="font-semibold">👍 장점:</span> HTTP
-                      Header를 통해 인증을 수행하므로 통신 로그에 토큰이 남지
-                      않아 보안성이 훨씬 높습니다.
-                    </li>
-                  </ul>
-                </div>
-              </div>
+              <ul className="space-y-3 border-l-2 border-gray-100 pl-4 text-xs leading-relaxed text-gray-600">
+                <li>POST 요청 본문은 최상위 JSON object여야 합니다.</li>
+                <li>
+                  Secret Key는 URL이나 query parameter가 아니라 Authorization
+                  헤더로 전달합니다.
+                </li>
+                <li>
+                  헤더를 설정할 수 없는 외부 서비스는 직접 연결하지 말고 별도
+                  adapter를 사용해야 합니다.
+                </li>
+              </ul>
             </div>
           </div>
         )}

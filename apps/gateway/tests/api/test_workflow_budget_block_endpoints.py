@@ -20,6 +20,7 @@ from sqlalchemy.sql.operators import eq
 from starlette.requests import Request
 
 from apps.gateway.api.v1.endpoints import workflow as workflow_endpoint
+from apps.gateway.application.webhook_ingress import DEFAULT_WEBHOOK_INGRESS_POLICY
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.workflow_budget import WorkflowBudget
@@ -428,7 +429,10 @@ def test_webhook_blocks_exceeded_budget_before_background_dispatch():
         "type": "http",
         "method": "POST",
         "path": f"/api/v1/hooks/{app_row.url_slug}",
-        "headers": [(b"x-webhook-secret", b"hook-secret")],
+        "headers": [
+            (b"x-webhook-secret", b"hook-secret"),
+            (b"content-type", b"application/json"),
+        ],
         "query_string": b"",
     }
 
@@ -442,6 +446,7 @@ def test_webhook_blocks_exceeded_budget_before_background_dispatch():
                 Request(scope, receive),
                 background_tasks,
                 runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+                ingress_policy=DEFAULT_WEBHOOK_INGRESS_POLICY,
                 db=db,
             )
         )
@@ -494,7 +499,10 @@ def test_webhook_rejects_non_webhook_deployment_before_budget_or_dispatch():
         "type": "http",
         "method": "POST",
         "path": f"/api/v1/hooks/{app_row.url_slug}",
-        "headers": [(b"x-webhook-secret", b"hook-secret")],
+        "headers": [
+            (b"x-webhook-secret", b"hook-secret"),
+            (b"content-type", b"application/json"),
+        ],
         "query_string": b"",
     }
 
@@ -508,6 +516,7 @@ def test_webhook_rejects_non_webhook_deployment_before_budget_or_dispatch():
                 Request(scope, receive),
                 background_tasks,
                 runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+                ingress_policy=DEFAULT_WEBHOOK_INGRESS_POLICY,
                 db=db,
             )
         )

@@ -14,7 +14,7 @@ Verified Against: `feature/mba-234 @ 647913b9`
 | GET | `/api/v1/deployments/public/{url_slug}/info` | Public app 화면용 safe metadata 조회 | 인증 없음. 기본 policy는 `webapp`, `widget`, `chatbot`만 허용 |
 | GET | `/api/v1/deployments/{deployment_id}/run-info` | 로그인 사용자 실행 화면에 필요한 safe deployment metadata 조회 | 로그인 + workflow execute 권한 |
 | POST | `/api/v1/deployments/{deployment_id}/run` | 로그인 사용자를 execution subject로 활성 deployment snapshot 실행 | 로그인 + workflow execute 권한 |
-| POST | `/api/v1/hooks/{url_slug}` | Public webhook trigger execution or pending capture ingestion | App secret via query token, Bearer header, or `X-Webhook-Secret` |
+| POST | `/api/v1/hooks/{url_slug}` | Public webhook trigger execution or pending capture ingestion | Exactly one App secret source: Bearer primary or `X-Webhook-Secret` compatibility header |
 | GET | `/api/v1/hooks/{url_slug}/capture/start` | Start a short-lived webhook payload capture session | User session + target workflow `deploy` permission |
 | GET | `/api/v1/hooks/{url_slug}/capture/status?capture_id=...` | Poll one capture session and return a redacted preview once captured | User session + same requester + target workflow `deploy` permission + capture nonce |
 | POST | `/api/v1/hooks/{url_slug}/capture/cancel?capture_id=...` | Cancel a pending capture session | User session + same requester + target workflow `deploy` permission + capture nonce |
@@ -148,6 +148,56 @@ Conversation Memory target activation은 explicit input/output mapping, node Mem
 
 Schedule records and scheduler jobs are created only for active `type="schedule"` deployments. A `scheduleTrigger` node inside any other deployment type, including `workflow_node`, does not create a schedule surface.
 
+### Public Webhook Trigger Request
+
+Primary credential:
+
+```http
+POST /api/v1/hooks/{url_slug} HTTP/1.1
+Authorization: Bearer <app-secret>
+Content-Type: application/json
+
+{"event":"created"}
+```
+
+Compatibility credential:
+
+```http
+POST /api/v1/hooks/{url_slug} HTTP/1.1
+X-Webhook-Secret: <app-secret>
+Content-Type: application/json
+
+{"event":"created"}
+```
+
+한 요청에는 정확히 하나의 credential source만 사용한다. Bearer scheme은 case-insensitive하게 인식하지만 credential 값을 trim하거나 정규화하지 않는다. Credential은 1~512 ASCII bytes로 제한한다. Query `token` key가 있으면 값과 header 유효 여부를 확인하지 않고 요청 전체를 거부하며 다른 provider-owned query parameter는 금지하지 않는다.
+
+Gateway transport는 `/api/v1/hooks` query에서 exact 또는 percent-encoded `token` field를 Uvicorn access logging 전에 제거하고 boolean presence만 endpoint에 전달한다. Token 값은 decode하거나 request state에 보존하지 않는다. 다른 query field는 원래 bytes로 보존한다.
+
+Allowed payload media type은 case-insensitive `application/json` 또는 `application/*+json`이다. Well-formed non-charset parameter는 허용하며 `charset`이 있으면 UTF-8이어야 한다. `Content-Encoding`은 누락 또는 단일 `identity`만 허용한다.
+
+| Limit | Value | Definition |
+| --- | ---: | --- |
+| Actual body | 1,048,576 bytes | ASGI stream에서 누적한 실제 byte 수 |
+| Processing deadline | 5 seconds | 첫 body read 직전부터 decode, parse, complexity validation 완료까지 |
+| JSON depth | 20 | Root value depth 1 |
+| JSON nodes | 10,000 | Root와 모든 object member value/array element 포함 |
+
+`Content-Length`가 상한을 넘으면 body read 전에 거부하지만 actual streamed bytes가 최종 source of truth다. Duplicate/invalid `Content-Length`, UTF-8 BOM, invalid UTF-8/JSON, `NaN`/`Infinity`, depth/node 초과를 허용하지 않는다. Root JSON은 object만 허용한다. Array, string, number, boolean과 null root는 `400 webhook.payload.invalid`로 거부하며 서버가 `{"value": ...}`로 자동 포장하지 않는다. Object 안의 nested JSON value는 그대로 보존한다.
+
+Parsed JSON은 workflow input으로만 전달한다. Payload에 `app_id`, `organization_id`, `workflow_id`, `deployment_id`, `user_id`, `trigger_mode` 또는 `execution_context` key가 있어도 server-derived execution context를 변경하지 않는다.
+
+Accepted execution response는 기존 envelope을 유지한다.
+
+```json
+{
+  "status": "accepted",
+  "message": "Webhook received, processing in background"
+}
+```
+
+Pending capture session이 있으면 동일 ingress validation을 통과한 JSON의 redacted/capped preview만 capture하고 기존 captured response를 반환한다. Capture preview cap은 ingress acceptance limit과 별개다.
+
 ### Webhook Capture Start Response
 
 ```json
@@ -213,6 +263,20 @@ Claim 조회, 상태 변경, outcome acknowledgment와 redrive는 public API로 
 
 ## Errors
 
+Public webhook ingress errors preserve the FastAPI `{ "detail": "..." }` envelope and use static detail codes:
+
+| Condition | Status | Detail |
+| --- | ---: | --- |
+| Query `token` key present | 400 | `webhook.query_secret_not_supported` |
+| Multiple/duplicate credential sources | 400 | `webhook.credential_ambiguous` |
+| Missing, malformed or invalid credential | 403 | `webhook.authentication_failed` |
+| Unsupported/malformed media metadata or encoding | 415 | `webhook.payload.unsupported_media_type` |
+| Declared or actual body too large | 413 | `webhook.payload.too_large` |
+| Ingress processing deadline exceeded | 408 | `webhook.payload.timeout` |
+| Invalid length, disconnect, UTF-8/JSON or complexity | 400 | `webhook.payload.invalid` |
+
+App not found, active deployment/type/runtime policy and workflow budget failures keep their existing status/envelope. Authentication and payload failure response/logging must not include query/header secret, raw URL/query, raw body, parsed payload or parser exception text. Repository Nginx와 Gateway/Uvicorn access-log path 모두 synthetic query marker가 남지 않아야 한다.
+
 Blocking preflight failure:
 
 ```json
@@ -260,5 +324,5 @@ Blocking preflight failure:
 - Conversation Access Grant proves only public session access. It cannot become an execution subject, credential/billing principal, or audit actor.
 - `workflow_node` deployment is not directly executable through public/API/webhook URL surfaces or authenticated deployment `run`/`run-info` endpoints. Workflow-node target inspection uses `workflowNode.data.appId` and inherits parent execution subject at runtime.
 - Workflow-node target active deployment must belong to the target app, be active, and have `type="workflow_node"`. Runtime also requires a non-null parent organization context matching the target app organization.
-- Public webhook trigger execution uses app secret authentication.
+- Public webhook trigger execution uses exactly one app secret header source. Bearer is primary and `X-Webhook-Secret` is compatibility-only; query `token` is rejected.
 - Webhook capture management uses user session authentication and target workflow `deploy` permission. App secret alone cannot start, read, or cancel capture sessions.

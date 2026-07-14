@@ -101,12 +101,8 @@ export function WebhookTriggerNodePanel({
 
   const [isCaptureMode, setIsCaptureMode] = useState(false);
   const [webhookUrl, setWebhookUrl] = useState<string>('');
-  const [webhookUrlWithToken, setWebhookUrlWithToken] = useState<string>('');
   const [authSecret, setAuthSecret] = useState<string>('');
   const [showSecret, setShowSecret] = useState(false);
-  const [urlFormat, setUrlFormat] = useState<'integrated' | 'standard'>(
-    'standard',
-  ); // 통합 URL vs 표준 API
   const [isLoadingUrl, setIsLoadingUrl] = useState(true);
   const [urlSlug, setUrlSlug] = useState<string>('');
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -141,18 +137,10 @@ export function WebhookTriggerNodePanel({
         if (app.url_slug) {
           setUrlSlug(app.url_slug);
           const baseUrl = window.location.origin;
-          const secret = app.auth_secret || '[auth-secret]';
 
-          // 분리 방식: URL만
           const url = `${baseUrl}/api/v1/hooks/${app.url_slug}`;
           setWebhookUrl(url);
-
-          // 통합 방식: URL + Query Parameter
-          const urlWithToken = `${baseUrl}/api/v1/hooks/${app.url_slug}?token=${secret}`;
-          setWebhookUrlWithToken(urlWithToken);
-
-          // Secret 저장
-          setAuthSecret(secret);
+          setAuthSecret(app.auth_secret || '');
         } else {
           setWebhookUrl('URL Slug가 없습니다');
         }
@@ -373,50 +361,6 @@ export function WebhookTriggerNodePanel({
           }
         >
           <div className="space-y-4">
-            {/* URL 형식 토글 */}
-            <div className="flex w-full rounded-md border border-gray-300 bg-gray-50 p-0.5">
-              <PortalTooltip
-                className="flex-1 flex"
-                content={
-                  <div>
-                    <strong className="text-purple-300">통합 URL:</strong> Jira,
-                    Slack 등 URL만 입력 가능한 서비스용 (인증키 포함)
-                  </div>
-                }
-              >
-                <button
-                  onClick={() => setUrlFormat('integrated')}
-                  className={`flex-1 px-4 py-1.5 text-xs font-medium rounded transition-colors ${
-                    urlFormat === 'integrated'
-                      ? 'bg-white text-gray-900 shadow-sm'
-                      : 'text-gray-600 hover:text-gray-900'
-                  }`}
-                >
-                  통합 URL
-                </button>
-              </PortalTooltip>
-              <PortalTooltip
-                className="flex-1 flex"
-                content={
-                  <div>
-                    <strong className="text-blue-300">표준 API:</strong> 자체
-                    개발, GitHub 등 보안과 헤더 설정이 필요한 환경용 (권장)
-                  </div>
-                }
-              >
-                <button
-                  onClick={() => setUrlFormat('standard')}
-                  className={`flex-1 px-4 py-1.5 text-xs font-medium rounded transition-colors ${
-                    urlFormat === 'standard'
-                      ? 'bg-white text-gray-900 shadow-sm'
-                      : 'text-gray-600 hover:text-gray-900'
-                  }`}
-                >
-                  표준 API
-                </button>
-              </PortalTooltip>
-            </div>
-
             {/* URL Display Area - HTTP Request Style */}
             <div className="pt-2">
               <label className="text-xs font-medium text-gray-700 mb-1.5 block">
@@ -427,21 +371,11 @@ export function WebhookTriggerNodePanel({
                   <textarea
                     readOnly
                     className="w-full rounded-md border border-gray-300 px-3 py-[7px] text-sm shadow-sm bg-gray-50 font-mono resize-none h-20 leading-[22px] focus:outline-none"
-                    value={
-                      isLoadingUrl
-                        ? 'URL 생성 중...'
-                        : urlFormat === 'integrated'
-                          ? webhookUrlWithToken
-                          : webhookUrl
-                    }
+                    value={isLoadingUrl ? 'URL 생성 중...' : webhookUrl}
                   />
                   <button
                     onClick={() => {
-                      const text =
-                        urlFormat === 'integrated'
-                          ? webhookUrlWithToken
-                          : webhookUrl;
-                      navigator.clipboard.writeText(text);
+                      navigator.clipboard.writeText(webhookUrl);
                       toast.success('URL이 복사되었습니다!');
                     }}
                     className="absolute top-2 right-2 p-1.5 hover:bg-gray-200 rounded transition-colors bg-white/50 backdrop-blur-sm"
@@ -453,45 +387,64 @@ export function WebhookTriggerNodePanel({
               </div>
             </div>
 
-            {/* Secret Key (Standard Only) */}
-            {urlFormat === 'standard' && (
-              <div className="flex flex-col gap-1">
-                <label className="text-xs font-medium text-gray-700">
-                  Secret Key
-                </label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type={showSecret ? 'text' : 'password'}
-                    value={isLoadingUrl ? '로딩 중...' : authSecret}
-                    readOnly
-                    className="flex-1 px-3 py-2 text-sm border rounded bg-gray-50 font-mono focus:outline-none"
-                  />
-                  <button
-                    onClick={() => setShowSecret(!showSecret)}
-                    disabled={isLoadingUrl}
-                    className="p-2 hover:bg-gray-100 rounded transition-colors disabled:opacity-50 border border-gray-200"
-                    title={showSecret ? 'Hide' : 'Show'}
-                  >
-                    {showSecret ? (
-                      <EyeOff className="w-4 h-4 text-gray-600" />
-                    ) : (
-                      <Eye className="w-4 h-4 text-gray-600" />
-                    )}
-                  </button>
-                  <button
-                    onClick={() => {
-                      navigator.clipboard.writeText(authSecret);
-                      toast.success('Secret Key가 복사되었습니다!');
-                    }}
-                    disabled={isLoadingUrl}
-                    className="p-2 hover:bg-gray-100 rounded transition-colors disabled:opacity-50 border border-gray-200"
-                    title="Copy Secret"
-                  >
-                    <Copy className="w-4 h-4 text-gray-600" />
-                  </button>
-                </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-xs font-medium text-gray-700">
+                Secret Key
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type={showSecret ? 'text' : 'password'}
+                  value={
+                    isLoadingUrl
+                      ? '로딩 중...'
+                      : authSecret || 'Secret Key가 없습니다'
+                  }
+                  readOnly
+                  className="flex-1 px-3 py-2 text-sm border rounded bg-gray-50 font-mono focus:outline-none"
+                />
+                <button
+                  onClick={() => setShowSecret(!showSecret)}
+                  disabled={isLoadingUrl || !authSecret}
+                  className="p-2 hover:bg-gray-100 rounded transition-colors disabled:opacity-50 border border-gray-200"
+                  title={showSecret ? 'Secret 숨기기' : 'Secret 보기'}
+                >
+                  {showSecret ? (
+                    <EyeOff className="w-4 h-4 text-gray-600" />
+                  ) : (
+                    <Eye className="w-4 h-4 text-gray-600" />
+                  )}
+                </button>
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(authSecret);
+                    toast.success('Secret Key가 복사되었습니다!');
+                  }}
+                  disabled={isLoadingUrl || !authSecret}
+                  className="p-2 hover:bg-gray-100 rounded transition-colors disabled:opacity-50 border border-gray-200"
+                  title="Secret 복사"
+                >
+                  <Copy className="w-4 h-4 text-gray-600" />
+                </button>
               </div>
-            )}
+              <div className="mt-1 flex items-center gap-2">
+                <code className="flex-1 break-all rounded border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-xs text-gray-700">
+                  Authorization: Bearer &lt;Secret Key&gt;
+                </code>
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(
+                      `Authorization: Bearer ${authSecret}`,
+                    );
+                    toast.success('Authorization 헤더가 복사되었습니다!');
+                  }}
+                  disabled={isLoadingUrl || !authSecret}
+                  className="rounded border border-gray-200 p-2 transition-colors hover:bg-gray-100 disabled:opacity-50"
+                  title="Authorization 헤더 복사"
+                >
+                  <Copy className="w-4 h-4 text-gray-600" />
+                </button>
+              </div>
+            </div>
 
             {/* 캡처 버튼 */}
             <div>

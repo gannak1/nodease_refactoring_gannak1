@@ -1,11 +1,13 @@
 # ADR-0021: Webhook capture helper security boundary
 
 Status: Accepted
-Related ADRs: ADR-0010, ADR-0018
+Related ADRs: ADR-0010, ADR-0018, ADR-0041
+
+Partial supersession note: Public trigger credential transport and ingress payload limits are governed by [ADR-0041](ADR-0041-public-webhook-ingress-security-boundary.md). The historical query-token statement below is no longer the current public trigger contract. This ADR continues to govern capture helper authentication, retention, and preview redaction.
 
 ## Context
 
-Webhook trigger execution is an intentional public surface. It accepts an app secret through a query token, Bearer header, or `X-Webhook-Secret` so external systems can invoke a deployed workflow.
+Webhook trigger execution is an intentional public surface. Before ADR-0040, it accepted an app secret through a query token, Bearer header, or `X-Webhook-Secret`. The current public trigger contract accepts exactly one header credential and rejects query-token transport.
 
 The capture helper is different. `GET /api/v1/hooks/{url_slug}/capture/start` and `GET /api/v1/hooks/{url_slug}/capture/status` are interactive debugging tools used by workflow builders to collect a sample webhook payload for test input. If those helper endpoints are unauthenticated or return raw payload, a user who knows a URL slug could start capture and read sensitive webhook data from a legitimate sender.
 

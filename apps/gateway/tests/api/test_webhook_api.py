@@ -1,15 +1,18 @@
 import asyncio
 import inspect
+import json
 import unittest
 from datetime import datetime, timedelta, timezone
-from uuid import uuid4
 from unittest.mock import MagicMock, patch
+from urllib.parse import urlencode
+from uuid import uuid4
 
 from fastapi import BackgroundTasks, HTTPException
 from fastapi.testclient import TestClient
 
 from apps.gateway.api.v1.endpoints import webhook as webhook_endpoint
 from apps.gateway.api.v1.endpoints.webhook import CAPTURE_SESSIONS
+from apps.gateway.application.webhook_ingress import DEFAULT_WEBHOOK_INGRESS_POLICY
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.main import app
 from apps.shared.db.session import get_db
@@ -22,12 +25,20 @@ from apps.shared.domain.deployment_runtime_policy import (
 
 class _FakeRequest:
     def __init__(self, query_params=None, headers=None, payload=None):
-        self.query_params = query_params or {}
-        self.headers = headers or {}
-        self._payload = payload if payload is not None else {}
+        raw_headers = {"Content-Type": "application/json"}
+        raw_headers.update(headers or {})
+        self.scope = {
+            "query_string": urlencode(query_params or {}).encode("ascii"),
+            "headers": [
+                (name.lower().encode("ascii"), value.encode("ascii"))
+                for name, value in raw_headers.items()
+            ],
+        }
+        self._body = json.dumps(payload if payload is not None else {}).encode("utf-8")
 
-    async def json(self):
-        return self._payload
+    async def stream(self):
+        yield self._body
+        yield b""
 
 
 class TestWebhookApi(unittest.TestCase):
@@ -182,7 +193,9 @@ class TestWebhookApi(unittest.TestCase):
                 "message": "Bearer api-very-secret-token",
             }
             response = self.client.post(
-                f"/api/v1/hooks/{self.url_slug}?token={self.auth_secret}", json=payload
+                f"/api/v1/hooks/{self.url_slug}",
+                headers={"Authorization": f"Bearer {self.auth_secret}"},
+                json=payload,
             )
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json()["status"], "captured")
@@ -543,11 +556,12 @@ class TestWebhookApi(unittest.TestCase):
                 webhook_endpoint.receive_webhook(
                     self.url_slug,
                     _FakeRequest(
-                        query_params={"token": self.auth_secret},
+                        headers={"Authorization": f"Bearer {self.auth_secret}"},
                         payload={"event": "after_cancel"},
                     ),
                     BackgroundTasks(),
                     runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+                    ingress_policy=DEFAULT_WEBHOOK_INGRESS_POLICY,
                     db=mock_db_session,
                 )
             )
@@ -586,11 +600,14 @@ class TestWebhookApi(unittest.TestCase):
                             webhook_endpoint.receive_webhook(
                                 self.url_slug,
                                 _FakeRequest(
-                                    query_params={"token": self.auth_secret},
+                                    headers={
+                                        "Authorization": f"Bearer {self.auth_secret}"
+                                    },
                                     payload={"event": "must-not-dispatch"},
                                 ),
                                 background_tasks,
                                 runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+                                ingress_policy=DEFAULT_WEBHOOK_INGRESS_POLICY,
                                 db=mock_db_session,
                             )
                         )
@@ -603,8 +620,8 @@ class TestWebhookApi(unittest.TestCase):
                 budget_check.assert_not_called()
                 self.assertEqual(background_tasks.tasks, [])
 
-    def test_webhook_invalid_token(self):
-        """잘못된 토큰으로 웹훅 수신 시 거부 테스트"""
+    def test_webhook_invalid_header_secret(self):
+        """잘못된 header secret으로 웹훅 수신 시 거부 테스트"""
         mock_db_session = self._mock_db_with_app()
 
         with self.assertRaises(HTTPException) as exc:
@@ -612,11 +629,12 @@ class TestWebhookApi(unittest.TestCase):
                 webhook_endpoint.receive_webhook(
                     self.url_slug,
                     _FakeRequest(
-                        query_params={"token": "wrong-token"},
+                        headers={"Authorization": "Bearer wrong-token"},
                         payload={},
                     ),
                     BackgroundTasks(),
                     runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
+                    ingress_policy=DEFAULT_WEBHOOK_INGRESS_POLICY,
                     db=mock_db_session,
                 )
             )
@@ -638,11 +656,12 @@ class TestWebhookApi(unittest.TestCase):
                 webhook_endpoint.receive_webhook(
                     self.url_slug,
                     _FakeRequest(
-                        query_params={"token": self.auth_secret},
+                        headers={"Authorization": f"Bearer {self.auth_secret}"},
                         payload={},
                     ),
                     background_tasks,
                     runtime_policy=injected_policy,
+                    ingress_policy=DEFAULT_WEBHOOK_INGRESS_POLICY,
                     db=mock_db_session,
                 )
             )

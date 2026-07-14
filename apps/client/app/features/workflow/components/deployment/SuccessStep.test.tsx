@@ -1,5 +1,5 @@
-import { cleanup, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SuccessStep } from './SuccessStep';
 
@@ -9,11 +9,55 @@ vi.mock('sonner', () => ({
   },
 }));
 
+const writeClipboard = vi.fn();
+
+beforeEach(() => {
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText: writeClipboard },
+  });
+});
+
 afterEach(() => {
   cleanup();
+  vi.clearAllMocks();
 });
 
 describe('SuccessStep', () => {
+  it('keeps the webhook secret out of the URL and requires header authentication', () => {
+    render(
+      <SuccessStep
+        deploymentType="webhook"
+        onClose={vi.fn()}
+        result={{
+          success: true,
+          version: 1,
+          url_slug: 'incident-hook',
+          auth_secret: 'webhook-secret-value',
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByText('http://localhost:3000/api/v1/hooks/incident-hook'),
+    ).toBeVisible();
+    expect(
+      screen.getByText('Authorization: Bearer <Secret Key>'),
+    ).toBeVisible();
+    expect(screen.queryByText(/\?token=/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/통합 URL/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTitle('Webhook URL 복사'));
+    expect(writeClipboard).toHaveBeenCalledWith(
+      'http://localhost:3000/api/v1/hooks/incident-hook',
+    );
+
+    fireEvent.click(screen.getByTitle('Authorization 헤더 복사'));
+    expect(writeClipboard).toHaveBeenLastCalledWith(
+      'Authorization: Bearer webhook-secret-value',
+    );
+  });
+
   it('shows a non-blocking preflight warning after a successful deployment', () => {
     render(
       <SuccessStep
