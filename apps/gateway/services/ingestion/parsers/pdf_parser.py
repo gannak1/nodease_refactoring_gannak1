@@ -115,10 +115,22 @@ class PdfParser(BaseParser):
                 return self._parse_with_fitz_fallback(file_path)
 
             results = []
-            for chunk in md_text_chunks:
+            for index, chunk in enumerate(md_text_chunks):
                 text_content = chunk["text"]
+                metadata = chunk.get("metadata") or {}
+
+                # pymupdf4llm uses page_number (1-based) in recent releases,
+                # while older releases returned page (0-based).
+                if metadata.get("page_number") is not None:
+                    page_number = int(metadata["page_number"])
+                elif metadata.get("page") is not None:
+                    page_number = int(metadata["page"]) + 1
+                else:
+                    # page_chunks preserves document order, so this remains a
+                    # useful fallback for metadata-light parser responses.
+                    page_number = index + 1
                 results.append(
-                    {"text": text_content, "page": chunk["metadata"]["page"] + 1}
+                    {"text": text_content, "page": page_number}
                 )
             return results
         except Exception as e:
