@@ -75,7 +75,14 @@ def _request(path, *, body=None, headers=None):
 
 def _valid_graph():
     return {
-        "nodes": [{"id": "start-1", "type": "startNode", "data": {}}],
+        "nodes": [
+            {
+                "id": "start-1",
+                "type": "startNode",
+                "position": {"x": 0, "y": 0},
+                "data": {},
+            }
+        ],
         "edges": [],
     }
 

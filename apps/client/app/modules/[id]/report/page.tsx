@@ -7,6 +7,7 @@ import { LogTab } from '@/app/features/workflow/components/editor/tabs/LogTab';
 import { MonitoringTab } from '@/app/features/workflow/components/editor/tabs/MonitoringTab';
 import { useWorkflowAppSync } from '@/app/features/workflow/hooks/useWorkflowAppSync';
 import { useWorkflowStore } from '@/app/features/workflow/store/useWorkflowStore';
+import { copyTestExecutionLocationQueryParams } from '@/app/features/workflow/utils/testExecutionLocation';
 
 type ReportTab = 'logs' | 'monitoring';
 type ReportTabButtonProps = {
@@ -56,6 +57,7 @@ export default function WorkflowReportPage() {
     const query = new URLSearchParams();
     query.set('tab', tab);
     if (nextRunId) query.set('runId', nextRunId);
+    copyTestExecutionLocationQueryParams(searchParams, query);
     router.push(`/modules/${workflowId}/report?${query.toString()}`);
   };
 
@@ -65,7 +67,12 @@ export default function WorkflowReportPage() {
         <div className="flex min-w-0 items-center gap-3">
           <button
             type="button"
-            onClick={() => router.push(`/modules/${workflowId}`)}
+            onClick={() => {
+              const query = new URLSearchParams();
+              copyTestExecutionLocationQueryParams(searchParams, query);
+              const suffix = query.size > 0 ? `?${query.toString()}` : '';
+              router.push(`/modules/${workflowId}${suffix}`);
+            }}
             className="flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-600 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-50 hover:text-slate-950"
           >
             <ArrowLeft className="h-4 w-4" />

@@ -11,6 +11,7 @@ from typing import Any, List, Literal, Optional
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from celery.exceptions import TimeoutError as CeleryTimeoutError
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import Date, Integer, cast, func, or_
@@ -100,6 +101,7 @@ from apps.workflow_engine.services.model_routing_policy_store import (
 from apps.shared.db.models.workflow_run import (
     NodeRunStatus,
     RunStatus,
+    RunTriggerMode,
     WorkflowNodeRun,
     WorkflowRun,
 )
@@ -177,6 +179,67 @@ def _safe_stream_event(value: Any) -> dict[str, Any]:
             return generic_error
         return {"type": "error", "data": safe_error}
     return value
+
+
+def _workflow_stream_started_event(run_id: str) -> dict[str, Any]:
+    """클라이언트가 테스트 실행 기록을 다시 조회할 수 있게 식별자만 전달한다."""
+    return {"type": "workflow_start", "data": {"run_id": run_id}}
+
+
+def _serialize_workflow_sse_event(event: dict[str, Any]) -> str:
+    """하나의 workflow 이벤트를 실제 빈 줄로 끝나는 SSE record로 직렬화한다."""
+    return f"data: {json.dumps(event)}\n\n"
+
+
+def _stream_workflow_events(
+    *,
+    external_run_id: str,
+    celery: Any,
+    graph: dict[str, Any],
+    user_input: dict[str, Any],
+    execution_context: dict[str, Any],
+):
+    """Redis 구독과 task 발행을 완료한 뒤 workflow SSE 이벤트를 전달한다."""
+    from apps.shared.pubsub import get_redis_client
+
+    client = get_redis_client()
+    pubsub = client.pubsub()
+    channel = f"workflow:{external_run_id}"
+
+    try:
+        # 구독을 먼저 완료해야 Worker가 즉시 발행한 첫 이벤트를 놓치지 않는다.
+        pubsub.subscribe(channel)
+        # 복원용 run_id를 브라우저에 알리기 전에 task를 큐에 올린다.
+        send_workflow_task(
+            celery,
+            "workflow.stream",
+            args=[graph, user_input, execution_context, external_run_id],
+        )
+        logger.info("[Gateway] Celery 태스크 시작됨")
+
+        yield _serialize_workflow_sse_event(
+            _workflow_stream_started_event(external_run_id)
+        )
+
+        for message in pubsub.listen():
+            if message["type"] == "message":
+                event = _safe_stream_event(json.loads(message["data"]))
+                yield _serialize_workflow_sse_event(event)
+
+                if event.get("type") in ("workflow_finish", "error"):
+                    logger.info(
+                        f"[Gateway] 스트리밍 종료 - type: {event.get('type')}"
+                    )
+                    break
+    except Exception:
+        error_event = {
+            "type": "error",
+            "data": {"message": "workflow.stream_unavailable"},
+        }
+        yield _serialize_workflow_sse_event(error_event)
+    finally:
+        pubsub.unsubscribe(channel)
+        pubsub.close()
 
 
 class WorkflowCompareRequest(BaseModel):
@@ -5446,8 +5509,10 @@ def apply_cost_optimizer_candidate(
 @router.get("/{workflow_id}/runs", response_model=WorkflowRunListResponse)
 def get_workflow_runs(
     workflow_id: str,
-    page: int = 1,
-    limit: int = 20,
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    status: Optional[RunStatus] = Query(None),
+    trigger_mode: Optional[RunTriggerMode] = Query(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -5458,13 +5523,19 @@ def get_workflow_runs(
 
     ensure_workflow_permission(db, current_user, workflow_id, "read")
 
-    total = db.query(WorkflowRun).filter(WorkflowRun.workflow_id == workflow_id).count()
-
-    runs = (
+    query = (
         db.query(WorkflowRun)
         .options(noload(WorkflowRun.node_runs))
         .filter(WorkflowRun.workflow_id == workflow_id)
-        .order_by(WorkflowRun.started_at.desc())
+    )
+    if status is not None:
+        query = query.filter(WorkflowRun.status == status)
+    if trigger_mode is not None:
+        query = query.filter(WorkflowRun.trigger_mode == trigger_mode)
+
+    total = query.count()
+    runs = (
+        query.order_by(WorkflowRun.started_at.desc())
         .offset(skip)
         .limit(limit)
         .all()
@@ -6149,7 +6220,7 @@ async def execute_workflow(
                 or "Workflow execution failed",
             )
 
-    except celery_app.backend.TimeoutError:
+    except CeleryTimeoutError:
         raise HTTPException(status_code=504, detail="Workflow execution timed out")
     except HTTPException:
         raise
@@ -6300,51 +6371,14 @@ async def stream_workflow(
             _test_routing_policy_context(db, workflow=workflow, graph=graph)
         )
 
-    # 6. Redis Pub/Sub 구독 및 SSE 스트리밍
-    # Race Condition 방지: 구독 완료 후 Celery 태스크 시작
-    def event_generator():
-        """Redis Pub/Sub을 구독하여 SSE 이벤트로 변환"""
-        from apps.shared.pubsub import get_redis_client
-
-        client = get_redis_client()
-        pubsub = client.pubsub()
-        channel = f"workflow:{external_run_id}"
-
-        try:
-            # 1. 먼저 Redis 채널 구독
-            pubsub.subscribe(channel)
-
-            # 2. 구독 완료 후 Celery 태스크 시작 (중요!)
-            send_workflow_task(
-                celery_app,
-                "workflow.stream",
-                args=[graph, user_input, execution_context, external_run_id],
-            )
-            logger.info("[Gateway] Celery 태스크 시작됨")
-
-            # 3. 이벤트 수신 및 SSE 전송
-            for message in pubsub.listen():
-                if message["type"] == "message":
-                    event = _safe_stream_event(json.loads(message["data"]))
-                    # SSE 포맷: "data: {json_content}\n\n"
-                    yield f"data: {json.dumps(event)}\n\n"
-
-                    # workflow_finish 또는 error 시 종료
-                    if event.get("type") in ("workflow_finish", "error"):
-                        logger.info(
-                            f"[Gateway] 스트리밍 종료 - type: {event.get('type')}"
-                        )
-                        break
-        except Exception:
-            # 구독 중 에러 발생 시 에러 이벤트 전송
-            error_event = {
-                "type": "error",
-                "data": {"message": "workflow.stream_unavailable"},
-            }
-            yield f"data: {json.dumps(error_event)}\n\n"
-        finally:
-            pubsub.unsubscribe(channel)
-            pubsub.close()
-
     # 7. StreamingResponse 반환
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        _stream_workflow_events(
+            external_run_id=external_run_id,
+            celery=celery_app,
+            graph=graph,
+            user_input=user_input,
+            execution_context=execution_context,
+        ),
+        media_type="text/event-stream",
+    )

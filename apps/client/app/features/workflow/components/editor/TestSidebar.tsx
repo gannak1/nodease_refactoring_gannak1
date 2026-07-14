@@ -18,6 +18,7 @@ import {
   ChevronRight,
   Clock,
   Coins,
+  GitCompareArrows,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { StartNodeData, WorkflowVariable } from '../../types/Nodes';
@@ -46,6 +47,16 @@ import {
 import { FinalResponseCard } from '../execution/FinalResponseCard';
 import { deploymentApiErrorMessage } from '../../utils/deploymentPreflightMessage';
 import { ModelRoutingDecisionDetails } from '../modelRouting/ModelRoutingDecisionDetails';
+import { restoreTestExecutionFromWorkflowRun } from '../../utils/testExecutionRestore';
+import {
+  TEST_COMPARISON_BASELINE_QUERY_KEY,
+  TEST_COMPARISON_ENABLED_VALUE,
+  TEST_COMPARISON_NODE_QUERY_KEY,
+  TEST_COMPARISON_QUERY_KEY,
+  TEST_NODE_QUERY_KEY,
+  TEST_RUN_QUERY_KEY,
+} from '../../utils/testExecutionLocation';
+import { ExecutionComparisonPanel } from './ExecutionComparisonPanel';
 
 export { ModelRoutingDecisionDetails } from '../modelRouting/ModelRoutingDecisionDetails';
 
@@ -64,8 +75,17 @@ const TEST_SIDEBAR_MAX_WIDTH = 640;
 const TEST_SIDEBAR_VIEWPORT_GUTTER = 24;
 const TEST_SIDEBAR_MIN_CANVAS_WIDTH = 420;
 const TEST_SIDEBAR_KEYBOARD_STEP = 20;
+const TEST_RUN_RESTORE_RETRY_DELAYS_MS = [
+  400, 800, 1_200, 2_000, 3_000, 4_000, 5_000, 6_000,
+] as const;
 
 type PreflightStatus = 'idle' | 'validating' | 'saving';
+type TestRunRestoreState = 'idle' | 'restoring' | 'delayed' | 'failed';
+type ComparisonLocationUpdate = {
+  comparisonMode?: boolean;
+  baselineRunId?: string | null;
+  comparisonNodeId?: string | null;
+};
 
 export const TEST_INPUT_CLASS_NAME =
   'w-full px-3 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-100 dark:placeholder:text-gray-500';
@@ -95,10 +115,86 @@ const getHttpStatus = (error: unknown) => {
   return undefined;
 };
 
+const waitForTestRunRestore = (durationMs: number) =>
+  new Promise((resolve) => setTimeout(resolve, durationMs));
+
+const readTestExecutionLocation = () => {
+  if (typeof window === 'undefined') {
+    return {
+      runId: null,
+      nodeId: null,
+      comparisonMode: false,
+      baselineRunId: null,
+      comparisonNodeId: null,
+    };
+  }
+
+  const searchParams = new URLSearchParams(window.location.search);
+  return {
+    runId: searchParams.get(TEST_RUN_QUERY_KEY),
+    nodeId: searchParams.get(TEST_NODE_QUERY_KEY),
+    comparisonMode:
+      searchParams.get(TEST_COMPARISON_QUERY_KEY) ===
+      TEST_COMPARISON_ENABLED_VALUE,
+    baselineRunId: searchParams.get(TEST_COMPARISON_BASELINE_QUERY_KEY),
+    comparisonNodeId: searchParams.get(TEST_COMPARISON_NODE_QUERY_KEY),
+  };
+};
+
+const setSearchParam = (
+  searchParams: URLSearchParams,
+  key: string,
+  value: string | null,
+) => {
+  if (value) {
+    searchParams.set(key, value);
+  } else {
+    searchParams.delete(key);
+  }
+};
+
+const replaceTestExecutionLocation = (
+  runId: string | null,
+  nodeId: string | null,
+  comparisonUpdate: ComparisonLocationUpdate = {},
+) => {
+  if (typeof window === 'undefined') return;
+
+  const url = new URL(window.location.href);
+  setSearchParam(url.searchParams, TEST_RUN_QUERY_KEY, runId);
+  setSearchParam(url.searchParams, TEST_NODE_QUERY_KEY, nodeId);
+
+  if ('comparisonMode' in comparisonUpdate) {
+    setSearchParam(
+      url.searchParams,
+      TEST_COMPARISON_QUERY_KEY,
+      comparisonUpdate.comparisonMode
+        ? TEST_COMPARISON_ENABLED_VALUE
+        : null,
+    );
+  }
+  if ('baselineRunId' in comparisonUpdate) {
+    setSearchParam(
+      url.searchParams,
+      TEST_COMPARISON_BASELINE_QUERY_KEY,
+      comparisonUpdate.baselineRunId ?? null,
+    );
+  }
+  if ('comparisonNodeId' in comparisonUpdate) {
+    setSearchParam(
+      url.searchParams,
+      TEST_COMPARISON_NODE_QUERY_KEY,
+      comparisonUpdate.comparisonNodeId ?? null,
+    );
+  }
+  window.history.replaceState(window.history.state, '', url);
+};
+
 export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   const {
     isTestPanelOpen,
     toggleTestPanel,
+    openTestPanel,
     nodes,
     activeWorkflowId,
     setNodes,
@@ -109,6 +205,8 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     envVariables,
     runtimeVariables,
     testExecutionStatus,
+    testExecutionRunId,
+    testSelectedNodeId,
     testExecutionStartedAt,
     testExecutionFinishedAt,
     testExecutionResult,
@@ -119,9 +217,12 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     beginTestExecution,
     setTestUploading,
     setCurrentExecutingNode,
+    setTestExecutionRunId,
+    selectTestExecutionNode,
     addTestNodeResult,
     finishTestExecution,
     failTestExecution,
+    restoreTestExecution,
     resetTestExecution,
   } = useWorkflowStore();
   const { setCenter, getViewport } = useReactFlow();
@@ -133,9 +234,23 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   const [validationErrors, setValidationErrors] = useState<
     GraphValidationIssue[]
   >([]);
-  const [selectedTestNodeId, setSelectedTestNodeId] = useState<string | null>(
-    null,
-  );
+  const [isComparisonMode, setIsComparisonMode] = useState(false);
+  const [hasOpenedComparisonPanel, setHasOpenedComparisonPanel] =
+    useState(false);
+  const [comparisonBaselineRunId, setComparisonBaselineRunId] = useState<
+    string | null
+  >(null);
+  const [comparisonSelectedNodeId, setComparisonSelectedNodeId] = useState<
+    string | null
+  >(null);
+  const [testExecutionLocationRevision, setTestExecutionLocationRevision] =
+    useState(0);
+  const [testRunRestoreState, setTestRunRestoreState] =
+    useState<TestRunRestoreState>('idle');
+  const [testRunRestoreRetry, setTestRunRestoreRetry] = useState(0);
+  const [localSelectedTestNodeId, setLocalSelectedTestNodeId] = useState<
+    string | null
+  >(null);
   const [testSidebarWidth, setTestSidebarWidth] = useState(
     TEST_SIDEBAR_DEFAULT_WIDTH,
   );
@@ -144,7 +259,21 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   );
   const clearResizeListenersRef = React.useRef<(() => void) | null>(null);
   const nodeStartedAtRef = React.useRef<Record<string, number>>({});
+  const restoredRunRef = React.useRef<string | null>(null);
+  const historyLocationChangeRef = React.useRef(false);
+  const latestNodesRef = React.useRef(nodes);
+  const currentTestExecutionRef = React.useRef({
+    runId: testExecutionRunId,
+    status: testExecutionStatus,
+    nodeResults: testNodeResults,
+    selectedNodeId: testSelectedNodeId,
+  });
   const isExecuting = testExecutionStatus === 'running';
+  const selectedTestNodeId = testSelectedNodeId ?? localSelectedTestNodeId;
+  const selectExecutionNode = (nodeId: string | null) => {
+    setLocalSelectedTestNodeId(nodeId);
+    selectTestExecutionNode?.(nodeId);
+  };
   const isPreparing =
     preflightStatus === 'validating' || preflightStatus === 'saving';
   const executionResult = testExecutionResult;
@@ -189,6 +318,157 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     },
     [],
   );
+
+  useEffect(() => {
+    const syncLocationState = () => {
+      historyLocationChangeRef.current = true;
+      setTestExecutionLocationRevision((value) => value + 1);
+    };
+
+    window.addEventListener('popstate', syncLocationState);
+    return () => window.removeEventListener('popstate', syncLocationState);
+  }, []);
+
+  useEffect(() => {
+    latestNodesRef.current = nodes;
+  }, [nodes]);
+
+  useEffect(() => {
+    if (!activeWorkflowId) return;
+
+    const location = readTestExecutionLocation();
+    setComparisonBaselineRunId(location.baselineRunId);
+    setComparisonSelectedNodeId(location.comparisonNodeId);
+    setHasOpenedComparisonPanel(location.comparisonMode);
+    setIsComparisonMode(location.comparisonMode);
+  }, [activeWorkflowId, testExecutionLocationRevision]);
+
+  useEffect(() => {
+    currentTestExecutionRef.current = {
+      runId: testExecutionRunId,
+      status: testExecutionStatus,
+      nodeResults: testNodeResults,
+      selectedNodeId: testSelectedNodeId,
+    };
+  }, [
+    testExecutionRunId,
+    testExecutionStatus,
+    testNodeResults,
+    testSelectedNodeId,
+  ]);
+
+  useEffect(() => {
+    const { runId, nodeId } = readTestExecutionLocation();
+    if (!runId || !activeWorkflowId || nodes.length === 0) {
+      if (!runId && historyLocationChangeRef.current) {
+        historyLocationChangeRef.current = false;
+        restoredRunRef.current = null;
+        setLocalSelectedTestNodeId(null);
+        selectTestExecutionNode?.(null);
+        resetTestExecution();
+      }
+      setTestRunRestoreState('idle');
+      return;
+    }
+
+    historyLocationChangeRef.current = false;
+    // URL에 실행 식별자가 있으면 아직 DB 조회가 지연 중이어도 복원 상태를 보여준다.
+    openTestPanel();
+
+    const currentExecution = currentTestExecutionRef.current;
+    if (
+      currentExecution.runId === runId &&
+      currentExecution.status !== 'running'
+    ) {
+      setTestRunRestoreState('idle');
+      const selectedNodeId =
+        nodeId &&
+        currentExecution.nodeResults.some((result) => result.nodeId === nodeId)
+          ? nodeId
+          : null;
+      if (selectedNodeId !== currentExecution.selectedNodeId) {
+        setLocalSelectedTestNodeId(selectedNodeId);
+        selectTestExecutionNode?.(selectedNodeId);
+      }
+      return;
+    }
+
+    const restoreKey = `${activeWorkflowId}:${runId}`;
+    if (restoredRunRef.current === restoreKey) {
+      setTestRunRestoreState('idle');
+      return;
+    }
+
+    let cancelled = false;
+    const restore = async () => {
+      setTestRunRestoreState('restoring');
+      for (
+        let attempt = 0;
+        attempt <= TEST_RUN_RESTORE_RETRY_DELAYS_MS.length;
+        attempt += 1
+      ) {
+        try {
+          const run = await workflowApi.getWorkflowRun(activeWorkflowId, runId);
+          if (cancelled) return;
+
+          const restored = restoreTestExecutionFromWorkflowRun(
+            run,
+            latestNodesRef.current,
+          );
+          restoreTestExecution(restored);
+
+          const selectedNodeId =
+            nodeId && restored.nodeResults.some((result) => result.nodeId === nodeId)
+              ? nodeId
+              : null;
+          setLocalSelectedTestNodeId(selectedNodeId);
+          selectTestExecutionNode?.(selectedNodeId);
+
+          if (run.status.toLowerCase() !== 'running') {
+            restoredRunRef.current = restoreKey;
+            setTestRunRestoreState('idle');
+            return;
+          }
+        } catch (error) {
+          if (getHttpStatus(error) !== 404) {
+            if (!cancelled) {
+              setTestRunRestoreState('failed');
+              toast.error('이전 테스트 실행 기록을 불러오지 못했습니다.');
+            }
+            return;
+          }
+        }
+
+        const retryDelay = TEST_RUN_RESTORE_RETRY_DELAYS_MS[attempt];
+        if (retryDelay !== undefined) {
+          await waitForTestRunRestore(retryDelay);
+          if (cancelled) return;
+        }
+      }
+
+      if (!cancelled) {
+        setTestRunRestoreState('delayed');
+        toast.error(
+          '이전 테스트 실행 기록이 아직 준비되지 않았습니다. 잠시 후 다시 시도하세요.',
+        );
+      }
+    };
+
+    void restore();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeWorkflowId,
+    nodes.length,
+    openTestPanel,
+    restoreTestExecution,
+    resetTestExecution,
+    selectTestExecutionNode,
+    testExecutionLocationRevision,
+    testRunRestoreRetry,
+  ]);
 
   const outputLabelByNodeId = useMemo(() => {
     const labelMap = new Map<string, Map<string, string>>();
@@ -400,9 +680,19 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     resultOutputByNodeId.set(result.nodeId, result.output);
   }
 
-  const nodeExecutionSummaries = nodes
-    .map((node) => {
-      const data = node.data as {
+  const nodeResultById = new Map(
+    nodeResults.map((result) => [result.nodeId, result]),
+  );
+  const executionNodeIds = new Set([
+    ...nodes.map((node) => node.id),
+    ...nodeResults.map((result) => result.nodeId),
+  ]);
+  const nodeExecutionSummaries = Array.from(executionNodeIds)
+    .map((nodeId) => {
+      const node = nodes.find((item) => item.id === nodeId);
+      const storedResult = nodeResultById.get(nodeId);
+      if (!node && !storedResult) return null;
+      const data = node?.data as {
         title?: string;
         name?: string;
         status?: string;
@@ -413,23 +703,39 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
           latency_ms?: number;
         };
       };
-      const output = resultOutputByNodeId.get(node.id);
+      const output = resultOutputByNodeId.get(nodeId);
       const status =
-        currentExecutingNodeId === node.id
+        currentExecutingNodeId === nodeId
           ? 'running'
-          : data.observability?.status || data.status || 'idle';
+          : storedResult?.status ||
+            data.observability?.status ||
+            data.status ||
+            'idle';
 
       return {
-        nodeId: node.id,
-        nodeType: node.type || 'node',
-        title: data.title || data.name || getNodeDisplayName(node.id),
+        nodeId,
+        nodeType: storedResult?.nodeType || node?.type || 'node',
+        title:
+          storedResult?.title ||
+          data.title ||
+          data.name ||
+          getNodeDisplayName(nodeId),
         status,
         output,
-        latencyMs: data.observability?.latency_ms,
-        totalTokens: data.observability?.total_tokens ?? readTokenUsage(output),
-        totalCost: data.observability?.total_cost ?? readCost(output),
+        latencyMs: storedResult?.latencyMs ?? data.observability?.latency_ms,
+        totalTokens:
+          storedResult?.totalTokens ??
+          data.observability?.total_tokens ??
+          readTokenUsage(output),
+        totalCost:
+          storedResult?.totalCost ??
+          data.observability?.total_cost ??
+          readCost(output),
       };
     })
+    .filter(
+      (summary): summary is NonNullable<typeof summary> => summary !== null,
+    )
     .filter((summary) =>
       ['running', 'success', 'failure'].includes(summary.status),
     );
@@ -471,6 +777,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   const renderNodeExecutionSummary = (
     summary: (typeof nodeExecutionSummaries)[number],
   ) => {
+    const hasLlmUsageMetrics = summary.nodeType === 'llmNode';
     const isRunning = summary.status === 'running';
     const isFailure = summary.status === 'failure';
     const statusLabel = isRunning ? '실행 중' : isFailure ? '실패' : '성공';
@@ -511,7 +818,13 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                 type="button"
                 aria-label={`${summary.title} 상세 보기`}
                 title="상세 보기"
-                onClick={() => setSelectedTestNodeId(summary.nodeId)}
+                onClick={() => {
+                  selectExecutionNode(summary.nodeId);
+                  replaceTestExecutionLocation(
+                    testExecutionRunId,
+                    summary.nodeId,
+                  );
+                }}
                 className="rounded-md border border-gray-200 bg-white p-1.5 text-gray-500 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300 dark:hover:border-blue-800 dark:hover:bg-blue-950/30"
               >
                 <ChevronRight className="h-4 w-4" />
@@ -519,7 +832,11 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
             ) : null}
           </div>
         </div>
-        <dl className="grid grid-cols-3 gap-2 bg-white px-4 py-3 text-xs dark:bg-gray-900">
+        <dl
+          className={`grid gap-2 bg-white px-4 py-3 text-xs dark:bg-gray-900 ${
+            hasLlmUsageMetrics ? 'grid-cols-3' : 'grid-cols-1'
+          }`}
+        >
           <div>
             <dt className="flex items-center gap-1 text-gray-500">
               <Clock className="h-3.5 w-3.5" />
@@ -529,21 +846,25 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
               {formatLatency(summary.latencyMs)}
             </dd>
           </div>
-          <div>
-            <dt className="flex items-center gap-1 text-gray-500">
-              <Coins className="h-3.5 w-3.5" />
-              비용
-            </dt>
-            <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
-              {formatCost(summary.totalCost)}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-gray-500">토큰</dt>
-            <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
-              {formatTokens(summary.totalTokens)}
-            </dd>
-          </div>
+          {hasLlmUsageMetrics ? (
+            <>
+              <div>
+                <dt className="flex items-center gap-1 text-gray-500">
+                  <Coins className="h-3.5 w-3.5" />
+                  비용
+                </dt>
+                <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
+                  {formatCost(summary.totalCost)}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-gray-500">토큰</dt>
+                <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
+                  {formatTokens(summary.totalTokens)}
+                </dd>
+              </div>
+            </>
+          ) : null}
         </dl>
       </div>
     );
@@ -552,8 +873,9 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   const renderNodeExecutionDetail = (
     summary: (typeof nodeExecutionSummaries)[number],
   ) => {
+    const hasLlmUsageMetrics = summary.nodeType === 'llmNode';
     const hasRoutingTrace =
-      summary.nodeType === 'llmNode' &&
+      hasLlmUsageMetrics &&
       typeof summary.output === 'object' &&
       summary.output !== null &&
       !Array.isArray(summary.output) &&
@@ -567,7 +889,10 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
             type="button"
             aria-label="테스트 결과로 돌아가기"
             title="테스트 결과로 돌아가기"
-            onClick={() => setSelectedTestNodeId(null)}
+            onClick={() => {
+              selectExecutionNode(null);
+              replaceTestExecutionLocation(testExecutionRunId, null);
+            }}
             className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
           >
             <ArrowLeft className="h-3.5 w-3.5" />
@@ -577,7 +902,11 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
           </h3>
         </div>
 
-        <dl className="grid grid-cols-3 gap-3 rounded-lg border border-gray-200 bg-gray-50 p-4 text-xs dark:border-gray-700 dark:bg-gray-800/60">
+        <dl
+          className={`grid gap-3 rounded-lg border border-gray-200 bg-gray-50 p-4 text-xs dark:border-gray-700 dark:bg-gray-800/60 ${
+            hasLlmUsageMetrics ? 'grid-cols-3' : 'grid-cols-2'
+          }`}
+        >
           <div>
             <dt className="text-gray-500">상태</dt>
             <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
@@ -590,12 +919,14 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
               {formatLatency(summary.latencyMs)}
             </dd>
           </div>
-          <div>
-            <dt className="text-gray-500">비용</dt>
-            <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
-              {formatCost(summary.totalCost)}
-            </dd>
-          </div>
+          {hasLlmUsageMetrics ? (
+            <div>
+              <dt className="text-gray-500">비용</dt>
+              <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
+                {formatCost(summary.totalCost)}
+              </dd>
+            </div>
+          ) : null}
         </dl>
 
         <section>
@@ -661,7 +992,10 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
       return;
     }
 
-    setSelectedTestNodeId(null);
+    selectExecutionNode(null);
+    restoredRunRef.current = null;
+    setTestRunRestoreState('idle');
+    replaceTestExecutionLocation(null, null);
     setValidationErrors([]);
     setPreflightStatus('validating');
 
@@ -784,12 +1118,17 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
           inputsWithMemory as Record<string, any>,
           async (event) => {
             resetStreamIdleTimeout();
-            // 시각적 피드백을 위한 지연
-            await new Promise((resolve) => setTimeout(resolve, 500));
-
             const { type, data } = event;
 
-            if (type === 'node_start') {
+            if (type === 'workflow_start') {
+              if (typeof data?.run_id === 'string') {
+                setTestExecutionRunId(data.run_id);
+                replaceTestExecutionLocation(data.run_id, null);
+              }
+              return;
+            } else if (type === 'node_start') {
+              // 노드 상태 변화만 짧게 늦춰 시각적 피드백을 유지한다.
+              await new Promise((resolve) => setTimeout(resolve, 500));
               nodeStartedAtRef.current[data.node_id] = performance.now();
               setCurrentExecutingNode(data.node_id);
               updateNodeData(data.node_id, {
@@ -812,6 +1151,8 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                 );
               }
             } else if (type === 'node_finish') {
+              // 노드 상태 변화만 짧게 늦춰 시각적 피드백을 유지한다.
+              await new Promise((resolve) => setTimeout(resolve, 500));
               const startedAt = nodeStartedAtRef.current[data.node_id];
               const fallbackLatencyMs = startedAt
                 ? Math.round(performance.now() - startedAt)
@@ -838,10 +1179,17 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                 nodeId: data.node_id,
                 nodeType: data.node_type,
                 output: data.output,
+                title: getNodeDisplayName(data.node_id),
+                status: 'success',
+                latencyMs: metrics.latencyMs,
+                totalTokens: metrics.totalTokens,
+                totalCost: metrics.totalCost,
               });
             } else if (type === 'workflow_finish') {
+              // 최종 결과를 즉시 반영해 완료 시점을 늦추지 않는다.
               finalResult = data;
             } else if (type === 'error') {
+              // 오류는 즉시 보여야 사용자가 재실행 여부를 판단할 수 있다.
               if (data.node_id) {
                 const startedAt = nodeStartedAtRef.current[data.node_id];
                 const latencyMs = startedAt
@@ -850,6 +1198,14 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
                 updateNodeData(data.node_id, {
                   status: 'failure',
                   observability: buildObservability(null, 'failure', latencyMs),
+                });
+                addTestNodeResult({
+                  nodeId: data.node_id,
+                  nodeType: data.node_type || 'node',
+                  output: {},
+                  title: getNodeDisplayName(data.node_id),
+                  status: 'failure',
+                  latencyMs,
                 });
               }
               toast.error(`모듈 실행 실패: ${data.message}`);
@@ -899,10 +1255,29 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
   };
 
   const handleReset = () => {
-    setSelectedTestNodeId(null);
+    selectExecutionNode(null);
+    restoredRunRef.current = null;
+    setTestRunRestoreState('idle');
+    replaceTestExecutionLocation(null, null);
     setValidationErrors([]);
     setPreflightStatus('idle');
     resetTestExecution();
+  };
+
+  const handleComparisonBaselineRunIdChange = (runId: string | null) => {
+    setComparisonBaselineRunId(runId);
+    setComparisonSelectedNodeId(null);
+    replaceTestExecutionLocation(testExecutionRunId, testSelectedNodeId, {
+      baselineRunId: runId,
+      comparisonNodeId: null,
+    });
+  };
+
+  const handleComparisonSelectedNodeIdChange = (nodeId: string | null) => {
+    setComparisonSelectedNodeId(nodeId);
+    replaceTestExecutionLocation(testExecutionRunId, testSelectedNodeId, {
+      comparisonNodeId: nodeId,
+    });
   };
 
   const getVariableDisplayName = (variable: WorkflowVariable) =>
@@ -931,21 +1306,107 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
         </div>
       )}
       {/* Header */}
-      <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between dark:border-gray-800">
-        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2">
-          <Play className="w-5 h-5 text-blue-600" />
-          테스트 실행
-        </h2>
-        <button
-          onClick={toggleTestPanel}
-          className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-full transition-colors dark:hover:bg-gray-800"
-        >
-          <X className="w-5 h-5" />
-        </button>
+      <div className="border-b border-gray-200 px-6 py-4 dark:border-gray-800">
+        <div className="flex items-center justify-between">
+          <h2 className="flex items-center gap-2 text-lg font-semibold text-gray-900 dark:text-gray-100">
+            <Play className="h-5 w-5 text-blue-600" />
+            테스트 실행
+          </h2>
+          <button
+            onClick={toggleTestPanel}
+            className="rounded-full p-2 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="mt-3 grid grid-cols-2 rounded-lg border border-gray-200 bg-gray-50 p-1 dark:border-gray-700 dark:bg-gray-800">
+          <button
+            type="button"
+            aria-pressed={!isComparisonMode}
+            onClick={() => {
+              setIsComparisonMode(false);
+              replaceTestExecutionLocation(
+                testExecutionRunId,
+                testSelectedNodeId,
+                { comparisonMode: false },
+              );
+            }}
+            className={`rounded-md px-3 py-2 text-xs font-semibold transition-colors ${
+              !isComparisonMode
+                ? 'bg-white text-gray-900 shadow-sm dark:bg-gray-900 dark:text-gray-100'
+                : 'text-gray-500 hover:text-gray-800 dark:text-gray-300'
+            }`}
+          >
+            단일 결과
+          </button>
+          <button
+            type="button"
+            aria-pressed={isComparisonMode}
+            onClick={() => {
+              setHasOpenedComparisonPanel(true);
+              setIsComparisonMode(true);
+              replaceTestExecutionLocation(
+                testExecutionRunId,
+                testSelectedNodeId,
+                { comparisonMode: true },
+              );
+              setClampedTestSidebarWidth(maxTestSidebarWidth);
+            }}
+            className={`inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-2 text-xs font-semibold transition-colors ${
+              isComparisonMode
+                ? 'bg-white text-blue-700 shadow-sm dark:bg-gray-900 dark:text-blue-300'
+                : 'text-gray-500 hover:text-gray-800 dark:text-gray-300'
+            }`}
+          >
+            <GitCompareArrows className="h-3.5 w-3.5" /> 실행 비교
+          </button>
+        </div>
       </div>
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-6">
+        {testRunRestoreState === 'restoring' && !isExecuting ? (
+          <div className="mb-4 flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 p-3 text-xs text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            저장된 테스트 실행 기록을 불러오는 중입니다.
+          </div>
+        ) : null}
+        {testRunRestoreState === 'delayed' ||
+        testRunRestoreState === 'failed' ? (
+          <div className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+            <p>
+              {testRunRestoreState === 'delayed'
+                ? '실행 기록이 아직 준비되지 않았습니다.'
+                : '실행 기록을 불러오는 중 오류가 발생했습니다.'}
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                restoredRunRef.current = null;
+                setTestRunRestoreState('idle');
+                setTestRunRestoreRetry((value) => value + 1);
+              }}
+              className="shrink-0 rounded-md border border-amber-300 bg-white px-2.5 py-1.5 font-semibold text-amber-800 hover:bg-amber-100 dark:bg-gray-900 dark:text-amber-200"
+            >
+              다시 시도
+            </button>
+          </div>
+        ) : null}
+        {hasOpenedComparisonPanel && activeWorkflowId ? (
+          <div className={isComparisonMode ? undefined : 'hidden'}>
+            <ExecutionComparisonPanel
+              workflowId={activeWorkflowId}
+              nodes={nodes}
+              baselineRunId={comparisonBaselineRunId}
+              currentRunId={testExecutionRunId}
+              currentExecutionStatus={testExecutionStatus}
+              currentExecutionError={testExecutionError}
+              selectedNodeId={comparisonSelectedNodeId}
+              onBaselineRunIdChange={handleComparisonBaselineRunIdChange}
+              onSelectedNodeIdChange={handleComparisonSelectedNodeIdChange}
+            />
+          </div>
+        ) : null}
         {isExecuting ? (
           /* Execution Progress - Show node results as they come in */
           <div className="space-y-4">
@@ -1135,7 +1596,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
               )}
             </div>
           </div>
-        ) : (
+        ) : isComparisonMode ? null : (
           /* Execution Result */
           <div className="space-y-6">
             {error ? (

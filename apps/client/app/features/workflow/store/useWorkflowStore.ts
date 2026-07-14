@@ -73,6 +73,8 @@ export type AgentBuilderPreviewState = {
 const createIdleTestExecutionState = () => ({
   isTestPanelOpen: false,
   testExecutionStatus: 'idle' as const,
+  testExecutionRunId: null,
+  testSelectedNodeId: null,
   testExecutionStartedAt: null,
   testExecutionFinishedAt: null,
   testExecutionResult: null,
@@ -81,6 +83,27 @@ const createIdleTestExecutionState = () => ({
   currentExecutingNodeId: null,
   isTestUploading: false,
 });
+
+export type TestNodeResult = {
+  nodeId: string;
+  nodeType: string;
+  output: unknown;
+  title?: string;
+  status?: 'running' | 'success' | 'failure';
+  latencyMs?: number;
+  totalTokens?: number;
+  totalCost?: number;
+};
+
+export type RestoredTestExecution = {
+  runId: string;
+  status: 'running' | 'success' | 'failure';
+  startedAt: number | null;
+  finishedAt: number | null;
+  workflowResult: unknown;
+  nodeResults: TestNodeResult[];
+  error: string | null;
+};
 
 type WorkflowState = {
   // === Editor UI 상태 (editorStore에서 유래) ===
@@ -113,23 +136,24 @@ type WorkflowState = {
 
   // === 테스트 실행 상태 ===
   testExecutionStatus: 'idle' | 'running' | 'success' | 'failure';
+  testExecutionRunId: string | null;
+  testSelectedNodeId: string | null;
   testExecutionStartedAt: number | null;
   testExecutionFinishedAt: number | null;
   testExecutionResult: unknown;
-  testNodeResults: Array<{ nodeId: string; nodeType: string; output: unknown }>;
+  testNodeResults: TestNodeResult[];
   testExecutionError: string | null;
   currentExecutingNodeId: string | null;
   isTestUploading: boolean;
   beginTestExecution: () => void;
   setTestUploading: (isUploading: boolean) => void;
   setCurrentExecutingNode: (nodeId: string | null) => void;
-  addTestNodeResult: (result: {
-    nodeId: string;
-    nodeType: string;
-    output: unknown;
-  }) => void;
+  setTestExecutionRunId: (runId: string | null) => void;
+  selectTestExecutionNode: (nodeId: string | null) => void;
+  addTestNodeResult: (result: TestNodeResult) => void;
   finishTestExecution: (result: unknown) => void;
   failTestExecution: (error: string) => void;
+  restoreTestExecution: (execution: RestoredTestExecution) => void;
   resetTestExecution: () => void;
 
   // === 노드 전체화면 설정(NDV) 상태 ===
@@ -584,6 +608,8 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
   // === 테스트 패널 상태 ===
   isTestPanelOpen: false,
   testExecutionStatus: 'idle',
+  testExecutionRunId: null,
+  testSelectedNodeId: null,
   testExecutionStartedAt: null,
   testExecutionFinishedAt: null,
   testExecutionResult: null,
@@ -1124,6 +1150,8 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
   beginTestExecution: () =>
     set({
       testExecutionStatus: 'running',
+      testExecutionRunId: null,
+      testSelectedNodeId: null,
       testExecutionStartedAt: Date.now(),
       testExecutionFinishedAt: null,
       testExecutionResult: null,
@@ -1138,9 +1166,16 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
   setCurrentExecutingNode: (currentExecutingNodeId) =>
     set({ currentExecutingNodeId }),
 
+  setTestExecutionRunId: (testExecutionRunId) => set({ testExecutionRunId }),
+
+  selectTestExecutionNode: (testSelectedNodeId) => set({ testSelectedNodeId }),
+
   addTestNodeResult: (result) =>
     set((state) => ({
-      testNodeResults: [...state.testNodeResults, result],
+      testNodeResults: [
+        ...state.testNodeResults.filter((item) => item.nodeId !== result.nodeId),
+        result,
+      ],
     })),
 
   finishTestExecution: (testExecutionResult) =>
@@ -1161,9 +1196,25 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
       isTestUploading: false,
     }),
 
+  restoreTestExecution: (execution) =>
+    set({
+      isTestPanelOpen: true,
+      testExecutionStatus: execution.status,
+      testExecutionRunId: execution.runId,
+      testExecutionStartedAt: execution.startedAt,
+      testExecutionFinishedAt: execution.finishedAt,
+      testExecutionResult: execution.workflowResult,
+      testNodeResults: execution.nodeResults,
+      testExecutionError: execution.error,
+      currentExecutingNodeId: null,
+      isTestUploading: false,
+    }),
+
   resetTestExecution: () =>
     set({
       testExecutionStatus: 'idle',
+      testExecutionRunId: null,
+      testSelectedNodeId: null,
       testExecutionStartedAt: null,
       testExecutionFinishedAt: null,
       testExecutionResult: null,
@@ -1360,6 +1411,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
   setActiveWorkflow: (id) => {
     const workflow = get().workflows.find((w) => w.id === id);
     if (workflow) {
+      const isSameWorkflow = id === get().activeWorkflowId;
       set({
         activeWorkflowId: id,
         nodes: workflow.nodes,
@@ -1369,7 +1421,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
         fullscreenNodeId: null,
         undoStack: [],
         redoStack: [],
-        ...createIdleTestExecutionState(),
+        ...(isSameWorkflow ? {} : createIdleTestExecutionState()),
       });
     }
   },
@@ -1378,6 +1430,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
   // 대상 워크플로우 데이터가 로드되어 있으면 화면 store도 함께 전환합니다.
   // 아직 로드 전이면 ID만 바꿔 초기 빈 데이터로 화면을 덮어쓰지 않습니다.
   setActiveWorkflowIdSafe: (id: string) => {
+    const isSameWorkflow = id === get().activeWorkflowId;
     const workflow = get().workflows.find((w) => w.id === id);
 
     if (!workflow) {
@@ -1387,7 +1440,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
         fullscreenNodeId: null,
         undoStack: [],
         redoStack: [],
-        ...createIdleTestExecutionState(),
+        ...(isSameWorkflow ? {} : createIdleTestExecutionState()),
       });
       return;
     }
@@ -1402,7 +1455,7 @@ export const useWorkflowStore = create<InternalWorkflowState>((set, get) => ({
       fullscreenNodeId: null,
       undoStack: [],
       redoStack: [],
-      ...createIdleTestExecutionState(),
+      ...(isSameWorkflow ? {} : createIdleTestExecutionState()),
       ...(hasLoadedWorkflowData
         ? { nodes: workflow.nodes, edges: workflow.edges }
         : {}),

@@ -84,6 +84,16 @@ const readWorkflowFinishOutput = (workflowResult: unknown): unknown => {
   return pickFirstText(workflowResult, WORKFLOW_OUTPUT_KEYS);
 };
 
+const isNodeExecutionContext = (value: unknown, nodes: Node[]) => {
+  if (!isRecord(value)) return false;
+
+  const keys = Object.keys(value);
+  if (keys.length === 0) return false;
+
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  return keys.every((key) => nodeIds.has(key));
+};
+
 const readNodeDisplayName = (node: Node | undefined, fallback: string) => {
   const data = node?.data as { title?: unknown; name?: unknown } | undefined;
   const title = typeof data?.title === 'string' ? data.title.trim() : '';
@@ -218,7 +228,11 @@ export const getFinalResponsePreview = ({
   nodes: Node[];
 }): FinalResponsePreview => {
   const workflowOutput = readWorkflowFinishOutput(workflowResult);
-  if (workflowOutput !== undefined && workflowOutput !== null) {
+  if (
+    workflowOutput !== undefined &&
+    workflowOutput !== null &&
+    !isNodeExecutionContext(workflowOutput, nodes)
+  ) {
     return buildFinalResponsePreview(workflowOutput, '워크플로우 최종 출력');
   }
 

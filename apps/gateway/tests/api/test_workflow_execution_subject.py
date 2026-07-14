@@ -2,6 +2,8 @@ import asyncio
 import uuid
 from types import SimpleNamespace
 
+import pytest
+from fastapi import HTTPException
 from starlette.requests import Request
 
 from apps.gateway.api.v1.endpoints import workflow as workflow_endpoint
@@ -39,7 +41,14 @@ class FakeNoBudgetDb:
 
 def _valid_start_graph():
     return {
-        "nodes": [{"id": "start-1", "type": "startNode", "data": {}}],
+        "nodes": [
+            {
+                "id": "start-1",
+                "type": "startNode",
+                "position": {"x": 0, "y": 0},
+                "data": {},
+            }
+        ],
         "edges": [],
     }
 
@@ -89,6 +98,55 @@ def test_authenticated_execute_passes_current_user_execution_subject(monkeypatch
         "type": "user",
         "id": str(current_user.id),
     }
+
+
+def test_execute_preflight_error_is_preserved_without_celery_backend(
+    monkeypatch,
+):
+    workflow_id = str(uuid.uuid4())
+    workflow = SimpleNamespace(
+        id=workflow_id,
+        app_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+    )
+    current_user = SimpleNamespace(id=uuid.uuid4())
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": f"/api/v1/workflows/{workflow_id}/execute",
+            "headers": [],
+        }
+    )
+
+    monkeypatch.setattr(
+        workflow_endpoint,
+        "ensure_workflow_permission",
+        lambda *args, **kwargs: workflow,
+    )
+    monkeypatch.setattr(
+        workflow_endpoint.WorkflowService,
+        "get_draft",
+        lambda *args, **kwargs: {
+            "nodes": [{"id": "start-1", "type": "startNode", "data": {}}],
+            "edges": [],
+        },
+    )
+    monkeypatch.setattr(workflow_endpoint, "celery_app", FakeCeleryApp())
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            workflow_endpoint.execute_workflow(
+                workflow_id,
+                request,
+                user_input={},
+                db=FakeNoBudgetDb(),
+                current_user=current_user,
+            )
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["error"]["code"] == "workflow.configuration_preflight.blocked"
 
 
 def test_authenticated_execute_dispatches_draft_rag_selection(monkeypatch):

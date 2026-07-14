@@ -60,6 +60,7 @@ import { getSnapBackgroundGap } from '../../utils/gridSnap';
 import { hasIncomingHandle } from '../../utils/validateWorkflowGraph';
 import { WORKFLOW_NODE_SIZE } from '../../utils/workflowCanvasGeometry';
 import { AgentBuilderPanel } from '../agentBuilder/AgentBuilderPanel';
+import { copyTestExecutionLocationQueryParams } from '../../utils/testExecutionLocation';
 
 const MIN_ZOOM = 0.4;
 const MAX_ZOOM = 1.6;
@@ -177,6 +178,8 @@ export default function NodeCanvas() {
     fullscreenNodeId,
     syncNodeFullscreenFromUrl,
     testExecutionStatus,
+    testExecutionRunId,
+    testSelectedNodeId,
     isTestUploading,
     hasUnsavedChanges,
     agentBuilderPreview,
@@ -1120,10 +1123,21 @@ export default function NodeCanvas() {
         </button>
         <div className="mx-1 h-4 w-px bg-slate-200" />
         <button
-          onClick={() =>
-            !isAgentBuilderPreviewMode &&
-            router.push(`/modules/${activeWorkflowId}/report?tab=logs`)
-          }
+          onClick={() => {
+            if (isAgentBuilderPreviewMode) return;
+            const query = new URLSearchParams({ tab: 'logs' });
+            const testExecutionQuery = new URLSearchParams(
+              window.location.search,
+            );
+            if (testExecutionRunId) {
+              testExecutionQuery.set('testRun', testExecutionRunId);
+            }
+            if (testSelectedNodeId) {
+              testExecutionQuery.set('testNode', testSelectedNodeId);
+            }
+            copyTestExecutionLocationQueryParams(testExecutionQuery, query);
+            router.push(`/modules/${activeWorkflowId}/report?${query.toString()}`);
+          }}
           disabled={isAgentBuilderPreviewMode}
           className={`flex h-full items-center gap-1.5 rounded-md px-3 text-[13px] font-semibold transition-colors ${
             isAgentBuilderPreviewMode

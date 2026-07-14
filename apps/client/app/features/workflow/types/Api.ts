@@ -571,12 +571,14 @@ export interface WorkflowNodeRun {
   trace_metadata?: Record<string, unknown>;
   error_message?: string;
   started_at: string;
-  finished_at?: string;
+  finished_at?: string | null;
+  duration?: number;
 }
 
 export interface WorkflowRun {
   id: string;
   workflow_id: string;
+  app_id?: string | null;
   user_id: string | null;
   status: string;
   trigger_mode: 'manual' | 'scheduler' | 'api' | 'app' | 'webhook';
@@ -584,11 +586,15 @@ export interface WorkflowRun {
   outputs?: Record<string, any>;
   error_message?: string;
   started_at: string;
-  finished_at?: string;
+  finished_at?: string | null;
   duration?: number;
   workflow_version?: number;
+  deployment_id?: string | null;
   total_tokens?: number;
   total_cost?: number;
+  redaction_applied?: boolean;
+  pii_detected?: boolean;
+  payload_storage_mode?: string;
   node_runs?: WorkflowNodeRun[];
 }
 

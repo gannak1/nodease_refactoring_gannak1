@@ -8,6 +8,9 @@ Verified Against: `feature/mba-219 @ 5b1cf366`
 | Method | Path | Description | Auth |
 | --- | --- | --- | --- |
 | POST | `/api/v1/workflows/{workflow_id}/stream` | 테스트 실행 스트리밍 이벤트를 반환한다. 기존 구현을 사용한다. | workflow execute 권한 |
+| GET | `/api/v1/workflows/{workflow_id}/runs` | 저장된 workflow run 목록을 조회한다. `page`, `limit`, optional `status`, `trigger_mode`로 기준 실행 후보를 좁힌다. | workflow read 권한 |
+| GET | `/api/v1/workflows/{workflow_id}/runs/{run_id}` | 저장된 workflow run 및 node run을 조회한다. TestSidebar 복원과 실행 비교는 이 기존 상세 API를 사용한다. | workflow read 권한 |
+| GET | `/api/v1/workflows/{workflow_id}/runs/{run_id}/llm-traces` | 선택한 실행의 LLM node 비용·토큰·지연 정보를 조회한다. 실행 비교는 raw prompt가 아닌 safe usage summary만 사용한다. | workflow read 권한 |
 | GET | `/api/v1/workflows/{workflow_id}/nodes/{node_id}/execution-logs` | 현재 노드가 실행된 workflow run 목록을 최신순으로 조회한다. 목록 row에 필요한 node-level preview를 포함한다. | workflow read 권한 |
 | GET | `/api/v1/workflows/{workflow_id}/nodes/{node_id}/execution-logs/{run_id}` | 선택한 workflow run 안의 현재 노드 input/output/trace/usage 상세를 조회한다. | workflow read 권한 |
 | GET | `/api/v1/deployments/{deployment_id}/run-info` | 내부 실행 화면용 safe deployment metadata를 반환한다. | 로그인 + workflow execute 권한 |
@@ -81,9 +84,11 @@ Schedule claim id, external-effect 내부 identity, provider-visible idempotency
 
 - 이번 UI 변경은 신규 API를 추가하지 않는다.
 - 프론트는 기존 스트리밍 이벤트를 사용한다.
+  - `workflow_start`: `{ run_id }`. 실행 결과 복원용 식별자만 포함하며 input/output/credential은 포함하지 않는다.
   - `node_start`: `{ node_id }`
   - `node_finish`: `{ node_id, node_type, output, latency_ms, total_tokens, total_cost }`
   - `workflow_finish`: 최종 workflow output
+- Gateway는 각 SSE event를 실제 줄바꿈 두 개(`\n\n`)로 끝나는 record로 전송한다. 문자 `\\n\\n`을 본문에 넣어 다음 event와 같은 JSON record로 합쳐지게 해서는 안 된다.
   - `error`: `{ message, node_id?, code?, retryable? }`. 기존 오류는 선택 필드를 생략할 수 있지만, MBA-190의 `external_effect.result_unavailable`, `external_effect.identity_conflict`, `external_effect.outcome_unknown`은 `code`와 `retryable=false`를 반드시 포함한다.
 - Gateway는 `X-Organization-Id`가 전달된 테스트 실행 요청에서 active organization membership을 검증하고, 해당 organization이 workflow의 organization과 다르면 scope 밖 resource로 보고 `404`로 숨긴다. Header가 없는 legacy 호출은 기존 workflow row organization 기준 permission check를 유지한다.
 - `node_finish` 이벤트의 node-level summary 표준 필드:
@@ -96,7 +101,6 @@ Schedule claim id, external-effect 내부 identity, provider-visible idempotency
 - 화면 완료 시간은 프론트가 테스트 실행 시작 상태로 전환된 시각과 `workflow_finish` 또는 최종 오류 처리 시각의 차이로 계산한다. 이 값은 API response 필드가 아니며 DB에 저장하지 않는다.
 - 서버 실행 시간은 백엔드/엔진이 기록한 workflow-level duration을 사용한다. 현재 저장 기준은 `workflow_runs.duration`이며, 단위는 초다.
 - `workflow_finish` 이벤트가 workflow-level summary를 제공하는 경우 프론트는 다음 필드를 우선 사용한다.
-  - `run_id`: 연결된 workflow run id.
   - `duration`: 서버 실행 시간. `workflow_runs.duration`과 같은 초 단위 값.
   - `total_tokens`: 서버가 집계한 전체 토큰 사용량.
   - `total_cost`: 서버가 집계한 전체 비용.
@@ -126,6 +130,24 @@ Client-only screen completion summary example:
 ```
 
 `screen_completion_duration_ms`는 API response가 아니라 프론트 UI 상태에서 계산되는 값이다.
+
+TestSidebar restore contract:
+
+- Client는 `testRun=<workflow_run_id>`와 optional `testNode=<node_id>`만 같은 workflow의 editor/report URL query에 보관한다.
+- 브라우저 새로고침 또는 보고 화면에서 editor로 돌아온 뒤 Client는 `GET /api/v1/workflows/{workflow_id}/runs/{testRun}`을 호출한다.
+- Gateway는 기존 workflow read permission을 적용한다. 권한이 없거나 해당 workflow에 속하지 않는 run은 복원하지 않는다.
+- `WorkflowNodeRun.duration`은 초 단위이며 Client는 표시 전에 millisecond로 변환한다. `trace_metadata`는 노드 상세의 safe model-routing 설명을 복원하는 데만 사용한다.
+- `workflow_start`는 durable run 기록 생성보다 먼저 도착할 수 있다. Client는 초기 `404` 또는 `running` 응답을 실패로 바꾸지 않고, 점차 길어지는 제한된 간격으로 재조회한다. terminal run을 정상 복원한 뒤에만 해당 URL run을 복원 완료로 고정한다.
+- 재시도 한도를 넘겨도 기존 실행을 `failure`로 덮어쓰지 않는다. Client는 기록 준비 지연 안내와 명시적 재시도 action을 표시한다. 브라우저 앞으로/뒤로가기로 `testRun` query가 바뀌면 Client는 새 URL을 다시 읽고, `testRun`이 제거된 경우 이전 복원 결과를 초기화한다.
+
+TestSidebar execution comparison contract:
+
+- 기준 실행 후보 목록은 `GET /runs`의 서버 필터를 사용한다. Client가 raw input/output 문자열을 검색 인덱스로 만들지 않는다.
+- Client는 사용자가 선택한 `baseline_run_id`로 상세와 LLM trace를 조회하며 최신 실행을 자동 고정하지 않는다.
+- 비교 대상 실행은 stream의 `workflow_start.run_id`로 식별한다. 상세 로그 반영이 지연되면 Client는 동기화 중 상태를 표시하고 기존 기준 실행을 변경하지 않는다.
+- 양쪽 실행은 같은 `workflow_id`의 read permission 경계를 통과해야 한다. 다른 workflow의 run id는 `404`로 숨긴다.
+- 노드별 비용·토큰·지연은 node run output/trace metadata와 LLM trace safe summary를 조합하되 credential id와 raw prompt를 표시하지 않는다.
+- LLM trace endpoint의 `404` 또는 빈 목록은 화면에 `LLM trace 기록 없음`으로 표시하고 node run 비교를 유지한다. `403`, `5xx`, 네트워크 오류는 node run 비교를 중단하지 않되 `비교 근거 일부를 불러오지 못함` 경고를 표시한다. 이 경우 모델 라우팅·토큰·비용 근거 일부가 누락될 수 있다.
 
 Example `node_finish` event data with node-level summary:
 

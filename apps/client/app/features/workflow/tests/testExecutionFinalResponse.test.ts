@@ -70,6 +70,37 @@ describe('workflow test final response preview', () => {
     });
   });
 
+  it('전체 노드 실행 결과를 감싼 workflow output보다 answer node 출력을 우선한다', () => {
+    const preview = getFinalResponsePreview({
+      workflowResult: {
+        output: {
+          'start-1': { message: '휴가 신청 절차를 알려주세요.' },
+          'llm-1': { text: '휴가 신청은 관리자 승인 후 처리됩니다.' },
+          'answer-1': { reply: '휴가 신청은 관리자 승인 후 처리됩니다.' },
+        },
+      },
+      nodeResults: [
+        {
+          nodeId: 'llm-1',
+          nodeType: 'llmNode',
+          output: { text: 'LLM 원본 응답' },
+        },
+        {
+          nodeId: 'answer-1',
+          nodeType: 'answerNode',
+          output: { reply: '최종 사용자에게 보여줄 답변' },
+        },
+      ],
+      nodes,
+    });
+
+    expect(preview).toMatchObject({
+      kind: 'text',
+      text: '최종 사용자에게 보여줄 답변',
+      sourceLabel: '최종 응답',
+    });
+  });
+
   it('answer node의 reply output은 최종 사용자 응답 텍스트로 표시한다', () => {
     expect(
       getFinalResponsePreview({

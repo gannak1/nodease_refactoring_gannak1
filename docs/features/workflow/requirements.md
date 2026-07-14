@@ -20,6 +20,7 @@ MBA-104 범위에서는 비용 최적화와 A/B 비교 실행을 준비하기 �
 - 빌더로서, 전체 비용과 전체 토큰 사용량은 서버 실행 결과 기준으로 확인하고 싶다.
 - 빌더로서, 향후 모델/프롬프트 A/B 비교를 붙이기 전에 기본 단일 실행 결과부터 명확하게 보고 싶다.
 - 빌더로서, 긴 입력값과 노드별 실행 상세를 읽을 때 테스트 실행 사이드바를 필요한 만큼 넓히고 싶다.
+- 빌더로서, 보고 화면을 확인하고 돌아오거나 브라우저를 새로고침해도 가장 최근 테스트 실행의 노드별 결과와 선택한 상세를 다시 보고 싶다.
 
 
 - 빌더로서, 배포 전에 필요한 credential과 권한 누락을 확인하고 싶다.
@@ -118,6 +119,8 @@ FR-048 기존 실행 계약 보존: Draft/test·Compare·stream publisher는 DB 
 - FR-070 (MBA-219): Mail managed validator는 Worker Mail schema와 같은 공통 `title`, folder, `max_results`, boolean, filter/date/reference, selector와 processing mode 타입·범위를 검사해야 한다. `credential_id=null`은 `configuration_state=unresolved`인 draft/inactive 편집 상태에서만 보존할 수 있다. 단, `configuration_state` 도입 전 Client가 저장한 `credential_id=null` node에서 그 필드가 아예 없으면 legacy unresolved와 동일하게 취급하되 명시적 null/그 밖의 값은 invalid로 유지한다. Non-null reference는 deployment 저장 시 scope/status/use가 유효해야 한다.
 - FR-071 (MBA-219): Pure preview는 durable permission audit을 만들지 않아야 한다. Active/inactive deployment create, activation과 authenticated test/stream/Compare/Cost Optimizer enforcement가 same-organization active Mail credential의 `use` 거부를 확인하면 resource hiding 응답을 유지하면서 요청당 resource별 `permission.denied`를 정확히 한 번 기록해야 한다.
 - FR-072 (MBA-219): Mail preflight permission은 organization/user/membership을 요청당 한 번 판정하고 direct/team grant를 active same-organization credential 집합으로 조회해야 하며 기존 scalar effective auth-state와 같은 결과를 반환해야 한다. Revoked credential은 scalar/bulk 어느 경로에서도 잔존 grant를 운영 권한으로 집계하지 않는다.
+- FR-073: 테스트 실행 stream은 시작 직후 safe `run_id`를 전달해야 한다. Client는 이 식별자와 optional 선택 `node_id`만 URL에 보관하고, 같은 workflow의 실행 상세 API가 read 권한을 다시 확인한 뒤 반환한 기록으로 TestSidebar를 복원해야 한다. 원본 입력·출력·credential·trace 원문을 브라우저 저장소나 URL에 저장해서는 안 된다. 같은 workflow를 다시 동기화하는 과정은 테스트 실행 상태를 초기화하지 않지만, 다른 workflow 전환과 사용자의 `다시 테스트하기`는 기존 테스트 상태를 초기화한다.
+- FR-074 (MBA-270): 빌더는 workflow 편집 화면과 TestSidebar를 벗어나지 않고 저장된 실행 하나를 명시적으로 기준 실행으로 고정한 뒤 현재 테스트 실행과 비교해야 한다. 비교 모드는 최신 실행을 자동 선택하지 않으며, 기준 실행은 사용자가 변경하거나 비교 모드를 종료하기 전까지 재실행에도 유지된다. 노드 목록 비교는 성공 여부, 비용, 실행 시간, 토큰만 표시하고 `노드 상세 비교하기`에서 같은 사이드바 안에 양쪽 입력·출력과 LLM 모델 라우팅 근거를 표시한다. Test/stream 실행의 라우팅 결과는 활성 배포 정책을 미리 보는 용도이며 정책 학습 표본에는 포함하지 않는다.
 
 
 ### 1. 실행 편의성
