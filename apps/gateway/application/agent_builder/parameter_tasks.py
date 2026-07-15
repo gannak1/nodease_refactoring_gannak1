@@ -16,6 +16,7 @@ from apps.shared.services.workflow_node_catalog import (
     apply_node_parameter_value,
     derive_node_configuration_state,
     node_parameter_is_configured,
+    parameter_definition,
     node_parameter_definitions,
     validate_node_parameter_value,
 )
@@ -28,6 +29,10 @@ from apps.gateway.application.agent_builder.parameter_suggestions import (
 
 
 class ParameterTaskConflict(ValueError):
+    pass
+
+
+class ParameterTaskSafetyError(ValueError):
     pass
 
 
@@ -153,6 +158,34 @@ def _explicit_value_is_allowed(
         str(parameter["key"]),
         value,
     )
+
+
+def validate_direct_set_value(
+    *,
+    node_type: str,
+    parameter_key: str,
+    task_input_type: str,
+    value: Any,
+) -> list[str]:
+    """Validate direct-edit values before they can become a graph patch."""
+    parameter = parameter_definition(node_type, parameter_key)
+    if parameter is None or parameter.get("input_type") != task_input_type:
+        raise ParameterTaskSafetyError("catalog parameter mismatch")
+    if (
+        parameter.get("sensitivity") == "reference_only"
+        and task_input_type not in {"credential_ref", "resource_ref"}
+    ):
+        raise ParameterTaskSafetyError("reference-only parameter mismatch")
+
+    redaction = TraceRedactionService.redact_payload(
+        value,
+        policy=TracePolicyService.fail_closed_redaction_policy(),
+        payload_kind="agent_builder_direct_parameter",
+    )
+    if redaction.failed or redaction.secret_detected:
+        raise ParameterTaskSafetyError("unsafe parameter value")
+
+    return validate_node_parameter_value(node_type, parameter_key, value)
 
 
 class ParameterTaskPlanner:

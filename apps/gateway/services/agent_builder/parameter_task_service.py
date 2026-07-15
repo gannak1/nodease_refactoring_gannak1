@@ -23,11 +23,13 @@ from apps.gateway.application.agent_builder.graph_mutation_builder import (
 )
 from apps.gateway.application.agent_builder.parameter_tasks import (
     ParameterTaskConflict,
+    ParameterTaskSafetyError,
     apply_local_task_decision,
     cancel_parameter_group,
     prepare_task_decision,
     previous_reopenable_task_id,
     recommendation_matches_canonical_graph,
+    validate_direct_set_value,
 )
 from apps.gateway.services.audit_records import add_action_audit
 from apps.gateway.services.app_service import AppService
@@ -50,7 +52,6 @@ from apps.shared.schemas.agent_builder import (
 )
 from apps.shared.services.permissions import has_workflow_permission
 from apps.shared.services.permissions import has_mail_credential_permission
-from apps.shared.services.workflow_node_catalog import validate_node_parameter_value
 from apps.shared.services.workflow_node_catalog import derive_node_configuration_state
 from apps.shared.services.workflow_node_catalog import apply_node_parameter_value
 from apps.gateway.application.agent_builder.parameter_suggestions import (
@@ -263,6 +264,109 @@ class ParameterTaskService:
         if hasattr(payload.value, "resource_id"):
             return self._resolve_reference_value(task, payload.value.resource_id)
         return decision_value
+
+    def _validate_workflow_node_pair(self, node_data: dict[str, Any]) -> None:
+        workflow_value = node_data.get("workflowId")
+        app_value = node_data.get("appId")
+        if workflow_value is None or app_value is None:
+            return
+        if any(
+            isinstance(value, str) and not value.strip()
+            for value in (workflow_value, app_value)
+        ):
+            return
+        try:
+            workflow_id = UUID(str(workflow_value))
+            app_id = UUID(str(app_value))
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise HTTPException(status_code=400, detail="invalid_decision") from exc
+
+        workflow = (
+            self.db.query(Workflow)
+            .filter(
+                Workflow.id == workflow_id,
+                Workflow.organization_id == self.organization_id,
+            )
+            .first()
+        )
+        app = (
+            self.db.query(App)
+            .filter(
+                App.id == app_id,
+                App.organization_id == self.organization_id,
+            )
+            .first()
+        )
+        if (
+            workflow is None
+            or app is None
+            or not has_workflow_permission(
+                self.db,
+                self.user_id,
+                workflow.id,
+                "read",
+                organization_id=self.organization_id,
+            )
+            or AppService.access_denial_status(self.db, app, self.user_id, "read")
+            is not None
+        ):
+            raise HTTPException(status_code=403, detail="permission_denied")
+        if app.workflow_id != workflow.id:
+            raise HTTPException(status_code=400, detail="invalid_decision")
+
+    def _normalize_workflow_node_pair(
+        self,
+        node_data: dict[str, Any],
+        *,
+        changed_parameter_key: str,
+    ) -> dict[str, Any]:
+        normalized = dict(node_data)
+        app_value = normalized.get("appId")
+        if (
+            changed_parameter_key != "appId"
+            or app_value is None
+            or (isinstance(app_value, str) and not app_value.strip())
+        ):
+            self._validate_workflow_node_pair(normalized)
+            return normalized
+
+        try:
+            app_id = UUID(str(app_value))
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise HTTPException(status_code=400, detail="invalid_decision") from exc
+
+        app = (
+            self.db.query(App)
+            .filter(
+                App.id == app_id,
+                App.organization_id == self.organization_id,
+            )
+            .first()
+        )
+        if app is None or AppService.access_denial_status(
+            self.db, app, self.user_id, "read"
+        ) is not None:
+            raise HTTPException(status_code=403, detail="permission_denied")
+
+        workflow = (
+            self.db.query(Workflow)
+            .filter(
+                Workflow.id == app.workflow_id,
+                Workflow.organization_id == self.organization_id,
+            )
+            .first()
+        )
+        if workflow is None or not has_workflow_permission(
+            self.db,
+            self.user_id,
+            workflow.id,
+            "read",
+            organization_id=self.organization_id,
+        ):
+            raise HTTPException(status_code=403, detail="permission_denied")
+
+        normalized["workflowId"] = str(workflow.id)
+        return normalized
 
     def cancel_group(
         self,
@@ -546,11 +650,17 @@ class ParameterTaskService:
                     value=decision_value,
                 )
             else:
-                validation_issues = validate_node_parameter_value(
-                    task.node_type,
-                    task.parameter_key,
-                    decision_value,
-                )
+                try:
+                    validation_issues = validate_direct_set_value(
+                        node_type=task.node_type,
+                        parameter_key=task.parameter_key,
+                        task_input_type=task.input_type,
+                        value=decision_value,
+                    )
+                except ParameterTaskSafetyError as exc:
+                    raise HTTPException(
+                        status_code=400, detail="invalid_decision"
+                    ) from exc
             if validation_issues:
                 validation_issue_payload = [
                     {
@@ -734,6 +844,11 @@ class ParameterTaskService:
             if task.node_type == "conditionNode" and task.parameter_key == "cases":
                 data = prepare_condition_cases_data(data)
             else:
+                if task.node_type == "workflowNode":
+                    data = self._normalize_workflow_node_pair(
+                        data,
+                        changed_parameter_key=task.parameter_key,
+                    )
                 data["configuration_state"] = derive_node_configuration_state(
                     task.node_type, data
                 )

@@ -1,7 +1,7 @@
 # Workflow Test Cases
 
 Status: Draft
-Verified Against: `feature/mba-198 @ 92669f3`
+Verified Against: `feature/mba-275 @ 0b04ee19`
 
 ## Test File Mapping
 
@@ -791,3 +791,12 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - Agent Builder acknowledgement 뒤 stale snapshot을 가진 Model Routing policy PATCH 또는 Cost Optimizer apply/recommendation apply가 실행되면 workflow row lock 뒤 `409 stale_graph`로 닫히고 graph와 policy/candidate 부가 상태를 모두 보존하는지 확인한다. 성공 경로는 canonical `graph_hash`와 `updated_at`을 반환하고 frontend 공통 metadata를 갱신해야 한다.
 - Canonical draft 재조회가 local Workflow history, Agent Builder pending boundary와 ambiguous save context를 초기화하지 않는지 확인한다.
 - Save/ack/revert/redo response loss에서 canonical graph metadata로 applied/unapplied/stale을 판정하고 결과 확정 전 pending history를 삭제하지 않는지 확인한다.
+
+### MBA-275 Configuration And Schedule Admission Regression
+
+- `WorkflowNode`(`local_execution`)는 `appId`가 missing/deferred이면 test/run/deployment/schedule에서 동일한 preflight blocker로 차단되고 client가 resolved 상태를 위조해도 통과하지 않는다. 유효한 `appId`만 있고 `workflowId` key가 아예 없는 graph도 NodeFactory에서 생성되어야 하며, 빈 `workflowId`를 가진 기존 modal 생성 graph도 오탐 없이 통과한다.
+- `loopNode.subGraph`는 필수다. 문자열, 빈 값 또는 누락된 `loop_key`는 mapped input의 첫 배열을 쓰는 runtime fallback에 따라 오탐 없이 통과하고, subGraph 내부의 unresolved local/external node는 같은 규칙으로 차단된다. Body implicit entry의 `loop.item|index`, 상위 실행 입력, Loop까지 방향성 선행 경로가 있는 output과 유효한 명시적 mapped input selector는 통과한다. 후속 body node가 같은 inherited source를 직접 참조하거나 downstream nested Loop child로 우회 전달하면 차단되고 완료된 local predecessor output만 사용할 수 있다. Parent graph의 후행·형제 node source, unknown loop key와 삭제된 상위 output을 가리키는 mapping은 Loop와 해당 child에서 차단한다. Depth 16은 통과하고 17은 `RecursionError` 없이 fail-closed한다.
+- required configuration이 없는 local node와 완전히 resolved graph는 오탐 없이 기존 실행 경로를 통과한다.
+- Gateway schedule dispatch는 unresolved configuration과 DB 기반 target/policy blocker를 publish 전에 차단하고 broker publisher를 호출하지 않는다. Worker는 locked canonical root identity와 공통 configuration을 재검사하며, target resource의 publish 이후 변경은 각 runtime authoritative gate가 차단한다.
+- worker가 받은 unresolved claim은 locked snapshot preflight 뒤 `configuration_preflight_blocked`로 한 번만 canceled 처리한다. `workflow_run_id`/`started_at`은 생성되지 않고 budget, `mark_running()`, Knowledge sync, engine/provider와 Celery retry는 호출되지 않는다.
+- 같은 claim 재전달은 terminal duplicate 결과로 억제되며 claim을 reopen하거나 다시 실행하지 않는다. resolved claim의 기존 성공·실패 경로는 회귀하지 않는다.

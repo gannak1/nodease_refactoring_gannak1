@@ -10,6 +10,7 @@ from apps.workflow_engine.application.schedule_dispatch import (
     BudgetDecisionPort,
     ScheduleAdmissionAuditPort,
     ScheduleAdmissionRepositoryPort,
+    ScheduleConfigurationPreflightPort,
     UnitOfWorkPort,
 )
 
@@ -18,6 +19,7 @@ from apps.workflow_engine.application.schedule_dispatch import (
 class ScheduleAdmissionDependencies:
     repository: ScheduleAdmissionRepositoryPort
     budget: BudgetDecisionPort
+    configuration_preflight: ScheduleConfigurationPreflightPort
     audit: ScheduleAdmissionAuditPort
     uow: UnitOfWorkPort
 
@@ -33,10 +35,14 @@ def build_schedule_admission_dependencies(
         SqlAlchemyScheduleAdmissionRepository,
         SqlAlchemyScheduleAdmissionUnitOfWork,
     )
+    from apps.workflow_engine.adapters.schedule_configuration_preflight import (
+        ScheduleConfigurationPreflightAdapter,
+    )
 
     return ScheduleAdmissionDependencies(
         repository=SqlAlchemyScheduleAdmissionRepository(db),
         budget=SharedWorkflowBudgetDecisionAdapter(db),
+        configuration_preflight=ScheduleConfigurationPreflightAdapter(),
         audit=SqlAlchemyScheduleAdmissionAuditRecorder(db),
         uow=SqlAlchemyScheduleAdmissionUnitOfWork(db),
     )

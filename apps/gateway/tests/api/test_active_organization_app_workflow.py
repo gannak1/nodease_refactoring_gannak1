@@ -1222,6 +1222,9 @@ class _RouteQuery:
     def order_by(self, *args, **kwargs):
         return self
 
+    def populate_existing(self):
+        return self
+
     def with_for_update(self):
         return self
 

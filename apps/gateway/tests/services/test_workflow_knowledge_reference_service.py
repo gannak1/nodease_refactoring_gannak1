@@ -266,6 +266,9 @@ def test_save_draft_defers_readiness_only_for_agent_builder_mutation(monkeypatch
         def filter(self, *_args):
             return self
 
+        def populate_existing(self):
+            return self
+
         def with_for_update(self):
             return self
 

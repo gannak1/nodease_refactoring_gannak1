@@ -929,6 +929,7 @@ def _execute_scheduled_deployment_claim(
             admission = use_case.admit(
                 repository=dependencies.repository,
                 budget=dependencies.budget,
+                configuration_preflight=dependencies.configuration_preflight,
                 audit=dependencies.audit,
                 uow=dependencies.uow,
                 claim_id=claim_id,

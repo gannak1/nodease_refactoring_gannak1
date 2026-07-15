@@ -1,7 +1,7 @@
 # Workflow API Spec
 
 Status: Draft
-Verified Against: `feature/mba-219 @ 5b1cf366`
+Verified Against: `feature/mba-275 @ 0b04ee19`
 
 ## Endpoints
 
@@ -359,6 +359,13 @@ Blocking response:
 - Node `position` 누락·비유한/비숫자 좌표, 비어 있거나 누락된 edge `id`, malformed edge, dangling endpoint, cycle, 진입점/isolation 오류와 합산 node 1,000개, edge 5,000개 또는 Loop subgraph depth 16 초과는 resource lookup과 task publish 전에 `workflow_graph_invalid`로 차단한다. 최상위 graph는 명시적 trigger/start node 하나, Loop body는 incoming executable edge가 없는 실행 진입점 하나를 요구한다.
 - Mail data의 `title`, folder, `max_results`, boolean, filter/date/reference와 processing mode는 Worker schema와 같은 타입·범위로 검사한다.
 - Compare와 Cost Optimizer candidate는 preflight를 통과한 server-bound graph에서 파생하며 task 직전에 WorkflowNode target을 다시 binding하지 않는다. Recommendation verification의 완료된 동일 Idempotency-Key safe response는 workflow 권한과 active organization scope를 확인한 뒤 현재 node/graph preflight와 task 없이 replay한다.
+
+### MBA-275 Cross-Surface Admission Contract
+
+- server는 Catalog required configuration에서 `external_read`, `external_write`, `local_execution`을 포함한 unresolved 상태를 재계산한다. client의 `configuration_state=resolved` 위조는 통과하지 않는다.
+- `WorkflowNode`는 runtime target인 `appId`만 required configuration이고 `workflowId`는 선택 metadata다. 누락된 `workflowId`는 runtime model에서도 빈 metadata로 정규화한다. `loopNode`는 `subGraph`가 필수이며, `loop_key`가 없거나 빈 값이면 mapped input의 첫 배열을 선택하는 기존 runtime fallback을 허용한다. Loop body의 implicit entry selector만 `loop.item|index`, 상위 실행 입력, Loop까지 방향성 선행 경로가 있는 현재 graph node output과 명시적 mapped input을 직접 사용할 수 있다. Body 후속 노드가 inherited source를 직접 참조하거나 downstream nested Loop로 이를 재전달하거나 input mapping이 parent graph의 후행·형제 source 또는 상위 output 계약에 없는 값을 가리키면 해당 설정을 unresolved로 차단한다. Depth 16을 넘는 subGraph는 configuration admission에서도 fail-closed한다.
+- test/run/deployment의 기존 `409 workflow.configuration_preflight.blocked` 응답과 safe `reason_code` 계약을 유지한다. 새 public error code를 만들지 않으며 raw node data, reference, secret과 내부 exception을 반환하지 않는다.
+- schedule dispatch는 publish 전에 공통 configuration과 DB 기반 target/policy preflight를 수행한다. Worker는 claim의 locked canonical root identity와 공통 configuration을 다시 검사한 뒤 budget 평가와 `mark_running()`으로 진행하고, blocker는 기존 `configuration_preflight_blocked`로 canceled 처리한다. Publish 뒤 바뀔 수 있는 WorkflowNode/KB/credential 상태와 권한은 runtime authoritative gate가 다시 검사한다.
 
 ## Errors
 

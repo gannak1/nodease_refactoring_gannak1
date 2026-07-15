@@ -768,9 +768,7 @@ Request는 client-generated `operation_id`, 현재 `expected_task_id`와 `expect
 | 409 | `operation_already_applied` | 다른 결과로 operation id를 중복 적용함 |
 | 409 | `task_conflict` | expected task version이 current 상태와 다르거나 다른 decision이 먼저 처리됨 |
 | 422 | `mutation_context_required` | Agent Builder operation 저장에 CDS context가 없음 |
-| 422 | `catalog_validation_failed` | node/parameter/selector 계약 위반 |
 | 422 | `workflow_context_required` | direct-edit CDS 저장 대상 workflow가 없음 |
-| 422 | `secret_input_not_allowed` | Agent Builder가 받지 않는 secret 원문 입력 |
 | 503 | `planner_unavailable` | intent model runtime 사용 불가 |
 
 오류 응답은 raw message, parameter value, credential config, provider response를 반사하지 않는다.
@@ -814,3 +812,10 @@ Request는 client-generated `operation_id`, 현재 `expected_task_id`와 `expect
 이 operation은 `initial_graph`, `replace_workflow`, `graph_edit`의 canonical layout 결과에만 server가 발급한다. client가 임의 위치를 보내는 API가 아니다.
 
 Knowledge 후보 응답은 use 권한을 통과한 active KB를 포함한다. 인덱싱 준비 상태는 candidate response 또는 knowledge-selection request의 유효성 조건이 아니며 run/deployment preflight의 조건이다. server-issued Agent Builder `mutation_context`가 있는 CAS 저장은 같은 권한/lifecycle 검사를 유지하되 retrieval readiness만 실행·배포 preflight로 미루며, 일반 Editor 저장은 retrieval-visible readiness를 계속 요구한다.
+
+### MBA-275 Direct-Edit Safety And Relation Contract
+
+- `set`의 typed value는 Catalog parameter 정의와 sensitivity/secret 정책을 통과해야 GraphMutation에 들어간다. secret-like 값 또는 detector 오류는 fail-closed하고 기존 `400 invalid_decision`으로 거부한다. 일반 Catalog validation issue는 HTTP 4xx가 아니라 `status=invalid`, `reason=catalog_validation_failed`인 task 결과로 저장·반환한다.
+- `credential_ref`와 `resource_ref`는 서버가 검증한 opaque/canonical reference만 받는다. raw credential config, token, password와 secret-like 입력은 받지 않으며 오류 응답·audit·trace·log에도 원문을 포함하지 않는다.
+- WorkflowNode 실행 admission의 필수 target은 `appId`다. `workflowId`는 기존 graph와 편집 화면을 위한 선택 metadata이며, 없거나 빈 값이어도 `appId`가 유효하면 실행 준비 상태를 차단하지 않는다. `appId`를 직접 변경하면 server는 선택된 App의 canonical Workflow ID로 `workflowId`를 정규화한다. `workflowId`를 직접 변경하거나 pair를 검증할 때는 각 resource의 organization과 권한을 확인하고 `App.workflow_id == Workflow.id`를 강제한다. malformed 또는 relation 불일치는 기존 `400 invalid_decision`, 권한 부족은 `403 permission_denied`로 매핑하며 대상 이름이나 내부 조회 결과를 반환하지 않는다. 검증 전후 graph, session revision, task 상태와 audit는 원자적으로 보존된다.
+- Draft save의 CAS는 locked DB row의 최신 `graph_hash`와 `updated_at`을 기준으로 하며, 불일치는 기존 `409 stale_graph`다. lock query는 session identity map의 stale Workflow를 재사용하지 않는다.

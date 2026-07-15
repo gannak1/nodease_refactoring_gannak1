@@ -71,13 +71,13 @@
       "capabilities": ["workflow_call"],
       "outputs": [{"capability": "workflow_call", "mode": "static", "keys": ["result"], "value_type": "unknown"}],
       "side_effect": "local_execution",
-      "required_configuration": ["workflowId", "appId"],
+      "required_configuration": ["appId"],
       "configuration_labels": {
         "workflowId": "Target workflow",
         "appId": "Target app"
       },
       "parameters": [
-        {"key": "workflowId", "label": "Target workflow", "input_type": "resource_ref", "required": true, "defer_policy": "allow_unresolved"},
+        {"key": "workflowId", "label": "Target workflow", "input_type": "resource_ref", "required": false, "defer_policy": "allow_unresolved"},
         {"key": "appId", "label": "Target app", "input_type": "resource_ref", "required": true, "defer_policy": "allow_unresolved"}
       ]
     },
@@ -163,13 +163,13 @@
       "capabilities": ["loop"],
       "outputs": [{"capability": "loop", "mode": "static", "keys": ["results"], "value_type": "array"}],
       "side_effect": "local_execution",
-      "required_configuration": ["loop_key", "subGraph"],
+      "required_configuration": ["subGraph"],
       "configuration_labels": {
         "loop_key": "반복 대상",
         "subGraph": "반복 내부 workflow"
       },
       "parameters": [
-        {"key": "loop_key", "label": "반복 대상", "input_type": "variable_selector", "required": true, "defer_policy": "forbidden"},
+        {"key": "loop_key", "label": "반복 대상", "input_type": "text", "required": false, "defer_policy": "forbidden"},
         {"key": "subGraph", "label": "반복 내부 workflow", "input_type": "json", "required": true, "defer_policy": "forbidden"}
       ]
     },

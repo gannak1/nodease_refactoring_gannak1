@@ -12,22 +12,6 @@ from pathlib import Path
 from threading import Barrier, Event
 
 import pytest
-from apps.gateway.adapters.audit.sqlalchemy_schedule_dispatch_audit import (
-    SqlAlchemyScheduleDispatchAuditRecorder,
-)
-from apps.gateway.adapters.db.schedule_dispatch_repository import (
-    SqlAlchemyScheduleDispatchRepository,
-)
-from apps.gateway.adapters.db.sqlalchemy_unit_of_work import SqlAlchemyUnitOfWork
-from apps.gateway.adapters.schedule.apscheduler_next_fire import (
-    ApschedulerNextFireCalculator,
-)
-from apps.gateway.application.deployment.schedule_occurrence import (
-    ScheduleOccurrenceUseCase,
-)
-from apps.gateway.services.workflow_budget_service import (
-    WorkflowBudgetDecisionAdapter,
-)
 from apps.shared.alembic.migration_lock import migration_advisory_lock
 from apps.shared.alembic.schedule_dispatch_downgrade import DESTRUCTIVE_DOWNGRADE_ENV
 from apps.shared.db.models.app import App
@@ -48,17 +32,6 @@ from apps.shared.tests.helpers.disposable_postgres import (
     DisposablePostgresConfig,
     DisposablePostgresConfigurationError,
     quote_disposable_database_name,
-)
-from apps.workflow_engine.adapters.schedule_dispatch_audit import (
-    SqlAlchemyScheduleAdmissionAuditRecorder,
-)
-from apps.workflow_engine.adapters.schedule_dispatch_repository import (
-    SharedWorkflowBudgetDecisionAdapter,
-    SqlAlchemyScheduleAdmissionRepository,
-    SqlAlchemyScheduleAdmissionUnitOfWork,
-)
-from apps.workflow_engine.application.schedule_dispatch import (
-    ScheduledDeploymentExecutionUseCase,
 )
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -562,6 +535,37 @@ def test_schedule_dispatch_head_downgrade_requires_explicit_break_glass():
     reason=f"set {RUN_ENV}=1 to run disposable PostgreSQL schedule race evidence",
 )
 def test_schedule_occurrence_and_worker_admission_have_single_database_winner():
+    from apps.gateway.adapters.audit.sqlalchemy_schedule_dispatch_audit import (
+        SqlAlchemyScheduleDispatchAuditRecorder,
+    )
+    from apps.gateway.adapters.db.schedule_dispatch_repository import (
+        SqlAlchemyScheduleDispatchRepository,
+    )
+    from apps.gateway.adapters.db.sqlalchemy_unit_of_work import SqlAlchemyUnitOfWork
+    from apps.gateway.adapters.schedule.apscheduler_next_fire import (
+        ApschedulerNextFireCalculator,
+    )
+    from apps.gateway.application.deployment.schedule_occurrence import (
+        ScheduleOccurrenceUseCase,
+    )
+    from apps.gateway.services.workflow_budget_service import (
+        WorkflowBudgetDecisionAdapter,
+    )
+    from apps.workflow_engine.adapters.schedule_configuration_preflight import (
+        ScheduleConfigurationPreflightAdapter,
+    )
+    from apps.workflow_engine.adapters.schedule_dispatch_audit import (
+        SqlAlchemyScheduleAdmissionAuditRecorder,
+    )
+    from apps.workflow_engine.adapters.schedule_dispatch_repository import (
+        SharedWorkflowBudgetDecisionAdapter,
+        SqlAlchemyScheduleAdmissionRepository,
+        SqlAlchemyScheduleAdmissionUnitOfWork,
+    )
+    from apps.workflow_engine.application.schedule_dispatch import (
+        ScheduledDeploymentExecutionUseCase,
+    )
+
     try:
         config = DisposablePostgresConfig.from_environment()
     except DisposablePostgresConfigurationError:
@@ -817,6 +821,7 @@ def test_schedule_occurrence_and_worker_admission_have_single_database_winner():
                     ).admit(
                         repository=SqlAlchemyScheduleAdmissionRepository(session),
                         budget=SharedWorkflowBudgetDecisionAdapter(session),
+                        configuration_preflight=ScheduleConfigurationPreflightAdapter(),
                         audit=SqlAlchemyScheduleAdmissionAuditRecorder(session),
                         uow=SqlAlchemyScheduleAdmissionUnitOfWork(session),
                         claim_id=claim_id,

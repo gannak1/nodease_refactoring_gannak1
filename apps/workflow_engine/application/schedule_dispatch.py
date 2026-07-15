@@ -14,6 +14,7 @@ from apps.shared.domain.schedule_dispatch import (
     REASON_APP_NOT_FOUND,
     REASON_BUDGET_BLOCKED,
     REASON_BUDGET_EVALUATION_FAILED,
+    REASON_CONFIGURATION_PREFLIGHT_BLOCKED,
     REASON_DEPLOYMENT_INACTIVE,
     REASON_DEPLOYMENT_NOT_CURRENT,
     REASON_DEPLOYMENT_NOT_FOUND,
@@ -153,6 +154,15 @@ class BudgetDecisionPort(Protocol):
     ) -> BudgetExecutionDecision: ...
 
 
+class ScheduleConfigurationPreflightPort(Protocol):
+    def is_ready(
+        self,
+        *,
+        graph_snapshot: dict | None,
+        organization_id: uuid.UUID,
+    ) -> bool: ...
+
+
 class ScheduleAdmissionAuditPort(Protocol):
     def record_budget_block(
         self,
@@ -187,6 +197,7 @@ class ScheduledDeploymentExecutionUseCase:
         *,
         repository: ScheduleAdmissionRepositoryPort,
         budget: BudgetDecisionPort,
+        configuration_preflight: ScheduleConfigurationPreflightPort,
         audit: ScheduleAdmissionAuditPort,
         uow: UnitOfWorkPort,
         claim_id: uuid.UUID,
@@ -228,6 +239,26 @@ class ScheduledDeploymentExecutionUseCase:
                 )
                 uow.commit()
                 return ScheduleAdmissionResult("rejected", reason)
+
+            if not configuration_preflight.is_ready(
+                graph_snapshot=snapshot.graph_snapshot,
+                organization_id=snapshot.claim_organization_id,
+            ):
+                repository.mark_canceled(
+                    reason=REASON_CONFIGURATION_PREFLIGHT_BLOCKED,
+                    now=now,
+                )
+                audit.record_claim_result(
+                    organization_id=snapshot.claim_organization_id,
+                    claim_id=snapshot.claim_id,
+                    action="schedule_dispatch.canceled",
+                    reason=REASON_CONFIGURATION_PREFLIGHT_BLOCKED,
+                )
+                uow.commit()
+                return ScheduleAdmissionResult(
+                    "rejected",
+                    REASON_CONFIGURATION_PREFLIGHT_BLOCKED,
+                )
 
             decision = budget.evaluate(workflow_id=snapshot.workflow_id, now=now)
             transition_now = repository.database_now()

@@ -10,6 +10,7 @@ from fastapi import HTTPException
 
 from apps.gateway.application.agent_builder.parameter_tasks import (
     ParameterTaskConflict,
+    ParameterTaskSafetyError,
     ParameterTaskPlanner,
     acknowledge_parameter_binding,
     acknowledge_task_decision,
@@ -23,6 +24,7 @@ from apps.gateway.application.agent_builder.parameter_tasks import (
     refresh_parameter_group_suggestions,
     remove_direct_edit_external_credential_tasks,
     remove_direct_edit_knowledge_parameter_tasks,
+    validate_direct_set_value,
 )
 from apps.shared.schemas.agent_builder import (
     AgentBuilderParameterCandidate,
@@ -894,6 +896,298 @@ def test_unregistered_external_credential_reference_is_rejected():
         service._resolve_reference_value(task, uuid4())
     assert exc.value.status_code == 400
     assert exc.value.detail == "invalid_decision"
+
+
+def test_direct_set_value_reuses_fail_closed_secret_detector(monkeypatch):
+    monkeypatch.setattr(
+        "apps.gateway.application.agent_builder.parameter_tasks.TraceRedactionService.redact_payload",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            failed=True,
+            secret_detected=True,
+        ),
+    )
+
+    with pytest.raises(ParameterTaskSafetyError, match="unsafe parameter value"):
+        validate_direct_set_value(
+            node_type="httpRequestNode",
+            parameter_key="url",
+            task_input_type="text",
+            value="https://example.com/hook",
+        )
+
+
+def test_direct_set_value_rejects_secret_like_text_with_real_detector():
+    secret_like_url = "https://example.invalid/hook?api_" + "key=fixture-value"
+
+    with pytest.raises(ParameterTaskSafetyError, match="unsafe parameter value"):
+        validate_direct_set_value(
+            node_type="httpRequestNode",
+            parameter_key="url",
+            task_input_type="text",
+            value=secret_like_url,
+        )
+
+
+@pytest.mark.parametrize(
+    "node_data",
+    [
+        {"workflowId": "", "appId": str(uuid4())},
+        {"workflowId": str(uuid4()), "appId": "   "},
+    ],
+)
+def test_workflow_node_pair_waits_until_both_references_are_configured(node_data):
+    db = SimpleNamespace(
+        query=lambda *_args: (_ for _ in ()).throw(
+            AssertionError("incomplete pair must not query resources")
+        )
+    )
+    service = ParameterTaskService(
+        db,
+        user_id=uuid4(),
+        organization_id=uuid4(),
+    )
+
+    service._validate_workflow_node_pair(node_data)
+
+
+@pytest.mark.parametrize("parameter_key", ["workflowId", "appId"])
+def test_workflow_node_reference_replacement_preserves_pair_invariant(
+    monkeypatch,
+    parameter_key,
+):
+    group_id = uuid4()
+    task = AgentBuilderParameterTask(
+        task_id=uuid4(),
+        group_id=group_id,
+        step_id="step-workflow",
+        node_id="workflow-node",
+        node_type="workflowNode",
+        parameter_key=parameter_key,
+        label="Target",
+        input_type="resource_ref",
+        required=True,
+        status="active",
+        task_version=1,
+        stable_order=0,
+        reason="safe reason",
+        input_guidance="safe guidance",
+    )
+    group = AgentBuilderParameterGroup(
+        group_id=group_id,
+        status="active",
+        tasks=[task],
+    )
+    repository = AgentBuilderRepository()
+    request_row = SimpleNamespace(response_payload={})
+    repository.store_parameter_group(request_row, group)
+    user_id = uuid4()
+    organization_id = uuid4()
+    parent_workflow_id = uuid4()
+    selected_workflow_id = uuid4()
+    canonical_workflow_id = uuid4()
+    target_app_id = uuid4()
+    session = SimpleNamespace(
+        id=uuid4(),
+        user_id=user_id,
+        organization_id=organization_id,
+        workflow_id=parent_workflow_id,
+    )
+    target_workflow = SimpleNamespace(
+        id=(
+            selected_workflow_id
+            if parameter_key == "workflowId"
+            else canonical_workflow_id
+        ),
+        organization_id=organization_id,
+    )
+    target_app = SimpleNamespace(
+        id=target_app_id,
+        organization_id=organization_id,
+        workflow_id=canonical_workflow_id,
+    )
+    other_key = "appId" if parameter_key == "workflowId" else "workflowId"
+    existing_value = (
+        target_app_id if other_key == "appId" else selected_workflow_id
+    )
+    workflow = SimpleNamespace(
+        id=parent_workflow_id,
+        organization_id=organization_id,
+        updated_at=datetime.now(timezone.utc),
+        graph={
+            "nodes": [
+                _node("workflow-node", "workflowNode", {other_key: str(existing_value)})
+            ],
+            "edges": [],
+        },
+    )
+
+    class _Query:
+        def __init__(self, first=None, all_rows=None):
+            self._first = first
+            self._all = list(all_rows or [])
+
+        def filter(self, *_args):
+            return self
+
+        def order_by(self, *_args):
+            return self
+
+        def with_for_update(self):
+            return self
+
+        def first(self):
+            return self._first
+
+        def all(self):
+            return list(self._all)
+
+    class _Db:
+        def __init__(self):
+            self.commits = 0
+            self.workflow_queries = 0
+
+        def query(self, model):
+            if model is task_service_module.AgentBuilderSession:
+                return _Query(first=session)
+            if model is task_service_module.Workflow:
+                self.workflow_queries += 1
+                return _Query(
+                    first=workflow if self.workflow_queries == 1 else target_workflow
+                )
+            if model is task_service_module.App:
+                return _Query(first=target_app)
+            if model is task_service_module.AgentBuilderRequest:
+                return _Query(all_rows=[request_row])
+            raise AssertionError(f"unexpected model: {model}")
+
+        def commit(self):
+            self.commits += 1
+
+    db = _Db()
+    audit_calls = []
+    monkeypatch.setattr(
+        task_service_module,
+        "has_workflow_permission",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        task_service_module.AppService,
+        "access_denial_status",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        task_service_module,
+        "add_action_audit",
+        lambda *_args, **_kwargs: audit_calls.append((_args, _kwargs)),
+    )
+    service = ParameterTaskService(
+        db,
+        user_id=user_id,
+        organization_id=organization_id,
+        repository=repository,
+    )
+    monkeypatch.setattr(
+        service,
+        "_validated_decision_value",
+        lambda _task, _payload: str(
+            selected_workflow_id
+            if parameter_key == "workflowId"
+            else target_app_id
+        ),
+    )
+    payload = AgentBuilderParameterTaskDecisionRequest.model_validate(
+        {
+            "operation_id": str(uuid4()),
+            "expected_task_version": task.task_version,
+            "action": "set",
+            "value": {"kind": "resource_ref", "resource_id": str(uuid4())},
+        }
+    )
+
+    if parameter_key == "workflowId":
+        with pytest.raises(HTTPException) as exc:
+            service.decide(session.id, task.task_id, payload)
+
+        assert exc.value.status_code == 400
+        assert exc.value.detail == "invalid_decision"
+        assert repository.load_parameter_group(request_row, group_id) == group
+        assert request_row.response_payload.get("operation_envelopes") is None
+        assert audit_calls == []
+        assert db.commits == 0
+        return
+
+    response = service.decide(session.id, task.task_id, payload)
+
+    assert response.awaiting_persistence_ack is True
+    assert response.graph_mutation is not None
+    operation = response.graph_mutation.operations[0]
+    assert operation.op == "replace_node_data"
+    assert operation.data["appId"] == str(target_app_id)
+    assert operation.data["workflowId"] == str(canonical_workflow_id)
+    assert len(request_row.response_payload["operation_envelopes"]) == 1
+    assert len(audit_calls) == 1
+    assert db.commits == 1
+
+
+@pytest.mark.parametrize("denied_resource", ["app", "workflow"])
+def test_workflow_node_app_normalization_requires_pair_permissions(
+    monkeypatch,
+    denied_resource,
+):
+    organization_id = uuid4()
+    app_id = uuid4()
+    workflow_id = uuid4()
+    app = SimpleNamespace(
+        id=app_id,
+        organization_id=organization_id,
+        workflow_id=workflow_id,
+    )
+    workflow = SimpleNamespace(
+        id=workflow_id,
+        organization_id=organization_id,
+    )
+
+    class _Query:
+        def __init__(self, result):
+            self.result = result
+
+        def filter(self, *_args):
+            return self
+
+        def first(self):
+            return self.result
+
+    db = SimpleNamespace(
+        query=lambda model: _Query(
+            app if model is task_service_module.App else workflow
+        )
+    )
+    monkeypatch.setattr(
+        task_service_module.AppService,
+        "access_denial_status",
+        lambda *_args, **_kwargs: 403 if denied_resource == "app" else None,
+    )
+    monkeypatch.setattr(
+        task_service_module,
+        "has_workflow_permission",
+        lambda *_args, **_kwargs: denied_resource != "workflow",
+    )
+    service = ParameterTaskService(
+        db,
+        user_id=uuid4(),
+        organization_id=organization_id,
+    )
+    node_data = {"appId": str(app_id), "workflowId": str(uuid4())}
+
+    with pytest.raises(HTTPException) as exc:
+        service._normalize_workflow_node_pair(
+            node_data,
+            changed_parameter_key="appId",
+        )
+
+    assert exc.value.status_code == 403
+    assert exc.value.detail == "permission_denied"
+    assert node_data["workflowId"] != str(workflow_id)
 
 
 def test_gmail_draft_rejects_non_gmail_oauth_credential_reference(monkeypatch):

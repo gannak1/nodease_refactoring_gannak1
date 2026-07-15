@@ -14,7 +14,9 @@ from apps.shared.domain.workflow_node_binding import (
     WorkflowNodeBinding,
     canonical_snapshot_sha256,
 )
+from apps.shared.schemas.workflow import NodeSchema
 from apps.workflow_engine.domain.execution import NodeExecutionControl
+from apps.workflow_engine.workflow.core.workflow_node_factory import NodeFactory
 from apps.workflow_engine.workflow.errors import WorkflowNodeConfigurationError
 from apps.workflow_engine.workflow.nodes.base.entities import NodeStatus
 from apps.workflow_engine.workflow.nodes.workflow import WorkflowNode
@@ -63,6 +65,21 @@ def test_workflow_node_initialization():
     assert len(node.data.inputs) == 2
     assert node.status == NodeStatus.IDLE
     assert node.node_type == "workflowNode"
+
+
+def test_workflow_node_factory_allows_optional_workflow_id_to_be_omitted():
+    node = NodeFactory.create(
+        NodeSchema(
+            id="workflow-node-1",
+            type="workflowNode",
+            position={"x": 0, "y": 0},
+            data={"title": "서브 워크플로우 실행", "appId": "app-456"},
+        )
+    )
+
+    assert isinstance(node, WorkflowNode)
+    assert node.data.workflowId == ""
+    assert node.data.appId == "app-456"
 
 
 def test_bound_workflow_node_keeps_original_deployment_after_active_change() -> None:

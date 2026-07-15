@@ -1,18 +1,32 @@
 import pytest
 
-from apps.workflow_engine.workflow.nodes.loop.loop_node import LoopNode, LoopNodeData
+from apps.workflow_engine.workflow.nodes.loop.loop_node import (
+    LoopNode,
+    LoopNodeData,
+    LoopNodeInput,
+)
 
 
-def _loop_node(*, subgraph: dict, error_strategy: str = "end") -> LoopNode:
+def _loop_node(
+    *, subgraph: dict, error_strategy: str = "end", loop_key: str = "items"
+) -> LoopNode:
     return LoopNode(
         id="loop-1",
         data=LoopNodeData(
             title="Loop",
-            loop_key="items",
+            loop_key=loop_key,
             error_strategy=error_strategy,
             subGraph=subgraph,
         ),
     )
+
+
+def test_loop_without_explicit_key_uses_first_mapped_array() -> None:
+    node = _loop_node(subgraph={"nodes": [], "edges": []}, loop_key="")
+
+    assert node._get_iteration_array(
+        {}, {"scalar": "ignored", "items": ["a", "b"]}
+    ) == ["a", "b"]
 
 
 def test_loop_body_uses_validated_implicit_entry(monkeypatch) -> None:
@@ -47,6 +61,55 @@ def test_loop_body_uses_validated_implicit_entry(monkeypatch) -> None:
 
     assert captured_entries == ["first", "first"]
     assert result["results"] == [{"iteration": 0}, {"iteration": 1}]
+
+
+def test_loop_body_context_includes_explicit_mapped_inputs(monkeypatch) -> None:
+    node = _loop_node(
+        subgraph={
+            "nodes": [
+                {
+                    "id": "body",
+                    "type": "templateNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {},
+                }
+            ],
+            "edges": [],
+        },
+        loop_key="",
+    )
+    node.data.inputs = [
+        LoopNodeInput(name="items", value_selector=["source", "items"]),
+        LoopNodeInput(name="mail", value_selector=["source", "mail"]),
+    ]
+    captured_contexts: list[dict] = []
+
+    def execute_body(context, *, iteration_index, entry_node_id):
+        captured_contexts.append(context)
+        return {"iteration": iteration_index, "entry": entry_node_id}
+
+    monkeypatch.setattr(node, "_execute_subgraph_scoped", execute_body)
+
+    node._run(
+        {
+            "source": {
+                "items": ["first"],
+                "mail": {"processing_ref": "opaque-reference"},
+            }
+        }
+    )
+
+    assert captured_contexts == [
+        {
+            "source": {
+                "items": ["first"],
+                "mail": {"processing_ref": "opaque-reference"},
+            },
+            "items": ["first"],
+            "mail": {"processing_ref": "opaque-reference"},
+            "loop": {"item": "first", "index": 0},
+        }
+    ]
 
 
 def test_loop_structure_error_is_not_swallowed_by_continue_strategy() -> None:

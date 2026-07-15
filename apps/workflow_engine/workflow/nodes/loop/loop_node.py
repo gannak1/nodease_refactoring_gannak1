@@ -128,6 +128,7 @@ class LoopNode(Node[LoopNodeData]):
 
         # 2. 하이브리드 입력 매핑
         mapped_inputs = self._map_inputs_hybrid(inputs)
+        subgraph_inputs = {**inputs, **mapped_inputs}
 
         # 3. 반복 대상 배열 가져오기
         array_to_iterate = self._get_iteration_array(inputs, mapped_inputs)
@@ -147,7 +148,7 @@ class LoopNode(Node[LoopNodeData]):
             try:
                 # 변수 컨텍스트 구축 (모든 외부 변수 + loop 변수)
                 context = self._build_variable_context(
-                    inputs, item=item, index=iteration_count
+                    subgraph_inputs, item=item, index=iteration_count
                 )
 
                 # 서브그래프 실행 (스코프 기반, 동기)

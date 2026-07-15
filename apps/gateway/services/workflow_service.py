@@ -174,7 +174,12 @@ class WorkflowService:
             if isinstance(request, WorkflowDraftRequest)
             else None
         )
-        query = db.query(Workflow).filter(Workflow.id == workflow_id).with_for_update()
+        query = (
+            db.query(Workflow)
+            .filter(Workflow.id == workflow_id)
+            .populate_existing()
+            .with_for_update()
+        )
         workflow = query.first()
 
         # workflow 없으면 error 반환
