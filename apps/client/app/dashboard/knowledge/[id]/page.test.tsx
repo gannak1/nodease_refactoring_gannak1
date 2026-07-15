@@ -99,7 +99,7 @@ const knowledgeBaseFixture: KnowledgeBaseDetailResponse = {
 
 describe('KnowledgeDetailPage source processing actions', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     mockedKnowledgeApi.getKnowledgeBase.mockResolvedValue(knowledgeBaseFixture);
   });
 
@@ -160,15 +160,11 @@ describe('KnowledgeDetailPage source processing actions', () => {
 
   it('keeps the current page when background polling fails', async () => {
     const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
-    let poll: (() => void) | undefined;
-    vi.spyOn(globalThis, 'setInterval').mockImplementation(
-      (handler: TimerHandler) => {
-        if (typeof handler === 'function') {
-          poll = handler as () => void;
-        }
-        return 1 as unknown as ReturnType<typeof setInterval>;
-      },
-    );
+    const setIntervalSpy = vi
+      .spyOn(globalThis, 'setInterval')
+      .mockImplementation(
+        () => 1 as unknown as ReturnType<typeof setInterval>,
+      );
     mockedKnowledgeApi.getKnowledgeBase
       .mockResolvedValueOnce({
         ...knowledgeBaseFixture,
@@ -189,9 +185,15 @@ describe('KnowledgeDetailPage source processing actions', () => {
       await screen.findByRole('heading', { name: '사내 문서' }),
     ).toBeVisible();
 
-    expect(poll).toBeDefined();
+    await waitFor(() => {
+      expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 3000);
+    });
+    const poll = setIntervalSpy.mock.calls.find(
+      ([, timeout]) => timeout === 3000,
+    )?.[0];
+    expect(typeof poll).toBe('function');
     await act(async () => {
-      poll?.();
+      (poll as () => void)();
     });
 
     await waitFor(() => {
