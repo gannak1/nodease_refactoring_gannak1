@@ -12,6 +12,11 @@ from scripts.ci.changed_scope import changed_paths_from_git, normalize_repo_path
 
 
 _EXCLUDED_TEST_PARTS = {"e2e", "evaluation", "load", "manual"}
+_POSTGRES_ONLY_TESTS = {
+    "apps/gateway/tests/integration/test_agent_builder_model_selection_db.py",
+    "apps/gateway/tests/integration/test_agent_builder_primary_workflow_db.py",
+    "apps/gateway/tests/integration/test_agent_builder_workflow_cas.py",
+}
 _GENERIC_TOKENS = {
     "adapter",
     "api",
@@ -144,6 +149,8 @@ def _is_allowed_test(path: Path, repo_root: Path, config: ComponentConfig) -> bo
         return False
 
     if not relative.startswith(f"{config.test_root}/") and relative != config.test_root:
+        return False
+    if relative in _POSTGRES_ONLY_TESTS:
         return False
     return not any(part in _EXCLUDED_TEST_PARTS for part in PurePosixPath(relative).parts)
 

@@ -38,6 +38,7 @@ jobs:
       root_tests: ${{ steps.scope_outputs.outputs.root_tests }}
       knowledge_postgres: ${{ steps.scope_outputs.outputs.knowledge_postgres }}
       workflow_postgres: ${{ steps.scope_outputs.outputs.workflow_postgres }}
+      agent_builder_postgres: ${{ steps.scope_outputs.outputs.agent_builder_postgres }}
       broad_python: ${{ steps.scope_outputs.outputs.broad_python }}
     steps:
       - name: Checkout pull request merge
@@ -90,6 +91,7 @@ jobs:
           CLASSIFIED_ROOT_TESTS: ${{ steps.classify.outputs.root_tests }}
           CLASSIFIED_KNOWLEDGE_POSTGRES: ${{ steps.classify.outputs.knowledge_postgres }}
           CLASSIFIED_WORKFLOW_POSTGRES: ${{ steps.classify.outputs.workflow_postgres }}
+          CLASSIFIED_AGENT_BUILDER_POSTGRES: ${{ steps.classify.outputs.agent_builder_postgres }}
           CLASSIFIED_BROAD_PYTHON: ${{ steps.classify.outputs.broad_python }}
         run: |
           emit_boolean() {
@@ -115,6 +117,7 @@ jobs:
             emit_boolean root_tests true
             emit_boolean knowledge_postgres true
             emit_boolean workflow_postgres true
+            emit_boolean agent_builder_postgres true
             emit_boolean broad_python true
             exit 0
           fi
@@ -131,6 +134,7 @@ jobs:
           emit_boolean root_tests "$CLASSIFIED_ROOT_TESTS"
           emit_boolean knowledge_postgres "$CLASSIFIED_KNOWLEDGE_POSTGRES"
           emit_boolean workflow_postgres "$CLASSIFIED_WORKFLOW_POSTGRES"
+          emit_boolean agent_builder_postgres "$CLASSIFIED_AGENT_BUILDER_POSTGRES"
           emit_boolean broad_python "$CLASSIFIED_BROAD_PYTHON"
 
   alembic_graph:
@@ -455,6 +459,12 @@ jobs:
     if: needs.scope.outputs.workflow_postgres == 'true'
     uses: ./.github/workflows/test-schedule-dispatch-postgres.yml
 
+  agent_builder_postgres:
+    name: agent-builder-postgres-contracts
+    needs: scope
+    if: needs.scope.outputs.agent_builder_postgres == 'true'
+    uses: ./.github/workflows/test-agent-builder-postgres.yml
+
   ci_required:
     name: ci-required
     if: always()
@@ -470,6 +480,7 @@ jobs:
       - sandbox_tests
       - knowledge_postgres
       - workflow_postgres
+      - agent_builder_postgres
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -495,3 +506,4 @@ jobs:
           --conditional "sandbox=${{ needs.scope.outputs.sandbox_tests }}=${{ needs.sandbox_tests.result }}"
           --conditional "knowledge-postgres=${{ needs.scope.outputs.knowledge_postgres }}=${{ needs.knowledge_postgres.result }}"
           --conditional "workflow-postgres=${{ needs.scope.outputs.workflow_postgres }}=${{ needs.workflow_postgres.result }}"
+          --conditional "agent-builder-postgres=${{ needs.scope.outputs.agent_builder_postgres }}=${{ needs.agent_builder_postgres.result }}"
