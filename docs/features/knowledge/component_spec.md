@@ -29,6 +29,7 @@ KC sync의 Gateway application, durable repository, Workflow executor와 Client 
 | Active Version Finalizer | Transactional active version pointer swap, previous version `superseded` 표시, content_hash/fingerprint commit, outbox insert를 수행한다 | Fencing/recovery gate가 필요하며 hash만 먼저 commit하거나 pointer swap 후 outbox insert 전에 crash window를 만들지 않는다 |
 | Artifact Cleanup Reconciler | DB state와 object storage/vector index/external artifact cleanup을 outbox 기반으로 맞춘다 | DB commit 전 physical delete를 수행하지 않고 retry 가능한 cleanup만 실행한다 |
 | Knowledge Permission Helper | Collection `read`, collection `route`, KB use, source ACL freshness/requester authorization을 bulk 평가한다 | Router와 controller는 permission row가 아니라 helper 결과를 소비해야 한다 |
+| Knowledge Document Registration Service | 빈 active manual KB를 잠그고 최초 Document 하나만 원자적으로 등록한다 | HTTP, raw header와 Client 상태를 import하지 않으며 기존 Document가 있으면 상태와 무관하게 typed conflict를 반환한다 |
 | Knowledge Administration Application | Organization manager의 domain grant/revoke, active subject grant validation, stale grant permission-row revoke와 transaction-bound audit를 조율한다 | Grant subject lock과 revoke permission-row lock을 분리하고 controller가 subject 활성 상태를 추정하지 않는다 |
 | Workflow Runtime Knowledge Candidate Resolver | Direct KB와 명시 selected Collection을 current authenticated/anonymous audience, lifecycle/readiness, route/use/source gate로 해석하고 direct-first/Collection-round-robin 20-KB set을 만든다 | Shared pure policy + Workflow Engine application/port + PostgreSQL snapshot adapter다. Gateway Builder resolver를 import하지 않고 retrieval/provider를 호출하지 않는다 |
 | Knowledge Collection Management Service | Manual Collection CRUD, item link/unlink, visibility, bounded subject page와 single/bundle/bulk permission mutation을 조율한다 | Collection-first lock, last-manage, self-escalation, all-or-nothing을 service가 판단하고 Collection 권한과 KB content 권한을 분리한다 |
@@ -125,6 +126,11 @@ Retrieval Orchestrator는 최종 evidence와 함께 KB/document version, organiz
 ### KB Detail Source Processing UI
 
 `POST /api/v1/rag/upload`로 등록된 source document는 초기 상태가 `pending`일 수 있으며, chunk/embedding 생성이 끝나기 전까지 RAG 검색 대상이 아니다.
+
+- KB detail은 `can_register_initial_document=true`인 경우에만 `첫 source 등록` action을 표시한다. Client는 `documents.length`, `can_write`, KB 이름으로 이 capability를 재구성하지 않는다.
+- 하나의 Document가 `pending`, `failed`, `processing`, `completed` 중 어느 상태로 존재해도 independent `소스 추가` action은 표시하지 않는다. Retry/process/delete는 기존 Document action으로 분리한다.
+- Occupied KB에는 별도 KB를 만든 뒤 Knowledge Collection에서 묶으라는 안내와 Collection 관리 이동 경로를 제공한다. 파일을 물리적으로 병합하거나 Collection 권한이 child KB content 권한을 부여한다고 표현하지 않는다.
+- Stale UI가 registration을 제출해 `409 knowledge.document_slot_occupied`를 받으면 raw 오류나 기존 document identity를 표시하지 않고 모달을 닫아 detail capability를 다시 조회한다.
 
 - KB 상세의 source 목록은 `pending` document에 `처리 시작` action과 "처리 시작 전에는 RAG 검색에 사용되지 않는다"는 safe 안내를 표시한다.
 - `failed` document는 같은 document settings 화면으로 들어가는 `재처리` action을 제공한다.

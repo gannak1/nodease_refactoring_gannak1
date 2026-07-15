@@ -181,6 +181,18 @@ KC sync의 실행·복구·snapshot·versioned finalization 검증은 [ADR-0048]
 
 ## Knowledge Base API Tests
 
+### MBA-273 Initial Document Registration
+
+- 빈 active manual KB에서 KB `write`가 있는 caller는 FILE/API/DB 중 하나의 최초 `Document(status=pending)`만 등록할 수 있고 detail의 `can_register_initial_document`는 등록 전 true, 등록 후 false다.
+- 기존 Document는 `pending`, `processing`, `failed`, `completed` 상태와 무관하게 slot을 점유한다. 두 번째 independent source는 `409 knowledge.document_slot_occupied`이며 response/log/audit에 기존 document id, filename, path, source config를 포함하지 않는다.
+- KB `read`만 있거나 cross-organization/hidden/deleted KB인 caller는 기존 hidden/denied matrix를 유지한다. Source-managed 또는 `sync_state != manual` KB는 최초 manual registration을 fail-closed한다.
+- 두 transaction이 같은 빈 KB에 동시에 등록하면 PostgreSQL KB row lock 뒤 하나만 commit되고 다른 하나는 conflict가 된다. 최종 Document count는 1이며 rollback/commit failure가 partial row를 남기지 않는다.
+- Backend-mediated FILE upload가 fast precheck 뒤 race에서 지면 해당 request가 생성한 storage artifact만 보상 삭제한다. DB flush 이전 실패는 cleanup-safe지만 commit 호출 이후 결과가 불명확한 실패에서는 이미 커밋된 Document reference 보호를 위해 자동 삭제하지 않는다. Cleanup failure는 provider exception/path/key를 노출하지 않는다. Presigned/direct object는 ownership이 확정되지 않으면 자동 삭제하지 않는다.
+- Knowledge 최초 등록용 Presigned URL 요청은 대상 `knowledgeBaseId`, active organization과 KB `write`를 요구하고 occupied KB를 storage call 전에 거부한다. Workflow 입력 파일용 generic presigned 호출은 기존처럼 KB 식별자 없이 동작한다. Fast precheck 통과 뒤 발생한 race는 최종 upload의 canonical check에서 다시 거부된다.
+- Endpoint와 ingestion orchestrator가 registration service를 우회해 `Document`를 직접 생성하는 production path가 없는지 architecture test로 고정한다.
+- Client는 explicit `can_register_initial_document=true`에서만 최초 source action을 표시한다. Field 누락/false, occupied/pending/failed/source-managed 상태에서는 action을 숨기고 Collection 안내를 제공하며 stale 409 뒤 detail을 refresh한다.
+- Demo seed의 fixed Knowledge Base별 Document count는 1 이하이고, 기존 인사 휴가·복지 fixture는 서로 다른 KB에 보존된다. Aggregate 검색이 필요한 seed graph는 Collection 또는 명시된 별도 KB reference를 사용하며 reset 반복 후에도 cardinality와 비대상 동적 KB 보존 계약을 유지한다.
+
 - KB create는 blank name을 DB insert 전에 거부하고 safe validation reason code만 반환한다.
 - KB create는 255자를 초과하는 name을 DB insert 전에 거부하고 safe validation reason code만 반환한다.
 - KB create는 empty, secret-like, token-like, allowlist 밖 `embedding_model`을 DB insert 전에 거부한다.

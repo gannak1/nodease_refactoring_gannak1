@@ -11,6 +11,7 @@ Status: Draft
 MBA-105에서 baseline으로 삼는 범위:
 
 - document/source item 1개 = document-level Knowledge Base.
+- Legacy one-to-many schema는 비파괴 호환을 위해 읽을 수 있지만 신규 manual Document 등록은 빈 active KB의 최초 row 하나만 허용한다. 독립 source item을 추가할 때는 별도 KB와 Knowledge Collection을 사용한다.
 - Knowledge Collection = grouping, routing, UX, operations 단위.
 - Workflow에는 별도 RAG node를 만들지 않고 LLM node의 RAG option/runtime path로 연결한다.
 - MVP Workflow RAG는 execution subject가 없으면 anonymous public-only로 낮추고, active public collection에 연결된 active KB만 검색한다. Source-managed KB는 valid source/connector public exposure approval도 필요하다.

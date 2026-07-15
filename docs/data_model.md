@@ -768,7 +768,7 @@ Agent Builder message history와 request `response_payload`는 사용자 경험 
 
 #### `knowledge_bases`
 
-현재 구현 기준 RAG data source 상위 단위. 목표 KB 통합 모델에서는 `knowledge_bases`가 문서/source item 1개에 대응하는 permission, retrieval, sync, lifecycle atom으로 재정의된다 ([ADR-0014](decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)).
+문서/source item 1개에 대응하는 permission, retrieval, sync, lifecycle atom ([ADR-0014](decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)). Legacy data를 비파괴로 읽기 위해 `knowledge_bases`와 `documents`의 물리 relation은 one-to-many를 유지하지만, MBA-273 이후 신규 manual registration은 KB row lock 아래 빈 KB에 최초 `Document` 하나만 만든다. 여러 독립 문서는 각각 별도 KB로 만들고 `knowledge_collection_items`로 묶는다.
 
 | 컬럼 | 타입 | 제약 |
 | --- | --- | --- |

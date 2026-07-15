@@ -13,7 +13,7 @@ Workflow canvas에는 독립형 RAG 실행 노드를 도입하지 않는다. Kno
 
 ## Current Baseline
 
-- `knowledge_bases`는 현재 코드에서 여러 `documents`를 포함할 수 있는 RAG data source 상위 단위다.
+- `knowledge_bases`와 `documents`의 물리 schema는 legacy 다중 row를 읽을 수 있도록 one-to-many 관계를 유지하지만, 신규 manual 입력은 빈 KB에 최초 `Document` 하나만 등록한다. 독립 source item을 추가하려면 별도 KB를 만들고 필요한 검색 묶음은 Knowledge Collection으로 구성한다.
 - Metadata-aware/hierarchical RAG 경계는 [ADR-0012](../../decisions/ADR-0012-metadata-aware-hierarchical-rag-boundary.md)를 따른다.
 - Standalone RAG Agent answer와 trace/usage correlation 경계는 [ADR-0013](../../decisions/ADR-0013-rag-answer-trace-usage-correlation-boundary.md)를 따른다.
 - Knowledge Skill은 [ADR-0015](../../decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)에 따른 provider-neutral target artifact이며, 현재 구현 완료 상태가 아니다.
@@ -158,6 +158,8 @@ Workflow canvas에는 독립형 RAG 실행 노드를 도입하지 않는다. Kno
 - FR-118 (MBA-265): Collection management projection은 caller authority인 `can_sync`와 현재 실행 adapter 지원 여부인 `sync_supported`를 분리한다. `sync_supported`와 sync POST는 동일한 organization-scoped canonical child eligibility scan을 사용해 UI/API 지원 판정 drift를 막는다. Legacy DB connection은 owner가 현재 organization의 active member이고 지원 DB type인 경우에만 사용하며, source row limit은 문서당 최대 1,000으로 제한한다. Worker는 저장된 DB 문서의 flat `all`/`range`/`keyword` selection을 기존 ingestion과 같은 helper로 적용한 결과만 새 version에 저장하고 empty selection이면 이전 active ready version을 유지한다. Connection/config 식별자와 processor 원문 오류는 status, audit, task result와 log에 노출하지 않는다.
 - FR-119 (MBA-265): KC sync와 기존 ingestion의 document write는 shared PostgreSQL transaction advisory lock으로 같은 document에 대해 직렬화한다. 모든 writer는 상태 전이용 선행 commit 직후, source fetch/parsing/embedding과 document/Collection/KB row lock 전에 advisory lock을 획득한다. Organization-scoped KB는 새 `DocumentVersion`과 version-scoped chunk를 준비한 뒤 chunk 존재를 확인하고 active pointer를 원자 교체하며, 실패·empty result·rollback에서는 이전 active ready version을 유지한다. Legacy unversioned writer는 `document_version_id IS NULL`인 chunk만 조회·교체하고 active/historical version chunk를 삭제하거나 임베딩 재사용 source로 섞지 않는다. Lock은 apply/item progress transaction과 같은 수명을 가진다. Collection의 `source_deleted`는 job progress보다 우선하며 queue/finalize/cancel/recovery가 다른 sync state로 덮어쓰지 않는다.
 - FR-120 (MBA-265): DB source 실행은 stored table/column/JOIN 값을 SQL fragment가 아닌 PostgreSQL 단일 identifier로 인용하고 JOIN edge를 선택된 두 table로 제한해야 한다. `LIMIT`은 bounded integer로 정규화하며 expression, 추가 table 또는 statement로 해석될 수 있는 변조 설정은 임의 SQL을 실행하지 않고 configuration failure로 닫는다.
+- FR-121 (MBA-273): Manual Knowledge Base의 신규 document registration은 active organization의 KB `write`, active lifecycle, `source_identity_id IS NULL`, `sync_state=manual`과 빈 document slot을 모두 요구한다. Gateway application service는 KB row를 `FOR UPDATE`로 잠근 뒤 상태와 무관한 기존 `Document` 존재를 재검사하고 최초 row 하나만 생성한다. 두 번째 독립 source 또는 동시 race loser는 `409 knowledge.document_slot_occupied`로 닫으며 Client precheck나 document count만 보안·무결성 근거로 사용하지 않는다. Existing document의 process/retry와 같은 source identity의 version finalization은 append가 아니며 기존 document/version 계약을 유지한다.
+- FR-122 (MBA-273): KB 상세는 caller 권한과 canonical source/lifecycle/cardinality 상태를 결합한 `can_register_initial_document` capability를 반환한다. Client는 이 capability가 명시적으로 true인 빈 KB에서만 최초 source 등록 action을 제공하고 stale `409`에서는 상세를 갱신한 뒤 별도 KB 생성 및 Knowledge Collection 연결을 안내한다. 여러 독립 문서를 물리적으로 병합하거나 Collection 권한을 child KB `use`로 상속하지 않는다. Demo seed가 관리하는 각 KB는 정확히 하나 이하의 fixed Document를 가져야 하며, 여러 문서가 필요한 fixture는 별도 KB와 Collection membership으로 표현한다.
 
 ## Policies And Edge Cases
 
