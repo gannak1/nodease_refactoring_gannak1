@@ -63,6 +63,18 @@ def test_policy_parses_deployment_managed_allowed_ports() -> None:
     assert policy.allowed_ports == frozenset({5432, 54322, 55432})
 
 
+def test_explicitly_disabled_local_profile_keeps_public_only_policy() -> None:
+    policy = connector_test_policy_from_environment(
+        {
+            "NODE_ENV": "development",
+            "CONNECTOR_TEST_LOCAL_PROFILE_ENABLED": "false",
+        }
+    )
+
+    assert policy.trusted_local_targets == frozenset()
+    assert policy.trusted_local_ca_file is None
+
+
 def test_development_policy_parses_exact_trusted_local_target(tmp_path) -> None:
     ca_file = tmp_path / "ca.crt"
     ca_file.write_bytes(_certificate_pem())
@@ -197,20 +209,27 @@ def test_missing_trusted_local_ca_file_fails_security_readiness(tmp_path) -> Non
 @pytest.mark.parametrize(
     "ca_payload",
     [
+        b"",
         b"not-a-certificate",
         _certificate_pem(is_ca=False),
         _certificate_pem(
             valid_from=datetime.now(UTC) - timedelta(minutes=10),
             valid_until=datetime.now(UTC) - timedelta(minutes=1),
         ),
+        _certificate_pem(
+            valid_from=datetime.now(UTC) + timedelta(minutes=1),
+            valid_until=datetime.now(UTC) + timedelta(minutes=10),
+        ),
         _certificate_pem() + _certificate_pem(),
         _certificate_pem() + b"-----BEGIN PRIVATE KEY-----\nredacted\n",
         b"x" * (64 * 1024 + 1),
     ],
     ids=[
+        "empty",
         "invalid-pem",
         "leaf-certificate",
         "expired-ca",
+        "future-ca",
         "multiple-certificates",
         "private-key-marker",
         "oversized",
@@ -251,6 +270,34 @@ def test_production_requires_strong_admission_hmac_key() -> None:
             "CONNECTOR_TEST_ADMISSION_HMAC_KEY": "x" * 32,
         }
     )
+
+
+def test_directory_or_unreadable_trusted_local_ca_fails_security_readiness(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = {
+        "NODE_ENV": "development",
+        "CONNECTOR_TEST_LOCAL_PROFILE_ENABLED": "true",
+        "CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS": "localhost:5432",
+        "CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE": str(tmp_path),
+    }
+    with pytest.raises(RuntimeError):
+        require_connector_test_security_ready(environment)
+
+    ca_file = tmp_path / "ca.crt"
+    ca_file.write_bytes(_certificate_pem())
+    environment["CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE"] = str(ca_file)
+    original_read_bytes = type(ca_file).read_bytes
+
+    def unreadable(path):
+        if path == ca_file:
+            raise OSError("test-only unreadable file")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(type(ca_file), "read_bytes", unreadable)
+    with pytest.raises(RuntimeError):
+        require_connector_test_security_ready(environment)
 
 
 @pytest.mark.parametrize(
