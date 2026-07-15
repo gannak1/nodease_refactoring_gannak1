@@ -169,7 +169,7 @@
         "subGraph": "반복 내부 workflow"
       },
       "parameters": [
-        {"key": "loop_key", "label": "반복 대상", "input_type": "variable_selector", "required": true, "defer_policy": "forbidden"},
+        {"key": "loop_key", "label": "반복 대상", "input_type": "text", "required": true, "defer_policy": "forbidden"},
         {"key": "subGraph", "label": "반복 내부 workflow", "input_type": "json", "required": true, "defer_policy": "forbidden"}
       ]
     },

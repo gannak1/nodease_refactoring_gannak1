@@ -7,6 +7,9 @@ from apps.gateway.application.deployment.errors import DeploymentPreflightBlocke
 from apps.gateway.application.deployment.models import NodeCatalogSnapshot
 from apps.gateway.application.deployment.ports import DeploymentPreflightRepository
 from apps.gateway.application.deployment.preflight import DeploymentPreflightUseCase
+from apps.shared.services.workflow_configuration_preflight import (
+    workflow_configuration_issues,
+)
 
 
 class ScheduleConfigurationPreflightAdapter:
@@ -25,6 +28,8 @@ class ScheduleConfigurationPreflightAdapter:
         graph_snapshot: dict | None,
         organization_id: uuid.UUID,
     ) -> bool:
+        if workflow_configuration_issues(graph_snapshot):
+            return False
         use_case = DeploymentPreflightUseCase(
             self.repository,
             organization_id=organization_id,

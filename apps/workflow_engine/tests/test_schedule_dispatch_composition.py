@@ -17,6 +17,7 @@ def test_schedule_admission_sqlalchemy_wiring_lives_in_composition_root():
 
     assert dependencies.repository.db is session
     assert dependencies.budget.db is session
+    assert hasattr(dependencies.configuration_preflight, "is_ready")
     assert dependencies.audit.db is session
     assert dependencies.uow.db is session
     assert "SqlAlchemyScheduleAdmissionRepository" not in task_source

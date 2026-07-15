@@ -274,6 +274,53 @@ def test_scheduled_task_duplicate_does_not_construct_engine(monkeypatch):
     assert _Engine.calls == []
 
 
+def test_scheduled_task_configuration_block_does_not_start_knowledge_or_engine(
+    monkeypatch,
+):
+    claim_id = uuid.uuid4()
+    task_id = f"schedule:{uuid.uuid4()}"
+    admissions = []
+
+    class _UseCase:
+        def __init__(self, **kwargs):
+            pass
+
+        def admit(self, **kwargs):
+            admissions.append(kwargs)
+            return application.ScheduleAdmissionResult(
+                "rejected",
+                "configuration_preflight_blocked",
+            )
+
+    monkeypatch.setattr(tasks, "SessionLocal", _Session)
+    monkeypatch.setattr(application, "ScheduledDeploymentExecutionUseCase", _UseCase)
+    monkeypatch.setattr(
+        "apps.workflow_engine.composition.schedule_dispatch.build_scheduled_workflow_engine",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("configuration-blocked claim must not construct engine")
+        ),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_sync_knowledge_bases_for_execution_subject",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("configuration-blocked claim must not sync knowledge")
+        ),
+    )
+    result = tasks._execute_scheduled_deployment_claim(
+        str(claim_id),
+        task_id=task_id,
+    )
+
+    assert result == {
+        "status": "rejected",
+        "reason": "configuration_preflight_blocked",
+        "claim_id": str(claim_id),
+    }
+    assert len(admissions) == 1
+    assert hasattr(admissions[0]["configuration_preflight"], "is_ready")
+
+
 def test_scheduled_task_engine_failure_is_finalized_without_celery_retry(
     monkeypatch,
     caplog,

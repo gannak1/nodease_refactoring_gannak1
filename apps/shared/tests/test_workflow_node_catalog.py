@@ -360,7 +360,13 @@ def test_catalog_exposes_effective_validation_and_sensitivity_metadata():
         for parameter in node_parameter_definitions("slackPostNode")
         if parameter["key"] == "credential"
     )
+    loop_key = next(
+        parameter
+        for parameter in node_parameter_definitions("loopNode")
+        if parameter["key"] == "loop_key"
+    )
 
     assert http_url["validation"]["max_length"] == 2048
     assert http_url["sensitivity"] == "secret_forbidden"
     assert slack_credential["sensitivity"] == "reference_only"
+    assert loop_key["input_type"] == "text"

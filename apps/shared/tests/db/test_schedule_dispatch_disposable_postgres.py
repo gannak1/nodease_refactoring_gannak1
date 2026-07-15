@@ -49,6 +49,9 @@ from apps.shared.tests.helpers.disposable_postgres import (
     DisposablePostgresConfigurationError,
     quote_disposable_database_name,
 )
+from apps.workflow_engine.adapters.schedule_configuration_preflight import (
+    ScheduleConfigurationPreflightAdapter,
+)
 from apps.workflow_engine.adapters.schedule_dispatch_audit import (
     SqlAlchemyScheduleAdmissionAuditRecorder,
 )
@@ -817,6 +820,7 @@ def test_schedule_occurrence_and_worker_admission_have_single_database_winner():
                     ).admit(
                         repository=SqlAlchemyScheduleAdmissionRepository(session),
                         budget=SharedWorkflowBudgetDecisionAdapter(session),
+                        configuration_preflight=ScheduleConfigurationPreflightAdapter(),
                         audit=SqlAlchemyScheduleAdmissionAuditRecorder(session),
                         uow=SqlAlchemyScheduleAdmissionUnitOfWork(session),
                         claim_id=claim_id,

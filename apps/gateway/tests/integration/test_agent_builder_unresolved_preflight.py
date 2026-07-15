@@ -41,6 +41,56 @@ def test_unresolved_external_action_is_blocked_for_test_run_and_deployment():
         assert exc.value.issues[0].node_type == "slackPostNode"
 
 
+def test_local_execution_preflight_ignores_client_configuration_state():
+    graph = {
+        "nodes": [
+            {
+                "id": "workflow-call",
+                "type": "workflowNode",
+                "data": {"configuration_state": "resolved"},
+            }
+        ],
+        "edges": [],
+    }
+
+    issues = workflow_configuration_issues(graph)
+
+    assert len(issues) == 1
+    assert issues[0].node_type == "workflowNode"
+    assert issues[0].missing_parameters == ("workflowId", "appId")
+
+
+def test_local_execution_preflight_checks_loop_subgraph():
+    graph = {
+        "nodes": [
+            {
+                "id": "loop",
+                "type": "loopNode",
+                "data": {
+                    "loop_key": "items",
+                    "subGraph": {
+                        "nodes": [
+                            {
+                                "id": "nested-workflow-call",
+                                "type": "workflowNode",
+                                "data": {"configuration_state": "resolved"},
+                            }
+                        ],
+                        "edges": [],
+                    },
+                },
+            },
+        ],
+        "edges": [],
+    }
+
+    issues = workflow_configuration_issues(graph)
+
+    assert [(issue.node_id, issue.missing_parameters) for issue in issues] == [
+        ("nested-workflow-call", ("workflowId", "appId"))
+    ]
+
+
 def test_resolved_external_action_passes_without_external_calls():
     enforce_workflow_configuration_preflight(
         _graph(

@@ -12,6 +12,7 @@ from apps.shared.domain.deployment_runtime_policy import (
 from apps.shared.domain.schedule_dispatch import (
     REASON_BUDGET_BLOCKED,
     REASON_BUDGET_EVALUATION_FAILED,
+    REASON_CONFIGURATION_PREFLIGHT_BLOCKED,
     REASON_ORGANIZATION_SCOPE_MISMATCH,
     STATUS_ENQUEUED,
     ScheduleDispatchSettings,
@@ -118,9 +119,21 @@ class _Uow:
 class _Budget:
     def __init__(self, status="allowed"):
         self.status = status
+        self.calls = []
 
     def evaluate(self, **kwargs):
+        self.calls.append(kwargs)
         return BudgetExecutionDecision(status=self.status)
+
+
+class _ConfigurationPreflight:
+    def __init__(self, ready=True):
+        self.ready = ready
+        self.calls = []
+
+    def is_ready(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.ready
 
 
 class _Audit:
@@ -150,6 +163,7 @@ def test_valid_claim_admits_one_system_schedule_execution():
     result = _use_case().admit(
         repository=repository,
         budget=_Budget(),
+        configuration_preflight=_ConfigurationPreflight(),
         audit=_Audit(),
         uow=uow,
         claim_id=snapshot.claim_id,
@@ -177,6 +191,7 @@ def test_disabled_mode_does_not_admit_an_already_queued_schedule_task():
     result = _use_case(mode="disabled").admit(
         repository=repository,
         budget=_Budget(),
+        configuration_preflight=_ConfigurationPreflight(),
         audit=_Audit(),
         uow=uow,
         claim_id=snapshot.claim_id,
@@ -195,10 +210,12 @@ def test_disabled_mode_does_not_admit_an_already_queued_schedule_task():
 def test_non_admissible_existing_state_suppresses_duplicate_engine_start(status):
     snapshot = _snapshot(status=status)
     repository = _Repository(snapshot)
+    preflight = _ConfigurationPreflight()
 
     result = _use_case().admit(
         repository=repository,
         budget=_Budget(),
+        configuration_preflight=preflight,
         audit=_Audit(),
         uow=_Uow(),
         claim_id=snapshot.claim_id,
@@ -209,6 +226,7 @@ def test_non_admissible_existing_state_suppresses_duplicate_engine_start(status)
     assert result.status == "duplicate"
     assert result.plan is None
     assert repository.running == []
+    assert preflight.calls == []
 
 
 def test_task_id_mismatch_is_rejected_without_claim_mutation():
@@ -218,6 +236,7 @@ def test_task_id_mismatch_is_rejected_without_claim_mutation():
     result = _use_case().admit(
         repository=repository,
         budget=_Budget(),
+        configuration_preflight=_ConfigurationPreflight(),
         audit=_Audit(),
         uow=_Uow(),
         claim_id=snapshot.claim_id,
@@ -238,6 +257,7 @@ def test_canonical_organization_mismatch_is_canceled_before_admission():
     result = _use_case().admit(
         repository=repository,
         budget=_Budget(),
+        configuration_preflight=_ConfigurationPreflight(),
         audit=audit,
         uow=uow,
         claim_id=snapshot.claim_id,
@@ -251,6 +271,49 @@ def test_canonical_organization_mismatch_is_canceled_before_admission():
     assert uow.commits == 1
 
 
+def test_configuration_preflight_cancels_before_budget_and_running():
+    snapshot = _snapshot()
+    repository = _Repository(snapshot)
+    budget = _Budget()
+    preflight = _ConfigurationPreflight(ready=False)
+    audit = _Audit()
+    uow = _Uow()
+
+    result = _use_case().admit(
+        repository=repository,
+        budget=budget,
+        configuration_preflight=preflight,
+        audit=audit,
+        uow=uow,
+        claim_id=snapshot.claim_id,
+        task_id=snapshot.idempotency_key,
+        admission_owner="owner",
+    )
+
+    assert result.status == "rejected"
+    assert result.reason == REASON_CONFIGURATION_PREFLIGHT_BLOCKED
+    assert repository.canceled == [
+        {"reason": REASON_CONFIGURATION_PREFLIGHT_BLOCKED, "now": NOW}
+    ]
+    assert repository.running == []
+    assert budget.calls == []
+    assert preflight.calls == [
+        {
+            "graph_snapshot": snapshot.graph_snapshot,
+            "organization_id": snapshot.claim_organization_id,
+        }
+    ]
+    assert audit.claim_results == [
+        {
+            "organization_id": snapshot.claim_organization_id,
+            "claim_id": snapshot.claim_id,
+            "action": "schedule_dispatch.canceled",
+            "reason": REASON_CONFIGURATION_PREFLIGHT_BLOCKED,
+        }
+    ]
+    assert uow.commits == 1
+
+
 def test_budget_blocked_after_enqueue_is_canceled_before_admission():
     snapshot = _snapshot()
     repository = _Repository(snapshot)
@@ -259,6 +322,7 @@ def test_budget_blocked_after_enqueue_is_canceled_before_admission():
     result = _use_case().admit(
         repository=repository,
         budget=_Budget("blocked"),
+        configuration_preflight=_ConfigurationPreflight(),
         audit=audit,
         uow=_Uow(),
         claim_id=snapshot.claim_id,
@@ -285,6 +349,7 @@ def test_budget_unavailable_returns_claim_to_dispatcher_without_engine_start():
     result = _use_case().admit(
         repository=repository,
         budget=_Budget("unavailable"),
+        configuration_preflight=_ConfigurationPreflight(),
         audit=audit,
         uow=_Uow(),
         claim_id=snapshot.claim_id,
@@ -307,6 +372,7 @@ def test_budget_unavailable_at_attempt_limit_records_terminal_failure():
     result = _use_case().admit(
         repository=repository,
         budget=_Budget("unavailable"),
+        configuration_preflight=_ConfigurationPreflight(),
         audit=audit,
         uow=_Uow(),
         claim_id=snapshot.claim_id,
@@ -327,6 +393,7 @@ def test_schedule_plan_separates_system_actor_credential_and_rag_subject():
     result = _use_case().admit(
         repository=repository,
         budget=_Budget(),
+        configuration_preflight=_ConfigurationPreflight(),
         audit=_Audit(),
         uow=_Uow(),
         claim_id=snapshot.claim_id,
@@ -362,6 +429,7 @@ def test_admission_deadline_uses_fresh_db_clock_after_budget_evaluation():
     result = _use_case().admit(
         repository=repository,
         budget=_Budget(),
+        configuration_preflight=_ConfigurationPreflight(),
         audit=_Audit(),
         uow=_Uow(),
         claim_id=snapshot.claim_id,
@@ -380,6 +448,7 @@ def test_finalize_uses_claim_run_and_owner_compare_and_set_contract():
     admission = _use_case().admit(
         repository=repository,
         budget=_Budget(),
+        configuration_preflight=_ConfigurationPreflight(),
         audit=_Audit(),
         uow=_Uow(),
         claim_id=snapshot.claim_id,
@@ -408,6 +477,7 @@ def test_admission_exception_rolls_back_without_plan():
         _use_case().admit(
             repository=_BrokenRepository(snapshot),
             budget=_Budget(),
+            configuration_preflight=_ConfigurationPreflight(),
             audit=_Audit(),
             uow=uow,
             claim_id=snapshot.claim_id,
