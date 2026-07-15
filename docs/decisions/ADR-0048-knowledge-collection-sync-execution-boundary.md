@@ -50,6 +50,10 @@ Option 3과 option 5를 채택한다.
 
 - Sync request와 status 조회는 Organization manager, effective Collection `sync`, domain
   `sync_manage` 중 하나를 요구한다.
+- Organization manager 판정은 ADR-0009의 membership-first helper를 먼저 사용한다. Active 또는
+  non-active membership row가 있으면 그 row가 우선하고, membership row 자체가 없는 legacy
+  `created_by`/`managed_by`만 manager fallback을 받는다. Manager가 아닌 actor는 active
+  organization membership을 통과해야 resource/domain grant를 평가한다.
 - Collection `manage`만으로 sync를 허용하지 않는다.
 - `sync`/`sync_manage`는 child KB `read/use/write/manage` 또는 Collection `route`를 부여하지
   않는다.
@@ -84,6 +88,9 @@ Option 3과 option 5를 채택한다.
   type은 configuration failure로 닫고 connection/config 식별자는 외부로 투영하지 않는다.
 - 문서 한 건의 source row limit은 초기 실행에서 최대 1,000으로 강제해 기존 저장 설정이 더
   크더라도 단일 job이 외부 DB와 embedding provider를 무제한 점유하지 않게 한다.
+- Worker는 DB processor 결과에 문서에 저장된 flat selection(`all`, `range`, `keyword`)을 기존
+  ingestion과 같은 helper로 적용한 뒤에만 새 version chunk를 저장한다. 필터 결과가 비면 새
+  version을 활성화하지 않고 이전 active ready version을 유지한다.
 - Stored DB selection의 table/column/JOIN 값은 SQL fragment가 아니라 PostgreSQL 단일
   identifier로 인용한다. JOIN edge는 snapshot에 선택된 두 table만 참조할 수 있고 `LIMIT`은
   bounded integer로 정규화한다. 저장 metadata가 변조되었더라도 임의 expression, 추가 table,
@@ -132,6 +139,8 @@ Option 3과 option 5를 채택한다.
 - Job status는 `queued`, `running`, `succeeded`, `partially_failed`, `failed`, `cancelled`다.
 - 일부 success와 failed/changed target이 섞이면 `partially_failed`와 Collection `stale`, all
   failure는 `failed`, all success는 `succeeded`와 Collection `synced`다.
+- 여러 failed/skipped item의 representative safe reason은 position 순 첫 행 하나만 조회하며,
+  reason 집계가 다중 행 예외로 terminal finalization을 rollback하지 않아야 한다.
 - Terminal 집계는 item row count를 job의 immutable `total_count`와 비교한다. 누락된 item은
   `sync.targets_changed` skipped로 보정하고, processed count가 original total과 정확히 일치하지
   않으면 success로 finalize하지 않는다.

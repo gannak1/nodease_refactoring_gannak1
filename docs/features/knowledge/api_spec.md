@@ -567,6 +567,10 @@ active organization membership과 지원 DB type을 검증한다. 문서당 sour
 상한 처리한다. Connection identifier, selection/SQL, credential과 processor 원문 오류는 job
 response·task result·audit·log에 포함하지 않는다.
 
+DB processor 결과에는 문서에 저장된 flat `selection_mode`, `chunk_range`, `keyword_filter`를 기존
+ingestion과 같은 selection helper로 적용한다. 선택 결과가 비거나 malformed이면 새 active
+version으로 전환하지 않고 safe configuration failure로 닫아 기존 active ready version을 유지한다.
+
 ### Collection Permission Management
 
 | Method | Path | 목적 | 권한 |
