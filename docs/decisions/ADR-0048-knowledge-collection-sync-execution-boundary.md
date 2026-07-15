@@ -16,6 +16,12 @@ content 권한이 아니므로 status나 audit에 child identity와 source confi
 된다. 현재 Workflow Engine이 실제로 재수집할 수 있는 source는 legacy DB document이며,
 신규 MCP/API/source connector 구현은 MBA-265 범위 밖이다.
 
+기존 Gateway ingestion은 `DocumentVersion`별 chunk를 준비한 뒤 active pointer를 교체하지만,
+legacy vector save는 document의 모든 chunk를 지우고 unversioned chunk를 만든다. KC sync가
+후자를 그대로 호출하면 active ready version이 있는 KB를 retrieval에서 사라지게 할 수 있다.
+또한 job-level snapshot digest만 저장하고 item별 revision을 버리거나 live KB/document FK의
+`ON DELETE CASCADE`에 item을 연결하면 요청 뒤 변경·삭제된 target을 성공으로 오인할 수 있다.
+
 ## Options Considered
 
 1. Collection `sync_state`와 Celery result backend만 사용한다.
@@ -57,6 +63,14 @@ Option 3과 option 5를 채택한다.
 - Active Manual Collection의 active, non-source-managed child KB에 연결된 `SourceType.DB`
   document만 초기 sync target이다.
 - Target order는 Collection item rank, item created time, KB UUID, document UUID다.
+- 각 job item은 Collection/membership/KB/document UUID, item rank/created time과 document updated time에서
+  계산한 per-target revision을 저장한다. Job-level revision은 정렬된 per-target revision의
+  aggregate다. Worker는 shared document advisory lock과 target row lock을 획득한 뒤 source I/O
+  전에 현재 revision과 비교하고 불일치는 `sync.targets_changed`로 종료한다.
+- Job item의 target UUID는 요청 시점 내부 snapshot reference이며 live KB/document에 cascading
+  FK로 연결하지 않는다. 대신 `(job_id, organization_id, collection_id)` composite FK로 owning
+  job과의 tenant/scope 일치만 강제한다. 요청 뒤 unlink나 live KB/document hard delete가 발생해도
+  item은 retention 동안 남아 changed target으로 집계되어야 한다.
 - System/source-managed Collection, source-managed child, API connector sync는 승인된 adapter가
   없는 동안 fail-closed 한다. FILE은 외부 sync 대상이 아니다.
 - Target cap은 100, 한 delivery의 batch는 5, document concurrency는 1이다.
@@ -91,16 +105,27 @@ Option 3과 option 5를 채택한다.
 - Unexpired running duplicate와 terminal redelivery는 no-op한다. Stale lease는 recovery가
   bounded retry하거나 deadline/max recovery 뒤 failed 처리한다.
 - Target apply와 item success/progress는 가능한 한 같은 DB commit에 포함한다.
-- KC sync와 기존 ingestion이 같은 document chunks를 교체하는 경로는 shared vector store의
-  PostgreSQL transaction advisory lock으로 document 단위 직렬화한다. Lock key는 document UUID의
-  namespaced digest에서 만들고 transaction commit/rollback과 함께 자동 해제한다. 모든 writer는
-  advisory lock을 document/Collection/KB row lock보다 먼저 획득해 잠금 순서를 통일한다.
+- KC sync와 기존 ingestion이 같은 document를 갱신하는 경로는 shared PostgreSQL transaction
+  advisory lock으로 document 단위 직렬화한다. Lock key는 document UUID의 namespaced digest에서
+  만들고 transaction commit/rollback과 함께 자동 해제한다. 모든 writer는 source fetch, parsing,
+  embedding과 document/Collection/KB row lock보다 먼저 advisory lock을 획득한다. 상태를 indexing으로
+  바꾸는 선행 commit이 필요하면 그 commit 직후 source read 전에 lock을 잡는다.
+- Organization-scoped KB의 KC sync는 legacy unversioned delete/insert를 사용하지 않는다. 새
+  `DocumentVersion(status=indexing)`과 version-scoped chunk를 같은 transaction에서 만들고, chunk가
+  하나 이상 준비된 뒤 active pointer를 원자 교체한다. 실패·empty result·rollback은 이전 active
+  ready version과 chunk를 유지하며, 성공한 뒤에만 이전 version을 superseded로 표시한다.
 
 ### Status, partial failure and retention
 
 - Job status는 `queued`, `running`, `succeeded`, `partially_failed`, `failed`, `cancelled`다.
 - 일부 success와 failed/changed target이 섞이면 `partially_failed`와 Collection `stale`, all
   failure는 `failed`, all success는 `succeeded`와 Collection `synced`다.
+- Terminal 집계는 item row count를 job의 immutable `total_count`와 비교한다. 누락된 item은
+  `sync.targets_changed` skipped로 보정하고, processed count가 original total과 정확히 일치하지
+  않으면 success로 finalize하지 않는다.
+- `source_deleted`는 job progress보다 우선하는 absorbing state다. Queue, recovery, cancel과 terminal
+  projection은 이미 `source_deleted`인 Collection을 `pending/syncing/synced/stale/failed` 또는
+  이전 state로 되살리지 않는다.
 - User status는 범주형 progress와 allowlisted safe reason만 반환한다. Exact count와 child
   identity는 반환하지 않는다.
 - User cancellation은 이번 범위에 포함하지 않는다. Permission/lifecycle invalidation은 claim
@@ -123,6 +148,9 @@ sync는 MCP/API connector, source revision, ACL/public exposure와 content safet
 
 - `knowledge_collection_sync_jobs`와 `knowledge_collection_sync_job_items` additive table이
   추가된다.
+- Job item은 per-target revision을 보존하고 live target delete cascade에서 분리된다.
+- KC DB document apply는 canonical versioned ingestion finalizer를 사용하므로 실패한 refresh가
+  이전 retrieval-visible version을 파괴하지 않는다.
 - Gateway와 Workflow Engine에 각각 application/port/adapter/composition boundary가 생긴다.
 - Celery Beat는 due/stale job recovery와 terminal retention cleanup task를 실행한다.
 - Client는 polling 기반 safe status panel을 제공한다.
@@ -151,6 +179,9 @@ sync는 MCP/API connector, source revision, ACL/public exposure와 content safet
 - Immediate mid-batch revoke 또는 user cancellation이 필요한 규제 요구가 생기면 cooperative
   cancellation/authorization epoch를 별도 ADR로 결정한다.
 - Celery Beat가 없는 배포는 별도 dispatcher가 필요하며 queued job을 무기한 방치하면 안 된다.
+- 향후 Gateway와 Workflow ingestion의 chunk preparation까지 하나의 application service로 합칠 수
+  있지만, 현재 결정은 shared version-scoped persistence/finalization contract를 두 writer가
+  동일하게 지키는 데 한정한다.
 
 ## Non-Goals
 
