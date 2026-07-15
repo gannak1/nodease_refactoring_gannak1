@@ -6,8 +6,8 @@ import pytest
 from fastapi import HTTPException
 
 from apps.gateway.adapters.db.agent_builder_repository import AgentBuilderRepository
-from apps.gateway.application.agent_builder import mutation_lifecycle as lifecycle_module
-from apps.gateway.application.agent_builder.mutation_lifecycle import (
+from apps.gateway.services.agent_builder import mutation_lifecycle as lifecycle_module
+from apps.gateway.services.agent_builder.mutation_lifecycle import (
     GraphMutationLifecycleService,
 )
 from apps.gateway.application.agent_builder.graph_mutation_builder import (

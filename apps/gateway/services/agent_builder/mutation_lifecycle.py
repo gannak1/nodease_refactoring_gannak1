@@ -31,7 +31,7 @@ from apps.gateway.application.agent_builder.parameter_tasks import (
     refresh_parameter_group_configuration,
     refresh_parameter_group_suggestions,
 )
-from apps.gateway.application.agent_builder.parameter_candidates import (
+from apps.gateway.services.agent_builder.parameter_candidates import (
     ParameterCandidateProvider,
 )
 from apps.gateway.application.agent_builder.condition_branches import (

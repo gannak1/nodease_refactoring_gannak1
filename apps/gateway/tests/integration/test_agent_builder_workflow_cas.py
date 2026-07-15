@@ -21,10 +21,10 @@ from apps.gateway.application.agent_builder.graph_mutation_builder import (
     canonical_graph_hash,
     materialize_candidate_graph,
 )
-from apps.gateway.application.agent_builder.parameter_task_service import (
+from apps.gateway.services.agent_builder.parameter_task_service import (
     ParameterTaskService,
 )
-from apps.gateway.application.agent_builder.mutation_lifecycle import (
+from apps.gateway.services.agent_builder.mutation_lifecycle import (
     GraphMutationLifecycleService,
 )
 from apps.gateway.services.agent_builder_service import AgentBuilderService
@@ -32,11 +32,11 @@ from apps.gateway.services.workflow_service import WorkflowService
 from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.agent_builder import AgentBuilderRequest, AgentBuilderSession
 from apps.shared.db.models.app import App
+from apps.shared.db.models.knowledge import KnowledgeBase
 from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.organization_membership import OrganizationMembership
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
-from apps.shared.db.session import engine
 from apps.shared.tests.helpers.disposable_postgres import (
     DisposablePostgresConfig,
     DisposablePostgresConfigurationError,
@@ -60,6 +60,12 @@ from apps.shared.schemas.workflow import WorkflowDraftRequest
 ROOT_DIR = Path(__file__).resolve().parents[4]
 RUN_DISPOSABLE_DB_ENV = "NODEASE_RUN_DISPOSABLE_DB_TEST"
 DISPOSABLE_DB_PREFIX = "mbased_workflow_cas"
+pytestmark = pytest.mark.skipif(
+    os.getenv(RUN_DISPOSABLE_DB_ENV) != "1",
+    reason=(
+        f"set {RUN_DISPOSABLE_DB_ENV}=1 to run disposable PostgreSQL workflow CAS tests"
+    ),
+)
 
 
 def _alembic_python() -> str:
@@ -98,8 +104,8 @@ def _run_alembic(database: str, config: DisposablePostgresConfig) -> None:
 
 
 @pytest.fixture
-def db_session():
-    connection = engine.connect()
+def db_session(disposable_cas_engine):
+    connection = disposable_cas_engine.connect()
     transaction = connection.begin()
     db = Session(bind=connection, join_transaction_mode="create_savepoint")
     try:
@@ -199,7 +205,7 @@ def _fixture(db):
     return user, workflow, request_row
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def disposable_cas_engine():
     try:
         config = DisposablePostgresConfig.from_environment()
@@ -413,12 +419,6 @@ def _race_save_draft(session_factory, *, workflow_id, user_id, request, label, b
             }
 
 
-@pytest.mark.skipif(
-    os.getenv(RUN_DISPOSABLE_DB_ENV) != "1",
-    reason=(
-        f"set {RUN_DISPOSABLE_DB_ENV}=1 to run disposable PostgreSQL workflow CAS race"
-    ),
-)
 def test_actual_postgresql_autosync_race_has_single_cas_winner(
     disposable_cas_engine,
 ):
@@ -482,12 +482,6 @@ def test_actual_postgresql_autosync_race_has_single_cas_winner(
     assert candidates[loser["label"]]["nodes"][0]["id"] not in persisted_node_ids
 
 
-@pytest.mark.skipif(
-    os.getenv(RUN_DISPOSABLE_DB_ENV) != "1",
-    reason=(
-        f"set {RUN_DISPOSABLE_DB_ENV}=1 to run disposable PostgreSQL workflow CAS race"
-    ),
-)
 def test_actual_postgresql_autosync_and_agent_builder_race_has_no_silent_overwrite(
     disposable_cas_engine,
 ):
@@ -1100,6 +1094,24 @@ def test_parameter_acknowledgement_retry_is_idempotent(db_session):
 
 def test_knowledge_binding_acknowledgement_completes_parameter_task(db_session):
     user, workflow, request_row = _fixture(db_session)
+    knowledge_bases = [
+        KnowledgeBase(
+            organization_id=workflow.organization_id,
+            user_id=user.id,
+            name="Knowledge Alpha",
+        ),
+        KnowledgeBase(
+            organization_id=workflow.organization_id,
+            user_id=user.id,
+            name="Knowledge Beta",
+        ),
+    ]
+    db_session.add_all(knowledge_bases)
+    db_session.flush()
+    knowledge_references = [
+        {"id": str(knowledge_base.id), "name": knowledge_base.name}
+        for knowledge_base in knowledge_bases
+    ]
     workflow.graph = {
         "nodes": [
             {
@@ -1153,7 +1165,10 @@ def test_knowledge_binding_acknowledgement_completes_parameter_task(db_session):
             {
                 "op": "replace_node_data",
                 "node_id": "llm",
-                "data": {"title": "LLM", "knowledgeBases": ["kb-1", "kb-2"]},
+                "data": {
+                    "title": "LLM",
+                    "knowledgeBases": knowledge_references,
+                },
             }
         ],
         completion_context=GraphMutationCompletionContext(
@@ -1169,7 +1184,7 @@ def test_knowledge_binding_acknowledgement_completes_parameter_task(db_session):
         resolution_id=resolution_id,
         operation_id=operation_id,
         timing="after_graph",
-        selected_candidate_ids=["kb-1", "kb-2"],
+        selected_candidate_ids=[reference["id"] for reference in knowledge_references],
     )
     db_session.flush()
     result_graph = apply_graph_operations(workflow.graph, mutation.operations)

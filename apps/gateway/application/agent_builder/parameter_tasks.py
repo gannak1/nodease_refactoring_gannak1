@@ -7,8 +7,6 @@ from dataclasses import dataclass
 from typing import Any, Literal
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from pydantic import BaseModel
-
 from apps.shared.schemas.agent_builder import (
     AgentBuilderParameterGroup,
     AgentBuilderParameterGuidanceHint,

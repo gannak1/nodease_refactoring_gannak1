@@ -50,6 +50,8 @@ planner는 catalog와 graph policy를 우회할 수 없고, frontend는 node별 
 
 현재 대형 `AgentBuilderService`는 전환 기간 facade로 남기고 새 endpoint를 application use case에 위임한다.
 
+Application package는 shared Pydantic request/response contract를 사용할 수 있지만 FastAPI, SQLAlchemy, DB model, concrete Gateway service/adapter를 직접 import하지 않는다. 현재 DB session, 권한 query, audit와 transaction을 직접 조율하는 `KnowledgeSelectionService`, `GraphMutationLifecycleService`, `ParameterCandidateProvider`, `ParameterTaskService`는 과도기 concrete coordinator로 `apps/gateway/services/agent_builder/`에 둔다. 이 위치는 헥사고널 이관 완료를 의미하지 않으며, 이후 use case/port 분리는 동작 보존 테스트와 함께 작은 단위로 진행한다.
+
 #### Existing model recommendation boundary
 
 - `LLMService.get_agent_answer_options()`는 active organization의 valid credential, active chat model, provider 일치, verified relation과 사용자 credential `use` 권한을 통과한 후보를 조회한다.
