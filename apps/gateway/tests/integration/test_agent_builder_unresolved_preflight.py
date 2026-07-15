@@ -116,13 +116,19 @@ def test_loop_subgraph_preflight_accepts_iteration_and_mapped_input_selectors():
             {
                 "id": "source",
                 "type": "startNode",
-                "data": {"variables": [{"name": "mail"}]},
+                "data": {
+                    "variables": [{"name": "items"}, {"name": "mail"}]
+                },
             },
             {
                 "id": "loop",
                 "type": "loopNode",
                 "data": {
                     "inputs": [
+                        {
+                            "name": "items",
+                            "value_selector": ["source", "items"],
+                        },
                         {
                             "name": "mapped_mail",
                             "value_selector": ["source", "mail"],
@@ -156,6 +162,162 @@ def test_loop_subgraph_preflight_accepts_iteration_and_mapped_input_selectors():
     }
 
     assert workflow_configuration_issues(graph) == []
+
+
+def test_loop_subgraph_preflight_rejects_inherited_selectors_after_entry():
+    graph = {
+        "nodes": [
+            {
+                "id": "source",
+                "type": "startNode",
+                "data": {
+                    "variables": [{"name": "items"}, {"name": "mail"}]
+                },
+            },
+            {
+                "id": "loop",
+                "type": "loopNode",
+                "data": {
+                    "inputs": [
+                        {
+                            "name": "items",
+                            "value_selector": ["source", "items"],
+                        },
+                        {
+                            "name": "mapped_mail",
+                            "value_selector": ["source", "mail"],
+                        }
+                    ],
+                    "subGraph": {
+                        "nodes": [
+                            {
+                                "id": "entry",
+                                "type": "templateNode",
+                                "data": {"template": "continue"},
+                            },
+                            {
+                                "id": "draft",
+                                "type": "gmailDraftNode",
+                                "data": {
+                                    "credential_id": "credential-reference",
+                                    "processing_ref_selector": ["loop", "item"],
+                                    "reply_body_selector": [
+                                        "mapped_mail",
+                                        "reply_body",
+                                    ],
+                                },
+                            },
+                        ],
+                        "edges": [
+                            {
+                                "id": "entry-draft",
+                                "source": "entry",
+                                "target": "draft",
+                            }
+                        ],
+                    },
+                },
+            },
+        ],
+        "edges": [{"id": "source-loop", "source": "source", "target": "loop"}],
+    }
+
+    issues = workflow_configuration_issues(graph)
+
+    assert [
+        (issue.node_id, issue.missing_parameters) for issue in issues
+    ] == [
+        ("draft", ("processing_ref_selector", "reply_body_selector")),
+    ]
+
+
+def test_downstream_nested_loop_does_not_tunnel_outer_inherited_sources():
+    graph = {
+        "nodes": [
+            {
+                "id": "source",
+                "type": "startNode",
+                "data": {
+                    "variables": [{"name": "items"}, {"name": "mail"}]
+                },
+            },
+            {
+                "id": "outer-loop",
+                "type": "loopNode",
+                "data": {
+                    "inputs": [
+                        {
+                            "name": "items",
+                            "value_selector": ["source", "items"],
+                        },
+                        {
+                            "name": "mapped_mail",
+                            "value_selector": ["source", "mail"],
+                        }
+                    ],
+                    "subGraph": {
+                        "nodes": [
+                            {
+                                "id": "entry",
+                                "type": "templateNode",
+                                "data": {"template": "continue"},
+                            },
+                            {
+                                "id": "inner-loop",
+                                "type": "loopNode",
+                                "data": {
+                                    "subGraph": {
+                                        "nodes": [
+                                            {
+                                                "id": "inner-draft",
+                                                "type": "gmailDraftNode",
+                                                "data": {
+                                                    "credential_id": (
+                                                        "credential-reference"
+                                                    ),
+                                                    "processing_ref_selector": [
+                                                        "loop",
+                                                        "item",
+                                                    ],
+                                                    "reply_body_selector": [
+                                                        "mapped_mail",
+                                                        "reply_body",
+                                                    ],
+                                                },
+                                            }
+                                        ],
+                                        "edges": [],
+                                    }
+                                },
+                            },
+                        ],
+                        "edges": [
+                            {
+                                "id": "entry-inner-loop",
+                                "source": "entry",
+                                "target": "inner-loop",
+                            }
+                        ],
+                    },
+                },
+            },
+        ],
+        "edges": [
+            {
+                "id": "source-outer-loop",
+                "source": "source",
+                "target": "outer-loop",
+            }
+        ],
+    }
+
+    issues = workflow_configuration_issues(graph)
+
+    assert [
+        (issue.node_id, issue.missing_parameters) for issue in issues
+    ] == [
+        ("inner-draft", ("reply_body_selector",)),
+    ]
 
 
 def test_loop_subgraph_preflight_rejects_unknown_iteration_context_key():

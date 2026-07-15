@@ -3,7 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from apps.shared.domain.workflow_graph import MAX_WORKFLOW_GRAPH_NESTING_DEPTH
+from apps.shared.domain.workflow_graph import (
+    AUXILIARY_NODE_TYPES,
+    MAX_WORKFLOW_GRAPH_NESTING_DEPTH,
+)
 from apps.shared.services.workflow_node_catalog import (
     node_definition,
     node_output_keys,
@@ -63,6 +66,34 @@ def _upstream_node_ids(graph: dict[str, Any], target_node_id: str) -> set[str]:
     return upstream
 
 
+def _implicit_entry_node_id(
+    graph: dict[str, Any],
+    node_by_id: dict[str, dict[str, Any]],
+) -> str | None:
+    executable_node_ids = {
+        node_id
+        for node_id, node in node_by_id.items()
+        if node.get("type") not in AUXILIARY_NODE_TYPES
+    }
+    incoming_node_ids: set[str] = set()
+    for edge in graph.get("edges") or []:
+        if not isinstance(edge, dict):
+            continue
+        source_id = str(edge.get("source") or "")
+        target_id = str(edge.get("target") or "")
+        source = node_by_id.get(source_id)
+        if (
+            source is not None
+            and source.get("type") not in AUXILIARY_NODE_TYPES
+            and target_id in executable_node_ids
+        ):
+            incoming_node_ids.add(target_id)
+    entry_node_ids = executable_node_ids - incoming_node_ids
+    if len(entry_node_ids) != 1:
+        return None
+    return next(iter(entry_node_ids))
+
+
 def workflow_configuration_issues(
     graph: dict[str, Any] | None,
 ) -> list[WorkflowConfigurationIssue]:
@@ -109,6 +140,11 @@ def workflow_configuration_issues(
         node_by_id = {
             str(node.get("id")): node for node in nodes if node.get("id")
         }
+        inherited_source_consumer_id = (
+            _implicit_entry_node_id(current, node_by_id)
+            if inherited_sources
+            else None
+        )
 
         local_sources: dict[str, SelectorKeys] = {
             node_id: frozenset(
@@ -125,6 +161,7 @@ def workflow_configuration_issues(
             selector: Any,
             *,
             allowed_local_source_ids: set[str] | None = None,
+            allow_inherited_sources: bool = True,
         ) -> bool:
             if not isinstance(selector, list) or len(selector) < 2:
                 return False
@@ -137,12 +174,18 @@ def workflow_configuration_issues(
                     return False
                 allowed_keys = local_sources[source_id]
             elif source_id in inherited_sources:
+                if not allow_inherited_sources:
+                    return False
                 allowed_keys = inherited_sources[source_id]
             else:
                 return False
             return allowed_keys is None or str(selector[1]) in allowed_keys
 
         for node in nodes:
+            node_id = str(node.get("id") or "")
+            allows_inherited_sources = (
+                not inherited_sources or node_id == inherited_source_consumer_id
+            )
             node_type = str(node.get("type") or "")
             definition = node_definition(node_type)
             data = node.get("data") if isinstance(node.get("data"), dict) else {}
@@ -189,7 +232,11 @@ def workflow_configuration_issues(
                     ):
                         selectors = parameter_selectors(data.get(parameter_key))
                         invalid = invalid or not selectors or not all(
-                            selector_valid(selector) for selector in selectors
+                            selector_valid(
+                                selector,
+                                allow_inherited_sources=allows_inherited_sources,
+                            )
+                            for selector in selectors
                         )
                     if invalid:
                         missing_items.append(parameter_key)
@@ -197,7 +244,7 @@ def workflow_configuration_issues(
                 if missing:
                     issues.append(
                         WorkflowConfigurationIssue(
-                            node_id=str(node.get("id") or ""),
+                            node_id=node_id,
                             node_type=node_type,
                             missing_parameters=missing,
                         )
@@ -205,10 +252,12 @@ def workflow_configuration_issues(
 
             subgraph = data.get("subGraph") if node_type == "loopNode" else None
             if isinstance(subgraph, dict):
-                node_id = str(node.get("id") or "")
                 upstream_node_ids = _upstream_node_ids(current, node_id)
+                inherited_child_sources = (
+                    inherited_sources if allows_inherited_sources else {}
+                )
                 child_sources = {
-                    **inherited_sources,
+                    **inherited_child_sources,
                     **{
                         source_id: output_keys
                         for source_id, output_keys in local_sources.items()
@@ -234,6 +283,7 @@ def workflow_configuration_issues(
                         if not selector_valid(
                             mapping_selector,
                             allowed_local_source_ids=upstream_node_ids,
+                            allow_inherited_sources=allows_inherited_sources,
                         ):
                             invalid_mapping = True
                             continue
