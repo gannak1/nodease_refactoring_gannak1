@@ -203,14 +203,20 @@ def test_local_postgres_requires_tls_and_uses_a_read_only_non_superuser() -> Non
                 """
                 SELECT
                     (SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()),
+                    (SELECT version FROM pg_stat_ssl WHERE pid = pg_backend_pid()),
                     current_setting('transaction_read_only')::boolean,
                     NOT (rolsuper OR rolcreatedb OR rolcreaterole OR
-                         rolreplication OR rolbypassrls)
+                         rolreplication OR rolbypassrls),
+                    rolconnlimit = 4
                 FROM pg_roles
                 WHERE rolname = current_user
                 """
             )
-            assert cursor.fetchone() == (True, True, True)
+            row = cursor.fetchone()
+            assert row is not None
+            assert row[0] is True
+            assert row[1] in {"TLSv1.2", "TLSv1.3"}
+            assert row[2:] == (True, True, True)
             with pytest.raises(psycopg2.Error):
                 cursor.execute("CREATE TEMP TABLE connector_probe_write(value integer)")
     finally:
