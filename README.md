@@ -1,203 +1,258 @@
-# Moduly (모듈리)
-
 <div align="center">
 
-![Moduly Logo](https://raw.githubusercontent.com/jungle-scope/moduly/develop/apps/client/public/moduly-logo.png) 
+<img src="./apps/client/public/logo.png" alt="Nodease" width="420" />
 
-**복잡한 설정 없이 완성하는 가장 직관적인 AI 자동화 툴**
-<br/>
-Drag & Drop으로 나만의 AI 워크플로우를 설계하고 실행하세요.
+# Nodease
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)](https://python.org)
-[![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=next.js&logoColor=white)](https://nextjs.org)
-[![Docker](https://img.shields.io/badge/Docker-Enabled-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
+**기업 내부 AI workflow를 자연어로 설계하고, 권한 있는 사내 지식과 연결하며,  
+실행 비용과 감사 이력을 함께 운영하는 AI workflow/LLMOps 플랫폼**
 
-[SaaS 체험하기](https://moduly-ai.cloud/) · [설치 가이드](#getting-started) · [버그 제보](https://github.com/jungle-scope/moduly/issues)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=next.js&logoColor=white)](https://nextjs.org/)
+[![Docker Compose](https://img.shields.io/badge/Docker_Compose-v2-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
+
+[핵심 가치](#핵심-가치) · [대표 데모](#대표-데모-사내-정책-문의-자동화) · [Quick Start](#quick-start) · [Architecture](#architecture) · [Documentation](#documentation) · [Issues](https://github.com/nodease/mbased/issues)
 
 </div>
 
 ---
 
-## Introduction
+## Nodease란?
 
-**Moduly**는 개발자와 비개발자 모두를 위해 설계된 오픈소스 AI 자동화 플랫폼입니다. 기존의 자동화 툴들이 가진 높은 진입 장벽과 복잡한 설정을 제거하고, 직관적인 드래그 앤 드롭 인터페이스를 통해 누구나 강력한 AI 워크플로우를 구축할 수 있도록 돕습니다.
+Nodease는 사내 여러 팀이 AI workflow를 만들고 실행하고 배포할 수 있게 하는 기업 내부 플랫폼입니다. 기존의 시각적 workflow builder와 runtime 위에 자연어 기반 Agent Builder, Organization/Team 단위 RBAC, 권한 기반 RAG, Audit/Trace, LLM 사용량·비용 관측을 결합합니다.
 
-단순한 챗봇을 넘어, 외부 데이터(RAG), API 연동, 그리고 파이썬 코드 실행까지 하나의 캔버스 위에서 자유롭게 연결하세요. Moduly가 당신의 아이디어를 실행 가능한 **모듈**로 만듭니다.
+목표는 AI workflow를 단순히 **만드는 도구**에서 권한·근거·비용을 함께 관리할 수 있는 **운영 가능한 플랫폼**으로 확장하는 것입니다.
 
-## Key Features
+> [!NOTE]
+> Nodease는 Krafton Jungle 11기에서 개발한 [moduly](https://github.com/jungle-scope/moduly)를 기반으로 작업한 프로젝트입니다.
 
-*   **드래그 앤 드롭 워크플로우**: 복잡한 코딩 없이 노드를 연결하여 로직을 설계하는 직관적인 UI/UX.
-*   **강력한 RAG (Retrieval-Augmented Generation)**: 문서, 데이터베이스 등 다양한 소스의 데이터를 학습시켜 AI가 더 똑똑하게 답변하도록 지식 베이스를 연결.
-*   **안전한 코드 실행 환경**: `NSJail` 기반 샌드박스 환경에서 Python 코드를 실행할 수 있는 안전한 환경.
-*   **폭넓은 확장성**: HTTP Request, Email(IMAP) 등 다양한 외부 서비스와의 데이터 동기화 및 연동 지원.
-*   **셀프 호스팅 최적화**: Docker Compose 하나로 프론트엔드부터 백엔드, DB까지 로컬 환경에 즉시 배포.
+## 핵심 가치
 
-## Getting Started
+| 가치                             | Nodease가 제공하는 방식                                                                                          |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| **자연어로 시작하는 자동화**     | Agent Builder가 업무 설명을 workflow 초안으로 만들고, 사용자가 Preview와 validation 결과를 확인한 뒤 저장합니다. |
+| **권한을 지키는 사내 지식 활용** | 실행 사용자가 접근할 수 있는 Knowledge Base만 RAG 검색 후보와 citation에 포함합니다.                             |
+| **근거가 남는 운영**             | 주요 행위와 node 실행을 Audit·Trace로 연결하고, 일반 조회에는 visibility·redaction 정책을 적용합니다.            |
+| **비용을 아는 LLMOps**           | workflow와 LLM node의 token, 비용, latency를 관측하고 동일 입력 기반 후보 설정을 비교합니다.                     |
 
-로컬 환경에서 Moduly를 실행하는 두 가지 방법이 있습니다:
-- **Docker Compose**: 로컬 또는 단일 서버에서 빠른 설치
-- **Kubernetes (Helm)**: 프로덕션 환경을 위한 확장 가능한 배포
+## 대표 데모: 사내 정책 문의 자동화
 
-### Option 1: Docker Compose
+사내 정책이 바뀌어 같은 문의가 반복되는 상황을 가정합니다. 빌더는 자연어로 정책 문의 workflow를 만들고, 일반 직원과 HR 관리자는 동일한 질문을 실행합니다. Nodease는 각 사용자가 접근할 수 있는 Knowledge만 검색하기 때문에 답변 근거와 citation 범위가 역할에 따라 달라집니다.
 
-#### Prerequisites
-*   [Docker](https://www.docker.com/) & Docker Compose
-*   Git
-*   Python 3.11+
-*   Node.js 18+
+```mermaid
+flowchart LR
+    A["빌더 권한 요청"] --> B["관리자 승인"]
+    B --> C["자연어로 정책 문의 workflow 요청"]
+    C --> D["Preview · Validation · 적용 및 저장"]
+    D --> E{"실행 사용자"}
+    E -->|일반 직원| F["공개 정책 Knowledge만 검색"]
+    E -->|HR 관리자| G["허용된 내부 정책까지 검색"]
+    F --> H["답변 + Citation"]
+    G --> H
+    H --> I["Audit · Trace · Usage/Cost 확인"]
+```
 
-#### Installation
+일반 직원의 답변과 trace에는 권한이 없는 내부 문서의 이름·내용·정확한 차단 건수를 노출하지 않습니다. 최종 정책 판단과 예외 승인은 담당자가 수행합니다.
 
-1. **저장소 클론**
-   ```bash
-   git clone https://github.com/jungle-scope/moduly.git
-   cd moduly
-   ```
+## 현재 구현 기능
 
-2. **환경 변수 설정**
-   제공된 예제 파일을 복사하여 `.env` 파일을 생성합니다.
-   ```bash
-   cp .env.example .env
-   ```
-   *`.env` 파일을 열어 `OPENAI_API_KEY`나 `ENCRYPTION_KEY` 등 필요한 키 값을 입력하세요.*
+| 영역                               | 현재 제공 범위                                                                                                                                          | 상태 |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | :--: |
+| **Workflow Builder & Runtime**     | 시각적 graph 편집, 테스트 실행, 배포, 수동·Schedule·Webhook·API 실행 경로                                                                               | 제공 |
+| **Workflow Node**                  | Start, Webhook, Schedule, LLM, Workflow, Code, Condition, File/Variable Extraction, Answer, Loop, HTTP, Slack, Template, GitHub, Mail 등 16개 구현 node | 제공 |
+| **Agent Builder**                  | 자연어 요청, 15개 node type 기반 초안, 읽기 전용 Preview, connection validation, 적용 및 저장                                                           | 제공 |
+| **Organization & RBAC**            | Organization/Team membership, 역할, team·user direct permission, App 생성 권한 신청·승인                                                                | 제공 |
+| **Knowledge & RAG**                | Knowledge Base 생성, 문서 업로드·색인, metadata-aware·hierarchical retrieval, citation, 권한 경계                                                       | 제공 |
+| **Audit & Trace**                  | Audit 검색, workflow/node trace, correlation, payload visibility·redaction, 민감 trace 접근 기록                                                        | 제공 |
+| **Usage, Budget & Cost Optimizer** | LLM token·비용·latency, workflow 월 예산, LLM node baseline/후보 A/B 비교와 검증 후 적용                                                                | 제공 |
+| **LLM Provider**                   | OpenAI, Anthropic, Google credential과 model 연결                                                                                                       | 제공 |
 
-3. **Docker 서비스 실행**
-   ```bash
-   docker-compose up -d --build
-   ```
-   *최초 실행 시 이미지를 빌드하느라 시간이 조금 걸릴 수 있습니다.*
+Agent Builder가 지원하는 15개 node type에는 외부 action node도 포함되지만, credential과 대상 resource 같은 미해결 설정은 사용자가 확인해야 합니다. Preview와 `적용 및 저장` 단계는 workflow 실행, Knowledge retrieval, Slack 전송 등 외부 side effect를 수행하지 않습니다.
 
-4. **접속**
-   브라우저를 열고 `http://localhost`으로 접속하여 Moduly를 시작하세요.
-   API 문서는 `http://localhost/api/docs`에서 확인할 수 있습니다.
+## 현재 경계와 Roadmap
 
-### Option 2: Kubernetes (Helm)
+Nodease는 활발히 개발 중입니다. 아래 항목은 현재 제공 기능과 구분해 설명합니다.
 
-Kubernetes 클러스터에 프로덕션 수준의 배포를 원한다면 Helm 차트를 사용하세요.
-
-#### Prerequisites
-*   Kubernetes 클러스터 (v1.24+)
-*   [Helm](https://helm.sh/) (v3.0+)
-*   [kubectl](https://kubernetes.io/docs/tasks/tools/)
-
-#### Installation
-
-1. **저장소 클론**
-   ```bash
-   git clone https://github.com/jungle-scope/moduly.git
-   cd docker
-   ```
-
-2. **의존성 업데이트**
-   ```bash
-   cd infra/helm/moduly
-   helm dependency update
-   ```
-
-3. **values.yaml 생성 및 설정**
-   ```bash
-   helm show values ./infra/helm/moduly > values.yaml
-   ```
-   
-   생성된 `values.yaml` 파일을 수정하여 환경에 맞게 구성합니다:
-   - 이미지 태그
-   - 도메인 설정 (ingress)
-   - 스토리지 클래스
-   - 리소스 제한
-   - 환경 변수 (API 키 등)
-
-4. **Helm 차트 설치**
-   ```bash
-   helm upgrade --install moduly ./infra/helm/moduly -f values.yaml
-   ```
-
-5. **배포 확인**
-   ```bash
-   kubectl get pods -n moduly
-   kubectl get ingress -n moduly
-   ```
-
-   설정한 도메인으로 접속하거나 Ingress IP를 확인하여 접속하세요.
-
-> **참고**: 자세한 Helm 차트 설정은 `infra/helm/moduly/README.md`를 참고하세요.
-
-### 환경변수
-
-주요 환경 변수 예시입니다. (자세한 내용은 `.env.example` 참고)
-
-| 변수명 | 설명 | 기본값/예시 |
-|--------|------|-------------|
-| `NEXT_PUBLIC_API_UR` | 백엔드 API 주소 | `http://localhost:8000` |
-| `ENCRYPTION_KEY` | 민감 데이터 암호화 키 | (Random String) |
-| `REDIS_URL` | Redis 접속 주소 | `redis://redis:6379/0` |
-| `POSTGRES_USER` | DB 사용자명 | `moduly` |
+- Mail node는 IMAP 기반 메일 **검색** 기능입니다. 메일 도착 event trigger, Gmail 답장 초안 생성과 자동 발송 기능이 아닙니다.
+- 자동 외부 지식 수집, 운영 수준의 Source ACL 동기화와 Collection routing 전체 경계는 계속 확장 중입니다.
+- Knowledge Skill과 외부 IdP 기반 SSO는 목표 기능이며 현재 제공 기능으로 설명하지 않습니다.
+- 배포 전에는 [아키텍처의 알려진 리스크](./docs/architecture.md#5-알려진-리스크)를 검토하고, secret·outbound egress·원문 payload 정책을 환경에 맞게 확정해야 합니다.
 
 ## Architecture
 
-현재 아키텍처 구성도와 요청 흐름은 [docs/architecture.md](./docs/architecture.md)를 기준으로 관리합니다.
+다음은 통합 컨테이너 실행 기준의 논리 구조입니다.
+
+```mermaid
+flowchart LR
+    U["Browser"] --> N["Nginx"]
+    N --> C["Client<br/>Next.js"]
+    N --> G["Gateway<br/>FastAPI"]
+    G --> P[("PostgreSQL<br/>+ pgvector")]
+    G --> R[("Redis")]
+    R --> W["Workflow Engine<br/>Celery"]
+    R --> L["Log System<br/>Celery"]
+    W --> P
+    L --> P
+    W --> S["Sandbox<br/>NSJail"]
+```
+
+| 경로                                    | 책임                                                                         |
+| --------------------------------------- | ---------------------------------------------------------------------------- |
+| `apps/client/`                          | Next.js UI. Workflow 편집, Knowledge, RBAC, Admin·observability 화면         |
+| `apps/gateway/`                         | FastAPI 진입점. 인증, organization context와 resource permission enforcement |
+| `apps/workflow_engine/`                 | Celery 기반 workflow 실행과 node runtime                                     |
+| `apps/log_system/`                      | Audit·Trace·log 계열 비동기 처리                                             |
+| `apps/shared/`                          | DB model, schema, permission, LLM client, RAG와 tracing 공통 계층            |
+| `apps/sandbox/`                         | NSJail 기반 Python code 실행 격리                                            |
+| `docker/`, `dev/`, `infra/`, `scripts/` | 통합 컨테이너, 로컬 개발, Kubernetes/Helm과 운영 script                      |
+
+자세한 서비스 경계와 요청 흐름은 [Architecture 문서](./docs/architecture.md)를 기준으로 합니다.
 
 ## Tech Stack
 
-Moduly는 최신 기술 스택을 활용하여 안정성과 확장성을 보장합니다.
+| 영역           | 기술                                                                                |
+| -------------- | ----------------------------------------------------------------------------------- |
+| Frontend       | Next.js 16, React 19, TypeScript, Tailwind CSS, React Flow                          |
+| Gateway        | Python 3.11, FastAPI, SQLAlchemy                                                    |
+| Runtime        | Celery, Redis                                                                       |
+| Database       | PostgreSQL, pgvector                                                                |
+| LLM/RAG        | OpenAI·Anthropic·Google client, document ingestion, metadata/hierarchical retrieval |
+| Sandbox        | NSJail                                                                              |
+| Infrastructure | Docker Compose, Kubernetes, Helm, Terraform                                         |
+| Test           | pytest, Vitest, ESLint, Next.js build                                               |
 
-### **Frontend**
-*   **Framework**: Next.js 16 (TypeScript)
-*   **Styling**: Tailwind CSS
-*   **Components**: React Flow (노드 기반 UI), Shadcn UI
+## Quick Start
 
-### **Backend (Workflow Engine)**
-*   **Language**: Python 3.11
-*   **Core**: Celery
-*   **Database**: SQLAlchemy 2.0(ORM), Redis (Message Broker & Caching)
-*   **AI Core**: LiteLLM (LLM Abstraction), PyMuPD, LlamaParse, pgvector
+통합 Docker Compose는 Client, Gateway, Workflow Engine, Log System, PostgreSQL, Redis, Sandbox와 Nginx를 함께 실행합니다.
 
-### **Infrastructure**
-*   **Containerization**: Docker, Docker Compose - 로컬 개발 환경
-*   **Kubernetes + Helm** - 프로덕션 오케스트레이션
-*   **Terraform** - 인프라 프로비저닝
-*   **NSJail** - 코드 샌드박스 격리
-*   **CI/CD**: GitHub Actions
+### Prerequisites
 
-## Project Structure
+- Git
+- Docker Engine 또는 Docker Desktop
+- Docker Compose v2
+- 로컬 포트 `80`, `5432`, `6379`, `8194`, `3128` 사용 가능
 
-현재 저장소 구조와 서비스 경계는 [docs/architecture.md](./docs/architecture.md)와 [AGENTS.md](./AGENTS.md)를 기준으로 관리합니다.
+### 1. 저장소와 환경파일 준비
 
-## How to use
+```bash
+git clone https://github.com/nodease/mbased.git
+cd mbased
+cp docker/.env.example docker/.env
+```
 
-1. **새 프로젝트 생성**: 내 모듈에서 '새 모듈'를 클릭합니다.
-2. **노드 추가**: 좌측 패널에서 원하는 노드를 캔버스로 드래그하거나 에디터에서 오른쪽 마우스를 클릭합니다.
-3. **연결**: 각 노드의 핸들을 마우스로 끌어 흐름을 연결합니다.
-4. **설정**: 노드를 클릭하여 프롬프트를 입력하거나 API 설정을 마칩니다.
-5. **실행**: 캔버스 상단 "테스트" 버튼으로 워크플로우 테스트
-6. **배포** — 완성된 워크플로우를 배포
+`docker/.env`에서 다음 값을 각각 안전한 랜덤 값으로 설정합니다.
 
-## Roadmap
-Moduly의 향후 개발 계획입니다:
+| 변수             | 요구 형식                               |
+| ---------------- | --------------------------------------- |
+| `SECRET_KEY`     | 충분히 긴 무작위 문자열                 |
+| `MASTER_KEY`     | Base64로 인코딩한 32바이트 키           |
+| `ENCRYPTION_KEY` | Fernet 호환 URL-safe Base64 32바이트 키 |
 
-*   [ ]  **다국어 UI** — 영어, 일본어 등 다국어 지원
-*   [ ] **엔터프라이즈 기능** — SSO, RBAC, 감사 로그
-> 아이디어가 있으신가요? [Ideas](https://github.com/jungle-scope/moduly/discussions/categories/ideas)에 남겨주세요! 🙌
+키는 재시작 후에도 동일한 값을 유지해야 합니다. `.env` 파일과 secret 원문을 Git, 문서, log에 커밋하지 마세요. 로컬 파일 저장은 기본값인 `STORAGE_TYPE=LOCAL`을 사용할 수 있습니다.
 
-## Deploy status 
+### 2. 실행
 
-| Name | Status | Comment |
-|--------|------|-------------|
-| Namespace | [![Deploy to Dev Namespace (Manual)](https://github.com/jungle-scope/moduly/actions/workflows/deploy-dev-namespace.yml/badge.svg?branch=develop)](https://github.com/jungle-scope/moduly/actions/workflows/deploy-dev-namespace.yml) | - |
+```bash
+docker compose \
+  --env-file docker/.env \
+  -f docker/docker-compose.yml \
+  up -d --build
 
-## Contributing
+docker compose \
+  --env-file docker/.env \
+  -f docker/docker-compose.yml \
+  ps
+```
 
-Moduly는 오픈소스 커뮤니티의 참여를 환영합니다! 버그 수정, 기능 추가, 문서 개선 등 어떤 형태의 기여도 감사합니다.
+- Web UI: [http://localhost](http://localhost)
+- API health: [http://localhost/api/v1/health](http://localhost/api/v1/health)
 
-- 기여하기 전에 [CONTRIBUTING.md]([./CONTRIBUTING.md](https://github.com/jungle-scope/moduly/wiki/CONTRIBUTING#%EC%BD%94%EB%93%9C-%EC%8A%A4%ED%83%80%EC%9D%BC))를 읽어주세요
-- 모든 참여자는 [행동 강령](https://github.com/jungle-scope/moduly/wiki/Contributor-Covenant-%ED%96%89%EB%8F%99-%EA%B0%95%EB%A0%B9)을 준수해 주세요
-- 보안 취약점 발견 시 [SECURITY.md](https://github.com/jungle-scope/moduly/wiki/%EB%B3%B4%EC%95%88-%EC%A0%95%EC%B1%85)를 참고해 주세요
+### 3. 종료
+
+```bash
+docker compose \
+  --env-file docker/.env \
+  -f docker/docker-compose.yml \
+  down
+```
+
+위 명령은 container를 종료하지만 named volume의 데이터는 유지합니다.
+
+## Development
+
+host 기반 개발 환경에서는 PostgreSQL, Redis, pgAdmin과 Sandbox를 Docker로 실행하고, Client·Gateway·Celery worker는 host process로 실행합니다.
+
+### Prerequisites
+
+- Python 3.11.x
+- Node.js 20.9 이상과 npm
+- Docker Compose v2
+- Bash
+
+### Setup & Run
+
+```bash
+cp dev/.env.example .env
+# .env의 SECRET_KEY, MASTER_KEY, ENCRYPTION_KEY를 안전한 값으로 설정합니다.
+
+./scripts/setup.sh
+./scripts/dev.sh
+```
+
+| Service  | URL                                                      |
+| -------- | -------------------------------------------------------- |
+| Client   | [http://localhost:3000](http://localhost:3000)           |
+| Gateway  | [http://localhost:8000](http://localhost:8000)           |
+| API Docs | [http://localhost:8000/docs](http://localhost:8000/docs) |
+| Sandbox  | [http://localhost:8194](http://localhost:8194)           |
+| pgAdmin  | [http://localhost:5050](http://localhost:5050)           |
+
+`Ctrl+C`로 host process와 개발용 Compose 서비스를 함께 종료합니다.
+
+## Testing
+
+Backend, Shared, Workflow Engine, Log System, Sandbox와 Client build를 포함한 저장소 검증:
+
+```bash
+./scripts/test.sh
+```
+
+Client lint, unit test와 production build는 별도로 실행합니다.
+
+```bash
+cd apps/client
+npm run lint
+npm run test
+npm run build
+```
+
+## Kubernetes / Helm
+
+Kubernetes와 Helm 자산은 `infra/helm/moduly/`에 있습니다. 이 경로와 일부 resource name은 기존 Moduly 식별자를 유지합니다.
+
+현재 chart는 환경별 image registry, ingress, database, storage와 secret 구성이 필요합니다. 따라서 범용 Quick Start가 아니라 배포 환경에 맞춰 검토해야 하는 고급 배포 자산으로 취급합니다.
+
+## Documentation
+
+| 문서                                                 | 설명                                             |
+| ---------------------------------------------------- | ------------------------------------------------ |
+| [Documentation Index](./docs/README.md)              | 활성 문서의 구조와 우선순위                      |
+| [Product Requirements](./docs/PRD.md)                | 제품 목표, 사용자와 범위                         |
+| [Architecture](./docs/architecture.md)               | 서비스 경계, 실행·배포 구조와 알려진 리스크      |
+| [Data Model](./docs/data_model.md)                   | DB model, relation과 permission 정책             |
+| [Glossary](./docs/glossary.md)                       | Nodease 공통 용어                                |
+| [Architecture Decisions](./docs/decisions/README.md) | Accepted ADR과 현재 코드 적용 기준               |
+| [Feature Specifications](./docs/features/)           | 기능별 requirements, API, component와 test cases |
+
+문서가 충돌하면 Accepted ADR → PRD → Architecture → Data Model → feature 문서 순으로 판단하며, 현재 구현을 설명할 때는 실제 코드와 테스트를 함께 확인합니다.
 
 ## License
 
-이 프로젝트는 [MIT License](./LICENSE)를 따릅니다. 자유롭게 사용, 수정 및 배포가 가능합니다.
+이 프로젝트는 [MIT License](./LICENSE)를 따릅니다.
 
 ---
+
 <div align="center">
-  Made with ❤️ by the Moduly Team
+  Nodease — Build AI workflows. Govern knowledge. Trace every run.
 </div>
