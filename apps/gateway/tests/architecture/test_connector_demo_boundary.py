@@ -31,6 +31,11 @@ def test_connector_demo_is_an_explicit_compose_override() -> None:
         in demo_compose
     )
     assert 'CONNECTOR_TEST_ALLOWED_PORTS: "5432"' in demo_compose
+    assert (
+        'CONNECTOR_TEST_REDIS_URL: "redis://connector-test-redis:6379/15"'
+        in demo_compose
+    )
+    assert "CONNECTOR_TEST_REDIS_URL" not in base_compose
     assert "54322" not in demo_compose
     assert 'CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE: "/run/connector-test-ca/ca.crt"' in (
         demo_compose

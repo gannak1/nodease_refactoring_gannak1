@@ -110,6 +110,7 @@ services:
       CONNECTOR_TEST_ALLOWED_PORTS: "5432"
       CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS: "connector-test-postgres:5432"
       CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE: "/run/connector-test-ca/ca.crt"
+      CONNECTOR_TEST_REDIS_URL: "redis://connector-test-redis:6379/15"
     volumes:
       - ../local/connector-test-tls/docker:/run/connector-test-ca:ro
     depends_on:

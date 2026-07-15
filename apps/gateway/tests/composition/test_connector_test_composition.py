@@ -6,6 +6,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
+from apps.gateway.composition import connectors as connector_composition
 from apps.gateway.composition.connectors import (
     connector_test_policy_from_environment,
     require_connector_test_security_ready,
@@ -50,6 +51,7 @@ def test_default_policy_matches_documented_limits() -> None:
     assert policy.user_concurrency_limit == 1
     assert policy.organization_concurrency_limit == 4
     assert policy.global_concurrency_limit == 16
+    assert policy.probe_hard_timeout_seconds == 20.0
     assert policy.redis_operation_timeout_seconds == 1.0
     assert policy.allowed_ports == frozenset({5432})
     assert policy.trusted_local_targets == frozenset()
@@ -70,6 +72,76 @@ def test_policy_parses_bounded_redis_operation_timeout() -> None:
     )
 
     assert policy.redis_operation_timeout_seconds == 0.25
+
+
+@pytest.mark.parametrize(
+    "redis_url",
+    [
+        "http://connector-test-redis:6379/15",
+        "redis:///15",
+        "redis://connector-test-redis:6379",
+        "redis://connector-test-redis:6379/256",
+        "redis://connector-test-redis:6379/15?mode=unsafe",
+        " redis://connector-test-redis:6379/15",
+    ],
+)
+def test_invalid_connector_test_redis_url_fails_security_readiness(
+    redis_url: str,
+) -> None:
+    with pytest.raises(RuntimeError):
+        require_connector_test_security_ready(
+            {"CONNECTOR_TEST_REDIS_URL": redis_url}
+        )
+
+
+@pytest.mark.asyncio
+async def test_connector_specific_redis_is_owned_and_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeRedis:
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    fake_redis = FakeRedis()
+    expected_url = "redis://connector-test-redis:6379/15"
+    calls: list[tuple[str, bool]] = []
+
+    def from_url(url: str, *, decode_responses: bool):
+        calls.append((url, decode_responses))
+        return fake_redis
+
+    monkeypatch.setattr(connector_composition, "_application", None)
+    monkeypatch.setenv("CONNECTOR_TEST_REDIS_URL", expected_url)
+    monkeypatch.setattr(
+        connector_composition,
+        "connector_test_policy_from_environment",
+        lambda _environ: connector_composition.ConnectorTestPolicy(),
+    )
+    monkeypatch.setattr(
+        connector_composition,
+        "_admission_key",
+        lambda _environ: b"x" * 32,
+    )
+    monkeypatch.setattr(connector_composition.aioredis, "from_url", from_url)
+    monkeypatch.setattr(
+        connector_composition,
+        "get_async_redis_client",
+        lambda: pytest.fail("shared Redis must not serve connector demo admission"),
+    )
+
+    try:
+        application = connector_composition.get_connector_test_application()
+
+        assert calls == [(expected_url, False)]
+        assert application.owned_redis_client is fake_redis
+        assert application.use_case._admission._redis is fake_redis
+    finally:
+        await connector_composition.shutdown_connector_test_application()
+
+    assert fake_redis.closed is True
 
 
 def test_explicitly_disabled_local_profile_keeps_public_only_policy() -> None:
@@ -329,6 +401,10 @@ def test_directory_or_unreadable_trusted_local_ca_fails_security_readiness(
         {"CONNECTOR_TEST_CONNECT_TIMEOUT_SECONDS": "11"},
         {"CONNECTOR_TEST_STATEMENT_TIMEOUT_SECONDS": "11"},
         {"CONNECTOR_TEST_RESPONSE_TIMEOUT_SECONDS": "31"},
+        {"CONNECTOR_TEST_PROBE_HARD_TIMEOUT_SECONDS": "0"},
+        {"CONNECTOR_TEST_PROBE_HARD_TIMEOUT_SECONDS": "nan"},
+        {"CONNECTOR_TEST_PROBE_HARD_TIMEOUT_SECONDS": "61"},
+        {"CONNECTOR_TEST_PROBE_HARD_TIMEOUT_SECONDS": "10"},
         {"CONNECTOR_TEST_REDIS_OPERATION_TIMEOUT_SECONDS": "0"},
         {"CONNECTOR_TEST_REDIS_OPERATION_TIMEOUT_SECONDS": "nan"},
         {"CONNECTOR_TEST_REDIS_OPERATION_TIMEOUT_SECONDS": "6"},

@@ -24,6 +24,7 @@ from apps.gateway.application.connectors.ingress import (
 )
 from apps.gateway.application.connectors.models import ConnectorTestCommand
 from apps.gateway.auth.dependencies import get_current_user
+from apps.gateway.composition.authentication import login_network_resolver
 from apps.gateway.composition.connectors import get_connector_test_application
 from apps.gateway.services.organization_context import resolve_active_organization_id
 from apps.gateway.utils.api_errors import error_detail, raise_api_error
@@ -173,6 +174,14 @@ async def test_db_connection(
         raw_organization_id,
         current_user.id,
     )
+    network_address = login_network_resolver().resolve(http_request)
+    if network_address == "unknown":
+        raise_api_error(
+            http_request,
+            503,
+            "connector.admission_unavailable",
+            "Connection test admission is unavailable.",
+        )
     ingress_policy = DEFAULT_CONNECTOR_TEST_INGRESS_POLICY
     try:
         ingress_policy.validate_metadata(
@@ -192,7 +201,6 @@ async def test_db_connection(
             "Request validation failed.",
         )
 
-    network_address = http_request.client.host if http_request.client else ""
     command = ConnectorTestCommand(
         organization_id=organization_id,
         actor_id=current_user.id,

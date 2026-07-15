@@ -117,4 +117,4 @@ async def lifespan(app: FastAPI):
         shutdown_connector_test_application,
     )
 
-    shutdown_connector_test_application()
+    await shutdown_connector_test_application()

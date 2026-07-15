@@ -1,3 +1,5 @@
+import asyncio
+import threading
 from contextlib import nullcontext
 from uuid import uuid4
 
@@ -333,4 +335,48 @@ async def test_local_executor_capacity_fails_without_queueing() -> None:
     finally:
         for _ in acquired:
             probe._capacity.release()
+        probe.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_probe_keeps_capacity_until_driver_thread_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = threading.Event()
+    finish = threading.Event()
+    policy = ConnectorTestPolicy(
+        organization_concurrency_limit=1,
+        global_concurrency_limit=1,
+    )
+    probe = StrictPostgresConnectorProbe(policy)
+
+    def blocking_probe(_command: ConnectorTestCommand) -> bool:
+        started.set()
+        finish.wait(timeout=1)
+        return True
+
+    monkeypatch.setattr(probe, "_probe_sync", blocking_probe)
+    task = asyncio.create_task(probe.probe(command()))
+
+    try:
+        assert await asyncio.to_thread(started.wait, 1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        with pytest.raises(ConnectorProbeCapacityExceeded):
+            await probe.probe(command())
+
+        finish.set()
+        for _ in range(100):
+            if probe._capacity.acquire(blocking=False):
+                probe._capacity.release()
+                break
+            await asyncio.sleep(0.01)
+        else:
+            pytest.fail("driver completion did not restore connector probe capacity")
+
+        assert await probe.probe(command()) is True
+    finally:
+        finish.set()
         probe.shutdown()

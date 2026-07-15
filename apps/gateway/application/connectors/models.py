@@ -55,6 +55,7 @@ class ConnectorTestPolicy:
     connect_timeout_seconds: int = 5
     statement_timeout_seconds: int = 3
     response_timeout_seconds: float = 10.0
+    probe_hard_timeout_seconds: float = 20.0
     redis_operation_timeout_seconds: float = 1.0
     lease_ttl_seconds: int = 30
 
@@ -107,6 +108,7 @@ class ConnectorTestPolicy:
             "connect_timeout_seconds": self.connect_timeout_seconds,
             "statement_timeout_seconds": self.statement_timeout_seconds,
             "response_timeout_seconds": self.response_timeout_seconds,
+            "probe_hard_timeout_seconds": self.probe_hard_timeout_seconds,
             "redis_operation_timeout_seconds": (
                 self.redis_operation_timeout_seconds
             ),
@@ -138,6 +140,8 @@ class ConnectorTestPolicy:
             raise ValueError("statement_timeout_seconds must not exceed 10")
         if self.response_timeout_seconds > 30:
             raise ValueError("response_timeout_seconds must not exceed 30")
+        if self.probe_hard_timeout_seconds > 60:
+            raise ValueError("probe_hard_timeout_seconds must not exceed 60")
         if self.redis_operation_timeout_seconds > 5:
             raise ValueError("redis_operation_timeout_seconds must not exceed 5")
         if self.lease_ttl_seconds > 120:
@@ -146,6 +150,8 @@ class ConnectorTestPolicy:
             raise ValueError("connect timeout must be shorter than response timeout")
         if self.statement_timeout_seconds >= self.response_timeout_seconds:
             raise ValueError("statement timeout must be shorter than response timeout")
+        if self.response_timeout_seconds >= self.probe_hard_timeout_seconds:
+            raise ValueError("response timeout must be shorter than probe hard timeout")
         if self.redis_operation_timeout_seconds >= self.response_timeout_seconds:
             raise ValueError(
                 "Redis operation timeout must be shorter than response timeout"

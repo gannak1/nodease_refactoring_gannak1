@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
 import os
-from datetime import UTC, datetime
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
+from urllib.parse import urlsplit
 
+import redis.asyncio as aioredis
 from cryptography import x509
 from cryptography.x509 import BasicConstraints
 
@@ -24,12 +28,14 @@ from apps.shared.services.egress_guard import canonicalize_network_host
 
 _LOCAL_ADMISSION_KEY = b"connector-test-local-development-key-v1"
 _MAX_TRUSTED_LOCAL_CA_BYTES = 64 * 1024
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
 class ConnectorTestApplication:
     use_case: TestConnectorConnection
     probe: StrictPostgresConnectorProbe
+    owned_redis_client: Any | None = field(default=None, repr=False)
 
 
 _application: ConnectorTestApplication | None = None
@@ -71,6 +77,9 @@ def connector_test_policy_from_environment(
         response_timeout_seconds=_float(
             environ, "CONNECTOR_TEST_RESPONSE_TIMEOUT_SECONDS", 10.0
         ),
+        probe_hard_timeout_seconds=_float(
+            environ, "CONNECTOR_TEST_PROBE_HARD_TIMEOUT_SECONDS", 20.0
+        ),
         redis_operation_timeout_seconds=_float(
             environ,
             "CONNECTOR_TEST_REDIS_OPERATION_TIMEOUT_SECONDS",
@@ -86,6 +95,7 @@ def require_connector_test_security_ready(
     values = environ if environ is not None else os.environ
     policy = connector_test_policy_from_environment(values)
     _admission_key(values)
+    _connector_test_redis_url(values)
     if policy.trusted_local_ca_file:
         _validate_trusted_local_ca_file(policy.trusted_local_ca_file)
 
@@ -94,8 +104,18 @@ def get_connector_test_application() -> ConnectorTestApplication:
     global _application
     if _application is None:
         policy = connector_test_policy_from_environment(os.environ)
+        redis_url = _connector_test_redis_url(os.environ)
+        owned_redis_client = (
+            aioredis.from_url(redis_url, decode_responses=False)
+            if redis_url
+            else None
+        )
         admission = RedisConnectorTestAdmission(
-            get_async_redis_client(),
+            (
+                owned_redis_client
+                if owned_redis_client is not None
+                else get_async_redis_client()
+            ),
             policy=policy,
             hmac_key=_admission_key(os.environ),
         )
@@ -108,16 +128,25 @@ def get_connector_test_application() -> ConnectorTestApplication:
                 policy,
             ),
             probe=probe,
+            owned_redis_client=owned_redis_client,
         )
     return _application
 
 
-def shutdown_connector_test_application() -> None:
+async def shutdown_connector_test_application() -> None:
     global _application
     application = _application
     _application = None
     if application is not None:
         application.probe.shutdown()
+        if application.owned_redis_client is not None:
+            try:
+                await application.owned_redis_client.aclose()
+            except Exception as exc:
+                logger.error(
+                    "Connector test Redis shutdown failed: error_type=%s",
+                    type(exc).__name__,
+                )
 
 
 def _admission_key(environ: Mapping[str, str]) -> bytes:
@@ -134,6 +163,32 @@ def _admission_key(environ: Mapping[str, str]) -> bytes:
             "CONNECTOR_TEST_ADMISSION_HMAC_KEY must contain at least 32 bytes"
         )
     return key
+
+
+def _connector_test_redis_url(environ: Mapping[str, str]) -> str | None:
+    value = str(environ.get("CONNECTOR_TEST_REDIS_URL", ""))
+    if not value:
+        return None
+    if value != value.strip():
+        raise RuntimeError("CONNECTOR_TEST_REDIS_URL must not contain whitespace")
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port or 6379
+        database = int(parsed.path.removeprefix("/"))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("CONNECTOR_TEST_REDIS_URL is invalid") from exc
+    if (
+        parsed.scheme not in {"redis", "rediss"}
+        or not parsed.hostname
+        or not 1 <= port <= 65535
+        or not parsed.path.startswith("/")
+        or parsed.path.count("/") != 1
+        or not 0 <= database <= 255
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise RuntimeError("CONNECTOR_TEST_REDIS_URL is invalid")
+    return value
 
 
 def _environment_name(environ: Mapping[str, str]) -> str:

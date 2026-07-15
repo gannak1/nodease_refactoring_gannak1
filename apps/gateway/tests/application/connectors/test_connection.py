@@ -71,11 +71,16 @@ class FakeProbe:
     error: Exception | None = None
     blocker: asyncio.Event | None = None
     calls: list[ConnectorTestCommand] = field(default_factory=list)
+    cancelled: bool = False
 
     async def probe(self, value: ConnectorTestCommand) -> bool:
         self.calls.append(value)
         if self.blocker is not None:
-            await self.blocker.wait()
+            try:
+                await self.blocker.wait()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
         if self.error:
             raise self.error
         return self.result
@@ -106,12 +111,14 @@ def use_case(
     *,
     allowed_ports: frozenset[int] = frozenset({5432}),
     response_timeout: float = 10,
+    probe_hard_timeout: float = 20,
 ) -> ConnectorConnectionUseCase:
     policy = ConnectorTestPolicy(
         allowed_ports=allowed_ports,
         connect_timeout_seconds=0.001,
         statement_timeout_seconds=0.001,
         response_timeout_seconds=response_timeout,
+        probe_hard_timeout_seconds=probe_hard_timeout,
         redis_operation_timeout_seconds=0.001,
         lease_ttl_seconds=30,
     )
@@ -205,6 +212,38 @@ async def test_timeout_keeps_lease_until_actual_probe_completion() -> None:
     blocker.set()
     await asyncio.wait_for(admission.release_event.wait(), timeout=1)
     assert len(admission.released) == 1
+
+
+@pytest.mark.asyncio
+async def test_hard_timeout_stops_heartbeat_and_releases_lease_once() -> None:
+    blocker = asyncio.Event()
+    admission = FakeAdmission()
+    probe = FakeProbe(blocker=blocker)
+    audit = FakeAudit()
+    policy = ConnectorTestPolicy(
+        connect_timeout_seconds=0.001,
+        statement_timeout_seconds=0.001,
+        response_timeout_seconds=0.01,
+        probe_hard_timeout_seconds=0.08,
+        redis_operation_timeout_seconds=0.001,
+        lease_ttl_seconds=0.03,
+    )
+
+    result = await ConnectorConnectionUseCase(
+        admission,
+        probe,
+        audit,
+        policy,
+    ).execute(command())
+
+    assert result.reason_code == "connector.connection_timeout"
+    assert admission.released == []
+    await asyncio.wait_for(admission.release_event.wait(), timeout=1)
+    assert probe.cancelled is True
+    assert admission.released == [AdmissionLease("lease")]
+    renewals_after_release = len(admission.renewed)
+    await asyncio.sleep(0.05)
+    assert len(admission.renewed) == renewals_after_release
 
 
 @pytest.mark.asyncio

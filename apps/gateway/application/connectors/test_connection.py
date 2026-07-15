@@ -40,6 +40,7 @@ class TestConnectorConnection:
         self._probe = probe
         self._audit = audit
         self._policy = policy
+        self._deferred_cleanup_tasks: set[asyncio.Task[None]] = set()
 
     async def execute(self, command: ConnectorTestCommand) -> ConnectorTestResult:
         if command.ssh_enabled:
@@ -76,6 +77,7 @@ class TestConnectorConnection:
                         probe_task,
                         heartbeat_task,
                         lease,
+                        started_at,
                     )
                     release_deferred = True
             except ConnectorTestAdmissionUnavailable:
@@ -84,7 +86,12 @@ class TestConnectorConnection:
                     failure_result("connector.admission_unavailable"),
                     _duration_bucket(time.monotonic() - started_at, None),
                 )
-                self._release_after_completion(probe_task, heartbeat_task, lease)
+                self._release_after_completion(
+                    probe_task,
+                    heartbeat_task,
+                    lease,
+                    started_at,
+                )
                 release_deferred = True
                 raise
             except ConnectorTargetNotAllowed:
@@ -99,7 +106,12 @@ class TestConnectorConnection:
             except ConnectorProbeFailed:
                 result = failure_result("connector.connection_failed")
             except asyncio.CancelledError:
-                self._release_after_completion(probe_task, heartbeat_task, lease)
+                self._release_after_completion(
+                    probe_task,
+                    heartbeat_task,
+                    lease,
+                    started_at,
+                )
                 release_deferred = True
                 raise
             except Exception:
@@ -120,20 +132,54 @@ class TestConnectorConnection:
         task: asyncio.Task[bool],
         heartbeat_task: asyncio.Task[None],
         lease: AdmissionLease,
+        started_at: float,
     ) -> None:
-        def _done(done: asyncio.Task[bool]) -> None:
-            try:
-                done.exception()
-            except (asyncio.CancelledError, Exception):
-                pass
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(self._finish_lease(heartbeat_task, lease))
-            except RuntimeError:
-                # Process shutdown is recovered by the Redis lease TTL.
-                return
+        cleanup_task = asyncio.create_task(
+            self._finish_deferred_probe(
+                task,
+                heartbeat_task,
+                lease,
+                started_at,
+            )
+        )
+        self._deferred_cleanup_tasks.add(cleanup_task)
+        cleanup_task.add_done_callback(self._deferred_cleanup_tasks.discard)
 
-        task.add_done_callback(_done)
+    async def _finish_deferred_probe(
+        self,
+        probe_task: asyncio.Task[bool],
+        heartbeat_task: asyncio.Task[None],
+        lease: AdmissionLease,
+        started_at: float,
+    ) -> None:
+        remaining = max(
+            0.0,
+            self._policy.probe_hard_timeout_seconds
+            - (time.monotonic() - started_at),
+        )
+        try:
+            done, _ = await asyncio.wait(
+                {probe_task, heartbeat_task},
+                timeout=remaining,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if probe_task in done:
+                self._consume_task_result(probe_task)
+            else:
+                probe_task.cancel()
+                try:
+                    await probe_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        finally:
+            await self._finish_lease(heartbeat_task, lease)
+
+    @staticmethod
+    def _consume_task_result(task: asyncio.Task[bool]) -> None:
+        try:
+            task.exception()
+        except (asyncio.CancelledError, Exception):
+            pass
 
     async def _maintain_lease(self, lease: AdmissionLease) -> None:
         interval = max(0.01, self._policy.lease_ttl_seconds / 3)

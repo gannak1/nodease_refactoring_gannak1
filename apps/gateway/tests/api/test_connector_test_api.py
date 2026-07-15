@@ -61,6 +61,11 @@ def client(monkeypatch: pytest.MonkeyPatch):
         "get_connector_test_application",
         lambda: SimpleNamespace(use_case=use_case),
     )
+    monkeypatch.setattr(
+        connector_endpoint,
+        "login_network_resolver",
+        lambda: SimpleNamespace(resolve=lambda _request: "203.0.113.0/24"),
+    )
     try:
         yield TestClient(app, raise_server_exceptions=False), use_case, user, organization_id
     finally:
@@ -125,7 +130,32 @@ def test_valid_request_builds_command_without_ssh_credentials(client) -> None:
     assert command.organization_id == organization_id
     assert command.port == 55432
     assert command.password == "placeholder-secret"
-    assert command.network_address
+    assert command.network_address == "203.0.113.0/24"
+
+
+def test_unknown_transport_identity_fails_closed_before_body_read(
+    client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    http, use_case, _, organization_id = client
+    monkeypatch.setattr(
+        connector_endpoint,
+        "login_network_resolver",
+        lambda: SimpleNamespace(resolve=lambda _request: "unknown"),
+    )
+
+    response = http.post(
+        "/api/v1/connectors/test",
+        headers={
+            "X-Organization-Id": str(organization_id),
+            "Content-Type": "application/json",
+        },
+        content=b"not-json",
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "connector.admission_unavailable"
+    assert use_case.commands == []
 
 
 @pytest.mark.parametrize(
