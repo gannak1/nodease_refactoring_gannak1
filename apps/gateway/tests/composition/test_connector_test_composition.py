@@ -17,6 +17,8 @@ def test_default_policy_matches_documented_limits() -> None:
     assert policy.organization_concurrency_limit == 4
     assert policy.global_concurrency_limit == 16
     assert policy.allowed_ports == frozenset({5432})
+    assert policy.trusted_local_targets == frozenset()
+    assert policy.trusted_local_ca_file is None
 
 
 def test_policy_parses_deployment_managed_allowed_ports() -> None:
@@ -25,6 +27,102 @@ def test_policy_parses_deployment_managed_allowed_ports() -> None:
     )
 
     assert policy.allowed_ports == frozenset({5432, 54322, 55432})
+
+
+def test_development_policy_parses_exact_trusted_local_target(tmp_path) -> None:
+    ca_file = tmp_path / "ca.crt"
+    ca_file.write_text("test-only-ca-placeholder", encoding="utf-8")
+    environment = {
+        "NODE_ENV": "development",
+        "CONNECTOR_TEST_ALLOWED_PORTS": "5432,55432",
+        "CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS": (
+            "LOCALHOST.:55432,connector-test-postgres:5432"
+        ),
+        "CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE": str(ca_file),
+    }
+
+    policy = connector_test_policy_from_environment(environment)
+
+    assert {(target.host, target.port) for target in policy.trusted_local_targets} == {
+        ("localhost", 55432),
+        ("connector-test-postgres", 5432),
+    }
+    assert policy.trusted_local_ca_file == str(ca_file)
+    require_connector_test_security_ready(environment)
+
+
+@pytest.mark.parametrize("node_env", ["production", " PRODUCTION "])
+def test_production_rejects_trusted_local_configuration(node_env: str) -> None:
+    with pytest.raises(RuntimeError):
+        connector_test_policy_from_environment(
+            {
+                "NODE_ENV": node_env,
+                "CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS": "localhost:5432",
+                "CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE": "local-ca.crt",
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "environment",
+    [
+        {
+            "NODE_ENV": "development",
+            "CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS": "localhost:5432",
+        },
+        {
+            "NODE_ENV": "development",
+            "CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE": "local-ca.crt",
+        },
+        {
+            "CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS": "localhost:5432",
+            "CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE": "local-ca.crt",
+        },
+        {
+            "NODE_ENV": "development",
+            "CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS": "*:5432",
+            "CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE": "local-ca.crt",
+        },
+        {
+            "NODE_ENV": "development",
+            "CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS": "10.0.0.0/8:5432",
+            "CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE": "local-ca.crt",
+        },
+        {
+            "NODE_ENV": "development",
+            "CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS": "127.0.0.1:5432",
+            "CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE": "local-ca.crt",
+        },
+        {
+            "NODE_ENV": "development",
+            "CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS": "localhost:55432",
+            "CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE": "local-ca.crt",
+        },
+        {
+            "NODE_ENV": "development",
+            "CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS": (
+                "localhost:5432,LOCALHOST.:5432"
+            ),
+            "CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE": "local-ca.crt",
+        },
+    ],
+)
+def test_invalid_trusted_local_configuration_fails_startup(
+    environment: dict[str, str],
+) -> None:
+    with pytest.raises((RuntimeError, ValueError)):
+        connector_test_policy_from_environment(environment)
+
+
+def test_missing_trusted_local_ca_file_fails_security_readiness(tmp_path) -> None:
+    with pytest.raises(RuntimeError):
+        require_connector_test_security_ready(
+            {
+                "NODE_ENV": "development",
+                "CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS": "localhost:5432",
+                "CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE": str(tmp_path / "missing.crt"),
+            }
+        )
 
 
 def test_production_requires_strong_admission_hmac_key() -> None:

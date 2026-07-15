@@ -13,6 +13,7 @@ from apps.gateway.application.connectors.errors import (
 from apps.gateway.application.connectors.models import (
     ConnectorTestCommand,
     ConnectorTestPolicy,
+    TrustedLocalConnectorTarget,
 )
 from apps.shared.services.egress_guard import EgressGuardError
 
@@ -62,8 +63,19 @@ def test_probe_pins_public_ip_enforces_tls_and_runs_constant_read_only_query(
     captured: dict[str, object] = {}
     engine = FakeEngine()
 
-    def fake_guard(host: str, port: int, *, allowed_ports):
-        captured["guard"] = (host, port, allowed_ports)
+    def fake_guard(
+        host: str,
+        port: int,
+        *,
+        allowed_ports,
+        trusted_local_targets,
+    ):
+        captured["guard"] = (
+            host,
+            port,
+            allowed_ports,
+            trusted_local_targets,
+        )
         return "db.example.com", 55432, "203.0.113.20"
 
     def fake_create_engine(url, **kwargs):
@@ -94,6 +106,7 @@ def test_probe_pins_public_ip_enforces_tls_and_runs_constant_read_only_query(
         "db.example.com",
         55432,
         frozenset({5432, 55432}),
+        frozenset(),
     )
     assert captured["kwargs"]["connect_args"] == {
         "connect_timeout": 5,
@@ -101,6 +114,92 @@ def test_probe_pins_public_ip_enforces_tls_and_runs_constant_read_only_query(
     }
     assert engine.connection.statements == ["SET TRANSACTION READ ONLY", "SELECT 1"]
     assert engine.disposed is True
+
+
+def test_probe_uses_deployment_ca_for_exact_trusted_local_target(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    captured: dict[str, object] = {}
+    engine = FakeEngine()
+    ca_file = tmp_path / "ca.crt"
+    ca_file.write_text("test-only-ca-placeholder", encoding="utf-8")
+
+    def fake_guard(
+        host: str,
+        port: int,
+        *,
+        allowed_ports,
+        trusted_local_targets,
+    ):
+        captured["guard"] = (
+            host,
+            port,
+            allowed_ports,
+            trusted_local_targets,
+        )
+        return "connector-test-postgres", 5432, "172.20.0.20"
+
+    def fake_create_engine(url, **kwargs):
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return engine
+
+    monkeypatch.setattr(probe_module, "ensure_network_target_allowed", fake_guard)
+    monkeypatch.setattr(probe_module, "create_engine", fake_create_engine)
+    monkeypatch.setattr(
+        probe_module,
+        "_system_ca_file",
+        lambda: pytest.fail("system CA must not be used for a trusted local target"),
+    )
+    target = TrustedLocalConnectorTarget(
+        host="connector-test-postgres",
+        port=5432,
+    )
+    policy = ConnectorTestPolicy(
+        trusted_local_targets=frozenset({target}),
+        trusted_local_ca_file=str(ca_file),
+    )
+    probe = StrictPostgresConnectorProbe(policy)
+
+    try:
+        assert probe._probe_sync(command(host="CONNECTOR-TEST-POSTGRES.")) is True
+    finally:
+        probe.shutdown()
+
+    url = captured["url"]
+    assert url.host == "connector-test-postgres"
+    assert dict(url.query) == {
+        "hostaddr": "172.20.0.20",
+        "sslmode": "verify-full",
+        "sslrootcert": str(ca_file),
+    }
+    assert captured["guard"] == (
+        "CONNECTOR-TEST-POSTGRES.",
+        5432,
+        frozenset({5432}),
+        frozenset({("connector-test-postgres", 5432)}),
+    )
+
+
+def test_probe_rejects_missing_trusted_local_ca_before_dns(tmp_path, monkeypatch) -> None:
+    def guard(*_args, **_kwargs):
+        pytest.fail("DNS guard must not run")
+
+    monkeypatch.setattr(probe_module, "ensure_network_target_allowed", guard)
+    target = TrustedLocalConnectorTarget(host="localhost", port=5432)
+    probe = StrictPostgresConnectorProbe(
+        ConnectorTestPolicy(
+            trusted_local_targets=frozenset({target}),
+            trusted_local_ca_file=str(tmp_path / "missing.crt"),
+        )
+    )
+
+    try:
+        with pytest.raises(ConnectorProbeFailed):
+            probe._probe_sync(command(host="localhost"))
+    finally:
+        probe.shutdown()
 
 
 def test_probe_fails_closed_before_dns_when_system_ca_is_unavailable(

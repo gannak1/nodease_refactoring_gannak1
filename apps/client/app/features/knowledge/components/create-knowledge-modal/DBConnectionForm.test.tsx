@@ -29,6 +29,7 @@ describe('DBConnectionForm connector test boundary', () => {
     expect(
       screen.getByRole('checkbox', { name: 'SSH 사용' }),
     ).not.toBeChecked();
+    expect(screen.getByPlaceholderText('db.example.com')).toHaveValue('');
   });
 
   it('blocks duplicate clicks while pending', async () => {
