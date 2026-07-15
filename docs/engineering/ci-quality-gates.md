@@ -1,7 +1,7 @@
 # PR CI 품질 게이트
 
 Status: Draft
-Verified Against: feature/mba-274 @ b7ff6591
+Verified Against: feature/mba-274 @ f3bbbb3f
 
 ## 목적
 
@@ -52,6 +52,7 @@ PR workspace의 selector 결과만으로 required gate를 결정하지 않는다
 - CI 제어 변경은 PR 작성자가 아닌 write 이상 권한 보유자가 현재 head commit에 남긴 `APPROVED` review가 있어야 통과한다. 이전 commit 승인은 재사용하지 않는다.
 - 승인 뒤 `/recheck-ci-control`을 PR conversation에 comment하면 base 브랜치 가드가 정책 status를 다시 계산한다.
 - 동시성 제어는 이벤트와 comment body 조건을 통과한 `ci-control-review` job에만 적용한다. 일반 Linear/Codex/user comment는 기존 정책 검사를 취소하지 않으며, 새 PR head 또는 정확한 `/recheck-ci-control` 요청만 같은 PR의 이전 유효 검사를 교체한다.
+- 승인 부재나 변경 파일 열거 누락 같은 정책 미충족은 PR head의 `trusted-ci-control/base-policy` status를 실패로 기록하되 evaluator job 자체는 정상 완료한다. `/recheck-ci-control`은 같은 head status를 다시 계산하므로 최초 `pull_request_target`의 실패 check run이 남아 병합을 막지 않는다. PR 번호 확인이나 status 기록 자체가 실패한 운영 오류만 evaluator job을 실패시킨다.
 - 신뢰 가드는 PR source, test, build script를 checkout하거나 실행하지 않으며 repository secret을 사용하지 않는다.
 
 가드를 최초로 추가하는 PR은 base 브랜치에 가드가 아직 없으므로 자기 자신을 보호할 수 없다. 최초 승격은 독립 review와 actionlint 결과를 수동으로 확인하고, 병합 뒤 probe PR에서 status 생성과 승인 재검증을 확인해야 한다.
