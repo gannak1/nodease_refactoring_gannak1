@@ -182,6 +182,42 @@ def test_probe_uses_deployment_ca_for_exact_trusted_local_target(
     )
 
 
+def test_local_profile_does_not_replace_system_ca_for_public_target(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    captured: dict[str, object] = {}
+    engine = FakeEngine()
+    local_ca_file = tmp_path / "local-ca.crt"
+    local_ca_file.write_text("test-only-local-ca-placeholder", encoding="utf-8")
+    target = TrustedLocalConnectorTarget(host="localhost", port=55432)
+    policy = ConnectorTestPolicy(
+        allowed_ports=frozenset({5432, 55432}),
+        trusted_local_targets=frozenset({target}),
+        trusted_local_ca_file=str(local_ca_file),
+    )
+
+    monkeypatch.setattr(probe_module, "_system_ca_file", lambda: "/system/ca.pem")
+    monkeypatch.setattr(
+        probe_module,
+        "ensure_network_target_allowed",
+        lambda *_args, **_kwargs: ("db.example.com", 5432, "203.0.113.20"),
+    )
+
+    def fake_create_engine(url, **_kwargs):
+        captured["url"] = url
+        return engine
+
+    monkeypatch.setattr(probe_module, "create_engine", fake_create_engine)
+    probe = StrictPostgresConnectorProbe(policy)
+    try:
+        assert probe._probe_sync(command()) is True
+    finally:
+        probe.shutdown()
+
+    assert dict(captured["url"].query)["sslrootcert"] == "/system/ca.pem"
+
+
 def test_probe_rejects_missing_trusted_local_ca_before_dns(tmp_path, monkeypatch) -> None:
     def guard(*_args, **_kwargs):
         pytest.fail("DNS guard must not run")

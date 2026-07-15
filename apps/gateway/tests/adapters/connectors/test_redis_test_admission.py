@@ -134,6 +134,47 @@ def test_short_hmac_key_is_rejected_at_composition_boundary() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "namespace",
+    [
+        "",
+        "-leading",
+        "trailing-",
+        "UPPERCASE",
+        "contains space",
+        "contains:{hash-tag}",
+        "x" * 65,
+    ],
+)
+def test_unsafe_admission_key_namespace_is_rejected(namespace: str) -> None:
+    with pytest.raises(ValueError):
+        RedisConnectorTestAdmission(
+            FakeRedis(),
+            policy=ConnectorTestPolicy(),
+            hmac_key=b"a" * 32,
+            key_namespace=namespace,
+        )
+
+
+@pytest.mark.asyncio
+async def test_explicit_admission_namespace_keeps_cluster_hash_tag() -> None:
+    redis_client = FakeRedis([b"OK", b"opaque-lease"])
+    admission = RedisConnectorTestAdmission(
+        redis_client,
+        policy=ConnectorTestPolicy(),
+        hmac_key=b"a" * 32,
+        key_namespace="connector-test-isolated",
+    )
+
+    await admission.acquire(command())
+
+    keys = redis_client.calls[0][2:5]
+    assert all(
+        str(key).startswith("connector-test-isolated:{admission-v1}:")
+        for key in keys
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("response", [0, RuntimeError("redis unavailable")])
 async def test_renewal_fails_closed_when_owner_lease_is_missing(response: object) -> None:

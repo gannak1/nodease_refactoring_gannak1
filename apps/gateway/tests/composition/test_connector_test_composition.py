@@ -1,9 +1,43 @@
+from datetime import UTC, datetime, timedelta
+
 import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
 
 from apps.gateway.composition.connectors import (
     connector_test_policy_from_environment,
     require_connector_test_security_ready,
 )
+
+
+def _certificate_pem(
+    *,
+    is_ca: bool = True,
+    valid_from: datetime | None = None,
+    valid_until: datetime | None = None,
+) -> bytes:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = x509.Name(
+        [x509.NameAttribute(NameOID.COMMON_NAME, "Connector Test CA Fixture")]
+    )
+    now = datetime.now(UTC)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(valid_from or now - timedelta(minutes=1))
+        .not_valid_after(valid_until or now + timedelta(minutes=10))
+        .add_extension(
+            x509.BasicConstraints(ca=is_ca, path_length=0 if is_ca else None),
+            critical=True,
+        )
+        .sign(key, hashes.SHA256())
+    )
+    return certificate.public_bytes(serialization.Encoding.PEM)
 
 
 def test_default_policy_matches_documented_limits() -> None:
@@ -31,9 +65,10 @@ def test_policy_parses_deployment_managed_allowed_ports() -> None:
 
 def test_development_policy_parses_exact_trusted_local_target(tmp_path) -> None:
     ca_file = tmp_path / "ca.crt"
-    ca_file.write_text("test-only-ca-placeholder", encoding="utf-8")
+    ca_file.write_bytes(_certificate_pem())
     environment = {
         "NODE_ENV": "development",
+        "CONNECTOR_TEST_LOCAL_PROFILE_ENABLED": "true",
         "CONNECTOR_TEST_ALLOWED_PORTS": "5432,55432",
         "CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS": (
             "LOCALHOST.:55432,connector-test-postgres:5432"
@@ -51,15 +86,27 @@ def test_development_policy_parses_exact_trusted_local_target(tmp_path) -> None:
     require_connector_test_security_ready(environment)
 
 
+@pytest.mark.parametrize(
+    "local_setting",
+    [
+        {"CONNECTOR_TEST_LOCAL_PROFILE_ENABLED": "true"},
+        {"CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS": "localhost:5432"},
+        {"CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE": "local-ca.crt"},
+        {
+            "CONNECTOR_TEST_LOCAL_PROFILE_ENABLED": "true",
+            "CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS": "localhost:5432",
+            "CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE": "local-ca.crt",
+        },
+    ],
+)
 @pytest.mark.parametrize("node_env", ["production", " PRODUCTION "])
-def test_production_rejects_trusted_local_configuration(node_env: str) -> None:
+def test_production_rejects_every_trusted_local_setting(
+    node_env: str,
+    local_setting: dict[str, str],
+) -> None:
     with pytest.raises(RuntimeError):
         connector_test_policy_from_environment(
-            {
-                "NODE_ENV": node_env,
-                "CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS": "localhost:5432",
-                "CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE": "local-ca.crt",
-            }
+            {"NODE_ENV": node_env, **local_setting}
         )
 
 
@@ -68,10 +115,12 @@ def test_production_rejects_trusted_local_configuration(node_env: str) -> None:
     [
         {
             "NODE_ENV": "development",
+            "CONNECTOR_TEST_LOCAL_PROFILE_ENABLED": "true",
             "CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS": "localhost:5432",
         },
         {
             "NODE_ENV": "development",
+            "CONNECTOR_TEST_LOCAL_PROFILE_ENABLED": "true",
             "CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE": "local-ca.crt",
         },
         {
@@ -80,26 +129,45 @@ def test_production_rejects_trusted_local_configuration(node_env: str) -> None:
         },
         {
             "NODE_ENV": "development",
+            "CONNECTOR_TEST_LOCAL_PROFILE_ENABLED": "false",
+            "CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS": "localhost:5432",
+            "CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE": "local-ca.crt",
+        },
+        {
+            "NODE_ENV": "development",
+            "CONNECTOR_TEST_LOCAL_PROFILE_ENABLED": "true",
+        },
+        {
+            "NODE_ENV": "development",
+            "CONNECTOR_TEST_LOCAL_PROFILE_ENABLED": "yes",
+        },
+        {
+            "NODE_ENV": "development",
+            "CONNECTOR_TEST_LOCAL_PROFILE_ENABLED": "true",
             "CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS": "*:5432",
             "CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE": "local-ca.crt",
         },
         {
             "NODE_ENV": "development",
+            "CONNECTOR_TEST_LOCAL_PROFILE_ENABLED": "true",
             "CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS": "10.0.0.0/8:5432",
             "CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE": "local-ca.crt",
         },
         {
             "NODE_ENV": "development",
+            "CONNECTOR_TEST_LOCAL_PROFILE_ENABLED": "true",
             "CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS": "127.0.0.1:5432",
             "CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE": "local-ca.crt",
         },
         {
             "NODE_ENV": "development",
+            "CONNECTOR_TEST_LOCAL_PROFILE_ENABLED": "true",
             "CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS": "localhost:55432",
             "CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE": "local-ca.crt",
         },
         {
             "NODE_ENV": "development",
+            "CONNECTOR_TEST_LOCAL_PROFILE_ENABLED": "true",
             "CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS": (
                 "localhost:5432,LOCALHOST.:5432"
             ),
@@ -119,8 +187,49 @@ def test_missing_trusted_local_ca_file_fails_security_readiness(tmp_path) -> Non
         require_connector_test_security_ready(
             {
                 "NODE_ENV": "development",
+                "CONNECTOR_TEST_LOCAL_PROFILE_ENABLED": "true",
                 "CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS": "localhost:5432",
                 "CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE": str(tmp_path / "missing.crt"),
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "ca_payload",
+    [
+        b"not-a-certificate",
+        _certificate_pem(is_ca=False),
+        _certificate_pem(
+            valid_from=datetime.now(UTC) - timedelta(minutes=10),
+            valid_until=datetime.now(UTC) - timedelta(minutes=1),
+        ),
+        _certificate_pem() + _certificate_pem(),
+        _certificate_pem() + b"-----BEGIN PRIVATE KEY-----\nredacted\n",
+        b"x" * (64 * 1024 + 1),
+    ],
+    ids=[
+        "invalid-pem",
+        "leaf-certificate",
+        "expired-ca",
+        "multiple-certificates",
+        "private-key-marker",
+        "oversized",
+    ],
+)
+def test_invalid_trusted_local_ca_material_fails_security_readiness(
+    tmp_path,
+    ca_payload: bytes,
+) -> None:
+    ca_file = tmp_path / "ca.crt"
+    ca_file.write_bytes(ca_payload)
+
+    with pytest.raises(RuntimeError):
+        require_connector_test_security_ready(
+            {
+                "NODE_ENV": "development",
+                "CONNECTOR_TEST_LOCAL_PROFILE_ENABLED": "true",
+                "CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS": "localhost:5432",
+                "CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE": str(ca_file),
             }
         )
 
