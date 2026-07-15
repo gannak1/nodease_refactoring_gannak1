@@ -795,7 +795,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 ### MBA-275 Configuration And Schedule Admission Regression
 
 - `WorkflowNode`(`local_execution`)는 `appId`가 missing/deferred이면 test/run/deployment/schedule에서 동일한 preflight blocker로 차단되고 client가 resolved 상태를 위조해도 통과하지 않는다. 유효한 `appId`만 있고 `workflowId` key가 아예 없는 graph도 NodeFactory에서 생성되어야 하며, 빈 `workflowId`를 가진 기존 modal 생성 graph도 오탐 없이 통과한다.
-- `loopNode.subGraph`는 필수다. 문자열, 빈 값 또는 누락된 `loop_key`는 mapped input의 첫 배열을 쓰는 runtime fallback에 따라 오탐 없이 통과하고, subGraph 내부의 unresolved local/external node는 같은 규칙으로 차단된다. Body의 `loop.item|index`, 상위 실행 입력과 명시적 mapped input selector는 통과하되 unknown loop key는 차단한다. Depth 16은 통과하고 17은 `RecursionError` 없이 fail-closed한다.
+- `loopNode.subGraph`는 필수다. 문자열, 빈 값 또는 누락된 `loop_key`는 mapped input의 첫 배열을 쓰는 runtime fallback에 따라 오탐 없이 통과하고, subGraph 내부의 unresolved local/external node는 같은 규칙으로 차단된다. Body의 `loop.item|index`, 상위 실행 입력과 유효한 명시적 mapped input selector는 통과하되 unknown loop key와 삭제된 상위 output을 가리키는 stale input mapping은 Loop와 해당 child에서 차단한다. Depth 16은 통과하고 17은 `RecursionError` 없이 fail-closed한다.
 - required configuration이 없는 local node와 완전히 resolved graph는 오탐 없이 기존 실행 경로를 통과한다.
 - Gateway schedule dispatch는 unresolved configuration과 DB 기반 target/policy blocker를 publish 전에 차단하고 broker publisher를 호출하지 않는다. Worker는 locked canonical root identity와 공통 configuration을 재검사하며, target resource의 publish 이후 변경은 각 runtime authoritative gate가 차단한다.
 - worker가 받은 unresolved claim은 locked snapshot preflight 뒤 `configuration_preflight_blocked`로 한 번만 canceled 처리한다. `workflow_run_id`/`started_at`은 생성되지 않고 budget, `mark_running()`, Knowledge sync, engine/provider와 Celery retry는 호출되지 않는다.

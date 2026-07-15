@@ -176,13 +176,35 @@ def workflow_configuration_issues(
             if isinstance(subgraph, dict):
                 child_sources = {**inherited_sources, **local_sources}
                 mappings = data.get("inputs")
+                invalid_mapping = False
                 if isinstance(mappings, list):
                     for mapping in mappings:
                         if not isinstance(mapping, dict):
+                            invalid_mapping = True
                             continue
                         mapping_name = mapping.get("name")
-                        if isinstance(mapping_name, str) and mapping_name.strip():
-                            child_sources[mapping_name] = None
+                        if not (
+                            isinstance(mapping_name, str) and mapping_name.strip()
+                        ):
+                            invalid_mapping = True
+                            continue
+                        mapping_selector = mapping.get("value_selector")
+                        if mapping_selector in (None, []):
+                            continue
+                        if not selector_valid(mapping_selector):
+                            invalid_mapping = True
+                            continue
+                        child_sources[mapping_name] = None
+                elif mappings is not None:
+                    invalid_mapping = True
+                if invalid_mapping:
+                    issues.append(
+                        WorkflowConfigurationIssue(
+                            node_id=str(node.get("id") or ""),
+                            node_type=node_type,
+                            missing_parameters=("inputs",),
+                        )
+                    )
                 child_sources["loop"] = frozenset({"item", "index"})
                 pending.append(
                     (

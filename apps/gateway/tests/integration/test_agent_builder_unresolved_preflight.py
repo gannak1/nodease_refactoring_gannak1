@@ -191,6 +191,57 @@ def test_loop_subgraph_preflight_rejects_unknown_iteration_context_key():
     assert issues[0].missing_parameters == ("processing_ref_selector",)
 
 
+def test_loop_subgraph_preflight_rejects_stale_input_mapping_selector():
+    graph = {
+        "nodes": [
+            {
+                "id": "source",
+                "type": "variableExtractionNode",
+                "data": {"mappings": [{"name": "new_name"}]},
+            },
+            {
+                "id": "loop",
+                "type": "loopNode",
+                "data": {
+                    "inputs": [
+                        {
+                            "name": "mapped_mail",
+                            "value_selector": ["source", "old_name"],
+                        }
+                    ],
+                    "subGraph": {
+                        "nodes": [
+                            {
+                                "id": "draft",
+                                "type": "gmailDraftNode",
+                                "data": {
+                                    "credential_id": "credential-reference",
+                                    "processing_ref_selector": [
+                                        "mapped_mail",
+                                        "processing_ref",
+                                    ],
+                                    "reply_body_selector": ["source", "new_name"],
+                                },
+                            }
+                        ],
+                        "edges": [],
+                    },
+                },
+            },
+        ],
+        "edges": [],
+    }
+
+    issues = workflow_configuration_issues(graph)
+
+    assert [
+        (issue.node_id, issue.missing_parameters) for issue in issues
+    ] == [
+        ("loop", ("inputs",)),
+        ("draft", ("processing_ref_selector",)),
+    ]
+
+
 def test_loop_subgraph_preflight_uses_shared_nesting_depth_limit():
     def nested_graph(depth: int):
         current = {
