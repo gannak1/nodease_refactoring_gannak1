@@ -142,6 +142,16 @@ const fakeEventSource = () => ({
   close: vi.fn(),
 });
 
+const waitForEventListener = async (
+  listeners: Map<string, EventListener>,
+  eventName: string,
+) => {
+  await waitFor(() => {
+    expect(listeners.has(eventName)).toBe(true);
+  });
+  return listeners.get(eventName) as EventListener;
+};
+
 const mockSidebarDefaults = ({
   currentOrganization = managerOrganization,
   organizations = [managerOrganization, memberOrganization],
@@ -215,8 +225,12 @@ describe('Sidebar notifications', () => {
     await waitFor(() =>
       expect(adminApi.getSecurityAlertSummary).toHaveBeenCalledTimes(1),
     );
+    const notificationsChangedListener = await waitForEventListener(
+      listeners,
+      'notifications.changed',
+    );
     act(() => {
-      listeners.get('notifications.changed')?.(
+      notificationsChangedListener(
         new CustomEvent('notifications.changed', {
           detail: { open_count: 999, secret: 'payload-must-not-be-used' },
         }),
@@ -253,8 +267,9 @@ describe('Sidebar notifications', () => {
     await waitFor(() =>
       expect(adminApi.getSecurityAlertSummary).toHaveBeenCalledTimes(1),
     );
+    const openListener = await waitForEventListener(listeners, 'open');
     act(() => {
-      listeners.get('open')?.(new Event('open'));
+      openListener(new Event('open'));
     });
 
     await waitFor(() =>
@@ -319,8 +334,12 @@ describe('Sidebar notifications', () => {
       expect(adminApi.getSecurityAlertSummary).toHaveBeenCalledTimes(1),
     );
     expect(await screen.findByRole('link', { name: '관리' })).toBeInTheDocument();
+    const notificationsChangedListener = await waitForEventListener(
+      listeners,
+      'notifications.changed',
+    );
     act(() => {
-      listeners.get('notifications.changed')?.(new Event('notifications.changed'));
+      notificationsChangedListener(new Event('notifications.changed'));
     });
 
     await waitFor(() =>
@@ -373,9 +392,13 @@ describe('Sidebar notifications', () => {
     await waitFor(() =>
       expect(adminApi.getSecurityAlertSummary).toHaveBeenCalledTimes(1),
     );
+    const notificationsChangedListener = await waitForEventListener(
+      listeners,
+      'notifications.changed',
+    );
 
     act(() => {
-      listeners.get('notifications.changed')?.(new Event('notifications.changed'));
+      notificationsChangedListener(new Event('notifications.changed'));
     });
     await waitFor(() =>
       expect(adminApi.getSecurityAlertSummary).toHaveBeenCalledTimes(2),
@@ -385,7 +408,7 @@ describe('Sidebar notifications', () => {
     });
 
     act(() => {
-      listeners.get('notifications.changed')?.(new Event('notifications.changed'));
+      notificationsChangedListener(new Event('notifications.changed'));
     });
     await waitFor(() =>
       expect(adminApi.getSecurityAlertSummary).toHaveBeenCalledTimes(3),

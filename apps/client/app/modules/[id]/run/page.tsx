@@ -1,6 +1,13 @@
 'use client';
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  FormEvent,
+  KeyboardEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import {
   AlertCircle,
@@ -78,7 +85,7 @@ const placeholderFor = (variable: InputVariable) =>
 
 const resizeChatInput = (input: HTMLTextAreaElement) => {
   input.style.height = 'auto';
-  input.style.height = `${Math.max(input.value ? input.scrollHeight : 40, 40)}px`;
+  input.style.height = `${Math.max(input.value ? input.scrollHeight : 56, 56)}px`;
 };
 
 const coerceInputValue = (variable: InputVariable, value: unknown) => {
@@ -302,37 +309,70 @@ export default function AuthenticatedDeploymentRunPage() {
     }
   };
 
+  const handleChatInputKeyDown = (
+    event: KeyboardEvent<HTMLTextAreaElement>,
+  ) => {
+    if (
+      event.key !== 'Enter' ||
+      event.shiftKey ||
+      event.nativeEvent.isComposing ||
+      event.nativeEvent.keyCode === 229
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    if (isRunning || loadError || event.currentTarget.value.trim() === '') {
+      return;
+    }
+    event.currentTarget.form?.requestSubmit();
+  };
+
   const title = deployment?.name || '배포된 워크플로우 실행';
 
   return (
-    <main className="h-full overflow-y-auto bg-slate-50 px-6 py-8 text-slate-900">
-      <div className="mx-auto flex max-w-5xl flex-col gap-6">
+    <main className="h-full overflow-y-auto bg-slate-50 px-5 py-6 text-slate-900 sm:px-8">
+      <div
+        className={`mx-auto flex flex-col gap-6 ${chatVariable ? 'max-w-7xl' : 'max-w-5xl'}`}
+      >
         <header className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
             <button
               type="button"
               onClick={() => push('/dashboard')}
-              className="mb-4 inline-flex items-center gap-2 text-sm font-semibold text-slate-500 hover:text-slate-900"
+              className={`mb-4 inline-flex items-center gap-2 font-semibold text-slate-500 hover:text-slate-900 ${chatVariable ? 'text-lg' : 'text-sm'}`}
             >
-              <ArrowLeft className="h-4 w-4" />
+              <ArrowLeft className={chatVariable ? 'h-5 w-5' : 'h-4 w-4'} />
               대시보드로 돌아가기
             </button>
-            <p className="text-xs font-semibold text-emerald-700">
+            <p
+              className={`${chatVariable ? 'text-base' : 'text-xs'} font-semibold text-emerald-700`}
+            >
               내부 배포 실행
             </p>
-            <h1 className="mt-2 truncate text-2xl font-bold text-slate-950">
+            <h1
+              className={`mt-2 truncate font-bold text-slate-950 ${chatVariable ? 'text-4xl tracking-tight' : 'text-2xl'}`}
+            >
               {title}
             </h1>
           </div>
-          <span className="inline-flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-emerald-700">
-            <ShieldCheck className="h-4 w-4" />
+          <span
+            className={`inline-flex items-center border border-emerald-200 bg-emerald-50 text-emerald-700 ${chatVariable ? 'gap-3 rounded-xl px-5 py-3' : 'gap-2 rounded-md px-3 py-2'}`}
+          >
+            <ShieldCheck className={chatVariable ? 'h-6 w-6' : 'h-4 w-4'} />
             <span className="flex flex-col leading-tight">
               {currentUserName && (
-                <span className="text-sm font-semibold text-slate-900">
+                <span
+                  className={`${chatVariable ? 'text-lg' : 'text-sm'} font-semibold text-slate-900`}
+                >
                   {currentUserName}
                 </span>
               )}
-              <span className="text-xs font-semibold">사용자 권한 적용</span>
+              <span
+                className={`${chatVariable ? 'text-base' : 'text-xs'} font-semibold`}
+              >
+                사용자 권한 적용
+              </span>
             </span>
           </span>
         </header>
@@ -348,28 +388,28 @@ export default function AuthenticatedDeploymentRunPage() {
             <Loader2 className="h-5 w-5 animate-spin text-slate-500" />
           </div>
         ) : chatVariable ? (
-          <section className="flex h-[calc(100vh-13rem)] min-h-[520px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <section className="flex h-[calc(100vh-15rem)] min-h-[560px] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
             <section
               ref={conversationRegionRef}
               aria-label="대화 내용"
-              className="flex flex-1 flex-col gap-7 overflow-y-auto px-4 py-8 sm:px-8"
+              className="flex flex-1 flex-col gap-8 overflow-y-auto px-5 py-8 sm:px-10"
             >
               {conversationTurns.length === 0 && !pendingQuestion ? (
                 <div className="my-auto text-center">
-                  <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-xl bg-emerald-50 text-emerald-700">
-                    <ShieldCheck className="h-5 w-5" />
+                  <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-700">
+                    <ShieldCheck className="h-8 w-8" />
                   </div>
-                  <h2 className="mt-4 text-lg font-semibold text-slate-950">
+                  <h2 className="mt-5 text-2xl font-semibold text-slate-950">
                     무엇을 도와드릴까요?
                   </h2>
-                  <p className="mt-2 text-sm text-slate-500">
+                  <p className="mt-3 text-lg text-slate-500">
                     현재 로그인한 사용자의 권한 안에서 답변합니다.
                   </p>
                 </div>
               ) : (
                 conversationTurns.map((turn) => (
                   <div key={turn.id} className="flex flex-col gap-4">
-                    <div className="ml-auto max-w-[85%] rounded-2xl rounded-br-md bg-slate-100 px-4 py-3 text-sm leading-6 text-slate-900">
+                    <div className="ml-auto max-w-[85%] rounded-2xl rounded-br-md bg-slate-100 px-5 py-4 text-lg leading-8 text-slate-900">
                       <p className="whitespace-pre-wrap break-words">
                         {turn.question}
                       </p>
@@ -377,6 +417,8 @@ export default function AuthenticatedDeploymentRunPage() {
                     <div className="max-w-[92%]">
                       <FinalResponseCard
                         expandContent
+                        large
+                        renderMarkdown
                         preview={getDeploymentRunFinalPreview(
                           deployment,
                           turn.response,
@@ -389,20 +431,20 @@ export default function AuthenticatedDeploymentRunPage() {
 
               {pendingQuestion && (
                 <div className="flex flex-col gap-4" aria-live="polite">
-                  <div className="ml-auto max-w-[85%] rounded-2xl rounded-br-md bg-slate-100 px-4 py-3 text-sm leading-6 text-slate-900">
+                  <div className="ml-auto max-w-[85%] rounded-2xl rounded-br-md bg-slate-100 px-5 py-4 text-lg leading-8 text-slate-900">
                     <p className="whitespace-pre-wrap break-words">
                       {pendingQuestion}
                     </p>
                   </div>
-                  <div className="flex items-center gap-2 px-1 text-sm text-slate-500">
-                    <Loader2 className="h-4 w-4 animate-spin" />
+                  <div className="flex items-center gap-3 px-1 text-lg text-slate-500">
+                    <Loader2 className="h-5 w-5 animate-spin" />
                     답변을 만들고 있습니다.
                   </div>
                 </div>
               )}
             </section>
 
-            <div className="border-t border-slate-200 bg-slate-50/80 p-3 sm:p-5">
+            <div className="border-t border-slate-200 bg-slate-50/80 p-4 sm:p-6">
               {runError && (
                 <div className="mb-3 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">
                   <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
@@ -411,7 +453,7 @@ export default function AuthenticatedDeploymentRunPage() {
               )}
               <form
                 onSubmit={handleSubmit}
-                className="flex items-center gap-2 rounded-2xl border border-slate-300 bg-white p-2 shadow-sm focus-within:border-emerald-500 focus-within:ring-2 focus-within:ring-emerald-100"
+                className="flex items-center gap-3 rounded-2xl border border-slate-300 bg-white p-2.5 shadow-sm focus-within:border-emerald-500 focus-within:ring-2 focus-within:ring-emerald-100"
               >
                 <label className="flex min-w-0 flex-1 items-center">
                   <span className="sr-only">
@@ -427,10 +469,11 @@ export default function AuthenticatedDeploymentRunPage() {
                         [chatVariable.name]: event.target.value,
                       }));
                     }}
+                    onKeyDown={handleChatInputKeyDown}
                     rows={1}
                     disabled={isRunning || Boolean(loadError)}
                     placeholder="질문을 입력하세요"
-                    className="min-h-10 w-full resize-none overflow-hidden bg-transparent px-3 py-2.5 text-sm text-slate-900 outline-none placeholder:text-slate-400 disabled:cursor-not-allowed"
+                    className="min-h-14 w-full resize-none overflow-hidden bg-transparent px-4 py-3.5 text-lg leading-7 text-slate-900 outline-none placeholder:text-slate-400 disabled:cursor-not-allowed"
                   />
                 </label>
                 <button
@@ -441,17 +484,18 @@ export default function AuthenticatedDeploymentRunPage() {
                     Boolean(loadError) ||
                     String(inputs[chatVariable.name] ?? '').trim() === ''
                   }
-                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-slate-950 text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                  className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl bg-slate-950 text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
                 >
                   {isRunning ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <Loader2 className="h-6 w-6 animate-spin" />
                   ) : (
-                    <SendHorizontal className="h-4 w-4" />
+                    <SendHorizontal className="h-6 w-6" />
                   )}
                 </button>
               </form>
-              <p className="mt-2 text-center text-xs text-slate-400">
-                중요한 내용은 연결된 사내 문서에서 다시 확인하세요.
+              <p className="mt-3 text-center text-base text-slate-500">
+                Enter로 전송 · Shift+Enter로 줄바꿈 · 중요한 내용은 연결된 사내
+                문서에서 다시 확인하세요.
               </p>
             </div>
           </section>
