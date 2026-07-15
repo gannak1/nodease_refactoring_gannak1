@@ -9,8 +9,10 @@ from typing import Protocol, Sequence
 from apps.shared.domain.knowledge_collection_sync import (
     JOB_DEADLINE_SECONDS,
     MAX_SYNC_TARGETS,
-    sync_target_revision,
-    sync_target_snapshot_revision,
+)
+from apps.shared.services.knowledge_collection_sync_targets import (
+    CollectionSyncTarget,
+    CollectionSyncTargetScan,
 )
 
 
@@ -37,24 +39,6 @@ class CollectionSyncCollectionSnapshot:
     sync_state: str
     is_system_managed: bool
     is_source_managed: bool
-
-
-@dataclass(frozen=True, slots=True)
-class CollectionSyncTarget:
-    collection_item_id: uuid.UUID
-    knowledge_base_id: uuid.UUID
-    document_id: uuid.UUID
-    item_rank: int
-    item_created_at: datetime
-    document_updated_at: datetime | None
-
-
-@dataclass(frozen=True, slots=True)
-class CollectionSyncTargetScan:
-    targets: tuple[CollectionSyncTarget, ...]
-    has_source_managed_child: bool = False
-    has_api_document: bool = False
-    exceeds_limit: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,23 +242,18 @@ class RequestKnowledgeCollectionSync:
                 command.collection_id,
                 limit=MAX_SYNC_TARGETS + 1,
             )
-            if scan.has_source_managed_child or scan.has_api_document:
-                self._record_policy_block(command, "sync.not_supported")
-                raise CollectionSyncPolicyBlocked("sync.not_supported")
-            if scan.exceeds_limit or len(scan.targets) > MAX_SYNC_TARGETS:
-                self._record_policy_block(command, "sync.target_limit_exceeded")
-                raise CollectionSyncPolicyBlocked("sync.target_limit_exceeded")
-            if not scan.targets:
-                self._record_policy_block(command, "sync.no_eligible_targets")
-                raise CollectionSyncPolicyBlocked("sync.no_eligible_targets")
+            blocking_reason = scan.blocking_reason
+            if len(scan.targets) > MAX_SYNC_TARGETS:
+                blocking_reason = "sync.target_limit_exceeded"
+            if blocking_reason is not None:
+                self._record_policy_block(command, blocking_reason)
+                raise CollectionSyncPolicyBlocked(blocking_reason)
 
             now = self.repository.database_now()
             job = self.repository.create_job(
                 command=command,
                 request_key_hash=request_key_hash,
-                target_snapshot_revision=_target_snapshot_revision(
-                    command.collection_id, scan.targets
-                ),
+                target_snapshot_revision=scan.snapshot_revision(command.collection_id),
                 previous_sync_state=collection.sync_state,
                 targets=scan.targets,
                 now=now,
@@ -401,35 +380,6 @@ class ReadKnowledgeCollectionSyncStatus:
 
 def _request_key_hash(value: uuid.UUID) -> str:
     return hashlib.sha256(b"kc-sync-request-v1\x00" + value.bytes).hexdigest()
-
-
-def _target_snapshot_revision(
-    collection_id: uuid.UUID,
-    targets: Sequence[CollectionSyncTarget],
-) -> str:
-    return sync_target_snapshot_revision(
-        collection_id,
-        [
-            _target_revision(collection_id=collection_id, target=target)
-            for target in targets
-        ],
-    )
-
-
-def _target_revision(
-    *,
-    collection_id: uuid.UUID,
-    target: CollectionSyncTarget,
-) -> str:
-    return sync_target_revision(
-        collection_id=collection_id,
-        collection_item_id=target.collection_item_id,
-        knowledge_base_id=target.knowledge_base_id,
-        document_id=target.document_id,
-        item_rank=target.item_rank,
-        item_created_at=target.item_created_at,
-        document_updated_at=target.document_updated_at,
-    )
 
 
 def _count_bucket(value: int) -> str:

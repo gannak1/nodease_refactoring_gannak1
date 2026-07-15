@@ -21,6 +21,7 @@ def _job(**overrides) -> WorkerSyncJob:
         "organization_id": uuid.uuid4(),
         "collection_id": uuid.uuid4(),
         "requested_by": uuid.uuid4(),
+        "target_snapshot_revision": "a" * 64,
         "total_count": 1,
         "status": "queued",
         "previous_sync_state": "manual",
@@ -59,6 +60,7 @@ def _dependencies(job: WorkerSyncJob):
     repository.lock_job.return_value = job
     repository.database_now.return_value = NOW
     repository.collection_is_supported.return_value = True
+    repository.target_snapshot_matches.return_value = True
     document = Mock()
     audit = Mock()
     publisher = Mock()
@@ -103,6 +105,40 @@ def test_permission_revoked_at_claim_cancels_before_document_access() -> None:
     assert result.reason_code == "sync.permission_revoked"
     repository.cancel_job.assert_called_once()
     document.sync.assert_not_called()
+    audit.record.assert_called_once()
+    uow.commit.assert_called_once()
+
+
+def test_changed_target_snapshot_fails_before_document_access() -> None:
+    job = _job()
+    use_case, _authorization, repository, document, audit, _publisher, uow = (
+        _dependencies(job)
+    )
+    repository.target_snapshot_matches.return_value = False
+    repository.item_counts.return_value = WorkerItemCounts(
+        pending=0,
+        running=0,
+        succeeded=0,
+        failed=0,
+        skipped=1,
+    )
+
+    result = use_case.execute(job.job_id, owner="owner-a")
+
+    assert result.status == "failed"
+    assert result.reason_code == "sync.targets_changed"
+    repository.mark_unfinished_items_skipped.assert_called_once()
+    repository.mark_running.assert_not_called()
+    document.sync.assert_not_called()
+    repository.finalize_job.assert_called_once_with(
+        job,
+        status="failed",
+        now=NOW,
+        reason_code="sync.targets_changed",
+        completed_count=0,
+        failed_count=0,
+        skipped_count=1,
+    )
     audit.record.assert_called_once()
     uow.commit.assert_called_once()
 
@@ -167,6 +203,41 @@ def test_missing_snapshot_item_cannot_finalize_as_success() -> None:
     )
     assert audit.record.call_count == 2
     assert uow.commit.call_count == 2
+
+
+def test_target_added_after_processing_prevents_successful_finalization() -> None:
+    job = _job()
+    item = _item(job)
+    use_case, _authorization, repository, document, audit, _publisher, uow = (
+        _dependencies(job)
+    )
+    repository.target_snapshot_matches.side_effect = [True, False]
+    repository.lock_owned_job.side_effect = [job, job, job, job]
+    repository.next_pending_item.side_effect = [item, None]
+    repository.item_counts.return_value = WorkerItemCounts(
+        pending=0,
+        running=0,
+        succeeded=1,
+        failed=0,
+        skipped=0,
+    )
+
+    result = use_case.execute(job.job_id, owner="owner-a")
+
+    assert result.status == "partially_failed"
+    assert result.reason_code == "sync.targets_changed"
+    document.sync.assert_called_once_with(item, actor_id=job.requested_by)
+    repository.finalize_job.assert_called_once_with(
+        job,
+        status="partially_failed",
+        now=NOW,
+        reason_code="sync.targets_changed",
+        completed_count=1,
+        failed_count=0,
+        skipped_count=0,
+    )
+    assert audit.record.call_count == 2
+    assert uow.commit.call_count == 3
 
 
 def test_retryable_target_failure_is_durable_and_waits_for_recovery_dispatch() -> None:

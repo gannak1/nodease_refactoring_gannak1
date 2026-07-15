@@ -14,19 +14,18 @@ from apps.gateway.application.knowledge_collection_sync.use_cases import (
     CollectionSyncTargetScan,
 )
 from apps.shared.db.models.knowledge import (
-    Document,
-    KnowledgeBase,
     KnowledgeCollection,
-    KnowledgeCollectionItem,
     KnowledgeCollectionSyncJob,
     KnowledgeCollectionSyncJobItem,
-    SourceType,
 )
 from apps.shared.domain.knowledge_collection_sync import (
     max_job_attempts_for_targets,
     sync_target_revision,
 )
 from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
+from apps.shared.services.knowledge_collection_sync_targets import (
+    scan_collection_sync_targets,
+)
 from apps.shared.services.permissions import (
     get_effective_knowledge_domain_actions,
     has_active_organization_membership,
@@ -150,69 +149,11 @@ class SqlAlchemyCollectionSyncRepository:
         *,
         limit: int,
     ) -> CollectionSyncTargetScan:
-        base_filters = (
-            KnowledgeCollectionItem.organization_id == organization_id,
-            KnowledgeCollectionItem.collection_id == collection_id,
-            KnowledgeBase.organization_id == organization_id,
-            KnowledgeBase.lifecycle_state == "active",
-            KnowledgeBase.sync_state != "source_deleted",
-        )
-        has_source_managed = (
-            self.db.query(KnowledgeCollectionItem.id)
-            .join(KnowledgeBase, KnowledgeBase.id == KnowledgeCollectionItem.knowledge_base_id)
-            .filter(*base_filters, KnowledgeBase.source_identity_id.is_not(None))
-            .first()
-            is not None
-        )
-        has_api = (
-            self.db.query(Document.id)
-            .join(KnowledgeBase, KnowledgeBase.id == Document.knowledge_base_id)
-            .join(
-                KnowledgeCollectionItem,
-                KnowledgeCollectionItem.knowledge_base_id == KnowledgeBase.id,
-            )
-            .filter(
-                *base_filters,
-                KnowledgeBase.source_identity_id.is_(None),
-                Document.source_type == SourceType.API,
-            )
-            .first()
-            is not None
-        )
-        rows = (
-            self.db.query(KnowledgeCollectionItem, KnowledgeBase, Document)
-            .join(KnowledgeBase, KnowledgeBase.id == KnowledgeCollectionItem.knowledge_base_id)
-            .join(Document, Document.knowledge_base_id == KnowledgeBase.id)
-            .filter(
-                *base_filters,
-                KnowledgeBase.source_identity_id.is_(None),
-                Document.source_type == SourceType.DB,
-            )
-            .order_by(
-                KnowledgeCollectionItem.rank.asc(),
-                KnowledgeCollectionItem.created_at.asc(),
-                KnowledgeBase.id.asc(),
-                Document.id.asc(),
-            )
-            .limit(limit)
-            .all()
-        )
-        targets = tuple(
-            CollectionSyncTarget(
-                collection_item_id=item.id,
-                knowledge_base_id=kb.id,
-                document_id=document.id,
-                item_rank=item.rank,
-                item_created_at=item.created_at,
-                document_updated_at=document.updated_at,
-            )
-            for item, kb, document in rows
-        )
-        return CollectionSyncTargetScan(
-            targets=targets,
-            has_source_managed_child=has_source_managed,
-            has_api_document=has_api,
-            exceeds_limit=len(rows) >= limit,
+        return scan_collection_sync_targets(
+            self.db,
+            organization_id,
+            collection_id,
+            limit=limit,
         )
 
     def create_job(

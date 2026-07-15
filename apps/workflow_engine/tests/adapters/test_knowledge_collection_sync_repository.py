@@ -17,6 +17,7 @@ def test_supported_collection_query_excludes_source_deleted_state() -> None:
     query = Mock()
     db.query.return_value = query
     query.filter.return_value = query
+    query.with_for_update.return_value = query
     query.first.return_value = (uuid4(),)
     now = datetime.now(timezone.utc)
     job = WorkerSyncJob(
@@ -24,6 +25,7 @@ def test_supported_collection_query_excludes_source_deleted_state() -> None:
         organization_id=uuid4(),
         collection_id=uuid4(),
         requested_by=uuid4(),
+        target_snapshot_revision="a" * 64,
         total_count=1,
         status="queued",
         previous_sync_state="manual",
@@ -43,6 +45,7 @@ def test_supported_collection_query_excludes_source_deleted_state() -> None:
     assert "organization_id" in str(compiled)
     assert "sync_state" in str(compiled)
     assert "source_deleted" in compiled.params.values()
+    query.with_for_update.assert_called_once_with()
 
 
 def test_collection_state_projection_does_not_overwrite_source_deleted() -> None:
@@ -76,6 +79,7 @@ def test_finalize_job_persists_reconciled_snapshot_counts() -> None:
         organization_id=uuid4(),
         collection_id=uuid4(),
         requested_by=uuid4(),
+        target_snapshot_revision="a" * 64,
         total_count=1,
         status="running",
         previous_sync_state="manual",
@@ -122,3 +126,89 @@ def test_finalize_job_persists_reconciled_snapshot_counts() -> None:
     assert row.failed_count == 0
     assert row.skipped_count == 1
     repository._set_collection_state.assert_called_once()  # type: ignore[attr-defined]  # noqa: SLF001
+
+
+def test_item_attempt_is_incremented_once_per_persisted_outcome() -> None:
+    now = datetime.now(timezone.utc)
+    item_id = uuid4()
+    job_id = uuid4()
+    item_row = SimpleNamespace(
+        id=item_id,
+        status="pending",
+        attempt_count=0,
+        max_attempts=3,
+        retryable=True,
+        safe_reason_code=None,
+        started_at=None,
+        completed_at=None,
+        updated_at=now,
+    )
+    job_row = SimpleNamespace(
+        id=job_id,
+        failed_count=0,
+        lease_expires_at=None,
+        updated_at=now,
+    )
+    db = Mock()
+    db.get.side_effect = lambda _model, row_id: (
+        item_row if row_id == item_id else job_row
+    )
+    repository = SqlAlchemyWorkerSyncRepository(db)
+    job = SimpleNamespace(job_id=job_id)
+    item = SimpleNamespace(item_id=item_id)
+
+    for expected_attempt, expected_retry in ((1, True), (2, True), (3, False)):
+        repository.mark_item_running(item, now=now)
+        assert item_row.attempt_count == expected_attempt - 1
+        will_retry = repository.mark_item_failed(
+            job,
+            item,
+            now=now,
+            reason_code="sync.temporarily_unavailable",
+            retryable=True,
+            lease_expires_at=now + timedelta(minutes=1),
+        )
+        assert item_row.attempt_count == expected_attempt
+        assert will_retry is expected_retry
+
+    assert job_row.failed_count == 1
+
+
+def test_successful_item_attempt_is_incremented_at_outcome_commit() -> None:
+    now = datetime.now(timezone.utc)
+    item_id = uuid4()
+    job_id = uuid4()
+    item_row = SimpleNamespace(
+        id=item_id,
+        status="pending",
+        attempt_count=0,
+        retryable=True,
+        safe_reason_code=None,
+        started_at=None,
+        completed_at=None,
+        updated_at=now,
+    )
+    job_row = SimpleNamespace(
+        id=job_id,
+        completed_count=0,
+        lease_expires_at=None,
+        updated_at=now,
+    )
+    db = Mock()
+    db.get.side_effect = lambda _model, row_id: (
+        item_row if row_id == item_id else job_row
+    )
+    repository = SqlAlchemyWorkerSyncRepository(db)
+    job = SimpleNamespace(job_id=job_id)
+    item = SimpleNamespace(item_id=item_id)
+
+    repository.mark_item_running(item, now=now)
+    repository.mark_item_succeeded(
+        job,
+        item,
+        now=now,
+        lease_expires_at=now + timedelta(minutes=1),
+    )
+
+    assert item_row.attempt_count == 1
+    assert job_row.completed_count == 1

@@ -108,12 +108,35 @@ def sync_target_revision(
     return digest.hexdigest()
 
 
+def sync_target_membership_revision(
+    *,
+    collection_id: uuid.UUID,
+    collection_item_id: uuid.UUID,
+    knowledge_base_id: uuid.UUID,
+    document_id: uuid.UUID,
+    item_rank: int,
+    item_created_at: datetime,
+) -> str:
+    """Hash target-set topology without mutable document processing state."""
+
+    if item_rank < 0:
+        raise KnowledgeCollectionSyncStateError("sync target rank must be nonnegative")
+    digest = hashlib.sha256(b"kc-sync-target-membership-v1\x00")
+    digest.update(collection_id.bytes)
+    digest.update(collection_item_id.bytes)
+    digest.update(knowledge_base_id.bytes)
+    digest.update(document_id.bytes)
+    digest.update(item_rank.to_bytes(8, byteorder="big", signed=False))
+    _update_timestamp(digest, item_created_at)
+    return digest.hexdigest()
+
+
 def sync_target_snapshot_revision(
     collection_id: uuid.UUID,
-    target_revisions: Sequence[str],
+    membership_revisions: Sequence[str],
 ) -> str:
-    digest = hashlib.sha256(b"kc-sync-target-set-v2\x00" + collection_id.bytes)
-    for revision in target_revisions:
+    digest = hashlib.sha256(b"kc-sync-target-set-v3\x00" + collection_id.bytes)
+    for revision in membership_revisions:
         try:
             encoded = bytes.fromhex(revision)
         except ValueError as exc:

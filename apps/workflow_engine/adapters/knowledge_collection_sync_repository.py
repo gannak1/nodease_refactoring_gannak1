@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import uuid
 from datetime import datetime, timezone
 
@@ -12,9 +13,13 @@ from apps.shared.db.models.knowledge import (
     KnowledgeCollectionSyncJobItem,
 )
 from apps.shared.domain.knowledge_collection_sync import (
+    MAX_SYNC_TARGETS,
     TERMINAL_JOB_STATUSES,
     collection_sync_state_for_job,
     safe_reason_code,
+)
+from apps.shared.services.knowledge_collection_sync_targets import (
+    scan_collection_sync_targets,
 )
 from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
 from apps.shared.services.permissions import (
@@ -108,8 +113,21 @@ class SqlAlchemyWorkerSyncRepository:
                 KnowledgeCollection.source_identity_id.is_(None),
                 KnowledgeCollection.source_connector_ref.is_(None),
             )
+            .with_for_update()
             .first()
             is not None
+        )
+
+    def target_snapshot_matches(self, job: WorkerSyncJob) -> bool:
+        scan = scan_collection_sync_targets(
+            self.db,
+            job.organization_id,
+            job.collection_id,
+            limit=MAX_SYNC_TARGETS + 1,
+        )
+        return scan.is_supported and hmac.compare_digest(
+            scan.snapshot_revision(job.collection_id),
+            job.target_snapshot_revision,
         )
 
     def reset_stale_job(self, job: WorkerSyncJob, *, now: datetime) -> None:
@@ -195,7 +213,6 @@ class SqlAlchemyWorkerSyncRepository:
     def mark_item_running(self, item: WorkerSyncItem, *, now: datetime) -> None:
         row = self._required_item(item.item_id)
         row.status = "running"
-        row.attempt_count += 1
         row.started_at = row.started_at or now
         row.safe_reason_code = None
         row.updated_at = now
@@ -210,6 +227,7 @@ class SqlAlchemyWorkerSyncRepository:
     ) -> None:
         row = self._required_item(item.item_id)
         job_row = self._required_job(job.job_id)
+        row.attempt_count += 1
         row.status = "succeeded"
         row.retryable = False
         row.safe_reason_code = None
@@ -264,6 +282,30 @@ class SqlAlchemyWorkerSyncRepository:
         job_row.lease_expires_at = lease_expires_at
         job_row.updated_at = now
         return will_retry
+
+    def mark_unfinished_items_skipped(
+        self,
+        job: WorkerSyncJob,
+        *,
+        now: datetime,
+        reason_code: str,
+    ) -> None:
+        self.db.query(KnowledgeCollectionSyncJobItem).filter(
+            KnowledgeCollectionSyncJobItem.job_id == job.job_id,
+            KnowledgeCollectionSyncJobItem.organization_id == job.organization_id,
+            KnowledgeCollectionSyncJobItem.status.in_(["pending", "running"]),
+        ).update(
+            {
+                KnowledgeCollectionSyncJobItem.status: "skipped",
+                KnowledgeCollectionSyncJobItem.retryable: False,
+                KnowledgeCollectionSyncJobItem.safe_reason_code: safe_reason_code(
+                    reason_code
+                ),
+                KnowledgeCollectionSyncJobItem.completed_at: now,
+                KnowledgeCollectionSyncJobItem.updated_at: now,
+            },
+            synchronize_session=False,
+        )
 
     def queue_job(
         self,
@@ -489,6 +531,7 @@ class SqlAlchemyWorkerSyncRepository:
             organization_id=row.organization_id,
             collection_id=row.collection_id,
             requested_by=row.requested_by,
+            target_snapshot_revision=row.target_snapshot_revision,
             total_count=row.total_count,
             status=row.status,
             previous_sync_state=row.previous_sync_state,

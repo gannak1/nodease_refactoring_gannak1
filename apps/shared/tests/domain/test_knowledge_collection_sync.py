@@ -9,6 +9,7 @@ from apps.shared.domain.knowledge_collection_sync import (
     progress_category,
     retry_delay,
     safe_reason_code,
+    sync_target_membership_revision,
     sync_target_revision,
     sync_target_snapshot_revision,
     terminal_job_status,
@@ -101,6 +102,18 @@ def test_target_revision_is_deterministic_and_changes_with_target_state() -> Non
     )
     assert sync_target_snapshot_revision(collection_id, [first]) == (
         sync_target_snapshot_revision(collection_id, [first])
+    )
+
+    membership_values = {
+        key: value for key, value in values.items() if key != "document_updated_at"
+    }
+    membership = sync_target_membership_revision(**membership_values)
+    assert sync_target_membership_revision(**membership_values) == membership
+    assert (
+        sync_target_membership_revision(
+            **{**membership_values, "item_rank": 1}
+        )
+        != membership
     )
 
 

@@ -241,6 +241,13 @@ def test_permission_denial_is_audited_without_scanning_targets() -> None:
             "sync.not_supported",
         ),
         (
+            CollectionSyncTargetScan(
+                targets=(),
+                has_multi_document_target=True,
+            ),
+            "sync.not_supported",
+        ),
+        (
             CollectionSyncTargetScan(targets=(), exceeds_limit=True),
             "sync.target_limit_exceeded",
         ),
