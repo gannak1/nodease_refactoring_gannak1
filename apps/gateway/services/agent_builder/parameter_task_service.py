@@ -314,6 +314,60 @@ class ParameterTaskService:
         if app.workflow_id != workflow.id:
             raise HTTPException(status_code=400, detail="invalid_decision")
 
+    def _normalize_workflow_node_pair(
+        self,
+        node_data: dict[str, Any],
+        *,
+        changed_parameter_key: str,
+    ) -> dict[str, Any]:
+        normalized = dict(node_data)
+        app_value = normalized.get("appId")
+        if (
+            changed_parameter_key != "appId"
+            or app_value is None
+            or (isinstance(app_value, str) and not app_value.strip())
+        ):
+            self._validate_workflow_node_pair(normalized)
+            return normalized
+
+        try:
+            app_id = UUID(str(app_value))
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise HTTPException(status_code=400, detail="invalid_decision") from exc
+
+        app = (
+            self.db.query(App)
+            .filter(
+                App.id == app_id,
+                App.organization_id == self.organization_id,
+            )
+            .first()
+        )
+        if app is None or AppService.access_denial_status(
+            self.db, app, self.user_id, "read"
+        ) is not None:
+            raise HTTPException(status_code=403, detail="permission_denied")
+
+        workflow = (
+            self.db.query(Workflow)
+            .filter(
+                Workflow.id == app.workflow_id,
+                Workflow.organization_id == self.organization_id,
+            )
+            .first()
+        )
+        if workflow is None or not has_workflow_permission(
+            self.db,
+            self.user_id,
+            workflow.id,
+            "read",
+            organization_id=self.organization_id,
+        ):
+            raise HTTPException(status_code=403, detail="permission_denied")
+
+        normalized["workflowId"] = str(workflow.id)
+        return normalized
+
     def cancel_group(
         self,
         session_id: UUID,
@@ -790,11 +844,14 @@ class ParameterTaskService:
             if task.node_type == "conditionNode" and task.parameter_key == "cases":
                 data = prepare_condition_cases_data(data)
             else:
+                if task.node_type == "workflowNode":
+                    data = self._normalize_workflow_node_pair(
+                        data,
+                        changed_parameter_key=task.parameter_key,
+                    )
                 data["configuration_state"] = derive_node_configuration_state(
                     task.node_type, data
                 )
-            if task.node_type == "workflowNode":
-                self._validate_workflow_node_pair(data)
             operations = [
                 {
                     "op": "replace_node_data",

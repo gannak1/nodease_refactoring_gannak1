@@ -951,7 +951,7 @@ def test_workflow_node_pair_waits_until_both_references_are_configured(node_data
 
 
 @pytest.mark.parametrize("parameter_key", ["workflowId", "appId"])
-def test_workflow_node_pair_mismatch_rejects_before_any_persistence(
+def test_workflow_node_reference_replacement_preserves_pair_invariant(
     monkeypatch,
     parameter_key,
 ):
@@ -983,7 +983,8 @@ def test_workflow_node_pair_mismatch_rejects_before_any_persistence(
     user_id = uuid4()
     organization_id = uuid4()
     parent_workflow_id = uuid4()
-    target_workflow_id = uuid4()
+    selected_workflow_id = uuid4()
+    canonical_workflow_id = uuid4()
     target_app_id = uuid4()
     session = SimpleNamespace(
         id=uuid4(),
@@ -992,16 +993,22 @@ def test_workflow_node_pair_mismatch_rejects_before_any_persistence(
         workflow_id=parent_workflow_id,
     )
     target_workflow = SimpleNamespace(
-        id=target_workflow_id,
+        id=(
+            selected_workflow_id
+            if parameter_key == "workflowId"
+            else canonical_workflow_id
+        ),
         organization_id=organization_id,
     )
     target_app = SimpleNamespace(
         id=target_app_id,
         organization_id=organization_id,
-        workflow_id=uuid4(),
+        workflow_id=canonical_workflow_id,
     )
     other_key = "appId" if parameter_key == "workflowId" else "workflowId"
-    existing_value = target_app_id if other_key == "appId" else target_workflow_id
+    existing_value = (
+        target_app_id if other_key == "appId" else selected_workflow_id
+    )
     workflow = SimpleNamespace(
         id=parent_workflow_id,
         organization_id=organization_id,
@@ -1083,7 +1090,9 @@ def test_workflow_node_pair_mismatch_rejects_before_any_persistence(
         service,
         "_validated_decision_value",
         lambda _task, _payload: str(
-            target_workflow_id if parameter_key == "workflowId" else target_app_id
+            selected_workflow_id
+            if parameter_key == "workflowId"
+            else target_app_id
         ),
     )
     payload = AgentBuilderParameterTaskDecisionRequest.model_validate(
@@ -1095,15 +1104,90 @@ def test_workflow_node_pair_mismatch_rejects_before_any_persistence(
         }
     )
 
-    with pytest.raises(HTTPException) as exc:
-        service.decide(session.id, task.task_id, payload)
+    if parameter_key == "workflowId":
+        with pytest.raises(HTTPException) as exc:
+            service.decide(session.id, task.task_id, payload)
 
-    assert exc.value.status_code == 400
-    assert exc.value.detail == "invalid_decision"
-    assert repository.load_parameter_group(request_row, group_id) == group
-    assert request_row.response_payload.get("operation_envelopes") is None
-    assert audit_calls == []
-    assert db.commits == 0
+        assert exc.value.status_code == 400
+        assert exc.value.detail == "invalid_decision"
+        assert repository.load_parameter_group(request_row, group_id) == group
+        assert request_row.response_payload.get("operation_envelopes") is None
+        assert audit_calls == []
+        assert db.commits == 0
+        return
+
+    response = service.decide(session.id, task.task_id, payload)
+
+    assert response.awaiting_persistence_ack is True
+    assert response.graph_mutation is not None
+    operation = response.graph_mutation.operations[0]
+    assert operation.op == "replace_node_data"
+    assert operation.data["appId"] == str(target_app_id)
+    assert operation.data["workflowId"] == str(canonical_workflow_id)
+    assert len(request_row.response_payload["operation_envelopes"]) == 1
+    assert len(audit_calls) == 1
+    assert db.commits == 1
+
+
+@pytest.mark.parametrize("denied_resource", ["app", "workflow"])
+def test_workflow_node_app_normalization_requires_pair_permissions(
+    monkeypatch,
+    denied_resource,
+):
+    organization_id = uuid4()
+    app_id = uuid4()
+    workflow_id = uuid4()
+    app = SimpleNamespace(
+        id=app_id,
+        organization_id=organization_id,
+        workflow_id=workflow_id,
+    )
+    workflow = SimpleNamespace(
+        id=workflow_id,
+        organization_id=organization_id,
+    )
+
+    class _Query:
+        def __init__(self, result):
+            self.result = result
+
+        def filter(self, *_args):
+            return self
+
+        def first(self):
+            return self.result
+
+    db = SimpleNamespace(
+        query=lambda model: _Query(
+            app if model is task_service_module.App else workflow
+        )
+    )
+    monkeypatch.setattr(
+        task_service_module.AppService,
+        "access_denial_status",
+        lambda *_args, **_kwargs: 403 if denied_resource == "app" else None,
+    )
+    monkeypatch.setattr(
+        task_service_module,
+        "has_workflow_permission",
+        lambda *_args, **_kwargs: denied_resource != "workflow",
+    )
+    service = ParameterTaskService(
+        db,
+        user_id=uuid4(),
+        organization_id=organization_id,
+    )
+    node_data = {"appId": str(app_id), "workflowId": str(uuid4())}
+
+    with pytest.raises(HTTPException) as exc:
+        service._normalize_workflow_node_pair(
+            node_data,
+            changed_parameter_key="appId",
+        )
+
+    assert exc.value.status_code == 403
+    assert exc.value.detail == "permission_denied"
+    assert node_data["workflowId"] != str(workflow_id)
 
 
 def test_gmail_draft_rejects_non_gmail_oauth_credential_reference(monkeypatch):

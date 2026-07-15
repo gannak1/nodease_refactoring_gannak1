@@ -152,7 +152,7 @@ def test_loop_subgraph_preflight_accepts_iteration_and_mapped_input_selectors():
                 },
             },
         ],
-        "edges": [],
+        "edges": [{"id": "source-loop", "source": "source", "target": "loop"}],
     }
 
     assert workflow_configuration_issues(graph) == []
@@ -229,7 +229,7 @@ def test_loop_subgraph_preflight_rejects_stale_input_mapping_selector():
                 },
             },
         ],
-        "edges": [],
+        "edges": [{"id": "source-loop", "source": "source", "target": "loop"}],
     }
 
     issues = workflow_configuration_issues(graph)
@@ -239,6 +239,72 @@ def test_loop_subgraph_preflight_rejects_stale_input_mapping_selector():
     ] == [
         ("loop", ("inputs",)),
         ("draft", ("processing_ref_selector",)),
+    ]
+
+
+@pytest.mark.parametrize(
+    "parent_edges",
+    [
+        [{"id": "loop-later", "source": "loop", "target": "later"}],
+        [],
+    ],
+    ids=["downstream", "sibling"],
+)
+def test_loop_subgraph_preflight_rejects_non_predecessor_parent_sources(
+    parent_edges,
+):
+    graph = {
+        "nodes": [
+            {
+                "id": "loop",
+                "type": "loopNode",
+                "data": {
+                    "inputs": [
+                        {
+                            "name": "mapped_mail",
+                            "value_selector": ["later", "processing_ref"],
+                        }
+                    ],
+                    "subGraph": {
+                        "nodes": [
+                            {
+                                "id": "draft",
+                                "type": "gmailDraftNode",
+                                "data": {
+                                    "credential_id": "credential-reference",
+                                    "processing_ref_selector": [
+                                        "mapped_mail",
+                                        "processing_ref",
+                                    ],
+                                    "reply_body_selector": ["later", "reply_body"],
+                                },
+                            }
+                        ],
+                        "edges": [],
+                    },
+                },
+            },
+            {
+                "id": "later",
+                "type": "variableExtractionNode",
+                "data": {
+                    "mappings": [
+                        {"name": "processing_ref"},
+                        {"name": "reply_body"},
+                    ]
+                },
+            },
+        ],
+        "edges": parent_edges,
+    }
+
+    issues = workflow_configuration_issues(graph)
+
+    assert [
+        (issue.node_id, issue.missing_parameters) for issue in issues
+    ] == [
+        ("loop", ("inputs",)),
+        ("draft", ("processing_ref_selector", "reply_body_selector")),
     ]
 
 
