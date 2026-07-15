@@ -132,6 +132,22 @@ def test_validation_batch_reads_target_node_data_from_deployment_snapshot():
     assert AdaptiveModelRoutingValidationService._node_data(graph, "missing") is None
 
 
+def test_validation_available_models_exclude_node_blocked_models():
+    """월간 검증 예산은 노드에서 명시적으로 제외한 모델에 사용하지 않는다."""
+    node_data = {
+        "model_routing_policy": {
+            "excluded_model_ids": ["gpt-5.6-sol", " gpt-5.6-sol "],
+        }
+    }
+
+    available = AdaptiveModelRoutingValidationService._eligible_available_model_ids(
+        ["gpt-5.6-luna", "gpt-5.6-sol"],
+        node_data=node_data,
+    )
+
+    assert available == {"gpt-5.6-luna"}
+
+
 def test_candidate_replay_uses_a_canonical_manual_run_trigger():
     """FR-011-A52: 후보 Replay도 workflow run 계약이 허용하는 trigger mode를 사용한다."""
     context = AdaptiveModelRoutingValidationService._candidate_execution_context(

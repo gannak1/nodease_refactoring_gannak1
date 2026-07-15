@@ -516,6 +516,68 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     });
   });
 
+  it('첫 배포 전에도 입력군 초안을 추가하고 draft 상태를 확인한다', async () => {
+    workflowApiMock.getModelRoutingPolicy.mockResolvedValue({
+      enabled: true,
+      status: 'collecting',
+      policy_id: null,
+      policy_version: null,
+      active_policy: null,
+      pending_policy: null,
+      refresh: {
+        refresh_every_runs: 20,
+        eligible_runs_since_last_refresh: 0,
+        next_refresh_after_runs: 20,
+        last_refresh_result: null,
+        last_refresh_at: null,
+      },
+      last_update: null,
+      adaptive: {
+        validation_budget_usd: 3,
+        max_cohorts: 6,
+        active_cohort_count: 1,
+        budget_month: null,
+        spent_usd: 0,
+        reserved_usd: 0,
+        remaining_usd: 3,
+        cohorts: [
+          {
+            id: 'draft-cohort',
+            key: 'platform_access',
+            label: '플랫폼 접근 신청',
+            label_en: 'platform_access',
+            representative_query: 'VPN 접근 신청 절차를 알려 주세요.',
+            source: 'manual',
+            status: 'draft',
+            required: false,
+            safety_protected: false,
+            observation_count: 0,
+            review_window_count: 0,
+            traffic_share: 0,
+            validated_model_id: null,
+          },
+        ],
+        latest_batch: null,
+      },
+    });
+    const node = createLlmNode({ auto_model_routing: true });
+    useWorkflowStore.setState(
+      { ...useWorkflowStore.getState(), nodes: [node] },
+      true,
+    );
+
+    render(<NodeInlinePanel node={node} />);
+
+    const addButton = await screen.findByRole('button', {
+      name: /직접 입력군 추가/,
+    });
+    expect(addButton).toBeEnabled();
+    expect(await screen.findByText('초안')).toBeInTheDocument();
+    expect(
+      screen.getByText('대표 문의: VPN 접근 신청 절차를 알려 주세요.'),
+    ).toBeInTheDocument();
+  });
+
   it('입력군 목록에 합성 대표 문의를 표시하고 생성 방식에 맞는 관리 동작을 제공한다', async () => {
     workflowApiMock.getModelRoutingPolicy.mockResolvedValue({
       enabled: true,
@@ -784,10 +846,10 @@ describe('FR-003 LLM node model routing optimization entry', () => {
 
     expect(
       await screen.findByRole('button', { name: /^최적화$/ }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(/배포 후 운영 로그를 기준으로 추천 모델/),
-    ).toBeInTheDocument();
+    ).toHaveAttribute(
+      'title',
+      '운영 로그 기반 LLM 노드 설정 추천을 검토합니다.',
+    );
     expect(
       await screen.findByRole('checkbox', { name: /자동 모델 라우팅/ }),
     ).toBeInTheDocument();

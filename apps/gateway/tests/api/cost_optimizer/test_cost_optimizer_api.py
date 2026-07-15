@@ -914,6 +914,163 @@ class TestModelRoutingPolicyApi:
         assert create_cohort.call_args.kwargs["fixed"] is True
         db.commit.assert_called_once()
 
+    def test_fr11_direct_cohort_is_saved_as_draft_before_first_deployment(self):
+        """첫 배포 전 입력군은 외부 호출 없이 workflow draft에 저장한다."""
+        workflow_id = uuid4()
+        organization_id = uuid4()
+        user_id = uuid4()
+        db = MagicMock()
+        workflow = _workflow_with_nodes(
+            workflow_id,
+            organization_id,
+            [
+                {
+                    "id": "llm-triage",
+                    "type": "llmNode",
+                    "data": {
+                        "auto_model_routing": True,
+                        "model_id": "gpt-5.6-luna",
+                        "model_routing_policy": {"max_cohorts": 6},
+                    },
+                }
+            ],
+        )
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+            return_value=workflow,
+        ), patch(
+            "apps.gateway.api.v1.endpoints.workflow._get_model_routing_policy_for_workflow",
+            return_value=None,
+        ), patch(
+            "apps.gateway.api.v1.endpoints.workflow._active_deployment_for_workflow",
+            return_value=None,
+        ), patch(
+            "apps.gateway.api.v1.endpoints.workflow.WorkflowRuntimeLLMService."
+            "get_runtime_client_for_user",
+        ) as get_runtime_client:
+            response = self.client.post(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage/model-routing/cohorts",
+                json={
+                    "label": "공통 계정·보안 온보딩",
+                    "key": "common_account_security",
+                    "representative_query": "입사 첫날 SSO와 보안 교육 순서를 알려 주세요.",
+                    "fixed": True,
+                },
+            )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["status"] == "draft"
+        assert payload["source"] == "manual"
+        assert UUID(payload["id"])
+        assert workflow.graph["nodes"][0]["data"]["model_routing_policy"][
+            "cohort_drafts"
+        ] == [
+            {
+                "id": payload["id"],
+                "key": "common_account_security",
+                "label": "공통 계정·보안 온보딩",
+                "representative_query": "입사 첫날 SSO와 보안 교육 순서를 알려 주세요.",
+                "fixed": True,
+            }
+        ]
+        get_runtime_client.assert_not_called()
+        db.commit.assert_called_once()
+
+    def test_fr11_draft_cohort_can_be_read_updated_and_deleted_before_deployment(self):
+        """배포 전 초안도 정책 조회와 동일한 관리 API로 수정·삭제한다."""
+        workflow_id = uuid4()
+        user_id = uuid4()
+        draft_id = uuid4()
+        db = MagicMock()
+        workflow = _workflow_with_nodes(
+            workflow_id,
+            uuid4(),
+            [
+                {
+                    "id": "llm-triage",
+                    "type": "llmNode",
+                    "data": {
+                        "auto_model_routing": True,
+                        "model_id": "gpt-5.6-luna",
+                        "model_routing_policy": {
+                            "max_cohorts": 6,
+                            "cohort_drafts": [
+                                {
+                                    "id": str(draft_id),
+                                    "key": "platform_access",
+                                    "label": "플랫폼 접근 신청",
+                                    "representative_query": "VPN 접근 신청 절차를 알려 주세요.",
+                                    "fixed": False,
+                                }
+                            ],
+                        },
+                    },
+                }
+            ],
+        )
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+
+        with patch(
+            "apps.gateway.api.v1.endpoints.workflow.ensure_workflow_permission",
+            return_value=workflow,
+        ), patch(
+            "apps.gateway.api.v1.endpoints.workflow._get_model_routing_policy_for_workflow",
+            return_value=None,
+        ), patch(
+            "apps.gateway.api.v1.endpoints.workflow._active_deployment_for_workflow",
+            return_value=None,
+        ), patch(
+            "apps.gateway.api.v1.endpoints.workflow._get_latest_model_routing_policy_update",
+            return_value=None,
+        ):
+            read_response = self.client.get(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage/model-routing/policy"
+            )
+            update_response = self.client.patch(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage/model-routing/cohorts/{draft_id}",
+                json={
+                    "label": "플랫폼 개발환경·접근 신청",
+                    "key": "platform_development_access",
+                    "representative_query": "Git, VPN과 운영 조회 권한 신청 순서를 알려 주세요.",
+                    "fixed": True,
+                },
+            )
+            delete_response = self.client.delete(
+                f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage/model-routing/cohorts/{draft_id}"
+            )
+
+        assert read_response.status_code == 200
+        assert read_response.json()["adaptive"]["cohorts"] == [
+            {
+                "id": str(draft_id),
+                "key": "platform_access",
+                "label": "플랫폼 접근 신청",
+                "label_en": "platform_access",
+                "representative_query": "VPN 접근 신청 절차를 알려 주세요.",
+                "source": "manual",
+                "status": "draft",
+                "required": False,
+                "safety_protected": False,
+                "observation_count": 0,
+                "review_window_count": 0,
+                "traffic_share": 0.0,
+                "validated_model_id": None,
+            }
+        ]
+        assert update_response.status_code == 200
+        assert update_response.json()["status"] == "draft"
+        assert update_response.json()["key"] == "platform_development_access"
+        assert delete_response.status_code == 200
+        assert delete_response.json() == {"id": str(draft_id), "status": "retired"}
+        assert workflow.graph["nodes"][0]["data"]["model_routing_policy"][
+            "cohort_drafts"
+        ] == []
+
     def test_fr11_manual_cohort_update_reembeds_and_resets_validation(self):
         """수동 입력군 수정은 새 대표 문의로 재임베딩하고 재검증 대기로 바꾼다."""
         workflow_id = uuid4()

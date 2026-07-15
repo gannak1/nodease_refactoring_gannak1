@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Callable, Iterable
@@ -47,11 +48,13 @@ class AdaptiveModelRoutingCohortStore:
     DISCOVERY_WINDOW_SIZE = 40
     MIN_DISTINCT_INPUTS = 5
     MIN_REVIEW_WINDOWS = 2
-    # text-embedding-3-large의 실제 한국어 운영 입력 분포에서는 같은 업무 의도의
-    # 표현이 넓게 퍼질 수 있다. 0.50은 반복되는 표현군을 묶으면서 서로 다른
-    # 업무군이 합쳐지기 시작하는 0.40보다 높은 경계다. 임계값은 입력군의 대표
-    # 중심점과 신규 입력을 비교할 때도 동일하게 사용한다.
-    SIMILARITY_THRESHOLD = 0.50
+    MAX_RUNTIME_REPRESENTATIVES = 8
+    # 자동 발견 단계는 표현이 다양한 신규 트렌드를 놓치지 않도록 0.50으로
+    # 군집화한다. 실제 관찰 저장과 runtime 라우팅은 다른 업무 문의가 섞이지
+    # 않도록 더 보수적인 0.55를 사용한다.
+    DISCOVERY_SIMILARITY_THRESHOLD = 0.50
+    AUTO_MATCH_SIMILARITY_THRESHOLD = 0.55
+    MANUAL_SIMILARITY_THRESHOLD = 0.60
 
     @classmethod
     def record_observation(
@@ -166,7 +169,7 @@ class AdaptiveModelRoutingCohortStore:
             ],
             minimum_distinct_inputs=cls.MIN_DISTINCT_INPUTS,
             minimum_review_windows=cls.MIN_REVIEW_WINDOWS,
-            similarity_threshold=cls.SIMILARITY_THRESHOLD,
+            similarity_threshold=cls.DISCOVERY_SIMILARITY_THRESHOLD,
         )
 
         existing_keys = {str(cohort.cohort_key) for cohort in cohorts}
@@ -251,6 +254,7 @@ class AdaptiveModelRoutingCohortStore:
         *,
         policy: LLMNodeModelRoutingPolicy,
         node_data: dict[str, Any],
+        cohort_id: Any | None = None,
         label: str,
         cohort_key: str,
         representative_query: str,
@@ -285,6 +289,7 @@ class AdaptiveModelRoutingCohortStore:
 
         now = datetime.now(timezone.utc)
         cohort = LLMNodeModelRoutingCohort(
+            id=cohort_id or uuid.uuid4(),
             policy_id=policy.id,
             cohort_key=normalized_key,
             label=normalized_label,
@@ -474,23 +479,104 @@ class AdaptiveModelRoutingCohortStore:
         encoder_model_id = str(cohorts[0].encoder_model_id or "").strip()
         if not encoder_model_id:
             return None
+        routes = [
+            AdaptiveCohortRoute(
+                cohort_id=str(cohort.cohort_key),
+                label=str(cohort.label),
+                status=str(cohort.status),
+                validated=True,
+                centroid_embedding=tuple(cohort.centroid_embedding or ()),
+                representative_embeddings=cls._runtime_representative_embeddings(
+                    db,
+                    policy_id=policy_id,
+                    cohort=cohort,
+                ),
+                safety_override=bool(cohort.safety_protected),
+                threshold=(
+                    cls.MANUAL_SIMILARITY_THRESHOLD
+                    if str(getattr(cohort, "source", "")) == "manual"
+                    else cls.AUTO_MATCH_SIMILARITY_THRESHOLD
+                ),
+            )
+            for cohort in cohorts
+        ]
         return AdaptiveModelRoutingPolicyService.build_runtime_catalog(
             encoder_model_id=encoder_model_id,
             input_paths=cls._input_paths(node_data),
-            routes=[
-                AdaptiveCohortRoute(
-                    cohort_id=str(cohort.cohort_key),
-                    label=str(cohort.label),
-                    status=str(cohort.status),
-                    validated=True,
-                    centroid_embedding=tuple(cohort.centroid_embedding or ()),
-                    safety_override=bool(cohort.safety_protected),
-                    threshold=cls.SIMILARITY_THRESHOLD,
-                )
-                for cohort in cohorts
-            ],
+            routes=routes,
             preserved_safety_routes=cls._preserved_safety_routes(policy),
         )
+
+    @classmethod
+    def _runtime_representative_embeddings(
+        cls,
+        db: Session,
+        *,
+        policy_id: Any,
+        cohort: LLMNodeModelRoutingCohort,
+    ) -> tuple[tuple[float, ...], ...]:
+        """대표 문의와 최근 매칭 입력의 비가역 벡터를 bounded set으로 만든다."""
+        examples = (
+            db.query(LLMNodeModelRoutingCohortExample)
+            .filter(LLMNodeModelRoutingCohortExample.cohort_id == cohort.id)
+            .order_by(LLMNodeModelRoutingCohortExample.ordinal.asc())
+            .limit(cls.MAX_RUNTIME_REPRESENTATIVES)
+            .all()
+        )
+        remaining = max(0, cls.MAX_RUNTIME_REPRESENTATIVES - len(examples))
+        observations = []
+        if remaining:
+            observations = (
+                db.query(LLMNodeModelRoutingObservation)
+                .filter(LLMNodeModelRoutingObservation.policy_id == policy_id)
+                .filter(LLMNodeModelRoutingObservation.matched_cohort_id == cohort.id)
+                .order_by(LLMNodeModelRoutingObservation.observed_at.desc())
+                .limit(remaining)
+                .all()
+            )
+        if str(getattr(cohort, "source", "")) == "manual" and observations:
+            anchors = [
+                list(getattr(example, "embedding", None) or [])
+                for example in examples
+                if getattr(example, "embedding", None)
+            ] or [list(cohort.centroid_embedding or [])]
+            # 직접 정의 입력군도 실제 표현 변형을 학습할 수는 있어야 한다.
+            # 다만 대표 문의와 60% 이상 가까운 관찰만 허용해 오분류가 다음
+            # 정책에서 새로운 대표값으로 강화되는 피드백 오류를 막는다.
+            observations = [
+                observation
+                for observation in observations
+                if max(
+                    (
+                        cls._cosine(observation.embedding or [], anchor)
+                        for anchor in anchors
+                    ),
+                    default=0.0,
+                )
+                >= cls.MANUAL_SIMILARITY_THRESHOLD
+            ]
+
+        expected_size = len(cohort.centroid_embedding or [])
+        vectors: list[tuple[float, ...]] = []
+        seen: set[tuple[float, ...]] = set()
+        for row in [*examples, *observations]:
+            try:
+                vector = tuple(float(value) for value in (row.embedding or []))
+            except (TypeError, ValueError):
+                continue
+            if (
+                not vector
+                or (expected_size and len(vector) != expected_size)
+                or not all(math.isfinite(value) for value in vector)
+                or not any(value != 0 for value in vector)
+                or vector in seen
+            ):
+                continue
+            seen.add(vector)
+            vectors.append(vector)
+        if not vectors and cohort.centroid_embedding:
+            vectors.append(tuple(float(value) for value in cohort.centroid_embedding))
+        return tuple(vectors)
 
     @staticmethod
     def _preserved_safety_routes(policy: LLMNodeModelRoutingPolicy) -> list[dict[str, Any]]:
@@ -566,7 +652,12 @@ class AdaptiveModelRoutingCohortStore:
             if cohort.status == "retired":
                 continue
             score = cls._cosine(vector, cohort.centroid_embedding or [])
-            if score >= cls.SIMILARITY_THRESHOLD and score > winner_score:
+            threshold = (
+                cls.MANUAL_SIMILARITY_THRESHOLD
+                if str(getattr(cohort, "source", "")) == "manual"
+                else cls.AUTO_MATCH_SIMILARITY_THRESHOLD
+            )
+            if score >= threshold and score > winner_score:
                 winner = cohort
                 winner_score = score
         return winner

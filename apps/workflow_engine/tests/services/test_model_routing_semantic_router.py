@@ -177,6 +177,46 @@ def test_semantic_matcher_rejects_top_route_below_its_threshold():
     assert match.threshold == 1.01
 
 
+def test_max_aggregation_scores_every_route_before_applying_margin():
+    """FR-011: 한 입력군의 대표 벡터가 top-k를 독점해 2위 입력군 검사를 건너뛰지 않는다."""
+    catalog = SemanticRouteCatalog(
+        version="adaptive-v1",
+        encoder_model_id="text-embedding-test",
+        aggregation="max",
+        top_k=5,
+        min_margin=0.05,
+        routes=(
+            SemanticRouteDefinition(
+                cohort_id="platform",
+                label="플랫폼",
+                threshold=0.5,
+                representative_vectors=(
+                    (1.0, 0.0),
+                    (0.999, 0.01),
+                    (0.998, 0.02),
+                    (0.997, 0.03),
+                    (0.996, 0.04),
+                ),
+            ),
+            SemanticRouteDefinition(
+                cohort_id="security",
+                label="보안",
+                threshold=0.5,
+                representative_vectors=((0.995, 0.05),),
+            ),
+        ),
+    )
+
+    match = SemanticRouteMatcher.match(catalog, query_vector=(1.0, 0.0))
+
+    assert match.status == "ambiguous"
+    assert match.runner_up_score is not None
+    assert {score.cohort_id for score in match.candidate_scores} == {
+        "platform",
+        "security",
+    }
+
+
 def test_semantic_matcher_rejects_ambiguous_routes_below_min_margin():
     """1위와 2위가 너무 비슷하면 저비용 Route를 임의로 고르지 않는다."""
     match = SemanticRouteMatcher.match(

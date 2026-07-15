@@ -184,6 +184,13 @@ export interface LLMNodeData extends BaseNodeData {
     };
     validation_budget_usd?: number;
     max_cohorts?: number;
+    cohort_drafts?: Array<{
+      id: string;
+      key: string;
+      label: string;
+      representative_query: string;
+      fixed: boolean;
+    }>;
   };
   model_routing_context?: {
     customer_facing?: boolean;

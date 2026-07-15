@@ -898,7 +898,7 @@ export function LLMNodePanel({
       setRoutingPolicyError(null);
     } catch {
       setRoutingPolicyError(
-        '입력군을 등록하지 못했습니다. 정책 상태와 임베딩 모델 권한을 확인해 주세요.',
+        '입력군을 저장하지 못했습니다. 입력값, 중복 영문 키, 최대 개수를 확인해 주세요.',
       );
     } finally {
       setIsManualCohortCreating(false);
@@ -1369,18 +1369,6 @@ export function LLMNodePanel({
         data-node-id={nodeId}
         className="rounded-lg border border-slate-200 bg-slate-50 p-3"
       >
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="text-xs font-bold text-slate-900">
-              모델 라우팅 최적화
-            </div>
-            <p className="mt-0.5 text-xs leading-relaxed text-slate-500">
-              배포 후 운영 로그를 기준으로 추천 모델과 예상 절감 근거를
-              확인한 뒤 직접 적용합니다.
-            </p>
-          </div>
-        </div>
-      </div>
 
       {/* 1. 모델 선택 */}
       <CollapsibleSection title="모델" showDivider>
@@ -1700,7 +1688,6 @@ export function LLMNodePanel({
                           type="button"
                           className="nodrag mt-2 font-semibold text-slate-700 underline underline-offset-2 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-60"
                           onClick={openManualCohortForm}
-                          disabled={!persistedRoutingPolicy?.policy_id}
                         >
                           대표 문의로 입력군 만들기
                         </button>
@@ -1731,7 +1718,7 @@ export function LLMNodePanel({
                             </div>
                             <div className="shrink-0 text-right">
                               <span className="block font-semibold text-slate-700">
-                                {cohort.status}
+                                {cohort.status === 'draft' ? '초안' : cohort.status}
                               </span>
                               <span className="block text-slate-500">
                                 기본 모델: {cohort.validated_model_id || '검증 대기'}
@@ -1799,14 +1786,13 @@ export function LLMNodePanel({
                               openManualCohortForm();
                             }
                           }}
-                          disabled={!persistedRoutingPolicy?.policy_id}
                         >
                           {isManualCohortFormOpen ? '닫기' : '직접 입력군 추가'}
                         </button>
                       </div>
                       {!persistedRoutingPolicy?.policy_id ? (
                         <p className="mt-2 text-[11px] text-slate-500">
-                          첫 배포 운영 실행이 완료되면 직접 입력군을 등록할 수 있습니다.
+                          지금 저장한 입력군은 workflow 초안에 보관되고, 첫 배포 운영 실행에서 실제 라우팅 입력군으로 준비됩니다.
                         </p>
                       ) : null}
                       {isManualCohortFormOpen ? (

@@ -18,6 +18,7 @@ class AdaptiveCohortRoute:
     status: str
     validated: bool
     centroid_embedding: Sequence[float]
+    representative_embeddings: Sequence[Sequence[float]] = ()
     safety_override: bool = False
     threshold: float = 0.72
 
@@ -46,32 +47,35 @@ class AdaptiveModelRoutingPolicyService:
     ) -> dict:
         """검증 완료 cohort와 policy-owned 안전 route를 runtime 형식으로 투영한다."""
         normalized_paths = cls._input_paths(input_paths)
-        projected_routes: list[dict] = [
-            {
-                "cohort_id": route.cohort_id,
-                "label": route.label,
-                "threshold": max(0.0, min(float(route.threshold), 1.0)),
-                "safety_override": bool(route.safety_override),
-                "lexical_signals": [],
-                "lexical_override_threshold": 1.0,
-                "centroid_embedding": [float(value) for value in route.centroid_embedding],
-                # Runtime matcher requires at least one representative. The
-                # centroid itself is used as a non-reversible representative;
-                # no operational input text is persisted in the policy.
-                "representatives": [
-                    {
-                        "utterance_hash": hashlib.sha256(
-                            f"adaptive:{route.cohort_id}".encode("utf-8")
-                        ).hexdigest(),
-                        "embedding": [
-                            float(value) for value in route.centroid_embedding
-                        ],
-                    }
-                ],
-            }
-            for route in routes
-            if cls._is_runtime_route(route)
-        ]
+        projected_routes: list[dict] = []
+        for route in routes:
+            if not cls._is_runtime_route(route):
+                continue
+            representative_vectors = cls._representative_vectors(route)
+            projected_routes.append(
+                {
+                    "cohort_id": route.cohort_id,
+                    "label": route.label,
+                    "threshold": max(0.0, min(float(route.threshold), 1.0)),
+                    "safety_override": bool(route.safety_override),
+                    "lexical_signals": [],
+                    "lexical_override_threshold": 1.0,
+                    "centroid_embedding": [
+                        float(value) for value in route.centroid_embedding
+                    ],
+                    # 운영 입력 원문은 저장하지 않는다. 검증된 입력군에서 뽑은
+                    # 비가역 벡터만 여러 개 보존해 표현이 달라도 가까운 예시를 찾는다.
+                    "representatives": [
+                        {
+                            "utterance_hash": hashlib.sha256(
+                                f"adaptive:{route.cohort_id}:{index}".encode("utf-8")
+                            ).hexdigest(),
+                            "embedding": vector,
+                        }
+                        for index, vector in enumerate(representative_vectors)
+                    ],
+                }
+            )
         # 안전 route는 사용자가/정책이 이미 정의한 rule이다. 검증 전 자동 cohort가
         # 고위험 입력을 싼 모델 route로 오분류하지 않도록 catalog에 계속 남긴다.
         projected_ids = {str(route["cohort_id"]) for route in projected_routes}
@@ -104,10 +108,25 @@ class AdaptiveModelRoutingPolicyService:
             "encoder_model_id": str(encoder_model_id or "").strip(),
             "input_paths": normalized_paths,
             "top_k": 5,
-            "aggregation": "centroid",
+            "aggregation": "max",
             "min_margin": 0.05,
             "routes": projected_routes,
         }
+
+    @staticmethod
+    def _representative_vectors(route: AdaptiveCohortRoute) -> list[list[float]]:
+        vectors: list[list[float]] = []
+        seen: set[tuple[float, ...]] = set()
+        source = route.representative_embeddings or (route.centroid_embedding,)
+        for raw_vector in source:
+            vector = tuple(float(value) for value in raw_vector)
+            if not vector or vector in seen:
+                continue
+            seen.add(vector)
+            vectors.append(list(vector))
+        if not vectors:
+            vectors.append([float(value) for value in route.centroid_embedding])
+        return vectors
 
     @classmethod
     def plan_candidates(

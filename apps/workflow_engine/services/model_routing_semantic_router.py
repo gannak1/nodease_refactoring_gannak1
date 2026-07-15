@@ -225,6 +225,23 @@ class SemanticRouteMatcher:
                 ),
                 key=lambda item: (-item[0], item[1].cohort_id),
             )
+        elif catalog.aggregation == "max":
+            # max는 입력군마다 가장 가까운 대표 예시 하나를 비교하는 의미다.
+            # 전체 representative를 먼저 top-k로 자르면 한 입력군이 슬롯을
+            # 독점해 runner-up과 min_margin 검사를 건너뛸 수 있다.
+            route_scores = sorted(
+                (
+                    (
+                        max(
+                            _cosine_similarity(query, vector)
+                            for vector in route.representative_vectors
+                        ),
+                        route,
+                    )
+                    for route in catalog.routes
+                ),
+                key=lambda item: (-item[0], item[1].cohort_id),
+            )
         else:
             scored_representatives = sorted(
                 (

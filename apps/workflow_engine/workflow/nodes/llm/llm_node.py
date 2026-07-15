@@ -580,11 +580,26 @@ class LLMNode(Node[LLMNodeData]):
             user_id,
             self.data.model_id,
         )
-        return LLMService.get_runtime_available_model_ids_for_user(
+        available_model_ids = LLMService.get_runtime_available_model_ids_for_user(
             db_session,
             user_id=user_id,
             organization_id=organization_id,
         )
+        from apps.shared.services.model_routing_cohort_drafts import (
+            model_routing_excluded_model_ids,
+        )
+
+        node_data = (
+            self.data.model_dump()
+            if callable(getattr(self.data, "model_dump", None))
+            else vars(self.data)
+        )
+        excluded_model_ids = model_routing_excluded_model_ids(node_data)
+        return [
+            model_id
+            for model_id in available_model_ids
+            if model_id not in excluded_model_ids
+        ]
 
     def _run(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """

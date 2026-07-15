@@ -43,6 +43,22 @@ def llm_node_config_fingerprint(node_data: dict[str, Any]) -> str:
         payload["model_routing_refresh_every_runs"] = refresh.get(
             "refresh_every_runs"
         )
+    if isinstance(routing_policy, dict):
+        cohort_drafts = routing_policy.get("cohort_drafts")
+        if isinstance(cohort_drafts, list):
+            payload["model_routing_cohort_drafts"] = sorted(
+                [item for item in cohort_drafts if isinstance(item, dict)],
+                key=lambda item: (str(item.get("id") or ""), str(item.get("key") or "")),
+            )
+        excluded_model_ids = routing_policy.get("excluded_model_ids")
+        if isinstance(excluded_model_ids, list):
+            payload["model_routing_excluded_model_ids"] = sorted(
+                {
+                    str(model_id).strip()
+                    for model_id in excluded_model_ids
+                    if str(model_id).strip()
+                }
+            )
     serialized = json.dumps(
         payload,
         ensure_ascii=False,

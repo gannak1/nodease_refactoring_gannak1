@@ -35,6 +35,9 @@ from apps.shared.db.models.model_routing_policy import (
 )
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
 from apps.shared.db.models.workflow_run import WorkflowNodeRun, WorkflowRun
+from apps.shared.services.model_routing_cohort_drafts import (
+    model_routing_excluded_model_ids,
+)
 from apps.shared.services.node_config_fingerprint import llm_node_config_fingerprint
 from apps.shared.services.tracing.policy import TracePolicyService
 from apps.shared.services.tracing.redaction import TraceRedactionService
@@ -46,6 +49,9 @@ from apps.workflow_engine.services.model_routing_adaptive_policy import (
 )
 from apps.workflow_engine.services.model_routing_adaptive_store import (
     AdaptiveModelRoutingCohortStore,
+)
+from apps.workflow_engine.services.model_routing_cohort_naming import (
+    AdaptiveModelRoutingCohortNamingService,
 )
 from apps.workflow_engine.services.model_routing_adaptive_validation import (
     AdaptiveValidationOutcome,
@@ -137,19 +143,28 @@ class AdaptiveModelRoutingValidationService:
         )
         db.flush()
         fingerprint = llm_node_config_fingerprint(node_data)
-        cohorts = cls._candidate_cohorts(db, policy_id=policy.id, fingerprint=fingerprint)
-        if not cohorts:
-            return None
-        available_model_ids = set(
+        available_model_ids = cls._eligible_available_model_ids(
             LLMService.get_runtime_available_model_ids_for_user(
                 db,
                 user_id=subject_id,
                 organization_id=policy.organization_id,
-            )
+            ),
+            node_data=node_data,
         )
         if not available_model_ids:
             return None
         baseline_model_id = cls._baseline_model(policy, node_data)
+        AdaptiveModelRoutingCohortNamingService.name_pending_auto_cohorts(
+            db,
+            policy=policy,
+            node_data=node_data,
+            execution_subject_id=subject_id,
+            available_model_ids=available_model_ids,
+            preferred_model_id=baseline_model_id,
+        )
+        cohorts = cls._candidate_cohorts(db, policy_id=policy.id, fingerprint=fingerprint)
+        if not cohorts:
+            return None
         if not baseline_model_id or baseline_model_id not in available_model_ids:
             return None
         budget = cls._locked_monthly_budget(db, policy)
@@ -272,6 +287,15 @@ class AdaptiveModelRoutingValidationService:
         )
         db.flush()
         return batch
+
+    @staticmethod
+    def _eligible_available_model_ids(
+        available_model_ids: list[str] | set[str] | tuple[str, ...],
+        *,
+        node_data: dict[str, Any],
+    ) -> set[str]:
+        """권한이 있어도 노드에서 제외한 모델은 검증 예산 후보에서 제거한다."""
+        return set(available_model_ids) - model_routing_excluded_model_ids(node_data)
 
     @classmethod
     def execute_batch(

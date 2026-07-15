@@ -3592,6 +3592,56 @@ def test_auto_model_routing_uses_active_policy_without_judge_call(monkeypatch):
     }
 
 
+def test_auto_model_routing_excludes_node_blocked_models_from_runtime_candidates(
+    monkeypatch,
+):
+    """노드에서 제외한 모델은 credential이 있어도 active rule이 선택하지 못한다."""
+    organization_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    data = LLMNodeData(
+        title="excluded routing model",
+        model_id="gpt-5.6-luna",
+        auto_model_routing=True,
+        model_routing_policy={
+            "excluded_model_ids": ["gpt-5.6-sol"],
+            "active_policy": {
+                "default_model_id": "gpt-5.6-luna",
+                "rules": [
+                    {
+                        "id": "blocked-sol-rule",
+                        "priority": 1,
+                        "when": {"input_length_bucket": "short"},
+                        "selected_model_id": "gpt-5.6-sol",
+                    }
+                ],
+            },
+        },
+        user_prompt="hello",
+        referenced_variables=[],
+        parameters={},
+    )
+    node = LLMNode("llm-1", data)
+    node.execution_context = {
+        "user_id": str(user_id),
+        "organization_id": str(organization_id),
+    }
+    monkeypatch.setattr(
+        node,
+        "_require_runtime_organization_id",
+        lambda *_args: organization_id,
+    )
+    monkeypatch.setattr(
+        workflow_llm_service.LLMService,
+        "get_runtime_available_model_ids_for_user",
+        lambda *args, **kwargs: ["gpt-5.6-luna", "gpt-5.6-sol"],
+    )
+
+    selected, _, metadata = node._resolve_model_routing_policy({}, object())
+
+    assert selected == "gpt-5.6-luna"
+    assert metadata["reason_code"] != "blocked-sol-rule"
+
+
 def test_auto_model_routing_embeds_query_once_and_exposes_semantic_reason(monkeypatch):
     """FR-011-A26/A28: query 1회 embedding 결과로 Route와 모델 근거를 남긴다."""
     calls = []

@@ -14,6 +14,9 @@ from apps.shared.db.models.model_routing_policy import (
     LLMNodeModelRoutingPolicyUpdate,
 )
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
+from apps.shared.services.model_routing_cohort_drafts import (
+    model_routing_excluded_model_ids,
+)
 from apps.shared.services.model_routing_policy_optimizer import (
     ModelRoutingOptimizationRequest,
     ModelRoutingPolicyOptimizer,
@@ -119,6 +122,9 @@ class PersistedModelRoutingPolicyRefreshService:
                         user_id=policy.judge_user_id,
                         organization_id=policy.organization_id,
                     )
+                )
+                available_model_ids -= model_routing_excluded_model_ids(
+                    node_data or {}
                 )
                 candidates = [
                     candidate
@@ -328,6 +334,12 @@ class PersistedModelRoutingPolicyRefreshService:
             db.flush()
             return update
         except Exception as exc:
+            logger.exception(
+                "[Model-Routing] policy refresh failed: policy_id=%s trigger=%s error_type=%s",
+                policy.id,
+                trigger,
+                type(exc).__name__,
+            )
             ModelRoutingPolicyLifecycleService.apply_refresh_result(
                 policy,
                 status="failed",
@@ -762,6 +774,12 @@ class PersistedModelRoutingPolicyRefreshService:
         )
         source = routing_context.get("semantic_router")
         if not isinstance(source, dict) or not source:
+            return None
+        # Adaptive 입력군은 encoder와 입력 경로만 먼저 설정할 수 있다. 정적
+        # catalog의 필수 routes가 없으면 catalog builder가 아니라 관찰 수집
+        # 설정으로만 취급한다.
+        routes = source.get("routes")
+        if not isinstance(routes, list) or not routes:
             return None
 
         active_policy = (

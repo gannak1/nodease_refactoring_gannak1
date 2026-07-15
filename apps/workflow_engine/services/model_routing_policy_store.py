@@ -13,6 +13,7 @@ from apps.shared.db.models.model_routing_policy import (
     LLMNodeModelRoutingPolicyRunEvent,
     LLMNodeModelRoutingPolicyUpdate,
 )
+from apps.shared.db.models.model_routing_cohort import LLMNodeModelRoutingCohort
 from apps.shared.db.models.app import App
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
 from apps.shared.db.models.workflow_run import (
@@ -28,6 +29,10 @@ from apps.workflow_engine.services.model_routing_policy_refresh import (
     ModelRoutingPolicyRefreshService,
 )
 from apps.workflow_engine.services.llm_service import LLMService
+from apps.shared.services.model_routing_cohort_drafts import (
+    model_routing_cohort_drafts,
+    model_routing_excluded_model_ids,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -120,6 +125,12 @@ class ModelRoutingPolicyStore:
             node_id=node_id,
         )
         if policy is not None:
+            cls._materialize_draft_cohorts(
+                db,
+                policy=policy,
+                workflow_run=workflow_run,
+                node_data=node_data,
+            )
             return policy
 
         policy_id = uuid.uuid4()
@@ -142,6 +153,7 @@ class ModelRoutingPolicyStore:
                 organization_id=organization_id,
             )
         )
+        available_model_ids -= model_routing_excluded_model_ids(node_data)
         if configured_model_id not in available_model_ids:
             # bootstrap policy가 실행 주체에게 사용할 수 없는 모델을 active로 만들면
             # policy runtime의 credential guard보다 먼저 잘못된 상태를 저장하게 된다.
@@ -184,7 +196,83 @@ class ModelRoutingPolicyStore:
                 deployment_id=workflow_run.deployment_id,
                 node_id=node_id,
             )
+        cls._materialize_draft_cohorts(
+            db,
+            policy=policy,
+            workflow_run=workflow_run,
+            node_data=node_data,
+        )
         return policy
+
+    @classmethod
+    def _materialize_draft_cohorts(
+        cls,
+        db: Session,
+        *,
+        policy: LLMNodeModelRoutingPolicy,
+        workflow_run: WorkflowRun,
+        node_data: dict[str, Any],
+    ) -> int:
+        """배포 snapshot의 초안을 실제 semantic cohort로 best-effort 승격한다."""
+        drafts = model_routing_cohort_drafts(node_data)
+        user_id = getattr(workflow_run, "user_id", None)
+        if not drafts or user_id is None or policy.organization_id is None:
+            return 0
+        try:
+            embedding_models = LLMService.get_runtime_available_embedding_model_ids_for_user(
+                db,
+                user_id=user_id,
+                organization_id=policy.organization_id,
+            )
+            if not embedding_models:
+                return 0
+            encoder_model_id = cls._preferred_embedding_model(
+                node_data,
+                embedding_models,
+            )
+            selection = LLMService.get_runtime_client_for_user(
+                db,
+                user_id=user_id,
+                model_id=encoder_model_id,
+                organization_id=policy.organization_id,
+            )
+            from apps.workflow_engine.services.model_routing_adaptive_store import (
+                AdaptiveModelRoutingCohortStore,
+            )
+
+            created = 0
+            for draft in drafts:
+                cohort_id = uuid.UUID(draft["id"])
+                existing = (
+                    db.query(LLMNodeModelRoutingCohort)
+                    .filter(LLMNodeModelRoutingCohort.id == cohort_id)
+                    .filter(LLMNodeModelRoutingCohort.policy_id == policy.id)
+                    .first()
+                )
+                if existing is not None:
+                    continue
+                AdaptiveModelRoutingCohortStore.create_manual_cohort(
+                    db,
+                    policy=policy,
+                    node_data=node_data,
+                    cohort_id=cohort_id,
+                    label=draft["label"],
+                    cohort_key=draft["key"],
+                    representative_query=draft["representative_query"],
+                    fixed=draft["fixed"],
+                    encoder_model_id=encoder_model_id,
+                    embed=selection.client.embed_sync,
+                )
+                created += 1
+            return created
+        except Exception as exc:
+            # 임베딩 공급자 장애가 고객의 본 workflow 실행을 실패시키면 안 된다.
+            # 초안은 deployment snapshot에 남으므로 다음 정책 생성/복구에서 재시도한다.
+            logger.warning(
+                "[Model-Routing] cohort draft materialization skipped: error_type=%s",
+                type(exc).__name__,
+            )
+            return 0
 
     @classmethod
     def _lock_policy_for_update(
@@ -366,9 +454,9 @@ class ModelRoutingPolicyStore:
         node_data: dict[str, Any],
     ) -> None:
         """Embedding 실패가 운영 run 집계를 막지 않도록 관찰만 best-effort로 기록한다."""
-        user_id = getattr(policy, "execution_subject_user_id", None) or getattr(
-            workflow_run, "user_id", None
-        )
+        # 팀별 RAG 권한이 다른 배포에서는 정책 소유자가 아니라 이 요청을 실제로
+        # 실행한 사용자의 권한으로 입력을 임베딩해야 관찰·Replay 경계가 일치한다.
+        user_id = getattr(workflow_run, "user_id", None)
         if user_id is None or policy.organization_id is None:
             return
         try:

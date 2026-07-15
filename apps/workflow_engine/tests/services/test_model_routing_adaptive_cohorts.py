@@ -4,6 +4,8 @@ from uuid import uuid4
 
 from apps.shared.db.models.model_routing_cohort import (
     LLMNodeModelRoutingCohort,
+    LLMNodeModelRoutingCohortExample,
+    LLMNodeModelRoutingObservation,
 )
 from apps.workflow_engine.services.model_routing_adaptive_cohorts import (
     AdaptiveCohortService,
@@ -90,6 +92,7 @@ def test_runtime_catalog_preserves_safety_routes_from_the_current_policy():
     """FR-011-A48: active cohort catalog은 현재 policy의 안전 route를 함께 보존한다."""
 
     active_cohort = SimpleNamespace(
+        id=uuid4(),
         cohort_key="billing",
         label="청구 문의",
         status="active",
@@ -115,18 +118,32 @@ def test_runtime_catalog_preserves_safety_routes_from_the_current_policy():
     )
 
     class _Query:
+        def __init__(self, rows):
+            self.rows = rows
+
         def filter(self, *_args):
             return self
 
         def order_by(self, *_args):
             return self
 
+        def limit(self, value):
+            self.rows = self.rows[:value]
+            return self
+
         def all(self):
-            return [active_cohort]
+            return self.rows
 
     class _Db:
-        def query(self, *_args):
-            return _Query()
+        def query(self, model):
+            if model is LLMNodeModelRoutingCohort:
+                return _Query([active_cohort])
+            if model in {
+                LLMNodeModelRoutingCohortExample,
+                LLMNodeModelRoutingObservation,
+            }:
+                return _Query([])
+            raise AssertionError(f"unexpected query model: {model}")
 
     catalog = AdaptiveModelRoutingCohortStore.build_runtime_catalog(
         _Db(),
@@ -139,6 +156,205 @@ def test_runtime_catalog_preserves_safety_routes_from_the_current_policy():
         "billing",
         "high-risk",
     ]
+
+
+def test_runtime_catalog_projects_curated_and_recent_observation_vectors():
+    """FR-011: runtime route는 대표 문의와 최근 운영 표현 벡터를 함께 사용한다."""
+    cohort_id = uuid4()
+    active_cohort = SimpleNamespace(
+        id=cohort_id,
+        cohort_key="platform_access",
+        label="플랫폼 접근",
+        source="auto",
+        status="active",
+        safety_protected=False,
+        centroid_embedding=[0.7, 0.3],
+        encoder_model_id="text-embedding-3-large",
+    )
+    example = SimpleNamespace(cohort_id=cohort_id, embedding=[1.0, 0.0], ordinal=1)
+    observations = [
+        SimpleNamespace(matched_cohort_id=cohort_id, embedding=[0.4, 0.6]),
+        SimpleNamespace(matched_cohort_id=cohort_id, embedding=[0.6, 0.4]),
+    ]
+
+    class _Query:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def filter(self, *_args):
+            return self
+
+        def order_by(self, *_args):
+            return self
+
+        def limit(self, value):
+            self.rows = self.rows[:value]
+            return self
+
+        def all(self):
+            return self.rows
+
+    class _Db:
+        def query(self, model):
+            if model is LLMNodeModelRoutingCohort:
+                return _Query([active_cohort])
+            if model is LLMNodeModelRoutingCohortExample:
+                return _Query([example])
+            if model is LLMNodeModelRoutingObservation:
+                return _Query(observations)
+            raise AssertionError(f"unexpected query model: {model}")
+
+    catalog = AdaptiveModelRoutingCohortStore.build_runtime_catalog(
+        _Db(),
+        policy_id=uuid4(),
+        policy=SimpleNamespace(active_policy={}),
+        node_data={"model_routing_context": {"input_paths": ["question"]}},
+    )
+
+    assert catalog["aggregation"] == "max"
+    assert [item["embedding"] for item in catalog["routes"][0]["representatives"]] == [
+        [1.0, 0.0],
+        [0.4, 0.6],
+        [0.6, 0.4],
+    ]
+
+
+def test_runtime_catalog_only_expands_manual_cohort_with_high_confidence_observations():
+    """FR-011: 직접 정의 입력군은 대표 문의와 가까운 관찰만 확장한다."""
+    cohort_id = uuid4()
+    manual_cohort = SimpleNamespace(
+        id=cohort_id,
+        cohort_key="sales_enablement",
+        label="영업 온보딩",
+        source="manual",
+        status="active",
+        safety_protected=False,
+        centroid_embedding=[1.0, 0.0],
+        encoder_model_id="text-embedding-3-large",
+    )
+    example = SimpleNamespace(cohort_id=cohort_id, embedding=[1.0, 0.0], ordinal=1)
+    misclassified_observation = SimpleNamespace(
+        matched_cohort_id=cohort_id,
+        embedding=[0.0, 1.0],
+    )
+    trusted_observation = SimpleNamespace(
+        matched_cohort_id=cohort_id,
+        embedding=[0.8, 0.2],
+    )
+
+    class _Query:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def filter(self, *_args):
+            return self
+
+        def order_by(self, *_args):
+            return self
+
+        def limit(self, value):
+            self.rows = self.rows[:value]
+            return self
+
+        def all(self):
+            return self.rows
+
+    class _Db:
+        def query(self, model):
+            if model is LLMNodeModelRoutingCohort:
+                return _Query([manual_cohort])
+            if model is LLMNodeModelRoutingCohortExample:
+                return _Query([example])
+            if model is LLMNodeModelRoutingObservation:
+                return _Query([misclassified_observation, trusted_observation])
+            raise AssertionError(f"unexpected query model: {model}")
+
+    catalog = AdaptiveModelRoutingCohortStore.build_runtime_catalog(
+        _Db(),
+        policy_id=uuid4(),
+        policy=SimpleNamespace(active_policy={}),
+        node_data={"model_routing_context": {"input_paths": ["question"]}},
+    )
+
+    assert [item["embedding"] for item in catalog["routes"][0]["representatives"]] == [
+        [1.0, 0.0],
+        [0.8, 0.2],
+    ]
+    assert catalog["routes"][0]["threshold"] == 0.60
+
+
+def test_manual_and_auto_cohorts_reject_low_confidence_boundary_observations():
+    """FR-011: 50% 초반의 다른 업무 문의를 기존 입력군에 억지로 넣지 않는다."""
+    manual = SimpleNamespace(
+        id=uuid4(),
+        source="manual",
+        status="active",
+        centroid_embedding=[1.0, 0.0],
+    )
+    auto = SimpleNamespace(
+        id=uuid4(),
+        source="auto",
+        status="active",
+        centroid_embedding=[1.0, 0.0],
+    )
+    low_confidence_vector = [0.52, 0.8541662602]
+    auto_confident_vector = [0.56, 0.8284926071]
+
+    assert AdaptiveModelRoutingCohortStore._match(low_confidence_vector, [manual]) is None
+    assert AdaptiveModelRoutingCohortStore._match(low_confidence_vector, [auto]) is None
+    assert AdaptiveModelRoutingCohortStore._match(auto_confident_vector, [manual]) is None
+    assert AdaptiveModelRoutingCohortStore._match(auto_confident_vector, [auto]) is auto
+
+
+def test_runtime_catalog_uses_auto_cohort_match_threshold():
+    """FR-011: 자동 발견 입력군의 runtime 경계도 관찰 저장 경계와 같다."""
+    active_cohort = SimpleNamespace(
+        id=uuid4(),
+        cohort_key="finance_operations",
+        label="재무 결산",
+        source="auto",
+        status="active",
+        safety_protected=False,
+        centroid_embedding=[1.0, 0.0],
+        encoder_model_id="text-embedding-3-large",
+    )
+
+    class _Query:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def filter(self, *_args):
+            return self
+
+        def order_by(self, *_args):
+            return self
+
+        def limit(self, value):
+            self.rows = self.rows[:value]
+            return self
+
+        def all(self):
+            return self.rows
+
+    class _Db:
+        def query(self, model):
+            if model is LLMNodeModelRoutingCohort:
+                return _Query([active_cohort])
+            if model in {
+                LLMNodeModelRoutingCohortExample,
+                LLMNodeModelRoutingObservation,
+            }:
+                return _Query([])
+            raise AssertionError(f"unexpected query model: {model}")
+
+    catalog = AdaptiveModelRoutingCohortStore.build_runtime_catalog(
+        _Db(),
+        policy_id=uuid4(),
+        policy=SimpleNamespace(active_policy={}),
+        node_data={"model_routing_context": {"input_paths": ["question"]}},
+    )
+
+    assert catalog["routes"][0]["threshold"] == 0.55
 
 
 def test_non_required_declining_cohort_becomes_dormant_after_three_reviews():

@@ -281,7 +281,20 @@ def test_persisted_refresh_activates_new_route_catalog_without_changing_model():
     )
     node_data = {
         "model_id": "gpt-4.1",
-        "model_routing_context": {"semantic_router": {"routes": []}},
+        "model_routing_context": {
+            "semantic_router": {
+                "route_catalog_version": "ticket-routing-v1",
+                "encoder_model_id": "text-embedding-test",
+                "routes": [
+                    {
+                        "cohort_id": "routine_support",
+                        "label": "단순 사용·안내 문의",
+                        "threshold": 0.7,
+                        "utterances": ["다운로드 위치를 알려 주세요."],
+                    }
+                ],
+            }
+        },
     }
     deployment = SimpleNamespace(
         graph_snapshot={"nodes": [{"id": "llm-1", "data": node_data}]}
@@ -446,6 +459,48 @@ def test_adaptive_refresh_defers_rule_changes_until_replay_validation_completes(
     assert policy.refresh_requested_at == datetime(2026, 7, 14, tzinfo=timezone.utc)
     assert update.output_summary["adaptive_validation"]["judge_called"] is False
     refresh_policy.assert_not_called()
+
+
+def test_adaptive_semantic_config_without_static_routes_does_not_activate_a_catalog():
+    """FR-011: 입력 경로 설정만 있는 adaptive router를 불완전한 정적 catalog로 만들지 않는다."""
+    from apps.workflow_engine.services.model_routing_policy_refresh_task import (
+        PersistedModelRoutingPolicyRefreshService,
+    )
+
+    policy = SimpleNamespace(
+        active_policy={},
+        judge_user_id=uuid4(),
+        organization_id=uuid4(),
+    )
+    node_data = {
+        "model_routing_context": {
+            "semantic_router": {
+                "encoder_model_id": "text-embedding-3-large",
+                "input_paths": ["start-question.question"],
+                "aggregation": "centroid",
+            }
+        }
+    }
+
+    with (
+        patch.object(
+            PersistedModelRoutingPolicyRefreshService,
+            "_adaptive_semantic_router_snapshot",
+            return_value=None,
+        ),
+        patch.object(
+            PersistedModelRoutingPolicyRefreshService,
+            "_semantic_router_snapshot",
+        ) as build_static_snapshot,
+    ):
+        snapshot = PersistedModelRoutingPolicyRefreshService._resolve_semantic_router_snapshot(
+            MagicMock(),
+            policy=policy,
+            node_data=node_data,
+        )
+
+    assert snapshot is None
+    build_static_snapshot.assert_not_called()
 
 
 def test_adaptive_refresh_projects_catalog_safety_route_to_baseline_rule():

@@ -649,3 +649,116 @@ def test_record_completed_run_locks_policies_in_node_id_order_before_counting():
     expected_policy_ids = [policy_by_node["llm-a"].id, policy_by_node["llm-z"].id]
     assert locked_policy_ids == expected_policy_ids
     assert [call.args[0].id for call in apply_run_event.call_args_list] == expected_policy_ids
+
+
+def test_first_policy_materializes_draft_cohorts_with_stable_ids():
+    """첫 배포 정책은 graph 초안을 같은 UUID의 실제 입력군으로 승격한다."""
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    draft_id = uuid4()
+    policy = SimpleNamespace(id=uuid4(), organization_id=uuid4(), max_cohorts=6)
+    workflow_run = SimpleNamespace(user_id=uuid4())
+    node_data = {
+        "model_id": "gpt-5.6-luna",
+        "model_routing_policy": {
+            "cohort_drafts": [
+                {
+                    "id": str(draft_id),
+                    "key": "common_account_security",
+                    "label": "공통 계정·보안 온보딩",
+                    "representative_query": "입사 첫날 SSO와 보안 교육 순서를 알려 주세요.",
+                    "fixed": True,
+                }
+            ]
+        },
+        "model_routing_context": {
+            "semantic_router": {"encoder_model_id": "text-embedding-3-large"}
+        },
+    }
+    db = MagicMock()
+    db.query.return_value = _Query(first_value=None)
+    embedding_client = SimpleNamespace(embed_sync=MagicMock(return_value=[0.1, 0.2]))
+
+    with patch.object(
+        LLMService,
+        "get_runtime_available_embedding_model_ids_for_user",
+        return_value=["text-embedding-3-large"],
+    ), patch.object(
+        LLMService,
+        "get_runtime_client_for_user",
+        return_value=SimpleNamespace(client=embedding_client),
+    ), patch(
+        "apps.workflow_engine.services.model_routing_adaptive_store."
+        "AdaptiveModelRoutingCohortStore.create_manual_cohort",
+        return_value=SimpleNamespace(id=draft_id),
+    ) as create_cohort:
+        created = ModelRoutingPolicyStore._materialize_draft_cohorts(
+            db,
+            policy=policy,
+            workflow_run=workflow_run,
+            node_data=node_data,
+        )
+
+    assert created == 1
+    assert create_cohort.call_args.kwargs["cohort_id"] == draft_id
+    assert create_cohort.call_args.kwargs["cohort_key"] == "common_account_security"
+    assert create_cohort.call_args.kwargs["fixed"] is True
+
+
+def test_existing_policy_retries_unmaterialized_draft_cohorts():
+    """임베딩 장애 뒤 다음 운영 실행은 남은 초안 승격을 다시 시도한다."""
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    existing_policy = SimpleNamespace(id=uuid4())
+    workflow_run = SimpleNamespace(
+        workflow_id=uuid4(),
+        deployment_id=uuid4(),
+        user_id=uuid4(),
+    )
+    node_data = {
+        "auto_model_routing": True,
+        "model_id": "gpt-5.6-luna",
+        "model_routing_policy": {
+            "cohort_drafts": [
+                {
+                    "id": str(uuid4()),
+                    "key": "platform_access",
+                    "label": "플랫폼 접근 온보딩",
+                    "representative_query": "개발 저장소와 배포 권한 신청 절차를 알려 주세요.",
+                    "fixed": False,
+                }
+            ]
+        },
+    }
+    db = MagicMock()
+
+    with (
+        patch.object(
+            ModelRoutingPolicyStore,
+            "get_runtime_policy",
+            return_value=existing_policy,
+        ),
+        patch.object(
+            ModelRoutingPolicyStore,
+            "_materialize_draft_cohorts",
+            return_value=1,
+        ) as materialize,
+    ):
+        policy = ModelRoutingPolicyStore.ensure_policy_for_deployed_node(
+            db,
+            workflow_run=workflow_run,
+            node_id="llm-answer",
+            node_data=node_data,
+        )
+
+    assert policy is existing_policy
+    materialize.assert_called_once_with(
+        db,
+        policy=existing_policy,
+        workflow_run=workflow_run,
+        node_data=node_data,
+    )

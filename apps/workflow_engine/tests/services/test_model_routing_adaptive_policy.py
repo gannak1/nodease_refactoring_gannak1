@@ -40,6 +40,32 @@ def test_runtime_catalog_only_contains_active_or_required_validated_cohorts():
     assert [route["cohort_id"] for route in catalog["routes"]] == ["active-billing"]
 
 
+def test_runtime_catalog_uses_multiple_safe_representatives_for_varied_queries():
+    """FR-011: 같은 입력군의 다양한 운영 표현을 중심점 하나로 축약하지 않는다."""
+    catalog = AdaptiveModelRoutingPolicyService.build_runtime_catalog(
+        encoder_model_id="text-embedding-3-large",
+        input_paths=["question"],
+        routes=[
+            AdaptiveCohortRoute(
+                cohort_id="platform-access",
+                label="플랫폼 접근",
+                status="active",
+                validated=True,
+                centroid_embedding=(0.7, 0.3),
+                representative_embeddings=((1.0, 0.0), (0.4, 0.6)),
+            )
+        ],
+    )
+
+    route = catalog["routes"][0]
+    assert catalog["aggregation"] == "max"
+    assert [item["embedding"] for item in route["representatives"]] == [
+        [1.0, 0.0],
+        [0.4, 0.6],
+    ]
+    assert all(set(item) == {"utterance_hash", "embedding"} for item in route["representatives"])
+
+
 def test_runtime_catalog_keeps_policy_owned_safety_route_without_creating_a_discount_rule():
     catalog = AdaptiveModelRoutingPolicyService.build_runtime_catalog(
         encoder_model_id="text-embedding-3-small",
