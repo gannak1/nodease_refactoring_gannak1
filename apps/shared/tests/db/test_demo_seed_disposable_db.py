@@ -131,6 +131,21 @@ def _snapshot_counts(
                         """
                     )
                 ).scalar_one(),
+                "seed_multi_document_knowledge_bases": conn.execute(
+                    text(
+                        """
+                        SELECT COUNT(*)
+                        FROM (
+                            SELECT d.knowledge_base_id
+                            FROM documents d
+                            WHERE d.knowledge_base_id = ANY(:knowledge_base_ids)
+                            GROUP BY d.knowledge_base_id
+                            HAVING COUNT(*) > 1
+                        ) multi_document
+                        """
+                    ),
+                    {"knowledge_base_ids": list(demo_seed.KB_IDS.values())},
+                ).scalar_one(),
                 "knowledge_ingestion_outbox": conn.execute(
                     text("SELECT COUNT(*) FROM knowledge_ingestion_outbox")
                 ).scalar_one(),
@@ -700,6 +715,8 @@ def test_seed_profile_resets_are_scoped_and_idempotent_in_disposable_postgres():
         assert reset_counts["document_chunk_document_orphans"] == 0
         assert reset_counts["document_chunk_kb_orphans"] == 0
         assert reset_counts["document_kb_orphans"] == 0
+        assert reset_counts["seed_multi_document_knowledge_bases"] == 0
+        assert second_reset_counts["seed_multi_document_knowledge_bases"] == 0
         assert remaining_outbox_ids == {non_demo_outbox_id}
         assert all(demo_agent_builder_after_demo_reset.values())
         assert not any(test_agent_builder_after_reset.values())

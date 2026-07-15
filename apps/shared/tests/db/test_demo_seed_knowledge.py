@@ -204,6 +204,18 @@ def test_hr_bot_graph_references_seeded_rag_kbs():
     assert str(demo_seed.KB_IDS["internal_compensation_access_policy"]) in kb_ids
     assert str(demo_seed.KB_IDS["legal_labor_standards"]) in kb_ids
     assert str(demo_seed.KB_IDS["legal_equal_employment"]) in kb_ids
+    assert str(demo_seed.KB_IDS["hr"]) not in kb_ids
+    assert "knowledgeCollections" not in llm_node["data"]
+
+
+def test_legacy_demo_documents_have_distinct_knowledge_base_keys():
+    mapping = demo_seed.LEGACY_DEMO_DOCUMENT_KB_KEYS
+
+    assert set(mapping) == {"hr_leave", "hr_welfare", "finance_sensitive"}
+    assert len(set(mapping.values())) == len(mapping)
+    assert mapping["hr_leave"] == "hr"
+    assert mapping["hr_welfare"] == "hr_welfare"
+    assert all(kb_key in demo_seed.KB_IDS for kb_key in mapping.values())
 
 
 def test_department_onboarding_graph_references_exact_rbac_demo_kbs():
@@ -912,6 +924,11 @@ def test_ticket_ops_input_schema_matches_webhook_mappings():
         ]
     }
 
+    llm_node = next(node for node in graph["nodes"] if node["id"] == "llm-triage")
+    assert llm_node["data"]["knowledgeBases"] == [
+        demo_seed._knowledge_base_ref("internal_cost_optimization_playbook")
+    ]
+
 
 def test_schema_readiness_reports_stale_demo_db_columns():
     gaps = seed_demo_script.schema_readiness_gaps(
@@ -1212,6 +1229,26 @@ def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():
         "tester_builder",
         "route",
     ) in collection_permission_specs
+    assert (
+        "hr_policies",
+        "hr_knowledge_users",
+        "route",
+    ) in collection_permission_specs
+    assert (
+        "hr_policies",
+        "platform_admin",
+        "read",
+    ) in collection_permission_specs
+    assert (
+        "hr_welfare",
+        "hr_knowledge_users",
+        "operator",
+    ) in permission_specs
+    assert (
+        "hr_welfare",
+        "platform_admin",
+        "manager",
+    ) in permission_specs
 
 
 def test_demo_knowledge_seed_excludes_personal_salary_records():
