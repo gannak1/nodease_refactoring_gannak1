@@ -49,6 +49,11 @@ from apps.gateway.services.knowledge_document_projection import (
     project_safe_document_progress_message,
     project_safe_document_status,
 )
+from apps.gateway.services.knowledge_document_lifecycle_service import (
+    KnowledgeDocumentLifecycleHidden,
+    KnowledgeDocumentLifecycleService,
+    KnowledgeDocumentLifecycleUnavailable,
+)
 from apps.gateway.services.knowledge_document_registration_service import (
     KnowledgeDocumentRegistrationError,
     KnowledgeDocumentRegistrationHidden,
@@ -590,6 +595,7 @@ def _prepare_db_source(db: Session, user: User, connection_id: Optional[UUID]):
     conn = (
         db.query(Connection)
         .filter(Connection.id == connection_id, Connection.user_id == user.id)
+        .with_for_update()
         .first()
     )
     if not conn:
@@ -696,7 +702,7 @@ def delete_document(
     문서를 삭제합니다. (연관된 청크도 자동 삭제됨)
     """
     organization_id = parse_organization_id(request, x_organization_id)
-    _, doc = _authorize_knowledge_document_action(
+    kb, _ = _authorize_knowledge_document_action(
         request,
         db,
         current_user,
@@ -705,18 +711,34 @@ def delete_document(
         "write",
     )
 
-    # 2. 파일 삭제 (S3/Local 자동 분기)
-    if doc.file_path:
+    try:
+        deleted = KnowledgeDocumentLifecycleService(db).delete_document(
+            knowledge_base_id=kb.id,
+            organization_id=organization_id,
+            document_id=document_id,
+        )
+    except KnowledgeDocumentLifecycleHidden:
+        raise_api_error(
+            request,
+            404,
+            "resource.hidden",
+            "Document not found.",
+        )
+    except KnowledgeDocumentLifecycleUnavailable:
+        raise_api_error(
+            request,
+            503,
+            "knowledge.document_delete_unavailable",
+            "Document deletion is temporarily unavailable.",
+        )
+
+    # DB commit 이후 request가 소유하던 storage reference를 best-effort 정리한다.
+    if deleted.file_path:
         storage = get_storage_service()
         try:
-            storage.delete(doc.file_path)
+            storage.delete(deleted.file_path)
         except Exception as e:
             logger.warning("Failed to delete document file: %s", type(e).__name__)
-            # 파일 삭제 실패해도 DB는 삭제 진행
-
-    # 3. DB 삭제 (Cascade로 청크도 같이 삭제됨)
-    db.delete(doc)
-    db.commit()
 
     return {"status": "success", "message": "Document deleted successfully"}
 

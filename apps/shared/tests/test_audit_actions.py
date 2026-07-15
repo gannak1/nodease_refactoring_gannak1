@@ -14,6 +14,7 @@ def test_mba_44_canonical_audit_actions_are_defined():
     assert AuditAction.POLICY_WARN == "policy.warn"
     assert AuditAction.POLICY_BLOCK == "policy.block"
     assert AuditAction.DEPLOYMENT_ACTIVATE_PREVIOUS == "deployment.activate_previous"
+    assert AuditAction.CONNECTION_DELETE == "connection.delete"
 
 
 def test_organization_membership_audit_actions_are_defined():

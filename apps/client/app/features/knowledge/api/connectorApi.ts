@@ -215,6 +215,11 @@ const normalizeConnectionDetails = (payload: unknown): DBConfig => {
   };
 };
 
+type ConnectorDeletionResult = {
+  success: boolean;
+  status?: number;
+};
+
 export const connectorApi = {
   /**
    * DB 연결 정보 저장 및 Connector 생성 요청
@@ -282,6 +287,23 @@ export const connectorApi = {
         }),
         ...(status ? { status } : {}),
         ...(reasonCode ? { reasonCode } : {}),
+      };
+    }
+  },
+
+  /** Best-effort cleanup for a request-owned connector that was never linked. */
+  deleteConnector: async (
+    connectionId: string,
+  ): Promise<ConnectorDeletionResult> => {
+    try {
+      await api.delete(`/connectors/${connectionId}`);
+      return { success: true };
+    } catch (error) {
+      const status = getHttpStatus(error);
+      logConnectorApiFailure('deleteConnector', error);
+      return {
+        success: false,
+        ...(status ? { status } : {}),
       };
     }
   },

@@ -11,12 +11,26 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
+from apps.gateway.services.connection_lifecycle_service import (
+    ConnectionLifecycleHidden,
+    ConnectionLifecycleInUse,
+    ConnectionLifecycleService,
+)
 from apps.gateway.services.knowledge_document_registration_service import (
     KnowledgeDocumentRegistrationHidden,
     KnowledgeDocumentRegistrationService,
     KnowledgeDocumentSlotOccupied,
 )
-from apps.shared.db.models.knowledge import Document, KnowledgeBase, SourceType
+from apps.gateway.services.knowledge_document_lifecycle_service import (
+    KnowledgeDocumentLifecycleService,
+)
+from apps.shared.db.models.connection import Connection
+from apps.shared.db.models.knowledge import (
+    Document,
+    DocumentVersion,
+    KnowledgeBase,
+    SourceType,
+)
 from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.user import User
 from apps.shared.tests.helpers.disposable_postgres import (
@@ -273,14 +287,39 @@ def test_committed_document_delete_reopens_initial_registration_slot(
         filename="first.txt",
     )
 
-    with postgres_session_factory() as delete_db:
-        deleted = (
-            delete_db.query(Document)
-            .filter(Document.id == first_document_id)
-            .delete(synchronize_session=False)
+    with postgres_session_factory() as version_db:
+        kb = version_db.query(KnowledgeBase).filter_by(id=knowledge_base_id).one()
+        active_version = DocumentVersion(
+            organization_id=organization_id,
+            knowledge_base_id=knowledge_base_id,
+            legacy_document_id=first_document_id,
+            version_number=1,
+            status="ready",
         )
-        assert deleted == 1
-        delete_db.commit()
+        version_db.add(active_version)
+        version_db.flush()
+        active_version_id = active_version.id
+        kb.active_document_version_id = active_version_id
+        version_db.commit()
+
+    with postgres_session_factory() as delete_db:
+        deleted = KnowledgeDocumentLifecycleService(delete_db).delete_document(
+            knowledge_base_id=knowledge_base_id,
+            organization_id=organization_id,
+            document_id=first_document_id,
+        )
+
+    assert deleted.file_path is None
+
+    with postgres_session_factory() as released_db:
+        kb = released_db.query(KnowledgeBase).filter_by(id=knowledge_base_id).one()
+        historical_version = (
+            released_db.query(DocumentVersion).filter_by(id=active_version_id).one()
+        )
+        assert kb.active_document_version_id is None
+        assert historical_version.status == "superseded"
+        assert historical_version.superseded_at is not None
+        assert historical_version.legacy_document_id is None
 
     replacement_document_id = _register_document(
         postgres_session_factory,
@@ -297,3 +336,93 @@ def test_committed_document_delete_reopens_initial_registration_slot(
             .all()
         )
         assert [document.filename for document in documents] == ["replacement.txt"]
+
+
+def test_connection_cleanup_rejects_live_document_reference_then_allows_release(
+    postgres_session_factory,
+):
+    organization_id, knowledge_base_id = _create_empty_knowledge_base(
+        postgres_session_factory
+    )
+    connection_id = uuid.uuid4()
+    with postgres_session_factory() as setup_db:
+        owner_id = (
+            setup_db.query(KnowledgeBase.user_id)
+            .filter(KnowledgeBase.id == knowledge_base_id)
+            .scalar()
+        )
+        setup_db.add(
+            Connection(
+                id=connection_id,
+                user_id=owner_id,
+                name="Integration DB",
+                type="postgres",
+                host="db.invalid",
+                port=5432,
+                database="integration",
+                username="integration",
+                encrypted_password="encrypted-placeholder",
+                use_ssh=False,
+            )
+        )
+        setup_db.commit()
+
+    with postgres_session_factory() as register_db:
+        document_id = KnowledgeDocumentRegistrationService(
+            register_db
+        ).register_initial_document(
+            knowledge_base_id=knowledge_base_id,
+            organization_id=organization_id,
+            filename="Integration DB",
+            file_path=None,
+            chunk_size=500,
+            chunk_overlap=50,
+            source_type=SourceType.DB,
+            meta_info={"connection_id": str(connection_id)},
+        )
+
+    with postgres_session_factory() as blocked_db:
+        with pytest.raises(ConnectionLifecycleHidden):
+            ConnectionLifecycleService(blocked_db).delete_unreferenced_connection(
+                connection_id=connection_id,
+                owner_id=uuid.uuid4(),
+            )
+
+    with postgres_session_factory() as blocked_db:
+        with pytest.raises(ConnectionLifecycleInUse):
+            ConnectionLifecycleService(blocked_db).delete_unreferenced_connection(
+                connection_id=connection_id,
+                owner_id=owner_id,
+            )
+
+    with postgres_session_factory() as nested_reference_db:
+        document = nested_reference_db.query(Document).filter_by(id=document_id).one()
+        document.meta_info = {
+            "db_config": {"connection_id": str(connection_id)}
+        }
+        nested_reference_db.commit()
+
+    with postgres_session_factory() as blocked_db:
+        with pytest.raises(ConnectionLifecycleInUse):
+            ConnectionLifecycleService(blocked_db).delete_unreferenced_connection(
+                connection_id=connection_id,
+                owner_id=owner_id,
+            )
+
+    with postgres_session_factory() as delete_document_db:
+        KnowledgeDocumentLifecycleService(delete_document_db).delete_document(
+            knowledge_base_id=knowledge_base_id,
+            organization_id=organization_id,
+            document_id=document_id,
+        )
+
+    with postgres_session_factory() as cleanup_db:
+        ConnectionLifecycleService(cleanup_db).delete_unreferenced_connection(
+            connection_id=connection_id,
+            owner_id=owner_id,
+        )
+
+    with postgres_session_factory() as verification_db:
+        assert (
+            verification_db.query(Connection).filter_by(id=connection_id).count() == 0
+        )

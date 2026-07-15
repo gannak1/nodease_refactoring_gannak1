@@ -2,8 +2,9 @@ import asyncio
 import logging
 from enum import Enum
 from typing import Any, NoReturn
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 from starlette.requests import ClientDisconnect
@@ -31,6 +32,12 @@ from apps.gateway.middleware.webhook_query_redaction import (
 )
 from apps.gateway.services.organization_context import resolve_active_organization_id
 from apps.gateway.utils.api_errors import error_detail, raise_api_error
+from apps.gateway.services.connection_lifecycle_service import (
+    ConnectionLifecycleHidden,
+    ConnectionLifecycleInUse,
+    ConnectionLifecycleService,
+    ConnectionLifecycleUnavailable,
+)
 from apps.gateway.utils.audit import audit
 from apps.gateway.utils.encryption import encryption_manager
 from apps.shared.audit.actions import AuditAction
@@ -341,6 +348,37 @@ async def create_connection(
         "success": True,
         "message": "연결 정보가 안전하게 저장되었습니다.",
     }
+
+
+@router.delete("/{connection_id}", status_code=status.HTTP_204_NO_CONTENT)
+@audit(AuditAction.CONNECTION_DELETE, target_param="connection_id")
+def delete_connection(
+    connection_id: UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    try:
+        ConnectionLifecycleService(db).delete_unreferenced_connection(
+            connection_id=connection_id,
+            owner_id=current_user.id,
+        )
+    except ConnectionLifecycleHidden:
+        raise HTTPException(
+            status_code=404,
+            detail={"reason_code": "resource.hidden"},
+        )
+    except ConnectionLifecycleInUse:
+        raise HTTPException(
+            status_code=409,
+            detail={"reason_code": "connection.in_use"},
+        )
+    except ConnectionLifecycleUnavailable:
+        raise HTTPException(
+            status_code=503,
+            detail={"reason_code": "connection.delete_unavailable"},
+        )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/{connection_id}", response_model=DBConnectionDetailResponse)

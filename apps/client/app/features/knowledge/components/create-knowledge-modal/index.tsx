@@ -64,6 +64,14 @@ const getReasonCode = (error: unknown): string | undefined => {
   return typeof reasonCode === 'string' ? reasonCode : undefined;
 };
 
+const SAFE_CONNECTOR_COMPENSATION_REASON_CODES = new Set([
+  'knowledge.document_slot_occupied',
+  'knowledge.document_registration_not_allowed',
+  'resource.hidden',
+  'resource.not_found',
+  'permission.denied',
+]);
+
 interface SelectOption {
   value: string;
   label: string;
@@ -476,6 +484,7 @@ export default function CreateKnowledgeModal({
   };
 
   const handleSubmit = async () => {
+    let requestOwnedConnectionId: string | undefined;
     try {
       setIsLoading(true);
 
@@ -544,6 +553,7 @@ export default function CreateKnowledgeModal({
           const connectorRes = await connectorApi.createConnector(dbConfig);
           if (connectorRes.success && connectorRes.id) {
             connectionId = connectorRes.id;
+            requestOwnedConnectionId = connectorRes.id;
           } else {
             toast.error(
               connectorRes.message || 'DB 연결 정보 저장에 실패했습니다.',
@@ -635,7 +645,15 @@ export default function CreateKnowledgeModal({
       );
       router.push(`/dashboard/knowledge/${response.knowledge_base_id}`);
     } catch (error) {
-      if (getReasonCode(error) === 'knowledge.document_slot_occupied') {
+      const reasonCode = getReasonCode(error);
+      if (
+        requestOwnedConnectionId &&
+        reasonCode &&
+        SAFE_CONNECTOR_COMPENSATION_REASON_CODES.has(reasonCode)
+      ) {
+        await connectorApi.deleteConnector(requestOwnedConnectionId);
+      }
+      if (reasonCode === 'knowledge.document_slot_occupied') {
         toast.error(
           '이 지식 베이스에는 이미 소스가 있습니다. 새 지식 베이스를 만든 뒤 Collection에서 묶어주세요.',
         );

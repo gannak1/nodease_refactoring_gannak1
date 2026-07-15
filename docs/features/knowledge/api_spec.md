@@ -332,6 +332,16 @@ ownership, filename/key validation, egress guard, size/content-type cap과 safe 
 commit이 시작되지 않았음이 확실할 때만 보상 삭제한다. Commit 호출 이후 결과가
 불명확하면 이미 커밋된 Document reference를 깨뜨릴 수 있으므로 자동 삭제하지 않는다.
 
+DB source UI가 이번 요청에서 새 Connection을 먼저 생성한 뒤 canonical registration에서
+`document_slot_occupied`, source policy, resource/permission rejection을 받으면 owner-scoped
+`DELETE /api/v1/connectors/{connection_id}`로 보상 정리한다. 이 endpoint는 Connection row를
+잠그고 어떤 Document의 allowlisted top-level 또는 `db_config.connection_id` metadata에도 참조되지 않은 경우에만
+`204`로 삭제하며, 참조 중이면 `409 connection.in_use`, unknown/other-owner resource는
+`404 resource.hidden`, persistence failure는 `503 connection.delete_unavailable`로 닫는다.
+DB source registration은 같은 Connection row lock을 commit까지 유지해 reference 생성과
+보상 삭제의 경합을 직렬화한다. Commit 결과가 불명확한 registration 오류에서는 Client가
+Connection을 자동 삭제하지 않는다.
+
 Direct resource는 active organization으로 먼저 scope를 고정한다. Unknown,
 cross-organization, deleted 또는 invisible resource는 `404 resource.hidden`,
 same-scope visible resource의 action 부족은 `403 permission.denied`다. 목록은

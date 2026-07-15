@@ -18,6 +18,11 @@ from apps.gateway.services.knowledge_document_registration_service import (
     KnowledgeDocumentRegistrationUnavailable,
     KnowledgeDocumentSlotOccupied,
 )
+from apps.gateway.services.knowledge_document_lifecycle_service import (
+    DeletedKnowledgeDocument,
+    KnowledgeDocumentLifecycleHidden,
+    KnowledgeDocumentLifecycleUnavailable,
+)
 from apps.shared.db.models.knowledge import SourceType
 
 
@@ -28,9 +33,7 @@ def upload_http_client(monkeypatch):
     db = SimpleNamespace()
     current_user = SimpleNamespace(id=uuid4())
     test_app.dependency_overrides[rag_endpoint.get_db] = lambda: db
-    test_app.dependency_overrides[rag_endpoint.get_current_user] = (
-        lambda: current_user
-    )
+    test_app.dependency_overrides[rag_endpoint.get_current_user] = lambda: current_user
     monkeypatch.setattr(
         "apps.gateway.utils.audit.record_audit",
         lambda **_kwargs: None,
@@ -90,15 +93,131 @@ def test_backend_cleanup_failure_logs_only_safe_error_type(monkeypatch, caplog):
 
 
 def test_backend_cleanup_is_disabled_when_commit_outcome_is_unknown():
-    assert rag_endpoint._is_backend_upload_cleanup_safe(
-        KnowledgeDocumentRegistrationUnavailable(artifact_cleanup_safe=False)
-    ) is False
-    assert rag_endpoint._is_backend_upload_cleanup_safe(
-        KnowledgeDocumentRegistrationUnavailable(artifact_cleanup_safe=True)
-    ) is True
-    assert rag_endpoint._is_backend_upload_cleanup_safe(
-        KnowledgeDocumentSlotOccupied()
-    ) is True
+    assert (
+        rag_endpoint._is_backend_upload_cleanup_safe(
+            KnowledgeDocumentRegistrationUnavailable(artifact_cleanup_safe=False)
+        )
+        is False
+    )
+    assert (
+        rag_endpoint._is_backend_upload_cleanup_safe(
+            KnowledgeDocumentRegistrationUnavailable(artifact_cleanup_safe=True)
+        )
+        is True
+    )
+
+
+def test_delete_document_releases_slot_before_best_effort_storage_cleanup(
+    upload_http_client,
+    monkeypatch,
+):
+    client, dependency_db, _current_user = upload_http_client
+    organization_id = uuid4()
+    knowledge_base_id = uuid4()
+    document_id = uuid4()
+    calls = []
+    monkeypatch.setattr(
+        rag_endpoint,
+        "_authorize_knowledge_document_action",
+        lambda *_args, **_kwargs: (
+            SimpleNamespace(id=knowledge_base_id),
+            SimpleNamespace(id=document_id),
+        ),
+    )
+
+    class _LifecycleService:
+        def __init__(self, db):
+            assert db is dependency_db
+
+        def delete_document(self, **kwargs):
+            calls.append(("db", kwargs))
+            return DeletedKnowledgeDocument(file_path="opaque-storage-reference")
+
+    class _Storage:
+        def delete(self, reference):
+            calls.append(("storage", reference))
+
+    monkeypatch.setattr(
+        rag_endpoint,
+        "KnowledgeDocumentLifecycleService",
+        _LifecycleService,
+    )
+    monkeypatch.setattr(rag_endpoint, "get_storage_service", lambda: _Storage())
+
+    response = client.delete(
+        f"/api/v1/rag/document/{document_id}",
+        headers={"X-Organization-Id": str(organization_id)},
+    )
+
+    assert response.status_code == 200
+    assert calls == [
+        (
+            "db",
+            {
+                "knowledge_base_id": knowledge_base_id,
+                "organization_id": organization_id,
+                "document_id": document_id,
+            },
+        ),
+        ("storage", "opaque-storage-reference"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("error", "status_code", "reason_code"),
+    [
+        (KnowledgeDocumentLifecycleHidden(), 404, "resource.hidden"),
+        (
+            KnowledgeDocumentLifecycleUnavailable(),
+            503,
+            "knowledge.document_delete_unavailable",
+        ),
+    ],
+)
+def test_delete_document_maps_lifecycle_errors_safely(
+    upload_http_client,
+    monkeypatch,
+    error,
+    status_code,
+    reason_code,
+):
+    client, _dependency_db, _current_user = upload_http_client
+    organization_id = uuid4()
+    knowledge_base_id = uuid4()
+    document_id = uuid4()
+    monkeypatch.setattr(
+        rag_endpoint,
+        "_authorize_knowledge_document_action",
+        lambda *_args, **_kwargs: (
+            SimpleNamespace(id=knowledge_base_id),
+            SimpleNamespace(id=document_id),
+        ),
+    )
+
+    class _LifecycleService:
+        def __init__(self, _db):
+            pass
+
+        def delete_document(self, **_kwargs):
+            raise error
+
+    monkeypatch.setattr(
+        rag_endpoint,
+        "KnowledgeDocumentLifecycleService",
+        _LifecycleService,
+    )
+
+    response = client.delete(
+        f"/api/v1/rag/document/{document_id}",
+        headers={"X-Organization-Id": str(organization_id)},
+    )
+
+    assert response.status_code == status_code
+    assert response.json()["detail"]["error"]["code"] == reason_code
+    assert (
+        rag_endpoint._is_backend_upload_cleanup_safe(KnowledgeDocumentSlotOccupied())
+        is True
+    )
 
 
 def test_generic_presigned_upload_does_not_require_a_knowledge_base(monkeypatch):
@@ -190,6 +309,48 @@ def test_knowledge_presigned_upload_rejects_occupied_slot_before_storage(
 
     assert exc_info.value.status_code == 409
     assert calls == ["authorize", "slot"]
+
+
+def test_prepare_db_source_locks_connection_until_document_registration_commit():
+    connection_id = uuid4()
+    user_id = uuid4()
+    connection = SimpleNamespace(
+        id=connection_id,
+        user_id=user_id,
+        type="postgres",
+        name="Operational DB",
+    )
+
+    class _Query:
+        locked = False
+
+        def filter(self, *_args):
+            return self
+
+        def with_for_update(self):
+            self.locked = True
+            return self
+
+        def first(self):
+            return connection
+
+    query = _Query()
+    db = SimpleNamespace(query=lambda _model: query)
+
+    file_path, filename, meta_info = rag_endpoint._prepare_db_source(
+        db,
+        SimpleNamespace(id=user_id),
+        connection_id,
+    )
+
+    assert query.locked is True
+    assert file_path is None
+    assert filename == "Operational DB"
+    assert meta_info == {
+        "connection_id": str(connection_id),
+        "db_type": "postgres",
+        "connection_name": "Operational DB",
+    }
 
 
 @pytest.mark.parametrize("source_type", list(SourceType))
@@ -514,9 +675,7 @@ def test_backend_upload_cleanup_follows_registration_outcome(
     )
 
     assert response.status_code == expected_status
-    assert cleanup_paths == (
-        ["request-owned/upload.pdf"] if cleanup_expected else []
-    )
+    assert cleanup_paths == (["request-owned/upload.pdf"] if cleanup_expected else [])
     assert "request-owned/upload.pdf" not in response.text
 
 

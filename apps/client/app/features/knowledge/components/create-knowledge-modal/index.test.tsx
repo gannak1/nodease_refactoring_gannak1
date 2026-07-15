@@ -17,6 +17,7 @@ const knowledgeApiMock = vi.hoisted(() => ({
 }));
 const connectorApiMock = vi.hoisted(() => ({
   createConnector: vi.fn(),
+  deleteConnector: vi.fn(),
   testConnection: vi.fn(),
 }));
 
@@ -37,6 +38,28 @@ vi.mock('@/app/features/knowledge/api/knowledgeApi', () => ({
 
 vi.mock('@/app/features/knowledge/api/connectorApi', () => ({
   connectorApi: connectorApiMock,
+}));
+
+vi.mock('./DBConnectionForm', () => ({
+  default: ({ onChange }: { onChange: (config: object) => void }) => (
+    <button
+      type="button"
+      onClick={() =>
+        onChange({
+          connectionName: 'Test DB',
+          type: 'postgres',
+          host: 'db.internal',
+          port: 5432,
+          database: 'test',
+          username: 'test-user',
+          password: 'placeholder-password',
+          ssh: { enabled: false },
+        })
+      }
+    >
+      DB 설정 입력
+    </button>
+  ),
 }));
 
 const fetchMock = vi.fn();
@@ -67,6 +90,12 @@ beforeEach(() => {
     status: 'pending',
     message: 'ok',
   });
+  connectorApiMock.createConnector.mockResolvedValue({
+    id: 'connection-1',
+    success: true,
+    message: 'ok',
+  });
+  connectorApiMock.deleteConnector.mockResolvedValue({ success: true });
   fetchMock.mockResolvedValue({
     ok: true,
     json: async () => [],
@@ -302,5 +331,67 @@ describe('CreateKnowledgeModal file drag and drop', () => {
     });
     expect(alertSpy).not.toHaveBeenCalled();
     expect(consoleErrorSpy).not.toHaveBeenCalled();
+  });
+
+  it('removes a newly created DB connector when canonical registration loses the slot race', async () => {
+    knowledgeApiMock.uploadKnowledgeBase.mockRejectedValueOnce({
+      response: {
+        status: 409,
+        data: {
+          detail: {
+            error: { code: 'knowledge.document_slot_occupied' },
+          },
+        },
+      },
+    });
+    render(
+      <CreateKnowledgeModal
+        isOpen
+        onClose={vi.fn()}
+        knowledgeBaseId="kb-1"
+        initialTab="DB"
+      />,
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: 'DB 설정 입력' }));
+    fireEvent.click(screen.getByRole('button', { name: '소스 추가' }));
+
+    await waitFor(() => {
+      expect(connectorApiMock.createConnector).toHaveBeenCalledTimes(1);
+      expect(connectorApiMock.deleteConnector).toHaveBeenCalledWith(
+        'connection-1',
+      );
+    });
+  });
+
+  it('keeps the DB connector when the document commit outcome is ambiguous', async () => {
+    knowledgeApiMock.uploadKnowledgeBase.mockRejectedValueOnce({
+      response: {
+        status: 503,
+        data: {
+          detail: {
+            error: {
+              code: 'knowledge.document_registration_unavailable',
+            },
+          },
+        },
+      },
+    });
+    render(
+      <CreateKnowledgeModal
+        isOpen
+        onClose={vi.fn()}
+        knowledgeBaseId="kb-1"
+        initialTab="DB"
+      />,
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: 'DB 설정 입력' }));
+    fireEvent.click(screen.getByRole('button', { name: '소스 추가' }));
+
+    await waitFor(() => {
+      expect(knowledgeApiMock.uploadKnowledgeBase).toHaveBeenCalledTimes(1);
+    });
+    expect(connectorApiMock.deleteConnector).not.toHaveBeenCalled();
   });
 });
