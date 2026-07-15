@@ -2,9 +2,7 @@ from pathlib import Path
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-
 from apps.shared.db.models.agent_builder import AgentBuilderSession
-
 
 ROOT = Path(__file__).resolve().parents[4]
 
@@ -24,13 +22,17 @@ def test_protocol_version_model_column_is_nullable():
     assert column.type.length == 32
 
 
-def test_protocol_and_security_repair_migrations_share_one_head():
+def test_protocol_and_security_repair_migrations_remain_in_single_head_ancestry():
     scripts = _script_directory()
     heads = scripts.get_heads()
 
-    assert heads == ["a30e1f2a43b"]
-    head = scripts.get_revision("a30e1f2a43b")
-    assert set(head.down_revision) == {"a29d0e1f2a43", "b8e5f4a3c2d2"}
+    assert len(heads) == 1
+    ancestry = {
+        revision.revision for revision in scripts.iterate_revisions(heads[0], "base")
+    }
+    assert "a30e1f2a43b" in ancestry
+    repair_merge = scripts.get_revision("a30e1f2a43b")
+    assert set(repair_merge.down_revision) == {"a29d0e1f2a43", "b8e5f4a3c2d2"}
     agent_builder_merge = scripts.get_revision("a29d0e1f2a43")
     assert set(agent_builder_merge.down_revision) == {
         "a28d9e0f1a32",

@@ -1359,6 +1359,7 @@ def test_create_preserves_mail_credential_permission_denial(monkeypatch):
                 is_active=True,
             ),
             user_id=actor_id,
+            observed_workflow_id=workflow_id,
             runtime_policy=DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
         )
 
@@ -1719,7 +1720,10 @@ def test_active_redeployment_inherits_model_routing_state(monkeypatch):
                     _node(
                         "llm-triage",
                         "llmNode",
-                        {"auto_model_routing": True},
+                        {
+                            "auto_model_routing": True,
+                            "model_id": "test-model",
+                        },
                     ),
                 ],
                 "edges": [_edge("trigger", "llm-triage", "trigger-llm")],

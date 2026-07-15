@@ -3,7 +3,6 @@ import math
 from collections import defaultdict
 from typing import Any
 
-
 DEFAULT_NODE_WIDTH = 420.0
 DEFAULT_NODE_HEIGHT = 200.0
 RANK_GAP = 160.0

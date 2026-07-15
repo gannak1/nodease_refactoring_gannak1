@@ -8,8 +8,8 @@ from apps.shared.services.workflow_node_catalog import (
     load_workflow_node_catalog,
     node_parameter_definitions,
     validate_node_parameter_value,
-    validate_workflow_node_catalog,
     validate_workflow_graph_connections,
+    validate_workflow_node_catalog,
 )
 
 EXPECTED_IMPLEMENTED_NODE_TYPES = {

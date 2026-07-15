@@ -4,10 +4,8 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
-
 from apps.shared.schemas.workflow import EdgeSchema, NodeSchema, Position
-
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 AgentBuilderRequestStatus = Literal[
     "planning",

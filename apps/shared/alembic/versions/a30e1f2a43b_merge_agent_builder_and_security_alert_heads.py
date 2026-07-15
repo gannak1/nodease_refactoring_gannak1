@@ -10,7 +10,6 @@ revision restores one Alembic head without changing the schema.
 
 from typing import Sequence, Union
 
-
 revision: str = "a30e1f2a43b"
 down_revision: Union[str, Sequence[str], None] = (
     "a29d0e1f2a43",

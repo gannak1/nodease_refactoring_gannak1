@@ -1051,7 +1051,7 @@ describe('AgentBuilderPanel', () => {
       'workflow-result-group',
     );
     expect(
-      within(afterGraphSetup).getByText('Graph 생성 후 Knowledge'),
+      await within(afterGraphSetup).findByText('Graph 생성 후 Knowledge'),
     ).toBeInTheDocument();
     expect(
       screen.getAllByRole('checkbox', { name: '휴가 정책' }),
@@ -1186,7 +1186,7 @@ describe('AgentBuilderPanel', () => {
       'workflow-result-group',
     );
     expect(
-      within(beforeGraphSetup).getByText('Graph 생성 전 Knowledge'),
+      await within(beforeGraphSetup).findByText('Graph 생성 전 Knowledge'),
     ).toBeInTheDocument();
     expect(
       screen.getAllByRole('checkbox', { name: '사내 문서' }),
@@ -1214,7 +1214,9 @@ describe('AgentBuilderPanel', () => {
       );
       expect(agentBuilderApi.sendMessage).toHaveBeenCalledTimes(1);
     });
-    expect(screen.queryByRole('checkbox', { name: '사내 문서' })).toBeNull();
+    await waitFor(() => {
+      expect(screen.queryByRole('checkbox', { name: '사내 문서' })).toBeNull();
+    });
   });
 
   it('사용 가능한 intent model이 없으면 hidden fallback 없이 요청을 차단한다', async () => {

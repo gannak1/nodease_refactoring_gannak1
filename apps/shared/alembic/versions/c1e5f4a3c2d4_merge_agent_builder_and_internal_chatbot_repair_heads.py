@@ -9,7 +9,6 @@ their schema history intact while restoring a single Alembic head.
 
 from typing import Sequence, Union
 
-
 revision: str = "c1e5f4a3c2d4"
 down_revision: Union[str, Sequence[str], None] = (
     "a30e1f2a43b",

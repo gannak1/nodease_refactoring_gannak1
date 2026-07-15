@@ -6,16 +6,9 @@ OpenAIClient 단위 테스트.
 """
 
 from copy import deepcopy
-import pathlib
-import sys
 
 import httpx
 import pytest
-
-# pytest 실행 시 모듈 검색 경로에 프로젝트 루트를 추가
-ROOT = pathlib.Path(__file__).resolve().parents[4]
-if str(ROOT) not in sys.path:
-    sys.path.append(str(ROOT))
 
 from apps.shared.services.llm_client import OpenAIClient
 from apps.shared.services.llm_client.base import BaseLLMClient

@@ -1,13 +1,12 @@
 from uuid import uuid4
 
 import pytest
-from pydantic import ValidationError
-
 from apps.shared.schemas.agent_builder import (
     AgentBuilderParameterCandidate,
     AgentBuilderParameterTask,
     AgentBuilderParameterTaskDecisionRequest,
 )
+from pydantic import ValidationError
 
 
 def test_parameter_task_decision_accepts_confirm_without_value():
