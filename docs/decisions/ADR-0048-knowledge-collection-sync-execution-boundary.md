@@ -60,19 +60,24 @@ Option 3과 option 5를 채택한다.
 
 ### Supported target
 
-- Active Manual Collection의 active, non-source-managed child KB에 연결된 `SourceType.DB`
-  document만 초기 sync target이다.
+- Active Manual Collection의 active, non-source-managed child KB 중 legacy `documents` row가
+  정확히 하나이고 그 row가 `SourceType.DB`인 document-level KB만 초기 sync target이다. DB
+  document를 포함한 KB에 다른 DB/FILE/API document가 함께 있으면 KB-level active version
+  pointer가 sibling content를 숨길 수 있으므로 fail-closed한다. 별도 FILE-only KB는 외부 sync
+  target이 아니다.
 - Target order는 Collection item rank, item created time, KB UUID, document UUID다.
-- 각 job item은 Collection/membership/KB/document UUID, item rank/created time과 document updated time에서
-  계산한 per-target revision을 저장한다. Job-level revision은 정렬된 per-target revision의
-  aggregate다. Worker는 shared document advisory lock과 target row lock을 획득한 뒤 source I/O
-  전에 현재 revision과 비교하고 불일치는 `sync.targets_changed`로 종료한다.
+- 각 job item은 Collection/membership/KB/document UUID, item rank/created time과 document updated
+  time에서 계산한 per-target revision을 저장한다. Job-level revision은 document updated time을
+  제외한 ordered membership topology revision의 aggregate다. Worker는 Collection lock 아래 claim과
+  finalize에서 canonical target set을 다시 계산하고, shared document advisory lock과 target row lock을
+  획득한 뒤 source I/O 전에는 per-target revision을 비교한다. Membership add/remove/reorder 또는
+  child source composition 변경은 `sync.targets_changed`로 종료한다.
 - Job item의 target UUID는 요청 시점 내부 snapshot reference이며 live KB/document에 cascading
   FK로 연결하지 않는다. 대신 `(job_id, organization_id, collection_id)` composite FK로 owning
   job과의 tenant/scope 일치만 강제한다. 요청 뒤 unlink나 live KB/document hard delete가 발생해도
   item은 retention 동안 남아 changed target으로 집계되어야 한다.
-- System/source-managed Collection, source-managed child, API connector sync는 승인된 adapter가
-  없는 동안 fail-closed 한다. FILE은 외부 sync 대상이 아니다.
+- System/source-managed Collection, source-managed child, API connector sync와 DB target을 포함한
+  multi-document KB는 승인된 adapter/document-atom cutover가 없는 동안 fail-closed 한다.
 - Target cap은 100, 한 delivery의 batch는 5, document concurrency는 1이다.
 - Legacy `connections`에는 organization column이 없으므로 stored DB connection의 owner가 현재
   organization의 active member인지 worker가 검증한다. 불일치·inactive owner·지원하지 않는 DB
@@ -105,6 +110,8 @@ Option 3과 option 5를 채택한다.
 - Unexpired running duplicate와 terminal redelivery는 no-op한다. Stale lease는 recovery가
   bounded retry하거나 deadline/max recovery 뒤 failed 처리한다.
 - Target apply와 item success/progress는 가능한 한 같은 DB commit에 포함한다.
+- Item `attempt_count`는 `running` 표시에 두 번 걸치지 않고 succeeded/failed/skipped outcome을
+  영속하는 transaction에서 실제 실행당 한 번만 증가한다.
 - KC sync와 기존 ingestion이 같은 document를 갱신하는 경로는 shared PostgreSQL transaction
   advisory lock으로 document 단위 직렬화한다. Lock key는 document UUID의 namespaced digest에서
   만들고 transaction commit/rollback과 함께 자동 해제한다. 모든 writer는 source fetch, parsing,
@@ -155,7 +162,8 @@ sync는 MCP/API connector, source revision, ACL/public exposure와 content safet
 - Celery Beat는 due/stale job recovery와 terminal retention cleanup task를 실행한다.
 - Client는 polling 기반 safe status panel을 제공한다.
 - Collection management projection은 권한인 `can_sync`와 현재 adapter 지원 여부인
-  `sync_supported`를 분리해 UI가 unsupported source를 실행 가능하다고 표시하지 않게 한다.
+  `sync_supported`를 분리하고 sync POST와 같은 canonical child eligibility scan을 사용해 UI가
+  unsupported source를 실행 가능하다고 표시하지 않게 한다.
 - Sync Operator는 child content를 읽지 않고 운영 refresh를 요청할 수 있지만 raw child 결과를
   볼 수 없다.
 - System/source-managed KC sync는 connector 구현 전까지 정책 오류로 남는다.

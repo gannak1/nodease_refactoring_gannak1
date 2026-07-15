@@ -3,7 +3,7 @@
 Status: Draft
 Verified Against: `feature/mba-265 @ ccac971f`
 MBA-105 구현 baseline, 운영 기본값, permission helper output, active version finalization, resource hiding matrix는 [implementation_baseline.md](implementation_baseline.md)를 따른다. Workflow RAG에서 `execution_subject`가 없는 MVP public-only runtime은 [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md)을 따른다. MCP/API source connector와 incremental sync 경계는 [ADR-0020](../../decisions/ADR-0020-knowledge-mcp-incremental-sync-boundary.md)을 따른다. Direct KB와 명시 selected Collection의 Workflow runtime candidate 해석은 [ADR-0036](../../decisions/ADR-0036-knowledge-runtime-candidate-resolution.md)을 따른다. KC lifecycle, item 순서와 권한 운영 경계는 [ADR-0044](../../decisions/ADR-0044-knowledge-collection-operational-management-boundary.md)을 따른다.
-KC sync의 Gateway application, durable repository, Workflow executor와 Client polling 경계는 [ADR-0047](../../decisions/ADR-0047-knowledge-collection-sync-execution-boundary.md)을 따른다.
+KC sync의 Gateway application, durable repository, Workflow executor와 Client polling 경계는 [ADR-0048](../../decisions/ADR-0048-knowledge-collection-sync-execution-boundary.md)을 따른다.
 
 ## Domain Components
 
@@ -34,8 +34,9 @@ KC sync의 Gateway application, durable repository, Workflow executor와 Client 
 | Knowledge Collection Administration Application | Restore와 exact reorder의 authorization·lock·audit·transaction 순서를 port 경계로 조율한다 | Endpoint나 Client가 lifecycle, order revision 또는 persistence policy를 판단하지 않는다 |
 | Collection Management PostgreSQL Adapter | Lifecycle/order용 organization-scoped row projection, Collection-first `FOR UPDATE`와 membership lock을 제공한다 | Raw principal을 projection하지 않고 repository port 밖으로 ORM entity를 전달하지 않는다 |
 | Collection Management Audit Adapter | 변경된 Collection마다 allowlisted canonical data-change audit를 같은 transaction에 추가한다 | Raw subject/Collection label, request payload, hidden target list와 exact count를 저장하지 않는다 |
+| Knowledge Collection Sync Target Scanner | Gateway management projection, sync request와 Workflow worker가 같은 child-source eligibility와 ordered membership snapshot을 계산한다 | DB document를 가진 legacy multi-document KB, API/source-managed child를 fail-closed하고 organization predicate를 모든 query에 적용한다 |
 | Knowledge Collection Sync Request Application | Current actor 권한, Collection/source eligibility, idempotency와 single-flight를 검증하고 job/target snapshot/audit를 원자 저장한다 | Gateway application/port/adapter 경계다. Commit 뒤 job UUID만 Celery에 발행하고 source config를 task payload로 만들지 않는다 |
-| Knowledge Collection Sync Worker Application | Job lease, fresh worker-start authorization, deterministic DB target batch, retry/partial/terminal 집계와 recovery를 조율한다 | Workflow Engine application/port/adapter 경계다. Celery redelivery가 아니라 PostgreSQL job/item 상태가 execution source of truth다 |
+| Knowledge Collection Sync Worker Application | Job lease, fresh worker-start authorization, claim/finalize target-set 재검증, deterministic DB target batch, retry/partial/terminal 집계와 recovery를 조율한다 | Workflow Engine application/port/adapter 경계다. Celery redelivery가 아니라 PostgreSQL job/item 상태가 execution source of truth이며 item attempt는 outcome commit에서 한 번만 증가한다 |
 | Knowledge Collection Sync Document Adapter | Shared document advisory lock 뒤 per-target revision을 재검사하고 DB source를 읽어 version-scoped chunk와 active version swap을 같은 UoW에 둔다 | Live target 변경, empty/failure 또는 stale writer가 이전 active ready version을 삭제하거나 `source_deleted` state를 되살리지 못한다 |
 | Knowledge Collection Sync Status Projector | Internal job/item 상태를 safe status/progress/reason/timestamp로 축소한다 | Exact child count와 KB/document/source identity, raw exception/config를 default-deny한다 |
 | Knowledge Document Response Projector | 내부 `documents.meta_info`에서 safe operational field만 allowlist projection한다 | Encrypted config, connection/source identifier, DB/source config와 unknown nested field를 API response로 전달하지 않는다 |
@@ -165,7 +166,7 @@ Knowledge Collection 관리 UI는 Workflow Builder가 아니라 Knowledge 관리
 - Collection role preset은 Viewer, Workflow Router, Maintainer, Sync Operator를 제공하되 저장 시 explicit action row를 transactionally 적용하고 KB `use`가 포함되지 않음을 표시한다. Bundle 회수도 같은 action 집합의 현재 row를 한 번에 제거하며 저장된 role이나 inheritance처럼 표현하지 않는다.
 - Bulk permission 관리: 같은 subject와 bundle을 선택한 1~50개 Collection에 grant/revoke를 한 요청으로 적용한다. UI는 all-or-nothing임을 설명하고 partial success를 만들거나 표시하지 않으며 성공/실패에서 hidden target identity를 노출하지 않는다.
 - Permission row는 Team과 User direct source를 분리해 표시한다. User direct row 회수 뒤 Team grant가 남을 수 있음을 안내하고 action 조합을 role provenance로 재구성하지 않는다.
-- Collection sync panel: active Manual Collection에서 `collection.can_sync` 또는 domain `can_manage_sync`가 있을 때만 요청 버튼을 제공한다. 한 click의 UUID idempotency key를 요청 확정까지 재사용하고 queued/running job에서는 중복 click을 막는다. Detail 진입 시 latest job을 조회하고 queued/running 동안 3초 polling하며 terminal, unmount, Collection 변경 시 polling을 중단한다.
+- Collection sync panel: active Manual Collection에서 `collection.can_sync` 또는 domain `can_manage_sync`가 있고 canonical child eligibility scan의 `sync_supported=true`일 때만 요청 버튼을 제공한다. 한 click의 UUID idempotency key를 요청 확정까지 재사용하고 queued/running job에서는 중복 click을 막는다. Detail 진입 시 latest job을 조회하고 queued/running 동안 3초 polling하며 terminal, unmount, Collection 변경 시 polling을 중단한다.
 - Sync 상태는 `queued/running/succeeded/partially_failed/failed/cancelled` text label과 `none/started/progressing/most/complete` 범주형 progress를 표시한다. Safe reason은 Client 고정 문구로 매핑하고 raw server detail을 그대로 렌더하지 않는다.
 
 금지 surface:
@@ -290,7 +291,7 @@ Purge는 일반 KB lifecycle state가 아니다. Retention/legal-hold purge, raw
 
 - Raw source id/url/title/path, raw source ACL, raw content, prompt/completion, provider raw response, credential value, secret은 audit/trace/log에서 제외한다. Raw/compliance access log는 safe reference와 decision만 저장한다.
 - Internal document metadata는 encrypted value도 credential-bearing configuration으로 취급한다. KB/document read response는 allowlist projector를 통과하고 unknown field는 default deny하며, API config와 connection/source identifier는 response, error, audit, trace, log로 복사하지 않는다.
-- KC sync panel은 `can_sync || can_manage_sync` authority가 있고 `sync_supported=true`인 active Collection에서만 실행을 활성화한다. `can_sync`는 권한, `sync_supported`는 현재 adapter 능력이므로 어느 하나도 다른 하나를 대신하지 않는다. Panel은 latest/specific job을 3초 bounded polling하고 status, 범주형 progress, fixed safe reason만 표시하며 exact child count/identity나 source/connection/config 오류를 DOM에 만들지 않는다. Request가 진행 중이거나 job이 queued/running이면 ref 기반 double-submit gate와 disabled 상태를 함께 적용한다.
+- KC sync panel은 `can_sync || can_manage_sync` authority가 있고 `sync_supported=true`인 active Collection에서만 실행을 활성화한다. `can_sync`는 권한, `sync_supported`는 POST와 동일한 canonical child eligibility 결과이므로 어느 하나도 다른 하나를 대신하지 않는다. Panel은 latest/specific job을 3초 bounded polling하고 status, 범주형 progress, fixed safe reason만 표시하며 exact child count/identity나 source/connection/config 오류를 DOM에 만들지 않는다. Request가 진행 중이거나 job이 queued/running이면 ref 기반 double-submit gate와 disabled 상태를 함께 적용한다.
 - Domain revoke는 inactive subject 복원을 요구하지 않는다. Existing permission row를 organization scope 안에서 lock/delete하고 audit와 원자 commit해 stale delegated capability를 제거한다.
 - Domain revoke repository는 organization/subject/action predicate와 `FOR UPDATE`를 하나의 SQL statement로 유지한다. Compile contract와 opt-in disposable PostgreSQL test가 cross-org isolation, audit rollback, concurrent exactly-one delete/audit를 검증한다.
 - Collection membership 관리 capability는 KB label read capability가 아니다. Safe label이 없으면 독립 KB `read`를 통과한 caller만 manual KB `name`을 볼 수 있다.

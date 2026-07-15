@@ -3,7 +3,7 @@
 Status: Draft
 Verified Against: `feature/mba-265 @ ccac971f`
 이 문서는 Knowledge feature의 현재 API baseline과 목표 KB 통합 API 계약을 함께 기록한다. MBA-105 목표 API는 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)의 임시 구현 baseline, Workflow RAG anonymous public-only runtime은 [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md), MCP/API source connector와 incremental sync 경계는 [ADR-0020](../../decisions/ADR-0020-knowledge-mcp-incremental-sync-boundary.md), MBA-231 위임 관리와 KB RBAC cutover는 [ADR-0034](../../decisions/ADR-0034-knowledge-delegated-administration-and-rbac-boundary.md), direct KB와 명시 selected Collection의 internal runtime resolver는 [ADR-0036](../../decisions/ADR-0036-knowledge-runtime-candidate-resolution.md), KC 운영 관리 계약은 [ADR-0044](../../decisions/ADR-0044-knowledge-collection-operational-management-boundary.md), 세부 구현 기준은 [implementation_baseline.md](implementation_baseline.md)를 따른다. Knowledge Skill 관련 API 경계는 [ADR-0015](../../decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)를 따른다.
-KC sync 요청·상태 조회와 durable execution 계약은 [ADR-0047](../../decisions/ADR-0047-knowledge-collection-sync-execution-boundary.md)을 따른다.
+KC sync 요청·상태 조회와 durable execution 계약은 [ADR-0048](../../decisions/ADR-0048-knowledge-collection-sync-execution-boundary.md)을 따른다.
 
 ## Current Baseline Endpoints
 
@@ -502,13 +502,16 @@ Reorder request는 empty Collection을 포함한 현재 전체 item을 `{item_id
 ### Collection Sync Jobs (MBA-265)
 
 MBA-265는 KC `sync` action과 domain `sync_manage`를 durable asynchronous job에 연결한다.
-초기 실행 대상은 active Manual Collection에 연결된 active/non-source-managed DB document이며,
-신규 connector protocol이나 source-managed sync를 포함하지 않는다.
+초기 실행 대상은 active Manual Collection에 연결된 active/non-source-managed KB 중 legacy
+`documents` row가 정확히 한 개이고 그 문서가 DB type인 document-level KB다. DB 문서와 FILE
+또는 다른 DB 문서가 한 KB에 함께 있는 legacy multi-document KB, API child, source-managed
+child는 실행하지 않는다. 신규 connector protocol이나 source-managed sync를 포함하지 않는다.
 
 Collection management response의 `can_sync`는 caller 권한이고 `sync_supported`는 현재 adapter가
-해당 Collection 유형을 실행할 수 있는지 나타내는 safe boolean이다. UI는 두 값이 모두 참일
-때만 실행 버튼을 활성화한다. 이 boolean은 source/connection identity나 unsupported target
-count를 공개하지 않는다.
+해당 Collection의 현재 child source 구성을 실행할 수 있는지 나타내는 safe boolean이다.
+Projection과 POST는 같은 canonical eligibility scan을 사용하고 UI는 두 값이 모두 참일 때만
+실행 버튼을 활성화한다. 이 boolean은 source/connection identity나 unsupported target count를
+공개하지 않는다.
 
 | Method | Path | 목적 | 권한 |
 | --- | --- | --- | --- |
