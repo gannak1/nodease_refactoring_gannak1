@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="920" viewBox="0 0 1500 920">
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="12" stdDeviation="20" flood-color="#0f172a" flood-opacity="0.14"/>
+    </filter>
+    <style>
+      .bg{fill:#f6f8fb}.panel{fill:#fff;stroke:#d9e2ee;stroke-width:1}.muted{fill:#7b8aa1;font:500 16px Inter,Pretendard,Arial,sans-serif}.tiny{fill:#64748b;font:600 13px Inter,Pretendard,Arial,sans-serif}.text{fill:#1f2937;font:700 18px Inter,Pretendard,Arial,sans-serif}.title{fill:#111827;font:900 30px Inter,Pretendard,Arial,sans-serif}.h2{fill:#111827;font:900 24px Inter,Pretendard,Arial,sans-serif}.green{fill:#059669}.blue{fill:#2563eb}.purple{fill:#7c3aed}.orange{fill:#ea580c}.chip{fill:#f5f3ff;stroke:#c4b5fd}.chipText{fill:#7c3aed;font:800 15px Inter,Pretendard,Arial,sans-serif}.greenChip{fill:#ecfdf5;stroke:#a7f3d0}.greenText{fill:#059669;font:800 15px Inter,Pretendard,Arial,sans-serif}.button{fill:#2563eb}.buttonText{fill:#fff;font:900 18px Inter,Pretendard,Arial,sans-serif}.ghost{fill:#fff;stroke:#cbd5e1}.ghostText{fill:#334155;font:800 16px Inter,Pretendard,Arial,sans-serif}.line{stroke:#e5edf6;stroke-width:1}.barBg{fill:#e5edf6}.barNow{fill:#f59e0b}.barNext{fill:#10b981}
+    </style>
+  </defs>
+  <rect class="bg" width="1500" height="920"/>
+
+  <g transform="translate(64 54)">
+    <rect class="panel" width="1372" height="260" rx="14"/>
+    <text x="28" y="48" class="title">운영 현황</text>
+    <text x="1240" y="48" class="muted">현재 로드 6개</text>
+    <rect x="28" y="78" width="820" height="50" rx="8" fill="#fff" stroke="#d9e2ee"/>
+    <text x="62" y="110" class="muted">모듈명, 설명 검색</text>
+    <rect x="880" y="78" width="152" height="50" rx="8" fill="#fff" stroke="#d9e2ee"/>
+    <text x="920" y="110" class="text" font-size="16">전체 권한</text>
+    <rect x="1058" y="78" width="152" height="50" rx="8" fill="#fff" stroke="#d9e2ee"/>
+    <text x="1098" y="110" class="text" font-size="16">전체 배포</text>
+    <rect x="1236" y="78" width="108" height="50" rx="8" fill="#fff" stroke="#d9e2ee"/>
+    <text x="1266" y="110" class="text" font-size="16">전체</text>
+    <line x1="0" y1="146" x2="1372" y2="146" class="line"/>
+    <text x="28" y="178" class="tiny">워크플로우</text>
+    <text x="360" y="178" class="tiny">월 예상 비용</text>
+    <text x="520" y="178" class="tiny">예산 사용률</text>
+    <text x="716" y="178" class="tiny">최적화</text>
+    <text x="934" y="178" class="tiny">상태</text>
+    <g transform="translate(0 194)">
+      <rect x="0" y="0" width="1372" height="66" fill="#fbfdff"/>
+      <rect x="28" y="11" width="44" height="44" rx="10" fill="#e8f2ff"/>
+      <text x="88" y="30" class="text">자동 PR 리뷰 워크플로우</text>
+      <text x="88" y="54" class="muted" font-size="14">최근 14일 184회 실행 · LLM 노드 2개</text>
+      <text x="360" y="39" class="text">$896 / 월</text>
+      <text x="520" y="35" fill="#dc2626" font-family="Inter,Pretendard,Arial,sans-serif" font-size="22" font-weight="900">91%</text>
+      <rect x="570" y="28" width="126" height="8" rx="4" fill="#f59e0b"/>
+      <rect x="716" y="16" width="116" height="34" rx="8" class="chip"/>
+      <text x="738" y="38" class="chipText">최적화 권장</text>
+      <rect x="934" y="16" width="72" height="34" rx="8" class="greenChip"/>
+      <text x="954" y="38" class="greenText">배포 중</text>
+      <rect x="1178" y="12" width="142" height="42" rx="10" class="button"/>
+      <text x="1212" y="39" class="buttonText">최적화</text>
+    </g>
+  </g>
+
+  <g transform="translate(250 354)">
+    <rect width="1000" height="500" rx="22" class="panel" filter="url(#shadow)"/>
+    <text x="42" y="58" class="title">LLM 비용 최적화 추천</text>
+    <text x="42" y="92" class="muted">자동 PR 리뷰 워크플로우 · 실제 실행 로그 기반</text>
+    <rect x="720" y="34" width="228" height="46" rx="23" fill="#ecfdf5" stroke="#a7f3d0"/>
+    <text x="758" y="64" fill="#047857" font-family="Inter,Pretendard,Arial,sans-serif" font-size="18" font-weight="900">예상 절감 62%</text>
+    <line x1="0" y1="118" x2="1000" y2="118" class="line"/>
+
+    <g transform="translate(42 150)">
+      <rect width="280" height="130" rx="16" fill="#fff7ed" stroke="#fed7aa"/>
+      <text x="24" y="38" class="muted">현재 월 예상 비용</text>
+      <text x="24" y="82" fill="#c2410c" font-family="Inter,Pretendard,Arial,sans-serif" font-size="34" font-weight="900">$896</text>
+      <rect x="24" y="100" width="220" height="10" rx="5" class="barBg"/>
+      <rect x="24" y="100" width="200" height="10" rx="5" class="barNow"/>
+    </g>
+
+    <g transform="translate(360 150)">
+      <rect width="280" height="130" rx="16" fill="#ecfdf5" stroke="#a7f3d0"/>
+      <text x="24" y="38" class="muted">최적화 후 예상 비용</text>
+      <text x="24" y="82" fill="#047857" font-family="Inter,Pretendard,Arial,sans-serif" font-size="34" font-weight="900">$341</text>
+      <rect x="24" y="100" width="220" height="10" rx="5" class="barBg"/>
+      <rect x="24" y="100" width="76" height="10" rx="5" class="barNext"/>
+    </g>
+
+    <g transform="translate(678 150)">
+      <rect width="280" height="130" rx="16" fill="#eff6ff" stroke="#bfdbfe"/>
+      <text x="24" y="38" class="muted">월 예상 절감액</text>
+      <text x="24" y="82" fill="#1d4ed8" font-family="Inter,Pretendard,Arial,sans-serif" font-size="34" font-weight="900">$555</text>
+      <text x="24" y="110" fill="#2563eb" font-family="Inter,Pretendard,Arial,sans-serif" font-size="16" font-weight="800">응답 시간 18% 개선 예상</text>
+    </g>
+
+    <g transform="translate(42 314)">
+      <text x="0" y="0" class="h2">적용 방식</text>
+      <rect x="0" y="24" width="916" height="74" rx="14" fill="#f8fafc" stroke="#d9e2ee"/>
+      <circle cx="34" cy="61" r="10" fill="#2563eb"/>
+      <circle cx="34" cy="61" r="4" fill="#fff"/>
+      <text x="58" y="53" class="text">조건부 모델 라우팅을 자동 적용</text>
+      <text x="58" y="80" class="muted">문서·단순 UI PR은 저비용 모델, 권한·보안·DB 변경은 기존 고성능 모델 유지</text>
+      <rect x="716" y="39" width="168" height="42" rx="10" fill="#f5f3ff" stroke="#c4b5fd"/>
+      <text x="754" y="66" class="chipText">품질 보호</text>
+    </g>
+
+    <g transform="translate(42 438)">
+      <rect width="186" height="48" rx="10" class="ghost"/>
+      <text x="42" y="31" class="ghostText">상세 근거 보기</text>
+      <rect x="706" width="252" height="48" rx="10" class="button"/>
+      <text x="760" y="31" class="buttonText">최적화 적용</text>
+    </g>
+  </g>
+</svg>

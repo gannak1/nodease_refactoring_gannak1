@@ -1,0 +1,129 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="980" viewBox="0 0 1600 980">
+  <defs>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="18" flood-color="#0f172a" flood-opacity="0.12"/>
+    </filter>
+    <style>
+      .bg { fill:#f6f8fb; }
+      .panel { fill:#ffffff; stroke:#d9e2ee; stroke-width:1; }
+      .muted { fill:#8291a8; font:500 18px Inter, Pretendard, Arial, sans-serif; }
+      .text { fill:#1f2937; font:600 20px Inter, Pretendard, Arial, sans-serif; }
+      .title { fill:#111827; font:800 28px Inter, Pretendard, Arial, sans-serif; }
+      .small { fill:#64748b; font:500 15px Inter, Pretendard, Arial, sans-serif; }
+      .tiny { fill:#64748b; font:500 13px Inter, Pretendard, Arial, sans-serif; }
+      .chip { fill:#f5f3ff; stroke:#c4b5fd; }
+      .chipText { fill:#7c3aed; font:700 15px Inter, Pretendard, Arial, sans-serif; }
+      .greenChip { fill:#ecfdf5; stroke:#a7f3d0; }
+      .greenText { fill:#059669; font:700 15px Inter, Pretendard, Arial, sans-serif; }
+      .warnChip { fill:#fff7ed; stroke:#fed7aa; }
+      .warnText { fill:#ea580c; font:700 15px Inter, Pretendard, Arial, sans-serif; }
+      .dangerText { fill:#dc2626; font:800 22px Inter, Pretendard, Arial, sans-serif; }
+      .button { fill:#2563eb; }
+      .buttonText { fill:#ffffff; font:800 17px Inter, Pretendard, Arial, sans-serif; }
+      .ghostButton { fill:#ffffff; stroke:#cbd5e1; }
+      .ghostText { fill:#334155; font:700 16px Inter, Pretendard, Arial, sans-serif; }
+      .divider { stroke:#e5edf6; stroke-width:1; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1600" height="980"/>
+
+  <g transform="translate(70 64)">
+    <rect class="panel" width="1460" height="238" rx="14"/>
+    <text x="28" y="48" class="title">운영 현황</text>
+    <text x="1328" y="48" class="small">현재 로드 6개</text>
+    <rect x="28" y="78" width="816" height="50" rx="8" fill="#ffffff" stroke="#d9e2ee"/>
+    <text x="62" y="110" class="muted">모듈명, 설명 검색</text>
+    <rect x="870" y="78" width="174" height="50" rx="8" fill="#ffffff" stroke="#d9e2ee"/>
+    <text x="920" y="110" class="text" font-size="17">전체 권한</text>
+    <rect x="1070" y="78" width="174" height="50" rx="8" fill="#ffffff" stroke="#d9e2ee"/>
+    <text x="1120" y="110" class="text" font-size="17">전체 배포</text>
+    <rect x="1270" y="78" width="162" height="50" rx="8" fill="#ffffff" stroke="#d9e2ee"/>
+    <text x="1318" y="110" class="text" font-size="17">전체 실행</text>
+
+    <line x1="0" y1="144" x2="1460" y2="144" class="divider"/>
+    <text x="28" y="176" class="tiny">워크플로우</text>
+    <text x="344" y="176" class="tiny">월 예상 비용</text>
+    <text x="510" y="176" class="tiny">예산 사용률</text>
+    <text x="708" y="176" class="tiny">최적화</text>
+    <text x="930" y="176" class="tiny">상태</text>
+
+    <g transform="translate(0 188)">
+      <rect x="0" y="0" width="1460" height="50" fill="#fbfdff"/>
+      <rect x="28" y="7" width="36" height="36" rx="8" fill="#e8f2ff"/>
+      <text x="78" y="30" class="text" font-size="18">자동 PR 리뷰 워크플로우</text>
+      <text x="344" y="30" class="text" font-size="18">$0.896</text>
+      <text x="510" y="25" class="dangerText">91%</text>
+      <rect x="560" y="18" width="126" height="8" rx="4" fill="#ffb020"/>
+      <rect x="708" y="8" width="116" height="34" rx="8" class="chip"/>
+      <text x="730" y="30" class="chipText">최적화 권장</text>
+      <rect x="930" y="8" width="72" height="34" rx="8" class="greenChip"/>
+      <text x="950" y="30" class="greenText">배포 중</text>
+      <rect x="1248" y="6" width="150" height="38" rx="8" fill="#2563eb"/>
+      <text x="1286" y="31" class="buttonText">최적화하기</text>
+    </g>
+  </g>
+
+  <g transform="translate(120 360)">
+    <rect width="650" height="520" rx="18" class="panel" filter="url(#softShadow)"/>
+    <text x="34" y="52" class="title">케이스 A: 로그가 적은 경우</text>
+    <text x="34" y="86" class="small">자동 PR 리뷰 워크플로우 · 최적화하기 클릭</text>
+    <line x1="0" y1="112" x2="650" y2="112" class="divider"/>
+
+    <rect x="34" y="142" width="582" height="104" rx="14" fill="#fff7ed" stroke="#fed7aa"/>
+    <text x="58" y="181" class="warnText" font-size="22">최적화 권장 불가</text>
+    <text x="58" y="216" class="small">최근 실행 로그가 부족해 모델 변경 효과를 판단할 수 없습니다.</text>
+
+    <g transform="translate(34 276)">
+      <text x="0" y="0" class="text">필요한 기준</text>
+      <text x="0" y="36" class="small">최근 7일 실행 30회 이상</text>
+      <text x="0" y="68" class="small">LLM 노드별 input/output token 기록</text>
+      <text x="0" y="100" class="small">성공/실패 및 평균 응답 시간 기록</text>
+    </g>
+
+    <g transform="translate(34 424)">
+      <rect width="168" height="48" rx="10" class="ghostButton"/>
+      <text x="44" y="31" class="ghostText">닫기</text>
+      <rect x="188" width="226" height="48" rx="10" fill="#eef4ff" stroke="#bfdbfe"/>
+      <text x="216" y="31" fill="#2563eb" font-family="Inter, Pretendard, Arial, sans-serif" font-size="16" font-weight="800">로그 더 수집 후 알림</text>
+      <rect x="432" width="184" height="48" rx="10" fill="#f8fafc" stroke="#cbd5e1"/>
+      <text x="464" y="31" class="ghostText">수집 기준 보기</text>
+    </g>
+  </g>
+
+  <g transform="translate(830 360)">
+    <rect width="650" height="520" rx="18" class="panel" filter="url(#softShadow)"/>
+    <text x="34" y="52" class="title">케이스 B: 로그가 충분한 경우</text>
+    <text x="34" y="86" class="small">최근 14일 184회 실행 · LLM 노드 2개 분석 완료</text>
+    <line x1="0" y1="112" x2="650" y2="112" class="divider"/>
+
+    <g transform="translate(34 138)">
+      <rect width="582" height="92" rx="14" fill="#f8fafc" stroke="#d9e2ee"/>
+      <text x="22" y="36" class="text">추천안 1 · 조건부 모델 라우팅</text>
+      <text x="22" y="66" class="small">문서/단순 UI PR은 저비용 모델, 권한·보안·DB 변경은 기존 모델 유지</text>
+      <text x="456" y="42" fill="#059669" font-family="Inter, Pretendard, Arial, sans-serif" font-size="24" font-weight="900">-62%</text>
+    </g>
+
+    <g transform="translate(34 252)">
+      <text x="0" y="0" class="text">예상 효과</text>
+      <rect x="0" y="20" width="176" height="88" rx="12" fill="#ecfdf5" stroke="#a7f3d0"/>
+      <text x="20" y="54" class="greenText" font-size="18">월 비용</text>
+      <text x="20" y="84" fill="#047857" font-family="Inter, Pretendard, Arial, sans-serif" font-size="24" font-weight="900">$0.896 → $0.341</text>
+      <rect x="204" y="20" width="176" height="88" rx="12" fill="#eff6ff" stroke="#bfdbfe"/>
+      <text x="224" y="54" fill="#2563eb" font-family="Inter, Pretendard, Arial, sans-serif" font-size="18" font-weight="800">품질 리스크</text>
+      <text x="224" y="84" fill="#1d4ed8" font-family="Inter, Pretendard, Arial, sans-serif" font-size="22" font-weight="900">낮음</text>
+      <rect x="408" y="20" width="174" height="88" rx="12" fill="#fff7ed" stroke="#fed7aa"/>
+      <text x="428" y="54" class="warnText" font-size="18">보호 조건</text>
+      <text x="428" y="84" fill="#c2410c" font-family="Inter, Pretendard, Arial, sans-serif" font-size="20" font-weight="900">위험 PR 제외</text>
+    </g>
+
+    <g transform="translate(34 400)">
+      <rect width="176" height="48" rx="10" class="ghostButton"/>
+      <text x="36" y="31" class="ghostText">결과 비교 실행</text>
+      <rect x="196" width="174" height="48" rx="10" class="ghostButton"/>
+      <text x="236" y="31" class="ghostText">추천안 저장</text>
+      <rect x="390" width="226" height="48" rx="10" class="button"/>
+      <text x="444" y="31" class="buttonText">조건부 적용</text>
+    </g>
+  </g>
+</svg>
