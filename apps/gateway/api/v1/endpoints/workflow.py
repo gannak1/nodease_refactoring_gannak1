@@ -352,6 +352,7 @@ class ModelRoutingCohortSuggestRequest(BaseModel):
 class ModelRoutingCohortCreateRequest(ModelRoutingCohortSuggestRequest):
     label: str = Field(min_length=1, max_length=255)
     key: str = Field(min_length=1, max_length=128)
+    representative_examples: list[str] = Field(default_factory=list, max_length=5)
     fixed: bool = False
 
 
@@ -1092,6 +1093,7 @@ def _model_routing_adaptive_summary(
             "label": draft["label"],
             "label_en": draft["key"],
             "representative_query": draft["representative_query"],
+            "representative_examples": draft.get("representative_examples", []),
             "source": "manual",
             "status": "draft",
             "required": draft["fixed"],
@@ -1125,19 +1127,23 @@ def _model_routing_adaptive_summary(
             .all()
         )
     }
-    representative_query_by_cohort = {
-        str(row.cohort_id): row.synthetic_text
-        for row in (
-            db.query(LLMNodeModelRoutingCohortExample)
-            .filter(
-                LLMNodeModelRoutingCohortExample.cohort_id.in_(
-                    [item.id for item in cohorts] or [UUID(int=0)]
-                )
+    representative_examples_by_cohort: dict[str, list[str]] = {}
+    for row in (
+        db.query(LLMNodeModelRoutingCohortExample)
+        .filter(
+            LLMNodeModelRoutingCohortExample.cohort_id.in_(
+                [item.id for item in cohorts] or [UUID(int=0)]
             )
-            .filter(LLMNodeModelRoutingCohortExample.ordinal == 1)
-            .all()
         )
-    }
+        .order_by(
+            LLMNodeModelRoutingCohortExample.cohort_id.asc(),
+            LLMNodeModelRoutingCohortExample.ordinal.asc(),
+        )
+        .all()
+    ):
+        representative_examples_by_cohort.setdefault(str(row.cohort_id), []).append(
+            row.synthetic_text
+        )
     budget = (
         db.query(LLMNodeModelRoutingValidationBudgetMonth)
         .filter(LLMNodeModelRoutingValidationBudgetMonth.policy_id == policy.id)
@@ -1174,7 +1180,13 @@ def _model_routing_adaptive_summary(
                 "key": cohort.cohort_key,
                 "label": cohort.label,
                 "label_en": cohort.label_en,
-                "representative_query": representative_query_by_cohort.get(str(cohort.id)),
+                "representative_query": next(
+                    iter(representative_examples_by_cohort.get(str(cohort.id), [])),
+                    None,
+                ),
+                "representative_examples": representative_examples_by_cohort.get(
+                    str(cohort.id), []
+                ),
                 "source": cohort.source,
                 "status": cohort.status,
                 "required": cohort.required,
@@ -1273,6 +1285,7 @@ def _upsert_model_routing_cohort_draft(
     label: str,
     key: str,
     representative_query: str,
+    representative_examples: list[str] | None,
     fixed: bool,
 ) -> dict[str, Any]:
     """기존 배포 DB 입력군도 다음 배포가 읽을 graph draft로 보존한다."""
@@ -1282,6 +1295,7 @@ def _upsert_model_routing_cohort_draft(
         label=label,
         key=key,
         representative_query=representative_query,
+        representative_examples=representative_examples,
         fixed=fixed,
     )
     if updated is not None:
@@ -1292,6 +1306,7 @@ def _upsert_model_routing_cohort_draft(
         label=label,
         key=key,
         representative_query=representative_query,
+        representative_examples=representative_examples,
         fixed=fixed,
     )
 
@@ -1299,7 +1314,7 @@ def _upsert_model_routing_cohort_draft(
 def _extract_model_routing_cohort_suggestion(
     response: Any,
     representative_query: str,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """Provider별 chat 응답에서 wizard가 약속한 작은 JSON만 꺼낸다."""
     content = ""
     if isinstance(response, dict):
@@ -1324,12 +1339,22 @@ def _extract_model_routing_cohort_suggestion(
     query = " ".join(
         str(payload.get("representative_query") or representative_query).split()
     )[:2000]
+    raw_examples = payload.get("representative_examples")
+    raw_examples = raw_examples if isinstance(raw_examples, list) else []
+    examples: list[str] = []
+    for raw in [query, *raw_examples]:
+        example = " ".join(str(raw or "").split())[:2000]
+        if example and example not in examples:
+            examples.append(example)
+        if len(examples) >= 5:
+            break
     return {
         "label": label,
         "key": _normalize_model_routing_cohort_key(
             str(payload.get("key") or ""), query
         ),
         "representative_query": query,
+        "representative_examples": examples,
     }
 
 
@@ -4213,13 +4238,17 @@ async def suggest_model_routing_cohort_endpoint(
                     "content": (
                         "입력군 설정을 돕습니다. 반드시 JSON object 하나만 반환하세요. "
                         "형식: {\\\"label\\\": 한국어 짧은 이름, \\\"key\\\": 영문 snake_case 키, "
-                        "\\\"representative_query\\\": 원문의 의미를 유지한 한국어 대표 문의}."
+                        "\\\"representative_query\\\": 원문의 의미를 유지한 한국어 대표 문의, "
+                        "\\\"representative_examples\\\": 서로 다른 표현과 상황을 사용한 한국어 예문 3~5개}. "
+                        "예문에는 대표 문의도 포함하고, 같은 문장의 단순 어미 변경은 피하세요. "
+                        "이름, 이메일, 계정 ID, 전화번호, 회사 고유명 같은 식별 정보는 "
+                        "복사하지 말고 일반적인 표현으로 바꾸세요."
                     ),
                 },
                 {"role": "user", "content": request_body.representative_query},
             ],
             temperature=0.1,
-            max_tokens=160,
+            max_tokens=600,
         )
     except Exception as exc:
         logger.warning(
@@ -4265,6 +4294,7 @@ def create_model_routing_cohort_endpoint(
             label=request_body.label,
             key=normalized_key,
             representative_query=request_body.representative_query,
+            representative_examples=request_body.representative_examples,
             fixed=request_body.fixed,
         )
     except ValueError as exc:
@@ -4317,6 +4347,7 @@ def create_model_routing_cohort_endpoint(
             label=request_body.label,
             cohort_key=normalized_key,
             representative_query=request_body.representative_query,
+            representative_examples=request_body.representative_examples,
             fixed=request_body.fixed,
             encoder_model_id=encoder_model_id,
             embed=runtime.client.embed_sync,
@@ -4341,6 +4372,7 @@ def create_model_routing_cohort_endpoint(
         "key": cohort.cohort_key,
         "label": cohort.label,
         "representative_query": request_body.representative_query,
+        "representative_examples": draft["representative_examples"],
         "source": cohort.source,
         "status": cohort.status,
     }
@@ -4377,6 +4409,7 @@ def update_model_routing_cohort_endpoint(
             label=request_body.label,
             key=normalized_key,
             representative_query=request_body.representative_query,
+            representative_examples=request_body.representative_examples,
             fixed=request_body.fixed,
         )
     except (ValueError, TypeError) as exc:
@@ -4411,6 +4444,7 @@ def update_model_routing_cohort_endpoint(
                 label=request_body.label,
                 key=normalized_key,
                 representative_query=request_body.representative_query,
+                representative_examples=request_body.representative_examples,
                 fixed=request_body.fixed,
             )
         except (ValueError, TypeError) as exc:
@@ -4452,6 +4486,7 @@ def update_model_routing_cohort_endpoint(
             label=request_body.label,
             cohort_key=normalized_key,
             representative_query=request_body.representative_query,
+            representative_examples=request_body.representative_examples,
             fixed=request_body.fixed,
             encoder_model_id=encoder_model_id,
             embed=runtime.client.embed_sync,
@@ -4480,6 +4515,7 @@ def update_model_routing_cohort_endpoint(
         "key": cohort.cohort_key,
         "label": cohort.label,
         "representative_query": request_body.representative_query,
+        "representative_examples": updated_draft["representative_examples"],
         "source": cohort.source,
         "status": cohort.status,
     }
@@ -4535,6 +4571,7 @@ def convert_model_routing_cohort_to_manual_endpoint(
             label=request_body.label,
             key=normalized_key,
             representative_query=request_body.representative_query,
+            representative_examples=request_body.representative_examples,
             fixed=request_body.fixed,
         )
     except (ValueError, TypeError) as exc:
@@ -4576,6 +4613,7 @@ def convert_model_routing_cohort_to_manual_endpoint(
             label=request_body.label,
             cohort_key=normalized_key,
             representative_query=request_body.representative_query,
+            representative_examples=request_body.representative_examples,
             fixed=request_body.fixed,
             encoder_model_id=encoder_model_id,
             embed=runtime.client.embed_sync,
@@ -4604,6 +4642,7 @@ def convert_model_routing_cohort_to_manual_endpoint(
         "key": cohort.cohort_key,
         "label": cohort.label,
         "representative_query": request_body.representative_query,
+        "representative_examples": request_body.representative_examples,
         "source": cohort.source,
         "status": cohort.status,
     }

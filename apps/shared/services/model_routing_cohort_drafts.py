@@ -6,6 +6,24 @@ import uuid
 from typing import Any
 
 
+MAX_REPRESENTATIVE_EXAMPLES = 5
+
+
+def _representative_examples(
+    representative_query: str,
+    raw_examples: Any,
+) -> list[str]:
+    values = raw_examples if isinstance(raw_examples, list) else []
+    normalized: list[str] = []
+    for raw in [representative_query, *values]:
+        text = " ".join(str(raw or "").split())[:2000]
+        if text and text not in normalized:
+            normalized.append(text)
+        if len(normalized) >= MAX_REPRESENTATIVE_EXAMPLES:
+            break
+    return normalized
+
+
 def model_routing_excluded_model_ids(node_data: dict[str, Any]) -> set[str]:
     """노드가 자동 라우팅과 유료 검증에서 제외한 모델 ID를 정규화한다."""
     policy = node_data.get("model_routing_policy")
@@ -39,6 +57,10 @@ def model_routing_cohort_drafts(node_data: dict[str, Any]) -> list[dict[str, Any
         representative_query = " ".join(
             str(raw.get("representative_query") or "").split()
         )[:2000]
+        representative_examples = _representative_examples(
+            representative_query,
+            raw.get("representative_examples"),
+        )
         if not label or not key or not representative_query:
             continue
         drafts.append(
@@ -47,6 +69,7 @@ def model_routing_cohort_drafts(node_data: dict[str, Any]) -> list[dict[str, Any
                 "key": key,
                 "label": label,
                 "representative_query": representative_query,
+                "representative_examples": representative_examples,
                 "fixed": bool(raw.get("fixed")),
             }
         )
@@ -59,6 +82,7 @@ def add_model_routing_cohort_draft(
     label: str,
     key: str,
     representative_query: str,
+    representative_examples: list[str] | None = None,
     fixed: bool,
     draft_id: str | uuid.UUID | None = None,
 ) -> dict[str, Any]:
@@ -86,6 +110,10 @@ def add_model_routing_cohort_draft(
         )[:2000],
         "fixed": bool(fixed),
     }
+    item["representative_examples"] = _representative_examples(
+        item["representative_query"],
+        representative_examples,
+    )
     if not item["key"] or not item["label"] or not item["representative_query"]:
         raise ValueError("model_routing.cohort_invalid")
     policy["cohort_drafts"] = [*drafts, item]
@@ -100,6 +128,7 @@ def update_model_routing_cohort_draft(
     label: str,
     key: str,
     representative_query: str,
+    representative_examples: list[str] | None = None,
     fixed: bool,
 ) -> dict[str, Any] | None:
     """같은 draft UUID를 유지하면서 사용자가 바꾼 정의를 반영한다."""
@@ -122,6 +151,10 @@ def update_model_routing_cohort_draft(
         )[:2000],
         "fixed": bool(fixed),
     }
+    updated["representative_examples"] = _representative_examples(
+        updated["representative_query"],
+        representative_examples,
+    )
     if not updated["key"] or not updated["label"] or not updated["representative_query"]:
         raise ValueError("model_routing.cohort_invalid")
     policy = node_data.get("model_routing_policy")

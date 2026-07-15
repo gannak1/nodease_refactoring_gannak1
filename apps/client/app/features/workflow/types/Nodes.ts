@@ -189,6 +189,7 @@ export interface LLMNodeData extends BaseNodeData {
       key: string;
       label: string;
       representative_query: string;
+      representative_examples?: string[];
       fixed: boolean;
     }>;
   };

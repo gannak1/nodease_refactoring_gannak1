@@ -14,7 +14,7 @@ from typing import Any, Literal, Sequence
 
 
 Vector = tuple[float, ...]
-Aggregation = Literal["centroid", "mean", "max", "sum"]
+Aggregation = Literal["centroid", "mean", "max", "sum", "top_k_mean"]
 MatchStatus = Literal["matched", "no_match", "ambiguous", "unavailable"]
 DecisionSource = Literal["dense", "safety_override", "unavailable"]
 
@@ -95,8 +95,10 @@ class SemanticRouteCatalog:
             raise ValueError("routes must not be empty")
         if self.top_k < 1:
             raise ValueError("top_k must be at least 1")
-        if self.aggregation not in {"centroid", "mean", "max", "sum"}:
-            raise ValueError("aggregation must be centroid, mean, max, or sum")
+        if self.aggregation not in {"centroid", "mean", "max", "sum", "top_k_mean"}:
+            raise ValueError(
+                "aggregation must be centroid, mean, max, sum, or top_k_mean"
+            )
         if not math.isfinite(self.min_margin) or self.min_margin < 0:
             raise ValueError("min_margin must be a finite non-negative number")
 
@@ -239,6 +241,28 @@ class SemanticRouteMatcher:
                         route,
                     )
                     for route in catalog.routes
+                ),
+                key=lambda item: (-item[0], item[1].cohort_id),
+            )
+        elif catalog.aggregation == "top_k_mean":
+            # 각 입력군 안에서 가까운 예문을 고른 뒤 평균한다. 전체 예문을 먼저
+            # 자르면 예문이 많은 입력군이 top-k 슬롯을 독점할 수 있다.
+            route_scores = sorted(
+                (
+                    (
+                        sum(scores) / len(scores),
+                        route,
+                    )
+                    for route in catalog.routes
+                    for scores in [
+                        sorted(
+                            (
+                                _cosine_similarity(query, vector)
+                                for vector in route.representative_vectors
+                            ),
+                            reverse=True,
+                        )[: catalog.top_k]
+                    ]
                 ),
                 key=lambda item: (-item[0], item[1].cohort_id),
             )
@@ -486,7 +510,7 @@ def _validate_query_vector(
 
 
 def _aggregate(scores: Sequence[float], aggregation: Aggregation) -> float:
-    if aggregation == "mean":
+    if aggregation in {"mean", "top_k_mean"}:
         return sum(scores) / len(scores)
     if aggregation == "max":
         return max(scores)

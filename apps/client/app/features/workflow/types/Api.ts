@@ -322,6 +322,8 @@ export interface ModelRoutingPolicyResponse {
       label_en: string | null;
       /** 운영 원문이 아닌 입력군 매칭 기준의 합성 대표 문의 */
       representative_query: string | null;
+      /** 대표 문의와 마법사가 만든 비식별 합성 예문 */
+      representative_examples?: string[];
       source: 'manual' | 'auto' | string;
       status: 'proposed' | 'validating' | 'validated_waiting' | 'active' | 'dormant' | 'retired' | string;
       required: boolean;
@@ -369,12 +371,14 @@ export interface ModelRoutingCohortSuggestionResponse {
   label: string;
   key: string;
   representative_query: string;
+  representative_examples: string[];
 }
 
 export interface ModelRoutingCohortCreateRequest
   extends ModelRoutingCohortSuggestionRequest {
   label: string;
   key: string;
+  representative_examples?: string[];
   fixed: boolean;
 }
 
@@ -383,6 +387,7 @@ export interface ModelRoutingCohortCreateResponse {
   key: string;
   label: string;
   representative_query: string;
+  representative_examples?: string[];
   source: 'manual' | 'auto' | string;
   status: string;
 }

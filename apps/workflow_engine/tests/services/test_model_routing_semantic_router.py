@@ -217,6 +217,46 @@ def test_max_aggregation_scores_every_route_before_applying_margin():
     }
 
 
+def test_top_k_mean_aggregation_uses_two_best_examples_per_cohort():
+    """FR-011: 입력군별로 가장 가까운 예문 두 개의 평균을 비교한다."""
+    catalog = SemanticRouteCatalog(
+        version="cohort-examples-v1",
+        encoder_model_id="text-embedding-test",
+        aggregation="top_k_mean",
+        top_k=2,
+        min_margin=0.05,
+        routes=(
+            SemanticRouteDefinition(
+                cohort_id="account_access",
+                label="계정·접근 권한",
+                threshold=0.60,
+                representative_vectors=(
+                    (1.0, 0.0),
+                    (0.8, 0.6),
+                    (0.0, 1.0),
+                ),
+            ),
+            SemanticRouteDefinition(
+                cohort_id="billing",
+                label="결제",
+                threshold=0.60,
+                representative_vectors=(
+                    (0.82, 0.5723635209),
+                    (0.61, 0.7924014134),
+                ),
+            ),
+        ),
+    )
+
+    result = SemanticRouteMatcher.match(catalog, query_vector=(1.0, 0.0))
+
+    assert result.status == "matched"
+    assert result.cohort_id == "account_access"
+    assert result.similarity == 0.9
+    assert result.runner_up_score is not None
+    assert abs(result.runner_up_score - 0.715) < 1e-9
+
+
 def test_semantic_matcher_rejects_ambiguous_routes_below_min_margin():
     """1위와 2위가 너무 비슷하면 저비용 Route를 임의로 고르지 않는다."""
     match = SemanticRouteMatcher.match(

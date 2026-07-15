@@ -211,7 +211,8 @@ def test_runtime_catalog_projects_curated_and_recent_observation_vectors():
         node_data={"model_routing_context": {"input_paths": ["question"]}},
     )
 
-    assert catalog["aggregation"] == "max"
+    assert catalog["aggregation"] == "top_k_mean"
+    assert catalog["top_k"] == 2
     assert [item["embedding"] for item in catalog["routes"][0]["representatives"]] == [
         [1.0, 0.0],
         [0.4, 0.6],
@@ -350,6 +351,35 @@ def test_observation_match_rejects_ambiguous_auto_cohorts():
         )
         is None
     )
+
+
+def test_observation_match_uses_top_two_example_average_per_cohort():
+    """FR-011: 관찰 저장도 대표 예문 여러 개의 상위 두 점수를 사용한다."""
+    access = SimpleNamespace(
+        id=uuid4(),
+        cohort_key="account_access",
+        source="manual",
+        status="active",
+        centroid_embedding=[0.6, 0.4],
+    )
+    billing = SimpleNamespace(
+        id=uuid4(),
+        cohort_key="billing",
+        source="manual",
+        status="active",
+        centroid_embedding=[0.7, 0.3],
+    )
+
+    matched = AdaptiveModelRoutingCohortStore._match(
+        [1.0, 0.0],
+        [access, billing],
+        example_embeddings_by_cohort={
+            str(access.id): [[1.0, 0.0], [0.8, 0.6], [0.0, 1.0]],
+            str(billing.id): [[0.82, 0.5723635209], [0.61, 0.7924014134]],
+        },
+    )
+
+    assert matched is access
 
 
 def test_runtime_catalog_uses_auto_cohort_match_threshold():
@@ -556,7 +586,7 @@ def test_manual_cohort_edit_reembeds_and_invalidates_previous_evidence():
             self._queries = iter(
                 [
                     _Query(rows=[cohort]),
-                    _Query(one=example),
+                    _Query(rows=[example]),
                     _Query(rows=[evidence]),
                     _Query(),
                 ]
@@ -592,6 +622,64 @@ def test_manual_cohort_edit_reembeds_and_invalidates_previous_evidence():
     assert updated.centroid_embedding == [1.0, 0.0]
     assert example.synthetic_text == "결제는 완료됐지만 청구서가 발행되지 않았습니다."
     assert evidence.status == "expired"
+
+
+def test_manual_cohort_creation_persists_multiple_representative_examples():
+    """FR-011: 대표 문의와 마법사 예문을 각각 검색 가능한 벡터로 저장한다."""
+    class _Query:
+        def filter(self, *_args):
+            return self
+
+        def order_by(self, *_args):
+            return self
+
+        def all(self):
+            return []
+
+    class _Db:
+        def __init__(self):
+            self.added = []
+
+        def query(self, _model):
+            return _Query()
+
+        def add(self, value):
+            self.added.append(value)
+
+        def flush(self):
+            pass
+
+    vectors = {
+        "퇴사자의 VPN 권한을 회수하고 싶습니다.": [1.0, 0.0],
+        "신규 입사자가 SSO로 로그인하지 못합니다.": [0.8, 0.2],
+        "휴대전화 교체 후 MFA를 다시 등록하고 싶습니다.": [0.6, 0.4],
+    }
+    db = _Db()
+
+    cohort = AdaptiveModelRoutingCohortStore.create_manual_cohort(
+        db,
+        policy=SimpleNamespace(id=uuid4(), max_cohorts=6),
+        node_data={"model_id": "gpt-4.1"},
+        label="계정·접근 권한",
+        cohort_key="account_access",
+        representative_query="퇴사자의 VPN 권한을 회수하고 싶습니다.",
+        representative_examples=list(vectors),
+        fixed=False,
+        encoder_model_id="text-embedding-3-large",
+        embed=lambda text: vectors[text],
+    )
+
+    examples = [
+        value
+        for value in db.added
+        if isinstance(value, LLMNodeModelRoutingCohortExample)
+    ]
+    assert [item.synthetic_text for item in examples] == list(vectors)
+    assert [item.ordinal for item in examples] == [1, 2, 3]
+    assert all(
+        abs(actual - expected) < 1e-9
+        for actual, expected in zip(cohort.centroid_embedding, [0.8, 0.2])
+    )
 
 
 def test_manual_cohort_edit_unmatches_observations_from_the_previous_definition():
@@ -639,7 +727,7 @@ def test_manual_cohort_edit_unmatches_observations_from_the_previous_definition(
             self._queries = iter(
                 [
                     _Query(rows=[cohort]),
-                    _Query(one=SimpleNamespace(ordinal=1)),
+                    _Query(rows=[SimpleNamespace(ordinal=1)]),
                     _Query(rows=[]),
                     observation_query,
                 ]

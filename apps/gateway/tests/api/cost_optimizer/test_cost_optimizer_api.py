@@ -113,6 +113,39 @@ def test_remove_cohort_from_active_policy_uses_persisted_cohort_id():
     assert result["rules"] == [{"when": {"semantic_cohort_id": "other-uuid"}}]
 
 
+def test_cohort_wizard_extracts_diverse_representative_examples():
+    """FR-011: 마법사는 대표 문의를 포함한 중복 없는 예문을 최대 5개 반환한다."""
+    response = {
+        "choices": [
+            {
+                "message": {
+                    "content": """{
+                        \"label\": \"계정·접근 권한\",
+                        \"key\": \"account_access\",
+                        \"representative_query\": \"퇴사자의 VPN 권한을 회수하고 싶습니다.\",
+                        \"representative_examples\": [
+                            \"퇴사자의 VPN 권한을 회수하고 싶습니다.\",
+                            \"신규 입사자가 SSO로 로그인하지 못합니다.\",
+                            \"휴대전화 교체 후 MFA를 다시 등록하고 싶습니다.\"
+                        ]
+                    }"""
+                }
+            }
+        ]
+    }
+
+    suggestion = workflow_endpoint._extract_model_routing_cohort_suggestion(
+        response,
+        "퇴사자의 VPN 권한을 회수하고 싶습니다.",
+    )
+
+    assert suggestion["representative_examples"] == [
+        "퇴사자의 VPN 권한을 회수하고 싶습니다.",
+        "신규 입사자가 SSO로 로그인하지 못합니다.",
+        "휴대전화 교체 후 MFA를 다시 등록하고 싶습니다.",
+    ]
+
+
 def _configure_cost_optimizer_experiment_query(db, experiment):
     (
         db.query.return_value.options.return_value.filter.return_value.first.return_value
@@ -788,6 +821,7 @@ class TestModelRoutingPolicyApi:
             "label": "결제 오류 문의",
             "key": "billing_issue",
             "representative_query": "결제가 완료됐는데 서비스 이용이 되지 않습니다.",
+            "representative_examples": ["결제가 완료됐는데 서비스 이용이 되지 않습니다."],
         }
         ensure_deployer.assert_called_once_with(
             db, SimpleNamespace(id=user_id), str(workflow_id), "deploy"
@@ -891,6 +925,7 @@ class TestModelRoutingPolicyApi:
             "key": "billing_issue",
             "label": "결제 오류 문의",
             "representative_query": "결제가 완료됐는데 서비스 이용이 되지 않습니다.",
+            "representative_examples": ["결제가 완료됐는데 서비스 이용이 되지 않습니다."],
             "source": "manual",
             "status": "proposed",
         }
@@ -974,6 +1009,7 @@ class TestModelRoutingPolicyApi:
                 "key": "common_account_security",
                 "label": "공통 계정·보안 온보딩",
                 "representative_query": "입사 첫날 SSO와 보안 교육 순서를 알려 주세요.",
+                "representative_examples": ["입사 첫날 SSO와 보안 교육 순서를 알려 주세요."],
                 "fixed": True,
             }
         ]
@@ -1052,6 +1088,7 @@ class TestModelRoutingPolicyApi:
                 "label": "플랫폼 접근 신청",
                 "label_en": "platform_access",
                 "representative_query": "VPN 접근 신청 절차를 알려 주세요.",
+                "representative_examples": ["VPN 접근 신청 절차를 알려 주세요."],
                 "source": "manual",
                 "status": "draft",
                 "required": False,
@@ -1165,6 +1202,7 @@ class TestModelRoutingPolicyApi:
             "key": "billing_receipt_issue",
             "label": "영수증 발급 문의",
             "representative_query": "결제는 완료됐는데 영수증을 다시 발급받고 싶습니다.",
+            "representative_examples": ["결제는 완료됐는데 영수증을 다시 발급받고 싶습니다."],
             "source": "manual",
             "status": "proposed",
         }
@@ -1179,6 +1217,7 @@ class TestModelRoutingPolicyApi:
                 "key": "billing_receipt_issue",
                 "label": "영수증 발급 문의",
                 "representative_query": "결제는 완료됐는데 영수증을 다시 발급받고 싶습니다.",
+                "representative_examples": ["결제는 완료됐는데 영수증을 다시 발급받고 싶습니다."],
                 "fixed": False,
             }
         ]
@@ -1290,6 +1329,7 @@ class TestModelRoutingPolicyApi:
                 "key": "account_access",
                 "label": "계정 접근 문의",
                 "representative_query": "로그인할 수 없어 계정 접근을 도와주세요.",
+                "representative_examples": ["로그인할 수 없어 계정 접근을 도와주세요."],
                 "fixed": False,
             }
         ]
@@ -1360,6 +1400,7 @@ class TestModelRoutingPolicyApi:
                 "label": "영수증 발급 문의",
                 "label_en": "billing_receipt_issue",
                 "representative_query": "결제는 완료됐는데 영수증을 다시 발급받고 싶습니다.",
+                "representative_examples": ["결제는 완료됐는데 영수증을 다시 발급받고 싶습니다."],
                 "source": "manual",
                 "status": "proposed",
                 "required": False,

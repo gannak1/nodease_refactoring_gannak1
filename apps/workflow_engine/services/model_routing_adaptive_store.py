@@ -11,7 +11,7 @@ import math
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -56,6 +56,7 @@ class AdaptiveModelRoutingCohortStore:
     AUTO_MATCH_SIMILARITY_THRESHOLD = 0.55
     MANUAL_SIMILARITY_THRESHOLD = 0.60
     DEFAULT_MATCH_MIN_MARGIN = 0.05
+    MAX_REPRESENTATIVE_EXAMPLES = 5
 
     @classmethod
     def record_observation(
@@ -88,10 +89,15 @@ class AdaptiveModelRoutingCohortStore:
             return existing
 
         cohorts = cls._live_cohorts(db, policy_id=policy.id)
+        example_embeddings_by_cohort = cls._example_embeddings_by_cohort(
+            db,
+            cohorts=cohorts,
+        )
         matched = cls._match(
             vector,
             cohorts,
             min_margin=cls._match_min_margin(policy, node_data),
+            example_embeddings_by_cohort=example_embeddings_by_cohort,
         )
         observation_count = (
             db.query(LLMNodeModelRoutingObservation)
@@ -263,6 +269,7 @@ class AdaptiveModelRoutingCohortStore:
         label: str,
         cohort_key: str,
         representative_query: str,
+        representative_examples: Sequence[str] | None = None,
         fixed: bool,
         encoder_model_id: str,
         embed: EmbeddingFunction,
@@ -288,9 +295,14 @@ class AdaptiveModelRoutingCohortStore:
         ) <= 0:
             raise ValueError("model_routing.cohort_limit_reached")
 
-        vector = cls._embedding(embed, normalized_query)
-        if not vector:
+        examples = cls._normalize_representative_examples(
+            normalized_query,
+            representative_examples,
+        )
+        vectors = [cls._embedding(embed, text) for text in examples]
+        if any(not vector for vector in vectors):
             raise ValueError("model_routing.cohort_embedding_failed")
+        centroid = cls._average_vectors(vectors)
 
         now = datetime.now(timezone.utc)
         cohort = LLMNodeModelRoutingCohort(
@@ -306,7 +318,7 @@ class AdaptiveModelRoutingCohortStore:
             required=bool(fixed),
             safety_protected=False,
             encoder_model_id=str(encoder_model_id),
-            centroid_embedding=vector,
+            centroid_embedding=centroid,
             node_config_fingerprint=llm_node_config_fingerprint(node_data),
             first_seen_at=now,
             last_seen_at=now,
@@ -318,14 +330,15 @@ class AdaptiveModelRoutingCohortStore:
             LLMNodeModelRoutingCohortExample,
         )
 
-        db.add(
-            LLMNodeModelRoutingCohortExample(
-                cohort_id=cohort.id,
-                synthetic_text=normalized_query,
-                embedding=vector,
-                ordinal=1,
+        for ordinal, (text, vector) in enumerate(zip(examples, vectors), start=1):
+            db.add(
+                LLMNodeModelRoutingCohortExample(
+                    cohort_id=cohort.id,
+                    synthetic_text=text,
+                    embedding=vector,
+                    ordinal=ordinal,
+                )
             )
-        )
         db.flush()
         return cohort
 
@@ -340,6 +353,7 @@ class AdaptiveModelRoutingCohortStore:
         label: str,
         cohort_key: str,
         representative_query: str,
+        representative_examples: Sequence[str] | None = None,
         fixed: bool,
         encoder_model_id: str,
         embed: EmbeddingFunction,
@@ -366,9 +380,14 @@ class AdaptiveModelRoutingCohortStore:
         ):
             raise ValueError("model_routing.cohort_key_exists")
 
-        vector = cls._embedding(embed, normalized_query)
-        if not vector:
+        examples = cls._normalize_representative_examples(
+            normalized_query,
+            representative_examples,
+        )
+        vectors = [cls._embedding(embed, text) for text in examples]
+        if any(not vector for vector in vectors):
             raise ValueError("model_routing.cohort_embedding_failed")
+        centroid = cls._average_vectors(vectors)
 
         now = datetime.now(timezone.utc)
         cohort.cohort_key = normalized_key
@@ -376,7 +395,7 @@ class AdaptiveModelRoutingCohortStore:
         cohort.label_en = normalized_key
         cohort.required = bool(fixed)
         cohort.encoder_model_id = str(encoder_model_id)
-        cohort.centroid_embedding = vector
+        cohort.centroid_embedding = centroid
         cohort.status = "proposed"
         cohort.observation_count = 0
         cohort.review_window_count = 0
@@ -387,24 +406,29 @@ class AdaptiveModelRoutingCohortStore:
         cohort.dormant_since = None
         cohort.retired_at = None
 
-        example = (
+        existing_examples = (
             db.query(LLMNodeModelRoutingCohortExample)
             .filter(LLMNodeModelRoutingCohortExample.cohort_id == cohort.id)
-            .filter(LLMNodeModelRoutingCohortExample.ordinal == 1)
-            .one_or_none()
+            .order_by(LLMNodeModelRoutingCohortExample.ordinal.asc())
+            .all()
         )
-        if example is None:
-            db.add(
-                LLMNodeModelRoutingCohortExample(
-                    cohort_id=cohort.id,
-                    synthetic_text=normalized_query,
-                    embedding=vector,
-                    ordinal=1,
+        existing_by_ordinal = {int(item.ordinal): item for item in existing_examples}
+        for ordinal, (text, vector) in enumerate(zip(examples, vectors), start=1):
+            example = existing_by_ordinal.pop(ordinal, None)
+            if example is None:
+                db.add(
+                    LLMNodeModelRoutingCohortExample(
+                        cohort_id=cohort.id,
+                        synthetic_text=text,
+                        embedding=vector,
+                        ordinal=ordinal,
+                    )
                 )
-            )
-        else:
-            example.synthetic_text = normalized_query
-            example.embedding = vector
+            else:
+                example.synthetic_text = text
+                example.embedding = vector
+        for obsolete in existing_by_ordinal.values():
+            db.delete(obsolete)
 
         for evidence in (
             db.query(LLMNodeModelRoutingModelEvidence)
@@ -441,6 +465,7 @@ class AdaptiveModelRoutingCohortStore:
         label: str,
         cohort_key: str,
         representative_query: str,
+        representative_examples: Sequence[str] | None = None,
         fixed: bool,
         encoder_model_id: str,
         embed: EmbeddingFunction,
@@ -457,6 +482,7 @@ class AdaptiveModelRoutingCohortStore:
             label=label,
             cohort_key=cohort_key,
             representative_query=representative_query,
+            representative_examples=representative_examples,
             fixed=fixed,
             encoder_model_id=encoder_model_id,
             embed=embed,
@@ -652,12 +678,22 @@ class AdaptiveModelRoutingCohortStore:
         cohorts: Iterable[LLMNodeModelRoutingCohort],
         *,
         min_margin: float | None = None,
+        example_embeddings_by_cohort: Mapping[str, Sequence[Sequence[float]]] | None = None,
     ) -> LLMNodeModelRoutingCohort | None:
         scored_cohorts: list[tuple[float, LLMNodeModelRoutingCohort]] = []
         for cohort in cohorts:
             if cohort.status == "retired":
                 continue
-            score = cls._cosine(vector, cohort.centroid_embedding or [])
+            representatives = list(
+                (example_embeddings_by_cohort or {}).get(str(cohort.id), ())
+            )
+            if not representatives:
+                representatives = [cohort.centroid_embedding or []]
+            similarities = sorted(
+                (cls._cosine(vector, item) for item in representatives),
+                reverse=True,
+            )[:2]
+            score = sum(similarities) / len(similarities) if similarities else 0.0
             scored_cohorts.append((score, cohort))
 
         if not scored_cohorts:
@@ -684,6 +720,57 @@ class AdaptiveModelRoutingCohortStore:
         if runner_up_score is not None and winner_score - runner_up_score < required_margin:
             return None
         return winner
+
+    @classmethod
+    def _example_embeddings_by_cohort(
+        cls,
+        db: Session,
+        *,
+        cohorts: Sequence[LLMNodeModelRoutingCohort],
+    ) -> dict[str, list[list[float]]]:
+        cohort_ids = [cohort.id for cohort in cohorts]
+        if not cohort_ids:
+            return {}
+        examples = (
+            db.query(LLMNodeModelRoutingCohortExample)
+            .filter(LLMNodeModelRoutingCohortExample.cohort_id.in_(cohort_ids))
+            .order_by(
+                LLMNodeModelRoutingCohortExample.cohort_id.asc(),
+                LLMNodeModelRoutingCohortExample.ordinal.asc(),
+            )
+            .all()
+        )
+        result: dict[str, list[list[float]]] = {}
+        for example in examples:
+            embedding = [float(value) for value in (example.embedding or [])]
+            if embedding:
+                result.setdefault(str(example.cohort_id), []).append(embedding)
+        return result
+
+    @classmethod
+    def _normalize_representative_examples(
+        cls,
+        representative_query: str,
+        representative_examples: Sequence[str] | None,
+    ) -> list[str]:
+        normalized: list[str] = []
+        for raw in [representative_query, *(representative_examples or ())]:
+            text = " ".join(str(raw or "").split())[:2000]
+            if text and text not in normalized:
+                normalized.append(text)
+            if len(normalized) >= cls.MAX_REPRESENTATIVE_EXAMPLES:
+                break
+        return normalized
+
+    @staticmethod
+    def _average_vectors(vectors: Sequence[Sequence[float]]) -> list[float]:
+        dimensions = {len(vector) for vector in vectors}
+        if not vectors or len(dimensions) != 1 or dimensions == {0}:
+            raise ValueError("model_routing.cohort_embedding_failed")
+        return [
+            sum(float(vector[index]) for vector in vectors) / len(vectors)
+            for index in range(len(vectors[0]))
+        ]
 
     @classmethod
     def _match_min_margin(

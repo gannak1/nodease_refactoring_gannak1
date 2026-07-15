@@ -396,6 +396,7 @@ export function LLMNodePanel({
     label: '',
     key: '',
     representativeQuery: '',
+    additionalExamples: [] as string[],
     fixed: false,
   });
   const [isCohortWizardRunning, setIsCohortWizardRunning] = useState(false);
@@ -837,6 +838,9 @@ export function LLMNodePanel({
         label: suggestion.label,
         key: suggestion.key,
         representativeQuery: suggestion.representative_query,
+        additionalExamples: (suggestion.representative_examples || []).filter(
+          (example) => example !== suggestion.representative_query,
+        ),
         fixed: manualCohort.fixed,
       });
       setRoutingPolicyError(null);
@@ -871,6 +875,10 @@ export function LLMNodePanel({
         label: manualCohort.label.trim(),
         key: manualCohort.key.trim(),
         representative_query: manualCohort.representativeQuery.trim(),
+        representative_examples: [
+          manualCohort.representativeQuery.trim(),
+          ...manualCohort.additionalExamples,
+        ],
         fixed: manualCohort.fixed,
       };
       if (convertingAutoCohortId) {
@@ -890,7 +898,13 @@ export function LLMNodePanel({
       } else {
         await workflowApi.createModelRoutingCohort(activeWorkflowId, nodeId, request);
       }
-      setManualCohort({ label: '', key: '', representativeQuery: '', fixed: false });
+      setManualCohort({
+        label: '',
+        key: '',
+        representativeQuery: '',
+        additionalExamples: [],
+        fixed: false,
+      });
       setEditingManualCohortId(null);
       setConvertingAutoCohortId(null);
       setIsManualCohortFormOpen(false);
@@ -916,7 +930,13 @@ export function LLMNodePanel({
   const openManualCohortForm = useCallback(() => {
     setEditingManualCohortId(null);
     setConvertingAutoCohortId(null);
-    setManualCohort({ label: '', key: '', representativeQuery: '', fixed: false });
+    setManualCohort({
+      label: '',
+      key: '',
+      representativeQuery: '',
+      additionalExamples: [],
+      fixed: false,
+    });
     setIsManualCohortFormOpen(true);
   }, []);
 
@@ -926,6 +946,7 @@ export function LLMNodePanel({
       label: string;
       key: string;
       representative_query: string | null;
+      representative_examples?: string[];
       required: boolean;
     }) => {
       setEditingManualCohortId(cohort.id);
@@ -934,6 +955,9 @@ export function LLMNodePanel({
         label: cohort.label,
         key: cohort.key,
         representativeQuery: cohort.representative_query || '',
+        additionalExamples: (cohort.representative_examples || []).filter(
+          (example) => example !== cohort.representative_query,
+        ),
         fixed: cohort.required,
       });
       setIsManualCohortFormOpen(true);
@@ -947,6 +971,7 @@ export function LLMNodePanel({
       label: string;
       key: string;
       representative_query: string | null;
+      representative_examples?: string[];
     }) => {
       setEditingManualCohortId(null);
       setConvertingAutoCohortId(cohort.id);
@@ -954,6 +979,9 @@ export function LLMNodePanel({
         label: cohort.label,
         key: cohort.key,
         representativeQuery: cohort.representative_query || '',
+        additionalExamples: (cohort.representative_examples || []).filter(
+          (example) => example !== cohort.representative_query,
+        ),
         fixed: false,
       });
       setIsManualCohortFormOpen(true);
@@ -1709,8 +1737,14 @@ export function LLMNodePanel({
                                 </span>
                               </div>
                               <p className="mt-1 whitespace-pre-wrap break-words leading-relaxed text-slate-600">
-                                대표 문의: {cohort.representative_query || '대표 문의를 준비 중입니다.'}
+                                대표 문의:{' '}
+                                {cohort.representative_query || '대표 문의를 준비 중입니다.'}
                               </p>
+                              {(cohort.representative_examples?.length || 0) > 1 ? (
+                                <p className="mt-1 text-slate-500">
+                                  매칭 예문 {cohort.representative_examples?.length}개
+                                </p>
+                              ) : null}
                               <p className="mt-1 text-slate-500">
                                 {cohort.key} · {cohort.source === 'manual' ? '직접 등록' : '자동 발견'} ·{' '}
                                 {cohort.observation_count}회
@@ -1856,6 +1890,43 @@ export function LLMNodePanel({
                             <Wand2 className="h-3.5 w-3.5" />
                             {isCohortWizardRunning ? '초안 만드는 중' : '입력군 마법사'}
                           </button>
+                          {manualCohort.additionalExamples.length > 0 ? (
+                            <div className="rounded border border-violet-100 bg-violet-50/50 p-2.5">
+                              <div className="text-[11px] font-semibold text-violet-950">
+                                자동 생성 예문
+                              </div>
+                              <p className="mt-0.5 text-[10px] leading-relaxed text-violet-700">
+                                실제 문의는 대표 문의와 아래 예문을 함께 비교합니다. 맞지 않는 예문은 삭제하세요.
+                              </p>
+                              <ul className="mt-2 space-y-1.5">
+                                {manualCohort.additionalExamples.map((example, index) => (
+                                  <li
+                                    key={`${example}-${index}`}
+                                    className="flex items-start justify-between gap-2 rounded border border-violet-100 bg-white px-2 py-1.5 text-[11px] text-slate-700"
+                                  >
+                                    <span className="min-w-0 whitespace-pre-wrap break-words">
+                                      {example}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      className="nodrag shrink-0 font-semibold text-rose-600 hover:text-rose-800"
+                                      aria-label={`자동 생성 예문 ${index + 1} 삭제`}
+                                      onClick={() =>
+                                        setManualCohort((current) => ({
+                                          ...current,
+                                          additionalExamples: current.additionalExamples.filter(
+                                            (_, itemIndex) => itemIndex !== index,
+                                          ),
+                                        }))
+                                      }
+                                    >
+                                      삭제
+                                    </button>
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          ) : null}
                           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                             <label className="block text-[11px] font-medium text-slate-700">
                               입력군 이름

@@ -194,6 +194,11 @@ describe('FR-003 LLM node model routing optimization entry', () => {
       label: '결제 오류 문의',
       key: 'billing_issue',
       representative_query: '결제가 완료됐는데 서비스 이용이 되지 않습니다.',
+      representative_examples: [
+        '결제가 완료됐는데 서비스 이용이 되지 않습니다.',
+        '결제 후에도 팀 기능이 열리지 않습니다.',
+        '구독 결제는 성공했지만 계정이 무료 상태입니다.',
+      ],
     });
     workflowApiMock.createModelRoutingCohort.mockResolvedValue({
       id: 'cohort-1',
@@ -475,7 +480,7 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     });
   });
 
-  it('대표 문의만 입력하면 입력군 마법사가 이름과 영문 키를 채우고 직접 등록한다', async () => {
+  it('대표 문의 하나로 마법사 예문을 만들고 검토 후 직접 등록한다', async () => {
     const node = createLlmNode({ auto_model_routing: true });
     useWorkflowStore.setState(
       { ...useWorkflowStore.getState(), nodes: [node] },
@@ -500,6 +505,15 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     });
     expect(screen.getByLabelText('입력군 이름')).toHaveValue('결제 오류 문의');
     expect(screen.getByLabelText('영문 키')).toHaveValue('billing_issue');
+    expect(
+      screen.getByText('결제 후에도 팀 기능이 열리지 않습니다.'),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole('button', { name: '자동 생성 예문 1 삭제' }),
+    );
+    expect(
+      screen.queryByText('결제 후에도 팀 기능이 열리지 않습니다.'),
+    ).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /^입력군 추가$/ }));
     await waitFor(() => {
@@ -510,6 +524,10 @@ describe('FR-003 LLM node model routing optimization entry', () => {
           label: '결제 오류 문의',
           key: 'billing_issue',
           representative_query: '결제가 완료됐는데 서비스 이용이 되지 않습니다.',
+          representative_examples: [
+            '결제가 완료됐는데 서비스 이용이 되지 않습니다.',
+            '구독 결제는 성공했지만 계정이 무료 상태입니다.',
+          ],
           fixed: false,
         },
       );
@@ -740,6 +758,7 @@ describe('FR-003 LLM node model routing optimization entry', () => {
           label: '계정 접근 문의',
           key: 'account_access',
           representative_query: '로그인할 수 없어 계정 접근을 도와주세요.',
+          representative_examples: ['로그인할 수 없어 계정 접근을 도와주세요.'],
           fixed: false,
         },
       );

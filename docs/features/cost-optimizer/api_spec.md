@@ -51,9 +51,9 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/preview` | active deployment policy를 기록 없이 한 번 평가해 선택 모델과 근거를 반환 | FR-011 | execute |
 | PATCH | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy` | 자동 라우팅 ON/OFF, 규칙 미일치 시 기본 모델/대체 모델, 정책 점검 주기, 월간 검증 예산, 입력군 최대 개수 변경 | FR-011 | builder 이상 |
 | POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy/refresh` | 수동 policy refresh 작업을 예약 | FR-011 | builder 이상 |
-| POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts/suggest` | 대표 문의로 입력군 이름/영문 key 초안 생성 | FR-011 | builder 이상 |
+| POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts/suggest` | 대표 문의로 입력군 이름/영문 key와 합성 예문 3~5개 생성 | FR-011 | builder 이상 |
 | POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts` | 사용자가 확정한 직접 입력군 생성 | FR-011 | builder 이상 |
-| PATCH | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts/{cohort_id}` | 직접 입력군의 이름/key/대표 문의/고정 여부를 수정하고 재검증 대기로 전환 | FR-011 | builder 이상 |
+| PATCH | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts/{cohort_id}` | 직접 입력군의 이름/key/대표 문의/합성 예문/고정 여부를 수정하고 재검증 대기로 전환 | FR-011 | builder 이상 |
 | POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts/{cohort_id}/convert-to-manual` | 자동 발견 입력군의 같은 row를 사용자 입력군으로 전환하고 재검증 대기로 전환 | FR-011 | builder 이상 |
 | DELETE | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts/{cohort_id}` | 직접/자동 입력군을 retired로 전환하고 이후 라우팅에서 제외 | FR-011 | builder 이상 |
 | GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/analysis` | **계획**: 라우팅 적합성, candidate gate 결과, evidence gap, 예상 순절감 safe summary 조회 | FR-011 | builder 이상 |
@@ -386,8 +386,9 @@ Semantic matcher는 Aurelio Semantic Router의 정적 Route와 Hybrid Router 평
    signal 가중치 합을 계산한다. threshold를 통과하면 해당 안전 Route를 우선한다.
 3. 안전 override가 없으면 catalog의 aggregation 계약에 따라 cosine similarity를
    계산한다. 정적 catalog 기본값은 `centroid`다.
-4. 적응형 입력군 catalog는 대표 문의와 신뢰 가능한 최근 관찰 vector를 입력군별 최대
-   8개까지 사용하고 `max`로 가장 가까운 표현을 찾는다. 신규 trend 군집화는 0.50,
+4. 적응형 입력군 catalog는 대표 문의·합성 예문과 신뢰 가능한 최근 관찰 vector를 입력군별 최대
+   8개까지 사용한다. 입력군별 상위 2개 cosine similarity 평균인 `top_k_mean`으로 점수를 만든다.
+   신규 trend 군집화는 0.50,
    자동 입력군 runtime/관찰 매칭은 0.55, 직접 등록 입력군은 0.60을 사용한다.
 5. 기존 policy의 `mean`, `sum`은 representative `top_k` 집계를 사용한다. `max`는 한
    입력군이 전역 top-k를 독점하지 않도록 각 입력군의 최고점을 먼저 계산한다.
@@ -601,8 +602,8 @@ lifecycle, centroid vector, traffic share, 검증 모델을 보관한다. `propo
 않는다.
 
 `..._observations`는 배포 후 성공한 node run의 input hash와 embedding vector만
-보관한다. raw 운영 입력은 저장하지 않는다. `..._cohort_examples`는 사용자 대표 문의나
-별도 안전 요약 과정이 만든 합성 대표 문장만 보관하는 설정 데이터다. 자동 발견 입력군은
+보관한다. raw 운영 입력은 저장하지 않는다. `..._cohort_examples`는 사용자 대표 문의와
+마법사 또는 별도 안전 요약 과정이 만든 합성 대표 문장을 ordinal별로 최대 5개 보관한다. 자동 발견 입력군은
 안전한 합성 대표 문장이 아직 없으면 example row가 없을 수 있으며 policy 조회는
 `representative_query: null`을 반환한다. secret이나 실제 고객 원문은 입력하면 안 된다.
 자동 발견 입력군의 `label`과 `cohort_key`는 정책 갱신 시 가림 처리한 최근 문의 최대

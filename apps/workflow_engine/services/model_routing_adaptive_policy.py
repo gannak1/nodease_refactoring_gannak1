@@ -107,8 +107,8 @@ class AdaptiveModelRoutingPolicyService:
             "route_catalog_version": "adaptive-cohorts-v1",
             "encoder_model_id": str(encoder_model_id or "").strip(),
             "input_paths": normalized_paths,
-            "top_k": 5,
-            "aggregation": "max",
+            "top_k": 2,
+            "aggregation": "top_k_mean",
             "min_margin": 0.05,
             "routes": projected_routes,
         }

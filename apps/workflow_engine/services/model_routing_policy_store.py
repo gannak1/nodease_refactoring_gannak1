@@ -259,6 +259,7 @@ class ModelRoutingPolicyStore:
                     label=draft["label"],
                     cohort_key=draft["key"],
                     representative_query=draft["representative_query"],
+                    representative_examples=draft.get("representative_examples"),
                     fixed=draft["fixed"],
                     encoder_model_id=encoder_model_id,
                     embed=selection.client.embed_sync,
