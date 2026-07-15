@@ -407,12 +407,23 @@ def _raise_collection_sync_error(request: Request, exc: Exception) -> None:
             "Permission denied.",
         )
     if isinstance(exc, CollectionSyncPolicyBlocked):
+        safe_code = safe_reason_code(exc.reason_code)
+        response_code = (
+            safe_code
+            if safe_code
+            in {
+                "sync.no_eligible_targets",
+                "sync.not_supported",
+                "sync.target_limit_exceeded",
+            }
+            else "policy.blocked"
+        )
         raise_api_error(
             request,
             status.HTTP_409_CONFLICT,
-            "policy.blocked",
+            response_code,
             "Knowledge Collection sync is not available.",
-            {"policy_reason": exc.reason_code},
+            {"policy_reason": safe_code},
         )
     if isinstance(exc, CollectionSyncPersistenceFailed):
         raise_api_error(

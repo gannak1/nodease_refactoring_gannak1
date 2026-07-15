@@ -2,11 +2,13 @@ import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
 from apps.gateway.api.v1.endpoints import knowledge as knowledge_endpoint
 from apps.gateway.application.knowledge_collection_sync.use_cases import (
     CollectionSyncJobSnapshot,
+    CollectionSyncPolicyBlocked,
     CollectionSyncRequestResult,
 )
 from apps.gateway.auth.dependencies import get_current_user
@@ -143,6 +145,67 @@ def test_collection_sync_request_rejects_noncanonical_key_before_composition(
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "validation.failed"
     assert built is False
+
+
+@pytest.mark.parametrize(
+    ("reason_code", "expected_code", "expected_policy_reason"),
+    [
+        (
+            "sync.no_eligible_targets",
+            "sync.no_eligible_targets",
+            "sync.no_eligible_targets",
+        ),
+        (
+            "sync.target_limit_exceeded",
+            "sync.target_limit_exceeded",
+            "sync.target_limit_exceeded",
+        ),
+        ("unsafe.internal.reason", "policy.blocked", "sync.internal_error"),
+    ],
+)
+def test_collection_sync_policy_reason_uses_safe_api_code(
+    monkeypatch,
+    reason_code,
+    expected_code,
+    expected_policy_reason,
+):
+    organization_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    collection_id = uuid.uuid4()
+
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "resolve_active_organization_id",
+        lambda db, request, raw, current_user_id: organization_id,
+    )
+
+    class RequestUseCase:
+        def execute(self, command):
+            raise CollectionSyncPolicyBlocked(reason_code)
+
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "build_knowledge_collection_sync_use_cases",
+        lambda db: SimpleNamespace(request=RequestUseCase()),
+    )
+    app.dependency_overrides[knowledge_endpoint.get_db] = lambda: object()
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
+    try:
+        response = TestClient(app).post(
+            f"/api/v1/knowledge/collections/{collection_id}/sync-jobs",
+            headers={
+                "X-Organization-Id": str(organization_id),
+                "Idempotency-Key": str(uuid.uuid4()),
+            },
+        )
+    finally:
+        app.dependency_overrides = {}
+
+    assert response.status_code == 409
+    body = response.json()["error"]
+    assert body["code"] == expected_code
+    assert body["details"] == {"policy_reason": expected_policy_reason}
+    assert reason_code not in str(body) or reason_code == expected_policy_reason
 
 
 def test_collection_create_route_uses_active_organization(monkeypatch):

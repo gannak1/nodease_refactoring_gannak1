@@ -49,6 +49,21 @@ class VectorStoreService:
         self.user_id = user_id
         self.embedding_service = EmbeddingService(db, user_id)
 
+    def _chunk_scope_query(
+        self,
+        document_id: UUID,
+        document_version_id: UUID | None,
+    ):
+        version_predicate = (
+            DocumentChunk.document_version_id.is_(None)
+            if document_version_id is None
+            else DocumentChunk.document_version_id == document_version_id
+        )
+        return self.db.query(DocumentChunk).filter(
+            DocumentChunk.document_id == document_id,
+            version_predicate,
+        )
+
     def save_chunks(
         self,
         document_id: UUID,
@@ -88,13 +103,10 @@ class VectorStoreService:
             return
 
         if not chunks:
-            delete_query = self.db.query(DocumentChunk).filter(
-                DocumentChunk.document_id == document_id
+            delete_query = self._chunk_scope_query(
+                document_id,
+                document_version_id,
             )
-            if document_version_id is not None:
-                delete_query = delete_query.filter(
-                    DocumentChunk.document_version_id == document_version_id
-                )
             delete_query.delete(synchronize_session=False)
             doc.embedding_model = model_name
             if commit:
@@ -111,11 +123,10 @@ class VectorStoreService:
         logger.info("[벡터저장] %s개 청크 처리 시작", len(chunks))
 
         # 1. 기존 청크 로드 및 해시 맵 구축
-        existing_chunks = (
-            self.db.query(DocumentChunk)
-            .filter(DocumentChunk.document_id == document_id)
-            .all()
-        )
+        existing_chunks = self._chunk_scope_query(
+            document_id,
+            document_version_id,
+        ).all()
         existing_map = {}
 
         for chunk in existing_chunks:
@@ -244,13 +255,10 @@ class VectorStoreService:
             )
 
         # 기존 청크 삭제 후 저장
-        delete_query = self.db.query(DocumentChunk).filter(
-            DocumentChunk.document_id == document_id
+        delete_query = self._chunk_scope_query(
+            document_id,
+            document_version_id,
         )
-        if document_version_id is not None:
-            delete_query = delete_query.filter(
-                DocumentChunk.document_version_id == document_version_id
-            )
         delete_query.delete(synchronize_session=False)
 
         self.db.bulk_save_objects(new_document_chunks)
