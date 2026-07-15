@@ -103,6 +103,11 @@ class AppService:
             organization_id=organization_id,
             app_id=app.id,
             created_by=user_id,
+            graph={
+                "nodes": [],
+                "edges": [],
+                "viewport": {"x": 0, "y": 0, "zoom": 1},
+            },
         )
         db.add(workflow)
         db.flush()

@@ -187,6 +187,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - 저장 실패와 acknowledgement 유실 후 operation id와 canonical 값으로 재시도·복구한다.
 - workflow 실행·배포 preflight는 unresolved external node를 차단한다.
 - 비어 있지 않은 editor에서 완결된 신규 workflow 요청을 보내면 기존 graph 전체를 typed remove/add operation의 `replace_workflow`로 교체한다. 같은 요청은 빈 workflow shell에서는 `initial_graph`를 반환한다.
+- Persisted graph가 null인 빈 workflow shell의 canonical draft GET은 `nodes`/`edges` 빈 배열과 기본 viewport를 반환해 첫 GraphMutation CDS save를 진행한다.
 - `Diff 노드와 LLM 노드 사이에 Code 노드 삽입`처럼 자연어 source/destination pair를 받은 `between` request는 직접 edge가 정확히 하나일 때만 `graph_edit`를 반환한다. 0개 또는 복수 direct edge는 edge 선택 clarification이며 multi-hop path는 지원하지 않는다.
 - `입력`과 `응답` 사이에 LLM node 삽입 요청은 저장 graph 제목이 `Start node`와 `Answer node`여도 예약 구조 node 별칭으로 직접 edge를 resolve한다.
 
