@@ -68,6 +68,35 @@ describe('configuration preflight message', () => {
     expect(message).not.toContain('credential-id');
   });
 
+  it('shows the safe configuration reason from an active deployment 409', () => {
+    const message = deploymentApiErrorMessage({
+      response: {
+        status: 409,
+        data: {
+          detail: {
+            error: {
+              code: 'workflow.configuration_preflight.blocked',
+              reason_code: 'node_configuration_unresolved',
+              required_actions: ['complete_node_configuration'],
+              preflight: {
+                status: 'blocked',
+                surface: 'deployment',
+                nodes: [{ node_type: 'llmNode' }],
+              },
+            },
+          },
+        },
+      },
+    });
+
+    expect(message).toBe(
+      [
+        '실행 준비 검사에서 차단되었습니다. (node_configuration_unresolved)',
+        '필요 조치: 노드 설정을 완료하세요',
+      ].join('\n'),
+    );
+  });
+
   it('uses the fixed fallback for malformed blocked preflight payloads', () => {
     const message = deploymentApiErrorMessage(
       {

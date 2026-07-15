@@ -102,6 +102,7 @@ Verified Against: `feature/mba-254 @ 95e821ef`
 - 배포 목록은 enabled policy라도 비활성 revision이면 `활성화 후 적용`, 활성 revision이면 `집행 중`으로 구분한다.
 
 - Deployment modal은 preflight preview가 blocked인 경우 safe reason과 required actions를 표시하고 hidden KB identity를 표시하지 않는다.
+- Active create의 `workflow.configuration_preflight.blocked` 409에 `safe_summary`가 없으면 modal은 Axios 기본 문구 대신 safe `reason_code`와 allowlisted node-configuration action을 표시하며 node ID나 raw configuration은 표시하지 않는다.
 - Inactive save 후 activation을 시도하면 같은 preflight blocker가 사용자에게 표시된다.
 - 공개/내부 챗봇 배포 결과는 각각 공개 링크와 인증 내부 링크만 표시하며, 내부 링크의 `401`은 safe `next`를 보존해 이메일/비밀번호 로그인 후 원래 링크로 복귀한다. 상세 assertion은 [chatbot-deployment test cases](../chatbot-deployment/test_cases.md)를 따른다.
 - Disposable PostgreSQL에 연결한 dispatcher 두 개가 같은 occurrence를 동시에 처리해도 claim은 하나이고 `next_run_at`은 한 번만 전진한다.

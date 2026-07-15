@@ -61,6 +61,10 @@ export function deploymentApiErrorMessage(
   }
   const detailObject = asRecord(detail);
   const detailError = asRecord(detailObject.error);
+  const configurationMessage = safeConfigurationPreflightMessage(detailError);
+  if (configurationMessage) {
+    return configurationMessage;
+  }
   const preflightMessage = safeBlockedPreflightMessage(detailError.preflight);
   if (preflightMessage) {
     return preflightMessage;
@@ -72,6 +76,27 @@ export function deploymentApiErrorMessage(
     return errorObject.message;
   }
   return fallback;
+}
+
+function safeConfigurationPreflightMessage(
+  error: Record<string, unknown>,
+): string | null {
+  if (error.code !== 'workflow.configuration_preflight.blocked') {
+    return null;
+  }
+
+  const preflight = asRecord(error.preflight);
+  const reasonCode = error.reason_code;
+  if (preflight.status !== 'blocked' || typeof reasonCode !== 'string') {
+    return null;
+  }
+
+  const actionLabels = Array.isArray(error.required_actions)
+    ? error.required_actions
+        .filter((action) => action === 'complete_node_configuration')
+        .map(() => '노드 설정을 완료하세요')
+    : [];
+  return formatSafePreflightFields(reasonCode, '0', actionLabels);
 }
 
 function safeBlockedPreflightMessage(value: unknown): string | null {

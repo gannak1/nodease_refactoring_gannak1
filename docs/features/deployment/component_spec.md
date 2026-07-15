@@ -17,6 +17,7 @@ Verified Against: `feature/mba-219 @ 5b1cf366`
 - Collection preflight copy may show affected Collection count bucket and candidate-budget-limited boolean. It never renders selected Collection/child identifiers, labels, membership, or exact hidden counts.
 - Existing activation toggle controls surface `deployment.preflight.blocked` responses without showing hidden KB identity.
 - `DeploymentFlowModal`과 activation toggle은 기존 preflight response에서 MBA-219의 generic node reason/action을 함께 표시한다. Mail credential identity, Slack token/Webhook URL/channel/payload와 raw configuration은 렌더링하지 않는다.
+- Active create가 `workflow.configuration_preflight.blocked` 409을 반환하면 preflight body에 `safe_summary`가 없더라도 safe `reason_code`와 allowlisted `complete_node_configuration` 조치만 표시한다. node ID, raw node data와 설정 원문은 표시하지 않는다.
 - Active delete controls do not need preflight display in MBA-176 because delete no longer auto-promotes another deployment.
 - 게시하기 메뉴는 공개 `chatbot`과 `internal_chatbot`을 별도 항목으로 제공한다.
 - `SuccessStep`은 공개 챗봇에는 `/embed/chat/{url_slug}` 링크만, 내부 챗봇에는 `/modules/{workflow_id}/run?deploymentId={deployment_id}` 인증 링크만 표시한다. 내부 챗봇 결과에는 public REST API secret/test panel을 표시하지 않는다.
