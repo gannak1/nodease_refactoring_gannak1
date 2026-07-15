@@ -255,6 +255,22 @@ describe('TestSidebar final response card', () => {
     expect(screen.getByRole('table')).not.toHaveClass('text-base');
   });
 
+  it('does not render Markdown images', () => {
+    const { container } = render(
+      <FinalResponseCard
+        renderMarkdown
+        preview={{
+          kind: 'text',
+          text: '![tracking pixel](https://tracker.example/pixel.png)',
+          isEmpty: false,
+          sourceLabel: 'Answer',
+        }}
+      />,
+    );
+
+    expect(container.querySelector('img')).not.toBeInTheDocument();
+  });
+
   it('빈 최종 응답은 empty state를 표시한다', () => {
     render(
       <FinalResponseCard

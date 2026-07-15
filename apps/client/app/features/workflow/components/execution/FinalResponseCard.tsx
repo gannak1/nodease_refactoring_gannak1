@@ -85,6 +85,7 @@ export function FinalResponseCard({
               className={`${responseContainerClassName} ${large ? 'text-lg leading-8' : 'text-sm leading-6'}`}
             >
               <ReactMarkdown
+                disallowedElements={['img']}
                 remarkPlugins={[remarkGfm]}
                 components={{
                   h1: ({ children }) => (
