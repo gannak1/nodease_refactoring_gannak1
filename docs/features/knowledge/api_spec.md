@@ -553,7 +553,9 @@ Resource hiding은 active organization 밖 Collection/job 또는 Collection/job 
 `403 permission.denied`다. Archived/deleted/source-managed/system-managed/unsupported source는
 mutation 전에 safe `409 policy.blocked` 또는 `sync.not_supported`로 닫는다. Sync 가능한 DB
 target이 없으면 `409 sync.no_eligible_targets`, target cap 초과는 `409 sync.target_limit_exceeded`
-를 사용하며 child identity와 exact count를 반환하지 않는다.
+를 사용하며 child identity와 exact count를 반환하지 않는다. 이 세 sync policy code만 error
+code로 승격하고 알 수 없는 reason은 `409 policy.blocked`와 `sync.internal_error` projection으로
+일반화한다.
 
 Gateway는 job/audit/Collection pending commit 뒤 `workflow.knowledge_collection_sync.execute`
 task를 발행한다. Publish 실패는 raw broker 오류를 반환하지 않고 `dispatch_deferred=true`인

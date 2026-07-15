@@ -101,7 +101,9 @@ Option 3과 option 5를 채택한다.
 
 - Gateway는 job/items, Collection pending, requested audit를 같은 transaction에 저장하고 commit
   뒤 job UUID 하나만 task로 발행한다.
-- Publish 실패는 queued job으로 남고 periodic recovery가 재발행한다.
+- Publish 실패는 queued job으로 남고 Worker와 분리된 singleton Celery Beat의 periodic recovery가
+  재발행한다. Docker Compose와 Helm 배포 모두 Beat를 포함하며 Helm rollout은 `Recreate` strategy로
+  동시에 둘 이상의 scheduler가 실행되는 시간을 만들지 않는다.
 - Task는 `acks_late`와 `reject_on_worker_lost`를 사용하되 business retry는 DB item attempt,
   next retry와 lease가 소유한다.
 - Job claim 상한은 target 수의 정상 batch claim, 각 item의 최대 retry claim, stale recovery 5회를
@@ -121,6 +123,9 @@ Option 3과 option 5를 채택한다.
   `DocumentVersion(status=indexing)`과 version-scoped chunk를 같은 transaction에서 만들고, chunk가
   하나 이상 준비된 뒤 active pointer를 원자 교체한다. 실패·empty result·rollback은 이전 active
   ready version과 chunk를 유지하며, 성공한 뒤에만 이전 version을 superseded로 표시한다.
+- Shared legacy unversioned vector save는 `document_version_id IS NULL` scope만 조회·삭제한다. 따라서
+  pre-execution legacy SyncService가 실행되어도 active/historical version chunk를 삭제하거나 해당
+  version의 embedding을 unversioned incremental reuse source로 섞지 않는다.
 
 ### Status, partial failure and retention
 
@@ -159,7 +164,8 @@ sync는 MCP/API connector, source revision, ACL/public exposure와 content safet
 - KC DB document apply는 canonical versioned ingestion finalizer를 사용하므로 실패한 refresh가
   이전 retrieval-visible version을 파괴하지 않는다.
 - Gateway와 Workflow Engine에 각각 application/port/adapter/composition boundary가 생긴다.
-- Celery Beat는 due/stale job recovery와 terminal retention cleanup task를 실행한다.
+- Docker Compose와 Helm의 별도 singleton Celery Beat는 due/stale job recovery와 terminal retention
+  cleanup task를 실행한다.
 - Client는 polling 기반 safe status panel을 제공한다.
 - Collection management projection은 권한인 `can_sync`와 현재 adapter 지원 여부인
   `sync_supported`를 분리하고 sync POST와 같은 canonical child eligibility scan을 사용해 UI가
