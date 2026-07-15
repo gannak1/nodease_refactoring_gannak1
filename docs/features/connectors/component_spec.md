@@ -1,7 +1,7 @@
 # Connectors Component Spec
 
 Status: Draft
-Verified Against: feature/mba-246 @ b299e2fa2eecbc8320d38440ff08d34963f5fba6
+Verified Against: feature/mba-246 @ 86941af23f76f82d2628f6858c09e5ab0aa5f0a0
 
 ## Screens
 
@@ -130,12 +130,14 @@ File/page artifact connector는 egress guard 이후에도 artifact content를 tr
 Local demo는 일반 stack과 분리된 `connector-demo` Compose profile을 명시적으로 시작한 경우에만 사용한다.
 
 1. Host-run은 `docker compose -f dev/docker-compose.yml --profile connector-demo up -d --build --wait connector-test-redis connector-test-tls-init connector-test-postgres`로 격리된 Redis와 TLS PostgreSQL을 시작하고 health 완료를 기다린다.
-2. Docker 통합 모드는 `docker compose -f docker/docker-compose.yml -f docker/docker-compose.connector-demo.yml --profile connector-demo up -d --build --wait`를 사용한다.
+2. Docker 통합 모드는 `docker compose -f docker/docker-compose.yml -f docker/docker-compose.connector-demo.yml --profile connector-demo up -d --build --wait`를 사용한다. Service-name runtime probe는 같은 파일에 `--profile connector-demo --profile connector-demo-verify run --rm connector-test-runtime-verifier`를 사용한다.
 3. `scripts/copy_connector_demo_password.ps1 -Mode dev` 또는 `-Mode docker`를 실행해 생성 credential을 stdout 없이 clipboard에 복사한다.
 4. Host-run Gateway에서는 `localhost`, port `55432`; Docker Gateway에서는 `connector-test-postgres`, port `5432`를 입력한다. Database는 `connector_demo`, username은 `connector_demo_user`를 사용한다.
-5. Gateway가 사용하는 exact-target/CA 환경 설정은 profile 또는 `dev/.env.example`을 따른다. Production 설정으로 복사하지 않는다.
+5. Gateway가 사용하는 explicit local-profile flag, exact-target, 공개 CA 환경 설정은 profile 또는 `dev/.env.example`을 따른다. Production 설정으로 복사하지 않는다.
 
-Runtime-generated 공개 CA는 git-ignore된 `local/connector-test-tls/<mode>/ca.crt`에 export되지만 CA signing key, server key와 credential은 private named volume을 벗어나지 않는다. 공개 CA 파일도 source artifact로 커밋하지 않는다.
+Runtime-generated 공개 CA는 git-ignore된 `local/connector-test-tls/<mode>/ca.crt`에 export한다. CA signing key는 init container의 임시 filesystem에서만 사용하고 persistent volume에 쓰지 않는다. Server TLS material, PostgreSQL bootstrap admin credential, Connector demo credential은 서로 다른 private named volume에 두고 Gateway는 어느 private volume도 mount하지 않는다. Public CA 파일도 source artifact나 Docker build context로 커밋하지 않는다.
+
+Demo PostgreSQL은 전용 bridge network와 loopback publish를 함께 사용한다. TCP는 TLS 1.2 이상 `hostssl`/SCRAM만 허용하고 평문은 거부한다. `connector_demo_user`는 read-only 기본 transaction, bounded statement timeout과 connection limit을 가진 non-superuser다. PostgreSQL만 server TLS, bootstrap admin credential, Connector demo credential volume을 읽는다. One-shot verifier는 Connector demo credential volume만 읽고 server TLS와 bootstrap admin credential volume은 읽지 않는다.
 
 ### Connection Create During DB Source Submit
 

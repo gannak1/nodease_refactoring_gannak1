@@ -1,7 +1,7 @@
 # Connectors Test Cases
 
 Status: Draft
-Verified Against: feature/mba-246 @ b299e2fa2eecbc8320d38440ff08d34963f5fba6
+Verified Against: feature/mba-246 @ 86941af23f76f82d2628f6858c09e5ab0aa5f0a0
 
 ## Minimum Failure Rule
 
@@ -41,6 +41,8 @@ Verified Against: feature/mba-246 @ b299e2fa2eecbc8320d38440ff08d34963f5fba6
 | CONN-TC-U014 | DB row fetch는 read-only transaction, statement timeout, batch size cap, total row cap을 적용해야 한다. | 사용자 SELECT가 cap 없이 실행되거나 row cap 초과를 부분 성공으로 반환한다. | safe reason code로 실패. |
 | CONN-TC-U015 | `PostgresConnector()` 기본 생성자는 Knowledge-safe 경계로 SSH tunnel을 거부해야 한다. | 기본 생성자가 SSH tunnel을 연다. | `adapter.ssh_tunnel_not_allowed`. |
 | CONN-TC-U016 | Workflow connector API는 기존 SSH tunnel compatibility를 명시적으로 선택해야 한다. | workflow connector API가 기본 생성자를 사용해 문서화된 SSH tunnel 설정을 깨뜨리거나, Knowledge ingestion까지 tunnel을 열어 둔다. | 테스트 실패. |
+| CONN-TC-U017 | Redis admission test namespace는 bounded safe token이어야 한다. | Empty, leading/trailing delimiter, uppercase, whitespace, caller-supplied hash tag, 65자 이상 namespace를 전달한다. | Adapter construction 실패, production key namespace 영향 없음. |
+| CONN-TC-U018 | Concurrency 거부는 rate를 부분 소비하지 않아야 한다. | 같은 user lease가 active인 상태에서 두 번째 request가 busy로 거부된 뒤 첫 lease를 해제하고 rate limit까지 재시도한다. | Busy request는 rate counter를 증가시키지 않고 다음 정상 acquire가 허용된다. |
 
 ## API Tests
 
@@ -76,6 +78,7 @@ Verified Against: feature/mba-246 @ b299e2fa2eecbc8320d38440ff08d34963f5fba6
 | CONN-TC-A028 | Connector test timeout 뒤 실제 blocking work가 끝날 때까지 lease를 유지해야 한다. | API 10초를 넘긴 future가 background에서 계속 실행되거나 실행 중 heartbeat가 필요하다. | Safe timeout 반환, owner-safe renewal 지속, completion 전 lease release 0회, completion 후 정확히 1회. |
 | CONN-TC-A029 | Admission 장애와 capacity 부족은 fail-closed해야 한다. | Redis timeout/script error, transport peer 없음, distributed/local concurrency full이다. | `429/503`, DNS/DB connect 0회, process-local unlimited fallback 없음. |
 | CONN-TC-A030 | Connector test audit는 bounded metadata만 가져야 한다. | Success/target denial/driver failure/timeout이다. | `connection.test`, organization/actor/result/reason/duration만 기록하고 target/credential/network 원문 없음. |
+| CONN-TC-A031 | 실제 Redis transport 장애는 API에서 DB probe 전에 닫혀야 한다. | 인증·active organization 요청을 loopback의 미사용 Redis port로 연결한다. | `503 connector.admission_unavailable`, probe 호출 0회, secret 비노출. |
 
 ## Component And Hook Tests
 
@@ -113,8 +116,34 @@ Verified Against: feature/mba-246 @ b299e2fa2eecbc8320d38440ff08d34963f5fba6
 | CONN-TC-X005 | Strict probe는 validated IP 한 곳에 선택된 server-owned CA file을 명시한 TLS `verify-full`로 한 번만 연결해야 한다. | Multiple DNS, rebinding, first-attempt failure, plaintext/downgrade, system/local CA 누락 또는 SAN mismatch를 유도한다. | Pinned one-attempt, no fallback/retry, target별 CA와 hostname certificate 검증. CA 누락은 startup 또는 DNS 전에 safe failure. |
 | CONN-TC-X006 | Port allowlist는 배포 관리자만 bounded 설정할 수 있어야 한다. | Empty token, duplicate, non-integer, `0`, `65536`, 17개 port를 설정하거나 request로 allowlist 밖 port를 보낸다. | Invalid 설정은 startup 실패. Request는 safe target-policy 실패이며 admission/DNS/probe 0회. |
 | CONN-TC-X007 | Trusted-local target은 development exact hostname+port만 허용해야 한다. | Unlisted private host, raw IP, wildcard/CIDR/suffix, allowlist 밖 port, mixed public/private DNS를 사용한다. | Network 전 safe target-policy 실패. Exact target의 RFC1918/ULA/loopback 결과만 검증 IP 하나에 pin. |
-| CONN-TC-X008 | Production은 trusted-local target 또는 local CA override를 허용하지 않아야 한다. | `NODE_ENV=production`에서 두 설정 중 하나 또는 모두를 주입한다. | Gateway startup 실패, public-only 경계 유지. |
-| CONN-TC-X009 | 실제 Redis와 runtime TLS PostgreSQL이 fake 밖의 배포 계약을 검증해야 한다. | Atomic last-slot race, cross-adapter concurrency, wrong-owner release, TTL recovery, host `localhost:55432`, Docker `connector-test-postgres:5432`를 실행한다. | 실제 Redis admission과 TLS `verify-full`/`SELECT 1` 성공. Secret/key 원문은 output·log·response에 없음. |
+| CONN-TC-X008 | Local profile은 명시적 flag와 완전한 설정 조합을 요구해야 한다. | Flag 없음/false+target/CA, flag만 있음, target만, CA만, non-development, invalid boolean을 각각 주입한다. | Gateway startup 실패, DNS/Redis/probe 0회. `true`+development+exact target+CA만 허용. |
+| CONN-TC-X009 | Production은 모든 local-profile 설정을 거부해야 한다. | `NODE_ENV=production`에서 flag, target, CA를 각각 단독으로 또는 함께 주입한다. | 모든 조합에서 Gateway startup 실패, public-only 경계 유지. |
+| CONN-TC-X010 | Local CA startup validation은 공개 root certificate만 받아야 한다. | Empty/invalid PEM, leaf `CA:FALSE`, expired/future CA, certificate 2개, private-key marker, 64 KiB 초과, missing/directory/unreadable path를 각각 제공한다. | DNS 전에 startup 실패. 현재 유효한 단일 PEM `CA:TRUE`만 통과. |
+| CONN-TC-X011 | Local CA는 exact target에만 적용해야 한다. | Local profile이 설정된 상태에서 public target을 probe한다. | Public target은 시스템 CA를 사용하고 local CA는 사용하지 않는다. |
+| CONN-TC-X012 | Demo PostgreSQL은 TLS-only 최소권한이어야 한다. | Verified TLS, `sslmode=disable`, write DDL, role attribute 조회를 각각 수행한다. | TLS 성공, 평문/DDL 실패, current role은 non-superuser·non-create-role/db·non-replication·non-bypass-RLS·read-only. |
+| CONN-TC-X013 | TLS 인증 실패는 downgrade 없이 닫혀야 한다. | Valid but unrelated CA와 CA는 맞지만 SAN이 다른 logical host를 각각 사용한다. | `connector.connection_failed`, 평문 fallback·다른 IP retry 0회, raw TLS detail 비노출. |
+| CONN-TC-X014 | Runtime certificate init은 CA signing key를 영속화하지 않아야 한다. | First init, valid-material repeated init, interrupted temp artifact를 점검한다. | CA key는 container temp에만 존재하고 종료 후 volume에 없음. Server key/CA certificate는 match하며 mode `0600/0644`, valid material은 재사용, stale temp는 정리. |
+| CONN-TC-X015 | Server TLS, bootstrap admin credential, Connector demo credential은 최소권한으로 분리되어야 한다. | Gateway, PostgreSQL, one-shot verifier mount와 각 credential volume의 파일 목록·mode를 렌더링/검사한다. | Gateway는 공개 CA만, PostgreSQL은 세 private volume을 읽는다. Verifier는 Connector credential만 읽고 server key/admin credential은 읽지 않는다. 두 credential volume에는 각각 기대한 파일 하나만 있고 mode는 `0600`이다. |
+| CONN-TC-X016 | Demo service는 default/production 배포에 섞이지 않아야 한다. | Profile 없는 dev Compose, base Docker Compose, Helm values/templates 전체를 렌더링·스캔한다. | Demo service/network/volume/mount/local env가 없고 일반 stack config가 유효하다. |
+| CONN-TC-X017 | Host publish와 network 분리는 함께 유지되어야 한다. | Dev/Docker Compose port와 network membership을 검사하고 host에서 실제 연결한다. | PostgreSQL/Redis는 `127.0.0.1`에만 publish되고 demo 전용 bridge를 사용하며 Docker PostgreSQL은 platform `moduly-network`에 직접 연결되지 않는다. |
+| CONN-TC-X018 | 실제 Redis test cleanup은 무관한 key를 보존해야 한다. | 같은 DB에 sentinel key를 둔 뒤 rate/concurrency/owner/TTL test와 cleanup을 실행한다. | Test namespace만 삭제되고 sentinel은 유지된다. `FLUSHDB`/`FLUSHALL` 호출 0회. |
+| CONN-TC-X019 | 실제 Redis atomic acquire는 partial state를 만들지 않아야 한다. | Last-slot race, cross-adapter global/user/org concurrency, busy-then-release, wrong/duplicate owner release, TTL recovery를 실행한다. | 정확한 winner/cap, busy는 rate 미소비, wrong/duplicate release는 다른 lease에 영향 없음, TTL 뒤 복구. |
+| CONN-TC-X020 | Host API와 Docker service-name 경로가 모두 실제 dependency를 사용해야 한다. | Host ASGI API는 실제 Redis+`localhost:55432`, one-shot Docker verifier는 `connector-test-redis`+`connector-test-postgres:5432`를 사용한다. | 두 경로 모두 TLS `verify-full`/`SELECT 1` 성공, output은 canonical status만 포함. |
+| CONN-TC-X021 | Demo 재시작은 readiness race 없이 복구되어야 한다. | Certificate init을 반복하고 PostgreSQL을 재시작한 뒤 health와 probe를 확인한다. | Init completion→PostgreSQL health 순서를 지키고 valid certificate 재사용, probe retry 없이 다음 호출 성공. |
+| CONN-TC-X022 | Local generated material은 source와 image build context에 들어가지 않아야 한다. | Git tracked files, `.dockerignore`, public bind directory, image source를 검사한다. | `local/`은 build context 제외, tracked private material 0건, public directory에는 `ca.crt` 하나만 존재. |
+| CONN-TC-X023 | Credential init은 손상·중단 artifact를 안전하게 복구해야 한다. | Empty/malformed/wrong-mode credential, stale `.password.*`, 반대 volume의 known credential file을 각각 주입하고 init을 반복한다. | 유효 credential은 값 보존+`0600` 복구, invalid credential은 원자 교체, stale/cross artifact 제거. 각 volume에는 기대 파일 하나만 남고 원문 출력은 없다. |
+| CONN-TC-X024 | Credential/data volume을 부분 삭제해도 silent fallback하지 않아야 한다. | Running demo에서 Connector credential volume만 제거해 health/probe를 확인하고, 별도로 bootstrap admin credential volume만 제거해 노출 surface를 검사한다. | Connector credential 불일치는 health/probe에서 fail-closed한다. Regenerated bootstrap file은 기존 DB admin credential로 간주하지 않으며 verifier/Gateway에 노출되지 않는다. 어떤 경우에도 default/empty credential, plaintext, superuser fallback은 없고 복구는 runbook의 demo data+credential project-scope reset을 따른다. |
+
+## MBA-246 Automation Traceability
+
+| Test case | 자동 검증 위치 | 수준 |
+| --- | --- | --- |
+| X008-X011 | `apps/gateway/tests/composition/test_connector_test_composition.py`, `apps/gateway/tests/adapters/connectors/test_postgres_probe.py` | Unit/startup |
+| U017-U018, X018-X019 | `apps/gateway/tests/adapters/connectors/test_redis_test_admission.py`, `test_redis_test_admission_integration.py` | Unit + actual Redis |
+| A031, X012-X013, X020 | `apps/gateway/tests/integration/test_connector_demo_integration.py` | Actual transport/API/TLS PostgreSQL |
+| X014-X017, X021-X024 | `apps/gateway/tests/architecture/test_connector_demo_boundary.py`, Compose healthcheck, `scripts/verify_connector_demo_runtime.py`, MBA-246 Docker lifecycle smoke | Architecture + actual Docker smoke |
+
+실제 Redis/TLS test는 opt-in 환경 설정이 없으면 skip할 수 있지만 MBA-246 merge evidence에서는 skip을 허용하지 않는다. 각 실행은 UUID 기반 namespace만 삭제하고 logical Redis DB 전체를 초기화하지 않는다. 실제 credential, certificate 본문, fingerprint, raw request는 pytest output이나 문서에 기록하지 않는다.
 
 ## Knowledge Source Connector Target Tests
 

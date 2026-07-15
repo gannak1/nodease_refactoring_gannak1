@@ -1,7 +1,7 @@
 # Connectors API Spec
 
 Status: Draft
-Verified Against: feature/mba-246 @ b299e2fa2eecbc8320d38440ff08d34963f5fba6
+Verified Against: feature/mba-246 @ 86941af23f76f82d2628f6858c09e5ab0aa5f0a0
 
 기본 경로: `/api/v1`
 
@@ -71,9 +71,9 @@ Initial admission limits:
 | Request network | aligned 60초당 20 |
 | Global | active 16 |
 
-Port allowlist는 `CONNECTOR_TEST_ALLOWED_PORTS`의 중복 없는 `1..65535` 정수 1~16개다. 기본·production과 Docker-internal demo는 `5432`, host-run demo는 `5432,55432`를 사용한다. 이 설정은 서버/Helm 소유이며 request body로 확장할 수 없다.
+Port allowlist는 `CONNECTOR_TEST_ALLOWED_PORTS`의 중복 없는 `1..65535` 정수 1~16개다. 기본·production과 Docker-service demo는 `5432`, host-run demo는 `5432,55432`를 사용한다. 이 설정은 서버/Helm 소유이며 request body로 확장할 수 없다.
 
-Trusted-local target은 port allowlist를 대체하지 않는다. `NODE_ENV=development`에서 `CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS`와 `CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE`을 함께 설정해야 하며, production은 두 설정 중 하나라도 있으면 시작하지 않는다. Target 목록은 쉼표로 구분한 exact canonical hostname+port 1~4개이고 wildcard, CIDR, suffix와 raw IP target은 허용하지 않는다.
+Trusted-local target은 port allowlist를 대체하지 않는다. `CONNECTOR_TEST_LOCAL_PROFILE_ENABLED=true`, `NODE_ENV=development`, `CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS`, `CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE` 네 조건을 모두 만족해야 한다. Flag가 없거나 false인데 target/CA가 있거나, flag만 있거나, production에서 세 local setting 중 하나라도 있으면 Gateway는 시작하지 않는다. Target 목록은 쉼표로 구분한 exact canonical hostname+port 1~4개이고 wildcard, CIDR, suffix와 raw IP target은 허용하지 않는다.
 
 Security environment settings:
 
@@ -92,8 +92,9 @@ Security environment settings:
 | `CONNECTOR_TEST_LEASE_TTL_SECONDS` | `30` | `1..120`, API timeout보다 큼 |
 | `CONNECTOR_TEST_ADMISSION_HMAC_KEY` | local-only fallback | Production에서 별도 32 byte 이상 key 필수 |
 | `CONNECTOR_TEST_ALLOWED_PORTS` | `5432` | 중복 없는 port 1~16개. Local target port도 포함 |
+| `CONNECTOR_TEST_LOCAL_PROFILE_ENABLED` | `false` | `true`/`false`만 허용. `true`는 development exact-local target과 CA를 모두 요구 |
 | `CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS` | unset | `NODE_ENV=development` 전용 exact `host:port` 1~4개 |
-| `CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE` | unset | Trusted-local target과 함께 설정하는 readable regular file |
+| `CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE` | unset | 64 KiB 이하, 현재 유효한 단일 PEM `CA:TRUE` 공개 certificate. Private key와 certificate bundle 금지 |
 
 Invalid security setting은 Gateway startup을 실패시킨다. Helm 배포는 `secrets.connectorTestAdmissionHmacKey`로 별도 key를 제공한다.
 
@@ -104,7 +105,7 @@ Local demo profile은 다음 두 target을 각각 사용한다.
 | Host-run Gateway | `localhost:55432` | `local/connector-test-tls/dev/ca.crt`의 runtime-generated 공개 CA |
 | Docker Gateway | `connector-test-postgres:5432` | container에 read-only mount된 runtime-generated 공개 CA |
 
-CA signing key, server key와 demo credential은 API나 Gateway mount에 포함되지 않는다. Credential은 helper를 통해 clipboard로만 전달하고 stdout에 출력하지 않는다.
+CA signing key는 one-shot init container의 임시 filesystem에서만 사용하고 종료 전에 제거한다. Server TLS material, PostgreSQL bootstrap admin credential, Connector demo credential은 분리된 private volume에 두며 API와 Gateway mount에는 포함하지 않는다. One-shot verifier와 clipboard helper에는 Connector demo credential만 제공하고 stdout에 출력하지 않는다.
 
 ### `POST /connectors`
 
