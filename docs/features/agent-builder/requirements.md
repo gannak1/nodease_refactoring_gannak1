@@ -324,6 +324,6 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 
 - `set` decision은 Catalog v3의 parameter type, validation, `sensitivity`와 `defer_policy`를 재조회한 뒤에만 graph patch를 만든다. `credential_ref`와 `resource_ref`는 서버가 현재 organization과 권한을 검증한 canonical reference만 저장한다.
 - secret-like 값이 확인되거나 secret detector가 실패하면 fail-closed하고 기존 `400 invalid_decision`으로 거부한다. 거부된 입력의 원문은 graph, session/request payload, parameter task, audit, trace, log 또는 오류 message에 저장·반사하지 않는다. 일반 Catalog validation issue는 HTTP 거부가 아니라 `status=invalid`, `reason=catalog_validation_failed`인 task 결과로 저장·반환한다.
-- WorkflowNode의 실행 필수 reference는 runtime target을 선택하는 `appId`다. `workflowId`는 선택 metadata이며, 함께 존재하는 결과 node data는 같은 organization, 각 resource 권한, `App.workflow_id == Workflow.id` 관계를 모두 통과해야 저장된다. 입력 순서와 무관하게 현재 node data와 patch를 합친 결과를 검증하며, 실패 시 부분 mutation을 남기지 않는다.
+- WorkflowNode의 실행 필수 reference는 runtime target을 선택하는 `appId`다. `workflowId`는 선택 metadata이며, `appId`를 직접 변경하면 서버는 선택된 App의 canonical Workflow로 이 metadata를 정규화한다. `workflowId`를 직접 변경하거나 이미 정합한 pair를 검증할 때는 같은 organization, 각 resource 권한, `App.workflow_id == Workflow.id` 관계를 모두 통과해야 저장된다. 실패 시 부분 mutation을 남기지 않는다.
 - Agent Builder draft CAS는 row lock을 획득한 뒤 DB 최신 Workflow row를 refresh하여 `updated_at`과 graph hash를 비교한다. stale이면 기존 `stale_graph` 409로 종료하고 최신 graph를 덮어쓰지 않는다.
 - Catalog required configuration의 server-derived preflight는 `external_read`, `external_write`, `local_execution`을 모두 포함한다. test, run, deployment와 schedule은 같은 unresolved 판정을 사용하며, client가 보낸 `configuration_state`는 권위로 사용하지 않는다.

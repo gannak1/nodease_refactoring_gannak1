@@ -543,5 +543,5 @@ applyGraphTransaction(nextNodes, nextEdges, metadata)
 
 - Parameter decision application은 Catalog parameter schema, sensitivity와 기존 fail-closed secret detector를 적용한 뒤에만 GraphMutationBuilder를 호출한다. detector 실패도 허용하지 않으며 값은 persistence/audit 경계에 도달하기 전에 폐기한다.
 - `parameter_tasks.validate_direct_set_value`는 순수 Catalog/type/sensitivity 판정을 담당하고, `ParameterTaskService`는 DB-backed reference와 Workflow/App relation을 검증한다. resource resolver는 canonical opaque id만 graph patch에 전달하며 raw config/secret을 application model에 넣지 않는다.
-- `appId`는 WorkflowNode runtime target을 정하는 필수 reference이고 `workflowId`는 선택 metadata다. relation 검증은 두 값이 모두 있는 현재 node data와 이번 patch의 합성 결과에서 수행한다. `App.workflow_id == Workflow.id`, 같은 organization, 양쪽 권한을 모두 확인한 뒤에만 task 완료와 graph patch를 원자적으로 확정한다.
+- `appId`는 WorkflowNode runtime target을 정하는 필수 reference이고 `workflowId`는 선택 metadata다. `appId` 직접 변경 시 service는 선택된 App과 canonical Workflow의 organization scope·양쪽 read 권한을 확인하고 `workflowId`를 정규화한다. `workflowId` 직접 변경과 이미 정합한 pair는 현재 node data와 patch의 합성 결과에서 `App.workflow_id == Workflow.id`를 강제한 뒤에만 task 완료와 graph patch를 원자적으로 확정한다.
 - WorkflowDraftCASService는 `populate_existing().with_for_update()`에 해당하는 locked refresh 계약으로 최신 row를 비교하며 stale conflict 시 graph/audit/task를 쓰지 않는다.
