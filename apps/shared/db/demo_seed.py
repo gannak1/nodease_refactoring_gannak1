@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import copy
 import gzip
 import json
 import os
@@ -109,6 +110,7 @@ DEMO_MODEL_ROUTER_BASE_MODEL = "gpt-5-mini"
 DEMO_MODEL_ROUTER_FALLBACK_MODEL = "gpt-4.1"
 DEMO_MODEL_ROUTER_CHEAP_MODEL = "gpt-4o-mini"
 DEMO_MODEL_ROUTER_BALANCED_MODEL = "gpt-4.1-mini"
+DEMO_ONBOARDING_ROUTER_MODEL = "gpt-5.6-luna"
 DEMO_EMBEDDING_MODEL = "text-embedding-3-small"
 DEMO_EMBEDDING_DIMENSION = 1536
 # 모델 라우팅은 문서 검색과 달리 입력 문의의 의미상 군집을 구분해야 한다.
@@ -237,6 +239,7 @@ CREDENTIAL_MODEL_REL_IDS = {
     DEMO_MODEL_ROUTER_CHEAP_MODEL: _uuid(926),
     DEMO_MODEL_ROUTER_BALANCED_MODEL: _uuid(927),
     DEMO_MODEL_ROUTER_EMBEDDING_MODEL: _uuid(928),
+    DEMO_ONBOARDING_ROUTER_MODEL: _uuid(929),
 }
 
 TEAM_LLM_PERMISSION_IDS = {
@@ -333,6 +336,7 @@ APP_IDS = {
     "department_onboarding_chatbot": _uuid(406),
     "team_onboarding_access_control": _uuid(407),
     "model_router_ticket_ops": uuid.UUID("91000000-0000-0000-0000-000000000001"),
+    "team_onboarding_adaptive_routing": _uuid(408),
 }
 
 WORKFLOW_IDS = {
@@ -342,6 +346,7 @@ WORKFLOW_IDS = {
 WORKFLOW_IDS["model_router_ticket_ops"] = uuid.UUID(
     "91000000-0000-0000-0000-000000000002"
 )
+WORKFLOW_IDS["team_onboarding_adaptive_routing"] = _uuid(508)
 
 DEPLOYMENT_IDS = {
     key: _uuid(600 + index)
@@ -350,6 +355,7 @@ DEPLOYMENT_IDS = {
 DEPLOYMENT_IDS["model_router_ticket_ops"] = uuid.UUID(
     "91000000-0000-0000-0000-000000000003"
 )
+DEPLOYMENT_IDS["team_onboarding_adaptive_routing"] = _uuid(608)
 
 LEGACY_DEMO_LLM_CREDENTIAL_ID = _uuid(700)
 
@@ -364,6 +370,9 @@ TEAM_PERMISSION_IDS = {
     "team_onboarding_platform": _uuid(807),
     "team_onboarding_sales": _uuid(808),
     "team_onboarding_people": _uuid(809),
+    "team_onboarding_adaptive_platform": _uuid(810),
+    "team_onboarding_adaptive_sales": _uuid(811),
+    "team_onboarding_adaptive_people": _uuid(812),
 }
 
 
@@ -2239,6 +2248,59 @@ def _team_onboarding_access_control_graph() -> dict[str, Any]:
     }
 
 
+def _team_onboarding_adaptive_routing_graph() -> dict[str, Any]:
+    """권한 데모를 그대로 사용하되 자동 라우팅 실험 설정만 추가한다."""
+    graph = copy.deepcopy(_team_onboarding_access_control_graph())
+    llm_node = next(node for node in graph["nodes"] if node["id"] == "llm-answer")
+    data = llm_node["data"]
+    data["model_id"] = DEMO_ONBOARDING_ROUTER_MODEL
+    data["fallback_model_id"] = None
+    data["auto_model_routing"] = True
+    data["model_routing_context"] = {
+        "semantic_router": {
+            "encoder_model_id": DEMO_MODEL_ROUTER_EMBEDDING_MODEL,
+            "input_paths": ["start-question.question"],
+            "aggregation": "centroid",
+        }
+    }
+    data["model_routing_policy"] = {
+        "refresh": {"refresh_every_runs": 5},
+        "validation_budget_usd": 3.0,
+        "max_cohorts": 6,
+        "excluded_model_ids": ["gpt-5.6-sol"],
+        "cohort_drafts": [
+            {
+                "id": str(_uuid(950)),
+                "key": "common_security",
+                "label": "공통 계정·보안 온보딩",
+                "representative_query": (
+                    "입사 첫날 SSO와 다중 인증, 필수 보안 교육 완료 순서를 알려 주세요."
+                ),
+                "fixed": True,
+            },
+            {
+                "id": str(_uuid(951)),
+                "key": "platform_access",
+                "label": "플랫폼 개발환경·접근 권한",
+                "representative_query": (
+                    "플랫폼개발팀 신입이 Git, VPN과 운영 조회 권한을 신청하는 절차를 알려 주세요."
+                ),
+                "fixed": False,
+            },
+            {
+                "id": str(_uuid(952)),
+                "key": "sales_enablement",
+                "label": "영업 CRM·고객 데이터 온보딩",
+                "representative_query": (
+                    "영업팀 신입이 CRM 접근 권한과 고객 데이터 취급 교육을 준비하는 순서를 알려 주세요."
+                ),
+                "fixed": False,
+            },
+        ],
+    }
+    return graph
+
+
 def _ticket_ops_graph() -> dict[str, Any]:
     return {
         "nodes": [
@@ -3432,6 +3494,12 @@ def _ensure_openai_provider_and_models(db: Session) -> tuple[LLMProvider, dict[s
             Decimal("0.001600"),
             1000000,
         ),
+        DEMO_ONBOARDING_ROUTER_MODEL: (
+            "chat",
+            Decimal("0.001000"),
+            Decimal("0.006000"),
+            400000,
+        ),
         DEMO_EMBEDDING_MODEL: (
             "embedding",
             Decimal("0.000020"),
@@ -3608,6 +3676,16 @@ def _seed_apps_and_workflows(db: Session) -> dict[str, Workflow]:
             deployed=True,
             deployment_type=DeploymentType.INTERNAL_CHATBOT,
         ),
+        "team_onboarding_adaptive_routing": _upsert_app_workflow(
+            db,
+            "team_onboarding_adaptive_routing",
+            "팀별 온보딩 자동 모델 라우팅 검증",
+            "팀 권한 RAG와 입력 추세 변화에 따른 자동 모델 라우팅을 검증하는 내부 챗봇",
+            "onboarding_people_manager",
+            _team_onboarding_adaptive_routing_graph(),
+            deployed=True,
+            deployment_type=DeploymentType.INTERNAL_CHATBOT,
+        ),
         "ticket_ops": _upsert_app_workflow(
             db,
             "ticket_ops",
@@ -3767,6 +3845,30 @@ def _seed_permissions(db: Session) -> None:
                 "flags": 0,
             },
         ),
+        *[
+            (
+                TEAM_PERMISSION_IDS[f"team_onboarding_adaptive_{team_suffix}"],
+                TeamWorkflowPermission,
+                {
+                    "grantee_organization_id": ORG_ID,
+                    "team_id": TEAM_IDS[f"onboarding_{team_suffix}"],
+                    "workflow_id": WORKFLOW_IDS[
+                        "team_onboarding_adaptive_routing"
+                    ],
+                    "auth_state": auth_state,
+                    "assigned_by": USER_IDS["onboarding_people_manager"],
+                    "options": _demo_options(
+                        f"permission-team-onboarding-adaptive-{team_suffix}"
+                    ),
+                    "flags": 0,
+                },
+            )
+            for team_suffix, auth_state in (
+                ("platform", "operator"),
+                ("sales", "operator"),
+                ("people", "manager"),
+            )
+        ],
         (
             TEAM_PERMISSION_IDS["test_builder"],
             TeamWorkflowPermission,
@@ -4083,6 +4185,7 @@ def _seed_llm_credential(
         DEMO_MODEL_ROUTER_FALLBACK_MODEL,
         DEMO_MODEL_ROUTER_CHEAP_MODEL,
         DEMO_MODEL_ROUTER_BALANCED_MODEL,
+        DEMO_ONBOARDING_ROUTER_MODEL,
     ]
     if runtime_credential_enabled:
         relation_model_names.append(DEMO_EMBEDDING_MODEL)

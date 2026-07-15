@@ -494,6 +494,75 @@ def test_team_onboarding_access_control_graph_references_bundled_pdf_kbs():
     assert "추측하지" in llm_node["data"]["system_prompt"]
 
 
+def test_team_onboarding_adaptive_routing_demo_only_changes_routing_settings():
+    """라우팅 실험 workflow는 원본 RAG/프롬프트/생성 파라미터를 그대로 복제한다."""
+    source = demo_seed._team_onboarding_access_control_graph()
+    experiment = demo_seed._team_onboarding_adaptive_routing_graph()
+    source_llm = next(node for node in source["nodes"] if node["id"] == "llm-answer")
+    experiment_llm = next(
+        node for node in experiment["nodes"] if node["id"] == "llm-answer"
+    )
+    source_data = source_llm["data"]
+    experiment_data = experiment_llm["data"]
+
+    assert experiment_data["knowledgeBases"] == source_data["knowledgeBases"]
+    assert experiment_data["system_prompt"] == source_data["system_prompt"]
+    assert experiment_data["user_prompt"] == source_data["user_prompt"]
+    assert experiment_data["parameters"] == source_data["parameters"]
+    assert experiment_data["model_id"] == "gpt-5.6-luna"
+    assert experiment_data["auto_model_routing"] is True
+    policy = experiment_data["model_routing_policy"]
+    assert policy["refresh"]["refresh_every_runs"] == 5
+    assert policy["validation_budget_usd"] == 3.0
+    assert policy["max_cohorts"] == 6
+    assert policy["excluded_model_ids"] == ["gpt-5.6-sol"]
+    cohort_drafts = policy["cohort_drafts"]
+    assert len(cohort_drafts) == 3
+    assert sum(bool(item["fixed"]) for item in cohort_drafts) == 1
+    assert {
+        item["key"] for item in cohort_drafts
+    } == {"common_security", "platform_access", "sales_enablement"}
+
+
+def test_team_onboarding_adaptive_routing_app_is_seeded_for_people_manager(
+    monkeypatch,
+):
+    calls = {}
+
+    def capture(
+        _db,
+        key,
+        name,
+        description,
+        owner_key,
+        graph,
+        *,
+        deployed,
+        deployment_type=demo_seed.DeploymentType.API,
+    ):
+        calls[key] = {
+            "name": name,
+            "owner_key": owner_key,
+            "graph": graph,
+            "deployed": deployed,
+            "deployment_type": deployment_type,
+        }
+        return key
+
+    monkeypatch.setattr(demo_seed, "_upsert_app_workflow", capture)
+
+    workflows = demo_seed._seed_apps_and_workflows(object())
+
+    assert workflows["team_onboarding_adaptive_routing"] == (
+        "team_onboarding_adaptive_routing"
+    )
+    call = calls["team_onboarding_adaptive_routing"]
+    assert call["name"] == "팀별 온보딩 자동 모델 라우팅 검증"
+    assert call["owner_key"] == "onboarding_people_manager"
+    assert call["deployed"] is True
+    assert call["deployment_type"] is demo_seed.DeploymentType.INTERNAL_CHATBOT
+
+
 def test_team_onboarding_access_control_app_is_active_internal_chatbot(monkeypatch):
     calls = {}
 
@@ -977,6 +1046,7 @@ def test_demo_seed_chat_models_use_gpt_5_4_family():
         demo_seed.DEMO_MODEL_ROUTER_FALLBACK_MODEL,
         demo_seed.DEMO_MODEL_ROUTER_CHEAP_MODEL,
         demo_seed.DEMO_MODEL_ROUTER_BALANCED_MODEL,
+        demo_seed.DEMO_ONBOARDING_ROUTER_MODEL,
         demo_seed.DEMO_EMBEDDING_MODEL,
         demo_seed.DEMO_MODEL_ROUTER_EMBEDDING_MODEL,
     }
