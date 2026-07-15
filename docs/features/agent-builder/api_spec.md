@@ -769,6 +769,7 @@ Rules:
 - Agent Builder save는 `Workflow` row 다음 parent `AgentBuilderRequest` row 순서로 lock을 얻어 cancel과 같은 순서로 직렬화하고 request version, operation status와 저장 metadata를 다시 읽는다. Canceled/stale operation은 graph를 쓰지 않는다.
 - 저장 직전 current canonical graph hash와 workflow `updated_at`을 두 기대값과 비교한다. 하나라도 다르면 graph를 쓰지 않고 `409 stale_graph`를 반환한다.
 - Backend는 request nodes/edges의 canonical hash가 persisted safe envelope의 `expected_result_graph_hash`와 같은지 검증한다. Typed operations를 DB에서 다시 읽거나 재생하지 않는다.
+- Client의 request nodes/edges는 canonical base graph에 응답의 typed operations를 순서대로 재생한 결과여야 한다. React Flow가 local rendering 중 추가한 `width`, `height`, `measured` 등 runtime measurement는 이 request와 canonical hash에서 제외한다.
 - Complete candidate graph는 catalog schema, node allowlist, connection policy와 structural validation을 다시 통과해야 한다.
 - Backend는 final candidate graph와 Catalog v3 및 server-owned reference policy registry에서 모든 `resource_ref`, `credential_ref`, Knowledge/Collection binding, WorkflowNode `appId`/`workflowId`와 기타 resource-bearing field를 직접 추출해 `managed_reference|legacy_editor_connection|unknown`으로 분류한다. Registry는 field path·mutation kind·resource kind별 resolver, required relation과 최소 permission action을 명시한다. Workflow draft 저장에는 workflow `write`, Knowledge/Collection과 managed credential binding에는 대상 resource `use`를 요구하며 단순 reference라는 이유로 대상 resource의 `read|write`를 일괄 요구하지 않는다. Target resource 자체를 변경하는 별도 operation만 그 resource의 `write`를 요구한다. Resolver는 같은 transaction에서 registry가 지정한 최소 action, 현재 organization, 존재/lifecycle과 relation을 검증하며 policy/resolver 누락은 fail-closed한다. ADR-0045의 resolver 미구현 Slack/GitHub 연결은 persisted base graph와 canonical field 값 및 connection-relevant node data가 동일한 경우에만 carry-forward한다. Client reference 목록이나 발급 시점 allow 결과는 사용하지 않으며 Agent Builder가 legacy field를 추가·교체·삭제한 경우, unknown field, managed resolver 누락, 삭제·비활성·권한 회수·relation 변경은 전체 save와 audit를 rollback한다. Carry-forward는 credential 사용 승인이 아니며 runtime/preflight 검사를 완화하지 않는다.
 - Backend는 request graph의 `configuration_state`를 신뢰하지 않고 Catalog required configuration 전체에서 각 node 상태를 다시 계산한다. `unresolved`는 저장을 차단하지 않지만 계산 결과와 node metadata가 catalog contract에 맞아야 한다.
@@ -1227,3 +1228,32 @@ Knowledge 후보 응답은 use 권한을 통과한 active KB를 포함한다. �
 - `credential_ref`와 `resource_ref`는 서버가 검증한 opaque/canonical reference만 받는다. raw credential config, token, password와 secret-like 입력은 받지 않으며 오류 응답·audit·trace·log에도 원문을 포함하지 않는다.
 - WorkflowNode 실행 admission의 필수 target은 `appId`다. `workflowId`는 기존 graph와 편집 화면을 위한 선택 metadata이며, 없거나 빈 값이어도 `appId`가 유효하면 실행 준비 상태를 차단하지 않는다. `appId`를 직접 변경하면 server는 선택된 App의 canonical Workflow ID로 `workflowId`를 정규화한다. `workflowId`를 직접 변경하거나 pair를 검증할 때는 각 resource의 organization과 권한을 확인하고 `App.workflow_id == Workflow.id`를 강제한다. malformed 또는 relation 불일치는 기존 `400 invalid_decision`, 권한 부족은 `403 permission_denied`로 매핑하며 대상 이름이나 내부 조회 결과를 반환하지 않는다. 검증 전후 graph, session revision, task 상태와 audit는 원자적으로 보존된다.
 - Draft save의 CAS는 locked DB row의 최신 `graph_hash`와 `updated_at`을 기준으로 하며, 불일치는 기존 `409 stale_graph`다. lock query는 session identity map의 stale Workflow를 재사용하지 않는다.
+## Hierarchical Knowledge Contract
+
+`knowledge_resolution`은 기존 평면 `candidates` 읽기 호환 필드와 함께 다음 필드를 제공한다.
+
+```json
+{
+  "collections": [
+    {
+      "collection_handle": "col-opaque",
+      "safe_label": "사내 문서",
+      "score": 0.84,
+      "children": [
+        {
+          "kb_handle": "rec-opaque",
+          "selection_key": "kbsel-opaque",
+          "safe_label": "사내 인사 KB",
+          "score": 0.90,
+          "shared_collection_count": 2
+        }
+      ]
+    }
+  ],
+  "ungrouped_kbs": []
+}
+```
+
+`POST /agent-builder/sessions/{session_id}/knowledge-selection`은 `selected_collection_handles`와 `selected_kb_handles`를 별도 배열로 받는다. 서버는 handle을 현재 organization, 권한, lifecycle 기준으로 다시 materialize하고 stale 또는 권한이 사라진 handle을 `422 catalog_validation_failed`로 거부한다.
+
+저장 graph의 LLM node에는 Collection이 `knowledgeCollections: [{id, safeLabel}]`, 직접 KB가 `knowledgeBases: [{id, name}]`로 별도 저장된다. 추천 점수와 opaque handle은 graph에 저장하지 않는다.

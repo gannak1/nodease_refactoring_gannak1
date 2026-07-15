@@ -8,6 +8,9 @@ import type { Node } from '../../types/Workflow';
 import {
   KnowledgeSelectionControl,
   type KnowledgeSelectionCandidate,
+  type KnowledgeSelectionCollection,
+  type KnowledgeSelectionChild,
+  type KnowledgeHierarchySubmission,
 } from './KnowledgeSelectionControl';
 import {
   NodeParameterCard,
@@ -29,7 +32,11 @@ export type WorkflowKnowledgeStep = {
   timing: 'before_graph' | 'after_graph';
   question?: string | null;
   candidates: KnowledgeSelectionCandidate[];
+  collections?: KnowledgeSelectionCollection[];
+  ungroupedKbs?: KnowledgeSelectionChild[];
   selectedCandidateIds?: string[];
+  selectedCollectionHandles?: string[];
+  selectedKbHandles?: string[];
   selectedLabels?: string[];
   errorMessage?: string | null;
 };
@@ -47,6 +54,7 @@ export const WorkflowResultGroup = ({
   onFocusNode,
   onOpenNodeSettings,
   onKnowledgeSubmit,
+  onKnowledgeHierarchySubmit,
   onDecision,
   onCancel,
   disabled = false,
@@ -61,11 +69,11 @@ export const WorkflowResultGroup = ({
   focusHeadingTaskId?: string | null;
   onPresentationHeadingFocused?: (taskId: string) => void;
   onFocusNode: (nodeId: string) => void;
-  onOpenNodeSettings?: (
-    nodeId: string,
-    section?: 'routing',
-  ) => void;
+  onOpenNodeSettings?: (nodeId: string, section?: 'routing') => void;
   onKnowledgeSubmit?: (selectionIds: string[]) => void;
+  onKnowledgeHierarchySubmit?: (
+    selection: KnowledgeHierarchySubmission,
+  ) => void;
   onDecision: (decision: ParameterDecisionInput) => void;
   onCancel?: () => void;
   disabled?: boolean;
@@ -88,7 +96,8 @@ export const WorkflowResultGroup = ({
     ? orderedTasks.find((task) => task.task_id === presentationTaskId)
     : null;
   const hasBlockingKnowledgeStep =
-    knowledgeStep?.status === 'active' || knowledgeStep?.status === 'confirming';
+    knowledgeStep?.status === 'active' ||
+    knowledgeStep?.status === 'confirming';
   const activeTask = hasBlockingKnowledgeStep
     ? undefined
     : (presentationTask ?? canonicalActiveTask);
@@ -108,7 +117,8 @@ export const WorkflowResultGroup = ({
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const wasEditingTaskRef = useRef(false);
   const editingNodeId = editingTaskId
-    ? orderedTasks.find((task) => task.task_id === editingTaskId)?.node_id ?? null
+    ? (orderedTasks.find((task) => task.task_id === editingTaskId)?.node_id ??
+      null)
     : null;
   const lastFocusedTaskIdRef = useRef<string | null>(null);
   const nodeDataById = useMemo(
@@ -184,17 +194,16 @@ export const WorkflowResultGroup = ({
   const completed = tasks.filter((task) =>
     ['completed', 'skipped', 'deferred'].includes(task.status),
   ).length;
-  const resolvedSetupStatus: WorkflowSetupStatus =
-    editingTaskId
-      ? 'editing'
-      : setupStatus ??
-        (activeTask?.resolution_source
-          ? 'awaiting_confirmation'
-          : activeTask
-            ? 'configuring'
-            : tasks.length > 0 && completed === tasks.length
-              ? 'completed'
-              : 'configuring');
+  const resolvedSetupStatus: WorkflowSetupStatus = editingTaskId
+    ? 'editing'
+    : (setupStatus ??
+      (activeTask?.resolution_source
+        ? 'awaiting_confirmation'
+        : activeTask
+          ? 'configuring'
+          : tasks.length > 0 && completed === tasks.length
+            ? 'completed'
+            : 'configuring'));
   const statusLabel =
     resolvedSetupStatus === 'planning'
       ? 'Workflow 계획 중'
@@ -208,9 +217,9 @@ export const WorkflowResultGroup = ({
             ? 'Workflow 설정 실패'
             : resolvedSetupStatus === 'editing'
               ? '설정 수정 중'
-            : resolvedSetupStatus === 'completed'
-              ? 'Workflow 생성 완료'
-              : '설정 입력 필요';
+              : resolvedSetupStatus === 'completed'
+                ? 'Workflow 생성 완료'
+                : '설정 입력 필요';
   const effectiveStatusLabel =
     resolvedSetupStatus === 'confirming'
       ? 'Workflow \uD655\uC778 \uC911'
@@ -281,7 +290,8 @@ export const WorkflowResultGroup = ({
                 key={node.id}
                 type="button"
                 onClick={() =>
-                  onOpenNodeSettings?.(node.id, 'routing') ?? onFocusNode(node.id)
+                  onOpenNodeSettings?.(node.id, 'routing') ??
+                  onFocusNode(node.id)
                 }
                 className="inline-flex items-center gap-1.5 rounded border border-slate-200 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-900"
               >
@@ -320,10 +330,17 @@ export const WorkflowResultGroup = ({
                   )
                   .join(':')}`}
                 candidates={knowledgeStep.candidates}
+                collections={knowledgeStep.collections}
+                ungroupedKbs={knowledgeStep.ungroupedKbs}
                 initialSelectedIds={knowledgeStep.selectedCandidateIds}
+                initialSelectedCollectionHandles={
+                  knowledgeStep.selectedCollectionHandles
+                }
+                initialSelectedKbHandles={knowledgeStep.selectedKbHandles}
                 timing={knowledgeStep.timing}
                 errorMessage={knowledgeStep.errorMessage}
                 onSubmit={(selectionIds) => onKnowledgeSubmit?.(selectionIds)}
+                onSubmitHierarchy={onKnowledgeHierarchySubmit}
                 disabled={
                   disabled ||
                   knowledgeStep.status === 'confirming' ||
@@ -347,9 +364,7 @@ export const WorkflowResultGroup = ({
       {!hasBlockingKnowledgeStep && tasks.length > 0 ? (
         <div className="flex items-center justify-between gap-3 text-xs text-neutral-500">
           <span>노드 설정</span>
-          {onCancel && canonicalActiveTask ? (
-            <span>현재 항목 1개</span>
-          ) : null}
+          {onCancel && canonicalActiveTask ? <span>현재 항목 1개</span> : null}
         </div>
       ) : null}
       {!hasBlockingKnowledgeStep
@@ -359,9 +374,7 @@ export const WorkflowResultGroup = ({
               nodeId={nodeId}
               tasks={nodeTasks}
               nodeData={nodeDataById.get(nodeId)}
-              presentationTaskId={
-                nodeId === activeNodeId ? activeTaskId : null
-              }
+              presentationTaskId={nodeId === activeNodeId ? activeTaskId : null}
               isPresentationReentry={
                 isPresentationReentry && nodeId === activeNodeId
               }

@@ -1134,6 +1134,7 @@ class AgentBuilderService:
 
         deferred_knowledge_options: list[dict[str, Any]] = []
         deferred_knowledge_questions: list[str] = []
+        deferred_knowledge_selection: dict[str, Any] | None = None
         try:
             selected_kb_context = self._selected_knowledge_candidate_context(
                 session,
@@ -1325,6 +1326,7 @@ class AgentBuilderService:
             deferred_knowledge_questions = list(
                 recommendations.get("questions") or []
             )
+            deferred_knowledge_selection = recommendations.get("knowledge_selection")
             recommendations = {
                 "status": "ready",
                 "bindings": [],
@@ -1359,6 +1361,7 @@ class AgentBuilderService:
                 structured_request=structured,
                 clarification_questions=recommendations["questions"],
                 clarification_options=recommendations.get("options", []),
+                knowledge_selection=recommendations.get("knowledge_selection"),
                 validation_result=validation,
                 warnings=[*structured_warnings, *recommendations["warnings"]],
             )
@@ -1554,6 +1557,7 @@ class AgentBuilderService:
                 ).enrich_group(issued.parameter_group),
                 clarification_questions=deferred_knowledge_questions,
                 clarification_options=deferred_knowledge_options,
+                knowledge_selection=deferred_knowledge_selection,
                 validation_result=draft_validation,
                 warnings=draft_safety_notices,
                 safe_step_node_ids=issued.step_node_ids,
@@ -3803,6 +3807,11 @@ class AgentBuilderService:
                 allow_unready_candidates=True,
             )
             resolution_id = pending_by_step.get(requirement.target_step_ref)
+            knowledge_selection = (
+                response.knowledge_selection.model_dump(mode="json")
+                if response.knowledge_selection is not None
+                else None
+            )
             if response.status == "unavailable":
                 if selected_candidate_handles and not include_materialized_refs:
                     selected_option = next(
@@ -3851,6 +3860,7 @@ class AgentBuilderService:
                         requirement=requirement,
                         resolution_id=resolution_id,
                     ),
+                    "knowledge_selection": knowledge_selection,
                     "warnings": [
                         response.user_safe_warning
                         or "Knowledge Base 추천을 사용할 수 없습니다."
@@ -3869,6 +3879,7 @@ class AgentBuilderService:
                         requirement=requirement,
                         resolution_id=resolution_id,
                     ),
+                    "knowledge_selection": knowledge_selection,
                     "warnings": [
                         response.user_safe_warning
                         or "Knowledge Base 후보를 사용자 확인으로 선택해야 합니다."
@@ -3964,15 +3975,28 @@ class AgentBuilderService:
                         ],
                     }
             if not recommendations:
+                has_collection_candidates = bool(
+                    knowledge_selection
+                    and knowledge_selection.get("collections")
+                )
                 return {
                     "status": "clarification_required",
                     "bindings": [],
                     "questions": [
-                        "권한 확인된 Knowledge Base 후보가 없습니다. Knowledge Base 없이 계속할지 확인해주세요."
+                        (
+                            "추천 Collection을 확인하고 사용할 항목을 선택해주세요."
+                            if has_collection_candidates
+                            else "권한 확인된 Knowledge Base 후보가 없습니다. Knowledge Base 없이 계속할지 확인해주세요."
+                        )
                     ],
                     "options": [],
+                    "knowledge_selection": knowledge_selection,
                     "warnings": [
-                        "Knowledge Base 후보가 없어 사용자 확인을 기다립니다."
+                        (
+                            "Knowledge Collection 후보 확인을 기다립니다."
+                            if has_collection_candidates
+                            else "Knowledge Base 후보가 없어 사용자 확인을 기다립니다."
+                        )
                     ],
                 }
             return {
@@ -3991,6 +4015,7 @@ class AgentBuilderService:
                     requirement=requirement,
                     resolution_id=resolution_id,
                 ),
+                "knowledge_selection": knowledge_selection,
                 "warnings": ["Knowledge Base 후보를 확인하고 선택해주세요."],
             }
         return {
@@ -4018,16 +4043,26 @@ class AgentBuilderService:
         self,
         structured: AgentBuilderStructuredRequest,
         *,
-        selected_candidate_handles: set[str],
+        selected_candidate_handles: set[str] | None = None,
+        selected_collection_handles: set[str] | None = None,
+        selected_kb_handles: set[str] | None = None,
     ) -> dict[str, Any]:
         """Revalidate selected safe handles without recomputing their ranking."""
+        selected_candidate_handles = selected_candidate_handles or set()
+        selected_kb_handles = selected_kb_handles or set()
+        selected_collection_handles = selected_collection_handles or set()
         requested_handles = {
             handle
-            for handle in selected_candidate_handles
+            for handle in {*selected_candidate_handles, *selected_kb_handles}
             if handle != NO_KB_CANDIDATE_ID
         }
-        if not requested_handles:
-            return {"status": "ready", "bindings": [], "warnings": []}
+        if not requested_handles and not selected_collection_handles:
+            return {
+                "status": "ready",
+                "bindings": [],
+                "collections": [],
+                "warnings": [],
+            }
 
         service = KnowledgeRAGRecommendationService(
             self.db,
@@ -4040,6 +4075,7 @@ class AgentBuilderService:
             if item.slot_type == "knowledge_base"
         }
         bindings_by_handle: dict[str, dict[str, Any]] = {}
+        collections_by_handle: dict[str, dict[str, Any]] = {}
         for requirement in structured.knowledge_requirements:
             request = KnowledgeRAGRecommendationRequest(
                 workflow_intent=structured.intent_summary,
@@ -4065,12 +4101,24 @@ class AgentBuilderService:
                 handle = str(binding.get("safe_handle") or "")
                 if handle in requested_handles:
                     bindings_by_handle[handle] = binding
+            if selected_collection_handles:
+                for binding in service.materialize_collection_handles_for_builder(
+                    request,
+                    selected_collection_handles,
+                ):
+                    handle = str(binding.get("safe_handle") or "")
+                    if handle in selected_collection_handles:
+                        collections_by_handle[handle] = binding
 
         missing_handles = requested_handles - set(bindings_by_handle)
-        if missing_handles:
+        missing_collection_handles = selected_collection_handles - set(
+            collections_by_handle
+        )
+        if missing_handles or missing_collection_handles:
             return {
                 "status": "validation_failed",
                 "bindings": [],
+                "collections": [],
                 "warnings": [
                     "선택한 Knowledge Base 정보를 다시 확인할 수 없습니다."
                 ],
@@ -4080,6 +4128,10 @@ class AgentBuilderService:
             "bindings": [
                 bindings_by_handle[handle]
                 for handle in sorted(requested_handles)
+            ],
+            "collections": [
+                collections_by_handle[handle]
+                for handle in sorted(selected_collection_handles)
             ],
             "warnings": [],
         }
@@ -4091,12 +4143,13 @@ class AgentBuilderService:
         workflow: Workflow,
         placement: AgentBuilderKnowledgePlacement,
         bindings: list[dict[str, Any]],
+        collection_bindings: list[dict[str, Any]] | None = None,
         resolution_id: str,
     ) -> dict[str, Any]:
         effective_plan = materialize_before_graph_plan(
             structured,
             placement=placement,
-            has_selection=bool(bindings),
+            has_selection=bool(bindings or collection_bindings),
         )
         candidate_graph = self._build_preview_graph(
             effective_plan,
@@ -4116,9 +4169,37 @@ class AgentBuilderService:
                 if "knowledgeBases" not in data:
                     continue
                 data["knowledgeBases"] = [
-                    {"id": knowledge_base_id}
-                    for knowledge_base_id in dict.fromkeys(knowledge_base_ids)
+                    {
+                        "id": str(binding["knowledge_base_id"]),
+                        "name": str(binding.get("name") or "Knowledge Base"),
+                    }
+                    for binding in bindings
+                    if binding.get("knowledge_base_id")
                 ]
+                node["data"] = data
+        knowledge_collections = [
+            {
+                "id": str(binding["knowledge_collection_id"]),
+                "safeLabel": str(
+                    binding.get("name") or "Knowledge Collection"
+                ),
+            }
+            for binding in (collection_bindings or [])
+            if binding.get("knowledge_collection_id")
+        ]
+        if knowledge_collections:
+            for node in candidate_graph.get("nodes") or []:
+                if node.get("type") != "llmNode":
+                    continue
+                data = dict(node.get("data") or {})
+                if "knowledgeBases" not in data:
+                    continue
+                data["knowledgeCollections"] = list(
+                    {
+                        reference["id"]: reference
+                        for reference in knowledge_collections
+                    }.values()
+                )
                 node["data"] = data
         validation = self.validate_preview_graph(candidate_graph)
         if not validation.valid:
@@ -5682,9 +5763,27 @@ class AgentBuilderService:
             for candidate_id in persisted_resolution.get("selected_candidate_ids") or []
             if isinstance(candidate_id, str) and candidate_id in candidates_by_id
         ]
+        selected_collection_handles = list(
+            dict.fromkeys(
+                item
+                for item in persisted_resolution.get(
+                    "selected_collection_handles", []
+                )
+                if isinstance(item, str) and item
+            )
+        )
+        selected_kb_handles = list(
+            dict.fromkeys(
+                item
+                for item in persisted_resolution.get("selected_kb_handles", [])
+                if isinstance(item, str) and item
+            )
+        )
         return {
             **resolution,
             "selected": selected,
+            "selected_collection_handles": selected_collection_handles,
+            "selected_kb_handles": selected_kb_handles,
             "selection_status": persisted_resolution["status"],
         }
 

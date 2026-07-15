@@ -64,7 +64,8 @@ const AGENT_BUILDER_DEFAULT_PANEL_WIDTH =
   'clamp(360px, 50vw, calc(100vw - 40px))';
 const KNOWLEDGE_REASON_LABELS: Record<string, string> = {
   topic_keyword_match: '\uC694\uCCAD \uC8FC\uC81C\uC640 \uC77C\uCE58',
-  metadata_match: '\uBB38\uC11C \uBA54\uD0C0\uB370\uC774\uD130\uC640 \uC77C\uCE58',
+  metadata_match:
+    '\uBB38\uC11C \uBA54\uD0C0\uB370\uC774\uD130\uC640 \uC77C\uCE58',
   semantic_similarity: '\uB0B4\uC6A9 \uC720\uC0AC\uB3C4\uAC00 \uB192\uC74C',
   recent_usage: '\uCD5C\uADFC \uC0AC\uC6A9\uB41C Knowledge Base',
 };
@@ -369,6 +370,47 @@ const knowledgeSelectionMessage = (
       ? 'Knowledge Base \uC5C6\uC774 \uACC4\uC18D'
       : 'Knowledge Base \uC5C6\uC774 \uC0DD\uC131';
 
+const hierarchyKnowledgeSelectionMessage = (
+  response: AgentBuilderMessageResponse,
+  selection: { collectionHandles: string[]; kbHandles: string[] },
+  timing: 'before_graph' | 'after_graph',
+) => {
+  const resolution = response.knowledge_resolution;
+  const collectionLabels = selection.collectionHandles.map(
+    (handle) =>
+      resolution?.collections?.find(
+        (collection) => collection.collection_handle === handle,
+      )?.safe_label ?? 'Knowledge Collection',
+  );
+  const kbCandidates = [
+    ...(resolution?.collections?.flatMap((collection) => collection.children) ??
+      []),
+    ...(resolution?.ungrouped_kbs ?? []),
+  ];
+  const kbLabels = Array.from(
+    new Set(
+      selection.kbHandles.map(
+        (handle) =>
+          kbCandidates.find((candidate) => candidate.kb_handle === handle)
+            ?.safe_label ?? 'Knowledge Base',
+      ),
+    ),
+  );
+  if (collectionLabels.length === 0 && kbLabels.length === 0) {
+    return timing === 'after_graph'
+      ? 'Knowledge Base 없이 계속'
+      : 'Knowledge Base 없이 생성';
+  }
+  return [
+    collectionLabels.length > 0
+      ? `Collection 선택: ${collectionLabels.join(', ')}`
+      : null,
+    kbLabels.length > 0 ? `Knowledge Base 선택: ${kbLabels.join(', ')}` : null,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(' / ');
+};
+
 const isNoKnowledgeBaseOption = (option: Record<string, unknown>) =>
   formatClarificationOptionValue(option.candidate_id) === NO_KB_CANDIDATE_ID ||
   formatClarificationOptionValue(option.type) === 'no_knowledge_base';
@@ -395,9 +437,7 @@ const knowledgeOptionsFromResolution = (
   ) {
     return [];
   }
-  const resolutionId = formatClarificationOptionValue(
-    resolution.resolution_id,
-  );
+  const resolutionId = formatClarificationOptionValue(resolution.resolution_id);
   return (resolution.candidates ?? [])
     .map((candidate, index) => {
       const option = candidate as Record<string, unknown>;
@@ -426,9 +466,7 @@ const knowledgeOptionsFromResolution = (
           typeof option.selection_id === 'string'
             ? option.selection_id
             : knowledgeSelectionKey(selection),
-        label:
-          selection.label ??
-          `Knowledge Base \uD6C4\uBCF4 ${index + 1}`,
+        label: selection.label ?? `Knowledge Base \uD6C4\uBCF4 ${index + 1}`,
         score:
           typeof rawScore === 'number' && Number.isFinite(rawScore)
             ? rawScore
@@ -455,6 +493,14 @@ const clampAgentBuilderPanelWidth = (
   return Math.min(Math.max(width, minWidth), maxWidth);
 };
 
+const hasKnowledgeHierarchyOptions = (response: AgentBuilderMessageResponse) =>
+  (response.knowledge_resolution?.collections?.length ?? 0) > 0 ||
+  (response.knowledge_resolution?.ungrouped_kbs?.length ?? 0) > 0;
+
+const hasKnowledgeSelectionOptions = (response: AgentBuilderMessageResponse) =>
+  knowledgeOptionsFromResponse(response).length > 0 ||
+  hasKnowledgeHierarchyOptions(response);
+
 export function AgentBuilderPanel({
   workflowId,
   appId,
@@ -471,9 +517,7 @@ export function AgentBuilderPanel({
   const [authoritativeRequestStatus, setAuthoritativeRequestStatus] = useState<
     string | null
   >(null);
-  const [, setSessionProtocolVersion] = useState<
-    'direct_edit_v1' | null
-  >(null);
+  const [, setSessionProtocolVersion] = useState<'direct_edit_v1' | null>(null);
   const [input, setInput] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [, setResponses] = useState<AgentBuilderMessageResponse[]>([]);
@@ -813,7 +857,9 @@ export function AgentBuilderPanel({
           setAuthoritativeRequestStatus(session.status);
           setResponses(restored.responses);
           setConversationItems(restored.conversationItems);
-          setCurrentResultRequestId(latestResponseRequestId(restored.responses));
+          setCurrentResultRequestId(
+            latestResponseRequestId(restored.responses),
+          );
           setParameterGroupRequestId(null);
           setRecoveredRoutingContext({ requestId: null, affectedNodeIds: [] });
           setLastSubmittedMessage(
@@ -832,8 +878,12 @@ export function AgentBuilderPanel({
         );
         const restoredParameterGroup = session.parameter_group ?? null;
         if (
-          (canonicalSession.active_graph_mutation as Record<string, unknown> | null)
-            ?.status === 'pending_ack'
+          (
+            canonicalSession.active_graph_mutation as Record<
+              string,
+              unknown
+            > | null
+          )?.status === 'pending_ack'
         ) {
           beginSessionReconciliation(canonicalSession.session_id);
         } else {
@@ -1080,7 +1130,9 @@ export function AgentBuilderPanel({
       return;
     }
     const selectedCandidates = undefined as
-      | Array<AgentBuilderKnowledgeCandidateSelection & { label?: string | null }>
+      | Array<
+          AgentBuilderKnowledgeCandidateSelection & { label?: string | null }
+        >
       | undefined;
     if (hasUnsavedChanges) {
       toast.warning(
@@ -1168,8 +1220,7 @@ export function AgentBuilderPanel({
           response.request_id,
           completionEligible,
         );
-        const hasKnowledgeConfirmation =
-          knowledgeOptionsFromResponse(response).length > 0;
+        const hasKnowledgeConfirmation = hasKnowledgeSelectionOptions(response);
         nextResponse = {
           ...response,
           status: hasKnowledgeConfirmation
@@ -1265,6 +1316,10 @@ export function AgentBuilderPanel({
     selections: Array<
       AgentBuilderKnowledgeCandidateSelection & { label?: string | null }
     >,
+    hierarchySelection?: {
+      collectionHandles: string[];
+      kbHandles: string[];
+    },
   ) => {
     const firstResolutionCandidate =
       response.knowledge_resolution?.candidates.find(
@@ -1289,19 +1344,6 @@ export function AgentBuilderPanel({
     setIsSubmitting(true);
     submitLockRef.current = true;
     shouldAutoScrollRef.current = true;
-    void ((items: ConversationItem[]) => [
-      ...items,
-      {
-        kind: 'user',
-        id: createLocalUserMessageId(),
-        content:
-          selections.length > 0
-            ? `Knowledge Base 선택: ${selections
-                .map((candidate) => candidate.label || 'Knowledge Base')
-                .join(', ')}`
-            : 'Knowledge Base 없이 생성',
-      },
-    ]);
     try {
       const selection = await agentBuilderApi.selectKnowledge(sessionId, {
         resolutionId,
@@ -1310,6 +1352,8 @@ export function AgentBuilderPanel({
           resolution_id: candidate.resolution_id,
           requirement_id: candidate.requirement_id,
         })),
+        selectedCollectionHandles: hierarchySelection?.collectionHandles,
+        selectedKbHandles: hierarchySelection?.kbHandles,
       });
       const applied = await applyAndSaveAgentBuilderMutation({
         sessionId,
@@ -1317,8 +1361,7 @@ export function AgentBuilderPanel({
         viewport: getViewport(),
         mutation: mutationWithBaseHash(selection.graph_mutation),
       });
-      const acknowledgedGroup =
-        applied.acknowledgement.parameter_group ?? null;
+      const acknowledgedGroup = applied.acknowledgement.parameter_group ?? null;
       const completionEligible = applied.session?.status === 'completed';
       if (applied.session?.status) {
         setAuthoritativeRequestStatus(applied.session.status);
@@ -1338,7 +1381,13 @@ export function AgentBuilderPanel({
         {
           kind: 'user',
           id: createLocalUserMessageId(),
-          content: knowledgeSelectionMessage(selections, timing),
+          content: hierarchySelection
+            ? hierarchyKnowledgeSelectionMessage(
+                response,
+                hierarchySelection,
+                timing,
+              )
+            : knowledgeSelectionMessage(selections, timing),
         },
       ]);
       appendResponse({
@@ -1349,10 +1398,40 @@ export function AgentBuilderPanel({
           timing,
           required: response.knowledge_resolution?.required ?? true,
           candidates: response.knowledge_resolution?.candidates ?? [],
-          selected: selections.map((candidate) => ({
-            candidate_id: candidate.candidate_id,
-            safe_label: candidate.label ?? null,
-          })),
+          collections: response.knowledge_resolution?.collections ?? [],
+          ungrouped_kbs: response.knowledge_resolution?.ungrouped_kbs ?? [],
+          selected: hierarchySelection
+            ? [
+                ...hierarchySelection.collectionHandles.map((handle) => {
+                  const collection =
+                    response.knowledge_resolution?.collections?.find(
+                      (item) => item.collection_handle === handle,
+                    );
+                  return {
+                    selection_type: 'collection' as const,
+                    collection_handle: handle,
+                    safe_label: collection?.safe_label ?? null,
+                  };
+                }),
+                ...hierarchySelection.kbHandles.map((handle) => {
+                  const kb = [
+                    ...(response.knowledge_resolution?.collections?.flatMap(
+                      (item) => item.children,
+                    ) ?? []),
+                    ...(response.knowledge_resolution?.ungrouped_kbs ?? []),
+                  ].find((item) => item.kb_handle === handle);
+                  return {
+                    selection_type: 'knowledge_base' as const,
+                    kb_handle: handle,
+                    candidate_id: handle,
+                    safe_label: kb?.safe_label ?? null,
+                  };
+                }),
+              ]
+            : selections.map((candidate) => ({
+                candidate_id: candidate.candidate_id,
+                safe_label: candidate.label ?? null,
+              })),
         },
         graph_mutation: selection.graph_mutation,
         parameter_group: acknowledgedGroup,
@@ -1587,12 +1666,31 @@ export function AgentBuilderPanel({
             score: option.score,
             reason: option.reason,
           })),
-          selectedCandidateIds: activeKnowledgeClarification.knowledge_resolution?.selected
-            .map((selection) => selection.candidate_id)
-            .filter(
-              (candidateId): candidateId is string =>
-                typeof candidateId === 'string',
-            ),
+          collections:
+            activeKnowledgeClarification.knowledge_resolution?.collections ??
+            [],
+          ungroupedKbs:
+            activeKnowledgeClarification.knowledge_resolution?.ungrouped_kbs ??
+            [],
+          selectedCandidateIds:
+            activeKnowledgeClarification.knowledge_resolution?.selected
+              .map((selection) => selection.candidate_id)
+              .filter(
+                (candidateId): candidateId is string =>
+                  typeof candidateId === 'string',
+              ),
+          selectedCollectionHandles:
+            activeKnowledgeClarification.knowledge_resolution
+              ?.selected_collection_handles ??
+            activeKnowledgeClarification.knowledge_resolution?.selected
+              .map((selection) => selection.collection_handle)
+              .filter((handle): handle is string => typeof handle === 'string'),
+          selectedKbHandles:
+            activeKnowledgeClarification.knowledge_resolution
+              ?.selected_kb_handles ??
+            activeKnowledgeClarification.knowledge_resolution?.selected
+              .map((selection) => selection.kb_handle ?? selection.candidate_id)
+              .filter((handle): handle is string => typeof handle === 'string'),
           errorMessage: knowledgeSelectionError,
         }
       : null;
@@ -1603,8 +1701,7 @@ export function AgentBuilderPanel({
       ? {
           status: 'confirming',
           timing: latestAssistantResponse.knowledge_resolution.timing,
-          question:
-            latestAssistantResponse.clarification_questions[0] ?? null,
+          question: latestAssistantResponse.clarification_questions[0] ?? null,
           candidates: knowledgeOptionsFromResponse(latestAssistantResponse).map(
             (option) => ({
               selection_id: option.selectionId,
@@ -1615,6 +1712,10 @@ export function AgentBuilderPanel({
               reason: option.reason,
             }),
           ),
+          collections:
+            latestAssistantResponse.knowledge_resolution.collections ?? [],
+          ungroupedKbs:
+            latestAssistantResponse.knowledge_resolution.ungrouped_kbs ?? [],
           selectedCandidateIds:
             latestAssistantResponse.knowledge_resolution.selected
               .map((selection) => selection.candidate_id)
@@ -1622,6 +1723,17 @@ export function AgentBuilderPanel({
                 (candidateId): candidateId is string =>
                   typeof candidateId === 'string',
               ),
+          selectedCollectionHandles:
+            latestAssistantResponse.knowledge_resolution
+              .selected_collection_handles ??
+            latestAssistantResponse.knowledge_resolution.selected
+              .map((selection) => selection.collection_handle)
+              .filter((handle): handle is string => typeof handle === 'string'),
+          selectedKbHandles:
+            latestAssistantResponse.knowledge_resolution.selected_kb_handles ??
+            latestAssistantResponse.knowledge_resolution.selected
+              .map((selection) => selection.kb_handle ?? selection.candidate_id)
+              .filter((handle): handle is string => typeof handle === 'string'),
           selectedLabels: latestAssistantResponse.knowledge_resolution.selected
             .map((selection) => selection.safe_label ?? selection.label)
             .filter((label): label is string => typeof label === 'string'),
@@ -1657,42 +1769,42 @@ export function AgentBuilderPanel({
     'stale_protocol',
     'canceled',
   ];
-  const setupStatus: WorkflowSetupStatus = isPersistedMutationSaving ||
-    isApplying
-    ? 'saving'
-    : authoritativeRequestStatus === 'completion_confirming'
-      ? 'confirming'
-      : pendingKnowledgeStep
+  const setupStatus: WorkflowSetupStatus =
+    isPersistedMutationSaving || isApplying
+      ? 'saving'
+      : authoritativeRequestStatus === 'completion_confirming'
         ? 'confirming'
-        : activeKnowledgeStep
-        ? 'awaiting_confirmation'
-        : pendingRequestId ||
-            isSubmitting ||
-            latestAssistantResponse?.status === 'planning'
-          ? 'planning'
-          : latestAssistantResponse &&
-              failedSetupStatuses.includes(latestAssistantResponse.status)
-            ? 'failed'
-            : activeParameterTask?.resolution_source
-              ? 'awaiting_confirmation'
-              : activeParameterTask
-                ? 'configuring'
-                : isAgentBuilderSetupCompleted(
-                      authoritativeRequestStatus,
-                      currentParameterGroup,
-                    )
-                  ? 'completed'
-                  : 'configuring';
+        : pendingKnowledgeStep
+          ? 'confirming'
+          : activeKnowledgeStep
+            ? 'awaiting_confirmation'
+            : pendingRequestId ||
+                isSubmitting ||
+                latestAssistantResponse?.status === 'planning'
+              ? 'planning'
+              : latestAssistantResponse &&
+                  failedSetupStatuses.includes(latestAssistantResponse.status)
+                ? 'failed'
+                : activeParameterTask?.resolution_source
+                  ? 'awaiting_confirmation'
+                  : activeParameterTask
+                    ? 'configuring'
+                    : isAgentBuilderSetupCompleted(
+                          authoritativeRequestStatus,
+                          currentParameterGroup,
+                        )
+                      ? 'completed'
+                      : 'configuring';
   const showUnifiedSetup = Boolean(
     knowledgeStep ||
-      currentParameterGroup ||
-      pendingRequestId ||
-      isSubmitting ||
-      latestAssistantResponse?.status === 'planning' ||
-      latestAssistantResponse?.status === 'completed' ||
-      routingNodeIds.length > 0 ||
-      (latestAssistantResponse &&
-        failedSetupStatuses.includes(latestAssistantResponse.status)),
+    currentParameterGroup ||
+    pendingRequestId ||
+    isSubmitting ||
+    latestAssistantResponse?.status === 'planning' ||
+    latestAssistantResponse?.status === 'completed' ||
+    routingNodeIds.length > 0 ||
+    (latestAssistantResponse &&
+      failedSetupStatuses.includes(latestAssistantResponse.status)),
   );
   const activeWorkflowTargetClarification =
     latestWorkflowTargetClarification(conversationItems);
@@ -2011,7 +2123,6 @@ export function AgentBuilderPanel({
               const isActiveWorkflowTargetClarification =
                 response.request_id ===
                 activeWorkflowTargetClarificationRequestId;
-              const knowledgeOptions = knowledgeOptionsFromResponse(response);
               return (
                 <div
                   key={item.id}
@@ -2020,7 +2131,7 @@ export function AgentBuilderPanel({
                   <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
                     {response.status}
                   </div>
-                  {knowledgeOptions.length === 0
+                  {!hasKnowledgeSelectionOptions(response)
                     ? response.clarification_questions?.map((question) => (
                         <p key={question} className="mt-2 text-slate-700">
                           {question}
@@ -2123,6 +2234,14 @@ export function AgentBuilderPanel({
                   void resolveKnowledgeSelection(
                     activeKnowledgeClarification,
                     selected,
+                  );
+                }}
+                onKnowledgeHierarchySubmit={(selection) => {
+                  if (!activeKnowledgeClarification) return;
+                  void resolveKnowledgeSelection(
+                    activeKnowledgeClarification,
+                    [],
+                    selection,
                   );
                 }}
                 onDecision={(decision) => void decideParameter(decision)}

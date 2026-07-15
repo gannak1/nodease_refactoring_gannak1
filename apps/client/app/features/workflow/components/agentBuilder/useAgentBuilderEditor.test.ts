@@ -31,6 +31,26 @@ const answerNode: Node = {
   position: { x: 400, y: 0 },
   data: { title: 'Answer', outputs: [] },
 };
+const llmNode: Node = {
+  id: 'llm',
+  type: 'llmNode',
+  position: { x: 200, y: 0 },
+  data: {
+    title: 'LLM',
+    provider: 'configured',
+    model_id: 'gpt-5.5',
+    configuration_state: 'resolved',
+    task_type: 'answer',
+    system_prompt: '',
+    user_prompt: '{{input}}',
+    referenced_variables: [],
+    parameters: {},
+    output_format: { type: 'text' },
+    knowledgeBases: [],
+    scoreThreshold: 0.5,
+    topK: 3,
+  },
+};
 
 const expectEditorNodesWithDisplayNumbers = (nodes: Node[]) => {
   expect(useWorkflowStore.getState().nodes).toEqual(
@@ -212,6 +232,58 @@ describe('Agent Builder editor adapter', () => {
       answerNode,
     ]);
     expect(request?.nodes[0]?.data).not.toHaveProperty('displayNumber');
+  });
+
+  it('persists the typed LLM mutation result instead of React Flow runtime measurements', async () => {
+    vi.mocked(workflowApi.syncDraftWorkflow).mockResolvedValue(saveResponse());
+    vi.mocked(agentBuilderApi.acknowledgeMutation).mockResolvedValue({
+      operation_id: 'operation-llm',
+      operation_status: 'acknowledged',
+      graph_hash: 'b'.repeat(64),
+      updated_at: '2026-07-13T00:00:00Z',
+    });
+    const store = useWorkflowStore.getState();
+    const applyMutation = store.applyAgentBuilderGraphMutation;
+    vi.spyOn(store, 'applyAgentBuilderGraphMutation').mockImplementation(
+      (...args) => {
+        applyMutation(...args);
+        useWorkflowStore.setState((state) => ({
+          nodes: state.nodes.map((node) =>
+            node.id === llmNode.id
+              ? ({
+                  ...node,
+                  width: 320,
+                  height: 180,
+                  measured: { width: 320, height: 180 },
+                } as Node)
+              : node,
+          ),
+        }));
+      },
+    );
+
+    await applyAndSaveAgentBuilderMutation({
+      sessionId: 'session-1',
+      workflowId: 'workflow-1',
+      viewport: { x: 0, y: 0, zoom: 1 },
+      mutation: {
+        operation_id: 'operation-llm',
+        kind: 'initial_graph',
+        base_graph_hash: 'a'.repeat(64),
+        expected_workflow_updated_at: '2026-07-12T00:00:00Z',
+        expected_result_graph_hash: 'b'.repeat(64),
+        operations: [{ op: 'add_node', node: llmNode }],
+      },
+    });
+
+    const request = vi.mocked(workflowApi.syncDraftWorkflow).mock.calls[0]?.[1];
+    expect(request?.nodes).toEqual([llmNode]);
+    expect(request?.nodes[0]).not.toHaveProperty('width');
+    expect(request?.nodes[0]).not.toHaveProperty('height');
+    expect(request?.nodes[0]).not.toHaveProperty('measured');
+    expect(useWorkflowStore.getState().nodes[0]).toEqual(
+      expect.objectContaining({ width: 320, height: 180 }),
+    );
   });
 
   it('updates the shared canonical metadata from Agent Builder draft GET and save', async () => {

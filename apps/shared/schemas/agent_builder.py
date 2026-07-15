@@ -4,6 +4,10 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
+from apps.shared.schemas.knowledge import (
+    KnowledgeSelectionCollection,
+    KnowledgeSelectionKBCandidate,
+)
 from apps.shared.schemas.workflow import EdgeSchema, NodeSchema, Position
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -217,11 +221,15 @@ class AgentBuilderKnowledgeSelectionRequest(BaseModel):
         default_factory=list,
         max_length=20,
     )
+    selected_collection_handles: list[str] = Field(default_factory=list, max_length=20)
+    selected_kb_handles: list[str] = Field(default_factory=list, max_length=20)
 
 
 class AgentBuilderKnowledgeSelectionResponse(BaseModel):
     resolution_id: str
     selected_candidates: list[AgentBuilderKnowledgeCandidateSelection]
+    selected_collection_handles: list[str] = Field(default_factory=list)
+    selected_kb_handles: list[str] = Field(default_factory=list)
     graph_mutation: GraphMutation
 
 
@@ -655,6 +663,7 @@ class AgentBuilderMessageResponse(BaseModel):
     parameter_group: AgentBuilderParameterGroup | None = None
     clarification_questions: list[str] = Field(default_factory=list)
     clarification_options: list[dict[str, Any]] = Field(default_factory=list)
+    knowledge_selection: dict[str, Any] | None = None
     draft_preview: AgentBuilderDraftPreview | None = None
     validation_result: AgentBuilderValidationResult | None = None
     preview_prompt: str | None = None
@@ -698,13 +707,61 @@ class AgentBuilderDirectStructuredPlan(BaseModel):
     )
 
 
+class AgentBuilderKnowledgeCandidateOption(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: str | None = None
+    candidate_id: str
+    resolution_id: str | None = None
+    requirement_id: str | None = None
+    label: str | None = None
+    safe_label: str | None = None
+    confidence: Literal["high", "medium", "low"] | None = None
+    score: float | None = Field(default=None, ge=0.0, le=1.0)
+    reason_category: str | None = None
+    reason: str | None = None
+    threshold_result: str | None = None
+    runtime_availability: str | None = None
+
+
+class AgentBuilderKnowledgeSelectedOption(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    selection_type: Literal["collection", "knowledge_base"] | None = None
+    candidate_id: str | None = None
+    collection_handle: str | None = None
+    kb_handle: str | None = None
+    resolution_id: str | None = None
+    requirement_id: str | None = None
+    label: str | None = None
+    safe_label: str | None = None
+
+
+class AgentBuilderKnowledgeResolution(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    resolution_id: str | None = None
+    requirement_id: str | None = None
+    timing: Literal["before_graph", "after_graph"] = "after_graph"
+    required: bool = False
+    candidates: list[AgentBuilderKnowledgeCandidateOption] = Field(
+        default_factory=list
+    )
+    collections: list[KnowledgeSelectionCollection] = Field(default_factory=list)
+    ungrouped_kbs: list[KnowledgeSelectionKBCandidate] = Field(default_factory=list)
+    selected: list[AgentBuilderKnowledgeSelectedOption] = Field(default_factory=list)
+    selected_collection_handles: list[str] = Field(default_factory=list)
+    selected_kb_handles: list[str] = Field(default_factory=list)
+    selection_status: Literal["pending_ack", "completed", "unapplied"] | None = None
+
+
 class AgentBuilderDirectMessageResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     request_id: UUID
     status: AgentBuilderRequestStatus
     structured_plan: AgentBuilderDirectStructuredPlan | None = None
-    knowledge_resolution: dict[str, Any] | None = None
+    knowledge_resolution: AgentBuilderKnowledgeResolution | None = None
     graph_mutation: GraphMutation | None = None
     parameter_group: AgentBuilderParameterGroup | None = None
     clarification_questions: list[str] = Field(default_factory=list)
@@ -747,13 +804,25 @@ class AgentBuilderDirectMessageResponse(BaseModel):
                 None,
             )
         knowledge_resolution = None
-        if placements or requirements or options:
+        if placements or requirements or options or response.knowledge_selection:
             knowledge_resolution = {
                 "resolution_id": resolution_id,
                 "timing": placements[0].timing if placements else "after_graph",
                 "required": bool(requirements),
                 "candidates": options,
+                "collections": (
+                    response.knowledge_selection.get("collections", [])
+                    if response.knowledge_selection
+                    else []
+                ),
+                "ungrouped_kbs": (
+                    response.knowledge_selection.get("ungrouped_kbs", [])
+                    if response.knowledge_selection
+                    else []
+                ),
                 "selected": [],
+                "selected_collection_handles": [],
+                "selected_kb_handles": [],
             }
         return cls(
             request_id=response.request_id,

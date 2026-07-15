@@ -129,6 +129,31 @@ class KnowledgeSelectionService:
         )
 
     @staticmethod
+    def _hierarchy_handles(payload: dict[str, Any]) -> tuple[set[str], set[str]]:
+        resolution = payload.get("knowledge_resolution")
+        if not isinstance(resolution, dict):
+            return set(), set()
+        collection_handles: set[str] = set()
+        kb_handles: set[str] = set()
+        for raw_collection in resolution.get("collections") or []:
+            if not isinstance(raw_collection, dict):
+                continue
+            handle = raw_collection.get("collection_handle")
+            if isinstance(handle, str) and handle:
+                collection_handles.add(handle)
+            for raw_child in raw_collection.get("children") or []:
+                if isinstance(raw_child, dict):
+                    kb_handle = raw_child.get("kb_handle")
+                    if isinstance(kb_handle, str) and kb_handle:
+                        kb_handles.add(kb_handle)
+        for raw_kb in resolution.get("ungrouped_kbs") or []:
+            if isinstance(raw_kb, dict):
+                kb_handle = raw_kb.get("kb_handle")
+                if isinstance(kb_handle, str) and kb_handle:
+                    kb_handles.add(kb_handle)
+        return collection_handles, kb_handles
+
+    @staticmethod
     def _placement_for_resolution(
         structured: AgentBuilderStructuredRequest,
         *,
@@ -302,6 +327,9 @@ class KnowledgeSelectionService:
             )
             for option in options
         }
+        allowed_collection_handles, allowed_kb_handles = self._hierarchy_handles(
+            payload
+        )
         for candidate in selection.selected_candidates:
             requirement_id = candidate.requirement_id or placement.requirement_id
             if (candidate.candidate_id, requirement_id) not in option_keys:
@@ -309,20 +337,49 @@ class KnowledgeSelectionService:
             if candidate.resolution_id not in {None, selection.resolution_id}:
                 raise HTTPException(status_code=422, detail="catalog_validation_failed")
 
+        selected_collection_handles = list(
+            dict.fromkeys(selection.selected_collection_handles)
+        )
+        selected_kb_handles = list(
+            dict.fromkeys(
+                [
+                    *selection.selected_kb_handles,
+                    *(candidate.candidate_id for candidate in selection.selected_candidates),
+                ]
+            )
+        )
+        if any(
+            handle not in allowed_collection_handles
+            for handle in selected_collection_handles
+        ) or any(
+            handle not in allowed_kb_handles
+            for handle in selection.selected_kb_handles
+        ):
+            raise HTTPException(status_code=422, detail="catalog_validation_failed")
+
         existing_resolution = self.repository.find_knowledge_resolution(
             request_row,
             selection.resolution_id,
         )
         if existing_resolution is not None:
-            selected_candidate_ids = list(
-                dict.fromkeys(
-                    candidate.candidate_id
-                    for candidate in selection.selected_candidates
-                )
+            selected_candidate_ids = [
+                *selected_collection_handles,
+                *selected_kb_handles,
+            ]
+            stored_collection_handles = existing_resolution.get(
+                "selected_collection_handles"
             )
-            if existing_resolution.get("selected_candidate_ids") != (
-                selected_candidate_ids
-            ):
+            stored_kb_handles = existing_resolution.get("selected_kb_handles")
+            selection_differs = (
+                list(stored_collection_handles or [])
+                != selected_collection_handles
+                or list(stored_kb_handles or []) != selected_kb_handles
+                if stored_collection_handles is not None
+                or stored_kb_handles is not None
+                else existing_resolution.get("selected_candidate_ids")
+                != selected_candidate_ids
+            )
+            if selection_differs:
                 raise HTTPException(status_code=409, detail="task_conflict")
             if existing_resolution.get("status") != "unapplied":
                 raise HTTPException(
@@ -330,19 +387,27 @@ class KnowledgeSelectionService:
                     detail="knowledge_resolution_already_submitted",
                 )
 
-        candidate_handles = {
-            candidate.candidate_id for candidate in selection.selected_candidates
-        }
-        if not candidate_handles:
-            candidate_handles = {self.no_knowledge_candidate_id}
-        recommendation = (
-            {"status": "ready", "bindings": [], "warnings": []}
-            if candidate_handles == {self.no_knowledge_candidate_id}
-            else self.binding_materializer(
+        candidate_handles = set(selected_kb_handles)
+        if not candidate_handles and not selected_collection_handles:
+            recommendation = {
+                "status": "ready",
+                "bindings": [],
+                "collections": [],
+                "warnings": [],
+            }
+        elif selection.selected_candidates and not (
+            selection.selected_kb_handles or selection.selected_collection_handles
+        ):
+            recommendation = self.binding_materializer(
                 structured,
                 selected_candidate_handles=candidate_handles,
             )
-        )
+        else:
+            recommendation = self.binding_materializer(
+                structured,
+                selected_kb_handles=candidate_handles,
+                selected_collection_handles=set(selected_collection_handles),
+            )
         if recommendation.get("status") != "ready":
             raise HTTPException(status_code=422, detail="catalog_validation_failed")
         knowledge_base_refs = [
@@ -352,6 +417,14 @@ class KnowledgeSelectionService:
             }
             for binding in recommendation.get("bindings") or []
             if binding.get("knowledge_base_id") and binding.get("name")
+        ]
+        knowledge_collection_refs = [
+            {
+                "id": str(binding["knowledge_collection_id"]),
+                "name": str(binding["name"]),
+            }
+            for binding in recommendation.get("collections") or []
+            if binding.get("knowledge_collection_id") and binding.get("name")
         ]
         if placement.timing == "before_graph":
             if self.before_graph_builder is None:
@@ -365,6 +438,9 @@ class KnowledgeSelectionService:
                     workflow=workflow,
                     placement=placement,
                     bindings=list(recommendation.get("bindings") or []),
+                    collection_bindings=list(
+                        recommendation.get("collections") or []
+                    ),
                     resolution_id=selection.resolution_id,
                 )
             except (TypeError, ValueError) as exc:
@@ -395,6 +471,7 @@ class KnowledgeSelectionService:
                 workflow_updated_at=workflow.updated_at,
                 target_node_id=target_node_id,
                 selected_knowledge_bases=knowledge_base_refs,
+                selected_knowledge_collections=knowledge_collection_refs,
                 resolution_id=selection.resolution_id,
             )
         self.repository.store_envelope(
@@ -406,8 +483,11 @@ class KnowledgeSelectionService:
             operation_id=mutation.operation_id,
             timing=placement.timing,
             selected_candidate_ids=[
-                candidate.candidate_id for candidate in selection.selected_candidates
+                *selected_collection_handles,
+                *selected_kb_handles,
             ],
+            selected_collection_handles=selected_collection_handles,
+            selected_kb_handles=selected_kb_handles,
         )
         add_action_audit(
             self.db,
@@ -420,12 +500,15 @@ class KnowledgeSelectionService:
                 "session_id": str(session.id),
                 "resolution_id": selection.resolution_id,
                 "operation_id": str(mutation.operation_id),
-                "selected_candidate_count": len(selection.selected_candidates),
+                "selected_collection_count": len(selected_collection_handles),
+                "selected_kb_count": len(selected_kb_handles),
             },
         )
         self.db.commit()
         return AgentBuilderKnowledgeSelectionResponse(
             resolution_id=selection.resolution_id,
             selected_candidates=selection.selected_candidates,
+            selected_collection_handles=selected_collection_handles,
+            selected_kb_handles=selected_kb_handles,
             graph_mutation=mutation,
         )

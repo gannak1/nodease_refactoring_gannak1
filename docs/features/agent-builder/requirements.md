@@ -130,6 +130,7 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 - Redo history는 client memory에만 유지하고 reload 뒤 복구하지 않는다. 재진입 상태의 Redo는 설정 UI만 닫고, 전체 복구 뒤 Redo는 final graph를 CDS 저장하되 canceled Agent Builder task, Knowledge 흐름이나 대화를 자동 재개하지 않는다. 전체 Redo 뒤 다시 Undo하면 canceled task UI에 재진입하지 않고 같은 boundary의 시작 전 graph로 바로 복구한다.
 - Parameter input의 Ctrl+Z는 control 내부 입력만 되돌리고 Agent Builder card/button focus에서는 canvas Undo/Redo를 실행하지 않는다. Workflow Undo/Redo는 canvas 또는 명시적인 전역 Workflow command focus에서만 실행한다.
 - mutation의 base graph hash가 current graph와 맞지 않거나 일부 operation만 적용 가능하면 전체 적용을 거부한다.
+- frontend는 저장 payload를 mutable React Flow state에서 다시 직렬화하지 않고 canonical base graph에 서버 발급 typed operations를 재생한 결과로 만든다. React Flow가 렌더링 중 추가하는 `width`, `height`, `measured`와 같은 화면 측정값은 editor 표시에는 사용할 수 있지만 workflow 저장 graph와 canonical hash에는 포함하지 않는다.
 - direct-edit mutation 적용은 곧바로 workflow 실행이나 배포를 의미하지 않는다.
 - Agent Builder transaction 동안 일반 autosync는 같은 graph를 별도로 저장하지 않는다.
 - frontend는 mutation 적용 후 `operation_id`, `expected_base_graph_hash`, `expected_workflow_updated_at`, `catalog_version`을 `mutation_context`로 포함해 일반 workflow draft save endpoint를 호출해야 한다.
@@ -383,3 +384,13 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 - WorkflowNode의 실행 필수 reference는 runtime target을 선택하는 `appId`다. `workflowId`는 선택 metadata이며, `appId`를 직접 변경하면 서버는 선택된 App의 canonical Workflow로 이 metadata를 정규화한다. `workflowId`를 직접 변경하거나 이미 정합한 pair를 검증할 때는 같은 organization, 각 resource 권한, `App.workflow_id == Workflow.id` 관계를 모두 통과해야 저장된다. 실패 시 부분 mutation을 남기지 않는다.
 - Agent Builder draft CAS는 row lock을 획득한 뒤 DB 최신 Workflow row를 refresh하여 `updated_at`과 graph hash를 비교한다. stale이면 기존 `stale_graph` 409로 종료하고 최신 graph를 덮어쓰지 않는다.
 - Catalog required configuration의 server-derived preflight는 `external_read`, `external_write`, `local_execution`을 모두 포함한다. test, run, deployment와 schedule은 같은 unresolved 판정을 사용하며, client가 보낸 `configuration_state`는 권위로 사용하지 않는다.
+## Hierarchical Knowledge Selection
+
+- Agent Builder는 Collection과 하위 KB를 계층으로 표시해야 한다.
+- Collection 선택은 동적 Collection routing, 하위 KB 선택은 direct KB binding으로 처리해야 한다.
+- Collection route 권한만 있는 사용자는 별도 KB use 권한이 없는 하위 KB identity를 볼 수 없어야 한다.
+- 동일 KB가 여러 Collection에 표시되면 모든 위치에서 하나의 `selection_key` 상태를 공유해야 한다.
+- Collection과 KB 선택은 독립적이어야 하며 빈 선택과 다중 선택을 지원해야 한다.
+- 선택 제출 시 서버는 opaque handle의 권한과 operational 상태를 재검증해야 한다.
+- 선택 후 planner 또는 원래 자연어 요청을 다시 호출해서는 안 된다.
+- Runtime은 direct KB와 Collection child KB를 합집합으로 만들고 동일 KB를 한 번만 검색해야 한다.

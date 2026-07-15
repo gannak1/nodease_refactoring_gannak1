@@ -665,6 +665,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - graph edit auto-layout은 새 node뿐 아니라 이동한 기존 node에 `replace_node_position` operation을 발급하고, CDS 저장 graph에 해당 위치가 남는다.
 - stale canvas에 같은 node ID가 남아도 Agent Builder mutation은 canonical draft graph를 base로 적용하고 저장한다.
 - 화면 전용 `displayNumber`는 Agent Builder CDS 저장 request와 canonical graph hash에 포함하지 않는다.
+- LLM node가 local editor 반영 직후 React Flow `width`, `height`, `measured`를 얻더라도 CDS 저장 request는 typed GraphMutation 결과와 동일한 canonical graph를 유지하고 `expected_result_graph_hash` 검증을 통과한다.
 - Agent Builder GraphMutation으로 추가된 node와 canonical base graph의 기존 node는 local editor 반영 시 모두 유효한 `displayNumber`를 가진다. 이 번호는 BaseNode의 source/target 연결 handle에 표시되며 저장 request에는 포함하지 않는다.
 - Start/Answer workflow도 `variables`와 `outputs` ParameterTask를 순차 제공하며, 자동 추천값이 있더라도 사용자 confirm 또는 set 뒤에만 완료 상태로 진행한다.
 - schema-invalid planner 응답과 완결된 Start-to-Answer 흐름의 모순된 unsupported 응답은 safe repair prompt를 한 번만 보내며, 수정된 `start_input -> answer` structured response를 정상 처리한다.
@@ -768,3 +769,15 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - Planner가 quick eligible이라고 주장하거나 malicious reason/resource payload를 반환해도 server policy가 이를 무시하고 fail-closed한다.
 - API, audit, trace와 UI reason에는 full operations, secret, credential config, hidden KB/Collection, raw URL/path, raw prompt와 정확한 차단 후보 수가 남지 않는다.
 - Audit은 requested/effective mode, allowlisted reason, transition/proposal outcome과 operation/hash만 구분하며 graph/parameter 원문을 저장하지 않는다.
+
+## Hierarchical Knowledge Selection
+
+- Collection 내부 동일 KB가 점수와 응답에 한 번만 반영되는지 검증한다.
+- 여러 Collection의 동일 KB가 같은 `selection_key`와 `kb_handle`을 받는지 검증한다.
+- 한 위치의 하위 KB checkbox 변경이 모든 위치에 동기화되는지 검증한다.
+- Collection 선택과 direct KB 선택이 독립적인지 검증한다.
+- route 권한이 있어도 use 권한 없는 하위 KB가 응답과 점수에서 제외되는지 검증한다.
+- stale/권한 변경 handle 제출이 거부되는지 검증한다.
+- graph에 `knowledgeCollections`와 `knowledgeBases`가 별도 저장되는지 검증한다.
+- runtime 합집합에서 동일 KB를 한 번만 검색하고 모든 provenance를 보존하는지 검증한다.
+- 빈 선택과 Collection/KB 다중 선택을 검증한다.

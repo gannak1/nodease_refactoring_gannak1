@@ -246,6 +246,72 @@ def test_auto_collection_mode_uses_only_route_allowed_collections():
     assert result.unavailable_candidate_count_bucket == "1"
 
 
+def test_builder_hierarchy_filters_collection_route_and_child_kb_use_independently():
+    visible_collection = _collection(
+        safe_metadata={"safe_label": "사내 문서", "topics": ["인사"]}
+    )
+    denied_collection = _collection(
+        safe_metadata={"safe_label": "숨김 Collection"}
+    )
+    visible_child = _kb()
+    denied_child = _kb()
+    ungrouped_kb = _kb()
+
+    class PerKbPermissionHelper(FakePermissionHelper):
+        def _manual_kb_auth_state(self, kb):
+            return (
+                AUTH_STATE_OPERATOR
+                if kb.id in {visible_child.id, ungrouped_kb.id}
+                else "none"
+            )
+
+    helper = PerKbPermissionHelper(
+        collection_actions={visible_collection.id: {"route"}}
+    )
+    resolver = FakeResolver(
+        helper=helper,
+        collections=[visible_collection, denied_collection],
+        items=[
+            SimpleNamespace(
+                collection_id=visible_collection.id,
+                knowledge_base_id=visible_child.id,
+            ),
+            SimpleNamespace(
+                collection_id=visible_collection.id,
+                knowledge_base_id=visible_child.id,
+            ),
+            SimpleNamespace(
+                collection_id=visible_collection.id,
+                knowledge_base_id=denied_child.id,
+            ),
+            SimpleNamespace(
+                collection_id=denied_collection.id,
+                knowledge_base_id=ungrouped_kb.id,
+            ),
+        ],
+        kbs=[visible_child, denied_child, ungrouped_kb],
+    )
+
+    result = resolver.resolve_builder_hierarchy()
+
+    assert [group.collection_id for group in result.collections] == [
+        visible_collection.id
+    ]
+    assert [
+        candidate.candidate_id for candidate in result.collections[0].candidates
+    ] == [visible_child.id]
+    assert [candidate.candidate_id for candidate in result.ungrouped_candidates] == [
+        ungrouped_kb.id
+    ]
+    assert denied_child.id not in {
+        candidate.candidate_id
+        for group in result.collections
+        for candidate in group.candidates
+    }
+    assert result.hidden_candidate_count_bucket == "0"
+    assert resolver.requested_item_collection_ids == {visible_collection.id}
+
+
 def test_auto_collection_candidate_carries_safe_collection_summary_metadata():
     collection = _collection(
         safe_metadata={
@@ -277,6 +343,31 @@ def test_auto_collection_candidate_carries_safe_collection_summary_metadata():
     assert candidate_metadata["route_scope_type"] == "auto_collection"
     assert candidate_metadata["linked_kb_count_bucket"] == "1"
     assert "raw_source_url" not in candidate_metadata
+
+
+def test_collection_safe_label_is_sanitized_before_candidate_projection():
+    collection = _collection(
+        safe_metadata={
+            "safe_label": "HR policy token=secret-value https://private.example/path",
+        }
+    )
+    kb = _kb()
+    helper = FakePermissionHelper(collection_actions={collection.id: {"route"}})
+    resolver = FakeResolver(
+        helper=helper,
+        collections=[collection],
+        items=[
+            SimpleNamespace(
+                collection_id=collection.id,
+                knowledge_base_id=kb.id,
+            )
+        ],
+        kbs=[kb],
+    )
+
+    result = resolver.resolve_builder_hierarchy()
+
+    assert result.collections[0].safe_label == "HR policy"
 
 
 def test_auto_collection_without_collection_candidate_falls_back_to_direct_authorized_kb():

@@ -668,6 +668,7 @@ applyGraphTransaction(nextNodes, nextEdges, metadata)
 - 후보 목록에는 권한 있는 KB를 표시하며, 사용자는 복수 선택하거나 `Knowledge Base 없이 계속`을 누를 수 있다.
 - Knowledge 카드와 ParameterTask 카드가 active인 `parameter_configuration` request는 비차단 open 상태이므로 composer와 Send control을 사용할 수 있다. 새 메시지는 기존 card/result를 request별 history에 유지한 채 별도 `planning` request를 만든다. Foreground request 또는 CAS 저장 중에만 disabled 상태가 되며, 과거 card action은 원 request/version과 최신 workflow graph revision을 재검증한다.
 - mutation에 포함된 server layout 좌표를 editor가 적용한 뒤, 화면 맞춤은 viewport 동작만 수행한다. viewport 동작은 저장 graph를 변경하지 않는다.
+- GraphMutation 저장 payload는 canonical base에 typed operations를 재생해 구성한다. React Flow node instance에 뒤늦게 붙는 `width`, `height`, `measured`는 화면 배치용으로만 유지하고 저장 payload를 다시 만드는 입력으로 사용하지 않는다.
 
 ### MBA-275 Validation Boundaries
 
@@ -675,3 +676,11 @@ applyGraphTransaction(nextNodes, nextEdges, metadata)
 - `parameter_tasks.validate_direct_set_value`는 순수 Catalog/type/sensitivity 판정을 담당하고, `ParameterTaskService`는 DB-backed reference와 Workflow/App relation을 검증한다. resource resolver는 canonical opaque id만 graph patch에 전달하며 raw config/secret을 application model에 넣지 않는다.
 - `appId`는 WorkflowNode runtime target을 정하는 필수 reference이고 `workflowId`는 선택 metadata다. `appId` 직접 변경 시 service는 선택된 App과 canonical Workflow의 organization scope·양쪽 read 권한을 확인하고 `workflowId`를 정규화한다. `workflowId` 직접 변경과 이미 정합한 pair는 현재 node data와 patch의 합성 결과에서 `App.workflow_id == Workflow.id`를 강제한 뒤에만 task 완료와 graph patch를 원자적으로 확정한다.
 - WorkflowDraftCASService는 `populate_existing().with_for_update()`에 해당하는 locked refresh 계약으로 최신 row를 비교하며 stale conflict 시 graph/audit/task를 쓰지 않는다.
+## Hierarchical Knowledge Control
+
+- 목록 상단에 추천 점수 내림차순임을 표시한다.
+- Collection 행은 독립 checkbox와 "실행 시 Collection에서 자동 라우팅" 안내를 제공한다.
+- 하위 KB checkbox는 `selection_key`로 상태를 관리한다. 동일 KB의 어느 위치를 조작해도 모든 위치가 동기화된다.
+- `shared_collection_count > 1`이면 `[공유 KB]`를 표시한다.
+- Collection에 속하지 않은 권한 확인 KB는 `직접 연결된 KB` 영역에 표시한다.
+- 빈 선택 CTA와 선택 적용 CTA는 before/after graph timing을 유지한다.

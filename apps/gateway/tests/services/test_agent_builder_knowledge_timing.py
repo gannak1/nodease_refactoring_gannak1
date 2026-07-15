@@ -115,6 +115,42 @@ def test_after_graph_binding_materializes_a_graph_valid_knowledge_reference():
     validate_candidate_graph(candidate_graph)
 
 
+def test_after_graph_binding_stores_collections_and_direct_kbs_separately():
+    workflow_id = uuid4()
+    knowledge_base_id = str(uuid4())
+    collection_id = str(uuid4())
+    graph = {
+        "nodes": [_node("llm", "llmNode", {"model_id": "model"})],
+        "edges": [],
+    }
+
+    mutation = KnowledgeTimingResolver().build_after_graph_mutation(
+        operation_id=uuid4(),
+        workflow_id=workflow_id,
+        graph=graph,
+        workflow_updated_at=datetime.now(timezone.utc),
+        target_node_id="llm",
+        selected_knowledge_bases=[
+            {"id": knowledge_base_id, "name": "Human Resources"}
+        ],
+        selected_knowledge_collections=[
+            {"id": collection_id, "name": "Company Policies"}
+        ],
+        resolution_id=uuid4(),
+    )
+
+    candidate_graph = apply_graph_operations(graph, mutation.operations)
+    llm_data = candidate_graph["nodes"][0]["data"]
+
+    assert llm_data["knowledgeBases"] == [
+        {"id": knowledge_base_id, "name": "Human Resources"}
+    ]
+    assert llm_data["knowledgeCollections"] == [
+        {"id": collection_id, "safeLabel": "Company Policies"}
+    ]
+    validate_candidate_graph(candidate_graph)
+
+
 def test_before_graph_empty_selection_omits_knowledge_step_and_bridges_dependencies():
     structured = AgentBuilderStructuredRequest.model_validate(
         {

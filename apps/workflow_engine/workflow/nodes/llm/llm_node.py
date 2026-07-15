@@ -2549,26 +2549,29 @@ class LLMNode(Node[LLMNodeData]):
         provenance_kinds: set[str] = set()
         for candidate in candidates:
             knowledge_base_id = getattr(candidate, "knowledge_base_id", None)
-            provenance = getattr(candidate, "provenance", None)
-            kind = getattr(provenance, "kind", None)
-            collection_id = getattr(provenance, "collection_id", None)
             if not isinstance(knowledge_base_id, uuid.UUID):
                 raise NonRetryableWorkflowError(invalid_reason)
             if knowledge_base_id in seen:
                 raise NonRetryableWorkflowError(invalid_reason)
             seen.add(knowledge_base_id)
-            if kind == "direct":
-                if (
-                    knowledge_base_id not in request.direct_kb_ids
-                    or collection_id is not None
-                ):
-                    raise NonRetryableWorkflowError(invalid_reason)
-            elif kind == "collection":
-                if collection_id not in request.collection_ids:
-                    raise NonRetryableWorkflowError(invalid_reason)
-            else:
+            provenances = getattr(candidate, "provenances", None)
+            if not isinstance(provenances, tuple) or not provenances:
                 raise NonRetryableWorkflowError(invalid_reason)
-            provenance_kinds.add(kind)
+            for provenance in provenances:
+                kind = getattr(provenance, "kind", None)
+                collection_id = getattr(provenance, "collection_id", None)
+                if kind == "direct":
+                    if (
+                        knowledge_base_id not in request.direct_kb_ids
+                        or collection_id is not None
+                    ):
+                        raise NonRetryableWorkflowError(invalid_reason)
+                elif kind == "collection":
+                    if collection_id not in request.collection_ids:
+                        raise NonRetryableWorkflowError(invalid_reason)
+                else:
+                    raise NonRetryableWorkflowError(invalid_reason)
+                provenance_kinds.add(kind)
 
         expected_status = "resolved" if candidates else "safe_no_result"
         expected_mode = (

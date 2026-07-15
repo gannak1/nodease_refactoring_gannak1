@@ -1,11 +1,15 @@
 import uuid
 
+import pytest
+
 from apps.gateway.services.knowledge_rag_recommendation_service import (
     GENERIC_KB_LABEL,
     KnowledgeRAGRecommendationService,
 )
 from apps.shared.schemas.knowledge import (
     KnowledgeCandidate,
+    KnowledgeCandidateCollectionGroup,
+    KnowledgeCandidateHierarchyResolution,
     KnowledgeCandidateResolution,
     KnowledgePermissionDecision,
     KnowledgeRAGRecommendationRequest,
@@ -62,6 +66,20 @@ class FakeResolver:
         )
         return self.resolution
 
+    def resolve_builder_hierarchy(self, **kwargs):
+        self.auto_calls.append(kwargs)
+        return getattr(
+            self,
+            "hierarchy",
+            KnowledgeCandidateHierarchyResolution(
+                ungrouped_candidates=self.resolution.candidates,
+                hidden_candidate_count_bucket=self.resolution.hidden_candidate_count_bucket,
+                unavailable_candidate_count_bucket=(
+                    self.resolution.unavailable_candidate_count_bucket
+                ),
+            ),
+        )
+
 
 class FailingResolver:
     def resolve_explicit_kbs(self, knowledge_base_ids):
@@ -78,6 +96,194 @@ def _service(resolver: FakeResolver) -> KnowledgeRAGRecommendationService:
         organization_id=uuid.uuid4(),
         resolver=resolver,
     )
+
+
+def test_hierarchical_selection_deduplicates_children_and_uses_stable_handles():
+    shared_kb = _candidate(safe_label="공유 인사 KB", runtime_availability="available")
+    other_kb = _candidate(safe_label="복지 KB", runtime_availability="available")
+    collection_a = uuid.uuid4()
+    collection_b = uuid.uuid4()
+    resolver = FakeResolver(KnowledgeCandidateResolution(candidates=[]))
+    resolver.hierarchy = KnowledgeCandidateHierarchyResolution(
+        collections=[
+            KnowledgeCandidateCollectionGroup(
+                collection_id=collection_a,
+                safe_label="사내 문서",
+                safe_metadata={"safe_topics": ["인사", "복지"]},
+                candidates=[shared_kb, shared_kb, other_kb],
+            ),
+            KnowledgeCandidateCollectionGroup(
+                collection_id=collection_b,
+                safe_label="경영 문서",
+                candidates=[shared_kb],
+            ),
+        ]
+    )
+
+    service = _service(resolver)
+    request = KnowledgeRAGRecommendationRequest(
+        workflow_intent="사내 인사 문서로 답변",
+        node_purpose="인사 답변",
+        mode="auto",
+        max_recommendations=20,
+    )
+    result = service.recommend_for_builder(request)
+
+    selection = result.knowledge_selection
+    assert selection is not None
+    internal = next(
+        item for item in selection.collections if item.safe_label == "사내 문서"
+    )
+    assert len(internal.children) == 2
+    shared_rows = [
+        child
+        for collection in selection.collections
+        for child in collection.children
+        if child.safe_label == "공유 인사 KB"
+    ]
+    assert len(shared_rows) == 2
+    assert len({row.kb_handle for row in shared_rows}) == 1
+    assert len({row.selection_key for row in shared_rows}) == 1
+    assert {row.shared_collection_count for row in shared_rows} == {2}
+    assert all(not row.kb_handle.endswith(str(shared_kb.candidate_id)) for row in shared_rows)
+    query_terms, _source = service._ranking_terms(  # noqa: SLF001
+        [shared_kb, other_kb], request
+    )
+    metadata_terms = {"사내", "문서", "인사", "복지"}
+    metadata_score = len(metadata_terms.intersection(query_terms)) / len(
+        set(query_terms)
+    )
+    child_scores = [child.score for child in internal.children]
+    expected_collection_score = (
+        max(child_scores) * 0.60
+        + (sum(sorted(child_scores, reverse=True)[:3]) / len(child_scores)) * 0.30
+        + metadata_score * 0.10
+    )
+    assert internal.score == pytest.approx(round(expected_collection_score, 4))
+    assert selection.collections == sorted(
+        selection.collections,
+        key=lambda item: (-item.score, item.safe_label or "", item.collection_handle),
+    )
+
+
+def test_collection_score_uses_all_authorized_children_before_display_cap():
+    higher = _candidate(
+        safe_label="인사 정책",
+        runtime_availability="available",
+        safe_metadata={"kb_safe_topics": ["인사 정책"]},
+    )
+    lower = _candidate(
+        safe_label="복지 안내",
+        runtime_availability="unknown",
+        safe_metadata={"kb_safe_topics": ["복지"]},
+    )
+    resolver = FakeResolver(KnowledgeCandidateResolution(candidates=[]))
+    resolver.hierarchy = KnowledgeCandidateHierarchyResolution(
+        collections=[
+            KnowledgeCandidateCollectionGroup(
+                collection_id=uuid.uuid4(),
+                safe_label="사내 문서",
+                candidates=[higher, lower],
+            )
+        ]
+    )
+    service = _service(resolver)
+    request = KnowledgeRAGRecommendationRequest(
+        workflow_intent="인사 정책",
+        mode="auto",
+        max_recommendations=1,
+    )
+    ranked = service._rank_candidates([higher, lower], request)  # noqa: SLF001
+
+    result = service.recommend_for_builder(request)
+
+    collection = result.knowledge_selection.collections[0]
+    assert len(collection.children) == 1
+    all_child_scores = sorted((item[1] for item in ranked), reverse=True)
+    expected = all_child_scores[0] * 0.60 + (
+        sum(all_child_scores[:3]) / len(all_child_scores[:3])
+    ) * 0.30
+    assert collection.score == pytest.approx(round(expected, 4))
+
+
+def test_route_authorized_collection_remains_selectable_without_visible_children():
+    resolver = FakeResolver(KnowledgeCandidateResolution(candidates=[]))
+    resolver.hierarchy = KnowledgeCandidateHierarchyResolution(
+        collections=[
+            KnowledgeCandidateCollectionGroup(
+                collection_id=uuid.uuid4(),
+                safe_label="제한 문서",
+                safe_metadata={"safe_topics": ["제한 문서"]},
+                candidates=[],
+            )
+        ]
+    )
+
+    result = _service(resolver).recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(
+            workflow_intent="제한 문서로 답변",
+            mode="auto",
+        )
+    )
+
+    assert result.status == "recommended"
+    assert result.recommendations == []
+    assert len(result.knowledge_selection.collections) == 1
+    assert result.knowledge_selection.collections[0].children == []
+    assert result.fallback_reason is None
+
+
+def test_hierarchical_response_does_not_expose_hidden_kb_count_bucket():
+    resolver = FakeResolver(KnowledgeCandidateResolution(candidates=[]))
+    resolver.hierarchy = KnowledgeCandidateHierarchyResolution(
+        collections=[],
+        ungrouped_candidates=[],
+        hidden_candidate_count_bucket="2-10",
+        unavailable_candidate_count_bucket="1",
+    )
+
+    result = _service(resolver).recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(
+            workflow_intent="사내 문서",
+            mode="auto",
+        )
+    )
+
+    assert result.summary.hidden_or_unavailable_count_bucket == "0"
+
+
+def test_collection_handle_materialization_revalidates_current_visibility():
+    kb = _candidate(safe_label="인사 KB", runtime_availability="available")
+    collection_id = uuid.uuid4()
+    resolver = FakeResolver(KnowledgeCandidateResolution(candidates=[]))
+    resolver.hierarchy = KnowledgeCandidateHierarchyResolution(
+        collections=[
+            KnowledgeCandidateCollectionGroup(
+                collection_id=collection_id,
+                safe_label="사내 문서",
+                candidates=[kb],
+            )
+        ]
+    )
+    service = _service(resolver)
+    request = KnowledgeRAGRecommendationRequest(
+        workflow_intent="사내 문서로 답변",
+        mode="auto",
+    )
+    result = service.recommend_for_builder(request)
+    handle = result.knowledge_selection.collections[0].collection_handle
+
+    assert service.materialize_collection_handles_for_builder(request, {handle}) == [
+        {
+            "safe_handle": handle,
+            "knowledge_collection_id": str(collection_id),
+            "name": "사내 문서",
+        }
+    ]
+
+    resolver.hierarchy = KnowledgeCandidateHierarchyResolution()
+
+    assert service.materialize_collection_handles_for_builder(request, {handle}) == []
 
 
 def test_recommendation_returns_kb_item_and_collection_summary_only():
@@ -505,6 +711,43 @@ def test_materialize_candidate_handles_does_not_depend_on_top_n_ranking():
             "safe_handle": lower_handle,
             "knowledge_base_id": str(lower.candidate_id),
             "name": "복지 안내",
+        }
+    ]
+
+
+def test_materialize_ungrouped_handle_when_collection_candidates_exist():
+    collection_child = _candidate(safe_label="Collection child")
+    ungrouped = _candidate(safe_label="Directly authorized KB")
+    resolver = FakeResolver(
+        KnowledgeCandidateResolution(candidates=[collection_child])
+    )
+    resolver.hierarchy = KnowledgeCandidateHierarchyResolution(
+        collections=[
+            KnowledgeCandidateCollectionGroup(
+                collection_id=uuid.uuid4(),
+                safe_label="Collection",
+                candidates=[collection_child],
+            )
+        ],
+        ungrouped_candidates=[ungrouped],
+    )
+    service = _service(resolver)
+    request = KnowledgeRAGRecommendationRequest(
+        workflow_intent="Use the directly authorized knowledge base",
+        mode="auto",
+    )
+    ungrouped_handle = service._recommendation_id(ungrouped)  # noqa: SLF001
+
+    materialized = service.materialize_candidate_handles_for_builder(
+        request,
+        {ungrouped_handle},
+    )
+
+    assert materialized == [
+        {
+            "safe_handle": ungrouped_handle,
+            "knowledge_base_id": str(ungrouped.candidate_id),
+            "name": "Directly authorized KB",
         }
     ]
 

@@ -105,6 +105,43 @@ class KnowledgeCandidateResolution(BaseModel):
     reason_code: str | None = None
 
 
+class KnowledgeCandidateCollectionGroup(BaseModel):
+    """Internal authorized Collection group used before opaque projection."""
+
+    collection_id: UUID
+    safe_label: str | None = None
+    safe_metadata: dict = Field(default_factory=dict)
+    candidates: list[KnowledgeCandidate] = Field(default_factory=list)
+
+
+class KnowledgeCandidateHierarchyResolution(BaseModel):
+    collections: list[KnowledgeCandidateCollectionGroup] = Field(default_factory=list)
+    ungrouped_candidates: list[KnowledgeCandidate] = Field(default_factory=list)
+    hidden_candidate_count_bucket: str = "0"
+    unavailable_candidate_count_bucket: str = "0"
+    reason_code: str | None = None
+
+
+class KnowledgeSelectionKBCandidate(BaseModel):
+    kb_handle: str
+    selection_key: str
+    safe_label: str | None = None
+    score: float = Field(ge=0.0, le=1.0)
+    shared_collection_count: int = Field(default=0, ge=0)
+
+
+class KnowledgeSelectionCollection(BaseModel):
+    collection_handle: str
+    safe_label: str | None = None
+    score: float = Field(ge=0.0, le=1.0)
+    children: list[KnowledgeSelectionKBCandidate] = Field(default_factory=list)
+
+
+class KnowledgeSelection(BaseModel):
+    collections: list[KnowledgeSelectionCollection] = Field(default_factory=list)
+    ungrouped_kbs: list[KnowledgeSelectionKBCandidate] = Field(default_factory=list)
+
+
 class KnowledgeCandidateResolveRequest(BaseModel):
     mode: KnowledgeCandidateResolutionMode
     knowledge_base_ids: list[UUID] = Field(default_factory=list)
@@ -504,6 +541,7 @@ class KnowledgeRAGRecommendationResponse(BaseModel):
     requirement_id: str | None = None
     recommendations: list[KnowledgeRAGRecommendation] = Field(default_factory=list)
     clarification_options: list[dict] = Field(default_factory=list)
+    knowledge_selection: KnowledgeSelection | None = None
     fallback_reason: str | None = None
     summary: KnowledgeRAGRecommendationSummary = Field(
         default_factory=KnowledgeRAGRecommendationSummary

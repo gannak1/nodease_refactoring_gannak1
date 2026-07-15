@@ -31,6 +31,8 @@ from apps.shared.schemas.agent_builder import (
     AgentBuilderStructuredRequest,
 )
 from apps.shared.schemas.knowledge import (
+    KnowledgeSelection,
+    KnowledgeSelectionCollection,
     KnowledgeRAGRecommendation,
     KnowledgeRAGRecommendationProvenance,
     KnowledgeRAGRecommendationResponse,
@@ -3149,6 +3151,57 @@ def test_agent_builder_kb_recommendation_no_candidate_requires_explicit_empty_se
     assert result["options"] == []
     assert "확인" in result["questions"][0]
     assert "후보" in result["warnings"][0]
+
+
+def test_agent_builder_collection_only_recommendation_remains_selectable(monkeypatch):
+    class FakeRecommendationService:
+        def __init__(self, db, *, user_id, organization_id):
+            pass
+
+        def recommend_for_builder(self, request, **_kwargs):
+            return KnowledgeRAGRecommendationResponse(
+                status="recommended",
+                recommendations=[],
+                knowledge_selection=KnowledgeSelection(
+                    collections=[
+                        KnowledgeSelectionCollection(
+                            collection_handle="col-safe-1",
+                            safe_label="제한 문서",
+                            score=0.8,
+                            children=[],
+                        )
+                    ]
+                ),
+                summary=KnowledgeRAGRecommendationSummary(
+                    candidate_count_bucket="0",
+                    recommendation_count_bucket="0",
+                ),
+            )
+
+    monkeypatch.setattr(
+        service_module,
+        "KnowledgeRAGRecommendationService",
+        FakeRecommendationService,
+    )
+    svc = AgentBuilderService(
+        object(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    structured = svc._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(
+            message="제한 문서를 참고해 답변하는 workflow를 만들어줘"
+        ),
+        workflow=None,
+    )
+
+    result = svc._resolve_knowledge_requirements(structured)  # noqa: SLF001
+
+    assert result["status"] == "clarification_required"
+    assert result["knowledge_selection"]["collections"][0][
+        "collection_handle"
+    ] == "col-safe-1"
+    assert "후보가 없습니다" not in result["questions"][0]
 
 
 def test_agent_builder_session_messages_restore_redacted_user_turn_and_assistant_turn():

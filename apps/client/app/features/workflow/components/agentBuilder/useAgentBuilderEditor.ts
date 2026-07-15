@@ -7,7 +7,10 @@ import type {
   Viewport,
   WorkflowDraftSaveRequest,
 } from '../../types/Workflow';
-import type { AgentBuilderGraphMutation } from './agentBuilderGraphMutation';
+import {
+  applyAgentBuilderOperations,
+  type AgentBuilderGraphMutation,
+} from './agentBuilderGraphMutation';
 
 const withoutEditorOnlyNodeData = (nodes: Node[]): Node[] =>
   nodes.map((node) => {
@@ -45,6 +48,11 @@ export const applyAndSaveAgentBuilderMutation = async (input: {
       ),
       edges: structuredClone(canonicalEdges),
     };
+    const mutationResult = applyAgentBuilderOperations(
+      revertGraph.nodes,
+      revertGraph.edges,
+      input.mutation.operations,
+    );
     store.applyAgentBuilderGraphMutation(input.mutation, input.sessionId, {
       nodes: revertGraph.nodes,
       edges: revertGraph.edges,
@@ -54,9 +62,9 @@ export const applyAndSaveAgentBuilderMutation = async (input: {
     const saveRequest: WorkflowDraftSaveRequest = {
       // displayNumber is a screen-only label and must not affect CAS hashes.
       nodes: withoutEditorOnlyNodeData(
-        current.nodes.filter((node) => node.type !== 'note'),
+        mutationResult.nodes.filter((node) => node.type !== 'note'),
       ),
-      edges: current.edges,
+      edges: mutationResult.edges,
       viewport: input.viewport,
       features: {
         ...current.features,

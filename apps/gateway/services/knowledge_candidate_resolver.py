@@ -13,8 +13,13 @@ from apps.shared.db.models.knowledge import (
 )
 from apps.shared.schemas.knowledge import (
     KnowledgeCandidate,
+    KnowledgeCandidateCollectionGroup,
+    KnowledgeCandidateHierarchyResolution,
     KnowledgeCandidateResolution,
     KnowledgePermissionDecision,
+)
+from apps.shared.services.knowledge_resource_eligibility import (
+    knowledge_collection_operational_predicates,
 )
 from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
 from apps.shared.services.knowledge_safe_text import (
@@ -233,6 +238,132 @@ class KnowledgeCandidateResolver:
             reason_code=None if candidates else "resource.hidden",
         )
 
+    def resolve_builder_hierarchy(
+        self,
+        *,
+        collection_ids: Iterable[uuid.UUID] | None = None,
+        max_collections: int = DEFAULT_MAX_COLLECTIONS,
+        max_candidate_kbs: int = DEFAULT_MAX_CANDIDATE_KBS,
+        allow_unready_candidates: bool = False,
+    ) -> KnowledgeCandidateHierarchyResolution:
+        """Return route-authorized Collections with independently authorized KBs."""
+
+        requested_ids = (
+            self._dedupe_ids(collection_ids) if collection_ids is not None else None
+        )
+        collections = self._collections(requested_ids, None)
+        route_decisions = self.permission_helper.bulk_evaluate_collection_action(
+            collections,
+            "route",
+        )
+        visible_collections = [
+            collection
+            for collection in collections
+            if route_decisions[collection.id].allowed
+        ][:max_collections]
+        visible_collection_ids = [collection.id for collection in visible_collections]
+        items = self._collection_items(visible_collection_ids, None)
+
+        direct_pairs, unavailable_count, hidden_count = self._direct_authorized_kb_pairs(
+            max_candidate_kbs,
+            allow_unready_candidates=allow_unready_candidates,
+        )
+        candidates_by_id: dict[uuid.UUID, KnowledgeCandidate] = {}
+        runtime_decisions = self._bulk_runtime_kb_decisions(
+            [kb for kb, _decision in direct_pairs]
+        )
+        for kb, decision in direct_pairs:
+            candidates_by_id[kb.id] = self._kb_candidate(
+                kb,
+                decision,
+                runtime_decision=runtime_decisions.get(kb.id),
+            )
+
+        item_kb_ids = self._dedupe_ids(item.knowledge_base_id for item in items)
+        missing_ids = [kb_id for kb_id in item_kb_ids if kb_id not in candidates_by_id]
+        if missing_ids:
+            linked_kbs = self._knowledge_bases_by_id(missing_ids)
+            linked_decisions = self.permission_helper.bulk_evaluate_kb_use(
+                linked_kbs.values()
+            )
+            linked_runtime = self._bulk_runtime_kb_decisions(list(linked_kbs.values()))
+            for kb_id in missing_ids:
+                kb = linked_kbs.get(kb_id)
+                if kb is None:
+                    continue
+                if self._kb_candidate_exclusion_reason(
+                    kb,
+                    allow_unready_candidates=allow_unready_candidates,
+                ):
+                    unavailable_count += 1
+                    continue
+                decision = linked_decisions[kb.id]
+                if not decision.allowed:
+                    if decision.external_reason_code == "resource.hidden":
+                        hidden_count += 1
+                    else:
+                        unavailable_count += 1
+                    continue
+                candidates_by_id[kb.id] = self._kb_candidate(
+                    kb,
+                    decision,
+                    runtime_decision=linked_runtime.get(kb.id),
+                )
+
+        item_ids_by_collection: dict[uuid.UUID, list[uuid.UUID]] = {}
+        for item in items:
+            values = item_ids_by_collection.setdefault(item.collection_id, [])
+            if item.knowledge_base_id not in values:
+                values.append(item.knowledge_base_id)
+
+        grouped_kb_ids: set[uuid.UUID] = set()
+        groups: list[KnowledgeCandidateCollectionGroup] = []
+        for collection in visible_collections:
+            child_candidates = [
+                candidates_by_id[kb_id]
+                for kb_id in item_ids_by_collection.get(collection.id, [])
+                if kb_id in candidates_by_id
+            ]
+            grouped_kb_ids.update(item.candidate_id for item in child_candidates)
+            groups.append(
+                KnowledgeCandidateCollectionGroup(
+                    collection_id=collection.id,
+                    safe_label=self._collection_safe_label(collection),
+                    safe_metadata={
+                        "safe_topics": self._collection_safe_topics(collection),
+                    },
+                    candidates=child_candidates,
+                )
+            )
+
+        if requested_ids is not None:
+            found_ids = {collection.id for collection in collections}
+            hidden_count += len(set(requested_ids) - found_ids)
+        hidden_count += sum(
+            1
+            for collection in collections
+            if not route_decisions[collection.id].allowed
+            and route_decisions[collection.id].external_reason_code == "resource.hidden"
+        )
+        unavailable_count += sum(
+            1
+            for collection in collections
+            if not route_decisions[collection.id].allowed
+            and route_decisions[collection.id].external_reason_code != "resource.hidden"
+        )
+        ungrouped = [
+            candidate
+            for candidate_id, candidate in candidates_by_id.items()
+            if candidate_id not in grouped_kb_ids
+        ][:max_candidate_kbs]
+        return KnowledgeCandidateHierarchyResolution(
+            collections=groups,
+            ungrouped_candidates=ungrouped,
+            hidden_candidate_count_bucket=bucket_count(hidden_count),
+            unavailable_candidate_count_bucket=bucket_count(unavailable_count),
+            reason_code=None if groups or ungrouped else "resource.hidden",
+        )
+
     def _collections(
         self,
         collection_ids: Iterable[uuid.UUID] | None,
@@ -240,7 +371,7 @@ class KnowledgeCandidateResolver:
     ) -> list[KnowledgeCollection]:
         query = self.db.query(KnowledgeCollection).filter(
             KnowledgeCollection.organization_id == self.organization_id,
-            KnowledgeCollection.lifecycle_state == "active",
+            *knowledge_collection_operational_predicates(),
         )
         if collection_ids is not None:
             requested_ids = self._dedupe_ids(collection_ids)
@@ -549,9 +680,9 @@ class KnowledgeCandidateResolver:
         # 승인된 safe_metadata label만 Builder recommendation summary에 전달한다.
         metadata = getattr(collection, "safe_metadata", None) or {}
         for key in ("collection_safe_label", "safe_label", "safe_display_name"):
-            value = metadata.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
+            value = safe_label_from_text(metadata.get(key))
+            if value:
+                return value
         return None
 
     def _collection_safe_topics(self, collection: KnowledgeCollection) -> list[str]:

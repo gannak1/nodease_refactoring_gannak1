@@ -10,6 +10,97 @@ const candidates = Array.from({ length: 25 }, (_, index) => ({
 }));
 
 describe('KnowledgeSelectionControl', () => {
+  it('keeps a shared KB checked across Collections while Collection selection stays independent', () => {
+    const onSubmit = vi.fn();
+    render(
+      <KnowledgeSelectionControl
+        candidates={[]}
+        collections={[
+          {
+            collection_handle: 'collection-a',
+            safe_label: '사내 문서 Collection',
+            score: 0.84,
+            children: [
+              {
+                kb_handle: 'kb-1',
+                selection_key: 'shared-kb-1',
+                safe_label: '사내 인사 KB',
+                score: 0.9,
+                shared_collection_count: 2,
+              },
+            ],
+          },
+          {
+            collection_handle: 'collection-b',
+            safe_label: '경영 문서 Collection',
+            score: 0.72,
+            children: [
+              {
+                kb_handle: 'kb-1',
+                selection_key: 'shared-kb-1',
+                safe_label: '사내 인사 KB',
+                score: 0.9,
+                shared_collection_count: 2,
+              },
+            ],
+          },
+        ]}
+        onSubmitHierarchy={onSubmit}
+        onSubmit={vi.fn()}
+      />,
+    );
+
+    const sharedKbCheckboxes = screen.getAllByLabelText('사내 인사 KB');
+    fireEvent.click(sharedKbCheckboxes[0]);
+    expect(sharedKbCheckboxes[0]).toBeChecked();
+    expect(sharedKbCheckboxes[1]).toBeChecked();
+
+    fireEvent.click(screen.getByLabelText('사내 문서 Collection'));
+    expect(screen.getByLabelText('사내 문서 Collection')).toBeChecked();
+    expect(screen.getByLabelText('경영 문서 Collection')).not.toBeChecked();
+
+    expect(
+      screen.getByRole('button', { name: 'Knowledge Base 없이 생성' }),
+    ).toBeEnabled();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: '선택한 Knowledge로 생성' }),
+    );
+    expect(onSubmit).toHaveBeenCalledWith({
+      collectionHandles: ['collection-a'],
+      kbHandles: ['kb-1'],
+    });
+  });
+
+  it('submits an explicit empty hierarchy selection independently from checked values', () => {
+    const onSubmit = vi.fn();
+    render(
+      <KnowledgeSelectionControl
+        timing="after_graph"
+        candidates={[]}
+        collections={[
+          {
+            collection_handle: 'collection-a',
+            safe_label: '사내 문서 Collection',
+            score: 0.8,
+            children: [],
+          },
+        ]}
+        onSubmitHierarchy={onSubmit}
+        onSubmit={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText('사내 문서 Collection'));
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Knowledge Base 없이 계속' }),
+    );
+
+    expect(onSubmit).toHaveBeenCalledWith({
+      collectionHandles: [],
+      kbHandles: [],
+    });
+  });
   it('explains that multiple candidates are displayed in recommendation order', () => {
     render(
       <KnowledgeSelectionControl
@@ -20,7 +111,7 @@ describe('KnowledgeSelectionControl', () => {
 
     expect(
       screen.getByText(
-        '위에서 아래 순서로 요청과의 추천 점수가 높은 후보입니다. 점수가 같으면 현재 사용 가능 상태와 출처 우선순위를 먼저 반영합니다.',
+        '추천 점수 내림차순으로 표시됩니다. Collection은 실행 시 자동 라우팅하고, 하위 Knowledge Base는 Workflow에 직접 고정합니다.',
       ),
     ).toBeInTheDocument();
     expect(screen.getByText('1순위')).toBeInTheDocument();
@@ -90,7 +181,10 @@ describe('KnowledgeSelectionControl', () => {
 
   it('keeps the selected candidates visible when an apply attempt fails', () => {
     const { rerender } = render(
-      <KnowledgeSelectionControl candidates={candidates.slice(0, 2)} onSubmit={vi.fn()} />,
+      <KnowledgeSelectionControl
+        candidates={candidates.slice(0, 2)}
+        onSubmit={vi.fn()}
+      />,
     );
 
     fireEvent.click(screen.getByLabelText('Knowledge 1'));

@@ -105,6 +105,8 @@ def test_knowledge_resolution_persists_only_safe_ids_and_acknowledges():
         operation_id=operation_id,
         timing="after_graph",
         selected_candidate_ids=["rec-safe-1", "rec-safe-1"],
+        selected_collection_handles=["col-safe-1", "col-safe-1"],
+        selected_kb_handles=["rec-safe-1", "rec-safe-1"],
     )
     acknowledged = repository.acknowledge_knowledge_resolution(
         request_row,
@@ -113,6 +115,8 @@ def test_knowledge_resolution_persists_only_safe_ids_and_acknowledges():
     )
 
     assert stored["selected_candidate_ids"] == ["rec-safe-1"]
+    assert stored["selected_collection_handles"] == ["col-safe-1"]
+    assert stored["selected_kb_handles"] == ["rec-safe-1"]
     assert acknowledged["status"] == "completed"
     assert request_row.response_payload["clarification_options"] == []
     assert request_row.response_payload["clarification_questions"] == []
@@ -746,6 +750,207 @@ def test_knowledge_selection_reads_direct_resolution_candidates_without_legacy_o
     assert len(request_row.response_payload["operation_envelopes"]) == 2
     assert len(audit_calls) == 1
     assert db.commits == 1
+
+
+def test_hierarchical_knowledge_selection_rejects_stale_handles_and_materializes_separately(
+    monkeypatch,
+):
+    user_id = uuid4()
+    organization_id = uuid4()
+    workflow_id = uuid4()
+    session = SimpleNamespace(
+        id=uuid4(),
+        user_id=user_id,
+        organization_id=organization_id,
+        workflow_id=workflow_id,
+        protocol_version="direct_edit_v1",
+    )
+    workflow = SimpleNamespace(
+        id=workflow_id,
+        organization_id=organization_id,
+        graph={
+            "nodes": [
+                {
+                    "id": "llm-1",
+                    "type": "llmNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {"knowledgeBases": [], "knowledgeCollections": []},
+                }
+            ],
+            "edges": [],
+        },
+        updated_at=datetime.now(timezone.utc),
+    )
+    structured = AgentBuilderStructuredRequest.model_validate(
+        {
+            "request_type": "new_workflow",
+            "draft_mode": "new_workflow",
+            "intent_summary": "safe summary",
+            "planned_steps": [
+                {
+                    "step_id": "step_llm",
+                    "capability": "llm",
+                    "purpose": "safe purpose",
+                }
+            ],
+            "knowledge_placements": [
+                {
+                    "requirement_id": "kr-1",
+                    "timing": "after_graph",
+                    "effect_kind": "binding_only",
+                    "target_step_id": "step_llm",
+                }
+            ],
+        }
+    )
+    request_row = SimpleNamespace(
+        structured_request=structured.model_dump(mode="json"),
+        response_payload={
+            "safe_step_node_ids": {"step_llm": "llm-1"},
+            "knowledge_resolution": {
+                "resolution_id": "res-hierarchy-1",
+                "timing": "after_graph",
+                "required": True,
+                "candidates": [],
+                "collections": [
+                    {
+                        "collection_handle": "col-safe-1",
+                        "safe_label": "사내 문서",
+                        "score": 0.8,
+                        "children": [
+                            {
+                                "kb_handle": "rec-safe-1",
+                                "selection_key": "kbsel-safe-1",
+                                "safe_label": "휴가 정책",
+                                "score": 0.9,
+                                "shared_collection_count": 1,
+                            }
+                        ],
+                    }
+                ],
+                "ungrouped_kbs": [],
+                "selected": [],
+            },
+            "operation_envelopes": [
+                {"kind": "initial_graph", "status": "acknowledged"}
+            ],
+        },
+    )
+
+    class _Query:
+        def __init__(self, *, first=None, rows=None):
+            self._first = first
+            self._rows = list(rows or [])
+
+        def filter(self, *_args):
+            return self
+
+        def order_by(self, *_args):
+            return self
+
+        def with_for_update(self):
+            return self
+
+        def first(self):
+            return self._first
+
+        def all(self):
+            return list(self._rows)
+
+    class _Db:
+        def query(self, model):
+            if model is selection_module.AgentBuilderSession:
+                return _Query(first=session)
+            if model is selection_module.Workflow:
+                return _Query(first=workflow)
+            if model is selection_module.AgentBuilderRequest:
+                return _Query(rows=[request_row])
+            raise AssertionError(f"unexpected model: {model}")
+
+        def commit(self):
+            return None
+
+    materializer_calls = []
+    knowledge_base_id = uuid4()
+    collection_id = uuid4()
+
+    def _materializer(*args, **kwargs):
+        materializer_calls.append((args, kwargs))
+        return {
+            "status": "ready",
+            "bindings": [
+                {
+                    "safe_handle": "rec-safe-1",
+                    "knowledge_base_id": str(knowledge_base_id),
+                    "name": "휴가 정책",
+                }
+            ],
+            "collections": [
+                {
+                    "safe_handle": "col-safe-1",
+                    "knowledge_collection_id": str(collection_id),
+                    "name": "사내 문서",
+                }
+            ],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(
+        selection_module,
+        "has_workflow_permission",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(selection_module, "add_action_audit", lambda *_args, **_kwargs: None)
+    service = KnowledgeSelectionService(
+        _Db(),
+        user_id=user_id,
+        organization_id=organization_id,
+        binding_materializer=_materializer,
+        no_knowledge_candidate_id="no-kb",
+    )
+
+    with pytest.raises(HTTPException) as stale:
+        service.select(
+            session.id,
+            AgentBuilderKnowledgeSelectionRequest(
+                resolution_id="res-hierarchy-1",
+                selected_collection_handles=["col-stale"],
+            ),
+        )
+    assert stale.value.status_code == 422
+    assert materializer_calls == []
+
+    response = service.select(
+        session.id,
+        AgentBuilderKnowledgeSelectionRequest(
+            resolution_id="res-hierarchy-1",
+            selected_collection_handles=["col-safe-1", "col-safe-1"],
+            selected_kb_handles=["rec-safe-1", "rec-safe-1"],
+        ),
+    )
+
+    assert response.selected_collection_handles == ["col-safe-1"]
+    assert response.selected_kb_handles == ["rec-safe-1"]
+    assert materializer_calls[0][1] == {
+        "selected_kb_handles": {"rec-safe-1"},
+        "selected_collection_handles": {"col-safe-1"},
+    }
+    operation = response.graph_mutation.operations[0]
+    assert operation.data["knowledgeBases"] == [
+        {"id": str(knowledge_base_id), "name": "휴가 정책"}
+    ]
+    assert operation.data["knowledgeCollections"] == [
+        {"id": str(collection_id), "safeLabel": "사내 문서"}
+    ]
+    assert request_row.response_payload["knowledge_resolutions"][0][
+        "selected_candidate_ids"
+    ] == ["col-safe-1", "rec-safe-1"]
+    assert request_row.response_payload["knowledge_resolutions"][0][
+        "selected_collection_handles"
+    ] == ["col-safe-1"]
+    assert request_row.response_payload["knowledge_resolutions"][0][
+        "selected_kb_handles"
+    ] == ["rec-safe-1"]
 
 
 def test_before_graph_empty_direct_resolution_uses_dedicated_empty_selection(

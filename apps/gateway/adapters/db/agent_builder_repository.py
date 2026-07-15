@@ -1048,6 +1048,8 @@ class AgentBuilderRepository:
         operation_id: UUID,
         timing: str,
         selected_candidate_ids: list[str],
+        selected_collection_handles: list[str] | None = None,
+        selected_kb_handles: list[str] | None = None,
         status: str = "pending_ack",
     ) -> dict[str, Any]:
         payload = self._payload(request_row)
@@ -1057,6 +1059,10 @@ class AgentBuilderRepository:
             "operation_id": str(operation_id),
             "timing": timing,
             "selected_candidate_ids": list(dict.fromkeys(selected_candidate_ids)),
+            "selected_collection_handles": list(
+                dict.fromkeys(selected_collection_handles or [])
+            ),
+            "selected_kb_handles": list(dict.fromkeys(selected_kb_handles or [])),
             "status": status,
         }
         for index, item in enumerate(resolutions):
@@ -1071,6 +1077,10 @@ class AgentBuilderRepository:
                     item.get("timing") != timing
                     or list(item.get("selected_candidate_ids") or [])
                     != serialized["selected_candidate_ids"]
+                    or list(item.get("selected_collection_handles") or [])
+                    != serialized["selected_collection_handles"]
+                    or list(item.get("selected_kb_handles") or [])
+                    != serialized["selected_kb_handles"]
                 ):
                     raise AgentBuilderRepositoryError(
                         "knowledge resolution retry payload differs"

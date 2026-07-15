@@ -183,7 +183,7 @@ echo -e "${GREEN}🖥️ Gateway API 서버 시작...${NC}"
     WATCHFILES_FORCE_POLLING="${WATCHFILES_FORCE_POLLING:-true}" \
         AGENT_BUILDER_DRAFT_MODEL_ID="${AGENT_BUILDER_DRAFT_MODEL_ID:-gpt-5-mini}" \
         PYTHONPATH="$PROJECT_ROOT" \
-        $VENV_PYTHON -m uvicorn apps.gateway.main:app --reload --port 8000
+        $VENV_PYTHON -m uvicorn apps.gateway.main:app --reload --host 0.0.0.0 --port 8000
 ) &
 FASTAPI_PID=$!
 
