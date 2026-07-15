@@ -47,8 +47,8 @@ Verified Against: `origin/dev @ 32fb602f`
 - 내부 챗봇 실행 페이지 우상단은 현재 로그인 사용자 이름과 사용자 권한 적용 상태를 함께 표시한다. 사용자 정보 조회 실패 시 이름은 생략하되 실행 화면과 권한 상태 표시는 유지한다.
 - 내부 챗봇 실행 페이지는 같은 화면에서 보낸 사용자 질문과 응답을 순서대로 누적하고, 전송 성공 후 질문 입력창을 비운다.
 - 내부 챗봇 질문 composer는 입력과 전송 버튼을 세로 중앙 정렬한다. 질문 입력은 내부 스크롤 없이 줄 수에 맞춰 높이가 늘어나고 전송 후 한 줄 높이로 돌아가며, 최종 응답도 카드 내부 스크롤 없이 전체 내용을 펼쳐 표시한다.
-- 내부 챗봇 text 응답의 Markdown 강조와 목록은 실제 semantic element로 렌더링하고 raw Markdown 표식을 그대로 표시하지 않는다. 내부 챗봇 제목, 메시지, 입력과 전송 control은 발표용 큰 hierarchy를 사용하되 일반 workflow 결과 카드의 기본 밀도는 유지한다.
-- 내부 챗봇 질문 입력에서 IME 조합 중이 아닌 `Enter`는 한 번만 전송하고 `Shift+Enter`는 전송하지 않은 채 줄바꿈을 허용한다. 빈 값과 실행 중 입력은 전송하지 않는다.
+- 내부 챗봇 text 응답의 Markdown 강조와 목록은 실제 semantic element로 렌더링하고 raw Markdown 표식을 그대로 표시하지 않는다. Markdown 이미지는 `<img>`로 렌더링하지 않고 외부 URL을 요청하지 않는다. 내부 챗봇 제목, 메시지, 입력과 전송 control은 발표용 큰 hierarchy를 사용하되 일반 workflow 결과 카드의 기본 밀도는 유지한다.
+- 내부 챗봇 질문 입력에서 IME 조합 중이 아닌 `Enter`는 한 번만 전송하고 `Shift+Enter`는 전송하지 않은 채 줄바꿈을 허용한다. WebKit에서 `isComposing`이 false인 `keyCode 229` 확정 Enter도 전송하지 않는다. 빈 값과 실행 중 입력은 전송하지 않는다.
 - 챗봇이 아닌 인증 배포는 여러 입력 변수를 지원하는 기존 실행 폼과 결과 영역을 유지한다.
 - 내부 실행 페이지는 backend의 문서화되지 않은 임의 `detail` string을 표시하지 않고 status별 fixed safe message를 사용한다.
 - 내부 실행 링크에서 `401`을 받으면 `/auth/login?next=<원래 내부 실행 경로>`로 이동하고, 이메일/비밀번호와 Google OAuth 로그인 성공 후 safe same-origin `next` 경로로 복귀한다.
