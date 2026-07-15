@@ -574,6 +574,63 @@ def test_actual_postgresql_autosync_and_agent_builder_race_has_no_silent_overwri
         assert boundary["latest_final_graph"] is None
 
 
+def test_actual_postgresql_stale_identity_map_conflicts_and_preserves_new_graph(
+    disposable_cas_engine,
+):
+    ids = _seed_committed_cas_fixture(disposable_cas_engine)
+    session_factory = sessionmaker(bind=disposable_cas_engine, expire_on_commit=False)
+    graph_b = {
+        "nodes": [_node("session-b", "answerNode")],
+        "edges": [],
+        "viewport": {"x": 0, "y": 0, "zoom": 1},
+    }
+    graph_a = {
+        "nodes": [_node("session-a", "startNode")],
+        "edges": [],
+        "viewport": {"x": 0, "y": 0, "zoom": 1},
+    }
+
+    session_a = session_factory()
+    try:
+        workflow_a = session_a.get(Workflow, ids["workflow"])
+        base_hash = canonical_graph_hash(workflow_a.graph)
+        base_updated_at = workflow_a.updated_at
+
+        with session_factory() as session_b:
+            workflow_b = session_b.get(Workflow, ids["workflow"])
+            workflow_b.graph = graph_b
+            workflow_b.updated_by = ids["user"]
+            session_b.commit()
+            session_b_updated_at = workflow_b.updated_at
+
+        assert workflow_a.graph != graph_b
+        assert workflow_a.updated_at == base_updated_at
+
+        with pytest.raises(HTTPException) as exc:
+            WorkflowService.save_draft(
+                session_a,
+                str(ids["workflow"]),
+                _normal_draft_request(
+                    graph_a,
+                    expected_graph_hash=base_hash,
+                    expected_updated_at=base_updated_at,
+                ),
+                user_id=str(ids["user"]),
+            )
+
+        assert exc.value.status_code == 409
+        assert exc.value.detail == "stale_graph"
+        session_a.rollback()
+    finally:
+        session_a.close()
+
+    with session_factory() as session_c:
+        persisted = session_c.get(Workflow, ids["workflow"])
+        assert persisted.graph == graph_b
+        assert canonical_graph_hash(persisted.graph) == canonical_graph_hash(graph_b)
+        assert persisted.updated_at == session_b_updated_at
+
+
 def test_first_cas_save_wins_and_same_operation_retry_returns_canonical_result(db_session):
     user, workflow, request_row = _fixture(db_session)
     mutation = GraphMutationBuilder().build(

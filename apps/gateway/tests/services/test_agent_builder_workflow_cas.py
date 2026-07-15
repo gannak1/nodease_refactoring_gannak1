@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
@@ -16,6 +17,7 @@ from apps.gateway.application.agent_builder.workflow_cas import (
     WorkflowDraftCASService,
     WorkflowMutationConflict,
 )
+from apps.gateway.services.workflow_service import WorkflowService
 from apps.shared.schemas.agent_builder import (
     AgentBuilderParameterGroup,
     AgentBuilderParameterTask,
@@ -110,6 +112,48 @@ def _redo_request(mutation, result_graph, base_graph_hash, now):
             },
         }
     )
+
+
+def test_draft_save_refreshes_identity_map_before_row_lock(monkeypatch):
+    now = datetime.now(timezone.utc)
+    workflow = SimpleNamespace(
+        id=uuid4(),
+        organization_id=uuid4(),
+        graph={"nodes": [], "edges": [], "viewport": {"x": 0, "y": 0, "zoom": 1}},
+        features={},
+        env_variables=[],
+        runtime_variables=[],
+        updated_at=now,
+    )
+    request = WorkflowDraftRequest.model_validate(
+        {
+            "nodes": [],
+            "edges": [],
+            "viewport": {"x": 0, "y": 0, "zoom": 1},
+            "expected_graph_hash": "0" * 64,
+            "expected_updated_at": now,
+        }
+    )
+    query = Mock()
+    query.filter.return_value = query
+    query.populate_existing.return_value = query
+    query.with_for_update.return_value = query
+    query.first.return_value = workflow
+    db = Mock()
+    db.query.return_value = query
+
+    monkeypatch.setattr(WorkflowService, "validate_knowledge_references", Mock())
+    monkeypatch.setattr(
+        "apps.gateway.services.workflow_service.WorkflowDraftCASService.validate_expected_draft_state",
+        Mock(),
+    )
+    monkeypatch.setattr(WorkflowService, "validate_mail_credential_references", Mock())
+    db.refresh = Mock()
+
+    WorkflowService.save_draft(db, str(workflow.id), request, user_id=str(uuid4()))
+
+    query.populate_existing.assert_called_once_with()
+    query.with_for_update.assert_called_once_with()
 
 
 def test_cas_validation_returns_canonical_graph_acknowledgement():
