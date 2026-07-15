@@ -19,9 +19,6 @@ from apps.gateway.adapters.db.schedule_dispatch_repository import (
     SqlAlchemyScheduleDispatchRepository,
 )
 from apps.gateway.adapters.db.sqlalchemy_unit_of_work import SqlAlchemyUnitOfWork
-from apps.gateway.adapters.schedule.apscheduler_next_fire import (
-    ApschedulerNextFireCalculator,
-)
 from apps.gateway.application.deployment.schedule_occurrence import (
     ScheduleOccurrenceUseCase,
 )
@@ -565,6 +562,10 @@ def test_schedule_dispatch_head_downgrade_requires_explicit_break_glass():
     reason=f"set {RUN_ENV}=1 to run disposable PostgreSQL schedule race evidence",
 )
 def test_schedule_occurrence_and_worker_admission_have_single_database_winner():
+    from apps.gateway.adapters.schedule.apscheduler_next_fire import (
+        ApschedulerNextFireCalculator,
+    )
+
     try:
         config = DisposablePostgresConfig.from_environment()
     except DisposablePostgresConfigurationError:
