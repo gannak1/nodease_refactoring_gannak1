@@ -17,6 +17,7 @@ from apps.shared.services.workflow_node_catalog import (
     derive_node_configuration_state,
     node_parameter_is_configured,
     parameter_definition,
+    node_parameter_value,
     node_parameter_definitions,
     validate_node_parameter_value,
 )
@@ -82,24 +83,7 @@ def _canonical_node_parameter_value(
     parameter_key: str,
     node_data: dict[str, Any],
 ) -> tuple[bool, Any]:
-    if parameter_key in node_data:
-        return True, node_data[parameter_key]
-    if node_type == "githubNode" and parameter_key == "credential":
-        return ("api_token" in node_data), node_data.get("api_token")
-    if node_type == "slackPostNode" and parameter_key == "credential":
-        auth_config = node_data.get("authConfig")
-        if node_data.get("authType") == "bearer" and isinstance(auth_config, dict):
-            return ("token" in auth_config), auth_config.get("token")
-    if node_type == "slackPostNode" and parameter_key == "channel":
-        body = node_data.get("body")
-        if isinstance(body, str):
-            try:
-                body = json.loads(body)
-            except (TypeError, ValueError):
-                body = None
-        if isinstance(body, dict):
-            return ("channel" in body), body.get("channel")
-    return False, None
+    return node_parameter_value(node_type, parameter_key, node_data)
 
 
 def recommendation_matches_canonical_graph(
@@ -214,7 +198,8 @@ class ParameterTaskPlanner:
         }
         step_purposes = step_purposes or {}
         externally_managed_parameters = externally_managed_parameters or set()
-        base_node_ids = base_node_ids or set(node_by_id)
+        if base_node_ids is None:
+            base_node_ids = set(node_by_id)
         tasks: list[AgentBuilderParameterTask] = []
         actionable_indexes: list[int] = []
 
@@ -255,6 +240,27 @@ class ParameterTaskPlanner:
                 else:
                     candidates = upstream_candidates.get(identity) or []
                     if (
+                        parameter.get("input_type") == "variable_selector_list"
+                        and candidates
+                        and node_parameter_is_configured(
+                            node_type, parameter_key, data
+                        )
+                        and data.get(parameter_key) == candidates
+                    ):
+                        source = "upstream_selector"
+                    elif (
+                        parameter.get("input_type") == "variable_selector_list"
+                        and candidates
+                    ):
+                        node["data"] = apply_node_parameter_value(
+                            node_type,
+                            parameter_key,
+                            data,
+                            candidates,
+                        )
+                        data = node["data"]
+                        source = "upstream_selector"
+                    elif (
                         len(candidates) == 1
                         and node_parameter_is_configured(
                             node_type, parameter_key, data
@@ -271,6 +277,17 @@ class ParameterTaskPlanner:
                         )
                         data = node["data"]
                         source = "upstream_selector"
+                    elif (
+                        str(node_id) not in base_node_ids
+                        and node_parameter_is_configured(
+                            node_type,
+                            parameter_key,
+                            data,
+                        )
+                    ):
+                        # Generated templates are safe catalog-owned recommendations.
+                        # Preserve their topology-specific value and require confirmation.
+                        source = "catalog_default"
                     elif "default" in parameter:
                         node["data"] = apply_node_parameter_value(
                             node_type,
@@ -283,7 +300,6 @@ class ParameterTaskPlanner:
                 hint = hints.get(identity)
                 label = str(parameter["label"])
                 status = "pending"
-                editor_credential_setup = False
                 recommendation_fingerprint = None
                 if source is not None:
                     found, recommendation_value = _canonical_node_parameter_value(
@@ -318,15 +334,15 @@ class ParameterTaskPlanner:
                     resolution_source=source,
                     recommendation_fingerprint=recommendation_fingerprint,
                     reason=(
-                        "Credential은 저장 후 노드 설정에서 연결해야 합니다."
-                        if editor_credential_setup
+                        str(parameter.get("reason"))
+                        if parameter.get("reason")
                         else hint.reason
                         if hint is not None
                         else f"{label} 설정이 필요합니다."
                     ),
                     input_guidance=(
-                        "현재 Agent Builder에서는 credential 값을 수집하지 않습니다."
-                        if editor_credential_setup
+                        str(parameter.get("input_guidance"))
+                        if parameter.get("input_guidance")
                         else hint.input_guidance
                         if hint is not None
                         else f"{label} 값을 입력하세요."
@@ -337,8 +353,7 @@ class ParameterTaskPlanner:
                     sensitivity=str(parameter.get("sensitivity") or "safe"),
                 )
                 tasks.append(task)
-                if not editor_credential_setup:
-                    actionable_indexes.append(len(tasks) - 1)
+                actionable_indexes.append(len(tasks) - 1)
 
         if actionable_indexes:
             first = actionable_indexes[0]
@@ -489,7 +504,7 @@ def refresh_parameter_group_suggestions(
     tasks = [task.model_copy(deep=True) for task in group.tasks]
     invalid_indexes: list[int] = []
     for index, task in enumerate(tasks):
-        if task.input_type != "variable_selector":
+        if task.input_type not in {"variable_selector", "variable_selector_list"}:
             continue
         try:
             suggestions = resolver.resolve(
@@ -504,10 +519,18 @@ def refresh_parameter_group_suggestions(
         data = node.get("data") if isinstance(node, dict) else {}
         selected = data.get(task.parameter_key) if isinstance(data, dict) else None
         valid_selectors = [item.value_selector for item in suggestions]
+        selection_is_valid = (
+            selected in valid_selectors
+            if task.input_type == "variable_selector"
+            else isinstance(selected, list)
+            and bool(selected)
+            and all(selector in valid_selectors for selector in selected)
+            and len({tuple(selector) for selector in selected}) == len(selected)
+        )
         if (
             task.status == "completed"
             and task.resolution_source == "upstream_selector"
-            and selected not in valid_selectors
+            and not selection_is_valid
         ):
             updated = updated.model_copy(
                 update={

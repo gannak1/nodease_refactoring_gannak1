@@ -12,11 +12,13 @@ export const ParameterInputRenderer = ({
   task,
   hydration = { state: 'empty' },
   onSubmit,
+  onSkip,
   disabled = false,
 }: {
   task: AgentBuilderParameterTask;
   hydration?: ParameterControlHydration;
   onSubmit: (value: unknown) => void;
+  onSkip?: () => void;
   disabled?: boolean;
 }) => {
   const hydratedValue =
@@ -35,6 +37,13 @@ export const ParameterInputRenderer = ({
     task.input_type === 'variable_selector' && typeof hydratedValue === 'string'
       ? hydratedValue
       : '',
+  );
+  const [suggestionIds, setSuggestionIds] = useState<string[]>(
+    task.input_type === 'variable_selector_list' && Array.isArray(hydratedValue)
+      ? hydratedValue.filter(
+          (item): item is string => typeof item === 'string',
+        )
+      : [],
   );
   const [candidateId, setCandidateId] = useState(
     isReferenceInput(task) && typeof hydratedValue === 'string'
@@ -76,6 +85,17 @@ export const ParameterInputRenderer = ({
 
   const submit = () => {
     setError(null);
+    if (
+      !task.required &&
+      onSkip &&
+      ['code', 'json', 'secret', 'select', 'text', 'textarea'].includes(
+        task.input_type,
+      ) &&
+      value.trim() === ''
+    ) {
+      onSkip();
+      return;
+    }
     if (isReference) {
       if (!candidateId) {
         setError('사용 권한이 있는 항목을 선택하세요.');
@@ -97,6 +117,20 @@ export const ParameterInputRenderer = ({
         return;
       }
       onSubmit(suggestion);
+      return;
+    }
+    if (task.input_type === 'variable_selector_list') {
+      const selections = suggestionIds.flatMap((id) => {
+        const suggestion = task.suggestions?.find(
+          (item) => item.suggestion_id === id,
+        );
+        return suggestion ? [suggestion] : [];
+      });
+      if (selections.length === 0 || selections.length !== suggestionIds.length) {
+        setError('연결할 이전 노드 출력을 하나 이상 선택하세요.');
+        return;
+      }
+      onSubmit(selections);
       return;
     }
     if (task.input_type === 'number') {
@@ -122,7 +156,8 @@ export const ParameterInputRenderer = ({
   const multiline = ['json', 'textarea', 'code'].includes(task.input_type);
   if (
     hydration.state === 'unavailable' &&
-    task.sensitivity === 'secret_forbidden'
+    task.sensitivity === 'secret_forbidden' &&
+    task.input_type !== 'secret'
   ) {
     return (
       <p className="text-xs text-amber-700 dark:text-amber-300">
@@ -132,7 +167,7 @@ export const ParameterInputRenderer = ({
   }
   return (
     <div className="space-y-2" onKeyDown={(event) => event.stopPropagation()}>
-      {hydration.state === 'unavailable' ? (
+      {hydration.state === 'unavailable' && task.input_type !== 'secret' ? (
         <p className="text-xs text-amber-700 dark:text-amber-300">
           사용할 수 없는 기존 설정입니다.
         </p>
@@ -189,6 +224,34 @@ export const ParameterInputRenderer = ({
             </option>
           ))}
         </select>
+      ) : task.input_type === 'variable_selector_list' ? (
+        <fieldset className="space-y-2">
+          <legend className="text-xs font-medium text-neutral-700 dark:text-neutral-200">
+            이전 노드 출력 선택
+          </legend>
+          {(task.suggestions ?? []).map((suggestion) => (
+            <label
+              key={suggestion.suggestion_id}
+              className="flex items-start gap-2 text-sm text-neutral-700 dark:text-neutral-200"
+            >
+              <input
+                type="checkbox"
+                checked={suggestionIds.includes(suggestion.suggestion_id)}
+                disabled={disabled}
+                onChange={(event) =>
+                  setSuggestionIds((current) =>
+                    event.target.checked
+                      ? [...current, suggestion.suggestion_id]
+                      : current.filter((id) => id !== suggestion.suggestion_id),
+                  )
+                }
+              />
+              <span>
+                {suggestion.label} ({suggestion.json_path})
+              </span>
+            </label>
+          ))}
+        </fieldset>
       ) : task.input_type === 'select' ? (
         <select
           aria-label={task.label}
@@ -226,13 +289,29 @@ export const ParameterInputRenderer = ({
       ) : (
         <input
           aria-label={task.label}
-          type={task.input_type === 'number' ? 'number' : 'text'}
+          type={
+            task.input_type === 'number'
+              ? 'number'
+              : task.input_type === 'secret'
+                ? 'password'
+                : 'text'
+          }
           value={value}
+          step={
+            task.input_type === 'number' && task.validation?.integer
+              ? 1
+              : undefined
+          }
           disabled={disabled}
           onChange={(event) => setValue(event.target.value)}
           className="w-full rounded-md border border-neutral-300 bg-transparent px-3 py-2 text-sm outline-none focus:border-blue-500 disabled:opacity-60 dark:border-neutral-700"
         />
       )}
+      {task.input_type === 'secret' ? (
+        <p className="text-xs text-neutral-500">
+          기존 비밀값은 표시하지 않습니다. 새 값을 입력하면 교체됩니다.
+        </p>
+      ) : null}
       {error ? (
         <p role="alert" className="text-xs text-red-600">
           {error}

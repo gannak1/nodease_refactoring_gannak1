@@ -23,14 +23,17 @@ _PARAMETER_INPUT_TYPES = {
     "json",
     "number",
     "resource_ref",
+    "secret",
     "select",
     "text",
     "textarea",
     "variable_selector",
+    "variable_selector_list",
 }
 _DEFER_POLICIES = {"forbidden", "allow_unresolved"}
 _PARAMETER_SENSITIVITIES = {"safe", "reference_only", "secret_forbidden"}
 _OUTPUT_MODES = {"static", "parameter_names"}
+_STANDALONE_CREATION_POLICIES = {"allowed", "requires_context", "forbidden"}
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,29 @@ def validate_workflow_node_catalog(catalog: dict[str, Any]) -> None:
     ]
     if len(capabilities) != len(set(capabilities)):
         raise RuntimeError("Workflow node catalog contains duplicate capabilities")
+
+    contracts = catalog.get("capability_contracts")
+    if not isinstance(contracts, dict) or set(contracts) != set(capabilities):
+        raise RuntimeError("Workflow node catalog capability contracts are incomplete")
+    for capability, contract in contracts.items():
+        if not isinstance(contract, dict):
+            raise RuntimeError("Workflow node catalog capability contract is invalid")
+        if not isinstance(contract.get("description"), str) or not contract[
+            "description"
+        ].strip():
+            raise RuntimeError("Workflow node catalog capability description is invalid")
+        aliases = contract.get("planner_aliases")
+        if (
+            not isinstance(aliases, list)
+            or not aliases
+            or any(not isinstance(alias, str) or not alias.strip() for alias in aliases)
+            or len(aliases) != len(set(aliases))
+        ):
+            raise RuntimeError("Workflow node catalog capability aliases are invalid")
+        if contract.get("standalone_creation") not in _STANDALONE_CREATION_POLICIES:
+            raise RuntimeError(
+                "Workflow node catalog standalone creation policy is invalid"
+            )
 
     for node in nodes:
         policy = node.get("connection_policy")
@@ -116,6 +142,14 @@ def validate_workflow_node_catalog(catalog: dict[str, Any]) -> None:
                 raise RuntimeError("Workflow node catalog has an invalid defer policy")
             if parameter.get("sensitivity", "safe") not in _PARAMETER_SENSITIVITIES:
                 raise RuntimeError("Workflow node catalog parameter sensitivity is invalid")
+            for guidance_key in ("reason", "input_guidance"):
+                if guidance_key in parameter and (
+                    not isinstance(parameter[guidance_key], str)
+                    or not parameter[guidance_key].strip()
+                ):
+                    raise RuntimeError(
+                        "Workflow node catalog parameter guidance is invalid"
+                    )
             validation = parameter.get("validation", {})
             if not isinstance(validation, dict):
                 raise RuntimeError("Workflow node catalog parameter validation is invalid")
@@ -195,6 +229,11 @@ def node_type_for_capability(capability: str) -> str | None:
     return None
 
 
+def capability_contract(capability: str) -> dict[str, Any] | None:
+    contract = load_workflow_node_catalog()["capability_contracts"].get(capability)
+    return copy.deepcopy(contract) if isinstance(contract, dict) else None
+
+
 def node_definition(node_type: str) -> dict[str, Any] | None:
     for node in load_workflow_node_catalog()["nodes"]:
         if node.get("node_type") == node_type:
@@ -247,7 +286,7 @@ def validate_node_parameter_value(
     validation = dict(parameter.get("validation") or {})
     if value is None:
         return ["required"] if parameter.get("required") else []
-    if input_type in {"text", "textarea", "code"}:
+    if input_type in {"text", "textarea", "code", "secret"}:
         if not isinstance(value, str):
             return ["invalid_type"]
         if len(value) < int(validation.get("min_length", 0)):
@@ -260,12 +299,36 @@ def validate_node_parameter_value(
     elif input_type == "number":
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return ["invalid_type"]
+        if validation.get("integer") and not float(value).is_integer():
+            return ["integer_required"]
         if "min" in validation and value < validation["min"]:
             return ["below_minimum"]
         if "max" in validation and value > validation["max"]:
             return ["above_maximum"]
     elif input_type == "boolean" and not isinstance(value, bool):
         return ["invalid_type"]
+    elif input_type == "variable_selector":
+        if (
+            not isinstance(value, list)
+            or len(value) < 2
+            or len(value) > 32
+            or any(not isinstance(item, str) or not item for item in value)
+        ):
+            return ["invalid_selector"]
+    elif input_type == "variable_selector_list":
+        if not isinstance(value, list) or not value or len(value) > 32:
+            return ["invalid_selector_list"]
+        if any(
+                len(selector) < 2
+                or len(selector) > 32
+                or any(not isinstance(item, str) or not item for item in selector)
+                for selector in value
+                if isinstance(selector, list)
+            ) or any(not isinstance(selector, list) for selector in value):
+            return ["invalid_selector_list"]
+        selectors = [tuple(selector) for selector in value]
+        if len(selectors) != len(set(selectors)):
+            return ["invalid_selector_list"]
     options = validation.get("options")
     if isinstance(options, list) and value not in options:
         return ["option_not_allowed"]
@@ -334,21 +397,32 @@ def _configuration_value_is_present(value: Any) -> bool:
     return True
 
 
-def node_parameter_is_configured(
+_LLM_ROUTING_PARAMETER_PATHS = {
+    "model_routing_refresh_every_runs": ("refresh", "refresh_every_runs"),
+    "model_routing_validation_budget_usd": ("validation_budget_usd",),
+    "model_routing_max_cohorts": ("max_cohorts",),
+}
+
+
+def node_parameter_value(
     node_type: str,
     parameter_key: str,
     node_data: dict[str, Any] | None,
-) -> bool:
+) -> tuple[bool, Any]:
     data = node_data if isinstance(node_data, dict) else {}
-    if node_type == "githubNode" and parameter_key == "credential":
-        return _configuration_value_is_present(data.get("api_token"))
-    if node_type == "slackPostNode" and parameter_key == "credential":
+    if parameter_key in data:
+        return True, data.get(parameter_key)
+    if node_type == "llmNode" and parameter_key in _LLM_ROUTING_PARAMETER_PATHS:
+        value: Any = data.get("model_routing_policy")
+        for path_key in _LLM_ROUTING_PARAMETER_PATHS[parameter_key]:
+            if not isinstance(value, dict) or path_key not in value:
+                return False, None
+            value = value[path_key]
+        return True, value
+    if node_type == "slackPostNode" and parameter_key == "bot_token":
         auth_config = data.get("authConfig")
-        return (
-            data.get("authType") == "bearer"
-            and isinstance(auth_config, dict)
-            and _configuration_value_is_present(auth_config.get("token"))
-        )
+        if isinstance(auth_config, dict):
+            return ("token" in auth_config), auth_config.get("token")
     if node_type == "slackPostNode" and parameter_key == "channel":
         body = data.get("body")
         if isinstance(body, str):
@@ -356,10 +430,18 @@ def node_parameter_is_configured(
                 body = json.loads(body)
             except (TypeError, ValueError):
                 body = None
-        return isinstance(body, dict) and _configuration_value_is_present(
-            body.get("channel")
-        )
-    return _configuration_value_is_present(data.get(parameter_key))
+        if isinstance(body, dict):
+            return ("channel" in body), body.get("channel")
+    return False, None
+
+
+def node_parameter_is_configured(
+    node_type: str,
+    parameter_key: str,
+    node_data: dict[str, Any] | None,
+) -> bool:
+    found, value = node_parameter_value(node_type, parameter_key, node_data)
+    return found and _configuration_value_is_present(value)
 
 
 def apply_node_parameter_value(
@@ -369,6 +451,48 @@ def apply_node_parameter_value(
     value: Any,
 ) -> dict[str, Any]:
     data = copy.deepcopy(node_data)
+    if node_type == "llmNode" and parameter_key in _LLM_ROUTING_PARAMETER_PATHS:
+        policy = data.get("model_routing_policy")
+        if not isinstance(policy, dict):
+            policy = {}
+        policy = copy.deepcopy(policy)
+        target = policy
+        path = _LLM_ROUTING_PARAMETER_PATHS[parameter_key]
+        for path_key in path[:-1]:
+            child = target.get(path_key)
+            if not isinstance(child, dict):
+                child = {}
+            child = copy.deepcopy(child)
+            target[path_key] = child
+            target = child
+        target[path[-1]] = copy.deepcopy(value)
+        data["model_routing_policy"] = policy
+        data.pop(parameter_key, None)
+        return data
+    if node_type == "slackPostNode" and parameter_key == "bot_token":
+        auth_config = data.get("authConfig")
+        if not isinstance(auth_config, dict):
+            auth_config = {}
+        auth_config = copy.deepcopy(auth_config)
+        auth_config["token"] = copy.deepcopy(value)
+        data["authConfig"] = auth_config
+        data.pop("bot_token", None)
+        return data
+    if node_type == "slackPostNode" and parameter_key in {"blocks", "attachments"}:
+        data[parameter_key] = json.dumps(value, ensure_ascii=False)
+        return data
+    if node_type == "githubNode" and parameter_key == "pr_number":
+        data[parameter_key] = str(int(value))
+        return data
+    if node_type == "fileExtractionNode" and parameter_key == "referenced_variables":
+        selector = copy.deepcopy(value)
+        data[parameter_key] = [
+            {
+                "name": str(selector[-1]),
+                "value_selector": selector,
+            }
+        ]
+        return data
     data[parameter_key] = copy.deepcopy(value)
     if node_type == "slackPostNode" and parameter_key == "channel":
         body = data.get("body")
@@ -384,29 +508,135 @@ def apply_node_parameter_value(
     return data
 
 
-def derive_node_configuration_state(
+def _stored_parameter_value_for_validation(
+    node_type: str,
+    parameter_key: str,
+    node_data: dict[str, Any],
+) -> Any:
+    _, value = node_parameter_value(node_type, parameter_key, node_data)
+    if node_type == "githubNode" and parameter_key == "pr_number":
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+    if (
+        node_type == "fileExtractionNode"
+        and parameter_key == "referenced_variables"
+        and isinstance(value, list)
+        and len(value) == 1
+        and isinstance(value[0], dict)
+    ):
+        return value[0].get("value_selector")
+    return value
+
+
+def validate_node_parameter_update(
+    node_type: str,
+    parameter_key: str,
+    node_data: dict[str, Any] | None,
+    value: Any,
+) -> list[str]:
+    issues = validate_node_parameter_value(node_type, parameter_key, value)
+    if issues:
+        return issues
+    if node_type != "llmNode" or parameter_key not in {
+        "model_id",
+        "fallback_model_id",
+    }:
+        return []
+    updated_data = apply_node_parameter_value(
+        node_type,
+        parameter_key,
+        node_data if isinstance(node_data, dict) else {},
+        value,
+    )
+    _, model_id = node_parameter_value(node_type, "model_id", updated_data)
+    _, fallback_model_id = node_parameter_value(
+        node_type,
+        "fallback_model_id",
+        updated_data,
+    )
+    if (
+        _configuration_value_is_present(model_id)
+        and _configuration_value_is_present(fallback_model_id)
+        and str(model_id) == str(fallback_model_id)
+    ):
+        return ["fallback_must_differ"]
+    return []
+
+
+def missing_required_configuration(
     node_type: str, node_data: dict[str, Any] | None
-) -> str:
+) -> list[str]:
     definition = node_definition(node_type)
     if definition is None:
-        return "unresolved"
+        return []
     data = node_data if isinstance(node_data, dict) else {}
     deferred = {
         str(key)
         for key in data.get("_deferred_parameters", [])
         if isinstance(key, str)
     }
+    missing: list[str] = []
     for key in definition.get("required_configuration") or []:
+        validation_value = _stored_parameter_value_for_validation(
+            node_type,
+            str(key),
+            data,
+        )
+        if node_type == "slackPostNode" and key == "channel" and not (
+            _configuration_value_is_present(validation_value)
+        ):
+            body = data.get("body")
+            if isinstance(body, str):
+                try:
+                    body = json.loads(body)
+                except (TypeError, ValueError):
+                    body = None
+            if isinstance(body, dict):
+                validation_value = body.get("channel")
         if (
             str(key) in deferred
             or not node_parameter_is_configured(node_type, str(key), data)
-            or (
-                node_type not in {"githubNode", "slackPostNode"}
-                and validate_node_parameter_value(node_type, str(key), data.get(key))
+            or validate_node_parameter_value(
+                node_type,
+                str(key),
+                validation_value,
             )
         ):
-            return "unresolved"
-    return "resolved"
+            missing.append(str(key))
+    if node_type == "slackPostNode":
+        mode = str(data.get("slackMode") or "api")
+        mode_required = ["url"] if mode == "webhook" else ["bot_token", "channel"]
+        for key in mode_required:
+            validation_value = data.get(key)
+            if key == "bot_token":
+                auth_config = data.get("authConfig")
+                validation_value = (
+                    auth_config.get("token")
+                    if isinstance(auth_config, dict)
+                    else None
+                )
+            if (
+                not node_parameter_is_configured(node_type, key, data)
+                or validate_node_parameter_value(
+                    node_type,
+                    key,
+                    validation_value,
+                )
+            ):
+                missing.append(key)
+    return missing
+
+
+def derive_node_configuration_state(
+    node_type: str, node_data: dict[str, Any] | None
+) -> str:
+    if node_definition(node_type) is None:
+        return "unresolved"
+    return (
+        "unresolved"
+        if missing_required_configuration(node_type, node_data)
+        else "resolved"
+    )
 
 
 def connection_policy_for_node_type(node_type: str) -> dict[str, str] | None:

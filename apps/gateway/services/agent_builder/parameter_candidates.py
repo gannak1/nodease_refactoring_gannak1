@@ -86,7 +86,10 @@ class ParameterCandidateProvider:
         }
         if str(value) in candidate_ids or str(value) in candidate_reference_values:
             return False
-        if task.node_type == "llmNode" and task.parameter_key == "model_id":
+        if task.node_type == "llmNode" and task.parameter_key in {
+            "model_id",
+            "fallback_model_id",
+        }:
             return not self._model_runtime_value_is_available(value, candidate_ids)
         return True
 
@@ -112,7 +115,10 @@ class ParameterCandidateProvider:
     ) -> list[AgentBuilderParameterCandidate]:
         if task.input_type not in {"resource_ref", "credential_ref"}:
             return []
-        if task.node_type == "llmNode" and task.parameter_key == "model_id":
+        if task.node_type == "llmNode" and task.parameter_key in {
+            "model_id",
+            "fallback_model_id",
+        }:
             return self._model_candidates()
         if task.node_type == "workflowNode" and task.parameter_key == "workflowId":
             return self._workflow_candidates()

@@ -2102,7 +2102,6 @@ export function AgentBuilderPanel({
                 tasks={currentParameterGroup?.tasks ?? []}
                 nodes={nodes}
                 routingNodeIds={routingNodeIds}
-                connectionNodeIds={routingNodeIds}
                 knowledgeStep={knowledgeStep}
                 setupStatus={setupStatus}
                 presentationTaskId={presentationTaskId}

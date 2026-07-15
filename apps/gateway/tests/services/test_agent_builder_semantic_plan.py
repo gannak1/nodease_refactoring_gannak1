@@ -12,15 +12,45 @@ def test_catalog_parameter_guide_contains_only_catalog_parameters():
     assert guide == {
         "step_slack": [
             {
-                "parameter_key": "credential",
-                "label": "Slack credential",
-                "input_type": "credential_ref",
+                "parameter_key": "slackMode",
+                "label": "Slack 전송 방식",
+                "input_type": "select",
             },
-                {
-                    "parameter_key": "channel",
-                    "label": "Slack channel",
-                    "input_type": "text",
-                },
+            {
+                "parameter_key": "channel",
+                "label": "Slack channel",
+                "input_type": "text",
+            },
+            {
+                "parameter_key": "message",
+                "label": "메시지",
+                "input_type": "textarea",
+            },
+            {
+                "parameter_key": "blocks",
+                "label": "Blocks",
+                "input_type": "json",
+            },
+            {
+                "parameter_key": "attachments",
+                "label": "Attachments",
+                "input_type": "json",
+            },
+            {
+                "parameter_key": "thread_ts",
+                "label": "Thread timestamp",
+                "input_type": "text",
+            },
+            {
+                "parameter_key": "username",
+                "label": "표시 이름",
+                "input_type": "text",
+            },
+            {
+                "parameter_key": "icon_emoji",
+                "label": "아이콘 이모지",
+                "input_type": "text",
+            },
         ]
     }
 

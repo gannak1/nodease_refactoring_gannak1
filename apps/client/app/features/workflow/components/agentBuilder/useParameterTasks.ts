@@ -19,6 +19,7 @@ export const toParameterDecisionValue = (
   if (task.input_type === 'boolean') return { kind: 'boolean', value };
   if (task.input_type === 'number') return { kind: 'number', value };
   if (task.input_type === 'json') return { kind: 'json', value };
+  if (task.input_type === 'secret') return { kind: 'secret', value };
   if (task.input_type === 'variable_selector') {
     const suggestion = value as {
       suggestion_id: string;
@@ -28,6 +29,19 @@ export const toParameterDecisionValue = (
       kind: 'variable_selector',
       suggestion_id: suggestion.suggestion_id,
       value_selector: suggestion.value_selector,
+    };
+  }
+  if (task.input_type === 'variable_selector_list') {
+    const selections = value as Array<{
+      suggestion_id: string;
+      value_selector: string[];
+    }>;
+    return {
+      kind: 'variable_selector_list',
+      selections: selections.map((selection) => ({
+        suggestion_id: selection.suggestion_id,
+        value_selector: selection.value_selector,
+      })),
     };
   }
   if (task.input_type === 'resource_ref') {

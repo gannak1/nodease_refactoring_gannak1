@@ -394,7 +394,7 @@ segmented control로 `단계별 생성`, `빠른 생성`, `구조만 생성`을 
 
 card 안에 또 다른 decorative card를 중첩하지 않는다.
 
-WorkflowResultGroup은 현재 direct-edit 결과의 `affected_node_ids`와 ParameterTask node id에 포함된 LLM 중 `auto_model_routing=true`가 아닌 node만 하나의 자동 라우팅 안내로 묶어 표시한다. 새로고침 복구에서는 full typed operation을 다시 받거나 재생하지 않고 canonical session의 safe envelope `affected_node_ids`만 같은 목적에 사용한다. `Routing 설정으로 이동` 버튼은 대상 node를 focus한 뒤 기존 Editor의 fullscreen Routing control을 연다. 이 navigation은 GraphMutation, workflow save, policy API 또는 planner 호출을 만들지 않는다. 기존 workflow의 무관한 LLM node에는 표시하지 않는다.
+WorkflowResultGroup은 `설정하며 생성`에서 LLM node의 Routing ParameterTask를 일반 node parameter card 안에 순차 표시한다. `auto_model_routing`은 checkbox, default/fallback model은 permission-filtered resource select, refresh interval·validation budget·maximum cohort는 number control을 사용한다. 현재 result group에 `auto_model_routing` task가 있으면 별도 Routing 안내를 중복 표시하지 않는다. `구조만 생성`처럼 task가 없는 결과에서만 `auto_model_routing=true`가 아닌 affected LLM을 하나의 안내로 묶고, `Routing 설정으로 이동`은 대상 node focus 뒤 fullscreen Routing control을 연다. Navigation은 GraphMutation, workflow save, policy API 또는 planner 호출을 만들지 않는다.
 
 ### 4.5 NodeParameterCard
 
@@ -405,7 +405,7 @@ WorkflowResultGroup은 현재 direct-edit 결과의 `affected_node_ids`와 Param
 - 현재 task의 `ParameterInputRenderer` 표시
 - node focus command 발생
 
-자동 추천값 task는 resolution source, 안전한 추천 이유와 canonical graph의 현재 값을 표시하고 사용자 확인 전까지 active/pending 상태로 둔다. 값이 같으면 `confirm`, 다르면 `set`을 제출한다. 확인된 completed task와 사용자가 건너뛴 skipped task는 요약 card로 남기되 기본 접힘 상태다. Active card 하나만 자동 확장한다. 일반 active task와 완료 boundary Undo로 다시 연 presentation reentry는 별도 result-group UI 상태로 구분하며 `presentationTaskId` 일치만으로 reentry를 추론하지 않는다. Slack/GitHub는 direct-edit `credential_ref` task, 빈 후보 picker 또는 defer 안내를 만들지 않고 unresolved node별 `연결 설정으로 이동` action만 제공한다. 이 action은 기존 Editor의 연결/인증 control을 열며 Agent Builder의 task 상태나 graph를 변경하지 않는다.
+자동 추천값 task는 resolution source, 안전한 추천 이유와 canonical graph의 현재 값을 표시하고 사용자 확인 전까지 active/pending 상태로 둔다. 값이 같으면 `confirm`, 다르면 `set`을 제출한다. 확인된 completed task와 사용자가 건너뛴 skipped task는 요약 card로 남기되 기본 접힘 상태다. Active card 하나만 자동 확장한다. 일반 active task와 완료 boundary Undo로 다시 연 presentation reentry는 별도 result-group UI 상태로 구분하며 `presentationTaskId` 일치만으로 reentry를 추론하지 않는다. Slack/GitHub는 direct-edit `credential_ref` task와 빈 후보 picker를 만들지 않지만 기존 node graph의 token/URL field는 password형 `secret` task로 순차 입력한다.
 
 ### 4.6 ParameterInputRenderer
 
@@ -417,6 +417,7 @@ catalog-derived `input_type`을 공통 control로 변환한다.
 | textarea | textarea |
 | code | code textarea |
 | json | JSON textarea |
+| secret | password input. 기존 값 hydrate/표시 금지; 새 값 입력만 허용 |
 | select | catalog option select |
 | number | numeric input/stepper |
 | boolean | checkbox 또는 toggle |
@@ -424,8 +425,9 @@ catalog-derived `input_type`을 공통 control로 변환한다.
 | resource_ref | searchable resource picker |
 | credential_ref | durable credential resource/use resolver가 있는 provider의 permission-filtered picker. Node runtime provider/auth compatibility를 함께 적용하며 Gmail Draft는 Gmail OAuth2만 노출한다. Slack/GitHub는 direct-edit `credential_ref` task 범위에서 제외한다. |
 | variable_selector | server-issued upstream output suggestion picker. Source node/output key/JSON path/value type을 함께 표시 |
+| variable_selector_list | server-issued upstream output suggestion checkbox list. 하나 이상 선택하며 각 source node/output key/JSON path/value type을 표시 |
 
-node type 분기는 허용하지 않는다. secret input type은 렌더링하지 않는다. 자동 추천값의 active task에는 `confirm`, Optional task에는 `skip`, 재편집 가능한 `active|completed|skipped|deferred|invalid` task에는 `set`을 제공하며 `previous`는 이전 재편집 가능 task가 있을 때 제공한다. `defer`는 Catalog가 `allow_unresolved`로 선언한 task에만 제공하고 생략되었거나 `forbidden`이면 렌더링하지 않는다. Required task의 `skip`은 숨기거나 disabled로 표시한다. Confirm과 skip은 graph 저장 없이 각각 명시적 `completed`, `skipped` 상태를 표시한다. 재진입 control은 canonical workflow graph의 safe current value로 초기화하고 task/session에 값을 복제하지 않는다.
+node type 분기는 허용하지 않는다. `secret`은 generic password control로 렌더링하고 canonical graph의 기존 값을 hydrate하지 않는다. 자동 추천값의 active task에는 `confirm`, Optional task에는 `skip`, 재편집 가능한 `active|completed|skipped|deferred|invalid` task에는 `set`을 제공하며 `previous`는 이전 재편집 가능 task가 있을 때 제공한다. Optional text/JSON control에서 빈 `적용`은 같은 `skip` action을 사용한다. `defer`는 Catalog가 `allow_unresolved`로 선언한 task에만 제공하고 생략되었거나 `forbidden`이면 렌더링하지 않는다. Required task의 `skip`은 숨기거나 disabled로 표시한다. Confirm과 skip은 graph 저장 없이 각각 명시적 `completed`, `skipped` 상태를 표시한다. 재진입 control은 canonical workflow graph의 safe current value로 초기화하고 task/session에 값을 복제하지 않는다. Runtime canonical graph가 GitHub PR 번호를 10진 문자열로 저장하면 number control은 안전하게 integer로 hydrate한다. File Extraction의 named selector object는 대응하는 selector suggestion으로 hydrate하고 Slack JSON 문자열은 JSON control에서 편집 가능한 값으로 변환한다.
 
 Condition branch `select`는 `validation.option_labels`의 안전한 node label과 `연결 안 함`을 표시하고 제출에는 대응하는 canonical node id/sentinel을 사용한다. 초기값은 node data의 server-owned branch target map에서 hydrate한다. Dynamic `cases` acknowledgement 뒤 추가된 branch task는 같은 node card의 순차 task로 합쳐지고 제거된 branch task는 canceled summary로 남는다.
 
@@ -626,7 +628,7 @@ applyGraphTransaction(nextNodes, nextEdges, metadata)
 - 자동 추천 출처는 `사용자 요청에서 확인`, `기존 Workflow 설정 사용`, `이전 노드 출력에서 연결`, `기본값 추천`으로 표시한다. 내부 enum, raw value와 secret은 렌더링하지 않는다.
 - Knowledge 추천 사유도 allowlisted 사용자 문구로만 표시하며 알 수 없는 reason enum은 숨긴다.
 - Quick ineligible `configuration_value_required`는 resource 존재나 후보 수를 언급하지 않고 `필수 설정값을 확인해야 합니다`로 표시한다.
-- 후보 resolver가 없는 Slack/GitHub deferred credential을 재편집할 때 disabled empty picker를 열지 않고 안전한 연결 안내와 편집 닫기만 제공한다.
+- Slack/GitHub는 후보 resolver가 필요한 managed credential picker를 열지 않는다. 기존 node graph secret을 재편집하면 빈 password control을 열어 새 값으로만 교체한다.
 - completed task 편집은 WorkflowResultGroup의 explicit editing state다. 이 상태에서는 생성 완료 표시를 숨기고 `설정 수정 중`을 표시하며, active task가 없어도 취소/닫기를 제공한다. 저장 실패 시 form 값을 보존하고 acknowledgement 성공 뒤 완료 상태로 돌아간다.
 - 완료 boundary의 첫 Undo는 sensitivity나 node type과 무관하게 최대 `stable_order`의 `completed|skipped|deferred` task를 표시한다. Raw secret과 권한 없는 reference는 hydration하지 않는다.
 - Canonical graph/session 복구는 workflow history boundary, pending operation과 redo memory를 지우지 않는 non-destructive sync를 사용한다. Acknowledgement 뒤 session 조회가 실패하면 `완료 확인 중`을 표시하고 `1초 -> 2초 -> 4초` 간격으로 최대 세 번 재조회하며 terminal 상태 전에는 완료 표시와 완료 Undo를 활성화하지 않는다. 세 번 모두 실패하면 `결과 확인 필요`와 `다시 확인` control을 표시하며, control은 같은 canonical session 조회만 재개한다.
@@ -646,9 +648,10 @@ applyGraphTransaction(nextNodes, nextEdges, metadata)
 9. Quick endpoint, eligibility policy, clone dry-run, transition/remaining-completion integration과 E2E가 함께 준비되고 canonical-v2가 협상된 revision에서만 `빠른 생성` control을 노출한다. Rollback은 quick/canonical creation gate를 먼저 닫고 foreground 및 open configuration을 포함한 canonical-v2 nonterminal request를 완료·mode-free cancel해 0건임을 확인한 뒤 legacy-write로 전환할 수 있다. Session GET 보존 기간 내 terminal canonical-v2 request까지 포함한 retained-history aggregate가 0건이 되기 전에는 dual-contract Gateway와 Client dual-read를 제거하거나 legacy-only Client를 배포하지 않는다.
 ## 2026-07-15 Connection Navigation And Completion Correction
 
-- WorkflowResultGroup does not render Slack/GitHub credential tasks. For a generated unresolved Slack/GitHub node it renders per-node external connection guidance and a `연결 설정으로 이동` action. The action focuses the node and opens the existing Editor authentication control without listing credentials, accepting a token, issuing a GraphMutation, saving, or calling the planner.
+- WorkflowResultGroup does not render Slack/GitHub managed credential tasks, empty credential pickers, defer controls, or external connection guidance. It renders Catalog-declared normal parameters and password형 `secret` controls mapped to the existing node graph fields. Mail/Gmail continue to use the existing managed credential picker.
 - Mail/Gmail retain their typed managed credential picker. Agent Builder never accepts or retains a raw credential value.
-- The routing action is labeled `Routing 설정으로 이동` and opens the target LLM node Routing control. Focus or zoom alone is insufficient. It does not create a routing rule or save the graph.
+- The Mail search card is catalog-driven for every user-configurable search field: credential, keyword, sender, subject, date range, folder, result limit, unread/read handling, and processing mode. Generated template values and Gmail processing selectors remain explicit confirmation tasks; runtime-only graph fields are not rendered as user tasks.
+- Configure-and-generate renders Catalog routing tasks in the LLM parameter card and suppresses duplicate routing guidance. Structure-only keeps the `Routing 설정으로 이동` action, which opens the target LLM Routing control without creating a mutation or saving the graph.
 - A recommended value remains an active confirmation task even when it is already materialized in the graph. The preselected value and alternate allowed choices remain visible. An unchanged confirmation is a no-mutation `confirm` action.
 - Only after every required Knowledge/task acknowledgement is terminal does the result show `Workflow 생성 완료`. Completed node cards collapse to a summary with an explicit edit action; opening edit hides completion and reopens that task.
 - A failed Knowledge selection keeps its card and current choice visible, with a safe status-specific message and retry only through the dedicated selection endpoint.

@@ -25,7 +25,8 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - catalog의 모든 supported node는 parameter schema, connection policy, input/output contract를 가진다.
 - parameter key는 node 안에서 유일하다.
 - input type과 validation rule reference는 허용 enum에 포함된다.
-- `credential_ref` parameter는 sensitive policy를 가진다.
+- `credential_ref` parameter는 sensitive policy를 가지며 Mail/Gmail처럼 durable credential resource와 permission resolver가 있는 node에만 사용한다. Slack/GitHub에는 `credential_ref` task를 만들지 않는다.
+- `variable_selector_list`는 하나 이상의 중복 없는 server-issued selector만 허용한다.
 - command: shared catalog schema pytest
 
 ### DBP-TC-S002 Runtime Contract Parity
@@ -111,7 +112,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - required와 optional 상태를 보존한다.
 - `structure_only`에서는 task를 만들지 않는다.
 - 사용자 명시값, 기존 node 값, 단일 upstream 값, 안전한 기본값 순서로 materialize한다.
-- `agent_builder_task=true`인 configurable parameter에 task record를 만들고 자동 추천 parameter는 올바른 resolution source와 graph 값을 가지되 사용자 확인 전 `pending|active`다. Start의 빈 `variables`와 Answer의 빈 `outputs`는 `agent_builder_task=false`여서 task를 만들지 않는다.
+- 모든 user-configurable parameter에 task record를 만들고 자동 추천 parameter는 올바른 resolution source와 graph 값을 가지되 사용자 확인 전 `pending|active`다. Start의 `variables`와 Answer의 `outputs`도 사용자 확인·수정 task로 만든다.
 - 자동 확정 task의 실제 값은 request payload에 복제하지 않고 workflow graph에만 존재한다.
 - 후보가 여러 개면 선택 task를 만들고 자동 확정하지 않는다.
 - Catalog에 defer policy가 없으면 `forbidden`이며 `allow_unresolved`만 defer할 수 있다.
@@ -388,7 +389,8 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 
 ### DBP-TC-F003 Workflow Result Group
 
-- 현재 Agent Builder 결과에 포함된 라우팅 미설정 LLM은 하나의 자동 라우팅 안내에만 표시한다. routing이 이미 활성화됐거나 현재 결과에 포함되지 않은 LLM은 표시하지 않는다. 각 `설정 열기` 버튼은 해당 node focus만 요청하고 GraphMutation, workflow save, policy API 또는 planner 호출을 만들지 않는다.
+- `설정하며 생성`의 LLM card는 Routing ParameterTask를 순차 표시하고 별도 Routing 안내를 중복 표시하지 않는다. `auto_model_routing`, permission-filtered default/fallback model, refresh interval, validation budget와 maximum cohort를 confirm/set하면 각각 기존 parameter mutation과 CAS/acknowledgement를 통과한다.
+- `구조만 생성` 결과에 포함된 라우팅 미설정 LLM은 하나의 자동 라우팅 안내에만 표시한다. routing이 이미 활성화됐거나 현재 결과에 포함되지 않은 LLM은 표시하지 않는다. 각 `Routing 설정으로 이동` 버튼은 해당 node의 Routing control을 열되 GraphMutation, workflow save, policy API 또는 planner 호출을 만들지 않는다.
 - 구조만 생성 결과를 새로고침한 뒤에도 canonical safe envelope의 `affected_node_ids`로 동일한 routing 안내를 복구한다. full typed operation을 복구하거나 재생하지 않는다.
 - 여러 node를 하나의 result group 아래 표시한다.
 - Knowledge 선택, 자동 추천 확인과 수동 parameter 입력을 같은 result group 안에서 순차 표시한다.
@@ -412,8 +414,8 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - `defer_policy=allow_unresolved` task에만 defer를 표시하고 누락/`forbidden` task에는 표시하지 않는다.
 - confirm/set/defer/skip/previous interaction, operation id/task version과 pending/invalid/completed/deferred/skipped 상태를 검증한다.
 - active task id가 바뀌면 text/boolean/selector/candidate/search/error local draft가 초기화된다.
-- secret input type은 렌더링하지 않는다.
-- Mail/Gmail managed credential task는 Undo reentry와 구분되어 권한 검증된 후보만 표시하고, deferred presentation reentry는 기존 값과 상태를 안전하게 보여준다. Slack/GitHub credential task는 direct-edit response에 포함하지 않으며, 해당 node의 결과 안내는 기존 Editor 연결 설정으로 이동한다.
+- `secret` input type은 password control로 렌더링하되 기존 graph 값을 hydrate하거나 화면/API task payload에 다시 표시하지 않는다.
+- Mail/Gmail managed credential task는 Undo reentry와 구분되어 권한 검증된 후보만 표시하고, deferred presentation reentry는 기존 값과 상태를 안전하게 보여준다. Slack/GitHub managed credential task와 연결 설정 안내는 direct-edit response/UI에 포함하지 않으며 Catalog의 일반 파라미터와 기존 node graph용 password형 `secret` task를 순차 확인한다.
 
 ### DBP-TC-F005 Node Focus
 
@@ -539,7 +541,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 
 ### DBP-TC-E010 Direct-Edit Consistency Hardening
 
-1. Agent Builder가 발급한 managed `credential_ref` task가 자동 deferred가 아니라 active/pending인지 확인하고, policy-allowed explicit defer가 CDS save/acknowledgement 뒤에만 deferred가 되는지 확인한다. Mail처럼 resolver가 있는 provider는 권한과 node runtime compatibility를 통과한 후보만 반환하고 Gmail Draft 후보와 제출은 Gmail OAuth2만 허용하는지 확인한다. Slack/GitHub credential task, 후보, token 입력과 defer control은 direct-edit response에 없고, 결과 UI의 기존 Editor 연결 설정 이동만 제공하는지 확인한다.
+1. Agent Builder가 발급한 managed `credential_ref` task가 자동 deferred가 아니라 active/pending인지 확인하고, policy-allowed explicit defer가 CDS save/acknowledgement 뒤에만 deferred가 되는지 확인한다. Mail처럼 resolver가 있는 provider는 권한과 node runtime compatibility를 통과한 후보만 반환하고 Gmail Draft 후보와 제출은 Gmail OAuth2만 허용하는지 확인한다. Slack/GitHub managed credential task, 후보, credential defer와 연결 설정 안내는 direct-edit response/UI에 없고 Catalog의 일반 파라미터와 기존 node graph용 `secret` input만 순차 확인하는지 검증한다.
 2. Direct response의 Knowledge 후보가 `knowledge_resolution.candidates`에만 있고 legacy clarification field 제출과 legacy/direct 교차 중복 제출이 거부되는지 확인한다.
 3. KB save 실패와 response loss에서 같은 card/selection을 유지하고 canonical recovery 뒤 중복 mutation이나 사용자 메시지가 없는지 확인한다.
 4. 같은 `confirm|set|defer|skip|cancel` operation/payload 재시도가 GraphMutation, task 전환, commit과 audit를 한 번만 만들고 같은 id의 다른 payload는 conflict인지 확인한다.
@@ -555,7 +557,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 14. `before_graph` structural Knowledge response loss가 resolution을 `unapplied`로 복구하고 같은 card에서 새 operation으로 재시도되는지 확인한다.
 15. Acknowledgement 성공 뒤 session read 실패가 `완료 확인 중`으로 남았다가 terminal read 뒤 completion과 첫 Undo를 활성화하는지 확인한다.
 16. 제3 canonical graph가 반환되는 ambiguous save에서 Workflow history boundary, redo memory와 pending context가 보존되는지 확인한다.
-17. direct-edit response와 legacy session 정규화 뒤 Slack/GitHub credential task, 빈 picker, token 입력, defer control이 없고 결과 UI의 `연결 설정으로 이동`만 기존 Editor 설정을 여는지 확인한다.
+17. direct-edit response와 legacy session 정규화 뒤 Slack/GitHub managed credential task, 빈 picker, credential defer와 연결 설정 안내가 없고 Catalog의 일반 파라미터 및 기존 node graph용 `secret` task만 남는지 확인한다.
 
 ## 7. Non-Functional Verification
 
@@ -633,10 +635,16 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 
 - Knowledge 선택은 발급된 safe candidate handle을 다시 ranking하지 않고 materialize한다. 현재 Top-K 순위가 달라져도 handle이 조직 범위, use 권한, lifecycle 및 runtime eligibility를 통과하면 선택 저장이 가능해야 하며, handle을 확인할 수 없으면 GraphMutation 없이 validation failure가 되어야 한다.
 - Canonical graph recovery after acknowledgement loss, persisted Undo, persisted Redo, and ambiguous save assigns editor-only edge display numbers without changing the serialized workflow graph or graph hash.
-- A Slack/GitHub direct-edit plan exposes configuration guidance but no `credential_ref` task, credential candidate, empty picker, or Agent Builder token field. Mail/Gmail still expose only permitted managed credential candidates.
-- A `연결 설정으로 이동` action selects/focuses the unresolved Slack/GitHub node and opens the existing Editor connection control without mutation, save, planner call, or external request.
-- A `Routing 설정으로 이동` action opens the selected LLM Routing control rather than only changing the viewport; an already enabled routing node has no guidance.
+- A Slack/GitHub direct-edit plan exposes every Catalog-declared normal parameter and the existing node graph token/URL fields as password형 `secret` tasks, but no `credential_ref` task, credential candidate, empty picker, credential defer control, or connection-navigation guidance. Mail/Gmail still expose only permitted managed credential candidates.
+- Slack mode와 parameter 설명은 Catalog의 한국어 문구를 유지한다. `message`는 `{{result}}`와 이전 node output 연결 방법을 설명하고, Optional Blocks/Attachments의 빈 `적용`은 `skip`으로 완료된다.
+- GitHub PR 번호 `15`를 typed integer decision으로 제출하면 graph에는 runtime canonical 값인 문자열 `"15"`가 저장되고, browser JSON round-trip graph의 canonical hash가 같으며 Workflow Engine `GithubNodeData` validation을 통과하는지 검증한다.
+- Agent Builder allowlist의 모든 node type과 모든 user-configurable Catalog parameter에 대표 typed 값을 적용한 뒤 실제 Workflow Engine NodeData schema validation을 통과하는 contract test를 실행한다. File Extraction selector와 Slack Blocks/Attachments의 runtime 저장 형식을 이 검증에 포함한다.
+- A Mail terminal acknowledgement task renders all required upstream effect selectors in one typed `variable_selector_list`; an empty or duplicate selection is rejected.
+- Catalog multilingual aliases are supplied to the planner with canonical capability IDs. An `unsupported` result is repaired once only for exactly one supported `standalone_creation=allowed` capability; context-required, forbidden, unknown, and multi-capability results are not backend-promoted.
+- Configure-and-generate exposes routing tasks and no duplicate guidance. Structure-only keeps a `Routing 설정으로 이동` action that opens the selected LLM Routing control rather than only changing the viewport; an already enabled routing node has no guidance.
+- Routing task model candidates are limited to the same permission-filtered active chat models as `model_id`; a fallback equal to the selected default model is rejected. Graph values use `auto_model_routing`, `fallback_model_id` and the existing nested `model_routing_policy.refresh.refresh_every_runs`, `validation_budget_usd`, `max_cohorts` runtime contract.
 - A recommended parameter is preselected with alternate choices, stays active until explicit confirmation, and sends no GraphMutation/save when confirmed unchanged.
+- A Mail search plan creates tasks for credential, keyword, sender, subject, start/end date, folder, maximum results, unread-only, mark-as-read, and processing mode. A Gmail durable flow additionally keeps Gmail Draft and Mail Acknowledge selectors as confirmation tasks. No generated value is marked completed before an explicit confirm/set/skip/defer decision.
 - Failed KB selection retains selected candidates and classifies permission, stale, validation, pending acknowledgement, and retryable unapplied outcomes without resubmitting natural language or rerunning the planner.
 - A reference task hydrates canonical graph values by `candidate_id` or `reference_value`. A deleted or unauthorized reference is unavailable and cannot be treated as complete.
 - The result container renders explicit workflow completion only after terminal acknowledgement and reopens a completed task through its edit action.
@@ -658,8 +666,8 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - stale canvas에 같은 node ID가 남아도 Agent Builder mutation은 canonical draft graph를 base로 적용하고 저장한다.
 - 화면 전용 `displayNumber`는 Agent Builder CDS 저장 request와 canonical graph hash에 포함하지 않는다.
 - Agent Builder GraphMutation으로 추가된 node와 canonical base graph의 기존 node는 local editor 반영 시 모두 유효한 `displayNumber`를 가진다. 이 번호는 BaseNode의 source/target 연결 handle에 표시되며 저장 request에는 포함하지 않는다.
-- 빈 Start/Answer workflow는 ParameterTask 없이 저장·acknowledgement 후 완료 상태로 진행한다.
-- schema-invalid planner 응답은 provider 호출 한 번 뒤 repair 없이 fail-closed한다. 완결된 Start-to-Answer 흐름을 unsupported로 반환한 schema-valid semantic 모순만 safe repair prompt를 한 번 보내며, 수정된 `start_input -> answer` structured response를 정상 처리한다.
+- Start/Answer workflow도 `variables`와 `outputs` ParameterTask를 순차 제공하며, 자동 추천값이 있더라도 사용자 confirm 또는 set 뒤에만 완료 상태로 진행한다.
+- schema-invalid planner 응답과 완결된 Start-to-Answer 흐름의 모순된 unsupported 응답은 safe repair prompt를 한 번만 보내며, 수정된 `start_input -> answer` structured response를 정상 처리한다.
 
 ### MBA-275 Direct-Edit Consistency Cases
 

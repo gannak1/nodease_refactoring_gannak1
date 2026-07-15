@@ -24,6 +24,50 @@ def _slack_node(data=None):
     }
 
 
+def test_slack_graph_allows_agent_builder_deferred_parameter_metadata():
+    validate_slack_graph_boundary(
+        [
+            _slack_node(
+                {
+                    "channel": "C123",
+                    "body": '{"channel":"C123","text":"hello"}',
+                    "_deferred_parameters": [],
+                    "configuration_state": "unresolved",
+                }
+            )
+        ],
+        allow_legacy_selectors=True,
+    )
+
+
+def test_slack_graph_rejects_invalid_agent_builder_deferred_parameter_metadata():
+    with pytest.raises(SlackGraphBoundaryError):
+        validate_slack_graph_boundary(
+            [
+                _slack_node(
+                    {
+                        "_deferred_parameters": ["channel", 123],
+                    }
+                )
+            ],
+            allow_legacy_selectors=True,
+        )
+
+
+def test_slack_graph_rejects_unhashable_agent_builder_deferred_parameter_metadata():
+    with pytest.raises(SlackGraphBoundaryError):
+        validate_slack_graph_boundary(
+            [
+                _slack_node(
+                    {
+                        "_deferred_parameters": ["channel", {"unexpected": True}],
+                    }
+                )
+            ],
+            allow_legacy_selectors=True,
+        )
+
+
 def test_slack_graph_boundary_allows_dedicated_api_configuration():
     validate_slack_graph_boundary([_slack_node()], require_resolved=True)
 

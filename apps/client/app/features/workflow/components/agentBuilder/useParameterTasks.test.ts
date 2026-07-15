@@ -40,6 +40,10 @@ describe('toParameterDecisionValue', () => {
       kind: 'select',
       value: 'option-a',
     });
+    expect(toParameterDecisionValue(task('secret'), 'secret-value')).toEqual({
+      kind: 'secret',
+      value: 'secret-value',
+    });
     expect(
       toParameterDecisionValue(task('resource_ref'), 'resource-id'),
     ).toEqual({
@@ -51,6 +55,33 @@ describe('toParameterDecisionValue', () => {
     ).toEqual({
       kind: 'credential_ref',
       credential_id: 'credential-id',
+    });
+  });
+
+  it('maps multiple selector suggestions to one typed selector-list value', () => {
+    expect(
+      toParameterDecisionValue(task('variable_selector_list'), [
+        {
+          suggestion_id: 'sel-draft',
+          value_selector: ['draft', 'draft_ref'],
+        },
+        {
+          suggestion_id: 'sel-slack',
+          value_selector: ['slack', 'message_ref'],
+        },
+      ]),
+    ).toEqual({
+      kind: 'variable_selector_list',
+      selections: [
+        {
+          suggestion_id: 'sel-draft',
+          value_selector: ['draft', 'draft_ref'],
+        },
+        {
+          suggestion_id: 'sel-slack',
+          value_selector: ['slack', 'message_ref'],
+        },
+      ],
     });
   });
 });

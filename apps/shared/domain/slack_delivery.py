@@ -13,6 +13,7 @@ SLACK_LEGACY_SELECTOR_REQUIRES_MIGRATION = "slack.legacy_selector_requires_migra
 _SLACK_WEBHOOK_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _SLACK_TEMPLATE_TOKEN_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]{0,127})\s*\}\}")
 _SLACK_UNSAFE_TEMPLATE_MARKERS = ("{{", "{%", "%}", "{#", "#}")
+_SLACK_DEFERRED_PARAMETER_KEYS = frozenset({"channel"})
 _SLACK_ALLOWED_FIELDS = frozenset(
     {
         "title",
@@ -37,6 +38,7 @@ _SLACK_ALLOWED_FIELDS = frozenset(
         "authType",
         "configuration_state",
         "channel_resolution_state",
+        "_deferred_parameters",
         "displayNumber",
         "visibleProperties",
     }
@@ -147,6 +149,14 @@ def _validate_slack_data(data: Mapping[str, Any], *, require_resolved: bool) -> 
     if data.get("configuration_state") not in (None, "resolved", "unresolved"):
         raise SlackGraphBoundaryError()
     if data.get("channel_resolution_state") not in (None, "resolved", "unresolved"):
+        raise SlackGraphBoundaryError()
+    deferred_parameters = data.get("_deferred_parameters", [])
+    if not isinstance(deferred_parameters, list) or any(
+        not isinstance(item, str) or item not in _SLACK_DEFERRED_PARAMETER_KEYS
+        for item in deferred_parameters
+    ):
+        raise SlackGraphBoundaryError()
+    if len(deferred_parameters) != len(set(deferred_parameters)):
         raise SlackGraphBoundaryError()
     display_number = data.get("displayNumber")
     if display_number is not None and (

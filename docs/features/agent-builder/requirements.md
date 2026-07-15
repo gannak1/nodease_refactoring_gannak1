@@ -36,7 +36,7 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 
 ### 3.2 Out Of Scope
 
-- credential secret 직접 입력·저장
+- 일반 chat/planner를 통한 credential secret 수집과 Agent Builder 전용 secret 저장소 추가. 단, 기존 Slack/GitHub node graph가 이미 사용하는 인증 field를 Catalog `secret` task로 갱신하는 것은 범위에 포함한다.
 - workflow 실행, retrieval 또는 외부 API action 실행
 - runtime에 존재하지 않는 node type 구현
 - 임의의 plugin parameter schema 추론
@@ -87,8 +87,8 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 - planner는 parameter key, credential 값, 최종 validation rule의 권위가 아니다.
 - 최초 결과가 schema-valid지만 semantic invariant를 위반한 경우에만 safe machine code로 semantic repair를 최대 한 번 수행한다. Provider/JSON/schema 실패에는 repair하지 않고 fail-closed하며, repair 결과가 다시 실패해도 종료한다. 한 request의 provider 호출 총수는 최대 두 번이다.
 - Usage attribution은 이 호출 정책을 관찰할 뿐 확대하지 않는다. Mode contract, mode source와 요청 귀속 metadata가 commit된 뒤에만 attempt를 예약하며, 자연어 mode 판정 전 usage fact는 request id로 귀속하고 미확정 mode를 추측하지 않는다. Schema-invalid 응답은 실제 attempt 1 usage를 기록할 수 있어도 repair하지 않는다. 취소 전에 시작된 attempt의 billing fact는 멱등 완료할 수 있지만 다음 repair attempt 전에 request version/status를 재검증하고 canceled/stale이면 provider를 다시 호출하지 않는다. Usage 기록 실패는 새로운 RequestStatus를 만들지 않고 terminal `failed`와 safe issue code로 표현한다.
-- 기존 workflow target 또는 삽입 위치를 지정하지 않은 완결된 node 흐름 또는 단일 지원 node 생성 요청은 message에 `workflow`라는 단어가 없어도 `new_workflow`로 구조화한다. 예를 들어 `입력 응답 노드를 만들어줘`는 `start_input -> answer` 흐름이고, `깃허브 노드 만들어줘`는 `github_pr_read`와 GitHub PR read action을 포함한 신규 flow다. 명시적인 GitHub PR 생성 요청은 지원하지 않는 action으로 유지한다.
-- `request_type=unsupported`는 구조화된 unsupported action 또는 사용자에게 반환할 safe unsupported reason을 포함해야 한다. 둘 다 없는 결과는 `UNSUPPORTED_REASON_REQUIRED` semantic contradiction으로 처리해 한 번 repair한다. 배치 없는 단일 node 생성 요청을 unsupported로 반환한 경우도 `UNSUPPORTED_SUPPORTED_NODE_CREATION_CONTRADICTION`으로 planner repair를 한 번 요청한다. `github/pull_request/create`처럼 서버가 명확히 인식하는 structured unsupported action은 별도 자연어 reason이 없어도 unsupported로 수용한다. Backend는 사용자 message의 정규식 matching으로 planner 결과를 특정 workflow로 강제하지 않는다.
+- 기존 workflow target 또는 삽입 위치를 지정하지 않은 완결된 node 흐름 또는 단일 지원 node 생성 요청은 message에 `workflow`라는 단어가 없어도 `new_workflow`로 구조화한다. Planner는 Catalog의 다국어 `planner_aliases`를 canonical capability ID로 변환하고 사용자가 직접 요청한 ID를 `requested_capabilities`에 포함한다. 예를 들어 `입력 응답 노드를 만들어줘`는 `start_input -> answer` 흐름이고, `깃허브 노드 만들어줘`는 `github_pr_read`와 GitHub PR read action을 포함한 신규 flow다. 명시적인 GitHub PR 생성 요청은 지원하지 않는 action으로 유지한다.
+- `request_type=unsupported`는 구조화된 unsupported action 또는 사용자에게 반환할 safe unsupported reason을 포함해야 한다. 둘 다 없는 결과는 `UNSUPPORTED_REASON_REQUIRED` semantic contradiction으로 처리해 한 번 repair한다. 단일 `requested_capabilities`가 Catalog에서 supported이고 `standalone_creation=allowed`인데 unsupported로 반환된 경우만 `UNSUPPORTED_SUPPORTED_NODE_CREATION_CONTRADICTION`으로 한 번 repair한다. `requires_context`, `forbidden`, 다중 또는 unknown capability는 이 경로로 repair하지 않는다. `github/pull_request/create`처럼 서버가 명확히 인식하는 structured unsupported action은 별도 자연어 reason이 없어도 unsupported로 수용한다. Backend는 사용자 message의 정규식 matching으로 capability를 선택하거나 planner 결과를 특정 workflow로 덮어쓰지 않는다.
 - `knowledge_required=true`인 결과는 유효한 typed Knowledge placement를 정확히 하나 이상 포함해야 한다. 누락되거나 timing/effect/target이 유효하지 않으면 safe semantic code와 placement 계약을 제공해 한 번 repair하며, repair 뒤에도 유효하지 않으면 fail-closed한다.
 - `between` 기존 workflow 수정은 selected edge 또는 `natural_language_edge` source/destination reference 쌍을 사용한다. 자연어 pair는 server-loaded graph에서 source와 destination을 잇는 직접 edge가 정확히 하나일 때만 resolve한다. 0개 또는 복수 direct edge는 edge 선택 clarification이며, 여러 hop path 탐색은 후속 범위다.
 - 자연어 edge target은 node `data.title` 일치를 우선 사용한다. 제목이 일치하지 않는 경우에만 예약 구조 node의 안전한 별칭(`입력`/`시작`, `응답`/`출력`)을 `startNode`/`answerNode`에 대응하며, 별칭 후보가 복수이면 자동 선택하지 않는다.
@@ -152,7 +152,7 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 
 ### DBP-FR-006 Parameter Task Planning
 
-- `guided_generate`에서 backend는 patch 결과 node를 catalog와 대조해 `agent_builder_task=true`인 configurable parameter에 parameter task record를 만든다. 기존 `configure_and_generate` 입력은 같은 흐름으로 정규화한다. Start의 빈 `variables`와 Answer의 빈 `outputs`처럼 graph 구조만으로 성립하는 schema field는 catalog에서 `agent_builder_task=false`로 선언해 사용자 설정 task를 만들지 않는다.
+- `configure_and_generate`에서 backend는 patch 결과 node를 catalog와 대조해 모든 user-configurable parameter에 parameter task record를 만든다. Start의 `variables`와 Answer의 `outputs`도 사용자 확인·수정 대상으로 포함한다. `agent_builder_task=false`는 runtime 내부 필드처럼 사용자에게 설정 control을 제공해서는 안 되는 값에만 사용한다.
 - parameter 값은 사용자 요청의 명시적 값, 기존 workflow 값, 단일 upstream output과 catalog contract로 확정되는 값, catalog의 안전한 기본값 순서로 결정한다.
 - 앞 단계에서 값이 확정되면 graph에 값을 반영하고 `resolution_source=user_request|existing_graph|upstream_selector|catalog_default`와 값 원문이 아닌 canonical SHA-256 `recommendation_fingerprint`를 기록하되 task는 사용자 확인 전까지 `pending|active`로 유지한다. 실제 값은 task에 복제하지 않고 workflow graph에서 hydrate하며, 안전한 추천 이유와 함께 확인 또는 수정 control을 표시한다.
 - 후보가 2개 이상이면 자동 확정하지 않고 선택 task를 만든다.
@@ -165,11 +165,11 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 ### DBP-FR-007 Parameter Input And State
 
 - parameter 값은 일반 chat text message가 아니라 typed decision payload로 제출한다.
-- 지원 input type은 `text`, `textarea`, `code`, `json`, `number`, `boolean`, `select`, `resource_ref`, `credential_ref`, `variable_selector`다.
-- Decision value는 input type과 일치하는 discriminator를 사용한다. `variable_selector`는 server-issued `suggestion_id`와 기존 runtime 표준인 `[source_node_id, output_key, ...nested_path]` 배열을 함께 보내며 임의 selector 문자열은 허용하지 않는다.
-- secret 원문 입력 type은 제공하지 않는다.
+- 지원 input type은 `text`, `textarea`, `code`, `json`, `number`, `boolean`, `select`, `secret`, `resource_ref`, `credential_ref`, `variable_selector`, `variable_selector_list`다.
+- Decision value는 input type과 일치하는 discriminator를 사용한다. `variable_selector`는 server-issued `suggestion_id`와 기존 runtime 표준인 `[source_node_id, output_key, ...nested_path]` 배열을 함께 보낸다. `variable_selector_list`는 중복되지 않은 하나 이상의 server-issued selector selection을 보낸다. 임의 selector 문자열은 허용하지 않는다.
+- `secret`은 기존 node graph의 인증 field를 교체하는 typed parameter decision에만 제공한다. Planner, 일반 chat, task/session, audit에는 원문을 복제하지 않고 기존 값은 hydrate하거나 다시 표시하지 않는다.
 - Catalog v3 parameter의 `defer_policy`는 `forbidden` 또는 `allow_unresolved`이며 생략하면 `forbidden`이다.
-- `credential_ref`를 포함한 configurable parameter는 현재 reference가 없다는 이유만으로 자동 `deferred` 처리하지 않는다. Agent Builder가 발급하는 task는 `pending|active`에서 사용자 확인을 기다리며, 사용자가 명시적으로 `defer`를 제출하고 Catalog policy가 허용한 경우에만 GraphMutation, CDS 저장과 acknowledgement 뒤 `deferred`가 된다. Permission-filtered picker는 durable credential resource/use 권한 resolver가 이미 존재하는 provider에만 제공하고 node runtime의 provider/auth compatibility를 함께 적용한다. Gmail Draft에는 Gmail OAuth2 use-permitted credential만 노출하고 제출도 같은 조건으로 검증한다. Slack/GitHub credential은 direct-edit task 범위에서 제외하며, 신규 credential store나 빈 picker/defer 안내를 만들지 않는다.
+- `credential_ref`를 포함한 configurable parameter는 현재 reference가 없다는 이유만으로 자동 `deferred` 처리하지 않는다. Agent Builder가 발급하는 task는 `pending|active`에서 사용자 확인을 기다리며, 사용자가 명시적으로 `defer`를 제출하고 Catalog policy가 허용한 경우에만 GraphMutation, CDS 저장과 acknowledgement 뒤 `deferred`가 된다. Permission-filtered picker는 durable credential resource/use 권한 resolver가 이미 존재하는 Mail/Gmail에만 제공한다. Gmail Draft에는 Gmail OAuth2 use-permitted credential만 노출하고 제출도 같은 조건으로 검증한다. Gmail/Mail selector는 defer할 수 없다. Slack/GitHub에는 신규 credential resource, 빈 picker 또는 credential defer 안내를 만들지 않지만 기존 node graph의 token/URL field는 password형 `secret` task로 입력할 수 있다.
 - required parameter는 유효한 값 또는 `allow_unresolved` 정책 없이 완료할 수 없다. `forbidden`인 task에는 defer control을 표시하지 않고 backend도 defer 요청을 거부한다.
 - optional parameter는 건너뛸 수 있다.
 - Frontend는 자동 추천값에 대한 `confirm`, `set`, policy가 허용한 `defer`, optional `skip`, `previous`를 명시적인 control로 제공한다. Required task에서는 `skip` control을 숨기거나 disabled로 표시하고 server도 같은 요청을 거부한다.
@@ -361,10 +361,18 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 
 ## 2026-07-15 External Connection And Recovery Corrections
 
-- Slack/GitHub의 `credential_ref` ParameterTask와 빈 후보 picker는 direct-edit에서 만들지 않는다. Agent Builder는 해당 node를 unresolved configuration으로 생성하고, 같은 workflow 설정 결과에서 node별 `연결 설정으로 이동` action을 제공한다. action은 기존 Editor의 연결/인증 control을 열 뿐 credential 후보 조회, token 입력, GraphMutation, workflow save, planner 재호출 또는 외부 호출을 수행하지 않는다.
+- Slack/GitHub의 `credential_ref` ParameterTask와 빈 후보 picker는 direct-edit에서 만들지 않는다. Catalog에 정의된 channel, message, action, repository, PR 번호와 기존 node graph의 token/URL field를 순차 task로 제공한다. Token/URL은 `secret` input으로만 받고 기존 값을 hydrate하거나 task/session/audit에 복제하지 않는다.
 - Mail/Gmail은 runtime이 기존 managed credential reference를 요구하므로 permission-filtered reference picker를 유지한다. raw credential 원문 입력은 Agent Builder 범위가 아니다.
-- Slack/GitHub unresolved node는 저장할 수 있지만 server preflight가 test, run, deployment를 차단한다. 조직 credential lifecycle, 권한 resolver, safe reference binding과 runtime preflight가 모두 준비되기 전에는 Agent Builder credential 지원을 추가하지 않는다.
-- Routing 안내의 action은 대상 LLM node의 Routing control을 열어야 하며 focus만 수행하고 끝나면 안 된다. action은 routing rule이나 graph를 자동 변경하지 않는다.
+- Mail 검색 node의 사용자 설정 항목인 `credential_id`, `keyword`, `sender`, `subject`, `start_date`, `end_date`, `folder`, `max_results`, `unread_only`, `mark_as_read`, `processing_mode`는 모두 Catalog ParameterTask로 제공한다. 생성 template이 미리 채운 값도 사용자 확인 전에는 완료 처리하지 않는다. `referenced_variables`, `configuration_state`, `_deferred_parameters` 같은 graph/runtime 내부 필드는 사용자 task로 노출하지 않는다.
+- Gmail Draft와 Mail Acknowledge의 credential 및 selector도 Catalog task로 유지한다. 여러 필수 효과는 `variable_selector_list`로 확인한다. Graph 연결에서 자동 추천된 selector는 canonical graph에 반영하되 명시적인 `confirm` 전에는 `pending|active` 상태로 남는다.
+- Slack/GitHub의 기존 runtime 인증 동작은 변경하지 않는다. 향후 공식 관리 credential resource가 제품에 추가될 때 Agent Builder 연계 여부를 별도 결정한다.
+- Slack의 전송 방식과 각 parameter 설명은 Catalog의 한국어 문구로 고정한다. `message`에는 생성 시 연결된 `{{result}}`가 이전 node의 `referenced_variables` 출력을 사용한다는 설명을 표시한다. Optional `blocks`와 `attachments`는 빈 `적용`을 `skip`으로 처리하고 완료 흐름을 막지 않는다.
+- GitHub `pr_number` decision은 1 이상의 integer만 받는다. GraphMutation 적용 시 GitHub runtime schema가 요구하는 10진 문자열로 canonicalize하고, JSON 왕복과 CAS 저장 뒤에도 같은 문자열을 유지한다.
+- File Extraction selector는 runtime schema의 `[{name, value_selector}]` 형태로 materialize하며, Slack `blocks`와 `attachments`는 검증된 JSON 값을 node runtime이 사용하는 JSON 문자열 형태로 저장한다.
+- `설정하며 생성`에서 LLM node는 `model_id`, `auto_model_routing`, 선택적 `fallback_model_id`, `model_routing_refresh_every_runs`, `model_routing_validation_budget_usd`, `model_routing_max_cohorts`를 Catalog ParameterTask로 제공한다. Planner/user request 또는 Catalog default로 추천된 값도 사용자 confirm 전에는 완료하지 않는다.
+- Routing ParameterTask의 set은 `parameter_update` GraphMutation, CDS CAS save와 acknowledgement를 사용한다. `auto_model_routing=true`는 graph에만 설정하고 Agent Builder 처리 중 model-routing policy/refresh/cohort API나 workflow 실행을 호출하지 않는다. Deployment/runtime의 기존 bootstrap이 canonical graph의 default/fallback model과 policy bounds를 사용한다.
+- `fallback_model_id` 후보는 `model_id`와 같은 permission-filtered active chat model 목록을 사용하고 default model과 같은 fallback은 validation failure로 거부한다.
+- `구조만 생성`에서는 Routing ParameterTask를 만들지 않는다. Routing 미설정 LLM의 안내 action은 대상 node의 Routing control을 열어야 하며 focus만 수행하고 끝나면 안 된다. 이 navigation은 routing graph를 자동 변경하지 않는다.
 - 모든 canonical recovery 경로는 editor-only edge handle display number를 다시 부여한다. server graph와 CAS hash는 이 metadata를 제외한다.
 - candidate task는 candidate id와 `reference_value`를 모두 이용해 기존 graph 값을 hydrate한다. 어떤 허용 candidate와도 대응하지 않는 값만 unavailable state로 표시하며, 대체 후보 또는 policy-allowed defer 전에는 완료 처리하지 않는다.
 

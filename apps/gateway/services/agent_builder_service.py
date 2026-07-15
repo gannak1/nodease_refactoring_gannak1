@@ -98,6 +98,7 @@ from apps.shared.services.workflow_node_catalog import (
     agent_builder_supported_capabilities,
     agent_builder_supported_node_types,
     capability_output_keys,
+    missing_required_configuration,
     node_definition,
     node_type_for_capability,
     validate_workflow_graph_connections,
@@ -128,14 +129,14 @@ SAFE_SIDE_EFFECT_NOTICE = (
 )
 SLACK_CHANNEL_UNRESOLVED_WARNING = (
     "Slack 채널이 아직 선택되지 않아 Slack node는 채널 미정 상태로 생성됩니다. "
-    "저장 후 실행 전에 Slack 채널과 연동 인증 정보를 확인해야 합니다."
+    "저장 후 실행 전에 Slack 채널 등 미설정 일반 파라미터를 확인해야 합니다."
 )
 GITHUB_CONFIGURATION_UNRESOLVED_WARNING = (
-    "GitHub credential과 repository와 PR 대상이 설정되지 않아 GitHub node는 미설정 상태로 생성됩니다. "
-    "저장 후 실행 전에 GitHub credential, repository, PR 번호를 확인해야 합니다."
+    "GitHub repository와 PR 대상이 설정되지 않아 GitHub node는 미설정 상태로 생성됩니다. "
+    "저장 후 실행 전에 repository, PR 번호 등 미설정 일반 파라미터를 확인해야 합니다."
 )
 EXTERNAL_NODE_CONFIGURATION_WARNING = (
-    "외부 연동 node의 credential과 target 설정은 자동으로 채우지 않았습니다. "
+    "외부 연동 node의 실행 대상과 필수 파라미터는 확인 전까지 미설정 상태로 유지됩니다. "
     "저장 후 실제 실행 전에 미설정 항목을 확인해야 합니다."
 )
 CAPABILITY_GENERATION_ORDER = (
@@ -5232,7 +5233,7 @@ class AgentBuilderService:
             definition = node_definition(node_type)
             if not definition or not definition.get("agent_builder_supported"):
                 continue
-            required_parameters = definition.get("required_configuration") or []
+            required_parameters = missing_required_configuration(node_type, data)
             parameter_labels = definition.get("configuration_labels") or {}
             capabilities = definition.get("capabilities") or []
             if node_type == "githubNode":

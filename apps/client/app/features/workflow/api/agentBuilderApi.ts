@@ -32,10 +32,12 @@ export type AgentBuilderParameterTask = {
     | 'json'
     | 'number'
     | 'resource_ref'
+    | 'secret'
     | 'select'
     | 'text'
     | 'textarea'
-    | 'variable_selector';
+    | 'variable_selector'
+    | 'variable_selector_list';
   required: boolean;
   defer_policy: 'forbidden' | 'allow_unresolved';
   status:

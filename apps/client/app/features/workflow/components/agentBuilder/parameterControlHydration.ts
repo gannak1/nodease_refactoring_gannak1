@@ -11,6 +11,11 @@ const CONDITION_BRANCH_PREFIX = 'condition_branch:';
 const CONDITION_BRANCH_TARGETS_KEY =
   '_agent_builder_condition_branch_targets';
 const CONDITION_BRANCH_NO_CONNECTION = '__agent_builder_no_connection__';
+const LLM_ROUTING_PARAMETER_PATHS: Record<string, string[]> = {
+  model_routing_refresh_every_runs: ['refresh', 'refresh_every_runs'],
+  model_routing_validation_budget_usd: ['validation_budget_usd'],
+  model_routing_max_cohorts: ['max_cohorts'],
+};
 
 const hasValue = (value: unknown) =>
   value !== undefined && value !== null && value !== '';
@@ -20,6 +25,30 @@ const sameSelector = (left: unknown, right: unknown) =>
   Array.isArray(right) &&
   left.length === right.length &&
   left.every((item, index) => item === right[index]);
+
+const nestedParameterValue = (
+  task: AgentBuilderParameterTask,
+  nodeData: Record<string, unknown>,
+): { found: boolean; value?: unknown } => {
+  const path =
+    task.node_type === 'llmNode'
+      ? LLM_ROUTING_PARAMETER_PATHS[task.parameter_key]
+      : undefined;
+  if (!path) return { found: false };
+  let value: unknown = nodeData.model_routing_policy;
+  for (const key of path) {
+    if (
+      value === null ||
+      typeof value !== 'object' ||
+      Array.isArray(value) ||
+      !Object.hasOwn(value, key)
+    ) {
+      return { found: false };
+    }
+    value = (value as Record<string, unknown>)[key];
+  }
+  return { found: true, value };
+};
 
 export const deriveParameterControlHydration = (
   task: AgentBuilderParameterTask,
@@ -36,6 +65,7 @@ export const deriveParameterControlHydration = (
     branchTargets !== null &&
     typeof branchTargets === 'object' &&
     !Array.isArray(branchTargets);
+  const nestedParameter = nestedParameterValue(task, nodeData);
   if (
     branchHandle &&
     (!isBranchTargetMap ||
@@ -43,7 +73,11 @@ export const deriveParameterControlHydration = (
   ) {
     return { state: 'empty' };
   }
-  if (!branchHandle && !Object.hasOwn(nodeData, task.parameter_key)) {
+  if (
+    !branchHandle &&
+    !Object.hasOwn(nodeData, task.parameter_key) &&
+    !nestedParameter.found
+  ) {
     return { state: 'empty' };
   }
   const branchTarget = branchHandle
@@ -53,7 +87,9 @@ export const deriveParameterControlHydration = (
     ? branchTarget === null
       ? CONDITION_BRANCH_NO_CONNECTION
       : branchTarget
-    : nodeData[task.parameter_key];
+    : nestedParameter.found
+      ? nestedParameter.value
+      : nodeData[task.parameter_key];
   if (!hasValue(current)) return { state: 'empty' };
   if (
     task.sensitivity === 'secret_forbidden' ||
@@ -88,10 +124,17 @@ export const deriveParameterControlHydration = (
   }
 
   if (task.input_type === 'variable_selector') {
-    const selector = Array.isArray(current)
-      ? current
-      : current && typeof current === 'object'
-        ? (current as Record<string, unknown>).value_selector
+    const storedSelector =
+      task.node_type === 'fileExtractionNode' &&
+      task.parameter_key === 'referenced_variables' &&
+      Array.isArray(current) &&
+      current.length === 1
+        ? current[0]
+        : current;
+    const selector = Array.isArray(storedSelector)
+      ? storedSelector
+      : storedSelector && typeof storedSelector === 'object'
+        ? (storedSelector as Record<string, unknown>).value_selector
         : null;
     const suggestion = task.suggestions?.find((item) =>
       sameSelector(item.value_selector, selector),
@@ -101,12 +144,35 @@ export const deriveParameterControlHydration = (
       : { state: 'unavailable' };
   }
 
+  if (task.input_type === 'variable_selector_list') {
+    if (!Array.isArray(current) || current.length === 0) {
+      return { state: 'empty' };
+    }
+    const suggestionIds = current.map((selector) =>
+      task.suggestions?.find((item) => sameSelector(item.value_selector, selector))
+        ?.suggestion_id,
+    );
+    return suggestionIds.every(
+      (suggestionId): suggestionId is string => typeof suggestionId === 'string',
+    ) && new Set(suggestionIds).size === suggestionIds.length
+      ? { state: 'available', value: suggestionIds }
+      : { state: 'unavailable' };
+  }
+
   if (task.input_type === 'boolean') {
     return typeof current === 'boolean'
       ? { state: 'available', value: current }
       : { state: 'unavailable' };
   }
   if (task.input_type === 'number') {
+    if (
+      task.node_type === 'githubNode' &&
+      task.parameter_key === 'pr_number' &&
+      typeof current === 'string' &&
+      /^\d+$/.test(current)
+    ) {
+      return { state: 'available', value: Number(current) };
+    }
     return typeof current === 'number' && Number.isFinite(current)
       ? { state: 'available', value: current }
       : { state: 'unavailable' };
@@ -154,6 +220,20 @@ export const parameterControlDisplayValue = (
     return suggestion
       ? `${suggestion.label} (${suggestion.json_path})`
       : null;
+  }
+  if (
+    task.input_type === 'variable_selector_list' &&
+    Array.isArray(hydration.value)
+  ) {
+    const labels = hydration.value.flatMap((suggestionId) => {
+      const suggestion = task.suggestions?.find(
+        (item) => item.suggestion_id === suggestionId,
+      );
+      return suggestion
+        ? [`${suggestion.label} (${suggestion.json_path})`]
+        : [];
+    });
+    return labels.length === hydration.value.length ? labels.join(', ') : null;
   }
   if (task.input_type === 'boolean') {
     return hydration.value ? '사용' : '사용 안 함';

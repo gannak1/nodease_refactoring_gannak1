@@ -188,6 +188,36 @@ describe('Agent Builder parameter cards', () => {
     );
   });
 
+  it('optional JSON을 빈 상태로 적용하면 invalid set 대신 skip을 제출한다', () => {
+    const onDecision = vi.fn();
+    const blocksTask: AgentBuilderParameterTask = {
+      ...tasks[0],
+      task_id: 'task-slack-blocks',
+      node_id: 'slack',
+      node_type: 'slackPostNode',
+      parameter_key: 'blocks',
+      label: 'Blocks',
+      input_type: 'json',
+      required: false,
+      defer_policy: 'forbidden',
+    };
+
+    render(
+      <WorkflowResultGroup
+        tasks={[blocksTask]}
+        onFocusNode={vi.fn()}
+        onDecision={onDecision}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '적용' }));
+
+    expect(onDecision).toHaveBeenCalledWith({
+      taskId: 'task-slack-blocks',
+      action: 'skip',
+    });
+  });
+
   it('resource reference는 검색 가능한 권한 후보에서만 선택한다', () => {
     const onDecision = vi.fn();
     render(

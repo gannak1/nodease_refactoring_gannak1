@@ -58,6 +58,22 @@ const matchesRecommendedValue = (
         currentValue
     );
   }
+  if (task.input_type === 'variable_selector_list') {
+    const currentIds = Array.isArray(currentValue) ? currentValue : [];
+    const submittedIds = Array.isArray(submittedValue)
+      ? submittedValue.flatMap((item) =>
+          item &&
+          typeof item === 'object' &&
+          typeof (item as { suggestion_id?: unknown }).suggestion_id === 'string'
+            ? [(item as { suggestion_id: string }).suggestion_id]
+            : [],
+        )
+      : [];
+    return (
+      currentIds.length === submittedIds.length &&
+      currentIds.every((id, index) => id === submittedIds[index])
+    );
+  }
   return JSON.stringify(currentValue) === JSON.stringify(submittedValue);
 };
 
@@ -311,6 +327,15 @@ export const NodeParameterCard = ({
                 ...(action === 'set' ? { value } : {}),
               });
             }}
+            onSkip={
+              !currentTask.required
+                ? () =>
+                    onDecision({
+                      taskId: currentTask.task_id,
+                      action: 'skip',
+                    })
+                : undefined
+            }
           />
           <div className="flex flex-wrap gap-2">
             {editingTask && activeTask ? (

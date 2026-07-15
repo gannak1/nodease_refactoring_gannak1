@@ -14,6 +14,10 @@ from apps.gateway.services.agent_builder_service import (
     AgentBuilderService,
     calculate_graph_hash,
 )
+from apps.gateway.application.agent_builder.graph_mutation_builder import (
+    materialize_candidate_graph,
+)
+from apps.gateway.services.workflow_service import WorkflowService
 from apps.shared.schemas.agent_builder import (
     AgentBuilderApplyRequest,
     AgentBuilderApplyResponse,
@@ -1191,6 +1195,10 @@ def test_structured_request_builds_durable_gmail_reply_draft_flow(monkeypatch):
             [nodes_by_type["gmailDraftNode"]["id"], "draft_ref"]
         ],
     }
+    WorkflowService.validate_external_node_storage_boundaries(
+        materialize_candidate_graph(preview),
+        require_resolved=False,
+    )
 
 
 def test_gmail_acknowledgement_keeps_draft_effect_selector_after_other_steps(
@@ -1555,9 +1563,9 @@ def test_github_pr_review_request_builds_read_review_and_comment_nodes(monkeypat
     assert [
         [parameter.label for parameter in issue.missing_parameters]
         for issue in configuration_issues
-    ] == [
-        ["GitHub credential", "Repository owner", "Repository name", "PR 번호"],
-        ["GitHub credential", "Repository owner", "Repository name", "PR 번호"],
+        ] == [
+            ["GitHub API Token", "PR 번호"],
+            ["GitHub API Token", "PR 번호"],
     ]
     assert svc.validate_preview_graph(preview_graph).valid is True
 
@@ -2125,7 +2133,7 @@ def test_structured_request_keeps_unresolved_slack_channel_as_nonblocking_warnin
     assert configuration_issues[0].node_label == "Slack 전송"
     assert [
         parameter.label for parameter in configuration_issues[0].missing_parameters
-    ] == ["Slack credential", "Slack channel"]
+    ] == ["Bot Token", "Slack channel"]
     slack_resolution = next(
         item
         for item in structured.pending_resolution
@@ -2188,9 +2196,9 @@ def test_session_message_payload_rehydrates_ready_draft_preview():
             "node_type": "slackPostNode",
             "node_label": "Slack 전송",
             "capability": "slack_send",
-            "missing_parameters": [
-                {"key": "credential", "label": "Slack credential"},
-                {"key": "channel", "label": "Slack channel"},
+                "missing_parameters": [
+                    {"key": "bot_token", "label": "Bot Token"},
+                    {"key": "channel", "label": "Slack channel"},
             ],
         }
     ]

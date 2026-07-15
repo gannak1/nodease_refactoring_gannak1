@@ -180,11 +180,19 @@ echo -e "${GREEN}🖥️ Gateway API 서버 시작...${NC}"
     else
         VENV_PYTHON="apps/gateway/.venv/bin/python"
     fi
-    AGENT_BUILDER_DRAFT_MODEL_ID="${AGENT_BUILDER_DRAFT_MODEL_ID:-gpt-5-mini}" PYTHONPATH="$PROJECT_ROOT" $VENV_PYTHON -m uvicorn apps.gateway.main:app --reload --port 8000
+    WATCHFILES_FORCE_POLLING="${WATCHFILES_FORCE_POLLING:-true}" \
+        AGENT_BUILDER_DRAFT_MODEL_ID="${AGENT_BUILDER_DRAFT_MODEL_ID:-gpt-5-mini}" \
+        PYTHONPATH="$PROJECT_ROOT" \
+        $VENV_PYTHON -m uvicorn apps.gateway.main:app --reload --port 8000
 ) &
 FASTAPI_PID=$!
 
 sleep 2
+
+if ! kill -0 "$FASTAPI_PID" 2>/dev/null; then
+    echo -e "${RED}Gateway API failed to start. Check whether port 8000 is already in use.${NC}"
+    exit 1
+fi
 
 # 5. Next.js 클라이언트 (선택)
 if [ -d "apps/client" ]; then

@@ -1,8 +1,9 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { WorkflowResultGroup } from './WorkflowResultGroup';
 import type { Node } from '../../types/Workflow';
+import type { AgentBuilderParameterTask } from '../../api/agentBuilderApi';
 
 const nodes: Node[] = [
   {
@@ -38,6 +39,31 @@ const nodes: Node[] = [
 ];
 
 describe('WorkflowResultGroup model routing guidance', () => {
+  beforeAll(() => {
+    Element.prototype.scrollIntoView = vi.fn();
+  });
+
+  const routingTask: AgentBuilderParameterTask = {
+    task_id: 'routing-task',
+    group_id: 'group',
+    step_id: 'step-llm',
+    node_id: 'generated-llm',
+    node_type: 'llmNode',
+    parameter_key: 'auto_model_routing',
+    label: '자동 모델 라우팅',
+    input_type: 'boolean',
+    required: false,
+    defer_policy: 'forbidden',
+    status: 'active',
+    task_version: 1,
+    stable_order: 0,
+    resolution_source: 'catalog_default',
+    reason: '입력에 따라 사용할 모델을 자동으로 선택합니다.',
+    input_guidance: '사용 여부를 확인하세요.',
+    node_label: 'LLM',
+    node_purpose: 'LLM 호출',
+    configuration_state: 'resolved',
+  };
   it('이번 결과의 라우팅 미설정 LLM만 하나의 안내로 보여주고 Routing control 열기를 요청한다', () => {
     const onFocusNode = vi.fn();
     const onOpenNodeSettings = vi.fn();
@@ -89,37 +115,39 @@ describe('WorkflowResultGroup model routing guidance', () => {
     expect(screen.queryByTestId('agent-builder-routing-guidance')).not.toBeInTheDocument();
   });
 
-  it('Slack과 GitHub는 credential 입력 카드 대신 기존 연결 설정으로 이동한다', () => {
+  it('Slack과 GitHub에 Agent Builder 전용 credential 안내를 만들지 않는다', () => {
     const onOpenNodeSettings = vi.fn();
 
     render(
       <WorkflowResultGroup
         tasks={[]}
         nodes={nodes}
-        connectionNodeIds={['generated-slack', 'generated-github']}
         onFocusNode={vi.fn()}
         onOpenNodeSettings={onOpenNodeSettings}
         onDecision={vi.fn()}
       />,
     );
 
-    expect(screen.getByTestId('agent-builder-connection-guidance')).toBeInTheDocument();
-    fireEvent.click(
-      screen.getByRole('button', { name: '알림 Slack 연결 설정으로 이동' }),
-    );
-    fireEvent.click(
-      screen.getByRole('button', { name: '리뷰 GitHub 연결 설정으로 이동' }),
+    expect(
+      screen.queryByTestId('agent-builder-connection-guidance'),
+    ).not.toBeInTheDocument();
+    expect(onOpenNodeSettings).not.toHaveBeenCalled();
+  });
+
+  it('configure-and-generate routing task suppresses duplicate routing guidance', () => {
+    render(
+      <WorkflowResultGroup
+        tasks={[routingTask]}
+        nodes={nodes}
+        routingNodeIds={['generated-llm']}
+        onFocusNode={vi.fn()}
+        onDecision={vi.fn()}
+      />,
     );
 
-    expect(onOpenNodeSettings).toHaveBeenNthCalledWith(
-      1,
-      'generated-slack',
-      'connection',
-    );
-    expect(onOpenNodeSettings).toHaveBeenNthCalledWith(
-      2,
-      'generated-github',
-      'connection',
-    );
+    expect(
+      screen.queryByTestId('agent-builder-routing-guidance'),
+    ).not.toBeInTheDocument();
+    expect(screen.getAllByText('자동 모델 라우팅').length).toBeGreaterThan(0);
   });
 });

@@ -40,6 +40,64 @@ const branchTask: AgentBuilderParameterTask = {
 };
 
 describe('ParameterInputRenderer condition branch target', () => {
+  it('renders secret parameters as an empty password control', () => {
+    const onSubmit = vi.fn();
+    const secretTask: AgentBuilderParameterTask = {
+      ...branchTask,
+      task_id: 'task-slack-token',
+      node_id: 'slack',
+      node_type: 'slackPostNode',
+      parameter_key: 'bot_token',
+      label: 'Bot Token',
+      input_type: 'secret',
+      required: false,
+      sensitivity: 'secret_forbidden',
+    };
+
+    render(
+      <ParameterInputRenderer
+        task={secretTask}
+        hydration={{ state: 'unavailable' }}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    const input = screen.getByLabelText('Bot Token');
+    expect(input).toHaveAttribute('type', 'password');
+    expect(input).toHaveValue('');
+    fireEvent.change(input, { target: { value: 'secret-value' } });
+    fireEvent.click(screen.getByRole('button', { name: '적용' }));
+    expect(onSubmit).toHaveBeenCalledWith('secret-value');
+  });
+
+  it('treats an empty optional JSON apply as an explicit skip', () => {
+    const onSubmit = vi.fn();
+    const onSkip = vi.fn();
+    const blocksTask: AgentBuilderParameterTask = {
+      ...branchTask,
+      task_id: 'task-slack-blocks',
+      node_id: 'slack',
+      node_type: 'slackPostNode',
+      parameter_key: 'blocks',
+      label: 'Blocks',
+      input_type: 'json',
+      required: false,
+    };
+
+    render(
+      <ParameterInputRenderer
+        task={blocksTask}
+        onSubmit={onSubmit}
+        onSkip={onSkip}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: '적용' }));
+
+    expect(onSkip).toHaveBeenCalledTimes(1);
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
   it('shows safe option labels while submitting the canonical target id', () => {
     const onSubmit = vi.fn();
     render(<ParameterInputRenderer task={branchTask} onSubmit={onSubmit} />);
@@ -78,5 +136,219 @@ describe('ParameterInputRenderer condition branch target', () => {
     expect(parameterControlDisplayValue(branchTask, emptyHydration)).toBe(
       '연결 안 함',
     );
+  });
+
+  it('hydrates Mail select and false boolean recommendations for confirmation', () => {
+    const onProcessingSubmit = vi.fn();
+    const processingTask: AgentBuilderParameterTask = {
+      ...branchTask,
+      task_id: 'task-mail-processing-mode',
+      node_id: 'mail',
+      node_type: 'mailNode',
+      parameter_key: 'processing_mode',
+      label: '처리 모드',
+      required: false,
+      resolution_source: 'catalog_default',
+      validation: {
+        options: ['search_only', 'durable'],
+        option_labels: {
+          search_only: '검색만',
+          durable: '후속 처리 추적',
+        },
+      },
+    };
+    const { unmount } = render(
+      <ParameterInputRenderer
+        task={processingTask}
+        hydration={{ state: 'available', value: 'durable' }}
+        onSubmit={onProcessingSubmit}
+      />,
+    );
+
+    expect(screen.getByLabelText('처리 모드')).toHaveValue('durable');
+    fireEvent.click(screen.getByRole('button'));
+    expect(onProcessingSubmit).toHaveBeenCalledWith('durable');
+    unmount();
+
+    const onBooleanSubmit = vi.fn();
+    const unreadTask: AgentBuilderParameterTask = {
+      ...branchTask,
+      task_id: 'task-mail-unread-only',
+      node_id: 'mail',
+      node_type: 'mailNode',
+      parameter_key: 'unread_only',
+      label: '읽지 않은 메일만',
+      input_type: 'boolean',
+      required: false,
+      resolution_source: 'catalog_default',
+      validation: {},
+    };
+    render(
+      <ParameterInputRenderer
+        task={unreadTask}
+        hydration={{ state: 'available', value: false }}
+        onSubmit={onBooleanSubmit}
+      />,
+    );
+
+    expect(screen.getByRole('checkbox')).not.toBeChecked();
+    fireEvent.click(screen.getByRole('button'));
+    expect(onBooleanSubmit).toHaveBeenCalledWith(false);
+  });
+
+  it('hydrates and submits multiple upstream selectors as one typed task value', () => {
+    const onSubmit = vi.fn();
+    const selectorListTask: AgentBuilderParameterTask = {
+      ...branchTask,
+      task_id: 'task-mail-effects',
+      node_id: 'mail-ack',
+      node_type: 'mailAcknowledgeNode',
+      parameter_key: 'required_effect_ref_selectors',
+      label: '필수 처리 결과',
+      input_type: 'variable_selector_list',
+      suggestions: [
+        {
+          suggestion_id: 'sel-draft',
+          kind: 'variable_selector',
+          label: 'Gmail 답장 초안',
+          description: '초안 생성 결과',
+          source_node_id: 'draft',
+          output_key: 'draft_ref',
+          value_type: 'text',
+          value_selector: ['draft', 'draft_ref'],
+          json_path: '$.draft_ref',
+        },
+        {
+          suggestion_id: 'sel-slack',
+          kind: 'variable_selector',
+          label: 'Slack 전송',
+          description: 'Slack 전송 결과',
+          source_node_id: 'slack',
+          output_key: 'message_ref',
+          value_type: 'text',
+          value_selector: ['slack', 'message_ref'],
+          json_path: '$.message_ref',
+        },
+      ],
+    };
+    const hydration = deriveParameterControlHydration(selectorListTask, {
+      required_effect_ref_selectors: [
+        ['draft', 'draft_ref'],
+        ['slack', 'message_ref'],
+      ],
+    });
+
+    render(
+      <ParameterInputRenderer
+        task={selectorListTask}
+        hydration={hydration}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    expect(screen.getAllByRole('checkbox')).toHaveLength(2);
+    expect(screen.getAllByRole('checkbox')[0]).toBeChecked();
+    expect(screen.getAllByRole('checkbox')[1]).toBeChecked();
+    fireEvent.click(screen.getByRole('button'));
+    expect(onSubmit).toHaveBeenCalledWith(selectorListTask.suggestions);
+  });
+
+  it('hydrates a runtime GitHub PR number string as a number task', () => {
+    const githubTask: AgentBuilderParameterTask = {
+      ...branchTask,
+      task_id: 'task-github-pr-number',
+      node_id: 'github',
+      node_type: 'githubNode',
+      parameter_key: 'pr_number',
+      label: 'PR 번호',
+      input_type: 'number',
+      validation: { min: 1, integer: true },
+    };
+
+    expect(
+      deriveParameterControlHydration(githubTask, { pr_number: '15' }),
+    ).toEqual({ state: 'available', value: 15 });
+  });
+
+  it('hydrates a file extraction runtime reference object as a selector task', () => {
+    const selectorTask: AgentBuilderParameterTask = {
+      ...branchTask,
+      task_id: 'task-file-selector',
+      node_id: 'file-extraction',
+      node_type: 'fileExtractionNode',
+      parameter_key: 'referenced_variables',
+      label: '입력 파일',
+      input_type: 'variable_selector',
+      suggestions: [
+        {
+          suggestion_id: 'sel-file',
+          kind: 'variable_selector',
+          label: 'Webhook file',
+          description: 'Webhook file output',
+          source_node_id: 'webhook',
+          output_key: 'file',
+          value_type: 'unknown',
+          value_selector: ['webhook', 'file'],
+          json_path: '$.file',
+        },
+      ],
+    };
+
+    expect(
+      deriveParameterControlHydration(selectorTask, {
+        referenced_variables: [
+          { name: 'file', value_selector: ['webhook', 'file'] },
+        ],
+      }),
+    ).toEqual({ state: 'available', value: 'sel-file' });
+  });
+
+  it('hydrates model routing nested policy values into number controls', () => {
+    const routingTask: AgentBuilderParameterTask = {
+      ...branchTask,
+      task_id: 'task-routing-refresh',
+      node_id: 'llm',
+      node_type: 'llmNode',
+      parameter_key: 'model_routing_refresh_every_runs',
+      label: 'Routing 갱신 주기',
+      input_type: 'number',
+      validation: { min: 5, max: 100, integer: true },
+    };
+
+    expect(
+      deriveParameterControlHydration(routingTask, {
+        model_routing_policy: {
+          refresh: { refresh_every_runs: 25 },
+        },
+      }),
+    ).toEqual({ state: 'available', value: 25 });
+  });
+
+  it('hydrates the routing fallback model by its safe candidate reference', () => {
+    const fallbackTask: AgentBuilderParameterTask = {
+      ...branchTask,
+      task_id: 'task-routing-fallback',
+      node_id: 'llm',
+      node_type: 'llmNode',
+      parameter_key: 'fallback_model_id',
+      label: 'Fallback model',
+      input_type: 'resource_ref',
+      required: false,
+      candidates: [
+        {
+          candidate_id: 'candidate-fallback',
+          kind: 'resource_ref',
+          label: 'Fallback model',
+          description: 'openai',
+          reference_value: 'provider-fallback-model',
+        },
+      ],
+    };
+
+    expect(
+      deriveParameterControlHydration(fallbackTask, {
+        fallback_model_id: 'provider-fallback-model',
+      }),
+    ).toEqual({ state: 'available', value: 'candidate-fallback' });
   });
 });

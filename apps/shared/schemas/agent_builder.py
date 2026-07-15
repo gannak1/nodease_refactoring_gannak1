@@ -5,7 +5,7 @@ from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from apps.shared.schemas.workflow import EdgeSchema, NodeSchema, Position
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 AgentBuilderRequestStatus = Literal[
     "planning",
@@ -366,10 +366,23 @@ class ParameterSelectValue(BaseModel):
     value: str
 
 
+class ParameterSecretValue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["secret"]
+    value: str = Field(min_length=1, max_length=4096)
+
+
 class ParameterNumberValue(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["number"]
-    value: float
+    value: int | float
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def reject_boolean_value(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("number value must not be boolean")
+        return value
 
 
 class ParameterBooleanValue(BaseModel):
@@ -403,15 +416,46 @@ class ParameterVariableSelectorValue(BaseModel):
     value_selector: list[str] = Field(min_length=2, max_length=32)
 
 
+class ParameterVariableSelectorSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    suggestion_id: str = Field(min_length=1, max_length=255)
+    value_selector: list[str] = Field(min_length=2, max_length=32)
+
+
+class ParameterVariableSelectorListValue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["variable_selector_list"]
+    selections: list[ParameterVariableSelectorSelection] = Field(
+        min_length=1,
+        max_length=32,
+    )
+
+    @field_validator("selections")
+    @classmethod
+    def reject_duplicate_selections(
+        cls,
+        selections: list[ParameterVariableSelectorSelection],
+    ) -> list[ParameterVariableSelectorSelection]:
+        suggestion_ids = [selection.suggestion_id for selection in selections]
+        selectors = [tuple(selection.value_selector) for selection in selections]
+        if len(suggestion_ids) != len(set(suggestion_ids)) or len(selectors) != len(
+            set(selectors)
+        ):
+            raise ValueError("selector list selections must be unique")
+        return selections
+
+
 ParameterDecisionValue = Annotated[
     ParameterTextValue
     | ParameterSelectValue
+    | ParameterSecretValue
     | ParameterNumberValue
     | ParameterBooleanValue
     | ParameterJsonValue
     | ParameterResourceValue
     | ParameterCredentialValue
-    | ParameterVariableSelectorValue,
+    | ParameterVariableSelectorValue
+    | ParameterVariableSelectorListValue,
     Field(discriminator="kind"),
 ]
 

@@ -38,7 +38,6 @@ export const WorkflowResultGroup = ({
   tasks,
   nodes = [],
   routingNodeIds = [],
-  connectionNodeIds = [],
   knowledgeStep = null,
   setupStatus,
   presentationTaskId = null,
@@ -62,10 +61,9 @@ export const WorkflowResultGroup = ({
   focusHeadingTaskId?: string | null;
   onPresentationHeadingFocused?: (taskId: string) => void;
   onFocusNode: (nodeId: string) => void;
-  connectionNodeIds?: string[];
   onOpenNodeSettings?: (
     nodeId: string,
-    section?: 'routing' | 'connection',
+    section?: 'routing',
   ) => void;
   onKnowledgeSubmit?: (selectionIds: string[]) => void;
   onDecision: (decision: ParameterDecisionInput) => void;
@@ -123,10 +121,27 @@ export const WorkflowResultGroup = ({
       ),
     [nodes],
   );
+  const routingTaskNodeIds = useMemo(
+    () =>
+      new Set(
+        orderedTasks
+          .filter(
+            (task) =>
+              task.node_type === 'llmNode' &&
+              task.parameter_key === 'auto_model_routing',
+          )
+          .map((task) => task.node_id),
+      ),
+    [orderedTasks],
+  );
   const routingNodes = useMemo(() => {
     const resultNodeIds = new Set(routingNodeIds);
     return nodes.flatMap((node) => {
-      if (node.type !== 'llmNode' || !resultNodeIds.has(node.id)) {
+      if (
+        node.type !== 'llmNode' ||
+        !resultNodeIds.has(node.id) ||
+        routingTaskNodeIds.has(node.id)
+      ) {
         return [];
       }
       const data = node.data as unknown as Record<string, unknown>;
@@ -143,30 +158,7 @@ export const WorkflowResultGroup = ({
         },
       ];
     });
-  }, [nodes, routingNodeIds]);
-  const connectionNodes = useMemo(() => {
-    const resultNodeIds = new Set(connectionNodeIds);
-    return nodes.flatMap((node) => {
-      if (
-        !resultNodeIds.has(node.id) ||
-        !['slackPostNode', 'githubNode'].includes(node.type ?? '')
-      ) {
-        return [];
-      }
-      const data = node.data as unknown as Record<string, unknown>;
-      return [
-        {
-          id: node.id,
-          label:
-            typeof data.title === 'string' && data.title.trim().length > 0
-              ? data.title
-              : node.type === 'slackPostNode'
-                ? 'Slack'
-                : 'GitHub',
-        },
-      ];
-    });
-  }, [connectionNodeIds, nodes]);
+  }, [nodes, routingNodeIds, routingTaskNodeIds]);
 
   useEffect(() => {
     setExpandedSecondaryNodeId(null);
@@ -295,39 +287,6 @@ export const WorkflowResultGroup = ({
               >
                 <Settings2 className="h-3.5 w-3.5" aria-hidden="true" />
                 {node.label} Routing 설정으로 이동
-              </button>
-            ))}
-          </div>
-        </section>
-      ) : null}
-
-      {connectionNodes.length > 0 ? (
-        <section
-          data-testid="agent-builder-connection-guidance"
-          aria-labelledby="agent-builder-connection-guidance-heading"
-          className="border-t border-neutral-200 pt-3 dark:border-neutral-800"
-        >
-          <h3
-            id="agent-builder-connection-guidance-heading"
-            className="text-xs font-medium text-neutral-900 dark:text-neutral-100"
-          >
-            외부 연결 설정
-          </h3>
-          <p className="mt-1 text-xs text-neutral-600 dark:text-neutral-300">
-            Slack과 GitHub 연결은 이 Agent Builder에서 입력하지 않습니다. 각 노드의 기존 연결 설정에서 관리합니다.
-          </p>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {connectionNodes.map((node) => (
-              <button
-                key={node.id}
-                type="button"
-                onClick={() =>
-                  onOpenNodeSettings?.(node.id, 'connection') ?? onFocusNode(node.id)
-                }
-                className="inline-flex items-center gap-1.5 rounded border border-slate-200 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-900"
-              >
-                <Settings2 className="h-3.5 w-3.5" aria-hidden="true" />
-                {node.label} 연결 설정으로 이동
               </button>
             ))}
           </div>

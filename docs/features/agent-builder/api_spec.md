@@ -79,8 +79,8 @@ completed | configuration_required | stale | stale_protocol | validation_failed 
 ### 2.3 ParameterInputType
 
 ```text
-text | textarea | code | json | number | boolean | select |
-resource_ref | credential_ref | variable_selector
+text | textarea | code | json | number | boolean | select | secret |
+resource_ref | credential_ref | variable_selector | variable_selector_list
 ```
 
 ### 2.4 ParameterTaskStatus
@@ -175,7 +175,7 @@ Selector suggestion은 backend가 발급하고 client가 임의로 구성하지 
 - `value_selector`는 runtime 표준인 `[source_node_id, output_key, ...nested_path]`다.
 - `json_path`는 같은 nested path를 표시하기 위한 safe metadata이며 decision의 별도 권위값이 아니다.
 - `source_node_id`, `output_key`, nested path와 `value_type`은 current graph와 catalog output contract로 다시 검증한다.
-- Resource/credential 후보는 같은 envelope에서 각각 `kind=resource_ref`/`credential_ref`와 권한 검증된 opaque resource id만 제공한다. Credential 후보는 durable credential resource와 use 권한 resolver가 존재하는 provider에만 제공하고 node runtime의 provider/auth compatibility로 추가 필터한다. `gmailDraftNode.credential_id`는 `provider=gmail`, `auth_type=oauth2`인 use-permitted credential만 후보와 `set` 제출에 허용한다. Slack/GitHub credential은 `direct_edit_v1` ParameterTask response에 포함하지 않으며, 해당 node는 기존 Editor 연결 설정에서만 구성한다.
+- Resource/credential 후보는 같은 envelope에서 각각 `kind=resource_ref`/`credential_ref`와 권한 검증된 opaque resource id만 제공한다. Credential 후보는 durable credential resource와 use 권한 resolver가 존재하는 provider에만 제공하고 node runtime의 provider/auth compatibility로 추가 필터한다. `gmailDraftNode.credential_id`는 `provider=gmail`, `auth_type=oauth2`인 use-permitted credential만 후보와 `set` 제출에 허용한다. Slack/GitHub에는 `credential_ref` 후보나 task를 만들지 않고 Catalog가 선언한 일반 파라미터와 기존 node graph용 `secret` task만 제공한다.
 
 ### 2.12 ParameterDecisionValue
 
@@ -184,12 +184,14 @@ Selector suggestion은 backend가 발급하고 client가 임의로 구성하지 
 | kind | Required fields | Rule |
 |---|---|---|
 | `text` / `textarea` / `code` / `select` | `value: string` | catalog length/pattern/options 검증 |
+| `secret` | `value: string` | 기존 node graph의 secret field에만 적용; planner/chat/task/session/audit 복제와 response hydration 금지 |
 | `json` | `value: any` | catalog type/schema 검증 |
 | `number` | `value: number` | catalog min/max 검증 |
 | `boolean` | `value: boolean` | boolean만 허용 |
 | `resource_ref` | `resource_id` | active organization과 resource use 권한 검증 |
 | `credential_ref` | `credential_id` | safe reference와 credential use 권한만 검증; config/secret 금지 |
 | `variable_selector` | `suggestion_id`, `value_selector` | server-issued suggestion과 runtime selector contract 재검증 |
+| `variable_selector_list` | `selections[]` | 하나 이상의 중복 없는 server-issued suggestion과 각 runtime selector contract 재검증 |
 
 ### 2.13 ParameterGuidanceHint
 
@@ -1184,8 +1186,11 @@ Request는 client-generated `operation_id`, 현재 `expected_task_id`와 `expect
 12. Quick mode는 Legacy Preview endpoint, payload 또는 저장소에 의존하지 않는다. Rollback 시 quick UI/endpoint creation gate를 먼저 닫고 canonical nonterminal request drain 뒤 기존 guided direct-edit와 `structure_only` 신규 write를 legacy 표현으로 유지한다. 보존 중 canonical terminal history가 있으면 session timeline은 각 request의 stored contract를 유지하고 dual-read Client만 이를 표시하며, legacy-only cutback은 retained-history aggregate가 0건이 된 뒤에만 허용한다.
 ## 2026-07-15 Direct-Edit Connection And Recovery Correction
 
-- `direct_edit_v1` response does not include a Slack or GitHub `credential_ref` ParameterTask. Those nodes may remain unresolved and must be configured only through the existing Editor connection controls. Mail/Gmail managed credential tasks remain permission-filtered.
-- Agent Builder never includes Slack/GitHub credential candidates, tokens, or raw credential values in its request or response. The external connection action is client-only navigation: no credential API, GraphMutation, workflow save, planner call, or external action is allowed.
+- `direct_edit_v1` response does not include a Slack or GitHub `credential_ref` ParameterTask, credential candidate, defer control, or connection-navigation guidance. It may include Catalog-declared `secret` tasks for the existing Slack `authConfig.token`/webhook URL and GitHub `api_token` graph fields. Mail/Gmail managed credential tasks remain permission-filtered.
+- A `secret` set request carries the raw value only for the current parameter decision and canonical workflow graph save. The response returns task state and mutation metadata but does not echo the raw value as task/session/audit data; client hydration never restores it. This does not add or change Slack/GitHub runtime authentication infrastructure.
+- Optional JSON parameter with an empty client control is submitted as `skip`, not as `set` with invalid JSON. GitHub integer parameters retain their integer representation through typed request, GraphMutation and canonical graph hashing.
+- Planner structured output includes `requested_capabilities`. Each item is a canonical capability ID selected from Catalog-provided multilingual aliases. When the planner returns `unsupported`, the backend may request one semantic repair only if exactly one requested capability is supported and its Catalog `standalone_creation` policy is `allowed`. `requires_context`, `forbidden`, unknown, or multiple capabilities are not promoted by backend heuristics.
+- The backend does not select capabilities with a regular expression and does not overwrite planner output with a hard-coded node type. Catalog validation remains the authority after LLM structuring.
 - Canonical draft GET/POST and acknowledgement recovery use the same `graph_hash` and `updated_at`. Editor-only edge handle `displayNumber` is excluded from all graph payloads, hashes, CAS checks, and server persistence.
 - A `resource_ref` or managed `credential_ref` candidate may provide both opaque `candidate_id` and graph `reference_value`. The client hydrates either representation; an unmatched value remains unavailable rather than being inferred as complete.
 - Knowledge selection failure handling distinguishes permission, stale graph, task conflict, validation, pending acknowledgement, and unapplied retry states while preserving the same selection card and selected values.
@@ -1203,6 +1208,16 @@ Request는 client-generated `operation_id`, 현재 `expected_task_id`와 `expect
 ```
 
 이 operation은 `initial_graph`, `replace_workflow`, `graph_edit`의 canonical layout 결과에만 server가 발급한다. client가 임의 위치를 보내는 API가 아니다.
+
+### Parameter value runtime canonicalization
+
+- `number` decision은 JSON number로 제출한다. GitHub `pr_number`는 1 이상의 integer인지 검증한 뒤 `GithubNodeData`가 요구하는 10진 문자열로 graph에 저장한다.
+- File Extraction의 `referenced_variables` decision은 canonical selector 배열을 제출하며 graph에는 `[{"name": "<output-key>", "value_selector": [...]}]`로 저장한다.
+- Slack `blocks`와 `attachments` decision은 JSON array/object로 제출하며 graph에는 Slack node runtime이 사용하는 JSON 문자열로 저장한다.
+- `secret` decision은 새 값을 password control에서 제출한다. 기존 graph secret은 response, task, session 또는 hydration payload에 반환하지 않는다.
+- LLM Routing task는 `auto_model_routing`과 `fallback_model_id`를 node data에 직접 저장한다. `model_routing_refresh_every_runs`는 `model_routing_policy.refresh.refresh_every_runs`, `model_routing_validation_budget_usd`는 `model_routing_policy.validation_budget_usd`, `model_routing_max_cohorts`는 `model_routing_policy.max_cohorts`로 materialize한다.
+- `fallback_model_id`는 `model_id`와 같은 permission-filtered `resource_ref` candidate를 사용한다. 같은 default/fallback 조합은 `fallback_must_differ` validation issue로 거부하며 graph mutation을 발급하지 않는다.
+- Agent Builder는 Routing task decision에서 model-routing policy/refresh/cohort endpoint를 호출하지 않는다. Canonical graph 저장과 acknowledgement만 수행한다.
 
 Knowledge 후보 응답은 use 권한을 통과한 active KB를 포함한다. 인덱싱 준비 상태는 candidate response 또는 knowledge-selection request의 유효성 조건이 아니며 run/deployment preflight의 조건이다. server-issued Agent Builder `mutation_context`가 있는 CAS 저장은 같은 권한/lifecycle 검사를 유지하되 retrieval readiness만 실행·배포 preflight로 미루며, 일반 Editor 저장은 retrieval-visible readiness를 계속 요구한다.
 

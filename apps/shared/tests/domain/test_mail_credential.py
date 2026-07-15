@@ -57,6 +57,31 @@ def test_mail_acknowledge_boundary_requires_effect_selectors():
         )
 
 
+def test_mail_acknowledge_boundary_accepts_server_configuration_state():
+    validate_mail_processing_node_boundary(
+        "mailAcknowledgeNode",
+        {
+            "title": "Acknowledge",
+            "configuration_state": "unresolved",
+            "processing_ref_selector": [],
+            "required_effect_ref_selectors": [],
+            "_deferred_parameters": [],
+        },
+        allow_unresolved=True,
+    )
+    with pytest.raises(MailNodeCredentialBoundaryError):
+        validate_mail_processing_node_boundary(
+            "mailAcknowledgeNode",
+            {
+                "title": "Acknowledge",
+                "configuration_state": "unknown",
+                "processing_ref_selector": [],
+                "required_effect_ref_selectors": [],
+            },
+            allow_unresolved=True,
+        )
+
+
 def test_processing_node_allows_empty_selectors_only_for_unresolved_draft():
     data = {
         "title": "Draft",
@@ -84,6 +109,48 @@ def test_mail_node_credential_boundary_accepts_only_reference_configuration():
             "parameters": {},
         }
     )
+
+
+def test_mail_boundaries_allow_only_catalog_deferred_parameter_metadata():
+    validate_mail_node_credential_boundary(
+        {
+            "title": "Mail",
+            "credential_id": None,
+            "configuration_state": "unresolved",
+            "_deferred_parameters": ["credential_id"],
+        }
+    )
+    validate_mail_processing_node_boundary(
+        "gmailDraftNode",
+        {
+            "title": "Draft",
+            "credential_id": None,
+            "configuration_state": "unresolved",
+            "processing_ref_selector": [],
+            "reply_body_selector": [],
+            "_deferred_parameters": ["credential_id"],
+        },
+        allow_unresolved=True,
+    )
+
+    with pytest.raises(MailNodeCredentialBoundaryError):
+        validate_mail_node_credential_boundary(
+            {
+                "title": "Mail",
+                "credential_id": None,
+                "configuration_state": "unresolved",
+                "_deferred_parameters": ["api_token"],
+            }
+        )
+    with pytest.raises(MailNodeCredentialBoundaryError):
+        validate_mail_node_credential_boundary(
+            {
+                "title": "Mail",
+                "credential_id": None,
+                "configuration_state": "unresolved",
+                "_deferred_parameters": [{"unexpected": True}],
+            }
+        )
 
 
 def test_mail_node_boundary_accepts_legacy_null_reference_without_state():

@@ -364,9 +364,10 @@ def test_llm_intent_extractor_uses_provider_schema_constraint_when_supported():
     assert set(response_format["schema"]["properties"]) == {
         "request_type",
         "draft_mode",
-        "intent_summary",
-        "ordered_capabilities",
-        "parameter_guidance_hints",
+            "intent_summary",
+            "ordered_capabilities",
+            "requested_capabilities",
+            "parameter_guidance_hints",
         "explicit_parameter_values",
         "knowledge_required",
         "knowledge_topics",
@@ -870,6 +871,8 @@ def test_intent_capability_guide_is_catalog_derived_and_excludes_loop():
     assert "loop" not in guide
     assert "webhook_trigger" in guide
     assert "knowledge_backed_llm" in guide
+    assert guide["slack_send"]["standalone_creation"] == "allowed"
+    assert "슬랙" in guide["slack_send"]["planner_aliases"]
 
 
 def test_llm_intent_extractor_passes_only_bounded_safe_kb_context():
@@ -1101,6 +1104,59 @@ def test_llm_intent_extractor_repairs_reasoned_unsupported_start_answer_flow_onc
     assert "UNSUPPORTED_SUPPORTED_FLOW_CONTRADICTION" in str(client.calls[1][0])
 
 
+def test_llm_intent_extractor_repairs_unplaced_start_answer_flow_misclassified_as_modify():
+    client = SequenceFakeLLMClient(
+        [
+            {
+                "request_type": "modify_workflow",
+                "draft_mode": "modify_workflow",
+                "intent_summary": "기존 입력 노드 뒤에 응답을 연결합니다.",
+                "ordered_capabilities": ["start_input", "answer"],
+                "edit": {
+                    "placement": "after",
+                    "target_reference_type": "natural_language_node",
+                    "target_query": "입력",
+                },
+            },
+            {
+                "request_type": "new_workflow",
+                "draft_mode": "new_workflow",
+                "intent_summary": "입력과 응답 노드를 생성합니다.",
+                "ordered_capabilities": ["start_input", "answer"],
+                "edit": None,
+            },
+        ]
+    )
+    extractor = LLMAgentBuilderIntentExtractor(
+        db=FakeDb(),
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        runtime_loader=lambda **_kwargs: SimpleNamespace(client=client),
+    )
+
+    result = extractor.extract(
+        safe_message="입력 출력 노드를 만들어줘",
+        workflow_context={
+            "workflow_present": True,
+            "nodes": [
+                {
+                    "id": "existing-input",
+                    "type": "startNode",
+                    "capabilities": ["start_input"],
+                }
+            ],
+        },
+    )
+
+    assert result.request_type == "new_workflow"
+    assert result.draft_mode == "new_workflow"
+    assert result.ordered_capabilities == ["start_input", "answer"]
+    assert len(client.calls) == 2
+    assert "UNPLACED_NODE_CREATION_NEW_WORKFLOW_REQUIRED" in str(
+        client.calls[1][0]
+    )
+
+
 def test_llm_intent_extractor_repairs_reasoned_unsupported_single_node_creation_once():
     client = SequenceFakeLLMClient(
         [
@@ -1109,6 +1165,7 @@ def test_llm_intent_extractor_repairs_reasoned_unsupported_single_node_creation_
                 "draft_mode": "new_workflow",
                 "intent_summary": "GitHub node request cannot be classified.",
                 "ordered_capabilities": [],
+                "requested_capabilities": ["github_pr_read"],
                 "unsupported_requests": ["Workflow request is required."],
                 "edit": None,
             },
@@ -1117,6 +1174,7 @@ def test_llm_intent_extractor_repairs_reasoned_unsupported_single_node_creation_
                 "draft_mode": "new_workflow",
                 "intent_summary": "GitHub PR 조회 node workflow를 생성합니다.",
                 "ordered_capabilities": ["github_pr_read", "answer"],
+                "requested_capabilities": ["github_pr_read"],
                 "integration_actions": [
                     {
                         "provider": "github",
@@ -1148,6 +1206,45 @@ def test_llm_intent_extractor_repairs_reasoned_unsupported_single_node_creation_
     repair_request = str(client.calls[1][0])
     assert "UNSUPPORTED_SUPPORTED_NODE_CREATION_CONTRADICTION" in repair_request
     assert "named supported node" in repair_request
+
+
+@pytest.mark.parametrize(
+    ("message", "requested_capability"),
+    [
+        ("메일 처리 완료 노드를 만들어줘", "mail_terminal_acknowledgement"),
+        ("반복 노드를 만들어줘", "loop"),
+        ("알 수 없는 노드를 만들어줘", "unknown_node"),
+    ],
+)
+def test_llm_intent_extractor_does_not_repair_non_standalone_node_creation(
+    message,
+    requested_capability,
+):
+    client = FakeLLMClient(
+        {
+            "request_type": "unsupported",
+            "draft_mode": "new_workflow",
+            "intent_summary": "단독 생성할 수 없는 node 요청입니다.",
+            "ordered_capabilities": [],
+            "requested_capabilities": [requested_capability],
+            "unsupported_requests": ["기존 workflow 문맥이 필요합니다."],
+            "edit": None,
+        }
+    )
+    extractor = LLMAgentBuilderIntentExtractor(
+        db=FakeDb(),
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        runtime_loader=lambda **_kwargs: SimpleNamespace(client=client),
+    )
+
+    result = extractor.extract(
+        safe_message=message,
+        workflow_context={"workflow_present": True, "nodes": []},
+    )
+
+    assert result.request_type == "unsupported"
+    assert len(client.calls) == 1
 
 
 def test_llm_intent_extractor_accepts_recognized_unsupported_action_without_repair():
