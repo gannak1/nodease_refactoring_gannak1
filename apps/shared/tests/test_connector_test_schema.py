@@ -1,5 +1,5 @@
 import pytest
-from apps.shared.schemas.connector import ConnectorTestRequest
+from apps.shared.schemas.connector import ConnectorTestRequest, DBConnectionTestRequest
 from pydantic import ValidationError
 
 
@@ -17,10 +17,14 @@ def payload() -> dict:
 
 
 def test_connector_test_schema_accepts_strict_postgres_shape() -> None:
-    model = ConnectorTestRequest.model_validate(payload())
+    request_payload = payload()
+    request_payload["connection_name"] = "  public-db  "
+
+    model = ConnectorTestRequest.model_validate(request_payload)
 
     assert model.type == "postgres"
     assert model.port == 5432
+    assert model.connection_name == "public-db"
     assert model.password.get_secret_value() == "placeholder-secret"
     assert "placeholder-secret" not in repr(model)
 
@@ -40,6 +44,7 @@ def test_connector_test_schema_accepts_bounded_custom_port() -> None:
         ("port", 65536),
         ("port", "55432"),
         ("connection_name", ""),
+        ("connection_name", " \t\n "),
         ("host", "h" * 254),
         ("database", "d" * 129),
         ("username", "u" * 129),
@@ -55,6 +60,24 @@ def test_connector_test_schema_rejects_unsupported_or_oversized_fields(
 
     with pytest.raises(ValidationError):
         ConnectorTestRequest.model_validate(request_payload)
+
+
+def test_persisted_connector_schema_normalizes_connection_name() -> None:
+    model = DBConnectionTestRequest.model_validate(
+        {**payload(), "connection_name": "  team database  "}
+    )
+
+    assert model.connection_name == "team database"
+
+
+@pytest.mark.parametrize("connection_name", ["", "   ", "x" * 101])
+def test_persisted_connector_schema_rejects_invalid_connection_name(
+    connection_name: str,
+) -> None:
+    with pytest.raises(ValidationError):
+        DBConnectionTestRequest.model_validate(
+            {**payload(), "connection_name": connection_name}
+        )
 
 
 def test_connector_test_schema_rejects_unknown_fields() -> None:

@@ -496,6 +496,11 @@ export default function CreateKnowledgeModal({
         setIsLoading(false);
         return;
       }
+      if (sourceType === 'DB' && !dbConfig.connectionName.trim()) {
+        alert('DB 연결 이름을 입력해주세요.');
+        setIsLoading(false);
+        return;
+      }
       if (
         sourceType === 'DB' &&
         (!dbConfig.host ||

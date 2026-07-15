@@ -1,6 +1,12 @@
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+
+
+def _strip_connection_name(value: object) -> object:
+    if isinstance(value, str):
+        return value.strip()
+    return value
 
 
 # SSH 설정 스키마
@@ -16,7 +22,12 @@ class SSHConfig(BaseModel):
 
 # DB연결 테스트 요청 본문 스키마
 class DBConnectionTestRequest(BaseModel):
-    connection_name: str = Field(..., description="연결 식별을 위한 별칭")
+    connection_name: str = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        description="연결 식별을 위한 별칭",
+    )
     type: str = Field(..., description="데이터베이스 타입 (예: postgres)")
 
     host: str
@@ -25,6 +36,11 @@ class DBConnectionTestRequest(BaseModel):
     username: str
     password: str
     ssh: Optional[SSHConfig] = None
+
+    @field_validator("connection_name", mode="before")
+    @classmethod
+    def normalize_connection_name(cls, value: object) -> object:
+        return _strip_connection_name(value)
 
 
 class ConnectorTestSSHConfig(BaseModel):
@@ -58,6 +74,11 @@ class ConnectorTestRequest(BaseModel):
     username: str = Field(min_length=1, max_length=128)
     password: SecretStr = Field(min_length=1, max_length=1024)
     ssh: Optional[ConnectorTestSSHConfig] = None
+
+    @field_validator("connection_name", mode="before")
+    @classmethod
+    def normalize_connection_name(cls, value: object) -> object:
+        return _strip_connection_name(value)
 
 
 # 테스트 결과 응답 스키마

@@ -35,6 +35,31 @@ afterEach(() => {
 });
 
 describe('connectorApi safe failure handling', () => {
+  it('trims the connection name before create and test requests', async () => {
+    vi.mocked(apiClient.post)
+      .mockResolvedValueOnce({
+        data: { id: 'connection-1', success: true },
+      })
+      .mockResolvedValueOnce({
+        data: { success: true },
+      });
+    const config = { ...dbConfig, connectionName: '  demo-db  ' };
+
+    await connectorApi.createConnector(config);
+    await connectorApi.testConnection(config);
+
+    expect(apiClient.post).toHaveBeenNthCalledWith(
+      1,
+      '/connectors',
+      expect.objectContaining({ connection_name: 'demo-db' }),
+    );
+    expect(apiClient.post).toHaveBeenNthCalledWith(
+      2,
+      '/connectors/test',
+      expect.objectContaining({ connection_name: 'demo-db' }),
+    );
+  });
+
   it('normalizes successful connector creation responses to safe fields', async () => {
     vi.mocked(apiClient.post).mockResolvedValueOnce({
       data: {

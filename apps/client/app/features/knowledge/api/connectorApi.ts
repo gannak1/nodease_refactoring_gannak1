@@ -161,7 +161,7 @@ export const connectorApi = {
   ): Promise<ConnectorCreationResult> => {
     try {
       const payload = {
-        connection_name: config.connectionName,
+        connection_name: config.connectionName.trim(),
         type: config.type,
         host: config.host,
         port: config.port,
@@ -228,7 +228,7 @@ export const connectorApi = {
   testConnection: async (config: DBConfig): Promise<ConnectionTestResult> => {
     try {
       const payload = {
-        connection_name: config.connectionName,
+        connection_name: config.connectionName.trim(),
         type: config.type,
         host: config.host,
         port: config.port,

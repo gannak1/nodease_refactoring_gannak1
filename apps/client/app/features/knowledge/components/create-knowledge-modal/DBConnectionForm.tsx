@@ -113,7 +113,7 @@ export default function DBConnectionForm({
         <div className="space-y-3">
           <div>
             <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">
-              연결 이름 (식별용)
+              연결 이름 (식별용) <span className="text-red-500">*</span>
             </label>
             <input
               type="text"
@@ -121,6 +121,8 @@ export default function DBConnectionForm({
               placeholder="예: 운영 DB"
               value={config.connectionName}
               onChange={(e) => handleChange('connectionName', e.target.value)}
+              maxLength={100}
+              required
             />
           </div>
 

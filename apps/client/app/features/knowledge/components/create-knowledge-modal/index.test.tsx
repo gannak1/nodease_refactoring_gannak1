@@ -15,6 +15,10 @@ const knowledgeApiMock = vi.hoisted(() => ({
   uploadKnowledgeBase: vi.fn(),
   uploadToS3: vi.fn(),
 }));
+const connectorApiMock = vi.hoisted(() => ({
+  createConnector: vi.fn(),
+  testConnection: vi.fn(),
+}));
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: routerPushMock, refresh: vi.fn() }),
@@ -32,9 +36,7 @@ vi.mock('@/app/features/knowledge/api/knowledgeApi', () => ({
 }));
 
 vi.mock('@/app/features/knowledge/api/connectorApi', () => ({
-  connectorApi: {
-    testConnection: vi.fn(),
-  },
+  connectorApi: connectorApiMock,
 }));
 
 const fetchMock = vi.fn();
@@ -77,6 +79,29 @@ afterEach(() => {
 });
 
 describe('CreateKnowledgeModal file drag and drop', () => {
+  it('blocks a DB source save when the connection name is blank', async () => {
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
+    render(
+      <CreateKnowledgeModal
+        isOpen
+        onClose={vi.fn()}
+        knowledgeBaseId="kb-1"
+        initialTab="DB"
+      />,
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+    fireEvent.change(screen.getByPlaceholderText('예: 운영 DB'), {
+      target: { value: '   ' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '소스 추가' }));
+
+    expect(alertSpy).toHaveBeenCalledWith('DB 연결 이름을 입력해주세요.');
+    expect(connectorApiMock.createConnector).not.toHaveBeenCalled();
+    expect(knowledgeApiMock.uploadKnowledgeBase).not.toHaveBeenCalled();
+    alertSpy.mockRestore();
+  });
+
   it('prevents browser file drop defaults inside the modal', async () => {
     const { container } = renderOpenFileSourceModal();
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
