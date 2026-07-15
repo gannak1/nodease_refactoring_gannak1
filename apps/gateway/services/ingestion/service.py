@@ -33,6 +33,9 @@ from apps.shared.services.knowledge_ingestion_finalizer import (
     KnowledgeIngestionFinalizationError,
     KnowledgeIngestionFinalizer,
 )
+from apps.shared.services.ingestion.chunk_selection import (
+    filter_chunks_by_selection,
+)
 from apps.shared.services.ingestion.hierarchical_chunker import (
     HierarchicalChunker,
     HierarchicalChunkerConfig,
@@ -321,37 +324,12 @@ class IngestionOrchestrator:
         """
         주어진 조건에 따라 청크 리스트를 필터링합니다.
         """
-        if not chunks:
-            return []
-
-        # 1. 'all' 모드면 필터링 없음
-        if selection_mode == "all" or not selection_mode:
-            return chunks
-
-        # 2. 'range' 모드
-        if selection_mode == "range" and chunk_range:
-            indices = set()
-            try:
-                parts = [p.strip() for p in chunk_range.split(",")]
-                for part in parts:
-                    if "-" in part:
-                        start, end = map(int, part.split("-"))
-                        indices.update(range(start, end + 1))
-                    else:
-                        indices.add(int(part))
-            except Exception as e:
-                logger.error(f"Invalid chunk range format: {chunk_range} ({e})")
-                raise ValueError(f"잘못된 청크 범위 형식입니다: {chunk_range}") from e
-
-            # 인덱스는 1부터 시작한다고 가정 (UI와 통일)
-            return [c for i, c in enumerate(chunks) if (i + 1) in indices]
-
-        # 3. 'keyword' 모드
-        if selection_mode == "keyword" and keyword_filter:
-            keyword = keyword_filter.lower()
-            return [c for c in chunks if keyword in c["content"].lower()]
-
-        return chunks
+        return filter_chunks_by_selection(
+            chunks,
+            selection_mode=selection_mode,
+            chunk_range=chunk_range,
+            keyword_filter=keyword_filter,
+        )
 
     def process_document(self, document_id: UUID):
         # 락 획득 시도 (2분 TTL)

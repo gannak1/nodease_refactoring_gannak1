@@ -44,12 +44,12 @@ class SqlAlchemyCollectionSyncAuthorization:
         organization_id: uuid.UUID,
         collection_id: uuid.UUID,
     ) -> bool:
+        if has_organization_manager_permission(self.db, actor_id, organization_id):
+            return True
         if not has_active_organization_membership(
             self.db, actor_id, organization_id
         ):
             return False
-        if has_organization_manager_permission(self.db, actor_id, organization_id):
-            return True
         if "sync_manage" in get_effective_knowledge_domain_actions(
             self.db, actor_id, organization_id
         ):

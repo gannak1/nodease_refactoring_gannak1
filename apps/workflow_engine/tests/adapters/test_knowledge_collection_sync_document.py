@@ -174,6 +174,116 @@ def test_document_adapter_finalizes_new_version_without_legacy_replace(
     finalizer.finalize_active_version.assert_called_once_with(version)
 
 
+@pytest.mark.parametrize(
+    ("selection_mode", "selection_value", "expected_contents"),
+    [
+        ("range", "2-3", ["second row", "matching row"]),
+        ("keyword", "matching", ["matching row"]),
+    ],
+)
+def test_document_adapter_applies_persisted_chunk_selection(
+    monkeypatch,
+    selection_mode: str,
+    selection_value: str,
+    expected_contents: list[str],
+) -> None:
+    item = _item()
+    rows = _rows(item)
+    rows[Document].meta_info.update(
+        {
+            "selection_mode": selection_mode,
+            "chunk_range": selection_value if selection_mode == "range" else None,
+            "keyword_filter": (
+                selection_value if selection_mode == "keyword" else None
+            ),
+        }
+    )
+    processor = Mock()
+    processor.process.return_value = SimpleNamespace(
+        chunks=[
+            {"content": "first row", "metadata": {}},
+            {"content": "second row", "metadata": {}},
+            {"content": "matching row", "metadata": {}},
+        ],
+        metadata={},
+    )
+    vector = Mock()
+    version = SimpleNamespace(id=uuid.uuid4())
+    finalizer = Mock()
+    finalizer.create_indexing_version.return_value = version
+    monkeypatch.setattr(adapter_module, "DbProcessor", Mock(return_value=processor))
+    monkeypatch.setattr(adapter_module, "VectorStoreService", Mock(return_value=vector))
+    monkeypatch.setattr(
+        adapter_module,
+        "KnowledgeIngestionFinalizer",
+        Mock(return_value=finalizer),
+    )
+    monkeypatch.setattr(adapter_module, "acquire_document_write_lock", Mock())
+    monkeypatch.setattr(
+        adapter_module, "has_active_organization_membership", lambda *args: True
+    )
+
+    SqlAlchemyKnowledgeCollectionSyncDocument(Db(rows)).sync(
+        item,
+        actor_id=uuid.uuid4(),
+    )
+
+    saved_chunks = vector.save_chunks.call_args.kwargs["chunks"]
+    assert [chunk["content"] for chunk in saved_chunks] == expected_contents
+    finalizer.finalize_active_version.assert_called_once_with(version)
+
+
+@pytest.mark.parametrize(
+    ("selection_mode", "chunk_range", "keyword_filter"),
+    [
+        ("keyword", None, "not-present"),
+        ("range", "invalid", None),
+    ],
+)
+def test_document_adapter_preserves_active_version_when_selection_is_invalid(
+    monkeypatch,
+    selection_mode: str,
+    chunk_range: str | None,
+    keyword_filter: str | None,
+) -> None:
+    item = _item()
+    rows = _rows(item)
+    rows[Document].meta_info.update(
+        {
+            "selection_mode": selection_mode,
+            "chunk_range": chunk_range,
+            "keyword_filter": keyword_filter,
+        }
+    )
+    processor = Mock()
+    processor.process.return_value = SimpleNamespace(
+        chunks=[{"content": "row content", "metadata": {}}],
+        metadata={},
+    )
+    vector_class = Mock()
+    finalizer_class = Mock()
+    monkeypatch.setattr(adapter_module, "DbProcessor", Mock(return_value=processor))
+    monkeypatch.setattr(adapter_module, "VectorStoreService", vector_class)
+    monkeypatch.setattr(
+        adapter_module,
+        "KnowledgeIngestionFinalizer",
+        finalizer_class,
+    )
+    monkeypatch.setattr(adapter_module, "acquire_document_write_lock", Mock())
+    monkeypatch.setattr(
+        adapter_module, "has_active_organization_membership", lambda *args: True
+    )
+
+    with pytest.raises(SyncTargetConfigurationInvalid):
+        SqlAlchemyKnowledgeCollectionSyncDocument(Db(rows)).sync(
+            item,
+            actor_id=uuid.uuid4(),
+        )
+
+    vector_class.assert_not_called()
+    finalizer_class.assert_not_called()
+
+
 def test_changed_target_revision_is_skipped_before_connection_lookup(
     monkeypatch,
 ) -> None:

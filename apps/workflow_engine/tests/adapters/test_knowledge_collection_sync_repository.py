@@ -6,7 +6,9 @@ from uuid import uuid4
 from sqlalchemy import and_
 from sqlalchemy.dialects import postgresql
 
+from apps.workflow_engine.adapters import knowledge_collection_sync_repository as repository_module
 from apps.workflow_engine.adapters.knowledge_collection_sync_repository import (
+    SqlAlchemyWorkerSyncAuthorization,
     SqlAlchemyWorkerSyncRepository,
 )
 from apps.workflow_engine.application.knowledge_collection_sync import WorkerSyncJob
@@ -46,6 +48,31 @@ def test_supported_collection_query_excludes_source_deleted_state() -> None:
     assert "sync_state" in str(compiled)
     assert "source_deleted" in compiled.params.values()
     query.with_for_update.assert_called_once_with()
+
+
+def test_legacy_organization_manager_without_membership_can_claim(
+    monkeypatch,
+) -> None:
+    manager_check = Mock(return_value=True)
+    membership_check = Mock(return_value=False)
+    monkeypatch.setattr(
+        repository_module,
+        "has_organization_manager_permission",
+        manager_check,
+    )
+    monkeypatch.setattr(
+        repository_module,
+        "has_active_organization_membership",
+        membership_check,
+    )
+    job = SimpleNamespace(
+        requested_by=uuid4(),
+        organization_id=uuid4(),
+    )
+
+    assert SqlAlchemyWorkerSyncAuthorization(Mock()).is_allowed(job) is True
+    manager_check.assert_called_once()
+    membership_check.assert_not_called()
 
 
 def test_collection_state_projection_does_not_overwrite_source_deleted() -> None:
@@ -212,3 +239,26 @@ def test_successful_item_attempt_is_incremented_at_outcome_commit() -> None:
 
     assert item_row.attempt_count == 1
     assert job_row.completed_count == 1
+
+
+def test_item_counts_limits_failure_reason_to_one_row() -> None:
+    status_query = Mock()
+    status_query.filter.return_value = status_query
+    status_query.group_by.return_value = status_query
+    status_query.all.return_value = [("failed", 2)]
+    reason_query = Mock()
+    reason_query.filter.return_value = reason_query
+    reason_query.order_by.return_value = reason_query
+    reason_query.limit.return_value = reason_query
+    reason_query.scalar.return_value = "sync.temporarily_unavailable"
+    db = Mock()
+    db.query.side_effect = [status_query, reason_query]
+
+    counts = SqlAlchemyWorkerSyncRepository(db).item_counts(
+        uuid4(),
+        expected_total=2,
+    )
+
+    assert counts.failed == 2
+    assert counts.reason_code == "sync.temporarily_unavailable"
+    reason_query.limit.assert_called_once_with(1)

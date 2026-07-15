@@ -53,14 +53,14 @@ class SqlAlchemyWorkerSyncAuthorization:
         self.db = db
 
     def is_allowed(self, job: WorkerSyncJob) -> bool:
-        if not has_active_organization_membership(
-            self.db, job.requested_by, job.organization_id
-        ):
-            return False
         if has_organization_manager_permission(
             self.db, job.requested_by, job.organization_id
         ):
             return True
+        if not has_active_organization_membership(
+            self.db, job.requested_by, job.organization_id
+        ):
+            return False
         if "sync_manage" in get_effective_knowledge_domain_actions(
             self.db, job.requested_by, job.organization_id
         ):
@@ -345,6 +345,7 @@ class SqlAlchemyWorkerSyncRepository:
                 KnowledgeCollectionSyncJobItem.safe_reason_code.is_not(None),
             )
             .order_by(KnowledgeCollectionSyncJobItem.position.asc())
+            .limit(1)
             .scalar()
         )
         row_total = sum(counts.values())

@@ -17,6 +17,9 @@ from apps.shared.db.models.knowledge import (
     SourceType,
 )
 from apps.shared.domain.knowledge_collection_sync import sync_target_revision
+from apps.shared.services.ingestion.chunk_selection import (
+    filter_chunks_by_selection,
+)
 from apps.shared.services.ingestion.processors.db_processor import DbProcessor
 from apps.shared.services.ingestion.vector_store_service import (
     VectorStoreService,
@@ -104,7 +107,10 @@ class SqlAlchemyKnowledgeCollectionSyncDocument:
         if not hmac.compare_digest(current_revision, item.target_revision):
             raise SyncTargetChanged()
 
-        source_config = self._source_config(document.meta_info)
+        stored_meta = document.meta_info
+        if not isinstance(stored_meta, dict):
+            raise SyncTargetConfigurationInvalid()
+        source_config = self._source_config(stored_meta)
         connection_id = self._connection_id(source_config.get("connection_id"))
         connection = (
             self.db.query(Connection)
@@ -131,7 +137,16 @@ class SqlAlchemyKnowledgeCollectionSyncDocument:
                 raise SyncTargetConfigurationInvalid()
             if result.metadata.get("error") is not None:
                 raise SyncTargetTemporarilyUnavailable()
-            if not result.chunks:
+            try:
+                selected_chunks = filter_chunks_by_selection(
+                    result.chunks,
+                    selection_mode=stored_meta.get("selection_mode", "all"),
+                    chunk_range=stored_meta.get("chunk_range"),
+                    keyword_filter=stored_meta.get("keyword_filter"),
+                )
+            except (AttributeError, TypeError, ValueError):
+                raise SyncTargetConfigurationInvalid() from None
+            if not selected_chunks:
                 raise SyncTargetConfigurationInvalid()
             finalizer = KnowledgeIngestionFinalizer(self.db)
             model_name = knowledge_base.embedding_model or "text-embedding-3-small"
@@ -155,7 +170,7 @@ class SqlAlchemyKnowledgeCollectionSyncDocument:
                 raise SyncTargetConfigurationInvalid()
             VectorStoreService(db=self.db, user_id=actor_id).save_chunks(
                 document_id=document.id,
-                chunks=result.chunks,
+                chunks=selected_chunks,
                 model_name=model_name,
                 commit=False,
                 allow_empty_replace=False,

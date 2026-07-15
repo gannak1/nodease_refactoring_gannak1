@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone
+from unittest.mock import Mock
 
+from apps.gateway.adapters.db import knowledge_collection_sync_repository as repository_module
 from apps.gateway.adapters.db.knowledge_collection_sync_repository import (
+    SqlAlchemyCollectionSyncAuthorization,
     SqlAlchemyCollectionSyncRepository,
 )
 from apps.gateway.application.knowledge_collection_sync.use_cases import (
@@ -29,6 +32,33 @@ class CapturingRepository(SqlAlchemyCollectionSyncRepository):
     @staticmethod
     def _job_snapshot(row):
         return row
+
+
+def test_legacy_organization_manager_without_membership_can_request_sync(
+    monkeypatch,
+) -> None:
+    manager_check = Mock(return_value=True)
+    membership_check = Mock(return_value=False)
+    monkeypatch.setattr(
+        repository_module,
+        "has_organization_manager_permission",
+        manager_check,
+    )
+    monkeypatch.setattr(
+        repository_module,
+        "has_active_organization_membership",
+        membership_check,
+    )
+
+    allowed = SqlAlchemyCollectionSyncAuthorization(Mock()).is_allowed(
+        actor_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        collection_id=uuid.uuid4(),
+    )
+
+    assert allowed is True
+    manager_check.assert_called_once()
+    membership_check.assert_not_called()
 
 
 def test_create_job_persists_each_target_revision() -> None:
