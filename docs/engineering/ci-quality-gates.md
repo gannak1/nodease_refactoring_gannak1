@@ -1,7 +1,7 @@
 # PR CI 품질 게이트
 
 Status: Draft
-Verified Against: feature/mba-253 @ eb269d62
+Verified Against: feature/mba-274 @ b7ff6591
 
 ## 목적
 
@@ -37,6 +37,7 @@ PR 검증 진입점은 `.github/workflows/pr-quality-gate.yml`과 `.github/workf
 | `sandbox-tests` | Sandbox 영향 | Sandbox pytest |
 | `knowledge-postgres-contracts` | Knowledge runtime/DB 영향 | 실제 PostgreSQL Knowledge 계약 검사 |
 | `workflow-postgres-contracts` | migration/schedule/external effect 영향 | 실제 PostgreSQL workflow 계약 검사 |
+| `agent-builder-postgres-contracts` | Agent Builder DB/CAS 영향 | 실제 PostgreSQL Agent Builder 계약 검사 |
 | `ci-required` | 항상 | 필수 job 결과를 fail-closed로 집계 |
 | `ci-control-review` | PR 생성·동기화 또는 명시적 재검증 | base 브랜치 정책으로 CI 제어 변경과 최신 승인 검증 |
 
@@ -46,10 +47,11 @@ PR 검증 진입점은 `.github/workflows/pr-quality-gate.yml`과 `.github/workf
 
 PR workspace의 selector 결과만으로 required gate를 결정하지 않는다.
 
-- 품질 게이트는 selector 실행 전에 `pr-quality-gate.yml`, `pr-ci-control-guard.yml`, `.github/actions/**`, `scripts/ci/**`, `tests/ci/**` 변경을 독립적으로 확인한다. 이 경로가 바뀌면 selector 출력과 무관하게 Client, Python service smoke, root, 두 PostgreSQL 계약 검사를 모두 선택한다.
+- 품질 게이트는 selector 실행 전에 `pr-quality-gate.yml`, `pr-ci-control-guard.yml`, `.github/actions/**`, `scripts/ci/**`, `tests/ci/**` 변경을 독립적으로 확인한다. 이 경로가 바뀌면 selector 출력과 무관하게 Client, Python service smoke, root, PostgreSQL 계약 검사를 모두 선택한다.
 - 신뢰 가드는 base 브랜치에서 `.github/workflows/**`, `.github/actions/**`, `scripts/ci/**`, `tests/ci/**` 변경을 별도로 확인한다. rename은 이전 경로와 새 경로를 모두 검사하고, 변경 파일 전체를 열거하지 못하면 실패한다.
 - CI 제어 변경은 PR 작성자가 아닌 write 이상 권한 보유자가 현재 head commit에 남긴 `APPROVED` review가 있어야 통과한다. 이전 commit 승인은 재사용하지 않는다.
 - 승인 뒤 `/recheck-ci-control`을 PR conversation에 comment하면 base 브랜치 가드가 정책 status를 다시 계산한다.
+- 동시성 제어는 이벤트와 comment body 조건을 통과한 `ci-control-review` job에만 적용한다. 일반 Linear/Codex/user comment는 기존 정책 검사를 취소하지 않으며, 새 PR head 또는 정확한 `/recheck-ci-control` 요청만 같은 PR의 이전 유효 검사를 교체한다.
 - 신뢰 가드는 PR source, test, build script를 checkout하거나 실행하지 않으며 repository secret을 사용하지 않는다.
 
 가드를 최초로 추가하는 PR은 base 브랜치에 가드가 아직 없으므로 자기 자신을 보호할 수 없다. 최초 승격은 독립 review와 actionlint 결과를 수동으로 확인하고, 병합 뒤 probe PR에서 status 생성과 승인 재검증을 확인해야 한다.
@@ -65,10 +67,11 @@ PR workspace의 selector 결과만으로 required gate를 결정하지 않는다
 | `apps/shared/**` | Shared 대응 test와 실제 소비 서비스 관련 test |
 | Log System task가 직접 소비하는 Shared service | Shared, Gateway, Workflow Engine, Log System 관련 test |
 | Shared schema/DB model | Shared, Gateway, Workflow Engine, Log System, root 관련 test |
-| `apps/shared/alembic/**` | 위 Python 범위와 두 PostgreSQL 계약 test |
+| `apps/shared/alembic/**` | 위 Python 범위와 PostgreSQL 계약 test |
 | Knowledge runtime 경로 | Knowledge PostgreSQL 계약 test |
 | schedule/external effect 경로 | Workflow PostgreSQL 계약 test |
-| 품질 게이트 CI 제어 파일 | 각 서비스 smoke, Client smoke, 두 PostgreSQL 계약 test와 최신 독립 승인 |
+| Agent Builder DB/CAS 경로 | Agent Builder PostgreSQL 계약 test |
+| 품질 게이트 CI 제어 파일 | 각 서비스 smoke, Client smoke, PostgreSQL 계약 test와 최신 독립 승인 |
 | 기타 GitHub Actions workflow | 기존 영향 범위 검사와 최신 독립 승인 |
 | 배포 workflow만 변경 | PR 공통 불변식만 실행하고 배포 검증과 분리 |
 | 알 수 없는 실행 경로 | Client와 Python smoke 범위로 fail-closed 확장 |
@@ -121,8 +124,9 @@ DB 관련 변경에서는 graph 검사에 더해 disposable PostgreSQL upgrade�
 
 - `.github/workflows/test-knowledge-runtime-postgres.yml`
 - `.github/workflows/test-schedule-dispatch-postgres.yml`
+- `.github/workflows/test-agent-builder-postgres.yml`
 
-두 workflow는 PR에서는 통합 gate가 호출하고, `dev` push에서는 기존 post-merge 방어선으로 계속 실행한다.
+세 workflow는 PR에서는 통합 gate가 호출하고, `dev` push에서는 기존 post-merge 방어선으로 계속 실행한다.
 
 ## 로컬 재현
 
