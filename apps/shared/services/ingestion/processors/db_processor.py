@@ -15,6 +15,12 @@ from apps.shared.services.ingestion.transformers.db_nl_transformer import (
     DbNlTransformer,
 )
 from apps.shared.utils.encryption import encryption_manager
+from apps.shared.utils.join_query_utils import (
+    convert_to_namespace,
+    generate_join_query,
+    normalize_query_limit,
+    quote_postgres_identifier,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +75,11 @@ class DbProcessor(BaseProcessor):
         connection_id = source_config.get("connection_id")
         if not connection_id:
             return ProcessingResult(
-                chunks=[], metadata={"error": "No connection_id provided"}
+                chunks=[],
+                metadata={
+                    "error": "No connection_id provided",
+                    "error_code": "configuration_invalid",
+                },
             )
 
         # DB 연결 정보 조회 (BaseProcessor의 self.db 사용)
@@ -81,14 +91,22 @@ class DbProcessor(BaseProcessor):
         )
         if not conn_record:
             return ProcessingResult(
-                chunks=[], metadata={"error": "Connection not found"}
+                chunks=[],
+                metadata={
+                    "error": "Connection not found",
+                    "error_code": "configuration_invalid",
+                },
             )
 
         # Connector 인스턴스 생성
         connector = self._get_connector(conn_record.type)
         if not connector:
             return ProcessingResult(
-                metadata={"error": f"Unsupported DB type: {conn_record.type}"},
+                chunks=[],
+                metadata={
+                    "error": "Unsupported DB type",
+                    "error_code": "configuration_invalid",
+                },
             )
 
         # 연결 설정 복호화
@@ -98,9 +116,7 @@ class DbProcessor(BaseProcessor):
                 password = encryption_manager.decrypt(conn_record.encrypted_password)
             except Exception:
                 # Decryption 실패 시 원본 값 사용 (개발 환경 등에서 암호화 안 된 경우)
-                logger.warning(
-                    f"Decryption failed for connection {connection_id}, using raw password"
-                )
+                logger.warning("DB connection credential decryption failed")
                 password = conn_record.encrypted_password
 
             config_dict = {
@@ -133,9 +149,7 @@ class DbProcessor(BaseProcessor):
                         )
                 except Exception:
                     # 복호화 실패 시 원본 값 사용 (개발 환경 등)
-                    logger.warning(
-                        f"SSH Decryption failed for connection {connection_id}, using raw value"
-                    )
+                    logger.warning("DB SSH credential decryption failed")
                     if conn_record.ssh_auth_type == "key":
                         ssh_config["private_key"] = (
                             conn_record.encrypted_ssh_private_key
@@ -144,9 +158,13 @@ class DbProcessor(BaseProcessor):
                         ssh_config["password"] = conn_record.encrypted_ssh_password
 
                 config_dict["ssh"] = ssh_config
-        except Exception as e:
+        except Exception:
             return ProcessingResult(
-                chunks=[], metadata={"error": f"Config setup failed: {str(e)}"}
+                chunks=[],
+                metadata={
+                    "error": "Config setup failed",
+                    "error_code": "configuration_invalid",
+                },
             )
 
         # 3. 데이터 패칭
@@ -175,9 +193,7 @@ class DbProcessor(BaseProcessor):
                         "선택한 테이블 간 FK 관계가 없습니다."
                     )
                 
-                logger.info(
-                    f"[DB처리] JOIN 모드: {selections[0]['table_name']} + {selections[1]['table_name']}"
-                )
+                logger.info("[DB처리] JOIN 모드")
                 join_chunks = self._process_with_join(
                     connector,
                     config_dict,
@@ -202,8 +218,18 @@ class DbProcessor(BaseProcessor):
                         chunker,
                     )
                 )
-        except Exception as e:
-            return ProcessingResult(chunks=[], metadata={"error": str(e)})
+        except Exception as exc:
+            return ProcessingResult(
+                chunks=[],
+                metadata={
+                    "error": "DB source processing failed",
+                    "error_code": (
+                        "configuration_invalid"
+                        if isinstance(exc, (KeyError, TypeError, ValueError))
+                        else "temporarily_unavailable"
+                    ),
+                },
+            )
         return ProcessingResult(
             chunks=chunks, metadata={"connection_id": str(connection_id)}
         )
@@ -234,13 +260,23 @@ class DbProcessor(BaseProcessor):
 
         selection = selections[0]
         table_name = selection["table_name"]
-        logger.info(f"[DB처리] 단일 테이블 처리: {table_name}")
+        logger.info("[DB처리] 단일 테이블 처리")
 
         columns = selection.get("columns", ["*"])
-        limit = source_config.get("limit", 1000)
+        if not isinstance(columns, list) or not columns:
+            raise ValueError("columns must be a non-empty list")
+        if "*" in columns and columns != ["*"]:
+            raise ValueError("wildcard must be the only selected column")
+        limit = normalize_query_limit(source_config.get("limit", 1000))
 
-        req_cols = ", ".join(columns)
-        query = f"SELECT {req_cols} FROM {table_name} LIMIT {limit}"
+        req_cols = ", ".join(
+            quote_postgres_identifier(column, allow_wildcard=True)
+            for column in columns
+        )
+        query = (
+            f"SELECT {req_cols} FROM {quote_postgres_identifier(table_name)} "
+            f"LIMIT {limit}"
+        )
 
         # Strategies
         def transform_strategy(row_dict):
@@ -279,14 +315,9 @@ class DbProcessor(BaseProcessor):
         chunker,
     ):
         """2테이블 JOIN 모드 처리"""
-        from apps.shared.utils.join_query_utils import (
-            convert_to_namespace,
-            generate_join_query,
-        )
-
         limit = source_config.get("limit", 1000)
         query = generate_join_query(selections, join_config, limit)
-        logger.info(f"Generated JOIN query: {query[:200]}...")
+        logger.info("DB JOIN query generated")
 
         # 템플릿 (전역 템플릿 사용)
         template_str = source_config.get("template", None)
@@ -396,8 +427,11 @@ class DbProcessor(BaseProcessor):
                     enable_chunking=enable_chunking,
                 )
                 chunks.extend(row_chunks)
-            except ValueError as e:
-                logger.error(f"Row {row_count} chunking failed: {e}")
+            except ValueError as exc:
+                logger.error(
+                    "DB row chunking failed: error_type=%s",
+                    type(exc).__name__,
+                )
                 continue
 
         logger.info(f"[DB처리] 완료: {row_count}개 행, {len(chunks)}개 청크")

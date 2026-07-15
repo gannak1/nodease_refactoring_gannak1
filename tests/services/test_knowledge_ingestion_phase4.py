@@ -1,5 +1,6 @@
 import logging
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -706,6 +707,57 @@ def test_finalize_indexing_version_marks_document_completed_after_finalizer_refr
     assert document.error_message is None
     assert document.updated_at is not None
     assert db.commit_count == 1
+
+
+def test_gateway_ingestion_acquires_shared_lock_before_extract(monkeypatch):
+    events: list[str] = []
+    document = SimpleNamespace(status="pending")
+
+    class DocumentQuery:
+        def get(self, document_id):
+            assert document_id == DOC_ID
+            return document
+
+    class Session:
+        def query(self, model):
+            assert model is Document
+            return DocumentQuery()
+
+        def close(self):
+            events.append("close")
+
+    @contextmanager
+    def processing_lock():
+        yield True
+
+    session = Session()
+    orchestrator = IngestionOrchestrator(SimpleNamespace())
+    monkeypatch.setattr(ingestion_service_module, "SessionLocal", lambda: session)
+    monkeypatch.setattr(
+        orchestrator,
+        "_document_processing_lock",
+        lambda _document_id: processing_lock(),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_mark_document_indexing",
+        lambda *_args: events.append("mark"),
+    )
+    monkeypatch.setattr(
+        ingestion_service_module,
+        "acquire_document_write_lock",
+        lambda *_args: events.append("advisory"),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_extract_raw_blocks",
+        lambda _document: events.append("extract") or [],
+    )
+    monkeypatch.setattr(orchestrator, "_update_status", lambda *_args, **_kwargs: None)
+
+    orchestrator.process_document(DOC_ID)
+
+    assert events[:3] == ["mark", "advisory", "extract"]
 
 
 def test_document_processing_lock_falls_back_when_redis_lock_unavailable(monkeypatch):

@@ -43,6 +43,18 @@ from apps.gateway.composition.knowledge_administration import (
     build_knowledge_collection_lifecycle_and_order_use_case,
     build_knowledge_domain_permission_use_case,
 )
+from apps.gateway.composition.knowledge_collection_sync import (
+    build_knowledge_collection_sync_use_cases,
+)
+from apps.gateway.application.knowledge_collection_sync.use_cases import (
+    CollectionSyncCommand,
+    CollectionSyncHidden,
+    CollectionSyncJobSnapshot,
+    CollectionSyncPermissionDenied,
+    CollectionSyncPersistenceFailed,
+    CollectionSyncPolicyBlocked,
+    CollectionSyncStatusQuery,
+)
 from apps.gateway.utils.api_errors import raise_api_error
 from apps.gateway.utils.audit import audit
 from apps.gateway.services.ingestion.service import (
@@ -115,6 +127,9 @@ from apps.shared.schemas.knowledge import (
     KnowledgeCollectionPermissionBulkBundleResponse,
     KnowledgeCollectionPermissionsResponse,
     KnowledgeCollectionResponse,
+    KnowledgeCollectionLatestSyncJobResponse,
+    KnowledgeCollectionSyncJobResponse,
+    KnowledgeCollectionSyncRequestResponse,
     KnowledgeCollectionUpdateRequest,
     KnowledgeCollectionVisibilityRequest,
     KnowledgeCollectionVisibilityResponse,
@@ -150,6 +165,10 @@ from apps.shared.services.knowledge_schema_readiness import (
     table_has_column,
 )
 from apps.shared.services.knowledge_safe_text import sanitize_kb_safe_metadata
+from apps.shared.domain.knowledge_collection_sync import (
+    progress_category,
+    safe_reason_code,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -370,6 +389,72 @@ def _raise_collection_operation_error(request: Request, exc: Exception) -> None:
             "Knowledge Collection change could not be saved.",
         )
     raise exc
+
+
+def _raise_collection_sync_error(request: Request, exc: Exception) -> None:
+    if isinstance(exc, CollectionSyncHidden):
+        raise_api_error(
+            request,
+            status.HTTP_404_NOT_FOUND,
+            "resource.hidden",
+            "Resource not found.",
+        )
+    if isinstance(exc, CollectionSyncPermissionDenied):
+        raise_api_error(
+            request,
+            status.HTTP_403_FORBIDDEN,
+            "permission.denied",
+            "Permission denied.",
+        )
+    if isinstance(exc, CollectionSyncPolicyBlocked):
+        safe_code = safe_reason_code(exc.reason_code)
+        response_code = (
+            safe_code
+            if safe_code
+            in {
+                "sync.no_eligible_targets",
+                "sync.not_supported",
+                "sync.target_limit_exceeded",
+            }
+            else "policy.blocked"
+        )
+        raise_api_error(
+            request,
+            status.HTTP_409_CONFLICT,
+            response_code,
+            "Knowledge Collection sync is not available.",
+            {"policy_reason": safe_code},
+        )
+    if isinstance(exc, CollectionSyncPersistenceFailed):
+        raise_api_error(
+            request,
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "sync.unavailable",
+            "Knowledge Collection sync is temporarily unavailable.",
+        )
+    raise exc
+
+
+def _collection_sync_job_response(
+    job: CollectionSyncJobSnapshot,
+) -> KnowledgeCollectionSyncJobResponse:
+    return KnowledgeCollectionSyncJobResponse(
+        job_id=job.job_id,
+        collection_id=job.collection_id,
+        status=job.status,
+        progress=progress_category(
+            status=job.status,
+            total_count=job.total_count,
+            completed_count=job.completed_count,
+            failed_count=job.failed_count,
+            skipped_count=job.skipped_count,
+        ),
+        safe_reason_code=safe_reason_code(job.safe_reason_code),
+        retryable=job.retryable,
+        requested_at=job.requested_at,
+        started_at=job.started_at,
+        completed_at=job.completed_at,
+    )
 
 
 def _raise_domain_permission_error(request: Request, exc: Exception) -> None:
@@ -1058,6 +1143,128 @@ def create_knowledge_collection(
         return service.create_collection(collection_request)
     except KnowledgeCollectionServiceError as exc:
         _raise_collection_service_error(request, exc)
+
+
+@router.post(
+    "/collections/{collection_id}/sync-jobs",
+    response_model=KnowledgeCollectionSyncRequestResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def request_knowledge_collection_sync(
+    collection_id: UUID,
+    request: Request,
+    idempotency_key: str = Header(
+        ...,
+        alias="Idempotency-Key",
+        min_length=36,
+        max_length=36,
+    ),
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        parsed_key = UUID(idempotency_key)
+        if str(parsed_key) != idempotency_key:
+            raise ValueError
+    except (TypeError, ValueError, AttributeError):
+        raise_api_error(
+            request,
+            status.HTTP_400_BAD_REQUEST,
+            "validation.failed",
+            "Idempotency-Key must be a canonical UUID.",
+            {"field": "Idempotency-Key"},
+        )
+    organization_id = resolve_active_organization_id(
+        db, request, x_organization_id, current_user.id
+    )
+    use_cases = build_knowledge_collection_sync_use_cases(db)
+    try:
+        result = use_cases.request.execute(
+            CollectionSyncCommand(
+                actor_id=current_user.id,
+                organization_id=organization_id,
+                collection_id=collection_id,
+                idempotency_key=parsed_key,
+            )
+        )
+    except (
+        CollectionSyncHidden,
+        CollectionSyncPermissionDenied,
+        CollectionSyncPolicyBlocked,
+        CollectionSyncPersistenceFailed,
+    ) as exc:
+        _raise_collection_sync_error(request, exc)
+    return KnowledgeCollectionSyncRequestResponse(
+        job=_collection_sync_job_response(result.job),
+        reused=result.reused,
+        dispatch_deferred=result.dispatch_deferred,
+    )
+
+
+@router.get(
+    "/collections/{collection_id}/sync-jobs/latest",
+    response_model=KnowledgeCollectionLatestSyncJobResponse,
+)
+def get_latest_knowledge_collection_sync_job(
+    collection_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = resolve_active_organization_id(
+        db, request, x_organization_id, current_user.id
+    )
+    try:
+        job = build_knowledge_collection_sync_use_cases(db).read.execute(
+            CollectionSyncStatusQuery(
+                actor_id=current_user.id,
+                organization_id=organization_id,
+                collection_id=collection_id,
+            )
+        )
+    except (CollectionSyncHidden, CollectionSyncPermissionDenied) as exc:
+        _raise_collection_sync_error(request, exc)
+    return KnowledgeCollectionLatestSyncJobResponse(
+        job=_collection_sync_job_response(job) if job is not None else None
+    )
+
+
+@router.get(
+    "/collections/{collection_id}/sync-jobs/{job_id}",
+    response_model=KnowledgeCollectionSyncJobResponse,
+)
+def get_knowledge_collection_sync_job(
+    collection_id: UUID,
+    job_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = resolve_active_organization_id(
+        db, request, x_organization_id, current_user.id
+    )
+    try:
+        job = build_knowledge_collection_sync_use_cases(db).read.execute(
+            CollectionSyncStatusQuery(
+                actor_id=current_user.id,
+                organization_id=organization_id,
+                collection_id=collection_id,
+                job_id=job_id,
+            )
+        )
+    except (CollectionSyncHidden, CollectionSyncPermissionDenied) as exc:
+        _raise_collection_sync_error(request, exc)
+    if job is None:
+        raise_api_error(
+            request,
+            status.HTTP_404_NOT_FOUND,
+            "resource.hidden",
+            "Resource not found.",
+        )
+    return _collection_sync_job_response(job)
 
 
 @router.get("/collections/{collection_id}", response_model=KnowledgeCollectionResponse)

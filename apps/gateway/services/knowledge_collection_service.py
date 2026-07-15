@@ -55,6 +55,10 @@ from apps.shared.schemas.knowledge import (
     KnowledgeDelegationSubjectsResponse,
 )
 from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
+from apps.shared.domain.knowledge_collection_sync import MAX_SYNC_TARGETS
+from apps.shared.services.knowledge_collection_sync_targets import (
+    scan_collection_sync_targets,
+)
 from apps.shared.services.knowledge_safe_text import (
     safe_label_from_text,
     sanitize_kb_safe_metadata,
@@ -1175,10 +1179,27 @@ class KnowledgeCollectionService:
             can_route=permissions["route"],
             can_manage=permissions["manage"],
             can_sync=permissions["sync"],
+            sync_supported=self._sync_supported(collection),
             safe_metadata=safe_metadata,
             created_at=collection.created_at,
             updated_at=collection.updated_at,
         )
+
+    def _sync_supported(self, collection: KnowledgeCollection) -> bool:
+        if (
+            collection.lifecycle_state != "active"
+            or collection.sync_state == "source_deleted"
+            or collection.is_system_managed
+            or collection.source_identity_id is not None
+            or collection.source_connector_ref
+        ):
+            return False
+        return scan_collection_sync_targets(
+            self.db,
+            self.organization_id,
+            collection.id,
+            limit=MAX_SYNC_TARGETS + 1,
+        ).is_supported
 
     def _item_response(
         self,

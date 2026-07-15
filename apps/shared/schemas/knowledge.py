@@ -46,6 +46,21 @@ KnowledgeRAGSourceTierPolicy = Literal["tie_break", "off"]
 KnowledgeCollectionAction = Literal["read", "route", "manage", "sync"]
 KnowledgeCollectionVisibility = Literal["private", "public"]
 KnowledgeCollectionLifecycleState = Literal["active", "archived", "deleted"]
+KnowledgeCollectionSyncJobStatus = Literal[
+    "queued",
+    "running",
+    "succeeded",
+    "partially_failed",
+    "failed",
+    "cancelled",
+]
+KnowledgeCollectionSyncProgress = Literal[
+    "none",
+    "started",
+    "progressing",
+    "most",
+    "complete",
+]
 KnowledgeCollectionRoleBundle = Literal[
     "viewer",
     "workflow_router",
@@ -131,6 +146,7 @@ class KnowledgeCollectionResponse(BaseModel):
     can_route: bool = False
     can_manage: bool = False
     can_sync: bool = False
+    sync_supported: bool = False
     safe_metadata: dict = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
@@ -140,6 +156,28 @@ class KnowledgeCollectionListResponse(BaseModel):
     collections: list[KnowledgeCollectionResponse] = Field(default_factory=list)
     can_create_collection: bool = False
     can_change_public_visibility: bool = False
+
+
+class KnowledgeCollectionSyncJobResponse(BaseModel):
+    job_id: UUID
+    collection_id: UUID
+    status: KnowledgeCollectionSyncJobStatus
+    progress: KnowledgeCollectionSyncProgress
+    safe_reason_code: str | None = None
+    retryable: bool = True
+    requested_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
+class KnowledgeCollectionSyncRequestResponse(BaseModel):
+    job: KnowledgeCollectionSyncJobResponse
+    reused: bool = False
+    dispatch_deferred: bool = False
+
+
+class KnowledgeCollectionLatestSyncJobResponse(BaseModel):
+    job: KnowledgeCollectionSyncJobResponse | None = None
 
 
 class KnowledgeCollectionLLMSelectableItem(BaseModel):

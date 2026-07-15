@@ -45,14 +45,17 @@ class FakeSession:
         items = self.all()
         return items[0] if items else None
 
-    def delete(self):
+    def delete(self, synchronize_session="auto", delete_args=None):
+        # SQLAlchemy Query.delete의 호출 계약을 유지하되 fake에서는 동기화하지 않는다.
+        _ = synchronize_session, delete_args
         if self.current_model == DocumentChunk:
             # DocumentChunk 전체 삭제 시뮬레이션 (특정 문서 ID에 대한 필터가 걸려있다고 가정)
             # 여기서는 테스트 데이터가 1개 문서뿐이므로 전체 삭제로 처리해도 무방
             count = len(self.store[DocumentChunk])
             self.store[DocumentChunk] = []
             self.deleted_items.append(f"Deleted {count} chunks")
-        return
+            return count
+        return 0
 
     def bulk_save_objects(self, objects):
         if not objects:
@@ -73,6 +76,15 @@ class FakeSession:
 
     def close(self):
         pass
+
+    def get_bind(self):
+        class _Dialect:
+            name = "sqlite"
+
+        class _Bind:
+            dialect = _Dialect()
+
+        return _Bind()
 
 
 # ------------------------------------------------------------------

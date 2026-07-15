@@ -12,6 +12,9 @@ import {
   KnowledgeCollectionRoleBundle,
   KnowledgeCollectionResponse,
   KnowledgeCollectionListResponse,
+  KnowledgeCollectionLatestSyncJobResponse,
+  KnowledgeCollectionSyncJobResponse,
+  KnowledgeCollectionSyncRequestResponse,
   KnowledgeCollectionLLMSelectableItem,
   KnowledgeCollectionLLMSelectableResponse,
   KnowledgeCollectionItemResponse,
@@ -177,6 +180,9 @@ export type {
   KnowledgeCollectionRoleBundle,
   KnowledgeCollectionResponse,
   KnowledgeCollectionListResponse,
+  KnowledgeCollectionLatestSyncJobResponse,
+  KnowledgeCollectionSyncJobResponse,
+  KnowledgeCollectionSyncRequestResponse,
   KnowledgeCollectionLLMSelectableItem,
   KnowledgeCollectionLLMSelectableResponse,
   KnowledgeCollectionItemResponse,
@@ -471,6 +477,37 @@ export const knowledgeApi = {
     safe_metadata?: Record<string, unknown>;
   }): Promise<KnowledgeCollectionResponse> => {
     const response = await api.post('/knowledge/collections', data);
+    return response.data;
+  },
+
+  requestKnowledgeCollectionSync: async (
+    id: string,
+    idempotencyKey: string,
+  ): Promise<KnowledgeCollectionSyncRequestResponse> => {
+    const response = await api.post(
+      `/knowledge/collections/${id}/sync-jobs`,
+      {},
+      { headers: { 'Idempotency-Key': idempotencyKey } },
+    );
+    return response.data;
+  },
+
+  getLatestKnowledgeCollectionSyncJob: async (
+    id: string,
+  ): Promise<KnowledgeCollectionLatestSyncJobResponse> => {
+    const response = await api.get(
+      `/knowledge/collections/${id}/sync-jobs/latest`,
+    );
+    return response.data;
+  },
+
+  getKnowledgeCollectionSyncJob: async (
+    id: string,
+    jobId: string,
+  ): Promise<KnowledgeCollectionSyncJobResponse> => {
+    const response = await api.get(
+      `/knowledge/collections/${id}/sync-jobs/${jobId}`,
+    );
     return response.data;
   },
 

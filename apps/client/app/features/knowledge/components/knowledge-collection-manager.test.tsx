@@ -97,6 +97,7 @@ describe('KnowledgeCollectionManager', () => {
           can_route: false,
           can_manage: false,
           can_sync: false,
+          sync_supported: true,
           safe_metadata: { safe_label: '인사 정책' },
           created_at: '2026-07-07T00:00:00Z',
           updated_at: '2026-07-07T00:00:00Z',
@@ -185,6 +186,7 @@ describe('KnowledgeCollectionManager', () => {
           can_route: false,
           can_manage: false,
           can_sync: false,
+          sync_supported: true,
           safe_metadata: {},
           created_at: '2026-07-07T00:00:00Z',
           updated_at: '2026-07-07T00:00:00Z',
@@ -540,6 +542,7 @@ describe('KnowledgeCollectionManager', () => {
           can_route: true,
           can_manage: true,
           can_sync: false,
+          sync_supported: true,
           safe_metadata: {
             collection_safe_topics: ['policy'],
           },

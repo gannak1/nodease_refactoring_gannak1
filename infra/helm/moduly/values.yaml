@@ -141,7 +141,25 @@ worker:
     # Storage configuration (for file processing)
     S3_BUCKET_NAME: ""
     AWS_REGION: "ap-northeast-2"
-    
+
+# Singleton Celery Beat scheduler. An empty image field reuses the Workflow
+# Engine image so the shared Celery schedule and task routes stay identical.
+beat:
+  enabled: true
+
+  image:
+    repository: ""
+    tag: ""
+    pullPolicy: ""
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 96Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
 # Logger (Logging System)
 logger:
   enabled: true

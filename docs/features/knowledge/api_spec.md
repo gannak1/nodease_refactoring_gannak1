@@ -1,7 +1,9 @@
 # Knowledge API Spec
 
 Status: Draft
+Verified Against: `feature/mba-265 @ ccac971f`
 이 문서는 Knowledge feature의 현재 API baseline과 목표 KB 통합 API 계약을 함께 기록한다. MBA-105 목표 API는 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)의 임시 구현 baseline, Workflow RAG anonymous public-only runtime은 [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md), MCP/API source connector와 incremental sync 경계는 [ADR-0020](../../decisions/ADR-0020-knowledge-mcp-incremental-sync-boundary.md), MBA-231 위임 관리와 KB RBAC cutover는 [ADR-0034](../../decisions/ADR-0034-knowledge-delegated-administration-and-rbac-boundary.md), direct KB와 명시 selected Collection의 internal runtime resolver는 [ADR-0036](../../decisions/ADR-0036-knowledge-runtime-candidate-resolution.md), KC 운영 관리 계약은 [ADR-0044](../../decisions/ADR-0044-knowledge-collection-operational-management-boundary.md), 세부 구현 기준은 [implementation_baseline.md](implementation_baseline.md)를 따른다. Knowledge Skill 관련 API 경계는 [ADR-0015](../../decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)를 따른다.
+KC sync 요청·상태 조회와 durable execution 계약은 [ADR-0048](../../decisions/ADR-0048-knowledge-collection-sync-execution-boundary.md)을 따른다.
 
 ## Current Baseline Endpoints
 
@@ -496,6 +498,78 @@ List의 `lifecycle_state` query는 `active`, `archived`, `deleted` 중 하나이
 `GET /items`, link와 reorder 성공 response는 `items`, opaque `order_revision`, `reorder_supported`, optional fixed `safe_reason_code`를 포함하고 항상 최신 전체 ordered item projection을 반환한다. 각 item은 `item_id`, `knowledge_base_id`, safe label, lifecycle/sync state, rank, caller action flags만 포함한다. Safe label은 유효한 `KnowledgeBase.safe_metadata.safe_label`, display-policy-approved source safe label, caller가 독립 KB `read`를 통과한 manual KB `name` 순으로 선택하고, 모두 사용할 수 없으면 generic `Knowledge Base`를 반환한다. Domain `catalog_manage`만으로 raw manual KB `name`을 fallback하지 않으며 link-candidate response도 같은 projection을 사용한다. `can_use_kb=false`인 item이 보일 수 있지만, 이는 runtime retrieval 가능성을 의미하지 않는다. Standalone GET은 `collection.read`를 요구하지만 link/reorder 성공 응답은 완료한 mutation authority를 다시 확인한 safe management projection이므로 별도 `read` grant를 만들지 않는다. Link/unlink는 같은 organization KB만 허용하며 archived/deleted KB는 link 대상에서 제외한다. Private Collection membership은 `collection.manage` + KB `manage`, 또는 domain `catalog_manage`로 관리할 수 있다. Public Collection의 link/unlink/reorder는 visibility 변경과 같은 public exposure mutation이므로 Organization manager와 `acknowledged_public_runtime_exposure=true`를 요구한다. Source identity/connector Collection 또는 source-managed child가 연관된 public link/reorder는 approval primitive 부재 상태에서 `source_public_exposure_required`로 차단한다. Duplicate link는 MVP에서 idempotent success로 처리할 수 있다. Link request의 optional `rank`는 legacy caller 호환용 deprecated field이며 서버는 값을 무시하고 Collection lock 아래 끝에 append한 뒤 전체 rank를 연속값으로 정규화한다.
 
 Reorder request는 empty Collection을 포함한 현재 전체 item을 `{item_id, rank}`로 보내고 `expected_order_revision`을 반드시 포함한다. Item id와 rank는 각각 unique이고 rank는 정확히 `0..N-1`이어야 한다. 서버는 Collection과 membership row를 잠근 뒤 current revision, 현재 전체 item set과 request를 비교한다. Stale revision, 누락·추가 item 또는 concurrent link/unlink는 어떤 rank도 바꾸지 않는 safe `409`다. 같은 순서의 no-op은 새 audit를 만들지 않는다. 초기 관리 surface는 item 500개 이하만 reorder하며 초과 response는 `reorder_supported=false`, `safe_reason_code=item_reorder_limit_exceeded`로 고정한다. `order_revision`은 권한이나 조회 capability가 아니다.
+
+### Collection Sync Jobs (MBA-265)
+
+MBA-265는 KC `sync` action과 domain `sync_manage`를 durable asynchronous job에 연결한다.
+초기 실행 대상은 active Manual Collection에 연결된 active/non-source-managed KB 중 legacy
+`documents` row가 정확히 한 개이고 그 문서가 DB type인 document-level KB다. DB 문서와 FILE
+또는 다른 DB 문서가 한 KB에 함께 있는 legacy multi-document KB, API child, source-managed
+child는 실행하지 않는다. 신규 connector protocol이나 source-managed sync를 포함하지 않는다.
+
+Collection management response의 `can_sync`는 caller 권한이고 `sync_supported`는 현재 adapter가
+해당 Collection의 현재 child source 구성을 실행할 수 있는지 나타내는 safe boolean이다.
+Projection과 POST는 같은 canonical eligibility scan을 사용하고 UI는 두 값이 모두 참일 때만
+실행 버튼을 활성화한다. 이 boolean은 source/connection identity나 unsupported target count를
+공개하지 않는다.
+
+| Method | Path | 목적 | 권한 |
+| --- | --- | --- | --- |
+| POST | `/api/v1/knowledge/collections/{collection_id}/sync-jobs` | KC sync job 생성 또는 기존 single-flight job 재사용 | Organization manager, Collection `sync`, domain `sync_manage` |
+| GET | `/api/v1/knowledge/collections/{collection_id}/sync-jobs/latest` | 현재 caller에게 허용된 최신 job safe projection | 요청 endpoint와 같은 current authority |
+| GET | `/api/v1/knowledge/collections/{collection_id}/sync-jobs/{job_id}` | 특정 job safe projection | 요청 endpoint와 같은 current authority |
+
+POST는 canonical UUID 형식의 `Idempotency-Key` header를 필수로 받는다. 서버는 원문을
+response/audit에 반사하지 않고 SHA-256 hash로만 저장한다. 같은 organization, Collection,
+key의 요청은 기존 job을 반환하고, 다른 key라도 queued/running job이 있으면 active job을
+재사용한다. Accepted/reused job은 `202`와 다음 safe envelope를 반환한다.
+
+```json
+{
+  "job": {
+    "job_id": "00000000-0000-0000-0000-000000000000",
+    "collection_id": "00000000-0000-0000-0000-000000000000",
+    "status": "queued",
+    "progress": "none",
+    "safe_reason_code": null,
+    "retryable": true,
+    "requested_at": "2026-01-01T00:00:00Z",
+    "started_at": null,
+    "completed_at": null
+  },
+  "reused": false,
+  "dispatch_deferred": false
+}
+```
+
+`status`는 `queued`, `running`, `succeeded`, `partially_failed`, `failed`, `cancelled`로
+제한한다. `progress`는 `none`, `started`, `progressing`, `most`, `complete` 중 하나다.
+Response에는 job item, KB/document/source identity, exact total/success/failure count, raw
+processor/connector error, connection/config/SQL/credential field를 추가하지 않는다. 알 수 없는
+내부 reason은 `sync.internal_error`로 일반화한다.
+
+Resource hiding은 active organization 밖 Collection/job 또는 Collection/job mismatch를
+`404 resource.hidden`으로 처리한다. Same-scope visible Collection의 sync authority 부족은
+`403 permission.denied`다. Archived/deleted/source-managed/system-managed/unsupported source는
+mutation 전에 safe `409 policy.blocked` 또는 `sync.not_supported`로 닫는다. Sync 가능한 DB
+target이 없으면 `409 sync.no_eligible_targets`, target cap 초과는 `409 sync.target_limit_exceeded`
+를 사용하며 child identity와 exact count를 반환하지 않는다. 이 세 sync policy code만 error
+code로 승격하고 알 수 없는 reason은 `409 policy.blocked`와 `sync.internal_error` projection으로
+일반화한다.
+
+Gateway는 job/audit/Collection pending commit 뒤 `workflow.knowledge_collection_sync.execute`
+task를 발행한다. Publish 실패는 raw broker 오류를 반환하지 않고 `dispatch_deferred=true`인
+queued job을 유지한다. Recovery task가 due/stale job을 다시 발행하므로 API caller가 새 key로
+반복 요청할 필요가 없다.
+
+Legacy DB connection은 organization column이 없으므로 worker가 connection owner의 current
+active organization membership과 지원 DB type을 검증한다. 문서당 source row limit은 1,000으로
+상한 처리한다. Connection identifier, selection/SQL, credential과 processor 원문 오류는 job
+response·task result·audit·log에 포함하지 않는다.
+
+DB processor 결과에는 문서에 저장된 flat `selection_mode`, `chunk_range`, `keyword_filter`를 기존
+ingestion과 같은 selection helper로 적용한다. 선택 결과가 비거나 malformed이면 새 active
+version으로 전환하지 않고 safe configuration failure로 닫아 기존 active ready version을 유지한다.
 
 ### Collection Permission Management
 

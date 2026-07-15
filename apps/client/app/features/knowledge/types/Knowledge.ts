@@ -180,6 +180,7 @@ export interface KnowledgeCollectionResponse {
   can_route: boolean;
   can_manage: boolean;
   can_sync: boolean;
+  sync_supported: boolean;
   safe_metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
@@ -189,6 +190,43 @@ export interface KnowledgeCollectionListResponse {
   collections: KnowledgeCollectionResponse[];
   can_create_collection: boolean;
   can_change_public_visibility: boolean;
+}
+
+export type KnowledgeCollectionSyncJobStatus =
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'partially_failed'
+  | 'failed'
+  | 'cancelled';
+
+export type KnowledgeCollectionSyncProgress =
+  | 'none'
+  | 'started'
+  | 'progressing'
+  | 'most'
+  | 'complete';
+
+export interface KnowledgeCollectionSyncJobResponse {
+  job_id: string;
+  collection_id: string;
+  status: KnowledgeCollectionSyncJobStatus;
+  progress: KnowledgeCollectionSyncProgress;
+  safe_reason_code?: string | null;
+  retryable: boolean;
+  requested_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+}
+
+export interface KnowledgeCollectionSyncRequestResponse {
+  job: KnowledgeCollectionSyncJobResponse;
+  reused: boolean;
+  dispatch_deferred: boolean;
+}
+
+export interface KnowledgeCollectionLatestSyncJobResponse {
+  job?: KnowledgeCollectionSyncJobResponse | null;
 }
 
 export interface KnowledgeCollectionLLMSelectableItem {

@@ -67,6 +67,11 @@ celery_app.conf.update(
             "schedule": 30.0,
             "options": {"queue": "log"},
         },
+        "knowledge-collection-sync-recovery": {
+            "task": "workflow.knowledge_collection_sync.recover",
+            "schedule": 30.0,
+            "options": {"queue": "workflow"},
+        },
     },
     # 태스크 설정
     task_track_started=False,  # [FIX] STARTED 상태 추적 비활성화 (Protocol Error 방지)
