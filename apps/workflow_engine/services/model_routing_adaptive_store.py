@@ -55,6 +55,7 @@ class AdaptiveModelRoutingCohortStore:
     DISCOVERY_SIMILARITY_THRESHOLD = 0.50
     AUTO_MATCH_SIMILARITY_THRESHOLD = 0.55
     MANUAL_SIMILARITY_THRESHOLD = 0.60
+    DEFAULT_MATCH_MIN_MARGIN = 0.05
 
     @classmethod
     def record_observation(
@@ -87,7 +88,11 @@ class AdaptiveModelRoutingCohortStore:
             return existing
 
         cohorts = cls._live_cohorts(db, policy_id=policy.id)
-        matched = cls._match(vector, cohorts)
+        matched = cls._match(
+            vector,
+            cohorts,
+            min_margin=cls._match_min_margin(policy, node_data),
+        )
         observation_count = (
             db.query(LLMNodeModelRoutingObservation)
             .filter(LLMNodeModelRoutingObservation.policy_id == policy.id)
@@ -645,22 +650,60 @@ class AdaptiveModelRoutingCohortStore:
         cls,
         vector: list[float],
         cohorts: Iterable[LLMNodeModelRoutingCohort],
+        *,
+        min_margin: float | None = None,
     ) -> LLMNodeModelRoutingCohort | None:
-        winner = None
-        winner_score = float("-inf")
+        scored_cohorts: list[tuple[float, LLMNodeModelRoutingCohort]] = []
         for cohort in cohorts:
             if cohort.status == "retired":
                 continue
             score = cls._cosine(vector, cohort.centroid_embedding or [])
-            threshold = (
-                cls.MANUAL_SIMILARITY_THRESHOLD
-                if str(getattr(cohort, "source", "")) == "manual"
-                else cls.AUTO_MATCH_SIMILARITY_THRESHOLD
-            )
-            if score >= threshold and score > winner_score:
-                winner = cohort
-                winner_score = score
+            scored_cohorts.append((score, cohort))
+
+        if not scored_cohorts:
+            return None
+
+        scored_cohorts.sort(
+            key=lambda item: (-item[0], str(getattr(item[1], "id", "")))
+        )
+        winner_score, winner = scored_cohorts[0]
+        threshold = (
+            cls.MANUAL_SIMILARITY_THRESHOLD
+            if str(getattr(winner, "source", "")) == "manual"
+            else cls.AUTO_MATCH_SIMILARITY_THRESHOLD
+        )
+        if winner_score < threshold:
+            return None
+
+        runner_up_score = (
+            scored_cohorts[1][0] if len(scored_cohorts) > 1 else None
+        )
+        required_margin = (
+            cls.DEFAULT_MATCH_MIN_MARGIN if min_margin is None else float(min_margin)
+        )
+        if runner_up_score is not None and winner_score - runner_up_score < required_margin:
+            return None
         return winner
+
+    @classmethod
+    def _match_min_margin(
+        cls,
+        policy: LLMNodeModelRoutingPolicy,
+        node_data: dict[str, Any],
+    ) -> float:
+        """관찰 저장도 active policy의 semantic router 경계를 따른다."""
+        active_policy = policy.active_policy if isinstance(policy.active_policy, dict) else {}
+        semantic_router = active_policy.get("semantic_router")
+        if not isinstance(semantic_router, dict):
+            context = node_data.get("model_routing_context")
+            context = context if isinstance(context, dict) else {}
+            semantic_router = context.get("semantic_router")
+        semantic_router = semantic_router if isinstance(semantic_router, dict) else {}
+        try:
+            value = float(semantic_router.get("min_margin", cls.DEFAULT_MATCH_MIN_MARGIN))
+        except (TypeError, ValueError):
+            return cls.DEFAULT_MATCH_MIN_MARGIN
+        return value if math.isfinite(value) and value >= 0 else cls.DEFAULT_MATCH_MIN_MARGIN
 
     @staticmethod
     def _embedding(embed: EmbeddingFunction, text: str) -> list[float]:

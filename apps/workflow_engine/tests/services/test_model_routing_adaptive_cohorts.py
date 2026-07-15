@@ -306,6 +306,52 @@ def test_manual_and_auto_cohorts_reject_low_confidence_boundary_observations():
     assert AdaptiveModelRoutingCohortStore._match(auto_confident_vector, [auto]) is auto
 
 
+def test_observation_match_rejects_ambiguous_auto_cohorts():
+    """FR-011: 1·2위 입력군의 차이가 작으면 학습 데이터로 편입하지 않는다."""
+    first = SimpleNamespace(
+        id=uuid4(),
+        cohort_key="first",
+        source="auto",
+        status="active",
+        centroid_embedding=[0.58, 0.8146164742],
+    )
+    second = SimpleNamespace(
+        id=uuid4(),
+        cohort_key="second",
+        source="auto",
+        status="active",
+        centroid_embedding=[0.57, 0.8216446910],
+    )
+
+    # 첫 번째와 두 번째의 유사도가 각각 0.58, 0.57이므로 runtime의
+    # min_margin(0.05) 기준에서는 어느 입력군에도 확정 매칭하면 안 된다.
+    assert AdaptiveModelRoutingCohortStore._match([1.0, 0.0], [first, second]) is None
+
+    # runtime은 2위가 자신의 threshold를 넘지 못해도, 1위와 충분히 구분되지
+    # 않으면 ambiguous로 처리한다. 관찰 저장도 같은 기준을 따라야 한다.
+    manual_winner = SimpleNamespace(
+        id=uuid4(),
+        cohort_key="manual-winner",
+        source="manual",
+        status="active",
+        centroid_embedding=[0.61, 0.7924014134],
+    )
+    manual_runner_up = SimpleNamespace(
+        id=uuid4(),
+        cohort_key="manual-runner-up",
+        source="manual",
+        status="active",
+        centroid_embedding=[0.59, 0.8074032449],
+    )
+    assert (
+        AdaptiveModelRoutingCohortStore._match(
+            [1.0, 0.0],
+            [manual_winner, manual_runner_up],
+        )
+        is None
+    )
+
+
 def test_runtime_catalog_uses_auto_cohort_match_threshold():
     """FR-011: 자동 발견 입력군의 runtime 경계도 관찰 저장 경계와 같다."""
     active_cohort = SimpleNamespace(
