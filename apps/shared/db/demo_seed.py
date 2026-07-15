@@ -2529,7 +2529,33 @@ def _model_router_ticket_ops_graph() -> dict[str, Any]:
                 "model_id": DEMO_MODEL_ROUTER_FALLBACK_MODEL,
                 "fallback_model_id": DEMO_MODEL_ROUTER_BALANCED_MODEL,
                 "auto_model_routing": True,
-                "model_routing_policy": {"refresh": {"refresh_every_runs": 20}},
+                "model_routing_policy": {
+                    "refresh": {"refresh_every_runs": 10},
+                    "max_cohorts": 4,
+                    "cohort_drafts": [
+                        {
+                            "id": str(_uuid(970)),
+                            "key": "routine_support",
+                            "label": "일반 사용 안내",
+                            "representative_query": "정산 파일을 다시 생성하고 다운로드하는 방법을 알려 주세요.",
+                            "fixed": True,
+                        },
+                        {
+                            "id": str(_uuid(971)),
+                            "key": "account_billing",
+                            "label": "계정 및 결제 문제",
+                            "representative_query": "결제는 완료됐지만 팀원 초대와 계정 권한 변경이 실패합니다.",
+                            "fixed": False,
+                        },
+                        {
+                            "id": str(_uuid(972)),
+                            "key": "high_risk",
+                            "label": "보안 및 SLA 고위험",
+                            "representative_query": "SLA 위반 가능성이 있는 장애로 고객 보상과 보안 대응을 검토해 주세요.",
+                            "fixed": True,
+                        },
+                    ],
+                },
                 "model_routing_context": {
                     "customer_facing": True,
                     "node_task": "customer_support_triage",
