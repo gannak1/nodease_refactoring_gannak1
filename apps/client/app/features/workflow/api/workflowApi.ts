@@ -683,7 +683,11 @@ export const workflowApi = {
         ? { conversation: { client_id: clientConversationId } }
         : {}),
     });
-    return response.data as { status: string; results?: unknown };
+    return response.data as {
+      status: string;
+      results?: unknown;
+      run_id?: string | null;
+    };
   },
 
   listWorkflowNodes: async (excludedAppId?: string) => {

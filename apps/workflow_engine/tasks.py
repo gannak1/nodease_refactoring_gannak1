@@ -110,13 +110,17 @@ def _cleanup_execution_resources(engine, session, *, label: str) -> None:
         )
 
 
-
-
 def _enforce_runtime_configuration(graph: Dict[str, Any], *, surface: str) -> None:
     try:
         enforce_workflow_configuration_preflight(graph, surface=surface)
     except WorkflowConfigurationPreflightError as exc:
         raise NonRetryableWorkflowError(str(exc)) from exc
+
+
+def _engine_workflow_run_id(engine) -> str | None:
+    """API 실험 도구가 결과를 정확한 실행 로그와 연결할 safe 식별자를 반환한다."""
+    run_id = getattr(getattr(engine, "logger", None), "workflow_run_id", None)
+    return str(run_id) if run_id is not None else None
 
 
 @celery_app.task(
@@ -529,7 +533,12 @@ def execute_workflow(
 
         # [GEVENT] 직접 동기 호출 - asyncio 불필요
         result = engine.execute()
-        return {"status": "success", "result": result, "sync_status": sync_result}
+        return {
+            "status": "success",
+            "result": result,
+            "sync_status": sync_result,
+            "run_id": _engine_workflow_run_id(engine),
+        }
 
     except ExternalEffectRetrySignal as e:
         logger.warning("Workflow external effect retry requested: code=%s", e.code)
@@ -663,7 +672,12 @@ def execute_deployed_workflow(
 
         # [GEVENT] 직접 동기 호출
         result = engine.execute()
-        return {"status": "success", "result": result, "sync_status": sync_result}
+        return {
+            "status": "success",
+            "result": result,
+            "sync_status": sync_result,
+            "run_id": _engine_workflow_run_id(engine),
+        }
 
     except ExternalEffectRetrySignal as e:
         logger.warning("Workflow external effect retry requested: code=%s", e.code)
@@ -806,7 +820,12 @@ def execute_by_deployment(
 
         # [GEVENT] 직접 동기 호출
         result = engine.execute()
-        return {"status": "success", "result": result, "sync_status": sync_result}
+        return {
+            "status": "success",
+            "result": result,
+            "sync_status": sync_result,
+            "run_id": _engine_workflow_run_id(engine),
+        }
 
     except ExternalEffectRetrySignal as e:
         logger.warning("Workflow external effect retry requested: code=%s", e.code)

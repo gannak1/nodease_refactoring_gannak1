@@ -1153,7 +1153,11 @@ class DeploymentService:
             result = await wait_for_celery_result(task.id, timeout=600)
 
             if result.get("status") == "success":
-                return {"status": "success", "results": result.get("result", {})}
+                return {
+                    "status": "success",
+                    "results": result.get("result", {}),
+                    "run_id": result.get("run_id"),
+                }
             else:
                 detail = _safe_deployment_error_detail(result.get("error"))
                 raise HTTPException(status_code=500, detail=detail)
