@@ -1,7 +1,7 @@
 # App Management Test Cases
 
 Status: Draft
-Verified Against: TBD
+Verified Against: feature/mba-87 @ ed766ba7
 
 ## Acceptance Criteria
 

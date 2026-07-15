@@ -1,7 +1,7 @@
 # App Management API Spec
 
 Status: Draft
-Verified Against: TBD
+Verified Against: feature/mba-87 @ ed766ba7
 
 ## Endpoints
 
