@@ -1,7 +1,7 @@
 # Connectors API Spec
 
 Status: Draft
-Verified Against: feature/mba-246 @ 899915842e2691a44b9bbf0b6322807a165857dd
+Verified Against: feature/mba-246 @ b299e2fa2eecbc8320d38440ff08d34963f5fba6
 
 기본 경로: `/api/v1`
 
@@ -9,7 +9,7 @@ Verified Against: feature/mba-246 @ 899915842e2691a44b9bbf0b6322807a165857dd
 
 | 메서드 | 경로 | 설명 | 인증 |
 | --- | --- | --- | --- |
-| POST | `/connectors/test` | Strict public PostgreSQL 연결 정보를 저장하지 않고 실제 접속 가능 여부를 테스트한다. | `auth_token`, active `X-Organization-Id` |
+| POST | `/connectors/test` | 기본 public PostgreSQL 또는 development exact-local PostgreSQL 연결 정보를 저장하지 않고 실제 접속 가능 여부를 테스트한다. | `auth_token`, active `X-Organization-Id` |
 | POST | `/connectors` | DB/SSH 연결을 테스트한 뒤 secret을 암호화해 `connections`에 저장한다. | `auth_token` 쿠키 필요 |
 | GET | `/connectors/{connection_id}` | 저장된 connection 상세를 조회한다. Secret은 반환하지 않는다. | `auth_token` 쿠키 및 owner |
 | GET | `/connectors/{connection_id}/schema` | 저장된 connection secret을 서버에서 복호화해 DB schema를 조회한다. | `auth_token` 쿠키 및 owner |
@@ -58,8 +58,8 @@ Expected target/SSH/connection 실패는 `200 OK`, `success=false`로 반환한�
 1. 로그인과 active organization membership을 검증한다.
 2. Actual body, media type, UTF-8 JSON object와 strict field를 검증한다.
 3. Redis에서 user/organization/network rate와 global/organization/user concurrency lease를 원자적으로 획득한다.
-4. Port가 서버의 deployment-managed allowlist에 있는지 admission 전에 확인한다. Host와 전체 DNS 결과가 public인지 검사하고 validated IP 하나로 연결을 고정한다.
-5. 시스템 CA bundle의 실제 파일 경로를 명시한 TLS `verify-full`, connect 5초, statement 3초, API 10초 안에서 read-only `SELECT 1`을 한 번 수행한다. CA bundle이 없으면 DNS 전에 safe failure로 닫는다.
+4. Port가 서버의 deployment-managed allowlist에 있는지 admission 전에 확인한다. 기본 경로는 host의 전체 DNS 결과가 public인지 검사한다. Development exact-local target은 서버 설정의 정확한 hostname+port와 일치하고 모든 DNS 결과가 RFC1918, IPv6 ULA 또는 loopback일 때만 허용한다. 두 경로 모두 validated IP 하나로 연결을 고정한다.
+5. Public target은 시스템 CA bundle, exact-local target은 서버가 설정한 전용 CA file을 명시해 TLS `verify-full`, connect 5초, statement 3초, API 10초 안에서 read-only `SELECT 1`을 한 번 수행한다. 선택된 CA가 없으면 startup 또는 DNS 전에 safe failure로 닫는다.
 6. Actual work 중 owner-safe heartbeat로 lease를 연장하고, safe result 반환 뒤에도 blocking work가 남아 있으면 completion까지 유지한 다음 owner lease를 해제한다.
 
 Initial admission limits:
@@ -71,7 +71,9 @@ Initial admission limits:
 | Request network | aligned 60초당 20 |
 | Global | active 16 |
 
-Port allowlist는 `CONNECTOR_TEST_ALLOWED_PORTS`의 중복 없는 `1..65535` 정수 1~16개다. 기본·production은 `5432`, local development/demo는 현재 Docker PostgreSQL publish port인 `5432,54322,55432`를 사용한다. 이 설정은 서버/Helm 소유이며 request body로 확장할 수 없다.
+Port allowlist는 `CONNECTOR_TEST_ALLOWED_PORTS`의 중복 없는 `1..65535` 정수 1~16개다. 기본·production과 Docker-internal demo는 `5432`, host-run demo는 `5432,55432`를 사용한다. 이 설정은 서버/Helm 소유이며 request body로 확장할 수 없다.
+
+Trusted-local target은 port allowlist를 대체하지 않는다. `NODE_ENV=development`에서 `CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS`와 `CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE`을 함께 설정해야 하며, production은 두 설정 중 하나라도 있으면 시작하지 않는다. Target 목록은 쉼표로 구분한 exact canonical hostname+port 1~4개이고 wildcard, CIDR, suffix와 raw IP target은 허용하지 않는다.
 
 Security environment settings:
 
@@ -89,8 +91,20 @@ Security environment settings:
 | `CONNECTOR_TEST_RESPONSE_TIMEOUT_SECONDS` | `10` | finite `0 < value <= 30`, connect/statement보다 크고 lease보다 작음 |
 | `CONNECTOR_TEST_LEASE_TTL_SECONDS` | `30` | `1..120`, API timeout보다 큼 |
 | `CONNECTOR_TEST_ADMISSION_HMAC_KEY` | local-only fallback | Production에서 별도 32 byte 이상 key 필수 |
+| `CONNECTOR_TEST_ALLOWED_PORTS` | `5432` | 중복 없는 port 1~16개. Local target port도 포함 |
+| `CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS` | unset | `NODE_ENV=development` 전용 exact `host:port` 1~4개 |
+| `CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE` | unset | Trusted-local target과 함께 설정하는 readable regular file |
 
 Invalid security setting은 Gateway startup을 실패시킨다. Helm 배포는 `secrets.connectorTestAdmissionHmacKey`로 별도 key를 제공한다.
+
+Local demo profile은 다음 두 target을 각각 사용한다.
+
+| Gateway 실행 위치 | 입력 host/port | CA ownership |
+| --- | --- | --- |
+| Host-run Gateway | `localhost:55432` | `local/connector-test-tls/dev/ca.crt`의 runtime-generated 공개 CA |
+| Docker Gateway | `connector-test-postgres:5432` | container에 read-only mount된 runtime-generated 공개 CA |
+
+CA signing key, server key와 demo credential은 API나 Gateway mount에 포함되지 않는다. Credential은 helper를 통해 clipboard로만 전달하고 stdout에 출력하지 않는다.
 
 ### `POST /connectors`
 

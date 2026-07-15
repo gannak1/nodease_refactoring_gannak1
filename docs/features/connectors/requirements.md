@@ -1,7 +1,7 @@
 # Connectors Requirements
 
 Status: Draft
-Verified Against: feature/mba-246 @ 899915842e2691a44b9bbf0b6322807a165857dd
+Verified Against: feature/mba-246 @ b299e2fa2eecbc8320d38440ff08d34963f5fba6
 Related Features: workflow, organization, audit-tracing, knowledge, conversation-memory
 
 ## Purpose
@@ -52,7 +52,7 @@ Connectors 기능은 외부 데이터 소스에 접속하기 위한 연결 정�
 - CONN-REQ-028: 현재 `connections` 테이블은 user-owned resource이며 `organization_id`를 갖지 않는다.
 - CONN-REQ-029: 현재 connection owner 판정은 organization/team permission helper가 아니라 `connections.user_id == current_user.id` 기준이어야 한다.
 - CONN-REQ-030: connector test, create, schema 조회 실패 응답은 raw host, database name, secret, driver detail, stack trace를 포함하지 않고 safe message 또는 safe `reason_code`로 닫아야 한다.
-- CONN-REQ-031: PostgreSQL 직접 연결 경로는 DB host/port를 사전 검증해 private, loopback, link-local, metadata, reserved target을 거부하고, 검증된 public IP로 실제 연결 대상을 고정해야 한다.
+- CONN-REQ-031: PostgreSQL 직접 연결의 기본 profile은 DB host/port를 사전 검증해 private, loopback, link-local, metadata, reserved target을 거부하고, 검증된 public IP로 실제 연결 대상을 고정해야 한다. CONN-REQ-049의 development exact-local profile만 명시적 예외다.
 - CONN-REQ-032: 기존 workflow DB connector compatibility 경로는 문서화된 SSH tunnel 설정을 사용할 수 있다. 이 허용은 workflow connector API 경계에서 명시적으로 선택해야 하며, arbitrary SSH command execution 허용을 의미하지 않는다.
 - CONN-REQ-033: Knowledge DB source ingestion이 공유 PostgreSQL adapter를 사용할 때는 기본 정책으로 SSH tunnel, proxy, private-network target을 거부해야 한다. 이 경로에서 tunnel을 열려면 별도 connector/egress ADR 또는 승인된 organization policy가 필요하다.
 - CONN-REQ-034: PostgreSQL schema introspection은 table, column, foreign key 개수 상한을 적용하고, 잘린 결과는 safe truncation marker로 표시해야 한다.
@@ -67,12 +67,14 @@ Connectors 기능은 외부 데이터 소스에 접속하기 위한 연결 정�
 - CONN-REQ-040: Connector test는 Redis atomic admission에서 aligned 60초 window당 user 5, organization 30, network 20 rate와 user 1, organization 4, global 16 concurrency를 적용해야 한다. 환경 설정은 문서화된 positive/finite 상한과 scope/timeout 관계를 벗어나면 Gateway startup을 실패시켜야 한다.
 - CONN-REQ-041: Admission identity는 scope-separated HMAC digest만 Redis에 저장해야 하며 raw organization/user/network identity, connection config와 secret을 key/member에 저장하지 않아야 한다. Owner-safe heartbeat는 실제 probe 실행 중 lease를 연장하고 process crash 때만 TTL recovery가 일어나야 한다.
 - CONN-REQ-042: Redis/admission 장애, transport peer 부재와 local executor capacity 부족은 probe 전에 fail-closed해야 한다. Process-local unlimited fallback은 허용하지 않는다.
-- CONN-REQ-043: Strict test는 `postgres`, public-only target과 deployment-managed port allowlist만 허용하고 모든 DNS 결과를 검증한 뒤 한 validated IP로 실제 연결을 고정해야 한다. 기본·production allowlist는 `5432`, local development/demo allowlist는 현재 Docker PostgreSQL publish port인 `5432,54322,55432`여야 한다. 설정은 중복 없는 `1..65535` 정수 1~16개로 제한하고 invalid 설정은 Gateway startup을 실패시켜야 하며 요청자는 allowlist를 확장할 수 없어야 한다.
-- CONN-REQ-044: Strict test는 시스템 CA bundle의 실제 파일 경로를 명시한 TLS `verify-full`, connect 5초, statement 3초, API 10초, distributed lease 30초, 요청당 한 번의 connection attempt, read-only `SELECT 1`과 one-row scalar result를 적용해야 한다. CA bundle이 없으면 DNS 전에 fail-closed해야 한다.
+- CONN-REQ-043: Strict test는 `postgres`, 기본·production public-only target과 deployment-managed port allowlist만 허용하고 모든 DNS 결과를 검증한 뒤 한 validated IP로 실제 연결을 고정해야 한다. 기본·production과 Docker-internal demo allowlist는 `5432`, host-run demo는 exact published target을 위해 `5432,55432`를 사용해야 한다. 설정은 중복 없는 `1..65535` 정수 1~16개로 제한하고 invalid 설정은 Gateway startup을 실패시켜야 하며 요청자는 allowlist를 확장할 수 없어야 한다.
+- CONN-REQ-044: Public strict test는 시스템 CA bundle, development exact-local target은 서버가 소유한 전용 CA file을 명시해 TLS `verify-full`, connect 5초, statement 3초, API 10초, distributed lease 30초, 요청당 한 번의 connection attempt, read-only `SELECT 1`과 one-row scalar result를 적용해야 한다. 선택된 CA file이 없으면 startup 또는 DNS 전에 fail-closed해야 하며 request가 CA나 SSL mode를 지정할 수 없어야 한다.
 - CONN-REQ-045: `ssh.enabled=true` connector test는 approved host-key/private-network 정책 전까지 network 전에 `connector.ssh_probe_not_supported`로 거부해야 한다. 이 제한은 기존 create/schema compatibility를 자동 제거하지 않는다.
 - CONN-REQ-046: Expected target/connection 실패는 static message와 allowlist reason code만 반환해야 하며 host/IP/port/database/username/password/private key/DSN/driver exception을 response, audit, application/client/edge log에 노출하지 않아야 한다.
 - CONN-REQ-047: Admission 뒤 결과는 `connection.test` audit으로 organization, actor, result, canonical reason과 coarse duration만 기록해야 한다. Audit publish 실패는 probe를 자동 재시도하거나 성공 결과를 실패로 바꾸지 않아야 한다.
 - CONN-REQ-048: Repository edge는 connector-test exact route에 32 KiB, 5초 idle receive, buffering off와 request-target log 억제를 적용해야 한다. Gateway actual-byte/total-deadline guard는 유지해야 한다.
+- CONN-REQ-049: Local private/loopback target은 `NODE_ENV=development`에서만 서버가 설정한 최대 4개의 exact canonical hostname+port에 한해 허용해야 한다. Wildcard, suffix, CIDR, raw IP target, request override를 허용하지 않고 target port가 deployment allowlist에도 있어야 하며, 모든 DNS 결과가 RFC1918, IPv6 ULA 또는 loopback이 아니거나 public/private mixed이면 거부해야 한다. Production은 local target 또는 CA 설정이 존재하면 startup을 실패시켜야 한다.
+- CONN-REQ-050: Local/Docker connector demo는 일반 platform PostgreSQL과 분리된 explicit Compose profile을 사용해야 한다. CA signing key, server key와 생성 credential은 runtime private volume에만 두고 공개 CA certificate만 git-ignore된 bind directory를 통해 Gateway에 read-only로 제공해야 한다. Host-run `localhost:55432`와 Docker `connector-test-postgres:5432`는 각각 exact target으로 검증해야 한다.
 
 ## Policies And Edge Cases
 
@@ -83,7 +85,8 @@ Connectors 기능은 외부 데이터 소스에 접속하기 위한 연결 정�
 - 현재 schema 조회는 SQLAlchemy inspector를 사용해 schema metadata를 읽는다.
 - schema 조회 cap은 UX용 metadata preview 범위를 제한하기 위한 것이며, connector가 전체 DB inventory를 durable storage, audit, trace, log에 저장해도 된다는 의미가 아니다.
 - SSH tunnel compatibility는 기존 workflow DB connector 기능을 보존하기 위한 경계다. Knowledge source ingestion의 기본 경계와 다르며, SSH tunnel 허용은 remote shell command 실행 허용으로 해석하지 않는다.
-- SSH tunnel compatibility는 create/schema/runtime의 기존 계약에 한정된다. Strict `/connectors/test`는 ADR-0043에 따라 SSH를 열지 않는다.
+- SSH tunnel compatibility는 create/schema/runtime의 기존 계약에 한정된다. Strict `/connectors/test`는 ADR-0049에 따라 SSH를 열지 않는다.
+- Development exact-local profile은 로컬 시연 전용 배포 설정이며 Organization별 운영 private-network 권한이나 CIDR 승인 기능이 아니다.
 - Production Gateway는 32 byte 이상의 별도 connector-test admission HMAC key를 요구한다. Helm에서는 `secrets.connectorTestAdmissionHmacKey`로 provisioning하고 auth/session key와 재사용하지 않는다.
 - 현재 `DbProcessor`는 Knowledge DB source ingestion에서 저장된 `connection_id`를 조회하고 선택된 테이블/컬럼 기반 SQL을 생성한다. 이 ingestion lifecycle은 Knowledge feature 책임이다.
 - `connections`에는 `created_at/updated_at`과 `organization_id`가 없다.

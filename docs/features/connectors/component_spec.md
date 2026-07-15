@@ -1,7 +1,7 @@
 # Connectors Component Spec
 
 Status: Draft
-Verified Against: feature/mba-246 @ 899915842e2691a44b9bbf0b6322807a165857dd
+Verified Against: feature/mba-246 @ b299e2fa2eecbc8320d38440ff08d34963f5fba6
 
 ## Screens
 
@@ -39,12 +39,12 @@ File/page artifact connector는 egress guard 이후에도 artifact content를 tr
 
 - 출처: `apps/client/app/features/knowledge/components/create-knowledge-modal/DBConnectionForm.tsx`
 - 책임: PostgreSQL DB 연결 정보와 선택적 SSH tunnel 정보를 입력하고 연결 테스트를 실행한다.
-- Strict test는 public PostgreSQL과 deployment-managed port allowlist만 지원한다. UI 기본값은 `5432`이고 allowlist 밖 port는 safe target-policy 실패로 표시한다. SSH 입력은 create/schema compatibility를 위해 유지하지만 `ssh.enabled=true` test는 safe 미지원 결과를 표시한다.
+- Strict test는 기본적으로 public PostgreSQL과 deployment-managed port allowlist만 지원한다. Development demo는 서버가 설정한 exact local hostname+port와 전용 CA에 한해 동일 UI를 사용한다. UI 기본값은 `5432`이고 allowlist 밖 port는 safe target-policy 실패로 표시한다. SSH 입력은 create/schema compatibility를 위해 유지하지만 `ssh.enabled=true` test는 safe 미지원 결과를 표시한다.
 - 소비자:
   - `CreateKnowledgeModal`
   - Knowledge document DB source 설정 화면의 connection edit flow
 - 렌더링: 연결 이름, DB 타입, DB host/port/database/username/password, 선택적 SSH tunnel 설정, SSH 인증 방식(`password`, `key`), private key file input, `연결 테스트` 버튼, 성공/실패 상태 메시지를 표시한다.
-- 현재 기본값: `initialConfig`가 없으면 demo-oriented 기본 config를 사용한다. Secret-like 기본값은 문서에 열거하지 않는다.
+- 현재 기본값: `initialConfig`가 없으면 입력은 비어 있고 DB type은 `postgres`, port는 `5432`, SSH는 비활성이다. Host placeholder는 public hostname 예시이며 local target을 기본 허용으로 오해하게 하는 loopback IP를 제시하지 않는다.
 - 경계:
   - 실제 저장은 직접 하지 않고 부모가 전달한 `onTestConnection`과 `onChange`에 위임한다.
   - private key file은 브라우저에서 text로 읽어 local state에 넣는다.
@@ -124,6 +124,18 @@ File/page artifact connector는 egress guard 이후에도 artifact content를 tr
 6. 성공하면 success toast와 `연결 성공!` 상태가 표시된다.
 7. 실패하면 error toast와 `연결 실패` 상태가 표시된다.
 8. Pending 중 중복 클릭을 막고, `429 Retry-After`가 있으면 bounded cooldown 동안 재시도를 비활성화한다.
+
+### Local/Docker TLS Demo
+
+Local demo는 일반 stack과 분리된 `connector-demo` Compose profile을 명시적으로 시작한 경우에만 사용한다.
+
+1. Host-run은 `docker compose -f dev/docker-compose.yml --profile connector-demo up -d --build --wait connector-test-redis connector-test-tls-init connector-test-postgres`로 격리된 Redis와 TLS PostgreSQL을 시작하고 health 완료를 기다린다.
+2. Docker 통합 모드는 `docker compose -f docker/docker-compose.yml -f docker/docker-compose.connector-demo.yml --profile connector-demo up -d --build --wait`를 사용한다.
+3. `scripts/copy_connector_demo_password.ps1 -Mode dev` 또는 `-Mode docker`를 실행해 생성 credential을 stdout 없이 clipboard에 복사한다.
+4. Host-run Gateway에서는 `localhost`, port `55432`; Docker Gateway에서는 `connector-test-postgres`, port `5432`를 입력한다. Database는 `connector_demo`, username은 `connector_demo_user`를 사용한다.
+5. Gateway가 사용하는 exact-target/CA 환경 설정은 profile 또는 `dev/.env.example`을 따른다. Production 설정으로 복사하지 않는다.
+
+Runtime-generated 공개 CA는 git-ignore된 `local/connector-test-tls/<mode>/ca.crt`에 export되지만 CA signing key, server key와 credential은 private named volume을 벗어나지 않는다. 공개 CA 파일도 source artifact로 커밋하지 않는다.
 
 ### Connection Create During DB Source Submit
 

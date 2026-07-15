@@ -1,7 +1,7 @@
 # Connectors Test Cases
 
 Status: Draft
-Verified Against: feature/mba-246 @ 899915842e2691a44b9bbf0b6322807a165857dd
+Verified Against: feature/mba-246 @ b299e2fa2eecbc8320d38440ff08d34963f5fba6
 
 ## Minimum Failure Rule
 
@@ -35,7 +35,7 @@ Verified Against: feature/mba-246 @ 899915842e2691a44b9bbf0b6322807a165857dd
 | CONN-TC-U008 | PostgreSQL schema introspection은 table, column, FK shape를 보존해야 한다. | 테이블이 있는데 `table_name`, column `name/type`, FK `referenced_table/referenced_column` 중 하나가 빠진다. | 테스트 실패. |
 | CONN-TC-U009 | audit listener는 `Connection` 민감 필드를 마스킹 대상으로 등록해야 한다. | host/database/username/encrypted secret 필드 중 하나가 sensitive set에서 빠진다. | 테스트 실패. |
 | CONN-TC-U010 | PostgreSQL 직접 연결은 검증된 public IP로 연결 대상을 고정해야 한다. | 사전 DNS 검증 후 SQLAlchemy/driver가 hostname을 다시 해석하도록 둔다. | 테스트 실패. |
-| CONN-TC-U011 | PostgreSQL 직접 연결은 private, loopback, link-local, metadata, reserved target을 거부해야 한다. | `127.0.0.1`, `10.0.0.0/8`, metadata IP 중 하나로 연결을 연다. | safe reason code로 실패. |
+| CONN-TC-U011 | PostgreSQL 기본 public profile은 private, loopback, link-local, metadata, reserved target을 거부해야 한다. | Trusted-local 설정 없이 `127.0.0.1`, `10.0.0.0/8`, metadata IP 중 하나로 연결을 연다. | safe reason code로 실패. |
 | CONN-TC-U012 | PostgreSQL schema introspection은 table/column/FK cap을 적용해야 한다. | cap 초과 schema가 truncation marker 없이 전체 반환된다. | 테스트 실패. |
 | CONN-TC-U013 | DB row fetch는 SELECT-only guard와 dangerous function blocklist를 적용해야 한다. | `pg_sleep`, `pg_read_file`, `dblink`, `COPY`, 복수 statement 중 하나가 통과한다. | `adapter.sql_not_allowed`. |
 | CONN-TC-U014 | DB row fetch는 read-only transaction, statement timeout, batch size cap, total row cap을 적용해야 한다. | 사용자 SELECT가 cap 없이 실행되거나 row cap 초과를 부분 성공으로 반환한다. | safe reason code로 실패. |
@@ -89,10 +89,10 @@ Verified Against: feature/mba-246 @ 899915842e2691a44b9bbf0b6322807a165857dd
 | CONN-TC-C006 | `DBConnectionForm` 입력 변경은 부모 `onChange` 호출과 test status 초기화를 해야 한다. | 한 필드 변경 후 `onChange`가 호출되지 않거나 `testStatus`가 `idle`이 아니다. | 테스트 실패. |
 | CONN-TC-C007 | `DBConnectionForm` 연결 테스트는 pending/success/error 상태를 표시해야 한다. | 테스트 pending인데 버튼이 활성 상태이거나, 성공/실패 결과 메시지가 표시되지 않는다. | 테스트 실패. |
 | CONN-TC-C008 | `DBConnectionForm`은 `Retry-After` cooldown을 bounded 적용해야 한다. | `429` 뒤 즉시 중복 요청하거나 비정상 header가 무제한 disable을 만든다. | `1..60`초만 재시도 비활성화하고 raw error/header를 표시하지 않는다. |
-| CONN-TC-C008 | `DBSchemaSelector`는 connection id로 schema를 조회해야 한다. | `connectionId`가 있는데 `connectorApi.getSchema`가 호출되지 않는다. | 테스트 실패. |
-| CONN-TC-C009 | `DBSchemaSelector`는 schema 조회 실패를 toast로 표시해야 한다. | `getSchema`가 reject된다. | `테이블 정보를 불러오는데 실패했습니다.` 표시. |
-| CONN-TC-C010 | `DBSchemaSelector`는 최대 2개 테이블 제한을 적용해야 한다. | 2개 테이블이 선택된 상태에서 3번째 테이블을 선택한다. | 선택 차단, 제한 toast. |
-| CONN-TC-C011 | `DBSchemaSelector`는 FK 있는 2개 테이블 선택 시 join config를 생성해야 한다. | FK metadata가 있는데 `onJoinConfigChange`에 enabled config가 전달되지 않는다. | 테스트 실패. |
+| CONN-TC-C009 | `DBSchemaSelector`는 connection id로 schema를 조회해야 한다. | `connectionId`가 있는데 `connectorApi.getSchema`가 호출되지 않는다. | 테스트 실패. |
+| CONN-TC-C010 | `DBSchemaSelector`는 schema 조회 실패를 toast로 표시해야 한다. | `getSchema`가 reject된다. | `테이블 정보를 불러오는데 실패했습니다.` 표시. |
+| CONN-TC-C011 | `DBSchemaSelector`는 최대 2개 테이블 제한을 적용해야 한다. | 2개 테이블이 선택된 상태에서 3번째 테이블을 선택한다. | 선택 차단, 제한 toast. |
+| CONN-TC-C012 | `DBSchemaSelector`는 FK 있는 2개 테이블 선택 시 join config를 생성해야 한다. | FK metadata가 있는데 `onJoinConfigChange`에 enabled config가 전달되지 않는다. | 테스트 실패. |
 
 ## Permission Tests
 
@@ -110,8 +110,11 @@ Verified Against: feature/mba-246 @ 899915842e2691a44b9bbf0b6322807a165857dd
 | CONN-TC-X002 | Secret 원문은 문서, fixture, audit metadata에 남지 않아야 한다. | DB password, SSH password, private key 원문이 문서, 테스트 fixture, audit metadata 중 하나에서 관찰된다. | 테스트 실패. |
 | CONN-TC-X003 | Redis admission은 multi-replica 경쟁에서도 rate/concurrency 상한을 넘지 않아야 한다. | 마지막 slot을 병렬 acquire하거나 wrong owner release, long-running heartbeat, stale lease, clock skew를 만든다. | Redis time/atomic script 기준 정확한 winner, owner-safe renew/release와 crash-only TTL recovery. |
 | CONN-TC-X004 | Admission key/member는 opaque해야 한다. | Redis key/hash/zset에 raw organization/user/network ID, host/database/username/password가 관찰된다. | HMAC identity와 random owner token만 존재. |
-| CONN-TC-X005 | Strict probe는 validated IP 한 곳에 시스템 CA bundle의 실제 파일 경로를 명시한 TLS `verify-full`로 한 번만 연결해야 한다. | Multiple public DNS, rebinding, first-attempt failure, plaintext/downgrade 또는 CA bundle 누락을 유도한다. | Pinned one-attempt, no fallback/retry, system CA와 hostname certificate 검증. CA 누락은 DNS 전에 safe failure. |
+| CONN-TC-X005 | Strict probe는 validated IP 한 곳에 선택된 server-owned CA file을 명시한 TLS `verify-full`로 한 번만 연결해야 한다. | Multiple DNS, rebinding, first-attempt failure, plaintext/downgrade, system/local CA 누락 또는 SAN mismatch를 유도한다. | Pinned one-attempt, no fallback/retry, target별 CA와 hostname certificate 검증. CA 누락은 startup 또는 DNS 전에 safe failure. |
 | CONN-TC-X006 | Port allowlist는 배포 관리자만 bounded 설정할 수 있어야 한다. | Empty token, duplicate, non-integer, `0`, `65536`, 17개 port를 설정하거나 request로 allowlist 밖 port를 보낸다. | Invalid 설정은 startup 실패. Request는 safe target-policy 실패이며 admission/DNS/probe 0회. |
+| CONN-TC-X007 | Trusted-local target은 development exact hostname+port만 허용해야 한다. | Unlisted private host, raw IP, wildcard/CIDR/suffix, allowlist 밖 port, mixed public/private DNS를 사용한다. | Network 전 safe target-policy 실패. Exact target의 RFC1918/ULA/loopback 결과만 검증 IP 하나에 pin. |
+| CONN-TC-X008 | Production은 trusted-local target 또는 local CA override를 허용하지 않아야 한다. | `NODE_ENV=production`에서 두 설정 중 하나 또는 모두를 주입한다. | Gateway startup 실패, public-only 경계 유지. |
+| CONN-TC-X009 | 실제 Redis와 runtime TLS PostgreSQL이 fake 밖의 배포 계약을 검증해야 한다. | Atomic last-slot race, cross-adapter concurrency, wrong-owner release, TTL recovery, host `localhost:55432`, Docker `connector-test-postgres:5432`를 실행한다. | 실제 Redis admission과 TLS `verify-full`/`SELECT 1` 성공. Secret/key 원문은 output·log·response에 없음. |
 
 ## Knowledge Source Connector Target Tests
 
