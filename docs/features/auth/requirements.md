@@ -89,6 +89,9 @@ Auth는 보호된 Gateway API가 `auth_token` 쿠키에서 현재 사용자를 �
 - AUTH-REQ-064: Login 성공은 `user.login`, invalid/inactive/limited/limiter-unavailable 결과는 `user.login_failed`를 사용하고 safe reason code로 구분해야 한다. Login audit는 request ID, policy version, allowlisted limited dimension과 email을 제외한 opaque user ID/표시 이름 success actor snapshot만 허용하며 raw email/IP/fingerprint와 exception message를 제외해야 한다.
 - AUTH-REQ-065: Login metric과 structured log는 outcome, allowlisted dimension, policy version과 operation 같은 bounded label만 사용해야 한다. Account, network/IP, fingerprint, user ID와 request ID를 metric label로 사용하지 않아야 한다.
 - AUTH-REQ-066: Request schema `422`는 login admission을 소비하지 않아야 한다. Existing invalid credential `401`, valid credential의 inactive `403`, success response와 cookie 계약은 유지해야 한다.
+- AUTH-REQ-067: 예상하지 못한 password credential backend 오류는 raw exception과 account 값을 응답·로그에 노출하지 않고 고정 `500` 응답과 `auth.login.internal_error` 감사 reason으로 변환해야 한다.
+- AUTH-REQ-068: Production Helm 배포에서 Ingress가 활성화되면 실제 peer topology에 맞는 trusted proxy CIDR이 필수여야 한다. Direct Gateway 배포는 빈 목록으로 forwarded address를 무시할 수 있으며, 광역 CIDR을 추측해 기본값으로 제공하지 않아야 한다.
+- AUTH-REQ-069: Bundled Docker Compose는 development mode를 명시적으로 기본 적용해야 하며, 운영 사용 시 `NODE_ENV=production`과 dedicated login fingerprint keyring을 설정해 production startup 검증을 활성화해야 한다.
 
 ## Policies And Edge Cases
 

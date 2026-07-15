@@ -102,6 +102,7 @@ Status: Draft
 | AUTH-TC-A049 | Untrusted direct request는 spoofed XFF로 bucket을 바꾸지 못해야 한다. | 같은 peer가 매 요청 다른 XFF를 제출한다. | 동일 network bucket이 소진되어 `429`. |
 | AUTH-TC-A050 | Login audit는 raw email/IP/fingerprint/secret을 저장하지 않아야 한다. | Credential, limited, unavailable 각각에 unique sentinel을 넣는다. | Response, audit, metric, log에 sentinel 없음. |
 | AUTH-TC-A051 | Password login 실패는 전용 감사만 한 번 기록해야 한다. | Invalid credential `401` 또는 inactive account `403`을 발생시킨다. | `user.login_failed`가 한 번 기록되고 전역 `auth.permission_denied`는 추가되지 않음. |
+| AUTH-TC-A052 | 예상하지 못한 credential backend 오류는 원문을 노출하지 않아야 한다. | Account sentinel이 포함된 DB/provider 예외를 발생시킨다. | 고정 `500`, `auth.login.internal_error`; response/log/audit에 sentinel 없음. |
 
 ## Distributed Login Admission Integration Tests
 
@@ -113,7 +114,7 @@ Status: Draft
 | AUTH-TC-I004 | Gateway replica는 같은 Redis state를 공유해야 한다. | 서로 다른 limiter instance에서 같은 identity로 capacity+1 요청을 나눈다. | 전체 합계가 capacity를 넘지 않음. |
 | AUTH-TC-I005 | Admission은 세 dimension all-or-nothing이어야 한다. | Account bucket만 비운 뒤 pair/network state를 관찰한다. | Blocked request가 pair/network token을 추가 소비하지 않음. |
 | AUTH-TC-I006 | Token refill은 Redis server time과 TTL을 따라야 한다. | 최소 refill interval 전후로 같은 bucket을 요청한다. | 전에는 blocked, 이후 한 token allowed; full refill 뒤 key 만료 또는 full-equivalent. |
-| AUTH-TC-I007 | HMAC rotation overlap은 old limit을 우회하지 않아야 한다. | Old version bucket을 소진한 뒤 new primary/old previous keyring으로 admission한다. | New bucket이 비어 있어도 blocked; overlap 동안 new state도 누적. |
+| AUTH-TC-I007 | HMAC rotation overlap은 old limit을 우회하지 않아야 한다. | Old version bucket을 소진한 뒤 new primary/old previous keyring으로 admission한다. | New bucket이 비어 있어도 blocked; all-or-nothing 계약에 따라 어떤 version/dimension state도 추가 소비하지 않음. |
 | AUTH-TC-I008 | Success reset은 active version account/pair key만 제거해야 한다. | Current+previous keyring에서 성공 reset한다. | 두 version account/pair 삭제, network key 유지. |
 
 ## Component And Hook Tests
@@ -181,3 +182,5 @@ Status: Draft
 | AUTH-TC-X007 | Redis malformed result는 fail-open으로 처리되지 않아야 한다. | Lua result가 contract와 다른 타입/길이를 반환한다. | `503`, verifier 미호출. |
 | AUTH-TC-X008 | Success reset 실패는 이미 성공한 login을 거짓 실패로 바꾸지 않아야 한다. | Credential/DB commit 뒤 Redis delete가 실패한다. | Login 성공 유지, safe limiter failure metric, token state 보수적 유지. |
 | AUTH-TC-X009 | Redis integration cleanup은 다른 key를 삭제하지 않아야 한다. | Test prefix 밖 sentinel key를 함께 둔다. | Test 종료 뒤 sentinel 유지, `FLUSHDB` 미사용. |
+| AUTH-TC-X010 | Ingress-backed production Helm은 trusted proxy CIDR 누락을 거부해야 한다. | `NODE_ENV=production`, Ingress enabled, trusted proxy CIDR empty로 chart를 render한다. | Helm render/lint 실패; direct Gateway 또는 development profile은 빈 목록 허용. |
+| AUTH-TC-X011 | Bundled Compose의 environment mode가 명시적이어야 한다. | `NODE_ENV` override 없이 Compose config를 render한다. | Gateway에 `NODE_ENV=development`; production override 시 `production`과 dedicated keyring startup 검증 적용. |

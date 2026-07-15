@@ -64,10 +64,13 @@ Server-side progressive sleep은 Gateway resource amplification을 만들 수 �
 - inactive: `user.login_failed`, reason `auth.login.inactive`
 - limited: `user.login_failed`, reason `auth.login.rate_limited`
 - limiter unavailable: `user.login_failed`, reason `auth.login.limiter_unavailable`
+- unexpected credential backend failure: `user.login_failed`, reason `auth.login.internal_error`
 
 Login audit는 request context 전체를 복사하지 않고 request ID, reason code, limiter policy version, allowlisted limited dimension과 success actor snapshot만 투영한다. Success actor snapshot은 opaque user ID와 표시 이름만 허용하고 email은 포함하지 않는다. IP/forwarded header, fingerprint, Redis key, password/hash, JWT/cookie와 exception message도 제외한다.
 
 Password login이 `user.login_failed`를 직접 기록한 `401/403`은 HTTP error envelope에 `audit_recorded`를 표시해 전역 `auth.permission_denied` 감사를 중복 생성하지 않는다. 공통 인증 dependency와 permission 경계에서 발생하고 아직 감사되지 않은 다른 `401/403`은 기존 전역 감사 계약을 유지한다.
+
+예상하지 못한 credential backend 예외는 원문을 상위 HTTP/server log로 전파하지 않고 safe typed application error와 고정 `500` 응답으로 변환한다.
 
 Metric/log label은 outcome, allowlisted dimension, policy version과 operation 같은 bounded 값만 사용한다. Account, IP/network, fingerprint, user ID와 request ID를 metric label로 사용하지 않는다.
 
@@ -94,13 +97,15 @@ Endpoint는 request/schema, application error-to-HTTP mapping과 cookie 작성�
 - 공격자가 특정 account budget을 소진하는 bounded denial은 남는다.
 - CAPTCHA/MFA 없이 자동화 공격을 완전히 제거하지는 못한다.
 - Production ingress topology에 맞는 trusted proxy CIDR 운영이 필요하다.
+- Ingress-backed production Helm release는 trusted proxy CIDR이 비어 있으면 render를 거부한다. Direct Gateway production은 빈 목록으로 forwarded address를 무시할 수 있다.
+- Bundled Docker Compose는 local/self-hosted 개발 호환성을 위해 development mode를 기본값으로 사용한다. 운영 사용자는 `NODE_ENV=production`과 dedicated keyring을 명시해야 한다.
 
 ## Verification
 
 - Pure policy/application tests는 admission 순서, success reset과 safe error를 검증한다.
 - Adapter tests는 trusted proxy spoofing, HMAC rotation과 non-disclosure를 검증한다.
 - Actual Redis integration은 multi-instance concurrency, all-or-nothing consume, refill/TTL과 current/previous overlap을 검증한다.
-- API tests는 기존 `200/401/403/422` 회귀와 신규 `429/503`, verifier pre-call 차단을 검증한다.
+- API tests는 기존 `200/401/403/422` 회귀와 신규 `429/500/503`, verifier pre-call 차단, unexpected backend exception 원문 비노출을 검증한다.
 
 ## Follow-Up
 

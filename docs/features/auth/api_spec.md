@@ -206,6 +206,7 @@ HTTP 예외는 다음 형식으로 반환된다.
 | 401 | `POST /auth/login` | `이메일 또는 비밀번호가 올바르지 않습니다` | 사용자가 없거나, 비밀번호가 없거나, 비밀번호 검증에 실패한다. |
 | 429 | `POST /auth/login` | `로그인 시도가 너무 많습니다. 잠시 후 다시 시도해주세요.` | Account, source network 또는 account+network admission token이 부족하다. `Retry-After`는 1~300초이며 제한 차원은 노출하지 않는다. |
 | 503 | `POST /auth/login` | `로그인을 일시적으로 사용할 수 없습니다.` | Redis limiter 연결, script 또는 result 판정에 실패한다. `Retry-After: 30`, credential verifier 미호출. |
+| 500 | `POST /auth/login` | `로그인을 처리할 수 없습니다.` | 예상하지 못한 credential backend 오류를 safe typed error로 변환한다. Raw exception과 account 값은 응답·로그에 포함하지 않는다. |
 | 401 | `GET /auth/me` | `로그인이 필요합니다` | `auth_token` 쿠키가 없다. |
 | 401 | `GET /auth/me` | `유효하지 않거나 만료된 토큰입니다` | JWT 검증에 실패한다. |
 | 401 | `GET /auth/me` | `유저를 찾을 수 없습니다` | 토큰의 user id가 사용자로 해석되지 않는다. |
@@ -220,14 +221,17 @@ HTTP 예외는 다음 형식으로 반환된다.
 
 회원가입, 로그인, 로그아웃, Google OAuth 진입/콜백은 공개 인증 생명주기 엔드포인트이다. 공개라는 의미는 resource permission이 필요 없다는 뜻이며 password login admission을 우회한다는 뜻이 아니다.
 
-회원가입, 로그인, 로그아웃, Google 로그인 성공, 인증 실패는 Gateway에 감사 이벤트를 기록한다. Password login은 성공에 `user.login`, invalid/inactive/limited/limiter-unavailable에 `user.login_failed`를 사용하고 safe reason code로 구분한다. Password login이 전용 감사를 기록한 `401/403`은 전역 `auth.permission_denied` 감사를 중복 생성하지 않는다. Login audit의 성공 actor snapshot은 opaque user ID와 표시 이름만 포함하며 raw email, IP/forwarded header, HMAC fingerprint, Redis key와 exception message를 저장하지 않는다.
+회원가입, 로그인, 로그아웃, Google 로그인 성공, 인증 실패는 Gateway에 감사 이벤트를 기록한다. Password login은 성공에 `user.login`, invalid/inactive/limited/limiter-unavailable/internal-error에 `user.login_failed`를 사용하고 safe reason code로 구분한다. Password login이 전용 감사를 기록한 `401/403`은 전역 `auth.permission_denied` 감사를 중복 생성하지 않는다. Login audit의 성공 actor snapshot은 opaque user ID와 표시 이름만 포함하며 raw email, IP/forwarded header, HMAC fingerprint, Redis key와 exception message를 저장하지 않는다.
 
 ## Session And Browser Configuration
 
 - `NODE_ENV=production`에서는 `SECRET_KEY`가 없거나 공백이거나 알려진 개발 placeholder이면 Gateway가 시작되지 않는다. 검사와 오류 메시지는 secret 값을 출력하지 않는다.
 - Credentialed CORS는 `CORS_ORIGINS`의 명시적인 HTTP(S) origin만 허용한다. Wildcard, 빈 목록, userinfo/path/query/fragment가 있는 origin은 시작 시 거부한다.
-- Production password login limiter는 dedicated versioned HMAC keyring과 primary version을 요구한다. Trusted proxy CIDR은 실제 ingress topology에 맞게 명시하며 direct Gateway deployment는 빈 목록으로 forwarded address를 무시한다.
+- Production password login limiter는 dedicated versioned HMAC keyring과 primary version을 요구한다. Trusted proxy CIDR은 실제 ingress topology에 맞게 명시하며 direct Gateway deployment는 빈 목록으로 forwarded address를 무시한다. Production Helm에서 Ingress가 활성화됐는데 이 값이 비면 chart render를 거부한다.
+- Bundled Docker Compose는 local/self-hosted 개발 호환성을 위해 `NODE_ENV=development`를 기본값으로 전달한다. 운영 배포로 사용할 때는 `NODE_ENV=production`과 dedicated keyring을 명시해야 한다.
 - Login limiter는 기존 Redis host/port/password와 전용 logical DB를 사용한다. Admission dependency가 실패하면 password login만 `503`으로 닫고 기존 JWT session 검증은 유지한다.
+- Non-secret 설정은 `AUTH_LOGIN_LIMITER_REDIS_DB`(기본 `2`), `AUTH_LOGIN_LIMITER_POLICY_VERSION`, `AUTH_LOGIN_FINGERPRINT_PRIMARY_VERSION`, `AUTH_LOGIN_TRUSTED_PROXY_CIDRS`를 사용한다. Production HMAC keyring JSON은 `AUTH_LOGIN_FINGERPRINT_KEYS` Secret으로 주입하고 실제 값은 manifest, log와 진단 응답에 출력하지 않는다.
+- 초기 capacity/full-refill 값은 ADR의 versioned policy로 고정한다. 값을 변경하면 policy version, requirements와 Redis integration test를 함께 갱신한다.
 - 이 CORS allowlist는 브라우저가 credentialed JSON 요청을 보내는 현행 제품 경계다. 별도 CSRF token과 exact-Origin 검사는 Target이며 현재 구현으로 표현하지 않는다.
 
 ## Target Runtime Principal Boundary
