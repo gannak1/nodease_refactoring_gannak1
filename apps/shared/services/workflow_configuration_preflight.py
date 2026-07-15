@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from apps.shared.domain.workflow_graph import MAX_WORKFLOW_GRAPH_NESTING_DEPTH
 from apps.shared.services.workflow_node_catalog import (
     node_definition,
     node_output_keys,
@@ -10,6 +11,8 @@ from apps.shared.services.workflow_node_catalog import (
     node_parameter_is_configured,
     validate_node_parameter_value,
 )
+
+SelectorKeys = frozenset[str] | None
 
 
 @dataclass(frozen=True)
@@ -42,7 +45,6 @@ def workflow_configuration_issues(
     graph: dict[str, Any] | None,
 ) -> list[WorkflowConfigurationIssue]:
     issues: list[WorkflowConfigurationIssue] = []
-    visited_graphs: set[int] = set()
 
     def parameter_selectors(value: Any) -> list[list[Any]]:
         if isinstance(value, list) and len(value) >= 2 and all(
@@ -59,11 +61,24 @@ def workflow_configuration_issues(
                 selectors.append(item["value_selector"])
         return selectors
 
-    def inspect_graph(current: dict[str, Any]) -> None:
-        graph_identity = id(current)
-        if graph_identity in visited_graphs:
-            return
-        visited_graphs.add(graph_identity)
+    if not isinstance(graph, dict):
+        return issues
+
+    pending: list[
+        tuple[dict[str, Any], int, dict[str, SelectorKeys], str | None]
+    ] = [(graph, 0, {}, None)]
+    while pending:
+        current, depth, inherited_sources, owner_loop_id = pending.pop()
+        if depth > MAX_WORKFLOW_GRAPH_NESTING_DEPTH:
+            issues.append(
+                WorkflowConfigurationIssue(
+                    node_id=owner_loop_id or "",
+                    node_type="loopNode",
+                    missing_parameters=("subGraph",),
+                )
+            )
+            continue
+
         nodes = [
             node
             for node in current.get("nodes") or []
@@ -73,18 +88,28 @@ def workflow_configuration_issues(
             str(node.get("id")): node for node in nodes if node.get("id")
         }
 
+        local_sources: dict[str, SelectorKeys] = {
+            node_id: frozenset(
+                str(key)
+                for key in node_output_keys(
+                    str(node.get("type") or ""),
+                    node.get("data") if isinstance(node.get("data"), dict) else {},
+                )
+            )
+            for node_id, node in node_by_id.items()
+        }
+
         def selector_valid(selector: Any) -> bool:
             if not isinstance(selector, list) or len(selector) < 2:
                 return False
-            source = node_by_id.get(str(selector[0]))
-            if source is None:
+            source_id = str(selector[0])
+            if source_id in local_sources:
+                allowed_keys = local_sources[source_id]
+            elif source_id in inherited_sources:
+                allowed_keys = inherited_sources[source_id]
+            else:
                 return False
-            return str(selector[1]) in node_output_keys(
-                str(source.get("type") or ""),
-                source.get("data")
-                if isinstance(source.get("data"), dict)
-                else {},
-            )
+            return allowed_keys is None or str(selector[1]) in allowed_keys
 
         for node in nodes:
             node_type = str(node.get("type") or "")
@@ -149,10 +174,25 @@ def workflow_configuration_issues(
 
             subgraph = data.get("subGraph") if node_type == "loopNode" else None
             if isinstance(subgraph, dict):
-                inspect_graph(subgraph)
+                child_sources = {**inherited_sources, **local_sources}
+                mappings = data.get("inputs")
+                if isinstance(mappings, list):
+                    for mapping in mappings:
+                        if not isinstance(mapping, dict):
+                            continue
+                        mapping_name = mapping.get("name")
+                        if isinstance(mapping_name, str) and mapping_name.strip():
+                            child_sources[mapping_name] = None
+                child_sources["loop"] = frozenset({"item", "index"})
+                pending.append(
+                    (
+                        subgraph,
+                        depth + 1,
+                        child_sources,
+                        str(node.get("id") or ""),
+                    )
+                )
 
-    if isinstance(graph, dict):
-        inspect_graph(graph)
     return issues
 
 

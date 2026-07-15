@@ -110,6 +110,121 @@ def test_local_execution_preflight_allows_loop_key_fallback_and_checks_subgraph(
     ]
 
 
+def test_loop_subgraph_preflight_accepts_iteration_and_mapped_input_selectors():
+    graph = {
+        "nodes": [
+            {
+                "id": "source",
+                "type": "startNode",
+                "data": {"variables": [{"name": "mail"}]},
+            },
+            {
+                "id": "loop",
+                "type": "loopNode",
+                "data": {
+                    "inputs": [
+                        {
+                            "name": "mapped_mail",
+                            "value_selector": ["source", "mail"],
+                        }
+                    ],
+                    "subGraph": {
+                        "nodes": [
+                            {
+                                "id": "draft",
+                                "type": "gmailDraftNode",
+                                "data": {
+                                    "credential_id": "credential-reference",
+                                    "processing_ref_selector": [
+                                        "loop",
+                                        "item",
+                                        "processing_ref",
+                                    ],
+                                    "reply_body_selector": [
+                                        "mapped_mail",
+                                        "reply_body",
+                                    ],
+                                },
+                            }
+                        ],
+                        "edges": [],
+                    },
+                },
+            },
+        ],
+        "edges": [],
+    }
+
+    assert workflow_configuration_issues(graph) == []
+
+
+def test_loop_subgraph_preflight_rejects_unknown_iteration_context_key():
+    graph = {
+        "nodes": [
+            {
+                "id": "loop",
+                "type": "loopNode",
+                "data": {
+                    "subGraph": {
+                        "nodes": [
+                            {
+                                "id": "draft",
+                                "type": "gmailDraftNode",
+                                "data": {
+                                    "credential_id": "credential-reference",
+                                    "processing_ref_selector": ["loop", "missing"],
+                                    "reply_body_selector": ["loop", "item"],
+                                },
+                            }
+                        ],
+                        "edges": [],
+                    }
+                },
+            }
+        ],
+        "edges": [],
+    }
+
+    issues = workflow_configuration_issues(graph)
+
+    assert len(issues) == 1
+    assert issues[0].missing_parameters == ("processing_ref_selector",)
+
+
+def test_loop_subgraph_preflight_uses_shared_nesting_depth_limit():
+    def nested_graph(depth: int):
+        current = {
+            "nodes": [
+                {
+                    "id": "workflow-call",
+                    "type": "workflowNode",
+                    "data": {"appId": "app-reference"},
+                }
+            ],
+            "edges": [],
+        }
+        for index in range(depth):
+            current = {
+                "nodes": [
+                    {
+                        "id": f"loop-{index}",
+                        "type": "loopNode",
+                        "data": {"subGraph": current},
+                    }
+                ],
+                "edges": [],
+            }
+        return current
+
+    assert workflow_configuration_issues(nested_graph(16)) == []
+
+    issues = workflow_configuration_issues(nested_graph(17))
+
+    assert len(issues) == 1
+    assert issues[0].node_type == "loopNode"
+    assert issues[0].missing_parameters == ("subGraph",)
+
+
 def test_resolved_external_action_passes_without_external_calls():
     enforce_workflow_configuration_preflight(
         _graph(

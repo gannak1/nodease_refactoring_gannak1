@@ -363,9 +363,9 @@ Blocking response:
 ### MBA-275 Cross-Surface Admission Contract
 
 - server는 Catalog required configuration에서 `external_read`, `external_write`, `local_execution`을 포함한 unresolved 상태를 재계산한다. client의 `configuration_state=resolved` 위조는 통과하지 않는다.
-- `WorkflowNode`는 runtime target인 `appId`만 required configuration이고 `workflowId`는 선택 metadata다. `loopNode`는 `subGraph`가 필수이며, `loop_key`가 없거나 빈 값이면 mapped input의 첫 배열을 선택하는 기존 runtime fallback을 허용한다.
+- `WorkflowNode`는 runtime target인 `appId`만 required configuration이고 `workflowId`는 선택 metadata다. 누락된 `workflowId`는 runtime model에서도 빈 metadata로 정규화한다. `loopNode`는 `subGraph`가 필수이며, `loop_key`가 없거나 빈 값이면 mapped input의 첫 배열을 선택하는 기존 runtime fallback을 허용한다. Loop body selector는 `loop.item|index`, 상위 실행 입력과 명시적 mapped input을 사용할 수 있고, depth 16을 넘는 subGraph는 configuration admission에서도 fail-closed한다.
 - test/run/deployment의 기존 `409 workflow.configuration_preflight.blocked` 응답과 safe `reason_code` 계약을 유지한다. 새 public error code를 만들지 않으며 raw node data, reference, secret과 내부 exception을 반환하지 않는다.
-- schedule dispatch는 publish 전에 같은 preflight를 수행하고, worker는 claim의 locked canonical snapshot을 다시 검사한 뒤 budget 평가와 `mark_running()`으로 진행한다. blocker는 기존 `configuration_preflight_blocked`로 canceled 처리한다.
+- schedule dispatch는 publish 전에 공통 configuration과 DB 기반 target/policy preflight를 수행한다. Worker는 claim의 locked canonical root identity와 공통 configuration을 다시 검사한 뒤 budget 평가와 `mark_running()`으로 진행하고, blocker는 기존 `configuration_preflight_blocked`로 canceled 처리한다. Publish 뒤 바뀔 수 있는 WorkflowNode/KB/credential 상태와 권한은 runtime authoritative gate가 다시 검사한다.
 
 ## Errors
 
