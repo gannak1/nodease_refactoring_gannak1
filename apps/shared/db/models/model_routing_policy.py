@@ -42,16 +42,16 @@ class LLMNodeModelRoutingPolicy(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    organization_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("organization.id", ondelete="CASCADE"), nullable=True
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("organization.id"), nullable=False
     )
-    workflow_id: Mapped[uuid.UUID] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False
+    workflow_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("workflows.id", ondelete="SET NULL"), nullable=True
     )
-    deployment_id: Mapped[uuid.UUID] = mapped_column(
+    deployment_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         PGUUID(as_uuid=True),
-        ForeignKey("workflow_deployments.id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("workflow_deployments.id", ondelete="SET NULL"),
+        nullable=True,
     )
     node_id: Mapped[str] = mapped_column(String, nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

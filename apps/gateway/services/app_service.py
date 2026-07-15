@@ -9,6 +9,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from apps.gateway.services.admin_usage_service import AdminUsageService, KST
+from apps.gateway.services.audit_records import add_action_audit
+from apps.gateway.services.app_lifecycle_lock import lock_app_for_lifecycle
 from apps.gateway.services.deployment_parameter_optimization_service import (
     DeploymentParameterOptimizationService,
 )
@@ -17,8 +19,10 @@ from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
 from apps.gateway.services.workflow_permission_lock import (
     lock_workflow_permission_scope,
 )
+from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.app import App
 from apps.shared.db.models.llm import LLMUsageLog
+from apps.shared.db.models.model_routing_policy import LLMNodeModelRoutingPolicy
 from apps.shared.db.models.team import TeamWorkflowPermission, UserWorkflowPermission
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
@@ -1171,32 +1175,116 @@ class AppService:
         return new_app
 
     @staticmethod
-    def delete_app(db: Session, app_id: str, user_id: str):
-        """
-        앱을 삭제합니다.
-        """
-        app = db.query(App).filter(App.id == app_id).first()
-        if not app:
-            return None
+    def _owned_workflow_query(db: Session, app_id, organization_id):
+        return db.query(Workflow).filter(
+            Workflow.app_id == app_id,
+            Workflow.organization_id == organization_id,
+        )
 
-        if not AppService.can_manage_app(db, app, user_id):
-            return None
+    @staticmethod
+    def _delete_workflow_permissions(db: Session, workflow_ids: list[Any]) -> None:
+        if not workflow_ids:
+            return
+        db.query(TeamWorkflowPermission).filter(
+            TeamWorkflowPermission.workflow_id.in_(workflow_ids)
+        ).delete(synchronize_session=False)
+        db.query(UserWorkflowPermission).filter(
+            UserWorkflowPermission.workflow_id.in_(workflow_ids)
+        ).delete(synchronize_session=False)
 
-        # 1. Circular dependency 해결을 위해 workflow_id 관계 끊기
-        app.workflow_id = None
-        db.flush()
+    @staticmethod
+    def _disable_model_routing_policies(db: Session, app: App) -> None:
+        deployment_ids = [
+            deployment_id
+            for (deployment_id,) in db.query(WorkflowDeployment.id)
+            .filter(WorkflowDeployment.app_id == app.id)
+            .all()
+        ]
+        if not deployment_ids:
+            return
 
-        # 2. 연결된 워크플로우 삭제
-        # Workflow.app_id가 ON DELETE CASCADE가 아닐 수 있으므로 수동 삭제
-        db.query(Workflow).filter(Workflow.app_id == app_id).delete()
-        db.flush()
+        db.query(LLMNodeModelRoutingPolicy).filter(
+            LLMNodeModelRoutingPolicy.organization_id == app.organization_id,
+            LLMNodeModelRoutingPolicy.deployment_id.in_(deployment_ids),
+        ).update(
+            {LLMNodeModelRoutingPolicy.enabled: False},
+            synchronize_session=False,
+        )
 
-        # 3. 앱 삭제
-        # WorkflowDeployment는 ON DELETE CASCADE로 설정되어 있어 자동 삭제됨
-        db.delete(app)
-        db.commit()
+    @staticmethod
+    def _add_delete_audit(
+        db: Session,
+        app: App,
+        user_id: str,
+        deleted_workflow_count: int,
+        request_id: str | None,
+    ) -> None:
+        metadata = {
+            "actor_id": str(user_id),
+            "app_id": str(app.id),
+            "deleted_workflow_count": deleted_workflow_count,
+        }
+        if request_id is not None:
+            metadata["request_id"] = str(request_id)
 
-        return True
+        add_action_audit(
+            db,
+            AuditAction.APP_DELETE,
+            user_id,
+            "app",
+            app.id,
+            organization_id=app.organization_id,
+            metadata=metadata,
+        )
+
+    @staticmethod
+    def delete_app(
+        db: Session,
+        app_id: str,
+        user_id: str,
+        request_id: str | None = None,
+    ):
+        """App과 같은 organization의 owned Workflow를 한 transaction으로 삭제한다."""
+        try:
+            app = lock_app_for_lifecycle(db, app_id)
+            if not app:
+                return None
+
+            if not AppService.can_manage_app(db, app, user_id):
+                return None
+
+            owned_workflows = AppService._owned_workflow_query(
+                db,
+                app_id,
+                app.organization_id,
+            )
+            workflow_ids = [workflow.id for workflow in owned_workflows.all()]
+            AppService._delete_workflow_permissions(db, workflow_ids)
+            AppService._disable_model_routing_policies(db, app)
+
+            # Circular dependency를 끊은 뒤 같은 organization의 owned Workflow만 삭제한다.
+            app.workflow_id = None
+            db.flush()
+            AppService._owned_workflow_query(
+                db,
+                app_id,
+                app.organization_id,
+            ).delete(synchronize_session=False)
+            db.flush()
+
+            db.delete(app)
+            AppService._add_delete_audit(
+                db,
+                app,
+                user_id,
+                len(workflow_ids),
+                request_id,
+            )
+            db.commit()
+            return True
+        except Exception:
+            db.rollback()
+            raise
 
     @staticmethod
     def _clean_graph_data(graph_snapshot: dict) -> dict:

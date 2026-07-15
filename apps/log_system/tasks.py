@@ -170,6 +170,14 @@ def _resolve_app_id(session, workflow_id, deployment_id=None):
     return None
 
 
+def _resolve_organization_id(session, workflow_id):
+    query = getattr(session, "query", None)
+    if query is None:
+        return None
+    workflow = query(Workflow).filter(Workflow.id == workflow_id).first()
+    return getattr(workflow, "organization_id", None) if workflow else None
+
+
 def _schedule_audit_organization_id(session, run_log):
     trigger_mode = getattr(run_log.trigger_mode, "value", run_log.trigger_mode)
     task_id = str(run_log.workflow_task_id or "")
@@ -359,9 +367,15 @@ def create_run_log(self, data: Dict[str, Any]):
             if data.get("app_id")
             else _resolve_app_id(session, workflow_id, deployment_id)
         )
+        organization_id = (
+            _deserialize_uuid(data.get("organization_id"))
+            if data.get("organization_id")
+            else _resolve_organization_id(session, workflow_id)
+        )
 
         run_log = WorkflowRun(
             id=run_id,
+            organization_id=organization_id,
             workflow_id=workflow_id,
             app_id=app_id,
             user_id=user_id,

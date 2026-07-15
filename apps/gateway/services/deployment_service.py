@@ -873,7 +873,7 @@ class DeploymentService:
         공개 실행(`/run-public`)은 anonymous public-only RAG 경계를 유지해야 하므로
         이 메서드에서만 execution_subject를 주입합니다.
         """
-        deployment, app = DeploymentService._get_active_deployment_and_app(
+        deployment, app = DeploymentService._lock_active_deployment_and_app(
             db,
             deployment_id,
             surface=SURFACE_AUTHENTICATED_RUN,
@@ -927,6 +927,30 @@ class DeploymentService:
             "input_schema": deployment.input_schema,
             "output_schema": deployment.output_schema,
         }
+
+    @staticmethod
+    def _lock_active_deployment_and_app(
+        db: Session,
+        deployment_id: uuid.UUID | str,
+        *,
+        surface: str,
+        runtime_policy: DeploymentRuntimePolicy,
+    ) -> tuple[WorkflowDeployment, App]:
+        initial_deployment = (
+            db.query(WorkflowDeployment)
+            .filter(WorkflowDeployment.id == deployment_id)
+            .first()
+        )
+        if initial_deployment is None:
+            raise HTTPException(status_code=404, detail="Deployment not found")
+        if lock_app_for_lifecycle(db, initial_deployment.app_id) is None:
+            raise HTTPException(status_code=404, detail="Deployment not found")
+        return DeploymentService._get_active_deployment_and_app(
+            db,
+            deployment_id,
+            surface=surface,
+            runtime_policy=runtime_policy,
+        )
 
     @staticmethod
     def _get_active_deployment_and_app(

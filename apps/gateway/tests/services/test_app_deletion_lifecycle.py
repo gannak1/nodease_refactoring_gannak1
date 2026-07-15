@@ -5,6 +5,7 @@ import pytest
 
 from apps.gateway.services.app_service import AppService
 from apps.shared.db.models.app import App
+from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.team import TeamWorkflowPermission, UserWorkflowPermission
 from apps.shared.db.models.workflow import Workflow
 
@@ -103,6 +104,10 @@ class _DeleteDb:
                 self.events.append(("delete", model))
                 return
 
+    def add(self, row):
+        self.rows_by_model.setdefault(type(row), []).append(row)
+        self.events.append(("add", type(row)))
+
     def commit(self):
         self.committed = True
 
@@ -134,6 +139,7 @@ def _deletion_fixture():
     db = _DeleteDb(
         {
             App: [app],
+            AuditLog: [],
             Workflow: [workflow],
             TeamWorkflowPermission: [team_permission],
             UserWorkflowPermission: [user_permission],

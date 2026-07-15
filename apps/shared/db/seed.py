@@ -777,6 +777,7 @@ def _seed_template_run_logs(db: Session, workflow: Workflow) -> None:
     for index, (suffix, status, priority, cost, tokens, error) in enumerate(run_specs):
         started_at = now - timedelta(days=index + 1, minutes=index * 11)
         run = WorkflowRun(
+            organization_id=workflow.organization_id,
             workflow_id=workflow.id,
             user_id=PLACEHOLDER_USER_ID,
             deployment_id=DEV_DEPLOYMENT_IDS["template"],

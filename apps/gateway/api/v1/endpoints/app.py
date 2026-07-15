@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.services.organization_context import resolve_active_organization_id
+from apps.gateway.utils.api_errors import raise_api_error
 from apps.gateway.utils.audit import audit
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.app import App
@@ -226,14 +227,14 @@ def clone_app(
 
 
 @router.delete("/{app_id}")
-@audit(AuditAction.APP_DELETE, target_param="app_id")
 def delete_app(
     app_id: str,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
-    앱을 삭제합니다. (본인 앱만)
+    관리 권한이 있는 App을 삭제합니다.
     """
     app_record = _get_app_or_404(db, app_id)
     denial_status = AppService.access_denial_status(
@@ -242,7 +243,20 @@ def delete_app(
     if denial_status is not None:
         raise _app_access_exception(denial_status)
 
-    result = AppService.delete_app(db, app_id, user_id=current_user.id)
+    try:
+        result = AppService.delete_app(
+            db,
+            app_id,
+            user_id=current_user.id,
+            request_id=getattr(request.state, "request_id", None),
+        )
+    except Exception:
+        raise_api_error(
+            request,
+            500,
+            "app.delete_failed",
+            "App deletion failed.",
+        )
     if not result:
         raise HTTPException(status_code=404, detail="App not found")
 

@@ -67,11 +67,17 @@ class WorkflowRun(Base):
     )
 
     # === 외래 키 (관계) ===
-    # 어떤 워크플로우가 실행되었는지
-    workflow_id: Mapped[uuid.UUID] = mapped_column(
+    organization_id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True),
-        ForeignKey("workflows.id", ondelete="CASCADE"),
+        ForeignKey("organization.id"),
         nullable=False,
+        index=True,
+    )
+    # 어떤 워크플로우가 실행되었는지
+    workflow_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("workflows.id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     # System schedule만 nullable. 다른 실행 표면은 application validation에서 user 필수.

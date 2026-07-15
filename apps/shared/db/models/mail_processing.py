@@ -66,10 +66,10 @@ class MailMessageProcessing(Base):
     organization_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("organization.id"), nullable=False, index=True
     )
-    workflow_id: Mapped[uuid.UUID] = mapped_column(
+    workflow_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("workflows.id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("workflows.id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     deployment_id: Mapped[uuid.UUID | None] = mapped_column(

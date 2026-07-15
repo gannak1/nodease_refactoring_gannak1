@@ -5027,6 +5027,7 @@ def _verify_cost_optimizer_recommendations(
     claim = CostOptimizerRecommendationVerificationService.claim(
         db,
         workflow_id=workflow.id,
+        organization_id=workflow.organization_id,
         node_id=node_id,
         user_id=current_user.id,
         idempotency_key=idempotency_key,

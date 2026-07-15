@@ -145,6 +145,13 @@ class TraceAccessService:
             if workflow and workflow.organization_id:
                 return workflow.organization_id
 
+        run_organization_id = getattr(run, "organization_id", None)
+        if run_organization_id is not None:
+            try:
+                return uuid.UUID(str(run_organization_id))
+            except (TypeError, ValueError):
+                return None
+
         return None
 
     @staticmethod

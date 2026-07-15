@@ -258,6 +258,7 @@ class WorkflowLogger:
 
         data = {
             "run_id": run_id,
+            "organization_id": execution_context.get("organization_id"),
             "workflow_id": workflow_id,
             "app_id": self.app_id,
             "user_id": user_id,

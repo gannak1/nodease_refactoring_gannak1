@@ -52,13 +52,13 @@ class CostOptimizerExperiment(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False
     )
-    organization_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("organization.id"), nullable=True, index=True
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("organization.id"), nullable=False, index=True
     )
-    workflow_id: Mapped[uuid.UUID] = mapped_column(
+    workflow_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         PGUUID(as_uuid=True),
-        ForeignKey("workflows.id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("workflows.id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     app_id: Mapped[Optional[uuid.UUID]] = mapped_column(
@@ -236,10 +236,13 @@ class CostOptimizerRecommendationVerification(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False
     )
-    workflow_id: Mapped[uuid.UUID] = mapped_column(
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("organization.id"), nullable=False, index=True
+    )
+    workflow_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         PGUUID(as_uuid=True),
-        ForeignKey("workflows.id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("workflows.id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     node_id: Mapped[str] = mapped_column(String, nullable=False, index=True)

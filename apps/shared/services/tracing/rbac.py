@@ -2,12 +2,16 @@ import uuid
 from typing import Any, Optional, Protocol
 
 from apps.shared.permissions import (
+    AUTH_STATE_MANAGER,
     AUTH_STATE_NONE,
     AUTH_STATE_RANK,
     auth_state_at_least,
     normalize_auth_state,
 )
-from apps.shared.services.permissions import get_effective_workflow_auth_state
+from apps.shared.services.permissions import (
+    get_effective_workflow_auth_state,
+    has_organization_manager_permission,
+)
 from sqlalchemy.orm import Session
 
 TRACE_SYSTEM_ADMIN_PERMISSION = "tracing.system_admin"
@@ -61,7 +65,11 @@ class TraceRbacService:
         """사용자가 workflow에 대해 가진 가장 높은 MVP auth_state를 반환합니다."""
         user_id = cls._coerce_uuid(getattr(user, "id", None))
         workflow_uuid = cls._coerce_uuid(workflow_id)
-        if db is None or user_id is None or workflow_uuid is None:
+        if db is None or user_id is None:
+            return None
+        if workflow_uuid is None:
+            if has_organization_manager_permission(db, user_id, organization_id):
+                return AUTH_STATE_MANAGER
             return None
 
         auth_state = get_effective_workflow_auth_state(

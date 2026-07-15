@@ -58,6 +58,7 @@ class CostOptimizerRecommendationVerificationService:
         user_id: Any,
         idempotency_key: str,
         request_fingerprint: str,
+        organization_id: Any | None = None,
     ) -> RecommendationVerificationClaim:
         existing = cls._find(db, user_id=user_id, idempotency_key=idempotency_key)
         if existing is not None:
@@ -65,6 +66,7 @@ class CostOptimizerRecommendationVerificationService:
 
         record = CostOptimizerRecommendationVerification(
             id=uuid4(),
+            organization_id=organization_id,
             workflow_id=workflow_id,
             node_id=node_id,
             created_by=user_id,

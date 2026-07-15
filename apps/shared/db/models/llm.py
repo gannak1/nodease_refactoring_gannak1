@@ -277,7 +277,10 @@ class LLMUsageLog(Base):
     )
 
     workflow_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("workflows.id"), nullable=True, index=True
+        PGUUID(as_uuid=True),
+        ForeignKey("workflows.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
     workflow_run_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         PGUUID(as_uuid=True),
