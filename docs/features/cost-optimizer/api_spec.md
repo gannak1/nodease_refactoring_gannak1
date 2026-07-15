@@ -384,15 +384,19 @@ Semantic matcher는 Aurelio Semantic Router의 정적 Route와 Hybrid Router 평
 1. `input_paths`에 지정된 업무 본문만 추출해 catalog encoder로 한 번 embedding한다.
 2. `safety_override` Route가 있으면 정규화한 query text에 대해 policy의 lexical
    signal 가중치 합을 계산한다. threshold를 통과하면 해당 안전 Route를 우선한다.
-3. 안전 override가 없으면 기본 `centroid` 방식에서 query와 사전 계산 Route centroid의 cosine similarity를
-   계산한다.
-4. 기존 policy의 `mean`, `max`, `sum` 방식만 representative `top_k` 집계를 사용한다.
-5. 지정 path가 없거나 값이 비어 있으면 전체 payload로 대체하지 않고
+3. 안전 override가 없으면 catalog의 aggregation 계약에 따라 cosine similarity를
+   계산한다. 정적 catalog 기본값은 `centroid`다.
+4. 적응형 입력군 catalog는 대표 문의와 신뢰 가능한 최근 관찰 vector를 입력군별 최대
+   8개까지 사용하고 `max`로 가장 가까운 표현을 찾는다. 신규 trend 군집화는 0.50,
+   자동 입력군 runtime/관찰 매칭은 0.55, 직접 등록 입력군은 0.60을 사용한다.
+5. 기존 policy의 `mean`, `sum`은 representative `top_k` 집계를 사용한다. `max`는 한
+   입력군이 전역 top-k를 독점하지 않도록 각 입력군의 최고점을 먼저 계산한다.
+6. 지정 path가 없거나 값이 비어 있으면 전체 payload로 대체하지 않고
    `unavailable`로 닫는다.
-6. 최고 점수가 Route threshold 이상이고 2위와의 차이가 `min_margin` 이상이면
+7. 최고 점수가 Route threshold 이상이고 2위와의 차이가 `min_margin` 이상이면
    `semantic_cohort_id`를 확정한다.
-7. 그렇지 않으면 `no_match` 또는 `ambiguous`로 닫고 default model을 사용한다.
-8. `no_match` 또는 `ambiguous`에서도 최고 점수 Route의 candidate id/label과 안전한
+8. 그렇지 않으면 `no_match` 또는 `ambiguous`로 닫고 default model을 사용한다.
+9. `no_match` 또는 `ambiguous`에서도 최고 점수 Route의 candidate id/label과 안전한
    점수만 진단 정보로 반환한다. Candidate는 확정 cohort가 아니므로 policy rule
    matching에는 사용하지 않는다.
 
@@ -601,6 +605,9 @@ lifecycle, centroid vector, traffic share, 검증 모델을 보관한다. `propo
 별도 안전 요약 과정이 만든 합성 대표 문장만 보관하는 설정 데이터다. 자동 발견 입력군은
 안전한 합성 대표 문장이 아직 없으면 example row가 없을 수 있으며 policy 조회는
 `representative_query: null`을 반환한다. secret이나 실제 고객 원문은 입력하면 안 된다.
+자동 발견 입력군의 `label`과 `cohort_key`는 정책 갱신 시 가림 처리한 최근 문의 최대
+5개로 생성한다. 원문은 이름 생성 요청 뒤 별도 저장하지 않으며, 생성 실패 시 기존
+`자동 발견 입력군 N`/`auto-...` 식별자를 유지하고 다음 갱신에서 재시도한다.
 `..._model_evidence`, `..._validation_batches`, `..._validation_items`,
 `..._validation_cost_events`, `..._validation_budget_months`는 candidate Replay/Judge
 결과와 월간 비용 한도를 보관한다.
@@ -627,10 +634,17 @@ lifecycle, centroid vector, traffic share, 검증 모델을 보관한다. `propo
 }
 ```
 
-이 endpoint는 persisted enabled policy와 실행 주체가 사용할 수 있는 embedding model을
-요구한다. 성공하면 `source=manual`, `status=proposed` row를 만들고, 이후 운영 관찰과
-Replay gate를 통과해야만 active routing rule로 승격된다. policy row가 아직 없으면
-`409 model_routing.policy_not_ready`를 반환한다.
+policy row가 아직 없는 workflow draft에서도 이 endpoint를 호출할 수 있다. 이 경우
+서버는 provider를 호출하지 않고 LLM node의
+`model_routing_policy.cohort_drafts[]`에 stable UUID, `label`, `key`,
+`representative_query`, `fixed`를 저장하며 `status=draft`를 반환한다. 같은 UUID는
+`PATCH`와 `DELETE`에도 사용한다.
+
+자동 라우팅 설정을 포함한 배포의 첫 terminal 운영 실행이 persisted policy를 만들면
+Workflow Engine은 draft UUID를 그대로 사용해 `source=manual`, `status=proposed` DB
+row와 대표 문의 embedding을 만든다. embedding 호출이 실패하면 workflow run을
+실패시키지 않고 draft를 남겨 다음 성공 운영 실행에서 다시 시도한다. DB row로 승격된
+뒤에도 Replay gate를 통과해야만 active routing rule에 들어간다.
 
 `fixed=true`인 입력군은 운영 트래픽이 줄어도 자동 휴면 또는 종료 처리하지 않는다.
 `DELETE /model-routing/cohorts/{cohort_id}`는 row와 검증 이력을 물리 삭제하지 않고
@@ -659,6 +673,11 @@ Replay gate를 통과해야만 active routing rule로 승격된다. policy row�
 입력군은 `POST /model-routing/cohorts/{cohort_id}/convert-to-manual`로 같은 cohort row를
 `manual`로 전환한다. 전환도 기존 route와 관찰·evidence를 재검증 대상으로 초기화하므로
 중복 key를 가진 새 row를 만들지 않는다.
+
+policy row가 아직 없으면 `PATCH`와 `DELETE`는 draft graph만 갱신한다. policy row와
+같은 UUID의 DB cohort가 이미 있으면 graph draft와 DB row를 같은 transaction에서 함께
+갱신한다. 요청한 UUID가 draft와 DB 양쪽에 모두 없을 때만
+`404 model_routing.cohort_not_found`를 반환한다.
 
 `PATCH /model-routing/policy`는 자동 라우팅의 공통 설정과 함께 아래 값을 받을 수 있다.
 

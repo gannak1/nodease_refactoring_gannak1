@@ -518,13 +518,25 @@ Replay는 실제 운영 traffic 비중을 증명하지 않는다. 따라서 `rep
 
 입력군은 자동 발견과 직접 등록을 함께 지원한다.
 
-- 자동 발견: 최근 40개 관찰에서 서로 다른 입력 5개 이상이 두 점검 구간에 반복되면 제안한다.
+- 배포 전 초안: 빌더는 workflow를 처음 편집하는 시점에도 직접 입력군을 만들고,
+  수정하고, 삭제할 수 있다. 이 입력군은 LLM node의
+  `model_routing_policy.cohort_drafts`에 stable UUID와 함께 저장된다. 초안 저장에는
+  embedding provider 호출이나 policy row가 필요하지 않다.
+- 첫 배포 승격: 자동 라우팅 설정을 포함한 배포의 첫 terminal 운영 실행이 policy
+  row를 만들면, 서버는 초안 UUID를 그대로 사용해 직접 입력군 DB row와 대표 문의
+  embedding을 만든다. UI에서 만든 초안과 배포 후 입력군이 다른 객체로 보이면 안 된다.
+- 승격 재시도: embedding provider가 일시적으로 실패해도 workflow 실행은 실패시키지
+  않는다. 아직 승격되지 않은 초안은 다음 성공 운영 실행에서 다시 승격을 시도한다.
+- 설정 일치: 입력군 초안과 제외 모델 목록은 LLM node 설정 지문에 포함한다. 이 값이
+  달라진 재배포에는 이전 cohort/evidence를 그대로 상속하지 않는다.
+
+- 자동 발견: 최근 40개 관찰에서 서로 다른 입력 5개 이상이 두 점검 구간에 반복되면 제안한다. 발견 직후에는 안정적인 내부 식별자로 저장하고, 정책 갱신 작업에서 가림 처리한 대표 문의 최대 5개를 일회성으로 분석해 `재무 결산·지급 승인`과 같은 한국어 업무명과 `finance_closing_approval` 형식의 영문 key로 보정한다. 이름 생성 실패는 입력군 발견·검증·runtime 실행을 막지 않는다.
 - 직접 등록: 사용자가 대표 한국어 문의를 쓰고 마법사로 이름/영문 key 초안을 받은 뒤 수정해 저장한다. 직접 등록만으로는 즉시 저비용 모델을 사용하지 않으며, 운영 관찰과 Replay 검증을 통과해야 active rule이 된다.
 - 입력군이 0개여도 자동 라우팅을 막지 않는다. 이때 모든 요청은 `기본 모델 (규칙 미일치 시)`로 실행하고, 자동 발견 또는 직접 등록 후 검증된 rule만 별도 모델을 선택한다.
 - 대표 문의: policy 조회는 cohort별 `representative_query`를 반환한다. 자동 발견 입력군은 운영 원문을 저장하지 않으므로 안전한 합성 대표 문장이 아직 없으면 `null`을 반환하며, 화면은 준비 중 상태와 `사용자 입력군으로 전환` 액션을 표시한다.
 - 수정 경계: `source=manual` 입력군만 이름, 영문 key, 대표 문의, 고정 여부를 수정할 수 있다. 대표 문의를 바꾸면 centroid와 기존 품질 증거의 의미가 달라지므로 기존 route/evidence를 비활성화하고 `proposed` 상태에서 다시 검증한다. `source=auto`는 원본을 수정하지 않고 같은 값을 새 manual cohort 초안으로 복사해 사용자가 별도 입력군으로 등록한다.
 - 최대 개수: policy별 `1~12`, 기본 `6`, 권장 `3~6`이다. `proposed`, `validating`, `validated_waiting`, `active` 상태만 자리를 차지한다. `dormant`와 `retired`는 과거 trend 이력이므로 새 입력군 자리를 막지 않는다.
-- lifecycle: 자동 입력군은 최근 traffic share가 3개 점검 구간 연속 5% 이하이면 `dormant`, 휴면 뒤 10% 이상으로 회복하면 `active`, 90일이 지나면 `retired`가 된다. 직접 등록/필수/안전 보호 입력군은 자동 휴면 처리하지 않는다.
+- lifecycle: 비고정 입력군은 source와 관계없이 최근 traffic share가 3개 점검 구간 연속 5% 이하이면 `dormant`, 휴면 뒤 10% 이상으로 회복하면 `active`, 90일이 지나면 `retired`가 된다. `fixed=true`인 직접 등록 입력군, 필수 입력군, 안전 보호 입력군은 자동 휴면 처리하지 않는다.
 
 #### Hard Gate
 
@@ -608,7 +620,7 @@ Semantic cohort는 runtime에서 즉석으로 군집을 만드는 기능이 아�
 - Route별 사전 계산 centroid vector
 - embedding model/version
 - 의미 분류에 사용할 runtime input의 명시적인 `input_paths`
-- Route별 threshold, `centroid` aggregation, `min_margin`
+- Route별 threshold, aggregation, `min_margin`
 
 대표 문장은 실제 운영 raw input을 그대로 저장하지 않는다. 첫 구현은 node에
 명시적으로 등록했거나 검토된 synthetic 문장만 허용한다. Runtime은 `input_paths`에
@@ -622,12 +634,15 @@ Route 대표 문장과 threshold/min-margin은 label이 있는 calibration 입�
 정확도 보고용 holdout에서 제외한다. Holdout 결과를 보고 같은 holdout 문장을 그대로
 대표 문장에 추가한 뒤 그 데이터로 정확도를 다시 주장해서는 안 된다.
 
-Policy 활성화 시 각 Route 대표 vector의 평균으로 centroid를 미리 계산한다. Runtime은
-입력 vector와 각 Route centroid의 cosine similarity를 계산한다. 이 방식은 대표 문장
-하나와 우연히 비슷해서 잘못 분류되는 `max` 방식의 위험을 줄이고 Route 전체 의미를
-반영한다. 최고 Route가 threshold를 넘고 2위와의 차이가 `min_margin` 이상일 때만
-semantic cohort를 확정한다. 불확실하면 `no_match` 또는 `ambiguous`로 표시하고 현재
-default model을 유지한다. 기존 policy의 `mean`, `max`, `sum`은 호환을 위해 유지한다.
+정적으로 작성한 Route catalog는 대표 vector 평균인 centroid를 기본값으로 사용할 수
+있다. 운영 관찰로 확장되는 적응형 입력군은 대표 문의와 신뢰 가능한 최근 관찰의 비가역
+vector를 최대 8개 유지하고, 각 입력군에서 가장 가까운 대표값을 사용하는 `max` 방식으로
+표현 변형을 흡수한다. `max`의 오분류 위험은 자동 발견 군 0.55, 직접 등록 군 0.60의
+서로 다른 threshold와 `min_margin`으로 닫는다. 신규 trend 발견을 위한 군집화는 더 넓은
+0.50 경계를 사용하지만, 발견 경계를 통과했다는 이유만으로 runtime route를 확정하지
+않는다. 최고 Route가 threshold를 넘고 2위와의 차이가 `min_margin` 이상일 때만 semantic
+cohort를 확정한다. 불확실하면 `no_match` 또는 `ambiguous`로 표시하고 현재 default
+model을 유지한다. 기존 policy의 `centroid`, `mean`, `max`, `sum`은 호환을 위해 유지한다.
 
 분류가 확정되지 않아도 운영자가 기준을 조정할 수 있도록 가장 점수가 높았던 Route의
 `candidate_cohort_id`, 사용자 친화 label, similarity, threshold와 margin은 safe
@@ -808,7 +823,7 @@ Cost Optimizer는 LLM 노드가 배포 후 운영 실행에서 모델을 자동 
 사용자 시나리오는 다음 흐름을 따른다.
 
 1. 빌더가 LLM 노드 상세 화면에서 `자동 모델 라우팅`을 켠다.
-2. ON 상태에서는 사용자가 `기본 모델 (규칙 미일치 시)`과 `기본 대체 모델`을 설정하고 현재 정책 상태를 확인한다. 입력군 rule에 매칭되지 않은 요청만 이 기본 모델을 사용하며, 검증된 입력군 rule은 별도 모델을 선택할 수 있다.
+2. ON 상태에서는 사용자가 `기본 모델 (규칙 미일치 시)`과 `기본 대체 모델`을 설정하고 현재 정책 상태를 확인한다. 입력군 rule에 매칭되지 않은 요청만 이 기본 모델을 사용하며, 검증된 입력군 rule은 별도 모델을 선택할 수 있다. 아직 배포하지 않았더라도 직접 입력군 초안을 만들고 수정할 수 있다.
 3. 변경한 node 설정을 포함해 workflow를 배포한다. draft에서 토글만 켠 상태는 운영 표본 집계 대상이 아니다.
 4. 배포 후 첫 성공 운영 실행은 저장 `model_id`/`fallback_model_id`로 보수적으로 실행하고, 같은 두 모델만 담은 policy row를 만든다. bootstrap은 모델을 하향하거나 조건 rule을 만들지 않는다.
 5. 그 다음 배포 후 실행부터 LLM 노드는 policy table의 active policy를 읽어 모델을 선택한다.
