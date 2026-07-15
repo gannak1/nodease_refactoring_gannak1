@@ -76,7 +76,7 @@ def test_demo_host_ports_are_bound_to_loopback_only() -> None:
     assert '\n      - "55432:5432"' not in demo_compose
 
 
-def test_private_signing_material_is_not_mounted_into_gateway() -> None:
+def test_private_material_mounts_follow_least_privilege() -> None:
     demo_compose = _read("docker/docker-compose.connector-demo.yml")
     gateway_section = demo_compose.split("  gateway:", 1)[1].split("\nvolumes:", 1)[0]
     postgres_section = demo_compose.split("  connector-test-postgres:", 1)[1].split(
@@ -89,10 +89,20 @@ def test_private_signing_material_is_not_mounted_into_gateway() -> None:
     assert "connector_test_ca_private" not in demo_compose
     assert "connector_test_server_tls" not in gateway_section
     assert "connector_test_demo_credentials" not in gateway_section
+    assert "connector_test_postgres_admin_credentials" not in gateway_section
     assert "connector_test_server_tls:/tls/server:ro" in postgres_section
-    assert "connector_test_demo_credentials:/tls/credentials:ro" in postgres_section
+    assert (
+        "connector_test_postgres_admin_credentials:/tls/admin-credentials:ro"
+        in postgres_section
+    )
+    assert (
+        "connector_test_demo_credentials:/tls/connector-credentials:ro"
+        in postgres_section
+    )
     assert "connector_test_server_tls" not in verifier_section
     assert "connector_test_demo_credentials" in verifier_section
+    assert "connector_test_postgres_admin_credentials" not in verifier_section
+    assert "postgres-password" not in verifier_section
     assert "CONNECTOR_DEMO_POSTGRES_PASSWORD_FILE" in verifier_section
     assert 'user: "999:999"' in verifier_section
 
@@ -156,10 +166,12 @@ def test_production_templates_do_not_expose_trusted_local_overrides() -> None:
         "connector-test-postgres",
         "connector-demo-network",
         "connector_test_server_tls",
+        "connector_test_postgres_admin_credentials",
         "connector_test_demo_credentials",
         "/run/connector-test-ca",
         "/tls/server",
-        "/tls/credentials",
+        "/tls/admin-credentials",
+        "/tls/connector-credentials",
     )
     helm_root = ROOT / "infra/helm/moduly"
     production_sources = [
@@ -187,7 +199,12 @@ def test_certificate_material_is_generated_at_runtime_only() -> None:
     assert "basicConstraints=critical,CA:TRUE,pathlen:0" in generator
     assert "subjectAltName=DNS:connector-test-postgres,DNS:localhost" in generator
     assert 'mktemp -d "${TMPDIR:-/tmp}/connector-test-generate.' in generator
-    assert 'rm -f "$server_dir/ca.key"' in generator
+    assert '"$server_dir/ca.key"' in generator
+    assert '"$admin_credential_dir/demo-password"' in generator
+    assert '"$connector_credential_dir/postgres-password"' in generator
+    assert 'generate_password_file "$admin_credential_dir/postgres-password"' in generator
+    assert 'generate_password_file "$connector_credential_dir/demo-password"' in generator
+    assert "cmp -s" in generator
     assert 'mv -f "$work_dir/ca.key"' not in generator
     assert "BEGIN PRIVATE KEY" not in generator
     assert "BEGIN CERTIFICATE" not in generator
@@ -219,3 +236,6 @@ def test_docker_runtime_verifier_projects_only_canonical_status() -> None:
     assert "flushdb" not in verifier.lower()
     assert "CONNECTOR_DEMO_POSTGRES_PASSWORD_FILE" in verifier
     assert "CONNECTOR_DEMO_POSTGRES_PASSWORD\"" not in verifier
+    assert 'private_mode != 0o600' in verifier
+    assert 'Path("/tls/server").exists()' in verifier
+    assert 'Path("/tls/admin-credentials").exists()' in verifier

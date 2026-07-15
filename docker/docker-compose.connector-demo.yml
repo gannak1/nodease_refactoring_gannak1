@@ -10,7 +10,8 @@ services:
     network_mode: "none"
     volumes:
       - connector_test_server_tls:/tls/server
-      - connector_test_demo_credentials:/tls/credentials
+      - connector_test_postgres_admin_credentials:/tls/admin-credentials
+      - connector_test_demo_credentials:/tls/connector-credentials
       - ../local/connector-test-tls/docker:/tls/public
 
   connector-test-redis:
@@ -35,8 +36,8 @@ services:
     environment:
       POSTGRES_DB: connector_demo
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD_FILE: /tls/credentials/postgres-password
-      CONNECTOR_DEMO_PASSWORD_FILE: /tls/credentials/demo-password
+      POSTGRES_PASSWORD_FILE: /tls/admin-credentials/postgres-password
+      CONNECTOR_DEMO_PASSWORD_FILE: /tls/connector-credentials/demo-password
     command:
       - postgres
       - -c
@@ -54,9 +55,10 @@ services:
     ports:
       - "127.0.0.1:55432:5432"
     volumes:
-      - connector_test_demo_data_v2:/var/lib/postgresql/data
+      - connector_test_demo_data_v3:/var/lib/postgresql/data
       - connector_test_server_tls:/tls/server:ro
-      - connector_test_demo_credentials:/tls/credentials:ro
+      - connector_test_postgres_admin_credentials:/tls/admin-credentials:ro
+      - connector_test_demo_credentials:/tls/connector-credentials:ro
     depends_on:
       connector-test-tls-init:
         condition: service_completed_successfully
@@ -64,7 +66,7 @@ services:
       test:
         - CMD-SHELL
         - >-
-          PGPASSWORD="$$(cat /tls/credentials/demo-password)"
+          PGPASSWORD="$$(cat /tls/connector-credentials/demo-password)"
           psql
           "host=localhost port=5432 dbname=connector_demo user=connector_demo_user sslmode=verify-full sslrootcert=/tls/server/ca.crt"
           -Atqc
@@ -86,11 +88,11 @@ services:
     environment:
       CONNECTOR_DEMO_REDIS_URL: "redis://connector-test-redis:6379/15"
       CONNECTOR_DEMO_CA_FILE: "/run/connector-test-ca/ca.crt"
-      CONNECTOR_DEMO_POSTGRES_PASSWORD_FILE: "/run/connector-test-credentials/demo-password"
+      CONNECTOR_DEMO_POSTGRES_PASSWORD_FILE: "/run/connector-credentials/demo-password"
     volumes:
       - ../scripts/verify_connector_demo_runtime.py:/app/demo/verify_connector_demo_runtime.py:ro
       - ../local/connector-test-tls/docker:/run/connector-test-ca:ro
-      - connector_test_demo_credentials:/run/connector-test-credentials:ro
+      - connector_test_demo_credentials:/run/connector-credentials:ro
     depends_on:
       connector-test-tls-init:
         condition: service_completed_successfully
@@ -122,8 +124,9 @@ services:
 
 volumes:
   connector_test_server_tls:
+  connector_test_postgres_admin_credentials:
   connector_test_demo_credentials:
-  connector_test_demo_data_v2:
+  connector_test_demo_data_v3:
 
 networks:
   connector-demo-network:

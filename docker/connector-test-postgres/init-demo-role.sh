@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-password_file="${CONNECTOR_DEMO_PASSWORD_FILE:-/tls/credentials/demo-password}"
+password_file="${CONNECTOR_DEMO_PASSWORD_FILE:-/tls/connector-credentials/demo-password}"
 if [ ! -f "$password_file" ] \
     || ! grep -Eq '^[0-9a-f]{64}$' "$password_file"; then
     echo "connector demo role credential is unavailable" >&2

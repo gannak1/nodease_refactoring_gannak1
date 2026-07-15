@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import stat
 import sys
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -43,8 +44,20 @@ def _settings() -> tuple[str, str, str]:
         or not Path(password_file).is_file()
     ):
         raise RuntimeError("connector demo runtime configuration is invalid")
-    password = Path(password_file).read_text(encoding="utf-8").strip()
-    if not password:
+    password_path = Path(password_file)
+    private_mode = stat.S_IMODE(password_path.stat().st_mode)
+    credential_entries = list(password_path.parent.iterdir())
+    if (
+        private_mode != 0o600
+        or credential_entries != [password_path]
+        or Path("/tls/server").exists()
+        or Path("/tls/admin-credentials").exists()
+    ):
+        raise RuntimeError("connector demo runtime credential boundary is invalid")
+    password = password_path.read_text(encoding="utf-8").strip()
+    if len(password) != 64 or any(
+        character not in "0123456789abcdef" for character in password
+    ):
         raise RuntimeError("connector demo runtime configuration is invalid")
     return redis_url, ca_file, password
 

@@ -2,12 +2,22 @@
 set -eu
 
 server_dir="${CONNECTOR_TEST_SERVER_TLS_DIR:-/tls/server}"
-credential_dir="${CONNECTOR_TEST_CREDENTIAL_DIR:-/tls/credentials}"
+admin_credential_dir="${CONNECTOR_TEST_ADMIN_CREDENTIAL_DIR:-/tls/admin-credentials}"
+connector_credential_dir="${CONNECTOR_TEST_CONNECTOR_CREDENTIAL_DIR:-/tls/connector-credentials}"
 public_dir="${CONNECTOR_TEST_PUBLIC_CA_DIR:-/tls/public}"
 
 umask 077
-mkdir -p "$server_dir" "$credential_dir" "$public_dir"
-rm -f "$server_dir/ca.key"
+mkdir -p \
+    "$server_dir" \
+    "$admin_credential_dir" \
+    "$connector_credential_dir" \
+    "$public_dir"
+rm -f \
+    "$server_dir/ca.key" \
+    "$admin_credential_dir/demo-password" \
+    "$connector_credential_dir/postgres-password" \
+    "$admin_credential_dir"/.password.* \
+    "$connector_credential_dir"/.password.*
 
 work_dir=""
 staged_ca_file=""
@@ -119,9 +129,12 @@ generate_password_file() {
     destination="$1"
     if [ -s "$destination" ] \
         && grep -Eq '^[0-9a-f]{64}$' "$destination"; then
+        chmod 0600 "$destination"
+        chown postgres:postgres "$destination"
         return
     fi
-    password_file="$(mktemp "$credential_dir/.password.XXXXXX")"
+    destination_dir="$(dirname "$destination")"
+    password_file="$(mktemp "$destination_dir/.password.XXXXXX")"
     openssl rand -hex 32 > "$password_file"
     chmod 0600 "$password_file"
     chown postgres:postgres "$password_file"
@@ -129,8 +142,20 @@ generate_password_file() {
     password_file=""
 }
 
-generate_password_file "$credential_dir/postgres-password"
-generate_password_file "$credential_dir/demo-password"
+generate_password_file "$admin_credential_dir/postgres-password"
+generate_password_file "$connector_credential_dir/demo-password"
+if cmp -s \
+    "$admin_credential_dir/postgres-password" \
+    "$connector_credential_dir/demo-password"; then
+    rm -f "$connector_credential_dir/demo-password"
+    generate_password_file "$connector_credential_dir/demo-password"
+fi
+if cmp -s \
+    "$admin_credential_dir/postgres-password" \
+    "$connector_credential_dir/demo-password"; then
+    echo "connector demo credentials could not be separated" >&2
+    exit 1
+fi
 
 public_ca_file="$(mktemp "$public_dir/.ca.XXXXXX")"
 cp "$server_dir/ca.crt" "$public_ca_file"
