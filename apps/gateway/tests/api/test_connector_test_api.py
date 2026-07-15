@@ -136,6 +136,7 @@ def test_valid_request_builds_command_without_ssh_credentials(client) -> None:
         payload(port=65536),
         payload(extra="not-allowed"),
         payload(password=""),
+        payload(connection_name=" \t "),
     ],
 )
 def test_strict_schema_rejects_before_use_case(client, invalid_payload: dict) -> None:
@@ -150,6 +151,28 @@ def test_strict_schema_rejects_before_use_case(client, invalid_payload: dict) ->
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "validation.failed"
     assert use_case.commands == []
+    assert "placeholder-secret" not in response.text
+
+
+@pytest.mark.parametrize("connection_name", ["", " \t ", "x" * 101])
+def test_create_rejects_invalid_connection_name_before_handler(
+    client,
+    monkeypatch: pytest.MonkeyPatch,
+    connection_name: str,
+) -> None:
+    http, _, _, _ = client
+    monkeypatch.setattr(
+        connector_endpoint,
+        "_build_workflow_connector",
+        lambda *_args: pytest.fail("create handler must not build a connector"),
+    )
+
+    response = http.post(
+        "/api/v1/connectors",
+        json=payload(connection_name=connection_name),
+    )
+
+    assert response.status_code == 422
     assert "placeholder-secret" not in response.text
 
 
