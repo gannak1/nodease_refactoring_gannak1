@@ -312,6 +312,7 @@ APP_IDS = {
     "department_onboarding_chatbot": _uuid(406),
     "team_onboarding_access_control": _uuid(407),
     "model_router_ticket_ops": uuid.UUID("91000000-0000-0000-0000-000000000001"),
+    "onboarding_chatbot": _uuid(408),
 }
 
 WORKFLOW_IDS = {
@@ -343,6 +344,12 @@ TEAM_PERMISSION_IDS = {
     "team_onboarding_platform": _uuid(807),
     "team_onboarding_sales": _uuid(808),
     "team_onboarding_people": _uuid(809),
+}
+
+USER_WORKFLOW_PERMISSION_IDS = {
+    "onboarding_chatbot_seoyeon": _uuid(840),
+    "onboarding_chatbot_junho": _uuid(841),
+    "onboarding_chatbot_jimin": _uuid(842),
 }
 
 
@@ -1208,6 +1215,7 @@ def demo_summary(profile: str = "demo") -> dict[str, Any]:
         "users": [spec.email for spec in USER_SPECS],
         "teams": [name for name, _ in TEAM_SPECS.values()],
         "apps": [
+            "온보딩용 챗봇",
             "사내 문서 질문 응답 봇",
             "부서별 온보딩 RAG 챗봇",
             "팀별 온보딩 문서 접근 제어 데모",
@@ -3424,6 +3432,19 @@ def _upsert_app_workflow(
 
 def _seed_apps_and_workflows(db: Session) -> dict[str, Workflow]:
     workflows = {
+        "onboarding_chatbot": _upsert_app_workflow(
+            db,
+            "onboarding_chatbot",
+            "온보딩용 챗봇",
+            "온보딩 챗봇 초안 작성을 위한 빈 workflow",
+            "admin",
+            {
+                "nodes": [],
+                "edges": [],
+                "viewport": {"x": 0, "y": 0, "zoom": 1},
+            },
+            deployed=False,
+        ),
         "hr_bot_example": _upsert_app_workflow(
             db,
             "hr_bot_example",
@@ -3655,6 +3676,28 @@ def _seed_permissions(db: Session) -> None:
                 "auth_state": "manager",
                 "assigned_by": USER_IDS["admin"],
                 "options": _demo_options(f"direct-permission-{workflow_key}"),
+                "flags": 0,
+            },
+        )
+
+    for permission_key, user_key in (
+        ("onboarding_chatbot_seoyeon", "onboarding_platform_rookie"),
+        ("onboarding_chatbot_junho", "onboarding_sales_rookie"),
+        ("onboarding_chatbot_jimin", "onboarding_people_manager"),
+    ):
+        _upsert_by_id(
+            db,
+            UserWorkflowPermission,
+            USER_WORKFLOW_PERMISSION_IDS[permission_key],
+            {
+                "grantee_organization_id": ORG_ID,
+                "user_id": USER_IDS[user_key],
+                "workflow_id": WORKFLOW_IDS["onboarding_chatbot"],
+                "auth_state": "operator",
+                "assigned_by": USER_IDS["admin"],
+                "options": _demo_options(
+                    f"direct-permission-onboarding-chatbot-{user_key}"
+                ),
                 "flags": 0,
             },
         )

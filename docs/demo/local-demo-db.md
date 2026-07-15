@@ -219,6 +219,7 @@ Demo 조직:
 Demo 주요 workflow:
 
 - `사내 문서 질문 응답 봇`
+- `온보딩용 챗봇` — `admin@nodease.demo`가 관리하는 빈 초안이며, `seoyeon.kim@nodease.demo`, `junho.lee@nodease.demo`, `jimin.park@nodease.demo`에게 직접 `operator` 권한을 부여한다.
 - `부서별 온보딩 RAG 챗봇`
 - `팀별 온보딩 문서 접근 제어 데모`
 - `Enterprise 고객 티켓 처리`

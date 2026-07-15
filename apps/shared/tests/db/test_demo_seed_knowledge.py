@@ -419,9 +419,92 @@ def test_team_onboarding_access_control_app_is_active_internal_chatbot(monkeypat
     assert call["deployment_type"] is demo_seed.DeploymentType.INTERNAL_CHATBOT
 
 
+def test_onboarding_chatbot_draft_is_empty_and_owned_by_admin(monkeypatch):
+    calls = {}
+
+    def capture(
+        _db,
+        key,
+        name,
+        description,
+        owner_key,
+        graph,
+        *,
+        deployed,
+        deployment_type=demo_seed.DeploymentType.API,
+    ):
+        calls[key] = {
+            "name": name,
+            "description": description,
+            "owner_key": owner_key,
+            "graph": graph,
+            "deployed": deployed,
+            "deployment_type": deployment_type,
+        }
+        return key
+
+    monkeypatch.setattr(demo_seed, "_upsert_app_workflow", capture)
+
+    workflows = demo_seed._seed_apps_and_workflows(object())
+
+    assert workflows["onboarding_chatbot"] == "onboarding_chatbot"
+    assert calls["onboarding_chatbot"] == {
+        "name": "온보딩용 챗봇",
+        "description": "온보딩 챗봇 초안 작성을 위한 빈 workflow",
+        "owner_key": "admin",
+        "graph": {
+            "nodes": [],
+            "edges": [],
+            "viewport": {"x": 0, "y": 0, "zoom": 1},
+        },
+        "deployed": False,
+        "deployment_type": demo_seed.DeploymentType.API,
+    }
+
+
+def test_onboarding_chatbot_draft_grants_direct_operator_permissions(monkeypatch):
+    upserts = []
+
+    def capture_upsert(_db, model, row_id, values):
+        upserts.append((model, row_id, values))
+
+    monkeypatch.setattr(demo_seed, "_upsert_by_id", capture_upsert)
+
+    demo_seed._seed_permissions(object())
+
+    direct_permissions = [
+        values
+        for model, _row_id, values in upserts
+        if model is demo_seed.UserWorkflowPermission
+        and values["workflow_id"] == demo_seed.WORKFLOW_IDS["onboarding_chatbot"]
+    ]
+
+    assert {
+        (values["user_id"], values["auth_state"], values["assigned_by"])
+        for values in direct_permissions
+    } == {
+        (
+            demo_seed.USER_IDS["onboarding_platform_rookie"],
+            "operator",
+            demo_seed.USER_IDS["admin"],
+        ),
+        (
+            demo_seed.USER_IDS["onboarding_sales_rookie"],
+            "operator",
+            demo_seed.USER_IDS["admin"],
+        ),
+        (
+            demo_seed.USER_IDS["onboarding_people_manager"],
+            "operator",
+            demo_seed.USER_IDS["admin"],
+        ),
+    }
+
+
 def test_demo_summary_reports_seeded_knowledge_documents():
     summary = demo_seed.demo_summary("demo")
 
+    assert "온보딩용 챗봇" in summary["apps"]
     assert summary["knowledge_documents"] == {
         "public_law_pdfs": 7,
         "internal_markdown_docs": 11,
