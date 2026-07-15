@@ -21,6 +21,7 @@ from apps.gateway.application.connectors.models import (
 )
 from apps.shared.services.egress_guard import (
     EgressGuardError,
+    canonicalize_network_host,
     ensure_network_target_allowed,
 )
 
@@ -30,6 +31,12 @@ _URL_HOST_MARKERS = ("://", "/", "@", "?", "#")
 def _system_ca_file() -> str:
     ca_file = ssl.get_default_verify_paths().cafile
     if not ca_file or not Path(ca_file).is_file():
+        raise ConnectorProbeFailed()
+    return ca_file
+
+
+def _configured_ca_file(ca_file: str) -> str:
+    if not Path(ca_file).is_file():
         raise ConnectorProbeFailed()
     return ca_file
 
@@ -73,11 +80,25 @@ class StrictPostgresConnectorProbe:
             if not host_input or any(marker in host_input for marker in _URL_HOST_MARKERS):
                 raise ConnectorTargetNotAllowed()
 
-            ca_file = _system_ca_file()
+            canonical_host = canonicalize_network_host(host_input)
+            trusted_local_targets = frozenset(
+                (target.host, target.port)
+                for target in self._policy.trusted_local_targets
+            )
+            is_trusted_local = (
+                canonical_host,
+                command.port,
+            ) in trusted_local_targets
+            ca_file = (
+                _configured_ca_file(self._policy.trusted_local_ca_file)
+                if is_trusted_local and self._policy.trusted_local_ca_file
+                else _system_ca_file()
+            )
             host, port, host_address = ensure_network_target_allowed(
                 host_input,
                 command.port,
                 allowed_ports=self._policy.allowed_ports,
+                trusted_local_targets=trusted_local_targets,
             )
             url = URL.create(
                 drivername="postgresql+psycopg2",

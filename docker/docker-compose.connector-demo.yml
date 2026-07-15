@@ -1,0 +1,65 @@
+services:
+  connector-test-tls-init:
+    profiles: ["connector-demo"]
+    build:
+      context: ..
+      dockerfile: docker/connector-test-postgres/Dockerfile
+    entrypoint: ["/usr/local/bin/generate-connector-test-certificates"]
+    user: "0:0"
+    restart: "no"
+    volumes:
+      - connector_test_ca_private:/tls/ca-private
+      - connector_test_server_tls:/tls/server
+      - ../local/connector-test-tls/docker:/tls/public
+
+  connector-test-postgres:
+    profiles: ["connector-demo"]
+    build:
+      context: ..
+      dockerfile: docker/connector-test-postgres/Dockerfile
+    environment:
+      POSTGRES_DB: connector_demo
+      POSTGRES_USER: connector_demo_user
+      POSTGRES_PASSWORD_FILE: /tls/server/demo-password
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/tls/server/server.crt
+      - -c
+      - ssl_key_file=/tls/server/server.key
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - connector_test_demo_data:/var/lib/postgresql/data
+      - connector_test_server_tls:/tls/server:ro
+    depends_on:
+      connector-test-tls-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U connector_demo_user -d connector_demo"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks:
+      - moduly-network
+
+  gateway:
+    environment:
+      NODE_ENV: development
+      CONNECTOR_TEST_ALLOWED_PORTS: "5432"
+      CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS: "connector-test-postgres:5432"
+      CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE: "/run/connector-test-ca/ca.crt"
+    volumes:
+      - ../local/connector-test-tls/docker:/run/connector-test-ca:ro
+    depends_on:
+      connector-test-tls-init:
+        condition: service_completed_successfully
+      connector-test-postgres:
+        condition: service_healthy
+
+volumes:
+  connector_test_ca_private:
+  connector_test_server_tls:
+  connector_test_demo_data:

@@ -1,13 +1,50 @@
 from __future__ import annotations
 
 import math
+import re
 import uuid
 from dataclasses import dataclass, field
+
+
+_HOST_LABEL_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+
+
+@dataclass(frozen=True, slots=True)
+class TrustedLocalConnectorTarget:
+    host: str = field(repr=False)
+    port: int = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.host, str) or not self.host:
+            raise ValueError("trusted local target host must be non-empty")
+        if self.host != self.host.strip().rstrip(".").lower():
+            raise ValueError("trusted local target host must be canonical")
+        if len(self.host) > 253 or any(
+            marker in self.host for marker in ("://", "/", "@", "?", "#", "*", ":")
+        ):
+            raise ValueError("trusted local target host is invalid")
+        labels = self.host.split(".")
+        if all(label.isdigit() for label in labels) or any(
+            not _HOST_LABEL_PATTERN.fullmatch(label) for label in labels
+        ):
+            raise ValueError("trusted local target host is invalid")
+        if (
+            isinstance(self.port, bool)
+            or not isinstance(self.port, int)
+            or self.port < 1
+            or self.port > 65535
+        ):
+            raise ValueError("trusted local target port is invalid")
 
 
 @dataclass(frozen=True, slots=True)
 class ConnectorTestPolicy:
     allowed_ports: frozenset[int] = frozenset({5432})
+    trusted_local_targets: frozenset[TrustedLocalConnectorTarget] = field(
+        default_factory=frozenset,
+        repr=False,
+    )
+    trusted_local_ca_file: str | None = field(default=None, repr=False)
     rate_window_seconds: int = 60
     user_rate_limit: int = 5
     organization_rate_limit: int = 30
@@ -33,6 +70,31 @@ class ConnectorTestPolicy:
             for port in self.allowed_ports
         ):
             raise ValueError("allowed_ports must contain valid TCP ports")
+        if not isinstance(self.trusted_local_targets, frozenset):
+            raise ValueError("trusted_local_targets must be a frozenset")
+        if len(self.trusted_local_targets) > 4:
+            raise ValueError("trusted_local_targets must not contain more than 4 targets")
+        if any(
+            not isinstance(target, TrustedLocalConnectorTarget)
+            for target in self.trusted_local_targets
+        ):
+            raise ValueError("trusted_local_targets contains an invalid target")
+        if any(
+            target.port not in self.allowed_ports
+            for target in self.trusted_local_targets
+        ):
+            raise ValueError("trusted local target port must be deployment-allowed")
+        if self.trusted_local_ca_file is not None:
+            if (
+                not isinstance(self.trusted_local_ca_file, str)
+                or not self.trusted_local_ca_file.strip()
+                or self.trusted_local_ca_file != self.trusted_local_ca_file.strip()
+            ):
+                raise ValueError("trusted_local_ca_file must be a non-empty path")
+        if bool(self.trusted_local_targets) != bool(self.trusted_local_ca_file):
+            raise ValueError(
+                "trusted local targets and CA file must be configured together"
+            )
         positive_values = {
             "rate_window_seconds": self.rate_window_seconds,
             "user_rate_limit": self.user_rate_limit,
@@ -135,5 +197,6 @@ __all__ = [
     "ConnectorTestPolicy",
     "ConnectorTestResult",
     "SUCCESS_RESULT",
+    "TrustedLocalConnectorTarget",
     "failure_result",
 ]

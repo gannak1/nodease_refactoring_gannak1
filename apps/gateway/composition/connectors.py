@@ -3,15 +3,20 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 
 from apps.gateway.adapters.audit.connector_test import ConnectorTestAuditRecorder
 from apps.gateway.adapters.connectors.postgres_probe import StrictPostgresConnectorProbe
 from apps.gateway.adapters.connectors.redis_test_admission import (
     RedisConnectorTestAdmission,
 )
-from apps.gateway.application.connectors.models import ConnectorTestPolicy
+from apps.gateway.application.connectors.models import (
+    ConnectorTestPolicy,
+    TrustedLocalConnectorTarget,
+)
 from apps.gateway.application.connectors.test_connection import TestConnectorConnection
 from apps.shared.pubsub import get_async_redis_client
+from apps.shared.services.egress_guard import canonicalize_network_host
 
 _LOCAL_ADMISSION_KEY = b"connector-test-local-development-key-v1"
 
@@ -28,8 +33,15 @@ _application: ConnectorTestApplication | None = None
 def connector_test_policy_from_environment(
     environ: Mapping[str, str],
 ) -> ConnectorTestPolicy:
+    allowed_ports = _ports(environ, "CONNECTOR_TEST_ALLOWED_PORTS", {5432})
+    trusted_local_targets, trusted_local_ca_file = _trusted_local_configuration(
+        environ,
+        allowed_ports=allowed_ports,
+    )
     return ConnectorTestPolicy(
-        allowed_ports=_ports(environ, "CONNECTOR_TEST_ALLOWED_PORTS", {5432}),
+        allowed_ports=allowed_ports,
+        trusted_local_targets=trusted_local_targets,
+        trusted_local_ca_file=trusted_local_ca_file,
         rate_window_seconds=_integer(environ, "CONNECTOR_TEST_RATE_WINDOW_SECONDS", 60),
         user_rate_limit=_integer(environ, "CONNECTOR_TEST_USER_RATE_LIMIT", 5),
         organization_rate_limit=_integer(
@@ -62,8 +74,14 @@ def require_connector_test_security_ready(
     environ: Mapping[str, str] | None = None,
 ) -> None:
     values = environ if environ is not None else os.environ
-    connector_test_policy_from_environment(values)
+    policy = connector_test_policy_from_environment(values)
     _admission_key(values)
+    if policy.trusted_local_ca_file and not Path(
+        policy.trusted_local_ca_file
+    ).is_file():
+        raise RuntimeError(
+            "CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE must reference a regular file"
+        )
 
 
 def get_connector_test_application() -> ConnectorTestApplication:
@@ -99,7 +117,7 @@ def shutdown_connector_test_application() -> None:
 def _admission_key(environ: Mapping[str, str]) -> bytes:
     raw_key = environ.get("CONNECTOR_TEST_ADMISSION_HMAC_KEY", "")
     if not raw_key:
-        if environ.get("NODE_ENV") == "production":
+        if _environment_name(environ) == "production":
             raise RuntimeError(
                 "CONNECTOR_TEST_ADMISSION_HMAC_KEY is required in production"
             )
@@ -110,6 +128,69 @@ def _admission_key(environ: Mapping[str, str]) -> bytes:
             "CONNECTOR_TEST_ADMISSION_HMAC_KEY must contain at least 32 bytes"
         )
     return key
+
+
+def _environment_name(environ: Mapping[str, str]) -> str:
+    return str(environ.get("NODE_ENV", "")).strip().lower()
+
+
+def _trusted_local_configuration(
+    environ: Mapping[str, str],
+    *,
+    allowed_ports: frozenset[int],
+) -> tuple[frozenset[TrustedLocalConnectorTarget], str | None]:
+    raw_targets = str(
+        environ.get("CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS", "")
+    ).strip()
+    raw_ca_file = str(
+        environ.get("CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE", "")
+    ).strip()
+    environment_name = _environment_name(environ)
+
+    if environment_name == "production" and (raw_targets or raw_ca_file):
+        raise RuntimeError(
+            "trusted local connector targets are forbidden in production"
+        )
+    if bool(raw_targets) != bool(raw_ca_file):
+        raise RuntimeError(
+            "trusted local connector targets and CA file must be configured together"
+        )
+    if not raw_targets:
+        return frozenset(), None
+    if environment_name != "development":
+        raise RuntimeError(
+            "trusted local connector targets require NODE_ENV=development"
+        )
+
+    parts = [part.strip() for part in raw_targets.split(",")]
+    if any(not part for part in parts) or len(parts) > 4:
+        raise RuntimeError(
+            "CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS must contain 1 to 4 targets"
+        )
+
+    targets: list[TrustedLocalConnectorTarget] = []
+    for part in parts:
+        if part.count(":") != 1:
+            raise RuntimeError(
+                "trusted local connector target must use exact host:port syntax"
+            )
+        raw_host, raw_port = part.rsplit(":", 1)
+        try:
+            target = TrustedLocalConnectorTarget(
+                host=canonicalize_network_host(raw_host),
+                port=int(raw_port),
+            )
+        except (ValueError, TypeError) as exc:
+            raise RuntimeError("trusted local connector target is invalid") from exc
+        if target.port not in allowed_ports:
+            raise RuntimeError(
+                "trusted local connector target port is not deployment-allowed"
+            )
+        targets.append(target)
+
+    if len(set(targets)) != len(targets):
+        raise RuntimeError("trusted local connector targets must not contain duplicates")
+    return frozenset(targets), raw_ca_file
 
 
 def _integer(environ: Mapping[str, str], name: str, default: int) -> int:
