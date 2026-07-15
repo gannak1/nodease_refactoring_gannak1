@@ -291,31 +291,6 @@ class IngestionOrchestrator:
         storage = get_storage_service()
         return storage.upload(file)
 
-    def create_pending_document(
-        self,
-        knowledge_base_id: UUID,
-        filename: str,
-        file_path: Optional[str],
-        chunk_size: int,
-        chunk_overlap: int,
-        source_type: SourceType = SourceType.FILE,
-        meta_info: dict = None,
-    ) -> UUID:
-        new_doc = Document(
-            knowledge_base_id=knowledge_base_id,
-            filename=filename,
-            file_path=file_path,
-            status="pending",
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-            source_type=source_type,
-            meta_info=meta_info or {},
-        )
-        self.db.add(new_doc)
-        self.db.commit()
-        self.db.refresh(new_doc)
-        return new_doc.id
-
     def _filter_chunks(
         self,
         chunks: List[Dict[str, Any]],

@@ -214,6 +214,7 @@ class KnowledgeBaseDetailResponse(KnowledgeBaseResponse):
     documents: List[DocumentResponse]
     can_edit_settings: bool = True
     can_manage_safe_metadata: bool = True
+    can_register_initial_document: bool = False
     can_read: bool = True
     can_use: bool = False
     can_write: bool = False

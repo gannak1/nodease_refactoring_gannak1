@@ -434,6 +434,7 @@ class KnowledgeBaseQueryService:
         has_organization_id: bool,
         can_edit_settings: bool = True,
         can_manage_safe_metadata: bool = True,
+        can_register_initial_document: bool = False,
         can_read: bool = True,
         can_use: bool = False,
         can_write: bool = False,
@@ -569,6 +570,9 @@ class KnowledgeBaseQueryService:
             documents=doc_responses,
             can_edit_settings=can_edit_settings,
             can_manage_safe_metadata=can_manage_safe_metadata,
+            can_register_initial_document=(
+                can_register_initial_document and not doc_responses
+            ),
             can_read=can_read,
             can_use=can_use,
             can_write=can_write,

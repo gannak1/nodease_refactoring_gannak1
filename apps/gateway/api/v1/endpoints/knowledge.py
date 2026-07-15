@@ -83,6 +83,9 @@ from apps.gateway.services.knowledge_document_projection import (
     project_safe_document_metadata,
     project_safe_document_status,
 )
+from apps.gateway.services.knowledge_document_registration_service import (
+    is_initial_document_registration_eligible,
+)
 from apps.gateway.services.knowledge_base_query_service import (
     KNOWLEDGE_BASE_MUTATION_COLUMNS,
     KnowledgeBaseCreateFailed,
@@ -1690,6 +1693,10 @@ def get_knowledge_base(
             has_organization_id=True,
             can_edit_settings=capabilities.can_write,
             can_manage_safe_metadata=capabilities.can_manage,
+            can_register_initial_document=(
+                capabilities.can_write
+                and is_initial_document_registration_eligible(kb)
+            ),
             can_read=capabilities.can_read,
             can_use=capabilities.can_use,
             can_write=capabilities.can_write,

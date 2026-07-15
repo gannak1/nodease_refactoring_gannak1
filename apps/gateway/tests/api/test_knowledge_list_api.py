@@ -759,7 +759,12 @@ def test_knowledge_detail_uses_read_gate_and_returns_capabilities(monkeypatch):
         fake_resolve_active_organization_id,
     )
 
-    kb = SimpleNamespace(id=knowledge_base_id)
+    kb = SimpleNamespace(
+        id=knowledge_base_id,
+        lifecycle_state="active",
+        source_identity_id=None,
+        sync_state="manual",
+    )
 
     class FakeAuthorizationService:
         def load_kb(self, kb_id, action):
@@ -806,6 +811,7 @@ def test_knowledge_detail_uses_read_gate_and_returns_capabilities(monkeypatch):
                 ],
                 "can_edit_settings": True,
                 "can_manage_safe_metadata": False,
+                "can_register_initial_document": False,
                 "can_read": True,
                 "can_use": True,
                 "can_write": True,
@@ -839,12 +845,13 @@ def test_knowledge_detail_uses_read_gate_and_returns_capabilities(monkeypatch):
         "current_user_id": user_id,
         "authorization": (knowledge_base_id, "read"),
         "detail": (
-                knowledge_base_id,
-                {
-                    "organization_scope": organization_id,
+            knowledge_base_id,
+            {
+                "organization_scope": organization_id,
                 "has_organization_id": True,
                 "can_edit_settings": True,
                 "can_manage_safe_metadata": False,
+                "can_register_initial_document": True,
                 "can_read": True,
                 "can_use": True,
                 "can_write": True,
@@ -862,6 +869,7 @@ def test_knowledge_detail_uses_read_gate_and_returns_capabilities(monkeypatch):
     assert body["documents"][0]["chunk_count"] == 0
     assert body["can_write"] is True
     assert body["can_manage"] is False
+    assert body["can_register_initial_document"] is False
 
 
 def test_direct_document_detail_projects_internal_metadata(monkeypatch):
