@@ -2550,6 +2550,9 @@ describe('AgentBuilderPanel', () => {
     ).not.toBeInTheDocument();
     expect(screen.getByText('Workflow 생성 완료')).toBeInTheDocument();
     expect(agentBuilderApi.sendMessage).toHaveBeenCalledTimes(1);
+    expect(toast.error).not.toHaveBeenCalledWith(
+      expect.stringContaining('Knowledge Base 선택을 적용하지 못했습니다'),
+    );
   });
 
   it('ambiguous Knowledge selection locks the card while canonical session is pending acknowledgement', async () => {
@@ -2638,6 +2641,9 @@ describe('AgentBuilderPanel', () => {
       screen.getByRole('button', { name: '선택한 Knowledge Base로 생성' }),
     ).toBeDisabled();
     expect(agentBuilderApi.sendMessage).toHaveBeenCalledTimes(1);
+    expect(toast.error).not.toHaveBeenCalledWith(
+      expect.stringContaining('Knowledge Base 선택을 적용하지 못했습니다'),
+    );
   });
 
   it('Knowledge candidate reasons use Korean allowlisted labels and hide unknown codes', async () => {

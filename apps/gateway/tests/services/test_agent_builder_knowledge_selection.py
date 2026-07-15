@@ -414,7 +414,7 @@ def test_duplicate_knowledge_selection_is_rejected_before_any_resolver_rerun(
         _Db(),
         user_id=user_id,
         organization_id=organization_id,
-        recommendation_resolver=lambda *_args, **_kwargs: resolver_calls.append(
+        binding_materializer=lambda *_args, **_kwargs: resolver_calls.append(
             (_args, _kwargs)
         ),
         no_knowledge_candidate_id="no-kb",
@@ -542,7 +542,7 @@ def test_direct_selection_rejects_legacy_only_knowledge_candidate(
         _Db(),
         user_id=user_id,
         organization_id=organization_id,
-        recommendation_resolver=lambda *_args, **_kwargs: resolver_calls.append(
+        binding_materializer=lambda *_args, **_kwargs: resolver_calls.append(
             (_args, _kwargs)
         ),
         no_knowledge_candidate_id="no-kb",
@@ -682,14 +682,20 @@ def test_knowledge_selection_reads_direct_resolution_candidates_without_legacy_o
         def commit(self):
             self.commits += 1
 
-    resolver_calls = []
+    materializer_calls = []
     knowledge_base_id = uuid4()
 
-    def _resolver(*args, **kwargs):
-        resolver_calls.append((args, kwargs))
+    def _materializer(*args, **kwargs):
+        materializer_calls.append((args, kwargs))
         return {
             "status": "ready",
-            "bindings": [{"knowledge_base_id": str(knowledge_base_id)}],
+            "bindings": [
+                {
+                    "safe_handle": "rec-safe-1",
+                    "knowledge_base_id": str(knowledge_base_id),
+                    "name": "휴가 정책",
+                }
+            ],
             "warnings": [],
         }
 
@@ -709,7 +715,7 @@ def test_knowledge_selection_reads_direct_resolution_candidates_without_legacy_o
         db,
         user_id=user_id,
         organization_id=organization_id,
-        recommendation_resolver=_resolver,
+        binding_materializer=_materializer,
         no_knowledge_candidate_id="no-kb",
     )
     selection = AgentBuilderKnowledgeSelectionRequest.model_validate(
@@ -731,7 +737,9 @@ def test_knowledge_selection_reads_direct_resolution_candidates_without_legacy_o
     assert response.graph_mutation.completion_context.knowledge_resolution_id == (
         "res-kb-1"
     )
-    assert resolver_calls[0][1]["selected_candidate_handles"] == {"rec-safe-1"}
+    assert materializer_calls[0][1]["selected_candidate_handles"] == {
+        "rec-safe-1"
+    }
     assert request_row.response_payload["knowledge_resolutions"][0][
         "selected_candidate_ids"
     ] == ["rec-safe-1"]
@@ -877,12 +885,6 @@ def test_before_graph_empty_direct_resolution_uses_dedicated_empty_selection(
         def commit(self):
             self.commits += 1
 
-    resolver_calls = []
-
-    def _resolver(*args, **kwargs):
-        resolver_calls.append((args, kwargs))
-        return {"status": "ready", "bindings": [], "warnings": []}
-
     builder_calls = []
 
     def _builder(**kwargs):
@@ -900,7 +902,9 @@ def test_before_graph_empty_direct_resolution_uses_dedicated_empty_selection(
         db,
         user_id=user_id,
         organization_id=organization_id,
-        recommendation_resolver=_resolver,
+        binding_materializer=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("empty selection must not materialize Knowledge Base handles")
+        ),
         no_knowledge_candidate_id="no-kb",
         before_graph_builder=_builder,
     )
@@ -914,7 +918,6 @@ def test_before_graph_empty_direct_resolution_uses_dedicated_empty_selection(
     response = service.select(session.id, selection)
 
     assert response.resolution_id == "res-empty"
-    assert resolver_calls[0][1]["selected_candidate_handles"] == {"no-kb"}
     assert builder_calls[0]["bindings"] == []
     assert request_row.response_payload["knowledge_resolutions"][0][
         "selected_candidate_ids"

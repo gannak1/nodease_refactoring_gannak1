@@ -4013,6 +4013,76 @@ class AgentBuilderService:
             selected_candidate_handles=selected_candidate_handles,
         )
 
+    def materialize_knowledge_selection(
+        self,
+        structured: AgentBuilderStructuredRequest,
+        *,
+        selected_candidate_handles: set[str],
+    ) -> dict[str, Any]:
+        """Revalidate selected safe handles without recomputing their ranking."""
+        requested_handles = {
+            handle
+            for handle in selected_candidate_handles
+            if handle != NO_KB_CANDIDATE_ID
+        }
+        if not requested_handles:
+            return {"status": "ready", "bindings": [], "warnings": []}
+
+        service = KnowledgeRAGRecommendationService(
+            self.db,
+            user_id=self.user.id,
+            organization_id=self.organization_id,
+        )
+        pending_by_step = {
+            item.target_step_ref: item.resolution_id
+            for item in structured.pending_resolution
+            if item.slot_type == "knowledge_base"
+        }
+        bindings_by_handle: dict[str, dict[str, Any]] = {}
+        for requirement in structured.knowledge_requirements:
+            request = KnowledgeRAGRecommendationRequest(
+                workflow_intent=structured.intent_summary,
+                node_purpose="; ".join(requirement.query_topics)
+                or requirement.expected_evidence_type,
+                knowledge_requirement=requirement.model_dump(mode="json"),
+                safe_query_topics=requirement.query_topics,
+                pending_resolution_ref=pending_by_step.get(
+                    requirement.target_step_ref
+                ),
+                safe_workflow_context_summary={
+                    "planned_step_count": len(structured.planned_steps),
+                    "required_capabilities": structured.required_capabilities,
+                },
+                intended_execution_subject_id=self.user.id,
+                mode="auto",
+                max_recommendations=AGENT_BUILDER_KB_RECOMMENDATION_LIMIT,
+            )
+            for binding in service.materialize_candidate_handles_for_builder(
+                request,
+                requested_handles,
+            ):
+                handle = str(binding.get("safe_handle") or "")
+                if handle in requested_handles:
+                    bindings_by_handle[handle] = binding
+
+        missing_handles = requested_handles - set(bindings_by_handle)
+        if missing_handles:
+            return {
+                "status": "validation_failed",
+                "bindings": [],
+                "warnings": [
+                    "선택한 Knowledge Base 정보를 다시 확인할 수 없습니다."
+                ],
+            }
+        return {
+            "status": "ready",
+            "bindings": [
+                bindings_by_handle[handle]
+                for handle in sorted(requested_handles)
+            ],
+            "warnings": [],
+        }
+
     def build_before_graph_knowledge_selection(
         self,
         *,

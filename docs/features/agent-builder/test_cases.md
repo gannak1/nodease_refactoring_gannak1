@@ -631,6 +631,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - 실행하지 못한 필수 검증은 사유와 남은 위험을 기록하며 완료로 처리하지 않는다.
 ## 2026-07-15 Connection Navigation And Recovery Cases
 
+- Knowledge 선택은 발급된 safe candidate handle을 다시 ranking하지 않고 materialize한다. 현재 Top-K 순위가 달라져도 handle이 조직 범위, use 권한, lifecycle 및 runtime eligibility를 통과하면 선택 저장이 가능해야 하며, handle을 확인할 수 없으면 GraphMutation 없이 validation failure가 되어야 한다.
 - Canonical graph recovery after acknowledgement loss, persisted Undo, persisted Redo, and ambiguous save assigns editor-only edge display numbers without changing the serialized workflow graph or graph hash.
 - A Slack/GitHub direct-edit plan exposes configuration guidance but no `credential_ref` task, credential candidate, empty picker, or Agent Builder token field. Mail/Gmail still expose only permitted managed credential candidates.
 - A `연결 설정으로 이동` action selects/focuses the unresolved Slack/GitHub node and opens the existing Editor connection control without mutation, save, planner call, or external request.

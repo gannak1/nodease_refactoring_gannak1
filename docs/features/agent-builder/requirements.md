@@ -230,6 +230,12 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 - `after_graph` Knowledge binding은 `knowledge_binding` GraphMutation의 CDS 저장과 canonical graph hash/`updated_at` acknowledgement 이후에만 선택 완료로 기록한다.
 - Knowledge 저장 중에는 기존 card와 선택값을 유지하고 control만 잠근다. 선택 사용자 메시지는 save/acknowledgement 성공 뒤 확정한다. 저장 전 실패는 같은 card에서 같은 선택을 재시도할 수 있어야 하며 결과가 불명확하면 canonical session의 안전한 `messages`와 `knowledge_resolution`으로 `pending_ack|completed|unapplied`를 판정한다. `unapplied`는 같은 card를 다시 활성화하고, `pending_ack`는 reconciliation 동안 잠그며, `completed`는 stale clarification card를 닫고 다음 설정 단계로 진행한다. 자연어 요청, planner 또는 유실된 typed operations는 재실행하지 않는다.
 
+### DBP-FR-010a Selected Knowledge Candidate Materialization
+
+- Knowledge selection endpoint는 후보 발급 뒤 사용자가 선택한 opaque candidate handle을 새 추천 점수나 Top-K 결과로 다시 계산하지 않는다.
+- 선택 처리 시 active organization, `use` 권한, lifecycle, runtime eligibility를 다시 검증하고, 검증을 통과한 기존 handle만 runtime Knowledge Base binding으로 materialize한다.
+- 선택한 handle이 더 이상 권한 또는 runtime eligibility를 통과하지 못하면 graph mutation을 만들거나 저장하지 않고 validation failure로 닫는다.
+
 ### DBP-FR-011 Existing Capability Compatibility
 
 - 기존 KB 후보 3개 높이·최대 20개 표시와 node capability allowlist는 재구현하지 않고 회귀 테스트로 보존한다.

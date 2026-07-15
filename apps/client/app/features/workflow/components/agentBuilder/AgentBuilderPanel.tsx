@@ -1363,13 +1363,25 @@ export function AgentBuilderPanel({
       setKnowledgeSelectionError(null);
       setInput('');
     } catch (error) {
+      let canonicalOutcomeConfirmed = false;
       try {
         const session = await agentBuilderApi.getSession(sessionId);
         if (session.session_id === sessionId) {
           reconcileCanonicalSession(session);
+          const activeMutation = session.active_graph_mutation as
+            | Record<string, unknown>
+            | null
+            | undefined;
+          canonicalOutcomeConfirmed =
+            session.status === 'completed' ||
+            activeMutation?.status === 'pending_ack';
         }
       } catch {
         // Keep the current card and selected values while the outcome is unknown.
+      }
+      if (canonicalOutcomeConfirmed) {
+        setKnowledgeSelectionError(null);
+        return;
       }
       const message = knowledgeSelectionErrorMessage(error);
       setKnowledgeSelectionError(message);
