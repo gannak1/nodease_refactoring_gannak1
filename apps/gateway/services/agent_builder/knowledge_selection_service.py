@@ -34,7 +34,7 @@ class KnowledgeSelectionService:
         *,
         user_id: UUID,
         organization_id: UUID,
-        recommendation_resolver: Callable[..., dict[str, Any]],
+        binding_materializer: Callable[..., dict[str, Any]],
         no_knowledge_candidate_id: str,
         before_graph_builder: Callable[..., dict[str, Any]] | None = None,
         repository: AgentBuilderRepository | None = None,
@@ -42,7 +42,7 @@ class KnowledgeSelectionService:
         self.db = db
         self.user_id = user_id
         self.organization_id = organization_id
-        self.recommendation_resolver = recommendation_resolver
+        self.binding_materializer = binding_materializer
         self.before_graph_builder = before_graph_builder
         self.no_knowledge_candidate_id = no_knowledge_candidate_id
         self.repository = repository or AgentBuilderRepository()
@@ -335,12 +335,15 @@ class KnowledgeSelectionService:
         }
         if not candidate_handles:
             candidate_handles = {self.no_knowledge_candidate_id}
-        recommendation = self.recommendation_resolver(
-            structured,
-            include_materialized_refs=True,
-            selected_candidate_handles=candidate_handles,
+        recommendation = (
+            {"status": "ready", "bindings": [], "warnings": []}
+            if candidate_handles == {self.no_knowledge_candidate_id}
+            else self.binding_materializer(
+                structured,
+                selected_candidate_handles=candidate_handles,
+            )
         )
-        if recommendation.get("status") not in {"recommended", "ready"}:
+        if recommendation.get("status") != "ready":
             raise HTTPException(status_code=422, detail="catalog_validation_failed")
         knowledge_base_refs = [
             {

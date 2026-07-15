@@ -5095,6 +5095,73 @@ def test_agent_builder_apply_materializes_kb_at_apply_time(monkeypatch):
     assert "knowledge_base_id" in bindings[0]
 
 
+def test_agent_builder_materializes_selected_kb_without_reranking(monkeypatch):
+    structured = service_module.AgentBuilderStructuredRequest(
+        request_type="new_workflow",
+        draft_mode="new_workflow",
+        intent_summary="safe policy workflow",
+        planned_steps=[
+            service_module.AgentBuilderPlannedStep(
+                step_id="step_llm",
+                capability="knowledge_backed_llm",
+                purpose="answer policy questions",
+            )
+        ],
+        knowledge_requirements=[
+            service_module.AgentBuilderKnowledgeRequirement(
+                requirement_id="kr_1",
+                query_topics=["policy"],
+                target_step_ref="step_llm",
+            )
+        ],
+        pending_resolution=[
+            service_module.AgentBuilderPendingResolution(
+                resolution_id="res_kb_1",
+                slot_type="knowledge_base",
+                slot_key="llm.knowledgeBases",
+                target_step_ref="step_llm",
+            )
+        ],
+    )
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    class FakeRecommendationService:
+        def __init__(self, db, *, user_id, organization_id):
+            pass
+
+        def recommend_for_builder(self, *_args, **_kwargs):
+            raise AssertionError("selection must not rerun KB ranking")
+
+        def materialize_candidate_handles_for_builder(self, request, candidate_handles):
+            assert request.pending_resolution_ref == "res_kb_1"
+            assert candidate_handles == {"safe-rec-1"}
+            return [
+                {
+                    "safe_handle": "safe-rec-1",
+                    "knowledge_base_id": str(uuid.uuid4()),
+                    "name": "Policy knowledge",
+                }
+            ]
+
+    monkeypatch.setattr(
+        service_module,
+        "KnowledgeRAGRecommendationService",
+        FakeRecommendationService,
+    )
+
+    response = svc.materialize_knowledge_selection(
+        structured,
+        selected_candidate_handles={"safe-rec-1"},
+    )
+
+    assert response["status"] == "ready"
+    assert response["bindings"][0]["safe_handle"] == "safe-rec-1"
+
+
 def test_agent_builder_session_restore_hides_cached_payload_when_scope_denied(
     monkeypatch,
 ):

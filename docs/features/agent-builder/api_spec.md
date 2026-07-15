@@ -745,6 +745,10 @@ Request:
 }
 ```
 
+### 8.7 Selected Knowledge Candidate Materialization
+
+Knowledge selection endpoint는 client가 이미 받은 opaque candidate handle을 새 recommendation 또는 Top-K ranking으로 다시 계산하지 않는다. Backend는 선택된 handle의 active organization 범위, `use` 권한, lifecycle 및 runtime eligibility만 다시 검증해 runtime binding으로 materialize한다. 이 검증이 실패하면 `422 catalog_validation_failed`로 종료하며 GraphMutation 또는 workflow 저장을 수행하지 않는다.
+
 ## 9. Cancel
 
 ### POST `/requests/{request_id}/cancel`
