@@ -15,7 +15,7 @@ Verified Against: `feature/mba-198 @ 92669f3`
 - Workflow Node Capability Catalog v2 is the shared source for node role, incoming/outgoing allowance, and outgoing handle policy.
 - Start, Webhook Trigger, and Schedule Trigger reject incoming edges. Answer rejects outgoing edges.
 - Condition accepts only the Default handle or a configured case handle as an outgoing source handle.
-- Frontend handle visibility and graph validation provide immediate UX feedback, while Agent Builder backend preview/apply-save validation is the persistence boundary.
+- Frontend handle visibility and graph validation provide immediate UX feedback, while Agent Builder direct-edit GraphMutation의 common CAS save와 canonical acknowledgement validation이 persistence boundary다. Preview/apply-save 제품 경로는 사용하지 않는다.
 
 ## Conversation Memory Dispatch Admission Target
 

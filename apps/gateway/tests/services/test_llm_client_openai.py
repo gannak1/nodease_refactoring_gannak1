@@ -619,6 +619,84 @@ def test_openai_responses_json_format_adds_json_word_to_input(monkeypatch):
     assert requested["payload"]["text"]["format"] == {"type": "json_object"}
 
 
+def test_openai_responses_builds_strict_json_schema_format():
+    client = OpenAIClient(
+        model_id="gpt-5.5-pro",
+        credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
+    )
+
+    response_format = client.build_json_schema_response_format(
+        name="agent_builder_intent",
+        schema={
+            "type": "object",
+            "properties": {
+                "request_type": {"type": "string", "default": "new_workflow"},
+                "edit": {
+                    "anyOf": [
+                        {
+                            "type": "object",
+                            "properties": {"placement": {"type": "string"}},
+                        },
+                        {"type": "null"},
+                    ]
+                },
+            },
+        },
+    )
+
+    assert response_format["type"] == "json_schema"
+    assert response_format["name"] == "agent_builder_intent"
+    assert response_format["strict"] is True
+    schema = response_format["schema"]
+    assert schema["required"] == ["request_type", "edit"]
+    assert schema["additionalProperties"] is False
+    assert "default" not in schema["properties"]["request_type"]
+    nested = schema["properties"]["edit"]["anyOf"][0]
+    assert nested["required"] == ["placement"]
+    assert nested["additionalProperties"] is False
+
+
+def test_openai_chat_builds_strict_json_schema_format():
+    client = OpenAIClient(
+        model_id="gpt-4.1",
+        credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
+    )
+
+    response_format = client.build_json_schema_response_format(
+        name="agent_builder_intent",
+        schema={
+            "type": "object",
+            "properties": {"request_type": {"type": "string"}},
+        },
+    )
+
+    assert response_format == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "agent_builder_intent",
+            "schema": {
+                "type": "object",
+                "properties": {"request_type": {"type": "string"}},
+                "required": ["request_type"],
+                "additionalProperties": False,
+            },
+            "strict": True,
+        },
+    }
+
+
+def test_openai_legacy_model_does_not_offer_json_schema_format():
+    client = OpenAIClient(
+        model_id="gpt-3.5-turbo",
+        credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
+    )
+
+    assert client.build_json_schema_response_format(
+        name="agent_builder_intent",
+        schema={"type": "object", "properties": {}},
+    ) is None
+
+
 def test_openai_responses_json_format_does_not_duplicate_json_instruction(monkeypatch):
     """기존 input에 json 지시가 있으면 보강 user block을 중복 추가하지 않는다."""
     requested = {}

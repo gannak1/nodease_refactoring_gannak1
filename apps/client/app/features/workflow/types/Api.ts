@@ -159,13 +159,19 @@ export interface CostOptimizerCompareRequest {
   candidate: CostOptimizerCandidateRequest;
 }
 
-export interface CostOptimizerApplyRequest {
+export interface WorkflowGraphCASExpectation {
+  expected_graph_hash: string;
+  expected_updated_at: string;
+}
+
+export interface CostOptimizerApplyRequest extends WorkflowGraphCASExpectation {
   comparison_id: string;
   candidate_settings: CostOptimizerCandidateRequest;
   acknowledge_downstream_warning?: boolean;
 }
 
-export interface CostOptimizerRecommendationApplyRequest {
+export interface CostOptimizerRecommendationApplyRequest
+  extends WorkflowGraphCASExpectation {
   recommendation_ids: string[];
 }
 
@@ -338,7 +344,13 @@ export interface ModelRoutingPolicyResponse {
   };
 }
 
-export interface ModelRoutingPolicyPatchRequest {
+export interface ModelRoutingPolicyPatchResponse
+  extends ModelRoutingPolicyResponse {
+  graph_hash: string;
+  updated_at: string;
+}
+
+export interface ModelRoutingPolicyPatchRequest extends WorkflowGraphCASExpectation {
   enabled: boolean;
   refresh_every_runs: number;
   validation_budget_usd: number;
@@ -449,7 +461,8 @@ export interface CostOptimizerApplyResponse {
   node_id: string;
   applied: boolean;
   downstream_compatibility: CostOptimizerDownstreamCompatibility;
-  updated_draft_revision?: string | number | null;
+  graph_hash: string;
+  updated_at: string;
 }
 
 export interface CostOptimizerExperimentListParams {

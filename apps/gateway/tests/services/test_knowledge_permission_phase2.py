@@ -394,6 +394,30 @@ def test_candidate_excludes_kb_without_active_document_version():
     assert result.unavailable_candidate_count_bucket == "1"
 
 
+def test_builder_candidate_mode_keeps_authorized_unready_kb_selectable():
+    collection = _collection()
+    indexing_kb = _kb(version_status="indexing")
+    helper = FakePermissionHelper(collection_actions={collection.id: {"route"}})
+    resolver = FakeResolver(
+        helper=helper,
+        collections=[collection],
+        items=[
+            SimpleNamespace(
+                collection_id=collection.id,
+                knowledge_base_id=indexing_kb.id,
+            )
+        ],
+        kbs=[indexing_kb],
+    )
+
+    result = resolver.resolve_auto_collection_candidates(
+        allow_unready_candidates=True,
+    )
+
+    assert [candidate.candidate_id for candidate in result.candidates] == [indexing_kb.id]
+    assert result.candidates[0].safe_metadata["active_document_version_status"] == "missing"
+
+
 def test_auto_collection_summary_count_uses_authorized_candidate_subset():
     collection = _collection(safe_metadata={"safe_label": "HR 정책"})
     denied_kb = _kb()

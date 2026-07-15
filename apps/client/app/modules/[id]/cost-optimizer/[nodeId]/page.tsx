@@ -22,6 +22,10 @@ import { CostOptimizerBaselineSelection } from '@/app/features/workflow/componen
 import { CostOptimizerHistoryPanel } from '@/app/features/workflow/components/costOptimizer/CostOptimizerHistoryPanel';
 import { CostOptimizerOutputPreviewPanel } from '@/app/features/workflow/components/costOptimizer/CostOptimizerPreviewViewer';
 import { fieldLabelsFromOutputFormat } from '@/app/features/workflow/components/costOptimizer/costOptimizerPreviewLabels';
+import {
+  ingestWorkflowDraftCASResult,
+  resolveWorkflowDraftCASExpectation,
+} from '@/app/features/workflow/utils/workflowDraftCAS';
 import { baselineFromExperimentSummary } from '@/app/features/workflow/components/costOptimizer/costOptimizerHistoryModel';
 import { NodeSettingsComparisonPanel } from '@/app/features/workflow/components/costOptimizer/NodeSettingsComparisonPanel';
 import {
@@ -1000,14 +1004,19 @@ function CostOptimizerPlaygroundContent({
       const downstreamState = compareResult.downstream_compatibility?.state;
       const needsDownstreamAck =
         downstreamState === 'warning' || downstreamState === 'incompatible';
-      await workflowApi.applyCostOptimizerCandidate(workflowId, nodeId, {
+      const expectation = await resolveWorkflowDraftCASExpectation(workflowId, {
+        refresh: true,
+      });
+      const applyResult = await workflowApi.applyCostOptimizerCandidate(workflowId, nodeId, {
         comparison_id: compareResult.comparison_id,
         candidate_settings: compareRequestCandidateFromDraft(
           candidate,
           testName.trim() || 'B',
         ),
         acknowledge_downstream_warning: needsDownstreamAck,
+        ...expectation,
       });
+      ingestWorkflowDraftCASResult(workflowId, applyResult);
       setApplySuccess(true);
       setIsApplyDialogOpen(false);
     } catch {

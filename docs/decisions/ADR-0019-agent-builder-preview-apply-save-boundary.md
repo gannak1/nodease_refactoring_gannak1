@@ -1,6 +1,6 @@
 # ADR-0019: Agent Builder preview apply/save boundary
 
-Status: Accepted
+Status: Superseded by ADR-0045
 
 Related ADRs: [ADR-0008](ADR-0008-audit-action-naming-standard.md), [ADR-0009](ADR-0009-active-organization-header-context.md), [ADR-0010](ADR-0010-resource-access-403-404-policy.md), [ADR-0016](ADR-0016-permission-request-and-app-creation-permission.md), [ADR-0017](ADR-0017-knowledge-integration-provisional-implementation-baseline.md), [ADR-0018](ADR-0018-workflow-rag-anonymous-public-only-runtime.md)
 

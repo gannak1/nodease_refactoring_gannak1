@@ -193,9 +193,16 @@ def _condition_branch_order(
 
 
 def _node_size(node: dict[str, Any]) -> tuple[float, float]:
+    measured = node.get("measured") if isinstance(node.get("measured"), dict) else {}
     return (
-        _positive_number(node.get("width"), DEFAULT_NODE_WIDTH),
-        _positive_number(node.get("height"), DEFAULT_NODE_HEIGHT),
+        _positive_number(
+            measured.get("width"),
+            _positive_number(node.get("width"), DEFAULT_NODE_WIDTH),
+        ),
+        _positive_number(
+            measured.get("height"),
+            _positive_number(node.get("height"), DEFAULT_NODE_HEIGHT),
+        ),
     )
 
 

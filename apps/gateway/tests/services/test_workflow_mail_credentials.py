@@ -1,24 +1,33 @@
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
 
+from apps.gateway.application.agent_builder.graph_mutation_builder import (
+    canonical_graph_hash,
+)
 from apps.gateway.services.workflow_service import WorkflowService
 from apps.shared.schemas.workflow import NodeSchema, Position, WorkflowDraftRequest
 
 
 def _request(data: dict) -> WorkflowDraftRequest:
+    nodes = [
+        NodeSchema(
+            id="mail-1",
+            type="mailNode",
+            position=Position(x=0, y=0),
+            data=data,
+        )
+    ]
     return WorkflowDraftRequest(
-        nodes=[
-            NodeSchema(
-                id="mail-1",
-                type="mailNode",
-                position=Position(x=0, y=0),
-                data=data,
-            )
-        ]
+        nodes=nodes,
+        expected_graph_hash=canonical_graph_hash(
+            {"nodes": [node.model_dump(mode="python") for node in nodes], "edges": []}
+        ),
+        expected_updated_at=datetime(2026, 7, 13, tzinfo=timezone.utc),
     )
 
 

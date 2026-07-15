@@ -1,4 +1,5 @@
-from typing import Any, Dict, List, Optional
+from datetime import datetime
+from typing import Any, Dict, List, Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -52,6 +53,14 @@ class RuntimeVariableSchema(BaseModel):
     name: str
 
 
+class WorkflowMutationContext(BaseModel):
+    operation_id: UUID
+    action: Literal["apply", "revert", "redo"]
+    expected_base_graph_hash: str = Field(min_length=64, max_length=64)
+    expected_workflow_updated_at: datetime
+    catalog_version: Literal[3] = 3
+
+
 class WorkflowDraftRequest(BaseModel):
     # 하나도 없으면 빈 리스트로 기본값 설정
     nodes: List[NodeSchema] = []
@@ -62,6 +71,9 @@ class WorkflowDraftRequest(BaseModel):
     runtime_variables: Optional[List[RuntimeVariableSchema]] = Field(
         None, alias="runtimeVariables"
     )
+    expected_graph_hash: str = Field(min_length=64, max_length=64)
+    expected_updated_at: datetime
+    mutation_context: WorkflowMutationContext | None = None
 
 
 class WorkflowCreateRequest(BaseModel):

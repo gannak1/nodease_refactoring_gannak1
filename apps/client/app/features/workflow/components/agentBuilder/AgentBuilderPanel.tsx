@@ -1,34 +1,40 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
-import { useRouter } from 'next/navigation';
 import {
   AlertCircle,
   Bot,
   Check,
   ChevronDown,
-  Eye,
   Loader2,
   Minus,
   Send,
   X,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { useReactFlow, type Edge, type Viewport } from '@xyflow/react';
+import { useReactFlow, type Edge } from '@xyflow/react';
 import {
   agentBuilderApi,
-  type AgentBuilderDraftPreview,
   type AgentBuilderIntentModelOption,
   type AgentBuilderIntentModelProvider,
   type AgentBuilderIntentModelSelection,
   type AgentBuilderKnowledgeCandidateSelection,
   type AgentBuilderMessageResponse,
+  type AgentBuilderGraphMutation,
+  type AgentBuilderParameterGroup,
   type AgentBuilderSessionMessage,
 } from '../../api/agentBuilderApi';
-import { workflowApi } from '../../api/workflowApi';
-import { useWorkflowStore } from '../../store/useWorkflowStore';
 import type { Node } from '../../types/Workflow';
+import { useWorkflowStore } from '../../store/useWorkflowStore';
+import {
+  WorkflowResultGroup,
+  type WorkflowKnowledgeStep,
+  type WorkflowSetupStatus,
+} from './WorkflowResultGroup';
+import { applyAndSaveAgentBuilderMutation } from './useAgentBuilderEditor';
+import { useParameterTasks } from './useParameterTasks';
+import { calculateAgentBuilderNodeFocusViewport } from './agentBuilderNodeFocus';
 
 type Props = {
   workflowId: string;
@@ -44,91 +50,151 @@ type ConversationItem =
   | { kind: 'user'; id: string; content: string }
   | { kind: 'assistant'; id: string; response: AgentBuilderMessageResponse };
 
-const DEFAULT_WORKFLOW_VIEWPORT: Viewport = { x: 0, y: 0, zoom: 1 };
 const NO_KB_CANDIDATE_ID = '__agent_builder_no_kb__';
-
-const UI_ONLY_NODE_DATA_KEYS = new Set([
-  'selected',
-  'dragging',
-  'status',
-  'displayStatus',
-  'isHovered',
-]);
-
-const semanticNodeData = (data: Node['data']) =>
-  Object.fromEntries(
-    Object.entries(data ?? {}).filter(([key]) => !UI_ONLY_NODE_DATA_KEYS.has(key)),
-  );
-
-const stableValue = (value: unknown): unknown => {
-  if (Array.isArray(value)) {
-    return value.map(stableValue);
-  }
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, entry]) => [key, stableValue(entry)]),
-    );
-  }
-  return value;
+const SAFE_SERVER_ERROR_CODE = /^[a-z][a-z0-9_]{0,79}$/;
+const SESSION_RECOVERY_DELAYS_MS = [1000, 2000, 4000] as const;
+const KNOWLEDGE_REASON_LABELS: Record<string, string> = {
+  topic_keyword_match: '\uC694\uCCAD \uC8FC\uC81C\uC640 \uC77C\uCE58',
+  metadata_match: '\uBB38\uC11C \uBA54\uD0C0\uB370\uC774\uD130\uC640 \uC77C\uCE58',
+  semantic_similarity: '\uB0B4\uC6A9 \uC720\uC0AC\uB3C4\uAC00 \uB192\uC74C',
+  recent_usage: '\uCD5C\uADFC \uC0AC\uC6A9\uB41C Knowledge Base',
 };
 
-const graphHashPayload = (nodes: Node[], edges: Edge[]) => {
-  const realNodes = nodes.filter((node) => node.type !== 'note');
-  const realNodeIds = new Set(realNodes.map((node) => node.id));
-  const realEdges = edges.filter(
-    (edge) => realNodeIds.has(edge.source) && realNodeIds.has(edge.target),
-  );
-
-  return JSON.stringify(
-    stableValue({
-      nodes: realNodes
-        .map((node) => ({
-          id: node.id,
-          type: node.type,
-          data: semanticNodeData(node.data),
-        }))
-        .sort((a, b) => a.id.localeCompare(b.id)),
-      edges: realEdges
-        .map((edge) => ({
-          source: edge.source,
-          target: edge.target,
-          sourceHandle: edge.sourceHandle ?? null,
-          targetHandle: edge.targetHandle ?? null,
-        }))
-        .sort((a, b) =>
-          [
-            a.source.localeCompare(b.source),
-            a.target.localeCompare(b.target),
-            String(a.sourceHandle ?? '').localeCompare(String(b.sourceHandle ?? '')),
-            String(a.targetHandle ?? '').localeCompare(String(b.targetHandle ?? '')),
-          ].find((value) => value !== 0) ?? 0,
-        ),
-    }),
-  );
+export const isAgentBuilderSetupCompleted = (
+  requestStatus: string | null | undefined,
+  parameterGroup: AgentBuilderParameterGroup | null,
+): boolean => {
+  void parameterGroup;
+  return requestStatus === 'completed';
 };
 
-const graphHash = async (nodes: Node[], edges: Edge[]) => {
-  if (typeof crypto === 'undefined' || !crypto.subtle) {
-    return null;
+const agentBuilderErrorCode = (error: unknown): string | null => {
+  if (!error || typeof error !== 'object') return null;
+  const response = (error as { response?: { data?: unknown } }).response;
+  const data = response?.data;
+  if (!data || typeof data !== 'object') return null;
+  const detail = (data as { detail?: unknown }).detail;
+  if (typeof detail === 'string') {
+    return SAFE_SERVER_ERROR_CODE.test(detail) ? detail : null;
   }
-  const digest = await crypto.subtle.digest(
-    'SHA-256',
-    new TextEncoder().encode(graphHashPayload(nodes, edges)),
-  );
-  return Array.from(new Uint8Array(digest))
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('');
+  if (detail && typeof detail === 'object') {
+    const code = (detail as { code?: unknown }).code;
+    return typeof code === 'string' && SAFE_SERVER_ERROR_CODE.test(code)
+      ? code
+      : null;
+  }
+  return null;
 };
 
-const canonicalEditorGraph = (nodes: Node[], edges: Edge[]) => {
-  const realNodes = nodes.filter((node) => node.type !== 'note');
-  const realNodeIds = new Set(realNodes.map((node) => node.id));
-  const realEdges = edges.filter(
-    (edge) => realNodeIds.has(edge.source) && realNodeIds.has(edge.target),
-  );
-  return { nodes: realNodes, edges: realEdges };
+const agentBuilderErrorMessage = (error: unknown): string => {
+  const code = agentBuilderErrorCode(error);
+  switch (code) {
+    case 'stale_protocol':
+      return '이전 Agent Builder 세션을 새 세션으로 전환하지 못했습니다. 다시 시도해주세요.';
+    case 'workflow_context_required':
+      return '현재 workflow 정보를 확인할 수 없습니다. 편집기를 새로고침한 뒤 다시 시도해주세요.';
+    case 'task_conflict':
+      return '다른 설정 변경이 먼저 반영되었습니다. 최신 상태를 확인한 뒤 다시 시도해주세요.';
+    case 'stale_graph':
+      return 'workflow가 변경되어 요청을 적용할 수 없습니다. 최신 상태를 확인해주세요.';
+    case 'stale_workflow_updated_at':
+      return 'workflow 저장 시점이 달라 요청을 적용할 수 없습니다. 최신 상태를 확인해주세요.';
+    case 'result_graph_hash_mismatch':
+    case 'revert_graph_hash_mismatch':
+      return '생성된 workflow와 서버 검증 결과가 일치하지 않아 저장하지 않았습니다.';
+    case 'operation_payload_unavailable':
+      return '이전 Agent Builder 작업 내용을 복구할 수 없습니다. 요청을 다시 입력해주세요.';
+    case 'mutation_context_required':
+      return 'Agent Builder 저장 정보가 누락되어 요청을 적용하지 않았습니다.';
+  }
+  const response = (
+    error as { response?: { status?: unknown }; isAxiosError?: unknown }
+  )?.response;
+  const status = typeof response?.status === 'number' ? response.status : null;
+  if (status && [502, 503, 504].includes(status)) {
+    return `Agent Builder 서버에 연결할 수 없습니다. 잠시 후 다시 시도해주세요. (HTTP ${status})`;
+  }
+  if (status === 401) {
+    return '로그인 세션이 만료되었습니다. 다시 로그인해주세요. (HTTP 401)';
+  }
+  if (status === 403) {
+    return 'Agent Builder를 사용할 권한이 없습니다. (HTTP 403)';
+  }
+  if (status === 404) {
+    return 'Agent Builder 세션 또는 workflow를 찾을 수 없습니다. (HTTP 404)';
+  }
+  if (status === 409) {
+    return 'Agent Builder 작업이 현재 workflow 상태와 충돌했습니다. 최신 상태를 확인해주세요. (HTTP 409)';
+  }
+  if (status === 400 || status === 422) {
+    return `Agent Builder 요청 형식이 올바르지 않습니다. (HTTP ${status})`;
+  }
+  if (code) {
+    return `Agent Builder 요청이 거부되었습니다. (오류 코드: ${code})`;
+  }
+  if (
+    error &&
+    typeof error === 'object' &&
+    (error as { isAxiosError?: unknown }).isAxiosError === true &&
+    !response
+  ) {
+    return 'Agent Builder 서버와 통신할 수 없습니다. 네트워크 상태를 확인해주세요.';
+  }
+  if (status) {
+    return `Agent Builder 요청에 실패했습니다. (HTTP ${status})`;
+  }
+  return 'Agent Builder 요청 처리 중 오류가 발생했습니다.';
+};
+
+const knowledgeSelectionErrorMessage = (error: unknown): string => {
+  const code = agentBuilderErrorCode(error);
+  if (code === 'permission_denied' || code === 'knowledge_access_denied') {
+    return 'Knowledge Base 사용 권한이 변경되었습니다. 목록을 확인한 뒤 다시 선택해주세요.';
+  }
+  if (
+    code === 'stale_graph' ||
+    code === 'stale_workflow_updated_at' ||
+    code === 'task_conflict'
+  ) {
+    return 'Workflow 상태가 변경되었습니다. 현재 선택은 유지되며 최신 상태를 확인한 뒤 다시 적용할 수 있습니다.';
+  }
+  if (isRecoverableTransportError(error)) {
+    return '저장 결과를 아직 확인하지 못했습니다. 현재 선택은 유지됩니다. 잠시 후 같은 버튼으로 다시 시도해주세요.';
+  }
+  return 'Knowledge Base 선택을 적용하지 못했습니다. 현재 선택은 유지됩니다. 다시 시도해주세요.';
+};
+
+const isRecoverableTransportError = (error: unknown): boolean => {
+  if (!error || typeof error !== 'object') return false;
+  const candidate = error as {
+    isAxiosError?: unknown;
+    response?: { status?: unknown };
+  };
+  if (candidate.isAxiosError !== true) return false;
+  const status = candidate.response?.status;
+  return status === undefined || (typeof status === 'number' && status >= 500);
+};
+
+const shouldDiscardStoredSession = (error: unknown): boolean => {
+  const code = agentBuilderErrorCode(error);
+  if (
+    code === 'stale_protocol' ||
+    code === 'session_not_found' ||
+    code === 'invalid_session'
+  ) {
+    return true;
+  }
+  const response = (error as { response?: { status?: unknown } })?.response;
+  return response?.status === 404;
+};
+
+const mutationWithBaseHash = (
+  mutation: AgentBuilderGraphMutation,
+): AgentBuilderGraphMutation & { base_graph_hash: string } => {
+  if (!mutation.base_graph_hash) {
+    throw new Error('Agent Builder mutation base hash is missing');
+  }
+  return mutation as AgentBuilderGraphMutation & { base_graph_hash: string };
 };
 
 const isAgentBuilderMessageResponse = (
@@ -182,6 +248,25 @@ const conversationItemsFromSessionMessages = (
   return { responses, conversationItems };
 };
 
+const latestResponseRequestId = (
+  responses: AgentBuilderMessageResponse[],
+): string | null => responses.at(-1)?.request_id ?? null;
+
+const safeAffectedNodeIds = (mutation: unknown): string[] => {
+  if (!mutation || typeof mutation !== 'object') return [];
+  const candidate = (mutation as { affected_node_ids?: unknown })
+    .affected_node_ids;
+  if (!Array.isArray(candidate)) return [];
+  return Array.from(
+    new Set(
+      candidate.filter(
+        (nodeId): nodeId is string =>
+          typeof nodeId === 'string' && nodeId.length > 0,
+      ),
+    ),
+  );
+};
+
 const lastUserMessageFromConversation = (items: ConversationItem[]) => {
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index];
@@ -195,9 +280,17 @@ const lastUserMessageFromConversation = (items: ConversationItem[]) => {
 const isWorkflowNodeClarificationOption = (option: Record<string, unknown>) =>
   option.type === 'workflow_node' && typeof option.node_id === 'string';
 
-const isKnowledgeClarificationOption = (option: Record<string, unknown>) =>
-  !isWorkflowNodeClarificationOption(option) &&
-  (typeof option.candidate_id === 'string' || option.type === 'knowledge_base');
+const hasPendingKnowledgeResolution = (response: AgentBuilderMessageResponse) =>
+  Boolean(response.knowledge_resolution) &&
+  Boolean(
+    formatClarificationOptionValue(
+      response.knowledge_resolution?.resolution_id,
+    ),
+  ) &&
+  (response.knowledge_resolution?.selection_status === 'unapplied' ||
+    (response.knowledge_resolution?.selection_status !== 'pending_ack' &&
+      response.knowledge_resolution?.selection_status !== 'completed' &&
+      (response.knowledge_resolution?.selected ?? []).length === 0));
 
 const latestKnowledgeClarification = (
   items: ConversationItem[],
@@ -206,8 +299,14 @@ const latestKnowledgeClarification = (
   if (
     !latestItem ||
     latestItem.kind !== 'assistant' ||
-    latestItem.response.status !== 'clarification_required' ||
-    !latestItem.response.clarification_options?.some(isKnowledgeClarificationOption)
+    ['pending_ack', 'completed'].includes(
+      latestItem.response.knowledge_resolution?.selection_status ?? '',
+    ) ||
+    !['clarification_required', 'graph_mutation_ready'].includes(
+      latestItem.response.status,
+    ) ||
+    (!hasPendingKnowledgeResolution(latestItem.response) &&
+      knowledgeOptionsFromResponse(latestItem.response).length === 0)
   ) {
     return null;
   }
@@ -231,32 +330,14 @@ const latestWorkflowTargetClarification = (
   return latestItem.response;
 };
 
-const responseFromSessionDraftPreview = (
-  draftPreview: AgentBuilderDraftPreview | null | undefined,
-): AgentBuilderMessageResponse | null => {
-  if (!draftPreview?.preview_graph || !draftPreview.validation_result) {
-    return null;
-  }
-  return {
-    request_id: `session-draft-${draftPreview.draft_id}`,
-    status: draftPreview.validation_result.valid ? 'draft_ready' : 'validation_failed',
-    structured_request: null,
-    clarification_questions: [],
-    clarification_options: [],
-    draft_preview: draftPreview,
-    validation_result: draftPreview.validation_result,
-    preview_prompt: draftPreview.validation_result.valid
-      ? '도안 생성 미리보기'
-      : null,
-    warnings: draftPreview.safety_notices ?? [],
-  };
-};
-
 function formatClarificationOptionValue(value: unknown): string | null {
   if (value === null || value === undefined || value === '') return null;
   if (typeof value === 'number') return value.toFixed(2);
   return String(value);
 }
+
+const formatKnowledgeReasonLabel = (value: unknown): string | null =>
+  typeof value === 'string' ? (KNOWLEDGE_REASON_LABELS[value] ?? null) : null;
 
 const createLocalUserMessageId = () => {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -265,38 +346,101 @@ const createLocalUserMessageId = () => {
   return `user-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 };
 
-const knowledgeCandidateSelectionFromOption = (
-  option: Record<string, unknown>,
-): (AgentBuilderKnowledgeCandidateSelection & { label?: string | null }) | null => {
-  const candidateId = formatClarificationOptionValue(option.candidate_id);
-  if (!candidateId) return null;
-  return {
-    candidate_id: candidateId,
-    resolution_id: formatClarificationOptionValue(option.resolution_id),
-    requirement_id: formatClarificationOptionValue(option.requirement_id),
-    label:
-      formatClarificationOptionValue(option.label) ??
-      formatClarificationOptionValue(option.safe_label),
-  };
-};
-
-const isSameKnowledgeCandidateSelection = (
-  left: AgentBuilderKnowledgeCandidateSelection,
-  right: AgentBuilderKnowledgeCandidateSelection,
+const knowledgeSelectionMessage = (
+  selections: Array<
+    AgentBuilderKnowledgeCandidateSelection & { label?: string | null }
+  >,
+  timing: 'before_graph' | 'after_graph',
 ) =>
-  left.candidate_id === right.candidate_id &&
-  left.resolution_id === right.resolution_id &&
-  left.requirement_id === right.requirement_id;
+  selections.length > 0
+    ? `Knowledge Base \uC120\uD0DD: ${selections
+        .map((candidate) => candidate.label || 'Knowledge Base')
+        .join(', ')}`
+    : timing === 'after_graph'
+      ? 'Knowledge Base \uC5C6\uC774 \uACC4\uC18D'
+      : 'Knowledge Base \uC5C6\uC774 \uC0DD\uC131';
 
 const isNoKnowledgeBaseOption = (option: Record<string, unknown>) =>
   formatClarificationOptionValue(option.candidate_id) === NO_KB_CANDIDATE_ID ||
   formatClarificationOptionValue(option.type) === 'no_knowledge_base';
 
+const knowledgeSelectionKey = (
+  selection: AgentBuilderKnowledgeCandidateSelection,
+) =>
+  [
+    selection.candidate_id,
+    selection.resolution_id ?? '',
+    selection.requirement_id ?? '',
+  ].join(':');
+
+const knowledgeOptionsFromResolution = (
+  response: AgentBuilderMessageResponse,
+) => {
+  const resolution = response.knowledge_resolution;
+  const retainsSelectionControl = ['pending_ack', 'unapplied'].includes(
+    resolution?.selection_status ?? '',
+  );
+  if (
+    !resolution ||
+    ((resolution.selected ?? []).length > 0 && !retainsSelectionControl)
+  ) {
+    return [];
+  }
+  const resolutionId = formatClarificationOptionValue(
+    resolution.resolution_id,
+  );
+  return (resolution.candidates ?? [])
+    .map((candidate, index) => {
+      const option = candidate as Record<string, unknown>;
+      if (isNoKnowledgeBaseOption(option)) return null;
+      const candidateId = formatClarificationOptionValue(option.candidate_id);
+      if (!candidateId) return null;
+      const selection: AgentBuilderKnowledgeCandidateSelection & {
+        label?: string | null;
+      } = {
+        candidate_id: candidateId,
+        resolution_id:
+          formatClarificationOptionValue(option.resolution_id) ??
+          resolutionId ??
+          null,
+        requirement_id:
+          formatClarificationOptionValue(option.requirement_id) ?? null,
+        label:
+          formatClarificationOptionValue(option.safe_label) ??
+          formatClarificationOptionValue(option.label),
+      };
+      const rawScore = option.score;
+      const rawConfidence = option.confidence;
+      return {
+        selection,
+        selectionId:
+          typeof option.selection_id === 'string'
+            ? option.selection_id
+            : knowledgeSelectionKey(selection),
+        label:
+          selection.label ??
+          `Knowledge Base \uD6C4\uBCF4 ${index + 1}`,
+        score:
+          typeof rawScore === 'number' && Number.isFinite(rawScore)
+            ? rawScore
+            : null,
+        confidence:
+          typeof rawConfidence === 'number' && Number.isFinite(rawConfidence)
+            ? rawConfidence
+            : null,
+        reason: formatKnowledgeReasonLabel(option.reason_category),
+      };
+    })
+    .filter((option): option is NonNullable<typeof option> => Boolean(option));
+};
+
+const knowledgeOptionsFromResponse = (response: AgentBuilderMessageResponse) =>
+  knowledgeOptionsFromResolution(response);
+
 export function AgentBuilderPanel({
   workflowId,
   appId,
   nodes,
-  edges,
   hasUnsavedChanges,
   selectedNodeId,
   selectedEdgeId,
@@ -304,48 +448,141 @@ export function AgentBuilderPanel({
   const [isOpen, setIsOpen] = useState(false);
   const [isMinimized, setIsMinimized] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [authoritativeRequestStatus, setAuthoritativeRequestStatus] = useState<
+    string | null
+  >(null);
+  const [, setSessionProtocolVersion] = useState<
+    'direct_edit_v1' | null
+  >(null);
   const [input, setInput] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isApplying, setIsApplying] = useState(false);
-  const [applyNotice, setApplyNotice] = useState<string | null>(null);
   const [, setResponses] = useState<AgentBuilderMessageResponse[]>([]);
-  const [conversationItems, setConversationItems] = useState<ConversationItem[]>([]);
-  const [pendingRequestId, setPendingRequestId] = useState<string | null>(null);
-  const [prePreviewViewport, setPrePreviewViewport] = useState<Viewport | null>(null);
-  const [selectedKnowledgeCandidates, setSelectedKnowledgeCandidates] = useState<
-    Array<AgentBuilderKnowledgeCandidateSelection & { label?: string | null }>
+  const [conversationItems, setConversationItems] = useState<
+    ConversationItem[]
   >([]);
+  const [currentResultRequestId, setCurrentResultRequestId] = useState<
+    string | null
+  >(null);
+  const [parameterGroupRequestId, setParameterGroupRequestId] = useState<
+    string | null
+  >(null);
+  const [recoveredRoutingContext, setRecoveredRoutingContext] = useState<{
+    requestId: string | null;
+    affectedNodeIds: string[];
+  }>({ requestId: null, affectedNodeIds: [] });
+  const [pendingRequestId, setPendingRequestId] = useState<string | null>(null);
+  const [sessionRestoreAttempt, setSessionRestoreAttempt] = useState(0);
+  const [sessionRecoveryRetryVersion, setSessionRecoveryRetryVersion] =
+    useState(0);
+  const [sessionRecoveryRequired, setSessionRecoveryRequired] = useState<
+    'restore' | 'pending_request' | 'acknowledgement' | null
+  >(null);
+  const [knowledgeSelectionError, setKnowledgeSelectionError] = useState<
+    string | null
+  >(null);
   const [lastSubmittedMessage, setLastSubmittedMessage] = useState('');
+  const [generationMode, setGenerationMode] = useState<
+    'configure_and_generate' | 'structure_only'
+  >('configure_and_generate');
   const [intentModelGroups, setIntentModelGroups] = useState<
     AgentBuilderIntentModelProvider[]
   >([]);
-  const [selectedIntentModel, setSelectedIntentModel] = useState<
-    AgentBuilderIntentModelOption | null
-  >(null);
+  const [selectedIntentModel, setSelectedIntentModel] =
+    useState<AgentBuilderIntentModelOption | null>(null);
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
-  const router = useRouter();
-  const { fitView, getViewport, setViewport } = useReactFlow();
-  const agentBuilderPreview = useWorkflowStore((state) => state.agentBuilderPreview);
-  const setAgentBuilderPreview = useWorkflowStore(
-    (state) => state.setAgentBuilderPreview,
+  const recoveredParameterGroup = useWorkflowStore(
+    (state) => state.recoveredAgentBuilderParameterGroup,
   );
-  const clearAgentBuilderPreview = useWorkflowStore(
-    (state) => state.clearAgentBuilderPreview,
+  const clearRecoveredParameterGroup = useWorkflowStore(
+    (state) => state.setRecoveredAgentBuilderParameterGroup,
   );
-  const setWorkflowData = useWorkflowStore((state) => state.setWorkflowData);
-  const setActiveWorkflowIdSafe = useWorkflowStore(
-    (state) => state.setActiveWorkflowIdSafe,
+  const isPersistedMutationSaving = useWorkflowStore(
+    (state) => state.isAgentBuilderMutationSaving,
   );
-  const envVariables = useWorkflowStore((state) => state.envVariables);
-  const runtimeVariables = useWorkflowStore((state) => state.runtimeVariables);
+  const agentBuilderHistoryNotice = useWorkflowStore(
+    (state) => state.agentBuilderHistoryNotice,
+  );
+  const { fitView, getNode, getViewport, setCenter, setViewport } =
+    useReactFlow();
+  const {
+    parameterGroup,
+    presentationTaskId,
+    isPresentationReentry,
+    focusHeadingTaskId,
+    setParameterGroup,
+    presentParameterGroup,
+    acknowledgePresentationFocus,
+    isApplying,
+    resetParameterTasks,
+    decideParameter,
+    cancelParameterFlow,
+  } = useParameterTasks({
+    sessionId,
+    workflowId,
+    getViewport,
+    onRequestStatusChange: setAuthoritativeRequestStatus,
+  });
+
+  const synchronizeParameterGroup = useCallback(
+    (
+      nextParameterGroup: AgentBuilderParameterGroup | null,
+      requestId: string | null,
+      completionEligible = false,
+    ) => {
+      setParameterGroup(nextParameterGroup, completionEligible);
+      setParameterGroupRequestId(nextParameterGroup ? requestId : null);
+    },
+    [setParameterGroup],
+  );
 
   const storageKey = workflowId
     ? `agent-builder:workflow:${workflowId}`
     : `agent-builder:app:${appId ?? 'none'}`;
   const legacyStorageKey = `agent-builder:${workflowId}:${appId ?? 'none'}`;
   const scopeRef = useRef(storageKey);
-  const panelInstanceId = useRef(createLocalUserMessageId()).current;
   const conversationScrollRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLElement>(null);
+  const shouldAutoScrollRef = useRef(true);
+  const submitLockRef = useRef(false);
+  const sessionCreationRef = useRef<Promise<string> | null>(null);
+  const pendingSessionReconciliationRef = useRef<string | null>(null);
+
+  const clearStoredSession = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.removeItem(storageKey);
+    window.localStorage.removeItem(legacyStorageKey);
+  }, [legacyStorageKey, storageKey]);
+
+  const retrySessionRecovery = useCallback(() => {
+    setSessionRecoveryRequired(null);
+    setSessionRestoreAttempt(0);
+    setSessionRecoveryRetryVersion((value) => value + 1);
+  }, []);
+
+  const ensureSession = useCallback(
+    async (forceNew = false) => {
+      if (!forceNew && sessionId) return sessionId;
+      if (!sessionCreationRef.current) {
+        sessionCreationRef.current = agentBuilderApi
+          .createSession({ workflowId, appId })
+          .then((session) => {
+            if (scopeRef.current === storageKey) {
+              setSessionId(session.session_id);
+              setSessionProtocolVersion(session.protocol_version ?? null);
+              if (typeof window !== 'undefined') {
+                window.localStorage.setItem(storageKey, session.session_id);
+              }
+            }
+            return session.session_id;
+          })
+          .finally(() => {
+            sessionCreationRef.current = null;
+          });
+      }
+      return sessionCreationRef.current;
+    },
+    [appId, sessionId, storageKey, workflowId],
+  );
 
   useEffect(() => {
     if (!isOpen) return;
@@ -377,83 +614,133 @@ export function AgentBuilderPanel({
     };
   }, [isOpen, storageKey]);
 
-  const appendResponse = (response: AgentBuilderMessageResponse) => {
-    setResponses((items) =>
-      items.some((item) => item.request_id === response.request_id)
-        ? items
-        : [...items, response],
-    );
-    setConversationItems((items) =>
-      items.some(
-        (item) =>
-          item.kind === 'assistant' &&
-          item.response.request_id === response.request_id,
-      )
-        ? items
-        : [
+  const appendResponse = useCallback(
+    (response: AgentBuilderMessageResponse) => {
+      setCurrentResultRequestId(response.request_id);
+      setResponses((items) =>
+        items.some((item) => item.request_id === response.request_id)
+          ? items.map((item) =>
+              item.request_id === response.request_id ? response : item,
+            )
+          : [...items, response],
+      );
+      setConversationItems((items) => {
+        const existingIndex = items.findIndex(
+          (item) =>
+            item.kind === 'assistant' &&
+            item.response.request_id === response.request_id,
+        );
+        if (existingIndex < 0) {
+          return [
             ...items,
             {
               kind: 'assistant',
               id: `assistant-${response.request_id}`,
               response,
             },
-          ],
-    );
-  };
+          ];
+        }
+        return items.map((item, index) =>
+          index === existingIndex && item.kind === 'assistant'
+            ? { ...item, response }
+            : item,
+        );
+      });
+    },
+    [],
+  );
+
+  const beginSessionReconciliation = useCallback((nextSessionId: string) => {
+    pendingSessionReconciliationRef.current = nextSessionId;
+    setAuthoritativeRequestStatus('completion_confirming');
+  }, []);
+
+  const reconcileCanonicalSession = useCallback(
+    (session: Awaited<ReturnType<typeof agentBuilderApi.getSession>>) => {
+      const activeMutation = session.active_graph_mutation as
+        | Record<string, unknown>
+        | null
+        | undefined;
+      const isPendingAcknowledgement =
+        activeMutation?.status === 'pending_ack' &&
+        typeof activeMutation.operation_id === 'string';
+      setSessionProtocolVersion(session.protocol_version ?? null);
+      const restored = conversationItemsFromSessionMessages(session.messages);
+      const requestId = latestResponseRequestId(restored.responses);
+      synchronizeParameterGroup(
+        session.parameter_group ?? null,
+        requestId,
+        session.status === 'completed',
+      );
+      setRecoveredRoutingContext({
+        requestId,
+        affectedNodeIds: safeAffectedNodeIds(activeMutation),
+      });
+      setCurrentResultRequestId(requestId);
+      setResponses(restored.responses);
+      setConversationItems(restored.conversationItems);
+      setLastSubmittedMessage(
+        lastUserMessageFromConversation(restored.conversationItems),
+      );
+      const pendingRequestId = session.pending_request?.request_id;
+      setPendingRequestId(
+        typeof pendingRequestId === 'string' ? pendingRequestId : null,
+      );
+      setSessionRecoveryRequired(null);
+      if (isPendingAcknowledgement) {
+        beginSessionReconciliation(session.session_id);
+      } else {
+        pendingSessionReconciliationRef.current = null;
+        setAuthoritativeRequestStatus(session.status);
+      }
+    },
+    [beginSessionReconciliation, synchronizeParameterGroup],
+  );
 
   useEffect(() => {
     if (scopeRef.current === storageKey) return;
     scopeRef.current = storageKey;
     setSessionId(null);
+    setAuthoritativeRequestStatus(null);
+    setSessionProtocolVersion(null);
     setInput('');
     setIsSubmitting(false);
     setIsMinimized(false);
-    setIsApplying(false);
-    setApplyNotice(null);
     setResponses([]);
     setConversationItems([]);
+    setCurrentResultRequestId(null);
+    setParameterGroupRequestId(null);
+    setRecoveredRoutingContext({ requestId: null, affectedNodeIds: [] });
     setPendingRequestId(null);
-    setPrePreviewViewport(null);
-    setSelectedKnowledgeCandidates([]);
+    setSessionRestoreAttempt(0);
+    setSessionRecoveryRequired(null);
+    setSessionRecoveryRetryVersion(0);
     setLastSubmittedMessage('');
+    setGenerationMode('configure_and_generate');
+    pendingSessionReconciliationRef.current = null;
+    resetParameterTasks();
     setIsModelMenuOpen(false);
-    clearAgentBuilderPreview();
-  }, [storageKey, clearAgentBuilderPreview]);
+  }, [resetParameterTasks, storageKey]);
 
   useEffect(() => {
-    if (!workflowId || typeof window === 'undefined') return;
-    const reopenKey = `agent-builder:reopen:${workflowId}`;
-    const rawMarker = window.sessionStorage.getItem(reopenKey);
-    if (!rawMarker) return;
-    let marker = { sessionId: rawMarker, sourceInstanceId: null as string | null };
-    try {
-      const parsed = JSON.parse(rawMarker) as unknown;
-      if (
-        parsed &&
-        typeof parsed === 'object' &&
-        typeof (parsed as { sessionId?: unknown }).sessionId === 'string'
-      ) {
-        marker = {
-          sessionId: (parsed as { sessionId: string }).sessionId,
-          sourceInstanceId:
-            typeof (parsed as { sourceInstanceId?: unknown }).sourceInstanceId ===
-            'string'
-              ? (parsed as { sourceInstanceId: string }).sourceInstanceId
-              : null,
-        };
-      }
-    } catch {
-      marker = { sessionId: rawMarker, sourceInstanceId: null };
-    }
-    if (!marker.sessionId || marker.sourceInstanceId === panelInstanceId) return;
-    if (window.localStorage.getItem(storageKey) !== marker.sessionId) {
-      window.sessionStorage.removeItem(reopenKey);
+    if (
+      !sessionId ||
+      !recoveredParameterGroup ||
+      recoveredParameterGroup.sessionId !== sessionId
+    ) {
       return;
     }
-    window.sessionStorage.removeItem(reopenKey);
     setIsOpen(true);
     setIsMinimized(false);
-  }, [panelInstanceId, storageKey, workflowId]);
+    shouldAutoScrollRef.current = true;
+    presentParameterGroup(recoveredParameterGroup.parameterGroup);
+    clearRecoveredParameterGroup(null);
+  }, [
+    clearRecoveredParameterGroup,
+    presentParameterGroup,
+    recoveredParameterGroup,
+    sessionId,
+  ]);
 
   useEffect(() => {
     if (!isOpen || sessionId || typeof window === 'undefined') return;
@@ -463,88 +750,274 @@ export function AgentBuilderPanel({
     if (!storedSessionId) return;
     window.localStorage.setItem(storageKey, storedSessionId);
     let isCanceled = false;
+    let recoveryTimeoutId: number | null = null;
     agentBuilderApi
       .getSession(storedSessionId)
-      .then((session) => {
+      .then(async (session) => {
         if (isCanceled) return;
+        setSessionRestoreAttempt(0);
+        setSessionRecoveryRequired(null);
+        if (
+          session.status === 'stale_protocol' ||
+          session.protocol_version === null
+        ) {
+          const restored = conversationItemsFromSessionMessages(
+            session.messages,
+          );
+          clearStoredSession();
+          setSessionId(null);
+          setSessionProtocolVersion(null);
+          setAuthoritativeRequestStatus(session.status);
+          setResponses(restored.responses);
+          setConversationItems(restored.conversationItems);
+          setCurrentResultRequestId(latestResponseRequestId(restored.responses));
+          setParameterGroupRequestId(null);
+          setRecoveredRoutingContext({ requestId: null, affectedNodeIds: [] });
+          setLastSubmittedMessage(
+            lastUserMessageFromConversation(restored.conversationItems),
+          );
+          setPendingRequestId(null);
+          synchronizeParameterGroup(null, null);
+          await ensureSession(true);
+          return;
+        }
         setSessionId(session.session_id);
-        const restored = conversationItemsFromSessionMessages(session.messages);
-        const topLevelDraftResponse = responseFromSessionDraftPreview(
-          session.draft_preview,
+        const canonicalSession = session;
+        setSessionProtocolVersion(session.protocol_version ?? null);
+        setGenerationMode(
+          session.default_generation_mode ?? 'configure_and_generate',
         );
-        const latestRestoredResponse =
-          restored.responses[restored.responses.length - 1];
-        const canRestoreTopLevelDraft =
-          !latestRestoredResponse || latestRestoredResponse.status === 'draft_ready';
-        const hasRestoredDraft = restored.responses.some(
-          (response) =>
-            response.draft_preview?.draft_id ===
-            topLevelDraftResponse?.draft_preview?.draft_id,
+        const restoredParameterGroup = session.parameter_group ?? null;
+        if (
+          (canonicalSession.active_graph_mutation as Record<string, unknown> | null)
+            ?.status === 'pending_ack'
+        ) {
+          beginSessionReconciliation(canonicalSession.session_id);
+        } else {
+          setAuthoritativeRequestStatus(canonicalSession.status);
+        }
+        setSessionProtocolVersion(canonicalSession.protocol_version ?? null);
+        const restored = conversationItemsFromSessionMessages(
+          canonicalSession.messages,
         );
-        const restoredResponses =
-          topLevelDraftResponse && canRestoreTopLevelDraft && !hasRestoredDraft
-            ? [...restored.responses, topLevelDraftResponse]
-            : restored.responses;
-        const restoredConversationItems =
-          topLevelDraftResponse && canRestoreTopLevelDraft && !hasRestoredDraft
-            ? [
-                ...restored.conversationItems,
-                {
-                  kind: 'assistant' as const,
-                  id: `assistant-${topLevelDraftResponse.request_id}`,
-                  response: topLevelDraftResponse,
-                },
-              ]
-            : restored.conversationItems;
-        setResponses(restoredResponses);
-        setConversationItems(restoredConversationItems);
+        const requestId = latestResponseRequestId(restored.responses);
+        synchronizeParameterGroup(
+          restoredParameterGroup,
+          requestId,
+          canonicalSession.status === 'completed',
+        );
+        setRecoveredRoutingContext({
+          requestId,
+          affectedNodeIds: safeAffectedNodeIds(
+            canonicalSession.active_graph_mutation,
+          ),
+        });
+        setCurrentResultRequestId(requestId);
+        setResponses(restored.responses);
+        setConversationItems(restored.conversationItems);
         setLastSubmittedMessage(
-          lastUserMessageFromConversation(restoredConversationItems),
+          lastUserMessageFromConversation(restored.conversationItems),
         );
-        const requestId = session.pending_request?.request_id;
-        setPendingRequestId(typeof requestId === 'string' ? requestId : null);
+        const pendingRequestId = canonicalSession.pending_request?.request_id;
+        setPendingRequestId(
+          typeof pendingRequestId === 'string' ? pendingRequestId : null,
+        );
       })
-      .catch(() => {
-        window.localStorage.removeItem(storageKey);
+      .catch((error) => {
+        if (isCanceled) return;
+        if (shouldDiscardStoredSession(error)) {
+          clearStoredSession();
+          toast.error(agentBuilderErrorMessage(error));
+          return;
+        }
+        if (sessionRestoreAttempt >= SESSION_RECOVERY_DELAYS_MS.length) {
+          setSessionRecoveryRequired('restore');
+          return;
+        }
+        recoveryTimeoutId = window.setTimeout(() => {
+          setSessionRestoreAttempt((attempt) => attempt + 1);
+        }, SESSION_RECOVERY_DELAYS_MS[sessionRestoreAttempt]);
       });
     return () => {
       isCanceled = true;
+      if (recoveryTimeoutId !== null) {
+        window.clearTimeout(recoveryTimeoutId);
+      }
     };
-  }, [isOpen, legacyStorageKey, sessionId, storageKey]);
+  }, [
+    beginSessionReconciliation,
+    clearStoredSession,
+    ensureSession,
+    isOpen,
+    legacyStorageKey,
+    sessionRecoveryRetryVersion,
+    sessionRestoreAttempt,
+    sessionId,
+    synchronizeParameterGroup,
+    storageKey,
+    workflowId,
+  ]);
+
+  useEffect(() => {
+    if (
+      !isOpen ||
+      !sessionId ||
+      !pendingRequestId ||
+      pendingRequestId === 'submitting'
+    ) {
+      return;
+    }
+    let isCanceled = false;
+    let timeoutId: number | null = null;
+    let pollAttempt = 0;
+    const schedulePoll = () => {
+      if (isCanceled) return;
+      if (pollAttempt >= SESSION_RECOVERY_DELAYS_MS.length) {
+        setSessionRecoveryRequired('pending_request');
+        return;
+      }
+      const delay = SESSION_RECOVERY_DELAYS_MS[pollAttempt];
+      pollAttempt += 1;
+      timeoutId = window.setTimeout(pollSession, delay);
+    };
+    const pollSession = async () => {
+      try {
+        const session = await agentBuilderApi.getSession(sessionId);
+        if (isCanceled) return;
+        setSessionRecoveryRequired(null);
+        setAuthoritativeRequestStatus(session.status);
+        setSessionProtocolVersion(session.protocol_version ?? null);
+        const restored = conversationItemsFromSessionMessages(session.messages);
+        const resultRequestId = latestResponseRequestId(restored.responses);
+        synchronizeParameterGroup(
+          session.parameter_group ?? null,
+          resultRequestId,
+          session.status === 'completed',
+        );
+        setRecoveredRoutingContext({
+          requestId: resultRequestId,
+          affectedNodeIds: safeAffectedNodeIds(session.active_graph_mutation),
+        });
+        setCurrentResultRequestId(resultRequestId);
+        const response = restored.responses.find(
+          (item) => item.request_id === pendingRequestId,
+        );
+        if (response) {
+          appendResponse(response);
+        }
+        const nextRequestId = session.pending_request?.request_id;
+        if (typeof nextRequestId === 'string') {
+          setPendingRequestId(nextRequestId);
+          schedulePoll();
+        } else {
+          setPendingRequestId(null);
+        }
+      } catch {
+        schedulePoll();
+      }
+    };
+    schedulePoll();
+    return () => {
+      isCanceled = true;
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, [
+    appendResponse,
+    isOpen,
+    pendingRequestId,
+    sessionRecoveryRetryVersion,
+    sessionId,
+    synchronizeParameterGroup,
+  ]);
+
+  useEffect(() => {
+    if (!isOpen || authoritativeRequestStatus !== 'completion_confirming') {
+      return;
+    }
+    const reconciliationSessionId =
+      pendingSessionReconciliationRef.current ?? sessionId;
+    if (!reconciliationSessionId) return;
+    let isCanceled = false;
+    let timeoutId: number | null = null;
+    let reconciliationAttempt = 0;
+    const scheduleReconciliation = () => {
+      if (isCanceled) return;
+      if (reconciliationAttempt >= SESSION_RECOVERY_DELAYS_MS.length) {
+        setSessionRecoveryRequired('acknowledgement');
+        return;
+      }
+      const delay = SESSION_RECOVERY_DELAYS_MS[reconciliationAttempt];
+      reconciliationAttempt += 1;
+      timeoutId = window.setTimeout(reconcile, delay);
+    };
+    const reconcile = async () => {
+      try {
+        const session = await agentBuilderApi.getSession(
+          reconciliationSessionId,
+        );
+        if (isCanceled) return;
+        const activeMutation = session.active_graph_mutation as
+          | Record<string, unknown>
+          | null
+          | undefined;
+        if (activeMutation?.status === 'pending_ack') {
+          reconcileCanonicalSession(session);
+          scheduleReconciliation();
+          return;
+        }
+        setSessionRecoveryRequired(null);
+        reconcileCanonicalSession(session);
+      } catch {
+        scheduleReconciliation();
+      }
+    };
+    scheduleReconciliation();
+    return () => {
+      isCanceled = true;
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, [
+    authoritativeRequestStatus,
+    isOpen,
+    reconcileCanonicalSession,
+    sessionRecoveryRetryVersion,
+    sessionId,
+  ]);
+
+  const activeParameterTaskId =
+    parameterGroup?.tasks.find((task) =>
+      ['active', 'invalid'].includes(task.status),
+    )?.task_id ?? null;
 
   useEffect(() => {
     if (!isOpen || isMinimized) return;
     const element = conversationScrollRef.current;
-    if (!element) return;
+    if (!element || !shouldAutoScrollRef.current) return;
     element.scrollTop = element.scrollHeight;
-  }, [conversationItems.length, pendingRequestId, isOpen, isMinimized]);
-
-  const ensureSession = async () => {
-    if (sessionId) return sessionId;
-    const session = await agentBuilderApi.createSession({ workflowId, appId });
-    setSessionId(session.session_id);
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(storageKey, session.session_id);
-    }
-    return session.session_id;
-  };
+  }, [
+    activeParameterTaskId,
+    conversationItems.length,
+    pendingRequestId,
+    sessionRecoveryRequired,
+    isOpen,
+    isMinimized,
+  ]);
 
   const submitAgentBuilderMessage = async (
     message: string,
     options?: {
-      selectedKnowledgeCandidate?: AgentBuilderKnowledgeCandidateSelection & {
-        label?: string | null;
-      };
-      selectedKnowledgeCandidates?: Array<
-        AgentBuilderKnowledgeCandidateSelection & { label?: string | null }
-      >;
       selectedNodeId?: string | null;
       displayContent?: string;
       clearInput?: boolean;
     },
   ) => {
     const trimmedMessage = message.trim();
-    if (!trimmedMessage || isSubmitting) return;
+    if (!trimmedMessage || isSubmitting || submitLockRef.current) return;
+    submitLockRef.current = true;
     let intentModel = selectedIntentModel;
     if (!intentModel) {
       try {
@@ -554,29 +1027,28 @@ export function AgentBuilderPanel({
         setSelectedIntentModel(intentModel);
       } catch {
         toast.error('Agent Builder 모델 목록을 불러오지 못했습니다.');
+        submitLockRef.current = false;
         return;
       }
     }
     if (!intentModel) {
       toast.warning('Agent Builder에서 사용할 수 있는 LLM 모델이 없습니다.');
+      submitLockRef.current = false;
       return;
     }
-    const selectedCandidates =
-      options?.selectedKnowledgeCandidates ??
-      (options?.selectedKnowledgeCandidate ? [options.selectedKnowledgeCandidate] : undefined);
+    const selectedCandidates = undefined as
+      | Array<AgentBuilderKnowledgeCandidateSelection & { label?: string | null }>
+      | undefined;
     if (hasUnsavedChanges) {
-      toast.warning('저장되지 않은 변경이 있어 Agent Builder를 시작할 수 없습니다.');
+      toast.warning(
+        '저장되지 않은 변경이 있어 Agent Builder를 시작할 수 없습니다.',
+      );
+      submitLockRef.current = false;
       return;
-    }
-    if (agentBuilderPreview) {
-      clearAgentBuilderPreview();
-      if (prePreviewViewport) {
-        setViewport(prePreviewViewport);
-        setPrePreviewViewport(null);
-      }
-      setApplyNotice('새 요청을 보내 이전 도안 생성 미리보기를 종료했습니다.');
     }
     setIsSubmitting(true);
+    setCurrentResultRequestId(null);
+    shouldAutoScrollRef.current = true;
     setConversationItems((items) => [
       ...items,
       {
@@ -586,77 +1058,296 @@ export function AgentBuilderPanel({
           options?.displayContent ??
           (selectedCandidates && selectedCandidates.length > 0
             ? `Knowledge Base 선택: ${selectedCandidates
-                .map((candidate) => candidate.label || candidate.candidate_id)
+                .map((candidate) => candidate.label || 'Knowledge Base')
                 .join(', ')}`
             : selectedCandidates
               ? 'Knowledge Base 선택 없이 생성'
               : trimmedMessage),
       },
     ]);
+    let requestSessionId: string | null = null;
     try {
-      const nextSessionId = await ensureSession();
+      let nextSessionId = await ensureSession();
+      requestSessionId = nextSessionId;
       setPendingRequestId('submitting');
-      const response = await agentBuilderApi.sendMessage(nextSessionId, {
+      const requestInput = {
         message: trimmedMessage,
         workflowId,
         appId,
         selectedNodeId: options?.selectedNodeId ?? selectedNodeId,
         selectedEdgeId,
-        selectedKnowledgeCandidate:
-          selectedCandidates && selectedCandidates.length === 1
-            ? {
-                candidate_id: selectedCandidates[0].candidate_id,
-                resolution_id: selectedCandidates[0].resolution_id,
-                requirement_id: selectedCandidates[0].requirement_id,
-              }
-            : undefined,
-        selectedKnowledgeCandidates: selectedCandidates?.map((candidate) => ({
-          candidate_id: candidate.candidate_id,
-          resolution_id: candidate.resolution_id,
-          requirement_id: candidate.requirement_id,
-        })),
         intentModelSelection: intentModel
           ? ({
               credentialId: intentModel.credential.id,
               modelId: intentModel.model.id,
             } satisfies AgentBuilderIntentModelSelection)
           : undefined,
-      });
-      appendResponse(response);
+        generationMode,
+      };
+      let response: AgentBuilderMessageResponse;
+      try {
+        response = await agentBuilderApi.sendMessage(
+          nextSessionId,
+          requestInput,
+        );
+      } catch (error) {
+        if (agentBuilderErrorCode(error) !== 'stale_protocol') throw error;
+        clearStoredSession();
+        setSessionId(null);
+        nextSessionId = await ensureSession(true);
+        requestSessionId = nextSessionId;
+        response = await agentBuilderApi.sendMessage(
+          nextSessionId,
+          requestInput,
+        );
+      }
+      setAuthoritativeRequestStatus(response.status);
+      let nextResponse = response;
+      if (response.graph_mutation) {
+        const applied = await applyAndSaveAgentBuilderMutation({
+          sessionId: nextSessionId,
+          workflowId,
+          viewport: getViewport(),
+          mutation: mutationWithBaseHash(response.graph_mutation),
+        });
+        const acknowledgedGroup =
+          applied.acknowledgement.parameter_group ??
+          response.parameter_group ??
+          null;
+        const completionEligible = applied.session?.status === 'completed';
+        if (applied.session?.status) {
+          setAuthoritativeRequestStatus(applied.session.status);
+        } else {
+          beginSessionReconciliation(nextSessionId);
+        }
+        synchronizeParameterGroup(
+          acknowledgedGroup,
+          response.request_id,
+          completionEligible,
+        );
+        const hasKnowledgeConfirmation =
+          knowledgeOptionsFromResponse(response).length > 0;
+        nextResponse = {
+          ...response,
+          status: hasKnowledgeConfirmation
+            ? response.status
+            : completionEligible
+              ? 'completed'
+              : 'parameter_configuration',
+          parameter_group: acknowledgedGroup,
+        };
+        window.setTimeout(() => {
+          fitView({ padding: 0.2, duration: 300, maxZoom: 1 });
+        }, 0);
+      }
+      appendResponse(nextResponse);
       setPendingRequestId(null);
       setLastSubmittedMessage(trimmedMessage);
-      setSelectedKnowledgeCandidates([]);
       if (options?.clearInput !== false) {
         setInput('');
       }
-    } catch {
-      toast.error('Agent Builder 요청에 실패했습니다.');
-      setPendingRequestId(null);
+    } catch (error) {
+      let recoveredPendingRequest = false;
+      if (requestSessionId && isRecoverableTransportError(error)) {
+        try {
+          const session = await agentBuilderApi.getSession(requestSessionId);
+          setAuthoritativeRequestStatus(session.status);
+          const recoveredRequestId = session.pending_request?.request_id;
+          const restored = conversationItemsFromSessionMessages(
+            session.messages,
+          );
+          const resultRequestId = latestResponseRequestId(restored.responses);
+          setRecoveredRoutingContext({
+            requestId: resultRequestId,
+            affectedNodeIds: safeAffectedNodeIds(session.active_graph_mutation),
+          });
+          if (typeof recoveredRequestId === 'string') {
+            const response = restored.responses.find(
+              (item) => item.request_id === recoveredRequestId,
+            );
+            if (response) {
+              appendResponse(response);
+            }
+            setSessionProtocolVersion(session.protocol_version ?? null);
+            synchronizeParameterGroup(
+              session.parameter_group ?? null,
+              resultRequestId,
+              session.status === 'completed',
+            );
+            setPendingRequestId(recoveredRequestId);
+            setLastSubmittedMessage(trimmedMessage);
+            if (options?.clearInput !== false) {
+              setInput('');
+            }
+            recoveredPendingRequest = true;
+          } else if (
+            session.status !== 'planning' &&
+            restored.responses.length > 0
+          ) {
+            setCurrentResultRequestId(resultRequestId);
+            setResponses(restored.responses);
+            setConversationItems(restored.conversationItems);
+            setSessionProtocolVersion(session.protocol_version ?? null);
+            synchronizeParameterGroup(
+              session.parameter_group ?? null,
+              resultRequestId,
+              session.status === 'completed',
+            );
+            setPendingRequestId(null);
+            setLastSubmittedMessage(
+              lastUserMessageFromConversation(restored.conversationItems) ||
+                trimmedMessage,
+            );
+            if (options?.clearInput !== false) {
+              setInput('');
+            }
+            recoveredPendingRequest = true;
+          }
+        } catch {
+          recoveredPendingRequest = false;
+        }
+      }
+      if (!recoveredPendingRequest) {
+        toast.error(agentBuilderErrorMessage(error));
+        setPendingRequestId(null);
+      }
     } finally {
       setIsSubmitting(false);
+      submitLockRef.current = false;
+    }
+  };
+
+  const resolveKnowledgeSelection = async (
+    response: AgentBuilderMessageResponse,
+    selections: Array<
+      AgentBuilderKnowledgeCandidateSelection & { label?: string | null }
+    >,
+  ) => {
+    const firstResolutionCandidate =
+      response.knowledge_resolution?.candidates.find(
+        (candidate) =>
+          !isNoKnowledgeBaseOption(candidate as Record<string, unknown>),
+      ) as Record<string, unknown> | undefined;
+    const resolutionId =
+      selections[0]?.resolution_id ??
+      formatClarificationOptionValue(
+        response.knowledge_resolution?.resolution_id,
+      ) ??
+      (typeof firstResolutionCandidate?.resolution_id === 'string'
+        ? firstResolutionCandidate.resolution_id
+        : null);
+    if (!sessionId || hasUnsavedChanges || isSubmitting) return;
+    if (submitLockRef.current) return;
+    if (!resolutionId) {
+      toast.error('Knowledge Base 선택 정보를 확인할 수 없습니다.');
+      return;
+    }
+    setKnowledgeSelectionError(null);
+    setIsSubmitting(true);
+    submitLockRef.current = true;
+    shouldAutoScrollRef.current = true;
+    void ((items: ConversationItem[]) => [
+      ...items,
+      {
+        kind: 'user',
+        id: createLocalUserMessageId(),
+        content:
+          selections.length > 0
+            ? `Knowledge Base 선택: ${selections
+                .map((candidate) => candidate.label || 'Knowledge Base')
+                .join(', ')}`
+            : 'Knowledge Base 없이 생성',
+      },
+    ]);
+    try {
+      const selection = await agentBuilderApi.selectKnowledge(sessionId, {
+        resolutionId,
+        selectedCandidates: selections.map((candidate) => ({
+          candidate_id: candidate.candidate_id,
+          resolution_id: candidate.resolution_id,
+          requirement_id: candidate.requirement_id,
+        })),
+      });
+      const applied = await applyAndSaveAgentBuilderMutation({
+        sessionId,
+        workflowId,
+        viewport: getViewport(),
+        mutation: mutationWithBaseHash(selection.graph_mutation),
+      });
+      const acknowledgedGroup =
+        applied.acknowledgement.parameter_group ?? null;
+      const completionEligible = applied.session?.status === 'completed';
+      if (applied.session?.status) {
+        setAuthoritativeRequestStatus(applied.session.status);
+      } else {
+        beginSessionReconciliation(sessionId);
+      }
+      synchronizeParameterGroup(
+        acknowledgedGroup,
+        response.request_id,
+        completionEligible,
+      );
+      const timing =
+        response.knowledge_resolution?.timing ??
+        (response.graph_mutation ? 'after_graph' : 'before_graph');
+      setConversationItems((items) => [
+        ...items,
+        {
+          kind: 'user',
+          id: createLocalUserMessageId(),
+          content: knowledgeSelectionMessage(selections, timing),
+        },
+      ]);
+      appendResponse({
+        ...response,
+        status: completionEligible ? 'completed' : 'parameter_configuration',
+        knowledge_resolution: {
+          resolution_id: resolutionId,
+          timing,
+          required: response.knowledge_resolution?.required ?? true,
+          candidates: response.knowledge_resolution?.candidates ?? [],
+          selected: selections.map((candidate) => ({
+            candidate_id: candidate.candidate_id,
+            safe_label: candidate.label ?? null,
+          })),
+        },
+        graph_mutation: selection.graph_mutation,
+        parameter_group: acknowledgedGroup,
+        clarification_questions: [],
+        clarification_options: [],
+        warnings: response.warnings,
+      });
+      setKnowledgeSelectionError(null);
+      setInput('');
+    } catch (error) {
+      try {
+        const session = await agentBuilderApi.getSession(sessionId);
+        if (session.session_id === sessionId) {
+          reconcileCanonicalSession(session);
+        }
+      } catch {
+        // Keep the current card and selected values while the outcome is unknown.
+      }
+      const message = knowledgeSelectionErrorMessage(error);
+      setKnowledgeSelectionError(message);
+      toast.error(message);
+    } finally {
+      setIsSubmitting(false);
+      submitLockRef.current = false;
     }
   };
 
   const submit = async () => {
-    const activeKnowledgeClarification = latestKnowledgeClarification(
-      conversationItems,
-    );
     const typedMessage = input.trim();
-    const isResolvingKnowledgeClarification =
-      !typedMessage && Boolean(activeKnowledgeClarification);
-    const message =
-      typedMessage ||
-      (isResolvingKnowledgeClarification ? lastSubmittedMessage : '');
-    await submitAgentBuilderMessage(message, {
-      selectedKnowledgeCandidates: isResolvingKnowledgeClarification
-        ? selectedKnowledgeCandidates
-        : undefined,
-      clearInput: true,
-    });
+    await submitAgentBuilderMessage(typedMessage, { clearInput: true });
   };
 
   const handleInputKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) {
+    if (
+      event.key !== 'Enter' ||
+      event.shiftKey ||
+      event.nativeEvent.isComposing
+    ) {
       return;
     }
     event.preventDefault();
@@ -669,7 +1360,19 @@ export function AgentBuilderPanel({
     }
     if (!sessionId) return null;
     const session = await agentBuilderApi.getSession(sessionId);
+    setAuthoritativeRequestStatus(session.status);
     const restored = conversationItemsFromSessionMessages(session.messages);
+    const resultRequestId = latestResponseRequestId(restored.responses);
+    setCurrentResultRequestId(resultRequestId);
+    synchronizeParameterGroup(
+      session.parameter_group ?? null,
+      resultRequestId,
+      session.status === 'completed',
+    );
+    setRecoveredRoutingContext({
+      requestId: resultRequestId,
+      affectedNodeIds: safeAffectedNodeIds(session.active_graph_mutation),
+    });
     setResponses(restored.responses);
     setConversationItems(restored.conversationItems);
     const requestId = session.pending_request?.request_id;
@@ -685,7 +1388,9 @@ export function AgentBuilderPanel({
     try {
       const requestId = await resolvePendingRequestId();
       if (!requestId) {
-        toast.warning('취소할 진행 중 요청을 아직 확인하지 못했습니다. 잠시 후 다시 시도해주세요.');
+        toast.warning(
+          '취소할 진행 중 요청을 아직 확인하지 못했습니다. 잠시 후 다시 시도해주세요.',
+        );
         return;
       }
       const response = await agentBuilderApi.cancelRequest(requestId);
@@ -697,186 +1402,271 @@ export function AgentBuilderPanel({
     }
   };
 
-  const openPreview = async (
-    preview: AgentBuilderDraftPreview | null | undefined,
-  ) => {
-    if (!preview) return;
-    if (agentBuilderPreview) return;
-    if (hasUnsavedChanges) {
-      toast.warning('저장되지 않은 변경이 있어 도안 생성 미리보기를 열 수 없습니다.');
-      return;
-    }
-    if (!preview.validation_result.valid) {
-      toast.warning('검증을 통과한 초안만 도안 생성 미리보기로 열 수 있습니다.');
-      return;
-    }
-    try {
-      await agentBuilderApi.recordPreviewOpened(preview.draft_id);
-    } catch {
-      toast.error('도안 생성 미리보기 audit 기록에 실패해 미리보기를 열 수 없습니다. 다시 시도해주세요.');
-      return;
-    }
-    setIsOpen(true);
-    setApplyNotice(null);
-    setPrePreviewViewport(getViewport());
-    setAgentBuilderPreview({
-      draftId: preview.draft_id,
-      previewGraph: {
-        nodes: preview.preview_graph.nodes as unknown as Node[],
-        edges: preview.preview_graph.edges as unknown as Edge[],
-        viewport: preview.preview_graph.viewport,
-      },
-      nodeDetailPreviews: preview.node_detail_previews,
-      validationResult: preview.validation_result,
-      baseGraphHash: preview.base_graph_hash,
-      draftMode: preview.draft_mode,
-    });
-  };
-
-  const applyAndSave = async () => {
-    if (!agentBuilderPreview || isApplying) return;
-    if (hasUnsavedChanges) {
-      toast.warning('저장되지 않은 변경이 있어 적용 및 저장을 차단했습니다.');
-      return;
-    }
-    setIsApplying(true);
-    setApplyNotice(null);
-    try {
-      const latestGraph = canonicalEditorGraph(nodes, edges);
-      const clientPreviewGraphHash = await graphHash(
-        agentBuilderPreview.previewGraph.nodes,
-        agentBuilderPreview.previewGraph.edges,
+  const focusParameterNode = useCallback(
+    (nodeId: string) => {
+      const workflowState = useWorkflowStore.getState();
+      workflowState.onNodesChange(
+        workflowState.nodes.map((item) => ({
+          id: item.id,
+          type: 'select' as const,
+          selected: item.id === nodeId,
+        })),
       );
-      const clientLatestGraphHash = await graphHash(
-        latestGraph.nodes,
-        latestGraph.edges,
-      );
-      if (!clientPreviewGraphHash || !clientLatestGraphHash) {
-        toast.error('브라우저에서 graph hash를 계산할 수 없어 저장을 중단했습니다.');
-        return;
-      }
-      const response = await agentBuilderApi.applyDraft(agentBuilderPreview.draftId, {
-        clientPreviewGraphHash,
-        clientLatestGraphHash,
-      });
-      if (response.outcome === 'saved' && response.audit_recorded) {
-        const savedWorkflowId = response.saved_workflow_id ?? workflowId;
-        const [savedWorkflow, savedWorkflowMeta] = await Promise.all([
-          workflowApi.getDraftWorkflow(savedWorkflowId),
-          workflowApi.getWorkflow(savedWorkflowId),
-        ]);
-        const isSameWorkflow = savedWorkflowId === workflowId;
-        const savedEnvVariables = isSameWorkflow ? envVariables : [];
-        const savedRuntimeVariables = isSameWorkflow ? runtimeVariables : [];
-        const savedWorkflowGraph = {
-          ...savedWorkflow,
-          viewport: savedWorkflow.viewport ?? DEFAULT_WORKFLOW_VIEWPORT,
-        };
-        if (!isSameWorkflow) {
-          if (sessionId && typeof window !== 'undefined') {
-            const nextStorageKey = `agent-builder:workflow:${savedWorkflowId}`;
-            window.localStorage.setItem(nextStorageKey, sessionId);
-            window.localStorage.removeItem(storageKey);
-            window.sessionStorage.setItem(
-              `agent-builder:reopen:${savedWorkflowId}`,
-              JSON.stringify({
-                sessionId,
-                sourceInstanceId: panelInstanceId,
-              }),
-            );
-          }
-          setActiveWorkflowIdSafe(savedWorkflowId);
-        }
-        setWorkflowData(
-          {
-            ...savedWorkflowGraph,
-            appId: savedWorkflowMeta.app_id,
-            envVariables: savedEnvVariables,
-            runtimeVariables: savedRuntimeVariables,
-          },
-          savedWorkflowId,
+      const node = getNode(nodeId);
+      if (!node) return;
+      const width = node.measured?.width ?? node.width ?? 200;
+      const height = node.measured?.height ?? node.height ?? 100;
+      const canvas = document.querySelector<HTMLElement>('.react-flow');
+      const canvasRect = canvas?.getBoundingClientRect();
+      const panelRect = panelRef.current?.getBoundingClientRect() ?? null;
+      if (canvasRect && canvasRect.width > 0 && canvasRect.height > 0) {
+        const position = node.position;
+        void setViewport(
+          calculateAgentBuilderNodeFocusViewport({
+            canvasRect,
+            panelRect,
+            node: { x: position.x, y: position.y, width, height },
+          }),
+          { duration: 300 },
         );
-        window.setTimeout(() => {
-          fitView({ padding: 0.2, duration: 300, maxZoom: 1 });
-        }, 0);
-        toast.success('Agent Builder 초안을 저장했습니다.');
-        setPrePreviewViewport(null);
-        clearAgentBuilderPreview();
-        if (savedWorkflowId !== workflowId) {
-          router.push(`/modules/${savedWorkflowId}`);
+        return;
+      }
+      void setCenter(
+        node.position.x + width / 2,
+        node.position.y + height / 2,
+        {
+          zoom: 1.5,
+          duration: 300,
+        },
+      );
+    },
+    [getNode, setCenter, setViewport],
+  );
+
+  const openNodeSettings = useCallback(
+    (nodeId: string, section?: 'routing' | 'connection') => {
+      focusParameterNode(nodeId);
+      window.dispatchEvent(
+        new CustomEvent('agent-builder:open-node-settings', {
+          detail: { nodeId, section },
+        }),
+      );
+    },
+    [focusParameterNode],
+  );
+
+  const activeKnowledgeClarification =
+    latestKnowledgeClarification(conversationItems);
+  const activeKnowledgeOptions = useMemo(
+    () =>
+      activeKnowledgeClarification
+        ? knowledgeOptionsFromResponse(activeKnowledgeClarification)
+        : [],
+    [activeKnowledgeClarification],
+  );
+  const latestAssistantResponse = useMemo(() => {
+    if (!currentResultRequestId) return null;
+    for (let index = conversationItems.length - 1; index >= 0; index -= 1) {
+      const item = conversationItems[index];
+      if (
+        item.kind === 'assistant' &&
+        item.response.request_id === currentResultRequestId
+      ) {
+        return item.response;
+      }
+    }
+    return null;
+  }, [conversationItems, currentResultRequestId]);
+  const currentParameterGroup =
+    !pendingRequestId &&
+    parameterGroup &&
+    (parameterGroupRequestId === latestAssistantResponse?.request_id ||
+      (isPresentationReentry && parameterGroupRequestId === null) ||
+      (parameterGroupRequestId === null &&
+        currentResultRequestId === null &&
+        authoritativeRequestStatus === 'completed'))
+      ? parameterGroup
+      : null;
+  const recoveredRoutingNodeIds = useMemo(
+    () =>
+      recoveredRoutingContext.requestId === latestAssistantResponse?.request_id
+        ? recoveredRoutingContext.affectedNodeIds
+        : [],
+    [
+      latestAssistantResponse?.request_id,
+      recoveredRoutingContext.affectedNodeIds,
+      recoveredRoutingContext.requestId,
+    ],
+  );
+  const routingNodeIds = useMemo(
+    () =>
+      Array.from(
+        new Set([
+          ...(latestAssistantResponse?.graph_mutation?.affected_node_ids ?? []),
+          ...(currentParameterGroup?.tasks.map((task) => task.node_id) ?? []),
+          ...recoveredRoutingNodeIds,
+        ]),
+      ),
+    [
+      currentParameterGroup,
+      latestAssistantResponse?.graph_mutation?.affected_node_ids,
+      recoveredRoutingNodeIds,
+    ],
+  );
+  const activeKnowledgeStep: WorkflowKnowledgeStep | null =
+    activeKnowledgeClarification
+      ? {
+          status: 'active',
+          timing:
+            activeKnowledgeClarification.knowledge_resolution?.timing ??
+            (activeKnowledgeClarification.graph_mutation
+              ? 'after_graph'
+              : 'before_graph'),
+          question:
+            activeKnowledgeClarification.clarification_questions[0] ?? null,
+          candidates: activeKnowledgeOptions.map((option) => ({
+            selection_id: option.selectionId,
+            candidate_id: option.selection.candidate_id,
+            label: option.label,
+            confidence: option.confidence,
+            score: option.score,
+            reason: option.reason,
+          })),
+          selectedCandidateIds: activeKnowledgeClarification.knowledge_resolution?.selected
+            .map((selection) => selection.candidate_id)
+            .filter(
+              (candidateId): candidateId is string =>
+                typeof candidateId === 'string',
+            ),
+          errorMessage: knowledgeSelectionError,
         }
-        return;
-      }
-      const notice =
-        response.notices[0] ??
-        response.block_reason ??
-        response.failure_reason ??
-        '초안을 저장하지 못했습니다.';
-      setApplyNotice(notice);
-      toast.warning(notice);
-    } catch {
-      toast.error('초안 적용 및 저장에 실패했습니다.');
-      setApplyNotice('초안 적용 및 저장에 실패했습니다.');
-    } finally {
-      setIsApplying(false);
-    }
-  };
-
-  const cancelPreview = async () => {
-    if (!agentBuilderPreview) return;
-    try {
-      const response = await agentBuilderApi.cancelDraft(agentBuilderPreview.draftId);
-      if (response.outcome !== 'canceled' || !response.audit_recorded) {
-        const notice =
-          response.notices[0] ??
-          response.block_reason ??
-          response.failure_reason ??
-          '도안 생성 미리보기 취소를 기록하지 못했습니다.';
-        setApplyNotice(notice);
-        toast.warning(notice);
-        return;
-      }
-    } catch {
-      setApplyNotice('도안 생성 미리보기 취소 기록에 실패했습니다.');
-      toast.error('도안 생성 미리보기 취소 기록에 실패했습니다.');
-      return;
-    }
-    setApplyNotice(null);
-    clearAgentBuilderPreview();
-    if (prePreviewViewport) {
-      setViewport(prePreviewViewport);
-      setPrePreviewViewport(null);
-    }
-  };
-
-  const activeKnowledgeClarification = latestKnowledgeClarification(
-    conversationItems,
+      : null;
+  const pendingKnowledgeStep: WorkflowKnowledgeStep | null =
+    !activeKnowledgeStep &&
+    latestAssistantResponse?.knowledge_resolution?.selection_status ===
+      'pending_ack'
+      ? {
+          status: 'confirming',
+          timing: latestAssistantResponse.knowledge_resolution.timing,
+          question:
+            latestAssistantResponse.clarification_questions[0] ?? null,
+          candidates: knowledgeOptionsFromResponse(latestAssistantResponse).map(
+            (option) => ({
+              selection_id: option.selectionId,
+              candidate_id: option.selection.candidate_id,
+              label: option.label,
+              confidence: option.confidence,
+              score: option.score,
+              reason: option.reason,
+            }),
+          ),
+          selectedCandidateIds:
+            latestAssistantResponse.knowledge_resolution.selected
+              .map((selection) => selection.candidate_id)
+              .filter(
+                (candidateId): candidateId is string =>
+                  typeof candidateId === 'string',
+              ),
+          selectedLabels: latestAssistantResponse.knowledge_resolution.selected
+            .map((selection) => selection.safe_label ?? selection.label)
+            .filter((label): label is string => typeof label === 'string'),
+          errorMessage: knowledgeSelectionError,
+        }
+      : null;
+  const completedKnowledgeStep: WorkflowKnowledgeStep | null =
+    !activeKnowledgeStep &&
+    !pendingKnowledgeStep &&
+    latestAssistantResponse?.knowledge_resolution
+      ? {
+          status: 'completed',
+          timing: latestAssistantResponse.knowledge_resolution.timing,
+          candidates: [],
+          selectedLabels: latestAssistantResponse.knowledge_resolution.selected
+            .map((selection) => {
+              const safeLabel = selection.safe_label ?? selection.label;
+              return typeof safeLabel === 'string' ? safeLabel : null;
+            })
+            .filter((label): label is string => Boolean(label)),
+        }
+      : null;
+  const knowledgeStep =
+    activeKnowledgeStep ?? pendingKnowledgeStep ?? completedKnowledgeStep;
+  const activeParameterTask = currentParameterGroup?.tasks.find((task) =>
+    ['active', 'invalid'].includes(task.status),
   );
-  const activeKnowledgeClarificationRequestId =
-    activeKnowledgeClarification?.request_id ?? null;
-  const activeWorkflowTargetClarification = latestWorkflowTargetClarification(
-    conversationItems,
+  const failedSetupStatuses = [
+    'failed',
+    'validation_failed',
+    'unsupported',
+    'stale',
+    'stale_protocol',
+    'canceled',
+  ];
+  const setupStatus: WorkflowSetupStatus = isPersistedMutationSaving ||
+    isApplying
+    ? 'saving'
+    : authoritativeRequestStatus === 'completion_confirming'
+      ? 'confirming'
+      : pendingKnowledgeStep
+        ? 'confirming'
+        : activeKnowledgeStep
+        ? 'awaiting_confirmation'
+        : pendingRequestId ||
+            isSubmitting ||
+            latestAssistantResponse?.status === 'planning'
+          ? 'planning'
+          : latestAssistantResponse &&
+              failedSetupStatuses.includes(latestAssistantResponse.status)
+            ? 'failed'
+            : activeParameterTask?.resolution_source
+              ? 'awaiting_confirmation'
+              : activeParameterTask
+                ? 'configuring'
+                : isAgentBuilderSetupCompleted(
+                      authoritativeRequestStatus,
+                      currentParameterGroup,
+                    )
+                  ? 'completed'
+                  : 'configuring';
+  const showUnifiedSetup = Boolean(
+    knowledgeStep ||
+      currentParameterGroup ||
+      pendingRequestId ||
+      isSubmitting ||
+      latestAssistantResponse?.status === 'planning' ||
+      latestAssistantResponse?.status === 'completed' ||
+      routingNodeIds.length > 0 ||
+      (latestAssistantResponse &&
+        failedSetupStatuses.includes(latestAssistantResponse.status)),
   );
+  const activeWorkflowTargetClarification =
+    latestWorkflowTargetClarification(conversationItems);
   const activeWorkflowTargetClarificationRequestId =
     activeWorkflowTargetClarification?.request_id ?? null;
-  const canSubmitMessage = Boolean(
-    input.trim() ||
-      (lastSubmittedMessage && activeKnowledgeClarificationRequestId),
-  );
+  const canSubmitMessage = Boolean(input.trim());
 
   const toggleAgentBuilder = () => {
     if (isMinimized) {
+      shouldAutoScrollRef.current = true;
       setIsMinimized(false);
       setIsOpen(true);
       return;
     }
-    setIsOpen((value) => (agentBuilderPreview ? true : !value));
+    shouldAutoScrollRef.current = true;
+    setIsOpen((value) => !value);
   };
 
   return (
-    <div className="fixed bottom-[72px] right-5 z-50 flex flex-col items-end gap-3">
+    <div
+      className="fixed bottom-[72px] left-2 right-2 z-50 flex flex-col items-end gap-3 sm:left-auto sm:right-5 sm:w-[380px]"
+      onKeyDown={(event) => event.stopPropagation()}
+    >
       {isOpen && !isMinimized && (
-        <section className="flex h-[520px] w-[380px] flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-2xl">
+        <section
+          ref={panelRef}
+          className="flex h-[min(520px,calc(100dvh-6rem))] w-full flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-2xl sm:w-[380px]"
+          aria-label="Agent Builder panel"
+        >
           <header className="flex items-center justify-between gap-2 border-b border-slate-200 px-4 py-3">
             <div className="flex min-w-0 items-center gap-2">
               <Bot className="h-4 w-4 text-slate-700" />
@@ -968,14 +1758,11 @@ export function AgentBuilderPanel({
               <button
                 type="button"
                 onClick={() => {
-                  if (!agentBuilderPreview) {
-                    setIsModelMenuOpen(false);
-                    setIsOpen(false);
-                    setIsMinimized(false);
-                  }
+                  setIsModelMenuOpen(false);
+                  setIsOpen(false);
+                  setIsMinimized(false);
                 }}
-                disabled={Boolean(agentBuilderPreview)}
-                className="rounded-md p-1 text-slate-500 hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-300"
+                className="rounded-md p-1 text-slate-500 hover:bg-slate-100"
                 aria-label="Close Agent Builder"
               >
                 <X className="h-4 w-4" />
@@ -987,12 +1774,28 @@ export function AgentBuilderPanel({
             ref={conversationScrollRef}
             data-testid="agent-builder-conversation"
             className="flex-1 space-y-3 overflow-y-auto px-4 py-3 text-sm"
+            onScroll={(event) => {
+              const element = event.currentTarget;
+              const distanceFromBottom =
+                element.scrollHeight - element.scrollTop - element.clientHeight;
+              shouldAutoScrollRef.current = distanceFromBottom <= 48;
+            }}
           >
+            {agentBuilderHistoryNotice ? (
+              <div
+                role="status"
+                aria-live="polite"
+                className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800"
+              >
+                {agentBuilderHistoryNotice}
+              </div>
+            ) : null}
             {hasUnsavedChanges && (
               <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
                 <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
                 <span>
-                  저장되지 않은 변경이 있어 초안 생성, 도안 생성 미리보기, 적용 및 저장이 차단됩니다.
+                  저장되지 않은 변경이 있어 Agent Builder 생성을 시작할 수
+                  없습니다.
                 </span>
               </div>
             )}
@@ -1013,6 +1816,26 @@ export function AgentBuilderPanel({
                 </button>
               </div>
             )}
+            {sessionRecoveryRequired ? (
+              <div
+                role="status"
+                aria-live="polite"
+                className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900"
+              >
+                <p className="font-semibold">결과 확인 필요</p>
+                <p className="mt-1">
+                  서버 응답을 아직 확인하지 못했습니다. 현재 작업은 유지됩니다.
+                </p>
+                <button
+                  type="button"
+                  onClick={retrySessionRecovery}
+                  className="mt-2 rounded-md border border-amber-400 bg-white px-2 py-1 font-semibold text-amber-900"
+                  aria-label="Agent Builder 상태 다시 확인"
+                >
+                  다시 확인
+                </button>
+              </div>
+            ) : null}
             {conversationItems.map((item) => {
               if (item.kind === 'user') {
                 return (
@@ -1024,10 +1847,10 @@ export function AgentBuilderPanel({
                 );
               }
               const response = item.response;
-              const isActiveKnowledgeClarification =
-                response.request_id === activeKnowledgeClarificationRequestId;
               const isActiveWorkflowTargetClarification =
-                response.request_id === activeWorkflowTargetClarificationRequestId;
+                response.request_id ===
+                activeWorkflowTargetClarificationRequestId;
+              const knowledgeOptions = knowledgeOptionsFromResponse(response);
               return (
                 <div
                   key={item.id}
@@ -1036,144 +1859,13 @@ export function AgentBuilderPanel({
                   <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
                     {response.status}
                   </div>
-                  {response.draft_preview ? (
-                    <>
-                      <p className="mt-2 text-slate-700">
-                        workflow 초안이 생성되었습니다. 도안 생성 미리보기에서
-                        실제 editor graph와 분리된 preview를 확인할 수 있습니다.
-                      </p>
-                      {response.draft_preview.validation_result.valid ? (
-                        <button
-                          type="button"
-                          onClick={() => openPreview(response.draft_preview)}
-                          disabled={hasUnsavedChanges || Boolean(agentBuilderPreview)}
-                          className="mt-2 inline-flex items-center gap-2 rounded-md bg-slate-900 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
-                        >
-                          <Eye className="h-4 w-4" />
-                          도안 생성 미리보기
-                        </button>
-                      ) : null}
-                      {(response.draft_preview.configuration_issues?.length ?? 0) >
-                      0 ? (
-                        <div className="mt-3 divide-y divide-slate-200 border-y border-slate-200">
-                          {response.draft_preview.configuration_issues?.map(
-                            (issue) => (
-                              <section
-                                key={issue.node_id}
-                                data-testid="agent-builder-node-configuration-issue"
-                                className="py-2.5"
-                              >
-                                <p className="font-semibold text-slate-900">
-                                  {issue.node_label}
-                                </p>
-                                <p className="mt-1 text-xs font-medium text-slate-600">
-                                  필요한 파라미터
-                                </p>
-                                <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs text-amber-800">
-                                  {issue.missing_parameters.map((parameter) => (
-                                    <li key={`${issue.node_id}-${parameter.key}`}>
-                                      {parameter.label}
-                                    </li>
-                                  ))}
-                                </ul>
-                              </section>
-                            ),
-                          )}
-                        </div>
-                      ) : null}
-                    </>
-                  ) : null}
-                  {response.clarification_questions?.map((question) => (
-                    <p key={question} className="mt-2 text-slate-700">
-                      {question}
-                    </p>
-                  ))}
-                  {response.clarification_options?.some(
-                    (option) =>
-                      isKnowledgeClarificationOption(option) &&
-                      !isNoKnowledgeBaseOption(option),
-                  ) ? (
-                    <div
-                      data-testid="agent-builder-kb-candidate-list"
-                      className="mt-3 max-h-[13.5rem] space-y-2 overflow-y-auto pr-1"
-                    >
-                      {response.clarification_options
-                        .filter(
-                          (option) =>
-                            isKnowledgeClarificationOption(option) &&
-                            !isNoKnowledgeBaseOption(option),
-                        )
-                        .map((option, index) => {
-                        const selection = knowledgeCandidateSelectionFromOption(option);
-                        const label =
-                          formatClarificationOptionValue(option.label) ??
-                          formatClarificationOptionValue(option.safe_label) ??
-                          `Knowledge Base 후보 ${index + 1}`;
-                        const confidence = formatClarificationOptionValue(
-                          option.confidence,
-                        );
-                        const score = formatClarificationOptionValue(option.score);
-                        const reason = formatClarificationOptionValue(
-                          option.reason_category,
-                        );
-                        const isSelected = selection
-                          ? selectedKnowledgeCandidates.some((candidate) =>
-                              isSameKnowledgeCandidateSelection(candidate, selection),
-                            )
-                          : false;
-                        return (
-                          <button
-                            type="button"
-                            key={`${option.candidate_id ?? label}-${index}`}
-                            onClick={() => {
-                              if (selection) {
-                                setSelectedKnowledgeCandidates((current) => {
-                                  const alreadySelected = current.some((candidate) =>
-                                    isSameKnowledgeCandidateSelection(
-                                      candidate,
-                                      selection,
-                                    ),
-                                  );
-                                  if (alreadySelected) {
-                                    return current.filter(
-                                      (candidate) =>
-                                        !isSameKnowledgeCandidateSelection(
-                                          candidate,
-                                          selection,
-                                        ),
-                                    );
-                                  }
-                                  return [...current, selection];
-                                });
-                              }
-                            }}
-                            disabled={
-                              !selection ||
-                              isSubmitting ||
-                              !isActiveKnowledgeClarification
-                            }
-                            aria-pressed={isSelected}
-                            className={`min-h-16 w-full rounded-md border px-3 py-2 text-left text-sm ${
-                              isSelected
-                                ? 'border-slate-900 bg-slate-100'
-                                : 'border-slate-200 bg-white'
-                            } disabled:cursor-not-allowed disabled:opacity-60`}
-                          >
-                            <div className="font-medium text-slate-900">{label}</div>
-                            <div className="mt-1 text-xs text-slate-500">
-                              {[
-                                confidence && `신뢰도 ${confidence}`,
-                                score && `점수 ${score}`,
-                                reason,
-                              ]
-                                .filter(Boolean)
-                                .join(' · ')}
-                            </div>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  ) : null}
+                  {knowledgeOptions.length === 0
+                    ? response.clarification_questions?.map((question) => (
+                        <p key={question} className="mt-2 text-slate-700">
+                          {question}
+                        </p>
+                      ))
+                    : null}
                   {response.clarification_options?.some(
                     isWorkflowNodeClarificationOption,
                   ) ? (
@@ -1204,15 +1896,20 @@ export function AgentBuilderPanel({
                               }
                               onClick={() => {
                                 if (!nodeId || !lastSubmittedMessage) return;
-                                void submitAgentBuilderMessage(lastSubmittedMessage, {
-                                  selectedNodeId: nodeId,
-                                  displayContent: `수정 대상 선택: ${label}`,
-                                  clearInput: false,
-                                });
+                                void submitAgentBuilderMessage(
+                                  lastSubmittedMessage,
+                                  {
+                                    selectedNodeId: nodeId,
+                                    displayContent: `수정 대상 선택: ${label}`,
+                                    clearInput: false,
+                                  },
+                                );
                               }}
                               className="min-h-14 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-left text-sm disabled:cursor-not-allowed disabled:opacity-60"
                             >
-                              <div className="font-medium text-slate-900">{label}</div>
+                              <div className="font-medium text-slate-900">
+                                {label}
+                              </div>
                               {nodeType ? (
                                 <div className="mt-1 text-xs text-slate-500">
                                   {nodeType}
@@ -1224,7 +1921,10 @@ export function AgentBuilderPanel({
                     </div>
                   ) : null}
                   {response.validation_result?.issues?.map((issue) => (
-                    <p key={`${issue.code}-${issue.path}`} className="mt-2 text-red-700">
+                    <p
+                      key={`${issue.code}-${issue.path}`}
+                      className="mt-2 text-red-700"
+                    >
                       {issue.message}
                     </p>
                   ))}
@@ -1236,39 +1936,102 @@ export function AgentBuilderPanel({
                 </div>
               );
             })}
+            {showUnifiedSetup ? (
+              <WorkflowResultGroup
+                tasks={currentParameterGroup?.tasks ?? []}
+                nodes={nodes}
+                routingNodeIds={routingNodeIds}
+                connectionNodeIds={routingNodeIds}
+                knowledgeStep={knowledgeStep}
+                setupStatus={setupStatus}
+                presentationTaskId={presentationTaskId}
+                isPresentationReentry={isPresentationReentry}
+                focusHeadingTaskId={focusHeadingTaskId}
+                onPresentationHeadingFocused={acknowledgePresentationFocus}
+                onFocusNode={focusParameterNode}
+                onOpenNodeSettings={openNodeSettings}
+                onKnowledgeSubmit={(selectionIds) => {
+                  if (!activeKnowledgeClarification) return;
+                  const selected = activeKnowledgeOptions
+                    .filter((option) =>
+                      selectionIds.includes(option.selectionId),
+                    )
+                    .map((option) => ({
+                      ...option.selection,
+                      label: option.label,
+                    }));
+                  void resolveKnowledgeSelection(
+                    activeKnowledgeClarification,
+                    selected,
+                  );
+                }}
+                onDecision={(decision) => void decideParameter(decision)}
+                onCancel={
+                  currentParameterGroup?.status === 'active'
+                    ? () => void cancelParameterFlow()
+                    : undefined
+                }
+                disabled={
+                  isSubmitting ||
+                  isApplying ||
+                  isPersistedMutationSaving ||
+                  authoritativeRequestStatus === 'completion_confirming'
+                }
+              />
+            ) : null}
           </div>
 
           <div className="border-t border-slate-200 p-3">
-            {agentBuilderPreview && applyNotice && (
-              <div className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                {applyNotice}
-              </div>
-            )}
-            {agentBuilderPreview && (
-              <div className="mb-2 flex gap-2">
-                <button
-                  type="button"
-                  onClick={applyAndSave}
-                  disabled={hasUnsavedChanges || isApplying}
-                  className="flex-1 rounded-md bg-emerald-600 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-300"
-                >
-                  {isApplying ? '저장 중' : '적용 및 저장'}
-                </button>
-                <button
-                  type="button"
-                  onClick={cancelPreview}
-                  className="rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700"
-                >
-                  취소
-                </button>
-              </div>
-            )}
+            <div
+              className="mb-2 grid grid-cols-2 gap-1 rounded-md bg-slate-100 p-1"
+              role="group"
+              aria-label="Workflow generation mode"
+            >
+              <button
+                type="button"
+                aria-pressed={generationMode === 'configure_and_generate'}
+                onClick={() => setGenerationMode('configure_and_generate')}
+                disabled={
+                  isSubmitting ||
+                  isPersistedMutationSaving ||
+                  Boolean(pendingRequestId)
+                }
+                className={`rounded px-2 py-1.5 text-xs font-medium ${
+                  generationMode === 'configure_and_generate'
+                    ? 'bg-white text-slate-900 shadow-sm'
+                    : 'text-slate-500'
+                }`}
+              >
+                설정하며 생성
+              </button>
+              <button
+                type="button"
+                aria-pressed={generationMode === 'structure_only'}
+                onClick={() => setGenerationMode('structure_only')}
+                disabled={
+                  isSubmitting ||
+                  isPersistedMutationSaving ||
+                  Boolean(pendingRequestId)
+                }
+                className={`rounded px-2 py-1.5 text-xs font-medium ${
+                  generationMode === 'structure_only'
+                    ? 'bg-white text-slate-900 shadow-sm'
+                    : 'text-slate-500'
+                }`}
+              >
+                구조만 생성
+              </button>
+            </div>
             <div className="flex gap-2">
               <textarea
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
                 onKeyDown={handleInputKeyDown}
-                disabled={Boolean(pendingRequestId) || isSubmitting}
+                disabled={
+                  Boolean(pendingRequestId) ||
+                  isSubmitting ||
+                  isPersistedMutationSaving
+                }
                 className="min-h-16 flex-1 resize-none rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-500"
                 placeholder="예: 입력값을 분석해서 답변하는 workflow를 만들어줘"
               />
@@ -1279,6 +2042,7 @@ export function AgentBuilderPanel({
                   !canSubmitMessage ||
                   hasUnsavedChanges ||
                   isSubmitting ||
+                  isPersistedMutationSaving ||
                   Boolean(pendingRequestId)
                 }
                 className="flex h-16 w-11 items-center justify-center rounded-md bg-slate-900 text-white disabled:cursor-not-allowed disabled:bg-slate-300"

@@ -51,6 +51,11 @@ from apps.shared.services.permissions import has_workflow_permission
 from apps.shared.services.model_routing_policy_inheritance import (
     ModelRoutingPolicyInheritanceService,
 )
+from apps.shared.services.workflow_configuration_preflight import (
+    WorkflowConfigurationPreflightError,
+    enforce_workflow_configuration_preflight,
+    workflow_configuration_issues,
+)
 from apps.shared.services.workflow_task_publisher import send_workflow_task
 
 logger = logging.getLogger(__name__)
@@ -196,6 +201,35 @@ class DeploymentService:
                 is_active=deployment_in.is_active,
             )
             raise
+        try:
+            WorkflowService.validate_mail_credential_references(
+                db,
+                graph_snapshot,
+                user_id=str(user_id),
+                organization_id=workflow.organization_id,
+                require_resolved=False,
+            )
+        except HTTPException as exc:
+            if exc.status_code == 403:
+                raise
+            reason_code = (
+                "mail_credential_unavailable"
+                if exc.detail == "resource.not_found"
+                else "node_configuration_invalid"
+            )
+            raise DeploymentService.workflow_configuration_validation_blocked(
+                graph_snapshot,
+                surface="deployment",
+                reason_code=reason_code,
+            ) from exc
+        if deployment_in.is_active:
+            try:
+                enforce_workflow_configuration_preflight(
+                    graph_snapshot,
+                    surface="deployment",
+                )
+            except WorkflowConfigurationPreflightError as exc:
+                raise DeploymentService.workflow_configuration_preflight_blocked(exc) from exc
 
         DeploymentService._enforce_deployment_configuration_preflight(
             db,
@@ -471,6 +505,63 @@ class DeploymentService:
             organization_id=organization_id,
             principal_id=principal_id,
         ).enforce_authenticated_run(graph_snapshot=graph_snapshot)
+
+    @staticmethod
+    def workflow_configuration_preflight_blocked(
+        error: WorkflowConfigurationPreflightError,
+        *,
+        reason_code: str = "node_configuration_unresolved",
+        issues: list | None = None,
+    ) -> HTTPException:
+        return DeploymentService._workflow_configuration_preflight_response(
+            surface=error.surface,
+            reason_code=reason_code,
+            issues=(issues if issues is not None else error.issues),
+        )
+
+    @staticmethod
+    def workflow_configuration_validation_blocked(
+        graph_snapshot: dict[str, Any],
+        *,
+        surface: str,
+        reason_code: str,
+    ) -> HTTPException:
+        return DeploymentService._workflow_configuration_preflight_response(
+            surface=surface,
+            reason_code=reason_code,
+            issues=workflow_configuration_issues(graph_snapshot),
+        )
+
+    @staticmethod
+    def _workflow_configuration_preflight_response(
+        *,
+        surface: str,
+        reason_code: str,
+        issues: list,
+    ) -> HTTPException:
+        safe_issues = list(issues)
+        return HTTPException(
+            status_code=409,
+            detail={
+                "error": {
+                    "code": "workflow.configuration_preflight.blocked",
+                    "message": "Workflow configuration preflight blocked execution",
+                    "reason_code": reason_code,
+                    "required_actions": ["complete_node_configuration"],
+                    "preflight": {
+                        "status": "blocked",
+                        "surface": surface,
+                        "nodes": [
+                            {
+                                "node_type": issue.node_type,
+                                "reason_codes": [reason_code],
+                            }
+                            for issue in safe_issues
+                        ],
+                    },
+                }
+            },
+        )
 
     @staticmethod
     def _enforce_graph_structure_before_binding(
@@ -891,6 +982,10 @@ class DeploymentService:
         )
 
         graph_data = deployment.graph_snapshot
+        try:
+            enforce_workflow_configuration_preflight(graph_data, surface="run")
+        except WorkflowConfigurationPreflightError as exc:
+            raise DeploymentService.workflow_configuration_preflight_blocked(exc) from exc
 
         try:
             # 로깅을 위한 컨텍스트 주입
@@ -1349,6 +1444,34 @@ class DeploymentService:
                         ),
                     },
                 )
+            try:
+                WorkflowService.validate_mail_credential_references(
+                    db,
+                    deployment.graph_snapshot,
+                    user_id=str(user_id) if user_id is not None else "",
+                    organization_id=getattr(app, "organization_id", None),
+                    require_resolved=False,
+                )
+            except HTTPException as exc:
+                if exc.status_code == 403:
+                    raise
+                reason_code = (
+                    "mail_credential_unavailable"
+                    if exc.detail == "resource.not_found"
+                    else "node_configuration_invalid"
+                )
+                raise DeploymentService.workflow_configuration_validation_blocked(
+                    deployment.graph_snapshot,
+                    surface="deployment",
+                    reason_code=reason_code,
+                ) from exc
+            try:
+                enforce_workflow_configuration_preflight(
+                    deployment.graph_snapshot,
+                    surface="deployment",
+                )
+            except WorkflowConfigurationPreflightError as exc:
+                raise DeploymentService.workflow_configuration_preflight_blocked(exc) from exc
             DeploymentService._enforce_knowledge_preflight(
                 db,
                 app=app,

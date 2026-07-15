@@ -1,6 +1,7 @@
 import copy
 import hashlib
 import json
+import logging
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -21,6 +22,7 @@ from apps.gateway.services.agent_builder_intent_service import (
     AgentBuilderIntentExtractionError,
     AgentBuilderIntentExtractor,
     AgentBuilderIntentRuntimeUnavailableError,
+    safe_intent_extraction_reason,
     validate_intent_semantics,
 )
 from apps.gateway.services.audit_records import add_action_audit
@@ -30,6 +32,22 @@ from apps.gateway.services.knowledge_rag_recommendation_service import (
 from apps.gateway.services.llm_service import LLMService
 from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
 from apps.gateway.services.workflow_service import WorkflowService
+from apps.gateway.application.agent_builder.condition_branches import (
+    normalize_condition_outgoing_edges,
+)
+from apps.gateway.application.agent_builder.parameter_tasks import (
+    remove_direct_edit_external_credential_tasks,
+    remove_direct_edit_knowledge_parameter_tasks,
+)
+from apps.gateway.application.agent_builder.semantic_plan import CAPABILITY_STEP_IDS
+from apps.gateway.application.agent_builder.service import DirectEditOrchestrator
+from apps.gateway.application.agent_builder.parameter_candidates import (
+    ParameterCandidateProvider,
+)
+from apps.gateway.application.agent_builder.knowledge_timing import (
+    materialize_before_graph_plan,
+)
+from apps.gateway.adapters.db.agent_builder_repository import AgentBuilderRepository
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.agent_builder import (
     AgentBuilderDraft,
@@ -42,14 +60,18 @@ from apps.shared.db.models.workflow import Workflow
 from apps.shared.schemas.agent_builder import (
     AgentBuilderApplyRequest,
     AgentBuilderApplyResponse,
+    AgentBuilderDirectMessageResponse,
+    AgentBuilderDirectSessionResponse,
     AgentBuilderDraftPreview,
     AgentBuilderEditOperation,
     AgentBuilderEditTargetReference,
     AgentBuilderKnowledgeRequirement,
+    AgentBuilderKnowledgePlacement,
     AgentBuilderMessageRequest,
     AgentBuilderMessageResponse,
     AgentBuilderMissingParameter,
     AgentBuilderNodeConfigurationIssue,
+    AgentBuilderParameterGroup,
     AgentBuilderPendingResolution,
     AgentBuilderPlannedStep,
     AgentBuilderSessionCreateRequest,
@@ -57,7 +79,11 @@ from apps.shared.schemas.agent_builder import (
     AgentBuilderStructuredRequest,
     AgentBuilderValidationIssue,
     AgentBuilderValidationResult,
+    GraphMutationSafeEnvelope,
+    GraphMutationCompletionContext,
 )
+
+
 from apps.shared.schemas.knowledge import KnowledgeRAGRecommendationRequest
 from apps.shared.services.permissions import (
     has_workflow_permission,
@@ -66,24 +92,36 @@ from apps.shared.services.workflow_layout import calculate_workflow_auto_layout
 from apps.shared.services.workflow_node_catalog import (
     agent_builder_supported_capabilities,
     agent_builder_supported_node_types,
+    capability_output_keys,
     node_definition,
     node_type_for_capability,
     validate_workflow_graph_connections,
 )
 from apps.shared.services.permission_audit import record_resource_permission_denied
+from apps.shared.services.tracing.policy import TracePolicyService
+from apps.shared.services.tracing.redaction import TraceRedactionService
+
+
+logger = logging.getLogger(__name__)
 
 
 SESSION_TTL = timedelta(hours=24)
 DRAFT_TTL = timedelta(minutes=30)
 AGENT_BUILDER_SUPPORTED_NODE_TYPES = agent_builder_supported_node_types()
 AGENT_BUILDER_SUPPORTED_CAPABILITIES = agent_builder_supported_capabilities()
+STRUCTURAL_NODE_TARGET_ALIASES = {
+    "startNode": frozenset({"start", "startnode", "input", "입력", "시작"}),
+    "answerNode": frozenset(
+        {"answer", "answernode", "response", "output", "응답", "출력"}
+    ),
+}
 NO_KB_CANDIDATE_ID = "__agent_builder_no_kb__"
 NO_KB_CANDIDATE_LABEL = "Knowledge Base 없이 생성"
 NO_KB_CANDIDATE_WARNING = "사용자가 Knowledge Base 없이 도안 생성을 선택했습니다. LLM node는 Knowledge Base binding 없이 생성됩니다."
 AGENT_BUILDER_KB_RECOMMENDATION_LIMIT = 20
 EXPECTED_APP_PRIMARY_WORKFLOW_ID = "expected_app_primary_workflow_id"
 SAFE_SIDE_EFFECT_NOTICE = (
-    "초안 생성, 미리보기, 적용 및 저장 중에는 workflow 실행, Knowledge Base 검색, "
+    "Agent Builder 요청 구조화, workflow graph 생성·저장 및 설정 중에는 workflow 실행, Knowledge Base 검색, "
     "Slack/GitHub/HTTP/Mail 외부 호출, workflow node credential 사용/변경, "
     "외부 시스템 변경을 수행하지 않습니다."
 )
@@ -118,25 +156,6 @@ CAPABILITY_GENERATION_ORDER = (
     "mail_terminal_acknowledgement",
     "answer",
 )
-CAPABILITY_STEP_IDS = {
-    "file_extraction": "step_file_extraction",
-    "variable_extraction": "step_variable_extraction",
-    "github_pr_read": "step_github_read",
-    "mail_search": "step_mail",
-    "gmail_reply_draft_create": "step_gmail_draft",
-    "mail_terminal_acknowledgement": "step_mail_acknowledge",
-    "http_request": "step_http",
-    "workflow_call": "step_workflow",
-    "code_execution": "step_code",
-    "template_render": "step_template",
-    "condition": "step_condition",
-    "loop": "step_loop",
-    "llm": "step_llm",
-    "knowledge_backed_llm": "step_llm",
-    "github_pr_comment": "step_github_comment",
-    "slack_send": "step_slack",
-    "answer": "step_answer",
-}
 CAPABILITY_NODE_PREFIXES = {
     "file_extraction": "agent-file-extraction",
     "variable_extraction": "agent-variable-extraction",
@@ -340,6 +359,14 @@ def _now() -> datetime:
 
 def _safe_summary(message: str, *, limit: int = 240) -> str:
     cleaned = " ".join((message or "").split())
+    redaction = TraceRedactionService.redact_payload(
+        cleaned,
+        policy=TracePolicyService.fail_closed_redaction_policy(),
+        payload_kind="agent_builder_message_summary",
+    )
+    if redaction.failed:
+        return "[redacted]"
+    cleaned = str(redaction.redacted_payload).replace("[REDACTED]", "[redacted]")
     cleaned = _AUTH_HEADER_VALUE_RE.sub("[redacted]", cleaned)
     cleaned = _SECRET_KEY_VALUE_RE.sub("[redacted]", cleaned)
     cleaned = _SECRET_NATURAL_LANGUAGE_RE.sub("[redacted]", cleaned)
@@ -921,9 +948,11 @@ class AgentBuilderService:
     def create_or_restore_session(
         self,
         request: AgentBuilderSessionCreateRequest,
-    ) -> AgentBuilderSessionResponse:
+    ) -> AgentBuilderDirectSessionResponse:
         workflow_id = request.workflow_id
         app_id = request.app_id
+        if workflow_id is None:
+            raise HTTPException(status_code=422, detail="workflow_context_required")
         workflow = None
         if workflow_id:
             workflow = self._workflow_in_active_org(workflow_id)
@@ -950,6 +979,7 @@ class AgentBuilderService:
                 AgentBuilderSession.workflow_id == workflow_id,
                 AgentBuilderSession.app_id == app_id,
                 AgentBuilderSession.status == "active",
+                AgentBuilderSession.protocol_version == "direct_edit_v1",
             )
             .order_by(AgentBuilderSession.updated_at.desc())
             .first()
@@ -962,6 +992,7 @@ class AgentBuilderService:
                 workflow_id=workflow_id,
                 app_id=app_id,
                 status="active",
+                protocol_version="direct_edit_v1",
                 expires_at=_now() + SESSION_TTL,
             )
             self.db.add(session)
@@ -987,17 +1018,29 @@ class AgentBuilderService:
         self.db.refresh(session)
         return self._session_response(session)
 
-    def get_session(self, session_id: uuid.UUID) -> AgentBuilderSessionResponse:
+    def get_session(self, session_id: uuid.UUID) -> AgentBuilderDirectSessionResponse:
         session = self._session_or_404(session_id)
         if not self._session_scope_allowed(session):
-            return AgentBuilderSessionResponse(
+            return AgentBuilderDirectSessionResponse(
                 session_id=session.id,
                 workflow_id=None,
                 app_id=None,
                 status="scope_unavailable",
                 messages=[],
                 pending_request=None,
-                draft_preview=None,
+            )
+        if getattr(session, "protocol_version", None) is None:
+            return AgentBuilderDirectSessionResponse(
+                session_id=session.id,
+                workflow_id=session.workflow_id,
+                app_id=session.app_id,
+                protocol_version=None,
+                status="stale_protocol",
+                messages=self._stale_protocol_messages(session),
+                active_request=None,
+                active_graph_mutation=None,
+                parameter_group=None,
+                pending_request=None,
             )
         return self._session_response(session)
 
@@ -1007,6 +1050,25 @@ class AgentBuilderService:
         message_request: AgentBuilderMessageRequest,
     ) -> AgentBuilderMessageResponse:
         session = self._session_or_404(session_id)
+        if (
+            hasattr(session, "protocol_version")
+            and session.protocol_version is None
+        ):
+            raise HTTPException(status_code=409, detail="stale_protocol")
+        direct_edit_session = (
+            getattr(session, "protocol_version", None) == "direct_edit_v1"
+        )
+        if (
+            direct_edit_session
+            and (
+                message_request.selected_knowledge_candidate is not None
+                or message_request.selected_knowledge_candidates is not None
+            )
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="legacy_knowledge_selection_not_supported",
+            )
         session = self._lock_session_for_request(session)
         self._reject_if_pending(session)
         workflow = None
@@ -1068,6 +1130,8 @@ class AgentBuilderService:
         )
         self.db.commit()
 
+        deferred_knowledge_options: list[dict[str, Any]] = []
+        deferred_knowledge_questions: list[str] = []
         try:
             selected_kb_context = self._selected_knowledge_candidate_context(
                 session,
@@ -1089,7 +1153,11 @@ class AgentBuilderService:
                     ),
                     warnings=[SAFE_SIDE_EFFECT_NOTICE],
                 )
-                self._finish_request(request_row, response)
+                self._finish_request(
+                    request_row,
+                    response,
+                    direct_edit=direct_edit_session,
+                )
                 self.db.commit()
                 return response
             structured = (
@@ -1127,7 +1195,11 @@ class AgentBuilderService:
                     ),
                     warnings=[SAFE_SIDE_EFFECT_NOTICE],
                 )
-                self._finish_request(request_row, response)
+                self._finish_request(
+                    request_row,
+                    response,
+                    direct_edit=direct_edit_session,
+                )
                 self.db.commit()
                 return response
             validation = self._validate_structured_request(structured, app_id=app_id)
@@ -1155,10 +1227,18 @@ class AgentBuilderService:
                 ),
                 warnings=[SAFE_SIDE_EFFECT_NOTICE],
             )
-            self._finish_request(request_row, response)
+            self._finish_request(
+                request_row,
+                response,
+                direct_edit=direct_edit_session,
+            )
             self.db.commit()
             return response
-        except AgentBuilderIntentExtractionError:
+        except AgentBuilderIntentExtractionError as exc:
+            logger.warning(
+                "agent_builder_intent_extraction_failed reason=%s",
+                safe_intent_extraction_reason(exc),
+            )
             response = AgentBuilderMessageResponse(
                 request_id=request_row.id,
                 status="failed",
@@ -1174,11 +1254,37 @@ class AgentBuilderService:
                 ),
                 warnings=[SAFE_SIDE_EFFECT_NOTICE],
             )
-            self._finish_request(request_row, response)
+            self._finish_request(
+                request_row,
+                response,
+                direct_edit=direct_edit_session,
+            )
             self.db.commit()
             return response
-        except Exception:
+        except Exception as exc:
+            logger.error(
+                "agent_builder_request_processing_failed error_type=%s",
+                type(exc).__name__,
+            )
             return self._fail_processing_request(request_row)
+        if (
+            recommendations["status"] == "clarification_required"
+            and getattr(session, "protocol_version", None) == "direct_edit_v1"
+            and structured.knowledge_placements
+            and all(
+                placement.timing == "after_graph"
+                for placement in structured.knowledge_placements
+            )
+        ):
+            deferred_knowledge_options = list(recommendations.get("options") or [])
+            deferred_knowledge_questions = list(
+                recommendations.get("questions") or []
+            )
+            recommendations = {
+                "status": "ready",
+                "bindings": [],
+                "warnings": list(recommendations.get("warnings") or []),
+            }
         structured_warnings = self._structured_request_warnings(structured)
         draft_safety_notices = self._draft_safety_notices(structured)
         if structured.request_type == "unsupported":
@@ -1194,7 +1300,11 @@ class AgentBuilderService:
                 validation_result=validation,
                 warnings=[SAFE_SIDE_EFFECT_NOTICE, *structured_warnings],
             )
-            self._finish_request(request_row, response)
+            self._finish_request(
+                request_row,
+                response,
+                direct_edit=direct_edit_session,
+            )
             self.db.commit()
             return response
         if recommendations["status"] == "clarification_required":
@@ -1207,7 +1317,11 @@ class AgentBuilderService:
                 validation_result=validation,
                 warnings=[*structured_warnings, *recommendations["warnings"]],
             )
-            self._finish_request(request_row, response)
+            self._finish_request(
+                request_row,
+                response,
+                direct_edit=direct_edit_session,
+            )
             self.db.commit()
             return response
         if recommendations["status"] == "validation_failed":
@@ -1224,7 +1338,11 @@ class AgentBuilderService:
                 validation_result=validation,
                 warnings=[*structured_warnings, *recommendations["warnings"]],
             )
-            self._finish_request(request_row, response)
+            self._finish_request(
+                request_row,
+                response,
+                direct_edit=direct_edit_session,
+            )
             self.db.commit()
             return response
         if not validation.valid and any(
@@ -1238,7 +1356,11 @@ class AgentBuilderService:
                 validation_result=validation,
                 warnings=[SAFE_SIDE_EFFECT_NOTICE, *structured_warnings],
             )
-            self._finish_request(request_row, response)
+            self._finish_request(
+                request_row,
+                response,
+                direct_edit=direct_edit_session,
+            )
             self.db.commit()
             return response
         if not validation.valid:
@@ -1249,7 +1371,11 @@ class AgentBuilderService:
                 validation_result=validation,
                 warnings=[SAFE_SIDE_EFFECT_NOTICE, *structured_warnings],
             )
-            self._finish_request(request_row, response)
+            self._finish_request(
+                request_row,
+                response,
+                direct_edit=direct_edit_session,
+            )
             self.db.commit()
             return response
 
@@ -1267,12 +1393,7 @@ class AgentBuilderService:
         except Exception:
             return self._fail_processing_request(request_row)
         uses_existing_workflow_base = (
-            workflow is not None
-            and structured.draft_mode
-            in {
-                "modify_workflow",
-                "replace_workflow",
-            }
+            workflow is not None and structured.draft_mode == "modify_workflow"
         )
         base_graph = workflow.graph if uses_existing_workflow_base else _empty_graph()
         base_node_ids = _graph_node_ids(base_graph)
@@ -1307,7 +1428,120 @@ class AgentBuilderService:
                 validation_result=draft_validation,
                 warnings=[SAFE_SIDE_EFFECT_NOTICE, *structured_warnings],
             )
-            self._finish_request(request_row, response)
+            self._finish_request(
+                request_row,
+                response,
+                direct_edit=direct_edit_session,
+            )
+            self.db.commit()
+            return response
+
+        if getattr(session, "protocol_version", None) == "direct_edit_v1":
+            if workflow is None:
+                response = AgentBuilderMessageResponse(
+                    request_id=request_row.id,
+                    status="validation_failed",
+                    structured_request=structured,
+                    validation_result=AgentBuilderValidationResult(
+                        valid=False,
+                        issues=[
+                            AgentBuilderValidationIssue(
+                                code="WORKFLOW_REQUIRED",
+                                message="Direct-edit session requires an editor workflow.",
+                                path="workflow_id",
+                            )
+                        ],
+                    ),
+                    warnings=[SAFE_SIDE_EFFECT_NOTICE],
+                )
+                self._finish_request(
+                    request_row,
+                    response,
+                    direct_edit=direct_edit_session,
+                )
+                self.db.commit()
+                return response
+            candidate_graph = preview_graph
+            if uses_existing_workflow_base:
+                candidate_graph = copy.deepcopy(workflow.graph or _empty_graph())
+                replaced_edge_ids = set(
+                    target_resolution.get("replaced_edge_ids") or []
+                )
+                candidate_graph["edges"] = [
+                    edge
+                    for edge in candidate_graph.get("edges") or []
+                    if str(edge.get("id")) not in replaced_edge_ids
+                ]
+                candidate_graph["nodes"] = [
+                    *(candidate_graph.get("nodes") or []),
+                    *[
+                        node
+                        for node in preview_graph.get("nodes") or []
+                        if str(node.get("id")) in generated_node_ids
+                    ],
+                ]
+                candidate_graph["edges"] = [
+                    *(candidate_graph.get("edges") or []),
+                    *[
+                        edge
+                        for edge in preview_graph.get("edges") or []
+                        if str(edge.get("id")) in generated_edge_ids
+                    ],
+                ]
+            try:
+                issued = DirectEditOrchestrator().issue(
+                    workflow=workflow,
+                    structured_request=structured,
+                    candidate_graph=candidate_graph,
+                    generation_mode=message_request.generation_mode,
+                )
+            except Exception:
+                return self._fail_processing_request(request_row)
+            response = AgentBuilderMessageResponse(
+                request_id=request_row.id,
+                status="graph_mutation_ready",
+                structured_request=structured,
+                graph_mutation=issued.mutation,
+                parameter_group=ParameterCandidateProvider(
+                    self.db,
+                    user_id=self.user.id,
+                    organization_id=self.organization_id,
+                ).enrich_group(issued.parameter_group),
+                clarification_questions=deferred_knowledge_questions,
+                clarification_options=deferred_knowledge_options,
+                validation_result=draft_validation,
+                warnings=draft_safety_notices,
+                safe_step_node_ids=issued.step_node_ids,
+            )
+            if (
+                self._finish_request(
+                    request_row,
+                    response,
+                    direct_edit=direct_edit_session,
+                )
+                is not False
+            ):
+                add_action_audit(
+                    self.db,
+                    AuditAction.AGENT_BUILDER_GRAPH_MUTATION_ISSUED,
+                    self.user.id,
+                    "workflow",
+                    workflow.id,
+                    organization_id=self.organization_id,
+                    metadata={
+                        "operation_id": str(issued.mutation.operation_id),
+                        "kind": issued.mutation.kind,
+                        "generation_mode": issued.mutation.generation_mode,
+                        "base_graph_hash": issued.mutation.base_graph_hash,
+                        "expected_result_graph_hash": (
+                            issued.mutation.expected_result_graph_hash
+                        ),
+                        "catalog_version": issued.mutation.catalog_version,
+                    },
+                )
+                session.workflow_id = workflow.id
+                session.app_id = app_id or session.app_id
+                session.updated_at = _now()
             self.db.commit()
             return response
 
@@ -1395,7 +1629,14 @@ class AgentBuilderService:
             preview_prompt="도안 생성 미리보기",
             warnings=draft_safety_notices,
         )
-        if self._finish_request(request_row, response) is not False:
+        if (
+            self._finish_request(
+                request_row,
+                response,
+                direct_edit=direct_edit_session,
+            )
+            is not False
+        ):
             add_action_audit(
                 self.db,
                 AuditAction.AGENT_BUILDER_DRAFT_CREATED,
@@ -2372,7 +2613,8 @@ class AgentBuilderService:
             )
             or (
                 extraction.request_type == "modify_workflow"
-                and extraction.draft_mode in {"modify_workflow", "replace_workflow"}
+                and extraction.draft_mode
+                in {"modify_workflow", "replace_workflow"}
             )
         )
         if (
@@ -2415,15 +2657,22 @@ class AgentBuilderService:
             "webhook_trigger",
             "schedule_trigger",
         }
+        # A configurable LLM always receives a post-graph Knowledge decision.
+        # This is a catalog policy, not a reinterpretation of the planner's JSON:
+        # the planner still owns the requested node flow, while the user decides
+        # whether the generated LLM keeps an empty Knowledge binding.
         knowledge_required = extraction.knowledge_required or (
             "knowledge_backed_llm" in requested
+        )
+        knowledge_selection_required = knowledge_required or (
+            request.generation_mode == "configure_and_generate" and "llm" in requested
         )
         normalized_capabilities: list[str] = []
         knowledge_capability_added = False
         for capability in requested:
             normalized = capability
             if (
-                knowledge_required
+                knowledge_selection_required
                 and capability == "llm"
                 and not knowledge_capability_added
             ):
@@ -2433,7 +2682,7 @@ class AgentBuilderService:
                 knowledge_capability_added = True
             normalized_capabilities.append(normalized)
 
-        if knowledge_required and not knowledge_capability_added:
+        if knowledge_selection_required and not knowledge_capability_added:
             answer_index = next(
                 (
                     index
@@ -2464,7 +2713,9 @@ class AgentBuilderService:
                 if capability not in entry_capabilities
                 and capability not in mail_flow_capabilities
             ]
-            llm_capability = "knowledge_backed_llm" if knowledge_required else "llm"
+            llm_capability = (
+                "knowledge_backed_llm" if knowledge_selection_required else "llm"
+            )
             normalized_capabilities = [
                 *entry_steps,
                 "mail_search",
@@ -2556,7 +2807,8 @@ class AgentBuilderService:
 
         pending_resolution: list[AgentBuilderPendingResolution] = []
         knowledge_requirements: list[AgentBuilderKnowledgeRequirement] = []
-        if knowledge_required and knowledge_step_id:
+        knowledge_placements = []
+        if knowledge_selection_required and knowledge_step_id:
             topics = []
             for topic in extraction.knowledge_topics:
                 safe_topic = _safe_summary(str(topic), limit=80)
@@ -2590,6 +2842,31 @@ class AgentBuilderService:
                     target_step_ref=knowledge_step_id,
                 )
             )
+            step_ids = {step.step_id for step in planned_steps}
+            knowledge_placements = [
+                placement
+                for placement in extraction.knowledge_placements
+                if placement.requirement_id == "kr_1"
+                and {
+                    value
+                    for value in (
+                        placement.target_step_id,
+                        placement.knowledge_step_id,
+                        placement.upstream_step_id,
+                        placement.downstream_step_id,
+                    )
+                    if value
+                }.issubset(step_ids)
+            ]
+            if not knowledge_placements:
+                knowledge_placements = [
+                    AgentBuilderKnowledgePlacement(
+                        requirement_id="kr_1",
+                        timing="after_graph",
+                        effect_kind="binding_only",
+                        target_step_id=knowledge_step_id,
+                    )
+                ]
 
         capability_set = set(normalized_capabilities)
         risk_flags: list[str] = []
@@ -2656,6 +2933,10 @@ class AgentBuilderService:
                 )
             )
             target_query = _safe_summary(target.target_query or "", limit=255) or None
+            source_query = _safe_summary(target.source_query or "", limit=255) or None
+            destination_query = (
+                _safe_summary(target.destination_query or "", limit=255) or None
+            )
             if (
                 target.target_reference_type == "natural_language_node"
                 and not target_query
@@ -2674,6 +2955,8 @@ class AgentBuilderService:
                         target=AgentBuilderEditTargetReference(
                             reference_type=target.target_reference_type,
                             query=target_query,
+                            source_query=source_query,
+                            destination_query=destination_query,
                             capabilities=target_capabilities,
                             node_types=target_node_types,
                         ),
@@ -2694,7 +2977,18 @@ class AgentBuilderService:
             draft_mode=draft_mode,
             intent_summary=intent_summary,
             planned_steps=planned_steps,
+            parameter_guidance_hints=[
+                hint
+                for hint in extraction.parameter_guidance_hints
+                if hint.step_id in {step.step_id for step in planned_steps}
+            ],
+            explicit_parameter_values=[
+                item
+                for item in extraction.explicit_parameter_values
+                if item.step_id in {step.step_id for step in planned_steps}
+            ],
             knowledge_requirements=knowledge_requirements,
+            knowledge_placements=knowledge_placements,
             required_capabilities=required_capabilities,
             pending_resolution=pending_resolution,
             edit_operations=edit_operations,
@@ -3063,6 +3357,78 @@ class AgentBuilderService:
         node_by_id = {str(node.get("id")): node for node in nodes if node.get("id")}
         edge_by_id = {str(edge.get("id")): edge for edge in edges if edge.get("id")}
 
+        if target.reference_type == "natural_language_edge":
+            def matching_nodes(query: str | None) -> list[dict[str, Any]]:
+                normalized_query = "".join(
+                    char for char in str(query or "").casefold() if char.isalnum()
+                )
+                if not normalized_query:
+                    return []
+                title_matches: list[dict[str, Any]] = []
+                for node in nodes:
+                    data = (
+                        node.get("data")
+                        if isinstance(node.get("data"), dict)
+                        else {}
+                    )
+                    normalized_title = "".join(
+                        char
+                        for char in str(data.get("title") or "").casefold()
+                        if char.isalnum()
+                    )
+                    if normalized_title and (
+                        normalized_query in normalized_title
+                        or normalized_title in normalized_query
+                    ):
+                        title_matches.append(node)
+                if title_matches:
+                    return title_matches
+
+                return [
+                    node
+                    for node in nodes
+                    if any(
+                        normalized_query in alias or alias in normalized_query
+                        for alias in STRUCTURAL_NODE_TARGET_ALIASES.get(
+                            str(node.get("type") or ""), frozenset()
+                        )
+                    )
+                ]
+
+            source_candidates = matching_nodes(target.source_query)
+            destination_candidates = matching_nodes(target.destination_query)
+            if len(source_candidates) != 1 or len(destination_candidates) != 1:
+                return {
+                    "status": "clarification_required",
+                    "questions": ["삽입할 기존 연결을 하나 선택해주세요."],
+                    "options": [],
+                }
+            source_node_id = str(source_candidates[0]["id"])
+            destination_node_id = str(destination_candidates[0]["id"])
+            direct_edges = [
+                edge
+                for edge in edges
+                if str(edge.get("source")) == source_node_id
+                and str(edge.get("target")) == destination_node_id
+            ]
+            if len(direct_edges) != 1:
+                return {
+                    "status": "clarification_required",
+                    "questions": ["삽입할 기존 연결을 하나 선택해주세요."],
+                    "options": [],
+                }
+            edge = direct_edges[0]
+            return {
+                "status": "resolved",
+                "operation_id": operation.operation_id,
+                "placement": "between",
+                "edge_id": str(edge["id"]),
+                "node_id": None,
+                "source_node_id": source_node_id,
+                "destination_node_id": destination_node_id,
+                "replaced_edge_ids": [str(edge["id"])],
+            }
+
         if target.reference_type == "selected_edge":
             edge = edge_by_id.get(str(selected_edge_id or ""))
             if edge is None:
@@ -3344,6 +3710,7 @@ class AgentBuilderService:
                     max_recommendations=AGENT_BUILDER_KB_RECOMMENDATION_LIMIT,
                 ),
                 include_materialized_refs=include_materialized_refs,
+                allow_unready_candidates=True,
             )
             resolution_id = pending_by_step.get(requirement.target_step_ref)
             if response.status == "unavailable":
@@ -3508,12 +3875,14 @@ class AgentBuilderService:
                     }
             if not recommendations:
                 return {
-                    "status": "recommended",
+                    "status": "clarification_required",
                     "bindings": [],
-                    "questions": [],
+                    "questions": [
+                        "권한 확인된 Knowledge Base 후보가 없습니다. Knowledge Base 없이 계속할지 확인해주세요."
+                    ],
                     "options": [],
                     "warnings": [
-                        "권한 확인된 Knowledge Base 후보가 없어 Knowledge Base 없이 LLM node 초안을 생성합니다."
+                        "Knowledge Base 후보가 없어 사용자 확인을 기다립니다."
                     ],
                 }
             return {
@@ -3540,6 +3909,82 @@ class AgentBuilderService:
             "questions": [],
             "options": [],
             "warnings": warnings,
+        }
+
+    def resolve_knowledge_selection(
+        self,
+        structured: AgentBuilderStructuredRequest,
+        *,
+        include_materialized_refs: bool,
+        selected_candidate_handles: set[str],
+    ) -> dict[str, Any]:
+        return self._resolve_knowledge_requirements(
+            structured,
+            include_materialized_refs=include_materialized_refs,
+            selected_candidate_handles=selected_candidate_handles,
+        )
+
+    def build_before_graph_knowledge_selection(
+        self,
+        *,
+        structured: AgentBuilderStructuredRequest,
+        workflow: Workflow,
+        placement: AgentBuilderKnowledgePlacement,
+        bindings: list[dict[str, Any]],
+        resolution_id: str,
+    ) -> dict[str, Any]:
+        effective_plan = materialize_before_graph_plan(
+            structured,
+            placement=placement,
+            has_selection=bool(bindings),
+        )
+        candidate_graph = self._build_preview_graph(
+            effective_plan,
+            workflow=workflow,
+            kb_bindings=self._safe_kb_bindings(bindings),
+        )
+        knowledge_base_ids = [
+            str(binding["knowledge_base_id"])
+            for binding in bindings
+            if binding.get("knowledge_base_id")
+        ]
+        if knowledge_base_ids:
+            for node in candidate_graph.get("nodes") or []:
+                if node.get("type") != "llmNode":
+                    continue
+                data = dict(node.get("data") or {})
+                if "knowledgeBases" not in data:
+                    continue
+                data["knowledgeBases"] = [
+                    {"id": knowledge_base_id}
+                    for knowledge_base_id in dict.fromkeys(knowledge_base_ids)
+                ]
+                node["data"] = data
+        validation = self.validate_preview_graph(candidate_graph)
+        if not validation.valid:
+            raise ValueError("knowledge candidate graph is invalid")
+        issued = DirectEditOrchestrator().issue(
+            workflow=workflow,
+            structured_request=effective_plan,
+            candidate_graph=candidate_graph,
+            generation_mode="configure_and_generate",
+        )
+        mutation = issued.mutation.model_copy(
+            update={
+                "completion_context": GraphMutationCompletionContext(
+                    knowledge_resolution_id=resolution_id
+                )
+            }
+        )
+        parameter_group = ParameterCandidateProvider(
+            self.db,
+            user_id=self.user.id,
+            organization_id=self.organization_id,
+        ).enrich_group(issued.parameter_group)
+        return {
+            "mutation": mutation,
+            "parameter_group": parameter_group,
+            "step_node_ids": issued.step_node_ids,
         }
 
     def _kb_clarification_options(
@@ -3891,7 +4336,7 @@ class AgentBuilderService:
         node_id: str,
         *,
         source_id: str,
-        source_output_key: str,
+        source_output_key: str | None,
         entry_id: str,
         entry_capability: str,
         model_id: str | None,
@@ -3900,7 +4345,7 @@ class AgentBuilderService:
         mail_draft_effect_source_id: str | None = None,
         durable_mail_processing: bool = False,
     ) -> dict[str, Any]:
-        source_selector = [source_id, source_output_key]
+        source_selector = [source_id, source_output_key] if source_output_key else None
         configuration_state = "unresolved"
         if capability in {"llm", "knowledge_backed_llm"}:
             data: dict[str, Any] = {
@@ -3912,10 +4357,12 @@ class AgentBuilderService:
                 ),
                 "task_type": "answer",
                 "system_prompt": "입력을 안전하게 분석하고 결과를 생성합니다.",
-                "user_prompt": f"{{{{{source_output_key}}}}}",
-                "referenced_variables": [
-                    {"name": source_output_key, "value_selector": source_selector}
-                ],
+                "user_prompt": f"{{{{{source_output_key}}}}}" if source_output_key else "",
+                "referenced_variables": (
+                    [{"name": source_output_key, "value_selector": source_selector}]
+                    if source_selector
+                    else []
+                ),
                 "parameters": {},
                 "output_format": {"type": "text"},
                 "knowledgeBases": kb_refs,
@@ -3927,7 +4374,11 @@ class AgentBuilderService:
                 "title": "서브 워크플로우",
                 "workflowId": "",
                 "appId": "",
-                "inputs": [{"name": "input", "value_selector": source_selector}],
+                "inputs": (
+                    [{"name": "input", "value_selector": source_selector}]
+                    if source_selector
+                    else []
+                ),
                 "outputs": [],
                 "configuration_state": configuration_state,
             }
@@ -3935,9 +4386,11 @@ class AgentBuilderService:
             data = {
                 "title": "코드 실행",
                 "code": "def main(inputs):\n    return {'result': inputs}",
-                "inputs": [
-                    {"name": "input", "source": f"{source_id}.{source_output_key}"}
-                ],
+                "inputs": (
+                    [{"name": "input", "source": f"{source_id}.{source_output_key}"}]
+                    if source_output_key
+                    else []
+                ),
                 "timeout": 10,
             }
         elif capability == "condition":
@@ -3950,14 +4403,16 @@ class AgentBuilderService:
         elif capability == "file_extraction":
             data = {
                 "title": "문서 추출",
-                "referenced_variables": [
-                    {"name": "file", "value_selector": source_selector}
-                ],
+                "referenced_variables": (
+                    [{"name": "file", "value_selector": source_selector}]
+                    if source_selector
+                    else []
+                ),
             }
         elif capability == "variable_extraction":
             data = {
                 "title": "변수 추출",
-                "source_selector": source_selector,
+                "source_selector": source_selector or [],
                 "mappings": [],
                 "configuration_state": configuration_state,
             }
@@ -3965,7 +4420,11 @@ class AgentBuilderService:
             data = {
                 "title": "반복",
                 "loop_key": "",
-                "inputs": [{"name": "items", "value_selector": source_selector}],
+                "inputs": (
+                    [{"name": "items", "value_selector": source_selector}]
+                    if source_selector
+                    else []
+                ),
                 "outputs": [],
                 "max_iterations": 100,
                 "parallel_mode": False,
@@ -3984,18 +4443,22 @@ class AgentBuilderService:
                 "timeout": 5000,
                 "authType": "none",
                 "authConfig": {},
-                "referenced_variables": [
-                    {"name": "input", "value_selector": source_selector}
-                ],
+                "referenced_variables": (
+                    [{"name": "input", "value_selector": source_selector}]
+                    if source_selector
+                    else []
+                ),
                 "configuration_state": configuration_state,
             }
         elif capability == "slack_send":
             data = {
                 "title": "Slack 전송",
                 "authConfig": {},
-                "referenced_variables": [
-                    {"name": "result", "value_selector": source_selector}
-                ],
+                "referenced_variables": (
+                    [{"name": "result", "value_selector": source_selector}]
+                    if source_selector
+                    else []
+                ),
                 "message": "{{result}}",
                 "channel": "",
                 "blocks": "",
@@ -4007,7 +4470,11 @@ class AgentBuilderService:
             data = {
                 "title": "템플릿",
                 "template": "{{input}}",
-                "variables": [{"name": "input", "value_selector": source_selector}],
+                "variables": (
+                    [{"name": "input", "value_selector": source_selector}]
+                    if source_selector
+                    else []
+                ),
             }
         elif capability in {"github_pr_read", "github_pr_comment"}:
             target_config, referenced_variables = self._github_target_configuration(
@@ -4027,10 +4494,11 @@ class AgentBuilderService:
             }
             if capability == "github_pr_comment":
                 data["comment_body"] = "{{review}}"
-                data["referenced_variables"] = [
-                    *referenced_variables,
-                    {"name": "review", "value_selector": source_selector},
-                ]
+                data["referenced_variables"] = [*referenced_variables]
+                if source_selector:
+                    data["referenced_variables"].append(
+                        {"name": "review", "value_selector": source_selector}
+                    )
         elif capability == "mail_search":
             data = {
                 "title": "메일 검색",
@@ -4061,7 +4529,7 @@ class AgentBuilderService:
                     mail_processing_source_id,
                     "processing_ref",
                 ],
-                "reply_body_selector": source_selector,
+                "reply_body_selector": source_selector or [],
             }
         elif capability == "mail_terminal_acknowledgement":
             if not mail_processing_source_id or not mail_draft_effect_source_id:
@@ -4079,12 +4547,11 @@ class AgentBuilderService:
         elif capability == "answer":
             data = {
                 "title": "응답",
-                "outputs": [
-                    {
-                        "variable": "answer",
-                        "value_selector": source_selector,
-                    }
-                ],
+                "outputs": (
+                    [{"variable": "answer", "value_selector": source_selector}]
+                    if source_selector
+                    else []
+                ),
             }
         else:
             raise ValueError(f"Unsupported draft capability: {capability}")
@@ -4151,7 +4618,11 @@ class AgentBuilderService:
 
         existing_ids = _graph_node_ids(graph)
         reserved_ids = set(existing_ids)
-        suffix = uuid.uuid4().hex[:8]
+        generation_seed = self._generation_seed(
+            structured,
+            raw_graph,
+            target_resolution,
+        )
         uses_llm = any(
             capability in {"llm", "knowledge_backed_llm"}
             for capability in body_capabilities
@@ -4171,7 +4642,11 @@ class AgentBuilderService:
         )
 
         source_capability = self._existing_node_capability(source_node)
-        source_output_key = CAPABILITY_OUTPUT_KEYS.get(source_capability, "result")
+        source_output_keys = capability_output_keys(
+            source_capability,
+            source_node.get("data") if isinstance(source_node.get("data"), dict) else {},
+        )
+        source_output_key = source_output_keys[0] if source_output_keys else None
         generated_nodes: list[dict[str, Any]] = []
         generated_node_ids: list[str] = []
         current_source_id = source_id
@@ -4181,14 +4656,31 @@ class AgentBuilderService:
         )
         mail_draft_effect_source_id: str | None = None
         durable_mail_processing = "gmail_reply_draft_create" in body_capabilities
-        for capability in body_capabilities:
+        planned_body_steps = [
+            step
+            for step in structured.planned_steps
+            if step.capability in body_capabilities
+            and step.capability
+            not in {"start_input", "webhook_trigger", "schedule_trigger", "answer"}
+        ]
+        for index, capability in enumerate(body_capabilities):
+            planned_step = (
+                planned_body_steps[index]
+                if index < len(planned_body_steps)
+                and planned_body_steps[index].capability == capability
+                else None
+            )
             node_id = self._unique_node_id(
                 CAPABILITY_NODE_PREFIXES[capability],
                 reserved_ids,
-                suffix,
+                self._step_node_suffix(
+                    generation_seed,
+                    planned_step.step_id
+                    if planned_step is not None
+                    else f"{capability}-{index}",
+                ),
             )
-            generated_nodes.append(
-                self._build_capability_preview_node(
+            generated_node = self._build_capability_preview_node(
                     capability,
                     node_id,
                     source_id=current_source_id,
@@ -4201,11 +4693,16 @@ class AgentBuilderService:
                     mail_draft_effect_source_id=mail_draft_effect_source_id,
                     durable_mail_processing=durable_mail_processing,
                 )
-            )
+            generated_nodes.append(generated_node)
             generated_node_ids.append(node_id)
             reserved_ids.add(node_id)
             current_source_id = node_id
-            current_output_key = CAPABILITY_OUTPUT_KEYS[capability]
+            generated_output_keys = capability_output_keys(
+                capability, generated_node.get("data")
+            )
+            current_output_key = (
+                generated_output_keys[0] if generated_output_keys else None
+            )
             if capability == "mail_search":
                 mail_processing_source_id = node_id
             elif capability == "gmail_reply_draft_create":
@@ -4292,18 +4789,49 @@ class AgentBuilderService:
                 target_resolution=target_resolution,
             )
 
-        graph = _redact_graph_for_preview(
-            workflow.graph if workflow else _empty_graph()
-        )
+        base_graph = workflow.graph if workflow else _empty_graph()
+        generation_seed = self._generation_seed(structured, base_graph)
         graph = _empty_graph()
         existing_ids = _graph_node_ids(graph)
-        suffix = uuid.uuid4().hex[:8]
         entry_capability, body_capabilities = self._ordered_preview_capabilities(
             structured
         )
-        input_id = self._unique_node_id("agent-input", existing_ids, suffix)
-        input_output_key = CAPABILITY_OUTPUT_KEYS[entry_capability]
-        generated_nodes = [self._build_entry_preview_node(entry_capability, input_id)]
+        entry_step = next(
+            (
+                step
+                for step in structured.planned_steps
+                if step.capability == entry_capability
+            ),
+            None,
+        )
+        body_steps = [
+            step
+            for step in structured.planned_steps
+            if step.capability in body_capabilities
+            and step.capability not in {"start_input", "webhook_trigger", "schedule_trigger", "answer"}
+        ]
+        use_planned_topology = (
+            len(body_steps) == len(body_capabilities)
+            and [step.capability for step in body_steps] == body_capabilities
+        )
+        input_id = self._unique_node_id(
+            "agent-input",
+            existing_ids,
+            self._step_node_suffix(
+                generation_seed,
+                entry_step.step_id if entry_step is not None else entry_capability,
+            ),
+        )
+        entry_node = self._build_entry_preview_node(entry_capability, input_id)
+        input_output_keys = capability_output_keys(entry_capability, entry_node["data"])
+        input_output_key = input_output_keys[0] if input_output_keys else None
+        generated_nodes = [entry_node]
+        step_node_ids: dict[str, str] = (
+            {entry_step.step_id: input_id} if entry_step is not None else {}
+        )
+        step_capabilities: dict[str, str] = (
+            {entry_step.step_id: entry_capability} if entry_step is not None else {}
+        )
         generated_node_ids_for_layout = [input_id]
         reserved_ids = existing_ids | {input_id}
 
@@ -4329,15 +4857,61 @@ class AgentBuilderService:
         mail_processing_source_id: str | None = None
         mail_draft_effect_source_id: str | None = None
         durable_mail_processing = "gmail_reply_draft_create" in body_capabilities
-        for capability in body_capabilities:
+        for index, capability in enumerate(body_capabilities):
+            planned_step = body_steps[index] if use_planned_topology else None
+            dependency_step_ids = (
+                [
+                    dependency
+                    for dependency in planned_step.depends_on
+                    if dependency in step_node_ids
+                ]
+                if planned_step is not None
+                else []
+            )
+            dependency_source_id = (
+                step_node_ids[dependency_step_ids[0]]
+                if dependency_step_ids
+                else source_id
+            )
+            dependency_capability = (
+                step_capabilities[dependency_step_ids[0]]
+                if dependency_step_ids
+                else self._existing_node_capability(
+                    next(
+                        node
+                        for node in generated_nodes
+                        if str(node.get("id")) == dependency_source_id
+                    )
+                )
+            )
+            dependency_node = next(
+                node
+                for node in generated_nodes
+                if str(node.get("id")) == dependency_source_id
+            )
+            dependency_output_keys = capability_output_keys(
+                dependency_capability,
+                dependency_node.get("data"),
+            )
+            dependency_output_key = (
+                dependency_output_keys[0] if dependency_output_keys else None
+            )
             prefix = CAPABILITY_NODE_PREFIXES[capability]
-            node_id = self._unique_node_id(prefix, reserved_ids, suffix)
-            generated_nodes.append(
-                self._build_capability_preview_node(
+            node_id = self._unique_node_id(
+                prefix,
+                reserved_ids,
+                self._step_node_suffix(
+                    generation_seed,
+                    planned_step.step_id
+                    if planned_step is not None
+                    else f"{capability}-{index}",
+                ),
+            )
+            generated_node = self._build_capability_preview_node(
                     capability,
                     node_id,
-                    source_id=source_id,
-                    source_output_key=source_output_key,
+                    source_id=dependency_source_id,
+                    source_output_key=dependency_output_key,
                     entry_id=input_id,
                     entry_capability=entry_capability,
                     model_id=model_id,
@@ -4346,18 +4920,41 @@ class AgentBuilderService:
                     mail_draft_effect_source_id=mail_draft_effect_source_id,
                     durable_mail_processing=durable_mail_processing,
                 )
-            )
+            generated_nodes.append(generated_node)
+            if planned_step is not None:
+                step_node_ids[planned_step.step_id] = node_id
+                step_capabilities[planned_step.step_id] = capability
             reserved_ids.add(node_id)
             generated_node_ids_for_layout.append(node_id)
             source_id = node_id
-            source_output_key = CAPABILITY_OUTPUT_KEYS[capability]
+            generated_output_keys = capability_output_keys(
+                capability, generated_node.get("data")
+            )
+            source_output_key = (
+                generated_output_keys[0] if generated_output_keys else None
+            )
             if capability == "mail_search":
                 mail_processing_source_id = node_id
             elif capability == "gmail_reply_draft_create":
                 mail_draft_effect_source_id = node_id
 
         if "mail_terminal_acknowledgement" not in body_capabilities:
-            answer_id = self._unique_node_id("agent-answer", reserved_ids, suffix)
+            answer_step = next(
+                (
+                    step
+                    for step in structured.planned_steps
+                    if step.capability == "answer"
+                ),
+                None,
+            )
+            answer_id = self._unique_node_id(
+                "agent-answer",
+                reserved_ids,
+                self._step_node_suffix(
+                    generation_seed,
+                    answer_step.step_id if answer_step is not None else "answer",
+                ),
+            )
             generated_nodes.append(
                 {
                     "id": answer_id,
@@ -4365,26 +4962,82 @@ class AgentBuilderService:
                     "position": {"x": 0, "y": 0},
                     "data": {
                         "title": "응답",
-                        "outputs": [
-                            {
-                                "variable": "answer",
-                                "value_selector": [source_id, source_output_key],
-                            }
-                        ],
+                        "outputs": (
+                            [
+                                {
+                                    "variable": "answer",
+                                    "value_selector": [source_id, source_output_key],
+                                }
+                            ]
+                            if source_output_key
+                            else []
+                        ),
                     },
                 }
             )
             generated_node_ids_for_layout.append(answer_id)
-        generated_edges = [
-            {
-                "id": f"edge-{source['id']}-{target['id']}",
-                "source": source["id"],
-                "target": target["id"],
-            }
-            for source, target in zip(generated_nodes, generated_nodes[1:])
-        ]
+        if use_planned_topology:
+            generated_edges = [
+                {
+                    "id": f"edge-{step_node_ids[dependency]}-{step_node_ids[step.step_id]}",
+                    "source": step_node_ids[dependency],
+                    "target": step_node_ids[step.step_id],
+                }
+                for step in body_steps
+                for dependency in step.depends_on
+                if dependency in step_node_ids and step.step_id in step_node_ids
+            ]
+            if "mail_terminal_acknowledgement" not in body_capabilities:
+                answer_step = next(
+                    (
+                        step
+                        for step in structured.planned_steps
+                        if step.capability == "answer"
+                    ),
+                    None,
+                )
+                answer_dependencies = (
+                    [
+                        dependency
+                        for dependency in answer_step.depends_on
+                        if dependency in step_node_ids
+                    ]
+                    if answer_step is not None
+                    else []
+                )
+                if not answer_dependencies:
+                    depended_on = {
+                        dependency
+                        for step in body_steps
+                        for dependency in step.depends_on
+                    }
+                    answer_dependencies = [
+                        step.step_id
+                        for step in body_steps
+                        if step.step_id not in depended_on
+                    ]
+                if not answer_dependencies and entry_step is not None:
+                    answer_dependencies = [entry_step.step_id]
+                generated_edges.extend(
+                    {
+                        "id": f"edge-{step_node_ids[dependency]}-{answer_id}",
+                        "source": step_node_ids[dependency],
+                        "target": answer_id,
+                    }
+                    for dependency in answer_dependencies
+                )
+        else:
+            generated_edges = [
+                {
+                    "id": f"edge-{source['id']}-{target['id']}",
+                    "source": source["id"],
+                    "target": target["id"],
+                }
+                for source, target in zip(generated_nodes, generated_nodes[1:])
+            ]
         graph["nodes"] = (graph.get("nodes") or []) + generated_nodes
         graph["edges"] = (graph.get("edges") or []) + generated_edges
+        graph = normalize_condition_outgoing_edges(graph)
         graph = _layout_generated_preview_nodes(
             graph,
             generated_node_ids_for_layout,
@@ -4508,9 +5161,41 @@ class AgentBuilderService:
             candidate = f"{prefix}-{suffix}-{counter}"
         return candidate
 
+    @staticmethod
+    def _generation_seed(
+        structured: AgentBuilderStructuredRequest,
+        base_graph: dict[str, Any],
+        target_resolution: dict[str, Any] | None = None,
+    ) -> str:
+        target = target_resolution or {}
+        payload = {
+            "base_graph_hash": calculate_graph_hash(base_graph),
+            "structured_request": structured.model_dump(
+                mode="json",
+                exclude_none=True,
+            ),
+            "target": {
+                "source_node_id": target.get("source_node_id"),
+                "destination_node_id": target.get("destination_node_id"),
+                "replaced_edge_ids": sorted(target.get("replaced_edge_ids") or []),
+            },
+        }
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:8]
+
+    @staticmethod
+    def _step_node_suffix(seed: str, step_ref: str) -> str:
+        safe_ref = re.sub(r"[^a-z0-9]+", "-", step_ref.lower()).strip("-")
+        return f"{(safe_ref or 'step')[:40]}-{seed}"
+
     def _session_response(
         self, session: AgentBuilderSession
-    ) -> AgentBuilderSessionResponse:
+    ) -> AgentBuilderDirectSessionResponse | AgentBuilderSessionResponse:
         now = _now()
         latest_request = (
             self.db.query(AgentBuilderRequest)
@@ -4524,6 +5209,158 @@ class AgentBuilderService:
             .order_by(AgentBuilderRequest.created_at.desc())
             .first()
         )
+        if getattr(session, "protocol_version", None) == "direct_edit_v1":
+            if latest_request is not None:
+                latest_request = (
+                    self.db.query(AgentBuilderRequest)
+                    .filter(AgentBuilderRequest.id == latest_request.id)
+                    .with_for_update()
+                    .first()
+                )
+            payload = (
+                copy.deepcopy(latest_request.response_payload or {})
+                if latest_request is not None
+                else {}
+            )
+            envelopes = [
+                item
+                for item in payload.get("operation_envelopes") or []
+                if isinstance(item, dict)
+                and item.get("catalog_version") == 3
+                and item.get("status") != "reverted"
+            ]
+            history_boundary = payload.get("workflow_history_boundary")
+            if (
+                isinstance(history_boundary, dict)
+                and history_boundary.get("status") == "reverted"
+            ):
+                envelopes = []
+            if (
+                latest_request is not None
+                and envelopes
+                and envelopes[-1].get("status") in {"pending_apply", "pending_save"}
+                and not envelopes[-1].get("result_graph_hash")
+                and not envelopes[-1].get("saved_workflow_updated_at")
+            ):
+                operation_id = uuid.UUID(str(envelopes[-1]["operation_id"]))
+                repository = AgentBuilderRepository()
+                blocked = repository.mark_envelope_blocked(
+                    latest_request,
+                    operation_id,
+                    reason="operation_payload_unavailable",
+                )
+                repository.recover_blocked_completion_state(
+                    latest_request,
+                    blocked,
+                )
+                add_action_audit(
+                    self.db,
+                    AuditAction.AGENT_BUILDER_GRAPH_MUTATION_BLOCKED,
+                    self.user.id,
+                    "workflow",
+                    session.workflow_id,
+                    organization_id=self.organization_id,
+                    metadata={
+                        "operation_id": str(operation_id),
+                        "reason": "operation_payload_unavailable",
+                        "catalog_version": blocked.get("catalog_version"),
+                    },
+                    status="failure",
+                )
+                self.db.commit()
+                payload = copy.deepcopy(latest_request.response_payload or {})
+                envelopes = [
+                    item
+                    for item in payload.get("operation_envelopes") or []
+                    if isinstance(item, dict)
+                    and item.get("catalog_version") == 3
+                    and item.get("status") != "reverted"
+                ]
+                history_boundary = payload.get("workflow_history_boundary")
+                if (
+                    isinstance(history_boundary, dict)
+                    and history_boundary.get("status") == "reverted"
+                ):
+                    envelopes = []
+            groups = [
+                item
+                for item in payload.get("parameter_groups") or []
+                if isinstance(item, dict)
+            ]
+            parameter_group = (
+                AgentBuilderParameterGroup.model_validate(groups[-1])
+                if groups
+                else None
+            )
+            normalized_parameter_group = remove_direct_edit_external_credential_tasks(
+                remove_direct_edit_knowledge_parameter_tasks(parameter_group)
+            )
+            if normalized_parameter_group is not parameter_group:
+                AgentBuilderRepository().store_parameter_group(
+                    latest_request,
+                    normalized_parameter_group,
+                )
+                self.db.commit()
+                parameter_group = normalized_parameter_group
+            workflow_graph = None
+            needs_reference_recovery = parameter_group is not None and any(
+                task.input_type in {"resource_ref", "credential_ref"}
+                for task in parameter_group.tasks
+            )
+            if session.workflow_id is not None and needs_reference_recovery:
+                recovery_workflow = (
+                    self.db.query(Workflow)
+                    .filter(
+                        Workflow.id == session.workflow_id,
+                        Workflow.organization_id == self.organization_id,
+                    )
+                    .first()
+                )
+                if recovery_workflow is not None:
+                    workflow_graph = getattr(recovery_workflow, "graph", None)
+            parameter_group = ParameterCandidateProvider(
+                self.db,
+                user_id=self.user.id,
+                organization_id=self.organization_id,
+            ).enrich_group(parameter_group, graph=workflow_graph)
+            return AgentBuilderDirectSessionResponse(
+                session_id=session.id,
+                workflow_id=session.workflow_id,
+                app_id=session.app_id,
+                protocol_version="direct_edit_v1",
+                status=(
+                    "operation_payload_unavailable"
+                    if envelopes
+                    and envelopes[-1].get("blocked_reason")
+                    == "operation_payload_unavailable"
+                    else self._public_request_status(latest_request.status)
+                    if latest_request
+                    else session.status
+                ),
+                messages=self._session_messages(
+                    latest_request,
+                    None,
+                    direct_edit=True,
+                )
+                if latest_request is None
+                else self._session_messages_for_requests(
+                    self._session_recovery_requests(session),
+                    direct_edit=True,
+                ),
+                active_request=(
+                    self._request_summary(latest_request)
+                    if latest_request is not None
+                    else None
+                ),
+                active_graph_mutation=(envelopes[-1] if envelopes else None),
+                parameter_group=parameter_group,
+                pending_request=(
+                    self._request_summary(latest_request)
+                    if latest_request is not None
+                    and latest_request.status == "processing"
+                    else None
+                ),
+            )
         latest_draft = (
             self.db.query(AgentBuilderDraft)
             .filter(
@@ -4547,6 +5384,7 @@ class AgentBuilderService:
             session_id=session.id,
             workflow_id=session.workflow_id,
             app_id=session.app_id,
+            protocol_version=getattr(session, "protocol_version", None),
             status=session.status,
             messages=self._session_messages(latest_request, latest_request_draft),
             pending_request=self._request_summary(latest_request)
@@ -4559,10 +5397,142 @@ class AgentBuilderService:
             ),
         )
 
+    def _stale_protocol_messages(
+        self,
+        session: AgentBuilderSession,
+    ) -> list[dict[str, Any]]:
+        requests = self._session_recovery_requests(session)
+        if not requests:
+            return []
+        messages: list[dict[str, Any]] = []
+        for request_row in requests:
+            if request_row.message_summary:
+                messages.append(
+                    {
+                        "kind": "user",
+                        "request_id": str(request_row.id),
+                        "content": request_row.message_summary,
+                        "redacted": True,
+                    }
+                )
+            response_payload = request_row.response_payload or {}
+            safe_response = {
+                "request_id": str(request_row.id),
+                "status": self._public_request_status(request_row.status),
+            }
+            for key in (
+                "warnings",
+                "clarification_questions",
+                "validation_result",
+            ):
+                if key in response_payload:
+                    safe_response[key] = copy.deepcopy(response_payload[key])
+            messages.append(
+                {
+                    "kind": "assistant",
+                    "request_id": str(request_row.id),
+                    "response": safe_response,
+                }
+            )
+        return messages
+
+    def _session_recovery_requests(
+        self,
+        session: AgentBuilderSession,
+    ) -> list[AgentBuilderRequest]:
+        now = _now()
+        rows = (
+            self.db.query(AgentBuilderRequest)
+            .filter(
+                AgentBuilderRequest.session_id == session.id,
+                or_(
+                    AgentBuilderRequest.expires_at.is_(None),
+                    AgentBuilderRequest.expires_at > now,
+                ),
+            )
+            .order_by(AgentBuilderRequest.created_at.asc())
+            .all()
+        )
+        unexpired = [
+            row
+            for row in rows
+            if getattr(row, "expires_at", None) is None
+            or getattr(row, "expires_at") > now
+        ]
+        return sorted(
+            unexpired,
+            key=lambda row: (
+                getattr(row, "created_at", None)
+                or datetime.min.replace(tzinfo=timezone.utc)
+            ),
+        )
+
+    def _session_messages_for_requests(
+        self,
+        requests: list[AgentBuilderRequest],
+        *,
+        direct_edit: bool = False,
+    ) -> list[dict[str, Any]]:
+        messages: list[dict[str, Any]] = []
+        for request_row in requests:
+            messages.extend(
+                self._session_messages(
+                    request_row,
+                    None,
+                    direct_edit=direct_edit,
+                )
+            )
+        return messages
+
+    @staticmethod
+    def _hydrate_persisted_knowledge_selection(
+        response_payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        resolution = response_payload.get("knowledge_resolution")
+        if not isinstance(resolution, dict):
+            return None
+        resolution_id = resolution.get("resolution_id")
+        if not isinstance(resolution_id, str) or not resolution_id:
+            return resolution
+        persisted_resolution = next(
+            (
+                item
+                for item in reversed(response_payload.get("knowledge_resolutions") or [])
+                if isinstance(item, dict)
+                and item.get("status")
+                in {"pending_ack", "completed", "unapplied"}
+                and item.get("resolution_id") == resolution_id
+            ),
+            None,
+        )
+        if persisted_resolution is None:
+            return resolution
+        candidates = resolution.get("candidates")
+        if not isinstance(candidates, list):
+            return resolution
+        candidates_by_id = {
+            candidate.get("candidate_id"): candidate
+            for candidate in candidates
+            if isinstance(candidate, dict)
+            and isinstance(candidate.get("candidate_id"), str)
+        }
+        selected = [
+            copy.deepcopy(candidates_by_id[candidate_id])
+            for candidate_id in persisted_resolution.get("selected_candidate_ids") or []
+            if isinstance(candidate_id, str) and candidate_id in candidates_by_id
+        ]
+        return {
+            **resolution,
+            "selected": selected,
+            "selection_status": persisted_resolution["status"],
+        }
+
     def _session_messages(
         self,
         latest_request: AgentBuilderRequest | None,
         latest_draft: AgentBuilderDraft | None,
+        *,
+        direct_edit: bool = False,
     ) -> list[dict[str, Any]]:
         if latest_request is None:
             return []
@@ -4576,14 +5546,49 @@ class AgentBuilderService:
                     "redacted": True,
                 }
             )
+        response_payload = self._message_payload_with_latest_preview(
+            latest_request,
+            latest_draft,
+        )
+        if direct_edit:
+            stored_knowledge_resolution = self._hydrate_persisted_knowledge_selection(
+                response_payload
+            )
+            if isinstance(stored_knowledge_resolution, dict):
+                stored_knowledge_resolution = copy.deepcopy(
+                    stored_knowledge_resolution
+                )
+            else:
+                stored_knowledge_resolution = None
+            for legacy_key in (
+                "draft_preview",
+                "preview_prompt",
+                "operation_envelopes",
+                "apply_result",
+                "draft",
+            ):
+                response_payload.pop(legacy_key, None)
+            response_payload.setdefault("request_id", str(latest_request.id))
+            response_payload.setdefault(
+                "status",
+                self._public_request_status(latest_request.status),
+            )
+            internal_response = AgentBuilderMessageResponse.model_validate(
+                response_payload
+            )
+            direct_response = AgentBuilderDirectMessageResponse.from_internal(
+                internal_response
+            ).model_dump(mode="json")
+            if stored_knowledge_resolution is not None:
+                direct_response["knowledge_resolution"] = (
+                    stored_knowledge_resolution
+                )
+            response_payload = direct_response
         messages.append(
             {
                 "kind": "assistant",
                 "request_id": str(latest_request.id),
-                "response": self._message_payload_with_latest_preview(
-                    latest_request,
-                    latest_draft,
-                ),
+                "response": response_payload,
             }
         )
         return messages
@@ -4620,11 +5625,15 @@ class AgentBuilderService:
     def _request_summary(self, request_row: AgentBuilderRequest) -> dict[str, Any]:
         return {
             "request_id": str(request_row.id),
-            "status": request_row.status,
+            "status": self._public_request_status(request_row.status),
             "created_at": request_row.created_at.isoformat()
             if request_row.created_at
             else None,
         }
+
+    @staticmethod
+    def _public_request_status(status: str) -> str:
+        return "planning" if status == "processing" else status
 
     def _draft_summary(self, draft: AgentBuilderDraft) -> dict[str, Any]:
         if (
@@ -4767,8 +5776,10 @@ class AgentBuilderService:
         self,
         request_row: AgentBuilderRequest,
         response: AgentBuilderMessageResponse,
+        *,
+        direct_edit: bool = False,
     ) -> bool | None:
-        payload = self._stored_response_payload(response)
+        payload = self._stored_response_payload(response, direct_edit=direct_edit)
         structured_request = (
             response.structured_request.model_dump(mode="json")
             if response.structured_request
@@ -4836,7 +5847,10 @@ class AgentBuilderService:
             request_row.completed_at = request_row.completed_at or _now()
             return
         request_row.status = response.status
-        request_row.response_payload = self._stored_response_payload(response)
+        request_row.response_payload = self._stored_response_payload(
+            response,
+            direct_edit=direct_edit,
+        )
         request_row.structured_request = (
             response.structured_request.model_dump(mode="json")
             if response.structured_request
@@ -4871,9 +5885,36 @@ class AgentBuilderService:
     def _stored_response_payload(
         self,
         response: AgentBuilderMessageResponse,
+        *,
+        direct_edit: bool = False,
     ) -> dict[str, Any]:
         payload = response.model_dump(mode="json")
+        if direct_edit:
+            direct_response = AgentBuilderDirectMessageResponse.from_internal(response)
+            if direct_response.knowledge_resolution is not None:
+                payload["knowledge_resolution"] = copy.deepcopy(
+                    direct_response.knowledge_resolution
+                )
+                payload["clarification_options"] = copy.deepcopy(
+                    direct_response.clarification_options
+                )
         payload.pop("draft_preview", None)
+        mutation = response.graph_mutation
+        if mutation is not None:
+            payload.pop("graph_mutation", None)
+            payload["generation_mode"] = mutation.generation_mode
+            envelope = GraphMutationSafeEnvelope.from_mutation(mutation)
+            payload["operation_envelopes"] = [envelope.model_dump(mode="json")]
+            payload = AgentBuilderRepository.attach_history_boundary_payload(
+                payload,
+                envelope,
+            )
+        parameter_group = response.parameter_group
+        if parameter_group is not None:
+            payload.pop("parameter_group", None)
+            payload["parameter_groups"] = [
+                parameter_group.model_dump(mode="json")
+            ]
         return payload
 
     def _session_or_404(self, session_id: uuid.UUID) -> AgentBuilderSession:

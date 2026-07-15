@@ -71,6 +71,8 @@ class KnowledgeCandidateResolver:
     def resolve_explicit_kbs(
         self,
         knowledge_base_ids: Iterable[uuid.UUID],
+        *,
+        allow_unready_candidates: bool = False,
     ) -> KnowledgeCandidateResolution:
         # Explicit KB mode는 collection route 권한을 요구하지 않는다.
         # 다만 KB use/source ACL/final evidence gate는 helper를 통해 그대로 적용한다.
@@ -87,7 +89,10 @@ class KnowledgeCandidateResolver:
             kb = kbs_by_id.get(kb_id)
             if kb is None:
                 continue
-            if self._kb_candidate_exclusion_reason(kb):
+            if self._kb_candidate_exclusion_reason(
+                kb,
+                allow_unready_candidates=allow_unready_candidates,
+            ):
                 unavailable_count += 1
                 continue
             decision = kb_decisions[kb.id]
@@ -122,6 +127,7 @@ class KnowledgeCandidateResolver:
         collection_ids: Iterable[uuid.UUID] | None = None,
         max_collections: int = DEFAULT_MAX_COLLECTIONS,
         max_candidate_kbs: int = DEFAULT_MAX_CANDIDATE_KBS,
+        allow_unready_candidates: bool = False,
     ) -> KnowledgeCandidateResolution:
         # Auto collection mode는 route-allowed collection scope 안에서만 KB 후보를 만든다.
         # 권한 없는 collection/KB는 식별자를 노출하지 않고 bucketed count로만 요약한다.
@@ -178,7 +184,10 @@ class KnowledgeCandidateResolver:
             kb = kbs_by_id.get(kb_id)
             if kb is None:
                 continue
-            if self._kb_candidate_exclusion_reason(kb):
+            if self._kb_candidate_exclusion_reason(
+                kb,
+                allow_unready_candidates=allow_unready_candidates,
+            ):
                 unavailable_count += 1
                 continue
             decision = kb_decisions[kb.id]
@@ -196,7 +205,10 @@ class KnowledgeCandidateResolver:
         )
         if requested_collection_ids is None and not allowed_pairs:
             direct_allowed_pairs, direct_unavailable_count, direct_hidden_count = (
-                self._direct_authorized_kb_pairs(max_candidate_kbs)
+                self._direct_authorized_kb_pairs(
+                    max_candidate_kbs,
+                    allow_unready_candidates=allow_unready_candidates,
+                )
             )
             allowed_pairs = direct_allowed_pairs
             unavailable_count += direct_unavailable_count
@@ -313,6 +325,8 @@ class KnowledgeCandidateResolver:
     def _direct_authorized_kb_pairs(
         self,
         max_candidate_kbs: int,
+        *,
+        allow_unready_candidates: bool = False,
     ) -> tuple[list[tuple[KnowledgeBase, KnowledgePermissionDecision]], int, int]:
         kbs = self._direct_knowledge_bases(max_candidate_kbs)
         if not kbs:
@@ -323,7 +337,10 @@ class KnowledgeCandidateResolver:
         allowed_pairs: list[tuple[KnowledgeBase, KnowledgePermissionDecision]] = []
         kb_decisions = self.permission_helper.bulk_evaluate_kb_use(kbs)
         for kb in kbs:
-            if self._kb_candidate_exclusion_reason(kb):
+            if self._kb_candidate_exclusion_reason(
+                kb,
+                allow_unready_candidates=allow_unready_candidates,
+            ):
                 unavailable_count += 1
                 continue
             decision = kb_decisions[kb.id]
@@ -457,12 +474,19 @@ class KnowledgeCandidateResolver:
             return metadata
         return {**metadata, "source_tier": source_tier.strip()}
 
-    def _kb_candidate_exclusion_reason(self, kb: KnowledgeBase) -> str | None:
+    def _kb_candidate_exclusion_reason(
+        self,
+        kb: KnowledgeBase,
+        *,
+        allow_unready_candidates: bool = False,
+    ) -> str | None:
         sync_state = str(getattr(kb, "sync_state", "") or "").lower()
         if sync_state == "source_deleted":
             return "source_deleted"
         version = getattr(kb, "active_document_version", None)
         if version is None or getattr(version, "status", None) != "ready":
+            if allow_unready_candidates:
+                return None
             if self._has_legacy_retrieval_visible_chunks(kb):
                 return None
             return "no_active_ready_version"

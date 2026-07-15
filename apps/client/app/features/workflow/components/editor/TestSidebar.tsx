@@ -1039,10 +1039,21 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
       setPreflightStatus('saving');
 
       try {
-        await workflowApi.syncDraftWorkflow(
+        const canonical = await workflowApi.getDraftWorkflow(activeWorkflowId);
+        useWorkflowStore
+          .getState()
+          .ingestCanonicalDraftMetadata(canonical, activeWorkflowId);
+        const saveResponse = await workflowApi.syncDraftWorkflow(
           activeWorkflowId,
-          buildWorkflowDraftPayload(graphSnapshot, graphSnapshot.viewport),
+          {
+            ...buildWorkflowDraftPayload(graphSnapshot, graphSnapshot.viewport),
+            expected_graph_hash: canonical.graph_hash,
+            expected_updated_at: canonical.updated_at,
+          },
         );
+        useWorkflowStore
+          .getState()
+          .ingestCanonicalDraftMetadata(saveResponse, activeWorkflowId);
       } catch (saveError) {
         const status = getHttpStatus(saveError);
         const message =

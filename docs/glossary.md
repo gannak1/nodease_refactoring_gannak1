@@ -82,7 +82,10 @@ Status: Draft
 | 용어 | 정의 |
 | --- | --- |
 | Agent | 제품 문맥에서는 사용자의 자연어 요청을 받아 workflow 생성을 돕거나 특정 workflow/node 안에서 제한된 작업을 수행하는 AI 실행 주체를 뜻한다. 현재 문서 범위에서 전역 Q&A 에이전트나 독립 DB 엔티티로 확정된 용어는 아니다. |
-| Agent Builder | 자연어 프롬프트로 실행 가능한 Workflow 초안을 만들고, 사용자가 Preview Mode에서 검토한 뒤 `적용 및 저장`으로 저장할 수 있게 돕는 기능. 기존 node 단위 wizard와 구분되며, workflow 실행은 별도 실행 flow를 따른다. |
+| Agent Builder | Accepted ADR-0045를 동작과 UX의 authority로 사용하고 ADR-0046의 GraphMutation/CAS 저장 계약을 따른다. ADR-0019는 Superseded Preview characterization 기록이다. 자연어 프롬프트를 typed GraphMutation으로 변환해 실제 Workflow Editor에 직접 적용하고, Node Capability Catalog 기반으로 모든 configurable parameter의 task를 node별 card로 안내한다. 자동 추천값은 graph에 먼저 반영될 수 있지만 사용자 `confirm` 또는 수정 `set`의 저장·acknowledgement 전까지 pending/active이며, 선택적 건너뜀은 skipped task로 남고 실제 값은 workflow graph에만 저장한다. CAS draft 저장 및 canonical acknowledgement 뒤 입력 task를 시작한다. |
+| GraphMutation | MBA-228에서 `initial_graph`, `graph_edit`, `replace_workflow`, `parameter_update`, `knowledge_binding` 변경을 typed node/edge operation으로 표현하는 공통 API 계약. `generation_mode`와 mutation kind는 독립이다. Full operations는 일회성 응답에만 존재하고 DB에는 base/expected-result/result hash와 completion context를 가진 safe envelope만 저장한다. 최초 구조 mutation이 Agent Builder 시작 전/final graph의 Workflow history boundary를 만들고 후속 parameter/Knowledge mutation은 별도 history entry 없이 final hash만 갱신한다. `reverted`는 boundary operation 최종 상태이며 mutation kind가 아니다. |
+| Parameter Task | Agent Builder가 Catalog의 configurable parameter 하나를 추적하는 안전한 진행 record. 실제 값은 담지 않으며 pending, active, completed, deferred, skipped, invalid, canceled 상태와 task version, policy, resolution source만 보존한다. 완료 첫 Workflow Undo는 마지막 task UI를 다시 표시하며 task 간 이동은 `이전 항목` control이 담당한다. 전체 boundary Undo는 모든 task를 canceled로 닫는다. |
+| Knowledge Placement | Planner가 KB 선택별 완성 graph 대신 반환하는 typed topology 관계. Requirement와 timing, target/effect, Knowledge step 및 upstream/downstream/empty-selection bridge를 표현하며 backend가 Catalog template으로 KB 선택 graph와 KB-free graph를 결정적으로 구성한다. |
 | Agent Skill | 특정 provider 기능이 아니라 Nodease 내부에서 재사용할 수 있는 일반적인 절차/context/routing artifact 개념. Workflow 생성, LLM node의 RAG 옵션 구성, 검증 checklist를 안내할 수 있지만 권한을 부여하거나 source of truth가 되지는 않는다. 현재 Knowledge 설계의 구체 구현 단위는 `Knowledge Skill`이며, Agent Skill은 전역 Q&A 에이전트나 독립 실행 권한을 뜻하지 않는다. |
 | Wizard | Prompt/code/template 같은 특정 node 설정을 개선하거나 생성하는 보조 기능. 현재 코드에는 node 단위 wizard가 존재한다. |
 

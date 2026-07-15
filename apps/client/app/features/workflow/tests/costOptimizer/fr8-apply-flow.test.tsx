@@ -105,6 +105,9 @@ describe('FR-008 Cost Optimizer apply flow', () => {
       },
     });
     workflowApiMock.getDraftWorkflow.mockResolvedValue({
+      workflow_id: 'workflow-1',
+      graph_hash: 'a'.repeat(64),
+      updated_at: '2026-07-14T00:00:00Z',
       nodes: [
         {
           id: 'llm-1',
@@ -149,7 +152,8 @@ describe('FR-008 Cost Optimizer apply flow', () => {
       node_id: 'llm-1',
       applied: true,
       downstream_compatibility: { state: 'compatible', label: '검증 가능' },
-      updated_draft_revision: null,
+        graph_hash: 'b'.repeat(64),
+      updated_at: '2026-07-14T00:00:01Z',
     });
   });
 
@@ -207,6 +211,8 @@ describe('FR-008 Cost Optimizer apply flow', () => {
         expect.objectContaining({
           comparison_id: 'comparison-1',
           acknowledge_downstream_warning: false,
+          expected_graph_hash: 'a'.repeat(64),
+          expected_updated_at: '2026-07-14T00:00:00Z',
           candidate_settings: expect.objectContaining({
             model_id: 'gpt-4.1',
           }),
@@ -270,6 +276,8 @@ describe('FR-008 Cost Optimizer apply flow', () => {
         'llm-1',
         expect.objectContaining({
           acknowledge_downstream_warning: true,
+          expected_graph_hash: 'a'.repeat(64),
+          expected_updated_at: '2026-07-14T00:00:00Z',
         }),
       );
     });

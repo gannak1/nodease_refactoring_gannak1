@@ -139,6 +139,8 @@ describe('FR-003 LLM node model routing optimization entry', () => {
         last_refresh_result: 'applied',
         last_refresh_at: null,
       },
+      graph_hash: 'b'.repeat(64),
+      updated_at: '2026-07-14T00:00:01Z',
       last_update: {
         id: 'update-1',
         trigger: 'auto_n_runs',
@@ -179,6 +181,8 @@ describe('FR-003 LLM node model routing optimization entry', () => {
         last_refresh_result: null,
         last_refresh_at: null,
       },
+      graph_hash: 'b'.repeat(64),
+      updated_at: '2026-07-14T00:00:01Z',
     });
     workflowApiMock.refreshModelRoutingPolicy.mockResolvedValue({
       policy_id: 'policy-persisted',
@@ -225,6 +229,13 @@ describe('FR-003 LLM node model routing optimization entry', () => {
         ...initialState,
         nodes: [node],
         activeWorkflowId: 'workflow-1',
+        canonicalDraftMetadata: {
+          'workflow-1': {
+            workflowId: 'workflow-1',
+            graphHash: 'a'.repeat(64),
+            updatedAt: '2026-07-14T00:00:00Z',
+          },
+        },
         workflowAccess: {
           workflow_id: 'workflow-1',
           organization_id: 'org-1',
@@ -378,8 +389,17 @@ describe('FR-003 LLM node model routing optimization entry', () => {
           refresh_every_runs: 45,
           validation_budget_usd: 3,
           max_cohorts: 6,
+          expected_graph_hash: 'a'.repeat(64),
+          expected_updated_at: '2026-07-14T00:00:00Z',
         }),
       );
+    });
+    expect(
+      useWorkflowStore.getState().getCanonicalDraftMetadata('workflow-1'),
+    ).toEqual({
+      workflowId: 'workflow-1',
+      graphHash: 'b'.repeat(64),
+      updatedAt: '2026-07-14T00:00:01Z',
     });
     expect(
       screen.getByText(/권장: 20~50회/),
@@ -678,11 +698,17 @@ describe('FR-003 LLM node model routing optimization entry', () => {
       (useWorkflowStore.getState().nodes[0].data as LLMNodeData)
         .auto_model_routing,
     ).toBe(true);
-    expect(workflowApiMock.patchModelRoutingPolicy).toHaveBeenCalledWith(
-      'workflow-1',
-      'llm-1',
-      expect.objectContaining({ enabled: true }),
-    );
+    await waitFor(() => {
+      expect(workflowApiMock.patchModelRoutingPolicy).toHaveBeenCalledWith(
+        'workflow-1',
+        'llm-1',
+        expect.objectContaining({
+          enabled: true,
+          expected_graph_hash: 'a'.repeat(64),
+          expected_updated_at: '2026-07-14T00:00:00Z',
+        }),
+      );
+    });
   });
 
   it('자동 정책 갱신하기는 refresh API를 요청한다', async () => {

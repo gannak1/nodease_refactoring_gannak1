@@ -59,8 +59,8 @@ const nextConfig: NextConfig = {
     },
     // Proxy client body size limit for large file uploads.
     proxyClientMaxBodySize: '50mb',
-    // [ADD] Proxy Timeout 설정 (2분) - LlamaParse/OCR 등 긴 요청 대비
-    proxyTimeout: 120000,
+    // Planner initial + semantic repair calls share a 7-minute proxy budget.
+    proxyTimeout: 420000,
   },
 };
 

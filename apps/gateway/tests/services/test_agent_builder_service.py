@@ -19,6 +19,8 @@ from apps.shared.schemas.agent_builder import (
     AgentBuilderMessageResponse,
     AgentBuilderMessageRequest,
     AgentBuilderPlannedStep,
+    AgentBuilderParameterGroup,
+    AgentBuilderParameterTask,
     AgentBuilderStructuredRequest,
 )
 from apps.shared.schemas.knowledge import (
@@ -1174,6 +1176,134 @@ def test_webhook_request_builds_webhook_trigger_preview(monkeypatch):
         {"name": "payload", "value_selector": [webhook_node["id"], "payload"]}
     ]
     assert svc.validate_preview_graph(preview_graph).valid is True
+
+
+def test_file_extraction_downstream_uses_catalog_declared_dynamic_output(monkeypatch):
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
+    structured = service_module.AgentBuilderStructuredRequest.model_validate(
+        {
+            "request_type": "new_workflow",
+            "draft_mode": "new_workflow",
+            "intent_summary": "파일을 추출하고 요약",
+            "planned_steps": [
+                {"step_id": "input", "capability": "start_input", "purpose": "입력"},
+                {
+                    "step_id": "extract",
+                    "capability": "file_extraction",
+                    "purpose": "파일 추출",
+                    "depends_on": ["input"],
+                },
+                {
+                    "step_id": "llm",
+                    "capability": "llm",
+                    "purpose": "요약",
+                    "depends_on": ["extract"],
+                },
+            ],
+            "required_capabilities": ["start_input", "file_extraction", "llm"],
+        }
+    )
+
+    graph = svc._build_preview_graph(structured, workflow=None, kb_bindings=[])
+
+    file_node = next(node for node in graph["nodes"] if node["type"] == "fileExtractionNode")
+    llm_node = next(node for node in graph["nodes"] if node["type"] == "llmNode")
+    assert file_node["data"]["referenced_variables"][0]["name"] == "file"
+    assert llm_node["data"]["referenced_variables"] == [
+        {"name": "file", "value_selector": [file_node["id"], "file"]}
+    ]
+    assert "text" not in str(llm_node["data"]["referenced_variables"])
+
+
+def test_unconfigured_dynamic_output_is_not_guessed_for_downstream_node(monkeypatch):
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
+    structured = service_module.AgentBuilderStructuredRequest.model_validate(
+        {
+            "request_type": "new_workflow",
+            "draft_mode": "new_workflow",
+            "intent_summary": "변수를 추출하고 요약",
+            "planned_steps": [
+                {"step_id": "input", "capability": "start_input", "purpose": "입력"},
+                {
+                    "step_id": "extract",
+                    "capability": "variable_extraction",
+                    "purpose": "변수 추출",
+                    "depends_on": ["input"],
+                },
+                {
+                    "step_id": "llm",
+                    "capability": "llm",
+                    "purpose": "요약",
+                    "depends_on": ["extract"],
+                },
+            ],
+            "required_capabilities": ["start_input", "variable_extraction", "llm"],
+        }
+    )
+
+    graph = svc._build_preview_graph(structured, workflow=None, kb_bindings=[])
+
+    llm_node = next(node for node in graph["nodes"] if node["type"] == "llmNode")
+    assert llm_node["data"]["referenced_variables"] == []
+    assert "result" not in llm_node["data"]["user_prompt"]
+
+
+def test_new_workflow_edges_follow_structured_step_dependencies(monkeypatch):
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
+    structured = service_module.AgentBuilderStructuredRequest.model_validate(
+        {
+            "request_type": "new_workflow",
+            "draft_mode": "new_workflow",
+            "intent_summary": "두 경로를 합쳐 전송",
+            "planned_steps": [
+                {"step_id": "input", "capability": "start_input", "purpose": "입력"},
+                {
+                    "step_id": "llm",
+                    "capability": "llm",
+                    "purpose": "분석",
+                    "depends_on": ["input"],
+                },
+                {
+                    "step_id": "template",
+                    "capability": "template_render",
+                    "purpose": "서식",
+                    "depends_on": ["input"],
+                },
+                {
+                    "step_id": "slack",
+                    "capability": "slack_send",
+                    "purpose": "전송",
+                    "depends_on": ["llm", "template"],
+                },
+            ],
+            "required_capabilities": ["start_input", "llm", "template_render", "slack_send"],
+        }
+    )
+
+    graph = svc._build_preview_graph(structured, workflow=None, kb_bindings=[])
+
+    by_type = {node["type"]: node["id"] for node in graph["nodes"]}
+    pairs = {(edge["source"], edge["target"]) for edge in graph["edges"]}
+    assert (by_type["startNode"], by_type["llmNode"]) in pairs
+    assert (by_type["startNode"], by_type["templateNode"]) in pairs
+    assert (by_type["llmNode"], by_type["slackPostNode"]) in pairs
+    assert (by_type["templateNode"], by_type["slackPostNode"]) in pairs
+    assert (by_type["llmNode"], by_type["templateNode"]) not in pairs
 
 
 def test_github_pr_review_request_builds_read_review_and_comment_nodes(monkeypatch):
@@ -2777,7 +2907,9 @@ def test_agent_builder_kb_recommendation_unavailable_blocks_required_kb(monkeypa
     assert "Knowledge Base" in result["warnings"][0]
 
 
-def test_agent_builder_kb_recommendation_no_candidate_warns_and_continues(monkeypatch):
+def test_agent_builder_kb_recommendation_no_candidate_requires_explicit_empty_selection(
+    monkeypatch,
+):
     class FakeRecommendationService:
         def __init__(self, db, *, user_id, organization_id):
             pass
@@ -2809,21 +2941,12 @@ def test_agent_builder_kb_recommendation_no_candidate_warns_and_continues(monkey
     )
 
     result = svc._resolve_knowledge_requirements(structured)  # noqa: SLF001
-    preview_graph = svc._build_preview_graph(  # noqa: SLF001
-        structured,
-        workflow=None,
-        kb_bindings=result["bindings"],
-    )
 
-    nodes_by_type = {node["type"]: node for node in preview_graph["nodes"]}
-    assert result["status"] == "recommended"
+    assert result["status"] == "clarification_required"
     assert result["bindings"] == []
-    assert "Knowledge Base 없이" in result["warnings"][0]
-    assert nodes_by_type["llmNode"]["data"]["knowledgeBases"] == []
-    assert (
-        nodes_by_type["slackPostNode"]["data"]["channel_resolution_state"]
-        == "unresolved"
-    )
+    assert result["options"] == []
+    assert "확인" in result["questions"][0]
+    assert "후보" in result["warnings"][0]
 
 
 def test_agent_builder_session_messages_restore_redacted_user_turn_and_assistant_turn():
@@ -2855,6 +2978,241 @@ def test_agent_builder_session_messages_restore_redacted_user_turn_and_assistant
     }
     assert messages[1]["kind"] == "assistant"
     assert messages[1]["response"]["status"] == "clarification_required"
+
+
+def test_direct_session_messages_expose_processing_request_as_planning():
+    request_id = uuid.uuid4()
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    request_row = SimpleNamespace(
+        id=request_id,
+        status="processing",
+        created_at=None,
+        message_summary="workflow request",
+        response_payload={},
+    )
+
+    messages = svc._session_messages(  # noqa: SLF001
+        request_row,
+        None,
+        direct_edit=True,
+    )
+
+    assert messages[1]["response"]["request_id"] == str(request_id)
+    assert messages[1]["response"]["status"] == "planning"
+    assert svc._request_summary(request_row)["status"] == "planning"  # noqa: SLF001
+
+
+def test_direct_session_recovery_removes_legacy_generic_knowledge_task(
+    monkeypatch,
+):
+    group_id = uuid.uuid4()
+    model_task = AgentBuilderParameterTask(
+        task_id=uuid.uuid4(),
+        group_id=group_id,
+        step_id="step_llm",
+        node_id="llm",
+        node_type="llmNode",
+        parameter_key="model_id",
+        label="Model",
+        input_type="resource_ref",
+        required=True,
+        defer_policy="forbidden",
+        status="completed",
+        task_version=1,
+        stable_order=0,
+        reason="Model is configured.",
+        input_guidance="Select a model.",
+        node_label="LLM",
+    )
+    knowledge_task = AgentBuilderParameterTask(
+        task_id=uuid.uuid4(),
+        group_id=group_id,
+        step_id="step_llm",
+        node_id="llm",
+        node_type="llmNode",
+        parameter_key="knowledgeBases",
+        label="Knowledge Bases",
+        input_type="resource_ref",
+        required=False,
+        defer_policy="forbidden",
+        status="active",
+        task_version=1,
+        stable_order=1,
+        reason="Knowledge Base setting is required.",
+        input_guidance="Select Knowledge Bases.",
+        node_label="LLM",
+    )
+    group = AgentBuilderParameterGroup(
+        group_id=group_id,
+        status="active",
+        tasks=[model_task, knowledge_task],
+    )
+    request_id = uuid.uuid4()
+    request_row = SimpleNamespace(
+        id=request_id,
+        status="completed",
+        created_at=None,
+        expires_at=None,
+        message_summary="LLM workflow",
+        response_payload={
+            "request_id": str(request_id),
+            "status": "graph_mutation_ready",
+            "parameter_groups": [group.model_dump(mode="json")],
+        },
+    )
+
+    class SessionQuery(FakeQuery):
+        def with_for_update(self):
+            return self
+
+        def all(self):
+            return [self.result] if self.result is not None else []
+
+    class SessionDb(FakeDb):
+        def query(self, model):
+            if model is service_module.AgentBuilderRequest:
+                return SessionQuery(request_row)
+            raise AssertionError(f"unexpected model: {model}")
+
+    monkeypatch.setattr(
+        service_module.ParameterCandidateProvider,
+        "enrich_group",
+        lambda _self, parameter_group, **_kwargs: parameter_group,
+    )
+    db = SessionDb()
+    svc = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    response = svc._session_response(  # noqa: SLF001
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            workflow_id=None,
+            app_id=None,
+            status="active",
+            protocol_version="direct_edit_v1",
+        )
+    )
+
+    assert response.parameter_group is not None
+    assert [task.parameter_key for task in response.parameter_group.tasks] == [
+        "model_id"
+    ]
+    assert response.parameter_group.status == "completed"
+    assert [
+        task["parameter_key"]
+        for task in request_row.response_payload["parameter_groups"][0]["tasks"]
+    ] == ["model_id"]
+    assert db.commits == 1
+
+
+def test_new_workflow_preview_graph_is_deterministic_for_the_same_plan():
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    structured = service_module.AgentBuilderStructuredRequest.model_validate(
+        {
+            "request_type": "new_workflow",
+            "draft_mode": "new_workflow",
+            "intent_summary": "receive a webhook and call an API",
+            "planned_steps": [
+                {
+                    "step_id": "step_webhook",
+                    "capability": "webhook_trigger",
+                    "purpose": "receive input",
+                },
+                {
+                    "step_id": "step_http",
+                    "capability": "http_request",
+                    "purpose": "call an API",
+                    "depends_on": ["step_webhook"],
+                },
+                {
+                    "step_id": "step_answer",
+                    "capability": "answer",
+                    "purpose": "return the result",
+                    "depends_on": ["step_http"],
+                },
+            ],
+            "required_capabilities": [
+                "webhook_trigger",
+                "http_request",
+                "answer",
+            ],
+        }
+    )
+
+    first = svc._build_preview_graph(structured, workflow=None, kb_bindings=[])  # noqa: SLF001
+    second = svc._build_preview_graph(structured, workflow=None, kb_bindings=[])  # noqa: SLF001
+
+    assert first == second
+
+
+def test_modify_workflow_preview_graph_is_deterministic_for_the_same_target(
+    monkeypatch,
+):
+    workflow = SimpleNamespace(
+        graph={
+            "nodes": [
+                {"id": "start", "type": "startNode", "data": {}},
+                {"id": "answer", "type": "answerNode", "data": {}},
+            ],
+            "edges": [
+                {"id": "edge-start-answer", "source": "start", "target": "answer"}
+            ],
+            "viewport": {"x": 0, "y": 0, "zoom": 1},
+        }
+    )
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    monkeypatch.setattr(svc, "_recommended_draft_model_id", lambda: "model-1")
+    structured = service_module.AgentBuilderStructuredRequest.model_validate(
+        {
+            "request_type": "modify_workflow",
+            "draft_mode": "modify_workflow",
+            "intent_summary": "insert an LLM",
+            "planned_steps": [
+                {
+                    "step_id": "step_llm",
+                    "capability": "llm",
+                    "purpose": "analyze input",
+                }
+            ],
+            "required_capabilities": ["llm"],
+        }
+    )
+    resolution = {
+        "status": "resolved",
+        "source_node_id": "start",
+        "destination_node_id": "answer",
+        "replaced_edge_ids": ["edge-start-answer"],
+    }
+
+    first = svc._build_preview_graph(  # noqa: SLF001
+        structured,
+        workflow=workflow,
+        kb_bindings=[],
+        target_resolution=resolution,
+    )
+    second = svc._build_preview_graph(  # noqa: SLF001
+        structured,
+        workflow=workflow,
+        kb_bindings=[],
+        target_resolution=resolution,
+    )
+
+    assert first == second
 
 
 def test_agent_builder_selected_kb_candidate_validates_prior_clarification_context():
@@ -4758,4 +5116,4 @@ def test_agent_builder_session_restore_hides_cached_payload_when_scope_denied(
 
     assert response.messages == []
     assert response.pending_request is None
-    assert response.draft_preview is None
+    assert "draft_preview" not in response.model_dump()

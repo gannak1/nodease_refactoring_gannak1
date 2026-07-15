@@ -35,6 +35,10 @@ from apps.shared.services.workflow_task_publisher import (
     send_workflow_task,
 )
 from apps.shared.services.workflow_node_catalog import node_side_effect_mapping
+from apps.shared.services.workflow_configuration_preflight import (
+    WorkflowConfigurationPreflightError,
+    enforce_workflow_configuration_preflight,
+)
 from apps.workflow_engine import mail_credential_startup  # noqa: F401
 from apps.workflow_engine.runtime_policy import get_deployment_runtime_policy
 from apps.workflow_engine.schedule_dispatch_settings import (
@@ -103,6 +107,15 @@ def _cleanup_execution_resources(engine, session, *, label: str) -> None:
             label,
             type(exc).__name__,
         )
+
+
+
+
+def _enforce_runtime_configuration(graph: Dict[str, Any], *, surface: str) -> None:
+    try:
+        enforce_workflow_configuration_preflight(graph, surface=surface)
+    except WorkflowConfigurationPreflightError as exc:
+        raise NonRetryableWorkflowError(str(exc)) from exc
 
 
 @celery_app.task(
@@ -489,6 +502,8 @@ def execute_workflow(
             if is_deployed
             else _canonical_workflow_execution_context(session, queued_context)
         )
+        _enforce_runtime_configuration(graph, surface="workflow_engine_run")
+
         # Knowledge Base 동기화
         try:
             sync_result = _sync_knowledge_bases_for_execution_subject(
@@ -617,6 +632,10 @@ def execute_deployed_workflow(
             deployment=deployment,
             app=app,
             require_execution_id=_graph_requires_frozen_deployment(graph),
+        )
+        _enforce_runtime_configuration(
+            graph,
+            surface="workflow_engine_deployed_run",
         )
 
         sync_result = {}
@@ -755,6 +774,11 @@ def execute_by_deployment(
             queued_context,
             deployment=deployment,
             app=app,
+        )
+
+        _enforce_runtime_configuration(
+            deployment.graph_snapshot,
+            surface="workflow_engine_deployed_run",
         )
 
         sync_result = {}
@@ -1070,6 +1094,8 @@ def stream_workflow(
             dict(execution_context or {}),
         )
         execution_context["workflow_run_id"] = external_run_id
+
+        _enforce_runtime_configuration(graph, surface="workflow_engine_stream")
 
         sync_result = {}
         try:

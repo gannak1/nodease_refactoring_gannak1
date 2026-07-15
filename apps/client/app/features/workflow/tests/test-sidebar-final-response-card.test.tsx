@@ -1,5 +1,5 @@
-import { cleanup, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   FinalResponseCard,
@@ -7,6 +7,16 @@ import {
   TEST_INPUT_CLASS_NAME,
 } from '../components/editor/TestSidebar';
 import type { FinalResponsePreview } from '../utils/testExecutionFinalResponse';
+import { workflowApi } from '../api/workflowApi';
+import { useWorkflowStore } from '../store/useWorkflowStore';
+
+vi.mock('../api/workflowApi', () => ({
+  workflowApi: {
+    getDraftWorkflow: vi.fn(),
+    syncDraftWorkflow: vi.fn(),
+    executeWorkflowStream: vi.fn(),
+  },
+}));
 
 vi.mock('@xyflow/react', () => ({
   useReactFlow: () => ({
@@ -60,6 +70,7 @@ vi.mock('../store/useWorkflowStore', () => {
     finishTestExecution: vi.fn(),
     failTestExecution: vi.fn(),
     resetTestExecution: vi.fn(),
+    ingestCanonicalDraftMetadata: vi.fn(),
   };
   const useWorkflowStore = Object.assign(
     vi.fn(() => state),
@@ -74,7 +85,78 @@ afterEach(() => {
   cleanup();
 });
 
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(workflowApi.executeWorkflowStream).mockResolvedValue(undefined);
+});
+
 describe('TestSidebar final response card', () => {
+  it('테스트 실행 전 canonical metadata로 저장하고 성공 응답을 공유 상태에 반영한다', async () => {
+    vi.mocked(workflowApi.getDraftWorkflow).mockResolvedValue({
+      workflow_id: 'workflow-1',
+      graph_hash: 'a'.repeat(64),
+      updated_at: '2026-07-14T00:00:00Z',
+      nodes: [],
+      edges: [],
+      viewport: { x: 0, y: 0, zoom: 1 },
+    });
+    vi.mocked(workflowApi.syncDraftWorkflow).mockResolvedValue({
+      status: 'success',
+      workflow_id: 'workflow-1',
+      graph_hash: 'b'.repeat(64),
+      updated_at: '2026-07-14T00:00:01Z',
+    });
+
+    render(<TestSidebar />);
+    fireEvent.click(screen.getByRole('button', { name: /테스트 실행하기/ }));
+
+    await waitFor(() => {
+      expect(workflowApi.syncDraftWorkflow).toHaveBeenCalledWith(
+        'workflow-1',
+        expect.objectContaining({
+          expected_graph_hash: 'a'.repeat(64),
+          expected_updated_at: '2026-07-14T00:00:00Z',
+        }),
+      );
+    });
+    expect(
+      useWorkflowStore.getState().ingestCanonicalDraftMetadata,
+    ).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ graph_hash: 'a'.repeat(64) }),
+      'workflow-1',
+    );
+    expect(
+      useWorkflowStore.getState().ingestCanonicalDraftMetadata,
+    ).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ graph_hash: 'b'.repeat(64) }),
+      'workflow-1',
+    );
+  });
+
+  it('canonical 저장이 stale이면 workflow 실행을 시작하지 않는다', async () => {
+    vi.mocked(workflowApi.getDraftWorkflow).mockResolvedValue({
+      workflow_id: 'workflow-1',
+      graph_hash: 'a'.repeat(64),
+      updated_at: '2026-07-14T00:00:00Z',
+      nodes: [],
+      edges: [],
+      viewport: { x: 0, y: 0, zoom: 1 },
+    });
+    vi.mocked(workflowApi.syncDraftWorkflow).mockRejectedValue({
+      response: { status: 409 },
+    });
+
+    render(<TestSidebar />);
+    fireEvent.click(screen.getByRole('button', { name: /테스트 실행하기/ }));
+
+    await waitFor(() => {
+      expect(useWorkflowStore.getState().failTestExecution).toHaveBeenCalled();
+    });
+    expect(workflowApi.executeWorkflowStream).not.toHaveBeenCalled();
+  });
+
   it('테스트 입력 필드는 다크 모드에서도 입력값과 placeholder 색상을 명시한다', () => {
     expect(TEST_INPUT_CLASS_NAME).toContain('text-gray-900');
     expect(TEST_INPUT_CLASS_NAME).toContain('placeholder:text-gray-400');

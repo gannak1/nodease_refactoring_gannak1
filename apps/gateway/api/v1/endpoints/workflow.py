@@ -22,6 +22,13 @@ from starlette.requests import Request
 
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.auth.permissions import ensure_workflow_permission
+from apps.gateway.application.agent_builder.graph_mutation_builder import (
+    canonical_graph_hash,
+)
+from apps.gateway.application.agent_builder.workflow_cas import (
+    WorkflowDraftCASService,
+    WorkflowMutationConflict,
+)
 from apps.gateway.services.organization_context import resolve_active_organization_id
 from apps.gateway.utils.audit import audit
 from apps.gateway.services.app_service import AppService
@@ -301,10 +308,14 @@ class CostOptimizerApplyRequest(BaseModel):
     comparison_id: str | None = None
     candidate_settings: CostOptimizerCandidateRequest
     acknowledge_downstream_warning: bool = False
+    expected_graph_hash: str = Field(min_length=64, max_length=64)
+    expected_updated_at: datetime
 
 
 class CostOptimizerRecommendationApplyRequest(BaseModel):
     recommendation_ids: list[str] = Field(default_factory=list)
+    expected_graph_hash: str = Field(min_length=64, max_length=64)
+    expected_updated_at: datetime
 
 
 class CostOptimizerRecommendationVerifyRequest(BaseModel):
@@ -324,6 +335,8 @@ class ModelRoutingPolicyPatchRequest(BaseModel):
     max_cohorts: int = Field(default=6, ge=1, le=12)
     default_model_id: str | None = Field(default=None, min_length=1, max_length=255)
     fallback_model_id: str | None = Field(default=None, max_length=255)
+    expected_graph_hash: str = Field(min_length=64, max_length=64)
+    expected_updated_at: datetime
 
 
 class ModelRoutingCohortSuggestRequest(BaseModel):
@@ -375,6 +388,65 @@ class ModelRoutingPreviewResponse(BaseModel):
 
 def _raise_invalid_cost_optimizer_candidate() -> None:
     raise HTTPException(status_code=400, detail="cost_optimizer.invalid_candidate")
+
+
+def _lock_workflow_for_cas_graph_write(
+    db: Session,
+    current_user: User,
+    workflow_id: str,
+    request_body: Any,
+    authorized_workflow: Workflow,
+) -> Workflow:
+    workflow = (
+        db.query(Workflow)
+        .filter(Workflow.id == workflow_id)
+        .with_for_update()
+        .first()
+    )
+    if workflow is None:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    if str(workflow.id) != str(authorized_workflow.id) or str(
+        workflow.organization_id
+    ) != str(authorized_workflow.organization_id):
+        raise HTTPException(status_code=404, detail="Workflow not found")
+
+    rechecked_workflow = ensure_workflow_permission(
+        db, current_user, workflow_id, "write"
+    )
+    if str(rechecked_workflow.id) != str(workflow.id) or str(
+        rechecked_workflow.organization_id
+    ) != str(workflow.organization_id):
+        raise HTTPException(status_code=404, detail="Workflow not found")
+
+    try:
+        WorkflowDraftCASService.validate_expected_draft_state(
+            workflow=workflow,
+            request=request_body,
+        )
+    except WorkflowMutationConflict as exc:
+        raise HTTPException(status_code=409, detail=exc.code) from exc
+    return workflow
+
+
+def _commit_graph_write_with_canonical_metadata(
+    db: Session,
+    workflow: Workflow,
+) -> dict[str, str]:
+    try:
+        db.flush()
+        db.refresh(workflow)
+        updated_at = workflow.updated_at
+        if updated_at is None:
+            raise RuntimeError("workflow_updated_at_unavailable")
+        metadata = {
+            "graph_hash": canonical_graph_hash(workflow.graph),
+            "updated_at": updated_at.isoformat(),
+        }
+        db.commit()
+        return metadata
+    except Exception:
+        db.rollback()
+        raise
 
 
 def _request_id_from_request(request: Request) -> str | None:
@@ -3915,7 +3987,16 @@ def patch_model_routing_policy_endpoint(
     current_user: User = Depends(get_current_user),
 ):
     """draft의 자동 라우팅 설정과 현재 배포 policy의 갱신 기준을 함께 갱신한다."""
-    workflow = ensure_workflow_permission(db, current_user, workflow_id, "deploy")
+    authorized_workflow = ensure_workflow_permission(
+        db, current_user, workflow_id, "deploy"
+    )
+    workflow = _lock_workflow_for_cas_graph_write(
+        db,
+        current_user,
+        workflow_id,
+        request_body,
+        authorized_workflow,
+    )
     next_graph = copy.deepcopy(workflow.graph or {})
     node = _ensure_cost_optimizer_llm_node(
         SimpleNamespace(id=workflow.id, graph=next_graph), node_id
@@ -4028,12 +4109,13 @@ def patch_model_routing_policy_endpoint(
         else:
             policy.status = "collecting"
     workflow.graph = next_graph
-    db.commit()
-    return _model_routing_policy_response(
+    metadata = _commit_graph_write_with_canonical_metadata(db, workflow)
+    response = _model_routing_policy_response(
         policy,
         enabled=request_body.enabled,
         adaptive=_model_routing_adaptive_summary(db, policy),
     )
+    return {**response, **metadata}
 
 
 @router.post("/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts/suggest")
@@ -4675,7 +4757,16 @@ def apply_cost_optimizer_recommendations(
     """
     서버가 다시 계산한 파라미터 추천 중 선택된 항목만 현재 draft LLM node에 적용합니다.
     """
-    workflow = ensure_workflow_permission(db, current_user, workflow_id, "write")
+    authorized_workflow = ensure_workflow_permission(
+        db, current_user, workflow_id, "write"
+    )
+    workflow = _lock_workflow_for_cas_graph_write(
+        db,
+        current_user,
+        workflow_id,
+        request_body,
+        authorized_workflow,
+    )
     _ensure_cost_optimizer_llm_node(workflow, node_id)
     recommendations_payload = CostOptimizerParameterRecommendationService.recommend(
         db,
@@ -4726,22 +4817,7 @@ def apply_cost_optimizer_recommendations(
         organization_id=workflow.organization_id,
     )
     workflow.graph = next_graph
-    db.commit()
-    try:
-        db.refresh(workflow)
-    except Exception:
-        logger.debug(
-            "Cost Optimizer recommendation apply refresh skipped", exc_info=True
-        )
-
-    updated_at = getattr(workflow, "updated_at", None)
-    updated_revision = (
-        updated_at.isoformat()
-        if hasattr(updated_at, "isoformat")
-        else str(updated_at)
-        if updated_at is not None
-        else None
-    )
+    metadata = _commit_graph_write_with_canonical_metadata(db, workflow)
 
     return {
         "workflow_id": str(workflow.id),
@@ -4753,7 +4829,7 @@ def apply_cost_optimizer_recommendations(
             "label": "판정 전",
             "message": "추천 설정이 적용되었습니다. 현재 workflow 테스트 실행으로 downstream 결과를 확인하세요.",
         },
-        "updated_draft_revision": updated_revision,
+        **metadata,
     }
 
 
@@ -5423,7 +5499,16 @@ def apply_cost_optimizer_candidate(
     """
     B candidate 설정 전체를 현재 draft의 target LLM node에 적용합니다.
     """
-    workflow = ensure_workflow_permission(db, current_user, workflow_id, "write")
+    authorized_workflow = ensure_workflow_permission(
+        db, current_user, workflow_id, "write"
+    )
+    workflow = _lock_workflow_for_cas_graph_write(
+        db,
+        current_user,
+        workflow_id,
+        request_body,
+        authorized_workflow,
+    )
     _ensure_cost_optimizer_llm_node(workflow, node_id)
     candidate_settings = _materialize_cost_optimizer_candidate_model_routing_policy(
         db,
@@ -5477,20 +5562,7 @@ def apply_cost_optimizer_candidate(
             candidate_row.is_applied = is_applied_candidate
             candidate_row.applied_at = applied_at if is_applied_candidate else None
             candidate_row.applied_by = current_user.id if is_applied_candidate else None
-    db.commit()
-    try:
-        db.refresh(workflow)
-    except Exception:
-        logger.debug("Cost Optimizer apply refresh skipped", exc_info=True)
-
-    updated_at = getattr(workflow, "updated_at", None)
-    updated_revision = (
-        updated_at.isoformat()
-        if hasattr(updated_at, "isoformat")
-        else str(updated_at)
-        if updated_at is not None
-        else None
-    )
+    metadata = _commit_graph_write_with_canonical_metadata(db, workflow)
 
     return {
         "workflow_id": str(workflow.id),
@@ -5501,7 +5573,7 @@ def apply_cost_optimizer_candidate(
             "label": "판정 전",
             "message": "후보 설정이 적용되었습니다. 현재 workflow 테스트 실행으로 downstream 결과를 확인하세요.",
         },
-        "updated_draft_revision": updated_revision,
+        **metadata,
     }
 
 
@@ -6021,7 +6093,7 @@ def get_draft_workflow(
     """
     ensure_workflow_permission(db, current_user, workflow_id, "read")
 
-    return WorkflowService.get_draft(db, workflow_id)
+    return WorkflowService.get_draft(db, workflow_id, include_metadata=True)
 
 
 @router.post("/{workflow_id}/compare")
@@ -6155,6 +6227,16 @@ async def execute_workflow(
         workflow,
         x_organization_id,
     )
+    from apps.gateway.services.deployment_service import DeploymentService
+    from apps.shared.services.workflow_configuration_preflight import (
+        WorkflowConfigurationPreflightError,
+        enforce_workflow_configuration_preflight,
+    )
+
+    try:
+        enforce_workflow_configuration_preflight(workflow.graph, surface="test")
+    except WorkflowConfigurationPreflightError as exc:
+        raise DeploymentService.workflow_configuration_preflight_blocked(exc) from exc
 
     # 1-1. 예산 초과 차단 — dispatch try 블록 밖이어야 429가 500으로 감싸이지 않는다.
     WorkflowBudgetService.ensure_workflow_budget_allows_execution(

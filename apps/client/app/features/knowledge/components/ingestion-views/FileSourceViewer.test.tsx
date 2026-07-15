@@ -129,7 +129,7 @@ describe('FileSourceViewer', () => {
     expect(revokeObjectURLMock).toHaveBeenCalledWith(CONTENT_URL);
   });
 
-  it('keeps non-PDF content in the existing scriptless sandbox', async () => {
+  it('keeps non-PDF content in a scriptless sandbox without download permission', async () => {
     getDocumentContentMock.mockResolvedValueOnce(
       new Blob(['document'], {
         type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -148,11 +148,9 @@ describe('FileSourceViewer', () => {
     );
     const iframe = container.querySelector('iframe');
     expect(iframe).toHaveAttribute('src', CONTENT_URL);
-    expect(iframe).toHaveAttribute(
-      'sandbox',
-      'allow-same-origin allow-downloads',
-    );
+    expect(iframe).toHaveAttribute('sandbox', 'allow-same-origin');
     expect(iframe?.getAttribute('sandbox')).not.toContain('allow-scripts');
+    expect(iframe?.getAttribute('sandbox')).not.toContain('allow-downloads');
     expect(container.querySelector('object')).not.toBeInTheDocument();
     expect(
       screen.queryByRole('link', { name: 'PDF를 새 탭에서 열기' }),

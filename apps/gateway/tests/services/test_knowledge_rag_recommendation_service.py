@@ -40,7 +40,7 @@ class FakeResolver:
         self.explicit_calls = []
         self.auto_calls = []
 
-    def resolve_explicit_kbs(self, knowledge_base_ids):
+    def resolve_explicit_kbs(self, knowledge_base_ids, *, allow_unready_candidates=False):
         self.explicit_calls.append(list(knowledge_base_ids))
         return self.resolution
 
@@ -50,12 +50,14 @@ class FakeResolver:
         collection_ids=None,
         max_collections=20,
         max_candidate_kbs=5000,
+        allow_unready_candidates=False,
     ):
         self.auto_calls.append(
             {
                 "collection_ids": collection_ids,
                 "max_collections": max_collections,
                 "max_candidate_kbs": max_candidate_kbs,
+                "allow_unready_candidates": allow_unready_candidates,
             }
         )
         return self.resolution
@@ -331,6 +333,79 @@ def test_structured_query_topics_drive_kb_relevance_and_ignore_workflow_noise():
     assert "structured_safe_query" in recommendation.provenance.used_signals
     assert "kb_relevance_match" in recommendation.provenance.used_signals
     assert recommendation.provenance.matched_safe_terms == ["사내 문서"]
+
+
+def test_structured_topics_fall_back_to_safe_intent_terms_only_when_none_match():
+    matching_kb = _candidate(
+        candidate_id=uuid.UUID("00000000-0000-0000-0000-000000000023"),
+        safe_label="Employee handbook",
+        runtime_availability="available",
+        safe_metadata={
+            "kb_safe_topics": ["employee handbook", "leave policy"],
+            "source_tier": "company_policy",
+            "sync_state": "synced",
+        },
+    )
+    unrelated_kb = _candidate(
+        candidate_id=uuid.UUID("00000000-0000-0000-0000-000000000024"),
+        safe_label="Finance controls",
+        runtime_availability="available",
+        safe_metadata={
+            "kb_safe_topics": ["expense policy"],
+            "source_tier": "company_policy",
+            "sync_state": "synced",
+        },
+    )
+
+    result = _service(
+        FakeResolver(
+            KnowledgeCandidateResolution(candidates=[unrelated_kb, matching_kb])
+        )
+    ).recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(
+            workflow_intent="Create an employee handbook question workflow",
+            node_purpose="Answer employee handbook questions",
+            safe_query_topics=["general internal assistance"],
+            max_recommendations=2,
+        )
+    )
+
+    recommendation = result.recommendations[0]
+    assert recommendation.safe_label == "Employee handbook"
+    assert recommendation.score >= 0.70
+    assert "fallback_safe_query" in recommendation.provenance.used_signals
+    assert "structured_safe_query" not in recommendation.provenance.used_signals
+
+
+def test_unmatched_kb_does_not_receive_an_operational_score_without_relevance():
+    result = _service(
+        FakeResolver(
+            KnowledgeCandidateResolution(
+                candidates=[
+                    _candidate(
+                        safe_label="Employee handbook",
+                        runtime_availability="available",
+                        safe_metadata={
+                            "kb_safe_topics": ["employee handbook"],
+                            "source_tier": "company_policy",
+                            "sync_state": "synced",
+                        },
+                    )
+                ]
+            )
+        )
+    ).recommend_for_builder(
+        KnowledgeRAGRecommendationRequest(
+            workflow_intent="Create a tax filing workflow",
+            node_purpose="Tax filing",
+            safe_query_topics=["tax filing"],
+        )
+    )
+
+    recommendation = result.recommendations[0]
+    assert recommendation.score == 0.0
+    assert recommendation.threshold_result == "below_threshold"
+    assert "kb_relevance_match" not in recommendation.provenance.used_signals
 
 
 def test_threshold_result_can_emit_all_documented_buckets():

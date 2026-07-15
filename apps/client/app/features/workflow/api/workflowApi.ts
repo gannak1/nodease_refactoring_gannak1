@@ -7,7 +7,12 @@ import {
   attachActiveOrganizationHeader,
   getStoredActiveOrganizationId,
 } from '@/lib/activeOrganization';
-import { WorkflowDraftRequest } from '../types/Workflow';
+import {
+  WorkflowDraftRequest,
+  WorkflowDraftResponse,
+  WorkflowDraftSaveRequest,
+  WorkflowDraftSaveResponse,
+} from '../types/Workflow';
 import {
   DeploymentCreate,
   DeploymentBrowserAccessRevisionCreate,
@@ -43,6 +48,7 @@ import {
   ModelRoutingCohortUpdateResponse,
   ModelRoutingCohortSuggestionRequest,
   ModelRoutingCohortSuggestionResponse,
+  ModelRoutingPolicyPatchResponse,
   ModelRoutingPolicyRefreshResponse,
   ModelRoutingPolicyResponse,
   WorkflowPermissionResponse,
@@ -125,9 +131,17 @@ api.interceptors.response.use(
 
 export const workflowApi = {
   // 1. 드래프트 워크플로우 동기화 (저장)
-  syncDraftWorkflow: async (workflowId: string, data: WorkflowDraftRequest) => {
+  syncDraftWorkflow: async (
+    workflowId: string,
+    data: WorkflowDraftSaveRequest,
+  ): Promise<WorkflowDraftSaveResponse> => {
     if (isMockWorkflowId(workflowId)) {
-      return { ...data, mockMode: true };
+      return {
+        status: 'success',
+        workflow_id: workflowId,
+        graph_hash: data.expected_graph_hash,
+        updated_at: data.expected_updated_at,
+      };
     }
 
     const response = await api.post(`/workflows/${workflowId}/draft`, data);
@@ -135,9 +149,16 @@ export const workflowApi = {
   },
 
   // 2. 드래프트 워크플로우 가져오기
-  getDraftWorkflow: async (workflowId: string) => {
+  getDraftWorkflow: async (
+    workflowId: string,
+  ): Promise<WorkflowDraftResponse> => {
     if (isMockWorkflowId(workflowId)) {
-      return cloneMockResponse(mockWorkflowDraft);
+      return {
+        ...cloneMockResponse(mockWorkflowDraft),
+        workflow_id: workflowId,
+        graph_hash: '0'.repeat(64),
+        updated_at: new Date(0).toISOString(),
+      };
     }
 
     const response = await api.get(`/workflows/${workflowId}/draft`);
@@ -441,7 +462,7 @@ export const workflowApi = {
     workflowId: string,
     nodeId: string,
     data: ModelRoutingPolicyPatchRequest,
-  ): Promise<ModelRoutingPolicyResponse> => {
+  ): Promise<ModelRoutingPolicyPatchResponse> => {
     const response = await api.patch(
       `/workflows/${workflowId}/llm-nodes/${nodeId}/model-routing/policy`,
       data,
