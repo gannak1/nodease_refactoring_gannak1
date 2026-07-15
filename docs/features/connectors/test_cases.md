@@ -1,7 +1,7 @@
 # Connectors Test Cases
 
 Status: Draft
-Verified Against: feature/mba-246 @ 35d66ce59ea7090d71326faf8965ab3c57a50649
+Verified Against: feature/mba-246 @ f5cab6c05106cd60b0944d48ff92cd7d87407ecd
 
 ## Minimum Failure Rule
 
@@ -76,11 +76,13 @@ Verified Against: feature/mba-246 @ 35d66ce59ea7090d71326faf8965ab3c57a50649
 | CONN-TC-A025 | Connector test media/JSON은 strict해야 한다. | Wrong/duplicate content type, compressed body, BOM, invalid UTF-8/JSON, NaN, non-object root다. | `400/415`, raw body 비노출. |
 | CONN-TC-A026 | SSH-enabled test는 network 전에 거부되어야 한다. | Valid SSH credential shape와 `enabled=true`다. | `200`, `connector.ssh_probe_not_supported`, DNS/probe 0회. |
 | CONN-TC-A027 | Public PostgreSQL과 deployment-managed port allowlist만 허용해야 한다. | Allowlist 밖 port, private/loopback/link-local/metadata/CGNAT/reserved/mapped/mixed DNS target이다. | `connector.target_not_allowed`, admission/DNS/DB connect 0회. |
-| CONN-TC-A028 | Connector test timeout 뒤 실제 blocking work가 끝날 때까지 lease를 유지해야 한다. | API 10초를 넘긴 future가 background에서 계속 실행되거나 실행 중 heartbeat가 필요하다. | Safe timeout 반환, owner-safe renewal 지속, completion 전 lease release 0회, completion 후 정확히 1회. |
+| CONN-TC-A028 | Connector test timeout 뒤 hard deadline 전까지 실제 blocking work와 lease 수명을 일치시켜야 한다. | API 10초를 넘긴 future가 20초 안에 끝나거나 실행 중 heartbeat가 필요하다. | Safe timeout 반환, completion 전 owner-safe renewal 지속, completion 뒤 lease 정확히 1회 해제. |
 | CONN-TC-A029 | Admission 장애와 capacity 부족은 fail-closed해야 한다. | Redis timeout/script error, transport peer 없음, distributed/local concurrency full이다. | `429/503`, DNS/DB connect 0회, process-local unlimited fallback 없음. |
 | CONN-TC-A030 | Connector test audit는 bounded metadata만 가져야 한다. | Success/target denial/driver failure/timeout이다. | `connection.test`, organization/actor/result/reason/duration만 기록하고 target/credential/network 원문 없음. |
 | CONN-TC-A031 | 실제 Redis transport 장애는 API에서 DB probe 전에 닫혀야 한다. | 인증·active organization 요청을 loopback의 미사용 Redis port로 연결한다. | `503 connector.admission_unavailable`, probe 호출 0회, secret 비노출. |
 | CONN-TC-A032 | Connector 저장 이름은 정규화되고 공백 이름은 거부되어야 한다. | 앞뒤 공백이 있는 이름, 빈 값, whitespace-only, 101자 값을 `POST /connectors` schema에 전달한다. | 유효 이름은 trim되고 나머지는 `422`; 저장 전 probe와 row 생성 0회. |
+| CONN-TC-A033 | 응답 뒤 probe가 hard deadline을 넘기면 distributed admission을 유한하게 정리해야 한다. | 취소 전까지 영원히 반환하지 않는 probe가 API timeout과 20초 hard deadline을 모두 넘긴다. | Hard deadline에 async probe/heartbeat 취소, owner lease 정확히 1회 해제, 이후 renewal 0회. 취소 불가능한 실제 driver thread의 local slot은 종료 전 재사용하지 않음. |
+| CONN-TC-A034 | Connector network rate identity는 trusted-proxy resolver를 사용해야 한다. | Trusted proxy 뒤 서로 다른 client 요청을 raw socket peer 하나로 묶거나, untrusted peer의 forwarded header를 신뢰한다. | Trusted peer에서는 첫 untrusted client hop의 normalized network를 사용하고 untrusted peer에서는 socket peer를 사용한다. Identity 해석 실패는 body/probe 전 `503`. |
 
 ## Component And Hook Tests
 
@@ -115,7 +117,7 @@ Verified Against: feature/mba-246 @ 35d66ce59ea7090d71326faf8965ab3c57a50649
 | --- | --- | --- | --- |
 | CONN-TC-X001 | `connectorApi`는 connector create/test 실패 시 raw Axios error 객체를 console에 전달하지 않아야 한다. | Axios error의 request config/data에 DB password, SSH password, private key가 포함된다. | Operation과 status만 safe warning으로 남기고 sentinel은 UI/console에 없음. |
 | CONN-TC-X002 | Secret 원문은 문서, fixture, audit metadata에 남지 않아야 한다. | DB password, SSH password, private key 원문이 문서, 테스트 fixture, audit metadata 중 하나에서 관찰된다. | 테스트 실패. |
-| CONN-TC-X003 | Redis admission은 multi-replica 경쟁에서도 rate/concurrency 상한을 넘지 않아야 한다. | 마지막 slot을 병렬 acquire하거나 wrong owner release, long-running heartbeat, stale lease, clock skew를 만든다. | Redis time/atomic script 기준 정확한 winner, owner-safe renew/release와 crash-only TTL recovery. |
+| CONN-TC-X003 | Redis admission은 multi-replica 경쟁에서도 rate/concurrency 상한을 넘지 않아야 한다. | 마지막 slot을 병렬 acquire하거나 wrong owner release, long-running heartbeat, stale lease, clock skew를 만든다. | Redis time/atomic script 기준 정확한 winner, owner-safe renew/release와 process crash/release-failure TTL recovery. |
 | CONN-TC-X004 | Admission key/member는 opaque해야 한다. | Redis key/hash/zset에 raw organization/user/network ID, host/database/username/password가 관찰된다. | HMAC identity와 random owner token만 존재. |
 | CONN-TC-X005 | Strict probe는 validated IP 한 곳에 선택된 server-owned CA file을 명시한 TLS `verify-full`로 한 번만 연결해야 한다. | Multiple DNS, rebinding, first-attempt failure, plaintext/downgrade, system/local CA 누락 또는 SAN mismatch를 유도한다. | Pinned one-attempt, no fallback/retry, target별 CA와 hostname certificate 검증. CA 누락은 startup 또는 DNS 전에 safe failure. |
 | CONN-TC-X006 | Port allowlist는 배포 관리자만 bounded 설정할 수 있어야 한다. | Empty token, duplicate, non-integer, `0`, `65536`, 17개 port를 설정하거나 request로 allowlist 밖 port를 보낸다. | Invalid 설정은 startup 실패. Request는 safe target-policy 실패이며 admission/DNS/probe 0회. |
@@ -138,6 +140,8 @@ Verified Against: feature/mba-246 @ 35d66ce59ea7090d71326faf8965ab3c57a50649
 | CONN-TC-X023 | Credential init은 손상·중단 artifact를 안전하게 복구해야 한다. | Empty/malformed/wrong-mode credential, stale `.password.*`, 반대 volume의 known credential file을 각각 주입하고 init을 반복한다. | 유효 credential은 값 보존+`0600` 복구, invalid credential은 원자 교체, stale/cross artifact 제거. 각 volume에는 기대 파일 하나만 남고 원문 출력은 없다. |
 | CONN-TC-X024 | Credential/data volume을 부분 삭제해도 silent fallback하지 않아야 한다. | Running demo에서 Connector credential volume만 제거해 health/probe를 확인하고, 별도로 bootstrap admin credential volume만 제거해 노출 surface를 검사한다. | Connector credential 불일치는 health/probe에서 fail-closed한다. Regenerated bootstrap file은 기존 DB admin credential로 간주하지 않으며 verifier/Gateway에 노출되지 않는다. 어떤 경우에도 default/empty credential, plaintext, superuser fallback은 없고 복구는 runbook의 demo data+credential project-scope reset을 따른다. |
 | CONN-TC-X025 | Port allowlist 기본값은 실행 위치의 실제 network port만 포함해야 한다. | Helm default/local/production, base Docker, Docker env example, host-run env example을 대조한다. | Helm·base Docker·Docker-service는 `5432`만, host-run은 `5432,55432`만 허용하며 관성적인 `54322`는 Connector allowlist에 없음. |
+| CONN-TC-X026 | Docker demo Gateway의 admission은 실제 전용 Redis를 사용해야 한다. | Demo verifier만 `connector-test-redis`를 사용하고 Gateway composition은 platform Redis singleton을 사용한다. | Gateway override가 Connector-specific DB 15 URL을 주입하고 composition이 별도 client를 생성·종료한다. Platform Redis 설정은 변경하지 않음. |
+| CONN-TC-X027 | Certificate validity API와 선언된 dependency 하한은 일치해야 한다. | `not_valid_before_utc`/`not_valid_after_utc`를 사용하면서 Gateway가 `cryptography<42` 설치를 허용한다. | Gateway dependency minimum이 `42.0.0` 이상이고 CA startup validation test가 UTC validity API를 실행한다. |
 
 ## MBA-246 Automation Traceability
 
@@ -148,6 +152,10 @@ Verified Against: feature/mba-246 @ 35d66ce59ea7090d71326faf8965ab3c57a50649
 | A031, X012-X013, X020 | `apps/gateway/tests/integration/test_connector_demo_integration.py` | Actual transport/API/TLS PostgreSQL |
 | X014-X017, X021-X024 | `apps/gateway/tests/architecture/test_connector_demo_boundary.py`, Compose healthcheck, `scripts/verify_connector_demo_runtime.py`, MBA-246 Docker lifecycle smoke | Architecture + actual Docker smoke |
 | A032, C013, X025 | `apps/shared/tests/test_connector_test_schema.py`, `apps/gateway/tests/api/test_connector_test_api.py`, Client Connector tests, `apps/gateway/tests/architecture/test_connector_helm_boundary.py` | Schema + API + Client + architecture |
+| A028, A033 | `apps/gateway/tests/application/connectors/test_connection.py`, `apps/gateway/tests/adapters/connectors/test_postgres_probe.py` | Application + executor lifecycle |
+| A034 | `apps/gateway/tests/api/test_connector_test_api.py`, `apps/gateway/tests/adapters/authentication/test_client_network.py` | API + trusted proxy adapter |
+| X026 | `apps/gateway/tests/composition/test_connector_test_composition.py`, `apps/gateway/tests/architecture/test_connector_demo_boundary.py` | Composition + deployment contract |
+| X027 | `apps/gateway/tests/architecture/test_connector_dependency_boundary.py`, Connector composition CA tests | Dependency contract + startup |
 
 실제 Redis/TLS test는 opt-in 환경 설정이 없으면 skip할 수 있지만 MBA-246 merge evidence에서는 skip을 허용하지 않는다. 각 실행은 UUID 기반 namespace만 삭제하고 logical Redis DB 전체를 초기화하지 않는다. 실제 credential, certificate 본문, fingerprint, raw request는 pytest output이나 문서에 기록하지 않는다.
 

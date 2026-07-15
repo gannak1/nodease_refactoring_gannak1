@@ -1,7 +1,7 @@
 # Connectors API Spec
 
 Status: Draft
-Verified Against: feature/mba-246 @ 35d66ce59ea7090d71326faf8965ab3c57a50649
+Verified Against: feature/mba-246 @ f5cab6c05106cd60b0944d48ff92cd7d87407ecd
 
 기본 경로: `/api/v1`
 
@@ -55,12 +55,12 @@ Expected target/SSH/connection 실패는 `200 OK`, `success=false`로 반환한�
 
 처리 순서:
 
-1. 로그인과 active organization membership을 검증한다.
+1. 로그인과 active organization membership을 검증하고 공통 trusted-proxy resolver로 request network identity를 계산한다. Forwarded header는 설정된 trusted proxy peer에서만 사용하며 identity를 해석할 수 없으면 body와 probe 전에 `503 connector.admission_unavailable`로 닫는다.
 2. Actual body, media type, UTF-8 JSON object와 strict field를 검증한다.
 3. Redis에서 user/organization/network rate와 global/organization/user concurrency lease를 원자적으로 획득한다. Acquire, renew, release 각각에 Connector 전용 operation deadline을 적용하고 timeout은 `503 connector.admission_unavailable`로 닫는다.
 4. Port가 서버의 deployment-managed allowlist에 있는지 admission 전에 확인한다. 기본 경로는 host의 전체 DNS 결과가 public인지 검사한다. Development exact-local target은 서버 설정의 정확한 hostname+port와 일치하고 모든 DNS 결과가 RFC1918, IPv6 ULA 또는 loopback일 때만 허용한다. 두 경로 모두 validated IP 하나로 연결을 고정한다.
 5. Public target은 시스템 CA bundle, exact-local target은 서버가 설정한 전용 CA file을 명시해 TLS `verify-full`, connect 5초, statement 3초, API 10초 안에서 read-only `SELECT 1`을 한 번 수행한다. 선택된 CA가 없으면 startup 또는 DNS 전에 safe failure로 닫는다.
-6. Actual work 중 owner-safe heartbeat로 lease를 연장하고, safe result 반환 뒤에도 blocking work가 남아 있으면 completion까지 유지한 다음 owner lease를 해제한다.
+6. Actual work 중 owner-safe heartbeat로 lease를 연장한다. Safe timeout 응답 뒤에도 probe가 20초 hard deadline 전에 끝나면 completion까지 lease를 유지한다. Hard deadline에 도달하면 heartbeat를 중단하고 owner lease를 해제하며 async probe를 취소한다. 취소할 수 없는 driver thread의 local executor slot은 실제 종료 전까지 재사용하지 않는다.
 
 Initial admission limits:
 
@@ -89,8 +89,10 @@ Security environment settings:
 | `CONNECTOR_TEST_CONNECT_TIMEOUT_SECONDS` | `5` | `1..10`, API timeout 미만 |
 | `CONNECTOR_TEST_STATEMENT_TIMEOUT_SECONDS` | `3` | `1..10`, API timeout 미만 |
 | `CONNECTOR_TEST_RESPONSE_TIMEOUT_SECONDS` | `10` | finite `0 < value <= 30`, connect/statement보다 크고 lease보다 작음 |
+| `CONNECTOR_TEST_PROBE_HARD_TIMEOUT_SECONDS` | `20` | finite `API timeout < value <= 60` |
 | `CONNECTOR_TEST_REDIS_OPERATION_TIMEOUT_SECONDS` | `1` | finite `0 < value <= 5`, API timeout 및 lease TTL의 3분의 1보다 작음 |
 | `CONNECTOR_TEST_LEASE_TTL_SECONDS` | `30` | `1..120`, API timeout보다 큼 |
+| `CONNECTOR_TEST_REDIS_URL` | unset | 선택적 Connector admission 전용 `redis`/`rediss` URL. Host와 logical DB `0..255` path가 필요하며 query/fragment는 허용하지 않는다. 미설정 시 platform async Redis를 사용한다. |
 | `CONNECTOR_TEST_ADMISSION_HMAC_KEY` | local-only fallback | Production에서 별도 32 byte 이상 key 필수 |
 | `CONNECTOR_TEST_ALLOWED_PORTS` | `5432` | 중복 없는 port 1~16개. Local target port도 포함 |
 | `CONNECTOR_TEST_LOCAL_PROFILE_ENABLED` | `false` | `true`/`false`만 허용. `true`는 development exact-local target과 CA를 모두 요구 |
@@ -107,6 +109,8 @@ Local demo profile은 다음 두 target을 각각 사용한다.
 | Docker Gateway | `connector-test-postgres:5432` | container에 read-only mount된 runtime-generated 공개 CA |
 
 CA signing key는 one-shot init container의 임시 filesystem에서만 사용하고 종료 전에 제거한다. Server TLS material, PostgreSQL bootstrap admin credential, Connector demo credential은 분리된 private volume에 두며 API와 Gateway mount에는 포함하지 않는다. One-shot verifier와 clipboard helper에는 Connector demo credential만 제공하고 stdout에 출력하지 않는다.
+
+Host-run demo는 선택적으로 `CONNECTOR_TEST_REDIS_URL`을 loopback-published demo Redis DB 15로 설정한다. Docker demo override는 Gateway에 `redis://connector-test-redis:6379/15`를 명시해 실제 admission도 전용 Redis를 사용한다. 이 override는 workflow, pub/sub와 Celery가 사용하는 platform Redis 설정을 변경하지 않으며, Gateway shutdown은 자신이 생성한 Connector 전용 Redis client만 닫는다.
 
 ### `POST /connectors`
 
