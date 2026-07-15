@@ -222,6 +222,23 @@ describe('AuthenticatedDeploymentRunPage', () => {
     });
   });
 
+  it('WebKit의 한글 조합 확정 Enter는 질문을 전송하지 않는다', async () => {
+    render(<AuthenticatedDeploymentRunPage />);
+    const questionInput = await screen.findByLabelText('질문');
+
+    fireEvent.change(questionInput, {
+      target: { value: '한글 입력 중' },
+    });
+    fireEvent.keyDown(questionInput, {
+      key: 'Enter',
+      code: 'Enter',
+      isComposing: false,
+      keyCode: 229,
+    });
+
+    expect(mockedWorkflowApi.runDeployment).not.toHaveBeenCalled();
+  });
+
   it('내부 실행 화면의 뒤로가기는 운영 현황이 아닌 대시보드로 이동한다', async () => {
     render(<AuthenticatedDeploymentRunPage />);
 
