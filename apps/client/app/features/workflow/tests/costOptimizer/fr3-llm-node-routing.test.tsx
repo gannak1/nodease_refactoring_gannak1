@@ -789,7 +789,7 @@ describe('FR-003 LLM node model routing optimization entry', () => {
       screen.getByText(/배포 후 운영 로그를 기준으로 추천 모델/),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole('checkbox', { name: /자동 모델 라우팅/ }),
+      await screen.findByRole('checkbox', { name: /자동 모델 라우팅/ }),
     ).toBeInTheDocument();
     expect(screen.queryByLabelText('작업 유형')).not.toBeInTheDocument();
   });
