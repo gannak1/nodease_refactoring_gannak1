@@ -21,6 +21,7 @@ Verified Against: TBD
 - Given `row.app.budget_status.status`가 `exceeded`다, When 클라이언트가 `/dashboard/mymodule`을 렌더링한다, Then row는 예산 상태 badge와 "실행 차단" 표시를 보여준다.
 - Given `row.app.budget_status`가 null이다, When 클라이언트가 `/dashboard/mymodule`을 렌더링한다, Then 예산 관련 텍스트 없이 기존 row 레이아웃을 유지한다.
 - Given `row.app.operation_metrics`가 null이다, When 클라이언트가 `/dashboard/mymodule`을 렌더링한다, Then 월 예상 비용/증가 추세/최적화 권장 UI는 "운영 비용 없음" 또는 "비교 데이터 없음"을 표시하고 deterministic dummy 값을 생성하지 않는다.
+- Given 최종 demo profile의 `온보딩용 챗봇` row가 API 응답의 첫 행이 아니다, When `/dashboard/mymodule`을 렌더링한다, Then 해당 row는 첫 행에 표시하고 나머지 row의 상대 순서는 유지한다.
 
 ### AC-3. 안전 요약 노출 제한
 

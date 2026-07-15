@@ -60,6 +60,21 @@ type DeploymentFilter = 'all' | 'active' | 'inactive' | 'undeployed';
 type RunFilter = 'all' | 'running' | 'failed';
 
 const PAGE_SIZE = 100;
+const ONBOARDING_CHATBOT_NAME = '온보딩용 챗봇';
+
+const prioritizeOnboardingChatbot = (rows: ModuleOperationRow[]) => {
+  const onboardingChatbotIndex = rows.findIndex(
+    (row) => row.app.name === ONBOARDING_CHATBOT_NAME,
+  );
+
+  if (onboardingChatbotIndex <= 0) return rows;
+
+  return [
+    rows[onboardingChatbotIndex],
+    ...rows.slice(0, onboardingChatbotIndex),
+    ...rows.slice(onboardingChatbotIndex + 1),
+  ];
+};
 
 const runLabels: Record<ModuleRunState, string> = {
   running: '실행 중',
@@ -354,7 +369,9 @@ export default function MyModulePage() {
           buildListParams(offset),
         );
         if (requestSeq !== requestSeqRef.current) return;
-        setRows((currentRows) => (append ? [...currentRows, ...data] : data));
+        setRows((currentRows) =>
+          prioritizeOnboardingChatbot(append ? [...currentRows, ...data] : data),
+        );
         setHasMore(data.length === PAGE_SIZE);
 
         try {

@@ -33,6 +33,7 @@ Budget Management 확장:
 
 - 모듈 row의 열기/앱 설정/배포 상태 변경 동작은 기존 권한 조건을 따른다.
 - 예산 상태 표시는 이 상호작용 조건을 바꾸지 않는다.
+- 최종 demo profile에서 `온보딩용 챗봇` row가 목록에 있으면 첫 행에 표시한다. 그 밖의 row는 API가 반환한 상대 순서를 유지한다.
 
 ## Accessibility
 
