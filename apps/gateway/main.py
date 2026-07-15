@@ -1,3 +1,4 @@
+# ruff: noqa: E402 - load local environment before importing configuration consumers
 # .env 파일을 기본값으로 로드 ( 개발 환경 )
 import logging
 import sys
@@ -43,6 +44,9 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from apps.gateway.api.api import api_router
+from apps.gateway.composition.authentication import (
+    validate_login_security_configuration,
+)
 from apps.gateway.core.http_security import (
     parse_credentialed_cors_origins,
     resolve_session_signing_secret,
@@ -58,6 +62,8 @@ from apps.shared.audit.context import (
     get_current_metadata,
     set_current_metadata,
 )
+
+validate_login_security_configuration()
 
 app = FastAPI(title="Moduly Gateway API", lifespan=lifespan)
 

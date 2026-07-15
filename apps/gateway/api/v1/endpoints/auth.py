@@ -3,18 +3,36 @@ import os
 from collections.abc import Mapping
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
+from apps.gateway.application.authentication.errors import (
+    InactiveAccount,
+    InvalidCredentials,
+    LoginRateLimited,
+    LoginTemporarilyUnavailable,
+    PasswordLoginInternalError,
+)
+from apps.gateway.application.authentication.models import PasswordLoginCommand
 from apps.gateway.auth.oauth import oauth
+from apps.gateway.composition.authentication import (
+    build_password_login,
+    login_network_resolver,
+)
 from apps.gateway.services.auth_return_service import AuthReturnService
 from apps.gateway.services.auth_service import AuthService
 from apps.shared.audit import record_audit
 from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.context import get_current_metadata
 from apps.shared.db.session import get_db
-from apps.shared.schemas.auth import LoginRequest, LoginResponse, SignupRequest
+from apps.shared.schemas.auth import (
+    LoginRequest,
+    LoginResponse,
+    SessionInfo,
+    SignupRequest,
+    UserResponse,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -95,6 +113,18 @@ def _record_google_oauth_failure(request: Request, reason: str) -> None:
             **_request_meta(request),
         },
     )
+
+
+def _recorded_login_error(
+    status_code: int,
+    detail: str,
+    *,
+    retry_after: int | None = None,
+) -> HTTPException:
+    headers = {"Retry-After": str(retry_after)} if retry_after is not None else None
+    exc = HTTPException(status_code=status_code, detail=detail, headers=headers)
+    setattr(exc, "audit_recorded", True)
+    return exc
 
 
 def _get_cookie_config(request: Request) -> tuple[bool, str | None]:
@@ -188,20 +218,63 @@ def login(
     Returns:
         LoginResponse: 사용자 정보 + JWT 토큰
     """
+    use_case = build_password_login(db)
     try:
-        result = AuthService.login(db, request)
-    except Exception as e:
-        _record_auth_failure(AuditAction.USER_LOGIN_FAILED, request_obj, request.email, e)
-        raise
+        result = use_case.execute(
+            PasswordLoginCommand(
+                account=str(request.email),
+                password=request.password,
+                source_network=login_network_resolver().resolve(request_obj),
+                request_id=(
+                    getattr(request_obj.state, "request_id", None)
+                    or request_obj.headers.get("X-Request-ID")
+                ),
+            )
+        )
+    except InvalidCredentials:
+        raise _recorded_login_error(
+            401,
+            "이메일 또는 비밀번호가 올바르지 않습니다",
+        ) from None
+    except InactiveAccount:
+        raise _recorded_login_error(403, "비활성화된 계정입니다") from None
+    except LoginRateLimited as exc:
+        raise _recorded_login_error(
+            429,
+            "로그인 시도가 너무 많습니다. 잠시 후 다시 시도해주세요.",
+            retry_after=exc.retry_after_seconds,
+        ) from None
+    except LoginTemporarilyUnavailable:
+        raise _recorded_login_error(
+            503,
+            "로그인을 일시적으로 사용할 수 없습니다.",
+            retry_after=30,
+        ) from None
+    except PasswordLoginInternalError:
+        raise _recorded_login_error(
+            500,
+            "로그인을 처리할 수 없습니다.",
+        ) from None
 
-    _record_auth_success(AuditAction.USER_LOGIN, request_obj, result.user)
+    response_result = LoginResponse(
+        user=UserResponse(
+            id=result.user.id,
+            email=result.user.email,
+            name=result.user.name,
+            created_at=result.user.created_at,
+        ),
+        session=SessionInfo(
+            token=result.session.token,
+            expires_at=result.session.expires_at,
+        ),
+    )
 
     # 환경 감지 및 쿠키 도메인 설정
     is_production, cookie_domain = _get_cookie_config(request_obj)
 
     cookie_params = {
         "key": "auth_token",
-        "value": result.session.token,
+        "value": response_result.session.token,
         "httponly": True,
         "samesite": "none" if is_production else "lax",
         "max_age": 21600,  # 6시간
@@ -217,7 +290,7 @@ def login(
 
     response.set_cookie(**cookie_params)
 
-    return result
+    return response_result
 
 
 @router.post("/logout")

@@ -110,4 +110,25 @@ describe('LoginPage auth return', () => {
 
     expect(mockedAuthApi.googleLogin).toHaveBeenCalledWith('/dashboard');
   });
+
+  it('로그인 제한은 서버의 고정된 generic 메시지만 표시한다', async () => {
+    mockedAuthApi.login.mockRejectedValueOnce({
+      response: {
+        status: 429,
+        data: {
+          detail: '로그인 시도가 너무 많습니다. 잠시 후 다시 시도해주세요.',
+        },
+      },
+    });
+    render(<LoginPage />);
+
+    submitLogin();
+
+    expect(
+      await screen.findByText(
+        '로그인 시도가 너무 많습니다. 잠시 후 다시 시도해주세요.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/account|network|threshold/i)).toBeNull();
+  });
 });
