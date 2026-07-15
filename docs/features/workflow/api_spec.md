@@ -360,6 +360,12 @@ Blocking response:
 - Mail data의 `title`, folder, `max_results`, boolean, filter/date/reference와 processing mode는 Worker schema와 같은 타입·범위로 검사한다.
 - Compare와 Cost Optimizer candidate는 preflight를 통과한 server-bound graph에서 파생하며 task 직전에 WorkflowNode target을 다시 binding하지 않는다. Recommendation verification의 완료된 동일 Idempotency-Key safe response는 workflow 권한과 active organization scope를 확인한 뒤 현재 node/graph preflight와 task 없이 replay한다.
 
+### MBA-275 Cross-Surface Admission Contract
+
+- server는 Catalog required configuration에서 `external_read`, `external_write`, `local_execution`을 포함한 unresolved 상태를 재계산한다. client의 `configuration_state=resolved` 위조는 통과하지 않는다.
+- test/run/deployment의 기존 `409 workflow.configuration_preflight.blocked` 응답과 safe `reason_code` 계약을 유지한다. 새 public error code를 만들지 않으며 raw node data, reference, secret과 내부 exception을 반환하지 않는다.
+- schedule dispatch는 publish 전에 같은 preflight를 수행하고, worker는 claim의 locked canonical snapshot을 다시 검사한 뒤 budget 평가와 `mark_running()`으로 진행한다. blocker는 기존 `configuration_preflight_blocked`로 canceled 처리한다.
+
 ## Errors
 
 ### 1. 실행 편의성

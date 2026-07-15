@@ -243,6 +243,10 @@ FR-048 기존 실행 계약 보존: Draft/test·Compare·stream publisher는 DB 
 
 ### 5. 교차 도메인 실행 경계
 
+- Catalog required configuration preflight는 `external_read`, `external_write`, `local_execution` node를 동일한 server-derived 규칙으로 검사한다. client가 보낸 `configuration_state`는 신뢰하지 않으며 draft 편집·저장은 허용하되 실행·배포 admission은 unresolved이면 차단한다.
+- test, run, deployment와 schedule은 동일한 preflight 판정을 사용한다. Gateway schedule dispatch는 task publish 전에 검사하고, worker schedule admission은 locked canonical deployment snapshot에 대해 다시 검사한다.
+- worker preflight blocker는 기존 `configuration_preflight_blocked` safe reason으로 `dispatching|enqueued -> canceled` 처리하고 `schedule_dispatch.canceled` audit을 남긴다. `workflow_run_id`, `started_at`, Knowledge sync, engine/provider 호출과 Celery retry는 시작하지 않는다.
+
 - 생성된 workflow나 Agent Builder가 만든 workflow도 일반 workflow와 동일한 organization scope, RBAC, audit, trace 정책을 따른다.
 - Workflow 실행 권한, LLM credential `use`, connector/connection 사용 권한, Knowledge KB/source ACL 권한은 서로를 대체하지 않는다.
 - Workflow-node 순환 참조, nesting depth 초과, target app/deployment unavailable 같은 복구 불가능한 graph 설정 오류는 retry 가능한 일시 장애가 아니다. Celery task는 이러한 non-retryable runtime error를 즉시 실패로 보존해야 한다.

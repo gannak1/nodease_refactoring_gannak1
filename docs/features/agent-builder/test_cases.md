@@ -627,3 +627,10 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - Agent Builder GraphMutation으로 추가된 node와 canonical base graph의 기존 node는 local editor 반영 시 모두 유효한 `displayNumber`를 가진다. 이 번호는 BaseNode의 source/target 연결 handle에 표시되며 저장 request에는 포함하지 않는다.
 - 빈 Start/Answer workflow는 ParameterTask 없이 저장·acknowledgement 후 완료 상태로 진행한다.
 - schema-invalid planner 응답과 완결된 Start-to-Answer 흐름의 모순된 unsupported 응답은 safe repair prompt를 한 번만 보내며, 수정된 `start_input -> answer` structured response를 정상 처리한다.
+
+### MBA-275 Direct-Edit Consistency Cases
+
+- direct `set`의 secret-like 값과 detector 오류는 fail-closed하며 `400 invalid_decision`만 반환하고 graph/session/task/audit/trace/log에 원문이 남지 않는다. 일반 Catalog validation issue는 HTTP 오류가 아니라 `status=invalid`, `reason=catalog_validation_failed` task 결과로 저장·반환된다.
+- `credential_ref`/`resource_ref`의 raw config와 미검증 id는 거부하고, 서버가 검증한 canonical reference만 저장한다.
+- Workflow/App pair는 같은 organization·양쪽 권한·`App.workflow_id == Workflow.id`를 모두 만족할 때만 저장된다. 두 입력 순서, 한쪽 교체, 숨김 resource와 권한 부족에서 safe 4xx 및 부분 mutation 없음이 동일하다.
+- PostgreSQL 두 session 경쟁에서 stale identity-map을 가진 CAS 요청은 locked 최신 row를 기준으로 `409 stale_graph`가 되고, 선행 commit의 graph/hash/updated_at을 보존한다.

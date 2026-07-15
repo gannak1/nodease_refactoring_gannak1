@@ -791,3 +791,12 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - Agent Builder acknowledgement 뒤 stale snapshot을 가진 Model Routing policy PATCH 또는 Cost Optimizer apply/recommendation apply가 실행되면 workflow row lock 뒤 `409 stale_graph`로 닫히고 graph와 policy/candidate 부가 상태를 모두 보존하는지 확인한다. 성공 경로는 canonical `graph_hash`와 `updated_at`을 반환하고 frontend 공통 metadata를 갱신해야 한다.
 - Canonical draft 재조회가 local Workflow history, Agent Builder pending boundary와 ambiguous save context를 초기화하지 않는지 확인한다.
 - Save/ack/revert/redo response loss에서 canonical graph metadata로 applied/unapplied/stale을 판정하고 결과 확정 전 pending history를 삭제하지 않는지 확인한다.
+
+### MBA-275 Configuration And Schedule Admission Regression
+
+- required configuration이 있는 `WorkflowNode`(`local_execution`)와 기존 external node의 missing/deferred 값은 test/run/deployment/schedule 모두 동일한 preflight blocker로 차단된다. client가 resolved 상태를 위조해도 통과하지 않는다.
+- 기존 문자열 `loop_key`를 가진 Loop는 오탐 없이 통과하고, `loopNode.subGraph` 내부의 unresolved local/external node는 같은 규칙으로 차단된다.
+- required configuration이 없는 local node와 완전히 resolved graph는 오탐 없이 기존 실행 경로를 통과한다.
+- Gateway schedule dispatch는 unresolved deployment를 publish 전에 차단하고 broker publisher를 호출하지 않는다.
+- worker가 받은 unresolved claim은 locked snapshot preflight 뒤 `configuration_preflight_blocked`로 한 번만 canceled 처리한다. `workflow_run_id`/`started_at`은 생성되지 않고 budget, `mark_running()`, Knowledge sync, engine/provider와 Celery retry는 호출되지 않는다.
+- 같은 claim 재전달은 terminal duplicate 결과로 억제되며 claim을 reopen하거나 다시 실행하지 않는다. resolved claim의 기존 성공·실패 경로는 회귀하지 않는다.
