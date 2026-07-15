@@ -24,6 +24,7 @@ from apps.shared.services.password_hashing import (
 SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 6
+_DUMMY_PASSWORD_HASH = hash_password_value("nodease-password-login-dummy")
 
 
 class AuthService:
@@ -173,6 +174,7 @@ class AuthService:
     def login(db: Session, request: LoginRequest) -> LoginResponse:
         user = db.query(User).filter(User.email == request.email).first()
         if not user or not user.password:
+            AuthService.verify_password(request.password, _DUMMY_PASSWORD_HASH)
             raise HTTPException(
                 status_code=401, detail="이메일 또는 비밀번호가 올바르지 않습니다"
             )
