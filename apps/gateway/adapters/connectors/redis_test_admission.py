@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import logging
 import math
+import re
 import secrets
 from typing import Any
 
@@ -20,10 +21,10 @@ from apps.gateway.application.connectors.models import (
 
 logger = logging.getLogger(__name__)
 
-_KEY_TAG = "connector-test:{admission-v1}"
-_RATE_KEY = f"{_KEY_TAG}:rate"
-_RATE_EXPIRY_KEY = f"{_KEY_TAG}:rate-expiry"
-_LEASE_KEY = f"{_KEY_TAG}:leases"
+_DEFAULT_KEY_NAMESPACE = "connector-test"
+_KEY_NAMESPACE_PATTERN = re.compile(
+    r"[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?"
+)
 
 _ACQUIRE_SCRIPT = r"""
 local time = redis.call('TIME')
@@ -57,11 +58,6 @@ for index, scope in ipairs(rate_scopes) do
     end
 end
 
-for _, field in ipairs(rate_fields) do
-    redis.call('HINCRBY', KEYS[1], field, 1)
-    redis.call('ZADD', KEYS[2], window_end + 120, field)
-end
-
 local user_prefix = ARGV[2] .. ':'
 local organization_marker = ':' .. ARGV[3] .. ':'
 local user_count = 0
@@ -91,6 +87,11 @@ if user_count >= tonumber(ARGV[8])
         retry_after = math.max(1, math.ceil(earliest_expiry - now))
     end
     return {'BUSY', tostring(retry_after)}
+end
+
+for _, field in ipairs(rate_fields) do
+    redis.call('HINCRBY', KEYS[1], field, 1)
+    redis.call('ZADD', KEYS[2], window_end + 120, field)
 end
 
 local member = ARGV[2] .. ':' .. ARGV[3] .. ':' .. ARGV[11]
@@ -124,12 +125,21 @@ class RedisConnectorTestAdmission:
         *,
         policy: ConnectorTestPolicy,
         hmac_key: bytes,
+        key_namespace: str = _DEFAULT_KEY_NAMESPACE,
     ) -> None:
         if len(hmac_key) < 32:
             raise ValueError("connector test admission HMAC key must be at least 32 bytes")
+        if not isinstance(key_namespace, str) or not _KEY_NAMESPACE_PATTERN.fullmatch(
+            key_namespace
+        ):
+            raise ValueError("connector test admission key namespace is invalid")
         self._redis = redis_client
         self._policy = policy
         self._hmac_key = hmac_key
+        key_tag = f"{key_namespace}:{{admission-v1}}"
+        self._rate_key = f"{key_tag}:rate"
+        self._rate_expiry_key = f"{key_tag}:rate-expiry"
+        self._lease_key = f"{key_tag}:leases"
 
     async def acquire(self, command: ConnectorTestCommand) -> AdmissionLease:
         if not command.network_address:
@@ -143,9 +153,9 @@ class RedisConnectorTestAdmission:
             response = await self._redis.eval(
                 _ACQUIRE_SCRIPT,
                 3,
-                _RATE_KEY,
-                _RATE_EXPIRY_KEY,
-                _LEASE_KEY,
+                self._rate_key,
+                self._rate_expiry_key,
+                self._lease_key,
                 self._policy.rate_window_seconds,
                 user_scope,
                 organization_scope,
@@ -178,7 +188,7 @@ class RedisConnectorTestAdmission:
 
     async def release(self, lease: AdmissionLease) -> None:
         try:
-            await self._redis.eval(_RELEASE_SCRIPT, 1, _LEASE_KEY, lease.member)
+            await self._redis.eval(_RELEASE_SCRIPT, 1, self._lease_key, lease.member)
         except Exception as exc:
             logger.error(
                 "Connector test admission release failed: error_type=%s",
@@ -191,7 +201,7 @@ class RedisConnectorTestAdmission:
             renewed = await self._redis.eval(
                 _RENEW_SCRIPT,
                 1,
-                _LEASE_KEY,
+                self._lease_key,
                 lease.member,
                 self._policy.lease_ttl_seconds,
             )

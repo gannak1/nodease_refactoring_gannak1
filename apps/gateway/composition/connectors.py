@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+
+from cryptography import x509
+from cryptography.x509 import BasicConstraints
 
 from apps.gateway.adapters.audit.connector_test import ConnectorTestAuditRecorder
 from apps.gateway.adapters.connectors.postgres_probe import StrictPostgresConnectorProbe
@@ -19,6 +23,7 @@ from apps.shared.pubsub import get_async_redis_client
 from apps.shared.services.egress_guard import canonicalize_network_host
 
 _LOCAL_ADMISSION_KEY = b"connector-test-local-development-key-v1"
+_MAX_TRUSTED_LOCAL_CA_BYTES = 64 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,12 +81,8 @@ def require_connector_test_security_ready(
     values = environ if environ is not None else os.environ
     policy = connector_test_policy_from_environment(values)
     _admission_key(values)
-    if policy.trusted_local_ca_file and not Path(
-        policy.trusted_local_ca_file
-    ).is_file():
-        raise RuntimeError(
-            "CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE must reference a regular file"
-        )
+    if policy.trusted_local_ca_file:
+        _validate_trusted_local_ca_file(policy.trusted_local_ca_file)
 
 
 def get_connector_test_application() -> ConnectorTestApplication:
@@ -145,11 +146,26 @@ def _trusted_local_configuration(
     raw_ca_file = str(
         environ.get("CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE", "")
     ).strip()
+    profile_enabled = _strict_boolean(
+        environ,
+        "CONNECTOR_TEST_LOCAL_PROFILE_ENABLED",
+        False,
+    )
     environment_name = _environment_name(environ)
 
-    if environment_name == "production" and (raw_targets or raw_ca_file):
+    if environment_name == "production" and (
+        profile_enabled or raw_targets or raw_ca_file
+    ):
         raise RuntimeError(
-            "trusted local connector targets are forbidden in production"
+            "trusted local connector profile is forbidden in production"
+        )
+    if (raw_targets or raw_ca_file) and not profile_enabled:
+        raise RuntimeError(
+            "trusted local connector settings require the explicit local profile"
+        )
+    if profile_enabled and not (raw_targets or raw_ca_file):
+        raise RuntimeError(
+            "trusted local connector profile requires exact targets and a CA file"
         )
     if bool(raw_targets) != bool(raw_ca_file):
         raise RuntimeError(
@@ -232,6 +248,64 @@ def _float(environ: Mapping[str, str], name: str, default: float) -> float:
         return float(raw_value)
     except ValueError as exc:
         raise RuntimeError(f"{name} must be numeric") from exc
+
+
+def _strict_boolean(
+    environ: Mapping[str, str],
+    name: str,
+    default: bool,
+) -> bool:
+    raw_value = environ.get(name)
+    if raw_value is None or raw_value == "":
+        return default
+    normalized = str(raw_value).strip().lower()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    raise RuntimeError(f"{name} must be true or false")
+
+
+def _validate_trusted_local_ca_file(raw_path: str) -> None:
+    path = Path(raw_path)
+    try:
+        if not path.is_file():
+            raise RuntimeError(
+                "CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE must reference a regular file"
+            )
+        data = path.read_bytes()
+    except OSError as exc:
+        raise RuntimeError(
+            "CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE must be readable"
+        ) from exc
+    if (
+        not data
+        or len(data) > _MAX_TRUSTED_LOCAL_CA_BYTES
+        or data.count(b"-----BEGIN CERTIFICATE-----") != 1
+        or data.count(b"-----END CERTIFICATE-----") != 1
+        or b"PRIVATE KEY" in data
+    ):
+        raise RuntimeError(
+            "CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE must contain one public CA certificate"
+        )
+    try:
+        certificate = x509.load_pem_x509_certificate(data)
+        constraints = certificate.extensions.get_extension_for_class(
+            BasicConstraints
+        ).value
+    except (ValueError, x509.ExtensionNotFound) as exc:
+        raise RuntimeError(
+            "CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE must contain a valid CA certificate"
+        ) from exc
+    now = datetime.now(UTC)
+    if (
+        not constraints.ca
+        or certificate.not_valid_before_utc > now
+        or certificate.not_valid_after_utc <= now
+    ):
+        raise RuntimeError(
+            "CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE must contain a currently valid CA"
+        )
 
 
 __all__ = [

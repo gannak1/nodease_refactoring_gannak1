@@ -29,16 +29,22 @@ class _NoopAudit:
 def _settings() -> tuple[str, str, str]:
     redis_url = os.environ.get("CONNECTOR_DEMO_REDIS_URL", "").strip()
     ca_file = os.environ.get("CONNECTOR_DEMO_CA_FILE", "").strip()
-    password = os.environ.get("CONNECTOR_DEMO_POSTGRES_PASSWORD", "")
+    password_file = os.environ.get(
+        "CONNECTOR_DEMO_POSTGRES_PASSWORD_FILE",
+        "",
+    ).strip()
     parsed = urlsplit(redis_url)
     if (
         parsed.scheme != "redis"
         or parsed.hostname != "connector-test-redis"
         or parsed.port != 6379
         or parsed.path != "/15"
-        or not password
         or not Path(ca_file).is_file()
+        or not Path(password_file).is_file()
     ):
+        raise RuntimeError("connector demo runtime configuration is invalid")
+    password = Path(password_file).read_text(encoding="utf-8").strip()
+    if not password:
         raise RuntimeError("connector demo runtime configuration is invalid")
     return redis_url, ca_file, password
 
@@ -47,7 +53,7 @@ async def _verify() -> None:
     redis_url, ca_file, password = _settings()
     redis_client = redis_asyncio.from_url(redis_url, decode_responses=False)
     await redis_client.ping()
-    await redis_client.flushdb()
+    key_namespace = f"connector-demo-runtime-{uuid4().hex}"
 
     target = TrustedLocalConnectorTarget(
         host="connector-test-postgres",
@@ -61,6 +67,7 @@ async def _verify() -> None:
         redis_client,
         policy=policy,
         hmac_key=b"docker-runtime-test-only-key-material" * 2,
+        key_namespace=key_namespace,
     )
     probe = StrictPostgresConnectorProbe(policy)
     use_case = TestConnectorConnection(admission, probe, _NoopAudit(), policy)
@@ -81,7 +88,12 @@ async def _verify() -> None:
             raise RuntimeError("connector demo runtime probe failed")
     finally:
         probe.shutdown()
-        await redis_client.flushdb()
+        keys = [
+            key
+            async for key in redis_client.scan_iter(match=f"{key_namespace}:*")
+        ]
+        if keys:
+            await redis_client.delete(*keys)
         await redis_client.aclose()
 
 

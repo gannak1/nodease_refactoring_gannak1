@@ -20,7 +20,7 @@ if ($Mode -eq "docker") {
 }
 
 $password = & docker @composeArguments exec -T connector-test-postgres `
-    sh -c 'cat /tls/server/demo-password'
+    sh -c 'cat /tls/credentials/demo-password'
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($password)) {
     throw "Connector demo credential is unavailable. Start the connector-demo profile first."
 }
