@@ -350,6 +350,9 @@ def test_catalog_parameter_validation_drives_configuration_state():
 
 
 def test_catalog_exposes_effective_validation_and_sensitivity_metadata():
+    catalog_by_type = {
+        node["node_type"]: node for node in load_workflow_node_catalog()["nodes"]
+    }
     http_url = next(
         parameter
         for parameter in node_parameter_definitions("httpRequestNode")
@@ -365,8 +368,23 @@ def test_catalog_exposes_effective_validation_and_sensitivity_metadata():
         for parameter in node_parameter_definitions("loopNode")
         if parameter["key"] == "loop_key"
     )
+    workflow_id = next(
+        parameter
+        for parameter in node_parameter_definitions("workflowNode")
+        if parameter["key"] == "workflowId"
+    )
+    workflow_app_id = next(
+        parameter
+        for parameter in node_parameter_definitions("workflowNode")
+        if parameter["key"] == "appId"
+    )
 
     assert http_url["validation"]["max_length"] == 2048
     assert http_url["sensitivity"] == "secret_forbidden"
     assert slack_credential["sensitivity"] == "reference_only"
     assert loop_key["input_type"] == "text"
+    assert loop_key["required"] is False
+    assert catalog_by_type["loopNode"]["required_configuration"] == ["subGraph"]
+    assert workflow_id["required"] is False
+    assert workflow_app_id["required"] is True
+    assert catalog_by_type["workflowNode"]["required_configuration"] == ["appId"]

@@ -97,7 +97,7 @@ Main generation과 Memory summary provider adapter는 Workflow admission 안에�
 - Preview는 audit port를 호출하지 않는다. Enforcing use case만 내부 same-organization permission-denial decision을 audit port에 전달하고 public preflight projection에는 resource identity나 effective state를 넣지 않는다.
 - Test Sidebar는 stream 시작 전 `409 workflow.configuration_preflight.blocked` 응답의 safe required action label을 표시한다. Generic 실행 실패 문구만 표시하거나 raw response object를 렌더링하지 않는다.
 - Compare와 Cost Optimizer는 base graph preflight가 blocked이면 variant/candidate publisher를 시작하지 않는다. 정상 graph의 기존 결과 projection은 유지한다.
-- Shared preflight classifier는 Catalog required configuration과 `external_read|external_write|local_execution` side effect를 기준으로 server-derived readiness를 계산한다. `loopNode.subGraph`도 각 graph scope에서 재귀적으로 검사하며, Gateway와 Workflow Engine은 이 판정을 공유하고 node `configuration_state`를 직접 신뢰하지 않는다.
+- Shared preflight classifier는 Catalog required configuration과 `external_read|external_write|local_execution` side effect를 기준으로 server-derived readiness를 계산한다. WorkflowNode는 `appId`를 필수 target으로 사용하고 선택 metadata인 `workflowId` 부재는 blocker로 만들지 않는다. Loop는 `subGraph`를 필수로 재귀 검사하고 `loop_key` 부재 시 runtime의 mapped-input 첫 배열 fallback을 유지한다. Gateway와 Workflow Engine은 이 판정을 공유하고 node `configuration_state`를 직접 신뢰하지 않는다.
 - Gateway schedule adapter는 publish 전 검사만 담당하고, Workflow Engine schedule admission adapter는 `lock_canonical_bundle()` 뒤 동일 판정을 재실행한다. 통과 전에 budget, `mark_running()`, Knowledge sync, engine construction과 provider 호출을 하지 않는다.
 - blocker는 기존 repository cancel contract와 `configuration_preflight_blocked`를 사용해 `running` 전 `canceled`로 닫고 safe audit만 기록한다. terminal claim 재전달은 duplicate 결과로 끝내며 reopen/retry하지 않는다.
 

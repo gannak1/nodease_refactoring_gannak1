@@ -36,7 +36,7 @@ def test_schedule_preflight_blocks_unresolved_local_execution_before_deployment_
 
     ready = adapter.is_ready(
         graph_snapshot=_workflow_node_graph(
-            {"appId": str(uuid4()), "configuration_state": "resolved"}
+            {"workflowId": str(uuid4()), "configuration_state": "resolved"}
         ),
         organization_id=uuid4(),
     )
@@ -49,7 +49,7 @@ def test_schedule_preflight_keeps_deployment_policy_for_resolved_local_execution
     monkeypatch,
 ):
     graph = _workflow_node_graph(
-        {"workflowId": str(uuid4()), "appId": str(uuid4())}
+        {"workflowId": "", "appId": str(uuid4()), "deployment_id": str(uuid4())}
     )
     deployment_calls = []
     monkeypatch.setattr(

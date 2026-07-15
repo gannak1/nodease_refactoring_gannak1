@@ -57,17 +57,36 @@ def test_local_execution_preflight_ignores_client_configuration_state():
 
     assert len(issues) == 1
     assert issues[0].node_type == "workflowNode"
-    assert issues[0].missing_parameters == ("workflowId", "appId")
+    assert issues[0].missing_parameters == ("appId",)
 
 
-def test_local_execution_preflight_checks_loop_subgraph():
+def test_local_execution_preflight_accepts_app_target_without_optional_workflow_id():
+    graph = {
+        "nodes": [
+            {
+                "id": "workflow-call",
+                "type": "workflowNode",
+                "data": {
+                    "workflowId": "",
+                    "appId": "app-reference",
+                    "deployment_id": "deployment-reference",
+                    "configuration_state": "resolved",
+                },
+            }
+        ],
+        "edges": [],
+    }
+
+    assert workflow_configuration_issues(graph) == []
+
+
+def test_local_execution_preflight_allows_loop_key_fallback_and_checks_subgraph():
     graph = {
         "nodes": [
             {
                 "id": "loop",
                 "type": "loopNode",
                 "data": {
-                    "loop_key": "items",
                     "subGraph": {
                         "nodes": [
                             {
@@ -87,7 +106,7 @@ def test_local_execution_preflight_checks_loop_subgraph():
     issues = workflow_configuration_issues(graph)
 
     assert [(issue.node_id, issue.missing_parameters) for issue in issues] == [
-        ("nested-workflow-call", ("workflowId", "appId"))
+        ("nested-workflow-call", ("appId",))
     ]
 
 

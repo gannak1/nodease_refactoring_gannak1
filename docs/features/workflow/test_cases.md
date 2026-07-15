@@ -794,8 +794,8 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 
 ### MBA-275 Configuration And Schedule Admission Regression
 
-- required configuration이 있는 `WorkflowNode`(`local_execution`)와 기존 external node의 missing/deferred 값은 test/run/deployment/schedule 모두 동일한 preflight blocker로 차단된다. client가 resolved 상태를 위조해도 통과하지 않는다.
-- 기존 문자열 `loop_key`를 가진 Loop는 오탐 없이 통과하고, `loopNode.subGraph` 내부의 unresolved local/external node는 같은 규칙으로 차단된다.
+- `WorkflowNode`(`local_execution`)는 `appId`가 missing/deferred이면 test/run/deployment/schedule에서 동일한 preflight blocker로 차단되고 client가 resolved 상태를 위조해도 통과하지 않는다. 유효한 `appId`와 빈 `workflowId`를 가진 기존 modal 생성 graph는 오탐 없이 통과한다.
+- `loopNode.subGraph`는 필수다. 문자열, 빈 값 또는 누락된 `loop_key`는 mapped input의 첫 배열을 쓰는 runtime fallback에 따라 오탐 없이 통과하고, subGraph 내부의 unresolved local/external node는 같은 규칙으로 차단된다.
 - required configuration이 없는 local node와 완전히 resolved graph는 오탐 없이 기존 실행 경로를 통과한다.
 - Gateway schedule dispatch는 unresolved deployment를 publish 전에 차단하고 broker publisher를 호출하지 않는다.
 - worker가 받은 unresolved claim은 locked snapshot preflight 뒤 `configuration_preflight_blocked`로 한 번만 canceled 처리한다. `workflow_run_id`/`started_at`은 생성되지 않고 budget, `mark_running()`, Knowledge sync, engine/provider와 Celery retry는 호출되지 않는다.

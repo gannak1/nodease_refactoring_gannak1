@@ -244,6 +244,7 @@ FR-048 기존 실행 계약 보존: Draft/test·Compare·stream publisher는 DB 
 ### 5. 교차 도메인 실행 경계
 
 - Catalog required configuration preflight는 `external_read`, `external_write`, `local_execution` node를 동일한 server-derived 규칙으로 검사한다. client가 보낸 `configuration_state`는 신뢰하지 않으며 draft 편집·저장은 허용하되 실행·배포 admission은 unresolved이면 차단한다.
+- `WorkflowNode`의 실행 필수 reference는 `appId`이며 `workflowId`는 선택 metadata다. `loopNode`는 `subGraph`를 필수로 검사하되, `loop_key`가 없거나 빈 값일 때 mapped input의 첫 배열을 반복 대상으로 사용하는 기존 runtime fallback을 유지한다.
 - test, run, deployment와 schedule은 동일한 preflight 판정을 사용한다. Gateway schedule dispatch는 task publish 전에 검사하고, worker schedule admission은 locked canonical deployment snapshot에 대해 다시 검사한다.
 - worker preflight blocker는 기존 `configuration_preflight_blocked` safe reason으로 `dispatching|enqueued -> canceled` 처리하고 `schedule_dispatch.canceled` audit을 남긴다. `workflow_run_id`, `started_at`, Knowledge sync, engine/provider 호출과 Celery retry는 시작하지 않는다.
 

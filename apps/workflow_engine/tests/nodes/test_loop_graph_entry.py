@@ -3,16 +3,26 @@ import pytest
 from apps.workflow_engine.workflow.nodes.loop.loop_node import LoopNode, LoopNodeData
 
 
-def _loop_node(*, subgraph: dict, error_strategy: str = "end") -> LoopNode:
+def _loop_node(
+    *, subgraph: dict, error_strategy: str = "end", loop_key: str = "items"
+) -> LoopNode:
     return LoopNode(
         id="loop-1",
         data=LoopNodeData(
             title="Loop",
-            loop_key="items",
+            loop_key=loop_key,
             error_strategy=error_strategy,
             subGraph=subgraph,
         ),
     )
+
+
+def test_loop_without_explicit_key_uses_first_mapped_array() -> None:
+    node = _loop_node(subgraph={"nodes": [], "edges": []}, loop_key="")
+
+    assert node._get_iteration_array(
+        {}, {"scalar": "ignored", "items": ["a", "b"]}
+    ) == ["a", "b"]
 
 
 def test_loop_body_uses_validated_implicit_entry(monkeypatch) -> None:

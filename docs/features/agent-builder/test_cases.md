@@ -632,5 +632,5 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 
 - direct `set`의 secret-like 값과 detector 오류는 fail-closed하며 `400 invalid_decision`만 반환하고 graph/session/task/audit/trace/log에 원문이 남지 않는다. 일반 Catalog validation issue는 HTTP 오류가 아니라 `status=invalid`, `reason=catalog_validation_failed` task 결과로 저장·반환된다.
 - `credential_ref`/`resource_ref`의 raw config와 미검증 id는 거부하고, 서버가 검증한 canonical reference만 저장한다.
-- Workflow/App pair는 같은 organization·양쪽 권한·`App.workflow_id == Workflow.id`를 모두 만족할 때만 저장된다. 두 입력 순서, 한쪽 교체, 숨김 resource와 권한 부족에서 safe 4xx 및 부분 mutation 없음이 동일하다.
+- WorkflowNode는 유효한 `appId`만으로 실행 admission을 통과하고 빈 `workflowId`는 오탐 차단하지 않는다. Workflow/App pair가 모두 있으면 같은 organization·양쪽 권한·`App.workflow_id == Workflow.id`를 모두 만족할 때만 저장된다. 두 입력 순서, 한쪽 교체, 숨김 resource와 권한 부족에서 safe 4xx 및 부분 mutation 없음이 동일하다.
 - PostgreSQL 두 session 경쟁에서 stale identity-map을 가진 CAS 요청은 locked 최신 row를 기준으로 `409 stale_graph`가 되고, 선행 commit의 graph/hash/updated_at을 보존한다.
