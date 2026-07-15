@@ -21,6 +21,7 @@ def _job(**overrides) -> WorkerSyncJob:
         "organization_id": uuid.uuid4(),
         "collection_id": uuid.uuid4(),
         "requested_by": uuid.uuid4(),
+        "total_count": 1,
         "status": "queued",
         "previous_sync_state": "manual",
         "attempt_count": 0,
@@ -44,6 +45,7 @@ def _item(job: WorkerSyncJob, *, position: int = 0) -> WorkerSyncItem:
         knowledge_base_id=uuid.uuid4(),
         document_id=uuid.uuid4(),
         position=position,
+        target_revision="a" * 64,
         status="pending",
         attempt_count=0,
         max_attempts=3,
@@ -132,6 +134,41 @@ def test_successful_target_and_terminal_state_share_application_commit_flow() ->
     assert audit.record.call_count == 2
 
 
+def test_missing_snapshot_item_cannot_finalize_as_success() -> None:
+    job = _job(total_count=1)
+    use_case, _authorization, repository, document, audit, _publisher, uow = (
+        _dependencies(job)
+    )
+    repository.lock_owned_job.side_effect = [job, job, job]
+    repository.next_pending_item.return_value = None
+    repository.item_counts.return_value = WorkerItemCounts(
+        pending=0,
+        running=0,
+        succeeded=0,
+        failed=0,
+        skipped=0,
+        missing=1,
+        reason_code="sync.targets_changed",
+    )
+
+    result = use_case.execute(job.job_id, owner="owner-a")
+
+    assert result.status == "failed"
+    assert result.reason_code == "sync.targets_changed"
+    document.sync.assert_not_called()
+    repository.finalize_job.assert_called_once_with(
+        job,
+        status="failed",
+        now=NOW,
+        reason_code="sync.targets_changed",
+        completed_count=0,
+        failed_count=0,
+        skipped_count=1,
+    )
+    assert audit.record.call_count == 2
+    assert uow.commit.call_count == 2
+
+
 def test_retryable_target_failure_is_durable_and_waits_for_recovery_dispatch() -> None:
     job = _job()
     item = _item(job)
@@ -155,7 +192,7 @@ def test_retryable_target_failure_is_durable_and_waits_for_recovery_dispatch() -
 
 
 def test_batch_is_bounded_to_five_then_publishes_continuation() -> None:
-    job = _job()
+    job = _job(total_count=6)
     items = [_item(job, position=index) for index in range(5)]
     use_case, _authorization, repository, document, _audit, publisher, _uow = _dependencies(
         job

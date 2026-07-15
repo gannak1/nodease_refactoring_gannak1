@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-from datetime import timedelta
-from typing import Literal
+import hashlib
+import uuid
+from collections.abc import Sequence
+from datetime import datetime, timedelta, timezone
+from typing import Any, Literal
 
 KnowledgeCollectionSyncJobStatus = Literal[
     "queued",
@@ -82,6 +85,61 @@ def safe_reason_code(value: str | None) -> str | None:
     return "sync.internal_error"
 
 
+def sync_target_revision(
+    *,
+    collection_id: uuid.UUID,
+    collection_item_id: uuid.UUID,
+    knowledge_base_id: uuid.UUID,
+    document_id: uuid.UUID,
+    item_rank: int,
+    item_created_at: datetime,
+    document_updated_at: datetime | None,
+) -> str:
+    if item_rank < 0:
+        raise KnowledgeCollectionSyncStateError("sync target rank must be nonnegative")
+    digest = hashlib.sha256(b"kc-sync-target-v2\x00")
+    digest.update(collection_id.bytes)
+    digest.update(collection_item_id.bytes)
+    digest.update(knowledge_base_id.bytes)
+    digest.update(document_id.bytes)
+    digest.update(item_rank.to_bytes(8, byteorder="big", signed=False))
+    _update_timestamp(digest, item_created_at)
+    _update_timestamp(digest, document_updated_at)
+    return digest.hexdigest()
+
+
+def sync_target_snapshot_revision(
+    collection_id: uuid.UUID,
+    target_revisions: Sequence[str],
+) -> str:
+    digest = hashlib.sha256(b"kc-sync-target-set-v2\x00" + collection_id.bytes)
+    for revision in target_revisions:
+        try:
+            encoded = bytes.fromhex(revision)
+        except ValueError as exc:
+            raise KnowledgeCollectionSyncStateError(
+                "sync target revision must be hexadecimal"
+            ) from exc
+        if len(encoded) != 32:
+            raise KnowledgeCollectionSyncStateError(
+                "sync target revision must be a SHA-256 digest"
+            )
+        digest.update(encoded)
+    return digest.hexdigest()
+
+
+def _update_timestamp(digest: Any, value: datetime | None) -> None:
+    if value is None:
+        digest.update(b"\xff")
+        return
+    aware = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    encoded = aware.astimezone(timezone.utc).isoformat(timespec="microseconds").encode(
+        "ascii"
+    )
+    digest.update(len(encoded).to_bytes(2, byteorder="big"))
+    digest.update(encoded)
+
+
 def progress_category(
     *,
     status: str,
@@ -112,12 +170,19 @@ def progress_category(
 
 def terminal_job_status(
     *,
+    total_count: int,
     succeeded_count: int,
     failed_count: int,
     skipped_count: int,
 ) -> KnowledgeCollectionSyncJobStatus:
+    if total_count < 1:
+        raise KnowledgeCollectionSyncStateError("sync total count must be positive")
     if min(succeeded_count, failed_count, skipped_count) < 0:
         raise KnowledgeCollectionSyncStateError("sync counts must be nonnegative")
+    if succeeded_count + failed_count + skipped_count != total_count:
+        raise KnowledgeCollectionSyncStateError(
+            "terminal sync counts must equal the snapshot total"
+        )
     if failed_count == 0 and skipped_count == 0:
         return "succeeded"
     if succeeded_count > 0:

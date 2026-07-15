@@ -1,3 +1,6 @@
+import uuid
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from apps.shared.domain.knowledge_collection_sync import (
     KnowledgeCollectionSyncStateError,
@@ -6,6 +9,8 @@ from apps.shared.domain.knowledge_collection_sync import (
     progress_category,
     retry_delay,
     safe_reason_code,
+    sync_target_revision,
+    sync_target_snapshot_revision,
     terminal_job_status,
 )
 
@@ -39,7 +44,7 @@ def test_terminal_progress_and_status_do_not_expose_exact_child_identity() -> No
         == "complete"
     )
     assert terminal_job_status(
-        succeeded_count=1, failed_count=0, skipped_count=1
+        total_count=2, succeeded_count=1, failed_count=0, skipped_count=1
     ) == "partially_failed"
     assert collection_sync_state_for_job("partially_failed") == "stale"
 
@@ -67,3 +72,43 @@ def test_job_attempt_budget_covers_batches_item_retries_and_stale_recovery() -> 
     assert max_job_attempts_for_targets(100) == 225
     with pytest.raises(KnowledgeCollectionSyncStateError):
         max_job_attempts_for_targets(101)
+
+
+def test_target_revision_is_deterministic_and_changes_with_target_state() -> None:
+    collection_id = uuid.uuid4()
+    knowledge_base_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+    created_at = datetime(2026, 7, 15, 1, 2, 3, tzinfo=timezone.utc)
+    updated_at = created_at + timedelta(minutes=1)
+    values = {
+        "collection_id": collection_id,
+        "collection_item_id": uuid.uuid4(),
+        "knowledge_base_id": knowledge_base_id,
+        "document_id": document_id,
+        "item_rank": 0,
+        "item_created_at": created_at,
+        "document_updated_at": updated_at,
+    }
+
+    first = sync_target_revision(**values)
+    assert sync_target_revision(**values) == first
+    assert sync_target_revision(**{**values, "item_rank": 1}) != first
+    assert (
+        sync_target_revision(
+            **{**values, "document_updated_at": updated_at + timedelta(seconds=1)}
+        )
+        != first
+    )
+    assert sync_target_snapshot_revision(collection_id, [first]) == (
+        sync_target_snapshot_revision(collection_id, [first])
+    )
+
+
+def test_terminal_status_requires_original_total_to_be_fully_reconciled() -> None:
+    with pytest.raises(KnowledgeCollectionSyncStateError):
+        terminal_job_status(
+            total_count=1,
+            succeeded_count=0,
+            failed_count=0,
+            skipped_count=0,
+        )

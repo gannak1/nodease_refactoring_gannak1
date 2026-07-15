@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -14,12 +16,18 @@ from apps.shared.db.models.knowledge import (
     KnowledgeCollectionItem,
     SourceType,
 )
+from apps.shared.domain.knowledge_collection_sync import sync_target_revision
 from apps.shared.services.ingestion.processors.db_processor import DbProcessor
 from apps.shared.services.ingestion.vector_store_service import (
     VectorStoreService,
     acquire_document_write_lock,
 )
+from apps.shared.services.knowledge_ingestion_finalizer import (
+    KnowledgeIngestionFinalizationError,
+    KnowledgeIngestionFinalizer,
+)
 from apps.shared.services.permissions import has_active_organization_membership
+from apps.shared.services.rag_hierarchy import chunking_fingerprint_hash
 from apps.workflow_engine.application.knowledge_collection_sync import (
     SyncTargetChanged,
     SyncTargetConfigurationInvalid,
@@ -84,6 +92,17 @@ class SqlAlchemyKnowledgeCollectionSyncDocument:
         )
         if None in (collection, membership, knowledge_base, document):
             raise SyncTargetChanged()
+        current_revision = sync_target_revision(
+            collection_id=item.collection_id,
+            collection_item_id=membership.id,
+            knowledge_base_id=item.knowledge_base_id,
+            document_id=item.document_id,
+            item_rank=membership.rank,
+            item_created_at=membership.created_at,
+            document_updated_at=document.updated_at,
+        )
+        if not hmac.compare_digest(current_revision, item.target_revision):
+            raise SyncTargetChanged()
 
         source_config = self._source_config(document.meta_info)
         connection_id = self._connection_id(source_config.get("connection_id"))
@@ -112,16 +131,41 @@ class SqlAlchemyKnowledgeCollectionSyncDocument:
                 raise SyncTargetConfigurationInvalid()
             if result.metadata.get("error") is not None:
                 raise SyncTargetTemporarilyUnavailable()
+            if not result.chunks:
+                raise SyncTargetConfigurationInvalid()
+            finalizer = KnowledgeIngestionFinalizer(self.db)
+            model_name = knowledge_base.embedding_model or "text-embedding-3-small"
+            document_version = finalizer.create_indexing_version(
+                document,
+                content_hash=self._content_hash(result.chunks),
+                chunking_fingerprint=chunking_fingerprint_hash(
+                    meta_info=document.meta_info,
+                    chunk_size=document.chunk_size,
+                    chunk_overlap=document.chunk_overlap,
+                    source_type=document.source_type,
+                ),
+                embedding_model=model_name,
+                safe_metadata={
+                    "source_type": "DB",
+                    "chunking_mode": "flat",
+                    "ingestion_path": "knowledge_collection_sync",
+                },
+            )
+            if document_version is None:
+                raise SyncTargetConfigurationInvalid()
             VectorStoreService(db=self.db, user_id=actor_id).save_chunks(
                 document_id=document.id,
                 chunks=result.chunks,
-                model_name=knowledge_base.embedding_model
-                or "text-embedding-3-small",
+                model_name=model_name,
                 commit=False,
-                allow_empty_replace=True,
+                allow_empty_replace=False,
+                document_version_id=document_version.id,
             )
+            finalizer.finalize_active_version(document_version)
         except (SyncTargetConfigurationInvalid, SyncTargetTemporarilyUnavailable):
             raise
+        except KnowledgeIngestionFinalizationError:
+            raise SyncTargetTemporarilyUnavailable() from None
         except RuntimeError as exc:
             if str(exc) == "DB sync vector store path is flat-only for MBA-85":
                 raise SyncTargetConfigurationInvalid() from None
@@ -132,6 +176,16 @@ class SqlAlchemyKnowledgeCollectionSyncDocument:
         document.status = "completed"
         document.error_message = None
         document.updated_at = datetime.now(timezone.utc)
+
+    @staticmethod
+    def _content_hash(chunks: list[dict[str, Any]]) -> str:
+        try:
+            content = "".join(chunk["content"] for chunk in chunks)
+        except (KeyError, TypeError):
+            raise SyncTargetConfigurationInvalid() from None
+        if not content:
+            raise SyncTargetConfigurationInvalid()
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
     @staticmethod
     def _connection_id(value: object) -> uuid.UUID:

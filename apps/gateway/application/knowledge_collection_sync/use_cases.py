@@ -9,6 +9,8 @@ from typing import Protocol, Sequence
 from apps.shared.domain.knowledge_collection_sync import (
     JOB_DEADLINE_SECONDS,
     MAX_SYNC_TARGETS,
+    sync_target_revision,
+    sync_target_snapshot_revision,
 )
 
 
@@ -39,6 +41,7 @@ class CollectionSyncCollectionSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class CollectionSyncTarget:
+    collection_item_id: uuid.UUID
     knowledge_base_id: uuid.UUID
     document_id: uuid.UUID
     item_rank: int
@@ -404,16 +407,29 @@ def _target_snapshot_revision(
     collection_id: uuid.UUID,
     targets: Sequence[CollectionSyncTarget],
 ) -> str:
-    digest = hashlib.sha256(b"kc-sync-targets-v1\x00" + collection_id.bytes)
-    for target in targets:
-        digest.update(target.knowledge_base_id.bytes)
-        digest.update(target.document_id.bytes)
-        digest.update(str(target.item_rank).encode("ascii"))
-        digest.update(target.item_created_at.isoformat().encode("ascii"))
-        if target.document_updated_at is not None:
-            digest.update(target.document_updated_at.isoformat().encode("ascii"))
-        digest.update(b"\x00")
-    return digest.hexdigest()
+    return sync_target_snapshot_revision(
+        collection_id,
+        [
+            _target_revision(collection_id=collection_id, target=target)
+            for target in targets
+        ],
+    )
+
+
+def _target_revision(
+    *,
+    collection_id: uuid.UUID,
+    target: CollectionSyncTarget,
+) -> str:
+    return sync_target_revision(
+        collection_id=collection_id,
+        collection_item_id=target.collection_item_id,
+        knowledge_base_id=target.knowledge_base_id,
+        document_id=target.document_id,
+        item_rank=target.item_rank,
+        item_created_at=target.item_created_at,
+        document_updated_at=target.document_updated_at,
+    )
 
 
 def _count_bucket(value: int) -> str:

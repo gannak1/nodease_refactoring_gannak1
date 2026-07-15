@@ -282,7 +282,9 @@ class SqlAlchemyWorkerSyncRepository:
         row.updated_at = now
         self._set_collection_state(row, "pending", now=now)
 
-    def item_counts(self, job_id: uuid.UUID) -> WorkerItemCounts:
+    def item_counts(
+        self, job_id: uuid.UUID, *, expected_total: int
+    ) -> WorkerItemCounts:
         rows = (
             self.db.query(
                 KnowledgeCollectionSyncJobItem.status,
@@ -303,13 +305,20 @@ class SqlAlchemyWorkerSyncRepository:
             .order_by(KnowledgeCollectionSyncJobItem.position.asc())
             .scalar()
         )
+        row_total = sum(counts.values())
+        missing = max(expected_total - row_total, 0)
+        excess = max(row_total - expected_total, 0)
         return WorkerItemCounts(
             pending=counts.get("pending", 0),
             running=counts.get("running", 0),
             succeeded=counts.get("succeeded", 0),
             failed=counts.get("failed", 0),
             skipped=counts.get("skipped", 0),
-            reason_code=safe_reason_code(reason),
+            missing=missing,
+            excess=excess,
+            reason_code=(
+                "sync.targets_changed" if missing else safe_reason_code(reason)
+            ),
         )
 
     def finalize_job(
@@ -319,6 +328,9 @@ class SqlAlchemyWorkerSyncRepository:
         status: str,
         now: datetime,
         reason_code: str | None,
+        completed_count: int | None = None,
+        failed_count: int | None = None,
+        skipped_count: int | None = None,
     ) -> None:
         if status not in TERMINAL_JOB_STATUSES - {"cancelled"}:
             raise ValueError("unsupported terminal sync status")
@@ -331,6 +343,20 @@ class SqlAlchemyWorkerSyncRepository:
         row.next_retry_at = None
         row.completed_at = now
         row.updated_at = now
+        supplied_counts = (completed_count, failed_count, skipped_count)
+        if any(value is not None for value in supplied_counts):
+            if any(value is None for value in supplied_counts):
+                raise ValueError("terminal sync counts must be supplied together")
+            completed = int(completed_count or 0)
+            failed = int(failed_count or 0)
+            skipped = int(skipped_count or 0)
+            if min(completed, failed, skipped) < 0 or (
+                completed + failed + skipped != row.total_count
+            ):
+                raise ValueError("terminal sync counts must match snapshot total")
+            row.completed_count = completed
+            row.failed_count = failed
+            row.skipped_count = skipped
         self._set_collection_state(
             row, collection_sync_state_for_job(status), now=now
         )
@@ -449,6 +475,8 @@ class SqlAlchemyWorkerSyncRepository:
             .one_or_none()
         )
         if collection is not None:
+            if collection.sync_state == "source_deleted" and state != "source_deleted":
+                return
             collection.sync_state = state
             collection.updated_at = now
 
@@ -461,6 +489,7 @@ class SqlAlchemyWorkerSyncRepository:
             organization_id=row.organization_id,
             collection_id=row.collection_id,
             requested_by=row.requested_by,
+            total_count=row.total_count,
             status=row.status,
             previous_sync_state=row.previous_sync_state,
             attempt_count=row.attempt_count,
@@ -484,6 +513,7 @@ class SqlAlchemyWorkerSyncRepository:
             knowledge_base_id=row.knowledge_base_id,
             document_id=row.document_id,
             position=row.position,
+            target_revision=row.target_revision,
             status=row.status,
             attempt_count=row.attempt_count,
             max_attempts=row.max_attempts,

@@ -81,6 +81,7 @@ class Repository:
         self.scan = CollectionSyncTargetScan(
             targets=(
                 CollectionSyncTarget(
+                    collection_item_id=uuid.uuid4(),
                     knowledge_base_id=uuid.uuid4(),
                     document_id=uuid.uuid4(),
                     item_rank=0,

@@ -384,6 +384,7 @@ class IngestionOrchestrator:
                     return
 
                 self._mark_document_indexing(document_id, ingestion_fencing_token)
+                acquire_document_write_lock(self.db, document_id)
 
                 raw_blocks = self._extract_raw_blocks(doc)
                 if not raw_blocks:
@@ -1362,7 +1363,6 @@ class IngestionOrchestrator:
         # !!! CRITICAL: 기존 검색 가능 청크는 준비가 끝나기 전에는 삭제하지 않는다. !!!
         # Versioned 경로는 새 document_version_id의 staging chunk만 교체하고,
         # legacy NULL chunk 정리는 active pointer swap transaction에서 수행한다.
-        acquire_document_write_lock(self.db, doc.id)
         if document_version is not None:
             self.db.flush()
         chunk_delete_query = self.db.query(DocumentChunk).filter(

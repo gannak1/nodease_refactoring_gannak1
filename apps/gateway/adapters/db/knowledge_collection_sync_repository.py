@@ -22,13 +22,16 @@ from apps.shared.db.models.knowledge import (
     KnowledgeCollectionSyncJobItem,
     SourceType,
 )
+from apps.shared.domain.knowledge_collection_sync import (
+    max_job_attempts_for_targets,
+    sync_target_revision,
+)
 from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
 from apps.shared.services.permissions import (
     get_effective_knowledge_domain_actions,
     has_active_organization_membership,
     has_organization_manager_permission,
 )
-from apps.shared.domain.knowledge_collection_sync import max_job_attempts_for_targets
 
 
 class SqlAlchemyCollectionSyncAuthorization:
@@ -196,6 +199,7 @@ class SqlAlchemyCollectionSyncRepository:
         )
         targets = tuple(
             CollectionSyncTarget(
+                collection_item_id=item.id,
                 knowledge_base_id=kb.id,
                 document_id=document.id,
                 item_rank=item.rank,
@@ -250,6 +254,15 @@ class SqlAlchemyCollectionSyncRepository:
                     knowledge_base_id=target.knowledge_base_id,
                     document_id=target.document_id,
                     position=position,
+                    target_revision=sync_target_revision(
+                        collection_id=command.collection_id,
+                        collection_item_id=target.collection_item_id,
+                        knowledge_base_id=target.knowledge_base_id,
+                        document_id=target.document_id,
+                        item_rank=target.item_rank,
+                        item_created_at=target.item_created_at,
+                        document_updated_at=target.document_updated_at,
+                    ),
                     status="pending",
                     created_at=now,
                     updated_at=now,

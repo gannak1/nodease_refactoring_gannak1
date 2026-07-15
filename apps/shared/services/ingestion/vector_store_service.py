@@ -4,7 +4,7 @@ from typing import Any, Dict, List
 from uuid import UUID
 
 import tiktoken
-from apps.shared.db.models.knowledge import Document, DocumentChunk
+from apps.shared.db.models.knowledge import Document, DocumentChunk, DocumentVersion
 from apps.shared.services.embedding_service import EmbeddingService
 from apps.shared.services.rag_hierarchy import (
     CHUNKING_MODE_HIERARCHICAL,
@@ -57,6 +57,7 @@ class VectorStoreService:
         *,
         commit: bool = True,
         allow_empty_replace: bool = False,
+        document_version_id: UUID | None = None,
     ):
         """
         청크 리스트를 받아 증분 업데이트(Incremental Update) 방식으로 저장
@@ -68,15 +69,33 @@ class VectorStoreService:
         doc = self.db.query(Document).filter(Document.id == document_id).first()
         if not doc:
             raise ValueError("document_not_found")
+        if document_version_id is not None:
+            version = (
+                self.db.query(DocumentVersion)
+                .filter(
+                    DocumentVersion.id == document_version_id,
+                    DocumentVersion.legacy_document_id == document_id,
+                    DocumentVersion.knowledge_base_id == doc.knowledge_base_id,
+                    DocumentVersion.status.in_(["staging", "indexing"]),
+                )
+                .one_or_none()
+            )
+            if version is None:
+                raise ValueError("document_version_not_writable")
 
         if not chunks and not allow_empty_replace:
             logger.warning("[벡터저장] 저장할 청크 없음")
             return
 
         if not chunks:
-            self.db.query(DocumentChunk).filter(
+            delete_query = self.db.query(DocumentChunk).filter(
                 DocumentChunk.document_id == document_id
-            ).delete()
+            )
+            if document_version_id is not None:
+                delete_query = delete_query.filter(
+                    DocumentChunk.document_version_id == document_version_id
+                )
+            delete_query.delete(synchronize_session=False)
             doc.embedding_model = model_name
             if commit:
                 self.db.commit()
@@ -213,6 +232,7 @@ class VectorStoreService:
             new_document_chunks.append(
                 DocumentChunk(
                     document_id=doc.id,
+                    document_version_id=document_version_id,
                     knowledge_base_id=doc.knowledge_base_id,
                     content=encrypted_content,
                     chunk_index=i,
@@ -224,9 +244,14 @@ class VectorStoreService:
             )
 
         # 기존 청크 삭제 후 저장
-        self.db.query(DocumentChunk).filter(
+        delete_query = self.db.query(DocumentChunk).filter(
             DocumentChunk.document_id == document_id
-        ).delete()
+        )
+        if document_version_id is not None:
+            delete_query = delete_query.filter(
+                DocumentChunk.document_version_id == document_version_id
+            )
+        delete_query.delete(synchronize_session=False)
 
         self.db.bulk_save_objects(new_document_chunks)
 

@@ -222,6 +222,58 @@ def test_postgres_document_replacement_acquires_transaction_lock(
     assert isinstance(parameters["lock_key"], int)
 
 
+def test_versioned_save_replaces_only_target_version_chunks(
+    service,
+    mock_db,
+    mock_document,
+) -> None:
+    from apps.shared.db.models.knowledge import (
+        Document,
+        DocumentChunk,
+        DocumentVersion,
+    )
+
+    version_id = uuid.uuid4()
+    document_query = MagicMock()
+    document_query.filter.return_value = document_query
+    document_query.first.return_value = mock_document
+    version_query = MagicMock()
+    version_query.filter.return_value = version_query
+    version_query.one_or_none.return_value = MagicMock(id=version_id)
+    chunk_query = MagicMock()
+    chunk_query.filter.return_value = chunk_query
+    chunk_query.all.return_value = []
+
+    def query(model):
+        if model is Document:
+            return document_query
+        if model is DocumentVersion:
+            return version_query
+        if model is DocumentChunk:
+            return chunk_query
+        raise AssertionError(f"unexpected model: {model}")
+
+    mock_db.query.side_effect = query
+
+    service.save_chunks(
+        mock_document.id,
+        [{"content": "versioned content", "metadata": {}}],
+        document_version_id=version_id,
+        commit=False,
+    )
+
+    saved_chunks = mock_db.bulk_save_objects.call_args.args[0]
+    assert [chunk.document_version_id for chunk in saved_chunks] == [version_id]
+    assert any(
+        "document_version_id" in str(predicate)
+        for call in chunk_query.filter.call_args_list
+        for predicate in call.args
+    )
+    chunk_query.delete.assert_called_once_with(synchronize_session=False)
+    mock_db.flush.assert_called_once()
+    mock_db.commit.assert_not_called()
+
+
 def test_embedding_failure_uses_sanitized_exception_and_log(
     service, mock_document, mock_embedding_service, caplog
 ):

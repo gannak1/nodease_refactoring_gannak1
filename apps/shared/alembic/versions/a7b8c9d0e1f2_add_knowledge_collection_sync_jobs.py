@@ -1,7 +1,7 @@
 """add knowledge collection sync jobs
 
 Revision ID: a7b8c9d0e1f2
-Revises: b8e5f4a3c2d2
+Revises: c1e5f4a3c2d4
 """
 
 from collections.abc import Sequence
@@ -12,7 +12,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision: str = "a7b8c9d0e1f2"
-down_revision: str | Sequence[str] | None = "b8e5f4a3c2d2"
+down_revision: str | Sequence[str] | None = "c1e5f4a3c2d4"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -23,12 +23,6 @@ def upgrade() -> None:
         "knowledge_collections",
         ["id", "organization_id"],
     )
-    op.create_unique_constraint(
-        "uq_documents_id_knowledge_base_id",
-        "documents",
-        ["id", "knowledge_base_id"],
-    )
-
     op.create_table(
         "knowledge_collection_sync_jobs",
         sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
@@ -96,7 +90,8 @@ def upgrade() -> None:
         sa.UniqueConstraint(
             "id",
             "organization_id",
-            name="uq_knowledge_collection_sync_jobs_id_org",
+            "collection_id",
+            name="uq_knowledge_collection_sync_jobs_id_org_collection",
         ),
         sa.UniqueConstraint(
             "organization_id",
@@ -142,6 +137,7 @@ def upgrade() -> None:
         sa.Column("knowledge_base_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("document_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("position", sa.Integer(), nullable=False),
+        sa.Column("target_revision", sa.String(length=64), nullable=False),
         sa.Column("status", sa.String(length=32), server_default="pending", nullable=False),
         sa.Column("attempt_count", sa.Integer(), server_default="0", nullable=False),
         sa.Column("max_attempts", sa.Integer(), server_default="3", nullable=False),
@@ -170,27 +166,13 @@ def upgrade() -> None:
             name="ck_knowledge_collection_sync_job_items_counters",
         ),
         sa.ForeignKeyConstraint(
-            ["job_id", "organization_id"],
-            ["knowledge_collection_sync_jobs.id", "knowledge_collection_sync_jobs.organization_id"],
-            name="fk_knowledge_collection_sync_job_items_job_org",
-            ondelete="CASCADE",
-        ),
-        sa.ForeignKeyConstraint(
-            ["collection_id", "organization_id"],
-            ["knowledge_collections.id", "knowledge_collections.organization_id"],
-            name="fk_knowledge_collection_sync_job_items_collection_org",
-            ondelete="CASCADE",
-        ),
-        sa.ForeignKeyConstraint(
-            ["knowledge_base_id", "organization_id"],
-            ["knowledge_bases.id", "knowledge_bases.organization_id"],
-            name="fk_knowledge_collection_sync_job_items_kb_org",
-            ondelete="CASCADE",
-        ),
-        sa.ForeignKeyConstraint(
-            ["document_id", "knowledge_base_id"],
-            ["documents.id", "documents.knowledge_base_id"],
-            name="fk_knowledge_collection_sync_job_items_document_kb",
+            ["job_id", "organization_id", "collection_id"],
+            [
+                "knowledge_collection_sync_jobs.id",
+                "knowledge_collection_sync_jobs.organization_id",
+                "knowledge_collection_sync_jobs.collection_id",
+            ],
+            name="fk_knowledge_collection_sync_job_items_job_scope",
             ondelete="CASCADE",
         ),
         sa.PrimaryKeyConstraint("id"),
@@ -258,11 +240,6 @@ def downgrade() -> None:
         table_name="knowledge_collection_sync_jobs",
     )
     op.drop_table("knowledge_collection_sync_jobs")
-    op.drop_constraint(
-        "uq_documents_id_knowledge_base_id",
-        "documents",
-        type_="unique",
-    )
     op.drop_constraint(
         "uq_knowledge_collections_id_organization_id",
         "knowledge_collections",

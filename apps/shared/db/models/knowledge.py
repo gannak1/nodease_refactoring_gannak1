@@ -298,7 +298,8 @@ class KnowledgeCollectionSyncJob(Base):
         UniqueConstraint(
             "id",
             "organization_id",
-            name="uq_knowledge_collection_sync_jobs_id_org",
+            "collection_id",
+            name="uq_knowledge_collection_sync_jobs_id_org_collection",
         ),
         UniqueConstraint(
             "organization_id",
@@ -445,27 +446,13 @@ class KnowledgeCollectionSyncJobItem(Base):
             name="uq_knowledge_collection_sync_job_items_position",
         ),
         ForeignKeyConstraint(
-            ["job_id", "organization_id"],
-            ["knowledge_collection_sync_jobs.id", "knowledge_collection_sync_jobs.organization_id"],
-            name="fk_knowledge_collection_sync_job_items_job_org",
-            ondelete="CASCADE",
-        ),
-        ForeignKeyConstraint(
-            ["collection_id", "organization_id"],
-            ["knowledge_collections.id", "knowledge_collections.organization_id"],
-            name="fk_knowledge_collection_sync_job_items_collection_org",
-            ondelete="CASCADE",
-        ),
-        ForeignKeyConstraint(
-            ["knowledge_base_id", "organization_id"],
-            ["knowledge_bases.id", "knowledge_bases.organization_id"],
-            name="fk_knowledge_collection_sync_job_items_kb_org",
-            ondelete="CASCADE",
-        ),
-        ForeignKeyConstraint(
-            ["document_id", "knowledge_base_id"],
-            ["documents.id", "documents.knowledge_base_id"],
-            name="fk_knowledge_collection_sync_job_items_document_kb",
+            ["job_id", "organization_id", "collection_id"],
+            [
+                "knowledge_collection_sync_jobs.id",
+                "knowledge_collection_sync_jobs.organization_id",
+                "knowledge_collection_sync_jobs.collection_id",
+            ],
+            name="fk_knowledge_collection_sync_job_items_job_scope",
             ondelete="CASCADE",
         ),
         CheckConstraint(
@@ -505,6 +492,7 @@ class KnowledgeCollectionSyncJobItem(Base):
         nullable=False,
     )
     position: Mapped[int] = mapped_column(Integer, nullable=False)
+    target_revision: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="pending", server_default=text("'pending'")
     )
@@ -617,13 +605,6 @@ class Document(Base):
     """
 
     __tablename__ = "documents"
-    __table_args__ = (
-        UniqueConstraint(
-            "id",
-            "knowledge_base_id",
-            name="uq_documents_id_knowledge_base_id",
-        ),
-    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False

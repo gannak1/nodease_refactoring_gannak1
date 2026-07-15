@@ -22,6 +22,7 @@ class WorkerSyncJob:
     organization_id: uuid.UUID
     collection_id: uuid.UUID
     requested_by: uuid.UUID
+    total_count: int
     status: str
     previous_sync_state: str
     attempt_count: int
@@ -42,6 +43,7 @@ class WorkerSyncItem:
     knowledge_base_id: uuid.UUID
     document_id: uuid.UUID
     position: int
+    target_revision: str
     status: str
     attempt_count: int
     max_attempts: int
@@ -54,6 +56,8 @@ class WorkerItemCounts:
     succeeded: int
     failed: int
     skipped: int
+    missing: int = 0
+    excess: int = 0
     reason_code: str | None = None
 
 
@@ -153,7 +157,9 @@ class WorkerSyncRepositoryPort(Protocol):
         reason_code: str | None,
     ) -> None: ...
 
-    def item_counts(self, job_id: uuid.UUID) -> WorkerItemCounts: ...
+    def item_counts(
+        self, job_id: uuid.UUID, *, expected_total: int
+    ) -> WorkerItemCounts: ...
 
     def finalize_job(
         self,
@@ -162,6 +168,9 @@ class WorkerSyncRepositoryPort(Protocol):
         status: str,
         now: datetime,
         reason_code: str | None,
+        completed_count: int | None = None,
+        failed_count: int | None = None,
+        skipped_count: int | None = None,
     ) -> None: ...
 
     def cancel_job(
@@ -422,7 +431,10 @@ class ExecuteKnowledgeCollectionSync:
         if job is None:
             self.unit_of_work.rollback()
             return WorkerSyncResult("duplicate", "sync.worker_interrupted")
-        counts = self.repository.item_counts(job_id)
+        counts = self.repository.item_counts(
+            job_id,
+            expected_total=job.total_count,
+        )
         now = self.repository.database_now()
         if counts.pending or counts.running:
             self.repository.queue_job(
@@ -435,22 +447,53 @@ class ExecuteKnowledgeCollectionSync:
             self._publish(job_id)
             return WorkerSyncResult("queued")
 
+        if counts.excess:
+            self.repository.finalize_job(
+                job,
+                status="failed",
+                now=now,
+                reason_code="sync.internal_error",
+            )
+            self.audit.record(
+                job=job,
+                action="knowledge.collection.sync.completed",
+                status="failure",
+                metadata={
+                    "job_status": "failed",
+                    "reason_code": "sync.internal_error",
+                },
+            )
+            self.unit_of_work.commit()
+            return WorkerSyncResult("failed", "sync.internal_error")
+
+        terminal_skipped = counts.skipped + counts.missing
         status = terminal_job_status(
+            total_count=job.total_count,
             succeeded_count=counts.succeeded,
             failed_count=counts.failed,
-            skipped_count=counts.skipped,
+            skipped_count=terminal_skipped,
         )
-        reason = counts.reason_code if status != "succeeded" else None
-        self.repository.finalize_job(job, status=status, now=now, reason_code=reason)
+        reason = (
+            "sync.targets_changed"
+            if counts.missing
+            else counts.reason_code if status != "succeeded" else None
+        )
+        self.repository.finalize_job(
+            job,
+            status=status,
+            now=now,
+            reason_code=reason,
+            completed_count=counts.succeeded,
+            failed_count=counts.failed,
+            skipped_count=terminal_skipped,
+        )
         self.audit.record(
             job=job,
             action="knowledge.collection.sync.completed",
             status="success" if status == "succeeded" else "failure",
             metadata={
                 "job_status": status,
-                "result_count_bucket": _count_bucket(
-                    counts.succeeded + counts.failed + counts.skipped
-                ),
+                "result_count_bucket": _count_bucket(job.total_count),
                 "reason_code": reason,
             },
         )

@@ -19,7 +19,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 
-def test_collection_sync_schema_enforces_single_flight_and_organization_fks(
+def test_collection_sync_schema_preserves_snapshot_item_after_live_target_delete(
     monkeypatch,
 ) -> None:
     schema = f"test_kc_sync_{uuid.uuid4().hex}"
@@ -61,6 +61,13 @@ def test_collection_sync_schema_enforces_single_flight_and_organization_fks(
             "knowledge_collection_sync_jobs",
             "knowledge_collection_sync_job_items",
         } <= set(inspector.get_table_names(schema=schema))
+        item_columns = {
+            column["name"]: column
+            for column in inspector.get_columns(
+                "knowledge_collection_sync_job_items", schema=schema
+            )
+        }
+        assert item_columns["target_revision"]["nullable"] is False
         job_indexes = {
             index["name"]: index
             for index in inspector.get_indexes(
@@ -82,7 +89,6 @@ def test_collection_sync_schema_enforces_single_flight_and_organization_fks(
         other_knowledge_base_id = uuid.uuid4()
         document_id = uuid.uuid4()
         other_document_id = uuid.uuid4()
-        mismatched_document_id = uuid.uuid4()
         connection.execute(
             text("INSERT INTO organization (id) VALUES (:first), (:second)"),
             {"first": organization_id, "second": other_organization_id},
@@ -112,15 +118,12 @@ def test_collection_sync_schema_enforces_single_flight_and_organization_fks(
             text(
                 "INSERT INTO documents (id, knowledge_base_id) "
                 "VALUES (:first, :knowledge_base_id), "
-                "(:second, :knowledge_base_id), "
-                "(:mismatched, :other_knowledge_base_id)"
+                "(:second, :knowledge_base_id)"
             ),
             {
                 "first": document_id,
                 "second": other_document_id,
-                "mismatched": mismatched_document_id,
                 "knowledge_base_id": knowledge_base_id,
-                "other_knowledge_base_id": other_knowledge_base_id,
             },
         )
 
@@ -177,9 +180,9 @@ def test_collection_sync_schema_enforces_single_flight_and_organization_fks(
             text(
                 "INSERT INTO knowledge_collection_sync_job_items ("
                 "id, organization_id, job_id, collection_id, knowledge_base_id, "
-                "document_id, position) VALUES ("
+                "document_id, position, target_revision) VALUES ("
                 ":id, :organization_id, :job_id, :collection_id, "
-                ":knowledge_base_id, :document_id, 0)"
+                ":knowledge_base_id, :document_id, 0, :target_revision)"
             ),
             {
                 "id": uuid.uuid4(),
@@ -188,36 +191,33 @@ def test_collection_sync_schema_enforces_single_flight_and_organization_fks(
                 "collection_id": collection_id,
                 "knowledge_base_id": knowledge_base_id,
                 "document_id": document_id,
+                "target_revision": "e" * 64,
             },
         )
+        connection.execute(
+            text("DELETE FROM documents WHERE id=:document_id"),
+            {"document_id": document_id},
+        )
+        connection.execute(
+            text("DELETE FROM knowledge_bases WHERE id=:knowledge_base_id"),
+            {"knowledge_base_id": knowledge_base_id},
+        )
+        assert connection.execute(
+            text(
+                "SELECT count(*) FROM knowledge_collection_sync_job_items "
+                "WHERE job_id=:job_id"
+            ),
+            {"job_id": second_job_id},
+        ).scalar_one() == 1
         with pytest.raises(IntegrityError):
             with connection.begin_nested():
                 connection.execute(
                     text(
                         "INSERT INTO knowledge_collection_sync_job_items ("
                         "id, organization_id, job_id, collection_id, "
-                        "knowledge_base_id, document_id, position) VALUES ("
+                        "knowledge_base_id, document_id, position, target_revision) VALUES ("
                         ":id, :organization_id, :job_id, :collection_id, "
-                        ":knowledge_base_id, :document_id, 1)"
-                    ),
-                    {
-                        "id": uuid.uuid4(),
-                        "organization_id": organization_id,
-                        "job_id": second_job_id,
-                        "collection_id": collection_id,
-                        "knowledge_base_id": knowledge_base_id,
-                        "document_id": mismatched_document_id,
-                    },
-                )
-        with pytest.raises(IntegrityError):
-            with connection.begin_nested():
-                connection.execute(
-                    text(
-                        "INSERT INTO knowledge_collection_sync_job_items ("
-                        "id, organization_id, job_id, collection_id, "
-                        "knowledge_base_id, document_id, position) VALUES ("
-                        ":id, :organization_id, :job_id, :collection_id, "
-                        ":knowledge_base_id, :document_id, 2)"
+                        ":knowledge_base_id, :document_id, 2, :target_revision)"
                     ),
                     {
                         "id": uuid.uuid4(),
@@ -226,6 +226,7 @@ def test_collection_sync_schema_enforces_single_flight_and_organization_fks(
                         "collection_id": collection_id,
                         "knowledge_base_id": knowledge_base_id,
                         "document_id": other_document_id,
+                        "target_revision": "f" * 64,
                     },
                 )
 
