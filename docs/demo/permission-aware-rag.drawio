@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="app.diagrams.net" modified="2026-07-13T00:00:00.000Z" agent="Codex" version="24.7.17" type="device">
+  <diagram id="permission-aware-rag" name="Page-1">
+    <mxGraphModel dx="1200" dy="720" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1200" pageHeight="720" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="before-title" value="Before · 팀별 분리" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=22;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="50" y="30" width="260" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="before-team-a" value="A 팀" style="rounded=0;whiteSpace=wrap;html=1;strokeWidth=2;fontSize=18;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="100" y="100" width="170" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="before-rag-a" value="A팀 전용 RAG / KB" style="rounded=0;whiteSpace=wrap;html=1;strokeWidth=2;fontSize=18;fillColor=#ffffff;strokeColor=#333333;" vertex="1" parent="1">
+          <mxGeometry x="420" y="100" width="230" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="before-edge-a" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#6c8ebf;" edge="1" parent="1" source="before-team-a" target="before-rag-a">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="before-team-b" value="B 팀" style="rounded=0;whiteSpace=wrap;html=1;strokeWidth=2;fontSize=18;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="100" y="220" width="170" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="before-rag-b" value="B팀 전용 RAG / KB" style="rounded=0;whiteSpace=wrap;html=1;strokeWidth=2;fontSize=18;fillColor=#ffffff;strokeColor=#333333;" vertex="1" parent="1">
+          <mxGeometry x="420" y="220" width="230" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="before-edge-b" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#d79b00;" edge="1" parent="1" source="before-team-b" target="before-rag-b">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <mxCell id="divider" value="" style="shape=line;html=1;strokeWidth=1;strokeColor=#b3b3b3;" vertex="1" parent="1">
+          <mxGeometry x="50" y="340" width="1100" height="10" as="geometry" />
+        </mxCell>
+
+        <mxCell id="after-title" value="After · 공통 RAG + 권한 필터" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=22;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="50" y="370" width="360" height="40" as="geometry" />
+        </mxCell>
+
+        <mxCell id="knowledge-boundary" value="공통 Knowledge" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;dashPattern=4 4;strokeWidth=2;fillColor=none;strokeColor=#333333;verticalAlign=top;align=right;spacingTop=10;spacingRight=12;fontSize=18;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="860" y="410" width="290" height="260" as="geometry" />
+        </mxCell>
+
+        <mxCell id="after-team-a" value="A 팀" style="rounded=0;whiteSpace=wrap;html=1;strokeWidth=2;fontSize=18;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="50" y="440" width="150" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="after-team-b" value="B 팀" style="rounded=0;whiteSpace=wrap;html=1;strokeWidth=2;fontSize=18;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="50" y="560" width="150" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="shared-rag" value="공통 Workflow / RAG" style="rounded=0;whiteSpace=wrap;html=1;strokeWidth=2;fontSize=18;fillColor=#ffffff;strokeColor=#333333;" vertex="1" parent="1">
+          <mxGeometry x="290" y="500" width="190" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="permission-filter" value="실행 사용자 권한 필터&lt;br&gt;&lt;font style=&quot;font-size: 14px;&quot;&gt;허용된 KB만 검색&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;strokeWidth=2;fontSize=18;fontStyle=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="570" y="490" width="210" height="90" as="geometry" />
+        </mxCell>
+
+        <mxCell id="kb-a" value="KB-A&lt;br&gt;&lt;font style=&quot;font-size: 14px;&quot;&gt;A팀 문서&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;strokeWidth=2;fontSize=18;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="910" y="465" width="180" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="kb-b" value="KB-B&lt;br&gt;&lt;font style=&quot;font-size: 14px;&quot;&gt;B팀 문서&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;strokeWidth=2;fontSize=18;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="910" y="565" width="180" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="after-edge-a" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#6c8ebf;" edge="1" parent="1" source="after-team-a" target="shared-rag">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="after-edge-b" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#d79b00;" edge="1" parent="1" source="after-team-b" target="shared-rag">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="shared-to-filter" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#333333;" edge="1" parent="1" source="shared-rag" target="permission-filter">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="filter-to-a" value="A팀 허용" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#6c8ebf;fontSize=14;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="permission-filter" target="kb-a">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="filter-to-b" value="B팀 허용" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#d79b00;fontSize=14;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="permission-filter" target="kb-b">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
