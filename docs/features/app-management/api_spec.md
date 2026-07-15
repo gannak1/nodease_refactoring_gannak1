@@ -9,6 +9,7 @@ Verified Against: TBD
 | --- | --- | --- | --- |
 | GET | `/api/v1/apps` | 현재 사용자가 접근할 수 있는 App 목록 | authenticated organization member |
 | GET | `/api/v1/apps/operations` | 내 모듈 운영 현황 목록 | organization manager or workflow builder/manager |
+| DELETE | `/api/v1/apps/{app_id}` | App과 실행 가능한 하위 설정 삭제, 운영 기록은 retention 정책에 따라 보존 | organization manager or workflow manager |
 
 ## Request And Response Models
 
@@ -71,11 +72,28 @@ Budget Management 확장 시 `app.budget_status`는 `GET /apps`의 `budget_statu
 - `trend_percent`: `projected_month_cost`와 `previous_month_cost`의 증감률. 직전 월 비용이 0이면 null이다.
 - `operation_metrics`는 `budget_status`와 별도 필드이며 `GET /apps` 응답에는 포함하지 않는다.
 
+### DELETE /apps/{app_id}
+
+성공 시 기존 응답 shape를 유지한다.
+
+```json
+{
+  "message": "App deleted successfully"
+}
+```
+
+- App, bounded owned Workflow, Workflow permission, budget, deployment, schedule과 현재 실행 설정은 하나의 transaction에서 삭제한다.
+- usage/audit/trace, Cost Optimizer와 model routing evidence, Agent Builder history, schedule claim, Mail/external-effect 멱등성 기록은 [ADR-0048](../../decisions/ADR-0048-app-workflow-deletion-and-operational-retention.md)의 retention 경계를 따른다.
+- App/Workflow lock을 획득한 뒤 organization/manage 권한을 다시 확인한다.
+- 같은 App의 동시 삭제 loser와 이미 삭제된 App은 `404`를 반환한다.
+- 중간 FK, audit 또는 lifecycle 처리 실패는 전체 rollback하며 부분 삭제를 성공 응답으로 반환하지 않는다.
+
 ## Errors
 
 - `401`: 미인증
 - `403`: organization scope 또는 App 접근 권한 없음
 - `404`: 직접 조회 대상이 없거나 scope 밖 리소스
+- `500`: 예상하지 못한 내부 오류. 삭제 transaction은 rollback되어 App/Workflow/권한/보존 참조가 요청 전 상태를 유지한다.
 
 ## Permissions
 

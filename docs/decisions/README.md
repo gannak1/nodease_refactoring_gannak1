@@ -67,6 +67,7 @@ ADR 본문은 작성 시점의 결정 과정을 보존하는 기록 문서다. `
 | [ADR-0045](ADR-0045-agent-builder-direct-edit-parameter-guidance.md) | Accepted | Agent Builder direct edit와 parameter guidance | Typed Knowledge placement, 통합 설정 흐름, ParameterTask, 완료 상태와 Workflow history boundary를 정의한다. Preview 경로는 Superseded legacy characterization으로 취급한다. |
 | [ADR-0046](ADR-0046-agent-builder-graph-mutation-and-cas-save.md) | Accepted | Agent Builder GraphMutation과 CAS 저장 | ADR-0045를 지원하는 저장 계약이다. Full typed operations는 API 응답 전용이고 DB에는 expected result hash를 포함한 safe envelope만 저장한다. 일반 editor 저장과 Agent Builder 저장은 canonical graph hash와 `updated_at` 기반 CAS를 공유한다. |
 | [ADR-0047](ADR-0047-password-login-abuse-prevention-boundary.md) | Accepted | Password login abuse prevention 경계 | Email/password login 앞에서 account, source network, account+network Redis token-bucket을 원자적으로 적용한다. Trusted proxy에서만 forwarded address를 해석하고 versioned HMAC fingerprint를 사용하며, limited request는 generic 429, limiter 장애는 password 검증 전 fail-closed 503으로 닫는다. |
+| [ADR-0048](ADR-0048-app-workflow-deletion-and-operational-retention.md) | Accepted | App/Workflow 삭제와 운영 기록 보존 경계 | MBA-87 target. 권한·배포·설정은 삭제하고 usage/audit/trace·운영 멱등성 기록은 retention까지 보존하는 migration/service 구현이 필요하다. |
 
 ## 참고 보고서
 

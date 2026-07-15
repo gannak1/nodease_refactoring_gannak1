@@ -44,6 +44,25 @@ Verified Against: TBD
 - Given `total_cost`가 NULL인 usage row만 있는 App, When 조회한다, Then 비용은 0으로 합산되어 `usage_ratio=0`, `status=normal`이다.
 - Given KST 월 경계의 usage row가 있다, When KST 7월 기준 조회한다, Then KST 7월 1일 00:00:00 row는 포함하고 KST 8월 1일 00:00:00 row는 제외한다.
 
+### AC-6. App 삭제 lifecycle (APP-REQ-050~053)
+
+- Given Team/User Workflow permission이 있는 App, When 유효한 manage actor가 삭제한다, Then App/owned Workflow/permission이 삭제되고 FK 500이 발생하지 않는다.
+- Given deployment와 schedule이 있는 App, When 삭제한다, Then 실행 가능한 deployment/schedule/active pointer가 남지 않는다.
+- Given usage/run/trace/audit가 있는 App, When 삭제한다, Then 기록은 retention 정책대로 유지되고 durable organization provenance로만 접근을 판정한다.
+- Given Cost Optimizer, model routing, Agent Builder, Mail processing 또는 external-effect 기록이 있는 App, When 삭제한다, Then 현재 실행 설정은 제거되고 evidence/history/idempotency ledger는 ADR-0048의 retention 정책을 따른다.
+- Given `apps.workflow_id`와 `workflows.app_id`가 불일치하거나 복수 Workflow가 연결된 legacy App, When 삭제한다, Then 같은 App/organization의 bounded 대상만 처리하고 다른 App/organization Workflow는 변경하지 않는다.
+- Given 삭제 중 FK/audit/lifecycle 처리 실패가 발생한다, When transaction이 종료된다, Then App, Workflow, permission, retained reference와 audit은 요청 전 상태로 rollback된다.
+- Given 같은 App을 두 요청이 동시에 삭제한다, When lifecycle lock 뒤 결과를 확인한다, Then 한 요청만 성공하고 loser는 `404`이며 부분 삭제나 500이 없다.
+- Given 권한이 없거나 cross-organization App ID를 요청한다, When 삭제한다, Then 기존 `403/404` resource hiding 계약을 유지하고 target-aware audit metadata를 노출하지 않는다.
+- Given 삭제 성공 audit을 조회한다, Then organization/actor/App/Workflow count/request의 safe metadata만 있고 App 이름, graph, deployment config, raw payload와 secret은 없다.
+
+## App Deletion Tests
+
+- Service test는 lock 뒤 권한 재검증, canonical/legacy Workflow 집합, 명시적 permission cleanup, single commit과 rollback을 검증한다.
+- PostgreSQL integration test는 Alembic head를 적용하고 direct/indirect FK가 있는 전체 fixture를 만든 뒤 삭제/보존 결과를 검증한다. SQLite 결과만으로 FK 정책을 승인하지 않는다.
+- Concurrency test는 delete/delete, delete/run admission, delete/schedule admission 경합을 검증한다.
+- Retained-record test는 Workflow/App row가 없어도 usage/audit/trace 조회가 organization scope를 지키고 삭제된 display reference를 안전하게 생략하는지 검증한다.
+
 ## Unit Tests
 
 - `AppService.get_user_apps`

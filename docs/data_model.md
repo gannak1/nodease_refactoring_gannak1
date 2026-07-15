@@ -88,6 +88,20 @@ erDiagram
 - `apps.workflow_id`와 `workflows.app_id`는 상호 참조(순환 FK)다.
 - JSONB metadata에 id를 넣는 방식(`audit_metadata`, `meta_info` 등)은 관계가 아니라 application convention이다.
 
+### App/Workflow 삭제 lifecycle target
+
+[ADR-0048](decisions/ADR-0048-app-workflow-deletion-and-operational-retention.md)은
+App/Workflow hard delete와 운영 기록 retention 경계를 정의한다. 권한, budget,
+deployment, schedule과 현재 실행 설정은 삭제한다. Usage/audit/trace, Cost Optimizer와
+model routing evidence, Agent Builder history, schedule claim, Mail/external-effect
+멱등성 ledger는 각 retention 또는 replay 안전 조건까지 유지한다.
+
+현재 schema는 target과 다르다. `workflow_runs`, Cost Optimizer, model routing,
+`mail_message_processings`는 Workflow cascade에 묶여 있고 `llm_usage_logs`와
+Team/User Workflow permission은 NO ACTION으로 Workflow 삭제를 막는다. MBA-87
+migration과 service가 반영되기 전까지 이 subsection은 target policy이며, 현재
+물리 FK는 아래 테이블 상세와 ADR-0048 inventory를 기준으로 읽는다.
+
 ## 공통 컬럼과 규칙
 
 | 항목 | 규칙 |
