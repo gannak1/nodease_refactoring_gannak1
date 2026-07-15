@@ -792,6 +792,9 @@ class WorkflowService:
             data["features"] = workflow.features
 
         if include_metadata:
+            data.setdefault("nodes", [])
+            data.setdefault("edges", [])
+            data.setdefault("viewport", {"x": 0, "y": 0, "zoom": 1})
             data["workflow_id"] = str(workflow.id)
             data["graph_hash"] = canonical_graph_hash(workflow.graph)
             data["updated_at"] = workflow.updated_at.isoformat()

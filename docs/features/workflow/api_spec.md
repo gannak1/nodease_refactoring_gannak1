@@ -1,12 +1,13 @@
 # Workflow API Spec
 
 Status: Draft
-Verified Against: `feature/mba-275 @ 0b04ee19`
+Verified Against: `codex/mba-276 @ d46dd672`
 
 ## Endpoints
 
 | Method | Path | Description | Auth |
 | --- | --- | --- | --- |
+| GET | `/api/v1/workflows/{workflow_id}/draft` | canonical workflow draft와 graph hash/`updated_at`을 반환한다. 아직 graph가 저장되지 않은 신규 workflow도 빈 `nodes`/`edges`와 기본 viewport를 반환한다. | workflow read 권한 |
 | POST | `/api/v1/workflows/{workflow_id}/stream` | 테스트 실행 스트리밍 이벤트를 반환한다. 기존 구현을 사용한다. | workflow execute 권한 |
 | GET | `/api/v1/workflows/{workflow_id}/runs` | 저장된 workflow run 목록을 조회한다. `page`, `limit`, optional `status`, `trigger_mode`로 기준 실행 후보를 좁힌다. | workflow read 권한 |
 | GET | `/api/v1/workflows/{workflow_id}/runs/{run_id}` | 저장된 workflow run 및 node run을 조회한다. TestSidebar 복원과 실행 비교는 이 기존 상세 API를 사용한다. | workflow read 권한 |
@@ -27,6 +28,28 @@ Client 내부 route:
 Workflow test stream은 별도 계약 전 Conversation Memory session을 자동 생성하지 않는다. Target runtime은 node value와 `RuntimeDataDependencyEnvelope`를 함께 전달하고 Condition/Switch/Loop의 active control dependency를 final output까지 보존한다. Main/summary provider 호출은 [LLM Credentials API Spec](../llm-credentials/api_spec.md#target-provider-execution-capability-contract)이 소유하는 opaque `ProviderExecutionCapability` identity/revision을 사용한다. 이 contract는 public HTTP request/response에 capability token, credential principal 또는 raw scope를 노출하지 않는다.
 
 ## Request And Response Models
+
+### Canonical workflow draft read
+
+`GET /api/v1/workflows/{workflow_id}/draft`는 저장 graph와 함께 server-calculated
+`graph_hash`, DB `updated_at`, `workflow_id`를 반환한다. 신규 workflow의 DB graph가
+`null`이거나 빈 object여도 Client가 canonical base를 별도로 추측하지 않도록 다음 최소
+graph contract를 materialize한다.
+
+```json
+{
+  "nodes": [],
+  "edges": [],
+  "viewport": {"x": 0, "y": 0, "zoom": 1},
+  "workflow_id": "00000000-0000-0000-0000-000000000000",
+  "graph_hash": "sha256",
+  "updated_at": "ISO-8601"
+}
+```
+
+저장 graph에 field가 존재하면 해당 값을 그대로 반환한다. 이 정규화는 malformed node나
+edge payload를 빈 graph로 대체하지 않으며, 이후 save의 CAS·graph validation을 우회하지
+않는다.
 
 ### MBA-233 LLM Knowledge reference graph contract
 
