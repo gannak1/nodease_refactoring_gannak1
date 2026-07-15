@@ -32,7 +32,8 @@ vi.mock('@/app/features/knowledge/api/knowledgeApi', () => ({
 }));
 
 vi.mock('@/app/features/knowledge/components/create-knowledge-modal', () => ({
-  default: () => null,
+  default: ({ isOpen }: { isOpen: boolean }) =>
+    isOpen ? <div data-testid="source-registration-modal" /> : null,
 }));
 
 vi.mock('@/app/features/knowledge/components/knowledge-search-modal', () => ({
@@ -137,6 +138,70 @@ describe('KnowledgeDetailPage source processing actions', () => {
     });
     expect(screen.getByText('완료')).toBeVisible();
   }, 10000);
+
+  it('only exposes initial source registration from the server capability', async () => {
+    mockedKnowledgeApi.getKnowledgeBase.mockResolvedValueOnce({
+      ...knowledgeBaseFixture,
+      document_count: 0,
+      documents: [],
+      can_edit_settings: true,
+      can_register_initial_document: true,
+    });
+
+    render(<KnowledgeDetailPage />);
+
+    const actions = await screen.findAllByRole('button', {
+      name: '첫 소스 등록',
+    });
+    expect(actions).toHaveLength(2);
+    fireEvent.click(actions[0]);
+    expect(screen.getByTestId('source-registration-modal')).toBeVisible();
+    expect(screen.queryByText('Collection 관리')).not.toBeInTheDocument();
+  });
+
+  it('fails closed when the initial registration capability is missing', async () => {
+    mockedKnowledgeApi.getKnowledgeBase.mockResolvedValueOnce({
+      ...knowledgeBaseFixture,
+      document_count: 0,
+      documents: [],
+      can_edit_settings: true,
+      can_register_initial_document: undefined,
+    });
+
+    render(<KnowledgeDetailPage />);
+
+    expect(
+      await screen.findByRole('heading', { name: '사내 문서' }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole('button', { name: '첫 소스 등록' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId('source-registration-modal'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('directs occupied writable knowledge bases to Collection management', async () => {
+    mockedKnowledgeApi.getKnowledgeBase.mockResolvedValueOnce({
+      ...knowledgeBaseFixture,
+      can_edit_settings: true,
+      can_register_initial_document: false,
+    });
+
+    render(<KnowledgeDetailPage />);
+
+    expect(await screen.findByText('Collection 관리')).toHaveAttribute(
+      'href',
+      '/dashboard/knowledge/collections',
+    );
+    expect(screen.getByText('새 지식 베이스')).toHaveAttribute(
+      'href',
+      '/dashboard/knowledge',
+    );
+    expect(
+      screen.queryByRole('button', { name: '첫 소스 등록' }),
+    ).not.toBeInTheDocument();
+  });
 
   it('shows a safe not-found state for hidden or missing knowledge bases', async () => {
     const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});

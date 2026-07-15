@@ -44,6 +44,26 @@ const safeFailureMessage = (message: string, error: unknown) => {
   return status ? `${message} (HTTP ${status})` : message;
 };
 
+const getReasonCode = (error: unknown): string | undefined => {
+  if (typeof error !== 'object' || error === null) return undefined;
+  const response = (
+    error as {
+      response?: {
+        data?: {
+          detail?: {
+            reason_code?: unknown;
+            error?: { code?: unknown };
+          };
+        };
+      };
+    }
+  ).response;
+  const reasonCode =
+    response?.data?.detail?.error?.code ??
+    response?.data?.detail?.reason_code;
+  return typeof reasonCode === 'string' ? reasonCode : undefined;
+};
+
 interface SelectOption {
   value: string;
   label: string;
@@ -548,6 +568,7 @@ export default function CreateKnowledgeModal({
           const presignedData = await knowledgeApi.getPresignedUploadUrl(
             file.name,
             file.type || 'application/octet-stream',
+            knowledgeBaseId,
           );
 
           if (presignedData.use_backend_proxy) {
@@ -566,6 +587,13 @@ export default function CreateKnowledgeModal({
           }
         } catch (err) {
           logCreateKnowledgeModalFailure('uploadToS3', err);
+          if (getReasonCode(err) === 'knowledge.document_slot_occupied') {
+            toast.error(
+              '이 지식 베이스에는 이미 소스가 있습니다. 새 지식 베이스를 만든 뒤 Collection에서 묶어주세요.',
+            );
+            onClose();
+            return;
+          }
           toast.error(safeFailureMessage('S3 업로드에 실패했습니다.', err));
           setIsLoading(false);
           return;
@@ -607,6 +635,13 @@ export default function CreateKnowledgeModal({
       );
       router.push(`/dashboard/knowledge/${response.knowledge_base_id}`);
     } catch (error) {
+      if (getReasonCode(error) === 'knowledge.document_slot_occupied') {
+        toast.error(
+          '이 지식 베이스에는 이미 소스가 있습니다. 새 지식 베이스를 만든 뒤 Collection에서 묶어주세요.',
+        );
+        onClose();
+        return;
+      }
       const status = getHttpStatus(error);
       toast.error(
         status

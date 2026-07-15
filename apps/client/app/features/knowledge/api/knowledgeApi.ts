@@ -242,6 +242,7 @@ export const knowledgeApi = {
   getPresignedUploadUrl: async (
     filename: string,
     contentType: string,
+    knowledgeBaseId?: string,
   ): Promise<{
     upload_url: string;
     s3_key: string;
@@ -251,6 +252,7 @@ export const knowledgeApi = {
     const response = await api.post('/rag/upload/presigned-url', {
       filename,
       content_type: contentType,
+      ...(knowledgeBaseId ? { knowledgeBaseId } : {}),
     });
     return response.data;
   },

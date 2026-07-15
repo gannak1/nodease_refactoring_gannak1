@@ -95,6 +95,9 @@ export default function KnowledgeDetailPage() {
         const data = await knowledgeApi.getKnowledgeBase(id);
         setKnowledgeBase(data);
         setFetchErrorStatus(null);
+        if (data.can_register_initial_document !== true) {
+          setIsUploadModalOpen(false);
+        }
 
         // 수정 중이 아닐 때만 필드 업데이트
         if (!isEditingName) {
@@ -446,6 +449,8 @@ export default function KnowledgeDetailPage() {
   const canManageSafeMetadata =
     knowledgeBase.can_manage_safe_metadata ?? canEditSettings;
   const canManageKnowledgeBase = knowledgeBase.can_manage === true;
+  const canRegisterInitialDocument =
+    knowledgeBase.can_register_initial_document === true;
 
   return (
     <div className="p-8 bg-gray-50/30 dark:bg-gray-900 min-h-full">
@@ -568,14 +573,14 @@ export default function KnowledgeDetailPage() {
             <Bot className="w-4 h-4 text-blue-600 dark:text-blue-400" />
             AI 답변 테스트
           </button>
-          {canEditSettings && (
-              <button
-                onClick={() => setIsUploadModalOpen(true)}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors shadow-sm"
-              >
-                <Plus className="w-4 h-4" />
-                소스 추가
-              </button>
+          {canRegisterInitialDocument && (
+            <button
+              onClick={() => setIsUploadModalOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors shadow-sm"
+            >
+              <Plus className="w-4 h-4" />
+              첫 소스 등록
+            </button>
           )}
           {canManageKnowledgeBase && (
               <button
@@ -664,6 +669,29 @@ export default function KnowledgeDetailPage() {
       </section>
       )}
 
+      {knowledgeBase.documents.length > 0 && canEditSettings && (
+        <div className="mb-6 flex flex-col gap-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-100 sm:flex-row sm:items-center sm:justify-between">
+          <p>
+            지식 베이스 하나는 독립 소스 하나를 관리합니다. 다른 문서는 새 지식
+            베이스로 만든 뒤 Collection에서 함께 구성하세요.
+          </p>
+          <div className="flex shrink-0 items-center gap-4">
+            <Link
+              href="/dashboard/knowledge"
+              className="font-medium text-blue-700 hover:underline dark:text-blue-300"
+            >
+              새 지식 베이스
+            </Link>
+            <Link
+              href="/dashboard/knowledge/collections"
+              className="font-medium text-blue-700 hover:underline dark:text-blue-300"
+            >
+              Collection 관리
+            </Link>
+          </div>
+        </div>
+      )}
+
       {/* Source List */}
       <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden shadow-sm">
         <div className="px-5 py-3 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center">
@@ -703,13 +731,13 @@ export default function KnowledgeDetailPage() {
                       <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
                         AI가 학습할 문서를 추가해보세요.
                       </p>
-                      {canEditSettings && (
+                      {canRegisterInitialDocument && (
                         <button
                           onClick={() => setIsUploadModalOpen(true)}
                           className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors shadow-sm"
                         >
                           <Plus className="w-4 h-4 mr-1.5" />
-                          첫번째 소스 추가하기
+                          첫 소스 등록
                         </button>
                       )}
                     </div>
@@ -849,9 +877,9 @@ export default function KnowledgeDetailPage() {
         </div>
       </div>
 
-      {/* Upload Modal (Reuse) - TODO: KB ID 전달 필요 */}
+      {/* Initial source registration modal */}
       <CreateKnowledgeModal
-        isOpen={isUploadModalOpen}
+        isOpen={isUploadModalOpen && canRegisterInitialDocument}
         knowledgeBaseId={id}
         onClose={() => {
           setIsUploadModalOpen(false);

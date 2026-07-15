@@ -178,8 +178,93 @@ describe('CreateKnowledgeModal file drag and drop', () => {
     await waitFor(() => {
       expect(knowledgeApiMock.uploadKnowledgeBase).toHaveBeenCalled();
     });
+    expect(knowledgeApiMock.getPresignedUploadUrl).toHaveBeenCalledWith(
+      'guide.md',
+      'text/markdown',
+      'kb-1',
+    );
     expect(onClose).toHaveBeenCalled();
     expect(routerPushMock).toHaveBeenCalledWith('/dashboard/knowledge/kb-1');
+  });
+
+  it('closes and shows a fixed collection hint when the slot became occupied', async () => {
+    const onClose = vi.fn();
+    knowledgeApiMock.getPresignedUploadUrl.mockRejectedValueOnce({
+      response: {
+        status: 409,
+        data: {
+          detail: {
+            error: { code: 'knowledge.document_slot_occupied' },
+          },
+        },
+      },
+    });
+    const { container } = render(
+      <CreateKnowledgeModal
+        isOpen
+        onClose={onClose}
+        knowledgeBaseId="kb-1"
+        initialTab="FILE"
+      />,
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+    const fileInput = container.querySelector('input[type="file"]');
+    fireEvent.change(fileInput!, {
+      target: {
+        files: [new File(['policy'], 'policy.md', { type: 'text/markdown' })],
+      },
+    });
+    const buttons = screen.getAllByRole('button');
+    fireEvent.click(buttons[buttons.length - 1]);
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(
+        '이 지식 베이스에는 이미 소스가 있습니다. 새 지식 베이스를 만든 뒤 Collection에서 묶어주세요.',
+      );
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(knowledgeApiMock.uploadKnowledgeBase).not.toHaveBeenCalled();
+  });
+
+  it('refreshes the detail flow when the canonical registration loses a race', async () => {
+    const onClose = vi.fn();
+    knowledgeApiMock.uploadKnowledgeBase.mockRejectedValueOnce({
+      response: {
+        status: 409,
+        data: {
+          detail: {
+            error: { code: 'knowledge.document_slot_occupied' },
+          },
+        },
+      },
+    });
+    const { container } = render(
+      <CreateKnowledgeModal
+        isOpen
+        onClose={onClose}
+        knowledgeBaseId="kb-1"
+        initialTab="FILE"
+      />,
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+    const fileInput = container.querySelector('input[type="file"]');
+    fireEvent.change(fileInput!, {
+      target: {
+        files: [new File(['policy'], 'policy.md', { type: 'text/markdown' })],
+      },
+    });
+    const buttons = screen.getAllByRole('button');
+    fireEvent.click(buttons[buttons.length - 1]);
+
+    await waitFor(() => {
+      expect(knowledgeApiMock.uploadKnowledgeBase).toHaveBeenCalledTimes(1);
+      expect(toast.error).toHaveBeenCalledWith(
+        '이 지식 베이스에는 이미 소스가 있습니다. 새 지식 베이스를 만든 뒤 Collection에서 묶어주세요.',
+      );
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('shows a sanitized upload failure message', async () => {
