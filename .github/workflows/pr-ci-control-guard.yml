@@ -62,6 +62,10 @@ jobs:
                 description,
                 target_url: targetUrl,
               });
+            const denyPolicy = async (description, warningMessage) => {
+              await setStatus("failure", description);
+              core.warning(warningMessage);
+            };
 
             await setStatus("pending", "Evaluating base-trusted CI control policy.");
 
@@ -72,11 +76,8 @@ jobs:
               per_page: 100,
             });
             if (files.length !== pull.changed_files) {
-              await setStatus(
-                "failure",
+              await denyPolicy(
                 "Could not enumerate every changed file; review is required.",
-              );
-              core.setFailed(
                 `Expected ${pull.changed_files} changed files but received ${files.length}.`,
               );
               return;
@@ -143,11 +144,8 @@ jobs:
             }
 
             if (!approvedByWriter) {
-              await setStatus(
-                "failure",
+              await denyPolicy(
                 "Fresh approval from a write maintainer is required.",
-              );
-              core.setFailed(
                 "CI control changes require an independent approval on the current head. " +
                   "After approval, comment /recheck-ci-control on the pull request.",
               );

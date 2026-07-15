@@ -32,3 +32,17 @@ def test_unrelated_issue_comments_cannot_cancel_ci_control_review():
     )
     assert "      cancel-in-progress: true" in job_lines
     assert "       github.event.comment.body == '/recheck-ci-control')" in job_lines
+
+
+def test_policy_denial_uses_replaceable_head_status_without_failing_job():
+    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+    deny_policy = workflow.split(
+        "const denyPolicy = async (description, warningMessage) => {", maxsplit=1
+    )[1].split("};", maxsplit=1)[0]
+
+    assert 'await setStatus("failure", description);' in deny_policy
+    assert "core.warning(warningMessage);" in deny_policy
+    assert "core.setFailed(" not in deny_policy
+    assert workflow.count("await denyPolicy(") == 2
+    assert "Could not enumerate every changed file; review is required." in workflow
+    assert "Fresh approval from a write maintainer is required." in workflow
