@@ -116,6 +116,10 @@ DEMO_EMBEDDING_DIMENSION = 1536
 # 모델 라우팅은 문서 검색과 달리 입력 문의의 의미상 군집을 구분해야 한다.
 # RAG 문서용 small 임베딩을 바꾸지 않고, routing catalog에만 더 정밀한 encoder를 쓴다.
 DEMO_MODEL_ROUTER_EMBEDDING_MODEL = "text-embedding-3-large"
+ENTERPRISE_REQUEST_ROUTING_NAME = "엔터프라이즈 통합 업무 요청 처리"
+ENTERPRISE_REQUEST_ROUTING_DESCRIPTION = (
+    "사내 문서 RAG와 입력군별 자동 모델 라우팅으로 다양한 업무 요청을 처리하는 workflow"
+)
 DEMO_REPO_ROOT = Path(__file__).resolve().parents[3]
 DEMO_LEGAL_DOCS_LABOR_DIR = DEMO_REPO_ROOT / "local" / "legal-docs-labor"
 DEMO_INTERNAL_DOCS_DIR = (
@@ -337,6 +341,7 @@ APP_IDS = {
     "team_onboarding_access_control": _uuid(407),
     "model_router_ticket_ops": uuid.UUID("91000000-0000-0000-0000-000000000001"),
     "team_onboarding_adaptive_routing": _uuid(408),
+    "enterprise_request_routing": _uuid(409),
 }
 
 WORKFLOW_IDS = {
@@ -373,6 +378,7 @@ TEAM_PERMISSION_IDS = {
     "team_onboarding_adaptive_platform": _uuid(810),
     "team_onboarding_adaptive_sales": _uuid(811),
     "team_onboarding_adaptive_people": _uuid(812),
+    "enterprise_request_routing": _uuid(813),
 }
 
 
@@ -1241,6 +1247,7 @@ def demo_summary(profile: str = "demo") -> dict[str, Any]:
             "사내 문서 질문 응답 봇",
             "부서별 온보딩 RAG 챗봇",
             "팀별 온보딩 문서 접근 제어 데모",
+            ENTERPRISE_REQUEST_ROUTING_NAME,
             "Enterprise 고객 티켓 처리",
             "테스트용 문의 응답 워크플로우",
         ],
@@ -2695,6 +2702,210 @@ def _model_router_ticket_ops_graph() -> dict[str, Any]:
     return graph
 
 
+def _enterprise_request_routing_graph() -> dict[str, Any]:
+    """사내 업무 요청을 RAG와 입력군별 자동 모델 라우팅으로 처리한다."""
+    graph = copy.deepcopy(_ticket_ops_graph())
+    webhook_node = next(
+        node for node in graph["nodes"] if node["id"] == "webhook-ticket"
+    )
+    webhook_node["id"] = "webhook-request"
+    webhook_node["data"].update(
+        {
+            "title": "사내 업무 요청 수신",
+            "description": "부서, 요청자 역할과 업무 문의를 수신합니다.",
+            "variable_mappings": [
+                {"json_path": "query", "variable_name": "query"},
+                {"json_path": "department", "variable_name": "department"},
+                {"json_path": "requesterRole", "variable_name": "requesterRole"},
+                {"json_path": "locale", "variable_name": "locale"},
+            ],
+        }
+    )
+
+    llm_node = next(node for node in graph["nodes"] if node["id"] == "llm-triage")
+    llm_node["id"] = "llm-request"
+    llm_node["data"].update(
+        {
+            "title": "업무 요청 분류 및 답변",
+            "description": "사내 문서를 검색하고 요청 위험도에 맞는 모델로 답변합니다.",
+            "model_id": DEMO_ONBOARDING_ROUTER_MODEL,
+            "fallback_model_id": None,
+            "auto_model_routing": True,
+            "model_routing_context": {
+                "customer_facing": False,
+                "node_task": "enterprise_internal_request",
+                "risk_level": "medium",
+                "semantic_router": {
+                    "encoder_model_id": DEMO_MODEL_ROUTER_EMBEDDING_MODEL,
+                    "input_paths": ["webhook-request.query"],
+                    "aggregation": "centroid",
+                },
+            },
+            "model_routing_policy": {
+                "refresh": {"refresh_every_runs": 10},
+                "validation_budget_usd": 3.0,
+                "max_cohorts": 8,
+                "excluded_model_ids": ["gpt-5.6-sol"],
+                "cohort_drafts": [
+                    {
+                        "id": str(_uuid(960)),
+                        "key": "routine_usage_guidance",
+                        "label": "단순 사용 안내",
+                        "representative_query": (
+                            "사내 시스템에서 증명서를 내려받는 위치와 절차를 알려 주세요."
+                        ),
+                        "fixed": True,
+                    },
+                    {
+                        "id": str(_uuid(961)),
+                        "key": "account_access_request",
+                        "label": "계정·접근 권한",
+                        "representative_query": (
+                            "퇴사자 Git 저장소와 VPN 접근 권한을 회수하는 절차를 알려 주세요."
+                        ),
+                        "fixed": True,
+                    },
+                    {
+                        "id": str(_uuid(962)),
+                        "key": "finance_closing_approval",
+                        "label": "재무 결산·지급 승인",
+                        "representative_query": (
+                            "해외 지급 건의 증빙과 월말 결산 승인 절차를 확인해 주세요."
+                        ),
+                        "fixed": True,
+                    },
+                    {
+                        "id": str(_uuid(963)),
+                        "key": "security_privacy_incident",
+                        "label": "보안·개인정보 사고",
+                        "representative_query": (
+                            "고객 개인정보가 외부 메일로 전송됐을 때 즉시 해야 할 조치를 알려 주세요."
+                        ),
+                        "fixed": True,
+                    },
+                ],
+            },
+            "knowledgeBases": [
+                _knowledge_base_ref(key)
+                for key in (
+                    "internal_onboarding",
+                    "internal_privacy_hr_records",
+                    "internal_budget_alert_runbook",
+                    "internal_cost_optimization_playbook",
+                    "internal_developer_onboarding_rules",
+                    "onboarding_finance",
+                )
+            ],
+            "scoreThreshold": 0.3,
+            "topK": 5,
+            "system_prompt": (
+                "기업 내부 업무 요청을 처리하는 AI입니다. 현재 실행 주체에게 허용된 사내 문서만 "
+                "근거로 답변하고, 근거가 없으면 추측하지 않습니다. 반드시 JSON object 하나만 "
+                "출력하며 필드는 '입력군', '승인 필요', '답변'만 사용합니다. 보안·개인정보 사고와 "
+                "재무 지급 승인은 보수적으로 판단합니다."
+            ),
+            "user_prompt": (
+                "부서: {{ department }}\n"
+                "요청자 역할: {{ requesterRole }}\n"
+                "언어: {{ locale }}\n"
+                "업무 요청: {{ query }}\n"
+                "요청 유형을 분류하고 승인 필요 여부와 실행 가능한 답변을 작성하세요."
+            ),
+            "referenced_variables": [
+                {
+                    "name": name,
+                    "value_selector": ["webhook-request", name],
+                }
+                for name in ("department", "requesterRole", "locale", "query")
+            ],
+            "parameters": {"temperature": 0.15, "max_tokens": 900},
+            "output_format": {
+                "type": "json",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "입력군": {"type": "string"},
+                        "승인 필요": {"type": "boolean"},
+                        "답변": {"type": "string"},
+                    },
+                    "required": ["입력군", "승인 필요", "답변"],
+                },
+            },
+        }
+    )
+
+    extract_node = next(
+        node for node in graph["nodes"] if node["id"] == "extract-ticket"
+    )
+    extract_node["data"].update(
+        {
+            "title": "업무 처리 결과 추출",
+            "description": "LLM JSON에서 승인 여부와 답변을 추출합니다.",
+            "source_selector": ["llm-request", "text"],
+            "mappings": [
+                {"name": "approvalRequired", "json_path": "승인 필요"},
+                {"name": "mailDraft", "json_path": "답변"},
+            ],
+        }
+    )
+
+    condition_node = next(
+        node for node in graph["nodes"] if node["id"] == "condition-approval"
+    )
+    condition_node["data"].update(
+        {
+            "title": "검토 필요 분기",
+            "description": "보안·재무 등 승인 필요 요청을 검토 경로로 분기합니다.",
+        }
+    )
+
+    approval_template = next(
+        node for node in graph["nodes"] if node["id"] == "template-approval"
+    )
+    approval_template["data"].update(
+        {
+            "title": "담당 부서 검토 요청",
+            "description": "승인이 필요한 업무 요청을 담당 부서에 전달합니다.",
+            "template": (
+                "담당 부서 검토가 필요한 요청입니다.\n\n"
+                "부서: {{ department }}\n"
+                "요청자 역할: {{ requesterRole }}\n"
+                "요청: {{ query }}\n\n"
+                "AI 검토 결과:\n{{ mailDraft }}"
+            ),
+            "variables": [
+                {"name": "mailDraft", "value_selector": ["extract-ticket", "mailDraft"]},
+                {"name": "department", "value_selector": ["webhook-request", "department"]},
+                {
+                    "name": "requesterRole",
+                    "value_selector": ["webhook-request", "requesterRole"],
+                },
+                {"name": "query", "value_selector": ["webhook-request", "query"]},
+            ],
+        }
+    )
+
+    reply_template = next(
+        node for node in graph["nodes"] if node["id"] == "template-reply"
+    )
+    reply_template["data"].update(
+        {
+            "title": "사내 업무 안내",
+            "description": "승인 없이 처리할 수 있는 업무 답변을 정리합니다.",
+            "template": "{{ mailDraft }}",
+        }
+    )
+
+    for edge in graph["edges"]:
+        if edge["source"] == "webhook-ticket":
+            edge["source"] = "webhook-request"
+        if edge["source"] == "llm-triage":
+            edge["source"] = "llm-request"
+        if edge["target"] == "llm-triage":
+            edge["target"] = "llm-request"
+    return graph
+
+
 def _test_inquiry_graph() -> dict[str, Any]:
     return {
         "nodes": [
@@ -3686,6 +3897,16 @@ def _seed_apps_and_workflows(db: Session) -> dict[str, Workflow]:
             deployed=True,
             deployment_type=DeploymentType.INTERNAL_CHATBOT,
         ),
+        "enterprise_request_routing": _upsert_app_workflow(
+            db,
+            "enterprise_request_routing",
+            ENTERPRISE_REQUEST_ROUTING_NAME,
+            ENTERPRISE_REQUEST_ROUTING_DESCRIPTION,
+            "admin",
+            _enterprise_request_routing_graph(),
+            deployed=True,
+            deployment_type=DeploymentType.WEBHOOK,
+        ),
         "ticket_ops": _upsert_app_workflow(
             db,
             "ticket_ops",
@@ -3762,6 +3983,19 @@ def _seed_permissions(db: Session) -> None:
                 "auth_state": "manager",
                 "assigned_by": USER_IDS["admin"],
                 "options": _demo_options("permission-model-router-ticket"),
+                "flags": 0,
+            },
+        ),
+        (
+            TEAM_PERMISSION_IDS["enterprise_request_routing"],
+            TeamWorkflowPermission,
+            {
+                "grantee_organization_id": ORG_ID,
+                "team_id": TEAM_IDS["platform_admin"],
+                "workflow_id": WORKFLOW_IDS["enterprise_request_routing"],
+                "auth_state": "manager",
+                "assigned_by": USER_IDS["admin"],
+                "options": _demo_options("permission-enterprise-request-routing"),
                 "flags": 0,
             },
         ),

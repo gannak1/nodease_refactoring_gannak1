@@ -11,6 +11,9 @@ from apps.shared.domain.app_auth_secret import (
     APP_AUTH_SECRET_VERIFIER_VERSION,
     app_auth_secret_verifier,
 )
+from apps.shared.domain.workflow_graph import validate_workflow_graph
+from apps.workflow_engine.workflow.nodes.webhook.entities import WebhookTriggerNodeData
+from apps.workflow_engine.workflow.nodes.webhook.webhook_node import WebhookTriggerNode
 from scripts import seed_demo as seed_demo_script
 
 
@@ -561,6 +564,102 @@ def test_team_onboarding_adaptive_routing_app_is_seeded_for_people_manager(
     assert call["owner_key"] == "onboarding_people_manager"
     assert call["deployed"] is True
     assert call["deployment_type"] is demo_seed.DeploymentType.INTERNAL_CHATBOT
+
+
+def test_enterprise_request_routing_graph_has_four_default_cohort_drafts():
+    """통합 업무 요청 workflow는 자동 라우팅과 4개 기본 입력군을 함께 제공한다."""
+    graph = demo_seed._enterprise_request_routing_graph()
+    llm_node = next(node for node in graph["nodes"] if node["id"] == "llm-request")
+    data = llm_node["data"]
+
+    assert data["auto_model_routing"] is True
+    assert data["model_id"] == demo_seed.DEMO_ONBOARDING_ROUTER_MODEL
+    assert data["model_routing_context"]["semantic_router"]["input_paths"] == [
+        "webhook-request.query"
+    ]
+
+    policy = data["model_routing_policy"]
+    assert policy["refresh"]["refresh_every_runs"] == 10
+    cohort_drafts = policy["cohort_drafts"]
+    assert len(cohort_drafts) == 4
+    assert {
+        (draft["key"], draft["label"])
+        for draft in cohort_drafts
+    } == {
+        ("routine_usage_guidance", "단순 사용 안내"),
+        ("account_access_request", "계정·접근 권한"),
+        ("finance_closing_approval", "재무 결산·지급 승인"),
+        ("security_privacy_incident", "보안·개인정보 사고"),
+    }
+    assert all(draft["representative_query"].strip() for draft in cohort_drafts)
+    assert all(draft["fixed"] is True for draft in cohort_drafts)
+    node_ids = {node["id"] for node in graph["nodes"]}
+    assert all(
+        edge["source"] in node_ids and edge["target"] in node_ids
+        for edge in graph["edges"]
+    )
+
+
+def test_enterprise_request_routing_graph_validates_and_maps_webhook_payload():
+    """시연 webhook의 실제 입력 필드가 LLM 입력 변수로 전달된다."""
+    graph = demo_seed._enterprise_request_routing_graph()
+    validate_workflow_graph(graph)
+    webhook = next(node for node in graph["nodes"] if node["id"] == "webhook-request")
+    node = WebhookTriggerNode(
+        id=webhook["id"],
+        data=WebhookTriggerNodeData.model_validate(webhook["data"]),
+    )
+
+    result = node.execute(
+        {
+            "query": "VPN 접근 권한을 회수하는 절차를 알려 주세요.",
+            "department": "플랫폼",
+            "requesterRole": "관리자",
+            "locale": "ko-KR",
+        }
+    )
+
+    assert result == {
+        "query": "VPN 접근 권한을 회수하는 절차를 알려 주세요.",
+        "department": "플랫폼",
+        "requesterRole": "관리자",
+        "locale": "ko-KR",
+    }
+
+
+def test_enterprise_request_routing_app_is_seeded_as_deployed_webhook(monkeypatch):
+    calls = {}
+
+    def capture(
+        _db,
+        key,
+        name,
+        description,
+        owner_key,
+        graph,
+        *,
+        deployed,
+        deployment_type=demo_seed.DeploymentType.API,
+    ):
+        calls[key] = {
+            "name": name,
+            "owner_key": owner_key,
+            "graph": graph,
+            "deployed": deployed,
+            "deployment_type": deployment_type,
+        }
+        return key
+
+    monkeypatch.setattr(demo_seed, "_upsert_app_workflow", capture)
+
+    workflows = demo_seed._seed_apps_and_workflows(object())
+
+    assert workflows["enterprise_request_routing"] == "enterprise_request_routing"
+    call = calls["enterprise_request_routing"]
+    assert call["name"] == "엔터프라이즈 통합 업무 요청 처리"
+    assert call["owner_key"] == "admin"
+    assert call["deployed"] is True
+    assert call["deployment_type"] is demo_seed.DeploymentType.WEBHOOK
 
 
 def test_team_onboarding_access_control_app_is_active_internal_chatbot(monkeypatch):
