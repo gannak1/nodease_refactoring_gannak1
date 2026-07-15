@@ -72,6 +72,8 @@ Status: Draft
 - 오류 상태:
   - `finally`에서 `isLoading`은 false로 재설정된다.
   - `error`는 선택된 사용자 표시용 메시지로 설정된다.
+  - `429`는 account 존재 여부, 제한 차원과 count를 표시하지 않고 `로그인 시도가 너무 많습니다. 잠시 후 다시 시도해주세요.`를 표시한다.
+  - Limiter unavailable `503`은 기존 5xx generic server 오류 메시지를 표시한다.
   - 인라인 빨간색 오류 알림은 `error`가 비어 있지 않을 때만 렌더링된다.
 
 ### SignupPage
@@ -158,6 +160,7 @@ Status: Draft
   - `LoginPage`는 기존 `error`를 비우고 `isLoading = true`로 설정한 뒤 `authApi.login`을 호출한다.
   - 성공 시 safe same-origin `next`가 있으면 그 경로로, 없거나 안전하지 않으면 `/dashboard`로 이동한다.
   - 401 실패는 `이메일 또는 비밀번호가 올바르지 않습니다.`를 표시한다.
+  - 429 실패는 backend의 고정 detail `로그인 시도가 너무 많습니다. 잠시 후 다시 시도해주세요.`를 인라인 오류와 toast에 표시한다. `Retry-After`를 countdown으로 표시하거나 account/network 제한 원인을 노출하지 않는다.
   - 배열 `detail`이 있는 422 실패는 `입력한 값이 올바르지 않습니다.`를 표시한다.
   - 배열 `detail`이 없는 422 실패는 `입력 형식이 올바르지 않습니다.`를 표시한다.
   - 5xx 실패는 `서버에 문제가 발생했습니다. 잠시 후 다시 시도해주세요.`를 표시한다.

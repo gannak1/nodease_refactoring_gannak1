@@ -5,7 +5,7 @@ Related Features: organization, audit-tracing, workflow, deployment, chatbot-dep
 
 ## Purpose
 
-Auth 기능은 사용자의 인증 생명주기를 담당한다. 현재 구현 범위는 이메일/비밀번호 회원가입, 이메일/비밀번호 로그인, Google OAuth 로그인, JWT 세션 쿠키 발급/검증/삭제, 현재 사용자 조회, 클라이언트 인증 리다이렉트 처리이다.
+Auth 기능은 사용자의 인증 생명주기를 담당한다. 현재 구현 범위는 이메일/비밀번호 회원가입, 분산 abuse prevention이 적용된 이메일/비밀번호 로그인, Google OAuth 로그인, JWT 세션 쿠키 발급/검증/삭제, 현재 사용자 조회, 클라이언트 인증 리다이렉트 처리이다.
 
 Auth는 보호된 Gateway API가 `auth_token` 쿠키에서 현재 사용자를 식별할 수 있는 공통 인증 경계를 제공한다. 신규 사용자 생성 시 기본 organization 컨텍스트를 준비하고, 주요 인증 성공/실패 이벤트를 audit로 기록한다. Resource permission 판정, organization 관리, audit 조회/정책 처리는 auth 자체의 책임 범위가 아니다.
 
@@ -13,6 +13,7 @@ Auth는 보호된 Gateway API가 `auth_token` 쿠키에서 현재 사용자를 �
 
 - 방문자는 이름, 이메일, 비밀번호로 계정을 생성하고 즉시 로그인된 상태로 대시보드에 진입할 수 있다.
 - 방문자는 이메일과 비밀번호로 로그인하고, 안전한 원래 보호 경로가 있으면 그 경로로, 없으면 대시보드로 진입할 수 있다.
+- 방문자는 반복 로그인 제한에 도달하면 계정 존재 여부나 제한 원인을 노출하지 않는 안내와 bounded 재시도 시간을 받으며, 영구 계정 잠금 없이 token refill 뒤 다시 시도할 수 있다.
 - 방문자는 Google OAuth 로그인을 시작하고, 안전한 원래 보호 경로가 있으면 성공한 콜백 이후 그 경로로, 없으면 대시보드로 진입할 수 있다.
 - 이미 로그인된 사용자는 공개 홈 진입 시 대시보드로 자동 이동된다.
 - 로그인되지 않은 사용자는 공개 홈과 auth 화면에서 강제 로그인 리다이렉트 없이 오류나 공개 화면을 볼 수 있다.
@@ -51,7 +52,7 @@ Auth는 보호된 Gateway API가 `auth_token` 쿠키에서 현재 사용자를 �
 - AUTH-REQ-027: Google OAuth 성공 시 시스템은 `last_login_at`을 갱신하고 6시간 만료 JWT 세션 쿠키를 설정한 뒤, 서명 세션에서 한 번 소비한 safe same-origin `next`로 리다이렉트해야 한다. 유효한 복귀 경로가 없으면 `/dashboard`를 사용한다.
 - AUTH-REQ-028: Gateway host가 정확히 `localhost:8000` 또는 `127.0.0.1:8000`이면 Google OAuth 성공 리다이렉트 대상은 각각 대응하는 `http://<loopback>:3000<safe-next>`여야 한다. 유사 문자열을 포함한 non-local host는 local로 취급하지 않는다.
 - AUTH-REQ-029: 회원가입 성공, 로그인 성공, 회원가입 실패, 로그인 실패, 로그아웃은 인증 행위 감사 이벤트로 기록되어야 한다.
-- AUTH-REQ-030: 인증 실패 또는 권한 거부로 발생한 401/403 응답은 `auth.permission_denied` 감사 이벤트로 기록되어야 한다.
+- AUTH-REQ-030: 공통 인증 dependency 또는 권한 경계에서 발생하고 다른 helper가 아직 감사하지 않은 401/403 응답은 `auth.permission_denied` 감사 이벤트로 기록되어야 한다. Password login이 `user.login_failed`를 직접 기록한 응답은 중복 전역 감사를 만들지 않아야 한다.
 - AUTH-REQ-031: Gateway 공통 인증 의존성은 `auth_token` 쿠키를 읽고 `AuthService.get_user_from_token`으로 현재 사용자를 반환해야 한다.
 - AUTH-REQ-032: 클라이언트 `authApi`는 signup, login, logout, me, googleLogin 호출을 제공해야 한다.
 - AUTH-REQ-033: 클라이언트 auth API 호출은 credential 포함 요청을 사용해야 한다.
@@ -73,6 +74,21 @@ Auth는 보호된 Gateway API가 `auth_token` 쿠키에서 현재 사용자를 �
 - AUTH-REQ-049: Google OAuth `next`는 client가 callback에 다시 제출하는 권한 값이 아니다. Gateway는 검증한 경로와 발급 시각을 서명된 server session에 저장하고 10분 이내 callback에서 한 번만 소비해야 하며, 만료·미래 시각·재사용·형식 오류는 `/dashboard`로 닫아야 한다.
 - AUTH-REQ-050: Google OAuth 시작·token 교환·user info 실패 응답, 로그와 audit metadata에는 provider exception 원문, token, credential 또는 raw payload를 포함하지 않아야 한다. 로그에는 오류 타입, audit에는 고정 reason code만 기록한다.
 - AUTH-REQ-051: `NODE_ENV=production`에서는 OAuth session 서명용 `SECRET_KEY`가 없거나 공백이거나 알려진 개발 placeholder이면 Gateway 시작을 거부해야 한다. Credentialed `CORS_ORIGINS`는 명시적인 HTTP(S) origin 목록이어야 하며 `*`, 빈 목록, userinfo/path/query/fragment가 있는 값을 거부해야 한다.
+- AUTH-REQ-052: `POST /auth/login`은 account, source network, account+network 세 차원의 분산 admission을 실제 사용자 조회와 password 검증 전에 수행해야 한다.
+- AUTH-REQ-053: Account limiter identity는 `EmailStr` 검증 뒤 Unicode NFKC, trim, casefold를 적용한 값에서 파생해야 한다. Raw email/username은 Redis key/value, audit, metric과 log에 저장하지 않아야 한다.
+- AUTH-REQ-054: Source network는 immediate peer가 configured trusted proxy CIDR일 때만 forwarded chain의 첫 untrusted hop에서 파생해야 한다. Untrusted peer가 보낸 `X-Forwarded-For`와 `X-Real-IP`는 무시해야 한다.
+- AUTH-REQ-055: Source network는 IPv4 `/24`, IPv6 `/64`로 정규화해야 하며 direct loopback development request는 exact loopback identity를 유지해야 한다.
+- AUTH-REQ-056: Limiter counter key는 domain-separated versioned HMAC-SHA-256 account/network/account+network fingerprint만 포함해야 한다. HMAC key와 raw identifier는 Redis value, response, audit, metric과 log에 포함하지 않아야 한다.
+- AUTH-REQ-057: Production은 dedicated primary HMAC key version을 요구하고 최대 한 개 previous version을 rotation overlap으로 허용해야 한다. Overlap 동안 active version 전체의 bucket을 같은 admission에서 평가·소비해야 한다.
+- AUTH-REQ-058: Login admission은 Redis server time을 사용하는 atomic token-bucket으로 구현해야 한다. Account+network는 5 token/300초, account는 20 token/900초, network는 100 token/300초의 초기 정책을 사용해야 한다.
+- AUTH-REQ-059: 모든 active-version bucket과 세 dimension에 token이 있을 때만 한 login request를 허용하고 모두에서 token 하나를 소비해야 한다. 하나라도 비면 다른 bucket을 추가 소비하지 않고 password 검증, JWT 발급과 DB mutation 전에 차단해야 한다.
+- AUTH-REQ-060: Credential 성공은 account와 account+network bucket만 active version 전체에서 초기화해야 한다. Network bucket과 실패한 login의 token은 유지해야 한다.
+- AUTH-REQ-061: 제한된 login은 `429`와 고정된 generic detail을 반환하고, 모든 blocked bucket이 최소 한 token을 회복하는 bounded 시간을 `Retry-After` 1~300초로 반환해야 한다. Body는 account 존재 여부, blocked dimension, count, threshold와 fingerprint를 노출하지 않아야 한다.
+- AUTH-REQ-062: Limiter 저장소 또는 script가 admission을 판정할 수 없으면 login은 password 검증 전에 fail-closed `503`과 generic detail, `Retry-After: 30`을 반환해야 한다. Process-local 또는 fail-open fallback은 사용하지 않아야 한다.
+- AUTH-REQ-063: Login abuse prevention은 server-side progressive sleep이나 영구 account lock을 사용하지 않아야 한다. 지속 공격은 token refill rate로 제한하고 정상 사용자는 bounded refill 뒤 다시 시도할 수 있어야 한다.
+- AUTH-REQ-064: Login 성공은 `user.login`, invalid/inactive/limited/limiter-unavailable 결과는 `user.login_failed`를 사용하고 safe reason code로 구분해야 한다. Login audit는 request ID, policy version, allowlisted limited dimension과 email을 제외한 opaque user ID/표시 이름 success actor snapshot만 허용하며 raw email/IP/fingerprint와 exception message를 제외해야 한다.
+- AUTH-REQ-065: Login metric과 structured log는 outcome, allowlisted dimension, policy version과 operation 같은 bounded label만 사용해야 한다. Account, network/IP, fingerprint, user ID와 request ID를 metric label로 사용하지 않아야 한다.
+- AUTH-REQ-066: Request schema `422`는 login admission을 소비하지 않아야 한다. Existing invalid credential `401`, valid credential의 inactive `403`, success response와 cookie 계약은 유지해야 한다.
 
 ## Policies And Edge Cases
 
@@ -82,7 +98,8 @@ Auth는 보호된 Gateway API가 `auth_token` 쿠키에서 현재 사용자를 �
 - 현재 구현은 비밀번호 길이, 복잡도, 재사용 제한을 강제하지 않는다.
 - 현재 구현은 이메일 인증을 요구하지 않는다.
 - 현재 구현은 비밀번호 재설정 API나 화면을 제공하지 않는다.
-- 현재 구현은 로그인 실패 횟수 제한이나 계정 잠금 정책을 제공하지 않는다.
+- 이메일/비밀번호 로그인은 account, source network, account+network 기준의 bounded token-bucket을 적용한다. Signup과 Google OAuth에는 이 limiter를 적용하지 않는다.
+- 로그인 limiter는 Redis 가용성에 의존한다. Admission 장애는 신규 password login을 `503`으로 닫지만 기존 session 검증에는 영향을 주지 않는다.
 - `LoginResponse`는 HTTP-only 쿠키와 별도로 JWT token 값을 응답 본문에도 포함한다.
 - Audit metadata에는 actor snapshot, 요청 metadata, 실패 email/error type 또는 OAuth reason code가 포함될 수 있지만, exception 원문과 세션 token 원문은 기록하지 않는다.
 - 로그아웃 엔드포인트는 현재 사용자 식별을 요구하지 않으며, cookie 삭제 시점에 actor id 없이 audit을 기록한다.
@@ -96,7 +113,7 @@ Auth는 보호된 Gateway API가 `auth_token` 쿠키에서 현재 사용자를 �
 ## Open Questions
 
 - 이메일 인증과 비밀번호 재설정을 auth 범위에 포함할지 결정해야 한다.
-- 비밀번호 정책, 로그인 실패 제한, 계정 잠금 정책을 추가할지 결정해야 한다.
+- 비밀번호 길이·복잡도·재사용과 password hashing algorithm을 별도 Auth foundation 범위에서 고도화할지 결정해야 한다.
 - HTTP-only 쿠키를 설정하면서 JWT token을 응답 본문에도 계속 반환할지 결정해야 한다.
 - Frontend auth 타입을 현재 Gateway 응답 모델에 맞게 축소할지, 아니면 Gateway 응답을 타입에 맞춰 확장할지 결정해야 한다.
 - Google OAuth 실패 시 단순 `400` 본문을 반환할지, 로그인 화면으로 오류 상태를 전달할지 결정해야 한다.

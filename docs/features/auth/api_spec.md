@@ -10,7 +10,7 @@ Verified Against: feature/mba-234 @ 647913b9
 | 메서드 | 경로 | 설명 | 인증 |
 | --- | --- | --- | --- |
 | POST | `/auth/signup` | 이메일/비밀번호 사용자를 생성하고, 6시간짜리 JWT 세션을 만들며, `auth_token` 쿠키를 설정한 뒤 사용자/세션 데이터를 반환한다. | 공개 |
-| POST | `/auth/login` | 이메일/비밀번호 사용자를 인증하고, 6시간짜리 JWT 세션을 만들며, `auth_token` 쿠키를 설정한 뒤 사용자/세션 데이터를 반환한다. | 공개 |
+| POST | `/auth/login` | 분산 account/network admission 뒤 이메일/비밀번호 사용자를 인증하고, 6시간짜리 JWT 세션을 만들며, `auth_token` 쿠키를 설정한 뒤 사용자/세션 데이터를 반환한다. | 공개 |
 | POST | `/auth/logout` | `auth_token` 쿠키를 삭제하고 로그아웃 확인 응답을 반환한다. | 공개 |
 | GET | `/auth/me` | 쿠키에서 `auth_token`을 읽어 검증하고 현재 사용자/세션 데이터를 반환한다. | `auth_token` 쿠키 필요 |
 | GET | `/auth/google/login` | 선택적 safe `next`를 서명 세션에 저장하고 Google 인증 화면으로 리디렉션한다. | 공개 |
@@ -40,6 +40,36 @@ Verified Against: feature/mba-234 @ 647913b9
 | `password` | `string` | 예 | 저장된 비밀번호 해시와 비교된다. |
 
 성공 응답: `200 OK`, `LoginResponse`, `auth_token` 쿠키 설정.
+
+Password 검증 전 admission:
+
+| Dimension | Capacity | Full refill time | 성공 시 reset |
+| --- | ---: | ---: | --- |
+| account+network | 5 | 300초 | 예 |
+| account | 20 | 900초 | 예 |
+| network | 100 | 300초 | 아니요 |
+
+Gateway는 raw email과 source address를 Redis에 저장하지 않고 versioned HMAC fingerprint를 사용한다. Source network는 trusted proxy peer에서 온 forwarded chain만 해석한다. 모든 bucket에 token이 있을 때만 password 검증을 수행한다.
+
+제한 응답: `429 Too Many Requests`.
+
+```json
+{
+  "detail": "로그인 시도가 너무 많습니다. 잠시 후 다시 시도해주세요."
+}
+```
+
+응답에는 `Retry-After: <1..300>` header가 포함된다. Body와 header는 account 존재 여부, blocked dimension, current count, threshold와 fingerprint를 포함하지 않는다.
+
+Limiter가 admission을 판정할 수 없는 경우: `503 Service Unavailable`.
+
+```json
+{
+  "detail": "로그인을 일시적으로 사용할 수 없습니다."
+}
+```
+
+응답에는 `Retry-After: 30` header가 포함되며 password 검증, JWT 발급과 `last_login_at` mutation은 발생하지 않는다.
 
 ### `POST /auth/logout`
 
@@ -174,6 +204,8 @@ HTTP 예외는 다음 형식으로 반환된다.
 | 400 | `GET /auth/google/callback` | `OAuth authentication failed` | token 교환, token/user info 타입, user info 조회 또는 email 검증에 실패한다. Provider exception 원문은 반환하지 않는다. |
 | 503 | `GET /auth/google/login` | `OAuth login is unavailable` | provider authorization 시작에 실패한다. Exception 원문은 반환하지 않는다. |
 | 401 | `POST /auth/login` | `이메일 또는 비밀번호가 올바르지 않습니다` | 사용자가 없거나, 비밀번호가 없거나, 비밀번호 검증에 실패한다. |
+| 429 | `POST /auth/login` | `로그인 시도가 너무 많습니다. 잠시 후 다시 시도해주세요.` | Account, source network 또는 account+network admission token이 부족하다. `Retry-After`는 1~300초이며 제한 차원은 노출하지 않는다. |
+| 503 | `POST /auth/login` | `로그인을 일시적으로 사용할 수 없습니다.` | Redis limiter 연결, script 또는 result 판정에 실패한다. `Retry-After: 30`, credential verifier 미호출. |
 | 401 | `GET /auth/me` | `로그인이 필요합니다` | `auth_token` 쿠키가 없다. |
 | 401 | `GET /auth/me` | `유효하지 않거나 만료된 토큰입니다` | JWT 검증에 실패한다. |
 | 401 | `GET /auth/me` | `유저를 찾을 수 없습니다` | 토큰의 user id가 사용자로 해석되지 않는다. |
@@ -186,12 +218,16 @@ HTTP 예외는 다음 형식으로 반환된다.
 
 `GET /auth/me`는 `AuthService.get_user_from_token`을 통해 `auth_token` 쿠키를 검증해서 인증한다.
 
-회원가입, 로그인, 로그아웃, Google OAuth 진입/콜백은 공개 인증 생명주기 엔드포인트이다. 회원가입, 로그인, 로그아웃, Google 로그인 성공, 인증 실패는 Gateway에 감사 이벤트를 기록한다. 실패 audit은 exception 원문 대신 오류 타입 또는 고정 OAuth reason code를 사용한다.
+회원가입, 로그인, 로그아웃, Google OAuth 진입/콜백은 공개 인증 생명주기 엔드포인트이다. 공개라는 의미는 resource permission이 필요 없다는 뜻이며 password login admission을 우회한다는 뜻이 아니다.
+
+회원가입, 로그인, 로그아웃, Google 로그인 성공, 인증 실패는 Gateway에 감사 이벤트를 기록한다. Password login은 성공에 `user.login`, invalid/inactive/limited/limiter-unavailable에 `user.login_failed`를 사용하고 safe reason code로 구분한다. Password login이 전용 감사를 기록한 `401/403`은 전역 `auth.permission_denied` 감사를 중복 생성하지 않는다. Login audit의 성공 actor snapshot은 opaque user ID와 표시 이름만 포함하며 raw email, IP/forwarded header, HMAC fingerprint, Redis key와 exception message를 저장하지 않는다.
 
 ## Session And Browser Configuration
 
 - `NODE_ENV=production`에서는 `SECRET_KEY`가 없거나 공백이거나 알려진 개발 placeholder이면 Gateway가 시작되지 않는다. 검사와 오류 메시지는 secret 값을 출력하지 않는다.
 - Credentialed CORS는 `CORS_ORIGINS`의 명시적인 HTTP(S) origin만 허용한다. Wildcard, 빈 목록, userinfo/path/query/fragment가 있는 origin은 시작 시 거부한다.
+- Production password login limiter는 dedicated versioned HMAC keyring과 primary version을 요구한다. Trusted proxy CIDR은 실제 ingress topology에 맞게 명시하며 direct Gateway deployment는 빈 목록으로 forwarded address를 무시한다.
+- Login limiter는 기존 Redis host/port/password와 전용 logical DB를 사용한다. Admission dependency가 실패하면 password login만 `503`으로 닫고 기존 JWT session 검증은 유지한다.
 - 이 CORS allowlist는 브라우저가 credentialed JSON 요청을 보내는 현행 제품 경계다. 별도 CSRF token과 exact-Origin 검사는 Target이며 현재 구현으로 표현하지 않는다.
 
 ## Target Runtime Principal Boundary
