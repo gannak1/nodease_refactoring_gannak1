@@ -112,6 +112,7 @@ def use_case(
         connect_timeout_seconds=0.001,
         statement_timeout_seconds=0.001,
         response_timeout_seconds=response_timeout,
+        redis_operation_timeout_seconds=0.001,
         lease_ttl_seconds=30,
     )
     return ConnectorConnectionUseCase(admission, probe, audit, policy)
@@ -278,6 +279,7 @@ async def test_long_running_probe_renews_lease_until_completion() -> None:
         connect_timeout_seconds=0.001,
         statement_timeout_seconds=0.001,
         response_timeout_seconds=0.02,
+        redis_operation_timeout_seconds=0.001,
         lease_ttl_seconds=0.03,
     )
     task = asyncio.create_task(
@@ -308,6 +310,7 @@ async def test_renewal_failure_returns_admission_error_and_defers_release() -> N
         connect_timeout_seconds=0.001,
         statement_timeout_seconds=0.001,
         response_timeout_seconds=0.02,
+        redis_operation_timeout_seconds=0.001,
         lease_ttl_seconds=0.03,
     )
 

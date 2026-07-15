@@ -8,12 +8,10 @@
 scheduleDispatch:
   mode: "disabled"
 
-# Active local PostgreSQL publish ports used by the development/demo stacks.
+# In-cluster Gateway reaches the PostgreSQL service on its service port only.
 connectorTest:
   allowedPorts:
     - 5432
-    - 54322
-    - 55432
 
 secrets:
   # Local-only fixed key. Production values must provide an independent secret.

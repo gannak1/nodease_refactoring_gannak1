@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import logging
@@ -149,32 +150,26 @@ class RedisConnectorTestAdmission:
         organization_scope = self._digest("organization", str(command.organization_id))
         network_scope = self._digest("network", command.network_address)
         token = secrets.token_hex(16)
-        try:
-            response = await self._redis.eval(
-                _ACQUIRE_SCRIPT,
-                3,
-                self._rate_key,
-                self._rate_expiry_key,
-                self._lease_key,
-                self._policy.rate_window_seconds,
-                user_scope,
-                organization_scope,
-                network_scope,
-                self._policy.user_rate_limit,
-                self._policy.organization_rate_limit,
-                self._policy.network_rate_limit,
-                self._policy.user_concurrency_limit,
-                self._policy.organization_concurrency_limit,
-                self._policy.global_concurrency_limit,
-                token,
-                self._policy.lease_ttl_seconds,
-            )
-        except Exception as exc:
-            logger.error(
-                "Connector test admission failed: error_type=%s",
-                type(exc).__name__,
-            )
-            raise ConnectorTestAdmissionUnavailable() from None
+        response = await self._eval(
+            "acquire",
+            _ACQUIRE_SCRIPT,
+            3,
+            self._rate_key,
+            self._rate_expiry_key,
+            self._lease_key,
+            self._policy.rate_window_seconds,
+            user_scope,
+            organization_scope,
+            network_scope,
+            self._policy.user_rate_limit,
+            self._policy.organization_rate_limit,
+            self._policy.network_rate_limit,
+            self._policy.user_concurrency_limit,
+            self._policy.organization_concurrency_limit,
+            self._policy.global_concurrency_limit,
+            token,
+            self._policy.lease_ttl_seconds,
+        )
 
         status, value = self._decode_response(response)
         if status == "OK":
@@ -187,32 +182,39 @@ class RedisConnectorTestAdmission:
         raise ConnectorTestAdmissionUnavailable()
 
     async def release(self, lease: AdmissionLease) -> None:
-        try:
-            await self._redis.eval(_RELEASE_SCRIPT, 1, self._lease_key, lease.member)
-        except Exception as exc:
-            logger.error(
-                "Connector test admission release failed: error_type=%s",
-                type(exc).__name__,
-            )
-            raise ConnectorTestAdmissionUnavailable() from None
+        await self._eval(
+            "release",
+            _RELEASE_SCRIPT,
+            1,
+            self._lease_key,
+            lease.member,
+        )
 
     async def renew(self, lease: AdmissionLease) -> None:
+        renewed = await self._eval(
+            "renew",
+            _RENEW_SCRIPT,
+            1,
+            self._lease_key,
+            lease.member,
+            self._policy.lease_ttl_seconds,
+        )
+        if renewed != 1:
+            raise ConnectorTestAdmissionUnavailable()
+
+    async def _eval(self, operation: str, *args: object) -> object:
         try:
-            renewed = await self._redis.eval(
-                _RENEW_SCRIPT,
-                1,
-                self._lease_key,
-                lease.member,
-                self._policy.lease_ttl_seconds,
+            return await asyncio.wait_for(
+                self._redis.eval(*args),
+                timeout=self._policy.redis_operation_timeout_seconds,
             )
         except Exception as exc:
             logger.error(
-                "Connector test admission renewal failed: error_type=%s",
+                "Connector test admission operation failed: operation=%s error_type=%s",
+                operation,
                 type(exc).__name__,
             )
             raise ConnectorTestAdmissionUnavailable() from None
-        if renewed != 1:
-            raise ConnectorTestAdmissionUnavailable()
 
     def _digest(self, scope: str, value: str) -> str:
         payload = f"connector-test-admission-v1:{scope}:{value}".encode("utf-8")

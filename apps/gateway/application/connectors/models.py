@@ -55,6 +55,7 @@ class ConnectorTestPolicy:
     connect_timeout_seconds: int = 5
     statement_timeout_seconds: int = 3
     response_timeout_seconds: float = 10.0
+    redis_operation_timeout_seconds: float = 1.0
     lease_ttl_seconds: int = 30
 
     def __post_init__(self) -> None:
@@ -106,6 +107,9 @@ class ConnectorTestPolicy:
             "connect_timeout_seconds": self.connect_timeout_seconds,
             "statement_timeout_seconds": self.statement_timeout_seconds,
             "response_timeout_seconds": self.response_timeout_seconds,
+            "redis_operation_timeout_seconds": (
+                self.redis_operation_timeout_seconds
+            ),
             "lease_ttl_seconds": self.lease_ttl_seconds,
         }
         for name, value in positive_values.items():
@@ -134,12 +138,22 @@ class ConnectorTestPolicy:
             raise ValueError("statement_timeout_seconds must not exceed 10")
         if self.response_timeout_seconds > 30:
             raise ValueError("response_timeout_seconds must not exceed 30")
+        if self.redis_operation_timeout_seconds > 5:
+            raise ValueError("redis_operation_timeout_seconds must not exceed 5")
         if self.lease_ttl_seconds > 120:
             raise ValueError("lease_ttl_seconds must not exceed 120")
         if self.connect_timeout_seconds >= self.response_timeout_seconds:
             raise ValueError("connect timeout must be shorter than response timeout")
         if self.statement_timeout_seconds >= self.response_timeout_seconds:
             raise ValueError("statement timeout must be shorter than response timeout")
+        if self.redis_operation_timeout_seconds >= self.response_timeout_seconds:
+            raise ValueError(
+                "Redis operation timeout must be shorter than response timeout"
+            )
+        if self.redis_operation_timeout_seconds * 3 >= self.lease_ttl_seconds:
+            raise ValueError(
+                "Redis operation timeout must be shorter than one third of lease TTL"
+            )
         if self.response_timeout_seconds >= self.lease_ttl_seconds:
             raise ValueError("response timeout must be shorter than lease TTL")
 

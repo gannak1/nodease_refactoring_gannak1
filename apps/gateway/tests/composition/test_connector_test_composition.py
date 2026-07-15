@@ -50,6 +50,7 @@ def test_default_policy_matches_documented_limits() -> None:
     assert policy.user_concurrency_limit == 1
     assert policy.organization_concurrency_limit == 4
     assert policy.global_concurrency_limit == 16
+    assert policy.redis_operation_timeout_seconds == 1.0
     assert policy.allowed_ports == frozenset({5432})
     assert policy.trusted_local_targets == frozenset()
     assert policy.trusted_local_ca_file is None
@@ -57,10 +58,18 @@ def test_default_policy_matches_documented_limits() -> None:
 
 def test_policy_parses_deployment_managed_allowed_ports() -> None:
     policy = connector_test_policy_from_environment(
-        {"CONNECTOR_TEST_ALLOWED_PORTS": "5432, 54322,55432"}
+        {"CONNECTOR_TEST_ALLOWED_PORTS": "5432, 15432,55432"}
     )
 
-    assert policy.allowed_ports == frozenset({5432, 54322, 55432})
+    assert policy.allowed_ports == frozenset({5432, 15432, 55432})
+
+
+def test_policy_parses_bounded_redis_operation_timeout() -> None:
+    policy = connector_test_policy_from_environment(
+        {"CONNECTOR_TEST_REDIS_OPERATION_TIMEOUT_SECONDS": "0.25"}
+    )
+
+    assert policy.redis_operation_timeout_seconds == 0.25
 
 
 def test_explicitly_disabled_local_profile_keeps_public_only_policy() -> None:
@@ -320,6 +329,16 @@ def test_directory_or_unreadable_trusted_local_ca_fails_security_readiness(
         {"CONNECTOR_TEST_CONNECT_TIMEOUT_SECONDS": "11"},
         {"CONNECTOR_TEST_STATEMENT_TIMEOUT_SECONDS": "11"},
         {"CONNECTOR_TEST_RESPONSE_TIMEOUT_SECONDS": "31"},
+        {"CONNECTOR_TEST_REDIS_OPERATION_TIMEOUT_SECONDS": "0"},
+        {"CONNECTOR_TEST_REDIS_OPERATION_TIMEOUT_SECONDS": "nan"},
+        {"CONNECTOR_TEST_REDIS_OPERATION_TIMEOUT_SECONDS": "6"},
+        {
+            "CONNECTOR_TEST_REDIS_OPERATION_TIMEOUT_SECONDS": "10",
+        },
+        {
+            "CONNECTOR_TEST_REDIS_OPERATION_TIMEOUT_SECONDS": "1",
+            "CONNECTOR_TEST_LEASE_TTL_SECONDS": "3",
+        },
         {"CONNECTOR_TEST_LEASE_TTL_SECONDS": "121"},
         {"CONNECTOR_TEST_ALLOWED_PORTS": "5432,"},
         {"CONNECTOR_TEST_ALLOWED_PORTS": "5432,5432"},

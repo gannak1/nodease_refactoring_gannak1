@@ -34,7 +34,9 @@ def test_helm_requires_and_injects_dedicated_connector_admission_key() -> None:
     assert "CONNECTOR_TEST_ALLOWED_PORTS" in gateway_template
     assert "allowedPorts:\n    - 5432" in values
     assert "allowedPorts:\n    - 5432" in production_values
-    assert "allowedPorts:\n    - 5432\n    - 54322\n    - 55432" in local_values
+    assert "allowedPorts:\n    - 5432" in local_values
+    assert "54322" not in local_values
+    assert "55432" not in local_values
 
 
 def test_gateway_image_provides_system_ca_for_strict_postgres_probe() -> None:
@@ -46,13 +48,13 @@ def test_gateway_image_provides_system_ca_for_strict_postgres_probe() -> None:
     assert "libpq5" in dockerfile
 
 
-def test_local_profiles_include_active_docker_postgres_ports() -> None:
+def test_connector_port_profiles_match_their_runtime_network_boundary() -> None:
     root = Path(__file__).parents[4]
-    expected = "5432,54322,55432"
     compose = (root / "docker" / "docker-compose.yml").read_text(encoding="utf-8")
     dev_example = (root / "dev" / ".env.example").read_text(encoding="utf-8")
     docker_example = (root / "docker" / ".env.example").read_text(encoding="utf-8")
 
-    assert f"CONNECTOR_TEST_ALLOWED_PORTS:-{expected}" in compose
-    assert f"CONNECTOR_TEST_ALLOWED_PORTS={expected}" in dev_example
-    assert f"CONNECTOR_TEST_ALLOWED_PORTS={expected}" in docker_example
+    assert "CONNECTOR_TEST_ALLOWED_PORTS:-5432}" in compose
+    assert "CONNECTOR_TEST_ALLOWED_PORTS=5432,55432" in dev_example
+    assert "CONNECTOR_TEST_ALLOWED_PORTS=5432" in docker_example
+    assert "54322" not in docker_example

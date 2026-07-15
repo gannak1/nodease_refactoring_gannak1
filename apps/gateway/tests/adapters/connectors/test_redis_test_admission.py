@@ -1,3 +1,4 @@
+import asyncio
 from uuid import uuid4
 
 import pytest
@@ -28,6 +29,13 @@ class FakeRedis:
         if isinstance(response, Exception):
             raise response
         return response
+
+
+class HangingRedis(FakeRedis):
+    async def eval(self, *args: object) -> object:
+        self.calls.append(args)
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
 
 
 def command(*, network_address: str = "203.0.113.9") -> ConnectorTestCommand:
@@ -182,3 +190,29 @@ async def test_renewal_fails_closed_when_owner_lease_is_missing(response: object
 
     with pytest.raises(ConnectorTestAdmissionUnavailable):
         await admission.renew(AdmissionLease("opaque-lease"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["acquire", "renew", "release"])
+async def test_every_redis_operation_has_a_fail_closed_deadline(
+    operation: str,
+) -> None:
+    redis_client = HangingRedis()
+    admission = RedisConnectorTestAdmission(
+        redis_client,
+        policy=ConnectorTestPolicy(redis_operation_timeout_seconds=0.01),
+        hmac_key=b"a" * 32,
+    )
+    lease = AdmissionLease("opaque-lease")
+
+    if operation == "acquire":
+        call = admission.acquire(command())
+    elif operation == "renew":
+        call = admission.renew(lease)
+    else:
+        call = admission.release(lease)
+
+    with pytest.raises(ConnectorTestAdmissionUnavailable):
+        await asyncio.wait_for(call, timeout=0.2)
+
+    assert len(redis_client.calls) == 1

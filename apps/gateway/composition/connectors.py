@@ -71,6 +71,11 @@ def connector_test_policy_from_environment(
         response_timeout_seconds=_float(
             environ, "CONNECTOR_TEST_RESPONSE_TIMEOUT_SECONDS", 10.0
         ),
+        redis_operation_timeout_seconds=_float(
+            environ,
+            "CONNECTOR_TEST_REDIS_OPERATION_TIMEOUT_SECONDS",
+            1.0,
+        ),
         lease_ttl_seconds=_integer(environ, "CONNECTOR_TEST_LEASE_TTL_SECONDS", 30),
     )
 

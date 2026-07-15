@@ -174,6 +174,7 @@ async def test_real_redis_enforces_atomic_rate_lease_ownership_and_ttl() -> None
             connect_timeout_seconds=1,
             statement_timeout_seconds=1,
             response_timeout_seconds=1.5,
+            redis_operation_timeout_seconds=0.25,
             lease_ttl_seconds=2,
         )
         ttl_adapter = _adapter(
