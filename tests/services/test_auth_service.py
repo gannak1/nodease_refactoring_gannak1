@@ -215,6 +215,42 @@ def test_login_checks_password_before_reporting_deactivated_user():
     assert db.commit_count == 0
 
 
+@pytest.mark.parametrize(
+    "user",
+    [
+        None,
+        make_user(password=None),
+    ],
+)
+def test_login_performs_dummy_verification_for_missing_or_passwordless_account(
+    user,
+    monkeypatch,
+):
+    db = FakeDB(user)
+    verification_calls = []
+    monkeypatch.setattr(
+        AuthService,
+        "verify_password",
+        staticmethod(
+            lambda password, password_hash: verification_calls.append(
+                (password, password_hash)
+            )
+            or False
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        AuthService.login(
+            db,
+            SimpleNamespace(email="missing@example.com", password="wrong-password"),
+        )
+
+    assert exc_info.value.status_code == 401
+    assert len(verification_calls) == 1
+    assert verification_calls[0][0] == "wrong-password"
+    assert verification_calls[0][1]
+
+
 def test_token_auth_rejects_deactivated_user(monkeypatch):
     user = make_user(deactivated_at=datetime.now(timezone.utc))
     db = FakeDB(user)

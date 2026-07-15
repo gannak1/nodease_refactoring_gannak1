@@ -34,6 +34,18 @@ Status: Draft
 | AUTH-TC-U020 | Auth return validator는 중첩 encoding과 URL 정규화 우회를 막아야 한다. | 절대 URL, protocol-relative URL, backslash, dot segment, control character, malformed/과다 중첩 encoding 중 하나를 입력한다. | `/dashboard` fallback. |
 | AUTH-TC-U021 | OAuth return context는 짧은 수명과 1회 소비를 강제해야 한다. | 같은 session context를 두 번 소비하거나 발급 10분 후 또는 미래 issued-at으로 소비한다. | 첫 정상 소비만 원래 경로, 나머지는 `/dashboard`. |
 | AUTH-TC-U022 | Production session 서명키 구성은 fail-closed해야 한다. | `NODE_ENV=production`에서 키가 누락·공백·개발 placeholder 중 하나다. | Gateway 구성 오류. Secret 원문 미출력. |
+| AUTH-TC-U023 | Account limiter identity는 표기 변형으로 우회되지 않아야 한다. | 같은 valid email에 공백, case 또는 Unicode compatibility form 하나만 바꾼다. | 같은 normalized account와 HMAC fingerprint. |
+| AUTH-TC-U024 | HMAC fingerprint는 domain과 key version을 분리해야 한다. | 같은 input을 account/network domain 또는 다른 active key version으로 계산한다. | 서로 다른 digest. Raw input/key 비노출. |
+| AUTH-TC-U025 | Untrusted peer의 forwarded header는 source network를 바꾸지 않아야 한다. | Trusted CIDR 밖 peer가 `X-Forwarded-For`를 제출한다. | Direct peer network 사용. |
+| AUTH-TC-U026 | Trusted proxy chain은 오른쪽부터 첫 untrusted hop을 선택해야 한다. | Trusted peer가 client와 복수 proxy가 포함된 valid chain을 전달한다. | 첫 untrusted hop의 canonical network 사용. |
+| AUTH-TC-U027 | Malformed forwarded chain은 안전하게 fallback해야 한다. | Trusted peer의 chain 항목 하나가 valid IP가 아니다. | Immediate peer network 사용, header 원문 미로깅. |
+| AUTH-TC-U028 | Source network prefix는 IPv4 `/24`, IPv6 `/64`여야 한다. | 같은 prefix와 경계 밖 address를 각각 입력한다. | 같은 prefix만 동일 identity. |
+| AUTH-TC-U029 | Limited admission은 authenticator를 호출하지 않아야 한다. | Limiter가 blocked decision을 반환한다. | Password/JWT/DB adapter 호출 0회. |
+| AUTH-TC-U030 | Limiter unavailable은 fail-closed해야 한다. | Limiter port가 unavailable error를 던진다. | Authenticator 호출 0회, typed temporary-unavailable error. |
+| AUTH-TC-U031 | Login 성공은 account와 pair만 reset해야 한다. | Admission 뒤 credential이 성공한다. | Active version account/pair reset, network reset 없음. |
+| AUTH-TC-U032 | Login 실패는 admission token을 환급하지 않아야 한다. | Invalid credential 또는 inactive 결과다. | Reset 호출 없음. |
+| AUTH-TC-U033 | Login audit projection은 raw identity를 제거해야 한다. | Request context에 raw email/IP와 exception marker가 있다. | Request ID, reason, policy version과 allowlisted dimension만 기록. |
+| AUTH-TC-U034 | Login metric label은 bounded해야 한다. | Unknown outcome/dimension/operation을 전달한다. | `unknown` allowlist 값으로 수렴하고 account/IP/fingerprint label 없음. |
 
 ## API Tests
 
@@ -81,6 +93,29 @@ Status: Draft
 | AUTH-TC-A040 | Google OAuth unsafe `next`는 session에 권한 경로로 저장되지 않아야 한다. | 절대/protocol-relative/중첩-encoded/dot-segment 값으로 login을 시작한다. | callback은 `/dashboard`, 외부 host 비노출. |
 | AUTH-TC-A041 | Non-local 유사 loopback host는 HTTPS callback을 사용해야 한다. | Host가 `localhost.attacker.example`처럼 loopback 문자열만 포함한다. | HTTPS non-local callback; local client redirect 미적용. |
 | AUTH-TC-A042 | Credentialed CORS 구성은 wildcard와 malformed origin을 거부해야 한다. | `*`, 빈 목록, userinfo/path/query/fragment 또는 비-HTTP(S) 값 중 하나를 설정한다. | Gateway 구성 오류. |
+| AUTH-TC-A043 | `POST /auth/login` 제한은 generic `429`를 반환해야 한다. | Existing 또는 missing account의 account/network/pair bucket 하나가 비어 있다. | 동일 detail과 `Retry-After` 1~300, 제한 차원·count 비노출. |
+| AUTH-TC-A044 | `POST /auth/login` limiter 장애는 generic `503`으로 닫혀야 한다. | Redis connection/script/result 판정이 실패한다. | 동일 detail, `Retry-After: 30`, password/JWT/DB mutation 없음. |
+| AUTH-TC-A045 | Login schema 오류는 admission token을 소비하지 않아야 한다. | Invalid email 또는 필수 field 누락으로 `422`가 발생한다. | Limiter 미호출. |
+| AUTH-TC-A046 | Existing/missing/passwordless account는 같은 invalid credential 계약을 유지해야 한다. | 세 account 상태에 같은 wrong password를 제출한다. | Byte-equivalent `401` detail, login failure reason은 external 비노출. |
+| AUTH-TC-A047 | Inactive account는 password 검증 전 노출되지 않아야 한다. | Inactive account에 wrong password를 제출한다. | `401`; valid password만 기존 `403`. |
+| AUTH-TC-A048 | Login 성공 뒤 pair/account 제한은 복구되고 network 사용량은 유지되어야 한다. | Capacity 내 오타 뒤 valid credential로 성공한다. | 다음 same-account login 가능, network token은 이전 시도만큼 소비 상태. |
+| AUTH-TC-A049 | Untrusted direct request는 spoofed XFF로 bucket을 바꾸지 못해야 한다. | 같은 peer가 매 요청 다른 XFF를 제출한다. | 동일 network bucket이 소진되어 `429`. |
+| AUTH-TC-A050 | Login audit는 raw email/IP/fingerprint/secret을 저장하지 않아야 한다. | Credential, limited, unavailable 각각에 unique sentinel을 넣는다. | Response, audit, metric, log에 sentinel 없음. |
+| AUTH-TC-A051 | Password login 실패는 전용 감사만 한 번 기록해야 한다. | Invalid credential `401` 또는 inactive account `403`을 발생시킨다. | `user.login_failed`가 한 번 기록되고 전역 `auth.permission_denied`는 추가되지 않음. |
+| AUTH-TC-A052 | 예상하지 못한 credential backend 오류는 원문을 노출하지 않아야 한다. | Account sentinel이 포함된 DB/provider 예외를 발생시킨다. | 고정 `500`, `auth.login.internal_error`; response/log/audit에 sentinel 없음. |
+
+## Distributed Login Admission Integration Tests
+
+| ID | 검증 조건 | 최소 실패 조건 | 기대 결과 |
+| --- | --- | --- | --- |
+| AUTH-TC-I001 | Pair capacity는 concurrent burst에서 초과되지 않아야 한다. | Empty state에서 동일 pair로 6개 동시 admission을 수행한다. | 정확히 5개 allowed, 1개 blocked. |
+| AUTH-TC-I002 | Account capacity는 여러 network에 공유되어야 한다. | 같은 account와 서로 다른 network로 21개 admission을 수행한다. | 정확히 20개 allowed, 나머지 blocked. |
+| AUTH-TC-I003 | Network capacity는 여러 account에 공유되어야 한다. | 같은 network와 서로 다른 account로 101개 admission을 수행한다. | 정확히 100개 allowed, 나머지 blocked. |
+| AUTH-TC-I004 | Gateway replica는 같은 Redis state를 공유해야 한다. | 서로 다른 limiter instance에서 같은 identity로 capacity+1 요청을 나눈다. | 전체 합계가 capacity를 넘지 않음. |
+| AUTH-TC-I005 | Admission은 세 dimension all-or-nothing이어야 한다. | Account bucket만 비운 뒤 pair/network state를 관찰한다. | Blocked request가 pair/network token을 추가 소비하지 않음. |
+| AUTH-TC-I006 | Token refill은 Redis server time과 TTL을 따라야 한다. | 최소 refill interval 전후로 같은 bucket을 요청한다. | 전에는 blocked, 이후 한 token allowed; full refill 뒤 key 만료 또는 full-equivalent. |
+| AUTH-TC-I007 | HMAC rotation overlap은 old limit을 우회하지 않아야 한다. | Old version bucket을 소진한 뒤 new primary/old previous keyring으로 admission한다. | New bucket이 비어 있어도 blocked; all-or-nothing 계약에 따라 어떤 version/dimension state도 추가 소비하지 않음. |
+| AUTH-TC-I008 | Success reset은 active version account/pair key만 제거해야 한다. | Current+previous keyring에서 성공 reset한다. | 두 version account/pair 삭제, network key 유지. |
 
 ## Component And Hook Tests
 
@@ -118,6 +153,7 @@ Status: Draft
 | AUTH-TC-E013 | 홈 화면은 인증 성공 시 landing을 보여주지 않아야 한다. | `authApi.me()`가 성공한다. | `/dashboard`로 replace되고 landing이 렌더링되지 않는다. |
 | AUTH-TC-E014 | 홈 화면은 인증 실패 시 landing을 보여야 한다. | `authApi.me()`가 실패한다. | loading이 해제되고 landing이 렌더링된다. |
 | AUTH-TC-E015 | 실제 로그아웃 사용자 경로는 서버 로그아웃 후 로그인 화면으로 이동해야 한다. | 연결된 로그아웃 UI에서 `authApi.logout()` 성공 후 `/auth/login`으로 이동하지 않는다. | 테스트 실패. |
+| AUTH-TC-E016 | 로그인 화면은 `429`를 generic 사용자 메시지로 표시해야 한다. | Login 요청이 고정 detail의 `429`로 reject된다. | 인라인 오류와 toast에 고정 메시지 표시, 제한 차원/count 미표시. |
 
 ## Permission Tests
 
@@ -126,8 +162,8 @@ Status: Draft
 | AUTH-TC-P001 | auth 공개 엔드포인트는 resource permission을 요구하지 않아야 한다. | signup, login, logout, Google login, Google callback 중 하나가 resource permission dependency를 요구한다. | 테스트 실패. |
 | AUTH-TC-P002 | `GET /auth/me`의 인증 경계는 `auth_token` 쿠키여야 한다. | Authorization header만 있고 `auth_token` 쿠키가 없다. | `401`, `로그인이 필요합니다`. |
 | AUTH-TC-P003 | Gateway 공통 인증 dependency는 쿠키 토큰을 AuthService로 위임해야 한다. | `get_current_user`가 `auth_token` 쿠키를 `AuthService.get_user_from_token`에 전달하지 않는다. | 테스트 실패. |
-| AUTH-TC-P004 | 인증 실패 401은 permission denied audit로 기록되어야 한다. | 인증 실패 응답이 401인데 `auth.permission_denied` 감사 이벤트가 없다. | 테스트 실패. |
-| AUTH-TC-P005 | 인증/권한 거부 403은 permission denied audit로 기록되어야 한다. | 인증 또는 권한 경계에서 403이 발생했는데 `auth.permission_denied` 감사 이벤트가 없다. | 테스트 실패. |
+| AUTH-TC-P004 | 공통 인증 dependency의 unaudited 401은 permission denied audit로 기록되어야 한다. | Password login 전용 실패가 아닌 인증 dependency 401인데 `auth.permission_denied` 감사 이벤트가 없다. | 테스트 실패. |
+| AUTH-TC-P005 | 공통 권한 경계의 unaudited 403은 permission denied audit로 기록되어야 한다. | Password login 전용 실패가 아닌 권한 경계 403인데 `auth.permission_denied` 감사 이벤트가 없다. | 테스트 실패. |
 | AUTH-TC-P006 | Conversation/Purge capability는 current user 인증으로 해석되지 않아야 한다. | Capability header만으로 `get_current_user` 또는 `/auth/me`가 user를 반환한다. | 401 또는 capability 전용 dependency에서만 처리. |
 | AUTH-TC-P007 | Public Chatbot은 login cookie가 있어도 anonymous audience를 유지해야 한다. | Public route가 cookie user를 execution subject로 승격해 private resource를 허용한다. | Public-only authorization. |
 | AUTH-TC-P008 | Authenticated internal surface는 public capability fallback을 허용하지 않아야 한다. | Expired/missing auth cookie를 valid Conversation grant로 대체한다. | 401/403, user identity 미생성. |
@@ -141,3 +177,10 @@ Status: Draft
 | AUTH-TC-X002 | audit metadata는 세션 token 원문을 남기지 않아야 한다. | signup, login, logout, auth failure audit metadata에 JWT 또는 `auth_token` 원문이 포함된다. | 테스트 실패. |
 | AUTH-TC-X003 | logout audit은 actor id 없이도 기록될 수 있어야 한다. | logout 요청에 현재 사용자 식별이 없다는 이유만으로 audit 기록이 실패한다. | 테스트 실패. |
 | AUTH-TC-X004 | OAuth 실패 audit은 raw provider 예외를 저장하지 않아야 한다. | provider 예외 문자열에 credential-like marker를 포함한다. | audit에는 fixed reason code만 있고 raw marker는 없다. |
+| AUTH-TC-X005 | Production HMAC keyring은 fail-fast해야 한다. | Keyring 누락, primary 불일치, 짧은 key 또는 active version 3개 중 하나다. | Gateway 구성 오류, key 원문·길이·digest 미출력. |
+| AUTH-TC-X006 | Non-production key fallback은 production에서 활성화되지 않아야 한다. | Production에서 dedicated keyring 없이 valid session key만 제공한다. | Gateway 구성 오류. |
+| AUTH-TC-X007 | Redis malformed result는 fail-open으로 처리되지 않아야 한다. | Lua result가 contract와 다른 타입/길이를 반환한다. | `503`, verifier 미호출. |
+| AUTH-TC-X008 | Success reset 실패는 이미 성공한 login을 거짓 실패로 바꾸지 않아야 한다. | Credential/DB commit 뒤 Redis delete가 실패한다. | Login 성공 유지, safe limiter failure metric, token state 보수적 유지. |
+| AUTH-TC-X009 | Redis integration cleanup은 다른 key를 삭제하지 않아야 한다. | Test prefix 밖 sentinel key를 함께 둔다. | Test 종료 뒤 sentinel 유지, `FLUSHDB` 미사용. |
+| AUTH-TC-X010 | Ingress-backed production Helm은 trusted proxy CIDR 누락을 거부해야 한다. | `NODE_ENV=production`, Ingress enabled, trusted proxy CIDR empty로 chart를 render한다. | Helm render/lint 실패; direct Gateway 또는 development profile은 빈 목록 허용. |
+| AUTH-TC-X011 | Bundled Compose의 environment mode가 명시적이어야 한다. | `NODE_ENV` override 없이 Compose config를 render한다. | Gateway에 `NODE_ENV=development`; production override 시 `production`과 dedicated keyring startup 검증 적용. |

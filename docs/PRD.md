@@ -272,6 +272,7 @@ Nodease는 단순히 AI 답변을 생성하는 도구가 아니다. 조직 내 �
 | NFR-007 | RAG 권한 경계 | 모든 RAG 검색 모드는 권한 검사를 통과한 문서만 검색 후보로 사용한다. 권한 없는 문서는 검색 후보, prompt, citation, trace 어디에도 포함되지 않는다. 권한/정책상 제외된 문서를 화면에 표시할 때는 문서명과 정확한 건수를 노출하지 않는 안전한 요약(bucketed summary)으로만 표시한다. |
 | NFR-008 | Security Alert 반영 | 정상 worker와 notification 경로에서 eligible event가 임계값에 도달한 뒤 관리자 UI에 1분 이내 반영한다. 탐지 실패는 원래 authorization 결과나 사용자 응답을 변경하지 않는다. |
 | NFR-009 | Conversation Memory 격리 | Target Memory session은 deployment version, organization과 subject/audience에 고정한다. Access Grant, execution subject, credential principal, billing principal과 audit actor를 서로 대체하지 않으며 raw token/content를 audit·trace·log에 저장하지 않는다. |
+| NFR-010 | Password login 남용 방지 | Email/password login은 credential 검증 전에 account, trusted source network와 account+network 기준의 분산 admission을 적용한다. Counter는 versioned HMAC identity만 사용하고 raw account/IP를 저장하지 않으며, limiter 장애는 credential 검증 전 fail-closed한다 ([ADR-0047](decisions/ADR-0047-password-login-abuse-prevention-boundary.md)). |
 
 ## 7. 성공 지표
 

@@ -69,6 +69,7 @@ Deployment의 기본 권한 enforcement는 MVP 1 구현 기준으로 본다. Dep
 
 - Resource permission helper는 RBAC 거부를 `permission.denied`로 기록한다.
 - 전역 HTTP 401/403 handler는 helper에서 이미 기록하지 않은 인증/권한 실패를 `auth.permission_denied`로 기록한다.
+- Password login은 invalid/inactive/limited/limiter-unavailable 결과를 `user.login_failed`로 직접 기록하고 error envelope의 `audit_recorded`로 전역 `auth.permission_denied` 중복 생성을 막는다. 이 전용 감사에는 raw email, IP/forwarded header와 limiter fingerprint를 저장하지 않는다.
 - 현재 등록된 `/api/v1/permissions/*` router의 team/user permission grant/update/revoke 흐름은 permission row별 data-change action인 `team_workflow_permission.created/updated/deleted`, `user_workflow_permission.created/updated/deleted`, `team_knowledge_permission.created/updated/deleted`, `user_knowledge_permission.created/updated/deleted`, `team_llm_permission.created/updated/deleted`, `user_llm_permission.created/updated/deleted`를 기록한다.
 - KB permission API의 Core upsert와 bulk delete 경로는 ORM listener에만 의존하지 않고, 권한 row mutation과 같은 DB transaction에 `team_knowledge_permission.*`/`user_knowledge_permission.*` data-change audit row를 추가한다.
 - Organization member invite/accept/update/remove 흐름은 `organization.invite`, `organization.member.accept`, `organization.member.update`, `organization.member.remove`를 기록한다. Member 제거에 따른 permission cleanup aggregate는 `permission.revoke`에 `reason='organization.member.remove'` metadata를 남긴다.

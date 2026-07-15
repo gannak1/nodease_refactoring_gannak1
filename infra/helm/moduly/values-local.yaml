@@ -87,6 +87,7 @@ gateway:
   env:
     CORS_ORIGINS: "http://localhost:3000,http://127.0.0.1:3000"
     SANDBOX_URL: "http://localhost:8194"  # Port-forward sandbox
+    NODE_ENV: "development"
 
 worker:
   replicaCount: 1  # Single replica for local

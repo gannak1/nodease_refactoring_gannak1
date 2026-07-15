@@ -6,6 +6,17 @@ Expand the name of the chart.
 {{- end }}
 
 {{/*
+Reject an ingress-backed production gateway that cannot recover the client
+network. Direct gateway deployments may intentionally keep the list empty.
+*/}}
+{{- define "moduly.validateLoginTrustedProxy" -}}
+{{- $nodeEnv := lower (.Values.gateway.env.NODE_ENV | default "production") -}}
+{{- if and .Values.gateway.enabled .Values.ingress.enabled (eq $nodeEnv "production") (empty .Values.gateway.env.AUTH_LOGIN_TRUSTED_PROXY_CIDRS) -}}
+{{- fail "gateway.env.AUTH_LOGIN_TRUSTED_PROXY_CIDRS is required for an ingress-backed production gateway" -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Create a default fully qualified app name.
 We truncate at 63 chars because some Kubernetes name fields are limited to this (by the DNS naming spec).
 If release name contains chart name it will be used as a full name.
