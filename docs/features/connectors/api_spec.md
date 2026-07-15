@@ -1,7 +1,7 @@
 # Connectors API Spec
 
 Status: Draft
-Verified Against: feature/mba-246 @ 0f1bc3dbec49f3a98d50e3354879c3bcd480b3e1
+Verified Against: feature/mba-246 @ 35d66ce59ea7090d71326faf8965ab3c57a50649
 
 기본 경로: `/api/v1`
 

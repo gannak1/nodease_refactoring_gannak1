@@ -1,7 +1,7 @@
 # Connectors Test Cases
 
 Status: Draft
-Verified Against: feature/mba-246 @ 0f1bc3dbec49f3a98d50e3354879c3bcd480b3e1
+Verified Against: feature/mba-246 @ 35d66ce59ea7090d71326faf8965ab3c57a50649
 
 ## Minimum Failure Rule
 
@@ -99,6 +99,7 @@ Verified Against: feature/mba-246 @ 0f1bc3dbec49f3a98d50e3354879c3bcd480b3e1
 | CONN-TC-C011 | `DBSchemaSelector`는 최대 2개 테이블 제한을 적용해야 한다. | 2개 테이블이 선택된 상태에서 3번째 테이블을 선택한다. | 선택 차단, 제한 toast. |
 | CONN-TC-C012 | `DBSchemaSelector`는 FK 있는 2개 테이블 선택 시 join config를 생성해야 한다. | FK metadata가 있는데 `onJoinConfigChange`에 enabled config가 전달되지 않는다. | 테스트 실패. |
 | CONN-TC-C013 | DB source UI는 연결 이름을 필수로 검사하고 trim해야 한다. | Whitespace-only 이름으로 저장하거나 앞뒤 공백 이름으로 test/create를 호출한다. | 저장 API와 Knowledge source API는 호출되지 않으며, 유효 이름은 trim된 payload로 전송된다. |
+| CONN-TC-C014 | 모든 `DBConnectionForm` 소비자는 구조화된 test result 계약을 지켜야 한다. | Knowledge document 편집 handler가 boolean을 반환해 form의 `success` 판정 또는 Client build가 깨진다. | 편집 성공·실패 모두 `{ success }`를 반환하고 TypeScript build가 통과한다. |
 
 ## Permission Tests
 

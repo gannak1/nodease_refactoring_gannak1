@@ -1,7 +1,7 @@
 # Connectors Component Spec
 
 Status: Draft
-Verified Against: feature/mba-246 @ 0f1bc3dbec49f3a98d50e3354879c3bcd480b3e1
+Verified Against: feature/mba-246 @ 35d66ce59ea7090d71326faf8965ab3c57a50649
 
 ## Screens
 
@@ -96,6 +96,7 @@ File/page artifact connector는 egress guard 이후에도 artifact content를 tr
 - DB/SSH 입력 변경 시 `config`를 갱신하고 부모 `onChange(newConfig)`를 호출하며 `testStatus`를 `idle`로 되돌린다.
 - `ssh.enabled`와 `ssh.authType`에 따라 SSH password input 또는 private key file input을 표시한다.
 - `handleTest`는 부모 `onTestConnection(config)` 결과에 따라 `연결 성공!` 또는 `연결 실패` 상태를 표시하고, pending 중 버튼을 disabled 처리한다.
+- 모든 소비자는 boolean 대신 `{ success, retryAfter? }` 결과를 반환해야 한다. Knowledge document 편집 흐름도 같은 계약을 사용하되 현재 create API에는 cooldown metadata가 없으므로 `success`만 반환한다.
 
 ### `CreateKnowledgeModal` DB Flow
 
@@ -162,7 +163,7 @@ Demo PostgreSQL은 전용 bridge network와 loopback publish를 함께 사용한
 2. 화면은 `connectorApi.getConnectionDetails(connectionId)`로 secret 없는 connection detail을 조회한다.
 3. `DBConnectionForm`이 detail 응답을 `initialConfig`로 직접 받아 열린다. 별도 normalization이 없으므로 `type`, `host`, `port`, `database`, `username`, `ssh.enabled`, `ssh.host`, `ssh.port`, `ssh.username`처럼 필드명이 맞는 값만 복원된다.
 4. detail 응답에는 DB password, SSH password, SSH private key가 없고, form은 secret 입력값에 현재 fallback을 사용한다. 재연결 시 필요한 secret은 사용자가 다시 입력해야 한다.
-5. document settings 화면의 `연결 테스트`는 `handleConnectionRequest`를 통해 새 connection 생성을 수행하고, 반환된 id로 상위 DB config를 재연결한다.
+5. document settings 화면의 `연결 테스트`는 `handleConnectionRequest`를 통해 새 connection 생성을 수행하고, 반환된 id로 상위 DB config를 재연결한 뒤 `{ success }` 결과를 form에 반환한다.
 6. 현재 구현에는 별도 update endpoint가 없으므로 기존 connection row의 in-place update로 해석하지 않는다.
 
 ## Accessibility
