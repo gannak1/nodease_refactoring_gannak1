@@ -1,10 +1,9 @@
 import json
 import secrets
 
-from cryptography.fernet import Fernet
-
 from apps.shared.db.models.knowledge import Document
 from apps.shared.utils.encryption import EncryptionManager
+from cryptography.fernet import Fernet
 
 
 def test_encryption_flow(monkeypatch):
