@@ -1,7 +1,7 @@
 # Connectors API Spec
 
 Status: Draft
-Verified Against: feature/mba-246 @ 86941af23f76f82d2628f6858c09e5ab0aa5f0a0
+Verified Against: feature/mba-246 @ 1c8a3fcb37b78d86d7e4083b4d82940f2da4307d
 
 기본 경로: `/api/v1`
 
@@ -22,7 +22,7 @@ Verified Against: feature/mba-246 @ 86941af23f76f82d2628f6858c09e5ab0aa5f0a0
 
 | 필드 | 타입 | 필수 | 비고 |
 | --- | --- | --- | --- |
-| `connection_name` | `string` | 예 | 연결 식별용 별칭이다. 저장되지 않는다. |
+| `connection_name` | `string (1..100)` | 예 | 앞뒤 공백을 제거한 연결 식별용 별칭이다. 공백뿐인 값은 `422`이며 저장되지 않는다. |
 | `type` | literal `"postgres"` | 예 | 다른 타입은 `422 validation.failed`다. |
 | `host` | `string` | 예 | DB host이다. |
 | `port` | `integer (1..65535)` | 아니오 | 기본값은 `5432`다. 서버의 deployment-managed allowlist 밖 port는 `connector.target_not_allowed`로 실패한다. |
@@ -57,7 +57,7 @@ Expected target/SSH/connection 실패는 `200 OK`, `success=false`로 반환한�
 
 1. 로그인과 active organization membership을 검증한다.
 2. Actual body, media type, UTF-8 JSON object와 strict field를 검증한다.
-3. Redis에서 user/organization/network rate와 global/organization/user concurrency lease를 원자적으로 획득한다.
+3. Redis에서 user/organization/network rate와 global/organization/user concurrency lease를 원자적으로 획득한다. Acquire, renew, release 각각에 Connector 전용 operation deadline을 적용하고 timeout은 `503 connector.admission_unavailable`로 닫는다.
 4. Port가 서버의 deployment-managed allowlist에 있는지 admission 전에 확인한다. 기본 경로는 host의 전체 DNS 결과가 public인지 검사한다. Development exact-local target은 서버 설정의 정확한 hostname+port와 일치하고 모든 DNS 결과가 RFC1918, IPv6 ULA 또는 loopback일 때만 허용한다. 두 경로 모두 validated IP 하나로 연결을 고정한다.
 5. Public target은 시스템 CA bundle, exact-local target은 서버가 설정한 전용 CA file을 명시해 TLS `verify-full`, connect 5초, statement 3초, API 10초 안에서 read-only `SELECT 1`을 한 번 수행한다. 선택된 CA가 없으면 startup 또는 DNS 전에 safe failure로 닫는다.
 6. Actual work 중 owner-safe heartbeat로 lease를 연장하고, safe result 반환 뒤에도 blocking work가 남아 있으면 completion까지 유지한 다음 owner lease를 해제한다.
@@ -89,6 +89,7 @@ Security environment settings:
 | `CONNECTOR_TEST_CONNECT_TIMEOUT_SECONDS` | `5` | `1..10`, API timeout 미만 |
 | `CONNECTOR_TEST_STATEMENT_TIMEOUT_SECONDS` | `3` | `1..10`, API timeout 미만 |
 | `CONNECTOR_TEST_RESPONSE_TIMEOUT_SECONDS` | `10` | finite `0 < value <= 30`, connect/statement보다 크고 lease보다 작음 |
+| `CONNECTOR_TEST_REDIS_OPERATION_TIMEOUT_SECONDS` | `1` | finite `0 < value <= 5`, API timeout 및 lease TTL의 3분의 1보다 작음 |
 | `CONNECTOR_TEST_LEASE_TTL_SECONDS` | `30` | `1..120`, API timeout보다 큼 |
 | `CONNECTOR_TEST_ADMISSION_HMAC_KEY` | local-only fallback | Production에서 별도 32 byte 이상 key 필수 |
 | `CONNECTOR_TEST_ALLOWED_PORTS` | `5432` | 중복 없는 port 1~16개. Local target port도 포함 |
@@ -112,6 +113,8 @@ CA signing key는 one-shot init container의 임시 filesystem에서만 사용�
 요청 본문: `DBConnectionTestRequest`.
 
 인증 입력: `auth_token` 쿠키.
+
+`connection_name`은 서버에서 앞뒤 공백을 제거한 뒤 1~100자여야 한다. 빈 문자열, 공백뿐인 값, 100자를 넘는 값은 `422`이며 저장 전 probe와 connection row 생성은 수행하지 않는다.
 
 동작:
 

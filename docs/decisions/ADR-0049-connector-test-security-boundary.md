@@ -13,7 +13,7 @@ Related ADRs: [ADR-0008](ADR-0008-audit-action-naming-standard.md), [ADR-0009](A
 
 1. 연결 테스트는 로그인 사용자와 `X-Organization-Id`의 active organization membership을 요구한다. Active member/manager는 테스트할 수 있지만 이 capability는 connection create/use/manage 권한이 아니다.
 2. 인증과 organization scope를 통과한 요청만 body를 읽는다. Gateway는 actual JSON body 32 KiB, 전체 receive 5초를 적용하고 repository edge는 exact route에 32 KiB, 5초 idle receive와 request-target log 억제를 적용한다.
-3. 구조 검증을 통과한 요청은 Redis의 단일 atomic acquire에서 user/organization/network fixed-window rate와 user/organization/global concurrency lease를 함께 판정한다. Concurrency가 거부된 요청은 rate counter를 소비하지 않는다. Redis 장애 또는 transport peer 부재는 network 전에 fail-closed한다.
+3. 구조 검증을 통과한 요청은 Redis의 단일 atomic acquire에서 user/organization/network fixed-window rate와 user/organization/global concurrency lease를 함께 판정한다. Concurrency가 거부된 요청은 rate counter를 소비하지 않는다. Redis 장애 또는 transport peer 부재는 network 전에 fail-closed한다. Acquire, renew, release는 각각 Connector 전용 operation deadline을 적용해 Redis transport가 응답하지 않아도 요청이나 lease 정리가 무기한 대기하지 않는다.
 4. Admission identity는 dedicated key와 scope domain tag로 HMAC-SHA256 처리한다. Redis에는 digest와 최소 128-bit owner token만 저장한다. 실행 중 owner는 Redis time 기준 heartbeat로 lease를 연장하고, 완료 시 정확한 owner member만 제거한다. Process crash 때만 TTL로 회수한다.
 5. V1 strict probe의 기본·production 경로는 public address로만 resolve되는 PostgreSQL host와 deployment-managed port allowlist만 허용한다. Local development는 `CONNECTOR_TEST_LOCAL_PROFILE_ENABLED=true`, `NODE_ENV=development`, 서버가 설정한 최대 4개의 exact canonical `host:port`, 전용 공개 CA를 모두 요구한다. Wildcard, CIDR, suffix, raw IP target과 request-controlled override는 허용하지 않는다. Exact local target의 모든 DNS 결과는 RFC1918, IPv6 ULA 또는 loopback이어야 하며 public/private mixed result는 거부한다. Host-run `localhost`가 IPv4/IPv6 loopback을 함께 반환할 때는 loopback-only bind와 일치하도록 검증된 IPv4를 결정적으로 우선한다. 모든 성공 경로는 실제 libpq 연결을 검증된 한 IP에 고정하고 다른 주소로 재시도하지 않는다.
 6. Public target은 시스템 CA bundle, exact local target은 서버가 설정한 `CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE`을 사용해 TLS `verify-full`을 적용한다. Local CA는 64 KiB 이하의 현재 유효한 단일 PEM `CA:TRUE` 공개 certificate여야 하고 private key나 certificate bundle을 포함할 수 없다. 부재·invalid CA는 startup 또는 DNS 전에 fail-closed한다. 요청자는 CA나 SSL mode를 지정할 수 없다. 요청당 connection attempt는 한 번이고, query는 read-only `SELECT 1`, result는 one-row scalar로 제한한다. Connect 5초, statement 3초, API 10초, lease 30초를 적용한다.
@@ -35,7 +35,7 @@ Related ADRs: [ADR-0008](ADR-0008-audit-action-naming-standard.md), [ADR-0009](A
 | Organization concurrency | 4 |
 | Global concurrency | 16 |
 
-제한값은 positive bounded environment setting으로 조정할 수 있지만 `0`, non-finite 값, 과도한 상한이나 누락으로 production 경계를 비활성화할 수 없다. Rate window/user/organization/network rate 상한은 각각 `300/100/1000/1000`, concurrency 상한은 `128`, connect/statement/API/lease timeout 상한은 각각 `10/10/30/120`초다. Timeout 간 `connect < API`, `statement < API < lease` 관계도 유지한다. `CONNECTOR_TEST_ALLOWED_PORTS`는 중복 없는 `1..65535` 정수 1~16개만 허용하고 invalid 설정은 Gateway startup을 실패시킨다. Local profile의 각 target port도 이 allowlist에 포함되어야 한다.
+제한값은 positive bounded environment setting으로 조정할 수 있지만 `0`, non-finite 값, 과도한 상한이나 누락으로 production 경계를 비활성화할 수 없다. Rate window/user/organization/network rate 상한은 각각 `300/100/1000/1000`, concurrency 상한은 `128`, connect/statement/API/Redis operation/lease timeout 상한은 각각 `10/10/30/5/120`초다. Redis operation 기본값은 1초이며 `Redis operation < API`, `3 × Redis operation < lease`, `connect < API`, `statement < API < lease` 관계를 유지한다. `CONNECTOR_TEST_ALLOWED_PORTS`는 중복 없는 `1..65535` 정수 1~16개만 허용하고 invalid 설정은 Gateway startup을 실패시킨다. Local profile의 각 target port도 이 allowlist에 포함되어야 한다.
 
 Production admission HMAC key가 없거나 32 byte보다 짧으면 Gateway는 시작하지 않는다. Helm 배포는 별도 `secrets.connectorTestAdmissionHmacKey`를 32 byte 이상으로 제공해야 하며 auth/session key를 재사용하지 않는다.
 
@@ -74,6 +74,7 @@ Connection ownership, create/schema/runtime compatibility와 Knowledge ingestion
 - `/connectors/test` caller는 로그인과 active organization header가 필요하다.
 - Deployment allowlist 밖 DB port와 SSH-enabled test는 V1에서 실패한다.
 - Redis가 connector test의 필수 security dependency가 된다.
+- Redis acquire/renew/release 무응답은 각각 bounded deadline 뒤 `connector.admission_unavailable`로 닫히며 public network probe로 fallback하지 않는다.
 - Helm 배포자는 `secrets.connectorTestAdmissionHmacKey`를 32 byte 이상의 별도 secret으로 provisioning해야 한다.
 - Helm 배포자는 `connectorTest.allowedPorts`로 1~16개의 정확한 허용 포트를 정한다. 기본·production은 `5432`다.
 - Local demo는 explicit profile에서만 생성되며 일반 `dev`/Docker 기동에는 자동 포함되지 않는다.

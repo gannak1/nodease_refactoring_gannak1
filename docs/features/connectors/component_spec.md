@@ -1,7 +1,7 @@
 # Connectors Component Spec
 
 Status: Draft
-Verified Against: feature/mba-246 @ 86941af23f76f82d2628f6858c09e5ab0aa5f0a0
+Verified Against: feature/mba-246 @ 1c8a3fcb37b78d86d7e4083b4d82940f2da4307d
 
 ## Screens
 
@@ -43,7 +43,7 @@ File/page artifact connector는 egress guard 이후에도 artifact content를 tr
 - 소비자:
   - `CreateKnowledgeModal`
   - Knowledge document DB source 설정 화면의 connection edit flow
-- 렌더링: 연결 이름, DB 타입, DB host/port/database/username/password, 선택적 SSH tunnel 설정, SSH 인증 방식(`password`, `key`), private key file input, `연결 테스트` 버튼, 성공/실패 상태 메시지를 표시한다.
+- 렌더링: 필수 연결 이름(최대 100자), DB 타입, DB host/port/database/username/password, 선택적 SSH tunnel 설정, SSH 인증 방식(`password`, `key`), private key file input, `연결 테스트` 버튼, 성공/실패 상태 메시지를 표시한다.
 - 현재 기본값: `initialConfig`가 없으면 입력은 비어 있고 DB type은 `postgres`, port는 `5432`, SSH는 비활성이다. Host placeholder는 public hostname 예시이며 local target을 기본 허용으로 오해하게 하는 loopback IP를 제시하지 않는다.
 - 경계:
   - 실제 저장은 직접 하지 않고 부모가 전달한 `onTestConnection`과 `onChange`에 위임한다.
@@ -101,7 +101,7 @@ File/page artifact connector는 egress guard 이후에도 artifact content를 tr
 
 - 연결 테스트는 `connectorApi.testConnection`의 safe result에 따라 success/error toast를 표시하고 `success`, optional `retryAfter` 결과를 폼에 반환한다.
 - `401/404`는 인증/organization context 오류, `429`는 잠시 후 재시도, `503`은 test service 일시 불가의 고정 메시지로 표시한다. Backend raw message는 표시하지 않는다.
-- DB source 제출 전 `host`, `port`, `database`, `username`, `password`를 검증하고 누락 시 alert로 중단한다.
+- DB source 제출 전 공백 제거한 `connectionName`과 `host`, `port`, `database`, `username`, `password`를 검증하고 누락 시 alert로 중단한다.
 - `connectorApi.createConnector`가 success와 id를 반환하면 Knowledge source payload에 connection id를 포함한다.
 - connection 생성이 실패하거나 예외가 발생하면 toast를 표시하고 Knowledge source 제출을 중단한다.
 
@@ -142,8 +142,8 @@ Demo PostgreSQL은 전용 bridge network와 loopback publish를 함께 사용한
 ### Connection Create During DB Source Submit
 
 1. 사용자가 DB source 정보를 입력하고 Knowledge source 추가를 제출한다.
-2. `CreateKnowledgeModal`은 DB 필수 입력을 확인한다.
-3. `connectorApi.createConnector(dbConfig)`를 호출한다.
+2. `CreateKnowledgeModal`은 공백 제거한 연결 이름을 포함한 DB 필수 입력을 확인한다. 공백뿐인 이름이면 API를 호출하지 않는다.
+3. `connectorApi`가 연결 이름의 앞뒤 공백을 제거한 뒤 `createConnector(dbConfig)` 요청을 보낸다.
 4. Gateway는 연결을 재테스트하고 secret을 암호화 저장한다.
 5. 성공하면 반환된 connection id가 Knowledge source 생성 payload에 포함된다.
 6. 실패하면 toast를 표시하고 Knowledge source 생성이 중단된다.

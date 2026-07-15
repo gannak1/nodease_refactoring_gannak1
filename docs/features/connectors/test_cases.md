@@ -1,7 +1,7 @@
 # Connectors Test Cases
 
 Status: Draft
-Verified Against: feature/mba-246 @ 86941af23f76f82d2628f6858c09e5ab0aa5f0a0
+Verified Against: feature/mba-246 @ 1c8a3fcb37b78d86d7e4083b4d82940f2da4307d
 
 ## Minimum Failure Rule
 
@@ -43,6 +43,7 @@ Verified Against: feature/mba-246 @ 86941af23f76f82d2628f6858c09e5ab0aa5f0a0
 | CONN-TC-U016 | Workflow connector API는 기존 SSH tunnel compatibility를 명시적으로 선택해야 한다. | workflow connector API가 기본 생성자를 사용해 문서화된 SSH tunnel 설정을 깨뜨리거나, Knowledge ingestion까지 tunnel을 열어 둔다. | 테스트 실패. |
 | CONN-TC-U017 | Redis admission test namespace는 bounded safe token이어야 한다. | Empty, leading/trailing delimiter, uppercase, whitespace, caller-supplied hash tag, 65자 이상 namespace를 전달한다. | Adapter construction 실패, production key namespace 영향 없음. |
 | CONN-TC-U018 | Concurrency 거부는 rate를 부분 소비하지 않아야 한다. | 같은 user lease가 active인 상태에서 두 번째 request가 busy로 거부된 뒤 첫 lease를 해제하고 rate limit까지 재시도한다. | Busy request는 rate counter를 증가시키지 않고 다음 정상 acquire가 허용된다. |
+| CONN-TC-U019 | Redis acquire/renew/release는 각각 무응답 deadline을 가져야 한다. | 취소 전까지 영원히 반환하지 않는 fake Redis로 세 operation을 각각 호출한다. | 설정된 operation deadline 안에 `connector.admission_unavailable`; 호출 task와 API가 무기한 대기하지 않음. |
 
 ## API Tests
 
@@ -79,6 +80,7 @@ Verified Against: feature/mba-246 @ 86941af23f76f82d2628f6858c09e5ab0aa5f0a0
 | CONN-TC-A029 | Admission 장애와 capacity 부족은 fail-closed해야 한다. | Redis timeout/script error, transport peer 없음, distributed/local concurrency full이다. | `429/503`, DNS/DB connect 0회, process-local unlimited fallback 없음. |
 | CONN-TC-A030 | Connector test audit는 bounded metadata만 가져야 한다. | Success/target denial/driver failure/timeout이다. | `connection.test`, organization/actor/result/reason/duration만 기록하고 target/credential/network 원문 없음. |
 | CONN-TC-A031 | 실제 Redis transport 장애는 API에서 DB probe 전에 닫혀야 한다. | 인증·active organization 요청을 loopback의 미사용 Redis port로 연결한다. | `503 connector.admission_unavailable`, probe 호출 0회, secret 비노출. |
+| CONN-TC-A032 | Connector 저장 이름은 정규화되고 공백 이름은 거부되어야 한다. | 앞뒤 공백이 있는 이름, 빈 값, whitespace-only, 101자 값을 `POST /connectors` schema에 전달한다. | 유효 이름은 trim되고 나머지는 `422`; 저장 전 probe와 row 생성 0회. |
 
 ## Component And Hook Tests
 
@@ -96,6 +98,7 @@ Verified Against: feature/mba-246 @ 86941af23f76f82d2628f6858c09e5ab0aa5f0a0
 | CONN-TC-C010 | `DBSchemaSelector`는 schema 조회 실패를 toast로 표시해야 한다. | `getSchema`가 reject된다. | `테이블 정보를 불러오는데 실패했습니다.` 표시. |
 | CONN-TC-C011 | `DBSchemaSelector`는 최대 2개 테이블 제한을 적용해야 한다. | 2개 테이블이 선택된 상태에서 3번째 테이블을 선택한다. | 선택 차단, 제한 toast. |
 | CONN-TC-C012 | `DBSchemaSelector`는 FK 있는 2개 테이블 선택 시 join config를 생성해야 한다. | FK metadata가 있는데 `onJoinConfigChange`에 enabled config가 전달되지 않는다. | 테스트 실패. |
+| CONN-TC-C013 | DB source UI는 연결 이름을 필수로 검사하고 trim해야 한다. | Whitespace-only 이름으로 저장하거나 앞뒤 공백 이름으로 test/create를 호출한다. | 저장 API와 Knowledge source API는 호출되지 않으며, 유효 이름은 trim된 payload로 전송된다. |
 
 ## Permission Tests
 
@@ -133,15 +136,17 @@ Verified Against: feature/mba-246 @ 86941af23f76f82d2628f6858c09e5ab0aa5f0a0
 | CONN-TC-X022 | Local generated material은 source와 image build context에 들어가지 않아야 한다. | Git tracked files, `.dockerignore`, public bind directory, image source를 검사한다. | `local/`은 build context 제외, tracked private material 0건, public directory에는 `ca.crt` 하나만 존재. |
 | CONN-TC-X023 | Credential init은 손상·중단 artifact를 안전하게 복구해야 한다. | Empty/malformed/wrong-mode credential, stale `.password.*`, 반대 volume의 known credential file을 각각 주입하고 init을 반복한다. | 유효 credential은 값 보존+`0600` 복구, invalid credential은 원자 교체, stale/cross artifact 제거. 각 volume에는 기대 파일 하나만 남고 원문 출력은 없다. |
 | CONN-TC-X024 | Credential/data volume을 부분 삭제해도 silent fallback하지 않아야 한다. | Running demo에서 Connector credential volume만 제거해 health/probe를 확인하고, 별도로 bootstrap admin credential volume만 제거해 노출 surface를 검사한다. | Connector credential 불일치는 health/probe에서 fail-closed한다. Regenerated bootstrap file은 기존 DB admin credential로 간주하지 않으며 verifier/Gateway에 노출되지 않는다. 어떤 경우에도 default/empty credential, plaintext, superuser fallback은 없고 복구는 runbook의 demo data+credential project-scope reset을 따른다. |
+| CONN-TC-X025 | Port allowlist 기본값은 실행 위치의 실제 network port만 포함해야 한다. | Helm default/local/production, base Docker, Docker env example, host-run env example을 대조한다. | Helm·base Docker·Docker-service는 `5432`만, host-run은 `5432,55432`만 허용하며 관성적인 `54322`는 Connector allowlist에 없음. |
 
 ## MBA-246 Automation Traceability
 
 | Test case | 자동 검증 위치 | 수준 |
 | --- | --- | --- |
 | X008-X011 | `apps/gateway/tests/composition/test_connector_test_composition.py`, `apps/gateway/tests/adapters/connectors/test_postgres_probe.py` | Unit/startup |
-| U017-U018, X018-X019 | `apps/gateway/tests/adapters/connectors/test_redis_test_admission.py`, `test_redis_test_admission_integration.py` | Unit + actual Redis |
+| U017-U019, X018-X019 | `apps/gateway/tests/adapters/connectors/test_redis_test_admission.py`, `test_redis_test_admission_integration.py` | Unit + actual Redis |
 | A031, X012-X013, X020 | `apps/gateway/tests/integration/test_connector_demo_integration.py` | Actual transport/API/TLS PostgreSQL |
 | X014-X017, X021-X024 | `apps/gateway/tests/architecture/test_connector_demo_boundary.py`, Compose healthcheck, `scripts/verify_connector_demo_runtime.py`, MBA-246 Docker lifecycle smoke | Architecture + actual Docker smoke |
+| A032, C013, X025 | `apps/shared/tests/test_connector_test_schema.py`, `apps/gateway/tests/api/test_connector_test_api.py`, Client Connector tests, `apps/gateway/tests/architecture/test_connector_helm_boundary.py` | Schema + API + Client + architecture |
 
 실제 Redis/TLS test는 opt-in 환경 설정이 없으면 skip할 수 있지만 MBA-246 merge evidence에서는 skip을 허용하지 않는다. 각 실행은 UUID 기반 namespace만 삭제하고 logical Redis DB 전체를 초기화하지 않는다. 실제 credential, certificate 본문, fingerprint, raw request는 pytest output이나 문서에 기록하지 않는다.
 

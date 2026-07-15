@@ -1,7 +1,7 @@
 # Connectors Requirements
 
 Status: Draft
-Verified Against: feature/mba-246 @ 86941af23f76f82d2628f6858c09e5ab0aa5f0a0
+Verified Against: feature/mba-246 @ 1c8a3fcb37b78d86d7e4083b4d82940f2da4307d
 Related Features: workflow, organization, audit-tracing, knowledge, conversation-memory
 
 ## Purpose
@@ -79,6 +79,8 @@ Connectors 기능은 외부 데이터 소스에 접속하기 위한 연결 정�
 - CONN-REQ-052: Demo PostgreSQL TCP 접속은 `hostssl`과 SCRAM, TLS 1.2 이상만 허용하고 `hostnossl`은 명시적으로 거부해야 한다. Connector가 사용하는 `connector_demo_user`는 superuser/create-role/create-db/replication/bypass-RLS 권한이 없는 connection-limited read-only role이어야 하며 platform DB 계정과 분리되어야 한다.
 - CONN-REQ-053: Certificate init은 CA signing key를 one-shot 컨테이너 임시 filesystem에서만 사용하고 persistent volume, Gateway, PostgreSQL, verifier 또는 build context에 남기지 않아야 한다. Server TLS material, PostgreSQL bootstrap admin credential, Connector demo credential은 서로 다른 private volume에 두어야 한다. PostgreSQL만 세 private volume을 읽고, one-shot verifier는 Connector demo credential만, Gateway는 공개 CA만 read-only로 읽어야 한다. 반복 init은 유효한 자료를 재사용하고 partial temporary file을 정리해야 한다.
 - CONN-REQ-054: 실제 Redis 검증은 실행별 안전한 key namespace만 사용·정리하고 `FLUSHDB`/`FLUSHALL`을 호출하지 않아야 한다. Concurrency 거부는 rate counter를 소비하지 않아야 하며 테스트 cleanup은 같은 logical DB의 무관한 key를 변경하지 않아야 한다.
+- CONN-REQ-055: Redis admission의 acquire, renew, release는 각각 Connector 전용 operation deadline을 적용해야 한다. 기본값은 1초, 상한은 5초이며 API timeout보다 짧고 lease TTL의 3분의 1보다 짧아야 한다. 무응답·timeout·transport 오류는 network probe나 unlimited local fallback 없이 `connector.admission_unavailable`로 fail-closed해야 한다.
+- CONN-REQ-056: Connector test와 저장의 `connection_name`은 서버에서 앞뒤 공백을 제거한 뒤 1~100자여야 한다. 공백뿐인 값은 `422`로 거부하고 connection row를 만들지 않아야 하며, Client의 DB source 저장 UI도 같은 값을 필수로 검사하고 정규화해 전송해야 한다.
 
 ## Policies And Edge Cases
 
