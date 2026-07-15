@@ -1171,6 +1171,17 @@ class TestModelRoutingPolicyApi:
         assert update_cohort.call_args.kwargs["cohort"] is cohort
         assert update_cohort.call_args.kwargs["cohort_key"] == "billing_receipt_issue"
         assert update_cohort.call_args.kwargs["fixed"] is False
+        assert workflow.graph["nodes"][0]["data"]["model_routing_policy"][
+            "cohort_drafts"
+        ] == [
+            {
+                "id": str(cohort_id),
+                "key": "billing_receipt_issue",
+                "label": "영수증 발급 문의",
+                "representative_query": "결제는 완료됐는데 영수증을 다시 발급받고 싶습니다.",
+                "fixed": False,
+            }
+        ]
         db.commit.assert_called_once()
 
     def test_fr11_auto_cohort_conversion_reuses_existing_row(self):
@@ -1271,6 +1282,17 @@ class TestModelRoutingPolicyApi:
         assert convert_cohort.call_args.kwargs["cohort"] is cohort
         assert policy.active_policy["semantic_router"]["routes"] == []
         assert policy.active_policy["rules"] == []
+        assert workflow.graph["nodes"][0]["data"]["model_routing_policy"][
+            "cohort_drafts"
+        ] == [
+            {
+                "id": str(cohort_id),
+                "key": "account_access",
+                "label": "계정 접근 문의",
+                "representative_query": "로그인할 수 없어 계정 접근을 도와주세요.",
+                "fixed": False,
+            }
+        ]
         db.commit.assert_called_once()
 
     def test_fr11_policy_summary_includes_safe_cohort_representative_query(self):

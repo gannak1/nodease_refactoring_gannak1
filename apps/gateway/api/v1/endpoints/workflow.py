@@ -1266,6 +1266,36 @@ def _normalize_model_routing_cohort_key(value: str, representative_query: str) -
     return f"cohort_{digest}"
 
 
+def _upsert_model_routing_cohort_draft(
+    node_data: dict[str, Any],
+    *,
+    draft_id: str | UUID,
+    label: str,
+    key: str,
+    representative_query: str,
+    fixed: bool,
+) -> dict[str, Any]:
+    """기존 배포 DB 입력군도 다음 배포가 읽을 graph draft로 보존한다."""
+    updated = update_model_routing_cohort_draft(
+        node_data,
+        draft_id=draft_id,
+        label=label,
+        key=key,
+        representative_query=representative_query,
+        fixed=fixed,
+    )
+    if updated is not None:
+        return updated
+    return add_model_routing_cohort_draft(
+        node_data,
+        draft_id=draft_id,
+        label=label,
+        key=key,
+        representative_query=representative_query,
+        fixed=fixed,
+    )
+
+
 def _extract_model_routing_cohort_suggestion(
     response: Any,
     representative_query: str,
@@ -4334,23 +4364,24 @@ def update_model_routing_cohort_endpoint(
     draft_node_data = (
         draft_node.get("data") if isinstance(draft_node.get("data"), dict) else {}
     )
+    policy = _get_model_routing_policy_for_workflow(db, workflow, node_id)
+    deployment = _active_deployment_for_workflow(db, workflow)
+    normalized_key = _normalize_model_routing_cohort_key(
+        request_body.key,
+        request_body.representative_query,
+    )
     try:
         updated_draft = update_model_routing_cohort_draft(
             draft_node_data,
             draft_id=cohort_id,
             label=request_body.label,
-            key=_normalize_model_routing_cohort_key(
-                request_body.key,
-                request_body.representative_query,
-            ),
+            key=normalized_key,
             representative_query=request_body.representative_query,
             fixed=request_body.fixed,
         )
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     draft_node["data"] = draft_node_data
-    policy = _get_model_routing_policy_for_workflow(db, workflow, node_id)
-    deployment = _active_deployment_for_workflow(db, workflow)
     if policy is None or not policy.enabled or deployment is None:
         if updated_draft is None:
             raise HTTPException(status_code=404, detail="model_routing.cohort_not_found")
@@ -4371,6 +4402,20 @@ def update_model_routing_cohort_endpoint(
         raise HTTPException(status_code=404, detail="model_routing.cohort_not_found")
     if cohort.source != "manual":
         raise HTTPException(status_code=409, detail="model_routing.cohort_auto_read_only")
+
+    if updated_draft is None:
+        try:
+            updated_draft = _upsert_model_routing_cohort_draft(
+                draft_node_data,
+                draft_id=cohort.id,
+                label=request_body.label,
+                key=normalized_key,
+                representative_query=request_body.representative_query,
+                fixed=request_body.fixed,
+            )
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        draft_node["data"] = draft_node_data
 
     node = _ensure_cost_optimizer_llm_node(
         SimpleNamespace(id=workflow.id, graph=deployment.graph_snapshot or {}),
@@ -4405,10 +4450,7 @@ def update_model_routing_cohort_endpoint(
             policy=policy,
             node_data=node_data,
             label=request_body.label,
-            cohort_key=_normalize_model_routing_cohort_key(
-                request_body.key,
-                request_body.representative_query,
-            ),
+            cohort_key=normalized_key,
             representative_query=request_body.representative_query,
             fixed=request_body.fixed,
             encoder_model_id=encoder_model_id,
@@ -4456,6 +4498,13 @@ def convert_model_routing_cohort_to_manual_endpoint(
 ):
     """자동 발견 입력군 row를 유지한 채 사용자가 수정 가능한 입력군으로 전환한다."""
     workflow = ensure_workflow_permission(db, current_user, workflow_id, "deploy")
+    next_graph = copy.deepcopy(workflow.graph or {})
+    draft_node = _ensure_cost_optimizer_llm_node(
+        SimpleNamespace(id=workflow.id, graph=next_graph), node_id
+    )
+    draft_node_data = (
+        draft_node.get("data") if isinstance(draft_node.get("data"), dict) else {}
+    )
     policy = _get_model_routing_policy_for_workflow(db, workflow, node_id)
     deployment = _active_deployment_for_workflow(db, workflow)
     if policy is None or not policy.enabled or deployment is None:
@@ -4474,6 +4523,23 @@ def convert_model_routing_cohort_to_manual_endpoint(
         raise HTTPException(status_code=404, detail="model_routing.cohort_not_found")
     if cohort.source != "auto":
         raise HTTPException(status_code=409, detail="model_routing.cohort_not_auto")
+
+    normalized_key = _normalize_model_routing_cohort_key(
+        request_body.key,
+        request_body.representative_query,
+    )
+    try:
+        _upsert_model_routing_cohort_draft(
+            draft_node_data,
+            draft_id=cohort.id,
+            label=request_body.label,
+            key=normalized_key,
+            representative_query=request_body.representative_query,
+            fixed=request_body.fixed,
+        )
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    draft_node["data"] = draft_node_data
 
     node = _ensure_cost_optimizer_llm_node(
         SimpleNamespace(id=workflow.id, graph=deployment.graph_snapshot or {}),
@@ -4508,10 +4574,7 @@ def convert_model_routing_cohort_to_manual_endpoint(
             policy=policy,
             node_data=node_data,
             label=request_body.label,
-            cohort_key=_normalize_model_routing_cohort_key(
-                request_body.key,
-                request_body.representative_query,
-            ),
+            cohort_key=normalized_key,
             representative_query=request_body.representative_query,
             fixed=request_body.fixed,
             encoder_model_id=encoder_model_id,
@@ -4521,6 +4584,7 @@ def convert_model_routing_cohort_to_manual_endpoint(
             policy.active_policy,
             cohort_id=str(cohort.id),
         )
+        workflow.graph = next_graph
         db.commit()
     except ValueError as exc:
         db.rollback()
