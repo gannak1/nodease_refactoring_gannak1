@@ -236,6 +236,25 @@ describe('TestSidebar final response card', () => {
     expect(screen.queryByText(/"summary"/)).not.toBeInTheDocument();
   });
 
+  it('uses presentation-sized text for large Markdown responses', () => {
+    render(
+      <FinalResponseCard
+        large
+        renderMarkdown
+        preview={{
+          kind: 'text',
+          text: 'Response body\n\n| Column | Value |\n| --- | --- |\n| Team | Sales |',
+          isEmpty: false,
+          sourceLabel: 'Answer',
+        }}
+      />,
+    );
+
+    const responseContainer = screen.getByText('Response body').parentElement;
+    expect(responseContainer).toHaveClass('text-lg', 'leading-8');
+    expect(screen.getByRole('table')).not.toHaveClass('text-base');
+  });
+
   it('빈 최종 응답은 empty state를 표시한다', () => {
     render(
       <FinalResponseCard

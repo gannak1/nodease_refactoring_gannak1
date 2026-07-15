@@ -143,7 +143,7 @@ describe('AuthenticatedDeploymentRunPage', () => {
     expect(screen.getByText('개발팀 신입 연봉 기준을 알려줘')).toBeVisible();
     expect(screen.getByText('최종 답변')).toBeVisible();
     expect(screen.getByLabelText('질문')).toHaveValue('');
-    expect(screen.getByLabelText('질문')).toHaveStyle({ height: '40px' });
+    expect(screen.getByLabelText('질문')).toHaveStyle({ height: '56px' });
 
     mockedWorkflowApi.runDeployment.mockResolvedValueOnce({
       status: 'success',
@@ -159,6 +159,67 @@ describe('AuthenticatedDeploymentRunPage', () => {
     ).toBeVisible();
     expect(screen.getByText('개발팀 신입 연봉 기준을 알려줘')).toBeVisible();
     expect(screen.getByText('VPN은 어디서 신청해?')).toBeVisible();
+  });
+
+  it('내부 챗봇 응답을 Markdown으로 표시하고 발표용 글자 크기를 사용한다', async () => {
+    mockedWorkflowApi.runDeployment.mockResolvedValueOnce({
+      status: 'success',
+      results: {
+        final_answer:
+          '**핵심 안내**\n\n- 재무팀 첫 주 일정\n- 영업팀 첫 주 일정',
+      },
+    });
+
+    render(<AuthenticatedDeploymentRunPage />);
+    const heading = await screen.findByRole('heading', {
+      name: '사내 문서 질문 응답 봇',
+    });
+    expect(heading).toHaveClass('text-4xl');
+
+    const questionInput = screen.getByLabelText('질문');
+    expect(questionInput).toHaveClass('text-lg', 'min-h-14');
+    expect(screen.getByRole('button', { name: '전송' })).toHaveClass(
+      'h-14',
+      'w-14',
+    );
+
+    fireEvent.change(questionInput, {
+      target: { value: '첫 주 일정을 알려줘' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '전송' }));
+
+    const strongText = await screen.findByText('핵심 안내');
+    expect(strongText.tagName).toBe('STRONG');
+    expect(screen.getByRole('list')).toBeVisible();
+    expect(screen.getByText('재무팀 첫 주 일정')).toBeVisible();
+  });
+
+  it('Enter는 질문을 전송하고 Shift+Enter는 줄바꿈을 위해 전송하지 않는다', async () => {
+    render(<AuthenticatedDeploymentRunPage />);
+    const questionInput = await screen.findByLabelText('질문');
+
+    fireEvent.change(questionInput, {
+      target: { value: '첫 번째 질문' },
+    });
+    fireEvent.keyDown(questionInput, {
+      key: 'Enter',
+      code: 'Enter',
+      shiftKey: true,
+    });
+    expect(mockedWorkflowApi.runDeployment).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(questionInput, {
+      key: 'Enter',
+      code: 'Enter',
+    });
+
+    await waitFor(() => {
+      expect(mockedWorkflowApi.runDeployment).toHaveBeenCalledWith(
+        'deployment-1',
+        { question: '첫 번째 질문' },
+        expect.any(String),
+      );
+    });
   });
 
   it('내부 실행 화면의 뒤로가기는 운영 현황이 아닌 대시보드로 이동한다', async () => {
