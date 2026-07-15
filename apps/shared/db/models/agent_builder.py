@@ -2,12 +2,11 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
+from apps.shared.db.base import Base
 from sqlalchemy import DateTime, ForeignKey, Index, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-
-from apps.shared.db.base import Base
 
 
 class AgentBuilderSession(Base):

@@ -6,13 +6,13 @@ from uuid import UUID
 from fastapi import Request
 from sqlalchemy.orm import Session
 
-from apps.gateway.application.agent_builder.knowledge_selection_service import (
+from apps.gateway.services.agent_builder.knowledge_selection_service import (
     KnowledgeSelectionService,
 )
-from apps.gateway.application.agent_builder.mutation_lifecycle import (
+from apps.gateway.services.agent_builder.mutation_lifecycle import (
     GraphMutationLifecycleService,
 )
-from apps.gateway.application.agent_builder.parameter_task_service import (
+from apps.gateway.services.agent_builder.parameter_task_service import (
     ParameterTaskService,
 )
 from apps.gateway.services.agent_builder_intent_service import (

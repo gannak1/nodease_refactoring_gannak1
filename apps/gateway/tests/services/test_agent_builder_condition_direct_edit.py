@@ -7,8 +7,8 @@ from uuid import uuid4
 import pytest
 
 from apps.gateway.adapters.db.agent_builder_repository import AgentBuilderRepository
-from apps.gateway.application.agent_builder import parameter_task_service as task_service_module
-from apps.gateway.application.agent_builder import mutation_lifecycle as lifecycle_module
+from apps.gateway.services.agent_builder import parameter_task_service as task_service_module
+from apps.gateway.services.agent_builder import mutation_lifecycle as lifecycle_module
 from apps.gateway.application.agent_builder.graph_mutation_builder import (
     apply_graph_operations,
 )
@@ -16,10 +16,10 @@ from apps.gateway.application.agent_builder.condition_branches import (
     condition_branch_decision_issues,
     reconcile_condition_branch_tasks,
 )
-from apps.gateway.application.agent_builder.parameter_task_service import (
+from apps.gateway.services.agent_builder.parameter_task_service import (
     ParameterTaskService,
 )
-from apps.gateway.application.agent_builder.mutation_lifecycle import (
+from apps.gateway.services.agent_builder.mutation_lifecycle import (
     GraphMutationLifecycleService,
 )
 from apps.gateway.application.agent_builder.service import DirectEditOrchestrator

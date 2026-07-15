@@ -58,7 +58,12 @@ def test_authenticated_execute_passes_current_user_execution_subject(monkeypatch
     app_id = uuid.uuid4()
     organization_id = uuid.uuid4()
     current_user = SimpleNamespace(id=uuid.uuid4())
-    workflow = SimpleNamespace(id=workflow_id, app_id=app_id, organization_id=organization_id)
+    workflow = SimpleNamespace(
+        id=workflow_id,
+        app_id=app_id,
+        organization_id=organization_id,
+        graph=_valid_start_graph(),
+    )
     celery = FakeCeleryApp()
     request = Request(
         {
@@ -108,6 +113,7 @@ def test_execute_preflight_error_is_preserved_without_celery_backend(
         id=workflow_id,
         app_id=uuid.uuid4(),
         organization_id=uuid.uuid4(),
+        graph=_valid_start_graph(),
     )
     current_user = SimpleNamespace(id=uuid.uuid4())
     request = Request(
@@ -155,7 +161,12 @@ def test_authenticated_execute_dispatches_draft_rag_selection(monkeypatch):
     organization_id = uuid.uuid4()
     knowledge_base_id = str(uuid.uuid4())
     current_user = SimpleNamespace(id=uuid.uuid4())
-    workflow = SimpleNamespace(id=workflow_id, app_id=app_id, organization_id=organization_id)
+    workflow = SimpleNamespace(
+        id=workflow_id,
+        app_id=app_id,
+        organization_id=organization_id,
+        graph=_valid_start_graph(),
+    )
     celery = FakeCeleryApp()
     draft_graph = {
         "nodes": [

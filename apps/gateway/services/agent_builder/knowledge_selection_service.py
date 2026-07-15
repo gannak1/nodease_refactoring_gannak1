@@ -9,7 +9,6 @@ from sqlalchemy.orm import Session
 
 from apps.gateway.adapters.db.agent_builder_repository import (
     AgentBuilderRepository,
-    AgentBuilderRepositoryError,
 )
 from apps.gateway.application.agent_builder.knowledge_timing import (
     KnowledgeTimingResolver,

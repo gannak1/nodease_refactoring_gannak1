@@ -1,15 +1,25 @@
 import copy
 import json
+import os
+import subprocess
+import sys
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy.orm import Session
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session, sessionmaker
 
+from apps.gateway.application.agent_builder.graph_mutation_builder import (
+    canonical_graph_hash,
+)
 from apps.gateway.services.agent_builder_intent_service import (
     LLMAgentBuilderIntentExtractor,
 )
 from apps.gateway.services.agent_builder_service import (
+    EXPECTED_APP_PRIMARY_WORKFLOW_ID,
     AgentBuilderService,
     calculate_graph_hash,
 )
@@ -39,19 +49,135 @@ from apps.shared.db.models.team import UserLLMPermission, UserWorkflowPermission
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_run import WorkflowRun
-from apps.shared.db.session import engine
 from apps.shared.schemas.agent_builder import (
     AgentBuilderApplyRequest,
     AgentBuilderMessageRequest,
 )
 from apps.shared.schemas.workflow import WorkflowDraftRequest
+from apps.shared.tests.helpers.disposable_postgres import (
+    DisposablePostgresConfig,
+    DisposablePostgresConfigurationError,
+    quote_disposable_database_name,
+)
+
+
+ROOT_DIR = Path(__file__).resolve().parents[4]
+RUN_DISPOSABLE_DB_ENV = "NODEASE_RUN_DISPOSABLE_DB_TEST"
+DISPOSABLE_DB_PREFIX = "mbased_agent_builder_model"
+pytestmark = pytest.mark.skipif(
+    os.getenv(RUN_DISPOSABLE_DB_ENV) != "1",
+    reason=(
+        f"set {RUN_DISPOSABLE_DB_ENV}=1 to run disposable Agent Builder model tests"
+    ),
+)
+
+
+def _run_alembic(database: str, config: DisposablePostgresConfig) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            "apps/shared/alembic.ini",
+            "upgrade",
+            "heads",
+        ],
+        cwd=ROOT_DIR,
+        env=config.subprocess_environment(database=database, root_dir=ROOT_DIR),
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        timeout=180,
+        check=False,
+    )
+    if result.returncode != 0:
+        pytest.fail(
+            "alembic failed for disposable Agent Builder model database; "
+            "stdout/stderr omitted to avoid leaking local configuration"
+        )
+
+
+@pytest.fixture(scope="module")
+def disposable_model_engine():
+    try:
+        config = DisposablePostgresConfig.from_environment()
+    except DisposablePostgresConfigurationError:
+        raise pytest.fail.Exception(
+            "disposable PostgreSQL connection settings are not safely configured",
+            pytrace=False,
+        ) from None
+
+    database = f"{DISPOSABLE_DB_PREFIX}_{uuid.uuid4().hex[:12]}"
+    quoted_database = quote_disposable_database_name(
+        database,
+        prefix=DISPOSABLE_DB_PREFIX,
+    )
+    admin_engine = create_engine(
+        config.database_url(config.maintenance_database),
+        isolation_level="AUTOCOMMIT",
+    )
+    database_created = False
+    test_engine = None
+    try:
+        with admin_engine.connect() as connection:
+            connection.execute(text(f"CREATE DATABASE {quoted_database}"))
+        database_created = True
+        extension_engine = create_engine(
+            config.database_url(database),
+            isolation_level="AUTOCOMMIT",
+        )
+        try:
+            with extension_engine.connect() as connection:
+                connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        finally:
+            extension_engine.dispose()
+        _run_alembic(database, config)
+        test_engine = create_engine(config.database_url(database))
+        yield test_engine
+    except OperationalError:
+        raise pytest.fail.Exception(
+            "disposable PostgreSQL is unavailable or rejected the connection; "
+            "connection details omitted",
+            pytrace=False,
+        ) from None
+    finally:
+        if test_engine is not None:
+            test_engine.dispose()
+        if database_created:
+            try:
+                with admin_engine.connect() as connection:
+                    connection.execute(
+                        text(
+                            """
+                            SELECT pg_terminate_backend(pid)
+                            FROM pg_stat_activity
+                            WHERE datname = :database
+                              AND pid <> pg_backend_pid()
+                            """
+                        ),
+                        {"database": database},
+                    )
+                    connection.execute(text(f"DROP DATABASE IF EXISTS {quoted_database}"))
+            except OperationalError:
+                raise pytest.fail.Exception(
+                    "disposable PostgreSQL cleanup could not connect; "
+                    "connection details omitted",
+                    pytrace=False,
+                ) from None
+        admin_engine.dispose()
 
 
 @pytest.fixture
-def db_session():
-    connection = engine.connect()
+def db_session(disposable_model_engine):
+    connection = disposable_model_engine.connect()
     transaction = connection.begin()
-    db = Session(bind=connection, join_transaction_mode="create_savepoint")
+    db = sessionmaker(
+        bind=connection,
+        class_=Session,
+        join_transaction_mode="create_savepoint",
+    )()
     try:
         yield db
     finally:
@@ -616,7 +742,13 @@ def test_agent_builder_apply_save_persists_layout_models_and_audit_without_execu
     WorkflowService.save_draft(
         db_session,
         str(workflow.id),
-        WorkflowDraftRequest.model_validate(editor_graph),
+        WorkflowDraftRequest.model_validate(
+            {
+                **editor_graph,
+                "expected_graph_hash": canonical_graph_hash(saved_workflow.graph),
+                "expected_updated_at": saved_workflow.updated_at,
+            }
+        ),
         user_id=str(actor.id),
     )
     db_session.expire_all()
@@ -839,6 +971,7 @@ def test_header_selection_stays_in_planner_while_new_agent_persists_recommendati
         node_detail_previews=[],
         validation_result={"valid": True, "issues": []},
         draft_metadata={
+            EXPECTED_APP_PRIMARY_WORKFLOW_ID: str(original_workflow.id),
             "workflow_scope": "new_workflow",
             "generated_node_ids": [node["id"] for node in preview_graph["nodes"]],
             "generated_edge_ids": [edge["id"] for edge in preview_graph["edges"]],
@@ -960,6 +1093,7 @@ def test_agent_builder_new_workflow_apply_rebinds_session_scope(db_session):
         node_detail_previews=[],
         validation_result={"valid": True, "issues": []},
         draft_metadata={
+            EXPECTED_APP_PRIMARY_WORKFLOW_ID: str(original_workflow.id),
             "workflow_scope": "new_workflow",
             "generated_node_ids": ["new-start", "new-answer"],
             "generated_edge_ids": ["edge-new-start-answer"],

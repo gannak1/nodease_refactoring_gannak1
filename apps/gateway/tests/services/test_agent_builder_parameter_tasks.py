@@ -31,15 +31,15 @@ from apps.shared.schemas.agent_builder import (
     AgentBuilderParameterTask,
     AgentBuilderParameterTaskDecisionRequest,
 )
-from apps.gateway.application.agent_builder.parameter_task_service import (
+from apps.gateway.services.agent_builder.parameter_task_service import (
     ParameterTaskService,
     apply_parameter_value_to_node_data,
 )
-from apps.gateway.application.agent_builder.parameter_candidates import (
+from apps.gateway.services.agent_builder.parameter_candidates import (
     ParameterCandidateProvider,
 )
-from apps.gateway.application.agent_builder import parameter_candidates as candidate_module
-from apps.gateway.application.agent_builder import parameter_task_service as task_service_module
+from apps.gateway.services.agent_builder import parameter_candidates as candidate_module
+from apps.gateway.services.agent_builder import parameter_task_service as task_service_module
 from apps.gateway.services.llm_service import LLMService
 from apps.gateway.adapters.db.agent_builder_repository import (
     AgentBuilderRepository,

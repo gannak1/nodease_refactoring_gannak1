@@ -55,6 +55,17 @@ def test_migration_change_selects_graph_consumers_and_postgres_contracts():
     assert scope.workflow_tests is True
     assert scope.knowledge_postgres is True
     assert scope.workflow_postgres is True
+    assert scope.agent_builder_postgres is True
+
+
+def test_agent_builder_change_selects_agent_builder_postgres():
+    scope = classify_paths(
+        ["apps/gateway/services/agent_builder/parameter_task_service.py"]
+    )
+
+    assert scope.gateway_tests is True
+    assert scope.agent_builder_postgres is True
+    assert scope.knowledge_postgres is False
 
 
 def test_knowledge_runtime_change_selects_knowledge_postgres():
@@ -103,6 +114,7 @@ def test_ci_control_change_selects_smoke_jobs_and_postgres_contracts():
     assert scope.broad_python is True
     assert scope.knowledge_postgres is True
     assert scope.workflow_postgres is True
+    assert scope.agent_builder_postgres is True
 
 
 def test_trusted_guard_change_is_treated_as_ci_control():
@@ -111,6 +123,7 @@ def test_trusted_guard_change_is_treated_as_ci_control():
     assert scope.broad_python is True
     assert scope.knowledge_postgres is True
     assert scope.workflow_postgres is True
+    assert scope.agent_builder_postgres is True
 
 
 def test_deployment_workflow_does_not_pull_runtime_tests_into_pr_gate():
@@ -149,6 +162,7 @@ def test_empty_diff_fails_closed():
     assert scope.broad_python is True
     assert scope.knowledge_postgres is True
     assert scope.workflow_postgres is True
+    assert scope.agent_builder_postgres is True
 
 
 def test_name_status_parser_preserves_both_sides_of_rename():

@@ -9,13 +9,13 @@ from apps.gateway.adapters.db.agent_builder_repository import (
     AgentBuilderRepository,
     AgentBuilderRepositoryError,
 )
-from apps.gateway.application.agent_builder.knowledge_selection_service import (
+from apps.gateway.services.agent_builder.knowledge_selection_service import (
     KnowledgeSelectionService,
 )
-from apps.gateway.application.agent_builder import (
+from apps.gateway.services.agent_builder import (
     knowledge_selection_service as selection_module,
 )
-from apps.gateway.application.agent_builder.parameter_candidates import (
+from apps.gateway.services.agent_builder.parameter_candidates import (
     ParameterCandidateProvider,
 )
 from apps.gateway.services.agent_builder_service import AgentBuilderService

@@ -41,7 +41,7 @@ from apps.gateway.application.agent_builder.parameter_tasks import (
 )
 from apps.gateway.application.agent_builder.semantic_plan import CAPABILITY_STEP_IDS
 from apps.gateway.application.agent_builder.service import DirectEditOrchestrator
-from apps.gateway.application.agent_builder.parameter_candidates import (
+from apps.gateway.services.agent_builder.parameter_candidates import (
     ParameterCandidateProvider,
 )
 from apps.gateway.application.agent_builder.knowledge_timing import (

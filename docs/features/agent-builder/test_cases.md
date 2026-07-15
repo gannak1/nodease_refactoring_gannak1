@@ -536,6 +536,8 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 
 - endpoint가 graph operation, task order 또는 permission query를 직접 구현하지 않는다.
 - application, domain service, DB adapter와 composition dependency 방향을 import/static test로 검증한다.
+- application import 검증은 shared Pydantic contract를 허용하되 FastAPI, SQLAlchemy, DB model과 concrete Gateway service/adapter를 차단한다.
+- Agent Builder DB integration과 CAS 경쟁 테스트는 disposable PostgreSQL 전용 CI에서 실행하고 DB가 없는 일반 Gateway test selector에서는 제외한다.
 
 ### DBP-TC-N002 Coupling
 

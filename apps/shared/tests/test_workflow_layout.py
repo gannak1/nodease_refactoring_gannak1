@@ -3,7 +3,6 @@ from pathlib import Path
 
 from apps.shared.services.workflow_layout import calculate_workflow_auto_layout
 
-
 FIXTURE_PATH = (
     Path(__file__).resolve().parents[3]
     / "tests"

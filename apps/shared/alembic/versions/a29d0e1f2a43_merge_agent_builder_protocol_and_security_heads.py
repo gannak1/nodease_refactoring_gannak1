@@ -6,7 +6,6 @@ Revises: a28d9e0f1a32, c7f8a9b0d123
 
 from typing import Sequence, Union
 
-
 revision: str = "a29d0e1f2a43"
 down_revision: Union[str, Sequence[str], None] = (
     "a28d9e0f1a32",

@@ -52,6 +52,24 @@ _WORKFLOW_POSTGRES_PATTERNS = (
     ".github/workflows/test-schedule-dispatch-postgres.yml",
 )
 
+_AGENT_BUILDER_POSTGRES_PATTERNS = (
+    "apps/gateway/adapters/db/agent_builder_repository.py",
+    "apps/gateway/application/agent_builder/**",
+    "apps/gateway/composition/agent_builder.py",
+    "apps/gateway/services/agent_builder/**",
+    "apps/gateway/services/agent_builder_service.py",
+    "apps/gateway/services/workflow_service.py",
+    "apps/gateway/tests/integration/test_agent_builder_model_selection_db.py",
+    "apps/gateway/tests/integration/test_agent_builder_primary_workflow_db.py",
+    "apps/gateway/tests/integration/test_agent_builder_workflow_cas.py",
+    "apps/shared/alembic/**",
+    "apps/shared/db/models/agent_builder.py",
+    "apps/shared/db/models/workflow.py",
+    "apps/shared/schemas/agent_builder.py",
+    "apps/shared/schemas/workflow.py",
+    ".github/workflows/test-agent-builder-postgres.yml",
+)
+
 _LOG_SYSTEM_SHARED_SERVICE_PATTERNS = (
     "apps/shared/services/external_effect_trace_capture.py",
     "apps/shared/services/knowledge_ingestion_outbox.py",
@@ -90,6 +108,7 @@ class ChangeScope:
     root_tests: bool = False
     knowledge_postgres: bool = False
     workflow_postgres: bool = False
+    agent_builder_postgres: bool = False
     broad_python: bool = False
 
     def enable_python_smoke(self) -> None:
@@ -214,6 +233,7 @@ def classify_paths(raw_paths: Iterable[str]) -> ChangeScope:
         scope.enable_python_smoke()
         scope.knowledge_postgres = True
         scope.workflow_postgres = True
+        scope.agent_builder_postgres = True
         return scope
 
     for path in paths:
@@ -221,6 +241,8 @@ def classify_paths(raw_paths: Iterable[str]) -> ChangeScope:
             scope.knowledge_postgres = True
         if _matches_any(path, _WORKFLOW_POSTGRES_PATTERNS):
             scope.workflow_postgres = True
+        if _matches_any(path, _AGENT_BUILDER_POSTGRES_PATTERNS):
+            scope.agent_builder_postgres = True
 
         if _is_documentation_path(path):
             continue
@@ -234,6 +256,7 @@ def classify_paths(raw_paths: Iterable[str]) -> ChangeScope:
             scope.enable_python_smoke()
             scope.knowledge_postgres = True
             scope.workflow_postgres = True
+            scope.agent_builder_postgres = True
             continue
 
         if path.startswith("apps/client/"):
@@ -294,6 +317,7 @@ def classify_paths(raw_paths: Iterable[str]) -> ChangeScope:
             if path in {
                 ".github/workflows/test-knowledge-runtime-postgres.yml",
                 ".github/workflows/test-schedule-dispatch-postgres.yml",
+                ".github/workflows/test-agent-builder-postgres.yml",
             }:
                 continue
             scope.client = True

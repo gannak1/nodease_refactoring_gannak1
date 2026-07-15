@@ -106,7 +106,10 @@ def test_execute_blocks_exceeded_budget_before_celery_dispatch(monkeypatch):
     organization_id = uuid4()
     current_user = SimpleNamespace(id=uuid4())
     workflow = SimpleNamespace(
-        id=str(workflow_id), app_id=uuid4(), organization_id=organization_id
+        id=str(workflow_id),
+        app_id=uuid4(),
+        organization_id=organization_id,
+        graph=_valid_graph(),
     )
     db = _exceeded_db(workflow_id, organization_id)
     _patch_common(monkeypatch, workflow)
@@ -254,6 +257,7 @@ def test_execute_allows_matching_active_organization_before_dispatch(monkeypatch
         id=str(workflow_id),
         app_id=uuid4(),
         organization_id=organization_id,
+        graph=_valid_graph(),
     )
     db = _Db()
     celery = _DispatchRecorder()
@@ -301,6 +305,7 @@ def test_execute_draft_not_found_preserves_404(monkeypatch):
         id=str(workflow_id),
         app_id=uuid4(),
         organization_id=organization_id,
+        graph=_valid_graph(),
     )
     db = _Db()
     monkeypatch.setattr(

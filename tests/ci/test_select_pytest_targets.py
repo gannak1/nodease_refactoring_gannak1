@@ -38,6 +38,21 @@ def test_selects_changed_test_file_directly(tmp_path: Path):
     ]
 
 
+def test_gateway_selector_excludes_postgres_only_agent_builder_tests(
+    tmp_path: Path,
+):
+    target = (
+        "apps/gateway/tests/integration/"
+        "test_agent_builder_workflow_cas.py"
+    )
+    _write(tmp_path, target)
+    _write(tmp_path, "apps/gateway/tests/architecture/test_boundaries.py")
+
+    assert select_pytest_targets("gateway", [target], tmp_path) == [
+        "apps/gateway/tests/architecture"
+    ]
+
+
 def test_selects_feature_tests_by_source_name(tmp_path: Path):
     target = "apps/gateway/tests/services/test_organization_member_service.py"
     _write(tmp_path, target)
