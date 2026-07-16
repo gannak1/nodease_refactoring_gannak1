@@ -649,7 +649,7 @@ Generic 비동기 audit event를 `audit_logs`에 전달하기 위한 durable out
 | 컬럼 | 타입 | 제약/의미 |
 | --- | --- | --- |
 | id | UUID | PK |
-| payload | JSONB | NOT NULL — 기존 `audit.record`에 전달하던 직렬화 payload |
+| payload | JSONB | NOT NULL — 처리 전에는 직렬화 audit payload, 성공 후에는 빈 JSON object `{}` |
 | status | VARCHAR(32) | NOT NULL — `pending/leased/succeeded/retry_scheduled/dead_lettered`, 기본 `pending` |
 | owner_token | VARCHAR(128) | NULL — 현재 lease owner |
 | lease_expires_at | DATETIME | NULL — lease 만료 시각 |
@@ -663,7 +663,8 @@ Generic 비동기 audit event를 `audit_logs`에 전달하기 위한 durable out
 
 - Business resource FK를 두지 않아 audit outbox insert가 대상 resource lifecycle에 불필요하게 실패하지 않게 한다.
 - `(status, next_retry_at)`과 `(status, lease_expires_at)` 인덱스가 due event polling과 stale lease 복구를 지원한다.
-- Worker는 lease/attempt 증가를 먼저 commit하고 `AuditLog` insert와 Outbox `succeeded`를 같은 transaction으로 commit한다. 같은 audit id는 멱등 성공으로 처리한다.
+- Worker는 lease/attempt 증가를 먼저 commit하고 `AuditLog` insert, Outbox `succeeded`, 성공 payload의 `{}` 교체를 같은 transaction으로 commit한다. 성공 row는 idempotency key와 terminal 상태·시각만 tombstone으로 유지하고 같은 audit id는 멱등 성공으로 처리한다.
+- Retry/dead-letter row의 payload는 재처리와 운영 복구를 위해 유지한다. Terminal row 삭제 기간은 별도 retention 정책으로 결정한다.
 - 실패는 safe reason code로 최대 5회 재시도한 뒤 `dead_lettered`로 전환한다. Rollout 4부터 신규 producer는 기존 `audit.record` Celery 발행을 사용하지 않는다.
 
 #### `security_alerts`

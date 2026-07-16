@@ -237,6 +237,8 @@ class AuditEventOutboxService:
         )
         if owned_event is None:
             return False
+        # AuditLog is canonical after delivery; keep only the idempotency tombstone.
+        owned_event.payload = {}
         owned_event.status = OUTBOX_STATUS_SUCCEEDED
         owned_event.owner_token = None
         owned_event.lease_expires_at = None

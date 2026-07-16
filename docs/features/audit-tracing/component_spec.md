@@ -39,7 +39,7 @@ Verified Against: feature/mba-188 @ 59d1cc51
 - Caller SQLAlchemy session이 있으면 commit 없이 `audit_event_outbox` row를 같은 UnitOfWork에 추가한다. Session이 없는 legacy producer는 짧은 독립 session으로 Outbox를 commit한다.
 - Rollout 4부터 `record_audit()`은 Outbox 저장만 수행하고 기존 `audit.record` Celery task를 발행하지 않는다. Outbox 저장 성공 시 audit id를 반환하고 실패 시 `None`을 반환한다.
 - `audit.event_outbox.process`는 Beat가 30초마다 Log queue에서 실행한다. Due row를 `FOR UPDATE SKIP LOCKED`로 분배하고 lease/attempt를 먼저 commit한다.
-- Worker는 `AuditLog` insert와 Outbox `succeeded` 전환을 같은 transaction으로 commit한다. 같은 audit id가 이미 있으면 멱등 성공이며, 실패는 safe reason code로 최대 5회 재시도한 뒤 dead-letter 처리한다.
+- Worker는 `AuditLog` insert, Outbox `succeeded` 전환, 성공 payload의 빈 JSON object 교체를 같은 transaction으로 commit한다. 성공 row는 idempotency key와 terminal 상태·시각만 tombstone으로 유지한다. 같은 audit id가 이미 있으면 멱등 성공이며, retry/dead-letter payload는 재처리를 위해 유지하고 실패는 safe reason code로 최대 5회 재시도한 뒤 dead-letter 처리한다.
 - 성공 commit 뒤 Security Alert 탐지를 발행한다. 발행 실패는 저장 transaction을 되돌리지 않으며 기존 Security Alert reconciliation이 복구 경로다.
 - 배포 전 broker에 들어간 메시지를 소진하기 위해 `audit.record` consumer는 호환성 task로 유지하지만 신규 producer에서는 사용하지 않는다.
 - Outbox payload는 `workflow_run_id`/`workflow_node_run_id`를 top-level correlation으로 운반한다. 현재 producer의 기존 metadata 값도 호환 입력으로 승격하며 Outbox worker와 호환 consumer가 Run의 Workflow 조직과 `audit_metadata.organization_id`가 같은 경우에만 AuditLog typed FK 컬럼에 저장한다.

@@ -8,7 +8,7 @@ Status: Draft
 - `audit_event_outbox` schema는 audit payload JSONB와 고정된 audit event id 기반 idempotency key를 보존하고, pending/leased/succeeded/retry/dead-letter 상태, lease owner/만료, 최대 5회 재시도에 필요한 counter와 retry 시각을 가진다. 이 테이블은 business resource FK 없이 독립적으로 insert 가능하며 status/retry와 status/lease 조회 인덱스를 제공한다.
 - Rollout 4의 `record_audit()`은 audit payload를 한 번만 직렬화해 고정 audit event id를 Outbox idempotency key에 사용한다. Caller session이 있으면 commit하지 않고 같은 transaction에 row를 추가하며, session이 없으면 짧은 독립 transaction으로 Outbox를 commit한다.
 - Outbox 저장 성공 시 고정 audit event id를 반환하고 실패 시 `None`을 반환한다. 실패 로그에는 payload, raw exception detail, secret이 없어야 하며 Redis/broker fallback을 시도하지 않는다.
-- Rollout 3의 Audit Outbox worker는 due row를 `FOR UPDATE SKIP LOCKED`로 lease하고 lease/attempt 증가를 먼저 commit한 뒤 처리한다. AuditLog insert와 Outbox `succeeded` 전환은 같은 transaction에서 commit하며 기존 `audit_logs.id`가 있으면 멱등 성공으로 처리한다.
+- Rollout 3의 Audit Outbox worker는 due row를 `FOR UPDATE SKIP LOCKED`로 lease하고 lease/attempt 증가를 먼저 commit한 뒤 처리한다. AuditLog insert, Outbox `succeeded` 전환, 성공 payload의 `{}` 교체는 같은 transaction에서 commit하며 기존 `audit_logs.id`가 있으면 멱등 성공으로 처리한다. 성공 row는 idempotency tombstone을 유지하고 retry/dead-letter row는 payload를 유지한다.
 - Audit Outbox worker는 owner token이 일치하는 lease만 완료/재시도할 수 있다. 만료 lease는 복구하고 저장 실패는 safe reason code로 최대 5회 재시도한 뒤 `dead_lettered`로 전환하며 raw payload나 exception detail을 reason/log에 남기지 않는다.
 - Audit Outbox 처리 성공 뒤 Security Alert 탐지 task를 commit 이후에 발행한다. 이 후속 발행 실패는 이미 저장한 AuditLog/Outbox 성공 transaction을 되돌리지 않으며 Security Alert reconciliation이 누락 탐지를 복구할 수 있다.
 - `audit.event_outbox.process`는 Log queue에 등록되고 Celery Beat가 30초마다 실행한다. Rollout 4의 `record_audit()`은 `celery_app.send_task("audit.record")`를 호출하지 않는다.

@@ -187,11 +187,12 @@ def test_audit_event_outbox_migration_upgrades_and_downgrades_in_postgres(
         assert result.recovered_count == 0
         delivered = connection.execute(
             text(
-                "SELECT status, attempt_count, owner_token, delivered_at "
+                "SELECT payload, status, attempt_count, owner_token, delivered_at "
                 "FROM audit_event_outbox WHERE idempotency_key=:key"
             ),
             {"key": str(audit_id)},
         ).mappings().one()
+        assert delivered["payload"] == {}
         assert delivered["status"] == "succeeded"
         assert delivered["attempt_count"] == 1
         assert delivered["owner_token"] is None

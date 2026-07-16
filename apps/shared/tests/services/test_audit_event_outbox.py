@@ -104,6 +104,7 @@ def test_retry_is_scheduled_then_fifth_failure_is_dead_lettered():
     module = _module()
     now = datetime(2026, 7, 16, 3, 0, tzinfo=timezone.utc)
     event = _leased_event()
+    original_payload = event.payload
     service = module.AuditEventOutboxService(_Db([event]))
 
     assert service.mark_retry_or_dead_letter(
@@ -114,6 +115,7 @@ def test_retry_is_scheduled_then_fifth_failure_is_dead_lettered():
         retry_after_seconds=60,
     ) is True
     assert event.status == "retry_scheduled"
+    assert event.payload is original_payload
     assert event.next_retry_at == now + timedelta(seconds=60)
     assert event.owner_token is None
     assert event.lease_expires_at is None
@@ -128,8 +130,31 @@ def test_retry_is_scheduled_then_fifth_failure_is_dead_lettered():
         now=now,
     ) is True
     assert event.status == "dead_lettered"
+    assert event.payload is original_payload
     assert event.next_retry_at is None
     assert event.dead_lettered_at == now
+
+
+def test_success_clears_delivered_payload_but_keeps_idempotency_tombstone():
+    module = _module()
+    now = datetime(2026, 7, 16, 3, 0, tzinfo=timezone.utc)
+    event = _leased_event()
+    event.idempotency_key = event.payload["id"]
+    event_id = event.id
+    idempotency_key = event.idempotency_key
+    service = module.AuditEventOutboxService(_Db([event]))
+
+    assert service.mark_succeeded(
+        event,
+        owner_token="worker-1",
+        now=now,
+    ) is True
+
+    assert event.payload == {}
+    assert event.id == event_id
+    assert event.idempotency_key == idempotency_key
+    assert event.status == "succeeded"
+    assert event.delivered_at == now
 
 
 def test_stale_owner_cannot_overwrite_terminal_state():
