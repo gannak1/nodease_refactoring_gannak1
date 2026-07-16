@@ -47,6 +47,8 @@ Verified Against: feature/mba-281 @ f645223a43057d3eccc1109751851fadf6c47189
 | CONN-TC-U020 | Connection Use Resolver는 ID와 execution subject owner predicate를 한 query에서 평가해야 한다. | UUID만 조회하거나 owner check를 caller가 별도로 수행한다. | non-owner/missing/malformed 모두 `resource.hidden`. |
 | CONN-TC-U021 | Background DB processor는 Connection을 use 직전에 다시 확인해야 한다. | 저장 뒤 Connection 삭제 또는 owner 변경 후에도 adapter를 호출한다. | adapter 0회, safe configuration failure. |
 | CONN-TC-U022 | Credential 복호화 실패는 저장값 fallback 없이 닫혀야 한다. | 암호문을 password/private key로 adapter에 전달한다. | adapter 0회, raw credential/detail 비노출. |
+| CONN-TC-U023 | Connection Use Resolver 저장소 조회 실패는 typed unavailable로 정규화해야 한다. | Raw SQLAlchemy/driver 오류가 Gateway 500, processor result 또는 log에 노출된다. | Gateway는 safe `503 connection.reference_unavailable`, processor는 `source.temporarily_unavailable`, adapter 0회. |
+| CONN-TC-U024 | Resolver는 dial 시작 시점의 최신 owner를 재조회하되 runtime row lock을 소유하지 않아야 한다. | 동일 Session의 stale owner를 재사용하거나 외부 I/O 동안 Connection mutation을 불필요하게 차단한다. | PostgreSQL owner 변경을 다음 resolve가 반영하며 runtime lock protocol은 MBA-302 테스트로 분리. |
 
 ## API Tests
 

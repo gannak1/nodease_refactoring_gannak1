@@ -120,7 +120,7 @@ File/page artifact connector는 egress guard 이후에도 artifact content를 tr
 - 호출자: RAG DB source 등록, Knowledge document process/preview 설정 검증, `DbProcessor`를 통한 Gateway/Workflow Engine background ingestion.
 - 경계:
   - Missing, malformed, deleted, owner 변경과 non-owner를 구분하지 않고 `resource.hidden`으로 닫는다.
-  - 실제 DB use 조회는 row lock을 사용하고 connector 생성·credential 복호화·DB dial보다 먼저 수행한다.
+  - 실제 DB use 조회는 connector 생성·credential 복호화·DB dial보다 먼저 수행하고 저장소 장애를 safe temporary failure로 닫는다. 이 조회 자체는 runtime row lock을 소유하지 않는다.
   - KB/Collection 권한, organization membership, HTTP 오류 shape와 DB protocol 정책을 소유하지 않는다.
   - Organization-scoped Connection 권한을 추측하거나 신규 permission을 만들지 않는다.
 
@@ -169,7 +169,7 @@ Docker demo Gateway는 Connector admission에만 `connector-test-redis` logical 
 
 1. Gateway는 submitted DB config의 Connection reference를 기존 opaque reference와 함께 정규화한다.
 2. Connection Use Resolver가 current user owner 조건을 확인한 뒤 allowlisted table/column/JOIN/chunk 설정만 document metadata에 저장하거나 preview runtime config로 전달한다.
-3. Background `DbProcessor`는 외부 DB dial 직전에 execution subject로 같은 resolver를 다시 호출하고 row를 잠근다.
+3. Background `DbProcessor`는 외부 DB dial 직전에 execution subject로 같은 resolver를 다시 호출해 최신 소유권 스냅샷을 확인한다.
 4. Connection 삭제, owner 변경, malformed/non-owner reference 또는 credential 복호화 실패는 connector 호출 전에 safe configuration/resource-hiding failure로 종료한다.
 5. Processor result와 chunk source label은 Connection id/name/host/user/credential을 포함하지 않는다.
 

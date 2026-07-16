@@ -14,7 +14,7 @@ KC sync 요청·상태 조회와 durable execution 계약은 [ADR-0048](../../de
 | POST | `/api/v1/knowledge` | 빈 KB 생성 | Active organization에 KB, 생성자의 user-direct `manager`, canonical audit를 한 transaction에서 생성한다. 필수 schema가 준비되지 않으면 `503 knowledge.schema_not_ready`로 fail-closed 처리한다 |
 | GET | `/api/v1/knowledge/{kb_id}` | 현재 KB 상세와 문서 상태 | Active organization + KB `read`. Detail capability는 `can_read/use/write/read_content/manage`와 빈 active manual KB에 최초 source를 등록할 수 있는 `can_register_initial_document`를 반환한다 |
 | GET | `/api/v1/knowledge/{kb_id}/documents/{document_id}/edit-config` | Document preview/process 설정 복원 | Active organization + KB `write`. Bounded property/aggregate/serialized-size allowlist만 반환하고 read detail과 encrypted source config를 재사용하지 않는다. 성공 응답은 `Cache-Control: no-store`다 |
-| POST | `/api/v1/knowledge/{kb_id}/documents/{document_id}/preview` | Document 설정 미리보기 | Active organization + KB `write`. DB source는 submitted/fallback opaque Connection reference가 current user 소유인지 확인한 뒤 processor를 호출한다 |
+| POST | `/api/v1/knowledge/{kb_id}/documents/{document_id}/preview` | Document 설정 미리보기 | Active organization + KB `write`. DB source는 submitted/fallback opaque Connection reference가 current user 소유인지 확인한 뒤 processor를 호출한다. Resolver 저장소 장애는 `503 connection.reference_unavailable`, processor 직전 재검증의 temporary failure는 `503 source.temporarily_unavailable`로 닫는다 |
 | POST | `/api/v1/knowledge/{kb_id}/documents/{document_id}/process` | Document 설정 저장 및 background ingestion | Active organization + KB `write`. DB source는 Connection owner 검증과 설정 allowlist를 통과한 뒤 owner Connection row를 잠그고 metadata commit까지 유지해 Connector 삭제와 직렬화한다. Background processor는 dial 직전에 같은 owner 정책을 재검증한다. Missing/malformed/other-owner reference는 `404 resource.hidden`, persistence failure는 `503 connection.reference_unavailable`로 닫는다 |
 | GET | `/api/v1/knowledge/{kb_id}/safe-metadata` | allowlisted KB recommendation metadata 조회 | active organization, KB `manage`; 권한 없는 resource는 404로 숨긴다 |
 | PATCH | `/api/v1/knowledge/{kb_id}/safe-metadata` | `safe_label`, `kb_safe_description`, `kb_safe_topics` 수정 | active organization, KB `manage`, sanitizer, audit. 일반 KB 설정 PATCH와 분리한다 |
@@ -22,7 +22,7 @@ KC sync 요청·상태 조회와 durable execution 계약은 [ADR-0048](../../de
 | DELETE | `/api/v1/knowledge/{kb_id}?acknowledged_hard_delete=true` | Manual KB hard delete | Organization manager 전용, explicit acknowledgement, approved retention/legal-hold gate. Production gate가 연결되지 않은 현재 baseline은 `403 policy.denied`로 fail-closed하며, allow된 경우에만 permission cleanup과 audit를 같은 DB transaction에서 처리한다 |
 | POST | `/api/v1/knowledge/candidates/resolve` | Builder/deployment preflight용 safe KB 후보 조회 | active organization, collection route 또는 explicit KB helper |
 | POST | `/api/v1/knowledge/rag-recommendations` | Workflow Builder용 LLM node RAG option 추천 | active organization, candidate resolver safe set, KB 단위 recommendation |
-| POST | `/api/v1/rag/upload` | 빈 manual KB의 최초 문서 등록/색인 요청 | `X-Organization-Id` active organization 필수. 신규 KB는 active organization에 귀속하며 primary organization fallback을 사용하지 않는다. 기존 KB는 KB `write`, active/manual/non-source-managed와 빈 document slot을 요구한다. Manual KB에서는 active version pointer가 있는 completed Document를 포함해 모든 상태의 기존 Document가 slot을 점유하며 두 번째 독립 source는 `409 knowledge.document_slot_occupied`다. Source-managed/non-manual KB는 slot 존재를 노출하기 전에 `knowledge.document_registration_not_allowed`로 거부한다 |
+| POST | `/api/v1/rag/upload` | 빈 manual KB의 최초 문서 등록/색인 요청 | `X-Organization-Id` active organization 필수. 신규 KB는 active organization에 귀속하며 primary organization fallback을 사용하지 않는다. 기존 KB는 KB `write`, active/manual/non-source-managed와 빈 document slot을 요구한다. DB source는 owner preflight 후 KB/slot을 먼저 확인하고, 등록 직전에 MBA-273 reference lock을 획득해 document commit까지 유지한다. Manual KB에서는 active version pointer가 있는 completed Document를 포함해 모든 상태의 기존 Document가 slot을 점유하며 두 번째 독립 source는 `409 knowledge.document_slot_occupied`다. Source-managed/non-manual KB는 slot 존재를 노출하기 전에 `knowledge.document_registration_not_allowed`로 거부한다 |
 | POST | `/api/v1/rag/upload/presigned-url` | FILE 또는 Workflow 입력용 임시 upload URL | Knowledge 최초 등록 호출은 `knowledgeBaseId`를 전달하고 active organization, KB `write`와 현재 빈 document slot을 fast precheck한다. 기존 Workflow 입력 파일 호출은 KB 식별자 없이 사용할 수 있다. 최종 Knowledge `/rag/upload`는 KB row lock 아래에서 cardinality를 다시 검증한다 |
 | POST | `/api/v1/rag/search-test/pure` | 검색 테스트 | active organization, KB use |
 | POST | `/api/v1/rag/search-test/chat` | 검색+답변 테스트 | active organization, KB use, LLM credential |
@@ -73,11 +73,14 @@ Gateway는 document/설정 mutation 전에 Shared Connection Use Resolver로
 `Connection.user_id == current_user.id`를 확인하고, process 저장 시 nested config에서
 Connection reference와 Connection detail field를 제거해 top-level opaque `connection_id`만
 canonical reference로 남긴다. Background Gateway ingestion과 Workflow Engine KC sync는 외부
-DB dial 직전에 current execution subject로 같은 resolver를 다시 호출하고 row를 잠근다.
+DB dial 직전에 current execution subject로 같은 resolver를 다시 호출해 최신 권한 스냅샷을 확인한다.
 Missing, malformed, deleted, owner 변경과 non-owner reference는 모두 `404
 resource.hidden`으로 일반화하며 Connection id/name/owner/host/database/username/credential을
 응답·audit·processing metadata에 넣지 않는다. Credential 복호화 실패는
 `configuration.invalid`로 닫고 저장 암호문을 adapter credential로 fallback하지 않는다.
+Resolver 저장소 장애는 Gateway에서 `503 connection.reference_unavailable`, processor에서
+`source.temporarily_unavailable`로 정규화한다. Runtime row lock과 실행 도중 revoke 취소는
+MBA-302의 별도 transaction/lock 계약 범위다.
 
 KB detail/direct document의 `error_message`와 progress SSE의 `message`/`error`는
 persisted 원문이 아니다. Gateway가 status를 fixed public message로 투영하며 failure는

@@ -90,7 +90,7 @@ Connectors 기능은 외부 데이터 소스에 접속하기 위한 연결 정�
 
 - CONN-REQ-061 (MBA-281): Knowledge DB source가 저장된 Connection을 사용할 때 현재 최소 권한은 `connections.user_id == execution_subject_user_id`다. Workflow/KB/Collection 권한이나 같은 organization membership만으로 다른 사용자의 Connection use를 허용하지 않아야 한다.
 - CONN-REQ-062 (MBA-281): Connection 조회·사용 판정은 Shared Connection Use Resolver가 소유해야 한다. Knowledge upload/process/preview와 Gateway/Workflow Engine background DB ingestion이 owner predicate를 각자 복제하지 않아야 한다.
-- CONN-REQ-063 (MBA-281): Knowledge DB source 설정 저장 전에 Connection을 검증하고, 외부 DB dial 직전에는 같은 resolver로 row lock을 포함해 다시 검증해야 한다. Queue 대기 중 삭제 또는 owner 변경이 발생하면 adapter 호출 전에 fail-closed해야 한다.
+- CONN-REQ-063 (MBA-281): Knowledge DB source 설정 저장 전에 Connection을 검증하고, 외부 DB dial 직전에는 같은 resolver로 다시 검증해야 한다. Queue 대기 중 삭제 또는 owner 변경이 발생하면 adapter 호출 전에 fail-closed해야 한다. 이 판정은 dial 시작 시점의 권한 스냅샷이며 runtime row lock, 실행 도중 revoke 취소와 transaction 조율은 MBA-302 범위다.
 - CONN-REQ-064 (MBA-281): Knowledge document metadata에는 opaque `connection_id`만 Connection reference로 저장할 수 있다. Connection name/type/host/database/username, decrypted/encrypted password와 SSH credential은 document metadata, processor result, chunk source label, audit와 log에 복제하지 않아야 한다.
 - CONN-REQ-065 (MBA-281): Missing, malformed, deleted와 non-owner Connection reference는 Knowledge use surface에서 동일한 `resource.hidden` 결과로 처리하고 Connection 존재·owner·상세를 노출하지 않아야 한다. Connector 관리 detail/schema API의 기존 403/404 계약은 이 요구로 변경하지 않는다.
 - CONN-REQ-066 (MBA-281): 저장 credential 복호화가 실패하면 Knowledge DB processor는 저장값을 평문 credential처럼 fallback하지 않고 configuration failure로 닫아 외부 adapter를 호출하지 않아야 한다.
@@ -107,7 +107,7 @@ Connectors 기능은 외부 데이터 소스에 접속하기 위한 연결 정�
 - SSH tunnel compatibility는 create/schema/runtime의 기존 계약에 한정된다. Strict `/connectors/test`는 ADR-0049에 따라 SSH를 열지 않는다.
 - Development exact-local profile은 로컬 시연 전용 배포 설정이며 Organization별 운영 private-network 권한이나 CIDR 승인 기능이 아니다.
 - Production Gateway는 32 byte 이상의 별도 connector-test admission HMAC key를 요구한다. Helm에서는 `secrets.connectorTestAdmissionHmacKey`로 provisioning하고, Docker Compose에서는 외부 `CONNECTOR_TEST_ADMISSION_HMAC_KEY`를 컨테이너에 전달한다. 두 경로 모두 auth/session key와 재사용하지 않고 tracked 예시에 실제 값을 두지 않는다.
-- 현재 `DbProcessor`는 Knowledge DB source ingestion에서 Shared Connection Use Resolver로 execution subject 소유 Connection을 잠근 뒤 선택된 테이블/컬럼 기반 SQL을 생성한다. 이 ingestion lifecycle은 Knowledge feature 책임이다.
+- 현재 `DbProcessor`는 Knowledge DB source ingestion에서 Shared Connection Use Resolver로 execution subject 소유 Connection을 dial 직전에 재검증한 뒤 선택된 테이블/컬럼 기반 SQL을 생성한다. 이 ingestion lifecycle은 Knowledge feature 책임이다.
 - `connections`에는 `created_at/updated_at`과 `organization_id`가 없다.
 
 ### Knowledge Source Connector Target Requirements
