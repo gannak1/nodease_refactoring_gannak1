@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from apps.shared.db.models.audit_log import AuditEventOutbox, AuditLog
+from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_run import WorkflowNodeRun, WorkflowRun
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
@@ -104,11 +105,28 @@ def build_audit_log(payload: dict[str, Any]) -> AuditLog:
 
 def validate_audit_workflow_correlation(db: Session, audit: AuditLog) -> None:
     """Keep optional correlation from blocking the canonical audit insert."""
+    metadata = audit.audit_metadata if isinstance(audit.audit_metadata, dict) else {}
+    audit_organization_id = _to_uuid(metadata.get("organization_id"))
+    if audit_organization_id is None:
+        audit.workflow_run_id = None
+        audit.workflow_node_run_id = None
+        return
+
     run = None
     if audit.workflow_run_id is not None:
         run = db.get(WorkflowRun, audit.workflow_run_id)
         if run is None:
             audit.workflow_run_id = None
+            audit.workflow_node_run_id = None
+            return
+        workflow = db.get(Workflow, run.workflow_id)
+        if (
+            workflow is None
+            or _to_uuid(workflow.organization_id) != audit_organization_id
+        ):
+            audit.workflow_run_id = None
+            audit.workflow_node_run_id = None
+            return
 
     if audit.workflow_node_run_id is None:
         return
@@ -117,7 +135,18 @@ def validate_audit_workflow_correlation(db: Session, audit: AuditLog) -> None:
         audit.workflow_node_run_id = None
         return
     if audit.workflow_run_id is None:
-        audit.workflow_run_id = node_run.workflow_run_id
+        run = db.get(WorkflowRun, node_run.workflow_run_id)
+        if run is None:
+            audit.workflow_node_run_id = None
+            return
+        workflow = db.get(Workflow, run.workflow_id)
+        if (
+            workflow is None
+            or _to_uuid(workflow.organization_id) != audit_organization_id
+        ):
+            audit.workflow_node_run_id = None
+            return
+        audit.workflow_run_id = run.id
         return
     if node_run.workflow_run_id != audit.workflow_run_id:
         audit.workflow_node_run_id = None

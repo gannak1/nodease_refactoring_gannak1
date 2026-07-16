@@ -42,8 +42,8 @@ Verified Against: feature/mba-188 @ 59d1cc51
 - Worker는 `AuditLog` insert와 Outbox `succeeded` 전환을 같은 transaction으로 commit한다. 같은 audit id가 이미 있으면 멱등 성공이며, 실패는 safe reason code로 최대 5회 재시도한 뒤 dead-letter 처리한다.
 - 성공 commit 뒤 Security Alert 탐지를 발행한다. 발행 실패는 저장 transaction을 되돌리지 않으며 기존 Security Alert reconciliation이 복구 경로다.
 - 배포 전 broker에 들어간 메시지를 소진하기 위해 `audit.record` consumer는 호환성 task로 유지하지만 신규 producer에서는 사용하지 않는다.
-- Outbox payload는 `workflow_run_id`/`workflow_node_run_id`를 top-level correlation으로 운반한다. 현재 producer의 기존 metadata 값도 호환 입력으로 승격하며 Outbox worker와 호환 consumer가 AuditLog typed FK 컬럼에 저장한다.
-- Correlation migration은 정상 UUID와 실제 참조 row가 모두 확인된 기존 metadata 값만 backfill한다. FK는 nullable `ON DELETE SET NULL`이며 두 컬럼에 개별 조회 인덱스를 둔다.
+- Outbox payload는 `workflow_run_id`/`workflow_node_run_id`를 top-level correlation으로 운반한다. 현재 producer의 기존 metadata 값도 호환 입력으로 승격하며 Outbox worker와 호환 consumer가 Run의 Workflow 조직과 `audit_metadata.organization_id`가 같은 경우에만 AuditLog typed FK 컬럼에 저장한다.
+- Correlation migration은 정상 UUID, 실제 참조 row, Run의 Workflow 조직과 audit 조직의 일치가 모두 확인된 기존 metadata 값만 backfill한다. FK는 nullable `ON DELETE SET NULL`이며 두 컬럼에 개별 조회 인덱스를 둔다.
 
 ## States
 

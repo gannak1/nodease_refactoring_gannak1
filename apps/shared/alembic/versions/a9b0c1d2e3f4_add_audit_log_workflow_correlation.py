@@ -34,6 +34,17 @@ def _backfill_existing_correlation(
         if require_matching_run
         else ""
     )
+    workflow_run_join = (
+        "JOIN workflow_runs AS correlation_run "
+        "ON correlation_run.id = referenced.workflow_run_id"
+        if require_matching_run
+        else ""
+    )
+    workflow_id_expression = (
+        "correlation_run.workflow_id"
+        if require_matching_run
+        else "referenced.workflow_id"
+    )
     op.execute(
         sa.text(
             f"""
@@ -44,7 +55,12 @@ def _backfill_existing_correlation(
                         WHEN audit_metadata ->> :metadata_key ~* :uuid_pattern
                         THEN (audit_metadata ->> :metadata_key)::uuid
                         ELSE NULL
-                    END AS correlation_id
+                    END AS correlation_id,
+                    CASE
+                        WHEN audit_metadata ->> 'organization_id' ~* :uuid_pattern
+                        THEN (audit_metadata ->> 'organization_id')::uuid
+                        ELSE NULL
+                    END AS organization_id
                 FROM audit_logs
             )
             UPDATE audit_logs AS audit
@@ -55,7 +71,12 @@ def _backfill_existing_correlation(
               AND EXISTS (
                   SELECT 1
                   FROM {referenced_table} AS referenced
+                  {workflow_run_join}
+                  JOIN workflows AS workflow
+                    ON workflow.id = {workflow_id_expression}
                   WHERE referenced.id = candidates.correlation_id
+                    AND candidates.organization_id IS NOT NULL
+                    AND workflow.organization_id = candidates.organization_id
                   {matching_run_clause}
               )
             """

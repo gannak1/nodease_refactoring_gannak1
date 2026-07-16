@@ -14,10 +14,10 @@ Status: Draft
 - `audit.event_outbox.process`는 Log queue에 등록되고 Celery Beat가 30초마다 실행한다. Rollout 4의 `record_audit()`은 `celery_app.send_task("audit.record")`를 호출하지 않는다.
 - 배포 직전에 broker에 들어간 legacy 메시지를 소진할 수 있도록 `audit.record` consumer는 호환성 task로 유지하되 신규 producer에서는 더 이상 사용하지 않는다.
 - `audit_logs.workflow_run_id`와 `workflow_node_run_id`는 nullable UUID FK와 개별 조회 인덱스를 가진다. 참조 실행이 삭제돼도 감사 행은 보존되도록 `ON DELETE SET NULL`을 사용한다.
-- Correlation migration은 기존 `audit_metadata.workflow_run_id`/`workflow_node_run_id`가 정상 UUID이고 실제 대상 row가 존재할 때만 typed 컬럼으로 backfill한다. malformed/orphan 값은 migration을 실패시키지 않고 NULL로 남긴다.
+- Correlation migration은 기존 `audit_metadata.workflow_run_id`/`workflow_node_run_id`와 `organization_id`가 정상 UUID이고 실제 대상 row가 존재하며 Run의 Workflow 조직이 audit 조직과 같을 때만 typed 컬럼으로 backfill한다. malformed/orphan/cross-organization 값은 migration을 실패시키지 않고 NULL로 남긴다.
 - Outbox worker와 호환 `audit.record` consumer는 top-level correlation을 우선하고 기존 metadata correlation을 호환 입력으로 읽어 같은 typed AuditLog 컬럼에 저장한다.
 - Audit list/detail safe projection은 nullable `workflow_run_id`/`workflow_node_run_id`를 additive하게 반환하되 기존 organization 권한·scope 필터를 우회하지 않는다.
-- 저장 시 orphan correlation은 NULL로 내리고 NodeRun이 다른 WorkflowRun 소속이면 잘못된 node 연결을 저장하지 않는다. Optional correlation 문제 때문에 canonical AuditLog 전체가 dead-letter되어서는 안 된다.
+- 저장 시 orphan correlation은 NULL로 내리고 NodeRun이 다른 WorkflowRun 소속이거나 Run의 Workflow 조직이 audit 조직과 다르면 잘못된 run/node 연결을 저장하지 않는다. 조직 metadata 누락·malformed을 포함한 optional correlation 문제 때문에 canonical AuditLog 전체가 dead-letter되어서는 안 된다.
 - Audit metadata sanitizer는 raw source id/url/path/title, raw source principal, raw source ACL row, raw chunk content, raw prompt/completion, credential value, `encrypted_config`, raw exception을 제거한다.
 - Authorized retrieval summary allowlist는 KB id, document version id, chunk id, citation id, optional collection id, rank/score, safe metadata summary, policy result, latency/cost/token aggregate, retryability, opaque correlation/request id, `retrieval_strategy`, `rag_mode`, authorized/selected/retrieved count summary, `context_token_estimate`, `permission_filter_applied`, `safe_exclusion_summary`, `query_rewrite_applied`, `query_rewrite_strategy`, `evidence_sufficient`, `insufficiency_reason`, `source_tier_policy`, `source_tier_used`, `fanout_concurrency`, `fanout_timeout_seconds`, `failure_policy`만 허용한다.
 - Audit/trace metadata sanitizer는 raw rewritten query를 raw prompt와 같은 민감 입력으로 보고 durable metadata와 log에서 제거한다.

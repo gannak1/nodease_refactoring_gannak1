@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from apps.shared.db.models.audit_log import AuditLog
+from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_run import WorkflowNodeRun, WorkflowRun
 from sqlalchemy.exc import IntegrityError
 
@@ -49,6 +50,23 @@ class _ProcessorDb:
 
     def rollback(self):
         self.events.append("rollback")
+
+
+class _CorrelationDb:
+    def __init__(self, rows):
+        self.rows = rows
+        self.added = []
+
+    def get(self, model, identity):
+        if model is AuditLog:
+            return None
+        return self.rows.get((model, identity))
+
+    def add(self, row):
+        self.added.append(row)
+
+    def flush(self):
+        pass
 
 
 def _leased_event(*, attempt_count=1):
@@ -358,36 +376,103 @@ def test_persistence_drops_orphan_and_mismatched_workflow_correlation():
     module = _module()
     event = _leased_event()
     workflow_run_id = uuid4()
+    workflow_id = uuid4()
+    organization_id = uuid4()
     other_workflow_run_id = uuid4()
     workflow_node_run_id = uuid4()
+    event.payload["audit_metadata"]["organization_id"] = str(organization_id)
     event.payload["workflow_run_id"] = str(workflow_run_id)
     event.payload["workflow_node_run_id"] = str(workflow_node_run_id)
 
-    class Db:
-        def __init__(self):
-            self.added = []
-
-        def get(self, model, identity):
-            if model is AuditLog:
-                return None
-            if model is WorkflowRun:
-                return SimpleNamespace(id=identity)
-            if model is WorkflowNodeRun:
-                return SimpleNamespace(
-                    id=identity,
-                    workflow_run_id=other_workflow_run_id,
-                )
-            raise AssertionError(model)
-
-        def add(self, row):
-            self.added.append(row)
-
-        def flush(self):
-            pass
-
-    db = Db()
+    db = _CorrelationDb(
+        {
+            (WorkflowRun, workflow_run_id): SimpleNamespace(
+                id=workflow_run_id,
+                workflow_id=workflow_id,
+            ),
+            (Workflow, workflow_id): SimpleNamespace(
+                id=workflow_id,
+                organization_id=organization_id,
+            ),
+            (WorkflowNodeRun, workflow_node_run_id): SimpleNamespace(
+                id=workflow_node_run_id,
+                workflow_run_id=other_workflow_run_id,
+            ),
+        }
+    )
 
     module.persist_audit_payload(db, event.payload)
 
     assert db.added[0].workflow_run_id == workflow_run_id
+    assert db.added[0].workflow_node_run_id is None
+
+
+def test_persistence_drops_cross_organization_run_and_node_correlation():
+    module = _module()
+    event = _leased_event()
+    audit_organization_id = uuid4()
+    workflow_organization_id = uuid4()
+    workflow_id = uuid4()
+    workflow_run_id = uuid4()
+    workflow_node_run_id = uuid4()
+    event.payload["audit_metadata"]["organization_id"] = str(
+        audit_organization_id
+    )
+    event.payload["workflow_run_id"] = str(workflow_run_id)
+    event.payload["workflow_node_run_id"] = str(workflow_node_run_id)
+    db = _CorrelationDb(
+        {
+            (WorkflowRun, workflow_run_id): SimpleNamespace(
+                id=workflow_run_id,
+                workflow_id=workflow_id,
+            ),
+            (Workflow, workflow_id): SimpleNamespace(
+                id=workflow_id,
+                organization_id=workflow_organization_id,
+            ),
+            (WorkflowNodeRun, workflow_node_run_id): SimpleNamespace(
+                id=workflow_node_run_id,
+                workflow_run_id=workflow_run_id,
+            ),
+        }
+    )
+
+    module.persist_audit_payload(db, event.payload)
+
+    assert db.added[0].workflow_run_id is None
+    assert db.added[0].workflow_node_run_id is None
+
+
+def test_persistence_drops_cross_organization_node_only_correlation():
+    module = _module()
+    event = _leased_event()
+    audit_organization_id = uuid4()
+    workflow_organization_id = uuid4()
+    workflow_id = uuid4()
+    workflow_run_id = uuid4()
+    workflow_node_run_id = uuid4()
+    event.payload["audit_metadata"]["organization_id"] = str(
+        audit_organization_id
+    )
+    event.payload["workflow_node_run_id"] = str(workflow_node_run_id)
+    db = _CorrelationDb(
+        {
+            (WorkflowNodeRun, workflow_node_run_id): SimpleNamespace(
+                id=workflow_node_run_id,
+                workflow_run_id=workflow_run_id,
+            ),
+            (WorkflowRun, workflow_run_id): SimpleNamespace(
+                id=workflow_run_id,
+                workflow_id=workflow_id,
+            ),
+            (Workflow, workflow_id): SimpleNamespace(
+                id=workflow_id,
+                organization_id=workflow_organization_id,
+            ),
+        }
+    )
+
+    module.persist_audit_payload(db, event.payload)
+
+    assert db.added[0].workflow_run_id is None
     assert db.added[0].workflow_node_run_id is None

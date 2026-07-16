@@ -8,6 +8,7 @@ import pytest
 from apps.log_system import audit_tasks
 from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.security_alert import SecurityAlertReconciliationWatermark
+from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_run import WorkflowNodeRun, WorkflowRun
 from sqlalchemy.exc import IntegrityError
 
@@ -25,6 +26,7 @@ class _Session:
         commit_error=None,
         winner_after_rollback=None,
         events=None,
+        workflow=None,
         workflow_run=None,
         workflow_node_run=None,
     ):
@@ -32,6 +34,7 @@ class _Session:
         self.commit_error = commit_error
         self.winner_after_rollback = winner_after_rollback
         self.events = events
+        self.workflow = workflow
         self.workflow_run = workflow_run
         self.workflow_node_run = workflow_node_run
         self.added = []
@@ -47,6 +50,10 @@ class _Session:
         if model is WorkflowRun:
             if self.workflow_run is not None and self.workflow_run.id == identity:
                 return self.workflow_run
+            return None
+        if model is Workflow:
+            if self.workflow is not None and self.workflow.id == identity:
+                return self.workflow
             return None
         if model is WorkflowNodeRun:
             if (
@@ -109,17 +116,26 @@ def test_record_audit_uses_publisher_supplied_id(monkeypatch):
 
 
 def test_legacy_record_audit_maps_workflow_correlation(monkeypatch):
+    data = _data(uuid4())
+    organization_id = data["audit_metadata"]["organization_id"]
+    workflow_id = uuid4()
     workflow_run_id = uuid4()
     workflow_node_run_id = uuid4()
     session = _Session(
-        workflow_run=SimpleNamespace(id=workflow_run_id),
+        workflow=SimpleNamespace(
+            id=workflow_id,
+            organization_id=organization_id,
+        ),
+        workflow_run=SimpleNamespace(
+            id=workflow_run_id,
+            workflow_id=workflow_id,
+        ),
         workflow_node_run=SimpleNamespace(
             id=workflow_node_run_id,
             workflow_run_id=workflow_run_id,
         ),
     )
     monkeypatch.setattr(audit_tasks, "SessionLocal", lambda: session)
-    data = _data(uuid4())
     data["workflow_run_id"] = str(workflow_run_id)
     data["audit_metadata"]["workflow_node_run_id"] = str(workflow_node_run_id)
 
