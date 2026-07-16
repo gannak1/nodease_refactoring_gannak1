@@ -66,6 +66,8 @@ class OpenAIClient(BaseLLMClient):
 
     _LONG_TIMEOUT_PREFIXES = ("gpt-5", "o1", "o3", "o4")
     _RESPONSES_ENDPOINT_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+    _MINIMAL_REASONING_MODEL_PREFIX = "gpt-5"
+    _MINIMAL_REASONING_OUTPUT_TOKEN_LIMIT = 1024
     _RESPONSES_UNSUPPORTED_GENERATION_PARAMS = (
         "top_p",
         "presence_penalty",
@@ -145,6 +147,30 @@ class OpenAIClient(BaseLLMClient):
 
     def _should_try_legacy_completions(self) -> bool:
         return self._clean_model_id.startswith(self._LEGACY_COMPLETIONS_PREFIXES)
+
+    def _uses_minimal_reasoning_default(
+        self,
+        *,
+        response_format: Any,
+        max_output_tokens: Any,
+    ) -> bool:
+        """작은 출력 한도의 GPT-5 응답에서 답변 토큰을 남긴다.
+
+        Responses API의 ``max_output_tokens``에는 사용자에게 보이지 않는 추론
+        토큰도 포함된다. JSON 출력은 형식 계약 때문에 짧은 응답으로 끝나는 경우가
+        많고, 일반 텍스트도 노드가 1,024 token 이하로 제한하면 추론만 수행한 뒤
+        ``incomplete``로 끝날 수 있다. 사용자가 reasoning 수준을 직접 지정하지
+        않았을 때만 minimal을 안전 기본값으로 적용한다.
+        """
+        if not self._clean_model_id.startswith(self._MINIMAL_REASONING_MODEL_PREFIX):
+            return False
+        if self._response_format_requires_json_input(response_format):
+            return True
+        try:
+            output_limit = int(max_output_tokens)
+        except (TypeError, ValueError):
+            return False
+        return 0 < output_limit <= self._MINIMAL_REASONING_OUTPUT_TOKEN_LIMIT
 
     def _uses_strict_generation_params(self) -> bool:
         return (
@@ -416,6 +442,15 @@ class OpenAIClient(BaseLLMClient):
             text_options = dict(text_options) if isinstance(text_options, dict) else {}
             text_options.setdefault("format", response_format)
             responses_payload["text"] = text_options
+
+        if (
+            "reasoning" not in responses_payload
+            and self._uses_minimal_reasoning_default(
+                response_format=response_format,
+                max_output_tokens=responses_payload.get("max_output_tokens"),
+            )
+        ):
+            responses_payload["reasoning"] = {"effort": "minimal"}
 
         self._ensure_json_instruction_in_responses_input(responses_payload)
 
