@@ -297,10 +297,6 @@ def test_missing_trusted_local_ca_file_fails_security_readiness(tmp_path) -> Non
             valid_from=datetime.now(UTC) - timedelta(minutes=10),
             valid_until=datetime.now(UTC) - timedelta(minutes=1),
         ),
-        _certificate_pem(
-            valid_from=datetime.now(UTC) + timedelta(minutes=1),
-            valid_until=datetime.now(UTC) + timedelta(minutes=10),
-        ),
         _certificate_pem() + _certificate_pem(),
         _certificate_pem() + b"-----BEGIN PRIVATE KEY-----\nredacted\n",
         b"x" * (64 * 1024 + 1),
@@ -310,7 +306,6 @@ def test_missing_trusted_local_ca_file_fails_security_readiness(tmp_path) -> Non
         "invalid-pem",
         "leaf-certificate",
         "expired-ca",
-        "future-ca",
         "multiple-certificates",
         "private-key-marker",
         "oversized",
@@ -322,6 +317,27 @@ def test_invalid_trusted_local_ca_material_fails_security_readiness(
 ) -> None:
     ca_file = tmp_path / "ca.crt"
     ca_file.write_bytes(ca_payload)
+
+    with pytest.raises(RuntimeError):
+        require_connector_test_security_ready(
+            {
+                "NODE_ENV": "development",
+                "CONNECTOR_TEST_LOCAL_PROFILE_ENABLED": "true",
+                "CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS": "localhost:5432",
+                "CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE": str(ca_file),
+            }
+        )
+
+
+def test_future_trusted_local_ca_fails_security_readiness(tmp_path) -> None:
+    now = datetime.now(UTC)
+    ca_file = tmp_path / "ca.crt"
+    ca_file.write_bytes(
+        _certificate_pem(
+            valid_from=now + timedelta(minutes=10),
+            valid_until=now + timedelta(minutes=20),
+        )
+    )
 
     with pytest.raises(RuntimeError):
         require_connector_test_security_ready(
