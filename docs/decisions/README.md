@@ -69,6 +69,7 @@ ADR 본문은 작성 시점의 결정 과정을 보존하는 기록 문서다. `
 | [ADR-0047](ADR-0047-password-login-abuse-prevention-boundary.md) | Accepted | Password login abuse prevention 경계 | Email/password login 앞에서 account, source network, account+network Redis token-bucket을 원자적으로 적용한다. Trusted proxy에서만 forwarded address를 해석하고 versioned HMAC fingerprint를 사용하며, limited request는 generic 429, limiter 장애는 password 검증 전 fail-closed 503으로 닫는다. |
 | [ADR-0048](ADR-0048-knowledge-collection-sync-execution-boundary.md) | Accepted | Knowledge Collection sync 실행 경계 | MBA-265는 Manual KC의 현재 DB document sync를 durable job/item, request idempotency, KC single-flight, worker-start 권한 재검사, Celery lease/recovery와 safe polling UI에 연결한다. Source/system-managed connector sync는 adapter가 없는 동안 fail-closed한다. |
 | [ADR-0049](ADR-0049-connector-test-security-boundary.md) | Accepted | Connector 연결 테스트 보안 경계 | `/connectors/test`를 authenticated active-organization capability로 제한하고 Redis 분산 admission, 기본 public PostgreSQL 및 explicit development exact-target TLS/pinning, bounded ingress/timeout과 오류 비노출을 강제한다. Local demo는 TLS-only 최소권한 DB, ephemeral CA signing key와 분리 volume을 사용하며 SSH와 운영 private-network test는 승인 정책 전까지 거부한다. |
+| [ADR-0050](ADR-0050-workflow-generic-http-egress-boundary.md) | Accepted | Workflow Generic HTTP egress 경계 | Generic HTTP를 application outbound port와 공통 guard에 연결하고 검증된 IP로 dial해 DNS rebinding을 차단한다. Redirect는 추적하지 않고 기존 HTTPX/provider 계약을 유지하며, Worker NetworkPolicy는 private·metadata direct egress를 추가로 차단한다. |
 
 ## 참고 보고서
 

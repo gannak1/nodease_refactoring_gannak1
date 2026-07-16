@@ -88,6 +88,15 @@ Main generation과 Memory summary provider adapter는 Workflow admission 안에�
 - Agent Builder preview/apply path는 dedicated Slack config와 `delivery_status` downstream selector만 생성한다. frontend와 backend deployment validation은 제거된 selector를 fail-closed한다.
 - execution logger는 Slack node의 raw configuration, request, response, `message_ref` 원문과 error cause를 기록하지 않는다. 별도 Slack observer나 ledger를 두지 않고 공통 external-effect attempt가 중첩 실행, Loop error propagation, terminal result reuse와 no-replay를 소유한다.
 
+### Generic HTTP Outbound Egress
+
+- `HttpRequestNode`는 Generic HTTP composition factory만 호출한다. Node와 `GenericHttpEffectAdapter`는 HTTPX/httpcore client, socket, DNS resolver와 concrete egress policy를 생성하지 않는다.
+- `GenericHttpEffectAdapter`는 prepared provider call을 transport-neutral outbound HTTP request로 바꾸고 typed port result를 ADR-0035의 provider outcome으로 변환한다. Canonical request와 external-effect application은 network policy를 다시 구현하지 않는다.
+- Guarded HTTPX adapter는 Shared `OutboundEgressGuard`로 URL, method, port, header, body와 모든 DNS 결과를 검사한다. Custom httpcore network backend는 선택한 검증 IP로 dial하고 peer 일치를 확인하며 TLS SNI/hostname 검증에는 원래 host를 사용한다.
+- Adapter는 `trust_env=false`, redirect off, identity encoding, bounded header/request/response/timeout과 TLS verification을 강제한다. 3xx는 후속 hop을 호출하지 않고 기존 Generic HTTP response로 반환한다.
+- Policy/DNS/transport exception은 raw destination이나 payload 없이 typed safe code와 failure phase만 application port로 전달한다. Provider는 pre-send permanent denial, proven pre-send transient failure와 post-send outcome unknown을 기존 effect error로 mapping한다.
+- Helm과 활성 EKS manifest의 Worker egress NetworkPolicy는 cluster DNS와 DB/Redis/Sandbox service, public HTTP/HTTPS 및 Mail IMAP port만 허용하고 public CIDR에서 private·metadata 범위를 제외한다. 외부 dependency CIDR은 해당 service port에만 한정한다. Cluster는 policy를 실제 집행하는 CNI를 사용해야 하고, additive allow 정책과 node-local/`hostNetwork` 예외를 배포 시 확인한다. 이는 private destination 방어선이며 public 허용 port의 모든 process-level direct dial을 proxy-only로 강제하지 않는다.
+
 ### Configuration Preflight
 
 - Deployment preflight application의 node validator registry가 Mail/Gmail Draft/Mail Acknowledge/Slack semantic readiness를 소유한다. Workflow endpoint, `WorkflowService`와 Client component에 같은 execution readiness 규칙을 복제하지 않는다.

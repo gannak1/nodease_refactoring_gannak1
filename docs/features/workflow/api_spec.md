@@ -390,6 +390,13 @@ Blocking response:
 - test/run/deployment의 기존 `409 workflow.configuration_preflight.blocked` 응답과 safe `reason_code` 계약을 유지한다. 새 public error code를 만들지 않으며 raw node data, reference, secret과 내부 exception을 반환하지 않는다.
 - schedule dispatch는 publish 전에 공통 configuration과 DB 기반 target/policy preflight를 수행한다. Worker는 claim의 locked canonical root identity와 공통 configuration을 다시 검사한 뒤 budget 평가와 `mark_running()`으로 진행하고, blocker는 기존 `configuration_preflight_blocked`로 canceled 처리한다. Publish 뒤 바뀔 수 있는 WorkflowNode/KB/credential 상태와 권한은 runtime authoritative gate가 다시 검사한다.
 
+### MBA-283 Generic HTTP Runtime Egress Contract
+
+- 신규 endpoint나 request/response field는 추가하지 않는다. Generic HTTP node의 URL, method, header, JSON body와 timeout 저장 shape는 유지하되 runtime은 public HTTP/HTTPS 80/443 destination만 허용한다.
+- URL userinfo/fragment, 비허용 scheme/port/method, hop-by-hop/proxy 제어 header와 private·local·metadata destination은 provider 호출 전에 차단한다. Response와 stream error에는 전체 URL/query/header/body/resolved IP 또는 내부 exception을 포함하지 않는다.
+- Policy 거부는 기존 `external_effect.invalid_prepared_request`, 전송 전 일시 연결 실패는 기존 `external_effect.connection_failed` 또는 retry control, 전송 뒤 response 상실·크기 초과·검증 실패는 기존 `external_effect.outcome_unknown` 계약을 사용한다. 신규 public error code를 만들지 않는다.
+- 정상 3xx/4xx/5xx를 포함한 완전한 응답은 기존 `status`, `data`, `headers` output을 유지한다. Redirect는 자동 추적하지 않으므로 3xx의 `Location` destination으로 두 번째 request를 보내지 않는다.
+
 ## Errors
 
 ### 1. 실행 편의성
