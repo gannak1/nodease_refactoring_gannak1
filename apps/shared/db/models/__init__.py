@@ -13,7 +13,7 @@ from apps.shared.db.models.agent_builder import (
     AgentBuilderSession,
 )
 from apps.shared.db.models.app import App
-from apps.shared.db.models.audit_log import AuditLog
+from apps.shared.db.models.audit_log import AuditEventOutbox, AuditLog
 from apps.shared.db.models.connection import Connection
 from apps.shared.db.models.cost_optimizer import (
     CostOptimizerCandidate,
@@ -136,6 +136,7 @@ from apps.shared.db.models.workflow_run import (
 __all__ = [
     "User",
     "App",
+    "AuditEventOutbox",
     "AuditLog",
     "AgentBuilderDraft",
     "AgentBuilderRequest",

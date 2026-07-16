@@ -3,13 +3,22 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import DateTime, ForeignKey, Index, String
+from apps.shared.db.base import Base
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
-
-from apps.shared.db.base import Base
 
 
 class ActorType(str, Enum):
@@ -94,4 +103,84 @@ class AuditLog(Base):
     __table_args__ = (
         Index("ix_audit_logs_target", "target_type", "target_id"),
         Index("ix_audit_logs_occurred_at_id", "occurred_at", "id"),
+    )
+
+
+class AuditEventOutbox(Base):
+    """Durable handoff for asynchronous ``AuditLog`` persistence."""
+
+    __tablename__ = "audit_event_outbox"
+    __table_args__ = (
+        UniqueConstraint(
+            "idempotency_key",
+            name="uq_audit_event_outbox_idempotency_key",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'leased', 'succeeded', "
+            "'retry_scheduled', 'dead_lettered')",
+            name="ck_audit_event_outbox_status",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0",
+            name="ck_audit_event_outbox_attempt_count_nonnegative",
+        ),
+        CheckConstraint(
+            "max_attempts > 0",
+            name="ck_audit_event_outbox_max_attempts_positive",
+        ),
+        Index(
+            "ix_audit_event_outbox_status_retry",
+            "status",
+            "next_retry_at",
+        ),
+        Index(
+            "ix_audit_event_outbox_lease",
+            "status",
+            "lease_expires_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False
+    )
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="pending", server_default=text("'pending'")
+    )
+    owner_token: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    lease_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    max_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=5, server_default=text("5")
+    )
+    next_retry_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    retryable: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    safe_reason_code: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    delivered_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    dead_lettered_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("now()"),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        server_default=text("now()"),
     )
