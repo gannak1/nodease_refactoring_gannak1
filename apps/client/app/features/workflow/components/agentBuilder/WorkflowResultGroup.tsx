@@ -19,6 +19,7 @@ import {
 
 export type WorkflowSetupStatus =
   | 'planning'
+  | 'recovery_required'
   | 'saving'
   | 'awaiting_confirmation'
   | 'configuring'
@@ -138,7 +139,8 @@ export const WorkflowResultGroup = ({
           .filter(
             (task) =>
               task.node_type === 'llmNode' &&
-              task.parameter_key === 'auto_model_routing',
+              (task.task_group === 'model_routing' ||
+                task.parameter_key === 'auto_model_routing'),
           )
           .map((task) => task.node_id),
       ),
@@ -207,19 +209,21 @@ export const WorkflowResultGroup = ({
   const statusLabel =
     resolvedSetupStatus === 'planning'
       ? 'Workflow 계획 중'
-      : resolvedSetupStatus === 'saving'
-        ? 'Workflow 저장 중'
-        : resolvedSetupStatus === 'awaiting_confirmation'
-          ? hasBlockingKnowledgeStep
-            ? 'Knowledge 확인 필요'
-            : '추천값 확인 필요'
-          : resolvedSetupStatus === 'failed'
-            ? 'Workflow 설정 실패'
-            : resolvedSetupStatus === 'editing'
-              ? '설정 수정 중'
-              : resolvedSetupStatus === 'completed'
-                ? 'Workflow 생성 완료'
-                : '설정 입력 필요';
+      : resolvedSetupStatus === 'recovery_required'
+        ? '서버 확인 대기'
+        : resolvedSetupStatus === 'saving'
+          ? 'Workflow 저장 중'
+          : resolvedSetupStatus === 'awaiting_confirmation'
+            ? hasBlockingKnowledgeStep
+              ? 'Knowledge 확인 필요'
+              : '추천값 확인 필요'
+            : resolvedSetupStatus === 'failed'
+              ? 'Workflow 설정 실패'
+              : resolvedSetupStatus === 'editing'
+                ? '설정 수정 중'
+                : resolvedSetupStatus === 'completed'
+                  ? 'Workflow 생성 완료'
+                  : '설정 입력 필요';
   const effectiveStatusLabel =
     resolvedSetupStatus === 'confirming'
       ? 'Workflow \uD655\uC778 \uC911'
@@ -233,6 +237,35 @@ export const WorkflowResultGroup = ({
             resolvedSetupStatus === 'confirming'
           ? 'border-blue-200 bg-blue-50 text-blue-800 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-200'
           : 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200';
+  const advancedRoutingNodes = useMemo(() => {
+    if (resolvedSetupStatus !== 'completed') return [];
+    return nodes.flatMap((node) => {
+      if (node.type !== 'llmNode') return [];
+      const routingTasks = orderedTasks.filter(
+        (task) =>
+          task.node_id === node.id && task.task_group === 'model_routing',
+      );
+      if (
+        routingTasks.length === 0 ||
+        routingTasks.some(
+          (task) =>
+            !['completed', 'skipped', 'deferred'].includes(task.status),
+        )
+      ) {
+        return [];
+      }
+      const data = node.data as unknown as Record<string, unknown>;
+      return [
+        {
+          id: node.id,
+          label:
+            typeof data.title === 'string' && data.title.trim().length > 0
+              ? data.title
+              : 'LLM',
+        },
+      ];
+    });
+  }, [nodes, orderedTasks, resolvedSetupStatus]);
   return (
     <div
       data-testid="workflow-result-group"
@@ -268,6 +301,39 @@ export const WorkflowResultGroup = ({
           </span>
         ) : null}
       </div>
+
+      {advancedRoutingNodes.length > 0 ? (
+        <section
+          data-testid="agent-builder-advanced-routing-settings"
+          className="border-t border-neutral-200 pt-3 dark:border-neutral-800"
+        >
+          <h3 className="text-xs font-medium text-neutral-900 dark:text-neutral-100">
+            {'\uACE0\uAE09 \uBAA8\uB378 Routing \uC124\uC815'}
+          </h3>
+          <p className="mt-1 text-xs text-neutral-600 dark:text-neutral-300">
+            {
+              '\uAE30\uBCF8 Routing \uD30C\uB77C\uBBF8\uD130 \uD655\uC778\uC774 \uC644\uB8CC\uB410\uC2B5\uB2C8\uB2E4. cohort\uC640 \uC6B4\uC601 \uC815\uCC45\uC740 \uAE30\uC874 LLM Routing \uD654\uBA74\uC5D0\uC11C \uAD00\uB9AC\uD569\uB2C8\uB2E4.'
+            }
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {advancedRoutingNodes.map((node) => (
+              <button
+                key={node.id}
+                type="button"
+                aria-label={`${node.label} \uACE0\uAE09 Routing \uC124\uC815`}
+                onClick={() =>
+                  onOpenNodeSettings?.(node.id, 'routing') ??
+                  onFocusNode(node.id)
+                }
+                className="inline-flex items-center gap-1.5 rounded border border-slate-200 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-900"
+              >
+                <Settings2 className="h-3.5 w-3.5" aria-hidden="true" />
+                {node.label} {'\uACE0\uAE09 Routing \uC124\uC815'}
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       {routingNodes.length > 0 ? (
         <section

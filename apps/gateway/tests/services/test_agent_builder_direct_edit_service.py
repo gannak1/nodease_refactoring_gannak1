@@ -85,7 +85,9 @@ def test_configure_and_generate_issues_initial_mutation_and_parameter_group():
     assert result.parameter_group is not None
     assert result.parameter_group.status == "pending_save"
     assert result.parameter_group.tasks
-    assert all(task.status == "pending" for task in result.parameter_group.tasks)
+    assert all(task.status != "active" for task in result.parameter_group.tasks)
+    assert any(task.status == "completed" for task in result.parameter_group.tasks)
+    assert any(task.status == "pending" for task in result.parameter_group.tasks)
     persisted = apply_graph_operations(workflow.graph, result.mutation.operations)
     assert persisted["nodes"]
     assert result.mutation.expected_result_graph_hash
@@ -370,7 +372,7 @@ def test_explicit_safe_parameter_value_is_materialized_from_structured_request()
         if task.parameter_key == "channel"
     )
     assert slack_data["channel"] == "C123"
-    assert channel_task.status == "pending"
+    assert channel_task.status == "completed"
     assert channel_task.resolution_source == "user_request"
 
 

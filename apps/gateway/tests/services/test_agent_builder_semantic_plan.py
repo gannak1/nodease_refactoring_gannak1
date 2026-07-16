@@ -17,6 +17,16 @@ def test_catalog_parameter_guide_contains_only_catalog_parameters():
                 "input_type": "select",
             },
             {
+                "parameter_key": "bot_token",
+                "label": "Bot Token",
+                "input_type": "secret",
+            },
+            {
+                "parameter_key": "url",
+                "label": "Webhook URL",
+                "input_type": "secret",
+            },
+            {
                 "parameter_key": "channel",
                 "label": "Slack channel",
                 "input_type": "text",
@@ -73,7 +83,7 @@ def test_parameter_guidance_discards_unknown_mismatched_and_secret_like_hints():
         ),
         AgentBuilderParameterGuidanceHint(
             step_id="step_slack",
-            parameter_key="url",
+            parameter_key="unknown_parameter",
             reason="다른 node의 parameter입니다.",
             input_guidance="URL을 입력하세요.",
         ),

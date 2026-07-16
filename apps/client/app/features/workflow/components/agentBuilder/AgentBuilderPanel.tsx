@@ -62,6 +62,10 @@ const AGENT_BUILDER_VIEWPORT_GUTTER = 40;
 const AGENT_BUILDER_RESIZE_KEYBOARD_STEP = 24;
 const AGENT_BUILDER_DEFAULT_PANEL_WIDTH =
   'clamp(360px, 50vw, calc(100vw - 40px))';
+const PENDING_REQUEST_NORMAL_POLL_MS = 5_000;
+const PENDING_REQUEST_NORMAL_WINDOW_MS = 60_000;
+const PENDING_REQUEST_LONG_POLL_MS = 10_000;
+const PENDING_REQUEST_DEADLINE_MS = 4 * 60_000;
 const KNOWLEDGE_REASON_LABELS: Record<string, string> = {
   topic_keyword_match: '\uC694\uCCAD \uC8FC\uC81C\uC640 \uC77C\uCE58',
   metadata_match:
@@ -517,7 +521,9 @@ export function AgentBuilderPanel({
   const [authoritativeRequestStatus, setAuthoritativeRequestStatus] = useState<
     string | null
   >(null);
-  const [, setSessionProtocolVersion] = useState<'direct_edit_v1' | null>(null);
+  const [sessionProtocolVersion, setSessionProtocolVersion] = useState<
+    'direct_edit_v1' | null
+  >(null);
   const [input, setInput] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [, setResponses] = useState<AgentBuilderMessageResponse[]>([]);
@@ -535,6 +541,7 @@ export function AgentBuilderPanel({
     affectedNodeIds: string[];
   }>({ requestId: null, affectedNodeIds: [] });
   const [pendingRequestId, setPendingRequestId] = useState<string | null>(null);
+  const [isPendingRequestSlow, setIsPendingRequestSlow] = useState(false);
   const [sessionRestoreAttempt, setSessionRestoreAttempt] = useState(0);
   const [sessionRecoveryRetryVersion, setSessionRecoveryRetryVersion] =
     useState(0);
@@ -745,9 +752,7 @@ export function AgentBuilderPanel({
   const reconcileCanonicalSession = useCallback(
     (session: Awaited<ReturnType<typeof agentBuilderApi.getSession>>) => {
       const activeMutation = session.active_graph_mutation as
-        | Record<string, unknown>
-        | null
-        | undefined;
+        Record<string, unknown> | null | undefined;
       const isPendingAcknowledgement =
         activeMutation?.status === 'pending_ack' &&
         typeof activeMutation.operation_id === 'string';
@@ -963,10 +968,43 @@ export function AgentBuilderPanel({
     let isCanceled = false;
     let timeoutId: number | null = null;
     let pollAttempt = 0;
-    const schedulePoll = () => {
+    const pollingStartedAt = Date.now();
+    const schedulePoll = (
+      continuePending = false,
+      requestCreatedAt?: unknown,
+    ) => {
       if (isCanceled) return;
       if (pollAttempt >= SESSION_RECOVERY_DELAYS_MS.length) {
-        setSessionRecoveryRequired('pending_request');
+        if (!continuePending) {
+          setIsPendingRequestSlow(false);
+          setSessionRecoveryRequired('pending_request');
+          return;
+        }
+        const parsedCreatedAt =
+          typeof requestCreatedAt === 'string'
+            ? Date.parse(requestCreatedAt)
+            : Number.NaN;
+        const requestStartedAt = Number.isFinite(parsedCreatedAt)
+          ? Math.min(parsedCreatedAt, Date.now())
+          : pollingStartedAt;
+        const elapsedMs = Math.max(0, Date.now() - requestStartedAt);
+        if (elapsedMs >= PENDING_REQUEST_DEADLINE_MS) {
+          setIsPendingRequestSlow(false);
+          setSessionRecoveryRequired('pending_request');
+          return;
+        }
+        const isLongRunning = elapsedMs >= PENDING_REQUEST_NORMAL_WINDOW_MS;
+        setIsPendingRequestSlow(isLongRunning);
+        const windowEndMs = isLongRunning
+          ? PENDING_REQUEST_DEADLINE_MS
+          : PENDING_REQUEST_NORMAL_WINDOW_MS;
+        const intervalMs = isLongRunning
+          ? PENDING_REQUEST_LONG_POLL_MS
+          : PENDING_REQUEST_NORMAL_POLL_MS;
+        timeoutId = window.setTimeout(
+          pollSession,
+          Math.min(intervalMs, Math.max(1, windowEndMs - elapsedMs)),
+        );
         return;
       }
       const delay = SESSION_RECOVERY_DELAYS_MS[pollAttempt];
@@ -977,7 +1015,6 @@ export function AgentBuilderPanel({
       try {
         const session = await agentBuilderApi.getSession(sessionId);
         if (isCanceled) return;
-        setSessionRecoveryRequired(null);
         setAuthoritativeRequestStatus(session.status);
         setSessionProtocolVersion(session.protocol_version ?? null);
         const restored = conversationItemsFromSessionMessages(session.messages);
@@ -1001,8 +1038,10 @@ export function AgentBuilderPanel({
         const nextRequestId = session.pending_request?.request_id;
         if (typeof nextRequestId === 'string') {
           setPendingRequestId(nextRequestId);
-          schedulePoll();
+          schedulePoll(true, session.pending_request?.created_at);
         } else {
+          setIsPendingRequestSlow(false);
+          setSessionRecoveryRequired(null);
           setPendingRequestId(null);
         }
       } catch {
@@ -1052,9 +1091,7 @@ export function AgentBuilderPanel({
         );
         if (isCanceled) return;
         const activeMutation = session.active_graph_mutation as
-          | Record<string, unknown>
-          | null
-          | undefined;
+          Record<string, unknown> | null | undefined;
         if (activeMutation?.status === 'pending_ack') {
           reconcileCanonicalSession(session);
           scheduleReconciliation();
@@ -1448,9 +1485,7 @@ export function AgentBuilderPanel({
         if (session.session_id === sessionId) {
           reconcileCanonicalSession(session);
           const activeMutation = session.active_graph_mutation as
-            | Record<string, unknown>
-            | null
-            | undefined;
+            Record<string, unknown> | null | undefined;
           canonicalOutcomeConfirmed =
             session.status === 'completed' ||
             activeMutation?.status === 'pending_ack';
@@ -1772,29 +1807,31 @@ export function AgentBuilderPanel({
   const setupStatus: WorkflowSetupStatus =
     isPersistedMutationSaving || isApplying
       ? 'saving'
-      : authoritativeRequestStatus === 'completion_confirming'
-        ? 'confirming'
-        : pendingKnowledgeStep
+      : sessionRecoveryRequired
+        ? 'recovery_required'
+        : authoritativeRequestStatus === 'completion_confirming'
           ? 'confirming'
-          : activeKnowledgeStep
-            ? 'awaiting_confirmation'
-            : pendingRequestId ||
-                isSubmitting ||
-                latestAssistantResponse?.status === 'planning'
-              ? 'planning'
-              : latestAssistantResponse &&
-                  failedSetupStatuses.includes(latestAssistantResponse.status)
-                ? 'failed'
-                : activeParameterTask?.resolution_source
-                  ? 'awaiting_confirmation'
-                  : activeParameterTask
-                    ? 'configuring'
-                    : isAgentBuilderSetupCompleted(
-                          authoritativeRequestStatus,
-                          currentParameterGroup,
-                        )
-                      ? 'completed'
-                      : 'configuring';
+          : pendingKnowledgeStep
+            ? 'confirming'
+            : activeKnowledgeStep
+              ? 'awaiting_confirmation'
+              : pendingRequestId ||
+                  isSubmitting ||
+                  latestAssistantResponse?.status === 'planning'
+                ? 'planning'
+                : latestAssistantResponse &&
+                    failedSetupStatuses.includes(latestAssistantResponse.status)
+                  ? 'failed'
+                  : activeParameterTask?.resolution_source
+                    ? 'awaiting_confirmation'
+                    : activeParameterTask
+                      ? 'configuring'
+                      : isAgentBuilderSetupCompleted(
+                            authoritativeRequestStatus,
+                            currentParameterGroup,
+                          )
+                        ? 'completed'
+                        : 'configuring';
   const showUnifiedSetup = Boolean(
     knowledgeStep ||
     currentParameterGroup ||
@@ -2077,9 +2114,13 @@ export function AgentBuilderPanel({
                 만들고 싶은 workflow를 한국어로 입력하세요.
               </p>
             )}
-            {pendingRequestId && (
+            {pendingRequestId && !sessionRecoveryRequired && (
               <div className="rounded-md border border-blue-200 bg-blue-50 p-3 text-xs text-blue-800">
-                <p>Agent Builder 요청이 진행 중입니다.</p>
+                <p>
+                  {isPendingRequestSlow
+                    ? '평소보다 오래 걸리고 있습니다'
+                    : 'Agent Builder 요청이 진행 중입니다.'}
+                </p>
                 <button
                   type="button"
                   onClick={cancelPendingRequest}
@@ -2118,6 +2159,12 @@ export function AgentBuilderPanel({
                     </div>
                   </div>
                 );
+              }
+              if (
+                sessionRecoveryRequired &&
+                item.response.status === 'planning'
+              ) {
+                return null;
               }
               const response = item.response;
               const isActiveWorkflowTargetClarification =
@@ -2236,14 +2283,18 @@ export function AgentBuilderPanel({
                     selected,
                   );
                 }}
-                onKnowledgeHierarchySubmit={(selection) => {
-                  if (!activeKnowledgeClarification) return;
-                  void resolveKnowledgeSelection(
-                    activeKnowledgeClarification,
-                    [],
-                    selection,
-                  );
-                }}
+                onKnowledgeHierarchySubmit={
+                  sessionProtocolVersion === 'direct_edit_v1'
+                    ? (selection) => {
+                        if (!activeKnowledgeClarification) return;
+                        void resolveKnowledgeSelection(
+                          activeKnowledgeClarification,
+                          [],
+                          selection,
+                        );
+                      }
+                    : undefined
+                }
                 onDecision={(decision) => void decideParameter(decision)}
                 onCancel={
                   currentParameterGroup?.status === 'active'

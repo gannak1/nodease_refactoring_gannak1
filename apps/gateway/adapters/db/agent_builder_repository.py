@@ -1058,11 +1058,11 @@ class AgentBuilderRepository:
             "resolution_id": resolution_id,
             "operation_id": str(operation_id),
             "timing": timing,
-            "selected_candidate_ids": list(dict.fromkeys(selected_candidate_ids)),
-            "selected_collection_handles": list(
-                dict.fromkeys(selected_collection_handles or [])
+            "selected_candidate_ids": sorted(set(selected_candidate_ids)),
+            "selected_collection_handles": sorted(
+                set(selected_collection_handles or [])
             ),
-            "selected_kb_handles": list(dict.fromkeys(selected_kb_handles or [])),
+            "selected_kb_handles": sorted(set(selected_kb_handles or [])),
             "status": status,
         }
         for index, item in enumerate(resolutions):

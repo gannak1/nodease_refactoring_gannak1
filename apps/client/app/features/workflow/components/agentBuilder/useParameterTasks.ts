@@ -12,6 +12,44 @@ import {
 import { useWorkflowStore } from '../../store/useWorkflowStore';
 import { applyAndSaveAgentBuilderMutation } from './useAgentBuilderEditor';
 
+const SAFE_PARAMETER_ERROR_CODE = /^[a-z][a-z0-9_]{0,79}$/;
+
+const parameterDecisionErrorCode = (error: unknown): string | null => {
+  if (!error || typeof error !== 'object') return null;
+  const data = (error as { response?: { data?: unknown } }).response?.data;
+  if (!data || typeof data !== 'object') return null;
+  const detail = (data as { detail?: unknown }).detail;
+  if (typeof detail === 'string') {
+    return SAFE_PARAMETER_ERROR_CODE.test(detail) ? detail : null;
+  }
+  if (!detail || typeof detail !== 'object') return null;
+  const code = (detail as { code?: unknown }).code;
+  return typeof code === 'string' && SAFE_PARAMETER_ERROR_CODE.test(code)
+    ? code
+    : null;
+};
+
+export const parameterDecisionErrorMessage = (error: unknown): string => {
+  switch (parameterDecisionErrorCode(error)) {
+    case 'stale_graph':
+    case 'stale_workflow_updated_at':
+      return 'Workflow가 서버에서 변경되어 설정을 저장하지 못했습니다. 최신 상태를 확인한 뒤 다시 시도해주세요.';
+    case 'result_graph_hash_mismatch':
+      return '설정 결과가 서버 검증 결과와 일치하지 않아 저장하지 않았습니다.';
+    case 'invalid_decision':
+      return '입력한 값이 이 파라미터의 형식 또는 허용 범위와 맞지 않습니다.';
+    case 'task_conflict':
+      return '다른 설정 변경이 먼저 반영되었습니다. 최신 설정을 확인한 뒤 다시 시도해주세요.';
+    case 'permission_denied':
+      return '이 파라미터를 변경할 권한이 없습니다.';
+  }
+  const status = (error as { response?: { status?: unknown } } | null)?.response
+    ?.status;
+  return typeof status === 'number'
+    ? `파라미터 설정을 저장하지 못했습니다. (HTTP ${status})`
+    : '파라미터 설정을 저장하지 못했습니다.';
+};
+
 export const toParameterDecisionValue = (
   task: AgentBuilderParameterTask,
   value: unknown,
@@ -254,7 +292,7 @@ export const useParameterTasks = ({
           );
         }
         pendingDecisionRef.current = null;
-      } catch {
+      } catch (error) {
         if (input.action === 'previous') {
           toast.error('이전 설정 항목을 확인하지 못했습니다.');
           return;
@@ -280,7 +318,7 @@ export const useParameterTasks = ({
         } catch {
           // Keep the operation id while the server outcome remains unknown.
         }
-        toast.error('파라미터 설정을 저장하지 못했습니다.');
+        toast.error(parameterDecisionErrorMessage(error));
       } finally {
         setIsApplying(false);
       }

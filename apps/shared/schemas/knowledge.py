@@ -430,8 +430,8 @@ class KnowledgeRAGRecommendationRequest(BaseModel):
     collection_ids: list[UUID] = Field(default_factory=list)
     knowledge_base_ids: list[UUID] = Field(default_factory=list)
     intended_execution_subject_id: UUID | None = None
-    max_recommendations: int = Field(default=5, ge=1, le=20)
-    max_collections: int = Field(default=20, ge=1, le=100)
+    max_recommendations: int = Field(default=20, ge=1, le=20)
+    max_collections: int = Field(default=20, ge=1, le=20)
     max_candidate_kbs: int = Field(default=5000, ge=1, le=5000)
     high_risk_domain: KnowledgeRAGHighRiskDomain = "none"
     allow_query_rewrite: bool = True

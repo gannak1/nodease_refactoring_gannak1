@@ -24,6 +24,7 @@ export type AgentBuilderParameterTask = {
   node_id: string;
   node_type: string;
   parameter_key: string;
+  task_group?: string | null;
   label: string;
   input_type:
     | 'boolean'

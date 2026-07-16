@@ -718,12 +718,12 @@ describe('Agent Builder parameter cards', () => {
     expect(onKnowledgeSubmit).toHaveBeenCalledWith([]);
   });
 
-  it('자동 추천값을 기본 선택한 입력 control과 다른 선택지로 보여주고 명시적 적용을 요구한다', () => {
+  it('자동 추천값은 완료로 접고 수정할 때 기존값과 다른 선택지를 보여준다', () => {
     const onDecision = vi.fn();
     const recommendedTask = {
       ...tasks[0],
       resolution_source: 'catalog_default' as const,
-      status: 'active' as const,
+      status: 'completed' as const,
       candidates: tasks[0].candidates?.map((candidate) => ({
         ...candidate,
         reference_value: 'gpt-5.5-mini',
@@ -745,29 +745,28 @@ describe('Agent Builder parameter cards', () => {
       <WorkflowResultGroup
         tasks={[recommendedTask]}
         nodes={[canonicalNode]}
-        setupStatus="awaiting_confirmation"
+        setupStatus="completed"
         onFocusNode={vi.fn()}
         onDecision={onDecision}
       />,
     );
 
-    expect(screen.getByText('자동 추천 · 확인 필요')).toBeInTheDocument();
+    expect(screen.getByText('Workflow 생성 완료')).toBeInTheDocument();
+    expect(screen.queryByLabelText('LLM model')).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole('button', { name: '응답 생성 설정 보기' }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'LLM model 수정' }));
     expect(screen.getByLabelText('LLM model')).toHaveValue('model-1');
     expect(screen.getByRole('option', { name: 'GPT Standard' })).toHaveValue(
       'model-2',
     );
 
-    fireEvent.click(screen.getByRole('button', { name: '적용' }));
-    expect(onDecision).toHaveBeenCalledWith({
-      taskId: 'task-model',
-      action: 'confirm',
-    });
-
     fireEvent.change(screen.getByLabelText('LLM model'), {
       target: { value: 'model-2' },
     });
     fireEvent.click(screen.getByRole('button', { name: '적용' }));
-    expect(onDecision).toHaveBeenLastCalledWith({
+    expect(onDecision).toHaveBeenCalledWith({
       taskId: 'task-model',
       action: 'set',
       value: 'model-2',

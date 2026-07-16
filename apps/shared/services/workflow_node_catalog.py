@@ -248,6 +248,8 @@ def node_parameter_definitions(node_type: str) -> list[dict[str, Any]]:
     return [
         {
             **dict(parameter),
+            "task_group": parameter.get("task_group")
+            or parameter_task_group(node_type, str(parameter.get("key") or "")),
             "defer_policy": parameter.get("defer_policy", "forbidden"),
             "agent_builder_task": parameter.get("agent_builder_task", True),
             "sensitivity": parameter.get(
@@ -402,6 +404,19 @@ _LLM_ROUTING_PARAMETER_PATHS = {
     "model_routing_validation_budget_usd": ("validation_budget_usd",),
     "model_routing_max_cohorts": ("max_cohorts",),
 }
+
+LLM_ROUTING_GRAPH_PARAMETER_KEYS = (
+    "model_id",
+    "auto_model_routing",
+    "fallback_model_id",
+    *_LLM_ROUTING_PARAMETER_PATHS.keys(),
+)
+
+
+def parameter_task_group(node_type: str, parameter_key: str) -> str | None:
+    if node_type == "llmNode" and parameter_key == "auto_model_routing":
+        return "model_routing"
+    return None
 
 
 def node_parameter_value(

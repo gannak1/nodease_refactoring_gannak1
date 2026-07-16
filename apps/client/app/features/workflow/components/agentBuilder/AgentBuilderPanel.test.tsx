@@ -85,6 +85,18 @@ const node = (id: string, type = 'startNode'): Node =>
     data: { title: id, triggerType: 'manual', variables: [] },
   }) as Node;
 
+const hierarchyKb = (
+  kbHandle: string,
+  safeLabel: string,
+  score: number | null = null,
+) => ({
+  kb_handle: kbHandle,
+  selection_key: kbHandle,
+  safe_label: safeLabel,
+  score,
+  shared_collection_count: 1,
+});
+
 const mockKnowledgeSelection = (
   selectedCandidates: Array<{
     candidate_id: string;
@@ -1015,7 +1027,7 @@ describe('AgentBuilderPanel', () => {
     expect(screen.queryByText('이전 응답 문구')).not.toBeInTheDocument();
   });
 
-  it('after-graph Collection과 KB 선택은 별도 handle로 저장하고 message를 재호출하지 않는다', async () => {
+  it('after-graph Collection 선택은 하위 KB handle까지 저장하고 message를 재호출하지 않는다', async () => {
     useWorkflowStore.setState({
       nodes: [],
       edges: [],
@@ -1213,9 +1225,9 @@ describe('AgentBuilderPanel', () => {
         name: '사내 정책 Collection',
       }),
     );
-    fireEvent.click(
+    expect(
       within(afterGraphSetup).getByRole('checkbox', { name: '휴가 정책' }),
-    );
+    ).toBeChecked();
     fireEvent.click(screen.getByRole('button', { name: '선택 적용' }));
 
     await waitFor(() => {
@@ -1260,6 +1272,8 @@ describe('AgentBuilderPanel', () => {
             safe_label: '사내 문서',
           },
         ],
+        collections: [],
+        ungrouped_kbs: [hierarchyKb('safe-rec-before-1', '사내 문서')],
         selected: [],
       },
       clarification_questions: ['사용할 Knowledge Base를 선택해주세요.'],
@@ -1346,7 +1360,7 @@ describe('AgentBuilderPanel', () => {
       within(beforeGraphSetup).getByRole('checkbox', { name: '사내 문서' }),
     );
     fireEvent.click(
-      screen.getByRole('button', { name: '선택한 Knowledge Base로 생성' }),
+      screen.getByRole('button', { name: '선택한 Knowledge로 생성' }),
     );
 
     await waitFor(() => {
@@ -1354,13 +1368,9 @@ describe('AgentBuilderPanel', () => {
         'session-before-graph-kb',
         {
           resolutionId: 'res-before-1',
-          selectedCandidates: [
-            {
-              candidate_id: 'safe-rec-before-1',
-              resolution_id: 'res-before-1',
-              requirement_id: 'kr-before-1',
-            },
-          ],
+          selectedCandidates: [],
+          selectedCollectionHandles: [],
+          selectedKbHandles: ['safe-rec-before-1'],
         },
       );
       expect(agentBuilderApi.sendMessage).toHaveBeenCalledTimes(1);
@@ -2277,6 +2287,8 @@ describe('AgentBuilderPanel', () => {
         timing: 'before_graph',
         required: true,
         candidates: [],
+        collections: [],
+        ungrouped_kbs: [],
         selected: [],
       },
       clarification_questions: ['사용할 Knowledge Base를 선택해주세요.'],
@@ -2351,6 +2363,8 @@ describe('AgentBuilderPanel', () => {
         {
           resolutionId: 'resolve-kb-empty-direct',
           selectedCandidates: [],
+          selectedCollectionHandles: [],
+          selectedKbHandles: [],
         },
       );
     });
@@ -2384,6 +2398,8 @@ describe('AgentBuilderPanel', () => {
             reason_category: 'topic_keyword_match',
           },
         ],
+        collections: [],
+        ungrouped_kbs: [hierarchyKb('safe-rec-failure', '휴가 정책')],
         selected: [],
       },
       clarification_questions: ['사용할 Knowledge Base를 선택해주세요.'],
@@ -2417,6 +2433,10 @@ describe('AgentBuilderPanel', () => {
                   reason_category: 'topic_keyword_match',
                 },
               ],
+              collections: [],
+              ungrouped_kbs: [
+                hierarchyKb('safe-rec-failure', '휴가 정책 canonical'),
+              ],
               selected: [],
             },
           },
@@ -2444,7 +2464,7 @@ describe('AgentBuilderPanel', () => {
     const checkbox = await screen.findByRole('checkbox', { name: '휴가 정책' });
     fireEvent.click(checkbox);
     fireEvent.click(
-      screen.getByRole('button', { name: '선택한 Knowledge Base로 생성' }),
+      screen.getByRole('button', { name: '선택한 Knowledge로 생성' }),
     );
 
     await waitFor(() => {
@@ -2460,7 +2480,7 @@ describe('AgentBuilderPanel', () => {
       screen.getByRole('checkbox', { name: '휴가 정책 canonical' }),
     ).toBeChecked();
     expect(
-      screen.getByRole('button', { name: '선택한 Knowledge Base로 생성' }),
+      screen.getByRole('button', { name: '선택한 Knowledge로 생성' }),
     ).toBeEnabled();
   });
 
@@ -2489,6 +2509,10 @@ describe('AgentBuilderPanel', () => {
             requirement_id: 'kr-completed-reconcile',
             safe_label: '휴가 정책',
           },
+        ],
+        collections: [],
+        ungrouped_kbs: [
+          hierarchyKb('safe-rec-completed-reconcile', '휴가 정책'),
         ],
         selected: [],
       },
@@ -2548,7 +2572,7 @@ describe('AgentBuilderPanel', () => {
     fireEvent.click(screen.getByLabelText('Agent Builder 요청 보내기'));
     fireEvent.click(await screen.findByRole('checkbox', { name: '휴가 정책' }));
     fireEvent.click(
-      screen.getByRole('button', { name: '선택한 Knowledge Base로 생성' }),
+      screen.getByRole('button', { name: '선택한 Knowledge로 생성' }),
     );
 
     expect(await screen.findByText('Knowledge 설정 완료')).toBeInTheDocument();
@@ -2588,6 +2612,8 @@ describe('AgentBuilderPanel', () => {
             safe_label: '휴가 정책',
           },
         ],
+        collections: [],
+        ungrouped_kbs: [hierarchyKb('safe-rec-pending-ack', '휴가 정책')],
         selected: [],
       },
       clarification_questions: ['사용할 Knowledge Base를 선택해주세요.'],
@@ -2637,7 +2663,7 @@ describe('AgentBuilderPanel', () => {
     fireEvent.click(screen.getByLabelText('Agent Builder 요청 보내기'));
     fireEvent.click(await screen.findByRole('checkbox', { name: '휴가 정책' }));
     fireEvent.click(
-      screen.getByRole('button', { name: '선택한 Knowledge Base로 생성' }),
+      screen.getByRole('button', { name: '선택한 Knowledge로 생성' }),
     );
 
     await waitFor(() =>
@@ -2645,7 +2671,7 @@ describe('AgentBuilderPanel', () => {
     );
     expect(screen.getByRole('checkbox', { name: '휴가 정책' })).toBeDisabled();
     expect(
-      screen.getByRole('button', { name: '선택한 Knowledge Base로 생성' }),
+      screen.getByRole('button', { name: '선택한 Knowledge로 생성' }),
     ).toBeDisabled();
     expect(agentBuilderApi.sendMessage).toHaveBeenCalledTimes(1);
     expect(toast.error).not.toHaveBeenCalledWith(
@@ -2658,7 +2684,6 @@ describe('AgentBuilderPanel', () => {
       session_id: 'session-kb-reasons',
       workflow_id: 'workflow-old',
       app_id: 'app-1',
-      protocol_version: 'direct_edit_v1',
       status: 'active',
       messages: [],
       pending_request: null,
@@ -2736,6 +2761,7 @@ describe('AgentBuilderPanel', () => {
       status: 'clarification_required',
       structured_plan: null,
       knowledge_resolution: {
+        resolution_id: 'resolve-kb-direct',
         timing: 'before_graph',
         required: true,
         candidates: [
@@ -2748,6 +2774,8 @@ describe('AgentBuilderPanel', () => {
             reason_category: 'topic_keyword_match',
           },
         ],
+        collections: [],
+        ungrouped_kbs: [hierarchyKb('safe-rec-direct', '휴가 정책 v1', 0.91)],
         selected: [],
       },
       clarification_questions: ['사용할 Knowledge Base를 선택해주세요.'],
@@ -2810,7 +2838,7 @@ describe('AgentBuilderPanel', () => {
       await screen.findByRole('checkbox', { name: '휴가 정책 v1' }),
     );
     fireEvent.click(
-      screen.getByRole('button', { name: '선택한 Knowledge Base로 생성' }),
+      screen.getByRole('button', { name: '선택한 Knowledge로 생성' }),
     );
 
     await waitFor(() => {
@@ -2818,13 +2846,9 @@ describe('AgentBuilderPanel', () => {
         'session-kb-direct',
         {
           resolutionId: 'resolve-kb-direct',
-          selectedCandidates: [
-            {
-              candidate_id: 'safe-rec-direct',
-              resolution_id: 'resolve-kb-direct',
-              requirement_id: 'kr-direct',
-            },
-          ],
+          selectedCandidates: [],
+          selectedCollectionHandles: [],
+          selectedKbHandles: ['safe-rec-direct'],
         },
       );
       expect(workflowApi.syncDraftWorkflow).toHaveBeenCalledTimes(2);
@@ -2835,13 +2859,13 @@ describe('AgentBuilderPanel', () => {
         screen.getByRole('checkbox', { name: '휴가 정책 v1' }),
       ).toBeChecked();
       expect(
-        screen.getByRole('button', { name: '선택한 Knowledge Base로 생성' }),
+        screen.getByRole('button', { name: '선택한 Knowledge로 생성' }),
       ).toBeEnabled();
     });
     expect(screen.queryByText(/Knowledge Base 선택:/)).not.toBeInTheDocument();
 
     fireEvent.click(
-      screen.getByRole('button', { name: '선택한 Knowledge Base로 생성' }),
+      screen.getByRole('button', { name: '선택한 Knowledge로 생성' }),
     );
 
     await waitFor(() => {
@@ -3062,12 +3086,16 @@ describe('AgentBuilderPanel', () => {
             safe_label: '휴가 정책',
           },
         ],
+        collections: [],
+        ungrouped_kbs: [hierarchyKb('safe-kb-pending-recovery', '휴가 정책')],
         selected: [
           {
             candidate_id: 'safe-kb-pending-recovery',
             safe_label: '휴가 정책',
           },
         ],
+        selected_collection_handles: [],
+        selected_kb_handles: ['safe-kb-pending-recovery'],
         selection_status: 'pending_ack',
       },
       clarification_questions: ['사용할 Knowledge Base를 선택해주세요.'],
@@ -3453,7 +3481,81 @@ describe('AgentBuilderPanel', () => {
     }
   });
 
-  it('planning session polling은 세 번의 확인 뒤 결과 확인 필요 상태로 멈춘다', async () => {
+  it('pending polling 연결이 끊기면 planning 표시를 멈추고 결과 확인 상태로 전환한다', async () => {
+    vi.useFakeTimers();
+    try {
+      window.localStorage.setItem(
+        'agent-builder:workflow:workflow-old',
+        'session-pending-disconnected',
+      );
+      const planningSession = {
+        session_id: 'session-pending-disconnected',
+        workflow_id: 'workflow-old',
+        protocol_version: 'direct_edit_v1' as const,
+        status: 'planning',
+        messages: [
+          {
+            kind: 'assistant' as const,
+            request_id: 'request-pending-disconnected',
+            response: {
+              request_id: 'request-pending-disconnected',
+              status: 'planning' as const,
+              clarification_questions: [],
+              clarification_options: [],
+              warnings: [],
+            },
+          },
+        ],
+        pending_request: {
+          request_id: 'request-pending-disconnected',
+          status: 'planning',
+          created_at: new Date().toISOString(),
+        },
+      };
+      vi.mocked(agentBuilderApi.getSession)
+        .mockResolvedValueOnce(planningSession)
+        .mockRejectedValue({
+          isAxiosError: true,
+          response: { status: 502, data: { detail: 'Bad Gateway' } },
+        });
+
+      render(
+        <AgentBuilderPanel
+          workflowId="workflow-old"
+          appId="app-1"
+          nodes={[]}
+          edges={[]}
+          hasUnsavedChanges={false}
+        />,
+      );
+      fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(screen.getByText('planning')).toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        await vi.advanceTimersByTimeAsync(2000);
+        await vi.advanceTimersByTimeAsync(4000);
+      });
+
+      expect(screen.getByText('결과 확인 필요')).toBeInTheDocument();
+      expect(screen.queryByText('planning')).toBeNull();
+      expect(screen.queryByText('Workflow 계획 중')).toBeNull();
+      expect(
+        screen.queryByText('Agent Builder 요청이 진행 중입니다.'),
+      ).toBeNull();
+      expect(
+        window.localStorage.getItem('agent-builder:workflow:workflow-old'),
+      ).toBe('session-pending-disconnected');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('planning session은 60초까지 정상 polling하고 이후 장기 처리 상태에서 terminal 결과를 복구한다', async () => {
     vi.useFakeTimers();
     try {
       window.localStorage.setItem(
@@ -3510,10 +3612,62 @@ describe('AgentBuilderPanel', () => {
       });
 
       expect(agentBuilderApi.getSession).toHaveBeenCalledTimes(4);
-      expect(screen.getByText('결과 확인 필요')).toBeInTheDocument();
+      expect(screen.queryByText('결과 확인 필요')).toBeNull();
+      expect(screen.queryByText('평소보다 오래 걸리고 있습니다')).toBeNull();
       expect(
         window.localStorage.getItem('agent-builder:workflow:workflow-old'),
       ).toBe('session-planning-recovery');
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(55_000);
+      });
+      expect(agentBuilderApi.getSession).toHaveBeenCalledTimes(15);
+      expect(
+        screen.getByText('평소보다 오래 걸리고 있습니다'),
+      ).toBeInTheDocument();
+      expect(screen.queryByText('결과 확인 필요')).toBeNull();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(170_000);
+      });
+      expect(agentBuilderApi.getSession).toHaveBeenCalledTimes(32);
+      expect(screen.queryByText('결과 확인 필요')).toBeNull();
+
+      vi.mocked(agentBuilderApi.getSession).mockResolvedValue({
+        ...planningSession,
+        status: 'failed',
+        messages: [
+          {
+            kind: 'assistant',
+            request_id: 'request-planning-recovery',
+            response: {
+              request_id: 'request-planning-recovery',
+              status: 'failed',
+              clarification_questions: [],
+              clarification_options: [],
+              validation_result: {
+                valid: false,
+                issues: [
+                  {
+                    code: 'REQUEST_PROCESSING_TIMEOUT',
+                    message: '처리 제한시간이 지나 요청을 종료했습니다.',
+                  },
+                ],
+              },
+              warnings: [],
+            },
+          },
+        ],
+        pending_request: null,
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8_000);
+      });
+
+      expect(agentBuilderApi.getSession).toHaveBeenCalledTimes(33);
+      expect(screen.getByText('failed')).toBeInTheDocument();
+      expect(screen.queryByText('결과 확인 필요')).toBeNull();
+      expect(screen.queryByText('평소보다 오래 걸리고 있습니다')).toBeNull();
     } finally {
       vi.useRealTimers();
     }

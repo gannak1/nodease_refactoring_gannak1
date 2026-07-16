@@ -241,8 +241,8 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - parameter mutation은 base hash, expected workflow `updated_at`, affected node, completion context와 catalog version을 포함한다.
 - 저장 실패, acknowledgement 응답 유실, 새로고침 후에도 저장되지 않은 task를 완료로 복구하지 않는다.
 - parameter decision은 LLM usage row를 추가하지 않는다.
-- 자동 추천 task의 값이 canonical graph와 같고 관련 structural operation이 acknowledged일 때만 `confirm`하면 GraphMutation/workflow save 없이 completed가 되고 next task를 한 번만 활성화한다. Structural operation이 `pending_save|pending_ack`이면 confirm을 거부한다. 같은 operation 재시도는 version, next task와 audit를 반복 변경하지 않는다.
-- mutation이 추가한 node의 template/default value는 `catalog_default`, server-issued upstream selector는 `upstream_selector`, base graph node에서 읽은 값만 `existing_graph` source로 표시한다. 세 경우 모두 사용자 confirm 전 terminal task가 되지 않는다.
+- 안전한 자동 추천 task의 값이 canonical graph와 같으면 completed로 계획하되 관련 structural operation이 acknowledged되기 전에는 group 완료/다음 task 활성화/UI 완료로 처리하지 않는다. Acknowledgement 뒤 추천 task는 접힌 완료 항목으로 표시하고 `수정`에서 canonical 값과 다른 후보를 선택할 수 있다.
+- mutation이 추가한 node의 template/default value는 `catalog_default`, server-issued upstream selector는 `upstream_selector`, base graph node에서 읽은 값만 `existing_graph` source로 표시한다. 기존 session의 active 추천 `confirm` 호환은 GraphMutation/workflow save 없이 완료하며 같은 operation 재시도는 version, next task와 audit를 반복 변경하지 않는다.
 - 자동 추천 task 값을 `set`으로 수정하면 동일 task id의 새 `parameter_update`를 거쳐 acknowledgement 뒤 completed가 되고 이미 활성화된 next task를 다시 생성·활성화하지 않는다.
 - `previous`는 current presentation task의 canonical 상태가 `active|completed|skipped|deferred`여도 persisted 상태/version을 바꾸지 않고 이전 재편집 가능 task id를 반환한다.
 - skipped task를 다시 열어 `set`하면 CDS acknowledgement 뒤 completed가 되며 skip 당시 graph에는 값이 저장되지 않는다.
@@ -270,12 +270,14 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - applied operation은 자동 재적용하지 않는다.
 - raw parameter value와 secret은 response에 포함되지 않는다.
 - task 상태는 request `response_payload`에서, 실제 parameter 값은 저장된 workflow graph에서 복구한다.
-- 자동 추천 task와 resolution source를 복구하고 실제 값은 graph에서만 읽는다. 사용자 confirm 전에는 completed로 앞당기지 않는다.
+- 자동 추천 task와 resolution source를 복구하고 실제 값은 graph에서만 읽는다. Structural acknowledgement 전에는 group 완료로 앞당기지 않으며, acknowledgement가 확인된 안전 추천은 completed로 복구한다.
 - parameter/Knowledge operation이 CDS 저장 또는 acknowledgement 전에 종료되면 task/selection 완료 상태를 앞당겨 복구하지 않는다.
 - stale session은 명확한 stale status를 반환한다.
 - 기존 Preview session은 `stale_protocol`이며 safe 대화 외 legacy preview/draft를 복구·적용하지 않는다.
-- session GET 또는 pending polling이 transport/5xx로 세 번 연속 실패하면 `1초 -> 2초 -> 4초` 자동 확인 뒤 `결과 확인 필요`와 `다시 확인` control을 표시하고 local session key, 대화, 입력 draft, Knowledge 선택과 history boundary를 유지한다.
+- session GET 또는 pending polling이 transport/5xx로 세 번 연속 실패하면 `1초 -> 2초 -> 4초` 자동 확인 뒤 `결과 확인 필요`와 `다시 확인` control을 표시하고 local session key, 대화, 입력 draft, Knowledge 선택과 history boundary를 유지한다. 이때 stale planning card, 진행 banner와 `Workflow 계획 중`은 보이지 않고 Workflow 상태는 `서버 확인 대기`여야 한다.
 - `다시 확인`은 같은 session GET만 새로 세 번 시도하며 natural-language request, planner, GraphMutation 또는 acknowledgement를 새로 발급하지 않는다.
+- 세 번의 빠른 조회가 모두 성공했지만 동일한 `pending_request`가 유지되면 60초까지 `결과 확인 필요`를 표시하지 않고 5초 간격으로 GET을 계속한다. 60초 이후 장기 처리 안내와 10초 간격으로 전환하며, server processing deadline 이후 반환된 `REQUEST_PROCESSING_TIMEOUT` terminal 응답으로 같은 request의 planning 표시를 교체한다.
+- 4분 processing 기한을 넘긴 request를 session GET 또는 다음 request admission이 terminal `failed`로 전환하고 pending gate를 해제하는지 확인한다. 늦게 끝난 기존 처리 결과가 failed request를 덮어쓰거나 GraphMutation을 발급하면 안 된다.
 - `stale_protocol`, 명시적 session not found 또는 invalid session만 local session key를 제거한다. Gateway 5xx와 network failure는 key를 제거하거나 새 session을 만들지 않는다.
 - `reverted` history boundary와 연결된 모든 ParameterTask/Knowledge resolution은 `canceled`로 복구한다. Parameter/Knowledge operation별 `reverted` 상태를 만들지 않고 Redo로 canceled 흐름을 completed로 바꾸지 않는다.
 
@@ -389,15 +391,17 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 
 ### DBP-TC-F003 Workflow Result Group
 
-- `설정하며 생성`의 LLM card는 Routing ParameterTask를 순차 표시하고 별도 Routing 안내를 중복 표시하지 않는다. `auto_model_routing`, permission-filtered default/fallback model, refresh interval, validation budget와 maximum cohort를 confirm/set하면 각각 기존 parameter mutation과 CAS/acknowledgement를 통과한다.
+- `설정하며 생성`의 LLM card는 일반 `model_id`와 Catalog가 `task_group=model_routing`으로 분류한 `auto_model_routing`만 graph topology 순서에 맞춰 표시하고 별도 Routing 안내를 중복 표시하지 않는다. 안전한 추천값은 structural acknowledgement 뒤 접힌 completed 항목으로 보이며 `수정(set)`은 기존 parameter mutation과 CAS/acknowledgement를 통과한다.
+- Agent Builder 응답과 복구된 session에는 fallback model, refresh interval, validation budget와 maximum cohort ParameterTask가 없어야 한다. 이전 session에 해당 task가 있어도 reconciliation 뒤 제거되며 기존 canonical graph 값은 유지되어야 한다.
+- `auto_model_routing` task가 active/pending/invalid이면 고급 Routing action을 표시하지 않는다. 해당 task와 전체 workflow 설정이 완료되면 기존 Routing control을 여는 action을 표시하며, 클릭 자체는 GraphMutation, save, planner 또는 policy API를 호출하지 않는다.
 - `구조만 생성` 결과에 포함된 라우팅 미설정 LLM은 하나의 자동 라우팅 안내에만 표시한다. routing이 이미 활성화됐거나 현재 결과에 포함되지 않은 LLM은 표시하지 않는다. 각 `Routing 설정으로 이동` 버튼은 해당 node의 Routing control을 열되 GraphMutation, workflow save, policy API 또는 planner 호출을 만들지 않는다.
 - 구조만 생성 결과를 새로고침한 뒤에도 canonical safe envelope의 `affected_node_ids`로 동일한 routing 안내를 복구한다. full typed operation을 복구하거나 재생하지 않는다.
 - 여러 node를 하나의 result group 아래 표시한다.
-- Knowledge 선택, 자동 추천 확인과 수동 parameter 입력을 같은 result group 안에서 순차 표시한다.
+- Knowledge 선택, 자동 추천 완료 요약/수정과 수동 parameter 입력을 같은 result group 안에서 순차 표시한다.
 - 같은 Knowledge requirement의 legacy clarification과 direct-edit Knowledge card를 동시에 표시하지 않는다.
 - `direct_edit_v1` 응답이 `knowledge_resolution` 없이 legacy `clarification_options`만 포함하면 Knowledge 설정 card를 렌더링하지 않는다.
 - active card만 확장하고 completed card는 요약한다.
-- 자동 추천 parameter는 active card에 resolution source, 안전한 이유, 현재 값을 표시하고 확인 또는 수정할 수 있다.
+- 자동 추천 parameter는 completed 요약으로 접혀 있고 `수정`을 열면 canonical 현재 값과 다른 허용 후보를 선택할 수 있다.
 - 진행률과 deferred/unresolved 상태를 표시한다.
 - skipped task를 완료와 구분해 표시하고 다시 열어 설정할 수 있다.
 - 모든 필수 Knowledge/parameter 확인과 graph 저장/acknowledgement 전에는 생성 완료를 표시하지 않고, 충족 뒤 명시적인 생성 완료 메시지를 표시한다.
@@ -552,7 +556,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 9. Completed task 편집 중 완료 표시가 숨겨지고 취소/닫기, 입력 보존과 acknowledgement 뒤 완료 복귀가 동작하는지 확인한다.
 10. 추천 출처 4개와 before/after Knowledge CTD 4개를 exact component copy로 확인한다.
 11. Reload와 `stale_protocol`에서 만료되지 않은 복수 request의 safe conversation을 시간순으로 유지하고, stale session에서는 이를 읽기 전용으로 표시하며 legacy Preview 정보를 복원하지 않고 신규 direct session 전환이 한 번만 일어나는지 확인한다.
-12. Preview/apply E2E가 제품 경로에 남지 않고 `KB 선택 -> 자동 추천 confirm -> 필수 parameter 입력 또는 명시적 defer -> save/acknowledgement -> completion -> Undo/Redo`와 response-loss E2E로 대체됐는지 확인한다. KB 선택 직후 완료를 기대하지 않는다.
+12. Preview/apply E2E가 제품 경로에 남지 않고 `KB 선택 -> 자동 추천 완료 요약/수정 -> 필수 parameter 입력 또는 명시적 defer -> save/acknowledgement -> completion -> Undo/Redo`와 response-loss E2E로 대체됐는지 확인한다. KB 선택 직후 완료를 기대하지 않는다.
 13. Direct candidate가 비어 있을 때 legacy clarification fallback을 frontend와 backend가 모두 거부하고, allowlisted KB reason만 사용자 문구로 표시하는지 확인한다.
 14. `before_graph` structural Knowledge response loss가 resolution을 `unapplied`로 복구하고 같은 card에서 새 operation으로 재시도되는지 확인한다.
 15. Acknowledgement 성공 뒤 session read 실패가 `완료 확인 중`으로 남았다가 terminal read 뒤 completion과 첫 Undo를 활성화하는지 확인한다.
@@ -627,13 +631,18 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - 실제 PostgreSQL에서 같은 request/attempt 순차·동시 저장이 한 행만 남는지, commit 응답 유실 뒤 재시도가 기존 행을 재사용하는지, 다른 billing fact 충돌이 fail-closed하는지 검증한다.
 - 모델·credential 삭제 뒤 연결 ID만 NULL이 되고 token/cost와 organization/workflow/budget/워크플로우 화면의 workflow별 예상 비용 집계가 유지되는지 검증한다.
 - migration single head, nullable history link, partial unique/check 제약과 빈 usage history에서 downgrade/re-upgrade 및 Agent Builder usage history가 있는 경우의 downgrade 거부를 검증한다.
-- 통합 Knowledge/Parameter UI, legacy Knowledge 중복 방지, 자동 추천 confirm 멱등성, 명시적 생성 완료 gate와 canonical completed task의 previous navigation을 검증한다.
+- 통합 Knowledge/Parameter UI, legacy Knowledge 중복 방지, 자동 추천 acknowledgement-gated 완료와 수정, 기존 session confirm 멱등성, 명시적 생성 완료 gate와 canonical completed task의 previous navigation을 검증한다.
 - unresolved 실행·배포 preflight와 mutation audit/redaction 검증을 실행한다.
 - DBP-NFR-001~004가 Test Matrix에 매핑되어야 한다.
 - 실행하지 못한 필수 검증은 사유와 남은 위험을 기록하며 완료로 처리하지 않는다.
 ## 2026-07-15 Connection Navigation And Recovery Cases
 
 - Knowledge 선택은 발급된 safe candidate handle을 다시 ranking하지 않고 materialize한다. 현재 Top-K 순위가 달라져도 handle이 조직 범위, use 권한, lifecycle 및 runtime eligibility를 통과하면 선택 저장이 가능해야 하며, handle을 확인할 수 없으면 GraphMutation 없이 validation failure가 되어야 한다.
+- 권한과 lifecycle을 통과한 Collection 전체를 점수 계산한 뒤 표시 상한을 적용해, 이름순 상한 밖의 최고 점수 Collection이 응답에 포함되는지 확인한다.
+- 같은 점수의 KB/Collection은 safe label 오름차순(없는 label은 마지막), opaque handle 오름차순으로 안정 정렬되고 source tier/availability가 별도 tie-break로 재적용되지 않는지 확인한다.
+- `before_graph` placement가 여러 LLM 중 target step 하나에만 Collection/KB binding을 적용하고 target이 없거나 모호하면 validation failure로 닫는지 확인한다.
+- Collection/KB handle 배열의 중복과 순서 차이를 canonical set으로 처리해 같은 집합 재시도는 멱등이고 실제 집합 변경만 conflict인지 확인한다.
+- Collection과 고유 KB 화면 후보가 각각 20개를 넘지 않고, 약 3개 행 높이의 내부 스크롤을 유지하는지 확인한다.
 - Canonical graph recovery after acknowledgement loss, persisted Undo, persisted Redo, and ambiguous save assigns editor-only edge display numbers without changing the serialized workflow graph or graph hash.
 - A Slack/GitHub direct-edit plan exposes every Catalog-declared normal parameter and the existing node graph token/URL fields as password형 `secret` tasks, but no `credential_ref` task, credential candidate, empty picker, credential defer control, or connection-navigation guidance. Mail/Gmail still expose only permitted managed credential candidates.
 - Slack mode와 parameter 설명은 Catalog의 한국어 문구를 유지한다. `message`는 `{{result}}`와 이전 node output 연결 방법을 설명하고, Optional Blocks/Attachments의 빈 `적용`은 `skip`으로 완료된다.
@@ -642,7 +651,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - A Mail terminal acknowledgement task renders all required upstream effect selectors in one typed `variable_selector_list`; an empty or duplicate selection is rejected.
 - Catalog multilingual aliases are supplied to the planner with canonical capability IDs. An `unsupported` result is repaired once only for exactly one supported `standalone_creation=allowed` capability; context-required, forbidden, unknown, and multi-capability results are not backend-promoted.
 - Configure-and-generate exposes routing tasks and no duplicate guidance. Structure-only keeps a `Routing 설정으로 이동` action that opens the selected LLM Routing control rather than only changing the viewport; an already enabled routing node has no guidance.
-- Routing task model candidates are limited to the same permission-filtered active chat models as `model_id`; a fallback equal to the selected default model is rejected. Graph values use `auto_model_routing`, `fallback_model_id` and the existing nested `model_routing_policy.refresh.refresh_every_runs`, `validation_budget_usd`, `max_cohorts` runtime contract.
+- The Agent Builder exposes permission-filtered candidates for the ordinary `model_id` task and only `auto_model_routing` in the routing task group. Existing fallback and nested `model_routing_policy` graph values remain runtime-compatible but are configured outside Agent Builder.
 - A recommended parameter is preselected with alternate choices, stays active until explicit confirmation, and sends no GraphMutation/save when confirmed unchanged.
 - A Mail search plan creates tasks for credential, keyword, sender, subject, start/end date, folder, maximum results, unread-only, mark-as-read, and processing mode. A Gmail durable flow additionally keeps Gmail Draft and Mail Acknowledge selectors as confirmation tasks. No generated value is marked completed before an explicit confirm/set/skip/defer decision.
 - Failed KB selection retains selected candidates and classifies permission, stale, validation, pending acknowledgement, and retryable unapplied outcomes without resubmitting natural language or rerunning the planner.
@@ -661,14 +670,16 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - use 권한은 있으나 active ready version이 없는 KB도 candidate/selection에서 선택할 수 있고, run/deployment preflight에서만 unresolved로 차단한다.
 - Agent Builder `knowledge_binding` CAS 저장은 권한/lifecycle을 계속 검증하면서 retrieval readiness가 없는 선택 KB도 저장할 수 있고, 일반 Editor 저장은 같은 KB를 계속 거부한다.
 - `safe_query_topics`가 하나 이상의 KB safe label/description/topics와 매칭되면 intent/node-purpose fallback을 사용하지 않는다. 모든 후보가 무매칭일 때만 fallback하며, 최종 `kb_relevance=0` 후보의 score는 source tier, availability, freshness와 관계없이 `0`이다.
+- Intent planner safe context는 relevance가 0보다 큰 KB만 포함한다. `LLM 노드 생성`처럼 Knowledge와 무관한 요청은 계층형 선택 UI의 0점 후보를 planner prompt에 전달하지 않고 정상 구조화되어야 한다.
 - Knowledge 또는 ParameterTask 카드가 active일 때 새 자연어 composer와 Send control이 disabled되지 않는다.
 - graph edit auto-layout은 새 node뿐 아니라 이동한 기존 node에 `replace_node_position` operation을 발급하고, CDS 저장 graph에 해당 위치가 남는다.
 - stale canvas에 같은 node ID가 남아도 Agent Builder mutation은 canonical draft graph를 base로 적용하고 저장한다.
 - 화면 전용 `displayNumber`는 Agent Builder CDS 저장 request와 canonical graph hash에 포함하지 않는다.
 - LLM node가 local editor 반영 직후 React Flow `width`, `height`, `measured`를 얻더라도 CDS 저장 request는 typed GraphMutation 결과와 동일한 canonical graph를 유지하고 `expected_result_graph_hash` 검증을 통과한다.
 - Agent Builder GraphMutation으로 추가된 node와 canonical base graph의 기존 node는 local editor 반영 시 모두 유효한 `displayNumber`를 가진다. 이 번호는 BaseNode의 source/target 연결 handle에 표시되며 저장 request에는 포함하지 않는다.
-- Start/Answer workflow도 `variables`와 `outputs` ParameterTask를 순차 제공하며, 자동 추천값이 있더라도 사용자 confirm 또는 set 뒤에만 완료 상태로 진행한다.
+- Start/Answer workflow도 `variables`와 `outputs` ParameterTask를 순차 제공하며, 안전한 자동 추천값은 structural acknowledgement 뒤 completed로 표시하고 미설정 값은 set 뒤에만 완료 상태로 진행한다.
 - schema-invalid planner 응답과 완결된 Start-to-Answer 흐름의 모순된 unsupported 응답은 safe repair prompt를 한 번만 보내며, 수정된 `start_input -> answer` structured response를 정상 처리한다.
+
 
 ### MBA-275 Direct-Edit Consistency Cases
 
@@ -772,10 +783,16 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 
 ## Hierarchical Knowledge Selection
 
+- `direct_edit_v1`이 flat candidate만 반환하면 계층 목록으로 위장하지 않고 오류를 표시하며 선택 제출을 차단하는지 검증한다.
+- Legacy session의 flat candidate UI는 유지되는지 검증한다.
+- Intent planner가 provider client에 90초 request 상한을 전달하고 해당 내부 옵션이 provider payload로 유출되지 않는지 검증한다.
+- 같은 request의 `planning`이 terminal 응답으로 교체되고, 4분을 넘긴 server processing request가 `REQUEST_PROCESSING_TIMEOUT`으로 종료되는지 검증한다.
+
 - Collection 내부 동일 KB가 점수와 응답에 한 번만 반영되는지 검증한다.
 - 여러 Collection의 동일 KB가 같은 `selection_key`와 `kb_handle`을 받는지 검증한다.
 - 한 위치의 하위 KB checkbox 변경이 모든 위치에 동기화되는지 검증한다.
-- Collection 선택과 direct KB 선택이 독립적인지 검증한다.
+- Collection parent 선택 시 권한 있는 전체 child가 함께 선택되고 Collection/KB handle이 모두 제출되는지 검증한다.
+- Child 일부를 해제하면 parent가 indeterminate와 `선택 수/전체 수`를 표시하고 Collection handle 없이 남은 KB handle만 제출되는지 검증한다.
 - route 권한이 있어도 use 권한 없는 하위 KB가 응답과 점수에서 제외되는지 검증한다.
 - stale/권한 변경 handle 제출이 거부되는지 검증한다.
 - graph에 `knowledgeCollections`와 `knowledgeBases`가 별도 저장되는지 검증한다.

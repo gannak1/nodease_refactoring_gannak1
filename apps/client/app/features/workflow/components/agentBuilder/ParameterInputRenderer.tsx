@@ -82,6 +82,11 @@ export const ParameterInputRenderer = ({
       ),
     );
   }, [task.validation]);
+  const numberMinimum =
+    typeof task.validation?.min === 'number' ? task.validation.min : undefined;
+  const numberMaximum =
+    typeof task.validation?.max === 'number' ? task.validation.max : undefined;
+  const numberRequiresInteger = task.validation?.integer === true;
 
   const submit = () => {
     setError(null);
@@ -137,6 +142,25 @@ export const ParameterInputRenderer = ({
       const parsed = Number(value);
       if (!Number.isFinite(parsed)) {
         setError('숫자 값을 입력하세요.');
+        return;
+      }
+      if (numberRequiresInteger && !Number.isInteger(parsed)) {
+        setError('\uC815\uC218\uB97C \uC785\uB825\uD558\uC138\uC694.');
+        return;
+      }
+      if (
+        (numberMinimum !== undefined && parsed < numberMinimum) ||
+        (numberMaximum !== undefined && parsed > numberMaximum)
+      ) {
+        if (numberMinimum !== undefined && numberMaximum !== undefined) {
+          setError(
+            `${numberMinimum} \uC774\uC0C1 ${numberMaximum} \uC774\uD558\uC758 \uAC12\uC744 \uC785\uB825\uD558\uC138\uC694.`,
+          );
+        } else if (numberMinimum !== undefined) {
+          setError(`${numberMinimum} \uC774\uC0C1\uC758 \uAC12\uC744 \uC785\uB825\uD558\uC138\uC694.`);
+        } else {
+          setError(`${numberMaximum} \uC774\uD558\uC758 \uAC12\uC744 \uC785\uB825\uD558\uC138\uC694.`);
+        }
         return;
       }
       onSubmit(parsed);
@@ -298,10 +322,12 @@ export const ParameterInputRenderer = ({
           }
           value={value}
           step={
-            task.input_type === 'number' && task.validation?.integer
+            task.input_type === 'number' && numberRequiresInteger
               ? 1
               : undefined
           }
+          min={task.input_type === 'number' ? numberMinimum : undefined}
+          max={task.input_type === 'number' ? numberMaximum : undefined}
           disabled={disabled}
           onChange={(event) => setValue(event.target.value)}
           className="w-full rounded-md border border-neutral-300 bg-transparent px-3 py-2 text-sm outline-none focus:border-blue-500 disabled:opacity-60 dark:border-neutral-700"

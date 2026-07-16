@@ -139,6 +139,36 @@ def test_knowledge_resolution_persists_only_safe_ids_and_acknowledges():
     assert request_row.response_payload == before_revert_attempt
 
 
+def test_knowledge_resolution_treats_reordered_handles_as_the_same_selection():
+    repository = AgentBuilderRepository()
+    request_row = SimpleNamespace(response_payload={})
+    operation_id = uuid4()
+
+    stored = repository.store_knowledge_resolution(
+        request_row,
+        resolution_id="res-kb-set",
+        operation_id=operation_id,
+        timing="after_graph",
+        selected_candidate_ids=["rec-b", "col-b", "rec-a", "col-a"],
+        selected_collection_handles=["col-b", "col-a", "col-b"],
+        selected_kb_handles=["rec-b", "rec-a", "rec-b"],
+    )
+    retried = repository.store_knowledge_resolution(
+        request_row,
+        resolution_id="res-kb-set",
+        operation_id=operation_id,
+        timing="after_graph",
+        selected_candidate_ids=["col-a", "rec-a", "col-b", "rec-b"],
+        selected_collection_handles=["col-a", "col-b"],
+        selected_kb_handles=["rec-a", "rec-b"],
+    )
+
+    assert stored == retried
+    assert stored["selected_candidate_ids"] == ["col-a", "col-b", "rec-a", "rec-b"]
+    assert stored["selected_collection_handles"] == ["col-a", "col-b"]
+    assert stored["selected_kb_handles"] == ["rec-a", "rec-b"]
+
+
 def test_knowledge_resolution_cannot_issue_a_second_operation_once_submitted():
     repository = AgentBuilderRepository()
     request_row = SimpleNamespace(response_payload={})
@@ -1130,6 +1160,98 @@ def test_before_graph_empty_direct_resolution_uses_dedicated_empty_selection(
     assert db.commits == 1
 
 
+def test_before_graph_bindings_update_only_the_placement_target_llm():
+    structured = AgentBuilderStructuredRequest.model_validate(
+        {
+            "request_type": "new_workflow",
+            "draft_mode": "new_workflow",
+            "intent_summary": "two llm workflow",
+            "planned_steps": [
+                {
+                    "step_id": "step_input",
+                    "capability": "start_input",
+                    "purpose": "receive request",
+                },
+                {
+                    "step_id": "step_other_llm",
+                    "capability": "llm",
+                    "purpose": "request preprocessing",
+                    "depends_on": ["step_input"],
+                },
+                {
+                    "step_id": "step_knowledge_llm",
+                    "capability": "knowledge_backed_llm",
+                    "purpose": "answer with knowledge",
+                    "depends_on": ["step_other_llm"],
+                },
+                {
+                    "step_id": "step_answer",
+                    "capability": "answer",
+                    "purpose": "return answer",
+                    "depends_on": ["step_knowledge_llm"],
+                },
+            ],
+        }
+    )
+    placement = AgentBuilderKnowledgePlacement(
+        requirement_id="kr-target",
+        timing="before_graph",
+        effect_kind="insert_step",
+        target_step_id="step_knowledge_llm",
+        knowledge_step_id="step_knowledge_llm",
+        upstream_step_id="step_other_llm",
+        downstream_step_id="step_answer",
+        empty_selection_bridge="connect_upstream_to_downstream",
+    )
+    graph = {
+        "nodes": [
+            {
+                "id": "llm-other",
+                "type": "llmNode",
+                "data": {"knowledgeBases": [], "knowledgeCollections": []},
+            },
+            {
+                "id": "llm-target",
+                "type": "llmNode",
+                "data": {"knowledgeBases": [], "knowledgeCollections": []},
+            },
+        ],
+        "edges": [],
+    }
+    service = AgentBuilderService(
+        SimpleNamespace(),
+        user=SimpleNamespace(id=uuid4()),
+        organization_id=uuid4(),
+    )
+
+    service._apply_before_graph_knowledge_bindings(  # noqa: SLF001
+        candidate_graph=graph,
+        structured=structured,
+        placement=placement,
+        bindings=[
+            {
+                "knowledge_base_id": "kb-internal-1",
+                "name": "Safe KB",
+            }
+        ],
+        collection_bindings=[
+            {
+                "knowledge_collection_id": "collection-internal-1",
+                "name": "Safe Collection",
+            }
+        ],
+    )
+
+    assert graph["nodes"][0]["data"]["knowledgeBases"] == []
+    assert graph["nodes"][0]["data"]["knowledgeCollections"] == []
+    assert graph["nodes"][1]["data"]["knowledgeBases"] == [
+        {"id": "kb-internal-1", "name": "Safe KB"}
+    ]
+    assert graph["nodes"][1]["data"]["knowledgeCollections"] == [
+        {"id": "collection-internal-1", "safeLabel": "Safe Collection"}
+    ]
+
+
 def test_before_graph_selection_builds_selected_and_empty_topology_without_planner_rerun(
     monkeypatch,
 ):
@@ -1145,10 +1267,16 @@ def test_before_graph_selection_builds_selected_and_empty_topology_without_plann
                     "purpose": "요청 수신",
                 },
                 {
+                    "step_id": "step_other_llm",
+                    "capability": "llm",
+                    "purpose": "요청 전처리",
+                    "depends_on": ["step_input"],
+                },
+                {
                     "step_id": "step_knowledge_llm",
                     "capability": "knowledge_backed_llm",
                     "purpose": "사내 문서 답변",
-                    "depends_on": ["step_input"],
+                    "depends_on": ["step_other_llm"],
                 },
                 {
                     "step_id": "step_answer",
@@ -1159,6 +1287,7 @@ def test_before_graph_selection_builds_selected_and_empty_topology_without_plann
             ],
             "required_capabilities": [
                 "webhook_trigger",
+                "llm",
                 "knowledge_backed_llm",
                 "knowledge_base",
                 "answer",
@@ -1171,7 +1300,7 @@ def test_before_graph_selection_builds_selected_and_empty_topology_without_plann
         effect_kind="insert_step",
         target_step_id="step_knowledge_llm",
         knowledge_step_id="step_knowledge_llm",
-        upstream_step_id="step_input",
+        upstream_step_id="step_other_llm",
         downstream_step_id="step_answer",
         empty_selection_bridge="connect_upstream_to_downstream",
     )
@@ -1217,11 +1346,23 @@ def test_before_graph_selection_builds_selected_and_empty_topology_without_plann
         for operation in selected["mutation"].operations
         if operation.op == "add_node"
     ]
-    llm = next(node for node in selected_nodes if node.type == "llmNode")
-    assert llm.data["knowledgeBases"][0]["id"] != "rec-safe-1"
+    target_node_id = selected["step_node_ids"]["step_knowledge_llm"]
+    other_node_id = selected["step_node_ids"]["step_other_llm"]
+    target_llm = next(node for node in selected_nodes if node.id == target_node_id)
+    other_llm = next(node for node in selected_nodes if node.id == other_node_id)
+    assert target_llm.data["knowledgeBases"][0]["id"] != "rec-safe-1"
+    assert other_llm.data["knowledgeBases"] == []
     assert selected["mutation"].completion_context.knowledge_resolution_id == "res-kb-1"
-    assert all(
-        operation.node.type != "llmNode"
+    assert "step_knowledge_llm" not in empty["step_node_ids"]
+    empty_nodes = [
+        operation.node
         for operation in empty["mutation"].operations
         if operation.op == "add_node"
+    ]
+    empty_other_llm = next(
+        node
+        for node in empty_nodes
+        if node.id == empty["step_node_ids"]["step_other_llm"]
     )
+    assert empty_other_llm.type == "llmNode"
+    assert empty_other_llm.data["knowledgeBases"] == []

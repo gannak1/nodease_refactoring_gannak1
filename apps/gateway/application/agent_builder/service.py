@@ -155,6 +155,22 @@ def _step_node_ids(
     return mapping
 
 
+def step_node_ids_for_graph(
+    structured_request: AgentBuilderStructuredRequest,
+    graph: dict[str, Any],
+) -> dict[str, str]:
+    included_node_ids = {
+        str(node.get("id"))
+        for node in graph.get("nodes") or []
+        if isinstance(node, dict) and node.get("id")
+    }
+    return _step_node_ids(
+        structured_request,
+        graph,
+        included_node_ids=included_node_ids,
+    )
+
+
 def _upstream_candidates(
     graph: dict[str, Any], step_node_ids: dict[str, str]
 ) -> dict[tuple[str, str], list[list[str]]]:
@@ -195,6 +211,61 @@ def _direct_edit_externally_managed_parameters(
         for step_id, node_id in step_node_ids.items()
         if node_types.get(node_id) == "llmNode"
     }
+
+
+def plan_parameter_tasks_for_existing_graph(
+    *,
+    graph: dict[str, Any],
+    step_node_ids: dict[str, str],
+    group_id,
+):
+    """Rebuild current Catalog task definitions without rerunning the planner LLM."""
+    existing_node_ids = {
+        str(node.get("id"))
+        for node in graph.get("nodes") or []
+        if isinstance(node, dict) and node.get("id")
+    }
+    current_step_node_ids = {
+        str(step_id): str(node_id)
+        for step_id, node_id in step_node_ids.items()
+        if str(node_id) in existing_node_ids
+    }
+    if not current_step_node_ids:
+        return []
+    task_plan = ParameterTaskPlanner().plan(
+        graph=graph,
+        step_node_ids=current_step_node_ids,
+        explicit_values={},
+        upstream_candidates=_upstream_candidates(graph, current_step_node_ids),
+        guidance_hints=[],
+        group_id=group_id,
+        externally_managed_parameters=_direct_edit_externally_managed_parameters(
+            graph,
+            current_step_node_ids,
+        ),
+        base_node_ids=existing_node_ids,
+    )
+    candidate_graph, tasks = add_condition_branch_tasks(
+        graph=task_plan.graph,
+        tasks=task_plan.tasks,
+        group_id=task_plan.group_id,
+        step_node_ids=current_step_node_ids,
+    )
+    suggestion_resolver = ParameterSuggestionResolver()
+    return [
+        task.model_copy(
+            update={
+                "suggestions": suggestion_resolver.resolve(
+                    graph=candidate_graph,
+                    target_node_id=task.node_id,
+                    parameter_key=task.parameter_key,
+                )
+                if task.input_type == "variable_selector"
+                else []
+            }
+        )
+        for task in tasks
+    ]
 
 
 class DirectEditOrchestrator:

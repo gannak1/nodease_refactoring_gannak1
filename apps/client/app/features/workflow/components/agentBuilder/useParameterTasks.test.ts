@@ -7,6 +7,7 @@ import {
   type AgentBuilderParameterTask,
 } from '../../api/agentBuilderApi';
 import {
+  parameterDecisionErrorMessage,
   useParameterTasks,
   toParameterDecisionValue,
 } from './useParameterTasks';
@@ -83,6 +84,42 @@ describe('toParameterDecisionValue', () => {
         },
       ],
     });
+  });
+});
+
+describe('parameterDecisionErrorMessage', () => {
+  it.each([
+    [
+      'stale_graph',
+      'Workflow가 서버에서 변경되어 설정을 저장하지 못했습니다. 최신 상태를 확인한 뒤 다시 시도해주세요.',
+    ],
+    [
+      'result_graph_hash_mismatch',
+      '설정 결과가 서버 검증 결과와 일치하지 않아 저장하지 않았습니다.',
+    ],
+    [
+      'invalid_decision',
+      '입력한 값이 이 파라미터의 형식 또는 허용 범위와 맞지 않습니다.',
+    ],
+  ])('maps safe server code %s without exposing raw detail', (detail, expected) => {
+    expect(
+      parameterDecisionErrorMessage({
+        isAxiosError: true,
+        response: { status: 409, data: { detail } },
+      }),
+    ).toBe(expected);
+  });
+
+  it('does not expose arbitrary server detail', () => {
+    expect(
+      parameterDecisionErrorMessage({
+        isAxiosError: true,
+        response: {
+          status: 500,
+          data: { detail: 'raw secret-like diagnostic value' },
+        },
+      }),
+    ).toBe('파라미터 설정을 저장하지 못했습니다. (HTTP 500)');
   });
 });
 

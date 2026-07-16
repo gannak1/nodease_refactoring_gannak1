@@ -172,6 +172,65 @@ def validate_direct_set_value(
     return validate_node_parameter_value(node_type, parameter_key, value)
 
 
+def _ordered_step_node_items(
+    graph: dict[str, Any],
+    step_node_ids: dict[str, str],
+) -> list[tuple[str, str]]:
+    """Order task-bearing nodes by graph topology with stable graph-order ties."""
+    step_by_node_id: dict[str, str] = {}
+    for step_id, node_id in step_node_ids.items():
+        step_by_node_id.setdefault(str(node_id), str(step_id))
+
+    graph_node_ids = [
+        str(node.get("id"))
+        for node in graph.get("nodes") or []
+        if isinstance(node, dict) and node.get("id") is not None
+    ]
+    graph_index = {node_id: index for index, node_id in enumerate(graph_node_ids)}
+    selected = set(step_by_node_id)
+    adjacency = {node_id: set() for node_id in selected}
+    indegree = {node_id: 0 for node_id in selected}
+    for edge in graph.get("edges") or []:
+        if not isinstance(edge, dict):
+            continue
+        source = str(edge.get("source") or "")
+        target = str(edge.get("target") or "")
+        if (
+            source not in selected
+            or target not in selected
+            or source == target
+            or target in adjacency[source]
+        ):
+            continue
+        adjacency[source].add(target)
+        indegree[target] += 1
+
+    fallback_index = len(graph_index)
+
+    def order_key(node_id: str) -> tuple[int, str]:
+        return (graph_index.get(node_id, fallback_index), node_id)
+
+    ready = sorted(
+        (node_id for node_id, degree in indegree.items() if degree == 0),
+        key=order_key,
+    )
+    ordered_node_ids: list[str] = []
+    while ready:
+        node_id = ready.pop(0)
+        ordered_node_ids.append(node_id)
+        for target in sorted(adjacency[node_id], key=order_key):
+            indegree[target] -= 1
+            if indegree[target] == 0:
+                ready.append(target)
+                ready.sort(key=order_key)
+
+    ordered_set = set(ordered_node_ids)
+    ordered_node_ids.extend(
+        sorted((selected - ordered_set), key=order_key)
+    )
+    return [(step_by_node_id[node_id], node_id) for node_id in ordered_node_ids]
+
+
 class ParameterTaskPlanner:
     def plan(
         self,
@@ -203,7 +262,9 @@ class ParameterTaskPlanner:
         tasks: list[AgentBuilderParameterTask] = []
         actionable_indexes: list[int] = []
 
-        for step_id, node_id in step_node_ids.items():
+        for step_id, node_id in _ordered_step_node_items(
+            materialized, step_node_ids
+        ):
             node = node_by_id.get(node_id)
             if node is None:
                 raise ParameterTaskConflict("step node is missing")
@@ -314,6 +375,7 @@ class ParameterTaskPlanner:
                     recommendation_fingerprint = (
                         canonical_parameter_value_fingerprint(recommendation_value)
                     )
+                    status = "completed"
                 task = AgentBuilderParameterTask(
                     task_id=uuid5(
                         NAMESPACE_URL,
@@ -324,6 +386,11 @@ class ParameterTaskPlanner:
                     node_id=node_id,
                     node_type=node_type,
                     parameter_key=parameter_key,
+                    task_group=(
+                        str(parameter["task_group"])
+                        if parameter.get("task_group")
+                        else None
+                    ),
                     label=label,
                     input_type=str(parameter["input_type"]),
                     required=bool(parameter["required"]),
@@ -353,7 +420,8 @@ class ParameterTaskPlanner:
                     sensitivity=str(parameter.get("sensitivity") or "safe"),
                 )
                 tasks.append(task)
-                actionable_indexes.append(len(tasks) - 1)
+                if task.status == "pending":
+                    actionable_indexes.append(len(tasks) - 1)
 
         if actionable_indexes:
             first = actionable_indexes[0]
@@ -401,6 +469,122 @@ def refresh_parameter_group_configuration(
             )
         tasks.append(task.model_copy(update={"configuration_state": state}))
     return group.model_copy(update={"tasks": tasks})
+
+
+def reconcile_parameter_group_catalog_tasks(
+    group: AgentBuilderParameterGroup,
+    catalog_tasks: list[AgentBuilderParameterTask],
+) -> AgentBuilderParameterGroup:
+    """Add Catalog tasks missing from a persisted group without losing progress."""
+    if group.status in {"pending_save", "pending_ack", "blocked", "canceled"}:
+        return group
+
+    existing_by_identity = {
+        (task.node_id, task.parameter_key): task for task in group.tasks
+    }
+    planned_identities: set[tuple[str, str]] = set()
+    merged: list[AgentBuilderParameterTask] = []
+
+    for planned in sorted(catalog_tasks, key=lambda task: task.stable_order):
+        identity = (planned.node_id, planned.parameter_key)
+        planned_identities.add(identity)
+        existing = existing_by_identity.get(identity)
+        if existing is None:
+            merged.append(
+                planned.model_copy(
+                    update={
+                        "group_id": group.group_id,
+                        "stable_order": len(merged),
+                    }
+                )
+            )
+            continue
+        status = existing.status
+        matching_recommendation = (
+            planned.status == "completed"
+            and existing.status in {"pending", "active"}
+            and planned.resolution_source is not None
+            and existing.resolution_source == planned.resolution_source
+            and existing.recommendation_fingerprint
+            == planned.recommendation_fingerprint
+        )
+        if matching_recommendation:
+            status = "completed"
+        merged.append(
+            planned.model_copy(
+                update={
+                    "task_id": existing.task_id,
+                    "group_id": group.group_id,
+                    "status": status,
+                    "task_version": existing.task_version,
+                    "stable_order": len(merged),
+                    "resolution_source": existing.resolution_source,
+                    "recommendation_fingerprint": (
+                        existing.recommendation_fingerprint
+                    ),
+                    "suggestions": planned.suggestions or existing.suggestions,
+                    "candidates": existing.candidates,
+                }
+            )
+        )
+
+    for existing in sorted(group.tasks, key=lambda task: task.stable_order):
+        if (existing.node_id, existing.parameter_key) in planned_identities:
+            continue
+        definition = parameter_definition(
+            existing.node_type,
+            existing.parameter_key,
+        )
+        if definition is not None and definition.get("agent_builder_task") is False:
+            continue
+        merged.append(existing.model_copy(update={"stable_order": len(merged)}))
+
+    if not merged:
+        return group.model_copy(update={"status": "completed", "tasks": []})
+    active_indexes = [
+        index for index, task in enumerate(merged) if task.status == "active"
+    ]
+    if len(active_indexes) > 1:
+        existing_active_identities = {
+            (task.node_id, task.parameter_key)
+            for task in group.tasks
+            if task.status == "active"
+        }
+        preserved_active = next(
+            (
+                index
+                for index in active_indexes
+                if (
+                    merged[index].node_id,
+                    merged[index].parameter_key,
+                )
+                in existing_active_identities
+            ),
+            active_indexes[0],
+        )
+        merged = [
+            task.model_copy(update={"status": "pending"})
+            if index in active_indexes and index != preserved_active
+            else task
+            for index, task in enumerate(merged)
+        ]
+    if not any(task.status in {"active", "invalid"} for task in merged):
+        next_pending = next(
+            (index for index, task in enumerate(merged) if task.status == "pending"),
+            None,
+        )
+        if next_pending is not None:
+            merged[next_pending] = merged[next_pending].model_copy(
+                update={"status": "active"}
+            )
+
+    terminal_statuses = {"completed", "skipped", "deferred"}
+    status = (
+        "completed"
+        if all(task.status in terminal_statuses for task in merged)
+        else "active"
+    )
+    return group.model_copy(update={"status": status, "tasks": merged})
 
 
 def remove_direct_edit_knowledge_parameter_tasks(

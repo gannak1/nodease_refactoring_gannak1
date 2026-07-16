@@ -47,6 +47,8 @@ fi
 
 # 정리 함수 (Ctrl+C 시 모든 프로세스 종료)
 cleanup() {
+    local exit_code="${1:-0}"
+    trap - SIGINT SIGTERM
     echo -e "\n${YELLOW}🔥 모든 서비스 종료 중...${NC}"
     
     # 모든 백그라운드 프로세스 종료
@@ -73,10 +75,11 @@ cleanup() {
     docker compose -f dev/docker-compose.yml down 2>/dev/null || true
     
     echo -e "${GREEN}✅ 모든 서비스 종료 완료${NC}"
-    exit 0
+    exit "$exit_code"
 }
 
-trap cleanup SIGINT SIGTERM
+trap 'cleanup 130' SIGINT
+trap 'cleanup 143' SIGTERM
 
 
 # 1. Docker Compose (PostgreSQL + Redis + Sandbox) - detached 모드로 시작
@@ -219,5 +222,26 @@ echo ""
 echo -e "${YELLOW}Ctrl+C를 누르면 모든 서비스가 종료됩니다.${NC}"
 echo ""
 
-# 모든 백그라운드 프로세스 대기
-wait
+# Stop the local environment when the first required service exits. A plain
+# wait hides a dead Gateway while unrelated workers continue running.
+SERVICE_PIDS=(
+    "$DOCKER_PID"
+    "$LOG_CELERY_PID"
+    "$LOG_CELERY_BEAT_PID"
+    "$WORKFLOW_CELERY_PID"
+    "$FASTAPI_PID"
+)
+if [ -n "${CLIENT_PID:-}" ]; then
+    SERVICE_PIDS+=("$CLIENT_PID")
+fi
+
+set +e
+wait -n "${SERVICE_PIDS[@]}"
+service_exit_code=$?
+set -e
+
+if [ "$service_exit_code" -eq 0 ]; then
+    service_exit_code=1
+fi
+echo -e "${RED}A required development service exited; cleaning up.${NC}"
+cleanup "$service_exit_code"

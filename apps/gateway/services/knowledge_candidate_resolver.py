@@ -245,6 +245,7 @@ class KnowledgeCandidateResolver:
         max_collections: int = DEFAULT_MAX_COLLECTIONS,
         max_candidate_kbs: int = DEFAULT_MAX_CANDIDATE_KBS,
         allow_unready_candidates: bool = False,
+        apply_collection_limit: bool = True,
     ) -> KnowledgeCandidateHierarchyResolution:
         """Return route-authorized Collections with independently authorized KBs."""
 
@@ -260,7 +261,9 @@ class KnowledgeCandidateResolver:
             collection
             for collection in collections
             if route_decisions[collection.id].allowed
-        ][:max_collections]
+        ]
+        if apply_collection_limit:
+            visible_collections = visible_collections[:max_collections]
         visible_collection_ids = [collection.id for collection in visible_collections]
         items = self._collection_items(visible_collection_ids, None)
 

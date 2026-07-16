@@ -337,16 +337,17 @@ class KnowledgeSelectionService:
             if candidate.resolution_id not in {None, selection.resolution_id}:
                 raise HTTPException(status_code=422, detail="catalog_validation_failed")
 
-        selected_collection_handles = list(
-            dict.fromkeys(selection.selected_collection_handles)
+        selected_collection_handles = sorted(
+            set(selection.selected_collection_handles)
         )
-        selected_kb_handles = list(
-            dict.fromkeys(
-                [
-                    *selection.selected_kb_handles,
-                    *(candidate.candidate_id for candidate in selection.selected_candidates),
-                ]
-            )
+        selected_kb_handles = sorted(
+            {
+                *selection.selected_kb_handles,
+                *(candidate.candidate_id for candidate in selection.selected_candidates),
+            }
+        )
+        selected_candidate_ids = sorted(
+            {*selected_collection_handles, *selected_kb_handles}
         )
         if any(
             handle not in allowed_collection_handles
@@ -362,10 +363,6 @@ class KnowledgeSelectionService:
             selection.resolution_id,
         )
         if existing_resolution is not None:
-            selected_candidate_ids = [
-                *selected_collection_handles,
-                *selected_kb_handles,
-            ]
             stored_collection_handles = existing_resolution.get(
                 "selected_collection_handles"
             )
@@ -482,10 +479,7 @@ class KnowledgeSelectionService:
             resolution_id=selection.resolution_id,
             operation_id=mutation.operation_id,
             timing=placement.timing,
-            selected_candidate_ids=[
-                *selected_collection_handles,
-                *selected_kb_handles,
-            ],
+            selected_candidate_ids=selected_candidate_ids,
             selected_collection_handles=selected_collection_handles,
             selected_kb_handles=selected_kb_handles,
         )

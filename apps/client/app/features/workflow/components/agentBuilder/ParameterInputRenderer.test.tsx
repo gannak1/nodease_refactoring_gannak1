@@ -324,6 +324,37 @@ describe('ParameterInputRenderer condition branch target', () => {
     ).toEqual({ state: 'available', value: 25 });
   });
 
+  it('enforces Catalog number bounds before submitting a Routing parameter', () => {
+    const onSubmit = vi.fn();
+    const routingTask: AgentBuilderParameterTask = {
+      ...branchTask,
+      task_id: 'task-routing-refresh-bounds',
+      node_id: 'llm',
+      node_type: 'llmNode',
+      parameter_key: 'model_routing_refresh_every_runs',
+      label: 'Routing refresh interval',
+      input_type: 'number',
+      validation: { min: 5, max: 100, integer: true },
+    };
+
+    render(
+      <ParameterInputRenderer task={routingTask} onSubmit={onSubmit} />,
+    );
+
+    const input = screen.getByLabelText('Routing refresh interval');
+    expect(input).toHaveAttribute('min', '5');
+    expect(input).toHaveAttribute('max', '100');
+    expect(input).toHaveAttribute('step', '1');
+
+    fireEvent.change(input, { target: { value: '101' } });
+    fireEvent.click(screen.getByRole('button'));
+
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      '5 이상 100 이하의 값을 입력하세요.',
+    );
+  });
+
   it('hydrates the routing fallback model by its safe candidate reference', () => {
     const fallbackTask: AgentBuilderParameterTask = {
       ...branchTask,

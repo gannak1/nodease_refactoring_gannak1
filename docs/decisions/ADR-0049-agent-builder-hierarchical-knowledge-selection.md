@@ -17,10 +17,18 @@ Agent Builder의 평면 Knowledge Base 후보 목록은 Collection 자동 라우
 - 외부 응답과 제출에는 실제 UUID 대신 서버가 발급한 opaque `collection_handle`, `kb_handle`, `selection_key`만 사용한다.
 - 동일 KB는 어느 Collection에 나타나도 같은 `kb_handle`과 `selection_key`를 사용한다.
 - Collection 선택은 실행 시 Collection membership을 해석하는 동적 라우팅이고, KB 선택은 graph에 직접 고정하는 참조다.
+- Collection parent를 선택하면 현재 사용자에게 표시 가능한 전체 하위 KB도 같은 `selection_key` 기준으로 선택한다. 제출에는 Collection handle과 선택된 하위 KB handle을 함께 포함한다.
+- Collection 하위 KB 일부만 남기면 parent는 indeterminate 상태와 `선택 수/전체 수`를 표시한다. 이 경우 Collection 동적 라우팅은 해제하고 남은 하위 KB만 직접 고정해, 보이지 않는 하위 KB가 의도와 다르게 runtime 대상에 포함되지 않게 한다.
+- 동일 KB가 여러 Collection에 나타나면 한 위치의 선택 변경을 모든 위치에 동기화한다. Collection parent 전체 선택과 직접 KB 선택은 제출 전에 opaque handle 집합으로 canonicalize한다.
 - GraphMutation은 `knowledgeCollections`와 `knowledgeBases`를 별도로 materialize한다. 선택 후 planner를 다시 호출하지 않는다.
 - KB 점수는 관련도 0.70, source tier 0.10, availability 0.10, freshness 0.10으로 요청 시 계산한다.
 - Collection 점수는 권한과 operational 검사를 통과한 전체 고유 하위 KB를 기준으로 최고 하위 KB 0.60, 상위 3개 평균 0.30, 안전한 Collection metadata 관련도 0.10으로 계산한다. 화면 표시 상한으로 잘린 KB도 점수에는 반영한다. Collection 크기 가산점과 중복 패널티는 사용하지 않는다.
-- 점수는 DB와 graph에 저장하지 않는다. 점수 내림차순 뒤 safe label과 opaque handle로 안정 정렬한다.
+- Collection/KB 표시 상한은 권한 및 lifecycle 필터, 전체 후보 점수 계산과 안정 정렬이 끝난 뒤에만 적용한다. 이름순 또는 조회순으로 먼저 자른 후보 집합에서 점수를 계산하지 않는다.
+- 화면에 반환하는 Collection은 최대 20개, 고유 KB 후보는 최대 20개다. UI는 약 3개 행 높이를 유지하고 나머지는 스크롤로 탐색한다. 내부 권한·점수 계산 상한은 화면 표시 상한과 분리한다.
+- 점수는 DB와 graph에 저장하지 않는다. 점수 내림차순, safe label 오름차순(없는 label은 마지막), opaque handle 오름차순으로 안정 정렬한다. source tier와 availability는 이미 KB 점수에 포함되므로 별도 tie-break로 다시 적용하지 않는다.
+- 발급된 후보 handle의 적용은 새 추천 또는 현재 Top-K에 의존하지 않는다. 서버는 해당 resolution에 발급된 handle을 보존하고 적용 시 active organization, 권한, lifecycle과 runtime eligibility만 다시 검증한다.
+- Collection/KB 선택 배열은 순서가 없는 집합이다. 서버는 중복 제거 후 handle 오름차순으로 canonicalize하며, 같은 집합의 순서만 바꾼 재시도는 같은 결정으로 처리하고 실제 집합이 달라진 재시도만 conflict로 닫는다.
+- `before_graph` Knowledge placement는 `target_step_id`로 해석되는 정확히 하나의 Knowledge-capable LLM node만 변경한다. target이 없거나 둘 이상이면 다른 LLM 전체에 복제하지 않고 validation failure로 닫는다.
 - Runtime은 직접 KB와 선택 Collection의 authorized child KB를 ID 합집합으로 해석하고 KB당 한 번만 검색한다. 내부 provenance에는 직접 선택과 기여한 모든 Collection을 보존한다.
 - 실행 직전에 Collection route 권한, KB use 권한, lifecycle과 operational 상태를 다시 확인한다.
 

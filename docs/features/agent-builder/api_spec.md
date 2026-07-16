@@ -326,6 +326,7 @@ Session의 만료되지 않은 request 전체에서 redaction된 safe conversati
 - mutation metadata의 `catalog_version`이 없거나 `2`이면 legacy stale로 반환하고, `3`인 mutation만 active 후보로 복구한다.
 - session row의 `protocol_version`이 null인 기존 Preview session은 `status=stale_protocol`로 반환한다. Safe 대화 이력은 표시할 수 있지만 legacy preview/draft를 적용하거나 GraphMutation으로 변환할 수 없다.
 - `stale_protocol`, server가 명시한 session not found 또는 invalid session 외의 transport/5xx 오류는 terminal 상태를 의미하지 않는다. Client는 저장된 session pointer를 보존하고 같은 GET만 `1초 -> 2초 -> 4초` 간격으로 최대 세 번 재시도할 수 있다. 세 번 모두 실패하면 UI는 `결과 확인 필요`와 수동 재조회 control을 표시한다.
+- GET이 성공하면서 동일한 `pending_request`를 반환하면 client는 60초까지 정상 planning 상태로 5초 간격의 GET을 계속한다. 60초 이후에는 장기 처리 안내를 표시하고 10초 간격으로 전환한다. Server가 처리 제한시간을 넘긴 request를 `failed`로 닫으면 client는 같은 `request_id`의 planning 응답을 terminal 응답으로 교체한다. 어느 구간에서든 transport/5xx가 발생하면 자동 조회를 중단하고 수동 확인 상태로 전환한다.
 - `stale_protocol` 응답은 redaction을 통과한 safe conversation을 읽기 전용으로 유지하고 재제출 안내를 포함한다. Client는 legacy Preview graph/draft/apply 정보를 복원하지 않고 신규 요청용 `direct_edit_v1` session을 한 번 생성하며 같은 stale session 전환을 반복하지 않는다.
 - CDS 저장 전 full operations 응답이 유실되면 server는 이를 복구·재생하지 않고 기존 envelope를 `blocked`로 닫아 `operation_payload_unavailable` reason을 반환한다. Initial/graph-edit/replace는 기존 request를 contract-neutral cancel해 terminal `canceled`임을 확인한 뒤에만 재생성하고, parameter decision은 parent request를 유지한 현재 task/version에서 새 operation id로 다시 입력한다.
 - Recovery는 최신 request row를 잠근 뒤 safe operation envelope의 GraphMutationStatus가 `pending_apply|pending_save`이고 저장 결과가 없는 경우만 차단한다. `pending_ack|acknowledged|blocked|reverted` operation은 변경하지 않으며 차단 상태, 연결 task/Knowledge 복구와 safe audit는 한 transaction에서 확정한다. 이 값들은 RequestStatus가 아니다.
@@ -336,6 +337,10 @@ Session의 만료되지 않은 request 전체에서 redaction된 safe conversati
 ## 5. Natural Language Request
 
 ### POST `/sessions/{session_id}/messages`
+
+- Intent planner provider 호출은 1회당 최대 90초로 제한한다. 첫 결과가 semantic repair 대상이면 한 번 더 호출할 수 있지만 각 호출에 동일한 상한을 적용한다.
+- Provider 응답이 완료되지 않아 request가 `processing`으로 남으면 session 조회가 같은 request를 계속 반환한다. Server는 request 생성 후 4분이 지나면 `REQUEST_PROCESSING_TIMEOUT` terminal 실패로 전환한다.
+- `direct_edit_v1`에서 Knowledge 추천 상태가 `recommended|clarification_required`이면 `collections`와 `ungrouped_kbs` 계층 계약을 반환해야 한다. Flat `candidates`만 있는 응답은 legacy UI로 fallback하지 않고 validation failure로 닫는다.
 
 Direct-edit session의 workflow graph가 비어 있지 않은데 structured request가 완결된 `new_workflow`이면 `replace_workflow` GraphMutation을 반환한다. 명시적 전체 교체는 `request_type=modify_workflow`, `draft_mode=replace_workflow`로 구조화하며 edit target을 요구하지 않는다. 둘 다 typed remove/add operation과 동일한 CDS/acknowledgement 경계를 사용한다.
 
@@ -932,9 +937,10 @@ Task 생성 우선순위:
 
 Catalog의 모든 configurable parameter에 task record를 만든다. 1~4에서 자동 추천된 값은 graph에
 반영하고 `resolution_source=user_request|existing_graph|upstream_selector|catalog_default`를 기록하지만
-task는 사용자 확인 전까지 `pending|active`로 유지한다. 실제 값은 task나 session payload에 복제하지
-않고 canonical workflow graph에서 hydrate한다. 사용자는 추천 이유와 현재 값을 확인한 뒤 값이 같으면
-`confirm`, 다르면 `set`을 제출한다. 후보가 여러 개면 자동 추천하지 않는다.
+structural graph save와 acknowledgement가 확인된 뒤 task를 `completed`로 표시한다. Pending structural
+group에서는 완료 UI나 다음 task activation에 사용하지 않는다. 실제 값은 task나 session payload에
+복제하지 않고 canonical workflow graph에서 hydrate한다. 사용자는 접힌 완료 항목의 `수정`을 열어
+현재 값과 다른 후보를 선택하면 `set`을 제출한다. 후보가 여러 개면 자동 추천하지 않는다.
 
 `reconfirmation_required=true`는 quick-to-guided 전환에서 실제 값이 저장되지 않아 다시 입력해야 하는 task에만 사용한다. 이 상태는 `resolution_source=null`이고 graph에 해당 값이 없어야 하며 `confirm`을 제공하지 않는다. 사용자가 typed `set`을 제출해 GraphMutation/CDS save/acknowledgement를 마치면 일반 completed task로 전환한다.
 
@@ -962,7 +968,7 @@ Request:
 지원 action:
 
 - `set`: typed value를 적용
-- `confirm`: canonical graph에 이미 반영된 자동 추천값을 변경 없이 확인
+- `confirm`: 기존 session의 active 자동 추천값을 변경 없이 확인하는 호환 action
 - `defer`: Catalog가 `allow_unresolved`로 허용한 parameter만 unresolved로 남김
 - `skip`: optional parameter만 건너뜀
 - `previous`: persisted 상태를 변경하지 않고 stable order상 이전 재편집 가능 task의 `next_task_id`를 반환
@@ -1042,11 +1048,16 @@ Request:
 ```json
 {
   "resolution_id": "opaque-id",
-  "selected_candidates": [
-    {"candidate_id": "opaque-id", "requirement_id": "requirement-id"}
-  ]
+  "selected_collection_handles": ["col-opaque"],
+  "selected_kb_handles": ["rec-opaque"]
 }
 ```
+
+`selected_candidates`는 과거 평면 candidate request의 읽기 호환 입력이다. 신규 계층형 `direct_edit_v1` UI는 `selected_collection_handles`와 `selected_kb_handles`만 제출한다. 두 배열은 순서 없는 집합이며 서버는 중복 제거 후 handle 오름차순으로 canonicalize한다.
+
+Collection parent를 전체 선택하면 client는 해당 Collection handle과 현재 응답에서 권한 확인된 전체 child KB handle을 함께 제출한다. Child 일부를 해제하면 parent는 indeterminate가 되고 해당 Collection handle을 제출하지 않으며 남은 child KB handle만 직접 고정 선택으로 제출한다. 동일 `selection_key`의 child는 모든 Collection 위치에서 같은 선택 상태를 사용한다.
+
+추천 응답의 화면 상한은 Collection 20개와 고유 KB 20개다. 서버는 권한/lifecycle 필터와 전체 점수 계산·안정 정렬 뒤 이 상한을 적용한다.
 
 - 빈 배열은 KB 없이 진행하겠다는 명시적인 no-selection이다. 별도 no-KB candidate를 요구하거나 selection을 다시 요청하지 않는다.
 - Message/session response의 `knowledge_resolution.resolution_id`는 candidate 유무와 무관하게 존재한다. Candidate가 0개여도 client는 이 값을 사용해 빈 `selected_candidates`를 제출한다.
@@ -1063,7 +1074,7 @@ Request:
 - `after_graph` binding은 CDS workflow save와 canonical graph hash/`updated_at` acknowledgement 이후에만 선택 완료로 기록한다.
 - 선택되지 않은 후보는 유지 가능한 UI 후보이며 선택 상태와 후보 목록은 별개다.
 - 선택 요청 처리 중에는 candidate와 selected state를 canonical response에 유지하고 control만 잠근다. 저장 전 실패는 같은 resolution/card에서 재시도할 수 있다. 결과가 불명확하면 canonical session의 안전한 `messages`, `knowledge_resolution`, envelope와 graph metadata로 `pending_ack|completed|unapplied`를 판정한다. Client는 canonical message의 같은 request/resolution을 기존 대화 항목에 upsert해 stale selection card를 남기지 않는다. Typed operations, 자연어 요청과 planner는 재생하지 않는다.
-- CTD는 `before_graph` 선택 시 `선택한 Knowledge Base로 생성`, 빈 선택 시 `Knowledge Base 없이 생성`, `after_graph` 선택 시 `선택 적용`, 빈 선택 시 `Knowledge Base 없이 계속`이다.
+- CTA는 `before_graph` 선택 시 `선택한 Knowledge로 생성`, 빈 선택 시 `Knowledge Base 없이 생성`, `after_graph` 선택 시 `선택 적용`, 빈 선택 시 `Knowledge Base 없이 계속`이다.
 
 `after_graph` response:
 
@@ -1091,7 +1102,9 @@ Request:
 
 ### 8.7 Selected Knowledge Candidate Materialization
 
-Knowledge selection endpoint는 client가 이미 받은 opaque candidate handle을 새 recommendation 또는 Top-K ranking으로 다시 계산하지 않는다. Backend는 선택된 handle의 active organization 범위, `use` 권한, lifecycle 및 runtime eligibility만 다시 검증해 runtime binding으로 materialize한다. 이 검증이 실패하면 `422 catalog_validation_failed`로 종료하며 GraphMutation 또는 workflow 저장을 수행하지 않는다.
+Knowledge selection endpoint는 client가 이미 받은 opaque candidate handle을 새 recommendation 또는 Top-K ranking으로 다시 계산하지 않는다. Backend는 resolution에 발급된 후보 집합에서 handle을 찾고 active organization 범위, Collection `route` 또는 KB `use` 권한, lifecycle 및 runtime eligibility만 다시 검증해 runtime binding으로 materialize한다. 현재 표시 Top-K에 없다는 이유만으로 거부하지 않는다. 이 검증이 실패하면 `422 catalog_validation_failed`로 종료하며 GraphMutation 또는 workflow 저장을 수행하지 않는다.
+
+`before_graph` request는 placement의 `target_step_id`로 정확히 하나의 Knowledge-capable LLM node를 해석한다. 0개 또는 2개 이상이면 `validation_failed`이며 다른 LLM node에 binding을 복제하지 않는다.
 
 ## 9. Cancel
 
@@ -1216,9 +1229,11 @@ Request는 client-generated `operation_id`, 현재 `expected_task_id`와 `expect
 - File Extraction의 `referenced_variables` decision은 canonical selector 배열을 제출하며 graph에는 `[{"name": "<output-key>", "value_selector": [...]}]`로 저장한다.
 - Slack `blocks`와 `attachments` decision은 JSON array/object로 제출하며 graph에는 Slack node runtime이 사용하는 JSON 문자열로 저장한다.
 - `secret` decision은 새 값을 password control에서 제출한다. 기존 graph secret은 response, task, session 또는 hydration payload에 반환하지 않는다.
-- LLM Routing task는 `auto_model_routing`과 `fallback_model_id`를 node data에 직접 저장한다. `model_routing_refresh_every_runs`는 `model_routing_policy.refresh.refresh_every_runs`, `model_routing_validation_budget_usd`는 `model_routing_policy.validation_budget_usd`, `model_routing_max_cohorts`는 `model_routing_policy.max_cohorts`로 materialize한다.
-- `fallback_model_id`는 `model_id`와 같은 permission-filtered `resource_ref` candidate를 사용한다. 같은 default/fallback 조합은 `fallback_must_differ` validation issue로 거부하며 graph mutation을 발급하지 않는다.
+- `model_id`는 일반 LLM ParameterTask로 반환한다. `auto_model_routing`만 `task_group=model_routing`을 반환하고 node data에 직접 저장한다. 이 group metadata는 표시와 completeness 판정용이며 graph에는 저장하지 않는다.
+- `fallback_model_id`, `model_routing_refresh_every_runs`, `model_routing_validation_budget_usd`, `model_routing_max_cohorts`의 Catalog/runtime 정의는 유지하지만 `agent_builder_task=false`이므로 Agent Builder ParameterTask를 발급하지 않는다. Catalog reconciliation은 이전 session의 해당 task를 제거하되 canonical graph의 기존 값을 변경하지 않는다.
+- Fallback model과 상세 routing policy의 후보 선택, 검증과 저장은 기존 LLM Routing control의 API 계약을 따른다.
 - Agent Builder는 Routing task decision에서 model-routing policy/refresh/cohort endpoint를 호출하지 않는다. Canonical graph 저장과 acknowledgement만 수행한다.
+- 완료 뒤 고급 Routing action은 기존 node settings navigation이며 Agent Builder API 요청이나 자동 policy mutation을 만들지 않는다.
 
 Knowledge 후보 응답은 use 권한을 통과한 active KB를 포함한다. 인덱싱 준비 상태는 candidate response 또는 knowledge-selection request의 유효성 조건이 아니며 run/deployment preflight의 조건이다. server-issued Agent Builder `mutation_context`가 있는 CAS 저장은 같은 권한/lifecycle 검사를 유지하되 retrieval readiness만 실행·배포 preflight로 미루며, 일반 Editor 저장은 retrieval-visible readiness를 계속 요구한다.
 

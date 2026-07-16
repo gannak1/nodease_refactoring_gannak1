@@ -603,6 +603,44 @@ def test_explicit_collection_cap_applies_after_route_authorization():
     assert result.unavailable_candidate_count_bucket == "1"
 
 
+def test_builder_hierarchy_can_defer_collection_limit_until_after_scoring():
+    collection_a = _collection()
+    collection_b = _collection()
+    kb_a = _kb()
+    kb_b = _kb()
+    helper = FakePermissionHelper(
+        collection_actions={
+            collection_a.id: {"route"},
+            collection_b.id: {"route"},
+        },
+    )
+    resolver = FakeResolver(
+        helper=helper,
+        collections=[collection_a, collection_b],
+        items=[
+            SimpleNamespace(
+                collection_id=collection_a.id,
+                knowledge_base_id=kb_a.id,
+            ),
+            SimpleNamespace(
+                collection_id=collection_b.id,
+                knowledge_base_id=kb_b.id,
+            ),
+        ],
+        kbs=[kb_a, kb_b],
+    )
+
+    result = resolver.resolve_builder_hierarchy(
+        max_collections=1,
+        apply_collection_limit=False,
+    )
+
+    assert {group.collection_id for group in result.collections} == {
+        collection_a.id,
+        collection_b.id,
+    }
+
+
 def test_auto_collection_mode_buckets_missing_requested_collection():
     existing_collection = _collection()
     kb = _kb()

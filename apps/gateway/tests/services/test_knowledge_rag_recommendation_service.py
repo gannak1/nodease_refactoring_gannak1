@@ -89,6 +89,22 @@ class FailingResolver:
         raise RuntimeError("resolver unavailable")
 
 
+def test_builder_recommendation_display_caps_default_to_twenty():
+    request = KnowledgeRAGRecommendationRequest(
+        workflow_intent="display cap",
+        mode="auto",
+    )
+
+    assert request.max_recommendations == 20
+    assert request.max_collections == 20
+    with pytest.raises(ValueError):
+        KnowledgeRAGRecommendationRequest(
+            workflow_intent="display cap",
+            mode="auto",
+            max_collections=21,
+        )
+
+
 def _service(resolver: FakeResolver) -> KnowledgeRAGRecommendationService:
     return KnowledgeRAGRecommendationService(
         None,
@@ -204,6 +220,108 @@ def test_collection_score_uses_all_authorized_children_before_display_cap():
         sum(all_child_scores[:3]) / len(all_child_scores[:3])
     ) * 0.30
     assert collection.score == pytest.approx(round(expected, 4))
+
+
+def test_collection_limit_is_applied_after_scoring_and_stable_sort():
+    low = _candidate(safe_label="가 낮은 Collection KB")
+    high = _candidate(safe_label="하 높은 점수 KB")
+    middle = _candidate(safe_label="중간 점수 KB")
+    resolver = FakeResolver(KnowledgeCandidateResolution(candidates=[]))
+    resolver.hierarchy = KnowledgeCandidateHierarchyResolution(
+        collections=[
+            KnowledgeCandidateCollectionGroup(
+                collection_id=uuid.uuid4(),
+                safe_label="가 Collection",
+                candidates=[low],
+            ),
+            KnowledgeCandidateCollectionGroup(
+                collection_id=uuid.uuid4(),
+                safe_label="하 Collection",
+                candidates=[high],
+            ),
+            KnowledgeCandidateCollectionGroup(
+                collection_id=uuid.uuid4(),
+                safe_label="중 Collection",
+                candidates=[middle],
+            ),
+        ]
+    )
+    service = _service(resolver)
+    request = KnowledgeRAGRecommendationRequest(
+        workflow_intent="collection selection",
+        mode="auto",
+        max_collections=2,
+        max_recommendations=20,
+    )
+    ranked = [
+        (low, 0.10, [], []),
+        (high, 0.90, [], []),
+        (middle, 0.70, [], []),
+    ]
+
+    selection = service._knowledge_selection(  # noqa: SLF001
+        resolver.hierarchy,
+        ranked,
+        request,
+    )
+
+    assert [item.safe_label for item in selection.collections] == [
+        "하 Collection",
+        "중 Collection",
+    ]
+
+
+def test_equal_score_candidates_sort_by_safe_label_before_opaque_handle():
+    label_z = _candidate(
+        candidate_id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+        safe_label="Zulu",
+    )
+    label_a = _candidate(
+        candidate_id=uuid.UUID("ffffffff-ffff-ffff-ffff-ffffffffffff"),
+        safe_label="Alpha",
+    )
+    resolver = FakeResolver(
+        KnowledgeCandidateResolution(candidates=[label_z, label_a])
+    )
+    service = _service(resolver)
+    request = KnowledgeRAGRecommendationRequest(
+        workflow_intent="unmatched query",
+        mode="auto",
+    )
+
+    ranked = service._rank_candidates([label_z, label_a], request)  # noqa: SLF001
+
+    assert [item[0].safe_label for item in ranked] == ["Alpha", "Zulu"]
+
+
+def test_handle_materialization_ignores_display_collection_limit():
+    candidate = _candidate(safe_label="Previously issued KB")
+    resolver = FakeResolver(KnowledgeCandidateResolution(candidates=[]))
+    resolver.hierarchy = KnowledgeCandidateHierarchyResolution(
+        collections=[
+            KnowledgeCandidateCollectionGroup(
+                collection_id=uuid.uuid4(),
+                safe_label="Previously issued Collection",
+                candidates=[candidate],
+            )
+        ]
+    )
+    service = _service(resolver)
+    handle = service._recommendation_id(candidate)  # noqa: SLF001
+    request = KnowledgeRAGRecommendationRequest(
+        workflow_intent="selection apply",
+        mode="auto",
+        max_collections=1,
+        max_candidate_kbs=1,
+    )
+
+    materialized = service.materialize_candidate_handles_for_builder(
+        request,
+        {handle},
+    )
+
+    assert materialized[0]["safe_handle"] == handle
+    assert resolver.auto_calls[-1]["apply_collection_limit"] is False
 
 
 def test_route_authorized_collection_remains_selectable_without_visible_children():
@@ -398,6 +516,30 @@ def test_safe_intent_candidate_context_is_bounded_and_excludes_raw_identity():
     assert str(raw_kb_id) not in serialized
     assert "/secret/hr.md" not in serialized
     assert "collection_id" not in serialized
+
+
+def test_safe_intent_candidates_exclude_zero_relevance_items():
+    resolver = FakeResolver(
+        KnowledgeCandidateResolution(
+            candidates=[
+                _candidate(
+                    safe_label="Finance policy",
+                    runtime_availability="available",
+                    safe_metadata={
+                        "kb_safe_topics": ["finance", "policy"],
+                        "kb_safe_description": "Approved finance policy",
+                    },
+                )
+            ]
+        )
+    )
+
+    context = _service(resolver).safe_intent_candidates_for_builder(
+        "llm workflow",
+        max_candidates=20,
+    )
+
+    assert context == []
 
 
 def test_high_risk_domain_only_changes_recommended_options():
@@ -884,11 +1026,11 @@ def test_auto_collection_omitted_scope_and_explicit_empty_scope_are_distinct():
             workflow_intent="휴가 정책",
             mode="auto_collection",
             collection_ids=[],
-            max_collections=50,
+            max_collections=10,
         )
     )
 
     assert resolver.auto_calls[0]["collection_ids"] is None
     assert resolver.auto_calls[0]["max_collections"] == 20
     assert resolver.auto_calls[1]["collection_ids"] == []
-    assert resolver.auto_calls[1]["max_collections"] == 50
+    assert resolver.auto_calls[1]["max_collections"] == 10

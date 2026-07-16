@@ -155,7 +155,7 @@ def build_insert_operations(
 
 def canonical_graph_hash(graph: dict[str, Any] | None) -> str:
     graph = materialize_candidate_graph(graph or {})
-    canonical = {
+    canonical = _normalize_canonical_json_numbers({
         "nodes": sorted(
             copy.deepcopy(graph.get("nodes") or []),
             key=lambda node: str(node.get("id") or ""),
@@ -164,7 +164,7 @@ def canonical_graph_hash(graph: dict[str, Any] | None) -> str:
             copy.deepcopy(graph.get("edges") or []),
             key=lambda edge: str(edge.get("id") or ""),
         ),
-    }
+    })
     payload = json.dumps(
         canonical,
         ensure_ascii=False,
@@ -172,6 +172,20 @@ def canonical_graph_hash(graph: dict[str, Any] | None) -> str:
         separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _normalize_canonical_json_numbers(value: Any) -> Any:
+    """Match browser JSON number semantics before hashing a workflow graph."""
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, dict):
+        return {
+            key: _normalize_canonical_json_numbers(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_normalize_canonical_json_numbers(item) for item in value]
+    return value
 
 
 def _coerce_operations(operations: list[Any]) -> list[GraphOperation]:

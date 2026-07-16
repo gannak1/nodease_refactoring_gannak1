@@ -481,14 +481,19 @@ def test_openai_invoke_sync_uses_responses_sync_client(monkeypatch):
         credentials={"apiKey": "sk-test", "baseUrl": "https://api.openai.com/v1"},
     )
 
-    resp = client.invoke_sync([{"role": "user", "content": "hi"}], max_tokens=10)
+    resp = client.invoke_sync(
+        [{"role": "user", "content": "hi"}],
+        max_tokens=10,
+        request_timeout_seconds=90,
+    )
 
     assert requested["client_kwargs"] == {"timeout": 60}
     assert requested["url"] == "https://api.openai.com/v1/responses"
     assert requested["payload"]["model"] == "gpt-5.4-mini"
     assert requested["payload"]["max_output_tokens"] == 10
     assert requested["payload"]["input"][0]["role"] == "user"
-    assert requested["timeout"] == 180
+    assert requested["timeout"] == 90
+    assert "request_timeout_seconds" not in requested["payload"]
     assert resp["choices"][0]["message"]["content"] == "hello"
     assert resp["usage"]["total_tokens"] == 5
 

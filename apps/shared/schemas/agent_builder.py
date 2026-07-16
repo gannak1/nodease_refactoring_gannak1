@@ -331,6 +331,7 @@ class AgentBuilderParameterTask(BaseModel):
     node_id: str
     node_type: str
     parameter_key: str
+    task_group: str | None = Field(default=None, min_length=1, max_length=64)
     label: str
     input_type: str
     required: bool

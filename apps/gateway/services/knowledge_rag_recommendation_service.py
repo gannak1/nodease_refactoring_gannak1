@@ -133,6 +133,7 @@ class KnowledgeRAGRecommendationService:
                         DEFAULT_MAX_CANDIDATE_KBS,
                     ),
                     allow_unready_candidates=allow_unready_candidates,
+                    apply_collection_limit=False,
                 )
                 unique_candidates: dict[uuid.UUID, KnowledgeCandidate] = {}
                 for group in hierarchy.collections:
@@ -245,7 +246,11 @@ class KnowledgeRAGRecommendationService:
                 "auto_collection",
                 allow_unready_candidates=True,
             )
-            ranked = self._rank_candidates(resolution.candidates, request)[:limit]
+            ranked = [
+                item
+                for item in self._rank_candidates(resolution.candidates, request)
+                if item[1] > 0
+            ][:limit]
         except Exception:
             return []
 
@@ -306,11 +311,9 @@ class KnowledgeRAGRecommendationService:
                 hierarchy = resolver.resolve_builder_hierarchy(
                     collection_ids=self._collection_scope(request),
                     max_collections=request.max_collections,
-                    max_candidate_kbs=min(
-                        request.max_candidate_kbs,
-                        DEFAULT_MAX_CANDIDATE_KBS,
-                    ),
+                    max_candidate_kbs=DEFAULT_MAX_CANDIDATE_KBS,
                     allow_unready_candidates=True,
+                    apply_collection_limit=False,
                 )
                 candidates_by_id = {
                     candidate.candidate_id: candidate
@@ -363,11 +366,9 @@ class KnowledgeRAGRecommendationService:
             hierarchy = resolver.resolve_builder_hierarchy(
                 collection_ids=self._collection_scope(request),
                 max_collections=request.max_collections,
-                max_candidate_kbs=min(
-                    request.max_candidate_kbs,
-                    DEFAULT_MAX_CANDIDATE_KBS,
-                ),
+                max_candidate_kbs=DEFAULT_MAX_CANDIDATE_KBS,
                 allow_unready_candidates=True,
+                apply_collection_limit=False,
             )
         except Exception:
             return []
@@ -513,10 +514,9 @@ class KnowledgeRAGRecommendationService:
             ranked,
             key=lambda item: (
                 -item[1],
-                -_AVAILABILITY_ORDER.get(item[0].runtime_availability, 1),
-                -self._source_tier_priority(item[0]),
                 0 if item[0].safe_label else 1,
-                str(item[0].candidate_id),
+                item[0].safe_label.casefold() if item[0].safe_label else "",
+                self._recommendation_id(item[0]),
             ),
         )
 
@@ -651,7 +651,8 @@ class KnowledgeRAGRecommendationService:
             children.sort(
                 key=lambda item: (
                     -item.score,
-                    item.safe_label or "",
+                    0 if item.safe_label else 1,
+                    item.safe_label.casefold() if item.safe_label else "",
                     item.kb_handle,
                 )
             )
@@ -698,17 +699,24 @@ class KnowledgeRAGRecommendationService:
         collections.sort(
             key=lambda item: (
                 -item.score,
-                item.safe_label or "",
+                0 if item.safe_label else 1,
+                item.safe_label.casefold() if item.safe_label else "",
                 item.collection_handle,
             )
         )
+        collections = collections[: request.max_collections]
         ungrouped = [
             project(candidate)
             for candidate in hierarchy.ungrouped_candidates
             if candidate.candidate_id in visible_ids
         ]
         ungrouped.sort(
-            key=lambda item: (-item.score, item.safe_label or "", item.kb_handle)
+            key=lambda item: (
+                -item.score,
+                0 if item.safe_label else 1,
+                item.safe_label.casefold() if item.safe_label else "",
+                item.kb_handle,
+            )
         )
         return KnowledgeSelection(
             collections=collections,

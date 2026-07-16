@@ -44,6 +44,9 @@ from apps.shared.services.workflow_node_catalog import (
 )
 
 
+AGENT_BUILDER_INTENT_REQUEST_TIMEOUT_SECONDS = 90
+
+
 class AgentBuilderIntentExtractionError(RuntimeError):
     """The planner response could not be safely converted into an intent."""
 
@@ -608,6 +611,8 @@ def _safe_knowledge_candidate_context(value: Any) -> list[dict[str, Any]]:
             )
         except (TypeError, ValueError):
             relevance_score = 0.0
+        if relevance_score <= 0:
+            continue
 
         def safe_text(key: str, limit: int) -> str | None:
             raw = item.get(key)
@@ -783,6 +788,9 @@ class LLMAgentBuilderIntentExtractor:
                     temperature=0,
                     max_tokens=4000,
                     response_format=response_format,
+                    request_timeout_seconds=(
+                        AGENT_BUILDER_INTENT_REQUEST_TIMEOUT_SECONDS
+                    ),
                 )
             except LLMResponseValidationError as exc:
                 if reservation is not None:

@@ -73,7 +73,13 @@ def _alembic_python() -> str:
         ROOT_DIR / "apps" / "gateway" / ".venv" / "Scripts" / "python.exe",
         ROOT_DIR / "apps" / "gateway" / ".venv" / "bin" / "python",
     )
-    return str(next((path for path in candidates if path.exists()), sys.executable))
+    for path in candidates:
+        try:
+            if path.exists():
+                return str(path)
+        except OSError:
+            continue
+    return sys.executable
 
 
 def _run_alembic(database: str, config: DisposablePostgresConfig) -> None:
@@ -1147,6 +1153,167 @@ def test_parameter_acknowledgement_retry_is_idempotent(db_session):
         .count()
         == audit_count
     )
+
+
+@pytest.mark.parametrize(
+    (
+        "node_type",
+        "parameter_key",
+        "input_type",
+        "decision_value",
+        "initial_data",
+        "expected_value",
+    ),
+    [
+        (
+            "slackPostNode",
+            "channel",
+            "text",
+            {"kind": "text", "value": "C123"},
+            {
+                "title": "Slack",
+                "body": '{"text":"{{result}}"}',
+                "channel": "",
+                "configuration_state": "unresolved",
+            },
+            "C123",
+        ),
+        (
+            "githubNode",
+            "pr_number",
+            "number",
+            {"kind": "number", "value": 15},
+            {
+                "title": "GitHub PR",
+                "action": "get_pr",
+                "api_token": "",
+                "repo_owner": "octo",
+                "repo_name": "repo",
+                "pr_number": "",
+                "referenced_variables": [],
+                "configuration_state": "unresolved",
+            },
+            "15",
+        ),
+    ],
+)
+def test_external_parameter_decision_persists_and_acknowledges(
+    db_session,
+    node_type,
+    parameter_key,
+    input_type,
+    decision_value,
+    initial_data,
+    expected_value,
+):
+    user, workflow, request_row = _fixture(db_session)
+    session = db_session.get(AgentBuilderSession, request_row.session_id)
+    session.protocol_version = "direct_edit_v1"
+    workflow.graph = {
+        "nodes": [
+            {
+                "id": "target",
+                "type": node_type,
+                "position": {"x": 0, "y": 0},
+                "data": initial_data,
+            }
+        ],
+        "edges": [],
+        "viewport": {"x": 0, "y": 0, "zoom": 1},
+    }
+    group_id = uuid.uuid4()
+    task = AgentBuilderParameterTask(
+        task_id=uuid.uuid4(),
+        group_id=group_id,
+        step_id="step_target",
+        node_id="target",
+        node_type=node_type,
+        parameter_key=parameter_key,
+        label=parameter_key,
+        input_type=input_type,
+        required=True,
+        status="active",
+        task_version=1,
+        stable_order=0,
+        reason="The runtime parameter is required.",
+        input_guidance="Enter the runtime parameter.",
+    )
+    repository = AgentBuilderRepository()
+    repository.store_parameter_group(
+        request_row,
+        AgentBuilderParameterGroup(
+            group_id=group_id,
+            status="active",
+            tasks=[task],
+        ),
+    )
+    db_session.flush()
+
+    operation_id = uuid.uuid4()
+    issued = ParameterTaskService(
+        db_session,
+        user_id=user.id,
+        organization_id=workflow.organization_id,
+    ).decide(
+        session.id,
+        task.task_id,
+        AgentBuilderParameterTaskDecisionRequest.model_validate(
+            {
+                "operation_id": operation_id,
+                "expected_task_version": 1,
+                "action": "set",
+                "value": decision_value,
+            }
+        ),
+    )
+    assert issued.graph_mutation is not None
+    result_graph = apply_graph_operations(
+        workflow.graph,
+        issued.graph_mutation.operations,
+    )
+    saved = WorkflowService.save_draft(
+        db_session,
+        str(workflow.id),
+        _draft_request(
+            {
+                **result_graph,
+                "mutation_context": {
+                    "operation_id": operation_id,
+                    "action": "apply",
+                    "expected_base_graph_hash": (
+                        issued.graph_mutation.base_graph_hash
+                    ),
+                    "expected_workflow_updated_at": (
+                        issued.graph_mutation.expected_workflow_updated_at
+                    ),
+                    "catalog_version": 3,
+                },
+            }
+        ),
+        user_id=str(user.id),
+    )
+    acknowledged = GraphMutationLifecycleService(
+        db_session,
+        user_id=user.id,
+        organization_id=workflow.organization_id,
+    ).acknowledge(
+        session.id,
+        operation_id,
+        GraphMutationAcknowledgementRequest.model_validate(
+            {
+                "workflow_id": workflow.id,
+                "graph_hash": saved["graph_hash"],
+                "updated_at": saved["updated_at"],
+            }
+        ),
+    )
+
+    persisted_node = next(
+        node for node in workflow.graph["nodes"] if node["id"] == "target"
+    )
+    assert persisted_node["data"][parameter_key] == expected_value
+    assert acknowledged.parameter_group is not None
+    assert acknowledged.parameter_group.tasks[0].status == "completed"
 
 
 def test_knowledge_binding_acknowledgement_completes_parameter_task(db_session):

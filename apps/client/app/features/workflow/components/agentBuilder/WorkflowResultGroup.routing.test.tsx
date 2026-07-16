@@ -64,6 +64,23 @@ describe('WorkflowResultGroup model routing guidance', () => {
     node_purpose: 'LLM 호출',
     configuration_state: 'resolved',
   };
+  const completedRoutingTasks: AgentBuilderParameterTask[] = [
+    'auto_model_routing',
+  ].map((parameterKey, stableOrder) => ({
+    ...routingTask,
+    task_id: `routing-task-${parameterKey}`,
+    parameter_key: parameterKey,
+    label: parameterKey,
+    input_type:
+      parameterKey === 'auto_model_routing'
+        ? 'boolean'
+        : parameterKey.includes('model_id')
+          ? 'resource_ref'
+          : 'number',
+    task_group: 'model_routing',
+    status: 'completed',
+    stable_order: stableOrder,
+  }));
   it('이번 결과의 라우팅 미설정 LLM만 하나의 안내로 보여주고 Routing control 열기를 요청한다', () => {
     const onFocusNode = vi.fn();
     const onOpenNodeSettings = vi.fn();
@@ -132,6 +149,56 @@ describe('WorkflowResultGroup model routing guidance', () => {
       screen.queryByTestId('agent-builder-connection-guidance'),
     ).not.toBeInTheDocument();
     expect(onOpenNodeSettings).not.toHaveBeenCalled();
+  });
+
+  it('offers the existing advanced Routing settings only after every graph task is complete', () => {
+    const onOpenNodeSettings = vi.fn();
+    const routingNode: Node = {
+      id: 'generated-llm',
+      type: 'llmNode',
+      position: { x: 0, y: 0 },
+      data: { title: 'Routing LLM', auto_model_routing: true },
+    } as Node;
+
+    const { rerender } = render(
+      <WorkflowResultGroup
+        tasks={[
+          { ...completedRoutingTasks[0], status: 'active' },
+          ...completedRoutingTasks.slice(1).map((task) => ({
+            ...task,
+            status: 'pending' as const,
+          })),
+        ]}
+        nodes={[routingNode]}
+        routingNodeIds={['generated-llm']}
+        setupStatus="configuring"
+        onFocusNode={vi.fn()}
+        onOpenNodeSettings={onOpenNodeSettings}
+        onDecision={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.queryByRole('button', { name: 'Routing LLM 고급 Routing 설정' }),
+    ).not.toBeInTheDocument();
+
+    rerender(
+      <WorkflowResultGroup
+        tasks={completedRoutingTasks}
+        nodes={[routingNode]}
+        routingNodeIds={['generated-llm']}
+        setupStatus="completed"
+        onFocusNode={vi.fn()}
+        onOpenNodeSettings={onOpenNodeSettings}
+        onDecision={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Routing LLM 고급 Routing 설정' }),
+    );
+
+    expect(onOpenNodeSettings).toHaveBeenCalledWith('generated-llm', 'routing');
   });
 
   it('configure-and-generate routing task suppresses duplicate routing guidance', () => {

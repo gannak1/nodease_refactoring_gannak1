@@ -110,9 +110,13 @@ Builder는 고정 KB와 Knowledge Collection을 별도 selector group으로 표�
 사용자가 제거하거나 권한이 복구되기 전 새 저장을 차단한다. Builder 안에서
 Collection 생성/삭제/permission/membership을 관리하지 않는다.
 
-Agent Builder와 optimizer는 기존 Collection selection을 보존하지만 자동으로 새
-Collection을 추천하거나 선택하지 않는다. Runtime sync는 explicit direct KB만 처리하고
-Collection child는 MBA-232 materialized provenance/readiness 결과를 사용한다.
+Agent Builder는 ADR-0049에 따라 route-authorized Collection과 use-authorized 하위 KB를
+계층 후보로 표시한다. Collection 선택은 runtime 동적 routing, 하위 KB 선택은 직접
+binding이며 둘은 독립 상태다. 동일 KB는 모든 Collection 위치에서 같은 selection state를
+공유한다. Runtime은 direct KB와 Collection child를 KB ID 합집합으로 중복 제거하고
+MBA-232 materialized provenance/readiness 결과를 사용한다.
+화면 후보는 점수 계산과 안정 정렬 뒤 Collection 최대 20개, 고유 KB 최대 20개로 제한하고
+약 3개 행 높이의 내부 스크롤로 표시한다.
 
 Conversation Memory target adapter는 Knowledge Permission Helper의 bulk 결과를 `decision`, `principal_kind`, opaque `authorization_decision_revision`, `resource_revision`, `policy_revision`, `evaluated_at` contract로 투영한다. Source-managed KB의 source ACL revision은 decision revision에 반영한다. Lifecycle, KB permission, source ACL 중 필요한 revision이 없으면 allow를 추정하지 않고 `unknown`을 반환한다. Anonymous public audience에는 subject ID/revision을 합성하지 않는다.
 

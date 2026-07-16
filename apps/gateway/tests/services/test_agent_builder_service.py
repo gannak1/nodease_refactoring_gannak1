@@ -1,5 +1,6 @@
 import copy
 import uuid
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -3204,6 +3205,78 @@ def test_agent_builder_collection_only_recommendation_remains_selectable(monkeyp
     assert "후보가 없습니다" not in result["questions"][0]
 
 
+def test_direct_builder_rejects_flat_only_knowledge_recommendation(monkeypatch):
+    class FakeRecommendationService:
+        def __init__(self, db, *, user_id, organization_id):
+            pass
+
+        def recommend_for_builder(self, request, **_kwargs):
+            return KnowledgeRAGRecommendationResponse(
+                status="recommended",
+                recommendations=[
+                    KnowledgeRAGRecommendation(
+                        recommendation_id="rec-flat-1",
+                        recommendation_mode="auto_collection",
+                        candidate_id="rec-flat-1",
+                        candidate_handle="rec-flat-1",
+                        safe_label="Flat KB",
+                        confidence="low",
+                        score=0.1,
+                        reason_category="safe_candidate_available",
+                        threshold_result="below_threshold",
+                        safe_reason_code="intent_matches_safe_metadata",
+                        recommended_options=KnowledgeRAGRecommendedOptions(),
+                        materialized_knowledge_bases=[],
+                        provenance=KnowledgeRAGRecommendationProvenance(
+                            safe_reason_code="intent_matches_safe_metadata",
+                        ),
+                        runtime_availability="available",
+                    )
+                ],
+                clarification_options=[
+                    {
+                        "type": "knowledge_base",
+                        "candidate_id": "rec-flat-1",
+                        "label": "Flat KB",
+                    }
+                ],
+                knowledge_selection=None,
+                summary=KnowledgeRAGRecommendationSummary(
+                    candidate_count_bucket="1",
+                    recommendation_count_bucket="1",
+                ),
+            )
+
+    monkeypatch.setattr(
+        service_module,
+        "KnowledgeRAGRecommendationService",
+        FakeRecommendationService,
+    )
+    svc = AgentBuilderService(
+        object(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+    structured = svc._build_structured_request(  # noqa: SLF001
+        AgentBuilderMessageRequest(message="사내 문서로 답변하는 workflow를 만들어줘"),
+        workflow=None,
+    )
+
+    result = svc._resolve_knowledge_requirements(  # noqa: SLF001
+        structured,
+        require_hierarchical_selection=True,
+    )
+
+    assert result["status"] == "validation_failed"
+    assert result["bindings"] == []
+    assert result["options"] == []
+    assert result["knowledge_selection"] == {
+        "collections": [],
+        "ungrouped_kbs": [],
+    }
+    assert "계층형 Knowledge 후보" in result["warnings"][0]
+
+
 def test_agent_builder_session_messages_restore_redacted_user_turn_and_assistant_turn():
     request_id = uuid.uuid4()
     svc = AgentBuilderService(
@@ -3259,6 +3332,94 @@ def test_direct_session_messages_expose_processing_request_as_planning():
     assert messages[1]["response"]["request_id"] == str(request_id)
     assert messages[1]["response"]["status"] == "planning"
     assert svc._request_summary(request_row)["status"] == "planning"  # noqa: SLF001
+
+
+def test_processing_request_past_deadline_becomes_terminal_failed():
+    now = datetime.now(timezone.utc)
+    request_row = SimpleNamespace(
+        id=uuid.uuid4(),
+        status="processing",
+        created_at=now - timedelta(minutes=5),
+        completed_at=None,
+        response_payload={},
+        structured_request={},
+    )
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    expired = svc._reconcile_processing_deadline(  # noqa: SLF001
+        request_row,
+        now=now,
+    )
+
+    assert expired is True
+    assert request_row.status == "failed"
+    assert request_row.response_payload["status"] == "failed"
+    assert request_row.response_payload["validation_result"]["issues"][0][
+        "code"
+    ] == "REQUEST_PROCESSING_TIMEOUT"
+    assert request_row.completed_at == now
+
+
+def test_processing_request_inside_deadline_remains_planning():
+    now = datetime.now(timezone.utc)
+    request_row = SimpleNamespace(
+        id=uuid.uuid4(),
+        status="processing",
+        created_at=now - timedelta(minutes=1),
+        completed_at=None,
+        response_payload={},
+        structured_request={},
+    )
+    svc = AgentBuilderService(
+        FakeDb(),
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    expired = svc._reconcile_processing_deadline(  # noqa: SLF001
+        request_row,
+        now=now,
+    )
+
+    assert expired is False
+    assert request_row.status == "processing"
+
+
+def test_processing_request_past_deadline_releases_next_request_admission(monkeypatch):
+    now = datetime.now(timezone.utc)
+    pending = SimpleNamespace(
+        id=uuid.uuid4(),
+        status="processing",
+        created_at=now - timedelta(minutes=5),
+        completed_at=None,
+        response_payload={},
+        structured_request={},
+    )
+    db = FakeDb()
+    db.query_result = FakeQuery(pending)
+    audit_calls = []
+    monkeypatch.setattr(
+        service_module,
+        "add_action_audit",
+        lambda *_args, **kwargs: audit_calls.append(kwargs),
+    )
+    svc = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    svc._reject_if_pending(SimpleNamespace(id=uuid.uuid4()))  # noqa: SLF001
+
+    assert pending.status == "failed"
+    assert pending.response_payload["validation_result"]["issues"][0][
+        "code"
+    ] == "REQUEST_PROCESSING_TIMEOUT"
+    assert audit_calls[0]["metadata"]["reason"] == "processing_timeout"
 
 
 def test_direct_session_recovery_removes_legacy_generic_knowledge_task(
@@ -3365,6 +3526,123 @@ def test_direct_session_recovery_removes_legacy_generic_knowledge_task(
         for task in request_row.response_payload["parameter_groups"][0]["tasks"]
     ] == ["model_id"]
     assert db.commits == 1
+
+
+def test_direct_session_recovery_adds_catalog_tasks_missing_from_legacy_group(
+    monkeypatch,
+):
+    group_id = uuid.uuid4()
+    channel_task = AgentBuilderParameterTask(
+        task_id=uuid.uuid4(),
+        group_id=group_id,
+        step_id="step_slack",
+        node_id="slack",
+        node_type="slackPostNode",
+        parameter_key="channel",
+        label="Slack channel",
+        input_type="text",
+        required=False,
+        defer_policy="allow_unresolved",
+        status="active",
+        task_version=3,
+        stable_order=0,
+        reason="Select the Slack channel.",
+        input_guidance="Enter a channel name or ID.",
+        node_label="Slack",
+    )
+    group = AgentBuilderParameterGroup(
+        group_id=group_id,
+        status="active",
+        tasks=[channel_task],
+    )
+    request_id = uuid.uuid4()
+    request_row = SimpleNamespace(
+        id=request_id,
+        status="completed",
+        created_at=None,
+        expires_at=None,
+        message_summary="Send a Slack message",
+        response_payload={
+            "request_id": str(request_id),
+            "status": "graph_mutation_ready",
+            "safe_step_node_ids": {"step_slack": "slack"},
+            "parameter_groups": [group.model_dump(mode="json")],
+        },
+    )
+    workflow_id = uuid.uuid4()
+    workflow = SimpleNamespace(
+        id=workflow_id,
+        graph={
+            "nodes": [
+                {
+                    "id": "slack",
+                    "type": "slackPostNode",
+                    "data": {"title": "Slack", "slackMode": "api"},
+                }
+            ],
+            "edges": [],
+        },
+    )
+
+    class SessionQuery(FakeQuery):
+        def with_for_update(self):
+            return self
+
+        def all(self):
+            return [self.result] if self.result is not None else []
+
+    class SessionDb(FakeDb):
+        def query(self, model):
+            if model is service_module.AgentBuilderRequest:
+                return SessionQuery(request_row)
+            if model is service_module.Workflow:
+                return SessionQuery(workflow)
+            raise AssertionError(f"unexpected model: {model}")
+
+    monkeypatch.setattr(
+        service_module.ParameterCandidateProvider,
+        "enrich_group",
+        lambda _self, parameter_group, **_kwargs: parameter_group,
+    )
+    db = SessionDb()
+    svc = AgentBuilderService(
+        db,
+        user=SimpleNamespace(id=uuid.uuid4()),
+        organization_id=uuid.uuid4(),
+    )
+
+    response = svc._session_response(  # noqa: SLF001
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            workflow_id=workflow_id,
+            app_id=None,
+            status="active",
+            protocol_version="direct_edit_v1",
+        )
+    )
+
+    expected_keys = [
+        "slackMode",
+        "bot_token",
+        "url",
+        "channel",
+        "message",
+        "blocks",
+        "attachments",
+        "thread_ts",
+        "username",
+        "icon_emoji",
+    ]
+    assert response.parameter_group is not None
+    assert [task.parameter_key for task in response.parameter_group.tasks] == expected_keys
+    stored_tasks = request_row.response_payload["parameter_groups"][0]["tasks"]
+    assert [task["parameter_key"] for task in stored_tasks] == expected_keys
+    recovered_channel = next(
+        task for task in response.parameter_group.tasks if task.parameter_key == "channel"
+    )
+    assert recovered_channel.task_id == channel_task.task_id
+    assert recovered_channel.task_version == 3
+    assert recovered_channel.status == "active"
 
 
 def test_new_workflow_preview_graph_is_deterministic_for_the_same_plan():

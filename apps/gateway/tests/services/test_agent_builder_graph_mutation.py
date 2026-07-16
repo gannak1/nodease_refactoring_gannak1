@@ -43,6 +43,41 @@ def _initial_operations() -> list[dict]:
     ]
 
 
+def test_canonical_graph_hash_normalizes_integral_floats_across_browser_json():
+    server_graph = {
+        "nodes": [
+            {
+                **_node("llm", "llmNode"),
+                "data": {
+                    "title": "LLM",
+                    "parameters": {
+                        "model_routing_validation_budget_usd": 3.0,
+                        "presence_penalty": -0.0,
+                    },
+                },
+            }
+        ],
+        "edges": [],
+    }
+    browser_graph = {
+        "nodes": [
+            {
+                **_node("llm", "llmNode"),
+                "data": {
+                    "title": "LLM",
+                    "parameters": {
+                        "model_routing_validation_budget_usd": 3,
+                        "presence_penalty": 0,
+                    },
+                },
+            }
+        ],
+        "edges": [],
+    }
+
+    assert canonical_graph_hash(server_graph) == canonical_graph_hash(browser_graph)
+
+
 @pytest.mark.parametrize("generation_mode", ["configure_and_generate", "structure_only"])
 def test_initial_graph_kind_is_independent_from_generation_mode(generation_mode):
     mutation = GraphMutationBuilder().build(

@@ -1,4 +1,5 @@
 from apps.shared.services.workflow_node_catalog import (
+    LLM_ROUTING_GRAPH_PARAMETER_KEYS,
     apply_node_parameter_value,
     agent_builder_supported_node_types,
     capability_contract,
@@ -132,7 +133,7 @@ def test_catalog_exposes_start_and_answer_schema_as_configurable_tasks():
     ]
 
 
-def test_llm_catalog_exposes_model_routing_parameters_and_runtime_shape():
+def test_llm_catalog_limits_agent_builder_routing_to_the_toggle_and_keeps_runtime_shape():
     parameters = node_parameter_definitions("llmNode")
     assert [parameter["key"] for parameter in parameters] == [
         "model_id",
@@ -143,6 +144,35 @@ def test_llm_catalog_exposes_model_routing_parameters_and_runtime_shape():
         "model_routing_max_cohorts",
         "knowledgeBases",
     ]
+    routing_parameters = [
+        parameter
+        for parameter in parameters
+        if parameter.get("task_group") == "model_routing"
+    ]
+    assert tuple(parameter["key"] for parameter in routing_parameters) == (
+        "auto_model_routing",
+    )
+    assert next(
+        parameter for parameter in parameters if parameter["key"] == "model_id"
+    )["agent_builder_task"] is True
+    assert {
+        parameter["key"]
+        for parameter in parameters
+        if parameter["agent_builder_task"] is False
+    } == {
+        "fallback_model_id",
+        "model_routing_refresh_every_runs",
+        "model_routing_validation_budget_usd",
+        "model_routing_max_cohorts",
+    }
+    assert set(LLM_ROUTING_GRAPH_PARAMETER_KEYS) == {
+        "model_id",
+        "auto_model_routing",
+        "fallback_model_id",
+        "model_routing_refresh_every_runs",
+        "model_routing_validation_budget_usd",
+        "model_routing_max_cohorts",
+    }
 
     data = {"model_id": "default-model"}
     for key, value in [

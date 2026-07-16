@@ -23,11 +23,16 @@ from apps.gateway.application.agent_builder.knowledge_timing import (
     materialize_before_graph_plan,
 )
 from apps.gateway.application.agent_builder.parameter_tasks import (
+    reconcile_parameter_group_catalog_tasks,
     remove_direct_edit_external_credential_tasks,
     remove_direct_edit_knowledge_parameter_tasks,
 )
 from apps.gateway.application.agent_builder.semantic_plan import CAPABILITY_STEP_IDS
-from apps.gateway.application.agent_builder.service import DirectEditOrchestrator
+from apps.gateway.application.agent_builder.service import (
+    DirectEditOrchestrator,
+    plan_parameter_tasks_for_existing_graph,
+    step_node_ids_for_graph,
+)
 from apps.gateway.auth.permissions import (
     ensure_workflow_permission,
     recorded_permission_denied_exception,
@@ -109,6 +114,7 @@ logger = logging.getLogger(__name__)
 
 SESSION_TTL = timedelta(hours=24)
 DRAFT_TTL = timedelta(minutes=30)
+AGENT_BUILDER_REQUEST_PROCESSING_TIMEOUT = timedelta(minutes=4)
 AGENT_BUILDER_SUPPORTED_NODE_TYPES = agent_builder_supported_node_types()
 AGENT_BUILDER_SUPPORTED_CAPABILITIES = agent_builder_supported_capabilities()
 STRUCTURAL_NODE_TARGET_ALIASES = {
@@ -1225,6 +1231,7 @@ class AgentBuilderService:
             validation = self._validate_structured_request(structured, app_id=app_id)
             recommendations = self._resolve_knowledge_requirements(
                 structured,
+                require_hierarchical_selection=direct_edit_session,
                 selected_candidate_handles=(
                     selected_kb_context["candidate_handles"]
                     if selected_kb_context
@@ -3757,6 +3764,7 @@ class AgentBuilderService:
         *,
         include_materialized_refs: bool = False,
         selected_candidate_handles: set[str] | None = None,
+        require_hierarchical_selection: bool = False,
     ) -> dict[str, Any]:
         if not structured.knowledge_requirements:
             return {
@@ -3812,6 +3820,24 @@ class AgentBuilderService:
                 if response.knowledge_selection is not None
                 else None
             )
+            if (
+                require_hierarchical_selection
+                and response.status in {"recommended", "clarification_required"}
+                and knowledge_selection is None
+            ):
+                return {
+                    "status": "validation_failed",
+                    "bindings": [],
+                    "questions": [],
+                    "options": [],
+                    "knowledge_selection": {
+                        "collections": [],
+                        "ungrouped_kbs": [],
+                    },
+                    "warnings": [
+                        "계층형 Knowledge 후보를 불러오지 못했습니다. 다시 시도해주세요."
+                    ],
+                }
             if response.status == "unavailable":
                 if selected_candidate_handles and not include_materialized_refs:
                     selected_option = next(
@@ -4154,53 +4180,16 @@ class AgentBuilderService:
         candidate_graph = self._build_preview_graph(
             effective_plan,
             workflow=workflow,
-            kb_bindings=self._safe_kb_bindings(bindings),
+            kb_bindings=[],
         )
-        knowledge_base_ids = [
-            str(binding["knowledge_base_id"])
-            for binding in bindings
-            if binding.get("knowledge_base_id")
-        ]
-        if knowledge_base_ids:
-            for node in candidate_graph.get("nodes") or []:
-                if node.get("type") != "llmNode":
-                    continue
-                data = dict(node.get("data") or {})
-                if "knowledgeBases" not in data:
-                    continue
-                data["knowledgeBases"] = [
-                    {
-                        "id": str(binding["knowledge_base_id"]),
-                        "name": str(binding.get("name") or "Knowledge Base"),
-                    }
-                    for binding in bindings
-                    if binding.get("knowledge_base_id")
-                ]
-                node["data"] = data
-        knowledge_collections = [
-            {
-                "id": str(binding["knowledge_collection_id"]),
-                "safeLabel": str(
-                    binding.get("name") or "Knowledge Collection"
-                ),
-            }
-            for binding in (collection_bindings or [])
-            if binding.get("knowledge_collection_id")
-        ]
-        if knowledge_collections:
-            for node in candidate_graph.get("nodes") or []:
-                if node.get("type") != "llmNode":
-                    continue
-                data = dict(node.get("data") or {})
-                if "knowledgeBases" not in data:
-                    continue
-                data["knowledgeCollections"] = list(
-                    {
-                        reference["id"]: reference
-                        for reference in knowledge_collections
-                    }.values()
-                )
-                node["data"] = data
+        if bindings or collection_bindings:
+            self._apply_before_graph_knowledge_bindings(
+                candidate_graph=candidate_graph,
+                structured=effective_plan,
+                placement=placement,
+                bindings=bindings,
+                collection_bindings=collection_bindings or [],
+            )
         validation = self.validate_preview_graph(candidate_graph)
         if not validation.valid:
             raise ValueError("knowledge candidate graph is invalid")
@@ -4227,6 +4216,55 @@ class AgentBuilderService:
             "parameter_group": parameter_group,
             "step_node_ids": issued.step_node_ids,
         }
+
+    def _apply_before_graph_knowledge_bindings(
+        self,
+        *,
+        candidate_graph: dict[str, Any],
+        structured: AgentBuilderStructuredRequest,
+        placement: AgentBuilderKnowledgePlacement,
+        bindings: list[dict[str, Any]],
+        collection_bindings: list[dict[str, Any]],
+    ) -> None:
+        step_node_ids = step_node_ids_for_graph(structured, candidate_graph)
+        target_node_id = step_node_ids.get(str(placement.target_step_id or ""))
+        target_node = next(
+            (
+                node
+                for node in candidate_graph.get("nodes") or []
+                if isinstance(node, dict) and str(node.get("id")) == target_node_id
+            ),
+            None,
+        )
+        target_data = dict(target_node.get("data") or {}) if target_node else {}
+        if (
+            target_node is None
+            or target_node.get("type") != "llmNode"
+            or "knowledgeBases" not in target_data
+        ):
+            raise ValueError("knowledge placement target is invalid")
+
+        target_data["knowledgeBases"] = [
+            {
+                "id": str(binding["knowledge_base_id"]),
+                "name": str(binding.get("name") or "Knowledge Base"),
+            }
+            for binding in bindings
+            if binding.get("knowledge_base_id")
+        ]
+        target_data["knowledgeCollections"] = list(
+            {
+                str(binding["knowledge_collection_id"]): {
+                    "id": str(binding["knowledge_collection_id"]),
+                    "safeLabel": str(
+                        binding.get("name") or "Knowledge Collection"
+                    ),
+                }
+                for binding in collection_bindings
+                if binding.get("knowledge_collection_id")
+            }.values()
+        )
+        target_node["data"] = target_data
 
     def _kb_clarification_options(
         self,
@@ -4478,6 +4516,7 @@ class AgentBuilderService:
             for capability in planned_capabilities
             if capability not in {"start_input", "webhook_trigger", "schedule_trigger"}
         ]
+        uses_planned_body = bool(body_capabilities)
         if not body_capabilities:
             body_capabilities = [
                 capability
@@ -4488,7 +4527,7 @@ class AgentBuilderService:
             body_capabilities = [
                 capability for capability in body_capabilities if capability != "answer"
             ]
-        if "knowledge_backed_llm" in body_capabilities:
+        if not uses_planned_body and "knowledge_backed_llm" in body_capabilities:
             body_capabilities = [
                 capability for capability in body_capabilities if capability != "llm"
             ]
@@ -5459,6 +5498,21 @@ class AgentBuilderService:
                     .with_for_update()
                     .first()
                 )
+                if self._reconcile_processing_deadline(latest_request, now=now):
+                    add_action_audit(
+                        self.db,
+                        AuditAction.AGENT_BUILDER_REQUEST_FAILED,
+                        self.user.id,
+                        "agent_builder_request",
+                        latest_request.id,
+                        organization_id=self.organization_id,
+                        metadata={
+                            "request_id": str(latest_request.id),
+                            "reason": "processing_timeout",
+                        },
+                        status="failure",
+                    )
+                    self.db.commit()
             payload = (
                 copy.deepcopy(latest_request.response_payload or {})
                 if latest_request is not None
@@ -5537,19 +5591,25 @@ class AgentBuilderService:
             normalized_parameter_group = remove_direct_edit_external_credential_tasks(
                 remove_direct_edit_knowledge_parameter_tasks(parameter_group)
             )
-            if normalized_parameter_group is not parameter_group:
-                AgentBuilderRepository().store_parameter_group(
-                    latest_request,
-                    normalized_parameter_group,
-                )
-                self.db.commit()
-                parameter_group = normalized_parameter_group
             workflow_graph = None
-            needs_reference_recovery = parameter_group is not None and any(
-                task.input_type in {"resource_ref", "credential_ref"}
-                for task in parameter_group.tasks
+            safe_step_node_ids = payload.get("safe_step_node_ids")
+            needs_catalog_recovery = (
+                normalized_parameter_group is not None
+                and normalized_parameter_group.status in {"active", "completed"}
+                and session.workflow_id is not None
+                and isinstance(safe_step_node_ids, dict)
+                and bool(safe_step_node_ids)
             )
-            if session.workflow_id is not None and needs_reference_recovery:
+            needs_reference_recovery = (
+                normalized_parameter_group is not None
+                and any(
+                    task.input_type in {"resource_ref", "credential_ref"}
+                    for task in normalized_parameter_group.tasks
+                )
+            )
+            if session.workflow_id is not None and (
+                needs_catalog_recovery or needs_reference_recovery
+            ):
                 recovery_workflow = (
                     self.db.query(Workflow)
                     .filter(
@@ -5560,6 +5620,26 @@ class AgentBuilderService:
                 )
                 if recovery_workflow is not None:
                     workflow_graph = getattr(recovery_workflow, "graph", None)
+            if needs_catalog_recovery and isinstance(workflow_graph, dict):
+                planned_tasks = plan_parameter_tasks_for_existing_graph(
+                    graph=workflow_graph,
+                    step_node_ids={
+                        str(step_id): str(node_id)
+                        for step_id, node_id in safe_step_node_ids.items()
+                    },
+                    group_id=normalized_parameter_group.group_id,
+                )
+                normalized_parameter_group = reconcile_parameter_group_catalog_tasks(
+                    normalized_parameter_group,
+                    planned_tasks,
+                )
+            if normalized_parameter_group != parameter_group:
+                AgentBuilderRepository().store_parameter_group(
+                    latest_request,
+                    normalized_parameter_group,
+                )
+                self.db.commit()
+                parameter_group = normalized_parameter_group
             parameter_group = ParameterCandidateProvider(
                 self.db,
                 user_id=self.user.id,
@@ -6118,6 +6198,64 @@ class AgentBuilderService:
         )
         request_row.completed_at = _now()
 
+    def _reconcile_processing_deadline(
+        self,
+        request_row: AgentBuilderRequest,
+        *,
+        now: datetime | None = None,
+    ) -> bool:
+        checked_at = now or _now()
+        created_at = getattr(request_row, "created_at", None)
+        if (
+            getattr(request_row, "status", None) != "processing"
+            or created_at is None
+            or created_at + AGENT_BUILDER_REQUEST_PROCESSING_TIMEOUT > checked_at
+        ):
+            return False
+
+        response = AgentBuilderMessageResponse(
+            request_id=request_row.id,
+            status="failed",
+            validation_result=AgentBuilderValidationResult(
+                valid=False,
+                issues=[
+                    AgentBuilderValidationIssue(
+                        code="REQUEST_PROCESSING_TIMEOUT",
+                        message=(
+                            "Agent Builder 요청 처리 제한시간이 지나 작업을 종료했습니다. "
+                            "같은 요청을 다시 제출해주세요."
+                        ),
+                    )
+                ],
+            ),
+            warnings=[
+                "서버가 처리 완료를 확인하지 못해 기존 요청을 종료했습니다."
+            ],
+        )
+        payload = self._stored_response_payload(response, direct_edit=True)
+        if isinstance(self.db, Session):
+            updated = (
+                self.db.query(AgentBuilderRequest)
+                .filter(
+                    AgentBuilderRequest.id == request_row.id,
+                    AgentBuilderRequest.status == "processing",
+                )
+                .update(
+                    {
+                        "status": "failed",
+                        "response_payload": payload,
+                        "completed_at": checked_at,
+                    },
+                    synchronize_session=False,
+                )
+            )
+            if updated != 1:
+                return False
+        request_row.status = "failed"
+        request_row.response_payload = payload
+        request_row.completed_at = checked_at
+        return True
+
     def _fail_processing_request(
         self,
         request_row: AgentBuilderRequest,
@@ -6152,11 +6290,15 @@ class AgentBuilderService:
         if direct_edit:
             direct_response = AgentBuilderDirectMessageResponse.from_internal(response)
             if direct_response.knowledge_resolution is not None:
+                direct_payload = direct_response.model_dump(
+                    mode="json",
+                    exclude_none=True,
+                )
                 payload["knowledge_resolution"] = copy.deepcopy(
-                    direct_response.knowledge_resolution
+                    direct_payload["knowledge_resolution"]
                 )
                 payload["clarification_options"] = copy.deepcopy(
-                    direct_response.clarification_options
+                    direct_payload["clarification_options"]
                 )
         payload.pop("draft_preview", None)
         mutation = response.graph_mutation
@@ -6304,4 +6446,19 @@ class AgentBuilderService:
             .first()
         )
         if pending is not None:
+            if self._reconcile_processing_deadline(pending):
+                add_action_audit(
+                    self.db,
+                    AuditAction.AGENT_BUILDER_REQUEST_FAILED,
+                    self.user.id,
+                    "agent_builder_request",
+                    pending.id,
+                    organization_id=self.organization_id,
+                    metadata={
+                        "request_id": str(pending.id),
+                        "reason": "processing_timeout",
+                    },
+                    status="failure",
+                )
+                return
             raise HTTPException(status_code=409, detail="Agent Builder request pending")

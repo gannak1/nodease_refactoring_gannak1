@@ -16,6 +16,7 @@ from apps.gateway.services.agent_builder_intent_service import (
     AgentBuilderIntentRuntimeUnavailableError,
     AgentBuilderSemanticEdit,
     LLMAgentBuilderIntentExtractor,
+    _safe_knowledge_candidate_context,
     agent_builder_capability_guide,
     safe_intent_extraction_reason,
 )
@@ -322,6 +323,7 @@ def test_llm_intent_extractor_requests_json_and_preserves_step_order():
     assert kwargs["response_format"]["type"] == "json_object"
     assert kwargs["temperature"] == 0
     assert kwargs["max_tokens"] == 4000
+    assert kwargs["request_timeout_seconds"] == 90
     assert runtime_calls[0]["credential_id"] == credential_id
     assert runtime_calls[0]["model_id"] == model_id
 
@@ -931,6 +933,20 @@ def test_llm_intent_extractor_passes_only_bounded_safe_kb_context():
     assert raw_kb_id not in prompt
     assert "raw_source_path" not in prompt
     assert result.knowledge_candidate_handles == ["rec-safe-1"]
+
+
+def test_intent_prompt_boundary_excludes_zero_relevance_kb_context():
+    assert _safe_knowledge_candidate_context(
+        [
+            {
+                "candidate_handle": "rec-unrelated",
+                "safe_label": "Unrelated policy",
+                "safe_topics": ["finance"],
+                "runtime_availability": "available",
+                "relevance_score": 0.0,
+            }
+        ]
+    ) == []
 
 
 def test_llm_intent_extractor_repairs_unknown_kb_candidate_handle_once():

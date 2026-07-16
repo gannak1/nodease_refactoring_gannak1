@@ -141,7 +141,7 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 - 저장 실패 또는 저장 전 종료 상태에서는 parameter task를 시작하지 않는다.
 - 최초 graph, 기존 graph 구조 변경, parameter decision과 `after_graph` Knowledge binding은 같은 GraphMutation/CDS 저장/acknowledgement 계약을 사용한다.
 - acknowledgement 전에는 해당 operation을 완료로 기록하거나 parameter task를 `active|completed|deferred|skipped`로 전환하지 않는다. 최초 structural operation의 parameter group/task는 `pending_save|pending_ack`/`pending`으로 유지하고 decision API도 제출을 거부한다. `structure_only`는 task를 만들지 않지만 acknowledgement 전에는 operation을 완료로 기록하지 않는다.
-- ParameterTask의 `resolution_source=existing_graph`는 mutation 발급 전 canonical base graph에 존재한 node의 실제 설정값에만 허용한다. mutation으로 추가한 node의 Catalog default/template 값과 upstream selector는 각각 `catalog_default`, `upstream_selector`로 표시하고 사용자 confirm 전 완료 처리하지 않는다.
+- ParameterTask의 `resolution_source=existing_graph`는 mutation 발급 전 canonical base graph에 존재한 node의 실제 설정값에만 허용한다. mutation으로 추가한 node의 Catalog default/template 값과 upstream selector는 각각 `catalog_default`, `upstream_selector`로 표시한다. 안전한 추천값은 structural save/acknowledgement가 확인된 뒤 별도 confirm 없이 completed로 표시하되 언제든 `수정`으로 다시 열 수 있어야 한다.
 - 같은 workflow의 동시 mutation은 첫 CDS 저장만 성공하고 뒤 저장은 stale conflict로 닫는다. Silent overwrite, 자동 merge와 CRDT는 제공하지 않는다.
 - 동일 operation의 CDS save 응답이 유실되면 client는 같은 mutation context로 한 번 자동 재시도한다. 두 번째 결과도 불명확하면 canonical workflow와 boundary 상태를 조회해 반영됨, 미반영 또는 stale을 판정할 때까지 pending history를 보존한다. Server는 revert와 redo 모두 canonical graph hash와 `updated_at`이 safe envelope의 저장 결과와 일치할 때 새 write, task/Knowledge 전환이나 audit 없이 기존 저장 성공 결과를 반환한다.
 - 동일 canonical graph hash와 `updated_at`의 acknowledgement 재시도는 최초 응답과 같은 완료 결과를 반환하고 task version, Knowledge resolution과 audit를 다시 변경하지 않는다.
@@ -173,11 +173,11 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 - `credential_ref`를 포함한 configurable parameter는 현재 reference가 없다는 이유만으로 자동 `deferred` 처리하지 않는다. Agent Builder가 발급하는 task는 `pending|active`에서 사용자 확인을 기다리며, 사용자가 명시적으로 `defer`를 제출하고 Catalog policy가 허용한 경우에만 GraphMutation, CDS 저장과 acknowledgement 뒤 `deferred`가 된다. Permission-filtered picker는 durable credential resource/use 권한 resolver가 이미 존재하는 Mail/Gmail에만 제공한다. Gmail Draft에는 Gmail OAuth2 use-permitted credential만 노출하고 제출도 같은 조건으로 검증한다. Gmail/Mail selector는 defer할 수 없다. Slack/GitHub에는 신규 credential resource, 빈 picker 또는 credential defer 안내를 만들지 않지만 기존 node graph의 token/URL field는 password형 `secret` task로 입력할 수 있다.
 - required parameter는 유효한 값 또는 `allow_unresolved` 정책 없이 완료할 수 없다. `forbidden`인 task에는 defer control을 표시하지 않고 backend도 defer 요청을 거부한다.
 - optional parameter는 건너뛸 수 있다.
-- Frontend는 자동 추천값에 대한 `confirm`, `set`, policy가 허용한 `defer`, optional `skip`, `previous`를 명시적인 control로 제공한다. Required task에서는 `skip` control을 숨기거나 disabled로 표시하고 server도 같은 요청을 거부한다.
+- Frontend는 자동 완료된 추천값의 `수정(set)`, policy가 허용한 `defer`, optional `skip`, `previous`를 명시적인 control로 제공한다. 기존 session의 active 추천에는 호환용 `confirm`을 제공할 수 있다. Required task에서는 `skip` control을 숨기거나 disabled로 표시하고 server도 같은 요청을 거부한다.
 - task 상태는 `pending`, `active`, `completed`, `deferred`, `skipped`, `invalid`, `canceled` 중 하나다.
 - completed task의 값을 변경하면 해당 node validation과 downstream suggestion을 다시 계산한다.
 - 유효한 `set` decision은 `parameter_update` GraphMutation을 반환하고 현재 task를 유지한다. Frontend가 mutation을 적용하고 CDS 저장과 canonical graph hash/`updated_at` acknowledgement를 완료한 뒤에만 현재 task를 `completed`로 바꾸고 다음 task를 활성화한다.
-- 자동 추천값이 canonical graph와 발급된 recommendation context에서 바뀌지 않고 관련 structural operation이 `acknowledged`인 `confirm`만 GraphMutation과 workflow 저장 없이 task를 `completed`로 전환하고 다음 task를 활성화한다. 같은 operation 재시도는 task version, 다음 task와 audit를 다시 변경하지 않는다. 추천값 수정은 `set -> parameter_update -> CDS save -> acknowledgement` 순서를 사용하며 새 값을 task/session payload에 복제하지 않는다.
+- 안전한 자동 추천값은 canonical graph와 발급된 recommendation context가 일치하고 관련 structural operation이 `acknowledged`일 때 별도 decision 없이 task를 `completed`로 표시한다. Pending save/ack group은 완료 UI나 다음 task 진행을 열지 않는다. 기존 active 추천의 호환용 `confirm`은 GraphMutation 없이 같은 검증을 수행한다. 추천값 수정은 `set -> parameter_update -> CDS save -> acknowledgement` 순서를 사용하며 새 값을 task/session payload에 복제하지 않는다.
 - `allow_unresolved` defer는 `parameter_update` GraphMutation을 반환하고 CDS 저장과 acknowledgement 뒤에만 task를 `deferred`로 전환한다. Optional `skip`은 graph 값이나 GraphMutation을 만들지 않고 operation id/task version 검증 뒤 task를 `skipped`로 전환해 다음 task를 활성화한다. Skipped task를 다시 열어 값을 설정하면 일반 `parameter_update`/CDS/acknowledgement 뒤 `completed`가 된다.
 - Node `configuration_state`는 backend가 Catalog의 모든 required configuration을 기준으로 생성, set/defer/skip, Undo, 복구와 실행·배포 preflight마다 다시 계산한다. 하나라도 missing/deferred/invalid이면 `unresolved`, 모두 유효할 때만 `resolved`이며 client가 보낸 상태를 권위로 신뢰하지 않는다. Optional skipped parameter는 Catalog required가 아닌 한 unresolved 원인이 아니다.
 - Parameter flow 전체 취소는 남은 task를 `canceled`로 닫고 이미 저장된 graph를 유지한다.
@@ -222,7 +222,7 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 - 사용자는 0개 이상의 Knowledge Base를 선택할 수 있다.
 - `knowledge_resolution`은 candidate가 처음부터 0개여도 유지되는 상위 `resolution_id`를 제공해야 하며 frontend는 후보가 비어 있어도 empty-selection card와 CTD를 표시해야 한다.
 - `before_graph`에서 선택하지 않은 상태를 제출하면 KB 없이 생성하겠다는 명시적인 empty selection으로 처리한다. 별도 no-KB 후보를 만들거나 다시 선택을 요구하지 않는다.
-- `before_graph`는 선택된 KB가 0개이면 `Knowledge Base 없이 생성`, 하나 이상이면 `선택한 Knowledge Base로 생성`을 표시한다. `after_graph`는 0개이면 `Knowledge Base 없이 계속`, 하나 이상이면 `선택 적용`을 표시한다.
+- `before_graph`는 선택된 Collection/KB가 0개이면 `Knowledge Base 없이 생성`, 하나 이상이면 `선택한 Knowledge로 생성`을 표시한다. `after_graph`는 0개이면 `Knowledge Base 없이 계속`, 하나 이상이면 `선택 적용`을 표시한다.
 - 최초 structured plan은 KB와 무관한 base topology와 typed Knowledge placement를 함께 제공한다. 각 placement는 requirement id, `before_graph|after_graph` timing, target step id, `binding_only|insert_step` effect kind를 포함한다. `insert_step`은 Knowledge step id, upstream step id, downstream step id와 empty-selection bridge policy를 추가로 포함한다. Planner는 선택별 완성 graph를 만들지 않는다.
 - 웹훅 기반 사내 문서 챗봇의 기본 base topology는 `webhook_trigger -> knowledge_backed_llm -> answer`이고, Knowledge 선택이 기존 LLM binding만 바꾸므로 `after_graph + binding_only`를 사용한다. 사용자가 Knowledge 선택에 따라 node 존재 또는 topology가 달라지는 조건부 구조를 명시한 경우에만 `before_graph + insert_step`을 사용한다.
 - Backend는 placement의 step reference, Catalog capability와 selected/empty topology를 검증한다. 선택된 KB가 있으면 Catalog template으로 Knowledge 의존 node/data/edge를 만들고 여러 KB를 같은 requirement binding 목록에 연결한다. Empty selection이면 bridge policy로 Knowledge step을 생략하고 upstream/downstream을 연결하며 Knowledge 선택 뒤 자연어 요청이나 planner를 다시 호출하지 않는다.
@@ -234,8 +234,10 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 ### DBP-FR-010a Selected Knowledge Candidate Materialization
 
 - Knowledge selection endpoint는 후보 발급 뒤 사용자가 선택한 opaque candidate handle을 새 추천 점수나 Top-K 결과로 다시 계산하지 않는다.
-- 선택 처리 시 active organization, `use` 권한, lifecycle, runtime eligibility를 다시 검증하고, 검증을 통과한 기존 handle만 runtime Knowledge Base binding으로 materialize한다.
+- 선택 처리 시 resolution에 발급된 전체 후보 집합을 유지하고 active organization, `use`/`route` 권한, lifecycle, runtime eligibility를 다시 검증한다. 현재 추천 순위 또는 표시 Top-K에서 밀려난 handle도 이 검증을 통과하면 materialize한다.
 - 선택한 handle이 더 이상 권한 또는 runtime eligibility를 통과하지 못하면 graph mutation을 만들거나 저장하지 않고 validation failure로 닫는다.
+- Collection/KB 선택은 순서 없는 집합으로 비교한다. 중복 제거와 handle 오름차순 canonicalization 뒤 같은 집합의 재시도는 멱등이고 실제 집합 변경만 conflict다.
+- `before_graph` materialization은 placement의 `target_step_id`로 확정한 정확히 하나의 Knowledge-capable LLM node만 변경한다. target이 없거나 모호하면 다른 LLM에 복제하지 않고 validation failure로 닫는다.
 
 ### DBP-FR-011 Existing Capability Compatibility
 
@@ -260,8 +262,10 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 - 실제 parameter 값은 session/request payload에 복제하지 않고 저장된 workflow graph에서 읽는다. 재진입 control은 Catalog mapping으로 graph의 현재 safe 값을 hydrate한다. 값이 없는 skipped/deferred task는 빈 control을 표시한다. Credential/resource reference는 현재 권한으로 조회 가능한 safe opaque reference만 표시하고 권한 상실·삭제된 reference의 ID/label과 raw secret은 노출하지 않는다.
 - raw secret과 credential config는 session에 저장하지 않는다.
 - transport 또는 5xx로 session 조회, pending request polling, acknowledgement 확인이 불명확해도 frontend는 local session pointer, 대화, 입력 draft, Knowledge 선택과 history boundary를 삭제하지 않는다. 같은 session context는 `1초 -> 2초 -> 4초` 간격으로 최대 세 번만 자동 확인한다.
+- Gateway는 session/request 보존 기간과 별개인 4분 processing 기한을 적용한다. 기한을 넘긴 `processing` request는 canonical session 조회 또는 다음 request admission에서 `failed` terminal 상태로 원자 전환하고 pending gate를 해제한다. 늦게 끝난 처리 결과는 terminal request를 덮어쓰지 않는다.
 - 원래 mutation 제출 흐름에서 acknowledgement 응답만 유실되면 같은 `operation_id`와 canonical metadata로 acknowledgement를 정확히 한 번 재시도할 수 있다. 두 번째 결과가 불명확해졌거나 복구·수동 확인 경로에서는 acknowledgement를 다시 발급하지 않고 session 조회만 수행한다.
 - 세 번의 자동 확인 뒤에도 applied, unapplied 또는 terminal 상태를 확정하지 못하면 `결과 확인 필요`와 `다시 확인` control을 표시한다. 수동 확인은 같은 session 조회만 다시 시작하며 자연어 요청, planner, GraphMutation 또는 acknowledgement를 새로 발급하지 않는다.
+- 성공한 session 응답이 동일한 `pending_request`를 반환하면 60초까지 정상 `계획 중` 상태에서 5초 간격으로 polling한다. 60초 이후에는 `평소보다 오래 걸리고 있습니다`를 표시하고 10초 간격으로 처리 제한시간까지 계속한다. Terminal 응답을 받으면 같은 `request_id`의 planning 표시를 교체한다. Transport 또는 5xx가 발생하면 자동 polling을 중단하고 `결과 확인 필요`와 수동 확인을 표시하며, 서버 처리가 계속된다고 오인하지 않도록 기존 planning card, 진행 banner와 `Workflow 계획 중` 상태를 숨긴다. Session pointer와 canonical 작업 context는 삭제하지 않는다.
 - local session pointer 제거와 새 direct-edit session 전환은 `stale_protocol`, server가 명시한 session not found 또는 invalid session에만 허용한다.
 - Client는 foreground request 응답과 request별 설정 card의 `mode_contract_version`을 session pointer와 함께 보존하고 각 후속 GET/POST에 해당 contract header를 사용한다. `mode_contract_mismatch`를 받으면 지원하는 contract인 경우 같은 GET을 한 번 다시 보내고, 지원하지 않거나 rollback 중이면 mode-free request cancel 또는 운영 drain으로 종료한다. 다른 contract로 quick 상태를 임의 projection하지 않는다.
 - 최신 failed/canceled request가 이전 ready mutation을 현재 결과처럼 복구하면 안 된다.
@@ -353,7 +357,7 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 ## 2026-07-14 Runtime Corrections
 
 - `after_graph` Knowledge binding that updates an LLM node's `knowledgeBases` emits every graph reference as safe `{ "id", "name" }`. D binding with an ID alone is invalid and must not be issued.
-- D task with an automatic recommendation shows that recommendation as the selected typed-control value together with the other allowed candidates or Catalog options. It remains pending user confirmation: unchanged apply sends `confirm`; a changed value sends `set`.
+- A task with an automatic safe recommendation is completed after structural acknowledgement and rendered collapsed. Opening `수정` hydrates the current canonical value into the typed control and keeps the other allowed candidates or Catalog options available; a changed value sends `set`.
 
 - `guided_generate`에서 LLM node가 생성되면 graph 저장 acknowledgement 뒤 하나의 after-graph Knowledge 설정 카드가 표시되어야 한다. 기존 `configure_and_generate` 입력도 같은 흐름이다. 사용자는 여러 Knowledge Base 또는 빈 선택을 확정할 수 있다.
 - Knowledge 후보 노출은 active organization의 use 권한 및 source lifecycle을 기준으로 한다. active ready version 부재는 후보 선택을 막지 않으며 실행 및 배포 preflight에서만 unresolved 상태를 차단한다.
@@ -365,15 +369,16 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 - Slack/GitHub의 `credential_ref` ParameterTask와 빈 후보 picker는 direct-edit에서 만들지 않는다. Catalog에 정의된 channel, message, action, repository, PR 번호와 기존 node graph의 token/URL field를 순차 task로 제공한다. Token/URL은 `secret` input으로만 받고 기존 값을 hydrate하거나 task/session/audit에 복제하지 않는다.
 - Mail/Gmail은 runtime이 기존 managed credential reference를 요구하므로 permission-filtered reference picker를 유지한다. raw credential 원문 입력은 Agent Builder 범위가 아니다.
 - Mail 검색 node의 사용자 설정 항목인 `credential_id`, `keyword`, `sender`, `subject`, `start_date`, `end_date`, `folder`, `max_results`, `unread_only`, `mark_as_read`, `processing_mode`는 모두 Catalog ParameterTask로 제공한다. 생성 template이 미리 채운 값도 사용자 확인 전에는 완료 처리하지 않는다. `referenced_variables`, `configuration_state`, `_deferred_parameters` 같은 graph/runtime 내부 필드는 사용자 task로 노출하지 않는다.
-- Gmail Draft와 Mail Acknowledge의 credential 및 selector도 Catalog task로 유지한다. 여러 필수 효과는 `variable_selector_list`로 확인한다. Graph 연결에서 자동 추천된 selector는 canonical graph에 반영하되 명시적인 `confirm` 전에는 `pending|active` 상태로 남는다.
+- Gmail Draft와 Mail Acknowledge의 credential 및 selector도 Catalog task로 유지한다. 여러 필수 효과는 `variable_selector_list`로 확인한다. Graph 연결에서 안전하게 자동 추천된 selector는 canonical graph에 반영하고 structural acknowledgement 뒤 completed로 표시하며, 사용자는 완료 요약의 `수정`에서 다른 selector를 선택할 수 있다.
 - Slack/GitHub의 기존 runtime 인증 동작은 변경하지 않는다. 향후 공식 관리 credential resource가 제품에 추가될 때 Agent Builder 연계 여부를 별도 결정한다.
 - Slack의 전송 방식과 각 parameter 설명은 Catalog의 한국어 문구로 고정한다. `message`에는 생성 시 연결된 `{{result}}`가 이전 node의 `referenced_variables` 출력을 사용한다는 설명을 표시한다. Optional `blocks`와 `attachments`는 빈 `적용`을 `skip`으로 처리하고 완료 흐름을 막지 않는다.
 - GitHub `pr_number` decision은 1 이상의 integer만 받는다. GraphMutation 적용 시 GitHub runtime schema가 요구하는 10진 문자열로 canonicalize하고, JSON 왕복과 CAS 저장 뒤에도 같은 문자열을 유지한다.
 - File Extraction selector는 runtime schema의 `[{name, value_selector}]` 형태로 materialize하며, Slack `blocks`와 `attachments`는 검증된 JSON 값을 node runtime이 사용하는 JSON 문자열 형태로 저장한다.
-- `설정하며 생성`에서 LLM node는 `model_id`, `auto_model_routing`, 선택적 `fallback_model_id`, `model_routing_refresh_every_runs`, `model_routing_validation_budget_usd`, `model_routing_max_cohorts`를 Catalog ParameterTask로 제공한다. Planner/user request 또는 Catalog default로 추천된 값도 사용자 confirm 전에는 완료하지 않는다.
-- Routing ParameterTask의 set은 `parameter_update` GraphMutation, CDS CAS save와 acknowledgement를 사용한다. `auto_model_routing=true`는 graph에만 설정하고 Agent Builder 처리 중 model-routing policy/refresh/cohort API나 workflow 실행을 호출하지 않는다. Deployment/runtime의 기존 bootstrap이 canonical graph의 default/fallback model과 policy bounds를 사용한다.
-- `fallback_model_id` 후보는 `model_id`와 같은 permission-filtered active chat model 목록을 사용하고 default model과 같은 fallback은 validation failure로 거부한다.
+- `설정하며 생성`에서 LLM node는 일반 `model_id` ParameterTask와 `task_group=model_routing`인 `auto_model_routing` ParameterTask만 제공한다. Planner/user request 또는 Catalog default로 안전하게 추천된 값은 structural acknowledgement 뒤 자동 완료하고 접힌 상태로 제공하되 수정 가능해야 한다.
+- `auto_model_routing` set은 `parameter_update` GraphMutation, CDS CAS save와 acknowledgement를 사용한다. `auto_model_routing=true`는 graph에만 설정하고 Agent Builder 처리 중 model-routing policy/refresh/cohort API나 workflow 실행을 호출하지 않는다.
+- 라우팅 파라미터 계약이 변경될 수 있는 동안 `fallback_model_id`, `model_routing_refresh_every_runs`, `model_routing_validation_budget_usd`, `model_routing_max_cohorts`는 Agent Builder ParameterTask와 복구된 설정 목록에서 제외한다. 기존 graph 값, runtime schema와 고급 LLM Routing control은 제거하거나 초기화하지 않는다.
 - `구조만 생성`에서는 Routing ParameterTask를 만들지 않는다. Routing 미설정 LLM의 안내 action은 대상 node의 Routing control을 열어야 하며 focus만 수행하고 끝나면 안 된다. 이 navigation은 routing graph를 자동 변경하지 않는다.
+- `설정하며 생성`의 `auto_model_routing` task가 terminal이고 전체 workflow 설정이 완료된 뒤에는 기존 LLM Routing control을 여는 고급 설정 action을 제공한다. Fallback, cohort 생성·수정, 수동 refresh와 persisted policy 상태는 Agent Builder ParameterTask로 복제하지 않는다.
 - 모든 canonical recovery 경로는 editor-only edge handle display number를 다시 부여한다. server graph와 CAS hash는 이 metadata를 제외한다.
 - candidate task는 candidate id와 `reference_value`를 모두 이용해 기존 graph 값을 hydrate한다. 어떤 허용 candidate와도 대응하지 않는 값만 unavailable state로 표시하며, 대체 후보 또는 policy-allowed defer 전에는 완료 처리하지 않는다.
 
@@ -390,7 +395,10 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 - Collection 선택은 동적 Collection routing, 하위 KB 선택은 direct KB binding으로 처리해야 한다.
 - Collection route 권한만 있는 사용자는 별도 KB use 권한이 없는 하위 KB identity를 볼 수 없어야 한다.
 - 동일 KB가 여러 Collection에 표시되면 모든 위치에서 하나의 `selection_key` 상태를 공유해야 한다.
-- Collection과 KB 선택은 독립적이어야 하며 빈 선택과 다중 선택을 지원해야 한다.
+- Collection parent 선택은 현재 표시 가능한 전체 하위 KB를 함께 선택하고 Collection handle과 하위 KB handle을 모두 제출해야 한다. 일부 하위 KB만 남기면 parent는 indeterminate와 `선택 수/전체 수`를 표시하고 Collection route 선택은 해제한 채 남은 KB만 직접 고정해야 한다. 빈 선택과 다중 선택을 지원해야 한다.
 - 선택 제출 시 서버는 opaque handle의 권한과 operational 상태를 재검증해야 한다.
 - 선택 후 planner 또는 원래 자연어 요청을 다시 호출해서는 안 된다.
 - Runtime은 direct KB와 Collection child KB를 합집합으로 만들고 동일 KB를 한 번만 검색해야 한다.
+- Collection/KB 후보 상한은 권한/lifecycle 필터, 전체 후보 점수 계산과 안정 정렬 뒤에 적용해야 한다.
+- 화면 응답은 Collection 최대 20개와 고유 KB 최대 20개로 제한하며 내부 권한·점수 계산 범위는 이 표시 상한으로 먼저 자르지 않는다.
+- 동일 점수는 safe label 오름차순(없는 label은 마지막), opaque handle 오름차순으로 정렬하며 source tier/availability를 별도 tie-break로 중복 적용하지 않는다.

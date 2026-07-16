@@ -31,6 +31,9 @@ export type KnowledgeHierarchySubmission = {
   kbHandles: string[];
 };
 
+const MAX_VISIBLE_COLLECTIONS = 20;
+const MAX_VISIBLE_KBS = 20;
+
 export const KnowledgeSelectionControl = ({
   candidates,
   collections = [],
@@ -73,15 +76,35 @@ export const KnowledgeSelectionControl = ({
     string[]
   >(initialSelectedCollectionHandles);
 
+  const { visibleCollections, visibleUngroupedKbs } = useMemo(() => {
+    const kbKeys = new Set<string>();
+    const includeKb = (candidate: KnowledgeSelectionChild) => {
+      if (kbKeys.has(candidate.selection_key)) return true;
+      if (kbKeys.size >= MAX_VISIBLE_KBS) return false;
+      kbKeys.add(candidate.selection_key);
+      return true;
+    };
+    const limitedCollections = collections
+      .slice(0, MAX_VISIBLE_COLLECTIONS)
+      .map((collection) => ({
+        ...collection,
+        children: collection.children.filter(includeKb),
+      }));
+    return {
+      visibleCollections: limitedCollections,
+      visibleUngroupedKbs: ungroupedKbs.filter(includeKb),
+    };
+  }, [collections, ungroupedKbs]);
+
   const allHierarchyKbs = useMemo(() => {
     const rows = [
-      ...collections.flatMap((collection) => collection.children),
-      ...ungroupedKbs,
+      ...visibleCollections.flatMap((collection) => collection.children),
+      ...visibleUngroupedKbs,
     ];
     const bySelectionKey = new Map<string, KnowledgeSelectionChild>();
     rows.forEach((row) => bySelectionKey.set(row.selection_key, row));
     return { rows, bySelectionKey };
-  }, [collections, ungroupedKbs]);
+  }, [visibleCollections, visibleUngroupedKbs]);
   const initialKbKeys = useMemo(
     () =>
       Array.from(allHierarchyKbs.bySelectionKey.values())
@@ -94,12 +117,17 @@ export const KnowledgeSelectionControl = ({
     [allHierarchyKbs, initialSelectedKbHandles],
   );
   const [selectedKbKeys, setSelectedKbKeys] = useState<string[]>(initialKbKeys);
-  const hierarchyMode = collections.length > 0 || ungroupedKbs.length > 0;
+  const hierarchyMode = typeof onSubmitHierarchy === 'function';
+  const hierarchyDataMissing =
+    hierarchyMode &&
+    visibleCollections.length === 0 &&
+    visibleUngroupedKbs.length === 0 &&
+    visibleCandidates.length > 0;
 
   const selectionScope = JSON.stringify({
     timing,
     flat: visibleCandidates.map(selectionId),
-    collections: collections.map((item) => item.collection_handle),
+    collections: visibleCollections.map((item) => item.collection_handle),
     kbs: Array.from(allHierarchyKbs.bySelectionKey.keys()),
     initialSelection,
     initialSelectedCollectionHandles,
@@ -127,8 +155,79 @@ export const KnowledgeSelectionControl = ({
     );
   };
 
+  const collectionChildrenByHandle = useMemo(
+    () =>
+      new Map(
+        visibleCollections.map((collection) => [
+          collection.collection_handle,
+          Array.from(
+            new Set(collection.children.map((child) => child.selection_key)),
+          ),
+        ]),
+      ),
+    [visibleCollections],
+  );
+  const collectionSelectedKbKeys = useMemo(
+    () =>
+      new Set(
+        selectedCollectionHandles.flatMap(
+          (handle) => collectionChildrenByHandle.get(handle) ?? [],
+        ),
+      ),
+    [collectionChildrenByHandle, selectedCollectionHandles],
+  );
+  const effectiveSelectedKbKeys = useMemo(
+    () => new Set([...selectedKbKeys, ...collectionSelectedKbKeys]),
+    [collectionSelectedKbKeys, selectedKbKeys],
+  );
+
+  const toggleCollection = (collection: KnowledgeSelectionCollection) => {
+    const handle = collection.collection_handle;
+    setSelectedCollectionHandles((current) =>
+      current.includes(handle)
+        ? current.filter((item) => item !== handle)
+        : [...current, handle],
+    );
+  };
+
+  const toggleHierarchyKb = (selectionKey: string) => {
+    if (!effectiveSelectedKbKeys.has(selectionKey)) {
+      setSelectedKbKeys((current) =>
+        current.includes(selectionKey) ? current : [...current, selectionKey],
+      );
+      return;
+    }
+
+    const selectedParents = selectedCollectionHandles.filter((handle) =>
+      (collectionChildrenByHandle.get(handle) ?? []).includes(selectionKey),
+    );
+    if (selectedParents.length === 0) {
+      setSelectedKbKeys((current) =>
+        current.filter((item) => item !== selectionKey),
+      );
+      return;
+    }
+
+    const preservedChildren = selectedParents.flatMap((handle) =>
+      (collectionChildrenByHandle.get(handle) ?? []).filter(
+        (key) => key !== selectionKey,
+      ),
+    );
+    setSelectedCollectionHandles((current) =>
+      current.filter((handle) => !selectedParents.includes(handle)),
+    );
+    setSelectedKbKeys((current) =>
+      Array.from(
+        new Set([
+          ...current.filter((item) => item !== selectionKey),
+          ...preservedChildren,
+        ]),
+      ),
+    );
+  };
+
   const selectedCount = hierarchyMode
-    ? selectedCollectionHandles.length + selectedKbKeys.length
+    ? selectedCollectionHandles.length + effectiveSelectedKbKeys.size
     : selectedIds.length;
   const submitLabel =
     selectedCount === 0
@@ -144,7 +243,7 @@ export const KnowledgeSelectionControl = ({
   const hierarchySubmission = (): KnowledgeHierarchySubmission => {
     const kbHandles = Array.from(
       new Set(
-        selectedKbKeys
+        Array.from(effectiveSelectedKbKeys)
           .map((key) => allHierarchyKbs.bySelectionKey.get(key)?.kb_handle)
           .filter((value): value is string => Boolean(value)),
       ),
@@ -168,9 +267,9 @@ export const KnowledgeSelectionControl = ({
       <input
         type="checkbox"
         aria-label={candidate.safe_label ?? 'Knowledge Base'}
-        checked={selectedKbKeys.includes(candidate.selection_key)}
+        checked={effectiveSelectedKbKeys.has(candidate.selection_key)}
         disabled={disabled}
-        onChange={() => toggleValue(candidate.selection_key, setSelectedKbKeys)}
+        onChange={() => toggleHierarchyKb(candidate.selection_key)}
       />
       <span className="min-w-0 flex-1 truncate text-sm">
         {candidate.safe_label ?? 'Knowledge Base'}
@@ -195,29 +294,50 @@ export const KnowledgeSelectionControl = ({
       <div className="max-h-[156px] overflow-y-auto rounded-md border border-neutral-200 dark:border-neutral-800">
         {hierarchyMode ? (
           <>
-            {collections.map((collection) => (
+            {hierarchyDataMissing ? (
+              <p
+                role="alert"
+                className="px-3 py-3 text-xs leading-5 text-amber-700 dark:text-amber-300"
+              >
+                계층형 Knowledge 후보를 불러오지 못했습니다. 다시 시도해주세요.
+              </p>
+            ) : null}
+            {visibleCollections.map((collection) => (
               <div key={collection.collection_handle}>
+                {(() => {
+                  const childKeys = Array.from(
+                    new Set(
+                      collection.children.map((child) => child.selection_key),
+                    ),
+                  );
+                  const selectedChildren = childKeys.filter((key) =>
+                    effectiveSelectedKbKeys.has(key),
+                  ).length;
+                  const collectionSelected = selectedCollectionHandles.includes(
+                    collection.collection_handle,
+                  );
+                  const partiallySelected =
+                    !collectionSelected && selectedChildren > 0;
+                  return (
                 <label className="flex min-h-[52px] items-center gap-3 px-3 py-2">
                   <input
                     type="checkbox"
                     aria-label={collection.safe_label ?? 'Knowledge Collection'}
-                    checked={selectedCollectionHandles.includes(
-                      collection.collection_handle,
-                    )}
+                    checked={collectionSelected}
+                    ref={(element) => {
+                      if (element) element.indeterminate = partiallySelected;
+                    }}
                     disabled={disabled}
-                    onChange={() =>
-                      toggleValue(
-                        collection.collection_handle,
-                        setSelectedCollectionHandles,
-                      )
-                    }
+                    onChange={() => toggleCollection(collection)}
                   />
                   <span className="min-w-0 flex-1 text-sm">
                     <span className="block truncate">
                       {collection.safe_label ?? 'Knowledge Collection'}
                     </span>
                     <span className="block text-xs text-neutral-500">
-                      실행 시 Collection에서 자동 라우팅
+                      {partiallySelected
+                        ? `${selectedChildren}/${childKeys.length} 선택`
+                        : '실행 시 Collection에서 자동 라우팅'}
                     </span>
                   </span>
                   {typeof collection.score === 'number' ? (
@@ -226,15 +346,17 @@ export const KnowledgeSelectionControl = ({
                     </span>
                   ) : null}
                 </label>
+                  );
+                })()}
                 {collection.children.map(renderKb)}
               </div>
             ))}
-            {ungroupedKbs.length > 0 ? (
+            {visibleUngroupedKbs.length > 0 ? (
               <section aria-label="직접 연결된 KB">
                 <h4 className="border-t border-neutral-200 px-3 py-2 text-xs font-medium text-neutral-600 dark:border-neutral-800 dark:text-neutral-300">
                   직접 연결된 KB
                 </h4>
-                {ungroupedKbs.map(renderKb)}
+                {visibleUngroupedKbs.map(renderKb)}
               </section>
             ) : null}
           </>

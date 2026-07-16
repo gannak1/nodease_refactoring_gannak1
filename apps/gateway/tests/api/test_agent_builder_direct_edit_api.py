@@ -1,3 +1,4 @@
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -454,6 +455,8 @@ def test_direct_response_persists_knowledge_resolution_for_recovery():
     assert payload["clarification_options"] == [
         {"type": "target_node", "node_id": "node-1"}
     ]
+    assert isinstance(payload["knowledge_resolution"], dict)
+    json.dumps(payload)
 
 
 def test_direct_session_recovery_preserves_canonical_knowledge_candidates():

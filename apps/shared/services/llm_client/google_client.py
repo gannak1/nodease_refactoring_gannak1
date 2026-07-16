@@ -47,6 +47,7 @@ class GoogleClient(BaseLLMClient):
         if not kwargs:
             return {}
         filtered = dict(kwargs)
+        filtered.pop("request_timeout_seconds", None)
         # Gemini OpenAI-compat endpoint rejects these fields.
         filtered.pop("frequency_penalty", None)
         filtered.pop("presence_penalty", None)
