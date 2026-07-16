@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, Optional
 
-from apps.shared.celery_app import celery_app
 from apps.shared.db.models.audit_log import AuditEventOutbox
 from apps.shared.db.session import SessionLocal
 from sqlalchemy.orm import Session
@@ -127,13 +126,4 @@ def record_audit(
 
     if not _store_outbox(payload, db_session=db_session):
         return None
-
-    try:
-        celery_app.send_task("audit.record", args=[payload])
-    except Exception as exc:  # noqa: BLE001 - rollout compatibility is best effort
-        logger.warning(
-            "[Audit] legacy publish failed: action=%s error_type=%s",
-            action,
-            type(exc).__name__,
-        )
     return audit_id

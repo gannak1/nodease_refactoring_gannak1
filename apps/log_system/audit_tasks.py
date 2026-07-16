@@ -2,7 +2,8 @@
 Audit System Celery 태스크
 
 사용자 작업 감사(Audit) 로그를 DB(audit_logs)에 저장하는 Celery 태스크입니다.
-롤아웃 중에는 기존 `audit.record` consumer와 Audit Outbox worker를 함께 운영합니다.
+신규 이벤트는 Audit Outbox worker가 처리합니다. `audit.record`는 rollout 4 이전에
+broker에 들어간 메시지를 소진하기 위한 호환성 consumer입니다.
 """
 
 import logging
