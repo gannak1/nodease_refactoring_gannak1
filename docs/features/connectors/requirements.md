@@ -1,7 +1,7 @@
 # Connectors Requirements
 
 Status: Draft
-Verified Against: feature/mba-281 @ 817deb9a70e37b858dfc41eb22e6291008237ecf
+Verified Against: feature/mba-281 @ 44fb1439cd7fbae10378e8117145e6fd4df85787
 Related Features: workflow, organization, audit-tracing, knowledge, conversation-memory
 
 ## Purpose
