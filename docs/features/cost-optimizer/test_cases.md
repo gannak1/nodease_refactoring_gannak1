@@ -260,6 +260,11 @@ evidence pipeline이 없으면 Workflow-Aware Adaptive Routing 구현 완료로 
 | FR-015-R18 | unbounded RAG preflight | RAG가 켜져 있고 최대 context 글자 수가 없다 | retrieval 전 signature를 만든다 | `topK`와 KB/Collection 참조 수 기반의 보수적 token 상한을 사용하며 임의 2,000 token으로 축소하지 않는다. |
 | FR-015-R19 | unknown model price | 구조·품질 gate를 통과했지만 가격이 없는 모델이 있다 | 경제적 후보를 선택한다 | 가격 없는 모델을 최저 비용 모델로 승격하지 않고 안전 기본 모델을 유지한다. |
 | FR-015-R20 | critical quality failure | 모델 호출과 Schema 검증은 성공했지만 evaluator가 치명적 품질 실패를 명시했다 | 채택 기준을 계산한다 | 점수 임계값 추측 없이 `critical_quality_failure`를 사용해 운영 교체 후보를 차단한다. |
+| FR-015-R21 | cold-start routing cycle | 실행 가능한 저가·중간·고성능 모델에 global prior가 있고 같은 node/signature의 검증 증거는 없다 | `PriorGuidedAdaptiveRouter`로 라우팅한다 | 검증 전용 전략처럼 기본 모델에 고착되지 않고 품질 하한과 효용을 만족한 후보를 선택하며 안전 기본 모델을 fallback으로 둔다. |
+| FR-015-R22 | transferable evidence | 더 어려운 compatible signature에서 후보 모델의 성공 증거가 있고 현재 요청은 더 쉽다 | posterior를 계산한다 | 증거를 낮은 가중치로 반영해 유효 표본 수를 늘리고 불확실성을 낮춘다. 쉬운 증거는 더 어려운 요청에 재사용하지 않는다. |
+| FR-015-R23 | bounded exploration safety | 불확실하지만 유망한 저비용 모델과 탐색 예산이 있다 | low/high constraint 요청을 각각 라우팅한다 | low constraint의 deterministic 표본에서만 후보를 탐색하고 high constraint에서는 안전 모델을 유지한다. |
+| FR-015-R24 | prior-guided trace | prior와 관련 evidence로 후보 점수를 계산했다 | decision metadata를 만든다 | 후보별 품질 평균·하한·불확실성·예상 총비용·fallback 비율·유효 증거 표본·prior source를 남기고 raw 입력은 남기지 않는다. |
+| FR-015-R25 | cold-start comparison experiment | 같은 node/signature 검증 증거가 없는 3 workflow×20 입력이 있다 | 5개 전략 fixed-fixture 실험을 실행한다 | 검증 전용 constraint의 기본 모델 고착 횟수와 prior-guided 전략의 모델 분산·품질·비용을 같은 result matrix로 비교한다. |
 
 ## LLM Parameter Recommendation Tests
 

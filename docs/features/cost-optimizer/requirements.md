@@ -1289,6 +1289,25 @@ downstream 호환성은 기존 FR-007 contract validator를 재사용한다. `co
 - 선택 결과에는 전략 ID, 선택/fallback 모델, constraint signature, 제외 모델과 이유, reason code, `judge_called=false`를 남긴다.
 - 1차 구현은 독립 Python strategy와 fixed-fixture experiment artifact만 제공한다. 신규 DB migration, 운영 policy 전환, LLM node runtime 연결, 사용자 UI는 범위 밖이다.
 
+`prior_guided_adaptive_v1`은 검증된 모델만 실행할 수 있어 새 모델이 영원히 증거를
+얻지 못하는 순환을 비교하기 위한 후속 실험 전략이다.
+
+- 모델의 node-local 검증 여부를 입장 조건으로 사용하지 않는다. 모델 catalog/global
+  profile의 예상 품질, 불확실성, 지연, fallback 비율을 cold-start 사전 점수로 사용한다.
+- 같은 signature 증거를 가장 강하게 반영하되, 더 어려운 compatible constraint에서 얻은
+  증거는 더 쉬운 요청에 낮은 가중치로 재사용한다. 쉬운 증거를 더 어려운 요청에
+  재사용하지 않는다.
+- 각 후보는 예상 품질 하한, 예상 총비용(직접 호출+예상 fallback 비용), 예상 지연과
+  불확실성으로 효용을 계산한다. 요청 난이도별 품질 하한을 넘는 후보만 일반 선택한다.
+- 저위험 요청에서만 예산·표본 비율로 제한한 탐색을 허용한다. strict schema, 엄격
+  downstream, high capability 요청에서는 불확실한 후보 탐색을 하지 않는다.
+- 로컬 실행 증거는 모델을 잠금 해제하는 값이 아니라 다음 선택의 품질 평균과
+  불확실성을 갱신하는 피드백이다.
+- 후보 선택 결과에는 후보별 품질 평균·하한·불확실성·예상 총비용·유효 증거 표본 수를
+  safe metadata로 남긴다.
+- 이번 후속 구현도 독립 실험 경계다. 운영 `semantic_cohort_v1`, DB policy, LLM runtime과
+  제품 UI는 실험 결과와 실제 Provider 검증을 거쳐 별도 변경한다.
+
 고정 fixture 실험은 고가 고정, 저가 고정, 실제 `SemanticRouteMatcher`와 fixture embedding을 사용한 의미 기반, 신규 제약·난이도 기반을 동일한 60개 입력으로 비교한다. RAG retrieval과 `(요청 fingerprint, 모델)` 결과 matrix는 전략 간 공유하고 입력 또는 RAG 결과가 바뀌면 기존 결과를 재사용하지 않는다. 치명적 단일 품질 실패는 임의 점수 임계값으로 추정하지 않고 blind evaluator 또는 계약 검증이 명시한 `critical_quality_failure` 신호로 판정한다. 현재 fixture에서 신규 전략은 고가 고정과 같은 성공/Schema/downstream 통과율을 유지했지만 비용 절감률은 약 3.7%에 그쳤다. 검증 비용을 포함한 손익분기점은 약 2,063회이며 1,000회 예상 절감률은 -3.94%라 채택 기준을 충족하지 못했다. 실제 Provider blind 품질 평가 전에는 운영 교체 후보로 판단하지 않는다.
 
 ## Policies And Edge Cases

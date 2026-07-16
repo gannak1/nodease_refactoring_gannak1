@@ -100,6 +100,38 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 
 `ConstraintDifficultyRouter`는 같은 signature의 검증 증거만 사용한다. 최소 표본, 실행 성공, Schema, downstream, fallback, 자유형 품질 기준을 통과한 후보 중 필요한 capability tier를 만족하는 가장 경제적인 모델을 선택한다. 증거가 부족하면 요구 tier를 만족하는 안전한 기본 모델을 유지한다. 설정된 기본 모델이 요구 tier보다 낮거나 사용할 수 없으면 그대로 하향하지 않고 실행 가능한 후보 중 가장 안전한 tier의 모델을 선택하며, fallback도 같은 tier 경계를 만족해야 한다.
 
+`PriorGuidedAdaptiveRouter`는 동일한 Hard Gate를 사용하지만 검증 증거를 모델 입장 조건으로
+사용하지 않는다. `ConstraintModelPrior`의 `quality_mean`, `quality_uncertainty`,
+`expected_latency_ms`, `fallback_rate`, `prior_strength`, `source`를 global cold-start
+profile로 받고, 관련 `ConstraintValidationEvidence`를 가중 결합해 posterior estimate를
+만든다. 이 내부 Python 계약은 HTTP API가 아니다.
+
+후보별 계산 계약은 다음과 같다.
+
+```text
+quality_lower_bound = posterior_quality_mean - risk_beta * uncertainty
+expected_total_cost = direct_cost + expected_fallback_rate * fallback_cost
+utility = quality_lower_bound
+          - cost_weight * normalized_expected_total_cost
+          - latency_weight * normalized_latency
+```
+
+정확히 같은 signature의 evidence weight는 `1.0`이다. 출력 계약이 호환되고 context,
+RAG, schema, downstream, capability가 현재 요청보다 어렵거나 같은 signature의 evidence는
+`0.65`로 재사용한다. 같은 출력 계약과 위험 tier에 한정된 부분 관련 evidence는 `0.35`로
+사용한다. 반대로 쉬운 evidence는 더 어려운 요청에 사용하지 않는다.
+
+`ConstraintExplorationContext`는 `enabled`, 비식별 `request_key`, `sample_rate`,
+`remaining_budget_usd`를 받는다. 탐색은 low constraint 요청에서만 deterministic sampling으로
+발생하며, 현재 선택보다 저렴하고 posterior mean이 품질 floor를 넘고 불확실성이 남은 후보만
+선택한다. 탐색 모델의 fallback은 안전 기본 모델이다.
+
+`prior_guided_adaptive_v1` trace에는 기존 constraint signature와 제외 사유 외에 후보별
+`posterior_quality_mean`, `quality_lower_bound`, `quality_uncertainty`,
+`expected_total_cost_usd`, `expected_latency_ms`, `expected_fallback_rate`,
+`utility_score`, `effective_evidence_samples`, `prior_source`를 포함한다. raw input/output,
+credential, embedding은 포함하지 않는다.
+
 `strict`와 downstream `required`는 JSON boolean `true`만 활성값으로 인정한다. 값이 없는 file/file_id/attachments 필드는 파일 입력으로 보지 않는다. RAG 최대 글자 수가 없으면 `topK × KB/Collection 참조 수 × 보수적 청크 token 상한`으로 preflight하고, retrieval 이후 실험은 `actual_rag_context_tokens`로 대체한다. 가격이 누락된 모델의 estimated cost는 무한대로 취급해 경제성 승격 대상에서 제외하되, 명시적 안전 기본 모델로 사용하는 것은 허용한다.
 
 실험 result의 `critical_quality_failure`는 blind evaluator 또는 명시적 계약 검증 결과다. 단순히 `quality_score`가 임의 숫자보다 낮다는 이유로 생성하지 않으며, 한 건이라도 `true`면 `no_critical_single_failure` 채택 기준은 실패한다.

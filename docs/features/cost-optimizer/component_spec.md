@@ -30,7 +30,7 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 | FR-012 | Optimization recommendation modal | LLM 노드 상세 화면의 `최적화` 버튼으로 추천 모달을 열고, 추천 근거와 위험도를 확인한 뒤 직접 정책 적용 또는 A/B 후보 실험으로 연결한다. |
 | FR-013 | Recommendation verification / compare quality row | 추천 모달과 일반 결과 분석 화면에서 baseline 대비 candidate 비용·속도·token·품질 점수·schema·downstream 결과를 보여주고 적용 또는 이력 재조회로 연결한다. |
 | FR-014 | 배포별 자동 파라미터 최적화 | 배포 모달에서 운영 로그 수집·점검 주기·월간 검증 예산을 설정하고, 내 모듈 운영 현황에서는 비용 위험과 분리된 자동 최적화 상태를 관리한다. |
-| FR-015 | 제약·난이도 라우터 실험 | 현재 UI와 운영 active policy를 바꾸지 않는다. fixed-fixture 보고서로만 전략 결과를 검토한다. |
+| FR-015 | 제약·난이도/사전 지식 기반 라우터 실험 | 현재 UI와 운영 active policy를 바꾸지 않는다. fixed-fixture 보고서로 검증 전용 전략과 사전 지식 기반 전략을 함께 검토한다. |
 
 ## Implementation Tracking
 
@@ -55,11 +55,11 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 | FR-012 | Optimization recommendation modal | `apps/client/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal.tsx`, `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr8-apply-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | 통과 기록 있음 |
 | FR-013 | Recommendation verification, compare quality row, history restore | `apps/client/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal.tsx`, `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerHistoryPanel.tsx`, `apps/client/app/features/workflow/hooks/useCostOptimizerHistory.ts`, `apps/client/app/features/workflow/api/workflowApi.ts`, `apps/client/app/features/workflow/types/Api.ts`, `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-inline-verification.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-verification-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | modal 검증, 일반 compare 품질 행, 평가 불가, 단건 비교 이력 복원 통과 |
 | FR-014 | Deployment optimization step / management | `apps/client/app/features/workflow/components/deployment/ParameterOptimizationStep.tsx`, `apps/client/app/features/workflow/components/deployment/AutomaticOptimizationManagementModal.tsx`, `apps/client/app/dashboard/mymodule/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/components/deployment/DeploymentFlowModal.test.tsx`, `apps/client/app/features/workflow/components/deployment/AutomaticOptimizationManagementModal.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr14-dashboard-automatic-optimization-management.test.tsx` | 통과 |
-| FR-015 | 실험 결과 artifact | `scripts/experiment_constraint_difficulty_router.py`, 실행 시 생성되는 로컬 `reports/model-routing/constraint-difficulty-v1-fixed-fixture/` | 실제 semantic matcher fixture를 포함한 개발자용 JSON/Markdown 생성 구현, 제품 UI 없음 | `tests/experiments/test_constraint_difficulty_routing_experiment.py` | 통과 |
+| FR-015 | 실험 결과 artifact | `scripts/experiment_constraint_difficulty_router.py`, 실행 시 생성되는 로컬 `reports/model-routing/constraint-difficulty-v1-fixed-fixture/` | 실제 semantic matcher fixture, 검증 전용 constraint, prior-guided cold-start 비교를 포함한 개발자용 JSON/Markdown 생성 구현, 제품 UI 없음 | `tests/experiments/test_constraint_difficulty_routing_experiment.py` | 통과 |
 
 ## FR-015 UI Boundary
 
-신규 전략은 검증 전 독립 실험이므로 LLM node 토글, 모델 라우팅 화면, Test Sidebar와 배포 정책 UI에 노출하지 않는다. 현재 화면은 계속 `semantic_cohort_v1` 운영 policy와 trace만 표시한다. 운영 채택이 결정되면 별도 요구사항에서 전략 선택 권한, policy 전환, trace 라벨과 비교 UI를 설계한다.
+신규 전략들은 검증 전 독립 실험이므로 LLM node 토글, 모델 라우팅 화면, Test Sidebar와 배포 정책 UI에 노출하지 않는다. 현재 화면은 계속 `semantic_cohort_v1` 운영 policy와 trace만 표시한다. `prior_guided_adaptive_v1`의 후보 점수는 실험 JSON/Markdown에만 기록한다. 운영 채택이 결정되면 별도 요구사항에서 global profile 출처, 탐색 예산 설정 권한, policy 전환, trace 라벨과 비교 UI를 설계한다.
 
 ## FR-014 배포별 자동 파라미터 최적화 UI
 
