@@ -162,7 +162,10 @@ async def test_process_rejects_other_users_connection_before_mutation(
         knowledge_endpoint,
         "_authorized_knowledge_document",
         lambda *args, **kwargs: (
-            SimpleNamespace(embedding_model="embedding-model"),
+            SimpleNamespace(
+                embedding_model="embedding-model",
+                organization_id=uuid.uuid4(),
+            ),
             document,
         ),
     )
@@ -254,7 +257,10 @@ async def test_process_normalizes_owned_connection_reference(
         knowledge_endpoint,
         "_authorized_knowledge_document",
         lambda *args, **kwargs: (
-            SimpleNamespace(embedding_model="embedding-model"),
+            SimpleNamespace(
+                embedding_model="embedding-model",
+                organization_id=uuid.uuid4(),
+            ),
             document,
         ),
     )
