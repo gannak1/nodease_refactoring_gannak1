@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from apps.shared.db.models.audit_log import AuditEventOutbox, AuditLog
+from apps.shared.db.models.workflow_run import WorkflowNodeRun, WorkflowRun
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -59,6 +60,18 @@ def audit_id_from_payload(payload: dict[str, Any]) -> uuid.UUID:
     return audit_id
 
 
+def workflow_correlation_from_payload(
+    payload: dict[str, Any],
+    key: str,
+) -> uuid.UUID | None:
+    value = payload.get(key)
+    if value is None:
+        metadata = payload.get("audit_metadata")
+        if isinstance(metadata, dict):
+            value = metadata.get(key)
+    return _to_uuid(value)
+
+
 def build_audit_log(payload: dict[str, Any]) -> AuditLog:
     """Map the durable wire payload without logging its potentially sensitive values."""
     audit_id = audit_id_from_payload(payload)
@@ -76,9 +89,38 @@ def build_audit_log(payload: dict[str, Any]) -> AuditLog:
         target_id=payload.get("target_id"),
         before=payload.get("before"),
         after=payload.get("after"),
+        workflow_run_id=workflow_correlation_from_payload(
+            payload,
+            "workflow_run_id",
+        ),
+        workflow_node_run_id=workflow_correlation_from_payload(
+            payload,
+            "workflow_node_run_id",
+        ),
         status=payload.get("status", "success"),
         audit_metadata=payload.get("audit_metadata") or {},
     )
+
+
+def validate_audit_workflow_correlation(db: Session, audit: AuditLog) -> None:
+    """Keep optional correlation from blocking the canonical audit insert."""
+    run = None
+    if audit.workflow_run_id is not None:
+        run = db.get(WorkflowRun, audit.workflow_run_id)
+        if run is None:
+            audit.workflow_run_id = None
+
+    if audit.workflow_node_run_id is None:
+        return
+    node_run = db.get(WorkflowNodeRun, audit.workflow_node_run_id)
+    if node_run is None:
+        audit.workflow_node_run_id = None
+        return
+    if audit.workflow_run_id is None:
+        audit.workflow_run_id = node_run.workflow_run_id
+        return
+    if node_run.workflow_run_id != audit.workflow_run_id:
+        audit.workflow_node_run_id = None
 
 
 def persist_audit_payload(db: Session, payload: dict[str, Any]) -> uuid.UUID:
@@ -87,6 +129,7 @@ def persist_audit_payload(db: Session, payload: dict[str, Any]) -> uuid.UUID:
     if db.get(AuditLog, audit_id) is not None:
         return audit_id
     audit = build_audit_log(payload)
+    validate_audit_workflow_correlation(db, audit)
     db.add(audit)
     db.flush()
     return audit_id

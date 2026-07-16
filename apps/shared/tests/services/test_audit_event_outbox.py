@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from apps.shared.db.models.audit_log import AuditLog
+from apps.shared.db.models.workflow_run import WorkflowNodeRun, WorkflowRun
 from sqlalchemy.exc import IntegrityError
 
 
@@ -335,3 +336,58 @@ def test_payload_is_mapped_to_audit_log_with_fixed_id():
     assert audit.category == "action"
     assert audit.status == "failure"
     assert audit.audit_metadata == event.payload["audit_metadata"]
+
+
+def test_payload_maps_workflow_correlation_from_top_level_and_metadata():
+    module = _module()
+    event = _leased_event()
+    workflow_run_id = uuid4()
+    workflow_node_run_id = uuid4()
+    event.payload["workflow_run_id"] = str(workflow_run_id)
+    event.payload["audit_metadata"]["workflow_node_run_id"] = str(
+        workflow_node_run_id
+    )
+
+    audit = module.build_audit_log(event.payload)
+
+    assert audit.workflow_run_id == workflow_run_id
+    assert audit.workflow_node_run_id == workflow_node_run_id
+
+
+def test_persistence_drops_orphan_and_mismatched_workflow_correlation():
+    module = _module()
+    event = _leased_event()
+    workflow_run_id = uuid4()
+    other_workflow_run_id = uuid4()
+    workflow_node_run_id = uuid4()
+    event.payload["workflow_run_id"] = str(workflow_run_id)
+    event.payload["workflow_node_run_id"] = str(workflow_node_run_id)
+
+    class Db:
+        def __init__(self):
+            self.added = []
+
+        def get(self, model, identity):
+            if model is AuditLog:
+                return None
+            if model is WorkflowRun:
+                return SimpleNamespace(id=identity)
+            if model is WorkflowNodeRun:
+                return SimpleNamespace(
+                    id=identity,
+                    workflow_run_id=other_workflow_run_id,
+                )
+            raise AssertionError(model)
+
+        def add(self, row):
+            self.added.append(row)
+
+        def flush(self):
+            pass
+
+    db = Db()
+
+    module.persist_audit_payload(db, event.payload)
+
+    assert db.added[0].workflow_run_id == workflow_run_id
+    assert db.added[0].workflow_node_run_id is None

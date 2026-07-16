@@ -73,6 +73,26 @@ def test_caller_session_adds_outbox_without_committing(monkeypatch):
     assert not hasattr(audit_logger, "celery_app")
 
 
+def test_audit_outbox_lifts_workflow_correlation_from_metadata():
+    db = _FakeSession()
+    workflow_run_id = UUID("10000000-0000-0000-0000-000000000001")
+    workflow_node_run_id = UUID("20000000-0000-0000-0000-000000000001")
+
+    audit_logger.record_audit(
+        "workflow.execute",
+        "action",
+        metadata={
+            "workflow_run_id": str(workflow_run_id),
+            "workflow_node_run_id": str(workflow_node_run_id),
+        },
+        db_session=db,
+    )
+
+    payload = db.rows[0].payload
+    assert payload["workflow_run_id"] == str(workflow_run_id)
+    assert payload["workflow_node_run_id"] == str(workflow_node_run_id)
+
+
 def test_audit_logger_does_not_import_celery_app(
     monkeypatch,
     caplog,

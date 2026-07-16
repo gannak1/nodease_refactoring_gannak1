@@ -91,6 +91,19 @@ class AuditLog(Base):
     before: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     after: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
 
+    # Workflow execution correlation. Audit rows outlive execution retention,
+    # so referenced run deletion preserves the audit row and clears only the FK.
+    workflow_run_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("workflow_runs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    workflow_node_run_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("workflow_node_runs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
     status: Mapped[AuditStatus] = mapped_column(
         SQLEnum(AuditStatus, name="audit_status", values_callable=enum_values),
         nullable=False,
@@ -103,6 +116,11 @@ class AuditLog(Base):
     __table_args__ = (
         Index("ix_audit_logs_target", "target_type", "target_id"),
         Index("ix_audit_logs_occurred_at_id", "occurred_at", "id"),
+        Index("ix_audit_logs_workflow_run_id", "workflow_run_id"),
+        Index(
+            "ix_audit_logs_workflow_node_run_id",
+            "workflow_node_run_id",
+        ),
     )
 
 

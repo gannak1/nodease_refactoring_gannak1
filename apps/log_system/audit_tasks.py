@@ -19,6 +19,8 @@ from apps.shared.db.session import SessionLocal
 from apps.shared.services.audit_event_outbox import (
     AUDIT_EVENT_OUTBOX_TASK_NAME,
     AuditEventOutboxProcessor,
+    validate_audit_workflow_correlation,
+    workflow_correlation_from_payload,
 )
 from apps.shared.services.security_alert_aggregation import (
     aggregate_security_alert_detection,
@@ -166,9 +168,18 @@ def record_audit_log(self, data: Dict[str, Any]):
             target_id=data.get("target_id"),
             before=data.get("before"),
             after=data.get("after"),
+            workflow_run_id=workflow_correlation_from_payload(
+                data,
+                "workflow_run_id",
+            ),
+            workflow_node_run_id=workflow_correlation_from_payload(
+                data,
+                "workflow_node_run_id",
+            ),
             status=data.get("status", "success"),
             audit_metadata=data.get("audit_metadata") or {},
         )
+        validate_audit_workflow_correlation(session, audit)
         session.add(audit)
         session.commit()
         return _dispatched_result(status="success", data=data, audit_id=audit_id)

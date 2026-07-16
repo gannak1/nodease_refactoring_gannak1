@@ -56,6 +56,10 @@ def test_list_audit_logs_scopes_filters_and_sorts_descending(monkeypatch):
         status=AuditStatus.SUCCESS,
         occurred_at=datetime(2026, 7, 2, 9, tzinfo=timezone.utc),
     )
+    workflow_run_id = uuid4()
+    workflow_node_run_id = uuid4()
+    newer_match.workflow_run_id = workflow_run_id
+    newer_match.workflow_node_run_id = workflow_node_run_id
     older_match = _audit_log(
         organization_id=organization_id,
         actor_id=actor_id,
@@ -123,6 +127,8 @@ def test_list_audit_logs_scopes_filters_and_sorts_descending(monkeypatch):
 
     assert result.total == 2
     assert [item.id for item in result.items] == [newer_match.id, older_match.id]
+    assert result.items[0].workflow_run_id == workflow_run_id
+    assert result.items[0].workflow_node_run_id == workflow_node_run_id
     assert db.query_for(AuditLog).offset_value == 0
     assert db.query_for(AuditLog).limit_value == 20
 

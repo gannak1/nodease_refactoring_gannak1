@@ -400,6 +400,8 @@ def _list_item(
         target_type=item.target_type,
         target_id=item.target_id,
         target_display=target_display,
+        workflow_run_id=item.workflow_run_id,
+        workflow_node_run_id=item.workflow_node_run_id,
         status=item.status,
         request_id=request_id if isinstance(request_id, str) else None,
     )

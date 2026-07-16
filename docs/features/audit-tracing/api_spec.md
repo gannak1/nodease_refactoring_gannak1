@@ -96,6 +96,18 @@ Audit list/detail item은 기존 ID와 함께 optional `actor_display`와 `targe
 }
 ```
 
+Workflow 실행과 연결된 audit item은 다음 nullable correlation을 additive하게 반환한다.
+
+```json
+{
+  "workflow_run_id": "<uuid|null>",
+  "workflow_node_run_id": "<uuid|null>"
+}
+```
+
+- 값은 AuditLog의 typed FK projection이며 generic metadata를 그대로 공개하는 경로가 아니다.
+- 기존 organization audit 권한과 scope 필터를 통과한 item에서만 반환한다.
+
 - `source`는 `event_snapshot`, `current_resource` 중 하나다.
 - User actor는 `audit_metadata.actor`의 유효한 `name`/`email` snapshot을 우선한다. Snapshot이 없으면 current organization의 member user를 batch 조회할 수 있다. System/null actor는 display object 없이 client의 고정 라벨을 사용한다.
 - 1차 target allowlist는 `organization`, `user`, `team`, `workflow`, `app`, `knowledge_base`다. Workflow label은 same-organization primary App name이다.

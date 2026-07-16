@@ -8,6 +8,7 @@ import pytest
 from apps.log_system import audit_tasks
 from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.security_alert import SecurityAlertReconciliationWatermark
+from apps.shared.db.models.workflow_run import WorkflowNodeRun, WorkflowRun
 from sqlalchemy.exc import IntegrityError
 
 
@@ -24,21 +25,37 @@ class _Session:
         commit_error=None,
         winner_after_rollback=None,
         events=None,
+        workflow_run=None,
+        workflow_node_run=None,
     ):
         self.existing = existing
         self.commit_error = commit_error
         self.winner_after_rollback = winner_after_rollback
         self.events = events
+        self.workflow_run = workflow_run
+        self.workflow_node_run = workflow_node_run
         self.added = []
         self.commits = 0
         self.rollbacks = 0
         self.closed = 0
 
     def get(self, model, identity):
-        assert model is AuditLog
-        if self.existing is not None and self.existing.id == identity:
-            return self.existing
-        return None
+        if model is AuditLog:
+            if self.existing is not None and self.existing.id == identity:
+                return self.existing
+            return None
+        if model is WorkflowRun:
+            if self.workflow_run is not None and self.workflow_run.id == identity:
+                return self.workflow_run
+            return None
+        if model is WorkflowNodeRun:
+            if (
+                self.workflow_node_run is not None
+                and self.workflow_node_run.id == identity
+            ):
+                return self.workflow_node_run
+            return None
+        raise AssertionError(model)
 
     def add(self, row):
         self.added.append(row)
@@ -89,6 +106,28 @@ def test_record_audit_uses_publisher_supplied_id(monkeypatch):
     assert session.added[0].id == audit_id
     assert session.commits == 1
     assert session.closed == 1
+
+
+def test_legacy_record_audit_maps_workflow_correlation(monkeypatch):
+    workflow_run_id = uuid4()
+    workflow_node_run_id = uuid4()
+    session = _Session(
+        workflow_run=SimpleNamespace(id=workflow_run_id),
+        workflow_node_run=SimpleNamespace(
+            id=workflow_node_run_id,
+            workflow_run_id=workflow_run_id,
+        ),
+    )
+    monkeypatch.setattr(audit_tasks, "SessionLocal", lambda: session)
+    data = _data(uuid4())
+    data["workflow_run_id"] = str(workflow_run_id)
+    data["audit_metadata"]["workflow_node_run_id"] = str(workflow_node_run_id)
+
+    audit_tasks.record_audit_log.run(data)
+
+    audit = session.added[0]
+    assert audit.workflow_run_id == workflow_run_id
+    assert audit.workflow_node_run_id == workflow_node_run_id
 
 
 def test_record_audit_redelivery_is_idempotent(monkeypatch):

@@ -92,6 +92,8 @@ def record_audit(
     after: Optional[Dict[str, Any]] = None,
     status: str = "success",
     metadata: Optional[Dict[str, Any]] = None,
+    workflow_run_id: Optional[Any] = None,
+    workflow_node_run_id: Optional[Any] = None,
     db_session: Session | None = None,
 ) -> Optional[uuid.UUID]:
     """감사 ID를 먼저 고정하고 PostgreSQL Outbox에 저장한다.
@@ -101,6 +103,7 @@ def record_audit(
     """
     audit_id = uuid.uuid4()
     try:
+        audit_metadata = metadata or {}
         data = {
             "id": audit_id,
             "action": action,
@@ -112,7 +115,13 @@ def record_audit(
             "before": before,
             "after": after,
             "status": status,
-            "audit_metadata": metadata or {},
+            "audit_metadata": audit_metadata,
+            "workflow_run_id": workflow_run_id
+            if workflow_run_id is not None
+            else audit_metadata.get("workflow_run_id"),
+            "workflow_node_run_id": workflow_node_run_id
+            if workflow_node_run_id is not None
+            else audit_metadata.get("workflow_node_run_id"),
             "occurred_at": datetime.now(timezone.utc),
         }
         payload = _serialize(data)

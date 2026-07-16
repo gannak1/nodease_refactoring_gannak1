@@ -20,7 +20,7 @@ Status: Draft
 | 사용자/조직 | `users`, `organization`, `organization_memberships`, `teams`, `team_memberships` |
 | 권한 | `team_workflow_permissions`, `team_knowledge_permissions`, `team_llm_permissions`, `team_mail_credential_permissions`, `team_audit_permissions`, `user_workflow_permissions`, `user_knowledge_permissions`, `user_llm_permissions`, `user_mail_credential_permissions` |
 | 앱/워크플로우 | `apps`, `workflows`, `workflow_budgets`, `workflow_deployments`, `schedules`, `workflow_runs`, `workflow_node_runs`, `workflow_node_effect_attempts` |
-| 추적/감사 | `trace_payloads`, `trace_payload_access_events`, `trace_redaction_policies`, `trace_retention_policies`, `trace_visibility_policies`, `audit_logs` |
+| 추적/감사 | `trace_payloads`, `trace_payload_access_events`, `trace_redaction_policies`, `trace_retention_policies`, `trace_visibility_policies`, `audit_logs`, `audit_event_outbox` |
 | 보안 알림 | `security_alerts`, `security_alert_audit_events`, `security_alert_reconciliation_watermarks`, `security_alert_reconciliation_receipts`, `security_alert_notification_outbox` |
 | Knowledge/RAG | `knowledge_bases`, `documents`, `document_chunks`, `rag_answer_runs` |
 | LLM | `llm_providers`, `llm_models`, `llm_credentials`, `llm_rel_credential_models`, `llm_usage_logs` |
@@ -60,6 +60,8 @@ erDiagram
   workflow_runs ||--o{ trace_payloads : stores
   workflow_node_runs ||--o{ trace_payloads : stores
   workflow_runs ||--o{ llm_usage_logs : records
+  workflow_runs ||--o{ audit_logs : correlates
+  workflow_node_runs ||--o{ audit_logs : correlates
   trace_payloads ||--o{ trace_payload_access_events : audited_by
 
   knowledge_bases ||--o{ documents : contains
@@ -623,10 +625,14 @@ canonical 감사 로그. action 값은 [ADR-0008](decisions/ADR-0008-audit-actio
 | target_type | VARCHAR(100) | NULL |
 | target_id | VARCHAR(255) | NULL — UUID가 아닌 문자열(다형 참조, FK 없음) |
 | before / after | JSONB | NULL — data-change diff |
+| workflow_run_id | UUID | NULL, FK→workflow_runs.id (SET NULL) — 실행 단위 correlation |
+| workflow_node_run_id | UUID | NULL, FK→workflow_node_runs.id (SET NULL) — 노드 실행 단위 correlation |
 | status | VARCHAR(7) | NOT NULL — success/failure |
 | audit_metadata | JSONB | NULL — policy_result, correlation_id 등 |
 
-- 검색 인덱스: occurred_at, actor_id, category, action, `(target_type, target_id)`, cursor scan용 `(occurred_at, id)`.
+- 검색 인덱스: occurred_at, actor_id, category, action, `(target_type, target_id)`, `workflow_run_id`, `workflow_node_run_id`, cursor scan용 `(occurred_at, id)`.
+- Migration `a9b0c1d2e3f4`는 기존 metadata correlation이 canonical UUID이고 실제 Run/NodeRun이 존재할 때만 typed 컬럼으로 backfill한다. Malformed/orphan 값은 NULL로 남긴다.
+- Run/NodeRun 삭제는 감사 행을 삭제하지 않고 typed FK만 NULL로 만든다. 기존 safe metadata snapshot은 감사 시점 기록으로 보존된다.
 - ADR-0030 Target public Conversation request lifecycle event는 `actor_id=NULL`, `actor_type='public'`을 사용한다. `public`은 현재 `VARCHAR(6)`에 맞는 explicit anonymous request actor kind이며 App/deployment owner나 Access Grant를 user actor로 합성하지 않는다. 비동기 physical purge/compliance completion은 `actor_id=NULL`, `actor_type='system'`이다.
 
 Security Alert 탐지 대상 audit는 추가로 다음 application contract를 만족해야 한다.
@@ -635,6 +641,30 @@ Security Alert 탐지 대상 audit는 추가로 다음 application contract를 �
 - 검증된 `audit_metadata.organization_id`
 - `permission.denied`의 safe target 또는 `policy.block`의 canonical `audit_metadata.policy_reason`
 - 기능 활성화 시점 이후의 `occurred_at`
+
+#### `audit_event_outbox`
+
+Generic 비동기 audit event를 `audit_logs`에 전달하기 위한 durable outbox다. Rollout 4에서는 `record_audit()`이 Outbox row만 생성하고 Redis/Celery에 직접 발행하지 않는다. Caller session이 있으면 commit을 caller에게 맡기고, 없는 legacy producer는 짧은 독립 transaction으로 저장한다. Beat 기반 Log worker가 due/stale row를 lease해 배송한다.
+
+| 컬럼 | 타입 | 제약/의미 |
+| --- | --- | --- |
+| id | UUID | PK |
+| payload | JSONB | NOT NULL — 기존 `audit.record`에 전달하던 직렬화 payload |
+| status | VARCHAR(32) | NOT NULL — `pending/leased/succeeded/retry_scheduled/dead_lettered`, 기본 `pending` |
+| owner_token | VARCHAR(128) | NULL — 현재 lease owner |
+| lease_expires_at | DATETIME | NULL — lease 만료 시각 |
+| attempt_count / max_attempts | INTEGER | NOT NULL, 0 이상 / 1 이상, 기본 0 / 5 |
+| next_retry_at | DATETIME | NULL — 다음 처리 가능 시각 |
+| retryable | BOOLEAN | NOT NULL, 기본 true |
+| safe_reason_code | VARCHAR(100) | NULL — raw exception 대신 저장하는 실패 코드 |
+| delivered_at / dead_lettered_at | DATETIME | NULL — terminal 상태 시각 |
+| idempotency_key | VARCHAR(255) | NOT NULL, UNIQUE — 미리 고정한 audit event id 기반 key |
+| created_at / updated_at | DATETIME | NOT NULL |
+
+- Business resource FK를 두지 않아 audit outbox insert가 대상 resource lifecycle에 불필요하게 실패하지 않게 한다.
+- `(status, next_retry_at)`과 `(status, lease_expires_at)` 인덱스가 due event polling과 stale lease 복구를 지원한다.
+- Worker는 lease/attempt 증가를 먼저 commit하고 `AuditLog` insert와 Outbox `succeeded`를 같은 transaction으로 commit한다. 같은 audit id는 멱등 성공으로 처리한다.
+- 실패는 safe reason code로 최대 5회 재시도한 뒤 `dead_lettered`로 전환한다. Rollout 4부터 신규 producer는 기존 `audit.record` Celery 발행을 사용하지 않는다.
 
 #### `security_alerts`
 
