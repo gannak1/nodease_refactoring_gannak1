@@ -446,6 +446,7 @@ async def upload_document(
     local_service = IngestionService(
         db,
         user_id=current_user.id,
+        organization_id=organization_id,
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
         ai_model=target_ai_model,
@@ -560,7 +561,11 @@ async def analyze_document(
         document_id,
         "write",
     )
-    ingestion_service = IngestionService(db, user_id=current_user.id)
+    ingestion_service = IngestionService(
+        db,
+        user_id=current_user.id,
+        organization_id=organization_id,
+    )
     try:
         result = await ingestion_service.analyze_document(document_id)
         return result
@@ -601,7 +606,11 @@ async def confirm_document_parsing(
 
     # 서비스 초기화 및 재개 (백그라운드)
     # 기존 설정(청크 사이즈 등)은 DB doc에 저장되어 있으므로 불러와서 쓴다고 가정
-    ingestion_service = IngestionService(db, user_id=current_user.id)
+    ingestion_service = IngestionService(
+        db,
+        user_id=current_user.id,
+        organization_id=organization_id,
+    )
 
     background_tasks.add_task(ingestion_service.resume_processing, document_id, strategy)
 

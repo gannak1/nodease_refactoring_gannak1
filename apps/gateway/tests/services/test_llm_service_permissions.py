@@ -46,6 +46,38 @@ class FakeDb:
         return FakeQuery(self.value)
 
 
+def test_get_client_for_user_rejects_non_object_credential_config(monkeypatch):
+    user_id = uuid.uuid4()
+    model = SimpleNamespace(
+        id=uuid.uuid4(),
+        name="Test Model",
+        provider_id=uuid.uuid4(),
+    )
+    credential = SimpleNamespace(
+        encrypted_config="[]",
+        provider=SimpleNamespace(name="openai"),
+    )
+    db = FakeDb(model)
+    monkeypatch.setattr(
+        LLMService,
+        "_get_valid_credential_for_user",
+        lambda *_args, **_kwargs: credential,
+    )
+    monkeypatch.setattr(
+        llm_service,
+        "get_llm_client",
+        lambda **_kwargs: pytest.fail("client must not be created"),
+    )
+
+    with pytest.raises(ValueError, match="Invalid credential config"):
+        LLMService.get_client_for_user(
+            db,
+            user_id=user_id,
+            model_id="test-model",
+            organization_id=uuid.uuid4(),
+        )
+
+
 class FakeWizardRuntimeQuery:
     def __init__(self, db, model):
         self.db = db

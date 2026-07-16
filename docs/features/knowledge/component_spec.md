@@ -1,7 +1,7 @@
 # Knowledge Component Spec
 
 Status: Draft
-Verified Against: `feature/mba-265 @ ccac971f`
+Verified Against: `feature/mba-282 @ 97de9ab0`
 MBA-105 구현 baseline, 운영 기본값, permission helper output, active version finalization, resource hiding matrix는 [implementation_baseline.md](implementation_baseline.md)를 따른다. Workflow RAG에서 `execution_subject`가 없는 MVP public-only runtime은 [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md)을 따른다. MCP/API source connector와 incremental sync 경계는 [ADR-0020](../../decisions/ADR-0020-knowledge-mcp-incremental-sync-boundary.md)을 따른다. Direct KB와 명시 selected Collection의 Workflow runtime candidate 해석은 [ADR-0036](../../decisions/ADR-0036-knowledge-runtime-candidate-resolution.md)을 따른다. KC lifecycle, item 순서와 권한 운영 경계는 [ADR-0044](../../decisions/ADR-0044-knowledge-collection-operational-management-boundary.md)을 따른다.
 KC sync의 Gateway application, durable repository, Workflow executor와 Client polling 경계는 [ADR-0048](../../decisions/ADR-0048-knowledge-collection-sync-execution-boundary.md)을 따른다.
 
@@ -20,6 +20,7 @@ KC sync의 Gateway application, durable repository, Workflow executor와 Client 
 | Public Exposure Policy Store | Source-managed KB의 anonymous public-only 노출 승인, 만료, 회수, 재검증 상태를 관리한다 | Collection visibility flag만으로 source-managed KB를 public candidate로 만들지 않는다 |
 | Content Safety Scanner | Source artifact의 file type allowlist, active content, archive cap, malware/content scan 결과를 평가한다 | Scan pass는 source ACL, KB permission, redaction, prompt-injection guard를 대체하지 않는다 |
 | Parser Isolation Worker | PDF/Office/HTML/archive 같은 rich content를 least-privilege 또는 sandboxed 환경에서 text로 추출한다 | Macro, script, embedded object, executable payload, external reference를 실행하지 않는다 |
+| LlamaParse Credential Resolver | User-initiated document parsing 직전에 execution subject, active organization, provider compatibility, valid 상태와 credential `use`를 확인하고 단일 허용 parser input을 반환한다 | FileProcessor가 credential ORM/config를 직접 읽거나 전역 최신 credential, environment fallback, 다른 organization credential을 사용하지 않는다 |
 | Privacy/Redaction Service | PII/secret hard baseline과 output-target redaction을 위한 shared detector/masking engine을 제공한다 | Trace storage나 Knowledge lifecycle을 소유하지 않는다 |
 | Canonical Normalizer | Source content를 추출, redaction, normalization해 canonical text/metadata를 만든다 | Chunk/embedding 생성 전에 Privacy/Redaction Service를 사용한다 |
 | Raw Artifact Store | Compliance view용 optional protected raw source content store | RAG, embedding, prompt, router input, Agent answer stream에서 사용하지 않는다 |

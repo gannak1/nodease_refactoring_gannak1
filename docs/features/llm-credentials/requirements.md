@@ -21,6 +21,7 @@ LLM credential은 organization scope의 provider API 호출 권한과 모델 연
 - Agent answer generation은 explicit KB mode와 auto collection mode 모두에서 명시된 `generation_model_id`와 `credential_id`의 visibility, use permission, verified relation을 서버에서 다시 검증한다.
 - Knowledge retrieval embedding은 KB embedding model readiness와 usable embedding credential을 preflight로 확인한다. 이 credential은 generation credential과 같다고 가정하지 않는다.
 - Credential option API는 실행 가능한 safe option schema만 반환하고, credential value, encrypted config, user quota, raw timestamps처럼 실행 선택에 불필요한 metadata를 기본 노출하지 않는다.
+- LlamaParse document parsing은 explicit execution subject와 active organization이 있을 때만 실행한다. 해당 organization 범위에서 provider가 `llamaparse`이고 valid 상태이며 subject가 `use` 가능한 credential이 정확히 하나일 때만 parser에 전달한다. 후보 없음, 복수 후보, context 누락, revoke/invalid, provider 불일치와 권한 상실은 provider 호출 전에 fail-closed한다.
 - LLM node RAG option의 `llm_assisted` query rewrite는 별도 승인 전까지 비활성이다. 승인 시 rewrite LLM call도 execution subject, model/credential visibility, credential `use`, verified relation, timeout, token/cost budget, usage logging을 통과해야 한다.
 - LLM Credentials domain은 `ProviderExecutionCapability` schema, 발급, revision과 revoke 검증의 authoritative owner다. Workflow/Conversation Memory provider call은 raw credential이나 client-selected owner가 아니라 server-issued capability를 사용해야 한다. Capability는 opaque identity/revision, organization/workflow/deployment ID/version, node/invocation/admission/provider-attempt binding, provider/model/credential safe reference, server-derived credential principal, credential permission decision revision, `main_generation|memory_summary` purpose, verified relation/egress/pricing revision, token·cost cap과 expiry에 binding되어야 한다.
 - Main/summary provider adapter, Memory context lease, Budget reservation과 usage reconciliation은 같은 capability identity/revision과 자기 operation binding을 검증해야 한다. Capability는 short-lived single invocation scope이고 credential revoke, credential permission decision revision 변경, model relation/egress policy 변경 또는 expiry 뒤 새 lease claim, reservation, provider attempt admission이나 outbound call의 근거로 재사용할 수 없어야 한다. 이미 시작된 provider attempt의 usage reconciliation은 stale capability로 새 호출을 허용하는 것과 분리해야 한다.
@@ -33,6 +34,7 @@ LLM credential은 organization scope의 provider API 호출 권한과 모델 연
 - Organization manager가 credential을 등록하더라도 raw API key는 organization member, credential `use` 권한자, workflow runtime 응답에 노출하지 않는다.
 - Credential `manage`/`use` 권한은 기존 credential의 권한 관리와 실행 사용을 위한 권한이며, 새 credential 등록 권한을 의미하지 않는다.
 - Default credential/preset 자동 선택은 별도 ADR/API 계약 전에는 허용하지 않는다.
+- LlamaParse parsing은 전역 최신 credential, 다른 organization credential, `LLAMA_CLOUD_API_KEY` 같은 환경 변수 fallback으로 권한 검증을 우회하지 않는다. system-owned parsing이 필요하면 system principal, organization binding과 lifecycle을 별도 계약으로 승인해야 한다.
 - `organization_default` summary policy는 위 preset ADR/API 계약과 구현 전까지 unsupported다. Client가 해당 key 또는 direct credential ID를 Memory node config로 보내면 fail-closed한다.
 - Credential 권한 부족은 KB permission/source ACL 실패와 독립적으로 기록한다. Credential이 있다고 해서 KB content permission이나 source ACL authorization을 대체하지 않는다.
 - Usage summary는 model/provider/credential 식별자와 token/cost/latency 집계만 포함한다.

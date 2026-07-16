@@ -362,7 +362,7 @@ Critical policy ownership:
 | LLM Provider (OpenAI, Anthropic, Google) | `apps/shared/services/llm_client`의 자체 client 계층. 일반 LLM 호출은 `LLMService`가 credential/권한/허용된 fallback 정책을 판정한 뒤 client를 선택한다. Standalone RAG answer API의 explicit KB/auto collection flow는 별도 ADR 전까지 명시 `generation_model_id`와 `credential_id`를 요구하며, 일반 fallback을 자동 선택으로 해석하지 않는다 | Gateway(테스트 실행, RAG answer)와 Workflow Engine(LLM node) 모두 이 경로를 사용 |
 | Google OAuth | 로그인 연동 (`GOOGLE_CLIENT_ID/SECRET`) | |
 | 문서 저장소 | local 또는 S3 (`STORAGE_TYPE`, `AWS_*`) | Knowledge 문서 원본 저장 |
-| 문서 파싱 | LlamaCloud (`LLAMA_CLOUD_API_KEY`) | RAG ingestion 파싱 |
+| 문서 파싱 | LlamaCloud (organization-scoped `llamaparse` credential) | RAG ingestion 파싱. User-initiated parsing은 execution subject, active organization, provider compatibility, valid 상태와 `use` 권한을 parser 호출 직전에 확인하며 전역 DB row 또는 환경 변수 fallback을 사용하지 않는다 |
 | 외부 DB connector | `/api/v1/connectors` — 연결 테스트/등록/스키마 조회 | workflow에서 외부 DB 사용 |
 | Workflow 노드 아웃바운드 | HTTP, GitHub, Mail, Slack node | 실행 시점 외부 호출. Mail은 ADR-0031의 credential resolver와 IMAP egress gate를 적용한다. Slack은 provider 전용 API/Webhook adapter와 제한된 egress policy를 적용하고, durable claim/replay는 [ADR-0035](decisions/ADR-0035-external-effect-idempotency-boundary.md), provider 판정과 no-replay 정책은 [ADR-0037](decisions/ADR-0037-slack-dedicated-delivery-boundary.md)을 따른다. |
 | 인바운드 트리거 | Webhook, Schedule node, public run API | Public webhook은 app secret Bearer primary 또는 `X-Webhook-Secret` compatibility header를 정확히 하나 사용하고 query secret은 거부한다. Schedule은 내부 system dispatch 계약을 따른다. |

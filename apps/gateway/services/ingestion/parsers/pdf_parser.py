@@ -178,7 +178,7 @@ class PdfParser(BaseParser):
                 language="ko",
                 fast_mode=False,
                 target_pages=target_pages,
-                verbose=True,
+                verbose=False,
             )
 
             # load_data returns List[Document]
@@ -198,6 +198,6 @@ class PdfParser(BaseParser):
 
             return results
 
-        except Exception:
-            logger.exception("LlamaParse failed")
+        except Exception as exc:
+            logger.warning("LlamaParse parsing failed: %s", type(exc).__name__)
             return self._parse_with_pymupdf(file_path)
