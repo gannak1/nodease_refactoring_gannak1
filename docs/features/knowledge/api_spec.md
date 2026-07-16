@@ -20,7 +20,7 @@ KC sync 요청·상태 조회와 durable execution 계약은 [ADR-0048](../../de
 | DELETE | `/api/v1/knowledge/{kb_id}?acknowledged_hard_delete=true` | Manual KB hard delete | Organization manager 전용, explicit acknowledgement, approved retention/legal-hold gate. Production gate가 연결되지 않은 현재 baseline은 `403 policy.denied`로 fail-closed하며, allow된 경우에만 permission cleanup과 audit를 같은 DB transaction에서 처리한다 |
 | POST | `/api/v1/knowledge/candidates/resolve` | Builder/deployment preflight용 safe KB 후보 조회 | active organization, collection route 또는 explicit KB helper |
 | POST | `/api/v1/knowledge/rag-recommendations` | Workflow Builder용 LLM node RAG option 추천 | active organization, candidate resolver safe set, KB 단위 recommendation |
-| POST | `/api/v1/rag/upload` | 빈 manual KB의 최초 문서 등록/색인 요청 | `X-Organization-Id` active organization 필수. 신규 KB는 active organization에 귀속하며 primary organization fallback을 사용하지 않는다. 기존 KB는 KB `write`, active/manual/non-source-managed와 빈 document slot을 요구한다. 모든 상태의 기존 Document가 slot을 점유하며 두 번째 독립 source는 `409 knowledge.document_slot_occupied`다 |
+| POST | `/api/v1/rag/upload` | 빈 manual KB의 최초 문서 등록/색인 요청 | `X-Organization-Id` active organization 필수. 신규 KB는 active organization에 귀속하며 primary organization fallback을 사용하지 않는다. 기존 KB는 KB `write`, active/manual/non-source-managed와 빈 document slot을 요구한다. Manual KB에서는 active version pointer가 있는 completed Document를 포함해 모든 상태의 기존 Document가 slot을 점유하며 두 번째 독립 source는 `409 knowledge.document_slot_occupied`다. Source-managed/non-manual KB는 slot 존재를 노출하기 전에 `knowledge.document_registration_not_allowed`로 거부한다 |
 | POST | `/api/v1/rag/upload/presigned-url` | FILE 또는 Workflow 입력용 임시 upload URL | Knowledge 최초 등록 호출은 `knowledgeBaseId`를 전달하고 active organization, KB `write`와 현재 빈 document slot을 fast precheck한다. 기존 Workflow 입력 파일 호출은 KB 식별자 없이 사용할 수 있다. 최종 Knowledge `/rag/upload`는 KB row lock 아래에서 cardinality를 다시 검증한다 |
 | POST | `/api/v1/rag/search-test/pure` | 검색 테스트 | active organization, KB use |
 | POST | `/api/v1/rag/search-test/chat` | 검색+답변 테스트 | active organization, KB use, LLM credential |
@@ -331,6 +331,8 @@ ownership, filename/key validation, egress guard, size/content-type cap과 safe 
 계속 적용한다. Backend-owned artifact도 canonical conflict 또는 DB flush 이전 실패처럼
 commit이 시작되지 않았음이 확실할 때만 보상 삭제한다. Commit 호출 이후 결과가
 불명확하면 이미 커밋된 Document reference를 깨뜨릴 수 있으므로 자동 삭제하지 않는다.
+Request-bound presigned upload intent와 만료·orphan reconciler는 `MBA-295`의 target이며,
+그 계약이 없는 현재 baseline은 caller prefix만으로 direct object ownership을 확정하지 않는다.
 
 DB source UI가 이번 요청에서 새 Connection을 먼저 생성한 뒤 canonical registration에서
 `document_slot_occupied`, source policy, resource/permission rejection을 받으면 owner-scoped

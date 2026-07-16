@@ -40,28 +40,6 @@ vi.mock('@/app/features/knowledge/api/connectorApi', () => ({
   connectorApi: connectorApiMock,
 }));
 
-vi.mock('./DBConnectionForm', () => ({
-  default: ({ onChange }: { onChange: (config: object) => void }) => (
-    <button
-      type="button"
-      onClick={() =>
-        onChange({
-          connectionName: 'Test DB',
-          type: 'postgres',
-          host: 'db.internal',
-          port: 5432,
-          database: 'test',
-          username: 'test-user',
-          password: 'placeholder-password',
-          ssh: { enabled: false },
-        })
-      }
-    >
-      DB 설정 입력
-    </button>
-  ),
-}));
-
 const fetchMock = vi.fn();
 
 const renderOpenFileSourceModal = () =>
@@ -78,6 +56,20 @@ const fileDropEvent = (
   target: Window | Element,
   dataTransfer: DataTransfer | object,
 ) => createEvent.drop(target, { dataTransfer });
+
+const fillValidDbConfig = (container: HTMLElement) => {
+  const textInputs = screen.getAllByRole('textbox');
+  fireEvent.change(textInputs[0], { target: { value: 'Test DB' } });
+  fireEvent.change(textInputs[1], { target: { value: 'db.internal' } });
+  fireEvent.change(textInputs[2], { target: { value: 'test' } });
+  fireEvent.change(textInputs[3], { target: { value: 'test-user' } });
+
+  const passwordInput = container.querySelector('input[type="password"]');
+  expect(passwordInput).toBeInTheDocument();
+  fireEvent.change(passwordInput!, {
+    target: { value: 'placeholder-password' },
+  });
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -344,7 +336,7 @@ describe('CreateKnowledgeModal file drag and drop', () => {
         },
       },
     });
-    render(
+    const { container } = render(
       <CreateKnowledgeModal
         isOpen
         onClose={vi.fn()}
@@ -353,7 +345,7 @@ describe('CreateKnowledgeModal file drag and drop', () => {
       />,
     );
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    fireEvent.click(screen.getByRole('button', { name: 'DB 설정 입력' }));
+    fillValidDbConfig(container);
     fireEvent.click(screen.getByRole('button', { name: '소스 추가' }));
 
     await waitFor(() => {
@@ -377,7 +369,7 @@ describe('CreateKnowledgeModal file drag and drop', () => {
         },
       },
     });
-    render(
+    const { container } = render(
       <CreateKnowledgeModal
         isOpen
         onClose={vi.fn()}
@@ -386,7 +378,7 @@ describe('CreateKnowledgeModal file drag and drop', () => {
       />,
     );
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    fireEvent.click(screen.getByRole('button', { name: 'DB 설정 입력' }));
+    fillValidDbConfig(container);
     fireEvent.click(screen.getByRole('button', { name: '소스 추가' }));
 
     await waitFor(() => {

@@ -42,10 +42,16 @@ def is_initial_document_registration_eligible(kb: KnowledgeBase) -> bool:
     """Return the KB-level policy result without evaluating caller authority."""
 
     return (
+        _is_initial_document_registration_source_eligible(kb)
+        and getattr(kb, "active_document_version_id", None) is None
+    )
+
+
+def _is_initial_document_registration_source_eligible(kb: KnowledgeBase) -> bool:
+    return (
         getattr(kb, "lifecycle_state", None) == "active"
         and getattr(kb, "source_identity_id", None) is None
         and getattr(kb, "sync_state", None) == "manual"
-        and getattr(kb, "active_document_version_id", None) is None
     )
 
 
@@ -73,8 +79,9 @@ class KnowledgeDocumentRegistrationService:
                 organization_id=organization_id,
                 lock=False,
             )
-            self._ensure_policy_allows_registration(kb)
+            self._ensure_source_policy_allows_registration(kb)
             self._ensure_document_slot_empty(knowledge_base_id)
+            self._ensure_active_document_pointer_empty(kb)
         except KnowledgeDocumentRegistrationError:
             raise
         except SQLAlchemyError:
@@ -99,8 +106,9 @@ class KnowledgeDocumentRegistrationService:
                 organization_id=organization_id,
                 lock=True,
             )
-            self._ensure_policy_allows_registration(kb)
+            self._ensure_source_policy_allows_registration(kb)
             self._ensure_document_slot_empty(knowledge_base_id)
+            self._ensure_active_document_pointer_empty(kb)
 
             document = Document(
                 knowledge_base_id=knowledge_base_id,
@@ -154,8 +162,13 @@ class KnowledgeDocumentRegistrationService:
         return kb
 
     @staticmethod
-    def _ensure_policy_allows_registration(kb: KnowledgeBase) -> None:
-        if not is_initial_document_registration_eligible(kb):
+    def _ensure_source_policy_allows_registration(kb: KnowledgeBase) -> None:
+        if not _is_initial_document_registration_source_eligible(kb):
+            raise KnowledgeDocumentRegistrationPolicyDenied()
+
+    @staticmethod
+    def _ensure_active_document_pointer_empty(kb: KnowledgeBase) -> None:
+        if getattr(kb, "active_document_version_id", None) is not None:
             raise KnowledgeDocumentRegistrationPolicyDenied()
 
     def _ensure_document_slot_empty(self, knowledge_base_id: UUID) -> None:

@@ -184,7 +184,7 @@ KC sync의 실행·복구·snapshot·versioned finalization 검증은 [ADR-0048]
 ### MBA-273 Initial Document Registration
 
 - 빈 active manual KB에서 KB `write`가 있는 caller는 FILE/API/DB 중 하나의 최초 `Document(status=pending)`만 등록할 수 있고 detail의 `can_register_initial_document`는 등록 전 true, 등록 후 false다.
-- 기존 Document는 `pending`, `processing`, `failed`, `completed` 상태와 무관하게 slot을 점유한다. 두 번째 independent source는 `409 knowledge.document_slot_occupied`이며 response/log/audit에 기존 document id, filename, path, source config를 포함하지 않는다.
+- Manual KB의 기존 Document는 `pending`, `processing`, `failed`, `completed` 상태와 무관하게 slot을 점유한다. Completed Document가 active version pointer를 가지고 있어도 두 번째 independent source는 `409 knowledge.document_slot_occupied`이며 response/log/audit에 기존 document id, filename, path, source config를 포함하지 않는다. Source-managed/non-manual KB는 Document 존재 여부를 공개하지 않고 `knowledge.document_registration_not_allowed`로 먼저 거부한다.
 - KB `read`만 있거나 cross-organization/hidden/deleted KB인 caller는 기존 hidden/denied matrix를 유지한다. Source-managed 또는 `sync_state != manual` KB는 최초 manual registration을 fail-closed한다.
 - 두 transaction이 같은 빈 KB에 동시에 등록하면 PostgreSQL KB row lock 뒤 하나만 commit되고 다른 하나는 conflict가 된다. Endpoint 권한 검사로 같은 Session identity map에 KB가 먼저 올라온 경우에도 canonical lock query는 `populate_existing`으로 DB 상태를 다시 읽어 concurrent lifecycle/source/version 변경을 반영한다. 최종 Document count는 1이며 rollback/commit failure가 partial row를 남기지 않는다.
 - Backend-mediated FILE upload가 fast precheck 뒤 race에서 지면 해당 request가 생성한 storage artifact만 보상 삭제한다. DB flush 이전 실패는 cleanup-safe지만 commit 호출 이후 결과가 불명확한 실패에서는 이미 커밋된 Document reference 보호를 위해 자동 삭제하지 않는다. Cleanup failure는 provider exception/path/key를 노출하지 않는다. Presigned/direct object는 ownership이 확정되지 않으면 자동 삭제하지 않는다.

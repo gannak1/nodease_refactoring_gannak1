@@ -140,6 +140,28 @@ def test_any_existing_document_state_occupies_the_slot(status):
     assert db.rolled_back is True
 
 
+def test_completed_document_with_active_pointer_reports_slot_occupied():
+    kb = _kb(active_document_version_id=uuid.uuid4())
+    db = _Db(kb, existing_document=(uuid.uuid4(), "completed"))
+
+    with pytest.raises(KnowledgeDocumentSlotOccupied):
+        _register(KnowledgeDocumentRegistrationService(db), kb)
+
+    assert db.added is None
+    assert db.rolled_back is True
+
+
+def test_source_managed_kb_does_not_disclose_existing_document_slot():
+    kb = _kb(source_identity_id=uuid.uuid4(), sync_state="synced")
+    db = _Db(kb, existing_document=(uuid.uuid4(), "completed"))
+
+    with pytest.raises(KnowledgeDocumentRegistrationPolicyDenied):
+        _register(KnowledgeDocumentRegistrationService(db), kb)
+
+    assert db.added is None
+    assert db.rolled_back is True
+
+
 @pytest.mark.parametrize(
     "overrides",
     [
