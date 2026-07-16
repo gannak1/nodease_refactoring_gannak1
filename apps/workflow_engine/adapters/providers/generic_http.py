@@ -7,6 +7,7 @@ import time
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from typing import Any, Mapping
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -33,6 +34,30 @@ from apps.workflow_engine.domain.external_effect import (
 
 
 _REQUEST_CANONICAL_DOMAIN_V1 = "nodease.generic-http-request.v1"
+
+
+def _explicit_port_from_url(url: str) -> int | None:
+    try:
+        authority = urlsplit(url).netloc.rsplit("@", 1)[-1]
+    except (TypeError, ValueError):
+        return None
+
+    if authority.startswith("["):
+        closing_bracket = authority.find("]")
+        if closing_bracket < 0:
+            return None
+        port_separator = authority[closing_bracket + 1 :]
+        if not port_separator.startswith(":"):
+            return None
+        port_text = port_separator[1:]
+    else:
+        if authority.count(":") != 1:
+            return None
+        _host, _separator, port_text = authority.rpartition(":")
+
+    if not port_text.isascii() or not port_text.isdecimal():
+        return None
+    return int(port_text)
 
 
 def _length_delimited_field(name: str, value: str | bytes) -> bytes:
@@ -295,8 +320,7 @@ class GenericHttpEffectAdapter:
             )
         )
         canonical_bytes = b"".join(
-            _length_delimited_field(name, value)
-            for name, value in canonical_fields
+            _length_delimited_field(name, value) for name, value in canonical_fields
         )
         return prepared, canonical_bytes, error_code
 
@@ -471,11 +495,13 @@ class GenericHttpEffectAdapter:
         try:
             parsed = httpx.URL(request.url)
             hostname = parsed.host
-            if parsed.port is not None:
+            explicit_port = _explicit_port_from_url(request.url)
+            trace_port = explicit_port if explicit_port is not None else parsed.port
+            if trace_port is not None:
                 hostname = (
-                    f"[{hostname}]:{parsed.port}"
+                    f"[{hostname}]:{trace_port}"
                     if ":" in hostname
-                    else f"{hostname}:{parsed.port}"
+                    else f"{hostname}:{trace_port}"
                 )
             path = parsed.path or "/"
         except (httpx.InvalidURL, ValueError, TypeError):

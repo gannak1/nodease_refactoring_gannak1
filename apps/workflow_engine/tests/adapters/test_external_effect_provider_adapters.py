@@ -110,6 +110,33 @@ def test_generic_http_malformed_port_keeps_failure_trace_sanitized() -> None:
     assert "opaque-query-value" not in str(adapter.trace_metadata)
 
 
+@pytest.mark.parametrize(
+    ("url", "expected_host"),
+    [
+        ("https://api.example.test:443/path?opaque", "api.example.test:443"),
+        ("http://api.example.test:80/path?opaque", "api.example.test:80"),
+        (
+            "https://[2606:4700:4700::1111]:443/path?opaque",
+            "[2606:4700:4700::1111]:443",
+        ),
+        ("https://api.example.test/path?opaque", "api.example.test"),
+    ],
+)
+def test_generic_http_trace_preserves_only_explicit_default_port(
+    url,
+    expected_host,
+) -> None:
+    calls: list[OutboundHttpRequest] = []
+    adapter = GenericHttpEffectAdapter(outbound_http=_CaptureOutboundHttp(calls))
+    prepared = adapter.prepare_effect(GenericHttpRequest("POST", url, {}, None, 1.0))
+
+    adapter.invoke_effect(adapter.finalize_provider_call(prepared, None))
+
+    assert adapter.trace_metadata["http"]["host"] == expected_host
+    assert adapter.trace_metadata["http"]["path"] == "/path"
+    assert "opaque" not in str(adapter.trace_metadata)
+
+
 def test_generic_http_response_loss_is_outcome_unknown() -> None:
     adapter = GenericHttpEffectAdapter(
         outbound_http=_FailingOutboundHttp(
@@ -168,9 +195,7 @@ def test_generic_http_invalid_text_encoding_falls_back_to_text_output(
         content=content,
         headers=(("content-type", content_type),),
     )
-    adapter = GenericHttpEffectAdapter(
-        outbound_http=_ResponseOutboundHttp(response)
-    )
+    adapter = GenericHttpEffectAdapter(outbound_http=_ResponseOutboundHttp(response))
     prepared = adapter.prepare_effect(
         GenericHttpRequest("POST", "https://example.test", {}, None, 1.0)
     )
@@ -198,9 +223,7 @@ def test_generic_http_prepares_and_invokes_frozen_wire_mode(
     payload_key,
 ) -> None:
     calls: list[OutboundHttpRequest] = []
-    adapter = GenericHttpEffectAdapter(
-        outbound_http=_CaptureOutboundHttp(calls)
-    )
+    adapter = GenericHttpEffectAdapter(outbound_http=_CaptureOutboundHttp(calls))
     prepared = adapter.prepare_effect(
         GenericHttpRequest(
             "POST",
