@@ -5,6 +5,21 @@ Status: Draft
 
 ## Unit Tests
 
+- `audit_event_outbox` schema는 audit payload JSONB와 고정된 audit event id 기반 idempotency key를 보존하고, pending/leased/succeeded/retry/dead-letter 상태, lease owner/만료, 최대 5회 재시도에 필요한 counter와 retry 시각을 가진다. 이 테이블은 business resource FK 없이 독립적으로 insert 가능하며 status/retry와 status/lease 조회 인덱스를 제공한다.
+- Rollout 4의 `record_audit()`은 audit payload를 한 번만 직렬화해 고정 audit event id를 Outbox idempotency key에 사용한다. Caller session이 있으면 commit하지 않고 같은 transaction에 row를 추가하며, session이 없으면 짧은 독립 transaction으로 Outbox를 commit한다.
+- Outbox 저장 성공 시 고정 audit event id를 반환하고 실패 시 `None`을 반환한다. 실패 로그에는 payload, raw exception detail, secret이 없어야 하며 Redis/broker fallback을 시도하지 않는다.
+- Rollout 3의 Audit Outbox worker는 due row를 `FOR UPDATE SKIP LOCKED`로 lease하고 lease/attempt 증가를 먼저 commit한 뒤 처리한다. AuditLog insert, Outbox `succeeded` 전환, 성공 payload의 `{}` 교체는 같은 transaction에서 commit하며 기존 `audit_logs.id`가 있으면 멱등 성공으로 처리한다. 성공 row는 idempotency tombstone을 유지하고 retry/dead-letter row는 payload를 유지한다.
+- Audit Outbox worker는 owner token이 일치하는 lease만 완료/재시도할 수 있다. 만료 lease는 복구하고 저장 실패는 safe reason code로 최대 5회 재시도한 뒤 `dead_lettered`로 전환하며 raw payload나 exception detail을 reason/log에 남기지 않는다.
+- Audit Outbox 처리 성공 뒤 Security Alert 탐지 task를 commit 이후에 발행한다. 이 후속 발행 실패는 이미 저장한 AuditLog/Outbox 성공 transaction을 되돌리지 않으며 Security Alert reconciliation이 누락 탐지를 복구할 수 있다.
+- `audit.event_outbox.process`는 Log queue에 등록되고 Celery Beat가 30초마다 실행한다. Rollout 4의 `record_audit()`은 `celery_app.send_task("audit.record")`를 호출하지 않는다.
+- 배포 직전에 broker에 들어간 legacy 메시지를 소진할 수 있도록 `audit.record` consumer는 호환성 task로 유지하되 신규 producer에서는 더 이상 사용하지 않는다.
+- `audit_logs.workflow_run_id`와 `workflow_node_run_id`는 nullable UUID FK와 개별 조회 인덱스를 가진다. 참조 실행이 삭제돼도 감사 행은 보존되도록 `ON DELETE SET NULL`을 사용한다.
+- Correlation migration은 기존 `audit_metadata.workflow_run_id`/`workflow_node_run_id`와 `organization_id`가 정상 UUID이고 실제 대상 row가 존재하며 Run의 Workflow 조직이 audit 조직과 같을 때만 typed 컬럼으로 backfill한다. malformed/orphan/cross-organization 값은 migration을 실패시키지 않고 NULL로 남긴다.
+- Outbox worker와 호환 `audit.record` consumer는 top-level correlation을 우선하고 기존 metadata correlation을 호환 입력으로 읽어 같은 typed AuditLog 컬럼에 저장한다.
+- Audit list/detail safe projection은 nullable `workflow_run_id`/`workflow_node_run_id`를 additive하게 반환하되 기존 organization 권한·scope 필터를 우회하지 않는다.
+- 저장 시 orphan correlation은 NULL로 내리고 NodeRun이 다른 WorkflowRun 소속이거나 Run의 Workflow 조직이 audit 조직과 다르면 잘못된 run/node 연결을 저장하지 않는다. 조직 metadata 누락·malformed을 포함한 optional correlation 문제 때문에 canonical AuditLog 전체가 dead-letter되어서는 안 된다.
+- 유효한 `organization_id`와 `workflow_run_id`가 있지만 비동기 `log.create_run`이 아직 WorkflowRun을 저장하지 않은 경우 Outbox worker는 safe reason으로 bounded retry한다. 재시도 중 Run이 보이면 typed correlation을 보존하고, 마지막 시도에도 없으면 correlation만 NULL로 내려 canonical AuditLog 자체는 저장한다.
+- 수동/API/Webhook 사용자 WorkflowRun 완료·실패 audit은 Workflow의 canonical `organization_id`와 `workflow_run_id`를 함께 기록해 Outbox 저장 뒤에도 typed run 연결을 유지한다. System schedule은 기존 exact claim provenance 검증을 계속 사용한다.
 - Audit metadata sanitizer는 raw source id/url/path/title, raw source principal, raw source ACL row, raw chunk content, raw prompt/completion, credential value, `encrypted_config`, raw exception을 제거한다.
 - Authorized retrieval summary allowlist는 KB id, document version id, chunk id, citation id, optional collection id, rank/score, safe metadata summary, policy result, latency/cost/token aggregate, retryability, opaque correlation/request id, `retrieval_strategy`, `rag_mode`, authorized/selected/retrieved count summary, `context_token_estimate`, `permission_filter_applied`, `safe_exclusion_summary`, `query_rewrite_applied`, `query_rewrite_strategy`, `evidence_sufficient`, `insufficiency_reason`, `source_tier_policy`, `source_tier_used`, `fanout_concurrency`, `fanout_timeout_seconds`, `failure_policy`만 허용한다.
 - Audit/trace metadata sanitizer는 raw rewritten query를 raw prompt와 같은 민감 입력으로 보고 durable metadata와 log에서 제거한다.

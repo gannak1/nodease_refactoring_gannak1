@@ -8,6 +8,8 @@ import pytest
 from apps.log_system import audit_tasks
 from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.security_alert import SecurityAlertReconciliationWatermark
+from apps.shared.db.models.workflow import Workflow
+from apps.shared.db.models.workflow_run import WorkflowNodeRun, WorkflowRun
 from sqlalchemy.exc import IntegrityError
 
 
@@ -24,21 +26,43 @@ class _Session:
         commit_error=None,
         winner_after_rollback=None,
         events=None,
+        workflow=None,
+        workflow_run=None,
+        workflow_node_run=None,
     ):
         self.existing = existing
         self.commit_error = commit_error
         self.winner_after_rollback = winner_after_rollback
         self.events = events
+        self.workflow = workflow
+        self.workflow_run = workflow_run
+        self.workflow_node_run = workflow_node_run
         self.added = []
         self.commits = 0
         self.rollbacks = 0
         self.closed = 0
 
     def get(self, model, identity):
-        assert model is AuditLog
-        if self.existing is not None and self.existing.id == identity:
-            return self.existing
-        return None
+        if model is AuditLog:
+            if self.existing is not None and self.existing.id == identity:
+                return self.existing
+            return None
+        if model is WorkflowRun:
+            if self.workflow_run is not None and self.workflow_run.id == identity:
+                return self.workflow_run
+            return None
+        if model is Workflow:
+            if self.workflow is not None and self.workflow.id == identity:
+                return self.workflow
+            return None
+        if model is WorkflowNodeRun:
+            if (
+                self.workflow_node_run is not None
+                and self.workflow_node_run.id == identity
+            ):
+                return self.workflow_node_run
+            return None
+        raise AssertionError(model)
 
     def add(self, row):
         self.added.append(row)
@@ -89,6 +113,37 @@ def test_record_audit_uses_publisher_supplied_id(monkeypatch):
     assert session.added[0].id == audit_id
     assert session.commits == 1
     assert session.closed == 1
+
+
+def test_legacy_record_audit_maps_workflow_correlation(monkeypatch):
+    data = _data(uuid4())
+    organization_id = data["audit_metadata"]["organization_id"]
+    workflow_id = uuid4()
+    workflow_run_id = uuid4()
+    workflow_node_run_id = uuid4()
+    session = _Session(
+        workflow=SimpleNamespace(
+            id=workflow_id,
+            organization_id=organization_id,
+        ),
+        workflow_run=SimpleNamespace(
+            id=workflow_run_id,
+            workflow_id=workflow_id,
+        ),
+        workflow_node_run=SimpleNamespace(
+            id=workflow_node_run_id,
+            workflow_run_id=workflow_run_id,
+        ),
+    )
+    monkeypatch.setattr(audit_tasks, "SessionLocal", lambda: session)
+    data["workflow_run_id"] = str(workflow_run_id)
+    data["audit_metadata"]["workflow_node_run_id"] = str(workflow_node_run_id)
+
+    audit_tasks.record_audit_log.run(data)
+
+    audit = session.added[0]
+    assert audit.workflow_run_id == workflow_run_id
+    assert audit.workflow_node_run_id == workflow_node_run_id
 
 
 def test_record_audit_redelivery_is_idempotent(monkeypatch):
@@ -816,6 +871,67 @@ def test_security_alert_notification_outbox_worker_delegates_transaction_control
     result = audit_tasks.deliver_security_alert_notification_outbox.run(limit=25)
 
     assert result == {"processed_count": 2, "recovered_count": 1}
+    assert len(processed) == 1
+    assert processed[0][1] == 25
+    assert processed[0][0]
+    assert session.commits == 0
+    assert session.rollbacks == 0
+    assert session.closed == 1
+
+
+def test_audit_event_outbox_task_is_registered_on_log_queue():
+    task_name = "audit.event_outbox.process"
+
+    assert task_name in audit_tasks.celery_app.tasks
+    route = audit_tasks.celery_app.amqp.router.route(
+        {},
+        task_name,
+        args=[],
+        kwargs={},
+    )
+    assert route["queue"].name == "log"
+
+
+def test_audit_event_outbox_has_recovery_beat_schedule():
+    entries = [
+        entry
+        for entry in (audit_tasks.celery_app.conf.beat_schedule or {}).values()
+        if entry.get("task") == "audit.event_outbox.process"
+    ]
+
+    assert entries == [
+        {
+            "task": "audit.event_outbox.process",
+            "schedule": 30.0,
+            "options": {"queue": "log"},
+        }
+    ]
+
+
+def test_audit_event_outbox_worker_delegates_transaction_control(monkeypatch):
+    session = _Session()
+    processed = []
+
+    class Processor:
+        def __init__(self, db, *, after_commit):
+            assert db is session
+            assert after_commit is audit_tasks._dispatch_security_alert_detection
+
+        def process_due_events(self, *, owner_token, limit):
+            processed.append((owner_token, limit))
+            return SimpleNamespace(processed_count=3, recovered_count=1)
+
+    monkeypatch.setattr(audit_tasks, "SessionLocal", lambda: session)
+    monkeypatch.setattr(
+        audit_tasks,
+        "AuditEventOutboxProcessor",
+        Processor,
+        raising=False,
+    )
+
+    result = audit_tasks.process_audit_event_outbox.run(limit=25)
+
+    assert result == {"processed_count": 3, "recovered_count": 1}
     assert len(processed) == 1
     assert processed[0][1] == 25
     assert processed[0][0]

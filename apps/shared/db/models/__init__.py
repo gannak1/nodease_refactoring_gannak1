@@ -13,7 +13,7 @@ from apps.shared.db.models.agent_builder import (
     AgentBuilderSession,
 )
 from apps.shared.db.models.app import App
-from apps.shared.db.models.audit_log import AuditLog
+from apps.shared.db.models.audit_log import AuditEventOutbox, AuditLog
 from apps.shared.db.models.connection import Connection
 from apps.shared.db.models.cost_optimizer import (
     CostOptimizerCandidate,
@@ -52,11 +52,6 @@ from apps.shared.db.models.mail_processing import (
     MailDraftEffect,
     MailMessageProcessing,
 )
-from apps.shared.db.models.model_routing_policy import (
-    LLMNodeModelRoutingPolicy,
-    LLMNodeModelRoutingPolicyRunEvent,
-    LLMNodeModelRoutingPolicyUpdate,
-)
 from apps.shared.db.models.model_routing_cohort import (
     LLMNodeModelRoutingCohort,
     LLMNodeModelRoutingCohortExample,
@@ -66,6 +61,11 @@ from apps.shared.db.models.model_routing_cohort import (
     LLMNodeModelRoutingValidationBudgetMonth,
     LLMNodeModelRoutingValidationCostEvent,
     LLMNodeModelRoutingValidationItem,
+)
+from apps.shared.db.models.model_routing_policy import (
+    LLMNodeModelRoutingPolicy,
+    LLMNodeModelRoutingPolicyRunEvent,
+    LLMNodeModelRoutingPolicyUpdate,
 )
 from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.organization_membership import (
@@ -136,6 +136,7 @@ from apps.shared.db.models.workflow_run import (
 __all__ = [
     "User",
     "App",
+    "AuditEventOutbox",
     "AuditLog",
     "AgentBuilderDraft",
     "AgentBuilderRequest",

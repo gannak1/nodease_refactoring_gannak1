@@ -32,6 +32,8 @@ class AuditLogListResponse(BaseModel):
 
 
 class AdminAuditLogSchema(AuditLogSchema):
+    workflow_run_id: Optional[UUID] = None
+    workflow_node_run_id: Optional[UUID] = None
     actor_display: AuditDisplayReference | None = None
     target_display: AuditDisplayReference | None = None
 

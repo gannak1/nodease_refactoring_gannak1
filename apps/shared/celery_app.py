@@ -67,6 +67,11 @@ celery_app.conf.update(
             "schedule": 30.0,
             "options": {"queue": "log"},
         },
+        "audit-event-outbox": {
+            "task": "audit.event_outbox.process",
+            "schedule": 30.0,
+            "options": {"queue": "log"},
+        },
         "knowledge-collection-sync-recovery": {
             "task": "workflow.knowledge_collection_sync.recover",
             "schedule": 30.0,
