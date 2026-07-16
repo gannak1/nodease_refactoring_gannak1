@@ -1,7 +1,7 @@
 # Workflow API Spec
 
 Status: Draft
-Verified Against: `codex/mba-276 @ d46dd672`
+Verified Against: `feature/mba-283 @ cb18712e`
 
 ## Endpoints
 
