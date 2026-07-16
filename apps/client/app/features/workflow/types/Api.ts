@@ -341,6 +341,10 @@ export interface ModelRoutingPolicyResponse {
       completed_items: number;
       reserved_cost: number;
       spent_cost: number;
+      bootstrap_wave: number | null;
+      bootstrap_search_state: string | null;
+      follow_up_batch_id: string | null;
+      validated_route_count: number;
       created_at: string | null;
     } | null;
   };
@@ -372,6 +376,7 @@ export interface ModelRoutingCohortSuggestionResponse {
   key: string;
   representative_query: string;
   representative_examples: string[];
+  safety_protected: boolean;
 }
 
 export interface ModelRoutingCohortCreateRequest
@@ -380,6 +385,7 @@ export interface ModelRoutingCohortCreateRequest
   key: string;
   representative_examples?: string[];
   fixed: boolean;
+  safety_protected: boolean;
 }
 
 export interface ModelRoutingCohortCreateResponse {
@@ -388,6 +394,7 @@ export interface ModelRoutingCohortCreateResponse {
   label: string;
   representative_query: string;
   representative_examples?: string[];
+  safety_protected: boolean;
   source: 'manual' | 'auto' | string;
   status: string;
 }

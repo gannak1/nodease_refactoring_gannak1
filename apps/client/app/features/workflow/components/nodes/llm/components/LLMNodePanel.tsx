@@ -398,7 +398,17 @@ export function LLMNodePanel({
     representativeQuery: '',
     additionalExamples: [] as string[],
     fixed: false,
+    safetyProtected: false,
   });
+  const manualCohortExampleCount = new Set(
+    [
+      manualCohort.representativeQuery.trim(),
+      ...manualCohort.additionalExamples.map((example) => example.trim()),
+    ].filter(Boolean),
+  ).size;
+  const manualCohortRequiredExampleCount = manualCohort.safetyProtected ? 5 : 3;
+  const manualCohortHasEnoughExamples =
+    manualCohortExampleCount >= manualCohortRequiredExampleCount;
   const [isCohortWizardRunning, setIsCohortWizardRunning] = useState(false);
   const [isManualCohortCreating, setIsManualCohortCreating] = useState(false);
 
@@ -842,6 +852,7 @@ export function LLMNodePanel({
           (example) => example !== suggestion.representative_query,
         ),
         fixed: manualCohort.fixed,
+        safetyProtected: suggestion.safety_protected,
       });
       setRoutingPolicyError(null);
     } catch {
@@ -865,6 +876,7 @@ export function LLMNodePanel({
       !manualCohort.label.trim() ||
       !manualCohort.key.trim() ||
       !manualCohort.representativeQuery.trim() ||
+      !manualCohortHasEnoughExamples ||
       isManualCohortCreating
     ) {
       return;
@@ -880,6 +892,7 @@ export function LLMNodePanel({
           ...manualCohort.additionalExamples,
         ],
         fixed: manualCohort.fixed,
+        safety_protected: manualCohort.safetyProtected,
       };
       if (convertingAutoCohortId) {
         await workflowApi.convertModelRoutingCohortToManual(
@@ -904,6 +917,7 @@ export function LLMNodePanel({
         representativeQuery: '',
         additionalExamples: [],
         fixed: false,
+        safetyProtected: false,
       });
       setEditingManualCohortId(null);
       setConvertingAutoCohortId(null);
@@ -924,6 +938,7 @@ export function LLMNodePanel({
     isManualCohortCreating,
     loadRoutingPolicy,
     manualCohort,
+    manualCohortHasEnoughExamples,
     nodeId,
   ]);
 
@@ -936,6 +951,7 @@ export function LLMNodePanel({
       representativeQuery: '',
       additionalExamples: [],
       fixed: false,
+      safetyProtected: false,
     });
     setIsManualCohortFormOpen(true);
   }, []);
@@ -948,6 +964,7 @@ export function LLMNodePanel({
       representative_query: string | null;
       representative_examples?: string[];
       required: boolean;
+      safety_protected: boolean;
     }) => {
       setEditingManualCohortId(cohort.id);
       setConvertingAutoCohortId(null);
@@ -959,6 +976,7 @@ export function LLMNodePanel({
           (example) => example !== cohort.representative_query,
         ),
         fixed: cohort.required,
+        safetyProtected: cohort.safety_protected,
       });
       setIsManualCohortFormOpen(true);
     },
@@ -972,6 +990,7 @@ export function LLMNodePanel({
       key: string;
       representative_query: string | null;
       representative_examples?: string[];
+      safety_protected: boolean;
     }) => {
       setEditingManualCohortId(null);
       setConvertingAutoCohortId(cohort.id);
@@ -983,6 +1002,7 @@ export function LLMNodePanel({
           (example) => example !== cohort.representative_query,
         ),
         fixed: false,
+        safetyProtected: cohort.safety_protected,
       });
       setIsManualCohortFormOpen(true);
       setRoutingPolicyError(null);
@@ -1878,6 +1898,25 @@ export function LLMNodePanel({
                               </span>
                             </span>
                           </label>
+                          <label className="flex items-start gap-2 rounded border border-rose-200 bg-rose-50 px-2.5 py-2 text-[11px] text-rose-900">
+                            <input
+                              type="checkbox"
+                              className="nodrag mt-0.5 h-3.5 w-3.5"
+                              checked={manualCohort.safetyProtected}
+                              onChange={(event) =>
+                                setManualCohort((current) => ({
+                                  ...current,
+                                  safetyProtected: event.target.checked,
+                                }))
+                              }
+                            />
+                            <span>
+                              <span className="block font-semibold">고위험 입력군</span>
+                              <span className="mt-0.5 block text-rose-700">
+                                보안, 개인정보, 법무, SLA, 금전 보상처럼 오답 영향이 큰 문의입니다. 예문 5개와 강화된 품질 검증을 요구합니다.
+                              </span>
+                            </span>
+                          </label>
                           <button
                             type="button"
                             className="nodrag inline-flex items-center gap-1 rounded border border-violet-300 bg-violet-50 px-2 py-1.5 text-[11px] font-semibold text-violet-800 hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-60"
@@ -1927,6 +1966,17 @@ export function LLMNodePanel({
                               </ul>
                             </div>
                           ) : null}
+                          <p
+                            className={`rounded border px-2 py-1.5 text-[11px] ${
+                              manualCohortHasEnoughExamples
+                                ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                                : 'border-amber-200 bg-amber-50 text-amber-800'
+                            }`}
+                          >
+                            {manualCohortHasEnoughExamples
+                              ? `대표 예문 ${manualCohortExampleCount}개가 준비됐습니다.`
+                              : `대표 예문이 최소 ${manualCohortRequiredExampleCount}개 필요합니다.`}
+                          </p>
                           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                             <label className="block text-[11px] font-medium text-slate-700">
                               입력군 이름
@@ -1966,9 +2016,10 @@ export function LLMNodePanel({
                               onClick={handleManualCohortCreate}
                               disabled={
                                 !manualCohort.label.trim() ||
-                                !manualCohort.key.trim() ||
-                                !manualCohort.representativeQuery.trim() ||
-                                isManualCohortCreating
+                                 !manualCohort.key.trim() ||
+                                 !manualCohort.representativeQuery.trim() ||
+                                 !manualCohortHasEnoughExamples ||
+                                 isManualCohortCreating
                               }
                             >
                               {isManualCohortCreating

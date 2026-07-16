@@ -199,6 +199,7 @@ describe('FR-003 LLM node model routing optimization entry', () => {
         '결제 후에도 팀 기능이 열리지 않습니다.',
         '구독 결제는 성공했지만 계정이 무료 상태입니다.',
       ],
+      safety_protected: false,
     });
     workflowApiMock.createModelRoutingCohort.mockResolvedValue({
       id: 'cohort-1',
@@ -206,6 +207,13 @@ describe('FR-003 LLM node model routing optimization entry', () => {
       label: '결제 오류 문의',
       source: 'manual',
       status: 'proposed',
+      representative_query: '결제가 완료됐는데 서비스 이용이 되지 않습니다.',
+      representative_examples: [
+        '결제가 완료됐는데 서비스 이용이 되지 않습니다.',
+        '결제 후에도 팀 기능이 열리지 않습니다.',
+        '구독 결제는 성공했지만 계정이 무료 상태입니다.',
+      ],
+      safety_protected: false,
     });
     global.fetch = vi.fn(async () => ({
       ok: true,
@@ -480,7 +488,7 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     });
   });
 
-  it('대표 문의 하나로 마법사 예문을 만들고 검토 후 직접 등록한다', async () => {
+  it('대표 문의 하나로 마법사 예문을 3개 이상 만들고 검토 후 직접 등록한다', async () => {
     const node = createLlmNode({ auto_model_routing: true });
     useWorkflowStore.setState(
       { ...useWorkflowStore.getState(), nodes: [node] },
@@ -508,13 +516,6 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     expect(
       screen.getByText('결제 후에도 팀 기능이 열리지 않습니다.'),
     ).toBeInTheDocument();
-    fireEvent.click(
-      screen.getByRole('button', { name: '자동 생성 예문 1 삭제' }),
-    );
-    expect(
-      screen.queryByText('결제 후에도 팀 기능이 열리지 않습니다.'),
-    ).not.toBeInTheDocument();
-
     fireEvent.click(screen.getByRole('button', { name: /^입력군 추가$/ }));
     await waitFor(() => {
       expect(workflowApiMock.createModelRoutingCohort).toHaveBeenCalledWith(
@@ -526,12 +527,39 @@ describe('FR-003 LLM node model routing optimization entry', () => {
           representative_query: '결제가 완료됐는데 서비스 이용이 되지 않습니다.',
           representative_examples: [
             '결제가 완료됐는데 서비스 이용이 되지 않습니다.',
+            '결제 후에도 팀 기능이 열리지 않습니다.',
             '구독 결제는 성공했지만 계정이 무료 상태입니다.',
           ],
           fixed: false,
+          safety_protected: false,
         },
       );
     });
+  });
+
+  it('대표 예문이 3개보다 적으면 입력군 저장을 막는다', async () => {
+    const node = createLlmNode({ auto_model_routing: true });
+    useWorkflowStore.setState(
+      { ...useWorkflowStore.getState(), nodes: [node] },
+      true,
+    );
+    render(<NodeInlinePanel node={node} />);
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: /직접 입력군 추가/ }),
+    );
+    fireEvent.change(screen.getByLabelText('대표 문의'), {
+      target: { value: '결제 오류를 확인해 주세요.' },
+    });
+    fireEvent.change(screen.getByLabelText('입력군 이름'), {
+      target: { value: '결제 오류' },
+    });
+    fireEvent.change(screen.getByLabelText('영문 키'), {
+      target: { value: 'billing_error' },
+    });
+
+    expect(screen.getByText(/대표 예문이 최소 3개 필요합니다/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^입력군 추가$/ })).toBeDisabled();
   });
 
   it('첫 배포 전에도 입력군 초안을 추가하고 draft 상태를 확인한다', async () => {
@@ -715,6 +743,11 @@ describe('FR-003 LLM node model routing optimization entry', () => {
             label: '계정 접근 문의',
             label_en: 'account access',
             representative_query: '로그인할 수 없어 계정 접근을 도와주세요.',
+            representative_examples: [
+              '로그인할 수 없어 계정 접근을 도와주세요.',
+              'SSO 인증이 반복해서 실패합니다.',
+              'MFA 기기 변경 후 계정에 접근할 수 없습니다.',
+            ],
             source: 'auto',
             status: 'active',
             required: false,
@@ -732,6 +765,13 @@ describe('FR-003 LLM node model routing optimization entry', () => {
       id: 'auto-cohort',
       key: 'account_access',
       label: '계정 접근 문의',
+      representative_query: '로그인할 수 없어 계정 접근을 도와주세요.',
+      representative_examples: [
+        '로그인할 수 없어 계정 접근을 도와주세요.',
+        'SSO 인증이 반복해서 실패합니다.',
+        'MFA 기기 변경 후 계정에 접근할 수 없습니다.',
+      ],
+      safety_protected: false,
       source: 'manual',
       status: 'proposed',
     });
@@ -758,8 +798,13 @@ describe('FR-003 LLM node model routing optimization entry', () => {
           label: '계정 접근 문의',
           key: 'account_access',
           representative_query: '로그인할 수 없어 계정 접근을 도와주세요.',
-          representative_examples: ['로그인할 수 없어 계정 접근을 도와주세요.'],
+          representative_examples: [
+            '로그인할 수 없어 계정 접근을 도와주세요.',
+            'SSO 인증이 반복해서 실패합니다.',
+            'MFA 기기 변경 후 계정에 접근할 수 없습니다.',
+          ],
           fixed: false,
+          safety_protected: false,
         },
       );
     });
