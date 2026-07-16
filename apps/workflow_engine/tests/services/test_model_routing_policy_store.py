@@ -328,6 +328,34 @@ def test_record_completed_run_excludes_rag_safe_no_result_from_policy_evidence()
     ensure_policy.assert_not_called()
 
 
+def test_routing_evidence_includes_successful_rag_run_with_safe_failure_policy():
+    """safe_no_result 설정이 있어도 근거가 충분하면 실제 모델 실행 표본이다."""
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    successful_rag_node = SimpleNamespace(
+        outputs={
+            "metadata": {
+                "rag": {
+                    "failure_policy": "safe_no_result",
+                    "evidence_sufficient": True,
+                }
+            }
+        },
+        trace_metadata={
+            "rag": {
+                "failure_policy": "safe_no_result",
+                "evidence_sufficient": True,
+            }
+        },
+    )
+
+    assert ModelRoutingPolicyStore._is_routing_evidence_eligible_node_run(
+        successful_rag_node
+    ) is True
+
+
 def test_record_completed_run_ignores_deployment_snapshot_without_auto_routing():
     """draft 토글이 아니라 배포 snapshot의 자동 라우팅 ON 여부만 집계 기준이다."""
     from apps.workflow_engine.services.model_routing_policy_store import (

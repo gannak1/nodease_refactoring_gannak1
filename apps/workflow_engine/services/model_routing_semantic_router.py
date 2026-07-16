@@ -314,6 +314,9 @@ class SemanticRouteMatcher:
             raise ValueError("catalog has no scorable representatives")
 
         candidate_scores = _candidate_scores(catalog, query, route_scores)
+        diagnostic_score_by_cohort = {
+            score.cohort_id: score.similarity for score in candidate_scores
+        }
 
         sparse_matches = _score_lexical_routes(catalog, query_text)
         matched_safety_routes = [
@@ -323,24 +326,21 @@ class SemanticRouteMatcher:
             and score >= route.lexical_override_threshold
         ]
         if matched_safety_routes:
-            dense_score_by_cohort = {
-                route.cohort_id: score for score, route in route_scores
-            }
             sparse_score, signal_count, selected_route = sorted(
                 matched_safety_routes,
                 key=lambda item: (
                     -item[0],
-                    -dense_score_by_cohort.get(item[2].cohort_id, -1.0),
+                    -diagnostic_score_by_cohort.get(item[2].cohort_id, -1.0),
                     item[2].cohort_id,
                 ),
             )[0]
-            selected_dense_score = dense_score_by_cohort.get(
+            selected_dense_score = diagnostic_score_by_cohort.get(
                 selected_route.cohort_id
             )
             other_dense_scores = [
-                score
-                for score, route in route_scores
-                if route.cohort_id != selected_route.cohort_id
+                score.similarity
+                for score in candidate_scores
+                if score.cohort_id != selected_route.cohort_id
             ]
             runner_up_score = max(other_dense_scores) if other_dense_scores else None
             margin = (
@@ -437,15 +437,13 @@ class SemanticRouteMatcher:
         )
         if lexical_fallback is not None:
             lexical_score, lexical_signal_count, selected_route = lexical_fallback
-            selected_dense_score = next(
-                score
-                for score, route in route_scores
-                if route.cohort_id == selected_route.cohort_id
-            )
+            selected_dense_score = diagnostic_score_by_cohort[
+                selected_route.cohort_id
+            ]
             other_dense_scores = [
-                score
-                for score, route in route_scores
-                if route.cohort_id != selected_route.cohort_id
+                score.similarity
+                for score in candidate_scores
+                if score.cohort_id != selected_route.cohort_id
             ]
             lexical_runner_up_score = (
                 max(other_dense_scores) if other_dense_scores else None

@@ -693,6 +693,43 @@ def test_hybrid_matcher_uses_unambiguous_normal_policy_signal_when_dense_match_i
     assert match.safety_override is False
 
 
+def test_hybrid_mean_matcher_scores_lexical_route_outside_global_top_k():
+    """구형 mean 정책도 lexical route가 dense top-k 밖이면 중단되지 않아야 한다."""
+    catalog = SemanticRouteCatalog(
+        version="legacy-mean-lexical-v1",
+        encoder_model_id="text-embedding-test",
+        aggregation="mean",
+        top_k=1,
+        min_margin=0.05,
+        routes=(
+            SemanticRouteDefinition(
+                cohort_id="dense_winner",
+                label="Dense 우선 입력군",
+                threshold=0.99,
+                representative_vectors=((1.0, 0.0),),
+            ),
+            SemanticRouteDefinition(
+                cohort_id="lexical_route",
+                label="Lexical 입력군",
+                threshold=0.99,
+                representative_vectors=((0.0, 1.0),),
+                lexical_signals=(SemanticLexicalSignal(term="crm", weight=1.0),),
+            ),
+        ),
+    )
+
+    match = SemanticRouteMatcher.match(
+        catalog,
+        query_vector=(0.8, 0.6),
+        query_text="CRM 권한 신청 절차를 알려 주세요.",
+    )
+
+    assert match.status == "matched"
+    assert match.cohort_id == "lexical_route"
+    assert match.decision_source == "lexical_fallback"
+    assert match.similarity == 0.6
+
+
 def test_hybrid_matcher_does_not_match_a_lexical_signal_inside_another_token():
     """A62: `crm` 같은 신호는 unrelated-crm-string 부분 문자열에 반응하면 안 된다."""
     catalog = SemanticRouteCatalog(

@@ -88,8 +88,8 @@ class ModelRoutingPolicyStore:
         RAG가 검색 오류나 근거 부족으로 ``safe_no_result``를 반환하면 LLM node는
         workflow를 안전하게 계속 진행하기 위해 SUCCESS로 끝날 수 있다. 그러나 이
         경로는 provider 모델을 호출하지 않았으므로 모델별 비용·품질·지연의 운영
-        증거로 사용할 수 없다. 과거 로그 호환성을 위해 해당 명시적 marker가 없는
-        경우에는 기존처럼 표본으로 인정한다.
+        증거로 사용할 수 없다. ``failure_policy``는 실패 여부가 아니라 노드 설정값
+        이므로, 실제 근거 부족을 뜻하는 ``evidence_sufficient=False``도 함께 확인한다.
         """
         outputs = getattr(node_run, "outputs", None)
         output_metadata = (
@@ -103,6 +103,7 @@ class ModelRoutingPolicyStore:
         return not any(
             isinstance(rag_metadata, dict)
             and rag_metadata.get("failure_policy") == "safe_no_result"
+            and rag_metadata.get("evidence_sufficient") is False
             for rag_metadata in rag_metadata_candidates
         )
 
