@@ -1,4 +1,4 @@
-"""감사 이벤트를 Celery 태스크(`audit.record`)로 비동기 발행한다."""
+"""감사 이벤트를 PostgreSQL Outbox에 저장한다."""
 
 import logging
 import uuid
@@ -7,12 +7,15 @@ from enum import Enum
 from typing import Any, Dict, Optional
 
 from apps.shared.celery_app import celery_app
+from apps.shared.db.models.audit_log import AuditEventOutbox
+from apps.shared.db.session import SessionLocal
+from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
 
 def _serialize(value: Any) -> Any:
-    """Celery JSON 직렬화를 위해 UUID/datetime/Enum/dict/list를 재귀 변환한다."""
+    """Outbox JSONB 저장을 위해 UUID/datetime/Enum/dict/list를 재귀 변환한다."""
     if isinstance(value, uuid.UUID):
         return str(value)
     if isinstance(value, datetime):
@@ -29,6 +32,55 @@ def _serialize(value: Any) -> Any:
     return str(value)
 
 
+def _store_outbox(
+    payload: dict[str, Any],
+    *,
+    db_session: Session | None,
+) -> bool:
+    outbox = AuditEventOutbox(
+        payload=payload,
+        status="pending",
+        attempt_count=0,
+        max_attempts=5,
+        retryable=True,
+        idempotency_key=str(payload["id"]),
+    )
+    if db_session is not None:
+        try:
+            db_session.add(outbox)
+            return True
+        except Exception as exc:  # noqa: BLE001 - audit must not block caller
+            logger.error(
+                "[Audit] outbox enqueue failed: error_type=%s",
+                type(exc).__name__,
+            )
+            return False
+
+    owned_session: Session | None = None
+    try:
+        owned_session = SessionLocal()
+        owned_session.add(outbox)
+        owned_session.commit()
+        return True
+    except Exception as exc:  # noqa: BLE001 - audit must not block caller
+        if owned_session is not None:
+            try:
+                owned_session.rollback()
+            except Exception:  # noqa: BLE001 - never expose or replace root failure
+                pass
+        logger.error(
+            "[Audit] outbox persistence failed: error_type=%s",
+            type(exc).__name__,
+        )
+        return False
+    finally:
+        if owned_session is not None:
+            try:
+                owned_session.close()
+            except Exception:  # noqa: BLE001 - audit cleanup must not block caller
+                pass
+
+
 def record_audit(
     action: str,
     category: str,
@@ -41,8 +93,13 @@ def record_audit(
     after: Optional[Dict[str, Any]] = None,
     status: str = "success",
     metadata: Optional[Dict[str, Any]] = None,
+    db_session: Session | None = None,
 ) -> Optional[uuid.UUID]:
-    """감사 이벤트 ID를 먼저 고정해 발행한다. 발행 실패는 로깅만 한다."""
+    """감사 ID를 먼저 고정하고 PostgreSQL Outbox에 저장한다.
+
+    Caller session이 있으면 Outbox row만 추가하고 commit은 caller에게 맡긴다.
+    Session이 없으면 독립된 짧은 transaction으로 Outbox를 먼저 확정한다.
+    """
     audit_id = uuid.uuid4()
     try:
         data = {
@@ -59,12 +116,24 @@ def record_audit(
             "audit_metadata": metadata or {},
             "occurred_at": datetime.now(timezone.utc),
         }
-        celery_app.send_task("audit.record", args=[_serialize(data)])
-        return audit_id
-    except Exception as exc:  # noqa: BLE001 - 감사 발행은 절대 본 요청을 막지 않는다
+        payload = _serialize(data)
+    except Exception as exc:  # noqa: BLE001 - 감사 준비는 본 요청을 막지 않는다
         logger.error(
-            "[Audit] record publish failed: action=%s error_type=%s",
+            "[Audit] payload preparation failed: action=%s error_type=%s",
             action,
             type(exc).__name__,
         )
         return None
+
+    if not _store_outbox(payload, db_session=db_session):
+        return None
+
+    try:
+        celery_app.send_task("audit.record", args=[payload])
+    except Exception as exc:  # noqa: BLE001 - rollout compatibility is best effort
+        logger.warning(
+            "[Audit] legacy publish failed: action=%s error_type=%s",
+            action,
+            type(exc).__name__,
+        )
+    return audit_id
