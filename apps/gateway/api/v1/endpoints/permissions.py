@@ -329,6 +329,7 @@ def _commit_audited_permission_mutation(
 
 
 def _record_team_workflow_permission_audit(
+    db: Session,
     current_user: User,
     permission: TeamWorkflowPermission,
     before: dict | None,
@@ -362,10 +363,12 @@ def _record_team_workflow_permission_audit(
         before=audit_before,
         after=audit_after,
         metadata=metadata,
+        db_session=db,
     )
 
 
 def _record_team_workflow_permission_delete_audit(
+    db: Session,
     current_user: User,
     permission: TeamWorkflowPermission,
     before: dict,
@@ -388,10 +391,12 @@ def _record_team_workflow_permission_delete_audit(
         before=before,
         after=None,
         metadata=metadata,
+        db_session=db,
     )
 
 
 def _record_team_llm_permission_audit(
+    db: Session,
     current_user: User,
     permission: TeamLLMPermission,
     before: dict | None,
@@ -425,10 +430,12 @@ def _record_team_llm_permission_audit(
         before=audit_before,
         after=audit_after,
         metadata=metadata,
+        db_session=db,
     )
 
 
 def _record_team_llm_permission_delete_audit(
+    db: Session,
     current_user: User,
     permission: TeamLLMPermission,
     before: dict,
@@ -451,6 +458,7 @@ def _record_team_llm_permission_delete_audit(
         before=before,
         after=None,
         metadata=metadata,
+        db_session=db,
     )
 
 
@@ -1605,12 +1613,15 @@ def _upsert_team_workflow_permission(
     if permission is None:
         permission = existing_permission
     after = _permission_audit_columns(permission)
-    db.commit()
-    _record_team_workflow_permission_audit(
-        current_user,
-        permission,
-        before,
-        after,
+    _commit_audited_permission_mutation(
+        db,
+        lambda: _record_team_workflow_permission_audit(
+            db,
+            current_user,
+            permission,
+            before,
+            after,
+        ),
     )
     return permission
 
@@ -1830,12 +1841,15 @@ def _upsert_team_llm_permission(
     if permission is None:
         permission = existing_permission
     after = _permission_audit_columns(permission)
-    db.commit()
-    _record_team_llm_permission_audit(
-        current_user,
-        permission,
-        before,
-        after,
+    _commit_audited_permission_mutation(
+        db,
+        lambda: _record_team_llm_permission_audit(
+            db,
+            current_user,
+            permission,
+            before,
+            after,
+        ),
     )
     return permission
 
@@ -2534,15 +2548,19 @@ def delete_team_workflow_permission(
             "Team workflow permission not found.",
         )
 
+    permission_id = permission.id
     before = _permission_audit_columns(permission)
     db.delete(permission)
-    db.commit()
-    _record_team_workflow_permission_delete_audit(
-        current_user,
-        permission,
-        before,
+    _commit_audited_permission_mutation(
+        db,
+        lambda: _record_team_workflow_permission_delete_audit(
+            db,
+            current_user,
+            permission,
+            before,
+        ),
     )
-    return {"message": "Team workflow permission deleted", "id": str(permission.id)}
+    return {"message": "Team workflow permission deleted", "id": str(permission_id)}
 
 
 @router.delete("/knowledge-bases/{knowledge_base_id}/teams/{team_id}")
@@ -2648,17 +2666,21 @@ def delete_team_llm_permission(
             "Team LLM credential permission not found.",
         )
 
+    permission_id = permission.id
     before = _permission_audit_columns(permission)
     db.delete(permission)
-    db.commit()
-    _record_team_llm_permission_delete_audit(
-        current_user,
-        permission,
-        before,
+    _commit_audited_permission_mutation(
+        db,
+        lambda: _record_team_llm_permission_delete_audit(
+            db,
+            current_user,
+            permission,
+            before,
+        ),
     )
     return {
         "message": "Team LLM credential permission deleted",
-        "id": str(permission.id),
+        "id": str(permission_id),
     }
 
 

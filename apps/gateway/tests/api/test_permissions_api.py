@@ -76,6 +76,7 @@ class TestPermissionsApi(unittest.TestCase):
             team=_team(id=team_id, organization_id=organization_id),
             upsert_result=upsert_result,
         )
+        _track_mocked_outbox_enqueue(self.permission_audit, session)
 
         response = self._put_permission(
             session=session,
@@ -141,6 +142,8 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertEqual(audit["after"]["auth_state"], "builder")
         self.assertEqual(audit["metadata"]["request_id"], "req-test")
         self.assertEqual(audit["metadata"]["actor"]["id"], str(user_id))
+        self.assertIs(audit["db_session"], session)
+        _assert_outbox_enqueued_before_commit(self, session)
 
     def test_put_team_workflow_permission_rejects_primary_changed_while_waiting(self):
         user_id = uuid4()
@@ -1269,6 +1272,7 @@ class TestPermissionsApi(unittest.TestCase):
             team=_team(id=team_id, organization_id=organization_id),
             llm_upsert_result=upsert_result,
         )
+        _track_mocked_outbox_enqueue(self.permission_audit, session)
 
         response = self._put_llm_permission(
             session=session,
@@ -1306,6 +1310,8 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertEqual(audit["target_type"], "team_llm_permission")
         self.assertEqual(audit["target_id"], upsert_result.id)
         self.assertEqual(audit["after"]["llm_credential_id"], credential_id)
+        self.assertIs(audit["db_session"], session)
+        _assert_outbox_enqueued_before_commit(self, session)
 
     def test_put_team_llm_permission_allows_credential_manager(self):
         # organization manager가 아니어도 credential manager 권한이 있으면 team LLM 권한을 부여할 수 있다.
@@ -2586,6 +2592,7 @@ class TestPermissionsApi(unittest.TestCase):
             team=_team(id=team_id, organization_id=organization_id),
             existing_permission=existing_permission,
         )
+        _track_mocked_outbox_enqueue(self.permission_audit, session)
 
         response = self._delete_permission(
             session=session,
@@ -2638,6 +2645,8 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertIsNone(audit["after"])
         self.assertEqual(audit["metadata"]["request_id"], "req-test")
         self.assertEqual(audit["metadata"]["actor"]["id"], str(user_id))
+        self.assertIs(audit["db_session"], session)
+        _assert_outbox_enqueued_before_commit(self, session)
 
     def test_delete_team_workflow_permission_allows_workflow_manager(self):
         # organization manager가 아니어도 workflow manager면 permission 회수가 가능하다.
@@ -2802,6 +2811,7 @@ class TestPermissionsApi(unittest.TestCase):
             team=_team(id=team_id, organization_id=organization_id),
             existing_llm_permission=existing_permission,
         )
+        _track_mocked_outbox_enqueue(self.permission_audit, session)
 
         response = self._delete_llm_permission(
             session=session,
@@ -2849,6 +2859,8 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertIsNone(audit["after"])
         self.assertEqual(audit["metadata"]["request_id"], "req-test")
         self.assertEqual(audit["metadata"]["actor"]["id"], str(user_id))
+        self.assertIs(audit["db_session"], session)
+        _assert_outbox_enqueued_before_commit(self, session)
 
     def test_delete_team_llm_permission_allows_credential_manager(self):
         # organization manager가 아니어도 credential manager면 permission 회수가 가능하다.
@@ -4908,6 +4920,25 @@ def _assert_audit_added_before_commit(testcase, session):
     testcase.assertIn(("commit", None), session.operations)
     testcase.assertLess(
         session.operations.index(("add", AuditLog)),
+        session.operations.index(("commit", None)),
+    )
+
+
+def _track_mocked_outbox_enqueue(audit_mock, session):
+    """mock audit enqueue 시점을 fake session 작업 순서에 기록한다."""
+
+    def enqueue(**_kwargs):
+        session.operations.append(("audit_outbox", None))
+        return uuid4()
+
+    audit_mock.side_effect = enqueue
+
+
+def _assert_outbox_enqueued_before_commit(testcase, session):
+    testcase.assertIn(("audit_outbox", None), session.operations)
+    testcase.assertIn(("commit", None), session.operations)
+    testcase.assertLess(
+        session.operations.index(("audit_outbox", None)),
         session.operations.index(("commit", None)),
     )
 
