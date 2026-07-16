@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -64,6 +64,13 @@ class ConnectionLifecycleService:
                                     "connection_id": str(connection_id)
                                 }
                             }
+                        ),
+                        and_(
+                            func.jsonb_typeof(Document.meta_info["db_config"])
+                            == "string",
+                            Document.meta_info["db_config"].astext.contains(
+                                str(connection_id)
+                            ),
                         ),
                     )
                 )

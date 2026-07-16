@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import sys
@@ -233,6 +234,44 @@ def test_concurrent_initial_registration_creates_exactly_one_document(
         assert documents[0].status == "pending"
 
 
+def test_registration_refreshes_preloaded_kb_after_concurrent_policy_change(
+    postgres_session_factory,
+):
+    organization_id, knowledge_base_id = _create_empty_knowledge_base(
+        postgres_session_factory
+    )
+
+    with postgres_session_factory() as stale_db:
+        preloaded = stale_db.query(KnowledgeBase).filter_by(id=knowledge_base_id).one()
+        assert preloaded.lifecycle_state == "active"
+
+        with postgres_session_factory() as updater_db:
+            updater_db.query(KnowledgeBase).filter_by(id=knowledge_base_id).update(
+                {KnowledgeBase.lifecycle_state: "archived"},
+                synchronize_session=False,
+            )
+            updater_db.commit()
+
+        with pytest.raises(KnowledgeDocumentRegistrationHidden):
+            KnowledgeDocumentRegistrationService(stale_db).register_initial_document(
+                knowledge_base_id=knowledge_base_id,
+                organization_id=organization_id,
+                filename="must-not-register.txt",
+                file_path=None,
+                chunk_size=500,
+                chunk_overlap=50,
+                source_type=SourceType.FILE,
+            )
+
+    with postgres_session_factory() as verification_db:
+        assert (
+            verification_db.query(Document)
+            .filter(Document.knowledge_base_id == knowledge_base_id)
+            .count()
+            == 0
+        )
+
+
 def test_registration_hides_knowledge_base_from_another_organization(
     postgres_session_factory,
 ):
@@ -338,6 +377,60 @@ def test_committed_document_delete_reopens_initial_registration_slot(
         assert [document.filename for document in documents] == ["replacement.txt"]
 
 
+def test_delete_refreshes_preloaded_active_version_after_concurrent_finalization(
+    postgres_session_factory,
+):
+    organization_id, knowledge_base_id = _create_empty_knowledge_base(
+        postgres_session_factory
+    )
+    document_id = _register_document(
+        postgres_session_factory,
+        organization_id=organization_id,
+        knowledge_base_id=knowledge_base_id,
+        filename="finalizing.txt",
+    )
+
+    with postgres_session_factory() as stale_db:
+        preloaded_kb = stale_db.query(KnowledgeBase).filter_by(id=knowledge_base_id).one()
+        stale_db.query(Document).filter_by(id=document_id).one()
+        assert preloaded_kb.active_document_version_id is None
+
+        with postgres_session_factory() as finalizer_db:
+            finalized_version = DocumentVersion(
+                organization_id=organization_id,
+                knowledge_base_id=knowledge_base_id,
+                legacy_document_id=document_id,
+                version_number=1,
+                status="ready",
+            )
+            finalizer_db.add(finalized_version)
+            finalizer_db.flush()
+            finalized_version_id = finalized_version.id
+            finalizer_db.query(KnowledgeBase).filter_by(id=knowledge_base_id).update(
+                {KnowledgeBase.active_document_version_id: finalized_version_id},
+                synchronize_session=False,
+            )
+            finalizer_db.commit()
+
+        KnowledgeDocumentLifecycleService(stale_db).delete_document(
+            knowledge_base_id=knowledge_base_id,
+            organization_id=organization_id,
+            document_id=document_id,
+        )
+
+    with postgres_session_factory() as verification_db:
+        kb = verification_db.query(KnowledgeBase).filter_by(id=knowledge_base_id).one()
+        version = (
+            verification_db.query(DocumentVersion)
+            .filter_by(id=finalized_version_id)
+            .one()
+        )
+        assert kb.active_document_version_id is None
+        assert version.status == "superseded"
+        assert version.superseded_at is not None
+        assert version.legacy_document_id is None
+
+
 def test_connection_cleanup_rejects_live_document_reference_then_allows_release(
     postgres_session_factory,
 ):
@@ -401,6 +494,34 @@ def test_connection_cleanup_rejects_live_document_reference_then_allows_release(
             "db_config": {"connection_id": str(connection_id)}
         }
         nested_reference_db.commit()
+
+    with postgres_session_factory() as blocked_db:
+        with pytest.raises(ConnectionLifecycleInUse):
+            ConnectionLifecycleService(blocked_db).delete_unreferenced_connection(
+                connection_id=connection_id,
+                owner_id=owner_id,
+            )
+
+    with postgres_session_factory() as serialized_reference_db:
+        document = serialized_reference_db.query(Document).filter_by(id=document_id).one()
+        document.meta_info = {
+            "db_config": json.dumps({"connection_id": str(connection_id)})
+        }
+        serialized_reference_db.commit()
+
+    with postgres_session_factory() as blocked_db:
+        with pytest.raises(ConnectionLifecycleInUse):
+            ConnectionLifecycleService(blocked_db).delete_unreferenced_connection(
+                connection_id=connection_id,
+                owner_id=owner_id,
+            )
+
+    with postgres_session_factory() as malformed_reference_db:
+        document = malformed_reference_db.query(Document).filter_by(id=document_id).one()
+        document.meta_info = {
+            "db_config": f'{{"connection_id":"{connection_id}"'
+        }
+        malformed_reference_db.commit()
 
     with postgres_session_factory() as blocked_db:
         with pytest.raises(ConnectionLifecycleInUse):

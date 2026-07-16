@@ -23,6 +23,10 @@ class _Query:
     def filter(self, *_args):
         return self
 
+    def populate_existing(self):
+        self.db.refreshed_entities.append(self.entity)
+        return self
+
     def with_for_update(self):
         self.db.locked_entities.append(self.entity)
         return self
@@ -55,6 +59,7 @@ class _Db:
         self.other_document = other_document
         self.query_error = query_error
         self.locked_entities = []
+        self.refreshed_entities = []
         self.deleted = None
         self.committed = False
         self.rolled_back = False
@@ -80,6 +85,7 @@ def _entities():
     kb = SimpleNamespace(
         id=knowledge_base_id,
         organization_id=organization_id,
+        lifecycle_state="active",
         active_document_version_id=active_version_id,
     )
     document = SimpleNamespace(
@@ -117,6 +123,7 @@ def test_delete_document_joins_write_lock_and_releases_owned_active_version(
 
     assert calls == [(db, document.id)]
     assert db.locked_entities == [KnowledgeBase, Document, DocumentVersion]
+    assert db.refreshed_entities == [KnowledgeBase, Document, DocumentVersion]
     assert kb.active_document_version_id is None
     assert active_version.status == "superseded"
     assert active_version.superseded_at is not None
@@ -158,6 +165,27 @@ def test_delete_document_hides_stale_authorized_resource_and_rolls_back(
 ):
     kb, document, _active_version = _entities()
     db = _Db(kb=kb, document=None)
+    monkeypatch.setattr(
+        lifecycle_module,
+        "acquire_document_write_lock",
+        lambda *_args: None,
+    )
+
+    with pytest.raises(KnowledgeDocumentLifecycleHidden):
+        KnowledgeDocumentLifecycleService(db).delete_document(
+            knowledge_base_id=kb.id,
+            organization_id=kb.organization_id,
+            document_id=document.id,
+        )
+
+    assert db.deleted is None
+    assert db.rolled_back is True
+
+
+def test_delete_document_hides_kb_archived_after_authorization(monkeypatch):
+    kb, document, active_version = _entities()
+    kb.lifecycle_state = "archived"
+    db = _Db(kb=kb, document=document, active_version=active_version)
     monkeypatch.setattr(
         lifecycle_module,
         "acquire_document_write_lock",

@@ -6,6 +6,9 @@ from uuid import UUID
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from apps.gateway.services.knowledge_mutation_locks import (
+    lock_fresh_knowledge_base,
+)
 from apps.shared.db.models.knowledge import Document, KnowledgeBase, SourceType
 
 
@@ -131,12 +134,20 @@ class KnowledgeDocumentRegistrationService:
         organization_id: UUID,
         lock: bool,
     ) -> KnowledgeBase:
+        if lock:
+            kb = lock_fresh_knowledge_base(
+                self.db,
+                knowledge_base_id=knowledge_base_id,
+                organization_id=organization_id,
+            )
+            if kb is None or getattr(kb, "lifecycle_state", None) != "active":
+                raise KnowledgeDocumentRegistrationHidden()
+            return kb
+
         query = self.db.query(KnowledgeBase).filter(
             KnowledgeBase.id == knowledge_base_id,
             KnowledgeBase.organization_id == organization_id,
         )
-        if lock:
-            query = query.with_for_update()
         kb = query.first()
         if kb is None or getattr(kb, "lifecycle_state", None) != "active":
             raise KnowledgeDocumentRegistrationHidden()

@@ -7,6 +7,10 @@ from uuid import UUID
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from apps.gateway.services.knowledge_mutation_locks import (
+    lock_fresh_document,
+    lock_fresh_knowledge_base,
+)
 from apps.shared.db.models.knowledge import Document, DocumentVersion, KnowledgeBase
 from apps.shared.services.ingestion.vector_store_service import (
     acquire_document_write_lock,
@@ -47,25 +51,21 @@ class KnowledgeDocumentLifecycleService:
             # Ingestion and Collection sync use the same transaction lock before
             # taking document/KB row locks. Deletion must join that ordering.
             acquire_document_write_lock(self.db, document_id)
-            kb = (
-                self.db.query(KnowledgeBase)
-                .filter(
-                    KnowledgeBase.id == knowledge_base_id,
-                    KnowledgeBase.organization_id == organization_id,
-                )
-                .with_for_update()
-                .first()
+            kb = lock_fresh_knowledge_base(
+                self.db,
+                knowledge_base_id=knowledge_base_id,
+                organization_id=organization_id,
             )
-            document = (
-                self.db.query(Document)
-                .filter(
-                    Document.id == document_id,
-                    Document.knowledge_base_id == knowledge_base_id,
-                )
-                .with_for_update()
-                .first()
+            document = lock_fresh_document(
+                self.db,
+                document_id=document_id,
+                knowledge_base_id=knowledge_base_id,
             )
-            if kb is None or document is None:
+            if (
+                kb is None
+                or getattr(kb, "lifecycle_state", None) != "active"
+                or document is None
+            ):
                 raise KnowledgeDocumentLifecycleHidden()
 
             self._release_active_version_if_owned(kb, document)
@@ -95,6 +95,7 @@ class KnowledgeDocumentLifecycleService:
                 DocumentVersion.id == active_version_id,
                 DocumentVersion.knowledge_base_id == kb.id,
             )
+            .populate_existing()
             .with_for_update()
             .first()
         )

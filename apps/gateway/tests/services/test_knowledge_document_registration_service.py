@@ -23,6 +23,10 @@ class _Query:
     def filter(self, *_args):
         return self
 
+    def populate_existing(self):
+        self.db.refreshed_entities.append(self.entity)
+        return self
+
     def with_for_update(self):
         self.db.locked = True
         return self
@@ -51,6 +55,7 @@ class _Db:
         self.flush_error = flush_error
         self.commit_error = commit_error
         self.locked = False
+        self.refreshed_entities = []
         self.added = None
         self.committed = False
         self.rolled_back = False
@@ -108,6 +113,7 @@ def test_register_initial_document_locks_kb_and_commits_one_pending_row():
     document_id = _register(KnowledgeDocumentRegistrationService(db), kb)
 
     assert db.locked is True
+    assert db.refreshed_entities == [KnowledgeBase]
     assert db.committed is True
     assert db.rolled_back is False
     assert document_id == db.added.id
