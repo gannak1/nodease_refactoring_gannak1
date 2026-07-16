@@ -1,7 +1,7 @@
 # Connectors Test Cases
 
 Status: Draft
-Verified Against: feature/mba-246 @ 8d02b4fb7c15f5737ea5ef16af616f7866329825
+Verified Against: feature/mba-281 @ 817deb9a70e37b858dfc41eb22e6291008237ecf
 
 ## Minimum Failure Rule
 
