@@ -21,13 +21,6 @@ from apps.shared.db.models.workflow_run import (
     WorkflowNodeRun,
     WorkflowRun,
 )
-from apps.workflow_engine.services.model_routing_semantic_router import (
-    SemanticRouteMatch,
-    SemanticRouteMatcher,
-    semantic_catalog_from_policy,
-)
-
-
 OPERATIONAL_TRIGGER_MODES = {
     RunTriggerMode.API,
     RunTriggerMode.WEBHOOK,
@@ -294,7 +287,8 @@ class ModelRoutingPolicyDecision:
     reason_code: str
     runtime_context: ModelRoutingRuntimeContext
     decision_source: str = "active_policy"
-    semantic_match: Optional[SemanticRouteMatch] = None
+    strategy_id: Optional[str] = None
+    decision_factors: dict[str, Any] = field(default_factory=dict)
 
 
 class ModelRoutingUnavailableError(ValueError):
@@ -312,8 +306,6 @@ class ModelRouter:
         "input_length_bucket",
         "prompt_length_bucket",
         "node_task",
-        "keyword_any",
-        "semantic_cohort_id",
     }
     COLD_START_MAX_USABLE_RUNS = 20
     OPTIMIZED_MIN_USABLE_RUNS = 90
@@ -397,7 +389,6 @@ class ModelRouter:
         inputs: dict[str, Any],
         node_data: Any,
         available_model_ids: Optional[Iterable[str]] = None,
-        semantic_query_vector: Optional[Iterable[float]] = None,
     ) -> ModelRoutingPolicyDecision:
         active_policy = policy.get("active_policy") if isinstance(policy, dict) else None
         active_policy = active_policy if isinstance(active_policy, dict) else {}
@@ -418,25 +409,7 @@ class ModelRouter:
             else None
         )
         runtime_context = cls.infer_runtime_context(inputs, node_data)
-        semantic_match = None
-        semantic_router = active_policy.get("semantic_router")
-        if isinstance(semantic_router, dict) and semantic_router:
-            try:
-                semantic_catalog = semantic_catalog_from_policy(semantic_router)
-                if semantic_catalog is not None:
-                    if semantic_query_vector is not None:
-                        semantic_match = SemanticRouteMatcher.match(
-                            semantic_catalog,
-                            query_vector=tuple(semantic_query_vector),
-                            query_text=cls.semantic_query_text(
-                                inputs,
-                                semantic_router,
-                            ),
-                        )
-                    else:
-                        semantic_match = SemanticRouteMatch.unavailable(semantic_catalog)
-            except (TypeError, ValueError):
-                semantic_match = None
+        strategy_id = cls._first_non_empty(active_policy.get("strategy_id"))
         rules = active_policy.get("rules")
         normalized_rules = [
             rule
@@ -444,22 +417,11 @@ class ModelRouter:
             if isinstance(rule, dict)
         ]
         normalized_rules.sort(key=cls._rule_sort_key)
-        safety_guarded = False
         for rule in normalized_rules:
             if not cls._matches_rule(
                 rule.get("when"),
                 runtime_context,
-                semantic_cohort_id=(
-                    semantic_match.cohort_id if semantic_match is not None else None
-                ),
             ):
-                continue
-            if cls._should_hold_validated_rule_for_safety(
-                rule,
-                semantic_match,
-                semantic_router,
-            ):
-                safety_guarded = True
                 continue
             selected_model = cls._first_non_empty(rule.get("selected_model_id"))
             rule_fallback_model = cls._first_non_empty(rule.get("fallback_model_id"))
@@ -481,7 +443,12 @@ class ModelRouter:
                 reason_code=cls._first_non_empty(rule.get("reason_code"))
                 or "policy_rule_matched",
                 runtime_context=runtime_context,
-                semantic_match=semantic_match,
+                strategy_id=strategy_id,
+                decision_factors=cls._decision_factors(
+                    active_policy,
+                    runtime_context=runtime_context,
+                    selected_model_id=selected_model,
+                ),
             )
 
         selected_model = cls._first_available_model(
@@ -507,70 +474,88 @@ class ModelRouter:
             allowed_models,
             exclude=selected_model,
         )
-        default_reason = "policy_default"
-        if safety_guarded:
-            default_reason = "semantic_safety_guard_default"
-        elif semantic_match is not None:
-            default_reason = (
-                "semantic_matched_no_rule_default"
-                if semantic_match.status == "matched"
-                else f"semantic_{semantic_match.status}_default"
-            )
-        elif isinstance(semantic_router, dict) and semantic_router:
-            default_reason = "semantic_unavailable_default"
         return ModelRoutingPolicyDecision(
             selected_model_id=selected_model,
             fallback_model_id=resolved_fallback,
             matched_rule_id=None,
-            reason_code=default_reason,
+            reason_code="policy_default",
             runtime_context=runtime_context,
-            semantic_match=semantic_match,
+            strategy_id=strategy_id,
+            decision_factors=cls._decision_factors(
+                active_policy,
+                runtime_context=runtime_context,
+                selected_model_id=selected_model,
+            ),
         )
 
     @classmethod
-    def _should_hold_validated_rule_for_safety(
+    def _decision_factors(
         cls,
-        rule: dict[str, Any],
-        semantic_match: Optional[SemanticRouteMatch],
-        semantic_router: Any,
-    ) -> bool:
-        """Keep the default model when a validated cheap route overlaps safety evidence."""
-        if (
-            rule.get("reason_code") != "validated_adaptive_cohort"
-            or semantic_match is None
-            or semantic_match.safety_override
-            or not isinstance(semantic_router, dict)
-        ):
-            return False
+        active_policy: dict[str, Any],
+        *,
+        runtime_context: ModelRoutingRuntimeContext,
+        selected_model_id: str,
+    ) -> dict[str, Any]:
+        """정책 생성 근거 중 원문 없이 사용자에게 공개 가능한 요약만 반환한다."""
+        profiles = active_policy.get("decision_profiles")
+        if not isinstance(profiles, list):
+            return {}
+        profile_name = runtime_context.input_length_bucket
+        profile = next(
+            (
+                item
+                for item in profiles
+                if isinstance(item, dict) and item.get("profile") == profile_name
+            ),
+            None,
+        )
+        if not isinstance(profile, dict):
+            return {}
 
-        matched_cohort_id = semantic_match.cohort_id
-        if not matched_cohort_id:
-            return False
-        scores_by_cohort = {
-            score.cohort_id: score.similarity
-            for score in semantic_match.candidate_scores
+        candidate_scores = profile.get("candidate_scores")
+        candidate_scores = candidate_scores if isinstance(candidate_scores, dict) else {}
+        selected_score = candidate_scores.get(selected_model_id)
+        selected_score = selected_score if isinstance(selected_score, dict) else {}
+        safe_score_keys = (
+            "quality_lower_bound",
+            "expected_total_cost_usd",
+            "expected_latency_ms",
+            "expected_fallback_rate",
+            "effective_evidence_samples",
+            "prior_source",
+        )
+        safe_score = {
+            key: selected_score[key]
+            for key in safe_score_keys
+            if key in selected_score
         }
-        routes = semantic_router.get("routes")
-        for route in routes if isinstance(routes, list) else []:
-            if not isinstance(route, dict) or not route.get("safety_override"):
-                continue
-            safety_cohort_id = cls._first_non_empty(route.get("cohort_id"))
-            if not safety_cohort_id or safety_cohort_id == matched_cohort_id:
-                continue
-            safety_score = scores_by_cohort.get(safety_cohort_id)
-            threshold_value = route.get("dense_override_threshold")
-            if threshold_value is None:
-                threshold_value = route.get("threshold")
-            try:
-                safety_threshold = float(threshold_value)
-            except (TypeError, ValueError):
-                continue
-            if (
-                safety_score is not None
-                and safety_score >= max(0.0, safety_threshold)
-            ):
-                return True
-        return False
+        excluded_models = profile.get("excluded_models")
+        excluded_models = excluded_models if isinstance(excluded_models, dict) else {}
+        signature = profile.get("constraint_signature")
+        signature = signature if isinstance(signature, dict) else {}
+        safe_signature_keys = (
+            "context_input_bucket",
+            "rag_context_bucket",
+            "output_contract",
+            "schema_complexity",
+            "downstream_strictness",
+            "file_input",
+            "required_input_missing",
+            "required_capability_tier",
+            "schema_required",
+        )
+        safe_signature = {
+            key: signature[key]
+            for key in safe_signature_keys
+            if key in signature
+        }
+        return {
+            "profile": profile_name,
+            "evaluated_candidate_count": len(candidate_scores),
+            "excluded_candidate_count": len(excluded_models),
+            "selected_model_score": safe_score,
+            "constraint_signature": safe_signature,
+        }
 
     @classmethod
     def infer_runtime_context(
@@ -625,48 +610,6 @@ class ModelRouter:
             prompt_length_bucket=cls._length_bucket(prompt_length),
             node_task=node_task,
         )
-
-    @classmethod
-    def semantic_query_text(
-        cls,
-        inputs: dict[str, Any],
-        semantic_router: dict[str, Any],
-    ) -> str:
-        """Extract only configured business fields for semantic classification."""
-        if "input_paths" not in semantic_router:
-            return cls._flatten_text(inputs).strip()
-        paths = semantic_router.get("input_paths")
-        if not isinstance(paths, list):
-            return ""
-
-        parts: list[str] = []
-        for raw_path in paths:
-            path = str(raw_path or "").strip()
-            if not path:
-                continue
-            value = cls._value_at_path(inputs, path)
-            text = cls._flatten_text(value).strip()
-            if text:
-                parts.append(text)
-        return "\n".join(parts)
-
-    @staticmethod
-    def _value_at_path(value: Any, path: str) -> Any:
-        current = value
-        for segment in path.split("."):
-            if isinstance(current, dict):
-                if segment not in current:
-                    return None
-                current = current[segment]
-                continue
-            if isinstance(current, (list, tuple)) and segment.isdigit():
-                index = int(segment)
-                if index >= len(current):
-                    return None
-                current = current[index]
-                continue
-            return None
-        return current
 
     @classmethod
     def collect_profile(cls, db: Session, context: ModelRouterContext) -> NodeRunProfile:
@@ -843,11 +786,6 @@ class ModelRouter:
             for key in allowed
             if key in llm_metadata and llm_metadata[key] is not None
         }
-        matched_cohort_id = str(
-            llm_metadata.get("matched_cohort_id") or ""
-        ).strip()
-        if matched_cohort_id:
-            conditions["semantic_cohort_id"] = matched_cohort_id
         return conditions
 
     @classmethod
@@ -901,8 +839,6 @@ class ModelRouter:
         cls,
         when: Any,
         runtime_context: ModelRoutingRuntimeContext,
-        *,
-        semantic_cohort_id: Optional[str] = None,
     ) -> bool:
         if when in (None, {}, []):
             return True
@@ -911,7 +847,6 @@ class ModelRouter:
         if any(key not in cls.POLICY_CONDITION_KEYS for key in when):
             return False
         context = runtime_context.as_metadata()
-        context["semantic_cohort_id"] = semantic_cohort_id
         for key in (
             "intent",
             "customer_facing",
@@ -922,34 +857,18 @@ class ModelRouter:
             "input_length_bucket",
             "prompt_length_bucket",
             "node_task",
-            "semantic_cohort_id",
         ):
             if key not in when:
                 continue
             if not cls._condition_value_matches(context.get(key), when[key]):
-                return False
-        keywords = when.get("keyword_any")
-        if keywords is not None:
-            if not isinstance(keywords, list):
-                return False
-            normalized_keywords = [
-                str(keyword).strip().casefold()
-                for keyword in keywords
-                if str(keyword).strip()
-            ]
-            if not normalized_keywords:
-                return False
-            text = runtime_context.text.casefold()
-            if not any(keyword in text for keyword in normalized_keywords):
                 return False
         return True
 
     @staticmethod
     def _rule_sort_key(rule: dict[str, Any]) -> tuple[int, int, int]:
         when = rule.get("when") if isinstance(rule.get("when"), dict) else {}
-        keyword_weight = 0 if when.get("keyword_any") else 1
         specificity = -len(when)
-        return (keyword_weight, int(rule.get("priority") or 1000), specificity)
+        return (int(rule.get("priority") or 1000), specificity, 0)
 
     @staticmethod
     def _condition_value_matches(value: Any, condition: Any) -> bool:

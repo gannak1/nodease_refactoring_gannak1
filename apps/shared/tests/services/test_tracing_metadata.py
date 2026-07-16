@@ -202,6 +202,60 @@ def test_llm_span_metadata_preserves_safe_runtime_policy_outcome_fields():
     assert "matched_lexical_signals" not in metadata["llm"]
 
 
+def test_llm_span_metadata_preserves_safe_model_routing_decision_factors_only():
+    metadata = TraceMetadataSanitizer.sanitize_span_metadata(
+        "llmNode",
+        {
+            "llm": {
+                "strategy_id": "prior_guided_adaptive_v1",
+                "selected_model": "gpt-4.1-mini",
+                "decision_factors": {
+                    "profile": "short",
+                    "evaluated_candidate_count": 3,
+                    "excluded_candidate_count": 1,
+                    "selected_model_score": {
+                        "quality_lower_bound": 0.92,
+                        "expected_total_cost_usd": 0.00042,
+                        "expected_latency_ms": 640,
+                        "expected_fallback_rate": 0.01,
+                        "effective_evidence_samples": 12,
+                        "prior_source": "model_catalog_family_prior",
+                        "raw_input": "민감한 원문",
+                    },
+                    "constraint_signature": {
+                        "context_input_bucket": "short",
+                        "output_contract": "json_schema",
+                        "schema_required": True,
+                        "raw_query": "민감한 질의",
+                    },
+                    "raw_prompt": "민감한 프롬프트",
+                },
+            }
+        },
+    )
+
+    assert metadata["llm"]["strategy_id"] == "prior_guided_adaptive_v1"
+    assert metadata["llm"]["decision_factors"] == {
+        "profile": "short",
+        "evaluated_candidate_count": 3,
+        "excluded_candidate_count": 1,
+        "selected_model_score": {
+            "quality_lower_bound": 0.92,
+            "expected_total_cost_usd": 0.00042,
+            "expected_latency_ms": 640,
+            "expected_fallback_rate": 0.01,
+            "effective_evidence_samples": 12,
+            "prior_source": "model_catalog_family_prior",
+        },
+        "constraint_signature": {
+            "context_input_bucket": "short",
+            "output_contract": "json_schema",
+            "schema_required": True,
+        },
+    }
+    assert "민감한" not in str(metadata)
+
+
 def test_rag_metadata_preserves_payload_reference_and_summarizes_evidence():
     metadata = TraceMetadataSanitizer.sanitize_span_metadata(
         "llmNode",

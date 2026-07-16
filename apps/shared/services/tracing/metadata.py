@@ -194,9 +194,12 @@ SPAN_SECTION_FIELDS = {
         "recommendation_type",
         "analysis_stage",
         "customer_facing",
+        "decision_factors",
         "decision_source",
         "downstream_status",
         "fallback_used",
+        "fallback_from_model",
+        "fallback_reason_code",
         "finish_reason",
         "has_file_input",
         "input_length_bucket",
@@ -210,6 +213,8 @@ SPAN_SECTION_FIELDS = {
         "node_task",
         "output_format",
         "policy_id",
+        "policy_source",
+        "included_in_policy_learning",
         "prompt_payload_id",
         "prompt_tokens",
         "prompt_length_bucket",
@@ -222,6 +227,7 @@ SPAN_SECTION_FIELDS = {
         "schema_required",
         "schema_status",
         "selected_model",
+        "strategy_id",
         "semantic_encoder_model",
         "semantic_candidate_cohort_id",
         "semantic_candidate_label",
@@ -417,12 +423,84 @@ class TraceMetadataSanitizer:
                 if rag:
                     sanitized[key] = rag
                 continue
+            if key == "llm":
+                llm = cls._sanitize_llm_section(safe_metadata[key])
+                if llm:
+                    sanitized[key] = llm
+                continue
             section_value = cls._filter_allowed_dict(
                 safe_metadata[key], SPAN_SECTION_FIELDS.get(key, set())
             )
             if section_value:
                 sanitized[key] = section_value
 
+        return sanitized
+
+    @classmethod
+    def _sanitize_llm_section(cls, value: Any) -> dict[str, Any]:
+        """LLM trace에서 라우팅 판단 근거를 원문 없이 제한된 형태로 보존한다."""
+        safe_value = cls.sanitize_json_safe(value)
+        if not isinstance(safe_value, dict):
+            return {}
+
+        allowed_fields = SPAN_SECTION_FIELDS["llm"] - {"decision_factors"}
+        sanitized = cls._filter_allowed_dict(safe_value, allowed_fields)
+        decision_factors = cls._sanitize_model_routing_decision_factors(
+            safe_value.get("decision_factors")
+        )
+        if decision_factors:
+            sanitized["decision_factors"] = decision_factors
+        return sanitized
+
+    @classmethod
+    def _sanitize_model_routing_decision_factors(cls, value: Any) -> dict[str, Any]:
+        safe_value = cls.sanitize_json_safe(value)
+        if not isinstance(safe_value, dict):
+            return {}
+
+        sanitized = cls._filter_allowed_dict(
+            safe_value,
+            {
+                "profile",
+                "evaluated_candidate_count",
+                "excluded_candidate_count",
+            },
+        )
+        selected_score = cls._filter_allowed_dict(
+            safe_value.get("selected_model_score"),
+            {
+                "quality_lower_bound",
+                "expected_total_cost_usd",
+                "expected_latency_ms",
+                "expected_fallback_rate",
+                "effective_evidence_samples",
+                "prior_source",
+            },
+        )
+        if selected_score:
+            sanitized["selected_model_score"] = selected_score
+
+        signature = cls.sanitize_json_safe(safe_value.get("constraint_signature"))
+        if isinstance(signature, dict):
+            safe_signature: dict[str, Any] = {}
+            for key in {
+                "context_input_bucket",
+                "rag_context_bucket",
+                "output_contract",
+                "schema_complexity",
+                "downstream_strictness",
+                "file_input",
+                "required_input_missing",
+                "required_capability_tier",
+                "schema_required",
+            }:
+                if key not in signature:
+                    continue
+                sanitized_value = cls._sanitize_allowed_value(signature[key])
+                if sanitized_value is not None:
+                    safe_signature[key] = sanitized_value
+            if safe_signature:
+                sanitized["constraint_signature"] = safe_signature
         return sanitized
 
     @classmethod

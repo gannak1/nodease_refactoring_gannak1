@@ -87,7 +87,7 @@ def _available_model_options(*model_ids):
     return [_available_model_option(model_id) for model_id in model_ids]
 
 
-def test_remove_cohort_from_active_policy_uses_persisted_cohort_id():
+def removed_cohort_from_active_policy_uses_persisted_cohort_id():
     """FR-011: route의 UUID를 기준으로 수정 전 입력군을 runtime policy에서 제거한다."""
     policy = {
         "semantic_router": {
@@ -113,7 +113,7 @@ def test_remove_cohort_from_active_policy_uses_persisted_cohort_id():
     assert result["rules"] == [{"when": {"semantic_cohort_id": "other-uuid"}}]
 
 
-def test_cohort_wizard_extracts_diverse_representative_examples():
+def removed_cohort_wizard_extracts_diverse_representative_examples():
     """FR-011: 마법사는 대표 문의를 포함한 중복 없는 예문을 최대 5개 반환한다."""
     response = {
         "choices": [
@@ -149,7 +149,7 @@ def test_cohort_wizard_extracts_diverse_representative_examples():
     assert workflow_endpoint._cohort_suggestion_has_enough_examples(suggestion) is False
 
 
-def test_cohort_wizard_requires_five_examples_for_a_high_risk_cohort():
+def removed_cohort_wizard_requires_five_examples_for_a_high_risk_cohort():
     suggestion = {
         "representative_examples": [
             "보안 사고가 발생했습니다.",
@@ -164,7 +164,7 @@ def test_cohort_wizard_requires_five_examples_for_a_high_risk_cohort():
     assert workflow_endpoint._cohort_suggestion_has_enough_examples(suggestion) is True
 
 
-def test_high_risk_draft_summary_preserves_safety_protection():
+def removed_high_risk_draft_summary_preserves_safety_protection():
     draft_id = uuid4()
     summary = workflow_endpoint._model_routing_adaptive_summary(
         MagicMock(),
@@ -195,7 +195,7 @@ def test_high_risk_draft_summary_preserves_safety_protection():
     assert summary["cohorts"][0]["safety_protected"] is True
 
 
-def test_adaptive_summary_exposes_safe_bootstrap_search_completion():
+def removed_adaptive_summary_exposes_safe_bootstrap_search_completion():
     """실험/UI가 한 wave 완료를 전체 bootstrap 완료로 오해하지 않아야 한다."""
 
     policy_id = uuid4()
@@ -298,12 +298,12 @@ class TestCostOptimizerAvailabilityApi:
             "fallback_model_id": "gpt-4.1-mini",
             "default_model_id": "gpt-4.1",
             "configured_fallback_model_id": "gpt-4.1-mini",
-            "matched_cohort": {"id": "routine-support", "label": "단순 사용 안내"},
-            "matched_rule_id": "route-routine-support",
-            "reason_code": "validated_quality_floor_cost_reduction",
-            "availability": "available",
-            "semantic_evaluation": "not_required",
-            "draft_matches_deployment": False,
+        "matched_rule_id": "route-routine-support",
+        "reason_code": "validated_quality_floor_cost_reduction",
+        "availability": "available",
+        "strategy_id": None,
+        "runtime_context": {},
+        "draft_matches_deployment": False,
         }
         app.dependency_overrides[get_db] = lambda: db
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
@@ -528,9 +528,6 @@ class TestModelRoutingPolicyApi:
         ), patch(
             "apps.gateway.api.v1.endpoints.workflow._get_model_routing_policy_for_workflow",
             return_value=policy,
-        ), patch(
-            "apps.gateway.api.v1.endpoints.workflow._model_routing_adaptive_summary",
-            return_value=workflow_endpoint._empty_model_routing_adaptive_summary(),
         ):
             response = self.client.get(
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage/model-routing/policy"
@@ -590,9 +587,6 @@ class TestModelRoutingPolicyApi:
         ), patch(
             "apps.gateway.api.v1.endpoints.workflow._get_model_routing_policy_for_workflow",
             return_value=policy,
-        ), patch(
-            "apps.gateway.api.v1.endpoints.workflow._model_routing_adaptive_summary",
-            return_value=workflow_endpoint._empty_model_routing_adaptive_summary(),
         ):
             response = self.client.get(
                 f"/api/v1/workflows/{workflow_id}/llm-nodes/llm-triage/model-routing/policy"
@@ -668,9 +662,6 @@ class TestModelRoutingPolicyApi:
         ) as ensure_builder, patch(
             "apps.gateway.api.v1.endpoints.workflow._get_model_routing_policy_for_workflow",
             return_value=policy,
-        ), patch(
-            "apps.gateway.api.v1.endpoints.workflow._model_routing_adaptive_summary",
-            return_value=workflow_endpoint._empty_model_routing_adaptive_summary(),
         ), patch(
             "apps.gateway.api.v1.endpoints.workflow.WorkflowRuntimeLLMService."
             "get_runtime_available_model_ids_for_user",
@@ -888,7 +879,7 @@ class TestModelRoutingPolicyApi:
         assert lock_query.locked is True
         db.commit.assert_not_called()
 
-    def test_fr11_cohort_wizard_suggests_fields_from_representative_query(self):
+    def removed_fr11_cohort_wizard_suggests_fields_from_representative_query(self):
         """대표 문의만 주면 마법사가 사람이 수정 가능한 입력군 초안을 반환한다."""
         workflow_id = uuid4()
         organization_id = uuid4()
@@ -959,7 +950,7 @@ class TestModelRoutingPolicyApi:
             runtime_surface="model_routing_cohort_wizard",
         )
 
-    def test_fr11_direct_cohort_is_embedded_and_saved_for_the_active_policy(self):
+    def removed_fr11_direct_cohort_is_embedded_and_saved_for_the_active_policy(self):
         """직접 입력군 등록은 실행 주체의 임베딩 권한으로 저장 경로를 호출한다."""
         workflow_id = uuid4()
         organization_id = uuid4()
@@ -1084,7 +1075,7 @@ class TestModelRoutingPolicyApi:
         assert create_cohort.call_args.kwargs["fixed"] is True
         db.commit.assert_called_once()
 
-    def test_fr11_direct_cohort_is_saved_as_draft_before_first_deployment(self):
+    def removed_fr11_direct_cohort_is_saved_as_draft_before_first_deployment(self):
         """첫 배포 전 입력군은 외부 호출 없이 workflow draft에 저장한다."""
         workflow_id = uuid4()
         organization_id = uuid4()
@@ -1161,7 +1152,7 @@ class TestModelRoutingPolicyApi:
         get_runtime_client.assert_not_called()
         db.commit.assert_called_once()
 
-    def test_fr11_draft_cohort_can_be_read_updated_and_deleted_before_deployment(self):
+    def removed_fr11_draft_cohort_can_be_read_updated_and_deleted_before_deployment(self):
         """배포 전 초안도 정책 조회와 동일한 관리 API로 수정·삭제한다."""
         workflow_id = uuid4()
         user_id = uuid4()
@@ -1258,7 +1249,7 @@ class TestModelRoutingPolicyApi:
             "cohort_drafts"
         ] == []
 
-    def test_fr11_manual_cohort_update_reembeds_and_resets_validation(self):
+    def removed_fr11_manual_cohort_update_reembeds_and_resets_validation(self):
         """수동 입력군 수정은 새 대표 문의로 재임베딩하고 재검증 대기로 바꾼다."""
         workflow_id = uuid4()
         organization_id = uuid4()
@@ -1388,7 +1379,7 @@ class TestModelRoutingPolicyApi:
         ]
         db.commit.assert_called_once()
 
-    def test_fr11_auto_cohort_conversion_reuses_existing_row(self):
+    def removed_fr11_auto_cohort_conversion_reuses_existing_row(self):
         """자동 입력군 전환은 같은 UUID를 manual row로 바꿔 key 중복을 만들지 않는다."""
         workflow_id = uuid4()
         organization_id = uuid4()
@@ -1510,7 +1501,7 @@ class TestModelRoutingPolicyApi:
         ]
         db.commit.assert_called_once()
 
-    def test_fr11_policy_summary_includes_safe_cohort_representative_query(self):
+    def removed_fr11_policy_summary_includes_safe_cohort_representative_query(self):
         """정책 조회는 raw 운영 입력이 아닌 저장된 합성 대표 문의만 반환한다."""
         policy_id = uuid4()
         cohort_id = uuid4()
@@ -1587,7 +1578,7 @@ class TestModelRoutingPolicyApi:
             }
         ]
 
-    def test_fr11_cohort_delete_retires_cohort_without_deleting_history(self):
+    def removed_fr11_cohort_delete_retires_cohort_without_deleting_history(self):
         """삭제는 evidence를 지우지 않고 다음 라우팅 대상에서만 제외한다."""
         workflow_id = uuid4()
         user_id = uuid4()
@@ -4269,8 +4260,8 @@ class TestCostOptimizerCompareApi:
             == "node-fingerprint"
         )
         assert candidate.diff_summary["routing_evidence"] == {
-            "semantic_cohort_id": "routine_support",
-            "route_catalog_version": "ticket-routing-v1",
+            "strategy_id": None,
+            "runtime_context": {},
             "schema_required": False,
         }
         assert candidate.total_tokens == 240

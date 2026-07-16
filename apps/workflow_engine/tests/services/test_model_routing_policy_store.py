@@ -617,6 +617,9 @@ def test_bootstrap_policy_ignores_legacy_active_policy_and_preserves_node_models
         )
 
     assert policy.active_policy == {
+        "strategy": "prior_guided_adaptive",
+        "strategy_id": "prior_guided_adaptive_v1",
+        "decision_profiles": [],
         "default_model_id": "gpt-4.1",
         "fallback_model_id": "gpt-4.1-mini",
         "rules": [],
@@ -670,6 +673,9 @@ def test_bootstrap_policy_matches_google_catalog_ids_with_or_without_models_pref
 
     assert policy is not None
     assert policy.active_policy == {
+        "strategy": "prior_guided_adaptive",
+        "strategy_id": "prior_guided_adaptive_v1",
+        "decision_profiles": [],
         "default_model_id": "models/gemini-2.5-flash",
         "fallback_model_id": "models/gemini-2.5-pro",
         "rules": [],
@@ -766,6 +772,9 @@ def test_deployment_bootstrap_creates_policy_before_first_operational_run():
     assert policies[0].deployment_id == deployment_id
     assert policies[0].execution_subject_user_id == execution_subject_user_id
     assert policies[0].active_policy == {
+        "strategy": "prior_guided_adaptive",
+        "strategy_id": "prior_guided_adaptive_v1",
+        "decision_profiles": [],
         "default_model_id": "gpt-4.1",
         "fallback_model_id": "gpt-4.1-mini",
         "rules": [],
@@ -968,8 +977,8 @@ def test_invalid_legacy_draft_does_not_block_later_valid_cohort_materialization(
     assert create_cohort.call_count == 2
 
 
-def test_existing_policy_retries_unmaterialized_draft_cohorts():
-    """임베딩 장애 뒤 다음 운영 실행은 남은 초안 승격을 다시 시도한다."""
+def test_existing_policy_does_not_materialize_legacy_cohort_drafts():
+    """사전 지식 기반 정책은 이전 입력군 초안이나 임베딩 경로를 호출하지 않는다."""
     from apps.workflow_engine.services.model_routing_policy_store import (
         ModelRoutingPolicyStore,
     )
@@ -1017,9 +1026,4 @@ def test_existing_policy_retries_unmaterialized_draft_cohorts():
         )
 
     assert policy is existing_policy
-    materialize.assert_called_once_with(
-        db,
-        policy=existing_policy,
-        workflow_run=workflow_run,
-        node_data=node_data,
-    )
+    materialize.assert_not_called()

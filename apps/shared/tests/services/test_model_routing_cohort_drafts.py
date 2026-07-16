@@ -1,9 +1,11 @@
 import pytest
 
 from apps.shared.services.model_routing_cohort_drafts import (
+    validate_model_routing_cohort_examples,
+)
+from apps.shared.services.model_routing_model_filter import (
     filter_model_routing_available_model_ids,
     model_routing_excluded_model_ids,
-    validate_model_routing_cohort_examples,
 )
 
 

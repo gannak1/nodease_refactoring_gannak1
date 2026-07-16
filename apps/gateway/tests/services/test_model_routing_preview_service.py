@@ -96,6 +96,7 @@ class TestModelRoutingPreviewService:
         """미리보기는 active deployment rule을 읽기만 하고 어떤 DB 기록도 남기지 않는다."""
         policy = _policy(
             active_policy={
+                "strategy_id": "prior_guided_adaptive_v1",
                 "default_model_id": "gpt-4.1",
                 "fallback_model_id": "gpt-4.1-mini",
                 "rules": [
@@ -137,7 +138,9 @@ class TestModelRoutingPreviewService:
         with patch(
             "apps.gateway.services.model_routing_preview_service.WorkflowRuntimeLLMService.get_runtime_available_model_ids_for_user",
             return_value=["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"],
-        ):
+        ), patch(
+            "apps.gateway.services.model_routing_preview_service.WorkflowRuntimeLLMService.get_runtime_client_for_user"
+        ) as runtime_client:
             result = ModelRoutingPreviewService.preview(
                 db,
                 workflow=workflow,
@@ -151,8 +154,13 @@ class TestModelRoutingPreviewService:
         assert result["fallback_model_id"] == "gpt-4.1-mini"
         assert result["decision_source"] == "matched_rule"
         assert result["matched_rule_id"] == "route-routine-support"
+        assert result["strategy_id"] == "prior_guided_adaptive_v1"
+        assert result["runtime_context"]["input_length_bucket"] == "short"
+        assert "matched_cohort" not in result
+        assert "semantic_evaluation" not in result
         assert result["draft_matches_deployment"] is False
         assert "inputs" not in result
+        runtime_client.assert_not_called()
         db.add.assert_not_called()
         db.commit.assert_not_called()
         db.flush.assert_not_called()

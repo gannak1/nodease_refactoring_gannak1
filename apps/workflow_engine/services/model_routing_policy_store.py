@@ -29,9 +29,9 @@ from apps.workflow_engine.services.model_routing_policy_refresh import (
     ModelRoutingPolicyRefreshService,
 )
 from apps.workflow_engine.services.llm_service import LLMService
-from apps.shared.services.model_routing_cohort_drafts import (
+from apps.shared.services.model_routing_cohort_drafts import model_routing_cohort_drafts
+from apps.shared.services.model_routing_model_filter import (
     filter_model_routing_available_model_ids,
-    model_routing_cohort_drafts,
     normalize_model_routing_model_id,
 )
 
@@ -152,12 +152,6 @@ class ModelRoutingPolicyStore:
             node_id=node_id,
         )
         if policy is not None:
-            cls._materialize_draft_cohorts(
-                db,
-                policy=policy,
-                workflow_run=workflow_run,
-                node_data=node_data,
-            )
             return policy
 
         organization_id = cls._organization_id_for_run(db, workflow_run)
@@ -168,14 +162,6 @@ class ModelRoutingPolicyStore:
             organization_id=organization_id,
             execution_subject_user_id=getattr(workflow_run, "user_id", None),
             node_id=node_id,
-            node_data=node_data,
-        )
-        if policy is None:
-            return None
-        cls._materialize_draft_cohorts(
-            db,
-            policy=policy,
-            workflow_run=workflow_run,
             node_data=node_data,
         )
         return policy
@@ -302,6 +288,12 @@ class ModelRoutingPolicyStore:
             fallback_model_id=fallback_model_id,
             refresh_every_runs=refresh_every_runs,
         )
+        bootstrap_active_policy = {
+            **bootstrap["active_policy"],
+            "strategy": "prior_guided_adaptive",
+            "strategy_id": "prior_guided_adaptive_v1",
+            "decision_profiles": [],
+        }
 
         policy = LLMNodeModelRoutingPolicy(
             id=policy_id,
@@ -312,7 +304,7 @@ class ModelRoutingPolicyStore:
             enabled=True,
             status="collecting",
             policy_version=bootstrap["policy_version"],
-            active_policy=bootstrap["active_policy"],
+            active_policy=bootstrap_active_policy,
             refresh_every_runs=refresh_every_runs,
             judge_user_id=execution_subject_user_id,
             execution_subject_user_id=execution_subject_user_id,
@@ -562,13 +554,6 @@ class ModelRoutingPolicyStore:
             )
             if policy is None:
                 continue
-            cls._record_adaptive_observation(
-                db,
-                policy=policy,
-                workflow_run=workflow_run,
-                node_run=node_run,
-                node_data=node_data,
-            )
             event_was_created = cls._record_policy_event(
                 db,
                 policy_id=policy.id,

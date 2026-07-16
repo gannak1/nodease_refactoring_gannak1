@@ -67,14 +67,6 @@ from apps.shared.db.models.model_routing_policy import (
     LLMNodeModelRoutingPolicy,
     LLMNodeModelRoutingPolicyUpdate,
 )
-from apps.shared.db.models.model_routing_cohort import (
-    LLMNodeModelRoutingCohort,
-    LLMNodeModelRoutingCohortExample,
-    LLMNodeModelRoutingModelEvidence,
-    LLMNodeModelRoutingValidationBatch,
-    LLMNodeModelRoutingValidationBudgetMonth,
-)
-from apps.shared.db.models.workflow_budget import WorkflowBudget
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
 from apps.shared.db.models.user import User
 from apps.shared.db.models.workflow import Workflow
@@ -90,20 +82,10 @@ from apps.shared.domain.workflow_graph import (
     validate_workflow_graph,
 )
 from apps.shared.permissions import workflow_auth_state_allows
-from apps.shared.services.model_routing_cohort_drafts import (
-    add_model_routing_cohort_draft,
-    model_routing_cohort_drafts,
-    remove_model_routing_cohort_draft,
-    required_model_routing_cohort_example_count,
-    update_model_routing_cohort_draft,
-)
 from apps.workflow_engine.services.llm_service import (
     LLMService as WorkflowRuntimeLLMService,
 )
 from apps.workflow_engine.services.model_router import ModelCandidate, ModelRouter
-from apps.workflow_engine.services.model_routing_adaptive_store import (
-    AdaptiveModelRoutingCohortStore,
-)
 from apps.workflow_engine.services.model_routing_policy_refresh import (
     ModelRoutingPolicyRefreshService,
 )
@@ -338,28 +320,10 @@ class CostOptimizerRecommendationVerifyRequest(BaseModel):
 class ModelRoutingPolicyPatchRequest(BaseModel):
     enabled: bool
     refresh_every_runs: int = Field(default=20, ge=5, le=100)
-    validation_budget_usd: Decimal = Field(default=Decimal("3"), ge=Decimal("0.5"), le=Decimal("10"))
-    max_cohorts: int = Field(default=6, ge=1, le=12)
     default_model_id: str | None = Field(default=None, min_length=1, max_length=255)
     fallback_model_id: str | None = Field(default=None, max_length=255)
     expected_graph_hash: str = Field(min_length=64, max_length=64)
     expected_updated_at: datetime
-
-
-class ModelRoutingCohortSuggestRequest(BaseModel):
-    representative_query: str = Field(min_length=5, max_length=2000)
-
-
-class ModelRoutingCohortCreateRequest(ModelRoutingCohortSuggestRequest):
-    label: str = Field(min_length=1, max_length=255)
-    key: str = Field(min_length=1, max_length=128)
-    representative_examples: list[str] = Field(default_factory=list, max_length=5)
-    fixed: bool = False
-    safety_protected: bool = False
-
-
-class ModelRoutingCohortUpdateRequest(ModelRoutingCohortCreateRequest):
-    """사용자 직접 입력군의 표시값과 대표 문의를 갱신한다."""
 
 
 class ModelRoutingPolicyRefreshRequest(BaseModel):
@@ -372,11 +336,6 @@ class ModelRoutingPreviewRequest(BaseModel):
     inputs: dict[str, Any] = Field(default_factory=dict)
 
 
-class ModelRoutingPreviewCohortResponse(BaseModel):
-    id: str | None = None
-    label: str | None = None
-
-
 class ModelRoutingPreviewResponse(BaseModel):
     """미리보기 endpoint가 raw input 없이 내보내는 고정 safe summary."""
 
@@ -387,11 +346,11 @@ class ModelRoutingPreviewResponse(BaseModel):
     fallback_model_id: str | None = None
     default_model_id: str | None = None
     configured_fallback_model_id: str | None = None
-    matched_cohort: ModelRoutingPreviewCohortResponse | None = None
     matched_rule_id: str | None = None
     reason_code: str
+    strategy_id: str | None = None
+    runtime_context: dict[str, Any] = Field(default_factory=dict)
     availability: Literal["available", "fallback"]
-    semantic_evaluation: Literal["not_required", "embedding_used", "unavailable"]
     draft_matches_deployment: bool
 
 
@@ -1023,7 +982,6 @@ def _model_routing_policy_response(
     *,
     enabled: bool,
     latest_update: LLMNodeModelRoutingPolicyUpdate | None = None,
-    adaptive: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     last_update = _model_routing_policy_update_summary(latest_update)
     if policy is None:
@@ -1042,7 +1000,6 @@ def _model_routing_policy_response(
                 "last_refresh_at": None,
             },
             "last_update": last_update,
-            "adaptive": adaptive or _empty_model_routing_adaptive_summary(),
         }
 
     refresh_every_runs = policy.refresh_every_runs
@@ -1064,181 +1021,6 @@ def _model_routing_policy_response(
             else None,
         },
         "last_update": last_update,
-        "adaptive": adaptive or _empty_model_routing_adaptive_summary(),
-    }
-
-
-def _empty_model_routing_adaptive_summary() -> dict[str, Any]:
-    return {
-        "validation_budget_usd": 3.0,
-        "max_cohorts": 6,
-        "active_cohort_count": 0,
-        "budget_month": None,
-        "spent_usd": 0.0,
-        "reserved_usd": 0.0,
-        "remaining_usd": 3.0,
-        "cohorts": [],
-        "latest_batch": None,
-    }
-
-
-def _model_routing_adaptive_summary(
-    db: Session,
-    policy: LLMNodeModelRoutingPolicy | None,
-    *,
-    node_data: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    draft_summaries = [
-        {
-            "id": draft["id"],
-            "key": draft["key"],
-            "label": draft["label"],
-            "label_en": draft["key"],
-            "representative_query": draft["representative_query"],
-            "representative_examples": draft.get("representative_examples", []),
-            "source": "manual",
-            "status": "draft",
-            "required": draft["fixed"],
-            "safety_protected": draft.get("safety_protected", False),
-            "observation_count": 0,
-            "review_window_count": 0,
-            "traffic_share": 0.0,
-            "validated_model_id": None,
-        }
-        for draft in model_routing_cohort_drafts(node_data or {})
-    ]
-    if policy is None:
-        return {
-            **_empty_model_routing_adaptive_summary(),
-            "active_cohort_count": len(draft_summaries),
-            "cohorts": draft_summaries,
-        }
-    cohorts = (
-        db.query(LLMNodeModelRoutingCohort)
-        .filter(LLMNodeModelRoutingCohort.policy_id == policy.id)
-        .filter(LLMNodeModelRoutingCohort.status != "retired")
-        .order_by(LLMNodeModelRoutingCohort.created_at.asc())
-        .all()
-    )
-    evidence_by_cohort = {
-        str(row.cohort_id): row
-        for row in (
-            db.query(LLMNodeModelRoutingModelEvidence)
-            .filter(LLMNodeModelRoutingModelEvidence.status == "validated")
-            .filter(LLMNodeModelRoutingModelEvidence.cohort_id.in_([item.id for item in cohorts] or [UUID(int=0)]))
-            .all()
-        )
-    }
-    representative_examples_by_cohort: dict[str, list[str]] = {}
-    for row in (
-        db.query(LLMNodeModelRoutingCohortExample)
-        .filter(
-            LLMNodeModelRoutingCohortExample.cohort_id.in_(
-                [item.id for item in cohorts] or [UUID(int=0)]
-            )
-        )
-        .order_by(
-            LLMNodeModelRoutingCohortExample.cohort_id.asc(),
-            LLMNodeModelRoutingCohortExample.ordinal.asc(),
-        )
-        .all()
-    ):
-        representative_examples_by_cohort.setdefault(str(row.cohort_id), []).append(
-            row.synthetic_text
-        )
-    budget = (
-        db.query(LLMNodeModelRoutingValidationBudgetMonth)
-        .filter(LLMNodeModelRoutingValidationBudgetMonth.policy_id == policy.id)
-        .order_by(LLMNodeModelRoutingValidationBudgetMonth.month_start.desc())
-        .first()
-    )
-    limit = Decimal(str(getattr(budget, "limit_usd", None) or policy.validation_budget_usd or 3))
-    spent = Decimal(str(getattr(budget, "spent_usd", 0) or 0))
-    reserved = Decimal(str(getattr(budget, "reserved_usd", 0) or 0))
-    latest_batch = (
-        db.query(LLMNodeModelRoutingValidationBatch)
-        .filter(LLMNodeModelRoutingValidationBatch.policy_id == policy.id)
-        .order_by(LLMNodeModelRoutingValidationBatch.created_at.desc())
-        .first()
-    )
-    latest_candidate_plan = (
-        latest_batch.candidate_plan
-        if latest_batch is not None and isinstance(latest_batch.candidate_plan, dict)
-        else {}
-    )
-    latest_error_summary = (
-        latest_batch.error_summary
-        if latest_batch is not None and isinstance(latest_batch.error_summary, dict)
-        else {}
-    )
-    persisted_ids = {str(cohort.id) for cohort in cohorts}
-    return {
-        "validation_budget_usd": float(limit),
-        "max_cohorts": int(getattr(policy, "max_cohorts", 6) or 6),
-        # dormant/retired는 과거 트렌드를 설명하기 위한 이력이다. 새 입력군의
-        # discovery/validation 자리를 차지하지 않으므로 UI의 최대 개수도 같은
-        # lifecycle 기준으로 계산한다.
-        "active_cohort_count": sum(
-            cohort.status in {"proposed", "validating", "validated_waiting", "active"}
-            for cohort in cohorts
-        ),
-        "budget_month": budget.month_start.isoformat() if budget is not None else None,
-        "spent_usd": float(spent),
-        "reserved_usd": float(reserved),
-        "remaining_usd": float(max(Decimal("0"), limit - spent - reserved)),
-        "cohorts": [
-            {
-                "id": str(cohort.id),
-                "key": cohort.cohort_key,
-                "label": cohort.label,
-                "label_en": cohort.label_en,
-                "representative_query": next(
-                    iter(representative_examples_by_cohort.get(str(cohort.id), [])),
-                    None,
-                ),
-                "representative_examples": representative_examples_by_cohort.get(
-                    str(cohort.id), []
-                ),
-                "source": cohort.source,
-                "status": cohort.status,
-                "required": cohort.required,
-                "safety_protected": cohort.safety_protected,
-                "observation_count": cohort.observation_count,
-                "review_window_count": cohort.review_window_count,
-                "traffic_share": float(cohort.last_traffic_share or 0),
-                "validated_model_id": (
-                    evidence_by_cohort[str(cohort.id)].model_id
-                    if str(cohort.id) in evidence_by_cohort
-                    else None
-                ),
-            }
-            for cohort in cohorts
-        ]
-        + [draft for draft in draft_summaries if draft["id"] not in persisted_ids],
-        "latest_batch": (
-            {
-                "id": str(latest_batch.id),
-                "status": latest_batch.status,
-                "trigger": latest_batch.trigger,
-                "total_items": latest_batch.total_items,
-                "completed_items": latest_batch.completed_items,
-                "reserved_cost": float(latest_batch.reserved_cost or 0),
-                "spent_cost": float(latest_batch.spent_cost or 0),
-                "bootstrap_wave": latest_candidate_plan.get("bootstrap_wave"),
-                "bootstrap_search_state": latest_error_summary.get(
-                    "bootstrap_search_state"
-                ),
-                "follow_up_batch_id": latest_error_summary.get(
-                    "follow_up_batch_id"
-                ),
-                "validated_route_count": int(
-                    latest_error_summary.get("validated_route_count") or 0
-                ),
-                "created_at": latest_batch.created_at.isoformat() if latest_batch.created_at else None,
-            }
-            if latest_batch is not None
-            else None
-        ),
     }
 
 
@@ -1291,108 +1073,6 @@ def _get_model_routing_policy_for_workflow(
     )
 
 
-def _normalize_model_routing_cohort_key(value: str, representative_query: str) -> str:
-    """LLM wizard 결과도 서버에서 안전한 영문 identifier로 다시 정리한다."""
-    normalized = re.sub(r"[^a-z0-9]+", "_", str(value or "").lower()).strip("_")
-    if normalized:
-        return normalized[:128]
-    digest = hashlib.sha256(representative_query.encode("utf-8")).hexdigest()[:12]
-    return f"cohort_{digest}"
-
-
-def _upsert_model_routing_cohort_draft(
-    node_data: dict[str, Any],
-    *,
-    draft_id: str | UUID,
-    label: str,
-    key: str,
-    representative_query: str,
-    representative_examples: list[str] | None,
-    fixed: bool,
-    safety_protected: bool,
-) -> dict[str, Any]:
-    """기존 배포 DB 입력군도 다음 배포가 읽을 graph draft로 보존한다."""
-    updated = update_model_routing_cohort_draft(
-        node_data,
-        draft_id=draft_id,
-        label=label,
-        key=key,
-        representative_query=representative_query,
-        representative_examples=representative_examples,
-        fixed=fixed,
-        safety_protected=safety_protected,
-    )
-    if updated is not None:
-        return updated
-    return add_model_routing_cohort_draft(
-        node_data,
-        draft_id=draft_id,
-        label=label,
-        key=key,
-        representative_query=representative_query,
-        representative_examples=representative_examples,
-        fixed=fixed,
-        safety_protected=safety_protected,
-    )
-
-
-def _extract_model_routing_cohort_suggestion(
-    response: Any,
-    representative_query: str,
-) -> dict[str, Any]:
-    """Provider별 chat 응답에서 wizard가 약속한 작은 JSON만 꺼낸다."""
-    content = ""
-    if isinstance(response, dict):
-        choices = response.get("choices")
-        if isinstance(choices, list) and choices:
-            message = choices[0].get("message") if isinstance(choices[0], dict) else None
-            if isinstance(message, dict):
-                content = str(message.get("content") or "")
-    match = re.search(r"\{.*\}", content, flags=re.DOTALL)
-    payload: dict[str, Any] = {}
-    if match is not None:
-        try:
-            decoded = json.loads(match.group(0))
-            if isinstance(decoded, dict):
-                payload = decoded
-        except json.JSONDecodeError:
-            payload = {}
-
-    label = " ".join(str(payload.get("label") or "").split())[:255]
-    if not label:
-        label = "사용자 등록 입력군"
-    query = " ".join(
-        str(payload.get("representative_query") or representative_query).split()
-    )[:2000]
-    raw_examples = payload.get("representative_examples")
-    raw_examples = raw_examples if isinstance(raw_examples, list) else []
-    examples: list[str] = []
-    for raw in [query, *raw_examples]:
-        example = " ".join(str(raw or "").split())[:2000]
-        if example and example not in examples:
-            examples.append(example)
-        if len(examples) >= 5:
-            break
-    return {
-        "label": label,
-        "key": _normalize_model_routing_cohort_key(
-            str(payload.get("key") or ""), query
-        ),
-        "representative_query": query,
-        "representative_examples": examples,
-        "safety_protected": payload.get("safety_protected") is True,
-    }
-
-
-def _cohort_suggestion_has_enough_examples(suggestion: Mapping[str, Any]) -> bool:
-    examples = suggestion.get("representative_examples")
-    count = len(examples) if isinstance(examples, list) else 0
-    required = required_model_routing_cohort_example_count(
-        suggestion.get("safety_protected") is True
-    )
-    return count >= required
-
-
 def _get_latest_model_routing_policy_update(
     db: Session,
     policy: LLMNodeModelRoutingPolicy | None,
@@ -1410,32 +1090,6 @@ def _get_latest_model_routing_policy_update(
 def _canonical_json_hash(value: Any) -> str:
     payload = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _remove_cohort_from_active_policy(
-    active_policy: Any,
-    *,
-    cohort_id: str,
-) -> dict[str, Any]:
-    """입력군 수정/삭제 뒤 기존 UUID route가 runtime policy에 남지 않게 한다."""
-    policy = copy.deepcopy(active_policy) if isinstance(active_policy, dict) else {}
-    router = policy.get("semantic_router")
-    if isinstance(router, dict):
-        router["routes"] = [
-            route
-            for route in router.get("routes") or []
-            if not isinstance(route, dict)
-            or str(route.get("cohort_id") or "") != cohort_id
-        ]
-        policy["semantic_router"] = router
-    policy["rules"] = [
-        rule
-        for rule in policy.get("rules") or []
-        if not isinstance(rule, dict)
-        or str((rule.get("when") or {}).get("semantic_cohort_id") or "")
-        != cohort_id
-    ]
-    return policy
 
 
 def _cost_optimizer_downstream_contracts_for_consumer(
@@ -2969,9 +2623,11 @@ def _cost_optimizer_routing_evidence_summary(
     output_format = output_format if isinstance(output_format, dict) else {}
 
     return {
-        "semantic_cohort_id": str(routing.get("matched_cohort_id") or "") or None,
-        "route_catalog_version": (
-            str(routing.get("route_catalog_version") or "") or None
+        "strategy_id": str(routing.get("strategy_id") or "") or None,
+        "runtime_context": (
+            routing.get("runtime_context")
+            if isinstance(routing.get("runtime_context"), dict)
+            else {}
         ),
         "schema_required": (
             str(output_format.get("type") or "").lower() == "json"
@@ -4068,7 +3724,6 @@ def get_model_routing_policy_endpoint(
         policy,
         enabled=bool(node_data.get("auto_model_routing")),
         latest_update=latest_update,
-        adaptive=_model_routing_adaptive_summary(db, policy, node_data=node_data),
     )
 
 
@@ -4155,10 +3810,6 @@ def patch_model_routing_policy_endpoint(
         legacy_refresh = {}
     legacy_refresh["refresh_every_runs"] = request_body.refresh_every_runs
     legacy_policy["refresh"] = legacy_refresh
-    # policy row가 아직 없는 첫 배포 전에도 이 값은 deployment snapshot에 남아야
-    # 첫 운영 실행이 bootstrap policy를 만들 때 같은 예산을 사용한다.
-    legacy_policy["validation_budget_usd"] = float(request_body.validation_budget_usd)
-    legacy_policy["max_cohorts"] = request_body.max_cohorts
     node_data["model_routing_policy"] = legacy_policy
     node["data"] = node_data
     WorkflowService.validate_knowledge_references(
@@ -4169,23 +3820,6 @@ def patch_model_routing_policy_endpoint(
     )
 
     policy = _get_model_routing_policy_for_workflow(db, workflow, node_id)
-    workflow_budget = (
-        db.query(WorkflowBudget)
-        .filter(WorkflowBudget.workflow_id == workflow.id)
-        .filter(WorkflowBudget.is_enabled.is_(True))
-        .first()
-    )
-    maximum_budget = min(
-        Decimal("10"),
-        Decimal(str(workflow_budget.monthly_budget_usd))
-        if workflow_budget is not None
-        else Decimal("10"),
-    )
-    if request_body.validation_budget_usd > maximum_budget:
-        raise HTTPException(
-            status_code=422,
-            detail="model_routing.validation_budget_exceeds_workflow_budget",
-        )
     if policy is not None:
         if "default_model_id" in request_fields or "fallback_model_id" in request_fields:
             execution_subject_id = policy.execution_subject_user_id
@@ -4212,8 +3846,6 @@ def patch_model_routing_policy_endpoint(
                 )
         policy.enabled = request_body.enabled
         policy.refresh_every_runs = request_body.refresh_every_runs
-        policy.validation_budget_usd = request_body.validation_budget_usd
-        policy.max_cohorts = request_body.max_cohorts
         policy.judge_user_id = current_user.id
         if policy.active_policy and (
             "default_model_id" in request_fields
@@ -4235,536 +3867,8 @@ def patch_model_routing_policy_endpoint(
     response = _model_routing_policy_response(
         policy,
         enabled=request_body.enabled,
-        adaptive=_model_routing_adaptive_summary(db, policy, node_data=node_data),
     )
     return {**response, **metadata}
-
-
-@router.post("/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts/suggest")
-async def suggest_model_routing_cohort_endpoint(
-    workflow_id: str,
-    node_id: str,
-    request_body: ModelRoutingCohortSuggestRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """대표 문의 하나로 입력군 이름과 영문 키의 초안을 만든다.
-
-    이 호출은 사용자가 마법사 버튼을 눌렀을 때만 발생한다. 이후 실제 라우팅 실행
-    또는 운영 요청에서는 LLM wizard를 호출하지 않는다.
-    """
-    workflow = ensure_workflow_permission(db, current_user, workflow_id, "deploy")
-    _ensure_cost_optimizer_llm_node(workflow, node_id)
-    organization_id = workflow.organization_id
-    if organization_id is None:
-        raise HTTPException(status_code=409, detail="model_routing.organization_required")
-    wizard_system_prompt = (
-        "입력군 설정을 돕습니다. 반드시 JSON object 하나만 반환하세요. "
-        "형식: {\"label\": 한국어 짧은 이름, \"key\": 영문 snake_case 키, "
-        "\"representative_query\": 원문의 의미를 유지한 한국어 대표 문의, "
-        "\"representative_examples\": 서로 다른 표현과 상황을 사용한 한국어 예문 3~5개, "
-        "\"safety_protected\": 보안·개인정보·법무·SLA·금전 보상처럼 오답 위험이 큰 입력군이면 true}. "
-        "일반 입력군은 예문을 최소 3개, safety_protected가 true이면 반드시 5개 만드세요. "
-        "예문에는 대표 문의도 포함하고, 같은 문장의 단순 어미 변경은 피하세요. "
-        "이름, 이메일, 계정 ID, 전화번호, 회사 고유명 같은 식별 정보는 "
-        "복사하지 말고 일반적인 표현으로 바꾸세요."
-    )
-    try:
-        runtime = LLMService.get_wizard_client_for_user(
-            db,
-            current_user.id,
-            LLMService.EFFICIENT_MODELS,
-            organization_id=organization_id,
-            runtime_surface="model_routing_cohort_wizard",
-        )
-        for attempt in range(2):
-            response = await runtime.client.invoke(
-                [
-                    {
-                        "role": "system",
-                        "content": wizard_system_prompt
-                        + (
-                            " 이전 응답의 예문 수가 부족했습니다. 서로 다른 상황과 어휘를 사용해 필요한 개수를 반드시 채우세요."
-                            if attempt
-                            else ""
-                        ),
-                    },
-                    {"role": "user", "content": request_body.representative_query},
-                ],
-                temperature=0.3,
-                max_tokens=800,
-            )
-            suggestion = _extract_model_routing_cohort_suggestion(
-                response,
-                request_body.representative_query,
-            )
-            if _cohort_suggestion_has_enough_examples(suggestion):
-                return suggestion
-    except Exception as exc:
-        logger.warning(
-            "[Model-Routing] cohort wizard failed: error_type=%s",
-            type(exc).__name__,
-        )
-        raise HTTPException(
-            status_code=422,
-            detail="model_routing.cohort_wizard_unavailable",
-        ) from exc
-    raise HTTPException(
-        status_code=422,
-        detail="model_routing.cohort_examples_insufficient",
-    )
-
-
-@router.post("/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts")
-def create_model_routing_cohort_endpoint(
-    workflow_id: str,
-    node_id: str,
-    request_body: ModelRoutingCohortCreateRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """직접 등록한 입력군을 policy에 추가하고 이후 운영/Replay 검증 대상으로 둔다."""
-    workflow = ensure_workflow_permission(db, current_user, workflow_id, "deploy")
-    next_graph = copy.deepcopy(workflow.graph or {})
-    draft_node = _ensure_cost_optimizer_llm_node(
-        SimpleNamespace(id=workflow.id, graph=next_graph), node_id
-    )
-    draft_node_data = (
-        draft_node.get("data") if isinstance(draft_node.get("data"), dict) else {}
-    )
-    if not draft_node_data.get("auto_model_routing"):
-        raise HTTPException(status_code=409, detail="model_routing.disabled")
-    normalized_key = _normalize_model_routing_cohort_key(
-        request_body.key,
-        request_body.representative_query,
-    )
-    try:
-        draft = add_model_routing_cohort_draft(
-            draft_node_data,
-            label=request_body.label,
-            key=normalized_key,
-            representative_query=request_body.representative_query,
-            representative_examples=request_body.representative_examples,
-            fixed=request_body.fixed,
-            safety_protected=request_body.safety_protected,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    draft_node["data"] = draft_node_data
-    policy = _get_model_routing_policy_for_workflow(db, workflow, node_id)
-    deployment = _active_deployment_for_workflow(db, workflow)
-    if policy is None or not policy.enabled or deployment is None:
-        workflow.graph = next_graph
-        db.commit()
-        return {
-            **draft,
-            "source": "manual",
-            "status": "draft",
-        }
-    # 입력군과 evidence는 draft가 아닌 실제 배포 snapshot의 설정 지문으로 묶인다.
-    # 그래야 이후 validation planner가 같은 fingerprint로 해당 입력군을 찾는다.
-    node = _ensure_cost_optimizer_llm_node(
-        SimpleNamespace(id=workflow.id, graph=deployment.graph_snapshot or {}),
-        node_id,
-    )
-    node_data = node.get("data") if isinstance(node.get("data"), dict) else {}
-    subject_id = policy.execution_subject_user_id or current_user.id
-    organization_id = policy.organization_id or workflow.organization_id
-    if organization_id is None:
-        raise HTTPException(status_code=409, detail="model_routing.organization_required")
-    embedding_models = WorkflowRuntimeLLMService.get_runtime_available_embedding_model_ids_for_user(
-        db,
-        user_id=subject_id,
-        organization_id=organization_id,
-    )
-    if not embedding_models:
-        raise HTTPException(status_code=422, detail="model_routing.embedding_unavailable")
-    encoder_model_id = ModelRoutingPolicyStore._preferred_embedding_model(
-        node_data,
-        embedding_models,
-    )
-    try:
-        runtime = WorkflowRuntimeLLMService.get_runtime_client_for_user(
-            db,
-            user_id=subject_id,
-            model_id=encoder_model_id,
-            organization_id=organization_id,
-        )
-        cohort = AdaptiveModelRoutingCohortStore.create_manual_cohort(
-            db,
-            policy=policy,
-            node_data=node_data,
-            cohort_id=UUID(draft["id"]),
-            label=request_body.label,
-            cohort_key=normalized_key,
-            representative_query=request_body.representative_query,
-            representative_examples=request_body.representative_examples,
-            fixed=request_body.fixed,
-            safety_protected=request_body.safety_protected,
-            encoder_model_id=encoder_model_id,
-            embed=runtime.client.embed_sync,
-        )
-        workflow.graph = next_graph
-        db.commit()
-    except ValueError as exc:
-        db.rollback()
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except Exception as exc:
-        db.rollback()
-        logger.warning(
-            "[Model-Routing] manual cohort creation failed: error_type=%s",
-            type(exc).__name__,
-        )
-        raise HTTPException(
-            status_code=422,
-            detail="model_routing.cohort_creation_failed",
-        ) from exc
-    return {
-        "id": str(cohort.id),
-        "key": cohort.cohort_key,
-        "label": cohort.label,
-        "representative_query": request_body.representative_query,
-        "representative_examples": draft["representative_examples"],
-        "safety_protected": request_body.safety_protected,
-        "source": cohort.source,
-        "status": cohort.status,
-    }
-
-
-@router.patch("/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts/{cohort_id}")
-def update_model_routing_cohort_endpoint(
-    workflow_id: str,
-    node_id: str,
-    cohort_id: str,
-    request_body: ModelRoutingCohortUpdateRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """직접 등록 입력군만 수정하고 기존 route/evidence를 재검증 대기로 돌린다."""
-    workflow = ensure_workflow_permission(db, current_user, workflow_id, "deploy")
-    next_graph = copy.deepcopy(workflow.graph or {})
-    draft_node = _ensure_cost_optimizer_llm_node(
-        SimpleNamespace(id=workflow.id, graph=next_graph), node_id
-    )
-    draft_node_data = (
-        draft_node.get("data") if isinstance(draft_node.get("data"), dict) else {}
-    )
-    policy = _get_model_routing_policy_for_workflow(db, workflow, node_id)
-    deployment = _active_deployment_for_workflow(db, workflow)
-    normalized_key = _normalize_model_routing_cohort_key(
-        request_body.key,
-        request_body.representative_query,
-    )
-    try:
-        updated_draft = update_model_routing_cohort_draft(
-            draft_node_data,
-            draft_id=cohort_id,
-            label=request_body.label,
-            key=normalized_key,
-            representative_query=request_body.representative_query,
-            representative_examples=request_body.representative_examples,
-            fixed=request_body.fixed,
-            safety_protected=request_body.safety_protected,
-        )
-    except (ValueError, TypeError) as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    draft_node["data"] = draft_node_data
-    if policy is None or not policy.enabled or deployment is None:
-        if updated_draft is None:
-            raise HTTPException(status_code=404, detail="model_routing.cohort_not_found")
-        workflow.graph = next_graph
-        db.commit()
-        return {**updated_draft, "source": "manual", "status": "draft"}
-    try:
-        cohort_uuid = UUID(cohort_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail="model_routing.cohort_not_found") from exc
-    cohort = (
-        db.query(LLMNodeModelRoutingCohort)
-        .filter(LLMNodeModelRoutingCohort.id == cohort_uuid)
-        .filter(LLMNodeModelRoutingCohort.policy_id == policy.id)
-        .one_or_none()
-    )
-    if cohort is None or cohort.status == "retired":
-        raise HTTPException(status_code=404, detail="model_routing.cohort_not_found")
-    if cohort.source != "manual":
-        raise HTTPException(status_code=409, detail="model_routing.cohort_auto_read_only")
-
-    if updated_draft is None:
-        try:
-            updated_draft = _upsert_model_routing_cohort_draft(
-                draft_node_data,
-                draft_id=cohort.id,
-                label=request_body.label,
-                key=normalized_key,
-                representative_query=request_body.representative_query,
-                representative_examples=request_body.representative_examples,
-                fixed=request_body.fixed,
-                safety_protected=request_body.safety_protected,
-            )
-        except (ValueError, TypeError) as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        draft_node["data"] = draft_node_data
-
-    node = _ensure_cost_optimizer_llm_node(
-        SimpleNamespace(id=workflow.id, graph=deployment.graph_snapshot or {}),
-        node_id,
-    )
-    node_data = node.get("data") if isinstance(node.get("data"), dict) else {}
-    subject_id = policy.execution_subject_user_id or current_user.id
-    organization_id = policy.organization_id or workflow.organization_id
-    if organization_id is None:
-        raise HTTPException(status_code=409, detail="model_routing.organization_required")
-    embedding_models = WorkflowRuntimeLLMService.get_runtime_available_embedding_model_ids_for_user(
-        db,
-        user_id=subject_id,
-        organization_id=organization_id,
-    )
-    if not embedding_models:
-        raise HTTPException(status_code=422, detail="model_routing.embedding_unavailable")
-    encoder_model_id = ModelRoutingPolicyStore._preferred_embedding_model(
-        node_data,
-        embedding_models,
-    )
-    try:
-        runtime = WorkflowRuntimeLLMService.get_runtime_client_for_user(
-            db,
-            user_id=subject_id,
-            model_id=encoder_model_id,
-            organization_id=organization_id,
-        )
-        cohort = AdaptiveModelRoutingCohortStore.update_manual_cohort(
-            db,
-            cohort=cohort,
-            policy=policy,
-            node_data=node_data,
-            label=request_body.label,
-            cohort_key=normalized_key,
-            representative_query=request_body.representative_query,
-            representative_examples=request_body.representative_examples,
-            fixed=request_body.fixed,
-            safety_protected=request_body.safety_protected,
-            encoder_model_id=encoder_model_id,
-            embed=runtime.client.embed_sync,
-        )
-        policy.active_policy = _remove_cohort_from_active_policy(
-            policy.active_policy,
-            cohort_id=str(cohort.id),
-        )
-        workflow.graph = next_graph
-        db.commit()
-    except ValueError as exc:
-        db.rollback()
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except Exception as exc:
-        db.rollback()
-        logger.warning(
-            "[Model-Routing] manual cohort update failed: error_type=%s",
-            type(exc).__name__,
-        )
-        raise HTTPException(
-            status_code=422,
-            detail="model_routing.cohort_update_failed",
-        ) from exc
-    return {
-        "id": str(cohort.id),
-        "key": cohort.cohort_key,
-        "label": cohort.label,
-        "representative_query": request_body.representative_query,
-        "representative_examples": updated_draft["representative_examples"],
-        "safety_protected": request_body.safety_protected,
-        "source": cohort.source,
-        "status": cohort.status,
-    }
-
-
-@router.post(
-    "/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts/{cohort_id}/convert-to-manual"
-)
-def convert_model_routing_cohort_to_manual_endpoint(
-    workflow_id: str,
-    node_id: str,
-    cohort_id: str,
-    request_body: ModelRoutingCohortUpdateRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """자동 발견 입력군 row를 유지한 채 사용자가 수정 가능한 입력군으로 전환한다."""
-    workflow = ensure_workflow_permission(db, current_user, workflow_id, "deploy")
-    next_graph = copy.deepcopy(workflow.graph or {})
-    draft_node = _ensure_cost_optimizer_llm_node(
-        SimpleNamespace(id=workflow.id, graph=next_graph), node_id
-    )
-    draft_node_data = (
-        draft_node.get("data") if isinstance(draft_node.get("data"), dict) else {}
-    )
-    policy = _get_model_routing_policy_for_workflow(db, workflow, node_id)
-    deployment = _active_deployment_for_workflow(db, workflow)
-    if policy is None or not policy.enabled or deployment is None:
-        raise HTTPException(status_code=409, detail="model_routing.policy_not_ready")
-    try:
-        cohort_uuid = UUID(cohort_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail="model_routing.cohort_not_found") from exc
-    cohort = (
-        db.query(LLMNodeModelRoutingCohort)
-        .filter(LLMNodeModelRoutingCohort.id == cohort_uuid)
-        .filter(LLMNodeModelRoutingCohort.policy_id == policy.id)
-        .one_or_none()
-    )
-    if cohort is None or cohort.status == "retired":
-        raise HTTPException(status_code=404, detail="model_routing.cohort_not_found")
-    if cohort.source != "auto":
-        raise HTTPException(status_code=409, detail="model_routing.cohort_not_auto")
-
-    normalized_key = _normalize_model_routing_cohort_key(
-        request_body.key,
-        request_body.representative_query,
-    )
-    try:
-        _upsert_model_routing_cohort_draft(
-            draft_node_data,
-            draft_id=cohort.id,
-            label=request_body.label,
-            key=normalized_key,
-            representative_query=request_body.representative_query,
-            representative_examples=request_body.representative_examples,
-            fixed=request_body.fixed,
-            safety_protected=request_body.safety_protected,
-        )
-    except (ValueError, TypeError) as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    draft_node["data"] = draft_node_data
-
-    node = _ensure_cost_optimizer_llm_node(
-        SimpleNamespace(id=workflow.id, graph=deployment.graph_snapshot or {}),
-        node_id,
-    )
-    node_data = node.get("data") if isinstance(node.get("data"), dict) else {}
-    subject_id = policy.execution_subject_user_id or current_user.id
-    organization_id = policy.organization_id or workflow.organization_id
-    if organization_id is None:
-        raise HTTPException(status_code=409, detail="model_routing.organization_required")
-    embedding_models = WorkflowRuntimeLLMService.get_runtime_available_embedding_model_ids_for_user(
-        db,
-        user_id=subject_id,
-        organization_id=organization_id,
-    )
-    if not embedding_models:
-        raise HTTPException(status_code=422, detail="model_routing.embedding_unavailable")
-    encoder_model_id = ModelRoutingPolicyStore._preferred_embedding_model(
-        node_data,
-        embedding_models,
-    )
-    try:
-        runtime = WorkflowRuntimeLLMService.get_runtime_client_for_user(
-            db,
-            user_id=subject_id,
-            model_id=encoder_model_id,
-            organization_id=organization_id,
-        )
-        cohort = AdaptiveModelRoutingCohortStore.convert_auto_cohort_to_manual(
-            db,
-            cohort=cohort,
-            policy=policy,
-            node_data=node_data,
-            label=request_body.label,
-            cohort_key=normalized_key,
-            representative_query=request_body.representative_query,
-            representative_examples=request_body.representative_examples,
-            fixed=request_body.fixed,
-            safety_protected=request_body.safety_protected,
-            encoder_model_id=encoder_model_id,
-            embed=runtime.client.embed_sync,
-        )
-        policy.active_policy = _remove_cohort_from_active_policy(
-            policy.active_policy,
-            cohort_id=str(cohort.id),
-        )
-        workflow.graph = next_graph
-        db.commit()
-    except ValueError as exc:
-        db.rollback()
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except Exception as exc:
-        db.rollback()
-        logger.warning(
-            "[Model-Routing] automatic cohort conversion failed: error_type=%s",
-            type(exc).__name__,
-        )
-        raise HTTPException(
-            status_code=422,
-            detail="model_routing.cohort_conversion_failed",
-        ) from exc
-    return {
-        "id": str(cohort.id),
-        "key": cohort.cohort_key,
-        "label": cohort.label,
-        "representative_query": request_body.representative_query,
-        "representative_examples": request_body.representative_examples,
-        "safety_protected": request_body.safety_protected,
-        "source": cohort.source,
-        "status": cohort.status,
-    }
-
-
-@router.delete("/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts/{cohort_id}")
-def retire_model_routing_cohort_endpoint(
-    workflow_id: str,
-    node_id: str,
-    cohort_id: str,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """입력군을 정책에서 제외하되 검증 이력은 보존한다."""
-    workflow = ensure_workflow_permission(db, current_user, workflow_id, "deploy")
-    next_graph = copy.deepcopy(workflow.graph or {})
-    draft_node = _ensure_cost_optimizer_llm_node(
-        SimpleNamespace(id=workflow.id, graph=next_graph), node_id
-    )
-    draft_node_data = (
-        draft_node.get("data") if isinstance(draft_node.get("data"), dict) else {}
-    )
-    try:
-        draft_removed = remove_model_routing_cohort_draft(
-            draft_node_data,
-            draft_id=cohort_id,
-        )
-    except (ValueError, TypeError) as exc:
-        raise HTTPException(status_code=404, detail="model_routing.cohort_not_found") from exc
-    draft_node["data"] = draft_node_data
-    policy = _get_model_routing_policy_for_workflow(db, workflow, node_id)
-    if policy is None:
-        if not draft_removed:
-            raise HTTPException(status_code=404, detail="model_routing.cohort_not_found")
-        workflow.graph = next_graph
-        db.commit()
-        return {"id": str(UUID(cohort_id)), "status": "retired"}
-    try:
-        cohort_uuid = UUID(cohort_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail="model_routing.cohort_not_found") from exc
-    cohort = (
-        db.query(LLMNodeModelRoutingCohort)
-        .filter(LLMNodeModelRoutingCohort.id == cohort_uuid)
-        .filter(LLMNodeModelRoutingCohort.policy_id == policy.id)
-        .one_or_none()
-    )
-    if cohort is None or cohort.status == "retired":
-        raise HTTPException(status_code=404, detail="model_routing.cohort_not_found")
-    if cohort.safety_protected:
-        raise HTTPException(status_code=409, detail="model_routing.safety_cohort_protected")
-
-    cohort.status = "retired"
-    cohort.required = False
-    cohort.retired_at = datetime.now(timezone.utc)
-    policy.active_policy = _remove_cohort_from_active_policy(
-        policy.active_policy,
-        cohort_id=str(cohort.id),
-    )
-    workflow.graph = next_graph
-    db.commit()
-    return {"id": str(cohort.id), "status": cohort.status}
 
 
 @router.post("/{workflow_id}/llm-nodes/{node_id}/model-routing/policy/refresh")

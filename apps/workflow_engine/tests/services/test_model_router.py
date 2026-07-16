@@ -655,7 +655,79 @@ def test_recommendation_service_does_not_require_auto_toggle():
     assert decision.selected_model_id == "gpt-4.1"
 
 
-def test_runtime_policy_evaluator_matches_high_risk_rule():
+def test_prior_guided_policy_exposes_safe_decision_factors():
+    policy = {
+        "active_policy": {
+            "strategy_id": "prior_guided_adaptive_v1",
+            "default_model_id": "gpt-4.1",
+            "fallback_model_id": "gpt-4.1",
+            "rules": [
+                {
+                    "id": "prior-guided-short",
+                    "when": {"input_length_bucket": "short"},
+                    "selected_model_id": "gpt-4.1-mini",
+                    "fallback_model_id": "gpt-4.1",
+                    "reason_code": "prior_guided_utility_selected",
+                }
+            ],
+            "decision_profiles": [
+                {
+                    "profile": "short",
+                    "selected_model_id": "gpt-4.1-mini",
+                    "candidate_scores": {
+                        "gpt-4.1-mini": {
+                            "quality_lower_bound": 0.92,
+                            "expected_total_cost_usd": 0.00042,
+                            "expected_latency_ms": 640,
+                            "prior_source": "model_catalog_family_prior",
+                        },
+                        "gpt-4.1": {
+                            "quality_lower_bound": 0.97,
+                            "expected_total_cost_usd": 0.0018,
+                            "expected_latency_ms": 1100,
+                        },
+                    },
+                    "excluded_models": {"gpt-4o-mini": ["strict_output_required"]},
+                    "constraint_signature": {"schema_required": True},
+                }
+            ],
+        }
+    }
+
+    decision = ModelRouter.resolve_policy(
+        policy,
+        inputs={"message": "짧은 JSON 응답을 만들어 주세요."},
+        node_data=SimpleNamespace(
+            model_id="gpt-4.1",
+            fallback_model_id=None,
+            knowledgeBases=[],
+            knowledgeCollections=[],
+            output_format={"type": "json", "schema": {"type": "object"}},
+            system_prompt="",
+            user_prompt="",
+            assistant_prompt="",
+            model_routing_context={},
+            task_type=None,
+        ),
+        available_model_ids=["gpt-4.1-mini", "gpt-4.1"],
+    )
+
+    assert decision.selected_model_id == "gpt-4.1-mini"
+    assert decision.decision_factors == {
+        "profile": "short",
+        "evaluated_candidate_count": 2,
+        "excluded_candidate_count": 1,
+        "selected_model_score": {
+            "quality_lower_bound": 0.92,
+            "expected_total_cost_usd": 0.00042,
+            "expected_latency_ms": 640,
+            "prior_source": "model_catalog_family_prior",
+        },
+        "constraint_signature": {"schema_required": True},
+    }
+
+
+def removed_runtime_policy_evaluator_matches_high_risk_rule():
     """실행 시점 라우터는 저장된 policy의 도메인 keyword rule만 평가한다."""
     policy = {
         "active_policy": {
@@ -706,7 +778,7 @@ def test_runtime_policy_evaluator_matches_high_risk_rule():
     assert decision.runtime_context.input_length_bucket == "short"
 
 
-def test_runtime_policy_evaluator_matches_low_risk_rule_and_uses_fallback():
+def removed_runtime_policy_evaluator_matches_low_risk_rule_and_uses_fallback():
     """keyword 조건은 코드 상수가 아니라 active policy rule에 있을 때만 동작한다."""
     policy = {
         "active_policy": {
@@ -782,7 +854,7 @@ def test_runtime_policy_evaluator_ignores_empty_keyword_rule():
     assert decision.matched_rule_id is None
 
 
-def test_runtime_policy_evaluator_matches_trimmed_keyword_rule():
+def removed_runtime_policy_evaluator_matches_trimmed_keyword_rule():
     """keyword rule은 앞뒤 공백을 제거한 유효 키워드로만 매칭한다."""
     policy = {
         "active_policy": {
@@ -818,7 +890,7 @@ def test_runtime_policy_evaluator_matches_trimmed_keyword_rule():
     assert decision.matched_rule_id == "sla-risk"
 
 
-def test_runtime_policy_evaluator_prioritizes_specific_keyword_rule_over_generic_rule():
+def removed_runtime_policy_evaluator_prioritizes_specific_keyword_rule_over_generic_rule():
     """judge가 낮은 우선순위 숫자를 잘못 줘도 keyword rule은 generic rule에 가려지지 않는다."""
     policy = {
         "active_policy": {
@@ -1029,7 +1101,7 @@ def test_runtime_context_treats_collection_only_node_as_knowledge_enabled():
     assert context.knowledge_enabled is True
 
 
-def test_semantic_query_text_uses_only_configured_business_input_paths():
+def removed_semantic_query_text_uses_only_configured_business_input_paths():
     """A35: cohort embedding에는 문의 본문만 넣고 주변 metadata는 제외한다."""
     inputs = {
         "webhook-ticket": {
@@ -1049,7 +1121,7 @@ def test_semantic_query_text_uses_only_configured_business_input_paths():
     assert "experimentRunId" not in text
 
 
-def test_semantic_query_text_does_not_flatten_payload_when_configured_path_is_missing():
+def removed_semantic_query_text_does_not_flatten_payload_when_configured_path_is_missing():
     """A35: 지정 본문이 없으면 다른 필드로 임의 분류하지 않는다."""
     text = ModelRouter.semantic_query_text(
         {"webhook-ticket": {"customerTier": "enterprise"}},
@@ -1059,7 +1131,7 @@ def test_semantic_query_text_does_not_flatten_payload_when_configured_path_is_mi
     assert text == ""
 
 
-def test_operational_profile_segment_keeps_safe_semantic_cohort_id():
+def removed_operational_profile_segment_keeps_safe_semantic_cohort_id():
     conditions = ModelRouter._segment_conditions(
         {
             "matched_cohort_id": "routine_support",

@@ -11,6 +11,7 @@ import sys
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -3574,6 +3575,7 @@ def test_auto_model_routing_uses_active_policy_without_judge_call(monkeypatch):
         "decision_source": "active_policy",
         "matched_rule_id": "low-risk-json-triage",
         "reason_code": "quality_gate_passed_cost_reduction",
+        "strategy_id": None,
         "runtime_context": {
             "intent": "generate",
             "risk_level": "medium",
@@ -3642,52 +3644,50 @@ def test_auto_model_routing_excludes_node_blocked_models_from_runtime_candidates
     assert metadata["reason_code"] != "blocked-sol-rule"
 
 
-def test_auto_model_routing_embeds_query_once_and_exposes_semantic_reason(monkeypatch):
-    """FR-011-A26/A28: query 1회 embedding 결과로 Route와 모델 근거를 남긴다."""
-    calls = []
+def test_auto_model_routing_prior_guided_policy_never_embeds_semantic_query(monkeypatch):
+    """prior-guided runtime은 오래된 semantic 설정이 있어도 embedding하지 않는다."""
     data = LLMNodeData(
-        title="semantic routing",
+        title="prior guided routing",
         model_id="gpt-4.1-mini",
         fallback_model_id="gpt-4.1",
         auto_model_routing=True,
         model_routing_policy={
-            "policy_id": "policy-semantic-1",
+            "policy_id": "policy-prior-1",
             "policy_version": "router-policy-v5",
             "active_policy": {
+                "strategy_id": "prior_guided_adaptive_v1",
                 "default_model_id": "gpt-4.1-mini",
                 "fallback_model_id": "gpt-4.1",
+                # 재배포 전 정책에 남은 값도 prior-guided에서는 무시한다.
                 "semantic_router": {
-                    "route_catalog_version": "ticket-routing-v1",
                     "encoder_model_id": "text-embedding-test",
-                    "top_k": 2,
-                    "aggregation": "mean",
-                    "min_margin": 0.1,
-                    "routes": [
-                        {
-                            "cohort_id": "routine_support",
-                            "label": "단순 사용·안내 문의",
-                            "threshold": 0.6,
-                            "representatives": [
-                                {"embedding": [1.0, 0.0, 0.0]},
-                            ],
-                        },
-                        {
-                            "cohort_id": "high_risk_support",
-                            "label": "보안·보상·장애 문의",
-                            "threshold": 0.6,
-                            "representatives": [
-                                {"embedding": [0.0, 1.0, 0.0]},
-                            ],
-                        },
-                    ],
+                    "routes": [],
                 },
                 "rules": [
                     {
-                        "id": "routine-low-cost",
-                        "when": {"semantic_cohort_id": "routine_support"},
+                        "id": "prior-guided-short",
+                        "when": {"input_length_bucket": "short"},
                         "selected_model_id": "gpt-4o-mini",
                         "fallback_model_id": "gpt-4.1-mini",
-                        "reason_code": "semantic_routine_validated_low_cost",
+                        "reason_code": "prior_guided_utility_selected",
+                    }
+                ],
+                "decision_profiles": [
+                    {
+                        "profile": "short",
+                        "selected_model_id": "gpt-4o-mini",
+                        "candidate_scores": {
+                            "gpt-4o-mini": {
+                                "quality_lower_bound": 0.9,
+                                "expected_total_cost_usd": 0.0002,
+                                "expected_latency_ms": 500,
+                                "prior_source": "model_catalog_family_prior",
+                            }
+                        },
+                        "excluded_models": {},
+                        "constraint_signature": {
+                            "context_input_bucket": "short"
+                        },
                     }
                 ],
             },
@@ -3702,33 +3702,28 @@ def test_auto_model_routing_embeds_query_once_and_exposes_semantic_reason(monkey
         "_available_routing_model_ids",
         lambda _db: ["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"],
     )
-
-    def fake_query_vector(*, policy, inputs, db_session):
-        calls.append((policy, inputs, db_session))
-        return (1.0, 0.0, 0.0)
-
-    monkeypatch.setattr(node, "_resolve_semantic_query_vector", fake_query_vector)
+    assert not hasattr(node, "_resolve_semantic_query_vector")
 
     selected, fallback, metadata = node._resolve_model_routing_policy(
         {"message": "다운로드 위치를 알려 주세요."},
         object(),
     )
 
-    assert len(calls) == 1
     assert selected == "gpt-4o-mini"
     assert fallback == "gpt-4.1-mini"
-    assert metadata["matched_rule_id"] == "routine-low-cost"
-    assert metadata["matched_cohort_id"] == "routine_support"
-    assert metadata["semantic_route_label"] == "단순 사용·안내 문의"
-    assert metadata["semantic_match_status"] == "matched"
-    assert metadata["semantic_similarity"] == pytest.approx(1.0)
-    assert metadata["semantic_threshold"] == 0.6
-    assert metadata["route_catalog_version"] == "ticket-routing-v1"
-    assert "query_vector" not in metadata
+    assert metadata["matched_rule_id"] == "prior-guided-short"
+    assert metadata["strategy_id"] == "prior_guided_adaptive_v1"
+    assert metadata["decision_factors"]["selected_model_score"] == {
+        "quality_lower_bound": 0.9,
+        "expected_total_cost_usd": 0.0002,
+        "expected_latency_ms": 500,
+        "prior_source": "model_catalog_family_prior",
+    }
+    assert "matched_cohort_id" not in metadata
 
 
-def test_auto_model_routing_keeps_default_when_semantic_embedding_fails(monkeypatch):
-    """FR-011-A27: encoder 실패는 임의 Route 대신 검증된 default model로 닫힌다."""
+def test_prior_guided_policy_ignores_semantic_only_rules_from_stale_snapshot(monkeypatch):
+    """이전 semantic rule은 prior-guided 정책에서 선택 근거로 사용하지 않는다."""
     data = LLMNodeData(
         title="semantic routing fallback",
         model_id="gpt-4.1-mini",
@@ -3737,6 +3732,7 @@ def test_auto_model_routing_keeps_default_when_semantic_embedding_fails(monkeypa
         model_routing_policy={
             "policy_id": "policy-semantic-1",
             "active_policy": {
+                "strategy_id": "prior_guided_adaptive_v1",
                 "default_model_id": "gpt-4.1-mini",
                 "fallback_model_id": "gpt-4.1",
                 "semantic_router": {
@@ -3772,11 +3768,7 @@ def test_auto_model_routing_keeps_default_when_semantic_embedding_fails(monkeypa
         "_available_routing_model_ids",
         lambda _db: ["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"],
     )
-    monkeypatch.setattr(
-        node,
-        "_resolve_semantic_query_vector",
-        lambda **_kwargs: None,
-    )
+    assert not hasattr(node, "_resolve_semantic_query_vector")
 
     selected, fallback, metadata = node._resolve_model_routing_policy(
         {"message": "다운로드 위치를 알려 주세요."},
@@ -3786,8 +3778,8 @@ def test_auto_model_routing_keeps_default_when_semantic_embedding_fails(monkeypa
     assert selected == "gpt-4.1-mini"
     assert fallback == "gpt-4.1"
     assert metadata["matched_rule_id"] is None
-    assert metadata["reason_code"] == "semantic_unavailable_default"
-    assert metadata["semantic_match_status"] == "unavailable"
+    assert metadata["reason_code"] == "policy_default"
+    assert metadata["strategy_id"] == "prior_guided_adaptive_v1"
 
 
 def test_auto_model_routing_prefers_persisted_policy_over_legacy_node_json(monkeypatch):

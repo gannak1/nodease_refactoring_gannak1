@@ -6,7 +6,7 @@ import hashlib
 import json
 from typing import Any
 
-from apps.shared.services.model_routing_cohort_drafts import (
+from apps.shared.services.model_routing_model_filter import (
     normalize_model_routing_model_id,
 )
 
