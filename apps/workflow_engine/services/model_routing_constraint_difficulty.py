@@ -8,8 +8,9 @@ deployment policy runtime.
 from __future__ import annotations
 
 import json
+import hashlib
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
@@ -17,6 +18,7 @@ import tiktoken
 
 
 STRATEGY_ID = "constraint_difficulty_v1"
+PRIOR_GUIDED_STRATEGY_ID = "prior_guided_adaptive_v1"
 SEMANTIC_STRATEGY_ID = "semantic_cohort_v1"
 _TIER_RANK = {"low": 0, "balanced": 1, "high": 2}
 _MAX_RAG_CHUNKS_PER_KB = 8
@@ -134,6 +136,86 @@ class ConstraintValidationEvidence:
 
 
 @dataclass(frozen=True)
+class ConstraintModelPrior:
+    """Cold-start model profile available before node-local evidence exists."""
+
+    model_id: str
+    quality_mean: float
+    quality_uncertainty: float
+    expected_latency_ms: int
+    fallback_rate: float = 0.02
+    prior_strength: float = 4.0
+    source: str = "model_catalog"
+
+    def __post_init__(self) -> None:
+        if not self.model_id.strip():
+            raise ValueError("model_id is required")
+        for name, value in (
+            ("quality_mean", self.quality_mean),
+            ("quality_uncertainty", self.quality_uncertainty),
+            ("fallback_rate", self.fallback_rate),
+        ):
+            if not math.isfinite(value) or not 0 <= value <= 1:
+                raise ValueError(f"{name} must be between 0 and 1")
+        if self.expected_latency_ms <= 0:
+            raise ValueError("expected_latency_ms must be positive")
+        if not math.isfinite(self.prior_strength) or self.prior_strength <= 0:
+            raise ValueError("prior_strength must be positive")
+
+
+@dataclass(frozen=True)
+class ConstraintExplorationContext:
+    """Per-request guard for deterministic, budget-bounded exploration."""
+
+    enabled: bool = False
+    request_key: str = ""
+    sample_rate: float = 0.0
+    remaining_budget_usd: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.sample_rate) or not 0 <= self.sample_rate <= 1:
+            raise ValueError("sample_rate must be between 0 and 1")
+        if (
+            not math.isfinite(self.remaining_budget_usd)
+            or self.remaining_budget_usd < 0
+        ):
+            raise ValueError("remaining_budget_usd must be non-negative")
+
+
+@dataclass(frozen=True)
+class PriorGuidedCandidateScore:
+    model_id: str
+    posterior_quality_mean: float
+    quality_lower_bound: float
+    quality_uncertainty: float
+    expected_direct_cost_usd: float
+    expected_total_cost_usd: float
+    expected_latency_ms: int
+    expected_fallback_rate: float
+    utility_score: float
+    effective_evidence_samples: float
+    prior_source: str
+
+    def as_metadata(self) -> dict[str, Any]:
+        return {
+            "posterior_quality_mean": round(self.posterior_quality_mean, 6),
+            "quality_lower_bound": round(self.quality_lower_bound, 6),
+            "quality_uncertainty": round(self.quality_uncertainty, 6),
+            "expected_direct_cost_usd": round(
+                self.expected_direct_cost_usd, 9
+            ),
+            "expected_total_cost_usd": round(self.expected_total_cost_usd, 9),
+            "expected_latency_ms": self.expected_latency_ms,
+            "expected_fallback_rate": round(self.expected_fallback_rate, 6),
+            "utility_score": round(self.utility_score, 6),
+            "effective_evidence_samples": round(
+                self.effective_evidence_samples, 3
+            ),
+            "prior_source": self.prior_source,
+        }
+
+
+@dataclass(frozen=True)
 class ConstraintCandidateFilterResult:
     eligible: tuple[ConstraintModelCandidate, ...]
     excluded_by_model: dict[str, tuple[str, ...]]
@@ -147,6 +229,9 @@ class ConstraintDifficultyDecision:
     excluded_models: dict[str, tuple[str, ...]]
     reason_code: str
     validation_candidate_ids: tuple[str, ...] = ()
+    candidate_scores: dict[str, PriorGuidedCandidateScore] = field(
+        default_factory=dict
+    )
     strategy_id: str = STRATEGY_ID
     judge_called: bool = False
 
@@ -161,6 +246,10 @@ class ConstraintDifficultyDecision:
                 for model_id, reasons in self.excluded_models.items()
             },
             "reason_code": self.reason_code,
+            "candidate_scores": {
+                model_id: score.as_metadata()
+                for model_id, score in self.candidate_scores.items()
+            },
             "judge_called": self.judge_called,
         }
 
@@ -642,6 +731,407 @@ class ConstraintDifficultyRouter:
         return evidence.quality_score is None or evidence.quality_score >= 0.8
 
 
+class PriorGuidedAdaptiveRouter:
+    """Route from model priors, transferable evidence, and bounded exploration.
+
+    Local validation changes the posterior estimate; it is not an admission gate.
+    This strategy remains experimental and is not wired into deployment runtime.
+    """
+
+    QUALITY_FLOOR = {"low": 0.72, "balanced": 0.82, "high": 0.90}
+    LCB_BETA = {"low": 1.0, "balanced": 1.5, "high": 1.96}
+    COST_WEIGHT = 0.14
+    LATENCY_WEIGHT = 0.02
+
+    def route(
+        self,
+        *,
+        request: ConstraintDifficultyRequest,
+        candidates: Iterable[ConstraintModelCandidate],
+        evidence: Iterable[ConstraintValidationEvidence],
+        priors: Iterable[ConstraintModelPrior],
+        safe_default_model_id: str,
+        exploration: ConstraintExplorationContext | None = None,
+    ) -> ConstraintDifficultyDecision:
+        features = ConstraintDifficultyFeatureExtractor.extract(request)
+        filter_result = ConstraintDifficultyCandidateFilter.filter(
+            candidates=candidates,
+            request=request,
+            features=features,
+        )
+        eligible = list(filter_result.eligible)
+        if not eligible:
+            raise ConstraintRoutingUnavailableError(
+                "No model satisfies execution-subject and structural constraints."
+            )
+
+        default = self._safe_default(
+            eligible=eligible,
+            safe_default_model_id=safe_default_model_id,
+            features=features,
+        )
+        prior_by_model = {item.model_id: item for item in priors}
+        evidence_rows = tuple(evidence)
+        scores = {
+            candidate.model_id: self._score_candidate(
+                candidate=candidate,
+                prior=prior_by_model.get(candidate.model_id)
+                or self._catalog_prior(candidate),
+                evidence=evidence_rows,
+                features=features,
+                fallback=default,
+                fallback_prior=prior_by_model.get(default.model_id)
+                or self._catalog_prior(default),
+            )
+            for candidate in eligible
+            if math.isfinite(candidate.estimated_cost(features))
+        }
+        if not scores:
+            return ConstraintDifficultyDecision(
+                selected_model_id=default.model_id,
+                fallback_model_id=None,
+                matched_signature=features.signature,
+                excluded_models=filter_result.excluded_by_model,
+                reason_code="prior_guided_price_unavailable_safe_default",
+                strategy_id=PRIOR_GUIDED_STRATEGY_ID,
+            )
+
+        floor = self.QUALITY_FLOOR[
+            features.signature.required_capability_tier
+        ]
+        qualified = [
+            score for score in scores.values() if score.quality_lower_bound >= floor
+        ]
+        if qualified:
+            selected_score = max(
+                qualified,
+                key=lambda item: (item.utility_score, item.model_id),
+            )
+        elif default.model_id in scores:
+            selected_score = scores[default.model_id]
+        else:
+            return ConstraintDifficultyDecision(
+                selected_model_id=default.model_id,
+                fallback_model_id=None,
+                matched_signature=features.signature,
+                excluded_models=filter_result.excluded_by_model,
+                reason_code="prior_guided_quality_floor_safe_default",
+                candidate_scores=scores,
+                strategy_id=PRIOR_GUIDED_STRATEGY_ID,
+            )
+        reason_code = (
+            "prior_guided_utility_selected"
+            if qualified
+            else "prior_guided_quality_floor_safe_default"
+        )
+
+        exploration_score = self._exploration_candidate(
+            scores=scores,
+            selected=selected_score,
+            default=default,
+            features=features,
+            floor=floor,
+            context=exploration,
+        )
+        if exploration_score is not None:
+            selected_score = exploration_score
+            reason_code = "prior_guided_bounded_exploration"
+
+        selected = next(
+            item for item in eligible if item.model_id == selected_score.model_id
+        )
+        if selected.model_id != default.model_id:
+            fallback = default
+        else:
+            fallback_score = max(
+                (
+                    score
+                    for score in qualified
+                    if score.model_id != selected.model_id
+                ),
+                key=lambda score: (score.utility_score, score.model_id),
+                default=None,
+            )
+            fallback = (
+                next(
+                    item
+                    for item in eligible
+                    if item.model_id == fallback_score.model_id
+                )
+                if fallback_score is not None
+                else None
+            )
+        return ConstraintDifficultyDecision(
+            selected_model_id=selected.model_id,
+            fallback_model_id=(
+                fallback.model_id
+                if fallback is not None and fallback.model_id != selected.model_id
+                else None
+            ),
+            matched_signature=features.signature,
+            excluded_models=filter_result.excluded_by_model,
+            reason_code=reason_code,
+            validation_candidate_ids=tuple(
+                item.model_id
+                for item in sorted(
+                    scores.values(),
+                    key=lambda score: (
+                        score.expected_total_cost_usd,
+                        score.model_id,
+                    ),
+                )
+                if item.model_id != default.model_id
+            ),
+            candidate_scores=scores,
+            strategy_id=PRIOR_GUIDED_STRATEGY_ID,
+        )
+
+    @staticmethod
+    def _safe_default(
+        *,
+        eligible: Sequence[ConstraintModelCandidate],
+        safe_default_model_id: str,
+        features: ConstraintDifficultyFeatures,
+    ) -> ConstraintModelCandidate:
+        configured = next(
+            (item for item in eligible if item.model_id == safe_default_model_id),
+            None,
+        )
+        if configured is not None:
+            return configured
+        strongest = max(_TIER_RANK[item.capability_tier] for item in eligible)
+        return min(
+            (
+                item
+                for item in eligible
+                if _TIER_RANK[item.capability_tier] == strongest
+            ),
+            key=lambda item: (item.estimated_cost(features), item.model_id),
+        )
+
+    def _score_candidate(
+        self,
+        *,
+        candidate: ConstraintModelCandidate,
+        prior: ConstraintModelPrior,
+        evidence: Sequence[ConstraintValidationEvidence],
+        features: ConstraintDifficultyFeatures,
+        fallback: ConstraintModelCandidate,
+        fallback_prior: ConstraintModelPrior,
+    ) -> PriorGuidedCandidateScore:
+        required_rank = _TIER_RANK[
+            features.signature.required_capability_tier
+        ]
+        candidate_rank = _TIER_RANK[candidate.capability_tier]
+        tier_gap = max(required_rank - candidate_rank, 0)
+        adjusted_prior_mean = max(prior.quality_mean - tier_gap * 0.10, 0.0)
+        adjusted_uncertainty = min(
+            prior.quality_uncertainty + tier_gap * 0.05,
+            1.0,
+        )
+
+        weighted_quality = 0.0
+        weighted_fallback = 0.0
+        effective_samples = 0.0
+        for row in evidence:
+            if row.model_id != candidate.model_id:
+                continue
+            relevance = self._evidence_relevance(
+                observed=row.signature,
+                requested=features.signature,
+            )
+            if relevance <= 0:
+                continue
+            sample_weight = row.sample_count * relevance
+            weighted_quality += self._evidence_quality(
+                row,
+                requested=features.signature,
+            ) * sample_weight
+            weighted_fallback += row.fallback_rate * sample_weight
+            effective_samples += sample_weight
+
+        denominator = prior.prior_strength + effective_samples
+        posterior_mean = (
+            adjusted_prior_mean * prior.prior_strength + weighted_quality
+        ) / denominator
+        fallback_rate = (
+            prior.fallback_rate * prior.prior_strength + weighted_fallback
+        ) / denominator
+        uncertainty = max(
+            0.015,
+            adjusted_uncertainty
+            / math.sqrt(1 + effective_samples / prior.prior_strength),
+        )
+        beta = self.LCB_BETA[features.signature.required_capability_tier]
+        lower_bound = max(posterior_mean - beta * uncertainty, 0.0)
+        direct_cost = candidate.estimated_cost(features)
+        fallback_cost = (
+            0.0
+            if candidate.model_id == fallback.model_id
+            else fallback.estimated_cost(features)
+        )
+        total_cost = direct_cost + fallback_rate * fallback_cost
+        default_cost = max(fallback.estimated_cost(features), 1e-12)
+        default_latency = max(fallback_prior.expected_latency_ms, 1)
+        utility = (
+            lower_bound
+            - self.COST_WEIGHT * (total_cost / default_cost)
+            - self.LATENCY_WEIGHT
+            * (prior.expected_latency_ms / default_latency)
+        )
+        return PriorGuidedCandidateScore(
+            model_id=candidate.model_id,
+            posterior_quality_mean=posterior_mean,
+            quality_lower_bound=lower_bound,
+            quality_uncertainty=uncertainty,
+            expected_direct_cost_usd=direct_cost,
+            expected_total_cost_usd=total_cost,
+            expected_latency_ms=prior.expected_latency_ms,
+            expected_fallback_rate=fallback_rate,
+            utility_score=utility,
+            effective_evidence_samples=effective_samples,
+            prior_source=prior.source,
+        )
+
+    @classmethod
+    def _evidence_relevance(
+        cls,
+        *,
+        observed: ConstraintSignature,
+        requested: ConstraintSignature,
+    ) -> float:
+        if observed == requested:
+            return 1.0
+        if not cls._output_contract_covers(
+            observed.output_contract,
+            requested.output_contract,
+        ):
+            return 0.0
+        if observed.file_input is False and requested.file_input is True:
+            return 0.0
+        if cls._signature_dominates(observed=observed, requested=requested):
+            return 0.65
+        if (
+            observed.downstream_strictness == requested.downstream_strictness
+            and observed.required_capability_tier
+            == requested.required_capability_tier
+        ):
+            return 0.35
+        return 0.0
+
+    @staticmethod
+    def _signature_dominates(
+        *,
+        observed: ConstraintSignature,
+        requested: ConstraintSignature,
+    ) -> bool:
+        bucket_rank = {"none": 0, "small": 1, "medium": 2, "large": 3}
+        schema_rank = {"none": 0, "simple": 1, "complex": 2}
+        downstream_rank = {"none": 0, "lenient": 1, "strict": 2}
+        return (
+            bucket_rank[observed.context_input_bucket]
+            >= bucket_rank[requested.context_input_bucket]
+            and bucket_rank[observed.rag_context_bucket]
+            >= bucket_rank[requested.rag_context_bucket]
+            and schema_rank[observed.schema_complexity]
+            >= schema_rank[requested.schema_complexity]
+            and downstream_rank[observed.downstream_strictness]
+            >= downstream_rank[requested.downstream_strictness]
+            and _TIER_RANK[observed.required_capability_tier]
+            >= _TIER_RANK[requested.required_capability_tier]
+        )
+
+    @staticmethod
+    def _output_contract_covers(observed: str, requested: str) -> bool:
+        if observed == requested:
+            return True
+        json_rank = {"json": 1, "strict_json_schema": 2}
+        return (
+            observed in json_rank
+            and requested in json_rank
+            and json_rank[observed] >= json_rank[requested]
+        )
+
+    @staticmethod
+    def _evidence_quality(
+        evidence: ConstraintValidationEvidence,
+        *,
+        requested: ConstraintSignature,
+    ) -> float:
+        components = [evidence.success_rate, 1.0 - evidence.fallback_rate]
+        if requested.output_contract != "text":
+            components.append(evidence.schema_pass_rate or 0.0)
+        if requested.downstream_strictness == "strict":
+            components.append(evidence.downstream_success_rate or 0.0)
+        if requested.output_contract == "text" or evidence.quality_score is not None:
+            components.append(evidence.quality_score or 0.0)
+        return min(components)
+
+    def _exploration_candidate(
+        self,
+        *,
+        scores: Mapping[str, PriorGuidedCandidateScore],
+        selected: PriorGuidedCandidateScore,
+        default: ConstraintModelCandidate,
+        features: ConstraintDifficultyFeatures,
+        floor: float,
+        context: ConstraintExplorationContext | None,
+    ) -> PriorGuidedCandidateScore | None:
+        if (
+            context is None
+            or not context.enabled
+            or features.signature.required_capability_tier != "low"
+            or features.signature.downstream_strictness == "strict"
+            or features.signature.output_contract == "strict_json_schema"
+            or not self._sampled(context)
+        ):
+            return None
+        promising = [
+            score
+            for score in scores.values()
+            if score.model_id not in {selected.model_id, default.model_id}
+            and score.expected_total_cost_usd
+            < selected.expected_total_cost_usd
+            and score.expected_total_cost_usd <= context.remaining_budget_usd
+            and score.posterior_quality_mean >= floor
+            and score.quality_uncertainty >= 0.05
+        ]
+        if not promising:
+            return None
+        return max(
+            promising,
+            key=lambda score: (
+                score.posterior_quality_mean + score.quality_uncertainty,
+                -score.expected_total_cost_usd,
+                score.model_id,
+            ),
+        )
+
+    @staticmethod
+    def _sampled(context: ConstraintExplorationContext) -> bool:
+        if context.sample_rate <= 0 or not context.request_key:
+            return False
+        digest = hashlib.sha256(context.request_key.encode("utf-8")).digest()
+        value = int.from_bytes(digest[:8], "big") / float(2**64 - 1)
+        return value < context.sample_rate
+
+    @staticmethod
+    def _catalog_prior(candidate: ConstraintModelCandidate) -> ConstraintModelPrior:
+        defaults = {
+            "low": (0.78, 0.12, 500),
+            "balanced": (0.88, 0.08, 900),
+            "high": (0.95, 0.05, 1_500),
+        }
+        quality, uncertainty, latency = defaults[candidate.capability_tier]
+        return ConstraintModelPrior(
+            model_id=candidate.model_id,
+            quality_mean=quality,
+            quality_uncertainty=uncertainty,
+            expected_latency_ms=latency,
+            source="catalog_tier_default",
+        )
+
+
 class ConstraintRoutingStrategyDispatcher:
     """Thin dispatch used by experiments; active runtime wiring is unchanged."""
 
@@ -650,15 +1140,21 @@ class ConstraintRoutingStrategyDispatcher:
         *,
         semantic_strategy: Callable[..., Any],
         constraint_strategy: ConstraintDifficultyRouter,
+        prior_guided_strategy: PriorGuidedAdaptiveRouter | None = None,
     ) -> None:
         self._semantic_strategy = semantic_strategy
         self._constraint_strategy = constraint_strategy
+        self._prior_guided_strategy = prior_guided_strategy
 
     def dispatch(self, strategy_id: str, **kwargs: Any) -> Any:
         if strategy_id == SEMANTIC_STRATEGY_ID:
             return self._semantic_strategy(**kwargs)
         if strategy_id == STRATEGY_ID:
             return self._constraint_strategy.route(**kwargs)
+        if strategy_id == PRIOR_GUIDED_STRATEGY_ID:
+            if self._prior_guided_strategy is None:
+                raise ValueError("Prior-guided strategy is not configured")
+            return self._prior_guided_strategy.route(**kwargs)
         raise ValueError(f"Unknown model routing strategy: {strategy_id}")
 
 

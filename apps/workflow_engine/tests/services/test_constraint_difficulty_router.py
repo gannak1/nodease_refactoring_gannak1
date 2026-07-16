@@ -8,6 +8,9 @@ from apps.workflow_engine.services.model_routing_constraint_difficulty import (
     ConstraintDifficultyRequest,
     ConstraintDifficultyRouter,
     ConstraintModelCandidate,
+    ConstraintModelPrior,
+    ConstraintExplorationContext,
+    PriorGuidedAdaptiveRouter,
     ConstraintRoutingUnavailableError,
     ConstraintRoutingStrategyDispatcher,
     ConstraintValidationEvidence,
@@ -93,6 +96,245 @@ def _passing_evidence(model_id: str, signature) -> ConstraintValidationEvidence:
         fallback_rate=0.0,
         quality_score=0.95,
     )
+
+
+def _prior(
+    model_id: str,
+    *,
+    quality: float,
+    uncertainty: float,
+    latency_ms: int,
+    fallback_rate: float = 0.02,
+) -> ConstraintModelPrior:
+    return ConstraintModelPrior(
+        model_id=model_id,
+        quality_mean=quality,
+        quality_uncertainty=uncertainty,
+        expected_latency_ms=latency_ms,
+        fallback_rate=fallback_rate,
+        source="global_model_profile",
+    )
+
+
+def test_prior_guided_router_breaks_the_exact_validation_cycle():
+    """FR-011: exact local evidence is feedback, not model admission."""
+    decision = PriorGuidedAdaptiveRouter().route(
+        request=_request(),
+        candidates=[LOW, BALANCED, HIGH],
+        evidence=[],
+        priors=[
+            _prior("low-model", quality=0.72, uncertainty=0.1, latency_ms=350),
+            _prior(
+                "balanced-model",
+                quality=0.91,
+                uncertainty=0.03,
+                latency_ms=700,
+            ),
+            _prior("high-model", quality=0.96, uncertainty=0.02, latency_ms=1_400),
+        ],
+        safe_default_model_id="high-model",
+    )
+
+    assert decision.selected_model_id == "balanced-model"
+    assert decision.fallback_model_id == "high-model"
+    assert decision.reason_code == "prior_guided_utility_selected"
+    assert decision.candidate_scores["balanced-model"].effective_evidence_samples == 0
+    trace = decision.as_trace_metadata()
+    assert trace["strategy_id"] == "prior_guided_adaptive_v1"
+    assert trace["candidate_scores"]["balanced-model"]["prior_source"] == (
+        "global_model_profile"
+    )
+
+
+def test_prior_guided_router_reuses_harder_compatible_evidence():
+    """FR-011: harder compatible evidence can support an easier request."""
+    easy_request = _request()
+    hard_request = _request(
+        node_data={
+            **_request().node_data,
+            "output_format": {
+                "type": "json",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "answer": {"type": "string"},
+                        "items": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                    },
+                    "required": ["answer", "items"],
+                },
+            },
+        },
+        downstream_requirements=(
+            {"field": "answer", "type": "string", "required": True},
+        ),
+    )
+    hard_signature = ConstraintDifficultyFeatureExtractor.extract(
+        hard_request
+    ).signature
+
+    decision = PriorGuidedAdaptiveRouter().route(
+        request=easy_request,
+        candidates=[BALANCED, HIGH],
+        evidence=[_passing_evidence("balanced-model", hard_signature)],
+        priors=[
+            _prior(
+                "balanced-model",
+                quality=0.82,
+                uncertainty=0.1,
+                latency_ms=700,
+            ),
+            _prior("high-model", quality=0.96, uncertainty=0.02, latency_ms=1_400),
+        ],
+        safe_default_model_id="high-model",
+    )
+
+    score = decision.candidate_scores["balanced-model"]
+    assert score.effective_evidence_samples > 0
+    assert score.quality_uncertainty < 0.1
+    assert decision.selected_model_id == "balanced-model"
+
+
+def test_prior_guided_router_does_not_explore_uncertain_model_for_high_risk_request():
+    """FR-011: bounded exploration never weakens a high-risk request."""
+    request = _request(
+        node_data={
+            **_request().node_data,
+            "output_format": {
+                "type": "json",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "decision": {"type": "string"},
+                        "details": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                    },
+                    "required": ["decision", "details"],
+                },
+            },
+            "knowledgeBases": [{"id": "kb-1", "name": "Policy"}],
+            "retrievedContextMaxChars": 40_000,
+        },
+        downstream_requirements=(
+            {"field": "decision", "type": "string", "required": True},
+        ),
+        actual_rag_context_tokens=12_000,
+    )
+
+    decision = PriorGuidedAdaptiveRouter().route(
+        request=request,
+        candidates=[BALANCED, HIGH],
+        evidence=[],
+        priors=[
+            _prior(
+                "balanced-model",
+                quality=0.91,
+                uncertainty=0.12,
+                latency_ms=700,
+            ),
+            _prior("high-model", quality=0.96, uncertainty=0.02, latency_ms=1_400),
+        ],
+        safe_default_model_id="high-model",
+        exploration=ConstraintExplorationContext(
+            enabled=True,
+            request_key="always-explore-for-test",
+            sample_rate=1.0,
+            remaining_budget_usd=1.0,
+        ),
+    )
+
+    assert decision.selected_model_id == "high-model"
+    assert decision.fallback_model_id is None
+    assert decision.reason_code != "prior_guided_bounded_exploration"
+
+
+def test_prior_guided_router_explores_only_a_promising_lower_cost_model():
+    """FR-011: low-risk exploration is bounded and keeps the safe fallback."""
+    request = _request(
+        node_data={
+            **_request().node_data,
+            "output_format": {"type": "text"},
+        }
+    )
+    decision = PriorGuidedAdaptiveRouter().route(
+        request=request,
+        candidates=[LOW, BALANCED, HIGH],
+        evidence=[],
+        priors=[
+            _prior("low-model", quality=0.77, uncertainty=0.08, latency_ms=350),
+            _prior(
+                "balanced-model",
+                quality=0.89,
+                uncertainty=0.03,
+                latency_ms=700,
+            ),
+            _prior("high-model", quality=0.94, uncertainty=0.02, latency_ms=1_400),
+        ],
+        safe_default_model_id="high-model",
+        exploration=ConstraintExplorationContext(
+            enabled=True,
+            request_key="always-explore-for-test",
+            sample_rate=1.0,
+            remaining_budget_usd=1.0,
+        ),
+    )
+
+    assert decision.reason_code == "prior_guided_bounded_exploration"
+    assert decision.selected_model_id == "low-model"
+    assert decision.fallback_model_id == "high-model"
+
+
+def test_prior_guided_router_corrects_an_optimistic_prior_with_local_failures():
+    """FR-011: runtime evidence updates selection instead of unlocking a model."""
+    request = _request()
+    signature = ConstraintDifficultyFeatureExtractor.extract(request).signature
+    optimistic_priors = [
+        _prior(
+            "balanced-model",
+            quality=0.93,
+            uncertainty=0.025,
+            latency_ms=700,
+        ),
+        _prior("high-model", quality=0.96, uncertainty=0.02, latency_ms=1_400),
+    ]
+    router = PriorGuidedAdaptiveRouter()
+
+    cold_start = router.route(
+        request=request,
+        candidates=[BALANCED, HIGH],
+        evidence=[],
+        priors=optimistic_priors,
+        safe_default_model_id="high-model",
+    )
+    corrected = router.route(
+        request=request,
+        candidates=[BALANCED, HIGH],
+        evidence=[
+            ConstraintValidationEvidence(
+                model_id="balanced-model",
+                signature=signature,
+                sample_count=20,
+                success_rate=0.65,
+                schema_pass_rate=0.65,
+                downstream_success_rate=0.65,
+                fallback_rate=0.35,
+                quality_score=0.70,
+            )
+        ],
+        priors=optimistic_priors,
+        safe_default_model_id="high-model",
+    )
+
+    assert cold_start.selected_model_id == "balanced-model"
+    assert corrected.selected_model_id == "high-model"
+    assert corrected.candidate_scores[
+        "balanced-model"
+    ].effective_evidence_samples == 20
 
 
 def test_feature_extractor_uses_constraints_not_semantic_fields():
