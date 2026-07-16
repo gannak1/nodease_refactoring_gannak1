@@ -1,12 +1,13 @@
 import json
 from typing import Any, Dict
 
-import httpx
 from jinja2 import Environment
 
 from apps.workflow_engine.adapters.providers.generic_http import (
-    GenericHttpEffectAdapter,
     GenericHttpRequest,
+)
+from apps.workflow_engine.composition.generic_http import (
+    build_generic_http_effect_adapter,
 )
 from apps.workflow_engine.workflow.nodes.base.node import Node
 from apps.workflow_engine.workflow.nodes.http.entities import HttpRequestNodeData
@@ -102,10 +103,7 @@ class HttpRequestNode(Node[HttpRequestNodeData]):  # Node 상속
         method = data.method.value
         timeout = data.timeout / 1000.0  # ms -> seconds
         slack_mode = self.runtime_node_type == "slackPostNode"
-        adapter = GenericHttpEffectAdapter(
-            slack_mode=slack_mode,
-            client_factory=httpx.Client,
-        )
+        adapter = build_generic_http_effect_adapter(slack_mode=slack_mode)
         request = GenericHttpRequest(
             method=method,
             url=url,

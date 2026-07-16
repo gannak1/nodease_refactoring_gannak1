@@ -3,7 +3,7 @@ import json
 import re
 import socket
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -63,6 +63,41 @@ _TRUSTED_LOCAL_NETWORKS = (
     ipaddress.ip_network("172.16.0.0/12"),
     ipaddress.ip_network("192.168.0.0/16"),
     ipaddress.ip_network("fc00::/7"),
+)
+_PUBLIC_EGRESS_DENIED_NETWORKS = tuple(
+    ipaddress.ip_network(cidr)
+    for cidr in (
+        "0.0.0.0/8",
+        "10.0.0.0/8",
+        "100.64.0.0/10",
+        "127.0.0.0/8",
+        "169.254.0.0/16",
+        "172.16.0.0/12",
+        "192.0.0.0/24",
+        "192.0.2.0/24",
+        "192.88.99.0/24",
+        "192.168.0.0/16",
+        "198.18.0.0/15",
+        "198.51.100.0/24",
+        "203.0.113.0/24",
+        "224.0.0.0/4",
+        "240.0.0.0/4",
+        "::/96",
+        "::ffff:0:0/96",
+        "64:ff9b::/96",
+        "64:ff9b:1::/48",
+        "100::/64",
+        "2001::/23",
+        "2001:db8::/32",
+        "2002::/16",
+        "3ffe::/16",
+        "3fff::/20",
+        "5f00::/16",
+        "fc00::/7",
+        "fe80::/10",
+        "fec0::/10",
+        "ff00::/8",
+    )
 )
 
 
@@ -127,16 +162,21 @@ class OutboundEgressGuard:
         self.policy = policy or EgressGuardPolicy()
 
     def validate_url(self, url: str) -> str:
-        parts = urlsplit(str(url or "").strip())
-        scheme = parts.scheme.lower()
+        try:
+            parts = urlsplit(str(url or "").strip())
+            scheme = parts.scheme.lower()
+            hostname = parts.hostname
+            has_credentials = bool(parts.username or parts.password)
+        except ValueError as exc:
+            raise EgressGuardError("egress.invalid_url") from exc
         if not scheme or scheme not in self.policy.allowed_schemes:
             raise EgressGuardError("egress.unsupported_scheme")
-        if not parts.hostname:
+        if not hostname:
             raise EgressGuardError("egress.invalid_url")
-        if self.policy.deny_url_credentials and (parts.username or parts.password):
+        if self.policy.deny_url_credentials and has_credentials:
             raise EgressGuardError("egress.url_credentials_not_allowed")
 
-        host = self._canonical_host(parts.hostname)
+        host = self._canonical_host(hostname)
         try:
             port = parts.port
         except ValueError as exc:
@@ -146,9 +186,9 @@ class OutboundEgressGuard:
         self._validate_allowed_port(scheme, port)
 
         self._validate_resolved_addresses(host)
-        netloc = host
+        netloc = f"[{host}]" if ":" in host else host
         if port is not None:
-            netloc = f"{host}:{port}"
+            netloc = f"{netloc}:{port}"
         return urlunsplit((scheme, netloc, parts.path or "/", parts.query, ""))
 
     def validate_redirect(self, from_url: str, to_url: str) -> str:
@@ -224,9 +264,23 @@ class OutboundEgressGuard:
         *,
         strip_sensitive: bool = False,
     ) -> dict[str, str]:
-        safe_headers: dict[str, str] = {}
+        return dict(
+            self.validate_request_header_items(
+                (headers or {}).items(),
+                strip_sensitive=strip_sensitive,
+            )
+        )
+
+    def validate_request_header_items(
+        self,
+        headers: Iterable[tuple[str, Any]],
+        *,
+        reject_hop_by_hop: bool = False,
+        strip_sensitive: bool = False,
+    ) -> tuple[tuple[str, str], ...]:
+        safe_headers: list[tuple[str, str]] = []
         total_bytes = 0
-        for key, value in (headers or {}).items():
+        for key, value in headers:
             if len(safe_headers) >= self.policy.max_header_count:
                 raise EgressGuardError("egress.headers_too_large")
             name = str(key).strip()
@@ -248,11 +302,13 @@ class OutboundEgressGuard:
                 raise EgressGuardError("egress.headers_too_large")
             lower_name = name.lower()
             if lower_name in HOP_BY_HOP_HEADER_NAMES:
+                if reject_hop_by_hop:
+                    raise EgressGuardError("egress.invalid_header")
                 continue
             if strip_sensitive and lower_name in SENSITIVE_HEADER_NAMES:
                 continue
-            safe_headers[name] = value_text
-        return safe_headers
+            safe_headers.append((name, value_text))
+        return tuple(safe_headers)
 
     def sanitize_response_headers(self, headers: Mapping[str, Any]) -> dict[str, str]:
         safe_headers: dict[str, str] = {}
@@ -347,12 +403,10 @@ class OutboundEgressGuard:
             or ip.is_unspecified
         ):
             return True
-        denied_ranges = [
-            ipaddress.ip_network("100.64.0.0/10"),
-            ipaddress.ip_network("169.254.169.254/32"),
-            ipaddress.ip_network("fd00::/8"),
-        ]
-        return any(ip in network for network in denied_ranges)
+        return any(
+            ip.version == network.version and ip in network
+            for network in _PUBLIC_EGRESS_DENIED_NETWORKS
+        )
 
     @staticmethod
     def _is_trusted_local_ip(

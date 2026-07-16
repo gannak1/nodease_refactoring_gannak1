@@ -7,10 +7,16 @@ import time
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from typing import Any, Mapping
-from urllib.parse import urlparse
 
 import httpx
 
+from apps.workflow_engine.application.outbound_http import (
+    OutboundHttpError,
+    OutboundHttpFailurePhase,
+    OutboundHttpPort,
+    OutboundHttpRequest,
+    OutboundHttpResponse,
+)
 from apps.workflow_engine.domain.external_effect import (
     EffectInvocationFailure,
     EffectOutcome,
@@ -72,7 +78,7 @@ class GenericHttpEffectAdapter:
         self,
         *,
         slack_mode: bool = False,
-        client_factory=None,
+        outbound_http: OutboundHttpPort | None = None,
         contracts: ProviderContractRegistry | None = None,
         active_profile: ProviderContractProfile | None = None,
         historical_profiles: Iterable[ProviderContractProfile] = (),
@@ -125,7 +131,7 @@ class GenericHttpEffectAdapter:
                 raise ValueError("HTTP contract version has conflicting definitions")
             self._profiles_by_version[profile.contract_version] = profile
         self.slack_mode = slack_mode
-        self.client_factory = client_factory or httpx.Client
+        self.outbound_http = outbound_http
         self.trace_metadata: dict[str, Any] = {}
 
     @property
@@ -372,54 +378,43 @@ class GenericHttpEffectAdapter:
                 retry_before_effect=False,
             )
         started = time.perf_counter()
-        try:
-            with self.client_factory(timeout=request.timeout_seconds) as client:
-                kwargs: dict[str, Any] = {
-                    "method": request.method,
-                    "url": request.url,
-                    "headers": list(request.headers),
-                }
-                if request.body_mode == "json":
-                    kwargs["json"] = copy.deepcopy(request.json_body)
-                elif request.body_mode in {"no_body", "json_null_no_body"}:
-                    kwargs["content"] = None
-                else:
-                    raise EffectInvocationFailure(
-                        outcome=EffectOutcome.FAILED_BEFORE_EFFECT,
-                        error_code="invalid_prepared_request",
-                        retry_before_effect=False,
-                    )
-                response = client.request(**kwargs)
-        except (httpx.InvalidURL, httpx.UnsupportedProtocol, httpx.LocalProtocolError):
+        if self.outbound_http is None:
             self._set_trace(request, None, started)
             raise EffectInvocationFailure(
                 outcome=EffectOutcome.FAILED_BEFORE_EFFECT,
                 error_code="invalid_prepared_request",
                 retry_before_effect=False,
-            ) from None
-        except (httpx.ConnectTimeout, httpx.ConnectError, httpx.PoolTimeout):
+            )
+        try:
+            response = self.outbound_http.send(
+                OutboundHttpRequest(
+                    method=request.method,
+                    url=request.url,
+                    headers=request.headers,
+                    body_mode=request.body_mode,
+                    json_body=copy.deepcopy(request.json_body),
+                    timeout_seconds=request.timeout_seconds,
+                )
+            )
+        except OutboundHttpError as exc:
             self._set_trace(request, None, started)
-            raise EffectInvocationFailure(
-                outcome=EffectOutcome.FAILED_BEFORE_EFFECT,
-                error_code="connection_failed",
-                retry_before_effect=True,
-            ) from None
-        except httpx.RequestError:
-            self._set_trace(request, None, started)
+            if exc.phase is OutboundHttpFailurePhase.BEFORE_SEND:
+                raise EffectInvocationFailure(
+                    outcome=EffectOutcome.FAILED_BEFORE_EFFECT,
+                    error_code=exc.code,
+                    retry_before_effect=exc.retryable_before_send,
+                ) from None
             raise EffectInvocationFailure(
                 outcome=EffectOutcome.EFFECT_OUTCOME_UNKNOWN,
-                error_code="response_lost",
+                error_code=exc.code,
             ) from None
 
         self._set_trace(request, response, started)
-        try:
-            response_body = response.json()
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            response_body = response.text
+        response_body = response.json_or_text()
         output = {
             "status": response.status_code,
             "data": response_body,
-            "headers": dict(response.headers),
+            "headers": dict(httpx.Headers(response.headers)),
         }
         return ProviderInvocationResult(
             output, provider_status_code=response.status_code
@@ -444,7 +439,7 @@ class GenericHttpEffectAdapter:
     def _set_trace(
         self,
         request: PreparedGenericHttpRequest,
-        response: httpx.Response | None,
+        response: OutboundHttpResponse | None,
         started: float,
     ) -> None:
         latency_ms = int((time.perf_counter() - started) * 1000)
@@ -458,7 +453,7 @@ class GenericHttpEffectAdapter:
                     allow_nan=False,
                 ).encode("utf-8")
             )
-        response_size = len(getattr(response, "content", b"") or b"")
+        response_size = len(response.content) if response is not None else 0
         status_code = getattr(response, "status_code", None)
         if request.slack_mode:
             self.trace_metadata = {
@@ -473,19 +468,24 @@ class GenericHttpEffectAdapter:
                 }
             }
             return
-        parsed = urlparse(request.url)
-        hostname = parsed.hostname or ""
-        if parsed.port is not None:
-            hostname = (
-                f"[{hostname}]:{parsed.port}"
-                if ":" in hostname
-                else f"{hostname}:{parsed.port}"
-            )
+        try:
+            parsed = httpx.URL(request.url)
+            hostname = parsed.host
+            if parsed.port is not None:
+                hostname = (
+                    f"[{hostname}]:{parsed.port}"
+                    if ":" in hostname
+                    else f"{hostname}:{parsed.port}"
+                )
+            path = parsed.path or "/"
+        except (httpx.InvalidURL, ValueError, TypeError):
+            hostname = ""
+            path = "/"
         self.trace_metadata = {
             "http": {
                 "method": request.method,
                 "host": hostname,
-                "path": parsed.path or "/",
+                "path": path,
                 "status_code": status_code,
                 "latency_ms": latency_ms,
                 "request_size": request_size,
