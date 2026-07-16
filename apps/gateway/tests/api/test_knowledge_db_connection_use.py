@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -12,6 +13,9 @@ from sqlalchemy.orm import Session
 
 from apps.gateway.api.v1.endpoints import knowledge as knowledge_endpoint
 from apps.gateway.api.v1.endpoints import rag as rag_endpoint
+from apps.gateway.services.knowledge_db_source_config import (
+    validate_knowledge_db_source_config,
+)
 from apps.shared.db.models.connection import Connection
 from apps.shared.db.models.user import User
 from apps.shared.schemas.rag import DocumentPreviewRequest
@@ -165,6 +169,68 @@ def test_rag_db_source_persists_only_opaque_reference(db_session: Session) -> No
     assert file_path is None
     assert filename == "Database source"
     assert meta_info == {"connection_id": str(connection_id)}
+
+
+def test_submitted_db_config_bypasses_malformed_legacy_json(
+    db_session: Session,
+) -> None:
+    owner_id = uuid.uuid4()
+    connection_id = uuid.uuid4()
+    _insert_user(db_session, owner_id)
+    _insert_connection(
+        db_session,
+        connection_id=connection_id,
+        owner_id=owner_id,
+    )
+
+    validated = validate_knowledge_db_source_config(
+        db_session,
+        execution_subject_user_id=owner_id,
+        stored_meta_info={"db_config": "{malformed legacy config"},
+        submitted_db_config={
+            "connection_id": str(connection_id),
+            "selections": [{"table_name": "safe_table", "columns": ["id"]}],
+        },
+    )
+
+    assert validated.connection_id == connection_id
+    assert validated.persisted_db_config == {
+        "selections": [{"table_name": "safe_table", "columns": ["id"]}]
+    }
+
+
+def test_legacy_json_db_config_is_decoded_without_submission(
+    db_session: Session,
+) -> None:
+    owner_id = uuid.uuid4()
+    connection_id = uuid.uuid4()
+    _insert_user(db_session, owner_id)
+    _insert_connection(
+        db_session,
+        connection_id=connection_id,
+        owner_id=owner_id,
+    )
+
+    validated = validate_knowledge_db_source_config(
+        db_session,
+        execution_subject_user_id=owner_id,
+        stored_meta_info={
+            "db_config": json.dumps(
+                {
+                    "connection_id": str(connection_id),
+                    "selections": [
+                        {"table_name": "legacy_table", "columns": ["id"]}
+                    ],
+                }
+            )
+        },
+        submitted_db_config=None,
+    )
+
+    assert validated.connection_id == connection_id
+    assert validated.persisted_db_config == {
+        "selections": [{"table_name": "legacy_table", "columns": ["id"]}]
+    }
 
 
 @pytest.mark.asyncio

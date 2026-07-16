@@ -166,6 +166,7 @@ class SyncService:
                                 "error": reason_code,
                             }
                         )
+                        self.db.rollback()
                         continue
 
                     # 2. Vector Store Save (Embedding -> DB Save)
@@ -195,6 +196,7 @@ class SyncService:
                             "error": "source.sync_failed",
                         }
                     )
+                    self.db.rollback()
                     # 워크플로우 실행 자체를 막지 않고 이전 데이터로 계속 실행
                     continue
 

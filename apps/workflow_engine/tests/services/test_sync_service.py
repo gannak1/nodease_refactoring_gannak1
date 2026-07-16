@@ -270,6 +270,7 @@ def test_sync_knowledge_bases_does_not_replace_chunks_on_connection_denial(
         }
     ]
     sync_service.vector_store_service.save_chunks.assert_not_called()
+    mock_db_session.rollback.assert_called_once_with()
 
 
 def test_sync_knowledge_bases_redacts_unexpected_failure_detail(
@@ -310,6 +311,7 @@ def test_sync_knowledge_bases_redacts_unexpected_failure_detail(
     assert result["failed"][0]["error"] == "source.sync_failed"
     assert sentinel not in caplog.text
     sync_service.vector_store_service.save_chunks.assert_not_called()
+    mock_db_session.rollback.assert_called_once_with()
 
 
 def test_sync_knowledge_bases_requires_kb_use_permission(sync_service, mock_db_session):

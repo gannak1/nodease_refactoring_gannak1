@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Mapping
@@ -18,6 +19,7 @@ _JOIN_EDGE_KEYS = frozenset(
     {"from_column", "from_table", "to_column", "to_table"}
 )
 _CHUNK_SETTING_KEYS = frozenset({"chunk_size", "overlap"})
+_MAX_CONFIG_TEXT_LENGTH = 65_536
 
 
 class KnowledgeDbSourceConfigInvalid(ValueError):
@@ -45,18 +47,20 @@ def validate_knowledge_db_source_config(
     submitted_db_config: Any,
 ) -> ValidatedKnowledgeDbSourceConfig:
     stored_meta = _mapping_or_empty(stored_meta_info)
-    stored_nested = _mapping_or_empty(stored_meta.get("db_config"))
     if submitted_db_config is None:
+        stored_nested = _stored_mapping_or_empty(stored_meta.get("db_config"))
         selected_config = stored_nested
     elif isinstance(submitted_db_config, Mapping):
         selected_config = submitted_db_config
     else:
         raise KnowledgeDbSourceConfigInvalid()
 
-    connection_id = selected_config.get(
-        "connection_id",
-        stored_nested.get("connection_id", stored_meta.get("connection_id")),
-    )
+    connection_id = selected_config.get("connection_id")
+    if connection_id is None:
+        connection_id = stored_meta.get("connection_id")
+    if connection_id is None and submitted_db_config is not None:
+        stored_nested = _stored_mapping_or_empty(stored_meta.get("db_config"))
+        connection_id = stored_nested.get("connection_id")
     connection = ConnectionUseResolver(db).resolve(
         connection_id,
         execution_subject_user_id=execution_subject_user_id,
@@ -99,6 +103,17 @@ def _mapping_or_empty(value: Any) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise KnowledgeDbSourceConfigInvalid()
     return value
+
+
+def _stored_mapping_or_empty(value: Any) -> Mapping[str, Any]:
+    if isinstance(value, str):
+        if len(value) > _MAX_CONFIG_TEXT_LENGTH:
+            raise KnowledgeDbSourceConfigInvalid()
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise KnowledgeDbSourceConfigInvalid() from exc
+    return _mapping_or_empty(value)
 
 
 def _project_persisted_config(config: Mapping[str, Any]) -> dict[str, Any]:
