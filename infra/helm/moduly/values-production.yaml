@@ -75,7 +75,7 @@ gateway:
     STORAGE_TYPE: "CLOUD"
     S3_BUCKET_NAME: "moduly-dev-file-upload"
     AWS_REGION: "ap-northeast-2"
-    
+
     # Google OAuth (optional)
     # GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are in secrets
     
@@ -124,6 +124,14 @@ worker:
     # Storage configuration
     S3_BUCKET_NAME: "moduly-dev-file-upload"
     AWS_REGION: "ap-northeast-2"
+
+  networkPolicy:
+    enabled: true
+    # RDS is deployed in the Terraform-owned Nodease VPC.
+    externalDatabaseCidrs:
+      - "10.0.0.0/16"
+    externalRedisCidrs: []
+    externalSandboxCidrs: []
 
 # Logger (Logging System)
 logger:
