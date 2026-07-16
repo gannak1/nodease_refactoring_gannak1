@@ -14,7 +14,8 @@ KC sync 요청·상태 조회와 durable execution 계약은 [ADR-0048](../../de
 | POST | `/api/v1/knowledge` | 빈 KB 생성 | Active organization에 KB, 생성자의 user-direct `manager`, canonical audit를 한 transaction에서 생성한다. 필수 schema가 준비되지 않으면 `503 knowledge.schema_not_ready`로 fail-closed 처리한다 |
 | GET | `/api/v1/knowledge/{kb_id}` | 현재 KB 상세와 문서 상태 | Active organization + KB `read`. Detail capability는 `can_read/use/write/read_content/manage`와 빈 active manual KB에 최초 source를 등록할 수 있는 `can_register_initial_document`를 반환한다 |
 | GET | `/api/v1/knowledge/{kb_id}/documents/{document_id}/edit-config` | Document preview/process 설정 복원 | Active organization + KB `write`. Bounded property/aggregate/serialized-size allowlist만 반환하고 read detail과 encrypted source config를 재사용하지 않는다. 성공 응답은 `Cache-Control: no-store`다 |
-| POST | `/api/v1/knowledge/{kb_id}/documents/{document_id}/process` | Document 설정 저장과 처리 시작 | Active organization + KB `write`. DB source의 새 `db_config.connection_id`는 owner Connection row를 잠근 뒤 metadata와 함께 commit해 Connector 삭제와 직렬화한다. Missing/other-owner reference는 `404 resource.hidden`, persistence failure는 `503 connection.reference_unavailable`로 닫는다 |
+| POST | `/api/v1/knowledge/{kb_id}/documents/{document_id}/preview` | Document 설정 미리보기 | Active organization + KB `write`. DB source는 submitted/fallback opaque Connection reference가 current user 소유인지 확인한 뒤 processor를 호출한다 |
+| POST | `/api/v1/knowledge/{kb_id}/documents/{document_id}/process` | Document 설정 저장 및 background ingestion | Active organization + KB `write`. DB source는 Connection owner 검증과 설정 allowlist를 통과한 뒤 owner Connection row를 잠그고 metadata commit까지 유지해 Connector 삭제와 직렬화한다. Background processor는 dial 직전에 같은 owner 정책을 재검증한다. Missing/malformed/other-owner reference는 `404 resource.hidden`, persistence failure는 `503 connection.reference_unavailable`로 닫는다 |
 | GET | `/api/v1/knowledge/{kb_id}/safe-metadata` | allowlisted KB recommendation metadata 조회 | active organization, KB `manage`; 권한 없는 resource는 404로 숨긴다 |
 | PATCH | `/api/v1/knowledge/{kb_id}/safe-metadata` | `safe_label`, `kb_safe_description`, `kb_safe_topics` 수정 | active organization, KB `manage`, sanitizer, audit. 일반 KB 설정 PATCH와 분리한다 |
 | POST | `/api/v1/knowledge/{kb_id}/archive`, `/restore` | Manual KB lifecycle 전이 | KB `manage` 또는 domain `lifecycle_manage`; source-managed KB는 source-owned로 차단 |
@@ -66,6 +67,17 @@ malformed 또는 bound 밖이면 raw fallback 대신 `editable=false`와 safe re
 aggregate item 또는 serialized response budget을 초과하면 같은 unavailable 결과로
 닫는다. Client는 권한과 hydration 상태를 현재 KB/document id scope에 결박하고, route
 전환 뒤 늦게 도착한 이전 scope 응답이나 fetch failure로 action을 다시 열지 않는다.
+
+DB source upload/process/preview의 `connection_id`는 opaque input일 뿐 권한 증명이 아니다.
+Gateway는 document/설정 mutation 전에 Shared Connection Use Resolver로
+`Connection.user_id == current_user.id`를 확인하고, process 저장 시 nested config에서
+Connection reference와 Connection detail field를 제거해 top-level opaque `connection_id`만
+canonical reference로 남긴다. Background Gateway ingestion과 Workflow Engine KC sync는 외부
+DB dial 직전에 current execution subject로 같은 resolver를 다시 호출하고 row를 잠근다.
+Missing, malformed, deleted, owner 변경과 non-owner reference는 모두 `404
+resource.hidden`으로 일반화하며 Connection id/name/owner/host/database/username/credential을
+응답·audit·processing metadata에 넣지 않는다. Credential 복호화 실패는
+`configuration.invalid`로 닫고 저장 암호문을 adapter credential로 fallback하지 않는다.
 
 KB detail/direct document의 `error_message`와 progress SSE의 `message`/`error`는
 persisted 원문이 아니다. Gateway가 status를 fixed public message로 투영하며 failure는
@@ -600,10 +612,11 @@ task를 발행한다. Publish 실패는 raw broker 오류를 반환하지 않고
 queued job을 유지한다. Recovery task가 due/stale job을 다시 발행하므로 API caller가 새 key로
 반복 요청할 필요가 없다.
 
-Legacy DB connection은 organization column이 없으므로 worker가 connection owner의 current
-active organization membership과 지원 DB type을 검증한다. 문서당 source row limit은 1,000으로
-상한 처리한다. Connection identifier, selection/SQL, credential과 processor 원문 오류는 job
-response·task result·audit·log에 포함하지 않는다.
+Legacy DB connection은 organization column이 없으므로 worker의 organization authority gate와
+별도로 Connection Use Resolver가 `connection.user_id == execution subject user_id`와 지원 DB
+type을 검증한다. 문서당 source row limit은 1,000으로 상한 처리한다. Connection identifier,
+selection/SQL, credential과 processor 원문 오류는 job response·task result·audit·log에 포함하지
+않는다.
 
 DB processor 결과에는 문서에 저장된 flat `selection_mode`, `chunk_range`, `keyword_filter`를 기존
 ingestion과 같은 selection helper로 적용한다. 선택 결과가 비거나 malformed이면 새 active

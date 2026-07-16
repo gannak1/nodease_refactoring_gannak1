@@ -113,6 +113,17 @@ File/page artifact connector는 egress guard 이후에도 artifact content를 tr
 - table/column 선택은 alias 기본값을 함께 관리하며, 민감 컬럼 toggle은 부모 state로 전달한다.
 - 선택 테이블이 2개이면 FK 관계를 검사해 join config를 부모에 전달하거나 FK 없음 경고를 표시한다.
 
+### `ConnectionUseResolver`
+
+- 출처: `apps/shared/services/connection_use_resolver.py`
+- 책임: opaque Connection UUID와 execution subject user UUID를 정규화하고 현재 user-owned 모델의 `Connection.id` + `Connection.user_id` predicate를 한 query에서 평가한다.
+- 호출자: RAG DB source 등록, Knowledge document process/preview 설정 검증, `DbProcessor`를 통한 Gateway/Workflow Engine background ingestion.
+- 경계:
+  - Missing, malformed, deleted, owner 변경과 non-owner를 구분하지 않고 `resource.hidden`으로 닫는다.
+  - 실제 DB use 조회는 row lock을 사용하고 connector 생성·credential 복호화·DB dial보다 먼저 수행한다.
+  - KB/Collection 권한, organization membership, HTTP 오류 shape와 DB protocol 정책을 소유하지 않는다.
+  - Organization-scoped Connection 권한을 추측하거나 신규 permission을 만들지 않는다.
+
 ## Interactions
 
 ### Connection Test
@@ -151,7 +162,16 @@ Docker demo Gateway는 Connector admission에만 `connector-test-redis` logical 
 3. `connectorApi`가 연결 이름의 앞뒤 공백을 제거한 뒤 `createConnector(dbConfig)` 요청을 보낸다.
 4. Gateway는 연결을 재테스트하고 secret을 암호화 저장한다.
 5. 성공하면 반환된 connection id가 Knowledge source 생성 payload에 포함된다.
-6. 실패하면 toast를 표시하고 Knowledge source 생성이 중단된다.
+6. Gateway는 document/KB 생성 전에 current user가 해당 Connection owner인지 resolver로 확인하고 document metadata에는 opaque id만 저장한다.
+7. 실패하면 resource identity를 노출하지 않는 오류를 반환하고 Knowledge source 생성이 중단된다.
+
+### Knowledge DB Source Process And Preview
+
+1. Gateway는 submitted DB config의 Connection reference를 기존 opaque reference와 함께 정규화한다.
+2. Connection Use Resolver가 current user owner 조건을 확인한 뒤 allowlisted table/column/JOIN/chunk 설정만 document metadata에 저장하거나 preview runtime config로 전달한다.
+3. Background `DbProcessor`는 외부 DB dial 직전에 execution subject로 같은 resolver를 다시 호출하고 row를 잠근다.
+4. Connection 삭제, owner 변경, malformed/non-owner reference 또는 credential 복호화 실패는 connector 호출 전에 safe configuration/resource-hiding failure로 종료한다.
+5. Processor result와 chunk source label은 Connection id/name/host/user/credential을 포함하지 않는다.
 
 ### Schema Selection
 

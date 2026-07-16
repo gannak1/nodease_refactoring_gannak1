@@ -40,6 +40,7 @@ Knowledge 통합 목표 구조에서는 Gateway/Shared/Workflow Engine 경계에
 | --- | --- |
 | Knowledge Source Connector | 외부/내부 source item과 source ACL을 adapter별로 수집한다. outbound network 접근은 중앙 guard를 통과한다. |
 | OutboundEgressGuard | server-side outbound dial 전 host/IP/port/proxy/timeout/size 정책을 검증한다. protocol별 SQL/command/listing 제한은 adapter가 담당한다. |
+| Connection Use Resolver | 현재 user-owned `connections`에서 opaque UUID를 execution subject와 함께 해석하고 `Connection.user_id == execution subject user_id`를 단일 query로 강제한다. Knowledge DB source 저장 경계와 실제 DB dial 직전 processor가 같은 resolver를 사용하며 missing/malformed/non-owner를 `resource.hidden`으로 fail-closed한다. Organization-scoped Connection RBAC은 이 resolver가 추측하지 않는다. |
 | Content Safety Gate / Parser Isolation Worker | 외부 source artifact를 redacted canonical text로 만들기 전 file type allowlist, active content 차단, archive cap, parser sandbox, malware/content scan hook을 평가한다. |
 | Shared Privacy/Redaction Service | PII/secret detector, hard baseline, output-target별 masking/hash/drop/block rule을 제공한다. Audit/Tracing과 Knowledge가 함께 사용한다 ([ADR-0014](decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)). |
 | Knowledge Sync Scheduler / Worker | connector sync lease, cursor, retry, dead-letter, tombstone, outbox를 관리한다. |
