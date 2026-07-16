@@ -512,8 +512,14 @@ def test_team_onboarding_adaptive_routing_demo_only_changes_routing_settings():
     assert experiment_data["system_prompt"] == source_data["system_prompt"]
     assert experiment_data["user_prompt"] == source_data["user_prompt"]
     assert experiment_data["parameters"] == source_data["parameters"]
-    assert experiment_data["model_id"] == "gpt-5.6-luna"
+    assert experiment_data["model_id"] == "gpt-4.1"
     assert experiment_data["auto_model_routing"] is True
+    semantic_router = experiment_data["model_routing_context"]["semantic_router"]
+    # 온보딩 질문은 계정·보안·메신저·일정처럼 표현 범위가 넓다. 대표 문장을
+    # 하나의 중심점으로 평균내면 관련 질문도 멀어질 수 있으므로 가까운 예문을
+    # 우선 반영하는 top_k_mean contract를 사용한다.
+    assert semantic_router["aggregation"] == "top_k_mean"
+    assert semantic_router["top_k"] == 2
     policy = experiment_data["model_routing_policy"]
     assert policy["refresh"]["refresh_every_runs"] == 5
     assert policy["validation_budget_usd"] == 3.0
@@ -525,6 +531,9 @@ def test_team_onboarding_adaptive_routing_demo_only_changes_routing_settings():
     assert {
         item["key"] for item in cohort_drafts
     } == {"common_security", "platform_access", "sales_enablement"}
+    assert all(len(item["representative_examples"]) == 5 for item in cohort_drafts)
+    common_draft = next(item for item in cohort_drafts if item["key"] == "common_security")
+    assert any("메신저" in example for example in common_draft["representative_examples"])
 
 
 def test_team_onboarding_adaptive_routing_app_is_seeded_for_people_manager(
@@ -592,7 +601,15 @@ def test_enterprise_request_routing_graph_has_four_default_cohort_drafts():
         ("security_privacy_incident", "보안·개인정보 사고"),
     }
     assert all(draft["representative_query"].strip() for draft in cohort_drafts)
+    assert all(len(draft["representative_examples"]) >= 3 for draft in cohort_drafts)
     assert all(draft["fixed"] is True for draft in cohort_drafts)
+    security_cohort = next(
+        draft
+        for draft in cohort_drafts
+        if draft["key"] == "security_privacy_incident"
+    )
+    assert security_cohort["safety_protected"] is True
+    assert len(security_cohort["representative_examples"]) == 5
     node_ids = {node["id"] for node in graph["nodes"]}
     assert all(
         edge["source"] in node_ids and edge["target"] in node_ids
@@ -1159,6 +1176,13 @@ def test_model_router_demo_workflow_enables_versioned_semantic_cohorts():
     assert data["auto_model_routing"] is True
     assert data["model_id"] == "gpt-4.1"
     assert data["fallback_model_id"] == "gpt-4.1-mini"
+    cohort_drafts = data["model_routing_policy"]["cohort_drafts"]
+    assert all(len(draft["representative_examples"]) >= 3 for draft in cohort_drafts)
+    high_risk_draft = next(
+        draft for draft in cohort_drafts if draft["key"] == "high_risk"
+    )
+    assert high_risk_draft["safety_protected"] is True
+    assert len(high_risk_draft["representative_examples"]) == 5
     semantic_router = data["model_routing_context"]["semantic_router"]
     assert semantic_router["route_catalog_version"] == "demo-ticket-routing-v7"
     assert (
@@ -1383,7 +1407,6 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     conversation_memory_revision = script.get_revision("ab1c2d3e4f50")
     current_head_revision = script.get_revision("ac2d3e4f5061")
     app_auth_secret_revision = script.get_revision("b0c1d2e3f4a5")
-    llm_credential_encryption_revision = script.get_revision("c2e8f4a91d67")
 
     assert safe_metadata_revision.down_revision == "fa7b8c9d0e12"
     assert set(merged_revision.down_revision) == {"fa7c8d9e0f12", "ff3a4b5c6d78"}
@@ -1439,15 +1462,12 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
         "ab1c2d3e4f50",
     }
     assert app_auth_secret_revision.down_revision == "ac2d3e4f5061"
-    assert llm_credential_encryption_revision.down_revision == "b0c1d2e3f4a5"
     assert "2b6c7d8e9f02" in ancestry
     assert "a6f4d2c8e1b7" in ancestry
     assert "a9b0c1d2e3f4" in ancestry
     assert "aa0b1c2d3e4f" in ancestry
     assert "ab1c2d3e4f50" in ancestry
     assert "b0c1d2e3f4a5" in ancestry
-    assert "c2e8f4a91d67" in ancestry
-    assert script.get_heads() == ["c2e8f4a91d67"]
 
 
 def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():

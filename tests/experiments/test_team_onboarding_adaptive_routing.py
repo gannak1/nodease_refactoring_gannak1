@@ -13,6 +13,17 @@ from scripts.experiment_team_onboarding_adaptive_routing import (
 )
 
 
+def test_team_onboarding_seed_has_three_valid_routing_cohort_drafts():
+    from apps.shared.db.demo_seed import _team_onboarding_adaptive_routing_graph
+
+    graph = _team_onboarding_adaptive_routing_graph()
+    llm_node = next(node for node in graph["nodes"] if node["id"] == "llm-answer")
+    drafts = llm_node["data"]["model_routing_policy"]["cohort_drafts"]
+
+    assert len(drafts) == 3
+    assert all(len(draft.get("representative_examples") or []) >= 3 for draft in drafts)
+
+
 def test_failed_deployment_call_is_recorded_without_stopping_the_experiment():
     case = build_experiment_cases(shuffle_seed=270)[0]
 
@@ -58,16 +69,16 @@ def test_source_filename_detection_reads_cited_pdf_names_from_answer_text():
     }
 
 
-def test_dataset_drives_discovery_dormancy_and_reactivation_in_61_runs():
+def test_dataset_drives_discovery_dormancy_and_reactivation_in_80_runs():
     cases = build_experiment_cases(shuffle_seed=270)
 
-    assert len(cases) == 61
-    assert len({case.case_id for case in cases}) == 61
-    assert len({case.question for case in cases}) == 61
+    assert len(cases) == 80
+    assert len({case.case_id for case in cases}) == 80
+    assert len({case.question for case in cases}) == 80
     assert [case.phase for case in cases[:6]] == ["sales_seed"] * 6
     assert [case.phase for case in cases[6:16]] == ["finance_emergence"] * 10
     assert [case.phase for case in cases[16:18]] == ["finance_validation"] * 2
-    assert [case.phase for case in cases[-5:]] == ["sales_return"] * 5
+    assert [case.phase for case in cases[-5:]] == ["post_validation"] * 5
 
     decline_cases = [case for case in cases if case.phase == "sales_decline"]
     assert len(decline_cases) == 38
@@ -77,8 +88,8 @@ def test_dataset_drives_discovery_dormancy_and_reactivation_in_61_runs():
     assert counts == {
         "sales_enablement": 11,
         "finance_operations": 12,
-        "common_security": 19,
-        "platform_access": 19,
+        "common_security": 29,
+        "platform_access": 28,
     }
 
 
@@ -205,3 +216,32 @@ def test_policy_settle_waits_for_async_validation_to_finish():
 
     assert result["status"] == "active"
     assert client.calls == 3
+
+
+def test_policy_settle_accepts_completed_collecting_policy_without_routes():
+    """검증이 끝났지만 활성 규칙이 없으면 다음 실험 입력으로 진행한다."""
+
+    class FakeClient:
+        def __init__(self):
+            self.calls = 0
+
+        def get_json(self, path, *, timeout=None):
+            self.calls += 1
+            return {
+                "status": "collecting",
+                "adaptive": {"latest_batch": {"status": "completed"}},
+            }
+
+    client = FakeClient()
+
+    result = _wait_for_policy_settle(
+        client,
+        workflow_id="workflow-1",
+        node_id="llm-answer",
+        timeout_seconds=1,
+        poll_interval_seconds=0,
+        minimum_wait_seconds=0,
+    )
+
+    assert result["status"] == "collecting"
+    assert client.calls == 1

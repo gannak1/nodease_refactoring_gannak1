@@ -1,7 +1,7 @@
 """Add cohort examples as model routing validation inputs.
 
 Revision ID: ba6f5c4d3e2f
-Revises: b9e5f4a3c2d3
+Revises: b0c1d2e3f4a5
 """
 
 from typing import Sequence, Union
@@ -11,7 +11,7 @@ from alembic import op
 
 
 revision: str = "ba6f5c4d3e2f"
-down_revision: Union[str, Sequence[str], None] = "b9e5f4a3c2d3"
+down_revision: Union[str, Sequence[str], None] = "b0c1d2e3f4a5"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

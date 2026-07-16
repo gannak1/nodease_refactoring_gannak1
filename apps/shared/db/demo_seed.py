@@ -110,7 +110,10 @@ DEMO_MODEL_ROUTER_BASE_MODEL = "gpt-5-mini"
 DEMO_MODEL_ROUTER_FALLBACK_MODEL = "gpt-4.1"
 DEMO_MODEL_ROUTER_CHEAP_MODEL = "gpt-4o-mini"
 DEMO_MODEL_ROUTER_BALANCED_MODEL = "gpt-4.1-mini"
-DEMO_ONBOARDING_ROUTER_MODEL = "gpt-5.6-luna"
+# 이 RAG 실험은 낮은 비용 후보를 검증하는 흐름이 목적이다. Responses API의
+# reasoning token이 900 token 출력 예산을 먼저 소진하지 않는 안정적인 기준 모델로
+# 시작해, 후보 품질 gate와 입력군 routing 자체를 검증한다.
+DEMO_ONBOARDING_ROUTER_MODEL = "gpt-4.1"
 DEMO_EMBEDDING_MODEL = "text-embedding-3-small"
 DEMO_EMBEDDING_DIMENSION = 1536
 # 모델 라우팅은 문서 검색과 달리 입력 문의의 의미상 군집을 구분해야 한다.
@@ -2267,7 +2270,11 @@ def _team_onboarding_adaptive_routing_graph() -> dict[str, Any]:
         "semantic_router": {
             "encoder_model_id": DEMO_MODEL_ROUTER_EMBEDDING_MODEL,
             "input_paths": ["start-question.question"],
-            "aggregation": "centroid",
+            # 온보딩 입력군은 한 주제 안에서도 계정·일정·메신저처럼 표현 범위가
+            # 넓다. 대표 문장 전체의 중심점보다 질문과 가장 가까운 두 예문을
+            # 평균내야 실제 운영 문의가 기본 모델로 과도하게 빠지지 않는다.
+            "aggregation": "top_k_mean",
+            "top_k": 2,
         }
     }
     data["model_routing_policy"] = {
@@ -2283,6 +2290,13 @@ def _team_onboarding_adaptive_routing_graph() -> dict[str, Any]:
                 "representative_query": (
                     "입사 첫날 SSO와 다중 인증, 필수 보안 교육 완료 순서를 알려 주세요."
                 ),
+                "representative_examples": [
+                    "입사 첫날 SSO와 다중 인증, 필수 보안 교육 완료 순서를 알려 주세요.",
+                    "신규 입사자가 계정 보안 설정을 마치는 절차가 궁금합니다.",
+                    "첫 출근 전에 MFA 등록과 보안 교육을 완료하고 싶습니다.",
+                    "사내 메신저 공지 채널과 소속 팀 채널에는 어떤 순서로 참여하나요?",
+                    "첫 주 공통 일정과 팀 리드에게 완료 상태를 공유하는 방법을 알려 주세요.",
+                ],
                 "fixed": True,
             },
             {
@@ -2292,6 +2306,13 @@ def _team_onboarding_adaptive_routing_graph() -> dict[str, Any]:
                 "representative_query": (
                     "플랫폼개발팀 신입이 Git, VPN과 운영 조회 권한을 신청하는 절차를 알려 주세요."
                 ),
+                "representative_examples": [
+                    "플랫폼개발팀 신입이 Git, VPN과 운영 조회 권한을 신청하는 절차를 알려 주세요.",
+                    "개발 저장소와 VPN 접근 권한은 어떤 순서로 신청하나요?",
+                    "신입 개발자가 운영 로그를 조회하려면 무엇을 준비해야 하나요?",
+                    "로컬 개발환경과 샘플 서비스 테스트를 완료하는 기준을 알려 주세요.",
+                    "배포 파이프라인 실습 전에 비운영 환경과 운영 환경을 구분하는 방법이 궁금합니다.",
+                ],
                 "fixed": False,
             },
             {
@@ -2301,6 +2322,13 @@ def _team_onboarding_adaptive_routing_graph() -> dict[str, Any]:
                 "representative_query": (
                     "영업팀 신입이 CRM 접근 권한과 고객 데이터 취급 교육을 준비하는 순서를 알려 주세요."
                 ),
+                "representative_examples": [
+                    "영업팀 신입이 CRM 접근 권한과 고객 데이터 취급 교육을 준비하는 순서를 알려 주세요.",
+                    "신규 영업 담당자가 CRM을 사용하려면 어떤 교육이 필요한가요?",
+                    "고객 데이터를 다루기 전에 받아야 하는 권한과 교육을 알려 주세요.",
+                    "CRM에서 담당 고객만 조회하도록 최소 접근 범위를 확인하는 방법을 알려 주세요.",
+                    "할인 예외가 포함된 견적을 고객에게 보내기 전에 받아야 하는 승인을 알려 주세요.",
+                ],
                 "fixed": False,
             },
         ],
@@ -2538,6 +2566,11 @@ def _model_router_ticket_ops_graph() -> dict[str, Any]:
                             "key": "routine_support",
                             "label": "일반 사용 안내",
                             "representative_query": "정산 파일을 다시 생성하고 다운로드하는 방법을 알려 주세요.",
+                            "representative_examples": [
+                                "정산 파일을 다시 생성하고 다운로드하는 방법을 알려 주세요.",
+                                "내보낸 보고서는 어디에서 다시 받을 수 있나요?",
+                                "화면에서 알림과 표시 설정을 바꾸는 방법이 궁금합니다.",
+                            ],
                             "fixed": True,
                         },
                         {
@@ -2545,6 +2578,11 @@ def _model_router_ticket_ops_graph() -> dict[str, Any]:
                             "key": "account_billing",
                             "label": "계정 및 결제 문제",
                             "representative_query": "결제는 완료됐지만 팀원 초대와 계정 권한 변경이 실패합니다.",
+                            "representative_examples": [
+                                "결제는 완료됐지만 팀원 초대와 계정 권한 변경이 실패합니다.",
+                                "구독 결제 후에도 계정이 무료 상태로 표시됩니다.",
+                                "팀원 초대 메일이 오지 않고 권한 변경도 반영되지 않습니다.",
+                            ],
                             "fixed": False,
                         },
                         {
@@ -2552,7 +2590,15 @@ def _model_router_ticket_ops_graph() -> dict[str, Any]:
                             "key": "high_risk",
                             "label": "보안 및 SLA 고위험",
                             "representative_query": "SLA 위반 가능성이 있는 장애로 고객 보상과 보안 대응을 검토해 주세요.",
+                            "representative_examples": [
+                                "SLA 위반 가능성이 있는 장애로 고객 보상과 보안 대응을 검토해 주세요.",
+                                "개인정보 유출 가능성이 있어 즉시 사고 대응이 필요합니다.",
+                                "관리자 계정이 탈취된 것 같아 긴급 조치를 요청합니다.",
+                                "결제 API 장애가 장기화되어 고객 크레딧 보상을 검토해야 합니다.",
+                                "보안 사고와 서비스 중단이 함께 발생해 법무 검토가 필요합니다.",
+                            ],
                             "fixed": True,
+                            "safety_protected": True,
                         },
                     ],
                 },
@@ -2780,6 +2826,11 @@ def _enterprise_request_routing_graph() -> dict[str, Any]:
                         "representative_query": (
                             "사내 시스템에서 증명서를 내려받는 위치와 절차를 알려 주세요."
                         ),
+                        "representative_examples": [
+                            "사내 시스템에서 증명서를 내려받는 위치와 절차를 알려 주세요.",
+                            "재직 증명서를 어디에서 발급할 수 있나요?",
+                            "회사 제출용 서류를 다시 다운로드하고 싶습니다.",
+                        ],
                         "fixed": True,
                     },
                     {
@@ -2789,6 +2840,11 @@ def _enterprise_request_routing_graph() -> dict[str, Any]:
                         "representative_query": (
                             "퇴사자 Git 저장소와 VPN 접근 권한을 회수하는 절차를 알려 주세요."
                         ),
+                        "representative_examples": [
+                            "퇴사자 Git 저장소와 VPN 접근 권한을 회수하는 절차를 알려 주세요.",
+                            "프로젝트 종료자의 운영 시스템 권한을 제거하고 싶습니다.",
+                            "휴직자의 계정과 원격 접속 권한을 일시 중지해 주세요.",
+                        ],
                         "fixed": True,
                     },
                     {
@@ -2798,6 +2854,11 @@ def _enterprise_request_routing_graph() -> dict[str, Any]:
                         "representative_query": (
                             "해외 지급 건의 증빙과 월말 결산 승인 절차를 확인해 주세요."
                         ),
+                        "representative_examples": [
+                            "해외 지급 건의 증빙과 월말 결산 승인 절차를 확인해 주세요.",
+                            "월말 비용 정산에 필요한 승인 서류가 무엇인지 궁금합니다.",
+                            "해외 송금 요청을 결재받는 순서를 알려 주세요.",
+                        ],
                         "fixed": True,
                     },
                     {
@@ -2807,7 +2868,15 @@ def _enterprise_request_routing_graph() -> dict[str, Any]:
                         "representative_query": (
                             "고객 개인정보가 외부 메일로 전송됐을 때 즉시 해야 할 조치를 알려 주세요."
                         ),
+                        "representative_examples": [
+                            "고객 개인정보가 외부 메일로 전송됐을 때 즉시 해야 할 조치를 알려 주세요.",
+                            "공개 저장소에 고객 데이터와 비밀키가 올라갔습니다.",
+                            "관리자 계정 탈취가 의심되어 긴급 대응이 필요합니다.",
+                            "외부 협력사에 개인정보 파일을 잘못 공유했습니다.",
+                            "보안 사고로 서비스가 중단되어 법무와 고객 공지가 필요합니다.",
+                        ],
                         "fixed": True,
+                        "safety_protected": True,
                     },
                 ],
             },

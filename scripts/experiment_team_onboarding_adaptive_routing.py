@@ -32,7 +32,7 @@ DEFAULT_EMAIL = "jimin.park@nodease.demo"
 DEFAULT_PASSWORD_ENV = "NODEASE_DEMO_PASSWORD"
 DEFAULT_MAX_PROVIDER_CALLS = 500
 DEFAULT_DEADLINE_MINUTES = 120
-POLICY_SETTLE_CHECKPOINTS = frozenset({16, 36, 56})
+POLICY_SETTLE_CHECKPOINTS = frozenset({16, 36, 56, 76})
 
 
 @dataclass(frozen=True)
@@ -154,6 +154,33 @@ SALES_RETURN_QUESTIONS = (
 )
 
 
+COMMON_POST_VALIDATION_QUESTIONS = (
+    "신규 입사자가 공통 온보딩 첫 주에 SSO, 다중 인증, 보안 교육을 어떤 순서로 끝내야 하는지 알려 주세요.",
+    "업무용 노트북을 분실했을 때 계정 잠금과 보안 신고를 어디에 어떤 정보와 함께 요청해야 하나요?",
+    "피싱으로 의심되는 메일의 링크를 열지 않은 상태에서 신고하고 삭제하는 절차를 정리해 주세요.",
+    "팀 채널에 합류하기 전에 완료해야 하는 공통 교육과 인사 시스템 확인 항목을 알려 주세요.",
+    "개인 기기에서 회사 파일을 내려받지 않아야 하는 이유와 원격 근무 시 지켜야 할 기준을 설명해 주세요.",
+    "입사자 연락처 정보가 바뀌었을 때 인사 시스템에서 수정하고 확인해야 할 절차가 무엇인가요?",
+    "SSO 로그인에 실패할 때 비밀번호나 복구 코드를 공유하지 않고 지원팀에 전달할 수 있는 정보는 무엇인가요?",
+    "사내 AI 도구에 고객 정보나 비밀값을 넣지 않기 위해 공통 온보딩에서 안내하는 원칙을 알려 주세요.",
+    "첫 주 공통 온보딩의 완료 여부를 팀 리드에게 공유할 때 어떤 항목을 점검해야 하나요?",
+    "휴가를 신청하기 전에 팀 일정과 인사 시스템에서 확인해야 할 순서를 알려 주세요.",
+)
+
+
+PLATFORM_POST_VALIDATION_QUESTIONS = (
+    "플랫폼개발팀 신입이 Git 저장소 권한을 받은 뒤 샘플 서비스를 안전한 개발 환경에서 검증하는 절차를 알려 주세요.",
+    "운영 로그 읽기 권한을 신청할 때 업무 목적과 필요한 기간을 어떻게 적고 누가 검토하는지 알려 주세요.",
+    "로컬 개발환경에 API 키를 파일로 남기지 않고 표준 방식으로 설정하는 기준을 설명해 주세요.",
+    "새 개발자가 배포 파이프라인 실습을 하기 전에 비운영 환경과 운영 환경을 어떻게 구분해야 하나요?",
+    "Git 프로젝트 접근이 필요 이상으로 열려 보일 때 어떤 증거를 남기고 누구에게 권한 조정을 요청해야 하나요?",
+    "플랫폼개발팀 첫 주에 완료해야 하는 런타임 설치, 테스트 실행, 회고 기록 항목을 정리해 주세요.",
+    "운영 변경 권한 없이 장애 로그를 확인해야 할 때 읽기 전용 접근을 요청하는 절차를 알려 주세요.",
+    "공유 계정이나 다른 팀원의 토큰을 사용하지 않고 개발 도구 권한을 신청하는 원칙을 설명해 주세요.",
+    "역할 변경으로 배포 권한이 만료될 때 저장소와 운영 접근을 함께 재검토해야 하는 이유를 알려 주세요.",
+)
+
+
 def _cases_for_questions(
     questions: Iterable[str],
     *,
@@ -226,12 +253,30 @@ def build_experiment_cases(*, shuffle_seed: int = 270) -> list[ExperimentCase]:
         rationale="최근 40건 중 영업 비중을 10% 이상으로 회복시켜 휴면 입력군의 재활성화를 본다.",
         prefix="sales-return",
     )
+    common_post_validation = _cases_for_questions(
+        COMMON_POST_VALIDATION_QUESTIONS,
+        phase="post_validation",
+        cohort_key="common_security",
+        source_filename="company_common_onboarding.pdf",
+        rationale="검증 뒤에도 공통 보안·온보딩 문의가 같은 입력군과 RAG 근거로 안정적으로 처리되는지 확인한다.",
+        prefix="common-post",
+    )
+    platform_post_validation = _cases_for_questions(
+        PLATFORM_POST_VALIDATION_QUESTIONS,
+        phase="post_validation",
+        cohort_key="platform_access",
+        source_filename="platform_team_onboarding_v4.pdf",
+        rationale="검증 뒤에도 플랫폼 접근·개발환경 문의가 같은 입력군과 RAG 근거로 안정적으로 처리되는지 확인한다.",
+        prefix="platform-post",
+    )
 
     rng = random.Random(shuffle_seed)
     rng.shuffle(finance)
     decline = common + platform
     rng.shuffle(decline)
-    return sales_seed + finance + finance_validation + decline + sales_return
+    post_validation = common_post_validation + platform_post_validation
+    rng.shuffle(post_validation)
+    return sales_seed + finance + finance_validation + decline + sales_return + post_validation
 
 
 def estimate_provider_call_ceiling(
@@ -480,9 +525,14 @@ def _wait_for_policy_settle(
         latest_batch = latest_batch if isinstance(latest_batch, dict) else {}
         policy_status = str(policy.get("status") or "")
         batch_status = str(latest_batch.get("status") or "")
-        if (
-            policy_status in {"active", "pending_review", "failed"}
+        settled_policy = policy_status in {"active", "pending_review", "failed"}
+        completed_collecting = (
+            policy_status == "collecting"
+            and bool(latest_batch)
             and batch_status not in pending_batch_states
+        )
+        if batch_status not in pending_batch_states and (
+            settled_policy or completed_collecting
         ):
             return policy
         time.sleep(max(0.0, poll_interval_seconds))
@@ -692,11 +742,12 @@ def build_markdown_report(
         "",
         "## 실험이 확인하는 흐름",
         "",
-        "1. 1~6회 영업 문의로 기존 영업 입력군의 초기 관찰을 만든다.",
-        "2. 7~16회 재무 문의로 초안에 없던 트렌드가 자동 입력군으로 발견되는지 본다.",
-        "3. 이후 40회는 공통·플랫폼 문의만 보내 영업 입력군 비중을 5% 이하로 세 점검 구간 유지한다.",
-        "4. 마지막 5회에 영업 문의를 다시 보내 최근 40건 비중이 10% 이상이 되면 재활성화되는지 본다.",
-        "5. 각 실행에서 실제 선택 모델, 입력군 유사도, fallback, RAG 출처, 정책 버전을 확인한다.",
+            "1. 1~6회 영업 문의로 기존 영업 입력군의 초기 관찰을 만든다.",
+            "2. 7~16회 재무 문의로 초안에 없던 트렌드가 자동 입력군으로 발견되는지 본다.",
+            "3. 19~56회는 공통·플랫폼 문의만 보내 영업 입력군 비중을 낮춰 휴면 판정을 확인한다.",
+            "4. 57~61회에 영업 문의를 다시 보내 최근 입력 비중이 회복되면 재활성화되는지 본다.",
+            "5. 62~80회는 공통·플랫폼 문의를 추가해 검증된 입력군 rule과 RAG 근거가 안정적으로 유지되는지 본다.",
+            "6. 각 실행에서 실제 선택 모델, 입력군 유사도, fallback, RAG 출처, 정책 버전을 확인한다.",
         "",
         "## 실행별 결과",
         "",
