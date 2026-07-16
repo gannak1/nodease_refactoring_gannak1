@@ -441,7 +441,7 @@ async def upload_document(
     api_method: str = Form("GET", alias="apiMethod"),
     api_headers: Optional[str] = Form(None, alias="apiHeaders"),
     api_body: Optional[str] = Form(None, alias="apiBody"),
-    connection_id: Optional[UUID] = Form(None, alias="connectionId"),
+    connection_id: Optional[str] = Form(None, alias="connectionId"),
     # 지식 베이스 신규 생성일 때만 필요한 정보들
     name: Optional[str] = Form(None),
     description: Optional[str] = Form(None),
@@ -597,7 +597,7 @@ def _prepare_db_source(
     request: Request,
     db: Session,
     user: User,
-    connection_id: Optional[UUID],
+    connection_id: Optional[str],
 ):
     """DB 소스처리를 위한 데이터 준비"""
     conn = resolve_connection_use_or_hidden(

@@ -80,6 +80,7 @@ def remove_legacy_connection_details(meta_info: dict[str, Any]) -> None:
         "password",
         "encrypted_password",
         "use_ssh",
+        "ssh",
         "ssh_host",
         "ssh_port",
         "ssh_username",

@@ -5,7 +5,8 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-from fastapi import BackgroundTasks, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
@@ -117,6 +118,31 @@ def test_rag_db_source_rejects_other_users_connection(db_session: Session) -> No
         )
 
     _assert_resource_hidden(exc_info.value)
+
+
+def test_rag_upload_hides_malformed_connection_reference(
+    db_session: Session,
+    monkeypatch,
+) -> None:
+    test_app = FastAPI()
+    test_app.include_router(rag_endpoint.router, prefix="/rag")
+    test_app.dependency_overrides[rag_endpoint.get_db] = lambda: db_session
+    test_app.dependency_overrides[rag_endpoint.get_current_user] = lambda: SimpleNamespace(
+        id=uuid.uuid4()
+    )
+    monkeypatch.setattr("apps.gateway.utils.audit.record_audit", lambda **_event: None)
+
+    response = TestClient(test_app).post(
+        "/rag/upload",
+        data={
+            "sourceType": "DB",
+            "connectionId": "not-a-uuid",
+        },
+        headers={"X-Organization-Id": str(uuid.uuid4())},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"]["error"]["code"] == "resource.hidden"
 
 
 def test_rag_db_source_persists_only_opaque_reference(db_session: Session) -> None:
@@ -247,6 +273,7 @@ async def test_process_normalizes_owned_connection_reference(
             "port": 15432,
             "type": "postgres",
             "use_ssh": True,
+            "ssh": {"password": "must-not-be-stored-ssh-password"},
             "ssh_port": 10022,
             "ssh_auth_type": "password",
         }
