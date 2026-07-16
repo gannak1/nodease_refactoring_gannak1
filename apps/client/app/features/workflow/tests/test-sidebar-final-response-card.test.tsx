@@ -236,10 +236,9 @@ describe('TestSidebar final response card', () => {
     expect(screen.queryByText(/"summary"/)).not.toBeInTheDocument();
   });
 
-  it('uses presentation-sized text for large Markdown responses', () => {
+  it('uses the default card text size for Markdown responses', () => {
     render(
       <FinalResponseCard
-        large
         renderMarkdown
         preview={{
           kind: 'text',
@@ -251,7 +250,7 @@ describe('TestSidebar final response card', () => {
     );
 
     const responseContainer = screen.getByText('Response body').parentElement;
-    expect(responseContainer).toHaveClass('text-lg', 'leading-8');
+    expect(responseContainer).toHaveClass('text-sm', 'leading-6');
     expect(screen.getByRole('table')).not.toHaveClass('text-base');
   });
 

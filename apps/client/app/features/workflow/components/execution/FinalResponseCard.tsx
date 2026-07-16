@@ -9,48 +9,40 @@ export function FinalResponseCard({
   preview,
   expandContent = false,
   renderMarkdown = false,
-  large = false,
 }: {
   preview: FinalResponsePreview;
   expandContent?: boolean;
   renderMarkdown?: boolean;
-  large?: boolean;
 }) {
   const titleId = useId();
-  const responseContainerClassName = `${large ? 'mt-4 rounded-lg p-5' : 'mt-3 rounded-md p-3'} border border-emerald-200 bg-white dark:border-emerald-800 dark:bg-emerald-950/40${
+  const responseContainerClassName = `mt-3 rounded-md border border-emerald-200 bg-white p-3 dark:border-emerald-800 dark:bg-emerald-950/40${
     expandContent ? '' : ' max-h-56 overflow-y-auto'
   }`;
 
   return (
     <section
       aria-labelledby={titleId}
-      className={`${large ? 'rounded-xl p-6' : 'rounded-lg p-4'} border border-emerald-200 bg-emerald-50 dark:border-emerald-800 dark:bg-emerald-900/20`}
+      className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-800 dark:bg-emerald-900/20"
     >
-      <div className={`flex items-start ${large ? 'gap-4' : 'gap-3'}`}>
-        <div
-          className={`${large ? 'rounded-lg p-3' : 'rounded-md p-2'} bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-200`}
-        >
-          <MessageSquare className={large ? 'h-6 w-6' : 'h-4 w-4'} />
+      <div className="flex items-start gap-3">
+        <div className="rounded-md bg-emerald-100 p-2 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-200">
+          <MessageSquare className="h-4 w-4" />
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <h3
               id={titleId}
-              className={`${large ? 'text-xl' : 'text-sm'} font-semibold text-emerald-950 dark:text-emerald-50`}
+              className="text-sm font-semibold text-emerald-950 dark:text-emerald-50"
             >
               최종 응답
             </h3>
-            <span
-              className={`${large ? 'px-3 py-1 text-base' : 'px-2 py-0.5 text-xs'} rounded-full border border-emerald-200 bg-white text-emerald-700 dark:border-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-200`}
-            >
+            <span className="rounded-full border border-emerald-200 bg-white px-2 py-0.5 text-xs text-emerald-700 dark:border-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-200">
               {preview.sourceLabel}
             </span>
           </div>
 
           {preview.isEmpty ? (
-            <p
-              className={`${large ? 'mt-4 text-lg' : 'mt-3 text-sm'} text-emerald-700 dark:text-emerald-200`}
-            >
+            <p className="mt-3 text-sm text-emerald-700 dark:text-emerald-200">
               최종 사용자에게 표시할 응답이 비어 있습니다.
             </p>
           ) : preview.kind === 'json' ? (
@@ -59,31 +51,23 @@ export function FinalResponseCard({
                 <dl className="space-y-2">
                   {preview.items.map((item) => (
                     <div key={item.label} className="min-w-0">
-                      <dt
-                        className={`${large ? 'text-base' : 'text-xs'} font-semibold text-emerald-700 dark:text-emerald-200`}
-                      >
+                      <dt className="text-xs font-semibold text-emerald-700 dark:text-emerald-200">
                         {item.label}
                       </dt>
-                      <dd
-                        className={`${large ? 'mt-1 text-lg leading-8' : 'mt-0.5 text-sm'} whitespace-pre-wrap break-words text-gray-900 dark:text-gray-100`}
-                      >
+                      <dd className="mt-0.5 whitespace-pre-wrap break-words text-sm text-gray-900 dark:text-gray-100">
                         {item.value}
                       </dd>
                     </div>
                   ))}
                 </dl>
               ) : (
-                <p
-                  className={`${large ? 'text-lg' : 'text-sm'} text-emerald-700 dark:text-emerald-200`}
-                >
+                <p className="text-sm text-emerald-700 dark:text-emerald-200">
                   표시 가능한 응답 필드가 없습니다.
                 </p>
               )}
             </div>
           ) : renderMarkdown ? (
-            <div
-              className={`${responseContainerClassName} ${large ? 'text-lg leading-8' : 'text-sm leading-6'}`}
-            >
+            <div className={`${responseContainerClassName} text-sm leading-6`}>
               <ReactMarkdown
                 disallowedElements={['img']}
                 remarkPlugins={[remarkGfm]}
@@ -158,9 +142,7 @@ export function FinalResponseCard({
             </div>
           ) : (
             <div className={responseContainerClassName}>
-              <p
-                className={`${large ? 'text-lg leading-8' : 'text-sm leading-6'} whitespace-pre-wrap break-words text-gray-900 dark:text-gray-100`}
-              >
+              <p className="whitespace-pre-wrap break-words text-sm leading-6 text-gray-900 dark:text-gray-100">
                 {preview.text}
               </p>
             </div>
