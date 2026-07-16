@@ -1,7 +1,7 @@
 # Connectors Component Spec
 
 Status: Draft
-Verified Against: feature/mba-281 @ 44fb1439cd7fbae10378e8117145e6fd4df85787
+Verified Against: feature/mba-281 @ 101bde8c4b30ad84b23a79c95c6ad90f0d21443a
 
 ## Screens
 
