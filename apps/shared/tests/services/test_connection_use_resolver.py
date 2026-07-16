@@ -126,3 +126,45 @@ def test_missing_execution_subject_is_resource_hidden(db_session: Session) -> No
 
     assert exc_info.value.code == "resource.hidden"
 
+
+def test_use_resolution_refreshes_rotated_credential(tmp_path) -> None:
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'connection-use.db'}")
+    User.__table__.create(engine)
+    Connection.__table__.create(engine)
+    owner_id = uuid.uuid4()
+    connection_id = uuid.uuid4()
+
+    with Session(engine) as setup_session:
+        _insert_user(setup_session, owner_id)
+        _insert_connection(
+            setup_session,
+            connection_id=connection_id,
+            owner_id=owner_id,
+        )
+
+    with Session(engine, expire_on_commit=False) as owner_session:
+        initial = ConnectionUseResolver(owner_session).resolve(
+            connection_id,
+            execution_subject_user_id=owner_id,
+        )
+        assert initial.encrypted_password == "opaque-ciphertext"
+        owner_session.commit()
+
+        with Session(engine) as rotation_session:
+            rotation_session.query(Connection).filter(
+                Connection.id == connection_id
+            ).update(
+                {Connection.encrypted_password: "rotated-ciphertext"},
+                synchronize_session=False,
+            )
+            rotation_session.commit()
+
+        resolved = ConnectionUseResolver(owner_session).resolve(
+            connection_id,
+            execution_subject_user_id=owner_id,
+            lock_for_use=True,
+        )
+
+        assert resolved.encrypted_password == "rotated-ciphertext"
+
+    engine.dispose()

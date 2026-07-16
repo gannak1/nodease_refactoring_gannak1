@@ -5,6 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 from sqlalchemy import create_engine, update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from apps.shared.db.models.connection import Connection
@@ -116,6 +117,25 @@ def test_invalid_connection_reference_is_denied_before_adapter_creation(
     result = processor.process(_source_config(connection_reference))
 
     _assert_safe_denial(result)
+    connector_factory.assert_not_called()
+
+
+def test_connection_lookup_failure_is_safe_and_does_not_create_adapter() -> None:
+    db_session = Mock()
+    db_session.query.side_effect = SQLAlchemyError("sensitive backend detail")
+    processor = DbProcessor(db_session=db_session, user_id=uuid.uuid4())
+    connector_factory = Mock()
+    processor._get_connector = connector_factory
+
+    result = processor.process(_source_config(uuid.uuid4()))
+
+    assert result.chunks == []
+    assert result.metadata == {
+        "error": "Connection lookup unavailable",
+        "error_code": "temporarily_unavailable",
+        "reason_code": "source.temporarily_unavailable",
+    }
+    assert "sensitive backend detail" not in repr(result.model_dump())
     connector_factory.assert_not_called()
 
 
@@ -235,4 +255,3 @@ def test_owner_path_uses_connection_without_exposing_connection_detail(
     assert "service-user" not in serialized
     assert "opaque-ciphertext" not in serialized
     connector.fetch_data.assert_called_once()
-

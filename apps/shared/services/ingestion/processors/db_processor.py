@@ -4,16 +4,18 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Dict
 
+from sqlalchemy.exc import SQLAlchemyError
+
+from apps.shared.services.connection_use_resolver import (
+    ConnectionUseDenied,
+    ConnectionUseResolver,
+)
 from apps.shared.services.ingestion.chunkers.adaptive_db_chunker import (
     AdaptiveDbChunker,
 )
 from apps.shared.services.ingestion.processors.base import (
     BaseProcessor,
     ProcessingResult,
-)
-from apps.shared.services.connection_use_resolver import (
-    ConnectionUseDenied,
-    ConnectionUseResolver,
 )
 from apps.shared.services.ingestion.transformers.db_nl_transformer import (
     DbNlTransformer,
@@ -84,6 +86,8 @@ class DbProcessor(BaseProcessor):
             )
         except ConnectionUseDenied:
             return self._connection_unavailable_result()
+        except SQLAlchemyError:
+            return self._connection_lookup_unavailable_result()
 
         # Connector 인스턴스 생성
         connector = self._get_connector(conn_record.type)
@@ -220,6 +224,17 @@ class DbProcessor(BaseProcessor):
                 "error": "Resource unavailable",
                 "error_code": "configuration_invalid",
                 "reason_code": "resource.hidden",
+            },
+        )
+
+    @staticmethod
+    def _connection_lookup_unavailable_result() -> ProcessingResult:
+        return ProcessingResult(
+            chunks=[],
+            metadata={
+                "error": "Connection lookup unavailable",
+                "error_code": "temporarily_unavailable",
+                "reason_code": "source.temporarily_unavailable",
             },
         )
 

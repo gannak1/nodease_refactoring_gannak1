@@ -157,6 +157,7 @@ def test_sync_knowledge_bases_success(sync_service, mock_db_session):
     mock_kb = KnowledgeBase(id=kb_id, name="TestDB", embedding_model="test-model")
     mock_doc = Document(
         id=doc_id,
+        filename="Database source",
         knowledge_base_id=kb_id,
         source_type=SourceType.DB,
         meta_info={"connection_id": "conn1", "sql": "SELECT 1"},
@@ -216,6 +217,99 @@ def test_sync_knowledge_bases_success(sync_service, mock_db_session):
     assert kwargs["document_id"] == doc_id
     assert kwargs["model_name"] == "test-model"
     assert kwargs["chunks"] == [{"content": "abc"}]
+
+
+def test_sync_knowledge_bases_does_not_replace_chunks_on_connection_denial(
+    sync_service, mock_db_session
+):
+    kb_id = uuid.uuid4()
+    doc_id = uuid.uuid4()
+    graph_data = {
+        "nodes": [
+            {
+                "type": "llmNode",
+                "data": {"knowledgeBases": [{"id": str(kb_id)}]},
+            }
+        ]
+    }
+    mock_kb = KnowledgeBase(id=kb_id, name="TestDB", embedding_model="test-model")
+    mock_doc = Document(
+        id=doc_id,
+        filename="Database source",
+        knowledge_base_id=kb_id,
+        source_type=SourceType.DB,
+        meta_info={"connection_id": str(uuid.uuid4())},
+    )
+
+    def query_side_effect(model):
+        query = MagicMock()
+        if model == KnowledgeBase:
+            query.filter.return_value.all.return_value = [mock_kb]
+        elif model == Document:
+            query.filter.return_value.all.return_value = [mock_doc]
+        return query
+
+    mock_db_session.query.side_effect = query_side_effect
+    sync_service.db_processor.process.return_value = ProcessingResult(
+        chunks=[],
+        metadata={
+            "error": "Resource unavailable",
+            "error_code": "configuration_invalid",
+            "reason_code": "resource.hidden",
+        },
+    )
+
+    result = sync_service.sync_knowledge_bases(graph_data)
+
+    assert result["synced_count"] == 0
+    assert result["failed"] == [
+        {
+            "filename": "Database source",
+            "last_synced": "알 수 없음",
+            "error": "resource.hidden",
+        }
+    ]
+    sync_service.vector_store_service.save_chunks.assert_not_called()
+
+
+def test_sync_knowledge_bases_redacts_unexpected_failure_detail(
+    sync_service, mock_db_session, caplog
+):
+    kb_id = uuid.uuid4()
+    sentinel = "sensitive-connection-detail"
+    mock_kb = KnowledgeBase(id=kb_id, name="TestDB")
+    mock_doc = Document(
+        id=uuid.uuid4(),
+        filename="Database source",
+        knowledge_base_id=kb_id,
+        source_type=SourceType.DB,
+        meta_info={"connection_id": str(uuid.uuid4())},
+    )
+
+    def query_side_effect(model):
+        query = MagicMock()
+        if model == KnowledgeBase:
+            query.filter.return_value.all.return_value = [mock_kb]
+        elif model == Document:
+            query.filter.return_value.all.return_value = [mock_doc]
+        return query
+
+    mock_db_session.query.side_effect = query_side_effect
+    sync_service.db_processor.process.side_effect = RuntimeError(sentinel)
+    graph_data = {
+        "nodes": [
+            {
+                "type": "llmNode",
+                "data": {"knowledgeBases": [{"id": str(kb_id)}]},
+            }
+        ]
+    }
+
+    result = sync_service.sync_knowledge_bases(graph_data)
+
+    assert result["failed"][0]["error"] == "source.sync_failed"
+    assert sentinel not in caplog.text
+    sync_service.vector_store_service.save_chunks.assert_not_called()
 
 
 def test_sync_knowledge_bases_requires_kb_use_permission(sync_service, mock_db_session):

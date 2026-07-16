@@ -238,6 +238,16 @@ async def test_process_normalizes_owned_connection_reference(
         owner_id=owner_id,
     )
     document = _document(connection_id)
+    document.meta_info.update(
+        {
+            "database": "must-not-be-stored-legacy-database",
+            "port": 15432,
+            "type": "postgres",
+            "use_ssh": True,
+            "ssh_port": 10022,
+            "ssh_auth_type": "password",
+        }
+    )
     background_process = Mock()
     ingestion_service = SimpleNamespace(process_document=background_process)
     monkeypatch.setattr(
@@ -265,8 +275,16 @@ async def test_process_normalizes_owned_connection_reference(
         preview_request=_preview_request(
             connection_id,
             host="must-not-be-stored.example",
+            port=15432,
+            database="must-not-be-stored-database",
             username="must-not-be-stored",
             password="must-not-be-stored",
+            type="postgres",
+            use_ssh=True,
+            ssh_host="must-not-be-stored-ssh.example",
+            ssh_port=10022,
+            ssh_username="must-not-be-stored-ssh-user",
+            ssh_auth_type="password",
             join_config={
                 "enabled": False,
                 "password": "must-not-be-stored-nested",

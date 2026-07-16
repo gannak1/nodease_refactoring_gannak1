@@ -35,7 +35,7 @@ class ConnectionUseResolver:
         if self.db is None:
             raise ConnectionUseDenied()
 
-        query = self.db.query(Connection).filter(
+        query = self.db.query(Connection).populate_existing().filter(
             Connection.id == normalized_connection_id,
             Connection.user_id == normalized_subject_id,
         )
@@ -52,4 +52,3 @@ class ConnectionUseResolver:
             return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
         except (AttributeError, TypeError, ValueError):
             raise ConnectionUseDenied() from None
-

@@ -11,6 +11,14 @@ from apps.shared.services.permissions import has_knowledge_base_permission
 
 logger = logging.getLogger(__name__)
 
+_SAFE_PROCESSOR_FAILURE_REASONS = frozenset(
+    {
+        "configuration.invalid",
+        "resource.hidden",
+        "source.temporarily_unavailable",
+    }
+)
+
 
 class SyncService:
     """
@@ -142,6 +150,23 @@ class SyncService:
 
                     # Processor 실행 (DB 접속 -> SQL 실행 -> NL 변환 -> Chunking)
                     result = self.db_processor.process(source_config)
+                    if result.metadata.get("error") is not None:
+                        reason_code = result.metadata.get("reason_code")
+                        if reason_code not in _SAFE_PROCESSOR_FAILURE_REASONS:
+                            reason_code = "source.sync_failed"
+                        last_sync = (
+                            doc.updated_at.strftime("%Y-%m-%d %H:%M:%S")
+                            if doc.updated_at
+                            else "알 수 없음"
+                        )
+                        failed_docs.append(
+                            {
+                                "filename": doc.filename,
+                                "last_synced": last_sync,
+                                "error": reason_code,
+                            }
+                        )
+                        continue
 
                     # 2. Vector Store Save (Embedding -> DB Save)
                     self.vector_store_service.save_chunks(
@@ -152,8 +177,11 @@ class SyncService:
 
                     synced_count += 1
 
-                except Exception as e:
-                    logger.error(f"[동기화] 외부 DB {doc.filename} 동기화 실패: {e}")
+                except Exception as exc:
+                    logger.error(
+                        "[동기화] 외부 DB 동기화 실패: error_type=%s",
+                        type(exc).__name__,
+                    )
 
                     last_sync = (
                         doc.updated_at.strftime("%Y-%m-%d %H:%M:%S")
@@ -164,7 +192,7 @@ class SyncService:
                         {
                             "filename": doc.filename,
                             "last_synced": last_sync,
-                            "error": str(e),
+                            "error": "source.sync_failed",
                         }
                     )
                     # 워크플로우 실행 자체를 막지 않고 이전 데이터로 계속 실행
