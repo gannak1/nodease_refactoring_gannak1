@@ -16,6 +16,7 @@ from apps.gateway.services.connection_lifecycle_service import (
     ConnectionLifecycleHidden,
     ConnectionLifecycleInUse,
     ConnectionLifecycleService,
+    ConnectionLifecycleUnavailable,
 )
 from apps.gateway.services.knowledge_document_registration_service import (
     KnowledgeDocumentRegistrationHidden,
@@ -313,6 +314,48 @@ def test_registration_hides_knowledge_base_from_another_organization(
         )
 
 
+def test_registration_repairs_legacy_stale_active_pointer(
+    postgres_session_factory,
+):
+    organization_id, knowledge_base_id = _create_empty_knowledge_base(
+        postgres_session_factory
+    )
+    with postgres_session_factory() as setup_db:
+        kb = setup_db.query(KnowledgeBase).filter_by(id=knowledge_base_id).one()
+        stale_version = DocumentVersion(
+            organization_id=organization_id,
+            knowledge_base_id=knowledge_base_id,
+            legacy_document_id=None,
+            version_number=1,
+            status="ready",
+        )
+        setup_db.add(stale_version)
+        setup_db.flush()
+        stale_version_id = stale_version.id
+        kb.active_document_version_id = stale_version_id
+        setup_db.commit()
+
+    document_id = _register_document(
+        postgres_session_factory,
+        organization_id=organization_id,
+        knowledge_base_id=knowledge_base_id,
+        filename="replacement.txt",
+    )
+
+    with postgres_session_factory() as verification_db:
+        kb = verification_db.query(KnowledgeBase).filter_by(id=knowledge_base_id).one()
+        stale_version = (
+            verification_db.query(DocumentVersion)
+            .filter_by(id=stale_version_id)
+            .one()
+        )
+        document = verification_db.query(Document).filter_by(id=document_id).one()
+        assert kb.active_document_version_id is None
+        assert stale_version.status == "superseded"
+        assert stale_version.superseded_at is not None
+        assert document.filename == "replacement.txt"
+
+
 def test_committed_document_delete_reopens_initial_registration_slot(
     postgres_session_factory,
 ):
@@ -547,3 +590,76 @@ def test_connection_cleanup_rejects_live_document_reference_then_allows_release(
         assert (
             verification_db.query(Connection).filter_by(id=connection_id).count() == 0
         )
+
+
+def test_connection_reference_lock_serializes_settings_save_with_delete(
+    postgres_session_factory,
+):
+    organization_id, knowledge_base_id = _create_empty_knowledge_base(
+        postgres_session_factory
+    )
+    connection_id = uuid.uuid4()
+    with postgres_session_factory() as setup_db:
+        owner_id = (
+            setup_db.query(KnowledgeBase.user_id)
+            .filter(KnowledgeBase.id == knowledge_base_id)
+            .scalar()
+        )
+        setup_db.add(
+            Connection(
+                id=connection_id,
+                user_id=owner_id,
+                name="Settings DB",
+                type="postgres",
+                host="db.invalid",
+                port=5432,
+                database="settings",
+                username="settings",
+                encrypted_password="encrypted-placeholder",
+                use_ssh=False,
+            )
+        )
+        setup_db.commit()
+
+    with postgres_session_factory() as register_db:
+        document_id = KnowledgeDocumentRegistrationService(
+            register_db
+        ).register_initial_document(
+            knowledge_base_id=knowledge_base_id,
+            organization_id=organization_id,
+            filename="Settings DB",
+            file_path=None,
+            chunk_size=500,
+            chunk_overlap=50,
+            source_type=SourceType.DB,
+            meta_info={},
+        )
+
+    with postgres_session_factory() as writer_db:
+        ConnectionLifecycleService(writer_db).lock_owned_connection_for_reference(
+            connection_id=connection_id,
+            owner_id=owner_id,
+        )
+        document = writer_db.query(Document).filter_by(id=document_id).one()
+
+        with postgres_session_factory() as contender_db:
+            contender_db.execute(text("SET LOCAL lock_timeout = '200ms'"))
+            with pytest.raises(ConnectionLifecycleUnavailable):
+                ConnectionLifecycleService(
+                    contender_db
+                ).delete_unreferenced_connection(
+                    connection_id=connection_id,
+                    owner_id=owner_id,
+                )
+
+        document.meta_info = {
+            "db_config": {"connection_id": str(connection_id)}
+        }
+        writer_db.commit()
+
+    with postgres_session_factory() as blocked_db:
+        with pytest.raises(ConnectionLifecycleInUse):
+            ConnectionLifecycleService(blocked_db).delete_unreferenced_connection(
+                connection_id=connection_id,
+                owner_id=owner_id,
+            )

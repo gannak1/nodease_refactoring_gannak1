@@ -64,6 +64,11 @@ from apps.gateway.services.ingestion.service import (
     recover_timed_out_document_with_artifacts,
 )
 from apps.gateway.services.knowledge_candidate_resolver import KnowledgeCandidateResolver
+from apps.gateway.services.connection_lifecycle_service import (
+    ConnectionLifecycleHidden,
+    ConnectionLifecycleService,
+    ConnectionLifecycleUnavailable,
+)
 from apps.gateway.services.knowledge_collection_service import (
     KnowledgeCollectionService,
     KnowledgeCollectionServiceError,
@@ -2135,6 +2140,53 @@ def get_document_content(
     return KnowledgeDocumentContentService().build_content_response(doc)
 
 
+def _lock_db_connection_reference(
+    request: Request,
+    db: Session,
+    *,
+    document: Document,
+    owner_id: UUID,
+    db_config: dict | None,
+) -> None:
+    if document.source_type != "DB" or not db_config:
+        return
+
+    raw_connection_id = db_config.get("connection_id")
+    if raw_connection_id is None:
+        return
+    try:
+        connection_id = UUID(str(raw_connection_id))
+    except (TypeError, ValueError, AttributeError):
+        raise_api_error(
+            request,
+            400,
+            "validation.failed",
+            "The DB connection reference is invalid.",
+        )
+
+    try:
+        ConnectionLifecycleService(db).lock_owned_connection_for_reference(
+            connection_id=connection_id,
+            owner_id=owner_id,
+        )
+    except ConnectionLifecycleHidden:
+        db.rollback()
+        raise_api_error(
+            request,
+            404,
+            "resource.hidden",
+            "Connection not found.",
+        )
+    except ConnectionLifecycleUnavailable:
+        db.rollback()
+        raise_api_error(
+            request,
+            503,
+            "connection.reference_unavailable",
+            "The DB connection reference is temporarily unavailable.",
+        )
+
+
 @router.post(
     "/{kb_id}/documents/{document_id}/process", status_code=status.HTTP_202_ACCEPTED
 )
@@ -2172,6 +2224,14 @@ async def process_document(
         )
     except RAGHierarchyError as exc:
         raise _chunking_http_exception(exc)
+
+    _lock_db_connection_reference(
+        request,
+        db,
+        document=doc,
+        owner_id=current_user.id,
+        db_config=preview_request.db_config,
+    )
 
     # 2. 설정 업데이트
     doc.chunk_size = preview_request.chunk_size

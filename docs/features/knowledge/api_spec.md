@@ -14,6 +14,7 @@ KC sync 요청·상태 조회와 durable execution 계약은 [ADR-0048](../../de
 | POST | `/api/v1/knowledge` | 빈 KB 생성 | Active organization에 KB, 생성자의 user-direct `manager`, canonical audit를 한 transaction에서 생성한다. 필수 schema가 준비되지 않으면 `503 knowledge.schema_not_ready`로 fail-closed 처리한다 |
 | GET | `/api/v1/knowledge/{kb_id}` | 현재 KB 상세와 문서 상태 | Active organization + KB `read`. Detail capability는 `can_read/use/write/read_content/manage`와 빈 active manual KB에 최초 source를 등록할 수 있는 `can_register_initial_document`를 반환한다 |
 | GET | `/api/v1/knowledge/{kb_id}/documents/{document_id}/edit-config` | Document preview/process 설정 복원 | Active organization + KB `write`. Bounded property/aggregate/serialized-size allowlist만 반환하고 read detail과 encrypted source config를 재사용하지 않는다. 성공 응답은 `Cache-Control: no-store`다 |
+| POST | `/api/v1/knowledge/{kb_id}/documents/{document_id}/process` | Document 설정 저장과 처리 시작 | Active organization + KB `write`. DB source의 새 `db_config.connection_id`는 owner Connection row를 잠근 뒤 metadata와 함께 commit해 Connector 삭제와 직렬화한다. Missing/other-owner reference는 `404 resource.hidden`, persistence failure는 `503 connection.reference_unavailable`로 닫는다 |
 | GET | `/api/v1/knowledge/{kb_id}/safe-metadata` | allowlisted KB recommendation metadata 조회 | active organization, KB `manage`; 권한 없는 resource는 404로 숨긴다 |
 | PATCH | `/api/v1/knowledge/{kb_id}/safe-metadata` | `safe_label`, `kb_safe_description`, `kb_safe_topics` 수정 | active organization, KB `manage`, sanitizer, audit. 일반 KB 설정 PATCH와 분리한다 |
 | POST | `/api/v1/knowledge/{kb_id}/archive`, `/restore` | Manual KB lifecycle 전이 | KB `manage` 또는 domain `lifecycle_manage`; source-managed KB는 source-owned로 차단 |
@@ -37,7 +38,7 @@ KC sync 요청·상태 조회와 durable execution 계약은 [ADR-0048](../../de
 
 MBA-231 cutover 이후 `/api/v1/knowledge/*`의 list/detail/settings/document/process/preview/sync와 `/api/v1/rag/upload`, document analyze/confirm/delete/progress는 active organization과 canonical KB action helper를 사용한다. `knowledge_bases.user_id`는 생성자/귀속 정보이며 이 표면의 권한 우회가 아니다. MBA-273부터 Knowledge 최초 등록을 위한 presigned upload 호출은 대상 `knowledgeBaseId`를 전달하고 active organization, KB `write`, initial document slot fast precheck를 통과해야 한다. 같은 endpoint를 사용하는 Workflow 입력 파일은 아직 KB가 확정되지 않은 별도 storage surface이므로 KB 식별자 없이 기존 authenticated storage 경계를 따른다. URL/proxy preview처럼 아직 KB가 확정되지 않은 표면은 별도 storage/egress 경계를 따르며, raw/source-derived content는 승인된 `content_read` 또는 후속 raw/compliance 정책 없이 노출하지 않는다.
 
-`GET /api/v1/knowledge/{kb_id}`의 `can_register_initial_document`는 서버가 계산한 UI capability다. Caller가 KB `write`를 가지고, KB가 active manual/non-source-managed이며 현재 `Document`가 없을 때만 true다. Field 누락이나 false는 fail-closed다. 이 값은 mutation authorization token이 아니며 `/rag/upload`는 동일 정책을 KB row lock 아래에서 다시 확인한다. Independent source append conflict는 raw filename/path나 기존 document identity를 포함하지 않는 다음 safe response를 사용한다.
+`GET /api/v1/knowledge/{kb_id}`의 `can_register_initial_document`는 서버가 계산한 UI capability다. Caller가 KB `write`를 가지고, KB가 active manual/non-source-managed이며 현재 `Document`가 없을 때만 true다. Field 누락이나 false는 fail-closed다. 이 값은 mutation authorization token이 아니며 `/rag/upload`는 동일 정책을 KB row lock 아래에서 다시 확인한다. 과거 삭제가 남긴 active version pointer는 canonical registration에서 version의 `legacy_document_id`와 `source_identity_id`가 이미 제거된 경우에만 `superseded`로 전환하고 pointer를 해제한다. Live document/source identity 또는 source-managed state는 자동 복구하지 않는다. Independent source append conflict는 raw filename/path나 기존 document identity를 포함하지 않는 다음 safe response를 사용한다.
 
 ```json
 {
@@ -342,7 +343,10 @@ DB source UI가 이번 요청에서 새 Connection을 먼저 생성한 뒤 canon
 `404 resource.hidden`, persistence failure는 `503 connection.delete_unavailable`로 닫는다.
 DB source registration은 같은 Connection row lock을 commit까지 유지해 reference 생성과
 보상 삭제의 경합을 직렬화한다. Commit 결과가 불명확한 registration 오류에서는 Client가
-Connection을 자동 삭제하지 않는다.
+Connection을 자동 삭제하지 않는다. 기존 DB Document의 process 설정에서 새
+`db_config.connection_id`를 저장할 때도 같은 owner-scoped Connection row lock을 metadata
+commit까지 유지한다. 따라서 delete가 먼저 commit되면 설정 저장은 `404 resource.hidden`,
+설정 저장이 먼저 commit되면 delete는 `409 connection.in_use`로 닫힌다.
 
 Direct resource는 active organization으로 먼저 scope를 고정한다. Unknown,
 cross-organization, deleted 또는 invisible resource는 `404 resource.hidden`,

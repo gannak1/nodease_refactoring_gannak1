@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -9,7 +10,12 @@ from sqlalchemy.orm import Session
 from apps.gateway.services.knowledge_mutation_locks import (
     lock_fresh_knowledge_base,
 )
-from apps.shared.db.models.knowledge import Document, KnowledgeBase, SourceType
+from apps.shared.db.models.knowledge import (
+    Document,
+    DocumentVersion,
+    KnowledgeBase,
+    SourceType,
+)
 
 
 class KnowledgeDocumentRegistrationError(Exception):
@@ -41,10 +47,7 @@ class KnowledgeDocumentRegistrationUnavailable(
 def is_initial_document_registration_eligible(kb: KnowledgeBase) -> bool:
     """Return the KB-level policy result without evaluating caller authority."""
 
-    return (
-        _is_initial_document_registration_source_eligible(kb)
-        and getattr(kb, "active_document_version_id", None) is None
-    )
+    return _is_initial_document_registration_source_eligible(kb)
 
 
 def _is_initial_document_registration_source_eligible(kb: KnowledgeBase) -> bool:
@@ -81,7 +84,6 @@ class KnowledgeDocumentRegistrationService:
             )
             self._ensure_source_policy_allows_registration(kb)
             self._ensure_document_slot_empty(knowledge_base_id)
-            self._ensure_active_document_pointer_empty(kb)
         except KnowledgeDocumentRegistrationError:
             raise
         except SQLAlchemyError:
@@ -108,7 +110,7 @@ class KnowledgeDocumentRegistrationService:
             )
             self._ensure_source_policy_allows_registration(kb)
             self._ensure_document_slot_empty(knowledge_base_id)
-            self._ensure_active_document_pointer_empty(kb)
+            self._release_stale_active_document_pointer(kb)
 
             document = Document(
                 knowledge_base_id=knowledge_base_id,
@@ -166,10 +168,34 @@ class KnowledgeDocumentRegistrationService:
         if not _is_initial_document_registration_source_eligible(kb):
             raise KnowledgeDocumentRegistrationPolicyDenied()
 
-    @staticmethod
-    def _ensure_active_document_pointer_empty(kb: KnowledgeBase) -> None:
-        if getattr(kb, "active_document_version_id", None) is not None:
+    def _release_stale_active_document_pointer(self, kb: KnowledgeBase) -> None:
+        active_version_id = getattr(kb, "active_document_version_id", None)
+        if active_version_id is None:
+            return
+
+        active_version = (
+            self.db.query(DocumentVersion)
+            .filter(
+                DocumentVersion.id == active_version_id,
+                DocumentVersion.knowledge_base_id == kb.id,
+            )
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if (
+            active_version is not None
+            and (
+                active_version.legacy_document_id is not None
+                or active_version.source_identity_id is not None
+            )
+        ):
             raise KnowledgeDocumentRegistrationPolicyDenied()
+
+        kb.active_document_version_id = None
+        if active_version is not None and active_version.status != "superseded":
+            active_version.status = "superseded"
+            active_version.superseded_at = datetime.now(timezone.utc)
 
     def _ensure_document_slot_empty(self, knowledge_base_id: UUID) -> None:
         existing_document_id = (

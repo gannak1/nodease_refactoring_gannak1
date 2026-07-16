@@ -27,17 +27,19 @@ class ConnectionLifecycleUnavailable(ConnectionLifecycleError):
 
 
 class ConnectionLifecycleService:
-    """Delete an owner connection only when no Knowledge document references it."""
+    """Serialize owner connection references with reference-aware deletion."""
 
     def __init__(self, db: Session) -> None:
         self.db = db
 
-    def delete_unreferenced_connection(
+    def lock_owned_connection_for_reference(
         self,
         *,
         connection_id: UUID,
         owner_id: UUID,
-    ) -> None:
+    ) -> Connection:
+        """Serialize a new document reference with owner-scoped deletion."""
+
         try:
             connection = (
                 self.db.query(Connection)
@@ -48,8 +50,23 @@ class ConnectionLifecycleService:
                 .with_for_update()
                 .first()
             )
-            if connection is None:
-                raise ConnectionLifecycleHidden()
+        except SQLAlchemyError:
+            raise ConnectionLifecycleUnavailable() from None
+        if connection is None:
+            raise ConnectionLifecycleHidden()
+        return connection
+
+    def delete_unreferenced_connection(
+        self,
+        *,
+        connection_id: UUID,
+        owner_id: UUID,
+    ) -> None:
+        try:
+            connection = self.lock_owned_connection_for_reference(
+                connection_id=connection_id,
+                owner_id=owner_id,
+            )
 
             referenced_document = (
                 self.db.query(Document.id)

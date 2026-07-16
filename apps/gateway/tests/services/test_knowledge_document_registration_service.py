@@ -12,7 +12,12 @@ from apps.gateway.services.knowledge_document_registration_service import (
     KnowledgeDocumentSlotOccupied,
     is_initial_document_registration_eligible,
 )
-from apps.shared.db.models.knowledge import Document, KnowledgeBase, SourceType
+from apps.shared.db.models.knowledge import (
+    Document,
+    DocumentVersion,
+    KnowledgeBase,
+    SourceType,
+)
 
 
 class _Query:
@@ -36,6 +41,8 @@ class _Query:
             raise self.db.query_error
         if self.entity is KnowledgeBase:
             return self.db.kb
+        if self.entity is DocumentVersion:
+            return self.db.active_version
         return self.db.existing_document
 
 
@@ -45,12 +52,14 @@ class _Db:
         kb,
         *,
         existing_document=None,
+        active_version=None,
         query_error=None,
         flush_error=None,
         commit_error=None,
     ):
         self.kb = kb
         self.existing_document = existing_document
+        self.active_version = active_version
         self.query_error = query_error
         self.flush_error = flush_error
         self.commit_error = commit_error
@@ -151,6 +160,68 @@ def test_completed_document_with_active_pointer_reports_slot_occupied():
     assert db.rolled_back is True
 
 
+def test_stale_active_pointer_without_document_is_released_on_registration():
+    active_version_id = uuid.uuid4()
+    kb = _kb(active_document_version_id=active_version_id)
+    active_version = SimpleNamespace(
+        id=active_version_id,
+        knowledge_base_id=kb.id,
+        legacy_document_id=None,
+        source_identity_id=None,
+        status="ready",
+        superseded_at=None,
+    )
+    db = _Db(kb, active_version=active_version)
+
+    _register(KnowledgeDocumentRegistrationService(db), kb)
+
+    assert kb.active_document_version_id is None
+    assert active_version.status == "superseded"
+    assert active_version.superseded_at is not None
+    assert db.refreshed_entities == [KnowledgeBase, DocumentVersion]
+    assert db.committed is True
+
+
+def test_active_pointer_with_live_document_identity_fails_closed():
+    active_version_id = uuid.uuid4()
+    kb = _kb(active_document_version_id=active_version_id)
+    active_version = SimpleNamespace(
+        id=active_version_id,
+        knowledge_base_id=kb.id,
+        legacy_document_id=uuid.uuid4(),
+        source_identity_id=None,
+        status="ready",
+    )
+    db = _Db(kb, active_version=active_version)
+
+    with pytest.raises(KnowledgeDocumentRegistrationPolicyDenied):
+        _register(KnowledgeDocumentRegistrationService(db), kb)
+
+    assert kb.active_document_version_id == active_version_id
+    assert db.added is None
+    assert db.rolled_back is True
+
+
+def test_active_pointer_with_source_identity_fails_closed():
+    active_version_id = uuid.uuid4()
+    kb = _kb(active_document_version_id=active_version_id)
+    active_version = SimpleNamespace(
+        id=active_version_id,
+        knowledge_base_id=kb.id,
+        legacy_document_id=None,
+        source_identity_id=uuid.uuid4(),
+        status="ready",
+    )
+    db = _Db(kb, active_version=active_version)
+
+    with pytest.raises(KnowledgeDocumentRegistrationPolicyDenied):
+        _register(KnowledgeDocumentRegistrationService(db), kb)
+
+    assert kb.active_document_version_id == active_version_id
+    assert db.added is None
+    assert db.rolled_back is True
+
+
 def test_source_managed_kb_does_not_disclose_existing_document_slot():
     kb = _kb(source_identity_id=uuid.uuid4(), sync_state="synced")
     db = _Db(kb, existing_document=(uuid.uuid4(), "completed"))
@@ -168,7 +239,6 @@ def test_source_managed_kb_does_not_disclose_existing_document_slot():
         {"source_identity_id": uuid.uuid4()},
         {"sync_state": "synced"},
         {"sync_state": "source_deleted"},
-        {"active_document_version_id": uuid.uuid4()},
     ],
 )
 def test_source_managed_or_non_manual_kb_rejects_registration(overrides):
@@ -229,6 +299,12 @@ def test_fast_precheck_maps_database_failure_without_raw_detail():
 
 def test_policy_helper_does_not_treat_write_authority_as_source_eligibility():
     assert is_initial_document_registration_eligible(_kb()) is True
+    assert (
+        is_initial_document_registration_eligible(
+            _kb(active_document_version_id=uuid.uuid4())
+        )
+        is True
+    )
     assert (
         is_initial_document_registration_eligible(
             _kb(source_identity_id=uuid.uuid4())

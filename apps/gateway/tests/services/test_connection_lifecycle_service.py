@@ -71,6 +71,21 @@ def test_delete_unreferenced_connection_locks_owner_row_and_commits():
     assert db.rolled_back is False
 
 
+def test_reference_target_lock_uses_owner_row_without_committing():
+    connection = SimpleNamespace(id=uuid.uuid4(), user_id=uuid.uuid4())
+    db = _Db(connection=connection)
+
+    locked = ConnectionLifecycleService(db).lock_owned_connection_for_reference(
+        connection_id=connection.id,
+        owner_id=connection.user_id,
+    )
+
+    assert locked is connection
+    assert db.connection_locked is True
+    assert db.committed is False
+    assert db.rolled_back is False
+
+
 def test_delete_connection_hides_missing_or_other_owner_resource():
     db = _Db(connection=None)
 
