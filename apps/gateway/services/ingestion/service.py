@@ -266,12 +266,14 @@ class IngestionOrchestrator:
         self,
         db: Session,
         user_id: Optional[UUID] = None,
+        organization_id: Optional[UUID] = None,
         chunk_size=1000,
         chunk_overlap=200,
         ai_model="text-embedding-3-small",
     ):
         self.db = db
         self.user_id = user_id
+        self.organization_id = organization_id
         self.ai_model = ai_model
 
         self.text_splitter = RecursiveCharacterTextSplitter(
@@ -492,7 +494,12 @@ class IngestionOrchestrator:
         )
 
     def _extract_raw_blocks(self, doc: Document) -> List[Dict[str, Any]]:
-        processor = IngestionFactory.get_processor(doc.source_type, self.db, self.user_id)
+        processor = IngestionFactory.get_processor(
+            doc.source_type,
+            self.db,
+            self.user_id,
+            self.organization_id,
+        )
         result = processor.process(self._build_config(doc))
         if result.metadata.get("error"):
             raise Exception(result.metadata["error"])
@@ -830,7 +837,10 @@ class IngestionOrchestrator:
             raise ValueError("Document not found")
 
         processor = IngestionFactory.get_processor(
-            doc.source_type, self.db, self.user_id
+            doc.source_type,
+            self.db,
+            self.user_id,
+            self.organization_id,
         )
         source_config = self._build_config(doc)
 
@@ -886,7 +896,12 @@ class IngestionOrchestrator:
             selection_mode=selection_mode,
         )
 
-        processor = IngestionFactory.get_processor(source_type, self.db, self.user_id)
+        processor = IngestionFactory.get_processor(
+            source_type,
+            self.db,
+            self.user_id,
+            self.organization_id,
+        )
 
         source_config = {}
         if source_type == SourceType.FILE:

@@ -967,7 +967,7 @@ def test_presigned_url_rejects_unsupported_extension_before_storage(monkeypatch)
 
 def test_analyze_document_returns_safe_error(monkeypatch):
     class FailingIngestionService:
-        def __init__(self, db, user_id):
+        def __init__(self, db, user_id, organization_id=None):
             pass
 
         async def analyze_document(self, document_id):

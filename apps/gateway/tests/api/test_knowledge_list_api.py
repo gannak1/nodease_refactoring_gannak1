@@ -1033,6 +1033,7 @@ def test_document_edit_config_requires_write_and_returns_bounded_projection(
 async def test_api_process_preserves_server_side_encrypted_source_config(monkeypatch):
     knowledge_base_id = uuid.uuid4()
     document_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
     encrypted_config = {
         "url_encrypted": "opaque-url-ciphertext",
         "method": "POST",
@@ -1056,17 +1057,28 @@ async def test_api_process_preserves_server_side_encrypted_source_config(monkeyp
 
     class FakeIngestionService:
         def __init__(self, *_args, **_kwargs):
-            pass
+            self.organization_id = _kwargs.get("organization_id")
 
         async def process_document(self, _document_id):
             pass
 
     db = FakeDb()
+    created_services = []
+
+    def create_ingestion_service(*args, **kwargs):
+        service = FakeIngestionService(*args, **kwargs)
+        created_services.append(service)
+        return service
+
     monkeypatch.setattr(
         knowledge_endpoint,
         "_authorized_knowledge_document",
         lambda *args, **kwargs: (
-            SimpleNamespace(id=knowledge_base_id, embedding_model="embedding-model"),
+            SimpleNamespace(
+                id=knowledge_base_id,
+                organization_id=organization_id,
+                embedding_model="embedding-model",
+            ),
             document,
         ),
     )
@@ -1078,7 +1090,7 @@ async def test_api_process_preserves_server_side_encrypted_source_config(monkeyp
     monkeypatch.setattr(
         knowledge_endpoint,
         "IngestionService",
-        FakeIngestionService,
+        create_ingestion_service,
     )
 
     response = await knowledge_endpoint.process_document.__wrapped__(
@@ -1102,6 +1114,7 @@ async def test_api_process_preserves_server_side_encrypted_source_config(monkeyp
         "message": "Document processing started",
     }
     assert db.committed is True
+    assert [service.organization_id for service in created_services] == [organization_id]
     assert document.meta_info["api_config"] is encrypted_config
     assert document.meta_info["db_config"] is None
 

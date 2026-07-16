@@ -7,6 +7,8 @@ Status: Draft
 - Credential response builder는 저장 schema의 `user_id`를 개인 credential owner 표시로 노출하지 않거나, 노출이 필요한 기존 response에서는 등록 행위자 reference로만 취급한다.
 - Agent answer option builder는 credential value, encrypted config, API key/token, raw owner metadata, 불필요한 raw timestamp를 제외한다.
 - Credential-model relation resolver는 inactive, unverified, wrong-provider, missing relation case를 거부한다.
+- LlamaParse credential resolver는 execution subject와 active organization이 모두 있을 때만 같은 organization의 valid `llamaparse` credential을 조회하고 `use` 권한을 다시 확인한다. 다른 user/organization credential, revoke/invalid, provider 불일치, 권한 상실, context 누락은 parser 호출 전에 차단한다.
+- LlamaParse resolver는 허용 후보가 하나일 때만 parser 입력을 반환한다. 후보 없음 또는 둘 이상은 created_at/name/latest/default fallback 없이 fail-closed한다.
 - Generation credential preflight는 KB permission, collection route permission, source ACL authorization을 충족시키지 않는다.
 - ProviderExecutionCapability issuer는 opaque identity/revision, organization/workflow/deployment version, node invocation/execution admission/provider attempt, provider/model/credential, server-derived credential principal, credential permission decision, purpose, verified relation/egress·pricing revision, token·cost cap과 expiry를 모두 고정한다.
 - Capability response/trace에는 raw credential, encrypted config와 capability token/scope 원문을 노출하지 않는다.
@@ -38,6 +40,7 @@ Status: Draft
 
 - 여러 credential 또는 model이 있어도 name/order fallback selection을 하지 않는다.
 - Default credential/preset ambiguity는 향후 ADR이 selection priority를 정의하기 전까지 gated/unsupported condition으로 반환한다.
+- LlamaParse processing failure response, processing metadata, audit/trace/log fixture에는 credential ID, config 원문, API key, decrypted value 또는 provider raw payload가 없어야 한다.
 - Capability의 deployment version, node invocation, model, pricing revision, token/cost cap 또는 expiry 중 하나가 mismatch이면 raw secret/provider call 없이 fail-closed한다.
 - Capability의 execution admission 또는 provider attempt binding을 다른 run/attempt에서 재사용하면 provider SDK 호출 전에 fail-closed한다.
 - Provider call 시작 뒤 credential이 revoke된 ambiguous outcome은 자동 재호출하지 않되 이미 발생한 usage reconciliation은 같은 capability/attempt safe reference로 한 번만 처리한다.

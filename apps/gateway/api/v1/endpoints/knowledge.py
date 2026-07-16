@@ -1861,7 +1861,11 @@ def update_knowledge_base(
         kb.embedding_model = update_data.embedding_model
 
         # 재인덱싱 트리거
-        orchestrator = IngestionService(db, current_user.id)
+        orchestrator = IngestionService(
+            db,
+            current_user.id,
+            organization_id=organization_id,
+        )
         background_tasks.add_task(
             orchestrator.reindex_knowledge_base, kb.id, update_data.embedding_model
         )
@@ -2203,6 +2207,7 @@ async def process_document(
     ingestion_service = IngestionService(
         db,
         user_id=current_user.id,
+        organization_id=kb.organization_id,
         chunk_size=preview_request.chunk_size,
         chunk_overlap=preview_request.chunk_overlap,
         ai_model=kb.embedding_model,
@@ -2232,7 +2237,7 @@ def preview_document_chunking(
     문서 청킹 설정을 미리보기 합니다. DB를 업데이트하지 않고 결과만 반환합니다.
     """
     # 1. 문서 존재 및 권한 확인
-    _, doc = _authorized_knowledge_document(
+    kb, doc = _authorized_knowledge_document(
         kb_id,
         document_id,
         "write",
@@ -2252,7 +2257,11 @@ def preview_document_chunking(
         raise _chunking_http_exception(exc)
 
     # 2. 서비스 호출
-    service = IngestionService(db, user_id=current_user.id)
+    service = IngestionService(
+        db,
+        user_id=current_user.id,
+        organization_id=kb.organization_id,
+    )
     try:
         segments = service.preview_chunking(
             file_path=doc.file_path,
@@ -2329,6 +2338,7 @@ async def sync_document(
     ingestion_service = IngestionService(
         db,
         user_id=current_user.id,
+        organization_id=kb.organization_id,
         chunk_size=doc.chunk_size,
         chunk_overlap=doc.chunk_overlap,
         ai_model=kb.embedding_model,

@@ -30,6 +30,9 @@ KC sync의 실행·복구·snapshot·versioned finalization 검증은 [ADR-0048]
 
 ## Permission And RBAC Tests
 
+- LlamaParse document processing은 execution subject와 active organization이 모두 있는 경우에만 시작한다. 다른 user/organization credential, revoke/invalid credential, provider 불일치, `use` 권한 상실, 후보 없음 또는 복수 후보에서는 provider parser 호출이 발생하면 실패다.
+- LlamaParse parser input resolver는 기존 credential service boundary를 사용한다. FileProcessor가 `LLMCredential` row 또는 stored config를 직접 조회/해석하거나 created_at 최신 row를 fallback으로 선택하면 실패다.
+- LlamaParse parser credential 실패의 processing metadata, API error, audit/trace/log capture와 fixture에는 credential ID, API key, config 원문, decrypted value와 provider raw payload가 없어야 한다.
 - Team onboarding demo seed는 회사 공통 PDF용 빈 KB를 플랫폼개발·영업·재무·People 팀에 부여하고, 각 팀 전용 빈 KB는 해당 팀과 People 팀에만 부여한다. 플랫폼개발팀 사용자의 runtime 후보에 영업·재무 KB가 포함되거나 영업팀 사용자의 후보에 플랫폼개발·재무 KB가 포함되면 실패한다.
 - Team onboarding demo의 네 KB는 `demodata/` PDF를 Document로 등록한다. runtime OpenAI credential 옵션만 사용해도 기존 precomputed fixture가 법령·사내문서를 채우고, PDF를 실제 파싱한 `text-embedding-3-small` embedding을 생성해 reset 직후 검색 가능해야 한다. 이 경로는 로컬 법령 PDF 원본을 요구하지 않는다. 플랫폼 PDF의 manager-only 마지막 페이지는 chunk ACL을 가장하지 않고 일반 플랫폼 KB 복사본에서 제외한다.
 - Demo reset은 demo Knowledge Base 또는 demo 사용자와 연결된 `user_knowledge_permissions`를 Knowledge Base보다 먼저 삭제해야 한다. migration backfill이나 시연 중 생성된 직접 권한이 남아 있어도 외래키 오류 없이 reset 후 같은 demo 상태를 재생성해야 한다.

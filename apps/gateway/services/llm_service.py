@@ -21,7 +21,6 @@ from apps.shared.db.models.llm import (
     LLMRelCredentialModel,
     LLMUsageLog,
 )
-from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_run import WorkflowRun
 from apps.shared.schemas.llm import (
     LLMCredentialCreate,
@@ -513,7 +512,7 @@ class LLMService:
     ) -> List[LLMCredentialResponse]:
         """사용자의 유효한 크리덴셜 목록 조회."""
         valid_credentials = (
-            db.query(LLMCredential).filter(LLMCredential.is_valid == True).all()
+            db.query(LLMCredential).filter(LLMCredential.is_valid.is_(True)).all()
         )
         readable_credentials = [
             credential
@@ -694,7 +693,7 @@ class LLMService:
                 db.query(LLMRelCredentialModel)
                 .filter(
                     LLMRelCredentialModel.credential_id == cred.id,
-                    LLMRelCredentialModel.is_verified == False,
+                    LLMRelCredentialModel.is_verified.is_(False),
                 )
                 .delete(synchronize_session=False)
             )
@@ -762,7 +761,7 @@ class LLMService:
             cfg = json.loads(cred.encrypted_config)
             api_key = cfg.get("apiKey")
             base_url = cfg.get("baseUrl")
-        except:
+        except (TypeError, ValueError, json.JSONDecodeError):
             raise ValueError("Invalid credential config")
 
         db.refresh(cred)
@@ -830,6 +829,100 @@ class LLMService:
         )
 
     @staticmethod
+    def _list_llamaparse_credentials(
+        db: Session,
+        organization_id: uuid.UUID,
+    ) -> list[LLMCredential]:
+        """LlamaParse provider와 조직 범위가 일치하는 활성 credential만 조회한다."""
+        return (
+            db.query(LLMCredential)
+            .options(joinedload(LLMCredential.provider))
+            .join(LLMProvider, LLMCredential.provider_id == LLMProvider.id)
+            .filter(
+                LLMCredential.organization_id == organization_id,
+                LLMCredential.is_valid.is_(True),
+                LLMProvider.name == "llamaparse",
+            )
+            .order_by(LLMCredential.id.asc())
+            .all()
+        )
+
+    @staticmethod
+    def resolve_llamaparse_api_key(
+        db: Session,
+        *,
+        user_id: Optional[uuid.UUID],
+        organization_id: Optional[uuid.UUID],
+    ) -> str:
+        """문서 파싱에 사용할 단일 permission-aware LlamaParse credential을 해석한다."""
+        try:
+            user_uuid = uuid.UUID(str(user_id)) if user_id is not None else None
+            organization_uuid = (
+                uuid.UUID(str(organization_id))
+                if organization_id is not None
+                else None
+            )
+        except (TypeError, ValueError) as exc:
+            raise LLMCredentialNotAvailableError(
+                "credential_context_missing",
+                "LlamaParse credential context is unavailable.",
+            ) from exc
+
+        if user_uuid is None or organization_uuid is None:
+            raise LLMCredentialNotAvailableError(
+                "credential_context_missing",
+                "LlamaParse credential context is unavailable.",
+            )
+
+        candidates = []
+        for credential in LLMService._list_llamaparse_credentials(db, organization_uuid):
+            provider_name = getattr(getattr(credential, "provider", None), "name", "")
+            if (
+                not credential.is_valid
+                or provider_name.lower() != "llamaparse"
+                or not has_llm_credential_permission(
+                    db,
+                    user_uuid,
+                    credential.id,
+                    "use",
+                    organization_id=organization_uuid,
+                )
+            ):
+                continue
+            candidates.append(credential)
+
+        if not candidates:
+            raise LLMCredentialNotAvailableError(
+                "credential_not_available",
+                "LlamaParse credential is unavailable.",
+                organization_id=organization_uuid,
+            )
+        if len(candidates) != 1:
+            raise LLMCredentialNotAvailableError(
+                "credential_selection_ambiguous",
+                "LlamaParse credential selection is ambiguous.",
+                organization_id=organization_uuid,
+            )
+
+        try:
+            config = json.loads(candidates[0].encrypted_config)
+            api_key = config.get("apiKey") if isinstance(config, dict) else None
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raise LLMCredentialNotAvailableError(
+                "credential_not_available",
+                "LlamaParse credential is unavailable.",
+                organization_id=organization_uuid,
+            ) from None
+
+        if not isinstance(api_key, str) or not api_key:
+            raise LLMCredentialNotAvailableError(
+                "credential_not_available",
+                "LlamaParse credential is unavailable.",
+                organization_id=organization_uuid,
+            )
+        return api_key
+
+    @staticmethod
     def _get_valid_credential_for_user(
         db: Session,
         user_id: uuid.UUID,
@@ -845,7 +938,7 @@ class LLMService:
                 return None
 
         query = db.query(LLMCredential).filter(
-            LLMCredential.is_valid == True,
+            LLMCredential.is_valid.is_(True),
         )
         if organization_uuid:
             query = query.filter(LLMCredential.organization_id == organization_uuid)
@@ -859,7 +952,7 @@ class LLMService:
                 )
                 .filter(
                     LLMRelCredentialModel.model_id == model_db_id,
-                    LLMRelCredentialModel.is_verified == True,
+                    LLMRelCredentialModel.is_verified.is_(True),
                 )
                 .order_by(LLMRelCredentialModel.priority.asc())
             )
@@ -914,7 +1007,7 @@ class LLMService:
             db.query(LLMCredential)
             .options(joinedload(LLMCredential.provider))
             .filter(
-                LLMCredential.is_valid == True,
+                LLMCredential.is_valid.is_(True),
                 LLMCredential.organization_id == organization_uuid,
             )
             .order_by(LLMCredential.created_at.asc(), LLMCredential.id.asc())
@@ -972,7 +1065,7 @@ class LLMService:
                     .filter(
                         LLMRelCredentialModel.credential_id == credential.id,
                         LLMRelCredentialModel.model_id == model.id,
-                        LLMRelCredentialModel.is_verified == True,
+                        LLMRelCredentialModel.is_verified.is_(True),
                     )
                     .order_by(LLMRelCredentialModel.priority.asc())
                     .first()
@@ -1143,7 +1236,7 @@ class LLMService:
             .filter(
                 LLMCredential.id == credential_id,
                 LLMCredential.organization_id == organization_uuid,
-                LLMCredential.is_valid == True,
+                LLMCredential.is_valid.is_(True),
             )
             .first()
         )
@@ -1175,7 +1268,7 @@ class LLMService:
             .filter(
                 LLMModel.id == model_id,
                 LLMModel.provider_id == credential.provider_id,
-                LLMModel.is_active == True,
+                LLMModel.is_active.is_(True),
                 LLMModel.type == "chat",
             )
             .first()
@@ -1194,7 +1287,7 @@ class LLMService:
             .filter(
                 LLMRelCredentialModel.credential_id == credential.id,
                 LLMRelCredentialModel.model_id == model.id,
-                LLMRelCredentialModel.is_verified == True,
+                LLMRelCredentialModel.is_verified.is_(True),
             )
             .first()
         )
@@ -1311,9 +1404,9 @@ class LLMService:
             )
             .options(joinedload(LLMModel.provider))
             .filter(
-                LLMCredential.is_valid == True,
-                LLMRelCredentialModel.is_verified == True,
-                LLMModel.is_active == True,
+                LLMCredential.is_valid.is_(True),
+                LLMRelCredentialModel.is_verified.is_(True),
+                LLMModel.is_active.is_(True),
             )
             .order_by(LLMModel.name)
             .all()
@@ -1350,9 +1443,9 @@ class LLMService:
             )
             .options(joinedload(LLMModel.provider))
             .filter(
-                LLMCredential.is_valid == True,
-                LLMRelCredentialModel.is_verified == True,
-                LLMModel.is_active == True,
+                LLMCredential.is_valid.is_(True),
+                LLMRelCredentialModel.is_verified.is_(True),
+                LLMModel.is_active.is_(True),
                 LLMModel.type == "embedding",
             )
             .all()
@@ -1394,9 +1487,9 @@ class LLMService:
             .filter(
                 LLMModel.provider_id == LLMCredential.provider_id,
                 LLMCredential.organization_id == organization_id,
-                LLMCredential.is_valid == True,
-                LLMRelCredentialModel.is_verified == True,
-                LLMModel.is_active == True,
+                LLMCredential.is_valid.is_(True),
+                LLMRelCredentialModel.is_verified.is_(True),
+                LLMModel.is_active.is_(True),
                 LLMModel.type == "chat",
             )
             .order_by(

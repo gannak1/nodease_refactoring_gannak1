@@ -1,13 +1,15 @@
-import json
 import logging
 import os
-import tempfile
 from typing import Any, Dict
 
 from apps.gateway.services.ingestion.parsers.docx_parser import DocxParser
 from apps.gateway.services.ingestion.parsers.excel_csv_parser import ExcelCsvParser
 from apps.gateway.services.ingestion.parsers.pdf_parser import PdfParser
 from apps.gateway.services.ingestion.parsers.txt_parser import TxtParser
+from apps.gateway.services.llm_service import (
+    LLMCredentialNotAvailableError,
+    LLMService,
+)
 from apps.shared.services.egress_guard import (
     DOCUMENT_RESPONSE_CONTENT_TYPES,
     EgressGuardError,
@@ -68,7 +70,13 @@ class FileProcessor(BaseProcessor):
 
             if isinstance(parser, PdfParser) and strategy == "llamaparse":
                 parse_kwargs["strategy"] = "llamaparse"
-                parse_kwargs["api_key"] = self._get_llamaparse_key()
+                try:
+                    parse_kwargs["api_key"] = self._get_llamaparse_key()
+                except LLMCredentialNotAvailableError:
+                    return ProcessingResult(
+                        chunks=[],
+                        metadata={"error": "Parser credential is unavailable."},
+                    )
                 # Preview 시에는 일부 페이지만 파싱하여 사용자 경험 개선
                 if "target_pages" in source_config:
                     parse_kwargs["target_pages"] = source_config["target_pages"]
@@ -193,45 +201,9 @@ class FileProcessor(BaseProcessor):
         return None
 
     def _get_llamaparse_key(self) -> str:
-        """
-        DB에서 LlamaParse API Key 조회
-        """
-        env_key = os.getenv("LLAMA_CLOUD_API_KEY")
-        if env_key:
-            return env_key
-
-        if not self.db:
-            return None
-
-        from apps.shared.db.models.llm import LLMCredential, LLMProvider
-
-        provider = (
-            self.db.query(LLMProvider).filter(LLMProvider.name == "llamaparse").first()
+        """권한이 검증된 LlamaParse credential의 secret만 resolver에서 받는다."""
+        return LLMService.resolve_llamaparse_api_key(
+            self.db,
+            user_id=self.user_id,
+            organization_id=self.organization_id,
         )
-        if not provider:
-            return None
-
-        query = self.db.query(LLMCredential).filter(
-            LLMCredential.provider_id == provider.id, LLMCredential.is_valid
-        )
-        if self.user_id:
-            user_cred = (
-                query.filter(LLMCredential.user_id == self.user_id)
-                .order_by(LLMCredential.created_at.desc())
-                .first()
-            )
-            if user_cred:
-                return self._extract_key(user_cred)
-
-        sys_cred = query.order_by(LLMCredential.created_at.desc()).first()
-        if sys_cred:
-            return self._extract_key(sys_cred)
-
-        return None
-
-    def _extract_key(self, cred) -> str:
-        try:
-            cfg = json.loads(cred.encrypted_config)
-            return cfg.get("apiKey")
-        except Exception:
-            return None
