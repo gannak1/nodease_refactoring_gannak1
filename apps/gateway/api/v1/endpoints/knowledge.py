@@ -64,6 +64,11 @@ from apps.gateway.services.ingestion.service import (
     recover_timed_out_document_with_artifacts,
 )
 from apps.gateway.services.knowledge_candidate_resolver import KnowledgeCandidateResolver
+from apps.gateway.services.connection_lifecycle_service import (
+    ConnectionLifecycleHidden,
+    ConnectionLifecycleService,
+    ConnectionLifecycleUnavailable,
+)
 from apps.gateway.services.knowledge_collection_service import (
     KnowledgeCollectionService,
     KnowledgeCollectionServiceError,
@@ -82,6 +87,9 @@ from apps.gateway.services.knowledge_document_projection import (
     project_safe_document_error,
     project_safe_document_metadata,
     project_safe_document_status,
+)
+from apps.gateway.services.knowledge_document_registration_service import (
+    is_initial_document_registration_eligible,
 )
 from apps.gateway.services.knowledge_base_query_service import (
     KNOWLEDGE_BASE_MUTATION_COLUMNS,
@@ -1690,6 +1698,10 @@ def get_knowledge_base(
             has_organization_id=True,
             can_edit_settings=capabilities.can_write,
             can_manage_safe_metadata=capabilities.can_manage,
+            can_register_initial_document=(
+                capabilities.can_write
+                and is_initial_document_registration_eligible(kb)
+            ),
             can_read=capabilities.can_read,
             can_use=capabilities.can_use,
             can_write=capabilities.can_write,
@@ -2128,6 +2140,53 @@ def get_document_content(
     return KnowledgeDocumentContentService().build_content_response(doc)
 
 
+def _lock_db_connection_reference(
+    request: Request,
+    db: Session,
+    *,
+    document: Document,
+    owner_id: UUID,
+    db_config: dict | None,
+) -> None:
+    if document.source_type != "DB" or not db_config:
+        return
+
+    raw_connection_id = db_config.get("connection_id")
+    if raw_connection_id is None:
+        return
+    try:
+        connection_id = UUID(str(raw_connection_id))
+    except (TypeError, ValueError, AttributeError):
+        raise_api_error(
+            request,
+            400,
+            "validation.failed",
+            "The DB connection reference is invalid.",
+        )
+
+    try:
+        ConnectionLifecycleService(db).lock_owned_connection_for_reference(
+            connection_id=connection_id,
+            owner_id=owner_id,
+        )
+    except ConnectionLifecycleHidden:
+        db.rollback()
+        raise_api_error(
+            request,
+            404,
+            "resource.hidden",
+            "Connection not found.",
+        )
+    except ConnectionLifecycleUnavailable:
+        db.rollback()
+        raise_api_error(
+            request,
+            503,
+            "connection.reference_unavailable",
+            "The DB connection reference is temporarily unavailable.",
+        )
+
+
 @router.post(
     "/{kb_id}/documents/{document_id}/process", status_code=status.HTTP_202_ACCEPTED
 )
@@ -2165,6 +2224,14 @@ async def process_document(
         )
     except RAGHierarchyError as exc:
         raise _chunking_http_exception(exc)
+
+    _lock_db_connection_reference(
+        request,
+        db,
+        document=doc,
+        owner_id=current_user.id,
+        db_config=preview_request.db_config,
+    )
 
     # 2. 설정 업데이트
     doc.chunk_size = preview_request.chunk_size

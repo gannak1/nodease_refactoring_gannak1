@@ -326,6 +326,73 @@ def test_get_detail_maps_documents_without_full_kb_orm_load():
     assert response.documents[0].chunk_count == 0
 
 
+def test_get_detail_only_projects_initial_registration_for_empty_kb():
+    knowledge_base_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    now = datetime(2026, 7, 15, 1, tzinfo=timezone.utc)
+
+    empty_response = KnowledgeBaseQueryService(
+        FakeDetailDb(
+            (
+                knowledge_base_id,
+                organization_id,
+                "빈 KB",
+                None,
+                "text-embedding-3-small",
+                now,
+                None,
+                None,
+            ),
+            [],
+        ),
+        column_exists=lambda *_args, **_kwargs: False,
+        finalize_processing_start=lambda *_args, **_kwargs: False,
+        recover_processing_timeout=lambda *_args, **_kwargs: False,
+    ).get_detail(
+        knowledge_base_id,
+        organization_scope=organization_id,
+        has_organization_id=True,
+        can_register_initial_document=True,
+    )
+    occupied_response = KnowledgeBaseQueryService(
+        FakeDetailDb(
+            (
+                knowledge_base_id,
+                organization_id,
+                "사용 중 KB",
+                None,
+                "text-embedding-3-small",
+                now,
+                None,
+                None,
+            ),
+            [
+                (
+                    uuid.uuid4(),
+                    "policy.md",
+                    "failed",
+                    now,
+                    None,
+                    None,
+                    SourceType.FILE,
+                    {},
+                )
+            ],
+        ),
+        column_exists=lambda *_args, **_kwargs: False,
+        finalize_processing_start=lambda *_args, **_kwargs: False,
+        recover_processing_timeout=lambda *_args, **_kwargs: False,
+    ).get_detail(
+        knowledge_base_id,
+        organization_scope=organization_id,
+        has_organization_id=True,
+        can_register_initial_document=True,
+    )
+
+    assert empty_response.can_register_initial_document is True
+    assert occupied_response.can_register_initial_document is False
+
+
 def test_list_llm_selectable_uses_kb_use_permission_and_ready_boundary(monkeypatch):
     organization_id = uuid.uuid4()
     user_id = uuid.uuid4()

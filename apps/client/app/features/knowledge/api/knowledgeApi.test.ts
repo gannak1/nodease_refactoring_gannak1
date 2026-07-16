@@ -74,6 +74,50 @@ describe('knowledgeApi.getProgressUrl', () => {
   });
 });
 
+describe('knowledgeApi.getPresignedUploadUrl', () => {
+  it('binds the storage preflight to the target knowledge base', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce({
+      data: {
+        upload_url: 'https://storage.invalid/upload',
+        s3_key: 'opaque-key',
+        method: 'PUT',
+      },
+    });
+
+    await knowledgeApi.getPresignedUploadUrl(
+      'policy.pdf',
+      'application/pdf',
+      'kb-1',
+    );
+
+    expect(apiClient.post).toHaveBeenCalledWith('/rag/upload/presigned-url', {
+      filename: 'policy.pdf',
+      content_type: 'application/pdf',
+      knowledgeBaseId: 'kb-1',
+    });
+  });
+
+  it('preserves generic workflow input uploads without a knowledge base', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce({
+      data: {
+        upload_url: 'https://storage.invalid/upload',
+        s3_key: 'opaque-key',
+        method: 'PUT',
+      },
+    });
+
+    await knowledgeApi.getPresignedUploadUrl(
+      'input.pdf',
+      'application/pdf',
+    );
+
+    expect(apiClient.post).toHaveBeenCalledWith('/rag/upload/presigned-url', {
+      filename: 'input.pdf',
+      content_type: 'application/pdf',
+    });
+  });
+});
+
 describe('knowledgeApi.getDocumentEditConfig', () => {
   it('uses the write-scoped document configuration endpoint', async () => {
     const response = {

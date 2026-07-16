@@ -140,6 +140,7 @@ export interface KnowledgeBaseDetailResponse extends KnowledgeBaseResponse {
   documents: DocumentResponse[];
   can_edit_settings?: boolean;
   can_manage_safe_metadata?: boolean;
+  can_register_initial_document?: boolean;
   can_read?: boolean;
   can_use?: boolean;
   can_write?: boolean;

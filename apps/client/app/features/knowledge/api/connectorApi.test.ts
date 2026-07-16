@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/apiClient', () => ({
   apiClient: {
+    delete: vi.fn(),
     get: vi.fn(),
     post: vi.fn(),
   },
@@ -184,6 +185,37 @@ describe('connectorApi safe failure handling', () => {
       success: false,
       message: 'DB 연결에 실패했습니다.',
     });
+  });
+
+  it('deletes a request-owned connector without returning backend payloads', async () => {
+    vi.mocked(apiClient.delete).mockResolvedValueOnce({
+      data: { diagnostic: 'not-returned' },
+    });
+
+    const result = await connectorApi.deleteConnector('connection-1');
+
+    expect(apiClient.delete).toHaveBeenCalledWith('/connectors/connection-1');
+    expect(result).toEqual({ success: true });
+  });
+
+  it('reports connector cleanup failure without logging raw response details', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = {
+      response: {
+        status: 503,
+        data: { detail: 'raw-response-payload-should-not-be-logged' },
+      },
+    };
+    vi.mocked(apiClient.delete).mockRejectedValueOnce(error);
+
+    const result = await connectorApi.deleteConnector('connection-1');
+
+    expect(result).toEqual({ success: false, status: 503 });
+    expect(warnSpy).toHaveBeenCalledWith('[connectorApi] request failed', {
+      operation: 'deleteConnector',
+      status: 503,
+    });
+    expect(warnSpy).not.toHaveBeenCalledWith(expect.anything(), error);
   });
 
   it('normalizes successful connection test responses to a safe message', async () => {

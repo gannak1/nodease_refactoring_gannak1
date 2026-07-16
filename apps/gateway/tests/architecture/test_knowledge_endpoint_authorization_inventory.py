@@ -7,6 +7,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[4]
 KNOWLEDGE_ENDPOINT = ROOT / "apps/gateway/api/v1/endpoints/knowledge.py"
 RAG_ENDPOINT = ROOT / "apps/gateway/api/v1/endpoints/rag.py"
+INGESTION_SERVICE = ROOT / "apps/gateway/services/ingestion/service.py"
 CLIENT_DOCUMENT_SETTINGS = (
     ROOT
     / "apps/client/app/dashboard/knowledge/[id]/document/[documentId]/page.tsx"
@@ -135,14 +136,33 @@ def test_rag_document_endpoints_use_canonical_actions(
 def test_upload_existing_kb_uses_write_and_search_uses_use_gate():
     _assert_positional_action(
         RAG_ENDPOINT,
-        "_get_or_create_knowledge_base",
+        "_load_writable_knowledge_base",
         "load_kb",
         1,
         "write",
     )
     assert _calls(_function(RAG_ENDPOINT, "upload_document"), "_get_or_create_knowledge_base")
+    assert _calls(
+        _function(RAG_ENDPOINT, "_get_or_create_knowledge_base"),
+        "_load_writable_knowledge_base",
+    )
     assert _calls(_function(RAG_ENDPOINT, "search_test_chat"), "_authorize_rag_use")
     assert _calls(_function(RAG_ENDPOINT, "search_test_pure"), "_authorize_rag_use")
+
+
+def test_document_creation_uses_central_registration_service():
+    upload_function = _function(RAG_ENDPOINT, "upload_document")
+    assert _calls(upload_function, "register_initial_document")
+    assert not _calls(upload_function, "Document")
+    assert "def create_pending_document(" not in INGESTION_SERVICE.read_text(
+        encoding="utf-8"
+    )
+
+
+def test_presigned_upload_is_scoped_to_writable_kb_and_empty_slot():
+    function = _function(RAG_ENDPOINT, "generate_presigned_url")
+    assert _calls(function, "_load_writable_knowledge_base")
+    assert _calls(function, "_ensure_initial_document_slot")
 
 
 def test_sync_domain_override_is_bounded_and_processing_actions_are_audited():

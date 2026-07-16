@@ -955,8 +955,12 @@ def test_presigned_url_rejects_unsupported_extension_before_storage(monkeypatch)
     with pytest.raises(Exception) as exc_info:
         asyncio.run(
             rag_endpoint.generate_presigned_url(
+                request=SimpleNamespace(),
                 filename="../evil.svg",
                 content_type="image/svg+xml",
+                knowledge_base_id=None,
+                x_organization_id=None,
+                db=object(),
                 current_user=SimpleNamespace(id="user-id"),
             )
         )

@@ -49,6 +49,19 @@ from apps.gateway.services.knowledge_document_projection import (
     project_safe_document_progress_message,
     project_safe_document_status,
 )
+from apps.gateway.services.knowledge_document_lifecycle_service import (
+    KnowledgeDocumentLifecycleHidden,
+    KnowledgeDocumentLifecycleService,
+    KnowledgeDocumentLifecycleUnavailable,
+)
+from apps.gateway.services.knowledge_document_registration_service import (
+    KnowledgeDocumentRegistrationError,
+    KnowledgeDocumentRegistrationHidden,
+    KnowledgeDocumentRegistrationPolicyDenied,
+    KnowledgeDocumentRegistrationService,
+    KnowledgeDocumentRegistrationUnavailable,
+    KnowledgeDocumentSlotOccupied,
+)
 from apps.gateway.services.rag_agent_answer_service import RAGAgentAnswerService
 from apps.gateway.services.retrieval import RetrievalService
 from apps.gateway.services.storage import get_storage_service
@@ -320,8 +333,16 @@ async def rag_agent_answer_stream(
 
 @router.post("/upload/presigned-url")
 async def generate_presigned_url(
+    request: Request,
     filename: str = Body(..., embed=True),
     content_type: str = Body(..., embed=True),
+    knowledge_base_id: UUID | None = Body(
+        None,
+        embed=True,
+        alias="knowledgeBaseId",
+    ),
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
@@ -333,6 +354,7 @@ async def generate_presigned_url(
     Args:
         filename: 업로드할 파일명
         content_type: 파일의 MIME 타입 (예: application/pdf)
+        knowledge_base_id: Knowledge 최초 등록이면 fast precheck할 대상 KB
         current_user: 인증된 사용자
 
     Returns:
@@ -358,6 +380,22 @@ async def generate_presigned_url(
         }
     """
     try:
+        if knowledge_base_id is not None:
+            organization_id = parse_organization_id(request, x_organization_id)
+            _load_writable_knowledge_base(
+                request,
+                db,
+                current_user,
+                organization_id,
+                knowledge_base_id,
+            )
+            _ensure_initial_document_slot(
+                request,
+                db,
+                knowledge_base_id=knowledge_base_id,
+                organization_id=organization_id,
+            )
+
         safe_filename = _validate_safe_document_filename(filename)
         storage = get_storage_service()
 
@@ -427,6 +465,19 @@ async def upload_document(
     logger.info(f"=== [upload_document] Request Received (Mode: {ingestion_mode}) ===")
     organization_id = parse_organization_id(request, x_organization_id)
 
+    try:
+        source_enum = SourceType(source_type)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid source type")
+
+    try:
+        normalized_chunking_mode = validate_chunking_request(
+            chunking_mode=chunking_mode,
+            source_type=source_enum,
+        )
+    except RAGHierarchyError as exc:
+        raise _chunking_http_exception(exc)
+
     # 1. 자료 확인 또는 생성
     target_kb_id, target_ai_model = _get_or_create_knowledge_base(
         request,
@@ -441,6 +492,12 @@ async def upload_document(
         similarity_threshold,
         file,
     )
+    _ensure_initial_document_slot(
+        request,
+        db,
+        knowledge_base_id=target_kb_id,
+        organization_id=organization_id,
+    )
 
     # 2. Ingestion Service 초기화
     local_service = IngestionService(
@@ -453,19 +510,7 @@ async def upload_document(
     )
 
     # 3. 소스 타입별 데이터 준비 (Strategy Pattern)
-    try:
-        source_enum = SourceType(source_type)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid source type")
-
-    try:
-        normalized_chunking_mode = validate_chunking_request(
-            chunking_mode=chunking_mode,
-            source_type=source_enum,
-        )
-    except RAGHierarchyError as exc:
-        raise _chunking_http_exception(exc)
-
+    backend_owned_upload_path: str | None = None
     if source_enum == SourceType.FILE:
         # [NEW] S3 Direct Upload 방식
         if s3_file_url and s3_file_key:
@@ -478,6 +523,7 @@ async def upload_document(
         elif file:
             file_path, filename, meta_info = _prepare_file_source(local_service, file)
             meta_info["upload_method"] = "backend"
+            backend_owned_upload_path = file_path
         else:
             raise HTTPException(
                 status_code=400,
@@ -498,15 +544,37 @@ async def upload_document(
     meta_info["chunking_mode"] = normalized_chunking_mode
 
     # 4. DB 레코드 생성 (Pending 상태)
-    doc_id = local_service.create_pending_document(
-        knowledge_base_id=target_kb_id,
-        filename=filename,
-        file_path=file_path,
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-        source_type=source_enum,
-        meta_info=meta_info,
-    )
+    try:
+        doc_id = KnowledgeDocumentRegistrationService(
+            db
+        ).register_initial_document(
+            knowledge_base_id=target_kb_id,
+            organization_id=organization_id,
+            filename=filename,
+            file_path=file_path,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            source_type=source_enum,
+            meta_info=meta_info,
+        )
+    except KnowledgeDocumentRegistrationError as exc:
+        if (
+            backend_owned_upload_path is not None
+            and _is_backend_upload_cleanup_safe(exc)
+        ):
+            _cleanup_backend_upload(backend_owned_upload_path)
+        _raise_document_registration_error(request, exc)
+    except Exception as exc:
+        logger.error(
+            "Unexpected document registration failure: %s",
+            type(exc).__name__,
+        )
+        raise_api_error(
+            request,
+            500,
+            "knowledge.document_registration_failed",
+            "Knowledge document registration failed.",
+        )
 
     return IngestionResponse(
         knowledge_base_id=target_kb_id,
@@ -527,6 +595,7 @@ def _prepare_db_source(db: Session, user: User, connection_id: Optional[UUID]):
     conn = (
         db.query(Connection)
         .filter(Connection.id == connection_id, Connection.user_id == user.id)
+        .with_for_update()
         .first()
     )
     if not conn:
@@ -633,7 +702,7 @@ def delete_document(
     문서를 삭제합니다. (연관된 청크도 자동 삭제됨)
     """
     organization_id = parse_organization_id(request, x_organization_id)
-    _, doc = _authorize_knowledge_document_action(
+    kb, _ = _authorize_knowledge_document_action(
         request,
         db,
         current_user,
@@ -642,18 +711,34 @@ def delete_document(
         "write",
     )
 
-    # 2. 파일 삭제 (S3/Local 자동 분기)
-    if doc.file_path:
+    try:
+        deleted = KnowledgeDocumentLifecycleService(db).delete_document(
+            knowledge_base_id=kb.id,
+            organization_id=organization_id,
+            document_id=document_id,
+        )
+    except KnowledgeDocumentLifecycleHidden:
+        raise_api_error(
+            request,
+            404,
+            "resource.hidden",
+            "Document not found.",
+        )
+    except KnowledgeDocumentLifecycleUnavailable:
+        raise_api_error(
+            request,
+            503,
+            "knowledge.document_delete_unavailable",
+            "Document deletion is temporarily unavailable.",
+        )
+
+    # DB commit 이후 request가 소유하던 storage reference를 best-effort 정리한다.
+    if deleted.file_path:
         storage = get_storage_service()
         try:
-            storage.delete(doc.file_path)
+            storage.delete(deleted.file_path)
         except Exception as e:
             logger.warning("Failed to delete document file: %s", type(e).__name__)
-            # 파일 삭제 실패해도 DB는 삭제 진행
-
-    # 3. DB 삭제 (Cascade로 청크도 같이 삭제됨)
-    db.delete(doc)
-    db.commit()
 
     return {"status": "success", "message": "Document deleted successfully"}
 
@@ -1007,27 +1092,118 @@ def _get_or_create_knowledge_base(
         return created.id, created.embedding_model
 
     else:
-        try:
-            kb = KnowledgeAuthorizationService(
-                db,
-                user_id=user.id,
-                organization_id=organization_id,
-            ).load_kb(kb_id, "write")
-        except KnowledgeResourceHidden:
-            raise_api_error(
-                request,
-                404,
-                "resource.hidden",
-                "Knowledge Base not found.",
-            )
-        except KnowledgePermissionDenied:
-            raise_api_error(
-                request,
-                403,
-                "permission.denied",
-                "Knowledge Base write permission is required.",
-            )
+        kb = _load_writable_knowledge_base(
+            request,
+            db,
+            user,
+            organization_id,
+            kb_id,
+        )
         return kb.id, kb.embedding_model
+
+
+def _load_writable_knowledge_base(
+    request: Request,
+    db: Session,
+    user: User,
+    organization_id: UUID,
+    knowledge_base_id: UUID,
+) -> KnowledgeBase:
+    try:
+        return KnowledgeAuthorizationService(
+            db,
+            user_id=user.id,
+            organization_id=organization_id,
+        ).load_kb(knowledge_base_id, "write")
+    except KnowledgeResourceHidden:
+        raise_api_error(
+            request,
+            404,
+            "resource.hidden",
+            "Knowledge Base not found.",
+        )
+    except KnowledgePermissionDenied:
+        raise_api_error(
+            request,
+            403,
+            "permission.denied",
+            "Knowledge Base write permission is required.",
+        )
+
+
+def _ensure_initial_document_slot(
+    request: Request,
+    db: Session,
+    *,
+    knowledge_base_id: UUID,
+    organization_id: UUID,
+) -> None:
+    try:
+        KnowledgeDocumentRegistrationService(db).ensure_available(
+            knowledge_base_id=knowledge_base_id,
+            organization_id=organization_id,
+        )
+    except KnowledgeDocumentRegistrationError as exc:
+        _raise_document_registration_error(request, exc)
+
+
+def _raise_document_registration_error(
+    request: Request,
+    exc: KnowledgeDocumentRegistrationError,
+) -> None:
+    if isinstance(exc, KnowledgeDocumentRegistrationHidden):
+        raise_api_error(
+            request,
+            404,
+            "resource.hidden",
+            "Knowledge Base not found.",
+        )
+    if isinstance(exc, KnowledgeDocumentSlotOccupied):
+        raise_api_error(
+            request,
+            409,
+            "knowledge.document_slot_occupied",
+            "This Knowledge Base already has a source document.",
+        )
+    if isinstance(exc, KnowledgeDocumentRegistrationPolicyDenied):
+        raise_api_error(
+            request,
+            409,
+            "knowledge.document_registration_not_allowed",
+            "This Knowledge Base does not accept manual source registration.",
+        )
+    if isinstance(exc, KnowledgeDocumentRegistrationUnavailable):
+        raise_api_error(
+            request,
+            503,
+            "knowledge.document_registration_unavailable",
+            "Knowledge document registration is temporarily unavailable.",
+        )
+    raise_api_error(
+        request,
+        500,
+        "knowledge.document_registration_failed",
+        "Knowledge document registration failed.",
+    )
+
+
+def _cleanup_backend_upload(file_path: str) -> None:
+    try:
+        get_storage_service().delete(file_path)
+    except Exception as exc:
+        logger.warning(
+            "Backend upload cleanup failed after document registration: %s",
+            type(exc).__name__,
+        )
+
+
+def _is_backend_upload_cleanup_safe(
+    exc: KnowledgeDocumentRegistrationError,
+) -> bool:
+    return not isinstance(
+        exc,
+        KnowledgeDocumentRegistrationUnavailable,
+    ) or exc.artifact_cleanup_safe
 
 
 def _validate_safe_document_filename(filename: str) -> str:

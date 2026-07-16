@@ -193,12 +193,14 @@ KB_IDS = {
     "onboarding_platform": _uuid(339),
     "onboarding_sales": _uuid(340),
     "onboarding_finance": _uuid(341),
+    "hr_welfare": _uuid(342),
 }
 
 COLLECTION_IDS = {
     "legal_public": _uuid(360),
     "internal_onboarding": _uuid(361),
     "team_onboarding_access_control": _uuid(362),
+    "hr_policies": _uuid(363),
 }
 
 # author의 승인된 App 생성 권한 신청 이력 (ADR-0016).
@@ -300,7 +302,20 @@ COLLECTION_ITEM_IDS = {
     "onboarding_platform": _uuid(389),
     "onboarding_sales": _uuid(390),
     "onboarding_finance": _uuid(391),
+    "hr_leave": _uuid(392),
+    "hr_welfare": _uuid(393),
 }
+
+LEGACY_DEMO_DOCUMENT_KB_KEYS = {
+    "hr_leave": "hr",
+    "hr_welfare": "hr_welfare",
+    "finance_sensitive": "finance",
+}
+
+HR_POLICY_COLLECTION_ITEMS = (
+    ("hr_leave", "internal_leave_attendance"),
+    ("hr_welfare", "internal_benefits"),
+)
 
 APP_IDS = {
     "hr_bot_example": _uuid(400),
@@ -1860,7 +1875,9 @@ def _edge(
 
 def _knowledge_base_ref(key: str) -> dict[str, str]:
     if key == "hr":
-        return {"id": str(KB_IDS[key]), "name": "사내 인사·복지 지식베이스"}
+        return {"id": str(KB_IDS[key]), "name": "사내 휴가 정책 지식베이스"}
+    if key == "hr_welfare":
+        return {"id": str(KB_IDS[key]), "name": "사내 복지 정책 지식베이스"}
     onboarding_spec = ONBOARDING_KB_SPECS.get(key)
     if onboarding_spec is not None:
         return {"id": str(KB_IDS[key]), "name": onboarding_spec[0]}
@@ -1886,7 +1903,6 @@ def _hr_bot_knowledge_base_refs() -> list[dict[str, str]]:
             "legal_equal_employment",
             "legal_equal_employment_enforcement_decree",
             "legal_privacy",
-            "hr",
         )
     ]
 
@@ -2202,10 +2218,7 @@ def _ticket_ops_graph() -> dict[str, Any]:
                         },
                     ],
                     "knowledgeBases": [
-                        {
-                            "id": str(KB_IDS["hr"]),
-                            "name": "사내 인사·복지 지식베이스",
-                        }
+                        _knowledge_base_ref("internal_cost_optimization_playbook")
                     ],
                     "parameters": {"temperature": 0.2, "max_tokens": 700},
                     "output_format": {
@@ -2857,6 +2870,12 @@ def _demo_team_knowledge_permission_specs() -> list[tuple[str, str, str]]:
             ("onboarding_finance", "onboarding_people", "manager"),
         ]
     )
+    knowledge_permission_specs.extend(
+        [
+            ("hr_welfare", "hr_knowledge_users", "operator"),
+            ("hr_welfare", "platform_admin", "manager"),
+        ]
+    )
     return knowledge_permission_specs
 
 
@@ -2888,6 +2907,10 @@ def _demo_team_knowledge_collection_permission_specs() -> list[tuple[str, str, s
         ("team_onboarding_access_control", "onboarding_people", action)
         for action in ("read", "route", "manage", "sync")
     )
+    for team_key in ("hr_knowledge_users", "platform_admin"):
+        collection_permission_specs.extend(
+            ("hr_policies", team_key, action) for action in ("read", "route")
+        )
     return collection_permission_specs
 
 
@@ -2903,11 +2926,29 @@ def _seed_knowledge(db: Session) -> None:
         KB_IDS["hr"],
         {
             "organization_id": ORG_ID,
-            "name": "사내 인사·복지 지식베이스",
-            "description": "휴가, 복지, 인사 정책 문서를 모은 데모 지식베이스",
+            "name": "사내 휴가 정책 지식베이스",
+            "description": "휴가 신청과 근태 유의 사항을 담은 데모 지식베이스",
             "embedding_model": "text-embedding-3-small",
             "top_k": 5,
             "similarity_threshold": 0.7,
+            "sync_state": "manual",
+            "lifecycle_state": "active",
+            "user_id": USER_IDS["admin"],
+        },
+    )
+    _upsert_by_id(
+        db,
+        KnowledgeBase,
+        KB_IDS["hr_welfare"],
+        {
+            "organization_id": ORG_ID,
+            "name": "사내 복지 정책 지식베이스",
+            "description": "복지 포인트와 경조사 지원을 담은 데모 지식베이스",
+            "embedding_model": "text-embedding-3-small",
+            "top_k": 5,
+            "similarity_threshold": 0.7,
+            "sync_state": "manual",
+            "lifecycle_state": "active",
             "user_id": USER_IDS["admin"],
         },
     )
@@ -3030,7 +3071,45 @@ def _seed_knowledge(db: Session) -> None:
             "created_by": USER_IDS["onboarding_people_manager"],
         },
     )
+    _upsert_by_id(
+        db,
+        KnowledgeCollection,
+        COLLECTION_IDS["hr_policies"],
+        {
+            "organization_id": ORG_ID,
+            "name": "사내 휴가·복지 정책 컬렉션",
+            "description": "독립된 휴가 정책과 복지 정책 지식베이스를 함께 검색하는 데모 컬렉션",
+            "source_identity_id": None,
+            "source_connector_ref": "local.demo.hr-policies",
+            "is_system_managed": True,
+            "sync_state": "manual",
+            "lifecycle_state": "active",
+            "safe_metadata": {
+                **_demo_options("collection-hr-policies"),
+                "visibility": "private",
+            },
+            "created_by": USER_IDS["admin"],
+        },
+    )
     db.flush()
+
+    for rank, (item_key, kb_key) in enumerate(HR_POLICY_COLLECTION_ITEMS):
+        _upsert_by_id(
+            db,
+            KnowledgeCollectionItem,
+            COLLECTION_ITEM_IDS[item_key],
+            {
+                "organization_id": ORG_ID,
+                "collection_id": COLLECTION_IDS["hr_policies"],
+                "knowledge_base_id": KB_IDS[kb_key],
+                "safe_source_path_ref": f"demo://hr-policies/{item_key}",
+                "rank": rank,
+                "safe_metadata": {
+                    **_demo_options(f"collection-item-{item_key}"),
+                    "source_tier": "private",
+                },
+            },
+        )
 
     for rank, spec in enumerate(DEMO_DOCUMENT_SPECS):
         if spec.collection_key is None:
@@ -3076,7 +3155,7 @@ def _seed_knowledge(db: Session) -> None:
 
     document_specs = {
         "hr_leave": (
-            KB_IDS["hr"],
+            KB_IDS[LEGACY_DEMO_DOCUMENT_KB_KEYS["hr_leave"]],
             "휴가 제도 안내.md",
             "가족돌봄휴가는 연차와 이어서 사용할 수 있으며, 사내 인사 포털에서 신청합니다.",
             """# 휴가 제도 안내
@@ -3097,7 +3176,7 @@ def _seed_knowledge(db: Session) -> None:
 """,
         ),
         "hr_welfare": (
-            KB_IDS["hr"],
+            KB_IDS[LEGACY_DEMO_DOCUMENT_KB_KEYS["hr_welfare"]],
             "복지 제도 안내.md",
             "복지 포인트와 경조사 지원은 인사 지식 활용팀 권한으로 조회할 수 있습니다.",
             """# 복지 제도 안내
@@ -3117,7 +3196,7 @@ def _seed_knowledge(db: Session) -> None:
 """,
         ),
         "finance_sensitive": (
-            KB_IDS["finance"],
+            KB_IDS[LEGACY_DEMO_DOCUMENT_KB_KEYS["finance_sensitive"]],
             "임원 보상 정책.md",
             "민감 재무 문서 예시입니다. 일반 팀에는 검색 권한을 부여하지 않습니다.",
             """# 임원 보상 정책

@@ -181,6 +181,22 @@ KC sync의 실행·복구·snapshot·versioned finalization 검증은 [ADR-0048]
 
 ## Knowledge Base API Tests
 
+### MBA-273 Initial Document Registration
+
+- 빈 active manual KB에서 KB `write`가 있는 caller는 FILE/API/DB 중 하나의 최초 `Document(status=pending)`만 등록할 수 있고 detail의 `can_register_initial_document`는 등록 전 true, 등록 후 false다.
+- Manual KB의 기존 Document는 `pending`, `processing`, `failed`, `completed` 상태와 무관하게 slot을 점유한다. Completed Document가 active version pointer를 가지고 있어도 두 번째 independent source는 `409 knowledge.document_slot_occupied`이며 response/log/audit에 기존 document id, filename, path, source config를 포함하지 않는다. Source-managed/non-manual KB는 Document 존재 여부를 공개하지 않고 `knowledge.document_registration_not_allowed`로 먼저 거부한다.
+- KB `read`만 있거나 cross-organization/hidden/deleted KB인 caller는 기존 hidden/denied matrix를 유지한다. Source-managed 또는 `sync_state != manual` KB는 최초 manual registration을 fail-closed한다.
+- 두 transaction이 같은 빈 KB에 동시에 등록하면 PostgreSQL KB row lock 뒤 하나만 commit되고 다른 하나는 conflict가 된다. Endpoint 권한 검사로 같은 Session identity map에 KB가 먼저 올라온 경우에도 canonical lock query는 `populate_existing`으로 DB 상태를 다시 읽어 concurrent lifecycle/source/version 변경을 반영한다. 최종 Document count는 1이며 rollback/commit failure가 partial row를 남기지 않는다.
+- Backend-mediated FILE upload가 fast precheck 뒤 race에서 지면 해당 request가 생성한 storage artifact만 보상 삭제한다. DB flush 이전 실패는 cleanup-safe지만 commit 호출 이후 결과가 불명확한 실패에서는 이미 커밋된 Document reference 보호를 위해 자동 삭제하지 않는다. Cleanup failure는 provider exception/path/key를 노출하지 않는다. Presigned/direct object는 ownership이 확정되지 않으면 자동 삭제하지 않는다.
+- Completed/active version을 가진 manual KB의 유일 Document를 삭제하면 shared document advisory lock이 먼저 획득되고, active pointer가 NULL로 전환되며 기존 active version은 `superseded`가 된다. 삭제 권한 검사에서 KB/Document를 같은 Session에 preload했더라도 advisory lock 뒤 canonical row lock query는 fresh DB 값을 다시 읽어 concurrent finalization을 놓치지 않으며, 그 사이 archived가 된 KB는 mutation 없이 hidden 처리한다. 삭제 commit 뒤 같은 KB에 replacement Document 하나를 등록할 수 있어야 한다. Legacy multi-document KB에서 삭제 대상이 아닌 sibling을 가리키는 active version은 임의로 해제하지 않는다.
+- DB source modal이 이번 요청에서 Connection을 생성한 뒤 canonical document registration race를 잃으면 새 Connection을 보상 삭제한다. Connection delete는 owner row lock과 Document의 top-level `connection_id`, nested object `db_config.connection_id`, legacy serialized `db_config` reference check를 사용하며 이미 참조 중인 Connection은 `409 connection.in_use`로 보존한다. Serialized config가 malformed여도 대상 UUID를 포함하면 보수적으로 in-use 처리한다. Registration commit 결과가 불명확한 `knowledge.document_registration_unavailable`에서는 자동 삭제하지 않고, cleanup 실패의 raw response/config를 Client log나 toast에 노출하지 않는다.
+- DB Document process가 새 `db_config.connection_id`를 저장하는 동안 owner Connection row lock을 commit까지 유지한다. 같은 Connection 삭제가 경합하면 저장이 먼저인 경우 delete는 committed nested reference를 보고 `409 connection.in_use`, 삭제가 먼저인 경우 저장은 `404 resource.hidden`으로 끝나며 dangling reference를 commit하지 않는다. Lock/query persistence failure는 raw DB detail 없이 `503 connection.reference_unavailable`로 반환한다.
+- `Document`가 없고 active `DocumentVersion`의 `legacy_document_id`와 `source_identity_id`도 모두 NULL인 legacy stale pointer KB는 registration의 fresh KB/version row lock 아래 pointer를 해제하고 version을 `superseded`로 전환한 뒤 replacement Document 하나를 생성한다. Version이 live document/source identity를 가지거나 source-managed/non-manual KB이면 자동 복구하지 않고 mutation 없이 fail-closed한다.
+- Knowledge 최초 등록용 Presigned URL 요청은 대상 `knowledgeBaseId`, active organization과 KB `write`를 요구하고 occupied KB를 storage call 전에 거부한다. Workflow 입력 파일용 generic presigned 호출은 기존처럼 KB 식별자 없이 동작한다. Fast precheck 통과 뒤 발생한 race는 최종 upload의 canonical check에서 다시 거부된다.
+- Endpoint와 ingestion orchestrator가 registration service를 우회해 `Document`를 직접 생성하는 production path가 없는지 architecture test로 고정한다.
+- Client는 explicit `can_register_initial_document=true`에서만 최초 source action을 표시한다. Field 누락/false, occupied/pending/failed/source-managed 상태에서는 action을 숨기고 Collection 안내를 제공하며 stale 409 뒤 detail을 refresh한다.
+- Demo seed의 fixed Knowledge Base별 Document count는 1 이하이고, 기존 인사 휴가·복지 fixture는 서로 다른 KB에 보존된다. Aggregate 검색이 필요한 seed graph는 Collection 또는 명시된 별도 KB reference를 사용하며 reset 반복 후에도 cardinality와 비대상 동적 KB 보존 계약을 유지한다. 검색 시연용 Collection의 모든 child KB는 `completed` Document와 1536차원 precomputed chunk를 하나 이상 가져야 하며, 단순 membership row 존재만으로 seed 성공으로 판단하지 않는다.
+
 - KB create는 blank name을 DB insert 전에 거부하고 safe validation reason code만 반환한다.
 - KB create는 255자를 초과하는 name을 DB insert 전에 거부하고 safe validation reason code만 반환한다.
 - KB create는 empty, secret-like, token-like, allowlist 밖 `embedding_model`을 DB insert 전에 거부한다.

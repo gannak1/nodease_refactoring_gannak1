@@ -17,6 +17,7 @@ const knowledgeApiMock = vi.hoisted(() => ({
 }));
 const connectorApiMock = vi.hoisted(() => ({
   createConnector: vi.fn(),
+  deleteConnector: vi.fn(),
   testConnection: vi.fn(),
 }));
 
@@ -56,6 +57,20 @@ const fileDropEvent = (
   dataTransfer: DataTransfer | object,
 ) => createEvent.drop(target, { dataTransfer });
 
+const fillValidDbConfig = (container: HTMLElement) => {
+  const textInputs = screen.getAllByRole('textbox');
+  fireEvent.change(textInputs[0], { target: { value: 'Test DB' } });
+  fireEvent.change(textInputs[1], { target: { value: 'db.internal' } });
+  fireEvent.change(textInputs[2], { target: { value: 'test' } });
+  fireEvent.change(textInputs[3], { target: { value: 'test-user' } });
+
+  const passwordInput = container.querySelector('input[type="password"]');
+  expect(passwordInput).toBeInTheDocument();
+  fireEvent.change(passwordInput!, {
+    target: { value: 'placeholder-password' },
+  });
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   knowledgeApiMock.getPresignedUploadUrl.mockResolvedValue({
@@ -67,6 +82,12 @@ beforeEach(() => {
     status: 'pending',
     message: 'ok',
   });
+  connectorApiMock.createConnector.mockResolvedValue({
+    id: 'connection-1',
+    success: true,
+    message: 'ok',
+  });
+  connectorApiMock.deleteConnector.mockResolvedValue({ success: true });
   fetchMock.mockResolvedValue({
     ok: true,
     json: async () => [],
@@ -178,8 +199,93 @@ describe('CreateKnowledgeModal file drag and drop', () => {
     await waitFor(() => {
       expect(knowledgeApiMock.uploadKnowledgeBase).toHaveBeenCalled();
     });
+    expect(knowledgeApiMock.getPresignedUploadUrl).toHaveBeenCalledWith(
+      'guide.md',
+      'text/markdown',
+      'kb-1',
+    );
     expect(onClose).toHaveBeenCalled();
     expect(routerPushMock).toHaveBeenCalledWith('/dashboard/knowledge/kb-1');
+  });
+
+  it('closes and shows a fixed collection hint when the slot became occupied', async () => {
+    const onClose = vi.fn();
+    knowledgeApiMock.getPresignedUploadUrl.mockRejectedValueOnce({
+      response: {
+        status: 409,
+        data: {
+          detail: {
+            error: { code: 'knowledge.document_slot_occupied' },
+          },
+        },
+      },
+    });
+    const { container } = render(
+      <CreateKnowledgeModal
+        isOpen
+        onClose={onClose}
+        knowledgeBaseId="kb-1"
+        initialTab="FILE"
+      />,
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+    const fileInput = container.querySelector('input[type="file"]');
+    fireEvent.change(fileInput!, {
+      target: {
+        files: [new File(['policy'], 'policy.md', { type: 'text/markdown' })],
+      },
+    });
+    const buttons = screen.getAllByRole('button');
+    fireEvent.click(buttons[buttons.length - 1]);
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(
+        '이 지식 베이스에는 이미 소스가 있습니다. 새 지식 베이스를 만든 뒤 Collection에서 묶어주세요.',
+      );
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(knowledgeApiMock.uploadKnowledgeBase).not.toHaveBeenCalled();
+  });
+
+  it('refreshes the detail flow when the canonical registration loses a race', async () => {
+    const onClose = vi.fn();
+    knowledgeApiMock.uploadKnowledgeBase.mockRejectedValueOnce({
+      response: {
+        status: 409,
+        data: {
+          detail: {
+            error: { code: 'knowledge.document_slot_occupied' },
+          },
+        },
+      },
+    });
+    const { container } = render(
+      <CreateKnowledgeModal
+        isOpen
+        onClose={onClose}
+        knowledgeBaseId="kb-1"
+        initialTab="FILE"
+      />,
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+    const fileInput = container.querySelector('input[type="file"]');
+    fireEvent.change(fileInput!, {
+      target: {
+        files: [new File(['policy'], 'policy.md', { type: 'text/markdown' })],
+      },
+    });
+    const buttons = screen.getAllByRole('button');
+    fireEvent.click(buttons[buttons.length - 1]);
+
+    await waitFor(() => {
+      expect(knowledgeApiMock.uploadKnowledgeBase).toHaveBeenCalledTimes(1);
+      expect(toast.error).toHaveBeenCalledWith(
+        '이 지식 베이스에는 이미 소스가 있습니다. 새 지식 베이스를 만든 뒤 Collection에서 묶어주세요.',
+      );
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('shows a sanitized upload failure message', async () => {
@@ -217,5 +323,67 @@ describe('CreateKnowledgeModal file drag and drop', () => {
     });
     expect(alertSpy).not.toHaveBeenCalled();
     expect(consoleErrorSpy).not.toHaveBeenCalled();
+  });
+
+  it('removes a newly created DB connector when canonical registration loses the slot race', async () => {
+    knowledgeApiMock.uploadKnowledgeBase.mockRejectedValueOnce({
+      response: {
+        status: 409,
+        data: {
+          detail: {
+            error: { code: 'knowledge.document_slot_occupied' },
+          },
+        },
+      },
+    });
+    const { container } = render(
+      <CreateKnowledgeModal
+        isOpen
+        onClose={vi.fn()}
+        knowledgeBaseId="kb-1"
+        initialTab="DB"
+      />,
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    fillValidDbConfig(container);
+    fireEvent.click(screen.getByRole('button', { name: '소스 추가' }));
+
+    await waitFor(() => {
+      expect(connectorApiMock.createConnector).toHaveBeenCalledTimes(1);
+      expect(connectorApiMock.deleteConnector).toHaveBeenCalledWith(
+        'connection-1',
+      );
+    });
+  });
+
+  it('keeps the DB connector when the document commit outcome is ambiguous', async () => {
+    knowledgeApiMock.uploadKnowledgeBase.mockRejectedValueOnce({
+      response: {
+        status: 503,
+        data: {
+          detail: {
+            error: {
+              code: 'knowledge.document_registration_unavailable',
+            },
+          },
+        },
+      },
+    });
+    const { container } = render(
+      <CreateKnowledgeModal
+        isOpen
+        onClose={vi.fn()}
+        knowledgeBaseId="kb-1"
+        initialTab="DB"
+      />,
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    fillValidDbConfig(container);
+    fireEvent.click(screen.getByRole('button', { name: '소스 추가' }));
+
+    await waitFor(() => {
+      expect(knowledgeApiMock.uploadKnowledgeBase).toHaveBeenCalledTimes(1);
+    });
+    expect(connectorApiMock.deleteConnector).not.toHaveBeenCalled();
   });
 });

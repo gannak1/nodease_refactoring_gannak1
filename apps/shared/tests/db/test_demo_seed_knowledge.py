@@ -204,6 +204,31 @@ def test_hr_bot_graph_references_seeded_rag_kbs():
     assert str(demo_seed.KB_IDS["internal_compensation_access_policy"]) in kb_ids
     assert str(demo_seed.KB_IDS["legal_labor_standards"]) in kb_ids
     assert str(demo_seed.KB_IDS["legal_equal_employment"]) in kb_ids
+    assert str(demo_seed.KB_IDS["hr"]) not in kb_ids
+    assert "knowledgeCollections" not in llm_node["data"]
+
+
+def test_legacy_demo_documents_have_distinct_knowledge_base_keys():
+    mapping = demo_seed.LEGACY_DEMO_DOCUMENT_KB_KEYS
+
+    assert set(mapping) == {"hr_leave", "hr_welfare", "finance_sensitive"}
+    assert len(set(mapping.values())) == len(mapping)
+    assert mapping["hr_leave"] == "hr"
+    assert mapping["hr_welfare"] == "hr_welfare"
+    assert all(kb_key in demo_seed.KB_IDS for kb_key in mapping.values())
+
+
+def test_hr_policy_collection_references_precomputed_indexed_kbs():
+    fixture = demo_seed._read_demo_knowledge_fixture()
+    indexed_keys = {spec.key for spec in demo_seed.DEMO_DOCUMENT_SPECS}
+    target_keys = {
+        knowledge_base_key
+        for _, knowledge_base_key in demo_seed.HR_POLICY_COLLECTION_ITEMS
+    }
+
+    assert target_keys == {"internal_leave_attendance", "internal_benefits"}
+    assert target_keys <= indexed_keys
+    assert all(fixture["chunks_by_document"][key] for key in target_keys)
 
 
 def test_department_onboarding_graph_references_exact_rbac_demo_kbs():
@@ -912,6 +937,11 @@ def test_ticket_ops_input_schema_matches_webhook_mappings():
         ]
     }
 
+    llm_node = next(node for node in graph["nodes"] if node["id"] == "llm-triage")
+    assert llm_node["data"]["knowledgeBases"] == [
+        demo_seed._knowledge_base_ref("internal_cost_optimization_playbook")
+    ]
+
 
 def test_schema_readiness_reports_stale_demo_db_columns():
     gaps = seed_demo_script.schema_readiness_gaps(
@@ -1212,6 +1242,26 @@ def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():
         "tester_builder",
         "route",
     ) in collection_permission_specs
+    assert (
+        "hr_policies",
+        "hr_knowledge_users",
+        "route",
+    ) in collection_permission_specs
+    assert (
+        "hr_policies",
+        "platform_admin",
+        "read",
+    ) in collection_permission_specs
+    assert (
+        "hr_welfare",
+        "hr_knowledge_users",
+        "operator",
+    ) in permission_specs
+    assert (
+        "hr_welfare",
+        "platform_admin",
+        "manager",
+    ) in permission_specs
 
 
 def test_demo_knowledge_seed_excludes_personal_salary_records():

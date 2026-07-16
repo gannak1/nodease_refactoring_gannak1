@@ -131,8 +131,57 @@ def _snapshot_counts(
                         """
                     )
                 ).scalar_one(),
+                "seed_multi_document_knowledge_bases": conn.execute(
+                    text(
+                        """
+                        SELECT COUNT(*)
+                        FROM (
+                            SELECT d.knowledge_base_id
+                            FROM documents d
+                            WHERE d.knowledge_base_id = ANY(:knowledge_base_ids)
+                            GROUP BY d.knowledge_base_id
+                            HAVING COUNT(*) > 1
+                        ) multi_document
+                        """
+                    ),
+                    {"knowledge_base_ids": list(demo_seed.KB_IDS.values())},
+                ).scalar_one(),
                 "knowledge_ingestion_outbox": conn.execute(
                     text("SELECT COUNT(*) FROM knowledge_ingestion_outbox")
+                ).scalar_one(),
+                "hr_policy_collection_members": conn.execute(
+                    text(
+                        """
+                        SELECT COUNT(*)
+                        FROM knowledge_collection_items
+                        WHERE collection_id = :collection_id
+                        """
+                    ),
+                    {"collection_id": demo_seed.COLLECTION_IDS["hr_policies"]},
+                ).scalar_one(),
+                "hr_policy_collection_retrievable_members": conn.execute(
+                    text(
+                        """
+                        SELECT COUNT(*)
+                        FROM (
+                            SELECT item.knowledge_base_id
+                            FROM knowledge_collection_items item
+                            JOIN documents document
+                              ON document.knowledge_base_id = item.knowledge_base_id
+                             AND document.status = 'completed'
+                            JOIN document_chunks chunk
+                              ON chunk.document_id = document.id
+                             AND chunk.knowledge_base_id = item.knowledge_base_id
+                            WHERE item.collection_id = :collection_id
+                              AND vector_dims(chunk.embedding) = :embedding_dimension
+                            GROUP BY item.knowledge_base_id
+                        ) retrievable_member
+                        """
+                    ),
+                    {
+                        "collection_id": demo_seed.COLLECTION_IDS["hr_policies"],
+                        "embedding_dimension": demo_seed.DEMO_EMBEDDING_DIMENSION,
+                    },
                 ).scalar_one(),
             }
     finally:
@@ -700,6 +749,10 @@ def test_seed_profile_resets_are_scoped_and_idempotent_in_disposable_postgres():
         assert reset_counts["document_chunk_document_orphans"] == 0
         assert reset_counts["document_chunk_kb_orphans"] == 0
         assert reset_counts["document_kb_orphans"] == 0
+        assert reset_counts["seed_multi_document_knowledge_bases"] == 0
+        assert second_reset_counts["seed_multi_document_knowledge_bases"] == 0
+        assert reset_counts["hr_policy_collection_members"] == 2
+        assert reset_counts["hr_policy_collection_retrievable_members"] == 2
         assert remaining_outbox_ids == {non_demo_outbox_id}
         assert all(demo_agent_builder_after_demo_reset.values())
         assert not any(test_agent_builder_after_reset.values())
