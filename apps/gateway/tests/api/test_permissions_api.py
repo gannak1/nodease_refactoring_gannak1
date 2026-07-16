@@ -10,9 +10,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.sql.operators import is_
 
-from apps.gateway.application.resource_permissions.mutation import (
-    PermissionMutationPersistenceFailed,
-)
 from apps.gateway.main import app
 from apps.gateway.services.app_lifecycle_lock import (
     AppPrimaryChangedDuringMutationError,
@@ -2212,16 +2209,23 @@ class TestPermissionsApi(unittest.TestCase):
         )
         session.audit_add_error = RuntimeError("audit unavailable")
 
-        with self.assertRaises(PermissionMutationPersistenceFailed):
-            self._put_user_permission(
-                session=session,
-                user_id=actor_id,
-                organization_id=organization_id,
-                workflow_id=workflow_id,
-                target_user_id=target_user_id,
-                payload={"auth_state": "builder"},
-            )
+        response = self._put_user_permission(
+            session=session,
+            user_id=actor_id,
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            target_user_id=target_user_id,
+            payload={"auth_state": "builder"},
+        )
 
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(
+            response.json(),
+            _error(
+                "audit.persistence_failed",
+                "The required audit record could not be persisted.",
+            ),
+        )
         self.assertFalse(session.committed)
         self.assertIn(("rollback", None), session.operations)
 

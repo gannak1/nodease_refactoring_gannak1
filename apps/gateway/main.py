@@ -44,6 +44,9 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from apps.gateway.api.api import api_router
+from apps.gateway.application.resource_permissions.mutation import (
+    PermissionMutationPersistenceFailed,
+)
 from apps.gateway.composition.authentication import (
     validate_login_security_configuration,
 )
@@ -55,6 +58,7 @@ from apps.gateway.lifespan import lifespan  # Import lifespan from module
 from apps.gateway.middleware.webhook_query_redaction import (
     WebhookQueryRedactionMiddleware,
 )
+from apps.gateway.utils.api_errors import error_response
 from apps.shared.audit import record_audit
 from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.context import (
@@ -145,6 +149,19 @@ async def validation_failed(request: Request, exc: RequestValidationError):
                 "details": {"errors": _strip_validation_input(jsonable_encoder(exc.errors()))},
             }
         },
+    )
+
+
+@app.exception_handler(PermissionMutationPersistenceFailed)
+async def permission_mutation_persistence_failed(
+    request: Request,
+    _exc: PermissionMutationPersistenceFailed,
+):
+    return error_response(
+        request,
+        500,
+        "audit.persistence_failed",
+        "The required audit record could not be persisted.",
     )
 
 
