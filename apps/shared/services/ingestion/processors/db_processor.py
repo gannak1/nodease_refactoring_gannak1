@@ -11,6 +11,10 @@ from apps.shared.services.ingestion.processors.base import (
     BaseProcessor,
     ProcessingResult,
 )
+from apps.shared.services.connection_use_resolver import (
+    ConnectionUseDenied,
+    ConnectionUseResolver,
+)
 from apps.shared.services.ingestion.transformers.db_nl_transformer import (
     DbNlTransformer,
 )
@@ -72,31 +76,14 @@ class DbProcessor(BaseProcessor):
             # 또는 meta_info에서 필요한 정보 전달
         }
         """
-        connection_id = source_config.get("connection_id")
-        if not connection_id:
-            return ProcessingResult(
-                chunks=[],
-                metadata={
-                    "error": "No connection_id provided",
-                    "error_code": "configuration_invalid",
-                },
+        try:
+            conn_record = ConnectionUseResolver(self.db).resolve(
+                source_config.get("connection_id"),
+                execution_subject_user_id=self.user_id,
+                lock_for_use=True,
             )
-
-        # DB 연결 정보 조회 (BaseProcessor의 self.db 사용)
-
-        from apps.shared.db.models.connection import Connection
-
-        conn_record = (
-            self.db.query(Connection).filter(Connection.id == connection_id).first()
-        )
-        if not conn_record:
-            return ProcessingResult(
-                chunks=[],
-                metadata={
-                    "error": "Connection not found",
-                    "error_code": "configuration_invalid",
-                },
-            )
+        except ConnectionUseDenied:
+            return self._connection_unavailable_result()
 
         # Connector 인스턴스 생성
         connector = self._get_connector(conn_record.type)
@@ -104,27 +91,22 @@ class DbProcessor(BaseProcessor):
             return ProcessingResult(
                 chunks=[],
                 metadata={
-                    "error": "Unsupported DB type",
+                    "error": "Connection configuration unavailable",
                     "error_code": "configuration_invalid",
+                    "reason_code": "configuration.invalid",
                 },
             )
 
         # 연결 설정 복호화
         try:
-            # 개별 필드에서 설정 구성 및 비밀번호 복호화
-            try:
-                password = encryption_manager.decrypt(conn_record.encrypted_password)
-            except Exception:
-                # Decryption 실패 시 원본 값 사용 (개발 환경 등에서 암호화 안 된 경우)
-                logger.warning("DB connection credential decryption failed")
-                password = conn_record.encrypted_password
-
             config_dict = {
                 "host": conn_record.host,
                 "port": conn_record.port,
                 "database": conn_record.database,
                 "username": conn_record.username,
-                "password": password,
+                "password": encryption_manager.decrypt(
+                    conn_record.encrypted_password
+                ),
             }
 
             # SSH 설정 추가
@@ -137,33 +119,27 @@ class DbProcessor(BaseProcessor):
                     "auth_type": conn_record.ssh_auth_type,
                 }
 
-                # SSH 인증 정보 복호화
-                try:
-                    if conn_record.ssh_auth_type == "key":
-                        ssh_config["private_key"] = encryption_manager.decrypt(
-                            conn_record.encrypted_ssh_private_key
-                        )
-                    else:
-                        ssh_config["password"] = encryption_manager.decrypt(
-                            conn_record.encrypted_ssh_password
-                        )
-                except Exception:
-                    # 복호화 실패 시 원본 값 사용 (개발 환경 등)
-                    logger.warning("DB SSH credential decryption failed")
-                    if conn_record.ssh_auth_type == "key":
-                        ssh_config["private_key"] = (
-                            conn_record.encrypted_ssh_private_key
-                        )
-                    else:
-                        ssh_config["password"] = conn_record.encrypted_ssh_password
+                if conn_record.ssh_auth_type == "key":
+                    ssh_config["private_key"] = encryption_manager.decrypt(
+                        conn_record.encrypted_ssh_private_key
+                    )
+                else:
+                    ssh_config["password"] = encryption_manager.decrypt(
+                        conn_record.encrypted_ssh_password
+                    )
 
                 config_dict["ssh"] = ssh_config
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "DB connection configuration could not be decrypted: error_type=%s",
+                type(exc).__name__,
+            )
             return ProcessingResult(
                 chunks=[],
                 metadata={
-                    "error": "Config setup failed",
+                    "error": "Connection configuration unavailable",
                     "error_code": "configuration_invalid",
+                    "reason_code": "configuration.invalid",
                 },
             )
 
@@ -200,7 +176,6 @@ class DbProcessor(BaseProcessor):
                     selections,
                     join_config,
                     source_config,
-                    conn_record,
                     transformer,
                     chunker,
                 )
@@ -213,25 +188,39 @@ class DbProcessor(BaseProcessor):
                         config_dict,
                         selections,
                         source_config,
-                        conn_record,
                         transformer,
                         chunker,
                     )
                 )
         except Exception as exc:
+            error_code = (
+                "configuration_invalid"
+                if isinstance(exc, (KeyError, TypeError, ValueError))
+                else "temporarily_unavailable"
+            )
             return ProcessingResult(
                 chunks=[],
                 metadata={
                     "error": "DB source processing failed",
-                    "error_code": (
-                        "configuration_invalid"
-                        if isinstance(exc, (KeyError, TypeError, ValueError))
-                        else "temporarily_unavailable"
+                    "error_code": error_code,
+                    "reason_code": (
+                        "configuration.invalid"
+                        if error_code == "configuration_invalid"
+                        else "source.temporarily_unavailable"
                     ),
                 },
             )
+        return ProcessingResult(chunks=chunks, metadata={"source_type": "DB"})
+
+    @staticmethod
+    def _connection_unavailable_result() -> ProcessingResult:
         return ProcessingResult(
-            chunks=chunks, metadata={"connection_id": str(connection_id)}
+            chunks=[],
+            metadata={
+                "error": "Resource unavailable",
+                "error_code": "configuration_invalid",
+                "reason_code": "resource.hidden",
+            },
         )
 
     def _get_connector(self, db_type: str):
@@ -249,7 +238,6 @@ class DbProcessor(BaseProcessor):
         config_dict,
         selections,
         source_config,
-        conn_record,
         transformer,
         chunker,
     ):
@@ -295,7 +283,6 @@ class DbProcessor(BaseProcessor):
             query,
             config_dict,
             selections,
-            conn_record,
             transformer,
             chunker,
             source_config,
@@ -310,7 +297,6 @@ class DbProcessor(BaseProcessor):
         selections,
         join_config,
         source_config,
-        conn_record,
         transformer,
         chunker,
     ):
@@ -355,7 +341,6 @@ class DbProcessor(BaseProcessor):
             query,
             config_dict,
             selections,
-            conn_record,
             transformer,
             chunker,
             source_config,
@@ -369,7 +354,6 @@ class DbProcessor(BaseProcessor):
         query,
         config_dict,
         selections,
-        conn_record,
         transformer,
         chunker,
         source_config,
@@ -410,7 +394,7 @@ class DbProcessor(BaseProcessor):
 
             # 4. 메타데이터 구성
             metadata = {
-                "source": f"DB:{conn_record.name}:{'JOIN' if len(selections) > 1 else selections[0]['table_name']}",
+                "source": f"DB:{'JOIN' if len(selections) > 1 else selections[0]['table_name']}",
                 "tables": [s["table_name"] for s in selections],
                 "row_index": row_count,
                 "original_data": original_data,

@@ -1,0 +1,128 @@
+from __future__ import annotations
+
+import uuid
+
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+
+from apps.shared.db.models.connection import Connection
+from apps.shared.db.models.user import User
+from apps.shared.services.connection_use_resolver import (
+    ConnectionUseDenied,
+    ConnectionUseResolver,
+)
+
+
+@pytest.fixture
+def db_session() -> Session:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    User.__table__.create(engine)
+    Connection.__table__.create(engine)
+    with Session(engine) as session:
+        yield session
+    engine.dispose()
+
+
+def _insert_user(session: Session, user_id: uuid.UUID) -> None:
+    session.execute(
+        User.__table__.insert().values(
+            id=user_id,
+            email=f"{user_id}@example.test",
+            name="Test User",
+            social_provider="local",
+        )
+    )
+
+
+def _insert_connection(
+    session: Session,
+    *,
+    connection_id: uuid.UUID,
+    owner_id: uuid.UUID,
+) -> None:
+    session.execute(
+        Connection.__table__.insert().values(
+            id=connection_id,
+            user_id=owner_id,
+            name="sensitive-connection-label",
+            type="postgres",
+            host="db.internal.example",
+            port=5432,
+            database="application",
+            username="service-user",
+            encrypted_password="opaque-ciphertext",
+            use_ssh=False,
+        )
+    )
+    session.commit()
+
+
+def test_owner_can_resolve_connection(db_session: Session) -> None:
+    owner_id = uuid.uuid4()
+    connection_id = uuid.uuid4()
+    _insert_user(db_session, owner_id)
+    _insert_connection(
+        db_session,
+        connection_id=connection_id,
+        owner_id=owner_id,
+    )
+
+    resolved = ConnectionUseResolver(db_session).resolve(
+        connection_id,
+        execution_subject_user_id=owner_id,
+        lock_for_use=True,
+    )
+
+    assert resolved.id == connection_id
+    assert resolved.user_id == owner_id
+
+
+@pytest.mark.parametrize("connection_reference", [None, "", "not-a-uuid"])
+def test_invalid_connection_reference_is_resource_hidden(
+    db_session: Session,
+    connection_reference: object,
+) -> None:
+    with pytest.raises(ConnectionUseDenied) as exc_info:
+        ConnectionUseResolver(db_session).resolve(
+            connection_reference,
+            execution_subject_user_id=uuid.uuid4(),
+        )
+
+    assert exc_info.value.code == "resource.hidden"
+    assert "connection" not in str(exc_info.value).lower()
+
+
+def test_other_users_connection_is_resource_hidden(db_session: Session) -> None:
+    owner_id = uuid.uuid4()
+    actor_id = uuid.uuid4()
+    connection_id = uuid.uuid4()
+    _insert_user(db_session, owner_id)
+    _insert_user(db_session, actor_id)
+    _insert_connection(
+        db_session,
+        connection_id=connection_id,
+        owner_id=owner_id,
+    )
+
+    with pytest.raises(ConnectionUseDenied) as exc_info:
+        ConnectionUseResolver(db_session).resolve(
+            connection_id,
+            execution_subject_user_id=actor_id,
+        )
+
+    assert exc_info.value.code == "resource.hidden"
+    serialized = repr(exc_info.value)
+    assert str(connection_id) not in serialized
+    assert "sensitive-connection-label" not in serialized
+
+
+def test_missing_execution_subject_is_resource_hidden(db_session: Session) -> None:
+    with pytest.raises(ConnectionUseDenied) as exc_info:
+        ConnectionUseResolver(db_session).resolve(
+            uuid.uuid4(),
+            execution_subject_user_id=None,
+        )
+
+    assert exc_info.value.code == "resource.hidden"
+

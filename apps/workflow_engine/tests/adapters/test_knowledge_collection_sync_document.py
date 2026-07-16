@@ -9,7 +9,6 @@ import pytest
 from sqlalchemy import and_
 from sqlalchemy.dialects import postgresql
 
-from apps.shared.db.models.connection import Connection
 from apps.shared.db.models.knowledge import (
     Document,
     KnowledgeBase,
@@ -92,7 +91,6 @@ def _item() -> WorkerSyncItem:
 
 
 def _rows(item: WorkerSyncItem):
-    owner_id = uuid.uuid4()
     document = SimpleNamespace(
         id=item.document_id,
         meta_info={
@@ -120,7 +118,6 @@ def _rows(item: WorkerSyncItem):
             embedding_model="text-embedding-3-small",
         ),
         Document: document,
-        Connection: SimpleNamespace(id=uuid.uuid4(), user_id=owner_id, type="postgres"),
     }
 
 
@@ -148,11 +145,8 @@ def test_document_adapter_finalizes_new_version_without_legacy_replace(
     db = Db(rows)
     acquire_lock = Mock(side_effect=lambda *_args: db.events.append("advisory"))
     monkeypatch.setattr(adapter_module, "acquire_document_write_lock", acquire_lock)
-    monkeypatch.setattr(
-        adapter_module, "has_active_organization_membership", lambda *args: True
-    )
-
-    SqlAlchemyKnowledgeCollectionSyncDocument(db).sync(item, actor_id=uuid.uuid4())
+    actor_id = uuid.uuid4()
+    SqlAlchemyKnowledgeCollectionSyncDocument(db).sync(item, actor_id=actor_id)
 
     source_config = processor.process.call_args.args[0]
     acquire_lock.assert_called_once_with(db, item.document_id)
@@ -172,6 +166,7 @@ def test_document_adapter_finalizes_new_version_without_legacy_replace(
         document_version_id=version.id,
     )
     finalizer.finalize_active_version.assert_called_once_with(version)
+    processor_class.assert_called_once_with(db_session=db, user_id=actor_id)
 
 
 @pytest.mark.parametrize(
@@ -219,10 +214,6 @@ def test_document_adapter_applies_persisted_chunk_selection(
         Mock(return_value=finalizer),
     )
     monkeypatch.setattr(adapter_module, "acquire_document_write_lock", Mock())
-    monkeypatch.setattr(
-        adapter_module, "has_active_organization_membership", lambda *args: True
-    )
-
     SqlAlchemyKnowledgeCollectionSyncDocument(Db(rows)).sync(
         item,
         actor_id=uuid.uuid4(),
@@ -270,10 +261,6 @@ def test_document_adapter_preserves_active_version_when_selection_is_invalid(
         finalizer_class,
     )
     monkeypatch.setattr(adapter_module, "acquire_document_write_lock", Mock())
-    monkeypatch.setattr(
-        adapter_module, "has_active_organization_membership", lambda *args: True
-    )
-
     with pytest.raises(SyncTargetConfigurationInvalid):
         SqlAlchemyKnowledgeCollectionSyncDocument(Db(rows)).sync(
             item,
@@ -315,10 +302,6 @@ def test_document_adapter_rejects_empty_result_before_version_swap(
     monkeypatch.setattr(
         adapter_module, "KnowledgeIngestionFinalizer", finalizer_class
     )
-    monkeypatch.setattr(
-        adapter_module, "has_active_organization_membership", lambda *args: True
-    )
-
     with pytest.raises(SyncTargetConfigurationInvalid):
         SqlAlchemyKnowledgeCollectionSyncDocument(Db(rows)).sync(
             item, actor_id=uuid.uuid4()
@@ -328,23 +311,30 @@ def test_document_adapter_rejects_empty_result_before_version_swap(
     finalizer_class.assert_not_called()
 
 
-def test_connection_owner_outside_organization_fails_before_processor(
+def test_connection_authorization_is_delegated_to_processor_with_actor(
     monkeypatch,
 ) -> None:
     item = _item()
     rows = _rows(item)
-    processor_class = Mock()
-    monkeypatch.setattr(adapter_module, "DbProcessor", processor_class)
-    monkeypatch.setattr(
-        adapter_module, "has_active_organization_membership", lambda *args: False
+    processor = Mock()
+    processor.process.return_value = SimpleNamespace(
+        chunks=[],
+        metadata={
+            "error": "Resource unavailable",
+            "error_code": "configuration_invalid",
+            "reason_code": "resource.hidden",
+        },
     )
+    processor_class = Mock(return_value=processor)
+    monkeypatch.setattr(adapter_module, "DbProcessor", processor_class)
+    actor_id = uuid.uuid4()
+    db = Db(rows)
 
     with pytest.raises(SyncTargetConfigurationInvalid):
-        SqlAlchemyKnowledgeCollectionSyncDocument(Db(rows)).sync(
-            item, actor_id=uuid.uuid4()
-        )
+        SqlAlchemyKnowledgeCollectionSyncDocument(db).sync(item, actor_id=actor_id)
 
-    processor_class.assert_not_called()
+    processor_class.assert_called_once_with(db_session=db, user_id=actor_id)
+    assert "query:Connection" not in db.events
 
 
 def test_unlinked_target_is_skipped_before_connection_lookup() -> None:

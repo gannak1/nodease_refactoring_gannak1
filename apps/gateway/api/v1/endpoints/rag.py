@@ -32,6 +32,9 @@ from apps.gateway.services.ingestion.service import (
     finalize_stale_processing_start,
     recover_timed_out_document_with_artifacts,
 )
+from apps.gateway.services.connection_use_service import (
+    resolve_connection_use_or_hidden,
+)
 from apps.gateway.services.knowledge_authorization_service import (
     KnowledgeAuthorizationService,
     KnowledgePermissionDenied,
@@ -73,7 +76,6 @@ from apps.gateway.utils.api_errors import (
 from apps.gateway.utils.audit import audit
 from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.logger import record_audit
-from apps.shared.db.models.connection import Connection
 from apps.shared.db.models.knowledge import Document, KnowledgeBase, SourceType
 from apps.shared.db.models.user import User
 from apps.shared.schemas.rag import (
@@ -478,6 +480,15 @@ async def upload_document(
     except RAGHierarchyError as exc:
         raise _chunking_http_exception(exc)
 
+    prepared_db_source = None
+    if source_enum == SourceType.DB:
+        prepared_db_source = _prepare_db_source(
+            request,
+            db,
+            current_user,
+            connection_id,
+        )
+
     # 1. 자료 확인 또는 생성
     target_kb_id, target_ai_model = _get_or_create_knowledge_base(
         request,
@@ -534,9 +545,7 @@ async def upload_document(
             api_url, api_method, api_headers, api_body
         )
     elif source_enum == SourceType.DB:  # [NEW] DB 타입 처리
-        file_path, filename, meta_info = _prepare_db_source(
-            db, current_user, connection_id
-        )
+        file_path, filename, meta_info = prepared_db_source
     else:
         raise HTTPException(status_code=400, detail="Invalid source type")
 
@@ -584,30 +593,21 @@ async def upload_document(
     )
 
 
-def _prepare_db_source(db: Session, user: User, connection_id: Optional[UUID]):
+def _prepare_db_source(
+    request: Request,
+    db: Session,
+    user: User,
+    connection_id: Optional[UUID],
+):
     """DB 소스처리를 위한 데이터 준비"""
-    if not connection_id:
-        raise HTTPException(
-            status_code=400, detail="Connection ID is required for DB source."
-        )
-
-    # 연결 정보 조회 및 권한 확인
-    conn = (
-        db.query(Connection)
-        .filter(Connection.id == connection_id, Connection.user_id == user.id)
-        .with_for_update()
-        .first()
+    conn = resolve_connection_use_or_hidden(
+        request,
+        db,
+        connection_id=connection_id,
+        execution_subject_user_id=user.id,
     )
-    if not conn:
-        raise HTTPException(status_code=404, detail="Connection not found.")
 
-    meta_info = {
-        "connection_id": str(conn.id),
-        "db_type": conn.type,
-        "connection_name": conn.name,
-    }
-
-    return None, conn.name, meta_info
+    return None, "Database source", {"connection_id": str(conn.id)}
 
 
 @router.post("/document/{document_id}/analyze", response_model=DocumentAnalyzeResponse)

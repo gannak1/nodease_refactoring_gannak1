@@ -83,6 +83,12 @@ from apps.gateway.services.knowledge_document_content_service import (
 from apps.gateway.services.knowledge_document_edit_projection import (
     project_document_edit_config,
 )
+from apps.gateway.services.knowledge_db_source_config import (
+    KnowledgeDbSourceConfigInvalid,
+    ValidatedKnowledgeDbSourceConfig,
+    remove_legacy_connection_details,
+    validate_knowledge_db_source_config,
+)
 from apps.gateway.services.knowledge_document_projection import (
     project_safe_document_error,
     project_safe_document_metadata,
@@ -119,6 +125,7 @@ from apps.gateway.services.organization_context import (
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.knowledge import Document, KnowledgeBase
 from apps.shared.db.models.user import User
+from apps.shared.services.connection_use_resolver import ConnectionUseDenied
 from apps.shared.schemas.knowledge import (
     KnowledgeCandidateResolution,
     KnowledgeCandidateResolveRequest,
@@ -180,6 +187,37 @@ from apps.shared.domain.knowledge_collection_sync import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _validated_db_source_config_or_error(
+    request: Request,
+    db: Session,
+    *,
+    current_user_id: UUID,
+    stored_meta_info: object,
+    submitted_db_config: object,
+) -> ValidatedKnowledgeDbSourceConfig:
+    try:
+        return validate_knowledge_db_source_config(
+            db,
+            execution_subject_user_id=current_user_id,
+            stored_meta_info=stored_meta_info,
+            submitted_db_config=submitted_db_config,
+        )
+    except ConnectionUseDenied:
+        raise_api_error(
+            request,
+            404,
+            "resource.hidden",
+            "Resource not found.",
+        )
+    except KnowledgeDbSourceConfigInvalid:
+        raise_api_error(
+            request,
+            400,
+            "validation.failed",
+            "Invalid DB source configuration.",
+        )
 
 
 class KnowledgeSchemaIntrospectionError(Exception):
@@ -2225,13 +2263,28 @@ async def process_document(
     except RAGHierarchyError as exc:
         raise _chunking_http_exception(exc)
 
-    _lock_db_connection_reference(
-        request,
-        db,
-        document=doc,
-        owner_id=current_user.id,
-        db_config=preview_request.db_config,
-    )
+    validated_db_config = None
+    if doc.source_type == "DB":
+        validated_db_config = _validated_db_source_config_or_error(
+            request,
+            db,
+            current_user_id=current_user.id,
+            stored_meta_info=doc.meta_info,
+            submitted_db_config=preview_request.db_config,
+        )
+        selections = validated_db_config.persisted_db_config.get("selections", [])
+        join_config = validated_db_config.persisted_db_config.get("join_config", {})
+        if len(selections) == 2 and not join_config.get("enabled", False):
+            raise HTTPException(
+                status_code=400, detail="선택한 테이블 간 FK 관계가 없습니다."
+            )
+        _lock_db_connection_reference(
+            request,
+            db,
+            document=doc,
+            owner_id=current_user.id,
+            db_config=validated_db_config.runtime_config,
+        )
 
     # 2. 설정 업데이트
     doc.chunk_size = preview_request.chunk_size
@@ -2246,25 +2299,21 @@ async def process_document(
             "remove_whitespace": preview_request.remove_whitespace,
             "strategy": preview_request.strategy,  # LlamaParse 등 파싱 전략 저장
             "chunking_mode": normalized_chunking_mode,
-            "db_config": preview_request.db_config,
+            "db_config": (
+                validated_db_config.persisted_db_config
+                if validated_db_config is not None
+                else preview_request.db_config
+            ),
             # 필터링 설정 저장
             "selection_mode": preview_request.selection_mode,
             "chunk_range": preview_request.chunk_range,
             "keyword_filter": preview_request.keyword_filter,
         }
     )
+    if validated_db_config is not None:
+        new_meta["connection_id"] = str(validated_db_config.connection_id)
+        remove_legacy_connection_details(new_meta)
     doc.meta_info = new_meta
-
-    # DB 소스인 경우 FK 관계 검증 (백그라운드 실행 전)
-    if doc.source_type == "DB" and preview_request.db_config:
-        selections = preview_request.db_config.get("selections", [])
-        join_config = preview_request.db_config.get("join_config", {})
-
-        # 2개 테이블 선택 시 FK 관계 필수
-        if len(selections) == 2 and not join_config.get("enabled", False):
-            raise HTTPException(
-                status_code=400, detail="선택한 테이블 간 FK 관계가 없습니다."
-            )
 
     # 상태 업데이트 (처리 시작 전)
     mark_document_processing_queued(doc)
@@ -2323,6 +2372,26 @@ def preview_document_chunking(
     except RAGHierarchyError as exc:
         raise _chunking_http_exception(exc)
 
+    preview_db_config = preview_request.db_config
+    preview_meta_info = doc.meta_info
+    if doc.source_type == "DB":
+        validated_db_config = _validated_db_source_config_or_error(
+            request,
+            db,
+            current_user_id=current_user.id,
+            stored_meta_info=doc.meta_info,
+            submitted_db_config=preview_request.db_config,
+        )
+        preview_db_config = validated_db_config.runtime_config
+        preview_meta_info = dict(doc.meta_info or {})
+        preview_meta_info["connection_id"] = str(
+            validated_db_config.connection_id
+        )
+        preview_meta_info["db_config"] = (
+            validated_db_config.persisted_db_config
+        )
+        remove_legacy_connection_details(preview_meta_info)
+
     # 2. 서비스 호출
     service = IngestionService(
         db,
@@ -2340,8 +2409,8 @@ def preview_document_chunking(
             strategy=preview_request.strategy,
             source_type=doc.source_type,
             chunking_mode=normalized_chunking_mode,
-            meta_info=doc.meta_info,
-            db_config=preview_request.db_config,
+            meta_info=preview_meta_info,
+            db_config=preview_db_config,
             # 필터링 파라미터 전달
             selection_mode=preview_request.selection_mode,
             chunk_range=preview_request.chunk_range,
