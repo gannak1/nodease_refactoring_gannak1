@@ -30,6 +30,10 @@ AfterCommit = Callable[[uuid.UUID], None]
 logger = logging.getLogger(__name__)
 
 
+class AuditWorkflowRunPendingError(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True)
 class AuditEventOutboxProcessResult:
     processed_count: int
@@ -71,6 +75,26 @@ def workflow_correlation_from_payload(
         if isinstance(metadata, dict):
             value = metadata.get(key)
     return _to_uuid(value)
+
+
+def workflow_run_correlation_is_pending(
+    db: Session,
+    payload: dict[str, Any],
+) -> bool:
+    metadata = payload.get("audit_metadata")
+    if not isinstance(metadata, dict):
+        return False
+    if _to_uuid(metadata.get("organization_id")) is None:
+        return False
+
+    workflow_run_id = workflow_correlation_from_payload(payload, "workflow_run_id")
+    if workflow_run_id is None:
+        return False
+
+    if db.get(WorkflowRun, workflow_run_id) is not None:
+        return False
+    audit_id = audit_id_from_payload(payload)
+    return db.get(AuditLog, audit_id) is None
 
 
 def build_audit_log(payload: dict[str, Any]) -> AuditLog:
@@ -337,6 +361,12 @@ class AuditEventOutboxProcessor:
         for event in events:
             audit_id: uuid.UUID | None = None
             try:
+                if (
+                    event.retryable
+                    and event.attempt_count < event.max_attempts
+                    and workflow_run_correlation_is_pending(self.db, event.payload)
+                ):
+                    raise AuditWorkflowRunPendingError("workflow_run_pending")
                 audit_id = self.persist_audit(self.db, event.payload)
                 if not self.outbox.mark_succeeded(event, owner_token=owner_token):
                     # Fencing failed: do not commit an AuditLog for a lease this
@@ -353,16 +383,24 @@ class AuditEventOutboxProcessor:
                     owner_token=owner_token,
                 )
                 if audit_id is None:
+                    safe_reason_code = (
+                        "audit.workflow_run_pending"
+                        if isinstance(error, AuditWorkflowRunPendingError)
+                        else "audit.persistence_failed"
+                    )
                     self.outbox.mark_retry_or_dead_letter(
                         event,
                         owner_token=owner_token,
-                        safe_reason_code="audit.persistence_failed",
+                        safe_reason_code=safe_reason_code,
                     )
                     self.db.commit()
-                    logger.warning(
-                        "[Audit] outbox persistence failed: error_type=%s",
-                        type(error).__name__,
-                    )
+                    if isinstance(error, AuditWorkflowRunPendingError):
+                        logger.info("[Audit] outbox workflow run correlation pending")
+                    else:
+                        logger.warning(
+                            "[Audit] outbox persistence failed: error_type=%s",
+                            type(error).__name__,
+                        )
                     continue
             processed_count += 1
             self._run_after_commit(audit_id)

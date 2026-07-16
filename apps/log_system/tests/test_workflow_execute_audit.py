@@ -4,10 +4,12 @@ from uuid import uuid4
 from apps.log_system.tasks import (
     _record_workflow_execute_audit,
     _schedule_audit_organization_id,
+    _workflow_execute_audit_organization_id,
 )
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.app import App
 from apps.shared.db.models.schedule_dispatch import ScheduleDispatchClaim
+from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
 from apps.shared.db.models.workflow_run import RunTriggerMode
 
@@ -138,6 +140,32 @@ class _Session:
 
     def query(self, model):
         return _Query(self.rows.get(model))
+
+
+def test_interactive_workflow_execute_audit_uses_workflow_organization():
+    organization_id = uuid4()
+    workflow_id = uuid4()
+    run = SimpleNamespace(
+        id=uuid4(),
+        user_id=uuid4(),
+        workflow_id=workflow_id,
+        workflow_task_id=None,
+        trigger_mode=RunTriggerMode.MANUAL,
+    )
+
+    result = _workflow_execute_audit_organization_id(
+        _Session(
+            {
+                Workflow: SimpleNamespace(
+                    id=workflow_id,
+                    organization_id=organization_id,
+                )
+            }
+        ),
+        run,
+    )
+
+    assert result == organization_id
 
 
 def test_schedule_audit_organization_requires_claim_run_deployment_and_workflow_match():

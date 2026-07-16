@@ -210,6 +210,21 @@ def _schedule_audit_organization_id(session, run_log):
     return claim.organization_id
 
 
+def _workflow_execute_audit_organization_id(session, run_log):
+    trigger_mode = getattr(run_log.trigger_mode, "value", run_log.trigger_mode)
+    if trigger_mode in {"schedule", "scheduler"}:
+        return _schedule_audit_organization_id(session, run_log)
+    if run_log.user_id is None:
+        return None
+
+    workflow = (
+        session.query(Workflow).filter(Workflow.id == run_log.workflow_id).first()
+    )
+    if workflow is None:
+        return None
+    return workflow.organization_id
+
+
 def _record_workflow_execute_audit(
     run_log,
     status,
@@ -479,7 +494,10 @@ def update_run_log_finish(self, data: Dict[str, Any]):
         _insert_trace_payloads(session, run_id, data.get("trace_payloads") or [])
         session.commit()
         _schedule_model_routing_run_record(run_log)
-        audit_organization_id = _schedule_audit_organization_id(session, run_log)
+        audit_organization_id = _workflow_execute_audit_organization_id(
+            session,
+            run_log,
+        )
         if run_log.user_id is not None or audit_organization_id is not None:
             _record_workflow_execute_audit(
                 run_log,
@@ -532,7 +550,10 @@ def update_run_log_error(self, data: Dict[str, Any]):
         )
         session.commit()
         _schedule_model_routing_run_record(run_log)
-        audit_organization_id = _schedule_audit_organization_id(session, run_log)
+        audit_organization_id = _workflow_execute_audit_organization_id(
+            session,
+            run_log,
+        )
         if run_log.user_id is not None or audit_organization_id is not None:
             _record_workflow_execute_audit(
                 run_log,

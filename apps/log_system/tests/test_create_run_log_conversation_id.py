@@ -265,9 +265,20 @@ def test_update_run_finish_clears_previous_error_message(monkeypatch):
         started_at=datetime.now(timezone.utc),
     )
     session = _QuerySession(run)
+    organization_id = uuid4()
+    audit_calls = []
     monkeypatch.setattr(log_tasks, "SessionLocal", lambda: session)
     monkeypatch.setattr(log_tasks, "_insert_trace_payloads", lambda *a, **k: None)
-    monkeypatch.setattr(log_tasks, "_record_workflow_execute_audit", lambda *a, **k: None)
+    monkeypatch.setattr(
+        log_tasks,
+        "_workflow_execute_audit_organization_id",
+        lambda *a, **k: organization_id,
+    )
+    monkeypatch.setattr(
+        log_tasks,
+        "_record_workflow_execute_audit",
+        lambda *args, **kwargs: audit_calls.append((args, kwargs)),
+    )
     monkeypatch.setattr(log_tasks, "_schedule_model_routing_run_record", lambda *a, **k: None)
 
     result = log_tasks.update_run_log_finish.__wrapped__(
@@ -286,3 +297,4 @@ def test_update_run_finish_clears_previous_error_message(monkeypatch):
     assert session.committed is True
     assert run.status == RunStatus.SUCCESS
     assert run.error_message is None
+    assert audit_calls[0][1]["organization_id"] == organization_id

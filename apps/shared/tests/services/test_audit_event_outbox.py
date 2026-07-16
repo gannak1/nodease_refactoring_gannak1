@@ -69,6 +69,18 @@ class _CorrelationDb:
         pass
 
 
+class _ProcessorCorrelationDb(_CorrelationDb):
+    def __init__(self, rows, events):
+        super().__init__(rows)
+        self.events = events
+
+    def commit(self):
+        self.events.append("commit")
+
+    def rollback(self):
+        self.events.append("rollback")
+
+
 def _leased_event(*, attempt_count=1):
     now = datetime(2026, 7, 16, 3, 0, tzinfo=timezone.utc)
     audit_id = uuid4()
@@ -279,6 +291,92 @@ def test_processor_converts_persistence_error_to_safe_retry(monkeypatch):
         "commit",
     ]
     assert secret not in events[4][1]
+
+
+def test_processor_retries_while_workflow_run_correlation_is_pending(monkeypatch):
+    module = _module()
+    event = _leased_event(attempt_count=1)
+    workflow_run_id = uuid4()
+    event.payload["workflow_run_id"] = str(workflow_run_id)
+    events = []
+    db = _ProcessorCorrelationDb({}, events)
+
+    class Outbox:
+        def __init__(self, processor_db):
+            assert processor_db is db
+
+        def recover_stale_leases(self):
+            return 0
+
+        def lease_due_events(self, *, owner_token, limit):
+            return [event]
+
+        def mark_succeeded(self, *args, **kwargs):
+            raise AssertionError("pending correlation must not succeed")
+
+        def mark_retry_or_dead_letter(
+            self, row, *, owner_token, safe_reason_code
+        ):
+            assert row is event
+            assert owner_token == "worker-1"
+            events.append(("retry", safe_reason_code))
+            return True
+
+    monkeypatch.setattr(module, "AuditEventOutboxService", Outbox)
+
+    result = module.AuditEventOutboxProcessor(db).process_due_events(
+        owner_token="worker-1"
+    )
+
+    assert result.processed_count == 0
+    assert db.added == []
+    assert events == [
+        "commit",
+        "rollback",
+        ("retry", "audit.workflow_run_pending"),
+        "commit",
+    ]
+
+
+def test_processor_final_attempt_persists_audit_without_missing_run_correlation(
+    monkeypatch,
+):
+    module = _module()
+    event = _leased_event(attempt_count=5)
+    workflow_run_id = uuid4()
+    event.payload["workflow_run_id"] = str(workflow_run_id)
+    events = []
+    db = _ProcessorCorrelationDb({}, events)
+
+    class Outbox:
+        def __init__(self, processor_db):
+            assert processor_db is db
+
+        def recover_stale_leases(self):
+            return 0
+
+        def lease_due_events(self, *, owner_token, limit):
+            return [event]
+
+        def mark_succeeded(self, row, *, owner_token):
+            assert row is event
+            assert owner_token == "worker-1"
+            events.append("succeeded")
+            return True
+
+        def mark_retry_or_dead_letter(self, *args, **kwargs):
+            raise AssertionError("final pending correlation must preserve the audit")
+
+    monkeypatch.setattr(module, "AuditEventOutboxService", Outbox)
+
+    result = module.AuditEventOutboxProcessor(db).process_due_events(
+        owner_token="worker-1"
+    )
+
+    assert result.processed_count == 1
+    assert len(db.added) == 1
+    assert db.added[0].workflow_run_id is None
+    assert events == ["commit", "succeeded", "commit"]
 
 
 def test_processor_treats_concurrent_legacy_insert_as_idempotent_success(
