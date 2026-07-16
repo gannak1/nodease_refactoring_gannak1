@@ -1,7 +1,7 @@
 # Connectors Requirements
 
 Status: Draft
-Verified Against: feature/mba-246 @ f5cab6c05106cd60b0944d48ff92cd7d87407ecd
+Verified Against: feature/mba-246 @ 05b815ee0f35d3e955ab74119dad2446bb532345
 Related Features: workflow, organization, audit-tracing, knowledge, conversation-memory
 
 ## Purpose
@@ -63,16 +63,16 @@ Connectors 기능은 외부 데이터 소스에 접속하기 위한 연결 정�
 - CONN-REQ-036: `POST /connectors/test`는 로그인 사용자와 `X-Organization-Id`의 active organization membership을 요구해야 한다. Invited/suspended/removed 또는 scope 밖 organization은 network와 admission 전에 fail-closed해야 한다.
 - CONN-REQ-037: Active organization member/manager는 connection test capability를 갖지만, 이 capability는 connection create/use/manage 권한을 부여하지 않아야 한다.
 - CONN-REQ-038: Gateway는 인증과 organization scope 확인 뒤 connector test actual JSON body를 최대 32 KiB, 전체 5초로 읽어야 한다. Declared length는 early hint이고 actual streamed bytes가 최종 기준이어야 한다.
-- CONN-REQ-039: Connector test ingress는 단일 `application/json`, identity encoding, UTF-8 object root만 허용하고 duplicate/invalid length, BOM, invalid JSON, non-finite number, disconnect를 safe reason code로 거부해야 한다.
+- CONN-REQ-039: Connector test ingress는 query string 없이 단일 `application/json`, identity encoding, UTF-8 object root만 허용하고 duplicate/invalid length, BOM, invalid JSON, non-finite number, disconnect를 safe reason code로 거부해야 한다. Connector test 경로의 query 원문은 ASGI access log가 생성되기 전에 제거하되 query 존재 여부만 boolean marker로 보존해 endpoint가 `400 connector.test_payload_invalid`로 거부해야 한다.
 - CONN-REQ-040: Connector test는 Redis atomic admission에서 aligned 60초 window당 user 5, organization 30, network 20 rate와 user 1, organization 4, global 16 concurrency를 적용해야 한다. Network identity는 공통 trusted-proxy resolver로 계산하고, forwarded header는 설정된 trusted proxy peer에서만 사용해야 한다. 환경 설정은 문서화된 positive/finite 상한과 scope/timeout 관계를 벗어나면 Gateway startup을 실패시켜야 한다.
 - CONN-REQ-041: Admission identity는 scope-separated HMAC digest만 Redis에 저장해야 하며 raw organization/user/network identity, connection config와 secret을 key/member에 저장하지 않아야 한다. Owner-safe heartbeat는 probe 완료 또는 server-owned hard deadline까지 lease를 연장한다. Hard deadline 뒤 heartbeat와 distributed lease를 종료하되, 취소할 수 없는 blocking driver work가 실제로 끝나기 전에는 해당 local executor capacity를 재사용하지 않아야 한다. Process crash와 release 실패는 TTL로 복구한다.
-- CONN-REQ-042: Redis/admission 장애, 해석할 수 없는 transport identity와 local executor capacity 부족은 probe 전에 fail-closed해야 한다. Process-local unlimited fallback은 허용하지 않는다.
+- CONN-REQ-042: Redis/admission 장애, 해석할 수 없는 transport identity와 local executor capacity 부족은 probe 전에 fail-closed해야 한다. Local executor slot은 Redis rate admission 전에 non-blocking 예약하고, local busy는 Redis rate counter와 Connector audit을 소비하지 않아야 한다. Admission 실패·취소 시 시작하지 않은 예약은 즉시 반환하고, 시작한 blocking driver의 slot은 실제 종료 전 재사용하지 않아야 한다. Process-local unlimited fallback은 허용하지 않는다.
 - CONN-REQ-043: Strict test는 `postgres`, 기본·production public-only target과 deployment-managed port allowlist만 허용하고 모든 DNS 결과를 검증한 뒤 한 validated IP로 실제 연결을 고정해야 한다. 기본·production과 Docker-service demo allowlist는 `5432`, host-run demo는 exact published target을 위해 `5432,55432`를 사용해야 한다. 설정은 중복 없는 `1..65535` 정수 1~16개로 제한하고 invalid 설정은 Gateway startup을 실패시켜야 하며 요청자는 allowlist를 확장할 수 없어야 한다.
 - CONN-REQ-044: Public strict test는 시스템 CA bundle, development exact-local target은 서버가 소유한 전용 CA file을 명시해 TLS `verify-full`, connect 5초, statement 3초, API 10초, probe hard deadline 20초, distributed lease 30초, 요청당 한 번의 connection attempt, read-only `SELECT 1`과 one-row scalar result를 적용해야 한다. 선택된 CA file이 없으면 startup 또는 DNS 전에 fail-closed해야 하며 request가 CA나 SSL mode를 지정할 수 없어야 한다.
 - CONN-REQ-045: `ssh.enabled=true` connector test는 approved host-key/private-network 정책 전까지 network 전에 `connector.ssh_probe_not_supported`로 거부해야 한다. 이 제한은 기존 create/schema compatibility를 자동 제거하지 않는다.
 - CONN-REQ-046: Expected target/connection 실패는 static message와 allowlist reason code만 반환해야 하며 host/IP/port/database/username/password/private key/DSN/driver exception을 response, audit, application/client/edge log에 노출하지 않아야 한다.
 - CONN-REQ-047: Admission 뒤 결과는 `connection.test` audit으로 organization, actor, result, canonical reason과 coarse duration만 기록해야 한다. Audit publish 실패는 probe를 자동 재시도하거나 성공 결과를 실패로 바꾸지 않아야 한다.
-- CONN-REQ-048: Repository edge는 connector-test exact route에 32 KiB, 5초 idle receive, buffering off와 request-target log 억제를 적용해야 한다. Gateway actual-byte/total-deadline guard는 유지해야 한다.
+- CONN-REQ-048: Repository edge는 connector-test exact route에 32 KiB, 5초 idle receive, buffering off와 request-target log 억제를 적용해야 한다. Direct Gateway 또는 Next rewrite가 edge를 우회하더라도 최외곽 ASGI middleware가 connector-test query 전체를 access-log-visible scope에서 제거해야 하며, Gateway actual-byte/total-deadline/query 거부 guard는 유지해야 한다.
 - CONN-REQ-049: Local private/loopback target은 `CONNECTOR_TEST_LOCAL_PROFILE_ENABLED=true`, `NODE_ENV=development`, 서버가 설정한 최대 4개의 exact canonical hostname+port, 전용 공개 CA가 모두 존재할 때만 허용해야 한다. Wildcard, suffix, CIDR, raw IP target, request override를 허용하지 않고 target port가 deployment allowlist에도 있어야 하며, 모든 DNS 결과가 RFC1918, IPv6 ULA 또는 loopback이 아니거나 public/private mixed이면 거부해야 한다. Profile flag·target·CA가 불완전하거나 production에서 셋 중 하나라도 설정되면 startup을 실패시켜야 한다.
 - CONN-REQ-050: Trusted-local CA file은 readable regular file, 64 KiB 이하, private-key marker가 없는 단일 PEM certificate여야 한다. Certificate는 현재 유효하고 `BasicConstraints CA:TRUE`여야 하며 invalid·expired·future·leaf·multiple-certificate·private-key-containing file은 DNS 전에 startup을 실패시켜야 한다.
 - CONN-REQ-051: Local/Docker connector demo는 일반 platform 서비스와 분리된 explicit Compose profile과 전용 bridge network를 사용해야 한다. Host publish는 `127.0.0.1`에만 열고 Host-run `localhost:55432`와 Docker `connector-test-postgres:5432`를 각각 exact target으로 검증해야 한다. Docker Gateway의 admission은 Connector 전용 Redis URL로 demo Redis logical DB 15를 사용하고, 일반 platform Redis 연결은 바꾸지 않아야 한다. 일반 profile과 production Helm에는 demo service, network, target, CA mount, private volume이 없어야 한다.
@@ -81,6 +81,8 @@ Connectors 기능은 외부 데이터 소스에 접속하기 위한 연결 정�
 - CONN-REQ-054: 실제 Redis 검증은 실행별 안전한 key namespace만 사용·정리하고 `FLUSHDB`/`FLUSHALL`을 호출하지 않아야 한다. Concurrency 거부는 rate counter를 소비하지 않아야 하며 테스트 cleanup은 같은 logical DB의 무관한 key를 변경하지 않아야 한다.
 - CONN-REQ-055: Redis admission의 acquire, renew, release는 각각 Connector 전용 operation deadline을 적용해야 한다. 기본값은 1초, 상한은 5초이며 API timeout보다 짧고 lease TTL의 3분의 1보다 짧아야 한다. 무응답·timeout·transport 오류는 network probe나 unlimited local fallback 없이 `connector.admission_unavailable`로 fail-closed해야 한다.
 - CONN-REQ-056: Connector test와 저장의 `connection_name`은 서버에서 앞뒤 공백을 제거한 뒤 1~100자여야 한다. 공백뿐인 값은 `422`로 거부하고 connection row를 만들지 않아야 하며, Client의 DB source 저장 UI도 같은 값을 필수로 검사하고 정규화해 전송해야 한다.
+- CONN-REQ-057: Client가 connection detail을 편집 form에 전달할 때 Gateway의 `connection_name`, `ssh.auth_type`을 각각 `connectionName`, `ssh.authType`으로 명시적으로 변환해야 한다. 응답에 없는 DB/SSH secret은 빈 재입력 상태로 유지하고 raw detail shape를 form에 직접 전달하지 않아야 한다.
+- CONN-REQ-058: Connector test의 `429 Retry-After`는 설정된 credentialed CORS origin의 브라우저 JavaScript가 읽을 수 있도록 `Access-Control-Expose-Headers`에 포함해야 한다. 허용 origin 판정과 credential 정책을 완화해서는 안 된다.
 
 ## Policies And Edge Cases
 

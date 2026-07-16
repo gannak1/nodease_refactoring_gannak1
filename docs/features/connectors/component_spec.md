@@ -1,7 +1,7 @@
 # Connectors Component Spec
 
 Status: Draft
-Verified Against: feature/mba-246 @ f5cab6c05106cd60b0944d48ff92cd7d87407ecd
+Verified Against: feature/mba-246 @ 05b815ee0f35d3e955ab74119dad2446bb532345
 
 ## Screens
 
@@ -92,7 +92,7 @@ File/page artifact connector는 egress guard 이후에도 artifact content를 tr
 ### `DBConnectionForm`
 
 - `config`, `loading`, `testStatus`를 로컬 state로 관리한다.
-- `initialConfig`가 있으면 클라이언트 `DBConfig`와 필드명이 일치하는 값만 편집 시작값으로 사용한다. 현재 detail 응답의 `connection_name`과 `ssh.auth_type`은 `connectionName`/`ssh.authType`으로 변환되지 않으므로 form fallback이 사용될 수 있다.
+- `initialConfig`는 `connectorApi.getConnectionDetails`가 Gateway snake_case wire shape를 camelCase `DBConfig`로 검증·정규화한 값만 받는다. `connection_name`과 `ssh.auth_type`은 각각 `connectionName`과 `ssh.authType`으로 복원한다.
 - DB/SSH 입력 변경 시 `config`를 갱신하고 부모 `onChange(newConfig)`를 호출하며 `testStatus`를 `idle`로 되돌린다.
 - `ssh.enabled`와 `ssh.authType`에 따라 SSH password input 또는 private key file input을 표시한다.
 - `handleTest`는 부모 `onTestConnection(config)` 결과에 따라 `연결 성공!` 또는 `연결 실패` 상태를 표시하고, pending 중 버튼을 disabled 처리한다.
@@ -165,7 +165,7 @@ Docker demo Gateway는 Connector admission에만 `connector-test-redis` logical 
 
 1. document settings 화면에서 사용자가 `DB 연결 수정`을 클릭한다.
 2. 화면은 `connectorApi.getConnectionDetails(connectionId)`로 secret 없는 connection detail을 조회한다.
-3. `DBConnectionForm`이 detail 응답을 `initialConfig`로 직접 받아 열린다. 별도 normalization이 없으므로 `type`, `host`, `port`, `database`, `username`, `ssh.enabled`, `ssh.host`, `ssh.port`, `ssh.username`처럼 필드명이 맞는 값만 복원된다.
+3. `connectorApi`는 detail 응답의 필수 문자열·port·지원 type을 검증하고 `connection_name`, `ssh.auth_type`을 form의 `connectionName`, `ssh.authType`으로 변환한다. `DBConnectionForm`은 이 정규화된 `DBConfig`를 `initialConfig`로 받아 열린다.
 4. detail 응답에는 DB password, SSH password, SSH private key가 없고, form은 secret 입력값에 현재 fallback을 사용한다. 재연결 시 필요한 secret은 사용자가 다시 입력해야 한다.
 5. document settings 화면의 `연결 테스트`는 `handleConnectionRequest`를 통해 새 connection 생성을 수행하고, 반환된 id로 상위 DB config를 재연결한 뒤 `{ success }` 결과를 form에 반환한다.
 6. 현재 구현에는 별도 update endpoint가 없으므로 기존 connection row의 in-place update로 해석하지 않는다.

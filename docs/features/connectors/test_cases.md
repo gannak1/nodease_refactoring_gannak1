@@ -1,7 +1,7 @@
 # Connectors Test Cases
 
 Status: Draft
-Verified Against: feature/mba-246 @ f5cab6c05106cd60b0944d48ff92cd7d87407ecd
+Verified Against: feature/mba-246 @ 05b815ee0f35d3e955ab74119dad2446bb532345
 
 ## Minimum Failure Rule
 
@@ -79,10 +79,13 @@ Verified Against: feature/mba-246 @ f5cab6c05106cd60b0944d48ff92cd7d87407ecd
 | CONN-TC-A028 | Connector test timeout 뒤 hard deadline 전까지 실제 blocking work와 lease 수명을 일치시켜야 한다. | API 10초를 넘긴 future가 20초 안에 끝나거나 실행 중 heartbeat가 필요하다. | Safe timeout 반환, completion 전 owner-safe renewal 지속, completion 뒤 lease 정확히 1회 해제. |
 | CONN-TC-A029 | Admission 장애와 capacity 부족은 fail-closed해야 한다. | Redis timeout/script error, transport peer 없음, distributed/local concurrency full이다. | `429/503`, DNS/DB connect 0회, process-local unlimited fallback 없음. |
 | CONN-TC-A030 | Connector test audit는 bounded metadata만 가져야 한다. | Success/target denial/driver failure/timeout이다. | `connection.test`, organization/actor/result/reason/duration만 기록하고 target/credential/network 원문 없음. |
-| CONN-TC-A031 | 실제 Redis transport 장애는 API에서 DB probe 전에 닫혀야 한다. | 인증·active organization 요청을 loopback의 미사용 Redis port로 연결한다. | `503 connector.admission_unavailable`, probe 호출 0회, secret 비노출. |
+| CONN-TC-A031 | 실제 Redis transport 장애는 API에서 DB probe 전에 닫혀야 한다. | 인증·active organization 요청을 loopback의 미사용 Redis port로 연결한다. | `503 connector.admission_unavailable`, local reservation 1회 예약·1회 반환, probe 호출 0회, secret 비노출. |
 | CONN-TC-A032 | Connector 저장 이름은 정규화되고 공백 이름은 거부되어야 한다. | 앞뒤 공백이 있는 이름, 빈 값, whitespace-only, 101자 값을 `POST /connectors` schema에 전달한다. | 유효 이름은 trim되고 나머지는 `422`; 저장 전 probe와 row 생성 0회. |
 | CONN-TC-A033 | 응답 뒤 probe가 hard deadline을 넘기면 distributed admission을 유한하게 정리해야 한다. | 취소 전까지 영원히 반환하지 않는 probe가 API timeout과 20초 hard deadline을 모두 넘긴다. | Hard deadline에 async probe/heartbeat 취소, owner lease 정확히 1회 해제, 이후 renewal 0회. 취소 불가능한 실제 driver thread의 local slot은 종료 전 재사용하지 않음. |
 | CONN-TC-A034 | Connector network rate identity는 trusted-proxy resolver를 사용해야 한다. | Trusted proxy 뒤 서로 다른 client 요청을 raw socket peer 하나로 묶거나, untrusted peer의 forwarded header를 신뢰한다. | Trusted peer에서는 첫 untrusted client hop의 normalized network를 사용하고 untrusted peer에서는 socket peer를 사용한다. Identity 해석 실패는 body/probe 전 `503`. |
+| CONN-TC-A035 | Connector test query는 direct Gateway access log 전에 제거되면서 endpoint에서 거부되어야 한다. | Next rewrite/Uvicorn에 `/api/v1/connectors/test?password=...`를 직접 보낸다. | Downstream·Uvicorn access path에는 query 원문이 없고 presence marker는 유지되며 API는 `400 connector.test_payload_invalid`, probe 0회. Exact path와 trailing slash만 적용되고 child path query는 변경하지 않음. |
+| CONN-TC-A036 | Local executor busy는 Redis rate admission을 소비하지 않아야 한다. | 취소 불가능한 driver가 local slot을 점유한 상태에서 반복 요청한다. | 모든 요청은 probe·Redis acquire·Connector audit 0회로 `connector.test_busy`; slot 복구 뒤 정상 요청이 기존 rate budget으로 진행됨. Admission 실패·취소는 미사용 예약을 반환함. |
+| CONN-TC-A037 | Browser Client가 429 cooldown header를 읽을 수 있어야 한다. | 허용 CORS origin에서 Connector test가 `429`를 반환한다. | `Retry-After: 1..60`과 `Access-Control-Expose-Headers`의 `Retry-After`가 함께 존재하고 origin allowlist/credentials 계약은 유지됨. |
 
 ## Component And Hook Tests
 
@@ -102,6 +105,7 @@ Verified Against: feature/mba-246 @ f5cab6c05106cd60b0944d48ff92cd7d87407ecd
 | CONN-TC-C012 | `DBSchemaSelector`는 FK 있는 2개 테이블 선택 시 join config를 생성해야 한다. | FK metadata가 있는데 `onJoinConfigChange`에 enabled config가 전달되지 않는다. | 테스트 실패. |
 | CONN-TC-C013 | DB source UI는 연결 이름을 필수로 검사하고 trim해야 한다. | Whitespace-only 이름으로 저장하거나 앞뒤 공백 이름으로 test/create를 호출한다. | 저장 API와 Knowledge source API는 호출되지 않으며, 유효 이름은 trim된 payload로 전송된다. |
 | CONN-TC-C014 | 모든 `DBConnectionForm` 소비자는 구조화된 test result 계약을 지켜야 한다. | Knowledge document 편집 handler가 boolean을 반환해 form의 `success` 판정 또는 Client build가 깨진다. | 편집 성공·실패 모두 `{ success }`를 반환하고 TypeScript build가 통과한다. |
+| CONN-TC-C015 | Connection detail은 form용 camelCase shape로 정규화되어야 한다. | Gateway가 `connection_name`, `ssh.auth_type`을 반환한 기존 DB 문서를 연 뒤 다른 필드를 편집한다. | Form의 연결 이름과 SSH auth type이 복원되고 create/test payload에 빈 `connection_name`이 전송되지 않음. Secret은 응답에서 복원하지 않고 빈 재입력 상태임. |
 
 ## Permission Tests
 
@@ -156,6 +160,10 @@ Verified Against: feature/mba-246 @ f5cab6c05106cd60b0944d48ff92cd7d87407ecd
 | A034 | `apps/gateway/tests/api/test_connector_test_api.py`, `apps/gateway/tests/adapters/authentication/test_client_network.py` | API + trusted proxy adapter |
 | X026 | `apps/gateway/tests/composition/test_connector_test_composition.py`, `apps/gateway/tests/architecture/test_connector_demo_boundary.py` | Composition + deployment contract |
 | X027 | `apps/gateway/tests/architecture/test_connector_dependency_boundary.py`, Connector composition CA tests | Dependency contract + startup |
+| A035 | `apps/gateway/tests/middleware/test_webhook_query_redaction.py`, `apps/gateway/tests/api/test_connector_test_api.py` | ASGI access-path + API ingress |
+| A036 | `apps/gateway/tests/application/connectors/test_connection.py`, `apps/gateway/tests/adapters/connectors/test_postgres_probe.py` | Application + executor reservation lifecycle |
+| A037, C008 | `apps/gateway/tests/api/test_connector_test_api.py`, `apps/client/app/features/knowledge/api/connectorApi.test.ts`, `DBConnectionForm.test.tsx` | CORS API + Client cooldown |
+| C015 | `apps/client/app/features/knowledge/api/connectorApi.test.ts`, document settings TypeScript contract | Client adapter normalization |
 
 실제 Redis/TLS test는 opt-in 환경 설정이 없으면 skip할 수 있지만 MBA-246 merge evidence에서는 skip을 허용하지 않는다. 각 실행은 UUID 기반 namespace만 삭제하고 logical Redis DB 전체를 초기화하지 않는다. 실제 credential, certificate 본문, fingerprint, raw request는 pytest output이나 문서에 기록하지 않는다.
 

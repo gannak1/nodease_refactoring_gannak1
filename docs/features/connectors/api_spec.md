@@ -1,7 +1,7 @@
 # Connectors API Spec
 
 Status: Draft
-Verified Against: feature/mba-246 @ f5cab6c05106cd60b0944d48ff92cd7d87407ecd
+Verified Against: feature/mba-246 @ 05b815ee0f35d3e955ab74119dad2446bb532345
 
 기본 경로: `/api/v1`
 
@@ -56,11 +56,12 @@ Expected target/SSH/connection 실패는 `200 OK`, `success=false`로 반환한�
 처리 순서:
 
 1. 로그인과 active organization membership을 검증하고 공통 trusted-proxy resolver로 request network identity를 계산한다. Forwarded header는 설정된 trusted proxy peer에서만 사용하며 identity를 해석할 수 없으면 body와 probe 전에 `503 connector.admission_unavailable`로 닫는다.
-2. Actual body, media type, UTF-8 JSON object와 strict field를 검증한다.
-3. Redis에서 user/organization/network rate와 global/organization/user concurrency lease를 원자적으로 획득한다. Acquire, renew, release 각각에 Connector 전용 operation deadline을 적용하고 timeout은 `503 connector.admission_unavailable`로 닫는다.
-4. Port가 서버의 deployment-managed allowlist에 있는지 admission 전에 확인한다. 기본 경로는 host의 전체 DNS 결과가 public인지 검사한다. Development exact-local target은 서버 설정의 정확한 hostname+port와 일치하고 모든 DNS 결과가 RFC1918, IPv6 ULA 또는 loopback일 때만 허용한다. 두 경로 모두 validated IP 하나로 연결을 고정한다.
-5. Public target은 시스템 CA bundle, exact-local target은 서버가 설정한 전용 CA file을 명시해 TLS `verify-full`, connect 5초, statement 3초, API 10초 안에서 read-only `SELECT 1`을 한 번 수행한다. 선택된 CA가 없으면 startup 또는 DNS 전에 safe failure로 닫는다.
-6. Actual work 중 owner-safe heartbeat로 lease를 연장한다. Safe timeout 응답 뒤에도 probe가 20초 hard deadline 전에 끝나면 completion까지 lease를 유지한다. Hard deadline에 도달하면 heartbeat를 중단하고 owner lease를 해제하며 async probe를 취소한다. 취소할 수 없는 driver thread의 local executor slot은 실제 종료 전까지 재사용하지 않는다.
+2. 최외곽 ASGI middleware는 connector-test 경로의 query 전체를 access-log-visible scope에서 제거하고 query 존재 boolean marker를 남긴다. Endpoint는 marker 또는 남은 query가 있으면 `400 connector.test_payload_invalid`로 닫고, 그 외 actual body, media type, UTF-8 JSON object와 strict field를 검증한다.
+3. Port가 서버의 deployment-managed allowlist에 있는지 확인하고 process-local executor slot을 non-blocking 예약한다. Slot이 없으면 Redis rate를 소비하지 않고 `429 connector.test_busy`로 닫는다.
+4. Redis에서 user/organization/network rate와 global/organization/user concurrency lease를 원자적으로 획득한다. Acquire, renew, release 각각에 Connector 전용 operation deadline을 적용하고 timeout은 `503 connector.admission_unavailable`로 닫는다. Acquire 실패 또는 request 취소 시 시작하지 않은 local 예약은 즉시 반환한다.
+5. 기본 경로는 host의 전체 DNS 결과가 public인지 검사한다. Development exact-local target은 서버 설정의 정확한 hostname+port와 일치하고 모든 DNS 결과가 RFC1918, IPv6 ULA 또는 loopback일 때만 허용한다. 두 경로 모두 validated IP 하나로 연결을 고정한다.
+6. Public target은 시스템 CA bundle, exact-local target은 서버가 설정한 전용 CA file을 명시해 TLS `verify-full`, connect 5초, statement 3초, API 10초 안에서 read-only `SELECT 1`을 한 번 수행한다. 선택된 CA가 없으면 startup 또는 DNS 전에 safe failure로 닫는다.
+7. Actual work 중 owner-safe heartbeat로 lease를 연장한다. Safe timeout 응답 뒤에도 probe가 20초 hard deadline 전에 끝나면 completion까지 lease를 유지한다. Hard deadline에 도달하면 heartbeat를 중단하고 owner lease를 해제하며 async probe를 취소한다. 취소할 수 없는 driver thread의 local executor slot은 실제 종료 전까지 재사용하지 않는다.
 
 Initial admission limits:
 
@@ -168,6 +169,8 @@ Host-run demo는 선택적으로 `CONNECTOR_TEST_REDIS_URL`을 loopback-publishe
 
 `ssh` 객체는 `enabled`, `host`, `port`, `username`, `auth_type`만 포함한다. DB password, SSH password, SSH private key, encrypted secret은 반환하지 않는다.
 
+Client의 `connectorApi.getConnectionDetails`는 이 wire shape를 form용 `DBConfig`로 변환한다. `connection_name`은 `connectionName`, `ssh.auth_type`은 `ssh.authType`으로 바꾸고 응답에 없는 secret 입력은 빈 값으로 둔다.
+
 ### `GET /connectors/{connection_id}/schema`
 
 요청 본문: 없음.
@@ -260,7 +263,7 @@ HTTP 예외는 Gateway 공통 `detail` 응답을 사용하고, 검증 오류는 
 | 400 | `GET /connectors/{connection_id}/schema` | `connector.schema_fetch_failed` | schema introspection이 실패한다. |
 | 422 | `POST /connectors/test`, `POST /connectors` | 검증 오류 envelope | 요청 본문이 Pydantic 검증에 실패한다. |
 
-Connector test의 429 `Retry-After`는 Redis state에서 계산한 1..60초 값이다. `POST /connectors`, 상세 조회, schema 조회의 인증 실패 응답은 Auth 공통 dependency의 `auth_token` 쿠키 검증 결과를 따른다.
+Connector test의 429 `Retry-After`는 Redis state 또는 local busy 정책에서 계산한 1..60초 값이다. 설정된 credentialed CORS origin에는 `Access-Control-Expose-Headers: Retry-After`를 반환해 브라우저 Client가 bounded cooldown을 적용할 수 있게 한다. 이 노출은 origin allowlist를 확장하지 않는다. `POST /connectors`, 상세 조회, schema 조회의 인증 실패 응답은 Auth 공통 dependency의 `auth_token` 쿠키 검증 결과를 따른다.
 
 ## Permissions
 
