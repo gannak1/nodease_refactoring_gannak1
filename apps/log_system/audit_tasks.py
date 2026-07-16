@@ -2,7 +2,7 @@
 Audit System Celery 태스크
 
 사용자 작업 감사(Audit) 로그를 DB(audit_logs)에 저장하는 Celery 태스크입니다.
-record_audit가 발행한 `audit.record`를 소비합니다. (기존 log_system/tasks.py 컨벤션 준수)
+롤아웃 중에는 기존 `audit.record` consumer와 Audit Outbox worker를 함께 운영합니다.
 """
 
 import logging
@@ -15,6 +15,10 @@ from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.security_alert import SecurityAlertReconciliationWatermark
 from apps.shared.db.models.user import User  # noqa: F401
 from apps.shared.db.session import SessionLocal
+from apps.shared.services.audit_event_outbox import (
+    AUDIT_EVENT_OUTBOX_TASK_NAME,
+    AuditEventOutboxProcessor,
+)
 from apps.shared.services.security_alert_aggregation import (
     aggregate_security_alert_detection,
 )
@@ -44,11 +48,16 @@ _SECURITY_ALERT_RECONCILIATION_TASK = "security_alert.reconcile"
 _SECURITY_ALERT_NOTIFICATION_OUTBOX_TASK = (
     "security_alert.notification_outbox.deliver"
 )
+_AUDIT_EVENT_OUTBOX_TASK = AUDIT_EVENT_OUTBOX_TASK_NAME
 _SECURITY_ALERT_PROCESSOR = "security-alert-v1"
 _SECURITY_ALERT_RECONCILIATION_BATCH_SIZE = 100
 
 
 class SecurityAlertTaskRetryError(RuntimeError):
+    pass
+
+
+class AuditEventOutboxTaskRetryError(RuntimeError):
     pass
 
 
@@ -117,6 +126,17 @@ def _retry_security_alert_task(
     )
     raise task.retry(
         exc=SecurityAlertTaskRetryError("security alert task retry requested"),
+        countdown=_retry_countdown(task),
+    )
+
+
+def _retry_audit_event_outbox_task(task: Any, error: Exception) -> NoReturn:
+    logger.error(
+        "[Audit] outbox processor failed: error_type=%s",
+        type(error).__name__,
+    )
+    raise task.retry(
+        exc=AuditEventOutboxTaskRetryError("audit outbox task retry requested"),
         countdown=_retry_countdown(task),
     )
 
@@ -392,6 +412,32 @@ def deliver_security_alert_notification_outbox(
     except Exception as error:
         session.rollback()
         _retry_security_alert_task(self, error, operation="notification_outbox")
+    finally:
+        session.close()
+
+
+@celery_app.task(
+    name=_AUDIT_EVENT_OUTBOX_TASK,
+    bind=True,
+    max_retries=3,
+)
+def process_audit_event_outbox(self, limit: int = 100) -> Dict[str, int]:
+    session = SessionLocal()
+    try:
+        result = AuditEventOutboxProcessor(
+            session,
+            after_commit=_dispatch_security_alert_detection,
+        ).process_due_events(
+            owner_token=str(uuid.uuid4()),
+            limit=limit,
+        )
+        return {
+            "processed_count": result.processed_count,
+            "recovered_count": result.recovered_count,
+        }
+    except Exception as error:
+        session.rollback()
+        _retry_audit_event_outbox_task(self, error)
     finally:
         session.close()
 

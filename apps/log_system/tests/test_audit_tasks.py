@@ -822,3 +822,64 @@ def test_security_alert_notification_outbox_worker_delegates_transaction_control
     assert session.commits == 0
     assert session.rollbacks == 0
     assert session.closed == 1
+
+
+def test_audit_event_outbox_task_is_registered_on_log_queue():
+    task_name = "audit.event_outbox.process"
+
+    assert task_name in audit_tasks.celery_app.tasks
+    route = audit_tasks.celery_app.amqp.router.route(
+        {},
+        task_name,
+        args=[],
+        kwargs={},
+    )
+    assert route["queue"].name == "log"
+
+
+def test_audit_event_outbox_has_recovery_beat_schedule():
+    entries = [
+        entry
+        for entry in (audit_tasks.celery_app.conf.beat_schedule or {}).values()
+        if entry.get("task") == "audit.event_outbox.process"
+    ]
+
+    assert entries == [
+        {
+            "task": "audit.event_outbox.process",
+            "schedule": 30.0,
+            "options": {"queue": "log"},
+        }
+    ]
+
+
+def test_audit_event_outbox_worker_delegates_transaction_control(monkeypatch):
+    session = _Session()
+    processed = []
+
+    class Processor:
+        def __init__(self, db, *, after_commit):
+            assert db is session
+            assert after_commit is audit_tasks._dispatch_security_alert_detection
+
+        def process_due_events(self, *, owner_token, limit):
+            processed.append((owner_token, limit))
+            return SimpleNamespace(processed_count=3, recovered_count=1)
+
+    monkeypatch.setattr(audit_tasks, "SessionLocal", lambda: session)
+    monkeypatch.setattr(
+        audit_tasks,
+        "AuditEventOutboxProcessor",
+        Processor,
+        raising=False,
+    )
+
+    result = audit_tasks.process_audit_event_outbox.run(limit=25)
+
+    assert result == {"processed_count": 3, "recovered_count": 1}
+    assert len(processed) == 1
+    assert processed[0][1] == 25
+    assert processed[0][0]
+    assert session.commits == 0
+    assert session.rollbacks == 0
+    assert session.closed == 1
