@@ -210,6 +210,22 @@ class OutboundEgressGuard:
         allowed_ports: frozenset[int] | None = None,
         trusted_local_targets: frozenset[tuple[str, int]] = frozenset(),
     ) -> tuple[str, int, str]:
+        canonical_host, safe_port, addresses = self.validate_host_port_addresses(
+            host,
+            port,
+            allowed_ports=allowed_ports,
+            trusted_local_targets=trusted_local_targets,
+        )
+        return canonical_host, safe_port, addresses[0]
+
+    def validate_host_port_addresses(
+        self,
+        host: str,
+        port: int,
+        *,
+        allowed_ports: frozenset[int] | None = None,
+        trusted_local_targets: frozenset[tuple[str, int]] = frozenset(),
+    ) -> tuple[str, int, tuple[str, ...]]:
         canonical_host = self._canonical_host(str(host or ""))
         if not canonical_host:
             raise EgressGuardError("egress.invalid_host")
@@ -219,7 +235,9 @@ class OutboundEgressGuard:
             raise EgressGuardError("egress.invalid_port") from exc
         if safe_port < 1 or safe_port > 65535:
             raise EgressGuardError("egress.invalid_port")
-        port_policy = self.policy.allowed_ports if allowed_ports is None else allowed_ports
+        port_policy = (
+            self.policy.allowed_ports if allowed_ports is None else allowed_ports
+        )
         if port_policy is not None and safe_port not in port_policy:
             raise EgressGuardError("egress.disallowed_port")
         is_trusted_local = (canonical_host, safe_port) in trusted_local_targets
@@ -228,7 +246,7 @@ class OutboundEgressGuard:
             port=safe_port,
             trusted_local=is_trusted_local,
         )
-        return canonical_host, safe_port, addresses[0]
+        return canonical_host, safe_port, tuple(dict.fromkeys(addresses))
 
     def validate_method(self, method: str) -> str:
         safe_method = str(method or "GET").upper()
@@ -575,7 +593,9 @@ def ensure_db_probe_allowed(query: str) -> None:
         "set_config",
         "table_to_xml",
     ]
-    if any(re.search(rf"\b{function}\s*\(", normalized) for function in blocked_functions):
+    if any(
+        re.search(rf"\b{function}\s*\(", normalized) for function in blocked_functions
+    ):
         raise EgressGuardError("adapter.sql_not_allowed")
 
 

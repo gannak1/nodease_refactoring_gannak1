@@ -807,7 +807,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 ### MBA-283 Generic HTTP Egress Regression
 
 - URL userinfo, localhost, RFC1918, IPv6 ULA/loopback/link-local, carrier-grade NAT, reserved, unspecified, multicast와 metadata target은 TCP dial 전에 `invalid_prepared_request`로 차단되고 오류·trace에 query/header/body/resolved IP가 남지 않는다.
-- DNS가 public과 차단 IP를 함께 반환하면 전체 요청을 거부한다. 검증 뒤 hostname DNS 응답이 바뀌어도 custom network backend는 검증한 public IP로만 dial하고 실제 peer가 다르면 request byte 전송 전에 닫는다.
+- DNS가 public과 차단 IP를 함께 반환하면 전체 요청을 거부한다. 모든 주소가 안전하면 custom network backend는 DNS/OS 순서대로 dial하고 첫 주소의 TCP connect 실패 시 다음 검증 주소로 폴백한다. 모든 검증 주소가 실패하면 `connection_failed`로 닫고, 첫 연결의 peer mismatch에서는 다음 주소를 시도하지 않는다. 검증 뒤 hostname DNS 응답이 바뀌어도 검증 목록 밖의 주소로 dial하지 않는다.
 - Public HTTP/HTTPS 80/443 happy path는 HTTPX 0.28 Generic HTTP V1 canonical digest, application header/JSON wire serialization, status/data/headers output과 non-2xx 성공 판정을 유지한다.
 - URL fragment는 network target에 전달하지 않고 userinfo, hop-by-hop/proxy header, 비허용 method/scheme/port와 request body/header 상한 초과를 pre-send permanent failure로 닫는다. Environment proxy는 사용하지 않는다.
 - Redirect-to-private 응답은 첫 3xx status/data/headers를 반환하고 두 번째 connection을 만들지 않는다. Peer mismatch는 request byte 전송 전 non-retryable 실패로 닫고, 압축·oversized response와 read 실패는 output을 사용하지 않고 outcome unknown으로 닫는다.

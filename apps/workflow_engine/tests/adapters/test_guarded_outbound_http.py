@@ -65,13 +65,21 @@ class _FakeStream(httpcore.NetworkStream):
 
 
 class _FakeBackend(httpcore.NetworkBackend):
-    def __init__(self, peer_ip: str) -> None:
+    def __init__(
+        self,
+        peer_ip: str,
+        *,
+        failed_targets: frozenset[str] = frozenset(),
+    ) -> None:
         self.peer_ip = peer_ip
+        self.failed_targets = failed_targets
         self.targets: list[tuple[str, int]] = []
         self.streams: list[_FakeStream] = []
 
     def connect_tcp(self, host, port, **_kwargs):
         self.targets.append((host, port))
+        if host in self.failed_targets:
+            raise httpcore.ConnectError("connect failed")
         stream = _FakeStream(self.peer_ip)
         self.streams.append(stream)
         return stream
@@ -116,11 +124,64 @@ def test_guarded_backend_allows_and_pins_public_ipv6(monkeypatch) -> None:
     assert backend.targets == [(public_ipv6, 443)]
 
 
+def test_guarded_backend_falls_back_across_validated_addresses(monkeypatch) -> None:
+    public_ipv6 = "2606:4700:4700::1111"
+    public_ipv4 = "93.184.216.34"
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            _address(public_ipv6),
+            _address(public_ipv4),
+        ],
+    )
+    backend = _FakeBackend(
+        public_ipv4,
+        failed_targets=frozenset({public_ipv6}),
+    )
+    guarded = GuardedNetworkBackend(
+        OutboundEgressGuard(generic_http_egress_policy()),
+        backend=backend,
+    )
+
+    stream = guarded.connect_tcp("example.test", 443)
+
+    assert backend.targets == [(public_ipv6, 443), (public_ipv4, 443)]
+    assert stream.peer_ip == public_ipv4
+
+
+def test_guarded_backend_raises_after_all_validated_addresses_fail(
+    monkeypatch,
+) -> None:
+    addresses = ("2606:4700:4700::1111", "93.184.216.34")
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [_address(address) for address in addresses],
+    )
+    backend = _FakeBackend(
+        addresses[-1],
+        failed_targets=frozenset(addresses),
+    )
+    guarded = GuardedNetworkBackend(
+        OutboundEgressGuard(generic_http_egress_policy()),
+        backend=backend,
+    )
+
+    with pytest.raises(httpcore.ConnectError):
+        guarded.connect_tcp("example.test", 443)
+
+    assert backend.targets == [(address, 443) for address in addresses]
+
+
 def test_guarded_backend_closes_peer_mismatch(monkeypatch) -> None:
     monkeypatch.setattr(
         socket,
         "getaddrinfo",
-        lambda *_args, **_kwargs: [_address("93.184.216.34")],
+        lambda *_args, **_kwargs: [
+            _address("93.184.216.34"),
+            _address("93.184.216.35"),
+        ],
     )
     backend = _FakeBackend("93.184.216.35")
     guarded = GuardedNetworkBackend(
@@ -132,6 +193,7 @@ def test_guarded_backend_closes_peer_mismatch(monkeypatch) -> None:
         guarded.connect_tcp("example.test", 443)
 
     assert captured.value.reason_code == "egress.peer_mismatch"
+    assert backend.targets == [("93.184.216.34", 443)]
     assert backend.streams[0].closed is True
 
 
@@ -479,9 +541,7 @@ def test_read_timeout_is_outcome_unknown(monkeypatch) -> None:
 
 
 def test_guarded_http_transport_uses_supported_httpcore_pool_shape() -> None:
-    transport = GuardedHttpTransport(
-        OutboundEgressGuard(generic_http_egress_policy())
-    )
+    transport = GuardedHttpTransport(OutboundEgressGuard(generic_http_egress_policy()))
 
     assert isinstance(transport._pool._network_backend, GuardedNetworkBackend)
     assert transport._pool._ssl_context.check_hostname is True

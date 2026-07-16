@@ -67,29 +67,48 @@ class GuardedNetworkBackend(httpcore.NetworkBackend):
         local_address: str | None = None,
         socket_options: Iterable[httpcore.SOCKET_OPTION] | None = None,
     ) -> httpcore.NetworkStream:
-        _canonical_host, safe_port, target_ip = self._guard.validate_host_port(
+        (
+            _canonical_host,
+            safe_port,
+            target_ips,
+        ) = self._guard.validate_host_port_addresses(
             host,
             port,
             allowed_ports=_ALLOWED_PORTS,
         )
-        stream = self._backend.connect_tcp(
-            host=target_ip,
-            port=safe_port,
-            timeout=timeout,
-            local_address=local_address,
-            socket_options=socket_options,
+        last_connect_error: httpcore.ConnectError | httpcore.ConnectTimeout | None = (
+            None
         )
-        try:
-            server_address = stream.get_extra_info("server_addr")
-            peer_ip = server_address[0] if server_address else None
-            self._guard.validate_response_peer_ip(peer_ip)
-            if ipaddress.ip_address(str(peer_ip)) != ipaddress.ip_address(target_ip):
-                raise EgressGuardError("egress.peer_mismatch")
-        except Exception:
-            with suppress(Exception):
-                stream.close()
-            raise
-        return stream
+        for target_ip in target_ips:
+            try:
+                stream = self._backend.connect_tcp(
+                    host=target_ip,
+                    port=safe_port,
+                    timeout=timeout,
+                    local_address=local_address,
+                    socket_options=socket_options,
+                )
+            except (httpcore.ConnectError, httpcore.ConnectTimeout) as exc:
+                last_connect_error = exc
+                continue
+
+            try:
+                server_address = stream.get_extra_info("server_addr")
+                peer_ip = server_address[0] if server_address else None
+                self._guard.validate_response_peer_ip(peer_ip)
+                if ipaddress.ip_address(str(peer_ip)) != ipaddress.ip_address(
+                    target_ip
+                ):
+                    raise EgressGuardError("egress.peer_mismatch")
+            except Exception:
+                with suppress(Exception):
+                    stream.close()
+                raise
+            return stream
+
+        if last_connect_error is not None:
+            raise last_connect_error
+        raise EgressGuardError("egress.dns_resolution_failed")
 
     def connect_unix_socket(
         self,
