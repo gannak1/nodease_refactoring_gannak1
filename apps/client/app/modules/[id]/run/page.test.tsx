@@ -143,7 +143,7 @@ describe('AuthenticatedDeploymentRunPage', () => {
     expect(screen.getByText('개발팀 신입 연봉 기준을 알려줘')).toBeVisible();
     expect(screen.getByText('최종 답변')).toBeVisible();
     expect(screen.getByLabelText('질문')).toHaveValue('');
-    expect(screen.getByLabelText('질문')).toHaveStyle({ height: '56px' });
+    expect(screen.getByLabelText('질문')).toHaveStyle({ height: '40px' });
 
     mockedWorkflowApi.runDeployment.mockResolvedValueOnce({
       status: 'success',
@@ -161,7 +161,7 @@ describe('AuthenticatedDeploymentRunPage', () => {
     expect(screen.getByText('VPN은 어디서 신청해?')).toBeVisible();
   });
 
-  it('내부 챗봇 응답을 Markdown으로 표시하고 발표용 글자 크기를 사용한다', async () => {
+  it('내부 챗봇 응답을 Markdown으로 표시하고 기본 UI 크기를 사용한다', async () => {
     mockedWorkflowApi.runDeployment.mockResolvedValueOnce({
       status: 'success',
       results: {
@@ -174,13 +174,13 @@ describe('AuthenticatedDeploymentRunPage', () => {
     const heading = await screen.findByRole('heading', {
       name: '사내 문서 질문 응답 봇',
     });
-    expect(heading).toHaveClass('text-4xl');
+    expect(heading).toHaveClass('text-2xl');
 
     const questionInput = screen.getByLabelText('질문');
-    expect(questionInput).toHaveClass('text-lg', 'min-h-14');
+    expect(questionInput).toHaveClass('text-sm', 'min-h-10');
     expect(screen.getByRole('button', { name: '전송' })).toHaveClass(
-      'h-14',
-      'w-14',
+      'h-10',
+      'w-10',
     );
 
     fireEvent.change(questionInput, {
