@@ -225,27 +225,19 @@ class WorkflowNode(Node[WorkflowNodeData]):
 
             # 서브 워크플로우도 세션 객체 대신 factory를 통해 필요한 시점에 세션을 엽니다.
             control = self._runtime_control
-            execution_id = control.execution_id if control is not None else None
-            invocation_path_prefix = None
-            if control is not None:
-                invocation_path_prefix = control.invocation_path_prefix + (
-                    InvocationSegment(
-                        "subworkflow",
-                        self.id,
-                        str(deployment.id),
-                    ),
-                )
-            engine = WorkflowEngine(
+            engine = WorkflowEngine.create_child(
                 graph,
                 sub_workflow_inputs,
                 execution_context=sub_execution_context,
+                runtime_control=control,
+                invocation_segment=InvocationSegment(
+                    "subworkflow",
+                    self.id,
+                    str(deployment.id),
+                ),
                 is_deployed=True,
                 db=db,
                 parent_run_id=parent_run_id,
-                is_subworkflow=True,  # [FIX] 서브 워크플로우 표시 - Redis 이벤트 발행 스킵
-                execution_id=execution_id,
-                invocation_path_prefix=invocation_path_prefix,
-                task_deadline=(control.task_deadline if control is not None else None),
             )
 
             # [동기 전환] 직접 동기적으로 서브 워크플로우 실행

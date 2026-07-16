@@ -59,6 +59,53 @@ class WorkflowEngine:
     def _default_session_factory() -> Session:
         return SessionLocal()
 
+    @classmethod
+    def create_child(
+        cls,
+        graph: Union[Dict[str, Any], tuple[List[NodeSchema], List[EdgeSchema]]],
+        user_input: Optional[Dict[str, Any]] = None,
+        *,
+        execution_context: Optional[Dict[str, Any]],
+        runtime_control: Optional[NodeExecutionControl],
+        invocation_segment: InvocationSegment,
+        is_deployed: bool = False,
+        db: Optional[Session] = None,
+        parent_run_id: Optional[str] = None,
+        workflow_timeout: int = 600,
+        entry_node_id: Optional[str] = None,
+        workflow_node_bindings: Optional[tuple[WorkflowNodeBinding, ...]] = None,
+        binding_container_path: tuple[tuple[str, str], ...] = (),
+        runtime_dependencies: Optional[WorkflowRuntimeDependencies] = None,
+    ) -> "WorkflowEngine":
+        """부모 lifecycle을 변경할 수 없는 내부 graph engine을 생성합니다."""
+        child_context = dict(execution_context or {})
+        child_parent_run_id = parent_run_id or child_context.get("workflow_run_id")
+        execution_id = runtime_control.execution_id if runtime_control else None
+        invocation_path_prefix = (
+            runtime_control.invocation_path_prefix + (invocation_segment,)
+            if runtime_control
+            else None
+        )
+        task_deadline = runtime_control.task_deadline if runtime_control else None
+
+        return cls(
+            graph=graph,
+            user_input=user_input,
+            execution_context=child_context,
+            is_deployed=is_deployed,
+            db=db,
+            parent_run_id=child_parent_run_id,
+            workflow_timeout=workflow_timeout,
+            is_subworkflow=True,
+            entry_node_id=entry_node_id,
+            execution_id=execution_id,
+            invocation_path_prefix=invocation_path_prefix,
+            workflow_node_bindings=workflow_node_bindings,
+            binding_container_path=binding_container_path,
+            task_deadline=task_deadline,
+            runtime_dependencies=runtime_dependencies,
+        )
+
     def __init__(
         self,
         graph: Union[Dict[str, Any], tuple[List[NodeSchema], List[EdgeSchema]]],
