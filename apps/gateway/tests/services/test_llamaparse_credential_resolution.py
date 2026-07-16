@@ -45,6 +45,16 @@ def test_resolver_does_not_select_foreign_credential(monkeypatch):
         "has_llm_credential_permission",
         lambda *_args, **_kwargs: False,
     )
+    monkeypatch.setattr(
+        llm_service_module,
+        "get_effective_llm_credential_auth_state",
+        lambda *_args, **_kwargs: "none",
+    )
+    monkeypatch.setattr(
+        llm_service_module,
+        "record_resource_permission_denied",
+        lambda **_kwargs: None,
+    )
 
     with pytest.raises(LLMCredentialNotAvailableError) as exc_info:
         LLMService.resolve_llamaparse_api_key(
@@ -53,6 +63,82 @@ def test_resolver_does_not_select_foreign_credential(monkeypatch):
 
     assert exc_info.value.reason == "credential_not_available"
     assert str(foreign_credential.id) not in str(exc_info.value)
+
+
+def test_resolver_records_permission_denial_when_no_candidate_is_usable(monkeypatch):
+    subject_id = uuid4()
+    organization_id = uuid4()
+    credential = _credential()
+    recorded = []
+    _patch_candidates(monkeypatch, [credential])
+    monkeypatch.setattr(
+        llm_service_module,
+        "has_llm_credential_permission",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        llm_service_module,
+        "get_effective_llm_credential_auth_state",
+        lambda *_args, **_kwargs: "read",
+    )
+    monkeypatch.setattr(
+        llm_service_module,
+        "record_resource_permission_denied",
+        lambda **kwargs: recorded.append(kwargs),
+    )
+
+    with pytest.raises(LLMCredentialNotAvailableError) as exc_info:
+        LLMService.resolve_llamaparse_api_key(
+            object(), user_id=subject_id, organization_id=organization_id
+        )
+
+    assert exc_info.value.reason == "credential_not_available"
+    assert recorded == [
+        {
+            "user_id": subject_id,
+            "resource_type": "llm_credential",
+            "resource_id": credential.id,
+            "action": "use",
+            "effective_auth_state": "read",
+            "organization_id": organization_id,
+        }
+    ]
+
+
+def test_resolver_does_not_audit_denied_candidate_when_another_is_usable(
+    monkeypatch,
+):
+    subject_id = uuid4()
+    organization_id = uuid4()
+    denied_credential = _credential()
+    usable_credential = _credential()
+    recorded = []
+    _patch_candidates(monkeypatch, [denied_credential, usable_credential])
+    monkeypatch.setattr(
+        llm_service_module,
+        "has_llm_credential_permission",
+        lambda _db, _user_id, credential_id, *_args, **_kwargs: (
+            credential_id == usable_credential.id
+        ),
+    )
+    monkeypatch.setattr(
+        llm_service_module,
+        "get_effective_llm_credential_auth_state",
+        lambda *_args, **_kwargs: "read",
+    )
+    monkeypatch.setattr(
+        llm_service_module,
+        "record_resource_permission_denied",
+        lambda **kwargs: recorded.append(kwargs),
+    )
+
+    assert (
+        LLMService.resolve_llamaparse_api_key(
+            object(), user_id=subject_id, organization_id=organization_id
+        )
+        == "test-only-value"
+    )
+    assert recorded == []
 
 
 def test_resolver_returns_single_authorized_organization_credential(monkeypatch):

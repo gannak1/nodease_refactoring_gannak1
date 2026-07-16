@@ -9,6 +9,7 @@ Status: Draft
 - Credential-model relation resolver는 inactive, unverified, wrong-provider, missing relation case를 거부한다.
 - LlamaParse credential resolver는 execution subject와 active organization이 모두 있을 때만 같은 organization의 valid `llamaparse` credential을 조회하고 `use` 권한을 다시 확인한다. 다른 user/organization credential, revoke/invalid, provider 불일치, 권한 상실, context 누락은 parser 호출 전에 차단한다.
 - LlamaParse resolver는 허용 후보가 하나일 때만 parser 입력을 반환한다. 후보 없음 또는 둘 이상은 created_at/name/latest/default fallback 없이 fail-closed한다.
+- LlamaParse credential 후보가 존재하지만 모두 subject의 `use` 권한이 없으면 parser 호출 전에 `permission.denied` audit을 한 번 기록한다. 허용 candidate가 있는 요청에서 다른 후보의 거부 때문에 audit을 추가하지 않으며, audit에는 credential config/API key/provider raw payload를 남기지 않는다.
 - Generation credential preflight는 KB permission, collection route permission, source ACL authorization을 충족시키지 않는다.
 - ProviderExecutionCapability issuer는 opaque identity/revision, organization/workflow/deployment version, node invocation/execution admission/provider attempt, provider/model/credential, server-derived credential principal, credential permission decision, purpose, verified relation/egress·pricing revision, token·cost cap과 expiry를 모두 고정한다.
 - Capability response/trace에는 raw credential, encrypted config와 capability token/scope 원문을 노출하지 않는다.

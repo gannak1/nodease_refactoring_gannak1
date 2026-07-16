@@ -32,6 +32,7 @@ from apps.shared.schemas.llm import (
     LLMProviderResponse,
 )
 from apps.shared.services.permissions import (
+    get_effective_llm_credential_auth_state,
     has_llm_credential_permission,
     has_organization_manager_permission,
 )
@@ -759,6 +760,8 @@ class LLMService:
         # 설정 로드
         try:
             cfg = json.loads(cred.encrypted_config)
+            if not isinstance(cfg, dict):
+                raise ValueError("Invalid credential config")
             api_key = cfg.get("apiKey")
             base_url = cfg.get("baseUrl")
         except (TypeError, ValueError, json.JSONDecodeError):
@@ -875,23 +878,50 @@ class LLMService:
             )
 
         candidates = []
+        permission_denials: list[tuple[LLMCredential, str]] = []
         for credential in LLMService._list_llamaparse_credentials(db, organization_uuid):
             provider_name = getattr(getattr(credential, "provider", None), "name", "")
             if (
                 not credential.is_valid
                 or provider_name.lower() != "llamaparse"
-                or not has_llm_credential_permission(
-                    db,
-                    user_uuid,
-                    credential.id,
-                    "use",
-                    organization_id=organization_uuid,
-                )
             ):
+                continue
+            if not has_llm_credential_permission(
+                db,
+                user_uuid,
+                credential.id,
+                "use",
+                organization_id=organization_uuid,
+            ):
+                permission_denials.append(
+                    (
+                        credential,
+                        get_effective_llm_credential_auth_state(
+                            db,
+                            user_uuid,
+                            credential.id,
+                            organization_id=organization_uuid,
+                        ),
+                    )
+                )
                 continue
             candidates.append(credential)
 
         if not candidates:
+            if permission_denials:
+                denied_resource_type = "organization"
+                denied_resource_id = organization_uuid
+                if len(permission_denials) == 1:
+                    denied_resource_type = "llm_credential"
+                    denied_resource_id = permission_denials[0][0].id
+                record_resource_permission_denied(
+                    user_id=user_uuid,
+                    resource_type=denied_resource_type,
+                    resource_id=denied_resource_id,
+                    action="use",
+                    effective_auth_state=permission_denials[0][1],
+                    organization_id=organization_uuid,
+                )
             raise LLMCredentialNotAvailableError(
                 "credential_not_available",
                 "LlamaParse credential is unavailable.",
