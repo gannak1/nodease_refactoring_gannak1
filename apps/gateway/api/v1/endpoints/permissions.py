@@ -10,6 +10,17 @@ from sqlalchemy.orm import Session, joinedload
 from apps.gateway.adapters.db.access_management_locking import (
     lock_access_subject_rows,
 )
+from apps.gateway.application.resource_permissions.mutation import (
+    GranteeType,
+    MutationOperation,
+    PermissionMutationCommand,
+    PermissionMutationNotFound,
+    PermissionMutationResult,
+    ResourceType,
+)
+from apps.gateway.composition.resource_permission_mutations import (
+    build_resource_permission_mutation_use_case,
+)
 from apps.gateway.services.auth_service import AuthService
 from apps.gateway.services.audit_records import add_data_change_audit
 from apps.gateway.services.app_lifecycle_lock import (
@@ -17,9 +28,6 @@ from apps.gateway.services.app_lifecycle_lock import (
     lock_app_for_workflow_mutation,
 )
 from apps.gateway.services.resource_permission_registry import resource_permission_spec
-from apps.gateway.services.workflow_permission_lock import (
-    lock_workflow_permission_scope,
-)
 from apps.gateway.utils.api_errors import (
     auth_error_code,
     auth_error_message,
@@ -328,138 +336,34 @@ def _commit_audited_permission_mutation(
         raise
 
 
-def _record_team_workflow_permission_audit(
+def _execute_resource_permission_mutation(
     db: Session,
     current_user: User,
-    permission: TeamWorkflowPermission,
-    before: dict | None,
-    after: dict,
-) -> None:
-    """Core upsert가 우회한 권한 변경 감사를 직접 남긴다."""
-    metadata = get_current_metadata()
-    metadata["actor"] = {
-        "id": str(current_user.id),
-        "email": getattr(current_user, "email", None),
-        "name": getattr(current_user, "name", None),
-    }
-
-    if before is None:
-        action = "team_workflow_permission.created"
-        audit_before = None
-        audit_after = after
-    else:
-        audit_before, audit_after = _changed_permission_columns(before, after)
-        if not audit_before and not audit_after:
-            return
-        action = "team_workflow_permission.updated"
-
-    record_audit(
-        action=action,
-        category="data_change",
-        actor_id=str(current_user.id),
-        actor_type="user",
-        target_type="team_workflow_permission",
-        target_id=permission.id,
-        before=audit_before,
-        after=audit_after,
-        metadata=metadata,
-        db_session=db,
+    *,
+    organization_id: UUID,
+    resource_type: ResourceType,
+    resource_id: UUID,
+    grantee_type: GranteeType,
+    grantee_id: UUID,
+    operation: MutationOperation,
+    auth_state: str | None,
+    assigned_at: datetime,
+) -> PermissionMutationResult:
+    command = PermissionMutationCommand(
+        actor_id=current_user.id,
+        organization_id=organization_id,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        grantee_type=grantee_type,
+        grantee_id=grantee_id,
+        operation=operation,
+        auth_state=auth_state,
+        assigned_at=assigned_at,
     )
-
-
-def _record_team_workflow_permission_delete_audit(
-    db: Session,
-    current_user: User,
-    permission: TeamWorkflowPermission,
-    before: dict,
-) -> None:
-    """team-workflow 권한 회수 감사를 직접 남긴다."""
-    metadata = get_current_metadata()
-    metadata["actor"] = {
-        "id": str(current_user.id),
-        "email": getattr(current_user, "email", None),
-        "name": getattr(current_user, "name", None),
-    }
-
-    record_audit(
-        action="team_workflow_permission.deleted",
-        category="data_change",
-        actor_id=str(current_user.id),
-        actor_type="user",
-        target_type="team_workflow_permission",
-        target_id=permission.id,
-        before=before,
-        after=None,
-        metadata=metadata,
-        db_session=db,
-    )
-
-
-def _record_team_llm_permission_audit(
-    db: Session,
-    current_user: User,
-    permission: TeamLLMPermission,
-    before: dict | None,
-    after: dict,
-) -> None:
-    """Core upsert가 우회한 LLM credential team 권한 변경 감사를 직접 남긴다."""
-    metadata = get_current_metadata()
-    metadata["actor"] = {
-        "id": str(current_user.id),
-        "email": getattr(current_user, "email", None),
-        "name": getattr(current_user, "name", None),
-    }
-
-    if before is None:
-        action = "team_llm_permission.created"
-        audit_before = None
-        audit_after = after
-    else:
-        audit_before, audit_after = _changed_permission_columns(before, after)
-        if not audit_before and not audit_after:
-            return
-        action = "team_llm_permission.updated"
-
-    record_audit(
-        action=action,
-        category="data_change",
-        actor_id=str(current_user.id),
-        actor_type="user",
-        target_type="team_llm_permission",
-        target_id=permission.id,
-        before=audit_before,
-        after=audit_after,
-        metadata=metadata,
-        db_session=db,
-    )
-
-
-def _record_team_llm_permission_delete_audit(
-    db: Session,
-    current_user: User,
-    permission: TeamLLMPermission,
-    before: dict,
-) -> None:
-    """team-LLM credential 권한 회수 감사를 직접 남긴다."""
-    metadata = get_current_metadata()
-    metadata["actor"] = {
-        "id": str(current_user.id),
-        "email": getattr(current_user, "email", None),
-        "name": getattr(current_user, "name", None),
-    }
-
-    record_audit(
-        action="team_llm_permission.deleted",
-        category="data_change",
-        actor_id=str(current_user.id),
-        actor_type="user",
-        target_type="team_llm_permission",
-        target_id=permission.id,
-        before=before,
-        after=None,
-        metadata=metadata,
-        db_session=db,
-    )
+    return build_resource_permission_mutation_use_case(
+        db,
+        actor=current_user,
+    ).execute(command)
 
 
 def _record_team_knowledge_permission_audit(
@@ -519,138 +423,6 @@ def _record_team_knowledge_permission_delete_audit(
         action="team_knowledge_permission.deleted",
         actor_id=current_user.id,
         target_type="team_knowledge_permission",
-        target_id=permission.id,
-        before=before,
-        after=None,
-        organization_id=permission.grantee_organization_id,
-        metadata=metadata,
-    )
-
-
-def _record_user_workflow_permission_audit(
-    db: Session,
-    current_user: User,
-    permission: UserWorkflowPermission,
-    before: dict | None,
-    after: dict,
-) -> None:
-    """Core upsert가 우회한 user-workflow 권한 변경 감사를 직접 남긴다."""
-    # Core upsert는 ORM 이벤트를 타지 않으므로 endpoint에서 audit payload를 직접 구성한다.
-    metadata = get_current_metadata()
-    metadata["actor"] = {
-        "id": str(current_user.id),
-        "email": getattr(current_user, "email", None),
-        "name": getattr(current_user, "name", None),
-    }
-
-    if before is None:
-        action = "user_workflow_permission.created"
-        audit_before = None
-        audit_after = after
-    else:
-        # 변경이 없는 upsert는 감사 로그를 남기지 않는다.
-        if before == after:
-            return
-        audit_before, audit_after = before, after
-        action = "user_workflow_permission.updated"
-
-    add_data_change_audit(
-        db,
-        action=action,
-        actor_id=current_user.id,
-        target_type="user_workflow_permission",
-        target_id=permission.id,
-        before=audit_before,
-        after=audit_after,
-        organization_id=permission.grantee_organization_id,
-        metadata=metadata,
-    )
-
-
-def _record_user_workflow_permission_delete_audit(
-    db: Session,
-    current_user: User,
-    permission: UserWorkflowPermission,
-    before: dict,
-) -> None:
-    """user-workflow 권한 회수 감사를 직접 남긴다."""
-    metadata = get_current_metadata()
-    metadata["actor"] = {
-        "id": str(current_user.id),
-        "email": getattr(current_user, "email", None),
-        "name": getattr(current_user, "name", None),
-    }
-
-    add_data_change_audit(
-        db,
-        action="user_workflow_permission.deleted",
-        actor_id=current_user.id,
-        target_type="user_workflow_permission",
-        target_id=permission.id,
-        before=before,
-        after=None,
-        organization_id=permission.grantee_organization_id,
-        metadata=metadata,
-    )
-
-
-def _record_user_llm_permission_audit(
-    db: Session,
-    current_user: User,
-    permission: UserLLMPermission,
-    before: dict | None,
-    after: dict,
-) -> None:
-    """Core upsert가 우회한 user-LLM credential 권한 변경 감사를 직접 남긴다."""
-    metadata = get_current_metadata()
-    metadata["actor"] = {
-        "id": str(current_user.id),
-        "email": getattr(current_user, "email", None),
-        "name": getattr(current_user, "name", None),
-    }
-
-    if before is None:
-        action = "user_llm_permission.created"
-        audit_before = None
-        audit_after = after
-    else:
-        if before == after:
-            return
-        audit_before, audit_after = before, after
-        action = "user_llm_permission.updated"
-
-    add_data_change_audit(
-        db,
-        action=action,
-        actor_id=current_user.id,
-        target_type="user_llm_permission",
-        target_id=permission.id,
-        before=audit_before,
-        after=audit_after,
-        organization_id=permission.grantee_organization_id,
-        metadata=metadata,
-    )
-
-
-def _record_user_llm_permission_delete_audit(
-    db: Session,
-    current_user: User,
-    permission: UserLLMPermission,
-    before: dict,
-) -> None:
-    """user-LLM credential 권한 회수 감사를 직접 남긴다."""
-    metadata = get_current_metadata()
-    metadata["actor"] = {
-        "id": str(current_user.id),
-        "email": getattr(current_user, "email", None),
-        "name": getattr(current_user, "name", None),
-    }
-
-    add_data_change_audit(
-        db,
-        action="user_llm_permission.deleted",
-        actor_id=current_user.id,
-        target_type="user_llm_permission",
         target_id=permission.id,
         before=before,
         after=None,
@@ -1553,77 +1325,22 @@ def _upsert_team_workflow_permission(
     workflow_id: UUID,
     team_id: UUID,
     auth_state: str,
-    assigned_by: UUID,
     assigned_at: datetime,
-) -> TeamWorkflowPermission:
+) -> dict[str, object]:
     """team-workflow 권한을 원자적으로 생성/수정하고 감사 로그를 남긴다."""
-    lock_workflow_permission_scope(
+    result = _execute_resource_permission_mutation(
         db,
+        current_user,
         organization_id=organization_id,
-        workflow_id=workflow_id,
-    )
-    _lock_permission_key(
-        db, "team_workflow_permission", organization_id, workflow_id, team_id
-    )
-    existing_permission = (
-        db.query(TeamWorkflowPermission)
-        .filter(
-            TeamWorkflowPermission.grantee_organization_id == organization_id,
-            TeamWorkflowPermission.workflow_id == workflow_id,
-            TeamWorkflowPermission.team_id == team_id,
-        )
-        .first()
-    )
-    before = (
-        _permission_audit_columns(existing_permission)
-        if existing_permission is not None
-        else None
-    )
-
-    # PostgreSQL upsert로 같은 권한 row를 동시에 생성하려는 요청도 DB에서 원자적으로 처리한다.
-    insert_stmt = pg_insert(TeamWorkflowPermission).values(
-        grantee_organization_id=organization_id,
-        workflow_id=workflow_id,
-        team_id=team_id,
+        resource_type="workflow",
+        resource_id=workflow_id,
+        grantee_type="team",
+        grantee_id=team_id,
+        operation="upsert",
         auth_state=auth_state,
-        assigned_by=assigned_by,
         assigned_at=assigned_at,
-        options={},
-        flags=0,
     )
-    upsert_stmt = (
-        insert_stmt.on_conflict_do_update(
-            index_elements=[
-                TeamWorkflowPermission.grantee_organization_id,
-                TeamWorkflowPermission.workflow_id,
-                TeamWorkflowPermission.team_id,
-            ],
-            set_={
-                "auth_state": insert_stmt.excluded.auth_state,
-                "assigned_by": insert_stmt.excluded.assigned_by,
-                "assigned_at": insert_stmt.excluded.assigned_at,
-            },
-            where=TeamWorkflowPermission.auth_state != insert_stmt.excluded.auth_state,
-        )
-        .returning(TeamWorkflowPermission)
-        .execution_options(populate_existing=True)
-    )
-
-    permission = db.scalars(upsert_stmt).one_or_none()
-    if permission is None:
-        permission = existing_permission
-    after = _permission_audit_columns(permission)
-    _commit_audited_permission_mutation(
-        db,
-        lambda: _record_team_workflow_permission_audit(
-            db,
-            current_user,
-            permission,
-            before,
-            after,
-        ),
-    )
-    return permission
+    return result.permission.response_payload()
 
 
 def _upsert_user_workflow_permission(
@@ -1633,79 +1350,22 @@ def _upsert_user_workflow_permission(
     workflow_id: UUID,
     user_id: UUID,
     auth_state: str,
-    assigned_by: UUID,
     assigned_at: datetime,
-) -> UserWorkflowPermission:
+) -> dict[str, object]:
     """user-workflow 권한을 원자적으로 생성/수정하고 감사 로그를 남긴다."""
-    lock_workflow_permission_scope(
+    result = _execute_resource_permission_mutation(
         db,
+        current_user,
         organization_id=organization_id,
-        workflow_id=workflow_id,
-    )
-    _lock_permission_key(
-        db, "user_workflow_permission", organization_id, workflow_id, user_id
-    )
-    # upsert 전 기존 row를 읽어 감사 로그의 before 값으로 사용한다.
-    existing_permission = (
-        db.query(UserWorkflowPermission)
-        .filter(
-            UserWorkflowPermission.grantee_organization_id == organization_id,
-            UserWorkflowPermission.workflow_id == workflow_id,
-            UserWorkflowPermission.user_id == user_id,
-        )
-        .first()
-    )
-    before = (
-        _user_permission_audit_snapshot(existing_permission, "workflow_id")
-        if existing_permission is not None
-        else None
-    )
-
-    # PostgreSQL upsert로 같은 권한 row를 동시에 생성하려는 요청도 DB에서 원자적으로 처리한다.
-    insert_stmt = pg_insert(UserWorkflowPermission).values(
-        grantee_organization_id=organization_id,
-        workflow_id=workflow_id,
-        user_id=user_id,
+        resource_type="workflow",
+        resource_id=workflow_id,
+        grantee_type="user",
+        grantee_id=user_id,
+        operation="upsert",
         auth_state=auth_state,
-        assigned_by=assigned_by,
         assigned_at=assigned_at,
-        options={},
-        flags=0,
     )
-    upsert_stmt = (
-        insert_stmt.on_conflict_do_update(
-            index_elements=[
-                UserWorkflowPermission.grantee_organization_id,
-                UserWorkflowPermission.user_id,
-                UserWorkflowPermission.workflow_id,
-            ],
-            set_={
-                "auth_state": insert_stmt.excluded.auth_state,
-                "assigned_by": insert_stmt.excluded.assigned_by,
-                "assigned_at": insert_stmt.excluded.assigned_at,
-            },
-            where=UserWorkflowPermission.auth_state != insert_stmt.excluded.auth_state,
-        )
-        .returning(UserWorkflowPermission)
-        .execution_options(populate_existing=True)
-    )
-
-    permission = db.scalars(upsert_stmt).one_or_none()
-    if permission is None:
-        # 같은 auth_state PUT은 no-op이므로 returning row가 없고 기존 row를 응답에 재사용한다.
-        permission = existing_permission
-    after = _user_permission_audit_snapshot(permission, "workflow_id")
-    _commit_audited_permission_mutation(
-        db,
-        lambda: _record_user_workflow_permission_audit(
-            db,
-            current_user,
-            permission,
-            before,
-            after,
-        ),
-    )
-    return permission
+    return result.permission.response_payload()
 
 
 def _upsert_team_knowledge_permission(
@@ -1787,71 +1447,22 @@ def _upsert_team_llm_permission(
     credential_id: UUID,
     team_id: UUID,
     auth_state: str,
-    assigned_by: UUID,
     assigned_at: datetime,
-) -> TeamLLMPermission:
+) -> dict[str, object]:
     """team-LLM credential 권한을 원자적으로 생성/수정하고 감사 로그를 남긴다."""
-    _lock_permission_key(
-        db, "team_llm_permission", organization_id, credential_id, team_id
-    )
-    existing_permission = (
-        db.query(TeamLLMPermission)
-        .filter(
-            TeamLLMPermission.grantee_organization_id == organization_id,
-            TeamLLMPermission.llm_credential_id == credential_id,
-            TeamLLMPermission.team_id == team_id,
-        )
-        .first()
-    )
-    before = (
-        _permission_audit_columns(existing_permission)
-        if existing_permission is not None
-        else None
-    )
-
-    insert_stmt = pg_insert(TeamLLMPermission).values(
-        grantee_organization_id=organization_id,
-        llm_credential_id=credential_id,
-        team_id=team_id,
-        auth_state=auth_state,
-        assigned_by=assigned_by,
-        assigned_at=assigned_at,
-        options={},
-        flags=0,
-    )
-    upsert_stmt = (
-        insert_stmt.on_conflict_do_update(
-            index_elements=[
-                TeamLLMPermission.grantee_organization_id,
-                TeamLLMPermission.llm_credential_id,
-                TeamLLMPermission.team_id,
-            ],
-            set_={
-                "auth_state": insert_stmt.excluded.auth_state,
-                "assigned_by": insert_stmt.excluded.assigned_by,
-                "assigned_at": insert_stmt.excluded.assigned_at,
-            },
-            where=TeamLLMPermission.auth_state != insert_stmt.excluded.auth_state,
-        )
-        .returning(TeamLLMPermission)
-        .execution_options(populate_existing=True)
-    )
-
-    permission = db.scalars(upsert_stmt).one_or_none()
-    if permission is None:
-        permission = existing_permission
-    after = _permission_audit_columns(permission)
-    _commit_audited_permission_mutation(
+    result = _execute_resource_permission_mutation(
         db,
-        lambda: _record_team_llm_permission_audit(
-            db,
-            current_user,
-            permission,
-            before,
-            after,
-        ),
+        current_user,
+        organization_id=organization_id,
+        resource_type="llm_credential",
+        resource_id=credential_id,
+        grantee_type="team",
+        grantee_id=team_id,
+        operation="upsert",
+        auth_state=auth_state,
+        assigned_at=assigned_at,
     )
-    return permission
+    return result.permission.response_payload()
 
 
 def _upsert_user_llm_permission(
@@ -1861,72 +1472,22 @@ def _upsert_user_llm_permission(
     credential_id: UUID,
     user_id: UUID,
     auth_state: str,
-    assigned_by: UUID,
     assigned_at: datetime,
-) -> UserLLMPermission:
+) -> dict[str, object]:
     """user-LLM credential 권한을 원자적으로 생성/수정하고 감사 로그를 남긴다."""
-    _lock_active_direct_permission_subject(db, organization_id, user_id)
-    _lock_permission_key(
-        db, "user_llm_permission", organization_id, credential_id, user_id
-    )
-    existing_permission = (
-        db.query(UserLLMPermission)
-        .filter(
-            UserLLMPermission.grantee_organization_id == organization_id,
-            UserLLMPermission.llm_credential_id == credential_id,
-            UserLLMPermission.user_id == user_id,
-        )
-        .first()
-    )
-    before = (
-        _user_permission_audit_snapshot(existing_permission, "llm_credential_id")
-        if existing_permission is not None
-        else None
-    )
-
-    insert_stmt = pg_insert(UserLLMPermission).values(
-        grantee_organization_id=organization_id,
-        llm_credential_id=credential_id,
-        user_id=user_id,
-        auth_state=auth_state,
-        assigned_by=assigned_by,
-        assigned_at=assigned_at,
-        options={},
-        flags=0,
-    )
-    upsert_stmt = (
-        insert_stmt.on_conflict_do_update(
-            index_elements=[
-                UserLLMPermission.grantee_organization_id,
-                UserLLMPermission.user_id,
-                UserLLMPermission.llm_credential_id,
-            ],
-            set_={
-                "auth_state": insert_stmt.excluded.auth_state,
-                "assigned_by": insert_stmt.excluded.assigned_by,
-                "assigned_at": insert_stmt.excluded.assigned_at,
-            },
-            where=UserLLMPermission.auth_state != insert_stmt.excluded.auth_state,
-        )
-        .returning(UserLLMPermission)
-        .execution_options(populate_existing=True)
-    )
-
-    permission = db.scalars(upsert_stmt).one_or_none()
-    if permission is None:
-        permission = existing_permission
-    after = _user_permission_audit_snapshot(permission, "llm_credential_id")
-    _commit_audited_permission_mutation(
+    result = _execute_resource_permission_mutation(
         db,
-        lambda: _record_user_llm_permission_audit(
-            db,
-            current_user,
-            permission,
-            before,
-            after,
-        ),
+        current_user,
+        organization_id=organization_id,
+        resource_type="llm_credential",
+        resource_id=credential_id,
+        grantee_type="user",
+        grantee_id=user_id,
+        operation="upsert",
+        auth_state=auth_state,
+        assigned_at=assigned_at,
     )
-    return permission
+    return result.permission.response_payload()
 
 
 def _upsert_user_knowledge_permission(
@@ -2274,7 +1835,6 @@ def put_team_workflow_permission(
         workflow_id,
         team_id,
         payload.auth_state,
-        current_user.id,
         now,
     )
 
@@ -2359,7 +1919,6 @@ def put_team_llm_permission(
         credential_id,
         team_id,
         payload.auth_state,
-        current_user.id,
         now,
     )
 
@@ -2405,7 +1964,6 @@ def put_user_workflow_permission(
         workflow_id,
         user_id,
         payload.auth_state,
-        current_user.id,
         now,
     )
 
@@ -2481,6 +2039,7 @@ def put_user_llm_permission(
         credential_id,
         user_id,
     )
+    _lock_active_direct_permission_subject(db, organization_id, user_id)
 
     now = datetime.now(timezone.utc)
     return _upsert_user_llm_permission(
@@ -2490,7 +2049,6 @@ def put_user_llm_permission(
         credential_id,
         user_id,
         payload.auth_state,
-        current_user.id,
         now,
     )
 
@@ -2522,45 +2080,30 @@ def delete_team_workflow_permission(
         workflow=workflow,
     )
 
-    lock_workflow_permission_scope(
-        db,
-        organization_id=organization_id,
-        workflow_id=workflow_id,
-    )
-    _lock_permission_key(
-        db, "team_workflow_permission", organization_id, workflow_id, team_id
-    )
-
-    permission = (
-        db.query(TeamWorkflowPermission)
-        .filter(
-            TeamWorkflowPermission.grantee_organization_id == organization_id,
-            TeamWorkflowPermission.workflow_id == workflow_id,
-            TeamWorkflowPermission.team_id == team_id,
+    try:
+        result = _execute_resource_permission_mutation(
+            db,
+            current_user,
+            organization_id=organization_id,
+            resource_type="workflow",
+            resource_id=workflow_id,
+            grantee_type="team",
+            grantee_id=team_id,
+            operation="delete",
+            auth_state=None,
+            assigned_at=datetime.now(timezone.utc),
         )
-        .first()
-    )
-    if permission is None:
+    except PermissionMutationNotFound:
         raise_api_error(
             request,
             404,
             "resource.not_found",
             "Team workflow permission not found.",
         )
-
-    permission_id = permission.id
-    before = _permission_audit_columns(permission)
-    db.delete(permission)
-    _commit_audited_permission_mutation(
-        db,
-        lambda: _record_team_workflow_permission_delete_audit(
-            db,
-            current_user,
-            permission,
-            before,
-        ),
-    )
-    return {"message": "Team workflow permission deleted", "id": str(permission_id)}
+    return {
+        "message": "Team workflow permission deleted",
+        "id": str(result.permission.permission_id),
+    }
 
 
 @router.delete("/knowledge-bases/{knowledge_base_id}/teams/{team_id}")
@@ -2646,41 +2189,29 @@ def delete_team_llm_permission(
         team_id,
     )
 
-    _lock_permission_key(
-        db, "team_llm_permission", organization_id, credential_id, team_id
-    )
-    permission = (
-        db.query(TeamLLMPermission)
-        .filter(
-            TeamLLMPermission.grantee_organization_id == organization_id,
-            TeamLLMPermission.llm_credential_id == credential_id,
-            TeamLLMPermission.team_id == team_id,
+    try:
+        result = _execute_resource_permission_mutation(
+            db,
+            current_user,
+            organization_id=organization_id,
+            resource_type="llm_credential",
+            resource_id=credential_id,
+            grantee_type="team",
+            grantee_id=team_id,
+            operation="delete",
+            auth_state=None,
+            assigned_at=datetime.now(timezone.utc),
         )
-        .first()
-    )
-    if permission is None:
+    except PermissionMutationNotFound:
         raise_api_error(
             request,
             404,
             "resource.not_found",
             "Team LLM credential permission not found.",
         )
-
-    permission_id = permission.id
-    before = _permission_audit_columns(permission)
-    db.delete(permission)
-    _commit_audited_permission_mutation(
-        db,
-        lambda: _record_team_llm_permission_delete_audit(
-            db,
-            current_user,
-            permission,
-            before,
-        ),
-    )
     return {
         "message": "Team LLM credential permission deleted",
-        "id": str(permission_id),
+        "id": str(result.permission.permission_id),
     }
 
 
@@ -2713,44 +2244,30 @@ def delete_user_workflow_permission(
         workflow=workflow,
     )
 
-    lock_workflow_permission_scope(
-        db,
-        organization_id=organization_id,
-        workflow_id=workflow_id,
-    )
-    _lock_permission_key(
-        db, "user_workflow_permission", organization_id, workflow_id, user_id
-    )
-    permission = (
-        db.query(UserWorkflowPermission)
-        .filter(
-            UserWorkflowPermission.grantee_organization_id == organization_id,
-            UserWorkflowPermission.workflow_id == workflow_id,
-            UserWorkflowPermission.user_id == user_id,
+    try:
+        result = _execute_resource_permission_mutation(
+            db,
+            current_user,
+            organization_id=organization_id,
+            resource_type="workflow",
+            resource_id=workflow_id,
+            grantee_type="user",
+            grantee_id=user_id,
+            operation="delete",
+            auth_state=None,
+            assigned_at=datetime.now(timezone.utc),
         )
-        .first()
-    )
-    if permission is None:
+    except PermissionMutationNotFound:
         raise_api_error(
             request,
             404,
             "resource.not_found",
             "User workflow permission not found.",
         )
-
-    before = _user_permission_audit_snapshot(permission, "workflow_id")
-    register_manual_audit_ownership(db, permission, "deleted")
-    db.delete(permission)
-    _commit_audited_permission_mutation(
-        db,
-        lambda: _record_user_workflow_permission_delete_audit(
-            db,
-            current_user,
-            permission,
-            before,
-        ),
-    )
-    return {"message": "User workflow permission deleted", "id": str(permission.id)}
+    return {
+        "message": "User workflow permission deleted",
+        "id": str(result.permission.permission_id),
+    }
 
 
 @router.delete("/knowledge-bases/{knowledge_base_id}/users/{user_id}")
@@ -2835,39 +2352,27 @@ def delete_user_llm_permission(
     )
 
     _lock_direct_permission_cleanup_subject(db, organization_id, user_id)
-    _lock_permission_key(
-        db, "user_llm_permission", organization_id, credential_id, user_id
-    )
-    permission = (
-        db.query(UserLLMPermission)
-        .filter(
-            UserLLMPermission.grantee_organization_id == organization_id,
-            UserLLMPermission.llm_credential_id == credential_id,
-            UserLLMPermission.user_id == user_id,
+    try:
+        result = _execute_resource_permission_mutation(
+            db,
+            current_user,
+            organization_id=organization_id,
+            resource_type="llm_credential",
+            resource_id=credential_id,
+            grantee_type="user",
+            grantee_id=user_id,
+            operation="delete",
+            auth_state=None,
+            assigned_at=datetime.now(timezone.utc),
         )
-        .first()
-    )
-    if permission is None:
+    except PermissionMutationNotFound:
         raise_api_error(
             request,
             404,
             "resource.not_found",
             "User LLM credential permission not found.",
         )
-
-    before = _user_permission_audit_snapshot(permission, "llm_credential_id")
-    register_manual_audit_ownership(db, permission, "deleted")
-    db.delete(permission)
-    _commit_audited_permission_mutation(
-        db,
-        lambda: _record_user_llm_permission_delete_audit(
-            db,
-            current_user,
-            permission,
-            before,
-        ),
-    )
     return {
         "message": "User LLM credential permission deleted",
-        "id": str(permission.id),
+        "id": str(result.permission.permission_id),
     }
