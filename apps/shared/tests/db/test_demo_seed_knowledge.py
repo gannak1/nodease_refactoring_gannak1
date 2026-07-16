@@ -218,6 +218,19 @@ def test_legacy_demo_documents_have_distinct_knowledge_base_keys():
     assert all(kb_key in demo_seed.KB_IDS for kb_key in mapping.values())
 
 
+def test_hr_policy_collection_references_precomputed_indexed_kbs():
+    fixture = demo_seed._read_demo_knowledge_fixture()
+    indexed_keys = {spec.key for spec in demo_seed.DEMO_DOCUMENT_SPECS}
+    target_keys = {
+        knowledge_base_key
+        for _, knowledge_base_key in demo_seed.HR_POLICY_COLLECTION_ITEMS
+    }
+
+    assert target_keys == {"internal_leave_attendance", "internal_benefits"}
+    assert target_keys <= indexed_keys
+    assert all(fixture["chunks_by_document"][key] for key in target_keys)
+
+
 def test_department_onboarding_graph_references_exact_rbac_demo_kbs():
     graph = demo_seed._department_onboarding_chatbot_graph()
     llm_node = next(node for node in graph["nodes"] if node["id"] == "llm-answer")

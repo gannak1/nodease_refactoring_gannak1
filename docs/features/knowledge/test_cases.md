@@ -193,7 +193,7 @@ KC sync의 실행·복구·snapshot·versioned finalization 검증은 [ADR-0048]
 - Knowledge 최초 등록용 Presigned URL 요청은 대상 `knowledgeBaseId`, active organization과 KB `write`를 요구하고 occupied KB를 storage call 전에 거부한다. Workflow 입력 파일용 generic presigned 호출은 기존처럼 KB 식별자 없이 동작한다. Fast precheck 통과 뒤 발생한 race는 최종 upload의 canonical check에서 다시 거부된다.
 - Endpoint와 ingestion orchestrator가 registration service를 우회해 `Document`를 직접 생성하는 production path가 없는지 architecture test로 고정한다.
 - Client는 explicit `can_register_initial_document=true`에서만 최초 source action을 표시한다. Field 누락/false, occupied/pending/failed/source-managed 상태에서는 action을 숨기고 Collection 안내를 제공하며 stale 409 뒤 detail을 refresh한다.
-- Demo seed의 fixed Knowledge Base별 Document count는 1 이하이고, 기존 인사 휴가·복지 fixture는 서로 다른 KB에 보존된다. Aggregate 검색이 필요한 seed graph는 Collection 또는 명시된 별도 KB reference를 사용하며 reset 반복 후에도 cardinality와 비대상 동적 KB 보존 계약을 유지한다.
+- Demo seed의 fixed Knowledge Base별 Document count는 1 이하이고, 기존 인사 휴가·복지 fixture는 서로 다른 KB에 보존된다. Aggregate 검색이 필요한 seed graph는 Collection 또는 명시된 별도 KB reference를 사용하며 reset 반복 후에도 cardinality와 비대상 동적 KB 보존 계약을 유지한다. 검색 시연용 Collection의 모든 child KB는 `completed` Document와 1536차원 precomputed chunk를 하나 이상 가져야 하며, 단순 membership row 존재만으로 seed 성공으로 판단하지 않는다.
 
 - KB create는 blank name을 DB insert 전에 거부하고 safe validation reason code만 반환한다.
 - KB create는 255자를 초과하는 name을 DB insert 전에 거부하고 safe validation reason code만 반환한다.

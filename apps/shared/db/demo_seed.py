@@ -312,6 +312,11 @@ LEGACY_DEMO_DOCUMENT_KB_KEYS = {
     "finance_sensitive": "finance",
 }
 
+HR_POLICY_COLLECTION_ITEMS = (
+    ("hr_leave", "internal_leave_attendance"),
+    ("hr_welfare", "internal_benefits"),
+)
+
 APP_IDS = {
     "hr_bot_example": _uuid(400),
     "ticket_ops": _uuid(401),
@@ -3088,20 +3093,19 @@ def _seed_knowledge(db: Session) -> None:
     )
     db.flush()
 
-    for rank, document_key in enumerate(("hr_leave", "hr_welfare")):
-        kb_key = LEGACY_DEMO_DOCUMENT_KB_KEYS[document_key]
+    for rank, (item_key, kb_key) in enumerate(HR_POLICY_COLLECTION_ITEMS):
         _upsert_by_id(
             db,
             KnowledgeCollectionItem,
-            COLLECTION_ITEM_IDS[document_key],
+            COLLECTION_ITEM_IDS[item_key],
             {
                 "organization_id": ORG_ID,
                 "collection_id": COLLECTION_IDS["hr_policies"],
                 "knowledge_base_id": KB_IDS[kb_key],
-                "safe_source_path_ref": f"demo://hr-policies/{document_key}",
+                "safe_source_path_ref": f"demo://hr-policies/{item_key}",
                 "rank": rank,
                 "safe_metadata": {
-                    **_demo_options(f"collection-item-{document_key}"),
+                    **_demo_options(f"collection-item-{item_key}"),
                     "source_tier": "private",
                 },
             },
