@@ -503,6 +503,41 @@ def test_adaptive_semantic_config_without_static_routes_does_not_activate_a_cata
     build_static_snapshot.assert_not_called()
 
 
+def test_adaptive_semantic_snapshot_does_not_advance_cohort_lifecycle():
+    """catalog 조회는 같은 refresh의 입력군 lifecycle을 중복 전진시키지 않는다."""
+    from apps.workflow_engine.services.model_routing_adaptive_store import (
+        AdaptiveModelRoutingCohortStore,
+    )
+    from apps.workflow_engine.services.model_routing_policy_refresh_task import (
+        PersistedModelRoutingPolicyRefreshService,
+    )
+
+    policy = SimpleNamespace(id=uuid4())
+    node_data = {"auto_model_routing": True}
+    expected_snapshot = {"route_catalog_version": "adaptive-cohorts-v1"}
+
+    with (
+        patch.object(
+            AdaptiveModelRoutingCohortStore,
+            "discover_and_advance",
+        ) as advance_lifecycle,
+        patch.object(
+            AdaptiveModelRoutingCohortStore,
+            "build_runtime_catalog",
+            return_value=expected_snapshot,
+        ) as build_catalog,
+    ):
+        snapshot = PersistedModelRoutingPolicyRefreshService._adaptive_semantic_router_snapshot(
+            MagicMock(),
+            policy=policy,
+            node_data=node_data,
+        )
+
+    assert snapshot == expected_snapshot
+    advance_lifecycle.assert_not_called()
+    build_catalog.assert_called_once()
+
+
 def test_adaptive_refresh_projects_catalog_safety_route_to_baseline_rule():
     """FR-011-A51: catalog의 safety 표시는 baseline 고정 rule로만 투영한다."""
     from apps.workflow_engine.services.model_routing_policy_refresh_task import (

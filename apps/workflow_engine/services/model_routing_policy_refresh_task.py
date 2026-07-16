@@ -815,17 +815,17 @@ class PersistedModelRoutingPolicyRefreshService:
         policy: LLMNodeModelRoutingPolicy,
         node_data: dict[str, Any],
     ) -> dict[str, Any] | None:
-        """검증된 자동 입력군이 있으면 수동 catalog보다 먼저 runtime에 반영한다."""
+        """검증된 자동 입력군 catalog를 lifecycle 변경 없이 읽는다.
+
+        입력군 발견과 휴면 판정은 validation ``plan_batch``가 한 번만 수행한다.
+        snapshot 조회에서도 전진시키면 한 refresh 안에서 같은 관찰값이 두 번
+        반영되어 저빈도 입력군이 예상보다 빨리 dormant 상태가 된다.
+        """
         try:
             from apps.workflow_engine.services.model_routing_adaptive_store import (
                 AdaptiveModelRoutingCohortStore,
             )
 
-            AdaptiveModelRoutingCohortStore.discover_and_advance(
-                db,
-                policy=policy,
-                node_data=node_data,
-            )
             return AdaptiveModelRoutingCohortStore.build_runtime_catalog(
                 db,
                 policy_id=policy.id,
