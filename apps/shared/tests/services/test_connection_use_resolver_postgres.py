@@ -9,11 +9,11 @@ from apps.shared.services.connection_use_resolver import (
     ConnectionUseResolver,
 )
 from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError, OperationalError
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 
-def test_postgres_owner_predicate_and_use_lock() -> None:
+def test_postgres_owner_predicate_refreshes_after_owner_change() -> None:
     schema = f"test_connection_use_{uuid.uuid4().hex}"
     connection_id = uuid.uuid4()
     owner_id = uuid.uuid4()
@@ -49,9 +49,9 @@ def test_postgres_owner_predicate_and_use_lock() -> None:
         pytest.skip("local PostgreSQL is unavailable; connection details omitted")
 
     owner_connection = engine.connect()
-    contender_connection = engine.connect()
+    writer_connection = engine.connect()
     owner_transaction = owner_connection.begin()
-    contender_transaction = contender_connection.begin()
+    writer_transaction = writer_connection.begin()
     owner_session = Session(
         bind=owner_connection,
         join_transaction_mode="create_savepoint",
@@ -60,10 +60,9 @@ def test_postgres_owner_predicate_and_use_lock() -> None:
         owner_connection.execute(
             text(f'SET LOCAL search_path TO "{schema}", public')
         )
-        contender_connection.execute(
+        writer_connection.execute(
             text(f'SET LOCAL search_path TO "{schema}", public')
         )
-        contender_connection.execute(text("SET LOCAL lock_timeout = '250ms'"))
 
         with pytest.raises(ConnectionUseDenied):
             ConnectionUseResolver(owner_session).resolve(
@@ -74,24 +73,33 @@ def test_postgres_owner_predicate_and_use_lock() -> None:
         resolved = ConnectionUseResolver(owner_session).resolve(
             connection_id,
             execution_subject_user_id=owner_id,
-            lock_for_use=True,
         )
         assert resolved.id == connection_id
 
-        with pytest.raises(DBAPIError):
-            contender_connection.execute(
-                text(
-                    "UPDATE connections SET user_id=:new_owner_id WHERE id=:id"
-                ),
-                {"new_owner_id": other_user_id, "id": connection_id},
+        writer_connection.execute(
+            text("UPDATE connections SET user_id=:new_owner_id WHERE id=:id"),
+            {"new_owner_id": other_user_id, "id": connection_id},
+        )
+        writer_transaction.commit()
+
+        with pytest.raises(ConnectionUseDenied):
+            ConnectionUseResolver(owner_session).resolve(
+                connection_id,
+                execution_subject_user_id=owner_id,
             )
+
+        transferred = ConnectionUseResolver(owner_session).resolve(
+            connection_id,
+            execution_subject_user_id=other_user_id,
+        )
+        assert transferred.user_id == other_user_id
     finally:
         owner_session.close()
-        if contender_transaction.is_active:
-            contender_transaction.rollback()
+        if writer_transaction.is_active:
+            writer_transaction.rollback()
         if owner_transaction.is_active:
             owner_transaction.rollback()
-        contender_connection.close()
+        writer_connection.close()
         owner_connection.close()
         try:
             with engine.begin() as cleanup:

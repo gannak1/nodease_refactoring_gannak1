@@ -58,6 +58,7 @@ from apps.gateway.application.knowledge_collection_sync.use_cases import (
 from apps.gateway.utils.api_errors import raise_api_error
 from apps.gateway.utils.audit import audit
 from apps.gateway.services.ingestion.service import (
+    IngestionPreviewSourceError,
     IngestionOrchestrator as IngestionService,
     finalize_stale_processing_start,
     mark_document_processing_queued,
@@ -125,7 +126,10 @@ from apps.gateway.services.organization_context import (
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.knowledge import Document, KnowledgeBase
 from apps.shared.db.models.user import User
-from apps.shared.services.connection_use_resolver import ConnectionUseDenied
+from apps.shared.services.connection_use_resolver import (
+    ConnectionUseDenied,
+    ConnectionUseUnavailable,
+)
 from apps.shared.schemas.knowledge import (
     KnowledgeCandidateResolution,
     KnowledgeCandidateResolveRequest,
@@ -210,6 +214,13 @@ def _validated_db_source_config_or_error(
             404,
             "resource.hidden",
             "Resource not found.",
+        )
+    except ConnectionUseUnavailable:
+        raise_api_error(
+            request,
+            503,
+            "connection.reference_unavailable",
+            "The DB connection reference is temporarily unavailable.",
         )
     except KnowledgeDbSourceConfigInvalid:
         raise_api_error(
@@ -2415,6 +2426,27 @@ def preview_document_chunking(
             selection_mode=preview_request.selection_mode,
             chunk_range=preview_request.chunk_range,
             keyword_filter=preview_request.keyword_filter,
+        )
+    except IngestionPreviewSourceError as exc:
+        if exc.reason_code == "resource.hidden":
+            raise_api_error(
+                request,
+                404,
+                "resource.hidden",
+                "Resource not found.",
+            )
+        if exc.reason_code == "source.temporarily_unavailable":
+            raise_api_error(
+                request,
+                503,
+                "source.temporarily_unavailable",
+                "The DB source is temporarily unavailable.",
+            )
+        raise_api_error(
+            request,
+            400,
+            "validation.failed",
+            "Invalid DB source configuration.",
         )
     except ValueError as e:
         logger.warning("Preview validation failed: %s", type(e).__name__)

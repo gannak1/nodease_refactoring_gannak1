@@ -35,6 +35,11 @@ from apps.gateway.services.ingestion.service import (
 from apps.gateway.services.connection_use_service import (
     resolve_connection_use_or_hidden,
 )
+from apps.gateway.services.connection_lifecycle_service import (
+    ConnectionLifecycleHidden,
+    ConnectionLifecycleService,
+    ConnectionLifecycleUnavailable,
+)
 from apps.gateway.services.knowledge_authorization_service import (
     KnowledgeAuthorizationService,
     KnowledgePermissionDenied,
@@ -481,6 +486,7 @@ async def upload_document(
         raise _chunking_http_exception(exc)
 
     prepared_db_source = None
+    prepared_db_connection_id = None
     if source_enum == SourceType.DB:
         prepared_db_source = _prepare_db_source(
             request,
@@ -488,6 +494,7 @@ async def upload_document(
             current_user,
             connection_id,
         )
+        prepared_db_connection_id = UUID(prepared_db_source[2]["connection_id"])
 
     # 1. 자료 확인 또는 생성
     target_kb_id, target_ai_model = _get_or_create_knowledge_base(
@@ -552,6 +559,14 @@ async def upload_document(
     meta_info = dict(meta_info or {})
     meta_info["chunking_mode"] = normalized_chunking_mode
 
+    if prepared_db_connection_id is not None:
+        _lock_db_connection_reference_for_registration(
+            request,
+            db,
+            connection_id=prepared_db_connection_id,
+            owner_id=current_user.id,
+        )
+
     # 4. DB 레코드 생성 (Pending 상태)
     try:
         doc_id = KnowledgeDocumentRegistrationService(
@@ -605,10 +620,41 @@ def _prepare_db_source(
         db,
         connection_id=connection_id,
         execution_subject_user_id=user.id,
-        lock_for_use=True,
     )
 
     return None, "Database source", {"connection_id": str(conn.id)}
+
+
+def _lock_db_connection_reference_for_registration(
+    request: Request,
+    db: Session,
+    *,
+    connection_id: UUID,
+    owner_id: UUID,
+) -> None:
+    """Hold the MBA-273 reference lock through document registration commit."""
+
+    try:
+        ConnectionLifecycleService(db).lock_owned_connection_for_reference(
+            connection_id=connection_id,
+            owner_id=owner_id,
+        )
+    except ConnectionLifecycleHidden:
+        db.rollback()
+        raise_api_error(
+            request,
+            404,
+            "resource.hidden",
+            "Resource not found.",
+        )
+    except ConnectionLifecycleUnavailable:
+        db.rollback()
+        raise_api_error(
+            request,
+            503,
+            "connection.reference_unavailable",
+            "The DB connection reference is temporarily unavailable.",
+        )
 
 
 @router.post("/document/{document_id}/analyze", response_model=DocumentAnalyzeResponse)

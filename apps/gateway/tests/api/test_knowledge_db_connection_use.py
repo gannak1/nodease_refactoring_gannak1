@@ -9,16 +9,24 @@ import pytest
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from apps.gateway.api.v1.endpoints import knowledge as knowledge_endpoint
 from apps.gateway.api.v1.endpoints import rag as rag_endpoint
+from apps.gateway.services.ingestion.factory import IngestionFactory
+from apps.gateway.services.ingestion.service import (
+    IngestionOrchestrator,
+    IngestionPreviewSourceError,
+)
 from apps.gateway.services.knowledge_db_source_config import (
     validate_knowledge_db_source_config,
 )
 from apps.shared.db.models.connection import Connection
+from apps.shared.db.models.knowledge import SourceType
 from apps.shared.db.models.user import User
 from apps.shared.schemas.rag import DocumentPreviewRequest
+from apps.shared.services.ingestion.processors.base import ProcessingResult
 
 
 @pytest.fixture
@@ -171,6 +179,45 @@ def test_rag_db_source_persists_only_opaque_reference(db_session: Session) -> No
     assert meta_info == {"connection_id": str(connection_id)}
 
 
+def test_rag_connection_lookup_failure_is_safe_503() -> None:
+    db = Mock()
+    db.query.side_effect = SQLAlchemyError("sensitive backend detail")
+
+    with pytest.raises(HTTPException) as exc_info:
+        rag_endpoint._prepare_db_source(
+            _request(),
+            db,
+            SimpleNamespace(id=uuid.uuid4()),
+            uuid.uuid4(),
+        )
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail["error"]["code"] == (
+        "connection.reference_unavailable"
+    )
+    assert "sensitive backend detail" not in repr(exc_info.value.detail)
+
+
+def test_knowledge_connection_lookup_failure_is_safe_503() -> None:
+    db = Mock()
+    db.query.side_effect = SQLAlchemyError("sensitive backend detail")
+
+    with pytest.raises(HTTPException) as exc_info:
+        knowledge_endpoint._validated_db_source_config_or_error(
+            _request(),
+            db,
+            current_user_id=uuid.uuid4(),
+            stored_meta_info={},
+            submitted_db_config={"connection_id": str(uuid.uuid4())},
+        )
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail["error"]["code"] == (
+        "connection.reference_unavailable"
+    )
+    assert "sensitive backend detail" not in repr(exc_info.value.detail)
+
+
 def test_submitted_db_config_bypasses_malformed_legacy_json(
     db_session: Session,
 ) -> None:
@@ -317,6 +364,115 @@ def test_preview_rejects_malformed_connection_before_processor(
         )
 
     _assert_resource_hidden(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("processor_reason", "expected_reason"),
+    [
+        ("resource.hidden", "resource.hidden"),
+        ("source.temporarily_unavailable", "source.temporarily_unavailable"),
+        ("untrusted.processor.detail", "configuration.invalid"),
+    ],
+)
+def test_preview_service_preserves_only_safe_processor_reason(
+    monkeypatch,
+    processor_reason,
+    expected_reason,
+) -> None:
+    processor = Mock()
+    processor.process.return_value = ProcessingResult(
+        chunks=[],
+        metadata={
+            "error": "sensitive processor detail",
+            "reason_code": processor_reason,
+        },
+    )
+    monkeypatch.setattr(
+        IngestionFactory,
+        "get_processor",
+        Mock(return_value=processor),
+    )
+    service = IngestionOrchestrator(
+        Mock(),
+        user_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+    )
+
+    with pytest.raises(IngestionPreviewSourceError) as exc_info:
+        service.preview_chunking(
+            file_path="",
+            chunk_size=500,
+            chunk_overlap=50,
+            segment_identifier="segment",
+            source_type=SourceType.DB,
+            meta_info={},
+            db_config={"connection_id": str(uuid.uuid4())},
+        )
+
+    assert exc_info.value.reason_code == expected_reason
+    assert "sensitive processor detail" not in repr(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("reason_code", "status_code", "response_code"),
+    [
+        ("resource.hidden", 404, "resource.hidden"),
+        (
+            "source.temporarily_unavailable",
+            503,
+            "source.temporarily_unavailable",
+        ),
+        ("configuration.invalid", 400, "validation.failed"),
+    ],
+)
+def test_preview_maps_runtime_processor_reason_safely(
+    db_session: Session,
+    monkeypatch,
+    reason_code,
+    status_code,
+    response_code,
+) -> None:
+    owner_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    connection_id = uuid.uuid4()
+    _insert_user(db_session, owner_id)
+    _insert_connection(
+        db_session,
+        connection_id=connection_id,
+        owner_id=owner_id,
+    )
+    document = _document(connection_id)
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_authorized_knowledge_document",
+        lambda *args, **kwargs: (
+            SimpleNamespace(organization_id=organization_id),
+            document,
+        ),
+    )
+
+    class PreviewService:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def preview_chunking(self, **_kwargs):
+            raise IngestionPreviewSourceError(reason_code)
+
+    monkeypatch.setattr(knowledge_endpoint, "IngestionService", PreviewService)
+
+    with pytest.raises(HTTPException) as exc_info:
+        knowledge_endpoint.preview_document_chunking(
+            kb_id=uuid.uuid4(),
+            document_id=document.id,
+            preview_request=_preview_request(connection_id),
+            request=_request(),
+            x_organization_id=str(organization_id),
+            db=db_session,
+            current_user=SimpleNamespace(id=owner_id),
+        )
+
+    assert exc_info.value.status_code == status_code
+    assert exc_info.value.detail["error"]["code"] == response_code
 
 
 @pytest.mark.asyncio

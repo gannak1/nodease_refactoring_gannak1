@@ -10,6 +10,7 @@ from apps.shared.db.models.connection import Connection
 from apps.shared.services.connection_use_resolver import (
     ConnectionUseDenied,
     ConnectionUseResolver,
+    ConnectionUseUnavailable,
 )
 
 
@@ -19,13 +20,11 @@ def resolve_connection_use_or_hidden(
     *,
     connection_id: Any,
     execution_subject_user_id: Any,
-    lock_for_use: bool = False,
 ) -> Connection:
     try:
         return ConnectionUseResolver(db).resolve(
             connection_id,
             execution_subject_user_id=execution_subject_user_id,
-            lock_for_use=lock_for_use,
         )
     except ConnectionUseDenied:
         raise_api_error(
@@ -33,4 +32,11 @@ def resolve_connection_use_or_hidden(
             404,
             "resource.hidden",
             "Resource not found.",
+        )
+    except ConnectionUseUnavailable:
+        raise_api_error(
+            request,
+            503,
+            "connection.reference_unavailable",
+            "The DB connection reference is temporarily unavailable.",
         )

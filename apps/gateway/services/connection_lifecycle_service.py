@@ -8,10 +8,6 @@ from sqlalchemy.orm import Session
 
 from apps.shared.db.models.connection import Connection
 from apps.shared.db.models.knowledge import Document
-from apps.shared.services.connection_use_resolver import (
-    ConnectionUseDenied,
-    ConnectionUseResolver,
-)
 
 
 class ConnectionLifecycleError(Exception):
@@ -45,15 +41,20 @@ class ConnectionLifecycleService:
         """Serialize a new document reference with owner-scoped deletion."""
 
         try:
-            return ConnectionUseResolver(self.db).resolve(
-                connection_id,
-                execution_subject_user_id=owner_id,
-                lock_for_use=True,
+            connection = (
+                self.db.query(Connection)
+                .filter(
+                    Connection.id == connection_id,
+                    Connection.user_id == owner_id,
+                )
+                .with_for_update()
+                .first()
             )
-        except ConnectionUseDenied:
-            raise ConnectionLifecycleHidden() from None
         except SQLAlchemyError:
             raise ConnectionLifecycleUnavailable() from None
+        if connection is None:
+            raise ConnectionLifecycleHidden()
+        return connection
 
     def delete_unreferenced_connection(
         self,

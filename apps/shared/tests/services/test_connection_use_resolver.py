@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from unittest.mock import Mock
 
 import pytest
 from apps.shared.db.models.connection import Connection
@@ -8,8 +9,10 @@ from apps.shared.db.models.user import User
 from apps.shared.services.connection_use_resolver import (
     ConnectionUseDenied,
     ConnectionUseResolver,
+    ConnectionUseUnavailable,
 )
 from sqlalchemy import create_engine
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 
@@ -70,7 +73,6 @@ def test_owner_can_resolve_connection(db_session: Session) -> None:
     resolved = ConnectionUseResolver(db_session).resolve(
         connection_id,
         execution_subject_user_id=owner_id,
-        lock_for_use=True,
     )
 
     assert resolved.id == connection_id
@@ -161,9 +163,22 @@ def test_use_resolution_refreshes_rotated_credential(tmp_path) -> None:
         resolved = ConnectionUseResolver(owner_session).resolve(
             connection_id,
             execution_subject_user_id=owner_id,
-            lock_for_use=True,
         )
 
         assert resolved.encrypted_password == "rotated-ciphertext"
 
     engine.dispose()
+
+
+def test_lookup_failure_is_normalized_without_backend_detail() -> None:
+    db = Mock()
+    db.query.side_effect = SQLAlchemyError("sensitive backend detail")
+
+    with pytest.raises(ConnectionUseUnavailable) as exc_info:
+        ConnectionUseResolver(db).resolve(
+            uuid.uuid4(),
+            execution_subject_user_id=uuid.uuid4(),
+        )
+
+    assert exc_info.value.code == "connection.reference_unavailable"
+    assert "sensitive backend detail" not in repr(exc_info.value)

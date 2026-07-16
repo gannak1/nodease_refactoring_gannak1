@@ -7,6 +7,7 @@ from typing import Any, Dict
 from apps.shared.services.connection_use_resolver import (
     ConnectionUseDenied,
     ConnectionUseResolver,
+    ConnectionUseUnavailable,
 )
 from apps.shared.services.ingestion.chunkers.adaptive_db_chunker import (
     AdaptiveDbChunker,
@@ -25,7 +26,6 @@ from apps.shared.utils.join_query_utils import (
     normalize_query_limit,
     quote_postgres_identifier,
 )
-from sqlalchemy.exc import SQLAlchemyError
 
 logger = logging.getLogger(__name__)
 
@@ -81,11 +81,10 @@ class DbProcessor(BaseProcessor):
             conn_record = ConnectionUseResolver(self.db).resolve(
                 source_config.get("connection_id"),
                 execution_subject_user_id=self.user_id,
-                lock_for_use=True,
             )
         except ConnectionUseDenied:
             return self._connection_unavailable_result()
-        except SQLAlchemyError:
+        except ConnectionUseUnavailable:
             return self._connection_lookup_unavailable_result()
 
         # Connector 인스턴스 생성

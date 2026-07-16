@@ -4,6 +4,7 @@ import uuid
 from typing import Any
 
 from apps.shared.db.models.connection import Connection
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 
@@ -14,6 +15,15 @@ class ConnectionUseDenied(Exception):
 
     def __init__(self) -> None:
         super().__init__("Resource is unavailable.")
+
+
+class ConnectionUseUnavailable(Exception):
+    """Hide persistence details when Connection authorization cannot be read."""
+
+    code = "connection.reference_unavailable"
+
+    def __init__(self) -> None:
+        super().__init__("Connection authorization is temporarily unavailable.")
 
 
 class ConnectionUseResolver:
@@ -27,20 +37,24 @@ class ConnectionUseResolver:
         connection_id: Any,
         *,
         execution_subject_user_id: Any,
-        lock_for_use: bool = False,
     ) -> Connection:
         normalized_connection_id = self._uuid_or_hidden(connection_id)
         normalized_subject_id = self._uuid_or_hidden(execution_subject_user_id)
         if self.db is None:
             raise ConnectionUseDenied()
 
-        query = self.db.query(Connection).populate_existing().filter(
-            Connection.id == normalized_connection_id,
-            Connection.user_id == normalized_subject_id,
-        )
-        if lock_for_use:
-            query = query.with_for_update()
-        connection = query.one_or_none()
+        try:
+            connection = (
+                self.db.query(Connection)
+                .populate_existing()
+                .filter(
+                    Connection.id == normalized_connection_id,
+                    Connection.user_id == normalized_subject_id,
+                )
+                .one_or_none()
+            )
+        except SQLAlchemyError:
+            raise ConnectionUseUnavailable() from None
         if connection is None:
             raise ConnectionUseDenied()
         return connection
