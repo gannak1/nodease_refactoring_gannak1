@@ -16,6 +16,12 @@ from apps.workflow_engine.adapters.providers.github import (
     GithubCommentEffectAdapter,
     GithubCommentRequest,
 )
+from apps.workflow_engine.application.outbound_http import (
+    OutboundHttpError,
+    OutboundHttpFailurePhase,
+    OutboundHttpRequest,
+    OutboundHttpResponse,
+)
 from apps.workflow_engine.domain.external_effect import (
     EffectInvocationFailure,
     EffectOutcome,
@@ -24,54 +30,42 @@ from apps.workflow_engine.domain.external_effect import (
 )
 
 
-class _HttpClient:
-    def __init__(self, *, error: Exception, **_kwargs) -> None:
+class _FailingOutboundHttp:
+    def __init__(self, error: OutboundHttpError) -> None:
         self.error = error
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_args):
-        return False
-
-    def request(self, **_kwargs):
+    def send(self, _request: OutboundHttpRequest) -> OutboundHttpResponse:
         raise self.error
 
 
-class _CaptureHttpClient:
-    def __init__(self, calls: list[dict], **_kwargs) -> None:
+class _CaptureOutboundHttp:
+    def __init__(self, calls: list[OutboundHttpRequest]) -> None:
         self.calls = calls
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_args):
-        return False
-
-    def request(self, **kwargs):
-        self.calls.append(kwargs)
-        return httpx.Response(200, json={"ok": True})
+    def send(self, request: OutboundHttpRequest) -> OutboundHttpResponse:
+        self.calls.append(request)
+        return OutboundHttpResponse(
+            status_code=200,
+            headers=(("content-type", "application/json"),),
+            content=b'{"ok":true}',
+        )
 
 
-class _ResponseHttpClient:
-    def __init__(self, response: httpx.Response, **_kwargs) -> None:
+class _ResponseOutboundHttp:
+    def __init__(self, response: OutboundHttpResponse) -> None:
         self.response = response
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_args):
-        return False
-
-    def request(self, **_kwargs):
+    def send(self, _request: OutboundHttpRequest) -> OutboundHttpResponse:
         return self.response
 
 
 def test_generic_http_local_protocol_error_is_safe_stop() -> None:
     adapter = GenericHttpEffectAdapter(
-        client_factory=lambda **kwargs: _HttpClient(
-            error=httpx.InvalidURL("invalid URL"),
-            **kwargs,
+        outbound_http=_FailingOutboundHttp(
+            OutboundHttpError(
+                "invalid_prepared_request",
+                phase=OutboundHttpFailurePhase.BEFORE_SEND,
+            )
         )
     )
     prepared = adapter.prepare_effect(
@@ -88,12 +82,68 @@ def test_generic_http_local_protocol_error_is_safe_stop() -> None:
     assert captured.value.retry_before_effect is False
 
 
-def test_generic_http_response_loss_is_outcome_unknown() -> None:
-    request = httpx.Request("POST", "https://example.test")
+def test_generic_http_malformed_port_keeps_failure_trace_sanitized() -> None:
     adapter = GenericHttpEffectAdapter(
-        client_factory=lambda **kwargs: _HttpClient(
-            error=httpx.ReadTimeout("read timed out", request=request),
-            **kwargs,
+        outbound_http=_FailingOutboundHttp(
+            OutboundHttpError(
+                "invalid_prepared_request",
+                phase=OutboundHttpFailurePhase.BEFORE_SEND,
+            )
+        )
+    )
+    prepared = adapter.prepare_effect(
+        GenericHttpRequest(
+            "POST",
+            "https://example.test:99999/path?opaque-query-value",
+            {},
+            None,
+            1.0,
+        )
+    )
+
+    with pytest.raises(EffectInvocationFailure) as captured:
+        adapter.invoke_effect(adapter.finalize_provider_call(prepared, None))
+
+    assert captured.value.error_code == "invalid_prepared_request"
+    assert adapter.trace_metadata["http"]["host"] == "example.test:99999"
+    assert adapter.trace_metadata["http"]["path"] == "/path"
+    assert "opaque-query-value" not in str(adapter.trace_metadata)
+
+
+@pytest.mark.parametrize(
+    ("url", "expected_host"),
+    [
+        ("https://api.example.test:443/path?opaque", "api.example.test:443"),
+        ("http://api.example.test:80/path?opaque", "api.example.test:80"),
+        (
+            "https://[2606:4700:4700::1111]:443/path?opaque",
+            "[2606:4700:4700::1111]:443",
+        ),
+        ("https://api.example.test/path?opaque", "api.example.test"),
+    ],
+)
+def test_generic_http_trace_preserves_only_explicit_default_port(
+    url,
+    expected_host,
+) -> None:
+    calls: list[OutboundHttpRequest] = []
+    adapter = GenericHttpEffectAdapter(outbound_http=_CaptureOutboundHttp(calls))
+    prepared = adapter.prepare_effect(GenericHttpRequest("POST", url, {}, None, 1.0))
+
+    adapter.invoke_effect(adapter.finalize_provider_call(prepared, None))
+
+    assert adapter.trace_metadata["http"]["host"] == expected_host
+    assert adapter.trace_metadata["http"]["path"] == "/path"
+    assert "opaque" not in str(adapter.trace_metadata)
+
+
+def test_generic_http_response_loss_is_outcome_unknown() -> None:
+    adapter = GenericHttpEffectAdapter(
+        outbound_http=_FailingOutboundHttp(
+            OutboundHttpError(
+                "response_lost",
+                phase=OutboundHttpFailurePhase.OUTCOME_UNKNOWN,
+            )
         )
     )
     prepared = adapter.prepare_effect(
@@ -107,6 +157,28 @@ def test_generic_http_response_loss_is_outcome_unknown() -> None:
     assert captured.value.error_code == "response_lost"
 
 
+def test_generic_http_proven_connection_failure_preserves_retry_contract() -> None:
+    adapter = GenericHttpEffectAdapter(
+        outbound_http=_FailingOutboundHttp(
+            OutboundHttpError(
+                "connection_failed",
+                phase=OutboundHttpFailurePhase.BEFORE_SEND,
+                retryable_before_send=True,
+            )
+        )
+    )
+    prepared = adapter.prepare_effect(
+        GenericHttpRequest("POST", "https://example.test", {}, None, 1.0)
+    )
+
+    with pytest.raises(EffectInvocationFailure) as captured:
+        adapter.invoke_effect(adapter.finalize_provider_call(prepared, None))
+
+    assert captured.value.outcome is EffectOutcome.FAILED_BEFORE_EFFECT
+    assert captured.value.error_code == "connection_failed"
+    assert captured.value.retry_before_effect is True
+
+
 @pytest.mark.parametrize(
     ("content", "content_type"),
     [
@@ -118,14 +190,12 @@ def test_generic_http_invalid_text_encoding_falls_back_to_text_output(
     content,
     content_type,
 ) -> None:
-    response = httpx.Response(
-        200,
+    response = OutboundHttpResponse(
+        status_code=200,
         content=content,
-        headers={"content-type": content_type},
+        headers=(("content-type", content_type),),
     )
-    adapter = GenericHttpEffectAdapter(
-        client_factory=lambda **kwargs: _ResponseHttpClient(response, **kwargs)
-    )
+    adapter = GenericHttpEffectAdapter(outbound_http=_ResponseOutboundHttp(response))
     prepared = adapter.prepare_effect(
         GenericHttpRequest("POST", "https://example.test", {}, None, 1.0)
     )
@@ -152,10 +222,8 @@ def test_generic_http_prepares_and_invokes_frozen_wire_mode(
     expected_content_type,
     payload_key,
 ) -> None:
-    calls: list[dict] = []
-    adapter = GenericHttpEffectAdapter(
-        client_factory=lambda **kwargs: _CaptureHttpClient(calls, **kwargs)
-    )
+    calls: list[OutboundHttpRequest] = []
+    adapter = GenericHttpEffectAdapter(outbound_http=_CaptureOutboundHttp(calls))
     prepared = adapter.prepare_effect(
         GenericHttpRequest(
             "POST",
@@ -170,13 +238,13 @@ def test_generic_http_prepares_and_invokes_frozen_wire_mode(
 
     frozen = prepared.request
     assert frozen.body_mode == expected_mode
-    headers = dict(calls[0]["headers"])
+    headers = dict(calls[0].headers)
     assert headers.get("content-type") == expected_content_type
-    assert payload_key in calls[0]
+    assert calls[0].body_mode == expected_mode
     if payload_key == "json":
-        assert list(calls[0]["json"]) == ["b", "a"]
+        assert list(calls[0].json_body) == ["b", "a"]
     else:
-        assert calls[0]["content"] is None
+        assert calls[0].json_body is None
 
 
 def test_generic_http_digest_normalizes_json_object_key_order() -> None:

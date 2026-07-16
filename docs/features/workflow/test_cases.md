@@ -1,7 +1,7 @@
 # Workflow Test Cases
 
 Status: Draft
-Verified Against: `codex/mba-276 @ d46dd672`
+Verified Against: `feature/mba-283 @ a7dac2fe`
 
 ## Test File Mapping
 
@@ -19,6 +19,7 @@ Verified Against: `codex/mba-276 @ d46dd672`
 - Deployment type/audience 정책: `apps/shared/tests/domain/test_deployment_runtime_policy.py`, `apps/gateway/tests/application/deployment/test_preflight_use_case.py`
 - MBA-190 외부 부수효과 멱등성: `apps/workflow_engine/tests/domain/test_external_effect_contract.py`, `apps/workflow_engine/tests/domain/test_external_effect_identity_runtime.py`, `apps/workflow_engine/tests/application/test_external_effect_executor.py`, `apps/workflow_engine/tests/adapters/test_external_effect_repository.py`, `apps/workflow_engine/tests/adapters/test_external_effect_provider_adapters.py`, `apps/workflow_engine/tests/composition/test_external_effect_readiness.py`, `apps/workflow_engine/tests/fakes/external_effects.py`, `apps/workflow_engine/tests/nodes/test_http_node.py`, `apps/workflow_engine/tests/nodes/test_loop_external_effect_control.py`, `apps/workflow_engine/tests/nodes/test_workflow_node.py`, `apps/workflow_engine/tests/services/test_workflow_engine_tracing.py`, `apps/workflow_engine/tests/services/test_workflow_logger_tracing.py`, `apps/workflow_engine/tests/test_workflow_tasks_rag_sync.py`, `apps/log_system/tests/test_node_log_retry_flow.py`, `apps/gateway/tests/api/test_workflow_execution_subject.py`, `apps/gateway/tests/api/test_workflow_external_effect_error_contract.py`, `apps/gateway/tests/application/deployment/test_workflow_node_binding.py`, `apps/shared/tests/test_external_effect_attempt_schema.py`, `apps/shared/tests/db/test_external_effect_disposable_postgres.py`, `apps/shared/tests/domain/test_workflow_execution_identity.py`, `apps/shared/tests/domain/test_workflow_node_binding.py`, `apps/shared/tests/services/test_external_effect_trace_capture.py`, `apps/shared/tests/services/test_workflow_task_publisher.py`
 - Workflow log 발행 격리: `apps/workflow_engine/tests/services/test_workflow_logger_tracing.py`에서 직렬화/Celery 발행 실패가 실행 결과를 실패로 바꾸지 않고, 민감한 예외 원문을 로그에 남기지 않는지 검증한다.
+- MBA-283 Generic HTTP egress: `apps/workflow_engine/tests/adapters/test_guarded_outbound_http.py`, `apps/workflow_engine/tests/adapters/test_external_effect_provider_adapters.py`, `apps/workflow_engine/tests/nodes/test_http_node.py`, `apps/shared/tests/deployment/test_workflow_worker_egress_policy.py`
 - 동시성 처리: `apps/gateway/tests/integration/test_agent_builder_workflow_cas.py`에서 독립 PostgreSQL session/transaction으로 autosync 대 autosync 및 autosync 대 Agent Builder 저장 경쟁을 실행하고 한 요청만 성공하며 다른 요청이 `409 stale_graph`인지 검증한다.
 - 테스트 실행 전 저장: `TestSidebar` component test에서 canonical draft GET의 `graph_hash`/`updated_at`이 save request에 전달되고 성공 응답 metadata가 shared Workflow store에 반영되며 stale save는 실행을 시작하지 않는지 검증한다.
 - 빈 canonical draft 조회: `apps/gateway/tests/services/test_workflow_draft_read.py`에서 DB graph가 `null` 또는 빈 object인 신규 workflow도 빈 `nodes`/`edges`, 기본 viewport와 canonical metadata를 반환하는지 검증한다.
@@ -737,7 +738,7 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - Provider key canonical input은 organization/app/workflow provenance를 포함해 같은 logical identity라도 다른 organization이나 target workflow에서 다른 key를 만든다.
 - Provider-visible raw key, raw internal identity, `effect_input_digest`, provider request identifier와 HMAC secret은 prompt, user-visible node output/응답, durable trace, metric label과 일반 log에 포함되지 않는다. Internal identity, digest와 key fingerprint는 각각 정의된 operational attempt column에만 저장할 수 있다.
 - 저장소 안 Draft/deployment/API/public/webhook/schedule/stream/Compare/Cost Optimizer 및 model-routing publisher는 `app.send_task` 공통 helper를 통해 Celery message에 low-cardinality 고정 `argsrepr`/`kwargsrepr`을 설정한다. Literal `workflow.*` 발행 지점을 정적 inventory로 대조해 helper 우회가 하나라도 있으면 실패한다. Workflow task 전용 Task base는 `apply_async` 기본 repr을 강제해 `.delay`, signature와 `self.retry`의 `task-sent` event를 보호한다. Request base는 악의적이거나 누락된 publisher repr을 수신 INFO log와 `task-received` event 발행 전에 같은 상수로 덮어쓴다. Worker log/event와 publisher `task-sent` event fixture에는 execution/node identity, claim/deployment/workflow UUID, graph/input, WorkflowNode binding, credential marker와 raw payload가 없다. 실제 task args decode와 실행 결과는 바뀌지 않는다.
-- Generic HTTP trace는 기존 목적지 `host`와 `path`를 계속 제공한다. URL에 `user:password@host:port`가 있어도 `host`는 parsed hostname과 명시 port만 포함하고 user info는 포함하지 않는다. MBA-190 적용 전후 두 field 이름과 user-info가 없는 일반 URL의 값은 유지된다.
+- Generic HTTP trace는 기존 목적지 `host`와 `path`를 계속 제공한다. URL에 `user:password@host:port`가 있어도 `host`는 parsed hostname과 명시 port만 포함하고 user info는 포함하지 않는다. `https`의 `443`, `http`의 `80`처럼 scheme 기본 포트를 명시한 경우에도 `host`에서 포트를 제거하지 않으며, 포트를 생략한 URL에는 기본 포트를 합성하지 않는다. MBA-190 적용 전후 두 field 이름과 user-info가 없는 일반 URL의 값은 유지된다.
 - Generic HTTP 현재 실행은 MBA-190 적용 전과 같은 `status`, `data`, `headers` node output을 반환하지만 attempt/replay result에는 이 raw output을 저장하지 않는다. Redaction 규칙은 현재 실행 output 계약과 durable trace/ledger 비노출을 구분한다.
 - 전체 URL, query, fragment, URL user info, request/response header/body와 provider exception message에 secret marker가 있어도 durable trace/log에 남지 않는다. `host`와 `path` 자체의 추가 비식별화는 이 테스트 범위가 아니다.
 - Fake provider integration에서 `httpx`, `httpcore`, `urllib3`/Requests logger를 DEBUG/INFO로 활성화해도 Workflow Engine이 수집한 log에는 URL/query/user info/header/body/key 또는 provider exception marker가 없고 adapter의 safe summary만 남는다. 이 억제 설정 때문에 Log System Worker logger 구성이 바뀌지 않는다.
@@ -802,3 +803,14 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - Gateway schedule dispatch는 unresolved configuration과 DB 기반 target/policy blocker를 publish 전에 차단하고 broker publisher를 호출하지 않는다. Worker는 locked canonical root identity와 공통 configuration을 재검사하며, target resource의 publish 이후 변경은 각 runtime authoritative gate가 차단한다.
 - worker가 받은 unresolved claim은 locked snapshot preflight 뒤 `configuration_preflight_blocked`로 한 번만 canceled 처리한다. `workflow_run_id`/`started_at`은 생성되지 않고 budget, `mark_running()`, Knowledge sync, engine/provider와 Celery retry는 호출되지 않는다.
 - 같은 claim 재전달은 terminal duplicate 결과로 억제되며 claim을 reopen하거나 다시 실행하지 않는다. resolved claim의 기존 성공·실패 경로는 회귀하지 않는다.
+
+### MBA-283 Generic HTTP Egress Regression
+
+- URL userinfo, localhost, RFC1918, IPv6 ULA/loopback/link-local, carrier-grade NAT, reserved, unspecified, multicast와 metadata target은 TCP dial 전에 `invalid_prepared_request`로 차단되고 오류·trace에 query/header/body/resolved IP가 남지 않는다.
+- DNS가 public과 차단 IP를 함께 반환하면 전체 요청을 거부한다. 모든 주소가 안전하면 custom network backend는 DNS/OS 순서대로 dial하고 첫 주소의 TCP connect 실패 시 다음 검증 주소로 폴백한다. 모든 검증 주소가 실패하면 `connection_failed`로 닫고, 첫 연결의 peer mismatch에서는 다음 주소를 시도하지 않는다. 검증 뒤 hostname DNS 응답이 바뀌어도 검증 목록 밖의 주소로 dial하지 않는다.
+- Public HTTP/HTTPS 80/443 happy path는 HTTPX 0.28 Generic HTTP V1 canonical digest, application header/JSON wire serialization, status/data/headers output과 non-2xx 성공 판정을 유지한다.
+- URL fragment는 network target에 전달하지 않고 userinfo, hop-by-hop/proxy header, 비허용 method/scheme/port와 request body/header 상한 초과를 pre-send permanent failure로 닫는다. Environment proxy는 사용하지 않는다.
+- Redirect-to-private 응답은 첫 3xx status/data/headers를 반환하고 두 번째 connection을 만들지 않는다. Peer mismatch는 request byte 전송 전 non-retryable 실패로 닫고, 압축·oversized response와 read 실패는 output을 사용하지 않고 outcome unknown으로 닫는다.
+- Connect 전에 전송이 없다고 증명되는 일시 실패만 retry-before-effect가 될 수 있다. Write/read timeout, response loss와 전송 뒤 검증 실패를 안전한 재시도로 바꾸지 않는다.
+- `HttpRequestNode`와 Generic HTTP provider는 `httpx.Client`를 직접 생성하지 않고 application outbound port를 사용한다. Production import/architecture contract가 직접 client 회귀를 탐지한다.
+- Helm render와 활성 EKS manifest의 Worker egress NetworkPolicy는 cluster DNS, PostgreSQL 5432, Redis 6379, Sandbox 8194, public 80/443과 Mail 143/993만 허용한다. Public 허용에서 private·metadata CIDR가 제외되고 외부 dependency CIDR은 해당 service port에만 적용되며 public catch-all CIDR을 허용하지 않아야 한다.

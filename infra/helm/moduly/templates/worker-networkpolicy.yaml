@@ -1,0 +1,157 @@
+{{- if and .Values.worker.enabled .Values.worker.networkPolicy.enabled }}
+{{- if and (not .Values.postgresql.enabled) (empty .Values.worker.networkPolicy.externalDatabaseCidrs) }}
+{{- fail "worker.networkPolicy.externalDatabaseCidrs is required when PostgreSQL is external" }}
+{{- end }}
+{{- if and (not .Values.redis.enabled) (empty .Values.worker.networkPolicy.externalRedisCidrs) }}
+{{- fail "worker.networkPolicy.externalRedisCidrs is required when Redis is external" }}
+{{- end }}
+{{- $externalCidrs := concat .Values.worker.networkPolicy.externalDatabaseCidrs .Values.worker.networkPolicy.externalRedisCidrs .Values.worker.networkPolicy.externalSandboxCidrs }}
+{{- range $externalCidr := $externalCidrs }}
+{{- $cidr := trim (toString $externalCidr) }}
+{{- if empty $cidr }}
+{{- fail "worker.networkPolicy external dependency CIDRs cannot be empty" }}
+{{- end }}
+{{- if or (eq $cidr "0.0.0.0/0") (eq $cidr "::/0") (eq $cidr "169.254.0.0/16") (eq $cidr "169.254.169.254/32") (eq $cidr "fe80::/10") }}
+{{- fail "worker.networkPolicy external dependency CIDRs cannot be public catch-all, link-local, or metadata ranges" }}
+{{- end }}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "moduly.fullname" . }}-worker-egress
+  labels:
+    {{- include "moduly.componentLabels" (dict "component" "worker" "context" .) | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "moduly.componentSelectorLabels" (dict "component" "worker" "context" .) | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    # Cluster DNS only. Service DNAT behavior remains CNI-specific, so the
+    # namespace boundary is used instead of opening UDP/TCP 53 globally.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- if .Values.postgresql.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/name: postgresql
+      ports:
+        - protocol: TCP
+          port: 5432
+    {{- end }}
+    {{- if .Values.redis.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/name: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    {{- end }}
+    {{- if .Values.sandbox.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "moduly.componentSelectorLabels" (dict "component" "sandbox" "context" .) | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 8194
+    {{- end }}
+    {{- range .Values.worker.networkPolicy.externalDatabaseCidrs }}
+    - to:
+        - ipBlock:
+            cidr: {{ . | quote }}
+      ports:
+        - protocol: TCP
+          port: 5432
+    {{- end }}
+    {{- range .Values.worker.networkPolicy.externalRedisCidrs }}
+    - to:
+        - ipBlock:
+            cidr: {{ . | quote }}
+      ports:
+        - protocol: TCP
+          port: 6379
+    {{- end }}
+    {{- range .Values.worker.networkPolicy.externalSandboxCidrs }}
+    - to:
+        - ipBlock:
+            cidr: {{ . | quote }}
+      ports:
+        - protocol: TCP
+          port: 8194
+    {{- end }}
+    # Public IPv4 only. Internal, non-routable, documentation, multicast,
+    # carrier-grade NAT and metadata/link-local ranges are excluded.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 0.0.0.0/8
+              - 10.0.0.0/8
+              - 100.64.0.0/10
+              - 127.0.0.0/8
+              - 169.254.0.0/16
+              - 172.16.0.0/12
+              - 192.0.0.0/24
+              - 192.0.2.0/24
+              - 192.88.99.0/24
+              - 192.168.0.0/16
+              - 198.18.0.0/15
+              - 198.51.100.0/24
+              - 203.0.113.0/24
+              - 224.0.0.0/4
+              - 240.0.0.0/4
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 143
+        - protocol: TCP
+          port: 993
+    # Public IPv6 only. Translation, local, documentation, discard and
+    # multicast ranges are excluded to prevent alternate-address bypasses.
+    - to:
+        - ipBlock:
+            cidr: ::/0
+            except:
+              - ::/96
+              - ::/128
+              - ::1/128
+              - ::ffff:0:0/96
+              - 64:ff9b::/96
+              - 64:ff9b:1::/48
+              - 100::/64
+              - 2001::/23
+              - 2001:db8::/32
+              - 2002::/16
+              - 3ffe::/16
+              - 3fff::/20
+              - 5f00::/16
+              - fc00::/7
+              - fe80::/10
+              - fec0::/10
+              - ff00::/8
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 143
+        - protocol: TCP
+          port: 993
+{{- end }}

@@ -15,9 +15,8 @@ HTTP Request Node 최소 테스트 [GEVENT] Sync 버전
 import os
 import sys
 import uuid
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
-import httpx
 import pytest
 
 # Add project root to sys.path
@@ -31,6 +30,15 @@ from apps.workflow_engine.domain.external_effect import (
     EffectInvocationFailure,
     ExternalEffectError,
 )
+from apps.workflow_engine.adapters.providers.generic_http import (
+    GenericHttpEffectAdapter,
+)
+from apps.workflow_engine.application.outbound_http import (
+    OutboundHttpError,
+    OutboundHttpFailurePhase,
+    OutboundHttpRequest,
+    OutboundHttpResponse,
+)
 from apps.workflow_engine.workflow.nodes.http import (
     HttpRequestNode,
     HttpRequestNodeData,
@@ -38,16 +46,32 @@ from apps.workflow_engine.workflow.nodes.http import (
 from apps.workflow_engine.workflow.nodes.http.entities import HttpMethod, HttpVariable
 
 
-# Mock Response for sync httpx.Client
-class MockResponse:
-    def __init__(self, status_code=200, json_data=None, headers=None):
-        self.status_code = status_code
-        self._json_data = json_data or {}
-        self.headers = headers or {}
-        self.text = "mock text"
+class _CaptureOutboundHttp:
+    def __init__(
+        self,
+        *,
+        status_code=200,
+        json_content=b"{}",
+        headers=(("content-type", "application/json"),),
+        error: OutboundHttpError | None = None,
+    ) -> None:
+        self.response = OutboundHttpResponse(
+            status_code=status_code,
+            headers=tuple(headers),
+            content=json_content,
+        )
+        self.error = error
+        self.requests: list[OutboundHttpRequest] = []
 
-    def json(self):
-        return self._json_data
+    def send(self, request: OutboundHttpRequest) -> OutboundHttpResponse:
+        self.requests.append(request)
+        if self.error is not None:
+            raise self.error
+        return self.response
+
+
+def _adapter(port: _CaptureOutboundHttp) -> GenericHttpEffectAdapter:
+    return GenericHttpEffectAdapter(outbound_http=port)
 
 
 def test_http_node_basic_get():
@@ -63,28 +87,21 @@ def test_http_node_basic_get():
     node = HttpRequestNode(id="http-1", data=node_data)
 
     # When
-    mock_response = MockResponse(
-        200, {"id": 1, "name": "John"}, {"content-type": "application/json"}
+    port = _CaptureOutboundHttp(
+        json_content=b'{"id":1,"name":"John"}',
     )
 
-    with patch("httpx.Client") as MockClient:
-        # [GEVENT] sync Client mock
-        client_instance = MockClient.return_value
-        client_instance.__enter__ = Mock(return_value=client_instance)
-        client_instance.__exit__ = Mock(return_value=False)
-        client_instance.request = Mock(return_value=mock_response)
-
+    with patch(
+        "apps.workflow_engine.workflow.nodes.http.http_node.build_generic_http_effect_adapter",
+        return_value=_adapter(port),
+    ):
         outputs = node.execute({})
 
-        # Call check
-        client_instance.request.assert_called_with(
-            method="GET",
-            url="https://api.example.com/users",
-            headers=[],
-            content=None,
-        )
-
     # Then
+    assert port.requests[0].method == "GET"
+    assert port.requests[0].url == "https://api.example.com/users"
+    assert port.requests[0].headers == ()
+    assert port.requests[0].body_mode == "no_body"
     assert outputs["status"] == 200
     assert outputs["data"]["id"] == 1
     assert node.status == NodeStatus.COMPLETED
@@ -106,18 +123,16 @@ def test_legacy_read_only_http_without_publisher_identity_remains_compatible():
         external_effect_context=None,
         external_effect_enforced=False,
     )
-    response = MockResponse(200, {"ok": True})
+    port = _CaptureOutboundHttp(json_content=b'{"ok":true}')
 
-    with patch("httpx.Client") as mock_client:
-        client = mock_client.return_value
-        client.__enter__ = Mock(return_value=client)
-        client.__exit__ = Mock(return_value=False)
-        client.request = Mock(return_value=response)
-
+    with patch(
+        "apps.workflow_engine.workflow.nodes.http.http_node.build_generic_http_effect_adapter",
+        return_value=_adapter(port),
+    ):
         output = node.execute({}, runtime_control=control)
 
     assert output["data"] == {"ok": True}
-    client.request.assert_called_once()
+    assert len(port.requests) == 1
 
 
 def test_legacy_mutating_http_without_publisher_identity_is_blocked():
@@ -138,14 +153,15 @@ def test_legacy_mutating_http_without_publisher_identity_is_blocked():
         external_effect_enforced=False,
     )
 
-    with (
-        patch("httpx.Client") as mock_client,
-        pytest.raises(ExternalEffectError) as captured,
-    ):
+    port = _CaptureOutboundHttp()
+    with patch(
+        "apps.workflow_engine.workflow.nodes.http.http_node.build_generic_http_effect_adapter",
+        return_value=_adapter(port),
+    ), pytest.raises(ExternalEffectError) as captured:
         node.execute({}, runtime_control=control)
 
     assert captured.value.code == "external_effect.identity_invalid"
-    mock_client.assert_not_called()
+    assert port.requests == []
 
 
 def test_failed_http_provider_call_keeps_safe_trace_summary_without_payload():
@@ -159,19 +175,17 @@ def test_failed_http_provider_call_keeps_safe_trace_summary_without_payload():
             referenced_variables=[],
         ),
     )
-    request = httpx.Request("POST", "https://api.example.com/items")
-
-    with (
-        patch("httpx.Client") as mock_client,
-        pytest.raises(EffectInvocationFailure),
-    ):
-        client = mock_client.return_value
-        client.__enter__ = Mock(return_value=client)
-        client.__exit__ = Mock(return_value=False)
-        client.request.side_effect = httpx.ReadTimeout(
-            "opaque provider failure",
-            request=request,
+    port = _CaptureOutboundHttp(
+        error=OutboundHttpError(
+            "response_lost",
+            phase=OutboundHttpFailurePhase.OUTCOME_UNKNOWN,
         )
+    )
+
+    with patch(
+        "apps.workflow_engine.workflow.nodes.http.http_node.build_generic_http_effect_adapter",
+        return_value=_adapter(port),
+    ), pytest.raises(EffectInvocationFailure):
         node.execute({})
 
     assert node._trace_metadata["http"]["method"] == "POST"
@@ -194,22 +208,17 @@ def test_http_node_post_with_body():
     node = HttpRequestNode(id="http-1", data=node_data)
 
     # When
-    mock_response = MockResponse(201, {"id": 101}, {})
+    port = _CaptureOutboundHttp(status_code=201, json_content=b'{"id":101}')
 
-    with patch("httpx.Client") as MockClient:
-        client_instance = MockClient.return_value
-        client_instance.__enter__ = Mock(return_value=client_instance)
-        client_instance.__exit__ = Mock(return_value=False)
-        client_instance.request = Mock(return_value=mock_response)
-
+    with patch(
+        "apps.workflow_engine.workflow.nodes.http.http_node.build_generic_http_effect_adapter",
+        return_value=_adapter(port),
+    ):
         outputs = node.execute({})
 
-        # Call check
-        call_args = client_instance.request.call_args
-        assert call_args.kwargs["method"] == "POST"
-        assert call_args.kwargs["json"] == {"title": "New Post"}
-
     # Then
+    assert port.requests[0].method == "POST"
+    assert port.requests[0].json_body == {"title": "New Post"}
     assert outputs["status"] == 201
 
 
@@ -228,22 +237,17 @@ def test_http_node_bearer_auth():
     node = HttpRequestNode(id="http-1", data=node_data)
 
     # When
-    mock_response = MockResponse(200, {"data": "protected"}, {})
+    port = _CaptureOutboundHttp(json_content=b'{"data":"protected"}')
 
-    with patch("httpx.Client") as MockClient:
-        client_instance = MockClient.return_value
-        client_instance.__enter__ = Mock(return_value=client_instance)
-        client_instance.__exit__ = Mock(return_value=False)
-        client_instance.request = Mock(return_value=mock_response)
-
+    with patch(
+        "apps.workflow_engine.workflow.nodes.http.http_node.build_generic_http_effect_adapter",
+        return_value=_adapter(port),
+    ):
         outputs = node.execute({})
 
-        # Call check
-        call_args = client_instance.request.call_args
-        headers = dict(call_args.kwargs["headers"])
-        assert headers["authorization"] == "Bearer my-token"
-
     # Then
+    headers = dict(port.requests[0].headers)
+    assert headers["authorization"] == "Bearer my-token"
     assert outputs["status"] == 200
 
 
@@ -262,21 +266,16 @@ def test_http_node_variable_substitution():
     node = HttpRequestNode(id="http-1", data=node_data)
 
     # When
-    mock_response = MockResponse(200, {"id": 123}, {})
+    port = _CaptureOutboundHttp(json_content=b'{"id":123}')
 
-    with patch("httpx.Client") as MockClient:
-        client_instance = MockClient.return_value
-        client_instance.__enter__ = Mock(return_value=client_instance)
-        client_instance.__exit__ = Mock(return_value=False)
-        client_instance.request = Mock(return_value=mock_response)
-
+    with patch(
+        "apps.workflow_engine.workflow.nodes.http.http_node.build_generic_http_effect_adapter",
+        return_value=_adapter(port),
+    ):
         # Start 노드의 출력을 inputs로 전달
         inputs = {"Start": {"userId": "123"}}
         outputs = node.execute(inputs)
 
-        # Call check
-        call_args = client_instance.request.call_args
-        assert call_args.kwargs["url"] == "https://api.example.com/users/123"
-
     # Then
+    assert port.requests[0].url == "https://api.example.com/users/123"
     assert outputs["status"] == 200

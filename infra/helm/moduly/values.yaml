@@ -98,7 +98,7 @@ gateway:
     STORAGE_TYPE: "LOCAL"
     S3_BUCKET_NAME: ""
     AWS_REGION: "ap-northeast-2"
-    
+
     # Google OAuth (optional)
     # GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are in secrets
     
@@ -146,6 +146,14 @@ worker:
     # Storage configuration (for file processing)
     S3_BUCKET_NAME: ""
     AWS_REGION: "ap-northeast-2"
+
+  # Worker outbound defense-in-depth. External dependency CIDRs are allowed
+  # only on their service ports; generic public egress remains port-limited.
+  networkPolicy:
+    enabled: true
+    externalDatabaseCidrs: []
+    externalRedisCidrs: []
+    externalSandboxCidrs: []
 
 # Singleton Celery Beat scheduler. An empty image field reuses the Workflow
 # Engine image so the shared Celery schedule and task routes stay identical.
