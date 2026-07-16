@@ -522,18 +522,29 @@ Replay는 실제 운영 traffic 비중을 증명하지 않는다. 따라서 `rep
   수정하고, 삭제할 수 있다. 이 입력군은 LLM node의
   `model_routing_policy.cohort_drafts`에 stable UUID와 함께 저장된다. 초안 저장에는
   embedding provider 호출이나 policy row가 필요하지 않다.
-- 첫 배포 승격: 자동 라우팅 설정을 포함한 배포의 첫 terminal 운영 실행이 policy
-  row를 만들면, 서버는 초안 UUID를 그대로 사용해 직접 입력군 DB row와 대표 문의·합성
-  예문 각각의 embedding을 만든다. UI에서 만든 초안과 배포 후 입력군이 다른 객체로 보이면 안 된다.
-- 승격 재시도: embedding provider가 일시적으로 실패해도 workflow 실행은 실패시키지
-  않는다. 아직 승격되지 않은 초안은 다음 성공 운영 실행에서 다시 승격을 시도한다.
+- 배포 승격: 자동 라우팅 설정을 포함한 배포 transaction은 첫 운영 실행 전 기본
+  policy row를 즉시 만든다. 배포 commit 뒤 비동기 bootstrap 작업은 초안 UUID를 그대로
+  사용해 직접 입력군 DB row와 대표 문의·합성 예문 각각의 embedding을 만든다. UI에서
+  만든 초안과 배포 후 입력군이 다른 객체로 보이면 안 된다.
+- 승격 재시도: embedding provider나 task broker가 일시적으로 실패해도 이미 확정된
+  배포를 되돌리거나 workflow 실행을 실패시키지 않는다. bootstrap task 재시도, 수동
+  정책 갱신 또는 다음 성공 운영 실행에서 아직 승격되지 않은 초안을 다시 처리한다.
 - 설정 일치: 입력군 초안과 제외 모델 목록은 LLM node 설정 지문에 포함한다. 이 값이
   달라진 재배포에는 이전 cohort/evidence를 그대로 상속하지 않는다.
 
 - 자동 발견: 최근 40개 관찰에서 서로 다른 입력 5개 이상이 두 점검 구간에 반복되면 제안한다. 발견 직후에는 안정적인 내부 식별자로 저장하고, 정책 갱신 작업에서 가림 처리한 대표 문의 최대 5개를 일회성으로 분석해 `재무 결산·지급 승인`과 같은 한국어 업무명과 `finance_closing_approval` 형식의 영문 key로 보정한다. 이름 생성 실패는 입력군 발견·검증·runtime 실행을 막지 않는다.
 - 직접 등록: 사용자는 대표 한국어 문의 하나만 쓴다. 마법사는 이름/영문 key와 서로 다른 표현의
   합성 예문 3~5개를 만들고, 사용자는 예문을 검토하거나 삭제한 뒤 저장한다. 직접 등록만으로는
-  즉시 저비용 모델을 사용하지 않으며, 운영 관찰과 Replay 검증을 통과해야 active rule이 된다.
+  즉시 저비용 모델을 사용하지 않는다. 배포 직후 대표 예시 bootstrap 검증 또는 이후 운영
+  관찰 Replay 검증을 통과해야 active rule이 된다.
+- 대표 예문 최소 수: 일반 입력군은 서로 다른 예문을 최소 3개, 안전 보호 고위험 입력군은
+  5개 보유해야 저장·승격할 수 있다. 마법사는 어순, 표현, 구체 상황이 다른 예문을 생성하며
+  중복 제거 뒤 최소 수를 채우지 못하면 한 번 재생성하고 그래도 부족하면 저장을 막는다.
+- 입력군별 유사도 기준: 하나의 전역 숫자를 모든 입력군에 강제하지 않는다. 같은 입력군의
+  예문끼리 얼마나 가까운지와 다른 입력군 예문이 얼마나 가까이 침범하는지를 함께 계산해
+  입력군별 threshold를 만든다. 예문이 3개보다 적거나 입력군 사이가 충분히 분리되지 않으면
+  검증 상태를 남기고 보수적인 기본 threshold를 사용한다. runtime 판정과 운영 관찰 분류는
+  같은 입력군별 기준을 사용한다.
 - 입력군이 0개여도 자동 라우팅을 막지 않는다. 이때 모든 요청은 `기본 모델 (규칙 미일치 시)`로 실행하고, 자동 발견 또는 직접 등록 후 검증된 rule만 별도 모델을 선택한다.
 - 대표 문의와 예문: policy 조회는 cohort별 `representative_query`와 최대 5개의
   `representative_examples`를 반환한다. 운영 원문은 예문으로 저장하지 않는다. 자동 발견 입력군은
@@ -552,6 +563,18 @@ Replay는 실제 운영 traffic 비중을 증명하지 않는다. 따라서 `rep
 - context/output limit, JSON/schema, tool/file/image 기능이 node 요구사항과 호환된다.
 - RAG/provider 기능과 organization 정책을 만족한다.
 - 삭제, 비활성, 만료 또는 scope 밖 resource를 참조하지 않는다.
+
+배포 직후 bootstrap은 저장된 대표 문의와 합성 예시를 사용한다. 일반 입력군은 서로 다른
+예시 3개 이상, 안전 보호 고위험 입력군은 5개가 있어야 유료 검증을 시작한다.
+같은 대표 예시는 기준 모델을 한 번만 실행하고 그 결과를 같은 batch의 여러 후보 비교에
+재사용한다. 이후 운영 재검증은 최근 성공 관찰 5개가 있어야 완결된 evidence로 인정한다.
+bootstrap evidence는 `validation_stage=bootstrap`, 운영 evidence는
+`validation_stage=production`으로 구분해 저장한다.
+
+고위험 입력군은 1회의 성공 Replay만으로 저비용 모델을 활성화하지 않는다. 최소 5개
+Replay가 모두 품질 계약을 만족하고, 품질 신뢰도 0.85 이상, 품질 점수 하한 85점 이상,
+기준 모델 대비 평균 품질 하락이 없을 때만 후보를 활성화한다. 하나라도 충족하지 못하면
+기존 기본 모델을 유지한다.
 
 권한이나 capability를 통과하지 못한 모델은 fallback으로도 저장하지 않는다.
 
@@ -639,10 +662,22 @@ Route 대표 문장과 threshold/min-margin은 label이 있는 calibration 입�
 정확도 보고용 holdout에서 제외한다. Holdout 결과를 보고 같은 holdout 문장을 그대로
 대표 문장에 추가한 뒤 그 데이터로 정확도를 다시 주장해서는 안 된다.
 
+입력군 내부 최저 유사도와 다른 입력군 최고 유사도의 간격이 0.05보다 작더라도 측정한
+분포를 버리고 공통 고정 threshold로 되돌리지 않는다. 이 경우 해당 route를
+`conservative_overlap` 상태로 기록한다. threshold는 `다른 입력군 최고 유사도 + 0.05`와
+`같은 입력군 양성 유사도 하한` 중 작은 값으로 정한다. 다른 입력군을 차단하려다 자기
+대표 예시까지 모두 거부하는 역전은 허용하지 않는다. runtime은 이 threshold와 별도로
+1위와 2위 route의 최소 점수 차이 0.05도 함께 확인한다. 따라서 겹치는 경계의 문의는
+`ambiguous`로 닫고 저장 기본 모델을 사용한다.
+대표 예시가 3개 미만이면 분포 자체를 신뢰할 수 없으므로 이때만 source별 보수적
+기본 threshold를 유지한다.
+
 정적으로 작성한 Route catalog는 대표 vector 평균인 centroid를 기본값으로 사용할 수
 있다. 운영 관찰로 확장되는 적응형 입력군은 대표 문의·합성 예문과 신뢰 가능한 최근 관찰의
-비가역 vector를 최대 8개 유지한다. 실제 문의와 입력군별 모든 대표값의 유사도를 계산한 뒤
-상위 2개 평균인 `top_k_mean(top_k=2)`으로 판정해 단일 우연 일치와 넓은 centroid의 왜곡을 줄인다.
+비가역 vector를 최대 8개 유지한다. 적응형 policy는 node의 semantic router에 명시된
+`aggregation`, `top_k`, `min_margin`을 그대로 사용하며, calibration과 runtime matcher가
+반드시 같은 점수 공식을 사용한다. 명시값이 없을 때만 `top_k_mean(top_k=2)`을 기본값으로
+사용한다. `centroid`를 명시한 node를 정책 생성 과정에서 임의로 `top_k_mean`으로 바꾸지 않는다.
 오분류 위험은 자동 발견 군 0.55, 직접 등록 군 0.60의
 서로 다른 threshold와 `min_margin`으로 닫는다. 신규 trend 발견을 위한 군집화는 더 넓은
 0.50 경계를 사용하지만, 발견 경계를 통과했다는 이유만으로 runtime route를 확정하지
@@ -671,14 +706,24 @@ cohort에서 품질 gate를 통과한 모델만 active policy rule에 연결할 
 2. signal 점수가 Route의 `lexical_override_threshold` 이상이면 dense similarity보다
    안전 Route를 우선 확정한다.
 3. 안전 override가 없으면 기존 embedding centroid, Route threshold와 `min_margin`으로
-   semantic cohort를 판정한다.
-4. 두 단계 모두 확정하지 못하면 default model을 유지한다.
+   semantic cohort를 판정한다. 이때 일반 Route의 점수가 더 높더라도 안전 Route의
+   dense score가 policy의 `dense_override_threshold` 이상이면 안전 Route를 우선한다.
+4. `dense_override_threshold`는 runtime 상수가 아니다. Policy 생성 시 해당 안전
+   입력군 calibration의 `negative_ceiling + min_margin`과 기존 Route threshold 중 큰
+   값으로 계산해 catalog에 저장한다.
+5. 세 단계 모두 확정하지 못하면 default model을 유지한다.
 
 도메인 신호는 runtime Python 상수에 하드코딩하지 않고 Route catalog/policy 데이터에만
 저장한다. 따라서 다른 workflow는 자기 catalog에 맞는 신호를 가질 수 있고, catalog
 version 변경으로 검증·배포 이력을 추적할 수 있다. Runtime matcher는 문자열 정규화,
 가중치 합산과 threshold 비교만 담당하며 `보안`, `결제`, `SLA` 같은 업무 단어의 의미를
 알지 못한다.
+
+Dense safety boundary는 lexical signal에 없는 새 표현도 보호하기 위한 보조 경계다.
+일반 입력군과 안전 입력군의 의미가 겹치는 경우 최고 점수 하나만 믿지 않고, 안전 입력군이
+calibration에서 확인된 위험 경계를 넘었으면 검증된 고성능 기본 모델을 유지한다. 이 경계도
+입력군 예문과 반례 분포에서 계산하므로 특정 workflow 업무 단어를 제품 코드에 하드코딩하지
+않는다.
 
 Trace에는 `hybrid` matcher 여부, safety override 적용 여부, 매칭 signal 수와 합산
 점수만 남긴다. 입력 원문과 매칭된 signal 원문은 저장하지 않는다. 일반 결제 단어만
@@ -695,7 +740,9 @@ Optimizer는 다음 순서로 policy를 만든다.
 3. 자유형 quality score는 표본 수와 분산을 반영한 보수적 lower bound를 사용한다.
 4. 후보의 품질 하한이 `baseline 품질 하한 - 허용 품질 저하` 이상인 경우에만 품질
    floor를 통과한다.
-5. 품질 floor 안에서 expected cost 또는 latency를 최소화한다. 동률이면 현재 모델을
+5. 같은 입력군에 검증 후보가 여러 개면 보수적 품질 하한이 가장 높은 후보를 먼저
+   찾는다. 최고 하한보다 3점을 초과해 낮은 후보는 비용이 싸더라도 제외하고, 3점 이내의
+   품질 여유 후보 안에서 expected cost 또는 latency를 최소화한다. 동률이면 현재 모델을
    유지한다.
 6. 운영 traffic share로 전체 예상 비용을 계산한다.
 7. fallback, Replay/Judge, semantic embedding 비용을 포함한 예상 순절감액이 양수일
@@ -796,6 +843,56 @@ holdout 50건은 50/50 성공, trace 선택 근거 50/50 기록, 자동 입력�
 이 결과는 해당 seed/deployment의 재현 결과이지, 모든 업무 입력에서 같은 품질을
 보장한다는 일반 성능 수치는 아니다.
 
+#### 자동 라우팅 가치 검증 기준
+
+자동 라우팅의 구현 완료와 사용 가치는 별도로 검증한다. 입력군별로 서로 다른 모델을
+선택했다는 사실만으로는 사용자가 모델 하나를 고정하는 것보다 낫다고 결론내리지
+않는다. 동일한 미사용 holdout 입력을 다음 세 배포에 같은 순서로 실행한다.
+
+1. `고성능 모델 고정`: 품질 기준선과 자동 라우팅의 비용 절감 폭을 확인한다.
+2. `저비용 모델 고정`: 가장 싼 모델 하나만 쓰는 방식에서 발생하는 품질 저하를
+   확인한다.
+3. `자동 라우팅`: 검증된 저비용 route와 보수적인 기본 모델을 함께 사용했을 때
+   비용과 품질의 균형을 확인한다.
+
+입력군 대표 예시, threshold calibration 입력, Replay/Judge 검증 입력과 최종 holdout은
+서로 겹치지 않아야 한다. 결과를 확인한 뒤 holdout 문장을 대표 예시나 정책 rule에
+추가하고 같은 결과를 다시 성공으로 보고해서는 안 된다.
+
+가치 판정은 실험 전에 다음 항목을 고정한다.
+
+- 세 배포의 workflow graph, prompt, RAG, output schema는 모델 라우팅 설정을 제외하고
+  동일해야 한다.
+- 실행 성공률, schema 통과율과 downstream 계약 통과율을 비교한다.
+- 자유형 출력은 blind pairwise Judge 품질 점수와 고위험 입력의 심각한 품질 저하 건수를
+  함께 본다. Judge 비용은 검증 비용에 포함한다.
+- 자동 라우팅의 실제 모델 분포, 입력군 rule 적용 범위, rule이 적용된 요청의 정확도,
+  default/fallback 비율과 trace 기록률을 확인한다. `no_match`와 `ambiguous`가 고성능
+  기본 모델로 닫힌 경우는 오분류가 아니라 안전한 미적용으로 따로 집계한다.
+- 안전 보호 입력군은 저비용 후보가 품질 gate를 통과하지 못해 active rule이 없어도
+  semantic catalog에 남아야 한다. 이 입력군이 매칭되면 검증되지 않은 저비용 모델이
+  아니라 고성능 기본 모델을 사용한다.
+- 사용자가 직접 등록한 필수 입력군도 같은 원칙을 따른다. 입력군을 알아보는 semantic
+  matching 준비 상태와 저비용 모델을 사용할 수 있다는 품질 검증 상태를 하나로 취급하지
+  않는다. `proposed`, `validating`, `validated_waiting` 상태의 필수 직접 입력군은 runtime
+  catalog에 남아 입력군을 식별하되, 검증된 adaptive rule이 없으면 저장 기본 모델을
+  사용한다.
+- 후보가 한 번 품질 gate에서 탈락했다는 이유만으로 영구 제외하지 않는다. 이후 같은 배포
+  설정에서 새로운 운영 관찰값이 충분히 쌓이고 월간 검증 예산이 남으면 새 observation
+  window로 재검증할 수 있다. 이미 `validated`인 동일 설정 증거만 중복 검증을 막는다.
+- 실행 비용에는 answer LLM 비용을, 별도 비용에는 bootstrap Replay/Judge와 semantic
+  embedding 비용을 구분해 기록한다.
+- `검증 비용 / 요청당 절감액`으로 손익분기 요청 수를 계산한다. 요청당 절감액이 0
+  이하이면 손익분기는 `도달 불가`로 표시한다.
+
+자동 라우팅의 제품 가치는 다음 두 질문에 함께 답할 때만 인정한다.
+
+- 고성능 모델 고정보다 품질 안전 기준을 유지하면서 실행 비용을 의미 있게 줄였는가?
+- 저비용 모델 고정보다 고위험 또는 복잡한 입력의 품질을 더 안전하게 지켰는가?
+
+둘 중 하나라도 확인되지 않으면 보고서는 자동 라우팅을 성공으로 포장하지 않고
+`비용 이점 미확인`, `품질 이점 미확인`, `검증 비용 미회수` 중 해당 결론을 명시한다.
+
 Replay 품질 증거를 만드는 입력군은 Route 대표 문장, threshold 보정용 calibration,
 최종 정확도 평가용 holdout과 분리한다. 증거 수집 입력은 실제 배포 baseline을 먼저
 만들고, 그 baseline의 동일 입력으로 후보 모델만 실행한다. 이 과정에서 생성된 실제
@@ -824,29 +921,32 @@ Cost Optimizer는 LLM 노드가 배포 후 운영 실행에서 모델을 자동 
 
 모델 라우팅은 매 실행마다 LLM judge를 호출해 판단하는 기능이 아니다. 실행 시점에는 이미 저장된 active policy를 읽고, 그 정책의 rule에 따라 사용할 기본 모델과 fallback 모델을 선택한다. Judge LLM은 정책 생성 또는 정책 갱신 시점에만 호출한다.
 
-정책 갱신은 모델 변경과 같은 의미가 아니다. 배포 후 운영 실행이 20회 쌓이면 시스템은 기존 active policy를 재평가하지만, 충분한 운영 샘플과 품질 gate를 통과한 저비용 후보가 없으면 기존 active policy를 유지한다. 검증 샘플을 만들기 위해 자동으로 더 싼 모델로 하향하는 동작은 하지 않는다. 저비용 모델 탐색은 A/B 테스트나 별도 실험 기능에서 수행한다.
+정책 갱신은 모델 변경과 같은 의미가 아니다. 배포 직후에는 사용자가 등록한 입력군의 합성 대표 예시로 기준 모델과 저비용 후보를 별도 Replay 검증하고, 품질·스키마·후속 노드·순절감 gate를 모두 통과한 입력군에만 첫 rule을 추가한다. 이후 배포 후 운영 실행이 설정 횟수만큼 쌓이면 시스템은 기존 active policy를 다시 평가하며, 검증을 통과한 변경 후보가 없으면 기존 active policy를 유지한다. 일반 운영 요청을 검증되지 않은 싼 모델로 보내 증거를 만드는 동작은 하지 않는다.
 
 사용자 시나리오는 다음 흐름을 따른다.
 
 1. 빌더가 LLM 노드 상세 화면에서 `자동 모델 라우팅`을 켠다.
 2. ON 상태에서는 사용자가 `기본 모델 (규칙 미일치 시)`과 `기본 대체 모델`을 설정하고 현재 정책 상태를 확인한다. 입력군 rule에 매칭되지 않은 요청만 이 기본 모델을 사용하며, 검증된 입력군 rule은 별도 모델을 선택할 수 있다. 아직 배포하지 않았더라도 직접 입력군 초안을 만들고 수정할 수 있다.
 3. 변경한 node 설정을 포함해 workflow를 배포한다. draft에서 토글만 켠 상태는 운영 표본 집계 대상이 아니다.
-4. 배포 후 첫 성공 운영 실행은 저장 `model_id`/`fallback_model_id`로 보수적으로 실행하고, 같은 두 모델만 담은 policy row를 만든다. bootstrap은 모델을 하향하거나 조건 rule을 만들지 않는다.
-5. 그 다음 배포 후 실행부터 LLM 노드는 policy table의 active policy를 읽어 모델을 선택한다.
-6. 실행 시점에는 judge LLM을 호출하지 않는다.
-7. 배포 후 운영 실행이 20회 쌓이면 정책 갱신 job이 실행된다.
-8. 사용자는 policy row가 만들어진 뒤 `자동 정책 갱신하기` 버튼으로 즉시 갱신을 요청할 수 있다.
-9. judge가 새 정책을 만들면 품질 gate 통과 시 active policy로 반영한다.
-10. 품질 근거가 부족하거나 검증된 저비용 후보가 없으면 기존 active policy를 유지하고 갱신 결과를 `kept_current`로 기록한다.
-11. 새 정책안이 만들어졌지만 불확실성이 높으면 `pending_review` 상태로 저장하고 기존 active policy를 유지한다.
-12. credential 또는 model이 사용할 수 없게 되면 해당 모델은 후보에서 제외하고 policy fallback을 찾는다. 현재 실행 주체가 쓸 수 있는 모델이 하나도 없으면 provider 호출 전에 명시적으로 실패한다.
+4. 배포 transaction은 저장 `model_id`/`fallback_model_id`와 빈 rule을 가진 기본 policy row를 즉시 만든다. provider 호출은 배포 transaction 안에서 하지 않는다.
+5. 배포 commit 뒤 비동기 bootstrap 작업은 입력군 대표 예시를 기준 모델로 먼저 실행한다. 기준 모델이 스키마 또는 후속 노드 계약을 지키지 못한 예시는 후보 모델을 실행하지 않는다.
+6. 기준 모델을 통과한 예시에 대해서만 후보 모델과 품질 Judge를 유료 실행하고 월간 검증 예산에 기준·후보·Judge 비용을 모두 기록한다.
+7. 후보가 실행 성공, 스키마, 후속 노드, 품질 하한, 개별 Replay의 최대 품질 하락, fallback 비율, 순절감 gate를 모두 통과한 입력군에만 active policy rule을 추가한다. 평균이 좋아도 한 대표 입력에서 기준보다 10점을 초과해 낮아진 후보는 전체 입력군 rule로 승격하지 않는다. 여러 후보가 통과하면 최고 품질 하한에서 3점 이내인 후보만 비용 최적화 대상으로 삼는다. 탈락한 입력군은 저장 모델을 계속 사용한다.
+8. 일반 실행 시점에는 judge LLM을 호출하지 않는다.
+9. 배포 후 운영 실행이 설정 횟수만큼 쌓이면 정책 갱신 job이 실행된다.
+10. 사용자는 policy row가 만들어진 뒤 `자동 정책 갱신하기` 버튼으로 즉시 갱신을 요청할 수 있다.
+11. 운영 정책 갱신은 새 저가 후보만 탐색하지 않고 현재 active rule의 모델을 같은 운영 observation window로 먼저 재검증한다. 현재 모델이 품질 gate에서 탈락하면 해당 입력군 rule만 철회하고 다른 입력군의 검증된 rule은 유지한다.
+11. judge가 새 정책을 만들면 품질 gate 통과 시 active policy로 반영한다.
+12. 품질 근거가 부족하거나 검증된 저비용 후보가 없으면 기존 active policy를 유지하고 갱신 결과를 `kept_current`로 기록한다.
+13. 새 정책안이 만들어졌지만 불확실성이 높으면 `pending_review` 상태로 저장하고 기존 active policy를 유지한다.
+14. credential 또는 model이 사용할 수 없게 되면 해당 모델은 후보에서 제외하고 policy fallback을 찾는다. 현재 실행 주체가 쓸 수 있는 모델이 하나도 없으면 provider 호출 전에 명시적으로 실패한다.
 
 정책 상태는 다음 값만 사용한다. `cold_start`, `warming_up`, `optimized` 같은 데이터 성숙도 단계는 사용자-facing 상태와 API 계약에서 사용하지 않는다.
 
 | 상태 | 의미 |
 | --- | --- |
 | `off` | 자동 라우팅 꺼짐 |
-| `collecting` | 자동 라우팅은 켜졌지만 정책 갱신에 필요한 운영 로그를 모으는 중 |
+| `collecting` | 자동 라우팅은 켜졌으며 배포 직후 입력군 검증 중이거나 다음 정책 갱신에 필요한 운영 로그를 모으는 중 |
 | `active` | active policy로 실행 중 |
 | `refreshing` | judge가 운영 로그를 분석해 정책을 갱신 중 |
 | `pending_review` | 새 정책안이 만들어졌지만 품질 gate 미통과 또는 불확실성 때문에 반영 보류 |
@@ -856,7 +956,11 @@ Cost Optimizer는 LLM 노드가 배포 후 운영 실행에서 모델을 자동 
 
 자동 모델 라우팅이 켜진 동일 LLM node를 새 deployment version으로 다시 배포하면, 이전 cohort/evidence의 node 설정 지문과 새 deployment snapshot의 LLM 설정 지문이 모두 같을 때만 이전 활성 배포의 active policy, 입력군, 대표 예문, 검증 완료 모델 evidence를 이어받아야 한다. 모델, prompt, RAG, 출력 형식처럼 실행 결과에 영향을 주는 설정이 달라졌다면 이전 정책을 복제하지 않고 새 버전에서 근거를 다시 수집·검증한다. 상속하는 경우 policy 안의 semantic cohort ID 참조도 새 입력군 row ID로 다시 연결해야 한다. 반면 이전 배포에서 누적한 운영 실행 수, refresh 진행 상태, run event, 운영 관찰값, 월간 Replay/Judge 검증 비용은 새 배포의 운영 이력이 아니므로 복사하지 않고 새 버전에서 0부터 다시 기록한다. 이 규칙은 새 배포 직후 입력군 목록과 직접 입력군 추가 기능이 비어 보이지 않게 하면서, 예전 버전의 실행 수로 새 버전의 정책 갱신이 조기에 예약되는 문제를 막는다.
 
-배포된 graph snapshot에서 `auto_model_routing=true`인 LLM node에 아직 policy row가 없다면 첫 실행은 node에 저장된 `model_id`와 `fallback_model_id`를 보수적으로 사용한다. graph snapshot 안의 legacy `model_routing_policy` JSON은 이 시점에 평가하지 않는다. 첫 terminal 운영 workflow 완료 후 생성되는 bootstrap policy도 저장 `model_id`/`fallback_model_id`만 보존하고 rule은 빈 배열로 둔다. bootstrap 생성은 judge refresh가 아니며, `auto_n_runs` 또는 `manual_refresh`가 policy update row를 남기는 실제 정책 갱신이다.
+배포된 graph snapshot에서 `auto_model_routing=true`인 LLM node는 배포 transaction 안에서 저장 `model_id`와 `fallback_model_id`, 빈 rule을 가진 기본 policy row를 만든다. graph snapshot 안의 legacy `model_routing_policy.active_policy`는 재사용하지 않는다. 배포 commit 뒤 `deployment_bootstrap` 작업이 직접 입력군의 합성 대표 예시를 embedding하고 기준 모델 → 후보 모델 → 품질 Judge 순서로 검증한다. 검증을 통과한 입력군만 `validated_adaptive_cohort` rule로 추가하며, 검증이 끝나기 전과 탈락한 입력군은 저장 기본 모델을 사용한다.
+
+bootstrap 후보 검증은 한 입력군에서 최초 저비용 후보 묶음이 모두 탈락했다는 이유만으로 운영 실행을 기다리며 종료하지 않는다. 월간 검증 예산이 남고 같은 설정 지문에서 아직 검증하지 않은 실행 가능 후보가 있으면, 완료된 batch 뒤에 다음 후보 묶음의 `deployment_bootstrap` batch를 즉시 예약한다. 한 batch는 입력군별 최대 2개 후보만 검증하고, 초기 탐색은 최대 3개 wave로 제한한다. 따라서 한 입력군에서 초기 배포가 즉시 검증하는 후보는 최대 6개다. 입력군별 검증된 route가 생기면 해당 입력군의 추가 탐색을 멈추고, 후보가 소진되거나 예산이 부족하거나 최대 wave에 도달하면 저장 기본 모델을 유지한다. 후보를 활성화하기 위한 품질·schema·downstream·fallback·순절감 gate는 후속 batch에서도 동일하게 적용한다.
+
+각 bootstrap batch는 후보별 상태와 안전한 탈락 사유를 남겨야 한다. 최소 기록은 입력군 식별자, 모델 ID, 검증 상태, 표본 수, `reason_code`, 기준/후보 평균 품질, 순절감률이다. raw 입력, raw 출력, prompt, credential은 기록하지 않는다. 후속 batch를 예약했는지와 다음 탐색이 없는 이유도 batch summary에서 구분할 수 있어야 한다.
 
 각 배포 후 workflow run은 `llm_node_model_routing_policy_run_events`에 한 번만 기록한다. 이 event의 `(policy_id, workflow_run_id)` 고유 제약으로 Celery 재시도나 중복 완료 훅이 같은 run을 두 번 카운트하지 못하게 한다. 누적 수가 `refresh_every_runs`에 처음 도달한 event만 refresh task를 예약한다.
 
@@ -899,6 +1003,7 @@ Judge LLM 호출은 정책 갱신 작업에서만 발생한다. 자동 라우팅
 
 | Trigger | 설명 |
 | --- | --- |
+| `deployment_bootstrap` | 자동 라우팅 설정을 포함한 새 배포 직후 실행. 입력군 대표 예시로 기준 모델을 먼저 검증하고, 통과 예시에 한해서만 후보와 Judge를 유료 검증한다. |
 | `auto_n_runs` | active policy 기준 마지막 갱신 이후 배포 후 운영 실행이 node 설정의 `refresh_every_runs`만큼 누적되면 자동 실행. 기본값은 20회이며 이 trigger는 정책 재평가를 뜻할 뿐 모델 변경을 보장하지 않는다. |
 | `manual_refresh` | 사용자가 `자동 정책 갱신하기` 버튼을 눌러 즉시 실행 |
 
@@ -929,6 +1034,10 @@ Judge 결과는 바로 운영 정책에 반영하지 않는다. 다음 gate를 �
 - judge 결과 confidence가 정책 기준 이상이다.
 - 조건 rule은 같은 `when` 조건의 segment에서 해당 모델이 품질 gate를 통과한 근거가 있다.
 - raw payload 또는 secret을 포함하지 않는다.
+
+비고위험 입력군의 bootstrap 후보도 대표 예시 한 건의 큰 실패를 평균으로 상쇄하지 않는다. 후보 품질 평균은 85점 이상, 95% 보수적 하한은 76.5점 이상, 기준 모델 대비 평균 하락은 2점 이내여야 한다. 대표 예시 중 하나라도 기준보다 10점을 초과해 낮으면 후보를 거절한다. 후보 Replay는 fallback 없이 요청 모델 자체를 실행하며, 후보가 실패하면 기준 모델 출력으로 대체해 후보 증거로 저장하지 않는다.
+
+semantic 입력군 판정은 최고 점수 입력군과 2위 입력군의 차이가 기본 0.05 이상일 때만 확정한다. 둘 이상의 입력군이 자체 threshold를 넘더라도 점수 차이가 0.05 미만이면 `ambiguous`로 닫고 검증된 저비용 rule 대신 기본 모델을 사용한다.
 
 새 default model 또는 새/변경된 rule의 `selected_model_id`는 기존 bootstrap policy의 rule이나 fallback에 이미 등장했더라도 별도의 운영 품질 표본을 가져야 한다. 단순히 후보 목록에 있었던 사실은 검증 근거가 아니다. 변경 모델과 현재 primary model 모두 관측 평균 비용 또는 평균 latency가 있으면 변경 모델은 둘 중 하나에서 개선되어야 한다. 관측값을 비교할 수 없는 경우에만 verified candidate의 정적 price 정보를 보조 비용 근거로 사용한다.
 

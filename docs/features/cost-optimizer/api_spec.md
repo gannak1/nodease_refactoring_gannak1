@@ -281,8 +281,10 @@ Policy가 의미 기반 입력군을 사용하면 internal snapshot에 `semantic
 대표 문장은 운영 raw input이 아니라 검토된 synthetic/curated 문장이어야 한다.
 대표 문장 vector는 policy 생성 시 미리 계산하며 runtime에서 다시 만들지 않는다.
 같은 주제 안의 안전 위험을 별도로 판정하는 Route는 `safety_override`,
-`lexical_override_threshold`, `lexical_signals`를 가질 수 있다. 이 signal은 node별
-versioned policy 데이터이며 runtime 코드 상수가 아니다.
+`lexical_override_threshold`, `lexical_signals`, `dense_override_threshold`를 가질 수
+있다. `dense_override_threshold`는 safety Route calibration의
+`max(route.threshold, negative_ceiling + min_margin)`으로 계산한다. 이 값과 signal은
+node별 versioned policy 데이터이며 runtime 코드 상수가 아니다.
 
 ```json
 {
@@ -314,6 +316,7 @@ versioned policy 데이터이며 runtime 코드 상수가 아니다.
       "label": "보안 및 SLA 고위험",
       "threshold": 0.75,
       "safety_override": true,
+      "dense_override_threshold": 0.82,
       "lexical_override_threshold": 1.0,
       "lexical_signals": [
         {"term": "account takeover", "weight": 1.0},
@@ -384,25 +387,34 @@ Semantic matcher는 Aurelio Semantic Router의 정적 Route와 Hybrid Router 평
 1. `input_paths`에 지정된 업무 본문만 추출해 catalog encoder로 한 번 embedding한다.
 2. `safety_override` Route가 있으면 정규화한 query text에 대해 policy의 lexical
    signal 가중치 합을 계산한다. threshold를 통과하면 해당 안전 Route를 우선한다.
-3. 안전 override가 없으면 catalog의 aggregation 계약에 따라 cosine similarity를
+3. lexical override가 없더라도 안전 Route의 dense score가 catalog의
+   `dense_override_threshold` 이상이면 일반 Route의 점수가 더 높아도 안전 Route를
+   우선한다. 이 값이 없으면 기존 policy와 호환되도록 이 단계를 건너뛴다.
+4. 안전 override가 없으면 catalog의 aggregation 계약에 따라 cosine similarity를
    계산한다. 정적 catalog 기본값은 `centroid`다.
-4. 적응형 입력군 catalog는 대표 문의·합성 예문과 신뢰 가능한 최근 관찰 vector를 입력군별 최대
+5. 적응형 입력군 catalog는 대표 문의·합성 예문과 신뢰 가능한 최근 관찰 vector를 입력군별 최대
    8개까지 사용한다. 입력군별 상위 2개 cosine similarity 평균인 `top_k_mean`으로 점수를 만든다.
    신규 trend 군집화는 0.50,
    자동 입력군 runtime/관찰 매칭은 0.55, 직접 등록 입력군은 0.60을 사용한다.
-5. 기존 policy의 `mean`, `sum`은 representative `top_k` 집계를 사용한다. `max`는 한
+6. 기존 policy의 `mean`, `sum`은 representative `top_k` 집계를 사용한다. `max`는 한
    입력군이 전역 top-k를 독점하지 않도록 각 입력군의 최고점을 먼저 계산한다.
-6. 지정 path가 없거나 값이 비어 있으면 전체 payload로 대체하지 않고
+7. 지정 path가 없거나 값이 비어 있으면 전체 payload로 대체하지 않고
    `unavailable`로 닫는다.
-7. 최고 점수가 Route threshold 이상이고 2위와의 차이가 `min_margin` 이상이면
+8. 최고 점수가 Route threshold 이상이고 2위와의 차이가 `min_margin` 이상이면
    `semantic_cohort_id`를 확정한다.
-8. 그렇지 않으면 `no_match` 또는 `ambiguous`로 닫고 default model을 사용한다.
-9. `no_match` 또는 `ambiguous`에서도 최고 점수 Route의 candidate id/label과 안전한
+9. 그렇지 않으면 `no_match` 또는 `ambiguous`로 닫고 default model을 사용한다.
+10. `no_match` 또는 `ambiguous`에서도 최고 점수 Route의 candidate id/label과 안전한
    점수만 진단 정보로 반환한다. Candidate는 확정 cohort가 아니므로 policy rule
    matching에는 사용하지 않는다.
 
 Semantic matcher는 Route만 반환한다. 최종 모델은 active policy rule과 runtime
 credential availability guard가 결정한다.
+
+`semantic_router.routes[]`와 `active_policy.rules[]`는 같은 목록이 아니다. 전자는 요청이
+어느 입력군에 가까운지 판단하는 matching catalog이고, 후자는 그 입력군에 특정 모델을
+써도 된다는 품질 검증 결과다. 따라서 필수 직접 입력군은 `status=proposed|validating|
+validated_waiting`이어도 Route에 포함될 수 있다. 해당 cohort UUID를 참조하는 검증 rule이
+없으면 matcher는 입력군만 확정하고 evaluator는 `default_model_id`를 사용한다.
 
 ### Evidence And Refresh Rules
 
@@ -414,7 +426,8 @@ Refresh 입력은 다음 두 adapter 결과다.
 Replay candidate는 `status=completed`, schema/downstream/quality gate 통과,
 비교 가능한 node fingerprint를 만족할 때만 `validated` 후보가 될 수 있다.
 
-Refresh trigger는 `validated_replay_created`, `evidence_threshold_reached`,
+Refresh trigger는 배포 직후 초기 검증용 `deployment_bootstrap`,
+`validated_replay_created`, `evidence_threshold_reached`,
 `model_availability_changed`, `quality_drift`, `manual_refresh`, 호환용
 `auto_n_runs`를 허용한다. Trigger는 재평가 사유일 뿐 모델 변경 보장이 아니다.
 
@@ -432,7 +445,7 @@ active policy에 그대로 보존하고 Judge 응답 정규화 뒤 다시 결합
 | Status | Description |
 | --- | --- |
 | `off` | 자동 라우팅 꺼짐 |
-| `collecting` | 자동 라우팅은 켜졌지만 정책 갱신에 필요한 운영 로그를 모으는 중 |
+| `collecting` | 배포 직후 입력군 검증 중이거나 다음 정책 갱신에 필요한 운영 로그를 모으는 중 |
 | `active` | active policy로 실행 중 |
 | `refreshing` | judge가 운영 로그를 분석해 정책을 갱신 중 |
 | `pending_review` | 새 정책안이 만들어졌지만 품질 gate 미통과 또는 불확실성 때문에 반영 보류 |
@@ -518,7 +531,7 @@ active policy에 그대로 보존하고 Judge 응답 정규화 뒤 다시 결합
 }
 ```
 
-`enabled=false`이면 runtime은 저장된 LLM node의 `model_id`와 `fallback_model_id`를 사용한다. `enabled=true`이면 runtime은 active policy를 우선 사용한다. active policy가 없으면 status는 `collecting`이고, runtime은 보수적으로 저장 모델을 사용한다. 정책 row는 `auto_model_routing=true`가 포함된 deployment snapshot의 target LLM node가 성공한 terminal 운영 workflow 완료 hook에서 생성한다. 따라서 draft의 PATCH만으로는 `policy_id`가 생기거나 운영 run이 집계되지 않는다.
+`enabled=false`이면 runtime은 저장된 LLM node의 `model_id`와 `fallback_model_id`를 사용한다. `enabled=true`이면 runtime은 active policy를 우선 사용한다. 정책 row는 `auto_model_routing=true`가 포함된 새 deployment transaction에서 저장 모델과 빈 rule로 생성한다. 배포 commit 뒤 `workflow.model_routing.bootstrap_policy`가 입력군 대표 예시를 준비하고 검증 batch를 예약한다. draft의 PATCH만으로는 `policy_id`가 생기거나 운영 run이 집계되지 않는다.
 
 ### POST Policy Refresh Response
 
@@ -568,7 +581,7 @@ POST 응답은 비동기 task가 예약됐다는 뜻일 뿐 judge 결과가 아�
 | --- | --- | --- |
 | `id` | UUID | policy update id |
 | `policy_id` | UUID | 대상 policy |
-| `trigger` | string | `validated_replay_created`, `evidence_threshold_reached`, `model_availability_changed`, `quality_drift`, `manual_refresh`, 호환용 `auto_n_runs` |
+| `trigger` | string | `deployment_bootstrap`, `validated_replay_created`, `evidence_threshold_reached`, `model_availability_changed`, `quality_drift`, `manual_refresh`, 호환용 `auto_n_runs` |
 | `status` | string | `applied`, `kept_current`, `pending_review`, `failed` |
 | `eligible_run_count` | integer | judge 입력에 포함한 운영 run count |
 | `excluded_run_count` | integer | 제외한 run count |
@@ -613,6 +626,75 @@ lifecycle, centroid vector, traffic share, 검증 모델을 보관한다. `propo
 `..._validation_cost_events`, `..._validation_budget_months`는 candidate Replay/Judge
 결과와 월간 비용 한도를 보관한다.
 
+후보 계획 단계의 중복 방지는 동일 설정 지문의 `status=validated` evidence만 대상으로
+한다. `rejected` 또는 `expired` evidence는 과거 판단 이력으로 보존하지만, 이후 새로운
+운영 observation window가 최소 표본 수를 충족하면 같은 모델을 새 batch에서 다시 검증할
+수 있다. 재검증도 월간 예산, 후보 wave 제한과 실행 주체 모델 권한을 동일하게 적용한다.
+`deployment_bootstrap`이 아닌 운영 갱신은 `active` 입력군과 현재 active rule의 모델도
+후보 맨 앞에 포함한다. 현재 active 모델이 새 운영 observation에서 품질 gate를 통과하지
+못하면 해당 입력군의 `validated_adaptive_cohort` rule만 제거하고 default model로 되돌린다.
+다른 입력군의 검증된 rule은 유지한다.
+
+품질 gate는 평균 품질 변화와 95% 보수적 품질 하한뿐 아니라 개별 Replay의 최저 품질
+변화도 확인한다. 기준 출력 대비 한 표본이라도 10점을 초과해 하락하면
+`quality_outlier_gate_failed`로 거절한다. 이 값은 safe summary의
+`quality_delta_minimum`으로 남기며 raw 입출력은 복제하지 않는다.
+
+같은 입력군에서 둘 이상의 evidence가 `validated`이면 비용만으로 최저가 모델을 고르지
+않는다. 먼저 `quality_score_lower_bound` 최고값을 구하고, 최고값보다 3점을 초과해 낮은
+후보를 제거한 뒤 남은 후보 중 `candidate_cost_average`가 가장 낮은 모델을 rule에 넣는다.
+하한값이 누락된 과거 evidence는 품질 여유 후보로 간주하지 않는다.
+
+자유형 출력 Judge는 `task_fulfillment`, `correctness`, `factual_reliability`,
+`completeness`, `clarity`, `safety`를 평가한다. authoritative evidence가 없는 요청에서
+근거 없는 제품 경로·정책·수치를 만들어 내면 `factual_reliability`를 감점하고, 근거가
+없음을 명시하며 불확실성을 안전하게 표현한 답변 자체는 감점하지 않는다.
+
+`..._validation_items`의 입력 출처는 둘 중 정확히 하나다. 운영 재검증은
+`observation_id`로 실제 배포 후 관찰값을 참조하고, 배포 직후 bootstrap 검증은
+`cohort_example_id`로 합성 대표 예시를 참조한다. bootstrap item은 기준 모델을 먼저
+실행해 계약을 확인한 뒤 후보 모델과 Judge를 실행한다. 같은 batch에서 동일 대표 예시를
+여러 후보가 사용하면 기준 출력은 task 메모리 안에서만 재사용하고 DB에는 safe summary만
+남긴다. `quality_summary.validation_stage`는 `bootstrap` 또는 `production`이며, 비용
+event도 `bootstrap_replay_and_judge`와 `candidate_replay_and_judge`로 구분한다. 실제
+고객 원문은 validation item에 복제하지 않는다.
+
+`deployment_bootstrap` batch가 완료됐지만 일부 입력군에 검증된 route가 없으면, 월간
+예산과 실행 가능한 미검증 후보가 남아 있는 동안 다음 후보 묶음을 새 batch로 즉시
+계획한다. 한 batch는 입력군별 최대 2개 후보, 전체 bootstrap은 최대 3개 wave로 제한해
+비용 폭주를 막되, 첫 후보 묶음 탈락을 전체 탐색 종료로 해석하지 않는다. `candidate_plan`
+에는 1부터 시작하는 `bootstrap_wave`를 저장한다. 입력군이 `active`가 되면 해당 입력군은
+후속 bootstrap 대상에서 제외한다. 미검증 후보 소진, 예산 부족, 최대 wave 도달, 실행
+주체 또는 모델 사용 불가 시에는 기본 모델을 유지하고 후속 batch를 만들지 않는다.
+
+완료 batch의 `error_summary`는 오류 원문 대신 다음 safe 진단 정보를 포함한다.
+
+```json
+{
+  "validated_route_count": 0,
+  "revoked_route_count": 1,
+  "rejected_or_waiting_cohort_count": 3,
+  "candidate_results": [
+    {
+      "cohort_id": "uuid",
+      "cohort_key": "account-access",
+      "model_id": "gpt-4.1-mini",
+      "status": "rejected",
+      "reason_code": "quality_gate_failed",
+      "sample_count": 5,
+      "baseline_quality_mean": 94.4,
+      "candidate_quality_mean": 85.0,
+      "net_savings_ratio": 0.82
+    }
+  ],
+  "bootstrap_search_state": "continued",
+  "follow_up_batch_id": "uuid"
+}
+```
+
+`candidate_results`에는 raw 입력과 출력이 포함되지 않는다. `bootstrap_search_state`는
+`continued`, `completed_with_routes`, `no_follow_up_batch` 중 하나다.
+
 ### Cohort wizard and direct registration
 
 `POST /model-routing/cohorts/suggest` request:
@@ -621,31 +703,43 @@ lifecycle, centroid vector, traffic share, 검증 모델을 보관한다. `propo
 { "representative_query": "세금계산서를 다시 발급받고 싶습니다." }
 ```
 
-응답은 사용자가 수정 가능한 `{ "label", "key", "representative_query" }`다. wizard는
-분류 초안만 만든다. 입력군을 바로 활성화하거나 실행 모델을 바꾸지 않는다.
+응답은 사용자가 수정 가능한 `label`, `key`, `representative_query`,
+`representative_examples`, `safety_protected`를 포함한다. 일반 입력군은 중복 없는
+예문 3~5개, `safety_protected=true`인 고위험 입력군은 5개를 반환한다. 첫 응답이
+최소 수를 채우지 못하면 서버는 한 번 재생성하고, 두 번째도 부족하면
+`422 model_routing.cohort_examples_insufficient`를 반환한다. wizard는 분류 초안만
+만들며 입력군을 바로 활성화하거나 실행 모델을 바꾸지 않는다.
 
 `POST /model-routing/cohorts` request:
 
 ```json
 {
   "representative_query": "세금계산서를 다시 발급받고 싶습니다.",
+  "representative_examples": [
+    "세금계산서를 다시 발급받고 싶습니다.",
+    "지난달 결제 증빙을 다시 내려받고 싶습니다.",
+    "회사 제출용 세금계산서를 찾을 수 없습니다."
+  ],
   "label": "세금계산서 재발행 문의",
   "key": "invoice-reissue",
-  "fixed": false
+  "fixed": false,
+  "safety_protected": false
 }
 ```
 
 policy row가 아직 없는 workflow draft에서도 이 endpoint를 호출할 수 있다. 이 경우
 서버는 provider를 호출하지 않고 LLM node의
 `model_routing_policy.cohort_drafts[]`에 stable UUID, `label`, `key`,
-`representative_query`, `fixed`를 저장하며 `status=draft`를 반환한다. 같은 UUID는
+`representative_query`, `representative_examples`, `fixed`, `safety_protected`를
+저장하며 `status=draft`를 반환한다. 일반 입력군은 예문 3개 이상, 안전 보호 고위험
+입력군은 5개가 필요하다. 같은 UUID는
 `PATCH`와 `DELETE`에도 사용한다.
 
-자동 라우팅 설정을 포함한 배포의 첫 terminal 운영 실행이 persisted policy를 만들면
-Workflow Engine은 draft UUID를 그대로 사용해 `source=manual`, `status=proposed` DB
-row와 대표 문의 embedding을 만든다. embedding 호출이 실패하면 workflow run을
-실패시키지 않고 draft를 남겨 다음 성공 운영 실행에서 다시 시도한다. DB row로 승격된
-뒤에도 Replay gate를 통과해야만 active routing rule에 들어간다.
+자동 라우팅 설정을 포함한 배포는 persisted policy를 즉시 만들고, commit 뒤 비동기
+bootstrap 작업이 draft UUID를 그대로 사용해 `source=manual`, `status=proposed` DB
+row와 대표 문의 embedding을 만든다. embedding 또는 검증 task가 실패해도 배포
+transaction은 되돌리지 않으며 수동 정책 갱신으로 재시도할 수 있다. DB row로 승격된
+뒤에도 기준 모델과 후보 Replay gate를 통과해야만 active routing rule에 들어간다.
 
 `fixed=true`인 입력군은 운영 트래픽이 줄어도 자동 휴면 또는 종료 처리하지 않는다.
 `DELETE /model-routing/cohorts/{cohort_id}`는 row와 검증 이력을 물리 삭제하지 않고
@@ -659,6 +753,12 @@ row와 대표 문의 embedding을 만든다. embedding 호출이 실패하면 wo
   "key": "billing_receipt_issue",
   "label": "영수증 발급 문의",
   "representative_query": "결제는 완료됐는데 영수증을 다시 발급받고 싶습니다.",
+  "representative_examples": [
+    "결제는 완료됐는데 영수증을 다시 발급받고 싶습니다.",
+    "지난달 결제 영수증을 찾을 수 없습니다.",
+    "회사 제출용 결제 증빙을 다시 내려받고 싶습니다."
+  ],
+  "safety_protected": false,
   "source": "manual",
   "status": "proposed"
 }
@@ -679,6 +779,31 @@ policy row가 아직 없으면 `PATCH`와 `DELETE`는 draft graph만 갱신한�
 같은 UUID의 DB cohort가 이미 있으면 graph draft와 DB row를 같은 transaction에서 함께
 갱신한다. 요청한 UUID가 draft와 DB 양쪽에 모두 없을 때만
 `404 model_routing.cohort_not_found`를 반환한다.
+
+runtime catalog의 각 `semantic_router.routes[]`는 공통 고정값 대신 입력군별
+`threshold`와 아래 calibration safe summary를 포함한다.
+
+```json
+{
+  "cohort_id": "invoice-reissue",
+  "threshold": 0.58,
+  "calibration": {
+    "status": "calibrated",
+    "positive_sample_count": 3,
+    "negative_sample_count": 6,
+    "positive_floor": 0.72,
+    "negative_ceiling": 0.44
+  }
+}
+```
+
+예문이 3개 미만이면 `insufficient_positive_examples`을 기록하고 source별 보수적
+기본값을 사용한다. 입력군 내부 최저 유사도와 다른 입력군 최고 유사도의 차이가
+0.05보다 작으면 `conservative_overlap`을 기록하고
+`negative_ceiling + 0.05`를 제품 하한/상한 안에서 route threshold로 사용한다.
+runtime은 이 threshold와 catalog의 `min_margin=0.05`를 모두 통과한 경우에만 route를
+확정한다. 이 방식은 측정값과 무관한 공통 0.6으로 검증된 route가 영구적으로
+도달 불가능해지는 것을 막으면서, 겹치는 문의는 기본 모델로 닫는다.
 
 `PATCH /model-routing/policy`는 자동 라우팅의 공통 설정과 함께 아래 값을 받을 수 있다.
 
@@ -793,6 +918,10 @@ Semantic Route catalog로 판정하고, 자동 반영 rule은 동일 cohort의 �
 Judge 입력에는 raw prompt, raw output, raw input, credential 원문, API key, encrypted config, raw trace payload, raw RAG chunk content를 포함하지 않는다. 입력은 모델별 비용/token/latency 평균, schema/downstream/fallback/retry safe summary, 현재 사용자 기준 candidate model 사용 가능성, 그리고 일반 feature 조건별 segment 성능 summary로 제한한다.
 
 Adaptive candidate validation item의 `execution_summary`는 `requested_model_id`, `actual_model_id`, `fallback_used`를 함께 보관한다. provider가 요청한 후보와 다른 모델로 fallback 실행한 경우 `fallback_used=true`로 기록하며, 해당 Replay는 후보 모델의 검증 표본이나 active policy 승격 근거로 사용할 수 없다. 이 값은 raw provider 응답이 아니라 safe model id와 boolean만 저장한다.
+
+Bootstrap candidate Replay의 실행 graph에는 후보 `model_id`를 넣고 `fallback_model_id`를 비운다. 요청 후보가 직접 실행에 실패하면 item을 실패로 닫으며 기준 모델로 대체 실행하지 않는다. 품질 Judge에는 raw credential이나 trace 원문 대신 node의 system/user/assistant prompt와 output format을 제한된 깊이로 정규화한 `evaluation_contract`를 전달한다. 후보 evidence는 평균 품질 85점, 보수적 하한 76.5점, 기준 대비 평균 하락 최대 2점, 개별 하락 최대 10점 계약을 모두 통과해야 한다.
+
+OpenAI GPT-5 계열의 JSON mode에서 호출자가 reasoning 수준을 명시하지 않은 경우 client는 실제 JSON 답변 토큰을 확보하기 위해 최소 reasoning을 안전 기본값으로 사용한다. 호출자가 reasoning을 명시하면 그 값을 유지한다.
 
 ## LLM Parameter Recommendation Contract
 
