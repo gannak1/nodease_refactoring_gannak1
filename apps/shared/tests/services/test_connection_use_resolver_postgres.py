@@ -3,15 +3,14 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError, OperationalError
-from sqlalchemy.orm import Session
-
 from apps.shared.db.session import engine
 from apps.shared.services.connection_use_resolver import (
     ConnectionUseDenied,
     ConnectionUseResolver,
 )
+from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError, OperationalError
+from sqlalchemy.orm import Session
 
 
 def test_postgres_owner_predicate_and_use_lock() -> None:

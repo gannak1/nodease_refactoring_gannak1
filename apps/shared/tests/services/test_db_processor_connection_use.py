@@ -4,14 +4,13 @@ import uuid
 from unittest.mock import Mock
 
 import pytest
-from sqlalchemy import create_engine, update
-from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
-
 from apps.shared.db.models.connection import Connection
 from apps.shared.db.models.user import User
 from apps.shared.services.ingestion.processors.db_processor import DbProcessor
 from apps.shared.utils.encryption import encryption_manager
+from sqlalchemy import create_engine, update
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 
 
 @pytest.fixture

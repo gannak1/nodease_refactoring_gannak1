@@ -3,9 +3,8 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy.orm import Session
-
 from apps.shared.db.models.connection import Connection
+from sqlalchemy.orm import Session
 
 
 class ConnectionUseDenied(Exception):

@@ -4,8 +4,6 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Dict
 
-from sqlalchemy.exc import SQLAlchemyError
-
 from apps.shared.services.connection_use_resolver import (
     ConnectionUseDenied,
     ConnectionUseResolver,
@@ -27,6 +25,7 @@ from apps.shared.utils.join_query_utils import (
     normalize_query_limit,
     quote_postgres_identifier,
 )
+from sqlalchemy.exc import SQLAlchemyError
 
 logger = logging.getLogger(__name__)
 
