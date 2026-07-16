@@ -296,10 +296,19 @@ def test_local_postgres_rejects_wrong_ca_and_san_mismatch(
 class _NeverProbe:
     def __init__(self) -> None:
         self.calls = 0
+        self.reservations = 0
+        self.releases = 0
+
+    def reserve(self):
+        self.reservations += 1
+        return self
+
+    def release(self) -> None:
+        self.releases += 1
 
     async def probe(self, _command) -> bool:
         self.calls += 1
-        return True
+        pytest.fail("Redis-down boundary must not start the connector probe")
 
 
 @pytest.mark.asyncio
@@ -368,6 +377,8 @@ async def test_authenticated_api_returns_503_before_probe_when_redis_is_down(
 
         assert response.status_code == 503
         assert response.json()["error"]["code"] == "connector.admission_unavailable"
+        assert probe.reservations == 1
+        assert probe.releases == 1
         assert probe.calls == 0
         assert "placeholder-secret" not in response.text
     finally:

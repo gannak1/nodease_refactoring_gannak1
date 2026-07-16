@@ -50,28 +50,18 @@ class StrictPostgresConnectorProbe:
         )
         self._capacity = threading.BoundedSemaphore(policy.global_concurrency_limit)
 
-    async def probe(self, command: ConnectorTestCommand) -> bool:
+    def reserve(self) -> _StrictPostgresProbeReservation:
         if not self._capacity.acquire(blocking=False):
             raise ConnectorProbeCapacityExceeded()
+        return _StrictPostgresProbeReservation(self)
 
+    async def _probe_reserved(self, command: ConnectorTestCommand) -> bool:
         loop = asyncio.get_running_loop()
         future = loop.run_in_executor(self._executor, self._probe_sync, command)
-        release_deferred = False
-        try:
-            return await asyncio.shield(future)
-        except asyncio.CancelledError:
-            future.add_done_callback(self._release_capacity)
-            release_deferred = True
-            raise
-        finally:
-            if not release_deferred:
-                self._capacity.release()
+        return await asyncio.shield(future)
 
     def shutdown(self) -> None:
         self._executor.shutdown(wait=False, cancel_futures=False)
-
-    def _release_capacity(self, _: asyncio.Future[bool]) -> None:
-        self._capacity.release()
 
     def _probe_sync(self, command: ConnectorTestCommand) -> bool:
         engine = None
@@ -136,6 +126,39 @@ class StrictPostgresConnectorProbe:
         finally:
             if engine is not None:
                 engine.dispose()
+
+
+class _StrictPostgresProbeReservation:
+    def __init__(self, probe: StrictPostgresConnectorProbe) -> None:
+        self._probe = probe
+        self._state_lock = threading.Lock()
+        self._started = False
+        self._released = False
+
+    async def probe(self, command: ConnectorTestCommand) -> bool:
+        with self._state_lock:
+            if self._released or self._started:
+                raise ConnectorProbeFailed()
+            self._started = True
+
+        task = asyncio.create_task(self._probe._probe_reserved(command))
+        release_deferred = False
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            task.add_done_callback(lambda _: self.release())
+            release_deferred = True
+            raise
+        finally:
+            if not release_deferred:
+                self.release()
+
+    def release(self) -> None:
+        with self._state_lock:
+            if self._released:
+                return
+            self._released = True
+        self._probe._capacity.release()
 
 
 __all__ = ["StrictPostgresConnectorProbe"]

@@ -331,7 +331,7 @@ async def test_local_executor_capacity_fails_without_queueing() -> None:
     assert all(acquired)
     try:
         with pytest.raises(ConnectorProbeCapacityExceeded):
-            await probe.probe(command())
+            probe.reserve()
     finally:
         for _ in acquired:
             probe._capacity.release()
@@ -356,7 +356,8 @@ async def test_cancelled_probe_keeps_capacity_until_driver_thread_finishes(
         return True
 
     monkeypatch.setattr(probe, "_probe_sync", blocking_probe)
-    task = asyncio.create_task(probe.probe(command()))
+    reservation = probe.reserve()
+    task = asyncio.create_task(reservation.probe(command()))
 
     try:
         assert await asyncio.to_thread(started.wait, 1)
@@ -365,18 +366,23 @@ async def test_cancelled_probe_keeps_capacity_until_driver_thread_finishes(
             await task
 
         with pytest.raises(ConnectorProbeCapacityExceeded):
-            await probe.probe(command())
+            probe.reserve()
 
         finish.set()
         for _ in range(100):
-            if probe._capacity.acquire(blocking=False):
-                probe._capacity.release()
+            try:
+                restored_reservation = probe.reserve()
+            except ConnectorProbeCapacityExceeded:
+                pass
+            else:
+                restored_reservation.release()
                 break
             await asyncio.sleep(0.01)
         else:
             pytest.fail("driver completion did not restore connector probe capacity")
 
-        assert await probe.probe(command()) is True
+        next_reservation = probe.reserve()
+        assert await next_reservation.probe(command()) is True
     finally:
         finish.set()
         probe.shutdown()

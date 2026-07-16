@@ -149,6 +149,72 @@ export type ConnectionTestResult = {
   retryAfter?: number;
 };
 
+type DBConnectionDetailPayload = {
+  connection_name?: unknown;
+  type?: unknown;
+  host?: unknown;
+  port?: unknown;
+  database?: unknown;
+  username?: unknown;
+  ssh?: unknown;
+};
+
+const requiredString = (value: unknown): string => {
+  if (typeof value !== 'string') throw new Error('Invalid connector detail');
+  return value;
+};
+
+const requiredPort = (value: unknown): number => {
+  if (
+    typeof value !== 'number' ||
+    !Number.isInteger(value) ||
+    value < 1 ||
+    value > 65535
+  )
+    throw new Error('Invalid connector detail');
+  return value;
+};
+
+const normalizeConnectionDetails = (payload: unknown): DBConfig => {
+  if (typeof payload !== 'object' || payload === null)
+    throw new Error('Invalid connector detail');
+
+  const detail = payload as DBConnectionDetailPayload;
+  if (detail.type !== 'postgres' && detail.type !== 'mysql')
+    throw new Error('Invalid connector detail');
+
+  const rawSsh =
+    typeof detail.ssh === 'object' && detail.ssh !== null
+      ? (detail.ssh as {
+          enabled?: unknown;
+          host?: unknown;
+          port?: unknown;
+          username?: unknown;
+          auth_type?: unknown;
+        })
+      : null;
+  const sshEnabled = rawSsh?.enabled === true;
+
+  return {
+    connectionName: requiredString(detail.connection_name),
+    type: detail.type,
+    host: requiredString(detail.host),
+    port: requiredPort(detail.port),
+    database: requiredString(detail.database),
+    username: requiredString(detail.username),
+    password: '',
+    ssh: {
+      enabled: sshEnabled,
+      host: sshEnabled ? requiredString(rawSsh?.host) : '',
+      port: sshEnabled ? requiredPort(rawSsh?.port) : 22,
+      username: sshEnabled ? requiredString(rawSsh?.username) : '',
+      authType: rawSsh?.auth_type === 'key' ? 'key' : 'password',
+      password: '',
+      privateKey: '',
+    },
+  };
+};
+
 export const connectorApi = {
   /**
    * DB 연결 정보 저장 및 Connector 생성 요청
@@ -288,8 +354,8 @@ export const connectorApi = {
    * @param connectedId - 연결 ID
    * @returns 저장된 DB연결 정보
    */
-  getConnectionDetails: async (connectionId: string): Promise<any> => {
+  getConnectionDetails: async (connectionId: string): Promise<DBConfig> => {
     const response = await api.get(`/connectors/${connectionId}`);
-    return response.data;
+    return normalizeConnectionDetails(response.data);
   },
 };

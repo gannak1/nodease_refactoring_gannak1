@@ -48,9 +48,22 @@ class TestConnectorConnection:
         if command.port not in self._policy.allowed_ports:
             return failure_result("connector.target_not_allowed")
 
-        lease = await self._admission.acquire(command)
+        try:
+            probe_reservation = self._probe.reserve()
+        except ConnectorProbeCapacityExceeded:
+            raise ConnectorTestBusy() from None
+
+        try:
+            lease = await self._admission.acquire(command)
+        except asyncio.CancelledError:
+            probe_reservation.release()
+            raise
+        except Exception:
+            probe_reservation.release()
+            raise
+
         started_at = time.monotonic()
-        probe_task = asyncio.create_task(self._probe.probe(command))
+        probe_task = asyncio.create_task(probe_reservation.probe(command))
         heartbeat_task = asyncio.create_task(self._maintain_lease(lease))
         release_deferred = False
 
@@ -96,13 +109,6 @@ class TestConnectorConnection:
                 raise
             except ConnectorTargetNotAllowed:
                 result = failure_result("connector.target_not_allowed")
-            except ConnectorProbeCapacityExceeded:
-                self._record_audit(
-                    command,
-                    failure_result("connector.test_busy"),
-                    _duration_bucket(time.monotonic() - started_at, None),
-                )
-                raise ConnectorTestBusy() from None
             except ConnectorProbeFailed:
                 result = failure_result("connector.connection_failed")
             except asyncio.CancelledError:

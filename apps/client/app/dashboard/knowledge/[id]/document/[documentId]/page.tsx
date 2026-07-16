@@ -146,7 +146,7 @@ export default function DocumentSettingsPage() {
   const [connectionId, setConnectionId] = useState<string>('');
   const [isEditingConnection, setIsEditingConnection] = useState(false);
   const [formKey, setFormKey] = useState(0); // 폼 강제 리셋용 키
-  const [connectionDetails, setConnectionDetails] = useState<any>(null);
+  const [connectionDetails, setConnectionDetails] = useState<DBConfig | null>(null);
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
 
   // 범위 선택 관련 상태
@@ -664,7 +664,7 @@ export default function DocumentSettingsPage() {
                     key={formKey} // 폼 초기화
                     onChange={() => {}}
                     onTestConnection={handleConnectionRequest}
-                    initialConfig={connectionDetails}
+                    initialConfig={connectionDetails ?? undefined}
                   />
                 </div>
               </div>

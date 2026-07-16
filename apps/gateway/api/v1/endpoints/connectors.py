@@ -26,6 +26,9 @@ from apps.gateway.application.connectors.models import ConnectorTestCommand
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.composition.authentication import login_network_resolver
 from apps.gateway.composition.connectors import get_connector_test_application
+from apps.gateway.middleware.webhook_query_redaction import (
+    CONNECTOR_TEST_QUERY_PRESENT_STATE_KEY,
+)
 from apps.gateway.services.organization_context import resolve_active_organization_id
 from apps.gateway.utils.api_errors import error_detail, raise_api_error
 from apps.gateway.utils.audit import audit
@@ -80,8 +83,12 @@ def _raw_header_values(request: Request, expected_name: bytes) -> tuple[bytes, .
 
 
 def _connector_test_ingress_metadata(request: Request) -> ConnectorTestIngressMetadata:
+    state = request.scope.get("state", {})
     return ConnectorTestIngressMetadata(
-        query_present=bool(request.scope.get("query_string", b"")),
+        query_present=(
+            bool(request.scope.get("query_string", b""))
+            or state.get(CONNECTOR_TEST_QUERY_PRESENT_STATE_KEY) is True
+        ),
         content_type_headers=_raw_header_values(request, b"content-type"),
         content_encoding_headers=_raw_header_values(request, b"content-encoding"),
         content_length_headers=_raw_header_values(request, b"content-length"),

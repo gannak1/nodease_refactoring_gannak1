@@ -13,8 +13,14 @@ class ConnectorTestAdmissionPort(Protocol):
     async def release(self, lease: AdmissionLease) -> None: ...
 
 
-class ConnectorProbePort(Protocol):
+class ConnectorProbeReservationPort(Protocol):
     async def probe(self, command: ConnectorTestCommand) -> bool: ...
+
+    def release(self) -> None: ...
+
+
+class ConnectorProbePort(Protocol):
+    def reserve(self) -> ConnectorProbeReservationPort: ...
 
 
 class ConnectorTestAuditPort(Protocol):
@@ -28,6 +34,7 @@ class ConnectorTestAuditPort(Protocol):
 
 __all__ = [
     "ConnectorProbePort",
+    "ConnectorProbeReservationPort",
     "ConnectorTestAdmissionPort",
     "ConnectorTestAuditPort",
 ]

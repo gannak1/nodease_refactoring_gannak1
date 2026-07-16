@@ -269,6 +269,25 @@ def test_admission_errors_use_safe_http_contract(
     assert "placeholder-secret" not in response.text
 
 
+def test_retry_after_is_exposed_to_allowed_browser_origin(client) -> None:
+    http, use_case, _, organization_id = client
+    use_case.error = ConnectorTestBusy(3)
+
+    response = http.post(
+        "/api/v1/connectors/test",
+        headers={
+            "X-Organization-Id": str(organization_id),
+            "Origin": "http://localhost:3000",
+        },
+        json=payload(),
+    )
+
+    assert response.status_code == 429
+    assert response.headers["Retry-After"] == "3"
+    exposed_headers = response.headers["Access-Control-Expose-Headers"]
+    assert "retry-after" in exposed_headers.lower()
+
+
 def test_organization_scope_is_checked_before_body_is_read(
     client,
     monkeypatch: pytest.MonkeyPatch,

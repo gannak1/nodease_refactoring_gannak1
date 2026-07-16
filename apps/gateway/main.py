@@ -158,6 +158,7 @@ app.add_middleware(
     allow_credentials=True,  # 쿠키 전송 허용
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Retry-After"],
 )
 
 # 세션 미들웨어 추가 (OAuth 상태 저장용)

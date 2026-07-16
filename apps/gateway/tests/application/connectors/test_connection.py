@@ -69,21 +69,35 @@ class FakeAdmission:
 class FakeProbe:
     result: bool = True
     error: Exception | None = None
+    reserve_error: Exception | None = None
     blocker: asyncio.Event | None = None
     calls: list[ConnectorTestCommand] = field(default_factory=list)
     cancelled: bool = False
+    reservations: int = 0
+    releases: int = 0
+
+    def reserve(self):
+        if self.reserve_error:
+            raise self.reserve_error
+        self.reservations += 1
+        return self
+
+    def release(self) -> None:
+        self.releases += 1
 
     async def probe(self, value: ConnectorTestCommand) -> bool:
         self.calls.append(value)
-        if self.blocker is not None:
-            try:
+        try:
+            if self.blocker is not None:
                 await self.blocker.wait()
-            except asyncio.CancelledError:
-                self.cancelled = True
-                raise
-        if self.error:
-            raise self.error
-        return self.result
+            if self.error:
+                raise self.error
+            return self.result
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        finally:
+            self.release()
 
 
 @dataclass
@@ -247,16 +261,18 @@ async def test_hard_timeout_stops_heartbeat_and_releases_lease_once() -> None:
 
 
 @pytest.mark.asyncio
-async def test_local_capacity_failure_is_audited_and_returned_as_busy() -> None:
+async def test_local_capacity_failure_does_not_consume_admission_rate() -> None:
     admission = FakeAdmission()
-    probe = FakeProbe(error=ConnectorProbeCapacityExceeded())
+    probe = FakeProbe(reserve_error=ConnectorProbeCapacityExceeded())
     audit = FakeAudit()
 
     with pytest.raises(ConnectorTestBusy):
         await use_case(admission, probe, audit).execute(command())
 
-    assert len(admission.released) == 1
-    assert audit.calls[0][1].reason_code == "connector.test_busy"
+    assert admission.acquired == []
+    assert admission.released == []
+    assert probe.calls == []
+    assert audit.calls == []
 
 
 @pytest.mark.asyncio
@@ -269,6 +285,7 @@ async def test_admission_failure_never_opens_probe() -> None:
         await use_case(admission, probe, audit).execute(command())
 
     assert probe.calls == []
+    assert probe.releases == 1
     assert admission.released == []
     assert audit.calls == []
 

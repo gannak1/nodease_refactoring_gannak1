@@ -4,7 +4,9 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 
 WEBHOOK_QUERY_TOKEN_PRESENT_STATE_KEY = "webhook_query_token_present"
+CONNECTOR_TEST_QUERY_PRESENT_STATE_KEY = "connector_test_query_present"
 _WEBHOOK_PATH_PREFIX = "/api/v1/hooks"
+_CONNECTOR_TEST_PATH = "/api/v1/connectors/test"
 
 
 def _is_token_query_field(field: bytes) -> bool:
@@ -35,13 +37,18 @@ def redact_webhook_token_query(raw_query: bytes) -> tuple[bytes, bool]:
 
 
 class WebhookQueryRedactionMiddleware:
-    """Remove legacy token fields before downstream access logging."""
+    """Remove sensitive query data before downstream and access logging."""
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http" and self._is_webhook_path(scope.get("path", "")):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path = scope.get("path", "")
+        if self._is_webhook_path(path):
             sanitized_query, token_present = redact_webhook_token_query(
                 scope.get("query_string", b"")
             )
@@ -49,6 +56,10 @@ class WebhookQueryRedactionMiddleware:
                 scope["query_string"] = sanitized_query
                 state = scope.setdefault("state", {})
                 state[WEBHOOK_QUERY_TOKEN_PRESENT_STATE_KEY] = True
+        elif self._is_connector_test_path(path) and scope.get("query_string", b""):
+            scope["query_string"] = b""
+            state = scope.setdefault("state", {})
+            state[CONNECTOR_TEST_QUERY_PRESENT_STATE_KEY] = True
 
         await self.app(scope, receive, send)
 
@@ -58,8 +69,13 @@ class WebhookQueryRedactionMiddleware:
             f"{_WEBHOOK_PATH_PREFIX}/"
         )
 
+    @staticmethod
+    def _is_connector_test_path(path: str) -> bool:
+        return path in {_CONNECTOR_TEST_PATH, f"{_CONNECTOR_TEST_PATH}/"}
+
 
 __all__ = [
+    "CONNECTOR_TEST_QUERY_PRESENT_STATE_KEY",
     "WEBHOOK_QUERY_TOKEN_PRESENT_STATE_KEY",
     "WebhookQueryRedactionMiddleware",
     "redact_webhook_token_query",

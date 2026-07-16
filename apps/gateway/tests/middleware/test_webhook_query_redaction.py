@@ -4,6 +4,7 @@ import pytest
 from uvicorn.protocols.utils import get_path_with_query_string
 
 from apps.gateway.middleware.webhook_query_redaction import (
+    CONNECTOR_TEST_QUERY_PRESENT_STATE_KEY,
     WEBHOOK_QUERY_TOKEN_PRESENT_STATE_KEY,
     WebhookQueryRedactionMiddleware,
 )
@@ -91,6 +92,35 @@ def test_non_webhook_query_is_not_modified() -> None:
     )
 
     assert observed["query_string"] == b"token=not-a-webhook-secret"
+    assert observed["state"] == {}
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/api/v1/connectors/test", "/api/v1/connectors/test/"],
+)
+def test_connector_test_query_is_removed_before_downstream_and_access_log(
+    path: str,
+) -> None:
+    observed = run_middleware(
+        path=path,
+        query_string=b"password=must-not-reach-access-log&token=value",
+    )
+
+    assert observed["query_string"] == b""
+    assert observed["final_query_string"] == b""
+    assert observed["state"] == {CONNECTOR_TEST_QUERY_PRESENT_STATE_KEY: True}
+    assert observed["access_path"] == path
+    assert "password" not in str(observed["access_path"])
+
+
+def test_connector_test_child_path_query_is_not_modified() -> None:
+    observed = run_middleware(
+        path="/api/v1/connectors/test/status",
+        query_string=b"page=1",
+    )
+
+    assert observed["query_string"] == b"page=1"
     assert observed["state"] == {}
 
 

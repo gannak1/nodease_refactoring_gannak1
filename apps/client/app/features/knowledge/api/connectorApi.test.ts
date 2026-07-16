@@ -294,6 +294,50 @@ describe('connectorApi safe failure handling', () => {
     expect(result.retryAfter).toBe(1);
   });
 
+  it('normalizes snake-case connection details before opening the edit form', async () => {
+    vi.mocked(apiClient.get).mockResolvedValueOnce({
+      data: {
+        id: 'connection-1',
+        connection_name: 'existing-db',
+        type: 'postgres',
+        host: 'db.internal',
+        port: 5432,
+        database: 'app',
+        username: 'app-user',
+        ssh: {
+          enabled: true,
+          host: 'bastion.internal',
+          port: 22,
+          username: 'ssh-user',
+          auth_type: 'key',
+        },
+      },
+    });
+
+    const result = await connectorApi.getConnectionDetails('connection-1');
+
+    expect(result).toEqual({
+      connectionName: 'existing-db',
+      type: 'postgres',
+      host: 'db.internal',
+      port: 5432,
+      database: 'app',
+      username: 'app-user',
+      password: '',
+      ssh: {
+        enabled: true,
+        host: 'bastion.internal',
+        port: 22,
+        username: 'ssh-user',
+        authType: 'key',
+        password: '',
+        privateKey: '',
+      },
+    });
+    expect(result).not.toHaveProperty('connection_name');
+    expect(result.ssh).not.toHaveProperty('auth_type');
+  });
+
   it('does not pass raw backend fields through successful HTTP failures', async () => {
     vi.mocked(apiClient.post).mockResolvedValueOnce({
       data: {
