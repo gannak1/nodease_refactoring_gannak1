@@ -6,7 +6,9 @@ Verified Against: feature/mba-198 @ 40c45fcc
 ## Purpose
 
 이 문서는 `requirements.md`의 FR-001부터 FR-015까지를 API 계약 관점에서 정리한다.
-FR-011은 [ADR-0038](../../decisions/ADR-0038-workflow-aware-adaptive-routing.md)의 Workflow-Aware Adaptive Routing으로 다룬다. Runtime은 저장된 active policy만 평가한다. Policy refresh는 운영 로그와 Cost Optimizer Replay evidence를 분리해 읽고, Hard Gate와 결정론적 optimizer를 통과한 후보만 policy에 반영한다. Judge LLM은 매 실행마다 호출하지 않으며 policy의 최종 결정권자가 아니다.
+FR-011은 `prior_guided_adaptive_v1` 정책으로 다룬다. Runtime은 저장된 active policy의 입력 길이 등 일반 조건만 평가한다. Policy refresh는 모델 catalog의 capability·가격·context 정보와 안전한 운영 집계를 사용하며 semantic cohort, embedding, cohort Replay batch를 사용하지 않는다.
+
+입력군 관련 REST API는 제공하지 않는다. 정책 API는 `enabled`, `refresh_every_runs`, `default_model_id`, `fallback_model_id`만 설정으로 받는다. 응답의 `active_policy.decision_profiles`는 `short`, `medium`, `long` profile별 선택 모델·fallback·선택 근거를 제공한다.
 
 Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baseline 실행 로그를 선택하고, 같은 입력으로 B 후보 설정을 실행한 뒤, 선택한 후보를 현재 draft에 적용하는 흐름을 지원한다.
 
@@ -28,7 +30,7 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | FR-008 | 선택한 B 후보 설정을 current draft target LLM node에 적용한다. |
 | FR-009 | 비교 실행에서 발생한 LLM usage/cost를 기록한다. |
 | FR-010 | builder 이상 권한을 API에서 강제한다. |
-| FR-011 | policy 조회/설정/refresh/preview API와 배포 후 run event가 policy table을 관리한다. 운영/Replay evidence의 출처를 구분하고, Hard Gate·적합성 분석·품질 gate·결정론적 optimizer를 통과한 policy만 runtime에 제공한다. |
+| FR-011 | policy 조회/설정/refresh/preview API와 배포 후 run event가 policy table을 관리한다. 사전 모델 지식과 운영 집계를 사용해 짧음/보통/긺 profile 정책을 만들고 runtime에 제공한다. 입력군 API와 semantic matcher는 제공하지 않는다. |
 | FR-012 | 운영 로그와 trace summary를 분석해 LLM 파라미터/모델 라우팅 추천을 반환한다. `direct_policy_update`만 즉시 적용하고, 일반 파라미터 조정은 A/B candidate 생성 경로로 보낸다. |
 | FR-013 | 추천 빠른 검증과 사용자가 baseline을 고르는 일반 compare 모두 candidate 실행 후 semantic 품질 평가를 수행하고 점수·confidence·safe summary를 응답과 이력에 저장한다. |
 | FR-014 | 배포별 자동 파라미터 최적화 설정과 수집/예산 safe summary를 제공한다. 비용 위험 신호와 모델 라우팅 정책은 포함하지 않는다. |
@@ -50,13 +52,8 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | PATCH | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/apply` | 선택한 B 후보 설정을 current draft에 적용 | FR-008, FR-010 | builder 이상 |
 | GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy` | 현재 policy 상태, 누적 운영 run 수, active/pending policy 조회 | FR-011 | builder 이상 |
 | POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/preview` | active deployment policy를 기록 없이 한 번 평가해 선택 모델과 근거를 반환 | FR-011 | execute |
-| PATCH | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy` | 자동 라우팅 ON/OFF, 규칙 미일치 시 기본 모델/대체 모델, 정책 점검 주기, 월간 검증 예산, 입력군 최대 개수 변경 | FR-011 | builder 이상 |
+| PATCH | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy` | 자동 라우팅 ON/OFF, 규칙 미일치 시 기본 모델/대체 모델, 정책 점검 주기 변경 | FR-011 | builder 이상 |
 | POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy/refresh` | 수동 policy refresh 작업을 예약 | FR-011 | builder 이상 |
-| POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts/suggest` | 대표 문의로 입력군 이름/영문 key와 합성 예문 3~5개 생성 | FR-011 | builder 이상 |
-| POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts` | 사용자가 확정한 직접 입력군 생성 | FR-011 | builder 이상 |
-| PATCH | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts/{cohort_id}` | 직접 입력군의 이름/key/대표 문의/합성 예문/고정 여부를 수정하고 재검증 대기로 전환 | FR-011 | builder 이상 |
-| POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts/{cohort_id}/convert-to-manual` | 자동 발견 입력군의 같은 row를 사용자 입력군으로 전환하고 재검증 대기로 전환 | FR-011 | builder 이상 |
-| DELETE | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/cohorts/{cohort_id}` | 직접/자동 입력군을 retired로 전환하고 이후 라우팅에서 제외 | FR-011 | builder 이상 |
 | GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/analysis` | **계획**: 라우팅 적합성, candidate gate 결과, evidence gap, 예상 순절감 safe summary 조회 | FR-011 | builder 이상 |
 | GET | `/api/v1/deployments/{deployment_id}/parameter-optimization` | 배포별 자동 파라미터 최적화의 대상 노드 수, 운영 수집 수, 점검 상태, 월간 검증 예산/사용액 조회 | FR-014 | workflow read |
 | PATCH | `/api/v1/deployments/{deployment_id}/parameter-optimization` | 재배포 없이 자동 최적화 사용 여부, 대상 LLM node, 점검 주기, 월간 검증 예산 수정 | FR-014 | workflow deploy |
@@ -78,7 +75,7 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | FR-009 | LLM usage/cost logging/history | `apps/gateway/api/v1/endpoints/workflow.py`, `apps/workflow_engine/`, `apps/shared/db/models/cost_optimizer.py`, `apps/shared/services/cost_optimizer_retention.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py`, `apps/workflow_engine/tests/nodes/test_llm_node_runtime.py`, `apps/shared/tests/services/test_cost_optimizer_retention.py` | 통과 |
 | FR-010 | builder permission enforcement | `apps/gateway/api/v1/endpoints/workflow.py`, `apps/gateway/auth/permissions.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
 | FR-011 | policy persistence, runtime evaluator, event idempotency, refresh task, credential guard, trace | `apps/shared/db/models/model_routing_policy.py`, `apps/gateway/api/v1/endpoints/workflow.py`, `apps/workflow_engine/tasks.py`, `apps/workflow_engine/services/model_routing_policy_refresh.py`, `apps/workflow_engine/services/model_routing_policy_refresh_task.py`, `apps/workflow_engine/workflow/nodes/llm/llm_node.py` | 기반 구현 완료 | 기존 FR-011 targeted tests | 통과 |
-| FR-011 | operational/replay evidence adapter, eligibility analyzer, semantic catalog/matcher, conservative optimizer | `apps/workflow_engine/services/model_routing_evidence.py`, `apps/workflow_engine/services/model_routing_eligibility.py`, `apps/workflow_engine/services/model_routing_semantic_catalog.py`, `apps/workflow_engine/services/model_routing_semantic_router.py`, `apps/shared/services/model_routing_policy_optimizer.py` | 구현 완료 | `apps/workflow_engine/tests/services/test_model_routing_evidence.py`, `test_model_routing_eligibility.py`, `test_model_routing_semantic_catalog.py`, `test_model_routing_semantic_router.py`, `test_model_routing_policy_optimizer.py` | 통과 |
+| FR-011 | prior-guided policy compiler / runtime evaluator | `apps/workflow_engine/services/model_routing_prior_guided_policy.py`, `apps/workflow_engine/services/model_router.py`, `apps/workflow_engine/workflow/nodes/llm/llm_node.py` | 구현 완료 | `apps/workflow_engine/tests/services/test_model_routing_prior_guided_policy.py`, `apps/workflow_engine/tests/nodes/test_llm_node_runtime.py` | 통과 |
 | FR-011 | 실제 DB Replay evidence에서 proposal·active policy까지 이어지는 자동 통합과 분석 API | 기존 refresh service와 Gateway endpoint 확장 | 구현 필요 | PostgreSQL integration test | 미작성 |
 | FR-012 | LLM parameter recommendation contract | `apps/gateway/services/cost_optimizer_parameter_recommendation_service.py`, `apps/gateway/api/v1/endpoints/workflow.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_parameter_recommendations_api.py`, `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 기록 있음 |
 | FR-013 | Recommendation/compare verification orchestration, quality judge, history summary, modal/result-analysis UI | `apps/gateway/services/cost_optimizer_recommendation_verification_service.py`, `apps/gateway/services/cost_optimizer_output_quality_service.py`, `apps/gateway/api/v1/endpoints/workflow.py`, `apps/shared/db/models/cost_optimizer.py`, `apps/client/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal.tsx`, `apps/client/app/features/workflow/api/workflowApi.ts`, `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py`, `apps/gateway/tests/api/cost_optimizer/test_recommendation_verification_api.py`, `apps/gateway/tests/services/test_cost_optimizer_output_quality_service.py`, `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-inline-verification.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-verification-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | Gateway/frontend targeted test 통과 |
@@ -126,11 +123,11 @@ RAG, schema, downstream, capability가 현재 요청보다 어렵거나 같은 s
 발생하며, 현재 선택보다 저렴하고 posterior mean이 품질 floor를 넘고 불확실성이 남은 후보만
 선택한다. 탐색 모델의 fallback은 안전 기본 모델이다.
 
-`prior_guided_adaptive_v1` trace에는 기존 constraint signature와 제외 사유 외에 후보별
-`posterior_quality_mean`, `quality_lower_bound`, `quality_uncertainty`,
-`expected_total_cost_usd`, `expected_latency_ms`, `expected_fallback_rate`,
-`utility_score`, `effective_evidence_samples`, `prior_source`를 포함한다. raw input/output,
-credential, embedding은 포함하지 않는다.
+`prior_guided_adaptive_v1`의 active policy는 profile별 후보 점수를 보유할 수 있다. 실행
+trace의 `llm.decision_factors`에는 사용자 설명에 필요한 `profile`, 검토/제외 후보 수,
+선택 모델의 `quality_lower_bound`, `expected_total_cost_usd`, `expected_latency_ms`,
+`expected_fallback_rate`, `effective_evidence_samples`, `prior_source`와 safe constraint
+signature만 저장한다. raw input/output, prompt, credential은 포함하지 않는다.
 
 `strict`와 downstream `required`는 JSON boolean `true`만 활성값으로 인정한다. 값이 없는 file/file_id/attachments 필드는 파일 입력으로 보지 않는다. RAG 최대 글자 수가 없으면 `topK × KB/Collection 참조 수 × 보수적 청크 token 상한`으로 preflight하고, retrieval 이후 실험은 `actual_rag_context_tokens`로 대체한다. 가격이 누락된 모델의 estimated cost는 무한대로 취급해 경제성 승격 대상에서 제외하되, 명시적 안전 기본 모델로 사용하는 것은 허용한다.
 

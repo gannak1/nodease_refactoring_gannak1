@@ -8,6 +8,19 @@ Verified Against: feature/mba-198 @ 40c45fcc
 
 Cost Optimizer는 workflow 안의 LLM 노드 비용을 줄이기 위한 기능이다.
 
+## Current Routing Decision
+
+FR-011 자동 모델 라우팅의 현재 제품 계약은 `prior_guided_adaptive_v1`이다. 입력 문장을 embedding해 입력군과 비교하는 semantic cohort 방식은 폐기되었으며, 입력군 생성·수정·마법사·예문·유사도 임계값·입력군별 Replay 검증은 제품 동작에 포함하지 않는다.
+
+정책 갱신은 실행 주체가 사용할 수 있는 모델 중에서 다음 사전 지식과 안전한 운영 집계를 사용한다.
+
+- 모델 가격, context window, structured output 지원 여부와 capability tier
+- 노드의 출력 형식, JSON schema 필요 여부, RAG 사용 여부와 예상 입력 길이
+- 모델별 성공률, schema 통과율, downstream 성공률, fallback 비율
+- 짧은 입력, 보통 입력, 긴 입력의 일반 profile
+
+런타임은 저장된 active policy의 일반 조건만 평가하며 embedding이나 Judge LLM을 호출하지 않는다. 기존 입력군 DB table과 과거 실험 문서는 migration 및 이력 호환을 위해 남을 수 있지만 신규 UI/API/runtime의 source of truth가 아니다.
+
 이 기능의 첫 번째 목표는 workflow 전체를 A/B 테스트하는 것이 아니라, 사용자가 선택한 특정 LLM 노드 하나에 대해 현재 설정과 후보 설정을 같은 입력 기준으로 비교할 수 있게 하는 것이다.
 
 사용자는 비교 결과를 보고 더 저렴하면서도 결과가 충분히 괜찮은 설정을 선택해 현재 LLM 노드에 적용할 수 있어야 한다.
@@ -46,7 +59,7 @@ Cost Optimizer는 이 질문에 답하기 위한 기능이다.
 
 baseline 선택 UI는 현재 최신 로그를 자동으로 고정하지 않는다. 사용자는 baseline 목록에서 비교 기준 실행 로그를 직접 선택해야 한다. `GET /baselines/latest` API는 모델 라우팅 추천 화면과 API 호환을 위해 남아 있지만, A/B workspace 진입의 기본 UX는 “선택 없이 최신 baseline 자동 사용”이 아니다.
 
-정책 기반 자동 모델 라우팅의 실행 기준은 별도 policy 저장소다. 현재 코드는 active policy 저장, runtime rule 평가, 실행 주체 기준 credential Hard Gate, 운영 run 집계, 자동 입력군 발견, 후보 Replay/Judge 검증, 검증 통과 rule 활성화를 제공한다. 입력군과 검증 증거는 전용 DB table에 저장한다. 다만 Cost Optimizer의 기존 비교 이력을 정책 증거로 자동 흡수하는 통합과, 운영자가 evidence gap을 상세히 보는 분석 화면은 남아 있다. FR-011은 이 범위를 [ADR-0038](../../decisions/ADR-0038-workflow-aware-adaptive-routing.md)의 Workflow-Aware Adaptive Routing으로 다루는 진행중 요구사항이다.
+정책 기반 자동 모델 라우팅의 실행 기준은 별도 policy 저장소다. 현재 코드는 active policy 저장, runtime 일반 rule 평가, 실행 주체 기준 credential Hard Gate, 운영 run 집계와 prior-guided profile 갱신을 제공한다. 입력군 발견, 의미 유사도 계산, 입력군별 후보 Replay/Judge 검증은 활성 제품 경로에서 제거했다.
 
 파라미터 추천은 미구현이 아니다. `GET /cost-optimizer/parameter-recommendations`는 배포 후 운영 로그 기반 추천을 반환하고, `PATCH /cost-optimizer/apply-recommendations`는 현재 `direct_policy_update` 성격의 추천만 즉시 draft에 반영한다. 일반 파라미터 변경 추천은 A/B 후보 실험을 거쳐 검증하는 흐름으로 다룬다.
 
@@ -86,7 +99,7 @@ Functional Requirement 상태는 다음 기준으로 구분한다.
 | FR-008 | 후보 적용 | P1 | `구현 완료` | `테스트 통과` | 사용자가 성공한 B 후보 설정 전체를 현재 target LLM node draft에 적용한다. downstream warning 확인과 schema 실패 후보 차단을 제공한다. draft conflict 처리는 후속 보강 대상이다. |
 | FR-009 | 비용 기록 | P1 | `구현 완료` | `테스트 통과` | 결과 분석 화면은 A/B 비용, prompt/completion/total token, latency를 표시한다. 비교 실행은 전용 experiment/candidate row로 저장되고 usage row가 candidate를 직접 참조한다. 과거 결과 재조회 API와 trace metadata retention 기준 정리를 제공한다. |
 | FR-010 | 권한 | P1 | `구현 완료` | `UI/API 권한 기반 구현, 테스트 통과` | A/B 테스트와 후보 적용은 builder 이상 권한이 있는 사용자만 수행한다. compare/apply/history API와 모델/Knowledge 후보 사용 가능성 검증이 적용됐다. |
-| FR-011 | Workflow-Aware Adaptive Routing | P1 | `진행중` | `전용 cohort/evidence DB, 자동·직접 입력군, 실제 Replay/Judge gate, runtime trace, 실제 Provider 50건 holdout 검증 완료. 기존 비교 이력 자동 흡수와 분석 UI 보강이 남음` | 운영 로그와 Cost Optimizer Replay를 출처가 구분된 evidence로 사용한다. Hard Gate와 품질 gate를 통과한 후보만 versioned input cohort rule에 연결하며, runtime은 저장 policy만 평가한다. Judge는 검증 단계에서만 출력 품질 평가와 설명을 돕고, 요청마다 정책을 직접 결정하지 않는다. |
+| FR-011 | Prior-Guided Adaptive Routing | P1 | `구현 완료` | `입력군 UI/API/runtime 제거, 모델 catalog·운영 집계 기반 short/medium/long 정책 생성, active policy runtime 평가와 trace 구현` | 실행 주체가 사용할 수 있는 모델의 capability·가격·context·structured output 지원과 운영 성공/schema/downstream/fallback 집계로 입력 길이 profile별 모델을 선택한다. Runtime은 저장 policy만 평가하고 embedding/Judge를 호출하지 않는다. |
 | FR-012 | LLM 파라미터 추천 룰셋 | P2 | `진행중` | `서비스/API/UI 일부 구현` | 운영 로그 기반 추천 API와 추천 모달이 있다. 모델 라우팅 enable/refresh 같은 `direct_policy_update`는 즉시 적용 가능하고, 일반 파라미터/RAG 조정은 A/B 후보 실험으로 검증한다. |
 | FR-013 | Cost Optimizer 후보 검증 및 출력 품질 평가 | P1 | `구현 완료` | `추천 빠른 검증·일반 compare quality judge·이력 저장·결과 분석 UI 및 targeted test 통과` | 추천 모달과 일반 비교 분석 테스트에서 동일 입력의 A/B 출력을 평가해 비용·속도·token·품질 점수·JSON schema·downstream 호환성을 보여주고, 같은 결과를 적용하거나 다시 조회한다. |
 | FR-014 | 배포별 자동 파라미터 최적화 | P2 | `진행중` | `배포 설정·운영 수집·상태/예산 UI 구현` | 배포 시 선택한 LLM 노드의 운영 실행을 수집하고, 점검 주기와 월간 검증 예산을 분리해 관리한다. 모델 라우팅·모델 선택·프롬프트 변경은 포함하지 않는다. |
@@ -407,10 +420,10 @@ Cost Optimizer의 A/B 테스트는 단순 실행 기능이 아니라, LLM 노드
 
 현재 Gateway의 Cost Optimizer availability, baseline 조회, experiment history, compare, apply API는 workflow `write` 권한을 요구한다. 프론트 진입 액션은 builder 미만 사용자에게 비활성화 상태와 권한 부족 안내를 제공한다. compare/apply API는 선택한 모델 후보가 현재 사용자의 사용 가능 모델 목록에 있는지 확인하고, Knowledge Base 후보가 현재 organization/workflow scope에서 `use` 가능한지 다시 검증한다.
 
-### FR-011. Workflow-Aware Adaptive Routing
+### FR-011. Prior-Guided Adaptive Routing
 
-Cost Optimizer는 LLM 노드의 workflow 맥락과 검증된 실행 증거를 사용해 모델을
-선택하는 Workflow-Aware Adaptive Routing을 제공해야 한다.
+Cost Optimizer는 LLM 노드의 일반 실행 조건, 모델 catalog 사전 지식과 안전한 운영
+집계를 사용해 모델을 선택하는 `prior_guided_adaptive_v1`을 제공해야 한다.
 
 여기서 `workflow 맥락`은 다음을 뜻한다.
 
@@ -419,11 +432,11 @@ Cost Optimizer는 LLM 노드의 workflow 맥락과 검증된 실행 증거를 �
 - 파일 입력 여부와 입력/prompt 길이 구간
 - downstream node가 기대하는 출력 계약
 - 명시적으로 저장된 `customer_facing`과 `node_task`
-- 과거 운영 traffic에서 각 입력군이 차지한 비중
 
 `Adaptive`는 매 실행마다 Judge LLM이 모델을 고른다는 뜻이 아니다. 새로운 운영
-증거나 Cost Optimizer Replay 결과가 생기면 policy를 재평가하고, 일반 실행은 이미
-검증되어 저장된 active policy만 평가한다.
+증거나 모델 catalog가 갱신되면 policy를 재평가하고, 일반 실행은 이미 저장된 active
+policy의 일반 조건만 평가한다. 입력 문장 embedding, 입력군 유사도 판정, 실행 중 Judge
+호출은 사용하지 않는다.
 
 #### 테스트 실행 후 실제 라우팅 상세
 
@@ -436,25 +449,23 @@ node의 `상세 보기`를 눌러, **이번 실행에서 실제로 어떤 모델
 
 - 실행 상세에는 상태, 실행 시간, 비용, 전체 출력 데이터를 표시한다. 출력은 임의로 자르지
   않고 내부 스크롤 영역에서 전체 값을 확인할 수 있어야 한다.
-- 자동 모델 라우팅이 적용된 LLM node는 입력 유형, 가장 가까운 입력 유형, **현재 policy에
-  등록된 모든 입력군의 유사도와 각 입력군의 선택 기준**, 처음 선택한 모델, 선택 이유,
-  policy version을 표시한다. 목록은 유사도 내림차순으로 보여 주며, 선택된 입력군 또는
-  기준 미달 상태를 함께 표시한다. 매칭 점수는 해당 입력이 특정 입력군과 얼마나 가까운지를
-  뜻하며, 입력군의 운영 traffic 비중이나 성공 확률을 뜻하지 않는다.
-- 입력군 선택에는 개별 입력군의 통과 기준과 1위·2위 최소 점수 차이 기준을 모두 적용한다.
-  화면은 두 기준을 수치로 보여 주되, 입력 원문이나 embedding vector는 표시하지 않는다.
-- 입력군 매칭이 기준에 미달하거나 애매하면 `기준 미달로 기본 모델 사용`과 그 이유를
-  표시한다. 저비용 모델을 불확실한 입력에 임의로 적용하지 않는 안전 장치다.
+- 자동 모델 라우팅이 적용된 LLM node는 실제 선택 모델, fallback, 적용 rule, policy
+  version과 사용자 친화적인 선택 이유를 표시한다.
+- policy에 판단 근거가 있으면 검토한 모델 수, 조건에서 제외된 모델 수, 선택 모델의 보수적
+  품질 하한, 예상 비용, 예상 지연 시간과 근거 출처를 표시한다.
+- 입력 조건은 `짧은 입력`, `보통 입력`, `긴 입력`, JSON schema 필요 여부, Knowledge 사용
+  여부처럼 원문을 재구성할 수 없는 safe summary만 표시한다.
 - 실제 provider 호출에서 fallback이 발생했으면 최초 선택 모델, 안전한 실패 사유 코드,
   실제 대체 실행 모델을 함께 표시한다. 계획된 fallback 모델만 있는 것과 실제 fallback이
   발생한 것은 구분한다.
-- 테스트 실행은 배포 후 운영 실행이 아니므로 policy 학습, 입력군 traffic 집계, 정책 갱신
-  카운터에 포함하지 않는다는 안내를 표시한다.
+- 테스트 실행은 배포 후 운영 실행이 아니므로 policy 학습과 정책 갱신 카운터에 포함하지
+  않는다는 안내를 표시한다.
 - draft와 활성 deployment의 같은 LLM node 설정 fingerprint가 다르면 해당 node는 배포
   policy를 읽지 않고 현재 저장 모델로 실행한다. 오래된 policy로 새 draft를 테스트하지 않기
   위한 경계다.
-- trace에는 raw credential, API key, embedding vector, 입력 원문을 새로 복사해 노출하지
-  않는다. 출력 데이터는 기존 테스트 실행 권한 범위에서만 제공한다.
+- trace에는 raw credential, API key, 입력 원문, prompt를 새로 복사해 노출하지 않는다.
+  라우팅 판단 근거는 허용된 개수·점수·비용·지연·분류값만 저장한다. 출력 데이터는 기존
+  테스트 실행 권한 범위에서만 제공한다.
 
 #### 해결해야 하는 현재 공백
 
@@ -487,7 +498,7 @@ Replay candidate가 policy와 runtime 모델 변경으로 이어짐을 증명하
   -> Deterministic Policy Optimizer
   -> Policy Proposal 또는 Fixed Model 권고
   -> Active Policy
-  -> Runtime Semantic Cohort Matcher + Rule Evaluator
+  -> Runtime Prior-Guided Rule Evaluator
   -> Decision Trace
 ```
 

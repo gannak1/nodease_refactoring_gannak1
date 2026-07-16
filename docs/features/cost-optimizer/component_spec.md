@@ -6,7 +6,7 @@ Verified Against: feature/mba-198 @ 40c45fcc
 ## Purpose
 
 이 문서는 `requirements.md`의 FR-001부터 FR-015까지를 화면과 컴포넌트 관점에서 구현 가능한 형태로 정리한다.
-FR-011은 LLM 노드 상세 화면의 자동 라우팅 컨트롤과 Workflow-Aware 분석 상태로 다룬다. 사용자는 단순 ON/OFF가 아니라 `이 node가 라우팅에 적합한지`, `어떤 evidence가 부족한지`, `어떤 cohort에서 어떤 모델을 쓰는지`, `예상 순절감과 품질 근거가 무엇인지`를 확인할 수 있어야 한다.
+FR-011은 LLM 노드 상세 화면의 사전 지식 기반 자동 라우팅 컨트롤로 다룬다. 입력군 관리, 입력군 마법사, 대표 문의, 유사도, 월간 입력군 검증 예산 UI는 노출하지 않는다. 자동 라우팅을 켜면 사용자는 기본 모델, 기본 fallback, 정책 버전, 갱신 주기와 `짧은 입력`, `보통 입력`, `긴 입력`별 선택 모델·근거를 확인한다.
 
 Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상세 화면에서 시작하는 LLM 노드 단위 A/B 테스트 흐름이다.
 
@@ -26,7 +26,7 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 | FR-008 | Apply candidate action | 선택한 B 후보 설정을 현재 LLM 노드 draft에 적용한다. |
 | FR-009 | Cost/usage display | 비교 실행 비용이 기록된다는 사실과 후보별 비용을 표시한다. |
 | FR-010 | Permission-gated UI | builder 이상이 아니면 A/B 테스트와 적용 액션을 막는다. |
-| FR-011 | Workflow-Aware routing controls / analysis / decision trace | 자동 라우팅 ON/OFF, 라우팅 적합성, evidence gap, semantic cohort별 policy, 예상 순절감, 실제 선택 모델과 Route 점수/fallback 근거를 보여준다. |
+| FR-011 | Prior-guided routing controls / decision trace | 자동 라우팅 ON/OFF, 기본·fallback 모델, 정책 갱신 주기, 입력 길이 profile별 선택 모델과 실제 선택 근거를 보여준다. 입력군·유사도 UI는 제공하지 않는다. |
 | FR-012 | Optimization recommendation modal | LLM 노드 상세 화면의 `최적화` 버튼으로 추천 모달을 열고, 추천 근거와 위험도를 확인한 뒤 직접 정책 적용 또는 A/B 후보 실험으로 연결한다. |
 | FR-013 | Recommendation verification / compare quality row | 추천 모달과 일반 결과 분석 화면에서 baseline 대비 candidate 비용·속도·token·품질 점수·schema·downstream 결과를 보여주고 적용 또는 이력 재조회로 연결한다. |
 | FR-014 | 배포별 자동 파라미터 최적화 | 배포 모달에서 운영 로그 수집·점검 주기·월간 검증 예산을 설정하고, 내 모듈 운영 현황에서는 비용 위험과 분리된 자동 최적화 상태를 관리한다. |
@@ -49,9 +49,7 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 | FR-009 | Cost/usage metric display, experiment history | `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx`, `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerHistoryPanel.tsx`, `apps/client/app/features/workflow/hooks/useCostOptimizerHistory.ts` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr9-usage-display.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr9-experiment-history-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr9-history-model.test.ts` | 통과 |
 | FR-010 | Permission-gated UI | `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerEntryAction.tsx`, `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr1-entry-action.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | 통과 |
 | FR-011 | 기존 policy controls와 model-routing route | `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx`, `apps/client/app/modules/[id]/model-routing/[nodeId]/page.tsx` | 기반 구현 완료 | 기존 Cost Optimizer frontend tests | 토글, 주기, policy 상태, 추천 route 통과 |
-| FR-011 | Runtime decision trace UI | `apps/client/app/features/workflow/components/modelRouting/ModelRoutingDecisionDetails.tsx`, `apps/client/app/features/workflow/components/editor/TestSidebar.tsx`, `apps/client/app/features/workflow/components/logs/LogDetail.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr11-semantic-routing-trace.test.tsx`, `apps/client/app/features/workflow/components/logs/LogDetail.test.tsx` | 통과 |
-| FR-011 | Test Sidebar 실행 노드 상세 | `apps/client/app/features/workflow/components/editor/TestSidebar.tsx`, `apps/client/app/features/workflow/components/modelRouting/ModelRoutingDecisionDetails.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/test-sidebar-node-detail.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr11-semantic-routing-trace.test.tsx` | 이번 변경 targeted test |
-| FR-011 | 적합성/evidence/policy diff UI | 기존 model-routing route 확장 | 구현 필요 | Workflow-Aware routing component tests | 미작성 |
+| FR-011 | Prior-guided policy panel / runtime decision trace | `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx`, `apps/client/app/features/workflow/components/modelRouting/ModelRoutingDecisionDetails.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr3-llm-node-routing.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr11-prior-guided-routing-trace.test.tsx` | 통과 |
 | FR-012 | Optimization recommendation modal | `apps/client/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal.tsx`, `apps/client/app/features/workflow/components/nodes/llm/components/LLMNodePanel.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr8-apply-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr2-entry-to-baseline-connection.test.tsx` | 통과 기록 있음 |
 | FR-013 | Recommendation verification, compare quality row, history restore | `apps/client/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal.tsx`, `apps/client/app/features/workflow/components/costOptimizer/CostOptimizerHistoryPanel.tsx`, `apps/client/app/features/workflow/hooks/useCostOptimizerHistory.ts`, `apps/client/app/features/workflow/api/workflowApi.ts`, `apps/client/app/features/workflow/types/Api.ts`, `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-inline-verification.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-verification-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | modal 검증, 일반 compare 품질 행, 평가 불가, 단건 비교 이력 복원 통과 |
 | FR-014 | Deployment optimization step / management | `apps/client/app/features/workflow/components/deployment/ParameterOptimizationStep.tsx`, `apps/client/app/features/workflow/components/deployment/AutomaticOptimizationManagementModal.tsx`, `apps/client/app/dashboard/mymodule/page.tsx` | 구현 완료 | `apps/client/app/features/workflow/components/deployment/DeploymentFlowModal.test.tsx`, `apps/client/app/features/workflow/components/deployment/AutomaticOptimizationManagementModal.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr14-dashboard-automatic-optimization-management.test.tsx` | 통과 |
@@ -59,7 +57,9 @@ Cost Optimizer UI는 workflow 전체 비교 화면이 아니라, LLM 노드 상�
 
 ## FR-015 UI Boundary
 
-신규 전략들은 검증 전 독립 실험이므로 LLM node 토글, 모델 라우팅 화면, Test Sidebar와 배포 정책 UI에 노출하지 않는다. 현재 화면은 계속 `semantic_cohort_v1` 운영 policy와 trace만 표시한다. `prior_guided_adaptive_v1`의 후보 점수는 실험 JSON/Markdown에만 기록한다. 운영 채택이 결정되면 별도 요구사항에서 global profile 출처, 탐색 예산 설정 권한, policy 전환, trace 라벨과 비교 UI를 설계한다.
+현재 제품 화면과 runtime은 `prior_guided_adaptive_v1`을 사용한다. 입력군·유사도·semantic
+matcher UI는 노출하지 않는다. Test Sidebar와 실행 로그는 같은 공통 컴포넌트로 선택 모델과
+safe 판단 근거를 표시한다.
 
 ## FR-014 배포별 자동 파라미터 최적화 UI
 
@@ -246,15 +246,12 @@ B 후보 재실행을 위해 baseline picker를 다시 열거나 workspace를 �
 #### 목표 사용자 흐름
 
 1. 사용자가 LLM node에서 `자동 모델 라우팅`을 켠다.
-2. 시스템은 먼저 라우팅 적합성을 분석한다.
-3. 후보가 있지만 증거가 부족하면 `Replay로 검증하기`를 안내한다.
-4. Cost Optimizer Replay에서 후보가 품질/효율 gate를 통과하면 policy proposal을
-   만든다.
-5. 사용자는 의미 입력군, 대표 문장 수, 기준 점수와 입력군별 검증 모델을 확인한다.
-6. 사용자는 예상 순절감, 품질 근거, cohort별 선택 모델과 fallback을 확인한다.
-7. 검증된 policy가 active가 되면 일반 실행은 저장 policy로 모델을 선택한다.
-8. 실행 로그에서 실제 선택 모델, matched cohort/rule, fallback과 policy version을
-   확인한다.
+2. 시스템은 실행 가능한 모델과 일반 실행 조건, 모델 catalog 사전 지식, 운영 집계로
+   `짧음/보통/긺` profile 정책을 만든다.
+3. 일반 실행은 저장된 active policy rule로 모델과 fallback을 선택한다.
+4. 실행 중에는 Judge나 embedding 모델을 호출하지 않는다.
+5. 테스트 실행 상세와 실행 로그에서 실제 선택 모델, 적용 rule, fallback, policy version과
+   safe 판단 근거를 확인한다.
 
 후보 검증 결과에서 provider가 요청 후보와 다른 모델을 실제 실행한 경우, 후보 모델명만 성공으로 표시하면 안 된다. 분석 화면은 `요청 모델 -> 실제 실행 모델`과 `fallback 발생`을 함께 표시하고, 해당 후보를 `검증 제외` 상태로 표시한다. 이 경우 schema, downstream, 품질 점수가 있어도 policy 적용 후보로 선택할 수 없다.
 
@@ -313,46 +310,25 @@ Hard Gate와 deterministic optimizer가 검증했다는 상태를 별도로 보�
 
 - 실제 선택 모델
 - fallback 모델과 fallback 사용 여부
-- 사용자 친화적인 입력 유형 이름과 matched cohort/rule
-- 의미 유사도, 통과 기준, 2위와의 점수 차이
-- 현재 policy에 등록된 모든 입력군의 유사도 순위와 각 입력군의 통과 기준
-- 입력군 선택에 필요한 1위·2위 최소 점수 차이 기준
-- 의미 유사도 판정인지 policy 안전 override인지 구분하는 선택 근거
-- 안전 override가 적용된 경우 signal 원문 대신 매칭 개수와 안전 우선 적용 상태
-- 선택 reason code의 사용자 친화 문구
-- policy/evidence/gate profile/Route catalog version
+- 입력 길이 profile과 JSON schema/Knowledge 사용 여부
+- 검토한 모델 수와 일반 조건에서 제외된 모델 수
+- 선택 모델의 보수적 품질 하한, 예상 비용, 예상 지연 시간
+- 판단 근거 출처와 선택 reason code의 사용자 친화 문구
+- 적용 rule과 policy version
 - `실행 중 Judge 호출 안 함`
 
 기술 식별자를 그대로 나열하지 않고 다음 순서로 설명한다.
 
 ```text
-입력 유형: 단순 사용·안내 문의
-판정: 유사도 88% (선택 기준 75%, 2위와 차이 37%p)
+입력 조건: 짧은 입력, JSON schema 필요
+비교 근거: 3개 모델 검토, 1개 조건 제외, 품질 하한 92%
 선택 모델: gpt-4o-mini
-선택 이유: 이 입력 유형에서 품질 기준을 통과한 모델 중 예상 비용이 가장 낮습니다.
+선택 이유: 품질 하한을 만족한 후보 중 예상 비용과 지연 시간을 함께 비교했습니다.
 안전 장치: 호출 실패 시 검증된 gpt-4.1-mini로 한 번 전환합니다.
 ```
 
-분류가 불확실하면 비용 절감 성공처럼 표시하지 않는다.
-
-```text
-입력 유형: 명확히 분류하지 못함
-판정: 1위와 2위 의미 점수 차이가 안전 기준보다 작습니다.
-선택 모델: 현재 기본 모델 유지
-선택 이유: 애매한 입력을 저비용 모델로 보내지 않는 보수적 정책입니다.
-```
-
-Frontend는 raw query, embedding vector, 대표 문장 원문을 trace 화면에 노출하지
-않는다. `semantic_similarity`, `semantic_threshold`, `semantic_margin`,
-`semantic_min_margin`, `semantic_cohort_scores[]`의 safe number와 입력군 이름만
-표시한다. 입력군 목록은 유사도 내림차순으로 표시하고, 선택된 행 또는 가장 가까운 행을
-구분한다.
-`semantic_decision_source=safety_override`이면 전문 점수 대신
-`정책의 안전 조건과 일치해 고성능 모델을 선택함`으로 설명한다. Catalog의 signal
-원문도 화면에 노출하지 않는다. Lexical signal이 아니라 policy에서 보정한
-`dense_override_threshold`를 통과한 경우에도 같은 설명을 사용하되, 상세 근거에는
-`안전 입력군 유사도가 검증된 보호 기준을 넘음`을 표시한다. 기준 계산에 사용한 raw
-예문·반례와 embedding은 노출하지 않는다.
+Frontend는 raw query, prompt, credential을 trace 화면에 노출하지 않는다. 숫자·분류값으로
+제한된 `decision_factors`만 표시한다.
 
 이 정보가 없으면 `자동 라우팅 ON` badge만으로 모델이 실제 바뀌었는지 증명할 수
 없으므로 시연 완료로 보지 않는다.
@@ -373,10 +349,8 @@ Frontend는 raw query, embedding vector, 대표 문장 원문을 trace 화면에
   자르지 않고 scrollable code block으로 보여준다. 자동 라우팅 상세가 있으면 출력 데이터를
   먼저, 그 다음 `배포 정책 기준 테스트`와 판정 근거를 표시한다.
 - LLM node output에 `metadata.model_routing`이 있으면 `ModelRoutingDecisionDetails`를
-  재사용해 입력 유형, 가장 가까운 입력 유형, 모든 입력군의 유사도·선택 기준·최소 점수 차이,
-  매칭 결과, 최초 선택 모델, 판단/선택 이유, policy version을 보여준다.
-- `semantic_match_status=no_match|ambiguous|unavailable`이면 `기준 미달로 기본 모델 사용`
-  라벨과 유사도/기준 미달 또는 판정 불가 사유를 보여준다.
+  재사용해 입력 길이 profile, 검토/제외 모델 수, 품질 하한, 예상 비용·지연, 최초 선택 모델,
+  판단/선택 이유와 policy version을 보여준다.
 - `fallback_used=true`이면 계획된 fallback 설명과 별도로 `실제 대체 실행` block에서
   `fallback_from_model`, `fallback_reason_code`, 실제 output model을 표시한다.
 - 자동 라우팅 trace가 있는 테스트 실행에는 `이 테스트 실행은 자동 라우팅 정책의 학습 및
