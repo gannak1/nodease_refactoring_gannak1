@@ -324,6 +324,9 @@ def test_prepare_db_source_locks_connection_until_document_registration_commit()
     class _Query:
         locked = False
 
+        def populate_existing(self):
+            return self
+
         def filter(self, *_args):
             return self
 
@@ -331,13 +334,14 @@ def test_prepare_db_source_locks_connection_until_document_registration_commit()
             self.locked = True
             return self
 
-        def first(self):
+        def one_or_none(self):
             return connection
 
     query = _Query()
     db = SimpleNamespace(query=lambda _model: query)
 
     file_path, filename, meta_info = rag_endpoint._prepare_db_source(
+        SimpleNamespace(state=SimpleNamespace(request_id="request-id")),
         db,
         SimpleNamespace(id=user_id),
         connection_id,
@@ -345,12 +349,8 @@ def test_prepare_db_source_locks_connection_until_document_registration_commit()
 
     assert query.locked is True
     assert file_path is None
-    assert filename == "Operational DB"
-    assert meta_info == {
-        "connection_id": str(connection_id),
-        "db_type": "postgres",
-        "connection_name": "Operational DB",
-    }
+    assert filename == "Database source"
+    assert meta_info == {"connection_id": str(connection_id)}
 
 
 @pytest.mark.parametrize("source_type", list(SourceType))
@@ -396,7 +396,7 @@ def test_upload_route_parses_each_source_type_and_uses_canonical_registration(
         )
         return None, "API source", {"source": "api"}
 
-    def prepare_db(db, user, parsed_connection_id):
+    def prepare_db(_request, db, user, parsed_connection_id):
         captured["prepared"] = (
             SourceType.DB,
             db,
@@ -491,7 +491,7 @@ def test_upload_route_parses_each_source_type_and_uses_canonical_registration(
         assert registration["filename"] == "API source"
         assert registration["file_path"] is None
     else:
-        assert prepared[1:] == (dependency_db, current_user, connection_id)
+        assert prepared[1:] == (dependency_db, current_user, str(connection_id))
         assert registration["filename"] == "DB source"
         assert registration["file_path"] is None
 

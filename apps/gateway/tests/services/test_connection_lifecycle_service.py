@@ -21,6 +21,9 @@ class _Query:
     def filter(self, *_args):
         return self
 
+    def populate_existing(self):
+        return self
+
     def with_for_update(self):
         self.db.connection_locked = True
         return self
@@ -31,6 +34,9 @@ class _Query:
         if self.entity is Connection:
             return self.db.connection
         return self.db.reference
+
+    def one_or_none(self):
+        return self.first()
 
 
 class _Db:

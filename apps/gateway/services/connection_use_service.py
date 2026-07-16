@@ -19,11 +19,13 @@ def resolve_connection_use_or_hidden(
     *,
     connection_id: Any,
     execution_subject_user_id: Any,
+    lock_for_use: bool = False,
 ) -> Connection:
     try:
         return ConnectionUseResolver(db).resolve(
             connection_id,
             execution_subject_user_id=execution_subject_user_id,
+            lock_for_use=lock_for_use,
         )
     except ConnectionUseDenied:
         raise_api_error(

@@ -605,6 +605,7 @@ def _prepare_db_source(
         db,
         connection_id=connection_id,
         execution_subject_user_id=user.id,
+        lock_for_use=True,
     )
 
     return None, "Database source", {"connection_id": str(conn.id)}
