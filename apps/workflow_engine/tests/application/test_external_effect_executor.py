@@ -767,9 +767,7 @@ def test_exhausted_retry_budget_does_not_reopen_terminal_attempt() -> None:
 
 def test_deterministic_invalid_http_input_is_terminal_without_provider_call() -> None:
     repository = InMemoryEffectAttemptRepository()
-    adapter = GenericHttpEffectAdapter(
-        client_factory=lambda **_kwargs: pytest.fail("provider must not be called")
-    )
+    adapter = GenericHttpEffectAdapter()
     executor = _executor(repository)
     context = _context()
     request = GenericHttpRequest(

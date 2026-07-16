@@ -83,6 +83,29 @@ def test_egress_guard_rejects_invalid_port_without_raw_exception(monkeypatch):
     assert exc_info.value.reason_code == "egress.invalid_port"
 
 
+def test_egress_guard_preserves_brackets_in_canonical_public_ipv6_url(monkeypatch):
+    address = "2606:4700:4700::1111"
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (
+                socket.AF_INET6,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                (address, 443, 0, 0),
+            )
+        ],
+    )
+
+    canonical = OutboundEgressGuard().validate_url(
+        f"https://[{address}]:443/path?value=1"
+    )
+
+    assert canonical == f"https://[{address}]:443/path?value=1"
+
+
 def test_egress_guard_rejects_disallowed_port(monkeypatch):
     monkeypatch.setattr(
         socket,
@@ -372,6 +395,29 @@ def test_egress_guard_removes_hop_by_hop_headers():
     )
 
     assert sanitized == {"Accept": "application/json"}
+
+
+def test_egress_guard_header_items_preserve_duplicates_and_can_reject_hop_by_hop():
+    guard = OutboundEgressGuard()
+
+    validated = guard.validate_request_header_items(
+        (("X-Trace", "first"), ("X-Trace", "second"))
+    )
+
+    assert validated == (("X-Trace", "first"), ("X-Trace", "second"))
+    with pytest.raises(EgressGuardError) as exc_info:
+        guard.validate_request_header_items(
+            (("Connection", "keep-alive"),),
+            reject_hop_by_hop=True,
+        )
+    assert exc_info.value.reason_code == "egress.invalid_header"
+
+
+def test_egress_guard_normalizes_malformed_url_to_safe_error():
+    with pytest.raises(EgressGuardError) as exc_info:
+        OutboundEgressGuard().validate_url("https://[invalid")
+
+    assert exc_info.value.reason_code == "egress.invalid_url"
 
 
 def test_egress_guard_rejects_header_count_and_size_over_policy():
