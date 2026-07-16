@@ -13,7 +13,9 @@ from apps.workflow_engine.services.model_routing_constraint_difficulty import (
     ConstraintDifficultyRequest,
     ConstraintDifficultyRouter,
     ConstraintModelCandidate,
+    ConstraintModelPrior,
     ConstraintValidationEvidence,
+    PriorGuidedAdaptiveRouter,
 )
 from apps.workflow_engine.services.model_routing_semantic_router import (
     SemanticRouteCatalog,
@@ -264,6 +266,7 @@ class ConstraintRoutingExperimentRunner:
         "fixed_low",
         "semantic_cohort_v1",
         "constraint_difficulty_v1",
+        "prior_guided_adaptive_v1",
     )
 
     def __init__(
@@ -277,6 +280,7 @@ class ConstraintRoutingExperimentRunner:
         low_model_id: str,
         safe_default_model_id: str,
         semantic_strategy: SemanticCohortExperimentStrategy,
+        priors: Iterable[ConstraintModelPrior] = (),
         blind_quality_noninferior: bool | None = None,
     ) -> None:
         self._candidates = tuple(candidates)
@@ -287,8 +291,10 @@ class ConstraintRoutingExperimentRunner:
         self._low_model_id = low_model_id
         self._safe_default_model_id = safe_default_model_id
         self._semantic_strategy = semantic_strategy
+        self._priors = tuple(priors)
         self._blind_quality_noninferior = blind_quality_noninferior
         self._router = ConstraintDifficultyRouter()
+        self._prior_guided_router = PriorGuidedAdaptiveRouter()
 
     def run(
         self, cases: Sequence[ConstraintRoutingExperimentCase]
@@ -375,6 +381,13 @@ class ConstraintRoutingExperimentRunner:
             evidence=self._evidence,
             safe_default_model_id=self._safe_default_model_id,
         )
+        prior_guided_decision = self._prior_guided_router.route(
+            request=case.request,
+            candidates=self._candidates,
+            evidence=self._evidence,
+            priors=self._priors,
+            safe_default_model_id=self._safe_default_model_id,
+        )
         semantic_selection = self._semantic_strategy.select(case)
         return (
             ("fixed_high", self._high_model_id, "fixed_high_model"),
@@ -388,6 +401,11 @@ class ConstraintRoutingExperimentRunner:
                 "constraint_difficulty_v1",
                 decision.selected_model_id,
                 decision.reason_code,
+            ),
+            (
+                "prior_guided_adaptive_v1",
+                prior_guided_decision.selected_model_id,
+                prior_guided_decision.reason_code,
             ),
         )
 
@@ -453,7 +471,7 @@ class ConstraintRoutingExperimentRunner:
     ) -> ExperimentAdoptionAssessment:
         high = summaries["fixed_high"]
         low = summaries["fixed_low"]
-        constraint = summaries["constraint_difficulty_v1"]
+        constraint = summaries["prior_guided_adaptive_v1"]
 
         schema_not_degraded = _nullable_rate_not_lower(
             constraint.schema_pass_rate, high.schema_pass_rate
@@ -462,7 +480,7 @@ class ConstraintRoutingExperimentRunner:
             constraint.downstream_success_rate, high.downstream_success_rate
         )
         constraint_rows = [
-            row for row in rows if row.strategy_id == "constraint_difficulty_v1"
+            row for row in rows if row.strategy_id == "prior_guided_adaptive_v1"
         ]
         critical_rows = [
             row
@@ -614,7 +632,7 @@ def _per_workflow_cost_guard(
             row
             for row in rows
             if row.workflow_type == workflow_type
-            and row.strategy_id == "constraint_difficulty_v1"
+            and row.strategy_id == "prior_guided_adaptive_v1"
         ]
         high_cost = sum(row.result.cost_usd for row in high_rows)
         constraint_cost = sum(row.result.cost_usd for row in constraint_rows)

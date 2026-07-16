@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import replace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,10 +16,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from apps.workflow_engine.services.model_routing_constraint_difficulty import (  # noqa: E402
-    ConstraintDifficultyFeatureExtractor,
     ConstraintDifficultyRequest,
     ConstraintModelCandidate,
-    ConstraintValidationEvidence,
+    ConstraintModelPrior,
 )
 from apps.workflow_engine.services.model_routing_constraint_experiment import (  # noqa: E402
     ConstraintRoutingExperimentCase,
@@ -70,6 +68,33 @@ def candidates() -> list[ConstraintModelCandidate]:
             output_price_1k=0.008,
             capability_tier="high",
             supports_strict_structured_output=True,
+        ),
+    ]
+
+
+def model_priors() -> list[ConstraintModelPrior]:
+    """Deterministic global profiles used to exercise the cold-start path."""
+    return [
+        ConstraintModelPrior(
+            model_id=LOW_MODEL,
+            quality_mean=0.72,
+            quality_uncertainty=0.10,
+            expected_latency_ms=350,
+            source="fixture_global_profile",
+        ),
+        ConstraintModelPrior(
+            model_id=BALANCED_MODEL,
+            quality_mean=0.93,
+            quality_uncertainty=0.025,
+            expected_latency_ms=700,
+            source="fixture_global_profile",
+        ),
+        ConstraintModelPrior(
+            model_id=HIGH_MODEL,
+            quality_mean=0.96,
+            quality_uncertainty=0.02,
+            expected_latency_ms=1_400,
+            source="fixture_global_profile",
         ),
     ]
 
@@ -131,44 +156,6 @@ def build_cases() -> list[ConstraintRoutingExperimentCase]:
                 )
             )
     return cases
-
-
-def build_evidence(
-    cases: list[ConstraintRoutingExperimentCase],
-) -> list[ConstraintValidationEvidence]:
-    evidence: list[ConstraintValidationEvidence] = []
-    seen = set()
-    for case in cases:
-        request = case.request
-        if request.node_data.get("knowledgeBases") or request.node_data.get(
-            "knowledgeCollections"
-        ):
-            request = replace(
-                request,
-                actual_rag_context_tokens=fixture_rag_context_tokens(case),
-            )
-        signature = ConstraintDifficultyFeatureExtractor.extract(request).signature
-        if signature in seen:
-            continue
-        seen.add(signature)
-        model_id = (
-            BALANCED_MODEL
-            if case.workflow_type == "simple_json_strict_downstream"
-            else HIGH_MODEL
-        )
-        evidence.append(
-            ConstraintValidationEvidence(
-                model_id=model_id,
-                signature=signature,
-                sample_count=20,
-                success_rate=1.0,
-                schema_pass_rate=1.0,
-                downstream_success_rate=1.0,
-                fallback_rate=0.0,
-                quality_score=0.95,
-            )
-        )
-    return evidence
 
 
 def fake_result(
@@ -278,7 +265,10 @@ def run_experiment() -> ConstraintRoutingExperimentReport:
     matrix = ReusableExperimentResultMatrix(result_provider=fake_result)
     return ConstraintRoutingExperimentRunner(
         candidates=candidates(),
-        evidence=build_evidence(cases),
+        # exact node-local evidence가 없는 cold-start에서 기존 검증 전용
+        # 전략과 prior-guided 전략의 차이를 확인한다.
+        evidence=[],
+        priors=model_priors(),
         result_matrix=matrix,
         retrieval_provider=fixture_rag_context_tokens,
         high_model_id=HIGH_MODEL,
@@ -305,12 +295,13 @@ def render_markdown(report: ConstraintRoutingExperimentReport) -> str:
         "",
         "## 실험 설계",
         "",
-        "- 비교 전략: 고가 고정, 저가 고정, 실제 SemanticRouteMatcher+fixture embedding, 신규 제약·난이도 기반",
+        "- 비교 전략: 고가 고정, 저가 고정, 실제 SemanticRouteMatcher+fixture embedding, 검증 전용 제약 기반, 사전 지식 기반 적응형",
         "- 워크플로우: 단순 JSON+엄격 downstream, RAG 답변, 긴 입력+자유형 출력",
         "- 입력 수: 워크플로우별 20개, 총 60개",
         "- RAG retrieval: RAG 입력마다 1회 수행 후 모든 전략이 같은 결과 사용",
         "- 모델 실행 결과: `(입력, 모델)` result matrix로 전략 간 재사용",
         "- Judge: 런타임에는 호출하지 않으며 fixture 품질 점수만 사용",
+        "- cold-start 조건: 같은 노드·제약 서명의 로컬 검증 증거 0개",
         "",
         "## 결과",
         "",
@@ -322,6 +313,7 @@ def render_markdown(report: ConstraintRoutingExperimentReport) -> str:
         "fixed_low": "저가 모델 고정",
         "semantic_cohort_v1": "현재 semantic matcher (fixture embedding)",
         "constraint_difficulty_v1": "신규 제약·난이도 기반",
+        "prior_guided_adaptive_v1": "사전 지식 기반 적응형",
     }
     for key, summary in report.strategy_summaries.items():
         lines.append(
@@ -332,6 +324,33 @@ def render_markdown(report: ConstraintRoutingExperimentReport) -> str:
             f"{summary.p95_latency_ms}ms | "
             f"{_score(summary.avg_quality_score)} |"
         )
+    validation_first_rows = [
+        row
+        for row in report.rows
+        if row.strategy_id == "constraint_difficulty_v1"
+    ]
+    prior_guided_rows = [
+        row
+        for row in report.rows
+        if row.strategy_id == "prior_guided_adaptive_v1"
+    ]
+    validation_lock_count = sum(
+        row.selected_model_id == HIGH_MODEL for row in validation_first_rows
+    )
+    prior_lock_count = sum(
+        row.selected_model_id == HIGH_MODEL for row in prior_guided_rows
+    )
+    lines.extend(
+        [
+            "",
+            "## 검증-라우팅 순환 해소 여부",
+            "",
+            f"- 기존 검증 전용 전략 기본 모델 고착: **{validation_lock_count}/{len(validation_first_rows)}회**",
+            f"- 사전 지식 기반 전략 기본 모델 사용: **{prior_lock_count}/{len(prior_guided_rows)}회**",
+            "- 새 전략은 로컬 검증 증거가 0개여도 품질 하한을 만족한 모델을 선택한다.",
+            "- 이 실험은 전역 모델 프로필을 고정 fixture로 제공하므로 실제 운영 프로필 정확도는 별도 검증 대상이다.",
+        ]
+    )
     lines.extend(
         [
             "",
@@ -362,7 +381,7 @@ def render_markdown(report: ConstraintRoutingExperimentReport) -> str:
             "",
             "## 재사용 검증",
             "",
-            f"- 전략별 독립 실행이라면 최대 240회지만 실제 result matrix row는 **{report.provider_result_count}개**다.",
+            f"- 전략별 독립 실행이라면 총 {len(report.rows)}회지만 실제 result matrix row는 **{report.provider_result_count}개**다.",
             f"- 현재 token fixture와 catalog 가격으로 계산한 provider 결과 생성 예상 비용은 **${report.provider_result_estimated_cost_usd:.6f}**다.",
             f"- RAG retrieval 결과는 **{report.retrieval_result_count}개**이며 RAG 입력 20개와 일치한다.",
             "",

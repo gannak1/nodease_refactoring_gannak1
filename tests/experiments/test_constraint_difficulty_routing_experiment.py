@@ -7,6 +7,7 @@ from apps.workflow_engine.services.model_routing_constraint_difficulty import (
     ConstraintDifficultyFeatureExtractor,
     ConstraintDifficultyRequest,
     ConstraintModelCandidate,
+    ConstraintModelPrior,
     ConstraintValidationEvidence,
 )
 from apps.workflow_engine.services.model_routing_constraint_experiment import (
@@ -130,6 +131,32 @@ def _evidence(cases: list[ConstraintRoutingExperimentCase]):
     return evidence
 
 
+def _priors() -> list[ConstraintModelPrior]:
+    return [
+        ConstraintModelPrior(
+            model_id="low-model",
+            quality_mean=0.72,
+            quality_uncertainty=0.10,
+            expected_latency_ms=350,
+            source="fixture_global_profile",
+        ),
+        ConstraintModelPrior(
+            model_id="balanced-model",
+            quality_mean=0.93,
+            quality_uncertainty=0.025,
+            expected_latency_ms=700,
+            source="fixture_global_profile",
+        ),
+        ConstraintModelPrior(
+            model_id="high-model",
+            quality_mean=0.96,
+            quality_uncertainty=0.02,
+            expected_latency_ms=1_400,
+            source="fixture_global_profile",
+        ),
+    ]
+
+
 def _fake_result(case, model_id, rag_context_tokens):
     base_cost = {
         "low-model": 0.001,
@@ -244,6 +271,7 @@ def test_four_strategies_reuse_model_results_and_rag_retrieval():
         low_model_id="low-model",
         safe_default_model_id="high-model",
         semantic_strategy=_semantic_strategy(),
+        priors=_priors(),
     ).run(cases)
 
     assert len(cases) == 60
@@ -252,6 +280,7 @@ def test_four_strategies_reuse_model_results_and_rag_retrieval():
         "fixed_low",
         "semantic_cohort_v1",
         "constraint_difficulty_v1",
+        "prior_guided_adaptive_v1",
     }
     assert all(count == 1 for count in provider_calls.values())
     assert sum(provider_calls.values()) < len(cases) * 4
@@ -290,6 +319,7 @@ def test_report_exposes_required_metrics_and_selection_reasons():
         low_model_id="low-model",
         safe_default_model_id="high-model",
         semantic_strategy=_semantic_strategy(),
+        priors=_priors(),
     ).run(cases)
 
     summary = report.strategy_summaries["constraint_difficulty_v1"]
@@ -436,9 +466,41 @@ def test_one_critically_low_quality_result_blocks_adoption():
         low_model_id="low-model",
         safe_default_model_id="high-model",
         semantic_strategy=_semantic_strategy(),
+        priors=_priors(),
     ).run(cases)
 
     criterion = report.adoption_assessment.criteria["no_critical_single_failure"]
 
     assert criterion.passed is False
     assert "critical_rows=1" in criterion.detail
+
+
+def test_prior_guided_strategy_routes_before_exact_local_validation_exists():
+    cases = [
+        ConstraintRoutingExperimentCase(
+            case_id=f"simple-json-{index}",
+            workflow_type="simple_json_strict_downstream",
+            request=_request("simple_json_strict_downstream", index),
+        )
+        for index in range(5)
+    ]
+    report = ConstraintRoutingExperimentRunner(
+        candidates=_candidates(),
+        evidence=[],
+        priors=_priors(),
+        result_matrix=ReusableExperimentResultMatrix(
+            result_provider=_fake_result
+        ),
+        retrieval_provider=lambda _case: 0,
+        high_model_id="high-model",
+        low_model_id="low-model",
+        safe_default_model_id="high-model",
+        semantic_strategy=_semantic_strategy(),
+    ).run(cases)
+
+    assert report.strategy_summaries[
+        "constraint_difficulty_v1"
+    ].selected_models == ("high-model",)
+    assert report.strategy_summaries[
+        "prior_guided_adaptive_v1"
+    ].selected_models == ("balanced-model",)
