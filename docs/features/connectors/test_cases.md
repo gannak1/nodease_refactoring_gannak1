@@ -155,6 +155,16 @@ Verified Against: feature/mba-246 @ 8d02b4fb7c15f5737ea5ef16af616f7866329825
 | CONN-TC-X029 | Connector test 민감 경로 집합은 Nginx와 ASGI sanitizer에서 일치해야 한다. | `/api/v1/connectors/test/`가 일반 `/api` location으로 떨어지거나 child path까지 Connector test로 취급된다. | Canonical path와 단일 trailing slash만 같은 32 KiB/5초/buffering-off/log-off 경계를 사용하고 child path는 두 matcher 모두에서 제외된다. |
 | CONN-TC-X030 | Knowledge DB metadata와 chunk label은 opaque reference 외 Connection 상세를 복제하지 않아야 한다. | `connection_name`, `db_type`, host/database/username, encrypted/decrypted credential 중 하나가 document metadata, processor result 또는 chunk source label에 남는다. | 테스트 실패. |
 
+## MBA-281 Automation Traceability
+
+| Test case | 자동 검증 위치 | 수준 |
+| --- | --- | --- |
+| U020 | `apps/shared/tests/services/test_connection_use_resolver.py`, `test_connection_use_resolver_postgres.py` | Unit + actual PostgreSQL |
+| U021-U022 | `apps/shared/tests/services/test_db_processor_connection_use.py` | Processor unit |
+| P004 | `apps/gateway/tests/api/test_knowledge_db_connection_use.py` | Gateway API |
+| P005 | `apps/workflow_engine/tests/adapters/test_knowledge_collection_sync_document.py`, `apps/workflow_engine/tests/services/test_sync_service.py` | Background/KC execution |
+| X030 | `apps/gateway/tests/api/test_knowledge_db_connection_use.py`, `apps/shared/tests/services/test_db_processor_connection_use.py` | Metadata/redaction |
+
 ## MBA-246 Automation Traceability
 
 | Test case | 자동 검증 위치 | 수준 |

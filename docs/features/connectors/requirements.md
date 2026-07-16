@@ -57,12 +57,6 @@ Connectors 기능은 외부 데이터 소스에 접속하기 위한 연결 정�
 - CONN-REQ-033: Knowledge DB source ingestion이 공유 PostgreSQL adapter를 사용할 때는 기본 정책으로 SSH tunnel, proxy, private-network target을 거부해야 한다. 이 경로에서 tunnel을 열려면 별도 connector/egress ADR 또는 승인된 organization policy가 필요하다.
 - CONN-REQ-034: PostgreSQL schema introspection은 table, column, foreign key 개수 상한을 적용하고, 잘린 결과는 safe truncation marker로 표시해야 한다.
 - CONN-REQ-035: DB row fetch 경로는 SELECT-only guard, dangerous function/keyword blocklist, read-only transaction, statement timeout, batch size cap, total row cap을 적용해야 한다.
-- CONN-REQ-061 (MBA-281): Knowledge DB source가 저장된 Connection을 사용할 때 현재 최소 권한은 `connections.user_id == execution_subject_user_id`다. Workflow/KB/Collection 권한이나 같은 organization membership만으로 다른 사용자의 Connection use를 허용하지 않아야 한다.
-- CONN-REQ-062 (MBA-281): Connection 조회·사용 판정은 Shared Connection Use Resolver가 소유해야 한다. Knowledge upload/process/preview와 Gateway/Workflow Engine background DB ingestion이 owner predicate를 각자 복제하지 않아야 한다.
-- CONN-REQ-063 (MBA-281): Knowledge DB source 설정 저장 전에 Connection을 검증하고, 외부 DB dial 직전에는 같은 resolver로 row lock을 포함해 다시 검증해야 한다. Queue 대기 중 삭제 또는 owner 변경이 발생하면 adapter 호출 전에 fail-closed해야 한다.
-- CONN-REQ-064 (MBA-281): Knowledge document metadata에는 opaque `connection_id`만 Connection reference로 저장할 수 있다. Connection name/type/host/database/username, decrypted/encrypted password와 SSH credential은 document metadata, processor result, chunk source label, audit와 log에 복제하지 않아야 한다.
-- CONN-REQ-065 (MBA-281): Missing, malformed, deleted와 non-owner Connection reference는 Knowledge use surface에서 동일한 `resource.hidden` 결과로 처리하고 Connection 존재·owner·상세를 노출하지 않아야 한다. Connector 관리 detail/schema API의 기존 403/404 계약은 이 요구로 변경하지 않는다.
-- CONN-REQ-066 (MBA-281): 저장 credential 복호화가 실패하면 Knowledge DB processor는 저장값을 평문 credential처럼 fallback하지 않고 configuration failure로 닫아 외부 adapter를 호출하지 않아야 한다.
 
 ### Secure Connection Test Requirements
 
@@ -91,6 +85,15 @@ Connectors 기능은 외부 데이터 소스에 접속하기 위한 연결 정�
 - CONN-REQ-058: Connector test의 `429 Retry-After`는 설정된 credentialed CORS origin의 브라우저 JavaScript가 읽을 수 있도록 `Access-Control-Expose-Headers`에 포함해야 한다. 허용 origin 판정과 credential 정책을 완화해서는 안 된다.
 - CONN-REQ-059: Gateway startup에 필요한 Connector 보안 설정은 지원되는 모든 배포 표면에서 동일하게 전달되어야 한다. Production Docker Compose는 tracked secret 값을 두지 않고 외부 `CONNECTOR_TEST_ADMISSION_HMAC_KEY`를 Gateway 컨테이너로 전달해야 하며, 값이 없거나 32 byte 미만이면 runtime startup이 fail-closed해야 한다. Helm은 별도 Secret을 required 값으로 유지해야 한다.
 - CONN-REQ-060: Connector security contract는 runtime startup, Docker Compose, Helm, Nginx와 ASGI middleware의 공통 불변식을 하나의 자동화 추적표로 검증해야 한다. 개별 surface 테스트가 통과하더라도 필수 설정 전달 또는 민감 경로 동치성이 빠지면 merge-ready로 간주하지 않는다.
+
+### Knowledge DB Connection Use Requirements
+
+- CONN-REQ-061 (MBA-281): Knowledge DB source가 저장된 Connection을 사용할 때 현재 최소 권한은 `connections.user_id == execution_subject_user_id`다. Workflow/KB/Collection 권한이나 같은 organization membership만으로 다른 사용자의 Connection use를 허용하지 않아야 한다.
+- CONN-REQ-062 (MBA-281): Connection 조회·사용 판정은 Shared Connection Use Resolver가 소유해야 한다. Knowledge upload/process/preview와 Gateway/Workflow Engine background DB ingestion이 owner predicate를 각자 복제하지 않아야 한다.
+- CONN-REQ-063 (MBA-281): Knowledge DB source 설정 저장 전에 Connection을 검증하고, 외부 DB dial 직전에는 같은 resolver로 row lock을 포함해 다시 검증해야 한다. Queue 대기 중 삭제 또는 owner 변경이 발생하면 adapter 호출 전에 fail-closed해야 한다.
+- CONN-REQ-064 (MBA-281): Knowledge document metadata에는 opaque `connection_id`만 Connection reference로 저장할 수 있다. Connection name/type/host/database/username, decrypted/encrypted password와 SSH credential은 document metadata, processor result, chunk source label, audit와 log에 복제하지 않아야 한다.
+- CONN-REQ-065 (MBA-281): Missing, malformed, deleted와 non-owner Connection reference는 Knowledge use surface에서 동일한 `resource.hidden` 결과로 처리하고 Connection 존재·owner·상세를 노출하지 않아야 한다. Connector 관리 detail/schema API의 기존 403/404 계약은 이 요구로 변경하지 않는다.
+- CONN-REQ-066 (MBA-281): 저장 credential 복호화가 실패하면 Knowledge DB processor는 저장값을 평문 credential처럼 fallback하지 않고 configuration failure로 닫아 외부 adapter를 호출하지 않아야 한다.
 
 ## Policies And Edge Cases
 
