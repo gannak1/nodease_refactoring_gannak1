@@ -1,3 +1,4 @@
+import logging
 import uuid
 from types import SimpleNamespace
 
@@ -5,6 +6,35 @@ import pytest
 
 from apps.workflow_engine.workflow.core.workflow_logger import WorkflowLogger
 from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
+
+
+@pytest.mark.parametrize("failure_stage", ["serialize", "publish"])
+def test_submit_log_failure_does_not_escape_or_expose_raw_error(
+    monkeypatch,
+    caplog,
+    failure_stage,
+):
+    raw_detail = "private broker endpoint must not escape"
+    logger = WorkflowLogger()
+
+    def raise_failure(*_args, **_kwargs):
+        raise RuntimeError(raw_detail)
+
+    if failure_stage == "serialize":
+        monkeypatch.setattr(logger, "_serialize_for_celery", raise_failure)
+    else:
+        monkeypatch.setattr(
+            "apps.workflow_engine.workflow.core.workflow_logger.celery_app.send_task",
+            raise_failure,
+        )
+
+    with caplog.at_level(logging.ERROR):
+        submitted = logger._submit_log("log.update_run_finish", {"result": "ok"})
+
+    assert submitted is False
+    assert raw_detail not in caplog.text
+    assert "task=log.update_run_finish" in caplog.text
+    assert "error_type=RuntimeError" in caplog.text
 
 
 def _passthrough_payloads(
@@ -35,6 +65,29 @@ def _passthrough_payloads(
             "visibility": SimpleNamespace(id=None),
         },
     )
+
+
+def test_create_run_log_keeps_run_id_when_publish_fails(monkeypatch):
+    def raise_publish_failure(*_args, **_kwargs):
+        raise RuntimeError("private broker detail")
+
+    monkeypatch.setattr(WorkflowLogger, "_prepare_payloads", _passthrough_payloads)
+    monkeypatch.setattr(
+        "apps.workflow_engine.workflow.core.workflow_logger.celery_app.send_task",
+        raise_publish_failure,
+    )
+
+    logger = WorkflowLogger()
+    run_id = logger.create_run_log(
+        workflow_id=str(uuid.uuid4()),
+        user_id=str(uuid.uuid4()),
+        user_input={"value": "hello"},
+        is_deployed=False,
+        execution_context={},
+    )
+
+    assert run_id is not None
+    assert logger.workflow_run_id == run_id
 
 
 def test_policy_failure_disables_payload_capture_and_redacts_compat_fields(monkeypatch):

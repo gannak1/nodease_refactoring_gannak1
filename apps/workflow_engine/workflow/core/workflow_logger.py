@@ -14,6 +14,7 @@ WorkflowEngine의 실행 이력을 Log-System 마이크로서비스에 비동기
   - 이 파일은 Celery 태스크 호출만 담당
 """
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
@@ -35,6 +36,8 @@ from apps.shared.services.tracing.payload import TracePayloadService
 from apps.shared.services.tracing.policy import TracePolicyService
 from apps.shared.services.tracing.redaction import TraceRedactionService
 from apps.workflow_engine.workflow.errors import NonRetryableWorkflowError
+
+logger = logging.getLogger(__name__)
 
 
 class WorkflowLogger:
@@ -180,7 +183,12 @@ class WorkflowLogger:
             metadata[section] = section_value
         return metadata
 
-    def _submit_log(self, task_name: str, data: Dict[str, Any], countdown: float = 0):
+    def _submit_log(
+        self,
+        task_name: str,
+        data: Dict[str, Any],
+        countdown: float = 0,
+    ) -> bool:
         """
         Celery 태스크로 로그 작업 제출 (비동기)
 
@@ -189,8 +197,21 @@ class WorkflowLogger:
             data: 전송할 데이터
             countdown: 태스크 실행 전 대기 시간(초). 부모 레코드 생성 대기용.
         """
-        serialized_data = self._serialize_for_celery(data)
-        celery_app.send_task(task_name, args=[serialized_data], countdown=countdown)
+        try:
+            serialized_data = self._serialize_for_celery(data)
+            celery_app.send_task(
+                task_name,
+                args=[serialized_data],
+                countdown=countdown,
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001 - logging must not block execution
+            logger.error(
+                "[WorkflowLog] submission failed: task=%s error_type=%s",
+                task_name,
+                type(exc).__name__,
+            )
+            return False
 
     def __enter__(self):
         """Context Manager 진입"""
