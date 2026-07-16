@@ -36,7 +36,10 @@ import ParsingStrategySettings from '@/app/features/knowledge/components/documen
 import ChunkPreviewList from '@/app/features/knowledge/components/preview/ChunkPreviewList';
 import DBConnectionForm from '@/app/features/knowledge/components/create-knowledge-modal/DBConnectionForm';
 import { DBConfig } from '@/app/features/knowledge/types/DB';
-import { connectorApi } from '@/app/features/knowledge/api/connectorApi';
+import {
+  connectorApi,
+  type ConnectionTestResult,
+} from '@/app/features/knowledge/api/connectorApi';
 import { useGenericCredential } from '@/app/features/knowledge/hooks/useGenericCredential';
 import ColumnAutocomplete from '@/app/features/knowledge/components/document-settings/ColumnAutocomplete';
 import {
@@ -143,7 +146,7 @@ export default function DocumentSettingsPage() {
   const [connectionId, setConnectionId] = useState<string>('');
   const [isEditingConnection, setIsEditingConnection] = useState(false);
   const [formKey, setFormKey] = useState(0); // 폼 강제 리셋용 키
-  const [connectionDetails, setConnectionDetails] = useState<any>(null);
+  const [connectionDetails, setConnectionDetails] = useState<DBConfig | null>(null);
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
 
   // 범위 선택 관련 상태
@@ -441,10 +444,12 @@ export default function DocumentSettingsPage() {
   const handleStartProcessing = () => handleSaveClick();
 
   // DB 연결 저장 핸들러
-  const handleConnectionRequest = async (config: DBConfig) => {
+  const handleConnectionRequest = async (
+    config: DBConfig,
+  ): Promise<Pick<ConnectionTestResult, 'success' | 'retryAfter'>> => {
     if (!canEditCurrentDocument || !isCurrentEditConfigReady) {
       toast.error('기존 문서 설정을 복원한 뒤 다시 시도해 주세요.');
-      return false;
+      return { success: false };
     }
     try {
       const newConn = await connectorApi.createConnector(config);
@@ -452,14 +457,14 @@ export default function DocumentSettingsPage() {
         setConnectionId(newConn.id); // ID 업데이트 -> 스키마 새로고침 트리거됨
         toast.success('DB 연결 정보가 업데이트되었습니다.');
         setIsEditingConnection(false); // 폼 닫기
-        return true;
+        return { success: true };
       } else {
         toast.error(newConn.message || '연결 실패');
-        return false;
+        return { success: false };
       }
     } catch {
       toast.error('DB 연결 정보 업데이트에 실패했습니다.');
-      return false;
+      return { success: false };
     }
   };
 
@@ -659,7 +664,7 @@ export default function DocumentSettingsPage() {
                     key={formKey} // 폼 초기화
                     onChange={() => {}}
                     onTestConnection={handleConnectionRequest}
-                    initialConfig={connectionDetails}
+                    initialConfig={connectionDetails ?? undefined}
                   />
                 </div>
               </div>

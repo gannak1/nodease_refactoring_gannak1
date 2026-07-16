@@ -1,19 +1,44 @@
+import asyncio
 import logging
 from enum import Enum
-from typing import Any
+from typing import Any, NoReturn
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
+from starlette.requests import ClientDisconnect
 
 from apps.gateway.api.deps import get_db
+from apps.gateway.application.connectors.errors import (
+    ConnectorTestAdmissionUnavailable,
+    ConnectorTestBusy,
+    ConnectorTestIngressError,
+    ConnectorTestPayloadInvalid,
+    ConnectorTestPayloadTimeout,
+    ConnectorTestRateLimited,
+)
+from apps.gateway.application.connectors.ingress import (
+    DEFAULT_CONNECTOR_TEST_INGRESS_POLICY,
+    ConnectorTestIngressMetadata,
+    ConnectorTestIngressPolicy,
+)
+from apps.gateway.application.connectors.models import ConnectorTestCommand
 from apps.gateway.auth.dependencies import get_current_user
+from apps.gateway.composition.authentication import login_network_resolver
+from apps.gateway.composition.connectors import get_connector_test_application
+from apps.gateway.middleware.webhook_query_redaction import (
+    CONNECTOR_TEST_QUERY_PRESENT_STATE_KEY,
+)
+from apps.gateway.services.organization_context import resolve_active_organization_id
+from apps.gateway.utils.api_errors import error_detail, raise_api_error
 from apps.gateway.utils.audit import audit
-from apps.shared.audit.actions import AuditAction
 from apps.gateway.utils.encryption import encryption_manager
+from apps.shared.audit.actions import AuditAction
 from apps.shared.connectors.postgres import PostgresConnector
 from apps.shared.db.models.connection import Connection
 from apps.shared.db.models.user import User
 from apps.shared.schemas.connector import (
+    ConnectorTestRequest,
     DBConnectionTestRequest,
     DBConnectionTestResponse,
 )
@@ -33,6 +58,13 @@ CONNECTOR_MAP = {
     # SupportedDBType.MYSQL: MySQLConnector,
 }
 
+_CONNECTOR_TEST_REQUEST_BODY = {
+    "required": True,
+    "content": {
+        "application/json": {"schema": ConnectorTestRequest.model_json_schema()},
+    },
+}
+
 
 def _build_workflow_connector(connector_class):
     if connector_class is PostgresConnector or issubclass(connector_class, PostgresConnector):
@@ -42,60 +74,168 @@ def _build_workflow_connector(connector_class):
     return connector_class()
 
 
-@router.post("/test", response_model=DBConnectionTestResponse)
-async def test_db_connection(request: DBConnectionTestRequest) -> Any:
-    """
-    **DB 연결 테스트 API**
+def _raw_header_values(request: Request, expected_name: bytes) -> tuple[bytes, ...]:
+    return tuple(
+        value
+        for name, value in request.scope.get("headers", ())
+        if name.lower() == expected_name
+    )
 
-    DB 및 SSH 설정을 사용해서 실제 DB 접속 가능한지 테스트한다.
 
-    Args:
-      request (DBConnectionTestRequest): DB 접속 정보 및 SSH 설정
+def _connector_test_ingress_metadata(request: Request) -> ConnectorTestIngressMetadata:
+    state = request.scope.get("state", {})
+    return ConnectorTestIngressMetadata(
+        query_present=(
+            bool(request.scope.get("query_string", b""))
+            or state.get(CONNECTOR_TEST_QUERY_PRESENT_STATE_KEY) is True
+        ),
+        content_type_headers=_raw_header_values(request, b"content-type"),
+        content_encoding_headers=_raw_header_values(request, b"content-encoding"),
+        content_length_headers=_raw_header_values(request, b"content-length"),
+    )
 
-    Returns:
-      DBConnectionTestResponse: 성공 여부 및 메세지
-    """
 
-    if request.type not in [db.value for db in SupportedDBType]:
-        return DBConnectionTestResponse(
-            success=False, message=f"지원하지 않는 DB 타입입니다: {request.type}"
+async def _read_connector_test_payload(
+    request: Request,
+    ingress_policy: ConnectorTestIngressPolicy,
+) -> dict[str, Any]:
+    deadline = ingress_policy.start_deadline()
+    body = bytearray()
+    stream = request.stream().__aiter__()
+
+    while True:
+        timeout = ingress_policy.remaining_seconds(deadline)
+        try:
+            chunk = await asyncio.wait_for(anext(stream), timeout=timeout)
+        except StopAsyncIteration:
+            break
+        except TimeoutError:
+            raise ConnectorTestPayloadTimeout() from None
+        except ClientDisconnect:
+            raise ConnectorTestPayloadInvalid() from None
+        except Exception:
+            raise ConnectorTestPayloadInvalid() from None
+
+        if not isinstance(chunk, (bytes, bytearray, memoryview)):
+            raise ConnectorTestPayloadInvalid()
+        ingress_policy.validate_actual_size(len(body) + len(chunk))
+        body.extend(chunk)
+
+    return ingress_policy.parse_json(bytes(body), deadline)
+
+
+def _raise_connector_test_ingress_error(
+    request: Request,
+    error: ConnectorTestIngressError,
+) -> NoReturn:
+    messages = {
+        "connector.test_payload_invalid": "Connection test payload is invalid.",
+        "connector.test_payload_timeout": "Connection test payload timed out.",
+        "connector.test_payload_too_large": "Connection test payload is too large.",
+        "connector.test_media_type_not_supported": (
+            "Connection test media type is not supported."
+        ),
+    }
+    raise_api_error(
+        request,
+        error.status_code,
+        error.code,
+        messages[error.code],
+    )
+
+
+def _raise_connector_test_admission_error(
+    request: Request,
+    error: ConnectorTestRateLimited | ConnectorTestBusy,
+) -> NoReturn:
+    messages = {
+        "connector.test_rate_limited": "Too many connection test requests.",
+        "connector.test_busy": "Connection test capacity is currently busy.",
+    }
+    raise HTTPException(
+        status_code=429,
+        detail=error_detail(request, error.code, messages[error.code]),
+        headers={"Retry-After": str(error.retry_after or 1)},
+    ) from None
+
+
+@router.post(
+    "/test",
+    response_model=DBConnectionTestResponse,
+    openapi_extra={"requestBody": _CONNECTOR_TEST_REQUEST_BODY},
+)
+async def test_db_connection(
+    http_request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    raw_organization_id: str | None = Header(
+        default=None,
+        alias="X-Organization-Id",
+    ),
+) -> Any:
+    """Test a bounded public PostgreSQL target without persisting credentials."""
+
+    organization_id = resolve_active_organization_id(
+        db,
+        http_request,
+        raw_organization_id,
+        current_user.id,
+    )
+    network_address = login_network_resolver().resolve(http_request)
+    if network_address == "unknown":
+        raise_api_error(
+            http_request,
+            503,
+            "connector.admission_unavailable",
+            "Connection test admission is unavailable.",
         )
-
-    config = request.model_dump()
-
-    if config.get("ssh") and not config["ssh"].get("enabled"):
-        config["ssh"] = None
-
-    connector_class = CONNECTOR_MAP.get(request.type)
-
-    if not connector_class:
-        return DBConnectionTestResponse(
-            success=False, message=f"커넥터를 찾을 수 없습니다. {request.type}"
+    ingress_policy = DEFAULT_CONNECTOR_TEST_INGRESS_POLICY
+    try:
+        ingress_policy.validate_metadata(
+            _connector_test_ingress_metadata(http_request)
         )
+        payload = await _read_connector_test_payload(http_request, ingress_policy)
+    except ConnectorTestIngressError as error:
+        _raise_connector_test_ingress_error(http_request, error)
 
     try:
-        from starlette.concurrency import run_in_threadpool
-
-        connector = _build_workflow_connector(connector_class)
-        # blocking I/O (SSH connection, DB connection)를 별도 스레드에서 실행
-        is_connected = await run_in_threadpool(connector.check, config)
-
-        if is_connected:
-            return DBConnectionTestResponse(
-                success=True, message="데이터베이스 연결에 성공했습니다."
-            )
-        else:
-            return DBConnectionTestResponse(
-                success=False, message="데이터베이스 연결에 실패했습니다."
-            )
-
-    except Exception as e:
-        logger.error("DB connection test failed: %s", type(e).__name__)
-        return DBConnectionTestResponse(
-            success=False,
-            message="연결 실패",
-            reason_code="connector.connection_failed",
+        request_data = ConnectorTestRequest.model_validate(payload)
+    except ValidationError:
+        raise_api_error(
+            http_request,
+            422,
+            "validation.failed",
+            "Request validation failed.",
         )
+
+    command = ConnectorTestCommand(
+        organization_id=organization_id,
+        actor_id=current_user.id,
+        network_address=network_address,
+        host=request_data.host,
+        port=request_data.port,
+        database=request_data.database,
+        username=request_data.username,
+        password=request_data.password.get_secret_value(),
+        ssh_enabled=bool(request_data.ssh and request_data.ssh.enabled),
+    )
+    try:
+        result = await get_connector_test_application().use_case.execute(command)
+    except (ConnectorTestRateLimited, ConnectorTestBusy) as error:
+        _raise_connector_test_admission_error(http_request, error)
+    except ConnectorTestAdmissionUnavailable:
+        raise_api_error(
+            http_request,
+            503,
+            "connector.admission_unavailable",
+            "Connection test admission is unavailable.",
+        )
+
+    return DBConnectionTestResponse(
+        success=result.success,
+        message=result.message,
+        reason_code=result.reason_code,
+    )
 
 
 @router.post("", status_code=201)

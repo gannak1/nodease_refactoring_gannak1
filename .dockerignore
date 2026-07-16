@@ -10,6 +10,7 @@
 **/node_modules
 **/.next
 **/uploads
+local/
 *.pyc
 *.pyo
 *.pyd

@@ -58,6 +58,12 @@ DOCUMENT_RESPONSE_CONTENT_TYPES = frozenset(
 )
 
 MAX_DB_FETCH_BATCH_SIZE = 1000
+_TRUSTED_LOCAL_NETWORKS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("fc00::/7"),
+)
 
 
 class EgressGuardError(Exception):
@@ -67,6 +73,14 @@ class EgressGuardError(Exception):
         super().__init__(message)
         self.reason_code = reason_code
         self.safe_message = message
+
+
+def canonicalize_network_host(host: str) -> str:
+    canonical_host = str(host or "").strip().rstrip(".").lower()
+    try:
+        return canonical_host.encode("idna").decode("ascii")
+    except UnicodeError as exc:
+        raise EgressGuardError("egress.invalid_host") from exc
 
 
 @dataclass(frozen=True)
@@ -154,6 +168,7 @@ class OutboundEgressGuard:
         port: int,
         *,
         allowed_ports: frozenset[int] | None = None,
+        trusted_local_targets: frozenset[tuple[str, int]] = frozenset(),
     ) -> tuple[str, int, str]:
         canonical_host = self._canonical_host(str(host or ""))
         if not canonical_host:
@@ -167,9 +182,11 @@ class OutboundEgressGuard:
         port_policy = self.policy.allowed_ports if allowed_ports is None else allowed_ports
         if port_policy is not None and safe_port not in port_policy:
             raise EgressGuardError("egress.disallowed_port")
+        is_trusted_local = (canonical_host, safe_port) in trusted_local_targets
         addresses = self._validate_resolved_addresses(
             canonical_host,
             port=safe_port,
+            trusted_local=is_trusted_local,
         )
         return canonical_host, safe_port, addresses[0]
 
@@ -286,17 +303,14 @@ class OutboundEgressGuard:
             raise EgressGuardError("egress.private_target")
 
     def _canonical_host(self, host: str) -> str:
-        host = host.strip().rstrip(".").lower()
-        try:
-            return host.encode("idna").decode("ascii")
-        except UnicodeError as exc:
-            raise EgressGuardError("egress.invalid_host") from exc
+        return canonicalize_network_host(host)
 
     def _validate_resolved_addresses(
         self,
         host: str,
         *,
         port: int | None = None,
+        trusted_local: bool = False,
     ) -> tuple[str, ...]:
         try:
             addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
@@ -309,9 +323,16 @@ class OutboundEgressGuard:
         for address in addresses:
             ip_text = address[4][0]
             ip = ipaddress.ip_address(ip_text)
-            if self._is_denied_ip(ip):
+            if trusted_local:
+                if not self._is_trusted_local_ip(ip):
+                    raise EgressGuardError("egress.private_target")
+            elif self._is_denied_ip(ip):
                 raise EgressGuardError("egress.private_target")
             safe_addresses.append(ip_text)
+        if trusted_local:
+            safe_addresses.sort(
+                key=lambda value: ipaddress.ip_address(value).version != 4
+            )
         return tuple(safe_addresses)
 
     def _is_denied_ip(self, ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
@@ -332,6 +353,16 @@ class OutboundEgressGuard:
             ipaddress.ip_network("fd00::/8"),
         ]
         return any(ip in network for network in denied_ranges)
+
+    @staticmethod
+    def _is_trusted_local_ip(
+        ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    ) -> bool:
+        if ip.is_loopback:
+            return True
+        if ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+            return False
+        return any(ip in network for network in _TRUSTED_LOCAL_NETWORKS)
 
     def _validate_allowed_port(self, scheme: str, port: int | None) -> None:
         if self.policy.allowed_ports is None:
@@ -507,6 +538,7 @@ def ensure_network_target_allowed(
     port: int,
     *,
     allowed_ports: frozenset[int] | None,
+    trusted_local_targets: frozenset[tuple[str, int]] = frozenset(),
 ) -> tuple[str, int, str]:
     guard = OutboundEgressGuard(
         EgressGuardPolicy(
@@ -515,7 +547,12 @@ def ensure_network_target_allowed(
             validate_peer_ip=False,
         )
     )
-    return guard.validate_host_port(host, port, allowed_ports=allowed_ports)
+    return guard.validate_host_port(
+        host,
+        port,
+        allowed_ports=allowed_ports,
+        trusted_local_targets=trusted_local_targets,
+    )
 
 
 def ensure_ssh_tunnel_allowed(enabled: bool, *, allow_tunnel: bool = False) -> None:

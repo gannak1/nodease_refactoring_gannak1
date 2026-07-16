@@ -8,7 +8,14 @@
 scheduleDispatch:
   mode: "disabled"
 
+# In-cluster Gateway reaches the PostgreSQL service on its service port only.
+connectorTest:
+  allowedPorts:
+    - 5432
+
 secrets:
+  # Local-only fixed key. Production values must provide an independent secret.
+  connectorTestAdmissionHmacKey: "connector-test-local-development-key-v1"
   # Database password
   dbPassword: "moduly123"
   

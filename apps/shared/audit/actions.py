@@ -71,6 +71,7 @@ class AuditAction:
 
     # 외부 연결 및 LLM 자격증명.
     CONNECTION_CREATE = "connection.create"
+    CONNECTION_TEST = "connection.test"
 
     CREDENTIAL_CREATE = "credential.create"
     CREDENTIAL_DELETE = "credential.delete"

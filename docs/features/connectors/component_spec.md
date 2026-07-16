@@ -1,7 +1,7 @@
 # Connectors Component Spec
 
 Status: Draft
-Verified Against: feature/mba-120 @ 7a7032e
+Verified Against: feature/mba-246 @ 05b815ee0f35d3e955ab74119dad2446bb532345
 
 ## Screens
 
@@ -33,17 +33,18 @@ File/page artifact connector는 egress guard 이후에도 artifact content를 tr
 - 경계:
   - React 상태를 소유하지 않는다.
   - Secret redaction을 직접 수행하지 않는다. Secret 비노출은 Gateway 응답 계약에 의존한다.
-  - API 오류를 일부 `{ success: false, message }`로 변환하지만, 모든 호출의 오류를 공통 envelope로 정규화하지는 않는다.
+  - API 오류는 status와 allowlist reason code만 `{ success: false, message, status?, reasonCode? }`로 정규화한다. Raw Axios error, request config와 backend diagnostic은 console/UI에 전달하지 않는다.
 
 ### `DBConnectionForm`
 
 - 출처: `apps/client/app/features/knowledge/components/create-knowledge-modal/DBConnectionForm.tsx`
 - 책임: PostgreSQL DB 연결 정보와 선택적 SSH tunnel 정보를 입력하고 연결 테스트를 실행한다.
+- Strict test는 기본적으로 public PostgreSQL과 deployment-managed port allowlist만 지원한다. Development demo는 서버가 설정한 exact local hostname+port와 전용 CA에 한해 동일 UI를 사용한다. UI 기본값은 `5432`이고 allowlist 밖 port는 safe target-policy 실패로 표시한다. SSH 입력은 create/schema compatibility를 위해 유지하지만 `ssh.enabled=true` test는 safe 미지원 결과를 표시한다.
 - 소비자:
   - `CreateKnowledgeModal`
   - Knowledge document DB source 설정 화면의 connection edit flow
-- 렌더링: 연결 이름, DB 타입, DB host/port/database/username/password, 선택적 SSH tunnel 설정, SSH 인증 방식(`password`, `key`), private key file input, `연결 테스트` 버튼, 성공/실패 상태 메시지를 표시한다.
-- 현재 기본값: `initialConfig`가 없으면 demo-oriented 기본 config를 사용한다. Secret-like 기본값은 문서에 열거하지 않는다.
+- 렌더링: 필수 연결 이름(최대 100자), DB 타입, DB host/port/database/username/password, 선택적 SSH tunnel 설정, SSH 인증 방식(`password`, `key`), private key file input, `연결 테스트` 버튼, 성공/실패 상태 메시지를 표시한다.
+- 현재 기본값: `initialConfig`가 없으면 입력은 비어 있고 DB type은 `postgres`, port는 `5432`, SSH는 비활성이다. Host placeholder는 public hostname 예시이며 local target을 기본 허용으로 오해하게 하는 loopback IP를 제시하지 않는다.
 - 경계:
   - 실제 저장은 직접 하지 않고 부모가 전달한 `onTestConnection`과 `onChange`에 위임한다.
   - private key file은 브라우저에서 text로 읽어 local state에 넣는다.
@@ -91,15 +92,17 @@ File/page artifact connector는 egress guard 이후에도 artifact content를 tr
 ### `DBConnectionForm`
 
 - `config`, `loading`, `testStatus`를 로컬 state로 관리한다.
-- `initialConfig`가 있으면 클라이언트 `DBConfig`와 필드명이 일치하는 값만 편집 시작값으로 사용한다. 현재 detail 응답의 `connection_name`과 `ssh.auth_type`은 `connectionName`/`ssh.authType`으로 변환되지 않으므로 form fallback이 사용될 수 있다.
+- `initialConfig`는 `connectorApi.getConnectionDetails`가 Gateway snake_case wire shape를 camelCase `DBConfig`로 검증·정규화한 값만 받는다. `connection_name`과 `ssh.auth_type`은 각각 `connectionName`과 `ssh.authType`으로 복원한다.
 - DB/SSH 입력 변경 시 `config`를 갱신하고 부모 `onChange(newConfig)`를 호출하며 `testStatus`를 `idle`로 되돌린다.
 - `ssh.enabled`와 `ssh.authType`에 따라 SSH password input 또는 private key file input을 표시한다.
 - `handleTest`는 부모 `onTestConnection(config)` 결과에 따라 `연결 성공!` 또는 `연결 실패` 상태를 표시하고, pending 중 버튼을 disabled 처리한다.
+- 모든 소비자는 boolean 대신 `{ success, retryAfter? }` 결과를 반환해야 한다. Knowledge document 편집 흐름도 같은 계약을 사용하되 현재 create API에는 cooldown metadata가 없으므로 `success`만 반환한다.
 
 ### `CreateKnowledgeModal` DB Flow
 
-- 연결 테스트는 `connectorApi.testConnection`의 `success` 값에 따라 success/error toast와 boolean 결과를 반환한다.
-- DB source 제출 전 `host`, `port`, `database`, `username`, `password`를 검증하고 누락 시 alert로 중단한다.
+- 연결 테스트는 `connectorApi.testConnection`의 safe result에 따라 success/error toast를 표시하고 `success`, optional `retryAfter` 결과를 폼에 반환한다.
+- `401/404`는 인증/organization context 오류, `429`는 잠시 후 재시도, `503`은 test service 일시 불가의 고정 메시지로 표시한다. Backend raw message는 표시하지 않는다.
+- DB source 제출 전 공백 제거한 `connectionName`과 `host`, `port`, `database`, `username`, `password`를 검증하고 누락 시 alert로 중단한다.
 - `connectorApi.createConnector`가 success와 id를 반환하면 Knowledge source payload에 connection id를 포함한다.
 - connection 생성이 실패하거나 예외가 발생하면 toast를 표시하고 Knowledge source 제출을 중단한다.
 
@@ -118,15 +121,34 @@ File/page artifact connector는 egress guard 이후에도 artifact content를 tr
 2. 사용자가 `연결 테스트`를 클릭한다.
 3. `DBConnectionForm`은 부모 `onTestConnection(config)`를 호출한다.
 4. `CreateKnowledgeModal`은 `connectorApi.testConnection(config)`를 호출한다.
-5. `connectorApi`는 클라이언트 `DBConfig`를 Gateway `DBConnectionTestRequest`로 매핑해 `POST /connectors/test`를 호출한다.
+5. `connectorApi`는 클라이언트 `DBConfig`를 Gateway strict `ConnectorTestRequest`로 매핑해 `POST /connectors/test`를 호출한다.
 6. 성공하면 success toast와 `연결 성공!` 상태가 표시된다.
 7. 실패하면 error toast와 `연결 실패` 상태가 표시된다.
+8. Pending 중 중복 클릭을 막고, `429 Retry-After`가 있으면 bounded cooldown 동안 재시도를 비활성화한다.
+
+Gateway는 request network를 raw socket peer 문자열로 직접 사용하지 않고 공통 trusted-proxy resolver를 통해 `/24` IPv4 또는 `/64` IPv6 단위 identity로 정규화한다. 설정된 trusted proxy에서 온 요청만 forwarded chain을 사용하며, identity를 해석할 수 없으면 DB 입력 body를 처리하기 전에 fail-closed한다.
+
+### Local/Docker TLS Demo
+
+Local demo는 일반 stack과 분리된 `connector-demo` Compose profile을 명시적으로 시작한 경우에만 사용한다.
+
+1. Host-run은 `docker compose -f dev/docker-compose.yml --profile connector-demo up -d --build --wait connector-test-redis connector-test-tls-init connector-test-postgres`로 격리된 Redis와 TLS PostgreSQL을 시작하고 health 완료를 기다린다.
+2. Docker 통합 모드는 `docker compose -f docker/docker-compose.yml -f docker/docker-compose.connector-demo.yml --profile connector-demo up -d --build --wait`를 사용한다. Service-name runtime probe는 같은 파일에 `--profile connector-demo --profile connector-demo-verify run --rm connector-test-runtime-verifier`를 사용한다.
+3. `scripts/copy_connector_demo_password.ps1 -Mode dev` 또는 `-Mode docker`를 실행해 생성 credential을 stdout 없이 clipboard에 복사한다.
+4. Host-run Gateway에서는 `localhost`, port `55432`; Docker Gateway에서는 `connector-test-postgres`, port `5432`를 입력한다. Database는 `connector_demo`, username은 `connector_demo_user`를 사용한다.
+5. Gateway가 사용하는 explicit local-profile flag, exact-target, 공개 CA와 Connector 전용 Redis 환경 설정은 profile 또는 `dev/.env.example`을 따른다. Production 설정으로 복사하지 않는다.
+
+Runtime-generated 공개 CA는 git-ignore된 `local/connector-test-tls/<mode>/ca.crt`에 export한다. CA signing key는 init container의 임시 filesystem에서만 사용하고 persistent volume에 쓰지 않는다. Server TLS material, PostgreSQL bootstrap admin credential, Connector demo credential은 서로 다른 private named volume에 두고 Gateway는 어느 private volume도 mount하지 않는다. Public CA 파일도 source artifact나 Docker build context로 커밋하지 않는다.
+
+Demo PostgreSQL은 전용 bridge network와 loopback publish를 함께 사용한다. TCP는 TLS 1.2 이상 `hostssl`/SCRAM만 허용하고 평문은 거부한다. `connector_demo_user`는 read-only 기본 transaction, bounded statement timeout과 connection limit을 가진 non-superuser다. PostgreSQL만 server TLS, bootstrap admin credential, Connector demo credential volume을 읽는다. One-shot verifier는 Connector demo credential volume만 읽고 server TLS와 bootstrap admin credential volume은 읽지 않는다.
+
+Docker demo Gateway는 Connector admission에만 `connector-test-redis` logical DB 15를 사용한다. Platform Redis URL은 유지하므로 workflow broker/result, pub/sub와 다른 Gateway 기능을 demo Redis로 우회시키지 않는다. Connector-specific client는 Gateway composition이 소유하고 lifespan 종료 시 닫는다.
 
 ### Connection Create During DB Source Submit
 
 1. 사용자가 DB source 정보를 입력하고 Knowledge source 추가를 제출한다.
-2. `CreateKnowledgeModal`은 DB 필수 입력을 확인한다.
-3. `connectorApi.createConnector(dbConfig)`를 호출한다.
+2. `CreateKnowledgeModal`은 공백 제거한 연결 이름을 포함한 DB 필수 입력을 확인한다. 공백뿐인 이름이면 API를 호출하지 않는다.
+3. `connectorApi`가 연결 이름의 앞뒤 공백을 제거한 뒤 `createConnector(dbConfig)` 요청을 보낸다.
 4. Gateway는 연결을 재테스트하고 secret을 암호화 저장한다.
 5. 성공하면 반환된 connection id가 Knowledge source 생성 payload에 포함된다.
 6. 실패하면 toast를 표시하고 Knowledge source 생성이 중단된다.
@@ -143,9 +165,9 @@ File/page artifact connector는 egress guard 이후에도 artifact content를 tr
 
 1. document settings 화면에서 사용자가 `DB 연결 수정`을 클릭한다.
 2. 화면은 `connectorApi.getConnectionDetails(connectionId)`로 secret 없는 connection detail을 조회한다.
-3. `DBConnectionForm`이 detail 응답을 `initialConfig`로 직접 받아 열린다. 별도 normalization이 없으므로 `type`, `host`, `port`, `database`, `username`, `ssh.enabled`, `ssh.host`, `ssh.port`, `ssh.username`처럼 필드명이 맞는 값만 복원된다.
+3. `connectorApi`는 detail 응답의 필수 문자열·port·지원 type을 검증하고 `connection_name`, `ssh.auth_type`을 form의 `connectionName`, `ssh.authType`으로 변환한다. `DBConnectionForm`은 이 정규화된 `DBConfig`를 `initialConfig`로 받아 열린다.
 4. detail 응답에는 DB password, SSH password, SSH private key가 없고, form은 secret 입력값에 현재 fallback을 사용한다. 재연결 시 필요한 secret은 사용자가 다시 입력해야 한다.
-5. document settings 화면의 `연결 테스트`는 `handleConnectionRequest`를 통해 새 connection 생성을 수행하고, 반환된 id로 상위 DB config를 재연결한다.
+5. document settings 화면의 `연결 테스트`는 `handleConnectionRequest`를 통해 새 connection 생성을 수행하고, 반환된 id로 상위 DB config를 재연결한 뒤 `{ success }` 결과를 form에 반환한다.
 6. 현재 구현에는 별도 update endpoint가 없으므로 기존 connection row의 in-place update로 해석하지 않는다.
 
 ## Accessibility

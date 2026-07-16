@@ -24,6 +24,7 @@ from apps.shared.services.egress_guard import (
     EgressGuardPolicy,
     OutboundEgressGuard,
     ensure_db_probe_allowed,
+    ensure_network_target_allowed,
     ensure_object_listing_allowed,
     ensure_ssh_command_allowed,
     safe_db_fetch_batch_size,
@@ -179,6 +180,160 @@ def test_response_peer_ip_validation_rejects_missing_or_private_peer():
 
 def test_response_peer_ip_validation_allows_public_peer():
     OutboundEgressGuard().validate_response_peer_ip("8.8.8.8")
+
+
+def test_exact_trusted_local_target_allows_private_address_and_pins_it(monkeypatch):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                6,
+                "",
+                ("172.20.0.20", 5432),
+            )
+        ],
+    )
+
+    result = ensure_network_target_allowed(
+        "CONNECTOR-TEST-POSTGRES.",
+        5432,
+        allowed_ports=frozenset({5432}),
+        trusted_local_targets=frozenset({("connector-test-postgres", 5432)}),
+    )
+
+    assert result == ("connector-test-postgres", 5432, "172.20.0.20")
+
+
+def test_unlisted_private_target_remains_denied_when_local_targets_exist(monkeypatch):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                6,
+                "",
+                ("172.20.0.30", 5432),
+            )
+        ],
+    )
+
+    with pytest.raises(EgressGuardError) as exc_info:
+        ensure_network_target_allowed(
+            "redis",
+            5432,
+            allowed_ports=frozenset({5432}),
+            trusted_local_targets=frozenset({("connector-test-postgres", 5432)}),
+        )
+
+    assert exc_info.value.reason_code == "egress.private_target"
+
+
+def test_exact_trusted_local_target_rejects_mixed_private_public_dns(monkeypatch):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                6,
+                "",
+                ("172.20.0.20", 5432),
+            ),
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                6,
+                "",
+                ("8.8.8.8", 5432),
+            ),
+        ],
+    )
+
+    with pytest.raises(EgressGuardError) as exc_info:
+        ensure_network_target_allowed(
+            "connector-test-postgres",
+            5432,
+            allowed_ports=frozenset({5432}),
+            trusted_local_targets=frozenset({("connector-test-postgres", 5432)}),
+        )
+
+    assert exc_info.value.reason_code == "egress.private_target"
+
+
+def test_exact_localhost_target_allows_only_loopback_results(monkeypatch):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (
+                socket.AF_INET6,
+                socket.SOCK_STREAM,
+                6,
+                "",
+                ("::1", 55432, 0, 0),
+            ),
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                6,
+                "",
+                ("127.0.0.1", 55432),
+            ),
+        ],
+    )
+
+    result = ensure_network_target_allowed(
+        "localhost",
+        55432,
+        allowed_ports=frozenset({55432}),
+        trusted_local_targets=frozenset({("localhost", 55432)}),
+    )
+
+    assert result == ("localhost", 55432, "127.0.0.1")
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "169.254.169.254",
+        "100.64.0.1",
+        "224.0.0.1",
+        "0.0.0.0",
+        "2001:db8::1",
+    ],
+)
+def test_exact_trusted_local_target_rejects_non_local_address_classes(
+    monkeypatch,
+    address,
+):
+    family = socket.AF_INET6 if ":" in address else socket.AF_INET
+    socket_address = (address, 5432, 0, 0) if family == socket.AF_INET6 else (
+        address,
+        5432,
+    )
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (family, socket.SOCK_STREAM, 6, "", socket_address)
+        ],
+    )
+
+    with pytest.raises(EgressGuardError) as exc_info:
+        ensure_network_target_allowed(
+            "connector-test-postgres",
+            5432,
+            allowed_ports=frozenset({5432}),
+            trusted_local_targets=frozenset({("connector-test-postgres", 5432)}),
+        )
+
+    assert exc_info.value.reason_code == "egress.private_target"
 
 
 def test_egress_guard_rejects_request_body_over_policy_cap(monkeypatch):
@@ -735,34 +890,6 @@ def test_connector_schema_endpoint_returns_safe_error(monkeypatch):
 
     assert getattr(exc_info.value, "status_code", None) == 400
     assert exc_info.value.detail == {"reason_code": "connector.schema_fetch_failed"}
-
-
-def test_connector_test_endpoint_returns_safe_error_message(monkeypatch):
-    class FailingConnector:
-        def check(self, config):
-            raise RuntimeError("host=db.internal password=secret")
-
-    monkeypatch.setitem(
-        connectors_endpoint.CONNECTOR_MAP,
-        connectors_endpoint.SupportedDBType.POSTGRES,
-        FailingConnector,
-    )
-    request = connectors_endpoint.DBConnectionTestRequest(
-        connection_name="db",
-        type="postgres",
-        host="db.example.com",
-        port=5432,
-        database="app",
-        username="user",
-        password="secret",
-    )
-
-    response = asyncio.run(connectors_endpoint.test_db_connection(request))
-
-    assert response.success is False
-    assert response.reason_code == "connector.connection_failed"
-    assert "secret" not in response.message
-    assert "db.internal" not in response.message
 
 
 def test_create_connection_returns_safe_connection_error(monkeypatch):
