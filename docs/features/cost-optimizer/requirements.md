@@ -90,6 +90,7 @@ Functional Requirement 상태는 다음 기준으로 구분한다.
 | FR-012 | LLM 파라미터 추천 룰셋 | P2 | `진행중` | `서비스/API/UI 일부 구현` | 운영 로그 기반 추천 API와 추천 모달이 있다. 모델 라우팅 enable/refresh 같은 `direct_policy_update`는 즉시 적용 가능하고, 일반 파라미터/RAG 조정은 A/B 후보 실험으로 검증한다. |
 | FR-013 | Cost Optimizer 후보 검증 및 출력 품질 평가 | P1 | `구현 완료` | `추천 빠른 검증·일반 compare quality judge·이력 저장·결과 분석 UI 및 targeted test 통과` | 추천 모달과 일반 비교 분석 테스트에서 동일 입력의 A/B 출력을 평가해 비용·속도·token·품질 점수·JSON schema·downstream 호환성을 보여주고, 같은 결과를 적용하거나 다시 조회한다. |
 | FR-014 | 배포별 자동 파라미터 최적화 | P2 | `진행중` | `배포 설정·운영 수집·상태/예산 UI 구현` | 배포 시 선택한 LLM 노드의 운영 실행을 수집하고, 점검 주기와 월간 검증 예산을 분리해 관리한다. 모델 라우팅·모델 선택·프롬프트 변경은 포함하지 않는다. |
+| FR-015 | 워크플로우 제약·난이도 기반 라우팅 실험 | P2 | `진행중` | `독립 전략·고정 fixture 실험 구현, 실제 Provider 검증 대기` | 의미 입력군을 읽지 않고 입력/RAG 길이, 출력 계약, schema, downstream, 파일, 필수 입력과 모델 가용성으로 후보를 거른다. 기존 `semantic_cohort_v1`과 공존하며 운영 active policy에는 연결하지 않는다. |
 
 ### FR-001. LLM 노드 단위 A/B 테스트 진입
 
@@ -1270,6 +1271,25 @@ downstream 호환성은 기존 FR-007 contract validator를 재사용한다. `co
 | `점검 준비 완료` | 대상 노드마다 필요한 운영 로그가 모였다. 추천 후보를 검토/검증할 수 있다. |
 | `월 예산 도달` | 실제 검증 비용 누적이 월 한도에 도달해 새 검증을 시작할 수 없다. |
 | `일시 중지`/`점검 실패` | 운영자가 중지했거나 안전한 점검 상태를 만들 수 없었다. |
+
+### FR-015. 워크플로우 제약·난이도 기반 라우팅 실험
+
+`constraint_difficulty_v1`은 현재 의미 기반 운영 전략인 `semantic_cohort_v1`을 교체하지 않는 비교 실험용 전략이다. 요청의 업무 의미를 분류하지 않고 LLM node와 요청의 구조적 제약만 사용한다.
+
+- 입력 특징은 `context/input bucket`, `RAG context bucket`, `output contract`, `schema complexity`, `downstream strictness`, `file input`, `required input missing`을 서로 분리해 유지한다.
+- `intent`, `task type`, 의미 입력군 ID, 도메인·customer-facing 키워드와 매 요청 Judge 호출은 사용하지 않는다.
+- 실행 주체가 사용할 수 없는 모델, context window가 부족한 모델, strict Structured Output이 필수인데 공식 지원하지 않는 모델은 점수 계산 전에 제외한다.
+- 일반 JSON 출력은 capability만으로 제외하지 않고 동일 constraint signature에서 얻은 Schema/downstream 검증 증거로 판단한다.
+- `strict`와 downstream `required`는 실제 boolean `true`일 때만 엄격 계약으로 판단한다. 문자열 값은 엄격 계약을 활성화하지 않는다.
+- 파일 필드 이름만 있고 값이 비어 있으면 파일 입력으로 판단하지 않는다.
+- RAG를 사용하면서 최대 문서 길이가 없으면 실제 runtime과 같이 제한 없음으로 보고, 설정된 `topK`와 KB/Collection 참조 수를 사용한 보수적 context 상한으로 preflight한다. 실험에서는 retrieval 후 실제 token 수로 signature를 다시 계산한다.
+- 쉬운 signature에서 얻은 증거는 긴 RAG, 복잡한 Schema, 엄격한 downstream 같은 더 어려운 signature에 재사용하지 않는다.
+- 자유형 출력처럼 자동 품질 검증 근거가 부족하면 안전한 기본 모델을 유지한다.
+- 가격을 계산할 수 없는 모델은 실행 가능 후보로는 남길 수 있지만, 검증 증거만으로 가장 경제적인 모델에 승격하지 않는다.
+- 선택 결과에는 전략 ID, 선택/fallback 모델, constraint signature, 제외 모델과 이유, reason code, `judge_called=false`를 남긴다.
+- 1차 구현은 독립 Python strategy와 fixed-fixture experiment artifact만 제공한다. 신규 DB migration, 운영 policy 전환, LLM node runtime 연결, 사용자 UI는 범위 밖이다.
+
+고정 fixture 실험은 고가 고정, 저가 고정, 실제 `SemanticRouteMatcher`와 fixture embedding을 사용한 의미 기반, 신규 제약·난이도 기반을 동일한 60개 입력으로 비교한다. RAG retrieval과 `(요청 fingerprint, 모델)` 결과 matrix는 전략 간 공유하고 입력 또는 RAG 결과가 바뀌면 기존 결과를 재사용하지 않는다. 치명적 단일 품질 실패는 임의 점수 임계값으로 추정하지 않고 blind evaluator 또는 계약 검증이 명시한 `critical_quality_failure` 신호로 판정한다. 현재 fixture에서 신규 전략은 고가 고정과 같은 성공/Schema/downstream 통과율을 유지했지만 비용 절감률은 약 3.7%에 그쳤다. 검증 비용을 포함한 손익분기점은 약 2,063회이며 1,000회 예상 절감률은 -3.94%라 채택 기준을 충족하지 못했다. 실제 Provider blind 품질 평가 전에는 운영 교체 후보로 판단하지 않는다.
 
 ## Policies And Edge Cases
 

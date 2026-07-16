@@ -5,7 +5,7 @@ Verified Against: feature/mba-198 @ 40c45fcc
 
 ## Purpose
 
-이 문서는 `requirements.md`의 FR-001부터 FR-014까지를 API 계약 관점에서 정리한다.
+이 문서는 `requirements.md`의 FR-001부터 FR-015까지를 API 계약 관점에서 정리한다.
 FR-011은 [ADR-0038](../../decisions/ADR-0038-workflow-aware-adaptive-routing.md)의 Workflow-Aware Adaptive Routing으로 다룬다. Runtime은 저장된 active policy만 평가한다. Policy refresh는 운영 로그와 Cost Optimizer Replay evidence를 분리해 읽고, Hard Gate와 결정론적 optimizer를 통과한 후보만 policy에 반영한다. Judge LLM은 매 실행마다 호출하지 않으며 policy의 최종 결정권자가 아니다.
 
 Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baseline 실행 로그를 선택하고, 같은 입력으로 B 후보 설정을 실행한 뒤, 선택한 후보를 현재 draft에 적용하는 흐름을 지원한다.
@@ -32,6 +32,7 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | FR-012 | 운영 로그와 trace summary를 분석해 LLM 파라미터/모델 라우팅 추천을 반환한다. `direct_policy_update`만 즉시 적용하고, 일반 파라미터 조정은 A/B candidate 생성 경로로 보낸다. |
 | FR-013 | 추천 빠른 검증과 사용자가 baseline을 고르는 일반 compare 모두 candidate 실행 후 semantic 품질 평가를 수행하고 점수·confidence·safe summary를 응답과 이력에 저장한다. |
 | FR-014 | 배포별 자동 파라미터 최적화 설정과 수집/예산 safe summary를 제공한다. 비용 위험 신호와 모델 라우팅 정책은 포함하지 않는다. |
+| FR-015 | REST API나 운영 policy를 추가하지 않고 독립 Python strategy request/decision/result-matrix 계약을 제공한다. |
 
 ## Endpoints
 
@@ -82,6 +83,51 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | FR-012 | LLM parameter recommendation contract | `apps/gateway/services/cost_optimizer_parameter_recommendation_service.py`, `apps/gateway/api/v1/endpoints/workflow.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_parameter_recommendations_api.py`, `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 기록 있음 |
 | FR-013 | Recommendation/compare verification orchestration, quality judge, history summary, modal/result-analysis UI | `apps/gateway/services/cost_optimizer_recommendation_verification_service.py`, `apps/gateway/services/cost_optimizer_output_quality_service.py`, `apps/gateway/api/v1/endpoints/workflow.py`, `apps/shared/db/models/cost_optimizer.py`, `apps/client/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal.tsx`, `apps/client/app/features/workflow/api/workflowApi.ts`, `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py`, `apps/gateway/tests/api/cost_optimizer/test_recommendation_verification_api.py`, `apps/gateway/tests/services/test_cost_optimizer_output_quality_service.py`, `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-inline-verification.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-verification-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | Gateway/frontend targeted test 통과 |
 | FR-014 | deployment config, plan persistence, operations summary, verification spend guard | `apps/shared/db/models/deployment_parameter_optimization.py`, `apps/gateway/services/deployment_parameter_optimization_service.py`, `apps/gateway/api/v1/endpoints/deployment.py`, `apps/gateway/api/v1/endpoints/workflow.py`, `apps/gateway/services/app_service.py` | 수집/상태/예산 설정과 실제 검증 비용 누적 구현 | `apps/gateway/tests/services/test_deployment_parameter_optimization_service.py`, `apps/gateway/tests/api/cost_optimizer/test_recommendation_verification_api.py`, operations API targeted test | 통과 |
+| FR-015 | constraint feature/filter/router/decision, strategy dispatch, reusable experiment matrix | `apps/workflow_engine/services/model_routing_constraint_difficulty.py`, `apps/workflow_engine/services/model_routing_constraint_experiment.py` | 독립 실험 구현 완료, 운영 연결 없음 | `apps/workflow_engine/tests/services/test_constraint_difficulty_router.py`, `tests/experiments/test_constraint_difficulty_routing_experiment.py` | 통과 |
+
+## Constraint-Difficulty Experimental Contract
+
+관련 FR: FR-015
+
+이 계약은 내부 Python 실험 인터페이스이며 HTTP endpoint가 아니다. `ConstraintDifficultyRequest`는 node data, 요청 입력, 실행 주체가 사용할 수 있는 model id, downstream field/type 요구, token 추정값과 retrieval 후 실제 RAG token 수를 받는다.
+
+`ConstraintDifficultyFeatureExtractor`는 의미 필드를 읽지 않고 다차원 `ConstraintSignature`를 만든다. `ConstraintDifficultyCandidateFilter`는 다음 Hard Gate를 적용한다.
+
+- `available_model_ids`에 없는 모델 제외
+- 예상 input+prompt+RAG+output token이 `context_window`를 넘는 모델 제외
+- `strict_json_schema`가 필수일 때 strict Structured Output 미지원 모델 제외
+- 필수 참조 입력 누락 시 실행 후보 제외
+
+`ConstraintDifficultyRouter`는 같은 signature의 검증 증거만 사용한다. 최소 표본, 실행 성공, Schema, downstream, fallback, 자유형 품질 기준을 통과한 후보 중 필요한 capability tier를 만족하는 가장 경제적인 모델을 선택한다. 증거가 부족하면 요구 tier를 만족하는 안전한 기본 모델을 유지한다. 설정된 기본 모델이 요구 tier보다 낮거나 사용할 수 없으면 그대로 하향하지 않고 실행 가능한 후보 중 가장 안전한 tier의 모델을 선택하며, fallback도 같은 tier 경계를 만족해야 한다.
+
+`strict`와 downstream `required`는 JSON boolean `true`만 활성값으로 인정한다. 값이 없는 file/file_id/attachments 필드는 파일 입력으로 보지 않는다. RAG 최대 글자 수가 없으면 `topK × KB/Collection 참조 수 × 보수적 청크 token 상한`으로 preflight하고, retrieval 이후 실험은 `actual_rag_context_tokens`로 대체한다. 가격이 누락된 모델의 estimated cost는 무한대로 취급해 경제성 승격 대상에서 제외하되, 명시적 안전 기본 모델로 사용하는 것은 허용한다.
+
+실험 result의 `critical_quality_failure`는 blind evaluator 또는 명시적 계약 검증 결과다. 단순히 `quality_score`가 임의 숫자보다 낮다는 이유로 생성하지 않으며, 한 건이라도 `true`면 `no_critical_single_failure` 채택 기준은 실패한다.
+
+`ConstraintDifficultyDecision.as_trace_metadata()` 결과는 다음 필드를 포함한다.
+
+```json
+{
+  "strategy_id": "constraint_difficulty_v1",
+  "selected_model_id": "gpt-4.1-mini",
+  "fallback_model_id": "gpt-4.1",
+  "matched_constraint_signature": {
+    "context_input_bucket": "small",
+    "rag_context_bucket": "none",
+    "output_contract": "json",
+    "schema_complexity": "simple",
+    "downstream_strictness": "strict",
+    "file_input": false,
+    "required_input_missing": false,
+    "required_capability_tier": "balanced"
+  },
+  "excluded_models": {},
+  "reason_code": "validated_economic_model_selected",
+  "judge_called": false
+}
+```
+
+`ReusableExperimentResultMatrix`는 `(workflow_type, case_id, request_fingerprint, model_id)`당 모델 결과를 한 번만 만든다. RAG workflow는 입력당 retrieval을 한 번 수행해 네 전략이 같은 token 수를 사용하며 RAG token 수가 fingerprint에 반영된다. 의미 기반 비교 arm은 실제 `SemanticRouteMatcher`를 사용하되 fixture embedding과 catalog로 외부 호출 없이 실행한다. 결과 집계는 Schema/downstream 필수 실행이 검증 전에 실패해 `None`을 반환해도 분모에서 제거하지 않는다. 채택 판정은 각 기준을 `통과`, `실패`, `실제 검증 필요`로 구분하며 미확정 기준이 하나라도 있으면 운영 교체 후보가 아니다. 이 결과는 DB에 저장하지 않으며 운영 trace 또는 policy source of truth가 아니다.
 
 ## Deployment Parameter Optimization Contract
 

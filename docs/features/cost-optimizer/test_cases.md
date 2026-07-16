@@ -5,7 +5,7 @@ Verified Against: `feature/mba-247 @ 311a4bc2`
 
 ## Purpose
 
-이 문서는 `requirements.md`의 FR-001부터 FR-014까지를 테스트 관점에서 검증 가능한 형태로 정리한다.
+이 문서는 `requirements.md`의 FR-001부터 FR-015까지를 테스트 관점에서 검증 가능한 형태로 정리한다.
 FR-011은 Workflow-Aware Adaptive Routing으로 다룬다. 기존 policy/runtime 테스트는 회귀 테스트로 유지하고, 실제 DB의 Cost Optimizer Replay evidence가 candidate validation, policy proposal, active policy, runtime 모델 선택까지 이어지는 통합 테스트를 새 완료 기준으로 사용한다.
 
 테스트는 LLM 노드 단위 Cost Optimizer 흐름을 기준으로 한다. 모델 라우팅은 자동 라우팅 토글과 active policy 평가뿐 아니라, operational/replay evidence 출처 분리, Hard Gate, 적합성 분석, candidate 품질 gate, 결정론적 optimizer와 decision trace를 검증한다. 고정 20회는 호환 trigger 테스트일 뿐 adaptive routing 완료 기준이 아니다.
@@ -30,6 +30,7 @@ FR-011은 Workflow-Aware Adaptive Routing으로 다룬다. 기존 policy/runtime
 | FR-012 | Optimization recommendation modal | Parameter recommendation API | 운영 로그 기반 추천 조회, `direct_policy_update` 적용, 일반 추천의 A/B 후보 실험 연결 | 작성 완료 | 부분 통과 |
 | FR-013 | Recommendation verification / compare quality row | Recommendation verification·compare API | 최신 성공 또는 사용자 선택 baseline, candidate 1회 실행, 품질 judge, schema/downstream gate, 품질 점수 이력, 적용/상세 분석 연결 | Gateway/frontend 테스트 작성 완료 | Gateway/frontend targeted test 통과 |
 | FR-014 | 배포별 자동 파라미터 최적화 | deployment config / operations summary | 배포 모달 설정, 대상 LLM node 검증, 배포 후 운영 실행 수집, 별도 예산/관리 UI | Gateway/frontend targeted test 작성 완료 | 통과 |
+| FR-015 | 제품 UI 없음 | 독립 constraint strategy/result-matrix contract | 구조 제약 추출, Hard Gate, 안전 기본 모델, 실제 semantic matcher fixture, 결과/RAG 재사용, 채택 기준 판정 | Workflow Engine/experiment test 작성 완료 | 통과 |
 
 ## Test Implementation Tracking
 
@@ -95,6 +96,8 @@ FR-011은 Workflow-Aware Adaptive Routing으로 다룬다. 기존 policy/runtime
 | FR-013 | Gateway API/service | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py`, `apps/gateway/tests/api/cost_optimizer/test_recommendation_verification_api.py`, `apps/gateway/tests/services/test_cost_optimizer_output_quality_service.py` | latest success 또는 사용자 선택 baseline, recommendation stale 검증, candidate/judge usage, 품질 평가와 이력, schema/downstream gate, apply payload | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/gateway/.venv/Scripts/python.exe -m pytest apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py apps/gateway/tests/api/cost_optimizer/test_recommendation_verification_api.py apps/gateway/tests/services/test_cost_optimizer_output_quality_service.py` | 통과 |
 | FR-014 | deployment/service | `apps/gateway/tests/services/test_deployment_parameter_optimization_service.py` | 대상 LLM node만 저장하고 비 LLM/missing node는 거부하며, 대상 node의 실제 검증 비용만 누적하고 한도 도달 뒤 새 검증을 차단 | 작성 완료 | targeted pytest | 통과 |
 | FR-014 | frontend deployment/manage | `apps/client/app/features/workflow/components/deployment/DeploymentFlowModal.test.tsx`, `apps/client/app/features/workflow/components/deployment/AutomaticOptimizationManagementModal.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr14-dashboard-automatic-optimization-management.test.tsx` | 배포 3단계에서 자동 최적화 설정 전달, 내 모듈의 배포별 `관리`가 정확한 deployment 설정을 조회해 관리 modal을 연다, 관리 modal에서 대상 node를 보존한 채 주기/예산 수정 | 작성 완료 | targeted Vitest | 통과 |
+| FR-015 | Workflow Engine service | `apps/workflow_engine/tests/services/test_constraint_difficulty_router.py` | 의미 필드 비사용, 실행 주체 모델 권한, context/strict output Hard Gate, 다차원 signature, tier에 맞는 안전 모델과 fallback, 필수 입력·파일 입력, 증거 격리, trace | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/workflow_engine/.venv/Scripts/python.exe -m pytest apps/workflow_engine/tests/services/test_constraint_difficulty_router.py` | 통과 |
+| FR-015 | Experiment | `tests/experiments/test_constraint_difficulty_routing_experiment.py` | 3 workflow×20 입력×4전략, 실제 `SemanticRouteMatcher` fixture, 입력·모델 result matrix, RAG 1회 재사용, 실패 표본 포함 지표, 채택 기준 자동 판정 | 작성 완료 | `PYTHONPATH=$(git rev-parse --show-toplevel) apps/workflow_engine/.venv/Scripts/python.exe -m pytest tests/experiments/test_constraint_difficulty_routing_experiment.py` | 통과 |
 
 ## Workflow-Aware Adaptive Routing Tests
 
@@ -228,6 +231,35 @@ evidence pipeline이 없으면 Workflow-Aware Adaptive Routing 구현 완료로 
 | FR-011-P08 | Test Sidebar 실제 fallback | 자동 라우팅 LLM node가 primary 호출 실패 뒤 fallback으로 성공했다 | node 상세를 연다 | 최초 선택 모델, 안전한 실패 사유, 실제 사용한 fallback 모델을 `실제 대체 실행` block으로 표시한다. 계획된 fallback만 있는 정상 실행과 혼동하지 않는다. |
 | FR-011-P09 | Test Sidebar 배포 정책 실행 | 자동 라우팅 LLM node의 현재 draft 설정 fingerprint가 활성 deployment snapshot과 같고 active policy row가 있다 | Test Sidebar에서 실행한다 | stream context는 해당 deployment policy lookup만 허용하고 runtime trace에 `decision_source=test_policy_preview`, `policy_source=active_deployment`, `included_in_policy_learning=false`를 남긴다. workflow run의 `deployment_id`는 비워 운영 표본/refresh counter에 포함하지 않는다. |
 | FR-011-P10 | Test Sidebar 정책 stale 차단 | current draft의 자동 라우팅 LLM node 설정 fingerprint가 활성 deployment snapshot과 다르다 | Test Sidebar에서 실행한다 | Gateway는 해당 node를 policy preview 대상에서 제외한다. runtime은 저장 모델로 실행하며 오래된 deployment policy를 평가하지 않는다. |
+
+## Constraint-Difficulty Router Experimental Tests
+
+관련 FR: FR-015
+
+이 섹션은 운영 active policy와 DB를 변경하지 않는 독립 실험 전략을 검증한다. fixed fixture 결과는 구조와 재사용 계약의 증거일 뿐 실제 Provider 품질 증거로 사용하지 않는다.
+
+| ID | 검증 영역 | Given | When | Then |
+| --- | --- | --- | --- | --- |
+| FR-015-R01 | semantic isolation | node data에 intent/task type/customer-facing/domain hint가 있다 | 제약 signature를 생성한다 | 해당 의미 필드는 signature와 선택 근거에 포함되지 않는다. |
+| FR-015-R02 | execution subject availability | catalog 모델 중 실행 주체가 사용할 수 없는 모델이 있다 | 후보를 필터링한다 | `model_not_available`로 제외한다. |
+| FR-015-R03 | context Hard Gate | input+prompt+RAG+reserved output 추정 token이 모델 context window를 넘는다 | 후보를 필터링한다 | `context_window_insufficient`로 제외한다. |
+| FR-015-R04 | strict output Hard Gate | strict JSON Schema 출력이 필수이고 모델이 strict Structured Output을 지원하지 않는다 | 후보를 필터링한다 | 해당 모델을 제외한다. 일반 JSON 출력에서는 이 capability만으로 제외하지 않는다. |
+| FR-015-R05 | simple JSON validation candidate | 짧은 입력과 단순 JSON 계약이며 검증 증거가 없다 | 라우팅한다 | 안전 기본 모델을 유지하고 더 저렴한 실행 가능 모델을 검증 후보로 반환한다. |
+| FR-015-R06 | high structural constraints | 긴 RAG 또는 복잡한 Schema+엄격 downstream이 있다 | 라우팅한다 | low tier 기본 모델을 그대로 사용하지 않고 요구 tier를 만족하는 안전 모델을 선택한다. fallback도 같은 tier 기준을 만족한다. |
+| FR-015-R07 | freeform safety | 자유형 출력에 자동 품질 증거가 부족하다 | 라우팅한다 | 안전 기본 모델을 유지하고 `freeform_quality_evidence_insufficient`를 남긴다. |
+| FR-015-R08 | exact signature evidence | 쉬운 조건에서 저가 모델 증거가 있지만 현재 요청은 더 긴 RAG/복잡한 계약이다 | 라우팅한다 | 쉬운 signature의 증거를 재사용하지 않는다. |
+| FR-015-R09 | required input/file dimensions | 필수 참조 입력이 없거나 파일 입력이 있다 | signature와 후보를 계산한다 | 누락 입력은 모델 호출 전에 차단하고 파일 여부는 독립 차원과 최소 tier에 반영한다. |
+| FR-015-R10 | real semantic matcher fixture | 고정 representative/query vector가 있다 | 네 전략 실험을 실행한다 | semantic arm은 미리 지정한 모델 ID가 아니라 실제 `SemanticRouteMatcher`의 match 결과를 사용한다. |
+| FR-015-R11 | provider result reuse | 여러 전략이 같은 입력에 같은 모델을 선택한다 | result matrix를 조회한다 | `(요청 fingerprint, 모델)` 결과를 한 번만 만들고 전략 간 재사용한다. 입력 또는 RAG 결과가 바뀌면 재사용하지 않는다. |
+| FR-015-R12 | RAG retrieval reuse | RAG 입력 20개를 네 전략으로 비교한다 | 실험을 실행한다 | 입력당 retrieval은 한 번만 수행하며 네 전략이 동일한 actual RAG token 수를 사용한다. |
+| FR-015-R13 | failure denominator | Schema/downstream 필수 케이스가 출력 검증 전에 실패해 상태가 `None`이다 | 지표를 집계한다 | 실패 표본을 분모에서 제거하지 않고 실패로 계산한다. 품질 미평가 비율은 별도 표시한다. |
+| FR-015-R14 | trace | 실행 권한·context로 일부 모델이 제외된다 | decision metadata를 만든다 | strategy, selected/fallback model, signature, 제외 모델과 이유, reason code, `judge_called=false`가 남는다. |
+| FR-015-R15 | adoption criteria | 3 workflow×20 입력의 4전략 결과가 있다 | 보고서를 생성한다 | 목표의 10개 채택 기준을 통과/실패/실제 검증 필요로 판정하고 하나라도 미확정이면 교체 후보로 표시하지 않는다. |
+| FR-015-R16 | semantic regression | 신규 모듈을 추가한다 | 기존 semantic router 단위 테스트를 실행한다 | 기존 테스트가 수정 없이 통과하고 운영 dispatch/active policy는 변경되지 않는다. |
+| FR-015-R17 | malformed boolean / empty file | `strict`, downstream `required`가 문자열 `"false"`이거나 file 필드 값이 비어 있다 | signature를 만든다 | 엄격 계약 또는 파일 입력으로 잘못 승격하지 않는다. |
+| FR-015-R18 | unbounded RAG preflight | RAG가 켜져 있고 최대 context 글자 수가 없다 | retrieval 전 signature를 만든다 | `topK`와 KB/Collection 참조 수 기반의 보수적 token 상한을 사용하며 임의 2,000 token으로 축소하지 않는다. |
+| FR-015-R19 | unknown model price | 구조·품질 gate를 통과했지만 가격이 없는 모델이 있다 | 경제적 후보를 선택한다 | 가격 없는 모델을 최저 비용 모델로 승격하지 않고 안전 기본 모델을 유지한다. |
+| FR-015-R20 | critical quality failure | 모델 호출과 Schema 검증은 성공했지만 evaluator가 치명적 품질 실패를 명시했다 | 채택 기준을 계산한다 | 점수 임계값 추측 없이 `critical_quality_failure`를 사용해 운영 교체 후보를 차단한다. |
 
 ## LLM Parameter Recommendation Tests
 
