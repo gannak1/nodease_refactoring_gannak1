@@ -56,7 +56,7 @@ Expected target/SSH/connection 실패는 `200 OK`, `success=false`로 반환한�
 처리 순서:
 
 1. 로그인과 active organization membership을 검증하고 공통 trusted-proxy resolver로 request network identity를 계산한다. Forwarded header는 설정된 trusted proxy peer에서만 사용하며 identity를 해석할 수 없으면 body와 probe 전에 `503 connector.admission_unavailable`로 닫는다.
-2. 최외곽 ASGI middleware는 connector-test 경로의 query 전체를 access-log-visible scope에서 제거하고 query 존재 boolean marker를 남긴다. Endpoint는 marker 또는 남은 query가 있으면 `400 connector.test_payload_invalid`로 닫고, 그 외 actual body, media type, UTF-8 JSON object와 strict field를 검증한다.
+2. 최외곽 ASGI middleware는 `/api/v1/connectors/test`와 단일 trailing-slash 동치 경로의 query 전체를 access-log-visible scope에서 제거하고 query 존재 boolean marker를 남긴다. Repository Nginx도 두 경로를 하나의 bounded secret-ingress location으로 처리하며 child path는 포함하지 않는다. Endpoint는 marker 또는 남은 query가 있으면 `400 connector.test_payload_invalid`로 닫고, 그 외 actual body, media type, UTF-8 JSON object와 strict field를 검증한다.
 3. Port가 서버의 deployment-managed allowlist에 있는지 확인하고 process-local executor slot을 non-blocking 예약한다. Slot이 없으면 Redis rate를 소비하지 않고 `429 connector.test_busy`로 닫는다.
 4. Redis에서 user/organization/network rate와 global/organization/user concurrency lease를 원자적으로 획득한다. Acquire, renew, release 각각에 Connector 전용 operation deadline을 적용하고 timeout은 `503 connector.admission_unavailable`로 닫는다. Acquire 실패 또는 request 취소 시 시작하지 않은 local 예약은 즉시 반환한다.
 5. 기본 경로는 host의 전체 DNS 결과가 public인지 검사한다. Development exact-local target은 서버 설정의 정확한 hostname+port와 일치하고 모든 DNS 결과가 RFC1918, IPv6 ULA 또는 loopback일 때만 허용한다. 두 경로 모두 validated IP 하나로 연결을 고정한다.
@@ -94,13 +94,13 @@ Security environment settings:
 | `CONNECTOR_TEST_REDIS_OPERATION_TIMEOUT_SECONDS` | `1` | finite `0 < value <= 5`, API timeout 및 lease TTL의 3분의 1보다 작음 |
 | `CONNECTOR_TEST_LEASE_TTL_SECONDS` | `30` | `1..120`, API timeout보다 큼 |
 | `CONNECTOR_TEST_REDIS_URL` | unset | 선택적 Connector admission 전용 `redis`/`rediss` URL. Host와 logical DB `0..255` path가 필요하며 query/fragment는 허용하지 않는다. 미설정 시 platform async Redis를 사용한다. |
-| `CONNECTOR_TEST_ADMISSION_HMAC_KEY` | local-only fallback | Production에서 별도 32 byte 이상 key 필수 |
+| `CONNECTOR_TEST_ADMISSION_HMAC_KEY` | local-only fallback | Production에서 별도 32 byte 이상 key 필수. Helm은 required Secret, Docker Compose는 외부 값의 Gateway passthrough를 사용하며 tracked 예시에 실제 값을 두지 않음 |
 | `CONNECTOR_TEST_ALLOWED_PORTS` | `5432` | 중복 없는 port 1~16개. Local target port도 포함 |
 | `CONNECTOR_TEST_LOCAL_PROFILE_ENABLED` | `false` | `true`/`false`만 허용. `true`는 development exact-local target과 CA를 모두 요구 |
 | `CONNECTOR_TEST_TRUSTED_LOCAL_TARGETS` | unset | `NODE_ENV=development` 전용 exact `host:port` 1~4개 |
 | `CONNECTOR_TEST_TRUSTED_LOCAL_CA_FILE` | unset | 64 KiB 이하, 현재 유효한 단일 PEM `CA:TRUE` 공개 certificate. Private key와 certificate bundle 금지 |
 
-Invalid security setting은 Gateway startup을 실패시킨다. Helm 배포는 `secrets.connectorTestAdmissionHmacKey`로 별도 key를 제공한다.
+Invalid security setting은 Gateway startup을 실패시킨다. Helm 배포는 `secrets.connectorTestAdmissionHmacKey`로 별도 key를 제공한다. Production Docker Compose는 `.env` 또는 shell에서 받은 `CONNECTOR_TEST_ADMISSION_HMAC_KEY`를 Gateway 컨테이너로 전달하되, 값이 비어 있으면 development fallback만 허용하고 production runtime startup은 실패한다.
 
 Local demo profile은 다음 두 target을 각각 사용한다.
 

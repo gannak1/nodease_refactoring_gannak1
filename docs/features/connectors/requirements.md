@@ -72,7 +72,7 @@ Connectors 기능은 외부 데이터 소스에 접속하기 위한 연결 정�
 - CONN-REQ-045: `ssh.enabled=true` connector test는 approved host-key/private-network 정책 전까지 network 전에 `connector.ssh_probe_not_supported`로 거부해야 한다. 이 제한은 기존 create/schema compatibility를 자동 제거하지 않는다.
 - CONN-REQ-046: Expected target/connection 실패는 static message와 allowlist reason code만 반환해야 하며 host/IP/port/database/username/password/private key/DSN/driver exception을 response, audit, application/client/edge log에 노출하지 않아야 한다.
 - CONN-REQ-047: Admission 뒤 결과는 `connection.test` audit으로 organization, actor, result, canonical reason과 coarse duration만 기록해야 한다. Audit publish 실패는 probe를 자동 재시도하거나 성공 결과를 실패로 바꾸지 않아야 한다.
-- CONN-REQ-048: Repository edge는 connector-test exact route에 32 KiB, 5초 idle receive, buffering off와 request-target log 억제를 적용해야 한다. Direct Gateway 또는 Next rewrite가 edge를 우회하더라도 최외곽 ASGI middleware가 connector-test query 전체를 access-log-visible scope에서 제거해야 하며, Gateway actual-byte/total-deadline/query 거부 guard는 유지해야 한다.
+- CONN-REQ-048: Repository edge는 connector-test canonical route와 단일 trailing-slash 동치 경로에 동일한 32 KiB, 5초 idle receive, buffering off와 request-target log 억제를 적용해야 한다. Child path는 Connector test endpoint로 취급하지 않는다. Direct Gateway 또는 Next rewrite가 edge를 우회하더라도 최외곽 ASGI middleware가 같은 두 경로의 connector-test query 전체를 access-log-visible scope에서 제거해야 하며, Gateway actual-byte/total-deadline/query 거부 guard는 유지해야 한다.
 - CONN-REQ-049: Local private/loopback target은 `CONNECTOR_TEST_LOCAL_PROFILE_ENABLED=true`, `NODE_ENV=development`, 서버가 설정한 최대 4개의 exact canonical hostname+port, 전용 공개 CA가 모두 존재할 때만 허용해야 한다. Wildcard, suffix, CIDR, raw IP target, request override를 허용하지 않고 target port가 deployment allowlist에도 있어야 하며, 모든 DNS 결과가 RFC1918, IPv6 ULA 또는 loopback이 아니거나 public/private mixed이면 거부해야 한다. Profile flag·target·CA가 불완전하거나 production에서 셋 중 하나라도 설정되면 startup을 실패시켜야 한다.
 - CONN-REQ-050: Trusted-local CA file은 readable regular file, 64 KiB 이하, private-key marker가 없는 단일 PEM certificate여야 한다. Certificate는 현재 유효하고 `BasicConstraints CA:TRUE`여야 하며 invalid·expired·future·leaf·multiple-certificate·private-key-containing file은 DNS 전에 startup을 실패시켜야 한다.
 - CONN-REQ-051: Local/Docker connector demo는 일반 platform 서비스와 분리된 explicit Compose profile과 전용 bridge network를 사용해야 한다. Host publish는 `127.0.0.1`에만 열고 Host-run `localhost:55432`와 Docker `connector-test-postgres:5432`를 각각 exact target으로 검증해야 한다. Docker Gateway의 admission은 Connector 전용 Redis URL로 demo Redis logical DB 15를 사용하고, 일반 platform Redis 연결은 바꾸지 않아야 한다. 일반 profile과 production Helm에는 demo service, network, target, CA mount, private volume이 없어야 한다.
@@ -83,6 +83,8 @@ Connectors 기능은 외부 데이터 소스에 접속하기 위한 연결 정�
 - CONN-REQ-056: Connector test와 저장의 `connection_name`은 서버에서 앞뒤 공백을 제거한 뒤 1~100자여야 한다. 공백뿐인 값은 `422`로 거부하고 connection row를 만들지 않아야 하며, Client의 DB source 저장 UI도 같은 값을 필수로 검사하고 정규화해 전송해야 한다.
 - CONN-REQ-057: Client가 connection detail을 편집 form에 전달할 때 Gateway의 `connection_name`, `ssh.auth_type`을 각각 `connectionName`, `ssh.authType`으로 명시적으로 변환해야 한다. 응답에 없는 DB/SSH secret은 빈 재입력 상태로 유지하고 raw detail shape를 form에 직접 전달하지 않아야 한다.
 - CONN-REQ-058: Connector test의 `429 Retry-After`는 설정된 credentialed CORS origin의 브라우저 JavaScript가 읽을 수 있도록 `Access-Control-Expose-Headers`에 포함해야 한다. 허용 origin 판정과 credential 정책을 완화해서는 안 된다.
+- CONN-REQ-059: Gateway startup에 필요한 Connector 보안 설정은 지원되는 모든 배포 표면에서 동일하게 전달되어야 한다. Production Docker Compose는 tracked secret 값을 두지 않고 외부 `CONNECTOR_TEST_ADMISSION_HMAC_KEY`를 Gateway 컨테이너로 전달해야 하며, 값이 없거나 32 byte 미만이면 runtime startup이 fail-closed해야 한다. Helm은 별도 Secret을 required 값으로 유지해야 한다.
+- CONN-REQ-060: Connector security contract는 runtime startup, Docker Compose, Helm, Nginx와 ASGI middleware의 공통 불변식을 하나의 자동화 추적표로 검증해야 한다. 개별 surface 테스트가 통과하더라도 필수 설정 전달 또는 민감 경로 동치성이 빠지면 merge-ready로 간주하지 않는다.
 
 ## Policies And Edge Cases
 
@@ -95,7 +97,7 @@ Connectors 기능은 외부 데이터 소스에 접속하기 위한 연결 정�
 - SSH tunnel compatibility는 기존 workflow DB connector 기능을 보존하기 위한 경계다. Knowledge source ingestion의 기본 경계와 다르며, SSH tunnel 허용은 remote shell command 실행 허용으로 해석하지 않는다.
 - SSH tunnel compatibility는 create/schema/runtime의 기존 계약에 한정된다. Strict `/connectors/test`는 ADR-0049에 따라 SSH를 열지 않는다.
 - Development exact-local profile은 로컬 시연 전용 배포 설정이며 Organization별 운영 private-network 권한이나 CIDR 승인 기능이 아니다.
-- Production Gateway는 32 byte 이상의 별도 connector-test admission HMAC key를 요구한다. Helm에서는 `secrets.connectorTestAdmissionHmacKey`로 provisioning하고 auth/session key와 재사용하지 않는다.
+- Production Gateway는 32 byte 이상의 별도 connector-test admission HMAC key를 요구한다. Helm에서는 `secrets.connectorTestAdmissionHmacKey`로 provisioning하고, Docker Compose에서는 외부 `CONNECTOR_TEST_ADMISSION_HMAC_KEY`를 컨테이너에 전달한다. 두 경로 모두 auth/session key와 재사용하지 않고 tracked 예시에 실제 값을 두지 않는다.
 - 현재 `DbProcessor`는 Knowledge DB source ingestion에서 저장된 `connection_id`를 조회하고 선택된 테이블/컬럼 기반 SQL을 생성한다. 이 ingestion lifecycle은 Knowledge feature 책임이다.
 - `connections`에는 `created_at/updated_at`과 `organization_id`가 없다.
 

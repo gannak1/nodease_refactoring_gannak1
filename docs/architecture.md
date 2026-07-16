@@ -340,8 +340,8 @@ Critical policy ownership:
 ### 통합 컨테이너 — `docker/docker-compose.yml`
 
 - 전체 서비스(postgres, redis, gateway, workflow_engine, log_system, frontend, sandbox, nginx, proxy)를 컨테이너로 실행한다.
-- Bundled Compose는 기본적으로 `NODE_ENV=development`다. 단일 서버 운영 배포로 사용할 때는 `NODE_ENV=production`, production session secret과 전용 login fingerprint keyring을 명시해 startup fail-closed 검증을 활성화해야 한다.
-- Nginx가 `:80` 단일 진입점이다: `/` → frontend, `/api`·`/ws` → gateway, `/health` → 단순 200. `/api/v1/hooks/`는 query-bearing request target이 access/error log에 남지 않게 해당 location log를 억제하고 1 MiB body와 5초 idle receive guard를 적용한다. Request buffering을 끄고 body를 Gateway로 즉시 stream해 application deadline이 지연되지 않게 한다. 이 edge guard는 Gateway의 actual-byte limit과 전체 processing deadline을 대체하지 않는다. Webhook 관측은 raw request target을 저장하지 않는 application status/metric/audit을 사용한다. Squid forward proxy(`:3128`)가 아웃바운드 경로를 제공한다.
+- Bundled Compose는 기본적으로 `NODE_ENV=development`다. 단일 서버 운영 배포로 사용할 때는 `NODE_ENV=production`, production session secret, 전용 login fingerprint keyring과 32 byte 이상의 별도 `CONNECTOR_TEST_ADMISSION_HMAC_KEY`를 명시해 startup fail-closed 검증을 활성화해야 한다. Connector key는 Compose가 외부 값의 이름만 Gateway에 전달하고 tracked env example에는 실제 값을 두지 않는다.
+- Nginx가 `:80` 단일 진입점이다: `/` → frontend, `/api`·`/ws` → gateway, `/health` → 단순 200. `/api/v1/hooks/`는 query-bearing request target이 access/error log에 남지 않게 해당 location log를 억제하고 1 MiB body와 5초 idle receive guard를 적용한다. Connector test canonical path와 단일 trailing-slash 동치 경로는 하나의 location에서 access/error log 억제, 32 KiB body, 5초 idle receive와 buffering off를 동일하게 적용하고 child path는 포함하지 않는다. Request buffering을 끄고 body를 Gateway로 즉시 stream해 application deadline이 지연되지 않게 한다. 이 edge guard는 Gateway의 actual-byte limit과 전체 processing deadline을 대체하지 않는다. Webhook과 Connector 관측은 raw request target을 저장하지 않는 application status/metric/audit을 사용한다. Squid forward proxy(`:3128`)가 아웃바운드 경로를 제공한다.
 
 ### Kubernetes — `infra/helm/moduly`
 

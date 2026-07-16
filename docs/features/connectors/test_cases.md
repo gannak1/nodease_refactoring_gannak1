@@ -146,6 +146,8 @@ Verified Against: feature/mba-246 @ 05b815ee0f35d3e955ab74119dad2446bb532345
 | CONN-TC-X025 | Port allowlist 기본값은 실행 위치의 실제 network port만 포함해야 한다. | Helm default/local/production, base Docker, Docker env example, host-run env example을 대조한다. | Helm·base Docker·Docker-service는 `5432`만, host-run은 `5432,55432`만 허용하며 관성적인 `54322`는 Connector allowlist에 없음. |
 | CONN-TC-X026 | Docker demo Gateway의 admission은 실제 전용 Redis를 사용해야 한다. | Demo verifier만 `connector-test-redis`를 사용하고 Gateway composition은 platform Redis singleton을 사용한다. | Gateway override가 Connector-specific DB 15 URL을 주입하고 composition이 별도 client를 생성·종료한다. Platform Redis 설정은 변경하지 않음. |
 | CONN-TC-X027 | Certificate validity API와 선언된 dependency 하한은 일치해야 한다. | `not_valid_before_utc`/`not_valid_after_utc`를 사용하면서 Gateway가 `cryptography<42` 설치를 허용한다. | Gateway dependency minimum이 `42.0.0` 이상이고 CA startup validation test가 UTC validity API를 실행한다. |
+| CONN-TC-X028 | Production Connector startup secret은 모든 지원 배포 표면에서 같은 fail-closed 계약을 가져야 한다. | Runtime과 Helm은 admission HMAC key를 요구하지만 base Docker Compose가 외부 값을 Gateway 컨테이너에 전달하지 않거나 tracked env example에 실제 key를 둔다. | Compose는 빈 development default를 보존하면서 외부 key 이름만 passthrough하고, production의 누락·짧은 값은 Gateway startup에서 실패한다. Helm required Secret 계약과 key 비재사용·비노출은 유지된다. |
+| CONN-TC-X029 | Connector test 민감 경로 집합은 Nginx와 ASGI sanitizer에서 일치해야 한다. | `/api/v1/connectors/test/`가 일반 `/api` location으로 떨어지거나 child path까지 Connector test로 취급된다. | Canonical path와 단일 trailing slash만 같은 32 KiB/5초/buffering-off/log-off 경계를 사용하고 child path는 두 matcher 모두에서 제외된다. |
 
 ## MBA-246 Automation Traceability
 
@@ -164,6 +166,7 @@ Verified Against: feature/mba-246 @ 05b815ee0f35d3e955ab74119dad2446bb532345
 | A036 | `apps/gateway/tests/application/connectors/test_connection.py`, `apps/gateway/tests/adapters/connectors/test_postgres_probe.py` | Application + executor reservation lifecycle |
 | A037, C008 | `apps/gateway/tests/api/test_connector_test_api.py`, `apps/client/app/features/knowledge/api/connectorApi.test.ts`, `DBConnectionForm.test.tsx` | CORS API + Client cooldown |
 | C015 | `apps/client/app/features/knowledge/api/connectorApi.test.ts`, document settings TypeScript contract | Client adapter normalization |
+| X028-X029 | `apps/gateway/tests/architecture/test_connector_deployment_contract.py` | Runtime + Compose + Helm + Nginx + ASGI deployment contract |
 
 실제 Redis/TLS test는 opt-in 환경 설정이 없으면 skip할 수 있지만 MBA-246 merge evidence에서는 skip을 허용하지 않는다. 각 실행은 UUID 기반 namespace만 삭제하고 logical Redis DB 전체를 초기화하지 않는다. 실제 credential, certificate 본문, fingerprint, raw request는 pytest output이나 문서에 기록하지 않는다.
 
