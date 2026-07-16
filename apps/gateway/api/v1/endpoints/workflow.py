@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
-from typing import Any, List, Literal, Optional
+from typing import Any, List, Literal, Mapping, Optional
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
@@ -94,6 +94,7 @@ from apps.shared.services.model_routing_cohort_drafts import (
     add_model_routing_cohort_draft,
     model_routing_cohort_drafts,
     remove_model_routing_cohort_draft,
+    required_model_routing_cohort_example_count,
     update_model_routing_cohort_draft,
 )
 from apps.workflow_engine.services.llm_service import (
@@ -354,6 +355,7 @@ class ModelRoutingCohortCreateRequest(ModelRoutingCohortSuggestRequest):
     key: str = Field(min_length=1, max_length=128)
     representative_examples: list[str] = Field(default_factory=list, max_length=5)
     fixed: bool = False
+    safety_protected: bool = False
 
 
 class ModelRoutingCohortUpdateRequest(ModelRoutingCohortCreateRequest):
@@ -1097,7 +1099,7 @@ def _model_routing_adaptive_summary(
             "source": "manual",
             "status": "draft",
             "required": draft["fixed"],
-            "safety_protected": False,
+            "safety_protected": draft.get("safety_protected", False),
             "observation_count": 0,
             "review_window_count": 0,
             "traffic_share": 0.0,
@@ -1159,6 +1161,16 @@ def _model_routing_adaptive_summary(
         .order_by(LLMNodeModelRoutingValidationBatch.created_at.desc())
         .first()
     )
+    latest_candidate_plan = (
+        latest_batch.candidate_plan
+        if latest_batch is not None and isinstance(latest_batch.candidate_plan, dict)
+        else {}
+    )
+    latest_error_summary = (
+        latest_batch.error_summary
+        if latest_batch is not None and isinstance(latest_batch.error_summary, dict)
+        else {}
+    )
     persisted_ids = {str(cohort.id) for cohort in cohorts}
     return {
         "validation_budget_usd": float(limit),
@@ -1212,6 +1224,16 @@ def _model_routing_adaptive_summary(
                 "completed_items": latest_batch.completed_items,
                 "reserved_cost": float(latest_batch.reserved_cost or 0),
                 "spent_cost": float(latest_batch.spent_cost or 0),
+                "bootstrap_wave": latest_candidate_plan.get("bootstrap_wave"),
+                "bootstrap_search_state": latest_error_summary.get(
+                    "bootstrap_search_state"
+                ),
+                "follow_up_batch_id": latest_error_summary.get(
+                    "follow_up_batch_id"
+                ),
+                "validated_route_count": int(
+                    latest_error_summary.get("validated_route_count") or 0
+                ),
                 "created_at": latest_batch.created_at.isoformat() if latest_batch.created_at else None,
             }
             if latest_batch is not None
@@ -1287,6 +1309,7 @@ def _upsert_model_routing_cohort_draft(
     representative_query: str,
     representative_examples: list[str] | None,
     fixed: bool,
+    safety_protected: bool,
 ) -> dict[str, Any]:
     """기존 배포 DB 입력군도 다음 배포가 읽을 graph draft로 보존한다."""
     updated = update_model_routing_cohort_draft(
@@ -1297,6 +1320,7 @@ def _upsert_model_routing_cohort_draft(
         representative_query=representative_query,
         representative_examples=representative_examples,
         fixed=fixed,
+        safety_protected=safety_protected,
     )
     if updated is not None:
         return updated
@@ -1308,6 +1332,7 @@ def _upsert_model_routing_cohort_draft(
         representative_query=representative_query,
         representative_examples=representative_examples,
         fixed=fixed,
+        safety_protected=safety_protected,
     )
 
 
@@ -1355,7 +1380,17 @@ def _extract_model_routing_cohort_suggestion(
         ),
         "representative_query": query,
         "representative_examples": examples,
+        "safety_protected": payload.get("safety_protected") is True,
     }
+
+
+def _cohort_suggestion_has_enough_examples(suggestion: Mapping[str, Any]) -> bool:
+    examples = suggestion.get("representative_examples")
+    count = len(examples) if isinstance(examples, list) else 0
+    required = required_model_routing_cohort_example_count(
+        suggestion.get("safety_protected") is True
+    )
+    return count >= required
 
 
 def _get_latest_model_routing_policy_update(
@@ -4223,6 +4258,17 @@ async def suggest_model_routing_cohort_endpoint(
     organization_id = workflow.organization_id
     if organization_id is None:
         raise HTTPException(status_code=409, detail="model_routing.organization_required")
+    wizard_system_prompt = (
+        "입력군 설정을 돕습니다. 반드시 JSON object 하나만 반환하세요. "
+        "형식: {\"label\": 한국어 짧은 이름, \"key\": 영문 snake_case 키, "
+        "\"representative_query\": 원문의 의미를 유지한 한국어 대표 문의, "
+        "\"representative_examples\": 서로 다른 표현과 상황을 사용한 한국어 예문 3~5개, "
+        "\"safety_protected\": 보안·개인정보·법무·SLA·금전 보상처럼 오답 위험이 큰 입력군이면 true}. "
+        "일반 입력군은 예문을 최소 3개, safety_protected가 true이면 반드시 5개 만드세요. "
+        "예문에는 대표 문의도 포함하고, 같은 문장의 단순 어미 변경은 피하세요. "
+        "이름, 이메일, 계정 ID, 전화번호, 회사 고유명 같은 식별 정보는 "
+        "복사하지 말고 일반적인 표현으로 바꾸세요."
+    )
     try:
         runtime = LLMService.get_wizard_client_for_user(
             db,
@@ -4231,25 +4277,29 @@ async def suggest_model_routing_cohort_endpoint(
             organization_id=organization_id,
             runtime_surface="model_routing_cohort_wizard",
         )
-        response = await runtime.client.invoke(
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "입력군 설정을 돕습니다. 반드시 JSON object 하나만 반환하세요. "
-                        "형식: {\\\"label\\\": 한국어 짧은 이름, \\\"key\\\": 영문 snake_case 키, "
-                        "\\\"representative_query\\\": 원문의 의미를 유지한 한국어 대표 문의, "
-                        "\\\"representative_examples\\\": 서로 다른 표현과 상황을 사용한 한국어 예문 3~5개}. "
-                        "예문에는 대표 문의도 포함하고, 같은 문장의 단순 어미 변경은 피하세요. "
-                        "이름, 이메일, 계정 ID, 전화번호, 회사 고유명 같은 식별 정보는 "
-                        "복사하지 말고 일반적인 표현으로 바꾸세요."
-                    ),
-                },
-                {"role": "user", "content": request_body.representative_query},
-            ],
-            temperature=0.1,
-            max_tokens=600,
-        )
+        for attempt in range(2):
+            response = await runtime.client.invoke(
+                [
+                    {
+                        "role": "system",
+                        "content": wizard_system_prompt
+                        + (
+                            " 이전 응답의 예문 수가 부족했습니다. 서로 다른 상황과 어휘를 사용해 필요한 개수를 반드시 채우세요."
+                            if attempt
+                            else ""
+                        ),
+                    },
+                    {"role": "user", "content": request_body.representative_query},
+                ],
+                temperature=0.3,
+                max_tokens=800,
+            )
+            suggestion = _extract_model_routing_cohort_suggestion(
+                response,
+                request_body.representative_query,
+            )
+            if _cohort_suggestion_has_enough_examples(suggestion):
+                return suggestion
     except Exception as exc:
         logger.warning(
             "[Model-Routing] cohort wizard failed: error_type=%s",
@@ -4259,9 +4309,9 @@ async def suggest_model_routing_cohort_endpoint(
             status_code=422,
             detail="model_routing.cohort_wizard_unavailable",
         ) from exc
-    return _extract_model_routing_cohort_suggestion(
-        response,
-        request_body.representative_query,
+    raise HTTPException(
+        status_code=422,
+        detail="model_routing.cohort_examples_insufficient",
     )
 
 
@@ -4296,6 +4346,7 @@ def create_model_routing_cohort_endpoint(
             representative_query=request_body.representative_query,
             representative_examples=request_body.representative_examples,
             fixed=request_body.fixed,
+            safety_protected=request_body.safety_protected,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -4349,6 +4400,7 @@ def create_model_routing_cohort_endpoint(
             representative_query=request_body.representative_query,
             representative_examples=request_body.representative_examples,
             fixed=request_body.fixed,
+            safety_protected=request_body.safety_protected,
             encoder_model_id=encoder_model_id,
             embed=runtime.client.embed_sync,
         )
@@ -4373,6 +4425,7 @@ def create_model_routing_cohort_endpoint(
         "label": cohort.label,
         "representative_query": request_body.representative_query,
         "representative_examples": draft["representative_examples"],
+        "safety_protected": request_body.safety_protected,
         "source": cohort.source,
         "status": cohort.status,
     }
@@ -4411,6 +4464,7 @@ def update_model_routing_cohort_endpoint(
             representative_query=request_body.representative_query,
             representative_examples=request_body.representative_examples,
             fixed=request_body.fixed,
+            safety_protected=request_body.safety_protected,
         )
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -4446,6 +4500,7 @@ def update_model_routing_cohort_endpoint(
                 representative_query=request_body.representative_query,
                 representative_examples=request_body.representative_examples,
                 fixed=request_body.fixed,
+                safety_protected=request_body.safety_protected,
             )
         except (ValueError, TypeError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -4488,6 +4543,7 @@ def update_model_routing_cohort_endpoint(
             representative_query=request_body.representative_query,
             representative_examples=request_body.representative_examples,
             fixed=request_body.fixed,
+            safety_protected=request_body.safety_protected,
             encoder_model_id=encoder_model_id,
             embed=runtime.client.embed_sync,
         )
@@ -4516,6 +4572,7 @@ def update_model_routing_cohort_endpoint(
         "label": cohort.label,
         "representative_query": request_body.representative_query,
         "representative_examples": updated_draft["representative_examples"],
+        "safety_protected": request_body.safety_protected,
         "source": cohort.source,
         "status": cohort.status,
     }
@@ -4573,6 +4630,7 @@ def convert_model_routing_cohort_to_manual_endpoint(
             representative_query=request_body.representative_query,
             representative_examples=request_body.representative_examples,
             fixed=request_body.fixed,
+            safety_protected=request_body.safety_protected,
         )
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -4615,6 +4673,7 @@ def convert_model_routing_cohort_to_manual_endpoint(
             representative_query=request_body.representative_query,
             representative_examples=request_body.representative_examples,
             fixed=request_body.fixed,
+            safety_protected=request_body.safety_protected,
             encoder_model_id=encoder_model_id,
             embed=runtime.client.embed_sync,
         )
@@ -4643,6 +4702,7 @@ def convert_model_routing_cohort_to_manual_endpoint(
         "label": cohort.label,
         "representative_query": request_body.representative_query,
         "representative_examples": request_body.representative_examples,
+        "safety_protected": request_body.safety_protected,
         "source": cohort.source,
         "status": cohort.status,
     }

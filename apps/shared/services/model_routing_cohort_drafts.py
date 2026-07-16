@@ -7,6 +7,32 @@ from typing import Any
 
 
 MAX_REPRESENTATIVE_EXAMPLES = 5
+MIN_REPRESENTATIVE_EXAMPLES = 3
+HIGH_RISK_MIN_REPRESENTATIVE_EXAMPLES = 5
+
+
+def normalize_model_routing_model_id(value: Any) -> str:
+    """모델 비교에만 쓰는 provider-agnostic ID를 만든다.
+
+    Google catalog처럼 ``models/`` 접두사가 붙는 경우와 OpenAI처럼 접두사가
+    없는 경우를 같은 모델로 다룬다. 실제 provider 호출에는 원래 catalog ID를
+    유지해야 하므로, 이 값은 권한/제외/중복 비교에만 사용한다.
+    """
+    return str(value or "").strip().lower().removeprefix("models/")
+
+
+def filter_model_routing_available_model_ids(
+    model_ids: list[str] | set[str] | tuple[str, ...],
+    *,
+    node_data: dict[str, Any],
+) -> list[str]:
+    """원래 catalog 표기를 보존한 채 node 제외 모델만 제거한다."""
+    excluded_model_ids = model_routing_excluded_model_ids(node_data)
+    return [
+        model_id
+        for model_id in model_ids
+        if normalize_model_routing_model_id(model_id) not in excluded_model_ids
+    ]
 
 
 def _representative_examples(
@@ -24,6 +50,25 @@ def _representative_examples(
     return normalized
 
 
+def required_model_routing_cohort_example_count(safety_protected: bool) -> int:
+    """일반 입력군과 고위험 입력군의 최소 대표 예문 수를 반환한다."""
+    return (
+        HIGH_RISK_MIN_REPRESENTATIVE_EXAMPLES
+        if safety_protected
+        else MIN_REPRESENTATIVE_EXAMPLES
+    )
+
+
+def validate_model_routing_cohort_examples(
+    representative_examples: list[str],
+    *,
+    safety_protected: bool,
+) -> None:
+    required = required_model_routing_cohort_example_count(safety_protected)
+    if len(representative_examples) < required:
+        raise ValueError("model_routing.cohort_examples_insufficient")
+
+
 def model_routing_excluded_model_ids(node_data: dict[str, Any]) -> set[str]:
     """노드가 자동 라우팅과 유료 검증에서 제외한 모델 ID를 정규화한다."""
     policy = node_data.get("model_routing_policy")
@@ -33,7 +78,7 @@ def model_routing_excluded_model_ids(node_data: dict[str, Any]) -> set[str]:
     return {
         normalized
         for value in raw_values
-        if (normalized := str(value or "").strip())
+        if (normalized := normalize_model_routing_model_id(value))
     }
 
 
@@ -71,6 +116,7 @@ def model_routing_cohort_drafts(node_data: dict[str, Any]) -> list[dict[str, Any
                 "representative_query": representative_query,
                 "representative_examples": representative_examples,
                 "fixed": bool(raw.get("fixed")),
+                "safety_protected": bool(raw.get("safety_protected")),
             }
         )
     return drafts
@@ -84,6 +130,7 @@ def add_model_routing_cohort_draft(
     representative_query: str,
     representative_examples: list[str] | None = None,
     fixed: bool,
+    safety_protected: bool = False,
     draft_id: str | uuid.UUID | None = None,
 ) -> dict[str, Any]:
     """입력군 초안을 node data에 추가하고 정규화된 항목을 반환한다."""
@@ -109,10 +156,15 @@ def add_model_routing_cohort_draft(
             str(representative_query or "").split()
         )[:2000],
         "fixed": bool(fixed),
+        "safety_protected": bool(safety_protected),
     }
     item["representative_examples"] = _representative_examples(
         item["representative_query"],
         representative_examples,
+    )
+    validate_model_routing_cohort_examples(
+        item["representative_examples"],
+        safety_protected=item["safety_protected"],
     )
     if not item["key"] or not item["label"] or not item["representative_query"]:
         raise ValueError("model_routing.cohort_invalid")
@@ -130,6 +182,7 @@ def update_model_routing_cohort_draft(
     representative_query: str,
     representative_examples: list[str] | None = None,
     fixed: bool,
+    safety_protected: bool = False,
 ) -> dict[str, Any] | None:
     """같은 draft UUID를 유지하면서 사용자가 바꾼 정의를 반영한다."""
     target_id = str(uuid.UUID(str(draft_id)))
@@ -150,10 +203,15 @@ def update_model_routing_cohort_draft(
             str(representative_query or "").split()
         )[:2000],
         "fixed": bool(fixed),
+        "safety_protected": bool(safety_protected),
     }
     updated["representative_examples"] = _representative_examples(
         updated["representative_query"],
         representative_examples,
+    )
+    validate_model_routing_cohort_examples(
+        updated["representative_examples"],
+        safety_protected=updated["safety_protected"],
     )
     if not updated["key"] or not updated["label"] or not updated["representative_query"]:
         raise ValueError("model_routing.cohort_invalid")

@@ -12,6 +12,9 @@ from apps.workflow_engine.services.model_routing_adaptive_cohorts import (
     CohortObservation,
     CohortState,
 )
+from apps.workflow_engine.services.model_routing_adaptive_policy import (
+    AdaptiveModelRoutingPolicyService,
+)
 from apps.workflow_engine.services.model_routing_adaptive_store import (
     AdaptiveModelRoutingCohortStore,
 )
@@ -24,6 +27,15 @@ def _observation(index: int, window: int, vector: tuple[float, ...]) -> CohortOb
         review_window=window,
         observed_at=datetime(2026, 7, 14, tzinfo=timezone.utc),
     )
+
+
+def test_adaptive_runtime_uses_five_percent_ambiguity_margin_by_default():
+    """서로 가까운 두 입력군은 5% 이상 벌어질 때만 확정 라우팅한다."""
+    aggregation, top_k, min_margin = AdaptiveModelRoutingCohortStore._semantic_runtime_options({})
+
+    assert aggregation == "top_k_mean"
+    assert top_k == 2
+    assert min_margin == 0.05
 
 
 def test_discovery_requires_distinct_inputs_in_two_review_windows():
@@ -158,6 +170,96 @@ def test_runtime_catalog_preserves_safety_routes_from_the_current_policy():
     ]
 
 
+def test_runtime_catalog_reserves_terms_from_unvalidated_manual_cohorts(monkeypatch):
+    """A62: 대기 입력군의 공통 단어가 활성 할인 rule의 보조 신호가 되면 안 된다."""
+    sales_id = uuid4()
+    platform_id = uuid4()
+    sales = SimpleNamespace(
+        id=sales_id,
+        cohort_key="sales_enablement",
+        label="영업 온보딩",
+        source="manual",
+        status="active",
+        required=False,
+        safety_protected=False,
+        centroid_embedding=[0.0, 1.0],
+        encoder_model_id="text-embedding-3-large",
+    )
+    platform = SimpleNamespace(
+        id=platform_id,
+        cohort_key="platform_access",
+        label="플랫폼 접근",
+        source="manual",
+        status="validating",
+        required=False,
+        safety_protected=False,
+        centroid_embedding=[1.0, 0.0],
+        encoder_model_id="text-embedding-3-large",
+    )
+
+    class _Query:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def filter(self, *_args):
+            return self
+
+        def order_by(self, *_args):
+            return self
+
+        def all(self):
+            return self.rows
+
+    class _Db:
+        def __init__(self):
+            self.cohort_query_count = 0
+
+        def query(self, model):
+            assert model is LLMNodeModelRoutingCohort
+            self.cohort_query_count += 1
+            return _Query(
+                [sales]
+                if self.cohort_query_count == 1
+                else [sales, platform]
+            )
+
+    texts_by_id = {
+        sales_id: (
+            "영업팀 신입이 CRM 권한을 신청하려면 무엇이 필요한가요?",
+            "CRM을 사용하기 전 영업 권한과 교육을 받고 싶습니다.",
+            "신규 영업 담당자의 CRM 접근 절차를 알려 주세요.",
+        ),
+        platform_id: (
+            "플랫폼개발팀 신입이 Git, VPN과 운영 조회 권한을 신청합니다.",
+            "개발 저장소와 VPN 권한은 어떤 순서로 신청하나요?",
+            "운영 로그를 조회하는 접근 권한을 준비하고 싶습니다.",
+        ),
+    }
+    monkeypatch.setattr(
+        AdaptiveModelRoutingCohortStore,
+        "_runtime_representative_embeddings",
+        classmethod(lambda cls, db, *, policy_id, cohort: ((1.0, 0.0),)),
+    )
+    monkeypatch.setattr(
+        AdaptiveModelRoutingCohortStore,
+        "_runtime_representative_texts",
+        classmethod(lambda cls, db, *, cohort: texts_by_id[cohort.id]),
+    )
+
+    catalog = AdaptiveModelRoutingCohortStore.build_runtime_catalog(
+        _Db(),
+        policy_id=uuid4(),
+        policy=SimpleNamespace(active_policy={}),
+        node_data={"model_routing_context": {"input_paths": ["question"]}},
+    )
+
+    signals = {
+        signal["term"] for signal in catalog["routes"][0]["lexical_signals"]
+    }
+    assert "crm" in signals
+    assert "권한" not in signals
+
+
 def test_runtime_catalog_projects_curated_and_recent_observation_vectors():
     """FR-011: runtime route는 대표 문의와 최근 운영 표현 벡터를 함께 사용한다."""
     cohort_id = uuid4()
@@ -218,6 +320,73 @@ def test_runtime_catalog_projects_curated_and_recent_observation_vectors():
         [0.4, 0.6],
         [0.6, 0.4],
     ]
+
+
+def test_runtime_catalog_uses_the_node_semantic_aggregation_for_calibration(
+    monkeypatch,
+):
+    """배포 설정이 centroid인데 적응형 catalog가 top-k로 바뀌면 안 된다."""
+    cohort_id = uuid4()
+    cohort = SimpleNamespace(
+        id=cohort_id,
+        cohort_key="routine_support",
+        label="일반 사용 안내",
+        source="manual",
+        status="active",
+        safety_protected=False,
+        centroid_embedding=[0.9, 0.1],
+        encoder_model_id="text-embedding-3-large",
+    )
+    representatives = (
+        (1.0, 0.0),
+        (0.8, 0.2),
+        (0.7, 0.3),
+    )
+
+    class _Query:
+        def filter(self, *_args):
+            return self
+
+        def order_by(self, *_args):
+            return self
+
+        def all(self):
+            return [cohort]
+
+    class _Db:
+        def query(self, model):
+            assert model is LLMNodeModelRoutingCohort
+            return _Query()
+
+    monkeypatch.setattr(
+        AdaptiveModelRoutingCohortStore,
+        "_runtime_representative_embeddings",
+        classmethod(lambda cls, db, *, policy_id, cohort: representatives),
+    )
+    monkeypatch.setattr(
+        AdaptiveModelRoutingCohortStore,
+        "_runtime_representative_texts",
+        classmethod(lambda cls, db, *, cohort: ()),
+    )
+    catalog = AdaptiveModelRoutingCohortStore.build_runtime_catalog(
+        _Db(),
+        policy_id=uuid4(),
+        policy=SimpleNamespace(active_policy={}),
+        node_data={
+            "model_routing_context": {
+                "semantic_router": {
+                    "input_paths": ["request.query"],
+                    "aggregation": "centroid",
+                    "top_k": 3,
+                    "min_margin": 0.08,
+                }
+            }
+        },
+    )
+
+    assert catalog["aggregation"] == "centroid"
+    assert catalog["top_k"] == 3
+    assert catalog["min_margin"] == 0.08
 
 
 def test_runtime_catalog_only_expands_manual_cohort_with_high_confidence_observations():
@@ -282,6 +451,80 @@ def test_runtime_catalog_only_expands_manual_cohort_with_high_confidence_observa
         [0.8, 0.2],
     ]
     assert catalog["routes"][0]["threshold"] == 0.60
+
+
+def test_runtime_catalog_uses_a_separately_calibrated_threshold_for_each_cohort(
+    monkeypatch,
+):
+    """FR-011: 각 입력군은 자신의 예문 분포로 계산한 매칭 기준을 사용한다."""
+    first_id = uuid4()
+    second_id = uuid4()
+    cohorts = [
+        SimpleNamespace(
+            id=first_id,
+            cohort_key="routine_support",
+            label="일반 사용 안내",
+            source="manual",
+            status="active",
+            safety_protected=False,
+            centroid_embedding=[1.0, 0.0],
+            encoder_model_id="text-embedding-3-large",
+        ),
+        SimpleNamespace(
+            id=second_id,
+            cohort_key="account_billing",
+            label="계정 및 결제",
+            source="manual",
+            status="active",
+            safety_protected=False,
+            centroid_embedding=[0.0, 1.0],
+            encoder_model_id="text-embedding-3-large",
+        ),
+    ]
+    representatives = {
+        first_id: ((1.0, 0.0), (0.99, 0.1), (0.97, 0.2)),
+        second_id: ((0.0, 1.0), (0.55, 0.84), (0.65, 0.76)),
+    }
+
+    class _Query:
+        def filter(self, *_args):
+            return self
+
+        def order_by(self, *_args):
+            return self
+
+        def all(self):
+            return cohorts
+
+    class _Db:
+        def query(self, model):
+            assert model is LLMNodeModelRoutingCohort
+            return _Query()
+
+    monkeypatch.setattr(
+        AdaptiveModelRoutingCohortStore,
+        "_runtime_representative_embeddings",
+        classmethod(
+            lambda cls, db, *, policy_id, cohort: representatives[cohort.id]
+        ),
+    )
+    monkeypatch.setattr(
+        AdaptiveModelRoutingCohortStore,
+        "_runtime_representative_texts",
+        classmethod(lambda cls, db, *, cohort: ()),
+    )
+
+    catalog = AdaptiveModelRoutingCohortStore.build_runtime_catalog(
+        _Db(),
+        policy_id=uuid4(),
+        policy=SimpleNamespace(active_policy={}),
+        node_data={"model_routing_context": {"input_paths": ["question"]}},
+    )
+
+    routes = {route["cohort_id"]: route for route in catalog["routes"]}
+    assert routes["routine_support"]["calibration"]["status"] == "calibrated"
+    assert routes["account_billing"]["calibration"]["status"] == "calibrated"
+    assert routes["routine_support"]["threshold"] != routes["account_billing"]["threshold"]
 
 
 def test_manual_and_auto_cohorts_reject_low_confidence_boundary_observations():
@@ -382,6 +625,35 @@ def test_observation_match_uses_top_two_example_average_per_cohort():
     assert matched is access
 
 
+def test_observation_match_uses_the_winning_cohorts_calibrated_threshold(monkeypatch):
+    """FR-011: 운영 관찰도 입력군별로 검증된 유사도 기준을 사용한다."""
+    cohort = SimpleNamespace(
+        id=uuid4(),
+        cohort_key="routine_support",
+        source="manual",
+        status="active",
+        centroid_embedding=[1.0, 0.0],
+    )
+    examples = [
+        [0.55, 0.8351646544],
+        [0.55, 0.8351646544],
+        [0.55, 0.8351646544],
+    ]
+    monkeypatch.setattr(
+        AdaptiveModelRoutingPolicyService,
+        "calibrate_similarity_threshold",
+        lambda **_kwargs: SimpleNamespace(threshold=0.50),
+    )
+
+    matched = AdaptiveModelRoutingCohortStore._match(
+        [1.0, 0.0],
+        [cohort],
+        example_embeddings_by_cohort={str(cohort.id): examples},
+    )
+
+    assert matched is cohort
+
+
 def test_runtime_catalog_uses_auto_cohort_match_threshold():
     """FR-011: 자동 발견 입력군의 runtime 경계도 관찰 저장 경계와 같다."""
     active_cohort = SimpleNamespace(
@@ -431,6 +703,102 @@ def test_runtime_catalog_uses_auto_cohort_match_threshold():
     )
 
     assert catalog["routes"][0]["threshold"] == 0.55
+
+
+def test_runtime_catalog_keeps_required_manual_cohorts_before_model_validation():
+    """FR-011: 모델 후보가 탈락해도 직접 정의한 필수 입력군의 분류 경계는 남는다."""
+    active_cohort = SimpleNamespace(
+        id=uuid4(),
+        cohort_key="routine_support",
+        label="일상 사용 안내",
+        source="manual",
+        status="active",
+        required=True,
+        safety_protected=False,
+        centroid_embedding=[1.0, 0.0],
+        encoder_model_id="text-embedding-3-large",
+    )
+    proposed_safety_cohort = SimpleNamespace(
+        id=uuid4(),
+        cohort_key="security_incident",
+        label="보안 사고",
+        source="manual",
+        status="proposed",
+        required=True,
+        safety_protected=True,
+        centroid_embedding=[0.0, 1.0],
+        encoder_model_id="text-embedding-3-large",
+    )
+    proposed_regular_cohort = SimpleNamespace(
+        id=uuid4(),
+        cohort_key="unvalidated_discount",
+        label="미검증 할인 후보",
+        source="manual",
+        status="proposed",
+        required=True,
+        safety_protected=False,
+        centroid_embedding=[0.5, 0.5],
+        encoder_model_id="text-embedding-3-large",
+    )
+    optional_regular_cohort = SimpleNamespace(
+        id=uuid4(),
+        cohort_key="untrusted_auto_candidate",
+        label="자동 발견 미검증 입력군",
+        source="auto",
+        status="proposed",
+        required=False,
+        safety_protected=False,
+        centroid_embedding=[0.4, 0.6],
+        encoder_model_id="text-embedding-3-large",
+    )
+
+    class _Query:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def filter(self, *_args):
+            return self
+
+        def order_by(self, *_args):
+            return self
+
+        def limit(self, value):
+            self.rows = self.rows[:value]
+            return self
+
+        def all(self):
+            return self.rows
+
+    class _Db:
+        def query(self, model):
+            if model is LLMNodeModelRoutingCohort:
+                return _Query([
+                    active_cohort,
+                    proposed_safety_cohort,
+                    proposed_regular_cohort,
+                    optional_regular_cohort,
+                ])
+            if model in {
+                LLMNodeModelRoutingCohortExample,
+                LLMNodeModelRoutingObservation,
+            }:
+                return _Query([])
+            raise AssertionError(f"unexpected query model: {model}")
+
+    catalog = AdaptiveModelRoutingCohortStore.build_runtime_catalog(
+        _Db(),
+        policy_id=uuid4(),
+        policy=SimpleNamespace(active_policy={}),
+        node_data={"model_routing_context": {"input_paths": ["question"]}},
+    )
+
+    routes = {route["cohort_id"]: route for route in catalog["routes"]}
+    assert set(routes) == {
+        "routine_support",
+        "security_incident",
+        "unvalidated_discount",
+    }
+    assert routes["security_incident"]["safety_override"] is True
 
 
 def test_non_required_declining_cohort_becomes_dormant_after_three_reviews():
@@ -610,6 +978,11 @@ def test_manual_cohort_edit_reembeds_and_invalidates_previous_evidence():
         label="청구서 발행 문의",
         cohort_key="invoice_issue",
         representative_query="결제는 완료됐지만 청구서가 발행되지 않았습니다.",
+        representative_examples=[
+            "결제는 완료됐지만 청구서가 발행되지 않았습니다.",
+            "지난달 결제 청구서를 찾을 수 없습니다.",
+            "회사 제출용 청구서를 다시 발급해 주세요.",
+        ],
         fixed=True,
         encoder_model_id="text-embedding-3-large",
         embed=lambda _text: [1.0, 0.0],
@@ -751,6 +1124,11 @@ def test_manual_cohort_edit_unmatches_observations_from_the_previous_definition(
         label="청구서 발행 문의",
         cohort_key="invoice_issue",
         representative_query="결제는 완료됐지만 청구서가 발행되지 않았습니다.",
+        representative_examples=[
+            "결제는 완료됐지만 청구서가 발행되지 않았습니다.",
+            "지난달 결제 청구서를 찾을 수 없습니다.",
+            "회사 제출용 청구서를 다시 발급해 주세요.",
+        ],
         fixed=False,
         encoder_model_id="text-embedding-3-large",
         embed=lambda _text: [1.0, 0.0],

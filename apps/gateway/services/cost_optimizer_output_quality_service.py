@@ -25,6 +25,7 @@ class CostOptimizerOutputQualityService:
         "instruction_fulfillment",
         "relevance_completeness",
         "clarity_consistency",
+        "factual_reliability",
     )
     JUDGE_OMITTED_FIELDS = frozenset(
         {
@@ -279,6 +280,17 @@ class CostOptimizerOutputQualityService:
             "task": "Evaluate two anonymized LLM outputs for the same input.",
             "dimensions": list(dimensions),
             "scoring": "Score each dimension from 0 to 100. Do not assume either variant is correct.",
+            "evaluation_policy": {
+                "unsupported_specific_claims": "penalize",
+                "transparent_uncertainty": "do_not_penalize",
+            },
+            "dimension_guidance": {
+                "factual_reliability": (
+                    "Penalize product-specific, organizational, or factual details "
+                    "that are not supported by the provided input or authoritative evidence. "
+                    "Transparent uncertainty is safer than invented specificity."
+                ),
+            },
             "response_schema": {
                 "variant_left": {dimension: "0..100" for dimension in dimensions},
                 "variant_right": {dimension: "0..100" for dimension in dimensions},
@@ -293,6 +305,10 @@ class CostOptimizerOutputQualityService:
                 "content": (
                     "Return JSON only. Evaluate each anonymized variant independently and fairly. "
                     "Do not identify a baseline, a candidate, or a ground-truth answer. "
+                    "When the input provides no authoritative evidence for a product-specific or factual claim, "
+                    "penalize unsupported specific instructions in factual_reliability and do not penalize "
+                    "transparent uncertainty. Treat authoritative_evidence_available=false as no factual basis "
+                    "for organization-specific locations, policies, limits, or procedures. "
                     "Do not quote sensitive source content in the response."
                 ),
             },
@@ -330,6 +346,7 @@ class CostOptimizerOutputQualityService:
             ),
             "output": cls._judge_visible_value(output),
             "rag_enabled": bool(rag_summary),
+            "authoritative_evidence_available": bool(rag_summary),
             "rag_summary": cls._safe_rag_summary(rag_summary),
         }
 

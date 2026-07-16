@@ -127,7 +127,8 @@ def test_cohort_wizard_extracts_diverse_representative_examples():
                             \"퇴사자의 VPN 권한을 회수하고 싶습니다.\",
                             \"신규 입사자가 SSO로 로그인하지 못합니다.\",
                             \"휴대전화 교체 후 MFA를 다시 등록하고 싶습니다.\"
-                        ]
+                        ],
+                        \"safety_protected\": true
                     }"""
                 }
             }
@@ -144,6 +145,120 @@ def test_cohort_wizard_extracts_diverse_representative_examples():
         "신규 입사자가 SSO로 로그인하지 못합니다.",
         "휴대전화 교체 후 MFA를 다시 등록하고 싶습니다.",
     ]
+    assert suggestion["safety_protected"] is True
+    assert workflow_endpoint._cohort_suggestion_has_enough_examples(suggestion) is False
+
+
+def test_cohort_wizard_requires_five_examples_for_a_high_risk_cohort():
+    suggestion = {
+        "representative_examples": [
+            "보안 사고가 발생했습니다.",
+            "관리자 계정이 탈취됐습니다.",
+            "개인정보가 외부로 유출됐습니다.",
+            "SLA 위반 장애를 검토해 주세요.",
+            "공개 저장소에 비밀키가 올라갔습니다.",
+        ],
+        "safety_protected": True,
+    }
+
+    assert workflow_endpoint._cohort_suggestion_has_enough_examples(suggestion) is True
+
+
+def test_high_risk_draft_summary_preserves_safety_protection():
+    draft_id = uuid4()
+    summary = workflow_endpoint._model_routing_adaptive_summary(
+        MagicMock(),
+        None,
+        node_data={
+            "model_routing_policy": {
+                "cohort_drafts": [
+                    {
+                        "id": str(draft_id),
+                        "key": "security_incident",
+                        "label": "보안 사고",
+                        "representative_query": "관리자 계정 탈취가 의심됩니다.",
+                        "representative_examples": [
+                            "관리자 계정 탈취가 의심됩니다.",
+                            "개인정보가 외부로 유출됐습니다.",
+                            "공개 저장소에 비밀키가 올라갔습니다.",
+                            "보안 사고로 서비스가 중단됐습니다.",
+                            "법무 검토가 필요한 침해 사고입니다.",
+                        ],
+                        "fixed": True,
+                        "safety_protected": True,
+                    }
+                ]
+            }
+        },
+    )
+
+    assert summary["cohorts"][0]["safety_protected"] is True
+
+
+def test_adaptive_summary_exposes_safe_bootstrap_search_completion():
+    """실험/UI가 한 wave 완료를 전체 bootstrap 완료로 오해하지 않아야 한다."""
+
+    policy_id = uuid4()
+    policy = SimpleNamespace(
+        id=policy_id,
+        validation_budget_usd=3,
+        max_cohorts=6,
+    )
+    latest_batch = SimpleNamespace(
+        id=uuid4(),
+        status="completed",
+        trigger="deployment_bootstrap",
+        total_items=4,
+        completed_items=4,
+        reserved_cost=0,
+        spent_cost=0.04,
+        created_at=None,
+        candidate_plan={"bootstrap_wave": 2},
+        error_summary={
+            "bootstrap_search_state": "completed_with_routes",
+            "follow_up_batch_id": None,
+            "validated_route_count": 2,
+        },
+    )
+
+    class _Query:
+        def __init__(self, *, rows=None, row=None):
+            self.rows = rows or []
+            self.row = row
+
+        def filter(self, *_args):
+            return self
+
+        def order_by(self, *_args):
+            return self
+
+        def all(self):
+            return self.rows
+
+        def first(self):
+            return self.row
+
+    db = SimpleNamespace(
+        query=MagicMock(
+            side_effect=[
+                _Query(rows=[]),
+                _Query(rows=[]),
+                _Query(rows=[]),
+                _Query(row=None),
+                _Query(row=latest_batch),
+            ]
+        )
+    )
+
+    summary = workflow_endpoint._model_routing_adaptive_summary(db, policy)
+
+    assert summary["latest_batch"]["bootstrap_wave"] == 2
+    assert (
+        summary["latest_batch"]["bootstrap_search_state"]
+        == "completed_with_routes"
+    )
+    assert summary["latest_batch"]["follow_up_batch_id"] is None
+    assert summary["latest_batch"]["validated_route_count"] == 2
 
 
 def _configure_cost_optimizer_experiment_query(db, experiment):
@@ -793,7 +908,12 @@ class TestModelRoutingPolicyApi:
                                 "content": (
                                     '{"label":"결제 오류 문의",'
                                     '"key":"billing_issue",'
-                                    '"representative_query":"결제가 완료됐는데 서비스 이용이 되지 않습니다."}'
+                                    '"representative_query":"결제가 완료됐는데 서비스 이용이 되지 않습니다.",'
+                                    '"representative_examples":['
+                                    '"결제가 완료됐는데 서비스 이용이 되지 않습니다.",'
+                                    '"결제 후에도 팀 기능이 열리지 않습니다.",'
+                                    '"구독 결제는 성공했지만 계정이 무료 상태입니다."],'
+                                    '"safety_protected":false}'
                                 )
                             }
                         }
@@ -821,7 +941,12 @@ class TestModelRoutingPolicyApi:
             "label": "결제 오류 문의",
             "key": "billing_issue",
             "representative_query": "결제가 완료됐는데 서비스 이용이 되지 않습니다.",
-            "representative_examples": ["결제가 완료됐는데 서비스 이용이 되지 않습니다."],
+            "representative_examples": [
+                "결제가 완료됐는데 서비스 이용이 되지 않습니다.",
+                "결제 후에도 팀 기능이 열리지 않습니다.",
+                "구독 결제는 성공했지만 계정이 무료 상태입니다.",
+            ],
+            "safety_protected": False,
         }
         ensure_deployer.assert_called_once_with(
             db, SimpleNamespace(id=user_id), str(workflow_id), "deploy"
@@ -915,6 +1040,11 @@ class TestModelRoutingPolicyApi:
                     "label": "결제 오류 문의",
                     "key": "billing_issue",
                     "representative_query": "결제가 완료됐는데 서비스 이용이 되지 않습니다.",
+                    "representative_examples": [
+                        "결제가 완료됐는데 서비스 이용이 되지 않습니다.",
+                        "결제 후에도 팀 기능이 열리지 않습니다.",
+                        "구독 결제는 성공했지만 계정이 무료 상태입니다.",
+                    ],
                     "fixed": True,
                 },
             )
@@ -925,7 +1055,12 @@ class TestModelRoutingPolicyApi:
             "key": "billing_issue",
             "label": "결제 오류 문의",
             "representative_query": "결제가 완료됐는데 서비스 이용이 되지 않습니다.",
-            "representative_examples": ["결제가 완료됐는데 서비스 이용이 되지 않습니다."],
+            "representative_examples": [
+                "결제가 완료됐는데 서비스 이용이 되지 않습니다.",
+                "결제 후에도 팀 기능이 열리지 않습니다.",
+                "구독 결제는 성공했지만 계정이 무료 상태입니다.",
+            ],
+            "safety_protected": False,
             "source": "manual",
             "status": "proposed",
         }
@@ -992,6 +1127,11 @@ class TestModelRoutingPolicyApi:
                     "label": "공통 계정·보안 온보딩",
                     "key": "common_account_security",
                     "representative_query": "입사 첫날 SSO와 보안 교육 순서를 알려 주세요.",
+                    "representative_examples": [
+                        "입사 첫날 SSO와 보안 교육 순서를 알려 주세요.",
+                        "신규 입사자가 MFA를 등록하는 절차가 궁금합니다.",
+                        "첫 출근 전에 계정 보안 설정을 완료하고 싶습니다.",
+                    ],
                     "fixed": True,
                 },
             )
@@ -1009,8 +1149,13 @@ class TestModelRoutingPolicyApi:
                 "key": "common_account_security",
                 "label": "공통 계정·보안 온보딩",
                 "representative_query": "입사 첫날 SSO와 보안 교육 순서를 알려 주세요.",
-                "representative_examples": ["입사 첫날 SSO와 보안 교육 순서를 알려 주세요."],
+                "representative_examples": [
+                    "입사 첫날 SSO와 보안 교육 순서를 알려 주세요.",
+                    "신규 입사자가 MFA를 등록하는 절차가 궁금합니다.",
+                    "첫 출근 전에 계정 보안 설정을 완료하고 싶습니다.",
+                ],
                 "fixed": True,
+                "safety_protected": False,
             }
         ]
         get_runtime_client.assert_not_called()
@@ -1073,6 +1218,11 @@ class TestModelRoutingPolicyApi:
                     "label": "플랫폼 개발환경·접근 신청",
                     "key": "platform_development_access",
                     "representative_query": "Git, VPN과 운영 조회 권한 신청 순서를 알려 주세요.",
+                    "representative_examples": [
+                        "Git, VPN과 운영 조회 권한 신청 순서를 알려 주세요.",
+                        "개발 환경 접근 권한은 어떤 순서로 신청하나요?",
+                        "신입 개발자의 저장소와 VPN 권한이 필요합니다.",
+                    ],
                     "fixed": True,
                 },
             )
@@ -1192,6 +1342,11 @@ class TestModelRoutingPolicyApi:
                     "label": "영수증 발급 문의",
                     "key": "billing_receipt_issue",
                     "representative_query": "결제는 완료됐는데 영수증을 다시 발급받고 싶습니다.",
+                    "representative_examples": [
+                        "결제는 완료됐는데 영수증을 다시 발급받고 싶습니다.",
+                        "지난달 결제 영수증을 찾을 수 없습니다.",
+                        "회사 제출용 결제 증빙을 다시 내려받고 싶습니다.",
+                    ],
                     "fixed": False,
                 },
             )
@@ -1202,7 +1357,12 @@ class TestModelRoutingPolicyApi:
             "key": "billing_receipt_issue",
             "label": "영수증 발급 문의",
             "representative_query": "결제는 완료됐는데 영수증을 다시 발급받고 싶습니다.",
-            "representative_examples": ["결제는 완료됐는데 영수증을 다시 발급받고 싶습니다."],
+            "representative_examples": [
+                "결제는 완료됐는데 영수증을 다시 발급받고 싶습니다.",
+                "지난달 결제 영수증을 찾을 수 없습니다.",
+                "회사 제출용 결제 증빙을 다시 내려받고 싶습니다.",
+            ],
+            "safety_protected": False,
             "source": "manual",
             "status": "proposed",
         }
@@ -1217,8 +1377,13 @@ class TestModelRoutingPolicyApi:
                 "key": "billing_receipt_issue",
                 "label": "영수증 발급 문의",
                 "representative_query": "결제는 완료됐는데 영수증을 다시 발급받고 싶습니다.",
-                "representative_examples": ["결제는 완료됐는데 영수증을 다시 발급받고 싶습니다."],
+                "representative_examples": [
+                    "결제는 완료됐는데 영수증을 다시 발급받고 싶습니다.",
+                    "지난달 결제 영수증을 찾을 수 없습니다.",
+                    "회사 제출용 결제 증빙을 다시 내려받고 싶습니다.",
+                ],
                 "fixed": False,
+                "safety_protected": False,
             }
         ]
         db.commit.assert_called_once()
@@ -1311,6 +1476,11 @@ class TestModelRoutingPolicyApi:
                     "label": "계정 접근 문의",
                     "key": "account_access",
                     "representative_query": "로그인할 수 없어 계정 접근을 도와주세요.",
+                    "representative_examples": [
+                        "로그인할 수 없어 계정 접근을 도와주세요.",
+                        "SSO 인증이 반복해서 실패합니다.",
+                        "MFA 기기 변경 후 계정에 접근할 수 없습니다.",
+                    ],
                     "fixed": False,
                 },
             )
@@ -1329,8 +1499,13 @@ class TestModelRoutingPolicyApi:
                 "key": "account_access",
                 "label": "계정 접근 문의",
                 "representative_query": "로그인할 수 없어 계정 접근을 도와주세요.",
-                "representative_examples": ["로그인할 수 없어 계정 접근을 도와주세요."],
+                "representative_examples": [
+                    "로그인할 수 없어 계정 접근을 도와주세요.",
+                    "SSO 인증이 반복해서 실패합니다.",
+                    "MFA 기기 변경 후 계정에 접근할 수 없습니다.",
+                ],
                 "fixed": False,
+                "safety_protected": False,
             }
         ]
         db.commit.assert_called_once()

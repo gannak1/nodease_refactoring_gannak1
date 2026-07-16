@@ -15,16 +15,19 @@ class CandidateValidationRequest:
 @dataclass(frozen=True)
 class CohortValidationInput:
     cohort_id: str
-    observation_ids: tuple[str, ...]
     candidates: tuple[CandidateValidationRequest, ...]
+    observation_ids: tuple[str, ...] = ()
+    cohort_example_ids: tuple[str, ...] = ()
+    required_replays: int = 5
 
 
 @dataclass(frozen=True)
 class PlannedValidationItem:
     cohort_id: str
-    observation_id: str
     model_id: str
     estimated_cost_usd: float
+    observation_id: str | None = None
+    cohort_example_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -51,15 +54,26 @@ class ModelRoutingValidationPlanner:
         total = 0.0
 
         for cohort in cohorts:
+            required_replays = max(
+                1,
+                min(cls.REPLAYS_PER_CANDIDATE, int(cohort.required_replays)),
+            )
             observation_ids = tuple(dict.fromkeys(cohort.observation_ids))[
-                : cls.REPLAYS_PER_CANDIDATE
+                :required_replays
             ]
-            if len(observation_ids) < cls.REPLAYS_PER_CANDIDATE:
+            cohort_example_ids = tuple(dict.fromkeys(cohort.cohort_example_ids))[
+                :required_replays
+            ]
+            if observation_ids:
+                replay_sources = tuple((item, None) for item in observation_ids)
+            else:
+                replay_sources = tuple((None, item) for item in cohort_example_ids)
+            if len(replay_sources) < required_replays:
                 continue
             for candidate in cohort.candidates:
                 estimated = max(0.0, float(candidate.estimated_item_cost))
-                candidate_total = estimated * cls.REPLAYS_PER_CANDIDATE
-                # 후보 한 개의 검증은 5개 대표 입력을 모두 처리할 때만 유효하다.
+                candidate_total = estimated * required_replays
+                # 후보 한 개의 검증은 계획한 대표 입력을 모두 처리할 때만 유효하다.
                 if total + candidate_total > remaining + 1e-12:
                     if not items:
                         return ValidationPlan(
@@ -75,11 +89,12 @@ class ModelRoutingValidationPlanner:
                 items.extend(
                     PlannedValidationItem(
                         cohort_id=cohort.cohort_id,
-                        observation_id=observation_id,
                         model_id=candidate.model_id,
                         estimated_cost_usd=estimated,
+                        observation_id=observation_id,
+                        cohort_example_id=cohort_example_id,
                     )
-                    for observation_id in observation_ids
+                    for observation_id, cohort_example_id in replay_sources
                 )
                 total += candidate_total
 

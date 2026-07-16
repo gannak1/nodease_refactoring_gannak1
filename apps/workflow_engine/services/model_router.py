@@ -444,7 +444,7 @@ class ModelRouter:
             if isinstance(rule, dict)
         ]
         normalized_rules.sort(key=cls._rule_sort_key)
-
+        safety_guarded = False
         for rule in normalized_rules:
             if not cls._matches_rule(
                 rule.get("when"),
@@ -453,6 +453,13 @@ class ModelRouter:
                     semantic_match.cohort_id if semantic_match is not None else None
                 ),
             ):
+                continue
+            if cls._should_hold_validated_rule_for_safety(
+                rule,
+                semantic_match,
+                semantic_router,
+            ):
+                safety_guarded = True
                 continue
             selected_model = cls._first_non_empty(rule.get("selected_model_id"))
             rule_fallback_model = cls._first_non_empty(rule.get("fallback_model_id"))
@@ -501,7 +508,9 @@ class ModelRouter:
             exclude=selected_model,
         )
         default_reason = "policy_default"
-        if semantic_match is not None:
+        if safety_guarded:
+            default_reason = "semantic_safety_guard_default"
+        elif semantic_match is not None:
             default_reason = (
                 "semantic_matched_no_rule_default"
                 if semantic_match.status == "matched"
@@ -517,6 +526,51 @@ class ModelRouter:
             runtime_context=runtime_context,
             semantic_match=semantic_match,
         )
+
+    @classmethod
+    def _should_hold_validated_rule_for_safety(
+        cls,
+        rule: dict[str, Any],
+        semantic_match: Optional[SemanticRouteMatch],
+        semantic_router: Any,
+    ) -> bool:
+        """Keep the default model when a validated cheap route overlaps safety evidence."""
+        if (
+            rule.get("reason_code") != "validated_adaptive_cohort"
+            or semantic_match is None
+            or semantic_match.safety_override
+            or not isinstance(semantic_router, dict)
+        ):
+            return False
+
+        matched_cohort_id = semantic_match.cohort_id
+        if not matched_cohort_id:
+            return False
+        scores_by_cohort = {
+            score.cohort_id: score.similarity
+            for score in semantic_match.candidate_scores
+        }
+        routes = semantic_router.get("routes")
+        for route in routes if isinstance(routes, list) else []:
+            if not isinstance(route, dict) or not route.get("safety_override"):
+                continue
+            safety_cohort_id = cls._first_non_empty(route.get("cohort_id"))
+            if not safety_cohort_id or safety_cohort_id == matched_cohort_id:
+                continue
+            safety_score = scores_by_cohort.get(safety_cohort_id)
+            threshold_value = route.get("dense_override_threshold")
+            if threshold_value is None:
+                threshold_value = route.get("threshold")
+            try:
+                safety_threshold = float(threshold_value)
+            except (TypeError, ValueError):
+                continue
+            if (
+                safety_score is not None
+                and safety_score >= max(0.0, safety_threshold)
+            ):
+                return True
+        return False
 
     @classmethod
     def infer_runtime_context(

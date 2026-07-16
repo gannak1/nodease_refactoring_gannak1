@@ -1,5 +1,6 @@
 import copy
 import secrets
+import uuid
 from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
@@ -1403,6 +1404,7 @@ class AppService:
             if node_type == "llmNode":
                 data.pop("knowledgeBases", None)
                 data.pop("knowledgeCollections", None)
+                AppService._regenerate_model_routing_cohort_draft_ids(data)
             elif node_type == "githubNode":
                 data.pop("api_token", None)
             elif node_type == "httpRequestNode":
@@ -1422,6 +1424,19 @@ class AppService:
                 pending.extend(nested)
 
         return cleaned_data
+
+    @staticmethod
+    def _regenerate_model_routing_cohort_draft_ids(node_data: dict) -> None:
+        """복제된 workflow가 원본 policy의 cohort UUID를 재사용하지 않게 한다."""
+        policy = node_data.get("model_routing_policy")
+        if not isinstance(policy, dict):
+            return
+        drafts = policy.get("cohort_drafts")
+        if not isinstance(drafts, list):
+            return
+        for draft in drafts:
+            if isinstance(draft, dict):
+                draft["id"] = str(uuid.uuid4())
 
     @staticmethod
     def _generate_url_slug(db: Session, name: str) -> str:

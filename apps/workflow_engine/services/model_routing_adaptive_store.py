@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from sqlalchemy import and_, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -24,6 +25,9 @@ from apps.shared.db.models.model_routing_cohort import (
 )
 from apps.shared.db.models.model_routing_policy import LLMNodeModelRoutingPolicy
 from apps.shared.db.models.workflow_run import WorkflowNodeRun, WorkflowRun
+from apps.shared.services.model_routing_cohort_drafts import (
+    validate_model_routing_cohort_examples,
+)
 from apps.shared.services.node_config_fingerprint import llm_node_config_fingerprint
 from apps.workflow_engine.services.model_router import ModelRouter
 from apps.workflow_engine.services.model_routing_adaptive_cohorts import (
@@ -93,11 +97,17 @@ class AdaptiveModelRoutingCohortStore:
             db,
             cohorts=cohorts,
         )
+        aggregation, top_k, min_margin = cls._semantic_runtime_options(
+            node_data,
+            policy=policy,
+        )
         matched = cls._match(
             vector,
             cohorts,
-            min_margin=cls._match_min_margin(policy, node_data),
+            min_margin=min_margin,
             example_embeddings_by_cohort=example_embeddings_by_cohort,
+            aggregation=aggregation,
+            top_k=top_k,
         )
         observation_count = (
             db.query(LLMNodeModelRoutingObservation)
@@ -271,6 +281,7 @@ class AdaptiveModelRoutingCohortStore:
         representative_query: str,
         representative_examples: Sequence[str] | None = None,
         fixed: bool,
+        safety_protected: bool = False,
         encoder_model_id: str,
         embed: EmbeddingFunction,
     ) -> LLMNodeModelRoutingCohort:
@@ -299,6 +310,10 @@ class AdaptiveModelRoutingCohortStore:
             normalized_query,
             representative_examples,
         )
+        validate_model_routing_cohort_examples(
+            examples,
+            safety_protected=safety_protected,
+        )
         vectors = [cls._embedding(embed, text) for text in examples]
         if any(not vector for vector in vectors):
             raise ValueError("model_routing.cohort_embedding_failed")
@@ -316,7 +331,7 @@ class AdaptiveModelRoutingCohortStore:
             # 고정 입력군만 저빈도여도 자동 휴면/종료 처리하지 않는다. 직접 등록한
             # 입력군이라도 고정을 해제하면 실제 traffic 변화에 따라 lifecycle을 따른다.
             required=bool(fixed),
-            safety_protected=False,
+            safety_protected=bool(safety_protected),
             encoder_model_id=str(encoder_model_id),
             centroid_embedding=centroid,
             node_config_fingerprint=llm_node_config_fingerprint(node_data),
@@ -355,6 +370,7 @@ class AdaptiveModelRoutingCohortStore:
         representative_query: str,
         representative_examples: Sequence[str] | None = None,
         fixed: bool,
+        safety_protected: bool = False,
         encoder_model_id: str,
         embed: EmbeddingFunction,
     ) -> LLMNodeModelRoutingCohort:
@@ -384,6 +400,10 @@ class AdaptiveModelRoutingCohortStore:
             normalized_query,
             representative_examples,
         )
+        validate_model_routing_cohort_examples(
+            examples,
+            safety_protected=safety_protected,
+        )
         vectors = [cls._embedding(embed, text) for text in examples]
         if any(not vector for vector in vectors):
             raise ValueError("model_routing.cohort_embedding_failed")
@@ -394,6 +414,7 @@ class AdaptiveModelRoutingCohortStore:
         cohort.label = normalized_label
         cohort.label_en = normalized_key
         cohort.required = bool(fixed)
+        cohort.safety_protected = bool(safety_protected)
         cohort.encoder_model_id = str(encoder_model_id)
         cohort.centroid_embedding = centroid
         cohort.status = "proposed"
@@ -467,6 +488,7 @@ class AdaptiveModelRoutingCohortStore:
         representative_query: str,
         representative_examples: Sequence[str] | None = None,
         fixed: bool,
+        safety_protected: bool = False,
         encoder_model_id: str,
         embed: EmbeddingFunction,
     ) -> LLMNodeModelRoutingCohort:
@@ -484,6 +506,7 @@ class AdaptiveModelRoutingCohortStore:
             representative_query=representative_query,
             representative_examples=representative_examples,
             fixed=fixed,
+            safety_protected=safety_protected,
             encoder_model_id=encoder_model_id,
             embed=embed,
         )
@@ -497,45 +520,117 @@ class AdaptiveModelRoutingCohortStore:
         policy: LLMNodeModelRoutingPolicy,
         node_data: dict[str, Any],
     ) -> dict[str, Any] | None:
-        """검증되어 active인 cohort를 기존 semantic matcher의 catalog로 투영한다."""
+        """매칭 가능한 cohort를 기존 semantic matcher의 catalog로 투영한다.
+
+        모델 후보의 비용·품질 검증에 실패한 것과 입력군 정의 자체가 무효인 것은
+        다르다. 사용자가 예시를 제공한 필수 manual cohort는 계속 분류하되, 해당
+        cohort에 검증된 할인 rule이 없으면 runtime evaluator가 기본 모델을 쓴다.
+        """
         cohorts = (
             db.query(LLMNodeModelRoutingCohort)
             .filter(LLMNodeModelRoutingCohort.policy_id == policy_id)
-            .filter(LLMNodeModelRoutingCohort.status == "active")
+            .filter(
+                or_(
+                    LLMNodeModelRoutingCohort.status == "active",
+                    LLMNodeModelRoutingCohort.safety_protected.is_(True),
+                    and_(
+                        LLMNodeModelRoutingCohort.source == "manual",
+                        LLMNodeModelRoutingCohort.required.is_(True),
+                        LLMNodeModelRoutingCohort.status.in_(
+                            ["proposed", "validating", "validated_waiting"]
+                        ),
+                    ),
+                )
+            )
             .order_by(LLMNodeModelRoutingCohort.cohort_key.asc())
             .all()
         )
         if not cohorts:
             return None
+        # 아직 활성 rule이 아닌 입력군도 공통 단어의 예약 집합에는 포함한다.
+        # 그렇지 않으면 "권한"처럼 다른 초안에도 있는 단어가 현재 활성 route에만
+        # 고유한 것처럼 보여, 검증 대기 입력을 잘못된 저비용 모델로 보낼 수 있다.
+        lexical_cohorts = (
+            db.query(LLMNodeModelRoutingCohort)
+            .filter(LLMNodeModelRoutingCohort.policy_id == policy_id)
+            .filter(LLMNodeModelRoutingCohort.status != "retired")
+            .order_by(LLMNodeModelRoutingCohort.cohort_key.asc())
+            .all()
+        )
         encoder_model_id = str(cohorts[0].encoder_model_id or "").strip()
         if not encoder_model_id:
             return None
-        routes = [
-            AdaptiveCohortRoute(
-                cohort_id=str(cohort.cohort_key),
-                label=str(cohort.label),
-                status=str(cohort.status),
-                validated=True,
-                centroid_embedding=tuple(cohort.centroid_embedding or ()),
-                representative_embeddings=cls._runtime_representative_embeddings(
-                    db,
-                    policy_id=policy_id,
-                    cohort=cohort,
-                ),
-                safety_override=bool(cohort.safety_protected),
-                threshold=(
-                    cls.MANUAL_SIMILARITY_THRESHOLD
-                    if str(getattr(cohort, "source", "")) == "manual"
-                    else cls.AUTO_MATCH_SIMILARITY_THRESHOLD
-                ),
+        representatives_by_cohort = {
+            cohort.id: cls._runtime_representative_embeddings(
+                db,
+                policy_id=policy_id,
+                cohort=cohort,
             )
             for cohort in cohorts
-        ]
+        }
+        representative_texts_by_cohort = {
+            cohort.id: cls._runtime_representative_texts(
+                db,
+                cohort=cohort,
+            )
+            for cohort in cohorts
+        }
+        lexical_representative_texts = {
+            str(cohort.cohort_key): cls._runtime_representative_texts(
+                db,
+                cohort=cohort,
+            )
+            for cohort in lexical_cohorts
+        }
+        aggregation, top_k, min_margin = cls._semantic_runtime_options(node_data)
+        routes: list[AdaptiveCohortRoute] = []
+        for cohort in cohorts:
+            default_threshold = (
+                cls.MANUAL_SIMILARITY_THRESHOLD
+                if str(getattr(cohort, "source", "")) == "manual"
+                else cls.AUTO_MATCH_SIMILARITY_THRESHOLD
+            )
+            calibration = AdaptiveModelRoutingPolicyService.calibrate_similarity_threshold(
+                positive_embeddings=representatives_by_cohort[cohort.id],
+                negative_embeddings=[
+                    vector
+                    for other_cohort in cohorts
+                    if other_cohort.id != cohort.id
+                    for vector in representatives_by_cohort[other_cohort.id]
+                ],
+                default_threshold=default_threshold,
+                aggregation=aggregation,
+                top_k=top_k,
+            )
+            routes.append(
+                AdaptiveCohortRoute(
+                    cohort_id=str(cohort.cohort_key),
+                    label=str(cohort.label),
+                    status=str(cohort.status),
+                    validated=(
+                        str(cohort.status) == "active"
+                        or (
+                            str(getattr(cohort, "source", "")) == "manual"
+                            and bool(getattr(cohort, "required", False))
+                        )
+                    ),
+                    centroid_embedding=tuple(cohort.centroid_embedding or ()),
+                    representative_embeddings=representatives_by_cohort[cohort.id],
+                    representative_texts=representative_texts_by_cohort[cohort.id],
+                    safety_override=bool(cohort.safety_protected),
+                    threshold=calibration.threshold,
+                    calibration=calibration.as_policy_metadata(),
+                )
+            )
         return AdaptiveModelRoutingPolicyService.build_runtime_catalog(
             encoder_model_id=encoder_model_id,
             input_paths=cls._input_paths(node_data),
             routes=routes,
+            lexical_representative_texts=lexical_representative_texts,
             preserved_safety_routes=cls._preserved_safety_routes(policy),
+            aggregation=aggregation,
+            top_k=top_k,
+            min_margin=min_margin,
         )
 
     @classmethod
@@ -609,6 +704,31 @@ class AdaptiveModelRoutingCohortStore:
             vectors.append(tuple(float(value) for value in cohort.centroid_embedding))
         return tuple(vectors)
 
+    @classmethod
+    def _runtime_representative_texts(
+        cls,
+        db: Session,
+        *,
+        cohort: LLMNodeModelRoutingCohort,
+    ) -> tuple[str, ...]:
+        """Return only synthetic draft examples; raw operating inputs stay out of policy."""
+        examples = (
+            db.query(LLMNodeModelRoutingCohortExample)
+            .filter(LLMNodeModelRoutingCohortExample.cohort_id == cohort.id)
+            .order_by(LLMNodeModelRoutingCohortExample.ordinal.asc())
+            .limit(cls.MAX_REPRESENTATIVE_EXAMPLES)
+            .all()
+        )
+        texts: list[str] = []
+        seen: set[str] = set()
+        for example in examples:
+            text = str(getattr(example, "synthetic_text", "") or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            texts.append(text)
+        return tuple(texts)
+
     @staticmethod
     def _preserved_safety_routes(policy: LLMNodeModelRoutingPolicy) -> list[dict[str, Any]]:
         active = policy.active_policy if isinstance(policy.active_policy, dict) else {}
@@ -679,21 +799,23 @@ class AdaptiveModelRoutingCohortStore:
         *,
         min_margin: float | None = None,
         example_embeddings_by_cohort: Mapping[str, Sequence[Sequence[float]]] | None = None,
+        aggregation: str = "top_k_mean",
+        top_k: int = 2,
     ) -> LLMNodeModelRoutingCohort | None:
+        live_cohorts = [cohort for cohort in cohorts if cohort.status != "retired"]
         scored_cohorts: list[tuple[float, LLMNodeModelRoutingCohort]] = []
-        for cohort in cohorts:
-            if cohort.status == "retired":
-                continue
+        for cohort in live_cohorts:
             representatives = list(
                 (example_embeddings_by_cohort or {}).get(str(cohort.id), ())
             )
             if not representatives:
                 representatives = [cohort.centroid_embedding or []]
-            similarities = sorted(
-                (cls._cosine(vector, item) for item in representatives),
-                reverse=True,
-            )[:2]
-            score = sum(similarities) / len(similarities) if similarities else 0.0
+            score = AdaptiveModelRoutingPolicyService._top_k_mean_similarity(
+                vector,
+                representatives,
+                aggregation=aggregation,
+                top_k=top_k,
+            )
             scored_cohorts.append((score, cohort))
 
         if not scored_cohorts:
@@ -708,6 +830,27 @@ class AdaptiveModelRoutingCohortStore:
             if str(getattr(winner, "source", "")) == "manual"
             else cls.AUTO_MATCH_SIMILARITY_THRESHOLD
         )
+        winner_representatives = list(
+            (example_embeddings_by_cohort or {}).get(str(winner.id), ())
+        ) or [winner.centroid_embedding or []]
+        calibration = AdaptiveModelRoutingPolicyService.calibrate_similarity_threshold(
+            positive_embeddings=winner_representatives,
+            negative_embeddings=[
+                representative
+                for cohort in live_cohorts
+                if cohort.id != winner.id
+                for representative in (
+                    list(
+                        (example_embeddings_by_cohort or {}).get(str(cohort.id), ())
+                    )
+                    or [cohort.centroid_embedding or []]
+                )
+            ],
+            default_threshold=threshold,
+            aggregation=aggregation,
+            top_k=top_k,
+        )
+        threshold = calibration.threshold
         if winner_score < threshold:
             return None
 
@@ -830,6 +973,42 @@ class AdaptiveModelRoutingCohortStore:
             if path and path not in paths:
                 paths.append(path)
         return paths[:8]
+
+    @classmethod
+    def _semantic_runtime_options(
+        cls,
+        node_data: dict[str, Any],
+        *,
+        policy: LLMNodeModelRoutingPolicy | None = None,
+    ) -> tuple[str, int, float]:
+        context = node_data.get("model_routing_context")
+        context = context if isinstance(context, dict) else {}
+        semantic = context.get("semantic_router")
+        semantic = semantic if isinstance(semantic, dict) else {}
+        active_policy = (
+            policy.active_policy
+            if policy is not None and isinstance(policy.active_policy, dict)
+            else {}
+        )
+        active_semantic = active_policy.get("semantic_router")
+        if isinstance(active_semantic, dict) and active_semantic:
+            semantic = active_semantic
+        aggregation = AdaptiveModelRoutingPolicyService._runtime_aggregation(
+            str(semantic.get("aggregation") or "top_k_mean")
+        )
+        try:
+            top_k = max(1, min(int(semantic.get("top_k", 2)), 8))
+        except (TypeError, ValueError):
+            top_k = 2
+        try:
+            min_margin = float(
+                semantic.get("min_margin", cls.DEFAULT_MATCH_MIN_MARGIN)
+            )
+        except (TypeError, ValueError):
+            min_margin = cls.DEFAULT_MATCH_MIN_MARGIN
+        if not math.isfinite(min_margin) or min_margin < 0:
+            min_margin = cls.DEFAULT_MATCH_MIN_MARGIN
+        return aggregation, top_k, min(min_margin, 1.0)
 
     @staticmethod
     def _encoder_model_id(observations: list[LLMNodeModelRoutingObservation]) -> str:

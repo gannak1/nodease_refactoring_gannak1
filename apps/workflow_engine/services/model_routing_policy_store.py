@@ -30,8 +30,9 @@ from apps.workflow_engine.services.model_routing_policy_refresh import (
 )
 from apps.workflow_engine.services.llm_service import LLMService
 from apps.shared.services.model_routing_cohort_drafts import (
+    filter_model_routing_available_model_ids,
     model_routing_cohort_drafts,
-    model_routing_excluded_model_ids,
+    normalize_model_routing_model_id,
 )
 
 
@@ -79,6 +80,31 @@ class ModelRoutingPolicyStore:
         except (InvalidOperation, TypeError, ValueError):
             value = Decimal("3")
         return max(Decimal("0.5"), min(Decimal("10"), value))
+
+    @staticmethod
+    def _is_routing_evidence_eligible_node_run(node_run: WorkflowNodeRun) -> bool:
+        """실제 모델 응답이 없는 안전 RAG 응답은 routing 증거에서 제외한다.
+
+        RAG가 검색 오류나 근거 부족으로 ``safe_no_result``를 반환하면 LLM node는
+        workflow를 안전하게 계속 진행하기 위해 SUCCESS로 끝날 수 있다. 그러나 이
+        경로는 provider 모델을 호출하지 않았으므로 모델별 비용·품질·지연의 운영
+        증거로 사용할 수 없다. 과거 로그 호환성을 위해 해당 명시적 marker가 없는
+        경우에는 기존처럼 표본으로 인정한다.
+        """
+        outputs = getattr(node_run, "outputs", None)
+        output_metadata = (
+            outputs.get("metadata") if isinstance(outputs, dict) else None
+        )
+        trace_metadata = getattr(node_run, "trace_metadata", None)
+        rag_metadata_candidates = (
+            output_metadata.get("rag") if isinstance(output_metadata, dict) else None,
+            trace_metadata.get("rag") if isinstance(trace_metadata, dict) else None,
+        )
+        return not any(
+            isinstance(rag_metadata, dict)
+            and rag_metadata.get("failure_policy") == "safe_no_result"
+            for rag_metadata in rag_metadata_candidates
+        )
 
     @classmethod
     def get_runtime_policy(
@@ -133,8 +159,108 @@ class ModelRoutingPolicyStore:
             )
             return policy
 
-        policy_id = uuid.uuid4()
         organization_id = cls._organization_id_for_run(db, workflow_run)
+        policy = cls._ensure_policy(
+            db,
+            workflow_id=workflow_run.workflow_id,
+            deployment_id=workflow_run.deployment_id,
+            organization_id=organization_id,
+            execution_subject_user_id=getattr(workflow_run, "user_id", None),
+            node_id=node_id,
+            node_data=node_data,
+        )
+        if policy is None:
+            return None
+        cls._materialize_draft_cohorts(
+            db,
+            policy=policy,
+            workflow_run=workflow_run,
+            node_data=node_data,
+        )
+        return policy
+
+    @classmethod
+    def ensure_policies_for_deployment(
+        cls,
+        db: Session,
+        *,
+        workflow_id: uuid.UUID,
+        deployment_id: uuid.UUID,
+        organization_id: uuid.UUID,
+        execution_subject_user_id: uuid.UUID,
+        graph_snapshot: dict[str, Any],
+    ) -> list[LLMNodeModelRoutingPolicy]:
+        """첫 운영 실행 전에 배포 snapshot의 기본 정책을 DB에 만든다."""
+        policies: list[LLMNodeModelRoutingPolicy] = []
+        nodes = graph_snapshot.get("nodes") if isinstance(graph_snapshot, dict) else []
+        for node in nodes if isinstance(nodes, list) else []:
+            if not isinstance(node, dict):
+                continue
+            node_id = str(node.get("id") or "").strip()
+            node_data = node.get("data") if isinstance(node.get("data"), dict) else None
+            if not node_id or not isinstance(node_data, dict):
+                continue
+            if str(node.get("type") or "") != "llmNode":
+                continue
+            if not bool(node_data.get("auto_model_routing")):
+                continue
+            existing = cls.get_runtime_policy(
+                db,
+                workflow_id=workflow_id,
+                deployment_id=deployment_id,
+                node_id=node_id,
+            )
+            policy = cls._ensure_policy(
+                db,
+                workflow_id=workflow_id,
+                deployment_id=deployment_id,
+                organization_id=organization_id,
+                execution_subject_user_id=execution_subject_user_id,
+                node_id=node_id,
+                node_data=node_data,
+            )
+            if policy is not None and existing is None:
+                policies.append(policy)
+        return policies
+
+    @classmethod
+    def materialize_policy_cohorts(
+        cls,
+        db: Session,
+        *,
+        policy: LLMNodeModelRoutingPolicy,
+        node_data: dict[str, Any],
+    ) -> int:
+        """배포 직후 비동기 bootstrap 작업에서 입력군 초안을 승격한다."""
+        return cls._materialize_draft_cohorts(
+            db,
+            policy=policy,
+            workflow_run=None,
+            node_data=node_data,
+        )
+
+    @classmethod
+    def _ensure_policy(
+        cls,
+        db: Session,
+        *,
+        workflow_id: uuid.UUID,
+        deployment_id: uuid.UUID,
+        organization_id: uuid.UUID | None,
+        execution_subject_user_id: uuid.UUID | None,
+        node_id: str,
+        node_data: dict[str, Any],
+    ) -> LLMNodeModelRoutingPolicy | None:
+        existing = cls.get_runtime_policy(
+            db,
+            workflow_id=workflow_id,
+            deployment_id=deployment_id,
+            node_id=node_id,
+        )
+        if existing is not None:
+            return existing
+
+        policy_id = uuid.uuid4()
         refresh_every_runs = cls._refresh_every_runs(node_data)
         validation_budget_usd = cls._validation_budget_usd(node_data)
         max_cohorts = cls._max_cohorts(node_data)
@@ -143,24 +269,31 @@ class ModelRoutingPolicyStore:
             # 실행 모델이 없는 잘못된 deployment snapshot은 policy를 만들지 않는다.
             # 이후 runtime도 저장 모델을 임의로 추정하지 않고 기존 validation 경로에서 막는다.
             return None
-        execution_user_id = getattr(workflow_run, "user_id", None)
-        if organization_id is None or execution_user_id is None:
+        if organization_id is None or execution_subject_user_id is None:
             return None
-        available_model_ids = set(
+        available_model_ids = filter_model_routing_available_model_ids(
             LLMService.get_runtime_available_model_ids_for_user(
                 db,
-                user_id=execution_user_id,
+                user_id=execution_subject_user_id,
                 organization_id=organization_id,
-            )
+            ),
+            node_data=node_data,
         )
-        available_model_ids -= model_routing_excluded_model_ids(node_data)
-        if configured_model_id not in available_model_ids:
+        available_by_normalized_id = {
+            normalize_model_routing_model_id(model_id): model_id
+            for model_id in available_model_ids
+            if normalize_model_routing_model_id(model_id)
+        }
+        configured_model_id = available_by_normalized_id.get(
+            normalize_model_routing_model_id(configured_model_id)
+        )
+        if configured_model_id is None:
             # bootstrap policy가 실행 주체에게 사용할 수 없는 모델을 active로 만들면
             # policy runtime의 credential guard보다 먼저 잘못된 상태를 저장하게 된다.
             return None
-        fallback_model_id = node_data.get("fallback_model_id")
-        if fallback_model_id not in available_model_ids:
-            fallback_model_id = None
+        fallback_model_id = available_by_normalized_id.get(
+            normalize_model_routing_model_id(node_data.get("fallback_model_id"))
+        )
         bootstrap = ModelRoutingPolicyRefreshService.default_rule_policy(
             policy_id=str(policy_id),
             policy_version="bootstrap-preserve-config-v1",
@@ -172,16 +305,16 @@ class ModelRoutingPolicyStore:
         policy = LLMNodeModelRoutingPolicy(
             id=policy_id,
             organization_id=organization_id,
-            workflow_id=workflow_run.workflow_id,
-            deployment_id=workflow_run.deployment_id,
+            workflow_id=workflow_id,
+            deployment_id=deployment_id,
             node_id=node_id,
             enabled=True,
             status="collecting",
             policy_version=bootstrap["policy_version"],
             active_policy=bootstrap["active_policy"],
             refresh_every_runs=refresh_every_runs,
-            judge_user_id=workflow_run.user_id,
-            execution_subject_user_id=workflow_run.user_id,
+            judge_user_id=execution_subject_user_id,
+            execution_subject_user_id=execution_subject_user_id,
             validation_budget_usd=validation_budget_usd,
             max_cohorts=max_cohorts,
         )
@@ -192,16 +325,10 @@ class ModelRoutingPolicyStore:
         except IntegrityError:
             return cls.get_runtime_policy(
                 db,
-                workflow_id=workflow_run.workflow_id,
-                deployment_id=workflow_run.deployment_id,
+                workflow_id=workflow_id,
+                deployment_id=deployment_id,
                 node_id=node_id,
             )
-        cls._materialize_draft_cohorts(
-            db,
-            policy=policy,
-            workflow_run=workflow_run,
-            node_data=node_data,
-        )
         return policy
 
     @classmethod
@@ -210,12 +337,16 @@ class ModelRoutingPolicyStore:
         db: Session,
         *,
         policy: LLMNodeModelRoutingPolicy,
-        workflow_run: WorkflowRun,
+        workflow_run: WorkflowRun | None,
         node_data: dict[str, Any],
     ) -> int:
         """배포 snapshot의 초안을 실제 semantic cohort로 best-effort 승격한다."""
         drafts = model_routing_cohort_drafts(node_data)
-        user_id = getattr(workflow_run, "user_id", None)
+        user_id = getattr(policy, "execution_subject_user_id", None) or getattr(
+            workflow_run,
+            "user_id",
+            None,
+        )
         if not drafts or user_id is None or policy.organization_id is None:
             return 0
         try:
@@ -251,19 +382,33 @@ class ModelRoutingPolicyStore:
                 )
                 if existing is not None:
                     continue
-                AdaptiveModelRoutingCohortStore.create_manual_cohort(
-                    db,
-                    policy=policy,
-                    node_data=node_data,
-                    cohort_id=cohort_id,
-                    label=draft["label"],
-                    cohort_key=draft["key"],
-                    representative_query=draft["representative_query"],
-                    representative_examples=draft.get("representative_examples"),
-                    fixed=draft["fixed"],
-                    encoder_model_id=encoder_model_id,
-                    embed=selection.client.embed_sync,
-                )
+                try:
+                    with db.begin_nested():
+                        AdaptiveModelRoutingCohortStore.create_manual_cohort(
+                            db,
+                            policy=policy,
+                            node_data=node_data,
+                            cohort_id=cohort_id,
+                            label=draft["label"],
+                            cohort_key=draft["key"],
+                            representative_query=draft["representative_query"],
+                            representative_examples=draft.get(
+                                "representative_examples"
+                            ),
+                            fixed=draft["fixed"],
+                            safety_protected=bool(draft.get("safety_protected")),
+                            encoder_model_id=encoder_model_id,
+                            embed=selection.client.embed_sync,
+                        )
+                except Exception as exc:
+                    # 예전 배포 snapshot의 대표 예문이 부족해도 뒤의 정상 초안까지
+                    # 함께 건너뛰지 않는다. 실패한 초안은 graph에 남아 보강 후 재시도한다.
+                    logger.warning(
+                        "[Model-Routing] cohort draft skipped: draft_id=%s error_type=%s",
+                        draft["id"],
+                        type(exc).__name__,
+                    )
+                    continue
                 created += 1
             return created
         except Exception as exc:
@@ -394,6 +539,7 @@ class ModelRoutingPolicyStore:
             node_run
             for node_run in node_runs
             if node_run.status == NodeRunStatus.SUCCESS
+            and cls._is_routing_evidence_eligible_node_run(node_run)
         ]
         scheduled: list[uuid.UUID] = []
         for node_run in sorted(

@@ -12,11 +12,21 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any, Literal, Sequence
 
+from apps.shared.services.model_routing_lexical import (
+    canonicalize_model_routing_lexical_token,
+    tokenize_model_routing_lexical_text,
+)
+
 
 Vector = tuple[float, ...]
 Aggregation = Literal["centroid", "mean", "max", "sum", "top_k_mean"]
 MatchStatus = Literal["matched", "no_match", "ambiguous", "unavailable"]
-DecisionSource = Literal["dense", "safety_override", "unavailable"]
+DecisionSource = Literal[
+    "dense",
+    "lexical_fallback",
+    "safety_override",
+    "unavailable",
+]
 
 
 @dataclass(frozen=True)
@@ -45,6 +55,7 @@ class SemanticRouteDefinition:
     centroid_vector: Vector | None = None
     safety_override: bool = False
     lexical_override_threshold: float = 1.0
+    dense_override_threshold: float | None = None
     lexical_signals: tuple[SemanticLexicalSignal, ...] = ()
 
     def __post_init__(self) -> None:
@@ -67,6 +78,13 @@ class SemanticRouteDefinition:
         ):
             raise ValueError(
                 "lexical_override_threshold must be a positive finite number"
+            )
+        if self.dense_override_threshold is not None and (
+            not math.isfinite(self.dense_override_threshold)
+            or not 0 <= self.dense_override_threshold <= 1
+        ):
+            raise ValueError(
+                "dense_override_threshold must be between 0 and 1"
             )
         normalized_terms = [
             _normalize_lexical_text(signal.term)
@@ -351,6 +369,50 @@ class SemanticRouteMatcher:
                 min_margin=catalog.min_margin,
             )
 
+        # 안전 입력군은 단순히 2등이라는 이유로 저비용 route에 밀리면 안 된다.
+        # 다만 자체 threshold만 넘으면 과잉 보호가 생기므로, 정책 생성 시 보정한
+        # 음성 최고점 + margin 경계까지 넘은 경우에만 안전 기본 모델로 닫는다.
+        dense_safety_matches = [
+            (score, route)
+            for score, route in route_scores
+            if route.safety_override
+            and route.dense_override_threshold is not None
+            and score >= route.dense_override_threshold
+        ]
+        if dense_safety_matches:
+            selected_dense_score, selected_route = sorted(
+                dense_safety_matches,
+                key=lambda item: (-item[0], item[1].cohort_id),
+            )[0]
+            other_scores = [
+                score
+                for score, route in route_scores
+                if route.cohort_id != selected_route.cohort_id
+            ]
+            runner_up_score = max(other_scores) if other_scores else None
+            return SemanticRouteMatch(
+                status="matched",
+                cohort_id=selected_route.cohort_id,
+                label=selected_route.label,
+                candidate_cohort_id=selected_route.cohort_id,
+                candidate_label=selected_route.label,
+                similarity=selected_dense_score,
+                threshold=selected_route.dense_override_threshold,
+                runner_up_score=runner_up_score,
+                margin=(
+                    selected_dense_score - runner_up_score
+                    if runner_up_score is not None
+                    else None
+                ),
+                catalog_version=catalog.version,
+                encoder_model_id=catalog.encoder_model_id,
+                decision_source="safety_override",
+                safety_override=True,
+                matcher=_matcher_name(catalog),
+                candidate_scores=candidate_scores,
+                min_margin=catalog.min_margin,
+            )
+
         top_score, top_route = route_scores[0]
         runner_up_score = route_scores[1][0] if len(route_scores) > 1 else None
         margin = (
@@ -363,6 +425,55 @@ class SemanticRouteMatcher:
             status = "ambiguous"
         else:
             status = "matched"
+
+        # 대표 예문이 적은 초기 정책에서는 같은 의미의 자연어 표현이 embedding
+        # threshold를 못 넘을 수 있다. 이때 policy가 대표 예문에서 만든 고유한
+        # lexical signal은 안전 route가 아닌 일반 route에도 보조 근거가 된다.
+        # 단, dense match가 이미 확정된 경우에는 이를 뒤집지 않고, lexical score가
+        # 동률이면 기본 모델로 닫아 오분류를 피한다.
+        lexical_fallback = _best_unambiguous_lexical_fallback(
+            sparse_matches,
+            status=status,
+        )
+        if lexical_fallback is not None:
+            lexical_score, lexical_signal_count, selected_route = lexical_fallback
+            selected_dense_score = next(
+                score
+                for score, route in route_scores
+                if route.cohort_id == selected_route.cohort_id
+            )
+            other_dense_scores = [
+                score
+                for score, route in route_scores
+                if route.cohort_id != selected_route.cohort_id
+            ]
+            lexical_runner_up_score = (
+                max(other_dense_scores) if other_dense_scores else None
+            )
+            return SemanticRouteMatch(
+                status="matched",
+                cohort_id=selected_route.cohort_id,
+                label=selected_route.label,
+                candidate_cohort_id=selected_route.cohort_id,
+                candidate_label=selected_route.label,
+                similarity=selected_dense_score,
+                threshold=selected_route.threshold,
+                runner_up_score=lexical_runner_up_score,
+                margin=(
+                    selected_dense_score - lexical_runner_up_score
+                    if lexical_runner_up_score is not None
+                    else None
+                ),
+                catalog_version=catalog.version,
+                encoder_model_id=catalog.encoder_model_id,
+                decision_source="lexical_fallback",
+                lexical_score=lexical_score,
+                lexical_signal_count=lexical_signal_count,
+                safety_override=False,
+                matcher=_matcher_name(catalog),
+                candidate_scores=candidate_scores,
+                min_margin=catalog.min_margin,
+            )
 
         best_sparse_score, best_sparse_count = _best_sparse_diagnostic(
             sparse_matches
@@ -452,6 +563,11 @@ def semantic_catalog_from_policy(value: Any) -> SemanticRouteCatalog | None:
                 safety_override=bool(route_value.get("safety_override", False)),
                 lexical_override_threshold=float(
                     route_value.get("lexical_override_threshold", 1.0)
+                ),
+                dense_override_threshold=(
+                    float(route_value["dense_override_threshold"])
+                    if route_value.get("dense_override_threshold") is not None
+                    else None
                 ),
                 lexical_signals=tuple(lexical_signals),
             )
@@ -589,13 +705,18 @@ def _score_lexical_routes(
     normalized_query = _normalize_lexical_text(query_text or "")
     if not normalized_query:
         return []
+    query_tokens = set(tokenize_model_routing_lexical_text(normalized_query))
 
     scored: list[tuple[float, int, SemanticRouteDefinition]] = []
     for route in catalog.routes:
         matched_signals = [
             signal
             for signal in route.lexical_signals
-            if _normalize_lexical_text(signal.term) in normalized_query
+            if _lexical_signal_matches_query(
+                signal.term,
+                normalized_query=normalized_query,
+                query_tokens=query_tokens,
+            )
         ]
         if matched_signals:
             scored.append(
@@ -606,6 +727,26 @@ def _score_lexical_routes(
                 )
             )
     return scored
+
+
+def _lexical_signal_matches_query(
+    term: str,
+    *,
+    normalized_query: str,
+    query_tokens: set[str],
+) -> bool:
+    """Match single-word signals by token and explicit multi-word signals by phrase."""
+    normalized_term = _normalize_lexical_text(term)
+    if not normalized_term:
+        return False
+    if " " in normalized_term:
+        return normalized_term in normalized_query
+    canonical_term = canonicalize_model_routing_lexical_token(normalized_term)
+    # 이전 policy가 `권한과`처럼 조사가 붙은 신호를 저장했을 수 있다. 새 policy는
+    # canonical token만 만들므로, 오래된 신호는 기본 모델로 닫아 오분류를 막는다.
+    if canonical_term != normalized_term:
+        return False
+    return canonical_term in query_tokens
 
 
 def _best_sparse_diagnostic(
@@ -620,11 +761,32 @@ def _best_sparse_diagnostic(
     return score, count
 
 
+def _best_unambiguous_lexical_fallback(
+    sparse_matches: Sequence[tuple[float, int, SemanticRouteDefinition]],
+    *,
+    status: MatchStatus,
+) -> tuple[float, int, SemanticRouteDefinition] | None:
+    """Return a policy-owned normal route only when dense matching is inconclusive."""
+    if status == "matched":
+        return None
+    candidates = [
+        (score, count, route)
+        for score, count, route in sparse_matches
+        if not route.safety_override and score >= route.lexical_override_threshold
+    ]
+    if not candidates:
+        return None
+    ranked = sorted(candidates, key=lambda item: (-item[0], -item[1], item[2].cohort_id))
+    if len(ranked) > 1 and ranked[0][0] == ranked[1][0]:
+        return None
+    return ranked[0]
+
+
 def _matcher_name(
     catalog: SemanticRouteCatalog,
 ) -> Literal["semantic", "hybrid"]:
     return (
         "hybrid"
-        if any(route.safety_override and route.lexical_signals for route in catalog.routes)
+        if any(route.lexical_signals for route in catalog.routes)
         else "semantic"
     )

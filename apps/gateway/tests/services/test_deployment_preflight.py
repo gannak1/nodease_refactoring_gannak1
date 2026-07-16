@@ -1691,6 +1691,8 @@ def test_active_redeployment_inherits_model_routing_state(monkeypatch):
         max_deployment_version=1,
     )
     inherited = []
+    bootstrapped = []
+    published = []
     monkeypatch.setattr(
         deployment_module, "has_workflow_permission", lambda *a, **k: True
     )
@@ -1707,6 +1709,17 @@ def test_active_redeployment_inherits_model_routing_state(monkeypatch):
         deployment_module.ModelRoutingPolicyInheritanceService,
         "inherit_for_deployment",
         lambda _db, **kwargs: inherited.append(kwargs) or 1,
+    )
+    monkeypatch.setattr(
+        deployment_module.ModelRoutingPolicyStore,
+        "ensure_policies_for_deployment",
+        lambda _db, **kwargs: bootstrapped.append(kwargs)
+        or [SimpleNamespace(id=uuid.uuid4())],
+    )
+    monkeypatch.setattr(
+        deployment_module,
+        "send_workflow_task",
+        lambda _app, name, args: published.append((name, args)),
     )
 
     deployment = DeploymentService.create_deployment(
@@ -1743,6 +1756,16 @@ def test_active_redeployment_inherits_model_routing_state(monkeypatch):
             "target_graph": deployment.graph_snapshot,
         }
     ]
+    assert bootstrapped == [
+        {
+            "workflow_id": workflow_id,
+            "deployment_id": deployment.id,
+            "organization_id": workflow.organization_id,
+            "execution_subject_user_id": app.created_by,
+            "graph_snapshot": deployment.graph_snapshot,
+        }
+    ]
+    assert published[0][0] == "workflow.model_routing.bootstrap_policy"
 
 
 def test_workflow_node_toggle_removes_legacy_schedule_surface(monkeypatch):

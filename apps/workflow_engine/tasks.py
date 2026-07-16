@@ -124,6 +124,45 @@ def _engine_workflow_run_id(engine) -> str | None:
 
 
 @celery_app.task(
+    name="workflow.model_routing.bootstrap_policy",
+    bind=True,
+    max_retries=3,
+    base=RedactedWorkflowTask,
+)
+def bootstrap_model_routing_policy(self, policy_id: str):
+    """배포 직후 기준 모델과 후보 모델의 첫 입력군 검증을 예약한다."""
+    from apps.workflow_engine.services.model_routing_adaptive_validation_service import (
+        AdaptiveModelRoutingValidationService,
+    )
+
+    session = SessionLocal()
+    try:
+        batch = AdaptiveModelRoutingValidationService.prepare_deployment_bootstrap(
+            session,
+            policy_id=policy_id,
+        )
+        session.commit()
+        batch_id = str(batch.id) if batch is not None else None
+        if batch is not None and batch.status == "pending":
+            send_workflow_task(
+                celery_app,
+                "workflow.model_routing.validate_batch",
+                args=[batch_id],
+            )
+        return {
+            "status": "scheduled" if batch_id else "no_eligible_candidates",
+            "policy_id": policy_id,
+            "validation_batch_id": batch_id,
+        }
+    except Exception as exc:
+        session.rollback()
+        logger.error("[Model-Routing] deployment bootstrap failed: %s", exc)
+        raise self.retry(exc=exc, countdown=min(2 ** (self.request.retries + 1), 30))
+    finally:
+        session.close()
+
+
+@celery_app.task(
     name="workflow.model_routing.record_run",
     bind=True,
     max_retries=3,
@@ -258,12 +297,37 @@ def validate_model_routing_batch(self, batch_id: str):
             # 다른 worker가 아직 유효한 lease를 가진 item을 실행 중이면 finalization을
             # 하지 않는다. lease가 만료되면 다음 retry가 item을 retry로 복구한다.
             raise self.retry(countdown=30)
+        follow_up_batch = None
+        if (
+            batch is not None
+            and getattr(batch, "status", None) == "completed"
+            and getattr(batch, "trigger", None) == "deployment_bootstrap"
+        ):
+            follow_up_batch = (
+                AdaptiveModelRoutingValidationService.plan_deployment_bootstrap_follow_up(
+                    session,
+                    batch=batch,
+                )
+            )
+            session.commit()
+            if (
+                follow_up_batch is not None
+                and getattr(follow_up_batch, "status", None) == "pending"
+            ):
+                send_workflow_task(
+                    celery_app,
+                    "workflow.model_routing.validate_batch",
+                    args=[str(follow_up_batch.id)],
+                )
         return {
             "status": getattr(batch, "status", "not_found"),
             "batch_id": str(getattr(batch, "id", "")) if batch is not None else None,
             "completed_items": int(getattr(batch, "completed_items", 0) or 0)
             if batch is not None
             else 0,
+            "follow_up_batch_id": (
+                str(follow_up_batch.id) if follow_up_batch is not None else None
+            ),
         }
     except Retry:
         raise

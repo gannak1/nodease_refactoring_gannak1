@@ -57,6 +57,9 @@ from apps.shared.services.workflow_configuration_preflight import (
     workflow_configuration_issues,
 )
 from apps.shared.services.workflow_task_publisher import send_workflow_task
+from apps.workflow_engine.services.model_routing_policy_store import (
+    ModelRoutingPolicyStore,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +204,8 @@ class DeploymentService:
             user_id=user_id,
             organization_id=workflow.organization_id,
         )
+        bootstrap_policy_ids: list[uuid.UUID] = []
+
         try:
             graph_snapshot = DeploymentService.bind_workflow_node_targets(
                 db,
@@ -332,6 +337,15 @@ class DeploymentService:
                     target_deployment_id=db_obj.id,
                     target_graph=graph_snapshot,
                 )
+                bootstrap_policies = ModelRoutingPolicyStore.ensure_policies_for_deployment(
+                    db,
+                    workflow_id=workflow.id,
+                    deployment_id=db_obj.id,
+                    organization_id=workflow.organization_id,
+                    execution_subject_user_id=user_id,
+                    graph_snapshot=graph_snapshot,
+                )
+                bootstrap_policy_ids = [policy.id for policy in bootstrap_policies]
                 from apps.gateway.services.scheduler_service import (
                     get_scheduler_service,
                 )
@@ -364,6 +378,22 @@ class DeploymentService:
 
             db.commit()
             db.refresh(db_obj)
+
+            for policy_id in bootstrap_policy_ids:
+                try:
+                    send_workflow_task(
+                        celery_app,
+                        "workflow.model_routing.bootstrap_policy",
+                        args=[str(policy_id)],
+                    )
+                except Exception as exc:
+                    # 배포 데이터는 이미 확정됐다. 브로커 장애로 배포 응답까지
+                    # 실패시키지 않고 수동 정책 갱신으로 복구할 수 있게 남긴다.
+                    logger.warning(
+                        "Model routing bootstrap publish failed: policy_id=%s error_type=%s",
+                        policy_id,
+                        type(exc).__name__,
+                    )
 
             # 응답에는 public path를 구성하는 slug만 projection한다.
             db_obj.url_slug = app.url_slug

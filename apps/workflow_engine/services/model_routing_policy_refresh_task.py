@@ -15,7 +15,7 @@ from apps.shared.db.models.model_routing_policy import (
 )
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
 from apps.shared.services.model_routing_cohort_drafts import (
-    model_routing_excluded_model_ids,
+    filter_model_routing_available_model_ids,
 )
 from apps.shared.services.model_routing_policy_optimizer import (
     ModelRoutingOptimizationRequest,
@@ -123,8 +123,11 @@ class PersistedModelRoutingPolicyRefreshService:
                         organization_id=policy.organization_id,
                     )
                 )
-                available_model_ids -= model_routing_excluded_model_ids(
-                    node_data or {}
+                available_model_ids = set(
+                    filter_model_routing_available_model_ids(
+                        available_model_ids,
+                        node_data=node_data or {},
+                    )
                 )
                 candidates = [
                     candidate

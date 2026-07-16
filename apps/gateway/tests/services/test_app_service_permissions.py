@@ -487,6 +487,48 @@ def test_clone_graph_cleanup_removes_workflow_node_binding_metadata():
     assert "_nodease_runtime" not in cleaned
 
 
+def test_clone_graph_cleanup_regenerates_model_routing_cohort_draft_ids():
+    """복제본의 입력군 초안은 원본 policy와 UUID를 공유하지 않는다."""
+    original_draft_ids = [str(uuid.uuid4()), str(uuid.uuid4())]
+    graph = {
+        "nodes": [
+            {
+                "id": "llm-root",
+                "type": "llmNode",
+                "data": {
+                    "model_routing_policy": {
+                        "cohort_drafts": [
+                            {
+                                "id": original_draft_ids[0],
+                                "key": "routine_support",
+                            },
+                            {
+                                "id": original_draft_ids[1],
+                                "key": "security_incident",
+                            },
+                        ]
+                    }
+                },
+            }
+        ],
+        "edges": [],
+    }
+
+    cleaned = AppService._clean_graph_data(graph)
+    cloned_draft_ids = [
+        draft["id"]
+        for draft in cleaned["nodes"][0]["data"]["model_routing_policy"][
+            "cohort_drafts"
+        ]
+    ]
+
+    assert cloned_draft_ids != original_draft_ids
+    assert len(set(cloned_draft_ids)) == 2
+    assert graph["nodes"][0]["data"]["model_routing_policy"]["cohort_drafts"][0][
+        "id"
+    ] == original_draft_ids[0]
+
+
 def test_public_graph_cleanup_removes_kb_and_collection_refs_recursively():
     direct_kb_id = str(uuid.uuid4())
     collection_id = str(uuid.uuid4())

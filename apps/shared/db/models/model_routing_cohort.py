@@ -8,6 +8,7 @@ from typing import Optional
 from apps.shared.db.base import Base
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
@@ -274,6 +275,17 @@ class LLMNodeModelRoutingValidationItem(Base):
             "model_id",
             name="uq_model_routing_validation_item_request",
         ),
+        UniqueConstraint(
+            "batch_id",
+            "cohort_id",
+            "cohort_example_id",
+            "model_id",
+            name="uq_model_routing_validation_item_example_request",
+        ),
+        CheckConstraint(
+            "(observation_id IS NOT NULL) <> (cohort_example_id IS NOT NULL)",
+            name="ck_model_routing_validation_item_one_input_source",
+        ),
         Index("ix_model_routing_validation_item_batch_status", "batch_id", "status"),
         Index("ix_model_routing_validation_item_cohort_model", "cohort_id", "model_id"),
     )
@@ -291,10 +303,15 @@ class LLMNodeModelRoutingValidationItem(Base):
         ForeignKey("llm_node_model_routing_cohorts.id", ondelete="CASCADE"),
         nullable=False,
     )
-    observation_id: Mapped[uuid.UUID] = mapped_column(
+    observation_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         PGUUID(as_uuid=True),
         ForeignKey("llm_node_model_routing_observations.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
+    )
+    cohort_example_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("llm_node_model_routing_cohort_examples.id", ondelete="CASCADE"),
+        nullable=True,
     )
     model_id: Mapped[str] = mapped_column(String(255), nullable=False)
     baseline_model_id: Mapped[str] = mapped_column(String(255), nullable=False)

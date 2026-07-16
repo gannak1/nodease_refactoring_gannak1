@@ -586,7 +586,7 @@ class LLMNode(Node[LLMNodeData]):
             organization_id=organization_id,
         )
         from apps.shared.services.model_routing_cohort_drafts import (
-            model_routing_excluded_model_ids,
+            filter_model_routing_available_model_ids,
         )
 
         node_data = (
@@ -594,12 +594,10 @@ class LLMNode(Node[LLMNodeData]):
             if callable(getattr(self.data, "model_dump", None))
             else vars(self.data)
         )
-        excluded_model_ids = model_routing_excluded_model_ids(node_data)
-        return [
-            model_id
-            for model_id in available_model_ids
-            if model_id not in excluded_model_ids
-        ]
+        return filter_model_routing_available_model_ids(
+            available_model_ids,
+            node_data=node_data,
+        )
 
     def _run(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """

@@ -265,6 +265,69 @@ def test_record_completed_run_counts_only_successful_llm_node_runs():
     assert "workflow_node_runs.node_id" in str(node_query.filters[-1])
 
 
+def test_record_completed_run_excludes_rag_safe_no_result_from_policy_evidence():
+    """모델을 호출하지 않은 RAG 안전 응답은 routing 품질 표본이 아니다."""
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    workflow_run = SimpleNamespace(
+        id=uuid4(),
+        workflow_id=uuid4(),
+        deployment_id=uuid4(),
+        trigger_mode="webhook",
+        status="success",
+    )
+    deployment = SimpleNamespace(
+        graph_snapshot={
+            "nodes": [
+                {
+                    "id": "llm-1",
+                    "data": {"auto_model_routing": True},
+                }
+            ]
+        }
+    )
+    safe_rag_node = SimpleNamespace(
+        node_id="llm-1",
+        status=NodeRunStatus.SUCCESS,
+        outputs={
+            "metadata": {
+                "rag": {
+                    "failure_policy": "safe_no_result",
+                    "evidence_sufficient": False,
+                }
+            }
+        },
+        trace_metadata={
+            "rag": {
+                "failure_policy": "safe_no_result",
+                "evidence_sufficient": False,
+            }
+        },
+    )
+    db = MagicMock()
+    db.query.side_effect = [
+        _Query(first_value=workflow_run),
+        _Query(first_value=deployment),
+        _Query(all_value=[safe_rag_node]),
+    ]
+
+    with patch.object(
+        ModelRoutingPolicyStore,
+        "ensure_policy_for_deployed_node",
+    ) as ensure_policy:
+        assert (
+            ModelRoutingPolicyStore.record_completed_deployed_run(
+                db,
+                workflow_run_id=workflow_run.id,
+            )
+            == []
+        )
+
+    ensure_policy.assert_not_called()
+
+
 def test_record_completed_run_ignores_deployment_snapshot_without_auto_routing():
     """draft 토글이 아니라 배포 snapshot의 자동 라우팅 ON 여부만 집계 기준이다."""
     from apps.workflow_engine.services.model_routing_policy_store import (
@@ -539,6 +602,52 @@ def test_bootstrap_policy_ignores_legacy_active_policy_and_preserves_node_models
     )
 
 
+def test_bootstrap_policy_matches_google_catalog_ids_with_or_without_models_prefix():
+    """배포 graph와 Google credential catalog의 표기가 달라도 bootstrap을 만들 수 있다."""
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    organization_id = uuid4()
+    workflow_run = SimpleNamespace(
+        workflow_id=uuid4(),
+        deployment_id=uuid4(),
+        user_id=uuid4(),
+    )
+    db = MagicMock()
+
+    with (
+        patch.object(ModelRoutingPolicyStore, "get_runtime_policy", return_value=None),
+        patch.object(
+            ModelRoutingPolicyStore,
+            "_organization_id_for_run",
+            return_value=organization_id,
+        ),
+        patch.object(
+            LLMService,
+            "get_runtime_available_model_ids_for_user",
+            return_value=["models/gemini-2.5-flash", "models/gemini-2.5-pro"],
+        ),
+    ):
+        policy = ModelRoutingPolicyStore.ensure_policy_for_deployed_node(
+            db,
+            workflow_run=workflow_run,
+            node_id="llm-1",
+            node_data={
+                "auto_model_routing": True,
+                "model_id": "gemini-2.5-flash",
+                "fallback_model_id": "gemini-2.5-pro",
+            },
+        )
+
+    assert policy is not None
+    assert policy.active_policy == {
+        "default_model_id": "models/gemini-2.5-flash",
+        "fallback_model_id": "models/gemini-2.5-pro",
+        "rules": [],
+    }
+
+
 def test_bootstrap_policy_preserves_deployment_max_cohorts_setting():
     """배포 snapshot의 입력군 상한은 첫 persisted policy에도 그대로 저장한다."""
     from apps.workflow_engine.services.model_routing_policy_store import (
@@ -580,6 +689,59 @@ def test_bootstrap_policy_preserves_deployment_max_cohorts_setting():
 
     assert policy is not None
     assert policy.max_cohorts == 8
+
+
+def test_deployment_bootstrap_creates_policy_before_first_operational_run():
+    """배포가 끝나면 운영 실행을 기다리지 않고 저장 모델 기반 정책을 만든다."""
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    organization_id = uuid4()
+    workflow_id = uuid4()
+    deployment_id = uuid4()
+    execution_subject_user_id = uuid4()
+    db = MagicMock()
+    graph_snapshot = {
+        "nodes": [
+            {
+                "id": "llm-1",
+                "type": "llmNode",
+                "data": {
+                    "auto_model_routing": True,
+                    "model_id": "gpt-4.1",
+                    "fallback_model_id": "gpt-4.1-mini",
+                },
+            }
+        ]
+    }
+
+    with (
+        patch.object(ModelRoutingPolicyStore, "get_runtime_policy", return_value=None),
+        patch.object(
+            LLMService,
+            "get_runtime_available_model_ids_for_user",
+            return_value=["gpt-4.1", "gpt-4.1-mini"],
+        ),
+    ):
+        policies = ModelRoutingPolicyStore.ensure_policies_for_deployment(
+            db,
+            workflow_id=workflow_id,
+            deployment_id=deployment_id,
+            organization_id=organization_id,
+            execution_subject_user_id=execution_subject_user_id,
+            graph_snapshot=graph_snapshot,
+        )
+
+    assert len(policies) == 1
+    assert policies[0].workflow_id == workflow_id
+    assert policies[0].deployment_id == deployment_id
+    assert policies[0].execution_subject_user_id == execution_subject_user_id
+    assert policies[0].active_policy == {
+        "default_model_id": "gpt-4.1",
+        "fallback_model_id": "gpt-4.1-mini",
+        "rules": [],
+    }
 
 
 def test_record_completed_run_locks_policies_in_node_id_order_before_counting():
@@ -669,6 +831,11 @@ def test_first_policy_materializes_draft_cohorts_with_stable_ids():
                     "key": "common_account_security",
                     "label": "공통 계정·보안 온보딩",
                     "representative_query": "입사 첫날 SSO와 보안 교육 순서를 알려 주세요.",
+                    "representative_examples": [
+                        "입사 첫날 SSO와 보안 교육 순서를 알려 주세요.",
+                        "신규 입사자의 MFA 등록 절차가 궁금합니다.",
+                        "첫 출근 전에 계정 보안 설정을 완료하고 싶습니다.",
+                    ],
                     "fixed": True,
                 }
             ]
@@ -705,6 +872,72 @@ def test_first_policy_materializes_draft_cohorts_with_stable_ids():
     assert create_cohort.call_args.kwargs["cohort_id"] == draft_id
     assert create_cohort.call_args.kwargs["cohort_key"] == "common_account_security"
     assert create_cohort.call_args.kwargs["fixed"] is True
+
+
+def test_invalid_legacy_draft_does_not_block_later_valid_cohort_materialization():
+    """예문이 부족한 예전 초안 하나가 뒤의 정상 입력군 승격까지 막지 않는다."""
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    policy = SimpleNamespace(id=uuid4(), organization_id=uuid4(), max_cohorts=6)
+    workflow_run = SimpleNamespace(user_id=uuid4())
+    node_data = {
+        "model_id": "gpt-5.6-luna",
+        "model_routing_policy": {
+            "cohort_drafts": [
+                {
+                    "id": str(uuid4()),
+                    "key": "legacy_one_example",
+                    "label": "예전 입력군",
+                    "representative_query": "대표 문의가 하나뿐입니다.",
+                    "fixed": False,
+                },
+                {
+                    "id": str(uuid4()),
+                    "key": "valid_examples",
+                    "label": "정상 입력군",
+                    "representative_query": "정상 대표 문의입니다.",
+                    "representative_examples": [
+                        "정상 대표 문의입니다.",
+                        "같은 의미의 두 번째 표현입니다.",
+                        "같은 의미를 다른 상황으로 표현했습니다.",
+                    ],
+                    "fixed": False,
+                },
+            ]
+        },
+    }
+    db = MagicMock()
+    db.query.return_value = _Query(first_value=None)
+
+    with patch.object(
+        LLMService,
+        "get_runtime_available_embedding_model_ids_for_user",
+        return_value=["text-embedding-3-large"],
+    ), patch.object(
+        LLMService,
+        "get_runtime_client_for_user",
+        return_value=SimpleNamespace(
+            client=SimpleNamespace(embed_sync=MagicMock(return_value=[0.1, 0.2]))
+        ),
+    ), patch(
+        "apps.workflow_engine.services.model_routing_adaptive_store."
+        "AdaptiveModelRoutingCohortStore.create_manual_cohort",
+        side_effect=[
+            ValueError("model_routing.cohort_examples_insufficient"),
+            SimpleNamespace(id=uuid4()),
+        ],
+    ) as create_cohort:
+        created = ModelRoutingPolicyStore._materialize_draft_cohorts(
+            db,
+            policy=policy,
+            workflow_run=workflow_run,
+            node_data=node_data,
+        )
+
+    assert created == 1
+    assert create_cohort.call_count == 2
 
 
 def test_existing_policy_retries_unmaterialized_draft_cohorts():

@@ -31,11 +31,13 @@ def _judge_response():
                                 "instruction_fulfillment": 71,
                                 "relevance_completeness": 74,
                                 "clarity_consistency": 70,
+                                "factual_reliability": 70,
                             },
                             "variant_right": {
                                 "instruction_fulfillment": 86,
                                 "relevance_completeness": 82,
                                 "clarity_consistency": 84,
+                                "factual_reliability": 85,
                             },
                             "confidence": 0.82,
                             "safe_summary": "한 출력이 더 간결하고 요청 범위를 충족합니다.",
@@ -106,9 +108,9 @@ def test_fr13_quality_judge_uses_blind_pairwise_variants_and_records_usage():
         )
 
     assert result["status"] == "completed"
-    assert result["baseline"]["score"] == 72
+    assert result["baseline"]["score"] == 71
     assert result["candidate"]["score"] == 84
-    assert result["delta"] == 12
+    assert result["delta"] == 13
     assert result["confidence"] == "high"
     assert result["judge_cost"] == 0.0004
     assert result["judge_usage_log_id"] == str(judge_log.id)
@@ -159,8 +161,8 @@ def test_fr13_quality_judge_restores_candidate_left_scores_to_original_variants(
         )
 
     assert result["baseline"]["score"] == 84
-    assert result["candidate"]["score"] == 72
-    assert result["delta"] == -12
+    assert result["candidate"]["score"] == 71
+    assert result["delta"] == -13
 
 
 def test_fr13_quality_judge_records_usage_when_response_cannot_be_scored():
@@ -220,6 +222,7 @@ def test_fr13_quality_judge_records_usage_when_response_cannot_be_scored():
                 "instruction_fulfillment": 86,
                 "relevance_completeness": 82,
                 "clarity_consistency": 84,
+                "factual_reliability": 85,
             },
             "confidence": 0.82,
         },
@@ -228,11 +231,13 @@ def test_fr13_quality_judge_records_usage_when_response_cannot_be_scored():
                 "instruction_fulfillment": 71,
                 "relevance_completeness": 74,
                 "clarity_consistency": 70,
+                "factual_reliability": 70,
             },
             "variant_right": {
                 "instruction_fulfillment": 86,
                 "relevance_completeness": 82,
                 "clarity_consistency": 84,
+                "factual_reliability": 85,
             },
         },
         {
@@ -240,11 +245,13 @@ def test_fr13_quality_judge_records_usage_when_response_cannot_be_scored():
                 "instruction_fulfillment": 71,
                 "relevance_completeness": 74,
                 "clarity_consistency": 70,
+                "factual_reliability": 70,
             },
             "variant_right": {
                 "instruction_fulfillment": 86,
                 "relevance_completeness": 82,
                 "clarity_consistency": 84,
+                "factual_reliability": 85,
             },
             "confidence": "NaN",
         },
@@ -253,11 +260,13 @@ def test_fr13_quality_judge_records_usage_when_response_cannot_be_scored():
                 "instruction_fulfillment": 101,
                 "relevance_completeness": 74,
                 "clarity_consistency": 70,
+                "factual_reliability": 70,
             },
             "variant_right": {
                 "instruction_fulfillment": 86,
                 "relevance_completeness": 82,
                 "clarity_consistency": 84,
+                "factual_reliability": 85,
             },
             "confidence": 0.82,
         },
@@ -348,7 +357,7 @@ def test_fr13_quality_judge_ignores_dimensions_outside_the_requested_rubric():
             pair_order="baseline_left",
         )
 
-    assert result["baseline"]["score"] == 72
+    assert result["baseline"]["score"] == 71
     assert result["candidate"]["score"] == 84
     assert "unrequested_dimension" not in result["dimensions"]
 
@@ -657,3 +666,25 @@ def test_fr13_quality_judge_adds_groundedness_only_for_rag_variants():
     assert payload["variant_left"]["rag_summary"] == {"retrieved_chunk_count": 3}
     assert result["status"] == "completed"
     assert "groundedness" in result["dimensions"]
+
+
+def test_quality_judge_does_not_reward_unsupported_specific_instructions():
+    """권위 있는 근거가 없으면 그럴듯한 추측보다 불확실성 공개를 우선한다."""
+    messages = CostOptimizerOutputQualityService._build_messages(
+        baseline={"input": {"message": "버튼 위치를 알려 주세요."}, "output": {"text": "오른쪽 위입니다."}},
+        candidate_result={
+            "input": {"message": "버튼 위치를 알려 주세요."},
+            "output": {"text": "근거가 없어 정확한 위치를 확인할 수 없습니다."},
+        },
+        pair_order="baseline_left",
+        dimensions=CostOptimizerOutputQualityService.BASE_DIMENSIONS,
+    )
+
+    payload = json.loads(messages[1]["content"])
+
+    assert "factual_reliability" in CostOptimizerOutputQualityService.BASE_DIMENSIONS
+    assert payload["evaluation_policy"]["unsupported_specific_claims"] == "penalize"
+    assert payload["evaluation_policy"]["transparent_uncertainty"] == "do_not_penalize"
+    assert payload["variant_left"]["authoritative_evidence_available"] is False
+    assert payload["variant_right"]["authoritative_evidence_available"] is False
+    assert "authoritative evidence" in messages[0]["content"]

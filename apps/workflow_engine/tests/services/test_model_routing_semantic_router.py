@@ -372,6 +372,192 @@ def test_policy_evaluator_keeps_default_model_for_ambiguous_semantic_input():
     assert decision.semantic_match.status == "ambiguous"
 
 
+def test_policy_evaluator_keeps_default_for_ambiguous_validated_adaptive_rule():
+    """검증 rule이어도 입력군 경계가 애매하면 안전한 기본 모델을 유지한다."""
+    policy = _policy()
+    policy["active_policy"]["rules"] = [
+        {
+            "id": "adaptive-routine",
+            "priority": 100,
+            "when": {"semantic_cohort_id": "routine_support"},
+            "selected_model_id": "gpt-4o-mini",
+            "fallback_model_id": "gpt-4.1-mini",
+            "reason_code": "validated_adaptive_cohort",
+        }
+    ]
+
+    decision = ModelRouter.resolve_policy(
+        policy,
+        inputs={"message": "검증된 입력군과 유사하지만 경계에 가까운 문의"},
+        node_data=_node_data(),
+        available_model_ids=["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"],
+        semantic_query_vector=(1.0, 0.95, 0.0),
+    )
+
+    assert decision.selected_model_id == "gpt-4.1-mini"
+    assert decision.matched_rule_id is None
+    assert decision.reason_code == "semantic_ambiguous_default"
+    assert decision.semantic_match is not None
+    assert decision.semantic_match.status == "ambiguous"
+
+
+def test_validated_low_cost_rule_yields_to_nearby_safety_route():
+    """안전 입력군 경계와 거의 겹치면 검증된 저가 rule보다 기본 모델을 유지한다."""
+    policy = _policy()
+    policy["active_policy"]["semantic_router"]["routes"][1].update(
+        {
+            "safety_override": True,
+            "dense_override_threshold": 0.62,
+        }
+    )
+    policy["active_policy"]["rules"] = [
+        {
+            "id": "adaptive-routine",
+            "priority": 100,
+            "when": {"semantic_cohort_id": "routine_support"},
+            "selected_model_id": "gpt-4o-mini",
+            "fallback_model_id": "gpt-4.1-mini",
+            "reason_code": "validated_adaptive_cohort",
+        }
+    ]
+
+    decision = ModelRouter.resolve_policy(
+        policy,
+        inputs={"message": "일반 안내와 안전 이슈가 겹치는 경계 문의"},
+        node_data=_node_data(),
+        available_model_ids=["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"],
+        semantic_query_vector=(1.0, 0.85, 0.0),
+    )
+
+    assert decision.selected_model_id == "gpt-4.1-mini"
+    assert decision.matched_rule_id is None
+    assert decision.reason_code == "semantic_matched_no_rule_default"
+    assert decision.semantic_match is not None
+    assert decision.semantic_match.safety_override is True
+
+
+def test_validated_low_cost_rule_is_not_held_below_dense_safety_boundary():
+    """정책에 저장된 안전 경계 미만 점수는 이중 여유로 다시 차단하지 않는다."""
+    policy = _policy()
+    policy["active_policy"]["semantic_router"]["routes"][1].update(
+        {
+            "safety_override": True,
+            "dense_override_threshold": 0.62,
+        }
+    )
+    policy["active_policy"]["rules"] = [
+        {
+            "id": "adaptive-routine",
+            "priority": 100,
+            "when": {"semantic_cohort_id": "routine_support"},
+            "selected_model_id": "gpt-4o-mini",
+            "fallback_model_id": "gpt-4.1-mini",
+            "reason_code": "validated_adaptive_cohort",
+        }
+    ]
+
+    decision = ModelRouter.resolve_policy(
+        policy,
+        inputs={"message": "일반 안내지만 안전 입력군 표현과 조금 겹치는 문의"},
+        node_data=_node_data(),
+        available_model_ids=["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"],
+        semantic_query_vector=(1.0, 0.75, 0.0),
+    )
+
+    assert decision.selected_model_id == "gpt-4o-mini"
+    assert decision.matched_rule_id == "adaptive-routine"
+
+
+def test_validated_low_cost_rule_is_used_when_safety_route_is_not_nearby():
+    """안전 입력군과 충분히 떨어진 요청은 검증된 저가 rule로 계속 라우팅한다."""
+    policy = _policy()
+    policy["active_policy"]["semantic_router"]["routes"][1].update(
+        {
+            "safety_override": True,
+            "dense_override_threshold": 0.62,
+        }
+    )
+    policy["active_policy"]["rules"] = [
+        {
+            "id": "adaptive-routine",
+            "priority": 100,
+            "when": {"semantic_cohort_id": "routine_support"},
+            "selected_model_id": "gpt-4o-mini",
+            "fallback_model_id": "gpt-4.1-mini",
+            "reason_code": "validated_adaptive_cohort",
+        }
+    ]
+
+    decision = ModelRouter.resolve_policy(
+        policy,
+        inputs={"message": "명확한 일반 안내 문의"},
+        node_data=_node_data(),
+        available_model_ids=["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"],
+        semantic_query_vector=(1.0, 0.0, 0.0),
+    )
+
+    assert decision.selected_model_id == "gpt-4o-mini"
+    assert decision.matched_rule_id == "adaptive-routine"
+
+
+def test_policy_evaluator_keeps_default_for_small_threshold_drift():
+    """검증 입력군도 보정 경계를 넘지 못한 새 표현에는 기본 모델을 유지한다."""
+    policy = _policy()
+    policy["active_policy"]["semantic_router"]["min_margin"] = 0
+    policy["active_policy"]["semantic_router"]["routes"][0]["threshold"] = 0.98
+    policy["active_policy"]["rules"] = [
+        {
+            "id": "adaptive-routine",
+            "priority": 100,
+            "when": {"semantic_cohort_id": "routine_support"},
+            "selected_model_id": "gpt-4o-mini",
+            "fallback_model_id": "gpt-4.1-mini",
+            "reason_code": "validated_adaptive_cohort",
+        }
+    ]
+
+    decision = ModelRouter.resolve_policy(
+        policy,
+        inputs={"message": "검증된 입력군의 새로운 표현"},
+        node_data=_node_data(),
+        available_model_ids=["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"],
+        semantic_query_vector=(1.0, 0.25, 0.0),
+    )
+
+    assert decision.selected_model_id == "gpt-4.1-mini"
+    assert decision.matched_rule_id is None
+    assert decision.reason_code == "semantic_no_match_default"
+
+
+def test_policy_evaluator_does_not_recover_large_drift_for_validated_rule():
+    """검증 rule이어도 기존 경계에서 0.03보다 멀면 안전한 기본 모델을 유지한다."""
+    policy = _policy()
+    policy["active_policy"]["semantic_router"]["min_margin"] = 0
+    policy["active_policy"]["semantic_router"]["routes"][0]["threshold"] = 0.99
+    policy["active_policy"]["rules"] = [
+        {
+            "id": "adaptive-routine",
+            "priority": 100,
+            "when": {"semantic_cohort_id": "routine_support"},
+            "selected_model_id": "gpt-4o-mini",
+            "fallback_model_id": "gpt-4.1-mini",
+            "reason_code": "validated_adaptive_cohort",
+        }
+    ]
+
+    decision = ModelRouter.resolve_policy(
+        policy,
+        inputs={"message": "검증 범위에서 멀어진 표현"},
+        node_data=_node_data(),
+        available_model_ids=["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"],
+        semantic_query_vector=(1.0, 0.4, 0.0),
+    )
+
+    assert decision.selected_model_id == "gpt-4.1-mini"
+    assert decision.matched_rule_id is None
+    assert decision.reason_code == "semantic_no_match_default"
+
+
 def test_policy_evaluator_does_not_select_unavailable_semantic_rule_model():
     """A25: cohort가 맞아도 실행 주체가 사용할 수 없는 모델은 선택하지 않는다."""
     decision = ModelRouter.resolve_policy(
@@ -470,6 +656,135 @@ def test_hybrid_matcher_has_no_domain_keyword_without_policy_signal():
     assert match.safety_override is False
 
 
+def test_hybrid_matcher_uses_unambiguous_normal_policy_signal_when_dense_match_is_inconclusive():
+    """A61: 일반 입력군도 정책이 만든 고유 신호로만 dense no-match를 보완한다."""
+    catalog = SemanticRouteCatalog(
+        version="normal-lexical-fallback-v1",
+        encoder_model_id="text-embedding-test",
+        aggregation="centroid",
+        min_margin=0.05,
+        routes=(
+            SemanticRouteDefinition(
+                cohort_id="platform_access",
+                label="플랫폼 접근",
+                threshold=0.9,
+                representative_vectors=((1.0, 0.0),),
+                lexical_signals=(SemanticLexicalSignal(term="vpn", weight=1.0),),
+            ),
+            SemanticRouteDefinition(
+                cohort_id="sales_enablement",
+                label="영업 온보딩",
+                threshold=0.9,
+                representative_vectors=((0.0, 1.0),),
+                lexical_signals=(SemanticLexicalSignal(term="crm", weight=1.0),),
+            ),
+        ),
+    )
+
+    match = SemanticRouteMatcher.match(
+        catalog,
+        query_vector=(0.6, 0.8),
+        query_text="CRM 권한을 신청하려면 어떤 교육이 필요한가요?",
+    )
+
+    assert match.status == "matched"
+    assert match.cohort_id == "sales_enablement"
+    assert match.decision_source == "lexical_fallback"
+    assert match.safety_override is False
+
+
+def test_hybrid_matcher_does_not_match_a_lexical_signal_inside_another_token():
+    """A62: `crm` 같은 신호는 unrelated-crm-string 부분 문자열에 반응하면 안 된다."""
+    catalog = SemanticRouteCatalog(
+        version="normal-lexical-token-boundary-v1",
+        encoder_model_id="text-embedding-test",
+        aggregation="centroid",
+        min_margin=0.05,
+        routes=(
+            SemanticRouteDefinition(
+                cohort_id="sales_enablement",
+                label="영업 온보딩",
+                threshold=0.9,
+                representative_vectors=((1.0, 0.0),),
+                lexical_signals=(SemanticLexicalSignal(term="crm", weight=1.0),),
+            ),
+        ),
+    )
+
+    match = SemanticRouteMatcher.match(
+        catalog,
+        query_vector=(0.6, 0.8),
+        query_text="microcrmhelper 설정은 플랫폼 개발 도구 안내를 확인하세요.",
+    )
+
+    assert match.status == "no_match"
+    assert match.decision_source == "dense"
+
+
+def test_hybrid_matcher_matches_a_canonical_korean_signal_with_a_particle():
+    """A62: 정책의 `권한` 신호는 실행 문의의 `권한과`도 같은 핵심어로 매칭한다."""
+    catalog = SemanticRouteCatalog(
+        version="normal-lexical-korean-particle-v1",
+        encoder_model_id="text-embedding-test",
+        aggregation="centroid",
+        min_margin=0.05,
+        routes=(
+            SemanticRouteDefinition(
+                cohort_id="sales_enablement",
+                label="영업 온보딩",
+                threshold=0.9,
+                representative_vectors=((1.0, 0.0),),
+                lexical_signals=(SemanticLexicalSignal(term="권한", weight=1.0),),
+            ),
+        ),
+    )
+
+    match = SemanticRouteMatcher.match(
+        catalog,
+        query_vector=(0.6, 0.8),
+        query_text="CRM 권한과 고객 교육을 신청하는 절차를 알려 주세요.",
+    )
+
+    assert match.status == "matched"
+    assert match.cohort_id == "sales_enablement"
+    assert match.decision_source == "lexical_fallback"
+
+
+def test_hybrid_matcher_rejects_tied_normal_policy_signals():
+    """A61: 같은 신호가 둘 이상의 일반 입력군에 있으면 기본 모델로 닫는다."""
+    catalog = SemanticRouteCatalog(
+        version="normal-lexical-tie-v1",
+        encoder_model_id="text-embedding-test",
+        aggregation="centroid",
+        min_margin=0.05,
+        routes=(
+            SemanticRouteDefinition(
+                cohort_id="first",
+                label="첫 번째",
+                threshold=0.9,
+                representative_vectors=((1.0, 0.0),),
+                lexical_signals=(SemanticLexicalSignal(term="crm", weight=1.0),),
+            ),
+            SemanticRouteDefinition(
+                cohort_id="second",
+                label="두 번째",
+                threshold=0.9,
+                representative_vectors=((0.0, 1.0),),
+                lexical_signals=(SemanticLexicalSignal(term="crm", weight=1.0),),
+            ),
+        ),
+    )
+
+    match = SemanticRouteMatcher.match(
+        catalog,
+        query_vector=(0.6, 0.8),
+        query_text="CRM 권한을 신청하려면 어떤 교육이 필요한가요?",
+    )
+
+    assert match.status == "no_match"
+    assert match.decision_source == "dense"
+
+
 def test_hybrid_matcher_keeps_normal_billing_query_on_dense_route():
     """A43: 일반 결제 표현만 있는 입력은 안전 override로 과잉 승격하지 않는다."""
     match = SemanticRouteMatcher.match(
@@ -483,6 +798,43 @@ def test_hybrid_matcher_keeps_normal_billing_query_on_dense_route():
     assert match.decision_source == "dense"
     assert match.lexical_score == 0
     assert match.lexical_signal_count == 0
+
+
+def test_dense_safety_guard_prevents_discount_route_when_high_risk_route_also_qualifies():
+    """정책이 계산한 안전 경계를 넘으면 더 가까운 일반 입력군보다 안전군을 우선한다."""
+    catalog = SemanticRouteCatalog(
+        version="dense-safety-v1",
+        encoder_model_id="text-embedding-test",
+        aggregation="centroid",
+        min_margin=0.05,
+        routes=(
+            SemanticRouteDefinition(
+                cohort_id="account_access",
+                label="계정 접근",
+                threshold=0.4,
+                representative_vectors=((1.0, 0.0),),
+            ),
+            SemanticRouteDefinition(
+                cohort_id="security_incident",
+                label="보안 사고",
+                threshold=0.4,
+                representative_vectors=((0.8, 0.6),),
+                safety_override=True,
+                dense_override_threshold=0.75,
+            ),
+        ),
+    )
+
+    match = SemanticRouteMatcher.match(
+        catalog,
+        query_vector=(1.0, 0.0),
+        query_text="",
+    )
+
+    assert match.cohort_id == "security_incident"
+    assert match.decision_source == "safety_override"
+    assert match.safety_override is True
+    assert match.similarity == 0.8
 
 
 def test_hybrid_matcher_trace_metadata_does_not_expose_text_or_signal_terms():
