@@ -166,8 +166,16 @@ export interface LLMNodeData extends BaseNodeData {
     policy_id?: string;
     policy_version?: string;
     active_policy?: {
+      strategy?: string;
+      strategy_id?: string;
       default_model_id?: string;
       fallback_model_id?: string;
+      decision_profiles?: Array<{
+        profile: 'short' | 'medium' | 'long' | string;
+        selected_model_id: string;
+        fallback_model_id?: string | null;
+        reason_code?: string | null;
+      }>;
       rules?: Array<{
         id?: string;
         priority?: number;
@@ -182,16 +190,6 @@ export interface LLMNodeData extends BaseNodeData {
       refresh_every_runs?: number;
       last_refresh_result?: string;
     };
-    validation_budget_usd?: number;
-    max_cohorts?: number;
-    cohort_drafts?: Array<{
-      id: string;
-      key: string;
-      label: string;
-      representative_query: string;
-      representative_examples?: string[];
-      fixed: boolean;
-    }>;
   };
   model_routing_context?: {
     customer_facing?: boolean;

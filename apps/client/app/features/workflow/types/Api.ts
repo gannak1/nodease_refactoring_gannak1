@@ -276,8 +276,19 @@ export interface ModelRoutingPolicyResponse {
   policy_id: string | null;
   policy_version: string | null;
   active_policy: {
+    strategy?: string;
+    strategy_id?: string;
     default_model_id?: string;
     fallback_model_id?: string | null;
+    decision_profiles?: Array<{
+      profile: 'short' | 'medium' | 'long' | string;
+      selected_model_id: string;
+      fallback_model_id?: string | null;
+      reason_code?: string | null;
+      constraint_signature?: Record<string, unknown>;
+      candidate_scores?: Record<string, unknown>;
+      excluded_models?: Record<string, unknown>;
+    }>;
     rules?: Array<{
       id?: string;
       selected_model_id?: string;
@@ -307,47 +318,6 @@ export interface ModelRoutingPolicyResponse {
     judge_cost: number | null;
     created_at: string | null;
   } | null;
-  adaptive?: {
-    validation_budget_usd: number;
-    max_cohorts: number;
-    active_cohort_count: number;
-    budget_month: string | null;
-    spent_usd: number;
-    reserved_usd: number;
-    remaining_usd: number;
-    cohorts: Array<{
-      id: string;
-      key: string;
-      label: string;
-      label_en: string | null;
-      /** 운영 원문이 아닌 입력군 매칭 기준의 합성 대표 문의 */
-      representative_query: string | null;
-      /** 대표 문의와 마법사가 만든 비식별 합성 예문 */
-      representative_examples?: string[];
-      source: 'manual' | 'auto' | string;
-      status: 'proposed' | 'validating' | 'validated_waiting' | 'active' | 'dormant' | 'retired' | string;
-      required: boolean;
-      safety_protected: boolean;
-      observation_count: number;
-      review_window_count: number;
-      traffic_share: number;
-      validated_model_id: string | null;
-    }>;
-    latest_batch: {
-      id: string;
-      status: string;
-      trigger: string;
-      total_items: number;
-      completed_items: number;
-      reserved_cost: number;
-      spent_cost: number;
-      bootstrap_wave: number | null;
-      bootstrap_search_state: string | null;
-      follow_up_batch_id: string | null;
-      validated_route_count: number;
-      created_at: string | null;
-    } | null;
-  };
 }
 
 export interface ModelRoutingPolicyPatchResponse
@@ -359,49 +329,11 @@ export interface ModelRoutingPolicyPatchResponse
 export interface ModelRoutingPolicyPatchRequest extends WorkflowGraphCASExpectation {
   enabled: boolean;
   refresh_every_runs: number;
-  validation_budget_usd: number;
-  max_cohorts: number;
   /** 규칙과 매칭되지 않은 입력에 사용하는 사용자가 지정한 기본 모델 */
   default_model_id?: string;
   /** 기본 모델 호출 실패 시 사용하는 사용자가 지정한 대체 모델 */
   fallback_model_id?: string | null;
 }
-
-export interface ModelRoutingCohortSuggestionRequest {
-  representative_query: string;
-}
-
-export interface ModelRoutingCohortSuggestionResponse {
-  label: string;
-  key: string;
-  representative_query: string;
-  representative_examples: string[];
-  safety_protected: boolean;
-}
-
-export interface ModelRoutingCohortCreateRequest
-  extends ModelRoutingCohortSuggestionRequest {
-  label: string;
-  key: string;
-  representative_examples?: string[];
-  fixed: boolean;
-  safety_protected: boolean;
-}
-
-export interface ModelRoutingCohortCreateResponse {
-  id: string;
-  key: string;
-  label: string;
-  representative_query: string;
-  representative_examples?: string[];
-  safety_protected: boolean;
-  source: 'manual' | 'auto' | string;
-  status: string;
-}
-
-export type ModelRoutingCohortUpdateRequest = ModelRoutingCohortCreateRequest;
-
-export type ModelRoutingCohortUpdateResponse = ModelRoutingCohortCreateResponse;
 
 export interface ModelRoutingPolicyRefreshResponse {
   policy_id: string;

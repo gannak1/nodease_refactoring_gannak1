@@ -16,11 +16,6 @@ const workflowApiMock = vi.hoisted(() => ({
   getModelRoutingPolicy: vi.fn(),
   patchModelRoutingPolicy: vi.fn(),
   refreshModelRoutingPolicy: vi.fn(),
-  suggestModelRoutingCohort: vi.fn(),
-  createModelRoutingCohort: vi.fn(),
-  updateModelRoutingCohort: vi.fn(),
-  convertModelRoutingCohortToManual: vi.fn(),
-  deleteModelRoutingCohort: vi.fn(),
 }));
 
 vi.mock('../../components/nodes/llm/components/ModelSelectDropdown', () => ({
@@ -127,9 +122,25 @@ describe('FR-003 LLM node model routing optimization entry', () => {
       policy_id: 'policy-persisted',
       policy_version: 'router-policy-v5',
       active_policy: {
+        strategy: 'prior_guided_adaptive',
+        strategy_id: 'prior_guided_adaptive_v1',
         default_model_id: 'gpt-4.1-mini',
         fallback_model_id: 'gpt-4.1',
         rules: [],
+        decision_profiles: [
+          {
+            profile: 'short',
+            selected_model_id: 'gpt-4.1-mini',
+            fallback_model_id: 'gpt-4.1',
+            reason_code: 'prior_guided_utility_selected',
+          },
+          {
+            profile: 'medium',
+            selected_model_id: 'gpt-4.1',
+            fallback_model_id: 'gpt-4.1-mini',
+            reason_code: 'prior_guided_constraints_safe_default',
+          },
+        ],
       },
       pending_policy: null,
       refresh: {
@@ -155,17 +166,6 @@ describe('FR-003 LLM node model routing optimization entry', () => {
         judge_cost: 0.0012,
         created_at: '2026-07-10T00:00:00+00:00',
       },
-      adaptive: {
-        validation_budget_usd: 3,
-        max_cohorts: 6,
-        active_cohort_count: 0,
-        budget_month: null,
-        spent_usd: 0,
-        reserved_usd: 0,
-        remaining_usd: 3,
-        cohorts: [],
-        latest_batch: null,
-      },
     });
     workflowApiMock.patchModelRoutingPolicy.mockResolvedValue({
       enabled: true,
@@ -189,31 +189,6 @@ describe('FR-003 LLM node model routing optimization entry', () => {
       status: 'refreshing',
       trigger: 'manual_refresh',
       scheduled: true,
-    });
-    workflowApiMock.suggestModelRoutingCohort.mockResolvedValue({
-      label: '결제 오류 문의',
-      key: 'billing_issue',
-      representative_query: '결제가 완료됐는데 서비스 이용이 되지 않습니다.',
-      representative_examples: [
-        '결제가 완료됐는데 서비스 이용이 되지 않습니다.',
-        '결제 후에도 팀 기능이 열리지 않습니다.',
-        '구독 결제는 성공했지만 계정이 무료 상태입니다.',
-      ],
-      safety_protected: false,
-    });
-    workflowApiMock.createModelRoutingCohort.mockResolvedValue({
-      id: 'cohort-1',
-      key: 'billing_issue',
-      label: '결제 오류 문의',
-      source: 'manual',
-      status: 'proposed',
-      representative_query: '결제가 완료됐는데 서비스 이용이 되지 않습니다.',
-      representative_examples: [
-        '결제가 완료됐는데 서비스 이용이 되지 않습니다.',
-        '결제 후에도 팀 기능이 열리지 않습니다.',
-        '구독 결제는 성공했지만 계정이 무료 상태입니다.',
-      ],
-      safety_protected: false,
     });
     global.fetch = vi.fn(async () => ({
       ok: true,
@@ -283,31 +258,8 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     expect(screen.queryByLabelText('작업 유형')).not.toBeInTheDocument();
   });
 
-  it('자동 모델 라우팅이 켜져 있으면 기본 정책 모델을 설정하고 입력군 관리를 먼저 보여준다', async () => {
-    const node = createLlmNode({
-      auto_model_routing: true,
-      model_routing_policy: {
-        status: 'active',
-        policy_id: 'policy-1',
-        policy_version: 'router-policy-v4',
-        active_policy: {
-          default_model_id: 'gpt-4.1-mini',
-          fallback_model_id: 'gpt-4.1',
-          rules: [
-            {
-              id: 'low-risk-json-triage',
-              selected_model_id: 'gpt-4.1-mini',
-              fallback_model_id: 'gpt-4.1',
-              reason_code: 'quality_gate_passed_cost_reduction',
-            },
-          ],
-        },
-        refresh: {
-          runs_since_last_refresh: 12,
-          refresh_every_runs: 20,
-        },
-      },
-    });
+  it('자동 모델 라우팅이 켜져 있으면 사전 지식 기반 정책만 보여준다', async () => {
+    const node = createLlmNode({ auto_model_routing: true });
 
     render(<NodeInlinePanel node={node} />);
 
@@ -316,14 +268,13 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     ).toBeChecked();
     expect(screen.getByText('자동 라우팅 사용 중')).toBeInTheDocument();
     expect(await screen.findByText('router-policy-v5')).toBeInTheDocument();
-    expect(screen.getByText('기본 모델 (규칙 미일치 시)')).toBeInTheDocument();
-    expect(screen.getByText('기본 대체 모델')).toBeInTheDocument();
     expect(
-      screen.getByRole('combobox', { name: '기본 모델을 선택하세요' }),
-    ).toHaveValue('gpt-4.1');
-
-    expect(screen.getByTestId('routing-cohort-management')).toHaveClass('order-1');
-    expect(screen.getByTestId('routing-refresh-controls')).toHaveClass('order-2');
+      screen.getByTestId('routing-prior-guided-policy'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('짧은 입력')).toBeInTheDocument();
+    expect(screen.getByText('보통 입력')).toBeInTheDocument();
+    expect(screen.queryByText('입력군 관리')).not.toBeInTheDocument();
+    expect(screen.queryByText('월간 모델 검증 한도')).not.toBeInTheDocument();
 
     fireEvent.change(
       screen.getByRole('combobox', { name: '기본 모델을 선택하세요' }),
@@ -333,75 +284,11 @@ describe('FR-003 LLM node model routing optimization entry', () => {
       expect(workflowApiMock.patchModelRoutingPolicy).toHaveBeenCalledWith(
         'workflow-1',
         'llm-1',
-        expect.objectContaining({ default_model_id: 'gpt-4.1-mini' }),
-      );
-    });
-  });
-
-  it('persisted policy가 있어도 자동 정책 점검 주기 draft와 PATCH에 슬라이더 값을 사용한다', async () => {
-    const node = createLlmNode({
-      auto_model_routing: true,
-      model_routing_policy: {
-        status: 'active',
-        policy_id: 'policy-1',
-        policy_version: 'router-policy-v4',
-        active_policy: {
-          default_model_id: 'gpt-4.1-mini',
-          fallback_model_id: 'gpt-4.1',
-          rules: [
-            {
-              id: 'low-risk-json-triage',
-              selected_model_id: 'gpt-4.1-mini',
-              fallback_model_id: 'gpt-4.1',
-              reason_code: 'quality_gate_passed_cost_reduction',
-            },
-          ],
-        },
-        refresh: {
-          runs_since_last_refresh: 12,
-          refresh_every_runs: 20,
-        },
-      },
-    });
-    useWorkflowStore.setState(
-      {
-        ...useWorkflowStore.getState(),
-        nodes: [node],
-      },
-      true,
-    );
-
-    const { rerender } = render(<NodeInlinePanel node={node} />);
-
-    const slider = await screen.findByRole('slider', {
-      name: /자동 정책 점검 주기/,
-    });
-    expect(slider).toHaveValue('20');
-
-    fireEvent.change(slider, { target: { value: '45' } });
-
-    rerender(
-      <NodeInlinePanel node={useWorkflowStore.getState().nodes[0] as AppNode} />,
-    );
-    const updatedSlider = screen.getByRole('slider', {
-      name: /자동 정책 점검 주기/,
-    });
-    fireEvent.mouseUp(updatedSlider);
-
-    const nextData = useWorkflowStore.getState().nodes[0]
-      .data as LLMNodeData;
-    expect(nextData.model_routing_policy?.refresh?.refresh_every_runs).toBe(45);
-    expect(updatedSlider).toHaveValue('45');
-    expect(screen.getByText('2/45회')).toBeInTheDocument();
-    await waitFor(() => {
-      expect(workflowApiMock.patchModelRoutingPolicy).toHaveBeenCalledWith(
-        'workflow-1',
-        'llm-1',
         expect.objectContaining({
           enabled: true,
-          refresh_every_runs: 45,
-          validation_budget_usd: 3,
-          max_cohorts: 6,
+          default_model_id: 'gpt-4.1-mini',
+          fallback_model_id: null,
+          refresh_every_runs: 20,
           expected_graph_hash: 'a'.repeat(64),
           expected_updated_at: '2026-07-14T00:00:00Z',
         }),
@@ -419,398 +306,31 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     ).toBeInTheDocument();
   });
 
-  it('월간 모델 검증 한도를 deployment snapshot과 policy PATCH에 함께 반영한다', async () => {
+  it('자동 정책 점검 주기 변경에는 입력군이나 검증 예산을 전송하지 않는다', async () => {
     const node = createLlmNode({ auto_model_routing: true });
-    useWorkflowStore.setState(
-      { ...useWorkflowStore.getState(), nodes: [node] },
-      true,
-    );
+    render(<NodeInlinePanel node={node} />);
 
-    const { rerender } = render(<NodeInlinePanel node={node} />);
-    const budgetSlider = await screen.findByRole('slider', {
-      name: /월간 모델 검증 한도/,
-    });
-
-    fireEvent.change(budgetSlider, { target: { value: '4.5' } });
-    rerender(
-      <NodeInlinePanel node={useWorkflowStore.getState().nodes[0] as AppNode} />,
-    );
-
-    const updatedBudgetSlider = screen.getByRole('slider', {
-      name: /월간 모델 검증 한도/,
-    });
-    fireEvent.mouseUp(updatedBudgetSlider);
-
-    expect(updatedBudgetSlider).toHaveValue('4.5');
-    expect(
-      (useWorkflowStore.getState().nodes[0].data as LLMNodeData)
-        .model_routing_policy?.validation_budget_usd,
-    ).toBe(4.5);
-    await waitFor(() => {
-      expect(workflowApiMock.patchModelRoutingPolicy).toHaveBeenCalledWith(
-        'workflow-1',
-        'llm-1',
-        expect.objectContaining({ validation_budget_usd: 4.5 }),
-      );
-    });
-  });
-
-  it('입력군 최대 개수는 draft와 policy PATCH에 함께 저장한다', async () => {
-    const node = createLlmNode({ auto_model_routing: true });
-    useWorkflowStore.setState(
-      { ...useWorkflowStore.getState(), nodes: [node] },
-      true,
-    );
-
-    const { rerender } = render(<NodeInlinePanel node={node} />);
     const slider = await screen.findByRole('slider', {
-      name: /입력군 최대 개수/,
+      name: '자동 정책 점검 주기',
     });
+    fireEvent.change(slider, { target: { value: '45' } });
+    fireEvent.mouseUp(slider);
 
-    fireEvent.change(slider, { target: { value: '8' } });
-    rerender(
-      <NodeInlinePanel node={useWorkflowStore.getState().nodes[0] as AppNode} />,
-    );
-    fireEvent.mouseUp(
-      screen.getByRole('slider', { name: /입력군 최대 개수/ }),
-    );
-
-    expect(
-      (useWorkflowStore.getState().nodes[0].data as LLMNodeData)
-        .model_routing_policy?.max_cohorts,
-    ).toBe(8);
     await waitFor(() => {
       expect(workflowApiMock.patchModelRoutingPolicy).toHaveBeenCalledWith(
         'workflow-1',
         'llm-1',
-        expect.objectContaining({ max_cohorts: 8 }),
+        expect.objectContaining({
+          enabled: true,
+          refresh_every_runs: 45,
+          default_model_id: 'gpt-4.1',
+          fallback_model_id: null,
+          expected_graph_hash: 'a'.repeat(64),
+          expected_updated_at: '2026-07-14T00:00:00Z',
+        }),
       );
     });
   });
-
-  it('대표 문의 하나로 마법사 예문을 3개 이상 만들고 검토 후 직접 등록한다', async () => {
-    const node = createLlmNode({ auto_model_routing: true });
-    useWorkflowStore.setState(
-      { ...useWorkflowStore.getState(), nodes: [node] },
-      true,
-    );
-    render(<NodeInlinePanel node={node} />);
-
-    fireEvent.click(
-      await screen.findByRole('button', { name: /직접 입력군 추가/ }),
-    );
-    fireEvent.change(screen.getByLabelText('대표 문의'), {
-      target: { value: '결제가 완료됐는데 서비스 이용이 되지 않습니다.' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: /입력군 마법사/ }));
-
-    await waitFor(() => {
-      expect(workflowApiMock.suggestModelRoutingCohort).toHaveBeenCalledWith(
-        'workflow-1',
-        'llm-1',
-        { representative_query: '결제가 완료됐는데 서비스 이용이 되지 않습니다.' },
-      );
-    });
-    expect(screen.getByLabelText('입력군 이름')).toHaveValue('결제 오류 문의');
-    expect(screen.getByLabelText('영문 키')).toHaveValue('billing_issue');
-    expect(
-      screen.getByText('결제 후에도 팀 기능이 열리지 않습니다.'),
-    ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /^입력군 추가$/ }));
-    await waitFor(() => {
-      expect(workflowApiMock.createModelRoutingCohort).toHaveBeenCalledWith(
-        'workflow-1',
-        'llm-1',
-        {
-          label: '결제 오류 문의',
-          key: 'billing_issue',
-          representative_query: '결제가 완료됐는데 서비스 이용이 되지 않습니다.',
-          representative_examples: [
-            '결제가 완료됐는데 서비스 이용이 되지 않습니다.',
-            '결제 후에도 팀 기능이 열리지 않습니다.',
-            '구독 결제는 성공했지만 계정이 무료 상태입니다.',
-          ],
-          fixed: false,
-          safety_protected: false,
-        },
-      );
-    });
-  });
-
-  it('대표 예문이 3개보다 적으면 입력군 저장을 막는다', async () => {
-    const node = createLlmNode({ auto_model_routing: true });
-    useWorkflowStore.setState(
-      { ...useWorkflowStore.getState(), nodes: [node] },
-      true,
-    );
-    render(<NodeInlinePanel node={node} />);
-
-    fireEvent.click(
-      await screen.findByRole('button', { name: /직접 입력군 추가/ }),
-    );
-    fireEvent.change(screen.getByLabelText('대표 문의'), {
-      target: { value: '결제 오류를 확인해 주세요.' },
-    });
-    fireEvent.change(screen.getByLabelText('입력군 이름'), {
-      target: { value: '결제 오류' },
-    });
-    fireEvent.change(screen.getByLabelText('영문 키'), {
-      target: { value: 'billing_error' },
-    });
-
-    expect(screen.getByText(/대표 예문이 최소 3개 필요합니다/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^입력군 추가$/ })).toBeDisabled();
-  });
-
-  it('첫 배포 전에도 입력군 초안을 추가하고 draft 상태를 확인한다', async () => {
-    workflowApiMock.getModelRoutingPolicy.mockResolvedValue({
-      enabled: true,
-      status: 'collecting',
-      policy_id: null,
-      policy_version: null,
-      active_policy: null,
-      pending_policy: null,
-      refresh: {
-        refresh_every_runs: 20,
-        eligible_runs_since_last_refresh: 0,
-        next_refresh_after_runs: 20,
-        last_refresh_result: null,
-        last_refresh_at: null,
-      },
-      last_update: null,
-      adaptive: {
-        validation_budget_usd: 3,
-        max_cohorts: 6,
-        active_cohort_count: 1,
-        budget_month: null,
-        spent_usd: 0,
-        reserved_usd: 0,
-        remaining_usd: 3,
-        cohorts: [
-          {
-            id: 'draft-cohort',
-            key: 'platform_access',
-            label: '플랫폼 접근 신청',
-            label_en: 'platform_access',
-            representative_query: 'VPN 접근 신청 절차를 알려 주세요.',
-            source: 'manual',
-            status: 'draft',
-            required: false,
-            safety_protected: false,
-            observation_count: 0,
-            review_window_count: 0,
-            traffic_share: 0,
-            validated_model_id: null,
-          },
-        ],
-        latest_batch: null,
-      },
-    });
-    const node = createLlmNode({ auto_model_routing: true });
-    useWorkflowStore.setState(
-      { ...useWorkflowStore.getState(), nodes: [node] },
-      true,
-    );
-
-    render(<NodeInlinePanel node={node} />);
-
-    const addButton = await screen.findByRole('button', {
-      name: /직접 입력군 추가/,
-    });
-    expect(addButton).toBeEnabled();
-    expect(await screen.findByText('초안')).toBeInTheDocument();
-    expect(
-      screen.getByText('대표 문의: VPN 접근 신청 절차를 알려 주세요.'),
-    ).toBeInTheDocument();
-  });
-
-  it('입력군 목록에 합성 대표 문의를 표시하고 생성 방식에 맞는 관리 동작을 제공한다', async () => {
-    workflowApiMock.getModelRoutingPolicy.mockResolvedValue({
-      enabled: true,
-      status: 'active',
-      policy_id: 'policy-persisted',
-      policy_version: 'router-policy-v5',
-      active_policy: { default_model_id: 'gpt-4.1', rules: [] },
-      pending_policy: null,
-      refresh: {
-        refresh_every_runs: 20,
-        eligible_runs_since_last_refresh: 2,
-        next_refresh_after_runs: 18,
-        last_refresh_result: null,
-        last_refresh_at: null,
-      },
-      last_update: null,
-      adaptive: {
-        validation_budget_usd: 3,
-        max_cohorts: 6,
-        active_cohort_count: 2,
-        budget_month: null,
-        spent_usd: 0,
-        reserved_usd: 0,
-        remaining_usd: 3,
-        cohorts: [
-          {
-            id: 'manual-cohort',
-            key: 'billing_support',
-            label: '결제 문의',
-            label_en: 'billing support',
-            representative_query: '결제는 완료됐지만 청구서가 발행되지 않았습니다.',
-            source: 'manual',
-            status: 'proposed',
-            required: false,
-            safety_protected: false,
-            observation_count: 1,
-            review_window_count: 0,
-            traffic_share: 0,
-            validated_model_id: null,
-          },
-          {
-            id: 'auto-cohort',
-            key: 'account_access',
-            label: '계정 접근 문의',
-            label_en: 'account access',
-            representative_query: null,
-            source: 'auto',
-            status: 'active',
-            required: false,
-            safety_protected: false,
-            observation_count: 12,
-            review_window_count: 2,
-            traffic_share: 0.4,
-            validated_model_id: 'gpt-4.1-mini',
-          },
-        ],
-        latest_batch: null,
-      },
-    });
-    const node = createLlmNode({ auto_model_routing: true });
-    useWorkflowStore.setState(
-      { ...useWorkflowStore.getState(), nodes: [node] },
-      true,
-    );
-
-    render(<NodeInlinePanel node={node} />);
-    await waitFor(() => {
-      expect(workflowApiMock.getModelRoutingPolicy).toHaveBeenCalledWith(
-        'workflow-1',
-        'llm-1',
-      );
-    });
-    expect(
-      await screen.findByText(
-        '대표 문의: 결제는 완료됐지만 청구서가 발행되지 않았습니다.',
-      ),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText('대표 문의: 대표 문의를 준비 중입니다.'),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: '결제 문의 수정' }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: '계정 접근 문의 사용자 입력군으로 전환' }),
-    ).toBeInTheDocument();
-  });
-
-  it('자동 입력군을 수동 입력군으로 전환할 때 같은 row를 수정해 중복 key를 만들지 않는다', async () => {
-    workflowApiMock.getModelRoutingPolicy.mockResolvedValueOnce({
-      enabled: true,
-      status: 'active',
-      policy_id: 'policy-persisted',
-      policy_version: 'router-policy-v5',
-      active_policy: { default_model_id: 'gpt-4.1', rules: [] },
-      pending_policy: null,
-      refresh: {
-        refresh_every_runs: 20,
-        eligible_runs_since_last_refresh: 2,
-        next_refresh_after_runs: 18,
-        last_refresh_result: null,
-        last_refresh_at: null,
-      },
-      last_update: null,
-      adaptive: {
-        validation_budget_usd: 3,
-        max_cohorts: 6,
-        active_cohort_count: 1,
-        budget_month: null,
-        spent_usd: 0,
-        reserved_usd: 0,
-        remaining_usd: 3,
-        cohorts: [
-          {
-            id: 'auto-cohort',
-            key: 'account_access',
-            label: '계정 접근 문의',
-            label_en: 'account access',
-            representative_query: '로그인할 수 없어 계정 접근을 도와주세요.',
-            representative_examples: [
-              '로그인할 수 없어 계정 접근을 도와주세요.',
-              'SSO 인증이 반복해서 실패합니다.',
-              'MFA 기기 변경 후 계정에 접근할 수 없습니다.',
-            ],
-            source: 'auto',
-            status: 'active',
-            required: false,
-            safety_protected: false,
-            observation_count: 12,
-            review_window_count: 2,
-            traffic_share: 0.4,
-            validated_model_id: 'gpt-4.1-mini',
-          },
-        ],
-        latest_batch: null,
-      },
-    });
-    workflowApiMock.convertModelRoutingCohortToManual.mockResolvedValue({
-      id: 'auto-cohort',
-      key: 'account_access',
-      label: '계정 접근 문의',
-      representative_query: '로그인할 수 없어 계정 접근을 도와주세요.',
-      representative_examples: [
-        '로그인할 수 없어 계정 접근을 도와주세요.',
-        'SSO 인증이 반복해서 실패합니다.',
-        'MFA 기기 변경 후 계정에 접근할 수 없습니다.',
-      ],
-      safety_protected: false,
-      source: 'manual',
-      status: 'proposed',
-    });
-    const node = createLlmNode({ auto_model_routing: true });
-    useWorkflowStore.setState(
-      { ...useWorkflowStore.getState(), nodes: [node] },
-      true,
-    );
-
-    render(<NodeInlinePanel node={node} />);
-    fireEvent.click(
-      await screen.findByRole('button', {
-        name: '계정 접근 문의 사용자 입력군으로 전환',
-      }),
-    );
-    fireEvent.click(screen.getByRole('button', { name: '입력군 수정' }));
-
-    await waitFor(() => {
-      expect(workflowApiMock.convertModelRoutingCohortToManual).toHaveBeenCalledWith(
-        'workflow-1',
-        'llm-1',
-        'auto-cohort',
-        {
-          label: '계정 접근 문의',
-          key: 'account_access',
-          representative_query: '로그인할 수 없어 계정 접근을 도와주세요.',
-          representative_examples: [
-            '로그인할 수 없어 계정 접근을 도와주세요.',
-            'SSO 인증이 반복해서 실패합니다.',
-            'MFA 기기 변경 후 계정에 접근할 수 없습니다.',
-          ],
-          fixed: false,
-          safety_protected: false,
-        },
-      );
-    });
-    expect(workflowApiMock.createModelRoutingCohort).not.toHaveBeenCalled();
-  });
-
   it('자동 모델 라우팅 토글 변경을 노드 데이터에 반영한다', async () => {
     const node = useWorkflowStore.getState().nodes[0] as AppNode;
 

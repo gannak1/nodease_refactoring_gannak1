@@ -89,18 +89,28 @@ describe('LogDetail', () => {
     };
     llmNodeRun.trace_metadata = {
       llm: {
+        strategy_id: 'prior_guided_adaptive_v1',
         selected_model: 'gpt-4.1',
         fallback_model: 'gpt-4.1-mini',
         decision_source: 'active_policy',
-        matched_cohort_id: 'high_risk',
-        semantic_route_label: '보안 및 SLA 고위험',
-        semantic_match_status: 'matched',
-        semantic_decision_source: 'safety_override',
-        semantic_lexical_score: 1,
-        semantic_lexical_signal_count: 1,
-        semantic_safety_override: true,
+        matched_rule_id: 'prior-guided-long',
+        reason_code: 'prior_guided_utility_selected',
         policy_version: 'routing-policy-v10',
-        route_catalog_version: 'ticket-routing-v7',
+        input_length_bucket: 'long',
+        output_format: 'json',
+        schema_required: true,
+        knowledge_enabled: true,
+        decision_factors: {
+          profile: 'long',
+          evaluated_candidate_count: 4,
+          excluded_candidate_count: 2,
+          selected_model_score: {
+            quality_lower_bound: 0.96,
+            expected_total_cost_usd: 0.0032,
+            expected_latency_ms: 1200,
+            prior_source: 'model_catalog_family_prior',
+          },
+        },
         judge_called: false,
       },
     };
@@ -109,21 +119,21 @@ describe('LogDetail', () => {
       render(<LogDetail run={run} />);
     });
 
-    const routingDetails = screen.getByText('자동 라우팅').closest('dl');
+    const routingDetails = screen
+      .getByText('사전 지식 기반 적응형 라우팅')
+      .closest('dl');
     expect(routingDetails).not.toBeNull();
     const routing = within(routingDetails as HTMLElement);
-    expect(routing.getByText('보안 및 SLA 고위험')).toBeInTheDocument();
+    expect(routing.getByText('긴 입력')).toBeInTheDocument();
     expect(routing.getByText('gpt-4.1')).toBeInTheDocument();
     expect(
       routing.getByText(
-        '정책의 안전 조건 1개와 일치해 안전 유형을 우선했습니다.',
+        '품질 하한을 만족한 후보 중 예상 비용과 지연 시간을 함께 비교해 선택했습니다.',
       ),
     ).toBeInTheDocument();
-    expect(
-      routing.getByText(
-        '비용 절감보다 사고 대응 품질을 우선해 검증된 모델을 선택했습니다.',
-      ),
-    ).toBeInTheDocument();
+    expect(routing.getByText('검토 모델 4개')).toBeInTheDocument();
+    expect(routing.getByText('품질 하한 96.0%')).toBeInTheDocument();
+    expect(routing.getByText('예상 비용 $0.003200')).toBeInTheDocument();
     expect(routing.getByText('실행 중 Judge 호출 안 함')).toBeInTheDocument();
   });
 
