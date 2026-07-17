@@ -1,5 +1,7 @@
 // API 요청 & 응답과 관련된 타입들을 정의합니다.
 
+import type { JudgeFirstActivePolicy } from './ModelRouting';
+
 export interface WorkflowCreateRequest {
   app_id: string;
 }
@@ -276,50 +278,7 @@ export interface ModelRoutingPolicyResponse {
   policy_id: string | null;
   bootstrap_id?: string | null;
   policy_version: string | null;
-  active_policy: {
-    strategy?: string;
-    strategy_id?: string;
-    default_model_id?: string;
-    fallback_model_id?: string | null;
-    task_complexity_profile?: {
-      kind?: string;
-      score?: number;
-      tier?: 'economy' | 'balanced' | 'advanced';
-      reasoning_depth?: number;
-      instruction_complexity?: number;
-      schema_precision?: number;
-      context_synthesis?: number;
-      grounding_requirement?: number;
-      output_generation_demand?: number;
-      ambiguity?: number;
-      reason?: string;
-    };
-    classifier_artifact?: {
-      kind?: string;
-      version?: string;
-      tier_sample_counts?: Partial<Record<'economy' | 'balanced' | 'advanced', number>>;
-    };
-    minimum_confidence?: number;
-    generalization_validation?: Record<string, unknown>;
-    difficulty_models?: Partial<
-      Record<'economy' | 'balanced' | 'advanced', string>
-    >;
-    decision_profiles?: Array<{
-      profile: 'short' | 'medium' | 'long' | string;
-      selected_model_id: string;
-      fallback_model_id?: string | null;
-      reason_code?: string | null;
-      constraint_signature?: Record<string, unknown>;
-      candidate_scores?: Record<string, unknown>;
-      excluded_models?: Record<string, unknown>;
-    }>;
-    rules?: Array<{
-      id?: string;
-      selected_model_id?: string;
-      fallback_model_id?: string | null;
-      reason_code?: string;
-    }>;
-  } | null;
+  active_policy: JudgeFirstActivePolicy | null;
   pending_policy: Record<string, unknown> | null;
   refresh: {
     refresh_every_runs: number;
@@ -387,40 +346,24 @@ export interface ModelRoutingBootstrapRequest {
   task_description: string;
   default_model_id: string;
   fallback_model_id?: string | null;
-  initial_budget_usd: number;
-}
-
-export interface ModelRoutingBootstrapSample {
-  id: string;
-  source: 'history' | 'synthetic';
-  difficulty: 'economy' | 'balanced' | 'advanced';
-  safe_input_summary: Record<string, unknown>;
-  input_length: number;
-  knowledge_enabled: boolean;
-  output_format: string;
-  planner_reason?: string | null;
 }
 
 export interface ModelRoutingBootstrapResponse {
   id: string;
   status: 'ready' | 'generating' | 'failed' | 'stale' | string;
-  source: 'history' | 'hybrid' | 'synthetic';
+  source: 'history' | 'judge_first';
   task_fingerprint: string;
   task_description: string;
   default_model_id: string;
   fallback_model_id?: string | null;
-  initial_budget_usd: number;
-  planner_model_id?: string | null;
-  planner_cost_usd?: number | null;
   generation_summary: Record<string, unknown>;
   stale_reason?: string | null;
   created_at?: string | null;
-  samples?: ModelRoutingBootstrapSample[];
 }
 
 export interface ModelRoutingBootstrapPreview {
   task_fingerprint: string;
-  history_mode: 'history' | 'hybrid' | 'synthetic';
+  history_mode: 'history' | 'judge_first';
   available_history_count: number;
   excluded_history_count: number;
   excluded_reason_summary: Record<string, number>;

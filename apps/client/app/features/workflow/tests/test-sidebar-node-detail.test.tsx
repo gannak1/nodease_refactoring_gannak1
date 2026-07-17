@@ -61,9 +61,9 @@ vi.mock('../store/useWorkflowStore', () => {
               fallback_used: true,
               fallback_from_model: 'gpt-5.6-luna',
               fallback_reason_code: 'provider_call_failed',
-              decision_source: 'active_policy',
-              strategy_id: 'bootstrap_task_complexity_v2',
-              reason_code: 'bootstrap_task_complexity_balanced',
+              decision_source: 'test_policy_preview',
+              strategy_id: 'judge_bootstrap_incremental_v1',
+              reason_code: 'judge_bootstrap_required',
               judge_called: false,
               policy_source: 'active_deployment',
               included_in_policy_learning: false,
@@ -142,7 +142,7 @@ describe('TestSidebar node execution details', () => {
     expect(screen.getByText('보통 입력')).toBeVisible();
     expect(
       screen.getByText(
-        '현재 작업의 복잡도와 비용·응답 속도를 함께 고려해 균형형 후보를 선택했습니다.',
+        '학습 초기 단계라 Judge가 현재 요청과 후보 모델을 비교해 선택했습니다.',
       ),
     ).toBeVisible();
     expect(

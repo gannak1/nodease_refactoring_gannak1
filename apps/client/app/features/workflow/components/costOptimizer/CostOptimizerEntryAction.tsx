@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { BarChart3, Route } from 'lucide-react';
+import { BarChart3 } from 'lucide-react';
 import { workflowApi } from '../../api/workflowApi';
 import type { WorkflowPermissionResponse } from '../../types/Api';
 
@@ -11,7 +11,6 @@ interface CostOptimizerEntryActionProps {
   hasUnsavedChanges?: boolean;
   onOpen?: () => void;
   label?: string;
-  destination?: 'model-routing' | 'cost-optimizer';
   title?: string;
 }
 
@@ -24,8 +23,7 @@ export const CostOptimizerEntryAction = ({
   workflowAccess,
   hasUnsavedChanges = false,
   onOpen,
-  label = '모델 라우팅 최적화',
-  destination = 'model-routing',
+  label = '비교 분석 테스트',
   title,
 }: CostOptimizerEntryActionProps) => {
   const router = useRouter();
@@ -81,7 +79,7 @@ export const CostOptimizerEntryAction = ({
             onOpen();
             return;
           }
-          router.push(`/modules/${workflowId}/${destination}/${nodeId}`);
+          router.push(`/modules/${workflowId}/cost-optimizer/${nodeId}`);
         }}
         className="nodrag inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-emerald-600 bg-emerald-600 px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:border-emerald-700 hover:bg-emerald-700 disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-50 disabled:text-gray-400 disabled:shadow-none"
         title={
@@ -90,11 +88,7 @@ export const CostOptimizerEntryAction = ({
             : '워크플로우 수정 권한이 필요합니다.'
         }
       >
-        {destination === 'cost-optimizer' ? (
-          <BarChart3 className="h-3.5 w-3.5" />
-        ) : (
-          <Route className="h-3.5 w-3.5" />
-        )}
+        <BarChart3 className="h-3.5 w-3.5" />
         {label}
       </button>
       {message ? (

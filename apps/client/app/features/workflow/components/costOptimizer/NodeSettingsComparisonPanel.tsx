@@ -219,25 +219,22 @@ export function NodeSettingsComparisonPanel({
   const routingPolicySummary = useMemo(() => {
     const policy = draft.model_routing_policy;
     const activePolicy = policy?.active_policy;
-    const firstRule = activePolicy?.rules?.find(Boolean);
-    const selectedModelId =
-      firstRule?.selected_model_id ||
-      activePolicy?.default_model_id ||
-      draft.model_id ||
-      '';
+    const defaultModelId = activePolicy?.default_model_id || draft.model_id || '';
     const fallbackModelId =
-      firstRule?.fallback_model_id ||
-      activePolicy?.fallback_model_id ||
-      draft.fallback_model_id ||
-      '';
+      activePolicy?.fallback_model_id || draft.fallback_model_id || '';
     const status =
       policy?.status ||
       (activePolicy ? 'active' : draft.auto_model_routing ? 'collecting' : 'off');
 
     return {
       status,
-      selectedModelId,
+      defaultModelId,
       fallbackModelId,
+      candidateModelCount: activePolicy?.candidate_model_ids?.length || 0,
+      learningMode:
+        activePolicy?.learning?.mode === 'local_first'
+          ? '로컬 라우터 우선'
+          : 'Judge 우선',
       policyVersion: policy?.policy_version || '정책 없음',
     };
   }, [
@@ -508,36 +505,41 @@ export function NodeSettingsComparisonPanel({
                         자동 라우팅 사용 중
                       </div>
                       <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
-                        B candidate는 현재 라우팅 정책을 기준으로 모델을
-                        선택합니다. 수동 기본/대체 모델 선택은 숨겨집니다.
+                        B candidate는 Judge-first 정책의 후보 모델을 비교합니다.
+                        학습이 충분하면 로컬 라우터가 먼저 선택합니다.
                       </p>
                     </div>
                     <span className="rounded-full bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-600 ring-1 ring-slate-200">
                       {routingPolicySummary.status}
                     </span>
                   </div>
-                  <dl className="mt-3 grid grid-cols-1 gap-2 text-[11px] sm:grid-cols-3">
+                  <dl className="mt-3 grid grid-cols-1 gap-2 text-[11px] sm:grid-cols-2">
                     <div className="rounded border border-slate-100 bg-white p-2">
                       <dt className="font-semibold text-slate-500">
-                        선택 모델
+                        Judge 기본 모델
                       </dt>
                       <dd className="mt-1 truncate font-semibold text-slate-900">
-                        {routingPolicySummary.selectedModelId || '정책 대기 중'}
+                        {routingPolicySummary.defaultModelId || '정책 대기 중'}
                       </dd>
                     </div>
                     <div className="rounded border border-slate-100 bg-white p-2">
                       <dt className="font-semibold text-slate-500">
-                        Fallback 모델
+                        기본 대체 모델
                       </dt>
                       <dd className="mt-1 truncate font-semibold text-slate-900">
                         {routingPolicySummary.fallbackModelId || '없음'}
                       </dd>
                     </div>
                     <div className="rounded border border-slate-100 bg-white p-2">
-                      <dt className="font-semibold text-slate-500">
-                        정책 버전
-                      </dt>
+                      <dt className="font-semibold text-slate-500">현재 선택 방식</dt>
                       <dd className="mt-1 truncate font-semibold text-slate-900">
+                        {routingPolicySummary.learningMode}
+                      </dd>
+                    </div>
+                    <div className="rounded border border-slate-100 bg-white p-2">
+                      <dt className="font-semibold text-slate-500">후보 모델</dt>
+                      <dd className="mt-1 truncate font-semibold text-slate-900">
+                        {routingPolicySummary.candidateModelCount}개 ·{' '}
                         {routingPolicySummary.policyVersion}
                       </dd>
                     </div>

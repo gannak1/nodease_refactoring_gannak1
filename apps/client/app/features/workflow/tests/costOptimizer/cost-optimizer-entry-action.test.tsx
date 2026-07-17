@@ -40,24 +40,6 @@ describe('CostOptimizerEntryAction', () => {
     });
   });
 
-  it('최적화 버튼은 모델 라우팅 최적화 화면으로 이동한다', async () => {
-    render(
-      <CostOptimizerEntryAction
-        workflowId="workflow-1"
-        nodeId="llm-1"
-        workflowAccess={writableAccess}
-        label="최적화"
-        destination="model-routing"
-      />,
-    );
-
-    const button = await screen.findByRole('button', { name: '최적화' });
-    await waitFor(() => expect(button).not.toBeDisabled());
-    fireEvent.click(button);
-
-    expect(pushMock).toHaveBeenCalledWith('/modules/workflow-1/model-routing/llm-1');
-  });
-
   it('비교 분석 테스트 버튼은 실행 로그 기반 A/B 비교 화면으로 이동한다', async () => {
     render(
       <CostOptimizerEntryAction
@@ -65,7 +47,6 @@ describe('CostOptimizerEntryAction', () => {
         nodeId="llm-1"
         workflowAccess={writableAccess}
         label="비교 분석 테스트"
-        destination="cost-optimizer"
       />,
     );
 
@@ -86,7 +67,6 @@ describe('CostOptimizerEntryAction', () => {
         workflowAccess={writableAccess}
         hasUnsavedChanges
         label="비교 분석 테스트"
-        destination="cost-optimizer"
       />,
     );
 

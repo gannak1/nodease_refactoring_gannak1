@@ -124,25 +124,19 @@ describe('FR-003 LLM node model routing optimization entry', () => {
       policy_id: 'policy-persisted',
       policy_version: 'router-policy-v5',
       active_policy: {
-        strategy: 'prior_guided_adaptive',
-        strategy_id: 'prior_guided_adaptive_v1',
+        strategy_id: 'judge_bootstrap_incremental_v1',
         default_model_id: 'gpt-4.1-mini',
         fallback_model_id: 'gpt-4.1',
         rules: [],
-        decision_profiles: [
-          {
-            profile: 'short',
-            selected_model_id: 'gpt-4.1-mini',
-            fallback_model_id: 'gpt-4.1',
-            reason_code: 'prior_guided_utility_selected',
-          },
-          {
-            profile: 'medium',
-            selected_model_id: 'gpt-4.1',
-            fallback_model_id: 'gpt-4.1-mini',
-            reason_code: 'prior_guided_constraints_safe_default',
-          },
-        ],
+        judge_provider: 'openai',
+        judge_model_id: 'gpt-4.1-mini',
+        minimum_local_samples: 24,
+        local_confidence_threshold: 0.78,
+        learning: {
+          mode: 'local_first',
+          judged_request_count: 24,
+          distinct_model_count: 2,
+        },
       },
       pending_policy: null,
       refresh: {
@@ -218,7 +212,7 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     });
     workflowApiMock.getModelRoutingBootstrapPreview.mockResolvedValue({
       task_fingerprint: 'fingerprint-1',
-      history_mode: 'synthetic',
+      history_mode: 'judge_first',
       available_history_count: 0,
       excluded_history_count: 0,
       excluded_reason_summary: {},
@@ -227,17 +221,14 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     workflowApiMock.createModelRoutingBootstrap.mockResolvedValue({
       id: 'bootstrap-1',
       status: 'ready',
-      source: 'synthetic',
+      source: 'judge_first',
       task_fingerprint: 'fingerprint-1',
       task_description: '고객 문의를 JSON으로 분류합니다.',
       default_model_id: 'gpt-4.1',
       fallback_model_id: 'gpt-4.1-mini',
-      initial_budget_usd: 1,
-      planner_model_id: 'gpt-4.1',
-      planner_cost_usd: 0.01,
       generation_summary: {
         history_sample_count: 0,
-        synthetic_sample_count: 15,
+        candidate_model_count: 2,
       },
     });
     global.fetch = vi.fn(async () => ({
@@ -308,7 +299,7 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     expect(screen.queryByLabelText('작업 유형')).not.toBeInTheDocument();
   });
 
-  it('자동 모델 라우팅이 켜져 있으면 사전 지식 기반 정책만 보여준다', async () => {
+  it('자동 모델 라우팅이 켜져 있으면 Judge-first 정책만 보여준다', async () => {
     const node = createLlmNode({ auto_model_routing: true });
 
     render(<NodeInlinePanel node={node} />);
@@ -319,10 +310,11 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     expect(screen.getByText('자동 라우팅 사용 중')).toBeInTheDocument();
     expect(await screen.findByText('router-policy-v5')).toBeInTheDocument();
     expect(
-      screen.getByTestId('routing-prior-guided-policy'),
+      screen.getByTestId('routing-judge-first-policy'),
     ).toBeInTheDocument();
-    expect(screen.getByText('짧은 입력')).toBeInTheDocument();
-    expect(screen.getByText('보통 입력')).toBeInTheDocument();
+    expect(screen.getByText('Judge-first + 점진적 로컬 학습')).toBeInTheDocument();
+    expect(screen.getByText('로컬 라우터 우선')).toBeInTheDocument();
+    expect(screen.getByText('24건')).toBeInTheDocument();
     expect(screen.queryByText('입력군 관리')).not.toBeInTheDocument();
     expect(screen.queryByText('월간 모델 검증 한도')).not.toBeInTheDocument();
 
@@ -381,7 +373,7 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     expect(workflowApiMock.patchModelRoutingPolicy).not.toHaveBeenCalled();
   });
 
-  it('작업 설명과 예산으로 초안 단계의 자동 선택 기준을 생성한다', async () => {
+  it('작업 설명으로 초안 단계의 Judge-first 자동 선택 기준을 생성한다', async () => {
     const node = createLlmNode({ auto_model_routing: true });
     useWorkflowStore.setState(
       { ...useWorkflowStore.getState(), nodes: [node] },
@@ -392,14 +384,6 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     fireEvent.change(await screen.findByLabelText('자동 라우팅 작업 설명'), {
       target: { value: '고객 문의를 JSON으로 분류하고 위험 문의는 신중하게 판단합니다.' },
     });
-    const initialBudgetSlider = screen.getByRole('slider', {
-      name: '1회 초기 생성 예산',
-    });
-    fireEvent.change(initialBudgetSlider, { target: { value: '2.5' } });
-
-    expect(screen.getByText('권장: $1~$3')).toBeInTheDocument();
-    expect(initialBudgetSlider).toHaveValue('2.5');
-
     fireEvent.click(screen.getByRole('button', { name: '자동 선택 기준 만들기' }));
 
     await waitFor(() => {
@@ -409,7 +393,6 @@ describe('FR-003 LLM node model routing optimization entry', () => {
         expect.objectContaining({
           task_description: '고객 문의를 JSON으로 분류하고 위험 문의는 신중하게 판단합니다.',
           default_model_id: 'gpt-4.1',
-          initial_budget_usd: 2.5,
         }),
       );
     });
@@ -419,7 +402,7 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     ).toBe('bootstrap-1');
   });
 
-  it('bootstrap 정책은 요청별 난이도 분류기와 후보 모델을 보여준다', async () => {
+  it('bootstrap 정책은 Judge 선택 누적과 로컬 학습 상태를 보여준다', async () => {
     workflowApiMock.getModelRoutingPolicy.mockResolvedValueOnce({
       enabled: true,
       status: 'active',
@@ -429,28 +412,15 @@ describe('FR-003 LLM node model routing optimization entry', () => {
         strategy_id: 'judge_bootstrap_incremental_v1',
         default_model_id: 'gpt-4.1-mini',
         fallback_model_id: 'gpt-4.1',
-        task_complexity_profile: {
-          kind: 'planner_task_complexity_v1',
-          score: 78,
-          tier: 'advanced',
-          reasoning_depth: 4,
-          instruction_complexity: 4,
-          schema_precision: 5,
-          context_synthesis: 3,
-          grounding_requirement: 3,
-          output_generation_demand: 2,
-          ambiguity: 2,
-          reason: '복수 조건과 엄격한 JSON 계약을 함께 만족해야 합니다.',
-        },
-        difficulty_models: {
-          economy: 'gpt-4o-mini',
-          balanced: 'gpt-4.1-mini',
-          advanced: 'gpt-4.1',
-        },
         rules: [],
+        judge_provider: 'openai',
+        judge_model_id: 'gpt-4.1-mini',
+        minimum_local_samples: 24,
+        local_confidence_threshold: 0.78,
         learning: {
           mode: 'judge_first',
           judged_request_count: 0,
+          distinct_model_count: 0,
         },
       },
       pending_policy: null,
@@ -475,16 +445,16 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     render(<NodeInlinePanel node={node} />);
 
     expect(
-      await screen.findByTestId('routing-bootstrap-policy'),
+      await screen.findByTestId('routing-judge-first-policy'),
     ).toBeInTheDocument();
-    expect(screen.getByText('Judge 기반 점진 학습 라우터')).toBeInTheDocument();
+    expect(screen.getByText('Judge-first + 점진적 로컬 학습')).toBeInTheDocument();
     expect(screen.getByText('Judge 선택 학습 중')).toBeInTheDocument();
     expect(screen.getByText('학습된 Judge 선택')).toBeInTheDocument();
     expect(screen.getByText('0건')).toBeInTheDocument();
     expect(screen.queryByText('경제형 요청')).not.toBeInTheDocument();
     expect(screen.queryByText('균형형 요청')).not.toBeInTheDocument();
     expect(screen.queryByText('고성능 요청')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('routing-prior-guided-policy')).not.toBeInTheDocument();
+    expect(screen.queryByText('요청 복잡도 점수')).not.toBeInTheDocument();
   });
 
   it('정책 다시 평가는 refresh API를 요청한다', async () => {
