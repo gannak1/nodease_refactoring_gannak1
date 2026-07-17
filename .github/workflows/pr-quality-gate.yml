@@ -36,9 +36,11 @@ jobs:
       log_tests: ${{ steps.scope_outputs.outputs.log_tests }}
       sandbox_tests: ${{ steps.scope_outputs.outputs.sandbox_tests }}
       root_tests: ${{ steps.scope_outputs.outputs.root_tests }}
+      memory_tests: ${{ steps.scope_outputs.outputs.memory_tests }}
       knowledge_postgres: ${{ steps.scope_outputs.outputs.knowledge_postgres }}
       workflow_postgres: ${{ steps.scope_outputs.outputs.workflow_postgres }}
       agent_builder_postgres: ${{ steps.scope_outputs.outputs.agent_builder_postgres }}
+      memory_postgres: ${{ steps.scope_outputs.outputs.memory_postgres }}
       broad_python: ${{ steps.scope_outputs.outputs.broad_python }}
     steps:
       - name: Checkout pull request merge
@@ -89,9 +91,11 @@ jobs:
           CLASSIFIED_LOG_TESTS: ${{ steps.classify.outputs.log_tests }}
           CLASSIFIED_SANDBOX_TESTS: ${{ steps.classify.outputs.sandbox_tests }}
           CLASSIFIED_ROOT_TESTS: ${{ steps.classify.outputs.root_tests }}
+          CLASSIFIED_MEMORY_TESTS: ${{ steps.classify.outputs.memory_tests }}
           CLASSIFIED_KNOWLEDGE_POSTGRES: ${{ steps.classify.outputs.knowledge_postgres }}
           CLASSIFIED_WORKFLOW_POSTGRES: ${{ steps.classify.outputs.workflow_postgres }}
           CLASSIFIED_AGENT_BUILDER_POSTGRES: ${{ steps.classify.outputs.agent_builder_postgres }}
+          CLASSIFIED_MEMORY_POSTGRES: ${{ steps.classify.outputs.memory_postgres }}
           CLASSIFIED_BROAD_PYTHON: ${{ steps.classify.outputs.broad_python }}
         run: |
           emit_boolean() {
@@ -115,9 +119,11 @@ jobs:
             emit_boolean log_tests true
             emit_boolean sandbox_tests true
             emit_boolean root_tests true
+            emit_boolean memory_tests true
             emit_boolean knowledge_postgres true
             emit_boolean workflow_postgres true
             emit_boolean agent_builder_postgres true
+            emit_boolean memory_postgres true
             emit_boolean broad_python true
             exit 0
           fi
@@ -132,9 +138,11 @@ jobs:
           emit_boolean log_tests "$CLASSIFIED_LOG_TESTS"
           emit_boolean sandbox_tests "$CLASSIFIED_SANDBOX_TESTS"
           emit_boolean root_tests "$CLASSIFIED_ROOT_TESTS"
+          emit_boolean memory_tests "$CLASSIFIED_MEMORY_TESTS"
           emit_boolean knowledge_postgres "$CLASSIFIED_KNOWLEDGE_POSTGRES"
           emit_boolean workflow_postgres "$CLASSIFIED_WORKFLOW_POSTGRES"
           emit_boolean agent_builder_postgres "$CLASSIFIED_AGENT_BUILDER_POSTGRES"
+          emit_boolean memory_postgres "$CLASSIFIED_MEMORY_POSTGRES"
           emit_boolean broad_python "$CLASSIFIED_BROAD_PYTHON"
 
   alembic_graph:
@@ -367,6 +375,47 @@ jobs:
           --broad "${{ needs.scope.outputs.broad_python }}"
           --run-with .venv-ci-shared/bin/python
 
+  memory_tests:
+    name: memory-tests
+    needs: scope
+    if: needs.scope.outputs.memory_tests == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - name: Checkout pull request merge
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: apps/shared/pyproject.toml
+
+      - name: Install Memory test dependencies
+        run: |
+          uv venv .venv-ci-memory --python "$PYTHON_VERSION"
+          uv pip install --python .venv-ci-memory/bin/python \
+            -e apps/shared \
+            pytest==9.1.1
+
+      - name: Run selected Memory tests
+        run: >-
+          python -m scripts.ci.select_pytest_targets
+          --component memory
+          --base "$BASE_SHA"
+          --head "$HEAD_SHA"
+          --broad "${{ needs.scope.outputs.broad_python }}"
+          --run-with .venv-ci-memory/bin/python
+
   log_tests:
     name: log-system-tests
     needs: scope
@@ -465,6 +514,12 @@ jobs:
     if: needs.scope.outputs.agent_builder_postgres == 'true'
     uses: ./.github/workflows/test-agent-builder-postgres.yml
 
+  memory_postgres:
+    name: memory-postgres-contracts
+    needs: scope
+    if: needs.scope.outputs.memory_postgres == 'true'
+    uses: ./.github/workflows/test-memory-postgres.yml
+
   ci_required:
     name: ci-required
     if: always()
@@ -476,11 +531,13 @@ jobs:
       - gateway_tests
       - workflow_tests
       - shared_tests
+      - memory_tests
       - log_tests
       - sandbox_tests
       - knowledge_postgres
       - workflow_postgres
       - agent_builder_postgres
+      - memory_postgres
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -502,8 +559,10 @@ jobs:
           --conditional "gateway=${{ needs.scope.outputs.gateway_job }}=${{ needs.gateway_tests.result }}"
           --conditional "workflow-engine=${{ needs.scope.outputs.workflow_tests }}=${{ needs.workflow_tests.result }}"
           --conditional "shared=${{ needs.scope.outputs.shared_tests }}=${{ needs.shared_tests.result }}"
+          --conditional "memory=${{ needs.scope.outputs.memory_tests }}=${{ needs.memory_tests.result }}"
           --conditional "log-system=${{ needs.scope.outputs.log_tests }}=${{ needs.log_tests.result }}"
           --conditional "sandbox=${{ needs.scope.outputs.sandbox_tests }}=${{ needs.sandbox_tests.result }}"
           --conditional "knowledge-postgres=${{ needs.scope.outputs.knowledge_postgres }}=${{ needs.knowledge_postgres.result }}"
           --conditional "workflow-postgres=${{ needs.scope.outputs.workflow_postgres }}=${{ needs.workflow_postgres.result }}"
           --conditional "agent-builder-postgres=${{ needs.scope.outputs.agent_builder_postgres }}=${{ needs.agent_builder_postgres.result }}"
+          --conditional "memory-postgres=${{ needs.scope.outputs.memory_postgres }}=${{ needs.memory_postgres.result }}"

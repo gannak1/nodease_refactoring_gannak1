@@ -34,6 +34,29 @@ def test_client_change_selects_only_client_runtime_job():
     assert scope.gateway_tests is False
 
 
+def test_memory_change_selects_only_memory_python_and_postgres_contracts():
+    scope = classify_paths(["apps/memory/application/lifecycle.py"])
+
+    assert scope.python_lint is True
+    assert scope.memory_tests is True
+    assert scope.memory_postgres is True
+    assert scope.gateway_tests is False
+    assert scope.workflow_tests is False
+    assert scope.shared_tests is False
+    assert scope.client is False
+    assert scope.broad_python is False
+
+
+def test_unrelated_shared_change_does_not_expand_to_memory_domain():
+    scope = classify_paths(["apps/shared/schemas/organization_membership.py"])
+
+    assert scope.shared_tests is True
+    assert scope.gateway_tests is True
+    assert scope.workflow_tests is True
+    assert scope.memory_tests is False
+    assert scope.memory_postgres is False
+
+
 def test_shared_schema_change_expands_to_consumers_and_root_tests():
     scope = classify_paths(["apps/shared/schemas/organization_membership.py"])
 
@@ -56,6 +79,8 @@ def test_migration_change_selects_graph_consumers_and_postgres_contracts():
     assert scope.knowledge_postgres is True
     assert scope.workflow_postgres is True
     assert scope.agent_builder_postgres is True
+    assert scope.memory_tests is True
+    assert scope.memory_postgres is True
 
 
 def test_agent_builder_change_selects_agent_builder_postgres():
@@ -115,6 +140,8 @@ def test_ci_control_change_selects_smoke_jobs_and_postgres_contracts():
     assert scope.knowledge_postgres is True
     assert scope.workflow_postgres is True
     assert scope.agent_builder_postgres is True
+    assert scope.memory_tests is True
+    assert scope.memory_postgres is True
 
 
 def test_trusted_guard_change_is_treated_as_ci_control():
@@ -124,6 +151,8 @@ def test_trusted_guard_change_is_treated_as_ci_control():
     assert scope.knowledge_postgres is True
     assert scope.workflow_postgres is True
     assert scope.agent_builder_postgres is True
+    assert scope.memory_tests is True
+    assert scope.memory_postgres is True
 
 
 def test_deployment_workflow_does_not_pull_runtime_tests_into_pr_gate():
@@ -163,6 +192,8 @@ def test_empty_diff_fails_closed():
     assert scope.knowledge_postgres is True
     assert scope.workflow_postgres is True
     assert scope.agent_builder_postgres is True
+    assert scope.memory_tests is True
+    assert scope.memory_postgres is True
 
 
 def test_name_status_parser_preserves_both_sides_of_rename():

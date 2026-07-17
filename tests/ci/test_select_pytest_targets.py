@@ -41,10 +41,7 @@ def test_selects_changed_test_file_directly(tmp_path: Path):
 def test_gateway_selector_excludes_postgres_only_agent_builder_tests(
     tmp_path: Path,
 ):
-    target = (
-        "apps/gateway/tests/integration/"
-        "test_agent_builder_workflow_cas.py"
-    )
+    target = "apps/gateway/tests/integration/test_agent_builder_workflow_cas.py"
     _write(tmp_path, target)
     _write(tmp_path, "apps/gateway/tests/architecture/test_boundaries.py")
 
@@ -119,6 +116,23 @@ def test_root_selector_excludes_evaluation_and_load_tests(tmp_path: Path):
         ],
         tmp_path,
     ) == ["tests/ci/test_changed_scope.py"]
+
+
+def test_memory_selector_runs_changed_layer_and_architecture_but_not_postgres(
+    tmp_path: Path,
+):
+    domain_test = "apps/memory/tests/domain/test_conversation.py"
+    architecture_test = "apps/memory/tests/architecture/test_boundaries.py"
+    postgres_test = "apps/memory/tests/adapters/test_disposable_postgres.py"
+    _write(tmp_path, domain_test)
+    _write(tmp_path, architecture_test)
+    _write(tmp_path, postgres_test)
+
+    assert select_pytest_targets(
+        "memory",
+        ["apps/memory/domain/conversation.py"],
+        tmp_path,
+    ) == ["apps/memory/tests/architecture", domain_test]
 
 
 def test_rejects_unknown_component(tmp_path: Path):

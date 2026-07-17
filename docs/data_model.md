@@ -13,7 +13,7 @@ Status: Draft
 
 ## 도메인별 테이블
 
-현재 코드의 SQLAlchemy `__tablename__` 기준 활성 테이블은 82개다. 아래 목록은 `origin/dev @ deb7af7910ea0dc395cfb095f5b9f54aa8cfc709`에서 모델 선언을 대조한 inventory다. `legacy_llm_provider`, `legacy_llm_credentials`는 migration `e4956fcd7e2b`에서 DROP됐고 주석 처리된 호환 모델이므로 개수와 목록에서 제외한다. 테이블 추가·삭제 시 수동 개수만 바꾸지 말고 이 inventory와 해당 도메인 설명을 함께 갱신한다.
+현재 코드의 SQLAlchemy `__tablename__` 기준 활성 테이블은 98개다. 아래 목록은 공통 model registry와 Alembic head `ab1c2d3e4f50`을 대조한 inventory다. `legacy_llm_provider`, `legacy_llm_credentials`는 migration `e4956fcd7e2b`에서 DROP됐고 주석 처리된 호환 모델이므로 개수와 목록에서 제외한다. 테이블 추가·삭제 시 수동 개수만 바꾸지 말고 이 inventory와 해당 도메인 설명을 함께 갱신한다.
 
 | 도메인 | 테이블 |
 | --- | --- |
@@ -21,9 +21,10 @@ Status: Draft
 | 권한 | `team_workflow_permissions`, `team_knowledge_permissions`, `team_knowledge_collection_permissions`, `team_knowledge_domain_permissions`, `team_llm_permissions`, `team_mail_credential_permissions`, `team_audit_permissions`, `user_workflow_permissions`, `user_knowledge_permissions`, `user_knowledge_collection_permissions`, `user_knowledge_domain_permissions`, `user_llm_permissions`, `user_mail_credential_permissions`, `permission_requests`, `user_app_creation_permissions` |
 | 앱/워크플로우 | `apps`, `workflows`, `workflow_budgets`, `workflow_deployments`, `schedules`, `schedule_dispatch_claims`, `workflow_runs`, `workflow_node_runs`, `workflow_node_effect_attempts`, `llm_node_versions`, `deployment_parameter_optimization_plans` |
 | Agent Builder | `agent_builder_sessions`, `agent_builder_requests`, `agent_builder_drafts` |
+| Conversation Memory | `conversation_sessions`, `conversation_access_grants`, `conversation_turns`, `conversation_memory_entries`, `conversation_memory_summaries`, `memory_data_dependencies`, `memory_entry_dependencies`, `memory_summary_dependencies`, `memory_turn_dispatch_jobs`, `memory_summary_generation_jobs`, `memory_context_plans`, `memory_context_leases`, `memory_context_provider_attempts`, `conversation_purge_jobs`, `conversation_idempotency_records` |
 | 추적/감사 | `trace_payloads`, `trace_payload_access_events`, `trace_redaction_policies`, `trace_retention_policies`, `trace_visibility_policies`, `audit_logs`, `audit_event_outbox` |
 | 보안 알림 | `security_alerts`, `security_alert_audit_events`, `security_alert_reconciliation_watermarks`, `security_alert_reconciliation_receipts`, `security_alert_notification_outbox` |
-| Knowledge/RAG | `knowledge_bases`, `documents`, `document_versions`, `document_chunks`, `rag_answer_runs`, `knowledge_collections`, `knowledge_collection_items`, `knowledge_collection_sync_jobs`, `knowledge_collection_sync_job_items`, `knowledge_ingestion_outbox`, `knowledge_source_identities`, `source_authorization_provenance`, `source_policy_kb_use_grants` |
+| Knowledge/RAG | `knowledge_bases`, `documents`, `document_versions`, `document_chunks`, `rag_answer_runs`, `knowledge_collections`, `knowledge_collection_items`, `knowledge_collection_sync_jobs`, `knowledge_collection_sync_job_items`, `knowledge_ingestion_outbox`, `knowledge_document_ingestion_jobs`, `knowledge_source_identities`, `source_authorization_provenance`, `source_policy_kb_use_grants` |
 | LLM | `llm_providers`, `llm_models`, `llm_credentials`, `llm_rel_credential_models`, `llm_usage_logs` |
 | LLM routing/비용 | `llm_node_model_routing_cohort_examples`, `llm_node_model_routing_cohorts`, `llm_node_model_routing_model_evidence`, `llm_node_model_routing_observations`, `llm_node_model_routing_policies`, `llm_node_model_routing_policy_run_events`, `llm_node_model_routing_policy_updates`, `llm_node_model_routing_validation_batches`, `llm_node_model_routing_validation_budget_months`, `llm_node_model_routing_validation_cost_events`, `llm_node_model_routing_validation_items`, `cost_optimizer_candidates`, `cost_optimizer_experiments`, `cost_optimizer_recommendation_verifications` |
 | 외부 연동 | `connections`, `mail_credentials`, `mail_draft_effects`, `mail_message_processings` |
@@ -88,7 +89,7 @@ erDiagram
   audit_logs ||--o{ security_alert_audit_events : supports
 ```
 
-- 위 ER diagram은 핵심 관계만 표시하며 82개 전체 table inventory를 반복하지 않는다.
+- 위 ER diagram은 핵심 관계만 표시하며 98개 전체 table inventory를 반복하지 않는다.
 - `rag_answer_runs`와 trace/usage 테이블은 FK가 아니라 opaque `correlation_id`(application-level convention)로만 연결한다 ([ADR-0013](decisions/ADR-0013-rag-answer-trace-usage-correlation-boundary.md)). 다이어그램에 없는 이유다.
 - `apps.workflow_id`와 `workflows.app_id`는 상호 참조(순환 FK)다.
 - JSONB metadata에 id를 넣는 방식(`audit_metadata`, `meta_info` 등)은 관계가 아니라 application convention이다.
@@ -542,7 +543,7 @@ ADR-0032의 `mail_message_processings`와 `mail_draft_effects`는 이미 구현�
 
 ### Target Conversation Memory Logical Model
 
-아래 항목은 [ADR-0030](decisions/ADR-0030-memory-bounded-context.md)과 [ADR-0033](decisions/ADR-0033-conversation-memory-contract-completion.md)의 목표 logical model이다. 물리 table 이름, column 타입, aggregate별 table 분할과 retention partition은 구현 PR의 migration/API 계약에서 확정한다. 아직 현재 활성 82개 table과 위 도메인별 현재 table 목록에는 포함하지 않는다.
+아래 항목은 [ADR-0030](decisions/ADR-0030-memory-bounded-context.md)과 [ADR-0033](decisions/ADR-0033-conversation-memory-contract-completion.md)의 logical model이다. MBA-316은 이를 15개 additive table과 `apps/memory/` persistence adapter로 물리화했지만 Gateway, Workflow Runtime, Client 또는 legacy `memory_mode`에는 연결하지 않은 dormant foundation이다. Public grant 발급, summary/provider 실행, context materialization, purge worker와 production composition은 각 후속 이슈가 소유한다.
 
 | Logical record | 핵심 binding과 제약 |
 | --- | --- |
@@ -559,6 +560,16 @@ ADR-0032의 `mail_message_processings`와 `mail_draft_effects`는 이미 구현�
 | Idempotency / secret replay record | Scope/fingerprint/status와 bounded encrypted response replay. Content/secret ciphertext는 TTL 뒤 irreversible delete |
 
 Session의 deployment binding은 active deployment pointer 변경으로 자동 갱신하지 않는다. Audit/usage는 Memory content record가 아니며 각 소유 도메인의 retention을 따르되 raw transcript, token/hash, prompt와 private source identity를 포함하지 않는다. `completed_with_hold`는 public purge의 compliance 격리 terminal 상태이고 실제 physical erasure 완료를 뜻하지 않는다. Hold 해제 erasure는 별도 compliance process가 소유하며 public terminal row를 `completed`로 되돌리지 않는다.
+
+#### MBA-316 physical foundation
+
+- `conversation_sessions`는 organization/app/workflow/deployment와 immutable deployment version 또는 snapshot hash, mapping/Memory policy/contract version, storage generation, audience/subject binding을 보존한다. Lifecycle revision과 content revision은 분리하며 한 session의 active turn은 partial unique index와 row lock/CAS로 보강한다.
+- Session active-turn pointer와 nullable Purge Job session reference는 `SET NULL`용 단일 FK에 더해 organization/session composite FK를 함께 둔다. 따라서 참조 대상 삭제 뒤 operational row를 보존하면서도 살아 있는 참조가 다른 organization/session row를 가리키지 못한다.
+- `conversation_turns`, `conversation_memory_entries`, `memory_turn_dispatch_jobs`는 StartTurn admission UnitOfWork를 구성한다. 같은 transaction에서 새 Turn보다 Entry/Dispatch가 먼저 flush될 수 있으므로 두 child-to-turn FK는 `DEFERRABLE INITIALLY DEFERRED`이고 commit 시 전체 참조를 검증한다.
+- Turn status별 execution/assistant/failure timestamp 조합과 Dispatch claim generation/attempt/state field 조합은 domain transition뿐 아니라 DB check constraint로도 보강한다.
+- Entry와 Summary의 display/model projection은 각각 BYTEA 암호문, key/format version, digest와 plaintext byte length를 가진다. 두 projection을 하나의 digest로 합치지 않으며 각 envelope에 독립 16 KiB 상한을 적용한다. 지워진 row는 모든 projection envelope가 NULL이고 `erased_at`이 있어야 한다.
+- Access Grant와 Purge Job에는 verifier hash/key version만 두고 raw token/receipt column을 두지 않는다. Access Grant의 session/organization/deployment ID·version/audience는 Session canonical binding을 composite FK로 참조하므로 다른 deployment 또는 audience scope로 저장할 수 없다. Dispatch/Summary/Context/Purge/Idempotency operational row에는 raw transcript, prompt, token 또는 private source content를 두지 않는다.
+- `apps/memory/adapters/persistence/readiness.py`는 15개 table과 필수 column이 모두 있을 때만 Memory schema readiness를 true로 반환한다. 일반 process health와 production feature 활성화를 뜻하지 않는다.
 
 ### 추적/감사
 
@@ -971,8 +982,7 @@ standalone RAG Agent answer의 실행 anchor. raw query/answer/chunk content는 
 
 아래 목록은 [ADR-0014](decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md), [ADR-0015](decisions/ADR-0015-knowledge-skill-context-routing-boundary.md), [ADR-0017](decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md), [ADR-0018](decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md), [ADR-0020](decisions/ADR-0020-knowledge-mcp-incremental-sync-boundary.md)의 통합 방향을 설명하지만, 물리 table 존재와 목표 동작 완성을 구분한다.
 
-- **Current physical table**: `knowledge_bases`, `documents`, `document_versions`, `document_chunks`, `knowledge_collections`, `knowledge_collection_items`, `knowledge_collection_sync_jobs`, `knowledge_collection_sync_job_items`, `team_knowledge_collection_permissions`, `user_knowledge_collection_permissions`, `team_knowledge_domain_permissions`, `user_knowledge_domain_permissions`, `knowledge_source_identities`, `source_policy_kb_use_grants`, `source_authorization_provenance`, `knowledge_ingestion_outbox`. 이 목록에 있다고 lifecycle, source ACL, redacted canonical text, finalization/cleanup의 모든 Target invariant가 완료됐다는 뜻은 아니다.
-- **Pending Merge**: MBA-288 브랜치의 `knowledge_document_ingestion_jobs`는 process/sync/resume/reindex 요청 실행을 durable하게 소유하지만 최신 dev의 82개 Current table inventory에는 아직 포함하지 않는다. 이 job은 `knowledge_ingestion_outbox`의 physical cleanup intent를 대체하지 않는다.
+- **Current physical table**: `knowledge_bases`, `documents`, `document_versions`, `document_chunks`, `knowledge_collections`, `knowledge_collection_items`, `knowledge_collection_sync_jobs`, `knowledge_collection_sync_job_items`, `team_knowledge_collection_permissions`, `user_knowledge_collection_permissions`, `team_knowledge_domain_permissions`, `user_knowledge_domain_permissions`, `knowledge_source_identities`, `source_policy_kb_use_grants`, `source_authorization_provenance`, `knowledge_ingestion_outbox`, `knowledge_document_ingestion_jobs`. 이 목록에 있다고 lifecycle, source ACL, redacted canonical text, finalization/cleanup의 모든 Target invariant가 완료됐다는 뜻은 아니다. `knowledge_document_ingestion_jobs`는 process/sync/resume/reindex 요청 실행을 소유하며 `knowledge_ingestion_outbox`의 physical cleanup intent를 대체하지 않는다.
 - **Target-only candidate**: `raw_knowledge_artifacts`, `source_acl_principals`, `source_acl_facts`, `source_subject_mappings`, `source_public_exposure_policies`, `knowledge_skills`, `knowledge_skill_versions`, `knowledge_skill_source_refs`, `knowledge_skill_evaluations`. 이 이름과 물리 분할은 별도 승인과 migration에서 확정한다.
 
 MBA-105 구현은 ADR-0017, ADR-0018, ADR-0020과 [Knowledge implementation baseline](features/knowledge/implementation_baseline.md)을 기준으로 진행하되, destructive production migration, raw artifact opt-in, code-bearing skill, global/main Agent retrieval path, platform-wide Workflow egress guard는 별도 승인 전까지 포함하지 않는다.
@@ -994,7 +1004,7 @@ Target candidate: knowledge_skills -> knowledge_skill_versions -> source refs / 
 | `team_knowledge_domain_permissions` / `user_knowledge_domain_permissions` | organization-scoped Knowledge 관리 위임 | ADR-0034의 `catalog_manage`, `permission_delegate`, `lifecycle_manage`, `sync_manage` additive allow를 저장한다. Optional expiry를 평가 시점에 적용하며 KB content/Collection route 권한을 상속하지 않는다. |
 | `knowledge_bases` | document/source item 단위 permission/retrieval/sync/lifecycle atom | target 의미는 `granularity=document`로 고정한다. Source-managed KB는 protected source identity와 sync state를 갖고, KB `use`와 source ACL gate를 모두 통과해야 retrieval 대상이 된다. Target column 후보에는 `active_document_version_id`, `source_identity_id`, lifecycle/sync state가 포함된다. |
 | `document_versions` | document-level KB의 canonical content/index version | `staging/indexing/ready/failed/superseded` 상태. Active version pointer swap은 indexing 성공 후 transaction/outbox 계약에 따라 수행한다. `content_hash`, chunking fingerprint, embedding model reference는 실제 artifact finalization과 같은 boundary에서 확정해야 한다. Content safety state, parser/scanner policy version, safe reason code는 ready 전 gate 결과로 document version metadata 또는 canonical metadata table에 둔다. `source_tier`, approval state, source freshness, version provenance는 document version metadata 또는 canonical metadata table에 두고 chunk metadata에는 ranking용으로 denormalize할 수 있다. |
-| `knowledge_document_ingestion_jobs` (MBA-288, Pending Merge) | process/sync/resume/reindex 요청의 durable 실행 source of truth | Document queued 설정과 job의 transaction-bound admission, document single-flight, protected input revision, fresh worker authorization, lease/heartbeat/fencing, bounded retry/dead-letter와 terminal 30일 cleanup을 branch contract로 둔다. 최신 dev 병합과 migration 검증 전에는 Current table 또는 운영 전제로 사용하지 않는다. |
+| `knowledge_document_ingestion_jobs` | process/sync/resume/reindex 요청의 durable 실행 source of truth | Document queued 설정과 job의 transaction-bound admission, document single-flight, protected input revision, fresh worker authorization, lease/heartbeat/fencing, bounded retry/dead-letter와 terminal 30일 cleanup을 current schema contract로 둔다. |
 | `knowledge_source_identities` | source item identity의 protected 저장소 | 사용자-facing resource가 아니며 source-managed KB와 1:1 관계를 목표로 한다. Raw source id/url/principal/path는 keyed HMAC-SHA256 safe ref, key version, rotation/backfill, tombstone matching, safe external reference format으로 다룬다. |
 | `raw_knowledge_artifacts` | opt-in protected raw source content 저장소 또는 encrypted object storage metadata | RAG/embedding/prompt에는 사용하지 않는다. `organization_id`, `knowledge_base_id`, `document_version_id`, `source_identity_id`, storage ref, encryption key version, content hash, retention/legal hold/purge state가 필요하다. Raw value/object key는 audit/trace/log/router/citation summary에 노출하지 않는다 ([ADR-0014](decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)). |
 | `source_acl_principals` / `source_acl_facts` | source 사용자/그룹/ACL 원천 사실 | Raw principal email/path/title/url은 기본 노출 금지. Safe ref, HMAC, key version, rotation/backfill 정책이 필요하다. |

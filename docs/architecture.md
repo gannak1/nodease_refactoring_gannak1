@@ -217,7 +217,7 @@ Package 기준:
 | `apps/workflow_engine/tasks.py` | Workflow Engine inbound adapter. Celery task는 외부 실행 이벤트를 받아 application use case로 전달한다 |
 | `apps/workflow_engine/adapters/` | DB run repository, execution queue, node runtime/provider adapter 등 workflow runtime outbound adapter를 둔다 |
 | `apps/workflow_engine/composition/` | Workflow Engine application use case와 독립 DB session factory, repository, provider/key concrete dependency를 조립한다 |
-| `apps/memory/domain/`, `apps/memory/application/`, `apps/memory/adapters/` | ADR-0030 target Memory bounded context. 첫 실제 use case와 함께 추가하며 Gateway/Workflow concrete module을 import하지 않는다 |
+| `apps/memory/domain/`, `apps/memory/application/`, `apps/memory/adapters/` | ADR-0030 Memory bounded context. MBA-316의 dormant foundation이 aggregate, lifecycle/dispatch use case, repository/UnitOfWork와 schema readiness를 구현한다. Gateway/Workflow concrete module을 import하지 않으며 아직 production composition에 연결하지 않는다 |
 | `apps/shared/domain/` | Gateway와 Workflow Engine이 함께 쓰는 순수 policy 또는 contract만 둔다. MBA-190에서는 모든 실행 표면의 `execution_id` 생성·검증, WorkflowNode binding, 공개 safe error code wire contract를 공유하고 lifecycle/replay policy는 Workflow Engine에 유지한다 |
 
 초기 pilot과 이후 package 규칙:
@@ -238,7 +238,7 @@ Package 기준:
 - `apps/gateway/adapters/db/access_management_*`와 `apps/gateway/adapters/audit/*`는 SQLAlchemy projection/mutation/lock, transaction-bound audit와 management reason redaction을 구현한다. `apps/gateway/composition/access_management.py`가 이를 조립한다.
 - 기존 member/team/user-direct/App 생성 권한 경로는 일괄 이동하지 않고 같은 subject lock protocol과 transaction-bound audit을 사용하는 compatibility path로 보강한다. 기존 authorization, response/status와 latent-row 정책은 유지한다.
 - 다른 도메인도 동일한 router/use case/domain policy/port/adapter 기준을 따른다. `permissions`, `knowledge`, `llm`, `workflow_management`, `runtime_retrieval` 같은 domain package는 빈 구조로 선생성하지 않고, 해당 도메인의 첫 리팩터링 PR에서 실제 use case/port와 함께 만든다.
-- Conversation Memory는 Gateway 또는 Workflow Engine 하위 helper로 중복 구현하지 않는다. 첫 Memory use case와 함께 `apps/memory/` 최소 package를 만들고 `apps/gateway/composition/memory.py`, `apps/workflow_engine/composition/memory.py`가 runtime별 adapter를 조립한다. 현재 global `memory_mode`/execution-log memory가 이미 이 구조로 이관됐다고 간주하지 않는다.
+- Conversation Memory는 Gateway 또는 Workflow Engine 하위 helper로 중복 구현하지 않는다. MBA-316에서 `apps/memory/`의 dormant domain/application/persistence 기반만 추가했으며 `apps/gateway/composition/memory.py`, `apps/workflow_engine/composition/memory.py`와 production traffic 연결은 후속 단계가 runtime별 adapter를 준비한 뒤 명시적으로 추가한다. 현재 global `memory_mode`/execution-log memory가 이 구조로 이관됐다고 간주하지 않는다.
 - Deployment preflight pilot을 이후 도메인 리팩터링의 reference implementation으로 사용하되, mutation 도메인은 별도 UnitOfWork와 transaction-bound audit 요구를 추가해야 한다.
 - `apps/shared/domain/*` 하위 도메인 package는 실제 cross-runtime pure policy가 생길 때만 만든다.
 - Gateway workflow 관리 책임은 `workflow_management`처럼 API 관리 책임을 드러내고, Workflow Engine 실행 책임과 혼동하지 않는다.
