@@ -22,7 +22,7 @@ Legacy Preview API와 direct-edit를 동시에 유지하면 graph 생성, valida
 1. **Contract before planning**: mode representation contract는 planner 호출과 request 생성 전에 확정한다. Contract가 표현할 수 없는 mode는 저장 상태를 만들지 않는다.
 2. **Durable state only**: 후속 요청은 DB에 허용된 safe metadata와 persisted workflow graph만 사용한다. 저장하지 않은 parameter 값, full operation, raw prompt 또는 replica memory에 의존하지 않는다.
 3. **Every nonterminal request is cancelable**: 모든 비종료 RequestStatus는 하나의 contract-neutral cancel로 terminal 상태가 될 수 있어야 한다. 기능별 취소 allowlist를 두지 않는다.
-4. **Authorize the final graph at save**: 모든 GraphMutation은 CAS transaction 안에서 final candidate graph의 전체 resource reference를 서버가 다시 추출하고 현재 권한·lifecycle·relation을 검증한 뒤에만 저장한다.
+4. **Authorize the final graph at save**: 모든 GraphMutation은 CAS transaction 안에서 final candidate graph의 전체 resource-bearing field를 서버가 다시 추출·분류한다. Managed reference는 현재 권한·lifecycle·relation을 검증하고, resolver 미구현 legacy Editor 연결은 base graph와 connection-relevant 값이 모두 같은 불변 carry-forward만 허용한다. Unknown 또는 신규·변경된 미관리 reference는 저장하지 않는다.
 
 ### 1. 정식 생성 모드
 
@@ -95,7 +95,7 @@ Full typed operations는 기존 계약대로 발급 API 응답에서만 전달�
 - 전체 planner를 다시 호출하거나 workflow 전체를 재생성하지 않는다.
 - Canonical graph에 추천값이 이미 materialize돼 있고 recommendation fingerprint와 task version이 변하지 않은 남은 task만 하나의 검토안으로 묶는다.
 - credential, 권한 resource, 외부 부수효과, Condition branch 또는 복수 후보가 남은 task는 단계별 확인 상태로 유지한다.
-- 사용자가 검토안을 적용하면 parent request row lock 안에서 각 추천 fingerprint와 task version을 다시 검증하고 값 변경 없는 기존 추천만 멱등 batch `confirm`한다. GraphMutation이나 workflow 저장을 만들지 않는다.
+- 사용자가 검토안을 적용하면 parent request row lock 안에서 각 추천 fingerprint와 task version을 다시 검증하고 값 변경 없는 기존 추천만 멱등 batch `confirm`한다. 완료되는 각 task의 version을 정확히 한 번 증가시키고 응답·복구 상태에 갱신된 version을 포함한다. GraphMutation이나 workflow 저장을 만들지 않는다.
 - 값이 없거나 새 값 계산·graph 변경이 필요한 task와 미완료 Knowledge/Collection 선택은 단계별 확인 상태로 유지한다. 여러 task를 바꾸는 신규 batch mutation은 별도 결정 전까지 도입하지 않는다.
 
 ### 6. 구조만 생성
@@ -108,7 +108,9 @@ Full typed operations는 기존 계약대로 발급 API 응답에서만 전달�
 - mode 전환과 빠른 완료 요청은 client-generated operation id와 expected request/task version을 포함한다.
 - Request 상태, GraphMutation 상태와 ParameterTask 상태는 서로 다른 enum과 owner를 가진다. `pending_apply|pending_save|pending_ack|acknowledged`는 GraphMutation lifecycle이며 RequestStatus로 저장하지 않는다.
 - stale graph, stale task 또는 중복 operation은 기존 결과를 덮어쓰지 않고 conflict로 닫는다. 다만 full operations를 저장하지 않는 mutation 발급 응답의 재시도는 같은 payload 반환을 보장하지 않고 `operation_payload_unavailable` 복구 계약을 따른다.
-- RequestStatus의 비종료 집합은 `planning|clarification_required|mode_transition_required|graph_mutation_ready|parameter_configuration`이고 이 상태는 모두 contract-neutral request cancel로 종료할 수 있다. 취소는 parent request row lock에서 늦은 planner 결과와 competing task/transition commit을 차단하고 남은 task/Knowledge resolution을 `canceled`로 닫는다.
+- RequestStatus의 비종료 집합은 `planning|clarification_required|mode_transition_required|graph_mutation_ready|parameter_configuration`이고 이 상태는 모두 contract-neutral request cancel로 종료할 수 있다. `configuration_required`는 model/credential route를 선택한 새 request가 필요한 terminal 상태로 유지한다. 취소는 parent request row lock에서 늦은 planner 결과와 competing task/transition commit을 차단하고 남은 task/Knowledge resolution을 `canceled`로 닫는다.
+- Message submit은 session row를 잠그고 비종료 request가 없을 때 mode contract, mode source와 요청 귀속 metadata를 포함한 `planning` request를 먼저 commit한 뒤 provider를 호출한다. 명시적 control과 `legacy-v1` default는 canonical requested/effective mode도 이때 저장한다. `canonical-v2` default처럼 자연어 mode intent가 필요한 request는 planning 동안 requested/effective mode를 미확정으로 두고 schema-valid planner 결과에서 intent mode 또는 guided fallback을 같은 request lock 안에서 정확히 한 번 확정한다. 같은 session에는 비종료 request를 하나만 허용하고 competing submit은 `request_in_progress`로 거부한다. 동기식 message 응답이 `request_id`를 반환하기 전의 `submitting|planning` UI는 client operation id를 포함한 session-scoped active-request cancel을 호출한다. Server는 session과 유일한 비종료 request를 잠가 기존 request cancel command로 위임하며, active row가 없거나 legacy 이상으로 둘 이상이면 다른 request를 추측해 취소하지 않는다.
+- 취소 전에 이미 시작된 provider attempt는 강제 중단을 보장하지 않는다. 응답이 도착하면 실제 발생한 usage fact는 request terminal 상태와 독립적으로 멱등 완료할 수 있지만 planner 결과는 commit하지 않는다. Semantic repair를 포함한 다음 provider attempt를 예약·호출하기 전에는 expected request version과 nonterminal status를 다시 확인하며 취소·stale이면 추가 호출하지 않는다. Usage recorder는 ADR-0026의 repair eligibility나 provider 호출 수를 확대할 수 없다.
 - 취소는 이미 CDS에 저장된 graph를 자동 롤백하지 않는다. 저장 전 operation은 `blocked`로 닫고 Client의 local apply를 Undo하며, 저장이 확정된 operation과 완료 parameter 값은 유지한다. 전체 graph 복구는 기존 Workflow Undo boundary만 사용한다.
 - 한 request에서 Legacy Preview와 direct-edit를 혼용하지 않는다.
 - 외부 generation mode 표현은 선택적 `X-Agent-Builder-Mode-Contract` 요청 헤더로 협상한다. 헤더가 없거나 `legacy-v1`이면 Gateway는 legacy `configure_and_generate` 표현을 반환하고, `canonical-v2`이면 canonical 표현을 반환한다.
@@ -122,7 +124,7 @@ Full typed operations는 기존 계약대로 발급 API 응답에서만 전달�
 - Mode transition 복구에는 값에 독립적인 structured plan과 재입력이 필요한 Catalog `step_id`/`parameter_key`만 저장한다. 실제 parameter 값과 값에 의존하는 graph fragment는 저장하지 않으며 전환 뒤 typed task에서 다시 확인한다.
 - full operations, raw prompt의 민감 부분, credential 원문, token, API key, hidden resource identifier와 외부 payload는 저장·audit·trace하지 않는다.
 - mode metadata를 위한 신규 table 또는 전용 column을 추가하지 않는다.
-- 빠른 생성 eligibility와 mode 전환은 권한 우회 수단이 아니다. 생성 시점과 mutation 발급 시점뿐 아니라 CAS 저장 transaction 안에서도 final candidate graph에서 모든 resource reference를 서버가 다시 추출해 현재 organization, lifecycle, relation과 use/write 권한을 재검증한다. Client가 제출한 reference 목록이나 발급 시점 판정을 재사용하지 않는다. 실행·배포 preflight도 기존 권한 검사를 유지한다.
+- 빠른 생성 eligibility와 mode 전환은 권한 우회 수단이 아니다. 생성 시점과 mutation 발급 시점뿐 아니라 CAS 저장 transaction 안에서도 final candidate graph의 모든 resource-bearing field를 서버가 다시 추출·분류한다. Managed reference는 현재 organization, lifecycle, relation과 use/write 권한을 재검증한다. ADR-0045의 resolver 미구현 Slack/GitHub 연결은 base graph와 connection-relevant 값이 같은 legacy carry-forward만 허용하고 Agent Builder가 추가·변경할 수 없다. Client가 제출한 reference 목록이나 발급 시점 판정을 재사용하지 않으며 실행·배포 preflight도 기존 권한 검사를 유지한다.
 
 ## Authority and implementation state
 

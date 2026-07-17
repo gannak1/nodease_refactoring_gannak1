@@ -238,7 +238,7 @@ Knowledge ranking 자체는 Knowledge Recommendation Adapter에 위임한다.
 책임:
 
 - workflow/app/Knowledge/model/credential reference 권한 확인
-- Final candidate graph와 Catalog schema에서 모든 resource/credential/Knowledge/WorkflowNode reference를 추출하고 resource kind별 server-owned resolver로 current organization, lifecycle, relation과 required permission 재검증
+- Final candidate graph와 Catalog schema/reference policy registry에서 모든 resource-bearing field를 추출해 `managed_reference|legacy_editor_connection|unknown`으로 분류. Managed reference는 resource kind별 server-owned resolver로 current organization, lifecycle, relation과 required permission을 재검증하고, resolver 미구현 Slack/GitHub 연결은 base graph와 connection-relevant 값이 같은 불변 carry-forward만 허용하며 신규·변경·unknown field는 차단
 - generation 중 side effect 금지
 - secret input boundary
 - Catalog required configuration 전체에서 `configuration_state`를 생성, set/defer/skip, Undo, 복구와 실행·배포 preflight마다 재계산
@@ -258,6 +258,7 @@ API endpoint와 graph builder가 permission query를 직접 작성하지 않는�
 - 새 mutation과 복구 metadata의 `catalog_version` 저장 및 누락·`2`·`3` version gate 적용
 - latest request와 mutation의 관계 보장
 - request row lock, operation id idempotency, expected task version과 action별 active/completed 허용 상태 동시성 검사
+- session row lock으로 비종료 request 단일성을 보장하고, message 응답 전 session-scoped cancel operation id와 canceled request 결과를 멱등 저장
 - acknowledgement 뒤 completion context에 연결된 task/Knowledge resolution 전환
 - CAS 저장 전 full operations 응답 유실은 request 재생성 또는 현재 task 재입력으로 닫고, 저장 뒤 acknowledgement 유실만 canonical graph와 expected/saved hash로 복구
 - completed history boundary의 전체 persisted revert 뒤 boundary를 `reverted`로 전환하고 모든 parameter group/Knowledge resolution을 `canceled`로 닫음. Parameter/Knowledge operation별 revert는 거부함
@@ -278,7 +279,7 @@ API endpoint와 graph builder가 permission query를 직접 작성하지 않는�
 - Agent Builder `mutation_context` 필수 검증
 - workflow row write lock과 active organization/write 권한 재확인
 - Agent Builder save와 request cancel에서 `Workflow` row 다음 parent request row의 공통 lock order와 version/status 재조회 적용
-- AgentBuilderPolicyService가 final candidate graph에서 추출한 모든 reference를 server-owned resolver로 같은 transaction 안에서 재조회하고 current organization, lifecycle, relation과 use/read/write 권한 확인. Client reference inventory와 발급 시점 allow 결과는 사용하지 않음
+- AgentBuilderPolicyService가 final candidate graph의 모든 resource-bearing field를 분류하고 managed reference를 server-owned resolver로 같은 transaction 안에서 재조회해 current organization, lifecycle, relation과 use/read/write 권한 확인. Resolver 미구현 Slack/GitHub 연결은 persisted base와 canonical field/connection-relevant data가 같은 carry-forward만 허용하고 신규·변경·unknown field는 차단. Client reference inventory와 발급 시점 allow 결과는 사용하지 않음
 - current canonical graph hash와 workflow `updated_at` compare-and-swap
 - request graph hash와 persisted safe envelope의 `expected_result_graph_hash` 일치 확인. Full operations는 DB에서 재생하지 않음
 - catalog/schema/connection validation 재실행
@@ -310,6 +311,7 @@ Concrete dependency 조립은 `apps/gateway/composition/agent_builder.py`가 담
 - conversation timeline composition
 - generation mode와 intent model selection
 - request submit/cancel
+- message response 전 `submitting|planning`에서는 session-scoped active-request cancel, request id가 확인된 뒤에는 request-scoped cancel 사용. 두 경로는 같은 backend cancel command와 terminal 결과를 소비
 - result group과 오류 상태 연결
 - mobile viewport에서는 좌우 여백 안의 전체 너비를 사용하고, desktop viewport에서는 가시성을 위해 화면 너비의 50%를 사용한다. 고정 최대 높이를 두지 않고 viewport 기준 높이를 사용해 panel 상단이 editor 상단 영역까지 확장된다. Launcher는 하단 Flow 설정 island와 같은 높이의 bottom control row에 배치한다.
 
@@ -344,7 +346,7 @@ segmented control로 `단계별 생성`, `빠른 생성`, `구조만 생성`을 
 
 ### 4.4 WorkflowResultGroup
 
-한 user request의 결과를 묶는다. 현재 결과 container는 가장 최근 terminal assistant response의 `request_id`에만 연결한다. 새 요청이 planning 또는 terminal failed/unsupported/validation failure가 되면 이전 request의 ParameterTask, Knowledge card, 완료 상태와 routing 안내를 현재 결과처럼 재사용하지 않는다. 이전 대화 항목은 읽기 전용 이력으로 유지한다.
+한 user request의 결과를 묶는다. 현재 결과 container는 가장 최근 terminal assistant response의 `request_id`에만 연결한다. 새 요청이 planning 또는 terminal `configuration_required|failed|unsupported|validation_failed`가 되면 이전 request의 ParameterTask, Knowledge card, 완료 상태와 routing 안내를 현재 결과처럼 재사용하지 않는다. `configuration_required`는 intent model/credential route 선택 action을 표시하고 같은 request를 비종료 상태처럼 재개하지 않는다. 이전 대화 항목은 읽기 전용 이력으로 유지한다.
 
 - request 요약
 - graph 적용 상태
@@ -517,7 +519,7 @@ applyGraphTransaction(nextNodes, nextEdges, metadata)
 3. QuickGenerationEligibilityPolicy가 `remaining_configuration` scope로 각 task를 판정한다. Planner와 전체 GraphMutation planning은 다시 호출하지 않는다.
 4. 안전한 task만 하나의 proposal로 묶고 credential, 권한 resource, 외부 부수효과, Condition branch와 복수 후보 task는 guided 상태로 남긴다.
 5. Client는 confirmable/remaining count와 safe summary를 검토하며 graph mutation dry-run이나 workflow save를 만들지 않는다.
-6. 사용자가 적용하면 recommendation fingerprint, canonical graph 값과 task version을 재검증하고 값 변경 없는 confirm만 request lock 안에서 원자적으로 완료한다. `request_version`과 `proposal_version`을 각각 증가시켜 둘 다 응답한다.
+6. 사용자가 적용하면 recommendation fingerprint, canonical graph 값과 task version을 재검증하고 값 변경 없는 confirm만 request lock 안에서 원자적으로 완료한다. `request_version`, `proposal_version`과 완료되는 각 task의 `task_version`을 정확히 한 번 증가시키고 갱신된 task id/version/status를 응답과 멱등 결과에 포함한다.
 7. 일부가 stale하거나 원자적으로 적용할 수 없으면 proposal 전체를 거부하고 기존 guided task 상태를 유지한다.
 8. 사용자가 proposal을 취소하면 request/proposal version을 같은 lock에서 각각 증가시키고 proposal만 canceled로 닫으며 graph와 guided task를 그대로 유지한다.
 
@@ -572,6 +574,8 @@ applyGraphTransaction(nextNodes, nextEdges, metadata)
 - 전체 Undo 뒤 reload 전 Redo: memory의 final graph를 CAS 저장하고 canceled task/Knowledge 흐름은 재활성화하지 않음. 전체 Redo 뒤 다음 Undo는 즉시 boundary revert하며 재진입 상태 Redo는 UI만 닫음
 - permission loss: 이후 task 변경을 차단하되 이미 생성된 local graph를 임의 삭제하지 않음
 - request cancel: 모든 비종료 RequestStatus를 parent request lock에서 terminal `canceled`로 전환하고 남은 task/Knowledge resolution과 늦은 planner 결과를 닫음. Persisted graph와 완료 값은 유지하고 저장 전 local mutation만 Undo
+- submitting/planning cancel: Client가 request id를 아직 받지 못하면 session-scoped cancel operation id로 유일한 비종료 request를 종료한다. 같은 operation 재시도는 새 request를 취소하지 않고 기존 결과를 반환하며, in-flight provider usage는 완료할 수 있어도 다음 repair attempt와 늦은 planner commit은 차단
+- intent usage attribution failure: terminal `failed`와 safe issue code로 표시하고 별도 RequestStatus를 만들거나 provider를 재호출하지 않음
 - concurrent save: 첫 CAS save만 성공하고 뒤 요청은 stale 안내. 자동 merge하지 않음
 - legacy Preview recovery: `stale_protocol`로 표시하고 이전 preview/draft 적용 금지
 
