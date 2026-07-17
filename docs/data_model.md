@@ -1139,6 +1139,10 @@ Unique key는 `(processing_id, node_id, operation_key_hash)`다. Reply body, MIM
 
 현재 구현의 Connection use 최소 정책은 `connections.user_id == execution_subject_user_id`다. Knowledge DB source는 문서 설정에 opaque `connection_id`만 저장하고, 설정 저장 시와 외부 DB 연결 직전에 Shared Connection Use Resolver로 이 조건을 다시 확인한다. 이 조회는 dial 시작 시점의 권한 스냅샷이며 runtime row lock이나 실행 도중 revoke 취소를 의미하지 않는다. Missing, malformed, deleted, owner 변경과 non-owner reference는 같은 resource-hiding 실패로 처리한다. `connections`에는 lifecycle/status column이 없으므로 별도 active 상태나 organization 공유 권한을 추측하지 않으며, 이를 추가하려면 별도 정책 결정과 migration이 필요하다. Runtime transaction/lock protocol은 MBA-302에서 별도로 정의한다.
 
+MBA-302 이후 runtime DB use는 독립된 짧은 session에서 owner predicate와 최소 credential projection을 읽고 복호화한 immutable in-memory snapshot만 반환한다. Snapshot transaction과 session은 외부 DB connect/query 전에 종료되며 ORM row, encrypted/decrypted credential과 Connection identity를 durable data나 observability payload로 복제하지 않는다. 이 변경은 `connections` 물리 schema를 바꾸지 않는다.
+
+Connection reference 저장·교체·삭제만 owner Connection row lock을 사용한다. 여러 Knowledge row가 함께 필요한 transaction의 전역 순서는 `Connection -> KnowledgeBase -> Document/DocumentVersion`이다. Existing Document reference writer는 Connection 잠금 뒤 Document를 fresh read lock하고 최초 authorization read의 `updated_at`과 비교해 stale writer를 `connection.reference_conflict`로 rollback한다. PostgreSQL local lock wait는 2초로 제한하고 timeout/deadlock/serialization victim은 전체 transaction rollback 뒤 새 session에서만 재시도 가능한 transient failure로 처리한다. 외부 DB/storage/provider I/O, chunking과 embedding은 Connection row lock transaction에 포함하지 않는다 ([ADR-0053](decisions/ADR-0053-connection-transaction-and-lock-boundary.md)).
+
 | 컬럼 | 타입 | 제약 |
 | --- | --- | --- |
 | id | UUID | PK |

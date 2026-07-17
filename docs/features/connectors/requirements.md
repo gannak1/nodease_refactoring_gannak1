@@ -1,7 +1,7 @@
 # Connectors Requirements
 
 Status: Draft
-Verified Against: feature/mba-281 @ 29fb9ae845505938f6effad838c6d95d193f5ee2
+Verified Against: feature/mba-302 @ bd24ef9f31d46c496507114aecfdf76582ccab77
 Related Features: workflow, organization, audit-tracing, knowledge, conversation-memory
 
 ## Purpose
@@ -94,6 +94,11 @@ Connectors 기능은 외부 데이터 소스에 접속하기 위한 연결 정�
 - CONN-REQ-064 (MBA-281): Knowledge document metadata에는 opaque `connection_id`만 Connection reference로 저장할 수 있다. Connection name/type/host/database/username, decrypted/encrypted password와 SSH credential은 document metadata, processor result, chunk source label, audit와 log에 복제하지 않아야 한다.
 - CONN-REQ-065 (MBA-281): Missing, malformed, deleted와 non-owner Connection reference는 Knowledge use surface에서 동일한 `resource.hidden` 결과로 처리하고 Connection 존재·owner·상세를 노출하지 않아야 한다. Connector 관리 detail/schema API의 기존 403/404 계약은 이 요구로 변경하지 않는다.
 - CONN-REQ-066 (MBA-281): 저장 credential 복호화가 실패하면 Knowledge DB processor는 저장값을 평문 credential처럼 fallback하지 않고 configuration failure로 닫아 외부 adapter를 호출하지 않아야 한다.
+- CONN-REQ-067 (MBA-302): Runtime DB use는 독립된 짧은 SQLAlchemy session에서 owner를 재검증하고 adapter type과 최소 credential configuration을 immutable snapshot으로 만든 뒤 transaction/session을 종료해야 한다. ORM Connection과 encrypted storage shape를 processor에 반환해서는 안 되며 connector 생성·외부 DB dial은 snapshot session 종료 뒤에만 허용한다.
+- CONN-REQ-068 (MBA-302): Connection reference 저장·교체·삭제만 owner Connection row lock을 사용한다. 여러 Knowledge row가 함께 필요한 mutation의 전역 순서는 `Connection -> KnowledgeBase -> Document/DocumentVersion`이며 existing Document reference writer는 Connection 다음 Document를 fresh read lock하고 최초 조회 revision을 재검증해 stale writer를 명시적 non-retryable conflict로 닫아야 한다. 외부 network/storage/provider I/O, chunking과 embedding을 Connection lock transaction 안에서 수행해서는 안 된다.
+- CONN-REQ-069 (MBA-302): PostgreSQL Connection reference lock wait는 local 2초로 제한한다. Lock timeout, deadlock victim과 serialization failure는 전체 transaction rollback 뒤 새 session에서만 재시도 가능한 `connection.reference_busy`, 기타 store failure는 `connection.reference_unavailable`로 구분하고 raw SQL/driver/lock detail을 노출하지 않아야 한다.
+- CONN-REQ-070 (MBA-302): Runtime PostgreSQL fetch와 schema introspection은 connect 5초, statement 5초와 read-only transaction을 적용한다. Fetch는 bounded batch·총 10,000 row·총 16 MiB row payload 상한을 적용하고, 상한 초과를 일부 성공으로 반환하지 않으며 종료·예외·취소에서 engine과 tunnel을 정리해야 한다.
+- CONN-REQ-071 (MBA-302): Runtime snapshot은 dial 시작 시점의 authorization snapshot이며 실행 중 즉시 revoke를 보장하지 않는다. Lock 관측 정보는 outcome과 coarse wait/hold bucket만 허용하고 Connection identity, target, SQL과 credential을 metric label, log, audit 또는 trace에 포함하지 않아야 한다.
 
 ## Policies And Edge Cases
 
@@ -101,13 +106,13 @@ Connectors 기능은 외부 데이터 소스에 접속하기 위한 연결 정�
 - 현재 `POST /connectors`는 `get_current_user`를 요구하지만 resource permission table을 사용하지 않는다.
 - 현재 `GET /connectors/{connection_id}`와 `GET /connectors/{connection_id}/schema`는 없는 connection에 `404`, owner mismatch에 `403`을 반환한다.
 - create/test/schema 실패 메시지는 raw host, database, secret, driver detail을 응답에 포함하지 않아야 한다.
-- 현재 schema 조회는 SQLAlchemy inspector를 사용해 schema metadata를 읽는다.
+- 현재 schema 조회는 기존 관리 API의 404/403 precheck를 짧은 request transaction에서 수행하고 rollback한 뒤, 독립 runtime snapshot provider로 owner와 credential을 다시 확인한다. Snapshot session 종료 뒤 SQLAlchemy inspector가 read-only/statement-timeout 설정으로 schema metadata를 읽는다.
 - schema 조회 cap은 UX용 metadata preview 범위를 제한하기 위한 것이며, connector가 전체 DB inventory를 durable storage, audit, trace, log에 저장해도 된다는 의미가 아니다.
 - SSH tunnel compatibility는 기존 workflow DB connector 기능을 보존하기 위한 경계다. Knowledge source ingestion의 기본 경계와 다르며, SSH tunnel 허용은 remote shell command 실행 허용으로 해석하지 않는다.
 - SSH tunnel compatibility는 create/schema/runtime의 기존 계약에 한정된다. Strict `/connectors/test`는 ADR-0049에 따라 SSH를 열지 않는다.
 - Development exact-local profile은 로컬 시연 전용 배포 설정이며 Organization별 운영 private-network 권한이나 CIDR 승인 기능이 아니다.
 - Production Gateway는 32 byte 이상의 별도 connector-test admission HMAC key를 요구한다. Helm에서는 `secrets.connectorTestAdmissionHmacKey`로 provisioning하고, Docker Compose에서는 외부 `CONNECTOR_TEST_ADMISSION_HMAC_KEY`를 컨테이너에 전달한다. 두 경로 모두 auth/session key와 재사용하지 않고 tracked 예시에 실제 값을 두지 않는다.
-- 현재 `DbProcessor`는 Knowledge DB source ingestion에서 Shared Connection Use Resolver로 execution subject 소유 Connection을 dial 직전에 재검증한 뒤 선택된 테이블/컬럼 기반 SQL을 생성한다. 이 ingestion lifecycle은 Knowledge feature 책임이다.
+- 현재 `DbProcessor`는 Knowledge DB source ingestion에서 Shared runtime snapshot provider로 execution subject 소유 Connection을 dial 직전에 재검증하고 snapshot session을 닫은 뒤 선택된 테이블/컬럼 기반 SQL을 생성한다. 이 ingestion lifecycle은 Knowledge feature 책임이다.
 - `connections`에는 `created_at/updated_at`과 `organization_id`가 없다.
 
 ### Knowledge Source Connector Target Requirements

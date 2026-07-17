@@ -1,7 +1,7 @@
 # Knowledge API Spec
 
 Status: Draft
-Verified Against: feature/mba-281 @ 29fb9ae845505938f6effad838c6d95d193f5ee2
+Verified Against: feature/mba-302 @ bd24ef9f31d46c496507114aecfdf76582ccab77
 이 문서는 Knowledge feature의 현재 API baseline과 목표 KB 통합 API 계약을 함께 기록한다. MBA-105 목표 API는 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)의 임시 구현 baseline, Workflow RAG anonymous public-only runtime은 [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md), MCP/API source connector와 incremental sync 경계는 [ADR-0020](../../decisions/ADR-0020-knowledge-mcp-incremental-sync-boundary.md), MBA-231 위임 관리와 KB RBAC cutover는 [ADR-0034](../../decisions/ADR-0034-knowledge-delegated-administration-and-rbac-boundary.md), direct KB와 명시 selected Collection의 internal runtime resolver는 [ADR-0036](../../decisions/ADR-0036-knowledge-runtime-candidate-resolution.md), KC 운영 관리 계약은 [ADR-0044](../../decisions/ADR-0044-knowledge-collection-operational-management-boundary.md), 세부 구현 기준은 [implementation_baseline.md](implementation_baseline.md)를 따른다. Knowledge Skill 관련 API 경계는 [ADR-0015](../../decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)를 따른다.
 KC sync 요청·상태 조회와 durable execution 계약은 [ADR-0048](../../decisions/ADR-0048-knowledge-collection-sync-execution-boundary.md)을 따른다.
 
@@ -361,7 +361,9 @@ DB source registration은 같은 Connection row lock을 commit까지 유지해 r
 Connection을 자동 삭제하지 않는다. 기존 DB Document의 process 설정에서 새
 `db_config.connection_id`를 저장할 때도 같은 owner-scoped Connection row lock을 metadata
 commit까지 유지한다. 따라서 delete가 먼저 commit되면 설정 저장은 `404 resource.hidden`,
-설정 저장이 먼저 commit되면 delete는 `409 connection.in_use`로 닫힌다.
+설정 저장이 먼저 commit되면 delete는 `409 connection.in_use`로 닫힌다. 설정 화면의 최초
+조회 뒤 다른 요청이 같은 Document를 먼저 갱신하면 Connection 다음 Document를 잠근 writer가
+`updated_at`을 재검증하고 stale 요청을 `409 connection.reference_conflict`로 전체 rollback한다.
 
 Direct resource는 active organization으로 먼저 scope를 고정한다. Unknown,
 cross-organization, deleted 또는 invisible resource는 `404 resource.hidden`,
