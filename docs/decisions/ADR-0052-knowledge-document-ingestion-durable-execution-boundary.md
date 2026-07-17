@@ -54,13 +54,17 @@ Option 3과 option 5를 채택한다.
   본 실행과 다른 DB session을 사용한다.
 - Retryable failure는 bounded exponential backoff와 `next_retry_at`을 저장한다. Future retry를 즉시
   재발행하지 않고 due recovery scanner가 발행 책임을 소유한다. Soft time limit과 allowlisted
-  transient failure만 자동 retry하며 unknown failure는 safe dead-letter로 닫는다.
+  transient failure만 자동 retry하며 unknown failure는 safe dead-letter로 닫는다. Processor의 raw
+  error 문자열은 retry 판단에 사용하지 않고 orchestration 경계에서 allowlisted typed source reason으로
+  정규화한다. DB/API timeout, connection, DNS, 408/425/429/5xx만 transient source failure로 분류한다.
 - Retry exhaustion은 `dead_lettered`로 남긴다. 권한 있는 manual retry는 terminal row를 되살리지
   않고 새 generation job을 만든다.
 - Active version finalization, Document completed projection과 job succeeded 전이는 같은 DB
   transaction에서 fencing token을 확인해 확정한다. Stale worker의 progress와 finalization은
   거부한다. 완료 progress=100도 이 transaction에 포함하며 commit 뒤에는 Redis advisory 값만
-  알린다. Redis progress는 권위 상태가 아니다.
+  알린다. Retry/cancel/dead-letter 전이는 DB commit 뒤 이전 attempt의 Redis key를 삭제해 DB의 0
+  projection으로 fallback한다. Lease를 잃은 worker는 cache를 삭제하지 않는다. Redis progress는 권위
+  상태가 아니다.
 - Terminal job은 기본 30일 뒤 bounded cleanup한다. Canonical audit와 document version retention은
   별도 정책을 따른다.
 
@@ -72,7 +76,11 @@ Option 3과 option 5를 채택한다.
   stale schema를 raw DB 오류가 아닌 `503 knowledge.ingestion_schema_not_ready`로 닫는다.
 - `knowledge` worker는 Gateway image/parser/storage 의존성을 사용하고 다른 Celery queue를 소비하지
   않는다. Worker bootstep은 필수 table, column, unique constraint와 index가 없으면 queue 소비 전에
-  startup을 실패시킨다.
+  startup을 실패시킨다. Compose worker는 migration을 수행한 Gateway health 이후 시작하며 Kubernetes
+  worker는 bounded init readiness를 통과한 뒤 Celery bootstep에서 다시 fail-closed 검사한다.
+- `STORAGE_TYPE=LOCAL`로 전용 worker를 활성화하면 Gateway와 worker는 동일 upload PVC를 마운트해야
+  하고 non-root container가 쓸 수 있도록 명시한 fsGroup을 적용해야 한다. Helm은 shared local storage
+  설정이 없으면 rendering을 거부한다. Production `CLOUD` storage는 이 PVC를 사용하지 않는다.
 - Production rollout은 additive migration을 먼저 적용한 뒤 Knowledge worker를 활성화한다. Queue
   drain 뒤 application rollback은 가능하지만 schema downgrade를 rollback 수단으로 사용하지 않는다.
 
