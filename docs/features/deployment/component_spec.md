@@ -1,7 +1,7 @@
 # Deployment Component Spec
 
 Status: Draft
-Verified Against: `feature/mba-247 @ 44094e46546b53c23ad3fe876e32bc4a1fc4b481`
+Verified Against: `feature/mba-247 @ 5b7f180195dca32daedabaeedb52b0fef6085a67`
 
 ## Screens
 
@@ -36,7 +36,7 @@ Verified Against: `feature/mba-247 @ 44094e46546b53c23ad3fe876e32bc4a1fc4b481`
 - `AppAuthSecretControl`은 safe status를 먼저 조회하고 사용자의 명시적 확인 뒤 최초 발급 또는 rotation을 실행한다. 일반 App·Deployment 응답에서 secret을 읽지 않는다.
 - Status 조회도 shared cache나 브라우저 재사용으로 stale version이 남지 않도록 `no-store, no-cache` 계약을 사용한다.
 - Status의 `rotation_enabled=false`이면 발급·교체 command를 렌더링하지 않고 Gateway 전환 대기 상태만 표시한다.
-- 성공한 신규 secret은 발급 version과 함께 component memory에만 유지하고 한 번 표시·복사할 수 있다. 다시 mount된 control과 success test panel은 no-store status version이 이 발급 version과 일치할 때만 원문을 재표시·복사·Authorization header에 사용한다. 화면을 닫거나 새 rotation이 성공했을 때, 또는 response 유실·다른 탭 rotation 뒤 status refresh가 보존한 version과 다른 값을 확인했을 때 지운다. 교체 확인을 열었다가 취소하거나 같은 version의 실패를 확인한 경우에는 기존 원문을 유지한다. local/session storage, URL, analytics, toast detail과 Client log에는 넣지 않는다.
+- 성공한 신규 secret은 발급 version과 함께 component memory에만 유지하고 한 번 표시·복사할 수 있다. 같은 control이 성공 응답을 부모 state로 전달한 것만으로 status를 즉시 재조회하거나 원문을 숨기지 않는다. 다시 mount된 control과 success test panel은 no-store status version이 이 발급 version과 일치할 때만 원문을 재표시·복사·Authorization header에 사용한다. 화면을 닫거나 새 rotation이 성공했을 때, 또는 response 유실·다른 탭 rotation 뒤 status refresh가 보존한 version과 다른 값을 확인했을 때 지운다. 교체 확인을 열었다가 취소하거나 같은 version의 실패를 확인한 경우에는 기존 원문을 유지한다. local/session storage, URL, analytics, toast detail과 Client log에는 넣지 않는다.
 - Rotation UI는 기본 5분 전환 유예와 `이전 secret 즉시 폐기` 선택을 구분한다. Mutation request는 자동 재시도하지 않고 version conflict 또는 응답 유실 시 status를 새로 읽도록 안내한다.
 - Status/rotation 권한이 없거나 resource가 숨겨진 경우 secret 상태나 App 존재 여부를 추론할 수 있는 상세를 렌더링하지 않는다.
 - Secret을 URL, `localStorage`, `sessionStorage`, analytics, toast 또는 Client log에 넣지 않는다. 일반 App·Deployment response에는 원문 또는 masked preview를 포함하지 않는다.

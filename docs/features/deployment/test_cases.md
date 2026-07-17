@@ -1,7 +1,7 @@
 # Deployment Test Cases
 
 Status: Draft
-Verified Against: `feature/mba-247 @ 44094e46546b53c23ad3fe876e32bc4a1fc4b481`
+Verified Against: `feature/mba-247 @ 5b7f180195dca32daedabaeedb52b0fef6085a67`
 
 ## Unit Tests
 
@@ -140,7 +140,7 @@ Verified Against: `feature/mba-247 @ 44094e46546b53c23ad3fe876e32bc4a1fc4b481`
 - Raw Kubernetes, Docker Compose와 Helm values/template은 lifecycle mode를 기본 `disabled`로 Gateway에 전달한다. Status와 성공 rotation 응답은 `no-store, no-cache`/`no-cache` header를 반환한다.
 - Caller-controlled request ID/IP/User-Agent에 secret-like 값을 넣어 rotation해도 `app.auth_secret.rotated`와 permission-denied audit metadata에 해당 값이 저장되지 않는다.
 - REST API/Webhook 배포 모달은 첫 active preflight 이전 input 단계에서 App ID 기반 secret status와 발급·교체 control에 접근할 수 있다.
-- 발급된 one-time secret을 표시한 상태에서 교체 확인을 열었다가 취소하거나 refresh가 같은 version인 rotation 실패를 확인해도 기존 원문은 새 rotation 성공 전까지 현재 component memory에 유지된다. 단, 원문과 함께 보존한 발급 version이 초기·재진입 status 또는 실패 뒤 refresh의 version과 다르면 원문을 즉시 폐기한다.
+- 발급된 one-time secret을 표시한 상태에서 교체 확인을 열었다가 취소하거나 refresh가 같은 version인 rotation 실패를 확인해도 기존 원문은 새 rotation 성공 전까지 현재 component memory에 유지된다. 성공 응답을 부모 state로 전달한 것만으로 status를 즉시 재조회하거나 원문을 숨기지 않는다. 단, 원문과 함께 보존한 발급 version이 초기·재진입 status 또는 실패 뒤 refresh의 version과 다르면 원문을 즉시 폐기한다.
 - `--reset` 없는 demo seed upsert는 valid managed App verifier/current/previous/generation 상태를 seed의 예측 가능한 credential로 되돌리지 않으며, legacy raw value만 null로 정리한다. 명시적 reset으로 row가 삭제된 경우에는 seed state를 새로 생성한다.
 - Active deployment secret blocker는 request ID와 `required_actions`를 포함한 표준 `error` envelope로 반환한다.
 - Managed current verifier가 malformed이면 previous verifier와 grace가 유효해도 public 인증은 fail-closed한다.
