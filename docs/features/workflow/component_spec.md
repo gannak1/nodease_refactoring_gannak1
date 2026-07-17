@@ -1,7 +1,7 @@
 # Workflow Component Spec
 
 Status: Draft
-Verified Against: `feature/mba-285 @ 2ca36f81`
+Verified Against: `feature/mba-286 @ 1d7a2e12`
 
 ## Condition Exit Layout
 
@@ -16,6 +16,15 @@ Verified Against: `feature/mba-285 @ 2ca36f81`
 - Start, Webhook Trigger, and Schedule Trigger reject incoming edges. Answer rejects outgoing edges.
 - Condition accepts only the Default handle or a configured case handle as an outgoing source handle.
 - Frontend handle visibility and graph validation provide immediate UX feedback, while Agent Builder direct-edit GraphMutation의 common CAS save와 canonical acknowledgement validation이 persistence boundary다. Preview/apply-save 제품 경로는 사용하지 않는다.
+
+## Runtime Scheduler Readiness
+
+- Workflow Engine은 selector source를 `data_dependencies`, source별 target 역색인을 `data_dependents`로 계산하고 control edge index와 분리한다. 빈 selector 집합을 control predecessor 부재로 해석하지 않는다.
+- 실행 시작 시 각 control edge는 `pending`이다. 일반 node 성공은 모든 outgoing edge를 active로 만들고, `selected_handle`을 반환하는 Condition 계열 node는 일치 edge만 active, 나머지는 inactive로 확정한다.
+- incoming edge가 모두 inactive인 node는 실행하지 않고 inactive로 확정하며 그 outgoing edge에도 inactive를 전파한다. 필수 selector source가 inactive인 dependent도 누락된 값으로 실행하지 않는다.
+- 명시적 entry 외 node는 모든 incoming edge가 확정되고 active predecessor 결과와 selector source 결과가 모두 준비된 경우에만 `pending -> queued`를 주장한다. Control target과 selector dependent 양쪽을 completion 후보로 재평가하되 lifecycle 전이는 node당 enqueue를 한 번으로 제한한다.
+- node 실패와 workflow/node timeout은 현재 fail-fast 경계를 유지한다. 실행 중인 sibling은 취소되고 아직 pending인 downstream node는 시작하지 않는다.
+- 이 상태는 실행 순서를 위한 in-memory scheduler state다. ADR-0033의 `RuntimeDataDependencyEnvelope`에 합산되는 active control dependency는 결과 lineage와 Memory authorization용 provenance이며 같은 저장 구조가 아니다.
 
 ## Conversation Memory Dispatch Admission Target
 
