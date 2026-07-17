@@ -54,14 +54,15 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 
 - Agent Builder의 canonical mode는 `guided_generate`, `quick_generate`, `structure_only`다.
 - 화면 기본값과 mode가 생략된 신규 요청의 기본값은 `guided_generate`다.
-- 기존 `configure_and_generate` 입력과 저장 row는 `guided_generate`로 읽기 정규화한다. 신규 응답에는 canonical 값만 반환하고 기존 JSON row를 backfill하지 않는다.
+- 기존 `configure_and_generate` 입력과 저장 row는 내부 domain에서 `guided_generate`로 읽기 정규화하고 기존 JSON row를 backfill하지 않는다. 외부 응답은 `X-Agent-Builder-Mode-Contract`가 없거나 `legacy-v1`이면 legacy 표현을, `canonical-v2`이면 canonical 표현을 반환한다.
+- 생성 모드 rollout은 Gateway dual-input/legacy-output, Client dual-read/legacy-write, 전체 Gateway replica와 Client gate 확인 뒤 canonical-v2 응답, Client canonical-write 순서다. 구형 Client가 canonical 응답을 먼저 받게 해서는 안 된다.
 - 사용자는 화면 mode control 또는 명시적인 자연어 요청으로 `quick_generate`를 요청할 수 있다. LLM은 mode 의도를 구조화할 수 있지만 eligibility와 권한을 승인하지 않는다.
 - Client는 초기 화면값과 사용자의 명시적 선택을 `generation_mode_source=default|explicit_control`로 구분한다. 명시적 control 선택, planner가 구조화한 명시적 자연어 mode 의도, 기본 guided 순으로 requested mode를 확정한다. Default guided는 "한 번에 만들어 줘" 같은 명시적 자연어 요청을 막지 않는다.
 - `quick_generate`의 최종 허용 여부는 Gateway application policy가 현재 권한, active organization, Catalog, base graph hash, workflow `updated_at`, resource revision과 미해결 선택을 기준으로 결정론적으로 판정한다.
 - Quick mode는 모든 capability가 지원되고 parameter가 사용자 요청·기존 graph·단일 selector·안전한 Catalog default로 하나의 값으로 확정되며, 권한 resource와 revision이 현재 유효하고 외부 부수효과를 새로 활성화하지 않을 때만 허용한다.
 - Credential, 권한 있는 KB/Collection 선택, 외부 대상, 의미 있는 복수 후보, Condition branch, HTTP/code/egress, unresolved 외부 action 또는 stale/hidden resource가 남으면 quick proposal을 발급하지 않는다.
 - Quick mode가 불가능하면 graph를 변경하지 않고 safe reason code와 `mode_transition_required`를 반환한다. UI는 민감한 resource 존재를 드러내지 않는 설명과 `단계별 생성으로 계속`/`취소`를 제공한다. 사용자 확인 없이 자동 전환하지 않는다.
-- Quick mode가 가능하면 backend는 full typed GraphMutation과 redaction-safe 변경 요약을 일회성 응답으로 반환하고 request를 `pending_apply`로 유지한다. Frontend는 editor clone에 dry-run해 동일 validator를 통과시킨 뒤 추가·변경·삭제 node와 남은 차단 사항을 표시한다. 사용자가 `생성 적용`을 명시적으로 선택한 뒤에만 실제 history boundary에 적용하고 CDS CAS 저장한다.
+- Quick mode가 가능하면 backend는 full typed GraphMutation과 redaction-safe 변경 요약을 일회성 응답으로 반환한다. RequestStatus는 `graph_mutation_ready`, 응답 안의 GraphMutationStatus만 `pending_apply`다. Frontend는 editor clone에 dry-run해 동일 validator를 통과시킨 뒤 추가·변경·삭제 node와 남은 차단 사항을 표시한다. 사용자가 `생성 적용`을 명시적으로 선택한 뒤에만 실제 history boundary에 적용하고 CDS CAS 저장한다.
 - Quick review는 Legacy Preview가 아니다. Preview session/API, 별도 draft store 또는 preview 전용 save path를 만들지 않으며 guided mode와 같은 GraphMutation, CAS, acknowledgement와 Undo 경계를 사용한다.
 - Quick response를 적용 전에 잃거나 reload하면 safe envelope에서 full operations를 복원하지 않고 요청을 재생성한다. CAS 저장 뒤 acknowledgement 유실 복구는 ADR-0046을 따른다.
 - `남은 설정 빠르게 완료`는 새 generation mode가 아니라 `guided_generate` request의 범위 축소 명령이다. 이미 acknowledgement된 graph와 완료 task를 보존하고 현재 미완료 task만 현재 권한·Catalog·revision으로 재평가한다. 전체 planner 또는 전체 graph generation을 다시 실행하지 않는다.
@@ -69,7 +70,7 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 - `structure_only`는 parameter task를 시작하지 않는 generation mode다. 빈 workflow의 새 graph는 `initial_graph`, 기존 workflow 부분 변경은 `graph_edit`, 기존 workflow 전체 교체는 `replace_workflow` GraphMutation을 사용하며 mode와 kind는 독립이다.
 - `structure_only` 결과의 unresolved configuration은 저장할 수 있지만 test, run과 deployment preflight가 차단하며 생성 완료 또는 실행 준비 상태로 표시하지 않는다.
 - `generation_mode`, `generation_mode_source`, requested/effective mode, transition status와 safe reason code는 각 request의 기존 `AgentBuilderRequest.response_payload`에만 저장한다. Workflow graph, session 전용 column, 신규 table 또는 별도 영구 column에는 저장하지 않는다.
-- Mode transition과 빠른 완료 요청은 client-generated operation id와 expected request/task version을 사용한다. 같은 operation 재시도는 같은 결과를 반환하고 stale 또는 competing 요청은 graph나 task를 변경하지 않은 채 conflict로 닫는다.
+- Mode transition과 빠른 완료 요청은 client-generated operation id와 expected request/task version을 사용한다. Safe 상태만 반환하는 transition/proposal 재시도는 같은 canonical 결과를 반환하고 stale 또는 competing 요청은 graph나 task를 변경하지 않은 채 conflict로 닫는다. Full GraphMutation operations를 발급한 transition 응답이 유실되면 같은 operation id 재시도는 중복 mutation을 만들지 않고 `operation_payload_unavailable`을 반환하며, 사용자가 기존 request 취소 뒤 새 request를 명시적으로 제출해야 한다.
 - Request version은 기존 `response_payload` 안에서 1부터 단조 증가하고 transition/proposal 상태 변경마다 parent request row lock 안에서 갱신한다. Proposal은 별도 monotonic proposal version을 가지며 신규 DB column을 추가하지 않는다.
 - Initial quick review와 mode transition 대기의 취소는 기존 request cancel을 사용한다. Guided request 자체는 유지하면서 remaining quick proposal만 닫을 때는 proposal id/version을 검증하는 전용 cancel을 사용하고 graph/task를 변경하지 않는다.
 
@@ -173,8 +174,8 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 - `allow_unresolved` defer는 `parameter_update` GraphMutation을 반환하고 CDS 저장과 acknowledgement 뒤에만 task를 `deferred`로 전환한다. Optional `skip`은 graph 값이나 GraphMutation을 만들지 않고 operation id/task version 검증 뒤 task를 `skipped`로 전환해 다음 task를 활성화한다. Skipped task를 다시 열어 값을 설정하면 일반 `parameter_update`/CDS/acknowledgement 뒤 `completed`가 된다.
 - Node `configuration_state`는 backend가 Catalog의 모든 required configuration을 기준으로 생성, set/defer/skip, Undo, 복구와 실행·배포 preflight마다 다시 계산한다. 하나라도 missing/deferred/invalid이면 `unresolved`, 모두 유효할 때만 `resolved`이며 client가 보낸 상태를 권위로 신뢰하지 않는다. Optional skipped parameter는 Catalog required가 아닌 한 unresolved 원인이 아니다.
 - Parameter flow 전체 취소는 남은 task를 `canceled`로 닫고 이미 저장된 graph를 유지한다.
-- Decision request는 client-generated operation id와 expected task version을 포함한다. Backend는 parent request row를 잠그고 target task/version과 action별 허용 상태를 확인한다. `confirm`은 active 자동 추천 task에만 허용한다. 값 수정 `set`은 `active|completed|skipped|deferred|invalid` task에 허용하고 유효한 acknowledgement 뒤 `completed`로 전환한다. `previous`는 현재 presentation task의 canonical 상태가 `active|completed|skipped|deferred`이면 persisted 상태를 변경하지 않고 이전 재편집 가능 task를 반환한다. `pending`은 active 전환 뒤 처리하고 `canceled`는 수정하지 않는다. 같은 operation 재시도는 같은 결과를 반환하고 다른 동시 decision은 `409 task_conflict`로 거부한다.
-- 같은 operation id와 같은 payload로 `confirm|set|defer|skip|cancel`을 재시도하면 최초 canonical 결과를 반환하고 GraphMutation 생성, task 전환, DB commit과 audit를 반복하지 않는다. Catalog validation으로 `invalid`가 된 `set`도 safe canonical 결과로 기록해 같은 validation issue와 task 상태를 반환한다. 같은 operation id에 다른 payload가 오면 `409 task_conflict`로 거부한다. Parameter group 취소의 operation id는 같은 group/task/version이 확정될 때까지 유지하며, 응답이 유실되면 같은 id로 한 번 재시도한 뒤 canonical canceled 상태를 조회한다.
+- Decision request는 client-generated operation id와 expected task version을 포함한다. Backend는 parent request row를 잠그고 target task/version과 action별 허용 상태를 확인한다. `confirm`은 active 자동 추천 task에만 허용한다. 값 수정 `set`은 `active|completed|skipped|deferred|invalid` task에 허용하고 유효한 acknowledgement 뒤 `completed`로 전환한다. `previous`는 현재 presentation task의 canonical 상태가 `active|completed|skipped|deferred`이면 persisted 상태를 변경하지 않고 이전 재편집 가능 task를 반환한다. `pending`은 active 전환 뒤 처리하고 `canceled`는 수정하지 않는다. 같은 operation 재시도는 상태 전이와 mutation을 반복하지 않는다. Full operations가 없는 `confirm|skip|previous|cancel`과 safe invalid 결과는 같은 canonical 결과를 반환하지만, `set|defer` mutation 응답 유실은 `operation_payload_unavailable` 뒤 현재 task/version에서 새 operation id로 재입력한다. 다른 동시 decision은 `409 task_conflict`로 거부한다.
+- 같은 operation id와 같은 payload를 재시도해도 GraphMutation 생성, task 전환, DB commit과 audit를 반복하지 않는다. `confirm|skip|cancel`과 Catalog validation으로 `invalid`가 된 `set`은 저장된 safe canonical 결과를 반환한다. Full operations를 발급한 `set|defer` 응답이 유실된 경우에는 최초 payload 대신 `operation_payload_unavailable`을 반환한다. 같은 operation id에 다른 payload가 오면 `409 task_conflict`로 거부한다. Parameter group 취소의 operation id는 같은 group/task/version이 확정될 때까지 유지하며, 응답이 유실되면 같은 id로 한 번 재시도한 뒤 canonical canceled 상태를 조회한다.
 - 저장 실패, acknowledgement 유실 또는 stale graph에서는 task 완료 상태를 앞당기지 않으며 operation id와 canonical graph hash/`updated_at`으로 acknowledgement를 재시도·복구할 수 있어야 한다.
 - Frontend는 parameter decision 결과가 확정되거나 session recovery가 끝날 때까지 같은 입력의 operation id를 유지한다. 결과와 session 조회가 모두 유실되면 같은 operation id로 재시도하고, recovery가 task를 다시 열면 다음 입력부터 새 operation id를 사용한다.
 - active `task_id`가 바뀌면 text, boolean, selector, resource candidate, 검색어와 validation error를 포함한 local input draft를 초기화한다. Completed/skipped/deferred task를 다시 열 때 이전 raw value를 session에서 복원하지 않는다.
@@ -267,6 +268,7 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 - 신규 workflow 생성은 app/workflow creation scope를 요구한다.
 - Knowledge, model, credential reference는 각 resource 권한을 별도로 검증한다.
 - Backend는 저장 graph의 required configuration 전체에서 `configuration_state`를 다시 계산해야 한다. 하나라도 missing/deferred/invalid인 외부 action node는 저장할 수 있어도 server-side 실행·배포 preflight에서 차단해야 한다. Preflight는 catalog와 저장 graph만 검사하며 credential provider나 외부 API를 호출하지 않는다.
+- `pending|active` ParameterTask 자체는 실행·배포 차단 근거가 아니다. 추천값이 canonical graph에 materialize돼 required configuration이 모두 유효하면 Agent Builder 사용자 확인이 남아 있어도 runtime readiness는 통과할 수 있다. 사용자 확인을 별도 admission gate로 만들려면 상위 실행·배포 정책을 별도로 변경해야 한다.
 - generation, suggestion, parameter submission 중 workflow 실행, retrieval, 외부 action, credential 사용·변경을 수행하지 않는다.
 
 ### DBP-FR-014 Audit And Sensitive Data

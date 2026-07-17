@@ -6,7 +6,7 @@ Status: Draft
 
 이 문서는 Accepted ADR-0045/ADR-0046의 direct-edit API와 ADR-0054의 생성 모드·전환 목표 API를 정의한다. ADR-0019는 Superseded Preview 기록이며 기존 결과는 characterization fixture로만 사용하고 direct-edit parity와 필수 검증 뒤 Preview API/UI를 제거한다. MBA-293 시점 코드는 기존 두 mode만 구현했으므로 `quick_generate`와 전환 endpoint는 후속 구현 전까지 제공되는 API로 간주하지 않는다.
 
-모든 endpoint는 인증과 `X-Organization-Id`를 요구한다. Client는 raw workflow graph, credential config, secret value를 Agent Builder API로 보내지 않는다. Backend는 server-loaded workflow graph hash, workflow `updated_at`과 catalog version을 기준으로 판단한다. 신규 direct-edit session의 target contract는 단일 catalog v3다. 기존 Preview protocol session은 cutover 뒤 `stale_protocol`로 복구하며 미적용 draft를 새 protocol로 변환하지 않는다.
+모든 endpoint는 인증과 `X-Organization-Id`를 요구한다. Client는 raw workflow graph, credential config, secret value를 Agent Builder API로 보내지 않는다. Backend는 server-loaded workflow graph hash, workflow `updated_at`과 catalog version을 기준으로 판단한다. 신규 direct-edit session의 target contract는 단일 catalog v3다. 기존 Preview protocol session은 cutover 뒤 `stale_protocol`로 복구하며 미적용 draft를 새 protocol로 변환하지 않는다. Generation mode의 외부 표현은 선택적 `X-Agent-Builder-Mode-Contract` 헤더로 협상하고 내부 domain·저장 metadata의 canonical mode와 구분한다.
 
 Base path는 `/api/v1/agent-builder`다.
 
@@ -18,7 +18,7 @@ Base path는 `/api/v1/agent-builder`다.
 guided_generate | quick_generate | structure_only
 ```
 
-`configure_and_generate`는 입력과 기존 JSON row를 위한 `guided_generate` 호환 별칭이다. Gateway는 신규 응답에 canonical 값만 반환하며 기존 row를 backfill하지 않는다. Mode가 없으면 `guided_generate`다.
+`configure_and_generate`는 입력과 기존 JSON row를 위한 `guided_generate` 호환 별칭이다. Gateway 내부 domain은 canonical 값으로 정규화하며 기존 row를 backfill하지 않는다. 외부 응답은 2.1.4의 negotiated contract를 따른다. Mode가 없으면 내부 기본값은 `guided_generate`다.
 
 ### 2.1.1 GenerationModeSource
 
@@ -37,6 +37,21 @@ Client는 화면 초기값에는 `default`, 사용자가 mode control을 조작�
 ```text
 pending | acknowledged | canceled | stale
 ```
+
+### 2.1.4 Generation Mode Contract Negotiation
+
+Client는 Agent Builder endpoint에 다음 선택적 요청 헤더를 보낼 수 있다.
+
+```text
+X-Agent-Builder-Mode-Contract: legacy-v1 | canonical-v2
+```
+
+- 헤더가 없거나 `legacy-v1`이면 외부 request/response mode 표현은 `configure_and_generate|structure_only`다.
+- `canonical-v2`이면 외부 표현은 `guided_generate|quick_generate|structure_only`다.
+- Gateway는 두 입력 표현을 모두 내부 canonical mode로 정규화하지만 응답은 요청에서 협상된 표현을 사용한다.
+- Gateway는 같은 이름의 응답 헤더로 실제 적용한 contract를 반환한다. 지원하지 않는 값은 canonical로 추측하지 않고 `400 unsupported_mode_contract`로 거부한다.
+- 헤더는 representation 협상용이며 session/request DB metadata에 저장하지 않는다. 저장값과 audit mode는 항상 canonical이다.
+- `quick_generate`는 `canonical-v2`와 Backend·Frontend integration gate가 모두 활성화된 경우에만 허용한다.
 
 ### 2.2 RequestStatus
 
@@ -227,6 +242,8 @@ Planner는 KB 선택별 완성 graph 대신 Knowledge가 base topology에 미치
 
 ### POST `/sessions`
 
+다음 예시는 `X-Agent-Builder-Mode-Contract: canonical-v2`를 보낸 경우다. 헤더가 없거나 `legacy-v1`이면 `default_generation_mode`는 `configure_and_generate`로 반환한다. Response에도 실제 적용한 contract를 같은 이름의 헤더로 반환한다.
+
 Request:
 
 ```json
@@ -243,6 +260,7 @@ Rules:
 - client graph snapshot은 허용하지 않는다.
 - current editor에 미저장 변경이 있으면 client는 autosync를 완료한 뒤 session을 시작해야 한다.
 - Server는 신규 session의 `protocol_version`을 `direct_edit_v1`로 저장한다. Request가 아직 없는 session도 이 값으로 protocol을 판별하며 기존 null session은 `stale_protocol`로 복구한다.
+- Generation mode contract header는 API 표현 협상에만 사용하며 session row나 `protocol_version`에 복제하지 않는다. 각 GET/POST 요청은 자체 header로 응답 표현을 협상한다.
 
 Response:
 
@@ -273,7 +291,7 @@ Session의 만료되지 않은 request 전체에서 redaction된 safe conversati
 - `stale_protocol`, server가 명시한 session not found 또는 invalid session 외의 transport/5xx 오류는 terminal 상태를 의미하지 않는다. Client는 저장된 session pointer를 보존하고 같은 GET만 `1초 -> 2초 -> 4초` 간격으로 최대 세 번 재시도할 수 있다. 세 번 모두 실패하면 UI는 `결과 확인 필요`와 수동 재조회 control을 표시한다.
 - `stale_protocol` 응답은 redaction을 통과한 safe conversation을 읽기 전용으로 유지하고 재제출 안내를 포함한다. Client는 legacy Preview graph/draft/apply 정보를 복원하지 않고 신규 요청용 `direct_edit_v1` session을 한 번 생성하며 같은 stale session 전환을 반복하지 않는다.
 - CDS 저장 전 full operations 응답이 유실되면 server는 이를 복구·재생하지 않고 기존 envelope를 `blocked`로 닫아 `operation_payload_unavailable` reason을 반환한다. Initial/graph-edit/replace는 request를 재생성하고 parameter decision은 현재 task/version에서 새 operation id로 다시 입력한다.
-- Recovery는 최신 request row를 잠근 뒤 저장 결과가 없는 `pending_apply|pending_save`만 차단한다. `pending_ack|acknowledged|blocked|reverted`는 변경하지 않으며 차단 상태, 연결 task/Knowledge 복구와 safe audit는 한 transaction에서 확정한다.
+- Recovery는 최신 request row를 잠근 뒤 safe operation envelope의 GraphMutationStatus가 `pending_apply|pending_save`이고 저장 결과가 없는 경우만 차단한다. `pending_ack|acknowledged|blocked|reverted` operation은 변경하지 않으며 차단 상태, 연결 task/Knowledge 복구와 safe audit는 한 transaction에서 확정한다. 이 값들은 RequestStatus가 아니다.
 - `parameter_update` 차단은 pending decision을 제거하고 같은 task/version을 `active`로 다시 연다. Initial/graph-edit/replace parameter group은 `blocked`, Knowledge resolution은 `canceled`로 닫는다.
 - CDS 저장 뒤 acknowledgement만 유실된 operation은 persisted graph hash와 envelope의 expected/saved hash, operation id와 workflow `updated_at`으로 acknowledgement를 복구할 수 있다.
 - `reverted` history boundary는 active mutation으로 반환하지 않고 모든 연결 ParameterTask/Knowledge resolution을 `canceled`로 복구한다. Parameter/Knowledge operation별 `reverted` 상태는 허용하지 않으며 Redo도 canceled 흐름을 자동 완료하지 않는다.
@@ -283,6 +301,8 @@ Session의 만료되지 않은 request 전체에서 redaction된 safe conversati
 ### POST `/sessions/{session_id}/messages`
 
 Direct-edit session의 workflow graph가 비어 있지 않은데 structured request가 완결된 `new_workflow`이면 `replace_workflow` GraphMutation을 반환한다. 명시적 전체 교체는 `request_type=modify_workflow`, `draft_mode=replace_workflow`로 구조화하며 edit target을 요구하지 않는다. 둘 다 typed remove/add operation과 동일한 CDS/acknowledgement 경계를 사용한다.
+
+아래 request/response 예시는 `X-Agent-Builder-Mode-Contract: canonical-v2` 기준이다. `legacy-v1` Client는 `configure_and_generate|structure_only`만 전송하고 같은 표현으로 응답받으며, Gateway 내부 requested/effective mode와 저장 metadata는 canonical 값이다.
 
 Request:
 
@@ -307,7 +327,7 @@ Request:
 Rules:
 
 - `message`는 최대 4,000자다.
-- `generation_mode`가 없으면 `guided_generate`를 사용하며 requested/effective mode를 request `response_payload`에 기록한다. 기존 `configure_and_generate` 입력은 guided mode로 정규화한다.
+- `generation_mode`가 없으면 내부적으로 `guided_generate`를 사용하며 requested/effective mode를 request `response_payload`에 canonical 값으로 기록한다. 기존 `configure_and_generate` 입력은 guided mode로 정규화하고 외부 response mode는 negotiated contract 표현을 따른다.
 - `generation_mode_source=explicit_control`이면 해당 canonical mode가 자연어 mode intent보다 우선한다. `source=default`이면 planner가 반환한 명시적 quick/structure-only intent를 requested mode로 사용할 수 있고, 그런 intent가 없으면 guided다. Legacy request가 mode를 보내고 source를 생략하면 explicit control로 해석한다.
 - `structured_plan.generation_mode_intent`는 `guided_generate|quick_generate|structure_only|null`이고 사용자 문장에 생성 방식이 명시된 경우에만 non-null이다. 이는 requested mode 계산 입력일 뿐 quick eligibility, 권한 또는 GraphMutation 적용 승인이 아니다.
 - 화면 control 또는 자연어에서 명시된 `quick_generate` 의도는 요청값이지만 eligibility 승인이 아니다. Planner가 mode intent를 구조화해도 Gateway application policy가 현재 권한, Catalog, graph/resource revision과 미해결 설정으로 최종 판정한다.
@@ -469,7 +489,9 @@ Request:
 
 - `action`은 `continue_guided`만 허용한다. 취소는 기존 `POST /requests/{request_id}/cancel` 경로 하나를 사용한다.
 - `continue_guided`는 보존된 structured plan으로 guided GraphMutation/Knowledge/Parameter 결과를 만들며 planner를 다시 호출하지 않고 성공 응답의 `request_version`을 증가시킨다.
-- 같은 operation/payload 재시도는 같은 결과를 반환한다. 다른 payload, stale request version 또는 이미 처리된 competing transition은 `409 mode_transition_conflict`다.
+- GraphMutation을 포함한 성공 응답의 RequestStatus는 `graph_mutation_ready`이고 nested GraphMutationStatus는 `pending_apply`다. Before-graph Knowledge 선택처럼 mutation을 아직 발급하지 않은 결과는 해당 기존 RequestStatus를 유지한다.
+- 같은 operation/payload 재시도는 상태 전이와 mutation 발급을 반복하지 않는다. 최초 응답에 full operations가 없었던 safe transition 결과는 같은 canonical 결과를 반환할 수 있지만, GraphMutation 발급 뒤 응답이 유실된 재시도는 저장되지 않은 operations를 재구성하지 않고 `409 operation_payload_unavailable`과 현재 safe request/envelope 상태를 반환한다. Client는 기존 request를 취소하고 새 operation id의 신규 message request를 명시적으로 제출한다.
+- 다른 payload, stale request version 또는 이미 처리된 competing transition은 `409 mode_transition_conflict`다.
 - 사용자가 확인하지 않은 transition을 server나 client가 자동 제출하지 않는다.
 
 ### 5.3 Remaining Configuration Quick Completion
@@ -812,8 +834,8 @@ Rules:
 - task status/version과 operations를 제외한 safe operation/acknowledgement metadata는 기존 `AgentBuilderRequest.response_payload`에 저장한다. Repository는 current payload를 복사해 새 전체 객체로 재할당하며 nested dict를 제자리 변경하지 않는다.
 - 실제 parameter value는 request/session payload에 저장하지 않고 workflow graph만 source of truth로 사용한다. 재진입 input은 canonical graph와 Catalog mapping에서 현재 safe 값을 hydrate하며 raw secret은 복구하지 않는다.
 - Optional `skip`은 workflow graph나 GraphMutation을 만들지 않고 operation id/task version 검증 뒤 task를 명시적 `skipped` 상태로 전환해 다음 task를 활성화한다. `confirm`도 graph와 recommendation context가 발급 시점과 같으면 GraphMutation과 workflow save 없이 active task를 `completed`로 전환한다. `previous`는 graph save/acknowledgement, task status/version과 Workflow history를 변경하지 않고 `next_task_id`만 반환한다. Graph 값을 바꾸는 `set`, completed/skipped/deferred/invalid task 수정과 `allow_unresolved` defer는 GraphMutation acknowledgement를 요구한다.
-- Backend는 parent `AgentBuilderRequest` row를 write lock으로 조회하고 target task id, `expected_task_version`과 action별 허용 status를 비교한다. `confirm`은 active 자동 추천 task에만 허용한다. 값 설정 `set`은 `active|completed|skipped|deferred|invalid`에 허용하며 `pending|canceled`에는 허용하지 않는다. `previous`는 current presentation task의 canonical status가 `active|completed|skipped|deferred`일 때 stable order상 이전 재편집 가능 task를 찾는다. 같은 `operation_id` 재시도는 기존 결과를 반환하고, 먼저 처리된 다른 decision 때문에 version이 바뀌면 `409 task_conflict`로 닫는다. 충돌 요청은 GraphMutation이나 next task를 만들지 않는다.
-- 동일 operation id와 동일 canonical payload의 `confirm|set|defer|skip|cancel` 재시도는 최초 결과를 반환하고 GraphMutation, task activation, DB commit과 audit를 반복하지 않는다. Catalog validation으로 `invalid`가 된 `set`도 operation result와 safe validation issue를 저장해 동일 재시도에 최초 invalid 결과를 반환한다. 동일 id의 payload fingerprint가 다르면 `409 task_conflict`다.
+- Backend는 parent `AgentBuilderRequest` row를 write lock으로 조회하고 target task id, `expected_task_version`과 action별 허용 status를 비교한다. `confirm`은 active 자동 추천 task에만 허용한다. 값 설정 `set`은 `active|completed|skipped|deferred|invalid`에 허용하며 `pending|canceled`에는 허용하지 않는다. `previous`는 current presentation task의 canonical status가 `active|completed|skipped|deferred`일 때 stable order상 이전 재편집 가능 task를 찾는다. 같은 `operation_id` 재시도는 상태 전이, GraphMutation과 next task를 반복하지 않고, 먼저 처리된 다른 decision 때문에 version이 바뀌면 `409 task_conflict`로 닫는다.
+- 동일 operation id와 동일 canonical payload의 `confirm|skip|cancel|previous` 재시도와 Catalog validation으로 `invalid`가 된 `set`은 저장된 safe 최초 결과를 반환하고 task activation, DB commit과 audit를 반복하지 않는다. Full operations를 발급한 `set|defer` 응답이 CDS 저장 전에 유실되면 같은 operation 재시도는 최초 operations 대신 `409 operation_payload_unavailable`을 반환하며, recovery가 task를 같은 version으로 다시 연 뒤 새 operation id로 재입력한다. 동일 id의 payload fingerprint가 다르면 `409 task_conflict`다.
 - `configuration_state`는 client decision field가 아니다. Backend는 최초 graph, set/defer/skip, persisted Undo, session recovery와 workflow test/run·deployment preflight마다 Catalog required configuration 전체를 검사한다. 하나라도 missing/deferred/invalid이면 `unresolved`, 모두 유효할 때만 `resolved`다. Optional skipped parameter는 Catalog required가 아닌 한 상태를 막지 않는다.
 
 Response:
@@ -923,7 +945,7 @@ Request:
 
 ### POST `/requests/{request_id}/cancel`
 
-`planning`, `mode_transition_required` 또는 initial quick review의 `pending_apply` request를 취소한다. 아직 저장되지 않은 local GraphMutation은 editor transaction을 Undo하고 acknowledgement하지 않는다. 이미 저장된 GraphMutation은 6.4의 persisted Undo 계약으로만 복구한다. Guided request 전체를 유지하면서 remaining quick proposal만 닫을 때는 5.3의 proposal cancel을 사용한다.
+RequestStatus가 `planning|mode_transition_required|graph_mutation_ready`인 미완료 request를 취소한다. `graph_mutation_ready` 취소 시 nested safe envelope의 GraphMutationStatus가 `pending_apply|blocked`이고 CDS 저장 결과가 없어야 하며, 아직 저장되지 않은 local GraphMutation은 editor transaction을 Undo하고 acknowledgement하지 않는다. 이미 저장된 GraphMutation은 6.4의 persisted Undo 계약으로만 복구한다. Guided request 전체를 유지하면서 remaining quick proposal만 닫을 때는 5.3의 proposal cancel을 사용한다.
 
 ### POST `/sessions/{session_id}/parameter-groups/{group_id}/cancel`
 
@@ -934,6 +956,7 @@ Request는 client-generated `operation_id`, 현재 `expected_task_id`와 `expect
 | HTTP | Code | Meaning |
 |---|---|---|
 | 400 | `invalid_decision` | task/action 조합이 유효하지 않음 |
+| 400 | `unsupported_mode_contract` | `X-Agent-Builder-Mode-Contract` 값이 지원되지 않음 |
 | 403 | `permission_denied` | active organization 또는 resource 권한 부족 |
 | 404 | `resource_not_found` | 숨김 정책을 적용한 session/workflow/resource 없음 |
 | 409 | `stale_graph` | expected base graph hash 또는 workflow `updated_at` 불일치 |
@@ -965,9 +988,12 @@ Request는 client-generated `operation_id`, 현재 `expected_task_id`와 `expect
 4. 기존 Condition/Variable clarification 결과를 characterization fixture로 고정하고 catalog-derived ParameterTask/GraphMutation parity를 통과시킨 뒤 같은 기능 PR에서 Preview 전용 API/UI를 제거한다. 신규 응답은 `draft_preview`나 legacy apply action을 반환하지 않고 Preview-opened/apply route와 frontend Preview/`적용 및 저장` control이 남아 있으면 removal 검증을 실패시킨다. Preview를 수정·확장하거나 fallback으로 유지하지 않는다.
 5. Frontend와 Gateway의 mixed-revision 무중단 전환, staged rollout/rollback, 배포 gate와 image artifact 검증은 별도 배포 DDR과 후속 이슈에서 수행한다.
 6. 기존 intent model 권한 검증, generated model 추천과 KB 후보 표시 정책은 현재 revision에서 다시 실행한 호환 테스트로 유지하되 모델 표시 순서 변경은 MBA-228 범위에 포함하지 않는다.
-7. 생성 모드 전환은 additive하게 도입한다. Gateway가 먼저 `configure_and_generate`를 `guided_generate`로 읽기 정규화하고 canonical 응답을 지원한 뒤 Client 기본값을 전환한다. 기존 request JSON은 backfill하지 않는다.
-8. `quick_generate`, mode transition과 remaining quick completion은 Gateway·Client·integration/E2E gate가 함께 준비된 revision에서만 노출한다. Client만 먼저 toggle을 노출하거나 Gateway가 미지원 mode를 암묵적으로 guided로 처리하지 않는다.
-9. Quick mode는 Legacy Preview endpoint, payload 또는 저장소에 의존하지 않는다. Rollback 시 quick UI/endpoint만 creation gate로 닫고 기존 guided direct-edit와 `structure_only`를 유지한다.
+7. 생성 모드 전환은 consumer-first로 도입한다. 첫 Gateway revision은 두 mode 이름을 모두 입력으로 수용하고 내부에서는 canonical로 정규화하지만, mode contract header가 없거나 `legacy-v1`인 응답에는 `configure_and_generate`를 유지한다. 기존 request JSON은 backfill하지 않는다.
+8. 다음 Client revision은 `configure_and_generate|guided_generate`를 모두 읽되 모든 Gateway replica가 준비됐다는 배포 gate 전까지 legacy 값을 쓴다. 구형 Client와 신형 Gateway 조합이 canonical 응답을 먼저 받지 않아야 한다.
+9. 모든 Gateway replica가 dual-input과 contract negotiation을 지원하고 Client dual-read gate가 확인된 뒤에만 `X-Agent-Builder-Mode-Contract: canonical-v2`를 허용한다. 헤더가 없거나 legacy인 오래 열린 Client session에는 계속 legacy 표현을 반환한다.
+10. Client canonical-write 전환은 canonical-v2 협상 성공 뒤에만 수행한다. Rollback은 Client를 legacy-write로 돌리고 Gateway dual-input/legacy-output을 유지한다.
+11. `quick_generate`, mode transition과 remaining quick completion은 canonical-v2, Gateway·Client·integration/E2E gate가 함께 준비된 revision에서만 노출한다. Client만 먼저 toggle을 노출하거나 Gateway가 미지원 mode를 암묵적으로 guided로 처리하지 않는다.
+12. Quick mode는 Legacy Preview endpoint, payload 또는 저장소에 의존하지 않는다. Rollback 시 quick UI/endpoint만 creation gate로 닫고 기존 guided direct-edit와 `structure_only`를 유지한다.
 ## 2026-07-15 Direct-Edit Connection And Recovery Correction
 
 - `direct_edit_v1` response does not include a Slack or GitHub `credential_ref` ParameterTask. Those nodes may remain unresolved and must be configured only through the existing Editor connection controls. Mail/Gmail managed credential tasks remain permission-filtered.

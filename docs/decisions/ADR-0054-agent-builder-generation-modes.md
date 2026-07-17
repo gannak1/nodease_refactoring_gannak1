@@ -25,7 +25,7 @@ Agent Builder는 다음 세 모드를 제공한다.
 | `quick_generate` | 빠른 생성 | 서버가 안전하게 확정할 수 있는 전체 변경안을 한 화면에서 검토한 뒤 명시적으로 적용한다. |
 | `structure_only` | 구조만 생성 | graph 구조만 생성하고 미해결 설정은 일반 Editor에서 처리한다. 고급 옵션이다. |
 
-기존 `configure_and_generate`는 `guided_generate`의 입력·조회 호환 별칭이다. Gateway는 신규 요청과 응답을 canonical `guided_generate`로 정규화한다. 기존 JSON row를 일괄 backfill하지 않으며 mixed-version read에서만 별칭을 해석한다.
+기존 `configure_and_generate`는 `guided_generate`의 입력·조회 호환 별칭이다. Gateway의 내부 domain과 신규 저장 metadata는 canonical `guided_generate`로 정규화한다. 외부 API 응답 표현은 7절의 consumer-first 계약 협상을 따르며, canonical mode를 읽는다고 명시한 Client에만 `guided_generate`를 반환한다. 기존 JSON row를 일괄 backfill하지 않으며 mixed-version read에서만 별칭을 해석한다.
 
 ### 2. 모드 선택 권한
 
@@ -63,7 +63,7 @@ Agent Builder는 다음 세 모드를 제공한다.
 
 빠른 생성도 ADR-0045와 ADR-0046의 typed `GraphMutation`과 CAS 저장을 사용한다.
 
-1. 서버는 full typed operations와 민감하지 않은 변경 요약을 한 API 응답으로 반환하고 요청을 `pending_apply`로 유지한다.
+1. 서버는 full typed operations와 민감하지 않은 변경 요약을 한 API 응답으로 반환한다. Request는 `graph_mutation_ready`, 응답 안의 GraphMutation만 `pending_apply`다.
 2. Client는 실제 editor graph가 아닌 복제본에 mutation을 dry-run하고 동일한 validator로 결과를 검증한다.
 3. UI는 추가·변경·삭제 node와 남은 차단 사항을 요약해 보여준다.
 4. 사용자가 `생성 적용`을 명시적으로 선택한 뒤에만 실제 editor history boundary에 mutation을 적용하고 CDS CAS 저장을 수행한다.
@@ -71,7 +71,7 @@ Agent Builder는 다음 세 모드를 제공한다.
 
 이 검토 화면은 Legacy Preview Mode가 아니다. 별도 preview session, draft graph 저장소, preview 전용 apply API를 만들지 않는다. 저장과 stale 검사, acknowledgement, Undo/Redo는 guided mode와 동일한 GraphMutation/CDS 경계를 사용한다.
 
-Full typed operations는 기존 계약대로 발급 API 응답에서만 전달한다. 적용 전 응답을 잃거나 reload하면 safe envelope에서 operations를 복원하지 않고 같은 사용자 의도로 다시 생성한다. 적용·저장 후 acknowledgement 복구는 ADR-0046을 따른다.
+Full typed operations는 기존 계약대로 발급 API 응답에서만 전달한다. 적용 전 응답을 잃거나 reload하면 safe envelope에서 operations를 복원하지 않는다. 같은 operation id 재시도는 중복 상태 전이를 만들지 않지만 원래 operations 대신 `operation_payload_unavailable`과 safe canonical 상태를 반환한다. 사용자가 기존 request를 취소하고 같은 의도로 새 request를 명시적으로 제출해야 새 operation id로 재생성하며, 서버는 현재 권한, Catalog와 graph/resource revision을 다시 검증한다. 적용·저장 후 acknowledgement 복구는 ADR-0046을 따른다.
 
 ### 5. 단계별 생성 중 빠른 완료
 
@@ -87,15 +87,18 @@ Full typed operations는 기존 계약대로 발급 API 응답에서만 전달�
 
 ### 6. 구조만 생성
 
-`structure_only`는 parameter task를 열지 않는다. 생성된 graph에 unresolved 설정이 있으면 저장은 가능하지만 server-side test, run과 deployment preflight가 차단한다. UI는 이를 완성된 실행 가능 workflow로 표시하지 않는다.
+`structure_only`는 parameter task를 열지 않는다. 생성된 graph에 unresolved 설정이 있으면 저장은 가능하지만 server-side test, run과 deployment preflight가 차단한다. UI는 이를 완성된 실행 가능 workflow로 표시하지 않는다. 실행·배포 readiness는 저장된 graph와 Catalog에서 계산한 missing/deferred/invalid configuration을 기준으로 하며, 값이 이미 유효하게 materialize된 graph의 `pending|active` ParameterTask 자체는 차단 사유가 아니다. Agent Builder의 사용자 확인 완료 상태와 runtime readiness는 별도 상태다.
 
 ### 7. 저장·동시성·취소
 
 - 세 모드는 같은 canonical graph hash, workflow `updated_at`, Catalog version과 ADR-0046 CAS 저장 계약을 사용한다.
 - mode 전환과 빠른 완료 요청은 client-generated operation id와 expected request/task version을 포함한다.
-- stale graph, stale task 또는 중복 operation은 기존 결과를 덮어쓰지 않고 conflict로 닫는다.
+- Request 상태, GraphMutation 상태와 ParameterTask 상태는 서로 다른 enum과 owner를 가진다. `pending_apply|pending_save|pending_ack|acknowledged`는 GraphMutation lifecycle이며 RequestStatus로 저장하지 않는다.
+- stale graph, stale task 또는 중복 operation은 기존 결과를 덮어쓰지 않고 conflict로 닫는다. 다만 full operations를 저장하지 않는 mutation 발급 응답의 재시도는 같은 payload 반환을 보장하지 않고 `operation_payload_unavailable` 복구 계약을 따른다.
 - 적용 전 취소는 graph를 변경하지 않는다. 적용 중 취소는 이미 acknowledgement된 변경을 자동 롤백하지 않고 기존 Workflow Undo boundary로 복구한다.
 - 한 request에서 Legacy Preview와 direct-edit를 혼용하지 않는다.
+- 외부 generation mode 표현은 선택적 `X-Agent-Builder-Mode-Contract` 요청 헤더로 협상한다. 헤더가 없거나 `legacy-v1`이면 Gateway는 legacy `configure_and_generate` 표현을 반환하고, `canonical-v2`이면 canonical `guided_generate`를 반환한다. 이 값은 representation 협상용이며 DB에 저장하지 않는다.
+- Rollout은 Gateway가 두 입력을 수용하되 legacy 응답을 유지하는 단계, Client가 두 응답을 읽는 단계, 모든 Gateway replica와 Client dual-read gate 확인 뒤 `canonical-v2`를 허용하는 단계, Client가 canonical 값을 쓰는 순서로 진행한다. `quick_generate`는 canonical-v2와 Backend·Frontend 통합 gate가 모두 준비된 경우에만 노출한다.
 
 ### 8. 데이터와 보안
 

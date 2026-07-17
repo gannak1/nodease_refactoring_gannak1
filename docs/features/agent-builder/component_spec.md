@@ -64,6 +64,8 @@ Application package는 shared Pydantic request/response contract를 사용할 �
 - requested/effective mode, source, request/proposal version과 transition 상태를 framework-independent result로 반환
 - 사용자 확인 없는 quick-to-guided 전환 금지
 
+Transport adapter는 `X-Agent-Builder-Mode-Contract`를 읽어 legacy/canonical 외부 표현을 application의 canonical result와 양방향 변환한다. 이 협상은 GenerationModePolicy의 domain 판단이나 DB 저장값을 바꾸지 않는다.
+
 #### QuickGenerationEligibilityPolicy
 
 목표 위치: `apps/gateway/application/agent_builder/quick_generation_policy.py`
@@ -284,7 +286,7 @@ API endpoint와 graph builder가 permission query를 직접 작성하지 않는�
 
 ## 3. Shared Schemas
 
-기존 `apps/shared/schemas/agent_builder.py`에 canonical GenerationMode, ModeTransition, QuickReview/QuickCompletionProposal과 GraphMutation schema를, `apps/shared/schemas/workflow.py`에 additive `mutation_context`와 canonical save response schema를 둔다. 기존 `configure_and_generate`는 request parsing compatibility에서만 허용하고 domain/application result는 canonical mode만 사용한다. Request/response schema는 framework-independent Pydantic contract로 유지하고 node별 parameter form schema를 추가하지 않는다.
+기존 `apps/shared/schemas/agent_builder.py`에 canonical GenerationMode, ModeTransition, QuickReview/QuickCompletionProposal과 GraphMutation schema를, `apps/shared/schemas/workflow.py`에 additive `mutation_context`와 canonical save response schema를 둔다. 기존 `configure_and_generate`는 transport parsing compatibility에서 허용하고 domain/application result는 canonical mode만 사용한다. API adapter는 negotiated mode contract에 따라 legacy/canonical response representation을 선택한다. Request/response schema는 framework-independent Pydantic contract로 유지하고 node별 parameter form schema를 추가하지 않는다.
 
 Concrete dependency 조립은 `apps/gateway/composition/agent_builder.py`가 담당한다. Agent Builder 별도 server, RPC, queue, 독립 DB는 이번 구조에 포함하지 않는다.
 
@@ -498,7 +500,7 @@ applyGraphTransaction(nextNodes, nextEdges, metadata)
 2. Application이 permission, saved workflow context와 requested mode를 확정하고 planner를 정상 한 번 호출한다.
 3. QuickGenerationEligibilityPolicy가 Catalog, 현재 resource snapshot, graph/revision과 side-effect 분류를 fail-closed로 판정한다.
 4. Ineligible이면 graph mutation을 만들지 않고 ModeTransitionPrompt에서 guided 전환 또는 취소를 기다린다. 전환 확인은 보존된 structured plan을 사용하며 planner를 다시 호출하지 않는다.
-5. Eligible이면 GraphMutationBuilder가 validated mutation과 safe summary를 만들고 request를 `pending_apply`로 둔다.
+5. Eligible이면 GraphMutationBuilder가 validated mutation과 safe summary를 만든다. RequestStatus는 `graph_mutation_ready`, nested GraphMutationStatus만 `pending_apply`다.
 6. AgentBuilderEditorAdapter가 cloned graph에 dry-run하고 QuickReviewPresenter가 변경 요약을 표시한다.
 7. 사용자가 `생성 적용`을 선택한 뒤에만 실제 editor history boundary에 mutation을 적용하고 CDS save/acknowledgement를 수행한다.
 8. Acknowledgement가 끝난 뒤 request를 완료한다. 적용 전 응답 유실/reload는 full operations를 복원하지 않고 request 재생성으로 닫는다.
@@ -526,7 +528,8 @@ applyGraphTransaction(nextNodes, nextEdges, metadata)
 
 | State | Owner | Persistence |
 |---|---|---|
-| session/request status | backend | DB |
+| RequestStatus | backend | DB; planning/result/terminal request lifecycle |
+| GraphMutationStatus | backend | 기존 request safe operation envelope; `pending_apply|pending_save|pending_ack|acknowledged|blocked|reverted` |
 | structured plan | backend | safe metadata only |
 | session protocol | backend | nullable `AgentBuilderSession.protocol_version`; null은 legacy, 신규는 `direct_edit_v1` |
 | canonical/requested/effective generation mode와 source, monotonic request/proposal version, transition/proposal safe state, operation envelope/acknowledgement metadata | backend | 기존 `AgentBuilderRequest.response_payload`; full operations 제외, 새 전체 JSON 객체 재할당 |
@@ -535,6 +538,7 @@ applyGraphTransaction(nextNodes, nextEdges, metadata)
 | undo/redo graph history | workflow store | client memory |
 | persisted Undo 상태 | backend/workflow draft | 원 operation의 `reverted` 상태와 canonical graph |
 | parameter task status/version/resolution source | backend | 기존 `AgentBuilderRequest.response_payload`; `skipped` 포함, 실제 parameter 값은 제외 |
+| test/run/deploy readiness | backend preflight | 저장 graph와 Catalog에서 missing/deferred/invalid configuration을 매번 재계산; ParameterTask 상태는 비권위 |
 | input draft before submit | frontend card | client memory |
 | credential secret | Agent Builder가 소유하지 않음 | 기존 credential 경계 |
 | viewport/focus | React Flow | client memory |
@@ -544,7 +548,7 @@ applyGraphTransaction(nextNodes, nextEdges, metadata)
 - planner failure: graph를 변경하지 않고 safe failure 표시
 - quick eligibility failure: graph를 변경하지 않고 `mode_transition_required`; 사용자 확인 없는 guided 전환 금지
 - quick review 취소: editor/workflow/request graph 상태를 변경하지 않고 request만 canceled 처리
-- quick apply 전 reload/response loss: safe envelope에서 operations를 복원하지 않고 `operation_payload_unavailable` 및 request 재생성 안내
+- quick 또는 `continue_guided` mutation 발급 뒤 apply 전 reload/response loss: 같은 operation 재시도에서 operations를 복원하지 않고 `operation_payload_unavailable`과 safe 상태를 표시한 뒤 기존 request 취소와 명시적 신규 request 재생성 안내
 - remaining quick-completion stale/conflict: proposal 전체를 거부하고 기존 guided task/graph를 유지하며 자동 재적용하지 않음
 - Knowledge before-graph unresolved: selection UI만 표시
 - stale mutation: base graph hash나 expected workflow `updated_at`이 다르거나 `catalog_version`이 없거나 `2`이면 적용하지 않고 request 재생성 안내
@@ -591,8 +595,8 @@ applyGraphTransaction(nextNodes, nextEdges, metadata)
 5. CAS 저장/acknowledgement/복구, Agent Builder history boundary persisted Undo/Redo, task 동시성, transaction-bound audit/redaction, unresolved 실행·배포 preflight를 구현하고 검증한다.
 6. Alembic single head, disposable 기존 DB upgrade와 request 없는 null/direct mixed protocol recovery를 검증한다.
 7. Frontend와 Gateway의 무중단 mixed-revision rollout, staged rollback, 배포 gate와 image artifact 검증은 별도 배포 작업으로 넘긴다.
-8. Gateway가 `configure_and_generate` read compatibility와 canonical `guided_generate` response를 먼저 지원한 뒤 Client 기본값을 전환한다. 기존 request JSON은 backfill하지 않는다.
-9. Quick endpoint, eligibility policy, clone dry-run, transition/remaining-completion integration과 E2E가 함께 준비된 revision에서만 `빠른 생성` control을 노출한다. Rollback은 quick creation gate만 닫고 기존 guided direct-edit와 structure-only를 유지한다.
+8. Gateway는 두 mode 입력을 수용하고 내부 canonical로 정규화하되 header가 없거나 legacy인 Client에는 `configure_and_generate` 응답을 유지한다. Client는 두 응답을 읽되 먼저 legacy-write로 배포한다. 모든 Gateway replica와 Client dual-read gate가 확인된 뒤에만 `X-Agent-Builder-Mode-Contract: canonical-v2`와 canonical-write를 순서대로 활성화한다. 기존 request JSON은 backfill하지 않는다.
+9. Quick endpoint, eligibility policy, clone dry-run, transition/remaining-completion integration과 E2E가 함께 준비되고 canonical-v2가 협상된 revision에서만 `빠른 생성` control을 노출한다. Rollback은 quick creation gate만 닫고 기존 guided direct-edit와 structure-only를 유지한다.
 ## 2026-07-15 Connection Navigation And Completion Correction
 
 - WorkflowResultGroup does not render Slack/GitHub credential tasks. For a generated unresolved Slack/GitHub node it renders per-node external connection guidance and a `연결 설정으로 이동` action. The action focuses the node and opens the existing Editor authentication control without listing credentials, accepting a token, issuing a GraphMutation, saving, or calling the planner.
