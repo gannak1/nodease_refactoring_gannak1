@@ -53,5 +53,5 @@ Status: Draft
 - Provider call 시작 뒤 credential이 revoke된 ambiguous outcome은 자동 재호출하지 않되 이미 발생한 usage reconciliation은 같은 capability/attempt safe reference로 한 번만 처리한다.
 - Plaintext backfill과 key rotation은 batch size/max-batches를 지키고 concurrent worker가 `SKIP LOCKED`로 같은 row를 중복 처리하지 않으며 재실행해도 active row를 다시 쓰지 않는다.
 - Malformed row가 포함된 rotation batch는 전체 rollback되고 운영 출력에는 config, API key, ciphertext, key 또는 원본 예외가 없어야 한다.
-- Gateway와 Workflow Worker는 missing/invalid keyring 또는 active version 누락에서 시작을 거부하고, Log System deployment에는 LLM keyring이 주입되지 않는다.
+- Gateway, Workflow Worker와 Knowledge Worker는 missing/invalid keyring, active version 누락 또는 64자를 초과하는 active version에서 시작을 거부한다. Knowledge Worker는 init container와 Celery parent/child process에 같은 keyring을 주입받고, Log System deployment에는 LLM keyring이 주입되지 않는다.
 - Encrypted metadata row가 존재하면 schema downgrade는 metadata 유실 전에 fail-closed한다.

@@ -16,9 +16,9 @@ Status: Draft
 - `LlamaParseCredentialResolver`: document parsing 직전에 execution subject, active organization, `llamaparse` provider 호환성, valid 상태와 credential `use` 권한을 확인하고 단일 허용 credential의 parser 입력만 반환한다. FileProcessor는 ORM row나 저장 config를 직접 해석하지 않는다.
 - `AgentAnswerOptionProvider`: credential secret이나 전체 owner metadata를 반환하지 않고 standalone RAG answer flow용 safe option schema를 만든다.
 - `ProviderExecutionCapabilityIssuer`: 이 capability 계약의 authoritative owner다. Canonical runtime scope와 admission, server-derived credential principal, credential `use` decision revision, verified model relation, egress/pricing policy와 token·cost cap을 검증해 invocation/provider-attempt에 binding된 short-lived opaque capability identity/revision을 발급한다. Raw credential을 application/Memory에 반환하지 않는다.
-- `LLMCredentialConfigService`: canonical config JSON을 active key로 암호화하고 row metadata를 기준으로 encrypted/legacy read를 구분한다. 복호화, JSON/schema validation과 safe error normalization의 유일한 application 경계다.
-- `LLMCredentialRotationService`: legacy 평문과 non-active key row를 stable order와 `FOR UPDATE SKIP LOCKED` 제한 batch로 active key에 재암호화하고 남은 대상 수만 반환한다.
-- `LLMCredentialKeyringReadiness`: Gateway와 Workflow Worker 시작 시 keyring JSON, Fernet key와 active version을 검증한다.
+- `LLMCredentialConfigService`: canonical config JSON을 active key로 암호화하고 row metadata를 기준으로 encrypted/legacy read를 구분한다. active version은 공백이 아니고 `llm_credentials.encryption_key_version` 저장 길이인 최대 64자를 넘지 않아야 한다. 복호화, JSON/schema validation과 safe error normalization의 유일한 application 경계다.
+- `LLMCredentialRotationService`: legacy 평문과 non-active key row를 stable order와 `FOR UPDATE SKIP LOCKED` 제한 batch로 active key에 재암호화하고 남은 대상 수만 반환한다. 운영 명령은 migration·readiness 완료 뒤 Gateway image에서 실행하며 plaintext, ciphertext 또는 key를 출력하지 않는다.
+- `LLMCredentialKeyringReadiness`: Gateway, Workflow Worker와 Knowledge Worker 시작 시 keyring JSON, Fernet key와 active version을 검증한다. Celery Worker는 parent와 child process에서 모두 검증한다.
 
 ## 상태
 

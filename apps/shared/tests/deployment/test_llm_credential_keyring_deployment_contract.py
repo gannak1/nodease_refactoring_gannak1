@@ -7,10 +7,11 @@ def _read(relative_path: str) -> str:
     return (ROOT / relative_path).read_text(encoding="utf-8")
 
 
-def test_gateway_and_worker_receive_the_same_llm_credential_keyring_contract():
+def test_gateway_and_workers_receive_the_same_llm_credential_keyring_contract():
     deployment_files = [
         "infra/helm/moduly/templates/gateway-deployment.yaml",
         "infra/helm/moduly/templates/worker-deployment.yaml",
+        "infra/helm/moduly/templates/knowledge-worker-deployment.yaml",
         "infra/k8s/namespaces/default/gateway-deployment.yaml",
         "infra/k8s/namespaces/default/worker-deployment.yaml",
         "infra/k8s/namespaces/dev/gateway-deployment.yaml",
@@ -23,7 +24,7 @@ def test_gateway_and_worker_receive_the_same_llm_credential_keyring_contract():
         assert "LLM_CREDENTIAL_ACTIVE_KEY_VERSION" in content
 
 
-def test_local_compose_passes_llm_keyring_to_gateway_and_worker_only():
+def test_local_compose_passes_llm_keyring_to_gateway_and_all_consuming_workers():
     compose = _read("docker/docker-compose.yml")
     keyring_lines = [
         line
@@ -36,8 +37,23 @@ def test_local_compose_passes_llm_keyring_to_gateway_and_worker_only():
         if line.strip().startswith("LLM_CREDENTIAL_ACTIVE_KEY_VERSION:")
     ]
 
-    assert len(keyring_lines) == 2
-    assert len(active_version_lines) == 2
+    assert len(keyring_lines) == 3
+    assert len(active_version_lines) == 3
+
+
+def test_rotation_cli_is_packaged_in_gateway_image_and_documented_after_startup():
+    dockerfile = _read("docker/gateway/Dockerfile")
+    readme = _read("README.md")
+
+    assert (
+        "COPY scripts/rotate_llm_credentials.py "
+        "/app/scripts/rotate_llm_credentials.py" in dockerfile
+    )
+    assert readme.index("### LLM credential rotation") > readme.index("### 2. 실행")
+    assert "exec -T gateway" in readme
+    assert "python /app/scripts/rotate_llm_credentials.py --batch-size 100" in readme
+    assert "python /app/scripts/rotate_llm_credentials.py --check" in readme
+    assert "kubectl -n <namespace> exec deployment/<release>-gateway --" in readme
 
 
 def test_helm_secret_declares_llm_keyring_without_embedding_a_key_value():

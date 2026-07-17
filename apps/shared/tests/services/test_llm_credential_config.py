@@ -108,6 +108,23 @@ def test_llm_keyring_readiness_rejects_unknown_active_version(monkeypatch):
         require_llm_credential_keyring_ready()
 
 
+def test_llm_keyring_readiness_rejects_active_version_exceeding_storage_limit(
+    monkeypatch,
+):
+    key = Fernet.generate_key().decode("utf-8")
+    long_version = "v" * 65
+    monkeypatch.setenv(
+        "LLM_CREDENTIAL_ENCRYPTION_KEYS",
+        json.dumps({long_version: key}),
+    )
+    monkeypatch.setenv("LLM_CREDENTIAL_ACTIVE_KEY_VERSION", long_version)
+
+    with pytest.raises(LLMCredentialConfigError, match="keyring is invalid") as exc:
+        require_llm_credential_keyring_ready()
+
+    assert long_version not in str(exc.value)
+
+
 def test_llm_keyring_does_not_silently_fallback_when_only_v2_is_configured(
     monkeypatch,
 ):

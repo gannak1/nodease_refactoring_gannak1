@@ -30,12 +30,16 @@ from apps.shared.domain.knowledge_document_ingestion import (  # noqa: E402
     DEFAULT_HEARTBEAT_SECONDS,
     DEFAULT_LEASE_SECONDS,
 )
+from apps.shared.services.llm_credential_config import (  # noqa: E402
+    require_llm_credential_keyring_ready,
+)
 from apps.shared.services.knowledge_document_ingestion_schema_readiness import (  # noqa: E402
     require_knowledge_document_ingestion_ready,
 )
 
 
 def _require_readiness() -> None:
+    require_llm_credential_keyring_ready()
     require_knowledge_document_ingestion_ready(
         engine,
         lease_seconds=DEFAULT_LEASE_SECONDS,
@@ -53,6 +57,7 @@ class KnowledgeSchemaReadinessStep(bootsteps.StartStopStep):
 @worker_process_init.connect
 def initialize_knowledge_worker_process(**kwargs) -> None:
     engine.dispose()
+    require_llm_credential_keyring_ready()
 
 
 app = celery_app

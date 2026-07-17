@@ -49,6 +49,7 @@ COPY apps/shared /app/apps/shared
 COPY apps/gateway /app/apps/gateway
 COPY apps/workflow_engine /app/apps/workflow_engine
 COPY scripts/check_schedule_dispatch_rollback.py /app/scripts/check_schedule_dispatch_rollback.py
+COPY scripts/rotate_llm_credentials.py /app/scripts/rotate_llm_credentials.py
 
 # Entrypoint 스크립트 복사
 COPY docker/gateway/docker-entrypoint.sh /docker-entrypoint.sh

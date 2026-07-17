@@ -16,6 +16,7 @@ from apps.shared.services.credential_encryption import (
 LLM_CREDENTIAL_KEYRING_ENV = "LLM_CREDENTIAL_ENCRYPTION_KEYS"
 LLM_CREDENTIAL_ACTIVE_KEY_VERSION_ENV = "LLM_CREDENTIAL_ACTIVE_KEY_VERSION"
 LLM_CREDENTIAL_ALGORITHM = FERNET_ENCRYPTION_ALGORITHM
+LLM_CREDENTIAL_KEY_VERSION_MAX_LENGTH = 64
 
 
 class LLMCredentialConfigError(ValueError):
@@ -26,6 +27,15 @@ class LLMCredentialConfigService:
     """Single encryption and validation boundary for stored LLM config."""
 
     def __init__(self, encryption: CredentialEncryptionService):
+        active_key_version = encryption.active_key_version
+        if (
+            not isinstance(active_key_version, str)
+            or not active_key_version.strip()
+            or len(active_key_version) > LLM_CREDENTIAL_KEY_VERSION_MAX_LENGTH
+        ):
+            raise LLMCredentialConfigError(
+                "LLM credential encryption keyring is invalid."
+            )
         self._encryption = encryption
 
     @classmethod

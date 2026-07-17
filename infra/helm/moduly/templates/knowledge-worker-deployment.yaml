@@ -62,6 +62,22 @@ spec:
             secretKeyRef:
               name: {{ include "moduly.secretName" . }}
               key: DB_PASSWORD
+        {{- if .Values.secrets.encryptionKey }}
+        - name: ENCRYPTION_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "moduly.secretName" . }}
+              key: ENCRYPTION_KEY
+        {{- end }}
+        {{- if .Values.secrets.llmCredentialEncryptionKeys }}
+        - name: LLM_CREDENTIAL_ENCRYPTION_KEYS
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "moduly.secretName" . }}
+              key: LLM_CREDENTIAL_ENCRYPTION_KEYS
+        - name: LLM_CREDENTIAL_ACTIVE_KEY_VERSION
+          value: {{ .Values.secrets.llmCredentialActiveKeyVersion | default "v1" | quote }}
+        {{- end }}
       containers:
       - name: knowledge-worker
         image: "{{ default .Values.gateway.image.repository .Values.knowledgeWorker.image.repository }}:{{ default (.Values.gateway.image.tag | default .Chart.AppVersion) .Values.knowledgeWorker.image.tag }}"
@@ -179,6 +195,15 @@ spec:
             secretKeyRef:
               name: {{ include "moduly.secretName" . }}
               key: ENCRYPTION_KEY
+        {{- end }}
+        {{- if .Values.secrets.llmCredentialEncryptionKeys }}
+        - name: LLM_CREDENTIAL_ENCRYPTION_KEYS
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "moduly.secretName" . }}
+              key: LLM_CREDENTIAL_ENCRYPTION_KEYS
+        - name: LLM_CREDENTIAL_ACTIVE_KEY_VERSION
+          value: {{ .Values.secrets.llmCredentialActiveKeyVersion | default "v1" | quote }}
         {{- end }}
         resources:
           {{- toYaml .Values.knowledgeWorker.resources | nindent 10 }}

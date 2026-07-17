@@ -32,7 +32,7 @@ Password login abuse prevention은 [ADR-0047](decisions/ADR-0047-password-login-
 
 Security Alert MVP는 [ADR-0028](decisions/ADR-0028-security-alert-detection-and-lifecycle.md)의 architecture를 따른다. MBA-223의 audit normalization, MBA-211의 alert/evidence 영속 모델·lifecycle service, MBA-212의 실시간 detector와 PostgreSQL watermark 기반 reconciler, MBA-213의 관리자 API, MBA-214의 notification/client 표면이 구현됐다. Reconciliation은 Celery Beat에 60초 주기로 등록되고 한 실행에서 최대 100건을 처리하며, 로컬 개발 스크립트, Docker Compose와 Helm chart가 Worker와 분리된 singleton Beat 프로세스를 실행한다.
 
-LLM credential 저장 암호화는 [ADR-0055](decisions/ADR-0055-llm-credential-at-rest-encryption-and-rotation.md)를 따른다. Shared config service가 versioned envelope의 encrypt/decrypt와 legacy 판정을 단독 소유하고 Gateway, Workflow Engine, RAG answer, embedding과 parser는 ORM ciphertext를 직접 해석하지 않는다. Gateway와 Workflow Worker는 동일 keyring을 시작 시 검증하며 평문 backfill과 key rotation은 application 요청과 분리된 제한 batch 운영 경로가 수행한다.
+LLM credential 저장 암호화는 [ADR-0055](decisions/ADR-0055-llm-credential-at-rest-encryption-and-rotation.md)를 따른다. Shared config service가 versioned envelope의 encrypt/decrypt와 legacy 판정을 단독 소유하고 Gateway, Workflow Engine, RAG answer, embedding과 parser는 ORM ciphertext를 직접 해석하지 않는다. Gateway, Workflow Worker와 Knowledge Worker는 동일 keyring을 시작 시 검증하며 평문 backfill과 key rotation은 application 요청과 분리된 제한 batch 운영 경로가 수행한다.
 
 | 구성요소 | 위치 | 책임 |
 | --- | --- | --- |

@@ -195,14 +195,7 @@ Mail credential은 다음 중 한 방식으로 구성합니다.
 - 호환 방식: `MAIL_CREDENTIAL_ENCRYPTION_KEYS`를 비워 두면 위 `ENCRYPTION_KEY`를 `v1` key로 사용합니다.
 - Versioned 방식: 별도 Fernet key를 생성해 `MAIL_CREDENTIAL_ENCRYPTION_KEYS={"v1":"<Mail-Fernet-key>"}`와 `MAIL_CREDENTIAL_ACTIVE_KEY_VERSION=v1`을 설정합니다. Rotation 중에는 기존 row를 복호화할 구 key도 JSON에 유지하고 Gateway와 Workflow Worker에 동일한 keyring을 주입합니다.
 
-LLM credential도 같은 방식으로 구성하되 `LLM_CREDENTIAL_ENCRYPTION_KEYS`와 `LLM_CREDENTIAL_ACTIVE_KEY_VERSION`을 사용합니다. Schema upgrade와 새 Gateway/Worker 배포 뒤 기존 평문 또는 구키 row는 제한 batch로 전환합니다.
-
-```bash
-python -m scripts.rotate_llm_credentials --batch-size 100 --max-batches 10
-python -m scripts.rotate_llm_credentials --check
-```
-
-Rotation은 구키와 신키를 함께 배포한 뒤 active version을 전환하고, `--check`가 pending 0을 반환한 후에만 구키를 제거합니다. 명령 출력에는 credential config, ciphertext 또는 key가 포함되지 않습니다.
+LLM credential도 같은 방식으로 구성하되 `LLM_CREDENTIAL_ENCRYPTION_KEYS`와 `LLM_CREDENTIAL_ACTIVE_KEY_VERSION`을 사용합니다. Schema upgrade와 새 Gateway, Workflow Worker, Knowledge Worker 배포 뒤 기존 평문 또는 구키 row는 제한 batch로 전환합니다.
 
 ### 2. 실행
 
@@ -232,6 +225,33 @@ docker compose \
 ```
 
 Docker Gateway entrypoint는 시작 전에 Alembic migration을 `heads`까지 적용합니다. 첫 기동에서 Gateway와 worker를 동시에 시작하면 worker의 schema readiness 검사가 migration보다 먼저 실행될 수 있으므로 위 순서를 유지합니다.
+
+### LLM credential rotation (기존 credential이 있는 경우)
+
+Schema upgrade와 새 keyring을 받은 Gateway/Worker 배포가 완료된 뒤에만, Gateway container에서 제한 batch rotation을 실행합니다.
+
+```bash
+docker compose \
+  --env-file docker/.env \
+  -f docker/docker-compose.yml \
+  exec -T gateway \
+  python /app/scripts/rotate_llm_credentials.py --batch-size 100 --max-batches 10
+
+docker compose \
+  --env-file docker/.env \
+  -f docker/docker-compose.yml \
+  exec -T gateway \
+  python /app/scripts/rotate_llm_credentials.py --check
+```
+
+Helm 환경도 migration과 Gateway readiness가 완료된 뒤 같은 Gateway image의 `/app/scripts/rotate_llm_credentials.py`를 단일 운영 명령으로 실행합니다.
+
+```bash
+kubectl -n <namespace> exec deployment/<release>-gateway -- \
+  python /app/scripts/rotate_llm_credentials.py --batch-size 100 --max-batches 10
+```
+
+`--check`가 pending 0을 확인한 뒤에만 구키를 제거합니다. 명령 출력에는 credential config, ciphertext 또는 key가 포함되지 않습니다.
 
 > [!IMPORTANT]
 > `docker/.env.example`은 안전을 위해 `SCHEDULE_DISPATCH_MODE=disabled`를 기본값으로 사용합니다. 이 상태에서는 Schedule node를 편집·배포할 수 있어도 신규 schedule claim과 dispatch는 실행되지 않습니다. `claim` 활성화는 Gateway와 Workflow Worker의 동일 설정, migration/readiness, rollback을 함께 맞추는 coordinated rollout이므로 [Deployment 요구사항](./docs/features/deployment/requirements.md)을 확인한 뒤 적용합니다.

@@ -12,12 +12,12 @@ Related ADRs: ADR-0022, ADR-0031
 
 ## 결정
 
-1. LLM credential config는 application-managed versioned Fernet envelope로 저장한다. `LLM_CREDENTIAL_ENCRYPTION_KEYS` JSON object와 `LLM_CREDENTIAL_ACTIVE_KEY_VERSION`이 LLM keyring의 authoritative 설정이다. 전용 keyring과 active version이 모두 미설정이거나 active version이 `v1`인 호환 상태에서만 기존 `ENCRYPTION_KEY`를 `v1` key로 사용한다. Keyring 없이 다른 active version만 설정된 부분 구성은 시작을 거부한다.
+1. LLM credential config는 application-managed versioned Fernet envelope로 저장한다. `LLM_CREDENTIAL_ENCRYPTION_KEYS` JSON object와 `LLM_CREDENTIAL_ACTIVE_KEY_VERSION`이 LLM keyring의 authoritative 설정이다. Active version은 공백이 아닌 최대 64자로 제한한다. 전용 keyring과 active version이 모두 미설정이거나 active version이 `v1`인 호환 상태에서만 기존 `ENCRYPTION_KEY`를 `v1` key로 사용한다. Keyring 없이 다른 active version만 설정된 부분 구성은 시작을 거부한다.
 2. `llm_credentials`에 nullable `encryption_key_version`, `encryption_algorithm`을 추가하고 두 값은 모두 null이거나 모두 non-null이어야 한다. `encrypted_config`는 계속 ciphertext 본문을 저장한다. 현재 algorithm은 `fernet-v1`이다.
 3. 전환은 dual-read/single-write로 수행한다. 신규·갱신 쓰기는 항상 active key로 암호화한다. 두 metadata가 모두 null인 기존 row만 legacy 평문 JSON으로 읽는다. metadata 일부 누락, unsupported algorithm, unknown key version, 손상 ciphertext 또는 복호화 뒤 invalid config에는 평문 fallback을 하지 않고 provider 호출 전에 fail-closed한다.
 4. Shared `LLMCredentialConfigService`가 config 직렬화, 암호화, envelope 판정, 복호화와 schema validation의 단일 경계다. Gateway, Workflow Engine, RAG answer, embedding, parser와 seed 경로는 ORM의 `encrypted_config`를 직접 해석하지 않는다.
 5. Alembic upgrade는 metadata 컬럼·pair constraint·key version index만 추가하고 application key를 읽거나 row를 변환하지 않는다. 평문 backfill과 구키 rotation은 별도 운영 명령이 stable order, 제한 batch, `FOR UPDATE SKIP LOCKED`와 batch transaction으로 수행한다.
-6. Gateway와 Workflow Worker parent/child process는 요청 또는 task 소비 전에 keyring 형식, key material과 active version을 검증한다. 둘은 같은 keyring을 받아야 한다. LLM credential을 사용하지 않는 Log System, Client와 Sandbox에는 keyring을 주입하지 않는다.
+6. Gateway는 요청 처리 전에, Workflow Worker와 Knowledge Worker의 parent/child process는 task 소비 전에 keyring 형식, key material과 active version을 검증한다. 세 process는 같은 keyring을 받아야 한다. Knowledge Worker의 migration readiness init container도 같은 검증을 수행한다. LLM credential을 사용하지 않는 Log System, Client와 Sandbox에는 keyring을 주입하지 않는다.
 7. Rotation은 구키와 신키를 모두 포함한 keyring 배포, 양 process의 구키 복호화 가능 확인, active version 전환, 신규 ciphertext 확인, 제한 batch 재암호화, 구키 참조 row 0 확인, 구키 제거 순서로 수행한다. 이전 version row가 남아 있으면 구키를 제거하지 않는다.
 8. encrypted metadata가 있는 row가 생성된 뒤 metadata 컬럼만 제거하면 ciphertext를 legacy 평문으로 오인한다. 따라서 encrypted row가 존재하는 schema downgrade는 fail-closed하며, 평문 복구를 자동 수행하지 않는다.
 9. Credential 저장·복호화·등록 검증·rotation 경로의 config 평문, ciphertext, Fernet key, provider 검증 raw payload와 원본 복호화 예외는 API, audit, trace, log, exception, fixture, migration 또는 rotation 출력에 남기지 않는다. 운영 출력은 safe 상태와 count만 제공한다. 일반 LLM invocation 오류 계약은 이 ADR의 범위가 아니다.
