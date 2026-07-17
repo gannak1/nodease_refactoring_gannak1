@@ -1,11 +1,16 @@
 import gzip
 import json
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from apps.shared.db import demo_seed
+from apps.shared.domain.app_auth_secret import (
+    APP_AUTH_SECRET_VERIFIER_VERSION,
+    app_auth_secret_verifier,
+)
 from scripts import seed_demo as seed_demo_script
 
 
@@ -216,6 +221,40 @@ def test_legacy_demo_documents_have_distinct_knowledge_base_keys():
     assert mapping["hr_leave"] == "hr"
     assert mapping["hr_welfare"] == "hr_welfare"
     assert all(kb_key in demo_seed.KB_IDS for kb_key in mapping.values())
+
+
+def test_demo_upsert_preserves_valid_rotated_app_secret_state_without_reset():
+    now = datetime(2026, 7, 18, tzinfo=timezone.utc)
+    existing = SimpleNamespace(
+        auth_secret="legacy-raw-value",
+        auth_secret_verifier=app_auth_secret_verifier("current-value"),
+        auth_secret_verifier_version=APP_AUTH_SECRET_VERIFIER_VERSION,
+        auth_secret_generation=4,
+        auth_secret_previous_verifier=app_auth_secret_verifier("previous-value"),
+        auth_secret_previous_verifier_version=APP_AUTH_SECRET_VERIFIER_VERSION,
+        auth_secret_previous_valid_until=now + timedelta(minutes=5),
+        auth_secret_rotated_at=now,
+    )
+    seed_values = {
+        "name": "데모 App",
+        "auth_secret": None,
+        "auth_secret_verifier": app_auth_secret_verifier("seed-value"),
+        "auth_secret_verifier_version": APP_AUTH_SECRET_VERIFIER_VERSION,
+        "auth_secret_generation": 1,
+        "auth_secret_previous_verifier": None,
+        "auth_secret_previous_verifier_version": None,
+        "auth_secret_previous_valid_until": None,
+        "auth_secret_rotated_at": now,
+    }
+
+    values = demo_seed._app_seed_values(existing, seed_values)
+
+    assert values["name"] == "데모 App"
+    assert values["auth_secret"] is None
+    assert all(
+        field not in values for field in demo_seed._MANAGED_APP_SECRET_STATE_FIELDS
+    )
+    assert demo_seed._app_seed_values(None, seed_values) == seed_values
 
 
 def test_hr_policy_collection_references_precomputed_indexed_kbs():

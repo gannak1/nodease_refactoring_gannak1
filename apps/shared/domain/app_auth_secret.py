@@ -8,6 +8,7 @@ APP_AUTH_SECRET_VERIFIER_VERSION = 1
 APP_AUTH_SECRET_MIN_BYTES = 1
 APP_AUTH_SECRET_MAX_BYTES = 512
 APP_AUTH_SECRET_TOKEN_BYTES = 32
+APP_AUTH_SECRET_PREFIX = "nodease_app_"
 
 _VERIFIER_DOMAIN = b"nodease.app-auth-secret.v1\x00"
 
@@ -17,9 +18,9 @@ class AppAuthSecretCandidateInvalid(ValueError):
 
 
 def generate_app_auth_secret() -> str:
-    """Generate a URL-safe bearer token with 256 bits of entropy."""
+    """Generate a redaction-recognizable bearer token with 256 bits of entropy."""
 
-    return secrets.token_urlsafe(APP_AUTH_SECRET_TOKEN_BYTES)
+    return APP_AUTH_SECRET_PREFIX + secrets.token_urlsafe(APP_AUTH_SECRET_TOKEN_BYTES)
 
 
 def app_auth_secret_verifier(
@@ -183,6 +184,7 @@ def _previous_state_is_valid(
 __all__ = [
     "APP_AUTH_SECRET_MAX_BYTES",
     "APP_AUTH_SECRET_MIN_BYTES",
+    "APP_AUTH_SECRET_PREFIX",
     "APP_AUTH_SECRET_VERIFIER_VERSION",
     "AppAuthSecretCandidateInvalid",
     "app_auth_secret_previous_is_active",

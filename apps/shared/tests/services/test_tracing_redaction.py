@@ -1,3 +1,7 @@
+from apps.shared.domain.app_auth_secret import (
+    APP_AUTH_SECRET_PREFIX,
+    generate_app_auth_secret,
+)
 from apps.shared.services.tracing.policy import ResolvedRedactionPolicy
 from apps.shared.services.tracing.redaction import TraceRedactionService
 
@@ -135,3 +139,20 @@ def test_known_provider_credential_prefixes_are_redacted_from_free_text():
 
     assert result.secret_detected is True
     assert all(secret not in result.redacted_payload for secret in secrets)
+
+
+def test_generated_app_secret_is_redacted_from_an_ordinary_free_text_field():
+    secret = f"{APP_AUTH_SECRET_PREFIX}{'a' * 42}-"
+
+    result = TraceRedactionService.redact_payload(
+        {"note": f"connector echoed {secret}"},
+        ResolvedRedactionPolicy(),
+    )
+
+    assert result.secret_detected is True
+    assert secret not in str(result.redacted_payload)
+    assert result.redacted_payload["note"] == "connector echoed [REDACTED]"
+
+
+def test_generated_app_secret_uses_the_redaction_recognizable_marker():
+    assert generate_app_auth_secret().startswith(APP_AUTH_SECRET_PREFIX)

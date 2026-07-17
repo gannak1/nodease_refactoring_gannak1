@@ -42,6 +42,7 @@ from apps.shared.domain.deployment_runtime_policy import (
     DeploymentRuntimePolicy,
     is_deployment_type_allowed_for_surface,
 )
+from apps.shared.domain.app_auth_secret import APP_AUTH_SECRET_PREFIX
 from apps.shared.db.session import get_db
 from apps.shared.services.workflow_task_publisher import send_workflow_task
 
@@ -69,6 +70,9 @@ _SECRET_VALUE_PATTERNS = [
     re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{20,}\b"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
     re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b"),
+    re.compile(
+        rf"(?<![A-Za-z0-9_-]){re.escape(APP_AUTH_SECRET_PREFIX)}[A-Za-z0-9_-]{{32,}}(?![A-Za-z0-9_-])"
+    ),
     re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
     re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"),
 ]

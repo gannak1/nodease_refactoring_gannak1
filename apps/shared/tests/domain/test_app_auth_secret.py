@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from apps.shared.domain.app_auth_secret import (
+    APP_AUTH_SECRET_PREFIX,
     APP_AUTH_SECRET_VERIFIER_VERSION,
     AppAuthSecretCandidateInvalid,
     app_auth_secret_verifier,
@@ -16,6 +17,7 @@ def test_generated_secret_is_unique_bounded_ascii_with_256_bit_entropy_source():
 
     assert len(secrets) == 16
     assert all(1 <= len(value.encode("ascii")) <= 512 for value in secrets)
+    assert all(value.startswith(APP_AUTH_SECRET_PREFIX) for value in secrets)
 
 
 def test_verifier_is_stable_fixed_length_and_not_the_candidate():

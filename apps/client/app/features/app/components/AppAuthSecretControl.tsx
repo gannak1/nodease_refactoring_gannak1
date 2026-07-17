@@ -105,10 +105,11 @@ export function AppAuthSecretControl({
 
   const rotateSecret = async () => {
     if (!status || rotating) return;
+    const requestedVersion = status.version;
     setRotating(true);
     try {
       const result = await appApi.rotateAuthSecret(appId, {
-        expected_version: status.version,
+        expected_version: requestedVersion,
         revoke_previous_immediately: revokeImmediately,
       });
       const nextStatus: AppAuthSecretStatus = {
@@ -132,6 +133,11 @@ export function AppAuthSecretControl({
         setStatus(nextStatus);
         setUnavailable(false);
         onReadinessChange?.(readinessOf(nextStatus));
+        if (nextStatus.version !== requestedVersion) {
+          updateIssuedSecret(null);
+          setShowSecret(false);
+          setConfirming(false);
+        }
       } catch {
         setUnavailable(true);
         onReadinessChange?.('status_unavailable');

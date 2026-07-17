@@ -23,9 +23,11 @@ export function SuccessStep({
   onSecretAvailable,
   onClose,
 }: SuccessStepProps) {
-  const [inputValues, setInputValues] = useState<Record<string, any>>({});
+  const [inputValues, setInputValues] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(false);
   const [testResponse, setTestResponse] = useState<string | null>(null);
+  const [sessionTestSecret, setSessionTestSecret] = useState('');
+  const testAuthSecret = issuedSecret ?? sessionTestSecret;
 
   const handleCopy = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -80,6 +82,7 @@ ${authHeader}  -d '{
 
   // Handle test execution
   const handleTestExecute = async () => {
+    if (!testAuthSecret) return;
     setIsLoading(true);
     setTestResponse(null);
 
@@ -87,9 +90,7 @@ ${authHeader}  -d '{
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
       };
-      if (issuedSecret) {
-        headers['Authorization'] = `Bearer ${issuedSecret}`;
-      }
+      headers['Authorization'] = `Bearer ${testAuthSecret}`;
 
       const response = await fetch(`/api/v1/run/${result.url_slug}`, {
         method: 'POST',
@@ -106,8 +107,9 @@ ${authHeader}  -d '{
       } else {
         toast.error('API 호출 오류', { duration: 1500 });
       }
-    } catch (error: any) {
-      setTestResponse(JSON.stringify({ error: error.message }, null, 2));
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      setTestResponse(JSON.stringify({ error: message }, null, 2));
       toast.error('테스트 실행 실패', { duration: 1500 });
     } finally {
       setIsLoading(false);
@@ -494,21 +496,43 @@ ${authHeader}  -d '{
                   </div>
                 </div>
 
+                {!issuedSecret && (
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-1">
+                      테스트용 기존 App secret
+                    </label>
+                    <input
+                      type="password"
+                      value={sessionTestSecret}
+                      onChange={(event) =>
+                        setSessionTestSecret(event.target.value)
+                      }
+                      autoComplete="off"
+                      aria-label="테스트용 기존 App secret"
+                      placeholder="이 화면에서만 사용"
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 font-mono text-sm text-gray-700 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                    <p className="mt-1 text-xs text-gray-500">
+                      입력값은 브라우저 저장소에 저장하지 않습니다.
+                    </p>
+                  </div>
+                )}
+
                 {/* Test Execution Button */}
                 <button
                   onClick={handleTestExecute}
-                  disabled={isLoading || !issuedSecret}
+                  disabled={isLoading || !testAuthSecret}
                   className={`w-full py-3 rounded-lg font-semibold text-white transition-colors ${
-                    isLoading || !issuedSecret
+                    isLoading || !testAuthSecret
                       ? 'bg-gray-400 cursor-not-allowed'
                       : 'bg-blue-600 hover:bg-blue-700'
                   }`}
                 >
                   {isLoading
                     ? '실행 중...'
-                    : issuedSecret
+                    : testAuthSecret
                       ? '테스트 실행'
-                      : 'Secret 발급 후 테스트'}
+                      : 'Secret 입력 후 테스트'}
                 </button>
 
                 {/* Response Result */}

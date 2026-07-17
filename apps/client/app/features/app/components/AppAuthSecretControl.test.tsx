@@ -43,14 +43,23 @@ describe('AppAuthSecretControl', () => {
     const storageWrite = vi.spyOn(Storage.prototype, 'setItem');
     const onSecretAvailable = vi.fn();
     const onReadinessChange = vi.fn();
-    mockedAppApi.getAuthSecretStatus.mockResolvedValue({
-      configured: false,
-      version: 0,
-      rotation_enabled: true,
-      rotated_at: null,
-      previous_grace_active: false,
-      previous_valid_until: null,
-    });
+    mockedAppApi.getAuthSecretStatus
+      .mockResolvedValueOnce({
+        configured: false,
+        version: 0,
+        rotation_enabled: true,
+        rotated_at: null,
+        previous_grace_active: false,
+        previous_valid_until: null,
+      })
+      .mockResolvedValueOnce({
+        configured: true,
+        version: 1,
+        rotation_enabled: true,
+        rotated_at: '2026-07-17T03:00:00Z',
+        previous_grace_active: false,
+        previous_valid_until: null,
+      });
     mockedAppApi.rotateAuthSecret.mockResolvedValue({
       secret: 'one-time-secret',
       version: 1,
@@ -189,6 +198,56 @@ describe('AppAuthSecretControl', () => {
     );
     expect(mockedAppApi.rotateAuthSecret).toHaveBeenCalledTimes(1);
     expect(screen.queryByLabelText('새 App secret')).not.toBeInTheDocument();
+  });
+
+  it('clears a displayed one-time secret when status proves a rotation response was lost', async () => {
+    const onSecretAvailable = vi.fn();
+    mockedAppApi.getAuthSecretStatus
+      .mockResolvedValueOnce({
+        configured: false,
+        version: 0,
+        rotation_enabled: true,
+        rotated_at: null,
+        previous_grace_active: false,
+        previous_valid_until: null,
+      })
+      .mockResolvedValueOnce({
+        configured: true,
+        version: 2,
+        rotation_enabled: true,
+        rotated_at: '2026-07-17T04:00:00Z',
+        previous_grace_active: true,
+        previous_valid_until: '2026-07-17T04:05:00Z',
+      });
+    mockedAppApi.rotateAuthSecret
+      .mockResolvedValueOnce({
+        secret: 'one-time-secret',
+        version: 1,
+        rotated_at: '2026-07-17T03:00:00Z',
+        previous_grace_active: false,
+        previous_valid_until: null,
+      })
+      .mockRejectedValueOnce(new Error('response lost'));
+
+    render(
+      <AppAuthSecretControl
+        appId="app-1"
+        onSecretAvailable={onSecretAvailable}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: '발급' }));
+    fireEvent.click(screen.getByRole('button', { name: '발급 확인' }));
+    expect(await screen.findByDisplayValue('one-time-secret')).toBeVisible();
+
+    fireEvent.click(screen.getByRole('button', { name: '교체' }));
+    fireEvent.click(screen.getByRole('button', { name: '교체 확인' }));
+
+    await waitFor(() =>
+      expect(mockedAppApi.getAuthSecretStatus).toHaveBeenCalledTimes(2),
+    );
+    expect(screen.queryByDisplayValue('one-time-secret')).not.toBeInTheDocument();
+    expect(onSecretAvailable).toHaveBeenLastCalledWith(null);
   });
 
   it('keeps issuance unavailable while the Gateway rollout gate is disabled', async () => {

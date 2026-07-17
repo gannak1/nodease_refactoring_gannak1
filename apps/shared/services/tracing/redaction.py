@@ -3,6 +3,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from apps.shared.domain.app_auth_secret import APP_AUTH_SECRET_PREFIX
 from apps.shared.services.tracing.policy import ResolvedRedactionPolicy
 
 DEFAULT_REPLACEMENT = "[REDACTED]"
@@ -71,6 +72,12 @@ SECRET_VALUE_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("aws_access_key", re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")),
     ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
     ("slack_token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{8,}\b")),
+    (
+        "app_auth_secret",
+        re.compile(
+            rf"(?<![A-Za-z0-9_-]){re.escape(APP_AUTH_SECRET_PREFIX)}[A-Za-z0-9_-]{{32,}}(?![A-Za-z0-9_-])"
+        ),
+    ),
     (
         "private_key",
         re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.S),

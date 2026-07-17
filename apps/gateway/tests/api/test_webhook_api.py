@@ -18,6 +18,7 @@ from apps.gateway.main import app
 from apps.shared.db.session import get_db
 from apps.shared.db.models.workflow_deployment import DeploymentType
 from apps.shared.domain.app_auth_secret import (
+    APP_AUTH_SECRET_PREFIX,
     APP_AUTH_SECRET_VERIFIER_VERSION,
     app_auth_secret_verifier,
 )
@@ -327,6 +328,16 @@ class TestWebhookApi(unittest.TestCase):
             webhook_endpoint._redact_capture_payload("xoxb-" + "1" * 12),
             "[REDACTED: sensitive value]",
         )
+
+    def test_capture_preview_redacts_generated_app_secret_in_an_ordinary_field(self):
+        secret = f"{APP_AUTH_SECRET_PREFIX}{'a' * 42}-"
+
+        preview = webhook_endpoint._redact_capture_payload(
+            {"message": f"connector echoed {secret}"}
+        )
+
+        self.assertEqual(preview["message"], "connector echoed [REDACTED: sensitive value]")
+        self.assertNotIn(secret, str(preview))
 
     def test_capture_start_requires_login(self):
         start_signature = inspect.signature(webhook_endpoint.start_capture)

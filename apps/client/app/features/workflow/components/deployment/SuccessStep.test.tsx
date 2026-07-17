@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SuccessStep } from './SuccessStep';
@@ -31,6 +37,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   vi.clearAllMocks();
 });
 
@@ -85,6 +92,53 @@ describe('SuccessStep', () => {
     expect(screen.getByRole('status')).toHaveTextContent(
       '실행 시 지식 후보가 제한될 수 있습니다.',
     );
+  });
+
+  it('uses an existing App secret only in component memory for REST testing', async () => {
+    const storageWrite = vi.spyOn(Storage.prototype, 'setItem');
+    const sessionSecret = `test-${Math.random().toString(36).slice(2)}`;
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ status: 'ok' }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <SuccessStep
+        {...secretProps}
+        deploymentType="api"
+        onClose={vi.fn()}
+        result={{
+          success: true,
+          appId: 'app-1',
+          version: 1,
+          url_slug: 'existing-app',
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByRole('button', { name: 'Secret 입력 후 테스트' }),
+    ).toBeDisabled();
+    fireEvent.change(
+      screen.getByLabelText('테스트용 기존 App secret'),
+      { target: { value: sessionSecret } },
+    );
+    fireEvent.click(screen.getByRole('button', { name: '테스트 실행' }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith('/api/v1/run/existing-app', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${sessionSecret}`,
+        },
+        credentials: 'include',
+        body: JSON.stringify({ inputs: {} }),
+      }),
+    );
+    expect(storageWrite).not.toHaveBeenCalled();
+    storageWrite.mockRestore();
   });
 
   it('public chatbot shows only the anonymous public link', () => {
