@@ -401,6 +401,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - user message 제출 직후 pending message가 보이도록 scroll한다.
 - assistant result와 active task가 추가되면 최신 content로 이동한다.
 - 사용자가 과거 message를 읽는 중에는 불필요한 강제 scroll을 하지 않는다.
+- panel은 mobile viewport에서 좌우 여백 안의 전체 너비를 유지하고 desktop viewport에서 화면 너비의 50%를 사용한다. 높이는 고정 최대값 없이 viewport에 맞춰 editor 상단 영역까지 확장하고 launcher는 하단 Flow 설정 island와 같은 control row에 정렬한다.
 
 ### DBP-TC-F007 Knowledge Selection
 

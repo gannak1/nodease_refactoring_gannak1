@@ -244,7 +244,7 @@ describe('AgentBuilderPanel', () => {
     expect(screen.getByText('Agent Builder')).toBeInTheDocument();
   });
 
-  it('mobile 폭에서 panel을 viewport 안에 두고 card/control shortcut을 canvas로 보내지 않는다', async () => {
+  it('mobile에서는 viewport 안에 두고 desktop에서는 화면 절반 너비로 표시한다', async () => {
     const canvasShortcut = vi.fn();
     window.addEventListener('keydown', canvasShortcut);
     try {
@@ -264,7 +264,9 @@ describe('AgentBuilderPanel', () => {
       });
       const panel = screen.getByText('Agent Builder').closest('section');
       expect(panel?.className).toContain('w-full');
-      expect(panel?.className).toContain('sm:w-[380px]');
+      expect(panel?.className).toContain('sm:w-[50vw]');
+      expect(panel?.className).toContain('h-[calc(100dvh-7.75rem)]');
+      expect(panel?.parentElement?.className).toContain('bottom-5');
 
       const button = screen.getByLabelText('Agent Builder 최소화');
       const shortcut = new KeyboardEvent('keydown', {
