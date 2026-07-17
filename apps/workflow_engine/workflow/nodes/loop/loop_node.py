@@ -213,25 +213,23 @@ class LoopNode(Node[LoopNodeData]):
         from apps.workflow_engine.workflow.core.workflow_engine import WorkflowEngine
 
         control = self._runtime_control
-        execution_id = control.execution_id if control is not None else None
-        invocation_path_prefix = None
-        if control is not None:
-            invocation_path_prefix = control.invocation_path_prefix + (
-                InvocationSegment("loop", self.id, str(iteration_index)),
-            )
-        engine = WorkflowEngine(
+        engine = WorkflowEngine.create_child(
             graph={
                 "nodes": self.data.subGraph["nodes"],
                 "edges": self.data.subGraph.get("edges", []),
             },
             user_input=context,
-            execution_context=self.execution_context.copy(),
+            execution_context=self.execution_context,
+            runtime_control=control,
+            invocation_segment=InvocationSegment(
+                "loop",
+                self.id,
+                str(iteration_index),
+            ),
             is_deployed=False,
             db=self.execution_context.get("db"),
             workflow_timeout=300,
             entry_node_id=entry_node_id,
-            execution_id=execution_id,
-            invocation_path_prefix=invocation_path_prefix,
             workflow_node_bindings=(
                 control.workflow_node_bindings if control is not None else None
             ),
@@ -240,7 +238,6 @@ class LoopNode(Node[LoopNodeData]):
                 if control is not None
                 else ()
             ),
-            task_deadline=control.task_deadline if control is not None else None,
         )
         self._subgraph_engine = engine
         try:

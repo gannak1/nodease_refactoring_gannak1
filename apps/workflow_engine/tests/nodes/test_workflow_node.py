@@ -155,14 +155,16 @@ def test_bound_workflow_node_keeps_original_deployment_after_active_change() -> 
     with patch(
         "apps.workflow_engine.workflow.core.workflow_engine.WorkflowEngine"
     ) as engine_type:
-        engine_type.return_value.execute.return_value = {"answer": "bound"}
-        engine_type.return_value.cleanup = Mock()
+        child_engine = engine_type.create_child.return_value
+        child_engine.execute.return_value = {"answer": "bound"}
+        child_engine.cleanup = Mock()
 
         result = node.execute({}, runtime_control=control)
 
     assert result == {"result": {"answer": "bound"}}
-    assert engine_type.call_args.args[0] == bound_graph
-    assert engine_type.call_args.args[0] != active_graph
+    assert engine_type.create_child.call_args.args[0] == bound_graph
+    assert engine_type.create_child.call_args.args[0] != active_graph
+    assert engine_type.create_child.call_args.kwargs["runtime_control"] is control
 
 
 def test_bound_workflow_node_respects_broken_active_pointer_kill_switch() -> None:
@@ -265,7 +267,7 @@ def test_workflow_node_execution_with_input_mapping():
     with patch(
         "apps.workflow_engine.workflow.core.workflow_engine.WorkflowEngine"
     ) as MockEngine:
-        mock_engine_instance = MockEngine.return_value
+        mock_engine_instance = MockEngine.create_child.return_value
         mock_engine_instance.execute = Mock(
             return_value={
                 "answer": "처리 완료",
@@ -301,10 +303,9 @@ def test_workflow_node_execution_with_input_mapping():
             "is_active": True,
         }
 
-        # 2. WorkflowEngine이 올바른 인자로 초기화되었는지 확인
-        # WorkflowEngine is called with positional args: (graph, sub_workflow_inputs, ...)
-        MockEngine.assert_called_once()
-        call_args = MockEngine.call_args
+        # 2. Child WorkflowEngine이 올바른 인자로 초기화되었는지 확인
+        MockEngine.create_child.assert_called_once()
+        call_args = MockEngine.create_child.call_args
 
         # First positional arg is the graph
         assert call_args[0][0] == mock_deployment.graph_snapshot
@@ -312,6 +313,10 @@ def test_workflow_node_execution_with_input_mapping():
         assert call_args[0][1] == {"input_text": "Hello World", "language": "en"}
         # Keyword arg is_deployed should be True
         assert call_args[1]["is_deployed"] is True
+        invocation_segment = call_args[1]["invocation_segment"]
+        assert invocation_segment.kind == "subworkflow"
+        assert invocation_segment.node_id == "wf-node-1"
+        assert invocation_segment.scope == "deploy-1"
         sub_context = call_args[1]["execution_context"]
         assert sub_context["workflow_node_depth"] == 1
         assert set(sub_context["workflow_node_visited_app_ids"]) == {
@@ -605,7 +610,7 @@ def test_workflow_node_nested_value_extraction():
     with patch(
         "apps.workflow_engine.workflow.core.workflow_engine.WorkflowEngine"
     ) as MockEngine:
-        mock_engine_instance = MockEngine.return_value
+        mock_engine_instance = MockEngine.create_child.return_value
         mock_engine_instance.execute = Mock(return_value={"result": "OK"})
         mock_engine_instance.cleanup = Mock()
 
@@ -618,7 +623,7 @@ def test_workflow_node_nested_value_extraction():
         node.execute(inputs)
 
         # Then - check positional args (graph, user_input)
-        call_args = MockEngine.call_args
+        call_args = MockEngine.create_child.call_args
         sub_workflow_inputs = call_args[0][1]  # Second positional arg
         assert sub_workflow_inputs["user_name"] == "Alice"
         assert sub_workflow_inputs["user_age"] == 30

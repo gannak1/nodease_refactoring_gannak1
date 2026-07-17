@@ -1,7 +1,7 @@
 # Workflow Test Cases
 
 Status: Draft
-Verified Against: `feature/mba-283 @ a7dac2fe`
+Verified Against: `feature/mba-285 @ 2ca36f81`
 
 ## Test File Mapping
 
@@ -20,6 +20,7 @@ Verified Against: `feature/mba-283 @ a7dac2fe`
 - MBA-190 외부 부수효과 멱등성: `apps/workflow_engine/tests/domain/test_external_effect_contract.py`, `apps/workflow_engine/tests/domain/test_external_effect_identity_runtime.py`, `apps/workflow_engine/tests/application/test_external_effect_executor.py`, `apps/workflow_engine/tests/adapters/test_external_effect_repository.py`, `apps/workflow_engine/tests/adapters/test_external_effect_provider_adapters.py`, `apps/workflow_engine/tests/composition/test_external_effect_readiness.py`, `apps/workflow_engine/tests/fakes/external_effects.py`, `apps/workflow_engine/tests/nodes/test_http_node.py`, `apps/workflow_engine/tests/nodes/test_loop_external_effect_control.py`, `apps/workflow_engine/tests/nodes/test_workflow_node.py`, `apps/workflow_engine/tests/services/test_workflow_engine_tracing.py`, `apps/workflow_engine/tests/services/test_workflow_logger_tracing.py`, `apps/workflow_engine/tests/test_workflow_tasks_rag_sync.py`, `apps/log_system/tests/test_node_log_retry_flow.py`, `apps/gateway/tests/api/test_workflow_execution_subject.py`, `apps/gateway/tests/api/test_workflow_external_effect_error_contract.py`, `apps/gateway/tests/application/deployment/test_workflow_node_binding.py`, `apps/shared/tests/test_external_effect_attempt_schema.py`, `apps/shared/tests/db/test_external_effect_disposable_postgres.py`, `apps/shared/tests/domain/test_workflow_execution_identity.py`, `apps/shared/tests/domain/test_workflow_node_binding.py`, `apps/shared/tests/services/test_external_effect_trace_capture.py`, `apps/shared/tests/services/test_workflow_task_publisher.py`
 - Workflow log 발행 격리: `apps/workflow_engine/tests/services/test_workflow_logger_tracing.py`에서 직렬화/Celery 발행 실패가 실행 결과를 실패로 바꾸지 않고, 민감한 예외 원문을 로그에 남기지 않는지 검증한다.
 - MBA-283 Generic HTTP egress: `apps/workflow_engine/tests/adapters/test_guarded_outbound_http.py`, `apps/workflow_engine/tests/adapters/test_external_effect_provider_adapters.py`, `apps/workflow_engine/tests/nodes/test_http_node.py`, `apps/shared/tests/deployment/test_workflow_worker_egress_policy.py`
+- MBA-285 child lifecycle: `apps/workflow_engine/tests/services/test_child_execution_lifecycle.py`, `apps/workflow_engine/tests/nodes/test_loop_graph_entry.py`, `apps/workflow_engine/tests/nodes/test_workflow_node.py`, `apps/workflow_engine/tests/domain/test_external_effect_identity_runtime.py`
 - 동시성 처리: `apps/gateway/tests/integration/test_agent_builder_workflow_cas.py`에서 독립 PostgreSQL session/transaction으로 autosync 대 autosync 및 autosync 대 Agent Builder 저장 경쟁을 실행하고 한 요청만 성공하며 다른 요청이 `409 stale_graph`인지 검증한다.
 - 테스트 실행 전 저장: `TestSidebar` component test에서 canonical draft GET의 `graph_hash`/`updated_at`이 save request에 전달되고 성공 응답 metadata가 shared Workflow store에 반영되며 stale save는 실행을 시작하지 않는지 검증한다.
 - 빈 canonical draft 조회: `apps/gateway/tests/services/test_workflow_draft_read.py`에서 DB graph가 `null` 또는 빈 object인 신규 workflow도 빈 `nodes`/`edges`, 기본 viewport와 canonical metadata를 반환하는지 검증한다.
@@ -555,6 +556,16 @@ Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정�
 - Preflight가 provider network adapter나 secret decrypt helper를 호출하지 않으며, 통과 뒤 runtime에서 credential revoke/permission 회수를 다시 차단한다.
 - Workflow-node runtime은 parent execution context를 상속한다. Parent subject가 있으면 해당 subject 기준 KB permission/source ACL을 사용하고, subject가 없으면 anonymous public-only로 낮춘다.
 - Workflow-node preflight는 `workflowNode.data.appId`로 target app active deployment를 찾는다. `workflowId`로 target을 잘못 해석하면 테스트 실패다.
+
+## MBA-285 Child Execution Lifecycle Tests
+
+- 두 개 이상 Loop iteration이 성공해도 child는 부모 `WorkflowRun` create/finish/error log와 최상위 Redis workflow/node event를 제출하지 않는다. Root finish와 `workflow_finish`만 전체 graph 종료 뒤 정확히 한 번 발생한다.
+- Loop child의 일반 실패와 timeout은 child run error/event를 만들지 않고 부모에 전달된다. `error_strategy=end`에서는 root error lifecycle이 한 번 발생하고 `continue`에서는 기존 iteration 오류 수집 뒤 root가 전체 결과를 한 번만 완료 처리한다.
+- `ExternalEffectRetrySignal`과 terminal `ExternalEffectError`는 `continue`에서도 문자열 iteration 결과로 축소되지 않으며 child와 root가 동일 오류 event를 중복 발행하지 않는다.
+- Loop와 WorkflowNode는 공통 child factory를 사용하고 호출자가 child lifecycle mode를 해제할 수 없다. Factory는 caller의 execution context를 변경하지 않는다.
+- Loop child는 부모 `execution_id`, task deadline, WorkflowNode binding과 Loop container path를 유지하고 iteration별 invocation path를 추가한다. WorkflowNode child는 target organization/app/workflow/deployment provenance와 subworkflow path를 유지한다.
+- Loop 안 WorkflowNode와 WorkflowNode 안 Loop에서도 root run terminal update와 최상위 event는 outcome당 한 번뿐이다. Child cleanup 실패는 원래 성공·실패·timeout 또는 external-effect control signal을 덮어쓰지 않는다.
+- 현재 child node별 durable log는 만들지 않고 부모 Loop/WorkflowNode container log와 external-effect attempt의 `node_invocation_id`로 correlation한다.
 
 ## MBA-190 External Effect Idempotency Tests
 

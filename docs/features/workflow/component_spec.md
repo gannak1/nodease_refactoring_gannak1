@@ -1,7 +1,7 @@
 # Workflow Component Spec
 
 Status: Draft
-Verified Against: `feature/mba-283 @ a7dac2fe`
+Verified Against: `feature/mba-285 @ 2ca36f81`
 
 ## Condition Exit Layout
 
@@ -27,6 +27,15 @@ Conversation Memory target task는 Workflow inbound adapter가 side effect 전�
 - Memory는 admission/running/terminal safe projection만 받고 Workflow execution row를 직접 변경하지 않는다.
 
 Celery task와 node runtime adapter가 admission table을 직접 insert/update하거나 capability 검증 전에 provider/tool/connector를 호출해서는 안 된다.
+
+### Child Workflow Execution Lifecycle
+
+- Root `WorkflowEngine`만 `WorkflowRun` 생성·완료·실패와 최상위 Redis workflow/node event를 소유한다.
+- Loop body와 WorkflowNode target은 공통 child engine factory로 생성한다. Factory는 child lifecycle mode를 강제하고 부모 execution context를 방어적으로 복사한다.
+- Child는 부모 `execution_id`와 `workflow_run_id` correlation을 유지한다. Loop는 iteration index, WorkflowNode는 frozen target deployment를 invocation path에 추가해 node invocation identity를 구분한다.
+- Child는 부모 run 또는 별도 child run/node log를 직접 변경하지 않는다. 결과·일반 오류·timeout·external-effect control signal을 container에 반환 또는 전파하고 root가 전체 graph outcome을 한 번만 기록한다.
+- 현재 durable child observability는 Loop/WorkflowNode container node log와 external-effect attempt의 invocation identity를 사용한다. Child node별 계층형 durable trace를 새로 저장하지 않는다.
+- Child cleanup은 best-effort이며 cleanup 실패가 원래 성공 결과, 실행 오류, timeout 또는 external-effect control signal을 덮어쓰지 않는다.
 
 ### Runtime Data Dependency Envelope
 
