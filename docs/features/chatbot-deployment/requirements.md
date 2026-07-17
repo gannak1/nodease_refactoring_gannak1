@@ -23,7 +23,7 @@ CBOT-REQ-004~007의 global `memory_mode`, client UUID와 execution-log memory는
 ## Functional Requirements
 
 - CBOT-REQ-001: 배포 진입점("게시하기" 드롭다운)은 **"공개 챗봇 배포"**와 **"내부 챗봇 배포"**를 별도 항목으로 표시한다. 두 항목은 시작 노드가 `startNode`인 워크플로우에서만 노출하고 `webhookTrigger`/`scheduleTrigger` 시작 노드에는 노출하지 않는다.
-- CBOT-REQ-002: 공개 챗봇은 `DeploymentType.chatbot`, 내부 챗봇은 `DeploymentType.internal_chatbot` 타입의 배포를 생성한다. 배포 생성 경로(그래프 스냅샷, url_slug/auth_secret 지연 생성, 단일 활성 배포, input/output 스키마 추출)는 기존 배포와 동일하다.
+- CBOT-REQ-002: 공개 챗봇은 `DeploymentType.chatbot`, 내부 챗봇은 `DeploymentType.internal_chatbot` 타입의 배포를 생성한다. 그래프 스냅샷, `url_slug` 지연 생성, 단일 활성 배포와 input/output 스키마 추출은 기존 배포 경로를 사용한다. App 인증 secret은 배포 생성 응답에서 만들거나 반환하지 않고 [deployment](../deployment/requirements.md)의 별도 lifecycle API에서 발급·교체한다.
 - CBOT-REQ-003: 배포 성공 시 `${origin}/embed/chat/{url_slug}` 형태의 공개 챗봇 공유 링크를 제공한다. 이 링크는 무인증 공개 실행 표면(`POST /run-public/{url_slug}`)을 사용한다.
 - CBOT-REQ-003a: 공개 챗봇 활성 배포 생성/전환은 deployment preflight를 통과해야 한다. `/run-public`은 사용자 execution subject를 주입하지 않으므로 private KB 후보가 있으면 `409 deployment.preflight.blocked`로 활성화를 차단한다.
 - CBOT-REQ-003b: 내부 챗봇은 인증 deployment run/run-info endpoint만 사용한다. Gateway는 대상 workflow organization의 active membership과 workflow `execute` 권한을 확인하고, `X-Organization-Id`가 전달되면 배포 앱 organization과의 일치도 확인한 뒤 현재 로그인 사용자를 runtime `execution_subject`로 전달한다.

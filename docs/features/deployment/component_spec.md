@@ -33,7 +33,16 @@ Verified Against: `feature/mba-219 @ 5b1cf366`
 ### Public Webhook Components
 
 - Deployment success UI와 Webhook trigger node panel은 secret을 query에 결합한 URL을 생성·복사하지 않는다. Endpoint URL과 secret을 분리해 표시하고 primary 방식인 `Authorization: Bearer` header 설정을 안내한다. `X-Webhook-Secret`은 기존 caller 호환을 위한 API 계약으로만 유지하며 UI에서 권장하지 않는다.
-- Secret을 URL, `localStorage`, `sessionStorage`, analytics, toast 또는 Client log에 넣지 않는다. MBA-247 전까지 기존 response에서 전달되는 secret 표시 동작은 호환 범위로 남지만 query-integrated URL은 제공하지 않는다.
+- `AppAuthSecretControl`은 safe status를 먼저 조회하고 사용자의 명시적 확인 뒤 최초 발급 또는 rotation을 실행한다. 일반 App·Deployment 응답에서 secret을 읽지 않는다.
+- Status 조회도 shared cache나 브라우저 재사용으로 stale version이 남지 않도록 `no-store, no-cache` 계약을 사용한다.
+- Status의 `rotation_enabled=false`이면 발급·교체 command를 렌더링하지 않고 Gateway 전환 대기 상태만 표시한다.
+- 성공한 신규 secret은 component memory에만 유지하고 한 번 표시·복사할 수 있다. 화면을 닫거나 새 rotation을 시작하면 지우며 local/session storage, URL, analytics, toast detail과 Client log에 넣지 않는다.
+- Rotation UI는 기본 5분 전환 유예와 `이전 secret 즉시 폐기` 선택을 구분한다. Mutation request는 자동 재시도하지 않고 version conflict 또는 응답 유실 시 status를 새로 읽도록 안내한다.
+- Status/rotation 권한이 없거나 resource가 숨겨진 경우 secret 상태나 App 존재 여부를 추론할 수 있는 상세를 렌더링하지 않는다.
+- Secret을 URL, `localStorage`, `sessionStorage`, analytics, toast 또는 Client log에 넣지 않는다. 일반 App·Deployment response에는 원문 또는 masked preview를 포함하지 않는다.
+- `AppAuthSecretService`는 status, App row lock, expected-version CAS, verifier 검증, current/previous transition과 필수 audit outbox transaction을 소유한다. Endpoint와 deployment/webhook ingress는 verifier 규칙을 복제하지 않는다.
+- Expand release는 lifecycle mutation gate를 기본 `disabled`로 유지하고 generation 0 raw-only late arrival만 제한적으로 검증한다. 모든 Gateway Pod가 verifier-aware revision으로 수렴한 뒤 별도 설정 rollout에서 gate를 `active`로 바꾸며, 활성화 뒤 persistence adapter는 current raw를 저장하지 않는다. Generation 1 이상에서는 verifier만 인증 권위다.
+- Active API/Webhook preflight가 `app.auth_secret_lifecycle_unavailable` 또는 `deployment.app_auth_secret_required`를 반환하면 배포를 시도하지 않고 Gateway 전환 대기 또는 App secret 발급 action을 표시한다. Inactive draft 저장은 유지한다.
 - Gateway endpoint는 ASGI/HTTP inbound adapter로 raw header occurrence와 query key presence를 추출하고 bounded stream을 수신한다. Framework-independent `application/webhook_ingress` policy가 credential/media/JSON limits를 판정하며 endpoint는 typed error를 static HTTP code로 mapping한다.
 - Existing capture, active deployment/runtime policy, budget와 background publish orchestration은 ingress validation 뒤의 transitional path로 유지한다. Client validation은 보안 판단이 아니며 Gateway를 우회할 수 없다.
 - Gateway의 outermost ASGI middleware는 `/api/v1/hooks` query에서 `token` field를 값 보존 없이 제거하고 boolean marker로 400 rejection을 유지해 Uvicorn access log 노출을 막는다. Repository Nginx는 `/api/v1/hooks/` 전용 location의 access/error log를 억제하고 1 MiB/5초 idle body guard와 request streaming을 적용한다.

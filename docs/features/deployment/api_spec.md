@@ -10,6 +10,8 @@ Verified Against: `feature/mba-254 @ 95e821ef`
 | POST | `/api/v1/deployments/preflight` | 배포 graph snapshot과 deployment type 기준으로 runtime availability를 검사한다 | 로그인 + workflow deploy/manage 권한 |
 | POST | `/api/v1/deployments` | 배포 생성. `is_active=true`이면 blocking preflight를 통과해야 한다 | 로그인 + workflow deploy/manage 권한 |
 | POST | `/api/v1/deployments/{source_deployment_id}/browser-access-revisions` | source snapshot을 복제한 browser policy 새 version 생성 | 로그인 + workflow deploy/manage 권한 |
+| GET | `/api/v1/apps/{app_id}/auth-secret/status` | App 인증 secret의 safe lifecycle 상태 조회 | 로그인 + active organization + App workflow `deploy` 권한 |
+| POST | `/api/v1/apps/{app_id}/auth-secret/rotate` | App 인증 secret 최초 발급 또는 rotation. 성공 시 신규 원문을 한 번 반환 | 로그인 + active organization + App workflow `deploy` 권한 |
 | PATCH | `/api/v1/deployments/{deployment_id}/toggle` | 배포 활성/비활성 전환. 활성화 시 blocking preflight를 통과해야 한다 | 로그인 + workflow deploy/manage 권한 |
 | DELETE | `/api/v1/deployments/{deployment_id}` | 배포 삭제. active 삭제 시 자동 승격하지 않는다 | 로그인 + workflow deploy/manage 권한 |
 | GET | `/api/v1/deployments?app_id={app_id}` | 배포 이력과 App 소유 `url_slug` 조회 | 로그인 + workflow read 권한 |
@@ -23,6 +25,48 @@ Verified Against: `feature/mba-254 @ 95e821ef`
 | POST | `/api/v1/hooks/{url_slug}/capture/cancel?capture_id=...` | Cancel a pending capture session | User session + same requester + target workflow `deploy` permission + capture nonce |
 
 ## Request And Response Models
+
+### App Auth Secret Status And Rotation
+
+일반 App·Deployment request/response schema에는 `auth_secret` 필드가 없다. Secret lifecycle은 다음 두 endpoint에서만 관리한다.
+
+`GET /api/v1/apps/{app_id}/auth-secret/status` response:
+
+```json
+{
+  "configured": true,
+  "version": 3,
+  "rotation_enabled": true,
+  "rotated_at": "2026-07-17T03:00:00Z",
+  "previous_grace_active": true,
+  "previous_valid_until": "2026-07-17T03:05:00Z"
+}
+```
+
+`POST /api/v1/apps/{app_id}/auth-secret/rotate` request:
+
+```json
+{
+  "expected_version": 3,
+  "revoke_previous_immediately": false
+}
+```
+
+미설정 App의 최초 발급은 `expected_version=0`을 사용한다. Expand 기간에 구버전 Gateway가 만든 `configured=true, version=0` raw-only state를 managed generation 1로 전환할 때도 같은 expected version을 사용한다. `rotation_enabled=false`이면 Gateway revision 수렴 전이므로 Client는 발급·교체 UI를 비활성화한다. 이 상태의 POST는 권한 확인 뒤 `503 app.auth_secret_lifecycle_unavailable`로 끝난다. 모든 Gateway가 verifier-aware revision으로 수렴한 뒤 별도 설정 rollout으로 lifecycle mode를 `active`로 바꾸며, 이후 발급·rotation은 원문을 DB에 저장하지 않는다. 성공 response의 `secret`은 이 응답에서만 한 번 제공되고 audit·trace·log에 저장하지 않는다. Status와 성공 rotation response는 `Cache-Control: no-store, no-cache`와 `Pragma: no-cache`를 반환한다.
+
+```json
+{
+  "secret": "<one-time-secret>",
+  "version": 4,
+  "rotated_at": "2026-07-17T03:00:00Z",
+  "previous_grace_active": true,
+  "previous_valid_until": "2026-07-17T03:05:00Z"
+}
+```
+
+표준 rotation은 직전 secret을 최대 5분 허용한다. `revoke_previous_immediately=true`이면 previous를 저장하지 않는다. Client는 POST를 자동 재시도하지 않으며 응답 유실 시 status를 다시 읽고 명시적으로 새 rotation을 수행한다.
+
+Active `api`/`webhook` preflight, create와 toggle은 configured App secret을 요구한다. Lifecycle mode가 아직 `disabled`이면 `503 app.auth_secret_lifecycle_unavailable`로 차단한다. Mode가 `active`지만 secret이 없으면 `409 deployment.app_auth_secret_required`와 `required_actions=["issue_app_auth_secret"]`를 반환한다. Inactive draft는 저장할 수 있다.
 
 ### `GET /api/v1/deployments?app_id={app_id}`
 
@@ -327,6 +371,19 @@ Claim 조회, 상태 변경, outcome acknowledgment와 redrive는 public API로 
 
 ## Errors
 
+App auth secret lifecycle errors use the standard API error envelope:
+
+| Condition | Status | Detail |
+| --- | ---: | --- |
+| App is outside active organization scope or hidden | 404 | `app.not_found` |
+| Same-organization App exists but caller lacks deploy permission | 403 | `permission.denied` |
+| Gateway verifier rollout has not been explicitly activated | 503 | `app.auth_secret_lifecycle_unavailable` |
+| Active API/Webhook requested while lifecycle is disabled and App has no secret | 503 | `app.auth_secret_lifecycle_unavailable` |
+| Active API/Webhook requested after activation but App has no secret | 409 | `deployment.app_auth_secret_required` |
+| `expected_version` differs from the locked current version | 409 | `app.auth_secret_version_conflict` |
+| Invalid request body or unknown field | 422 | validation error |
+| Audit persistence or transaction commit failure | 500 | generic internal error; no secret returned |
+
 Public webhook ingress errors preserve the FastAPI `{ "detail": "..." }` envelope and use static detail codes:
 
 | Condition | Status | Detail |
@@ -390,3 +447,4 @@ Blocking preflight failure:
 - Workflow-node target active deployment must belong to the target app, be active, and have `type="workflow_node"`. Runtime also requires a non-null parent organization context matching the target app organization.
 - Public webhook trigger execution uses exactly one app secret header source. Bearer is primary and `X-Webhook-Secret` is compatibility-only; query `token` is rejected.
 - Webhook capture management uses user session authentication and target workflow `deploy` permission. App secret alone cannot start, read, or cancel capture sessions.
+- App auth secret status/rotation은 로그인 사용자, active organization과 대상 App workflow `deploy` 권한을 요구한다. Public app secret 자체로 lifecycle API를 호출할 수 없다.

@@ -295,7 +295,14 @@ project/endpoint boundary.
 | workflow_id | UUID | NULL, FK→workflows.id — primary workflow |
 | active_deployment_id | UUID | NULL, **FK 없음** (application-level 참조) |
 | url_slug | VARCHAR | NOT NULL, UNIQUE — public endpoint 경로 |
-| auth_secret | VARCHAR | NOT NULL — public run/webhook Bearer secret |
+| auth_secret | VARCHAR | NULL — migration 전 credential과 혼합 배포 중 구버전 Pod가 만든 generation 0 late arrival 원문. Lifecycle 활성화 뒤 신규 write 금지, reconcile/contract에서 제거 |
+| auth_secret_verifier | VARCHAR(64) | NULL — domain-separated SHA-256 V1 current verifier |
+| auth_secret_verifier_version | INTEGER | NULL — current verifier algorithm version |
+| auth_secret_generation | INTEGER | NOT NULL, default 0 — 성공한 발급·rotation 단조 증가 version |
+| auth_secret_previous_verifier | VARCHAR(64) | NULL — 직전 secret verifier 하나 |
+| auth_secret_previous_verifier_version | INTEGER | NULL — previous verifier algorithm version |
+| auth_secret_previous_valid_until | DATETIME | NULL — UTC expiry, 경계 시각부터 무효 |
+| auth_secret_rotated_at | DATETIME | NULL — 마지막 성공 발급·rotation 시각 |
 | is_api_enabled | BOOLEAN | NOT NULL |
 | api_req_per_minute / api_req_per_hour | INTEGER | NOT NULL — rate limit |
 | is_market | BOOLEAN | NOT NULL |
@@ -303,7 +310,7 @@ project/endpoint boundary.
 | created_by | UUID | NOT NULL, FK→users.id |
 | created_at / updated_at | DATETIME | NOT NULL |
 
-최신 dev의 physical schema는 일반 App resource에 `auth_secret` 원문을 저장하고 일부 일반 응답에서 반환하는 compatibility debt가 남아 있다. MBA-247 브랜치의 verifier-only 저장, 명시적 one-time 발급·rotation과 rolling expand/contract migration은 아직 dev에 병합되지 않았으므로 위 Current column을 선행 변경하지 않는다. 병합 뒤 실제 migration과 응답 schema를 검증한 경우에만 current/previous verifier metadata를 Current inventory에 반영한다.
+App 인증 secret 원문은 일반 resource 데이터가 아니다. 신규 발급 원문은 API에서 one-time response로만 반환한다. Expand는 구형 Gateway traffic을 drain/fence한 뒤 verifier-aware revision을 `disabled` mode로 수렴시키며, 모든 Gateway가 같은 revision으로 수렴한 뒤에만 별도 설정 rollout으로 활성화한다. 활성화 뒤 신규 발급·rotation은 legacy raw를 저장하지 않으며 generation 1 이상 인증 권위는 current/previous verifier다. 후속 reconcile에서 generation 0 late arrival를 backfill하고 raw fallback을 중단한 뒤 contract migration에서 raw와 column을 제거한다. `auth_secret IS NULL`인 verifier-only 또는 unconfigured App은 구 schema의 NOT NULL 원문으로 복구할 수 없어 downgrade를 차단한다. Rotation은 App row lock과 expected generation CAS를 사용하며 previous는 최대 5분 또는 즉시 폐기 정책을 따른다. 상세 계약은 [ADR-0056](decisions/ADR-0056-app-auth-secret-issuance-and-rotation.md)를 따른다.
 
 #### `workflows`
 
