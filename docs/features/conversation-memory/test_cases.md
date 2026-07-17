@@ -239,6 +239,8 @@ Status: Draft
 
 ## Gateway And API Tests
 
+MBA-317의 자동 검증은 public capability domain/application, encrypted replay/admission adapter, Gateway lifecycle transport와 same-origin CORS boundary를 대상으로 한다. provider/dispatch/turn completion 및 physical purge worker 사례는 MBA-318 이후의 runtime/worker test로 남긴다.
+
 - MEM-TC-API-001: Runtime metadata는 business `inputs`와 분리된다.
 - MEM-TC-API-002: Client subject/organization/internal session/storage generation spoofing을 무시한다.
 - MEM-TC-API-003: Authenticated endpoint의 invalid/expired auth는 anonymous fallback 없이 401이다.
@@ -263,16 +265,16 @@ Status: Draft
 - MEM-TC-API-018: Create는 201, pending run/delete는 202, completed run/lifecycle read는 200 계약을 지킨다.
 - MEM-TC-API-019: 같은 idempotency key의 pending/completed/failed replay는 새 task/provider 호출 없이 같은 safe 상태/결과를 반환한다.
 - MEM-TC-API-020: Public create/reset 응답 유실 뒤 같은 key retry는 최초 응답의 동일 grant만 유지하고 bounded replay record에서 같은 raw token을 반환한다. Reset replay는 old grant를 다시 활성화하거나 replacement grant를 추가 발급하지 않는다.
-- MEM-TC-API-020A: Public create idempotency key는 최소 128-bit entropy를 요구하고 raw key를 durable log에 남기지 않으며 정상 network 변경 뒤에도 같은 deployment/origin retry를 복구한다.
+- MEM-TC-API-020A: Public create idempotency key는 최소 128-bit entropy를 요구하고 raw key를 durable log에 남기지 않으며 정상 network 변경 뒤에도 같은 canonical deployment retry를 복구한다. Parent Origin은 idempotency scope를 바꾸지 않는다.
 - MEM-TC-API-021: Access Grant replay 10분 TTL 만료 뒤 same-key create/reset은 `409 memory.secret_replay_expired`를 반환하고 새 grant를 만들지 않는다.
 - MEM-TC-API-021A: `memory.secret_replay_expired` 뒤 새 idempotency key의 explicit create는 새 session/grant를 만들며 접근 불가능한 기존 session은 idle expiry/retention cleanup 대상이다.
-- MEM-TC-API-021B: Public reset/delete의 expired secret conflict는 exact scope/fingerprint/grant-verifier relation에서만 반환하고 wrong key/token/origin/deployment는 동일한 404다.
+- MEM-TC-API-021B: Public reset/delete의 expired secret conflict는 exact scope/fingerprint/grant-verifier relation에서만 반환하고 wrong key/token/deployment는 동일한 404다. Parent Origin은 grant scope 입력이 아니다.
 - MEM-TC-API-022: Public invalid/expired/revoked/wrong-scope grant와 lifecycle probe는 모두 동일한 safe 404 shape다.
 - MEM-TC-API-023: Authenticated owner만 closed lifecycle 409를 받고 scope 밖 caller는 404다.
 - MEM-TC-API-024: Authenticated mutation은 CSRF token, exact Origin과 Fetch Metadata 중 하나라도 실패하면 side effect 없이 403이다.
 - MEM-TC-API-024A: `X-CSRF-Token`은 authenticated session에 binding되고 다른 session/user token replay, URL token과 auth cookie-derived token을 거부한다.
-- MEM-TC-API-025: Public API는 cookie를 무시/거부하고 credential-less exact-origin CORS만 반환한다. Authenticated CORS와 wildcard를 혼용하지 않는다.
-- MEM-TC-API-025A: Public browser conversation은 missing/null/unlisted Origin을 거부하고 server-to-server API가 browser grant surface로 우회하지 못한다.
+- MEM-TC-API-025: Public Conversation API는 iframe same-origin 호출만 지원하며 `Access-Control-Allow-Origin`·`Access-Control-Allow-Credentials`와 public CORS preflight grant를 반환하지 않는다. 전역 credentialed CORS 설정, wildcard 또는 deployment parent allowlist가 이 route에 누출되지 않는다.
+- MEM-TC-API-025A: Same-origin iframe 호출은 정상 동작하고 external direct JavaScript preflight/fetch는 CORS grant를 받지 못한다. Parent Origin, `Referer`, `Host`, query와 client hint는 grant scope·deployment policy·runtime audience를 바꾸지 않는다.
 - MEM-TC-API-025B: V1은 standalone grant rotate endpoint를 노출하지 않고 old/new token grace overlap을 허용하지 않는다. Reset 성공과 동시에 old grant는 사용할 수 없다.
 - MEM-TC-API-025C: Workflow Editor test 실행은 별도 Conversation Session을 생성하거나 public/authenticated session route를 재사용하지 않는다. 미승인 session surface 값은 fail-closed한다.
 - MEM-TC-API-025D: 새 탭/브라우저는 기존 session용 grant를 재발급받지 못하며 새 idempotency key로 별도 conversation을 생성한다.
@@ -296,7 +298,7 @@ Status: Draft
 - MEM-TC-API-037: Authenticated internal Chatbot route는 별도 surface/권한/CSRF/CORS/session namespace를 요구하고 public Access Grant로 호출할 수 없다.
 - MEM-TC-API-038: 일반 deployment, schedule, webhook과 API batch는 target Conversation Session을 암묵적으로 생성하지 않는다.
 - MEM-TC-API-039: Session-pinned deployment version과 요청 version이 다르면 authenticated route는 typed conflict/new-session action을 반환하고 public route는 동일한 safe 404를 반환한다.
-- MEM-TC-API-040: Deployment-owned exact Origin/embed allowlist가 없거나 mismatch면 public session 생성 전에 거부하고 client/env fallback으로 완화하지 않는다.
+- MEM-TC-API-040: Deployment-owned parent allowlist는 `frame-ancestors` CSP에만 사용한다. 정책 부재·disabled·mismatch는 iframe embed를 fail-closed로 막지만 Public Conversation API의 CORS grant로 재해석하거나 client/env fallback으로 완화하지 않는다.
 
 ## Workflow Runtime Tests
 
@@ -411,7 +413,7 @@ Status: Draft
 - MEM-TC-SEC-011: Request/attempt/execution ID collision과 다른 tenant idempotency key 재사용.
 - MEM-TC-SEC-012: Malformed Unicode/Markdown/HTML/JSON으로 redaction, serialization 또는 UI XSS 우회.
 - MEM-TC-SEC-013: Cookie `SameSite=None`, forged Origin, missing/invalid CSRF token과 cross-site form/fetch mutation.
-- MEM-TC-SEC-014: Wildcard CORS, credential 혼용, Authorization preflight bypass와 malicious allowed-origin confusion.
+- MEM-TC-SEC-014: Public Conversation route에 전역 credentialed CORS, wildcard ACAO, `Access-Control-Allow-Credentials`, Authorization preflight 또는 deployment parent allowlist가 누출되어 external direct JavaScript가 grant 응답을 읽는 회귀.
 - MEM-TC-SEC-015: Public session/grant churn, distributed source rotation과 concurrent run을 통한 rate/cost limit 우회.
 - MEM-TC-SEC-016: Token response/cache/browser storage 유출과 malformed version prefix/timing oracle.
 - MEM-TC-SEC-017: Expired purge receipt 또는 다른 deployment receipt로 session/purge state 추론.

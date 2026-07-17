@@ -85,6 +85,13 @@ class AuditAction:
     MODEL_PRICING_UPDATE = "model.pricing_update"
     LLM_CALL = "llm.call"
 
+    # Public Conversation Memory capability lifecycle.  The actor is the
+    # anonymous public capability, never an app/deployment owner.
+    CONVERSATION_PUBLIC_CREATED = "conversation.public.created"
+    CONVERSATION_PUBLIC_CLOSED = "conversation.public.closed"
+    CONVERSATION_PUBLIC_RESET = "conversation.public.reset"
+    CONVERSATION_PUBLIC_DELETE_REQUESTED = "conversation.public.delete_requested"
+
     # 지식베이스와 문서 수명주기.
     KNOWLEDGE_CREATE = "knowledge.create"
     KNOWLEDGE_UPDATE = "knowledge.update"

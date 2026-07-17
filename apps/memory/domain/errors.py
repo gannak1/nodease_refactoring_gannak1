@@ -56,3 +56,29 @@ class MemoryAdapterUnavailableError(MemoryDomainError):
 
 class EntryNotFoundError(MemoryDomainError):
     code = "memory.entry_not_found"
+
+
+class AccessGrantNotUsableError(MemoryDomainError):
+    """A public grant must be rendered as a resource-hidden failure."""
+
+    code = "memory.session_hidden"
+
+
+class AccessGrantScopeError(AccessGrantNotUsableError):
+    """The grant does not bind to the requested public deployment surface."""
+
+
+class SecretReplayExpiredError(MemoryDomainError):
+    code = "memory.secret_replay_expired"
+
+
+class PurgeReceiptNotUsableError(MemoryDomainError):
+    code = "memory.session_hidden"
+
+
+class PublicConversationRateLimitedError(MemoryDomainError):
+    code = "memory.rate_limited"
+
+    def __init__(self, retry_after_seconds: int = 1) -> None:
+        self.retry_after_seconds = max(1, min(60, int(retry_after_seconds)))
+        super().__init__()

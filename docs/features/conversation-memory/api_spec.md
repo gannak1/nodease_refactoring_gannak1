@@ -1,10 +1,12 @@
 # Conversation Memory API Specification
 
-Status: Draft
+Status: Implemented public lifecycle foundation; runtime follow-up pending
 
 ## Contract Status
 
-이 문서는 [ADR-0030](../../decisions/ADR-0030-memory-bounded-context.md)과 [ADR-0033](../../decisions/ADR-0033-conversation-memory-contract-completion.md)의 목표 API와 runtime application contract를 정의한다. MBA-316은 transport-independent Session/Turn lifecycle과 dispatch command, repository/UnitOfWork의 dormant subset만 구현한다. 아래 session endpoint, Access Grant bearer와 runtime request envelope은 아직 구현되지 않았고 production composition에도 연결되지 않았다. 현재 Chatbot의 `inputs.memory_mode`와 `inputs.conversation_id`는 legacy contract이며 target API에 포함하지 않는다.
+이 문서는 [ADR-0030](../../decisions/ADR-0030-memory-bounded-context.md)과 [ADR-0033](../../decisions/ADR-0033-conversation-memory-contract-completion.md)의 목표 API와 runtime application contract를 정의한다. MBA-316은 transport-independent Session/Turn lifecycle과 dispatch command, repository/UnitOfWork의 dormant subset을 구현했고, MBA-317은 Public Chatbot의 session create/close/reset/delete, Access Grant/receipt verifier, bounded encrypted secret replay, transcript empty projection, purge-status와 Gateway composition을 구현한다. 이 public lifecycle surface는 migration `ac1d2e3f4a50` 적용과 required capability/replay/admission key 설정 뒤에만 동작하며, 설정 또는 Redis admission이 없으면 fail-closed한다.
+
+MBA-317은 Workflow provider/dispatch를 연결하지 않는다. 따라서 `POST /api/v1/run-public/{url_slug}`의 root-level `conversation` envelope은 `memory.feature_unavailable`으로 거부되고, public turn status는 grant 검증 뒤 resource-hidden 응답만 반환한다. 실제 run/turn lifecycle 연결은 MBA-318의 별도 vertical runtime 범위다. 현재 Chatbot의 `inputs.memory_mode`와 `inputs.conversation_id`는 legacy contract이며 target API에 포함하지 않는다.
 
 Endpoint path는 목표 contract다. 구현 PR은 additive versioning과 guided migration으로 도입하고 기존 Workflow/Chatbot API 문서를 함께 갱신해야 한다. Authenticated internal Chatbot endpoint는 별도 내부 Chatbot 접근 정책·배포 surface 구현에 의존하며 이 Conversation Memory 설계만으로 현재 제공되는 기능이 아니다. Numeric retention/rate limit은 운영 설정이지만 이 문서의 security/idempotency baseline을 완화할 수 없다.
 
@@ -26,32 +28,34 @@ Execution subject, credential principal, billing principal과 audit actor는 별
 Authorization: Conversation <opaque-access-token>
 ```
 
-Raw token은 기본적으로 탭 단위 `sessionStorage`에 보관하고 persistent `localStorage`, URL, browser history, access log, audit, trace와 metric label에 남길 수 없다. V1은 탭/브라우저 간 token 이동이나 기존 session용 별도 grant 발급을 지원하지 않는다. 새 탭에서는 새 idempotency key로 새 conversation을 명시 생성한다. Public API는 credential-less CORS만 허용하고 `Access-Control-Allow-Credentials`를 반환하지 않는다. 허용 origin은 deployment-owned versioned exact origin/embed allowlist로 제한하며 wildcard와 credential을 함께 사용하지 않는다. 이 설정 계약이 구현되기 전 client 입력이나 환경변수 fallback으로 allowlist를 넓혀서는 안 된다.
+Raw token은 기본적으로 탭 단위 `sessionStorage`에 보관하고 persistent `localStorage`, URL, browser history, access log, audit, trace와 metric label에 남길 수 없다. V1은 탭/브라우저 간 token 이동이나 기존 session용 별도 grant 발급을 지원하지 않는다. 새 탭에서는 새 idempotency key로 새 conversation을 명시 생성한다.
 
-Browser-facing public conversation create/run/lifecycle 요청은 allowlist에 있는 `Origin`을 필수로 요구한다. Origin 없는 server-to-server 실행은 이 browser grant surface를 사용하지 않고 별도 API-secret/service contract를 사용하며 Conversation Session은 명시적으로 구성해야 한다.
+Public Conversation API는 Nodease iframe document의 relative same-origin 호출만 지원한다. endpoint는 `Access-Control-Allow-Origin`, `Access-Control-Allow-Credentials` 또는 public CORS preflight grant를 반환하지 않는다. deployment-owned `browser_access_policy.embedding.parent_origins`는 iframe의 CSP `frame-ancestors` 전용이며 API CORS allowlist, Access Grant scope, idempotency scope 또는 execution principal로 재사용하지 않는다. 따라서 외부 parent JavaScript의 direct `fetch`와 server-to-server caller는 이 browser API의 지원 호출자가 아니다. 향후 external JavaScript SDK가 필요하면 parent 목록과 분리된 exact API origin, `credentials=false`, method/header/preflight 및 `Vary: Origin` 계약을 별도 ADR로 정의한다. 요청의 `Origin`, `Referer`, `Host`와 client hint는 deployment policy나 grant scope를 완화하지 않는다.
 
 Cookie 기반 authenticated mutation은 session-bound synchronizer token인 `X-CSRF-Token` header와 exact `Origin` 검증을 모두 요구한다. Token은 authenticated bootstrap/session response로 발급하고 authentication cookie 값에서 파생하거나 URL에 넣지 않는다. `Sec-Fetch-Site`가 제공되면 `same-origin` 또는 명시적으로 허용된 same-site 요청만 허용한다. State-changing endpoint는 simple cross-origin request로 호출할 수 없는 JSON contract를 유지한다.
 
-Public token, transcript, turn status와 lifecycle response는 `Cache-Control: no-store`를 반환한다. 인증 응답은 `Cache-Control: private, no-store`를 사용하며 origin에 따라 응답이 달라지는 surface는 적절한 `Vary: Origin, Authorization, Cookie`를 적용한다.
+Public token, transcript, turn status와 lifecycle response는 `Cache-Control: no-store`를 반환한다. 인증 응답은 `Cache-Control: private, no-store`를 사용하며 public conversation response는 parent Origin에 따라 달라지지 않는다. Authorization 또는 Cookie에 따라 응답이 달라지는 인증 surface만 필요한 `Vary` 값을 적용한다.
 
 Public conversation page는 `Referrer-Policy: no-referrer`와 strict Content Security Policy를 사용한다. Third-party script와 frame origin은 deployment embed 정책의 reviewed allowlist만 허용하며 inline/raw token telemetry를 금지한다.
 
-## Proposed HTTP Surface
+## HTTP Surface
 
 ### Public Conversation
 
-| Method | Path | Purpose |
-| --- | --- | --- |
-| POST | `/api/v1/run-public/{url_slug}/conversations` | Public session과 Access Grant 생성 |
-| POST | `/api/v1/run-public/{url_slug}` | 기존 public run에 target `conversation` envelope 추가 |
-| GET | `/api/v1/run-public/{url_slug}/conversation/turns/{turn_id}` | 현재 grant의 turn 상태/완료 결과 조회 |
-| GET | `/api/v1/run-public/{url_slug}/conversation/transcript` | 허용 시 redacted public transcript 조회 |
-| POST | `/api/v1/run-public/{url_slug}/conversation/close` | 현재 grant session close |
-| POST | `/api/v1/run-public/{url_slug}/conversation/reset` | 기존 session close + 새 session/grant 발급 |
-| DELETE | `/api/v1/run-public/{url_slug}/conversation` | 현재 grant session 접근 차단과 purge 요청 |
-| GET | `/api/v1/run-public/{url_slug}/conversation/purge-status` | Purge receipt capability로 삭제 상태 조회 |
+| Method | Path | Purpose | MBA-317 상태 |
+| --- | --- | --- | --- |
+| POST | `/api/v1/run-public/{url_slug}/conversations` | Public session과 Access Grant 생성 | 구현됨 |
+| POST | `/api/v1/run-public/{url_slug}` | target `conversation` runtime envelope | `memory.feature_unavailable`; MBA-318 전 provider/dispatch 미호출 |
+| GET | `/api/v1/run-public/{url_slug}/conversation/turns/{turn_id}` | 현재 grant의 turn 상태/완료 결과 조회 | grant 검증 뒤 hidden; MBA-318 전 turn 생성 없음 |
+| GET | `/api/v1/run-public/{url_slug}/conversation/transcript` | 허용 시 redacted public transcript 조회 | 구현됨; MBA-318 전 안전한 빈 projection |
+| POST | `/api/v1/run-public/{url_slug}/conversation/close` | 현재 grant session close | 구현됨 |
+| POST | `/api/v1/run-public/{url_slug}/conversation/reset` | 기존 session close + 새 session/grant 발급 | 구현됨 |
+| DELETE | `/api/v1/run-public/{url_slug}/conversation` | 현재 grant session 접근 차단과 purge 요청 | 구현됨; physical purge worker는 후속 범위 |
+| GET | `/api/v1/run-public/{url_slug}/conversation/purge-status` | Purge receipt capability로 삭제 상태 조회 | 구현됨 |
 
 Public lifecycle/transcript endpoint는 `Authorization: Conversation ...` header를 요구한다. Invalid, expired, revoked 또는 다른 slug/deployment에 binding된 grant는 resource-hiding response를 반환한다.
+
+Public create/close/reset/delete body는 현재 빈 JSON object만 허용한다. unknown field, client-supplied organization/subject/session/storage generation과 body request ID는 거부한다. `Idempotency-Key`는 URL-safe 22~256자(최소 128-bit random entropy)이고 server는 hash만 저장한다. close/reset/delete는 정확한 `If-Match: "lifecycle-revision-N"`가 없거나 malformed면 `428`로 거부한다. Gateway는 socket peer만 network admission input으로 사용하며 `X-Forwarded-For`, `Origin`, `Referer`, `Host` 또는 client hint로 scope를 바꾸지 않는다.
 
 ### Authenticated Conversation
 
@@ -82,7 +86,7 @@ Authenticated endpoint는 client-supplied subject, organization, workflow와 int
 | Delete accepted | `202 Accepted` | 동일 purge receipt/reference 반환 |
 | Transcript/turn/purge status | `200 OK` | 조회 요청이므로 idempotency key 불필요 |
 
-모든 create/run/close/reset/delete mutation은 `Idempotency-Key`를 요구한다. Authenticated scope는 canonical principal, deployment, operation과 target session이다. Public create는 deployment와 normalized Origin, 이후 public operation은 grant, deployment, operation과 target session을 scope로 사용한다. Public create key는 최소 128-bit random entropy를 요구하고 hash만 장기 식별자로 저장하며 raw key를 access/audit log에 남기지 않는다. Network source는 abuse limit에는 사용하지만 정상 retry의 idempotency scope를 바꾸지 않는다. 같은 key에 다른 bounded fingerprint가 오면 `409 memory.duplicate_request_conflict`를 반환한다. Secret replay ciphertext가 만료된 same-key request는 새 grant/receipt를 만들지 않고 `409 memory.secret_replay_expired`를 반환한다. 새 public conversation은 새 idempotency key로 명시적으로 생성한다. Pending replay는 새 task를 발행하지 않고 기존 상태를 반환하고, failed replay는 같은 safe terminal error를 반환한다.
+모든 create/run/close/reset/delete mutation은 `Idempotency-Key`를 요구한다. Authenticated scope는 canonical principal, deployment, operation과 target session이다. Public create는 canonical deployment와 operation, 이후 public operation은 grant, deployment, operation과 target session을 scope로 사용한다. Public create key는 최소 128-bit random entropy를 요구하고 hash만 장기 식별자로 저장하며 raw key를 access/audit log에 남기지 않는다. Network source는 abuse limit에는 사용하지만 정상 retry의 idempotency scope를 바꾸지 않는다. Parent Origin은 CSP embedding 경계일 뿐 idempotency scope에 포함하지 않는다. 같은 key에 다른 bounded fingerprint가 오면 `409 memory.duplicate_request_conflict`를 반환한다. Secret replay ciphertext가 만료된 same-key request는 새 grant/receipt를 만들지 않고 `409 memory.secret_replay_expired`를 반환한다. 새 public conversation은 새 idempotency key로 명시적으로 생성한다. Pending replay는 새 task를 발행하지 않고 기존 상태를 반환하고, failed replay는 같은 safe terminal error를 반환한다.
 
 Public reset/delete의 `memory.secret_replay_expired`는 stored idempotency scope/fingerprint, request grant verifier relation과 high-entropy key가 모두 정확히 일치할 때만 반환한다. 하나라도 불일치하면 revoked/invalid grant와 동일한 resource-hidden 404로 닫아 session 존재나 token lifecycle을 추론하지 못하게 한다.
 

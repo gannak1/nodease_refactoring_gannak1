@@ -1634,6 +1634,11 @@ class ConversationIdempotencyRecord(_TimestampMixin, Base):
     __tablename__ = "conversation_idempotency_records"
     __table_args__ = (
         UniqueConstraint(
+            "id",
+            "organization_id",
+            name="uq_conv_idempotency_id_org",
+        ),
+        UniqueConstraint(
             "organization_id",
             "operation",
             "scope_digest",
@@ -1691,4 +1696,64 @@ class ConversationIdempotencyRecord(_TimestampMixin, Base):
     safe_result_code: Mapped[str | None] = mapped_column(
         String(64),
         nullable=True,
+    )
+
+
+class ConversationSecretReplayRecord(Base):
+    """Short-lived encrypted capability replay payload.
+
+    The raw access grant or purge receipt is never a column in this table.  A
+    record is bound to one idempotency result and removed by its expiry worker.
+    """
+
+    __tablename__ = "conversation_secret_replays"
+    __table_args__ = (
+        UniqueConstraint(
+            "idempotency_record_id",
+            name="uq_conv_secret_replay_idempotency",
+        ),
+        ForeignKeyConstraint(
+            ["idempotency_record_id", "organization_id"],
+            [
+                "conversation_idempotency_records.id",
+                "conversation_idempotency_records.organization_id",
+            ],
+            name="fk_conv_secret_replay_idempotency_org",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "purpose IN ('access_grant', 'purge_receipt') "
+            "AND length(associated_data_digest) = 64",
+            name="ck_conv_secret_replay_fields",
+        ),
+        Index("ix_conv_secret_replays_expiry", "expires_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        nullable=False,
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        nullable=False,
+    )
+    idempotency_record_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        nullable=False,
+    )
+    purpose: Mapped[str] = mapped_column(String(32), nullable=False)
+    ciphertext: Mapped[bytes] = mapped_column(BYTEA, nullable=False)
+    key_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    associated_data_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utc_now,
+        server_default=text("now()"),
     )

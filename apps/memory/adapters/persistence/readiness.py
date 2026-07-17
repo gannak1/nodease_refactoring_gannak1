@@ -116,6 +116,18 @@ REQUIRED_MEMORY_SCHEMA: dict[str, frozenset[str]] = {
             "status",
         }
     ),
+    "conversation_secret_replays": frozenset(
+        {
+            "id",
+            "organization_id",
+            "idempotency_record_id",
+            "purpose",
+            "ciphertext",
+            "key_version",
+            "associated_data_digest",
+            "expires_at",
+        }
+    ),
 }
 
 

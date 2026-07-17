@@ -58,6 +58,9 @@ from apps.gateway.lifespan import lifespan  # Import lifespan from module
 from apps.gateway.middleware.webhook_query_redaction import (
     WebhookQueryRedactionMiddleware,
 )
+from apps.gateway.middleware.public_conversation_cors import (
+    PublicConversationCorsBoundaryMiddleware,
+)
 from apps.gateway.utils.api_errors import error_response
 from apps.shared.audit import record_audit
 from apps.shared.audit.actions import AuditAction
@@ -191,6 +194,11 @@ app.add_middleware(
 # Keep this transport sanitizer outermost so earlier middleware failures cannot
 # expose legacy webhook query credentials through the ASGI server access log.
 app.add_middleware(WebhookQueryRedactionMiddleware)
+
+# Must be outer than the legacy credentialed CORS middleware.  Public
+# Conversation lifecycle calls are iframe-document same-origin only; the
+# deployment parent allowlist remains a CSP frame-ancestors policy.
+app.add_middleware(PublicConversationCorsBoundaryMiddleware)
 
 # 정적 파일 서빙 (widget.js) - 옵션
 STATIC_DIR = BASE_DIR / "static"

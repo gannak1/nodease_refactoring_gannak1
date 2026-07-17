@@ -1,6 +1,6 @@
 # Conversation Memory Component Specification
 
-Status: Draft
+Status: Implemented public lifecycle foundation; runtime follow-up pending
 
 ## Architecture
 
@@ -26,7 +26,7 @@ FastAPI request/response, Celery task, SQLAlchemy expression와 provider SDK는 
 
 ## Session Surface Composition
 
-- 초기 Gateway composition은 public Chatbot adapter만 Conversation Session create/run/lifecycle port에 연결한다.
+- MBA-317 Gateway composition은 public Chatbot adapter를 Conversation Session create/close/reset/delete/transcript/purge-status port에 연결한다. public run/turn dispatch는 MBA-318 전 intentionally dormant이며 root-level `conversation` envelope을 fail-closed한다.
 - Authenticated internal Chatbot adapter는 별도 access policy와 route/CSRF/session namespace 계약이 구현된 뒤 연결하는 후속 target이다.
 - Workflow Editor test adapter는 일반 test execution만 수행하고 Conversation Session port를 호출하지 않는다. Editor session은 별도 feature/security contract 전까지 composition allowlist에 등록하지 않는다.
 - Schedule, webhook, API batch와 subworkflow가 임의 public/authenticated adapter를 재사용해 session을 만들 수 없다.
@@ -42,7 +42,11 @@ apps/memory/
     ports.py
     lifecycle.py
     dispatch.py
+    public_lifecycle.py
   adapters/
+    admission.py
+    audit.py
+    security.py
     persistence/
       repository.py
       readiness.py
@@ -76,7 +80,7 @@ SQLAlchemy persistence model은 기존 Alembic metadata registry와의 호환을
 
 Persistence FK는 aggregate ID만 단독 신뢰하지 않고 가능한 모든 Memory-owned relation에 organization/session scope를 포함한다. Active Turn과 Purge tombstone처럼 대상 삭제 시 nullable reference만 `SET NULL`로 보존해야 하는 relation은 단일 `SET NULL` FK와 deferred composite scope FK를 함께 사용해 삭제 보존과 tenant 무결성을 동시에 유지한다.
 
-`StartTurn`은 single-active-turn claim, Turn, TurnDispatchJob과 required outbox가 함께 존재해야 하므로 명시적 cross-aggregate UoW다. `CompleteTurn`은 Turn terminal 전이, Session active-turn 해제/content revision, final entry/projection 승격과 required outbox를 같은 UoW에 둔다. Reset의 old close + new session/grant, Delete의 tombstone + grant revoke + purge job/outbox도 접근 차단 유실을 막는 lifecycle UoW다. 이 예외를 generic multi-aggregate transaction service로 확장하지 않는다. Summary 상태 전이는 각 root의 version/CAS와 process manager로 조정한다.
+`StartTurn`은 single-active-turn claim, Turn, TurnDispatchJob과 required outbox가 함께 존재해야 하므로 명시적 cross-aggregate UoW다. `CompleteTurn`은 Turn terminal 전이, Session active-turn 해제/content revision, final entry/projection 승격과 required outbox를 같은 UoW에 둔다. MBA-317의 Reset old close + old grant revoke + new session/grant/replay, Delete tombstone + grant revoke + purge job/replay/audit outbox도 하나의 lifecycle UoW다. 이 예외를 generic multi-aggregate transaction service로 확장하지 않는다. Summary 상태 전이는 각 root의 version/CAS와 process manager로 조정한다.
 
 ### ConversationSession Aggregate
 

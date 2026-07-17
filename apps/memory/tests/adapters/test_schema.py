@@ -16,6 +16,7 @@ from apps.shared.db.models.conversation_memory import (
     ConversationMemoryEntryRecord,
     ConversationMemorySummaryRecord,
     ConversationPurgeJobRecord,
+    ConversationSecretReplayRecord,
     ConversationSessionRecord,
     ConversationTurnRecord,
     MemoryContextLeaseRecord,
@@ -47,6 +48,7 @@ MODELS = {
     MemoryContextProviderAttemptRecord: "memory_context_provider_attempts",
     ConversationPurgeJobRecord: "conversation_purge_jobs",
     ConversationIdempotencyRecord: "conversation_idempotency_records",
+    ConversationSecretReplayRecord: "conversation_secret_replays",
 }
 
 
@@ -276,6 +278,32 @@ def test_access_grant_and_purge_receipt_never_define_raw_secret_columns():
     } <= set(ConversationPurgeJobRecord.__table__.c.keys())
 
 
+def test_secret_replay_is_encrypted_and_bound_to_one_idempotency_result():
+    columns = ConversationSecretReplayRecord.__table__.c
+    assert {
+        "raw_token",
+        "token",
+        "raw_receipt",
+        "receipt",
+        "secret",
+        "value",
+    }.isdisjoint(columns.keys())
+    assert isinstance(columns.ciphertext.type, BYTEA)
+    assert {
+        "idempotency_record_id",
+        "key_version",
+        "associated_data_digest",
+        "expires_at",
+    } <= set(columns.keys())
+    assert "uq_conv_secret_replay_idempotency" in _constraint_names(
+        ConversationSecretReplayRecord,
+        UniqueConstraint,
+    )
+    assert ("idempotency_record_id", "organization_id") in _composite_foreign_keys(
+        ConversationSecretReplayRecord
+    )
+
+
 def test_entry_and_summary_dependencies_preserve_composite_tenant_scope():
     assert {
         ("entry_id", "session_id", "organization_id"),
@@ -305,6 +333,7 @@ def test_operational_records_are_content_free_and_use_fencing_versions():
         MemoryContextProviderAttemptRecord,
         ConversationPurgeJobRecord,
         ConversationIdempotencyRecord,
+        ConversationSecretReplayRecord,
     )
     for model in operational:
         columns = model.__table__.c
@@ -352,11 +381,32 @@ def test_memory_migration_is_additive_reversible_and_descends_from_current_head(
     assert 'name="uq_conv_sessions_grant_binding"' in source
     assert 'name="fk_conv_grants_session_binding"' in source
     for table_name in MODELS.values():
+        if table_name == "conversation_secret_replays":
+            continue
         assert f'"{table_name}"' in source
         assert f'op.drop_table("{table_name}")' in source
     assert "workflow_runs" not in source
     assert "workflow_node_runs" not in source
     assert "op.drop_column" not in source
+
+
+def test_public_capability_replay_migration_follows_current_dev_head():
+    migration = (
+        ROOT
+        / "apps"
+        / "shared"
+        / "alembic"
+        / "versions"
+        / "ac1d2e3f4a50_add_public_conversation_capability_replay.py"
+    )
+    source = migration.read_text(encoding="utf-8")
+
+    assert 'revision: str = "ac1d2e3f4a50"' in source
+    assert 'down_revision: str | Sequence[str] | None = "f4a5b6c7d8e9"' in source
+    assert '"conversation_secret_replays"' in source
+    assert "uq_conv_idempotency_id_org" in source
+    assert "ALTER TYPE audit_actor_type ADD VALUE IF NOT EXISTS 'public'" in source
+    assert "raw_token" not in source
 
 
 class _Inspector:
