@@ -3,6 +3,7 @@ import subprocess
 import sys
 import threading
 import uuid
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -53,11 +54,15 @@ from apps.shared.db.models.workflow_deployment import (
     DeploymentType,
     WorkflowDeployment,
 )
-from apps.shared.schemas.agent_builder import AgentBuilderApplyRequest
-from apps.shared.schemas.deployment import DeploymentCreate
+from apps.shared.domain.app_auth_secret import (
+    APP_AUTH_SECRET_VERIFIER_VERSION,
+    app_auth_secret_verifier,
+)
 from apps.shared.domain.deployment_runtime_policy import (
     DEFAULT_DEPLOYMENT_RUNTIME_POLICY,
 )
+from apps.shared.schemas.agent_builder import AgentBuilderApplyRequest
+from apps.shared.schemas.deployment import DeploymentCreate
 from apps.shared.tests.helpers.disposable_postgres import (
     DisposablePostgresConfig,
     DisposablePostgresConfigurationError,
@@ -758,6 +763,12 @@ def test_deployment_create_waits_for_primary_transition_app_lock(
     actor, _collaborator, organization, app, old_workflow, _team = _app_context(
         db_session
     )
+    app.auth_secret_verifier = app_auth_secret_verifier(
+        "synthetic-agent-builder-deployment-secret"
+    )
+    app.auth_secret_verifier_version = APP_AUTH_SECRET_VERIFIER_VERSION
+    app.auth_secret_generation = 1
+    app.auth_secret_rotated_at = datetime.now(timezone.utc)
     draft = _ready_new_workflow_draft(
         db_session,
         actor=actor,
