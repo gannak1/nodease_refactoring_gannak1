@@ -16,7 +16,6 @@ import {
   MousePointerClick,
   Wand2,
   FileJson,
-  RefreshCw,
 } from 'lucide-react';
 import { PromptWizardModal } from '../../../modals/PromptWizardModal';
 import { ModelSelectDropdown } from './ModelSelectDropdown';
@@ -50,12 +49,6 @@ type ModelOption = {
 };
 
 const TOKEN_PATTERN = /{{\s*([^}]+?)\s*}}/g;
-
-const routingProfileLabel = (profile: string) => {
-  if (profile === 'short') return '짧은 입력';
-  if (profile === 'long') return '긴 입력';
-  return '보통 입력';
-};
 
 const extractTokenNames = (value: string) => {
   const names = new Set<string>();
@@ -278,18 +271,12 @@ export function LLMNodePanel({
     });
     return () => window.cancelAnimationFrame(animationFrame);
   }, [fullscreenNodeSettingsSection, nodeId]);
-  const [isOptimizationModalOpen, setIsOptimizationModalOpen] = useState(false);
-  const [appliedRecommendationIds, setAppliedRecommendationIds] = useState<
-    string[]
-  >([]);
   const [draftJsonSchemaFields, setDraftJsonSchemaFields] = useState<
     JsonSchemaField[]
   >(() => schemaFieldsFromOutputFormat(data.output_format));
   const [persistedRoutingPolicy, setPersistedRoutingPolicy] =
     useState<ModelRoutingPolicyResponse | null>(null);
   const [routingPolicyError, setRoutingPolicyError] = useState<string | null>(null);
-  const [isRoutingPolicyRefreshing, setIsRoutingPolicyRefreshing] =
-    useState(false);
   const [routingBootstrapPreview, setRoutingBootstrapPreview] =
     useState<ModelRoutingBootstrapPreview | null>(null);
   const [routingBootstrap, setRoutingBootstrap] =
@@ -434,11 +421,6 @@ export function LLMNodePanel({
     data.model_routing_policy,
     persistedRoutingPolicy,
   ]);
-  const judgeLearning =
-    persistedRoutingPolicy?.active_policy?.strategy_id ===
-    'judge_bootstrap_incremental_v1'
-      ? persistedRoutingPolicy.active_policy.learning
-      : null;
   const upstreamNodes = useMemo(
     () => getUpstreamNodes(nodeId, nodes, edges),
     [nodeId, nodes, edges],
@@ -641,32 +623,6 @@ export function LLMNodePanel({
       syncRoutingPolicy,
     ],
   );
-
-  const handleManualRoutingPolicyRefresh = useCallback(async () => {
-    if (
-      !activeWorkflowId ||
-      !persistedRoutingPolicy?.policy_id ||
-      isRoutingPolicyRefreshing
-    ) {
-      return;
-    }
-    try {
-      setIsRoutingPolicyRefreshing(true);
-      await workflowApi.refreshModelRoutingPolicy(activeWorkflowId, nodeId);
-      await loadRoutingPolicy();
-      setRoutingPolicyError(null);
-    } catch {
-      setRoutingPolicyError('정책 갱신을 요청하지 못했습니다.');
-    } finally {
-      setIsRoutingPolicyRefreshing(false);
-    }
-  }, [
-    activeWorkflowId,
-    isRoutingPolicyRefreshing,
-    loadRoutingPolicy,
-    nodeId,
-    persistedRoutingPolicy?.policy_id,
-  ]);
 
   const handleCreateRoutingBootstrap = useCallback(async () => {
     if (!activeWorkflowId || isCreatingRoutingBootstrap) return;
@@ -1071,16 +1027,13 @@ export function LLMNodePanel({
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <div className="text-xs font-semibold text-slate-800">
-                        자동 라우팅 사용 중
+                        자동 선택 사용 중
                       </div>
                       <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
-                        기본 모델은 불확실하거나 Judge를 사용할 수 없을 때만 쓰며,
-                        정상 운영 요청은 현재 정책의 후보 중에서 선택합니다.
+                        요청마다 적합한 모델을 자동 선택합니다. 판단이 불확실하거나
+                        자동 선택을 사용할 수 없을 때는 기본 모델로 실행합니다.
                       </p>
                     </div>
-                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">
-                      {routingPolicySummary.statusLabel}
-                    </span>
                   </div>
                   <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <div className="rounded border border-slate-100 bg-slate-50 p-2">
@@ -1114,9 +1067,9 @@ export function LLMNodePanel({
                     </div>
                   </div>
                   <div className="mt-3 rounded-md border border-violet-200 bg-violet-50/50 p-3">
-                    <div className="flex items-start gap-1.5">
-                      <div className="text-xs font-semibold text-violet-950">
-                        자동 선택 기준 만들기
+                      <div className="flex items-start gap-1.5">
+                        <div className="text-xs font-semibold text-violet-950">
+                          자동 선택 기준 만들기
                       </div>
                       <HelpPopover
                         id="system"
@@ -1124,14 +1077,14 @@ export function LLMNodePanel({
                         onToggle={toggleHelp}
                         widthClassName="w-72"
                       >
-                        이 노드의 작업 설명과 실행 가능한 모델 목록을 Judge-first
-                        정책으로 준비합니다. 초기에는 Judge가 모델을 고르고, 선택
-                        결과가 충분히 쌓이면 로컬 라우터가 먼저 판단합니다.
+                        이 노드의 작업 설명과 실행 가능한 모델 목록을 준비합니다.
+                        초기에는 Judge가 모델을 고르고, 충분한 정상 실행 결과가
+                        쌓이면 로컬 라우터가 먼저 판단합니다.
                       </HelpPopover>
                     </div>
                     <p className="mt-1 text-[11px] leading-relaxed text-violet-800">
-                      합성 예문이나 난이도 구간을 만들지 않습니다. 운영 요청마다
-                      Judge가 남긴 선택 결과를 로컬 라우터의 학습 자료로 사용합니다.
+                      운영 요청에서 확인된 정상 선택 결과를 모아 자동 선택을 점차
+                      빠르게 만듭니다. 요청 원문은 저장하지 않습니다.
                     </p>
                     <label className="mt-3 block text-[11px] font-semibold text-slate-700">
                       이 노드가 하는 작업
@@ -1147,7 +1100,7 @@ export function LLMNodePanel({
                       <div className="font-semibold">점진 학습 상태</div>
                       <p className="mt-1">
                         {routingBootstrapPreview
-                          ? `동일 작업의 성공 운영 로그 ${routingBootstrapPreview.available_history_count}건을 확인했습니다. 과거 로그는 현황 표시에만 사용하며 새 모델 선택은 Judge 결과부터 학습합니다.`
+                          ? `동일 작업의 성공 운영 로그 ${routingBootstrapPreview.available_history_count}건을 확인했습니다. 과거 로그는 현황 표시에만 참고합니다.`
                           : '운영 로그 확인 중'}
                       </p>
                     </div>
@@ -1167,219 +1120,22 @@ export function LLMNodePanel({
                     {routingBootstrap ? (
                       <div className="mt-3 rounded border border-violet-100 bg-white p-2 text-[11px] text-slate-700">
                         <div className="font-semibold text-violet-900">
-                          Judge-first 정책 준비 완료
+                          자동 선택 기준 준비 완료
                         </div>
                         <p className="mt-1">
                           후보 모델{' '}
                           {Number(routingBootstrap.generation_summary.candidate_model_count || 0)}개를
-                          Judge가 비교할 수 있습니다. 첫 실행부터 Judge가 선택하며 합성 예문 생성 비용은 없습니다.
+                          자동 선택에 사용합니다. 첫 실행부터 Judge가 모델을 고르며,
+                          합성 예문 생성 비용은 없습니다.
                         </p>
                       </div>
                     ) : null}
                   </div>
-                  <dl className="mt-3 grid grid-cols-1 gap-2 text-[11px] sm:grid-cols-2">
-                    <div className="rounded border border-slate-100 bg-slate-50 p-2">
-                      <dt className="font-semibold text-slate-500">
-                        정책 버전
-                      </dt>
-                      <dd className="mt-1 truncate font-semibold text-slate-900">
-                        {routingPolicySummary.policyVersion}
-                      </dd>
-                    </div>
-                    <div className="rounded border border-slate-100 bg-slate-50 p-2">
-                      <dt className="font-semibold text-slate-500">
-                        운영 반영 방식
-                      </dt>
-                      <dd className="mt-1 font-semibold text-slate-900">
-                        실행 완료마다 성적 누적
-                      </dd>
-                    </div>
-                  </dl>
-                  <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
-                    갱신 근거: {routingPolicySummary.reasonCode}
-                  </p>
-                  {routingPolicySummary.lastUpdate ? (
-                    <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-2.5 text-[11px]">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="font-semibold text-slate-700">
-                          최근 정책 점검
-                        </span>
-                        <span className="font-semibold text-slate-600">
-                          {routingPolicySummary.lastUpdate.trigger ===
-                          'deployment_bootstrap'
-                            ? '배포 정책 생성'
-                            : routingPolicySummary.lastUpdate.trigger ===
-                                'score_change'
-                              ? '운영 성적 변화'
-                              : '직접 재평가'}{' '}
-                          ·{' '}
-                          {routingPolicySummary.lastUpdate.status === 'applied'
-                            ? '반영됨'
-                            : routingPolicySummary.lastUpdate.status}
-                        </span>
-                      </div>
-                      <p className="mt-1 text-slate-500">
-                        운영 표본 {routingPolicySummary.lastUpdate.eligible_run_count}회
-                        · 제외 {routingPolicySummary.lastUpdate.excluded_run_count}회
-                      </p>
-                    </div>
-                  ) : null}
                   {routingPolicyError ? (
                     <p className="mt-2 text-[11px] text-rose-600">
                       {routingPolicyError}
                     </p>
                   ) : null}
-                  {!persistedRoutingPolicy?.policy_id ? (
-                    <p className="mt-3 text-[11px] leading-relaxed text-slate-500">
-                      배포할 때 첫 실행용 정책을 즉시 생성합니다. 아직 배포된 정책이
-                      없어 현재 초안에서는 기본 모델을 사용합니다.
-                    </p>
-                  ) : null}
-                  <button
-                    type="button"
-                    className="nodrag mt-3 inline-flex items-center gap-1.5 rounded-md border border-emerald-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-60"
-                    onClick={handleManualRoutingPolicyRefresh}
-                    disabled={
-                      isRoutingPolicyRefreshing ||
-                      routingPolicySummary.status === 'refreshing' ||
-                      !activeWorkflowId ||
-                      !persistedRoutingPolicy?.policy_id
-                    }
-                  >
-                    <RefreshCw
-                      className={`h-3.5 w-3.5 ${isRoutingPolicyRefreshing ? 'animate-spin' : ''}`}
-                    />
-                    정책 다시 평가
-                  </button>
-                  <div
-                    data-testid="routing-refresh-controls"
-                    className="order-2 mt-3 rounded-lg border border-emerald-100 bg-emerald-50/60 p-3"
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <div className="text-xs font-semibold text-emerald-900">
-                          운영 성적 자동 반영
-                        </div>
-                        <p className="mt-0.5 text-[11px] leading-relaxed text-emerald-700">
-                          배포 실행이 끝날 때마다 모델별 품질·비용·지연 성적을
-                          누적합니다. 테스트 실행은 포함하지 않습니다.
-                        </p>
-                      </div>
-                      <span className="shrink-0 rounded bg-white px-2 py-1 text-xs font-mono font-semibold text-emerald-800 ring-1 ring-emerald-200">
-                        {routingPolicySummary.performance.total_runs}회
-                      </span>
-                    </div>
-                    <div className="mt-3 space-y-2">
-                      {routingPolicySummary.performance.models.length === 0 ? (
-                        <div className="rounded border border-dashed border-emerald-200 bg-white px-3 py-2 text-[11px] text-emerald-800">
-                          아직 배포 운영 성적이 없습니다.
-                        </div>
-                      ) : (
-                        routingPolicySummary.performance.models.map((model) => (
-                          <div
-                            key={`${model.model_id}:${model.input_profile}`}
-                            className="rounded border border-emerald-100 bg-white px-3 py-2 text-[11px]"
-                          >
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="truncate font-semibold text-slate-800">
-                                {model.model_id} ·{' '}
-                                {routingProfileLabel(model.input_profile)}
-                              </span>
-                              <span className="shrink-0 text-slate-500">
-                                {model.run_count}회
-                              </span>
-                            </div>
-                            <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-slate-500">
-                              <span>품질 {(model.quality_score * 100).toFixed(1)}%</span>
-                              <span>
-                                평균 비용{' '}
-                                {model.avg_cost === null
-                                  ? '-'
-                                  : `$${model.avg_cost.toFixed(6)}`}
-                              </span>
-                              <span>
-                                평균 지연{' '}
-                                {model.avg_latency_ms === null
-                                  ? '-'
-                                  : `${Math.round(model.avg_latency_ms)}ms`}
-                              </span>
-                            </div>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                    <div className="mt-3 rounded border border-emerald-200 bg-white px-3 py-2 text-[11px] text-emerald-900">
-                      <div className="font-semibold">정책 교체 보호 기준</div>
-                      <p className="mt-1 leading-relaxed text-emerald-700">
-                        새 운영 표본 {routingPolicySummary.changePolicy.minimum_new_runs}회
-                        이상 · 품질 하락 방지 · 비용·지연{' '}
-                        {Math.round(
-                          routingPolicySummary.changePolicy
-                            .efficiency_improvement_threshold * 100,
-                        )}
-                        % 이상 개선일 때만 정책을 교체합니다.
-                      </p>
-                    </div>
-                  </div>
-                  <div className="mt-3 rounded-lg border border-sky-100 bg-sky-50/60 p-3 text-[11px]">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <div className="text-xs font-semibold text-sky-900">
-                          계약 확인 학습 상태
-                        </div>
-                        <p className="mt-0.5 leading-relaxed text-sky-800">
-                          Judge가 고른 모델은 실행이 끝난 뒤 스키마, 후속 단계, 대체 실행 여부를 확인한 경우에만 로컬 학습에 반영합니다.
-                        </p>
-                      </div>
-                    </div>
-                    <div className="mt-2 flex flex-wrap gap-2 text-sky-900">
-                      <span className="rounded border border-sky-200 bg-white px-2 py-1">
-                        학습 반영 {routingPolicySummary.learningSummary.accepted_count}건
-                      </span>
-                      <span className="rounded border border-sky-200 bg-white px-2 py-1">
-                        결과 대기 {routingPolicySummary.learningSummary.pending_count}건
-                      </span>
-                      <span className="rounded border border-sky-200 bg-white px-2 py-1">
-                        학습 제외 {routingPolicySummary.learningSummary.rejected_count}건
-                      </span>
-                    </div>
-                  </div>
-                  <div
-                    data-testid="routing-judge-first-policy"
-                    className="order-1 mt-3 rounded-lg border border-violet-200 bg-violet-50/40 p-3"
-                  >
-                    <div className="text-xs font-semibold text-violet-950">
-                      Judge-first + 점진적 로컬 학습
-                    </div>
-                    <p className="mt-1 text-[11px] leading-relaxed text-violet-800">
-                      초기에는 Judge가 사용 가능한 후보 모델 중 하나를 선택합니다.
-                      성공한 실행의 선택 결과와 품질이 충분히 쌓이면 로컬 라우터가
-                      먼저 판단하고, 확신이 낮을 때만 Judge를 다시 호출합니다.
-                    </p>
-                    <dl className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                      <div className="rounded border border-violet-100 bg-white px-2.5 py-2 text-[11px]">
-                        <dt className="font-semibold text-slate-700">현재 선택 방식</dt>
-                        <dd className="mt-1 font-semibold text-slate-950">
-                          {judgeLearning?.mode === 'local_first'
-                            ? '로컬 라우터 우선'
-                            : 'Judge 선택 학습 중'}
-                        </dd>
-                      </div>
-                      <div className="rounded border border-violet-100 bg-white px-2.5 py-2 text-[11px]">
-                        <dt className="font-semibold text-slate-700">학습된 Judge 선택</dt>
-                        <dd className="mt-1 font-semibold text-slate-950">
-                          {judgeLearning?.judged_request_count ?? 0}건
-                        </dd>
-                      </div>
-                      <div className="rounded border border-violet-100 bg-white px-2.5 py-2 text-[11px] sm:col-span-2">
-                        <dt className="font-semibold text-slate-700">Judge 모델</dt>
-                        <dd className="mt-1 font-semibold text-slate-950">
-                          {persistedRoutingPolicy?.active_policy?.judge_model_id ||
-                            '기본 모델'}
-                        </dd>
-                      </div>
-                    </dl>
-                  </div>
                 </div>
               ) : (
                 <>
