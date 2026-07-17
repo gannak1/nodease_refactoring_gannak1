@@ -1,7 +1,7 @@
 # Deployment Test Cases
 
 Status: Draft
-Verified Against: `feature/mba-254 @ 95e821ef`
+Verified Against: `feature/mba-247 @ 311a4bc2`
 
 ## Unit Tests
 
@@ -9,6 +9,7 @@ Verified Against: `feature/mba-254 @ 95e821ef`
 - Domain-separated verifier는 같은 candidate에 안정적인 fixed-length 결과를 만들며 current/유효 previous를 constant-time 경로로 검증한다. Unknown algorithm, malformed state, non-ASCII, 0/513-byte candidate와 expiry 경계 `now >= previous_valid_until`은 fail-closed한다.
 - Rotation state transition은 최초 `0 -> 1`, 일반 `N -> N+1`, 즉시 previous 폐기, 기존 previous 교체, stale expected version과 두 경쟁 요청의 단일 winner를 검증한다.
 - Audit metadata sanitizer는 secret, verifier, candidate, prefix, 길이, Authorization과 fingerprint를 허용하지 않는다.
+- API/Webhook 배포 input 단계에서 발급한 one-time secret은 optimization·success 단계까지 메모리로 전달되어 즉시 테스트에 사용할 수 있고, 단계 전환 중 초기화되거나 browser storage에 저장되지 않는다. 모달 close/reopen은 해당 값을 폐기한다.
 
 - Readiness inventory는 object가 아닌 JSONB policy와 malformed/unknown contract를 예외로 중단하지 않고 `malformed`로 집계하며 raw policy 값을 출력하지 않는다.
 - Deployment application package는 FastAPI, SQLAlchemy, DB model, concrete adapter/service/composition module을 import하지 않는다.
