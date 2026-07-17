@@ -14,6 +14,10 @@ Status: Draft
 - ProviderExecutionCapability issuer는 opaque identity/revision, organization/workflow/deployment version, node invocation/execution admission/provider attempt, provider/model/credential, server-derived credential principal, credential permission decision, purpose, verified relation/egress·pricing revision, token·cost cap과 expiry를 모두 고정한다.
 - Capability response/trace에는 raw credential, encrypted config와 capability token/scope 원문을 노출하지 않는다.
 - Capability consumer가 client 값으로 credential principal 또는 permission revision을 덮어쓰려 하면 발급·사용을 거부한다.
+- Credential config service는 active key round trip, 구키 decrypt, canonical JSON과 required `apiKey` validation을 수행한다.
+- Encryption metadata가 모두 null인 legacy row만 평문 read를 허용한다. Metadata 일부 누락, unsupported algorithm, unknown key version, 손상 ciphertext 또는 invalid config는 평문 fallback 없이 실패한다.
+- Gateway와 Workflow Engine의 신규 credential 등록은 raw config와 다른 ciphertext, active key version과 algorithm을 저장한다.
+- Gateway·Workflow Engine·RAG answer·embedding·LlamaParse의 decrypt 실패 테스트는 provider/client mock 호출이 0회임을 검증한다.
 
 ## API 테스트
 
@@ -47,3 +51,7 @@ Status: Draft
 - Capability의 deployment version, node invocation, model, pricing revision, token/cost cap 또는 expiry 중 하나가 mismatch이면 raw secret/provider call 없이 fail-closed한다.
 - Capability의 execution admission 또는 provider attempt binding을 다른 run/attempt에서 재사용하면 provider SDK 호출 전에 fail-closed한다.
 - Provider call 시작 뒤 credential이 revoke된 ambiguous outcome은 자동 재호출하지 않되 이미 발생한 usage reconciliation은 같은 capability/attempt safe reference로 한 번만 처리한다.
+- Plaintext backfill과 key rotation은 batch size/max-batches를 지키고 concurrent worker가 `SKIP LOCKED`로 같은 row를 중복 처리하지 않으며 재실행해도 active row를 다시 쓰지 않는다.
+- Malformed row가 포함된 rotation batch는 전체 rollback되고 운영 출력에는 config, API key, ciphertext, key 또는 원본 예외가 없어야 한다.
+- Gateway와 Workflow Worker는 missing/invalid keyring 또는 active version 누락에서 시작을 거부하고, Log System deployment에는 LLM keyring이 주입되지 않는다.
+- Encrypted metadata row가 존재하면 schema downgrade는 metadata 유실 전에 fail-closed한다.

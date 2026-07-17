@@ -77,6 +77,7 @@ ADR 본문은 작성 시점의 결정 과정을 보존하는 기록 문서다. `
 | [ADR-0054](ADR-0054-agent-builder-generation-modes.md) | Accepted | Agent Builder 생성 모드와 전환 경계 | 기본 `guided_generate`, 명시적 `quick_generate`, 고급 `structure_only`를 정의한다. 빠른 생성도 typed GraphMutation/CDS CAS를 사용하고 서버 eligibility와 사용자 확인을 통과하며 Legacy Preview 프로토콜을 복구하지 않는다. |
 | [ADR-0055](ADR-0055-agent-builder-intent-usage-attribution.md) | Accepted | Agent Builder intent 사용량 귀속 경계 | Planner와 repair 호출을 실제 user/organization/workflow/model/credential에 별도로 귀속하고, provider 응답 직후 raw content 없이 기존 `llm_usage_logs`에 멱등 저장한다. 모델·credential 삭제 뒤에도 token/cost 이력을 보존하며 기존 관리·예산·월 예상 비용 집계에 포함한다. |
 | [ADR-0056](ADR-0056-app-auth-secret-issuance-and-rotation.md) | Accepted | App 인증 secret 발급·검증·rotation 경계 | App·Deployment 일반 응답에서 secret 원문을 제거하고 명시적 one-time rotation API만 원문을 반환한다. App에는 비가역 current/previous verifier와 version을 저장하며, row lock·CAS·최대 5분 grace·즉시 폐기·transaction-bound audit을 적용한다. |
+| [ADR-0055](ADR-0055-llm-credential-at-rest-encryption-and-rotation.md) | Accepted | LLM credential 저장 암호화와 key rotation | LLM credential config를 전용 versioned keyring으로 암호화하고 Shared 단일 decrypt 경계, dual-read/single-write 전환, Gateway·Workflow Worker·Knowledge Worker startup 검증과 제한 batch backfill·rotation을 적용한다. |
 
 ## 참고 보고서
 

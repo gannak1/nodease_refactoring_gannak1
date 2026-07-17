@@ -374,6 +374,17 @@ def test_register_credential_flushes_default_organization_before_manager_check(
         "has_organization_manager_permission",
         has_manager_permission,
     )
+    protected_configs = []
+
+    def protect_config(config):
+        protected_configs.append(config)
+        return SimpleNamespace(
+            ciphertext="synthetic-ciphertext",
+            key_version="v2",
+            algorithm="fernet-v1",
+        )
+
+    monkeypatch.setattr(llm_service, "protect_llm_credential_config", protect_config)
     monkeypatch.setattr(LLMService, "_fetch_remote_models", lambda *a, **k: [])
     monkeypatch.setattr(LLMService, "_sync_models_to_db", lambda *a, **k: [])
     monkeypatch.setattr(
@@ -386,7 +397,106 @@ def test_register_credential_flushes_default_organization_before_manager_check(
 
     assert manager_check_flush_counts == [1]
     assert credential.organization_id is not None
+    assert credential.encrypted_config == "synthetic-ciphertext"
+    assert credential.encryption_key_version == "v2"
+    assert credential.encryption_algorithm == "fernet-v1"
+    assert protected_configs == [
+        {"apiKey": "sk-test", "baseUrl": "https://api.example"}
+    ]
     assert db.committed is True
+
+
+def test_provider_verification_does_not_expose_response_body(monkeypatch):
+    sensitive_body = "provider payload with api_key=must-not-leak"
+    monkeypatch.setattr(
+        llm_service.requests,
+        "get",
+        lambda *args, **kwargs: SimpleNamespace(
+            status_code=500,
+            text=sensitive_body,
+        ),
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        LLMService._fetch_remote_models(
+            "https://api.example",
+            "synthetic-key",
+            "openai",
+        )
+
+    assert "status_code=500" in str(exc_info.value)
+    assert sensitive_body not in str(exc_info.value)
+
+
+def test_provider_verification_does_not_expose_network_error(monkeypatch):
+    sensitive_detail = "request failed with token=must-not-leak"
+
+    def fail_request(*args, **kwargs):
+        raise RuntimeError(sensitive_detail)
+
+    monkeypatch.setattr(llm_service.requests, "get", fail_request)
+
+    with pytest.raises(ValueError) as exc_info:
+        LLMService._fetch_remote_models(
+            "https://api.example",
+            "synthetic-key",
+            "openai",
+        )
+
+    assert "Network error verifying openai key" == str(exc_info.value)
+    assert sensitive_detail not in str(exc_info.value)
+
+
+def test_provider_verification_does_not_expose_json_error(monkeypatch):
+    sensitive_detail = "invalid provider JSON with api_key=must-not-leak"
+
+    class InvalidJsonResponse:
+        status_code = 200
+
+        def json(self):
+            raise ValueError(sensitive_detail)
+
+    monkeypatch.setattr(
+        llm_service.requests,
+        "get",
+        lambda *args, **kwargs: InvalidJsonResponse(),
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        LLMService._fetch_remote_models(
+            "https://api.example",
+            "synthetic-key",
+            "openai",
+        )
+
+    assert str(exc_info.value) == "Invalid model response from openai"
+    assert sensitive_detail not in str(exc_info.value)
+
+
+def test_credential_registration_endpoint_redacts_unexpected_error(monkeypatch):
+    sensitive_detail = "database failed with ciphertext=must-not-leak"
+    request = LLMCredentialCreate(
+        provider_id=uuid.uuid4(),
+        organization_id=uuid.uuid4(),
+        credential_name="shared",
+        api_key="synthetic-key",
+    )
+
+    def fail_registration(*args, **kwargs):
+        raise RuntimeError(sensitive_detail)
+
+    monkeypatch.setattr(LLMService, "register_credential", fail_registration)
+
+    with pytest.raises(HTTPException) as exc_info:
+        llm_endpoint.register_credential.__wrapped__(
+            request,
+            FakeDb(None),
+            SimpleNamespace(id=uuid.uuid4()),
+        )
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == "Credential registration failed"
+    assert sensitive_detail not in str(exc_info.value.detail)
 
 
 def test_get_user_credentials_filters_by_read_permission(monkeypatch):

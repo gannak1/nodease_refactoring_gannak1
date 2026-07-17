@@ -16,6 +16,9 @@ Status: Draft
 - `LlamaParseCredentialResolver`: document parsing 직전에 execution subject, active organization, `llamaparse` provider 호환성, valid 상태와 credential `use` 권한을 확인하고 단일 허용 credential의 parser 입력만 반환한다. FileProcessor는 ORM row나 저장 config를 직접 해석하지 않는다.
 - `AgentAnswerOptionProvider`: credential secret이나 전체 owner metadata를 반환하지 않고 standalone RAG answer flow용 safe option schema를 만든다.
 - `ProviderExecutionCapabilityIssuer`: 이 capability 계약의 authoritative owner다. Canonical runtime scope와 admission, server-derived credential principal, credential `use` decision revision, verified model relation, egress/pricing policy와 token·cost cap을 검증해 invocation/provider-attempt에 binding된 short-lived opaque capability identity/revision을 발급한다. Raw credential을 application/Memory에 반환하지 않는다.
+- `LLMCredentialConfigService`: canonical config JSON을 active key로 암호화하고 row metadata를 기준으로 encrypted/legacy read를 구분한다. 복호화, JSON/schema validation과 safe error normalization의 유일한 application 경계다.
+- `LLMCredentialRotationService`: legacy 평문과 non-active key row를 stable order와 `FOR UPDATE SKIP LOCKED` 제한 batch로 active key에 재암호화하고 남은 대상 수만 반환한다.
+- `LLMCredentialKeyringReadiness`: Gateway와 Workflow Worker 시작 시 keyring JSON, Fernet key와 active version을 검증한다.
 
 ## 상태
 
@@ -33,6 +36,8 @@ Status: Draft
 - LlamaParse parsing은 provider 호출 전에 credential resolver를 통과해야 한다. 후보 없음/복수, revoke/invalid, 권한 상실, provider 불일치 또는 context 누락은 safe reason으로 종료하며 전역/환경 변수 fallback을 사용하지 않는다.
 - Main generation과 Memory summary는 각각 purpose가 고정된 ProviderExecutionCapability를 사용한다. Summary는 `inherit_node`에서 별도 capability를 발급하고 organization default/owner credential을 추론하지 않는다.
 - Capability identity/revision은 Memory lease, Budget reservation, provider attempt와 usage reconciliation에 전달한다. Credential revoke/permission revision 변경과 scope/admission/attempt/expiry mismatch는 새 claim·reservation·provider SDK 호출 전에 거부한다. Consumer는 credential principal이나 capability revision을 자체 합성하지 않는다.
+- 신규 credential write는 active encryption version만 사용한다. Legacy read는 encryption metadata 두 값이 모두 null인 row에만 허용하며 metadata pair 불일치 또는 encrypted row decrypt 실패에는 평문 fallback을 하지 않는다.
+- Rotation은 신·구키 동시 배포, active version 전환, batch 재암호화, 구키 참조 0 확인, 구키 제거 순서로 수행한다. Alembic migration은 key를 읽거나 row를 암호화하지 않는다.
 
 ## 접근성
 

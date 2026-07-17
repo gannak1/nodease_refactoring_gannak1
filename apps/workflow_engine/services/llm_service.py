@@ -1,4 +1,3 @@
-import json
 import logging
 import uuid
 from dataclasses import dataclass
@@ -21,6 +20,11 @@ from apps.shared.schemas.llm import (
     LLMProviderResponse,
 )
 from apps.shared.services.llm_client import get_llm_client
+from apps.shared.services.llm_credential_config import (
+    LLMCredentialConfigError,
+    load_llm_credential_config,
+    protect_llm_credential_config,
+)
 from apps.shared.services.llm_usage_context import resolve_llm_usage_context
 from apps.shared.services.permissions import has_llm_credential_permission
 
@@ -227,7 +231,12 @@ class LLMService:
                     timeout=10,
                 )
                 if resp.status_code == 200:
-                    data = resp.json()
+                    try:
+                        data = resp.json()
+                    except ValueError:
+                        raise ValueError(
+                            f"Invalid model response from {provider}"
+                        ) from None
                     # OpenAI는 { "data": [ { "id": "model-id", ... }, ... ] } 형식으로 반환
                     remote_models = data.get("data", [])
                 elif resp.status_code in [401, 403]:
@@ -238,13 +247,16 @@ class LLMService:
                 else:
                     # 그 외 상태 코드는 등록 단계 실패로 처리
                     raise ValueError(
-                        f"Failed to fetch models from {provider}: {resp.status_code} {resp.text}"
+                        f"Failed to fetch models from {provider}: "
+                        f"status_code={resp.status_code}"
                     )
             except ValueError:
                 raise  # 알려진 ValueError는 그대로 전달
-            except Exception as e:
+            except Exception:
                 # 네트워크/타임아웃 오류 처리
-                raise ValueError(f"Network error verifying {provider} key: {str(e)}")
+                raise ValueError(
+                    f"Network error verifying {provider} key"
+                ) from None
 
             if provider == "google" and remote_models:
                 remote_models = LLMService._filter_google_models(
@@ -263,7 +275,12 @@ class LLMService:
                     timeout=10,
                 )
                 if resp.status_code == 200:
-                    data = resp.json()
+                    try:
+                        data = resp.json()
+                    except ValueError:
+                        raise ValueError(
+                            "Invalid model response from Anthropic"
+                        ) from None
                     # Anthropic은 { "data": [ { "id": "claude-...", ... }, ... ] } 형식으로 반환
                     remote_models = data.get("data", [])
                 elif resp.status_code in [401, 403]:
@@ -272,12 +289,13 @@ class LLMService:
                     )
                 else:
                     raise ValueError(
-                        f"Failed to fetch models from Anthropic: {resp.status_code} {resp.text}"
+                        "Failed to fetch models from Anthropic: "
+                        f"status_code={resp.status_code}"
                     )
             except ValueError:
                 raise
-            except Exception as e:
-                raise ValueError(f"Network error verifying Anthropic key: {str(e)}")
+            except Exception:
+                raise ValueError("Network error verifying Anthropic key") from None
 
         # LlamaParse (라마파스)
         elif provider == "llamaparse":
@@ -300,12 +318,13 @@ class LLMService:
                     )
                 else:
                     raise ValueError(
-                        f"Failed to verify LlamaParse key: {resp.status_code} {resp.text}"
+                        "Failed to verify LlamaParse key: "
+                        f"status_code={resp.status_code}"
                     )
             except ValueError:
                 raise
-            except Exception as e:
-                raise ValueError(f"Network error verifying LlamaParse key: {str(e)}")
+            except Exception:
+                raise ValueError("Network error verifying LlamaParse key") from None
         # 현재는 빈 리스트를 반환하지만, 추후 지원 여부 검증 로직이 필요함.
 
         if not remote_models and provider in ["openai", "google", "anthropic"]:
@@ -510,21 +529,23 @@ class LLMService:
         if not provider:
             raise ValueError(f"Provider {request.provider_id} not found")
 
+        envelope = protect_llm_credential_config(
+            {"apiKey": request.api_key, "baseUrl": provider.base_url}
+        )
+
         # 2. API 키 검증 및 모델 조회
         remote_models = LLMService._fetch_remote_models(
             provider.base_url, request.api_key, provider.name
         )
 
         # 3. 크리덴셜 생성
-        config_json = json.dumps(
-            {"apiKey": request.api_key, "baseUrl": provider.base_url}
-        )
-
         new_cred = LLMCredential(
             provider_id=provider.id,
             user_id=user_id,
             credential_name=request.credential_name,
-            encrypted_config=config_json,
+            encrypted_config=envelope.ciphertext,
+            encryption_key_version=envelope.key_version,
+            encryption_algorithm=envelope.algorithm,
             is_valid=True,
             quota_type="unlimited",
             quota_limit=0,
@@ -598,11 +619,11 @@ class LLMService:
             raise ValueError("Credential is not valid")
 
         try:
-            cfg = json.loads(cred.encrypted_config)
+            cfg = load_llm_credential_config(cred)
             api_key = cfg.get("apiKey")
             base_url = cfg.get("baseUrl")
-        except Exception:
-            raise ValueError("Invalid credential config")
+        except LLMCredentialConfigError as exc:
+            raise ValueError("Invalid credential config") from exc
 
         remote_models = LLMService._fetch_remote_models(
             base_url=base_url, api_key=api_key, provider_type=cred.provider.name
@@ -740,11 +761,11 @@ class LLMService:
 
         # 설정 로드
         try:
-            cfg = json.loads(cred.encrypted_config)
+            cfg = load_llm_credential_config(cred)
             api_key = cfg.get("apiKey")
             base_url = cfg.get("baseUrl")
-        except:
-            raise ValueError("Invalid credential config")
+        except LLMCredentialConfigError as exc:
+            raise ValueError("Invalid credential config") from exc
 
         db.refresh(cred)
         provider_type = cred.provider.name

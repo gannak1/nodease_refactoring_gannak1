@@ -1,11 +1,13 @@
-import json
 import logging
 from typing import List
 from uuid import UUID
 
 import openai
 from apps.shared.db.models.llm import LLMCredential, LLMProvider
-from apps.shared.utils.encryption import encryption_manager
+from apps.shared.services.llm_credential_config import (
+    LLMCredentialConfigError,
+    load_llm_credential_config,
+)
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
@@ -55,23 +57,16 @@ class EmbeddingService:
 
         # 2. API Key 복호화
         try:
-            config_str = credential.encrypted_config
-            # TODO: 실제로는 DB에 암호화되어 저장되지만, 현재 개발환경에서 평문일 수도 있음
-            # encryption_manager를 통해 복호화 시도
-            try:
-                config_json = encryption_manager.decrypt(config_str)
-            except Exception:
-                config_json = config_str
+            config = load_llm_credential_config(credential)
+        except LLMCredentialConfigError as exc:
+            raise ValueError("Failed to initialize OpenAI client") from exc
 
-            config = json.loads(config_json)
-            api_key = config.get("apiKey")
-            if not api_key:
-                raise ValueError("API Key missing in credential config")
-
+        try:
+            api_key = config["apiKey"]
             self._client = openai.OpenAI(api_key=api_key)
             return self._client
-        except Exception as e:
-            raise ValueError(f"Failed to initialize OpenAI client: {e}")
+        except Exception:
+            raise ValueError("Failed to initialize OpenAI client") from None
 
     def embed_batch(self, texts: List[str], model: str = None) -> List[List[float]]:
         """
@@ -88,8 +83,11 @@ class EmbeddingService:
             # 순서 보장
             embeddings = [data.embedding for data in response.data]
             return embeddings
-        except Exception as e:
-            logger.error(f"[EmbeddingService] Failed: {e}")
+        except Exception as exc:
+            logger.error(
+                "[EmbeddingService] Provider call failed: error_type=%s",
+                type(exc).__name__,
+            )
             # 실패 시 더미 벡터 (0.0) 반환 or Raise
             # 여기서는 Workflow가 멈추지 않도록 Raise하되 상위에서 처리
-            raise e
+            raise
