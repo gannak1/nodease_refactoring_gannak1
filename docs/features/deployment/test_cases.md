@@ -1,15 +1,15 @@
 # Deployment Test Cases
 
 Status: Draft
-Verified Against: `feature/mba-247 @ 6e0429ed`
+Verified Against: `feature/mba-247 @ 6daebec818e2b393df2927b8f0b25bd6c5b6a99f`
 
 ## Unit Tests
 
-- App secret generator는 호출마다 최소 256-bit entropy의 bounded ASCII token을 만들고 repr/log helper에 원문을 포함하지 않는다.
+- App secret generator는 호출마다 최소 256-bit entropy의 bounded ASCII token과 common redactor가 free-text에서 식별할 수 있는 고정 marker를 만들고 repr/log helper에 원문을 포함하지 않는다.
 - Domain-separated verifier는 같은 candidate에 안정적인 fixed-length 결과를 만들며 current/유효 previous를 constant-time 경로로 검증한다. Unknown algorithm, malformed state, non-ASCII, 0/513-byte candidate와 expiry 경계 `now >= previous_valid_until`은 fail-closed한다.
 - Rotation state transition은 최초 `0 -> 1`, 일반 `N -> N+1`, 즉시 previous 폐기, 기존 previous 교체, stale expected version과 두 경쟁 요청의 단일 winner를 검증한다.
 - Audit metadata sanitizer는 secret, verifier, candidate, prefix, 길이, Authorization과 fingerprint를 허용하지 않는다.
-- API/Webhook 배포 input 단계에서 발급한 one-time secret은 optimization·success 단계까지 메모리로 전달되어 즉시 테스트에 사용할 수 있고, 단계 전환 중 초기화되거나 browser storage에 저장되지 않는다. 모달 close/reopen은 해당 값을 폐기한다.
+- API/Webhook 배포 input 단계에서 발급한 one-time secret은 optimization·success 단계까지 메모리로 전달되어 즉시 테스트에 사용할 수 있고, 단계 전환 중 초기화되거나 browser storage에 저장되지 않는다. 모달 close/reopen은 해당 값을 폐기한다. 기존 configured App의 success 테스트는 사용자가 입력한 기존 secret을 component memory에서만 사용하며 storage나 App/Deployment state에 저장하지 않는다.
 
 - Readiness inventory는 object가 아닌 JSONB policy와 malformed/unknown contract를 예외로 중단하지 않고 `malformed`로 집계하며 raw policy 값을 출력하지 않는다.
 - Deployment application package는 FastAPI, SQLAlchemy, DB model, concrete adapter/service/composition module을 import하지 않는다.
@@ -103,7 +103,7 @@ Verified Against: `feature/mba-247 @ 6e0429ed`
 - Webhook capture status rejects missing, wrong, expired, or different-requester `capture_id`.
 - Webhook capture cancel deletes a waiting session, rejects wrong/different-requester `capture_id`, and requires target workflow `deploy` permission.
 - Webhook received after capture cancel follows the normal execution path instead of the capture path.
-- Webhook capture stores and returns only a redacted/capped payload preview; token, secret, authorization, cookie, password, raw payload/content fields and known token patterns such as JWT, GitHub, Slack, AWS, Google API keys, and PEM private keys are not returned as raw values. Public identifier fields such as `issue.key` and `project.key` are preserved, while secret-bearing names such as `api_key`, `secret_key`, `access_key`, `x-api-key`, `secret-key`, and `api.key` are redacted. Secret-like or oversized JSON field names are sanitized before returning or storing the preview. Large arrays are capped while iterating the preview and are not copied in full before applying the item limit.
+- Webhook capture stores and returns only a redacted/capped payload preview; token, secret, authorization, cookie, password, raw payload/content fields and known token patterns such as generated App secret marker, JWT, GitHub, Slack, AWS, Google API keys, and PEM private keys are not returned as raw values. Public identifier fields such as `issue.key` and `project.key` are preserved, while secret-bearing names such as `api_key`, `secret_key`, `access_key`, `x-api-key`, `secret-key`, and `api.key` are redacted. Secret-like or oversized JSON field names are sanitized before returning or storing the preview. Large arrays are capped while iterating the preview and are not copied in full before applying the item limit.
 - Webhook capture deletes the session after the captured status is read once.
 
 ## E2E Tests
@@ -114,7 +114,7 @@ Verified Against: `feature/mba-247 @ 6e0429ed`
 - REST API load client는 `Authorization: Bearer`만 사용하고 폐기된 `X-Auth-Secret`을 전송하지 않는다. 테스트 시작·실패·리포트에서 token 값, prefix 또는 일부 preview를 출력하지 않는 정적 계약 테스트를 유지한다.
 - Direct-runtime 검증 script가 ingress를 호출하지 않더라도 고정 raw App secret fixture를 저장하지 않는다. Legacy raw-only fixture는 같은 candidate의 verifier로 승격하고, 미설정 fixture만 임시 candidate를 생성·폐기하며 verifier-only canonical state를 저장한다. 이미 유효한 managed state는 불필요하게 rotation하지 않는다.
 - One-time secret copy는 browser storage, URL, analytics와 console에 원문을 남기지 않는다. 기본 rotation 안내는 previous가 최대 5분 유효함을, 즉시 폐기 선택은 기존 consumer가 즉시 실패할 수 있음을 명확히 표시한다.
-- Version conflict와 응답 유실 UI는 POST를 자동 재시도하지 않고 status refresh 후 사용자가 새 rotation을 명시적으로 선택하게 한다.
+- Version conflict와 응답 유실 UI는 POST를 자동 재시도하지 않고 status refresh 후 사용자가 새 rotation을 명시적으로 선택하게 한다. Refresh version이 요청 전 version과 달라졌으면 화면에 남은 이전 one-time secret을 폐기해 stale credential을 새 값처럼 표시·복사하지 않는다.
 
 - Workflow 설정 사이드바는 deployment list의 App `url_slug`로 공개 Chatbot/Widget URL을 구성하고 slug 누락 시 `/embed/chat/undefined` 링크와 복사 동작을 렌더링하지 않는다.
 - 배포 목록은 enabled policy라도 비활성 revision이면 `활성화 후 적용`, 활성 revision이면 `집행 중`으로 구분한다.
@@ -140,7 +140,8 @@ Verified Against: `feature/mba-247 @ 6e0429ed`
 - Raw Kubernetes, Docker Compose와 Helm values/template은 lifecycle mode를 기본 `disabled`로 Gateway에 전달한다. Status와 성공 rotation 응답은 `no-store, no-cache`/`no-cache` header를 반환한다.
 - Caller-controlled request ID/IP/User-Agent에 secret-like 값을 넣어 rotation해도 `app.auth_secret.rotated`와 permission-denied audit metadata에 해당 값이 저장되지 않는다.
 - REST API/Webhook 배포 모달은 첫 active preflight 이전 input 단계에서 App ID 기반 secret status와 발급·교체 control에 접근할 수 있다.
-- 발급된 one-time secret을 표시한 상태에서 교체 확인을 열었다가 취소하거나 새 rotation이 실패해도 기존 원문은 새 rotation 성공 전까지 현재 component memory에 유지된다.
+- 발급된 one-time secret을 표시한 상태에서 교체 확인을 열었다가 취소하거나 refresh가 같은 version인 rotation 실패를 확인해도 기존 원문은 새 rotation 성공 전까지 현재 component memory에 유지된다. 단, 실패 뒤 refresh가 version 증가를 관찰하면 원문을 즉시 폐기한다.
+- `--reset` 없는 demo seed upsert는 valid managed App verifier/current/previous/generation 상태를 seed의 예측 가능한 credential로 되돌리지 않으며, legacy raw value만 null로 정리한다. 명시적 reset으로 row가 삭제된 경우에는 seed state를 새로 생성한다.
 - Active deployment secret blocker는 request ID와 `required_actions`를 포함한 표준 `error` envelope로 반환한다.
 - Managed current verifier가 malformed이면 previous verifier와 grace가 유효해도 public 인증은 fail-closed한다.
 - Secret이 없는 active API/Webhook preview/create/toggle은 mode가 `disabled`이면 503, `active`이면 `deployment.app_auth_secret_required` 409로 DB mutation 전에 차단된다. Inactive API/Webhook draft와 active non-secret deployment type은 허용한다.

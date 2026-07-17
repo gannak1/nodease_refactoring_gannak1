@@ -1,7 +1,7 @@
 # Deployment Component Spec
 
 Status: Draft
-Verified Against: `feature/mba-247 @ 6e0429ed`
+Verified Against: `feature/mba-247 @ 6daebec818e2b393df2927b8f0b25bd6c5b6a99f`
 
 ## Screens
 
@@ -36,13 +36,14 @@ Verified Against: `feature/mba-247 @ 6e0429ed`
 - `AppAuthSecretControl`은 safe status를 먼저 조회하고 사용자의 명시적 확인 뒤 최초 발급 또는 rotation을 실행한다. 일반 App·Deployment 응답에서 secret을 읽지 않는다.
 - Status 조회도 shared cache나 브라우저 재사용으로 stale version이 남지 않도록 `no-store, no-cache` 계약을 사용한다.
 - Status의 `rotation_enabled=false`이면 발급·교체 command를 렌더링하지 않고 Gateway 전환 대기 상태만 표시한다.
-- 성공한 신규 secret은 component memory에만 유지하고 한 번 표시·복사할 수 있다. 화면을 닫거나 새 rotation을 시작하면 지우며 local/session storage, URL, analytics, toast detail과 Client log에 넣지 않는다.
+- 성공한 신규 secret은 component memory에만 유지하고 한 번 표시·복사할 수 있다. 화면을 닫거나 새 rotation이 성공했을 때, 또는 response 유실 뒤 status refresh가 요청 전과 다른 version을 확인했을 때 지운다. 교체 확인을 열었다가 취소하거나 같은 version의 실패를 확인한 경우에는 기존 원문을 유지한다. local/session storage, URL, analytics, toast detail과 Client log에는 넣지 않는다.
 - Rotation UI는 기본 5분 전환 유예와 `이전 secret 즉시 폐기` 선택을 구분한다. Mutation request는 자동 재시도하지 않고 version conflict 또는 응답 유실 시 status를 새로 읽도록 안내한다.
 - Status/rotation 권한이 없거나 resource가 숨겨진 경우 secret 상태나 App 존재 여부를 추론할 수 있는 상세를 렌더링하지 않는다.
 - Secret을 URL, `localStorage`, `sessionStorage`, analytics, toast 또는 Client log에 넣지 않는다. 일반 App·Deployment response에는 원문 또는 masked preview를 포함하지 않는다.
 - `AppAuthSecretService`는 status, App row lock, expected-version CAS, verifier 검증, current/previous transition과 필수 audit outbox transaction을 소유한다. Endpoint와 deployment/webhook ingress는 verifier 규칙을 복제하지 않는다.
 - Expand release는 lifecycle mutation gate를 기본 `disabled`로 유지하고 generation 0 raw-only late arrival만 제한적으로 검증한다. 모든 Gateway Pod가 verifier-aware revision으로 수렴한 뒤 별도 설정 rollout에서 gate를 `active`로 바꾸며, 활성화 뒤 persistence adapter는 current raw를 저장하지 않는다. Generation 1 이상에서는 verifier만 인증 권위다.
 - Active API/Webhook 배포 모달은 preflight 이전 input 단계에서 App secret status와 발급·교체 control을 표시한다. Preflight가 `app.auth_secret_lifecycle_unavailable` 또는 `deployment.app_auth_secret_required`를 반환하면 배포를 시도하지 않고 Gateway 전환 대기 또는 같은 App secret 발급 action을 유지한다. Input 단계에서 발급한 one-time secret은 배포 모달이 열린 동안에만 메모리에 보존하여 success 단계의 복사·테스트에 전달하고, 모달을 닫거나 다시 열면 폐기한다. Inactive draft 저장은 유지한다.
+- 기존 configured App을 재배포한 success 화면은 사용자가 이미 보관한 secret을 password input으로 일시 입력해 REST 실행을 확인할 수 있다. 이 값은 해당 component memory와 Authorization header에만 사용하며 App/Deployment state, browser storage, URL, analytics와 log에 기록하지 않는다.
 - API/Webhook input은 App secret safe status를 `checking`, `ready`, `secret_required`, `lifecycle_unavailable`, `status_unavailable`로 투영한다. `configured=true`이면 lifecycle mutation gate가 disabled여도 기존 credential로 배포할 수 있으므로 `ready`이며 발급·교체 command만 숨긴다. 미설정, status 조회 실패 또는 App identity 누락은 `ready`가 될 때까지 다음 단계를 fail-closed로 차단한다.
 - Client readiness gate는 사용자 흐름의 조기 차단일 뿐 활성화 권위가 아니다. Gateway는 create/toggle에서 현재 App 상태를 다시 검증한다. Client 오류 formatter는 top-level 표준 error envelope과 legacy nested envelope을 모두 읽되, required action은 allowlist된 label만 표시한다.
 - Gateway endpoint는 ASGI/HTTP inbound adapter로 raw header occurrence와 query key presence를 추출하고 bounded stream을 수신한다. Framework-independent `application/webhook_ingress` policy가 credential/media/JSON limits를 판정하며 endpoint는 typed error를 static HTTP code로 mapping한다.

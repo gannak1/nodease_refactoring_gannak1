@@ -33,7 +33,7 @@ App resource 아래에 safe status와 one-time rotation command를 둔다.
 - `GET /api/v1/apps/{app_id}/auth-secret/status`
 - `POST /api/v1/apps/{app_id}/auth-secret/rotate`
 
-`expected_version=0`은 미설정 App의 최초 발급이다. Expand 기간에는 migration 뒤 구버전 Pod가 만든 configured generation 0 raw-only state를 managed generation 1로 전환할 때도 같은 값이 사용된다. 양수는 managed current secret의 rotation이다. Status와 성공 rotation 응답은 `Cache-Control: no-store, no-cache`와 `Pragma: no-cache`를 사용하며 성공 rotation 응답만 새 원문을 포함한다. 이후 status나 일반 조회로 원문을 다시 읽을 수 없다. V1은 raw secret replay/idempotency response store를 추가하지 않는다. 응답 유실 시 status를 다시 읽고 최신 version으로 새 rotation을 명시적으로 수행한다.
+`expected_version=0`은 미설정 App의 최초 발급이다. Expand 기간에는 migration 뒤 구버전 Pod가 만든 configured generation 0 raw-only state를 managed generation 1로 전환할 때도 같은 값이 사용된다. 양수는 managed current secret의 rotation이다. Status와 성공 rotation 응답은 `Cache-Control: no-store, no-cache`와 `Pragma: no-cache`를 사용하며 성공 rotation 응답만 새 원문을 포함한다. 이후 status나 일반 조회로 원문을 다시 읽을 수 없다. V1은 raw secret replay/idempotency response store를 추가하지 않는다. 응답 유실 시 status를 다시 읽고 최신 version으로 새 rotation을 명시적으로 수행한다. Client가 refresh에서 요청 전 version과 다른 version을 확인하면 화면에 남은 이전 one-time 원문을 즉시 폐기하며, 이를 새 current secret으로 표시·복사하지 않는다.
 
 Status 응답은 `rotation_enabled`를 포함한다. Checked-in 배포 설정과 application default는 `APP_AUTH_SECRET_LIFECYCLE_MODE=disabled`이며 이 상태에서는 권한 확인 뒤 rotation command를 `503 app.auth_secret_lifecycle_unavailable`로 차단한다. 모든 Gateway Pod가 verifier-aware revision으로 수렴한 뒤에만 별도 배포 변경으로 `active`를 설정한다.
 
@@ -43,7 +43,7 @@ Status 응답은 `rotation_enabled`를 포함한다. Checked-in 배포 설정과
 
 ### 3. App당 current verifier 하나와 previous verifier 하나를 저장한다
 
-Gateway는 server-generated ASCII token에 domain-separated SHA-256 V1을 적용해 고정 길이 verifier를 저장하고 이를 신규 인증 권위로 사용한다. Token이 최소 256-bit CSPRNG entropy를 가지므로 verifier만 유출된 공격자가 bearer token을 복구하는 것은 현실적으로 불가능하다. 향후 verifier algorithm 변경을 위해 current/previous algorithm version을 함께 저장한다.
+Gateway는 server-generated ASCII token에 domain-separated SHA-256 V1을 적용해 고정 길이 verifier를 저장하고 이를 신규 인증 권위로 사용한다. Token이 최소 256-bit CSPRNG entropy를 가지므로 verifier만 유출된 공격자가 bearer token을 복구하는 것은 현실적으로 불가능하다. 신규 생성 token은 shared trace와 webhook capture redactor가 일반 free-text field에서도 식별할 수 있는 고정 비밀 marker를 포함한다. Marker는 인증·권한 판정의 근거가 아니며 audit, trace, log 같은 durable metadata에는 원문과 함께 남기지 않는다. 향후 verifier algorithm 변경을 위해 current/previous algorithm version을 함께 저장한다.
 
 Production의 일반 migration-first rolling workflow는 migration 뒤에도 구형 Gateway가 잠시 traffic을 받으므로 이 expand를 그대로 수행하는 안전한 경로가 아니다. 구형 Gateway는 lifecycle mode를 모르고 legacy 일반 응답에서 원문을 계속 반환하며 verifier-only row를 인증할 수 없다. 따라서 expand는 migration 전에 구형 Gateway를 ingress에서 drain/fence하고, migration과 verifier-aware `disabled` revision 수렴을 완료한 뒤 traffic을 재개하는 maintenance rollout을 사용해야 한다. 별도 redaction-only compatibility release를 먼저 전체 수렴시키는 대안도 가능하지만, 구형과 verifier-only 활성 revision이 동시에 traffic을 받는 배포는 지원하지 않는다. 혼합 구간에 신규 원문을 legacy column에 이중 쓰는 방식도 구버전 응답 노출과 previous grace 불일치 때문에 사용하지 않는다. 모든 Pod의 revision 수렴을 확인하고 lifecycle mode를 `active`로 바꾼 뒤에만 신규 원문을 one-time 응답으로 발급하며 DB에는 verifier만 저장한다. Verifier가 있는 generation은 verifier만 인증 권위로 사용하며 raw fallback을 허용하지 않는다.
 
