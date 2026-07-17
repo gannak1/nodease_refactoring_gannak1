@@ -447,15 +447,16 @@ async def get_connection_schema(
     **DB 스키마 조회 API**
     독립된 짧은 snapshot transaction에서 연결 정보를 해석한 뒤 DB schema를 조회합니다.
     """
+    current_user_id = current_user.id
     normalized_connection_id = _authorize_connection_schema_management(
         db,
         connection_id=connection_id,
-        current_user_id=current_user.id,
+        current_user_id=current_user_id,
     )
     try:
         snapshot = ConnectionRuntimeSnapshotProvider(SessionLocal).load(
             normalized_connection_id,
-            execution_subject_user_id=current_user.id,
+            execution_subject_user_id=current_user_id,
         )
     except ConnectionUseDenied:
         raise HTTPException(

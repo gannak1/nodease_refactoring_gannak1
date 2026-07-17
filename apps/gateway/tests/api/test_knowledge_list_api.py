@@ -1146,7 +1146,7 @@ async def test_db_process_locks_new_connection_reference_before_commit(monkeypat
 
     class FakeDb:
         def commit(self):
-            events.append("commit")
+            pytest.fail("DB reference commit must use the lifecycle UoW")
 
         def rollback(self):
             events.append("rollback")
@@ -1157,6 +1157,9 @@ async def test_db_process_locks_new_connection_reference_before_commit(monkeypat
 
         def lock_owned_connection_and_document_for_reference(self, **kwargs):
             events.append(("lock", kwargs))
+
+        def commit_reference_mutation(self):
+            events.append("commit")
 
     class FakeIngestionService:
         def __init__(self, *_args, **_kwargs):
@@ -1295,6 +1298,37 @@ def test_db_connection_reference_lock_maps_safe_errors(
     assert exc_info.value.status_code == expected_status
     assert exc_info.value.detail["error"]["code"] == expected_code
     assert rolled_back == [True]
+
+
+@pytest.mark.parametrize(
+    ("service_error", "expected_code"),
+    [
+        (
+            knowledge_endpoint.ConnectionLifecycleBusy(),
+            "connection.reference_busy",
+        ),
+        (
+            knowledge_endpoint.ConnectionLifecycleUnavailable(),
+            "connection.reference_unavailable",
+        ),
+    ],
+)
+def test_db_connection_reference_commit_maps_safe_errors(
+    service_error,
+    expected_code,
+):
+    class FailingService:
+        def commit_reference_mutation(self):
+            raise service_error
+
+    with pytest.raises(HTTPException) as exc_info:
+        knowledge_endpoint._commit_db_connection_reference(
+            SimpleNamespace(state=SimpleNamespace(request_id="request-id")),
+            FailingService(),
+        )
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail["error"]["code"] == expected_code
 
 
 def test_invalid_db_connection_reference_is_rejected_before_lock(monkeypatch):

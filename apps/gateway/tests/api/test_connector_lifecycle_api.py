@@ -145,3 +145,69 @@ def test_schema_management_precheck_preserves_non_owner_403_contract():
     assert getattr(exc_info.value, "status_code", None) == 403
     assert exc_info.value.detail == "Not authorized"
     assert db.rollback_count == 1
+
+
+@pytest.mark.asyncio
+async def test_schema_management_caches_user_id_before_precheck_rollback(monkeypatch):
+    user_id = uuid.uuid4()
+    connection_id = uuid.uuid4()
+    db = _SchemaOwnerDb((user_id,))
+    captured = {}
+
+    class ExpiringUser:
+        def __init__(self):
+            self.read_count = 0
+
+        @property
+        def id(self):
+            self.read_count += 1
+            if self.read_count > 1:
+                raise RuntimeError("expired ORM attribute was accessed")
+            return user_id
+
+    class FakeSnapshot:
+        adapter_type = "postgres"
+
+        @staticmethod
+        def to_connector_config():
+            return {"safe": "config"}
+
+    class FakeSnapshotProvider:
+        def __init__(self, session_factory):
+            captured["session_factory"] = session_factory
+
+        def load(self, selected_connection_id, *, execution_subject_user_id):
+            captured["connection_id"] = selected_connection_id
+            captured["execution_subject_user_id"] = execution_subject_user_id
+            return FakeSnapshot()
+
+    class FakeConnector:
+        @staticmethod
+        def get_schema_info(config):
+            captured["config"] = config
+            return ["public.example"]
+
+    user = ExpiringUser()
+    monkeypatch.setattr(
+        connector_endpoint,
+        "ConnectionRuntimeSnapshotProvider",
+        FakeSnapshotProvider,
+    )
+    monkeypatch.setattr(
+        connector_endpoint,
+        "_build_workflow_connector",
+        lambda _connector_class: FakeConnector(),
+    )
+
+    result = await connector_endpoint.get_connection_schema(
+        connection_id=str(connection_id),
+        db=db,
+        current_user=user,
+    )
+
+    assert result == {"tables": ["public.example"]}
+    assert user.read_count == 1
+    assert db.rollback_count == 1
+    assert captured["connection_id"] == connection_id
+    assert captured["execution_subject_user_id"] == user_id
+    assert captured["config"] == {"safe": "config"}

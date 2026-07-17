@@ -147,6 +147,18 @@ class ConnectionLifecycleService:
             raise ConnectionLifecycleConflict()
         return document
 
+    def commit_reference_mutation(self) -> None:
+        """Commit a locked reference mutation and map safe retry semantics."""
+
+        try:
+            self.db.commit()
+        except SQLAlchemyError as exc:
+            self.db.rollback()
+            raise self._translate_store_error(exc) from None
+        except BaseException:
+            self.db.rollback()
+            raise
+
     def delete_unreferenced_connection(
         self,
         *,

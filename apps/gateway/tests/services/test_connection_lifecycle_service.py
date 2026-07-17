@@ -54,11 +54,13 @@ class _Db:
         connection=None,
         reference=None,
         query_error=None,
+        commit_error=None,
         dialect_name="sqlite",
     ):
         self.connection = connection
         self.reference = reference
         self.query_error = query_error
+        self.commit_error = commit_error
         self.connection_locked = False
         self.locked_entities = []
         self.deleted = None
@@ -83,6 +85,8 @@ class _Db:
 
     def commit(self):
         self.committed = True
+        if self.commit_error is not None:
+            raise self.commit_error
 
     def rollback(self):
         self.rolled_back = True
@@ -173,6 +177,42 @@ def test_reference_mutation_rejects_stale_document_revision():
 
     assert exc_info.value.code == "connection.reference_conflict"
     assert exc_info.value.retryable is False
+    assert db.rolled_back is True
+
+
+@pytest.mark.parametrize("sqlstate", ["55P03", "57014", "40P01", "40001"])
+def test_reference_mutation_commit_maps_contention_to_retryable_busy(sqlstate):
+    original_error = SimpleNamespace(sqlstate=sqlstate)
+    db = _Db(
+        commit_error=OperationalError("statement", {}, original_error),
+        dialect_name="postgresql",
+    )
+
+    with pytest.raises(ConnectionLifecycleBusy) as exc_info:
+        ConnectionLifecycleService(db).commit_reference_mutation()
+
+    assert exc_info.value.code == "connection.reference_busy"
+    assert exc_info.value.retryable is True
+    assert sqlstate not in str(exc_info.value)
+    assert db.rolled_back is True
+
+
+def test_reference_mutation_commit_redacts_database_failure():
+    db = _Db(commit_error=SQLAlchemyError("raw database detail"))
+
+    with pytest.raises(ConnectionLifecycleUnavailable) as exc_info:
+        ConnectionLifecycleService(db).commit_reference_mutation()
+
+    assert "raw database detail" not in str(exc_info.value)
+    assert db.rolled_back is True
+
+
+def test_reference_mutation_commit_rolls_back_when_cancelled():
+    db = _Db(commit_error=asyncio.CancelledError())
+
+    with pytest.raises(asyncio.CancelledError):
+        ConnectionLifecycleService(db).commit_reference_mutation()
+
     assert db.rolled_back is True
 
 

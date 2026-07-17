@@ -512,6 +512,9 @@ async def test_process_normalizes_owned_connection_reference(
         def lock_owned_connection_and_document_for_reference(self, **kwargs):
             reference_lock(**kwargs)
 
+        def commit_reference_mutation(self):
+            db_session.commit()
+
     monkeypatch.setattr(
         knowledge_endpoint,
         "_authorized_knowledge_document",

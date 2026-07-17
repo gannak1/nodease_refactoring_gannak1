@@ -126,10 +126,10 @@ class ConnectionRuntimeSnapshotProvider:
             )
             host = ConnectionRuntimeSnapshotProvider._required_text(connection.host)
             port = ConnectionRuntimeSnapshotProvider._validated_port(connection.port)
-            database = ConnectionRuntimeSnapshotProvider._required_text(
+            database = ConnectionRuntimeSnapshotProvider._required_stored_text(
                 connection.database
             )
-            username = ConnectionRuntimeSnapshotProvider._required_text(
+            username = ConnectionRuntimeSnapshotProvider._required_stored_text(
                 connection.username
             )
             password = encryption_manager.decrypt(connection.encrypted_password)
@@ -179,9 +179,12 @@ class ConnectionRuntimeSnapshotProvider:
                 private_key=private_key,
             )
 
-        password = encryption_manager.decrypt(connection.encrypted_ssh_password)
-        if not isinstance(password, str) or not password:
-            raise ValueError
+        encrypted_password = connection.encrypted_ssh_password
+        password = None
+        if encrypted_password is not None:
+            password = encryption_manager.decrypt(encrypted_password)
+            if not isinstance(password, str) or not password:
+                raise ValueError
         return ConnectionRuntimeSshSnapshot(
             host=host,
             port=port,
@@ -198,6 +201,12 @@ class ConnectionRuntimeSnapshotProvider:
         if not normalized:
             raise ValueError
         return normalized
+
+    @staticmethod
+    def _required_stored_text(value: Any) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError
+        return value
 
     @staticmethod
     def _validated_port(value: Any) -> int:

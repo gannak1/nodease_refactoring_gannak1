@@ -227,3 +227,51 @@ def test_provider_rejects_invalid_runtime_fields_without_dialing(
         ConnectionRuntimeSnapshotProvider._project(
             SimpleNamespace(**values),
         )
+
+
+def test_snapshot_preserves_stored_database_identifiers(monkeypatch) -> None:
+    monkeypatch.setattr(encryption_manager, "decrypt", lambda _value: "test-value")
+
+    snapshot = ConnectionRuntimeSnapshotProvider._project(
+        SimpleNamespace(
+            type="postgres",
+            host="db.example.test",
+            port=5432,
+            database=" application ",
+            username=" runtime-user ",
+            encrypted_password="opaque-test-ciphertext",
+            use_ssh=False,
+        )
+    )
+
+    assert snapshot.to_connector_config()["database"] == " application "
+    assert snapshot.to_connector_config()["username"] == " runtime-user "
+
+
+def test_snapshot_preserves_passwordless_ssh_agent_path(monkeypatch) -> None:
+    decrypt_calls = []
+
+    def decrypt(value):
+        decrypt_calls.append(value)
+        return "database-password"
+
+    monkeypatch.setattr(encryption_manager, "decrypt", decrypt)
+    snapshot = ConnectionRuntimeSnapshotProvider._project(
+        SimpleNamespace(
+            type="postgres",
+            host="db.example.test",
+            port=5432,
+            database="application",
+            username="runtime-user",
+            encrypted_password="opaque-database-ciphertext",
+            use_ssh=True,
+            ssh_host="ssh.example.test",
+            ssh_port=22,
+            ssh_username="ssh-user",
+            ssh_auth_type="password",
+            encrypted_ssh_password=None,
+        )
+    )
+
+    assert decrypt_calls == ["opaque-database-ciphertext"]
+    assert snapshot.to_connector_config()["ssh"]["password"] is None
