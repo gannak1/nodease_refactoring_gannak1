@@ -231,20 +231,30 @@ describe('AgentBuilderPanel', () => {
       />,
     );
 
-    fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+    const launcher = screen.getByLabelText('Agent Builder 열기');
+    expect(launcher).toHaveClass('pointer-events-auto');
+    expect(launcher.parentElement).toHaveClass('pointer-events-none');
+
+    fireEvent.click(launcher);
     await screen.findByRole('button', {
       name: /Agent Builder 모델: GPT-5.5$/,
     });
     expect(screen.getByText('Agent Builder')).toBeInTheDocument();
+    expect(screen.getByLabelText('Agent Builder panel')).toHaveClass(
+      'pointer-events-auto',
+    );
 
     fireEvent.click(screen.getByLabelText('Agent Builder 최소화'));
     expect(screen.queryByText('Agent Builder')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Agent Builder 펼치기').parentElement).toHaveClass(
+      'pointer-events-none',
+    );
 
     fireEvent.click(screen.getByLabelText('Agent Builder 펼치기'));
     expect(screen.getByText('Agent Builder')).toBeInTheDocument();
   });
 
-  it('mobile에서는 viewport 안에 두고 desktop에서는 화면 절반 너비로 표시한다', async () => {
+  it('mobile에서는 viewport 안에 두고 desktop에서는 기본 화면 절반 너비로 표시한다', async () => {
     const canvasShortcut = vi.fn();
     window.addEventListener('keydown', canvasShortcut);
     try {
@@ -264,7 +274,12 @@ describe('AgentBuilderPanel', () => {
       });
       const panel = screen.getByText('Agent Builder').closest('section');
       expect(panel?.className).toContain('w-full');
-      expect(panel?.className).toContain('sm:w-[50vw]');
+      expect(panel?.parentElement).toHaveClass('agent-builder-panel-shell');
+      expect(
+        panel?.parentElement?.style.getPropertyValue(
+          '--agent-builder-panel-width',
+        ),
+      ).toBe('clamp(360px, 50vw, calc(100vw - 40px))');
       expect(panel?.className).toContain('h-[calc(100dvh-7.75rem)]');
       expect(panel?.parentElement?.className).toContain('bottom-5');
 
@@ -281,6 +296,133 @@ describe('AgentBuilderPanel', () => {
       expect(canvasShortcut).not.toHaveBeenCalled();
     } finally {
       window.removeEventListener('keydown', canvasShortcut);
+    }
+  });
+
+  it('desktop 초기 너비에도 최소·최대 제한과 separator 접근성 범위를 적용한다', async () => {
+    const originalInnerWidth = window.innerWidth;
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      value: 700,
+    });
+    try {
+      render(
+        <AgentBuilderPanel
+          workflowId="workflow-1"
+          appId="app-1"
+          nodes={[]}
+          edges={[]}
+          hasUnsavedChanges={false}
+        />,
+      );
+
+      fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+      const panel = await screen.findByLabelText('Agent Builder panel');
+      const resizeHandle = screen.getByLabelText('Agent Builder 너비 조절');
+
+      expect(
+        panel.parentElement?.style.getPropertyValue(
+          '--agent-builder-panel-width',
+        ),
+      ).toBe('clamp(360px, 50vw, calc(100vw - 40px))');
+      expect(resizeHandle).toHaveAttribute('aria-valuenow', '360');
+      expect(resizeHandle).toHaveAttribute('aria-valuemin', '360');
+      expect(resizeHandle).toHaveAttribute('aria-valuemax', '660');
+      expect(resizeHandle).toHaveAttribute('aria-valuetext', '360픽셀');
+    } finally {
+      Object.defineProperty(window, 'innerWidth', {
+        configurable: true,
+        value: originalInnerWidth,
+      });
+    }
+  });
+
+  it('desktop에서 왼쪽 경계를 드래그해 panel 너비를 조절한다', async () => {
+    const originalInnerWidth = window.innerWidth;
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      value: 1200,
+    });
+    try {
+      render(
+        <AgentBuilderPanel
+          workflowId="workflow-1"
+          appId="app-1"
+          nodes={[]}
+          edges={[]}
+          hasUnsavedChanges={false}
+        />,
+      );
+
+      fireEvent.click(screen.getByLabelText('Agent Builder 열기'));
+      const panel = await screen.findByLabelText('Agent Builder panel');
+      vi.spyOn(panel, 'getBoundingClientRect').mockReturnValue({
+        x: 600,
+        y: 100,
+        top: 100,
+        right: 1200,
+        bottom: 800,
+        left: 600,
+        width: 600,
+        height: 700,
+        toJSON: () => ({}),
+      });
+
+      const resizeHandle = screen.getByLabelText('Agent Builder 너비 조절');
+      fireEvent.pointerDown(resizeHandle, { clientX: 600, pointerId: 1 });
+      fireEvent.pointerMove(window, { clientX: 500, pointerId: 1 });
+
+      expect(
+        panel.parentElement?.style.getPropertyValue(
+          '--agent-builder-panel-width',
+        ),
+      ).toBe('700px');
+      expect(document.body.style.cursor).toBe('col-resize');
+
+      fireEvent.pointerMove(window, { clientX: -1000, pointerId: 1 });
+      expect(
+        panel.parentElement?.style.getPropertyValue(
+          '--agent-builder-panel-width',
+        ),
+      ).toBe('1160px');
+
+      fireEvent.pointerMove(window, { clientX: 2000, pointerId: 1 });
+      expect(
+        panel.parentElement?.style.getPropertyValue(
+          '--agent-builder-panel-width',
+        ),
+      ).toBe('360px');
+      expect(resizeHandle).toHaveAttribute('aria-valuenow', '360');
+      expect(resizeHandle).toHaveAttribute('aria-valuemin', '360');
+      expect(resizeHandle).toHaveAttribute('aria-valuemax', '1160');
+
+      fireEvent.pointerUp(window, { pointerId: 1 });
+      expect(document.body.style.cursor).toBe('');
+      expect(document.body.style.userSelect).toBe('');
+
+      fireEvent.keyDown(resizeHandle, { key: 'End' });
+      expect(
+        panel.parentElement?.style.getPropertyValue(
+          '--agent-builder-panel-width',
+        ),
+      ).toBe('1160px');
+
+      Object.defineProperty(window, 'innerWidth', {
+        configurable: true,
+        value: 800,
+      });
+      fireEvent(window, new Event('resize'));
+      expect(
+        panel.parentElement?.style.getPropertyValue(
+          '--agent-builder-panel-width',
+        ),
+      ).toBe('760px');
+      expect(resizeHandle).toHaveAttribute('aria-valuemax', '760');
+    } finally {
+      Object.defineProperty(window, 'innerWidth', {
+        configurable: true,
+        value: originalInnerWidth,
+      });
     }
   });
 

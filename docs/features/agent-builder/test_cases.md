@@ -401,7 +401,8 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - user message 제출 직후 pending message가 보이도록 scroll한다.
 - assistant result와 active task가 추가되면 최신 content로 이동한다.
 - 사용자가 과거 message를 읽는 중에는 불필요한 강제 scroll을 하지 않는다.
-- panel은 mobile viewport에서 좌우 여백 안의 전체 너비를 유지하고 desktop viewport에서 화면 너비의 50%를 사용한다. 높이는 고정 최대값 없이 viewport에 맞춰 editor 상단 영역까지 확장하고 launcher는 하단 Flow 설정 island와 같은 control row에 정렬한다.
+- panel은 mobile viewport에서 좌우 여백 안의 전체 너비를 유지하고 resize handle을 숨긴다. desktop viewport에서는 제한된 50vw로 시작하며 640~719px viewport에서도 최소 360px을 유지한다. 왼쪽 경계를 드래그하거나 방향키로 최소·최대 범위 안에서 너비를 조절하고 focusable separator의 `aria-valuenow|min|max`가 현재 픽셀 너비와 동적으로 일치한다. 드래그가 panel 밖으로 나가도 계속 반영되고 종료 뒤 cursor/text selection 상태를 복구한다. 조절 뒤 닫았다 다시 열면 같은 component session 너비를 유지하며 viewport가 줄면 화면 안으로 clamp한다. 높이는 고정 최대값 없이 viewport에 맞춰 editor 상단 영역까지 확장하고 launcher는 하단 Flow 설정 island와 같은 control row에 정렬한다.
+- panel과 launcher는 클릭 가능하지만 둘 밖의 고정 wrapper 투명 영역은 pointer event를 통과시킨다. panel open/minimize/close 각각에서 하단 React Flow control island와 canvas click target을 막지 않는다.
 
 ### DBP-TC-F007 Knowledge Selection
 

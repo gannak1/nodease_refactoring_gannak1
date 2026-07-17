@@ -275,7 +275,8 @@ Concrete dependency 조립은 `apps/gateway/composition/agent_builder.py`가 담
 - generation mode와 intent model selection
 - request submit/cancel
 - result group과 오류 상태 연결
-- mobile viewport에서는 좌우 여백 안의 전체 너비를 사용하고, desktop viewport에서는 가시성을 위해 화면 너비의 50%를 사용한다. 고정 최대 높이를 두지 않고 viewport 기준 높이를 사용해 panel 상단이 editor 상단 영역까지 확장된다. Launcher는 하단 Flow 설정 island와 같은 높이의 bottom control row에 배치한다.
+- mobile viewport에서는 좌우 여백 안의 전체 너비를 사용한다. desktop viewport에서는 `clamp(360px, 50vw, calc(100vw - 40px))`로 시작하고 왼쪽 resize handle의 pointer drag 또는 방향키로 같은 최소·최대 범위 안에서 너비를 조절한다. 조절값은 component session 동안 유지하고 viewport가 줄면 다시 화면 안으로 clamp한다. Focusable separator는 현재·최소·최대 픽셀 너비와 읽기 쉬운 픽셀 문구를 ARIA value 속성으로 노출한다. 고정 최대 높이를 두지 않고 viewport 기준 높이를 사용해 panel 상단이 editor 상단 영역까지 확장된다. Launcher는 하단 Flow 설정 island와 같은 높이의 bottom control row에 배치한다.
+- 고정 배치 wrapper 자체는 pointer event를 받지 않고 실제 panel과 launcher만 받는다. 따라서 panel open/minimize/close 상태와 무관하게 wrapper의 투명 영역 아래 React Flow canvas와 하단 control island가 클릭 가능해야 한다.
 
 금지:
 
