@@ -36,28 +36,22 @@ FastAPI request/response, Celery task, SQLAlchemy expression와 provider SDK는 
 ```text
 apps/memory/
   domain/
-    models.py
-    policies.py
-    events.py
+    conversation.py
     errors.py
   application/
-    commands.py
-    queries.py
-    models.py
     ports.py
-    use_cases/
+    lifecycle.py
+    dispatch.py
   adapters/
     persistence/
-    authorization/
-    summarization/
-    usage/
-    audit/
+      repository.py
+      readiness.py
 
 apps/gateway/composition/memory.py
 apps/workflow_engine/composition/memory.py
 ```
 
-목표 shape이며 빈 package를 먼저 생성하지 않는다. 첫 구현 PR은 실제 aggregate/use case/port와 필요한 최소 파일만 추가한다.
+MBA-316이 구현한 dormant package와 후속 composition root의 경계를 함께 표시한 shape다. `apps/memory/`의 위 파일은 실제 aggregate/use case/port/persistence adapter이며, 두 composition root와 authorization/summarization/usage/audit adapter는 아직 생성하거나 production traffic에 연결하지 않는다. 후속 기능도 실제 use case 없이 빈 package를 먼저 만들지 않는다.
 
 SQLAlchemy persistence model은 기존 Alembic metadata registry와의 호환을 위해 `apps/shared/db/models/`에 둘 수 있다. Memory persistence adapter 외 production code가 해당 model을 직접 query/mutate해서는 안 된다.
 
@@ -79,6 +73,8 @@ SQLAlchemy persistence model은 기존 Alembic metadata registry와의 호환을
 | `MemoryContextProviderAttempt` | Lease claim/provider-start/outcome/reconcile | Lease/context handle/node invocation |
 
 `ConversationMemoryEntry`는 content가 immutable인 append-oriented record이며 provisional/approved/rejected status만 CAS로 전이한다. `ConversationMemorySummary`는 source revision에 대한 materialized projection, dependency는 normalized relation으로 관리한다. 구현이 이들을 별도 aggregate root로 승격할 수 있지만 Session aggregate object graph에 전체 turn/entry/summary collection을 적재해서는 안 된다. Aggregate 사이에는 opaque ID와 immutable/revision snapshot만 전달한다.
+
+Persistence FK는 aggregate ID만 단독 신뢰하지 않고 가능한 모든 Memory-owned relation에 organization/session scope를 포함한다. Active Turn과 Purge tombstone처럼 대상 삭제 시 nullable reference만 `SET NULL`로 보존해야 하는 relation은 단일 `SET NULL` FK와 deferred composite scope FK를 함께 사용해 삭제 보존과 tenant 무결성을 동시에 유지한다.
 
 `StartTurn`은 single-active-turn claim, Turn, TurnDispatchJob과 required outbox가 함께 존재해야 하므로 명시적 cross-aggregate UoW다. `CompleteTurn`은 Turn terminal 전이, Session active-turn 해제/content revision, final entry/projection 승격과 required outbox를 같은 UoW에 둔다. Reset의 old close + new session/grant, Delete의 tombstone + grant revoke + purge job/outbox도 접근 차단 유실을 막는 lifecycle UoW다. 이 예외를 generic multi-aggregate transaction service로 확장하지 않는다. Summary 상태 전이는 각 root의 version/CAS와 process manager로 조정한다.
 
@@ -155,6 +151,8 @@ Raw trace 전체가 아니라 승인된 redacted/bounded projection이다.
 - provisional/approved/rejected lifecycle
 - idempotency key
 - Data Dependency references
+
+Display와 model projection은 서로 다른 redaction 결과일 수 있으므로 암호문뿐 아니라 key/format version, digest와 plaintext byte length도 projection별 envelope로 분리한다. 둘 중 하나 이상이 있어야 하며 각 projection은 독립적으로 16 KiB 상한을 적용한다. Domain과 예외의 `repr`에는 두 암호문을 포함하지 않는다.
 
 ### ConversationMemorySummary
 

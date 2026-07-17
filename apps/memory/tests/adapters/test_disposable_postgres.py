@@ -1,0 +1,575 @@
+"""Opt-in PostgreSQL evidence for Conversation Memory persistence invariants."""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from threading import Barrier
+
+import pytest
+from sqlalchemy import create_engine, func, select, text
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session
+
+from apps.memory.adapters.persistence.repository import (
+    SqlAlchemyConversationMemoryRepository,
+    SqlAlchemyMemoryUnitOfWork,
+)
+from apps.memory.adapters.persistence.readiness import (
+    REQUIRED_MEMORY_SCHEMA,
+    check_memory_schema_readiness,
+)
+from apps.memory.application.lifecycle import (
+    CreateSessionCommand,
+    CreateSessionUseCase,
+    StartTurnCommand,
+    StartTurnUseCase,
+)
+from apps.memory.application.dispatch import (
+    ClaimTurnDispatchCommand,
+    ClaimTurnDispatchUseCase,
+    MarkTurnDispatchPublishedCommand,
+    MarkTurnDispatchPublishedUseCase,
+)
+from apps.memory.domain.conversation import (
+    AudienceKind,
+    ProtectedContent,
+    ProtectedEntryContent,
+)
+from apps.memory.domain.errors import MemoryDomainError
+from apps.shared.db.models.app import App
+from apps.shared.db.models.conversation_memory import (
+    ConversationMemoryEntryRecord,
+    ConversationSessionRecord,
+    ConversationTurnRecord,
+    MemoryTurnDispatchJobRecord,
+)
+from apps.shared.db.models.organization import Organization
+from apps.shared.db.models.user import User
+from apps.shared.db.models.workflow import Workflow
+from apps.shared.db.models.workflow_deployment import (
+    DeploymentType,
+    WorkflowDeployment,
+)
+from apps.shared.db.models.workflow_run import (
+    NodeRunStatus,
+    RunStatus,
+    RunTriggerMode,
+    WorkflowNodeRun,
+    WorkflowRun,
+)
+from apps.shared.tests.helpers.disposable_postgres import (
+    DisposablePostgresConfig,
+    DisposablePostgresConfigurationError,
+    quote_disposable_database_name,
+)
+
+
+ROOT_DIR = Path(__file__).resolve().parents[4]
+RUN_ENV = "NODEASE_RUN_DISPOSABLE_DB_TEST"
+DB_PREFIX = "mbased_memory"
+PARENT_REVISION = "aa0b1c2d3e4f"
+MEMORY_REVISION = "ab1c2d3e4f50"
+
+
+def _run_alembic(
+    revision: str,
+    *,
+    operation: str,
+    database: str,
+    config: DisposablePostgresConfig,
+) -> None:
+    environment = config.subprocess_environment(database=database, root_dir=ROOT_DIR)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            "apps/shared/alembic.ini",
+            operation,
+            revision,
+        ],
+        cwd=ROOT_DIR,
+        env=environment,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        timeout=180,
+        check=False,
+    )
+    if result.returncode != 0:
+        del result
+        pytest.fail(
+            "alembic command failed; stdout/stderr omitted to avoid leaking "
+            "local configuration"
+        )
+
+
+def _assert_memory_alembic_model_has_no_pending_operations(
+    *,
+    database: str,
+    config: DisposablePostgresConfig,
+) -> None:
+    environment = config.subprocess_environment(database=database, root_dir=ROOT_DIR)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            "apps/shared/alembic.ini",
+            "check",
+        ],
+        cwd=ROOT_DIR,
+        env=environment,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        timeout=180,
+        check=False,
+    )
+    if result.returncode == 0:
+        return
+
+    output = f"{result.stdout}\n{result.stderr}"
+    is_autogenerate_drift = "New upgrade operations detected" in output
+    memory_drift = any(table_name in output for table_name in REQUIRED_MEMORY_SCHEMA)
+    del result, output
+    if not is_autogenerate_drift:
+        pytest.fail(
+            "alembic model check failed; stdout/stderr omitted to avoid leaking "
+            "local configuration"
+        )
+    if memory_drift:
+        pytest.fail(
+            "Memory model/migration drift detected; stdout/stderr omitted to "
+            "avoid leaking local configuration"
+        )
+
+
+def _enable_vector_extension(database: str, config: DisposablePostgresConfig) -> None:
+    engine = create_engine(config.database_url(database), isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+    finally:
+        engine.dispose()
+
+
+def _seed_legacy_execution(engine) -> dict[str, uuid.UUID]:
+    ids = {
+        name: uuid.uuid4()
+        for name in (
+            "user",
+            "organization",
+            "app",
+            "workflow",
+            "deployment",
+            "run",
+            "node_run",
+        )
+    }
+    with Session(engine) as session:
+        session.add(
+            User(
+                id=ids["user"],
+                email=f"memory-{ids['user']}@example.invalid",
+                name="Memory Migration Test",
+                social_provider="local",
+            )
+        )
+        session.flush()
+        session.add(
+            Organization(
+                id=ids["organization"],
+                name="Memory Migration Test Organization",
+                created_by=ids["user"],
+                is_active=True,
+            )
+        )
+        session.flush()
+        app = App(
+            id=ids["app"],
+            organization_id=ids["organization"],
+            name="Memory Migration Test App",
+            url_slug=f"memory-{ids['app']}",
+            auth_secret="redacted-test-placeholder",
+            created_by=ids["user"],
+        )
+        session.add(app)
+        session.flush()
+        session.add(
+            Workflow(
+                id=ids["workflow"],
+                organization_id=ids["organization"],
+                app_id=ids["app"],
+                graph={"nodes": [], "edges": []},
+                created_by=ids["user"],
+            )
+        )
+        session.flush()
+        app.workflow_id = ids["workflow"]
+        deployment = WorkflowDeployment(
+            id=ids["deployment"],
+            app_id=ids["app"],
+            version=1,
+            type=DeploymentType.CHATBOT,
+            graph_snapshot={"nodes": [], "edges": []},
+            created_by=ids["user"],
+            is_active=True,
+        )
+        session.add(deployment)
+        session.flush()
+        app.active_deployment_id = deployment.id
+        session.add(
+            WorkflowRun(
+                id=ids["run"],
+                workflow_id=ids["workflow"],
+                user_id=ids["user"],
+                app_id=ids["app"],
+                deployment_id=ids["deployment"],
+                workflow_version=1,
+                status=RunStatus.SUCCESS,
+                trigger_mode=RunTriggerMode.MANUAL,
+                inputs={},
+                outputs={},
+            )
+        )
+        session.flush()
+        session.add(
+            WorkflowNodeRun(
+                id=ids["node_run"],
+                workflow_run_id=ids["run"],
+                node_id="memory-migration-test-node",
+                node_type="answerNode",
+                status=NodeRunStatus.SUCCESS,
+                inputs={},
+                process_data={},
+                outputs={},
+            )
+        )
+        session.commit()
+    return ids
+
+
+def _create_session(engine, ids: dict[str, uuid.UUID], session_id: uuid.UUID) -> None:
+    now = datetime.now(timezone.utc)
+    with Session(engine) as db:
+        repository = SqlAlchemyConversationMemoryRepository(db)
+        uow = SqlAlchemyMemoryUnitOfWork(db)
+        CreateSessionUseCase(repository=repository, uow=uow).execute(
+            CreateSessionCommand(
+                session_id=session_id,
+                organization_id=ids["organization"],
+                app_id=ids["app"],
+                workflow_id=ids["workflow"],
+                deployment_id=ids["deployment"],
+                deployment_version=1,
+                deployment_snapshot_hash=None,
+                mapping_version="mapping-v1",
+                memory_policy_version="memory-v1",
+                memory_contract_version="conversation-memory-v1",
+                storage_generation=1,
+                audience_kind=AudienceKind.PUBLIC_CHATBOT,
+                subject_type=None,
+                subject_id=None,
+                idle_expires_at=now + timedelta(hours=24),
+                absolute_expires_at=now + timedelta(days=7),
+                now=now,
+            )
+        )
+
+
+def _start_command(
+    ids: dict[str, uuid.UUID],
+    session_id: uuid.UUID,
+    *,
+    digest_seed: str,
+) -> StartTurnCommand:
+    return StartTurnCommand(
+        organization_id=ids["organization"],
+        session_id=session_id,
+        expected_lifecycle_revision=1,
+        turn_id=uuid.uuid4(),
+        user_entry_id=uuid.uuid4(),
+        dispatch_id=uuid.uuid4(),
+        idempotency_key_hash=digest_seed * 64,
+        request_fingerprint=("f" if digest_seed != "f" else "e") * 64,
+        user_content=ProtectedEntryContent(
+            display=ProtectedContent(
+                ciphertext=b"opaque-test-display-ciphertext",
+                key_version="display-key-v1",
+                format_version="memory-envelope-v1",
+                content_digest="c" * 64,
+                plaintext_byte_length=64,
+            ),
+            model=ProtectedContent(
+                ciphertext=b"opaque-test-model-ciphertext",
+                key_version="model-key-v1",
+                format_version="memory-envelope-v1",
+                content_digest="d" * 64,
+                plaintext_byte_length=72,
+            ),
+        ),
+        channel="conversation",
+        minimum_worker_capability="memory-runtime-v1",
+        max_dispatch_attempts=5,
+        now=datetime.now(timezone.utc),
+    )
+
+
+class _FailingDispatchRepository(SqlAlchemyConversationMemoryRepository):
+    def add_dispatch_job(self, job) -> None:
+        raise RuntimeError("safe synthetic dispatch persistence failure")
+
+
+def _assert_legacy_execution_survives(engine, ids: dict[str, uuid.UUID]) -> None:
+    with Session(engine) as session:
+        assert session.get(WorkflowRun, ids["run"]) is not None
+        assert session.get(WorkflowNodeRun, ids["node_run"]) is not None
+
+
+@pytest.mark.skipif(
+    os.getenv(RUN_ENV) != "1",
+    reason=f"set {RUN_ENV}=1 to run disposable PostgreSQL Memory evidence",
+)
+def test_memory_migration_uow_and_concurrent_start_turn_contracts():
+    try:
+        config = DisposablePostgresConfig.from_environment()
+    except DisposablePostgresConfigurationError:
+        raise pytest.fail.Exception(
+            "disposable PostgreSQL connection settings are not safely configured",
+            pytrace=False,
+        ) from None
+
+    database = f"{DB_PREFIX}_{uuid.uuid4().hex[:12]}"
+    quoted_database = quote_disposable_database_name(database, prefix=DB_PREFIX)
+    admin_engine = create_engine(
+        config.database_url(config.maintenance_database),
+        isolation_level="AUTOCOMMIT",
+    )
+    database_created = False
+
+    try:
+        with admin_engine.connect() as connection:
+            connection.execute(text(f"CREATE DATABASE {quoted_database}"))
+        database_created = True
+        _enable_vector_extension(database, config)
+        _run_alembic(
+            PARENT_REVISION,
+            operation="upgrade",
+            database=database,
+            config=config,
+        )
+
+        engine = create_engine(config.database_url(database))
+        try:
+            ids = _seed_legacy_execution(engine)
+            _run_alembic(
+                MEMORY_REVISION,
+                operation="upgrade",
+                database=database,
+                config=config,
+            )
+            _assert_memory_alembic_model_has_no_pending_operations(
+                database=database,
+                config=config,
+            )
+            _assert_legacy_execution_survives(engine, ids)
+            with Session(engine) as db:
+                assert check_memory_schema_readiness(db).ready is True
+
+            concurrent_session_id = uuid.uuid4()
+            _create_session(engine, ids, concurrent_session_id)
+            barrier = Barrier(2)
+
+            def start_turn(command: StartTurnCommand) -> str:
+                with Session(engine) as db:
+                    repository = SqlAlchemyConversationMemoryRepository(db)
+                    uow = SqlAlchemyMemoryUnitOfWork(db)
+                    barrier.wait(timeout=10)
+                    try:
+                        StartTurnUseCase(repository=repository, uow=uow).execute(
+                            command
+                        )
+                        return "success"
+                    except MemoryDomainError as exc:
+                        return exc.code
+
+            commands = (
+                _start_command(ids, concurrent_session_id, digest_seed="a"),
+                _start_command(ids, concurrent_session_id, digest_seed="b"),
+            )
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                outcomes = list(executor.map(start_turn, commands))
+            assert sorted(outcomes) == ["memory.active_turn_conflict", "success"]
+
+            with Session(engine) as db:
+                assert (
+                    db.scalar(
+                        select(func.count(ConversationTurnRecord.id)).where(
+                            ConversationTurnRecord.session_id == concurrent_session_id
+                        )
+                    )
+                    == 1
+                )
+                dispatch_id = db.scalar(
+                    select(MemoryTurnDispatchJobRecord.id).where(
+                        MemoryTurnDispatchJobRecord.session_id == concurrent_session_id
+                    )
+                )
+                assert dispatch_id is not None
+                assert (
+                    db.scalar(
+                        select(func.count(ConversationMemoryEntryRecord.id)).where(
+                            ConversationMemoryEntryRecord.session_id
+                            == concurrent_session_id
+                        )
+                    )
+                    == 1
+                )
+                assert (
+                    db.scalar(
+                        select(func.count(MemoryTurnDispatchJobRecord.id)).where(
+                            MemoryTurnDispatchJobRecord.session_id
+                            == concurrent_session_id
+                        )
+                    )
+                    == 1
+                )
+                wrong_tenant_repository = SqlAlchemyConversationMemoryRepository(db)
+                assert (
+                    wrong_tenant_repository.lock_session(
+                        organization_id=uuid.uuid4(),
+                        session_id=concurrent_session_id,
+                    )
+                    is None
+                )
+                db.rollback()
+
+            claim_now = datetime.now(timezone.utc)
+            with Session(engine) as db:
+                repository = SqlAlchemyConversationMemoryRepository(db)
+                uow = SqlAlchemyMemoryUnitOfWork(db)
+                claimed = ClaimTurnDispatchUseCase(
+                    repository=repository,
+                    uow=uow,
+                ).execute(
+                    ClaimTurnDispatchCommand(
+                        organization_id=ids["organization"],
+                        dispatch_id=dispatch_id,
+                        owner="dispatcher-integration",
+                        deadline=claim_now + timedelta(seconds=30),
+                        now=claim_now,
+                    )
+                )
+                MarkTurnDispatchPublishedUseCase(
+                    repository=repository,
+                    uow=uow,
+                ).execute(
+                    MarkTurnDispatchPublishedCommand(
+                        organization_id=ids["organization"],
+                        dispatch_id=dispatch_id,
+                        owner="dispatcher-integration",
+                        claim_generation=claimed.claim_generation,
+                        broker_message_id="opaque-integration-message-reference",
+                        now=claim_now + timedelta(seconds=1),
+                    )
+                )
+            with Session(engine) as db:
+                stored_dispatch = db.get(
+                    MemoryTurnDispatchJobRecord,
+                    dispatch_id,
+                )
+                assert stored_dispatch is not None
+                assert stored_dispatch.status == "published"
+                assert stored_dispatch.claim_owner is None
+
+            rollback_session_id = uuid.uuid4()
+            _create_session(engine, ids, rollback_session_id)
+            rollback_command = _start_command(
+                ids,
+                rollback_session_id,
+                digest_seed="d",
+            )
+            with Session(engine) as db:
+                repository = _FailingDispatchRepository(db)
+                uow = SqlAlchemyMemoryUnitOfWork(db)
+                with pytest.raises(RuntimeError, match="synthetic dispatch"):
+                    StartTurnUseCase(repository=repository, uow=uow).execute(
+                        rollback_command
+                    )
+            with Session(engine) as db:
+                stored_session = db.get(
+                    ConversationSessionRecord,
+                    rollback_session_id,
+                )
+                assert stored_session is not None
+                assert stored_session.active_turn_id is None
+                assert stored_session.next_turn_sequence == 1
+                assert (
+                    db.scalar(
+                        select(func.count(ConversationTurnRecord.id)).where(
+                            ConversationTurnRecord.session_id == rollback_session_id
+                        )
+                    )
+                    == 0
+                )
+                assert (
+                    db.scalar(
+                        select(func.count(MemoryTurnDispatchJobRecord.id)).where(
+                            MemoryTurnDispatchJobRecord.session_id
+                            == rollback_session_id
+                        )
+                    )
+                    == 0
+                )
+
+            _run_alembic(
+                PARENT_REVISION,
+                operation="downgrade",
+                database=database,
+                config=config,
+            )
+            _assert_legacy_execution_survives(engine, ids)
+        finally:
+            engine.dispose()
+    except OperationalError:
+        raise pytest.fail.Exception(
+            "disposable PostgreSQL is unavailable or rejected the connection; "
+            "connection details omitted",
+            pytrace=False,
+        ) from None
+    finally:
+        if database_created:
+            try:
+                with admin_engine.connect() as connection:
+                    connection.execute(
+                        text(
+                            """
+                            SELECT pg_terminate_backend(pid)
+                            FROM pg_stat_activity
+                            WHERE datname = :database
+                              AND pid <> pg_backend_pid()
+                            """
+                        ),
+                        {"database": database},
+                    )
+                    connection.execute(
+                        text(f"DROP DATABASE IF EXISTS {quoted_database}")
+                    )
+            except OperationalError:
+                raise pytest.fail.Exception(
+                    "disposable PostgreSQL cleanup could not connect; "
+                    "connection details omitted",
+                    pytrace=False,
+                ) from None
+        admin_engine.dispose()

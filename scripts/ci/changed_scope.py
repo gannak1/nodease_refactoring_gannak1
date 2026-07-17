@@ -70,6 +70,22 @@ _AGENT_BUILDER_POSTGRES_PATTERNS = (
     ".github/workflows/test-agent-builder-postgres.yml",
 )
 
+_MEMORY_POSTGRES_PATTERNS = (
+    "apps/memory/**",
+    "apps/shared/alembic/**",
+    "apps/shared/db/models/conversation_memory.py",
+    "apps/shared/tests/helpers/disposable_postgres.py",
+    ".github/workflows/test-memory-postgres.yml",
+)
+
+_MEMORY_SHARED_TEST_PATTERNS = (
+    "apps/shared/alembic/**",
+    "apps/shared/db/base.py",
+    "apps/shared/db/models/__init__.py",
+    "apps/shared/db/models/conversation_memory.py",
+    "apps/shared/pyproject.toml",
+)
+
 _LOG_SYSTEM_SHARED_SERVICE_PATTERNS = (
     "apps/shared/services/external_effect_trace_capture.py",
     "apps/shared/services/knowledge_ingestion_outbox.py",
@@ -106,9 +122,11 @@ class ChangeScope:
     log_tests: bool = False
     sandbox_tests: bool = False
     root_tests: bool = False
+    memory_tests: bool = False
     knowledge_postgres: bool = False
     workflow_postgres: bool = False
     agent_builder_postgres: bool = False
+    memory_postgres: bool = False
     broad_python: bool = False
 
     def enable_python_smoke(self) -> None:
@@ -118,12 +136,12 @@ class ChangeScope:
         self.log_tests = True
         self.sandbox_tests = True
         self.root_tests = True
+        self.memory_tests = True
         self.broad_python = True
 
     def github_outputs(self) -> dict[str, str]:
         outputs = {
-            name: "true" if value else "false"
-            for name, value in asdict(self).items()
+            name: "true" if value else "false" for name, value in asdict(self).items()
         }
         outputs["gateway_job"] = (
             "true" if self.gateway_tests or self.root_tests else "false"
@@ -226,7 +244,9 @@ def _is_ci_control_path(path: str) -> bool:
 
 def classify_paths(raw_paths: Iterable[str]) -> ChangeScope:
     paths = list(dict.fromkeys(normalize_repo_path(path) for path in raw_paths))
-    scope = ChangeScope(docs_only=bool(paths) and all(_is_documentation_path(path) for path in paths))
+    scope = ChangeScope(
+        docs_only=bool(paths) and all(_is_documentation_path(path) for path in paths)
+    )
 
     if not paths:
         scope.client = True
@@ -234,6 +254,7 @@ def classify_paths(raw_paths: Iterable[str]) -> ChangeScope:
         scope.knowledge_postgres = True
         scope.workflow_postgres = True
         scope.agent_builder_postgres = True
+        scope.memory_postgres = True
         return scope
 
     for path in paths:
@@ -243,6 +264,8 @@ def classify_paths(raw_paths: Iterable[str]) -> ChangeScope:
             scope.workflow_postgres = True
         if _matches_any(path, _AGENT_BUILDER_POSTGRES_PATTERNS):
             scope.agent_builder_postgres = True
+        if _matches_any(path, _MEMORY_POSTGRES_PATTERNS):
+            scope.memory_postgres = True
 
         if _is_documentation_path(path):
             continue
@@ -257,10 +280,15 @@ def classify_paths(raw_paths: Iterable[str]) -> ChangeScope:
             scope.knowledge_postgres = True
             scope.workflow_postgres = True
             scope.agent_builder_postgres = True
+            scope.memory_postgres = True
             continue
 
         if path.startswith("apps/client/"):
             scope.client = True
+            continue
+
+        if path.startswith("apps/memory/"):
+            scope.memory_tests = True
             continue
 
         if path.startswith("apps/gateway/"):
@@ -284,6 +312,9 @@ def classify_paths(raw_paths: Iterable[str]) -> ChangeScope:
             scope.gateway_tests = True
             scope.workflow_tests = True
 
+            if _matches_any(path, _MEMORY_SHARED_TEST_PATTERNS):
+                scope.memory_tests = True
+
             if path.startswith(("apps/shared/db/", "apps/shared/schemas/")):
                 scope.root_tests = True
                 scope.log_tests = True
@@ -292,6 +323,7 @@ def classify_paths(raw_paths: Iterable[str]) -> ChangeScope:
                 scope.log_tests = True
                 scope.knowledge_postgres = True
                 scope.workflow_postgres = True
+                scope.memory_postgres = True
             if _matches_any(path, _LOG_SYSTEM_SHARED_SERVICE_PATTERNS):
                 scope.log_tests = True
             if any(
@@ -318,6 +350,7 @@ def classify_paths(raw_paths: Iterable[str]) -> ChangeScope:
                 ".github/workflows/test-knowledge-runtime-postgres.yml",
                 ".github/workflows/test-schedule-dispatch-postgres.yml",
                 ".github/workflows/test-agent-builder-postgres.yml",
+                ".github/workflows/test-memory-postgres.yml",
             }:
                 continue
             scope.client = True
@@ -375,7 +408,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.python_files0:
         files = changed_python_files(paths, repo_root)
-        sys.stdout.buffer.write(b"".join(path.encode("utf-8") + b"\0" for path in files))
+        sys.stdout.buffer.write(
+            b"".join(path.encode("utf-8") + b"\0" for path in files)
+        )
         return 0
 
     scope = classify_paths(paths)

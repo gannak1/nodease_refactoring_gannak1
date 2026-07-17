@@ -16,6 +16,7 @@ _POSTGRES_ONLY_TESTS = {
     "apps/gateway/tests/integration/test_agent_builder_model_selection_db.py",
     "apps/gateway/tests/integration/test_agent_builder_primary_workflow_db.py",
     "apps/gateway/tests/integration/test_agent_builder_workflow_cas.py",
+    "apps/memory/tests/adapters/test_disposable_postgres.py",
 }
 _GENERIC_TOKENS = {
     "adapter",
@@ -113,6 +114,16 @@ _COMPONENTS = {
         smoke_targets=("apps/sandbox/tests",),
         layer_map={},
     ),
+    "memory": ComponentConfig(
+        test_root="apps/memory/tests",
+        source_prefix="apps/memory/",
+        smoke_targets=("apps/memory/tests/architecture",),
+        layer_map={
+            "adapters": "adapters",
+            "application": "application",
+            "domain": "domain",
+        },
+    ),
     "root": ComponentConfig(
         test_root="tests",
         source_prefix=None,
@@ -152,7 +163,9 @@ def _is_allowed_test(path: Path, repo_root: Path, config: ComponentConfig) -> bo
         return False
     if relative in _POSTGRES_ONLY_TESTS:
         return False
-    return not any(part in _EXCLUDED_TEST_PARTS for part in PurePosixPath(relative).parts)
+    return not any(
+        part in _EXCLUDED_TEST_PARTS for part in PurePosixPath(relative).parts
+    )
 
 
 def _test_files(repo_root: Path, config: ComponentConfig) -> list[Path]:
@@ -169,9 +182,7 @@ def _test_files(repo_root: Path, config: ComponentConfig) -> list[Path]:
 def _features_match(source_path: str, test_path: str) -> bool:
     source_stem = PurePosixPath(source_path).stem.lower()
     test_stem = PurePosixPath(test_path).stem.lower().removeprefix("test_")
-    if len(source_stem) >= 5 and (
-        source_stem in test_stem or test_stem in source_stem
-    ):
+    if len(source_stem) >= 5 and (source_stem in test_stem or test_stem in source_stem):
         return True
 
     source_tokens = _feature_tokens(source_path)
@@ -210,12 +221,16 @@ def _matching_feature_targets(
     source_paths = [
         normalize_repo_path(path)
         for path in changed_paths
-        if path.endswith(".py") and "/tests/" not in path and not path.startswith("tests/")
+        if path.endswith(".py")
+        and "/tests/" not in path
+        and not path.startswith("tests/")
     ]
     targets: set[str] = set()
     for test_file in test_files:
         relative_test = test_file.relative_to(repo_root).as_posix()
-        if any(_features_match(source_path, relative_test) for source_path in source_paths):
+        if any(
+            _features_match(source_path, relative_test) for source_path in source_paths
+        ):
             targets.add(relative_test)
     return targets
 
@@ -271,15 +286,13 @@ def _layer_fallback_targets(
 
 
 def _existing_smoke_targets(repo_root: Path, config: ComponentConfig) -> set[str]:
-    return {
-        target
-        for target in config.smoke_targets
-        if (repo_root / target).exists()
-    }
+    return {target for target in config.smoke_targets if (repo_root / target).exists()}
 
 
 def _collapse_nested_targets(targets: Iterable[str]) -> list[str]:
-    ordered = sorted(set(targets), key=lambda value: (len(PurePosixPath(value).parts), value))
+    ordered = sorted(
+        set(targets), key=lambda value: (len(PurePosixPath(value).parts), value)
+    )
     collapsed: list[str] = []
     for target in ordered:
         target_path = PurePosixPath(target)
@@ -316,7 +329,7 @@ def select_pytest_targets(
 
     if not targets:
         targets.update(_existing_smoke_targets(repo_root, config))
-    if component == "gateway":
+    if component in {"gateway", "memory"}:
         targets.update(_existing_smoke_targets(repo_root, config))
 
     valid_targets = {

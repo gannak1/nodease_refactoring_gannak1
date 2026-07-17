@@ -484,6 +484,21 @@ Status: Draft
 
 ## Requirement Traceability
 
+### MBA-316 automated foundation evidence
+
+MBA-316은 production composition을 활성화하지 않고 아래 persistence/lifecycle subset을 자동화한다. 이 표는 전체 Conversation Memory 기능이 완료됐다는 의미가 아니며, Access Grant/API, Runtime provenance/context, summary/provider/usage와 physical purge 사례는 후속 이슈의 테스트로 남는다.
+
+| Test target | 구현 evidence | 연결 사례 |
+| --- | --- | --- |
+| `apps/memory/tests/architecture/test_boundaries.py` | Domain/application framework 독립성, import side effect 부재, Memory ORM direct access 제한 | MEM-TC-ARCH-001, 002, 006, 008 |
+| `apps/memory/tests/domain/test_conversation.py` | Session/Turn revision, active turn, hash-only replay identity, 모든 terminal outcome의 absorbing transition property, late write, projection envelope bound, dispatch fencing·claim expiry recovery | MEM-TC-DOM-001, 003~013, 015 및 MEM-TC-DOM-016의 dispatch process subset |
+| `apps/memory/tests/application/test_lifecycle.py` | Create/Start/Complete/Close/Delete-pending UoW, same-request replay, dispatch insert failure rollback, unknown outcome fail-closed | MEM-TC-APP-002, 008~012, 016, 040, 041의 mutation 차단, 043의 tombstone/purge-job 기반 |
+| `apps/memory/tests/application/test_dispatch.py` | Claim/publish/expired-recovery command만 상태를 전이하고 stale fencing을 rollback | MEM-TC-APP-017, 017A, 018 |
+| `apps/memory/tests/adapters/test_schema.py`, `test_repository.py` | 15개 model/readiness, nullable reference의 tenant-scoped composite FK, lifecycle/turn/entry/dispatch CAS와 terminal/fencing check, projection별 암호화 envelope, safe DB error 변환 | MEM-TC-DB-001, 004, 008, 010, 023의 schema/repository subset |
+| `apps/memory/tests/adapters/test_disposable_postgres.py` | 실제 PostgreSQL clean upgrade와 Memory table 범위 Alembic model drift check, legacy Run/NodeRun 보존 downgrade, concurrent StartTurn 단일 승자, StartTurn partial-write rollback, dispatch claim/publish | MEM-TC-DB-002, 013, 014 및 MEM-TC-MIG-005 |
+
+Disposable PostgreSQL evidence는 `NODEASE_RUN_DISPOSABLE_DB_TEST=1`인 전용 CI job에서 한 번 실행하고 일반 `memory-tests` job에서는 제외한다. MEM-TC-DOM-016의 active Turn safe terminal 처리, MEM-TC-DB-003/005~007/009/011~012/015~026과 lifecycle audit/outbox cardinality는 관련 application adapter가 구현되기 전 완료로 표시하지 않는다.
+
 | Requirement range | Primary test sections |
 | --- | --- |
 | MEM-REQ-001~007 | Architecture Boundary, Session Aggregate, Lifecycle, Gateway/API |

@@ -4,7 +4,7 @@ Status: Draft
 
 ## Contract Status
 
-이 문서는 [ADR-0030](../../decisions/ADR-0030-memory-bounded-context.md)과 [ADR-0033](../../decisions/ADR-0033-conversation-memory-contract-completion.md)의 목표 API와 runtime application contract를 정의한다. 아래 session endpoint와 request envelope은 아직 구현되지 않았다. 현재 Chatbot의 `inputs.memory_mode`와 `inputs.conversation_id`는 legacy contract이며 target API에 포함하지 않는다.
+이 문서는 [ADR-0030](../../decisions/ADR-0030-memory-bounded-context.md)과 [ADR-0033](../../decisions/ADR-0033-conversation-memory-contract-completion.md)의 목표 API와 runtime application contract를 정의한다. MBA-316은 transport-independent Session/Turn lifecycle과 dispatch command, repository/UnitOfWork의 dormant subset만 구현한다. 아래 session endpoint, Access Grant bearer와 runtime request envelope은 아직 구현되지 않았고 production composition에도 연결되지 않았다. 현재 Chatbot의 `inputs.memory_mode`와 `inputs.conversation_id`는 legacy contract이며 target API에 포함하지 않는다.
 
 Endpoint path는 목표 contract다. 구현 PR은 additive versioning과 guided migration으로 도입하고 기존 Workflow/Chatbot API 문서를 함께 갱신해야 한다. Authenticated internal Chatbot endpoint는 별도 내부 Chatbot 접근 정책·배포 surface 구현에 의존하며 이 Conversation Memory 설계만으로 현재 제공되는 기능이 아니다. Numeric retention/rate limit은 운영 설정이지만 이 문서의 security/idempotency baseline을 완화할 수 없다.
 

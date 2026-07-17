@@ -88,6 +88,18 @@ echo -e "\n${YELLOW}📍 Shared Library & Unit 테스트 실행 (with Workflow V
 )
 UNIT_EXIT_CODE=$?
 
+echo -e "\n${YELLOW}📍 Conversation Memory 테스트 실행 (with Workflow Venv)${NC}"
+(
+    if [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "win32" ]] || [[ "$OSTYPE" == "cygwin" ]]; then
+        VENV_PYTHON="apps/workflow_engine/.venv/Scripts/python"
+    else
+        VENV_PYTHON="apps/workflow_engine/.venv/bin/python"
+    fi
+    export PYTHONPATH="$PROJECT_ROOT"
+    $VENV_PYTHON -m pytest apps/memory/tests
+)
+MEMORY_EXIT_CODE=$?
+
 echo -e "\n${YELLOW}📍 Sandbox Service 테스트 실행 (with Workflow Venv)${NC}"
 (
     # OS별 Python 경로 설정
@@ -147,6 +159,12 @@ else
     echo -e "${RED}❌ Shared/Unit Logic: FAIL${NC}"
 fi
 
+if [ $MEMORY_EXIT_CODE -eq 0 ]; then
+    echo -e "${GREEN}✅ Conversation Memory: PASS${NC}"
+else
+    echo -e "${RED}❌ Conversation Memory: FAIL${NC}"
+fi
+
 if [ $SANDBOX_EXIT_CODE -eq 0 ]; then
     echo -e "${GREEN}✅ Sandbox Service: PASS${NC}"
 else
@@ -161,7 +179,7 @@ if [ -d "apps/client" ]; then
     fi
 fi
 
-if [ $GATEWAY_EXIT_CODE -eq 0 ] && [ $WORKFLOW_EXIT_CODE -eq 0 ] && [ $LOG_SYSTEM_EXIT_CODE -eq 0 ] && [ $ROOT_TESTS_EXIT_CODE -eq 0 ] && [ $UNIT_EXIT_CODE -eq 0 ] && [ $SANDBOX_EXIT_CODE -eq 0 ] && [ $CLIENT_EXIT_CODE -eq 0 ]; then
+if [ $GATEWAY_EXIT_CODE -eq 0 ] && [ $WORKFLOW_EXIT_CODE -eq 0 ] && [ $LOG_SYSTEM_EXIT_CODE -eq 0 ] && [ $ROOT_TESTS_EXIT_CODE -eq 0 ] && [ $UNIT_EXIT_CODE -eq 0 ] && [ $MEMORY_EXIT_CODE -eq 0 ] && [ $SANDBOX_EXIT_CODE -eq 0 ] && [ $CLIENT_EXIT_CODE -eq 0 ]; then
     exit 0
 else
     exit 1
