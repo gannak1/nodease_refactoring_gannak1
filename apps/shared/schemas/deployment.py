@@ -213,6 +213,30 @@ class DeploymentRunInfoResponse(BaseModel):
     output_schema: Optional[dict] = None
 
 
+class DeploymentLLMCredentialPolicyUpsert(BaseModel):
+    """Manager-only server policy for one immutable deployment LLM node."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model_id: UUID
+    credential_id: UUID
+
+
+class DeploymentLLMCredentialPolicyResponse(BaseModel):
+    """Safe projection; it never returns credential config or a principal."""
+
+    id: UUID
+    deployment_id: UUID
+    deployment_version: int = Field(ge=1)
+    node_id: str
+    model_id: UUID
+    credential_id: UUID
+    policy_revision: int = Field(ge=1)
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
 class DeploymentConversationControl(BaseModel):
     """인증 실행의 legacy conversation namespace용 bounded client control."""
 

@@ -18,6 +18,10 @@ Status: Draft
 - Encryption metadata가 모두 null인 legacy row만 평문 read를 허용한다. Metadata 일부 누락, unsupported algorithm, unknown key version, 손상 ciphertext 또는 invalid config는 평문 fallback 없이 실패한다.
 - Gateway와 Workflow Engine의 신규 credential 등록은 raw config와 다른 ciphertext, active key version과 algorithm을 저장한다.
 - Gateway·Workflow Engine·RAG answer·embedding·LlamaParse의 decrypt 실패 테스트는 provider/client mock 호출이 0회임을 검증한다.
+- Deployment policy resolver는 immutable deployment graph의 exact `llmNode.model_id`만 읽고 `credential_id`/`credentialId`, fallback model, auto-routing이 있는 capability-required node를 거부한다.
+- Deployment policy write는 manager actor를 server-derived credential principal으로만 사용하고, request의 credential config/principal override를 받지 않는다. Same organization, active credential/provider, verified single relation, credential `use`를 만족하지 않으면 policy row를 만들지 않는다.
+- Capability-required LLM node는 trusted node invocation control과 explicit token/cost cap이 없으면 provider client를 만들지 않으며, legacy user/app owner/default/name/order/fallback selection을 호출하지 않는다.
+- Capability-required LLM node가 legacy `memory_mode`를 만나면 inline summary helper를 skip하고 history query 또는 legacy `get_client_for_user` provider call을 만들지 않는다. Main capability를 summary purpose로 재사용하지 않으며, dedicated Conversation Memory summarizer가 없는 상태에서 summary provider 호출을 추가하지 않는다.
 
 ## API 테스트
 
@@ -28,12 +32,15 @@ Status: Draft
 - DELETE의 legacy success message가 `deleted`를 사용하더라도 secret physical purge 완료로 해석하지 않는다. 응답, audit와 log에는 저장 secret 원문을 포함하지 않는다.
 - Knowledge target flow에서 `generation_model_id`/`credential_id`가 없거나 보이지 않으면 Knowledge API gate에 따라 answer-run 생성 전에 실패한다.
 - Credential `use` denial은 sanitized error/audit metadata에서 KB permission denial 및 source ACL denial과 구분된다.
+- `PUT /api/v1/deployments/{deployment_id}/llm-credential-policies/{node_id}`는 active organization manager만 성공하고, response에 credential principal, encrypted config, API key/token, raw capability scope를 포함하지 않는다.
+- Policy endpoint는 다른 organization deployment를 `404`로 숨기고 manager denial은 `403 permission.denied`, invalid graph/relation은 safe `422`, concurrent/ambiguous selection은 safe `409`로 반환한다.
 
 ## E2E 테스트
 
 - Standalone RAG answer explicit KB mode와 auto collection mode는 preset/default credential ADR이 승인되기 전까지 모두 명시 generation model/credential selection을 요구한다.
 - Conversation Memory summary는 `inherit_node`만 허용하고 direct credential ID와 `organization_default`를 거부한다.
 - Main capability를 summary purpose로 재사용하거나 summary capability를 main generation에 사용하면 provider 호출 전에 거부한다.
+- Capability-required deployment LLM node는 selected model과 다른 fallback/auto-routed model로 provider SDK를 호출하지 않으며, current policy revision 또는 permission/relation/pricing/egress fingerprint가 달라지면 provider call 전에 거부한다.
 
 ## 권한 테스트
 

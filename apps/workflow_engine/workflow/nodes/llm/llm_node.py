@@ -22,6 +22,11 @@ from apps.shared.domain.knowledge_runtime_candidates import (
     KnowledgeRuntimeCandidateRequest,
     KnowledgeRuntimeCandidateResolution,
 )
+from apps.shared.domain.provider_execution_capability import (
+    CapabilityPurpose,
+    ProviderExecutionBinding,
+    RuntimePrincipal,
+)
 from apps.shared.db.session import SessionLocal  # 임시 세션 생성용
 from apps.shared.schemas.rag import ChunkPreview
 from apps.shared.schemas.workflow_citation import (
@@ -44,6 +49,9 @@ from apps.shared.services.rag_evidence_policy import (
 )
 from apps.shared.services.security_alert_policy_reason import (
     with_normalized_security_alert_policy_reason,
+)
+from apps.shared.services.provider_execution_capability import (
+    ProviderExecutionCapabilityIssueCommand,
 )
 from apps.shared.services.rag_source_tier import (
     chunk_source_tier_priority,
@@ -154,6 +162,44 @@ def _safe_provider_failure_metadata(error: Exception) -> dict[str, Any]:
         if isinstance(value, str) and SAFE_PROVIDER_ERROR_IDENTIFIER_RE.fullmatch(value):
             metadata[metadata_name] = value
     return metadata
+
+
+class ProviderExecutionCapabilityConfigurationError(ValueError):
+    """Safe fail-closed error for the opt-in capability runtime path."""
+
+    code = "provider_capability.configuration_required"
+
+
+def _build_json_output_schema_instruction(
+    output_format: Optional[Dict[str, Any]],
+    *,
+    force_json_object: bool = False,
+) -> Optional[str]:
+    if not force_json_object and not isinstance(output_format, dict):
+        return None
+    if isinstance(output_format, dict) and output_format.get("type") != "json":
+        return None
+
+    schema = output_format.get("schema") if isinstance(output_format, dict) else None
+    if not isinstance(schema, dict) or not schema:
+        return (
+            "응답은 반드시 json object 하나만 반환하세요. "
+            "설명 문장, markdown, code fence는 포함하지 마세요."
+        )
+
+    schema_text = json.dumps(schema, ensure_ascii=False, sort_keys=True)
+    return (
+        f"{JSON_OUTPUT_SCHEMA_SYSTEM_INSTRUCTION_PREFIX}\n"
+        "설명 문장, markdown, code fence는 포함하지 마세요.\n\n"
+        f"json schema:\n{schema_text}"
+    )
+
+
+def _response_format_requires_json_instruction(response_format: Any) -> bool:
+    if not isinstance(response_format, dict):
+        return False
+    response_format_type = response_format.get("type")
+    return response_format_type in {"json_object", "json_schema"}
 
 
 RAG_NO_EVIDENCE_MESSAGE = "요청하신 문서를 찾을 수 없거나 접근 권한이 없습니다."
@@ -1014,11 +1060,18 @@ class LLMNode(Node[LLMNodeData]):
         db_session = None
         temp_session = None
         client_override = getattr(self, "_client_override", None)
+        capability_required = self._provider_execution_capability_required()
         selected_credential_id = None
+        runtime_credential_principal_user_id = None
         knowledge_enabled = bool(
             self.data.knowledgeBases or self.data.knowledgeCollections
         )
-        if not client_override or knowledge_enabled or self.data.auto_model_routing:
+        if (
+            capability_required
+            or not client_override
+            or knowledge_enabled
+            or self.data.auto_model_routing
+        ):
             db_session, should_close_session = self._borrow_db_session()
             if should_close_session:
                 temp_session = db_session
@@ -1287,14 +1340,21 @@ class LLMNode(Node[LLMNodeData]):
                 self.data,
                 rag_metadata=routing_rag_context,
             )
-            selected_model_id, fallback_model_id, model_routing_metadata = (
-                self._resolve_model_routing_policy(
-                    inputs,
-                    db_session,
-                    routing_feature_text=routing_feature_text,
-                    routing_rag_context=routing_rag_context,
+            if capability_required:
+                selected_model_id = self.data.model_id
+                fallback_model_id = None
+                model_routing_metadata = {
+                    "provider_execution_capability": "required"
+                }
+            else:
+                selected_model_id, fallback_model_id, model_routing_metadata = (
+                    self._resolve_model_routing_policy(
+                        inputs,
+                        db_session,
+                        routing_feature_text=routing_feature_text,
+                        routing_rag_context=routing_rag_context,
+                    )
                 )
-            )
             # 자동 라우팅을 끈 노드도 provider fallback은 사용할 수 있다. 이 경우에도
             # 실제 대체 실행 정보를 안전하게 남길 수 있도록 빈 metadata로 정규화한다.
             model_routing_metadata = dict(model_routing_metadata or {})
@@ -1307,7 +1367,34 @@ class LLMNode(Node[LLMNodeData]):
             fallback_reason_code = None
             fallback_error_metadata: dict[str, Any] = {}
 
-            if client_override:
+            if capability_required:
+                if client_override is not None:
+                    raise PermissionError(
+                        "provider_capability.client_override_forbidden"
+                    )
+                if db_session is None:
+                    raise PermissionError("provider_capability.db_session_required")
+                issue_command = self._provider_execution_issue_command(
+                    selected_model_id=selected_model_id,
+                )
+                runtime_selection = (
+                    LLMService.get_runtime_client_for_provider_execution(
+                        db_session,
+                        issue_command=issue_command,
+                    )
+                )
+                if runtime_selection.model_id != selected_model_id:
+                    raise LLMCredentialNotAvailableError(
+                        "provider_capability_model_mismatch",
+                        "Provider execution capability is not available.",
+                        organization_id=issue_command.binding.organization_id,
+                    )
+                client = runtime_selection.client
+                selected_credential_id = runtime_selection.credential_id
+                runtime_credential_principal_user_id = (
+                    runtime_selection.credential_principal_user_id
+                )
+            elif client_override:
                 client = client_override
             else:
                 user_id = self._resolve_credential_principal_user()
@@ -1433,6 +1520,9 @@ class LLMNode(Node[LLMNodeData]):
                         )
                         fallback_client = runtime_selection.client
                         selected_credential_id = runtime_selection.credential_id
+                        runtime_credential_principal_user_id = (
+                            runtime_selection.credential_principal_user_id
+                        )
                     except Exception as exc:
                         logger.error(
                             "[LLMNode] Fallback client load failed: error_type=%s",
@@ -1492,8 +1582,14 @@ class LLMNode(Node[LLMNodeData]):
                         usage=usage_for_log,
                     )
 
-                    usage_user_id = self._resolve_credential_principal_user()
-                    workflow_run_id_str = self.execution_context.get("workflow_run_id")
+                    usage_user_id = (
+                        runtime_credential_principal_user_id
+                        if capability_required
+                        else self._resolve_credential_principal_user()
+                    )
+                    workflow_run_id_str = self.execution_context.get(
+                        "workflow_run_id"
+                    )
                     cost_optimizer_candidate_id = self.execution_context.get(
                         "cost_optimizer_candidate_id"
                     )
@@ -1830,6 +1926,14 @@ class LLMNode(Node[LLMNodeData]):
         - 요약 실패 시 워크플로우 실행은 그대로 진행
         """
         if not self.execution_context.get("memory_mode"):
+            return None
+
+        if self._provider_execution_capability_required():
+            # The legacy inline summarizer reads WorkflowRun history without
+            # the Conversation Memory session/access-grant/lease contract.
+            # It must not become a target provider path merely because a main
+            # generation capability is active.  A future dedicated Memory
+            # adapter will issue its own `memory_summary` capability.
             return None
 
         try:
@@ -2969,6 +3073,129 @@ class LLMNode(Node[LLMNodeData]):
             raise PermissionError(
                 "RAG retrieval requires a valid credential user context."
             ) from exc
+
+    def _provider_execution_capability_required(self) -> bool:
+        """Return only an explicit server-supplied capability activation flag."""
+
+        return self.execution_context.get("provider_execution_capability_required") is True
+
+    def _provider_execution_issue_command(
+        self,
+        *,
+        selected_model_id: str,
+    ) -> ProviderExecutionCapabilityIssueCommand:
+        """Build a policy-only provider attempt from trusted runtime control.
+
+        This deliberately does not consult ``user_id`` or
+        ``credential_principal`` in execution context.  Those legacy fields
+        could otherwise turn a public request into the app owner's credential
+        principal.  The policy issuer derives the credential principal itself.
+        """
+
+        if (
+            self.data.auto_model_routing
+            or self.data.fallback_model_id
+            or selected_model_id != self.data.model_id
+        ):
+            raise ProviderExecutionCapabilityConfigurationError()
+        control = self._runtime_control
+        effect_context = (
+            control.external_effect_context if control is not None else None
+        )
+        if (
+            control is None
+            or not control.external_effect_enforced
+            or effect_context is None
+            or effect_context.node_id != self.id
+        ):
+            raise ProviderExecutionCapabilityConfigurationError()
+
+        try:
+            deployment_id = uuid.UUID(str(self.execution_context["deployment_id"]))
+            workflow_version = self.execution_context["workflow_version"]
+            if isinstance(workflow_version, bool):
+                raise ValueError
+            deployment_version = int(workflow_version)
+            context_organization_id = uuid.UUID(
+                str(self.execution_context["organization_id"])
+            )
+            context_workflow_id = uuid.UUID(str(self.execution_context["workflow_id"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ProviderExecutionCapabilityConfigurationError() from exc
+        if (
+            deployment_version < 1
+            or context_organization_id != effect_context.organization_id
+            or context_workflow_id != effect_context.workflow_id
+        ):
+            raise ProviderExecutionCapabilityConfigurationError()
+
+        execution_subject, audit_actor = self._provider_execution_identities()
+        caps = self.execution_context.get("provider_execution_capability_limits")
+        if not isinstance(caps, dict):
+            raise ProviderExecutionCapabilityConfigurationError()
+        cap_values = (
+            caps.get("input_token_cap"),
+            caps.get("output_token_cap"),
+            caps.get("cost_cap_microusd"),
+        )
+        if any(
+            not isinstance(value, int) or isinstance(value, bool) or value < 0
+            for value in cap_values
+        ):
+            raise ProviderExecutionCapabilityConfigurationError()
+        input_token_cap, output_token_cap, cost_cap_microusd = cap_values
+        node_invocation_id = effect_context.node_invocation_id
+        provider_attempt_id = uuid.uuid5(
+            control.execution_id,
+            f"provider_execution:{node_invocation_id}:main_generation",
+        )
+        return ProviderExecutionCapabilityIssueCommand(
+            binding=ProviderExecutionBinding(
+                organization_id=effect_context.organization_id,
+                workflow_id=effect_context.workflow_id,
+                deployment_id=deployment_id,
+                deployment_version=deployment_version,
+                node_id=self.id,
+                node_invocation_id=node_invocation_id,
+                # The trusted execution identity is the admission fence for
+                # this first capability generation.  MBA-287 adds a durable
+                # provider-attempt ledger without widening this input surface.
+                execution_admission_id=control.execution_id,
+                provider_attempt_id=provider_attempt_id,
+                purpose=CapabilityPurpose.MAIN_GENERATION,
+            ),
+            execution_subject=execution_subject,
+            billing_principal=RuntimePrincipal.organization(
+                effect_context.organization_id
+            ),
+            audit_actor=audit_actor,
+            input_token_cap=input_token_cap,
+            output_token_cap=output_token_cap,
+            cost_cap_microusd=cost_cap_microusd,
+        )
+
+    def _provider_execution_identities(
+        self,
+    ) -> tuple[RuntimePrincipal, RuntimePrincipal]:
+        subject = self.execution_context.get("execution_subject")
+        if isinstance(subject, dict):
+            subject_type = subject.get("subject_type") or subject.get("type")
+            subject_id = subject.get("subject_id") or subject.get("id")
+            if subject_type == "user":
+                try:
+                    user_id = uuid.UUID(str(subject_id))
+                except (TypeError, ValueError) as exc:
+                    raise ProviderExecutionCapabilityConfigurationError() from exc
+                user = RuntimePrincipal.user(user_id)
+                return user, user
+            raise ProviderExecutionCapabilityConfigurationError()
+
+        audience = self.execution_context.get("provider_execution_audience")
+        if audience == "anonymous_public":
+            return RuntimePrincipal.anonymous_public(), RuntimePrincipal.public_actor()
+        if audience == "system":
+            return RuntimePrincipal.system_actor(), RuntimePrincipal.system_actor()
+        raise ProviderExecutionCapabilityConfigurationError()
 
     def _is_system_schedule_execution(self) -> bool:
         trigger_mode = str(self.execution_context.get("trigger_mode") or "").lower()

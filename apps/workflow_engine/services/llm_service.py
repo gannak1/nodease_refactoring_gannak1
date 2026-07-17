@@ -38,6 +38,12 @@ from apps.shared.services.permissions import has_llm_credential_permission
 from apps.shared.services.retrieval_embedding_model_projection import (
     EmbeddingModelBinding,
 )
+from apps.shared.services.provider_execution_capability import (
+    ProviderExecutionCapabilityAdmissionCommand,
+    ProviderExecutionCapabilityIssueCommand,
+    ProviderExecutionCapabilityService,
+    ProviderExecutionPolicyError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +75,9 @@ class LLMRuntimeSelection:
     credential_id: uuid.UUID
     model_id: str
     organization_id: uuid.UUID
+    capability_id: uuid.UUID | None = None
+    capability_revision: int | None = None
+    credential_principal_user_id: uuid.UUID | None = None
 
 
 class LLMService:
@@ -742,6 +751,73 @@ class LLMService:
             credential_id=cred.id,
             model_id=model_id,
             organization_id=organization_id,
+            credential_principal_user_id=user_id,
+        )
+
+    @staticmethod
+    def get_runtime_client_for_provider_execution(
+        db: Session,
+        *,
+        issue_command: ProviderExecutionCapabilityIssueCommand,
+    ) -> LLMRuntimeSelection:
+        """Materialize a client only after capability issue and admission.
+
+        This target-only path never accepts a credential principal or
+        credential selection from its caller.  The shared LLM Credentials
+        service derives both from the canonical deployment policy and repeats
+        the permission/relation checks immediately before client creation.
+        """
+
+        try:
+            capability = ProviderExecutionCapabilityService.issue_capability(
+                db,
+                command=issue_command,
+            )
+            lease = ProviderExecutionCapabilityService.admit_capability(
+                db,
+                command=ProviderExecutionCapabilityAdmissionCommand(
+                    capability_id=capability.id,
+                    capability_revision=capability.revision,
+                    binding=issue_command.binding,
+                    requested_input_tokens=issue_command.input_token_cap,
+                    requested_output_tokens=issue_command.output_token_cap,
+                    requested_cost_microusd=issue_command.cost_cap_microusd,
+                ),
+            )
+        except ProviderExecutionPolicyError as exc:
+            raise LLMCredentialNotAvailableError(
+                f"provider_capability_{exc.code}",
+                "Provider execution capability is not available.",
+                model_id=None,
+                organization_id=issue_command.binding.organization_id,
+            ) from exc
+
+        try:
+            cfg = json.loads(lease.credential.encrypted_config)
+            api_key = cfg.get("apiKey")
+            base_url = cfg.get("baseUrl")
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise LLMCredentialNotAvailableError(
+                "credential_config_invalid",
+                "Provider execution capability is not available.",
+                organization_id=issue_command.binding.organization_id,
+            ) from exc
+
+        client = get_llm_client(
+            provider=lease.provider.name,
+            model_id=lease.model.model_id_for_api_call,
+            credentials={"apiKey": api_key, "baseUrl": base_url},
+        )
+        return LLMRuntimeSelection(
+            client=client,
+            credential_id=lease.credential.id,
+            model_id=lease.model.model_id_for_api_call,
+            organization_id=issue_command.binding.organization_id,
+            capability_id=capability.id,
+            capability_revision=capability.revision,
+            credential_principal_user_id=(
+                lease.capability.credential_principal.reference_id
+            ),
         )
 
     @staticmethod

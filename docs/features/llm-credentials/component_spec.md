@@ -15,10 +15,12 @@ Status: Draft
 - `CredentialModelRelationResolver`: credential-model pair가 active이고 verified 상태인지 확인한다.
 - `LlamaParseCredentialResolver`: document parsing 직전에 execution subject, active organization, `llamaparse` provider 호환성, valid 상태와 credential `use` 권한을 확인하고 단일 허용 credential의 parser 입력만 반환한다. FileProcessor는 ORM row나 저장 config를 직접 해석하지 않는다.
 - `AgentAnswerOptionProvider`: credential secret이나 전체 owner metadata를 반환하지 않고 standalone RAG answer flow용 safe option schema를 만든다.
+- `DeploymentCredentialPolicyService`: manager-only deployment policy write/read boundary다. Immutable deployment graph의 exact LLM node/model과 organization-scoped credential, verified relation, credential `use`를 server-side에서 대조하고 revisioned policy row를 만든다. Graph, request body, public runtime actor가 credential principal을 선택하지 못하게 한다.
 - `ProviderExecutionCapabilityIssuer`: 이 capability 계약의 authoritative owner다. Canonical runtime scope와 admission, server-derived credential principal, credential `use` decision revision, verified model relation, egress/pricing policy와 token·cost cap을 검증해 invocation/provider-attempt에 binding된 short-lived opaque capability identity/revision을 발급한다. Raw credential을 application/Memory에 반환하지 않는다.
 - `LLMCredentialConfigService`: canonical config JSON을 active key로 암호화하고 row metadata를 기준으로 encrypted/legacy read를 구분한다. active version은 공백이 아니고 `llm_credentials.encryption_key_version` 저장 길이인 최대 64자를 넘지 않아야 한다. 복호화, JSON/schema validation과 safe error normalization의 유일한 application 경계다.
 - `LLMCredentialRotationService`: legacy 평문과 non-active key row를 stable order와 `FOR UPDATE SKIP LOCKED` 제한 batch로 active key에 재암호화하고 남은 대상 수만 반환한다. 운영 명령은 migration·readiness 완료 뒤 Gateway image에서 실행하며 plaintext, ciphertext 또는 key를 출력하지 않는다.
 - `LLMCredentialKeyringReadiness`: Gateway, Workflow Worker와 Knowledge Worker 시작 시 keyring JSON, Fernet key와 active version을 검증한다. Celery Worker는 parent와 child process에서 모두 검증한다.
+- Legacy `LLMNode` inline summary helper는 Conversation Memory summarizer component가 아니다. Capability-required LLM execution에서는 helper를 skip해 legacy `user_id`/owner credential provider call을 만들지 않으며, future summarizer만 별도 `memory_summary` capability를 consume할 수 있다.
 
 ## 상태
 
@@ -38,6 +40,7 @@ Status: Draft
 - Capability identity/revision은 Memory lease, Budget reservation, provider attempt와 usage reconciliation에 전달한다. Credential revoke/permission revision 변경과 scope/admission/attempt/expiry mismatch는 새 claim·reservation·provider SDK 호출 전에 거부한다. Consumer는 credential principal이나 capability revision을 자체 합성하지 않는다.
 - 신규 credential write는 active encryption version만 사용한다. Legacy read는 encryption metadata 두 값이 모두 null인 row에만 허용하며 metadata pair 불일치 또는 encrypted row decrypt 실패에는 평문 fallback을 하지 않는다.
 - Rotation은 신·구키 동시 배포, active version 전환, batch 재암호화, 구키 참조 0 확인, 구키 제거 순서로 수행한다. Alembic migration은 key를 읽거나 row를 암호화하지 않는다.
+- Capability-required LLM node path는 trusted Workflow Engine control과 explicit bounded cap을 가진 server runtime에서만 활성화한다. 이 path는 client override, `fallback_model_id`, automatic model routing, legacy `user_id`/owner credential selection을 사용하지 않는다. Policy가 고른 safe credential reference는 내부 client materialization에만 사용하고 component response, trace, audit에는 raw config를 전달하지 않는다.
 
 ## 접근성
 

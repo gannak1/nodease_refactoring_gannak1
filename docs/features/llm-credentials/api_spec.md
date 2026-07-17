@@ -10,6 +10,8 @@ Status: Draft
 | GET | `/api/v1/llm/credentials` | 현재 credential listing surface | 현재 동작. 목표 Agent answer option 계약이 아니다 |
 | POST | `/api/v1/llm/credentials` | active organization에 LLM credential을 등록하고 provider 모델 relation을 동기화한다 | Organization manager only |
 | DELETE | `/api/v1/llm/credentials/{credential_id}` | active organization의 LLM credential을 revoke한다. Current 구현은 `is_valid=false`이며 row를 hard delete하지 않는다 | Organization manager 또는 credential `manage` |
+| GET | `/api/v1/deployments/{deployment_id}/llm-credential-policies` | immutable deployment version의 active LLM credential policy를 safe projection으로 조회한다 | Active organization manager only |
+| PUT | `/api/v1/deployments/{deployment_id}/llm-credential-policies/{node_id}` | immutable deployment LLM node/model에 대한 server-owned credential policy revision을 생성한다 | Active organization manager only |
 
 ## 요청과 응답 모델
 
@@ -31,6 +33,23 @@ Response는 `LLMCredentialResponse`를 사용할 수 있지만, `encrypted_confi
 현재 `DELETE /api/v1/llm/credentials/{credential_id}`는 이름과 legacy 성공 message에 `delete/deleted`를 사용하지만 의미는 revoke다. Service는 `llm_credentials.is_valid=false`만 commit하며 credential row, credential-model relation, 기존 `llm_usage_logs`와 저장된 secret material을 삭제하지 않는다. Revoke 뒤 신규 option 선택, capability 발급과 provider 호출은 fail-closed해야 한다.
 
 Secret physical purge 또는 crypto-shred는 이 endpoint의 현재 계약이 아니다. 이를 추가할 때는 historical usage/audit 보존, FK nullability 또는 tombstone/snapshot, retention/legal-hold와 실패 복구를 함께 정의해야 하며, 단순 hard delete로 현재 DELETE의 의미를 바꾸지 않는다.
+
+### Deployment Credential Policy Management
+
+이 API는 graph에 credential ID를 저장하지 않고, 배포된 LLM node의 provider credential 선택을 server-owned row로 분리한다. 두 endpoint 모두 `X-Organization-Id`의 active organization과 대상 deployment의 App/Workflow organization을 다시 대조한다.
+
+`PUT` request:
+
+- `model_id`: LLM catalog UUID
+- `credential_id`: active organization의 LLM credential UUID
+
+`credential_principal_user_id`, credential config, API key, provider request option은 request에 포함할 수 없다. Server는 policy write actor가 organization manager인지 확인하고, 그 actor를 credential principal으로 server-side 파생한다. 이어서 대상 deployment의 immutable `graph_snapshot`에서 정확히 하나의 `llmNode`와 graph-owned `model_id`를 확인하며, selected model/provider, credential valid state, same-organization scope, verified credential-model relation, credential `use`를 검증한다.
+
+Capability-required policy는 direct `credential_id`/`credentialId` graph field, `fallback_model_id`, `auto_model_routing`을 허용하지 않는다. 이들은 현재 target policy의 명시 model/credential binding을 흐리므로 `422 configuration_required`로 fail-closed한다.
+
+같은 `(organization, deployment, deployment_version, node_id, model_id)` active policy를 교체하면 기존 row를 inactive로 두고 새 row를 생성하며 `policy_revision`을 증가시킨다. GET은 현재 deployment version의 active row만 반환한다. Response에는 `id`, `deployment_id`, `deployment_version`, `node_id`, `model_id`, `credential_id`, `policy_revision`, `is_active`, timestamps만 포함하며 credential principal, encrypted config, API key/token, raw capability scope는 포함하지 않는다.
+
+오류는 `404 Deployment not found`(다른 organization 포함 resource hiding), `403 permission.denied`, `409 selection_ambiguous`, `422 configuration_required|relation_unavailable`의 safe code로 제한한다.
 
 ### Agent Answer Option
 
@@ -80,6 +99,10 @@ Workflow Runtime은 provider SDK 호출 전에 attempt reference를 먼저 생�
 - node invocation, execution admission과 server-issued provider attempt binding
 
 Memory summary 초기 정책은 `inherit_node`만 허용한다. Main node의 approved scope에서 별도 `memory_summary` capability를 발급하며 direct credential ID, name/order fallback과 `organization_default`를 거부한다. Capability identity/revision은 client에 해석 가능한 scope를 노출하지 않는 opaque reference다. Credential revoke, credential permission decision revision 변경, model relation/egress/pricing revision mismatch, wrong deployment/node/invocation/admission/provider-attempt/purpose 또는 expiry는 새 context claim·budget reservation·provider attempt admission·provider call 전에 fail-closed한다. 이미 시작된 provider attempt의 normalized usage reconciliation은 새 outbound call 권한과 분리한다. Capability, credential principal과 public Access Grant는 execution subject나 audit actor가 아니다.
+
+현재 구현에서 capability issue/admission은 public HTTP endpoint가 아니라 `provider_execution_capability_required=true`인 server-owned runtime context만 사용할 수 있는 internal application port다. 이 mode는 trusted Workflow Engine execution control, canonical deployment/version/node invocation, explicit user/anonymous-public/system execution identity, organization billing principal, bounded token/cost cap을 요구한다. Capability path에서는 legacy `user_id`, `credential_principal`, App/deployment owner, fallback model, name/order/default candidate를 credential selection에 사용하지 않는다. 이 커밋에서는 Gateway/deployed task composition이 flag를 주입하지 않으므로 policy API 설정만으로 live provider selection이 전환되지 않는다. Existing legacy runtime의 activation/migration은 durable usage ledger 이후 별도 범위(MBA-320)다.
+
+현재 legacy LLM node의 inline memory summary는 Conversation Session/Access Grant/lease와 source authorization 재검증을 거치지 않으므로 capability-required path에서 실행하지 않는다. 이 경로는 `memory_summary` capability를 main generation capability로 바꾸거나 legacy user/owner credential fallback으로 호출하지 않고 summary를 생략한다. 별도 Conversation Memory summarizer가 lifecycle·budget·usage 계약을 갖춘 뒤에만 `inherit_node` 정책의 distinct `memory_summary` capability를 provider call에 소비한다.
 
 ## 권한
 

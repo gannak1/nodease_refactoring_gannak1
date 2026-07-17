@@ -55,11 +55,13 @@ from apps.shared.db.models.knowledge import (
     SourcePolicyKBUseGrant,
 )
 from apps.shared.db.models.llm import (
+    LLMDeploymentCredentialPolicy,
     LLMCredential,
     LLMModel,
     LLMProvider,
     LLMRelCredentialModel,
     LLMUsageLog,
+    ProviderExecutionCapabilityRecord,
 )
 from apps.shared.db.models.llm_node_version import LLMNodeVersion
 from apps.shared.db.models.mail_credential import (
@@ -189,10 +191,12 @@ __all__ = [
     "SourceAuthorizationProvenance",
     "SourcePolicyKBUseGrant",
     "LLMCredential",
+    "LLMDeploymentCredentialPolicy",
     "LLMModel",
     "LLMProvider",
     "LLMRelCredentialModel",
     "LLMUsageLog",
+    "ProviderExecutionCapabilityRecord",
     "MailCredential",
     "MAIL_CREDENTIAL_ACTIVE",
     "MAIL_CREDENTIAL_REVOKED",
