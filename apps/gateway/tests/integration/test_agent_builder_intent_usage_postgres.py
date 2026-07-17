@@ -529,6 +529,13 @@ def test_operation_cost_summary_uses_real_postgres_active_and_permission_scope(
                 active_parameter_patch={},
             )
         )
+        foreign_organization = Organization(
+            name=f"Cost Summary Foreign Organization {uuid.uuid4().hex}",
+            created_by=seed.user_id,
+            managed_by=seed.user_id,
+        )
+        db.add(foreign_organization)
+        db.flush()
 
         member = User(
             email=f"cost-summary-member-{uuid.uuid4().hex}@example.invalid",
@@ -641,6 +648,12 @@ def test_operation_cost_summary_uses_real_postgres_active_and_permission_scope(
                     user_id=seed.user_id,
                     organization_id=seed.organization_id,
                     total_cost=Decimal("0.006000"),
+                ),
+                _workflow_usage_log(
+                    seed,
+                    user_id=seed.user_id,
+                    organization_id=foreign_organization.id,
+                    total_cost=Decimal("99.000000"),
                 ),
                 _workflow_usage_log(
                     seed,
@@ -1295,6 +1308,32 @@ def test_new_usage_revalidates_runtime_selection_before_reservation(
                 membership.organization_auth_state = ORGANIZATION_AUTH_MEMBER
             else:
                 membership.membership_state = ORGANIZATION_MEMBERSHIP_SUSPENDED
+
+    with pytest.raises(AgentBuilderIntentUsageRecordingError):
+        _reserve(
+            AgentBuilderIntentUsageService(session_factory=session_factory),
+            seed,
+        )
+
+    with session_factory() as db:
+        assert db.scalar(
+            select(func.count(LLMUsageLog.id)).where(
+                LLMUsageLog.runtime_request_id == seed.request_id
+            )
+        ) == 0
+
+
+def test_new_usage_rejects_negative_model_pricing_before_reservation(
+    usage_database,
+):
+    engine, _ = usage_database
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    seed = _seed_contract(session_factory)
+
+    with session_factory.begin() as db:
+        model = db.get(LLMModel, seed.model_id)
+        model.input_price_1k = Decimal("-0.001000")
+        model.output_price_1k = Decimal("0.004000")
 
     with pytest.raises(AgentBuilderIntentUsageRecordingError):
         _reserve(

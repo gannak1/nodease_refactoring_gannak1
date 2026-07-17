@@ -19,6 +19,9 @@ from apps.gateway.services.agent_builder_intent_service import (
     agent_builder_capability_guide,
     safe_intent_extraction_reason,
 )
+from apps.gateway.services.agent_builder.intent_usage_service import (
+    AgentBuilderIntentUsageService,
+)
 from apps.gateway.services.agent_builder_service import AgentBuilderService
 from apps.gateway.services.llm_service import LLMCredentialNotAvailableError
 from apps.shared.schemas.agent_builder import AgentBuilderMessageRequest
@@ -148,6 +151,19 @@ class CapturingUsageRecorder:
         self.canceled.append(reservation)
         if self.cancel_error is not None:
             raise self.cancel_error
+
+
+def test_intent_usage_pricing_rejects_negative_model_price():
+    model = SimpleNamespace(
+        input_price_1k=Decimal("-0.001"),
+        output_price_1k=Decimal("0.002"),
+    )
+
+    with pytest.raises(AgentBuilderIntentUsageRecordingError):
+        AgentBuilderIntentUsageService._prices_for_model(
+            model,
+            "intent-usage-model",
+        )
 
 
 def _google_client_with_response(monkeypatch, response_payload):

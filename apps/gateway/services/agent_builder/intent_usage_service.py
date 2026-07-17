@@ -365,8 +365,15 @@ class AgentBuilderIntentUsageService:
                 )
             if pricing is None:
                 return Decimal("0"), Decimal("0")
-            return Decimal(str(pricing["input"])), Decimal(str(pricing["output"]))
-        return Decimal(str(input_price)), Decimal(str(output_price))
+            input_price = pricing["input"]
+            output_price = pricing["output"]
+        input_decimal = Decimal(str(input_price))
+        output_decimal = Decimal(str(output_price))
+        if input_decimal < 0 or output_decimal < 0:
+            raise AgentBuilderIntentUsageRecordingError(
+                "intent_usage_recording_failed"
+            )
+        return input_decimal, output_decimal
 
     @staticmethod
     def _calculate_cost(

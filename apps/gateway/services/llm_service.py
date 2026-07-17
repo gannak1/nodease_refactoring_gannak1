@@ -1892,6 +1892,9 @@ class LLMService:
         """
         특정 모델의 가격 정보를 업데이트합니다.
         """
+        if input_price < 0 or output_price < 0:
+            raise ValueError("Model pricing must be non-negative")
+
         model = db.query(LLMModel).filter(LLMModel.id == model_id).first()
         if not model:
             raise ValueError(f"Model {model_id} not found")

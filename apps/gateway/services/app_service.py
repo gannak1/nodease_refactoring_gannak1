@@ -5,7 +5,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 
-from sqlalchemy import case, func, or_
+from sqlalchemy import case, func, or_, true
 from sqlalchemy.orm import Session, joinedload
 
 from apps.gateway.services.admin_usage_service import (
@@ -476,6 +476,7 @@ class AppService:
         metrics = AppService._operation_metrics_by_workflow_id(
             db,
             workflow_ids,
+            organization_id=organization_id,
             now=now or datetime.now(KST),
         )
         projected_total = Decimal("0")
@@ -1023,6 +1024,7 @@ class AppService:
                 metrics = AppService._operation_metrics_by_workflow_id(
                     db,
                     workflow_ids,
+                    organization_id=apps[0].organization_id if apps else None,
                     now=datetime.now(KST),
                 )
             except Exception:
@@ -1044,6 +1046,7 @@ class AppService:
         db: Session,
         workflow_ids: list[Any],
         *,
+        organization_id: Any | None = None,
         now: datetime | None = None,
     ) -> dict[Any, dict[str, Any] | None]:
         target_ids = _unique_workflow_ids(workflow_ids)
@@ -1058,11 +1061,13 @@ class AppService:
             db,
             workflow_ids=target_ids,
             period=current_period,
+            organization_id=organization_id,
         )
         previous_costs = _budget_status_costs(
             db,
             workflow_ids=target_ids,
             period=previous_period,
+            organization_id=organization_id,
         )
 
         total_seconds = Decimal(
@@ -1139,6 +1144,7 @@ class AppService:
             db,
             workflow_ids=target_ids,
             period=period,
+            organization_id=organization_id,
         )
 
         for budget in budgets:
@@ -1510,17 +1516,20 @@ def _budget_status_costs(
     *,
     workflow_ids: list[Any],
     period,
+    organization_id: Any | None = None,
 ) -> dict[Any, Decimal]:
     if hasattr(db, "budgets"):
         return _fake_budget_status_costs(
             db,
             workflow_ids=workflow_ids,
             period=period,
+            organization_id=organization_id,
         )
     return _budget_status_costs_query(
         db,
         workflow_ids=workflow_ids,
         period=period,
+        organization_id=organization_id,
     )
 
 
@@ -1529,17 +1538,20 @@ def _operation_cost_breakdowns(
     *,
     workflow_ids: list[Any],
     period,
+    organization_id: Any | None = None,
 ) -> dict[Any, UsageCostBreakdown]:
     if hasattr(db, "budgets"):
         return _fake_operation_cost_breakdowns(
             db,
             workflow_ids=workflow_ids,
             period=period,
+            organization_id=organization_id,
         )
     return _operation_cost_breakdowns_query(
         db,
         workflow_ids=workflow_ids,
         period=period,
+        organization_id=organization_id,
     )
 
 
@@ -1548,6 +1560,7 @@ def _fake_operation_cost_breakdowns(
     *,
     workflow_ids: list[Any],
     period,
+    organization_id: Any | None = None,
 ) -> dict[Any, UsageCostBreakdown]:
     workflow_id_set = set(workflow_ids)
     totals = {workflow_id: Decimal("0") for workflow_id in workflow_id_set}
@@ -1556,6 +1569,8 @@ def _fake_operation_cost_breakdowns(
     }
     for usage in getattr(db, "usage_logs", []):
         if usage.workflow_id not in workflow_id_set:
+            continue
+        if not _usage_matches_organization_scope(usage, organization_id):
             continue
         if not period.start_at <= usage.created_at < period.end_at:
             continue
@@ -1584,6 +1599,7 @@ def _operation_cost_breakdowns_query(
     *,
     workflow_ids: list[Any],
     period,
+    organization_id: Any | None = None,
 ) -> dict[Any, UsageCostBreakdown]:
     total_cost = func.coalesce(
         func.sum(func.coalesce(LLMUsageLog.total_cost, 0)), 0
@@ -1611,6 +1627,7 @@ def _operation_cost_breakdowns_query(
             LLMUsageLog.workflow_id.in_(set(workflow_ids)),
             LLMUsageLog.created_at >= period.start_at,
             LLMUsageLog.created_at < period.end_at,
+            _usage_organization_scope_condition(organization_id),
             _billable_usage_condition(),
         )
         .group_by(LLMUsageLog.workflow_id)
@@ -1651,11 +1668,14 @@ def _fake_budget_status_costs(
     *,
     workflow_ids: list[Any],
     period,
+    organization_id: Any | None = None,
 ) -> dict[Any, Decimal]:
     workflow_id_set = set(workflow_ids)
     costs = {workflow_id: Decimal("0") for workflow_id in workflow_id_set}
     for usage in getattr(db, "usage_logs", []):
         if usage.workflow_id not in workflow_id_set:
+            continue
+        if not _usage_matches_organization_scope(usage, organization_id):
             continue
         if not (period.start_at <= usage.created_at < period.end_at):
             continue
@@ -1675,6 +1695,7 @@ def _budget_status_costs_query(
     *,
     workflow_ids: list[Any],
     period,
+    organization_id: Any | None = None,
 ) -> dict[Any, Decimal]:
     total_cost = func.coalesce(
         func.sum(func.coalesce(LLMUsageLog.total_cost, 0)), 0
@@ -1685,6 +1706,7 @@ def _budget_status_costs_query(
             LLMUsageLog.workflow_id.in_(set(workflow_ids)),
             LLMUsageLog.created_at >= period.start_at,
             LLMUsageLog.created_at < period.end_at,
+            _usage_organization_scope_condition(organization_id),
             _billable_usage_condition(),
         )
         .group_by(LLMUsageLog.workflow_id)
@@ -1702,3 +1724,19 @@ def _billable_usage_condition():
         LLMUsageLog.runtime_surface != AGENT_BUILDER_INTENT_RUNTIME_SURFACE,
         LLMUsageLog.status == "success",
     )
+
+
+def _usage_organization_scope_condition(organization_id: Any | None):
+    if organization_id is None:
+        return true()
+    return or_(
+        LLMUsageLog.organization_id == organization_id,
+        LLMUsageLog.organization_id.is_(None),
+    )
+
+
+def _usage_matches_organization_scope(usage, organization_id: Any | None) -> bool:
+    if organization_id is None:
+        return True
+    usage_organization_id = getattr(usage, "organization_id", None)
+    return usage_organization_id is None or usage_organization_id == organization_id

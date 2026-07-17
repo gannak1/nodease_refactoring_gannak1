@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -143,5 +143,5 @@ class LLMTraceListResponse(BaseModel):
 
 
 class LLMModelPricingUpdate(BaseModel):
-    input_price_1k: float
-    output_price_1k: float
+    input_price_1k: float = Field(ge=0)
+    output_price_1k: float = Field(ge=0)
