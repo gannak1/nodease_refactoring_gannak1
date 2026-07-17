@@ -49,6 +49,12 @@ def _legacy_row(index: int, secret: str = "legacy-test-credential"):
     )
 
 
+def test_app_auth_secret_migration_extends_current_head():
+    migration = importlib.import_module(MIGRATION_MODULE)
+
+    assert migration.down_revision == "ac2d3e4f5061"
+
+
 def test_legacy_backfill_uses_bounded_keyset_batches(monkeypatch):
     migration = importlib.import_module(MIGRATION_MODULE)
     bind = _Bind([_legacy_row(index) for index in range(501)])

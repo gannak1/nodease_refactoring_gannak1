@@ -1,7 +1,7 @@
 """Add verifier-based App auth secret lifecycle state.
 
 Revision ID: b0c1d2e3f4a5
-Revises: a9b0c1d2e3f4
+Revises: ac2d3e4f5061
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "b0c1d2e3f4a5"
-down_revision: str | Sequence[str] | None = "a9b0c1d2e3f4"
+down_revision: str | Sequence[str] | None = "ac2d3e4f5061"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
