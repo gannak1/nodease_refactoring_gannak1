@@ -1,7 +1,7 @@
 # Audit Tracing Component Spec
 
 Status: Draft
-Verified Against: feature/mba-284 @ 4c151838
+Verified Against: feature/mba-284 @ 5247ed1b
 
 검증 값은 SafeChangeSummary와 audit actor management 연동, GenericAsyncAuditPublisher, Workflow/LLM 권한 변경 AuditRecorder 경계에 적용한다. 다른 trace UI는 각 feature 구현 기준을 따른다.
 
