@@ -33,7 +33,7 @@ App resource 아래에 safe status와 one-time rotation command를 둔다.
 - `GET /api/v1/apps/{app_id}/auth-secret/status`
 - `POST /api/v1/apps/{app_id}/auth-secret/rotate`
 
-`expected_version=0`은 미설정 App의 최초 발급이다. Expand 기간에는 migration 뒤 구버전 Pod가 만든 configured generation 0 raw-only state를 managed generation 1로 전환할 때도 같은 값이 사용된다. 양수는 managed current secret의 rotation이다. Status와 성공 rotation 응답은 `Cache-Control: no-store, no-cache`와 `Pragma: no-cache`를 사용하며 성공 rotation 응답만 새 원문을 포함한다. 이후 status나 일반 조회로 원문을 다시 읽을 수 없다. V1은 raw secret replay/idempotency response store를 추가하지 않는다. 응답 유실 시 status를 다시 읽고 최신 version으로 새 rotation을 명시적으로 수행한다. Client가 refresh에서 요청 전 version과 다른 version을 확인하면 화면에 남은 이전 one-time 원문을 즉시 폐기하며, 이를 새 current secret으로 표시·복사하지 않는다.
+`expected_version=0`은 미설정 App의 최초 발급이다. Expand 기간에는 migration 뒤 구버전 Pod가 만든 configured generation 0 raw-only state를 managed generation 1로 전환할 때도 같은 값이 사용된다. 양수는 managed current secret의 rotation이다. Status와 성공 rotation 응답은 `Cache-Control: no-store, no-cache`와 `Pragma: no-cache`를 사용하며 성공 rotation 응답만 새 원문을 포함한다. 이후 status나 일반 조회로 원문을 다시 읽을 수 없다. V1은 raw secret replay/idempotency response store를 추가하지 않는다. Client는 모달/component memory 안에서도 one-time 원문과 발급 version을 함께 보존하고, 다시 mount된 control의 no-store status version이 일치할 때만 원문을 재표시·복사·테스트 header에 사용한다. 응답 유실 또는 다른 탭의 rotation 뒤 refresh version이 보존한 version과 다르면 원문을 즉시 폐기하며, 이를 새 current secret으로 표시·복사하지 않는다. 이 경우 status의 최신 version을 이용해 사용자가 새 rotation을 명시적으로 수행한다.
 
 Status 응답은 `rotation_enabled`를 포함한다. Checked-in 배포 설정과 application default는 `APP_AUTH_SECRET_LIFECYCLE_MODE=disabled`이며 이 상태에서는 권한 확인 뒤 rotation command를 `503 app.auth_secret_lifecycle_unavailable`로 차단한다. 모든 Gateway Pod가 verifier-aware revision으로 수렴한 뒤에만 별도 배포 변경으로 `active`를 설정한다.
 
