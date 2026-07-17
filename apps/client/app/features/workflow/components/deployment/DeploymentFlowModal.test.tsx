@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { DeploymentFlowModal } from './DeploymentFlowModal';
@@ -8,17 +14,22 @@ vi.mock('@/app/features/app/components/AppAuthSecretControl', () => ({
     appId,
     issuedSecret,
     onSecretAvailable,
+    onReadinessChange,
   }: {
     appId: string;
     issuedSecret?: string | null;
     onSecretAvailable?: (secret: string | null) => void;
+    onReadinessChange?: (readiness: 'ready') => void;
   }) => (
     <div>
       <span>Secret 발급 준비: {appId}</span>
       <span>현재 Secret: {issuedSecret || '없음'}</span>
       <button
         type="button"
-        onClick={() => onSecretAvailable?.('one-time-secret')}
+        onClick={() => {
+          onSecretAvailable?.('one-time-secret');
+          onReadinessChange?.('ready');
+        }}
       >
         Secret 발급
       </button>
@@ -45,6 +56,8 @@ describe('DeploymentFlowModal', () => {
 
     expect(screen.getByText('REST API 배포')).toBeVisible();
     expect(screen.getByText('Secret 발급 준비: app-1')).toBeVisible();
+    expect(screen.getByRole('button', { name: '다음' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Secret 발급' }));
     fireEvent.click(screen.getByRole('button', { name: '다음' }));
 
     expect(screen.getByText('운영 비용 자동 최적화')).toBeVisible();

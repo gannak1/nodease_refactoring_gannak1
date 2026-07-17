@@ -46,6 +46,7 @@ from apps.shared.db.session import SessionLocal
 from apps.workflow_engine.services.llm_service import LLMRuntimeSelection, LLMService
 from apps.workflow_engine.services.model_router import ModelRouter, ModelRouterContext
 from apps.workflow_engine.workflow.core.workflow_engine import WorkflowEngine
+from scripts.managed_app_secret_fixture import configure_managed_app_secret_fixture
 
 
 APP_ID = uuid.UUID("91000000-0000-0000-0000-000000000001")
@@ -328,7 +329,6 @@ def _upsert_demo_workflow(db, graph: dict[str, Any]) -> None:
             description="LLM 출력이 추출, 조건 분기, 템플릿, 응답 노드에서 재사용되는 검증용 workflow",
             icon={"type": "emoji", "content": "🧭", "background_color": "#E0F2FE"},
             url_slug="demo-model-router-ticket-ops",
-            auth_secret="sk-demo-model-router-ticket-ops",
             is_api_enabled=True,
             api_req_per_minute=60,
             api_req_per_hour=3600,
@@ -338,6 +338,7 @@ def _upsert_demo_workflow(db, graph: dict[str, Any]) -> None:
         db.add(app)
         db.flush()
 
+    configure_managed_app_secret_fixture(app)
     app.organization_id = ORG_ID
     app.name = "모델 라우팅 검증용 고객 티켓 처리"
 

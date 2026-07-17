@@ -21,12 +21,26 @@ interface AppAuthSecretControlProps {
   appId: string;
   issuedSecret?: string | null;
   onSecretAvailable?: (secret: string | null) => void;
+  onReadinessChange?: (readiness: AppAuthSecretReadiness) => void;
+}
+
+export type AppAuthSecretReadiness =
+  | 'checking'
+  | 'ready'
+  | 'secret_required'
+  | 'lifecycle_unavailable'
+  | 'status_unavailable';
+
+function readinessOf(status: AppAuthSecretStatus): AppAuthSecretReadiness {
+  if (status.configured) return 'ready';
+  return status.rotation_enabled ? 'secret_required' : 'lifecycle_unavailable';
 }
 
 export function AppAuthSecretControl({
   appId,
   issuedSecret: controlledIssuedSecret,
   onSecretAvailable,
+  onReadinessChange,
 }: AppAuthSecretControlProps) {
   const [status, setStatus] = useState<AppAuthSecretStatus | null>(null);
   const [localIssuedSecret, setLocalIssuedSecret] = useState<string | null>(
@@ -55,6 +69,7 @@ export function AppAuthSecretControl({
     setLoading(true);
     setUnavailable(false);
     setStatus(null);
+    onReadinessChange?.('checking');
     if (!isIssuedSecretControlled) {
       setLocalIssuedSecret(null);
       onSecretAvailable?.(null);
@@ -63,10 +78,16 @@ export function AppAuthSecretControl({
     void appApi
       .getAuthSecretStatus(appId)
       .then((nextStatus) => {
-        if (active) setStatus(nextStatus);
+        if (active) {
+          setStatus(nextStatus);
+          onReadinessChange?.(readinessOf(nextStatus));
+        }
       })
       .catch(() => {
-        if (active) setUnavailable(true);
+        if (active) {
+          setUnavailable(true);
+          onReadinessChange?.('status_unavailable');
+        }
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -75,7 +96,7 @@ export function AppAuthSecretControl({
     return () => {
       active = false;
     };
-  }, [appId, isIssuedSecretControlled, onSecretAvailable]);
+  }, [appId, isIssuedSecretControlled, onReadinessChange, onSecretAvailable]);
 
   const beginRotation = () => {
     setRevokeImmediately(false);
@@ -99,6 +120,7 @@ export function AppAuthSecretControl({
         previous_valid_until: result.previous_valid_until,
       };
       setStatus(nextStatus);
+      onReadinessChange?.('ready');
       updateIssuedSecret(result.secret);
       setShowSecret(true);
       setConfirming(false);
@@ -106,9 +128,13 @@ export function AppAuthSecretControl({
     } catch {
       toast.error('Secret 상태가 변경되었습니다. 상태를 새로 확인해주세요.');
       try {
-        setStatus(await appApi.getAuthSecretStatus(appId));
+        const nextStatus = await appApi.getAuthSecretStatus(appId);
+        setStatus(nextStatus);
+        setUnavailable(false);
+        onReadinessChange?.(readinessOf(nextStatus));
       } catch {
         setUnavailable(true);
+        onReadinessChange?.('status_unavailable');
       }
     } finally {
       setRotating(false);
@@ -135,9 +161,7 @@ export function AppAuthSecretControl({
 
   if (unavailable || !status) {
     return (
-      <p className="text-xs text-gray-500">
-        Secret 상태를 확인할 수 없습니다.
-      </p>
+      <p className="text-xs text-gray-500">Secret 상태를 확인할 수 없습니다.</p>
     );
   }
 
@@ -194,9 +218,7 @@ export function AppAuthSecretControl({
               <input
                 type="checkbox"
                 checked={revokeImmediately}
-                onChange={(event) =>
-                  setRevokeImmediately(event.target.checked)
-                }
+                onChange={(event) => setRevokeImmediately(event.target.checked)}
                 className="mt-0.5 h-4 w-4"
               />
               이전 secret 즉시 폐기

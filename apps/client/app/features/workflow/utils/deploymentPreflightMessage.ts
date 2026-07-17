@@ -56,22 +56,63 @@ export function deploymentApiErrorMessage(
   const response = asRecord(errorObject.response);
   const data = asRecord(response.data);
   const detail = data.detail;
-  if (typeof detail === 'string') {
+  const standardError = asRecord(data.error);
+  if (typeof detail === 'string' && !hasKeys(standardError)) {
     return detail;
   }
   const detailObject = asRecord(detail);
   const detailError = asRecord(detailObject.error);
-  const preflightMessage = safeBlockedPreflightMessage(detailError.preflight);
+  const apiError = hasKeys(standardError) ? standardError : detailError;
+  const details = asRecord(apiError.details);
+  const preflightMessage = safeBlockedPreflightMessage(
+    apiError.preflight ?? details.preflight,
+  );
   if (preflightMessage) {
     return preflightMessage;
   }
-  if (typeof detailError.message === 'string') {
-    return detailError.message;
+
+  const code = typeof apiError.code === 'string' ? apiError.code : null;
+  const safeMessage = safeApiErrorMessage(code, apiError.message);
+  const actions = safeRequiredActionLabels(details.required_actions);
+  if (safeMessage) {
+    return [
+      safeMessage,
+      actions.length ? `필요 조치: ${actions.join(', ')}` : null,
+    ]
+      .filter(Boolean)
+      .join('\n');
   }
   if (typeof errorObject.message === 'string') {
     return errorObject.message;
   }
   return fallback;
+}
+
+const SAFE_ERROR_MESSAGES: Record<string, string> = {
+  'deployment.app_auth_secret_required': 'App Secret이 필요합니다.',
+  'app.auth_secret_lifecycle_unavailable':
+    'App Secret 기능을 현재 사용할 수 없습니다.',
+};
+
+const SAFE_REQUIRED_ACTION_LABELS: Record<string, string> = {
+  issue_app_auth_secret: 'App Secret을 발급하세요',
+};
+
+function safeApiErrorMessage(
+  code: string | null,
+  value: unknown,
+): string | null {
+  if (code && SAFE_ERROR_MESSAGES[code]) return SAFE_ERROR_MESSAGES[code];
+  return typeof value === 'string' && value ? value : null;
+}
+
+function safeRequiredActionLabels(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((action) =>
+      typeof action === 'string' ? SAFE_REQUIRED_ACTION_LABELS[action] : null,
+    )
+    .filter((label): label is string => Boolean(label));
 }
 
 function safeBlockedPreflightMessage(value: unknown): string | null {
@@ -100,4 +141,8 @@ function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function hasKeys(value: Record<string, unknown>): boolean {
+  return Object.keys(value).length > 0;
 }

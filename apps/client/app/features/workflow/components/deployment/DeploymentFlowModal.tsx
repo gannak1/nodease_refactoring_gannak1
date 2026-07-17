@@ -15,6 +15,7 @@ import { InputStep } from './InputStep';
 import { ParameterOptimizationStep } from './ParameterOptimizationStep';
 import { SuccessStep } from './SuccessStep';
 import { ErrorStep } from './ErrorStep';
+import type { AppAuthSecretReadiness } from '@/app/features/app/components/AppAuthSecretControl';
 
 interface Props {
   isOpen: boolean;
@@ -44,6 +45,8 @@ export function DeploymentFlowModal({
   const [deploymentResult, setDeploymentResult] =
     useState<DeploymentResult | null>(null);
   const [issuedSecret, setIssuedSecret] = useState<string | null>(null);
+  const [appAuthSecretReadiness, setAppAuthSecretReadiness] =
+    useState<AppAuthSecretReadiness>('checking');
   const [isDeploying, setIsDeploying] = useState(false);
   const [embeddingEnabled, setEmbeddingEnabled] = useState(false);
   const [parentOrigins, setParentOrigins] = useState<string[]>(['']);
@@ -59,7 +62,8 @@ export function DeploymentFlowModal({
 
   useEffect(() => {
     setIssuedSecret(null);
-  }, [appId, isOpen]);
+    setAppAuthSecretReadiness('checking');
+  }, [appId, deploymentType, isOpen]);
 
   // Reset state when modal opens
   useEffect(() => {
@@ -201,9 +205,7 @@ export function DeploymentFlowModal({
                 <div
                   key={step}
                   className={`h-1.5 w-1.5 rounded-full ${
-                    index < stepNumber
-                      ? 'bg-blue-600'
-                      : 'bg-gray-300'
+                    index < stepNumber ? 'bg-blue-600' : 'bg-gray-300'
                   }`}
                 />
               ))}
@@ -218,6 +220,8 @@ export function DeploymentFlowModal({
               appId={appId}
               issuedSecret={issuedSecret}
               onSecretAvailable={setIssuedSecret}
+              appAuthSecretReadiness={appAuthSecretReadiness}
+              onAppAuthSecretReadinessChange={setAppAuthSecretReadiness}
               deploymentType={deploymentType}
               deploymentTypeLabel={getDeploymentTypeName()}
               description={description}

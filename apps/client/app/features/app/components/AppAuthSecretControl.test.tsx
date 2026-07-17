@@ -42,6 +42,7 @@ describe('AppAuthSecretControl', () => {
   it('issues an unconfigured secret once without browser persistence', async () => {
     const storageWrite = vi.spyOn(Storage.prototype, 'setItem');
     const onSecretAvailable = vi.fn();
+    const onReadinessChange = vi.fn();
     mockedAppApi.getAuthSecretStatus.mockResolvedValue({
       configured: false,
       version: 0,
@@ -62,9 +63,13 @@ describe('AppAuthSecretControl', () => {
       <AppAuthSecretControl
         appId="app-1"
         onSecretAvailable={onSecretAvailable}
+        onReadinessChange={onReadinessChange}
       />,
     );
 
+    await waitFor(() =>
+      expect(onReadinessChange).toHaveBeenLastCalledWith('secret_required'),
+    );
     fireEvent.click(await screen.findByRole('button', { name: '발급' }));
     fireEvent.click(screen.getByRole('button', { name: '발급 확인' }));
 
@@ -76,6 +81,7 @@ describe('AppAuthSecretControl', () => {
     );
     expect(await screen.findByDisplayValue('one-time-secret')).toBeVisible();
     expect(onSecretAvailable).toHaveBeenLastCalledWith('one-time-secret');
+    expect(onReadinessChange).toHaveBeenLastCalledWith('ready');
 
     fireEvent.click(screen.getByRole('button', { name: '교체' }));
     expect(screen.getByDisplayValue('one-time-secret')).toBeVisible();
@@ -186,6 +192,7 @@ describe('AppAuthSecretControl', () => {
   });
 
   it('keeps issuance unavailable while the Gateway rollout gate is disabled', async () => {
+    const onReadinessChange = vi.fn();
     mockedAppApi.getAuthSecretStatus.mockResolvedValue({
       configured: false,
       version: 0,
@@ -195,14 +202,67 @@ describe('AppAuthSecretControl', () => {
       previous_valid_until: null,
     });
 
-    render(<AppAuthSecretControl appId="app-1" />);
+    render(
+      <AppAuthSecretControl
+        appId="app-1"
+        onReadinessChange={onReadinessChange}
+      />,
+    );
 
     expect(
       await screen.findByText(
         'Gateway 전환이 완료된 후 Secret을 발급할 수 있습니다.',
       ),
     ).toBeVisible();
-    expect(screen.queryByRole('button', { name: '발급' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: '발급' }),
+    ).not.toBeInTheDocument();
     expect(mockedAppApi.rotateAuthSecret).not.toHaveBeenCalled();
+    expect(onReadinessChange).toHaveBeenLastCalledWith('lifecycle_unavailable');
+  });
+
+  it('keeps an existing secret ready while lifecycle mutation is disabled', async () => {
+    const onReadinessChange = vi.fn();
+    mockedAppApi.getAuthSecretStatus.mockResolvedValue({
+      configured: true,
+      version: 0,
+      rotation_enabled: false,
+      rotated_at: null,
+      previous_grace_active: false,
+      previous_valid_until: null,
+    });
+
+    render(
+      <AppAuthSecretControl
+        appId="app-1"
+        onReadinessChange={onReadinessChange}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(onReadinessChange).toHaveBeenLastCalledWith('ready'),
+    );
+    expect(
+      screen.queryByRole('button', { name: '교체' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('fails closed when the safe status cannot be loaded', async () => {
+    const onReadinessChange = vi.fn();
+    mockedAppApi.getAuthSecretStatus.mockRejectedValue(
+      new Error('status unavailable'),
+    );
+
+    render(
+      <AppAuthSecretControl
+        appId="app-1"
+        onReadinessChange={onReadinessChange}
+      />,
+    );
+
+    expect(
+      await screen.findByText('Secret 상태를 확인할 수 없습니다.'),
+    ).toBeVisible();
+    expect(onReadinessChange).toHaveBeenLastCalledWith('status_unavailable');
   });
 });

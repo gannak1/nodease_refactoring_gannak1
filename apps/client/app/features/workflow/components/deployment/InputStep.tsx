@@ -2,7 +2,10 @@
 
 import { Loader2 } from 'lucide-react';
 
-import { AppAuthSecretControl } from '@/app/features/app/components/AppAuthSecretControl';
+import {
+  AppAuthSecretControl,
+  type AppAuthSecretReadiness,
+} from '@/app/features/app/components/AppAuthSecretControl';
 
 import type {
   DeploymentBrowserAccessPolicy,
@@ -15,6 +18,8 @@ interface InputStepProps {
   appId?: string;
   issuedSecret: string | null;
   onSecretAvailable: (secret: string | null) => void;
+  appAuthSecretReadiness: AppAuthSecretReadiness;
+  onAppAuthSecretReadinessChange: (readiness: AppAuthSecretReadiness) => void;
   deploymentType: DeploymentType;
   deploymentTypeLabel: string;
   description: string;
@@ -35,6 +40,8 @@ export function InputStep({
   appId,
   issuedSecret,
   onSecretAvailable,
+  appAuthSecretReadiness,
+  onAppAuthSecretReadinessChange,
   deploymentType,
   deploymentTypeLabel,
   description,
@@ -54,6 +61,8 @@ export function InputStep({
     deploymentType,
   );
   const requiresAppAuthSecret = ['api', 'webhook'].includes(deploymentType);
+  const appAuthSecretBlocked =
+    requiresAppAuthSecret && (!appId || appAuthSecretReadiness !== 'ready');
   const policyResult = supportsEmbeddingPolicy
     ? buildBrowserAccessPolicyDraft(embeddingEnabled, parentOrigins)
     : null;
@@ -76,7 +85,14 @@ export function InputStep({
             appId={appId}
             issuedSecret={issuedSecret}
             onSecretAvailable={onSecretAvailable}
+            onReadinessChange={onAppAuthSecretReadinessChange}
           />
+        )}
+
+        {requiresAppAuthSecret && !appId && (
+          <p className="text-xs text-gray-500" role="status">
+            App 정보를 확인할 수 없어 Secret 준비를 진행할 수 없습니다.
+          </p>
         )}
 
         <div>
@@ -123,7 +139,9 @@ export function InputStep({
         <button
           type="button"
           onClick={() => onSubmit(policyResult?.policy || undefined)}
-          disabled={isDeploying || Boolean(validationError)}
+          disabled={
+            isDeploying || Boolean(validationError) || appAuthSecretBlocked
+          }
           className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-400"
         >
           {isDeploying && <Loader2 className="h-4 w-4 animate-spin" />}
