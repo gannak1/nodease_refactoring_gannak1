@@ -30,6 +30,23 @@ def _column_names(table_name: str) -> set[str]:
 def _create_legacy_tables(bind) -> None:
     """Create the pre-cleanup schema without importing retired ORM models."""
     metadata = sa.MetaData()
+    # Referenced tables were created by earlier revisions. Keep only their
+    # primary keys in this migration-local metadata so the historical foreign
+    # keys compile without depending on live ORM models.
+    for table_name in (
+        "llm_node_model_routing_policies",
+        "llm_node_model_routing_policy_updates",
+        "workflow_runs",
+        "workflow_node_runs",
+        "llm_usage_logs",
+        "cost_optimizer_candidates",
+    ):
+        sa.Table(
+            table_name,
+            metadata,
+            sa.Column("id", sa.UUID(), primary_key=True),
+        )
+
     cohorts = sa.Table(
         "llm_node_model_routing_cohorts",
         metadata,
