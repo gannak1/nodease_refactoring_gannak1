@@ -33,7 +33,7 @@ Nodease는 사내 여러 팀이 AI workflow를 생성·편집·실행·배포하
 | --- | --- |
 | **자연어로 시작하는 자동화** | Agent Builder가 자연어 요청을 typed `GraphMutation`으로 변환해 실제 Editor에 반영하고 CAS 방식으로 저장합니다. |
 | **권한을 지키는 사내 지식 활용** | 실행 주체가 접근할 수 있는 Collection과 Knowledge Base만 검색 후보로 만들고, 최종 evidence를 다시 검증합니다. |
-| **안전한 외부 업무 연동** | credential을 graph에 직접 저장하지 않고 opaque reference로 연결하며, 실행·배포 전에 configuration preflight를 수행합니다. |
+| **안전한 외부 업무 연동** | Mail처럼 resolver가 도입된 경로는 credential을 opaque reference로 연결하고 실행·배포 전에 configuration preflight를 수행합니다. Slack·GitHub의 legacy direct-secret graph field는 아직 전환 대상입니다. |
 | **근거가 남는 운영** | 주요 행위, workflow/node 실행, correlation과 민감 payload 접근을 Audit·Trace 정책으로 기록합니다. |
 | **비용을 아는 LLMOps** | LLM token, 비용, latency와 예산을 관측하고 후보 설정을 동일 입력으로 비교·검증합니다. |
 
@@ -61,7 +61,7 @@ Workflow 생성과 설정 확인 단계에서는 Knowledge retrieval, Slack 전�
 | 영역 | 현재 제공 범위 | 공식 문서 |
 | --- | --- | --- |
 | **Workflow Builder & Runtime** | React Flow 기반 graph 편집, CAS 저장, test 실행, deployment, 수동·Webhook·API 실행과 배포 profile에서 활성화한 Schedule 실행 | [Workflow](./docs/features/workflow/requirements.md) |
-| **Workflow Node** | Start부터 Gmail Draft·Mail Acknowledge까지 canonical catalog 기준 18개 실행 node | [Node Catalog ADR](./docs/decisions/ADR-0024-agent-builder-node-capability-catalog.md) |
+| **Workflow Node** | Start부터 Gmail Draft·Mail Acknowledge까지 canonical catalog 기준 18개 실행 node | [Node Catalog ADR](./docs/decisions/ADR-0024-agent-builder-node-capability-catalog.md) · [Mail 처리 확장 ADR](./docs/decisions/ADR-0032-mail-processing-gmail-draft-idempotency.md) |
 | **Agent Builder** | 자연어를 typed GraphMutation과 ParameterTask로 변환하고 Editor 적용·CAS 저장·acknowledgement로 연결 | [Agent Builder](./docs/features/agent-builder/requirements.md) |
 | **Organization & RBAC** | active organization, Organization/Team membership, 역할, team·user direct permission과 resource action 강제 | [Organization](./docs/features/organization/requirements.md) |
 | **Knowledge & RAG** | 1문서·source item 단위 Knowledge Base, Knowledge Collection, versioned ingestion, metadata/hierarchical retrieval, permission과 citation | [Knowledge](./docs/features/knowledge/requirements.md) |
@@ -73,7 +73,7 @@ Workflow 생성과 설정 확인 단계에서는 Knowledge retrieval, Slack 전�
 
 ### Workflow node 지원 범위
 
-Canonical catalog에서 실행 가능한 node는 다음 18개입니다.
+ADR-0024의 catalog baseline에 ADR-0032의 Gmail Draft·Mail Acknowledge 확장을 반영한 현재 canonical catalog에서 실행 가능한 node는 다음 18개입니다.
 
 `Start`, `Webhook`, `Schedule`, `LLM`, `Workflow`, `Code`, `Condition`, `File Extraction`, `Variable Extraction`, `Answer`, `Loop`, `HTTP`, `Slack`, `Template`, `GitHub`, `Mail`, `Gmail Draft`, `Mail Acknowledge`
 
@@ -175,12 +175,15 @@ cp docker/.env.example docker/.env
 | 변수 | 용도 |
 | --- | --- |
 | `SECRET_KEY` | 인증 token 서명 |
-| `MASTER_KEY` | 공통 암호화 데이터 보호 |
+| `MASTER_KEY` | 예약·legacy 설정. 현재 Docker Gateway와 LLM credential의 `encrypted_config` 암호화에는 연결되지 않음 |
 | `ENCRYPTION_KEY` | 기존 암호화 호환 경계 |
 | `MAIL_CREDENTIAL_ENCRYPTION_KEYS` | Mail credential용 versioned keyring. 비어 있으면 호환 `ENCRYPTION_KEY` 경계를 사용 |
 | `MAIL_CREDENTIAL_ACTIVE_KEY_VERSION` | 새 Mail credential을 암호화할 active key version |
 
 실제 key, token, credential과 `.env` 파일을 Git, 문서, log에 남기지 마세요. 로컬 파일 저장은 `STORAGE_TYPE=LOCAL`을 사용할 수 있습니다.
+
+> [!WARNING]
+> 현재 LLM credential의 `encrypted_config`는 이름과 달리 config JSON을 평문으로 저장합니다. `MASTER_KEY`를 설정해도 이 저장 경로가 암호화되지는 않으므로 운영·공유 DB에 실제 provider key를 넣지 말고 [Data Model의 알려진 차이](./docs/data_model.md#llm_credentials)를 확인합니다.
 
 ### 2. 실행
 
@@ -334,7 +337,7 @@ RAG benchmark와 load test는 일반 회귀에 포함하지 않습니다. 필요
 
 - Client의 권한 차단은 UX 보조 수단이며, 최종 권한 판단은 Gateway와 Workflow Runtime이 수행합니다.
 - API와 runtime은 active organization, execution subject, resource permission과 credential use 권한을 검증합니다.
-- API key, token, credential 원문과 decrypted value를 response, Audit, Trace, log와 test fixture에 남기지 않습니다.
+- API key, token, credential 원문과 decrypted value를 response, Audit, Trace, log와 test fixture에 남기지 않는 것이 원칙입니다. 다만 현재 deployment 생성 응답은 `auth_secret` 원문을 포함할 수 있고 Slack·GitHub legacy node는 direct-secret field를 graph에 저장할 수 있으므로, 해당 응답과 graph를 secret-free로 취급하거나 공유하지 않습니다. 이 예외는 [Architecture의 알려진 리스크](./docs/architecture.md#5-알려진-리스크)에 따른 보안 정렬 대상입니다.
 - Raw prompt/completion, Mail body, document content와 connector payload는 허용된 runtime 경계 밖에서 durable metadata로 보존하지 않습니다.
 - Generic HTTP, Mail과 Slack은 각 provider/egress 계약을 따릅니다. Knowledge URL preview와 Connector 저장·runtime 경로 등 잔여 위험은 [Architecture의 알려진 리스크](./docs/architecture.md#5-알려진-리스크)를 확인합니다.
 - Sandbox network는 기본적으로 차단하며 `SANDBOX_ENABLE_NETWORK`와 배포 NetworkPolicy를 명시적으로 검토합니다.
