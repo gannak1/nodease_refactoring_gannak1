@@ -100,6 +100,8 @@ Status: Draft
 | Knowledge Collection | 여러 document-level Knowledge Base를 묶는 grouping, routing, UX, operations 단위. Collection 권한은 하위 KB content retrieval 권한을 자동 부여하지 않는다. |
 | Standalone Knowledge Base | 어떤 Knowledge Collection에도 연결되지 않은 KB. Collection membership은 선택 사항이며 하나의 KB는 0개 이상의 Collection에 연결될 수 있다. |
 | Knowledge Collection Sync Job | 권한 있는 사용자가 요청한 KC 동기화를 durable하게 추적하는 DB record. Idempotency, single-flight, worker lease, retry, partial failure와 safe progress의 source of truth이며 child KB content 권한을 부여하지 않는다. |
+| Knowledge Document Ingestion Job | Document process, sync, approval-resume 또는 reindex 한 generation의 durable DB record. Request admission, document single-flight, worker lease/heartbeat/fencing, retry/dead-letter와 terminal result의 source of truth다. Celery task ID나 Redis progress는 이 record를 대신하지 않는다. |
+| Knowledge Ingestion Worker | Gateway parser/storage 의존성을 사용하면서 `knowledge` Celery queue만 소비하는 전용 worker. Job UUID만 입력받고 current authorization과 DB claim을 확인한 뒤 document ingestion을 실행한다. |
 | Single-flight | 같은 Knowledge Collection에 queued/running sync job을 동시에 하나만 허용해 중복 요청과 Celery redelivery가 같은 target을 병렬 적용하지 못하게 하는 정책. |
 | Safe Progress | Child KB/document/source identity와 정확한 hidden count를 노출하지 않고 `none`, `started`, `progressing`, `most`, `complete` 같은 범주로 표시하는 실행 진행 정보. |
 | Knowledge Skill | Workflow Builder가 LLM node의 RAG 옵션을 구성할 때 어떤 source-of-truth tier를 먼저 볼지, 어떤 collection/KB 후보를 고려할지, 어떤 query template과 검증 절차를 쓸지 정의하는 Knowledge 도메인의 provider-neutral 절차 지식 artifact. Skill metadata/body/resource도 권한과 redaction-safe boundary 안에 있으며, 실제 근거는 KB/document version/citation에서 가져온다. MBA-145 Agent Builder MVP는 Knowledge Skill body/checklist를 prompt context로 직접 로드하지 않는다. |

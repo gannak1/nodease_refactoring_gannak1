@@ -859,6 +859,36 @@ safe query topics와 저장된 safe metadata를 사용해 계산한다. Migratio
 
 `meta_info.classification`의 canonical 의미는 ADR-0007의 보안 민감도다. Current demo/legacy 데이터에는 `public_law`, `internal_policy`처럼 문서 유형 또는 주제로 보이는 값이 남아 있지만 이를 허용 보안 등급 확장으로 해석하지 않는다. MBA-305가 검토하는 `document_type`, taxonomy topic과 chunking profile은 classification과 분리된 additive metadata 후보이며, AI가 만든 topic은 권한·보안 분류의 source of truth가 아니다.
 
+#### `knowledge_document_ingestion_jobs`
+
+Document process, sync, approval-resume와 embedding model reindex의 durable 실행 record다
+([ADR-0052](decisions/ADR-0052-knowledge-document-ingestion-durable-execution-boundary.md)).
+Celery result backend, task ID와 Redis progress는 이 table을 대체하지 않는다.
+
+| 컬럼 | 타입 | 제약 |
+| --- | --- | --- |
+| id | UUID | PK, Celery payload의 유일한 업무 식별자 |
+| organization_id | UUID | NOT NULL, FK→organization.id (RESTRICT) |
+| knowledge_base_id / document_id | UUID | NULL, FK→knowledge_bases/documents (SET NULL). 삭제 뒤 terminal 이력 보존 |
+| requested_by_user_id | UUID | NULL, FK→users.id (SET NULL). Worker-start current authorization 재검사 대상 |
+| operation_kind | VARCHAR(32) | NOT NULL, CK: `process/sync/resume/reindex` |
+| generation | INTEGER | NOT NULL, 양수 |
+| input_revision / idempotency_key | VARCHAR(64) | NOT NULL, protected SHA-256 digest. Raw source config/content 저장 금지 |
+| status | VARCHAR(32) | NOT NULL, `pending/running/retry_scheduled/succeeded/dead_lettered/cancelled` |
+| attempt_count / max_attempts / retryable | INTEGER / INTEGER / BOOLEAN | bounded retry contract |
+| safe_reason_code | VARCHAR(100) | NULL, allowlisted terminal/retry reason |
+| owner_token / fencing_token | VARCHAR(128) | running 동안만 NOT NULL |
+| lease_expires_at / heartbeat_at / next_retry_at | DATETIME | DB clock 기반 execution claim/recovery |
+| dispatch_lease_expires_at | DATETIME | NULL, pending/retry job의 bounded recovery 발행 lease |
+| requested_at / started_at / completed_at / dead_lettered_at / updated_at | DATETIME | lifecycle timestamp |
+| result_document_version_id | UUID | NULL, FK→document_versions.id (SET NULL) |
+| safe_metadata | JSONB | NOT NULL, default `{}`. Raw parser/source/provider payload 금지 |
+
+- `(organization_id, idempotency_key)`는 unique다.
+- `document_id`별 active(`pending/running/retry_scheduled`) partial unique index가 single-flight를 강제한다.
+- Due scan `(status, next_retry_at, dispatch_lease_expires_at, requested_at)`과 stale execution lease `(status, lease_expires_at)` index를 둔다.
+- Terminal row는 기본 30일 뒤 bounded cleanup하며 canonical audit/document version retention은 별도다.
+
 #### `document_chunks`
 
 retrieval 최소 단위. pgvector 임베딩과 hierarchical chunk 구조를 가진다. 목표 모델에서 `content`, embedding input, retrieval-visible text artifact는 redacted canonical text에서 생성된다 ([ADR-0014](decisions/ADR-0014-knowledge-base-document-atom-and-collection-boundary.md)).

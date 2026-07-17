@@ -111,8 +111,11 @@ class FileProcessor(BaseProcessor):
             if temp_file_path and os.path.exists(temp_file_path):
                 try:
                     os.remove(temp_file_path)
-                except Exception as e:
-                    logger.warning(f"Failed to remove temp file: {e}")
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to remove temporary file: error_type=%s",
+                        type(exc).__name__,
+                    )
 
     def _download_file(self, url: str) -> str:
         """
@@ -140,10 +143,8 @@ class FileProcessor(BaseProcessor):
                     allowed_content_types=DOCUMENT_RESPONSE_CONTENT_TYPES,
                 ),
             )
-        except EgressGuardError as e:
-            raise RuntimeError(
-                f"Remote file download denied: {e.reason_code}"
-            ) from e
+        except EgressGuardError:
+            raise
         except Exception as e:
             raise RuntimeError("Remote file download failed.") from e
 
@@ -186,8 +187,11 @@ class FileProcessor(BaseProcessor):
             if temp_file_path and os.path.exists(temp_file_path):
                 try:
                     os.remove(temp_file_path)
-                except Exception as e:
-                    logger.warning(f"Failed to remove temp file: {e}")
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to remove temporary file: error_type=%s",
+                        type(exc).__name__,
+                    )
 
     def _get_parser(self, ext: str):
         if ext == ".pdf":

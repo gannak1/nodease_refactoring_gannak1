@@ -6,7 +6,6 @@ from uuid import UUID
 
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Body,
     Depends,
     File,
@@ -22,6 +21,18 @@ from sqlalchemy.orm import Session
 
 from apps.gateway.api.deps import get_db
 from apps.gateway.auth.dependencies import get_current_user
+from apps.gateway.application.knowledge_document_ingestion.use_cases import (
+    DocumentIngestionConflict,
+    DocumentIngestionHidden,
+    DocumentIngestionPersistenceFailed,
+    DocumentIngestionPolicyBlocked,
+    DocumentIngestionSettings,
+    RequestDocumentIngestionCommand,
+)
+from apps.gateway.composition.knowledge_document_ingestion import (
+    build_read_document_ingestion_status,
+    build_request_document_ingestion,
+)
 from apps.gateway.core.config import settings
 
 # from services.ingestion_local_service import IngestionService
@@ -63,6 +74,10 @@ from apps.gateway.services.knowledge_document_lifecycle_service import (
     KnowledgeDocumentLifecycleService,
     KnowledgeDocumentLifecycleUnavailable,
 )
+from apps.gateway.services.knowledge_document_ingestion_readiness import (
+    KnowledgeDocumentIngestionUnavailable,
+    require_knowledge_document_ingestion_schema,
+)
 from apps.gateway.services.knowledge_document_registration_service import (
     KnowledgeDocumentRegistrationError,
     KnowledgeDocumentRegistrationHidden,
@@ -82,7 +97,11 @@ from apps.gateway.utils.api_errors import (
 from apps.gateway.utils.audit import audit
 from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.logger import record_audit
-from apps.shared.db.models.knowledge import Document, KnowledgeBase, SourceType
+from apps.shared.db.models.knowledge import (
+    Document,
+    KnowledgeBase,
+    SourceType,
+)
 from apps.shared.db.models.user import User
 from apps.shared.schemas.rag import (
     ApiPreviewRequest,
@@ -103,6 +122,9 @@ from apps.shared.services.egress_guard import (
     safe_http_request,
 )
 from apps.shared.services.knowledge_permission_service import KnowledgePermissionHelper
+from apps.shared.services.knowledge_document_ingestion_projection import (
+    project_safe_ingestion_job,
+)
 from apps.shared.services.permission_audit import record_resource_permission_denied
 from apps.shared.services.permissions import has_organization_scope_access
 from apps.shared.services.rag_filters import normalize_metadata_filter
@@ -123,6 +145,19 @@ SAFE_DOCUMENT_EXTENSIONS = {
     ".xls",
     ".xlsx",
 }
+
+
+def _ensure_document_ingestion_schema_ready(db: Session, request: Request) -> None:
+    try:
+        require_knowledge_document_ingestion_schema(db)
+    except KnowledgeDocumentIngestionUnavailable as exc:
+        raise_api_error(
+            request,
+            503,
+            "knowledge.ingestion_schema_not_ready",
+            "Knowledge document ingestion is temporarily unavailable.",
+            {"reason": exc.reason_code},
+        )
 
 
 def _chunking_http_exception(exc: RAGHierarchyError) -> HTTPException:
@@ -433,7 +468,6 @@ async def generate_presigned_url(
 @router.post("/upload", response_model=IngestionResponse)
 @audit(AuditAction.DOCUMENT_UPLOAD)
 async def upload_document(
-    background_tasks: BackgroundTasks,
     request: Request,
     x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     file: Optional[UploadFile] = File(None, alias="file"),
@@ -707,7 +741,6 @@ async def analyze_document(
 async def confirm_document_parsing(
     document_id: UUID,
     request: Request,
-    background_tasks: BackgroundTasks,
     strategy: str = "llamaparse",  # "llamaparse" or "general"
     x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
@@ -717,7 +750,7 @@ async def confirm_document_parsing(
     비용 승인 대기 중인 문서의 파싱을 재개합니다.
     """
     organization_id = parse_organization_id(request, x_organization_id)
-    _, doc = _authorize_knowledge_document_action(
+    kb, _ = _authorize_knowledge_document_action(
         request,
         db,
         current_user,
@@ -726,22 +759,61 @@ async def confirm_document_parsing(
         "write",
     )
 
-    if doc.status != "waiting_for_approval":
-        raise HTTPException(status_code=400, detail="Document remains in invalid state")
+    if strategy not in {"llamaparse", "general"}:
+        raise_api_error(
+            request,
+            400,
+            "validation.failed",
+            "Unsupported document parsing strategy.",
+        )
 
-    # 서비스 초기화 및 재개 (백그라운드)
-    # 기존 설정(청크 사이즈 등)은 DB doc에 저장되어 있으므로 불러와서 쓴다고 가정
-    ingestion_service = IngestionService(
-        db,
-        user_id=current_user.id,
-        organization_id=organization_id,
-    )
+    _ensure_document_ingestion_schema_ready(db, request)
 
-    background_tasks.add_task(ingestion_service.resume_processing, document_id, strategy)
+    try:
+        result = build_request_document_ingestion(db).execute(
+            RequestDocumentIngestionCommand(
+                actor_id=current_user.id,
+                organization_id=organization_id,
+                knowledge_base_id=kb.id,
+                document_id=document_id,
+                operation="resume",
+                settings=DocumentIngestionSettings(
+                    embedding_model=kb.embedding_model,
+                    meta_updates={"strategy": strategy},
+                ),
+                required_document_status="waiting_for_approval",
+            )
+        )
+    except DocumentIngestionHidden:
+        raise_api_error(request, 404, "resource.hidden", "Document not found.")
+    except DocumentIngestionConflict:
+        raise_api_error(
+            request,
+            409,
+            "ingestion.already_in_progress",
+            "Another document ingestion intent is already in progress.",
+        )
+    except DocumentIngestionPolicyBlocked as exc:
+        raise_api_error(
+            request,
+            409,
+            exc.reason_code,
+            "Document ingestion is not available for the current resource state.",
+        )
+    except DocumentIngestionPersistenceFailed:
+        raise_api_error(
+            request,
+            503,
+            "ingestion.admission_unavailable",
+            "Document ingestion is temporarily unavailable.",
+        )
 
     return {
         "message": f"Parsing resumed with strategy: {strategy}",
         "status": "processing",
+        "job_id": str(result.job.job_id),
+        "reused": result.reused,
+        "dispatch_deferred": result.dispatch_deferred,
     }
 
 
@@ -940,6 +1012,7 @@ async def get_document_progress(
         document_id,
         "read",
     )
+    _ensure_document_ingestion_schema_ready(db, request)
 
     async def event_generator():
         while True:
@@ -958,6 +1031,7 @@ async def get_document_progress(
                 db.refresh(doc)
 
             status = project_safe_document_status(doc.status)
+            latest_job = build_read_document_ingestion_status(db).execute(document_id)
 
             # 2. Redis에서 실시간 진행률 조회 (에러 핸들링 포함)
             redis_progress = None
@@ -982,6 +1056,7 @@ async def get_document_progress(
                         status,
                         doc.error_message,
                     ),
+                    "ingestion_job": project_safe_ingestion_job(latest_job),
                 },
                 ensure_ascii=False,
             )
@@ -989,7 +1064,7 @@ async def get_document_progress(
             yield f"data: {data}\n\n"
 
             # 5. 종료 조건
-            if status == "completed" or progress >= 100:
+            if status in {"completed", "failed"} or progress >= 100:
                 break
             if status == "failed":
                 break

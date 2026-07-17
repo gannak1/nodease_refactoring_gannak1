@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
-from fastapi import BackgroundTasks, HTTPException, Response
+from fastapi import HTTPException, Response
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -905,6 +905,11 @@ def test_direct_document_detail_projects_internal_metadata(monkeypatch):
     )
     monkeypatch.setattr(
         knowledge_endpoint,
+        "_ensure_document_ingestion_schema_ready",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
         "recover_timed_out_document_with_artifacts",
         lambda *args, **kwargs: False,
     )
@@ -919,6 +924,53 @@ def test_direct_document_detail_projects_internal_metadata(monkeypatch):
     )
 
     assert response.meta_info == {"progress": 20}
+
+
+def test_document_detail_checks_ingestion_readiness_after_authorization(
+    monkeypatch,
+):
+    events: list[str] = []
+    knowledge_base_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+
+    def authorize(*_args, **_kwargs):
+        events.append("authorization")
+        return (
+            SimpleNamespace(id=knowledge_base_id),
+            SimpleNamespace(id=document_id, status="processing"),
+        )
+
+    def require_readiness(*_args, **_kwargs):
+        events.append("readiness")
+        raise RuntimeError("schema not ready")
+
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_authorized_knowledge_document",
+        authorize,
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_ensure_document_ingestion_schema_ready",
+        require_readiness,
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "finalize_stale_processing_start",
+        lambda *_args, **_kwargs: events.append("reconciliation"),
+    )
+
+    with pytest.raises(RuntimeError, match="schema not ready"):
+        knowledge_endpoint.get_document(
+            kb_id=knowledge_base_id,
+            document_id=document_id,
+            request=SimpleNamespace(),
+            x_organization_id=str(uuid.uuid4()),
+            db=object(),
+            current_user=SimpleNamespace(id=uuid.uuid4()),
+        )
+
+    assert events == ["authorization", "readiness"]
 
 
 def test_direct_document_detail_replaces_persisted_failure_detail(monkeypatch):
@@ -1055,28 +1107,25 @@ async def test_api_process_preserves_server_side_encrypted_source_config(monkeyp
         chunk_size=800,
         chunk_overlap=80,
         meta_info={"api_config": encrypted_config},
+        updated_at=None,
     )
 
     class FakeDb:
-        committed = False
+        pass
 
-        def commit(self):
-            self.committed = True
+    job_id = uuid.uuid4()
+    captured_commands = []
 
-    class FakeIngestionService:
-        def __init__(self, *_args, **_kwargs):
-            self.organization_id = _kwargs.get("organization_id")
-
-        async def process_document(self, _document_id):
-            pass
+    class FakeUseCase:
+        def execute(self, command):
+            captured_commands.append(command)
+            return SimpleNamespace(
+                job=SimpleNamespace(job_id=job_id),
+                reused=False,
+                dispatch_deferred=False,
+            )
 
     db = FakeDb()
-    created_services = []
-
-    def create_ingestion_service(*args, **kwargs):
-        service = FakeIngestionService(*args, **kwargs)
-        created_services.append(service)
-        return service
 
     monkeypatch.setattr(
         knowledge_endpoint,
@@ -1092,13 +1141,13 @@ async def test_api_process_preserves_server_side_encrypted_source_config(monkeyp
     )
     monkeypatch.setattr(
         knowledge_endpoint,
-        "mark_document_processing_queued",
-        lambda doc: setattr(doc, "status", "indexing"),
+        "build_request_document_ingestion",
+        lambda _db, **_kwargs: FakeUseCase(),
     )
     monkeypatch.setattr(
         knowledge_endpoint,
-        "IngestionService",
-        create_ingestion_service,
+        "_ensure_document_ingestion_schema_ready",
+        lambda *_args, **_kwargs: None,
     )
 
     response = await knowledge_endpoint.process_document.__wrapped__(
@@ -1111,7 +1160,6 @@ async def test_api_process_preserves_server_side_encrypted_source_config(monkeyp
             db_config=None,
         ),
         request=SimpleNamespace(),
-        background_tasks=BackgroundTasks(),
         x_organization_id=str(uuid.uuid4()),
         db=db,
         current_user=SimpleNamespace(id=uuid.uuid4()),
@@ -1120,11 +1168,15 @@ async def test_api_process_preserves_server_side_encrypted_source_config(monkeyp
     assert response == {
         "status": "processing",
         "message": "Document processing started",
+        "job_id": str(job_id),
+        "reused": False,
+        "dispatch_deferred": False,
     }
-    assert db.committed is True
-    assert [service.organization_id for service in created_services] == [organization_id]
+    assert len(captured_commands) == 1
+    assert captured_commands[0].organization_id == organization_id
     assert document.meta_info["api_config"] is encrypted_config
-    assert document.meta_info["db_config"] is None
+    assert captured_commands[0].settings.meta_updates["db_config"] is None
+    assert "api_config" not in captured_commands[0].settings.meta_updates
 
 
 @pytest.mark.asyncio
@@ -1135,6 +1187,7 @@ async def test_db_process_locks_new_connection_reference_before_commit(monkeypat
     owner_id = uuid.uuid4()
     connection_id = uuid.uuid4()
     events: list[object] = []
+    captured_commands = []
     document = SimpleNamespace(
         id=document_id,
         source_type="DB",
@@ -1155,18 +1208,27 @@ async def test_db_process_locks_new_connection_reference_before_commit(monkeypat
         def __init__(self, db):
             assert db is dependency_db
 
-        def lock_owned_connection_and_document_for_reference(self, **kwargs):
+        def lock_owned_connection_for_reference(self, **kwargs):
             events.append(("lock", kwargs))
 
         def commit_reference_mutation(self):
-            events.append("commit")
+            pytest.fail("Durable admission must own the reference commit")
 
-    class FakeIngestionService:
-        def __init__(self, *_args, **_kwargs):
-            pass
+    job_id = uuid.uuid4()
 
-        async def process_document(self, _document_id):
-            pass
+    class FakeUseCase:
+        def execute(self, command):
+            captured_commands.append(command)
+            events.append(("admit", command.document_id))
+            return SimpleNamespace(
+                job=SimpleNamespace(job_id=job_id),
+                reused=False,
+                dispatch_deferred=False,
+            )
+
+    def build_use_case(_db, *, unit_of_work=None):
+        assert isinstance(unit_of_work, FakeConnectionLifecycleService)
+        return FakeUseCase()
 
     dependency_db = FakeDb()
     monkeypatch.setattr(
@@ -1196,13 +1258,13 @@ async def test_db_process_locks_new_connection_reference_before_commit(monkeypat
     )
     monkeypatch.setattr(
         knowledge_endpoint,
-        "mark_document_processing_queued",
-        lambda doc: setattr(doc, "status", "indexing"),
+        "build_request_document_ingestion",
+        build_use_case,
     )
     monkeypatch.setattr(
         knowledge_endpoint,
-        "IngestionService",
-        FakeIngestionService,
+        "_ensure_document_ingestion_schema_ready",
+        lambda *_args, **_kwargs: None,
     )
 
     response = await knowledge_endpoint.process_document.__wrapped__(
@@ -1213,7 +1275,6 @@ async def test_db_process_locks_new_connection_reference_before_commit(monkeypat
             db_config={"connection_id": str(connection_id), "selections": []},
         ),
         request=SimpleNamespace(),
-        background_tasks=BackgroundTasks(),
         x_organization_id=str(organization_id),
         db=dependency_db,
         current_user=SimpleNamespace(id=owner_id),
@@ -1226,14 +1287,110 @@ async def test_db_process_locks_new_connection_reference_before_commit(monkeypat
             {
                 "connection_id": connection_id,
                 "owner_id": owner_id,
-                "document_id": document_id,
-                "expected_document_updated_at": None,
             },
         ),
-        "commit",
+        ("admit", document_id),
     ]
-    assert document.meta_info["connection_id"] == str(connection_id)
-    assert "connection_id" not in document.meta_info["db_config"]
+    assert len(captured_commands) == 1
+    settings = captured_commands[0].settings
+    assert settings.meta_updates["connection_id"] == str(connection_id)
+    assert settings.meta_updates["db_config"] == {"selections": []}
+    assert "connection_id" not in settings.meta_updates["db_config"]
+
+
+@pytest.mark.asyncio
+async def test_db_sync_uses_top_level_connection_reference_in_durable_uow(
+    monkeypatch,
+):
+    knowledge_base_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    connection_id = uuid.uuid4()
+    updated_at = datetime(2026, 7, 17, tzinfo=timezone.utc)
+    events: list[object] = []
+    captured_commands = []
+    dependency_db = SimpleNamespace(rollback=lambda: events.append("rollback"))
+    document = SimpleNamespace(
+        id=document_id,
+        source_type="DB",
+        meta_info={
+            "connection_id": str(connection_id),
+            "db_config": {"selections": []},
+        },
+        updated_at=updated_at,
+    )
+
+    class FakeConnectionLifecycleService:
+        def __init__(self, db):
+            assert db is dependency_db
+
+        def lock_owned_connection_for_reference(self, **kwargs):
+            events.append(("lock", kwargs))
+
+    class FakeUseCase:
+        def execute(self, command):
+            captured_commands.append(command)
+            events.append(("admit", command.document_id))
+            return SimpleNamespace(
+                job=SimpleNamespace(job_id=uuid.uuid4()),
+                reused=False,
+                dispatch_deferred=False,
+            )
+
+    def build_use_case(_db, *, unit_of_work=None):
+        assert isinstance(unit_of_work, FakeConnectionLifecycleService)
+        return FakeUseCase()
+
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_authorized_knowledge_document",
+        lambda *_args, **_kwargs: (
+            SimpleNamespace(
+                id=knowledge_base_id,
+                organization_id=organization_id,
+                embedding_model="embedding-model",
+            ),
+            document,
+        ),
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "ConnectionLifecycleService",
+        FakeConnectionLifecycleService,
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "build_request_document_ingestion",
+        build_use_case,
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_ensure_document_ingestion_schema_ready",
+        lambda *_args, **_kwargs: None,
+    )
+
+    response = await knowledge_endpoint.sync_document.__wrapped__(
+        kb_id=knowledge_base_id,
+        document_id=document_id,
+        request=SimpleNamespace(),
+        x_organization_id=str(organization_id),
+        db=dependency_db,
+        current_user=SimpleNamespace(id=owner_id),
+    )
+
+    assert response["status"] == "processing"
+    assert events == [
+        (
+            "lock",
+            {"connection_id": connection_id, "owner_id": owner_id},
+        ),
+        ("admit", document_id),
+    ]
+    assert len(captured_commands) == 1
+    command = captured_commands[0]
+    assert command.expected_document_updated_at == updated_at
+    assert command.require_document_revision_match is True
 
 
 @pytest.mark.parametrize(
@@ -1244,11 +1401,6 @@ async def test_db_process_locks_new_connection_reference_before_commit(monkeypat
             knowledge_endpoint.ConnectionLifecycleBusy(),
             503,
             "connection.reference_busy",
-        ),
-        (
-            knowledge_endpoint.ConnectionLifecycleConflict(),
-            409,
-            "connection.reference_conflict",
         ),
         (
             knowledge_endpoint.ConnectionLifecycleUnavailable(),
@@ -1273,7 +1425,7 @@ def test_db_connection_reference_lock_maps_safe_errors(
         def __init__(self, _db):
             pass
 
-        def lock_owned_connection_and_document_for_reference(self, **_kwargs):
+        def lock_owned_connection_for_reference(self, **_kwargs):
             raise service_error
 
     monkeypatch.setattr(
@@ -1331,6 +1483,23 @@ def test_db_connection_reference_commit_maps_safe_errors(
     assert exc_info.value.detail["error"]["code"] == expected_code
 
 
+@pytest.mark.parametrize(
+    "reason_code",
+    ["connection.reference_busy", "connection.reference_unavailable"],
+)
+def test_durable_admission_preserves_safe_connection_persistence_reason(
+    reason_code,
+):
+    with pytest.raises(HTTPException) as exc_info:
+        knowledge_endpoint._raise_document_ingestion_error(
+            SimpleNamespace(state=SimpleNamespace(request_id="request-id")),
+            knowledge_endpoint.DocumentIngestionPersistenceFailed(reason_code),
+        )
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail["error"]["code"] == reason_code
+
+
 def test_invalid_db_connection_reference_is_rejected_before_lock(monkeypatch):
     monkeypatch.setattr(
         knowledge_endpoint,
@@ -1376,4 +1545,154 @@ def test_knowledge_detail_fails_closed_when_required_schema_is_missing(monkeypat
     assert body["error"]["code"] == "knowledge.schema_not_ready"
     assert body["error"]["details"]["missing_columns"] == {
         "knowledge_bases": ["organization_id"]
+    }
+
+
+def test_document_ingestion_status_is_no_store_and_safely_projected(monkeypatch):
+    knowledge_base_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+    job = SimpleNamespace(job_id=uuid.uuid4(), unsafe_payload="must-not-leak")
+
+    class FakeReadUseCase:
+        def execute(self, candidate_document_id):
+            assert candidate_document_id == document_id
+            return job
+
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_authorized_knowledge_document",
+        lambda *_args, **_kwargs: (SimpleNamespace(), SimpleNamespace()),
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_ensure_document_ingestion_schema_ready",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "build_read_document_ingestion_status",
+        lambda _db: FakeReadUseCase(),
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "project_safe_ingestion_job",
+        lambda candidate: {"job_id": str(candidate.job_id), "status": "running"},
+    )
+    response_headers = Response()
+
+    payload = knowledge_endpoint.get_document_ingestion_status(
+        kb_id=knowledge_base_id,
+        document_id=document_id,
+        request=SimpleNamespace(),
+        response=response_headers,
+        x_organization_id=str(uuid.uuid4()),
+        db=object(),
+        current_user=SimpleNamespace(id=uuid.uuid4()),
+    )
+
+    assert response_headers.headers["Cache-Control"] == "no-store"
+    assert payload == {"job": {"job_id": str(job.job_id), "status": "running"}}
+    assert "unsafe_payload" not in str(payload)
+
+
+def test_document_ingestion_retry_reauthorizes_sync_and_pins_latest_job(
+    monkeypatch,
+):
+    knowledge_base_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    latest_job_id = uuid.uuid4()
+    replacement_job_id = uuid.uuid4()
+    authorization_calls = []
+    captured_commands = []
+
+    def authorize(*_args, **kwargs):
+        authorization_calls.append((kwargs.get("domain_action"), _args[2]))
+        return (
+            SimpleNamespace(id=knowledge_base_id, organization_id=organization_id),
+            SimpleNamespace(id=document_id),
+        )
+
+    class FakeReadUseCase:
+        def execute(self, candidate_document_id):
+            assert candidate_document_id == document_id
+            return SimpleNamespace(job_id=latest_job_id, operation="sync")
+
+    class FakeRedriveUseCase:
+        def execute(self, command):
+            captured_commands.append(command)
+            return SimpleNamespace(
+                job=SimpleNamespace(job_id=replacement_job_id),
+                dispatch_deferred=False,
+            )
+
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_authorized_knowledge_document",
+        authorize,
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_ensure_document_ingestion_schema_ready",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "build_read_document_ingestion_status",
+        lambda _db: FakeReadUseCase(),
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "build_redrive_document_ingestion",
+        lambda _db: FakeRedriveUseCase(),
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "project_safe_ingestion_job",
+        lambda candidate: {"job_id": str(candidate.job_id)},
+    )
+
+    payload = knowledge_endpoint.retry_document_ingestion.__wrapped__(
+        kb_id=knowledge_base_id,
+        document_id=document_id,
+        request=SimpleNamespace(),
+        x_organization_id=str(organization_id),
+        db=object(),
+        current_user=SimpleNamespace(id=uuid.uuid4()),
+    )
+
+    assert authorization_calls == [(None, "read"), ("sync_manage", "write")]
+    assert captured_commands[0].expected_job_id == latest_job_id
+    assert captured_commands[0].organization_id == organization_id
+    assert payload == {
+        "status": "processing",
+        "job": {"job_id": str(replacement_job_id)},
+        "dispatch_deferred": False,
+    }
+
+
+def test_document_ingestion_readiness_maps_safe_503(monkeypatch):
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "require_knowledge_document_ingestion_schema",
+        lambda _db: (_ for _ in ()).throw(
+            knowledge_endpoint.KnowledgeDocumentIngestionUnavailable(
+                "knowledge.ingestion_table_missing"
+            )
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        knowledge_endpoint._ensure_document_ingestion_schema_ready(
+            object(),
+            SimpleNamespace(state=SimpleNamespace(request_id="request-id")),
+        )
+
+    assert exc_info.value.status_code == 503
+    assert (
+        exc_info.value.detail["error"]["code"]
+        == "knowledge.ingestion_schema_not_ready"
+    )
+    assert exc_info.value.detail["error"]["details"] == {
+        "reason": "knowledge.ingestion_table_missing"
     }

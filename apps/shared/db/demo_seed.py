@@ -38,6 +38,7 @@ from apps.shared.db.models.knowledge import (
     KnowledgeBase,
     KnowledgeCollection,
     KnowledgeCollectionItem,
+    KnowledgeDocumentIngestionJob,
     KnowledgeIngestionOutbox,
     SourceType,
 )
@@ -4734,6 +4735,9 @@ def reset_demo_data(db: Session) -> None:
         LLMCredential.id == LEGACY_DEMO_LLM_CREDENTIAL_ID
     ).delete(synchronize_session=False)
 
+    db.query(KnowledgeDocumentIngestionJob).filter(
+        KnowledgeDocumentIngestionJob.knowledge_base_id.in_(kb_ids)
+    ).delete(synchronize_session=False)
     db.query(KnowledgeIngestionOutbox).filter(
         KnowledgeIngestionOutbox.knowledge_base_id.in_(kb_ids)
     ).delete(synchronize_session=False)

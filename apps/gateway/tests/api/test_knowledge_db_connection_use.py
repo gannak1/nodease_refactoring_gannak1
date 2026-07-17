@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.exc import SQLAlchemyError
@@ -311,13 +311,13 @@ async def test_process_rejects_other_users_connection_before_mutation(
     )
     monkeypatch.setattr(
         knowledge_endpoint,
-        "mark_document_processing_queued",
-        lambda *_args: pytest.fail("document status must not be mutated"),
+        "build_request_document_ingestion",
+        lambda *_args, **_kwargs: pytest.fail("admission must not start"),
     )
     monkeypatch.setattr(
         knowledge_endpoint,
-        "IngestionService",
-        lambda *_args, **_kwargs: pytest.fail("background service must not start"),
+        "_ensure_document_ingestion_schema_ready",
+        lambda *_args, **_kwargs: None,
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -326,7 +326,6 @@ async def test_process_rejects_other_users_connection_before_mutation(
             document_id=document.id,
             preview_request=_preview_request(connection_id),
             request=_request(),
-            background_tasks=BackgroundTasks(),
             x_organization_id=str(uuid.uuid4()),
             db=db_session,
             current_user=SimpleNamespace(id=actor_id),
@@ -482,6 +481,8 @@ async def test_process_normalizes_owned_connection_reference(
     monkeypatch,
 ) -> None:
     owner_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    knowledge_base_id = uuid.uuid4()
     connection_id = uuid.uuid4()
     _insert_user(db_session, owner_id)
     _insert_connection(
@@ -501,40 +502,53 @@ async def test_process_normalizes_owned_connection_reference(
             "ssh_auth_type": "password",
         }
     )
-    background_process = Mock()
-    ingestion_service = SimpleNamespace(process_document=background_process)
     reference_lock = Mock()
 
     class FakeConnectionLifecycleService:
         def __init__(self, db):
             assert db is db_session
 
-        def lock_owned_connection_and_document_for_reference(self, **kwargs):
+        def lock_owned_connection_for_reference(self, **kwargs):
             reference_lock(**kwargs)
 
-        def commit_reference_mutation(self):
-            db_session.commit()
+    captured_commands = []
+    captured_unit_of_work = []
+    job_id = uuid.uuid4()
+
+    class FakeUseCase:
+        def execute(self, command):
+            captured_commands.append(command)
+            return SimpleNamespace(
+                job=SimpleNamespace(job_id=job_id),
+                reused=False,
+                dispatch_deferred=False,
+            )
+
+    def build_use_case(_db, *, unit_of_work=None):
+        captured_unit_of_work.append(unit_of_work)
+        return FakeUseCase()
 
     monkeypatch.setattr(
         knowledge_endpoint,
         "_authorized_knowledge_document",
         lambda *args, **kwargs: (
             SimpleNamespace(
+                id=knowledge_base_id,
                 embedding_model="embedding-model",
-                organization_id=uuid.uuid4(),
+                organization_id=organization_id,
             ),
             document,
         ),
     )
     monkeypatch.setattr(
         knowledge_endpoint,
-        "mark_document_processing_queued",
-        lambda doc: setattr(doc, "status", "pending"),
+        "build_request_document_ingestion",
+        build_use_case,
     )
     monkeypatch.setattr(
         knowledge_endpoint,
-        "IngestionService",
-        Mock(return_value=ingestion_service),
+        "_ensure_document_ingestion_schema_ready",
+        lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
         knowledge_endpoint,
@@ -543,7 +557,7 @@ async def test_process_normalizes_owned_connection_reference(
     )
 
     response = await knowledge_endpoint.process_document.__wrapped__(
-        kb_id=uuid.uuid4(),
+        kb_id=knowledge_base_id,
         document_id=document.id,
         preview_request=_preview_request(
             connection_id,
@@ -564,7 +578,6 @@ async def test_process_normalizes_owned_connection_reference(
             },
         ),
         request=_request(),
-        background_tasks=BackgroundTasks(),
         x_organization_id=str(uuid.uuid4()),
         db=db_session,
         current_user=SimpleNamespace(id=owner_id),
@@ -574,10 +587,21 @@ async def test_process_normalizes_owned_connection_reference(
     reference_lock.assert_called_once_with(
         connection_id=connection_id,
         owner_id=owner_id,
-        document_id=document.id,
-        expected_document_updated_at=None,
     )
-    assert document.meta_info["connection_id"] == str(connection_id)
-    assert "connection_id" not in document.meta_info["db_config"]
-    serialized = repr(document.meta_info)
+    assert isinstance(captured_unit_of_work[0], FakeConnectionLifecycleService)
+    assert response["job_id"] == str(job_id)
+    assert len(captured_commands) == 1
+    settings = captured_commands[0].settings
+    assert settings.meta_updates["connection_id"] == str(connection_id)
+    assert "connection_id" not in settings.meta_updates["db_config"]
+    assert {
+        "database",
+        "port",
+        "type",
+        "use_ssh",
+        "ssh",
+        "ssh_port",
+        "ssh_auth_type",
+    }.issubset(settings.meta_remove_keys)
+    serialized = repr(settings.meta_updates)
     assert "must-not-be-stored" not in serialized

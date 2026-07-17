@@ -199,3 +199,7 @@ Return the appropriate apiVersion for NetworkPolicy
 {{- print "extensions/v1beta1" }}
 {{- end }}
 {{- end }}
+{{/* Shared claim used only when durable Knowledge workers consume LOCAL uploads. */}}
+{{- define "moduly.knowledgeUploadClaimName" -}}
+{{- default (printf "%s-knowledge-uploads" (include "moduly.fullname" .)) .Values.knowledgeWorker.localStorage.existingClaim -}}
+{{- end -}}

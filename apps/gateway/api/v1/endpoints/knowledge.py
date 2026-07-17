@@ -6,7 +6,6 @@ from uuid import UUID
 
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
     Header,
     HTTPException,
@@ -46,6 +45,22 @@ from apps.gateway.composition.knowledge_administration import (
 from apps.gateway.composition.knowledge_collection_sync import (
     build_knowledge_collection_sync_use_cases,
 )
+from apps.gateway.composition.knowledge_document_ingestion import (
+    build_read_document_ingestion_status,
+    build_redrive_document_ingestion,
+    build_request_document_ingestion,
+    build_request_knowledge_base_reindex,
+)
+from apps.gateway.application.knowledge_document_ingestion.use_cases import (
+    DocumentIngestionConflict,
+    DocumentIngestionHidden,
+    DocumentIngestionPersistenceFailed,
+    DocumentIngestionPolicyBlocked,
+    DocumentIngestionSettings,
+    RedriveDocumentIngestionCommand,
+    RequestDocumentIngestionCommand,
+    RequestKnowledgeBaseReindexCommand,
+)
 from apps.gateway.application.knowledge_collection_sync.use_cases import (
     CollectionSyncCommand,
     CollectionSyncHidden,
@@ -61,13 +76,11 @@ from apps.gateway.services.ingestion.service import (
     IngestionPreviewSourceError,
     IngestionOrchestrator as IngestionService,
     finalize_stale_processing_start,
-    mark_document_processing_queued,
     recover_timed_out_document_with_artifacts,
 )
 from apps.gateway.services.knowledge_candidate_resolver import KnowledgeCandidateResolver
 from apps.gateway.services.connection_lifecycle_service import (
     ConnectionLifecycleBusy,
-    ConnectionLifecycleConflict,
     ConnectionLifecycleHidden,
     ConnectionLifecycleService,
     ConnectionLifecycleUnavailable,
@@ -91,6 +104,10 @@ from apps.gateway.services.knowledge_db_source_config import (
     ValidatedKnowledgeDbSourceConfig,
     remove_legacy_connection_details,
     validate_knowledge_db_source_config,
+)
+from apps.gateway.services.knowledge_document_ingestion_readiness import (
+    KnowledgeDocumentIngestionUnavailable,
+    require_knowledge_document_ingestion_schema,
 )
 from apps.gateway.services.knowledge_document_projection import (
     project_safe_document_error,
@@ -186,6 +203,9 @@ from apps.shared.services.knowledge_schema_readiness import (
     table_has_column,
 )
 from apps.shared.services.knowledge_safe_text import sanitize_kb_safe_metadata
+from apps.shared.services.knowledge_document_ingestion_projection import (
+    project_safe_ingestion_job,
+)
 from apps.shared.domain.knowledge_collection_sync import (
     progress_category,
     safe_reason_code,
@@ -260,6 +280,61 @@ def _chunking_http_exception(exc: RAGHierarchyError) -> HTTPException:
         status_code=exc.status_code,
         detail={"reason": exc.reason, "message": exc.message},
     )
+
+
+def _raise_document_ingestion_error(request: Request, exc: Exception) -> None:
+    if isinstance(exc, DocumentIngestionHidden):
+        raise_api_error(
+            request,
+            404,
+            "resource.hidden",
+            "Knowledge document not found.",
+        )
+    if isinstance(exc, DocumentIngestionConflict):
+        raise_api_error(
+            request,
+            409,
+            "ingestion.already_in_progress",
+            "Another document ingestion intent is already in progress.",
+        )
+    if isinstance(exc, DocumentIngestionPolicyBlocked):
+        raise_api_error(
+            request,
+            409,
+            exc.reason_code,
+            "Document ingestion is not available for the current resource state.",
+        )
+    if isinstance(exc, DocumentIngestionPersistenceFailed):
+        if exc.reason_code in {
+            "connection.reference_busy",
+            "connection.reference_unavailable",
+        }:
+            raise_api_error(
+                request,
+                503,
+                exc.reason_code,
+                "The DB connection reference is temporarily unavailable.",
+            )
+        raise_api_error(
+            request,
+            503,
+            "ingestion.admission_unavailable",
+            "Document ingestion is temporarily unavailable.",
+        )
+    raise exc
+
+
+def _ensure_document_ingestion_schema_ready(db: Session, request: Request) -> None:
+    try:
+        require_knowledge_document_ingestion_schema(db)
+    except KnowledgeDocumentIngestionUnavailable as exc:
+        raise_api_error(
+            request,
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "knowledge.ingestion_schema_not_ready",
+            "Knowledge document ingestion is temporarily unavailable.",
+            {"reason": exc.reason_code},
+        )
 
 
 def _knowledge_collection_service(
@@ -1884,7 +1959,6 @@ def update_knowledge_base(
     kb_id: UUID,
     update_data: KnowledgeUpdate,
     request: Request,
-    background_tasks: BackgroundTasks,
     x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -1912,28 +1986,37 @@ def update_knowledge_base(
     except (KnowledgeResourceHidden, KnowledgePermissionDenied) as exc:
         _raise_knowledge_authorization_error(request, exc)
 
+    embedding_model_changed = (
+        update_data.embedding_model is not None
+        and update_data.embedding_model != kb.embedding_model
+    )
+    if embedding_model_changed:
+        _ensure_document_ingestion_schema_ready(db, request)
+
     if update_data.name is not None:
         kb.name = update_data.name
     if update_data.description is not None:
         kb.description = update_data.description
     # 임베딩 모델 변경 및 재인덱싱 트리거
-    if (
-        update_data.embedding_model is not None
-        and update_data.embedding_model != kb.embedding_model
-    ):
-        kb.embedding_model = update_data.embedding_model
-
-        # 재인덱싱 트리거
-        orchestrator = IngestionService(
-            db,
-            current_user.id,
-            organization_id=organization_id,
-        )
-        background_tasks.add_task(
-            orchestrator.reindex_knowledge_base, kb.id, update_data.embedding_model
-        )
-
-    db.commit()
+    if embedding_model_changed:
+        try:
+            build_request_knowledge_base_reindex(db).execute(
+                RequestKnowledgeBaseReindexCommand(
+                    actor_id=current_user.id,
+                    organization_id=organization_id,
+                    knowledge_base_id=kb.id,
+                    embedding_model=update_data.embedding_model,
+                )
+            )
+        except (
+            DocumentIngestionHidden,
+            DocumentIngestionConflict,
+            DocumentIngestionPolicyBlocked,
+            DocumentIngestionPersistenceFailed,
+        ) as exc:
+            _raise_document_ingestion_error(request, exc)
+    else:
+        db.commit()
     db.refresh(kb)
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -2118,6 +2201,9 @@ def get_document(
         current_user,
     )
 
+    if doc.status in {"indexing", "processing"}:
+        _ensure_document_ingestion_schema_ready(db, request)
+
     if finalize_stale_processing_start(
         db,
         doc.id,
@@ -2136,6 +2222,94 @@ def get_document(
         source_type=doc.source_type,
         meta_info=project_safe_document_metadata(doc.meta_info),
     )
+
+
+@router.get("/{kb_id}/documents/{document_id}/ingestion")
+def get_document_ingestion_status(
+    kb_id: UUID,
+    document_id: UUID,
+    request: Request,
+    response: Response,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    response.headers["Cache-Control"] = "no-store"
+    _authorized_knowledge_document(
+        kb_id,
+        document_id,
+        "read",
+        request,
+        x_organization_id,
+        db,
+        current_user,
+    )
+    _ensure_document_ingestion_schema_ready(db, request)
+    job = build_read_document_ingestion_status(db).execute(document_id)
+    return {"job": project_safe_ingestion_job(job)}
+
+
+@router.post(
+    "/{kb_id}/documents/{document_id}/ingestion/retry",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+@audit(AuditAction.DOCUMENT_PROCESS, target_param="document_id")
+def retry_document_ingestion(
+    kb_id: UUID,
+    document_id: UUID,
+    request: Request,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _authorized_knowledge_document(
+        kb_id,
+        document_id,
+        "read",
+        request,
+        x_organization_id,
+        db,
+        current_user,
+    )
+    _ensure_document_ingestion_schema_ready(db, request)
+    latest_job = build_read_document_ingestion_status(db).execute(document_id)
+    domain_action = (
+        "sync_manage"
+        if latest_job is not None and latest_job.operation == "sync"
+        else None
+    )
+    kb, _ = _authorized_knowledge_document(
+        kb_id,
+        document_id,
+        "write",
+        request,
+        x_organization_id,
+        db,
+        current_user,
+        domain_action=domain_action,
+    )
+    try:
+        result = build_redrive_document_ingestion(db).execute(
+            RedriveDocumentIngestionCommand(
+                actor_id=current_user.id,
+                organization_id=kb.organization_id,
+                knowledge_base_id=kb.id,
+                document_id=document_id,
+                expected_job_id=(latest_job.job_id if latest_job is not None else None),
+            )
+        )
+    except (
+        DocumentIngestionHidden,
+        DocumentIngestionConflict,
+        DocumentIngestionPolicyBlocked,
+        DocumentIngestionPersistenceFailed,
+    ) as exc:
+        _raise_document_ingestion_error(request, exc)
+    return {
+        "status": "processing",
+        "job": project_safe_ingestion_job(result.job),
+        "dispatch_deferred": result.dispatch_deferred,
+    }
 
 
 @router.get(
@@ -2217,11 +2391,9 @@ def _lock_db_connection_reference(
 
     lifecycle_service = ConnectionLifecycleService(db)
     try:
-        lifecycle_service.lock_owned_connection_and_document_for_reference(
+        lifecycle_service.lock_owned_connection_for_reference(
             connection_id=connection_id,
             owner_id=owner_id,
-            document_id=document.id,
-            expected_document_updated_at=document.updated_at,
         )
     except ConnectionLifecycleHidden:
         db.rollback()
@@ -2238,14 +2410,6 @@ def _lock_db_connection_reference(
             503,
             "connection.reference_busy",
             "The DB connection reference is temporarily busy.",
-        )
-    except ConnectionLifecycleConflict:
-        db.rollback()
-        raise_api_error(
-            request,
-            409,
-            "connection.reference_conflict",
-            "The DB connection reference changed concurrently.",
         )
     except ConnectionLifecycleUnavailable:
         db.rollback()
@@ -2289,7 +2453,6 @@ async def process_document(
     document_id: UUID,
     preview_request: DocumentPreviewRequest,
     request: Request,
-    background_tasks: BackgroundTasks,
     x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -2308,6 +2471,7 @@ async def process_document(
         db,
         current_user,
     )
+    _ensure_document_ingestion_schema_ready(db, request)
 
     try:
         normalized_chunking_mode = validate_chunking_request(
@@ -2318,6 +2482,7 @@ async def process_document(
     except RAGHierarchyError as exc:
         raise _chunking_http_exception(exc)
 
+    expected_document_updated_at = doc.updated_at
     validated_db_config = None
     connection_reference_lifecycle = None
     if doc.source_type == "DB":
@@ -2342,58 +2507,70 @@ async def process_document(
             db_config=validated_db_config.runtime_config,
         )
 
-    # 2. 설정 업데이트
-    doc.chunk_size = preview_request.chunk_size
-    doc.chunk_overlap = preview_request.chunk_overlap
-
-    # 메타데이터에 추가 설정 저장
-    new_meta = dict(doc.meta_info or {})
-    new_meta.update(
-        {
-            "segment_identifier": preview_request.segment_identifier,
-            "remove_urls_emails": preview_request.remove_urls_emails,
-            "remove_whitespace": preview_request.remove_whitespace,
-            "strategy": preview_request.strategy,  # LlamaParse 등 파싱 전략 저장
-            "chunking_mode": normalized_chunking_mode,
-            "db_config": (
-                validated_db_config.persisted_db_config
-                if validated_db_config is not None
-                else preview_request.db_config
-            ),
-            # 필터링 설정 저장
-            "selection_mode": preview_request.selection_mode,
-            "chunk_range": preview_request.chunk_range,
-            "keyword_filter": preview_request.keyword_filter,
-        }
-    )
+    meta_updates = {
+        "segment_identifier": preview_request.segment_identifier,
+        "remove_urls_emails": preview_request.remove_urls_emails,
+        "remove_whitespace": preview_request.remove_whitespace,
+        "strategy": preview_request.strategy,
+        "chunking_mode": normalized_chunking_mode,
+        "db_config": (
+            validated_db_config.persisted_db_config
+            if validated_db_config is not None
+            else preview_request.db_config
+        ),
+        "selection_mode": preview_request.selection_mode,
+        "chunk_range": preview_request.chunk_range,
+        "keyword_filter": preview_request.keyword_filter,
+    }
+    meta_remove_keys: tuple[str, ...] = ()
     if validated_db_config is not None:
-        new_meta["connection_id"] = str(validated_db_config.connection_id)
-        remove_legacy_connection_details(new_meta)
-    doc.meta_info = new_meta
+        meta_updates["connection_id"] = str(validated_db_config.connection_id)
+        current_meta = dict(doc.meta_info or {})
+        sanitized_current_meta = dict(current_meta)
+        remove_legacy_connection_details(sanitized_current_meta)
+        meta_remove_keys = tuple(
+            sorted(set(current_meta).difference(sanitized_current_meta))
+        )
 
-    # 상태 업데이트 (처리 시작 전)
-    mark_document_processing_queued(doc)
-    if connection_reference_lifecycle is None:
-        db.commit()
-    else:
-        _commit_db_connection_reference(request, connection_reference_lifecycle)
+    try:
+        result = build_request_document_ingestion(
+            db,
+            unit_of_work=connection_reference_lifecycle,
+        ).execute(
+            RequestDocumentIngestionCommand(
+                actor_id=current_user.id,
+                organization_id=kb.organization_id,
+                knowledge_base_id=kb.id,
+                document_id=document_id,
+                operation="process",
+                settings=DocumentIngestionSettings(
+                    chunk_size=preview_request.chunk_size,
+                    chunk_overlap=preview_request.chunk_overlap,
+                    embedding_model=kb.embedding_model,
+                    meta_updates=meta_updates,
+                    meta_remove_keys=meta_remove_keys,
+                ),
+                expected_document_updated_at=expected_document_updated_at,
+                require_document_revision_match=(
+                    connection_reference_lifecycle is not None
+                ),
+            )
+        )
+    except (
+        DocumentIngestionHidden,
+        DocumentIngestionConflict,
+        DocumentIngestionPolicyBlocked,
+        DocumentIngestionPersistenceFailed,
+    ) as exc:
+        _raise_document_ingestion_error(request, exc)
 
-    # 3. 백그라운드 작업 시작
-    ingestion_service = IngestionService(
-        db,
-        user_id=current_user.id,
-        organization_id=kb.organization_id,
-        chunk_size=preview_request.chunk_size,
-        chunk_overlap=preview_request.chunk_overlap,
-        ai_model=kb.embedding_model,
-    )
-
-    background_tasks.add_task(
-        ingestion_service.process_document,
-        document_id,
-    )
-
-    return {"status": "processing", "message": "Document processing started"}
+    return {
+        "status": "processing",
+        "message": "Document processing started",
+        "job_id": str(result.job.job_id),
+        "reused": result.reused,
+        "dispatch_deferred": result.dispatch_deferred,
+    }
 
 
 @router.post(
@@ -2525,7 +2702,6 @@ async def sync_document(
     kb_id: UUID,
     document_id: UUID,
     request: Request,
-    background_tasks: BackgroundTasks,
     x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -2545,24 +2721,53 @@ async def sync_document(
         current_user,
         domain_action="sync_manage",
     )
+    _ensure_document_ingestion_schema_ready(db, request)
 
-    # 상태 업데이트
-    mark_document_processing_queued(doc)
-    db.commit()
+    expected_document_updated_at = doc.updated_at
+    connection_reference_lifecycle = None
+    if str(getattr(doc.source_type, "value", doc.source_type)) == "DB":
+        connection_reference_lifecycle = _lock_db_connection_reference(
+            request,
+            db,
+            document=doc,
+            owner_id=current_user.id,
+            db_config={
+                "connection_id": dict(doc.meta_info or {}).get("connection_id")
+            },
+        )
 
-    # 2. 백그라운드 작업 시작
-    ingestion_service = IngestionService(
-        db,
-        user_id=current_user.id,
-        organization_id=kb.organization_id,
-        chunk_size=doc.chunk_size,
-        chunk_overlap=doc.chunk_overlap,
-        ai_model=kb.embedding_model,
-    )
+    try:
+        result = build_request_document_ingestion(
+            db,
+            unit_of_work=connection_reference_lifecycle,
+        ).execute(
+            RequestDocumentIngestionCommand(
+                actor_id=current_user.id,
+                organization_id=kb.organization_id,
+                knowledge_base_id=kb.id,
+                document_id=document_id,
+                operation="sync",
+                settings=DocumentIngestionSettings(
+                    embedding_model=kb.embedding_model,
+                ),
+                expected_document_updated_at=expected_document_updated_at,
+                require_document_revision_match=(
+                    connection_reference_lifecycle is not None
+                ),
+            )
+        )
+    except (
+        DocumentIngestionHidden,
+        DocumentIngestionConflict,
+        DocumentIngestionPolicyBlocked,
+        DocumentIngestionPersistenceFailed,
+    ) as exc:
+        _raise_document_ingestion_error(request, exc)
 
-    background_tasks.add_task(
-        ingestion_service.process_document,
-        document_id,
-    )
-
-    return {"status": "processing", "message": "Document sync started"}
+    return {
+        "status": "processing",
+        "message": "Document sync started",
+        "job_id": str(result.job.job_id),
+        "reused": result.reused,
+        "dispatch_deferred": result.dispatch_deferred,
+    }

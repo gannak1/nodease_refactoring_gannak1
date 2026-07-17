@@ -46,6 +46,65 @@ def _request() -> Request:
     return request
 
 
+def test_confirm_reuses_active_resume_after_document_status_changes(monkeypatch):
+    organization_id = uuid.uuid4()
+    knowledge_base_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+    job_id = uuid.uuid4()
+    captured = {}
+
+    monkeypatch.setattr(
+        rag,
+        "parse_organization_id",
+        lambda *_args, **_kwargs: organization_id,
+    )
+    monkeypatch.setattr(
+        rag,
+        "_authorize_knowledge_document_action",
+        lambda *_args, **_kwargs: (
+            SimpleNamespace(
+                id=knowledge_base_id,
+                embedding_model="text-embedding-3-small",
+            ),
+            SimpleNamespace(id=document_id, status="indexing"),
+        ),
+    )
+    monkeypatch.setattr(
+        rag,
+        "_ensure_document_ingestion_schema_ready",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def execute(command):
+        captured["command"] = command
+        return SimpleNamespace(
+            job=SimpleNamespace(job_id=job_id),
+            reused=True,
+            dispatch_deferred=False,
+        )
+
+    monkeypatch.setattr(
+        rag,
+        "build_request_document_ingestion",
+        lambda _db: SimpleNamespace(execute=execute),
+    )
+
+    response = asyncio.run(
+        rag.confirm_document_parsing(
+            document_id=document_id,
+            request=_request(),
+            strategy="general",
+            x_organization_id=str(organization_id),
+            db=object(),
+            current_user=SimpleNamespace(id=uuid.uuid4()),
+        )
+    )
+
+    assert response["job_id"] == str(job_id)
+    assert response["reused"] is True
+    assert captured["command"].required_document_status == "waiting_for_approval"
+
+
 def test_search_requires_knowledge_base_id():
     with pytest.raises(HTTPException) as exc:
         rag._require_search_knowledge_base_id(_request(), SearchQuery(query="policy"))
@@ -208,6 +267,11 @@ def test_document_progress_authorizes_read_before_opening_stream(monkeypatch):
         )
 
     monkeypatch.setattr(rag, "_authorize_knowledge_document_action", authorize)
+    monkeypatch.setattr(
+        rag,
+        "_ensure_document_ingestion_schema_ready",
+        lambda *_args, **_kwargs: None,
+    )
 
     response = asyncio.run(
         rag.get_document_progress(
@@ -254,6 +318,48 @@ def test_document_progress_denial_prevents_stream_creation(monkeypatch):
     assert exc.value is denial
 
 
+def test_document_progress_maps_unready_ingestion_schema_after_authorization(
+    monkeypatch,
+):
+    events = []
+
+    monkeypatch.setattr(
+        rag,
+        "_authorize_knowledge_document_action",
+        lambda *_args, **_kwargs: events.append("authorized"),
+    )
+
+    def reject_schema(_db, _request):
+        events.append("schema")
+        rag.raise_api_error(
+            _request,
+            503,
+            "knowledge.ingestion_schema_not_ready",
+            "Knowledge document ingestion is temporarily unavailable.",
+            {"reason": "knowledge.ingestion_table_missing"},
+        )
+
+    monkeypatch.setattr(rag, "_ensure_document_ingestion_schema_ready", reject_schema)
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            rag.get_document_progress(
+                uuid.uuid4(),
+                _request(),
+                uuid.uuid4(),
+                db=object(),
+                current_user=SimpleNamespace(id=uuid.uuid4()),
+            )
+        )
+
+    assert events == ["authorized", "schema"]
+    assert exc_info.value.status_code == 503
+    assert (
+        exc_info.value.detail["error"]["code"]
+        == "knowledge.ingestion_schema_not_ready"
+    )
+
+
 def test_document_progress_uses_fixed_messages_and_sleeps_after_bad_redis_value(
     monkeypatch,
 ):
@@ -285,8 +391,13 @@ def test_document_progress_uses_fixed_messages_and_sleeps_after_bad_redis_value(
         def expire_all(self):
             pass
 
-        def query(self, _model):
+        def query(self, model):
+            assert model is rag.Document
             return ProgressQuery()
+
+    class ReadStatus:
+        def execute(self, _document_id):
+            return None
 
     class InvalidProgressRedis:
         def get(self, _key):
@@ -299,6 +410,16 @@ def test_document_progress_uses_fixed_messages_and_sleeps_after_bad_redis_value(
         rag,
         "_authorize_knowledge_document_action",
         lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        rag,
+        "_ensure_document_ingestion_schema_ready",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        rag,
+        "build_read_document_ingestion_status",
+        lambda _db: ReadStatus(),
     )
     monkeypatch.setattr(
         rag,
@@ -341,12 +462,14 @@ def test_document_progress_uses_fixed_messages_and_sleeps_after_bad_redis_value(
         "message": "Document processing is in progress.",
         "status": "processing",
         "error": None,
+        "ingestion_job": None,
     }
     assert second_payload == {
         "progress": 0,
         "message": "Document processing failed. You can retry the document.",
         "status": "failed",
         "error": "Document processing failed. You can retry the document.",
+        "ingestion_job": None,
     }
     serialized = first_event + second_event
     assert "legacy-internal-exception-marker" not in serialized

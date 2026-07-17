@@ -96,6 +96,23 @@ gateway:
     SANDBOX_URL: "http://localhost:8194"  # Port-forward sandbox
     NODE_ENV: "development"
 
+knowledgeWorker:
+  enabled: true
+  replicaCount: 1
+  concurrency: 1
+  localStorage:
+    enabled: true
+    size: 2Gi
+    accessModes:
+      - ReadWriteOnce
+  resources:
+    limits:
+      cpu: 500m
+      memory: 768Mi
+    requests:
+      cpu: 100m
+      memory: 192Mi
+
 worker:
   replicaCount: 1  # Single replica for local
   resources:

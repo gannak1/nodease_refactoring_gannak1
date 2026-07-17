@@ -130,6 +130,62 @@ services:
       start_period: 30s
       retries: 3
 
+  # Knowledge document ingestion (Celery Worker)
+  knowledge_worker:
+    build:
+      context: ..
+      dockerfile: docker/gateway/Dockerfile
+    container_name: moduly-knowledge-worker
+    entrypoint:
+      - celery
+      - -A
+      - apps.gateway.knowledge_worker:app
+      - worker
+      - --loglevel=info
+      - --queues=knowledge
+      - --concurrency=2
+      - --prefetch-multiplier=1
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: admin
+      DB_PASSWORD: admin123
+      DB_NAME: moduly_local
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: 0
+      REDIS_PASSWORD: ""
+      REDIS_URL: redis://redis:6379/0
+      REDIS_BROKER_DB: 0
+      REDIS_BACKEND_DB: 1
+      MASTER_KEY: ${MASTER_KEY:-}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      STORAGE_TYPE: ${STORAGE_TYPE:-LOCAL}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_REGION: ${AWS_REGION:-ap-northeast-2}
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME:-}
+      CONNECTOR_TEST_ALLOWED_PORTS: "${CONNECTOR_TEST_ALLOWED_PORTS:-5432}"
+      HTTP_PROXY: http://proxy:3128
+      HTTPS_PROXY: http://proxy:3128
+      NO_PROXY: "localhost,127.0.0.1,postgres,redis,proxy"
+      PYTHONUNBUFFERED: 1
+      PYTHONPATH: /app
+    depends_on:
+      gateway:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - gateway_uploads:/app/uploads
+    networks:
+      - moduly-network
+    healthcheck:
+      disable: true
+
   # Workflow Engine (Celery Worker)
   workflow_engine:
     build:

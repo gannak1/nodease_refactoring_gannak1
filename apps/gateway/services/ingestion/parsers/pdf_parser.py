@@ -133,8 +133,11 @@ class PdfParser(BaseParser):
                     {"text": text_content, "page": page_number}
                 )
             return results
-        except Exception as e:
-            logger.error(f"[PdfParser] PyMuPDF failed: {e}")
+        except Exception as exc:
+            logger.error(
+                "[PdfParser] PyMuPDF failed: error_type=%s",
+                type(exc).__name__,
+            )
             return self._parse_with_fitz_fallback(file_path)
 
     def _parse_with_fitz_fallback(self, file_path: str) -> List[Dict[str, Any]]:
@@ -148,8 +151,11 @@ class PdfParser(BaseParser):
                 if len(text.strip()) > 5:
                     results.append({"text": text, "page": i + 1})
             return results
-        except Exception as e:
-            logger.error(f"[PdfParser] Basic fitz extraction failed: {e}")
+        except Exception as exc:
+            logger.error(
+                "[PdfParser] Basic fitz extraction failed: error_type=%s",
+                type(exc).__name__,
+            )
             return []
 
     def _parse_with_llamaparse(

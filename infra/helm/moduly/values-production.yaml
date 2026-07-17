@@ -88,6 +88,13 @@ gateway:
     annotations:
       eks.amazonaws.com/role-arn: "arn:aws:iam::912894834396:role/moduly-gateway-role"
 
+# Migration-first rollout gate. Set enabled=true only after the release's
+# Knowledge ingestion migration is visible to every worker pod.
+knowledgeWorker:
+  enabled: false
+  replicaCount: 2
+  concurrency: 2
+
 # Worker (Workflow Engine)
 worker:
   enabled: true
