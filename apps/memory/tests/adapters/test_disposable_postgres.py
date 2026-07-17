@@ -75,7 +75,7 @@ ROOT_DIR = Path(__file__).resolve().parents[4]
 RUN_ENV = "NODEASE_RUN_DISPOSABLE_DB_TEST"
 DB_PREFIX = "mbased_memory"
 PARENT_REVISION = "aa0b1c2d3e4f"
-MEMORY_REVISION = "ab1c2d3e4f50"
+CURRENT_HEAD_REVISION = "head"
 
 
 def _run_alembic(
@@ -375,7 +375,7 @@ def test_memory_migration_uow_and_concurrent_start_turn_contracts():
         try:
             ids = _seed_legacy_execution(engine)
             _run_alembic(
-                MEMORY_REVISION,
+                CURRENT_HEAD_REVISION,
                 operation="upgrade",
                 database=database,
                 config=config,
