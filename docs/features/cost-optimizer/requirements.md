@@ -10,16 +10,36 @@ Cost Optimizer는 workflow 안의 LLM 노드 비용을 줄이기 위한 기능�
 
 ## Current Routing Decision
 
-FR-011 자동 모델 라우팅의 현재 제품 계약은 `prior_guided_adaptive_v1`이다. 입력 문장을 embedding해 입력군과 비교하는 semantic cohort 방식은 폐기되었으며, 입력군 생성·수정·마법사·예문·유사도 임계값·입력군별 Replay 검증은 제품 동작에 포함하지 않는다.
+FR-011의 현재 제품 계약은 `bootstrap_mdeberta_difficulty_v1`이다. 이 계약은
+[ADR-0045](../../decisions/ADR-0045-bootstrap-difficulty-routing-policy.md)를 따른다.
+새 workflow도 "검증된 후보가 없어서 routing을 시작할 수 없는" 상태에 머물지 않게,
+자동 라우팅을 켤 때 먼저 작업 난이도 분류기를 만든다.
 
-정책 갱신은 실행 주체가 사용할 수 있는 모델 중에서 다음 사전 지식과 안전한 운영 집계를 사용한다.
+| 동일 작업 지문의 성공 운영 로그 | 초기 표본 | 정책 출처 |
+| --- | --- | --- |
+| 0건 | Planner가 만든 실행 가능한 합성 JSON payload | `synthetic` |
+| 1~11건 | 가림 처리한 운영 표본과 부족한 범위의 합성 payload | `hybrid` |
+| 12건 이상 | 최대 24개 대표 운영 표본 | `history` |
 
-- 모델 가격, context window, structured output 지원 여부와 capability tier
-- 노드의 출력 형식, JSON schema 필요 여부, RAG 사용 여부와 예상 입력 길이
-- 모델별 성공률, schema 통과율, downstream 성공률, fallback 비율
-- 짧은 입력, 보통 입력, 긴 입력의 일반 profile
+작업 지문은 prompt, 입력 매핑, 출력 schema, RAG/retrieval 설정, downstream 계약을 포함한다.
+수동 모델, fallback 모델, 자동 라우팅 ON/OFF 값은 포함하지 않는다. 따라서 수동 모델만
+바뀐 경우에는 bootstrap을 재사용할 수 있지만, 실제 작업을 바꾸는 prompt/RAG/schema/downstream
+변경은 bootstrap을 오래됨 상태로 만들고 다시 생성을 요구한다.
 
-런타임은 저장된 active policy의 일반 조건만 평가하며 embedding이나 Judge LLM을 호출하지 않는다. 기존 입력군 DB table과 과거 실험 문서는 migration 및 이력 호환을 위해 남을 수 있지만 신규 UI/API/runtime의 source of truth가 아니다.
+초기 생성은 경제형·균형형·고성능형 난이도별 payload를 3~8개(기본 5개) 만든다. Planner
+비용은 사용자가 정한 1회 초기 생성 예산($0.50~$10, 기본 $1)에서만 사용한다. 배포 후
+후보 replay 비용은 월간 재검증 예산에서 별도로 차감한다.
+
+일반 실행은 현재 입력과 노드의 구조 조건을 mDeBERTa 난이도 분류기에 넣고, confidence가 충분하면
+난이도별 모델을 선택한다. 분류기는 공유 mDeBERTa encoder가 만든 표현 위에서 해당 노드의 bootstrap
+표본으로 학습한 작은 softmax head를 사용한다. 즉 새 정책은 가장 가까운 예문을 찾는 E5 prototype
+방식이 아니라 경제형·균형형·고성능형 확률과 0~100 난이도 점수를 계산한다. confidence가 낮으면
+사용자가 고른 기본 모델을 사용하고, provider 호출이 실패한 경우에만 기본 대체 모델을 시도한다.
+실행마다 Planner/Judge LLM을 호출하지 않는다.
+
+배포 후 성공 운영 실행이 설정 주기만큼 쌓이면 제한된 replay로 모델별 품질·비용·지연을
+재평가한다. 품질 gate를 통과한 경우에만 난이도별 모델을 교체하며, 통과 후보가 없으면 기존
+정책을 유지한다. Canary와 Shadow는 이번 범위에 포함하지 않는다.
 
 이 기능의 첫 번째 목표는 workflow 전체를 A/B 테스트하는 것이 아니라, 사용자가 선택한 특정 LLM 노드 하나에 대해 현재 설정과 후보 설정을 같은 입력 기준으로 비교할 수 있게 하는 것이다.
 
@@ -99,7 +119,7 @@ Functional Requirement 상태는 다음 기준으로 구분한다.
 | FR-008 | 후보 적용 | P1 | `구현 완료` | `테스트 통과` | 사용자가 성공한 B 후보 설정 전체를 현재 target LLM node draft에 적용한다. downstream warning 확인과 schema 실패 후보 차단을 제공한다. draft conflict 처리는 후속 보강 대상이다. |
 | FR-009 | 비용 기록 | P1 | `구현 완료` | `테스트 통과` | 결과 분석 화면은 A/B 비용, prompt/completion/total token, latency를 표시한다. 비교 실행은 전용 experiment/candidate row로 저장되고 usage row가 candidate를 직접 참조한다. 과거 결과 재조회 API와 trace metadata retention 기준 정리를 제공한다. |
 | FR-010 | 권한 | P1 | `구현 완료` | `UI/API 권한 기반 구현, 테스트 통과` | A/B 테스트와 후보 적용은 builder 이상 권한이 있는 사용자만 수행한다. compare/apply/history API와 모델/Knowledge 후보 사용 가능성 검증이 적용됐다. |
-| FR-011 | Prior-Guided Adaptive Routing | P1 | `구현 완료` | `입력군 UI/API/runtime 제거, 모델 catalog·운영 집계 기반 short/medium/long 정책 생성, active policy runtime 평가와 trace 구현` | 실행 주체가 사용할 수 있는 모델의 capability·가격·context·structured output 지원과 운영 성공/schema/downstream/fallback 집계로 입력 길이 profile별 모델을 선택한다. Runtime은 저장 policy만 평가하고 embedding/Judge를 호출하지 않는다. |
+| FR-011 | Bootstrap 난이도 자동 모델 라우팅 | P1 | `진행중` | `초기 artifact·Planner·mDeBERTa runtime·초안 UI 구현, 배포 후 replay 재평가 연결 보강 필요` | 운영 로그가 없거나 부족해도 작업 지문과 안전한 표본으로 난이도 분류기를 만들고, 첫 배포 실행부터 경제형·균형형·고성능형 모델을 선택한다. |
 | FR-012 | LLM 파라미터 추천 룰셋 | P2 | `진행중` | `서비스/API/UI 일부 구현` | 운영 로그 기반 추천 API와 추천 모달이 있다. 모델 라우팅 enable/refresh 같은 `direct_policy_update`는 즉시 적용 가능하고, 일반 파라미터/RAG 조정은 A/B 후보 실험으로 검증한다. |
 | FR-013 | Cost Optimizer 후보 검증 및 출력 품질 평가 | P1 | `구현 완료` | `추천 빠른 검증·일반 compare quality judge·이력 저장·결과 분석 UI 및 targeted test 통과` | 추천 모달과 일반 비교 분석 테스트에서 동일 입력의 A/B 출력을 평가해 비용·속도·token·품질 점수·JSON schema·downstream 호환성을 보여주고, 같은 결과를 적용하거나 다시 조회한다. |
 | FR-014 | 배포별 자동 파라미터 최적화 | P2 | `진행중` | `배포 설정·운영 수집·상태/예산 UI 구현` | 배포 시 선택한 LLM 노드의 운영 실행을 수집하고, 점검 주기와 월간 검증 예산을 분리해 관리한다. 모델 라우팅·모델 선택·프롬프트 변경은 포함하지 않는다. |
@@ -420,7 +440,68 @@ Cost Optimizer의 A/B 테스트는 단순 실행 기능이 아니라, LLM 노드
 
 현재 Gateway의 Cost Optimizer availability, baseline 조회, experiment history, compare, apply API는 workflow `write` 권한을 요구한다. 프론트 진입 액션은 builder 미만 사용자에게 비활성화 상태와 권한 부족 안내를 제공한다. compare/apply API는 선택한 모델 후보가 현재 사용자의 사용 가능 모델 목록에 있는지 확인하고, Knowledge Base 후보가 현재 organization/workflow scope에서 `use` 가능한지 다시 검증한다.
 
-### FR-011. Prior-Guided Adaptive Routing
+### FR-011. Bootstrap 난이도 자동 모델 라우팅
+
+자동 모델 라우팅을 켠 빌더는 중앙 LLM 설정 패널에서 작업 설명, 기본 모델, 기본 대체 모델,
+1회 초기 생성 예산, 배포 후 재평가 주기와 월간 재검증 예산을 설정할 수 있어야 한다.
+`자동 선택 기준 만들기`는 초안 단계에서도 실행할 수 있으며, 생성이 끝난 뒤 첫 배포 실행부터
+저장된 bootstrap policy로 모델을 선택해야 한다.
+
+초기 bootstrap은 같은 작업 지문의 성공한 **배포 후 운영** node run만 사용한다. 에디터 테스트,
+실패 실행, 안전 요약을 만들 수 없는 trace, 다른 작업 지문의 과거 실행은 학습 표본에서 제외한다.
+과거 로그가 한 모델로만 실행됐더라도 그 모델의 품질 우위로 표시하지 않는다. 로그는 요청 난이도
+학습 재료이며, 모델별 품질 증거는 배포 후 replay 재평가의 책임이다.
+
+Planner는 다음 정보를 읽어 표본을 만들거나 라벨링한다.
+
+- 시스템·사용자·어시스턴트 prompt와 입력 변수/매핑
+- 출력 형식과 JSON Schema
+- RAG/Knowledge Base 및 retrieval 설정
+- 후속 node가 요구하는 출력 계약
+- 사용자가 입력한 작업 설명
+
+RAG를 사용하는 node의 합성 표본에는 단일 문서 근거 확인, 여러 문서 종합, 상충하는 근거 판단,
+근거 없음 안전 응답을 가능한 범위에서 포함해야 한다. 모든 난이도에 의미 있는 요청이 없으면 억지로
+세 구간을 만들지 않고, 생략한 난이도와 이유를 Inspector에 표시한다.
+
+bootstrap artifact와 sample row에는 원문 입력, prompt 원문, credential, KB 원문을 저장하지 않는다.
+가림 처리한 입력 shape/길이/출력 형식/RAG 여부, feature hash, 출처, 난이도 label과 안전한 이유만
+저장한다. 초기 생성 중 Planner 호출이 실패하면 artifact는 `failed`가 되고 기존 수동 모델 실행은
+막지 않는다.
+
+runtime trace는 policy version, 선택 난이도, 난이도 확률, 0~100 난이도 점수, confidence, 선택 모델, 기본 모델,
+fallback 계획/실제 사용 여부, `judge_called=false`를 남긴다. 화면은 이 safe trace를 사용해
+"왜 이 모델이 선택됐는지"를 보여준다.
+
+#### 전역 모델 프로필과 노드별 운영 성적
+
+난이도 분류기는 `경제형/균형형/고성능형` 확률만 만든다. 모델 선택기는 이 확률에 대해
+실행 주체가 사용할 수 있는 **모든** 채팅 모델을 점수화한다. 가격순 첫·중간·마지막 모델을
+고정해 쓰지 않는다.
+
+- 전역 모델 프로필은 모델별 난이도별 예상 품질·불확실성, 입력 길이별 예상 지연 시간,
+  fallback 비율, profile 출처와 버전을 보관하는 공통 초기 지식이다.
+- 배포 후 운영 성적은 `(policy_id, model_id, input_profile)` 단위로 성공, schema,
+  downstream, fallback, 비용, token, 지연 시간을 누적한다. 에디터 테스트와 비교 실행은
+  이 성적에 포함하지 않는다.
+- 선택 점수는 catalog 가격, 전역 프로필, 같은 입력 길이 구간의 해당 노드 운영 성적을 함께
+  사용한다. 운영 표본이 없으면 전역 프로필만 사용하고, 표본이 생기면 그 성적의 비중을
+  점차 높인다.
+- 한 노드의 실패나 특수한 traffic은 전역 모델 프로필을 덮어쓰지 않는다. 다른 workflow의
+  초기 선택을 오염시키지 않기 위해 node-local 성적은 별도 누계로 유지한다.
+- 초기 bootstrap policy에는 난이도별 선택 모델과 함께, **모든 당시 사용 가능 후보**의
+  모델 ID·가격·전역 profile을 담은 버전형 safe snapshot을 저장한다. runtime은 이
+  snapshot에서 현재도 사용할 수 있는 후보만 다시 점수화한다. Inspector에는 원본
+  profile JSON 대신 비교 모델 수, 품질 하한, 예상 비용·지연 시간, profile 출처/버전을
+  요약으로 표시한다.
+
+#### 이전 FR-011 상세의 이력 범위
+
+아래 `Prior-Guided Adaptive Routing`은 기존 semantic cohort/prior-guided 설계 기록이다.
+새 bootstrap 정책의 source of truth가 아니며, 남은 호환 API/table과 회귀 테스트의 배경 설명으로만
+유지한다. 새 구현은 위 요구사항과 ADR-0045를 우선한다.
+
+### Legacy FR-011. Prior-Guided Adaptive Routing
 
 Cost Optimizer는 LLM 노드의 일반 실행 조건, 모델 catalog 사전 지식과 안전한 운영
 집계를 사용해 모델을 선택하는 `prior_guided_adaptive_v1`을 제공해야 한다.
@@ -467,7 +548,7 @@ node의 `상세 보기`를 눌러, **이번 실행에서 실제로 어떤 모델
   라우팅 판단 근거는 허용된 개수·점수·비용·지연·분류값만 저장한다. 출력 데이터는 기존
   테스트 실행 권한 범위에서만 제공한다.
 
-#### 해결해야 하는 현재 공백
+#### 현재 구현과 검증 한계
 
 현재 구현은 다음 기반을 제공한다.
 
@@ -477,29 +558,29 @@ node의 `상세 보기`를 눌러, **이번 실행에서 실제로 어떤 모델
 - 운영 run 중복 집계와 비동기 refresh task
 - 선택 모델, fallback, rule, policy version safe trace
 
-그러나 bootstrap policy는 저장 모델만 유지하고, 운영 profile은 Cost Optimizer
-candidate를 제외한다. 새 모델을 policy에 넣으려면 그 모델의 품질 표본이 필요한데
-runtime은 검증되지 않은 모델을 임의로 탐색하지 않는다. 따라서 Replay에서 이미
-검증한 후보를 policy evidence로 연결하지 않으면 새 모델이 승격될 수 없는 순환이
-생긴다.
+배포 시점 compiler는 실행 주체가 사용할 수 있는 모델 catalog의 capability·가격·context
+사전 지식을 사용해 첫 policy를 동기 생성한다. 따라서 첫 실행 전에 policy row와 일반
+입력 길이 rule이 준비된다. 이후 운영 성적은 별도 누계 table에 저장하며, 실패 실행도
+품질의 음수 증거로 포함한다.
 
 기존 synthetic E2E는 여러 모델의 profile을 테스트 안에서 미리 주입한다. 이는
-rule evaluator와 refresh gate가 주어진 profile에서 동작함을 검증하지만, 실제 DB의
-Replay candidate가 policy와 runtime 모델 변경으로 이어짐을 증명하지 않는다.
+rule evaluator와 refresh gate가 주어진 profile에서 동작함을 검증한다. 실제 provider
+환경에서 장시간 운영했을 때 catalog prior와 누적 성적이 기대한 모델 분포로 수렴하는지는
+별도 운영 실험으로 확인해야 한다.
 
 #### 목표 처리 순서
 
 ```text
-운영 로그 + Cost Optimizer Replay
-  -> Evidence Adapter
-  -> Hard Gate
-  -> Routing Eligibility Analyzer
-  -> Candidate Quality/Efficiency Gate
-  -> Deterministic Policy Optimizer
-  -> Policy Proposal 또는 Fixed Model 권고
+배포 snapshot + 실행 주체의 사용 가능 모델 catalog
+  -> capability/context/structured output Hard Gate
+  -> short/medium/long 첫 policy 동기 생성
   -> Active Policy
   -> Runtime Prior-Guided Rule Evaluator
   -> Decision Trace
+  -> terminal 운영 run의 모델·입력 길이별 성적 누적
+  -> 유의미한 품질·비용·지연 변화 감지
+  -> policy 재계산
+  -> 품질 유지 + 효율 10% 이상 개선일 때만 교체
 ```
 
 #### Evidence source
@@ -508,14 +589,19 @@ Evidence는 출처를 구분해야 한다.
 
 | Source | 의미 | FR-011 적용 |
 | --- | --- | --- |
-| `operational` | 배포 후 실제 운영 run | 현재 구현과 연결 |
-| `replay` | 같은 baseline input으로 실행한 Cost Optimizer candidate | 현재 FR-011 구현 범위 |
-| `shadow` | 운영 응답에 영향 없이 후보를 병렬 실행 | 후속 |
-| `canary` | 제한된 실제 traffic에 후보를 적용 | 후속 |
+| `operational` | 배포 후 실제 운영 run | 현재 자동 policy 재평가의 유일한 실행 성적 입력 |
+| `replay` | 같은 baseline input으로 실행한 Cost Optimizer candidate | 별도 비교 분석 근거이며 현재 자동 policy에는 합산하지 않음 |
+| `shadow` | 운영 응답에 영향 없이 후보를 병렬 실행 | 현재 범위 밖이며 실행하지 않음 |
+| `canary` | 제한된 실제 traffic에 후보를 적용 | 현재 범위 밖이며 실행하지 않음 |
 
 Replay는 실제 운영 traffic 비중을 증명하지 않는다. 따라서 `replay`와
-`operational` sample count를 하나의 숫자로 합치지 않는다. Replay는 후보 품질을
-검증하고, 운영 로그는 현재 정책 성능과 입력군 비중을 계산하는 데 사용한다.
+`operational` sample count를 하나의 숫자로 합치지 않는다. 현재 자동 policy는 운영
+누계만 사용하며 Replay는 사용자가 보는 비교 분석 이력으로 남는다.
+
+> 아래 Hard Gate부터 후속 제품 범위까지는 이전 Workflow-Aware/Semantic Routing 설계를
+> 검토한 기록이다. 현재 `prior_guided_adaptive_v1`의 규범 계약은 이 절 위의 lifecycle,
+> current routing decision, API·component current contract다. 입력군, embedding,
+> Replay/Judge 자동 승격, Canary, Shadow는 현재 runtime과 policy refresh에서 실행하지 않는다.
 
 현재 구현은 정책 단위로 전용 학습 저장소를 둔다. 일반 운영 입력 원문은 이 저장소에
 복사하지 않으며 hash와 embedding vector만 관찰값으로 보관한다.
@@ -525,6 +611,7 @@ Replay는 실제 운영 traffic 비중을 증명하지 않는다. 따라서 `rep
 | `workflow_runs`, `workflow_node_runs`, `llm_usage_logs` | 배포 후 운영 실행과 비용의 원천 | 기존 trace 정책을 따른다. |
 | `cost_optimizer_experiments`, `cost_optimizer_candidates` | 사용자가 만든 비교/Replay 이력 | 기존 Cost Optimizer 보존 정책을 따른다. |
 | `llm_node_model_routing_policies`, `llm_node_model_routing_policy_updates` | active policy와 갱신 이력 | 원문 없음 |
+| `llm_node_model_routing_performances` | 모델·입력 길이별 성공/schema/downstream/fallback/비용/지연 누계 | 원문 없음 |
 | `llm_node_model_routing_cohorts`, `..._observations`, `..._model_evidence`, `..._validation_*` | 입력군 lifecycle, 비가역 관찰값, 후보 검증 결과, 월간 예산 | 운영 입력 원문 없음 |
 | `llm_node_model_routing_cohort_examples` | 입력군의 합성 대표 문장 | 사용자가 직접 등록한 대표 문의 또는 별도 안전 요약 과정이 만든 합성 문장만 보관한다. 운영 원문, secret, 실제 고객 식별 정보는 보관하지 않는다. |
 

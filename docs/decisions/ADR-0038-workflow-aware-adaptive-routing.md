@@ -1,6 +1,8 @@
 # ADR-0038: Workflow-Aware Adaptive Routing
 
-Status: Accepted
+Status: Superseded
+
+Superseded By: [ADR-0058](ADR-0058-bootstrap-difficulty-routing-policy.md)
 
 Related ADRs: [ADR-0022](ADR-0022-incremental-hexagonal-architecture-adoption.md)
 

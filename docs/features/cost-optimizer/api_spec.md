@@ -6,9 +6,16 @@ Verified Against: feature/mba-198 @ 40c45fcc
 ## Purpose
 
 이 문서는 `requirements.md`의 FR-001부터 FR-015까지를 API 계약 관점에서 정리한다.
-FR-011은 `prior_guided_adaptive_v1` 정책으로 다룬다. Runtime은 저장된 active policy의 입력 길이 등 일반 조건만 평가한다. Policy refresh는 모델 catalog의 capability·가격·context 정보와 안전한 운영 집계를 사용하며 semantic cohort, embedding, cohort Replay batch를 사용하지 않는다.
+FR-011은 `bootstrap_mdeberta_difficulty_v1` 정책으로 다룬다. bootstrap API가 운영 로그
+유무에 맞는 안전한 표본을 준비하고, runtime은 저장된 classifier artifact의
+`economy`/`balanced`/`advanced` 확률과 0~100 난이도 점수를 평가한다. 새 artifact는 공유
+mDeBERTa encoder 위에서 node별 표본으로 학습한 linear softmax head이며, 기존 E5 prototype
+artifact는 재생성 전 읽기 호환용으로만 유지한다. 일반 실행 중 Planner/Judge LLM은 호출하지
+않는다. 배포 후 replay 기반 재평가는 모델별 품질·비용 증거를 추가하는 별도 단계다.
 
-입력군 관련 REST API는 제공하지 않는다. 정책 API는 `enabled`, `refresh_every_runs`, `default_model_id`, `fallback_model_id`만 설정으로 받는다. 응답의 `active_policy.decision_profiles`는 `short`, `medium`, `long` profile별 선택 모델·fallback·선택 근거를 제공한다.
+bootstrap API는 `enabled`, 작업 설명, 기본/대체 모델, 초기 생성 예산을 받고, 응답에는 원문이
+아닌 표본 출처·가림 처리 요약·난이도 label·artifact version만 포함한다. 기존 semantic cohort
+API는 이력/호환 경로이며 신규 bootstrap runtime의 source of truth가 아니다.
 
 Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baseline 실행 로그를 선택하고, 같은 입력으로 B 후보 설정을 실행한 뒤, 선택한 후보를 현재 draft에 적용하는 흐름을 지원한다.
 
@@ -51,9 +58,12 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/compare` | 선택 baseline input으로 B 후보를 실행하고 A/B 출력 품질을 평가 | FR-003, FR-004, FR-005, FR-006, FR-009, FR-010, FR-013 | builder 이상 |
 | PATCH | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/cost-optimizer/apply` | 선택한 B 후보 설정을 current draft에 적용 | FR-008, FR-010 | builder 이상 |
 | GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy` | 현재 policy 상태, 누적 운영 run 수, active/pending policy 조회 | FR-011 | builder 이상 |
+| GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/bootstrap-preview` | 동일 작업 지문의 안전한 운영 로그 수와 초기 생성 방식 미리 보기 | FR-011 | builder 이상 |
+| GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/bootstrap` | 현재 bootstrap artifact와 가림 처리한 표본 summary 조회 | FR-011 | builder 이상 |
+| POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/bootstrap` | 작업 설명/기본 모델/예산으로 초안 bootstrap classifier artifact 생성 | FR-011 | builder 이상 |
 | POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/preview` | active deployment policy를 기록 없이 한 번 평가해 선택 모델과 근거를 반환 | FR-011 | execute |
-| PATCH | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy` | 자동 라우팅 ON/OFF, 규칙 미일치 시 기본 모델/대체 모델, 정책 점검 주기 변경 | FR-011 | builder 이상 |
-| POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy/refresh` | 수동 policy refresh 작업을 예약 | FR-011 | builder 이상 |
+| PATCH | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy` | 자동 라우팅 ON/OFF와 규칙 미일치 시 기본 모델/대체 모델 변경. `refresh_every_runs`는 호환 입력으로만 수용 | FR-011 | builder 이상 |
+| POST | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/policy/refresh` | 현재 운영 성적으로 policy 재평가 작업을 예약 | FR-011 | builder 이상 |
 | GET | `/api/v1/workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/analysis` | **계획**: 라우팅 적합성, candidate gate 결과, evidence gap, 예상 순절감 safe summary 조회 | FR-011 | builder 이상 |
 | GET | `/api/v1/deployments/{deployment_id}/parameter-optimization` | 배포별 자동 파라미터 최적화의 대상 노드 수, 운영 수집 수, 점검 상태, 월간 검증 예산/사용액 조회 | FR-014 | workflow read |
 | PATCH | `/api/v1/deployments/{deployment_id}/parameter-optimization` | 재배포 없이 자동 최적화 사용 여부, 대상 LLM node, 점검 주기, 월간 검증 예산 수정 | FR-014 | workflow deploy |
@@ -76,6 +86,7 @@ Cost Optimizer API는 특정 workflow의 특정 LLM node를 기준으로 baselin
 | FR-010 | builder permission enforcement | `apps/gateway/api/v1/endpoints/workflow.py`, `apps/gateway/auth/permissions.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 |
 | FR-011 | policy persistence, runtime evaluator, event idempotency, refresh task, credential guard, trace | `apps/shared/db/models/model_routing_policy.py`, `apps/gateway/api/v1/endpoints/workflow.py`, `apps/workflow_engine/tasks.py`, `apps/workflow_engine/services/model_routing_policy_refresh.py`, `apps/workflow_engine/services/model_routing_policy_refresh_task.py`, `apps/workflow_engine/workflow/nodes/llm/llm_node.py` | 기반 구현 완료 | 기존 FR-011 targeted tests | 통과 |
 | FR-011 | prior-guided policy compiler / runtime evaluator | `apps/workflow_engine/services/model_routing_prior_guided_policy.py`, `apps/workflow_engine/services/model_router.py`, `apps/workflow_engine/workflow/nodes/llm/llm_node.py` | 구현 완료 | `apps/workflow_engine/tests/services/test_model_routing_prior_guided_policy.py`, `apps/workflow_engine/tests/nodes/test_llm_node_runtime.py` | 통과 |
+| FR-011 | bootstrap artifact, Planner, mDeBERTa classifier, bootstrap API | `apps/workflow_engine/services/model_routing_bootstrap.py`, `apps/workflow_engine/services/model_routing_mdeberta_classifier.py`, `apps/shared/db/models/model_routing_policy.py`, `apps/gateway/api/v1/endpoints/workflow.py` | 진행중 | `apps/workflow_engine/tests/services/test_model_routing_bootstrap.py`, `test_model_routing_mdeberta_classifier.py`, `test_model_routing_bootstrap_runtime.py` | unit 통과 |
 | FR-011 | 실제 DB Replay evidence에서 proposal·active policy까지 이어지는 자동 통합과 분석 API | 기존 refresh service와 Gateway endpoint 확장 | 구현 필요 | PostgreSQL integration test | 미작성 |
 | FR-012 | LLM parameter recommendation contract | `apps/gateway/services/cost_optimizer_parameter_recommendation_service.py`, `apps/gateway/api/v1/endpoints/workflow.py` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_parameter_recommendations_api.py`, `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py` | 통과 기록 있음 |
 | FR-013 | Recommendation/compare verification orchestration, quality judge, history summary, modal/result-analysis UI | `apps/gateway/services/cost_optimizer_recommendation_verification_service.py`, `apps/gateway/services/cost_optimizer_output_quality_service.py`, `apps/gateway/api/v1/endpoints/workflow.py`, `apps/shared/db/models/cost_optimizer.py`, `apps/client/app/features/workflow/components/costOptimizer/OptimizationRecommendationModal.tsx`, `apps/client/app/features/workflow/api/workflowApi.ts`, `apps/client/app/modules/[id]/cost-optimizer/[nodeId]/page.tsx` | 구현 완료 | `apps/gateway/tests/api/cost_optimizer/test_cost_optimizer_api.py`, `apps/gateway/tests/api/cost_optimizer/test_recommendation_verification_api.py`, `apps/gateway/tests/services/test_cost_optimizer_output_quality_service.py`, `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-inline-verification.test.tsx`, `apps/client/app/features/workflow/tests/costOptimizer/fr13-recommendation-verification-api-client.test.ts`, `apps/client/app/features/workflow/tests/costOptimizer/fr6-playground-mode-switch.test.tsx` | Gateway/frontend targeted test 통과 |
@@ -181,6 +192,64 @@ signature만 저장한다. raw input/output, prompt, credential은 포함하지 
 
 ## Model Routing Policy Contract
 
+> 현재 bootstrap 계약은 [ADR-0045](../../decisions/ADR-0045-bootstrap-difficulty-routing-policy.md)를
+> 따른다. 아래 legacy semantic cohort field는 기존 policy/read 호환을 위해 남아 있을 수 있으나,
+> 신규 bootstrap runtime은 사용하지 않는다.
+
+### Bootstrap Contract
+
+`GET /workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/bootstrap-preview`는 provider를
+호출하지 않고 현재 node의 작업 지문과 같은 성공 운영 node run을 세어 다음 중 하나를 반환한다.
+
+| history count | `source` | `planned_history_sample_count` | `planned_synthetic_sample_count` |
+| --- | --- | --- | --- |
+| 0 | `synthetic` | 0 | 난이도별 최소 표본을 채울 수량 |
+| 1~11 | `hybrid` | 실제 대표 표본 수 | 부족한 난이도/길이 범위를 채울 수량 |
+| 12 이상 | `history` | 최대 24 | 0 |
+
+`POST /workflows/{workflow_id}/llm-nodes/{node_id}/model-routing/bootstrap` request:
+
+```json
+{
+  "task_description": "고객 문의를 JSON으로 분류하고 위험한 요청은 신중하게 판단합니다.",
+  "default_model_id": "gpt-4.1-mini",
+  "fallback_model_id": "gpt-4.1",
+  "initial_budget_usd": 1.0
+}
+```
+
+Gateway는 builder 권한과 현재 사용자의 credential model 사용 권한을 검사한다. 작업 지문이
+prompt/입력 매핑/output schema/RAG/downstream 계약과 맞지 않으면 과거 로그를 사용하지 않는다.
+응답은 artifact id, source, classifier artifact version, 표본 수, 실제 Planner 비용과
+`status=ready|failed|stale`만 반환한다. raw input/prompt/KB document/embedding vector는 반환하지
+않는다.
+
+`GET /.../bootstrap`은 아래와 같은 안전한 상세를 반환한다.
+
+```json
+{
+  "id": "uuid",
+  "source": "hybrid",
+  "status": "ready",
+  "task_fingerprint": "sha256:...",
+  "sample_counts": {"history": 6, "synthetic": 9},
+  "classifier_artifact_version": "mdeberta-centroid-v1",
+  "samples": [
+    {
+      "source": "history",
+      "difficulty": "balanced",
+      "safe_input_summary": {"keys": ["message"], "value_length_bucket": "medium"},
+      "output_format": "json",
+      "knowledge_enabled": true
+    }
+  ]
+}
+```
+
+`llm_node_model_routing_bootstraps`는 workflow/node 작업 지문과 planner/classifier 결과를,
+`llm_node_model_routing_bootstrap_samples`는 source node run id(nullable), safe summary, feature hash,
+난이도 label을 저장한다. 정책 row는 `bootstrap_id`로 artifact를 참조한다.
+
 이 섹션은 FR-011 Workflow-Aware Adaptive Routing의 API 계약이다. 자동 라우팅 ON 상태의 일반 LLM node 실행은 active policy를 읽어 모델을 선택하고, Judge LLM을 호출하지 않는다.
 
 이 계약의 source of truth는 `llm_node_model_routing_policies`다. Cost Optimizer candidate의 policy JSON은 compare/apply 호환을 위한 candidate snapshot이며, 일반 배포 실행은 policy table의 active policy만 사용한다. Gateway의 `GET/PATCH/POST /model-routing/policy`는 이 table과 refresh task를 관리하고, Workflow Engine의 `LLMNode._resolve_model_routing_policy()`는 runtime DB lookup 결과를 `ModelRouter.resolve_policy()`에 전달한다.
@@ -232,6 +301,17 @@ Response은 safe summary만 반환한다.
   "matched_cohort": {"id": "routine-support", "label": "단순 사용 안내"},
   "matched_rule_id": "route-routine-support",
   "reason_code": "validated_quality_floor_cost_reduction",
+  "decision_factors": {
+    "selection_mode": "global_profile_score",
+    "compared_model_count": 8,
+    "quality_floor": 0.78,
+    "selected_quality_lower_bound": 0.86,
+    "selected_expected_cost_usd": 0.0012,
+    "selected_expected_latency_ms": 600,
+    "effective_operational_samples": 14,
+    "profile_source": "catalog_seed_v1+node_operational",
+    "profile_version": "catalog-seed-v1"
+  },
   "availability": "available",
   "semantic_evaluation": "embedding_used",
   "draft_matches_deployment": false
@@ -239,6 +319,9 @@ Response은 safe summary만 반환한다.
 ```
 
 `decision_source`는 `matched_rule`, `default_model`, `fallback_model` 중 하나다.
+bootstrap 전역 profile 전략에서는 `decision_factors`가 현재 실행 주체가 사용할 수 있는
+후보 수, 선택 후보의 품질 하한·예상 비용·예상 지연 시간·운영 표본 수를 반환한다. raw
+전역 profile 전체, credential, 원문 입력은 반환하지 않는다.
 semantic cohort를 계산해야 하면 execution subject 권한의 embedding client를 한 번
 호출할 수 있지만, completion 호출은 하지 않는다. request의 raw input, credential,
 embedding vector, raw trace는 저장하거나 response에 넣지 않는다. 이 endpoint는
@@ -267,6 +350,9 @@ Celery refresh task를 생성하거나 변경하지 않는다.
 | `policy_source` | `active_deployment`이면 테스트 실행이 활성 배포 policy를 읽었음을 뜻한다. |
 | `included_in_policy_learning` | 테스트 정책 실행은 항상 `false`다. |
 | `judge_called` | 일반 runtime은 항상 `false`; Judge는 실행 시점 모델 선택에 사용하지 않는다. |
+| `decision_factors.selection_mode` | `global_profile_score`이면 난이도 확률에 대해 현재 사용 가능한 전체 snapshot 후보를 점수화했다는 뜻이다. |
+| `decision_factors.compared_model_count` | 이번 선택에서 실제로 비교한 현재 사용 가능 모델 수 |
+| `decision_factors.effective_operational_samples` | 같은 policy·모델·입력 길이 구간에서 선택 점수에 반영한 배포 후 운영 표본 수 |
 
 다음 상태는 `409` safe error code로 반환한다.
 
@@ -491,39 +577,38 @@ credential availability guard가 결정한다.
 validated_waiting`이어도 Route에 포함될 수 있다. 해당 cohort UUID를 참조하는 검증 rule이
 없으면 matcher는 입력군만 확정하고 evaluator는 `default_model_id`를 사용한다.
 
-### Evidence And Refresh Rules
+### Legacy Evidence And Refresh Rules
 
-Refresh 입력은 다음 두 adapter 결과다.
+> 아래 내용은 이전 `prior_guided_adaptive_v1` / semantic cohort 경로의 이력이다.
+> `bootstrap_mdeberta_difficulty_v1`에는 적용하지 않는다. 새 bootstrap 정책은
+> [Bootstrap Contract](#bootstrap-contract)를 source of truth로 사용하며, 배포 후 후보
+> replay를 통한 tier 모델 교체는 별도 evidence 실행 경로가 완성되기 전까지 `kept_current`로
+> 현재 bootstrap 정책을 유지한다.
 
-- `OperationalEvidenceAdapter`: 배포 후 terminal 운영 run과 canonical trace
-- `ReplayEvidenceAdapter`: Cost Optimizer experiment/candidate의 동일 입력 비교 결과
+배포 transaction은 `deployment_bootstrap` update와 첫 active policy를 함께 저장한다.
+이 단계에서는 실행 주체가 사용할 수 있는 모델 catalog의 capability, context window,
+structured output 지원, 가격과 보수적 품질 prior를 사용한다.
 
-Replay candidate는 `status=completed`, schema/downstream/quality gate 통과,
-비교 가능한 node fingerprint를 만족할 때만 `validated` 후보가 될 수 있다.
+배포 후 terminal workflow가 끝날 때마다 `score_change` 평가에 사용할 운영 성적을
+`llm_node_model_routing_performances`에 모델·입력 길이별로 누적한다. 성공과 실패,
+schema, downstream, fallback, retry, 비용, token, latency를 집계하되 raw 입력과 출력은
+복사하지 않는다.
 
-Refresh trigger는 배포 직후 초기 검증용 `deployment_bootstrap`,
-`validated_replay_created`, `evidence_threshold_reached`,
-`model_availability_changed`, `quality_drift`, `manual_refresh`, 호환용
-`auto_n_runs`를 허용한다. Trigger는 재평가 사유일 뿐 모델 변경 보장이 아니다.
-
-Judge는 자유형 출력 품질 점수 또는 safe 설명을 제공한다. 최종 proposal은
-`ModelRoutingPolicyOptimizer`가 Hard Gate, gate profile, cohort traffic share,
-관측 비용/latency와 fallback overhead를 다시 검증해 만든다.
-
-Judge prompt의 `current_policy`에는 semantic catalog 원문을 넣지 않는다. Catalog는
-version, encoder id, Route id/label/threshold, 대표 문장 개수만 요약하며 representative
-embedding vector와 utterance hash는 제외한다. Runtime에서 필요한 전체 catalog는 DB의
-active policy에 그대로 보존하고 Judge 응답 정규화 뒤 다시 결합한다.
+마지막 checkpoint 이후 새 표본이 3회 이상이고 품질이 5%p 이상 변하거나 비용·지연이
+10% 이상 변하면 `score_change` refresh를 예약한다. 새 policy는 품질 하한을 유지하면서
+비용 또는 지연이 10% 이상 개선될 때만 `applied`가 된다. 그 외에는
+`kept_current`로 기존 policy와 version을 유지한다. Runtime과 refresh 모두 Judge,
+semantic cohort, embedding, Canary, Shadow를 실행하지 않는다.
 
 ### Policy Status
 
 | Status | Description |
 | --- | --- |
 | `off` | 자동 라우팅 꺼짐 |
-| `collecting` | 배포 직후 입력군 검증 중이거나 다음 정책 갱신에 필요한 운영 로그를 모으는 중 |
+| `collecting` | 아직 배포 policy가 없거나 첫 policy를 만들 수 없는 상태 |
 | `active` | active policy로 실행 중 |
-| `refreshing` | judge가 운영 로그를 분석해 정책을 갱신 중 |
-| `pending_review` | 새 정책안이 만들어졌지만 품질 gate 미통과 또는 불확실성 때문에 반영 보류 |
+| `refreshing` | 운영 성적으로 policy를 다시 계산 중 |
+| `pending_review` | 호환 상태. 현재 prior-guided 자동 갱신은 보류 대신 `kept_current`를 사용 |
 | `failed` | 정책 갱신 실패 |
 
 `cold_start`, `warming_up`, `optimized`는 API status로 사용하지 않는다.
@@ -535,61 +620,72 @@ active policy에 그대로 보존하고 Judge 응답 정규화 뒤 다시 결합
   "enabled": true,
   "status": "active",
   "policy_id": "uuid",
-  "policy_version": "router-policy-v4",
+  "policy_version": "deployment-prior-v1",
   "active_policy": {
-    "strategy": "workflow_aware_adaptive",
-    "evidence_version": "sha256-safe-summary",
-    "gate_profile_version": "routing-gate-v1",
+    "strategy": "prior_guided_adaptive",
+    "strategy_id": "prior_guided_adaptive_v1",
     "default_model_id": "gpt-4.1-mini",
     "fallback_model_id": "gpt-4.1",
     "rules": [
       {
-        "id": "short-json-no-knowledge",
-        "priority": 10,
-        "when": {
-          "output_format": "json",
-          "knowledge_enabled": false,
-          "input_length_bucket": "short"
-        },
-        "reason_code": "short_structured_input_uses_low_cost_model",
+        "id": "prior-guided-short",
+        "priority": 100,
+        "when": {"input_length_bucket": "short"},
+        "reason_code": "prior_guided_utility_selected",
         "selected_model_id": "gpt-4.1-mini",
         "fallback_model_id": "gpt-4.1"
       }
     ]
   },
-  "eligibility": {
-    "status": "eligible",
-    "reason_codes": ["multiple_validated_candidates"],
-    "evidence_gaps": []
-  },
   "refresh": {
     "refresh_every_runs": 20,
-    "eligible_runs_since_last_refresh": 13,
-    "next_refresh_after_runs": 7,
+    "eligible_runs_since_last_refresh": 4,
+    "next_refresh_after_runs": null,
     "last_refresh_result": "applied",
     "last_refresh_at": "2026-07-07T00:00:00Z"
+  },
+  "performance": {
+    "total_runs": 4,
+    "model_count": 2,
+    "models": [
+      {
+        "model_id": "gpt-4.1-mini",
+        "input_profile": "short",
+        "run_count": 3,
+        "quality_score": 1.0,
+        "avg_cost": 0.0004,
+        "avg_latency_ms": 720
+      }
+    ]
+  },
+  "change_policy": {
+    "mode": "event_driven",
+    "minimum_new_runs": 3,
+    "quality_change_threshold": 0.05,
+    "efficiency_improvement_threshold": 0.1
   },
   "pending_policy": null,
   "warnings": []
 }
 ```
 
-응답에는 마지막 정책 갱신의 safe summary도 포함한다. summary에는 judge 모델/provider, 갱신 결과, 운영 표본 수, judge usage log id와 계산 비용만 포함하며 judge prompt/응답 원문이나 credential은 포함하지 않는다.
+응답에는 마지막 정책 계산의 safe summary도 포함한다. Judge 필드는 이전 응답 호환을
+위해 nullable로 남지만 현재 prior-guided lifecycle에서는 채우지 않는다.
 
 ```json
 {
   "last_update": {
     "id": "uuid",
-    "trigger": "auto_n_runs",
+    "trigger": "score_change",
     "status": "applied",
-    "eligible_run_count": 20,
+    "eligible_run_count": 4,
     "excluded_run_count": 2,
-    "judge_provider": "openai",
-    "judge_model": "gpt-4.1-mini",
-    "judge_usage_log_id": "uuid",
-    "prompt_version": "model-routing-policy-judge-v1",
-    "new_policy_version": "router-policy-v4",
-    "judge_cost": 0.0012,
+    "judge_provider": null,
+    "judge_model": null,
+    "judge_usage_log_id": null,
+    "prompt_version": null,
+    "new_policy_version": "v2",
+    "judge_cost": null,
     "created_at": "2026-07-10T00:00:00Z"
   }
 }
@@ -600,13 +696,16 @@ active policy에 그대로 보존하고 Judge 응답 정규화 뒤 다시 결합
 ```json
 {
   "enabled": true,
-  "refresh_every_runs": 20,
-  "validation_budget_usd": 3,
-  "max_cohorts": 6
+  "default_model_id": "gpt-4.1",
+  "fallback_model_id": "gpt-4.1-mini"
 }
 ```
 
-`enabled=false`이면 runtime은 저장된 LLM node의 `model_id`와 `fallback_model_id`를 사용한다. `enabled=true`이면 runtime은 active policy를 우선 사용한다. 정책 row는 `auto_model_routing=true`가 포함된 새 deployment transaction에서 저장 모델과 빈 rule로 생성한다. 배포 commit 뒤 `workflow.model_routing.bootstrap_policy`가 입력군 대표 예시를 준비하고 검증 batch를 예약한다. draft의 PATCH만으로는 `policy_id`가 생기거나 운영 run이 집계되지 않는다.
+`enabled=false`이면 runtime은 저장된 LLM node의 `model_id`와 `fallback_model_id`를
+사용한다. `enabled=true`이면 runtime은 active policy를 우선 사용한다. 정책 row와 첫
+`short/medium/long` rule은 새 deployment transaction 안에서 즉시 생성한다.
+`refresh_every_runs`, `validation_budget_usd`, `max_cohorts`는 이전 client 호환 입력으로
+수용할 수 있지만 자동 policy 교체 조건으로 사용하지 않는다.
 
 ### POST Policy Refresh Response
 
@@ -619,7 +718,10 @@ active policy에 그대로 보존하고 Judge 응답 정규화 뒤 다시 결합
 }
 ```
 
-POST 응답은 비동기 task가 예약됐다는 뜻일 뿐 judge 결과가 아니다. 최종 `applied`, `kept_current`, `pending_review`, `failed` 결과와 update summary는 이후 GET policy 응답의 `last_update`에서 조회한다. policy row가 아직 없거나 자동 라우팅이 꺼져 있으면 POST는 `409 model_routing.policy_not_ready`를 반환한다.
+POST 응답은 현재 운영 성적을 비동기로 다시 계산하도록 예약했다는 뜻이다. 최종
+`applied`, `kept_current`, `failed` 결과는 이후 GET policy 응답의 `last_update`에서
+조회한다. policy row가 아직 없거나 자동 라우팅이 꺼져 있으면 POST는
+`409 model_routing.policy_not_ready`를 반환한다.
 
 ### Persistence Model
 
@@ -640,14 +742,15 @@ POST 응답은 비동기 task가 예약됐다는 뜻일 뿐 judge 결과가 아�
 | `policy_version` | string | active policy version |
 | `active_policy` | JSONB | 실행 시점 모델 선택 rule safe snapshot |
 | `pending_policy` | JSONB nullable | gate 미통과 또는 검토 보류 정책안 |
-| `refresh_every_runs` | integer | 기본값 20 |
-| `validation_budget_usd` | decimal | node별 월간 자동 Replay/Judge 검증 예산, 기본값 3 USD |
-| `max_cohorts` | integer | 자동/직접 입력군 최대 개수, `1~12`, 기본값 6 |
+| `performance_checkpoint` | JSONB | 마지막 policy 평가 시점의 모델·입력 길이별 운영 성적 snapshot |
+| `refresh_every_runs` | integer | 이전 snapshot/client 호환 필드. 현재 자동 trigger에는 사용하지 않음 |
+| `validation_budget_usd` | decimal | 이전 검증 설계 호환 필드. 현재 prior-guided lifecycle에는 사용하지 않음 |
+| `max_cohorts` | integer | 이전 입력군 설계 호환 필드. 현재 runtime에는 사용하지 않음 |
 | `last_refreshed_at` | datetime nullable | 마지막 정책 갱신 시각 |
 | `last_refresh_result` | string nullable | `applied`, `kept_current`, `pending_review`, `failed` |
 | `eligible_runs_since_last_refresh` | integer | 마지막 갱신 이후 중복 제거된 배포 후 운영 실행 수 |
 | `refresh_requested_at` | datetime nullable | refresh task가 예약된 시각. 실행 중복 예약 방지에 사용 |
-| `judge_user_id` | UUID nullable | judge credential 사용 권한을 검증할 사용자 |
+| `judge_user_id` | UUID nullable | 이전 Judge 경로 호환 필드 |
 | `created_by`, `updated_by` | UUID nullable | 변경 사용자 |
 
 #### `llm_node_model_routing_policy_updates`
@@ -656,17 +759,17 @@ POST 응답은 비동기 task가 예약됐다는 뜻일 뿐 judge 결과가 아�
 | --- | --- | --- |
 | `id` | UUID | policy update id |
 | `policy_id` | UUID | 대상 policy |
-| `trigger` | string | `deployment_bootstrap`, `validated_replay_created`, `evidence_threshold_reached`, `model_availability_changed`, `quality_drift`, `manual_refresh`, 호환용 `auto_n_runs` |
+| `trigger` | string | 현재 `deployment_bootstrap`, `score_change`, `manual_refresh`. `auto_n_runs` 등은 과거 이력 호환 |
 | `status` | string | `applied`, `kept_current`, `pending_review`, `failed` |
-| `eligible_run_count` | integer | judge 입력에 포함한 운영 run count |
+| `eligible_run_count` | integer | 정책 평가에 사용한 운영 run count |
 | `excluded_run_count` | integer | 제외한 run count |
 | `excluded_reason_summary` | JSONB | 테스트 실행, usage 누락, retention 누락 등 safe summary |
-| `judge_provider` | string nullable | judge provider |
-| `judge_model` | string nullable | judge model |
-| `judge_usage_log_id` | UUID nullable | judge 호출 비용/토큰 원천 usage log |
-| `prompt_version` | string | judge prompt contract version |
-| `input_summary` | JSONB | judge에 전달한 safe input summary |
-| `output_summary` | JSONB | judge가 만든 policy diff와 confidence safe summary |
+| `judge_provider` | string nullable | 이전 Judge 경로 호환 필드. 현재 null |
+| `judge_model` | string nullable | 이전 Judge 경로 호환 필드. 현재 null |
+| `judge_usage_log_id` | UUID nullable | 이전 Judge 경로 호환 필드. 현재 null |
+| `prompt_version` | string nullable | 이전 Judge 경로 호환 필드. 현재 null |
+| `input_summary` | JSONB | 모델 profile과 사용 가능 후보 수 safe summary |
+| `output_summary` | JSONB | prior-guided 계산 결과와 policy 교체 guard safe summary |
 | `new_policy_version` | string nullable | 생성된 policy version |
 | `error_code` | string nullable | 실패 사유 |
 
@@ -681,7 +784,76 @@ POST 응답은 비동기 task가 예약됐다는 뜻일 뿐 judge 결과가 아�
 
 `(policy_id, workflow_run_id)`는 unique다. Celery retry, webhook 재전달, 완료 hook 중복 호출이 있어도 한 workflow run은 policy 누적 수를 한 번만 증가시킨다.
 
+#### `llm_node_model_routing_performances`
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `policy_id` | UUID | 대상 배포 policy |
+| `model_id` | string | 실제 실행 모델 |
+| `input_profile` | string | `short`, `medium`, `long`, `unknown` |
+| `run_count`, `success_count` | integer | 전체 실행 수와 성공 수 |
+| `schema_pass_count`, `schema_eval_count` | integer | schema 평가/통과 누계 |
+| `downstream_success_count`, `downstream_eval_count` | integer | 후속 노드 영향 평가/통과 누계 |
+| `fallback_count`, `retry_count` | integer | fallback·retry 누계 |
+| `total_cost`, `total_tokens`, `total_latency_ms` | numeric | 평균 계산용 합계 |
+
+`(policy_id, model_id, input_profile)`는 unique다. 원문 입력·출력·prompt는 저장하지 않는다.
+
+#### `llm_model_routing_global_profiles`
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `llm_model_id` | UUID unique | `llm_models` catalog 모델과의 1:1 연결 |
+| `capability_tier` | string | 초기 capability tier (`low`, `balanced`, `high`) |
+| `quality_by_difficulty` | JSONB | `economy`, `balanced`, `advanced` 난이도별 예상 품질 |
+| `uncertainty_by_difficulty` | JSONB | 난이도별 초기 불확실성 |
+| `expected_latency_ms_by_input_profile` | JSONB | `short`, `medium`, `long`, `unknown` 입력 길이별 예상 지연 시간 |
+| `fallback_rate` | decimal | 초기 fallback 확률 |
+| `prior_strength` | decimal | node-local 성적과 결합할 때의 전역 표본 강도 |
+| `source`, `profile_version` | string | catalog seed 또는 명시 profile의 출처와 버전 |
+| `is_active` | boolean | 현재 profile 사용 여부 |
+
+사용 가능한 catalog 모델에 profile row가 없으면 bootstrap/policy compile 시
+`catalog_seed_v1` profile을 만들고 저장한다. 실제 배포 후 성적은 이 table을 수정하지
+않으며 `llm_node_model_routing_performances`에만 누적한다. 따라서 전역 profile은
+초기 선택의 공통 기준이고, 노드별 성적은 특정 workflow/deployment의 보정값이다.
+
+새 bootstrap policy의 `active_policy.global_profile_catalog`은 정책 생성 시점의 후보
+catalog와 profile을 보관하는 safe snapshot이다. runtime은 이 snapshot의 모든 후보 중
+현재 execution subject가 사용할 수 있는 모델만 남기고, 난이도 확률·가격·전역 profile·같은
+`policy_id/model_id/input_profile`의 운영 성적으로 다시 순위화한다. snapshot에는 credential,
+raw input, prompt, KB 원문을 넣지 않는다.
+
+```json
+{
+  "version": "global-model-profile-catalog-v1",
+  "candidates": [
+    {
+      "model_id": "gpt-5-mini",
+      "display_name": "GPT-5 mini",
+      "input_price_1k": 0.00025,
+      "output_price_1k": 0.002
+    }
+  ],
+  "profiles": {
+    "gpt-5-mini": {
+      "quality_by_difficulty": {"economy": 0.97, "balanced": 0.91, "advanced": 0.75},
+      "uncertainty_by_difficulty": {"economy": 0.03, "balanced": 0.04, "advanced": 0.05},
+      "expected_latency_ms_by_input_profile": {"short": 480, "medium": 600, "long": 1080},
+      "fallback_rate": 0.02,
+      "prior_strength": 6,
+      "source": "catalog_seed_v1",
+      "profile_version": "catalog-seed-v1",
+      "capability_tier": "balanced"
+    }
+  }
+}
+```
+
 #### Adaptive cohort persistence
+
+이하 입력군 table은 기존 migration과 실험 이력 보존용이다. 현재
+`prior_guided_adaptive_v1`의 policy 생성, runtime, refresh는 이 table을 읽거나 쓰지 않는다.
 
 `llm_node_model_routing_cohorts`는 policy별 입력군의 label, source(`auto`/`manual`),
 lifecycle, centroid vector, traffic share, 검증 모델을 보관한다. `proposed`,
