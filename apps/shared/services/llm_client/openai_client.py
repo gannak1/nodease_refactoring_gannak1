@@ -71,6 +71,14 @@ class OpenAIClient(BaseLLMClient):
     _LONG_TIMEOUT_PREFIXES = ("gpt-5", "o1", "o3", "o4")
     _RESPONSES_ENDPOINT_PREFIXES = ("gpt-5", "o1", "o3", "o4")
     _MINIMAL_REASONING_MODEL_PREFIX = "gpt-5"
+    # gpt-5.4 Responses API는 ``minimal``을 허용하지 않고 ``low``부터
+    # 허용한다. JSON 출력에서 추론 토큰이 답변 토큰을 모두 소비하는 문제는
+    # 피하되, 지원하지 않는 effort로 400을 내지 않도록 별도로 처리한다.
+    _LOWEST_REASONING_EFFORT_MODELS = {
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.4-nano",
+    }
     _MINIMAL_REASONING_OUTPUT_TOKEN_LIMIT = 1024
     _RESPONSES_UNSUPPORTED_GENERATION_PARAMS = (
         "top_p",
@@ -175,6 +183,23 @@ class OpenAIClient(BaseLLMClient):
         except (TypeError, ValueError):
             return False
         return 0 < output_limit <= self._MINIMAL_REASONING_OUTPUT_TOKEN_LIMIT
+
+    def _default_reasoning_effort(
+        self,
+        *,
+        response_format: Any,
+        max_output_tokens: Any,
+    ) -> str | None:
+        """모델별 Responses API가 허용하는 가장 낮은 reasoning effort를 고른다."""
+
+        if not self._uses_minimal_reasoning_default(
+            response_format=response_format,
+            max_output_tokens=max_output_tokens,
+        ):
+            return None
+        if self._clean_model_id in self._LOWEST_REASONING_EFFORT_MODELS:
+            return "low"
+        return "minimal"
 
     def _uses_strict_generation_params(self) -> bool:
         return (
@@ -450,14 +475,12 @@ class OpenAIClient(BaseLLMClient):
             text_options.setdefault("format", response_format)
             responses_payload["text"] = text_options
 
-        if (
-            "reasoning" not in responses_payload
-            and self._uses_minimal_reasoning_default(
-                response_format=response_format,
-                max_output_tokens=responses_payload.get("max_output_tokens"),
-            )
-        ):
-            responses_payload["reasoning"] = {"effort": "minimal"}
+        reasoning_effort = self._default_reasoning_effort(
+            response_format=response_format,
+            max_output_tokens=responses_payload.get("max_output_tokens"),
+        )
+        if "reasoning" not in responses_payload and reasoning_effort is not None:
+            responses_payload["reasoning"] = {"effort": reasoning_effort}
 
         self._ensure_json_instruction_in_responses_input(responses_payload)
 
