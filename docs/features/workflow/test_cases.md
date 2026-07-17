@@ -1,7 +1,7 @@
 # Workflow Test Cases
 
 Status: Draft
-Verified Against: `feature/mba-285 @ 2ca36f81`
+Verified Against: `feature/mba-286 @ 1d7a2e12`
 
 ## Test File Mapping
 
@@ -20,6 +20,7 @@ Verified Against: `feature/mba-285 @ 2ca36f81`
 - MBA-190 외부 부수효과 멱등성: `apps/workflow_engine/tests/domain/test_external_effect_contract.py`, `apps/workflow_engine/tests/domain/test_external_effect_identity_runtime.py`, `apps/workflow_engine/tests/application/test_external_effect_executor.py`, `apps/workflow_engine/tests/adapters/test_external_effect_repository.py`, `apps/workflow_engine/tests/adapters/test_external_effect_provider_adapters.py`, `apps/workflow_engine/tests/composition/test_external_effect_readiness.py`, `apps/workflow_engine/tests/fakes/external_effects.py`, `apps/workflow_engine/tests/nodes/test_http_node.py`, `apps/workflow_engine/tests/nodes/test_loop_external_effect_control.py`, `apps/workflow_engine/tests/nodes/test_workflow_node.py`, `apps/workflow_engine/tests/services/test_workflow_engine_tracing.py`, `apps/workflow_engine/tests/services/test_workflow_logger_tracing.py`, `apps/workflow_engine/tests/test_workflow_tasks_rag_sync.py`, `apps/log_system/tests/test_node_log_retry_flow.py`, `apps/gateway/tests/api/test_workflow_execution_subject.py`, `apps/gateway/tests/api/test_workflow_external_effect_error_contract.py`, `apps/gateway/tests/application/deployment/test_workflow_node_binding.py`, `apps/shared/tests/test_external_effect_attempt_schema.py`, `apps/shared/tests/db/test_external_effect_disposable_postgres.py`, `apps/shared/tests/domain/test_workflow_execution_identity.py`, `apps/shared/tests/domain/test_workflow_node_binding.py`, `apps/shared/tests/services/test_external_effect_trace_capture.py`, `apps/shared/tests/services/test_workflow_task_publisher.py`
 - Workflow log 발행 격리: `apps/workflow_engine/tests/services/test_workflow_logger_tracing.py`에서 직렬화/Celery 발행 실패가 실행 결과를 실패로 바꾸지 않고, 민감한 예외 원문을 로그에 남기지 않는지 검증한다.
 - MBA-283 Generic HTTP egress: `apps/workflow_engine/tests/adapters/test_guarded_outbound_http.py`, `apps/workflow_engine/tests/adapters/test_external_effect_provider_adapters.py`, `apps/workflow_engine/tests/nodes/test_http_node.py`, `apps/shared/tests/deployment/test_workflow_worker_egress_policy.py`
+- MBA-286 scheduler readiness: `apps/workflow_engine/tests/nodes/test_workflow_scheduler_readiness.py`, `apps/workflow_engine/tests/nodes/test_parallel_execution_optimization.py`, `apps/workflow_engine/tests/test_condition_branch_routing.py`
 - MBA-285 child lifecycle: `apps/workflow_engine/tests/services/test_child_execution_lifecycle.py`, `apps/workflow_engine/tests/nodes/test_loop_graph_entry.py`, `apps/workflow_engine/tests/nodes/test_workflow_node.py`, `apps/workflow_engine/tests/domain/test_external_effect_identity_runtime.py`
 - 동시성 처리: `apps/gateway/tests/integration/test_agent_builder_workflow_cas.py`에서 독립 PostgreSQL session/transaction으로 autosync 대 autosync 및 autosync 대 Agent Builder 저장 경쟁을 실행하고 한 요청만 성공하며 다른 요청이 `409 stale_graph`인지 검증한다.
 - 테스트 실행 전 저장: `TestSidebar` component test에서 canonical draft GET의 `graph_hash`/`updated_at`이 save request에 전달되고 성공 응답 metadata가 shared Workflow store에 반영되며 stale save는 실행을 시작하지 않는지 검증한다.
@@ -28,6 +29,16 @@ Verified Against: `feature/mba-285 @ 2ca36f81`
 `*.todo.test.ts`의 `it.todo` 항목은 아직 대응 구현 또는 API 계약이 없는 테스트 케이스다. 구현 시 같은 파일에서 실제 assertion 테스트로 전환한다.
 
 Frontend 공통 그래프 검증은 catalog v2의 incoming/outgoing 금지 정책과 parity를 유지해야 한다. Start/Webhook/Schedule incoming, Answer outgoing, 잘못된 Condition source handle을 거부하고, Agent Builder direct-edit GraphMutation/CAS save도 같은 graph를 다시 거부하는지 검증한다.
+
+## Runtime Scheduler Readiness Tests
+
+- selector가 없는 fan-in은 첫 predecessor 결과만으로 실행되지 않고 실제 active incoming predecessor가 모두 성공한 뒤 정확히 한 번 실행된다.
+- Condition case/default 중 선택되지 않은 edge와 downstream 경로는 inactive로 전파되며 join은 해당 branch를 기다리지 않는다. 여러 inactive branch가 중간 join에서 다시 합쳐져도 상태 변화마다 downstream을 재평가하며, 선택되지 않은 branch의 node와 side effect는 실행되지 않는다.
+- 별도 control path에 있는 selector source를 기다리는 target은 control edge만 준비된 시점에는 실행되지 않으며, selector source 완료가 target을 다시 깨워 한 번 실행한다.
+- selector source가 inactive 경로에 있으면 dependent node는 누락된 값으로 실행되지 않고 inactive로 전파된다.
+- control completion과 selector completion이 같은 target을 중복 후보로 만들더라도 `pending -> queued` 전이는 한 번이고 node 실행 cardinality도 1이다.
+- active predecessor 실패 또는 workflow/node timeout 뒤 join과 downstream side effect는 시작되지 않으며 기존 fail-fast error 경계를 유지한다.
+- 서로 다른 active sibling node의 기존 병렬 실행은 유지한다. selector가 특정 predecessor 하나만 참조하더라도 target으로 들어오는 다른 active control edge가 있으면 해당 predecessor도 완료될 때까지 기다린다.
 
 ## Conversation Memory Runtime Target Tests
 
