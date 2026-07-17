@@ -2,7 +2,7 @@
 
 Status: Accepted
 
-Related ADRs: [ADR-0019](ADR-0019-agent-builder-preview-apply-save-boundary.md), [ADR-0024](ADR-0024-agent-builder-node-capability-catalog.md), [ADR-0025](ADR-0025-agent-builder-intent-model-selection.md), [ADR-0026](ADR-0026-agent-builder-intent-and-connection-validation.md), [ADR-0027](ADR-0027-agent-builder-pre-intent-safe-kb-context.md), [ADR-0040](ADR-0040-agent-builder-unified-model-recommendation.md), [ADR-0046](ADR-0046-agent-builder-graph-mutation-and-cas-save.md)
+Related ADRs: [ADR-0019](ADR-0019-agent-builder-preview-apply-save-boundary.md), [ADR-0024](ADR-0024-agent-builder-node-capability-catalog.md), [ADR-0025](ADR-0025-agent-builder-intent-model-selection.md), [ADR-0026](ADR-0026-agent-builder-intent-and-connection-validation.md), [ADR-0027](ADR-0027-agent-builder-pre-intent-safe-kb-context.md), [ADR-0040](ADR-0040-agent-builder-unified-model-recommendation.md), [ADR-0046](ADR-0046-agent-builder-graph-mutation-and-cas-save.md), [ADR-0054](ADR-0054-agent-builder-generation-modes.md)
 
 ## Context
 
@@ -19,7 +19,7 @@ Workflow editor에는 graph snapshot 기반 Undo/Redo가 이미 있다. Node Cap
 
 MBA-228은 다음 목표 구조를 채택한다.
 
-1. Agent Builder는 `설정하며 생성`과 `구조만 생성` 두 모드를 제공한다. 기본값은 `설정하며 생성`이다.
+1. Agent Builder direct-edit는 설정을 확인하며 만드는 흐름과 구조만 생성하는 흐름을 지원한다. MBA-228 당시 mode 값은 `configure_and_generate|structure_only`였으며, 현재 canonical mode와 기본값, 빠른 생성 eligibility 및 mode 전환은 ADR-0054가 소유한다.
 2. planner LLM은 사용자 요청을 한 번 구조화해 node 목적, graph 의도, parameter가 필요한 이유에 대한 안전한 설명을 만든다. Parameter 설명 hint는 `step_id`, Catalog가 prompt에 제공한 `parameter_key`, `reason`, `input_guidance`로 제한한다. Backend는 step capability의 Catalog에 존재하는 key만 사용하고 잘못된 hint는 폐기한 뒤 Catalog 설명으로 fallback한다. 실제 parameter key, 타입, 필수 여부, 검증 규칙은 Node Capability Catalog가 결정한다.
 3. backend는 완성 graph snapshot 대신 base graph hash와 workflow `updated_at`을 전제로 한 typed `GraphMutation`과 parameter task 목록을 반환한다.
 4. frontend editor adapter는 Agent Builder 시작 전 graph snapshot과 acknowledgement가 끝난 최종 graph를 하나의 Workflow history boundary로 관리한다. 최초 `initial_graph`, `graph_edit` 또는 `replace_workflow`가 boundary를 만들고 이후 `parameter_update`와 `knowledge_binding`은 graph를 CAS 저장하되 별도 Workflow history entry를 만들지 않고 같은 boundary의 final snapshot/hash만 갱신한다. 생성 완료 뒤 수동 editor 변경은 일반 history entry로 boundary 뒤에 쌓이므로 먼저 Undo된다.
@@ -31,7 +31,7 @@ MBA-228은 다음 목표 구조를 채택한다.
 10. graph 생성 중 workflow 실행, retrieval, 외부 action 실행, credential 사용 또는 외부 시스템 변경은 발생하지 않는다.
 11. 최초 graph 생성, 기존 graph 구조 변경, 전체 workflow 교체, parameter decision과 `after_graph` Knowledge binding은 ADR-0046의 공통 `GraphMutation`을 사용한다. Local 적용 뒤 `operation_id`, expected base graph hash와 expected workflow `updated_at`을 포함한 CAS workflow draft 저장을 수행하고, server가 반환한 canonical graph hash와 `updated_at`으로 acknowledgement한다. Agent Builder 저장, 일반 autosync, version 복원, test 전 저장과 Undo/Redo는 같은 frontend canonical metadata 상태를 읽고 모든 성공한 draft GET/POST 결과로 이를 갱신한다. Server는 acknowledgement 전에는 operation, parameter task 또는 Knowledge selection을 완료하거나 다음 task를 활성화하지 않는다.
 12. MBA-228 parameter/input/output 계약은 Workflow Node Capability Catalog v3로 도입한다. Phase 1에서 단일 bundled catalog, parser와 backend/frontend parity test를 함께 v3로 전환한다. Full typed `operations`는 발급 API 응답에서만 client에 전달하고 DB/session payload에는 저장하지 않는다. 기존 `AgentBuilderRequest.response_payload`에는 `catalog_version=3`, operation id/kind/status, base graph hash, 발급 시 server가 candidate를 검증해 계산한 `expected_result_graph_hash`, expected workflow `updated_at`, affected node ids와 completion context로 구성된 safe operation envelope만 저장한다. 버전이 없거나 `2`인 미적용 operation은 legacy stale로 분류해 재생성을 요구하며, `3`인 envelope만 CAS 저장·acknowledgement 후보가 된다. Catalog version이나 operation 원문을 위한 별도 column/table, encrypted operation store 또는 legacy backfill은 만들지 않는다.
-13. Direct-edit는 MBA-228의 단일 기능 PR에서 additive protocol migration과 mixed-version read로 전환한다. Nullable `AgentBuilderSession.protocol_version`을 추가하고 신규 direct-edit session에는 `direct_edit_v1`을 기록한다. 기존 null session은 backfill하거나 자동 변환하지 않고 legacy Preview session으로 판별해 `stale_protocol`로 복구한다. Preview API/UI는 direct-edit parity와 필수 integration/E2E 검증을 통과한 뒤 제거한다. `generation_mode`는 request마다 선택할 수 있으므로 request `response_payload`에만 저장하며 값이 없으면 `configure_and_generate`를 사용한다. Frontend와 Gateway의 무중단 전환, 단계적 rollout/rollback, 배포 gate와 image 산출물 분리는 별도 배포 결정의 범위다.
+13. Direct-edit는 MBA-228의 단일 기능 PR에서 additive protocol migration과 mixed-version read로 전환한다. Nullable `AgentBuilderSession.protocol_version`을 추가하고 신규 direct-edit session에는 `direct_edit_v1`을 기록한다. 기존 null session은 backfill하거나 자동 변환하지 않고 legacy Preview session으로 판별해 `stale_protocol`로 복구한다. Preview API/UI는 direct-edit parity와 필수 integration/E2E 검증을 통과한 뒤 제거한다. `generation_mode`는 request마다 선택할 수 있으므로 request `response_payload`에만 저장한다. MBA-228의 기존 `configure_and_generate` 값은 ADR-0054에 따라 canonical `guided_generate`로 읽기 정규화하며 기존 row를 backfill하지 않는다. Frontend와 Gateway의 무중단 전환, 단계적 rollout/rollback, 배포 gate와 image 산출물 분리는 별도 배포 결정의 범위다.
 14. GraphMutation의 `configuration_state=unresolved` 외부 action node는 저장할 수 있지만 server-side 실행과 배포 preflight에서 차단한다. Mutation 발급, CAS 저장, 차단과 acknowledgement는 safe metadata만 audit한다.
 15. 모든 graph 저장과 acknowledgement가 완료되어 Agent Builder 결과가 완료 상태가 된 뒤 Workflow Undo가 boundary에 도달하면, configurable ParameterTask가 있는 경우 첫 Undo는 graph를 바꾸지 않는 parameter 재진입 단계다. 재진입 대상은 수동 설정 여부와 관계없이 `completed|skipped|deferred` 중 재편집 가능하고 `stable_order`가 가장 큰 task다. 이때 persisted task status/version과 graph 값은 변경하지 않고 client presentation에서만 해당 task를 현재 편집 대상으로 표시한다. Agent Builder panel이 닫혔거나 최소화돼 있으면 열고 최소화를 해제하며, 대상 node를 선택해 panel을 제외한 가시 canvas 영역에서 가리지 않는 가장 큰 배율로 focus하고 해당 card를 보이게 scroll한다. 첫 Undo 직후 input control로 keyboard focus를 강제하지 않아 다음 canvas Ctrl+Z가 전체 복구로 이어질 수 있게 한다. completed/skipped/deferred task 사이의 이동은 Workflow Undo가 아니라 ParameterTask UI의 `이전 항목` control이 담당한다. 재진입 상태에서 다음 Workflow Undo는 Agent Builder 시작 전 snapshot을 CAS 저장하고 생성 node/edge, parameter 값과 Knowledge binding을 포함한 결과 전체를 제거하며 모든 ParameterTask와 Knowledge resolution을 `canceled`로 닫는다. Task가 없으면 완료 상태의 첫 Undo가 바로 전체 복구다. `replace_workflow` boundary의 시작 snapshot은 교체 전 graph 전체다. Graph 저장 또는 acknowledgement가 끝나지 않은 결과는 완료 상태 Undo로 취급하지 않는다.
 16. 전체 복구 뒤 reload 전 Ctrl+Y 또는 Ctrl+Shift+Z는 client memory의 최종 graph snapshot을 다시 적용하고 서버 graph를 CAS 저장하지만 canceled ParameterTask나 Knowledge 흐름을 재실행하지 않는다. 전체 Redo 뒤 같은 client memory에서 다시 Undo하면 canceled task UI에 재진입하지 않고 시작 전 graph로 바로 CAS 복구한다. Parameter 재진입 단계에서 Redo는 graph를 바꾸지 않고 설정 UI를 닫아 완료 표시로 돌아간다. Redo stack과 parameter 재진입 표시는 client memory 전용이며 reload 뒤 복구하지 않는다. Parameter input의 Ctrl+Z는 control 내부 text history만 사용하고 Agent Builder card/button focus에서는 canvas Undo/Redo command를 실행하지 않는다.
@@ -56,7 +56,7 @@ MBA-228은 다음 목표 구조를 채택한다.
 
 ## Authority And Migration
 
-이 ADR은 MBA-228 Agent Builder 동작과 UX의 Accepted authority다. ADR-0046은 GraphMutation/CAS 저장을 구체화하는 supporting authority이며 ADR-0019는 Superseded legacy 기록이다. Preview 결과는 characterization fixture로만 고정하고 direct-edit parity와 필수 integration/E2E를 통과한 뒤 API/UI 분기를 제거한다.
+이 ADR은 MBA-228 Agent Builder direct-edit parameter/Knowledge UX와 history boundary의 Accepted authority다. 생성 mode, 기본값, 빠른 생성 eligibility와 mode 전환은 ADR-0054가 보완해 소유한다. ADR-0046은 GraphMutation/CAS 저장을 구체화하는 supporting authority이며 ADR-0019는 Superseded legacy 기록이다. Preview 결과는 characterization fixture로만 고정하고 direct-edit parity와 필수 integration/E2E를 통과한 뒤 API/UI 분기를 제거한다.
 
 저장 전 권한, stale, validation, audit 정책 자체는 폐기하지 않는다. Frontend는 모든 Agent Builder GraphMutation을 local history transaction으로 적용한 뒤 CAS workflow draft 저장을 완료해야 한다. Backend는 저장된 canonical graph hash와 workflow `updated_at`을 확인한 acknowledgement 이후에만 operation 완료, parameter task 전환 또는 Knowledge binding 확정을 기록한다. Direct-edit graph는 일반 editor save endpoint의 additive mutation context를 사용하며 실행·배포 preflight는 별도로 유지한다.
 
@@ -88,7 +88,7 @@ MBA-228은 하나의 기능 PR에서 nullable protocol migration, null/`direct_e
 
 ## 2026-07-14 Correction: LLM Knowledge Selection And Input Continuity
 
-- `generation_mode=configure_and_generate`의 일반 LLM 생성은 planner가 Knowledge 필요성을 명시하지 않았더라도 `after_graph` / `binding_only` Knowledge 선택 단계를 만든다. 이는 planner JSON을 재해석하는 규칙이 아니라 LLM node의 선택 가능한 binding을 확인시키는 Catalog 정책이다.
+- canonical `generation_mode=guided_generate`의 일반 LLM 생성은 planner가 Knowledge 필요성을 명시하지 않았더라도 `after_graph` / `binding_only` Knowledge 선택 단계를 만든다. 기존 `configure_and_generate` 입력은 같은 mode로 정규화한다. 이는 planner JSON을 재해석하는 규칙이 아니라 LLM node의 선택 가능한 binding을 확인시키는 Catalog 정책이다.
 - 사용자는 하나 이상의 권한 있는 Knowledge Base를 고르거나 명시적으로 Knowledge Base 없이 계속할 수 있다. 선택 뒤 planner나 자연어 요청을 다시 실행하지 않는다.
 - Knowledge candidate의 인덱싱 준비 상태는 생성 또는 binding 선택을 막지 않는다. 사용 권한과 source lifecycle만 후보 노출 경계이며, 준비되지 않은 binding은 실제 실행과 배포 preflight에서 차단한다.
 - Knowledge/Parameter 카드가 열려 있어도 새 자연어 요청 composer는 잠그지 않는다. 네트워크 요청 또는 graph 저장 중인 경우만 제출 control을 잠근다.

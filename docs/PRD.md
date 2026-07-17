@@ -43,7 +43,7 @@ Nodease는 기존 Moduly 코드를 리팩토링해 만드는 기업 내부 AI �
 
 | 축 | 현재 상태 | 목표 사용자 흐름 |
 | --- | --- | --- |
-| **Agent Builder** | 자연어 요청으로 workflow 초안을 만들고 필수 설정을 보완해 저장하는 경로와 기존 node 단위 wizard가 함께 존재 | 프롬프트 입력 → workflow 초안 생성 → 필수 설정 검토·보완 → 저장 → 별도 테스트 실행. 예: "사내 복지, 휴가, 인사 정책 문서를 바탕으로 직원 질문에 답변해줘" → `[입력] → [Knowledge Base-backed LLM] → [응답]` |
+| **Agent Builder** | 자연어 요청으로 workflow 초안을 만들고 GraphMutation/CAS로 저장한 뒤 필수 설정을 보완하는 direct-edit 경로. 현재 mode 값은 `configure_and_generate|structure_only` | 목표 계약은 기본 `단계별 생성`, control 또는 자연어로 요청하는 `빠른 생성`, 고급 `구조만 생성`을 제공한다. 세 모드는 같은 GraphMutation/CAS 저장 계약을 사용하며 빠른 생성도 변경 요약 확인과 명시적 적용을 거친다. 예: "사내 복지, 휴가, 인사 정책 문서를 바탕으로 직원 질문에 답변해줘" → `[입력] → [Knowledge Base-backed LLM] → [응답]` |
 | **Admin 대시보드** | `audit_logs`, `llm_usage_logs`, `workflow_runs` 데이터는 이미 쌓임 | 조회 UI: 권한 신청/승인 이력, 누가 언제 뭘 했는지(audit), workflow별 비용(usage), 예산 위험 표시 |
 | **비용 최적화** | `POST /api/v1/workflows/{id}/compare` 모델 비교 API 구현됨 | "비용 최적화" UI: LLM 노드의 현재 설정과 후보 설정을 같은 입력으로 비교하고, `modelRouting`, `promptRouting`, task-aware RAG, `responseFormat`, `maxOutputTokens` 조정에 따른 비용·품질 차이를 표시 |
 | **통합 RAG** | KB 구축/검색, metadata-aware·hierarchical retrieval 구현됨 | 현재 데모는 준비된 KB 검색/citation과 권한 경계를 유지하고, 목표 구조는 gate 승인 후 자동 수집 가능한 사내 지식 통합 저장소, document-level KB 권한 경계, collection 기반 routing으로 확장 |
@@ -83,12 +83,12 @@ Conversation Memory는 현재 4개 데모 축의 완료 조건이 아니라 후�
 6. 관리자는 요청자, 요청 권한, 신청 사유를 확인한 뒤 권한 요청을 승인한다.
 7. 신입사원은 다시 `내 워크플로우` 화면으로 돌아와 새 모듈을 생성한다.
 8. 신입사원은 Agent Builder에 자연어로 만들고 싶은 workflow를 요청한다.
-9. Agent Builder는 입력 노드, Knowledge Base가 연결된 LLM 노드, 응답 노드로 구성된 workflow 초안을 생성한다.
-10. 신입사원은 생성된 graph와 Node Detail Panel의 내부 설정을 확인하고, 실행에 필요한 설정을 보완한다.
-11. 신입사원은 workflow를 저장한다. 시스템은 현재 권한과 저장 가능한 설정인지 다시 검증하고, 성공한 저장 행위를 audit log에 기록한다.
+9. 기본 `단계별 생성`은 입력 노드, LLM 노드, 응답 노드 구조를 typed GraphMutation으로 editor에 반영하고 CAS 저장 acknowledgement를 완료한다.
+10. 신입사원은 통합 설정 카드에서 권한 있는 Knowledge Base와 node parameter를 순서대로 확인하거나 수정한다.
+11. 시스템은 각 변경의 권한, stale graph, Catalog validation과 CAS 저장을 확인하고 모든 필수 설정 acknowledgement가 끝난 경우에만 생성 완료로 표시한다.
 12. 신입사원은 저장된 workflow를 별도 테스트 실행하고, 응답 노드에서 결과가 반환되는 것을 확인한다.
 13. 신입사원은 workflow를 배포하고, 배포된 workflow를 실행한다.
-14. workflow 생성, 권한 승인, Agent Builder를 통한 workflow 저장, 배포, 실행 행위는 audit log에 기록된다.
+14. workflow 생성, 권한 승인, Agent Builder mutation 저장·acknowledgement, 배포와 실행 행위는 audit log에 기록된다.
 
 시연에서 사용하는 Agent Builder workflow는 사내 지식 통합 질의 workflow다. 이 workflow는 직원의 질문을 입력으로 받아, 사내 복지/휴가/인사 정책 문서가 색인된 Knowledge Base를 검색하고, LLM이 권한이 허용된 문서 근거를 바탕으로 답변을 생성한다. Slack 등 외부 채널 연동은 이번 시연에서 제외하고, Nodease 내부 입력 노드와 응답 노드로 결과를 확인한다.
 
@@ -164,10 +164,10 @@ RAG 보안 경계: 어떤 RAG 모드에서도 권한 없는 문서는 검색 후
 8. 신입사원이 새 workflow 편집 화면에서 Agent Builder를 연다.
 9. 신입사원은 흩어진 사내 문서를 검색해 답변하는 RAG workflow 생성을 자연어로 요청한다.
 10. 예시 요청은 "사내 복지, 휴가, 인사 정책 문서를 통합 검색해서 직원 질문에 답변하는 워크플로우를 만들어줘"로 한다.
-11. Agent Builder는 입력 노드, Knowledge Base-backed LLM 노드, Answer 노드로 구성된 초안을 생성한다.
-12. 신입사원은 생성된 graph와 노드 구성을 확인한다.
-13. LLM 노드를 선택해 Node Detail Panel에서 사내 문서 Knowledge Base binding, 입력/출력 mapping, 필수 설정 상태를 확인하고 필요한 값을 보완한다.
-14. 신입사원은 workflow를 저장한다. 시스템은 현재 권한과 저장 가능한 설정인지 다시 검증한 경우에만 저장을 완료한다.
+11. Agent Builder의 기본 `단계별 생성`은 입력 노드, LLM 노드, Answer 노드 구조를 typed GraphMutation으로 editor에 반영하고 CAS 저장한다.
+12. 신입사원은 통합 설정 카드에서 사내 문서 Knowledge Base binding, 입력/출력 mapping과 validation 상태를 순서대로 확인한다.
+13. 각 설정 변경은 같은 GraphMutation/CAS 경계에서 저장되고 server acknowledgement 뒤에만 다음 설정으로 진행한다.
+14. 시스템은 권한 재확인, stale check와 validation을 모두 통과하고 필수 설정 acknowledgement가 끝난 경우에만 workflow 생성 완료로 표시한다.
 15. 저장된 workflow의 테스트 입력에 사내 문서 질문을 넣는다. 예: "가족돌봄휴가를 연차와 붙여서 사용할 수 있어? 신청은 어디서 해야 해?"
 16. workflow를 테스트 실행한다.
 17. LLM 노드는 권한이 허용된 Knowledge Base에서 관련 문서를 검색하고, 검색 결과를 바탕으로 답변을 생성한다.
@@ -178,7 +178,7 @@ RAG 보안 경계: 어떤 RAG 모드에서도 권한 없는 문서는 검색 후
 **3막 — 관리자 감사/운영 관측**
 
 21. 관리자가 admin 화면으로 돌아간다.
-22. 관리자는 audit 목록에서 권한 신청, 권한 승인, Agent Builder를 통한 workflow 저장, workflow 배포, 실행 기록을 확인한다.
+22. 관리자는 audit 목록에서 권한 신청, 권한 승인, Agent Builder mutation 저장·acknowledgement, workflow 배포와 실행 기록을 확인한다.
 23. 이번 달 조직 LLM 사용 비용을 확인한다.
 24. 예산 위험/초과 workflow 개수를 확인한다.
 
@@ -211,10 +211,12 @@ Nodease는 단순히 AI 답변을 생성하는 도구가 아니다. 조직 내 �
 
 ### Agent Builder — [features/agent-builder/](features/agent-builder/requirements.md)
 
-- FR-001: 자연어 프롬프트로부터 실행 가능한 workflow 초안 생성
-- FR-002: 생성된 workflow 초안과 필수 설정을 검토·보완하고 저장한 뒤 별도 테스트 실행
-- FR-003: 생성 결과에 필요한 credential/권한이 없으면 사전 안내
-- FR-004: Knowledge Base-backed LLM node 설정을 포함한 사내 지식 통합 RAG workflow 초안 생성
+- FR-001: 자연어 프롬프트로부터 typed GraphMutation 기반 workflow 생성안 생성
+- FR-002: 기본 `단계별 생성`에서 graph를 CAS 저장한 뒤 Knowledge와 parameter를 순차적으로 확인·수정하고 acknowledgement 완료 후 생성 완료 처리
+- FR-003: 명시적 `빠른 생성` 요청은 서버 eligibility를 통과한 경우에만 변경 요약을 제공하고, 사용자 `생성 적용` 뒤 같은 GraphMutation/CAS 경계로 저장
+- FR-004: `구조만 생성` 결과의 unresolved 설정은 저장할 수 있으나 test, run과 deployment preflight에서 차단
+- FR-005: 생성 결과에 필요한 credential/권한 또는 외부 부수효과 확인이 남으면 빠른 생성을 자동 완료하지 않고 명시적 동의 뒤 단계별 생성으로 전환
+- FR-006: Knowledge Base-backed LLM node 설정을 포함한 사내 지식 통합 RAG workflow 생성
 
 ### Admin 대시보드 — [features/admin-dashboard/](features/admin-dashboard/requirements.md)
 
@@ -279,7 +281,7 @@ Nodease는 단순히 AI 답변을 생성하는 도구가 아니다. 조직 내 �
 이 프로젝트의 성공 기준은 **데모 시나리오 완주**다. 시연은 통합 데모 흐름으로 진행하며, 아래 시나리오별 조건이 그 흐름 안에서 모두 동작하면 성공으로 판단한다.
 
 - [ ] 시나리오 1 (권한 신청): 권한 없는 신입사원이 workflow 생성/배포 권한을 신청하고, 관리자가 승인한 뒤 새 workflow 생성까지 완주
-- [ ] 시나리오 1 (Agent Builder): Agent Builder가 사내 복지/휴가/인사 정책을 바탕으로 Knowledge Base-backed RAG workflow 초안을 만들고, 필수 설정을 검토·보완해 저장한 뒤 별도 테스트 실행에서 응답과 citation/retrieval 근거를 확인
+- [ ] 시나리오 1 (Agent Builder): Agent Builder가 사내 복지/휴가/인사 정책을 바탕으로 Knowledge Base-backed RAG workflow 구조를 만들고, 기본 단계별 생성에서 권한 있는 Knowledge와 parameter를 확인해 CAS 저장·acknowledgement를 완료한 뒤 별도 테스트 실행에서 응답과 citation/retrieval 근거를 확인
 - [ ] 시나리오 2: 조직 관리자가 audit와 비용/예산 위험 요약을 확인하고, 반복 권한·정책 차단에서 생성된 Security Alert를 Sidebar와 Admin Dashboard에서 확인·조사·해결하며 필요한 경우 current organization user access를 수동 조치
 - [ ] 시나리오 3: 비용 위험 workflow를 trace로 분석하고 LLM 노드 단위 A/B 비교를 통해 `modelRouting`, `promptRouting`, task-aware RAG, `responseFormat`, `maxOutputTokens` 조정 효과를 확인
 

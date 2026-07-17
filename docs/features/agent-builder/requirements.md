@@ -8,7 +8,7 @@ Related Features: Workflow Editor, Workflow Node Capability Catalog, Knowledge, 
 
 Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 변환하고, 생성된 node에 필요한 설정을 Node Capability Catalog 기준으로 안내한다. 사용자는 graph를 먼저 확인하면서 node별 parameter를 구조화된 control로 입력할 수 있어야 하며, Agent Builder가 만든 전체 graph 변경을 한 번의 Undo로 되돌릴 수 있어야 한다.
 
-이 문서는 Accepted ADR-0045의 Agent Builder direct-edit UX와 Accepted ADR-0046의 GraphMutation/CDS 저장 경계를 구현하기 위한 기능 계약을 정의한다. Model option과 generated LLM node 추천은 Accepted ADR-0040을 따른다. ADR-0019는 Superseded Preview 기록이며 characterization 외 활성 fallback으로 사용하지 않는다.
+이 문서는 Accepted ADR-0045의 Agent Builder direct-edit UX, Accepted ADR-0046의 GraphMutation/CDS 저장 경계와 Accepted ADR-0054의 생성 모드·전환 계약을 구현하기 위한 기능 계약을 정의한다. Model option과 generated LLM node 추천은 Accepted ADR-0040을 따른다. ADR-0019는 Superseded Preview 기록이며 characterization 외 활성 fallback으로 사용하지 않는다. MBA-293 시점 코드에는 기존 두 mode만 있으므로 세 canonical mode와 빠른 생성은 후속 구현 목표다.
 
 ## 2. Design Principles
 
@@ -24,7 +24,8 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 ### 3.1 In Scope
 
 - 신규 workflow 생성과 기존 workflow 수정을 위한 typed GraphMutation 생성
-- `설정하며 생성`과 `구조만 생성` 모드
+- 기본 `단계별 생성`, 명시적 `빠른 생성`, 고급 `구조만 생성` 모드와 안전한 mode 전환
+- 단계별 생성 중 미완료 task만 대상으로 하는 `남은 설정 빠르게 완료`
 - Node Capability Catalog 기반 parameter task 생성
 - upstream output을 이용한 selector 추천
 - node focus와 node별 parameter card
@@ -44,21 +45,38 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 - ADR-0040의 generated LLM model 추천과 intent model 표시 순서 정책 재설계. 최신 dev 동작은 회귀 검증하고 MBA-228이 덮어쓰지 않는다.
 - KB 후보 표시 정책의 재구현
 - Frontend와 Gateway의 mixed-revision 무중단 배포, staged rollout/rollback, creation gate와 image artifact 검증
+- Legacy Preview API/UI, 별도 preview graph store 또는 preview 전용 apply/save 계약 복구
+- Knowledge 후보 ranking과 Collection/KB 계층 선택 알고리즘 재설계
 
 ## 4. Functional Requirements
 
 ### DBP-FR-001 Generation Mode
 
-- Agent Builder는 `configure_and_generate`와 `structure_only`를 제공한다.
-- 화면 기본값은 `configure_and_generate`다.
-- 사용자가 message를 제출한 뒤에는 해당 request의 mode를 변경하지 않는다.
+- Agent Builder의 canonical mode는 `guided_generate`, `quick_generate`, `structure_only`다.
+- 화면 기본값과 mode가 생략된 신규 요청의 기본값은 `guided_generate`다.
+- 기존 `configure_and_generate` 입력과 저장 row는 `guided_generate`로 읽기 정규화한다. 신규 응답에는 canonical 값만 반환하고 기존 JSON row를 backfill하지 않는다.
+- 사용자는 화면 mode control 또는 명시적인 자연어 요청으로 `quick_generate`를 요청할 수 있다. LLM은 mode 의도를 구조화할 수 있지만 eligibility와 권한을 승인하지 않는다.
+- Client는 초기 화면값과 사용자의 명시적 선택을 `generation_mode_source=default|explicit_control`로 구분한다. 명시적 control 선택, planner가 구조화한 명시적 자연어 mode 의도, 기본 guided 순으로 requested mode를 확정한다. Default guided는 "한 번에 만들어 줘" 같은 명시적 자연어 요청을 막지 않는다.
+- `quick_generate`의 최종 허용 여부는 Gateway application policy가 현재 권한, active organization, Catalog, base graph hash, workflow `updated_at`, resource revision과 미해결 선택을 기준으로 결정론적으로 판정한다.
+- Quick mode는 모든 capability가 지원되고 parameter가 사용자 요청·기존 graph·단일 selector·안전한 Catalog default로 하나의 값으로 확정되며, 권한 resource와 revision이 현재 유효하고 외부 부수효과를 새로 활성화하지 않을 때만 허용한다.
+- Credential, 권한 있는 KB/Collection 선택, 외부 대상, 의미 있는 복수 후보, Condition branch, HTTP/code/egress, unresolved 외부 action 또는 stale/hidden resource가 남으면 quick proposal을 발급하지 않는다.
+- Quick mode가 불가능하면 graph를 변경하지 않고 safe reason code와 `mode_transition_required`를 반환한다. UI는 민감한 resource 존재를 드러내지 않는 설명과 `단계별 생성으로 계속`/`취소`를 제공한다. 사용자 확인 없이 자동 전환하지 않는다.
+- Quick mode가 가능하면 backend는 full typed GraphMutation과 redaction-safe 변경 요약을 일회성 응답으로 반환하고 request를 `pending_apply`로 유지한다. Frontend는 editor clone에 dry-run해 동일 validator를 통과시킨 뒤 추가·변경·삭제 node와 남은 차단 사항을 표시한다. 사용자가 `생성 적용`을 명시적으로 선택한 뒤에만 실제 history boundary에 적용하고 CDS CAS 저장한다.
+- Quick review는 Legacy Preview가 아니다. Preview session/API, 별도 draft store 또는 preview 전용 save path를 만들지 않으며 guided mode와 같은 GraphMutation, CAS, acknowledgement와 Undo 경계를 사용한다.
+- Quick response를 적용 전에 잃거나 reload하면 safe envelope에서 full operations를 복원하지 않고 요청을 재생성한다. CAS 저장 뒤 acknowledgement 유실 복구는 ADR-0046을 따른다.
+- `남은 설정 빠르게 완료`는 새 generation mode가 아니라 `guided_generate` request의 범위 축소 명령이다. 이미 acknowledgement된 graph와 완료 task를 보존하고 현재 미완료 task만 현재 권한·Catalog·revision으로 재평가한다. 전체 planner 또는 전체 graph generation을 다시 실행하지 않는다.
+- 남은 task 중 canonical graph에 추천값이 이미 materialize되고 recommendation fingerprint가 일치하는 항목만 한 검토안으로 묶는다. 적용은 parent request row lock 안의 멱등 batch confirm이며 GraphMutation이나 workflow 저장을 만들지 않는다. 값이 없거나 변경이 필요한 항목, credential, 권한 resource, 외부 부수효과, Condition branch와 복수 후보는 단계별 상태로 유지한다.
 - `structure_only`는 parameter task를 시작하지 않는 generation mode다. 빈 workflow의 새 graph는 `initial_graph`, 기존 workflow 부분 변경은 `graph_edit`, 기존 workflow 전체 교체는 `replace_workflow` GraphMutation을 사용하며 mode와 kind는 독립이다.
-- `generation_mode`는 각 request의 기존 `AgentBuilderRequest.response_payload`에 저장한다. 신규 request에 값이 없으면 `configure_and_generate`를 사용하며 workflow graph, session 전용 column 또는 별도 영구 column에는 저장하지 않는다.
+- `structure_only` 결과의 unresolved configuration은 저장할 수 있지만 test, run과 deployment preflight가 차단하며 생성 완료 또는 실행 준비 상태로 표시하지 않는다.
+- `generation_mode`, `generation_mode_source`, requested/effective mode, transition status와 safe reason code는 각 request의 기존 `AgentBuilderRequest.response_payload`에만 저장한다. Workflow graph, session 전용 column, 신규 table 또는 별도 영구 column에는 저장하지 않는다.
+- Mode transition과 빠른 완료 요청은 client-generated operation id와 expected request/task version을 사용한다. 같은 operation 재시도는 같은 결과를 반환하고 stale 또는 competing 요청은 graph나 task를 변경하지 않은 채 conflict로 닫는다.
+- Request version은 기존 `response_payload` 안에서 1부터 단조 증가하고 transition/proposal 상태 변경마다 parent request row lock 안에서 갱신한다. Proposal은 별도 monotonic proposal version을 가지며 신규 DB column을 추가하지 않는다.
+- Initial quick review와 mode transition 대기의 취소는 기존 request cancel을 사용한다. Guided request 자체는 유지하면서 remaining quick proposal만 닫을 때는 proposal id/version을 검증하는 전용 cancel을 사용하고 graph/task를 변경하지 않는다.
 
 ### DBP-FR-002 Structured Planning
 
 - planner는 사용자 message, server-loaded workflow context, 선택된 editor hint, safe Knowledge candidate context, capability 목록과 capability별 Catalog 허용 parameter key/safe label을 입력으로 사용한다.
-- 정상 request에서 planner는 provider를 한 번 호출해 node 목적, dependency, edit target, Knowledge 필요성과 `step_id`, `parameter_key`, `reason`, `input_guidance`로 구성된 parameter guidance hint를 하나의 구조화 응답으로 반환한다.
+- 정상 request에서 planner는 provider를 한 번 호출해 node 목적, dependency, edit target, Knowledge 필요성, 명시적 자연어 mode 의도 또는 null과 `step_id`, `parameter_key`, `reason`, `input_guidance`로 구성된 parameter guidance hint를 하나의 구조화 응답으로 반환한다. Mode 의도는 요청에 명시된 생성 방식만 구조화하며 eligibility를 뜻하지 않는다.
 - Backend는 hint의 `step_id`가 현재 plan step이고 `parameter_key`가 해당 step capability의 Catalog에 있을 때만 사용한다. Unknown/mismatched hint는 폐기하고 Catalog description으로 fallback한다.
 - planner는 parameter key, credential 값, 최종 validation rule의 권위가 아니다.
 - 최초 결과가 schema-valid지만 semantic invariant를 위반한 경우에만 safe machine code로 semantic repair를 최대 한 번 수행한다. Provider/JSON/schema 실패에는 repair하지 않고 fail-closed하며, repair 결과가 다시 실패해도 종료한다. 한 request의 provider 호출 총수는 최대 두 번이다.
@@ -127,7 +145,7 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 
 ### DBP-FR-006 Parameter Task Planning
 
-- `configure_and_generate`에서 backend는 patch 결과 node를 catalog와 대조해 `agent_builder_task=true`인 configurable parameter에 parameter task record를 만든다. Start의 빈 `variables`와 Answer의 빈 `outputs`처럼 graph 구조만으로 성립하는 schema field는 catalog에서 `agent_builder_task=false`로 선언해 사용자 설정 task를 만들지 않는다.
+- `guided_generate`에서 backend는 patch 결과 node를 catalog와 대조해 `agent_builder_task=true`인 configurable parameter에 parameter task record를 만든다. 기존 `configure_and_generate` 입력은 같은 흐름으로 정규화한다. Start의 빈 `variables`와 Answer의 빈 `outputs`처럼 graph 구조만으로 성립하는 schema field는 catalog에서 `agent_builder_task=false`로 선언해 사용자 설정 task를 만들지 않는다.
 - parameter 값은 사용자 요청의 명시적 값, 기존 workflow 값, 단일 upstream output과 catalog contract로 확정되는 값, catalog의 안전한 기본값 순서로 결정한다.
 - 앞 단계에서 값이 확정되면 graph에 값을 반영하고 `resolution_source=user_request|existing_graph|upstream_selector|catalog_default`와 값 원문이 아닌 canonical SHA-256 `recommendation_fingerprint`를 기록하되 task는 사용자 확인 전까지 `pending|active`로 유지한다. 실제 값은 task에 복제하지 않고 workflow graph에서 hydrate하며, 안전한 추천 이유와 함께 확인 또는 수정 control을 표시한다.
 - 후보가 2개 이상이면 자동 확정하지 않고 선택 task를 만든다.
@@ -223,7 +241,7 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 - 신규 direct-edit session은 `direct_edit_v1`을 저장하고 기존 null row는 backfill하거나 자동 변환하지 않는다. 기존 null Preview session은 `stale_protocol`로 복구해 safe 대화만 표시한다.
 - `stale_protocol` 전환은 legacy Preview graph/draft/apply 정보를 복원하지 않는다. Redaction을 통과한 안전한 이전 대화는 읽기 전용으로 유지하고 재제출 안내를 표시하며, 신규 요청은 한 번 생성한 새 `direct_edit_v1` session에서 처리해 stale 전환을 반복하지 않는다.
 - Frontend와 Gateway의 무중단 coordinated rollout, 배포 gate, 단계적 rollback과 image artifact 분리는 별도 배포 이슈의 범위이며 MBA-228 완료 조건이 아니다.
-- Generation mode, safe operation envelope, catalog version과 task 상태는 기존 `AgentBuilderRequest.response_payload`를 재사용하며 신규 table을 만들지 않는다. Full typed operations와 parameter 값은 저장하지 않는다. Repository는 nested JSON을 제자리 변경하지 않고 새 전체 payload 객체를 column에 재할당한다. Generation mode는 session column에 저장하지 않는다.
+- Generation mode/source, request/proposal version, safe operation envelope, catalog version과 task 상태는 기존 `AgentBuilderRequest.response_payload`를 재사용하며 신규 table을 만들지 않는다. Full typed operations와 parameter 값은 저장하지 않는다. Repository는 nested JSON을 제자리 변경하지 않고 새 전체 payload 객체를 column에 재할당한다. Generation mode는 session column에 저장하지 않는다.
 - 복구 시 `response_payload`의 `catalog_version`이 없거나 `2`이면 legacy v2 operation으로 stale 처리하고, `3`인 operation만 current catalog 검증으로 진행한다.
 - 실제 parameter 값은 session/request payload에 복제하지 않고 저장된 workflow graph에서 읽는다. 재진입 control은 Catalog mapping으로 graph의 현재 safe 값을 hydrate한다. 값이 없는 skipped/deferred task는 빈 control을 표시한다. Credential/resource reference는 현재 권한으로 조회 가능한 safe opaque reference만 표시하고 권한 상실·삭제된 reference의 ID/label과 raw secret은 노출하지 않는다.
 - raw secret과 credential config는 session에 저장하지 않는다.
@@ -306,7 +324,7 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 - `after_graph` Knowledge binding that updates an LLM node's `knowledgeBases` emits every graph reference as safe `{ "id", "name" }`. D binding with an ID alone is invalid and must not be issued.
 - D task with an automatic recommendation shows that recommendation as the selected typed-control value together with the other allowed candidates or Catalog options. It remains pending user confirmation: unchanged apply sends `confirm`; a changed value sends `set`.
 
-- `configure_and_generate`에서 LLM node가 생성되면 graph 저장 acknowledgement 뒤 하나의 after-graph Knowledge 설정 카드가 표시되어야 한다. 사용자는 여러 Knowledge Base 또는 빈 선택을 확정할 수 있다.
+- `guided_generate`에서 LLM node가 생성되면 graph 저장 acknowledgement 뒤 하나의 after-graph Knowledge 설정 카드가 표시되어야 한다. 기존 `configure_and_generate` 입력도 같은 흐름이다. 사용자는 여러 Knowledge Base 또는 빈 선택을 확정할 수 있다.
 - Knowledge 후보 노출은 active organization의 use 권한 및 source lifecycle을 기준으로 한다. active ready version 부재는 후보 선택을 막지 않으며 실행 및 배포 preflight에서만 unresolved 상태를 차단한다.
 - ParameterTask 또는 Knowledge 카드가 표시되는 동안에도 사용자는 다음 자연어 요청을 입력할 수 있다. 진행 중 API 요청과 CDS 저장 중에만 composer 제출을 막는다.
 - Agent Builder graph mutation은 server auto-layout으로 계산된 좌표를 포함해야 하고, canonical workflow graph 저장 후 그 좌표가 유지되어야 한다.
