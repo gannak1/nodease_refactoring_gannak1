@@ -491,6 +491,80 @@ def test_usage_record_is_idempotent_and_included_in_existing_projections(
         assert metrics[seed.workflow_id]["projected_month_cost"] >= 0.004
 
 
+def test_organization_summary_scopes_legacy_null_usage_to_primary_workflows(
+    usage_database,
+):
+    engine, _ = usage_database
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    seed = _seed_contract(session_factory)
+    service = AgentBuilderIntentUsageService(session_factory=session_factory)
+    _record(service, seed)
+
+    with session_factory.begin() as db:
+        other_organization = Organization(
+            name=f"Other Organization {uuid.uuid4().hex}",
+            created_by=seed.user_id,
+            managed_by=seed.user_id,
+        )
+        db.add(other_organization)
+        db.flush()
+        other_app = App(
+            organization_id=other_organization.id,
+            name="Other Organization App",
+            url_slug=f"other-organization-app-{uuid.uuid4().hex}",
+            auth_secret="",
+            created_by=seed.user_id,
+        )
+        db.add(other_app)
+        db.flush()
+        other_workflow = Workflow(
+            organization_id=other_organization.id,
+            app_id=other_app.id,
+            graph={"nodes": [], "edges": []},
+            created_by=seed.user_id,
+            updated_by=seed.user_id,
+        )
+        db.add(other_workflow)
+        db.flush()
+        other_app.workflow_id = other_workflow.id
+        db.add_all(
+            [
+                _workflow_usage_log(
+                    seed,
+                    user_id=seed.user_id,
+                    organization_id=None,
+                    workflow_id=seed.workflow_id,
+                    total_cost=Decimal("0.500000"),
+                ),
+                _workflow_usage_log(
+                    seed,
+                    user_id=seed.user_id,
+                    organization_id=other_organization.id,
+                    workflow_id=seed.workflow_id,
+                    total_cost=Decimal("99.000000"),
+                ),
+                _workflow_usage_log(
+                    seed,
+                    user_id=seed.user_id,
+                    organization_id=None,
+                    workflow_id=other_workflow.id,
+                    total_cost=Decimal("98.000000"),
+                ),
+            ]
+        )
+
+    with session_factory() as db:
+        summary = AdminUsageService.get_organization_summary(
+            db,
+            seed.organization_id,
+            now=datetime.now(timezone.utc),
+        )
+
+    assert summary.total_cost == pytest.approx(0.504)
+    assert summary.workflow_execution_cost == pytest.approx(0.5)
+    assert summary.agent_builder_cost == pytest.approx(0.004)
+
+
 def test_operation_cost_summary_uses_real_postgres_active_and_permission_scope(
     usage_database,
 ):
@@ -1262,6 +1336,31 @@ def test_new_usage_rejects_workflow_that_is_no_longer_app_primary(
         ) == 0
 
 
+def test_new_usage_rejects_canceled_request_before_next_attempt(
+    usage_database,
+):
+    engine, _ = usage_database
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    seed = _seed_contract(session_factory)
+
+    with session_factory.begin() as db:
+        db.get(AgentBuilderRequest, seed.request_id).status = "canceled"
+
+    with pytest.raises(AgentBuilderIntentUsageRecordingError):
+        _reserve(
+            AgentBuilderIntentUsageService(session_factory=session_factory),
+            seed,
+            attempt=2,
+        )
+
+    with session_factory() as db:
+        assert db.scalar(
+            select(func.count(LLMUsageLog.id)).where(
+                LLMUsageLog.runtime_request_id == seed.request_id
+            )
+        ) == 0
+
+
 @pytest.mark.parametrize(
     "invalid_condition",
     [
@@ -1396,10 +1495,11 @@ def test_message_api_persists_each_provider_attempt_through_production_compositi
         payloads.insert(
             0,
             {
-                "request_type": "invalid",
+                "request_type": "unsupported",
                 "draft_mode": "new_workflow",
                 "intent_summary": "수정이 필요한 응답",
                 "ordered_capabilities": [],
+                "unsupported_requests": [],
             },
         )
     client = _SequenceIntentClient(payloads)
@@ -1738,7 +1838,7 @@ def test_migration_round_trip_on_empty_usage_history():
                     connection.execute(
                         text("SELECT version_num FROM alembic_version")
                     ).scalar_one()
-                    == "a8c9d0e1f2a3"
+                    == "ac2d3e4f5061"
                 )
                 assert _usage_history_reference_delete_actions(connection) == {
                     "credential_id": "SET NULL",
@@ -1793,4 +1893,4 @@ def test_migration_downgrade_rejects_agent_builder_usage_history():
     if "Agent Builder usage rows exist" not in output:
         pytest.fail("downgrade rejection did not report the preserved usage reason")
     assert preserved_usage_count == 1
-    assert version == "a8c9d0e1f2a3"
+    assert version == "ac2d3e4f5061"

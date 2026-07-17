@@ -358,7 +358,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - Admin과 내 모듈 응답은 기존 총비용을 유지하고 workflow 실행 비용과 Agent Builder 비용을 구분하며 두 값의 합이 총비용과 같은지 검증한다.
 - Model/credential 삭제 뒤 연결 ID만 NULL이고 token/cost와 일반 집계는 유지된다.
 - Migration의 single head, nullable history link, partial unique/check 제약과 빈 이력 downgrade/re-upgrade를 검증한다. Agent Builder usage 이력이 한 건이라도 있으면 provenance 보존을 위해 downgrade가 거절되는지 검증한다. PostgreSQL catalog에서 제약 이름을 확인하고 음수 token/cost, 0 이하 attempt와 불완전한 Agent Builder runtime identity 직접 insert가 거절되는지 검증한다.
-- 실제 message HTTP API부터 production composition, intent extractor와 별도 usage transaction까지 통과해 최초 planner는 한 행, Pydantic 구조 repair는 attempt 1·2 두 행을 저장하는지 검증한다.
+- 실제 message HTTP API부터 production composition, intent extractor와 별도 usage transaction까지 통과해 최초 planner는 한 행, semantic repair가 발생하면 attempt 1·2 두 행을 저장하는지 검증한다. Pydantic 구조 오류는 attempt 1 usage만 보존하고 두 번째 Provider 호출 없이 종료하며, 첫 응답 뒤 request가 취소되면 attempt 2 예약도 거절한다.
 
 ## 5. Frontend Unit And Component Tests
 

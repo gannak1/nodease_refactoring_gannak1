@@ -1124,6 +1124,8 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     audit_workflow_correlation_revision = script.get_revision("a9b0c1d2e3f4")
     document_ingestion_job_revision = script.get_revision("aa0b1c2d3e4f")
     agent_builder_intent_usage_revision = script.get_revision("a8c9d0e1f2a3")
+    conversation_memory_revision = script.get_revision("ab1c2d3e4f50")
+    current_head_revision = script.get_revision("ac2d3e4f5061")
 
     assert safe_metadata_revision.down_revision == "fa7b8c9d0e12"
     assert set(merged_revision.down_revision) == {"fa7c8d9e0f12", "ff3a4b5c6d78"}
@@ -1173,11 +1175,18 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     assert audit_workflow_correlation_revision.down_revision == "a8b9c0d1e2f3"
     assert document_ingestion_job_revision.down_revision == "a9b0c1d2e3f4"
     assert agent_builder_intent_usage_revision.down_revision == "aa0b1c2d3e4f"
+    assert conversation_memory_revision.down_revision == "aa0b1c2d3e4f"
+    assert set(current_head_revision.down_revision) == {
+        "a8c9d0e1f2a3",
+        "ab1c2d3e4f50",
+    }
     assert "2b6c7d8e9f02" in ancestry
     assert "a6f4d2c8e1b7" in ancestry
     assert "a9b0c1d2e3f4" in ancestry
     assert "aa0b1c2d3e4f" in ancestry
-    assert script.get_heads() == ["a8c9d0e1f2a3"]
+    assert "a8c9d0e1f2a3" in ancestry
+    assert "ab1c2d3e4f50" in ancestry
+    assert script.get_heads() == ["ac2d3e4f5061"]
 
 
 def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():

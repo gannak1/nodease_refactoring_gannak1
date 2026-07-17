@@ -327,13 +327,36 @@ def _organization_period_cost_query(
     organization_id: Any,
     period: AdminUsagePeriod,
 ) -> UsageCostBreakdown:
+    eligible_primary_workflows = (
+        db.query(App.workflow_id.label("workflow_id"))
+        .join(
+            Workflow,
+            and_(
+                Workflow.id == App.workflow_id,
+                Workflow.organization_id == organization_id,
+            ),
+        )
+        .filter(
+            App.organization_id == organization_id,
+            App.workflow_id.isnot(None),
+        )
+        .distinct()
+        .subquery()
+    )
     row = (
         db.query(
             _total_cost_sum().label("total_cost"),
             _agent_builder_cost_sum().label("agent_builder_cost"),
         )
+        .join(
+            eligible_primary_workflows,
+            eligible_primary_workflows.c.workflow_id == LLMUsageLog.workflow_id,
+        )
         .filter(
-            LLMUsageLog.organization_id == organization_id,
+            or_(
+                LLMUsageLog.organization_id == organization_id,
+                LLMUsageLog.organization_id.is_(None),
+            ),
             *_usage_in_period_conditions(period),
         )
         .one()
@@ -346,11 +369,13 @@ def _organization_period_cost_fake(
     organization_id: Any,
     period: AdminUsagePeriod,
 ) -> UsageCostBreakdown:
+    eligible_workflow_ids = set(_primary_workflow_zero_items(db, organization_id))
     total_cost = Decimal("0")
     agent_builder_cost = Decimal("0")
     for usage in db.usage_logs:
         if (
-            usage.organization_id != organization_id
+            usage.workflow_id not in eligible_workflow_ids
+            or not _is_usage_in_organization(usage, organization_id)
             or not period.start_at <= usage.created_at < period.end_at
             or not is_billable_llm_usage(
                 getattr(usage, "runtime_surface", None),

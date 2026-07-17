@@ -315,7 +315,7 @@ class AgentBuilderIntentUsageService:
         *,
         lock_primary: bool = False,
     ) -> None:
-        request_exists = db.execute(
+        request_statement = (
             select(AgentBuilderRequest.id)
             .join(
                 AgentBuilderSession,
@@ -326,11 +326,17 @@ class AgentBuilderIntentUsageService:
                 AgentBuilderRequest.session_id == context.session_id,
                 AgentBuilderRequest.user_id == context.user_id,
                 AgentBuilderRequest.organization_id == context.organization_id,
+                AgentBuilderRequest.status == "processing",
                 AgentBuilderSession.user_id == context.user_id,
                 AgentBuilderSession.organization_id == context.organization_id,
                 AgentBuilderSession.workflow_id == context.workflow_id,
             )
-        ).scalar_one_or_none()
+        )
+        if lock_primary:
+            request_statement = request_statement.with_for_update(
+                of=AgentBuilderRequest
+            )
+        request_exists = db.execute(request_statement).scalar_one_or_none()
         primary_statement = (
             select(Workflow.id)
             .join(App, App.id == Workflow.app_id)

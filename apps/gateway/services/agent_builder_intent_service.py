@@ -822,16 +822,9 @@ class LLMAgentBuilderIntentExtractor:
             except AgentBuilderIntentExtractionError:
                 raise
             except ValidationError as exc:
-                if attempt == 1:
-                    raise AgentBuilderIntentExtractionError(
-                        "Agent Builder intent extraction failed"
-                    ) from exc
-                repair_codes = ["SCHEMA_VALIDATION_FAILED"]
-                if any(
-                    error.get("loc", ())[:1] == ("knowledge_placements",)
-                    for error in exc.errors()
-                ):
-                    repair_codes.append("KNOWLEDGE_BINDING_TARGET_REQUIRED")
+                raise AgentBuilderIntentExtractionError(
+                    "Agent Builder intent extraction failed"
+                ) from exc
             except Exception as exc:
                 raise AgentBuilderIntentExtractionError(
                     "Agent Builder intent extraction failed"

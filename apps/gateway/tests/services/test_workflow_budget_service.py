@@ -616,8 +616,24 @@ def test_organization_summary_returns_budget_block_from_active_budgets():
             ),
         ],
         apps=[
-            SimpleNamespace(id=app_id, name=name)
-            for name, app_id in app_ids.items()
+            SimpleNamespace(
+                id=app_ids["at_risk"],
+                name="at_risk",
+                workflow_id=at_risk_workflow_id,
+                organization_id=organization_id,
+            ),
+            SimpleNamespace(
+                id=app_ids["normal"],
+                name="normal",
+                workflow_id=normal_workflow_id,
+                organization_id=organization_id,
+            ),
+            SimpleNamespace(
+                id=app_ids["disabled"],
+                name="disabled",
+                workflow_id=disabled_workflow_id,
+                organization_id=organization_id,
+            ),
         ],
         budgets=[
             _budget_row(organization_id, at_risk_workflow_id, Decimal("100.00")),

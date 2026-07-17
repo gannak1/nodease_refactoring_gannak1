@@ -113,8 +113,8 @@ Transport adapter는 `X-Agent-Builder-Mode-Contract`를 읽어 legacy/canonical 
 
 제약:
 
-- 정상 request당 provider 호출 한 번. JSON object의 Pydantic 구조 schema 실패 또는 semantic invariant 위반에만 safe-code repair 최대 한 번
-- provider 호출, content 추출, JSON 파싱 또는 non-object JSON failure에는 repair하지 않고 fail-closed
+- 정상 request당 provider 호출 한 번. 최초 schema-valid 결과의 semantic invariant 위반에만 safe-code repair 최대 한 번
+- provider 호출, content 추출, JSON 파싱, non-object JSON 또는 Pydantic 구조 schema 실패에는 repair하지 않고 fail-closed
 - parameter, Knowledge와 task 전환 중 추가 planner 호출 금지
 - secret-like input 차단 또는 redaction 후 호출
 - parameter key와 validation rule을 결정하지 않음
