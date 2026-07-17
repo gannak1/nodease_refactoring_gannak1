@@ -15,6 +15,15 @@ Legacy Preview API와 direct-edit를 동시에 유지하면 graph 생성, valida
 
 ## Decision
 
+### 0. 공통 불변조건
+
+아래 규칙은 mode, endpoint와 RequestStatus별 세부 계약보다 우선하며 이후 절은 이를 구체화할 뿐 예외를 만들지 않는다.
+
+1. **Contract before planning**: mode representation contract는 planner 호출과 request 생성 전에 확정한다. Contract가 표현할 수 없는 mode는 저장 상태를 만들지 않는다.
+2. **Durable state only**: 후속 요청은 DB에 허용된 safe metadata와 persisted workflow graph만 사용한다. 저장하지 않은 parameter 값, full operation, raw prompt 또는 replica memory에 의존하지 않는다.
+3. **Every nonterminal request is cancelable**: 모든 비종료 RequestStatus는 하나의 contract-neutral cancel로 terminal 상태가 될 수 있어야 한다. 기능별 취소 allowlist를 두지 않는다.
+4. **Authorize the final graph at save**: 모든 GraphMutation은 CAS transaction 안에서 final candidate graph의 전체 resource reference를 서버가 다시 추출하고 현재 권한·lifecycle·relation을 검증한 뒤에만 저장한다.
+
 ### 1. 정식 생성 모드
 
 Agent Builder는 다음 세 모드를 제공한다.
@@ -30,9 +39,10 @@ Agent Builder는 다음 세 모드를 제공한다.
 ### 2. 모드 선택 권한
 
 - 별도 선택이 없으면 `guided_generate`를 사용한다.
-- 사용자는 화면 control 또는 "한 번에 만들어 줘"처럼 명시적인 자연어 요청으로 `quick_generate`를 요청할 수 있다.
+- 사용자는 `canonical-v2`에서 화면 control 또는 "한 번에 만들어 줘"처럼 명시적인 자연어 요청으로 `quick_generate`를 요청할 수 있다.
 - Client는 화면의 초기값과 사용자의 명시적 control 선택을 `generation_mode_source=default|explicit_control`로 구분한다. 명시적 control 선택, 명시적 자연어 mode 의도, 기본 guided 순서로 requested mode를 확정한다.
-- `source=default`인 guided 표시는 자연어의 명시적 quick/structure-only 요청을 막지 않는다. `source=explicit_control`인 선택은 자연어 mode 의도보다 우선한다.
+- `source=default`인 guided 표시는 `canonical-v2` 자연어의 명시적 quick/structure-only 요청을 막지 않는다. `source=explicit_control`인 선택은 자연어 mode 의도보다 우선한다.
+- Mode contract는 planner 호출과 request row 생성 전에 확정한다. `legacy-v1`에서는 자연어 quick 의도를 requested mode로 승격하지 않고 `configure_and_generate`로 처리하며 `mode_transition_required`나 quick metadata를 만들지 않는다. Legacy 표현으로 `quick_generate`를 직접 제출하면 request를 만들기 전에 `unsupported_generation_mode`로 거부한다.
 - LLM은 자연어에서 모드 의도를 구조화할 수 있지만 빠른 생성 가능 여부를 승인하지 않는다.
 - 최종 가능 여부는 Gateway의 결정론적 eligibility policy가 현재 사용자 권한, Catalog, graph와 resource 상태를 기준으로 판정한다.
 - 서버는 사용자 동의 없이 빠른 생성을 단계별 생성으로 조용히 전환하지 않는다.
@@ -59,6 +69,8 @@ Agent Builder는 다음 세 모드를 제공한다.
 - resource가 삭제, 비활성, 권한 상실 또는 stale 상태다.
 
 이 경우 서버는 graph를 변경하지 않고 safe reason code와 `mode_transition_required`를 반환한다. 일반 required parameter 값을 확정할 수 없는 경우에는 `configuration_value_required`를 사용한다. UI는 단계별 생성으로 전환할 이유를 민감 정보 없이 설명하고 사용자의 명시적 확인을 받는다. 사용자가 취소하면 기존 graph는 그대로 유지한다.
+
+Quick 판정 중 사용자 문장에서 읽은 실제 parameter 값은 request/session metadata에 보존하지 않는다. 대신 전환 뒤 다시 입력해야 할 Catalog `step_id`/`parameter_key`만 safe reconfirmation descriptor로 저장한다. 사용자가 단계별 전환을 확인하면 서버는 값에 독립적인 structured plan과 Catalog로 graph/task를 만들고 해당 task를 `reconfirmation_required`로 연다. 원래 값을 추측하거나 prompt/planner를 다시 실행하거나 처리 Gateway의 메모리에 남은 값을 조건부로 사용하지 않는다.
 
 ### 4. 빠른 생성 적용 경계
 
@@ -96,19 +108,21 @@ Full typed operations는 기존 계약대로 발급 API 응답에서만 전달�
 - mode 전환과 빠른 완료 요청은 client-generated operation id와 expected request/task version을 포함한다.
 - Request 상태, GraphMutation 상태와 ParameterTask 상태는 서로 다른 enum과 owner를 가진다. `pending_apply|pending_save|pending_ack|acknowledged`는 GraphMutation lifecycle이며 RequestStatus로 저장하지 않는다.
 - stale graph, stale task 또는 중복 operation은 기존 결과를 덮어쓰지 않고 conflict로 닫는다. 다만 full operations를 저장하지 않는 mutation 발급 응답의 재시도는 같은 payload 반환을 보장하지 않고 `operation_payload_unavailable` 복구 계약을 따른다.
-- 적용 전 취소는 graph를 변경하지 않는다. 적용 중 취소는 이미 acknowledgement된 변경을 자동 롤백하지 않고 기존 Workflow Undo boundary로 복구한다.
+- RequestStatus의 비종료 집합은 `planning|clarification_required|mode_transition_required|graph_mutation_ready|parameter_configuration`이고 이 상태는 모두 contract-neutral request cancel로 종료할 수 있다. 취소는 parent request row lock에서 늦은 planner 결과와 competing task/transition commit을 차단하고 남은 task/Knowledge resolution을 `canceled`로 닫는다.
+- 취소는 이미 CDS에 저장된 graph를 자동 롤백하지 않는다. 저장 전 operation은 `blocked`로 닫고 Client의 local apply를 Undo하며, 저장이 확정된 operation과 완료 parameter 값은 유지한다. 전체 graph 복구는 기존 Workflow Undo boundary만 사용한다.
 - 한 request에서 Legacy Preview와 direct-edit를 혼용하지 않는다.
 - 외부 generation mode 표현은 선택적 `X-Agent-Builder-Mode-Contract` 요청 헤더로 협상한다. 헤더가 없거나 `legacy-v1`이면 Gateway는 legacy `configure_and_generate` 표현을 반환하고, `canonical-v2`이면 canonical 표현을 반환한다.
 - Message request 생성 시 정규화한 `mode_contract_version=legacy-v1|canonical-v2`를 기존 `AgentBuilderRequest.response_payload`에 고정한다. Raw header와 session 전체 계약은 저장하지 않으며 contract 값이 없는 기존 request는 `legacy-v1`로 읽는다. Active request를 조회하거나 변경하는 후속 endpoint는 고정된 contract와 같은 요청만 허용하고 불일치하면 request payload를 projection하지 않은 채 `mode_contract_mismatch`로 닫는다.
-- Request cancel은 generation mode를 포함하지 않는 contract-neutral 응답으로 제공해 고정 contract를 모르는 복구·운영 경로도 같은 인증·권한 아래 request를 종료할 수 있게 한다.
+- Request cancel은 generation mode를 포함하지 않는 contract-neutral 응답으로 제공해 고정 contract를 모르는 복구·운영 경로도 같은 인증·권한 아래 모든 비종료 request를 종료할 수 있게 한다.
 - Rollout은 Gateway가 두 입력을 수용하되 legacy 응답을 유지하는 단계, Client가 두 응답을 읽는 단계, 모든 Gateway replica와 Client dual-read gate 확인 뒤 `canonical-v2`를 허용하는 단계, Client가 canonical 값을 쓰는 순서로 진행한다. `quick_generate`는 canonical-v2와 Backend·Frontend 통합 gate가 모두 준비된 경우에만 노출한다. Client rollback 전에는 quick/canonical request 생성을 먼저 닫고 active `canonical-v2` request를 완료·취소해 0건임을 확인하며, 이 drain이 끝날 때까지 dual-contract Gateway를 유지한다. Drain count는 `mode_contract_version=canonical-v2`이면서 RequestStatus가 terminal이 아닌 request의 내부 운영 집계이며 request id나 payload를 외부에 노출하지 않는다.
 
 ### 8. 데이터와 보안
 
 - canonical mode, requested mode와 source, effective mode, request-scoped `mode_contract_version`, monotonic request/proposal version, 전환 상태와 safe reason code는 기존 `AgentBuilderRequest.response_payload`의 safe metadata에 저장할 수 있다.
+- Mode transition 복구에는 값에 독립적인 structured plan과 재입력이 필요한 Catalog `step_id`/`parameter_key`만 저장한다. 실제 parameter 값과 값에 의존하는 graph fragment는 저장하지 않으며 전환 뒤 typed task에서 다시 확인한다.
 - full operations, raw prompt의 민감 부분, credential 원문, token, API key, hidden resource identifier와 외부 payload는 저장·audit·trace하지 않는다.
 - mode metadata를 위한 신규 table 또는 전용 column을 추가하지 않는다.
-- 빠른 생성 eligibility와 mode 전환은 권한 우회 수단이 아니다. 생성 시점, mutation 발급 시점, CAS 저장 시점과 실행·배포 preflight에서 기존 권한 검사를 유지한다.
+- 빠른 생성 eligibility와 mode 전환은 권한 우회 수단이 아니다. 생성 시점과 mutation 발급 시점뿐 아니라 CAS 저장 transaction 안에서도 final candidate graph에서 모든 resource reference를 서버가 다시 추출해 현재 organization, lifecycle, relation과 use/write 권한을 재검증한다. Client가 제출한 reference 목록이나 발급 시점 판정을 재사용하지 않는다. 실행·배포 preflight도 기존 권한 검사를 유지한다.
 
 ## Authority and implementation state
 

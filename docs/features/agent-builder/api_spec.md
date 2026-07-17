@@ -47,7 +47,8 @@ X-Agent-Builder-Mode-Contract: legacy-v1 | canonical-v2
 ```
 
 - 헤더가 없거나 `legacy-v1`이면 외부 request/response mode 표현은 `configure_and_generate|structure_only`다. `canonical-v2`이면 외부 표현은 `guided_generate|quick_generate|structure_only`다.
-- Gateway는 두 입력 표현을 모두 내부 canonical mode로 정규화하고 같은 이름의 응답 헤더로 실제 적용한 contract를 반환한다. 지원하지 않는 값은 canonical로 추측하지 않고 `400 unsupported_mode_contract`로 거부한다.
+- Gateway는 negotiated contract가 허용한 입력 표현을 내부 canonical mode로 정규화하고 같은 이름의 응답 헤더로 실제 적용한 contract를 반환한다. 지원하지 않는 contract 값은 canonical로 추측하지 않고 `400 unsupported_mode_contract`로 거부한다.
+- Contract는 planner 호출과 request row 생성 전에 확정한다. `legacy-v1`의 `generation_mode_source=default` 요청에서 planner가 자연어 quick 의도를 감지해도 resolver는 requested mode를 `guided_generate`로 유지하고 legacy `configure_and_generate` 응답만 만든다. `mode_transition_required`와 quick metadata는 생성하지 않는다. Legacy 표현으로 `quick_generate`를 직접 보내면 request row를 만들기 전에 `400 unsupported_generation_mode`로 거부한다.
 - Request가 아직 없는 `POST /sessions`는 해당 호출의 header로만 응답 표현을 정하고 session에 contract를 고정하지 않는다.
 - `POST /sessions/{session_id}/messages`가 request를 만들 때 정규화한 `mode_contract_version=legacy-v1|canonical-v2`를 기존 request `response_payload`에 고정한다. Raw header는 저장하지 않고 contract 값이 없는 기존 request는 `legacy-v1`로 읽는다.
 - Active request를 조회·전환·acknowledge하는 후속 endpoint는 고정된 contract와 같은 header를 요구한다. 헤더 생략은 `legacy-v1`로 해석하며, 불일치하면 request mode나 payload를 다른 표현으로 projection하지 않고 `409 mode_contract_mismatch`와 safe `request_id`, `required_mode_contract`만 반환한다.
@@ -71,6 +72,8 @@ Contract 불일치 응답은 active request 내용을 포함하지 않는다.
 planning | clarification_required | mode_transition_required | graph_mutation_ready | parameter_configuration |
 completed | stale | stale_protocol | validation_failed | unsupported | failed | canceled
 ```
+
+앞의 다섯 값은 비종료 상태이고 뒤의 일곱 값은 종료 상태다. 모든 비종료 상태는 9절의 contract-neutral request cancel로 종료할 수 있어야 하며, 기능별 endpoint가 별도 취소 allowlist를 만들지 않는다.
 
 ### 2.3 ParameterInputType
 
@@ -342,10 +345,10 @@ Rules:
 
 - `message`는 최대 4,000자다.
 - `generation_mode`가 없으면 내부적으로 `guided_generate`를 사용하며 requested/effective mode를 request `response_payload`에 canonical 값으로 기록한다. 기존 `configure_and_generate` 입력은 guided mode로 정규화하고 외부 response mode는 negotiated contract 표현을 따른다.
-- `generation_mode_source=explicit_control`이면 해당 canonical mode가 자연어 mode intent보다 우선한다. `source=default`이면 planner가 반환한 명시적 quick/structure-only intent를 requested mode로 사용할 수 있고, 그런 intent가 없으면 guided다. Legacy request가 mode를 보내고 source를 생략하면 explicit control로 해석한다.
+- `generation_mode_source=explicit_control`이면 해당 canonical mode가 자연어 mode intent보다 우선한다. `canonical-v2`의 `source=default`이면 planner가 반환한 명시적 quick/structure-only intent를 requested mode로 사용할 수 있고, 그런 intent가 없으면 guided다. `legacy-v1`은 자연어 quick intent를 활성화하지 않고 guided로 유지한다. Legacy request가 mode를 보내고 source를 생략하면 explicit control로 해석한다.
 - `structured_plan.generation_mode_intent`는 `guided_generate|quick_generate|structure_only|null`이고 사용자 문장에 생성 방식이 명시된 경우에만 non-null이다. 이는 requested mode 계산 입력일 뿐 quick eligibility, 권한 또는 GraphMutation 적용 승인이 아니다.
 - 화면 control 또는 자연어에서 명시된 `quick_generate` 의도는 요청값이지만 eligibility 승인이 아니다. Planner가 mode intent를 구조화해도 Gateway application policy가 현재 권한, Catalog, graph/resource revision과 미해결 설정으로 최종 판정한다.
-- Quick eligibility가 없으면 response는 `mode_transition_required`이며 `graph_mutation=null`이다. Server는 같은 structured plan을 보존하고 사용자의 명시적 guided 전환 또는 취소를 기다리며 planner를 다시 호출하지 않는다.
+- Quick eligibility가 없으면 response는 `mode_transition_required`이며 `graph_mutation=null`이다. Server는 값에 독립적인 structured plan과 재입력이 필요한 safe `step_id`/`parameter_key` descriptor만 보존하고 사용자의 명시적 guided 전환 또는 취소를 기다린다. 실제 parameter 값과 값에 의존하는 graph fragment는 보존하지 않으며 planner를 다시 호출하지 않는다.
 - selected ids는 server-loaded graph 안에 있어야 하며 target hint일 뿐 권위 graph가 아니다.
 - raw graph key, raw credential config, secret parameter payload를 포함하면 422 또는 safe validation failure로 거부한다.
 - 정상 request는 planner provider를 한 번 호출한다. 최초 schema-valid 결과가 semantic invariant만 위반한 경우 safe code repair를 최대 한 번 수행할 수 있다. Provider/JSON/schema 실패에는 repair하지 않는다.
@@ -549,13 +552,16 @@ Quick eligibility가 없으면 다음 형태를 반환한다.
     "transition_id": "opaque-id",
     "target_mode": "guided_generate",
     "expected_request_version": 1,
-    "reason_codes": ["resource_confirmation_required"]
+    "reason_codes": ["resource_confirmation_required"],
+    "reconfirmation_required": [
+      {"step_id": "step-slack", "parameter_key": "channel"}
+    ]
   },
   "graph_mutation": null
 }
 ```
 
-Reason code는 `credential_confirmation_required`, `resource_confirmation_required`, `configuration_value_required`, `external_effect_confirmation_required`, `branch_confirmation_required`, `network_or_code_confirmation_required`, `multiple_candidates`, `stale_context`의 allowlist다. `configuration_value_required`는 일반 required parameter에 사용자 요청·기존 graph·selector·안전한 Catalog default로 확정할 값이 없을 때 사용하며 UI는 `필수 설정값을 확인해야 합니다`로 표시한다. 정확한 hidden resource, 후보 수, 이름과 식별자는 반환하지 않는다.
+Reason code는 `credential_confirmation_required`, `resource_confirmation_required`, `configuration_value_required`, `external_effect_confirmation_required`, `branch_confirmation_required`, `network_or_code_confirmation_required`, `multiple_candidates`, `stale_context`의 allowlist다. `configuration_value_required`는 일반 required parameter에 사용자 요청·기존 graph·selector·안전한 Catalog default로 확정할 값이 없을 때 사용하며 UI는 `필수 설정값을 확인해야 합니다`로 표시한다. `reconfirmation_required`에는 Catalog가 검증한 `step_id`/`parameter_key`만 포함하고 실제 값, label, resource id와 hidden candidate 정보는 포함하지 않는다. 정확한 hidden resource, 후보 수, 이름과 식별자는 반환하지 않는다.
 
 ### 5.2 Mode Transition
 
@@ -573,7 +579,7 @@ Request:
 ```
 
 - `action`은 `continue_guided`만 허용한다. 취소는 기존 `POST /requests/{request_id}/cancel` 경로 하나를 사용한다.
-- `continue_guided`는 보존된 structured plan으로 guided GraphMutation/Knowledge/Parameter 결과를 만들며 planner를 다시 호출하지 않고 성공 응답의 `request_version`을 증가시킨다.
+- `continue_guided`는 보존된 값 독립 structured plan으로 guided GraphMutation/Knowledge/Parameter 결과를 만들며 planner를 다시 호출하지 않고 성공 응답의 `request_version`을 증가시킨다. `reconfirmation_required` descriptor에 해당하는 실제 값은 GraphMutation에 materialize하지 않고 `resolution_source=null`, `reconfirmation_required=true`인 ParameterTask로 연다. Server는 원 prompt를 재실행하거나 처리 replica 메모리의 값을 사용하지 않으며, 값에 의존하는 graph fragment는 해당 typed task 입력과 후속 GraphMutation 전까지 만들지 않는다.
 - GraphMutation을 포함한 성공 응답의 RequestStatus는 `graph_mutation_ready`이고 nested GraphMutationStatus는 `pending_apply`다. Before-graph Knowledge 선택처럼 mutation을 아직 발급하지 않은 결과는 해당 기존 RequestStatus를 유지한다.
 - 같은 operation/payload 재시도는 상태 전이와 mutation 발급을 반복하지 않는다. 최초 응답에 full operations가 없었던 safe transition 결과는 같은 canonical 결과를 반환할 수 있지만, GraphMutation 발급 뒤 응답이 유실된 재시도는 저장되지 않은 operations를 재구성하지 않고 `409 operation_payload_unavailable`과 현재 safe request/envelope 상태를 반환한다. Client는 기존 request를 취소하고 새 operation id의 신규 message request를 명시적으로 제출한다.
 - 다른 payload, stale request version 또는 이미 처리된 competing transition은 `409 mode_transition_conflict`다.
@@ -733,9 +739,11 @@ Rules:
 
 - Agent Builder가 발급한 operation은 `mutation_context` 없는 저장을 성공으로 인정하지 않는다.
 - Backend는 workflow row를 write lock으로 조회하고 active organization과 write 권한을 다시 확인한다.
+- Agent Builder save는 `Workflow` row 다음 parent `AgentBuilderRequest` row 순서로 lock을 얻어 cancel과 같은 순서로 직렬화하고 request version, operation status와 저장 metadata를 다시 읽는다. Canceled/stale operation은 graph를 쓰지 않는다.
 - 저장 직전 current canonical graph hash와 workflow `updated_at`을 두 기대값과 비교한다. 하나라도 다르면 graph를 쓰지 않고 `409 stale_graph`를 반환한다.
 - Backend는 request nodes/edges의 canonical hash가 persisted safe envelope의 `expected_result_graph_hash`와 같은지 검증한다. Typed operations를 DB에서 다시 읽거나 재생하지 않는다.
 - Complete candidate graph는 catalog schema, node allowlist, connection policy와 structural validation을 다시 통과해야 한다.
+- Backend는 final candidate graph와 Catalog v3에서 모든 `resource_ref`, `credential_ref`, Knowledge/Collection binding과 WorkflowNode `appId`/`workflowId` reference를 직접 추출한다. Server-owned resolver가 같은 transaction 안에서 현재 organization, 존재/lifecycle, required relation과 use/read/write 권한을 다시 검증한다. Client reference 목록이나 발급 시점 allow 결과는 사용하지 않으며 resolver가 없는 resource-bearing field, 삭제·비활성·권한 회수·relation 변경은 전체 save와 audit를 rollback한다.
 - Backend는 request graph의 `configuration_state`를 신뢰하지 않고 Catalog required configuration 전체에서 각 node 상태를 다시 계산한다. `unresolved`는 저장을 차단하지 않지만 계산 결과와 node metadata가 catalog contract에 맞아야 한다.
 - Graph write와 기존 `add_action_audit`의 canonical audit insert는 같은 SQLDlchemy session과 transaction에서 확정한다. 둘 중 하나라도 실패하면 rollback하고 성공을 반환하지 않는다. 신규 audit outbox나 worker는 추가하지 않는다.
 - 일반 autosync를 포함한 모든 editor save는 request 최상위의 `expected_graph_hash`와 `expected_updated_at`을 제공한다. Backend는 같은 workflow row lock 안에서 두 값을 current canonical metadata와 비교하고 불일치하면 `409 stale_graph`로 닫는다. Agent Builder의 `mutation_context` 검증은 이 공통 CDS 위에 추가되며, silent overwrite, 자동 merge와 강제 덮어쓰기는 허용하지 않는다.
@@ -850,6 +858,7 @@ Rules:
   "status": "active",
   "task_version": 3,
   "resolution_source": null,
+  "reconfirmation_required": false,
   "validation": {
     "rule_id": "slack.channel",
     "max_length": 255
@@ -898,6 +907,8 @@ Catalog의 모든 configurable parameter에 task record를 만든다. 1~4에서 
 task는 사용자 확인 전까지 `pending|active`로 유지한다. 실제 값은 task나 session payload에 복제하지
 않고 canonical workflow graph에서 hydrate한다. 사용자는 추천 이유와 현재 값을 확인한 뒤 값이 같으면
 `confirm`, 다르면 `set`을 제출한다. 후보가 여러 개면 자동 추천하지 않는다.
+
+`reconfirmation_required=true`는 quick-to-guided 전환에서 실제 값이 저장되지 않아 다시 입력해야 하는 task에만 사용한다. 이 상태는 `resolution_source=null`이고 graph에 해당 값이 없어야 하며 `confirm`을 제공하지 않는다. 사용자가 typed `set`을 제출해 GraphMutation/CDS save/acknowledgement를 마치면 일반 completed task로 전환한다.
 
 `defer_policy`는 `forbidden|allow_unresolved`이며 Catalog에 값이 없으면 `forbidden`이다.
 
@@ -1054,7 +1065,11 @@ Request:
 
 ### POST `/requests/{request_id}/cancel`
 
-RequestStatus가 `planning|mode_transition_required|graph_mutation_ready`인 미완료 request를 취소한다. 이 endpoint는 request에 고정된 mode contract와 무관하게 호출할 수 있고 generation mode를 포함하지 않는 contract-neutral 응답 `{"request_id":"uuid","status":"canceled"}`만 반환한다. 따라서 Client rollback이나 recovery가 `mode_contract_mismatch`를 받은 경우에도 같은 인증·active organization·workflow 권한을 다시 검증한 뒤 request를 종료할 수 있다. 같은 request cancel 재시도는 상태와 audit를 반복하지 않고 같은 mode-free 결과를 반환한다. `graph_mutation_ready` 취소 시 nested safe envelope의 GraphMutationStatus가 `pending_apply|blocked`이고 CDS 저장 결과가 없어야 하며, 아직 저장되지 않은 local GraphMutation은 editor transaction을 Undo하고 acknowledgement하지 않는다. 이미 저장된 GraphMutation은 6.4의 persisted Undo 계약으로만 복구한다. Guided request 전체를 유지하면서 remaining quick proposal만 닫을 때는 5.3의 proposal cancel을 사용한다.
+RequestStatus가 `planning|clarification_required|mode_transition_required|graph_mutation_ready|parameter_configuration`인 모든 비종료 request를 취소한다. 이 endpoint는 request에 고정된 mode contract와 무관하게 호출할 수 있고 generation mode를 포함하지 않는 contract-neutral 응답 `{"request_id":"uuid","status":"canceled"}`만 반환한다. 따라서 Client rollback이나 recovery가 `mode_contract_mismatch`를 받은 경우에도 같은 인증·active organization·workflow 권한을 다시 검증한 뒤 request를 종료할 수 있다.
+
+Server는 request에서 workflow id를 안전하게 조회한 뒤 `Workflow` row, parent `AgentBuilderRequest` row 순서로 lock을 얻고 request version을 전진시켜 늦은 planner 결과와 competing clarification/transition/task/save commit을 거부한다. 남은 `pending|active|invalid` ParameterTask와 미완료 Knowledge resolution을 `canceled`로 닫고 safe operation envelope와 CDS 저장 결과를 같은 transaction에서 판정한다. 저장 전 `pending_apply|pending_save` operation은 `blocked`와 safe cancel reason으로 닫고 Client는 local apply를 Undo하며 acknowledgement하지 않는다. `pending_ack|acknowledged`처럼 CDS 저장이 확정된 operation, 완료 task 값과 persisted graph는 유지하고 자동 revert하지 않는다. Guided request 전체를 유지하면서 remaining quick proposal만 닫을 때는 5.3의 proposal cancel을 사용한다.
+
+같은 request cancel 재시도는 상태와 audit를 반복하지 않고 같은 mode-free 결과를 반환한다. 이미 `canceled`면 같은 결과를 반환하고, 그 밖의 종료 상태는 변경하지 않고 `409 request_not_cancelable`을 반환한다.
 
 ### POST `/sessions/{session_id}/parameter-groups/{group_id}/cancel`
 
@@ -1066,6 +1081,7 @@ Request는 client-generated `operation_id`, 현재 `expected_task_id`와 `expect
 |---|---|---|
 | 400 | `invalid_decision` | task/action 조합이 유효하지 않음 |
 | 400 | `unsupported_mode_contract` | `X-Agent-Builder-Mode-Contract` 값이 지원되지 않음 |
+| 400 | `unsupported_generation_mode` | negotiated mode contract에서 표현할 수 없는 mode를 request 생성 전에 제출함 |
 | 403 | `permission_denied` | active organization 또는 resource 권한 부족 |
 | 404 | `resource_not_found` | 숨김 정책을 적용한 session/workflow/resource 없음 |
 | 409 | `mode_contract_mismatch` | active request에 고정된 representation contract와 요청 header가 달라 같은 contract 재조회 또는 mode-free cancel이 필요함 |
@@ -1076,6 +1092,7 @@ Request는 client-generated `operation_id`, 현재 `expected_task_id`와 `expect
 | 409 | `task_conflict` | expected task version이 current 상태와 다르거나 다른 decision이 먼저 처리됨 |
 | 409 | `mode_transition_conflict` | mode transition id/version이 stale하거나 competing transition이 먼저 처리됨 |
 | 409 | `quick_completion_conflict` | 남은 설정 proposal의 request/task/graph/resource revision이 달라졌거나 원자적으로 적용할 수 없음 |
+| 409 | `request_not_cancelable` | canceled 이외의 종료 request를 다시 취소하려고 함 |
 | 422 | `mutation_context_required` | Agent Builder operation 저장에 CDS context가 없음 |
 | 422 | `workflow_context_required` | direct-edit CDS 저장 대상 workflow가 없음 |
 | 503 | `planner_unavailable` | intent model runtime 사용 불가 |
