@@ -1112,18 +1112,7 @@ class LLMNode(Node[LLMNodeData]):
             routing_feature_text = ModelRouter.routing_feature_text(
                 inputs,
                 self.data,
-                rendered_prompt_parts=[
-                    # 공통 safety/schema 문구는 모든 요청에 거의 동일하며 bootstrap
-                    # 학습 표본에는 포함되지 않는다. 현재 요청이 tokenizer 앞부분에
-                    # 오도록 user prompt를 먼저 전달하고, 작성자가 만든 나머지 prompt도
-                    # 같은 계약으로 분류기에 전달한다.
-                    rendered_user_prompt,
-                    # 작성자 prompt는 routing feature에서 한 번만 포함한다. 같은
-                    # system/user contract를 중복하면 256-token Judge가 reasoning
-                    # budget을 소진해 JSON을 끝내지 못할 수 있다.
-                    system_content,
-                    rendered_assistant_prompt,
-                ],
+                rag_metadata=routing_rag_context,
             )
             selected_model_id, fallback_model_id, model_routing_metadata = (
                 self._resolve_model_routing_policy(

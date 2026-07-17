@@ -126,14 +126,28 @@ def test_legacy_policy_is_not_executable():
         )
 
 
-def test_routing_feature_contains_request_prompt_and_structural_contract():
+def test_routing_feature_contains_only_request_varying_runtime_signals():
     feature = ModelRouter.routing_feature_text(
         {"message": "세 문서를 비교해 승인 여부를 판단해 주세요."},
         _node(),
+        rendered_prompt_parts=["고정 시스템 프롬프트", "고정 출력 계약"],
+        rag_metadata={
+            "used": True,
+            "retrieved_chunk_count": 3,
+            "retrieved_context_chars": 920,
+            "source_count": 2,
+            "evidence_sufficient": True,
+            "knowledge_enabled": True,
+        },
     )
 
     assert "CURRENT_REQUEST:" in feature
     assert "세 문서를 비교" in feature
-    assert "RENDERED_PROMPT:" in feature
-    assert "STRUCTURAL_CONSTRAINTS:" in feature
-    assert '"schema_required": true' in feature
+    assert "RAG_RUNTIME_SIGNALS:" in feature
+    assert '"retrieved_chunk_count": 3' in feature
+    assert '"evidence_sufficient": true' in feature
+    assert "고정 시스템 프롬프트" not in feature
+    assert "고정 출력 계약" not in feature
+    assert "STRUCTURAL_CONSTRAINTS:" not in feature
+    assert "schema_required" not in feature
+    assert "knowledge_enabled" not in feature

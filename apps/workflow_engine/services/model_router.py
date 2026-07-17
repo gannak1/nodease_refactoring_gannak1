@@ -400,37 +400,38 @@ class ModelRouter:
         rendered_prompt_parts: Iterable[str] | None = None,
         rag_metadata: dict[str, Any] | None = None,
     ) -> str:
-        """Judge와 local router가 공유하는 메모리 전용 요청 feature를 만든다."""
+        """Judge/local router에 요청마다 바뀌는 feature만 전달한다.
 
-        runtime_context = cls.infer_runtime_context(inputs, node_data)
-        if rendered_prompt_parts is None:
-            rendered_prompt_parts = cls._render_prompt_parts(inputs, node_data)
-        rendered = "\n".join(
-            str(value or "").strip()
-            for value in rendered_prompt_parts
-            if str(value or "").strip()
-        )
+        노드의 프롬프트, 출력 형식, JSON schema, KB 연결 여부는 같은 노드 실행마다
+        동일하다. 이 값들을 요청 feature에 반복해 넣으면 요청별 난이도 차이를 흐리고
+        Judge 입력 비용만 늘린다. 고정 계약은 bootstrap/policy의 작업 지문에서 다룬다.
+        """
+
+        # 기존 호출 시그니처를 유지한다. 아래 두 값은 bootstrap 경로와 달리
+        # runtime request feature에는 의도적으로 포함하지 않는다.
+        del node_data, rendered_prompt_parts
+
+        request_text = cls._flatten_text(inputs)
         safe_rag_metadata = {
             key: value
             for key, value in (rag_metadata or {}).items()
-            if key in {"knowledge_enabled", "retrieved_context_chars", "source_count"}
+            if key
+            in {
+                "used",
+                "retrieved_context_token_estimate",
+                "retrieved_context_chars",
+                "retrieved_chunk_count",
+                "source_count",
+                "evidence_sufficient",
+            }
             and isinstance(value, (bool, int, float, str))
         }
-        constraints = {
-            "output_format": runtime_context.output_format,
-            "schema_required": runtime_context.schema_required,
-            "knowledge_enabled": runtime_context.knowledge_enabled,
-            "input_length_bucket": runtime_context.input_length_bucket,
-        }
         parts = [
-            f"CURRENT_REQUEST:\n{runtime_context.text}" if runtime_context.text else "",
-            f"RENDERED_PROMPT:\n{rendered}" if rendered else "",
-            "STRUCTURAL_CONSTRAINTS:\n"
-            + json.dumps(constraints, ensure_ascii=False, sort_keys=True),
+            f"CURRENT_REQUEST:\n{request_text}" if request_text else "",
         ]
         if safe_rag_metadata:
             parts.append(
-                "RAG_RUNTIME_METADATA:\n"
+                "RAG_RUNTIME_SIGNALS:\n"
                 + json.dumps(safe_rag_metadata, ensure_ascii=False, sort_keys=True)
             )
         return "\n\n".join(part for part in parts if part)
