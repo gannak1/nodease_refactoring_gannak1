@@ -8,7 +8,6 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from apps.shared.db.models.connection import Connection
 from apps.shared.db.models.knowledge import (
     Document,
     KnowledgeBase,
@@ -29,7 +28,6 @@ from apps.shared.services.knowledge_ingestion_finalizer import (
     KnowledgeIngestionFinalizationError,
     KnowledgeIngestionFinalizer,
 )
-from apps.shared.services.permissions import has_active_organization_membership
 from apps.shared.services.rag_hierarchy import chunking_fingerprint_hash
 from apps.workflow_engine.application.knowledge_collection_sync import (
     SyncTargetChanged,
@@ -111,21 +109,6 @@ class SqlAlchemyKnowledgeCollectionSyncDocument:
         if not isinstance(stored_meta, dict):
             raise SyncTargetConfigurationInvalid()
         source_config = self._source_config(stored_meta)
-        connection_id = self._connection_id(source_config.get("connection_id"))
-        connection = (
-            self.db.query(Connection)
-            .filter(Connection.id == connection_id)
-            .with_for_update()
-            .one_or_none()
-        )
-        if (
-            connection is None
-            or connection.type != "postgres"
-            or not has_active_organization_membership(
-                self.db, connection.user_id, item.organization_id
-            )
-        ):
-            raise SyncTargetConfigurationInvalid()
         self._validate_selections(source_config.get("selections"))
 
         try:
@@ -201,13 +184,6 @@ class SqlAlchemyKnowledgeCollectionSyncDocument:
         if not content:
             raise SyncTargetConfigurationInvalid()
         return hashlib.sha256(content.encode("utf-8")).hexdigest()
-
-    @staticmethod
-    def _connection_id(value: object) -> uuid.UUID:
-        try:
-            return uuid.UUID(str(value))
-        except (AttributeError, TypeError, ValueError):
-            raise SyncTargetConfigurationInvalid() from None
 
     @staticmethod
     def _source_config(meta_info: object) -> dict[str, Any]:

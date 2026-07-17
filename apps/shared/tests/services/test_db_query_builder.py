@@ -1,4 +1,3 @@
-from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -47,7 +46,6 @@ def test_single_table_query_quotes_stored_table_and_column_values():
             }
         ],
         source_config={"limit": "1000"},
-        conn_record=SimpleNamespace(),
         transformer=object(),
         chunker=object(),
     )

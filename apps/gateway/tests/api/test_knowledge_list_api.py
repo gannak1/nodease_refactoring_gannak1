@@ -1184,6 +1184,14 @@ async def test_db_process_locks_new_connection_reference_before_commit(monkeypat
     )
     monkeypatch.setattr(
         knowledge_endpoint,
+        "_validated_db_source_config_or_error",
+        lambda *_args, **_kwargs: knowledge_endpoint.ValidatedKnowledgeDbSourceConfig(
+            connection_id=connection_id,
+            persisted_db_config={"selections": []},
+        ),
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
         "mark_document_processing_queued",
         lambda doc: setattr(doc, "status", "indexing"),
     )
@@ -1215,7 +1223,8 @@ async def test_db_process_locks_new_connection_reference_before_commit(monkeypat
         ),
         "commit",
     ]
-    assert document.meta_info["db_config"]["connection_id"] == str(connection_id)
+    assert document.meta_info["connection_id"] == str(connection_id)
+    assert "connection_id" not in document.meta_info["db_config"]
 
 
 @pytest.mark.parametrize(

@@ -32,6 +32,14 @@ from apps.gateway.services.ingestion.service import (
     finalize_stale_processing_start,
     recover_timed_out_document_with_artifacts,
 )
+from apps.gateway.services.connection_use_service import (
+    resolve_connection_use_or_hidden,
+)
+from apps.gateway.services.connection_lifecycle_service import (
+    ConnectionLifecycleHidden,
+    ConnectionLifecycleService,
+    ConnectionLifecycleUnavailable,
+)
 from apps.gateway.services.knowledge_authorization_service import (
     KnowledgeAuthorizationService,
     KnowledgePermissionDenied,
@@ -73,7 +81,6 @@ from apps.gateway.utils.api_errors import (
 from apps.gateway.utils.audit import audit
 from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.logger import record_audit
-from apps.shared.db.models.connection import Connection
 from apps.shared.db.models.knowledge import Document, KnowledgeBase, SourceType
 from apps.shared.db.models.user import User
 from apps.shared.schemas.rag import (
@@ -439,7 +446,7 @@ async def upload_document(
     api_method: str = Form("GET", alias="apiMethod"),
     api_headers: Optional[str] = Form(None, alias="apiHeaders"),
     api_body: Optional[str] = Form(None, alias="apiBody"),
-    connection_id: Optional[UUID] = Form(None, alias="connectionId"),
+    connection_id: Optional[str] = Form(None, alias="connectionId"),
     # 지식 베이스 신규 생성일 때만 필요한 정보들
     name: Optional[str] = Form(None),
     description: Optional[str] = Form(None),
@@ -477,6 +484,17 @@ async def upload_document(
         )
     except RAGHierarchyError as exc:
         raise _chunking_http_exception(exc)
+
+    prepared_db_source = None
+    prepared_db_connection_id = None
+    if source_enum == SourceType.DB:
+        prepared_db_source = _prepare_db_source(
+            request,
+            db,
+            current_user,
+            connection_id,
+        )
+        prepared_db_connection_id = UUID(prepared_db_source[2]["connection_id"])
 
     # 1. 자료 확인 또는 생성
     target_kb_id, target_ai_model = _get_or_create_knowledge_base(
@@ -534,14 +552,20 @@ async def upload_document(
             api_url, api_method, api_headers, api_body
         )
     elif source_enum == SourceType.DB:  # [NEW] DB 타입 처리
-        file_path, filename, meta_info = _prepare_db_source(
-            db, current_user, connection_id
-        )
+        file_path, filename, meta_info = prepared_db_source
     else:
         raise HTTPException(status_code=400, detail="Invalid source type")
 
     meta_info = dict(meta_info or {})
     meta_info["chunking_mode"] = normalized_chunking_mode
+
+    if prepared_db_connection_id is not None:
+        _lock_db_connection_reference_for_registration(
+            request,
+            db,
+            connection_id=prepared_db_connection_id,
+            owner_id=current_user.id,
+        )
 
     # 4. DB 레코드 생성 (Pending 상태)
     try:
@@ -584,30 +608,53 @@ async def upload_document(
     )
 
 
-def _prepare_db_source(db: Session, user: User, connection_id: Optional[UUID]):
+def _prepare_db_source(
+    request: Request,
+    db: Session,
+    user: User,
+    connection_id: Optional[str],
+):
     """DB 소스처리를 위한 데이터 준비"""
-    if not connection_id:
-        raise HTTPException(
-            status_code=400, detail="Connection ID is required for DB source."
-        )
-
-    # 연결 정보 조회 및 권한 확인
-    conn = (
-        db.query(Connection)
-        .filter(Connection.id == connection_id, Connection.user_id == user.id)
-        .with_for_update()
-        .first()
+    conn = resolve_connection_use_or_hidden(
+        request,
+        db,
+        connection_id=connection_id,
+        execution_subject_user_id=user.id,
     )
-    if not conn:
-        raise HTTPException(status_code=404, detail="Connection not found.")
 
-    meta_info = {
-        "connection_id": str(conn.id),
-        "db_type": conn.type,
-        "connection_name": conn.name,
-    }
+    return None, "Database source", {"connection_id": str(conn.id)}
 
-    return None, conn.name, meta_info
+
+def _lock_db_connection_reference_for_registration(
+    request: Request,
+    db: Session,
+    *,
+    connection_id: UUID,
+    owner_id: UUID,
+) -> None:
+    """Hold the MBA-273 reference lock through document registration commit."""
+
+    try:
+        ConnectionLifecycleService(db).lock_owned_connection_for_reference(
+            connection_id=connection_id,
+            owner_id=owner_id,
+        )
+    except ConnectionLifecycleHidden:
+        db.rollback()
+        raise_api_error(
+            request,
+            404,
+            "resource.hidden",
+            "Resource not found.",
+        )
+    except ConnectionLifecycleUnavailable:
+        db.rollback()
+        raise_api_error(
+            request,
+            503,
+            "connection.reference_unavailable",
+            "The DB connection reference is temporarily unavailable.",
+        )
 
 
 @router.post("/document/{document_id}/analyze", response_model=DocumentAnalyzeResponse)

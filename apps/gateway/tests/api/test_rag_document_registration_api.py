@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from types import SimpleNamespace
+from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
@@ -8,6 +9,10 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from apps.gateway.api.v1.endpoints import rag as rag_endpoint
+from apps.gateway.services.connection_lifecycle_service import (
+    ConnectionLifecycleHidden,
+    ConnectionLifecycleUnavailable,
+)
 from apps.gateway.services.knowledge_authorization_service import (
     KnowledgePermissionDenied,
     KnowledgeResourceHidden,
@@ -311,7 +316,7 @@ def test_knowledge_presigned_upload_rejects_occupied_slot_before_storage(
     assert calls == ["authorize", "slot"]
 
 
-def test_prepare_db_source_locks_connection_until_document_registration_commit():
+def test_prepare_db_source_preflights_owner_without_runtime_lock():
     connection_id = uuid4()
     user_id = uuid4()
     connection = SimpleNamespace(
@@ -322,35 +327,31 @@ def test_prepare_db_source_locks_connection_until_document_registration_commit()
     )
 
     class _Query:
-        locked = False
+        def populate_existing(self):
+            return self
 
         def filter(self, *_args):
             return self
 
         def with_for_update(self):
-            self.locked = True
-            return self
+            raise AssertionError("authorization preflight must not acquire a row lock")
 
-        def first(self):
+        def one_or_none(self):
             return connection
 
     query = _Query()
     db = SimpleNamespace(query=lambda _model: query)
 
     file_path, filename, meta_info = rag_endpoint._prepare_db_source(
+        SimpleNamespace(state=SimpleNamespace(request_id="request-id")),
         db,
         SimpleNamespace(id=user_id),
         connection_id,
     )
 
-    assert query.locked is True
     assert file_path is None
-    assert filename == "Operational DB"
-    assert meta_info == {
-        "connection_id": str(connection_id),
-        "db_type": "postgres",
-        "connection_name": "Operational DB",
-    }
+    assert filename == "Database source"
+    assert meta_info == {"connection_id": str(connection_id)}
 
 
 @pytest.mark.parametrize("source_type", list(SourceType))
@@ -365,14 +366,16 @@ def test_upload_route_parses_each_source_type_and_uses_canonical_registration(
     document_id = uuid4()
     connection_id = uuid4()
     captured: dict[str, object] = {}
+    events: list[str] = []
 
-    monkeypatch.setattr(
-        rag_endpoint,
-        "_get_or_create_knowledge_base",
-        lambda *_args, **_kwargs: (knowledge_base_id, "text-embedding-3-small"),
-    )
+    def get_or_create(*_args, **_kwargs):
+        events.append("knowledge_base")
+        return knowledge_base_id, "text-embedding-3-small"
+
+    monkeypatch.setattr(rag_endpoint, "_get_or_create_knowledge_base", get_or_create)
 
     def ensure_slot(_request, db, **kwargs):
+        events.append("slot")
         captured["slot"] = (db, kwargs)
 
     monkeypatch.setattr(rag_endpoint, "_ensure_initial_document_slot", ensure_slot)
@@ -396,24 +399,40 @@ def test_upload_route_parses_each_source_type_and_uses_canonical_registration(
         )
         return None, "API source", {"source": "api"}
 
-    def prepare_db(db, user, parsed_connection_id):
+    def prepare_db(_request, db, user, parsed_connection_id):
+        events.append("connection_preflight")
         captured["prepared"] = (
             SourceType.DB,
             db,
             user,
             parsed_connection_id,
         )
-        return None, "DB source", {"source": "db"}
+        return None, "DB source", {"connection_id": str(connection_id)}
 
     monkeypatch.setattr(rag_endpoint, "_prepare_file_source", prepare_file)
     monkeypatch.setattr(rag_endpoint, "_prepare_api_source", prepare_api)
     monkeypatch.setattr(rag_endpoint, "_prepare_db_source", prepare_db)
+
+    def lock_reference(_request, db, *, connection_id, owner_id):
+        events.append("connection_reference_lock")
+        captured["connection_reference_lock"] = (
+            db,
+            connection_id,
+            owner_id,
+        )
+
+    monkeypatch.setattr(
+        rag_endpoint,
+        "_lock_db_connection_reference_for_registration",
+        lock_reference,
+    )
 
     class RegistrationService:
         def __init__(self, db):
             assert db is dependency_db
 
         def register_initial_document(self, **kwargs):
+            events.append("registration")
             captured["registration"] = kwargs
             return document_id
 
@@ -491,9 +510,66 @@ def test_upload_route_parses_each_source_type_and_uses_canonical_registration(
         assert registration["filename"] == "API source"
         assert registration["file_path"] is None
     else:
-        assert prepared[1:] == (dependency_db, current_user, connection_id)
+        assert prepared[1:] == (dependency_db, current_user, str(connection_id))
+        assert captured["connection_reference_lock"] == (
+            dependency_db,
+            connection_id,
+            current_user.id,
+        )
+        assert events == [
+            "connection_preflight",
+            "knowledge_base",
+            "slot",
+            "connection_reference_lock",
+            "registration",
+        ]
         assert registration["filename"] == "DB source"
         assert registration["file_path"] is None
+
+
+@pytest.mark.parametrize(
+    ("error", "status_code", "reason_code"),
+    [
+        (ConnectionLifecycleHidden(), 404, "resource.hidden"),
+        (
+            ConnectionLifecycleUnavailable(),
+            503,
+            "connection.reference_unavailable",
+        ),
+    ],
+)
+def test_db_reference_lock_errors_are_safe(
+    monkeypatch,
+    error,
+    status_code,
+    reason_code,
+):
+    db = SimpleNamespace(rollback=Mock())
+
+    class LifecycleService:
+        def __init__(self, dependency):
+            assert dependency is db
+
+        def lock_owned_connection_for_reference(self, **_kwargs):
+            raise error
+
+    monkeypatch.setattr(
+        rag_endpoint,
+        "ConnectionLifecycleService",
+        LifecycleService,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        rag_endpoint._lock_db_connection_reference_for_registration(
+            SimpleNamespace(state=SimpleNamespace(request_id="request-id")),
+            db,
+            connection_id=uuid4(),
+            owner_id=uuid4(),
+        )
+
+    assert exc_info.value.status_code == status_code
+    assert exc_info.value.detail["error"]["code"] == reason_code
+    db.rollback.assert_called_once_with()
 
 
 def test_upload_route_rejects_occupied_slot_before_source_side_effect(
@@ -532,6 +608,61 @@ def test_upload_route_rejects_occupied_slot_before_source_side_effect(
             "knowledgeBaseId": str(knowledge_base_id),
             "sourceType": "API",
             "apiUrl": "https://api.example.test/policies",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["error"]["code"] == (
+        "knowledge.document_slot_occupied"
+    )
+
+
+def test_db_upload_rejects_occupied_slot_before_reference_lock(
+    upload_http_client,
+    monkeypatch,
+):
+    client, _dependency_db, _current_user = upload_http_client
+    organization_id = uuid4()
+    knowledge_base_id = uuid4()
+    connection_id = uuid4()
+
+    monkeypatch.setattr(
+        rag_endpoint,
+        "_prepare_db_source",
+        lambda *_args, **_kwargs: (
+            None,
+            "DB source",
+            {"connection_id": str(connection_id)},
+        ),
+    )
+    monkeypatch.setattr(
+        rag_endpoint,
+        "_get_or_create_knowledge_base",
+        lambda *_args, **_kwargs: (knowledge_base_id, "text-embedding-3-small"),
+    )
+
+    def reject_slot(request, *_args, **_kwargs):
+        rag_endpoint._raise_document_registration_error(
+            request,
+            KnowledgeDocumentSlotOccupied(),
+        )
+
+    monkeypatch.setattr(rag_endpoint, "_ensure_initial_document_slot", reject_slot)
+    monkeypatch.setattr(
+        rag_endpoint,
+        "_lock_db_connection_reference_for_registration",
+        lambda *_args, **_kwargs: pytest.fail(
+            "reference lock must not be acquired for an occupied KB"
+        ),
+    )
+
+    response = client.post(
+        "/api/v1/rag/upload",
+        headers={"X-Organization-Id": str(organization_id)},
+        data={
+            "knowledgeBaseId": str(knowledge_base_id),
+            "sourceType": "DB",
+            "connectionId": str(connection_id),
         },
     )
 

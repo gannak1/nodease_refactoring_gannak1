@@ -1124,6 +1124,8 @@ Unique key는 `(processing_id, node_id, operation_key_hash)`다. Reply body, MIM
 
 현재 `connections`는 organization-scoped resource가 아니므로, target Knowledge source connector나 KB sync가 connection을 사용할 때 workflow/KB 권한만으로 connection 사용 권한이 자동 충족된다고 해석하지 않는다. Organization/owner scope, secret manage/use 경계, egress guard 이관은 connector gate에서 정리해야 한다.
 
+현재 구현의 Connection use 최소 정책은 `connections.user_id == execution_subject_user_id`다. Knowledge DB source는 문서 설정에 opaque `connection_id`만 저장하고, 설정 저장 시와 외부 DB 연결 직전에 Shared Connection Use Resolver로 이 조건을 다시 확인한다. 이 조회는 dial 시작 시점의 권한 스냅샷이며 runtime row lock이나 실행 도중 revoke 취소를 의미하지 않는다. Missing, malformed, deleted, owner 변경과 non-owner reference는 같은 resource-hiding 실패로 처리한다. `connections`에는 lifecycle/status column이 없으므로 별도 active 상태나 organization 공유 권한을 추측하지 않으며, 이를 추가하려면 별도 정책 결정과 migration이 필요하다. Runtime transaction/lock protocol은 MBA-302에서 별도로 정의한다.
+
 | 컬럼 | 타입 | 제약 |
 | --- | --- | --- |
 | id | UUID | PK |

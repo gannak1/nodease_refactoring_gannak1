@@ -1,7 +1,7 @@
 # Connectors Test Cases
 
 Status: Draft
-Verified Against: feature/mba-246 @ 8d02b4fb7c15f5737ea5ef16af616f7866329825
+Verified Against: feature/mba-281 @ 29fb9ae845505938f6effad838c6d95d193f5ee2
 
 ## Minimum Failure Rule
 
@@ -44,6 +44,11 @@ Verified Against: feature/mba-246 @ 8d02b4fb7c15f5737ea5ef16af616f7866329825
 | CONN-TC-U017 | Redis admission test namespace는 bounded safe token이어야 한다. | Empty, leading/trailing delimiter, uppercase, whitespace, caller-supplied hash tag, 65자 이상 namespace를 전달한다. | Adapter construction 실패, production key namespace 영향 없음. |
 | CONN-TC-U018 | Concurrency 거부는 rate를 부분 소비하지 않아야 한다. | 같은 user lease가 active인 상태에서 두 번째 request가 busy로 거부된 뒤 첫 lease를 해제하고 rate limit까지 재시도한다. | Busy request는 rate counter를 증가시키지 않고 다음 정상 acquire가 허용된다. |
 | CONN-TC-U019 | Redis acquire/renew/release는 각각 무응답 deadline을 가져야 한다. | 취소 전까지 영원히 반환하지 않는 fake Redis로 세 operation을 각각 호출한다. | 설정된 operation deadline 안에 `connector.admission_unavailable`; 호출 task와 API가 무기한 대기하지 않음. |
+| CONN-TC-U020 | Connection Use Resolver는 ID와 execution subject owner predicate를 한 query에서 평가해야 한다. | UUID만 조회하거나 owner check를 caller가 별도로 수행한다. | non-owner/missing/malformed 모두 `resource.hidden`. |
+| CONN-TC-U021 | Background DB processor는 Connection을 use 직전에 다시 확인해야 한다. | 저장 뒤 Connection 삭제 또는 owner 변경 후에도 adapter를 호출한다. | adapter 0회, safe configuration failure. |
+| CONN-TC-U022 | Credential 복호화 실패는 저장값 fallback 없이 닫혀야 한다. | 암호문을 password/private key로 adapter에 전달한다. | adapter 0회, raw credential/detail 비노출. |
+| CONN-TC-U023 | Connection Use Resolver 저장소 조회 실패는 typed unavailable로 정규화해야 한다. | Raw SQLAlchemy/driver 오류가 Gateway 500, processor result 또는 log에 노출된다. | Gateway는 safe `503 connection.reference_unavailable`, processor는 `source.temporarily_unavailable`, adapter 0회. |
+| CONN-TC-U024 | Resolver는 dial 시작 시점의 최신 owner를 재조회하되 runtime row lock을 소유하지 않아야 한다. | 동일 Session의 stale owner를 재사용하거나 외부 I/O 동안 Connection mutation을 불필요하게 차단한다. | PostgreSQL owner 변경을 다음 resolve가 반영하며 runtime lock protocol은 MBA-302 테스트로 분리. |
 
 ## API Tests
 
@@ -114,6 +119,8 @@ Verified Against: feature/mba-246 @ 8d02b4fb7c15f5737ea5ef16af616f7866329825
 | CONN-TC-P001 | `POST /connectors/test`는 active organization member/manager만 호출해야 한다. | 미인증 또는 active scope 밖 사용자가 probe를 시작한다. | Network 전 차단. |
 | CONN-TC-P002 | 저장된 connection 상세/schema는 owner mismatch를 거부해야 한다. | 다른 사용자의 connection id로 상세 또는 schema를 요청한다. | `403`, `Not authorized`. |
 | CONN-TC-P003 | 현재 user-owned `connections`는 workflow/KB 권한만으로 자동 공유되지 않아야 한다. | workflow/KB 접근 권한만 있는 사용자가 다른 사용자의 connection을 사용한다. | 테스트 실패 또는 403/404. |
+| CONN-TC-P004 | Knowledge upload/process/preview는 current user 소유가 아닌 Connection UUID를 저장하거나 사용하지 않아야 한다. | 사용자 A가 사용자 B의 UUID를 제출한다. | document mutation/background 등록 전 `404 resource.hidden`. |
+| CONN-TC-P005 | KC/background direct-call은 Gateway 검증을 신뢰하지 않아야 한다. | processor를 타 사용자 UUID와 actor로 직접 호출한다. | connector 생성·dial 0회, safe failure. |
 
 ## Edge Cases
 
@@ -148,6 +155,17 @@ Verified Against: feature/mba-246 @ 8d02b4fb7c15f5737ea5ef16af616f7866329825
 | CONN-TC-X027 | Certificate validity API와 선언된 dependency 하한은 일치해야 한다. | `not_valid_before_utc`/`not_valid_after_utc`를 사용하면서 Gateway가 `cryptography<42` 설치를 허용한다. | Gateway dependency minimum이 `42.0.0` 이상이고 CA startup validation test가 UTC validity API를 실행한다. |
 | CONN-TC-X028 | Production Connector startup secret은 모든 지원 배포 표면에서 같은 fail-closed 계약을 가져야 한다. | Runtime과 Helm은 admission HMAC key를 요구하지만 base Docker Compose가 외부 값을 Gateway 컨테이너에 전달하지 않거나 tracked env example에 실제 key를 둔다. | Compose는 빈 development default를 보존하면서 외부 key 이름만 passthrough하고, production의 누락·짧은 값은 Gateway startup에서 실패한다. Helm required Secret 계약과 key 비재사용·비노출은 유지된다. |
 | CONN-TC-X029 | Connector test 민감 경로 집합은 Nginx와 ASGI sanitizer에서 일치해야 한다. | `/api/v1/connectors/test/`가 일반 `/api` location으로 떨어지거나 child path까지 Connector test로 취급된다. | Canonical path와 단일 trailing slash만 같은 32 KiB/5초/buffering-off/log-off 경계를 사용하고 child path는 두 matcher 모두에서 제외된다. |
+| CONN-TC-X030 | Knowledge DB metadata와 chunk label은 opaque reference 외 Connection 상세를 복제하지 않아야 한다. | `connection_name`, `db_type`, host/database/username, encrypted/decrypted credential 중 하나가 document metadata, processor result 또는 chunk source label에 남는다. | 테스트 실패. |
+
+## MBA-281 Automation Traceability
+
+| Test case | 자동 검증 위치 | 수준 |
+| --- | --- | --- |
+| U020 | `apps/shared/tests/services/test_connection_use_resolver.py`, `test_connection_use_resolver_postgres.py` | Unit + actual PostgreSQL |
+| U021-U022 | `apps/shared/tests/services/test_db_processor_connection_use.py` | Processor unit |
+| P004 | `apps/gateway/tests/api/test_knowledge_db_connection_use.py` | Gateway API |
+| P005 | `apps/workflow_engine/tests/adapters/test_knowledge_collection_sync_document.py`, `apps/workflow_engine/tests/services/test_sync_service.py` | Background/KC execution |
+| X030 | `apps/gateway/tests/api/test_knowledge_db_connection_use.py`, `apps/shared/tests/services/test_db_processor_connection_use.py` | Metadata/redaction |
 
 ## MBA-246 Automation Traceability
 

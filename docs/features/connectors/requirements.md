@@ -1,7 +1,7 @@
 # Connectors Requirements
 
 Status: Draft
-Verified Against: feature/mba-246 @ 8d02b4fb7c15f5737ea5ef16af616f7866329825
+Verified Against: feature/mba-281 @ 29fb9ae845505938f6effad838c6d95d193f5ee2
 Related Features: workflow, organization, audit-tracing, knowledge, conversation-memory
 
 ## Purpose
@@ -86,6 +86,15 @@ Connectors 기능은 외부 데이터 소스에 접속하기 위한 연결 정�
 - CONN-REQ-059: Gateway startup에 필요한 Connector 보안 설정은 지원되는 모든 배포 표면에서 동일하게 전달되어야 한다. Production Docker Compose는 tracked secret 값을 두지 않고 외부 `CONNECTOR_TEST_ADMISSION_HMAC_KEY`를 Gateway 컨테이너로 전달해야 하며, 값이 없거나 32 byte 미만이면 runtime startup이 fail-closed해야 한다. Helm은 별도 Secret을 required 값으로 유지해야 한다.
 - CONN-REQ-060: Connector security contract는 runtime startup, Docker Compose, Helm, Nginx와 ASGI middleware의 공통 불변식을 하나의 자동화 추적표로 검증해야 한다. 개별 surface 테스트가 통과하더라도 필수 설정 전달 또는 민감 경로 동치성이 빠지면 merge-ready로 간주하지 않는다.
 
+### Knowledge DB Connection Use Requirements
+
+- CONN-REQ-061 (MBA-281): Knowledge DB source가 저장된 Connection을 사용할 때 현재 최소 권한은 `connections.user_id == execution_subject_user_id`다. Workflow/KB/Collection 권한이나 같은 organization membership만으로 다른 사용자의 Connection use를 허용하지 않아야 한다.
+- CONN-REQ-062 (MBA-281): Connection 조회·사용 판정은 Shared Connection Use Resolver가 소유해야 한다. Knowledge upload/process/preview와 Gateway/Workflow Engine background DB ingestion이 owner predicate를 각자 복제하지 않아야 한다.
+- CONN-REQ-063 (MBA-281): Knowledge DB source 설정 저장 전에 Connection을 검증하고, 외부 DB dial 직전에는 같은 resolver로 다시 검증해야 한다. Queue 대기 중 삭제 또는 owner 변경이 발생하면 adapter 호출 전에 fail-closed해야 한다. 이 판정은 dial 시작 시점의 권한 스냅샷이며 runtime row lock, 실행 도중 revoke 취소와 transaction 조율은 MBA-302 범위다.
+- CONN-REQ-064 (MBA-281): Knowledge document metadata에는 opaque `connection_id`만 Connection reference로 저장할 수 있다. Connection name/type/host/database/username, decrypted/encrypted password와 SSH credential은 document metadata, processor result, chunk source label, audit와 log에 복제하지 않아야 한다.
+- CONN-REQ-065 (MBA-281): Missing, malformed, deleted와 non-owner Connection reference는 Knowledge use surface에서 동일한 `resource.hidden` 결과로 처리하고 Connection 존재·owner·상세를 노출하지 않아야 한다. Connector 관리 detail/schema API의 기존 403/404 계약은 이 요구로 변경하지 않는다.
+- CONN-REQ-066 (MBA-281): 저장 credential 복호화가 실패하면 Knowledge DB processor는 저장값을 평문 credential처럼 fallback하지 않고 configuration failure로 닫아 외부 adapter를 호출하지 않아야 한다.
+
 ## Policies And Edge Cases
 
 - `POST /connectors/test`는 active organization context를 요구한다. 이 endpoint의 test capability는 현재 user-owned connection의 create/use/manage 권한과 분리된다.
@@ -98,7 +107,7 @@ Connectors 기능은 외부 데이터 소스에 접속하기 위한 연결 정�
 - SSH tunnel compatibility는 create/schema/runtime의 기존 계약에 한정된다. Strict `/connectors/test`는 ADR-0049에 따라 SSH를 열지 않는다.
 - Development exact-local profile은 로컬 시연 전용 배포 설정이며 Organization별 운영 private-network 권한이나 CIDR 승인 기능이 아니다.
 - Production Gateway는 32 byte 이상의 별도 connector-test admission HMAC key를 요구한다. Helm에서는 `secrets.connectorTestAdmissionHmacKey`로 provisioning하고, Docker Compose에서는 외부 `CONNECTOR_TEST_ADMISSION_HMAC_KEY`를 컨테이너에 전달한다. 두 경로 모두 auth/session key와 재사용하지 않고 tracked 예시에 실제 값을 두지 않는다.
-- 현재 `DbProcessor`는 Knowledge DB source ingestion에서 저장된 `connection_id`를 조회하고 선택된 테이블/컬럼 기반 SQL을 생성한다. 이 ingestion lifecycle은 Knowledge feature 책임이다.
+- 현재 `DbProcessor`는 Knowledge DB source ingestion에서 Shared Connection Use Resolver로 execution subject 소유 Connection을 dial 직전에 재검증한 뒤 선택된 테이블/컬럼 기반 SQL을 생성한다. 이 ingestion lifecycle은 Knowledge feature 책임이다.
 - `connections`에는 `created_at/updated_at`과 `organization_id`가 없다.
 
 ### Knowledge Source Connector Target Requirements
@@ -123,7 +132,7 @@ Connectors 기능은 외부 데이터 소스에 접속하기 위한 연결 정�
 ## Knowledge Source Connector Policies
 
 - 현재 `connections` 테이블은 user 소유이며 `organization_id`가 없다. 조직 경계 판정이 다른 리소스와 다르므로, target Knowledge source connector에서 workflow/KB 권한만으로 connection use가 자동 허용된다고 해석하지 않는다.
-- connection `use`는 별도 permission table 없이 소비하는 workflow/knowledge base 권한으로 허용하는 방향을 검토하되, 현재 user-owned `connections`에서는 connection owner/organization scope 확인이 선행돼야 한다. Secret 조회/관리(manage)는 connection owner 또는 organization owner/manager로 제한한다 ([data_model.md](../../data_model.md) "만들지 않는 테이블" 참조).
+- 현재 user-owned `connections`의 connection `use`는 execution subject가 connection owner인 경우에만 허용한다. Workflow/KB/Collection 권한 또는 organization manager 권한이 이 owner gate를 대체하지 않는다. Organization-scoped 공유, 별도 `use/manage` permission과 owner/manager override는 후속 ADR·migration 전까지 구현하지 않는다 ([data_model.md](../../data_model.md) `connections` 참조).
 - Internal DB/API/private-network targets are denied by default for Knowledge source collection unless a future connector/egress ADR defines an explicit organization policy, approved network segment, audit-safe reason code, and operational owner.
 - Bot/webhook/app installation visibility는 capture signal 또는 event detection에 사용할 수 있지만 requester authorization으로 취급하지 않는다. Private source-managed retrieval은 delegated OAuth, source subject mapping, or runtime authorization primitive를 통해 별도 확인해야 한다.
 

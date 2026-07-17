@@ -62,6 +62,26 @@ PROCESSING_START_TIMEOUT_MESSAGE = (
 ACTIVE_PROCESSING_STALL_TIMEOUT_MESSAGE = (
     "Document processing did not complete in time. Please retry."
 )
+_SAFE_PREVIEW_SOURCE_REASON_CODES = frozenset(
+    {
+        "configuration.invalid",
+        "resource.hidden",
+        "source.temporarily_unavailable",
+    }
+)
+
+
+class IngestionPreviewSourceError(ValueError):
+    """Carry only a safe processor reason across the preview service boundary."""
+
+    def __init__(self, reason_code: object) -> None:
+        normalized_reason = str(reason_code)
+        self.reason_code = (
+            normalized_reason
+            if normalized_reason in _SAFE_PREVIEW_SOURCE_REASON_CODES
+            else "configuration.invalid"
+        )
+        super().__init__("Source preview failed.")
 
 
 def _aware_datetime(value: Any) -> Optional[datetime]:
@@ -922,7 +942,9 @@ class IngestionOrchestrator:
 
         # Check for errors from processor
         if result.metadata and "error" in result.metadata:
-            raise ValueError(result.metadata["error"])
+            raise IngestionPreviewSourceError(
+                result.metadata.get("reason_code")
+            )
 
         raw_blocks = result.chunks
         meta_info = dict(meta_info or {})
