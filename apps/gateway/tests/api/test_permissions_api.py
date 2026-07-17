@@ -14,6 +14,7 @@ from apps.gateway.main import app
 from apps.gateway.services.app_lifecycle_lock import (
     AppPrimaryChangedDuringMutationError,
 )
+from apps.shared.audit.manual_ownership import is_manually_audited
 from apps.shared.db.models.app import App
 from apps.shared.db.models.audit_log import AuditLog
 from apps.shared.db.models.knowledge import KnowledgeBase
@@ -76,8 +77,6 @@ class TestPermissionsApi(unittest.TestCase):
             team=_team(id=team_id, organization_id=organization_id),
             upsert_result=upsert_result,
         )
-        _track_mocked_outbox_enqueue(self.permission_audit, session)
-
         response = self._put_permission(
             session=session,
             user_id=user_id,
@@ -95,7 +94,7 @@ class TestPermissionsApi(unittest.TestCase):
         self.assertEqual(response.json()["team_id"], str(team_id))
         self.assertEqual(response.json()["auth_state"], "builder")
         self.assertEqual(response.json()["assigned_by"], str(user_id))
-        self.assertEqual(len(session.added), 0)
+        self.assertEqual(len(session.added), 1)
         self.assertTrue(session.scalars_called)
         _assert_organization_scope_filters(
             self, session.organization_query, organization_id
@@ -126,24 +125,27 @@ class TestPermissionsApi(unittest.TestCase):
             str(session.lock_statement.compile(dialect=postgresql.dialect())),
         )
         self.assertNotIn(TeamMembership, session.query_calls)
-        self.permission_audit.assert_called_once()
-        audit = self.permission_audit.call_args.kwargs
-        self.assertEqual(audit["action"], "team_workflow_permission.created")
-        self.assertEqual(audit["category"], "data_change")
-        self.assertEqual(audit["actor_id"], str(user_id))
-        self.assertEqual(audit["actor_type"], "user")
-        self.assertEqual(audit["target_type"], "team_workflow_permission")
-        self.assertEqual(audit["target_id"], upsert_result.id)
-        self.assertIsNone(audit["before"])
-        self.assertEqual(audit["after"]["id"], upsert_result.id)
-        self.assertEqual(audit["after"]["grantee_organization_id"], organization_id)
-        self.assertEqual(audit["after"]["workflow_id"], workflow_id)
-        self.assertEqual(audit["after"]["team_id"], team_id)
-        self.assertEqual(audit["after"]["auth_state"], "builder")
-        self.assertEqual(audit["metadata"]["request_id"], "req-test")
-        self.assertEqual(audit["metadata"]["actor"]["id"], str(user_id))
-        self.assertIs(audit["db_session"], session)
-        _assert_outbox_enqueued_before_commit(self, session)
+        self.permission_audit.assert_not_called()
+        audit = session.added[0]
+        self.assertIsInstance(audit, AuditLog)
+        self.assertEqual(audit.action, "team_workflow_permission.created")
+        self.assertEqual(audit.category, "data_change")
+        self.assertEqual(audit.actor_id, user_id)
+        self.assertEqual(audit.actor_type, "user")
+        self.assertEqual(audit.target_type, "team_workflow_permission")
+        self.assertEqual(audit.target_id, str(upsert_result.id))
+        self.assertIsNone(audit.before)
+        self.assertEqual(
+            audit.after,
+            {
+                "grantee_organization_id": str(organization_id),
+                "team_id": str(team_id),
+                "workflow_id": str(workflow_id),
+                "auth_state": "builder",
+            },
+        )
+        self.assertEqual(audit.audit_metadata["request_id"], "req-test")
+        self.assertEqual(audit.audit_metadata["actor"]["id"], str(user_id))
 
     def test_put_team_workflow_permission_rejects_primary_changed_while_waiting(self):
         user_id = uuid4()
@@ -1056,7 +1058,7 @@ class TestPermissionsApi(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["auth_state"], "manager")
-        self.assertEqual(len(session.added), 0)
+        self.assertEqual(len(session.added), 1)
         self.assertEqual(session.workflow_permission_query_count, 2)
         self.assertTrue(session.scalars_called)
         _assert_active_membership_filters(
@@ -1074,26 +1076,18 @@ class TestPermissionsApi(unittest.TestCase):
         )
         self.assertTrue(session.committed)
         self.assertIsNotNone(session.lock_statement)
-        self.permission_audit.assert_called_once()
-        audit = self.permission_audit.call_args.kwargs
-        self.assertEqual(audit["action"], "team_workflow_permission.updated")
-        self.assertEqual(audit["category"], "data_change")
-        self.assertEqual(audit["actor_id"], str(user_id))
-        self.assertEqual(audit["actor_type"], "user")
-        self.assertEqual(audit["target_type"], "team_workflow_permission")
-        self.assertEqual(audit["target_id"], existing_permission.id)
-        self.assertEqual(audit["before"]["auth_state"], "viewer")
-        self.assertEqual(audit["after"]["auth_state"], "manager")
-        self.assertEqual(audit["before"]["assigned_by"], previous_assigned_by)
-        self.assertEqual(audit["after"]["assigned_by"], user_id)
-        self.assertEqual(
-            audit["before"]["assigned_at"],
-            existing_permission.assigned_at,
-        )
-        self.assertEqual(audit["after"]["assigned_at"], upsert_result.assigned_at)
-        self.assertNotIn("workflow_id", audit["before"])
-        self.assertEqual(audit["metadata"]["request_id"], "req-test")
-        self.assertEqual(audit["metadata"]["actor"]["id"], str(user_id))
+        self.permission_audit.assert_not_called()
+        audit = session.added[0]
+        self.assertEqual(audit.action, "team_workflow_permission.updated")
+        self.assertEqual(audit.target_id, str(existing_permission.id))
+        self.assertEqual(audit.before["auth_state"], "viewer")
+        self.assertEqual(audit.after["auth_state"], "manager")
+        self.assertEqual(audit.before["workflow_id"], str(workflow_id))
+        self.assertEqual(audit.before["team_id"], str(team_id))
+        self.assertNotIn("assigned_by", audit.before)
+        self.assertNotIn("assigned_at", audit.before)
+        self.assertEqual(audit.audit_metadata["request_id"], "req-test")
+        self.assertEqual(audit.audit_metadata["actor"]["id"], str(user_id))
 
     def test_put_team_workflow_permission_rejects_member_without_manage(self):
         # active member라도 workflow manager가 아니면 권한 변경은 거부해야 한다.
@@ -1272,8 +1266,6 @@ class TestPermissionsApi(unittest.TestCase):
             team=_team(id=team_id, organization_id=organization_id),
             llm_upsert_result=upsert_result,
         )
-        _track_mocked_outbox_enqueue(self.permission_audit, session)
-
         response = self._put_llm_permission(
             session=session,
             user_id=user_id,
@@ -1304,14 +1296,12 @@ class TestPermissionsApi(unittest.TestCase):
         )
         self.assertTrue(session.committed)
         self.assertTrue(session.scalars_called)
-        self.permission_audit.assert_called_once()
-        audit = self.permission_audit.call_args.kwargs
-        self.assertEqual(audit["action"], "team_llm_permission.created")
-        self.assertEqual(audit["target_type"], "team_llm_permission")
-        self.assertEqual(audit["target_id"], upsert_result.id)
-        self.assertEqual(audit["after"]["llm_credential_id"], credential_id)
-        self.assertIs(audit["db_session"], session)
-        _assert_outbox_enqueued_before_commit(self, session)
+        self.permission_audit.assert_not_called()
+        audit = session.added[0]
+        self.assertEqual(audit.action, "team_llm_permission.created")
+        self.assertEqual(audit.target_type, "team_llm_permission")
+        self.assertEqual(audit.target_id, str(upsert_result.id))
+        self.assertEqual(audit.after["llm_credential_id"], str(credential_id))
 
     def test_put_team_llm_permission_allows_credential_manager(self):
         # organization manager가 아니어도 credential manager 권한이 있으면 team LLM 권한을 부여할 수 있다.
@@ -2219,16 +2209,23 @@ class TestPermissionsApi(unittest.TestCase):
         )
         session.audit_add_error = RuntimeError("audit unavailable")
 
-        with self.assertRaisesRegex(RuntimeError, "audit unavailable"):
-            self._put_user_permission(
-                session=session,
-                user_id=actor_id,
-                organization_id=organization_id,
-                workflow_id=workflow_id,
-                target_user_id=target_user_id,
-                payload={"auth_state": "builder"},
-            )
+        response = self._put_user_permission(
+            session=session,
+            user_id=actor_id,
+            organization_id=organization_id,
+            workflow_id=workflow_id,
+            target_user_id=target_user_id,
+            payload={"auth_state": "builder"},
+        )
 
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(
+            response.json(),
+            _error(
+                "audit.persistence_failed",
+                "The required audit record could not be persisted.",
+            ),
+        )
         self.assertFalse(session.committed)
         self.assertIn(("rollback", None), session.operations)
 
@@ -2592,8 +2589,6 @@ class TestPermissionsApi(unittest.TestCase):
             team=_team(id=team_id, organization_id=organization_id),
             existing_permission=existing_permission,
         )
-        _track_mocked_outbox_enqueue(self.permission_audit, session)
-
         response = self._delete_permission(
             session=session,
             user_id=user_id,
@@ -2611,6 +2606,7 @@ class TestPermissionsApi(unittest.TestCase):
             },
         )
         self.assertEqual(session.deleted, [existing_permission])
+        self.assertTrue(is_manually_audited(session, existing_permission, "deleted"))
         self.assertTrue(session.committed)
         self.assertFalse(session.scalars_called)
         self.assertEqual(len(session.lock_statements), 2)
@@ -2632,21 +2628,16 @@ class TestPermissionsApi(unittest.TestCase):
             organization_id,
         )
         _assert_team_scope_filters(self, session.team_query, team_id, organization_id)
-        self.permission_audit.assert_called_once()
-        audit = self.permission_audit.call_args.kwargs
-        self.assertEqual(audit["action"], "team_workflow_permission.deleted")
-        self.assertEqual(audit["category"], "data_change")
-        self.assertEqual(audit["actor_id"], str(user_id))
-        self.assertEqual(audit["actor_type"], "user")
-        self.assertEqual(audit["target_type"], "team_workflow_permission")
-        self.assertEqual(audit["target_id"], existing_permission.id)
-        self.assertEqual(audit["before"]["id"], existing_permission.id)
-        self.assertEqual(audit["before"]["auth_state"], "builder")
-        self.assertIsNone(audit["after"])
-        self.assertEqual(audit["metadata"]["request_id"], "req-test")
-        self.assertEqual(audit["metadata"]["actor"]["id"], str(user_id))
-        self.assertIs(audit["db_session"], session)
-        _assert_outbox_enqueued_before_commit(self, session)
+        self.permission_audit.assert_not_called()
+        audit = session.added[0]
+        self.assertEqual(audit.action, "team_workflow_permission.deleted")
+        self.assertEqual(audit.target_id, str(existing_permission.id))
+        self.assertEqual(audit.before["auth_state"], "builder")
+        self.assertEqual(audit.before["workflow_id"], str(workflow_id))
+        self.assertEqual(audit.before["team_id"], str(team_id))
+        self.assertIsNone(audit.after)
+        self.assertEqual(audit.audit_metadata["request_id"], "req-test")
+        self.assertEqual(audit.audit_metadata["actor"]["id"], str(user_id))
 
     def test_delete_team_workflow_permission_allows_workflow_manager(self):
         # organization manager가 아니어도 workflow manager면 permission 회수가 가능하다.
@@ -2811,8 +2802,6 @@ class TestPermissionsApi(unittest.TestCase):
             team=_team(id=team_id, organization_id=organization_id),
             existing_llm_permission=existing_permission,
         )
-        _track_mocked_outbox_enqueue(self.permission_audit, session)
-
         response = self._delete_llm_permission(
             session=session,
             user_id=user_id,
@@ -2830,6 +2819,7 @@ class TestPermissionsApi(unittest.TestCase):
             },
         )
         self.assertEqual(session.deleted, [existing_permission])
+        self.assertTrue(is_manually_audited(session, existing_permission, "deleted"))
         self.assertTrue(session.committed)
         self.assertFalse(session.scalars_called)
         self.assertNotIn(TeamMembership, session.query_calls)
@@ -2845,22 +2835,16 @@ class TestPermissionsApi(unittest.TestCase):
             organization_id,
         )
         _assert_team_scope_filters(self, session.team_query, team_id, organization_id)
-        self.permission_audit.assert_called_once()
-        audit = self.permission_audit.call_args.kwargs
-        self.assertEqual(audit["action"], "team_llm_permission.deleted")
-        self.assertEqual(audit["category"], "data_change")
-        self.assertEqual(audit["actor_id"], str(user_id))
-        self.assertEqual(audit["actor_type"], "user")
-        self.assertEqual(audit["target_type"], "team_llm_permission")
-        self.assertEqual(audit["target_id"], existing_permission.id)
-        self.assertEqual(audit["before"]["id"], existing_permission.id)
-        self.assertEqual(audit["before"]["llm_credential_id"], credential_id)
-        self.assertEqual(audit["before"]["auth_state"], "operator")
-        self.assertIsNone(audit["after"])
-        self.assertEqual(audit["metadata"]["request_id"], "req-test")
-        self.assertEqual(audit["metadata"]["actor"]["id"], str(user_id))
-        self.assertIs(audit["db_session"], session)
-        _assert_outbox_enqueued_before_commit(self, session)
+        self.permission_audit.assert_not_called()
+        audit = session.added[0]
+        self.assertEqual(audit.action, "team_llm_permission.deleted")
+        self.assertEqual(audit.target_id, str(existing_permission.id))
+        self.assertEqual(audit.before["llm_credential_id"], str(credential_id))
+        self.assertEqual(audit.before["team_id"], str(team_id))
+        self.assertEqual(audit.before["auth_state"], "operator")
+        self.assertIsNone(audit.after)
+        self.assertEqual(audit.audit_metadata["request_id"], "req-test")
+        self.assertEqual(audit.audit_metadata["actor"]["id"], str(user_id))
 
     def test_delete_team_llm_permission_allows_credential_manager(self):
         # organization manager가 아니어도 credential manager면 permission 회수가 가능하다.
@@ -3050,6 +3034,7 @@ class TestPermissionsApi(unittest.TestCase):
             },
         )
         self.assertEqual(session.deleted, [existing_permission])
+        self.assertTrue(is_manually_audited(session, existing_permission, "deleted"))
         self.assertTrue(session.committed)
         self.assertFalse(session.scalars_called)
         scope_locks = [
@@ -3326,6 +3311,7 @@ class TestPermissionsApi(unittest.TestCase):
             },
         )
         self.assertEqual(session.deleted, [existing_permission])
+        self.assertTrue(is_manually_audited(session, existing_permission, "deleted"))
         self.assertTrue(session.committed)
         self.assertFalse(session.scalars_called)
         self.assertIsNotNone(session.lock_statement)
@@ -4920,25 +4906,6 @@ def _assert_audit_added_before_commit(testcase, session):
     testcase.assertIn(("commit", None), session.operations)
     testcase.assertLess(
         session.operations.index(("add", AuditLog)),
-        session.operations.index(("commit", None)),
-    )
-
-
-def _track_mocked_outbox_enqueue(audit_mock, session):
-    """mock audit enqueue 시점을 fake session 작업 순서에 기록한다."""
-
-    def enqueue(**_kwargs):
-        session.operations.append(("audit_outbox", None))
-        return uuid4()
-
-    audit_mock.side_effect = enqueue
-
-
-def _assert_outbox_enqueued_before_commit(testcase, session):
-    testcase.assertIn(("audit_outbox", None), session.operations)
-    testcase.assertIn(("commit", None), session.operations)
-    testcase.assertLess(
-        session.operations.index(("audit_outbox", None)),
         session.operations.index(("commit", None)),
     )
 

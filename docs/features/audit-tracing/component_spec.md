@@ -1,9 +1,9 @@
 # Audit Tracing Component Spec
 
 Status: Draft
-Verified Against: feature/mba-188 @ 59d1cc51
+Verified Against: feature/mba-284 @ 5247ed1b
 
-검증 값은 MBA-188 SafeChangeSummary와 audit actor management 연동에 적용한다. 다른 trace UI는 각 feature 구현 기준을 따른다.
+검증 값은 SafeChangeSummary와 audit actor management 연동, GenericAsyncAuditPublisher, Workflow/LLM 권한 변경 AuditRecorder 경계에 적용한다. 다른 trace UI는 각 feature 구현 기준을 따른다.
 
 ## Screens
 
@@ -32,6 +32,9 @@ Verified Against: feature/mba-188 @ 59d1cc51
 - UI component가 아니라 backend outbound adapter contract다.
 - Mutation use case와 같은 UnitOfWork에서 AuditLog row를 준비한다.
 - Async best-effort publish 성공을 security mutation 성공 조건으로 사용하지 않는다.
+- `/api/v1/permissions`의 Workflow/LLM credential team/user PUT·DELETE는 resource permission mutation application use case가 SQLAlchemy permission repository, transaction-bound audit adapter, UnitOfWork를 조율한다. Repository와 audit adapter는 commit/rollback을 호출하지 않는다.
+- 동일 `auth_state` PUT은 기존 row를 반환하는 no-op으로 종료하고 canonical audit을 만들지 않는다. 적용된 create/update/delete만 safe organization/grantee/resource/auth-state snapshot으로 audit을 한 건 추가한 뒤 flush와 final commit을 수행한다.
+- ORM delete는 tracked object를 deleted 상태로 만들기 전에 해당 object/operation의 manual audit ownership을 등록한다. 따라서 transaction-bound canonical audit와 after-commit listener 발행이 같은 permission 변경을 중복 소유하지 않는다.
 
 ### GenericAsyncAuditPublisher
 
