@@ -1,7 +1,7 @@
 # Connectors Requirements
 
 Status: Draft
-Verified Against: feature/mba-302 @ bd24ef9f31d46c496507114aecfdf76582ccab77
+Verified Against: feature/mba-302 @ b2d6467002b7becf1daa0badfe6fc155b3edaa57
 Related Features: workflow, organization, audit-tracing, knowledge, conversation-memory
 
 ## Purpose
@@ -94,9 +94,9 @@ Connectors 기능은 외부 데이터 소스에 접속하기 위한 연결 정�
 - CONN-REQ-064 (MBA-281): Knowledge document metadata에는 opaque `connection_id`만 Connection reference로 저장할 수 있다. Connection name/type/host/database/username, decrypted/encrypted password와 SSH credential은 document metadata, processor result, chunk source label, audit와 log에 복제하지 않아야 한다.
 - CONN-REQ-065 (MBA-281): Missing, malformed, deleted와 non-owner Connection reference는 Knowledge use surface에서 동일한 `resource.hidden` 결과로 처리하고 Connection 존재·owner·상세를 노출하지 않아야 한다. Connector 관리 detail/schema API의 기존 403/404 계약은 이 요구로 변경하지 않는다.
 - CONN-REQ-066 (MBA-281): 저장 credential 복호화가 실패하면 Knowledge DB processor는 저장값을 평문 credential처럼 fallback하지 않고 configuration failure로 닫아 외부 adapter를 호출하지 않아야 한다.
-- CONN-REQ-067 (MBA-302): Runtime DB use는 독립된 짧은 SQLAlchemy session에서 owner를 재검증하고 adapter type과 최소 credential configuration을 immutable snapshot으로 만든 뒤 transaction/session을 종료해야 한다. ORM Connection과 encrypted storage shape를 processor에 반환해서는 안 되며 connector 생성·외부 DB dial은 snapshot session 종료 뒤에만 허용한다.
+- CONN-REQ-067 (MBA-302): Runtime DB use는 독립된 짧은 SQLAlchemy session에서 owner를 재검증하고 adapter type과 최소 credential configuration을 immutable snapshot으로 만든 뒤 transaction/session을 종료해야 한다. ORM Connection과 encrypted storage shape를 processor에 반환해서는 안 되며 connector 생성·외부 DB dial은 snapshot session 종료 뒤에만 허용한다. Snapshot projection은 공백뿐인 database/username을 거부하되 저장된 PostgreSQL identifier text를 임의 trim하지 않고, encrypted SSH password가 없는 기존 password-auth row의 agent/default-key compatibility를 보존해야 한다.
 - CONN-REQ-068 (MBA-302): Connection reference 저장·교체·삭제만 owner Connection row lock을 사용한다. 여러 Knowledge row가 함께 필요한 mutation의 전역 순서는 `Connection -> KnowledgeBase -> Document/DocumentVersion`이며 existing Document reference writer는 Connection 다음 Document를 fresh read lock하고 최초 조회 revision을 재검증해 stale writer를 명시적 non-retryable conflict로 닫아야 한다. 외부 network/storage/provider I/O, chunking과 embedding을 Connection lock transaction 안에서 수행해서는 안 된다.
-- CONN-REQ-069 (MBA-302): PostgreSQL Connection reference lock wait는 local 2초로 제한한다. Lock timeout, deadlock victim과 serialization failure는 전체 transaction rollback 뒤 새 session에서만 재시도 가능한 `connection.reference_busy`, 기타 store failure는 `connection.reference_unavailable`로 구분하고 raw SQL/driver/lock detail을 노출하지 않아야 한다.
+- CONN-REQ-069 (MBA-302): PostgreSQL Connection reference lock wait는 local 2초로 제한한다. Lock 획득 또는 같은 reference mutation의 flush/commit에서 발생한 lock timeout, deadlock victim과 serialization failure는 전체 transaction rollback 뒤 새 session에서만 재시도 가능한 `connection.reference_busy`, 기타 store failure는 `connection.reference_unavailable`로 구분하고 raw SQL/driver/lock detail을 노출하지 않아야 한다.
 - CONN-REQ-070 (MBA-302): Runtime PostgreSQL fetch와 schema introspection은 connect 5초, statement 5초와 read-only transaction을 적용한다. Fetch는 bounded batch·총 10,000 row·총 16 MiB row payload 상한을 적용하고, 상한 초과를 일부 성공으로 반환하지 않으며 종료·예외·취소에서 engine과 tunnel을 정리해야 한다.
 - CONN-REQ-071 (MBA-302): Runtime snapshot은 dial 시작 시점의 authorization snapshot이며 실행 중 즉시 revoke를 보장하지 않는다. Lock 관측 정보는 outcome과 coarse wait/hold bucket만 허용하고 Connection identity, target, SQL과 credential을 metric label, log, audit 또는 trace에 포함하지 않아야 한다.
 

@@ -1,7 +1,7 @@
 # Knowledge Test Cases
 
 Status: Draft
-Verified Against: feature/mba-302 @ bd24ef9f31d46c496507114aecfdf76582ccab77
+Verified Against: feature/mba-302 @ b2d6467002b7becf1daa0badfe6fc155b3edaa57
 이 문서는 현재 RAG 동작과 목표 KB 통합 모델에 필요한 테스트 범위를 함께 기록한다. MBA-105 목표 모델 테스트는 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)과 [implementation_baseline.md](implementation_baseline.md)의 임시 baseline을 기준으로 구현 blocker가 된다.
 KC sync의 실행·복구·snapshot·versioned finalization 검증은 [ADR-0048](../../decisions/ADR-0048-knowledge-collection-sync-execution-boundary.md)을 따른다.
 
@@ -478,8 +478,8 @@ KC sync의 실행·복구·snapshot·versioned finalization 검증은 [ADR-0048]
 - 정상 owner가 저장한 DB source라도 background 실행 전에 Connection이 삭제되거나 owner가 변경되면 Gateway ingestion, direct `DbProcessor`와 KC sync가 adapter 생성·DB dial 전에 configuration failure로 닫혀야 한다. Gateway 검증 결과를 background capability로 재사용하지 않는다.
 - Connection resolver의 SQLAlchemy/driver 조회 실패는 raw detail이나 500으로 새지 않고 Gateway `503 connection.reference_unavailable`, processor `source.temporarily_unavailable`로 정규화하며 adapter를 호출하지 않는다. Preview의 두 번째 runtime 판정에서 발생한 `resource.hidden`과 temporary failure도 각각 404/503 의미를 유지하고 일반 400으로 축소하지 않는다.
 - Disposable PostgreSQL 검증은 같은 Session에 이미 로드된 Connection의 owner가 다른 transaction에서 변경된 뒤 다음 resolver가 stale identity를 재사용하지 않고 old owner를 거부하는지 확인한다. MBA-281은 runtime row lock을 검증하지 않으며 lock mode/order/scope test는 MBA-302로 분리한다.
-- MBA-302 runtime snapshot 검증은 owner predicate와 credential projection을 독립 session에서 완료하고 session을 닫은 뒤에만 Gateway/Workflow/KC connector가 호출되는지 확인한다. Success, hidden, configuration/store failure와 connector cancellation 모두 snapshot transaction/session을 남기지 않으며 processor output/repr에는 Connection identity와 credential이 없어야 한다.
-- Connection reference writer가 owner row lock을 보유한 동안 delete/update contender는 PostgreSQL local 2초 안에 safe retryable busy로 종료하고 전체 rollback해야 한다. Writer commit 뒤 새 transaction은 committed Document reference를 확인해 delete를 `connection.in_use`로 막고, 최초 조회 revision보다 Document가 갱신되었으면 stale writer를 `connection.reference_conflict`로 막아야 한다. Deadlock victim은 같은 session의 부분 상태를 재사용하지 않아야 한다.
+- MBA-302 runtime snapshot 검증은 owner predicate와 credential projection을 독립 session에서 완료하고 session을 닫은 뒤에만 Gateway/Workflow/KC connector가 호출되는지 확인한다. Success, hidden, configuration/store failure와 connector cancellation 모두 snapshot transaction/session을 남기지 않으며 processor output/repr에는 Connection identity와 credential이 없어야 한다. Stored database/username의 앞뒤 공백은 임의 trim하지 않고 encrypted SSH password가 없는 기존 password-auth row는 불필요한 decrypt 없이 `password=None`으로 투영한다.
+- Connection reference writer가 owner row lock을 보유한 동안 delete/update contender는 PostgreSQL local 2초 안에 safe retryable busy로 종료하고 전체 rollback해야 한다. Writer commit 뒤 새 transaction은 committed Document reference를 확인해 delete를 `connection.in_use`로 막고, 최초 조회 revision보다 Document가 갱신되었으면 stale writer를 `connection.reference_conflict`로 막아야 한다. Deadlock victim은 같은 session의 부분 상태를 재사용하지 않아야 한다. Metadata commit에서 `40001`/`40P01`/`55P03`/`57014`가 발생해도 `connection.reference_busy`, 기타 SQLAlchemy commit 오류는 `connection.reference_unavailable`로 닫고 background task를 등록하지 않아야 한다.
 - Runtime PostgreSQL fetch는 connect 5초, statement 5초, bounded batch, 총 10,000 row와 총 16 MiB cap을 적용한다. Row/byte limit 초과는 일부 chunk를 success로 finalize하지 않고 generator exception/cancel에서 engine/tunnel을 정리해야 한다.
 - DB source 저장 metadata는 top-level opaque `connection_id`만 Connection reference로 유지하고 client가 보낸 host/username/password, legacy `connection_name`/`db_type`과 encrypted/decrypted credential을 제거한다. Processor success/failure metadata와 chunk source label도 Connection id/name/host/user/credential을 포함하지 않는다.
 - DB/SSH credential 복호화 실패 시 저장 암호문을 adapter에 전달하지 않고 connector fetch가 0회인지 검증한다. Audit와 document failure에는 safe error class만 남는다.

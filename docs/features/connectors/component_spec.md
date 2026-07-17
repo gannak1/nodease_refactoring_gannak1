@@ -1,7 +1,7 @@
 # Connectors Component Spec
 
 Status: Draft
-Verified Against: feature/mba-302 @ bd24ef9f31d46c496507114aecfdf76582ccab77
+Verified Against: feature/mba-302 @ b2d6467002b7becf1daa0badfe6fc155b3edaa57
 
 ## Screens
 
@@ -130,6 +130,7 @@ File/page artifact connector는 egress guard 이후에도 artifact content를 tr
 - 책임: 주입된 session factory로 독립 session을 열고 `ConnectionUseResolver`의 owner 판정을 재사용해 adapter type과 최소 credential configuration을 immutable snapshot으로 투영한다.
 - 경계:
   - Password/SSH credential 복호화는 provider 안에서만 수행하고 ORM entity와 encrypted field를 processor에 반환하지 않는다.
+  - PostgreSQL database/username은 공백뿐인 값을 거부하되 저장된 text를 그대로 전달한다. 기존 password-auth SSH row에 encrypted password가 없으면 agent/default-key compatibility를 위해 `password=None`으로 투영하고 복호화를 호출하지 않는다.
   - Success, hidden, configuration failure와 store failure 모두 transaction을 종료하고 session을 닫은 뒤 caller에 typed result/error를 반환한다.
   - Connector 생성·dial·query, chunking과 embedding을 호출하지 않는다.
   - Snapshot DTO는 API/metadata/audit/trace serialization 대상이 아니며 repr에 secret을 포함하지 않는다.
@@ -139,7 +140,7 @@ File/page artifact connector는 egress guard 이후에도 artifact content를 tr
 - 출처: `apps/gateway/services/connection_lifecycle_service.py`
 - 책임: Connection reference 저장·교체·삭제를 owner Connection row lock으로 직렬화하고 committed Document reference 및 writer의 expected Document revision을 확인한다.
 - 경계:
-  - PostgreSQL local `lock_timeout=2s`를 적용하고 timeout/deadlock/serialization victim을 retryable `connection.reference_busy`로 정규화한다.
+  - PostgreSQL local `lock_timeout=2s`를 적용하고 lock 획득 또는 reference mutation flush/commit의 timeout/deadlock/serialization victim을 retryable `connection.reference_busy`로 정규화한다. 기타 commit/store 오류는 전체 rollback 뒤 `connection.reference_unavailable`로 닫는다.
   - 전역 lock 순서는 `Connection -> KnowledgeBase -> Document/DocumentVersion`이며 caller는 역순으로 이 service를 호출하지 않는다.
   - Existing Document reference writer는 Connection 잠금 뒤 Document를 `populate_existing + FOR UPDATE`로 다시 읽고 최초 조회 `updated_at`과 다르면 `connection.reference_conflict`로 전체 rollback한다.
   - 외부 DB/storage/provider I/O를 수행하지 않고 typed failure 뒤 전체 transaction을 rollback한다.
@@ -211,7 +212,7 @@ Docker demo Gateway는 Connector admission에만 `connector-test-redis` logical 
 ### Schema Selection
 
 1. `DBSchemaSelector`는 `connectionId`를 받으면 `connectorApi.getSchema(connectionId)`를 호출한다.
-2. Gateway는 기존 관리 API의 404/403 owner precheck를 짧은 transaction에서 수행하고 rollback한다.
+2. Gateway는 current user ID를 scalar로 먼저 복사하고 기존 관리 API의 404/403 owner precheck를 짧은 transaction에서 수행한 뒤 rollback한다. Rollback 뒤 request-session ORM user attribute를 다시 읽지 않는다.
 3. 독립 `ConnectionRuntimeSnapshotProvider`가 owner를 다시 확인하고 최소 runtime config를 만든 뒤 session을 닫는다.
 4. PostgreSQL connector는 read-only/statement-timeout 설정으로 schema를 조회한다.
 5. UI는 table/column/FK 정보를 표시한다.
