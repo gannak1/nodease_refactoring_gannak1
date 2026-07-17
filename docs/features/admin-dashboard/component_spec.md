@@ -117,6 +117,11 @@ Verified Against: feature/mba-188 @ 59d1cc51
 - `404` 응답(이미 회수됐거나 없는 row)은 "이미 회수된 권한입니다" toast 후 목록 갱신.
 - 데이터 원천: `GET /admin/app-creation-permissions`.
 
+### PermissionsTab
+
+- `PermissionsTab`은 App Router의 route segment export 계약을 지키도록 `page.tsx`와 분리된 컴포넌트로 유지한다.
+- 권한 부여 modal에서 검색 결과에 현재 resource 또는 grantee 선택값이 보이지 않으면 저장 action을 비활성화하고, 제출 시점에도 같은 조건을 다시 확인해 숨겨진 이전 선택값으로 권한을 부여하지 않는다.
+
 ### KnowledgePermissionManagement (MBA-176)
 
 - 기존 admin/settings permission UI를 재사용해 Knowledge Base별 team permission과 user direct permission을 관리한다.

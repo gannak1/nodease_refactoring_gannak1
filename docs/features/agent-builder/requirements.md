@@ -309,6 +309,8 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 ### DBP-NFR-004 Accessibility And Layout
 
 - 모든 parameter control은 label, error, keyboard focus를 제공한다.
+- desktop Agent Builder panel은 왼쪽 경계를 마우스로 드래그하거나 키보드 방향키로 조절할 수 있어야 한다. 초기 50vw와 조절된 너비 모두 최소 360px부터 viewport 우측 여백 40px을 제외한 최대 범위로 제한하고 같은 화면 세션에서 panel을 닫았다 다시 열어도 조절값을 유지한다. Focusable separator는 현재·최소·최대 픽셀 너비를 `aria-valuenow`, `aria-valuemin`, `aria-valuemax`로 제공한다. mobile에서는 resize handle을 숨기고 기존 좌우 여백 안의 전체 너비를 유지한다.
+- Agent Builder의 고정 배치 wrapper는 panel과 launcher 밖의 투명 영역에서 pointer event를 가로채지 않아야 한다. panel을 최소화하거나 닫은 뒤에도 하단 React Flow control을 클릭할 수 있어야 한다.
 - card와 canvas focus는 mobile/desktop viewport에서 Agent Builder panel과 선택 node가 겹치지 않도록 가시 영역과 동적 zoom을 계산한다. 공간이 부족하면 zoom을 낮춰 node 식별과 주요 handle을 보장하고 panel control이 서로 겹치거나 화면 밖으로 잘리지 않아야 한다.
 - 긴 label과 validation message가 container를 벗어나지 않아야 한다.
 

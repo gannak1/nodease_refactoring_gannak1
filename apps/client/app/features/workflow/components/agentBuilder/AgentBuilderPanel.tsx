@@ -1,7 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { KeyboardEvent } from 'react';
+import type {
+  CSSProperties,
+  KeyboardEvent,
+  PointerEvent as ReactPointerEvent,
+} from 'react';
 import {
   AlertCircle,
   Bot,
@@ -53,6 +57,11 @@ type ConversationItem =
 const NO_KB_CANDIDATE_ID = '__agent_builder_no_kb__';
 const SAFE_SERVER_ERROR_CODE = /^[a-z][a-z0-9_]{0,79}$/;
 const SESSION_RECOVERY_DELAYS_MS = [1000, 2000, 4000] as const;
+const AGENT_BUILDER_MIN_PANEL_WIDTH = 360;
+const AGENT_BUILDER_VIEWPORT_GUTTER = 40;
+const AGENT_BUILDER_RESIZE_KEYBOARD_STEP = 24;
+const AGENT_BUILDER_DEFAULT_PANEL_WIDTH =
+  'clamp(360px, 50vw, calc(100vw - 40px))';
 const KNOWLEDGE_REASON_LABELS: Record<string, string> = {
   topic_keyword_match: '\uC694\uCCAD \uC8FC\uC81C\uC640 \uC77C\uCE58',
   metadata_match: '\uBB38\uC11C \uBA54\uD0C0\uB370\uC774\uD130\uC640 \uC77C\uCE58',
@@ -437,6 +446,15 @@ const knowledgeOptionsFromResolution = (
 const knowledgeOptionsFromResponse = (response: AgentBuilderMessageResponse) =>
   knowledgeOptionsFromResolution(response);
 
+const clampAgentBuilderPanelWidth = (
+  width: number,
+  viewportWidth: number,
+): number => {
+  const maxWidth = Math.max(0, viewportWidth - AGENT_BUILDER_VIEWPORT_GUTTER);
+  const minWidth = Math.min(AGENT_BUILDER_MIN_PANEL_WIDTH, maxWidth);
+  return Math.min(Math.max(width, minWidth), maxWidth);
+};
+
 export function AgentBuilderPanel({
   workflowId,
   appId,
@@ -447,6 +465,8 @@ export function AgentBuilderPanel({
 }: Props) {
   const [isOpen, setIsOpen] = useState(false);
   const [isMinimized, setIsMinimized] = useState(false);
+  const [panelWidth, setPanelWidth] = useState<number | null>(null);
+  const [viewportWidth, setViewportWidth] = useState<number | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [authoritativeRequestStatus, setAuthoritativeRequestStatus] = useState<
     string | null
@@ -542,10 +562,33 @@ export function AgentBuilderPanel({
   const scopeRef = useRef(storageKey);
   const conversationScrollRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLElement>(null);
+  const resizeCleanupRef = useRef<(() => void) | null>(null);
   const shouldAutoScrollRef = useRef(true);
   const submitLockRef = useRef(false);
   const sessionCreationRef = useRef<Promise<string> | null>(null);
   const pendingSessionReconciliationRef = useRef<string | null>(null);
+
+  useEffect(
+    () => () => {
+      resizeCleanupRef.current?.();
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const updateViewportWidth = () => {
+      const nextViewportWidth = window.innerWidth;
+      setViewportWidth(nextViewportWidth);
+      setPanelWidth((current) =>
+        current === null
+          ? null
+          : clampAgentBuilderPanelWidth(current, nextViewportWidth),
+      );
+    };
+    updateViewportWidth();
+    window.addEventListener('resize', updateViewportWidth);
+    return () => window.removeEventListener('resize', updateViewportWidth);
+  }, []);
 
   const clearStoredSession = useCallback(() => {
     if (typeof window === 'undefined') return;
@@ -1656,17 +1699,123 @@ export function AgentBuilderPanel({
     setIsOpen((value) => !value);
   };
 
+  const effectiveViewportWidth =
+    viewportWidth ??
+    (typeof window === 'undefined'
+      ? AGENT_BUILDER_MIN_PANEL_WIDTH + AGENT_BUILDER_VIEWPORT_GUTTER
+      : window.innerWidth);
+  const maxPanelWidth = Math.max(
+    0,
+    effectiveViewportWidth - AGENT_BUILDER_VIEWPORT_GUTTER,
+  );
+  const minPanelWidth = Math.min(
+    AGENT_BUILDER_MIN_PANEL_WIDTH,
+    maxPanelWidth,
+  );
+  const currentPanelWidth = Math.round(
+    panelWidth ??
+      clampAgentBuilderPanelWidth(
+        effectiveViewportWidth / 2,
+        effectiveViewportWidth,
+      ),
+  );
+
+  const renderedPanelWidth = () => {
+    const measuredWidth = panelRef.current?.getBoundingClientRect().width;
+    if (measuredWidth && measuredWidth > 0) return measuredWidth;
+    return currentPanelWidth;
+  };
+
+  const setClampedPanelWidth = (width: number) => {
+    setPanelWidth(clampAgentBuilderPanelWidth(width, window.innerWidth));
+  };
+
+  const handlePanelResizeStart = (
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) => {
+    event.preventDefault();
+    resizeCleanupRef.current?.();
+
+    const startClientX = event.clientX;
+    const startWidth = renderedPanelWidth();
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    const handlePointerMove = (moveEvent: globalThis.PointerEvent) => {
+      setClampedPanelWidth(startWidth + startClientX - moveEvent.clientX);
+    };
+    const cleanup = () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', cleanup);
+      window.removeEventListener('pointercancel', cleanup);
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      resizeCleanupRef.current = null;
+    };
+
+    resizeCleanupRef.current = cleanup;
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', cleanup, { once: true });
+    window.addEventListener('pointercancel', cleanup, { once: true });
+  };
+
+  const handlePanelResizeKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      setClampedPanelWidth(
+        renderedPanelWidth() + AGENT_BUILDER_RESIZE_KEYBOARD_STEP,
+      );
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      setClampedPanelWidth(
+        renderedPanelWidth() - AGENT_BUILDER_RESIZE_KEYBOARD_STEP,
+      );
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      setClampedPanelWidth(AGENT_BUILDER_MIN_PANEL_WIDTH);
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      setClampedPanelWidth(window.innerWidth);
+    }
+  };
+
+  const panelWidthStyle = {
+    '--agent-builder-panel-width':
+      panelWidth === null
+        ? AGENT_BUILDER_DEFAULT_PANEL_WIDTH
+        : `${panelWidth}px`,
+  } as CSSProperties;
+
   return (
     <div
-      className="fixed bottom-5 left-2 right-2 z-50 flex flex-col items-end gap-3 sm:left-auto sm:right-5 sm:w-[50vw]"
+      className="agent-builder-panel-shell pointer-events-none fixed bottom-5 left-2 right-2 z-50 flex flex-col items-end gap-3 sm:left-auto sm:right-5"
+      style={panelWidthStyle}
       onKeyDown={(event) => event.stopPropagation()}
     >
       {isOpen && !isMinimized && (
         <section
           ref={panelRef}
-          className="flex h-[calc(100dvh-7.75rem)] w-full flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-2xl sm:w-[50vw]"
+          className="pointer-events-auto relative flex h-[calc(100dvh-7.75rem)] w-full flex-col overflow-hidden rounded-lg border border-slate-200 bg-white shadow-2xl"
           aria-label="Agent Builder panel"
         >
+          <div
+            role="separator"
+            aria-label="Agent Builder 너비 조절"
+            aria-orientation="vertical"
+            aria-valuenow={currentPanelWidth}
+            aria-valuemin={Math.round(minPanelWidth)}
+            aria-valuemax={Math.round(maxPanelWidth)}
+            aria-valuetext={`${currentPanelWidth}픽셀`}
+            tabIndex={0}
+            onPointerDown={handlePanelResizeStart}
+            onKeyDown={handlePanelResizeKeyDown}
+            className="group absolute bottom-0 left-0 top-0 z-10 hidden w-2 cursor-col-resize touch-none outline-none sm:block"
+          >
+            <span className="absolute bottom-2 left-1/2 top-2 w-0.5 -translate-x-1/2 rounded-full bg-transparent transition-colors group-hover:bg-blue-400 group-focus-visible:bg-blue-500" />
+          </div>
           <header className="flex items-center justify-between gap-2 border-b border-slate-200 px-4 py-3">
             <div className="flex min-w-0 items-center gap-2">
               <Bot className="h-4 w-4 text-slate-700" />
@@ -2065,7 +2214,7 @@ export function AgentBuilderPanel({
       <button
         type="button"
         onClick={toggleAgentBuilder}
-        className="flex h-12 w-12 items-center justify-center rounded-full bg-slate-950 text-white shadow-lg transition-colors hover:bg-slate-800"
+        className="pointer-events-auto flex h-12 w-12 items-center justify-center rounded-full bg-slate-950 text-white shadow-lg transition-colors hover:bg-slate-800"
         aria-label={isMinimized ? 'Agent Builder 펼치기' : 'Agent Builder 열기'}
       >
         <Bot className="h-5 w-5" />

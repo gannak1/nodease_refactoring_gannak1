@@ -1,4 +1,6 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const navigationMock = vi.hoisted(() => ({
@@ -52,7 +54,16 @@ vi.mock('@/app/features/admin/components/AdminSummaryCards', () => ({
   AdminSummaryCards: () => null,
 }));
 
+import { PermissionsTab } from '@/app/features/admin/components/PermissionsTab';
 import AdminConsolePage from './page';
+
+describe('AdminConsolePage route contract', () => {
+  it('page.tsx에서 테스트용 컴포넌트를 named export하지 않는다', () => {
+    const pageSource = readFileSync(resolve(__dirname, 'page.tsx'), 'utf8');
+
+    expect(pageSource).not.toMatch(/export\s+function\s+PermissionsTab\b/);
+  });
+});
 
 const member = {
   id: 'membership-1',
@@ -216,5 +227,226 @@ describe('AdminConsolePage 조직 구성 상태 보존', () => {
     expect(
       screen.getByRole('link', { name: '지식 기반 탭에서 확인' }),
     ).toHaveAttribute('href', '/dashboard/admin?tab=knowledge');
+  });
+});
+
+describe('PermissionsTab 표 기반 권한 부여', () => {
+  const renderPermissionsTab = (overrides = {}) => {
+    const onGrant = vi.fn();
+    const onSelectResource = vi.fn();
+
+    render(
+      <PermissionsTab
+        resourceType="workflow"
+        workflowOptions={[
+          {
+            id: 'app-1',
+            name: 'Enterprise 고객 티켓 처리',
+            workflow_id: 'workflow-1',
+          },
+          {
+            id: 'app-2',
+            name: '사내 문서 질문 응답 봇',
+            workflow_id: 'workflow-2',
+          },
+        ]}
+        selectedWorkflowId="workflow-1"
+        knowledgeBases={[]}
+        selectedKnowledgeBaseId=""
+        credentials={[]}
+        selectedCredentialId=""
+        mailCredentials={[]}
+        selectedMailCredentialId=""
+        activeTeams={[team]}
+        activeMembers={[]}
+        granteeType="team"
+        granteeId="team-1"
+        authState="viewer"
+        permissionList={{
+          resource_type: 'workflow',
+          resource_id: 'workflow-1',
+          organization_id: 'org-1',
+          team_permissions: [],
+          user_permissions: [],
+        }}
+        actionPending={false}
+        onSelectResource={onSelectResource}
+        onGrant={onGrant}
+        onRevoke={vi.fn()}
+        {...overrides}
+      />,
+    );
+
+    return { onGrant, onSelectResource };
+  };
+
+  it('권한 부여 버튼으로 표 선택 모달을 열고 저장한다', async () => {
+    const { onGrant } = renderPermissionsTab();
+
+    expect(
+      screen.queryByRole('dialog', { name: '리소스 권한 부여' }),
+    ).not.toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: '권한 부여' })).toHaveLength(1);
+    expect(
+      screen.queryByRole('button', { name: '리소스·권한 변경' }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '권한 부여' }));
+
+    const dialog = screen.getByRole('dialog', { name: '리소스 권한 부여' });
+    expect(dialog).toBeInTheDocument();
+    expect(screen.getByRole('table', { name: '권한 대상 리소스' })).toBeInTheDocument();
+    expect(screen.getByRole('table', { name: '권한 부여 대상' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: '리소스 목록' })).toHaveClass(
+      'max-h-[500px]',
+      'overflow-auto',
+    );
+    expect(screen.getByRole('region', { name: '부여 대상 목록' })).toHaveClass(
+      'max-h-[500px]',
+      'overflow-auto',
+    );
+    expect(
+      within(screen.getByRole('table', { name: '권한 대상 리소스' }))
+        .getAllByRole('rowgroup')[0],
+    ).toHaveClass('sticky');
+    expect(
+      within(screen.getByRole('table', { name: '권한 부여 대상' }))
+        .getAllByRole('rowgroup')[0],
+    ).toHaveClass('sticky');
+
+    fireEvent.click(screen.getByRole('button', { name: '선택한 권한 부여' }));
+    await waitFor(() =>
+      expect(onGrant).toHaveBeenCalledWith({
+        resourceType: 'workflow',
+        resourceId: 'workflow-1',
+        granteeType: 'team',
+        granteeId: 'team-1',
+        authState: 'viewer',
+      }),
+    );
+    expect(
+      screen.queryByRole('dialog', { name: '리소스 권한 부여' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('모달 선택과 취소는 페이지의 조회 리소스를 바꾸지 않는다', () => {
+    const { onGrant } = renderPermissionsTab();
+    fireEvent.click(screen.getByRole('button', { name: '권한 부여' }));
+
+    fireEvent.change(screen.getByRole('searchbox', { name: '리소스 검색' }), {
+      target: { value: '사내 문서' },
+    });
+    const resourceTable = screen.getByRole('table', {
+      name: '권한 대상 리소스',
+    });
+    expect(
+      within(resourceTable).queryByText('Enterprise 고객 티켓 처리'),
+    ).not.toBeInTheDocument();
+    expect(
+      within(resourceTable).getByText('사내 문서 질문 응답 봇'),
+    ).toBeVisible();
+
+    fireEvent.click(
+      screen.getByRole('radio', { name: '사내 문서 질문 응답 봇 선택' }),
+    );
+    expect(onGrant).not.toHaveBeenCalled();
+    expect(screen.getByText('Enterprise 고객 티켓 처리')).toBeVisible();
+
+    fireEvent.click(screen.getByRole('button', { name: '취소' }));
+    expect(
+      screen.queryByRole('dialog', { name: '리소스 권한 부여' }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText('Enterprise 고객 티켓 처리')).toBeVisible();
+  });
+
+  it.each([
+    ['리소스', '리소스 검색'],
+    ['부여 대상', '대상 검색'],
+  ])(
+    '검색으로 선택한 %s가 숨겨지면 권한을 저장하지 않는다',
+    (_selection, searchName) => {
+      const { onGrant } = renderPermissionsTab();
+      fireEvent.click(screen.getByRole('button', { name: '권한 부여' }));
+
+      fireEvent.change(screen.getByRole('searchbox', { name: searchName }), {
+        target: { value: '검색 결과 없음' },
+      });
+
+      const submitButton = screen.getByRole('button', {
+        name: '선택한 권한 부여',
+      });
+      expect(submitButton).toBeDisabled();
+      fireEvent.click(submitButton);
+      expect(onGrant).not.toHaveBeenCalled();
+    },
+  );
+
+  it('권한 저장 중에는 모든 닫기 경로와 선택 입력을 잠근다', () => {
+    renderPermissionsTab({ actionPending: true });
+    fireEvent.click(screen.getByRole('button', { name: '권한 부여' }));
+
+    const dialog = screen.getByRole('dialog', { name: '리소스 권한 부여' });
+    const backdrop = dialog.previousElementSibling;
+    expect(dialog).toHaveAttribute('aria-busy', 'true');
+    expect(backdrop).not.toBeNull();
+
+    fireEvent.click(backdrop!);
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    fireEvent.click(screen.getByRole('button', { name: '권한 부여 닫기' }));
+    fireEvent.click(screen.getByRole('button', { name: '취소' }));
+
+    expect(dialog).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '권한 부여 닫기' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '취소' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '저장 중...' })).toBeDisabled();
+    within(dialog)
+      .getAllByRole('searchbox')
+      .forEach((input) => expect(input).toBeDisabled());
+    within(dialog)
+      .getAllByRole('combobox')
+      .forEach((select) => expect(select).toBeDisabled());
+    within(dialog)
+      .getAllByRole('radio')
+      .forEach((radio) => expect(radio).toBeDisabled());
+  });
+
+  it('본문 리소스 필터로 저장 없이 권한 조회 대상을 바꾼다', () => {
+    const { onGrant, onSelectResource } = renderPermissionsTab();
+
+    fireEvent.click(screen.getByRole('button', { name: '리소스 필터 변경' }));
+    fireEvent.change(
+      screen.getByRole('searchbox', { name: '조회 리소스 검색' }),
+      { target: { value: '사내 문서' } },
+    );
+    fireEvent.click(
+      screen.getByRole('option', { name: '사내 문서 질문 응답 봇' }),
+    );
+
+    expect(onSelectResource).toHaveBeenCalledWith('workflow', 'workflow-2');
+    expect(onGrant).not.toHaveBeenCalled();
+  });
+
+  it('새 리소스 응답을 기다리는 동안 이전 리소스의 회수 버튼을 숨긴다', () => {
+    renderPermissionsTab({
+      selectedWorkflowId: 'workflow-2',
+      permissionList: {
+        resource_type: 'workflow',
+        resource_id: 'workflow-1',
+        organization_id: 'org-1',
+        team_permissions: [
+          {
+            id: 'permission-1',
+            grantee_type: 'team',
+            grantee_id: 'team-1',
+            grantee_name: '개발팀',
+            auth_state: 'viewer',
+            assigned_at: '2026-07-18T00:00:00Z',
+          },
+        ],
+        user_permissions: [],
+      },
+    });
+
+    expect(screen.queryByRole('button', { name: '회수' })).not.toBeInTheDocument();
+    expect(screen.queryByText('개발팀')).not.toBeInTheDocument();
   });
 });

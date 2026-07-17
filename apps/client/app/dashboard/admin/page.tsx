@@ -14,7 +14,6 @@ import {
   RefreshCw,
   Search,
   ShieldCheck,
-  SlidersHorizontal,
   Trash2,
   UserPlus,
   Users,
@@ -27,6 +26,17 @@ import { AdminSummaryCards } from '@/app/features/admin/components/AdminSummaryC
 import { AuditSearchTab } from '@/app/features/admin/components/AuditSearchTab';
 import { OrganizationStructureSwitch } from '@/app/features/admin/components/OrganizationStructureSwitch';
 import { PermissionRequestsTab } from '@/app/features/admin/components/PermissionRequestsTab';
+import {
+  PermissionsTab,
+  type AppResponse,
+  type GranteeType,
+  type LLMCredentialResponse,
+  type PermissionGrantSelection,
+  type ResourceAuthState,
+  type ResourcePermissionListResponse,
+  type ResourceType,
+  type TeamResponse,
+} from '@/app/features/admin/components/PermissionsTab';
 import { SecurityAlertsTab } from '@/app/features/admin/components/SecurityAlertsTab';
 import { UsageTab } from '@/app/features/admin/components/UsageTab';
 import {
@@ -65,16 +75,6 @@ import {
   type MailCredentialOption,
 } from '@/app/features/workflow/api/mailCredentialApi';
 
-type TeamResponse = {
-  id: string;
-  organization_id: string;
-  name: string;
-  description?: string | null;
-  is_active: boolean;
-  is_auto_add?: boolean;
-  deactivated_at?: string | null;
-};
-
 type TeamMemberResponse = {
   id: string;
   user_id: string;
@@ -83,51 +83,11 @@ type TeamMemberResponse = {
   assigned_at: string;
 };
 
-type AppResponse = {
-  id: string;
-  name: string;
-  workflow_id?: string | null;
-};
-
 type LLMProviderResponse = {
   id: string;
   name: string;
   base_url: string;
   models: { id: string; name: string }[];
-};
-
-type LLMCredentialResponse = {
-  id: string;
-  provider_id: string;
-  credential_name: string;
-  config_preview?: string;
-  is_valid: boolean;
-  created_at: string;
-};
-
-type ResourceType =
-  | 'workflow'
-  | 'knowledge_base'
-  | 'llm_credential'
-  | 'mail_credential';
-type GranteeType = 'team' | 'user';
-type ResourceAuthState = 'viewer' | 'operator' | 'builder' | 'manager';
-
-type ResourcePermissionEntry = {
-  id: string;
-  grantee_type: GranteeType;
-  grantee_id: string;
-  grantee_name: string;
-  auth_state: ResourceAuthState;
-  assigned_at: string;
-};
-
-type ResourcePermissionListResponse = {
-  resource_type: ResourceType;
-  resource_id: string;
-  organization_id: string;
-  team_permissions: ResourcePermissionEntry[];
-  user_permissions: ResourcePermissionEntry[];
 };
 
 type ConfirmState = {
@@ -145,13 +105,6 @@ type TeamEditorState =
 
 const PAGE_SIZE = 20;
 const AUTH_STATES: OrganizationAuthState[] = ['member', 'manager'];
-const RESOURCE_AUTH_STATES: ResourceAuthState[] = [
-  'viewer',
-  'operator',
-  'builder',
-  'manager',
-];
-
 const stateOrder: Record<MembershipState, number> = {
   active: 0,
   invited: 1,
@@ -363,15 +316,6 @@ export default function AdminConsolePage() {
         : permissionResourceType === 'llm_credential'
           ? credentialPermissions
           : mailCredentialPermissions;
-
-  const permissionResourceId =
-    permissionResourceType === 'workflow'
-      ? selectedWorkflowId
-      : permissionResourceType === 'knowledge_base'
-        ? selectedKnowledgeBaseId
-        : permissionResourceType === 'llm_credential'
-          ? selectedCredentialId
-          : selectedMailCredentialId;
 
   const activeManagerCount = useMemo(
     () =>
@@ -905,15 +849,17 @@ export default function AdminConsolePage() {
     resourceType: ResourceType,
     granteeType: GranteeType,
     granteeId: string,
+    explicitResourceId?: string,
   ) => {
     const resourceId =
-      resourceType === 'workflow'
+      explicitResourceId ||
+      (resourceType === 'workflow'
         ? selectedWorkflowId
         : resourceType === 'knowledge_base'
           ? selectedKnowledgeBaseId
           : resourceType === 'llm_credential'
             ? selectedCredentialId
-            : selectedMailCredentialId;
+            : selectedMailCredentialId);
     const resourcePath =
       resourceType === 'workflow'
         ? `/permissions/workflows/${resourceId}`
@@ -925,20 +871,64 @@ export default function AdminConsolePage() {
     return `${resourcePath}/${granteeType}s/${granteeId}`;
   };
 
-  const grantPermission = async () => {
-    if (!permissionResourceId || !permissionGranteeId) return;
-    await runAction(async () => {
+  const grantPermission = async (selection: PermissionGrantSelection) => {
+    if (!selection.resourceId || !selection.granteeId) return false;
+    return runAction(async () => {
       await apiClient.put(
         permissionPath(
-          permissionResourceType,
-          permissionGranteeType,
-          permissionGranteeId,
+          selection.resourceType,
+          selection.granteeType,
+          selection.granteeId,
+          selection.resourceId,
         ),
-        { auth_state: permissionAuthState },
+        { auth_state: selection.authState },
       );
       toast.success('권한을 저장했습니다.');
-      await loadPermissions(permissionResourceType);
+      setPermissionResourceType(selection.resourceType);
+      setPermissionGranteeType(selection.granteeType);
+      setPermissionGranteeId(selection.granteeId);
+      setPermissionAuthState(selection.authState);
+
+      const nextWorkflowId =
+        selection.resourceType === 'workflow'
+          ? selection.resourceId
+          : selectedWorkflowId;
+      const nextKnowledgeBaseId =
+        selection.resourceType === 'knowledge_base'
+          ? selection.resourceId
+          : selectedKnowledgeBaseId;
+      const nextCredentialId =
+        selection.resourceType === 'llm_credential'
+          ? selection.resourceId
+          : selectedCredentialId;
+      const nextMailCredentialId =
+        selection.resourceType === 'mail_credential'
+          ? selection.resourceId
+          : selectedMailCredentialId;
+
+      setSelectedWorkflowId(nextWorkflowId);
+      setSelectedKnowledgeBaseId(nextKnowledgeBaseId);
+      setSelectedCredentialId(nextCredentialId);
+      setSelectedMailCredentialId(nextMailCredentialId);
+      await loadPermissions(
+        selection.resourceType,
+        nextWorkflowId,
+        nextKnowledgeBaseId,
+        nextCredentialId,
+        nextMailCredentialId,
+      );
     });
+  };
+
+  const selectPermissionResource = (
+    resourceType: ResourceType,
+    resourceId: string,
+  ) => {
+    setPermissionResourceType(resourceType);
+    if (resourceType === 'workflow') setSelectedWorkflowId(resourceId);
+    if (resourceType === 'knowledge_base') setSelectedKnowledgeBaseId(resourceId);
+    if (resourceType === 'llm_credential') setSelectedCredentialId(resourceId);
+    if (resourceType === 'mail_credential') setSelectedMailCredentialId(resourceId);
   };
 
   const revokePermission = async (
@@ -1223,29 +1213,22 @@ export default function AdminConsolePage() {
             <div className="flex flex-col gap-6">
               <PermissionsTab
                 resourceType={permissionResourceType}
-                onResourceTypeChange={setPermissionResourceType}
                 workflowOptions={workflowOptions}
                 selectedWorkflowId={selectedWorkflowId}
-                onSelectedWorkflowIdChange={setSelectedWorkflowId}
                 knowledgeBases={knowledgeBases}
                 selectedKnowledgeBaseId={selectedKnowledgeBaseId}
-                onSelectedKnowledgeBaseIdChange={setSelectedKnowledgeBaseId}
                 credentials={credentials}
                 selectedCredentialId={selectedCredentialId}
-                onSelectedCredentialIdChange={setSelectedCredentialId}
                 mailCredentials={mailCredentials}
                 selectedMailCredentialId={selectedMailCredentialId}
-                onSelectedMailCredentialIdChange={setSelectedMailCredentialId}
                 activeTeams={activeTeams}
                 activeMembers={activeMembers}
                 granteeType={permissionGranteeType}
-                onGranteeTypeChange={setPermissionGranteeType}
                 granteeId={permissionGranteeId}
-                onGranteeIdChange={setPermissionGranteeId}
                 authState={permissionAuthState}
-                onAuthStateChange={setPermissionAuthState}
                 permissionList={selectedPermissionList}
                 actionPending={actionPending}
+                onSelectResource={selectPermissionResource}
                 onGrant={grantPermission}
                 onRevoke={(resourceType, granteeType, granteeId, label) =>
                   openConfirm({
@@ -2226,265 +2209,6 @@ function TeamsTab({
   );
 }
 
-function PermissionsTab({
-  resourceType,
-  onResourceTypeChange,
-  workflowOptions,
-  selectedWorkflowId,
-  onSelectedWorkflowIdChange,
-  knowledgeBases,
-  selectedKnowledgeBaseId,
-  onSelectedKnowledgeBaseIdChange,
-  credentials,
-  selectedCredentialId,
-  onSelectedCredentialIdChange,
-  mailCredentials,
-  selectedMailCredentialId,
-  onSelectedMailCredentialIdChange,
-  activeTeams,
-  activeMembers,
-  granteeType,
-  onGranteeTypeChange,
-  granteeId,
-  onGranteeIdChange,
-  authState,
-  onAuthStateChange,
-  permissionList,
-  actionPending,
-  onGrant,
-  onRevoke,
-}: {
-  resourceType: ResourceType;
-  onResourceTypeChange: (value: ResourceType) => void;
-  workflowOptions: AppResponse[];
-  selectedWorkflowId: string;
-  onSelectedWorkflowIdChange: (value: string) => void;
-  knowledgeBases: KnowledgeBaseResponse[];
-  selectedKnowledgeBaseId: string;
-  onSelectedKnowledgeBaseIdChange: (value: string) => void;
-  credentials: LLMCredentialResponse[];
-  selectedCredentialId: string;
-  onSelectedCredentialIdChange: (value: string) => void;
-  mailCredentials: MailCredentialOption[];
-  selectedMailCredentialId: string;
-  onSelectedMailCredentialIdChange: (value: string) => void;
-  activeTeams: TeamResponse[];
-  activeMembers: OrganizationMember[];
-  granteeType: GranteeType;
-  onGranteeTypeChange: (value: GranteeType) => void;
-  granteeId: string;
-  onGranteeIdChange: (value: string) => void;
-  authState: ResourceAuthState;
-  onAuthStateChange: (value: ResourceAuthState) => void;
-  permissionList: ResourcePermissionListResponse | null;
-  actionPending: boolean;
-  onGrant: () => void;
-  onRevoke: (
-    resourceType: ResourceType,
-    granteeType: GranteeType,
-    granteeId: string,
-    label: string,
-  ) => void;
-}) {
-  const resourceMissing =
-    resourceType === 'workflow'
-      ? !selectedWorkflowId
-      : resourceType === 'knowledge_base'
-        ? !selectedKnowledgeBaseId
-        : resourceType === 'llm_credential'
-          ? !selectedCredentialId
-          : !selectedMailCredentialId;
-  const granteeOptionsMissing =
-    granteeType === 'team' ? activeTeams.length === 0 : activeMembers.length === 0;
-  const resourceLabel =
-    resourceType === 'workflow'
-      ? 'Workflow 권한'
-      : resourceType === 'knowledge_base'
-        ? 'Knowledge Base 권한'
-        : resourceType === 'llm_credential'
-          ? 'LLM Credential 권한'
-          : 'Mail Credential 권한';
-
-  return (
-    <DashboardPanel
-      title="권한"
-      icon={SlidersHorizontal}
-      aside={
-        <span className="text-xs font-medium text-slate-500">
-          {resourceLabel}
-        </span>
-      }
-    >
-      <div className="grid gap-4 border-b border-slate-100 px-5 py-4 xl:grid-cols-[220px_minmax(0,1fr)_180px_minmax(0,1fr)_160px_auto]">
-        <select
-          value={resourceType}
-          onChange={(event) =>
-            onResourceTypeChange(event.target.value as ResourceType)
-          }
-          className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
-        >
-          <option value="workflow">Workflow</option>
-          <option value="knowledge_base">Knowledge Base</option>
-          <option value="llm_credential">LLM Credential</option>
-          <option value="mail_credential">Mail Credential</option>
-        </select>
-        {resourceType === 'workflow' ? (
-          <select
-            value={selectedWorkflowId}
-            onChange={(event) => onSelectedWorkflowIdChange(event.target.value)}
-            className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
-          >
-            {workflowOptions.length === 0 ? (
-              <option value="">선택 가능한 workflow 없음</option>
-            ) : (
-              workflowOptions.map((app) => (
-                <option key={app.id} value={app.workflow_id || ''}>
-                  {app.name}
-                </option>
-              ))
-            )}
-          </select>
-        ) : resourceType === 'knowledge_base' ? (
-          <select
-            value={selectedKnowledgeBaseId}
-            onChange={(event) =>
-              onSelectedKnowledgeBaseIdChange(event.target.value)
-            }
-            className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
-          >
-            {knowledgeBases.length === 0 ? (
-              <option value="">선택 가능한 지식 기반 없음</option>
-            ) : (
-              knowledgeBases.map((knowledgeBase) => (
-                <option key={knowledgeBase.id} value={knowledgeBase.id}>
-                  {knowledgeBase.name}
-                </option>
-              ))
-            )}
-          </select>
-        ) : resourceType === 'llm_credential' ? (
-          <select
-            value={selectedCredentialId}
-            onChange={(event) => onSelectedCredentialIdChange(event.target.value)}
-            className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
-          >
-            {credentials.length === 0 ? (
-              <option value="">선택 가능한 credential 없음</option>
-            ) : (
-              credentials.map((credential) => (
-                <option key={credential.id} value={credential.id}>
-                  {credential.credential_name}
-                </option>
-              ))
-            )}
-          </select>
-        ) : (
-          <select
-            value={selectedMailCredentialId}
-            onChange={(event) =>
-              onSelectedMailCredentialIdChange(event.target.value)
-            }
-            className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
-          >
-            {mailCredentials.length === 0 ? (
-              <option value="">선택 가능한 Mail credential 없음</option>
-            ) : (
-              mailCredentials.map((credential) => (
-                <option key={credential.id} value={credential.id}>
-                  {credential.credential_name}
-                </option>
-              ))
-            )}
-          </select>
-        )}
-        <select
-          value={granteeType}
-          onChange={(event) =>
-            onGranteeTypeChange(event.target.value as GranteeType)
-          }
-          className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
-        >
-          <option value="team">Team</option>
-          <option value="user">User direct</option>
-        </select>
-        {granteeType === 'team' ? (
-          <select
-            value={granteeId}
-            onChange={(event) => onGranteeIdChange(event.target.value)}
-            className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
-          >
-            {activeTeams.length === 0 ? (
-              <option value="">활성 팀 없음</option>
-            ) : (
-              activeTeams.map((team) => (
-                <option key={team.id} value={team.id}>
-                  {team.name}
-                </option>
-              ))
-            )}
-          </select>
-        ) : (
-          <ActiveOrganizationMemberPicker
-            members={activeMembers}
-            value={granteeId}
-            onChange={onGranteeIdChange}
-            placeholder="권한 대상 멤버"
-            emptyLabel="활성 멤버 없음"
-          />
-        )}
-        <select
-          value={authState}
-          onChange={(event) =>
-            onAuthStateChange(event.target.value as ResourceAuthState)
-          }
-          className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
-        >
-          {RESOURCE_AUTH_STATES.map((state) => (
-            <option key={state} value={state}>
-              {resourcePermissionLabel(resourceType, state)}
-            </option>
-          ))}
-        </select>
-        <button
-          onClick={onGrant}
-          disabled={
-            actionPending ||
-            resourceMissing ||
-            granteeOptionsMissing ||
-            !granteeId
-          }
-          className="h-10 rounded-md bg-slate-950 px-4 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          저장
-        </button>
-      </div>
-
-      {resourceMissing ? (
-        <Placeholder
-          title="선택 가능한 resource가 없습니다"
-          description="Workflow, Knowledge Base, LLM Credential이 생성되면 권한을 부여할 수 있습니다."
-        />
-      ) : (
-        <div className="grid gap-4 px-5 py-5 lg:grid-cols-2">
-          <PermissionList
-            title="Team permissions"
-            rows={permissionList?.team_permissions || []}
-            resourceType={resourceType}
-            granteeType="team"
-            onRevoke={onRevoke}
-          />
-          <PermissionList
-            title="User direct permissions"
-            rows={permissionList?.user_permissions || []}
-            resourceType={resourceType}
-            granteeType="user"
-            onRevoke={onRevoke}
-          />
-        </div>
-      )}
-    </DashboardPanel>
-  );
-}
 
 function CredentialsTab({
   providers,
@@ -2608,103 +2332,6 @@ function CredentialsTab({
   );
 }
 
-function resourcePermissionLabel(
-  resourceType: ResourceType,
-  state: ResourceAuthState,
-) {
-  if (resourceType === 'llm_credential' || resourceType === 'mail_credential') {
-    const labels: Record<ResourceAuthState, string> = {
-      viewer: 'Credential 조회 가능',
-      operator: 'Credential 사용 가능',
-      builder: 'Credential 수정 가능',
-      manager: 'Credential 관리 가능',
-    };
-    return labels[state];
-  }
-  if (resourceType === 'knowledge_base') {
-    const labels: Record<ResourceAuthState, string> = {
-      viewer: 'KB 조회 가능',
-      operator: 'KB 사용 가능',
-      builder: 'KB 수정 가능',
-      manager: 'KB 관리 가능',
-    };
-    return labels[state];
-  }
-  const labels: Record<ResourceAuthState, string> = {
-    viewer: 'Workflow 조회 가능',
-    operator: 'Workflow 실행 가능',
-    builder: 'Workflow 수정 가능',
-    manager: 'Workflow 관리 가능',
-  };
-  return labels[state];
-}
-
-function PermissionList({
-  title,
-  rows,
-  resourceType,
-  granteeType,
-  onRevoke,
-}: {
-  title: string;
-  rows: ResourcePermissionEntry[];
-  resourceType: ResourceType;
-  granteeType: GranteeType;
-  onRevoke: (
-    resourceType: ResourceType,
-    granteeType: GranteeType,
-    granteeId: string,
-    label: string,
-  ) => void;
-}) {
-  return (
-    <div className="overflow-hidden rounded-md border border-slate-200">
-      <div className="border-b border-slate-200 bg-slate-50 px-4 py-3 text-xs font-semibold uppercase text-slate-500">
-        {title}
-      </div>
-      {rows.length === 0 ? (
-        <div className="px-4 py-8 text-center text-sm text-slate-500">
-          부여된 권한이 없습니다.
-        </div>
-      ) : (
-        <div className="divide-y divide-slate-100">
-          {rows.map((row) => (
-            <div
-              key={row.id}
-              className="flex items-center justify-between gap-3 px-4 py-3"
-            >
-              <div className="min-w-0">
-                <p className="truncate text-sm font-semibold text-slate-950">
-                  {row.grantee_name}
-                </p>
-                <p className="mt-1 text-xs text-slate-500">
-                  {resourcePermissionLabel(resourceType, row.auth_state)} ·{' '}
-                  {formatDateTime(row.assigned_at)}
-                </p>
-              </div>
-              <button
-                onClick={() =>
-                  onRevoke(
-                    resourceType,
-                    granteeType,
-                    row.grantee_id,
-                    `${row.grantee_name} · ${resourcePermissionLabel(
-                      resourceType,
-                      row.auth_state,
-                    )}`,
-                  )
-                }
-                className="rounded-md border border-red-200 px-2 py-1 text-xs font-semibold text-red-700 hover:bg-red-50"
-              >
-                회수
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 function KnowledgeTab({
   knowledgeBases,
