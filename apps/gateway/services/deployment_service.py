@@ -73,6 +73,20 @@ _LEGACY_MEMORY_MODE_INPUT = "memory_mode"
 _MAX_LEGACY_CONVERSATION_ID_LENGTH = 255
 
 
+class DeploymentAuthSecretPreflightError(RuntimeError):
+    def __init__(
+        self,
+        *,
+        code: str,
+        message: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(code)
+        self.code = code
+        self.message = message
+        self.details = details or {}
+
+
 def _safe_deployment_error_detail(value: Any) -> Any:
     if not isinstance(value, dict):
         return "Workflow execution failed"
@@ -435,26 +449,18 @@ class DeploymentService:
         ):
             return
         if not lifecycle_mutations_enabled:
-            raise HTTPException(
-                status_code=503,
-                detail={
-                    "code": "app.auth_secret_lifecycle_unavailable",
-                    "message": (
-                        "App authentication secret lifecycle is temporarily "
-                        "unavailable."
-                    ),
-                },
-            )
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "deployment.app_auth_secret_required",
-                "message": (
-                    "Issue an App authentication secret before activating this "
-                    "deployment."
+            raise DeploymentAuthSecretPreflightError(
+                code="app.auth_secret_lifecycle_unavailable",
+                message=(
+                    "App authentication secret lifecycle is temporarily unavailable."
                 ),
-                "required_actions": ["issue_app_auth_secret"],
-            },
+            )
+        raise DeploymentAuthSecretPreflightError(
+            code="deployment.app_auth_secret_required",
+            message=(
+                "Issue an App authentication secret before activating this deployment."
+            ),
+            details={"required_actions": ["issue_app_auth_secret"]},
         )
 
     @staticmethod

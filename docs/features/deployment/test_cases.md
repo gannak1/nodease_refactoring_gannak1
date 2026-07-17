@@ -134,6 +134,10 @@ Verified Against: `feature/mba-254 @ 95e821ef`
 - Expand release의 checked-in manifest와 application default는 lifecycle mode를 `disabled`로 유지한다. 이 상태의 status는 `rotation_enabled=false`이며 권한이 있는 rotation도 secret 생성, row lock, audit과 mutation 전에 `503 app.auth_secret_lifecycle_unavailable`로 끝난다.
 - Raw Kubernetes, Docker Compose와 Helm values/template은 lifecycle mode를 기본 `disabled`로 Gateway에 전달한다. Status와 성공 rotation 응답은 `no-store, no-cache`/`no-cache` header를 반환한다.
 - Caller-controlled request ID/IP/User-Agent에 secret-like 값을 넣어 rotation해도 `app.auth_secret.rotated`와 permission-denied audit metadata에 해당 값이 저장되지 않는다.
+- REST API/Webhook 배포 모달은 첫 active preflight 이전 input 단계에서 App ID 기반 secret status와 발급·교체 control에 접근할 수 있다.
+- 발급된 one-time secret을 표시한 상태에서 교체 확인을 열었다가 취소하거나 새 rotation이 실패해도 기존 원문은 새 rotation 성공 전까지 현재 component memory에 유지된다.
+- Active deployment secret blocker는 request ID와 `required_actions`를 포함한 표준 `error` envelope로 반환한다.
+- Managed current verifier가 malformed이면 previous verifier와 grace가 유효해도 public 인증은 fail-closed한다.
 - Secret이 없는 active API/Webhook preview/create/toggle은 mode가 `disabled`이면 503, `active`이면 `deployment.app_auth_secret_required` 409로 DB mutation 전에 차단된다. Inactive API/Webhook draft와 active non-secret deployment type은 허용한다.
 - Expand rollout rehearsal은 migration 전에 legacy Gateway traffic을 drain/fence하고 verifier-aware disabled revision 수렴 뒤 traffic을 재개한다. 선행 redaction-only release가 없는 상태에서 old/new Gateway가 동시에 serving되는 일반 rolling은 안전한 완료 증거로 인정하지 않는다.
 - 모든 Gateway Pod 수렴 뒤 lifecycle mode를 `active`로 주입한 Fresh App 발급과 rotation은 current/previous verifier와 safe metadata만 저장하고 legacy `auth_secret`은 null로 유지한다. Raw와 verifier는 일반 response, audit outbox, trace와 log에 없어야 한다. Generation 1 이상 인증은 legacy raw가 있어도 verifier를 권위로 사용한다.

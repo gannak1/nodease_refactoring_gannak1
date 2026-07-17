@@ -69,6 +69,20 @@ def test_verification_fails_closed_for_unknown_or_incomplete_state():
     )
 
 
+def test_verification_rejects_previous_when_current_verifier_is_malformed():
+    now = datetime(2026, 7, 17, 3, 0, tzinfo=timezone.utc)
+
+    assert not verify_app_auth_secret(
+        "previous-secret",
+        current_verifier="malformed",
+        current_verifier_version=APP_AUTH_SECRET_VERIFIER_VERSION,
+        previous_verifier=app_auth_secret_verifier("previous-secret"),
+        previous_verifier_version=APP_AUTH_SECRET_VERIFIER_VERSION,
+        previous_valid_until=now + timedelta(minutes=5),
+        now=now,
+    )
+
+
 def test_legacy_verification_is_bounded_and_constant_time_comparable():
     assert verify_legacy_app_auth_secret("legacy-secret", "legacy-secret")
     assert not verify_legacy_app_auth_secret("other-secret", "legacy-secret")

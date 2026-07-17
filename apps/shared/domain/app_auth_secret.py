@@ -45,6 +45,12 @@ def verify_app_auth_secret(
 ) -> bool:
     """Verify a candidate without exposing which stored verifier matched."""
 
+    if not app_auth_secret_verifier_state_is_valid(
+        current_verifier,
+        current_verifier_version,
+    ):
+        return False
+
     try:
         candidate_verifier = app_auth_secret_verifier(
             candidate,
@@ -53,7 +59,7 @@ def verify_app_auth_secret(
     except AppAuthSecretCandidateInvalid:
         return False
 
-    if _valid_verifier(current_verifier) and secrets.compare_digest(
+    if secrets.compare_digest(
         candidate_verifier,
         current_verifier,
     ):

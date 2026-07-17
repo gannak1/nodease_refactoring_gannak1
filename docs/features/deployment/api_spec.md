@@ -66,7 +66,7 @@ Verified Against: `feature/mba-254 @ 95e821ef`
 
 표준 rotation은 직전 secret을 최대 5분 허용한다. `revoke_previous_immediately=true`이면 previous를 저장하지 않는다. Client는 POST를 자동 재시도하지 않으며 응답 유실 시 status를 다시 읽고 명시적으로 새 rotation을 수행한다.
 
-Active `api`/`webhook` preflight, create와 toggle은 configured App secret을 요구한다. Lifecycle mode가 아직 `disabled`이면 `503 app.auth_secret_lifecycle_unavailable`로 차단한다. Mode가 `active`지만 secret이 없으면 `409 deployment.app_auth_secret_required`와 `required_actions=["issue_app_auth_secret"]`를 반환한다. Inactive draft는 저장할 수 있다.
+Active `api`/`webhook` preflight, create와 toggle은 configured App secret을 요구한다. Lifecycle mode가 아직 `disabled`이면 `503 app.auth_secret_lifecycle_unavailable`로 차단한다. Mode가 `active`지만 secret이 없으면 표준 error envelope의 `error.code="deployment.app_auth_secret_required"`와 `error.details.required_actions=["issue_app_auth_secret"]`를 반환한다. Inactive draft는 저장할 수 있다.
 
 ### `GET /api/v1/deployments?app_id={app_id}`
 

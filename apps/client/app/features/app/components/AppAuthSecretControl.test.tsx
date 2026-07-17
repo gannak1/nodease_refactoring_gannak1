@@ -76,6 +76,24 @@ describe('AppAuthSecretControl', () => {
     );
     expect(await screen.findByDisplayValue('one-time-secret')).toBeVisible();
     expect(onSecretAvailable).toHaveBeenLastCalledWith('one-time-secret');
+
+    fireEvent.click(screen.getByRole('button', { name: '교체' }));
+    expect(screen.getByDisplayValue('one-time-secret')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: '취소' }));
+    expect(screen.getByDisplayValue('one-time-secret')).toBeVisible();
+    expect(onSecretAvailable).toHaveBeenLastCalledWith('one-time-secret');
+
+    mockedAppApi.rotateAuthSecret.mockRejectedValueOnce(
+      new Error('version conflict'),
+    );
+    fireEvent.click(screen.getByRole('button', { name: '교체' }));
+    fireEvent.click(screen.getByRole('button', { name: '교체 확인' }));
+    await waitFor(() =>
+      expect(mockedAppApi.rotateAuthSecret).toHaveBeenCalledTimes(2),
+    );
+    expect(screen.getByDisplayValue('one-time-secret')).toBeVisible();
+    expect(onSecretAvailable).toHaveBeenLastCalledWith('one-time-secret');
+
     expect(storageWrite).not.toHaveBeenCalled();
     storageWrite.mockRestore();
   });

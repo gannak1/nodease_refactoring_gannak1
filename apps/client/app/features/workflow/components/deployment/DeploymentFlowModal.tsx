@@ -19,6 +19,7 @@ import { ErrorStep } from './ErrorStep';
 interface Props {
   isOpen: boolean;
   onClose: () => void;
+  appId?: string;
   deploymentType: DeploymentType;
   llmNodes: DeploymentOptimizationNode[];
   onDeploy: (
@@ -33,6 +34,7 @@ interface Props {
 export function DeploymentFlowModal({
   isOpen,
   onClose,
+  appId,
   deploymentType,
   llmNodes,
   onDeploy,
@@ -208,6 +210,7 @@ export function DeploymentFlowModal({
         <div className="flex-1 transition-all duration-300">
           {currentStep === 'input' && (
             <InputStep
+              appId={appId}
               deploymentType={deploymentType}
               deploymentTypeLabel={getDeploymentTypeName()}
               description={description}

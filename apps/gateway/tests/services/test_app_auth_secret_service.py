@@ -3,7 +3,6 @@ from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from fastapi import HTTPException
 
 from apps.gateway.services.app_auth_secret_service import (
     AppAuthSecretLifecycleUnavailableError,
@@ -11,7 +10,10 @@ from apps.gateway.services.app_auth_secret_service import (
     AppAuthSecretService,
     AppAuthSecretVersionConflictError,
 )
-from apps.gateway.services.deployment_service import DeploymentService
+from apps.gateway.services.deployment_service import (
+    DeploymentAuthSecretPreflightError,
+    DeploymentService,
+)
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.app import App
 from apps.shared.db.models.workflow_deployment import DeploymentType
@@ -531,7 +533,7 @@ def test_disabled_lifecycle_gate_rejects_before_lock_or_secret_generation(
 def test_active_api_deployment_without_secret_is_blocked_while_lifecycle_disabled():
     app = _app()
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(DeploymentAuthSecretPreflightError) as exc_info:
         DeploymentService.ensure_auth_secret_ready_for_activation(
             app,
             deployment_type=DeploymentType.API,
@@ -539,14 +541,14 @@ def test_active_api_deployment_without_secret_is_blocked_while_lifecycle_disable
             lifecycle_mutations_enabled=False,
         )
 
-    assert exc_info.value.status_code == 503
-    assert exc_info.value.detail["code"] == "app.auth_secret_lifecycle_unavailable"
+    assert exc_info.value.code == "app.auth_secret_lifecycle_unavailable"
+    assert exc_info.value.details == {}
 
 
 def test_active_api_deployment_requires_secret_after_lifecycle_activation():
     app = _app()
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(DeploymentAuthSecretPreflightError) as exc_info:
         DeploymentService.ensure_auth_secret_ready_for_activation(
             app,
             deployment_type=DeploymentType.API,
@@ -554,8 +556,10 @@ def test_active_api_deployment_requires_secret_after_lifecycle_activation():
             lifecycle_mutations_enabled=True,
         )
 
-    assert exc_info.value.status_code == 409
-    assert exc_info.value.detail["code"] == "deployment.app_auth_secret_required"
+    assert exc_info.value.code == "deployment.app_auth_secret_required"
+    assert exc_info.value.details == {
+        "required_actions": ["issue_app_auth_secret"]
+    }
 
 
 @pytest.mark.parametrize(

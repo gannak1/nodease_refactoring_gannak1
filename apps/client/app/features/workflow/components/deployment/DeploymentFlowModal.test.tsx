@@ -3,6 +3,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { DeploymentFlowModal } from './DeploymentFlowModal';
 
+vi.mock('@/app/features/app/components/AppAuthSecretControl', () => ({
+  AppAuthSecretControl: ({ appId }: { appId: string }) => (
+    <div>Secret 발급 준비: {appId}</div>
+  ),
+}));
+
 afterEach(cleanup);
 
 describe('DeploymentFlowModal', () => {
@@ -13,6 +19,7 @@ describe('DeploymentFlowModal', () => {
       <DeploymentFlowModal
         isOpen
         onClose={vi.fn()}
+        appId="app-1"
         deploymentType="api"
         llmNodes={[{ id: 'llm-1', title: '티켓 분류' }]}
         onDeploy={onDeploy}
@@ -20,6 +27,7 @@ describe('DeploymentFlowModal', () => {
     );
 
     expect(screen.getByText('REST API 배포')).toBeVisible();
+    expect(screen.getByText('Secret 발급 준비: app-1')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: '다음' }));
 
     expect(screen.getByText('운영 비용 자동 최적화')).toBeVisible();

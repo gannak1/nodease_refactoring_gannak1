@@ -2,6 +2,8 @@
 
 import { Loader2 } from 'lucide-react';
 
+import { AppAuthSecretControl } from '@/app/features/app/components/AppAuthSecretControl';
+
 import type {
   DeploymentBrowserAccessPolicy,
   DeploymentType,
@@ -10,6 +12,7 @@ import { buildBrowserAccessPolicyDraft } from '../../utils/browserAccessPolicy';
 import { BrowserAccessPolicyEditor } from './BrowserAccessPolicyEditor';
 
 interface InputStepProps {
+  appId?: string;
   deploymentType: DeploymentType;
   deploymentTypeLabel: string;
   description: string;
@@ -27,6 +30,7 @@ interface InputStepProps {
 }
 
 export function InputStep({
+  appId,
   deploymentType,
   deploymentTypeLabel,
   description,
@@ -45,6 +49,7 @@ export function InputStep({
   const supportsEmbeddingPolicy = ['chatbot', 'widget'].includes(
     deploymentType,
   );
+  const requiresAppAuthSecret = ['api', 'webhook'].includes(deploymentType);
   const policyResult = supportsEmbeddingPolicy
     ? buildBrowserAccessPolicyDraft(embeddingEnabled, parentOrigins)
     : null;
@@ -62,6 +67,10 @@ export function InputStep({
       </div>
 
       <div className="max-h-[65vh] space-y-6 overflow-y-auto p-6">
+        {requiresAppAuthSecret && appId && (
+          <AppAuthSecretControl appId={appId} />
+        )}
+
         <div>
           <label
             className="mb-2 block text-sm font-medium text-gray-700"

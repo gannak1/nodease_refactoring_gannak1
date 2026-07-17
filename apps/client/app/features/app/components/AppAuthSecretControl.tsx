@@ -61,11 +61,8 @@ export function AppAuthSecretControl({
   }, [appId, onSecretAvailable]);
 
   const beginRotation = () => {
-    setIssuedSecret(null);
-    setShowSecret(false);
     setRevokeImmediately(false);
     setConfirming(true);
-    onSecretAvailable?.(null);
   };
 
   const rotateSecret = async () => {
@@ -91,8 +88,6 @@ export function AppAuthSecretControl({
       onSecretAvailable?.(result.secret);
       toast.success('새 App secret이 발급되었습니다.');
     } catch {
-      setIssuedSecret(null);
-      onSecretAvailable?.(null);
       toast.error('Secret 상태가 변경되었습니다. 상태를 새로 확인해주세요.');
       try {
         setStatus(await appApi.getAuthSecretStatus(appId));
