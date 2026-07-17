@@ -138,6 +138,43 @@ class MDebertaModelChoiceClassifier:
         return updated
 
     @classmethod
+    def vectorize(
+        cls,
+        text: str,
+        *,
+        artifact: dict[str, Any] | None,
+        embedder: TextEmbedder | None = None,
+    ) -> tuple[list[float], str]:
+        """원문을 저장하지 않고 현재 요청의 학습용 vector만 만든다."""
+        return cls._vector(text, artifact=artifact, embedder=embedder)
+
+    @classmethod
+    def update_from_vector(
+        cls,
+        artifact: dict[str, Any] | None,
+        *,
+        vector: Iterable[float],
+        encoder_model_id: str | None,
+        selected_model_id: str,
+        candidate_model_ids: Iterable[str],
+    ) -> dict[str, Any]:
+        from apps.workflow_engine.services.model_routing_incremental_learning import (
+            IncrementalModelChoiceClassifier,
+        )
+
+        updated = IncrementalModelChoiceClassifier.update(
+            artifact,
+            vector=vector,
+            selected_model_id=selected_model_id,
+            candidate_model_ids=candidate_model_ids,
+        )
+        updated["encoder_model_id"] = str(encoder_model_id or "")
+        updated["classification_strategy"] = (
+            "frozen_mdeberta_online_model_choice_v1"
+        )
+        return updated
+
+    @classmethod
     def predict(
         cls,
         artifact: dict[str, Any],

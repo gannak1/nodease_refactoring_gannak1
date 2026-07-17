@@ -38,6 +38,53 @@ class ModelRoutingOperationalPerformanceService:
     EFFICIENCY_IMPROVEMENT_THRESHOLD = 0.10
 
     @classmethod
+    def learning_contract_outcome(
+        cls,
+        *,
+        workflow_run: Any,
+        node_run: Any,
+    ) -> tuple[bool, str]:
+        """완료된 운영 실행이 local router 학습 label로 안전한지 판정한다."""
+        if cls._status(getattr(node_run, "status", None)) != "success":
+            return False, "node_failed"
+        if cls._status(getattr(workflow_run, "status", None)) != "success":
+            return False, "downstream_failed"
+
+        trace = (
+            node_run.trace_metadata
+            if isinstance(getattr(node_run, "trace_metadata", None), dict)
+            else {}
+        )
+        llm = trace.get("llm") if isinstance(trace.get("llm"), dict) else {}
+        outputs = (
+            node_run.outputs
+            if isinstance(getattr(node_run, "outputs", None), dict)
+            else {}
+        )
+        metadata = (
+            outputs.get("metadata")
+            if isinstance(outputs.get("metadata"), dict)
+            else {}
+        )
+        routing = (
+            metadata.get("model_routing")
+            if isinstance(metadata.get("model_routing"), dict)
+            else {}
+        )
+        if bool(llm.get("fallback_used") or routing.get("fallback_used")):
+            return False, "fallback_used"
+
+        schema_status = llm.get("schema_status") or trace.get("schema_status")
+        if schema_status is not None and not cls._passed(schema_status):
+            return False, "schema_failed"
+        downstream_status = llm.get("downstream_status") or trace.get(
+            "downstream_status"
+        )
+        if downstream_status is not None and not cls._passed(downstream_status):
+            return False, "downstream_failed"
+        return True, "contract_passed"
+
+    @classmethod
     def sample_from_run(
         cls,
         *,
@@ -200,6 +247,64 @@ class ModelRoutingOperationalPerformanceService:
                 for row in rows
             ],
         }
+
+    @classmethod
+    def candidate_contract_evidence(
+        cls,
+        db: Session,
+        *,
+        policy_id: uuid.UUID | str,
+        candidate_model_ids: list[str],
+    ) -> dict[str, dict[str, float | int | None]]:
+        """후보별 실제 계약 성적을 Judge 입력용 안전 요약으로 만든다.
+
+        이 값은 답변의 문장 품질을 평가한 결과가 아니다. schema, 후속 노드, fallback
+        같은 workflow 계약 신호만 합산한다. 따라서 카탈로그의 사전 품질값을 대체하지
+        않고, 충분한 운영 표본이 쌓인 후보에만 보정 근거로 사용한다.
+        """
+
+        candidate_ids = {str(model_id or "").strip().lower() for model_id in candidate_model_ids}
+        totals: dict[str, dict[str, int]] = {}
+        for row in cls._rows(db, policy_id=policy_id):
+            model_id = str(getattr(row, "model_id", "") or "").strip().lower()
+            if not model_id or model_id not in candidate_ids:
+                continue
+            target = totals.setdefault(
+                model_id,
+                {
+                    "run_count": 0,
+                    "success_count": 0,
+                    "schema_pass_count": 0,
+                    "schema_eval_count": 0,
+                    "downstream_success_count": 0,
+                    "downstream_eval_count": 0,
+                    "fallback_count": 0,
+                },
+            )
+            for key in target:
+                target[key] += int(getattr(row, key, 0) or 0)
+
+        evidence: dict[str, dict[str, float | int | None]] = {}
+        for model_id, total in totals.items():
+            run_count = total["run_count"]
+            if run_count <= 0:
+                continue
+            evidence[model_id] = {
+                "operational_run_count": run_count,
+                "operational_success_rate": cls._ratio(total["success_count"], run_count) or 0.0,
+                "operational_schema_pass_rate": cls._ratio(
+                    total["schema_pass_count"], total["schema_eval_count"]
+                )
+                if total["schema_eval_count"]
+                else None,
+                "operational_downstream_success_rate": cls._ratio(
+                    total["downstream_success_count"], total["downstream_eval_count"]
+                )
+                if total["downstream_eval_count"]
+                else None,
+                "operational_fallback_rate": cls._ratio(total["fallback_count"], run_count) or 0.0,
+            }
+        return evidence
 
     @classmethod
     def profile_for_policy(cls, db: Session, *, policy_id: uuid.UUID) -> NodeRunProfile:

@@ -15,10 +15,8 @@ type JudgeSummary = {
   model?: string;
   confidence?: number;
   reasonCode?: string;
-  difficultyScore?: number;
   reasonShort?: string;
-  eligibleModelCount?: number;
-  requiredQualityFloor?: number;
+  candidateModelCount?: number;
   cost?: number;
 };
 
@@ -41,6 +39,8 @@ type ModelRoutingSummary = {
   localConfidence?: number;
   localConfidenceThreshold?: number;
   learningMode?: string;
+  learningStatus?: string;
+  learningOutcomeReason?: string;
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -92,10 +92,8 @@ const judgeOf = (value: unknown): JudgeSummary | undefined => {
     model: stringValue(value.model),
     confidence: numberValue(value.confidence),
     reasonCode: stringValue(value.reason_code),
-    difficultyScore: numberValue(value.difficulty_score),
     reasonShort: stringValue(value.reason_short),
-    eligibleModelCount: numberValue(value.eligible_model_count),
-    requiredQualityFloor: numberValue(value.required_quality_floor),
+    candidateModelCount: numberValue(value.candidate_model_count),
     cost: numberValue(value.cost),
   };
 };
@@ -138,6 +136,8 @@ const summaryOf = ({
       decisionFactors.local_confidence_threshold,
     ),
     learningMode: stringValue(decisionFactors.learning_mode),
+    learningStatus: stringValue(routing.learning_status),
+    learningOutcomeReason: stringValue(routing.learning_outcome_reason),
   };
 
   return summary.selectedModel || summary.reasonCode ? summary : null;
@@ -204,7 +204,7 @@ export function ModelRoutingDecisionDetails({
           {isDeploymentPolicyTest
             ? '활성 배포 정책을 테스트에만 적용했습니다. 이 결과는 로컬 라우터 학습에 포함되지 않습니다.'
             : summary.decisionSource === 'runtime_judge'
-              ? '이번 요청의 난이도를 Judge가 판정하고, 서버가 통과 후보 중 모델을 선택했습니다.'
+              ? '이번 요청과 사용 가능한 후보 모델을 Judge가 함께 검토해 선택했습니다.'
               : summary.decisionSource === 'local_router'
                 ? '누적된 Judge 선택을 학습한 로컬 라우터가 먼저 선택했습니다.'
                 : 'Judge-first 정책을 적용할 수 없어 저장된 기본 모델로 실행했습니다.'}
@@ -242,14 +242,12 @@ export function ModelRoutingDecisionDetails({
         ) : null}
       </div>
 
-      {!(isJudgeFirst && summary.judge?.difficultyScore !== undefined) ? (
-        <div className="sm:col-span-2">
-          <dt className="text-gray-500">선택 이유</dt>
-          <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
-            {reasonText(summary.reasonCode)}
-          </dd>
-        </div>
-      ) : null}
+      <div className="sm:col-span-2">
+        <dt className="text-gray-500">선택 이유</dt>
+        <dd className="mt-1 font-semibold text-gray-900 dark:text-gray-100">
+          {reasonText(summary.reasonCode)}
+        </dd>
+      </div>
 
       {summary.fallbackModel ? (
         <div className="sm:col-span-2">
@@ -283,16 +281,12 @@ export function ModelRoutingDecisionDetails({
               ? '-'
               : `${(summary.judge.confidence * 100).toFixed(1)}%`}
           </dd>
-          <dd className="mt-2 grid gap-2 sm:grid-cols-3">
-            <span className="rounded border border-violet-200 bg-white px-2 py-1">
-              난이도 {summary.judge.difficultyScore ?? '-'}
-              {summary.judge.difficultyScore === undefined ? '' : '/100'}
-            </span>
+          <dd className="mt-2 grid gap-2 sm:grid-cols-2">
             <span className="rounded border border-violet-200 bg-white px-2 py-1">
               사유: {summary.judge.reasonShort || '-'}
             </span>
             <span className="rounded border border-violet-200 bg-white px-2 py-1">
-              품질 통과 후보 {summary.judge.eligibleModelCount ?? '-'}개
+              검토 후보 모델 {summary.judge.candidateModelCount ?? '-'}개
             </span>
           </dd>
           <dd className="mt-1 text-gray-500">
@@ -316,6 +310,24 @@ export function ModelRoutingDecisionDetails({
           {summary.localConfidenceThreshold !== undefined
             ? ` · 선택 기준 ${(summary.localConfidenceThreshold * 100).toFixed(1)}%`
             : ''}
+        </div>
+      ) : null}
+
+      {isJudgeFirst && summary.learningStatus === 'pending_contract' ? (
+        <div className="sm:col-span-2 rounded-md border border-sky-200 bg-sky-50 p-3 text-sky-950 dark:border-sky-900 dark:bg-sky-950/20 dark:text-sky-100">
+          실행 결과 계약을 확인한 뒤 학습에 반영합니다.
+        </div>
+      ) : null}
+      {isJudgeFirst && summary.learningStatus === 'accepted' ? (
+        <div className="sm:col-span-2 rounded-md border border-emerald-200 bg-emerald-50 p-3 text-emerald-950 dark:border-emerald-900 dark:bg-emerald-950/20 dark:text-emerald-100">
+          스키마와 후속 단계 조건을 통과해 이 선택을 로컬 학습에 반영했습니다.
+        </div>
+      ) : null}
+      {isJudgeFirst && summary.learningStatus === 'rejected' ? (
+        <div className="sm:col-span-2 rounded-md border border-rose-200 bg-rose-50 p-3 text-rose-950 dark:border-rose-900 dark:bg-rose-950/20 dark:text-rose-100">
+          {summary.learningOutcomeReason === 'schema_failed'
+            ? '스키마 또는 후속 단계 조건을 통과하지 못해 학습에서 제외되었습니다.'
+            : '실행 계약을 통과하지 못해 학습에서 제외되었습니다.'}
         </div>
       ) : null}
 

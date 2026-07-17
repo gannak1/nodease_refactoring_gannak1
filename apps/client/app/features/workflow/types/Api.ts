@@ -319,6 +319,12 @@ export interface ModelRoutingPolicyResponse {
       avg_total_tokens: number | null;
     }>;
   };
+  learning_summary?: {
+    pending_count: number;
+    accepted_count: number;
+    rejected_count: number;
+    last_outcome_reason: string | null;
+  };
   change_policy?: {
     mode: 'event_driven';
     minimum_new_runs: number;

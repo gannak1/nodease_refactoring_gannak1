@@ -200,6 +200,12 @@ Policy response는 다음 구조를 사용한다.
     "total_runs": 42,
     "model_count": 5,
     "models": []
+  },
+  "learning_summary": {
+    "pending_count": 2,
+    "accepted_count": 18,
+    "rejected_count": 3,
+    "last_outcome_reason": "contract_passed"
   }
 }
 ~~~
@@ -228,6 +234,11 @@ reason code, runtime context, `decision_source`, `judge_called`를 남긴다. Ju
 후보 확률의 요약만 남긴다. 원문 prompt/입력, 검색 문서 원문, embedding vector는
 반환하거나 저장하지 않는다.
 
+Judge가 선택한 실행은 처음에는 `learning_status=pending_contract`로 기록한다. workflow
+완료 후 node 성공, schema/downstream 계약, fallback 여부를 확인해 `accepted` 또는
+`rejected`와 `learning_outcome_reason`으로 갱신한다. policy 조회의 `learning_summary`는
+이 상태별 건수만 반환하며 feature vector나 원문은 포함하지 않는다.
+
 ### Persistence Model
 
 | 테이블 | 역할 |
@@ -238,6 +249,7 @@ reason code, runtime context, `decision_source`, `judge_called`를 남긴다. Ju
 | llm_node_model_routing_policy_updates | 정책 재평가의 trigger, 안전한 입력/출력 요약, 결과 |
 | llm_node_model_routing_policy_run_events | 배포 후 운영 실행의 중복 없는 점검 카운터 |
 | llm_node_model_routing_performances | 배포/node/model/입력 길이 profile별 운영 성적 |
+| llm_node_model_routing_learning_labels | Judge 선택의 안전한 vector와 완료 후 계약 기반 학습 확정 상태. 원문 prompt/input은 저장하지 않는다. |
 | llm_model_routing_global_profiles | 과거 전략 호환 table. 신규 Judge-first runtime은 참조하지 않는다. |
 
 테스트 실행과 Cost Optimizer candidate 비교 실행은 운영 정책 카운터와 성적에 포함하지 않는다.

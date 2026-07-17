@@ -3850,8 +3850,8 @@ def test_auto_model_routing_prefers_persisted_policy_over_legacy_node_json(monke
     assert metadata["judge_called"] is False
 
 
-def test_deployed_judge_bootstrap_uses_judge_and_records_safe_learning_label(monkeypatch):
-    """초기 배포 실행은 Judge 선택을 쓰되 editor test와 달리 학습 label을 남긴다."""
+def test_deployed_judge_bootstrap_uses_judge_and_queues_safe_learning_label(monkeypatch):
+    """초기 배포 실행은 Judge 선택을 쓰되 완료 후 학습할 label만 남긴다."""
     from apps.workflow_engine.services.model_routing_policy_store import (
         ModelRoutingPolicyStore,
     )
@@ -3877,8 +3877,8 @@ def test_deployed_judge_bootstrap_uses_judge_and_records_safe_learning_label(mon
     captured: dict[str, Any] = {}
     monkeypatch.setattr(
         ModelRoutingPolicyStore,
-        "record_runtime_judge_label",
-        lambda *_args, **kwargs: captured.update(kwargs) or {"learning_recorded": True},
+        "queue_runtime_judge_label",
+        lambda *_args, **kwargs: captured.update(kwargs) or {"learning_queued": True},
     )
 
     class _JudgeClient:
@@ -3887,7 +3887,7 @@ def test_deployed_judge_bootstrap_uses_judge_and_records_safe_learning_label(mon
                 "choices": [
                     {
                         "message": {
-                            "content": '{"difficulty_score":18,"confidence":0.9,"reason_short":"단순 안내 요청","reason_code":"economy_fit"}'
+                            "content": '{"selected_model_id":"gpt-4o-mini","confidence":0.9,"reason_short":"단순 안내 요청","reason_code":"economy_fit"}'
                         }
                     }
                 ],
@@ -3930,7 +3930,7 @@ def test_deployed_judge_bootstrap_uses_judge_and_records_safe_learning_label(mon
     monkeypatch.setattr(
         node,
         "_routing_candidate_profiles",
-        lambda *_args: [
+            lambda *_args, **_kwargs: [
             {
                 "model_id": "gpt-4o-mini",
                 "input_price_per_1k": 0.00015,
@@ -3964,9 +3964,8 @@ def test_deployed_judge_bootstrap_uses_judge_and_records_safe_learning_label(mon
     assert fallback == "gpt-5-mini"
     assert metadata["decision_source"] == "runtime_judge"
     assert metadata["judge_called"] is True
-    assert metadata["judge"]["difficulty_score"] == 18
     assert metadata["judge"]["reason_short"] == "단순 안내 요청"
-    assert metadata["judge"]["eligible_model_count"] == 2
+    assert metadata["judge"]["candidate_model_count"] == 2
     assert metadata["judge"]["usage_log_error"] == "RuntimeError"
     assert captured["policy_id"] == str(policy_id)
     assert captured["selected_model_id"] == "gpt-4o-mini"

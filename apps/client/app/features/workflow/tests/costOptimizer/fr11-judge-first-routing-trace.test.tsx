@@ -20,12 +20,12 @@ describe('FR-011 Judge-first model routing trace', () => {
             reason_code: 'judge_bootstrap_required',
             policy_version: 'judge-bootstrap-v1',
             judge_called: true,
+            learning_status: 'pending_contract',
             judge: {
               model: 'gpt-4.1-mini',
               confidence: 0.84,
-              difficulty_score: 78,
               reason_short: '근거 종합 필요',
-              eligible_model_count: 2,
+              candidate_model_count: 2,
               reason_code: 'structured_reasoning_required',
               cost: 0.00013,
             },
@@ -50,9 +50,8 @@ describe('FR-011 Judge-first model routing trace', () => {
     expect(screen.getByText('이번 Judge 판단')).toBeVisible();
     expect(screen.getByText(/Judge 모델: gpt-4.1-mini/)).toBeVisible();
     expect(screen.getByText(/판단 확신도 84.0%/)).toBeVisible();
-    expect(screen.getByText('난이도 78/100')).toBeVisible();
     expect(screen.getByText('사유: 근거 종합 필요')).toBeVisible();
-    expect(screen.getByText('품질 통과 후보 2개')).toBeVisible();
+    expect(screen.getByText('검토 후보 모델 2개')).toBeVisible();
     expect(screen.getByText(/Judge 비용 \$0.000130/)).toBeVisible();
     expect(
       screen.getByText(
@@ -62,6 +61,33 @@ describe('FR-011 Judge-first model routing trace', () => {
     ).toBeVisible();
     expect(screen.getByText('JSON 스키마 필요')).toBeVisible();
     expect(screen.getByText('지식 베이스 사용')).toBeVisible();
+    expect(
+      screen.getByText('실행 결과 계약을 확인한 뒤 학습에 반영합니다.'),
+    ).toBeVisible();
+  });
+
+  it('계약 실패로 제외된 Judge 선택은 학습에 쓰지 않았다고 표시한다', () => {
+    render(
+      <ModelRoutingDecisionDetails
+        output={{
+          model: 'gpt-5-mini',
+          metadata: {
+            model_routing: {
+              strategy_id: 'judge_bootstrap_incremental_v1',
+              selected_model: 'gpt-5-mini',
+              decision_source: 'runtime_judge',
+              reason_code: 'multi_constraint',
+              learning_status: 'rejected',
+              learning_outcome_reason: 'schema_failed',
+            },
+          },
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByText('스키마 또는 후속 단계 조건을 통과하지 못해 학습에서 제외되었습니다.'),
+    ).toBeVisible();
   });
 
   it('로컬 라우터가 충분히 확신하면 Judge를 호출하지 않은 근거를 표시한다', () => {

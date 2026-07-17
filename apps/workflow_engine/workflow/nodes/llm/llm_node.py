@@ -584,6 +584,7 @@ class LLMNode(Node[LLMNodeData]):
                 candidate_profiles = self._routing_candidate_profiles(
                     db_session,
                     candidate_model_ids,
+                    policy_id=policy.get("policy_id"),
                 )
                 judge_decision = ModelRoutingRuntimeJudge.decide(
                     client=judge_selection.client,
@@ -608,24 +609,7 @@ class LLMNode(Node[LLMNodeData]):
             else:
                 # Judge가 정상적으로 고른 모델은 usage 기록이나 학습 artifact 저장이
                 # 일시 실패하더라도 유지한다. 두 후속 작업은 관측성/학습 보조 경로다.
-                catalog_selection = ModelRoutingRuntimeJudge.select_catalog_candidate(
-                    candidate_profiles,
-                    difficulty_score=judge_decision.difficulty_score,
-                    required_difficulty=judge_decision.required_difficulty,
-                )
-                confidence_allows_selection = (
-                    ModelRoutingRuntimeJudge.confidence_allows_catalog_selection(
-                        judge_decision.confidence
-                    )
-                )
-                selected_model_id = (
-                    catalog_selection.selected_model_id
-                    if confidence_allows_selection
-                    else None
-                ) or (
-                    judge_decision.selected_model_id
-                    or judge_default_model_id
-                )
+                selected_model_id = judge_decision.selected_model_id or judge_default_model_id
                 if fallback_model_id == selected_model_id:
                     fallback_model_id = ModelRouter.first_available_model(
                         [
@@ -643,16 +627,8 @@ class LLMNode(Node[LLMNodeData]):
                 reason_code = judge_decision.reason_code
                 judge_metadata = judge_decision.safe_metadata()
                 judge_metadata["model"] = judge_model_id
-                judge_metadata["selection_source"] = (
-                    "catalog_quality_then_cost"
-                    if confidence_allows_selection
-                    else "low_confidence_default"
-                )
-                judge_metadata["eligible_model_count"] = catalog_selection.eligible_model_count
-                judge_metadata["required_quality_floor"] = catalog_selection.required_quality_floor
-                judge_metadata["minimum_selection_confidence"] = (
-                    ModelRoutingRuntimeJudge.MIN_CONFIDENCE_FOR_CATALOG_SELECTION
-                )
+                judge_metadata["selection_source"] = "judge_candidate_selection"
+                judge_metadata["candidate_model_count"] = len(candidate_model_ids)
 
                 usage = judge_decision.usage
                 if usage:
@@ -687,15 +663,21 @@ class LLMNode(Node[LLMNodeData]):
                 policy_id = policy.get("policy_id")
                 if policy_id:
                     try:
-                        ModelRoutingPolicyStore.record_runtime_judge_label(
-                            db_session,
-                            policy_id=policy_id,
-                            routing_feature_text=routing_feature_text or "",
-                            selected_model_id=selected_model_id,
-                            candidate_model_ids=candidate_model_ids,
-                            confidence=judge_decision.confidence,
-                            reason_code=judge_decision.reason_code,
-                        )
+                        workflow_run_id = self.execution_context.get("workflow_run_id")
+                        if workflow_run_id:
+                            queued_learning = ModelRoutingPolicyStore.queue_runtime_judge_label(
+                                db_session,
+                                policy_id=policy_id,
+                                workflow_run_id=workflow_run_id,
+                                node_id=self.id,
+                                routing_feature_text=routing_feature_text or "",
+                                selected_model_id=selected_model_id,
+                                candidate_model_ids=candidate_model_ids,
+                                confidence=judge_decision.confidence,
+                                reason_code=judge_decision.reason_code,
+                            )
+                            if queued_learning.get("learning_queued"):
+                                judge_metadata["learning_status"] = "pending_contract"
                     except (RuntimeError, ValueError, TypeError, SQLAlchemyError) as exc:
                         judge_metadata["learning_error"] = type(exc).__name__
 
@@ -716,6 +698,8 @@ class LLMNode(Node[LLMNodeData]):
             metadata["rag_context"] = dict(routing_rag_context)
         if judge_metadata:
             metadata["judge"] = judge_metadata
+            if judge_metadata.get("learning_status"):
+                metadata["learning_status"] = judge_metadata["learning_status"]
         if decision.decision_factors:
             metadata["decision_factors"] = decision.decision_factors
         metadata.update(preview_metadata)
@@ -725,6 +709,8 @@ class LLMNode(Node[LLMNodeData]):
     def _routing_candidate_profiles(
         db_session,
         candidate_model_ids: list[str],
+        *,
+        policy_id: str | uuid.UUID | None = None,
     ) -> list[dict[str, Any]]:
         """Judge가 비용과 문맥 여유를 비교할 수 있는 공개 카탈로그 요약이다."""
 
@@ -738,6 +724,7 @@ class LLMNode(Node[LLMNodeData]):
 
         rows_by_model_id: dict[str, LLMModel] = {}
         profile_by_llm_model_id: dict[uuid.UUID, LLMModelRoutingGlobalProfile] = {}
+        operational_evidence_by_model: dict[str, dict[str, Any]] = {}
         if callable(getattr(db_session, "query", None)):
             rows = (
                 db_session.query(LLMModel)
@@ -765,6 +752,21 @@ class LLMNode(Node[LLMNodeData]):
                 profile.llm_model_id: profile
                 for profile in global_profiles
             }
+            if policy_id:
+                try:
+                    from apps.workflow_engine.services.model_routing_operational_performance import (
+                        ModelRoutingOperationalPerformanceService,
+                    )
+
+                    operational_evidence_by_model = (
+                        ModelRoutingOperationalPerformanceService.candidate_contract_evidence(
+                            db_session,
+                            policy_id=policy_id,
+                            candidate_model_ids=normalized_ids,
+                        )
+                    )
+                except (AttributeError, SQLAlchemyError, TypeError, ValueError):
+                    operational_evidence_by_model = {}
 
         profiles: list[dict[str, Any]] = []
         for model_id in normalized_ids:
@@ -793,7 +795,6 @@ class LLMNode(Node[LLMNodeData]):
                 profile["context_window"] = row.context_window
             global_profile = profile_by_llm_model_id.get(row.id) if row is not None else None
             if global_profile is not None:
-                profile["capability_tier"] = str(global_profile.capability_tier)
                 if isinstance(global_profile.quality_by_difficulty, dict):
                     profile["quality_by_difficulty"] = dict(
                         global_profile.quality_by_difficulty
@@ -804,6 +805,11 @@ class LLMNode(Node[LLMNodeData]):
                     )
                 if global_profile.fallback_rate is not None:
                     profile["fallback_rate"] = float(global_profile.fallback_rate)
+            operational_evidence = operational_evidence_by_model.get(
+                model_id.lower()
+            )
+            if isinstance(operational_evidence, dict):
+                profile.update(operational_evidence)
             profiles.append(profile)
         return profiles
 

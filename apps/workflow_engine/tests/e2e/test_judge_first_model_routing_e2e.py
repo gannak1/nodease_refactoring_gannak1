@@ -41,6 +41,7 @@ class _JudgeClient:
                             {
                                 "selected_model_id": selected,
                                 "confidence": 0.92,
+                                "reason_short": "단순 안내 요청" if is_simple else "여러 조건 종합",
                                 "reason_code": "request_capability_match",
                             }
                         )

@@ -4195,7 +4195,9 @@ def _seed_llm_credential(
         ).delete(synchronize_session=False)
         _delete_demo_runtime_llm_permissions(db)
 
-    for model_name in relation_model_names:
+    # A model can serve multiple demo roles (for example, fallback and onboarding
+    # routing). Persist one credential relation per distinct model.
+    for model_name in dict.fromkeys(relation_model_names):
         _upsert_by_id(
             db,
             LLMRelCredentialModel,

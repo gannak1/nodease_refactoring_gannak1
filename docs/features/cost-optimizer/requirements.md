@@ -31,11 +31,19 @@ FR-011의 현재 제품 계약은 `judge_bootstrap_incremental_v1`다. 이 계�
 있는 전체 후보 중 하나를 선택하게 한다. Judge 응답은 선택 모델·신뢰도·안전한 근거만 남기며,
 원문 prompt, 입력 payload, RAG 문서 원문은 정책 artifact나 API 응답에 저장하지 않는다.
 
-Judge 선택 label은 로컬 mDeBERTa 모델 선택 분류기를 점진적으로 학습시키는 재료다. 완료된
-운영 결과가 최소 표본 수, schema/downstream 성공률, fallback 비율 기준을 통과하면 로컬
+Judge 선택은 즉시 학습하지 않는다. 실행 중에는 원문 없는 숫자 vector·선택 모델만 대기 label로
+저장하고, workflow가 끝난 뒤 해당 node가 schema 통과, 후속 노드 성공, fallback 미발생 조건을
+모두 만족할 때만 local artifact에 누적한다. 완료된 운영 결과가 최소 표본 수,
+schema/downstream 성공률, fallback 비율 기준을 통과하면 로컬
 분류기가 먼저 모델을 선택한다. 로컬 신뢰도가 낮거나 선택 모델의 credential 권한이 바뀐
 경우에만 Judge를 다시 호출한다. prompt, 출력 schema, RAG, downstream 계약이 바뀌면
 bootstrap과 local artifact를 오래됨으로 표시하고 Judge-first로 다시 시작한다.
+
+문장 품질을 평가하기 위한 별도 LLM Judge는 자동 모델 라우팅의 운영 성적에 사용하지 않는다.
+대신 완료된 배포 실행의 schema 통과, 후속 노드 성공, provider fallback, 실행 성공 신호를
+후보 모델별로 누적한다. 다음 Runtime Judge 호출에는 이 운영 계약 성적을 함께 전달하며,
+같은 모델의 성적이 5건 이상 쌓인 경우에는 카탈로그 품질값보다 해당 성적을 우선 참고한다.
+표본이 부족할 때 카탈로그 값은 초기 선택을 위한 약한 사전 정보로만 사용한다.
 
 배포 후 성공 운영 실행이 설정 주기만큼 쌓이면 Judge 선택 label 수와 모델별 품질·비용·지연을
 재평가한다. local router가 충분히 학습됐는지는 이 시점의 품질 gate로만 전환한다. 정책 갱신은
@@ -454,7 +462,8 @@ Cost Optimizer의 A/B 테스트는 단순 실행 기능이 아니라, LLM 노드
 - 초기 Judge는 현재 요청별로 `selected_model_id`, `confidence`, `reason_code`를 반환한다.
   Judge label은 로컬 모델 선택 분류기의 학습 데이터이며 runtime keyword rule이 아니다.
 - 학습은 실행 중 메모리에 있는 rendered prompt로 mDeBERTa feature를 만든 뒤, 원문 대신
-  가중치·Judge 선택·실행 결과 안전 요약만 저장한다. RAG 문서 원문은 Judge와
+  숫자 vector·Judge 선택만 대기 저장한다. workflow 완료 뒤 schema 통과, 후속 노드 성공,
+  fallback 미발생을 확인한 label만 artifact 가중치에 반영한다. RAG 문서 원문은 Judge와
   artifact에 넣지 않고 retrieval 사용 여부·문맥 길이·출처 수 같은 구조 정보만 쓴다.
 - prompt, 입력 매핑, 출력 schema, RAG 또는 downstream 계약이 바뀌면 bootstrap은 오래됨
   상태가 되며 다시 생성해야 한다. 수동 모델만 바뀐 경우에는 재사용할 수 있다.

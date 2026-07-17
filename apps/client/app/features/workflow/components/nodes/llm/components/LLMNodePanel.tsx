@@ -384,9 +384,22 @@ export function LLMNodePanel({
       policy?.status ||
       legacyPolicy?.status ||
       (activePolicy ? 'active' : data.auto_model_routing ? 'collecting' : 'off');
+    const statusLabel =
+      status === 'failed'
+        ? '정책 오류'
+        : status === 'refreshing'
+          ? '운영 성적 재평가 중'
+          : activePolicy?.learning?.mode === 'local_first'
+            ? '로컬 선택 우선'
+            : activePolicy
+              ? 'Judge 선택 학습 중'
+              : data.auto_model_routing
+                ? '기준 생성 필요'
+                : '사용 안 함';
 
     return {
       status,
+      statusLabel,
       policyVersion:
         policy?.policy_version || legacyPolicy?.policy_version || '정책 없음',
       reasonCode: activePolicy
@@ -402,6 +415,12 @@ export function LLMNodePanel({
         model_count: 0,
         last_recorded_at: null,
         models: [],
+      },
+      learningSummary: policy?.learning_summary ?? {
+        pending_count: 0,
+        accepted_count: 0,
+        rejected_count: 0,
+        last_outcome_reason: null,
       },
       changePolicy: policy?.change_policy ?? {
         mode: 'event_driven' as const,
@@ -1041,8 +1060,8 @@ export function LLMNodePanel({
                     자동 모델 라우팅
                   </span>
                   <span className="mt-0.5 block text-[11px] leading-relaxed text-emerald-700">
-                    켜면 저장된 정책으로 실행 모델을 고르고, 실행 중에는
-                    judge LLM을 호출하지 않습니다.
+                    켜면 첫 운영 요청은 Judge가 후보 모델을 고르고, 계약을 통과한
+                    선택이 충분히 쌓이면 로컬 라우터가 먼저 고릅니다.
                   </span>
                 </span>
               </label>
@@ -1055,12 +1074,12 @@ export function LLMNodePanel({
                         자동 라우팅 사용 중
                       </div>
                       <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
-                        직접 모델 선택 대신 active policy를 기준으로 모델을
-                        선택합니다.
+                        기본 모델은 불확실하거나 Judge를 사용할 수 없을 때만 쓰며,
+                        정상 운영 요청은 현재 정책의 후보 중에서 선택합니다.
                       </p>
                     </div>
                     <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">
-                      {routingPolicySummary.status}
+                      {routingPolicySummary.statusLabel}
                     </span>
                   </div>
                   <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -1300,6 +1319,29 @@ export function LLMNodePanel({
                         )}
                         % 이상 개선일 때만 정책을 교체합니다.
                       </p>
+                    </div>
+                  </div>
+                  <div className="mt-3 rounded-lg border border-sky-100 bg-sky-50/60 p-3 text-[11px]">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-xs font-semibold text-sky-900">
+                          계약 확인 학습 상태
+                        </div>
+                        <p className="mt-0.5 leading-relaxed text-sky-800">
+                          Judge가 고른 모델은 실행이 끝난 뒤 스키마, 후속 단계, 대체 실행 여부를 확인한 경우에만 로컬 학습에 반영합니다.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-2 text-sky-900">
+                      <span className="rounded border border-sky-200 bg-white px-2 py-1">
+                        학습 반영 {routingPolicySummary.learningSummary.accepted_count}건
+                      </span>
+                      <span className="rounded border border-sky-200 bg-white px-2 py-1">
+                        결과 대기 {routingPolicySummary.learningSummary.pending_count}건
+                      </span>
+                      <span className="rounded border border-sky-200 bg-white px-2 py-1">
+                        학습 제외 {routingPolicySummary.learningSummary.rejected_count}건
+                      </span>
                     </div>
                   </div>
                   <div

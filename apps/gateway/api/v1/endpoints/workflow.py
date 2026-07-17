@@ -1037,6 +1037,12 @@ def _model_routing_policy_response(
                 "last_recorded_at": None,
                 "models": [],
             },
+            "learning_summary": {
+                "pending_count": 0,
+                "accepted_count": 0,
+                "rejected_count": 0,
+                "last_outcome_reason": None,
+            },
             "change_policy": _model_routing_change_policy_summary(),
         }
 
@@ -1072,6 +1078,16 @@ def _model_routing_policy_response(
                 "model_count": 0,
                 "last_recorded_at": None,
                 "models": [],
+            }
+        ),
+        "learning_summary": (
+            ModelRoutingPolicyStore.learning_label_summary(db, policy_id=policy.id)
+            if db is not None
+            else {
+                "pending_count": 0,
+                "accepted_count": 0,
+                "rejected_count": 0,
+                "last_outcome_reason": None,
             }
         ),
         "change_policy": _model_routing_change_policy_summary(),

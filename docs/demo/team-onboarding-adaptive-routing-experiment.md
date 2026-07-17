@@ -178,7 +178,7 @@ DB의 정책·입력군·검증 비용 요약을 대조한 결과다.
   전체 실험이 중단되지 않도록 실패 요약과 checkpoint를 남긴다.
 
 상세 실행 순서와 각 run의 safe metadata는
-`reports/model-routing/team-onboarding/local-20260715-final-v5/report.md`에서 확인한다.
+`reports/model-routing/history/team-onboarding/local-20260715-final-v5/report.md`에서 확인한다.
 
 ## 실험 후 결론 작성 규칙
 
@@ -190,4 +190,4 @@ DB의 정책·입력군·검증 비용 요약을 대조한 결과다.
 - 미검증: provider 권한, 예산, 시간 제한 때문에 실행하지 못한 사실
 
 실제 결과는
-`reports/model-routing/team-onboarding/<run-name>/report.md`에 생성한다.
+`reports/model-routing/history/team-onboarding/<run-name>/report.md`에 생성한다.

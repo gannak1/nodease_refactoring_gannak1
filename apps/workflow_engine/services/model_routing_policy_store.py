@@ -1,6 +1,7 @@
 """모델 라우팅 policy의 DB persistence와 배포 run 완료 훅을 담당한다."""
 
 import uuid
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -10,6 +11,7 @@ from sqlalchemy.orm import Session
 from apps.shared.db.models.model_routing_policy import (
     LLMNodeModelRoutingPolicy,
     LLMNodeModelRoutingBootstrap,
+    LLMNodeModelRoutingLearningLabel,
     LLMNodeModelRoutingPolicyRunEvent,
     LLMNodeModelRoutingPolicyUpdate,
 )
@@ -78,26 +80,24 @@ class ModelRoutingPolicyStore:
         return max(Decimal("0.5"), min(Decimal("10"), value))
 
     @classmethod
-    def record_runtime_judge_label(
+    def queue_runtime_judge_label(
         cls,
         db: Session,
         *,
         policy_id: str | uuid.UUID,
+        workflow_run_id: str | uuid.UUID,
+        node_id: str,
         routing_feature_text: str,
         selected_model_id: str,
         candidate_model_ids: list[str],
         confidence: float,
         reason_code: str,
     ) -> dict[str, Any]:
-        """Judge 선택을 raw prompt 없이 local router artifact에 누적한다.
-
-        policy row를 잠근 뒤 JSONB artifact를 갱신한다. 동시에 끝난 요청이 같은
-        가중치를 읽고 마지막 write로 덮어쓰는 문제를 피하기 위한 경계다.
-        """
+        """Judge 선택을 실행 완료 뒤 학습할 수 있도록 안전한 vector로 보관한다."""
 
         policy = cls._lock_policy_for_update(db, policy_id=uuid.UUID(str(policy_id)))
         if policy is None:
-            return {"learning_recorded": False, "reason": "policy_not_found"}
+            return {"learning_queued": False, "reason": "policy_not_found"}
         stored_active_policy = getattr(policy, "active_policy", None)
         active_policy = (
             dict(stored_active_policy)
@@ -105,50 +105,260 @@ class ModelRoutingPolicyStore:
             else {}
         )
         if active_policy.get("strategy_id") != JUDGE_FIRST_STRATEGY_ID:
-            return {"learning_recorded": False, "reason": "strategy_not_supported"}
+            return {"learning_queued": False, "reason": "strategy_not_supported"}
 
         learning = (
             dict(active_policy.get("learning"))
             if isinstance(active_policy.get("learning"), dict)
             else {}
         )
-        labels = {
-            str(model_id)
-            for model_id in (learning.get("selected_model_ids") or [])
-            if str(model_id).strip()
-        }
-        labels.add(str(selected_model_id))
-        learning["judged_request_count"] = int(
-            learning.get("judged_request_count") or 0
-        ) + 1
-        learning["selected_model_ids"] = sorted(labels)
-        learning["last_judge_confidence"] = round(float(confidence), 4)
-        learning["last_judge_reason_code"] = str(reason_code)[:80]
         try:
             from apps.workflow_engine.services.model_routing_local_classifier import (
                 MDebertaModelChoiceClassifier,
             )
 
-            learning["local_router_artifact"] = MDebertaModelChoiceClassifier.update(
-                learning.get("local_router_artifact"),
-                text=routing_feature_text,
-                selected_model_id=selected_model_id,
-                candidate_model_ids=candidate_model_ids,
+            vector, encoder_model_id = MDebertaModelChoiceClassifier.vectorize(
+                routing_feature_text,
+                artifact=learning.get("local_router_artifact"),
             )
-            learning.pop("last_learning_error", None)
         except (RuntimeError, ValueError) as exc:
-            # Judge 선택은 실제 실행에 이미 반영한다. local encoder가 아직 준비되지
-            # 않았다는 이유로 운영 요청 전체를 실패시키지 않는다.
-            learning["last_learning_error"] = type(exc).__name__
+            return {"learning_queued": False, "reason": type(exc).__name__}
 
-        active_policy["learning"] = learning
-        policy.active_policy = active_policy
+        run_uuid = uuid.UUID(str(workflow_run_id))
+        existing = (
+            db.query(LLMNodeModelRoutingLearningLabel)
+            .filter(LLMNodeModelRoutingLearningLabel.policy_id == policy.id)
+            .filter(LLMNodeModelRoutingLearningLabel.workflow_run_id == run_uuid)
+            .filter(LLMNodeModelRoutingLearningLabel.node_id == str(node_id))
+            .first()
+        )
+        if existing is not None:
+            return {"learning_queued": False, "reason": "already_queued"}
+        db.add(
+            LLMNodeModelRoutingLearningLabel(
+                policy_id=policy.id,
+                workflow_run_id=run_uuid,
+                node_id=str(node_id),
+                selected_model_id=str(selected_model_id),
+                candidate_model_ids=[str(model_id) for model_id in candidate_model_ids],
+                feature_vector=[float(value) for value in vector],
+                encoder_model_id=encoder_model_id,
+                confidence=Decimal(str(confidence)),
+                reason_code=str(reason_code)[:128],
+            )
+        )
         db.flush()
         return {
-            "learning_recorded": bool(learning.get("local_router_artifact")),
-            "judged_request_count": learning["judged_request_count"],
+            "learning_queued": True,
             "learning_mode": learning.get("mode") or "judge_first",
         }
+
+    @staticmethod
+    def learning_label_summary(
+        db: Session,
+        *,
+        policy_id: str | uuid.UUID,
+    ) -> dict[str, Any]:
+        """UI가 보여줄 수 있는 계약 기반 학습 현황만 반환한다.
+
+        학습 입력의 원문이나 vector는 반환하지 않는다. pending은 workflow의 최종
+        계약 결과를 기다리는 Judge 선택, accepted/rejected는 그 결과가 확정된
+        선택 수를 뜻한다.
+        """
+
+        try:
+            policy_uuid = uuid.UUID(str(policy_id))
+        except (TypeError, ValueError):
+            return {
+                "pending_count": 0,
+                "accepted_count": 0,
+                "rejected_count": 0,
+                "last_outcome_reason": None,
+            }
+
+        labels = (
+            db.query(LLMNodeModelRoutingLearningLabel)
+            .filter(LLMNodeModelRoutingLearningLabel.policy_id == policy_uuid)
+            .order_by(LLMNodeModelRoutingLearningLabel.created_at.desc())
+            .all()
+        )
+        counts = {"pending": 0, "accepted": 0, "rejected": 0}
+        for label in labels:
+            status = str(getattr(label, "status", "") or "")
+            if status in counts:
+                counts[status] += 1
+        latest_finalized = next(
+            (
+                label
+                for label in labels
+                if str(getattr(label, "status", "") or "")
+                in {"accepted", "rejected"}
+            ),
+            None,
+        )
+        return {
+            "pending_count": counts["pending"],
+            "accepted_count": counts["accepted"],
+            "rejected_count": counts["rejected"],
+            "last_outcome_reason": (
+                str(getattr(latest_finalized, "outcome_reason", "") or "")
+                or None
+            ),
+        }
+
+    @classmethod
+    def finalize_runtime_judge_labels(
+        cls,
+        db: Session,
+        *,
+        policy: LLMNodeModelRoutingPolicy,
+        workflow_run: WorkflowRun,
+        node_run: WorkflowNodeRun,
+    ) -> int:
+        """완료된 node의 대기 Judge label을 계약 결과에 따라 확정한다."""
+        labels = (
+            db.query(LLMNodeModelRoutingLearningLabel)
+            .filter(LLMNodeModelRoutingLearningLabel.policy_id == policy.id)
+            .filter(LLMNodeModelRoutingLearningLabel.workflow_run_id == workflow_run.id)
+            .filter(LLMNodeModelRoutingLearningLabel.node_id == node_run.node_id)
+            .filter(LLMNodeModelRoutingLearningLabel.status == "pending")
+            .all()
+        )
+        contract_passed, outcome_reason = (
+            ModelRoutingOperationalPerformanceService.learning_contract_outcome(
+                workflow_run=workflow_run,
+                node_run=node_run,
+            )
+        )
+        accepted = 0
+        final_status = "rejected"
+        for label in labels:
+            if cls._finalize_runtime_judge_label(
+                policy=policy,
+                label=label,
+                contract_passed=contract_passed,
+                outcome_reason=outcome_reason,
+            ):
+                accepted += 1
+                final_status = "accepted"
+        if labels:
+            cls._write_runtime_judge_learning_outcome(
+                node_run=node_run,
+                status=final_status,
+                outcome_reason=outcome_reason,
+            )
+        return accepted
+
+    @staticmethod
+    def _write_runtime_judge_learning_outcome(
+        *,
+        node_run: WorkflowNodeRun,
+        status: str,
+        outcome_reason: str,
+    ) -> None:
+        """기존 node trace에 학습 확정 결과만 보강한다.
+
+        실행 원문이나 feature vector는 trace에 쓰지 않는다. Test Sidebar와 실행 로그가
+        같은 결과를 보여주도록 안전한 상태 코드만 기록한다.
+        """
+
+        trace = (
+            dict(node_run.trace_metadata)
+            if isinstance(getattr(node_run, "trace_metadata", None), dict)
+            else {}
+        )
+        llm = dict(trace.get("llm")) if isinstance(trace.get("llm"), dict) else {}
+        llm["learning_status"] = status
+        llm["learning_outcome_reason"] = outcome_reason
+        trace["llm"] = llm
+        node_run.trace_metadata = trace
+
+        outputs = (
+            dict(node_run.outputs)
+            if isinstance(getattr(node_run, "outputs", None), dict)
+            else {}
+        )
+        metadata = (
+            dict(outputs.get("metadata"))
+            if isinstance(outputs.get("metadata"), dict)
+            else {}
+        )
+        routing = (
+            dict(metadata.get("model_routing"))
+            if isinstance(metadata.get("model_routing"), dict)
+            else {}
+        )
+        if routing:
+            routing["learning_status"] = status
+            routing["learning_outcome_reason"] = outcome_reason
+            metadata["model_routing"] = routing
+            outputs["metadata"] = metadata
+            node_run.outputs = outputs
+
+    @staticmethod
+    def _finalize_runtime_judge_label(
+        *,
+        policy: LLMNodeModelRoutingPolicy,
+        label: LLMNodeModelRoutingLearningLabel,
+        contract_passed: bool,
+        outcome_reason: str,
+    ) -> bool:
+        """계약 통과 label만 local classifier artifact에 반영한다."""
+        label.outcome_reason = outcome_reason
+        label.finalized_at = datetime.now(timezone.utc)
+        if not contract_passed:
+            label.status = "rejected"
+            return False
+
+        active_policy = (
+            dict(policy.active_policy)
+            if isinstance(getattr(policy, "active_policy", None), dict)
+            else {}
+        )
+        if active_policy.get("strategy_id") != JUDGE_FIRST_STRATEGY_ID:
+            label.status = "rejected"
+            label.outcome_reason = "strategy_not_supported"
+            return False
+        learning = (
+            dict(active_policy.get("learning"))
+            if isinstance(active_policy.get("learning"), dict)
+            else {}
+        )
+        try:
+            from apps.workflow_engine.services.model_routing_local_classifier import (
+                MDebertaModelChoiceClassifier,
+            )
+
+            learning["local_router_artifact"] = (
+                MDebertaModelChoiceClassifier.update_from_vector(
+                    learning.get("local_router_artifact"),
+                    vector=label.feature_vector,
+                    encoder_model_id=label.encoder_model_id,
+                    selected_model_id=label.selected_model_id,
+                    candidate_model_ids=label.candidate_model_ids,
+                )
+            )
+        except (RuntimeError, ValueError):
+            label.status = "rejected"
+            label.outcome_reason = "learning_error"
+            return False
+
+        labels = {
+            str(model_id)
+            for model_id in (learning.get("selected_model_ids") or [])
+            if str(model_id).strip()
+        }
+        labels.add(str(label.selected_model_id))
+        learning["judged_request_count"] = int(
+            learning.get("judged_request_count") or 0
+        ) + 1
+        learning["selected_model_ids"] = sorted(labels)
+        learning["last_judge_confidence"] = round(float(label.confidence or 0), 4)
+        learning["last_judge_reason_code"] = str(label.reason_code or "")[:80]
+        active_policy["learning"] = learning
+        policy.active_policy = active_policy
+        label.status = "accepted"
+        return True
 
     @classmethod
     def reconcile_incremental_learning_mode(
@@ -692,6 +902,14 @@ class ModelRoutingPolicyStore:
                     # provider 호출 전 실패처럼 모델을 식별할 수 없는 실행은
                     # event 이력만 남기고 모델 성적에는 귀속하지 않는다.
                     performance_changed = False
+                # 모델 사용량을 복원하지 못한 실패도 학습하면 안 된다. 성적 누계와
+                # 별개로 대기 label은 항상 이번 node의 계약 결과로 확정한다.
+                cls.finalize_runtime_judge_labels(
+                    db,
+                    policy=policy,
+                    workflow_run=workflow_run,
+                    node_run=node_run,
+                )
             # Judge label로 학습한 local head는 운영 품질까지 확인된 뒤에만
             # local-first로 바꾼다. editor test run은 이 완료 훅에 들어오지 않는다.
             cls.reconcile_incremental_learning_mode(db, policy=policy)

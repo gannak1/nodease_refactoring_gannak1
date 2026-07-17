@@ -166,6 +166,12 @@ describe('FR-003 LLM node model routing optimization entry', () => {
           },
         ],
       },
+      learning_summary: {
+        pending_count: 2,
+        accepted_count: 18,
+        rejected_count: 3,
+        last_outcome_reason: 'contract_passed',
+      },
       change_policy: {
         mode: 'event_driven',
         minimum_new_runs: 3,
@@ -356,6 +362,10 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     expect(
       screen.queryByRole('slider', { name: '자동 정책 점검 주기' }),
     ).not.toBeInTheDocument();
+    expect(screen.getByText('계약 확인 학습 상태')).toBeInTheDocument();
+    expect(screen.getByText(/학습 반영 18건/)).toBeInTheDocument();
+    expect(screen.getByText(/결과 대기 2건/)).toBeInTheDocument();
+    expect(screen.getByText(/학습 제외 3건/)).toBeInTheDocument();
   });
   it('자동 모델 라우팅 토글은 기준 생성 전에는 빈 정책을 저장하지 않는다', async () => {
     const node = useWorkflowStore.getState().nodes[0] as AppNode;
@@ -448,7 +458,7 @@ describe('FR-003 LLM node model routing optimization entry', () => {
       await screen.findByTestId('routing-judge-first-policy'),
     ).toBeInTheDocument();
     expect(screen.getByText('Judge-first + 점진적 로컬 학습')).toBeInTheDocument();
-    expect(screen.getByText('Judge 선택 학습 중')).toBeInTheDocument();
+    expect(screen.getAllByText('Judge 선택 학습 중')).not.toHaveLength(0);
     expect(screen.getByText('학습된 Judge 선택')).toBeInTheDocument();
     expect(screen.getByText('0건')).toBeInTheDocument();
     expect(screen.queryByText('경제형 요청')).not.toBeInTheDocument();

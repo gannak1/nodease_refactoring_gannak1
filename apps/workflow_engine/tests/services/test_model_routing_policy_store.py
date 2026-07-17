@@ -9,6 +9,68 @@ from apps.shared.db.models.workflow_run import NodeRunStatus
 from apps.workflow_engine.services.llm_service import LLMService
 
 
+def test_completed_judge_label_updates_local_artifact_only_after_contract_passes(monkeypatch):
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+    from apps.workflow_engine.services.model_routing_local_classifier import (
+        MDebertaModelChoiceClassifier,
+    )
+
+    policy = SimpleNamespace(
+        active_policy={
+            "strategy_id": "judge_bootstrap_incremental_v1",
+            "learning": {"mode": "judge_first"},
+        }
+    )
+    accepted = SimpleNamespace(
+        status="pending",
+        feature_vector=[0.2, 0.8],
+        encoder_model_id="test-encoder",
+        selected_model_id="gpt-5-mini",
+        candidate_model_ids=["gpt-4o-mini", "gpt-5-mini"],
+        confidence=0.88,
+        reason_code="multi_constraint",
+        outcome_reason=None,
+    )
+    updated = {}
+    monkeypatch.setattr(
+        MDebertaModelChoiceClassifier,
+        "update_from_vector",
+        lambda artifact, **kwargs: updated.update(kwargs) or {"kind": "test"},
+    )
+
+    assert ModelRoutingPolicyStore._finalize_runtime_judge_label(
+        policy=policy,
+        label=accepted,
+        contract_passed=True,
+        outcome_reason="contract_passed",
+    ) is True
+    assert accepted.status == "accepted"
+    assert updated["selected_model_id"] == "gpt-5-mini"
+    assert policy.active_policy["learning"]["judged_request_count"] == 1
+
+    rejected = SimpleNamespace(
+        status="pending",
+        feature_vector=[0.2, 0.8],
+        encoder_model_id="test-encoder",
+        selected_model_id="gpt-4o-mini",
+        candidate_model_ids=["gpt-4o-mini", "gpt-5-mini"],
+        confidence=0.72,
+        reason_code="fallback",
+        outcome_reason=None,
+    )
+    assert ModelRoutingPolicyStore._finalize_runtime_judge_label(
+        policy=policy,
+        label=rejected,
+        contract_passed=False,
+        outcome_reason="fallback_used",
+    ) is False
+    assert rejected.status == "rejected"
+    assert rejected.outcome_reason == "fallback_used"
+    assert policy.active_policy["learning"]["judged_request_count"] == 1
+
+
 class _Query:
     def __init__(self, *, first_value=None, all_value=None):
         self.first_value = first_value
@@ -26,11 +88,68 @@ class _Query:
         self.with_for_update_called = True
         return self
 
+    def order_by(self, *_args):
+        return self
+
     def first(self):
         return self.first_value
 
     def all(self):
         return self.all_value
+
+
+def test_learning_label_summary_returns_counts_without_exposing_vectors():
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    policy_id = uuid4()
+    db = MagicMock()
+    db.query.return_value = _Query(
+        all_value=[
+            SimpleNamespace(status="pending", outcome_reason=None),
+            SimpleNamespace(status="accepted", outcome_reason="contract_passed"),
+            SimpleNamespace(status="rejected", outcome_reason="schema_failed"),
+        ]
+    )
+
+    assert ModelRoutingPolicyStore.learning_label_summary(
+        db,
+        policy_id=policy_id,
+    ) == {
+        "pending_count": 1,
+        "accepted_count": 1,
+        "rejected_count": 1,
+        "last_outcome_reason": "contract_passed",
+    }
+
+
+def test_finalize_learning_outcome_updates_node_trace_without_storing_feature_vector():
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    node_run = SimpleNamespace(
+        trace_metadata={"llm": {"selected_model": "gpt-5-mini"}},
+        outputs={
+            "metadata": {
+                "model_routing": {"selected_model": "gpt-5-mini"},
+            }
+        },
+    )
+
+    ModelRoutingPolicyStore._write_runtime_judge_learning_outcome(
+        node_run=node_run,
+        status="accepted",
+        outcome_reason="contract_passed",
+    )
+
+    assert node_run.trace_metadata["llm"]["learning_status"] == "accepted"
+    assert (
+        node_run.outputs["metadata"]["model_routing"]["learning_outcome_reason"]
+        == "contract_passed"
+    )
+    assert "feature_vector" not in node_run.trace_metadata["llm"]
 
 
 def test_claim_pending_auto_refresh_skips_delivery_after_refresh_started():

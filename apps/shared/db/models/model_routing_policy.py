@@ -309,6 +309,61 @@ class LLMNodeModelRoutingPolicyRunEvent(Base):
     )
 
 
+class LLMNodeModelRoutingLearningLabel(Base):
+    """Judge 선택을 실행 결과가 나온 뒤 학습하기 위한 안전한 대기 label.
+
+    원문 prompt/input은 저장하지 않고 local classifier가 이미 만든 숫자 vector와
+    선택 결과만 보관한다. workflow가 완료되면 계약 결과에 따라 accepted 또는
+    rejected로 확정한다.
+    """
+
+    __tablename__ = "llm_node_model_routing_learning_labels"
+    __table_args__ = (
+        UniqueConstraint(
+            "policy_id",
+            "workflow_run_id",
+            "node_id",
+            name="uq_model_routing_learning_label_policy_run_node",
+        ),
+        Index(
+            "ix_model_routing_learning_label_policy_status",
+            "policy_id",
+            "status",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    policy_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("llm_node_model_routing_policies.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    workflow_run_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("workflow_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    node_id: Mapped[str] = mapped_column(String, nullable=False)
+    selected_model_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    candidate_model_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    feature_vector: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    encoder_model_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    confidence: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 6), nullable=True)
+    reason_code: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    outcome_reason: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    finalized_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 class LLMNodeModelRoutingPerformance(Base):
     """배포 정책의 모델·입력 길이별 운영 성적 누계."""
 

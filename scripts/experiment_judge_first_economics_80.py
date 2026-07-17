@@ -33,18 +33,25 @@ from typing import Any, Iterable
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PARENT_OF_ROOT = ROOT.parent
+EXPERIMENT_RUNS_ROOT = pathlib.Path("reports/model-routing/runs/judge-first")
 for path in (ROOT, PARENT_OF_ROOT):
     if str(path) not in sys.path:
         sys.path.append(str(path))
 
 from apps.log_system import tasks as log_tasks
 from apps.shared.celery_app import celery_app
+from apps.shared.db.demo_seed import _ticket_ops_graph
 from apps.shared.db.models.app import App
 from apps.shared.db.models.llm import LLMModel, LLMUsageLog
-from apps.shared.db.models.model_routing_policy import LLMNodeModelRoutingPolicy
+from apps.shared.db.models.model_routing_policy import (
+    LLMNodeModelRoutingPerformance,
+    LLMNodeModelRoutingPolicy,
+    LLMNodeModelRoutingPolicyRunEvent,
+    LLMNodeModelRoutingPolicyUpdate,
+)
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
-from apps.shared.db.models.workflow_run import WorkflowNodeRun
+from apps.shared.db.models.workflow_run import WorkflowNodeRun, WorkflowRun
 from apps.shared.db.session import SessionLocal
 from apps.workflow_engine.services.llm_service import (
     LLMCredentialNotAvailableError,
@@ -53,9 +60,11 @@ from apps.workflow_engine.services.llm_service import (
 from apps.workflow_engine.services.model_routing_policy_store import (
     ModelRoutingPolicyStore,
 )
+from apps.workflow_engine.services.model_routing_runtime_judge import (
+    ModelRoutingRuntimeJudge,
+)
 from apps.workflow_engine.workflow.core.workflow_engine import WorkflowEngine
 from scripts.model_routing_benchmark_cases_v22 import V22_HOLDOUT_CASE_POOLS
-from scripts.verify_model_router_demo import _ticket_ops_graph
 
 
 ORG_ID = uuid.UUID("10200000-0000-0000-0000-000000000100")
@@ -75,6 +84,9 @@ ARMS = (AUTO_ARM, HIGH_ARM, LOW_ARM)
 HIGH_MODEL = "gpt-5.4"
 LOW_MODEL = "gpt-4o-mini"
 ROUTING_JUDGE_MODEL = "gpt-5-mini"
+# 품질 평가는 라우팅 Judge와 분리한다. 라우팅 Judge만 바꿔도 동일한 품질 평가
+# 기준으로 결과를 비교할 수 있어야 한다.
+QUALITY_JUDGE_MODEL = "gpt-5-mini"
 LOCAL_CONFIDENCE_THRESHOLD = 0.78
 
 
@@ -93,6 +105,7 @@ class ArmResult:
     selected_model: str | None
     task_cost_usd: float
     task_latency_ms: int | None
+    workflow_latency_ms: int | None
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
@@ -319,7 +332,7 @@ def _ensure_runtime_models(db) -> list[str]:
         "gpt-5.4",
     ]
     selected = [model_id for model_id in wanted if model_id in available]
-    required = {HIGH_MODEL, LOW_MODEL, ROUTING_JUDGE_MODEL}
+    required = {HIGH_MODEL, LOW_MODEL, ROUTING_JUDGE_MODEL, QUALITY_JUDGE_MODEL}
     missing = required - set(selected)
     if missing:
         raise RuntimeError(f"실험에 필요한 실행 가능 모델이 없습니다: {sorted(missing)}")
@@ -456,6 +469,26 @@ def _upsert_workflow_and_deployments(db, available_models: list[str]) -> None:
 def _clear_prior_experiment_runs(db) -> None:
     from apps.shared.db.models.workflow_run import WorkflowRun
 
+    # 이 script가 소유한 고정 workflow/deployment의 policy evidence만 비운다.
+    # policy row 자체는 _upsert_workflow_and_deployments가 재사용하지만, run event와
+    # 성적 표본을 남기면 다음 batch가 과거 실험을 학습한 것처럼 보인다.
+    policy_ids = [
+        row[0]
+        for row in db.query(LLMNodeModelRoutingPolicy.id)
+        .filter(LLMNodeModelRoutingPolicy.workflow_id == WORKFLOW_ID)
+        .all()
+    ]
+    if policy_ids:
+        db.query(LLMNodeModelRoutingPolicyRunEvent).filter(
+            LLMNodeModelRoutingPolicyRunEvent.policy_id.in_(policy_ids)
+        ).delete(synchronize_session=False)
+        db.query(LLMNodeModelRoutingPerformance).filter(
+            LLMNodeModelRoutingPerformance.policy_id.in_(policy_ids)
+        ).delete(synchronize_session=False)
+        db.query(LLMNodeModelRoutingPolicyUpdate).filter(
+            LLMNodeModelRoutingPolicyUpdate.policy_id.in_(policy_ids)
+        ).delete(synchronize_session=False)
+
     run_ids = [
         row[0]
         for row in db.query(WorkflowRun.id)
@@ -471,6 +504,138 @@ def _clear_prior_experiment_runs(db) -> None:
         ).delete(synchronize_session=False)
         db.query(WorkflowRun).filter(WorkflowRun.id.in_(run_ids)).delete(
             synchronize_session=False
+        )
+    db.flush()
+
+
+def _clear_case_runs(db, cases: list[ExperimentCase]) -> None:
+    """재개하려는 batch의 중단된 run만 제거한다.
+
+    run id는 case/arm 조합으로 결정적이다. process가 중간에 종료된 뒤 같은 batch를
+    재시도하면 예전 started_at과 새 node log가 합쳐질 수 있으므로 재실행 전에 해당
+    run만 비운다. 이전에 완료된 batch의 run과 학습 증거는 건드리지 않는다.
+    """
+
+    run_ids = [_run_id(arm, case.case_id) for case in cases for arm in ARMS]
+    if not run_ids:
+        return
+    db.query(LLMUsageLog).filter(LLMUsageLog.workflow_run_id.in_(run_ids)).delete(
+        synchronize_session=False
+    )
+    db.query(WorkflowNodeRun).filter(
+        WorkflowNodeRun.workflow_run_id.in_(run_ids)
+    ).delete(synchronize_session=False)
+    db.query(WorkflowRun).filter(WorkflowRun.id.in_(run_ids)).delete(
+        synchronize_session=False
+    )
+    db.flush()
+
+
+def _policy_checkpoint() -> dict[str, Any]:
+    """완료 batch를 다시 실행할 수 있게 policy와 성적 누계를 안전한 JSON으로 저장한다."""
+
+    db = SessionLocal()
+    try:
+        policy = (
+            db.query(LLMNodeModelRoutingPolicy)
+            .filter(LLMNodeModelRoutingPolicy.deployment_id == AUTO_DEPLOYMENT_ID)
+            .filter(LLMNodeModelRoutingPolicy.node_id == NODE_ID)
+            .first()
+        )
+        if policy is None:
+            return {}
+        performances = (
+            db.query(LLMNodeModelRoutingPerformance)
+            .filter(LLMNodeModelRoutingPerformance.policy_id == policy.id)
+            .all()
+        )
+        return {
+            "policy": {
+                "status": policy.status,
+                "policy_version": policy.policy_version,
+                "active_policy": copy.deepcopy(policy.active_policy or {}),
+                "performance_checkpoint": copy.deepcopy(policy.performance_checkpoint or {}),
+                "pending_policy": copy.deepcopy(policy.pending_policy),
+                "refresh_every_runs": policy.refresh_every_runs,
+                "eligible_runs_since_last_refresh": policy.eligible_runs_since_last_refresh,
+                "refresh_requested_at": policy.refresh_requested_at.isoformat()
+                if policy.refresh_requested_at
+                else None,
+                "last_refresh_result": policy.last_refresh_result,
+            },
+            "performances": [
+                {
+                    "model_id": row.model_id,
+                    "input_profile": row.input_profile,
+                    "run_count": row.run_count,
+                    "success_count": row.success_count,
+                    "schema_pass_count": row.schema_pass_count,
+                    "schema_eval_count": row.schema_eval_count,
+                    "downstream_success_count": row.downstream_success_count,
+                    "downstream_eval_count": row.downstream_eval_count,
+                    "fallback_count": row.fallback_count,
+                    "retry_count": row.retry_count,
+                    "total_cost": float(row.total_cost or 0),
+                    "total_tokens": row.total_tokens,
+                    "total_latency_ms": row.total_latency_ms,
+                }
+                for row in performances
+            ],
+        }
+    finally:
+        db.close()
+
+
+def _restore_policy_checkpoint(db, checkpoint: dict[str, Any]) -> None:
+    """이전 완료 batch의 policy state로 되돌려 중단 batch의 학습 오염을 제거한다."""
+
+    snapshot = checkpoint.get("policy") if isinstance(checkpoint, dict) else None
+    if not isinstance(snapshot, dict):
+        raise RuntimeError("--resume 보고서에 policy checkpoint가 없습니다.")
+    policy = (
+        db.query(LLMNodeModelRoutingPolicy)
+        .filter(LLMNodeModelRoutingPolicy.deployment_id == AUTO_DEPLOYMENT_ID)
+        .filter(LLMNodeModelRoutingPolicy.node_id == NODE_ID)
+        .first()
+    )
+    if policy is None:
+        raise RuntimeError("resume 대상 자동 라우팅 policy가 없습니다.")
+    policy.status = str(snapshot.get("status") or "active")
+    policy.policy_version = snapshot.get("policy_version")
+    policy.active_policy = copy.deepcopy(snapshot.get("active_policy") or {})
+    policy.performance_checkpoint = copy.deepcopy(snapshot.get("performance_checkpoint") or {})
+    policy.pending_policy = copy.deepcopy(snapshot.get("pending_policy"))
+    policy.refresh_every_runs = int(snapshot.get("refresh_every_runs") or 100)
+    policy.eligible_runs_since_last_refresh = int(
+        snapshot.get("eligible_runs_since_last_refresh") or 0
+    )
+    # 이 실험에서는 refresh task를 의도적으로 실행하지 않는다.
+    policy.refresh_requested_at = None
+    policy.last_refresh_result = snapshot.get("last_refresh_result")
+
+    db.query(LLMNodeModelRoutingPerformance).filter(
+        LLMNodeModelRoutingPerformance.policy_id == policy.id
+    ).delete(synchronize_session=False)
+    for item in checkpoint.get("performances") or []:
+        if not isinstance(item, dict):
+            continue
+        db.add(
+            LLMNodeModelRoutingPerformance(
+                policy_id=policy.id,
+                model_id=str(item.get("model_id") or "unknown"),
+                input_profile=str(item.get("input_profile") or "unknown"),
+                run_count=int(item.get("run_count") or 0),
+                success_count=int(item.get("success_count") or 0),
+                schema_pass_count=int(item.get("schema_pass_count") or 0),
+                schema_eval_count=int(item.get("schema_eval_count") or 0),
+                downstream_success_count=int(item.get("downstream_success_count") or 0),
+                downstream_eval_count=int(item.get("downstream_eval_count") or 0),
+                fallback_count=int(item.get("fallback_count") or 0),
+                retry_count=int(item.get("retry_count") or 0),
+                total_cost=float(item.get("total_cost") or 0),
+                total_tokens=int(item.get("total_tokens") or 0),
+                total_latency_ms=int(item.get("total_latency_ms") or 0),
+            )
         )
     db.flush()
 
@@ -538,10 +703,16 @@ def _execute_case(arm: str, case: ExperimentCase) -> ArmResult:
         # WorkflowEngine의 마지막 gevent log write가 execute() 반환 직후에
         # 완료될 수 있다. 저장 전 읽으면 실제 호출했어도 비용/모델이 0으로
         # 기록되므로, terminal node와 task usage가 보일 때까지 짧게 기다린다.
+        workflow_run = None
         node_run = None
         task_usage = None
         for _attempt in range(30):
             db.expire_all()
+            workflow_run = (
+                db.query(WorkflowRun)
+                .filter(WorkflowRun.id == run_id)
+                .first()
+            )
             node_run = (
                 db.query(WorkflowNodeRun)
                 .filter(WorkflowNodeRun.workflow_run_id == run_id)
@@ -565,7 +736,7 @@ def _execute_case(arm: str, case: ExperimentCase) -> ArmResult:
             .order_by(LLMUsageLog.created_at.desc())
             .first()
         )
-        prompt_tokens, completion_tokens, total_tokens, task_cost, task_latency = _usage(task_usage)
+        prompt_tokens, completion_tokens, total_tokens, task_cost, _usage_latency = _usage(task_usage)
         _jp, _jc, judge_tokens, judge_cost, judge_latency = _usage(judge_usage)
         outputs = node_run.outputs if node_run is not None and isinstance(node_run.outputs, dict) else {}
         output_text = str(outputs.get("text") or "")
@@ -581,17 +752,20 @@ def _execute_case(arm: str, case: ExperimentCase) -> ArmResult:
             if "decision_source" in llm_trace
             else {}
         )
-        if not task_latency:
-            task_latency = (
-                int(llm_trace.get("latency_ms") or 0)
-                or int(float(node_run.duration or 0) * 1000)
-                if node_run is not None
-                else None
-            )
-        if not judge_latency:
-            judge_latency = int(
-                (routing.get("judge") or {}).get("latency_ms") or 0
-            ) or None
+        # WorkflowNodeRun.duration은 LLM node가 시작한 뒤 routing resolver와
+        # Runtime Judge, 최종 provider 호출이 모두 끝날 때까지의 실제 경과 시간이다.
+        # Usage log latency와 Judge usage latency를 더하면 Judge 시간이 중복될 수 있어
+        # 보고서의 기준 시간에는 사용하지 않는다.
+        task_latency = (
+            int(float(node_run.duration or 0) * 1000)
+            if node_run is not None and node_run.duration is not None
+            else int(llm_trace.get("latency_ms") or 0) or None
+        )
+        workflow_latency = (
+            int(float(workflow_run.duration or 0) * 1000)
+            if workflow_run is not None and workflow_run.duration is not None
+            else None
+        )
         selected_model = str(
             routing.get("selected_model")
             or (outputs.get("model") if isinstance(outputs, dict) else "")
@@ -603,6 +777,7 @@ def _execute_case(arm: str, case: ExperimentCase) -> ArmResult:
             selected_model=selected_model,
             task_cost_usd=task_cost,
             task_latency_ms=task_latency,
+            workflow_latency_ms=workflow_latency,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
@@ -629,10 +804,19 @@ def _record_automatic_operational_result(case: ExperimentCase) -> None:
 
     db = SessionLocal()
     try:
-        ModelRoutingPolicyStore.record_completed_deployed_run(
+        scheduled_policy_ids = ModelRoutingPolicyStore.record_completed_deployed_run(
             db,
             workflow_run_id=_run_id(AUTO_ARM, case.case_id),
         )
+        # 운영 코드에서는 이 id를 Celery refresh task로 넘긴다. 이 경제성 실험은
+        # runtime Judge label과 local learner의 전환만 비교하므로, refresh task를
+        # 실행하지 않는 대신 예약 상태를 즉시 해제해 다음 run이 멈추지 않게 한다.
+        for policy_id in scheduled_policy_ids:
+            policy = db.get(LLMNodeModelRoutingPolicy, policy_id)
+            if policy is not None:
+                policy.status = "active"
+                policy.refresh_requested_at = None
+                policy.last_refresh_result = "experiment_refresh_suppressed"
         db.commit()
     except Exception:
         db.rollback()
@@ -672,7 +856,7 @@ def _quality_judge(case: ExperimentCase, results: dict[str, ArmResult]) -> tuple
     db = SessionLocal()
     try:
         selection = LLMService.get_runtime_client_for_user(
-            db, USER_ID, ROUTING_JUDGE_MODEL, ORG_ID
+            db, USER_ID, QUALITY_JUDGE_MODEL, ORG_ID
         )
         started = datetime.now(timezone.utc)
         response = selection.client.invoke_sync(
@@ -691,7 +875,7 @@ def _quality_judge(case: ExperimentCase, results: dict[str, ArmResult]) -> tuple
         usage = response.get("usage") if isinstance(response, dict) else {}
         prompt_tokens = int((usage or {}).get("prompt_tokens") or 0)
         completion_tokens = int((usage or {}).get("completion_tokens") or 0)
-        cost = LLMService.calculate_cost(db, ROUTING_JUDGE_MODEL, prompt_tokens, completion_tokens)
+        cost = LLMService.calculate_cost(db, QUALITY_JUDGE_MODEL, prompt_tokens, completion_tokens)
     except Exception as exc:
         error_code = f"{type(exc).__name__}:{str(exc)[:180]}"
         return ({arm: {"quality_score": 0.0, "contract_pass": False, "reason": f"quality_judge_error:{error_code}"} for arm in ARMS}, {"error": error_code})
@@ -713,7 +897,7 @@ def _quality_judge(case: ExperimentCase, results: dict[str, ArmResult]) -> tuple
             "reason": str(row.get("reason") or "품질 Judge 응답 없음")[:240],
         }
     return judged, {
-        "model": ROUTING_JUDGE_MODEL,
+        "model": QUALITY_JUDGE_MODEL,
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "total_tokens": prompt_tokens + completion_tokens,
@@ -745,8 +929,7 @@ def _arm_summary(rows: list[dict[str, Any]], arm: str) -> dict[str, Any]:
         "total_product_cost_usd": task_cost + route_cost,
         "average_task_latency_ms": _mean(item["task_latency_ms"] for item in arm_rows),
         "average_end_to_end_latency_ms": _mean(
-            (item["task_latency_ms"] or 0) + (item["routing_judge_latency_ms"] or 0)
-            for item in arm_rows
+            item["workflow_latency_ms"] for item in arm_rows
         ),
         "p95_task_latency_ms": _p95(item["task_latency_ms"] for item in arm_rows),
         "total_tokens": sum(int(item["total_tokens"] or 0) for item in arm_rows),
@@ -839,11 +1022,11 @@ def render_markdown(report: dict[str, Any]) -> str:
     auto_vs_high = high["total_product_cost_usd"] - automatic["total_product_cost_usd"]
     auto_vs_low_quality = automatic["quality_score_average"] - low["quality_score_average"]
     lines = [
-        "# Judge-first 자동 모델 라우팅 80회 경제성 실험 보고서",
+        f"# Judge-first 자동 모델 라우팅 {report['case_count']}회 경제성 실험 보고서",
         "",
         "## 한눈에 보는 결론",
         "",
-        "이 실험은 같은 기업 요청 처리 워크플로우를 80개의 서로 다른 요청으로 실행해, 자동 모델 라우팅이 비싼 모델만 고정하는 경우보다 돈을 아끼는지, 싼 모델만 고정하는 경우보다 결과 품질을 지키는지 확인한 결과입니다.",
+        f"이 실험은 같은 기업 요청 처리 워크플로우를 {report['case_count']}개의 서로 다른 요청으로 실행해, 자동 모델 라우팅이 비싼 모델만 고정하는 경우보다 돈을 아끼는지, 싼 모델만 고정하는 경우보다 결과 품질을 지키는지 확인한 결과입니다.",
         "",
         f"- 자동 라우팅 총 제품 비용: {_money(automatic['total_product_cost_usd'])}",
         f"- 고가 고정 대비 자동 라우팅 순절감: {_money(auto_vs_high)} ({'절감' if auto_vs_high >= 0 else '추가 비용'})",
@@ -860,9 +1043,10 @@ def render_markdown(report: dict[str, Any]) -> str:
         "- 자동 라우팅 전략: `judge_bootstrap_incremental_v1`",
         f"- 자동 라우팅 후보: {', '.join(report['available_models'])}",
         f"- 고가 고정 모델: `{HIGH_MODEL}` / 저가 고정 모델: `{LOW_MODEL}`",
-        f"- 라우팅 Judge 및 품질 평가 Judge: `{ROUTING_JUDGE_MODEL}`",
+        f"- 라우팅 Judge: `{report['routing_judge_model']}`",
+        f"- 독립 품질 평가 Judge: `{report['quality_judge_model']}`",
         "- RAG: 미사용. 이번 비교에서는 KB 검색 품질 변수를 빼고 모델 라우팅 자체의 비용·속도·출력 품질만 측정했습니다.",
-        "- 정책 refresh: 100회. 80회 실험 동안 정책 교체를 막고, Judge label을 누적한 local router의 전환만 측정했습니다.",
+        f"- 정책 refresh: 100회. {report['case_count']}회 실험 동안 정책 교체를 막고, Judge label을 누적한 local router의 전환만 측정했습니다.",
         "",
         "## 데이터셋",
         "",
@@ -950,17 +1134,128 @@ def render_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def write_report(output_dir: pathlib.Path, report: dict[str, Any]) -> tuple[pathlib.Path, pathlib.Path]:
+def _report_paths(
+    output_dir: pathlib.Path,
+    *,
+    report_name: str | None,
+) -> tuple[pathlib.Path, pathlib.Path]:
+    """새 run은 고정 파일명, 기존 run은 호환용 이름을 유지한다."""
+
+    if report_name is None:
+        return output_dir / "result.json", output_dir / "report.md"
+    return output_dir / f"{report_name}.json", output_dir / f"{report_name}.md"
+
+
+def _write_run_config(
+    output_dir: pathlib.Path,
+    *,
+    run_id: str,
+    report_name: str | None,
+    batch_size: int,
+) -> pathlib.Path:
+    """실험 조건을 결과와 같은 폴더에 남겨 나중 비교 기준을 고정한다."""
+
     output_dir.mkdir(parents=True, exist_ok=True)
-    json_path = output_dir / "judge_first_economics_80.json"
-    markdown_path = output_dir / "judge_first_economics_80.md"
+    config_path = output_dir / "run-config.json"
+    config = {
+        "schema_version": 1,
+        "run_id": run_id,
+        "experiment": "judge-first-economics",
+        "strategy_id": "judge_bootstrap_incremental_v1",
+        "routing_judge_model": ROUTING_JUDGE_MODEL,
+        "routing_judge_max_output_tokens": ModelRoutingRuntimeJudge.MAX_OUTPUT_TOKENS,
+        "quality_judge_model": QUALITY_JUDGE_MODEL,
+        "candidate_model_ids": [
+            "gpt-4o-mini",
+            "gpt-4.1-mini",
+            "gpt-4.1",
+            "gpt-5-mini",
+            "gpt-5.4-mini",
+            "gpt-5.4",
+        ],
+        "comparison_arms": {
+            AUTO_ARM: "automatic routing",
+            HIGH_ARM: HIGH_MODEL,
+            LOW_ARM: LOW_MODEL,
+        },
+        "dataset": {
+            "name": "enterprise-ticket-80-v1",
+            "total_case_count": len(build_cases()),
+        },
+        "batch_size": batch_size,
+        "artifact_files": {
+            "report": "report.md" if report_name is None else f"{report_name}.md",
+            "result": "result.json" if report_name is None else f"{report_name}.json",
+            "batches": "batches/",
+        },
+    }
+    if config_path.exists():
+        previous = json.loads(config_path.read_text(encoding="utf-8"))
+        for key in (
+            "run_id",
+            "routing_judge_model",
+            "routing_judge_max_output_tokens",
+            "quality_judge_model",
+            "strategy_id",
+        ):
+            if previous.get(key) != config[key]:
+                raise RuntimeError(
+                    f"동일 run 폴더의 실험 조건이 다릅니다: {key}. "
+                    "새 --run-id를 사용하세요."
+                )
+        return config_path
+    config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+    return config_path
+
+
+def resolve_artifact_target(
+    *,
+    output_dir: str,
+    run_id: str | None,
+) -> tuple[pathlib.Path, str | None]:
+    """새 실험은 run-id 폴더를, 기존 명령은 기존 output-dir 계약을 사용한다."""
+
+    if run_id:
+        normalized = run_id.strip()
+        if not normalized or any(char in normalized for char in "\\/:*?\"<>|"):
+            raise ValueError("--run-id는 경로 구분자와 예약 문자를 포함할 수 없습니다.")
+        return EXPERIMENT_RUNS_ROOT / normalized, None
+    return pathlib.Path(output_dir), "judge_first_economics_80"
+
+
+def write_report(
+    output_dir: pathlib.Path,
+    report: dict[str, Any],
+    *,
+    report_name: str | None,
+) -> tuple[pathlib.Path, pathlib.Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path, markdown_path = _report_paths(output_dir, report_name=report_name)
     json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     markdown_path.write_text(render_markdown(report), encoding="utf-8")
+
+    # 배치가 끝난 당시의 누적 결과도 고정한다. 누적 보고서만 덮어쓰면 10/20/…건에서
+    # Judge 호출과 local router 전환이 어떻게 달라졌는지 나중에 재현할 수 없다.
+    latest_batch = report.get("latest_batch") if isinstance(report.get("latest_batch"), dict) else {}
+    start = int(latest_batch.get("offset") or 0) + 1
+    end = int(latest_batch.get("completed_case_count") or 0)
+    if end >= start:
+        batch_dir = output_dir / "batches"
+        batch_dir.mkdir(parents=True, exist_ok=True)
+        batch_name = f"batch-{start:02d}-{end:02d}"
+        (batch_dir / f"{batch_name}.json").write_text(
+            json.dumps(report, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        (batch_dir / f"{batch_name}.md").write_text(
+            render_markdown(report),
+            encoding="utf-8",
+        )
     return json_path, markdown_path
 
 
-def _read_existing_report(output_dir: pathlib.Path) -> dict[str, Any]:
-    path = output_dir / "judge_first_economics_80.json"
+def _read_existing_report(output_dir: pathlib.Path, *, report_name: str | None) -> dict[str, Any]:
+    path, _ = _report_paths(output_dir, report_name=report_name)
     if not path.exists():
         raise RuntimeError("--resume에는 이전 실험 보고서가 필요합니다.")
     return json.loads(path.read_text(encoding="utf-8"))
@@ -972,14 +1267,19 @@ def run_experiment(
     *,
     resume: bool,
     batch_offset: int,
+    report_name: str | None,
 ) -> dict[str, Any]:
     if resume:
-        previous_report = _read_existing_report(output_dir)
+        previous_report = _read_existing_report(output_dir, report_name=report_name)
         rows = list(previous_report.get("runs") or [])
         available_models = list(previous_report.get("available_models") or [])
         prior_quality_cost = float(previous_report.get("quality_judge_total_cost_usd") or 0)
         prior_quality_calls = int(previous_report.get("quality_judge_call_count") or 0)
         prior_quality_errors = list(previous_report.get("quality_judge_errors") or [])
+        with SessionLocal() as db:
+            _restore_policy_checkpoint(db, previous_report.get("policy_checkpoint") or {})
+            _clear_case_runs(db, cases)
+            db.commit()
     else:
         with SessionLocal() as db:
             available_models = _ensure_runtime_models(db)
@@ -1027,12 +1327,15 @@ def run_experiment(
             "completed_case_count": len(rows),
         },
         "available_models": available_models,
+        "routing_judge_model": ROUTING_JUDGE_MODEL,
+        "quality_judge_model": QUALITY_JUDGE_MODEL,
         "runs": rows,
         "arm_summary": {arm: _arm_summary(rows, arm) for arm in ARMS},
         "learning_summary": {
             **_learning_summary(rows),
             "persisted": _persisted_learning_state(),
         },
+        "policy_checkpoint": _policy_checkpoint(),
         "quality_judge_total_cost_usd": prior_quality_cost + sum(
             float(metric.get("cost_usd") or 0) for metric in quality_judge_metrics
         ),
@@ -1042,7 +1345,7 @@ def run_experiment(
         "quality_judge_errors": prior_quality_errors
         + [metric for metric in quality_judge_metrics if metric.get("error")],
     }
-    json_path, markdown_path = write_report(output_dir, report)
+    json_path, markdown_path = write_report(output_dir, report, report_name=report_name)
     print(json.dumps({"json": str(json_path.resolve()), "markdown": str(markdown_path.resolve())}, ensure_ascii=False), flush=True)
     return report
 
@@ -1053,12 +1356,41 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--count", type=int, default=80, help="사전 검증용 실행 건수입니다. 기본값은 80입니다.")
     parser.add_argument("--offset", type=int, default=0, help="80개 고정 데이터셋에서 시작할 0-base 위치입니다.")
     parser.add_argument("--resume", action="store_true", help="이전 10건 batch의 DB 정책과 보고서를 이어서 누적합니다.")
-    parser.add_argument("--output-dir", default="reports/model-routing/judge-first-economics-80")
+    parser.add_argument(
+        "--routing-judge-model",
+        default=ROUTING_JUDGE_MODEL,
+        help="자동 라우팅 판단에만 사용할 Judge 모델입니다. 독립 품질 평가는 별도 고정 모델을 사용합니다.",
+    )
+    parser.add_argument(
+        "--report-name",
+        default=None,
+        help="기존 경로 호환용 출력 파일 이름입니다. 새 --run-id 실행에서는 사용하지 마세요.",
+    )
+    parser.add_argument(
+        "--run-id",
+        default=None,
+        help=(
+            "새 실험 폴더 이름입니다. 예: "
+            "2026-07-18__ticket-json-v1__judge-gpt-5.4-mini__out-256"
+        ),
+    )
+    parser.add_argument(
+        "--output-dir",
+        default="reports/model-routing/current/judge-first/economics-80/latest",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
+    global ROUTING_JUDGE_MODEL
     args = parse_args()
+    ROUTING_JUDGE_MODEL = str(args.routing_judge_model)
+    output_dir, report_name = resolve_artifact_target(
+        output_dir=str(args.output_dir),
+        run_id=args.run_id,
+    )
+    if args.run_id and args.report_name:
+        raise SystemExit("--run-id와 --report-name은 함께 사용할 수 없습니다.")
     cases = build_cases()
     if args.count < 1 or args.offset < 0 or args.offset + args.count > len(cases):
         raise SystemExit(f"--offset/--count 범위는 0~{len(cases)} 안이어야 합니다.")
@@ -1078,11 +1410,19 @@ def main() -> None:
             )
         )
         return
+    if args.run_id:
+        _write_run_config(
+            output_dir,
+            run_id=str(args.run_id).strip(),
+            report_name=report_name,
+            batch_size=len(selected_cases),
+        )
     run_experiment(
         selected_cases,
-        pathlib.Path(args.output_dir),
+        output_dir,
         resume=args.resume,
         batch_offset=args.offset,
+        report_name=report_name,
     )
 
 
