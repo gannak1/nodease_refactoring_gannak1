@@ -124,6 +124,31 @@ def test_session_schema_pins_scope_versions_and_separates_revisions():
         ConversationSessionRecord,
         UniqueConstraint,
     )
+    assert "uq_conv_sessions_grant_binding" in _constraint_names(
+        ConversationSessionRecord,
+        UniqueConstraint,
+    )
+
+
+def test_access_grant_scope_fk_pins_session_deployment_version_and_audience():
+    binding = _foreign_key(
+        ConversationAccessGrantRecord,
+        "fk_conv_grants_session_binding",
+    )
+    assert tuple(element.parent.name for element in binding.elements) == (
+        "session_id",
+        "organization_id",
+        "deployment_id",
+        "deployment_version",
+        "audience_kind",
+    )
+    assert tuple(element.target_fullname for element in binding.elements) == (
+        "conversation_sessions.id",
+        "conversation_sessions.organization_id",
+        "conversation_sessions.deployment_id",
+        "conversation_sessions.deployment_version",
+        "conversation_sessions.audience_kind",
+    )
 
 
 def test_turn_schema_enforces_tenant_sequence_request_and_single_active_turn():
@@ -324,6 +349,8 @@ def test_memory_migration_is_additive_reversible_and_descends_from_current_head(
 
     assert 'revision: str = "ab1c2d3e4f50"' in source
     assert 'down_revision: str | Sequence[str] | None = "aa0b1c2d3e4f"' in source
+    assert 'name="uq_conv_sessions_grant_binding"' in source
+    assert 'name="fk_conv_grants_session_binding"' in source
     for table_name in MODELS.values():
         assert f'"{table_name}"' in source
         assert f'op.drop_table("{table_name}")' in source

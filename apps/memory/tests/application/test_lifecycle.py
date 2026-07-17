@@ -31,7 +31,9 @@ from apps.memory.domain.conversation import (
 )
 from apps.memory.domain.errors import (
     DuplicateRequestConflictError,
+    SessionNotActiveError,
     StaleLifecycleRevisionError,
+    StaleTurnVersionError,
 )
 
 
@@ -288,6 +290,23 @@ def test_same_request_replays_existing_turn_and_conflicting_fingerprint_fails():
     assert uow.rollback_count == 1
 
 
+def test_start_turn_rejects_session_at_idle_expiry_without_partial_writes():
+    repo = _Repository()
+    uow = _UnitOfWork(repo)
+    session = _create_session(repo, uow)
+    command = _start_command(session)
+    session.idle_expires_at = command.now
+
+    with pytest.raises(SessionNotActiveError):
+        StartTurnUseCase(repository=repo, uow=uow).execute(command)
+
+    assert repo.sessions[session.id].active_turn_id is None
+    assert repo.turns == {}
+    assert repo.entries == {}
+    assert repo.dispatch_jobs == {}
+    assert uow.rollback_count == 1
+
+
 def test_dispatch_insert_failure_rolls_back_the_whole_start_turn_unit():
     repo = _Repository()
     uow = _UnitOfWork(repo)
@@ -342,6 +361,136 @@ def test_complete_turn_atomically_approves_user_and_assistant_entries():
     assert repo.entries[start.user_entry_id].lifecycle.value == "approved"
     assert repo.entries[assistant_entry_id].lifecycle.value == "approved"
     assert repo.turns[turn.id].assistant_entry_id == assistant_entry_id
+
+
+def test_complete_turn_replays_same_terminal_result_and_rejects_identity_conflict():
+    repo = _Repository()
+    uow = _UnitOfWork(repo)
+    session = _create_session(repo, uow)
+    start = _start_command(session)
+    StartTurnUseCase(repository=repo, uow=uow).execute(start)
+    turn = repo.turns[start.turn_id]
+    turn.mark_queued(expected_version=1, now=_now())
+    turn.mark_running(
+        expected_version=2,
+        execution_id=uuid.uuid4(),
+        attempt_id=uuid.uuid4(),
+        now=_now(),
+    )
+    assistant_entry_id = uuid.uuid4()
+    command = CompleteTurnCommand(
+        organization_id=session.organization_id,
+        session_id=session.id,
+        turn_id=turn.id,
+        expected_lifecycle_revision=1,
+        expected_turn_version=3,
+        outcome="completed",
+        assistant_entry_id=assistant_entry_id,
+        assistant_content=_protected(b"assistant"),
+        safe_failure_reason=None,
+        now=_now(),
+    )
+    use_case = CompleteTurnUseCase(repository=repo, uow=uow)
+
+    first = use_case.execute(command)
+    replay = use_case.execute(command)
+
+    assert replay == first
+    assert len(repo.entries) == 2
+    assert repo.sessions[session.id].content_revision == 1
+
+    assert command.assistant_content is not None
+    assert command.assistant_content.display is not None
+    conflicting_content = replace(
+        command.assistant_content,
+        display=replace(
+            command.assistant_content.display,
+            content_digest="e" * 64,
+        ),
+    )
+    conflicts = (
+        replace(command, assistant_entry_id=uuid.uuid4()),
+        replace(command, assistant_content=conflicting_content),
+        replace(command, expected_turn_version=first.turn_version),
+        replace(
+            command,
+            outcome="failed",
+            assistant_entry_id=None,
+            assistant_content=None,
+            safe_failure_reason="memory.execution_failed",
+        ),
+    )
+    for conflicting_command in conflicts:
+        with pytest.raises(StaleTurnVersionError):
+            use_case.execute(conflicting_command)
+
+
+@pytest.mark.parametrize("outcome", ["failed", "cancelled"])
+def test_complete_turn_replays_matching_failed_or_cancelled_result(outcome: str):
+    repo = _Repository()
+    uow = _UnitOfWork(repo)
+    session = _create_session(repo, uow)
+    start = _start_command(session)
+    StartTurnUseCase(repository=repo, uow=uow).execute(start)
+    command = CompleteTurnCommand(
+        organization_id=session.organization_id,
+        session_id=session.id,
+        turn_id=start.turn_id,
+        expected_lifecycle_revision=1,
+        expected_turn_version=1,
+        outcome=outcome,  # type: ignore[arg-type]
+        assistant_entry_id=None,
+        assistant_content=None,
+        safe_failure_reason="memory.execution_failed",
+        now=_now(),
+    )
+    use_case = CompleteTurnUseCase(repository=repo, uow=uow)
+
+    first = use_case.execute(command)
+    replay = use_case.execute(command)
+
+    assert replay == first
+    assert repo.entries[start.user_entry_id].lifecycle.value == "rejected"
+
+
+def test_complete_turn_rejects_late_write_at_idle_expiry():
+    repo = _Repository()
+    uow = _UnitOfWork(repo)
+    session = _create_session(repo, uow)
+    start = _start_command(session)
+    StartTurnUseCase(repository=repo, uow=uow).execute(start)
+    turn = repo.turns[start.turn_id]
+    turn.mark_queued(expected_version=1, now=_now())
+    turn.mark_running(
+        expected_version=2,
+        execution_id=uuid.uuid4(),
+        attempt_id=uuid.uuid4(),
+        now=_now(),
+    )
+    session.idle_expires_at = _now()
+    assistant_entry_id = uuid.uuid4()
+
+    with pytest.raises(SessionNotActiveError):
+        CompleteTurnUseCase(repository=repo, uow=uow).execute(
+            CompleteTurnCommand(
+                organization_id=session.organization_id,
+                session_id=session.id,
+                turn_id=turn.id,
+                expected_lifecycle_revision=1,
+                expected_turn_version=3,
+                outcome="completed",
+                assistant_entry_id=assistant_entry_id,
+                assistant_content=_protected(b"assistant"),
+                safe_failure_reason=None,
+                now=_now(),
+            )
+        )
+
+    assert repo.sessions[session.id].active_turn_id == turn.id
+    assert repo.sessions[session.id].content_revision == 0
+    assert repo.turns[turn.id].status.value == "running"
+    assert repo.entries[start.user_entry_id].lifecycle.value == "provisional"
+    assert assistant_entry_id not in repo.entries
 
 
 def test_failed_turn_releases_active_claim_without_approving_user_content():

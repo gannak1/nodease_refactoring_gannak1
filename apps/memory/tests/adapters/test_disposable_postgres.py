@@ -13,7 +13,7 @@ from threading import Barrier
 
 import pytest
 from sqlalchemy import create_engine, func, select, text
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from apps.memory.adapters.persistence.repository import (
@@ -44,6 +44,7 @@ from apps.memory.domain.conversation import (
 from apps.memory.domain.errors import MemoryDomainError
 from apps.shared.db.models.app import App
 from apps.shared.db.models.conversation_memory import (
+    ConversationAccessGrantRecord,
     ConversationMemoryEntryRecord,
     ConversationSessionRecord,
     ConversationTurnRecord,
@@ -386,6 +387,50 @@ def test_memory_migration_uow_and_concurrent_start_turn_contracts():
             _assert_legacy_execution_survives(engine, ids)
             with Session(engine) as db:
                 assert check_memory_schema_readiness(db).ready is True
+
+            binding_session_id = uuid.uuid4()
+            _create_session(engine, ids, binding_session_id)
+            binding_now = datetime.now(timezone.utc)
+            with Session(engine) as db:
+                db.add(
+                    ConversationAccessGrantRecord(
+                        id=uuid.uuid4(),
+                        organization_id=ids["organization"],
+                        session_id=binding_session_id,
+                        deployment_id=ids["deployment"],
+                        deployment_version=1,
+                        audience_kind=AudienceKind.PUBLIC_CHATBOT.value,
+                        verifier_hash="a" * 64,
+                        verifier_key_version="grant-key-v1",
+                        state="active",
+                        issued_at=binding_now,
+                        expires_at=binding_now + timedelta(hours=1),
+                    )
+                )
+                db.commit()
+
+            for deployment_version, audience_kind in (
+                (2, AudienceKind.PUBLIC_CHATBOT.value),
+                (1, AudienceKind.AUTHENTICATED_INTERNAL_CHATBOT.value),
+            ):
+                with Session(engine) as db:
+                    db.add(
+                        ConversationAccessGrantRecord(
+                            id=uuid.uuid4(),
+                            organization_id=ids["organization"],
+                            session_id=binding_session_id,
+                            deployment_id=ids["deployment"],
+                            deployment_version=deployment_version,
+                            audience_kind=audience_kind,
+                            verifier_hash=uuid.uuid4().hex * 2,
+                            verifier_key_version="grant-key-v1",
+                            state="active",
+                            issued_at=binding_now,
+                            expires_at=binding_now + timedelta(hours=1),
+                        )
+                    )
+                    with pytest.raises(IntegrityError):
+                        db.commit()
 
             concurrent_session_id = uuid.uuid4()
             _create_session(engine, ids, concurrent_session_id)

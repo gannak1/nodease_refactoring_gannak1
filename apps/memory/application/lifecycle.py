@@ -16,14 +16,20 @@ from apps.memory.domain.conversation import (
     ConversationPurgeJob,
     ConversationSession,
     ConversationTurn,
+    EntryLifecycle,
+    EntryType,
     MemoryTurnDispatchJob,
+    ProtectedContent,
     ProtectedEntryContent,
     RequestIdentity,
     SessionLifecycle,
+    TurnStatus,
 )
 from apps.memory.domain.errors import (
     EntryNotFoundError,
     SessionNotFoundError,
+    StaleLifecycleRevisionError,
+    StaleTurnVersionError,
 )
 
 
@@ -229,6 +235,7 @@ class StartTurnUseCase(_TransactionalUseCase):
             sequence = session.claim_turn(
                 turn_id=command.turn_id,
                 expected_lifecycle_revision=command.expected_lifecycle_revision,
+                now=command.now,
             )
             turn = ConversationTurn.start(
                 turn_id=command.turn_id,
@@ -304,6 +311,16 @@ class CompleteTurnUseCase(_TransactionalUseCase):
             if user_entry is None:
                 raise EntryNotFoundError()
 
+            replay = _terminal_complete_turn_replay(
+                repository=self.repository,
+                command=command,
+                session=session,
+                turn=turn,
+                user_entry=user_entry,
+            )
+            if replay is not None:
+                return replay
+
             if command.outcome == "completed":
                 if (
                     command.assistant_entry_id is None
@@ -321,6 +338,7 @@ class CompleteTurnUseCase(_TransactionalUseCase):
                     turn_id=turn.id,
                     expected_lifecycle_revision=command.expected_lifecycle_revision,
                     content_changed=True,
+                    now=command.now,
                 )
                 user_entry.approve(
                     content_revision=session.content_revision,
@@ -362,6 +380,7 @@ class CompleteTurnUseCase(_TransactionalUseCase):
                     turn_id=turn.id,
                     expected_lifecycle_revision=command.expected_lifecycle_revision,
                     content_changed=False,
+                    now=command.now,
                 )
                 user_entry.reject(now=command.now)
 
@@ -377,6 +396,100 @@ class CompleteTurnUseCase(_TransactionalUseCase):
             )
 
         return self._execute(operation)
+
+
+def _terminal_complete_turn_replay(
+    *,
+    repository: ConversationMemoryRepositoryPort,
+    command: CompleteTurnCommand,
+    session: ConversationSession,
+    turn: ConversationTurn,
+    user_entry: ConversationMemoryEntry,
+) -> CompleteTurnResult | None:
+    if not turn.terminal:
+        return None
+    if session.lifecycle_revision != command.expected_lifecycle_revision:
+        raise StaleLifecycleRevisionError()
+    if turn.version != command.expected_turn_version + 1:
+        raise StaleTurnVersionError()
+    if turn.status is not TurnStatus(command.outcome):
+        raise StaleTurnVersionError()
+    if session.active_turn_id == turn.id:
+        raise StaleTurnVersionError()
+
+    content_revision = session.content_revision
+    if command.outcome == "completed":
+        if command.assistant_entry_id is None or command.assistant_content is None:
+            raise StaleTurnVersionError()
+        if turn.assistant_entry_id != command.assistant_entry_id:
+            raise StaleTurnVersionError()
+        assistant_entry = repository.get_entry(
+            organization_id=command.organization_id,
+            session_id=command.session_id,
+            entry_id=command.assistant_entry_id,
+        )
+        if assistant_entry is None:
+            raise EntryNotFoundError()
+        if (
+            user_entry.lifecycle is not EntryLifecycle.APPROVED
+            or user_entry.content_revision is None
+            or assistant_entry.turn_id != turn.id
+            or assistant_entry.entry_type is not EntryType.ASSISTANT_TURN
+            or assistant_entry.lifecycle is not EntryLifecycle.APPROVED
+            or assistant_entry.content_revision is None
+            or assistant_entry.content_revision != user_entry.content_revision
+            or not _same_protected_content_identity(
+                assistant_entry.content,
+                command.assistant_content,
+            )
+        ):
+            raise StaleTurnVersionError()
+        content_revision = assistant_entry.content_revision
+    elif (
+        command.assistant_entry_id is not None
+        or command.assistant_content is not None
+        or not command.safe_failure_reason
+        or turn.assistant_entry_id is not None
+        or turn.safe_failure_reason != command.safe_failure_reason
+        or user_entry.lifecycle is not EntryLifecycle.REJECTED
+        or user_entry.content_revision is not None
+    ):
+        raise StaleTurnVersionError()
+
+    return CompleteTurnResult(
+        session_id=session.id,
+        turn_id=turn.id,
+        lifecycle=session.lifecycle,
+        content_revision=content_revision,
+        turn_version=turn.version,
+    )
+
+
+def _same_protected_content_identity(
+    stored: ProtectedEntryContent | None,
+    requested: ProtectedEntryContent,
+) -> bool:
+    if stored is None:
+        return False
+    return _protected_projection_identity(
+        stored.display
+    ) == _protected_projection_identity(
+        requested.display
+    ) and _protected_projection_identity(
+        stored.model
+    ) == _protected_projection_identity(requested.model)
+
+
+def _protected_projection_identity(
+    projection: ProtectedContent | None,
+) -> tuple[str, str, int] | None:
+    if projection is None:
+        return None
+    return (
+        projection.format_version,
+        projection.content_digest,
+        projection.plaintext_byte_length,
+    )
 
 
 class CloseSessionUseCase(_TransactionalUseCase):

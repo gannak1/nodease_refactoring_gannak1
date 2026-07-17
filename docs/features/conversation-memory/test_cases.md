@@ -34,7 +34,7 @@ Status: Draft
 - MEM-TC-DOM-005: Delivery attempt ID가 달라도 logical turn은 중복 생성되지 않는다.
 - MEM-TC-DOM-006: Pending에서 completed/failed/cancelled 전이만 허용한다.
 - MEM-TC-DOM-007: Terminal turn의 다른 terminal state 재전이를 거부한다.
-- MEM-TC-DOM-008: Close/reset/delete 이후 start/complete를 거부한다.
+- MEM-TC-DOM-008: Clock expiry, close/reset/delete 이후 start/complete를 거부한다. Expiry worker가 lifecycle을 아직 전이하지 않았어도 command의 `now`가 idle/absolute boundary에 도달하면 late write를 fail-closed 한다.
 - MEM-TC-DOM-009: Stale lifecycle revision 또는 turn version write를 거부한다.
 - MEM-TC-DOM-010: Late completion이 delete-pending/deleted session을 되살리지 않는다.
 - MEM-TC-DOM-011: 서로 다른 organization에서 같은 session ID를 사용해도 safe hidden/fail-closed 한다.
@@ -103,7 +103,7 @@ Status: Draft
 - MEM-TC-APP-013: Commit 직후 Gateway crash 또는 broker publish 실패에도 dispatcher가 job을 재claim한다.
 - MEM-TC-APP-014: Publish 성공 응답 유실과 duplicate publish는 같은 dispatch/turn을 재사용한다.
 - MEM-TC-APP-014A: Durable Workflow admission 전 duplicate publish는 admission에서 제거되고 admission 이후 outcome unknown은 arbitrary execution 재실행 없이 Workflow reconciliation 또는 safe terminal failure로 닫힌다.
-- MEM-TC-APP-015: Required CompleteTurn 실패는 success/applied를 반환하지 않고 durable execution result로 CompleteTurn만 재시도한다.
+- MEM-TC-APP-015: Required CompleteTurn 실패는 success/applied를 반환하지 않고 durable execution result로 CompleteTurn만 재시도한다. 최초 terminal commit 뒤 응답 유실 retry는 outcome, expected predecessor version, assistant entry와 protected content identity가 모두 일치할 때 canonical result를 재생하고, 하나라도 다르면 conflict로 거부한다.
 - MEM-TC-APP-016: CompleteTurn의 Turn terminal, Session active-turn/content revision, final entry/projection과 required outbox는 모두 commit되거나 모두 rollback된다.
 
 ### Dispatch Processing
@@ -181,7 +181,7 @@ Status: Draft
 - MEM-TC-DB-004: Lifecycle/content/turn/source CAS가 목적에 맞는 version만 비교한다.
 - MEM-TC-DB-005: Entry/dependency organization mismatch constraint를 검증한다.
 - MEM-TC-DB-006: Source invalidation과 summary stale update가 transaction rollback된다.
-- MEM-TC-DB-007: Access Grant token hash uniqueness, `active|transcript_only|revoked|expired` 전이, immediate revoke와 서로 다른 create/reset에서 발급된 grant 격리를 검증한다. V1 schema는 rotated-grant chain이나 grace-window 상태를 요구하지 않는다.
+- MEM-TC-DB-007: Access Grant token hash uniqueness, `active|transcript_only|revoked|expired` 전이, immediate revoke와 서로 다른 create/reset에서 발급된 grant 격리를 검증한다. Grant의 session/deployment ID·version/audience는 Session canonical binding을 composite FK로 참조하며 불일치 row를 DB에서 거부한다. V1 schema는 rotated-grant chain이나 grace-window 상태를 요구하지 않는다.
 - MEM-TC-DB-008: Raw public token column이 존재하지 않는다.
 - MEM-TC-DB-009: Memory content encryption key unavailable/rotation contract를 검증한다.
 - MEM-TC-DB-010: Content/provenance 최대 크기를 application과 DB 양쪽에서 검증한다.
@@ -200,7 +200,7 @@ Status: Draft
 - MEM-TC-DB-022: Provider attempt claim/start/outcome transition은 version CAS를 적용하고 same-attempt retry 외 중복 claim을 거부한다.
 - MEM-TC-DB-023: Session persistence unique/scope constraint가 deployment ID/version or snapshot hash와 mapping/Memory policy version을 함께 보존한다.
 - MEM-TC-DB-024: Purge가 provisional projection과 모든 replay ciphertext를 지우고 operational row의 content-bearing column/reference를 null/erased state로 전이한다.
-- MEM-TC-DB-025: Purge Job/receipt는 verifier hash와 terminal status만 receipt expiry까지 유지하고 raw receipt/content를 저장하지 않는다.
+- MEM-TC-DB-025: Purge Job/receipt는 verifier hash와 terminal status만 receipt expiry까지 유지하고 raw receipt/content를 저장하지 않는다. Receipt expiry는 발급 시점 이후 최대 8일을 넘지 않는다.
 - MEM-TC-DB-026: Legal-hold compliance storage는 일반 Memory query/provider adapter와 물리·권한 경계가 분리된다.
 
 ### Authorization Adapters
@@ -491,11 +491,11 @@ MBA-316은 production composition을 활성화하지 않고 아래 persistence/l
 | Test target | 구현 evidence | 연결 사례 |
 | --- | --- | --- |
 | `apps/memory/tests/architecture/test_boundaries.py` | Domain/application framework 독립성, import side effect 부재, Memory ORM direct access 제한 | MEM-TC-ARCH-001, 002, 006, 008 |
-| `apps/memory/tests/domain/test_conversation.py` | Session/Turn revision, active turn, hash-only replay identity, 모든 terminal outcome의 absorbing transition property, late write, projection envelope bound, dispatch fencing·claim expiry recovery | MEM-TC-DOM-001, 003~013, 015 및 MEM-TC-DOM-016의 dispatch process subset |
-| `apps/memory/tests/application/test_lifecycle.py` | Create/Start/Complete/Close/Delete-pending UoW, same-request replay, dispatch insert failure rollback, unknown outcome fail-closed | MEM-TC-APP-002, 008~012, 016, 040, 041의 mutation 차단, 043의 tombstone/purge-job 기반 |
+| `apps/memory/tests/domain/test_conversation.py` | Session/Turn revision, active turn, clock expiry late-write 차단, hash-only replay identity, purge receipt 8일 상한, 모든 terminal outcome의 absorbing transition property, dispatch fencing·claim expiry recovery | MEM-TC-DOM-001, 003~013, 015 및 MEM-TC-DOM-016의 dispatch process subset |
+| `apps/memory/tests/application/test_lifecycle.py` | Create/Start/Complete/Close/Delete-pending UoW, same-request replay, matching terminal CompleteTurn replay와 mismatch conflict, clock expiry write 차단, dispatch insert failure rollback, unknown outcome fail-closed | MEM-TC-APP-002, 008~012, 015, 016, 040, 041의 mutation 차단, 043의 tombstone/purge-job 기반 |
 | `apps/memory/tests/application/test_dispatch.py` | Claim/publish/expired-recovery command만 상태를 전이하고 stale fencing을 rollback | MEM-TC-APP-017, 017A, 018 |
-| `apps/memory/tests/adapters/test_schema.py`, `test_repository.py` | 15개 model/readiness, nullable reference의 tenant-scoped composite FK, lifecycle/turn/entry/dispatch CAS와 terminal/fencing check, projection별 암호화 envelope, safe DB error 변환 | MEM-TC-DB-001, 004, 008, 010, 023의 schema/repository subset |
-| `apps/memory/tests/adapters/test_disposable_postgres.py` | 실제 PostgreSQL clean upgrade와 Memory table 범위 Alembic model drift check, legacy Run/NodeRun 보존 downgrade, concurrent StartTurn 단일 승자, StartTurn partial-write rollback, dispatch claim/publish | MEM-TC-DB-002, 013, 014 및 MEM-TC-MIG-005 |
+| `apps/memory/tests/adapters/test_schema.py`, `test_repository.py` | 15개 model/readiness, nullable reference의 tenant-scoped composite FK와 Access Grant canonical binding FK, lifecycle/turn/entry/dispatch CAS와 terminal/fencing check, projection별 암호화 envelope, safe DB error 변환 | MEM-TC-DB-001, 004, 007, 008, 010, 023의 schema/repository subset |
+| `apps/memory/tests/adapters/test_disposable_postgres.py` | 실제 PostgreSQL clean upgrade와 Memory table 범위 Alembic model drift check, Access Grant binding mismatch DB rejection, legacy Run/NodeRun 보존 downgrade, concurrent StartTurn 단일 승자, StartTurn partial-write rollback, dispatch claim/publish | MEM-TC-DB-002, 007, 013, 014 및 MEM-TC-MIG-005 |
 
 Disposable PostgreSQL evidence는 `NODEASE_RUN_DISPOSABLE_DB_TEST=1`인 전용 CI job에서 한 번 실행하고 일반 `memory-tests` job에서는 제외한다. MEM-TC-DOM-016의 active Turn safe terminal 처리, MEM-TC-DB-003/005~007/009/011~012/015~026과 lifecycle audit/outbox cardinality는 관련 application adapter가 구현되기 전 완료로 표시하지 않는다.
 

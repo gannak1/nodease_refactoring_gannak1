@@ -7,6 +7,7 @@ import pytest
 
 from apps.memory.domain.conversation import (
     AudienceKind,
+    ConversationPurgeJob,
     ConversationSession,
     ConversationTurn,
     MemoryTurnDispatchJob,
@@ -22,6 +23,7 @@ from apps.memory.domain.errors import (
     DispatchStateConflictError,
     InvalidTurnTransitionError,
     SessionClosedError,
+    SessionNotActiveError,
     StaleLifecycleRevisionError,
     StaleRevisionError,
     StaleTurnVersionError,
@@ -78,6 +80,7 @@ def test_session_claims_one_active_turn_without_changing_lifecycle_revision():
     sequence = session.claim_turn(
         turn_id=turn_id,
         expected_lifecycle_revision=1,
+        now=_now(),
     )
 
     assert sequence == 1
@@ -90,6 +93,7 @@ def test_session_claims_one_active_turn_without_changing_lifecycle_revision():
         session.claim_turn(
             turn_id=uuid.uuid4(),
             expected_lifecycle_revision=1,
+            now=_now(),
         )
 
 
@@ -100,6 +104,7 @@ def test_session_rejects_stale_revision_and_terminal_lifecycle():
         session.claim_turn(
             turn_id=uuid.uuid4(),
             expected_lifecycle_revision=2,
+            now=_now(),
         )
     assert stale.value.code == "memory.stale_lifecycle_revision"
 
@@ -111,8 +116,65 @@ def test_session_rejects_stale_revision_and_terminal_lifecycle():
         session.claim_turn(
             turn_id=uuid.uuid4(),
             expected_lifecycle_revision=2,
+            now=_now(),
         )
     assert closed.value.code == "memory.session_closed"
+
+
+def test_session_claim_and_release_reject_idle_or_absolute_expiry_boundary():
+    idle_expired = _session()
+    idle_expired.idle_expires_at = _now()
+    with pytest.raises(SessionNotActiveError):
+        idle_expired.claim_turn(
+            turn_id=uuid.uuid4(),
+            expected_lifecycle_revision=1,
+            now=_now(),
+        )
+
+    absolute_expired = _session()
+    turn_id = uuid.uuid4()
+    absolute_expired.claim_turn(
+        turn_id=turn_id,
+        expected_lifecycle_revision=1,
+        now=_now(),
+    )
+    absolute_expired.absolute_expires_at = _now()
+    with pytest.raises(SessionNotActiveError):
+        absolute_expired.release_turn(
+            turn_id=turn_id,
+            expected_lifecycle_revision=1,
+            content_changed=True,
+            now=_now(),
+        )
+
+    assert absolute_expired.active_turn_id == turn_id
+    assert absolute_expired.content_revision == 0
+
+
+def test_purge_receipt_rejects_more_than_eight_days_from_issue_time():
+    common = {
+        "organization_id": uuid.uuid4(),
+        "session_id": uuid.uuid4(),
+        "session_reference_digest": "a" * 64,
+        "receipt_verifier_hash": "b" * 64,
+        "receipt_verifier_key_version": "key-v1",
+        "max_attempts": 8,
+        "now": _now(),
+    }
+
+    accepted = ConversationPurgeJob.pending(
+        **common,
+        purge_job_id=uuid.uuid4(),
+        receipt_expires_at=_now() + timedelta(days=8),
+    )
+    assert accepted.receipt_expires_at == _now() + timedelta(days=8)
+
+    with pytest.raises(ValueError, match="purge receipt"):
+        ConversationPurgeJob.pending(
+            **common,
+            purge_job_id=uuid.uuid4(),
+            receipt_expires_at=_now() + timedelta(days=8, microseconds=1),
+        )
 
 
 def test_completed_turn_changes_content_revision_but_failed_turn_does_not():
@@ -121,12 +183,14 @@ def test_completed_turn_changes_content_revision_but_failed_turn_does_not():
     session.claim_turn(
         turn_id=first_turn_id,
         expected_lifecycle_revision=1,
+        now=_now(),
     )
 
     session.release_turn(
         turn_id=first_turn_id,
         expected_lifecycle_revision=1,
         content_changed=False,
+        now=_now(),
     )
 
     assert session.active_turn_id is None
@@ -137,11 +201,13 @@ def test_completed_turn_changes_content_revision_but_failed_turn_does_not():
     session.claim_turn(
         turn_id=second_turn_id,
         expected_lifecycle_revision=1,
+        now=_now(),
     )
     session.release_turn(
         turn_id=second_turn_id,
         expected_lifecycle_revision=1,
         content_changed=True,
+        now=_now(),
     )
 
     assert session.content_revision == 1
@@ -151,7 +217,11 @@ def test_completed_turn_changes_content_revision_but_failed_turn_does_not():
 def test_delete_pending_blocks_late_completion_and_clears_active_claim():
     session = _session()
     turn_id = uuid.uuid4()
-    session.claim_turn(turn_id=turn_id, expected_lifecycle_revision=1)
+    session.claim_turn(
+        turn_id=turn_id,
+        expected_lifecycle_revision=1,
+        now=_now(),
+    )
 
     session.request_delete(expected_lifecycle_revision=1, now=_now())
 
@@ -164,6 +234,7 @@ def test_delete_pending_blocks_late_completion_and_clears_active_claim():
             turn_id=turn_id,
             expected_lifecycle_revision=1,
             content_changed=True,
+            now=_now(),
         )
 
 

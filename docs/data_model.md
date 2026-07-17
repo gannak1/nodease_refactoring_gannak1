@@ -568,7 +568,7 @@ Session의 deployment binding은 active deployment pointer 변경으로 자동 �
 - `conversation_turns`, `conversation_memory_entries`, `memory_turn_dispatch_jobs`는 StartTurn admission UnitOfWork를 구성한다. 같은 transaction에서 새 Turn보다 Entry/Dispatch가 먼저 flush될 수 있으므로 두 child-to-turn FK는 `DEFERRABLE INITIALLY DEFERRED`이고 commit 시 전체 참조를 검증한다.
 - Turn status별 execution/assistant/failure timestamp 조합과 Dispatch claim generation/attempt/state field 조합은 domain transition뿐 아니라 DB check constraint로도 보강한다.
 - Entry와 Summary의 display/model projection은 각각 BYTEA 암호문, key/format version, digest와 plaintext byte length를 가진다. 두 projection을 하나의 digest로 합치지 않으며 각 envelope에 독립 16 KiB 상한을 적용한다. 지워진 row는 모든 projection envelope가 NULL이고 `erased_at`이 있어야 한다.
-- Access Grant와 Purge Job에는 verifier hash/key version만 두고 raw token/receipt column을 두지 않는다. Dispatch/Summary/Context/Purge/Idempotency operational row에는 raw transcript, prompt, token 또는 private source content를 두지 않는다.
+- Access Grant와 Purge Job에는 verifier hash/key version만 두고 raw token/receipt column을 두지 않는다. Access Grant의 session/organization/deployment ID·version/audience는 Session canonical binding을 composite FK로 참조하므로 다른 deployment 또는 audience scope로 저장할 수 없다. Dispatch/Summary/Context/Purge/Idempotency operational row에는 raw transcript, prompt, token 또는 private source content를 두지 않는다.
 - `apps/memory/adapters/persistence/readiness.py`는 15개 table과 필수 column이 모두 있을 때만 Memory schema readiness를 true로 반환한다. 일반 process health와 production feature 활성화를 뜻하지 않는다.
 
 ### 추적/감사

@@ -148,7 +148,11 @@ def test_session_lock_is_tenant_scoped_and_save_uses_revision_cas():
     )
     assert loaded is not None
     turn_id = uuid.uuid4()
-    loaded.claim_turn(turn_id=turn_id, expected_lifecycle_revision=1)
+    loaded.claim_turn(
+        turn_id=turn_id,
+        expected_lifecycle_revision=1,
+        now=_now(),
+    )
     repository.save_session(loaded)
 
     select_statement = db.execute.call_args_list[0].args[0]

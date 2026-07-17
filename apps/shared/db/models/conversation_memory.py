@@ -76,6 +76,14 @@ class ConversationSessionRecord(_TimestampMixin, Base):
             "organization_id",
             name="uq_conv_sessions_id_org",
         ),
+        UniqueConstraint(
+            "id",
+            "organization_id",
+            "deployment_id",
+            "deployment_version",
+            "audience_kind",
+            name="uq_conv_sessions_grant_binding",
+        ),
         ForeignKeyConstraint(
             ["active_turn_id", "id", "organization_id"],
             [
@@ -260,9 +268,21 @@ class ConversationAccessGrantRecord(_TimestampMixin, Base):
             name="uq_conv_grants_verifier",
         ),
         ForeignKeyConstraint(
-            ["session_id", "organization_id"],
-            ["conversation_sessions.id", "conversation_sessions.organization_id"],
-            name="fk_conv_grants_session_org",
+            [
+                "session_id",
+                "organization_id",
+                "deployment_id",
+                "deployment_version",
+                "audience_kind",
+            ],
+            [
+                "conversation_sessions.id",
+                "conversation_sessions.organization_id",
+                "conversation_sessions.deployment_id",
+                "conversation_sessions.deployment_version",
+                "conversation_sessions.audience_kind",
+            ],
+            name="fk_conv_grants_session_binding",
             ondelete="CASCADE",
         ),
         CheckConstraint(

@@ -171,6 +171,14 @@ def upgrade() -> None:
             "organization_id",
             name="uq_conv_sessions_id_org",
         ),
+        sa.UniqueConstraint(
+            "id",
+            "organization_id",
+            "deployment_id",
+            "deployment_version",
+            "audience_kind",
+            name="uq_conv_sessions_grant_binding",
+        ),
         sa.CheckConstraint(
             "(deployment_version IS NOT NULL AND deployment_version > 0) "
             "OR (deployment_snapshot_hash IS NOT NULL "
@@ -258,9 +266,21 @@ def upgrade() -> None:
         sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
         *_timestamps(),
         sa.ForeignKeyConstraint(
-            ["session_id", "organization_id"],
-            ["conversation_sessions.id", "conversation_sessions.organization_id"],
-            name="fk_conv_grants_session_org",
+            [
+                "session_id",
+                "organization_id",
+                "deployment_id",
+                "deployment_version",
+                "audience_kind",
+            ],
+            [
+                "conversation_sessions.id",
+                "conversation_sessions.organization_id",
+                "conversation_sessions.deployment_id",
+                "conversation_sessions.deployment_version",
+                "conversation_sessions.audience_kind",
+            ],
+            name="fk_conv_grants_session_binding",
             ondelete="CASCADE",
         ),
         sa.UniqueConstraint(

@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 
 from apps.memory.domain.errors import (
@@ -21,6 +21,7 @@ _SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 _SAFE_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
 _SAFE_CHANNEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 MAX_MEMORY_CONTENT_BYTES = 16_384
+MAX_PURGE_RECEIPT_LIFETIME = timedelta(days=8)
 
 
 class AudienceKind(StrEnum):
@@ -246,9 +247,10 @@ class ConversationSession:
         *,
         turn_id: uuid.UUID,
         expected_lifecycle_revision: int,
+        now: datetime,
     ) -> int:
         self._require_revision(expected_lifecycle_revision)
-        self._require_active()
+        self._require_active(now=now)
         if self.active_turn_id is not None:
             raise ActiveTurnConflictError()
         sequence = self.next_turn_sequence
@@ -262,9 +264,10 @@ class ConversationSession:
         turn_id: uuid.UUID,
         expected_lifecycle_revision: int,
         content_changed: bool,
+        now: datetime,
     ) -> None:
         self._require_revision(expected_lifecycle_revision)
-        self._require_active()
+        self._require_active(now=now)
         if self.active_turn_id != turn_id:
             raise ActiveTurnConflictError()
         self.active_turn_id = None
@@ -316,10 +319,14 @@ class ConversationSession:
         if self.lifecycle_revision != expected:
             raise StaleLifecycleRevisionError()
 
-    def _require_active(self) -> None:
+    def _require_active(self, *, now: datetime | None = None) -> None:
         if self.lifecycle is SessionLifecycle.CLOSED:
             raise SessionClosedError()
         if self.lifecycle is not SessionLifecycle.ACTIVE:
+            raise SessionNotActiveError()
+        if now is not None and (
+            now >= self.idle_expires_at or now >= self.absolute_expires_at
+        ):
             raise SessionNotActiveError()
 
 
@@ -783,7 +790,11 @@ class ConversationPurgeJob:
             receipt_verifier_key_version,
             "receipt_verifier_key_version",
         )
-        if receipt_expires_at <= now or max_attempts < 1:
+        if (
+            receipt_expires_at <= now
+            or receipt_expires_at > now + MAX_PURGE_RECEIPT_LIFETIME
+            or max_attempts < 1
+        ):
             raise ValueError("purge receipt or attempt bounds are invalid")
         return cls(
             id=purge_job_id,
