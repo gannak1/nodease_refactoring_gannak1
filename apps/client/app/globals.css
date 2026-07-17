@@ -1,6 +1,7 @@
 @import 'tailwindcss';
 @source './**/*.{js,ts,jsx,tsx,mdx}';
 @source '../lib/**/*.{js,ts,jsx,tsx,mdx}';
+@source not '../.next';
 
 :root {
   --background: #f6f8fb;
