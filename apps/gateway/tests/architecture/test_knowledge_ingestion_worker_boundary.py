@@ -35,6 +35,9 @@ def test_helm_worker_is_migration_first_and_has_bounded_concurrency() -> None:
     storage_template = _read(
         "infra/helm/moduly/templates/knowledge-storage-pvc.yaml"
     )
+    service_account_template = _read(
+        "infra/helm/moduly/templates/serviceaccount.yaml"
+    )
     values = _read("infra/helm/moduly/values.yaml")
     production = _read("infra/helm/moduly/values-production.yaml")
     local = _read("infra/helm/moduly/values-local.yaml")
@@ -55,6 +58,8 @@ def test_helm_worker_is_migration_first_and_has_bounded_concurrency() -> None:
         in gateway_template
     )
     assert "kind: PersistentVolumeClaim" in storage_template
+    assert ".Values.serviceAccount.create" in service_account_template
+    assert 'include "moduly.serviceAccountName" .' in service_account_template
     assert "knowledgeWorker:\n  enabled: false" in values
     assert "knowledgeWorker:\n  enabled: false" in production
     assert "knowledgeWorker:\n  enabled: true" in local
