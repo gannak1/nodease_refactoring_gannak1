@@ -250,9 +250,9 @@ class RAGEvaluator:
             # 검색 수행
             try:
                 retrieved = retrieval_func(sample.query, max_k)
-            except Exception as e:
+            except Exception:
                 print(
-                    f"[RAGEvaluator] Error retrieving for query '{sample.query[:50]}...': {e}"
+                    f"[RAGEvaluator] retrieval_failed sample_index={i + 1}"
                 )
                 retrieved = []
 
