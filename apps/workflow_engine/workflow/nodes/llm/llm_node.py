@@ -13,6 +13,7 @@ from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.logger import record_audit
 from apps.shared.db.models.knowledge import KnowledgeBase
 from apps.shared.db.models.llm import LLMModel
+from apps.shared.db.models.model_routing_policy import LLMModelRoutingGlobalProfile
 from apps.shared.db.models.workflow_run import RunStatus, WorkflowNodeRun, WorkflowRun
 from apps.shared.domain.knowledge_runtime_candidates import (
     AnonymousPublicAudience,
@@ -55,6 +56,9 @@ from apps.workflow_engine.services.llm_service import (
 from apps.workflow_engine.services.model_router import (
     ModelRouter,
     ModelRoutingUnavailableError,
+)
+from apps.workflow_engine.services.model_routing_judge_first_policy import (
+    JUDGE_FIRST_STRATEGY_ID,
 )
 from apps.workflow_engine.services.retrieval import RetrievalService
 from apps.workflow_engine.application.runtime_retrieval.knowledge_candidates import (
@@ -421,6 +425,7 @@ class LLMNode(Node[LLMNodeData]):
         db_session=None,
         *,
         routing_feature_text: str | None = None,
+        routing_rag_context: dict[str, Any] | None = None,
     ) -> tuple[str, Optional[str], Optional[dict]]:
         """저장 policy를 읽고 Judge-first/local-first 모델 선택을 수행한다."""
         selected_model_id = self.data.model_id
@@ -429,7 +434,6 @@ class LLMNode(Node[LLMNodeData]):
             return selected_model_id, fallback_model_id, None
 
         policy = self.data.model_routing_policy or {}
-        node_profile = None
         is_deployed_execution = bool(self.execution_context.get("deployment_id"))
         policy_deployment_id = self.execution_context.get("deployment_id")
         preview_node_ids = self.execution_context.get("routing_policy_preview_node_ids")
@@ -472,38 +476,6 @@ class LLMNode(Node[LLMNodeData]):
                         "runs_since_last_refresh": persisted_policy.eligible_runs_since_last_refresh,
                     },
                 }
-                active_policy = (
-                    persisted_policy.active_policy
-                    if isinstance(persisted_policy.active_policy, dict)
-                    else {}
-                )
-                if active_policy.get("strategy_id") in {
-                    "bootstrap_request_complexity_regression_v4",
-                    "bootstrap_request_complexity_v3",
-                    "bootstrap_task_complexity_v2",
-                    # 이미 배포된 v1 snapshot만 호환 경로로 유지한다.
-                    "bootstrap_mdeberta_difficulty_v1",
-                }:
-                    # 전역 profile은 policy snapshot에 있고, 노드별 운영 성적만
-                    # 별도 누계에서 읽는다. 이 조회 실패가 실제 LLM 실행을 막으면
-                    # 안 되므로 전역 profile 점수만으로 계속 라우팅한다.
-                    try:
-                        from apps.workflow_engine.services.model_routing_operational_performance import (
-                            ModelRoutingOperationalPerformanceService,
-                        )
-
-                        node_profile = (
-                            ModelRoutingOperationalPerformanceService.profile_for_policy(
-                                db_session,
-                                policy_id=persisted_policy.id,
-                            )
-                        )
-                    except (SQLAlchemyError, TypeError, ValueError):
-                        logger.warning(
-                            "Model routing operational profile is unavailable; "
-                            "using global profile only.",
-                            exc_info=True,
-                        )
             elif is_deployed_execution:
                 # 배포 runtime의 source of truth는 policy table이다. 첫 성공 실행이
                 # policy row를 만들기 전까지 graph에 남은 legacy snapshot을 평가하면
@@ -538,6 +510,18 @@ class LLMNode(Node[LLMNodeData]):
                 },
             )
 
+        if active_policy.get("strategy_id") != JUDGE_FIRST_STRATEGY_ID:
+            return selected_model_id, fallback_model_id, {
+                "enabled": True,
+                "policy_id": policy.get("policy_id"),
+                "policy_version": policy.get("policy_version"),
+                "strategy_id": active_policy.get("strategy_id"),
+                "decision_source": "stored_model",
+                "reason_code": "legacy_policy_ignored",
+                "judge_called": False,
+                **preview_metadata,
+            }
+
         try:
             available_model_ids = self._available_routing_model_ids(db_session)
             decision = ModelRouter.resolve_policy(
@@ -546,7 +530,6 @@ class LLMNode(Node[LLMNodeData]):
                 node_data=self.data,
                 available_model_ids=available_model_ids,
                 routing_feature_text=routing_feature_text,
-                node_profile=node_profile,
             )
             selected_model_id = decision.selected_model_id
             fallback_model_id = decision.fallback_model_id
@@ -598,39 +581,43 @@ class LLMNode(Node[LLMNodeData]):
                 )
                 candidate_model_ids = list(available_model_ids or [])
                 judge_default_model_id = selected_model_id
+                candidate_profiles = self._routing_candidate_profiles(
+                    db_session,
+                    candidate_model_ids,
+                )
                 judge_decision = ModelRoutingRuntimeJudge.decide(
                     client=judge_selection.client,
                     candidate_model_ids=candidate_model_ids,
-                    default_model_id=selected_model_id,
-                    fallback_model_id=fallback_model_id,
                     routing_feature_text=routing_feature_text or "",
-                    node_contract={
-                        "output_format": self.data.output_format or {},
-                        "knowledge_enabled": bool(
-                            self.data.knowledgeBases or self.data.knowledgeCollections
-                        ),
-                        "schema_required": _response_format_requires_json_instruction(
-                            (self.data.parameters or {}).get("response_format")
-                        )
-                        or (
-                            isinstance(self.data.output_format, dict)
-                            and self.data.output_format.get("type") == "json"
-                        ),
-                        "input_length_bucket": routing_context.get("input_length_bucket"),
-                    },
+                    rag_context=routing_rag_context,
+                    candidate_profiles=candidate_profiles,
                 )
             except (RuntimeError, ValueError, TypeError, SQLAlchemyError) as exc:
                 # Judge는 초기 학습을 위한 보조 경로다. 일시 실패가 운영 요청을
                 # 차단하면 안 되므로 이미 계산한 기본 모델로 닫는다.
                 decision_source = "stored_model"
                 reason_code = "runtime_judge_unavailable"
-                judge_metadata = {"error_code": type(exc).__name__}
+                # ProviderInvocationError처럼 이미 정규화한 reason_code가 있으면
+                # 운영 trace에서 재시도/토큰 한도/형식 실패를 구분할 수 있다. 원문
+                # provider 메시지는 민감 정보가 될 수 있으므로 남기지 않는다.
+                judge_metadata = {
+                    "error_code": str(
+                        getattr(exc, "reason_code", None) or type(exc).__name__
+                    )[:96]
+                }
             else:
                 # Judge가 정상적으로 고른 모델은 usage 기록이나 학습 artifact 저장이
                 # 일시 실패하더라도 유지한다. 두 후속 작업은 관측성/학습 보조 경로다.
-                selected_model_id = judge_decision.selected_model_id
+                selected_model_id = (
+                    ModelRoutingRuntimeJudge.select_catalog_candidate(
+                        candidate_profiles,
+                        required_difficulty=judge_decision.required_difficulty,
+                    )
+                    or judge_decision.selected_model_id
+                    or judge_default_model_id
+                )
                 if fallback_model_id == selected_model_id:
-                    fallback_model_id = ModelRouter._first_available_model(
+                    fallback_model_id = ModelRouter.first_available_model(
                         [
                             judge_default_model_id,
                             active_policy.get("fallback_model_id"),
@@ -646,6 +633,7 @@ class LLMNode(Node[LLMNodeData]):
                 reason_code = judge_decision.reason_code
                 judge_metadata = judge_decision.safe_metadata()
                 judge_metadata["model"] = judge_model_id
+                judge_metadata["selection_source"] = "catalog_quality_then_cost"
 
                 usage = judge_decision.usage
                 if usage:
@@ -705,12 +693,100 @@ class LLMNode(Node[LLMNodeData]):
             "runtime_context": routing_context,
             "judge_called": bool(judge_metadata and decision_source == "runtime_judge"),
         }
+        if routing_rag_context is not None:
+            metadata["rag_context"] = dict(routing_rag_context)
         if judge_metadata:
             metadata["judge"] = judge_metadata
         if decision.decision_factors:
             metadata["decision_factors"] = decision.decision_factors
         metadata.update(preview_metadata)
         return selected_model_id, fallback_model_id, metadata
+
+    @staticmethod
+    def _routing_candidate_profiles(
+        db_session,
+        candidate_model_ids: list[str],
+    ) -> list[dict[str, Any]]:
+        """Judge가 비용과 문맥 여유를 비교할 수 있는 공개 카탈로그 요약이다."""
+
+        normalized_ids = [
+            str(model_id).strip()
+            for model_id in candidate_model_ids
+            if str(model_id).strip()
+        ]
+        if not normalized_ids:
+            return []
+
+        rows_by_model_id: dict[str, LLMModel] = {}
+        profile_by_llm_model_id: dict[uuid.UUID, LLMModelRoutingGlobalProfile] = {}
+        if callable(getattr(db_session, "query", None)):
+            rows = (
+                db_session.query(LLMModel)
+                .filter(LLMModel.model_id_for_api_call.in_(normalized_ids))
+                .all()
+            )
+            rows_by_model_id = {
+                str(row.model_id_for_api_call): row
+                for row in rows
+            }
+            try:
+                global_profiles = (
+                    db_session.query(LLMModelRoutingGlobalProfile)
+                    .filter(
+                        LLMModelRoutingGlobalProfile.llm_model_id.in_(
+                            [row.id for row in rows]
+                        )
+                    )
+                    .filter(LLMModelRoutingGlobalProfile.is_active.is_(True))
+                    .all()
+                )
+            except (AttributeError, SQLAlchemyError):
+                global_profiles = []
+            profile_by_llm_model_id = {
+                profile.llm_model_id: profile
+                for profile in global_profiles
+            }
+
+        profiles: list[dict[str, Any]] = []
+        for model_id in normalized_ids:
+            row = rows_by_model_id.get(model_id)
+            price = LLMService.KNOWN_MODEL_PRICES.get(model_id)
+            if price is None:
+                price = LLMService.KNOWN_MODEL_PRICES.get(
+                    LLMService._normalize_model_id(model_id)
+                )
+            profile: dict[str, Any] = {"model_id": model_id}
+            input_price = row.input_price_1k if row is not None else None
+            output_price = row.output_price_1k if row is not None else None
+            if input_price is None and price is not None:
+                input_price = price.get("input")
+            if output_price is None and price is not None:
+                output_price = price.get("output")
+            if input_price is not None:
+                profile["input_price_per_1k"] = float(input_price)
+            if output_price is not None:
+                profile["output_price_per_1k"] = float(output_price)
+            if (
+                row is not None
+                and isinstance(row.context_window, int)
+                and row.context_window > 0
+            ):
+                profile["context_window"] = row.context_window
+            global_profile = profile_by_llm_model_id.get(row.id) if row is not None else None
+            if global_profile is not None:
+                profile["capability_tier"] = str(global_profile.capability_tier)
+                if isinstance(global_profile.quality_by_difficulty, dict):
+                    profile["quality_by_difficulty"] = dict(
+                        global_profile.quality_by_difficulty
+                    )
+                if isinstance(global_profile.expected_latency_ms_by_input_profile, dict):
+                    profile["expected_latency_ms_by_input_profile"] = dict(
+                        global_profile.expected_latency_ms_by_input_profile
+                    )
+                if global_profile.fallback_rate is not None:
+                    profile["fallback_rate"] = float(global_profile.fallback_rate)
+            profiles.append(profile)
+        return profiles
 
     def _available_routing_model_ids(self, db_session) -> list[str] | None:
         """현재 execution subject가 실제로 호출할 수 있는 모델만 policy 평가에 넘긴다."""
@@ -990,11 +1066,31 @@ class LLMNode(Node[LLMNodeData]):
                     {"role": "assistant", "content": rendered_assistant_prompt}
                 )
 
-            # v3는 현재 요청과 변수 치환이 끝난 prompt를 함께 읽어 난이도 점수를
-            # 계산한다. 학습 표본에는 실제 검색 결과가 없으므로, runtime 검색 문맥을
-            # 덧붙이지 않는다. RAG 설정 자체는 공통 구조 feature에 이미 포함된다.
+            # RAG 원문은 Judge/local router에 재전송하지 않는다. 대신 이번 요청에서
+            # 실제로 검색된 문맥의 크기와 근거 상태만 별도 안전 요약으로 전달한다.
+            rag_trace_summary = (
+                knowledge_result.trace_summary
+                if knowledge_result is not None
+                and isinstance(knowledge_result.trace_summary, dict)
+                else {}
+            )
+            routing_rag_context = {
+                "used": bool(knowledge_enabled),
+                "retrieved_context_token_estimate": int(
+                    rag_trace_summary.get("context_token_estimate") or 0
+                ),
+                "retrieved_context_chars": len(knowledge_context),
+                "retrieved_chunk_count": int(
+                    rag_trace_summary.get("retrieved_chunk_count") or 0
+                ),
+                "source_count": len(knowledge_metadata),
+                "evidence_sufficient": bool(
+                    knowledge_result is not None
+                    and knowledge_result.evidence_decision.evidence_sufficient
+                ),
+            }
             # 이 feature는 호출 중 메모리에만 있으며 trace나 DB artifact에 남기지 않는다.
-            routing_feature_text = ModelRouter.bootstrap_classifier_feature_text(
+            routing_feature_text = ModelRouter.routing_feature_text(
                 inputs,
                 self.data,
                 rendered_prompt_parts=[
@@ -1003,6 +1099,9 @@ class LLMNode(Node[LLMNodeData]):
                     # 오도록 user prompt를 먼저 전달하고, 작성자가 만든 나머지 prompt도
                     # 같은 계약으로 분류기에 전달한다.
                     rendered_user_prompt,
+                    # 작성자 prompt는 routing feature에서 한 번만 포함한다. 같은
+                    # system/user contract를 중복하면 256-token Judge가 reasoning
+                    # budget을 소진해 JSON을 끝내지 못할 수 있다.
                     system_content,
                     rendered_assistant_prompt,
                 ],
@@ -1012,6 +1111,7 @@ class LLMNode(Node[LLMNodeData]):
                     inputs,
                     db_session,
                     routing_feature_text=routing_feature_text,
+                    routing_rag_context=routing_rag_context,
                 )
             )
             # 자동 라우팅을 끈 노드도 provider fallback은 사용할 수 있다. 이 경우에도

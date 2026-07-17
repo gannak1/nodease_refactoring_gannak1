@@ -8,7 +8,6 @@ Workflow-Engine Celery 태스크 정의
 import logging
 import time
 import uuid
-from decimal import Decimal
 from typing import Any, Dict
 
 from celery.exceptions import Retry
@@ -131,7 +130,7 @@ def _engine_workflow_run_id(engine) -> str | None:
     base=RedactedWorkflowTask,
 )
 def bootstrap_model_routing_policy(self, policy_id: str):
-    """배포 직후 사전 지식 기반 모델 정책을 생성한다."""
+    """배포 직후 Judge-first 정책 상태와 로컬 학습 조건을 정합화한다."""
     from apps.workflow_engine.services.model_routing_policy_refresh_task import (
         PersistedModelRoutingPolicyRefreshService,
     )
@@ -152,158 +151,6 @@ def bootstrap_model_routing_policy(self, policy_id: str):
     except Exception as exc:
         session.rollback()
         logger.error("[Model-Routing] deployment bootstrap failed: %s", exc)
-        raise self.retry(exc=exc, countdown=min(2 ** (self.request.retries + 1), 30))
-    finally:
-        session.close()
-
-
-@celery_app.task(
-    name="workflow.model_routing.generate_bootstrap",
-    bind=True,
-    max_retries=0,
-    base=RedactedWorkflowTask,
-)
-def generate_model_routing_bootstrap(self, bootstrap_id: str):
-    """HTTP 응답 이후 Planner 기반 초기 라우팅 기준을 생성한다.
-
-    예문, holdout 예문, 규칙 생성은 여러 LLM 호출을 포함한다. Gateway 요청에서
-    직접 실행하면 reverse proxy timeout으로 UI가 실패처럼 보이므로 Worker에서
-    처리하고 bootstrap row 상태로 결과를 전달한다.
-    """
-    from apps.shared.db.models.model_routing_policy import (
-        LLMNodeModelRoutingBootstrap,
-    )
-    from apps.workflow_engine.services.llm_service import LLMService
-    from apps.workflow_engine.services.model_router import ModelRouter
-    from apps.workflow_engine.services.model_routing_bootstrap import (
-        LLMJsonBootstrapPlanner,
-        PersistedModelRoutingBootstrapStore,
-    )
-
-    session = SessionLocal()
-    bootstrap_uuid = uuid.UUID(str(bootstrap_id))
-    try:
-        bootstrap = session.get(LLMNodeModelRoutingBootstrap, bootstrap_uuid)
-        if bootstrap is None:
-            return {"status": "not_found", "bootstrap_id": str(bootstrap_id)}
-        if bootstrap.status != "generating":
-            return {
-                "status": bootstrap.status,
-                "bootstrap_id": str(bootstrap.id),
-            }
-        if bootstrap.created_by is None or bootstrap.organization_id is None:
-            raise ValueError("bootstrap_execution_subject_unavailable")
-
-        available_model_ids = set(
-            LLMService.get_runtime_available_model_ids_for_user(
-                session,
-                user_id=bootstrap.created_by,
-                organization_id=bootstrap.organization_id,
-            )
-        )
-        candidates = [
-            candidate
-            for candidate in ModelRouter.collect_candidates(
-                session,
-                organization_id=bootstrap.organization_id,
-            )
-            if candidate.model_id in available_model_ids
-            and ModelRouter.is_workflow_chat_model(candidate.model_id)
-        ]
-        if not candidates:
-            raise ValueError("bootstrap_no_available_chat_model")
-        selection = LLMService.get_runtime_client_for_user(
-            session,
-            user_id=bootstrap.created_by,
-            model_id=bootstrap.planner_model_id or bootstrap.default_model_id,
-            organization_id=bootstrap.organization_id,
-        )
-        planner = LLMJsonBootstrapPlanner(selection.client)
-        completed = PersistedModelRoutingBootstrapStore.complete_pending(
-            session,
-            bootstrap_id=bootstrap_uuid,
-            planner=planner,
-            available_candidates=candidates,
-            # Worker에서 실제 mDeBERTa 분류기를 학습한다. HTTP 요청은 generating
-            # row만 저장하므로 model download가 API timeout을 만들지 않는다.
-            defer_classifier=False,
-        )
-        if completed is None:
-            session.commit()
-            return {"status": "not_found", "bootstrap_id": str(bootstrap_id)}
-        if completed.status == "ready":
-            completed.planner_model_id = selection.model_id
-            completed.planner_cost_usd = Decimal(
-                str(
-                    LLMService.calculate_cost(
-                        session,
-                        selection.model_id,
-                        int(planner.usage.get("prompt_tokens") or 0),
-                        int(planner.usage.get("completion_tokens") or 0),
-                    )
-                )
-            )
-            # bootstrap 생성 전후 어느 쪽에서 deployment policy row가 생겼는지와
-            # 관계없이 요청 난이도 classifier artifact를 같은 정책에 반영한다.
-            PersistedModelRoutingBootstrapStore.finalize_request_complexity_classifier(
-                session,
-                bootstrap_id=completed.id,
-            )
-        session.commit()
-        return {"status": completed.status, "bootstrap_id": str(completed.id)}
-    except Exception as exc:
-        session.rollback()
-        PersistedModelRoutingBootstrapStore.mark_pending_generation_failed(
-            session,
-            bootstrap_id=bootstrap_uuid,
-            error_code=type(exc).__name__,
-        )
-        session.commit()
-        logger.exception("[Model-Routing] bootstrap generation failed")
-        return {"status": "failed", "bootstrap_id": str(bootstrap_id)}
-    finally:
-        session.close()
-
-
-@celery_app.task(
-    name="workflow.model_routing.build_bootstrap_classifier",
-    bind=True,
-    max_retries=2,
-    base=RedactedWorkflowTask,
-)
-def build_model_routing_bootstrap_classifier(self, bootstrap_id: str):
-    """이전 queue 메시지용 classifier artifact 동기화 task다."""
-    from apps.workflow_engine.services.model_routing_bootstrap import (
-        PersistedModelRoutingBootstrapStore,
-    )
-
-    session = SessionLocal()
-    try:
-        bootstrap = PersistedModelRoutingBootstrapStore.finalize_request_complexity_classifier(
-            session,
-            bootstrap_id=uuid.UUID(str(bootstrap_id)),
-        )
-        session.commit()
-        return {
-            "status": "ready" if bootstrap is not None else "not_found",
-            "bootstrap_id": str(bootstrap_id),
-        }
-    except Exception as exc:
-        session.rollback()
-        if self.request.retries >= self.max_retries:
-            try:
-                PersistedModelRoutingBootstrapStore.mark_deferred_classifier_failed(
-                    session,
-                    bootstrap_id=uuid.UUID(str(bootstrap_id)),
-                    error_code=type(exc).__name__,
-                )
-                session.commit()
-            except Exception:
-                session.rollback()
-        logger.warning(
-            "[Model-Routing] deferred bootstrap classifier failed: error_type=%s",
-            type(exc).__name__,
-        )
         raise self.retry(exc=exc, countdown=min(2 ** (self.request.retries + 1), 30))
     finally:
         session.close()
@@ -353,7 +200,7 @@ def record_model_routing_operational_run(self, workflow_run_id: str):
     base=RedactedWorkflowTask,
 )
 def refresh_model_routing_policy(self, policy_id: str, trigger: str = "manual_refresh"):
-    """운영 집계와 모델 prior로 저장 정책을 갱신한다."""
+    """누적된 Judge 선택과 운영 품질로 local-first 전환 여부를 갱신한다."""
     from apps.workflow_engine.services.model_routing_policy_refresh_task import (
         PersistedModelRoutingPolicyRefreshService,
     )

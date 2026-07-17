@@ -414,13 +414,7 @@ class DeploymentService:
         workflow_id: uuid.UUID,
         graph_snapshot: dict[str, Any],
     ) -> None:
-        """자동 라우팅이 과거 legacy 정책을 조용히 재사용하지 않게 막는다.
-
-        prompt, RAG, 출력 schema, 후속 소비자 계약이 바뀌면 bootstrap에서 학습한
-        난이도 기준도 달라진다. 이 경우 배포를 허용하면 첫 요청이 오래된 분류기로
-        다른 모델을 고를 수 있으므로, 사용자가 중앙 패널에서 기준을 다시 만들도록
-        명확하게 차단한다.
-        """
+        """자동 라우팅 노드가 Judge-first 준비 정보 없이 배포되지 않게 막는다."""
         nodes = graph_snapshot.get("nodes") if isinstance(graph_snapshot, dict) else []
         for node in nodes if isinstance(nodes, list) else []:
             if not isinstance(node, dict) or node.get("type") != "llmNode":
@@ -430,14 +424,6 @@ class DeploymentService:
                 continue
             node_id = str(node.get("id") or "")
             bootstrap_id = node_data.get("model_routing_bootstrap_id")
-            # 이미 배포된 prior-guided 정책은 호환 경로로 유지한다. 새 중앙 패널에서
-            # bootstrap을 만든 노드만 이 새 계약을 요구해 기존 배포를 갑자기 막지 않는다.
-            if (
-                not bootstrap_id
-                and node_data.get("model_routing_strategy")
-                != "bootstrap_mdeberta_difficulty_v1"
-            ):
-                continue
             if not node_id or not bootstrap_id:
                 raise HTTPException(
                     status_code=409,

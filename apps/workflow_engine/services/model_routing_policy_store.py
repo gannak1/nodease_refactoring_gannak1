@@ -1,6 +1,5 @@
 """모델 라우팅 policy의 DB persistence와 배포 run 완료 훅을 담당한다."""
 
-import logging
 import uuid
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -26,15 +25,13 @@ from apps.shared.db.models.workflow_run import (
 from apps.workflow_engine.services.model_routing_policy_lifecycle import (
     ModelRoutingPolicyLifecycleService,
 )
-from apps.workflow_engine.services.model_routing_policy_refresh import (
-    ModelRoutingPolicyRefreshService,
-)
-from apps.workflow_engine.services.model_router import NodeRunProfile
-from apps.workflow_engine.services.model_routing_prior_guided_policy import (
-    compile_prior_guided_policy_from_db,
-)
 from apps.workflow_engine.services.model_routing_bootstrap import (
     PersistedModelRoutingBootstrapStore,
+)
+from apps.workflow_engine.services.model_routing_judge_first_policy import (
+    JUDGE_FIRST_STRATEGY_ID,
+    build_judge_first_active_policy,
+    normalize_judge_first_active_policy,
 )
 from apps.workflow_engine.services.model_routing_operational_performance import (
     ModelRoutingOperationalPerformanceService,
@@ -47,10 +44,6 @@ from apps.shared.services.model_routing_model_filter import (
     filter_model_routing_available_model_ids,
     normalize_model_routing_model_id,
 )
-
-
-logger = logging.getLogger(__name__)
-
 
 class ModelRoutingRunLogPendingError(RuntimeError):
     """Workflow는 끝났지만 자동 라우팅 node 완료 로그가 아직 반영되지 않았다."""
@@ -105,10 +98,13 @@ class ModelRoutingPolicyStore:
         policy = cls._lock_policy_for_update(db, policy_id=uuid.UUID(str(policy_id)))
         if policy is None:
             return {"learning_recorded": False, "reason": "policy_not_found"}
+        stored_active_policy = getattr(policy, "active_policy", None)
         active_policy = (
-            dict(policy.active_policy) if isinstance(policy.active_policy, dict) else {}
+            dict(stored_active_policy)
+            if isinstance(stored_active_policy, dict)
+            else {}
         )
-        if active_policy.get("strategy_id") != "judge_bootstrap_incremental_v1":
+        if active_policy.get("strategy_id") != JUDGE_FIRST_STRATEGY_ID:
             return {"learning_recorded": False, "reason": "strategy_not_supported"}
 
         learning = (
@@ -129,7 +125,7 @@ class ModelRoutingPolicyStore:
         learning["last_judge_confidence"] = round(float(confidence), 4)
         learning["last_judge_reason_code"] = str(reason_code)[:80]
         try:
-            from apps.workflow_engine.services.model_routing_mdeberta_classifier import (
+            from apps.workflow_engine.services.model_routing_local_classifier import (
                 MDebertaModelChoiceClassifier,
             )
 
@@ -163,10 +159,13 @@ class ModelRoutingPolicyStore:
     ) -> None:
         """운영 품질이 충분할 때만 Judge-first를 local-first로 전환한다."""
 
+        stored_active_policy = getattr(policy, "active_policy", None)
         active_policy = (
-            dict(policy.active_policy) if isinstance(policy.active_policy, dict) else {}
+            dict(stored_active_policy)
+            if isinstance(stored_active_policy, dict)
+            else {}
         )
-        if active_policy.get("strategy_id") != "judge_bootstrap_incremental_v1":
+        if active_policy.get("strategy_id") != JUDGE_FIRST_STRATEGY_ID:
             return
         learning = (
             dict(active_policy.get("learning"))
@@ -408,74 +407,44 @@ class ModelRoutingPolicyStore:
             and bootstrap.task_fingerprint
             == str(node_data.get("model_routing_bootstrap_fingerprint") or "")
         ):
-            bootstrap_active_policy = (
+            source_policy = (
                 PersistedModelRoutingBootstrapStore.active_policy_for_bootstrap(
                     bootstrap
                 )
             )
-            # 배포 실행 주체의 credential은 초안 생성 사용자와 다를 수 있다.
-            # 현재 실행 주체가 쓸 수 없는 난이도 모델은 기본 모델로 닫아
-            # 최초 요청이 credential 오류로 실패하지 않게 한다.
-            for tier, model_id in list(
-                (bootstrap_active_policy.get("difficulty_models") or {}).items()
-            ):
-                if normalize_model_routing_model_id(model_id) not in available_by_normalized_id:
-                    bootstrap_active_policy["difficulty_models"][tier] = configured_model_id
-            if (
-                normalize_model_routing_model_id(
-                    bootstrap_active_policy.get("default_model_id")
-                )
-                not in available_by_normalized_id
-            ):
-                bootstrap_active_policy["default_model_id"] = configured_model_id
-            if (
-                normalize_model_routing_model_id(
-                    bootstrap_active_policy.get("fallback_model_id")
-                )
-                not in available_by_normalized_id
-            ):
-                bootstrap_active_policy["fallback_model_id"] = fallback_model_id
-            policy_version = str(bootstrap_active_policy["policy_version"])
+            policy_version = str(source_policy["policy_version"])
+            bootstrap_active_policy = normalize_judge_first_active_policy(
+                source_policy,
+                policy_version=policy_version,
+                default_model_id=configured_model_id,
+                fallback_model_id=fallback_model_id,
+                candidate_model_ids=available_model_ids,
+            )
+            bootstrap_active_policy.update(
+                {
+                    "bootstrap_id": str(bootstrap.id),
+                    "task_fingerprint": bootstrap.task_fingerprint,
+                    "judge_model_id": configured_model_id,
+                }
+            )
             update_summary = {
                 "bootstrap_id": str(bootstrap.id),
                 "bootstrap_source": bootstrap.source,
                 "task_fingerprint": bootstrap.task_fingerprint,
             }
         else:
-            try:
-                compiled = compile_prior_guided_policy_from_db(
-                    db,
-                    node_data=node_data,
-                    available_model_ids=available_model_ids,
-                    safe_default_model_id=configured_model_id,
-                    profile=NodeRunProfile(),
-                )
-                bootstrap_active_policy = compiled.active_policy
-                policy_version = "deployment-prior-v1"
-                update_summary = compiled.summary
-            except Exception as exc:
-                # 모델 catalog 일부가 비어도 배포 자체를 막지 않는다. 이 경우에만
-                # 사용자가 지정한 기본 모델로 닫힌 안전 정책을 만든다.
-                logger.warning(
-                    "[Model-Routing] deployment policy compile fell back: node_id=%s error_type=%s",
-                    node_id,
-                    type(exc).__name__,
-                )
-                safe_policy = ModelRoutingPolicyRefreshService.default_rule_policy(
-                    policy_id=str(policy_id),
-                    policy_version="deployment-safe-default-v1",
-                    default_model_id=configured_model_id,
-                    fallback_model_id=fallback_model_id,
-                    refresh_every_runs=refresh_every_runs,
-                )
-                bootstrap_active_policy = {
-                    **safe_policy["active_policy"],
-                    "strategy": "prior_guided_adaptive",
-                    "strategy_id": "prior_guided_adaptive_v1",
-                    "decision_profiles": [],
-                }
-                policy_version = "deployment-safe-default-v1"
-                update_summary = {"fallback_reason": type(exc).__name__}
+            policy_version = "deployment-judge-first-v1"
+            bootstrap_active_policy = build_judge_first_active_policy(
+                policy_version=policy_version,
+                default_model_id=configured_model_id,
+                fallback_model_id=fallback_model_id,
+                candidate_model_ids=available_model_ids,
+            )
+            bootstrap_active_policy["judge_model_id"] = configured_model_id
+            update_summary = {
+                "strategy_id": JUDGE_FIRST_STRATEGY_ID,
+                "bootstrap_source": "deployment_default",
+            }
 
         policy = LLMNodeModelRoutingPolicy(
             id=policy_id,

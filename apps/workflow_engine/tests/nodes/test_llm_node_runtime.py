@@ -400,11 +400,11 @@ def test_llm_node_runs_with_override_client():
     }
 
 
-def test_llm_node_passes_rendered_prompt_and_request_to_request_complexity_router(
+def test_llm_node_passes_rendered_prompt_and_request_to_judge_first_router(
     monkeypatch,
 ):
     """v3 분류기는 템플릿 원문이 아니라 실제로 치환된 요청을 받아야 한다."""
-    captured: dict[str, str | None] = {}
+    captured: dict[str, Any] = {}
     data = LLMNodeData(
         title="요청별 난이도",
         provider="openai",
@@ -426,8 +426,10 @@ def test_llm_node_passes_rendered_prompt_and_request_to_request_complexity_route
         db_session=None,
         *,
         routing_feature_text=None,
+        routing_rag_context=None,
     ):
         captured["feature"] = routing_feature_text
+        captured["rag_context"] = routing_rag_context
         return "gpt-4o-mini", None, {
             "enabled": True,
             "policy_id": "policy-v3",
@@ -436,8 +438,8 @@ def test_llm_node_passes_rendered_prompt_and_request_to_request_complexity_route
             "fallback_model": None,
             "decision_source": "active_policy",
             "matched_rule_id": "difficulty-balanced",
-            "reason_code": "bootstrap_global_profile_balanced",
-            "strategy_id": "bootstrap_request_complexity_v3",
+                "reason_code": "judge_bootstrap_required",
+                "strategy_id": "judge_bootstrap_incremental_v1",
             "judge_called": False,
         }
 
@@ -454,10 +456,18 @@ def test_llm_node_passes_rendered_prompt_and_request_to_request_complexity_route
     feature = captured["feature"] or ""
     assert "RENDERED_PROMPT:" in feature
     assert "고객 요청: 세 가지 계약 조건이 충돌할 때 승인 여부를 판단해 주세요." in feature
-    assert "REQUEST_INPUT:" in feature
+    assert "CURRENT_REQUEST:" in feature
     assert "세 가지 계약 조건이 충돌할 때 승인 여부를 판단해 주세요." in feature
     assert SAFETY_SYSTEM_PROMPT not in feature
     assert "RAG_RUNTIME_METADATA" not in feature
+    assert captured["rag_context"] == {
+        "used": False,
+        "retrieved_context_token_estimate": 0,
+        "retrieved_context_chars": 0,
+        "retrieved_chunk_count": 0,
+        "source_count": 0,
+        "evidence_sufficient": False,
+    }
 
 
 @pytest.mark.parametrize(
@@ -758,9 +768,11 @@ def test_llm_node_policy_is_limited_to_models_usable_by_current_execution_subjec
         id=uuid.uuid4(),
         policy_version="router-policy-v2",
         active_policy={
+            "strategy_id": "judge_bootstrap_incremental_v1",
             "default_model_id": "gpt-4.1",
             "fallback_model_id": "gpt-4.1-mini",
-            "rules": [],
+            "candidate_model_ids": ["gpt-4.1", "gpt-4.1-mini"],
+            "learning": {"mode": "judge_first"},
         },
         refresh_every_runs=20,
         eligible_runs_since_last_refresh=0,
@@ -786,6 +798,9 @@ def test_llm_node_policy_is_limited_to_models_usable_by_current_execution_subjec
             "deployment_id": str(uuid.uuid4()),
             "user_id": str(user_id),
             "organization_id": str(organization_id),
+            "routing_policy_preview": True,
+            "routing_policy_preview_node_ids": ["llm-router"],
+            "routing_policy_deployment_id": str(uuid.uuid4()),
         },
     )
     captured = {}
@@ -809,7 +824,8 @@ def test_llm_node_policy_is_limited_to_models_usable_by_current_execution_subjec
     assert captured == {"user_id": user_id, "organization_id": organization_id}
     assert selected == "gpt-4.1-mini"
     assert fallback is None
-    assert metadata["reason_code"] == "policy_default"
+    assert metadata["reason_code"] == "judge_bootstrap_required"
+    assert metadata["decision_source"] == "test_policy_preview"
 
 
 def test_llm_node_data_preserves_output_format_for_cost_optimizer_apply():
@@ -3659,8 +3675,15 @@ def test_auto_model_routing_uses_active_policy_without_judge_call(monkeypatch):
             "policy_id": "policy-1",
             "policy_version": "router-policy-v4",
             "active_policy": {
+                "strategy_id": "judge_bootstrap_incremental_v1",
                 "default_model_id": "gpt-4.1-mini",
                 "fallback_model_id": "gpt-4.1",
+                "candidate_model_ids": ["gpt-4.1-mini", "gpt-4.1"],
+                "learning": {
+                    "mode": "local_first",
+                    "local_confidence_threshold": 0.78,
+                    "local_router_artifact": {"version": 1},
+                },
                 "rules": [
                     {
                         "id": "low-risk-json-triage",
@@ -3686,6 +3709,14 @@ def test_auto_model_routing_uses_active_policy_without_judge_call(monkeypatch):
         "workflow_id": str(workflow_id),
         "workflow_run_id": str(workflow_run_id),
     }
+    monkeypatch.setattr(
+        "apps.workflow_engine.services.model_router."
+        "MDebertaModelChoiceClassifier.predict",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            selected_model_id="gpt-4.1-mini",
+            confidence=0.92,
+        ),
+    )
 
     result = node.execute({})
 
@@ -3693,32 +3724,16 @@ def test_auto_model_routing_uses_active_policy_without_judge_call(monkeypatch):
     assert calls[0]["kind"] == "client"
     assert calls[0]["model_id"] == "gpt-4.1-mini"
     assert not any(call.get("kind") == "judge" for call in calls)
-    assert result["metadata"]["model_routing"] == {
-        "enabled": True,
-        "policy_id": "policy-1",
-        "policy_version": "router-policy-v4",
-        "selected_model": "gpt-4.1-mini",
-        "fallback_model": "gpt-4.1",
-        "decision_source": "active_policy",
-        "matched_rule_id": "low-risk-json-triage",
-        "reason_code": "quality_gate_passed_cost_reduction",
-        "strategy_id": None,
-        "runtime_context": {
-            "intent": "generate",
-            "risk_level": "medium",
-            "customer_facing": False,
-            "knowledge_enabled": False,
-            "output_format": "text",
-            "schema_required": False,
-            "has_file_input": False,
-            "input_length": 0,
-            "input_length_bucket": "short",
-            "prompt_length": 5,
-            "prompt_length_bucket": "short",
-            "node_task": "generate",
-        },
-        "judge_called": False,
-    }
+    routing = result["metadata"]["model_routing"]
+    assert routing["policy_id"] == "policy-1"
+    assert routing["policy_version"] == "router-policy-v4"
+    assert routing["selected_model"] == "gpt-4.1-mini"
+    assert routing["fallback_model"] == "gpt-4.1"
+    assert routing["decision_source"] == "local_router"
+    assert routing["matched_rule_id"] == "incremental-local-router"
+    assert routing["reason_code"] == "local_router_confident"
+    assert routing["strategy_id"] == "judge_bootstrap_incremental_v1"
+    assert routing["judge_called"] is False
 
 
 def test_auto_model_routing_excludes_node_blocked_models_from_runtime_candidates(
@@ -3782,19 +3797,12 @@ def test_auto_model_routing_prefers_persisted_policy_over_legacy_node_json(monke
         enabled=True,
         status="active",
         policy_version="router-policy-v9",
-        active_policy={
-            "default_model_id": "gpt-4.1-mini",
-            "fallback_model_id": "gpt-4.1",
-            "rules": [
-                {
-                    "id": "persisted-short-text",
-                    "priority": 10,
-                    "when": {"input_length_bucket": "short"},
-                    "selected_model_id": "gpt-4.1-mini",
-                    "fallback_model_id": "gpt-4.1",
-                    "reason_code": "persisted_policy_rule",
-                }
-            ],
+            active_policy={
+                "strategy_id": "judge_bootstrap_incremental_v1",
+                "default_model_id": "gpt-4.1-mini",
+                "fallback_model_id": "gpt-4.1",
+                "candidate_model_ids": ["gpt-4.1-mini", "gpt-4.1"],
+                "learning": {"mode": "judge_first"},
         },
         refresh_every_runs=20,
         eligible_runs_since_last_refresh=4,
@@ -3819,9 +3827,12 @@ def test_auto_model_routing_prefers_persisted_policy_over_legacy_node_json(monke
     node = LLMNode(
         "llm-1",
         data,
-        execution_context={
-            "workflow_id": str(uuid.uuid4()),
-            "deployment_id": str(uuid.uuid4()),
+            execution_context={
+                "workflow_id": str(uuid.uuid4()),
+                "deployment_id": str(uuid.uuid4()),
+                "routing_policy_preview": True,
+                "routing_policy_preview_node_ids": ["llm-1"],
+                "routing_policy_deployment_id": str(uuid.uuid4()),
         },
     )
     monkeypatch.setattr(
@@ -3945,10 +3956,12 @@ def test_test_execution_uses_matching_deployment_policy_without_becoming_deploye
         enabled=True,
         status="active",
         policy_version="router-policy-v10",
-        active_policy={
-            "default_model_id": "gpt-4.1-mini",
-            "fallback_model_id": "gpt-4.1",
-            "rules": [],
+            active_policy={
+                "strategy_id": "judge_bootstrap_incremental_v1",
+                "default_model_id": "gpt-4.1-mini",
+                "fallback_model_id": "gpt-4.1",
+                "candidate_model_ids": ["gpt-4.1-mini", "gpt-4.1"],
+                "learning": {"mode": "judge_first"},
         },
         refresh_every_runs=20,
         eligible_runs_since_last_refresh=5,
@@ -4005,11 +4018,13 @@ def test_llm_node_blocks_policy_when_no_model_is_usable_by_execution_subject(
         auto_model_routing=True,
         model_routing_policy={
             "policy_id": "policy-1",
-            "active_policy": {
-                "default_model_id": "gpt-4.1-mini",
-                "fallback_model_id": "gpt-4.1",
-                "rules": [],
-            },
+                "active_policy": {
+                    "strategy_id": "judge_bootstrap_incremental_v1",
+                    "default_model_id": "gpt-4.1-mini",
+                    "fallback_model_id": "gpt-4.1",
+                    "candidate_model_ids": ["gpt-4.1-mini", "gpt-4.1"],
+                    "learning": {"mode": "judge_first"},
+                },
         },
         user_prompt="hello",
         referenced_variables=[],

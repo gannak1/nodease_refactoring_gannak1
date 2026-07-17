@@ -123,7 +123,7 @@ def test_policy_uses_runtime_judge_first_then_local_router(monkeypatch):
         confidence = 0.92
         probabilities = {"gpt-4o-mini": 0.92, "gpt-5-mini": 0.08}
 
-    from apps.workflow_engine.services.model_routing_mdeberta_classifier import (
+    from apps.workflow_engine.services.model_routing_local_classifier import (
         MDebertaModelChoiceClassifier,
     )
 

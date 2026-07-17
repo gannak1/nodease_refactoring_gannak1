@@ -1377,7 +1377,7 @@ class TestModelRoutingPolicyApi:
         assert node_data["model_routing_policy"]["status"] == "collecting"
         assert (
             node_data["model_routing_policy"]["policy_version"]
-            == "gateway-cold-start-v1"
+            == "gateway-judge-first-v1"
         )
         assert (
             node_data["model_routing_policy"]["active_policy"]["default_model_id"]
@@ -2072,7 +2072,7 @@ class TestCostOptimizerCompareApi:
                                             "decision_source": "active_policy",
                                             "selected_model": "gpt-5-mini",
                                             "fallback_model": "gpt-4.1",
-                                            "reason_code": "cold_start_default_policy",
+                                            "reason_code": "judge_bootstrap_required",
                                         }
                                     },
                                 },
@@ -2142,10 +2142,14 @@ class TestCostOptimizerCompareApi:
         )
         policy = sent_llm_node["data"]["model_routing_policy"]
         assert policy["status"] == "collecting"
-        assert policy["policy_version"] == "gateway-cold-start-v1"
+        assert policy["policy_version"] == "gateway-judge-first-v1"
         assert policy["active_policy"]["default_model_id"] == "gpt-4.1-mini"
         assert policy["active_policy"]["fallback_model_id"] is None
-        assert policy["active_policy"]["rules"] == []
+        assert "rules" not in policy["active_policy"]
+        assert (
+            policy["active_policy"]["strategy_id"]
+            == "judge_bootstrap_incremental_v1"
+        )
 
     def test_fr3_compare_rejects_unusable_knowledge_base_before_running_task(self):
         workflow_id = uuid4()
@@ -3220,7 +3224,7 @@ class TestCostOptimizerCompareApi:
         baseline["input"] = {"message": "baseline input only"}
         baseline["node_config_fingerprint"] = "node-fingerprint"
         baseline["trace"]["model_routing"] = {
-            "strategy_id": "bootstrap_mdeberta_difficulty_v1",
+            "strategy_id": "judge_bootstrap_incremental_v1",
             "selected_model": "gpt-4.1",
             "policy_version": "bootstrap-v1",
         }
@@ -3322,7 +3326,7 @@ class TestCostOptimizerCompareApi:
             == "node-fingerprint"
         )
         assert candidate.diff_summary["routing_evidence"] == {
-            "strategy_id": "bootstrap_mdeberta_difficulty_v1",
+            "strategy_id": "judge_bootstrap_incremental_v1",
             "runtime_context": {},
             "schema_required": False,
         }
@@ -5608,7 +5612,7 @@ class TestCostOptimizerBaselineHelpers:
                 "llm": {
                     "selected_model": "gpt-4o-mini",
                     "fallback_model": "gpt-4.1-mini",
-                    "strategy_id": "bootstrap_mdeberta_difficulty_v1",
+                    "strategy_id": "judge_bootstrap_incremental_v1",
                     "matched_rule_id": "difficulty-balanced",
                     "policy_version": "routing-policy-v3",
                     "reason_code": "validated_quality_floor_positive_net_saving",
@@ -5637,7 +5641,7 @@ class TestCostOptimizerBaselineHelpers:
         assert row["trace"]["model_routing"] == {
             "selected_model": "gpt-4o-mini",
             "fallback_model": "gpt-4.1-mini",
-            "strategy_id": "bootstrap_mdeberta_difficulty_v1",
+            "strategy_id": "judge_bootstrap_incremental_v1",
             "matched_rule_id": "difficulty-balanced",
             "policy_version": "routing-policy-v3",
             "reason_code": "validated_quality_floor_positive_net_saving",

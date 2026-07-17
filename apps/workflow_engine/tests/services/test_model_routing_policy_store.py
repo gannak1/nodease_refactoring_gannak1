@@ -621,15 +621,16 @@ def test_bootstrap_policy_ignores_legacy_active_policy_and_preserves_node_models
             node_data=node_data,
         )
 
-    assert policy.active_policy == {
-        "strategy": "prior_guided_adaptive",
-        "strategy_id": "prior_guided_adaptive_v1",
-        "decision_profiles": [],
-        "default_model_id": "gpt-4.1",
-        "fallback_model_id": "gpt-4.1-mini",
-        "rules": [],
-    }
-    assert policy.policy_version == "deployment-safe-default-v1"
+    assert policy.active_policy["strategy_id"] == "judge_bootstrap_incremental_v1"
+    assert policy.active_policy["default_model_id"] == "gpt-4.1"
+    assert policy.active_policy["fallback_model_id"] == "gpt-4.1-mini"
+    assert policy.active_policy["candidate_model_ids"] == [
+        "gpt-4.1",
+        "gpt-4.1-mini",
+    ]
+    assert policy.active_policy["learning"]["mode"] == "judge_first"
+    assert "rules" not in policy.active_policy
+    assert policy.policy_version == "deployment-judge-first-v1"
     assert policy.status == "active"
     assert policy.refresh_every_runs == 35
     available_models.assert_called_once_with(
@@ -678,18 +679,17 @@ def test_bootstrap_policy_matches_google_catalog_ids_with_or_without_models_pref
         )
 
     assert policy is not None
-    assert policy.active_policy == {
-        "strategy": "prior_guided_adaptive",
-        "strategy_id": "prior_guided_adaptive_v1",
-        "decision_profiles": [],
-        "default_model_id": "models/gemini-2.5-flash",
-        "fallback_model_id": "models/gemini-2.5-pro",
-        "rules": [],
-    }
+    assert policy.active_policy["strategy_id"] == "judge_bootstrap_incremental_v1"
+    assert policy.active_policy["default_model_id"] == "models/gemini-2.5-flash"
+    assert policy.active_policy["fallback_model_id"] == "models/gemini-2.5-pro"
+    assert policy.active_policy["candidate_model_ids"] == [
+        "models/gemini-2.5-flash",
+        "models/gemini-2.5-pro",
+    ]
 
 
-def test_deployment_creates_prior_guided_policy_before_first_run():
-    """배포 transaction 안에서 첫 실행용 profile rule을 즉시 저장한다."""
+def test_deployment_creates_judge_first_policy_before_first_run():
+    """배포 transaction 안에서 첫 실행용 Judge-first 정책을 즉시 저장한다."""
     from apps.workflow_engine.services.model_routing_policy_store import (
         ModelRoutingPolicyStore,
     )
@@ -701,23 +701,6 @@ def test_deployment_creates_prior_guided_policy_before_first_run():
         user_id=uuid4(),
     )
     db = MagicMock()
-    active_policy = {
-        "strategy": "prior_guided_adaptive",
-        "strategy_id": "prior_guided_adaptive_v1",
-        "default_model_id": "gpt-4.1",
-        "fallback_model_id": "gpt-4.1",
-        "rules": [
-            {
-                "id": "prior-guided-short",
-                "when": {"input_length_bucket": "short"},
-                "selected_model_id": "gpt-4.1-mini",
-            }
-        ],
-        "decision_profiles": [
-            {"profile": "short", "selected_model_id": "gpt-4.1-mini"}
-        ],
-    }
-
     with (
         patch.object(ModelRoutingPolicyStore, "get_runtime_policy", return_value=None),
         patch.object(
@@ -730,13 +713,6 @@ def test_deployment_creates_prior_guided_policy_before_first_run():
             "get_runtime_available_model_ids_for_user",
             return_value=["gpt-4.1", "gpt-4.1-mini"],
         ),
-        patch(
-            "apps.workflow_engine.services.model_routing_policy_store.compile_prior_guided_policy_from_db",
-            return_value=SimpleNamespace(
-                active_policy=active_policy,
-                summary={"profile_count": 3},
-            ),
-        ) as compile_policy,
     ):
         policy = ModelRoutingPolicyStore.ensure_policy_for_deployed_node(
             db,
@@ -749,9 +725,13 @@ def test_deployment_creates_prior_guided_policy_before_first_run():
         )
 
     assert policy.status == "active"
-    assert policy.policy_version == "deployment-prior-v1"
-    assert policy.active_policy == active_policy
-    compile_policy.assert_called_once()
+    assert policy.policy_version == "deployment-judge-first-v1"
+    assert policy.active_policy["strategy_id"] == "judge_bootstrap_incremental_v1"
+    assert policy.active_policy["default_model_id"] == "gpt-4.1"
+    assert policy.active_policy["candidate_model_ids"] == [
+        "gpt-4.1",
+        "gpt-4.1-mini",
+    ]
 
 
 def test_deployment_bootstrap_creates_policy_before_first_operational_run():
@@ -800,14 +780,12 @@ def test_deployment_bootstrap_creates_policy_before_first_operational_run():
     assert policies[0].workflow_id == workflow_id
     assert policies[0].deployment_id == deployment_id
     assert policies[0].execution_subject_user_id == execution_subject_user_id
-    assert policies[0].active_policy == {
-        "strategy": "prior_guided_adaptive",
-        "strategy_id": "prior_guided_adaptive_v1",
-        "decision_profiles": [],
-        "default_model_id": "gpt-4.1",
-        "fallback_model_id": "gpt-4.1-mini",
-        "rules": [],
-    }
+    assert (
+        policies[0].active_policy["strategy_id"]
+        == "judge_bootstrap_incremental_v1"
+    )
+    assert policies[0].active_policy["default_model_id"] == "gpt-4.1"
+    assert policies[0].active_policy["fallback_model_id"] == "gpt-4.1-mini"
 
 
 def test_record_completed_run_locks_policies_in_node_id_order_before_counting():

@@ -394,20 +394,15 @@ def test_llm_trace_metadata_preserves_canonical_routing_and_rag_summaries():
                     "selected_model": "gpt-4.1",
                     "fallback_model": "gpt-4.1-mini",
                     "fallback_used": True,
-                    "decision_source": "active_policy",
-                    "matched_rule_id": "short-json",
-                    "strategy_id": "prior_guided_adaptive_v1",
-                    "reason_code": "prior_guided_utility_selected",
+                    "decision_source": "local_router",
+                    "matched_rule_id": "incremental-local-router",
+                    "strategy_id": "judge_bootstrap_incremental_v1",
+                    "reason_code": "local_router_confident",
                     "decision_factors": {
-                        "profile": "short",
-                        "evaluated_candidate_count": 3,
-                        "excluded_candidate_count": 1,
-                        "selected_model_score": {
-                            "quality_lower_bound": 0.92,
-                            "expected_total_cost_usd": 0.00042,
-                            "expected_latency_ms": 640,
-                            "prior_source": "model_catalog_family_prior",
-                        },
+                        "learning_mode": "local_first",
+                        "local_confidence": 0.86,
+                        "local_confidence_threshold": 0.78,
+                        "candidate_model_count": 3,
                     },
                     "judge_called": False,
                     "runtime_context": {
@@ -438,15 +433,10 @@ def test_llm_trace_metadata_preserves_canonical_routing_and_rag_summaries():
     assert metadata["llm"]["fallback_used"] is True
     assert metadata["llm"]["input_length_bucket"] == "short"
     assert metadata["llm"]["decision_factors"] == {
-        "profile": "short",
-        "evaluated_candidate_count": 3,
-        "excluded_candidate_count": 1,
-        "selected_model_score": {
-            "quality_lower_bound": 0.92,
-            "expected_total_cost_usd": 0.00042,
-            "expected_latency_ms": 640,
-            "prior_source": "model_catalog_family_prior",
-        },
+        "learning_mode": "local_first",
+        "local_confidence": 0.86,
+        "local_confidence_threshold": 0.78,
+        "candidate_model_count": 3,
     }
     assert metadata["rag"]["context_token_estimate"] == 123
     assert metadata["rag"]["evidence_sufficient"] is True

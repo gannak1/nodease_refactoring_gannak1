@@ -30,10 +30,33 @@ def test_runtime_judge_accepts_only_current_execution_subject_candidates():
     decision = ModelRoutingRuntimeJudge.decide(
         client=client,
         candidate_model_ids=["gpt-4o-mini", "gpt-5-mini"],
-        default_model_id="gpt-4o-mini",
-        fallback_model_id="gpt-5-mini",
         routing_feature_text="고객 요청: 서로 충돌하는 세 개의 규정을 비교해 JSON으로 판단",
-        node_contract={"output_format": "json", "knowledge_enabled": True},
+        rag_context={
+            "used": True,
+            "retrieved_context_token_estimate": 4200,
+            "retrieved_context_chars": 14800,
+            "source_count": 3,
+        },
+        candidate_profiles=[
+            {
+                "model_id": "gpt-4o-mini",
+                "input_price_per_1k": 0.00015,
+                "output_price_per_1k": 0.0006,
+                "context_window": 128000,
+                "capability_tier": "economy",
+                "quality_by_difficulty": {"advanced": 0.62},
+                "fallback_rate": 0.04,
+            },
+            {
+                "model_id": "gpt-5-mini",
+                "input_price_per_1k": 0.00025,
+                "output_price_per_1k": 0.002,
+                "context_window": 400000,
+                "capability_tier": "balanced",
+                "quality_by_difficulty": {"advanced": 0.86},
+                "fallback_rate": 0.01,
+            },
+        ],
     )
 
     assert decision.selected_model_id == "gpt-5-mini"
@@ -41,10 +64,55 @@ def test_runtime_judge_accepts_only_current_execution_subject_candidates():
     assert decision.reason_code == "multi_step_contract"
     assert decision.usage == {"prompt_tokens": 42, "completion_tokens": 18}
     rendered_prompt = client.calls[0]["messages"][1]["content"]
+    prompt_body = __import__("json").loads(rendered_prompt)
     assert '"gpt-4o-mini"' in rendered_prompt
     assert '"gpt-5-mini"' in rendered_prompt
     assert "사용 가능한 후보 외의 모델을 선택하지 마세요" in rendered_prompt
-    assert "response_format" not in client.calls[0]["kwargs"]
+    assert "default_model_id" not in rendered_prompt
+    assert "fallback_model_id" not in rendered_prompt
+    assert "node_contract" not in rendered_prompt
+    assert prompt_body["candidate_profiles"] == [
+        {
+            "id": "gpt-4o-mini",
+            "cost": [0.00015, 0.0006],
+            "quality": [None, None, 0.62],
+            "fallback_rate": 0.04,
+            "tier": "economy",
+        },
+        {
+            "id": "gpt-5-mini",
+            "cost": [0.00025, 0.002],
+            "quality": [None, None, 0.86],
+            "fallback_rate": 0.01,
+            "tier": "balanced",
+        },
+    ]
+    assert prompt_body["rag_context"] == {
+        "used": True,
+        "retrieved_context_token_estimate": 4200,
+        "retrieved_context_chars": 14800,
+        "source_count": 3,
+    }
+    assert "[파일:" not in rendered_prompt
+    assert client.calls[0]["kwargs"]["response_format"] == {"type": "json_object"}
+    assert client.calls[0]["kwargs"]["max_tokens"] == 256
+
+
+def test_runtime_judge_marks_non_rag_request_without_inventing_retrieval_metrics():
+    client = _JudgeClient(
+        '{"selected_model_id":"gpt-4o-mini","confidence":0.72,'
+        '"reason_code":"short_structured_request"}'
+    )
+
+    ModelRoutingRuntimeJudge.decide(
+        client=client,
+        candidate_model_ids=["gpt-4o-mini"],
+        routing_feature_text="짧은 JSON 분류 요청",
+        rag_context={"used": False},
+    )
+
+    prompt_body = __import__("json").loads(client.calls[0]["messages"][1]["content"])
+    assert prompt_body["rag_context"] == {"used": False}
 
 
 def test_runtime_judge_rejects_model_outside_available_candidates():
@@ -57,10 +125,7 @@ def test_runtime_judge_rejects_model_outside_available_candidates():
         ModelRoutingRuntimeJudge.decide(
             client=client,
             candidate_model_ids=["gpt-4o-mini", "gpt-5-mini"],
-            default_model_id="gpt-4o-mini",
-            fallback_model_id=None,
             routing_feature_text="간단한 안내 요청",
-            node_contract={},
         )
 
 
@@ -74,10 +139,7 @@ def test_runtime_judge_does_not_persist_raw_feature_text_in_decision():
     decision = ModelRoutingRuntimeJudge.decide(
         client=client,
         candidate_model_ids=["gpt-4o-mini"],
-        default_model_id="gpt-4o-mini",
-        fallback_model_id=None,
         routing_feature_text=secret_like_request,
-        node_contract={},
     )
 
     assert "SECRET-123" not in str(decision.safe_metadata())

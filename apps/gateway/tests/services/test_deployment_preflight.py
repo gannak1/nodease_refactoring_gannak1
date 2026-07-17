@@ -17,6 +17,9 @@ from apps.shared.db.models.knowledge import (
     KnowledgeCollectionItem,
 )
 from apps.shared.db.models.mail_credential import MailCredential
+from apps.shared.db.models.model_routing_policy import (
+    LLMNodeModelRoutingBootstrap,
+)
 from apps.shared.db.models.schedule import Schedule
 from apps.shared.db.models.workflow import Workflow
 from apps.shared.db.models.workflow_deployment import DeploymentType, WorkflowDeployment
@@ -27,6 +30,10 @@ from apps.shared.schemas.deployment import DeploymentCreate
 from apps.shared.services.workflow_configuration_preflight import (
     WorkflowConfigurationIssue,
     WorkflowConfigurationPreflightError,
+)
+from apps.workflow_engine.services.model_routing_bootstrap import (
+    downstream_contract_from_graph,
+    task_fingerprint,
 )
 
 
@@ -1686,12 +1693,50 @@ def test_active_redeployment_creates_fresh_model_routing_policy(monkeypatch):
         is_active=True,
         version=1,
     )
+    graph_snapshot = {
+        "nodes": [
+            _node("trigger", "webhookTrigger"),
+            _node(
+                "llm-triage",
+                "llmNode",
+                {
+                    "auto_model_routing": True,
+                    "model_id": "test-model",
+                },
+            ),
+        ],
+        "edges": [_edge("trigger", "llm-triage", "trigger-llm")],
+    }
+    llm_node = graph_snapshot["nodes"][1]
+    fingerprint = task_fingerprint(
+        llm_node["data"],
+        downstream_contract=downstream_contract_from_graph(
+            graph_snapshot,
+            "llm-triage",
+        ),
+    )
+    bootstrap_id = uuid.uuid4()
+    llm_node["data"].update(
+        {
+            "model_routing_bootstrap_id": str(bootstrap_id),
+            "model_routing_bootstrap_fingerprint": fingerprint,
+        }
+    )
     db = _Db(
         {
             App: [app],
             Workflow: [workflow],
             WorkflowDeployment: [previous_deployment],
             Schedule: [],
+            LLMNodeModelRoutingBootstrap: [
+                _row(
+                    id=bootstrap_id,
+                    workflow_id=workflow_id,
+                    node_id="llm-triage",
+                    status="ready",
+                    task_fingerprint=fingerprint,
+                )
+            ],
         },
         max_deployment_version=1,
     )
@@ -1727,20 +1772,7 @@ def test_active_redeployment_creates_fresh_model_routing_policy(monkeypatch):
         DeploymentCreate(
             app_id=app_id,
             type=DeploymentType.WEBHOOK,
-            graph_snapshot={
-                "nodes": [
-                    _node("trigger", "webhookTrigger"),
-                    _node(
-                        "llm-triage",
-                        "llmNode",
-                        {
-                            "auto_model_routing": True,
-                            "model_id": "test-model",
-                        },
-                    ),
-                ],
-                "edges": [_edge("trigger", "llm-triage", "trigger-llm")],
-            },
+            graph_snapshot=graph_snapshot,
             is_active=True,
         ),
         user_id=app.created_by,
@@ -2100,6 +2132,16 @@ class _Db:
         }:
             return _Query(self.rows_by_model.setdefault(model, []))
         return _ScalarQuery(self.max_deployment_version)
+
+    def get(self, model, object_id):
+        return next(
+            (
+                row
+                for row in self.rows_by_model.get(model, [])
+                if getattr(row, "id", None) == object_id
+            ),
+            None,
+        )
 
     def add(self, obj):
         self.rows_by_model.setdefault(type(obj), []).append(obj)

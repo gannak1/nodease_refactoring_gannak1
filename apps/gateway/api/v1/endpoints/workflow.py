@@ -87,8 +87,8 @@ from apps.workflow_engine.services.llm_service import (
     LLMService as WorkflowRuntimeLLMService,
 )
 from apps.workflow_engine.services.model_router import ModelCandidate, ModelRouter
-from apps.workflow_engine.services.model_routing_policy_refresh import (
-    ModelRoutingPolicyRefreshService,
+from apps.workflow_engine.services.model_routing_judge_first_policy import (
+    build_judge_first_active_policy,
 )
 from apps.workflow_engine.services.model_routing_policy_store import (
     ModelRoutingPolicyStore,
@@ -333,12 +333,11 @@ class ModelRoutingPolicyPatchRequest(BaseModel):
 
 
 class ModelRoutingBootstrapRequest(BaseModel):
-    """초안 LLM 노드에서 첫 실행용 난이도 정책을 만드는 요청."""
+    """초안 LLM 노드에서 Judge-first 초기 정책을 만드는 요청."""
 
     task_description: str = Field(min_length=10, max_length=4000)
     default_model_id: str = Field(min_length=1, max_length=255)
     fallback_model_id: str | None = Field(default=None, max_length=255)
-    initial_budget_usd: float = Field(default=1.0, ge=0.5, le=10.0)
 
 
 class ModelRoutingPolicyRefreshRequest(BaseModel):
@@ -850,13 +849,25 @@ def _default_cost_optimizer_model_routing_policy(
         else None
     )
 
-    return ModelRoutingPolicyRefreshService.default_rule_policy(
-        policy_id="cost-optimizer-cold-start-default",
-        policy_version="gateway-cold-start-v1",
+    policy_version = "gateway-judge-first-v1"
+    active_policy = build_judge_first_active_policy(
+        policy_version=policy_version,
         default_model_id=default_model_id,
         fallback_model_id=fallback_model_id,
-        refresh_every_runs=_candidate_refresh_every_runs(candidate),
+        candidate_model_ids=[model.model_id for model in candidate_models],
     )
+    active_policy["judge_model_id"] = default_model_id
+    return {
+        "status": "collecting",
+        "policy_id": "cost-optimizer-judge-first-default",
+        "policy_version": policy_version,
+        "active_policy": active_policy,
+        "refresh": {
+            "refresh_every_runs": _candidate_refresh_every_runs(candidate),
+            "last_refresh_result": "judge_first_ready",
+            "last_refresh_trigger": "cost_optimizer_candidate",
+        },
+    }
 
 
 def _materialize_cost_optimizer_candidate_model_routing_policy(
@@ -3802,7 +3813,7 @@ def preview_model_routing_bootstrap_endpoint(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """초안에서도 history/synthetic/hybrid 초기 정책 재료를 미리 보여준다."""
+    """초안 노드의 Judge-first 실행 후보와 준비 상태를 미리 보여준다."""
     workflow = ensure_workflow_permission(db, current_user, workflow_id, "write")
     node = _ensure_cost_optimizer_llm_node(workflow, node_id)
     node_data = node.get("data") if isinstance(node.get("data"), dict) else {}
@@ -3845,7 +3856,7 @@ def create_model_routing_bootstrap_endpoint(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Planner 비용을 한 번만 사용해 초안 단계의 최초 난이도 정책을 생성한다."""
+    """Planner 호출 없이 초안 단계의 Judge-first 정책을 준비한다."""
     # 초기 기준 생성은 초안 편집 단계의 작업이다. 실제 배포 권한은 이후 배포 API에서
     # 별도로 검사하므로, 여기서는 workflow 수정 권한만 요구한다.
     workflow = ensure_workflow_permission(db, current_user, workflow_id, "write")
@@ -3872,10 +3883,7 @@ def create_model_routing_bootstrap_endpoint(
         raise HTTPException(status_code=422, detail="model_routing.fallback_must_differ")
 
     try:
-        # Planner는 예문/holdout/규칙 생성을 위해 여러 LLM 호출을 수행한다. HTTP
-        # 요청에서 직접 기다리면 proxy timeout이 발생할 수 있으므로, 여기서는
-        # generating artifact를 저장하고 Worker가 이어서 생성하도록 한다.
-        bootstrap, should_enqueue = PersistedModelRoutingBootstrapStore.create_pending(
+        bootstrap = PersistedModelRoutingBootstrapStore.create_ready(
             db,
             workflow_id=workflow.id,
             organization_id=workflow.organization_id,
@@ -3884,9 +3892,7 @@ def create_model_routing_bootstrap_endpoint(
             task_description=request_body.task_description,
             default_model_id=request_body.default_model_id,
             fallback_model_id=request_body.fallback_model_id,
-            initial_budget_usd=request_body.initial_budget_usd,
             created_by=current_user.id,
-            planner_model_id=request_body.default_model_id,
             available_candidates=candidates,
             downstream_contract=downstream_contract_from_graph(next_graph, node_id),
         )
@@ -3897,11 +3903,10 @@ def create_model_routing_bootstrap_endpoint(
         db.rollback()
         logger.exception("[Model-Routing] bootstrap creation failed")
         raise HTTPException(
-            status_code=502, detail="model_routing.bootstrap_generation_failed"
+            status_code=502, detail="model_routing.bootstrap_creation_failed"
         ) from exc
 
-    # 생성 대기 artifact와 draft 참조를 같은 commit으로 저장한다. Worker가 완료하기
-    # 전에는 deployment preflight가 generating 상태를 읽고 배포를 막는다.
+    # Judge-first artifact와 draft 참조를 같은 commit으로 저장한다.
     node_data.update(
         {
             "auto_model_routing": True,
@@ -3916,23 +3921,6 @@ def create_model_routing_bootstrap_endpoint(
     node["data"] = node_data
     workflow.graph = next_graph
     db.commit()
-    if should_enqueue:
-        try:
-            send_workflow_task(
-                celery_app,
-                "workflow.model_routing.generate_bootstrap",
-                args=[str(bootstrap.id)],
-            )
-        except Exception:
-            # HTTP 성공 뒤 Worker 발행이 실패하면 화면이 계속 생성 중으로 남지 않게
-            # 실패 상태를 저장한다. 사용자는 같은 버튼으로 안전하게 재시도할 수 있다.
-            logger.exception("[Model-Routing] bootstrap generation enqueue failed")
-            PersistedModelRoutingBootstrapStore.mark_pending_generation_failed(
-                db,
-                bootstrap_id=bootstrap.id,
-                error_code="bootstrap_enqueue_failed",
-            )
-            db.commit()
     return PersistedModelRoutingBootstrapStore.public_summary(
         bootstrap, include_samples=True, db=db
     )
