@@ -103,6 +103,36 @@ apps/gateway/.venv/Scripts/python.exe tests/evaluation/run_law_development_pilot
 
 현재 non-rerank hybrid/hierarchy branch는 similarity가 아니라 RRF score에 threshold를 적용하므로 engineering dry-run은 `threshold=0.0`으로 candidate truncation을 분리한다. 이 값은 production 권장값이나 safety abstention 정책이 아니다. Human review가 끝나지 않은 question bundle의 출력은 `exploratory_unreviewed_labels`이며, 실제 실행했다는 이유로 quality gate나 runtime default를 변경하지 않는다.
 
+### Chunk profile development ablation
+
+`run_chunk_profile_experiment.py`는 같은 prepared corpus, 질문, query vector, embedding model과 실제
+PostgreSQL hybrid retrieval에서 다음 profile을 비교한다.
+
+- raw atomic evidence
+- deterministic source context를 붙인 atomic evidence
+- 구조 경계를 넘지 않는 contextual 256/512/1024/2000-token chunk
+
+합쳐진 검색 chunk는 포함한 canonical atomic evidence 전체로 relevance를 판정한다. Top-5 metric과 함께
+고정 context-token budget 안에 실제로 들어가는 evidence coverage를 계산한다. 이 runner는 development
+ablation 전용이며 hierarchy mode, generation 품질 또는 production 기본값을 자동 변경하지 않는다.
+
+```powershell
+apps/gateway/.venv/Scripts/python.exe tests/evaluation/run_chunk_profile_experiment.py `
+  --snapshot-dir local/evaluation-data/mba-279/kr-law/<snapshot-id> `
+  --bundle-dir local/evaluation-data/mba-279/kr-law-development/<bundle-id> `
+  --run-root local/evaluation-data/mba-279/profile-runs/<run-id> `
+  --run-id <run-id> `
+  --env-file .env `
+  --context-budget-tokens 2048 `
+  --retrieval-depth 100 `
+  --hybrid-search
+```
+
+Token 측정은 명시한 tokenizer를 사용하고 기본값은 `cl100k_base`다. 원자 evidence 하나가 목표 token을
+초과하면 정답 경계를 임의 분할하지 않고 over-target 예외로 집계한다. Source text, query, vector, DB
+resource ID와 credential은 ignored local artifact 밖으로 내보내지 않는다. 각 결과에는 code commit과
+실행에 사용한 source byte fingerprint가 함께 기록된다.
+
 ### 2. 베이스라인 성능 측정
 
 ```python
