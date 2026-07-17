@@ -508,7 +508,7 @@ class LLMService:
             db.query(LLMCredential)
             .filter(
                 LLMCredential.user_id == user_id,
-                LLMCredential.is_valid == True,
+                LLMCredential.is_valid.is_(True),
             )
             .all()
         )
@@ -661,7 +661,7 @@ class LLMService:
                 db.query(LLMRelCredentialModel)
                 .filter(
                     LLMRelCredentialModel.credential_id == cred.id,
-                    LLMRelCredentialModel.is_verified == False,
+                    LLMRelCredentialModel.is_verified.is_(False),
                 )
                 .delete(synchronize_session=False)
             )
@@ -807,11 +807,11 @@ class LLMService:
                 LLMCredential.id == LLMRelCredentialModel.credential_id,
             )
             .filter(
-                LLMModel.is_active == True,
+                LLMModel.is_active.is_(True),
                 LLMModel.type == "chat",
                 LLMCredential.organization_id == organization_uuid,
-                LLMCredential.is_valid == True,
-                LLMRelCredentialModel.is_verified == True,
+                LLMCredential.is_valid.is_(True),
+                LLMRelCredentialModel.is_verified.is_(True),
             )
             .all()
         )
@@ -852,11 +852,11 @@ class LLMService:
                 LLMCredential.id == LLMRelCredentialModel.credential_id,
             )
             .filter(
-                LLMModel.is_active == True,
+                LLMModel.is_active.is_(True),
                 LLMModel.type == "embedding",
                 LLMCredential.organization_id == organization_uuid,
-                LLMCredential.is_valid == True,
-                LLMRelCredentialModel.is_verified == True,
+                LLMCredential.is_valid.is_(True),
+                LLMRelCredentialModel.is_verified.is_(True),
             )
             .all()
         )
@@ -899,7 +899,7 @@ class LLMService:
                 return None
 
         query = db.query(LLMCredential).filter(
-            LLMCredential.is_valid == True,
+            LLMCredential.is_valid.is_(True),
         )
         if organization_uuid:
             query = query.filter(LLMCredential.organization_id == organization_uuid)
@@ -913,7 +913,7 @@ class LLMService:
                 )
                 .filter(
                     LLMRelCredentialModel.model_id == model_db_id,
-                    LLMRelCredentialModel.is_verified == True,
+                    LLMRelCredentialModel.is_verified.is_(True),
                 )
                 .order_by(LLMRelCredentialModel.priority.asc())
             )
@@ -973,7 +973,7 @@ class LLMService:
         )
 
         query = db.query(LLMCredential).filter(
-            LLMCredential.is_valid == True,
+            LLMCredential.is_valid.is_(True),
             LLMCredential.provider_id == target_model.provider_id,
             LLMCredential.organization_id == organization_uuid,
         )
@@ -998,7 +998,7 @@ class LLMService:
                 .filter(
                     LLMRelCredentialModel.credential_id == credential.id,
                     LLMRelCredentialModel.model_id == target_model.id,
-                    LLMRelCredentialModel.is_verified == True,
+                    LLMRelCredentialModel.is_verified.is_(True),
                 )
                 .order_by(LLMRelCredentialModel.priority.asc())
                 .first()
@@ -1066,9 +1066,9 @@ class LLMService:
             .options(joinedload(LLMModel.provider))
             .filter(
                 LLMCredential.user_id == user_id,
-                LLMCredential.is_valid == True,
-                LLMRelCredentialModel.is_verified == True,
-                LLMModel.is_active == True,
+                LLMCredential.is_valid.is_(True),
+                LLMRelCredentialModel.is_verified.is_(True),
+                LLMModel.is_active.is_(True),
             )
             .distinct()
             .order_by(LLMModel.name)
@@ -1098,9 +1098,9 @@ class LLMService:
             .options(joinedload(LLMModel.provider))
             .filter(
                 LLMCredential.user_id == user_id,
-                LLMCredential.is_valid == True,
-                LLMRelCredentialModel.is_verified == True,
-                LLMModel.is_active == True,
+                LLMCredential.is_valid.is_(True),
+                LLMRelCredentialModel.is_verified.is_(True),
+                LLMModel.is_active.is_(True),
                 LLMModel.type == "embedding",
             )
             .distinct()
