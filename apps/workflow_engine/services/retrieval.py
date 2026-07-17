@@ -25,6 +25,13 @@ from apps.shared.services.rag_hierarchy import (
     normalize_hierarchy_mode,
     parent_candidate_limit,
 )
+from apps.shared.services.rag_retrieval_diagnostics import (
+    RetrievalDiagnosticsObserver,
+    diagnostic_query_limit,
+    keyword_stage_name,
+    observe_bounded_candidates,
+    vector_stage_name,
+)
 from apps.shared.services.rag_source_tier import (
     normalize_source_tier_policy,
     retrieval_candidate_source_tier_priority,
@@ -56,11 +63,19 @@ class RetrievalService:
     _cross_encoder_model = None
     _cross_encoder_model_name = None
 
-    def __init__(self, db: Session, user_id, organization_id=None):
+    def __init__(
+        self,
+        db: Session,
+        user_id,
+        organization_id=None,
+        *,
+        retrieval_diagnostics: RetrievalDiagnosticsObserver | None = None,
+    ):
         self.db = db
         self.user_id = user_id
         self.organization_id = organization_id
         self.llm_client = None
+        self.retrieval_diagnostics = retrieval_diagnostics
 
     @classmethod
     def _is_cross_encoder_rerank_enabled(cls) -> bool:
@@ -252,16 +267,27 @@ class RetrievalService:
         conditions.extend(self._chunk_level_conditions(chunk_levels))
         if parent_ids is not None:
             conditions.append(DocumentChunk.parent_chunk_id.in_(parent_ids))
+        query_limit = diagnostic_query_limit(top_k, self.retrieval_diagnostics)
         stmt = (
             select(DocumentChunk, Document, distance_col)
             .join(Document)
             .join(KnowledgeBase, KnowledgeBase.id == DocumentChunk.knowledge_base_id)
             .outerjoin(DocumentVersion, DocumentChunk.document_version_id == DocumentVersion.id)
             .where(*conditions)
-            .order_by(distance_col)
-            .limit(top_k)
+            .order_by(distance_col, DocumentChunk.id)
+            .limit(query_limit)
         )
-        return self.db.execute(stmt).all()
+        rows = self.db.execute(stmt).all()
+        observe_bounded_candidates(
+            observer=self.retrieval_diagnostics,
+            stage=vector_stage_name(
+                chunk_levels,
+                parent_ids_present=parent_ids is not None,
+            ),
+            requested_limit=top_k,
+            rows=[(str(chunk.id), 1.0 - float(distance)) for chunk, _doc, distance in rows],
+        )
+        return rows if self.retrieval_diagnostics is not None else rows[:top_k]
 
     def _keyword_search(
         self,
@@ -322,16 +348,28 @@ class RetrievalService:
               {filter_sql}
               {level_sql}
               {parent_sql}
-            ORDER BY rank DESC
+            ORDER BY rank DESC, dc.id ASC
             LIMIT :top_k
         """)
         stmt = bind_keyword_filter_params(stmt, filter_clause)
         for param_name in level_expanding:
             stmt = stmt.bindparams(bindparam(param_name, expanding=True))
-        params = {"query": query, "kb_id": knowledge_base_id, "top_k": top_k}
+        query_limit = diagnostic_query_limit(top_k, self.retrieval_diagnostics)
+        params = {"query": query, "kb_id": knowledge_base_id, "top_k": query_limit}
         params.update(filter_clause.params)
         params.update(level_params)
-        return self.db.execute(stmt, params).fetchall()
+        rows = self.db.execute(stmt, params).fetchall()
+        if self.retrieval_diagnostics is not None:
+            observe_bounded_candidates(
+                observer=self.retrieval_diagnostics,
+                stage=keyword_stage_name(
+                    chunk_levels,
+                    parent_ids_present=parent_ids is not None,
+                ),
+                requested_limit=top_k,
+                rows=[(str(row[0]), float(row[13])) for row in rows],
+            )
+        return rows if self.retrieval_diagnostics is not None else rows[:top_k]
 
     @staticmethod
     def _retrieval_visible_chunk_condition():
@@ -635,6 +673,10 @@ class RetrievalService:
             queries = [query]
 
         all_candidates = {}
+        candidate_pool_limit = diagnostic_query_limit(
+            top_k * 10,
+            self.retrieval_diagnostics,
+        )
 
         try:
             kb = (
@@ -701,6 +743,14 @@ class RetrievalService:
                             )
                         ]
 
+                    self._observe_stage_rows(
+                        "parent_selection",
+                        [
+                            (str(item["chunk"].id), float(item["score"]))
+                            for item in parent_fused
+                        ],
+                        parent_candidate_limit(top_k),
+                    )
                     parent_ids = [
                         item["chunk"].id
                         for item in parent_fused[: parent_candidate_limit(top_k)]
@@ -798,7 +848,7 @@ class RetrievalService:
                                 }
                             )
 
-                for item in fused[: top_k * 10]:
+                for item in fused[:candidate_pool_limit]:
                     chunk_id = str(item["chunk"].id)
                     if chunk_id not in all_candidates:
                         all_candidates[chunk_id] = item
@@ -886,11 +936,19 @@ class RetrievalService:
                         )
                     )
             else:
-                thresholded_candidates = [
+                eligible_candidates = [
                     item
                     for item in merged_candidates
                     if float(item["score"]) >= threshold
-                ][:top_k]
+                ]
+                self._observe_final_rows(
+                    [
+                        (str(item["chunk"].id), float(item["score"]))
+                        for item in eligible_candidates
+                    ],
+                    top_k,
+                )
+                thresholded_candidates = eligible_candidates[:top_k]
                 for rank, item in enumerate(thresholded_candidates, start=1):
                     chunk = item["chunk"]
                     doc = item["doc"]
@@ -930,10 +988,22 @@ class RetrievalService:
                         )
                     )
         else:
-            for rank, (chunk, doc, distance) in enumerate(vector_results[:top_k], start=1):
+            eligible_vector_results = [
+                (chunk, doc, distance)
+                for chunk, doc, distance in vector_results
+                if 1 - distance >= threshold
+            ]
+            self._observe_final_rows(
+                [
+                    (str(chunk.id), float(1 - distance))
+                    for chunk, _doc, distance in eligible_vector_results
+                ],
+                top_k,
+            )
+            for rank, (chunk, doc, distance) in enumerate(
+                eligible_vector_results[:top_k], start=1
+            ):
                 similarity = 1 - distance
-                if similarity < threshold:
-                    continue
 
                 # 암호화된 content 복호화
                 meta = self._chunk_metadata(chunk, doc)
@@ -976,6 +1046,26 @@ class RetrievalService:
         if not source_tier_tie_break_enabled(policy):
             return 0
         return retrieval_candidate_source_tier_priority(candidate)
+
+    def _observe_final_rows(
+        self,
+        rows: list[tuple[str, float]],
+        requested_limit: int,
+    ) -> None:
+        self._observe_stage_rows("final_selection", rows, requested_limit)
+
+    def _observe_stage_rows(
+        self,
+        stage: str,
+        rows: list[tuple[str, float]],
+        requested_limit: int,
+    ) -> None:
+        observe_bounded_candidates(
+            observer=self.retrieval_diagnostics,
+            stage=stage,
+            requested_limit=requested_limit,
+            rows=rows,
+        )
 
     def _decrypt_content(self, content: str) -> str:
         """
@@ -1034,6 +1124,10 @@ class RetrievalService:
         source_tier_policy = normalize_source_tier_policy(source_tier_policy)
 
         all_candidates = {}
+        candidate_pool_limit = diagnostic_query_limit(
+            top_k * 10,
+            self.retrieval_diagnostics,
+        )
 
         try:
             kb = (
@@ -1100,6 +1194,14 @@ class RetrievalService:
                             parent_vector_results
                         )
                     ]
+                self._observe_stage_rows(
+                    "parent_selection",
+                    [
+                        (str(item["chunk"].id), float(item["score"]))
+                        for item in parent_fused
+                    ],
+                    parent_candidate_limit(top_k),
+                )
                 parent_ids = [
                     item["chunk"].id
                     for item in parent_fused[: parent_candidate_limit(top_k)]
@@ -1199,7 +1301,7 @@ class RetrievalService:
                             }
                         )
 
-            for item in fused[: top_k * 10]:
+            for item in fused[:candidate_pool_limit]:
                 chunk_id = str(item["chunk"].id)
                 if chunk_id not in all_candidates:
                     all_candidates[chunk_id] = item
@@ -1283,11 +1385,19 @@ class RetrievalService:
                         )
                     )
             else:
-                thresholded_candidates = [
+                eligible_candidates = [
                     item
                     for item in merged_candidates
                     if float(item["score"]) >= threshold
-                ][:top_k]
+                ]
+                self._observe_final_rows(
+                    [
+                        (str(item["chunk"].id), float(item["score"]))
+                        for item in eligible_candidates
+                    ],
+                    top_k,
+                )
+                thresholded_candidates = eligible_candidates[:top_k]
                 for rank, item in enumerate(thresholded_candidates, start=1):
                     chunk = item["chunk"]
                     doc = item["doc"]
@@ -1323,10 +1433,22 @@ class RetrievalService:
                         )
                     )
         else:
-            for rank, (chunk, doc, distance) in enumerate(vector_results[:top_k], start=1):
+            eligible_vector_results = [
+                (chunk, doc, distance)
+                for chunk, doc, distance in vector_results
+                if 1 - distance >= threshold
+            ]
+            self._observe_final_rows(
+                [
+                    (str(chunk.id), float(1 - distance))
+                    for chunk, _doc, distance in eligible_vector_results
+                ],
+                top_k,
+            )
+            for rank, (chunk, doc, distance) in enumerate(
+                eligible_vector_results[:top_k], start=1
+            ):
                 similarity = 1 - distance
-                if similarity < threshold:
-                    continue
 
                 meta = self._chunk_metadata(chunk, doc)
                 meta["score"] = float(similarity)
