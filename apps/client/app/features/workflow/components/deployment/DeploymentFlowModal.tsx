@@ -15,7 +15,10 @@ import { InputStep } from './InputStep';
 import { ParameterOptimizationStep } from './ParameterOptimizationStep';
 import { SuccessStep } from './SuccessStep';
 import { ErrorStep } from './ErrorStep';
-import type { AppAuthSecretReadiness } from '@/app/features/app/components/AppAuthSecretControl';
+import type {
+  AppAuthSecretReadiness,
+  IssuedAppAuthSecret,
+} from '@/app/features/app/components/AppAuthSecretControl';
 
 interface Props {
   isOpen: boolean;
@@ -44,7 +47,8 @@ export function DeploymentFlowModal({
   const [description, setDescription] = useState('');
   const [deploymentResult, setDeploymentResult] =
     useState<DeploymentResult | null>(null);
-  const [issuedSecret, setIssuedSecret] = useState<string | null>(null);
+  const [issuedSecret, setIssuedSecret] =
+    useState<IssuedAppAuthSecret | null>(null);
   const [appAuthSecretReadiness, setAppAuthSecretReadiness] =
     useState<AppAuthSecretReadiness>('checking');
   const [isDeploying, setIsDeploying] = useState(false);
@@ -121,10 +125,13 @@ export function DeploymentFlowModal({
       } else {
         setCurrentStep('error');
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       setDeploymentResult({
         success: false,
-        message: error.message || '알 수 없는 오류가 발생했습니다.',
+        message:
+          error instanceof Error
+            ? error.message
+            : '알 수 없는 오류가 발생했습니다.',
       });
       setCurrentStep('error');
     } finally {

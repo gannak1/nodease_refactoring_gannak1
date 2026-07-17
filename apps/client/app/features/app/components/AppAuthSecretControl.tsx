@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   AlertTriangle,
   Copy,
@@ -19,9 +19,14 @@ import {
 
 interface AppAuthSecretControlProps {
   appId: string;
-  issuedSecret?: string | null;
-  onSecretAvailable?: (secret: string | null) => void;
+  issuedSecret?: IssuedAppAuthSecret | null;
+  onSecretAvailable?: (secret: IssuedAppAuthSecret | null) => void;
   onReadinessChange?: (readiness: AppAuthSecretReadiness) => void;
+}
+
+export interface IssuedAppAuthSecret {
+  value: string;
+  version: number;
 }
 
 export type AppAuthSecretReadiness =
@@ -43,9 +48,8 @@ export function AppAuthSecretControl({
   onReadinessChange,
 }: AppAuthSecretControlProps) {
   const [status, setStatus] = useState<AppAuthSecretStatus | null>(null);
-  const [localIssuedSecret, setLocalIssuedSecret] = useState<string | null>(
-    null,
-  );
+  const [localIssuedSecret, setLocalIssuedSecret] =
+    useState<IssuedAppAuthSecret | null>(null);
   const [showSecret, setShowSecret] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [revokeImmediately, setRevokeImmediately] = useState(false);
@@ -56,13 +60,20 @@ export function AppAuthSecretControl({
   const issuedSecret = isIssuedSecretControlled
     ? controlledIssuedSecret
     : localIssuedSecret;
+  const issuedSecretValue =
+    issuedSecret && status?.version === issuedSecret.version
+      ? issuedSecret.value
+      : null;
 
-  const updateIssuedSecret = (secret: string | null) => {
-    if (!isIssuedSecretControlled) {
-      setLocalIssuedSecret(secret);
-    }
-    onSecretAvailable?.(secret);
-  };
+  const updateIssuedSecret = useCallback(
+    (secret: IssuedAppAuthSecret | null) => {
+      if (!isIssuedSecretControlled) {
+        setLocalIssuedSecret(secret);
+      }
+      onSecretAvailable?.(secret);
+    },
+    [isIssuedSecretControlled, onSecretAvailable],
+  );
 
   useEffect(() => {
     let active = true;
@@ -71,14 +82,21 @@ export function AppAuthSecretControl({
     setStatus(null);
     onReadinessChange?.('checking');
     if (!isIssuedSecretControlled) {
-      setLocalIssuedSecret(null);
-      onSecretAvailable?.(null);
+      updateIssuedSecret(null);
     }
 
     void appApi
       .getAuthSecretStatus(appId)
       .then((nextStatus) => {
         if (active) {
+          if (
+            controlledIssuedSecret &&
+            controlledIssuedSecret.version !== nextStatus.version
+          ) {
+            updateIssuedSecret(null);
+            setShowSecret(false);
+            setConfirming(false);
+          }
           setStatus(nextStatus);
           onReadinessChange?.(readinessOf(nextStatus));
         }
@@ -96,7 +114,13 @@ export function AppAuthSecretControl({
     return () => {
       active = false;
     };
-  }, [appId, isIssuedSecretControlled, onReadinessChange, onSecretAvailable]);
+  }, [
+    appId,
+    controlledIssuedSecret,
+    isIssuedSecretControlled,
+    onReadinessChange,
+    updateIssuedSecret,
+  ]);
 
   const beginRotation = () => {
     setRevokeImmediately(false);
@@ -122,7 +146,7 @@ export function AppAuthSecretControl({
       };
       setStatus(nextStatus);
       onReadinessChange?.('ready');
-      updateIssuedSecret(result.secret);
+      updateIssuedSecret({ value: result.secret, version: result.version });
       setShowSecret(true);
       setConfirming(false);
       toast.success('새 App secret이 발급되었습니다.');
@@ -252,7 +276,7 @@ export function AppAuthSecretControl({
         </div>
       )}
 
-      {issuedSecret && (
+      {issuedSecretValue && (
         <div className="space-y-2" role="status">
           <p className="text-xs font-medium text-red-700">
             지금 보관하세요. 이 값을 다시 조회할 수 없습니다.
@@ -260,7 +284,7 @@ export function AppAuthSecretControl({
           <div className="flex items-center gap-1.5">
             <input
               type={showSecret ? 'text' : 'password'}
-              value={issuedSecret}
+              value={issuedSecretValue}
               readOnly
               aria-label="새 App secret"
               className="min-w-0 flex-1 rounded border border-gray-300 bg-white px-2.5 py-2 font-mono text-xs text-gray-700"
@@ -280,7 +304,7 @@ export function AppAuthSecretControl({
             <button
               type="button"
               onClick={() =>
-                void copyText(issuedSecret, 'Secret을 복사했습니다.')
+                void copyText(issuedSecretValue, 'Secret을 복사했습니다.')
               }
               className="rounded border border-gray-300 p-2 text-gray-600 hover:bg-gray-50"
               title="Secret 복사"
@@ -292,7 +316,7 @@ export function AppAuthSecretControl({
             type="button"
             onClick={() =>
               void copyText(
-                `Authorization: Bearer ${issuedSecret}`,
+                `Authorization: Bearer ${issuedSecretValue}`,
                 'Authorization 헤더를 복사했습니다.',
               )
             }

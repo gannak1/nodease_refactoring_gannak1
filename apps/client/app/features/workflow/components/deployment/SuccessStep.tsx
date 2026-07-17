@@ -6,13 +6,17 @@ import { CheckCircle2, Copy, Clock, Globe } from 'lucide-react';
 import type { DeploymentResult } from './types';
 import type { DeploymentType } from '../../types/Deployment';
 import { formatCronExpression } from './utils';
-import { AppAuthSecretControl } from '@/app/features/app/components/AppAuthSecretControl';
+import {
+  AppAuthSecretControl,
+  type AppAuthSecretReadiness,
+  type IssuedAppAuthSecret,
+} from '@/app/features/app/components/AppAuthSecretControl';
 
 interface SuccessStepProps {
   result: DeploymentResult;
   deploymentType: DeploymentType;
-  issuedSecret: string | null;
-  onSecretAvailable: (secret: string | null) => void;
+  issuedSecret: IssuedAppAuthSecret | null;
+  onSecretAvailable: (secret: IssuedAppAuthSecret | null) => void;
   onClose: () => void;
 }
 
@@ -27,7 +31,11 @@ export function SuccessStep({
   const [isLoading, setIsLoading] = useState(false);
   const [testResponse, setTestResponse] = useState<string | null>(null);
   const [sessionTestSecret, setSessionTestSecret] = useState('');
-  const testAuthSecret = issuedSecret ?? sessionTestSecret;
+  const [appAuthSecretReadiness, setAppAuthSecretReadiness] =
+    useState<AppAuthSecretReadiness>('checking');
+  const issuedSecretValue =
+    appAuthSecretReadiness === 'ready' ? issuedSecret?.value : null;
+  const testAuthSecret = issuedSecretValue ?? sessionTestSecret;
 
   const handleCopy = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -343,6 +351,7 @@ ${authHeader}  -d '{
                     appId={result.appId}
                     issuedSecret={issuedSecret}
                     onSecretAvailable={onSecretAvailable}
+                    onReadinessChange={setAppAuthSecretReadiness}
                   />
                 </div>
               )}
@@ -401,6 +410,7 @@ ${authHeader}  -d '{
                       appId={result.appId}
                       issuedSecret={issuedSecret}
                       onSecretAvailable={onSecretAvailable}
+                      onReadinessChange={setAppAuthSecretReadiness}
                     />
                   </div>
                 )}

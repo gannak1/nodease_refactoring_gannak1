@@ -5,6 +5,7 @@ import { Loader2 } from 'lucide-react';
 import {
   AppAuthSecretControl,
   type AppAuthSecretReadiness,
+  type IssuedAppAuthSecret,
 } from '@/app/features/app/components/AppAuthSecretControl';
 
 import type {
@@ -16,8 +17,8 @@ import { BrowserAccessPolicyEditor } from './BrowserAccessPolicyEditor';
 
 interface InputStepProps {
   appId?: string;
-  issuedSecret: string | null;
-  onSecretAvailable: (secret: string | null) => void;
+  issuedSecret: IssuedAppAuthSecret | null;
+  onSecretAvailable: (secret: IssuedAppAuthSecret | null) => void;
   appAuthSecretReadiness: AppAuthSecretReadiness;
   onAppAuthSecretReadinessChange: (readiness: AppAuthSecretReadiness) => void;
   deploymentType: DeploymentType;

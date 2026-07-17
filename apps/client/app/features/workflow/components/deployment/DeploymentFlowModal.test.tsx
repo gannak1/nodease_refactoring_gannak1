@@ -17,21 +17,24 @@ vi.mock('@/app/features/app/components/AppAuthSecretControl', () => ({
     onReadinessChange,
   }: {
     appId: string;
-    issuedSecret?: string | null;
-    onSecretAvailable?: (secret: string | null) => void;
+    issuedSecret?: { value: string; version: number } | null;
+    onSecretAvailable?: (secret: { value: string; version: number } | null) => void;
     onReadinessChange?: (readiness: 'ready') => void;
   }) => (
     <div>
       <span>Secret 발급 준비: {appId}</span>
-      <span>현재 Secret: {issuedSecret || '없음'}</span>
+      <span>현재 Secret: {issuedSecret?.value || '없음'}</span>
       <button
         type="button"
         onClick={() => {
-          onSecretAvailable?.('one-time-secret');
+          onSecretAvailable?.({ value: 'one-time-secret', version: 1 });
           onReadinessChange?.('ready');
         }}
       >
         Secret 발급
+      </button>
+      <button type="button" onClick={() => onReadinessChange?.('ready')}>
+        Secret 상태 확인
       </button>
     </div>
   ),
@@ -111,6 +114,7 @@ describe('DeploymentFlowModal', () => {
     expect(
       await screen.findByText('현재 Secret: one-time-secret'),
     ).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Secret 상태 확인' }));
     expect(screen.getByRole('button', { name: '테스트 실행' })).toBeEnabled();
 
     rerender(renderModal(false));

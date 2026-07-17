@@ -89,14 +89,20 @@ describe('AppAuthSecretControl', () => {
       }),
     );
     expect(await screen.findByDisplayValue('one-time-secret')).toBeVisible();
-    expect(onSecretAvailable).toHaveBeenLastCalledWith('one-time-secret');
+    expect(onSecretAvailable).toHaveBeenLastCalledWith({
+      value: 'one-time-secret',
+      version: 1,
+    });
     expect(onReadinessChange).toHaveBeenLastCalledWith('ready');
 
     fireEvent.click(screen.getByRole('button', { name: '교체' }));
     expect(screen.getByDisplayValue('one-time-secret')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: '취소' }));
     expect(screen.getByDisplayValue('one-time-secret')).toBeVisible();
-    expect(onSecretAvailable).toHaveBeenLastCalledWith('one-time-secret');
+    expect(onSecretAvailable).toHaveBeenLastCalledWith({
+      value: 'one-time-secret',
+      version: 1,
+    });
 
     mockedAppApi.rotateAuthSecret.mockRejectedValueOnce(
       new Error('version conflict'),
@@ -107,7 +113,10 @@ describe('AppAuthSecretControl', () => {
       expect(mockedAppApi.rotateAuthSecret).toHaveBeenCalledTimes(2),
     );
     expect(screen.getByDisplayValue('one-time-secret')).toBeVisible();
-    expect(onSecretAvailable).toHaveBeenLastCalledWith('one-time-secret');
+    expect(onSecretAvailable).toHaveBeenLastCalledWith({
+      value: 'one-time-secret',
+      version: 1,
+    });
 
     expect(storageWrite).not.toHaveBeenCalled();
     storageWrite.mockRestore();
@@ -158,13 +167,36 @@ describe('AppAuthSecretControl', () => {
     render(
       <AppAuthSecretControl
         appId="app-1"
-        issuedSecret="one-time-secret"
+        issuedSecret={{ value: 'one-time-secret', version: 1 }}
         onSecretAvailable={onSecretAvailable}
       />,
     );
 
     expect(await screen.findByDisplayValue('one-time-secret')).toBeVisible();
     expect(onSecretAvailable).not.toHaveBeenCalledWith(null);
+  });
+
+  it('clears a parent-owned one-time secret when its issuance version is stale', async () => {
+    const onSecretAvailable = vi.fn();
+    mockedAppApi.getAuthSecretStatus.mockResolvedValue({
+      configured: true,
+      version: 2,
+      rotation_enabled: true,
+      rotated_at: '2026-07-17T04:00:00Z',
+      previous_grace_active: true,
+      previous_valid_until: '2026-07-17T04:05:00Z',
+    });
+
+    render(
+      <AppAuthSecretControl
+        appId="app-1"
+        issuedSecret={{ value: 'one-time-secret', version: 1 }}
+        onSecretAvailable={onSecretAvailable}
+      />,
+    );
+
+    await waitFor(() => expect(onSecretAvailable).toHaveBeenCalledWith(null));
+    expect(screen.queryByDisplayValue('one-time-secret')).not.toBeInTheDocument();
   });
 
   it('does not automatically retry a failed rotation', async () => {
