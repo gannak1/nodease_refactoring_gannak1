@@ -2,7 +2,7 @@
 
 Status: Superseded
 
-Superseded By: [ADR-0058](ADR-0058-bootstrap-difficulty-routing-policy.md)
+Superseded By: [ADR-0059](ADR-0059-judge-bootstrap-incremental-routing.md)
 
 Related ADRs: [ADR-0022](ADR-0022-incremental-hexagonal-architecture-adoption.md)
 

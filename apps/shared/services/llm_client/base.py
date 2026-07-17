@@ -39,6 +39,28 @@ class LLMResponseValidationError(ValueError):
         self.usage: Dict[str, int] | None = _safe_billing_usage(usage)
 
 
+class ProviderInvocationError(LLMResponseValidationError):
+    """Provider 호출 실패를 원문과 분리한 구조화된 진단 정보와 함께 전달한다."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason_code: str,
+        status_code: int | None = None,
+        provider_error_code: str | None = None,
+        provider_error_param: str | None = None,
+        provider_response_status: str | None = None,
+        usage: Any = None,
+    ) -> None:
+        super().__init__(message, usage=usage)
+        self.reason_code = reason_code
+        self.status_code = status_code
+        self.provider_error_code = provider_error_code
+        self.provider_error_param = provider_error_param
+        self.provider_response_status = provider_response_status
+
+
 class BaseLLMClient(ABC):
     """
     provider별 클라이언트의 기본 구조를 정의합니다.

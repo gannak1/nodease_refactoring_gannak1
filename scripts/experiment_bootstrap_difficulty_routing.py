@@ -11,6 +11,7 @@ import copy
 import json
 import os
 import random
+import re
 import sys
 import time
 from collections import Counter
@@ -18,21 +19,12 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Literal
+from urllib.parse import urlparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-
-from scripts.experiment_fresh_routing_benchmark import ExperimentClient
-from scripts.experiment_team_onboarding_adaptive_routing import (
-    _find_source_filenames,
-    _integer,
-    _number,
-    _safe_detail,
-    _wait_for_run_detail,
-)
-
 
 Difficulty = Literal["economy", "balanced", "advanced"]
 SOURCE_APP_ID = "10200000-0000-0000-0000-000000000408"
@@ -68,6 +60,184 @@ RAG_NODE_DATA_KEYS = (
     # 실험 재현성 차원에서 보존한다. 현재 runtime은 이 값을 사용하지 않아도 된다.
     "includeSourceMetadata",
 )
+
+
+def _safe_detail(response: Any) -> str:
+    try:
+        body = response.json()
+    except Exception:
+        return f"HTTP {response.status_code}"
+    detail = body.get("detail") if isinstance(body, dict) else None
+    return (
+        f"HTTP {response.status_code}: {detail}"
+        if isinstance(detail, str) and len(detail) <= 160
+        else f"HTTP {response.status_code}"
+    )
+
+
+def _local_http_auth_cookie_header(
+    base_url: str,
+    cookies: Any,
+) -> str | None:
+    """로컬 Docker HTTP 경로에서만 Secure 로그인 쿠키를 명시 전달한다.
+
+    Gateway 로그인은 production HTTPS를 전제로 ``auth_token``에 Secure 속성을
+    붙인다. 실험 스크립트는 Docker network의 ``http://gateway:8000``을 직접
+    호출하므로 requests가 이 쿠키를 자동 전송하지 않는다. 원격 HTTP 주소로
+    인증 토큰을 흘리지 않도록 loopback/Docker service 이름에만 이 보완을 둔다.
+    """
+
+    parsed = urlparse(base_url)
+    if parsed.scheme != "http" or parsed.hostname not in {
+        "localhost",
+        "127.0.0.1",
+        "gateway",
+    }:
+        return None
+    token = cookies.get("auth_token") if hasattr(cookies, "get") else None
+    return f"auth_token={token}" if isinstance(token, str) and token else None
+
+
+class ExperimentClient:
+    """현재 난이도 라우팅 실험만을 위한 인증 API client."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        organization_id: str,
+        email: str,
+        password: str,
+        timeout_seconds: int,
+    ) -> None:
+        import requests
+
+        self.base_url = base_url.rstrip("/")
+        self.timeout_seconds = timeout_seconds
+        self.session = requests.Session()
+        response = self.session.post(
+            f"{self.base_url}/api/v1/auth/login",
+            json={"email": email, "password": password},
+            timeout=30,
+        )
+        if response.status_code != 200:
+            raise RuntimeError(f"데모 계정 로그인 실패: {_safe_detail(response)}")
+        self.session.headers.update({"X-Organization-Id": organization_id})
+        auth_cookie = _local_http_auth_cookie_header(base_url, self.session.cookies)
+        if auth_cookie:
+            self.session.headers.update({"Cookie": auth_cookie})
+
+    def request_object(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: dict[str, Any] | None = None,
+        timeout: int | None = None,
+    ) -> dict[str, Any]:
+        response = self.session.request(
+            method,
+            f"{self.base_url}{path}",
+            json=body,
+            timeout=timeout or self.timeout_seconds,
+        )
+        if response.status_code < 200 or response.status_code >= 300:
+            raise RuntimeError(f"{method} {path} 실패: {_safe_detail(response)}")
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"{method} {path} 응답이 object가 아닙니다.")
+        return payload
+
+    def get_json(
+        self, path: str, *, timeout: int | None = None
+    ) -> dict[str, Any]:
+        return self.request_object("GET", path, timeout=timeout)
+
+    def get_json_list(
+        self, path: str, *, timeout: int | None = None
+    ) -> list[dict[str, Any]]:
+        response = self.session.get(
+            f"{self.base_url}{path}", timeout=timeout or self.timeout_seconds
+        )
+        if response.status_code < 200 or response.status_code >= 300:
+            raise RuntimeError(f"GET {path} 실패: {_safe_detail(response)}")
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise RuntimeError(f"GET {path} 응답이 list가 아닙니다.")
+        return [item for item in payload if isinstance(item, dict)]
+
+
+def _find_source_filenames(value: Any) -> set[str]:
+    found: set[str] = set()
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in {"filename", "source_filename"} and isinstance(item, str):
+                if item.lower().endswith((".pdf", ".md", ".txt")):
+                    found.add(Path(item).name)
+            else:
+                found.update(_find_source_filenames(item))
+    elif isinstance(value, list):
+        for item in value:
+            found.update(_find_source_filenames(item))
+    elif isinstance(value, str):
+        for match in re.finditer(
+            r"(?<![\w.-])([\w.-]+\.(?:pdf|md|txt))(?![\w.-])",
+            value,
+            flags=re.IGNORECASE,
+        ):
+            found.add(Path(match.group(1)).name)
+    return found
+
+
+def _number(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _integer(value: Any) -> int | None:
+    number = _number(value)
+    return int(number) if number is not None else None
+
+
+def _wait_for_run_detail(
+    client: ExperimentClient,
+    *,
+    workflow_id: str,
+    run_id: str,
+    node_id: str,
+    timeout_seconds: int,
+    poll_interval_seconds: float = 1.0,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout_seconds
+    last_status = "unknown"
+    while time.monotonic() < deadline:
+        run = client.get_json(
+            f"/api/v1/workflows/{workflow_id}/runs/{run_id}", timeout=30
+        )
+        node_runs = run.get("node_runs")
+        node_runs = node_runs if isinstance(node_runs, list) else []
+        node_run = next(
+            (
+                item
+                for item in node_runs
+                if isinstance(item, dict) and item.get("node_id") == node_id
+            ),
+            None,
+        )
+        run_status = str(run.get("status") or "").lower()
+        node_status = str((node_run or {}).get("status") or "").lower()
+        last_status = f"run={run_status or 'unknown'}, node={node_status or 'missing'}"
+        terminal = {"success", "failed", "cancelled", "canceled", "skipped"}
+        if node_run is not None and run_status in terminal and node_status in terminal:
+            return run
+        if run_status in {"failed", "cancelled", "canceled"} and node_run is None:
+            return run
+        time.sleep(max(0.0, poll_interval_seconds))
+    raise TimeoutError(f"run detail 최종 상태 대기 시간 초과: {last_status}")
 
 
 @dataclass(frozen=True)

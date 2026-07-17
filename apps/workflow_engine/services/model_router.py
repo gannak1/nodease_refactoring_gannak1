@@ -23,6 +23,7 @@ from apps.shared.db.models.workflow_run import (
     WorkflowRun,
 )
 from apps.workflow_engine.services.model_routing_mdeberta_classifier import (
+    MDebertaComplexityRegressor,
     MDebertaDifficultyClassifier,
 )
 OPERATIONAL_TRIGGER_MODES = {
@@ -322,6 +323,7 @@ class ModelRoutingPolicyDecision:
     decision_source: str = "active_policy"
     strategy_id: Optional[str] = None
     decision_factors: dict[str, Any] = field(default_factory=dict)
+    requires_runtime_judge: bool = False
 
 
 @dataclass(frozen=True)
@@ -456,13 +458,42 @@ class ModelRouter:
         if not default_model_id:
             raise ModelRoutingUnavailableError("default model is required.")
 
+        executable_model_ids = (
+            [str(model_id).strip() for model_id in available_model_ids if str(model_id).strip()]
+            if available_model_ids is not None
+            else []
+        )
         allowed_models = (
-            {cls.normalize_model_id(model_id) for model_id in available_model_ids}
+            {cls.normalize_model_id(model_id) for model_id in executable_model_ids}
             if available_model_ids is not None
             else None
         )
         runtime_context = cls.infer_runtime_context(inputs, node_data)
         strategy_id = cls._first_non_empty(active_policy.get("strategy_id"))
+        if strategy_id == "judge_bootstrap_incremental_v1":
+            return cls._resolve_judge_bootstrap_incremental_policy(
+                active_policy,
+                runtime_context=runtime_context,
+                allowed_models=allowed_models,
+                executable_model_ids=executable_model_ids,
+                default_model_id=default_model_id,
+                fallback_model_id=fallback_model_id,
+                strategy_id=strategy_id,
+                routing_feature_text=routing_feature_text,
+            )
+        if strategy_id == "bootstrap_request_complexity_regression_v4":
+            return cls._resolve_bootstrap_complexity_regression_policy(
+                active_policy,
+                inputs=inputs,
+                node_data=node_data,
+                runtime_context=runtime_context,
+                allowed_models=allowed_models,
+                default_model_id=default_model_id,
+                fallback_model_id=fallback_model_id,
+                strategy_id=strategy_id,
+                routing_feature_text=routing_feature_text,
+                node_profile=node_profile,
+            )
         if strategy_id == "bootstrap_request_complexity_v3":
             return cls._resolve_bootstrap_difficulty_policy(
                 active_policy,
@@ -576,6 +607,239 @@ class ModelRouter:
                 runtime_context=runtime_context,
                 selected_model_id=selected_model,
             ),
+        )
+
+    @classmethod
+    def _resolve_judge_bootstrap_incremental_policy(
+        cls,
+        active_policy: dict[str, Any],
+        *,
+        runtime_context: ModelRoutingRuntimeContext,
+        allowed_models: set[str] | None,
+        executable_model_ids: list[str],
+        default_model_id: str,
+        fallback_model_id: str | None,
+        strategy_id: str,
+        routing_feature_text: str | None,
+    ) -> ModelRoutingPolicyDecision:
+        """초기에는 Judge, 충분히 건강한 표본 뒤에는 local router를 사용한다."""
+
+        candidates = executable_model_ids or cls._bootstrap_catalog_model_ids(active_policy)
+        default_selected = cls._first_available_model(
+            [default_model_id, fallback_model_id, *candidates], allowed_models
+        )
+        if not default_selected:
+            raise ModelRoutingUnavailableError(
+                "No Judge bootstrap model is currently available to the execution subject."
+            )
+        resolved_fallback = cls._first_available_model(
+            [fallback_model_id, default_model_id, *candidates],
+            allowed_models,
+            exclude=default_selected,
+        )
+        learning = active_policy.get("learning")
+        learning = learning if isinstance(learning, dict) else {}
+        artifact = learning.get("local_router_artifact")
+        min_confidence = float(learning.get("local_confidence_threshold") or 0.78)
+        if learning.get("mode") == "local_first" and isinstance(artifact, dict):
+            try:
+                from apps.workflow_engine.services.model_routing_mdeberta_classifier import (
+                    MDebertaModelChoiceClassifier,
+                )
+
+                prediction = MDebertaModelChoiceClassifier.predict(
+                    artifact,
+                    text=routing_feature_text or runtime_context.text,
+                    available_model_ids=candidates,
+                )
+                selected = cls._first_available_model(
+                    [prediction.selected_model_id], allowed_models
+                )
+                if selected and prediction.confidence >= min_confidence:
+                    return ModelRoutingPolicyDecision(
+                        selected_model_id=selected,
+                        fallback_model_id=resolved_fallback,
+                        matched_rule_id="incremental-local-router",
+                        reason_code="local_router_confident",
+                        runtime_context=runtime_context,
+                        decision_source="local_router",
+                        strategy_id=strategy_id,
+                        decision_factors={
+                            "learning_mode": "local_first",
+                            "local_confidence": prediction.confidence,
+                            "local_confidence_threshold": min_confidence,
+                            "candidate_model_count": len(candidates),
+                        },
+                    )
+                low_confidence = prediction.confidence
+            except (RuntimeError, ValueError):
+                low_confidence = None
+            return ModelRoutingPolicyDecision(
+                selected_model_id=default_selected,
+                fallback_model_id=resolved_fallback,
+                matched_rule_id=None,
+                reason_code="local_router_uncertain",
+                runtime_context=runtime_context,
+                decision_source="local_router_uncertain",
+                strategy_id=strategy_id,
+                decision_factors={
+                    "learning_mode": "local_first",
+                    "local_confidence": low_confidence,
+                    "local_confidence_threshold": min_confidence,
+                    "candidate_model_count": len(candidates),
+                },
+                requires_runtime_judge=True,
+            )
+
+        return ModelRoutingPolicyDecision(
+            selected_model_id=default_selected,
+            fallback_model_id=resolved_fallback,
+            matched_rule_id=None,
+            reason_code="judge_bootstrap_required",
+            runtime_context=runtime_context,
+            decision_source="runtime_judge_pending",
+            strategy_id=strategy_id,
+            decision_factors={
+                "learning_mode": "judge_first",
+                "candidate_model_count": len(candidates),
+                "judged_request_count": int(learning.get("judged_request_count") or 0),
+            },
+            requires_runtime_judge=True,
+        )
+
+    @classmethod
+    def _resolve_bootstrap_complexity_regression_policy(
+        cls,
+        active_policy: dict[str, Any],
+        *,
+        inputs: dict[str, Any],
+        node_data: Any,
+        runtime_context: ModelRoutingRuntimeContext,
+        allowed_models: set[str] | None,
+        default_model_id: str,
+        fallback_model_id: str | None,
+        strategy_id: str,
+        routing_feature_text: str | None,
+        node_profile: NodeRunProfile | None,
+    ) -> ModelRoutingPolicyDecision:
+        """연속 복잡도 점수로 모든 후보 모델을 순위화한다.
+
+        새 정책은 economy/balanced/advanced 중 하나를 선택하지 않는다. 회귀기가
+        예측한 0~100 점수와 오차 범위를 전역 profile scorer에 전달해, 요청보다
+        능력이 부족한 후보는 품질 gate에서 제외하고 충분한 후보 중 가장 효율적인
+        모델을 선택한다.
+        """
+        catalog_model_ids = cls._bootstrap_catalog_model_ids(active_policy)
+        default_selected = cls._first_available_model(
+            [
+                default_model_id,
+                fallback_model_id,
+                getattr(node_data, "model_id", None),
+                *catalog_model_ids,
+            ],
+            allowed_models,
+        )
+        if not default_selected:
+            raise ModelRoutingUnavailableError(
+                "No bootstrap routing model is currently available to the execution subject."
+            )
+        default_fallback = cls._first_available_model(
+            [
+                fallback_model_id,
+                default_model_id,
+                getattr(node_data, "fallback_model_id", None),
+                getattr(node_data, "model_id", None),
+                *catalog_model_ids,
+            ],
+            allowed_models,
+            exclude=default_selected,
+        )
+        artifact = active_policy.get("classifier_artifact")
+        if not isinstance(artifact, dict):
+            return cls._complexity_regression_default_decision(
+                default_selected=default_selected,
+                default_fallback=default_fallback,
+                runtime_context=runtime_context,
+                strategy_id=strategy_id,
+                reason_code="complexity_regression_artifact_missing",
+            )
+
+        feature_text = routing_feature_text or cls._bootstrap_feature_text(
+            inputs,
+            node_data,
+            runtime_context,
+        )
+        try:
+            prediction = MDebertaComplexityRegressor.predict(artifact, feature_text)
+        except (RuntimeError, ValueError):
+            return cls._complexity_regression_default_decision(
+                default_selected=default_selected,
+                default_fallback=default_fallback,
+                runtime_context=runtime_context,
+                strategy_id=strategy_id,
+                reason_code="complexity_regression_unavailable",
+            )
+
+        decision = cls._bootstrap_global_profile_decision(
+            active_policy,
+            difficulty="continuous",
+            probabilities=None,
+            complexity_score=prediction.complexity_score,
+            complexity_uncertainty=prediction.uncertainty,
+            runtime_context=runtime_context,
+            node_data=node_data,
+            allowed_models=allowed_models,
+            default_model_id=default_model_id,
+            fallback_model_id=fallback_model_id,
+            strategy_id=strategy_id,
+            node_profile=node_profile,
+            classification_factors={
+                "routing_basis": "request_prompt_complexity_regression",
+                "classification_status": "matched",
+                "complexity_score": prediction.complexity_score,
+                "complexity_uncertainty": prediction.uncertainty,
+                "confidence": prediction.confidence,
+            },
+            matched_rule_id="complexity-regression",
+            reason_prefix="complexity_regression_global_profile",
+        )
+        if decision is not None:
+            return decision
+        return cls._complexity_regression_default_decision(
+            default_selected=default_selected,
+            default_fallback=default_fallback,
+            runtime_context=runtime_context,
+            strategy_id=strategy_id,
+            reason_code="complexity_regression_catalog_unavailable",
+            factors={
+                "complexity_score": prediction.complexity_score,
+                "complexity_uncertainty": prediction.uncertainty,
+                "confidence": prediction.confidence,
+            },
+        )
+
+    @staticmethod
+    def _complexity_regression_default_decision(
+        *,
+        default_selected: str,
+        default_fallback: str | None,
+        runtime_context: ModelRoutingRuntimeContext,
+        strategy_id: str,
+        reason_code: str,
+        factors: dict[str, Any] | None = None,
+    ) -> ModelRoutingPolicyDecision:
+        return ModelRoutingPolicyDecision(
+            selected_model_id=default_selected,
+            fallback_model_id=default_fallback,
+            matched_rule_id=None,
+            reason_code=reason_code,
+            runtime_context=runtime_context,
+            strategy_id=strategy_id,
+            decision_factors={
+                "routing_basis": "request_prompt_complexity_regression",
+                "classification_status": "fallback",
+                **(factors or {}),
+            },
         )
 
     @classmethod
@@ -1025,6 +1289,8 @@ class ModelRouter:
         *,
         difficulty: str,
         probabilities: Any,
+        complexity_score: float | None = None,
+        complexity_uncertainty: float = 0.0,
         runtime_context: ModelRoutingRuntimeContext,
         node_data: Any,
         allowed_models: set[str] | None,
@@ -1048,6 +1314,7 @@ class ModelRouter:
             return None
         try:
             from apps.workflow_engine.services.model_routing_global_profiles import (
+                ModelRoutingComplexityEstimate,
                 ModelRoutingDifficultyDistribution,
                 ModelRoutingGlobalProfileScorer,
             )
@@ -1056,9 +1323,21 @@ class ModelRouter:
                 probabilities if isinstance(probabilities, Mapping) else {}
             )
             if not probability_mapping:
-                probability_mapping = {difficulty: 1.0}
+                probability_mapping = (
+                    {"balanced": 1.0}
+                    if complexity_score is not None
+                    else {difficulty: 1.0}
+                )
             distribution = ModelRoutingDifficultyDistribution.from_mapping(
                 probability_mapping
+            )
+            complexity = (
+                ModelRoutingComplexityEstimate(
+                    score=max(0.0, min(100.0, float(complexity_score))),
+                    uncertainty=max(0.0, float(complexity_uncertainty)),
+                )
+                if complexity_score is not None
+                else None
             )
             input_tokens, output_tokens = cls._bootstrap_runtime_token_estimate(
                 node_data,
@@ -1068,6 +1347,7 @@ class ModelRouter:
                 catalog_snapshot=catalog_snapshot,
                 available_model_ids=allowed_models,
                 difficulty=distribution,
+                complexity=complexity,
                 input_profile=runtime_context.input_length_bucket,
                 estimated_input_tokens=input_tokens,
                 estimated_output_tokens=output_tokens,
@@ -1101,11 +1381,17 @@ class ModelRouter:
             "profile_source": selected_score.profile_source,
             "profile_version": selected_score.profile_version,
         }
+        if result.complexity_score is not None:
+            factors["complexity_score"] = result.complexity_score
         return ModelRoutingPolicyDecision(
             selected_model_id=result.selected_model_id,
             fallback_model_id=resolved_fallback,
             matched_rule_id=matched_rule_id or f"difficulty-{difficulty}",
-            reason_code=f"{reason_prefix}_{difficulty}",
+            reason_code=(
+                reason_prefix
+                if result.complexity_score is not None
+                else f"{reason_prefix}_{difficulty}"
+            ),
             runtime_context=runtime_context,
             strategy_id=strategy_id,
             decision_factors=factors,

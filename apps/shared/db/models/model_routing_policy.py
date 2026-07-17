@@ -207,6 +207,12 @@ class LLMNodeModelRoutingBootstrapSample(Base):
     source: Mapped[str] = mapped_column(String(16), nullable=False)
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
     difficulty: Mapped[str] = mapped_column(String(16), nullable=False)
+    complexity_score: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2),
+        nullable=False,
+        default=Decimal("50"),
+        comment="회귀형 요청 복잡도 점수(0~100). difficulty는 과거 정책 호환용 표시값이다.",
+    )
     safe_input_summary: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     feature_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     input_length: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

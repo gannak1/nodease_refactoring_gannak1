@@ -1,6 +1,7 @@
 from scripts.experiment_bootstrap_difficulty_routing import (
     AUTHENTICATED_EXPERIMENT_DEPLOYMENT_TYPE,
     RoutingObservation,
+    _local_http_auth_cookie_header,
     assert_rag_embedding_models_available,
     _deployment_create_body,
     _copy_llm_rag_configuration,
@@ -8,6 +9,19 @@ from scripts.experiment_bootstrap_difficulty_routing import (
     evaluate_routing_attempt,
     wait_for_bootstrap_classifier,
 )
+
+
+def test_local_docker_http_experiment_reuses_secure_login_cookie_only_locally():
+    cookies = {"auth_token": "session-token"}
+
+    assert _local_http_auth_cookie_header("http://gateway:8000", cookies) == (
+        "auth_token=session-token"
+    )
+    assert _local_http_auth_cookie_header("http://localhost:8000", cookies) == (
+        "auth_token=session-token"
+    )
+    assert _local_http_auth_cookie_header("https://nodease.example", cookies) is None
+    assert _local_http_auth_cookie_header("http://nodease.example", cookies) is None
 
 
 def test_routing_dataset_has_balanced_20_and_diverse_50_cases():

@@ -49,7 +49,7 @@ def test_lifecycle_chart_visualizes_each_policy_checkpoint(tmp_path: Path):
                 "active_rule_count": 1,
                 "validation_spend_usd": 0.08,
                 "route_coverage_pct": 25.0,
-                "cohort_accuracy_pct": 80.0,
+                "routing_accuracy_pct": 80.0,
             },
             {
                 "sequence": 20,
@@ -57,7 +57,7 @@ def test_lifecycle_chart_visualizes_each_policy_checkpoint(tmp_path: Path):
                 "active_rule_count": 2,
                 "validation_spend_usd": 0.12,
                 "route_coverage_pct": 45.0,
-                "cohort_accuracy_pct": 90.0,
+                "routing_accuracy_pct": 90.0,
             },
         ],
         model_windows=[

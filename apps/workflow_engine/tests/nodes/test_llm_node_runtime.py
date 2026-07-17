@@ -43,6 +43,7 @@ from apps.shared.domain.knowledge_runtime_candidates import (  # noqa: E402
     resolve_knowledge_runtime_candidates,
 )
 from apps.shared.schemas.rag import ChunkPreview  # noqa: E402
+from apps.shared.services.llm_client.base import ProviderInvocationError  # noqa: E402
 from apps.shared.services.rag_evidence_policy import RAGEvidenceDecision  # noqa: E402
 from apps.shared.services.tracing.metadata import TraceMetadataSanitizer  # noqa: E402
 from apps.workflow_engine.services import (  # noqa: E402
@@ -116,6 +117,17 @@ class FailingClient:
         """동기 호출 - 실패"""
         self.calls.append({"messages": messages, "kwargs": kwargs})
         raise RuntimeError("primary model failed")
+
+
+class IncompleteResponsesClient:
+    """Responses API가 출력 전 종료된 상황을 재현한다."""
+
+    def invoke_sync(self, messages, **kwargs):
+        raise ProviderInvocationError(
+            "OpenAI Responses 응답이 완료되지 않았습니다: status=incomplete",
+            reason_code="responses_incomplete",
+            provider_response_status="incomplete",
+        )
 
 
 class SuccessClient:
@@ -1333,11 +1345,66 @@ def test_llm_node_uses_fallback_model_on_failure(monkeypatch):
         "fallback_used": True,
         "fallback_from_model": "primary-model",
         "fallback_reason_code": "provider_call_failed",
+        "fallback_provider_error_code": "provider_exception",
+        "fallback_provider_error_type": "RuntimeError",
     }
     assert service_calls == [
         {"model_id": "primary-model", "organization_id": organization_id},
         {"model_id": "fallback-model", "organization_id": organization_id},
     ]
+
+
+def test_llm_node_records_safe_responses_failure_category_before_fallback(monkeypatch):
+    """Responses 오류의 원문 없이 상태 범주만 fallback trace에 남긴다."""
+    organization_id = uuid.uuid4()
+
+    def fake_get_runtime_client_for_user(db, user_id, model_id, organization_id=None):
+        client = (
+            IncompleteResponsesClient()
+            if model_id == "primary-model"
+            else SuccessClient()
+        )
+        return SimpleNamespace(
+            client=client,
+            credential_id=uuid.uuid4(),
+            model_id=model_id,
+            organization_id=organization_id,
+        )
+
+    monkeypatch.setattr(
+        LLMService, "get_runtime_client_for_user", fake_get_runtime_client_for_user
+    )
+    node = LLMNode(
+        "llm-1",
+        LLMNodeData(
+            title="LLM",
+            provider="openai",
+            model_id="primary-model",
+            fallback_model_id="fallback-model",
+            system_prompt="sys",
+            user_prompt="user",
+            assistant_prompt=None,
+            referenced_variables=[],
+            context_variable=None,
+            parameters={},
+        ),
+        execution_context={
+            "user_id": str(uuid.uuid4()),
+            "organization_id": str(organization_id),
+            "db": object(),
+        },
+    )
+
+    result = node.execute({})
+
+    assert result["metadata"]["model_routing"] == {
+        "fallback_used": True,
+        "fallback_from_model": "primary-model",
+        "fallback_reason_code": "provider_call_failed",
+        "fallback_provider_error_code": "responses_incomplete",
+        "fallback_provider_error_type": "ProviderInvocationError",
+        "fallback_provider_response_status": "incomplete",
+    }
 
 
 def test_llm_node_logs_fallback_model_when_primary_client_selection_fails(
@@ -3770,6 +3837,99 @@ def test_auto_model_routing_prefers_persisted_policy_over_legacy_node_json(monke
     assert metadata["policy_id"] == str(persisted.id)
     assert metadata["policy_version"] == "router-policy-v9"
     assert metadata["judge_called"] is False
+
+
+def test_deployed_judge_bootstrap_uses_judge_and_records_safe_learning_label(monkeypatch):
+    """초기 배포 실행은 Judge 선택을 쓰되 editor test와 달리 학습 label을 남긴다."""
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    policy_id = uuid.uuid4()
+    persisted = SimpleNamespace(
+        id=policy_id,
+        enabled=True,
+        status="active",
+        policy_version="judge-bootstrap-v1",
+        active_policy={
+            "strategy_id": "judge_bootstrap_incremental_v1",
+            "default_model_id": "gpt-5-mini",
+            "fallback_model_id": "gpt-4o-mini",
+            "learning": {"mode": "judge_first", "local_router_artifact": {}},
+        },
+        refresh_every_runs=20,
+        eligible_runs_since_last_refresh=0,
+    )
+    monkeypatch.setattr(
+        ModelRoutingPolicyStore, "get_runtime_policy", lambda *_args, **_kwargs: persisted
+    )
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        ModelRoutingPolicyStore,
+        "record_runtime_judge_label",
+        lambda *_args, **kwargs: captured.update(kwargs) or {"learning_recorded": True},
+    )
+
+    class _JudgeClient:
+        def invoke_sync(self, *, messages, **kwargs):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"selected_model_id":"gpt-4o-mini","confidence":0.9,"reason_code":"judge_short"}'
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 9, "completion_tokens": 4},
+            }
+
+    user_id = uuid.uuid4()
+    monkeypatch.setattr(
+        LLMService,
+        "get_runtime_client_for_user",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            client=_JudgeClient(), credential_id=uuid.uuid4(), model_id="gpt-5-mini"
+        ),
+    )
+    monkeypatch.setattr(LLMService, "calculate_cost", lambda *_args, **_kwargs: 0.0001)
+    def _raise_usage_log_error(*_args, **_kwargs):
+        raise RuntimeError("usage log temporary failure")
+
+    monkeypatch.setattr(LLMService, "log_usage", _raise_usage_log_error)
+
+    node = LLMNode(
+        "llm-judge",
+        LLMNodeData(
+            title="judge bootstrap",
+            model_id="gpt-5-mini",
+            fallback_model_id="gpt-4o-mini",
+            auto_model_routing=True,
+            user_prompt="{{ message }}",
+            referenced_variables=[],
+            parameters={},
+        ),
+        execution_context={
+            "workflow_id": str(uuid.uuid4()),
+            "deployment_id": str(uuid.uuid4()),
+            "workflow_run_id": str(uuid.uuid4()),
+            "organization_id": str(uuid.uuid4()),
+        },
+    )
+    monkeypatch.setattr(node, "_available_routing_model_ids", lambda _db: ["gpt-4o-mini", "gpt-5-mini"])
+    monkeypatch.setattr(node, "_resolve_credential_principal_user", lambda: user_id)
+    monkeypatch.setattr(node, "_require_runtime_organization_id", lambda *_args: uuid.uuid4())
+
+    selected, fallback, metadata = node._resolve_model_routing_policy(
+        {"message": "짧은 사용 방법을 알려 주세요"}, object(), routing_feature_text="짧은 안내"
+    )
+
+    assert selected == "gpt-4o-mini"
+    assert fallback == "gpt-5-mini"
+    assert metadata["decision_source"] == "runtime_judge"
+    assert metadata["judge_called"] is True
+    assert metadata["judge"]["usage_log_error"] == "RuntimeError"
+    assert captured["policy_id"] == str(policy_id)
+    assert captured["selected_model_id"] == "gpt-4o-mini"
 
 
 def test_test_execution_uses_matching_deployment_policy_without_becoming_deployed(

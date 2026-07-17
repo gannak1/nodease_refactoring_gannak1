@@ -74,6 +74,20 @@ class ModelRoutingDifficultyDistribution:
 
 
 @dataclass(frozen=True)
+class ModelRoutingComplexityEstimate:
+    """요청별 연속 복잡도 점수와 예측 오차 범위."""
+
+    score: float
+    uncertainty: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.score) or not 0 <= self.score <= 100:
+            raise ValueError("complexity score must be between 0 and 100")
+        if not math.isfinite(self.uncertainty) or self.uncertainty < 0:
+            raise ValueError("complexity uncertainty must be non-negative")
+
+
+@dataclass(frozen=True)
 class GlobalModelProfile:
     """한 모델의 전역 사전 지식 profile.
 
@@ -136,6 +150,33 @@ class GlobalModelProfile:
             for level in DIFFICULTY_LEVELS
         )
 
+    def expected_quality_at_complexity(self, complexity: ModelRoutingComplexityEstimate) -> float:
+        return self._interpolate_complexity_curve(
+            self.quality_by_difficulty,
+            complexity.score,
+        )
+
+    def expected_uncertainty_at_complexity(
+        self,
+        complexity: ModelRoutingComplexityEstimate,
+    ) -> float:
+        return self._interpolate_complexity_curve(
+            self.uncertainty_by_difficulty,
+            complexity.score,
+        )
+
+    @staticmethod
+    def _interpolate_complexity_curve(
+        values: Mapping[str, float],
+        score: float,
+    ) -> float:
+        low = _float(values.get("economy"), default=0.0)
+        middle = _float(values.get("balanced"), default=low)
+        high = _float(values.get("advanced"), default=middle)
+        if score <= 50:
+            return low + (middle - low) * (score / 50.0)
+        return middle + (high - middle) * ((score - 50.0) / 50.0)
+
     def expected_latency_ms(self, input_profile: str) -> int:
         normalized = str(input_profile or "unknown").strip().lower()
         for key in (normalized, "unknown", "medium", "short", "long"):
@@ -170,6 +211,7 @@ class ModelRoutingProfileScoreResult:
     ranked_candidates: tuple[ModelRoutingCandidateScore, ...]
     quality_floor: float
     dominant_difficulty: str
+    complexity_score: float | None = None
 
     @property
     def by_model(self) -> dict[str, ModelRoutingCandidateScore]:
@@ -194,6 +236,7 @@ class ModelRoutingGlobalProfileScorer:
     _COST_WEIGHT = 0.14
     _LATENCY_WEIGHT = 0.05
     _FALLBACK_WEIGHT = 0.08
+    _MAX_QUALITY_HEADROOM_UTILITY = 0.02
 
     @classmethod
     def rank(
@@ -202,6 +245,7 @@ class ModelRoutingGlobalProfileScorer:
         candidates: Iterable[ConstraintModelCandidate],
         global_profiles: Mapping[str, GlobalModelProfile],
         difficulty: ModelRoutingDifficultyDistribution,
+        complexity: ModelRoutingComplexityEstimate | None = None,
         input_profile: str,
         estimated_input_tokens: int,
         estimated_output_tokens: int,
@@ -226,6 +270,7 @@ class ModelRoutingGlobalProfileScorer:
                 profile=global_profiles.get(candidate.model_id)
                 or CatalogGlobalProfileDefaults.for_candidate(candidate),
                 difficulty=difficulty,
+                complexity=complexity,
                 input_profile=normalized_input_profile,
                 estimated_input_tokens=estimated_input_tokens,
                 estimated_output_tokens=estimated_output_tokens,
@@ -237,9 +282,17 @@ class ModelRoutingGlobalProfileScorer:
             )
             for candidate in candidate_rows
         ]
-        quality_floor = cls._QUALITY_FLOOR[difficulty.dominant_level]
+        quality_floor = (
+            cls._quality_floor_for_complexity(complexity)
+            if complexity is not None
+            else cls._QUALITY_FLOOR[difficulty.dominant_level]
+        )
         eligible = [item for item in scores if item.quality_lower_bound >= quality_floor]
-        scored = cls._apply_utility(scores, eligible=eligible)
+        scored = cls._apply_utility(
+            scores,
+            eligible=eligible,
+            quality_floor=quality_floor,
+        )
         eligible = [item for item in scored if item.selection_eligible]
         if eligible:
             selected = max(eligible, key=lambda item: (item.utility_score, item.model_id))
@@ -271,6 +324,7 @@ class ModelRoutingGlobalProfileScorer:
             ranked_candidates=ranked,
             quality_floor=quality_floor,
             dominant_difficulty=difficulty.dominant_level,
+            complexity_score=complexity.score if complexity is not None else None,
         )
 
     @classmethod
@@ -280,6 +334,7 @@ class ModelRoutingGlobalProfileScorer:
         candidates: Iterable[ModelCandidate],
         global_profiles: Mapping[str, GlobalModelProfile],
         difficulty: ModelRoutingDifficultyDistribution,
+        complexity: ModelRoutingComplexityEstimate | None = None,
         input_profile: str,
         estimated_input_tokens: int,
         estimated_output_tokens: int,
@@ -316,6 +371,7 @@ class ModelRoutingGlobalProfileScorer:
             candidates=converted,
             global_profiles=normalized_profiles,
             difficulty=difficulty,
+            complexity=complexity,
             input_profile=input_profile,
             estimated_input_tokens=estimated_input_tokens,
             estimated_output_tokens=estimated_output_tokens,
@@ -377,6 +433,7 @@ class ModelRoutingGlobalProfileScorer:
         catalog_snapshot: Any,
         available_model_ids: Iterable[str] | None,
         difficulty: ModelRoutingDifficultyDistribution,
+        complexity: ModelRoutingComplexityEstimate | None = None,
         input_profile: str,
         estimated_input_tokens: int,
         estimated_output_tokens: int,
@@ -435,6 +492,7 @@ class ModelRoutingGlobalProfileScorer:
                 candidates=candidates,
                 global_profiles=profiles,
                 difficulty=difficulty,
+                complexity=complexity,
                 input_profile=input_profile,
                 estimated_input_tokens=estimated_input_tokens,
                 estimated_output_tokens=estimated_output_tokens,
@@ -502,13 +560,22 @@ class ModelRoutingGlobalProfileScorer:
         candidate: ConstraintModelCandidate,
         profile: GlobalModelProfile,
         difficulty: ModelRoutingDifficultyDistribution,
+        complexity: ModelRoutingComplexityEstimate | None,
         input_profile: str,
         estimated_input_tokens: int,
         estimated_output_tokens: int,
         performance: ModelPerformance | None,
     ) -> ModelRoutingCandidateScore:
-        prior_quality = profile.expected_quality(difficulty)
-        prior_uncertainty = profile.expected_uncertainty(difficulty)
+        prior_quality = (
+            profile.expected_quality_at_complexity(complexity)
+            if complexity is not None
+            else profile.expected_quality(difficulty)
+        )
+        prior_uncertainty = (
+            profile.expected_uncertainty_at_complexity(complexity)
+            if complexity is not None
+            else profile.expected_uncertainty(difficulty)
+        )
         prior_strength = profile.prior_strength
         observed_quality = cls._operational_quality(performance)
         sample_count = int(performance.run_count or 0) if performance else 0
@@ -570,6 +637,7 @@ class ModelRoutingGlobalProfileScorer:
         scores: list[ModelRoutingCandidateScore],
         *,
         eligible: list[ModelRoutingCandidateScore],
+        quality_floor: float,
     ) -> list[ModelRoutingCandidateScore]:
         if not scores:
             return []
@@ -585,8 +653,16 @@ class ModelRoutingGlobalProfileScorer:
             latency_penalty = cls._normalized(
                 float(item.expected_latency_ms), float(min_latency), float(max_latency)
             )
+            # 품질 gate를 통과한 뒤에는 "더 비싼 모델일수록 더 좋은" 방향으로
+            # 무한히 보상하지 않는다. 충분한 품질을 확보한 후보 중 비용과 지연이
+            # 가장 낮은 모델을 고르는 것이 라우터의 목표다. 남는 품질 여유는 동률을
+            # 안정적으로 풀기 위한 작은 보조 신호로만 사용한다.
+            quality_headroom = min(
+                max(item.quality_lower_bound - quality_floor, 0.0),
+                cls._MAX_QUALITY_HEADROOM_UTILITY,
+            )
             utility = (
-                item.quality_lower_bound
+                quality_headroom
                 - cls._COST_WEIGHT * cost_penalty
                 - cls._LATENCY_WEIGHT * latency_penalty
                 - cls._FALLBACK_WEIGHT * item.expected_fallback_rate
@@ -601,6 +677,26 @@ class ModelRoutingGlobalProfileScorer:
                 )
             )
         return resolved
+
+    @classmethod
+    def _quality_floor_for_complexity(
+        cls,
+        complexity: ModelRoutingComplexityEstimate,
+    ) -> float:
+        """복잡할수록 품질 기준을 부드럽게 높인다.
+
+        0점은 기존 economy 기준, 50점은 balanced 기준, 100점은 advanced
+        기준에 대응한다. 세 구간으로 분기하지 않으므로 64점과 65점도 다른
+        품질 기준으로 후보를 평가한다.
+        """
+        protected_score = min(100.0, complexity.score + complexity.uncertainty)
+        if protected_score <= 50:
+            return cls._QUALITY_FLOOR["economy"] + (
+                cls._QUALITY_FLOOR["balanced"] - cls._QUALITY_FLOOR["economy"]
+            ) * (protected_score / 50.0)
+        return cls._QUALITY_FLOOR["balanced"] + (
+            cls._QUALITY_FLOOR["advanced"] - cls._QUALITY_FLOOR["balanced"]
+        ) * ((protected_score - 50.0) / 50.0)
 
     @staticmethod
     def _normalized(value: float, low: float, high: float) -> float:

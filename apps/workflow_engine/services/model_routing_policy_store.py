@@ -39,6 +39,9 @@ from apps.workflow_engine.services.model_routing_bootstrap import (
 from apps.workflow_engine.services.model_routing_operational_performance import (
     ModelRoutingOperationalPerformanceService,
 )
+from apps.workflow_engine.services.model_routing_incremental_learning import (
+    learning_mode_for,
+)
 from apps.workflow_engine.services.llm_service import LLMService
 from apps.shared.services.model_routing_model_filter import (
     filter_model_routing_available_model_ids,
@@ -80,6 +83,131 @@ class ModelRoutingPolicyStore:
         except (InvalidOperation, TypeError, ValueError):
             value = Decimal("3")
         return max(Decimal("0.5"), min(Decimal("10"), value))
+
+    @classmethod
+    def record_runtime_judge_label(
+        cls,
+        db: Session,
+        *,
+        policy_id: str | uuid.UUID,
+        routing_feature_text: str,
+        selected_model_id: str,
+        candidate_model_ids: list[str],
+        confidence: float,
+        reason_code: str,
+    ) -> dict[str, Any]:
+        """Judge 선택을 raw prompt 없이 local router artifact에 누적한다.
+
+        policy row를 잠근 뒤 JSONB artifact를 갱신한다. 동시에 끝난 요청이 같은
+        가중치를 읽고 마지막 write로 덮어쓰는 문제를 피하기 위한 경계다.
+        """
+
+        policy = cls._lock_policy_for_update(db, policy_id=uuid.UUID(str(policy_id)))
+        if policy is None:
+            return {"learning_recorded": False, "reason": "policy_not_found"}
+        active_policy = (
+            dict(policy.active_policy) if isinstance(policy.active_policy, dict) else {}
+        )
+        if active_policy.get("strategy_id") != "judge_bootstrap_incremental_v1":
+            return {"learning_recorded": False, "reason": "strategy_not_supported"}
+
+        learning = (
+            dict(active_policy.get("learning"))
+            if isinstance(active_policy.get("learning"), dict)
+            else {}
+        )
+        labels = {
+            str(model_id)
+            for model_id in (learning.get("selected_model_ids") or [])
+            if str(model_id).strip()
+        }
+        labels.add(str(selected_model_id))
+        learning["judged_request_count"] = int(
+            learning.get("judged_request_count") or 0
+        ) + 1
+        learning["selected_model_ids"] = sorted(labels)
+        learning["last_judge_confidence"] = round(float(confidence), 4)
+        learning["last_judge_reason_code"] = str(reason_code)[:80]
+        try:
+            from apps.workflow_engine.services.model_routing_mdeberta_classifier import (
+                MDebertaModelChoiceClassifier,
+            )
+
+            learning["local_router_artifact"] = MDebertaModelChoiceClassifier.update(
+                learning.get("local_router_artifact"),
+                text=routing_feature_text,
+                selected_model_id=selected_model_id,
+                candidate_model_ids=candidate_model_ids,
+            )
+            learning.pop("last_learning_error", None)
+        except (RuntimeError, ValueError) as exc:
+            # Judge 선택은 실제 실행에 이미 반영한다. local encoder가 아직 준비되지
+            # 않았다는 이유로 운영 요청 전체를 실패시키지 않는다.
+            learning["last_learning_error"] = type(exc).__name__
+
+        active_policy["learning"] = learning
+        policy.active_policy = active_policy
+        db.flush()
+        return {
+            "learning_recorded": bool(learning.get("local_router_artifact")),
+            "judged_request_count": learning["judged_request_count"],
+            "learning_mode": learning.get("mode") or "judge_first",
+        }
+
+    @classmethod
+    def reconcile_incremental_learning_mode(
+        cls,
+        db: Session,
+        *,
+        policy: LLMNodeModelRoutingPolicy,
+    ) -> None:
+        """운영 품질이 충분할 때만 Judge-first를 local-first로 전환한다."""
+
+        active_policy = (
+            dict(policy.active_policy) if isinstance(policy.active_policy, dict) else {}
+        )
+        if active_policy.get("strategy_id") != "judge_bootstrap_incremental_v1":
+            return
+        learning = (
+            dict(active_policy.get("learning"))
+            if isinstance(active_policy.get("learning"), dict)
+            else {}
+        )
+        if not isinstance(learning.get("local_router_artifact"), dict):
+            learning["mode"] = "judge_first"
+            active_policy["learning"] = learning
+            policy.active_policy = active_policy
+            return
+
+        summary = ModelRoutingOperationalPerformanceService.response_summary(
+            db, policy_id=policy.id
+        )
+        rows = summary.get("models") if isinstance(summary, dict) else []
+        rows = rows if isinstance(rows, list) else []
+        total_runs = sum(int(row.get("run_count") or 0) for row in rows if isinstance(row, dict))
+
+        def weighted_rate(key: str) -> float | None:
+            evaluated = [
+                (int(row.get("run_count") or 0), row.get(key))
+                for row in rows
+                if isinstance(row, dict) and row.get(key) is not None
+            ]
+            weight = sum(count for count, _rate in evaluated)
+            if not weight:
+                return None
+            return sum(count * float(rate) for count, rate in evaluated) / weight
+
+        learning["mode"] = learning_mode_for(
+            judged_request_count=int(learning.get("judged_request_count") or 0),
+            distinct_selected_model_count=len(learning.get("selected_model_ids") or []),
+            success_rate=weighted_rate("success_rate"),
+            schema_pass_rate=weighted_rate("schema_pass_rate"),
+            downstream_success_rate=weighted_rate("downstream_success_rate"),
+            fallback_rate=weighted_rate("fallback_rate"),
+        )
+        learning["operational_run_count"] = total_runs
+        active_policy["learning"] = learning
+        policy.active_policy = active_policy
 
     @staticmethod
     def _is_routing_evidence_eligible_node_run(node_run: WorkflowNodeRun) -> bool:
@@ -595,6 +723,9 @@ class ModelRoutingPolicyStore:
                     # provider 호출 전 실패처럼 모델을 식별할 수 없는 실행은
                     # event 이력만 남기고 모델 성적에는 귀속하지 않는다.
                     performance_changed = False
+            # Judge label로 학습한 local head는 운영 품질까지 확인된 뒤에만
+            # local-first로 바꾼다. editor test run은 이 완료 훅에 들어오지 않는다.
+            cls.reconcile_incremental_learning_mode(db, policy=policy)
             outcome = ModelRoutingPolicyLifecycleService.apply_run_event(
                 policy,
                 event_was_created=event_was_created,

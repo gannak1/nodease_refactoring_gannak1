@@ -53,16 +53,16 @@ class _Planner:
             for index, run in enumerate(history_runs)
         }
 
-    def create_samples(self, *, missing_tiers, count_per_tier, **_kwargs):
+    def create_samples(self, *, coverage_targets, count_per_target, **_kwargs):
         return [
             {
-                "difficulty": tier,
-                "payload": {"message": f"{tier} synthetic {index}"},
-                "feature_text": f"{tier} synthetic {index}",
+                "complexity_score": target,
+                "payload": {"message": f"complexity {target} synthetic {index}"},
+                "feature_text": f"complexity {target} synthetic {index}",
                 "reason": "테스트용 합성 입력",
             }
-            for tier in missing_tiers
-            for index in range(count_per_tier)
+            for target in coverage_targets
+            for index in range(count_per_target)
         ]
 
     def create_difficulty_rules(self, **_kwargs):
@@ -152,14 +152,14 @@ def test_bootstrap_plan_maps_generated_payload_to_llm_input_shape():
         planner=_Planner(),
     )
 
-    economy_feature = next(
+    low_complexity_feature = next(
         sample.feature_text
         for sample in plan.samples
-        if sample.difficulty == "economy"
+        if sample.complexity_score == 15
     )
 
-    assert "CURRENT_REQUEST:\nwebhook: message: economy synthetic 0" in economy_feature
-    assert "RENDERED_PROMPT:\neconomy synthetic 0\n고객 문의를 JSON으로 분류합니다." in economy_feature
+    assert "CURRENT_REQUEST:\nwebhook: message: complexity 15.0 synthetic 0" in low_complexity_feature
+    assert "RENDERED_PROMPT:\ncomplexity 15.0 synthetic 0\n고객 문의를 JSON으로 분류합니다." in low_complexity_feature
 
 
 def test_bootstrap_plan_maps_history_payload_to_llm_input_shape():
@@ -261,7 +261,15 @@ def test_bootstrap_without_history_creates_labeled_samples_for_request_classifie
     }
     assert all(sample.source == "synthetic" for sample in result.samples)
     assert {sample.source for sample in result.samples} == {"synthetic"}
-    assert len(result.samples) == 30
+    assert len(result.samples) == 12
+    assert {sample.complexity_score for sample in result.samples} == {
+        15.0,
+        30.0,
+        45.0,
+        60.0,
+        75.0,
+        90.0,
+    }
     assert result.validation_samples == []
     assert result.difficulty_rules == []
     assert result.rule_generalization["status"] == "not_used"
@@ -274,24 +282,24 @@ def test_bootstrap_does_not_create_holdout_examples_for_runtime_topic_classifica
         def create_samples(
             self,
             *,
-            missing_tiers,
-            count_per_tier,
+            coverage_targets,
+            count_per_target,
             sample_role="training",
             **_kwargs,
         ):
             return [
                 {
-                    "difficulty": tier,
+                    "complexity_score": target,
                     "payload": {
                         "message": (
-                            f"{tier} {'학습' if sample_role == 'training' else '검증'} "
+                            f"complexity {target} {'학습' if sample_role == 'training' else '검증'} "
                             f"표현 {index}"
                         )
                     },
                     "reason": f"{sample_role} 표본",
                 }
-                for tier in missing_tiers
-                for index in range(count_per_tier)
+                for target in coverage_targets
+                for index in range(count_per_target)
             ]
 
     result = ModelRoutingBootstrapPlanner.plan(
@@ -727,8 +735,8 @@ def test_pending_bootstrap_does_not_enqueue_duplicate_generation(monkeypatch):
     assert should_enqueue is False
 
 
-def test_classifier_artifact_is_copied_to_existing_deployment_policy_as_v3():
-    """비동기 classifier가 준비되면 이미 배포된 policy도 새 artifact를 사용해야 한다."""
+def test_regression_artifact_is_copied_to_existing_deployment_policy_as_v4():
+    """비동기 회귀기가 준비되면 이미 배포된 policy도 새 artifact를 사용해야 한다."""
     policy = SimpleNamespace(
         active_policy={
             "strategy_id": "bootstrap_mdeberta_difficulty_v1",
@@ -746,12 +754,15 @@ def test_classifier_artifact_is_copied_to_existing_deployment_policy_as_v3():
     )
 
     assert policy.active_policy["classifier_artifact"] == artifact
-    assert policy.active_policy["strategy_id"] == "bootstrap_request_complexity_v3"
+    assert (
+        policy.active_policy["strategy_id"]
+        == "bootstrap_request_complexity_regression_v4"
+    )
     assert policy.active_policy["rules"] == []
 
 
-def test_deferred_task_syncs_ready_classifier_to_deployment_policy():
-    """이전 queue task도 준비된 v3 classifier artifact를 배포 정책에 반영한다."""
+def test_deferred_task_syncs_ready_regressor_to_deployment_policy():
+    """대기 작업도 준비된 회귀 artifact를 배포 정책에 반영한다."""
     bootstrap_id = uuid4()
     profile = {
         "kind": "planner_task_complexity_v1",
@@ -787,12 +798,15 @@ def test_deferred_task_syncs_ready_classifier_to_deployment_policy():
     assert result is bootstrap
     assert bootstrap.classifier_artifact == {"kind": "mdeberta_linear_difficulty_v1"}
     assert policy.active_policy["task_complexity_profile"] == profile
-    assert policy.active_policy["strategy_id"] == "bootstrap_request_complexity_v3"
+    assert (
+        policy.active_policy["strategy_id"]
+        == "bootstrap_request_complexity_regression_v4"
+    )
     assert policy.active_policy["classifier_artifact"] == {"kind": "mdeberta_linear_difficulty_v1"}
 
 
-def test_active_policy_carries_request_classifier_and_task_profile_for_display():
-    """새 배포 runtime은 classifier를 쓰고 task profile은 생성 근거로만 유지한다."""
+def test_active_policy_starts_judge_bootstrap_and_keeps_task_profile_as_context():
+    """새 배포 정책은 Judge-first를 사용하고 과거 난이도 profile은 설명용으로만 둔다."""
     bootstrap = SimpleNamespace(
         id=uuid4(),
         task_fingerprint="fingerprint",
@@ -816,11 +830,33 @@ def test_active_policy_carries_request_classifier_and_task_profile_for_display()
 
     policy = PersistedModelRoutingBootstrapStore.active_policy_for_bootstrap(bootstrap)
 
-    assert policy["strategy_id"] == "bootstrap_request_complexity_v3"
+    assert policy["strategy_id"] == "judge_bootstrap_incremental_v1"
+    assert policy["judge_model_id"] == "gpt-4.1"
     assert policy["task_complexity_profile"]["tier"] == "balanced"
     assert policy["minimum_confidence"] == 0.45
     assert policy["classifier_artifact"] == {"kind": "multilingual_e5_prototype_v1"}
     assert policy["rules"] == []
+    assert policy["learning"]["mode"] == "judge_first"
+
+
+def test_legacy_classifier_completion_does_not_overwrite_judge_bootstrap_policy():
+    """과거 deferred worker가 끝나도 새 Judge-first 정책 전략을 되돌리지 않는다."""
+    policy = SimpleNamespace(
+        active_policy={
+            "strategy_id": "judge_bootstrap_incremental_v1",
+            "learning": {"mode": "judge_first"},
+        }
+    )
+
+    PersistedModelRoutingBootstrapStore._apply_classifier_artifact_to_policy(
+        policy,
+        artifact={"kind": "mdeberta_linear_difficulty_v1"},
+    )
+
+    assert policy.active_policy == {
+        "strategy_id": "judge_bootstrap_incremental_v1",
+        "learning": {"mode": "judge_first"},
+    }
 
 
 def test_bootstrap_rule_normalization_rejects_full_sentence_terms():
@@ -893,7 +929,7 @@ def test_bootstrap_rule_normalization_removes_terms_shared_by_multiple_tiers():
     ]
 
 
-def test_bootstrap_with_history_fills_tiers_that_are_underrepresented_after_split():
+def test_bootstrap_with_history_fills_missing_continuous_complexity_ranges():
     result = ModelRoutingBootstrapPlanner.plan(
         node_data=_node(),
         task_description="고객 문의를 위험도별로 JSON 분류합니다.",
@@ -904,8 +940,14 @@ def test_bootstrap_with_history_fills_tiers_that_are_underrepresented_after_spli
 
     assert result.source == "hybrid"
     assert result.history_sample_count == 12
-    assert len(result.samples) + len(result.validation_samples) == 12
-    assert {sample.source for sample in result.samples} == {"history"}
+    assert len(result.samples) + len(result.validation_samples) == 18
+    assert result.synthetic_sample_count == 6
+    assert {sample.source for sample in result.samples} == {"history", "synthetic"}
+    assert {
+        sample.complexity_score
+        for sample in result.samples
+        if sample.source == "synthetic"
+    } == {30.0, 45.0, 75.0}
 
 
 def test_task_fingerprint_tracks_node_contract_not_manual_models_or_planner_description():

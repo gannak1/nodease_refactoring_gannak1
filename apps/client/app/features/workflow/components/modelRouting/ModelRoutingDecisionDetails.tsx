@@ -20,9 +20,21 @@ type RoutingDecisionFactors = {
   expectedLatencyMs?: number;
   priorSource?: string;
   routingBasis?: string;
+  complexityScore?: number;
+  complexityUncertainty?: number;
   difficulty?: string;
   difficultyScore?: number;
   confidence?: number;
+  localConfidence?: number;
+  localConfidenceThreshold?: number;
+  learningMode?: string;
+};
+
+type JudgeSummary = {
+  model?: string;
+  confidence?: number;
+  reasonCode?: string;
+  cost?: number;
 };
 
 type ModelRoutingSummary = {
@@ -37,6 +49,8 @@ type ModelRoutingSummary = {
   policyVersion?: string;
   matchedRuleId?: string;
   judgeCalled?: boolean;
+  decisionSource?: string;
+  judge?: JudgeSummary;
   policySource?: string;
   includedInPolicyLearning?: boolean;
   runtimeContext: RoutingContext;
@@ -88,21 +102,46 @@ const contextOf = (value: unknown): RoutingContext => {
 
 const decisionFactorsOf = (value: unknown): RoutingDecisionFactors => {
   if (!isRecord(value)) return {};
-  const score = isRecord(value.selected_model_score)
+  const selectedModelScore = isRecord(value.selected_model_score)
     ? value.selected_model_score
     : {};
   return {
     profile: stringValue(value.profile),
-    evaluatedCandidateCount: numberValue(value.evaluated_candidate_count),
+    evaluatedCandidateCount:
+      numberValue(value.evaluated_candidate_count) ??
+      numberValue(value.compared_model_count),
     excludedCandidateCount: numberValue(value.excluded_candidate_count),
-    qualityLowerBound: numberValue(score.quality_lower_bound),
-    expectedTotalCostUsd: numberValue(score.expected_total_cost_usd),
-    expectedLatencyMs: numberValue(score.expected_latency_ms),
-    priorSource: stringValue(score.prior_source),
+    qualityLowerBound:
+      numberValue(selectedModelScore.quality_lower_bound) ??
+      numberValue(value.selected_quality_lower_bound),
+    expectedTotalCostUsd:
+      numberValue(selectedModelScore.expected_total_cost_usd) ??
+      numberValue(value.selected_expected_cost_usd),
+    expectedLatencyMs:
+      numberValue(selectedModelScore.expected_latency_ms) ??
+      numberValue(value.selected_expected_latency_ms),
+    priorSource:
+      stringValue(selectedModelScore.prior_source) ??
+      stringValue(value.profile_source),
     routingBasis: stringValue(value.routing_basis),
+    complexityScore: numberValue(value.complexity_score),
+    complexityUncertainty: numberValue(value.complexity_uncertainty),
     difficulty: stringValue(value.difficulty),
     difficultyScore: numberValue(value.difficulty_score),
     confidence: numberValue(value.confidence),
+    localConfidence: numberValue(value.local_confidence),
+    localConfidenceThreshold: numberValue(value.local_confidence_threshold),
+    learningMode: stringValue(value.learning_mode),
+  };
+};
+
+const judgeOf = (value: unknown): JudgeSummary | undefined => {
+  if (!isRecord(value)) return undefined;
+  return {
+    model: stringValue(value.model),
+    confidence: numberValue(value.confidence),
+    reasonCode: stringValue(value.reason_code),
+    cost: numberValue(value.cost),
   };
 };
 
@@ -132,6 +171,8 @@ const summaryOf = ({
     policyVersion: stringValue(routing.policy_version),
     matchedRuleId: stringValue(routing.matched_rule_id),
     judgeCalled: booleanValue(routing.judge_called),
+    decisionSource: stringValue(routing.decision_source),
+    judge: judgeOf(routing.judge),
     policySource: stringValue(routing.policy_source),
     includedInPolicyLearning: booleanValue(routing.included_in_policy_learning),
     runtimeContext: contextOf(routing.runtime_context || routing),
@@ -156,6 +197,8 @@ const lengthBucketLabel = (bucket?: string): string => {
 
 const reasonText = (reasonCode?: string): string => {
   switch (reasonCode) {
+    case 'complexity_regression_global_profile':
+      return '요청 복잡도 점수에 필요한 품질을 만족한 후보 중 예상 비용과 지연이 가장 적절한 모델을 선택했습니다.';
     case 'bootstrap_global_profile_economy':
       return '이번 요청의 난이도 점수가 경제형 범위여서, 품질 기준 안에서 비용 효율이 높은 후보를 선택했습니다.';
     case 'bootstrap_global_profile_balanced':
@@ -172,6 +215,14 @@ const reasonText = (reasonCode?: string): string => {
       return '품질 하한을 만족한 후보 중 예상 비용과 지연 시간을 함께 비교해 선택했습니다.';
     case 'prior_guided_constraints_safe_default':
       return '요구 조건을 만족하는 더 나은 후보가 없어 안전한 기본 모델을 유지했습니다.';
+    case 'judge_bootstrap_required':
+      return '초기 학습 표본을 만들기 위해 Judge가 현재 요청에 맞는 후보 모델을 선택했습니다.';
+    case 'local_router_confident':
+      return '이전 Judge 선택과 운영 결과를 학습한 로컬 라우터가 충분한 확신으로 모델을 선택했습니다.';
+    case 'local_router_uncertain':
+      return '로컬 라우터의 확신이 부족해 Judge가 최종 선택을 확인했습니다.';
+    case 'runtime_judge_unavailable':
+      return 'Judge를 사용할 수 없어 안전한 기본 모델로 실행했습니다.';
     case 'active_policy_unavailable':
     case 'policy_unavailable':
       return '사용할 수 있는 활성 정책이 없어 저장된 기본 모델을 사용했습니다.';
@@ -212,6 +263,11 @@ export function ModelRoutingDecisionDetails({
     summary.strategyId === 'bootstrap_task_complexity_v2';
   const isRequestComplexity =
     summary.strategyId === 'bootstrap_request_complexity_v3';
+  const isComplexityRegression =
+    summary.strategyId === 'bootstrap_request_complexity_regression_v4';
+  const isComplexityRouting = isRequestComplexity || isComplexityRegression;
+  const isJudgeBootstrap =
+    summary.strategyId === 'judge_bootstrap_incremental_v1';
   const isDeploymentPolicyTest =
     summary.policySource === 'active_deployment' &&
     summary.includedInPolicyLearning === false;
@@ -229,8 +285,12 @@ export function ModelRoutingDecisionDetails({
         <dt className="font-semibold text-emerald-700 dark:text-emerald-200">
           {isDeploymentPolicyTest
             ? '배포 정책 기준 테스트'
-            : isRequestComplexity
-              ? '요청 난이도 기반 자동 라우팅'
+            : isJudgeBootstrap
+              ? 'Judge 기반 점진 학습 자동 라우팅'
+              : isComplexityRegression
+              ? '요청 복잡도 점수 기반 자동 라우팅'
+              : isRequestComplexity
+                ? '요청 난이도 기반 자동 라우팅'
               : isBootstrapTaskComplexity
               ? '작업 복잡도 기반 자동 라우팅'
             : isPriorGuided
@@ -240,7 +300,13 @@ export function ModelRoutingDecisionDetails({
         <dd className="mt-1 text-gray-700 dark:text-gray-200">
           {isDeploymentPolicyTest
             ? '활성 배포의 저장 정책을 테스트 실행에만 적용했습니다. 이 결과는 정책 학습에 포함되지 않습니다.'
-            : '실행 중 Judge를 호출하지 않고 저장된 정책으로 모델을 선택했습니다.'}
+            : isJudgeBootstrap
+              ? summary.decisionSource === 'test_policy_preview'
+                ? '테스트 화면에서는 Judge를 호출하지 않습니다. 실제 배포 실행 전에 예상 기본 모델만 표시합니다.'
+                : summary.decisionSource === 'runtime_judge'
+                  ? '초기 학습 표본을 만들기 위해 이번 요청에서만 Judge가 후보 모델을 선택했습니다.'
+                  : '이전 Judge 선택과 운영 결과를 학습한 로컬 라우터가 먼저 모델을 선택했습니다.'
+              : '실행 중 Judge를 호출하지 않고 저장된 정책으로 모델을 선택했습니다.'}
         </dd>
       </div>
 
@@ -284,16 +350,27 @@ export function ModelRoutingDecisionDetails({
         </div>
       ) : null}
 
-      {isRequestComplexity && factors.difficultyScore !== undefined ? (
+      {isComplexityRouting &&
+      (factors.complexityScore !== undefined ||
+        factors.difficultyScore !== undefined) ? (
         <div className="sm:col-span-2 rounded-md border border-emerald-200 bg-white p-3 dark:border-emerald-900 dark:bg-gray-900">
           <dt className="font-semibold text-gray-700 dark:text-gray-200">
-            이번 요청의 난이도 판정
+            이번 요청의 복잡도 판정
           </dt>
           <dd className="mt-2 flex flex-wrap gap-2 text-gray-700 dark:text-gray-200">
             <span className="rounded bg-emerald-50 px-2 py-1">
-              난이도 점수 {Math.round(factors.difficultyScore)}/100
+              복잡도 점수{' '}
+              {Math.round(
+                factors.complexityScore ?? factors.difficultyScore ?? 0,
+              )}
+              /100
             </span>
-            {factors.difficulty ? (
+            {factors.complexityUncertainty !== undefined ? (
+              <span className="rounded bg-emerald-50 px-2 py-1">
+                예측 오차 ±{Math.round(factors.complexityUncertainty)}점
+              </span>
+            ) : null}
+            {!isComplexityRegression && factors.difficulty ? (
               <span className="rounded bg-emerald-50 px-2 py-1">
                 등급 {factors.difficulty}
               </span>
@@ -366,6 +443,34 @@ export function ModelRoutingDecisionDetails({
           </dd>
           <dd>사유: {fallbackReasonText(summary.fallbackReasonCode)}</dd>
           <dd>실제 사용: {summary.actualModel || summary.fallbackModel || '-'}</dd>
+        </div>
+      ) : null}
+
+      {isJudgeBootstrap && summary.judge ? (
+        <div className="sm:col-span-2 rounded-md border border-violet-200 bg-violet-50/60 p-3 text-gray-900 dark:border-violet-900 dark:bg-violet-950/20 dark:text-gray-100">
+          <dt className="font-semibold text-violet-900 dark:text-violet-100">
+            이번 Judge 판단
+          </dt>
+          <dd className="mt-1 text-gray-700 dark:text-gray-200">
+            Judge 모델: {summary.judge.model || '-'} · 판단 확신도{' '}
+            {summary.judge.confidence === undefined
+              ? '-'
+              : `${(summary.judge.confidence * 100).toFixed(1)}%`}
+          </dd>
+          <dd className="mt-1 text-gray-500">
+            판단 코드: {summary.judge.reasonCode || '-'}
+            {summary.judge.cost === undefined
+              ? ''
+              : ` · Judge 비용 $${summary.judge.cost.toFixed(6)}`}
+          </dd>
+        </div>
+      ) : null}
+      {isJudgeBootstrap && factors.learningMode ? (
+        <div className="sm:col-span-2 text-gray-500">
+          학습 방식: {factors.learningMode === 'local_first' ? '로컬 라우터 우선' : 'Judge 학습 중'}
+          {factors.localConfidence !== undefined
+            ? ` · 로컬 확신도 ${(factors.localConfidence * 100).toFixed(1)}%`
+            : ''}
         </div>
       ) : null}
 

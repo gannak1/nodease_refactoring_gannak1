@@ -401,8 +401,14 @@ export function LLMNodePanel({
       policyVersion:
         policy?.policy_version || legacyPolicy?.policy_version || '정책 없음',
       reasonCode: activePolicy
-        ? activePolicy.strategy_id === 'bootstrap_request_complexity_v3'
-          ? '현재 요청과 변수 치환된 프롬프트의 난이도 점수로 모델을 선택합니다.'
+        ? activePolicy.strategy_id === 'judge_bootstrap_incremental_v1'
+          ? activePolicy.learning?.mode === 'local_first'
+            ? '운영 요청에서 Judge가 고른 결과와 실행 품질을 바탕으로, 로컬 라우터가 먼저 모델을 선택합니다. 확신이 낮으면 Judge에게 다시 판단을 맡깁니다.'
+            : '초기 운영 요청은 Judge가 현재 실행 주체가 사용할 수 있는 후보 중 모델을 선택합니다. 선택 결과가 충분히 쌓이고 품질이 안정되면 로컬 라우터가 먼저 선택합니다.'
+          : activePolicy.strategy_id === 'bootstrap_request_complexity_regression_v4'
+          ? '현재 요청과 변수 치환된 프롬프트의 0~100 복잡도 점수로 모든 후보 모델을 비교해 선택합니다.'
+          : activePolicy.strategy_id === 'bootstrap_request_complexity_v3'
+            ? '현재 요청과 변수 치환된 프롬프트의 난이도 점수로 모델을 선택합니다.'
           : activePolicy.strategy_id === 'bootstrap_task_complexity_v2'
             ? '이전 정책은 노드 전체의 고정 난이도로 모델을 선택합니다. 새 기준을 만들면 요청별 난이도 점수로 전환됩니다.'
           : activePolicy.strategy_id === 'bootstrap_mdeberta_difficulty_v1'
@@ -443,15 +449,30 @@ export function LLMNodePanel({
     [persistedRoutingPolicy?.active_policy?.task_complexity_profile],
   );
   const isBootstrapRouting =
+    data.model_routing_strategy === 'judge_bootstrap_incremental_v1' ||
+    data.model_routing_strategy === 'bootstrap_request_complexity_regression_v4' ||
     data.model_routing_strategy === 'bootstrap_request_complexity_v3' ||
     data.model_routing_strategy === 'bootstrap_task_complexity_v2' ||
     data.model_routing_strategy === 'bootstrap_mdeberta_difficulty_v1' ||
+    persistedRoutingPolicy?.active_policy?.strategy_id ===
+      'judge_bootstrap_incremental_v1' ||
+    persistedRoutingPolicy?.active_policy?.strategy_id ===
+      'bootstrap_request_complexity_regression_v4' ||
     persistedRoutingPolicy?.active_policy?.strategy_id ===
       'bootstrap_request_complexity_v3' ||
     persistedRoutingPolicy?.active_policy?.strategy_id ===
       'bootstrap_task_complexity_v2' ||
     persistedRoutingPolicy?.active_policy?.strategy_id ===
       'bootstrap_mdeberta_difficulty_v1';
+  const isJudgeBootstrapRouting =
+    data.model_routing_strategy === 'judge_bootstrap_incremental_v1' ||
+    persistedRoutingPolicy?.active_policy?.strategy_id ===
+      'judge_bootstrap_incremental_v1';
+  const judgeLearning =
+    persistedRoutingPolicy?.active_policy?.strategy_id ===
+    'judge_bootstrap_incremental_v1'
+      ? persistedRoutingPolicy.active_policy.learning
+      : null;
   const isRoutingBootstrapGenerating = routingBootstrap?.status === 'generating';
   const upstreamNodes = useMemo(
     () => getUpstreamNodes(nodeId, nodes, edges),
@@ -1418,13 +1439,42 @@ export function LLMNodePanel({
                       className="order-1 mt-3 rounded-lg border border-violet-200 bg-violet-50/40 p-3"
                     >
                       <div className="text-xs font-semibold text-violet-950">
-                        요청 난이도 분류기
+                        {persistedRoutingPolicy?.active_policy?.strategy_id ===
+                        'judge_bootstrap_incremental_v1'
+                          ? 'Judge 기반 점진 학습 라우터'
+                          : '요청 난이도 분류기'}
                       </div>
                       <p className="mt-1 text-[11px] leading-relaxed text-violet-800">
-                        요청 주제 키워드를 고정 분류하지 않습니다. 실행마다 변수 치환된 프롬프트와
-                        들어온 요청을 읽어 난이도 점수를 계산한 뒤 후보 모델을 비교합니다.
+                        {persistedRoutingPolicy?.active_policy?.strategy_id ===
+                        'judge_bootstrap_incremental_v1'
+                          ? '초기 운영 요청은 Judge가 후보 모델을 직접 고릅니다. 원문을 저장하지 않고 선택 결과와 실행 품질만 누적하며, 충분히 쌓인 뒤에는 로컬 라우터가 먼저 선택합니다.'
+                          : '요청 주제 키워드를 고정 분류하지 않습니다. 실행마다 변수 치환된 프롬프트와 들어온 요청을 읽어 난이도 점수를 계산한 뒤 후보 모델을 비교합니다.'}
                       </p>
-                      {bootstrapTaskComplexityProfile ? (
+                      {isJudgeBootstrapRouting ? (
+                        <dl className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                          <div className="rounded border border-violet-100 bg-white px-2.5 py-2 text-[11px]">
+                            <dt className="font-semibold text-slate-700">현재 선택 방식</dt>
+                            <dd className="mt-1 font-semibold text-slate-950">
+                              {judgeLearning?.mode === 'local_first'
+                                ? '로컬 라우터 우선'
+                                : 'Judge 선택 학습 중'}
+                            </dd>
+                          </div>
+                          <div className="rounded border border-violet-100 bg-white px-2.5 py-2 text-[11px]">
+                            <dt className="font-semibold text-slate-700">학습된 Judge 선택</dt>
+                            <dd className="mt-1 font-semibold text-slate-950">
+                              {judgeLearning?.judged_request_count ?? 0}건
+                            </dd>
+                          </div>
+                          <div className="rounded border border-violet-100 bg-white px-2.5 py-2 text-[11px] sm:col-span-2">
+                            <dt className="font-semibold text-slate-700">Judge 모델</dt>
+                            <dd className="mt-1 font-semibold text-slate-950">
+                              {persistedRoutingPolicy?.active_policy?.judge_model_id ||
+                                '기본 모델'}
+                            </dd>
+                          </div>
+                        </dl>
+                      ) : bootstrapTaskComplexityProfile ? (
                         <div className="mt-3 rounded border border-violet-100 bg-white px-3 py-2 text-[11px] text-violet-900">
                           <div className="flex items-center justify-between gap-3">
                             <span className="font-semibold">초기 작업 계약 분석</span>
@@ -1444,11 +1494,11 @@ export function LLMNodePanel({
                           ) : null}
                         </div>
                       ) : null}
-                      {Object.keys(bootstrapDifficultyModels).length === 0 ? (
+                      {!isJudgeBootstrapRouting && Object.keys(bootstrapDifficultyModels).length === 0 ? (
                         <div className="mt-3 rounded border border-dashed border-violet-200 bg-white px-3 py-2 text-[11px] text-violet-800">
                           기준 생성 또는 배포 후 정책이 준비되면 난이도별 모델을 표시합니다.
                         </div>
-                      ) : (
+                      ) : !isJudgeBootstrapRouting ? (
                         <dl className="mt-3 space-y-2">
                           {(['economy', 'balanced', 'advanced'] as const).map((tier) => {
                             const modelId = bootstrapDifficultyModels[tier];
@@ -1470,7 +1520,7 @@ export function LLMNodePanel({
                             );
                           })}
                         </dl>
-                      )}
+                      ) : null}
                     </div>
                   ) : (
                     <div

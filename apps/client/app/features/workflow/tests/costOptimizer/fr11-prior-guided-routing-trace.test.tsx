@@ -8,6 +8,49 @@ afterEach(() => {
 });
 
 describe('FR-011 prior-guided model routing trace', () => {
+  it('회귀형 복잡도 점수와 후보 선택 근거를 세 구간 등급 없이 표시한다', () => {
+    render(
+      <ModelRoutingDecisionDetails
+        output={{
+          model: 'gpt-5-mini',
+          metadata: {
+            model_routing: {
+              strategy_id: 'bootstrap_request_complexity_regression_v4',
+              selected_model: 'gpt-5-mini',
+              fallback_model: 'gpt-5.4',
+              reason_code: 'complexity_regression_global_profile',
+              policy_version: 'bootstrap-regression-v1',
+              decision_factors: {
+                routing_basis: 'request_prompt_complexity_regression',
+                complexity_score: 64,
+                complexity_uncertainty: 4,
+                compared_model_count: 4,
+                quality_floor: 0.8088,
+                selected_quality_lower_bound: 0.8244,
+                selected_expected_cost_usd: 0.0012,
+                selected_expected_latency_ms: 600,
+              },
+            },
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('요청 복잡도 점수 기반 자동 라우팅')).toBeVisible();
+    expect(screen.getByText('복잡도 점수 64/100')).toBeVisible();
+    expect(screen.getByText('예측 오차 ±4점')).toBeVisible();
+    expect(screen.getByText('검토 모델 4개')).toBeVisible();
+    expect(screen.getByText('품질 하한 82.4%')).toBeVisible();
+    expect(screen.getByText('예상 비용 $0.001200')).toBeVisible();
+    expect(screen.getByText('예상 지연 600ms')).toBeVisible();
+    expect(
+      screen.getByText(
+        '요청 복잡도 점수에 필요한 품질을 만족한 후보 중 예상 비용과 지연이 가장 적절한 모델을 선택했습니다.',
+      ),
+    ).toBeVisible();
+    expect(screen.queryByText(/등급 /)).not.toBeInTheDocument();
+  });
+
   it('입력군 유사도 대신 일반 제약과 사전 지식 기반 선택 근거를 표시한다', () => {
     render(
       <ModelRoutingDecisionDetails
@@ -131,5 +174,67 @@ describe('FR-011 prior-guided model routing trace', () => {
     expect(screen.getByText('검토 모델 2개')).toBeVisible();
     expect(screen.getByText('품질 하한 90.0%')).toBeVisible();
     expect(screen.getByText(/정책 버전: prior-guided-v4/)).toBeVisible();
+  });
+
+  it('Judge-first 배포 실행은 Judge 선택과 로컬 학습 상태를 함께 표시한다', () => {
+    render(
+      <ModelRoutingDecisionDetails
+        traceMetadata={{
+          llm: {
+            strategy_id: 'judge_bootstrap_incremental_v1',
+            selected_model: 'gpt-5-mini',
+            fallback_model: 'gpt-4.1',
+            decision_source: 'runtime_judge',
+            reason_code: 'judge_bootstrap_required',
+            policy_version: 'judge-bootstrap-v1',
+            judge_called: true,
+            judge: {
+              model: 'gpt-4.1-mini',
+              confidence: 0.84,
+              reason_code: 'structured_reasoning_required',
+              cost: 0.00013,
+            },
+            decision_factors: {
+              learning_mode: 'judge_first',
+              judged_request_count: 7,
+            },
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText('Judge 기반 점진 학습 자동 라우팅')).toBeVisible();
+    expect(screen.getByText('이번 Judge 판단')).toBeVisible();
+    expect(screen.getByText(/Judge 모델: gpt-4.1-mini/)).toBeVisible();
+    expect(screen.getByText(/판단 확신도 84.0%/)).toBeVisible();
+    expect(screen.getByText(/Judge 비용 \$0.000130/)).toBeVisible();
+    expect(screen.getByText('학습 방식: Judge 학습 중')).toBeVisible();
+  });
+
+  it('Judge-first 테스트 미리보기는 실제 Judge 선택 결과처럼 표시하지 않는다', () => {
+    render(
+      <ModelRoutingDecisionDetails
+        output={{
+          model: 'gpt-4.1',
+          metadata: {
+            model_routing: {
+              strategy_id: 'judge_bootstrap_incremental_v1',
+              selected_model: 'gpt-4.1',
+              decision_source: 'test_policy_preview',
+              reason_code: 'judge_bootstrap_required',
+              judge_called: false,
+            },
+          },
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByText(
+        '테스트 화면에서는 Judge를 호출하지 않습니다. 실제 배포 실행 전에 예상 기본 모델만 표시합니다.',
+      ),
+    ).toBeVisible();
+    expect(screen.getByText('실행 중 Judge 호출 안 함')).toBeVisible();
+    expect(screen.queryByText('이번 Judge 판단')).not.toBeInTheDocument();
   });
 });

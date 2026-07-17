@@ -7,6 +7,58 @@ from apps.workflow_engine.services.model_router import (
 )
 
 
+def test_regression_policy_selects_closest_sufficient_model_without_tier_rounding(
+    monkeypatch,
+):
+    """64점 요청은 세 구간 label이 아니라 연속 품질 곡선으로 후보를 비교한다."""
+
+    monkeypatch.setattr(
+        "apps.workflow_engine.services.model_router.MDebertaComplexityRegressor.predict",
+        lambda _artifact, _feature_text: SimpleNamespace(
+            complexity_score=64.0,
+            uncertainty=4.0,
+            confidence=0.92,
+        ),
+    )
+    policy = {
+        "active_policy": {
+            "strategy_id": "bootstrap_request_complexity_regression_v4",
+            "default_model_id": "gpt-5.4",
+            "fallback_model_id": "gpt-5.6",
+            "classifier_artifact": {
+                "kind": "mdeberta_complexity_regression_v2"
+            },
+            "global_profile_catalog": _global_profile_catalog(),
+        }
+    }
+    node_data = SimpleNamespace(
+        model_id="gpt-5.4",
+        fallback_model_id="gpt-5.6",
+        parameters={"max_tokens": 512},
+        knowledgeBases=[],
+        knowledgeCollections=[],
+        output_format={"type": "json"},
+        system_prompt="여러 조건을 비교해 JSON으로 답합니다.",
+        user_prompt="{{message}}",
+        assistant_prompt="",
+        task_type="generate",
+    )
+
+    decision = ModelRouter.resolve_policy(
+        policy,
+        inputs={"message": "정책 예외와 근거를 함께 검토해 주세요."},
+        node_data=node_data,
+        available_model_ids=["gpt-4o-mini", "gpt-5-mini", "gpt-5.4", "gpt-5.6"],
+    )
+
+    assert decision.selected_model_id == "gpt-5-mini"
+    assert decision.fallback_model_id == "gpt-5.4"
+    assert decision.matched_rule_id == "complexity-regression"
+    assert decision.reason_code == "complexity_regression_global_profile"
+    assert decision.decision_factors["complexity_score"] == 64.0
+    assert decision.decision_factors["routing_basis"] == "request_prompt_complexity_regression"
+
+
 def test_request_complexity_policy_routes_each_rendered_request_by_difficulty(monkeypatch):
     """같은 노드에서도 요청 프롬프트 난이도에 따라 다른 모델을 선택한다."""
     classifier_inputs: list[str] = []
@@ -188,7 +240,7 @@ def _global_profile_catalog() -> dict:
                 economy=0.95, balanced=0.70, advanced=0.45, latency=350
             ),
             "gpt-5-mini": profile(
-                economy=0.97, balanced=0.91, advanced=0.75, latency=600
+                economy=0.97, balanced=0.91, advanced=0.80, latency=600
             ),
             "gpt-5.4": profile(
                 economy=0.99, balanced=0.97, advanced=0.96, latency=1_100

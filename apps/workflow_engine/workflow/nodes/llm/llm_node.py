@@ -84,6 +84,8 @@ RAG_FANOUT_AGGREGATE_TIMEOUT_SECONDS = 30.0
 RAG_FANOUT_PER_KB_TIMEOUT_SECONDS = 10.0
 MAX_RAG_REWRITTEN_QUERY_LENGTH = 1000
 QUERY_REWRITE_PLACEHOLDER_RE = re.compile(r"\{\{\s*query\s*\}\}|\{query\}")
+PROVIDER_HTTP_STATUS_RE = re.compile(r"\bstatus\s*[=:]?\s*(\d{3})\b", re.IGNORECASE)
+SAFE_PROVIDER_ERROR_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,96}$")
 SUMMARY_MODEL_PREFS = {
     "openai": ["gpt-5.4-mini", "gpt-5.4-nano", "gpt-4o-mini"],
     "google": ["gemini-3.1-flash-lite", "gemini-2.5-flash"],
@@ -95,6 +97,48 @@ SAFETY_SYSTEM_PROMPT = PLATFORM_UNTRUSTED_CONTEXT_GUARDRAIL_PROMPT
 JSON_OUTPUT_SCHEMA_SYSTEM_INSTRUCTION_PREFIX = (
     "응답은 반드시 아래 json schema를 만족하는 json object 하나만 반환하세요."
 )
+
+
+def _safe_provider_failure_metadata(error: Exception) -> dict[str, Any]:
+    """원문 오류를 보존하지 않고 provider fallback 원인을 trace에 남긴다."""
+    message = str(error)
+    normalized = message.lower()
+    error_code = "provider_exception"
+
+    if "responses 응답이 완료되지 않았습니다" in normalized:
+        error_code = "responses_incomplete"
+    elif "responses 응답에 사용할 수 있는 텍스트가 없습니다" in normalized:
+        error_code = "responses_empty_text"
+    elif "응답을 json으로 파싱할 수 없습니다" in normalized:
+        error_code = "provider_response_invalid_json"
+    elif "호출 실패" in normalized:
+        error_code = "provider_request_failed"
+
+    structured_reason = getattr(error, "reason_code", None)
+    if isinstance(structured_reason, str) and structured_reason:
+        error_code = structured_reason
+
+    metadata: dict[str, Any] = {
+        "fallback_provider_error_code": error_code,
+        "fallback_provider_error_type": type(error).__name__,
+    }
+    structured_status = getattr(error, "status_code", None)
+    if isinstance(structured_status, int) and 100 <= structured_status <= 599:
+        metadata["fallback_provider_status_code"] = structured_status
+    else:
+        status_match = PROVIDER_HTTP_STATUS_RE.search(message)
+        if status_match:
+            metadata["fallback_provider_status_code"] = int(status_match.group(1))
+
+    for source_name, metadata_name in (
+        ("provider_error_code", "fallback_provider_remote_error_code"),
+        ("provider_error_param", "fallback_provider_remote_error_param"),
+        ("provider_response_status", "fallback_provider_response_status"),
+    ):
+        value = getattr(error, source_name, None)
+        if isinstance(value, str) and SAFE_PROVIDER_ERROR_IDENTIFIER_RE.fullmatch(value):
+            metadata[metadata_name] = value
+    return metadata
 
 
 def _build_json_output_schema_instruction(
@@ -378,11 +422,7 @@ class LLMNode(Node[LLMNodeData]):
         *,
         routing_feature_text: str | None = None,
     ) -> tuple[str, Optional[str], Optional[dict]]:
-        """저장된 active policy snapshot으로 실행 모델을 결정한다.
-
-        Judge LLM은 정책 갱신 단계에서만 호출되어야 하므로, 런타임은 이미
-        저장된 policy rule만 읽고 safe summary metadata를 남긴다.
-        """
+        """저장 policy를 읽고 Judge-first/local-first 모델 선택을 수행한다."""
         selected_model_id = self.data.model_id
         fallback_model_id = self.data.fallback_model_id
         if not self.data.auto_model_routing:
@@ -438,6 +478,7 @@ class LLMNode(Node[LLMNodeData]):
                     else {}
                 )
                 if active_policy.get("strategy_id") in {
+                    "bootstrap_request_complexity_regression_v4",
                     "bootstrap_request_complexity_v3",
                     "bootstrap_task_complexity_v2",
                     # 이미 배포된 v1 snapshot만 호환 경로로 유지한다.
@@ -525,21 +566,147 @@ class LLMNode(Node[LLMNodeData]):
         if fallback_model_id == selected_model_id:
             fallback_model_id = None
 
+        judge_metadata: dict[str, Any] = {}
+        decision_source = decision.decision_source
+        if decision.requires_runtime_judge and not is_policy_preview_node:
+            try:
+                from apps.workflow_engine.services.model_routing_runtime_judge import (
+                    ModelRoutingRuntimeJudge,
+                )
+
+                user_id = self._resolve_credential_principal_user()
+                if user_id is None or db_session is None:
+                    raise ValueError("routing judge execution subject is unavailable")
+                organization_id = self._require_runtime_organization_id(
+                    user_id, selected_model_id
+                )
+                judge_model_id = str(
+                    active_policy.get("judge_model_id") or selected_model_id
+                )
+                normalized_available = {
+                    ModelRouter.normalize_model_id(model_id): model_id
+                    for model_id in (available_model_ids or [])
+                }
+                judge_model_id = normalized_available.get(
+                    ModelRouter.normalize_model_id(judge_model_id), selected_model_id
+                )
+                judge_selection = LLMService.get_runtime_client_for_user(
+                    db_session,
+                    user_id=user_id,
+                    model_id=judge_model_id,
+                    organization_id=organization_id,
+                )
+                candidate_model_ids = list(available_model_ids or [])
+                judge_default_model_id = selected_model_id
+                judge_decision = ModelRoutingRuntimeJudge.decide(
+                    client=judge_selection.client,
+                    candidate_model_ids=candidate_model_ids,
+                    default_model_id=selected_model_id,
+                    fallback_model_id=fallback_model_id,
+                    routing_feature_text=routing_feature_text or "",
+                    node_contract={
+                        "output_format": self.data.output_format or {},
+                        "knowledge_enabled": bool(
+                            self.data.knowledgeBases or self.data.knowledgeCollections
+                        ),
+                        "schema_required": _response_format_requires_json_instruction(
+                            (self.data.parameters or {}).get("response_format")
+                        )
+                        or (
+                            isinstance(self.data.output_format, dict)
+                            and self.data.output_format.get("type") == "json"
+                        ),
+                        "input_length_bucket": routing_context.get("input_length_bucket"),
+                    },
+                )
+            except (RuntimeError, ValueError, TypeError, SQLAlchemyError) as exc:
+                # Judge는 초기 학습을 위한 보조 경로다. 일시 실패가 운영 요청을
+                # 차단하면 안 되므로 이미 계산한 기본 모델로 닫는다.
+                decision_source = "stored_model"
+                reason_code = "runtime_judge_unavailable"
+                judge_metadata = {"error_code": type(exc).__name__}
+            else:
+                # Judge가 정상적으로 고른 모델은 usage 기록이나 학습 artifact 저장이
+                # 일시 실패하더라도 유지한다. 두 후속 작업은 관측성/학습 보조 경로다.
+                selected_model_id = judge_decision.selected_model_id
+                if fallback_model_id == selected_model_id:
+                    fallback_model_id = ModelRouter._first_available_model(
+                        [
+                            judge_default_model_id,
+                            active_policy.get("fallback_model_id"),
+                            active_policy.get("default_model_id"),
+                        ],
+                        {
+                            ModelRouter.normalize_model_id(model_id)
+                            for model_id in (available_model_ids or [])
+                        },
+                        exclude=selected_model_id,
+                    )
+                decision_source = "runtime_judge"
+                reason_code = judge_decision.reason_code
+                judge_metadata = judge_decision.safe_metadata()
+                judge_metadata["model"] = judge_model_id
+
+                usage = judge_decision.usage
+                if usage:
+                    try:
+                        judge_cost = LLMService.calculate_cost(
+                            db_session,
+                            judge_model_id,
+                            int(usage.get("prompt_tokens") or 0),
+                            int(usage.get("completion_tokens") or 0),
+                        )
+                        workflow_run_id = self.execution_context.get("workflow_run_id")
+                        LLMService.log_usage(
+                            db=db_session,
+                            user_id=user_id,
+                            model_id=judge_model_id,
+                            usage=usage,
+                            cost=judge_cost,
+                            organization_id=self.execution_context.get("organization_id"),
+                            workflow_id=self.execution_context.get("workflow_id"),
+                            workflow_run_id=(
+                                uuid.UUID(str(workflow_run_id))
+                                if workflow_run_id
+                                else None
+                            ),
+                            node_id=f"{self.id}:routing_judge",
+                            credential_id=judge_selection.credential_id,
+                        )
+                        judge_metadata["cost"] = judge_cost
+                    except (RuntimeError, ValueError, TypeError, SQLAlchemyError) as exc:
+                        judge_metadata["usage_log_error"] = type(exc).__name__
+
+                policy_id = policy.get("policy_id")
+                if policy_id:
+                    try:
+                        ModelRoutingPolicyStore.record_runtime_judge_label(
+                            db_session,
+                            policy_id=policy_id,
+                            routing_feature_text=routing_feature_text or "",
+                            selected_model_id=selected_model_id,
+                            candidate_model_ids=candidate_model_ids,
+                            confidence=judge_decision.confidence,
+                            reason_code=judge_decision.reason_code,
+                        )
+                    except (RuntimeError, ValueError, TypeError, SQLAlchemyError) as exc:
+                        judge_metadata["learning_error"] = type(exc).__name__
+
         metadata = {
             "enabled": True,
             "policy_id": policy.get("policy_id"),
             "policy_version": policy.get("policy_version"),
             "selected_model": selected_model_id,
             "fallback_model": fallback_model_id,
-            "decision_source": (
-                "test_policy_preview" if is_policy_preview_node else "active_policy"
-            ),
+            "decision_source": "test_policy_preview" if is_policy_preview_node else decision_source,
             "matched_rule_id": matched_rule_id,
             "reason_code": reason_code,
             "strategy_id": decision.strategy_id,
             "runtime_context": routing_context,
-            "judge_called": False,
+            "judge_called": bool(judge_metadata and decision_source == "runtime_judge"),
         }
+        if judge_metadata:
+            metadata["judge"] = judge_metadata
         if decision.decision_factors:
             metadata["decision_factors"] = decision.decision_factors
         metadata.update(preview_metadata)
@@ -857,6 +1024,7 @@ class LLMNode(Node[LLMNodeData]):
             ).as_metadata()
             fallback_used = False
             fallback_reason_code = None
+            fallback_error_metadata: dict[str, Any] = {}
 
             if client_override:
                 client = client_override
@@ -951,10 +1119,15 @@ class LLMNode(Node[LLMNodeData]):
             except Exception as primary_error:
                 if not fallback_model_id:
                     raise
+                fallback_error_metadata = _safe_provider_failure_metadata(
+                    primary_error
+                )
                 logger.warning(
-                    "[LLMNode] Primary provider call failed: "
-                    "error_type=%s fallback_model=%s",
-                    type(primary_error).__name__,
+                    "[LLMNode] Primary provider call failed: error_code=%s "
+                    "error_type=%s status_code=%s fallback_model=%s",
+                    fallback_error_metadata["fallback_provider_error_code"],
+                    fallback_error_metadata["fallback_provider_error_type"],
+                    fallback_error_metadata.get("fallback_provider_status_code"),
                     fallback_model_id,
                 )
                 fallback_client = None
@@ -1123,6 +1296,7 @@ class LLMNode(Node[LLMNodeData]):
                         "fallback_used": True,
                         "fallback_from_model": routed_model_id,
                         "fallback_reason_code": fallback_reason_code,
+                        **fallback_error_metadata,
                     }
                 )
 

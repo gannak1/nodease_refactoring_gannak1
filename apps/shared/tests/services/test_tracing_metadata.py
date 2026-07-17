@@ -182,6 +182,75 @@ def test_llm_span_metadata_preserves_current_routing_fields_without_sensitive_va
     assert "raw_prompt" not in metadata["llm"]
 
 
+def test_llm_span_metadata_preserves_safe_runtime_judge_summary_only():
+    metadata = TraceMetadataSanitizer.sanitize_span_metadata(
+        "llmNode",
+        {
+            "llm": {
+                "strategy_id": "judge_bootstrap_incremental_v1",
+                "judge_called": True,
+                "judge": {
+                    "model": "gpt-5-mini",
+                    "selected_model": "gpt-4o-mini",
+                    "confidence": 0.87,
+                    "reason_code": "simple_request",
+                    "cost": 0.00012,
+                    "usage": {
+                        "prompt_tokens": 120,
+                        "completion_tokens": 30,
+                        "raw_content": "customer secret",
+                    },
+                    "raw_prompt": "sensitive prompt",
+                },
+                "decision_factors": {
+                    "learning_mode": "judge_first",
+                    "judged_request_count": 7,
+                    "local_confidence": 0.42,
+                    "raw_input": "sensitive input",
+                },
+            }
+        },
+    )
+
+    assert metadata["llm"]["judge"] == {
+        "model": "gpt-5-mini",
+        "selected_model": "gpt-4o-mini",
+        "confidence": 0.87,
+        "reason_code": "simple_request",
+        "cost": 0.00012,
+        "usage": {"prompt_tokens": 120, "completion_tokens": 30},
+    }
+    assert metadata["llm"]["decision_factors"] == {
+        "learning_mode": "judge_first",
+        "judged_request_count": 7,
+        "local_confidence": 0.42,
+    }
+
+
+def test_llm_span_metadata_preserves_safe_provider_fallback_diagnostics_only():
+    metadata = TraceMetadataSanitizer.sanitize_span_metadata(
+        "llmNode",
+        {
+            "llm": {
+                "fallback_provider_error_code": "responses_incomplete",
+                "fallback_provider_error_type": "ValueError",
+                "fallback_provider_status_code": 429,
+                "fallback_provider_remote_error_code": "unsupported_parameter",
+                "fallback_provider_remote_error_param": "reasoning.effort",
+                "provider_error_message": "raw provider detail must not persist",
+            }
+        },
+    )
+
+    assert metadata["llm"] == {
+        "fallback_provider_error_code": "responses_incomplete",
+        "fallback_provider_error_type": "ValueError",
+        "fallback_provider_status_code": 429,
+        "fallback_provider_remote_error_code": "unsupported_parameter",
+        "fallback_provider_remote_error_param": "reasoning.effort",
+    }
+
+
 def test_llm_span_metadata_preserves_safe_model_routing_decision_factors_only():
     metadata = TraceMetadataSanitizer.sanitize_span_metadata(
         "llmNode",

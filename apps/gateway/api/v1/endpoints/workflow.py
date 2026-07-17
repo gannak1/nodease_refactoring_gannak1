@@ -3910,7 +3910,7 @@ def create_model_routing_bootstrap_endpoint(
             "model_routing_bootstrap_id": str(bootstrap.id),
             "model_routing_bootstrap_fingerprint": bootstrap.task_fingerprint,
             "model_routing_task_description": request_body.task_description,
-            "model_routing_strategy": "bootstrap_request_complexity_v3",
+            "model_routing_strategy": "judge_bootstrap_incremental_v1",
         }
     )
     node["data"] = node_data

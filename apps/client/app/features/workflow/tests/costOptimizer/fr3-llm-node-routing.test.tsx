@@ -426,7 +426,7 @@ describe('FR-003 LLM node model routing optimization entry', () => {
       policy_id: 'policy-bootstrap',
       policy_version: 'bootstrap-12345678',
       active_policy: {
-        strategy_id: 'bootstrap_request_complexity_v3',
+        strategy_id: 'judge_bootstrap_incremental_v1',
         default_model_id: 'gpt-4.1-mini',
         fallback_model_id: 'gpt-4.1',
         task_complexity_profile: {
@@ -448,6 +448,10 @@ describe('FR-003 LLM node model routing optimization entry', () => {
           advanced: 'gpt-4.1',
         },
         rules: [],
+        learning: {
+          mode: 'judge_first',
+          judged_request_count: 0,
+        },
       },
       pending_policy: null,
       refresh: {
@@ -461,7 +465,7 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     });
     const node = createLlmNode({
       auto_model_routing: true,
-      model_routing_strategy: 'bootstrap_request_complexity_v3',
+      model_routing_strategy: 'judge_bootstrap_incremental_v1',
     });
     useWorkflowStore.setState(
       { ...useWorkflowStore.getState(), nodes: [node] },
@@ -473,17 +477,13 @@ describe('FR-003 LLM node model routing optimization entry', () => {
     expect(
       await screen.findByTestId('routing-bootstrap-policy'),
     ).toBeInTheDocument();
-    expect(screen.getByText('요청 난이도 분류기')).toBeInTheDocument();
-    expect(
-      screen.getByText('초기 작업 계약 분석'),
-    ).toBeInTheDocument();
-    expect(screen.getByText('78 / 100 · 고성능형')).toBeInTheDocument();
-    expect(
-      screen.getByText('복수 조건과 엄격한 JSON 계약을 함께 만족해야 합니다.'),
-    ).toBeInTheDocument();
-    expect(screen.getByText('경제형 요청')).toBeInTheDocument();
-    expect(screen.getByText('균형형 요청')).toBeInTheDocument();
-    expect(screen.getByText('고성능 요청')).toBeInTheDocument();
+    expect(screen.getByText('Judge 기반 점진 학습 라우터')).toBeInTheDocument();
+    expect(screen.getByText('Judge 선택 학습 중')).toBeInTheDocument();
+    expect(screen.getByText('학습된 Judge 선택')).toBeInTheDocument();
+    expect(screen.getByText('0건')).toBeInTheDocument();
+    expect(screen.queryByText('경제형 요청')).not.toBeInTheDocument();
+    expect(screen.queryByText('균형형 요청')).not.toBeInTheDocument();
+    expect(screen.queryByText('고성능 요청')).not.toBeInTheDocument();
     expect(screen.queryByTestId('routing-prior-guided-policy')).not.toBeInTheDocument();
   });
 

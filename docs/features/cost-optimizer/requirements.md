@@ -10,10 +10,11 @@ Cost Optimizer는 workflow 안의 LLM 노드 비용을 줄이기 위한 기능�
 
 ## Current Routing Decision
 
-FR-011의 현재 제품 계약은 `bootstrap_request_complexity_v3`다. 이 계약은
-[ADR-0045](../../decisions/ADR-0045-bootstrap-difficulty-routing-policy.md)를 따른다.
+FR-011의 현재 제품 계약은 `judge_bootstrap_incremental_v1`다. 이 계약은
+[ADR-0059](../../decisions/ADR-0059-judge-bootstrap-incremental-routing.md)를 따른다.
 새 workflow가 "검증된 후보가 없어서 routing을 시작할 수 없는" 상태에 머물지 않게,
-자동 라우팅을 켤 때 Planner가 **이 LLM 노드가 처리할 요청 난이도 분류기**를 한 번 만든다.
+초기 운영 요청은 Judge LLM이 현재 요청에 맞는 모델을 선택하고, 그 선택과 실제 실행
+결과가 쌓일수록 로컬 라우터가 Judge를 대신한다.
 
 | 동일 작업 지문의 성공 운영 로그 | 초기 표본 | 정책 출처 |
 | --- | --- | --- |
@@ -26,24 +27,25 @@ FR-011의 현재 제품 계약은 `bootstrap_request_complexity_v3`다. 이 계�
 바뀐 경우에는 bootstrap을 재사용할 수 있지만, 실제 작업을 바꾸는 prompt/RAG/schema/downstream
 변경은 bootstrap을 오래됨 상태로 만들고 다시 생성을 요구한다.
 
-초기 생성은 경제형·균형형·고성능형 난이도별 payload를 3~12개(기본 10개) 만들어 사용자가
-생성 근거를 확인할 수 있게 한다. Planner 비용은 사용자가 정한 1회 초기 생성 예산($0.50~$10,
-기본 $1)에서만 사용한다. 배포 후 후보 replay 비용은 월간 재검증 예산에서 별도로 차감한다.
+초기 생성은 작업 설명과 node 계약을 정리하고 Judge가 사용할 안전한 요청 계약을 만든다.
+이 과정의 Planner 비용은 사용자가 정한 1회 초기 생성 예산($0.50~$10, 기본 $1)에서만
+사용한다. 배포 후 후보 replay 비용은 월간 재검증 예산에서 별도로 차감한다.
 
-일반 실행은 현재 문의의 주제 키워드나 문장 유사도를 분류하지 않는다. 실행마다 **변수 치환이
-끝난 system/user/assistant prompt와 들어온 입력**을 분류기에 전달해 0~100 난이도 점수와
-경제형·균형형·고성능형 확률을 계산한다. 이 점수는 reasoning depth, 지시/예외 복잡도, JSON
-schema 정밀도, RAG 문서 종합/근거 요구, 출력 생성량, 모호성을 함께 반영한다. 그 뒤 현재 실행
-주체가 사용할 수 있는 모든 후보의 사전 품질·비용·지연 profile을 비교해 모델을 고른다.
-RAG 문서 원문과 실행마다 달라지는 검색 결과는 분류기에 넣거나 저장하지 않는다. 대신 node의 RAG
-사용 여부와 검색 설정 같은 고정 구조 정보만 사용한다. prompt, 출력 schema, RAG, downstream 계약이 바뀌면 bootstrap을 오래됨으로 표시하고
-다시 생성한다. 실행마다 Planner/Judge LLM, 외부 의미 유사도 검색 또는 vector DB 조회를
-호출하지 않는다. 대신 bootstrap에서 준비한 로컬 mDeBERTa 분류기만 추론해 요청 난이도
-점수와 확률을 계산한다.
+일반 실행은 현재 문의의 주제 키워드나 문장 유사도를 저장·검색하지 않는다. 초기 단계에서는
+**변수 치환이 끝난 prompt와 들어온 입력**을 Judge에 일시적으로 전달해, 실행 주체가 쓸 수
+있는 전체 후보 중 하나를 선택하게 한다. Judge 응답은 선택 모델·신뢰도·안전한 근거만 남기며,
+원문 prompt, 입력 payload, RAG 문서 원문은 정책 artifact나 API 응답에 저장하지 않는다.
 
-배포 후 성공 운영 실행이 설정 주기만큼 쌓이면 제한된 replay로 모델별 품질·비용·지연을
-재평가한다. 품질 gate를 통과한 경우에만 난이도별 모델을 교체하며, 통과 후보가 없으면 기존
-정책을 유지한다. Canary와 Shadow는 이번 범위에 포함하지 않는다.
+Judge 선택 label은 로컬 mDeBERTa 모델 선택 분류기를 점진적으로 학습시키는 재료다. 완료된
+운영 결과가 최소 표본 수, schema/downstream 성공률, fallback 비율 기준을 통과하면 로컬
+분류기가 먼저 모델을 선택한다. 로컬 신뢰도가 낮거나 선택 모델의 credential 권한이 바뀐
+경우에만 Judge를 다시 호출한다. prompt, 출력 schema, RAG, downstream 계약이 바뀌면
+bootstrap과 local artifact를 오래됨으로 표시하고 Judge-first로 다시 시작한다.
+
+배포 후 성공 운영 실행이 설정 주기만큼 쌓이면 Judge 선택 label 수와 모델별 품질·비용·지연을
+재평가한다. local router가 충분히 학습됐는지는 이 시점의 품질 gate로만 전환하며, 모델 후보의
+추가 성능 검증이 필요할 때만 제한된 replay를 별도로 사용한다. Canary와 Shadow는 이번 범위에
+포함하지 않는다.
 
 이 기능의 첫 번째 목표는 workflow 전체를 A/B 테스트하는 것이 아니라, 사용자가 선택한 특정 LLM 노드 하나에 대해 현재 설정과 후보 설정을 같은 입력 기준으로 비교할 수 있게 하는 것이다.
 
@@ -123,7 +125,7 @@ Functional Requirement 상태는 다음 기준으로 구분한다.
 | FR-008 | 후보 적용 | P1 | `구현 완료` | `테스트 통과` | 사용자가 성공한 B 후보 설정 전체를 현재 target LLM node draft에 적용한다. downstream warning 확인과 schema 실패 후보 차단을 제공한다. draft conflict 처리는 후속 보강 대상이다. |
 | FR-009 | 비용 기록 | P1 | `구현 완료` | `테스트 통과` | 결과 분석 화면은 A/B 비용, prompt/completion/total token, latency를 표시한다. 비교 실행은 전용 experiment/candidate row로 저장되고 usage row가 candidate를 직접 참조한다. 과거 결과 재조회 API와 trace metadata retention 기준 정리를 제공한다. |
 | FR-010 | 권한 | P1 | `구현 완료` | `UI/API 권한 기반 구현, 테스트 통과` | A/B 테스트와 후보 적용은 builder 이상 권한이 있는 사용자만 수행한다. compare/apply/history API와 모델/Knowledge 후보 사용 가능성 검증이 적용됐다. |
-| FR-011 | Bootstrap 작업 난이도 자동 모델 라우팅 | P1 | `진행중` | `Planner 작업 난이도 프로필·runtime 후보 점수화 구현, 배포 후 replay 재평가 연결 보강 필요` | 운영 로그가 없거나 부족해도 prompt/출력 계약/RAG/downstream 기반 난이도 프로필을 만들고, 첫 배포 실행부터 경제형·균형형·고성능형 모델을 선택한다. |
+| FR-011 | Judge Bootstrap 점진 학습 자동 모델 라우팅 | P1 | `진행중` | `기존 bootstrap 회귀 라우팅을 Judge-first/local-first 구조로 전환 중` | 초기 운영 요청은 Judge가 후보 모델을 선택하고, 선택 label과 실제 운영 성과가 충분히 쌓이면 로컬 라우터가 우선 선택한다. |
 | FR-012 | LLM 파라미터 추천 룰셋 | P2 | `진행중` | `서비스/API/UI 일부 구현` | 운영 로그 기반 추천 API와 추천 모달이 있다. 모델 라우팅 enable/refresh 같은 `direct_policy_update`는 즉시 적용 가능하고, 일반 파라미터/RAG 조정은 A/B 후보 실험으로 검증한다. |
 | FR-013 | Cost Optimizer 후보 검증 및 출력 품질 평가 | P1 | `구현 완료` | `추천 빠른 검증·일반 compare quality judge·이력 저장·결과 분석 UI 및 targeted test 통과` | 추천 모달과 일반 비교 분석 테스트에서 동일 입력의 A/B 출력을 평가해 비용·속도·token·품질 점수·JSON schema·downstream 호환성을 보여주고, 같은 결과를 적용하거나 다시 조회한다. |
 | FR-014 | 배포별 자동 파라미터 최적화 | P2 | `진행중` | `배포 설정·운영 수집·상태/예산 UI 구현` | 배포 시 선택한 LLM 노드의 운영 실행을 수집하고, 점검 주기와 월간 검증 예산을 분리해 관리한다. 모델 라우팅·모델 선택·프롬프트 변경은 포함하지 않는다. |
@@ -209,7 +211,7 @@ LLM 노드 상세 화면의 모델 설정 UX는 다음을 따른다.
 
 - 자동 모델 라우팅 OFF 상태에서는 기본 모델과 fallback 모델 선택 UI를 표시한다.
 - 자동 모델 라우팅 ON 상태에서는 기본 모델과 fallback 모델 선택 UI를 숨기고 active policy 상태를 표시한다.
-- 실행 시점 자동 라우팅은 active policy를 사용하며, judge LLM을 매 실행마다 호출하지 않는다.
+- 초기 `judge_first` 상태의 배포 운영 실행은 active policy가 정한 후보 집합 안에서 Judge LLM을 호출한다. 충분한 Judge 선택 label과 건강한 운영 결과가 쌓인 `local_first` 상태에서는 로컬 라우터가 먼저 선택하고, 확신이 낮은 요청만 Judge로 되돌린다.
 - 정책 갱신은 새 validated Replay evidence, 운영 evidence threshold, model availability/drift, 사용자의 수동 요청으로 수행한다. `refresh_every_runs` 기본 20회는 호환용 주기 재평가 trigger이며 모델 변경을 보장하지 않는다.
 - 작업 유형 입력은 표시하지 않는다.
 
@@ -443,59 +445,49 @@ Cost Optimizer의 A/B 테스트는 단순 실행 기능이 아니라, LLM 노드
 
 현재 Gateway의 Cost Optimizer availability, baseline 조회, experiment history, compare, apply API는 workflow `write` 권한을 요구한다. 프론트 진입 액션은 builder 미만 사용자에게 비활성화 상태와 권한 부족 안내를 제공한다. compare/apply API는 선택한 모델 후보가 현재 사용자의 사용 가능 모델 목록에 있는지 확인하고, Knowledge Base 후보가 현재 organization/workflow scope에서 `use` 가능한지 다시 검증한다.
 
-### FR-011. Bootstrap 요청 난이도 자동 모델 라우팅
+### FR-011. Judge Bootstrap 점진 학습 자동 모델 라우팅
 
-자동 모델 라우팅은 입력 문장을 입력군으로 나누거나 주제 키워드·문장 유사도를 계산하지
-않는다. **실행마다** 변수 치환이 끝난 prompt와 들어온 요청을 읽어 난이도 점수와
-경제형·균형형·고성능형 확률을 계산하고, 그 결과와 실행 주체가 사용할 수 있는 전체 모델
-카탈로그를 바탕으로 모델을 고른다.
+자동 모델 라우팅은 입력 문장을 입력군으로 저장하거나 주제 키워드 rule을 하드코딩하지
+않는다. 초기에는 Judge가 현재 요청과 노드 계약을 읽어 후보 모델을 선택하고, 이후에는
+그 선택과 실제 실행 결과로 학습한 로컬 라우터가 먼저 모델을 고른다.
 
 #### 초기 정책 생성
 
 - 사용자는 LLM 노드에서 자동 라우팅을 켜고 작업 설명, 기본 모델, 기본 대체 모델,
   초기 생성 예산을 입력한다.
 - bootstrap은 system/user/assistant prompt, 입력 매핑, 출력 형식과 schema, RAG 설정,
-  후속 노드 계약을 읽어 초기 난이도 학습 표본과 mDeBERTa 분류기 artifact를 생성한다.
-- Planner는 표본별 economy, balanced, advanced 난이도 label과 근거 요약을 만든다.
-  실제 0~100 요청 난이도 점수와 세 등급 확률은 bootstrap 표본으로 학습한 mDeBERTa
-  분류기가 **각 실행 요청**에 대해 계산한다. Planner label은 runtime keyword rule이
-  아니라 분류기 학습 데이터다.
+  후속 노드 계약을 읽어 Judge 요청 계약과 로컬 router artifact 초기 상태를 만든다.
+- 초기 Judge는 현재 요청별로 `selected_model_id`, `confidence`, `reason_code`를 반환한다.
+  Judge label은 로컬 모델 선택 분류기의 학습 데이터이며 runtime keyword rule이 아니다.
 - 같은 작업 지문의 성공 운영 로그가 0건이면 안전한 합성 표본을, 1~11건이면 운영
   표본과 필요한 합성 표본을, 12건 이상이면 대표 운영 표본을 사용한다.
-- 학습 feature는 node prompt template, 실제 변수 매핑으로 렌더링한 user prompt, 입력,
-  출력 계약을 포함한다. system/assistant의 upstream 값은 runtime처럼 marker로만 남긴다.
-  RAG 문서 원문은 넣지 않고 retrieval 사용 여부·문맥 길이·출처 수 같은 구조 정보만 쓴다.
-  입력 원문, prompt 원문, credential, KB 원문은 artifact나 API 응답에 저장하지 않는다.
-  안전 요약과 feature hash만 사용한다.
+- 학습은 실행 중 메모리에 있는 rendered prompt로 mDeBERTa feature를 만든 뒤, 원문 대신
+  가중치·Judge 선택·실행 결과 안전 요약만 저장한다. RAG 문서 원문은 Judge와
+  artifact에 넣지 않고 retrieval 사용 여부·문맥 길이·출처 수 같은 구조 정보만 쓴다.
 - prompt, 입력 매핑, 출력 schema, RAG 또는 downstream 계약이 바뀌면 bootstrap은 오래됨
   상태가 되며 다시 생성해야 한다. 수동 모델만 바뀐 경우에는 재사용할 수 있다.
 
-#### 실행 시 모델 선택
+#### 실행 시 모델 선택과 점진 전환
 
-- 일반 실행 중에는 Planner, Judge, 외부 의미 유사도 검색 또는 vector DB 조회를 호출하지
-  않는다. bootstrap에서 준비한 로컬 mDeBERTa 분류기만 요청별 점수 추론에 사용한다.
-- runtime은 저장된 분류기 artifact로 현재 요청의 난이도 점수·확률을 계산하고, 현재 실행의
-  일반 구조 정보(입력 길이, RAG 사용 여부, 출력 형식 등), 전역 모델 profile, 해당
-  배포·노드의 운영 성적을 함께 사용해 **현재 실행 주체가 쓸 수 있는 모든 채팅 모델**을
-  점수화한다.
-- 품질 하한을 통과한 모델 중 비용·지연·fallback 위험이 더 적절한 모델을 선택한다.
-  세 개의 고정 난이도 모델만 사용하는 계약이 아니다.
-- 자동 라우팅을 켰지만 ready bootstrap이 없거나 점수화할 후보가 없으면 사용자가 지정한 기본 모델을 사용한다.
-  `minimum_confidence`보다 낮은 경우에는 기본 모델로 즉시 고정하지 않고, 세 난이도 확률 전체와
-  후보의 품질·불확실성·비용·지연 profile로 보수적으로 순위화하며 낮은 신뢰도 상태를 trace에 남긴다.
-  기본 모델 호출이 실패하면 기본 대체 모델을 한 번
-  시도한다.
-- 실행 trace에는 선택 모델, 대체 모델, 정책 버전, strategy ID, 선택 근거와 안전한
-  decision factor를 남긴다.
+- `judge_first`: local artifact가 준비되기 전에는 매 운영 요청에 Judge를 호출한다.
+- `local_first`: Judge 선택 label이 충분히 쌓이고 완료된 운영 품질 기준을 통과하면 로컬
+  mDeBERTa 분류기가 전체 사용 가능 후보 중 하나를 먼저 선택한다.
+- `local_first` 상태에서 local prediction의 confidence가 기준 미만이거나 선택 모델이 현재
+  실행 주체에게 허용되지 않으면 Judge를 호출한다. 별도 `hybrid` 상태값은 두지 않는다.
+- Judge 호출 실패·형식 오류는 workflow를 실패시키지 않으며 사용자가 지정한 기본 모델, 그 뒤
+  기본 대체 모델 순서로 실행한다.
+- 실행 trace에는 `decision_source`(`runtime_judge`, `local_router`, `stored_model`), Judge
+  호출 여부와 비용, 선택 모델, 대체 모델, 정책 버전, 안전한 선택 근거를 남긴다.
 
 #### 배포 후 재평가
 
 - Test Sidebar 실행은 정책 학습·운영 성적·갱신 카운터에 포함하지 않는다.
 - 성공한 배포 후 운영 실행만 노드별 모델·입력 길이 profile별 성적에 반영한다.
-- 설정한 점검 주기에 도달하거나 사용자가 정책 갱신을 요청하면 제한된 replay와
-  안전한 품질·비용·지연 근거를 바탕으로 policy를 다시 평가한다.
-- 품질 gate를 통과하고 의미 있는 개선이 있을 때만 policy version을 교체한다.
-  통과 후보가 없으면 기존 active policy를 유지한다.
+- 설정한 점검 주기에 도달하면 완료된 Judge 표본과 운영 성적을 다시 평가한다.
+  최소 표본 수, 최소 두 개 이상의 선택 모델, schema/downstream 성공률, fallback 비율 기준을
+  충족하면 `local_first`로 전환한다. 기준을 잃으면 다시 `judge_first`로 돌아간다.
+- 제한된 replay는 후보 모델 자체의 성능 재검증에만 사용하며, Judge-first 초기 전환의 필수
+  조건은 아니다.
 - 재평가 비용은 초기 bootstrap 예산과 별도의 월간 검증 예산에서 관리한다.
 
 #### 제외 범위

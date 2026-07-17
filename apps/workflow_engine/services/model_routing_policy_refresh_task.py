@@ -101,7 +101,15 @@ class PersistedModelRoutingPolicyRefreshService:
                 if isinstance(policy.active_policy, dict)
                 else {}
             )
+            if active_policy.get("strategy_id") == "judge_bootstrap_incremental_v1":
+                return cls._refresh_judge_bootstrap_incremental_policy(
+                    db,
+                    policy=policy,
+                    update=update,
+                    requested_at=requested_at,
+                )
             if active_policy.get("strategy_id") in {
+                "bootstrap_request_complexity_regression_v4",
                 "bootstrap_request_complexity_v3",
                 "bootstrap_task_complexity_v2",
                 # 이전 snapshot은 신규 profile로 다시 만들기 전까지 current policy를
@@ -143,6 +151,80 @@ class PersistedModelRoutingPolicyRefreshService:
             }
             db.flush()
             return update
+
+    @classmethod
+    def _refresh_judge_bootstrap_incremental_policy(
+        cls,
+        db: Session,
+        *,
+        policy: LLMNodeModelRoutingPolicy,
+        update: LLMNodeModelRoutingPolicyUpdate,
+        requested_at: datetime,
+    ) -> LLMNodeModelRoutingPolicyUpdate:
+        """Judge label과 완료된 운영 결과를 반영해 local-first 전환만 재평가한다."""
+        from apps.workflow_engine.services.model_routing_policy_store import (
+            ModelRoutingPolicyStore,
+        )
+
+        ModelRoutingPolicyStore.reconcile_incremental_learning_mode(db, policy=policy)
+        active_policy = (
+            dict(policy.active_policy) if isinstance(policy.active_policy, dict) else {}
+        )
+        learning = (
+            dict(active_policy.get("learning"))
+            if isinstance(active_policy.get("learning"), dict)
+            else {}
+        )
+        profile = ModelRoutingOperationalPerformanceService.profile_for_policy(
+            db,
+            policy_id=policy.id,
+        )
+        ModelRoutingPolicyLifecycleService.apply_refresh_result(
+            policy,
+            status="kept_current",
+            proposed_policy=active_policy,
+            policy_version=policy.policy_version,
+        )
+        policy.last_refreshed_at = requested_at
+        policy.performance_checkpoint = (
+            ModelRoutingOperationalPerformanceService.checkpoint_snapshot(
+                db,
+                policy_id=policy.id,
+            )
+        )
+        ModelRoutingPolicyLifecycleService.complete_refresh_cycle(
+            policy,
+            eligible_runs_since_last_refresh=cls._remaining_event_count(
+                db,
+                policy,
+                requested_at,
+            ),
+        )
+        update.status = "kept_current"
+        update.eligible_run_count = profile.operational_usable_runs
+        update.excluded_run_count = cls._excluded_run_count(
+            db,
+            policy,
+            requested_at,
+            usable_run_count=profile.operational_usable_runs,
+        )
+        update.input_summary = {
+            "strategy_id": "judge_bootstrap_incremental_v1",
+            "judged_request_count": int(learning.get("judged_request_count") or 0),
+            "selected_model_count": len(learning.get("selected_model_ids") or []),
+        }
+        update.output_summary = {
+            "reason": "Judge 선택과 운영 품질을 다시 확인했습니다. 모델은 이 갱신에서 임의로 바꾸지 않습니다.",
+            "learning_mode": learning.get("mode") or "judge_first",
+            "local_router_ready": learning.get("mode") == "local_first",
+        }
+        update.error_code = None
+        update.judge_model = None
+        update.judge_provider = None
+        update.prompt_version = None
+        update.new_policy_version = None
+        db.flush()
+        return update
 
     @classmethod
     def _refresh_bootstrap_policy(
@@ -200,7 +282,7 @@ class PersistedModelRoutingPolicyRefreshService:
             "model_profile": profile.as_snapshot(),
             "strategy_id": str(
                 (policy.active_policy or {}).get("strategy_id")
-                or "bootstrap_request_complexity_v3"
+                or "bootstrap_request_complexity_regression_v4"
             ),
         }
         update.output_summary = {

@@ -10,7 +10,11 @@ from typing import Any, Dict, List, Optional
 import httpx
 import tiktoken
 
-from .base import BaseLLMClient, LLMResponseValidationError
+from .base import (
+    BaseLLMClient,
+    LLMResponseValidationError,
+    ProviderInvocationError,
+)
 
 
 class OpenAIClient(BaseLLMClient):
@@ -258,10 +262,12 @@ class OpenAIClient(BaseLLMClient):
 
         response_status = data.get("status")
         if response_status in {"incomplete", "failed", "cancelled"}:
-            raise LLMResponseValidationError(
+            raise ProviderInvocationError(
                 "OpenAI Responses 응답이 완료되지 않았습니다: "
                 f"status={response_status}, "
                 f"summary={self._summarize_responses_response(data)}",
+                reason_code="responses_incomplete",
+                provider_response_status=response_status,
                 usage=mapped_usage,
             )
 
@@ -302,9 +308,10 @@ class OpenAIClient(BaseLLMClient):
                 ) from exc
 
         if not text.strip():
-            raise LLMResponseValidationError(
+            raise ProviderInvocationError(
                 "OpenAI Responses 응답에 사용할 수 있는 텍스트가 없습니다: "
                 f"summary={self._summarize_responses_response(data)}",
+                reason_code="responses_empty_text",
                 usage=mapped_usage,
             )
 
@@ -819,7 +826,11 @@ class OpenAIClient(BaseLLMClient):
     def _raise_error_response(self, data: Dict[str, Any], status_code: int | None = None) -> None:
         error_info = data.get("error") if isinstance(data, dict) else None
         if not isinstance(error_info, dict):
-            raise ValueError(f"{self.provider_name} 호출 실패: Unknown error")
+            raise ProviderInvocationError(
+                f"{self.provider_name} 호출 실패: Unknown error",
+                reason_code="provider_http_error",
+                status_code=status_code,
+            )
         message = str(error_info.get("message", "Unknown error"))
         parts = [message]
         for key in ("type", "param", "code"):
@@ -827,7 +838,17 @@ class OpenAIClient(BaseLLMClient):
             if value:
                 parts.append(f"{key}={value}")
         status_text = f" (status {status_code})" if status_code else ""
-        raise ValueError(f"{self.provider_name} 호출 실패{status_text}: " + " | ".join(parts))
+        raise ProviderInvocationError(
+            f"{self.provider_name} 호출 실패{status_text}: " + " | ".join(parts),
+            reason_code="provider_http_error",
+            status_code=status_code,
+            provider_error_code=(
+                str(error_info["code"]) if error_info.get("code") else None
+            ),
+            provider_error_param=(
+                str(error_info["param"]) if error_info.get("param") else None
+            ),
+        )
 
     def _build_headers(self) -> Dict[str, str]:
         return {

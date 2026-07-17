@@ -162,6 +162,8 @@ export interface LLMNodeData extends BaseNodeData {
   /** Planner에 전달한 사용자 작업 설명. 실제 입력 원문은 저장하지 않는다. */
   model_routing_task_description?: string;
   model_routing_strategy?:
+    | 'judge_bootstrap_incremental_v1'
+    | 'bootstrap_request_complexity_regression_v4'
     | 'bootstrap_request_complexity_v3'
     | 'bootstrap_task_complexity_v2'
     | 'bootstrap_mdeberta_difficulty_v1';

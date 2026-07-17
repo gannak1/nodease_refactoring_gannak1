@@ -1,6 +1,8 @@
 # ADR-0058: 로그 유무를 모두 처리하는 Bootstrap 난이도 라우팅 정책
 
-Status: Accepted
+Status: Superseded
+
+Superseded By: [ADR-0059](ADR-0059-judge-bootstrap-incremental-routing.md)
 
 Related ADRs: [ADR-0038](ADR-0038-workflow-aware-adaptive-routing.md)
 

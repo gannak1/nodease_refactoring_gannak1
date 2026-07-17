@@ -46,6 +46,29 @@ class DifficultyPrediction:
     difficulty_score: float
 
 
+@dataclass(frozen=True)
+class ComplexityPrediction:
+    """요청별 연속 복잡도 예측값.
+
+    ``complexity_score``는 0~100 범위다. ``uncertainty``는 학습 표본에서
+    회귀기가 보인 평균 오차를 뜻하며, 라우터는 불확실할수록 더 보수적인 품질
+    기준을 적용한다.
+    """
+
+    complexity_score: float
+    confidence: float
+    uncertainty: float
+
+
+@dataclass(frozen=True)
+class ModelChoicePrediction:
+    """점진 학습된 local router의 모델 선택 결과다."""
+
+    selected_model_id: str
+    confidence: float
+    probabilities: dict[str, float]
+
+
 class MDebertaEmbedder:
     """Hugging Face mDeBERTa encoder를 lazy-load하는 runtime encoder.
 
@@ -184,6 +207,7 @@ class MDebertaDifficultyClassifier:
                 embedder = MDebertaEmbedder(resolved_model_id)
                 cls._embedder_cache[resolved_model_id] = embedder
             return embedder
+
 
     @classmethod
     def fit(
@@ -507,3 +531,257 @@ class MDebertaDifficultyClassifier:
         }
         denominator = sum(exponentials.values()) or 1.0
         return {tier: value / denominator for tier, value in exponentials.items()}
+
+
+class MDebertaModelChoiceClassifier:
+    """Judge의 모델 선택을 재현하는 mDeBERTa + online head 경계.
+
+    mDeBERTa는 현재 렌더된 요청을 숫자 벡터로 바꾸는 고정 encoder다. node별 policy에는
+    그 벡터나 원문을 저장하지 않고 작은 multi-class head 가중치만 저장한다.
+    """
+
+    @classmethod
+    def update(
+        cls,
+        artifact: dict[str, Any] | None,
+        *,
+        text: str,
+        selected_model_id: str,
+        candidate_model_ids: Iterable[str],
+        embedder: TextEmbedder | None = None,
+    ) -> dict[str, Any]:
+        from apps.workflow_engine.services.model_routing_incremental_learning import (
+            IncrementalModelChoiceClassifier,
+        )
+
+        vector, encoder_model_id = cls._vector(text, artifact=artifact, embedder=embedder)
+        updated = IncrementalModelChoiceClassifier.update(
+            artifact,
+            vector=vector,
+            selected_model_id=selected_model_id,
+            candidate_model_ids=candidate_model_ids,
+        )
+        updated["encoder_model_id"] = encoder_model_id
+        updated["classification_strategy"] = "frozen_mdeberta_online_model_choice_v1"
+        return updated
+
+    @classmethod
+    def predict(
+        cls,
+        artifact: dict[str, Any],
+        *,
+        text: str,
+        available_model_ids: Iterable[str],
+        embedder: TextEmbedder | None = None,
+    ) -> ModelChoicePrediction:
+        from apps.workflow_engine.services.model_routing_incremental_learning import (
+            IncrementalModelChoiceClassifier,
+        )
+
+        vector, _ = cls._vector(text, artifact=artifact, embedder=embedder)
+        result = IncrementalModelChoiceClassifier.predict(
+            artifact,
+            vector=vector,
+            available_model_ids=available_model_ids,
+        )
+        return ModelChoicePrediction(
+            selected_model_id=result.selected_model_id,
+            confidence=result.confidence,
+            probabilities=result.probabilities,
+        )
+
+    @classmethod
+    def _vector(
+        cls,
+        text: str,
+        *,
+        artifact: dict[str, Any] | None,
+        embedder: TextEmbedder | None,
+    ) -> tuple[list[float], str]:
+        encoder_model_id = str((artifact or {}).get("encoder_model_id") or "")
+        runtime_embedder = embedder or MDebertaDifficultyClassifier._shared_embedder(
+            encoder_model_id or None
+        )
+        vectors = MDebertaDifficultyClassifier._encode(
+            runtime_embedder,
+            [str(text or "").strip()],
+            mode="plain",
+        )
+        if not vectors or not vectors[0]:
+            raise ValueError("모델 선택 학습용 mDeBERTa 벡터를 만들지 못했습니다.")
+        return (
+            MDebertaDifficultyClassifier._l2_normalize(
+                [float(value) for value in vectors[0]]
+            ),
+            runtime_embedder.model_id,
+        )
+
+
+class MDebertaComplexityRegressor:
+    """mDeBERTa 표현에서 요청 복잡도 0~100을 직접 예측한다.
+
+    기존 ``MDebertaDifficultyClassifier``는 이미 저장된 세 구간 정책을 읽기
+    위해 남긴다. 새 bootstrap은 이 회귀 artifact를 만들어 runtime이 특정
+    난이도 구간이 아니라 연속 점수로 모든 모델을 비교하도록 한다.
+    """
+
+    ARTIFACT_KIND = "mdeberta_complexity_regression_v2"
+    TRAINING_EPOCHS = 320
+    LEARNING_RATE = 0.12
+    L2_REGULARIZATION = 0.002
+
+    @classmethod
+    def fit(
+        cls,
+        examples: Iterable[tuple[str, float]],
+        *,
+        embedder: TextEmbedder | None = None,
+    ) -> dict[str, Any]:
+        normalized = [
+            (str(text).strip(), cls._score(score))
+            for text, score in examples
+            if str(text).strip()
+        ]
+        if len(normalized) < 2:
+            raise ValueError("복잡도 회귀기는 두 개 이상의 표본이 필요합니다.")
+
+        runtime_embedder = embedder or MDebertaDifficultyClassifier._shared_embedder()
+        vectors = MDebertaDifficultyClassifier._encode(
+            runtime_embedder,
+            [text for text, _ in normalized],
+            mode="plain",
+        )
+        if len(vectors) != len(normalized) or not vectors or not vectors[0]:
+            raise ValueError("복잡도 회귀기 embedding을 만들지 못했습니다.")
+        rows = [
+            (
+                MDebertaDifficultyClassifier._l2_normalize(
+                    [float(value) for value in vector]
+                ),
+                score / 100.0,
+            )
+            for vector, (_, score) in zip(vectors, normalized, strict=True)
+            if vector
+        ]
+        if len(rows) != len(normalized):
+            raise ValueError("유효한 복잡도 회귀기 표본을 만들지 못했습니다.")
+        width = len(rows[0][0])
+        if not width or any(len(vector) != width for vector, _ in rows):
+            raise ValueError("복잡도 회귀기 embedding 차원이 일치하지 않습니다.")
+
+        weights, bias = cls._train(rows, width=width)
+        residuals = [
+            (cls._predict_normalized(weights, bias, vector) - target) ** 2
+            for vector, target in rows
+        ]
+        rmse = math.sqrt(sum(residuals) / len(residuals)) * 100.0
+        return {
+            "kind": cls.ARTIFACT_KIND,
+            "encoder_model_id": runtime_embedder.model_id,
+            "classification_strategy": "frozen_mdeberta_linear_regression_v2",
+            "regression_weights": weights,
+            "regression_bias": bias,
+            "training_sample_count": len(rows),
+            "training_score_range": {
+                "min": min(score for _, score in normalized),
+                "max": max(score for _, score in normalized),
+            },
+            "training_rmse": round(rmse, 4),
+            "training": {
+                "epochs": cls.TRAINING_EPOCHS,
+                "learning_rate": cls.LEARNING_RATE,
+                "l2_regularization": cls.L2_REGULARIZATION,
+            },
+        }
+
+    @classmethod
+    def predict(
+        cls,
+        artifact: dict[str, Any],
+        text: str,
+        *,
+        embedder: TextEmbedder | None = None,
+    ) -> ComplexityPrediction:
+        if not isinstance(artifact, dict) or artifact.get("kind") != cls.ARTIFACT_KIND:
+            raise ValueError("지원하지 않는 복잡도 회귀기 artifact입니다.")
+        weights = artifact.get("regression_weights")
+        try:
+            bias = float(artifact.get("regression_bias"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("복잡도 회귀기 bias가 유효하지 않습니다.") from exc
+        if not isinstance(weights, list) or not weights:
+            raise ValueError("복잡도 회귀기 가중치가 유효하지 않습니다.")
+        encoder_model_id = str(artifact.get("encoder_model_id") or DEFAULT_MDEBERTA_MODEL_ID)
+        runtime_embedder = embedder or MDebertaDifficultyClassifier._shared_embedder(
+            encoder_model_id
+        )
+        vectors = MDebertaDifficultyClassifier._encode(
+            runtime_embedder,
+            [str(text or "").strip()],
+            mode="plain",
+        )
+        if not vectors or not vectors[0]:
+            raise ValueError("복잡도를 예측할 입력 embedding을 만들지 못했습니다.")
+        vector = MDebertaDifficultyClassifier._l2_normalize(
+            [float(value) for value in vectors[0]]
+        )
+        if len(weights) != len(vector):
+            raise ValueError("복잡도 회귀기 embedding 차원이 일치하지 않습니다.")
+        raw_score = cls._predict_normalized(
+            [float(value) for value in weights], bias, vector
+        ) * 100.0
+        score = cls._score(raw_score)
+        uncertainty = max(1.0, min(50.0, float(artifact.get("training_rmse") or 25.0)))
+        confidence = max(0.0, min(1.0, 1.0 - uncertainty / 50.0))
+        return ComplexityPrediction(
+            complexity_score=round(score, 2),
+            confidence=round(confidence, 4),
+            uncertainty=round(uncertainty, 2),
+        )
+
+    @classmethod
+    def _train(
+        cls,
+        rows: list[tuple[list[float], float]],
+        *,
+        width: int,
+    ) -> tuple[list[float], float]:
+        weights = [0.0] * width
+        bias = sum(target for _, target in rows) / len(rows)
+        for _epoch in range(cls.TRAINING_EPOCHS):
+            gradient = [0.0] * width
+            bias_gradient = 0.0
+            for vector, target in rows:
+                error = cls._predict_normalized(weights, bias, vector) - target
+                gradient = [
+                    current + error * feature
+                    for current, feature in zip(gradient, vector, strict=True)
+                ]
+                bias_gradient += error
+            sample_count = len(rows)
+            weights = [
+                value
+                - cls.LEARNING_RATE
+                * ((item / sample_count) + cls.L2_REGULARIZATION * value)
+                for value, item in zip(weights, gradient, strict=True)
+            ]
+            bias -= cls.LEARNING_RATE * bias_gradient / sample_count
+        return weights, bias
+
+    @staticmethod
+    def _predict_normalized(
+        weights: list[float],
+        bias: float,
+        vector: list[float],
+    ) -> float:
+        return sum(weight * feature for weight, feature in zip(weights, vector, strict=True)) + bias
+
+    @staticmethod
+    def _score(value: float) -> float:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("복잡도 점수는 숫자여야 합니다.") from exc
+        if not math.isfinite(numeric):
+            raise ValueError("복잡도 점수는 유한한 숫자여야 합니다.")
+        return max(0.0, min(100.0, numeric))

@@ -38,6 +38,7 @@ from apps.workflow_engine.services.model_router import (
     ModelRouter,
 )
 from apps.workflow_engine.services.model_routing_mdeberta_classifier import (
+    MDebertaComplexityRegressor,
     MDebertaDifficultyClassifier,
     TextEmbedder,
 )
@@ -58,9 +59,10 @@ DIFFICULTY_TIERS: tuple[DifficultyTier, ...] = (
 )
 MIN_HISTORY_FOR_HISTORY_ONLY = 12
 MAX_HISTORY_SAMPLES = 24
-DEFAULT_SAMPLES_PER_TIER = 10
-MIN_SAMPLES_PER_TIER = 3
-MAX_SAMPLES_PER_TIER = 12
+COMPLEXITY_COVERAGE_TARGETS: tuple[float, ...] = (15.0, 30.0, 45.0, 60.0, 75.0, 90.0)
+DEFAULT_SAMPLES_PER_COMPLEXITY_TARGET = 2
+MIN_SAMPLES_PER_COMPLEXITY_TARGET = 1
+MAX_SAMPLES_PER_COMPLEXITY_TARGET = 3
 
 
 @dataclass(frozen=True)
@@ -85,9 +87,36 @@ class BootstrapSample:
     input_length: int
     knowledge_enabled: bool
     output_format: str
+    # v4 정책의 학습·실행 기준. difficulty는 이전 DB/API 호환용 표시값일 뿐,
+    # 새 runtime은 이 연속 점수를 사용한다.
+    complexity_score: float = 50.0
     # validation 표본은 artifact 학습에 넣지 않는다. 같은 정책이 본 적 없는
     # 표현을 분류할 수 있는지 확인하는 용도다.
     sample_role: BootstrapSampleRole = "training"
+
+
+def _complexity_score_from_value(value: Any, *, fallback: float = 50.0) -> float:
+    """신규 점수와 기존 tier 값을 모두 안전하게 읽는다."""
+
+    if isinstance(value, str):
+        legacy = {"economy": 20.0, "balanced": 55.0, "advanced": 85.0}
+        if value in legacy:
+            return legacy[value]
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        score = fallback
+    return max(0.0, min(100.0, score))
+
+
+def _display_difficulty_for_score(score: float) -> DifficultyTier:
+    """기존 DB의 difficulty 문자열을 유지하기 위한 표시용 변환이다."""
+
+    if score < 34:
+        return "economy"
+    if score < 67:
+        return "balanced"
+    return "advanced"
 
 
 @dataclass(frozen=True)
@@ -118,14 +147,14 @@ class BootstrapPlanner(Protocol):
         *,
         task_summary: dict[str, Any],
         history_runs: list[BootstrapHistoryRun],
-    ) -> dict[str, tuple[DifficultyTier, str | None]]: ...
+    ) -> dict[str, tuple[float | DifficultyTier, str | None]]: ...
 
     def create_samples(
         self,
         *,
         task_summary: dict[str, Any],
-        missing_tiers: list[DifficultyTier],
-        count_per_tier: int,
+        coverage_targets: list[float],
+        count_per_target: int,
         sample_budget_usd: float,
         sample_role: BootstrapSampleRole = "training",
         reference_samples: list[BootstrapSample] | None = None,
@@ -192,7 +221,7 @@ class LLMJsonBootstrapPlanner:
         *,
         task_summary: dict[str, Any],
         history_runs: list[BootstrapHistoryRun],
-    ) -> dict[str, tuple[DifficultyTier, str | None]]:
+    ) -> dict[str, tuple[float | DifficultyTier, str | None]]:
         payload = {
             "task": task_summary,
             "history_samples": [
@@ -209,34 +238,41 @@ class LLMJsonBootstrapPlanner:
                 "labels": [
                     {
                         "node_run_id": "string",
-                        "difficulty": "economy | balanced | advanced",
+                        "complexity_score": "integer 0..100",
                         "reason": "short safe reason",
                     }
                 ]
             },
         }
         result = self._invoke(
-            "Classify each safe operational sample by the capability required to "
-            "complete this node. Return JSON only. Do not infer model quality from "
-            "the model that previously ran the sample.",
+            "Score each safe operational sample from 0 to 100 by the capability "
+            "required to complete this node. This is continuous request complexity, "
+            "not economy/balanced/advanced topic classification. Return JSON only. "
+            "Do not infer model quality from the model that previously ran the sample.",
             payload,
         )
-        labels: dict[str, tuple[DifficultyTier, str | None]] = {}
+        labels: dict[str, tuple[float | DifficultyTier, str | None]] = {}
         for item in result.get("labels", []):
             if not isinstance(item, dict):
                 continue
             node_run_id = str(item.get("node_run_id") or "")
-            tier = str(item.get("difficulty") or "")
-            if node_run_id and tier in DIFFICULTY_TIERS:
-                labels[node_run_id] = (tier, str(item.get("reason") or "") or None)
+            score = item.get("complexity_score")
+            legacy_tier = str(item.get("difficulty") or "")
+            if node_run_id and (score is not None or legacy_tier in DIFFICULTY_TIERS):
+                labels[node_run_id] = (
+                    _complexity_score_from_value(
+                        score if score is not None else legacy_tier
+                    ),
+                    str(item.get("reason") or "") or None,
+                )
         return labels
 
     def create_samples(
         self,
         *,
         task_summary: dict[str, Any],
-        missing_tiers: list[DifficultyTier],
-        count_per_tier: int,
+        coverage_targets: list[float],
+        count_per_target: int,
         sample_budget_usd: float,
         sample_role: BootstrapSampleRole = "training",
         reference_samples: list[BootstrapSample] | None = None,
@@ -244,13 +280,13 @@ class LLMJsonBootstrapPlanner:
         _ = sample_role, reference_samples
         payload = {
             "task": task_summary,
-            "missing_difficulties": missing_tiers,
-            "count_per_difficulty": count_per_tier,
+            "coverage_targets": coverage_targets,
+            "count_per_target": count_per_target,
             "sample_budget_usd": round(sample_budget_usd, 4),
             "response_schema": {
                 "samples": [
                     {
-                        "difficulty": "economy | balanced | advanced",
+                        "complexity_score": "integer 0..100",
                         "payload": (
                             "JSON object in the LLM node input shape. Top-level keys "
                             "must match input_variables[].value_selector[0], and nested "
@@ -264,9 +300,9 @@ class LLMJsonBootstrapPlanner:
             },
         }
         result = self._invoke(
-            "Create executable representative JSON payloads for the requested task "
-            "complexity tier. These labeled examples train a per-request difficulty "
-            "classifier, not a topic or keyword router. "
+            "Create executable representative JSON payloads across the requested "
+            "continuous complexity range. These labeled examples train a per-request "
+            "complexity regressor, not a topic or keyword router. "
             "Respect required input variables. Include RAG cases when knowledge is "
             "enabled: single source, synthesis, conflicting sources, and no evidence. "
             "Use different request shapes and Korean expressions. Do not merely replace a team "
@@ -274,7 +310,7 @@ class LLMJsonBootstrapPlanner:
             "contract determine the tier; do not infer the tier from the input subject matter. "
             "Return JSON only and never invent credentials, secrets, or raw documents.",
             payload,
-            max_tokens=min(6200, max(3200, 190 * count_per_tier * len(missing_tiers))),
+            max_tokens=min(6200, max(3200, 190 * count_per_target * len(coverage_targets))),
         )
         samples = result.get("samples")
         return samples if isinstance(samples, list) else []
@@ -505,6 +541,10 @@ class ModelRoutingBootstrapPlanner:
             task_summary=task_summary,
         )
         task_tier = str(task_complexity_profile["tier"])
+        task_complexity_score = _complexity_score_from_value(
+            task_complexity_profile.get("score"),
+            fallback=_complexity_score_from_value(task_tier),
+        )
         try:
             history_labels = cls._label_history(
                 planner,
@@ -518,14 +558,21 @@ class ModelRoutingBootstrapPlanner:
 
         history_samples = []
         for run in selected_history:
-            difficulty, reason = history_labels.get(
+            labeled_score, reason = history_labels.get(
                 run.node_run_id,
-                (task_tier, str(task_complexity_profile.get("reason") or "") or None),
+                (
+                    task_complexity_score,
+                    str(task_complexity_profile.get("reason") or "") or None,
+                ),
+            )
+            complexity_score = _complexity_score_from_value(
+                labeled_score,
+                fallback=task_complexity_score,
             )
             history_samples.append(
                 BootstrapSample(
                     source="history",
-                    difficulty=difficulty,
+                    difficulty=_display_difficulty_for_score(complexity_score),
                     safe_input_summary=run.safe_input_summary,
                     feature_text=ModelRouter.bootstrap_classifier_feature_text(
                         cls._classifier_inputs_for_node(
@@ -539,31 +586,30 @@ class ModelRoutingBootstrapPlanner:
                     input_length=run.input_length,
                     knowledge_enabled=run.knowledge_enabled,
                     output_format=run.output_format,
+                    complexity_score=complexity_score,
                 )
             )
 
         training_history, validation_history = cls._split_history_samples(history_samples)
-        sample_counts = {
-            tier: sum(1 for sample in training_history if sample.difficulty == tier)
-            for tier in DIFFICULTY_TIERS
-        }
-        # 난이도 분류기는 최소 두 등급을 학습해야 한다. 과거 로그가 많아도 한 가지
-        # 난이도만 있다면 빠진 난이도별 실행 가능한 payload를 합성해 빈 구간을 보완한다.
-        missing_tiers: list[DifficultyTier] = [
-            tier
-            for tier in DIFFICULTY_TIERS
-            if sample_counts[tier] < MIN_SAMPLES_PER_TIER
-        ]
+        coverage_targets = cls._missing_complexity_coverage_targets(training_history)
         synthetic = cls._create_synthetic_samples(
             planner,
             node_data=node_data,
             task_summary=task_summary,
-            missing_tiers=missing_tiers,
-            count_per_tier=cls._sample_count_per_tier(initial_budget_usd),
+            coverage_targets=coverage_targets,
+            count_per_target=cls._sample_count_per_complexity_target(
+                initial_budget_usd
+            ),
             sample_budget_usd=initial_budget_usd * 0.65,
             sample_role="training",
         )
-        source: BootstrapSource = "hybrid" if history_samples else "synthetic"
+        source: BootstrapSource = (
+            "synthetic"
+            if not history_samples
+            else "hybrid"
+            if synthetic
+            else "history"
+        )
         all_samples = [*training_history, *synthetic]
         return BootstrapPlan(
             source=source,
@@ -664,19 +710,23 @@ class ModelRoutingBootstrapPlanner:
         }
 
     @staticmethod
-    def _sample_count_per_tier(initial_budget_usd: float) -> int:
-        # $1 기본값은 10개다. 난이도별 서로 다른 요청 형태를 배워야 실제 문장
-        # 표현이 달라져도 routing할 수 있으므로, 기존 5개보다 넓은 표본을 쓴다.
-        # 예산을 키워도 raw-like 예시를 과도하게 저장하지 않도록 12개에서 상한을 둔다.
+    def _sample_count_per_complexity_target(initial_budget_usd: float) -> int:
+        """초기 예산에 맞는 복잡도 목표별 합성 표본 수를 계산한다."""
+
+        # $1 기본값은 여섯 목표에 각 2개, 총 12개다. 점수 회귀기는 세 label에
+        # 몰린 표본보다 복잡도 축 전체를 덮는 서로 다른 요청 형태가 필요하다.
         return max(
-            MIN_SAMPLES_PER_TIER,
-            min(MAX_SAMPLES_PER_TIER, round(DEFAULT_SAMPLES_PER_TIER * initial_budget_usd)),
+            MIN_SAMPLES_PER_COMPLEXITY_TARGET,
+            min(
+                MAX_SAMPLES_PER_COMPLEXITY_TARGET,
+                round(DEFAULT_SAMPLES_PER_COMPLEXITY_TARGET * initial_budget_usd),
+            ),
         )
 
     @staticmethod
     def _validation_sample_count_per_tier(initial_budget_usd: float) -> int:
         """학습 표본과 다른 표현을 확인할 최소 holdout 수를 계산한다."""
-        training_count = ModelRoutingBootstrapPlanner._sample_count_per_tier(
+        training_count = ModelRoutingBootstrapPlanner._sample_count_per_complexity_target(
             initial_budget_usd
         )
         return max(3, min(5, round(training_count * 0.4)))
@@ -718,21 +768,23 @@ class ModelRoutingBootstrapPlanner:
         *,
         task_summary: dict[str, Any],
         history_runs: list[BootstrapHistoryRun],
-    ) -> dict[str, tuple[DifficultyTier, str | None]]:
+    ) -> dict[str, tuple[float, str | None]]:
         if not history_runs:
             return {}
         result = planner.label_history(
             task_summary=task_summary,
             history_runs=history_runs,
         )
-        normalized: dict[str, tuple[DifficultyTier, str | None]] = {}
+        normalized: dict[str, tuple[float, str | None]] = {}
         for run in history_runs:
             tier_and_reason = result.get(run.node_run_id)
             if not tier_and_reason:
                 continue
-            tier, reason = tier_and_reason
-            if tier in DIFFICULTY_TIERS:
-                normalized[run.node_run_id] = (tier, reason)
+            score, reason = tier_and_reason
+            normalized[run.node_run_id] = (
+                _complexity_score_from_value(score),
+                reason,
+            )
         return normalized
 
     @classmethod
@@ -742,18 +794,18 @@ class ModelRoutingBootstrapPlanner:
         *,
         node_data: Any,
         task_summary: dict[str, Any],
-        missing_tiers: list[DifficultyTier],
-        count_per_tier: int,
+        coverage_targets: list[float],
+        count_per_target: int,
         sample_budget_usd: float,
         sample_role: BootstrapSampleRole,
         reference_samples: list[BootstrapSample] | None = None,
     ) -> list[BootstrapSample]:
-        if not missing_tiers:
+        if not coverage_targets:
             return []
         generated = planner.create_samples(
             task_summary=task_summary,
-            missing_tiers=missing_tiers,
-            count_per_tier=count_per_tier,
+            coverage_targets=coverage_targets,
+            count_per_target=count_per_target,
             sample_budget_usd=sample_budget_usd,
             sample_role=sample_role,
             reference_samples=reference_samples,
@@ -762,10 +814,14 @@ class ModelRoutingBootstrapPlanner:
         for item in generated:
             if not isinstance(item, dict):
                 continue
+            score = item.get("complexity_score")
             tier = str(item.get("difficulty") or "")
             payload = item.get("payload")
-            if tier not in DIFFICULTY_TIERS or not isinstance(payload, dict):
+            if not isinstance(payload, dict):
                 continue
+            complexity_score = _complexity_score_from_value(
+                score if score is not None else tier
+            )
             # 학습 입력은 실제 runtime과 같은 계약을 사용해야 한다. payload만
             # 직렬화하면 runtime의 prompt/출력 계약/RAG 구조 정보가 빠져 같은
             # 요청도 학습과 실행에서 다른 feature가 된다.
@@ -778,7 +834,7 @@ class ModelRoutingBootstrapPlanner:
             samples.append(
                 BootstrapSample(
                     source="synthetic",
-                    difficulty=tier,  # type: ignore[arg-type]
+                    difficulty=_display_difficulty_for_score(complexity_score),
                     safe_input_summary=payload,
                     feature_text=feature_text,
                     source_node_run_id=None,
@@ -788,10 +844,32 @@ class ModelRoutingBootstrapPlanner:
                     ),
                     knowledge_enabled=bool(task_summary.get("knowledge_enabled")),
                     output_format=str(task_summary.get("output_format") or "text"),
+                    complexity_score=complexity_score,
                     sample_role=sample_role,
                 )
             )
         return samples
+
+    @staticmethod
+    def _missing_complexity_coverage_targets(
+        samples: list[BootstrapSample],
+    ) -> list[float]:
+        """학습 표본이 비어 있는 연속 복잡도 구간만 보강한다.
+
+        각 목표는 이웃 목표의 중간값으로 만든 구간을 대표한다. 예를 들어 45점
+        표본은 37.5~52.5 구간을 덮는다. 따라서 같은 legacy difficulty label 안에
+        있더라도 35점과 60점의 학습 부족을 따로 감지할 수 있다.
+        """
+
+        scores = [sample.complexity_score for sample in samples]
+        targets = COMPLEXITY_COVERAGE_TARGETS
+        missing: list[float] = []
+        for index, target in enumerate(targets):
+            lower = 0.0 if index == 0 else (targets[index - 1] + target) / 2.0
+            upper = 100.0 if index == len(targets) - 1 else (target + targets[index + 1]) / 2.0
+            if not any(lower <= score < upper for score in scores):
+                missing.append(target)
+        return missing
 
     @staticmethod
     def _classifier_inputs_for_node(
@@ -1513,6 +1591,7 @@ class PersistedModelRoutingBootstrapStore:
                     source=sample.source,
                     ordinal=ordinal,
                     difficulty=sample.difficulty,
+                    complexity_score=Decimal(str(sample.complexity_score)),
                     safe_input_summary=sample.safe_input_summary,
                     feature_hash=hashlib.sha256(
                         sample.feature_text.encode("utf-8")
@@ -1738,8 +1817,11 @@ class PersistedModelRoutingBootstrapStore:
         if defer_classifier:
             return {}, "pending"
         return (
-            MDebertaDifficultyClassifier.fit(
-                [(sample.feature_text, sample.difficulty) for sample in plan.samples],
+            MDebertaComplexityRegressor.fit(
+                [
+                    (sample.feature_text, sample.complexity_score)
+                    for sample in plan.samples
+                ],
                 embedder=embedder,
             ),
             "ready",
@@ -1752,6 +1834,7 @@ class PersistedModelRoutingBootstrapStore:
         return [
             {
                 "difficulty": sample.difficulty,
+                "complexity_score": sample.complexity_score,
                 "safe_input_summary": sample.safe_input_summary,
                 "input_length": sample.input_length,
                 "knowledge_enabled": sample.knowledge_enabled,
@@ -1788,6 +1871,43 @@ class PersistedModelRoutingBootstrapStore:
                 "correct_count": 0,
                 "accuracy": None,
                 "minimum_confidence": None,
+            }
+
+        if artifact.get("kind") == MDebertaComplexityRegressor.ARTIFACT_KIND:
+            errors: list[float] = []
+            confidences: list[float] = []
+            for sample in validation_samples:
+                try:
+                    prediction = MDebertaComplexityRegressor.predict(
+                        artifact,
+                        sample.feature_text,
+                        embedder=embedder,
+                    )
+                except (RuntimeError, ValueError):
+                    return {
+                        "status": "failed",
+                        "passed": False,
+                        "total_count": len(validation_samples),
+                        "mean_absolute_error": None,
+                        "minimum_confidence": None,
+                    }
+                errors.append(
+                    abs(prediction.complexity_score - sample.complexity_score)
+                )
+                confidences.append(prediction.confidence)
+            mae = sum(errors) / len(errors) if errors else None
+            passed = bool(
+                len(validation_samples) >= 4
+                and mae is not None
+                and mae <= 18.0
+                and confidences
+            )
+            return {
+                "status": "passed" if passed else "failed",
+                "passed": passed,
+                "total_count": len(validation_samples),
+                "mean_absolute_error": round(mae, 4) if mae is not None else None,
+                "minimum_confidence": round(min(confidences), 4) if passed else None,
             }
 
         correct_count = 0
@@ -1991,7 +2111,11 @@ class PersistedModelRoutingBootstrapStore:
             if isinstance(policy.active_policy, dict)
             else {}
         )
-        active_policy["strategy_id"] = "bootstrap_request_complexity_v3"
+        if active_policy.get("strategy_id") == "judge_bootstrap_incremental_v1":
+            # 새 전략은 Judge label을 local router artifact로 축적한다. 과거
+            # complexity worker가 끝났다는 이유로 정책 전략을 되돌리지 않는다.
+            return
+        active_policy["strategy_id"] = "bootstrap_request_complexity_regression_v4"
         active_policy["classifier_artifact"] = dict(artifact)
         if task_complexity_profile is not None:
             active_policy["task_complexity_profile"] = dict(task_complexity_profile)
@@ -2057,8 +2181,10 @@ class PersistedModelRoutingBootstrapStore:
             if isinstance(policy.active_policy, dict)
             else {}
         )
+        if active_policy.get("strategy_id") == "judge_bootstrap_incremental_v1":
+            return
         active_policy["classifier_artifact"] = dict(artifact)
-        active_policy["strategy_id"] = "bootstrap_request_complexity_v3"
+        active_policy["strategy_id"] = "bootstrap_request_complexity_regression_v4"
         active_policy.pop("difficulty_rules", None)
         active_policy["rules"] = []
         if classifier_generalization is not None:
@@ -2140,13 +2266,17 @@ class PersistedModelRoutingBootstrapStore:
             else {}
         )
         return {
-            "strategy": "bootstrap_request_complexity",
-            "strategy_id": "bootstrap_request_complexity_v3",
+            # bootstrap은 더 이상 정적 난이도 회귀 결과로 모델을 고정하지 않는다.
+            # 첫 운영 요청은 Judge가 후보 중 하나를 고르고, 이후 local router가 그
+            # 선택을 점진적으로 재현한다.
+            "strategy": "judge_bootstrap_incremental",
+            "strategy_id": "judge_bootstrap_incremental_v1",
             "policy_version": f"bootstrap-{str(bootstrap.id)[:8]}",
             "bootstrap_id": str(bootstrap.id),
             "task_fingerprint": bootstrap.task_fingerprint,
             "default_model_id": bootstrap.default_model_id,
             "fallback_model_id": bootstrap.fallback_model_id,
+            "judge_model_id": bootstrap.default_model_id,
             "task_complexity_profile": task_complexity_profile,
             "classifier_artifact": (
                 dict(bootstrap.classifier_artifact)
@@ -2171,6 +2301,13 @@ class PersistedModelRoutingBootstrapStore:
                 else {}
             ),
             "rules": [],
+            "learning": {
+                "mode": "judge_first",
+                "local_confidence_threshold": 0.78,
+                "judged_request_count": 0,
+                "selected_model_ids": [],
+                "local_router_artifact": {},
+            },
         }
 
     @classmethod
@@ -2207,6 +2344,7 @@ class PersistedModelRoutingBootstrapStore:
                     "id": str(sample.id),
                     "source": sample.source,
                     "difficulty": sample.difficulty,
+                    "complexity_score": float(sample.complexity_score),
                     "safe_input_summary": sample.safe_input_summary,
                     "input_length": sample.input_length,
                     "knowledge_enabled": sample.knowledge_enabled,

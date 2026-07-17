@@ -201,10 +201,17 @@ SPAN_SECTION_FIELDS = {
         "fallback_used",
         "fallback_from_model",
         "fallback_reason_code",
+        "fallback_provider_error_code",
+        "fallback_provider_error_type",
+        "fallback_provider_status_code",
+        "fallback_provider_remote_error_code",
+        "fallback_provider_remote_error_param",
+        "fallback_provider_response_status",
         "finish_reason",
         "has_file_input",
         "input_length_bucket",
         "judge_called",
+        "judge",
         "knowledge_enabled",
         "latency_ms",
         "matched_rule_id",
@@ -426,13 +433,65 @@ class TraceMetadataSanitizer:
         if not isinstance(safe_value, dict):
             return {}
 
-        allowed_fields = SPAN_SECTION_FIELDS["llm"] - {"decision_factors"}
+        allowed_fields = SPAN_SECTION_FIELDS["llm"] - {"decision_factors", "judge"}
         sanitized = cls._filter_allowed_dict(safe_value, allowed_fields)
         decision_factors = cls._sanitize_model_routing_decision_factors(
             safe_value.get("decision_factors")
         )
         if decision_factors:
             sanitized["decision_factors"] = decision_factors
+        judge = cls._sanitize_model_routing_judge(safe_value.get("judge"))
+        if judge:
+            sanitized["judge"] = judge
+        return sanitized
+
+    @classmethod
+    def _sanitize_model_routing_judge(cls, value: Any) -> dict[str, Any]:
+        """Judge 호출 결과 중 정책 설명에 필요한 수치만 trace에 남긴다."""
+        safe_value = cls.sanitize_json_safe(value)
+        if not isinstance(safe_value, dict):
+            return {}
+        sanitized = cls._filter_allowed_dict(
+            safe_value,
+            {
+                "model",
+                "selected_model",
+                "reason_code",
+                "error_code",
+                "usage_log_error",
+                "learning_error",
+            },
+        )
+        confidence = safe_value.get("confidence")
+        if (
+            not isinstance(confidence, bool)
+            and isinstance(confidence, (int, float))
+            and math.isfinite(float(confidence))
+            and 0.0 <= float(confidence) <= 1.0
+        ):
+            sanitized["confidence"] = float(confidence)
+        cost = safe_value.get("cost")
+        if (
+            not isinstance(cost, bool)
+            and isinstance(cost, (int, float))
+            and math.isfinite(float(cost))
+            and 0.0 <= float(cost) <= 1_000_000.0
+        ):
+            sanitized["cost"] = float(cost)
+        usage = safe_value.get("usage")
+        if isinstance(usage, dict):
+            safe_usage: dict[str, int | float] = {}
+            for key in {"prompt_tokens", "completion_tokens", "total_tokens"}:
+                token_count = usage.get(key)
+                if (
+                    not isinstance(token_count, bool)
+                    and isinstance(token_count, (int, float))
+                    and math.isfinite(float(token_count))
+                    and 0 <= float(token_count) <= 10_000_000
+                ):
+                    safe_usage[key] = token_count
+            if safe_usage:
+                sanitized["usage"] = safe_usage
         return sanitized
 
     @classmethod
@@ -447,6 +506,9 @@ class TraceMetadataSanitizer:
                 "profile",
                 "evaluated_candidate_count",
                 "excluded_candidate_count",
+                "learning_mode",
+                "candidate_model_count",
+                "judged_request_count",
             },
         )
         selected_score = cls._filter_allowed_dict(
@@ -481,6 +543,15 @@ class TraceMetadataSanitizer:
         if difficulty in {"economy", "balanced", "advanced"}:
             sanitized["difficulty"] = difficulty
         for key in ("confidence", "minimum_confidence"):
+            raw_value = safe_value.get(key)
+            if (
+                not isinstance(raw_value, bool)
+                and isinstance(raw_value, (int, float))
+                and math.isfinite(float(raw_value))
+                and 0.0 <= float(raw_value) <= 1.0
+            ):
+                sanitized[key] = float(raw_value)
+        for key in ("local_confidence", "local_confidence_threshold"):
             raw_value = safe_value.get(key)
             if (
                 not isinstance(raw_value, bool)

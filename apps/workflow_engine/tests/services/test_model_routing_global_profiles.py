@@ -13,6 +13,7 @@ from apps.workflow_engine.services.model_routing_constraint_difficulty import (
 )
 from apps.workflow_engine.services.model_routing_global_profiles import (
     GlobalModelProfile,
+    ModelRoutingComplexityEstimate,
     ModelRoutingDifficultyDistribution,
     ModelRoutingGlobalProfileScorer,
 )
@@ -109,6 +110,40 @@ def test_global_profiles_score_every_available_model_not_only_three_representati
     assert result.selected_model_id == "gpt-5.4"
     assert result.by_model["gpt-5.4"].selection_eligible is True
     assert result.by_model["gpt-4o-mini"].selection_eligible is False
+
+
+def test_global_profiles_choose_the_closest_sufficient_model_for_a_continuous_score():
+    candidates = (
+        _candidate("gpt-4o-mini", input_price=0.00015, output_price=0.0006),
+        _candidate("gpt-5-mini", input_price=0.00025, output_price=0.002),
+        _candidate("gpt-5.4", input_price=0.0025, output_price=0.015),
+    )
+    profiles = {
+        "gpt-4o-mini": _profile(
+            "gpt-4o-mini", economy=0.95, balanced=0.70, advanced=0.35, latency_ms=400
+        ),
+        "gpt-5-mini": _profile(
+            "gpt-5-mini", economy=0.97, balanced=0.91, advanced=0.80, latency_ms=650
+        ),
+        "gpt-5.4": _profile(
+            "gpt-5.4", economy=0.99, balanced=0.97, advanced=0.96, latency_ms=1_200
+        ),
+    }
+
+    result = ModelRoutingGlobalProfileScorer.rank(
+        candidates=candidates,
+        global_profiles=profiles,
+        difficulty=ModelRoutingDifficultyDistribution(balanced=1.0),
+        complexity=ModelRoutingComplexityEstimate(score=64.0, uncertainty=4.0),
+        input_profile="medium",
+        estimated_input_tokens=800,
+        estimated_output_tokens=300,
+        default_model_id="gpt-5.4",
+    )
+
+    assert result.selected_model_id == "gpt-5-mini"
+    assert result.complexity_score == 64.0
+    assert result.quality_floor > 0.78
 
 
 def test_node_specific_operational_score_can_override_global_profile_when_evidence_is_strong():
