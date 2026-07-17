@@ -532,6 +532,7 @@ Verified Against: feature/mba-127 @ 258b26a9
 - `권한 부여` button은 AWS Console 스타일의 modal을 연다. Modal은 resource table, team/user table, permission radio group을 순서대로 제공한다.
 - Permission card에는 `권한 부여` action만 둔다. Selected resource 영역에 같은 modal을 여는 중복 action을 두지 않는다.
 - Resource와 grantee는 현재 단일 PUT API 계약에 맞춰 각각 하나만 선택한다. 각 table은 이름 검색과 유형 전환을 제공하고 현재 선택을 radio로 표시한다.
+- Resource와 grantee table은 결과가 많아도 modal 전체를 밀어내지 않도록 각각 약 10개 row가 보이는 최대 높이 500px의 독립 scroll 영역을 사용하고 table header를 상단에 고정한다.
 - Modal의 resource type/resource/grantee/auth state는 draft state다. 선택 또는 취소만으로 바깥 permission card의 selected resource와 permission 목록을 변경하지 않는다.
 - Grant PUT 성공 후에만 modal draft를 page selection에 반영하고, 방금 권한을 부여한 resource의 permission 목록을 조회한다. 실패하면 modal과 기존 page selection을 유지한다.
 - Grant PUT 처리 중에는 modal에 busy 상태를 표시하고 배경/X/취소/Escape 닫기와 resource/grantee/auth state 입력을 모두 비활성화한다.

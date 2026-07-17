@@ -2742,9 +2742,14 @@ function PermissionGrantModal({
                 </select>
               </label>
             </div>
-            <div className="mt-3 overflow-x-auto">
+            <div
+              role="region"
+              aria-label="리소스 목록"
+              tabIndex={0}
+              className="mt-3 max-h-[500px] overflow-auto rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
               <table className="w-full min-w-[620px] text-left text-sm" aria-label="권한 대상 리소스">
-                <thead className="border-y border-slate-200 text-xs text-slate-500">
+                <thead className="sticky top-0 z-10 border-y border-slate-200 bg-white text-xs text-slate-500">
                   <tr><th className="w-12 px-3 py-2">선택</th><th className="px-3 py-2">리소스 이름</th><th className="px-3 py-2">유형</th><th className="px-3 py-2">설명</th></tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -2799,9 +2804,14 @@ function PermissionGrantModal({
                 </select>
               </label>
             </div>
-            <div className="mt-3 overflow-x-auto">
+            <div
+              role="region"
+              aria-label="부여 대상 목록"
+              tabIndex={0}
+              className="mt-3 max-h-[500px] overflow-auto rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
               <table className="w-full min-w-[620px] text-left text-sm" aria-label="권한 부여 대상">
-                <thead className="border-y border-slate-200 text-xs text-slate-500"><tr><th className="w-12 px-3 py-2">선택</th><th className="px-3 py-2">이름</th><th className="px-3 py-2">유형</th><th className="px-3 py-2">설명</th></tr></thead>
+                <thead className="sticky top-0 z-10 border-y border-slate-200 bg-white text-xs text-slate-500"><tr><th className="w-12 px-3 py-2">선택</th><th className="px-3 py-2">이름</th><th className="px-3 py-2">유형</th><th className="px-3 py-2">설명</th></tr></thead>
                 <tbody className="divide-y divide-slate-100">
                   {visibleGrantees.length === 0 ? (
                     <tr><td colSpan={4} className="px-3 py-8 text-center text-slate-500">선택 가능한 대상이 없습니다.</td></tr>

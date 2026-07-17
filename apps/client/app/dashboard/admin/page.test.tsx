@@ -285,6 +285,22 @@ describe('PermissionsTab 표 기반 권한 부여', () => {
     expect(dialog).toBeInTheDocument();
     expect(screen.getByRole('table', { name: '권한 대상 리소스' })).toBeInTheDocument();
     expect(screen.getByRole('table', { name: '권한 부여 대상' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: '리소스 목록' })).toHaveClass(
+      'max-h-[500px]',
+      'overflow-auto',
+    );
+    expect(screen.getByRole('region', { name: '부여 대상 목록' })).toHaveClass(
+      'max-h-[500px]',
+      'overflow-auto',
+    );
+    expect(
+      within(screen.getByRole('table', { name: '권한 대상 리소스' }))
+        .getAllByRole('rowgroup')[0],
+    ).toHaveClass('sticky');
+    expect(
+      within(screen.getByRole('table', { name: '권한 부여 대상' }))
+        .getAllByRole('rowgroup')[0],
+    ).toHaveClass('sticky');
 
     fireEvent.click(screen.getByRole('button', { name: '선택한 권한 부여' }));
     await waitFor(() =>
