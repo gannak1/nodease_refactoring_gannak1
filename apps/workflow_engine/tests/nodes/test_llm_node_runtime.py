@@ -78,6 +78,12 @@ from apps.workflow_engine.workflow.errors import (  # noqa: E402
 )
 
 
+def test_llm_node_answer_grounding_check_defaults_to_basic():
+    data = LLMNodeData(title="LLM", model_id="gpt-4o-mini")
+
+    assert data.answerGroundingCheck == "basic"
+
+
 class DummyClient:
     """동기 더미 클라이언트 [GEVENT]"""
 

@@ -823,7 +823,7 @@ downstream card는 `사용 가능`, `주의 필요`, `사용 불가`, `확인 �
 | `dedupeRetrievedContext` | `data.dedupeRetrievedContext` | `candidate.knowledge.dedupe_retrieved_context` | `candidate_settings.knowledge.dedupe_retrieved_context` | 중복 검색 근거를 제거한다. |
 | `retrievedContextMaxChars` | `data.retrievedContextMaxChars` | `candidate.knowledge.retrieved_context_max_chars` | `candidate_settings.knowledge.retrieved_context_max_chars` | author prompt가 아니라 Knowledge/RAG context만 제한한다. |
 | `retrievedContextCompression` | `data.retrievedContextCompression` | `candidate.knowledge.retrieved_context_compression` | `candidate_settings.knowledge.retrieved_context_compression` | `off`, `light`, `strong`. |
-| `answerGroundingCheck` | `data.answerGroundingCheck` | `candidate.knowledge.answer_grounding_check` | `candidate_settings.knowledge.answer_grounding_check` | `off`, `basic`, `strict`. |
+| `answerGroundingCheck` | `data.answerGroundingCheck` | `candidate.knowledge.answer_grounding_check` | `candidate_settings.knowledge.answer_grounding_check` | `off`, `basic`, `strict`. 새 노드와 값이 없는 기존 노드의 기본값은 `basic`. |
 
 ### Inspector
 

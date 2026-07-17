@@ -365,7 +365,7 @@ evidence pipeline이 없으면 Workflow-Aware Adaptive Routing 구현 완료로 
 - 1차 UI는 nested field editor를 제공하지 않고 flat key-type row만 편집한다.
 - B candidate 영역은 여러 Knowledge Base, `topK`, `scoreThreshold`를 편집할 수 있다.
 - B candidate 영역은 중복 근거 제거, 참조 문서 길이 제한, 검색 문서 압축, 답변 근거 확인을 편집할 수 있다.
-- 새 LLM 노드는 중복 근거 제거, 참조 문서 길이 제한, 검색 문서 압축, 답변 근거 확인 기본값을 명시적으로 가진다.
+- 새 LLM 노드는 중복 근거 제거, 참조 문서 길이 제한, 검색 문서 압축, 답변 근거 확인 기본값을 명시적으로 가지며, 답변 근거 확인은 `basic`이 기본이다.
 - 참조 문서 길이 제한은 Knowledge/RAG context에만 적용되며 system/user/assistant prompt를 임의로 자르지 않는다.
 - 참조 문서 길이 제한이 비어 있으면 compare request는 `retrieved_context_max_chars: null`을 보낼 수 있고, API는 이를 제한 없음으로 허용한다.
 - 중복 근거 제거가 켜지면 동일한 retrieved chunk content는 한 번만 LLM context에 들어간다.

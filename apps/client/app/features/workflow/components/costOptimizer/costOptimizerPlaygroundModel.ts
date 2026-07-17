@@ -387,10 +387,11 @@ export const candidateFromOptions = (
         ? data.retrievedContextCompression
         : 'off',
     answerGroundingCheck:
+      data.answerGroundingCheck === 'off' ||
       data.answerGroundingCheck === 'basic' ||
       data.answerGroundingCheck === 'strict'
         ? data.answerGroundingCheck
-        : 'off',
+        : 'basic',
   };
 };
 

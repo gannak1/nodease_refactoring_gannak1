@@ -127,7 +127,7 @@ export const nodeRegistry: NodeDefinition[] = [
       dedupeRetrievedContext: false,
       retrievedContextMaxChars: undefined,
       retrievedContextCompression: 'off',
-      answerGroundingCheck: 'off',
+      answerGroundingCheck: 'basic',
       parameters: {
         temperature: 0.7,
         top_p: 1.0,

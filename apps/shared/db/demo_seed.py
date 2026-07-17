@@ -2054,6 +2054,7 @@ def _department_onboarding_chatbot_graph() -> dict[str, Any]:
                     "knowledgeBases": _department_onboarding_knowledge_base_refs(),
                     "scoreThreshold": 0.3,
                     "topK": 3,
+                    "answerGroundingCheck": "basic",
                     "parameters": {"temperature": 0.2, "max_tokens": 700},
                 },
             ),

@@ -5527,6 +5527,13 @@ class TestCostOptimizerExperimentHistoryApi:
 
 
 class TestCostOptimizerBaselineHelpers:
+    def test_candidate_data_defaults_answer_grounding_check_to_basic(self):
+        candidate = workflow_endpoint._cost_optimizer_candidate_data_from_node_data(
+            {"model_id": "gpt-4.1-mini"}
+        )
+
+        assert candidate["knowledge"]["answer_grounding_check"] == "basic"
+
     def test_fr7_downstream_compatibility_is_compatible_when_snapshot_matches(self):
         graph = {
             "nodes": [
