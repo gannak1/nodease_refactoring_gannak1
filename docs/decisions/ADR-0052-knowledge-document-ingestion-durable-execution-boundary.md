@@ -59,16 +59,20 @@ Option 3과 option 5를 채택한다.
   재발행하지 않고 due recovery scanner가 발행 책임을 소유한다. Soft time limit과 allowlisted
   transient failure만 자동 retry하며 unknown failure는 safe dead-letter로 닫는다. Processor의 raw
   error 문자열은 retry 판단에 사용하지 않고 orchestration 경계에서 allowlisted typed source reason으로
-  정규화한다. DB/API timeout, connection, DNS, 408/425/429/5xx만 transient source failure로 분류한다.
+  정규화한다. DB/API와 remote FILE egress의 timeout, connection, DNS 및 API 408/425/429/5xx만
+  transient source failure로 분류한다. Private target 등 egress policy 차단은 retry하지 않는다.
 - Retry exhaustion은 `dead_lettered`로 남긴다. 권한 있는 manual retry는 terminal row를 되살리지
   않고 새 generation job을 만든다.
-- Recovery는 후보를 찾은 뒤 admission/finalization과 같은 `KnowledgeBase -> Document -> job` 순서로
-  canonical row lock을 획득하고 due 상태를 다시 확인한다. Retry/dead-letter 전이와 pending/retry job의
-  dispatch lease 획득은 이 잠금 아래 수행해 worker finalization과의 역순 잠금 교착을 만들지 않는다.
+- 최초 worker claim과 Recovery는 후보를 찾은 뒤 admission/finalization/failure transition과 같은
+  `KnowledgeBase -> Document -> job` 순서로 canonical row lock을 획득하고 due 상태를 다시 확인한다.
+  Recovery만 scope row에 `SKIP LOCKED`를 적용해 실행 중인 첫 문서를 기다리지 않고 이후 due job과
+  terminal cleanup을 계속한다. Retry/dead-letter 전이와 pending/retry job의 dispatch lease 획득은 이
+  잠금 아래 수행해 역순 잠금 교착을 만들지 않는다.
 - Active version finalization, Document completed projection과 job succeeded 전이는 같은 DB
   transaction에서 fencing token을 확인해 확정한다. Stale worker의 progress와 finalization은
-  거부한다. 완료 progress=100도 이 transaction에 포함하며 commit 뒤에는 Redis advisory 값만
-  알린다. 새 admission과 retry/cancel/dead-letter/recovery 전이는 canonical DB commit 뒤 해당 document의
+  거부한다. Chunk 준비 단계의 advisory progress는 99 이하로 제한한다. 완료 progress=100도 이
+  transaction에 포함하며 성공 commit 뒤에만 Redis advisory 100을 알린다. 새 admission과
+  retry/cancel/dead-letter/recovery 전이는 canonical DB commit 뒤 해당 document의
   Redis key를 삭제해 새 attempt 또는 DB projection으로 fallback한다. Lease를 잃은 worker는 cache를
   삭제하지 않는다. Redis progress는 권위 상태가 아니다.
 - Terminal job은 기본 30일 뒤 bounded cleanup한다. Canonical audit와 document version retention은
