@@ -60,6 +60,7 @@ class SqlAlchemyDocumentIngestionRepository:
                 KnowledgeBase.id == knowledge_base_id,
                 KnowledgeBase.organization_id == organization_id,
             )
+            .populate_existing()
             .with_for_update()
             .one_or_none()
         )
@@ -71,6 +72,7 @@ class SqlAlchemyDocumentIngestionRepository:
                 Document.id == document_id,
                 Document.knowledge_base_id == knowledge_base_id,
             )
+            .populate_existing()
             .with_for_update()
             .one_or_none()
         )
@@ -755,6 +757,7 @@ class SqlAlchemyDocumentIngestionRepository:
             content_hash=document.content_hash,
             active_document_version_id=knowledge_base.active_document_version_id,
             embedding_model=knowledge_base.embedding_model,
+            document_updated_at=document.updated_at,
         )
 
     @staticmethod

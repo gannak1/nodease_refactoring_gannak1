@@ -159,6 +159,24 @@ class ConnectionLifecycleService:
             self.db.rollback()
             raise
 
+    def flush(self) -> None:
+        """Flush a reference mutation with the same safe error contract."""
+
+        try:
+            self.db.flush()
+        except SQLAlchemyError as exc:
+            self.db.rollback()
+            raise self._translate_store_error(exc) from None
+        except BaseException:
+            self.db.rollback()
+            raise
+
+    def commit(self) -> None:
+        self.commit_reference_mutation()
+
+    def rollback(self) -> None:
+        self.db.rollback()
+
     def delete_unreferenced_connection(
         self,
         *,

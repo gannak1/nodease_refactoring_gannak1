@@ -81,7 +81,6 @@ from apps.gateway.services.ingestion.service import (
 from apps.gateway.services.knowledge_candidate_resolver import KnowledgeCandidateResolver
 from apps.gateway.services.connection_lifecycle_service import (
     ConnectionLifecycleBusy,
-    ConnectionLifecycleConflict,
     ConnectionLifecycleHidden,
     ConnectionLifecycleService,
     ConnectionLifecycleUnavailable,
@@ -306,6 +305,16 @@ def _raise_document_ingestion_error(request: Request, exc: Exception) -> None:
             "Document ingestion is not available for the current resource state.",
         )
     if isinstance(exc, DocumentIngestionPersistenceFailed):
+        if exc.reason_code in {
+            "connection.reference_busy",
+            "connection.reference_unavailable",
+        }:
+            raise_api_error(
+                request,
+                503,
+                exc.reason_code,
+                "The DB connection reference is temporarily unavailable.",
+            )
         raise_api_error(
             request,
             503,
@@ -2382,11 +2391,9 @@ def _lock_db_connection_reference(
 
     lifecycle_service = ConnectionLifecycleService(db)
     try:
-        lifecycle_service.lock_owned_connection_and_document_for_reference(
+        lifecycle_service.lock_owned_connection_for_reference(
             connection_id=connection_id,
             owner_id=owner_id,
-            document_id=document.id,
-            expected_document_updated_at=document.updated_at,
         )
     except ConnectionLifecycleHidden:
         db.rollback()
@@ -2403,14 +2410,6 @@ def _lock_db_connection_reference(
             503,
             "connection.reference_busy",
             "The DB connection reference is temporarily busy.",
-        )
-    except ConnectionLifecycleConflict:
-        db.rollback()
-        raise_api_error(
-            request,
-            409,
-            "connection.reference_conflict",
-            "The DB connection reference changed concurrently.",
         )
     except ConnectionLifecycleUnavailable:
         db.rollback()
@@ -2483,6 +2482,7 @@ async def process_document(
     except RAGHierarchyError as exc:
         raise _chunking_http_exception(exc)
 
+    expected_document_updated_at = doc.updated_at
     validated_db_config = None
     connection_reference_lifecycle = None
     if doc.source_type == "DB":
@@ -2533,7 +2533,10 @@ async def process_document(
         )
 
     try:
-        result = build_request_document_ingestion(db).execute(
+        result = build_request_document_ingestion(
+            db,
+            unit_of_work=connection_reference_lifecycle,
+        ).execute(
             RequestDocumentIngestionCommand(
                 actor_id=current_user.id,
                 organization_id=kb.organization_id,
@@ -2546,6 +2549,10 @@ async def process_document(
                     embedding_model=kb.embedding_model,
                     meta_updates=meta_updates,
                     meta_remove_keys=meta_remove_keys,
+                ),
+                expected_document_updated_at=expected_document_updated_at,
+                require_document_revision_match=(
+                    connection_reference_lifecycle is not None
                 ),
             )
         )
@@ -2716,17 +2723,24 @@ async def sync_document(
     )
     _ensure_document_ingestion_schema_ready(db, request)
 
+    expected_document_updated_at = doc.updated_at
+    connection_reference_lifecycle = None
     if str(getattr(doc.source_type, "value", doc.source_type)) == "DB":
-        _lock_db_connection_reference(
+        connection_reference_lifecycle = _lock_db_connection_reference(
             request,
             db,
             document=doc,
             owner_id=current_user.id,
-            db_config=dict(doc.meta_info or {}).get("db_config"),
+            db_config={
+                "connection_id": dict(doc.meta_info or {}).get("connection_id")
+            },
         )
 
     try:
-        result = build_request_document_ingestion(db).execute(
+        result = build_request_document_ingestion(
+            db,
+            unit_of_work=connection_reference_lifecycle,
+        ).execute(
             RequestDocumentIngestionCommand(
                 actor_id=current_user.id,
                 organization_id=kb.organization_id,
@@ -2735,6 +2749,10 @@ async def sync_document(
                 operation="sync",
                 settings=DocumentIngestionSettings(
                     embedding_model=kb.embedding_model,
+                ),
+                expected_document_updated_at=expected_document_updated_at,
+                require_document_revision_match=(
+                    connection_reference_lifecycle is not None
                 ),
             )
         )

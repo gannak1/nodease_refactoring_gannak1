@@ -11,6 +11,7 @@ from apps.gateway.application.knowledge_document_ingestion.use_cases import (
     DocumentIngestionConflict,
     DocumentIngestionJobSnapshot,
     DocumentIngestionPolicyBlocked,
+    DocumentIngestionPersistenceFailed,
     DocumentIngestionRequestResult,
     DocumentIngestionSettings,
     RequestDocumentIngestion,
@@ -265,6 +266,70 @@ def test_resume_retry_reuses_active_job_after_document_status_changes() -> None:
     assert repository.applied is False
     assert repository.created is False
     assert unit_of_work.rollback_count == 1
+
+
+def test_active_intent_reuse_precedes_reference_revision_precondition() -> None:
+    target = replace(_target(), document_updated_at=NOW)
+    repository = FakeRepository(target)
+    command = replace(
+        _command(target),
+        expected_document_updated_at=NOW,
+        require_document_revision_match=True,
+    )
+    first = _use_case(repository).execute(command)
+    repository.target = replace(
+        target,
+        document_status="indexing",
+        document_updated_at=datetime(2026, 7, 16, 0, 1, tzinfo=timezone.utc),
+    )
+    repository.active = first.job
+    repository.applied = False
+    repository.created = False
+
+    retried = _use_case(repository).execute(command)
+
+    assert retried.reused is True
+    assert repository.applied is False
+    assert repository.created is False
+
+
+def test_new_reference_intent_rejects_stale_document_revision() -> None:
+    target = replace(
+        _target(),
+        document_updated_at=datetime(2026, 7, 16, 0, 1, tzinfo=timezone.utc),
+    )
+    repository = FakeRepository(target)
+    command = replace(
+        _command(target),
+        expected_document_updated_at=NOW,
+        require_document_revision_match=True,
+    )
+
+    with pytest.raises(DocumentIngestionPolicyBlocked) as raised:
+        _use_case(repository).execute(command)
+
+    assert raised.value.reason_code == "connection.reference_conflict"
+    assert repository.applied is False
+    assert repository.created is False
+
+
+def test_reference_uow_safe_commit_reason_is_preserved() -> None:
+    class ReferenceBusy(Exception):
+        code = "connection.reference_busy"
+
+    class BusyUnitOfWork(FakeUnitOfWork):
+        def commit(self) -> None:
+            raise ReferenceBusy()
+
+    target = _target()
+
+    with pytest.raises(DocumentIngestionPersistenceFailed) as raised:
+        _use_case(
+            FakeRepository(target),
+            unit_of_work=BusyUnitOfWork(),
+        ).execute(_command(target))
+
+    assert raised.value.reason_code == "connection.reference_busy"
 
 
 def test_changed_settings_conflict_before_document_mutation() -> None:

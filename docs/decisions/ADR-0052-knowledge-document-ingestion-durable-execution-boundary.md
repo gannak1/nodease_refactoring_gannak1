@@ -36,7 +36,10 @@ Option 3과 option 5를 채택한다.
 - Gateway는 organization/KB/document를 현재 권한으로 확인하고 document 또는 KB row를 잠근다.
   Document queued 상태·설정과 job insert를 같은 transaction에 저장한 뒤 commit한다.
 - Admission, reindex와 worker finalization은 `KnowledgeBase -> Document` 순서로 row lock을 획득한다.
-  DB source 설정은 ADR-0051의 owner 검증과 sanitized Connection reference만 유지한다.
+  DB source process/sync는 ADR-0053에 따라 owner Connection row를 먼저 잠근 뒤 durable repository가
+  `KnowledgeBase -> Document -> job`을 fresh lock한다. 최초 조회 Document revision은 새 admission 전에
+  다시 비교하고, Connection lifecycle UoW가 sanitized reference metadata와 job의 flush/commit을 함께
+  소유한다. DB source 설정은 ADR-0051의 owner 검증과 sanitized Connection reference만 유지한다.
 - 같은 document에는 `pending|running|retry_scheduled` job 하나만 허용한다. 같은 active intent는
   기존 job을 재사용하고 다른 intent는 safe conflict로 닫는다.
 - Job idempotency key는 organization, document, operation, generation과 protected input revision의

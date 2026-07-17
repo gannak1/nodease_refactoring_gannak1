@@ -20,6 +20,9 @@ from apps.shared.services.rag_hierarchy import chunking_fingerprint_hash
 
 
 _SHA256_PATTERN = re.compile(r"^(?:sha256:)?[0-9a-fA-F]{64}$")
+_SAFE_PERSISTENCE_REASON_CODES = frozenset(
+    {"connection.reference_busy", "connection.reference_unavailable"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +45,8 @@ class RequestDocumentIngestionCommand:
         default_factory=DocumentIngestionSettings
     )
     required_document_status: str | None = None
+    expected_document_updated_at: datetime | None = None
+    require_document_revision_match: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +72,7 @@ class AdmissionDocumentSnapshot:
     content_hash: str | None
     active_document_version_id: uuid.UUID | None
     embedding_model: str
+    document_updated_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,7 +133,9 @@ class DocumentIngestionPolicyBlocked(Exception):
 
 
 class DocumentIngestionPersistenceFailed(Exception):
-    pass
+    def __init__(self, reason_code: str = "ingestion.admission_unavailable") -> None:
+        super().__init__(reason_code)
+        self.reason_code = reason_code
 
 
 class DocumentIngestionRepositoryPort(Protocol):
@@ -249,6 +257,12 @@ class RequestDocumentIngestion:
                 and target.document_status != command.required_document_status
             ):
                 raise DocumentIngestionPolicyBlocked("ingestion.configuration_invalid")
+            if (
+                command.require_document_revision_match
+                and target.document_updated_at
+                != command.expected_document_updated_at
+            ):
+                raise DocumentIngestionPolicyBlocked("connection.reference_conflict")
 
             now = self.repository.database_now()
             self.repository.apply_settings_and_mark_queued(
@@ -281,7 +295,7 @@ class RequestDocumentIngestion:
             raise
         except Exception as exc:
             self.unit_of_work.rollback()
-            raise DocumentIngestionPersistenceFailed() from exc
+            raise _persistence_failure(exc) from exc
 
         clear_progress_projection(self.progress, command.document_id)
         deferred = self._publish(job.job_id)
@@ -637,3 +651,10 @@ def _protected_digest(value: str | None) -> str | None:
     if isinstance(value, str) and _SHA256_PATTERN.fullmatch(value):
         return value
     return None
+
+
+def _persistence_failure(exc: Exception) -> DocumentIngestionPersistenceFailed:
+    reason_code = getattr(exc, "code", None)
+    if reason_code not in _SAFE_PERSISTENCE_REASON_CODES:
+        reason_code = "ingestion.admission_unavailable"
+    return DocumentIngestionPersistenceFailed(reason_code)

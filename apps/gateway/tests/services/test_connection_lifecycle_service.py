@@ -54,16 +54,19 @@ class _Db:
         connection=None,
         reference=None,
         query_error=None,
+        flush_error=None,
         commit_error=None,
         dialect_name="sqlite",
     ):
         self.connection = connection
         self.reference = reference
         self.query_error = query_error
+        self.flush_error = flush_error
         self.commit_error = commit_error
         self.connection_locked = False
         self.locked_entities = []
         self.deleted = None
+        self.flushed = False
         self.committed = False
         self.rolled_back = False
         self.executed = []
@@ -87,6 +90,11 @@ class _Db:
         self.committed = True
         if self.commit_error is not None:
             raise self.commit_error
+
+    def flush(self):
+        self.flushed = True
+        if self.flush_error is not None:
+            raise self.flush_error
 
     def rollback(self):
         self.rolled_back = True
@@ -204,6 +212,22 @@ def test_reference_mutation_commit_redacts_database_failure():
         ConnectionLifecycleService(db).commit_reference_mutation()
 
     assert "raw database detail" not in str(exc_info.value)
+    assert db.rolled_back is True
+
+
+@pytest.mark.parametrize("sqlstate", ["55P03", "57014", "40P01", "40001"])
+def test_reference_mutation_flush_maps_contention_to_retryable_busy(sqlstate):
+    original_error = SimpleNamespace(sqlstate=sqlstate)
+    db = _Db(
+        flush_error=OperationalError("statement", {}, original_error),
+        dialect_name="postgresql",
+    )
+
+    with pytest.raises(ConnectionLifecycleBusy) as exc_info:
+        ConnectionLifecycleService(db).flush()
+
+    assert exc_info.value.code == "connection.reference_busy"
+    assert sqlstate not in str(exc_info.value)
     assert db.rolled_back is True
 
 

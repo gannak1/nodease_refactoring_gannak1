@@ -13,6 +13,7 @@ from apps.gateway.adapters.queue.knowledge_document_ingestion_publisher import (
     CeleryKnowledgeDocumentIngestionPublisher,
 )
 from apps.gateway.application.knowledge_document_ingestion.use_cases import (
+    DocumentIngestionUnitOfWorkPort,
     ReadDocumentIngestionStatus,
     RedriveDocumentIngestion,
     RequestKnowledgeBaseReindex,
@@ -21,11 +22,17 @@ from apps.gateway.application.knowledge_document_ingestion.use_cases import (
 from apps.shared.celery_app import celery_app
 
 
-def build_request_document_ingestion(db: Session) -> RequestDocumentIngestion:
+def build_request_document_ingestion(
+    db: Session,
+    *,
+    unit_of_work: DocumentIngestionUnitOfWorkPort | None = None,
+) -> RequestDocumentIngestion:
     return RequestDocumentIngestion(
         repository=SqlAlchemyDocumentIngestionRepository(db),
         publisher=CeleryKnowledgeDocumentIngestionPublisher(celery_app),
-        unit_of_work=SqlAlchemyUnitOfWork(db),
+        unit_of_work=(
+            unit_of_work if unit_of_work is not None else SqlAlchemyUnitOfWork(db)
+        ),
         progress=RedisDocumentIngestionProgressProjection(),
     )
 

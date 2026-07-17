@@ -508,10 +508,11 @@ async def test_process_normalizes_owned_connection_reference(
         def __init__(self, db):
             assert db is db_session
 
-        def lock_owned_connection_and_document_for_reference(self, **kwargs):
+        def lock_owned_connection_for_reference(self, **kwargs):
             reference_lock(**kwargs)
 
     captured_commands = []
+    captured_unit_of_work = []
     job_id = uuid.uuid4()
 
     class FakeUseCase:
@@ -522,6 +523,11 @@ async def test_process_normalizes_owned_connection_reference(
                 reused=False,
                 dispatch_deferred=False,
             )
+
+    def build_use_case(_db, *, unit_of_work=None):
+        captured_unit_of_work.append(unit_of_work)
+        return FakeUseCase()
+
     monkeypatch.setattr(
         knowledge_endpoint,
         "_authorized_knowledge_document",
@@ -537,7 +543,7 @@ async def test_process_normalizes_owned_connection_reference(
     monkeypatch.setattr(
         knowledge_endpoint,
         "build_request_document_ingestion",
-        lambda _db: FakeUseCase(),
+        build_use_case,
     )
     monkeypatch.setattr(
         knowledge_endpoint,
@@ -581,9 +587,8 @@ async def test_process_normalizes_owned_connection_reference(
     reference_lock.assert_called_once_with(
         connection_id=connection_id,
         owner_id=owner_id,
-        document_id=document.id,
-        expected_document_updated_at=None,
     )
+    assert isinstance(captured_unit_of_work[0], FakeConnectionLifecycleService)
     assert response["job_id"] == str(job_id)
     assert len(captured_commands) == 1
     settings = captured_commands[0].settings

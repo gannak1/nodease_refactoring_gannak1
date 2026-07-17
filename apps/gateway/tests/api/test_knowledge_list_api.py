@@ -1107,6 +1107,7 @@ async def test_api_process_preserves_server_side_encrypted_source_config(monkeyp
         chunk_size=800,
         chunk_overlap=80,
         meta_info={"api_config": encrypted_config},
+        updated_at=None,
     )
 
     class FakeDb:
@@ -1141,7 +1142,7 @@ async def test_api_process_preserves_server_side_encrypted_source_config(monkeyp
     monkeypatch.setattr(
         knowledge_endpoint,
         "build_request_document_ingestion",
-        lambda _db: FakeUseCase(),
+        lambda _db, **_kwargs: FakeUseCase(),
     )
     monkeypatch.setattr(
         knowledge_endpoint,
@@ -1207,7 +1208,7 @@ async def test_db_process_locks_new_connection_reference_before_commit(monkeypat
         def __init__(self, db):
             assert db is dependency_db
 
-        def lock_owned_connection_and_document_for_reference(self, **kwargs):
+        def lock_owned_connection_for_reference(self, **kwargs):
             events.append(("lock", kwargs))
 
         def commit_reference_mutation(self):
@@ -1224,6 +1225,10 @@ async def test_db_process_locks_new_connection_reference_before_commit(monkeypat
                 reused=False,
                 dispatch_deferred=False,
             )
+
+    def build_use_case(_db, *, unit_of_work=None):
+        assert isinstance(unit_of_work, FakeConnectionLifecycleService)
+        return FakeUseCase()
 
     dependency_db = FakeDb()
     monkeypatch.setattr(
@@ -1254,7 +1259,7 @@ async def test_db_process_locks_new_connection_reference_before_commit(monkeypat
     monkeypatch.setattr(
         knowledge_endpoint,
         "build_request_document_ingestion",
-        lambda _db: FakeUseCase(),
+        build_use_case,
     )
     monkeypatch.setattr(
         knowledge_endpoint,
@@ -1282,8 +1287,6 @@ async def test_db_process_locks_new_connection_reference_before_commit(monkeypat
             {
                 "connection_id": connection_id,
                 "owner_id": owner_id,
-                "document_id": document_id,
-                "expected_document_updated_at": None,
             },
         ),
         ("admit", document_id),
@@ -1295,6 +1298,101 @@ async def test_db_process_locks_new_connection_reference_before_commit(monkeypat
     assert "connection_id" not in settings.meta_updates["db_config"]
 
 
+@pytest.mark.asyncio
+async def test_db_sync_uses_top_level_connection_reference_in_durable_uow(
+    monkeypatch,
+):
+    knowledge_base_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+    organization_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    connection_id = uuid.uuid4()
+    updated_at = datetime(2026, 7, 17, tzinfo=timezone.utc)
+    events: list[object] = []
+    captured_commands = []
+    dependency_db = SimpleNamespace(rollback=lambda: events.append("rollback"))
+    document = SimpleNamespace(
+        id=document_id,
+        source_type="DB",
+        meta_info={
+            "connection_id": str(connection_id),
+            "db_config": {"selections": []},
+        },
+        updated_at=updated_at,
+    )
+
+    class FakeConnectionLifecycleService:
+        def __init__(self, db):
+            assert db is dependency_db
+
+        def lock_owned_connection_for_reference(self, **kwargs):
+            events.append(("lock", kwargs))
+
+    class FakeUseCase:
+        def execute(self, command):
+            captured_commands.append(command)
+            events.append(("admit", command.document_id))
+            return SimpleNamespace(
+                job=SimpleNamespace(job_id=uuid.uuid4()),
+                reused=False,
+                dispatch_deferred=False,
+            )
+
+    def build_use_case(_db, *, unit_of_work=None):
+        assert isinstance(unit_of_work, FakeConnectionLifecycleService)
+        return FakeUseCase()
+
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_authorized_knowledge_document",
+        lambda *_args, **_kwargs: (
+            SimpleNamespace(
+                id=knowledge_base_id,
+                organization_id=organization_id,
+                embedding_model="embedding-model",
+            ),
+            document,
+        ),
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "ConnectionLifecycleService",
+        FakeConnectionLifecycleService,
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "build_request_document_ingestion",
+        build_use_case,
+    )
+    monkeypatch.setattr(
+        knowledge_endpoint,
+        "_ensure_document_ingestion_schema_ready",
+        lambda *_args, **_kwargs: None,
+    )
+
+    response = await knowledge_endpoint.sync_document.__wrapped__(
+        kb_id=knowledge_base_id,
+        document_id=document_id,
+        request=SimpleNamespace(),
+        x_organization_id=str(organization_id),
+        db=dependency_db,
+        current_user=SimpleNamespace(id=owner_id),
+    )
+
+    assert response["status"] == "processing"
+    assert events == [
+        (
+            "lock",
+            {"connection_id": connection_id, "owner_id": owner_id},
+        ),
+        ("admit", document_id),
+    ]
+    assert len(captured_commands) == 1
+    command = captured_commands[0]
+    assert command.expected_document_updated_at == updated_at
+    assert command.require_document_revision_match is True
+
+
 @pytest.mark.parametrize(
     ("service_error", "expected_status", "expected_code"),
     [
@@ -1303,11 +1401,6 @@ async def test_db_process_locks_new_connection_reference_before_commit(monkeypat
             knowledge_endpoint.ConnectionLifecycleBusy(),
             503,
             "connection.reference_busy",
-        ),
-        (
-            knowledge_endpoint.ConnectionLifecycleConflict(),
-            409,
-            "connection.reference_conflict",
         ),
         (
             knowledge_endpoint.ConnectionLifecycleUnavailable(),
@@ -1332,7 +1425,7 @@ def test_db_connection_reference_lock_maps_safe_errors(
         def __init__(self, _db):
             pass
 
-        def lock_owned_connection_and_document_for_reference(self, **_kwargs):
+        def lock_owned_connection_for_reference(self, **_kwargs):
             raise service_error
 
     monkeypatch.setattr(
@@ -1388,6 +1481,23 @@ def test_db_connection_reference_commit_maps_safe_errors(
 
     assert exc_info.value.status_code == 503
     assert exc_info.value.detail["error"]["code"] == expected_code
+
+
+@pytest.mark.parametrize(
+    "reason_code",
+    ["connection.reference_busy", "connection.reference_unavailable"],
+)
+def test_durable_admission_preserves_safe_connection_persistence_reason(
+    reason_code,
+):
+    with pytest.raises(HTTPException) as exc_info:
+        knowledge_endpoint._raise_document_ingestion_error(
+            SimpleNamespace(state=SimpleNamespace(request_id="request-id")),
+            knowledge_endpoint.DocumentIngestionPersistenceFailed(reason_code),
+        )
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail["error"]["code"] == reason_code
 
 
 def test_invalid_db_connection_reference_is_rejected_before_lock(monkeypatch):
