@@ -32,7 +32,9 @@ class ModelRoutingPolicyLifecycleService:
         deployment_id = getattr(run, "deployment_id", None)
         trigger_mode = getattr(run, "trigger_mode", None)
         status = getattr(run, "status", None)
-        normalized_trigger = str(getattr(trigger_mode, "value", trigger_mode) or "").lower()
+        normalized_trigger = str(
+            getattr(trigger_mode, "value", trigger_mode) or ""
+        ).lower()
         normalized_status = str(getattr(status, "value", status) or "").lower()
         return (
             bool(deployment_id)
@@ -45,26 +47,41 @@ class ModelRoutingPolicyLifecycleService:
         policy: Any,
         *,
         event_was_created: bool,
+        performance_changed: bool | None = None,
         now: datetime | None = None,
     ) -> PolicyRunEventOutcome:
         if not event_was_created or not bool(getattr(policy, "enabled", False)):
             return PolicyRunEventOutcome(should_enqueue_refresh=False)
 
         now = now or datetime.now(timezone.utc)
-        policy.eligible_runs_since_last_refresh = int(
-            getattr(policy, "eligible_runs_since_last_refresh", 0) or 0
-        ) + 1
-        threshold = max(5, min(100, int(getattr(policy, "refresh_every_runs", 20) or 20)))
+        policy.eligible_runs_since_last_refresh = (
+            int(getattr(policy, "eligible_runs_since_last_refresh", 0) or 0) + 1
+        )
         requested_at = getattr(policy, "refresh_requested_at", None)
         if requested_at is not None:
             if requested_at.tzinfo is None:
                 requested_at = requested_at.replace(tzinfo=timezone.utc)
-            is_refreshing = str(getattr(policy, "status", "") or "").lower() == "refreshing"
-            if is_refreshing and now - requested_at >= ModelRoutingPolicyLifecycleService.REFRESH_REQUEST_LEASE:
+            is_refreshing = (
+                str(getattr(policy, "status", "") or "").lower() == "refreshing"
+            )
+            if (
+                is_refreshing
+                and now - requested_at
+                >= ModelRoutingPolicyLifecycleService.REFRESH_REQUEST_LEASE
+            ):
                 policy.refresh_requested_at = now
                 return PolicyRunEventOutcome(should_enqueue_refresh=True)
             return PolicyRunEventOutcome(should_enqueue_refresh=False)
-        if policy.eligible_runs_since_last_refresh < threshold:
+        if performance_changed is None:
+            # 직접 lifecycle helper를 쓰는 기존 호환 경로는 횟수 기준을 유지한다.
+            # 운영 run 저장소는 성적 변화 여부를 명시해 이 분기를 사용하지 않는다.
+            threshold = max(
+                5,
+                min(100, int(getattr(policy, "refresh_every_runs", 20) or 20)),
+            )
+            if policy.eligible_runs_since_last_refresh < threshold:
+                return PolicyRunEventOutcome(should_enqueue_refresh=False)
+        elif not performance_changed:
             return PolicyRunEventOutcome(should_enqueue_refresh=False)
 
         policy.status = "refreshing"
@@ -93,7 +110,9 @@ class ModelRoutingPolicyLifecycleService:
             return
 
         # kept_current와 failed는 기존 active policy를 그대로 실행한다.
-        policy.status = "active" if getattr(policy, "active_policy", None) else "collecting"
+        policy.status = (
+            "active" if getattr(policy, "active_policy", None) else "collecting"
+        )
 
     @staticmethod
     def complete_refresh_cycle(

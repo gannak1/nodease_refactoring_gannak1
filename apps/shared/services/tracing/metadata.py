@@ -1,3 +1,4 @@
+import math
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
@@ -479,6 +480,55 @@ class TraceMetadataSanitizer:
         )
         if selected_score:
             sanitized["selected_model_score"] = selected_score
+
+        # Bootstrap 난이도 라우팅은 원문 없이도 "왜 이 모델인가"를 설명할 수
+        # 있어야 한다. 아래 값은 enum/범위가 제한된 수치만 보존하고, policy가
+        # 만들었던 phrase나 실제 입력 단어는 trace에 남기지 않는다.
+        classification_status = str(
+            safe_value.get("classification_status") or ""
+        ).strip()
+        if classification_status in {
+            "planner_rule",
+            "matched",
+            "fallback",
+            "artifact_missing",
+            "unavailable",
+        }:
+            sanitized["classification_status"] = classification_status
+        difficulty = str(safe_value.get("difficulty") or "").strip()
+        if difficulty in {"economy", "balanced", "advanced"}:
+            sanitized["difficulty"] = difficulty
+        for key in ("confidence", "minimum_confidence"):
+            raw_value = safe_value.get(key)
+            if (
+                not isinstance(raw_value, bool)
+                and isinstance(raw_value, (int, float))
+                and math.isfinite(float(raw_value))
+                and 0.0 <= float(raw_value) <= 1.0
+            ):
+                sanitized[key] = float(raw_value)
+        for key in ("matched_signal_count", "match_score"):
+            raw_value = safe_value.get(key)
+            if (
+                not isinstance(raw_value, bool)
+                and isinstance(raw_value, int)
+                and 0 <= raw_value <= 50
+            ):
+                sanitized[key] = raw_value
+        raw_probabilities = safe_value.get("probabilities")
+        if isinstance(raw_probabilities, dict):
+            probabilities: dict[str, float] = {}
+            for key in ("economy", "balanced", "advanced"):
+                raw_value = raw_probabilities.get(key)
+                if (
+                    not isinstance(raw_value, bool)
+                    and isinstance(raw_value, (int, float))
+                    and math.isfinite(float(raw_value))
+                    and 0.0 <= float(raw_value) <= 1.0
+                ):
+                    probabilities[key] = float(raw_value)
+            if probabilities:
+                sanitized["probabilities"] = probabilities
 
         signature = cls.sanitize_json_safe(safe_value.get("constraint_signature"))
         if isinstance(signature, dict):

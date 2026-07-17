@@ -30,7 +30,7 @@ def test_operational_run_task_dispatches_refresh_for_due_policy():
         (
             ("workflow.model_routing.refresh_policy",),
             {
-                "args": [str(policy_id), "auto_n_runs"],
+                "args": [str(policy_id), "score_change"],
                 "kwargs": {},
                 "argsrepr": "[workflow arguments redacted]",
                 "kwargsrepr": "{workflow arguments redacted}",
@@ -62,7 +62,7 @@ def test_duplicate_auto_refresh_delivery_is_skipped_after_request_is_consumed():
         patch.object(PersistedModelRoutingPolicyRefreshService, "refresh") as refresh,
     ):
         result = tasks.refresh_model_routing_policy.__wrapped__(
-            str(policy_id), "auto_n_runs"
+            str(policy_id), "score_change"
         )
 
     assert result == {"status": "skipped", "update_id": None, "result": None}
@@ -110,3 +110,65 @@ def test_deployment_bootstrap_task_compiles_prior_guided_policy_without_validati
         "update_id": str(update_id),
     }
     assert sent == []
+
+
+def test_generate_bootstrap_task_runs_planner_outside_gateway_request():
+    """기준 생성은 Worker에서 완료하고, 성공 후에만 classifier task를 예약한다."""
+    from apps.workflow_engine import tasks
+    from apps.workflow_engine.services.llm_service import LLMService
+    from apps.workflow_engine.services.model_router import ModelRouter
+    from apps.workflow_engine.services.model_routing_bootstrap import (
+        PersistedModelRoutingBootstrapStore,
+    )
+
+    bootstrap_id = uuid4()
+    user_id = uuid4()
+    organization_id = uuid4()
+    bootstrap = MagicMock(
+        id=bootstrap_id,
+        status="generating",
+        created_by=user_id,
+        organization_id=organization_id,
+        planner_model_id="gpt-4.1",
+        default_model_id="gpt-4.1",
+    )
+    completed = MagicMock(id=bootstrap_id, status="ready")
+    session = MagicMock()
+    session.get.return_value = bootstrap
+    selection = MagicMock(client=object(), model_id="gpt-4.1")
+
+    with (
+        patch.object(tasks, "SessionLocal", return_value=session),
+        patch.object(
+            LLMService,
+            "get_runtime_available_model_ids_for_user",
+            return_value=["gpt-4.1", "gpt-4.1-mini"],
+        ),
+        patch.object(
+            LLMService,
+            "get_runtime_client_for_user",
+            return_value=selection,
+        ),
+        patch.object(LLMService, "calculate_cost", return_value=0.012),
+        patch.object(
+            ModelRouter,
+            "collect_candidates",
+            return_value=[
+                MagicMock(model_id="gpt-4.1"),
+                MagicMock(model_id="gpt-4.1-mini"),
+            ],
+        ),
+        patch.object(ModelRouter, "is_workflow_chat_model", return_value=True),
+        patch.object(
+            PersistedModelRoutingBootstrapStore,
+            "complete_pending",
+            return_value=completed,
+        ) as complete_pending,
+        patch.object(tasks.celery_app, "send_task") as send_task,
+    ):
+        result = tasks.generate_model_routing_bootstrap.__wrapped__(str(bootstrap_id))
+
+    complete_pending.assert_called_once()
+    session.commit.assert_called_once()
+    send_task.assert_called_once()
+    assert result == {"status": "ready", "bootstrap_id": str(bootstrap_id)}

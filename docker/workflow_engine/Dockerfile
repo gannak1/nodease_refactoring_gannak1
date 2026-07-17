@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y \
 # 공통 패키지 복사 및 설치
 COPY apps/shared /build/apps/shared
 COPY apps/workflow_engine /build/apps/workflow_engine
+COPY docker/model-routing-cpu-constraints.txt /build/model-routing-cpu-constraints.txt
 
 ARG INSTALL_RAG_RERANKER=false
 
@@ -25,7 +26,10 @@ ARG INSTALL_RAG_RERANKER=false
 RUN if [ "$INSTALL_RAG_RERANKER" = "true" ]; then \
         pip install --no-cache-dir --prefix=/install "sentence-transformers>=3.0.0,<4.0.0"; \
     fi && \
-    pip install --no-cache-dir --prefix=/install /build/apps/shared /build/apps/workflow_engine && \
+    pip install --no-cache-dir --prefix=/install \
+        --extra-index-url https://download.pytorch.org/whl/cpu \
+        --constraint /build/model-routing-cpu-constraints.txt \
+        /build/apps/shared /build/apps/workflow_engine && \
     rm -rf /install/lib/python3.11/site-packages/workflow && \
     rm -rf /install/lib/python3.11/site-packages/services && \
     rm -rf /install/lib/python3.11/site-packages/utils && \
@@ -40,6 +44,7 @@ WORKDIR /app
 
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
+ENV HF_HUB_DISABLE_XET=1
 
 # 실행 시 필요한 최소 라이브러리 설치
 RUN apt-get update && apt-get install -y \

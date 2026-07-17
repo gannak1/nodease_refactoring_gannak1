@@ -17,7 +17,12 @@ from apps.shared.services.model_routing_model_filter import (
     filter_model_routing_available_model_ids,
 )
 from apps.workflow_engine.services.llm_service import LLMService
-from apps.workflow_engine.services.model_router import ModelRouter, ModelRouterContext
+from apps.workflow_engine.services.model_routing_operational_performance import (
+    ModelRoutingOperationalPerformanceService,
+)
+from apps.workflow_engine.services.model_routing_policy_change_guard import (
+    ModelRoutingPolicyChangeGuard,
+)
 from apps.workflow_engine.services.model_routing_policy_lifecycle import (
     ModelRoutingPolicyLifecycleService,
 )
@@ -61,10 +66,13 @@ class PersistedModelRoutingPolicyRefreshService:
                 .filter(WorkflowDeployment.id == policy.deployment_id)
                 .first()
             )
-            node_data = cls._node_data(
-                deployment.graph_snapshot if deployment else {},
-                policy.node_id,
-            ) or {}
+            node_data = (
+                cls._node_data(
+                    deployment.graph_snapshot if deployment else {},
+                    policy.node_id,
+                )
+                or {}
+            )
 
             if not bool(node_data.get("auto_model_routing")):
                 ModelRoutingPolicyLifecycleService.apply_refresh_result(
@@ -87,6 +95,22 @@ class PersistedModelRoutingPolicyRefreshService:
                 }
                 db.flush()
                 return update
+
+            active_policy = (
+                policy.active_policy
+                if isinstance(policy.active_policy, dict)
+                else {}
+            )
+            if (
+                active_policy.get("strategy_id")
+                == "bootstrap_mdeberta_difficulty_v1"
+            ):
+                return cls._refresh_bootstrap_policy(
+                    db,
+                    policy=policy,
+                    update=update,
+                    requested_at=requested_at,
+                )
 
             return cls._refresh_prior_guided_policy(
                 db,
@@ -118,6 +142,74 @@ class PersistedModelRoutingPolicyRefreshService:
             return update
 
     @classmethod
+    def _refresh_bootstrap_policy(
+        cls,
+        db: Session,
+        *,
+        policy: LLMNodeModelRoutingPolicy,
+        update: LLMNodeModelRoutingPolicyUpdate,
+        requested_at: datetime,
+    ) -> LLMNodeModelRoutingPolicyUpdate:
+        """Bootstrap 분류기를 prior-guided refresh로 덮어쓰지 않는다.
+
+        Bootstrap 이후의 모델 교체는 난이도별 candidate replay evidence가 준비된
+        경우에만 허용한다. 그 실행 경로가 없을 때는 운영 성적만 checkpoint로
+        저장하고 현재 난이도별 모델을 유지한다.
+        """
+        profile = ModelRoutingOperationalPerformanceService.profile_for_policy(
+            db,
+            policy_id=policy.id,
+        )
+        ModelRoutingPolicyLifecycleService.apply_refresh_result(
+            policy,
+            status="kept_current",
+            proposed_policy=policy.active_policy or {},
+            policy_version=policy.policy_version,
+        )
+        policy.last_refreshed_at = requested_at
+        policy.performance_checkpoint = (
+            ModelRoutingOperationalPerformanceService.checkpoint_snapshot(
+                db,
+                policy_id=policy.id,
+            )
+        )
+        ModelRoutingPolicyLifecycleService.complete_refresh_cycle(
+            policy,
+            eligible_runs_since_last_refresh=cls._remaining_event_count(
+                db,
+                policy,
+                requested_at,
+            ),
+        )
+        excluded_count = cls._excluded_run_count(
+            db,
+            policy,
+            requested_at,
+            usable_run_count=profile.operational_usable_runs,
+        )
+        update.status = "kept_current"
+        update.eligible_run_count = profile.operational_usable_runs
+        update.excluded_run_count = excluded_count
+        update.excluded_reason_summary = {
+            "missing_usage_or_output": excluded_count,
+        }
+        update.input_summary = {
+            "model_profile": profile.as_snapshot(),
+            "strategy_id": "bootstrap_mdeberta_difficulty_v1",
+        }
+        update.output_summary = {
+            "reason": "난이도별 후보 replay 증거가 없어 기존 bootstrap 정책을 유지했습니다.",
+            "replay_required": True,
+        }
+        update.error_code = None
+        update.judge_model = None
+        update.judge_provider = None
+        update.prompt_version = None
+        update.new_policy_version = None
+        db.flush()
+        return update
+
+    @classmethod
     def _refresh_prior_guided_policy(
         cls,
         db: Session,
@@ -127,10 +219,9 @@ class PersistedModelRoutingPolicyRefreshService:
         node_data: dict[str, Any],
         requested_at: datetime,
     ) -> LLMNodeModelRoutingPolicyUpdate:
-        execution_subject_id = (
-            getattr(policy, "execution_subject_user_id", None)
-            or getattr(policy, "judge_user_id", None)
-        )
+        execution_subject_id = getattr(
+            policy, "execution_subject_user_id", None
+        ) or getattr(policy, "judge_user_id", None)
         if execution_subject_id is None or policy.organization_id is None:
             raise ValueError("model routing execution subject is unavailable")
 
@@ -151,8 +242,12 @@ class PersistedModelRoutingPolicyRefreshService:
             raise ValueError("model routing candidate is unavailable")
 
         configured_model_id = str(node_data.get("model_id") or "").strip()
-        active_policy = policy.active_policy if isinstance(policy.active_policy, dict) else {}
-        current_default_model_id = str(active_policy.get("default_model_id") or "").strip()
+        active_policy = (
+            policy.active_policy if isinstance(policy.active_policy, dict) else {}
+        )
+        current_default_model_id = str(
+            active_policy.get("default_model_id") or ""
+        ).strip()
         safe_default_model_id = next(
             (
                 model_id
@@ -162,14 +257,9 @@ class PersistedModelRoutingPolicyRefreshService:
             sorted(available_model_ids)[0],
         )
 
-        profile = ModelRouter.collect_profile(
+        profile = ModelRoutingOperationalPerformanceService.profile_for_policy(
             db,
-            ModelRouterContext(
-                workflow_id=str(policy.workflow_id),
-                node_id=policy.node_id,
-                current_model_id=safe_default_model_id,
-                deployment_id=str(policy.deployment_id),
-            ),
+            policy_id=policy.id,
         )
         compiled = compile_prior_guided_policy_from_db(
             db,
@@ -178,16 +268,30 @@ class PersistedModelRoutingPolicyRefreshService:
             safe_default_model_id=safe_default_model_id,
             profile=profile,
         )
-        next_version = ModelRoutingPolicyRefreshService._next_policy_version(
-            str(policy.policy_version or "v0")
+        decision = ModelRoutingPolicyChangeGuard.evaluate(
+            policy.active_policy,
+            compiled.active_policy,
+        )
+        next_version = (
+            ModelRoutingPolicyRefreshService._next_policy_version(
+                str(policy.policy_version or "v0")
+            )
+            if decision.status == "applied"
+            else policy.policy_version
         )
         ModelRoutingPolicyLifecycleService.apply_refresh_result(
             policy,
-            status="applied",
+            status=decision.status,
             proposed_policy=compiled.active_policy,
             policy_version=next_version,
         )
         policy.last_refreshed_at = requested_at
+        policy.performance_checkpoint = (
+            ModelRoutingOperationalPerformanceService.checkpoint_snapshot(
+                db,
+                policy_id=policy.id,
+            )
+        )
         ModelRoutingPolicyLifecycleService.complete_refresh_cycle(
             policy,
             eligible_runs_since_last_refresh=cls._remaining_event_count(
@@ -197,8 +301,13 @@ class PersistedModelRoutingPolicyRefreshService:
             ),
         )
 
-        excluded_count = cls._excluded_run_count(db, policy, requested_at)
-        update.status = "applied"
+        excluded_count = cls._excluded_run_count(
+            db,
+            policy,
+            requested_at,
+            usable_run_count=profile.operational_usable_runs,
+        )
+        update.status = decision.status
         update.eligible_run_count = profile.operational_usable_runs
         update.excluded_run_count = excluded_count
         update.excluded_reason_summary = {
@@ -210,14 +319,20 @@ class PersistedModelRoutingPolicyRefreshService:
             "available_model_count": len(available_model_ids),
         }
         update.output_summary = {
-            "reason": "사전 지식과 운영 증거로 제약 기반 모델 정책을 갱신했습니다.",
+            "reason": decision.reason_code,
             "prior_guided": compiled.summary,
+            "change_guard": {
+                "max_cost_improvement": decision.max_cost_improvement,
+                "max_latency_improvement": decision.max_latency_improvement,
+            },
         }
         update.error_code = None
         update.judge_model = None
         update.judge_provider = None
         update.prompt_version = None
-        update.new_policy_version = next_version
+        update.new_policy_version = (
+            next_version if decision.status == "applied" else None
+        )
         db.flush()
         return update
 
@@ -237,8 +352,7 @@ class PersistedModelRoutingPolicyRefreshService:
             "output_format": output_format.get("type") or "text",
             "schema_required": bool(output_format.get("schema")),
             "knowledge_enabled": bool(
-                node_data.get("knowledgeBases")
-                or node_data.get("knowledgeCollections")
+                node_data.get("knowledgeBases") or node_data.get("knowledgeCollections")
             ),
             "has_fallback_model": bool(node_data.get("fallback_model_id")),
         }
@@ -261,6 +375,8 @@ class PersistedModelRoutingPolicyRefreshService:
         db: Session,
         policy: LLMNodeModelRoutingPolicy,
         cutoff: datetime,
+        *,
+        usable_run_count: int,
     ) -> int:
         total = (
             db.query(LLMNodeModelRoutingPolicyRunEvent)
@@ -268,13 +384,4 @@ class PersistedModelRoutingPolicyRefreshService:
             .filter(LLMNodeModelRoutingPolicyRunEvent.created_at <= cutoff)
             .count()
         )
-        profile = ModelRouter.collect_profile(
-            db,
-            ModelRouterContext(
-                workflow_id=str(policy.workflow_id),
-                node_id=policy.node_id,
-                current_model_id=None,
-                deployment_id=str(policy.deployment_id),
-            ),
-        )
-        return max(0, total - profile.operational_usable_runs)
+        return max(0, total - usable_run_count)

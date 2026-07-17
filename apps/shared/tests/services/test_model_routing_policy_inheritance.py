@@ -268,6 +268,44 @@ def test_skips_inheritance_when_target_node_disables_automatic_routing():
     assert db.rows_for(LLMNodeModelRoutingPolicy) == [source_policy]
 
 
+def test_skips_legacy_policy_inheritance_for_bootstrap_strategy():
+    """새 bootstrap artifact는 이전 deployment runtime policy를 복제하지 않는다."""
+    workflow_id = uuid4()
+    source_policy = LLMNodeModelRoutingPolicy(
+        id=uuid4(),
+        workflow_id=workflow_id,
+        deployment_id=uuid4(),
+        node_id="llm-triage",
+        organization_id=uuid4(),
+        enabled=True,
+        active_policy={"default_model_id": "gpt-4.1-mini"},
+    )
+    db = _Db({LLMNodeModelRoutingPolicy: [source_policy]})
+
+    inherited = ModelRoutingPolicyInheritanceService.inherit_for_deployment(
+        db,
+        workflow_id=workflow_id,
+        source_deployment_id=source_policy.deployment_id,
+        target_deployment_id=uuid4(),
+        target_graph={
+            "nodes": [
+                {
+                    "id": "llm-triage",
+                    "type": "llmNode",
+                    "data": {
+                        "auto_model_routing": True,
+                        "model_routing_strategy": "bootstrap_mdeberta_difficulty_v1",
+                        "model_routing_bootstrap_id": str(uuid4()),
+                    },
+                }
+            ]
+        },
+    )
+
+    assert inherited == 0
+    assert db.rows_for(LLMNodeModelRoutingPolicy) == [source_policy]
+
+
 class _Db:
     def __init__(self, rows_by_model):
         self.rows_by_model = {model: list(rows) for model, rows in rows_by_model.items()}

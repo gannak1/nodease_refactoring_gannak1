@@ -81,13 +81,26 @@ def test_refresh_compiles_prior_guided_policy_without_semantic_router():
             return_value=["gpt-4.1", "gpt-4.1-mini"],
         ),
         patch(
-            "apps.workflow_engine.services.model_routing_policy_refresh_task.ModelRouter.collect_profile",
+            "apps.workflow_engine.services.model_routing_policy_refresh_task.ModelRoutingOperationalPerformanceService.profile_for_policy",
             return_value=profile,
+        ),
+        patch(
+            "apps.workflow_engine.services.model_routing_policy_refresh_task.ModelRoutingOperationalPerformanceService.checkpoint_snapshot",
+            return_value={"total_runs": 20, "models": {}},
         ),
         patch(
             "apps.workflow_engine.services.model_routing_policy_refresh_task.compile_prior_guided_policy_from_db",
             return_value=compiled,
         ) as compile_policy,
+        patch(
+            "apps.workflow_engine.services.model_routing_policy_refresh_task.ModelRoutingPolicyChangeGuard.evaluate",
+            return_value=SimpleNamespace(
+                status="applied",
+                reason_code="material_efficiency_improvement",
+                max_cost_improvement=0.2,
+                max_latency_improvement=0.1,
+            ),
+        ),
         patch.object(
             PersistedModelRoutingPolicyRefreshService,
             "_remaining_event_count",
@@ -146,6 +159,70 @@ def test_refresh_keeps_current_policy_when_auto_routing_is_off():
     assert update.status == "kept_current"
     assert policy.active_policy["default_model_id"] == "gpt-4.1"
     assert policy.refresh_requested_at is None
+
+
+def test_refresh_keeps_bootstrap_classifier_policy_without_replacing_strategy():
+    """재평가가 bootstrap 난이도 분류기를 legacy compiler로 덮어쓰면 안 된다."""
+    from apps.workflow_engine.services.model_routing_policy_refresh_task import (
+        PersistedModelRoutingPolicyRefreshService,
+    )
+
+    policy = _policy()
+    policy.active_policy = {
+        "strategy_id": "bootstrap_mdeberta_difficulty_v1",
+        "default_model_id": "gpt-4.1-mini",
+        "difficulty_models": {"economy": "gpt-4o-mini"},
+    }
+    deployment = SimpleNamespace(
+        graph_snapshot={
+            "nodes": [
+                {
+                    "id": "llm-1",
+                    "data": {"auto_model_routing": True, "model_id": "gpt-4.1-mini"},
+                }
+            ]
+        }
+    )
+    profile = SimpleNamespace(
+        operational_usable_runs=20,
+        as_snapshot=lambda: {"operational_usable_runs": 20},
+    )
+    db = MagicMock()
+    db.query.side_effect = [_FirstQuery(policy), _FirstQuery(deployment)]
+
+    with (
+        patch(
+            "apps.workflow_engine.services.model_routing_policy_refresh_task.ModelRoutingOperationalPerformanceService.profile_for_policy",
+            return_value=profile,
+        ),
+        patch(
+            "apps.workflow_engine.services.model_routing_policy_refresh_task.ModelRoutingOperationalPerformanceService.checkpoint_snapshot",
+            return_value={"total_runs": 20},
+        ),
+        patch.object(
+            PersistedModelRoutingPolicyRefreshService,
+            "_remaining_event_count",
+            return_value=1,
+        ),
+        patch.object(
+            PersistedModelRoutingPolicyRefreshService,
+            "_excluded_run_count",
+            return_value=0,
+        ),
+        patch(
+            "apps.workflow_engine.services.model_routing_policy_refresh_task.compile_prior_guided_policy_from_db"
+        ) as compile_policy,
+    ):
+        update = PersistedModelRoutingPolicyRefreshService.refresh(
+            db,
+            policy_id=policy.id,
+            trigger="auto_runs",
+        )
+
+    assert update.status == "kept_current"
+    assert policy.active_policy["strategy_id"] == "bootstrap_mdeberta_difficulty_v1"
+    assert update.output_summary["replay_required"] is True
+    compile_policy.assert_not_called()
 
 
 def test_refresh_fails_closed_without_execution_subject():

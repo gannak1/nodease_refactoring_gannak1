@@ -8,6 +8,7 @@ Workflow-Engine Celery 태스크 정의
 import logging
 import time
 import uuid
+from decimal import Decimal
 from typing import Any, Dict
 
 from celery.exceptions import Retry
@@ -157,6 +158,164 @@ def bootstrap_model_routing_policy(self, policy_id: str):
 
 
 @celery_app.task(
+    name="workflow.model_routing.generate_bootstrap",
+    bind=True,
+    max_retries=0,
+    base=RedactedWorkflowTask,
+)
+def generate_model_routing_bootstrap(self, bootstrap_id: str):
+    """HTTP 응답 이후 Planner 기반 초기 라우팅 기준을 생성한다.
+
+    예문, holdout 예문, 규칙 생성은 여러 LLM 호출을 포함한다. Gateway 요청에서
+    직접 실행하면 reverse proxy timeout으로 UI가 실패처럼 보이므로 Worker에서
+    처리하고 bootstrap row 상태로 결과를 전달한다.
+    """
+    from apps.shared.db.models.model_routing_policy import (
+        LLMNodeModelRoutingBootstrap,
+    )
+    from apps.workflow_engine.services.llm_service import LLMService
+    from apps.workflow_engine.services.model_router import ModelRouter
+    from apps.workflow_engine.services.model_routing_bootstrap import (
+        LLMJsonBootstrapPlanner,
+        PersistedModelRoutingBootstrapStore,
+    )
+
+    session = SessionLocal()
+    bootstrap_uuid = uuid.UUID(str(bootstrap_id))
+    try:
+        bootstrap = session.get(LLMNodeModelRoutingBootstrap, bootstrap_uuid)
+        if bootstrap is None:
+            return {"status": "not_found", "bootstrap_id": str(bootstrap_id)}
+        if bootstrap.status != "generating":
+            return {
+                "status": bootstrap.status,
+                "bootstrap_id": str(bootstrap.id),
+            }
+        if bootstrap.created_by is None or bootstrap.organization_id is None:
+            raise ValueError("bootstrap_execution_subject_unavailable")
+
+        available_model_ids = set(
+            LLMService.get_runtime_available_model_ids_for_user(
+                session,
+                user_id=bootstrap.created_by,
+                organization_id=bootstrap.organization_id,
+            )
+        )
+        candidates = [
+            candidate
+            for candidate in ModelRouter.collect_candidates(
+                session,
+                organization_id=bootstrap.organization_id,
+            )
+            if candidate.model_id in available_model_ids
+            and ModelRouter.is_workflow_chat_model(candidate.model_id)
+        ]
+        if not candidates:
+            raise ValueError("bootstrap_no_available_chat_model")
+        selection = LLMService.get_runtime_client_for_user(
+            session,
+            user_id=bootstrap.created_by,
+            model_id=bootstrap.planner_model_id or bootstrap.default_model_id,
+            organization_id=bootstrap.organization_id,
+        )
+        planner = LLMJsonBootstrapPlanner(selection.client)
+        completed = PersistedModelRoutingBootstrapStore.complete_pending(
+            session,
+            bootstrap_id=bootstrap_uuid,
+            planner=planner,
+            available_candidates=candidates,
+        )
+        if completed is None:
+            session.commit()
+            return {"status": "not_found", "bootstrap_id": str(bootstrap_id)}
+        if completed.status == "ready":
+            completed.planner_model_id = selection.model_id
+            completed.planner_cost_usd = Decimal(
+                str(
+                    LLMService.calculate_cost(
+                        session,
+                        selection.model_id,
+                        int(planner.usage.get("prompt_tokens") or 0),
+                        int(planner.usage.get("completion_tokens") or 0),
+                    )
+                )
+            )
+        session.commit()
+        if completed.status == "ready":
+            try:
+                celery_app.send_task(
+                    "workflow.model_routing.build_bootstrap_classifier",
+                    args=[str(completed.id)],
+                    kwargs={},
+                    argsrepr="[workflow arguments redacted]",
+                    kwargsrepr="{workflow arguments redacted}",
+                )
+            except Exception:
+                # 규칙 기반 정책은 이미 ready 상태다. classifier 갱신 재시도는
+                # 별도 task/운영 도구가 처리할 수 있으므로 최초 기준을 실패시키지 않는다.
+                logger.exception(
+                    "[Model-Routing] deferred bootstrap classifier enqueue failed"
+                )
+        return {"status": completed.status, "bootstrap_id": str(completed.id)}
+    except Exception as exc:
+        session.rollback()
+        PersistedModelRoutingBootstrapStore.mark_pending_generation_failed(
+            session,
+            bootstrap_id=bootstrap_uuid,
+            error_code=type(exc).__name__,
+        )
+        session.commit()
+        logger.exception("[Model-Routing] bootstrap generation failed")
+        return {"status": "failed", "bootstrap_id": str(bootstrap_id)}
+    finally:
+        session.close()
+
+
+@celery_app.task(
+    name="workflow.model_routing.build_bootstrap_classifier",
+    bind=True,
+    max_retries=2,
+    base=RedactedWorkflowTask,
+)
+def build_model_routing_bootstrap_classifier(self, bootstrap_id: str):
+    """Planner rule 저장 뒤 mDeBERTa artifact를 별도 worker에서 준비한다."""
+    from apps.workflow_engine.services.model_routing_bootstrap import (
+        PersistedModelRoutingBootstrapStore,
+    )
+
+    session = SessionLocal()
+    try:
+        bootstrap = PersistedModelRoutingBootstrapStore.build_deferred_classifier(
+            session,
+            bootstrap_id=uuid.UUID(str(bootstrap_id)),
+        )
+        session.commit()
+        return {
+            "status": "ready" if bootstrap is not None else "not_found",
+            "bootstrap_id": str(bootstrap_id),
+        }
+    except Exception as exc:
+        session.rollback()
+        if self.request.retries >= self.max_retries:
+            try:
+                PersistedModelRoutingBootstrapStore.mark_deferred_classifier_failed(
+                    session,
+                    bootstrap_id=uuid.UUID(str(bootstrap_id)),
+                    error_code=type(exc).__name__,
+                )
+                session.commit()
+            except Exception:
+                session.rollback()
+        logger.warning(
+            "[Model-Routing] deferred bootstrap classifier failed: error_type=%s",
+            type(exc).__name__,
+        )
+        raise self.retry(exc=exc, countdown=min(2 ** (self.request.retries + 1), 30))
+    finally:
+        session.close()
+
+
+@celery_app.task(
     name="workflow.model_routing.record_run",
     bind=True,
     max_retries=3,
@@ -179,7 +338,7 @@ def record_model_routing_operational_run(self, workflow_run_id: str):
             send_workflow_task(
                 celery_app,
                 "workflow.model_routing.refresh_policy",
-                args=[str(policy_id), "auto_n_runs"],
+                args=[str(policy_id), "score_change"],
             )
         return {
             "status": "success",
@@ -207,7 +366,7 @@ def refresh_model_routing_policy(self, policy_id: str, trigger: str = "manual_re
 
     session = SessionLocal()
     try:
-        if trigger == "auto_n_runs":
+        if trigger in {"auto_n_runs", "score_change"}:
             from apps.workflow_engine.services.model_routing_policy_store import (
                 ModelRoutingPolicyStore,
             )
@@ -410,8 +569,7 @@ def _canonical_deployed_graph_execution_context(
     if (
         deployment is None
         or str(deployment.app_id) != str(context["app_id"])
-        or str(queued_context.get("workflow_version"))
-        != str(deployment.version)
+        or str(queued_context.get("workflow_version")) != str(deployment.version)
         or not isinstance(deployment.graph_snapshot, dict)
         or canonical_snapshot_sha256(graph)
         != canonical_snapshot_sha256(deployment.graph_snapshot)
@@ -554,9 +712,7 @@ def execute_deployed_workflow(
         queued_context = dict(execution_context or {})
         app = session.query(App).filter(App.workflow_id == workflow_id).first()
         if not app:
-            raise PermanentDeploymentExecutionError(
-                "deployed workflow is unavailable"
-            )
+            raise PermanentDeploymentExecutionError("deployed workflow is unavailable")
         active_deployment = (
             session.query(WorkflowDeployment)
             .filter(
@@ -567,9 +723,7 @@ def execute_deployed_workflow(
             .first()
         )
         if active_deployment is None:
-            raise PermanentDeploymentExecutionError(
-                "deployed workflow is unavailable"
-            )
+            raise PermanentDeploymentExecutionError("deployed workflow is unavailable")
         queued_deployment_id = queued_context.get("deployment_id")
         if queued_deployment_id is None:
             deployment = active_deployment
@@ -589,16 +743,12 @@ def execute_deployed_workflow(
                 .first()
             )
         if not deployment or not deployment.graph_snapshot:
-            raise PermanentDeploymentExecutionError(
-                "deployed workflow is unavailable"
-            )
+            raise PermanentDeploymentExecutionError("deployed workflow is unavailable")
         graph = deployment.graph_snapshot
         if _graph_requires_frozen_deployment(graph) and (
             str(queued_context.get("deployment_id")) != str(deployment.id)
-            or str(queued_context.get("deployment_version"))
-            != str(deployment.version)
-            or queued_context.get("snapshot_sha256")
-            != canonical_snapshot_sha256(graph)
+            or str(queued_context.get("deployment_version")) != str(deployment.version)
+            or queued_context.get("snapshot_sha256") != canonical_snapshot_sha256(graph)
         ):
             raise PermanentDeploymentExecutionError(
                 "deployed workflow identity is not frozen"

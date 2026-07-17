@@ -181,7 +181,9 @@ def test_successful_run_does_not_wait_for_auto_routing_node_in_an_unselected_bra
             "ensure_policy_for_deployed_node",
             return_value=policy,
         ),
-        patch.object(ModelRoutingPolicyStore, "_record_policy_event", return_value=True),
+        patch.object(
+            ModelRoutingPolicyStore, "_record_policy_event", return_value=True
+        ),
         patch.object(
             ModelRoutingPolicyStore,
             "_lock_policy_for_update",
@@ -351,9 +353,12 @@ def test_routing_evidence_includes_successful_rag_run_with_safe_failure_policy()
         },
     )
 
-    assert ModelRoutingPolicyStore._is_routing_evidence_eligible_node_run(
-        successful_rag_node
-    ) is True
+    assert (
+        ModelRoutingPolicyStore._is_routing_evidence_eligible_node_run(
+            successful_rag_node
+        )
+        is True
+    )
 
 
 def test_record_completed_run_ignores_deployment_snapshot_without_auto_routing():
@@ -429,9 +434,7 @@ def test_duplicate_run_requeues_refresh_that_is_still_pending_publish():
         _Query(first_value=workflow_run),
         _Query(first_value=deployment),
         _Query(
-            all_value=[
-                SimpleNamespace(node_id="llm-1", status=NodeRunStatus.SUCCESS)
-            ]
+            all_value=[SimpleNamespace(node_id="llm-1", status=NodeRunStatus.SUCCESS)]
         ),
     ]
 
@@ -441,7 +444,9 @@ def test_duplicate_run_requeues_refresh_that_is_still_pending_publish():
             "ensure_policy_for_deployed_node",
             return_value=policy,
         ),
-        patch.object(ModelRoutingPolicyStore, "_record_policy_event", return_value=False),
+        patch.object(
+            ModelRoutingPolicyStore, "_record_policy_event", return_value=False
+        ),
         patch.object(
             ModelRoutingPolicyStore,
             "_lock_policy_for_update",
@@ -489,9 +494,7 @@ def test_new_run_does_not_reenqueue_refresh_already_requested_by_another_run():
         _Query(first_value=workflow_run),
         _Query(first_value=deployment),
         _Query(
-            all_value=[
-                SimpleNamespace(node_id="llm-1", status=NodeRunStatus.SUCCESS)
-            ]
+            all_value=[SimpleNamespace(node_id="llm-1", status=NodeRunStatus.SUCCESS)]
         ),
     ]
 
@@ -501,7 +504,9 @@ def test_new_run_does_not_reenqueue_refresh_already_requested_by_another_run():
             "ensure_policy_for_deployed_node",
             return_value=policy,
         ),
-        patch.object(ModelRoutingPolicyStore, "_record_policy_event", return_value=True),
+        patch.object(
+            ModelRoutingPolicyStore, "_record_policy_event", return_value=True
+        ),
         patch.object(
             ModelRoutingPolicyStore,
             "_lock_policy_for_update",
@@ -624,7 +629,8 @@ def test_bootstrap_policy_ignores_legacy_active_policy_and_preserves_node_models
         "fallback_model_id": "gpt-4.1-mini",
         "rules": [],
     }
-    assert policy.policy_version == "bootstrap-preserve-config-v1"
+    assert policy.policy_version == "deployment-safe-default-v1"
+    assert policy.status == "active"
     assert policy.refresh_every_runs == 35
     available_models.assert_called_once_with(
         db,
@@ -680,6 +686,72 @@ def test_bootstrap_policy_matches_google_catalog_ids_with_or_without_models_pref
         "fallback_model_id": "models/gemini-2.5-pro",
         "rules": [],
     }
+
+
+def test_deployment_creates_prior_guided_policy_before_first_run():
+    """배포 transaction 안에서 첫 실행용 profile rule을 즉시 저장한다."""
+    from apps.workflow_engine.services.model_routing_policy_store import (
+        ModelRoutingPolicyStore,
+    )
+
+    organization_id = uuid4()
+    workflow_run = SimpleNamespace(
+        workflow_id=uuid4(),
+        deployment_id=uuid4(),
+        user_id=uuid4(),
+    )
+    db = MagicMock()
+    active_policy = {
+        "strategy": "prior_guided_adaptive",
+        "strategy_id": "prior_guided_adaptive_v1",
+        "default_model_id": "gpt-4.1",
+        "fallback_model_id": "gpt-4.1",
+        "rules": [
+            {
+                "id": "prior-guided-short",
+                "when": {"input_length_bucket": "short"},
+                "selected_model_id": "gpt-4.1-mini",
+            }
+        ],
+        "decision_profiles": [
+            {"profile": "short", "selected_model_id": "gpt-4.1-mini"}
+        ],
+    }
+
+    with (
+        patch.object(ModelRoutingPolicyStore, "get_runtime_policy", return_value=None),
+        patch.object(
+            ModelRoutingPolicyStore,
+            "_organization_id_for_run",
+            return_value=organization_id,
+        ),
+        patch.object(
+            LLMService,
+            "get_runtime_available_model_ids_for_user",
+            return_value=["gpt-4.1", "gpt-4.1-mini"],
+        ),
+        patch(
+            "apps.workflow_engine.services.model_routing_policy_store.compile_prior_guided_policy_from_db",
+            return_value=SimpleNamespace(
+                active_policy=active_policy,
+                summary={"profile_count": 3},
+            ),
+        ) as compile_policy,
+    ):
+        policy = ModelRoutingPolicyStore.ensure_policy_for_deployed_node(
+            db,
+            workflow_run=workflow_run,
+            node_id="llm-1",
+            node_data={
+                "auto_model_routing": True,
+                "model_id": "gpt-4.1",
+            },
+        )
+
+    assert policy.status == "active"
+    assert policy.policy_version == "deployment-prior-v1"
+    assert policy.active_policy == active_policy
+    compile_policy.assert_called_once()
 
 
 def test_bootstrap_policy_preserves_deployment_max_cohorts_setting():
@@ -812,8 +884,8 @@ def test_record_completed_run_locks_policies_in_node_id_order_before_counting():
         _Query(first_value=deployment),
         _Query(
             all_value=[
-                    SimpleNamespace(node_id="llm-z", status=NodeRunStatus.SUCCESS),
-                    SimpleNamespace(node_id="llm-a", status=NodeRunStatus.SUCCESS),
+                SimpleNamespace(node_id="llm-z", status=NodeRunStatus.SUCCESS),
+                SimpleNamespace(node_id="llm-a", status=NodeRunStatus.SUCCESS),
             ]
         ),
     ]
@@ -821,7 +893,9 @@ def test_record_completed_run_locks_policies_in_node_id_order_before_counting():
 
     def lock_policy(_db, *, policy_id):
         locked_policy_ids.append(policy_id)
-        return next(policy for policy in policy_by_node.values() if policy.id == policy_id)
+        return next(
+            policy for policy in policy_by_node.values() if policy.id == policy_id
+        )
 
     with (
         patch.object(
@@ -829,7 +903,9 @@ def test_record_completed_run_locks_policies_in_node_id_order_before_counting():
             "ensure_policy_for_deployed_node",
             side_effect=lambda _db, **kwargs: policy_by_node[kwargs["node_id"]],
         ),
-        patch.object(ModelRoutingPolicyStore, "_record_policy_event", return_value=True),
+        patch.object(
+            ModelRoutingPolicyStore, "_record_policy_event", return_value=True
+        ),
         patch.object(
             ModelRoutingPolicyStore,
             "_lock_policy_for_update",
@@ -847,7 +923,9 @@ def test_record_completed_run_locks_policies_in_node_id_order_before_counting():
 
     expected_policy_ids = [policy_by_node["llm-a"].id, policy_by_node["llm-z"].id]
     assert locked_policy_ids == expected_policy_ids
-    assert [call.args[0].id for call in apply_run_event.call_args_list] == expected_policy_ids
+    assert [
+        call.args[0].id for call in apply_run_event.call_args_list
+    ] == expected_policy_ids
 
 
 def test_first_policy_materializes_draft_cohorts_with_stable_ids():
@@ -885,19 +963,23 @@ def test_first_policy_materializes_draft_cohorts_with_stable_ids():
     db.query.return_value = _Query(first_value=None)
     embedding_client = SimpleNamespace(embed_sync=MagicMock(return_value=[0.1, 0.2]))
 
-    with patch.object(
-        LLMService,
-        "get_runtime_available_embedding_model_ids_for_user",
-        return_value=["text-embedding-3-large"],
-    ), patch.object(
-        LLMService,
-        "get_runtime_client_for_user",
-        return_value=SimpleNamespace(client=embedding_client),
-    ), patch(
-        "apps.workflow_engine.services.model_routing_adaptive_store."
-        "AdaptiveModelRoutingCohortStore.create_manual_cohort",
-        return_value=SimpleNamespace(id=draft_id),
-    ) as create_cohort:
+    with (
+        patch.object(
+            LLMService,
+            "get_runtime_available_embedding_model_ids_for_user",
+            return_value=["text-embedding-3-large"],
+        ),
+        patch.object(
+            LLMService,
+            "get_runtime_client_for_user",
+            return_value=SimpleNamespace(client=embedding_client),
+        ),
+        patch(
+            "apps.workflow_engine.services.model_routing_adaptive_store."
+            "AdaptiveModelRoutingCohortStore.create_manual_cohort",
+            return_value=SimpleNamespace(id=draft_id),
+        ) as create_cohort,
+    ):
         created = ModelRoutingPolicyStore._materialize_draft_cohorts(
             db,
             policy=policy,
@@ -948,24 +1030,28 @@ def test_invalid_legacy_draft_does_not_block_later_valid_cohort_materialization(
     db = MagicMock()
     db.query.return_value = _Query(first_value=None)
 
-    with patch.object(
-        LLMService,
-        "get_runtime_available_embedding_model_ids_for_user",
-        return_value=["text-embedding-3-large"],
-    ), patch.object(
-        LLMService,
-        "get_runtime_client_for_user",
-        return_value=SimpleNamespace(
-            client=SimpleNamespace(embed_sync=MagicMock(return_value=[0.1, 0.2]))
+    with (
+        patch.object(
+            LLMService,
+            "get_runtime_available_embedding_model_ids_for_user",
+            return_value=["text-embedding-3-large"],
         ),
-    ), patch(
-        "apps.workflow_engine.services.model_routing_adaptive_store."
-        "AdaptiveModelRoutingCohortStore.create_manual_cohort",
-        side_effect=[
-            ValueError("model_routing.cohort_examples_insufficient"),
-            SimpleNamespace(id=uuid4()),
-        ],
-    ) as create_cohort:
+        patch.object(
+            LLMService,
+            "get_runtime_client_for_user",
+            return_value=SimpleNamespace(
+                client=SimpleNamespace(embed_sync=MagicMock(return_value=[0.1, 0.2]))
+            ),
+        ),
+        patch(
+            "apps.workflow_engine.services.model_routing_adaptive_store."
+            "AdaptiveModelRoutingCohortStore.create_manual_cohort",
+            side_effect=[
+                ValueError("model_routing.cohort_examples_insufficient"),
+                SimpleNamespace(id=uuid4()),
+            ],
+        ) as create_cohort,
+    ):
         created = ModelRoutingPolicyStore._materialize_draft_cohorts(
             db,
             policy=policy,

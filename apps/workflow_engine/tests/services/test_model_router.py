@@ -110,6 +110,12 @@ def test_workflow_chat_model_allowlist_includes_gpt_56_aliases():
         )
 
 
+def test_workflow_chat_model_filter_accepts_model_id_string():
+    """Gateway가 후보의 model_id 문자열을 재검사해도 채팅 모델을 유지한다."""
+    assert ModelRouter.is_workflow_chat_model("gpt-4.1") is True
+    assert ModelRouter.is_workflow_chat_model("text-embedding-3-large") is False
+
+
 def test_cold_start_high_risk_uses_conservative_model():
     """운영 로그가 부족하고 고객-facing/RAG 위험이 있으면 cheap 모델을 고르지 않는다."""
     decision = ModelRouter.resolve(
@@ -1099,6 +1105,165 @@ def test_runtime_context_treats_collection_only_node_as_knowledge_enabled():
     )
 
     assert context.knowledge_enabled is True
+
+
+def test_runtime_context_ignores_empty_file_fields_and_detects_meaningful_file_ids():
+    node_data = SimpleNamespace(
+        model_id="gpt-4.1-mini",
+        fallback_model_id=None,
+        knowledgeBases=[],
+        knowledgeCollections=[],
+        output_format={"type": "text"},
+        system_prompt="",
+        user_prompt="",
+        assistant_prompt="",
+        task_type="generate",
+    )
+
+    empty_context = ModelRouter.infer_runtime_context(
+        {"message": "첨부 없이 실행", "file_id": None, "attachments": []},
+        node_data,
+    )
+    file_context = ModelRouter.infer_runtime_context(
+        {"message": "첨부 분석", "file_id": "file-123"},
+        node_data,
+    )
+
+    assert empty_context.has_file_input is False
+    assert file_context.has_file_input is True
+
+
+def test_runtime_policy_routes_by_all_supported_general_conditions():
+    """요청 특성과 노드 설정이 active policy의 일반 조건으로 실제 모델을 바꾼다."""
+
+    def route(*, when, inputs=None, **node_overrides):
+        node_values = {
+            "model_id": "default-model",
+            "fallback_model_id": "fallback-model",
+            "knowledgeBases": [],
+            "knowledgeCollections": [],
+            "output_format": {"type": "text"},
+            "system_prompt": "",
+            "user_prompt": "",
+            "assistant_prompt": "",
+            "task_type": "generate",
+            "model_routing_context": {},
+        }
+        node_values.update(node_overrides)
+        policy = {
+            "active_policy": {
+                "default_model_id": "default-model",
+                "fallback_model_id": "fallback-model",
+                "rules": [
+                    {
+                        "id": "expected-rule",
+                        "priority": 1,
+                        "when": when,
+                        "selected_model_id": "matched-model",
+                    }
+                ],
+            }
+        }
+        return ModelRouter.resolve_policy(
+            policy,
+            inputs=inputs or {"message": "일반 요청"},
+            node_data=SimpleNamespace(**node_values),
+            available_model_ids=[
+                "default-model",
+                "fallback-model",
+                "matched-model",
+            ],
+        )
+
+    cases = (
+        route(when={"input_length_bucket": "short"}),
+        route(
+            when={"input_length_bucket": "medium"},
+            inputs={"message": "가" * 700},
+        ),
+        route(
+            when={"input_length_bucket": "long"},
+            inputs={"message": "가" * 2_100},
+        ),
+        route(
+            when={"output_format": "json"},
+            output_format={"type": "json"},
+        ),
+        route(
+            when={"schema_required": True},
+            output_format={
+                "type": "json",
+                "schema": {"type": "object", "required": ["answer"]},
+            },
+        ),
+        route(
+            when={"knowledge_enabled": True},
+            knowledgeBases=[{"id": "kb-1"}],
+        ),
+        route(
+            when={"knowledge_enabled": True},
+            knowledgeCollections=[{"id": "collection-1"}],
+        ),
+        route(
+            when={"has_file_input": True},
+            inputs={"message": "첨부 분석", "file_id": "file-123"},
+        ),
+        route(
+            when={"prompt_length_bucket": "medium"},
+            system_prompt="가" * 700,
+        ),
+        route(
+            when={"customer_facing": True},
+            model_routing_context={"customer_facing": True},
+        ),
+        route(
+            when={"node_task": "classify"},
+            model_routing_context={"node_task": "classify"},
+        ),
+    )
+
+    assert all(decision.selected_model_id == "matched-model" for decision in cases)
+    assert all(decision.matched_rule_id == "expected-rule" for decision in cases)
+
+
+def test_runtime_policy_does_not_match_constraints_that_are_not_present():
+    policy = {
+        "active_policy": {
+            "default_model_id": "default-model",
+            "rules": [
+                {
+                    "id": "requires-json-rag-file",
+                    "when": {
+                        "output_format": "json",
+                        "schema_required": True,
+                        "knowledge_enabled": True,
+                        "has_file_input": True,
+                    },
+                    "selected_model_id": "matched-model",
+                }
+            ],
+        }
+    }
+    decision = ModelRouter.resolve_policy(
+        policy,
+        inputs={"message": "일반 요청", "attachments": []},
+        node_data=SimpleNamespace(
+            model_id="default-model",
+            fallback_model_id=None,
+            knowledgeBases=[],
+            knowledgeCollections=[],
+            output_format={"type": "text"},
+            system_prompt="",
+            user_prompt="",
+            assistant_prompt="",
+            task_type="generate",
+            model_routing_context={},
+        ),
+        available_model_ids=["default-model", "matched-model"],
+    )
+
+    assert decision.selected_model_id == "default-model"
+    assert decision.matched_rule_id is None
 
 
 def removed_semantic_query_text_uses_only_configured_business_input_paths():

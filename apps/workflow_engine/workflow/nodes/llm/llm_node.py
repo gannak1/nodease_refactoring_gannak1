@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from jinja2 import Environment
+from sqlalchemy.exc import SQLAlchemyError
 
 from apps.shared.audit.actions import AuditAction
 from apps.shared.audit.logger import record_audit
@@ -371,7 +372,11 @@ class LLMNode(Node[LLMNodeData]):
         self._knowledge_runtime_candidate_resolver = resolver
 
     def _resolve_model_routing_policy(
-        self, inputs: Dict[str, Any], db_session=None
+        self,
+        inputs: Dict[str, Any],
+        db_session=None,
+        *,
+        routing_feature_text: str | None = None,
     ) -> tuple[str, Optional[str], Optional[dict]]:
         """저장된 active policy snapshot으로 실행 모델을 결정한다.
 
@@ -384,6 +389,7 @@ class LLMNode(Node[LLMNodeData]):
             return selected_model_id, fallback_model_id, None
 
         policy = self.data.model_routing_policy or {}
+        node_profile = None
         is_deployed_execution = bool(self.execution_context.get("deployment_id"))
         policy_deployment_id = self.execution_context.get("deployment_id")
         preview_node_ids = self.execution_context.get("routing_policy_preview_node_ids")
@@ -426,6 +432,35 @@ class LLMNode(Node[LLMNodeData]):
                         "runs_since_last_refresh": persisted_policy.eligible_runs_since_last_refresh,
                     },
                 }
+                active_policy = (
+                    persisted_policy.active_policy
+                    if isinstance(persisted_policy.active_policy, dict)
+                    else {}
+                )
+                if (
+                    active_policy.get("strategy_id")
+                    == "bootstrap_mdeberta_difficulty_v1"
+                ):
+                    # 전역 profile은 policy snapshot에 있고, 노드별 운영 성적만
+                    # 별도 누계에서 읽는다. 이 조회 실패가 실제 LLM 실행을 막으면
+                    # 안 되므로 전역 profile 점수만으로 계속 라우팅한다.
+                    try:
+                        from apps.workflow_engine.services.model_routing_operational_performance import (
+                            ModelRoutingOperationalPerformanceService,
+                        )
+
+                        node_profile = (
+                            ModelRoutingOperationalPerformanceService.profile_for_policy(
+                                db_session,
+                                policy_id=persisted_policy.id,
+                            )
+                        )
+                    except (SQLAlchemyError, TypeError, ValueError):
+                        logger.warning(
+                            "Model routing operational profile is unavailable; "
+                            "using global profile only.",
+                            exc_info=True,
+                        )
             elif is_deployed_execution:
                 # 배포 runtime의 source of truth는 policy table이다. 첫 성공 실행이
                 # policy row를 만들기 전까지 graph에 남은 legacy snapshot을 평가하면
@@ -467,6 +502,8 @@ class LLMNode(Node[LLMNodeData]):
                 inputs=inputs,
                 node_data=self.data,
                 available_model_ids=available_model_ids,
+                routing_feature_text=routing_feature_text,
+                node_profile=node_profile,
             )
             selected_model_id = decision.selected_model_id
             fallback_model_id = decision.fallback_model_id
@@ -609,104 +646,7 @@ class LLMNode(Node[LLMNodeData]):
                     },
                 }
 
-        selected_model_id, fallback_model_id, model_routing_metadata = (
-            self._resolve_model_routing_policy(inputs, db_session)
-        )
-        # 자동 라우팅을 끈 노드도 provider fallback은 사용할 수 있다. 이 경우에도
-        # 실제 대체 실행 정보를 안전하게 남길 수 있도록 빈 metadata로 정규화한다.
-        model_routing_metadata = dict(model_routing_metadata or {})
-        routed_model_id = selected_model_id
-        routing_context = ModelRouter.infer_runtime_context(
-            inputs,
-            self.data,
-        ).as_metadata()
-        fallback_used = False
-        fallback_reason_code = None
-
         try:
-            if client_override:
-                client = client_override
-            else:
-                user_id = self._resolve_credential_principal_user()
-                if user_id is None:
-                    raise ValueError(
-                        "LLM 노드 실행에는 유효한 credential principal이 필요합니다."
-                    )
-                organization_id = self._require_runtime_organization_id(
-                    user_id, selected_model_id
-                )
-
-                try:
-                    runtime_selection = LLMService.get_runtime_client_for_user(
-                        db_session,
-                        user_id=user_id,
-                        model_id=selected_model_id,
-                        organization_id=organization_id,
-                    )
-                    client = runtime_selection.client
-                    selected_credential_id = runtime_selection.credential_id
-                    selected_model_id = runtime_selection.model_id
-                except Exception as primary_client_error:
-                    if (
-                        isinstance(primary_client_error, LLMCredentialNotAvailableError)
-                        and primary_client_error.reason == "organization_scope_missing"
-                    ):
-                        self._record_llm_runtime_permission_denied(
-                            user_id=user_id,
-                            model_id=selected_model_id,
-                            organization_id=None,
-                            error=primary_client_error,
-                        )
-                        raise
-
-                    # [FIX] API 키 조회 실패 시 fallback 모델로 시도
-                    if fallback_model_id:
-                        logger.warning(
-                            "[LLMNode] Primary model client failed: "
-                            "error_type=%s fallback_model=%s",
-                            type(primary_client_error).__name__,
-                            fallback_model_id,
-                        )
-                        try:
-                            runtime_selection = LLMService.get_runtime_client_for_user(
-                                db_session,
-                                user_id=user_id,
-                                model_id=fallback_model_id,
-                                organization_id=organization_id,
-                            )
-                            client = runtime_selection.client
-                            selected_credential_id = runtime_selection.credential_id
-                            selected_model_id = runtime_selection.model_id
-                            fallback_used = True
-                            fallback_reason_code = "runtime_client_unavailable"
-                            # The fallback is now the active client. Do not invoke
-                            # the same provider a second time if this call fails.
-                            fallback_model_id = None
-                        except Exception as fallback_client_error:
-                            logger.error(
-                                "[LLMNode] Fallback model client failed: error_type=%s",
-                                type(fallback_client_error).__name__,
-                            )
-                            self._record_llm_runtime_permission_denied(
-                                user_id=user_id,
-                                model_id=fallback_model_id,
-                                organization_id=organization_id,
-                                error=fallback_client_error,
-                            )
-                            raise primary_client_error  # 원래 에러로 raise
-                    else:
-                        logger.warning(
-                            "[LLMNode] Credential client unavailable: error_type=%s",
-                            type(primary_client_error).__name__,
-                        )
-                        self._record_llm_runtime_permission_denied(
-                            user_id=user_id,
-                            model_id=selected_model_id,
-                            organization_id=organization_id,
-                            error=primary_client_error,
-                        )
-                        raise
-
             memory_summary = None
             try:
                 memory_summary = self._build_memory_summary()
@@ -803,7 +743,8 @@ class LLMNode(Node[LLMNodeData]):
                 return {
                     "text": knowledge_result.answer_override or "",
                     "usage": {},
-                    "model": selected_model_id,
+                    # 근거 부족으로 LLM을 호출하지 않았으므로 라우팅 결정을 만들지 않는다.
+                    "model": self.data.model_id,
                     "cost": 0.0,
                     "metadata": {
                         "knowledge_search": knowledge_metadata
@@ -879,6 +820,115 @@ class LLMNode(Node[LLMNodeData]):
                 messages.append(
                     {"role": "assistant", "content": rendered_assistant_prompt}
                 )
+
+            # Bootstrap classifier는 학습·실행에서 같은 요청 feature만 사용한다.
+            # runtime RAG 결과나 렌더된 prompt를 섞으면 학습 표본과 비교 기준이 달라진다.
+            routing_feature_text = ModelRouter.bootstrap_classifier_feature_text(
+                inputs,
+                self.data,
+            )
+            selected_model_id, fallback_model_id, model_routing_metadata = (
+                self._resolve_model_routing_policy(
+                    inputs,
+                    db_session,
+                    routing_feature_text=routing_feature_text,
+                )
+            )
+            # 자동 라우팅을 끈 노드도 provider fallback은 사용할 수 있다. 이 경우에도
+            # 실제 대체 실행 정보를 안전하게 남길 수 있도록 빈 metadata로 정규화한다.
+            model_routing_metadata = dict(model_routing_metadata or {})
+            routed_model_id = selected_model_id
+            routing_context = ModelRouter.infer_runtime_context(
+                inputs,
+                self.data,
+            ).as_metadata()
+            fallback_used = False
+            fallback_reason_code = None
+
+            if client_override:
+                client = client_override
+            else:
+                user_id = self._resolve_credential_principal_user()
+                if user_id is None:
+                    raise ValueError(
+                        "LLM 노드 실행에는 유효한 credential principal이 필요합니다."
+                    )
+                organization_id = self._require_runtime_organization_id(
+                    user_id, selected_model_id
+                )
+
+                try:
+                    runtime_selection = LLMService.get_runtime_client_for_user(
+                        db_session,
+                        user_id=user_id,
+                        model_id=selected_model_id,
+                        organization_id=organization_id,
+                    )
+                    client = runtime_selection.client
+                    selected_credential_id = runtime_selection.credential_id
+                    selected_model_id = runtime_selection.model_id
+                except Exception as primary_client_error:
+                    if (
+                        isinstance(
+                            primary_client_error, LLMCredentialNotAvailableError
+                        )
+                        and primary_client_error.reason == "organization_scope_missing"
+                    ):
+                        self._record_llm_runtime_permission_denied(
+                            user_id=user_id,
+                            model_id=selected_model_id,
+                            organization_id=None,
+                            error=primary_client_error,
+                        )
+                        raise
+
+                    # API 키 조회 실패 시 fallback 모델로 시도한다.
+                    if fallback_model_id:
+                        logger.warning(
+                            "[LLMNode] Primary model client failed: "
+                            "error_type=%s fallback_model=%s",
+                            type(primary_client_error).__name__,
+                            fallback_model_id,
+                        )
+                        try:
+                            runtime_selection = LLMService.get_runtime_client_for_user(
+                                db_session,
+                                user_id=user_id,
+                                model_id=fallback_model_id,
+                                organization_id=organization_id,
+                            )
+                            client = runtime_selection.client
+                            selected_credential_id = runtime_selection.credential_id
+                            selected_model_id = runtime_selection.model_id
+                            fallback_used = True
+                            fallback_reason_code = "runtime_client_unavailable"
+                            # The fallback is now the active client. Do not invoke
+                            # the same provider a second time if this call fails.
+                            fallback_model_id = None
+                        except Exception as fallback_client_error:
+                            logger.error(
+                                "[LLMNode] Fallback model client failed: error_type=%s",
+                                type(fallback_client_error).__name__,
+                            )
+                            self._record_llm_runtime_permission_denied(
+                                user_id=user_id,
+                                model_id=fallback_model_id,
+                                organization_id=organization_id,
+                                error=fallback_client_error,
+                            )
+                            raise primary_client_error
+                    else:
+                        logger.warning(
+                            "[LLMNode] Credential client unavailable: error_type=%s",
+                            type(primary_client_error).__name__,
+                        )
+                        self._record_llm_runtime_permission_denied(
+                            user_id=user_id,
+                            model_id=selected_model_id,
+                            organization_id=organization_id,
+                            error=primary_client_error,
+                        )
+                        raise
 
             # STEP 4. LLM 호출 ----------------------------------------------------
             used_model_id = selected_model_id

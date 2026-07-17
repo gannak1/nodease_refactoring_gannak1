@@ -1407,6 +1407,10 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
     conversation_memory_revision = script.get_revision("ab1c2d3e4f50")
     current_head_revision = script.get_revision("ac2d3e4f5061")
     app_auth_secret_revision = script.get_revision("b0c1d2e3f4a5")
+    routing_bootstrap_inputs_revision = script.get_revision("ba6f5c4d3e2f")
+    routing_performance_revision = script.get_revision("bb7c8d9e0f13")
+    routing_bootstrap_artifacts_revision = script.get_revision("bc8d9e0f1a24")
+    routing_global_profiles_revision = script.get_revision("bd9e0f1a2b35")
 
     assert safe_metadata_revision.down_revision == "fa7b8c9d0e12"
     assert set(merged_revision.down_revision) == {"fa7c8d9e0f12", "ff3a4b5c6d78"}
@@ -1462,12 +1466,17 @@ def test_knowledge_safe_metadata_migration_is_preserved_in_the_single_head():
         "ab1c2d3e4f50",
     }
     assert app_auth_secret_revision.down_revision == "ac2d3e4f5061"
+    assert routing_bootstrap_inputs_revision.down_revision == "b0c1d2e3f4a5"
+    assert routing_performance_revision.down_revision == "ba6f5c4d3e2f"
+    assert routing_bootstrap_artifacts_revision.down_revision == "bb7c8d9e0f13"
+    assert routing_global_profiles_revision.down_revision == "bc8d9e0f1a24"
     assert "2b6c7d8e9f02" in ancestry
     assert "a6f4d2c8e1b7" in ancestry
     assert "a9b0c1d2e3f4" in ancestry
     assert "aa0b1c2d3e4f" in ancestry
     assert "ab1c2d3e4f50" in ancestry
     assert "b0c1d2e3f4a5" in ancestry
+    assert script.get_heads() == ["bd9e0f1a2b35"]
 
 
 def test_demo_knowledge_seed_contract_has_ids_and_permission_specs():

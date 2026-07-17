@@ -3,7 +3,7 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
@@ -20,6 +20,9 @@ from apps.shared.db.models.workflow_run import (
     RunTriggerMode,
     WorkflowNodeRun,
     WorkflowRun,
+)
+from apps.workflow_engine.services.model_routing_mdeberta_classifier import (
+    MDebertaDifficultyClassifier,
 )
 OPERATIONAL_TRIGGER_MODES = {
     RunTriggerMode.API,
@@ -88,6 +91,31 @@ BLOCKED_WORKFLOW_MODEL_TYPES = {
     "moderation",
 }
 VERSION_SUFFIX_PATTERN = re.compile(r"-(?:\d{4}-\d{2}-\d{2}|\d{8})$")
+
+# 입력군/업무 도메인과 무관하게, 한국어 정책 문구의 부분 일치에서만 의미가
+# 약한 연결어와 정중 표현이다. 실제 업무 단어는 bootstrap policy에 저장된
+# Planner 결과만 사용한다.
+ROUTING_LOW_SIGNAL_TOKENS = {
+    "같이",
+    "관련",
+    "내용",
+    "다시",
+    "대해",
+    "모두",
+    "방법",
+    "부탁",
+    "사항",
+    "알려",
+    "요청",
+    "정리",
+    "주세요",
+    "함께",
+    "확인",
+    "해당",
+    "해주세요",
+    "합니다",
+    "하세요",
+}
 
 
 @dataclass(frozen=True)
@@ -291,6 +319,21 @@ class ModelRoutingPolicyDecision:
     decision_factors: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class BootstrapRuleSignals:
+    """Bootstrap phrase rule의 강한/약한 일치 근거다.
+
+    여러 단어로 만든 Planner phrase에서 단어 하나만 우연히 겹치는 경우는
+    ``weak``으로 보관한다. 단일 난이도 분기를 만들기에는 부족하지만, 서로 다른
+    phrase에서 나온 두 개 이상의 약한 근거가 함께 있으면 복합 요청의 보조 근거로
+    사용할 수 있다.
+    """
+
+    strong_terms: tuple[str, ...]
+    weak_terms: tuple[str, ...]
+    score: int
+
+
 class ModelRoutingUnavailableError(ValueError):
     pass
 
@@ -306,6 +349,9 @@ class ModelRouter:
         "input_length_bucket",
         "prompt_length_bucket",
         "node_task",
+        "keyword_any",
+        "keyword_all",
+        "minimum_keyword_matches",
     }
     COLD_START_MAX_USABLE_RUNS = 20
     OPTIMIZED_MIN_USABLE_RUNS = 90
@@ -389,6 +435,8 @@ class ModelRouter:
         inputs: dict[str, Any],
         node_data: Any,
         available_model_ids: Optional[Iterable[str]] = None,
+        routing_feature_text: str | None = None,
+        node_profile: NodeRunProfile | None = None,
     ) -> ModelRoutingPolicyDecision:
         active_policy = policy.get("active_policy") if isinstance(policy, dict) else None
         active_policy = active_policy if isinstance(active_policy, dict) else {}
@@ -410,6 +458,19 @@ class ModelRouter:
         )
         runtime_context = cls.infer_runtime_context(inputs, node_data)
         strategy_id = cls._first_non_empty(active_policy.get("strategy_id"))
+        if strategy_id == "bootstrap_mdeberta_difficulty_v1":
+            return cls._resolve_bootstrap_difficulty_policy(
+                active_policy,
+                inputs=inputs,
+                node_data=node_data,
+                runtime_context=runtime_context,
+                allowed_models=allowed_models,
+                default_model_id=default_model_id,
+                fallback_model_id=fallback_model_id,
+                strategy_id=strategy_id,
+                routing_feature_text=routing_feature_text,
+                node_profile=node_profile,
+            )
         rules = active_policy.get("rules")
         normalized_rules = [
             rule
@@ -487,6 +548,762 @@ class ModelRouter:
                 selected_model_id=selected_model,
             ),
         )
+
+    @classmethod
+    def _resolve_bootstrap_difficulty_policy(
+        cls,
+        active_policy: dict[str, Any],
+        *,
+        inputs: dict[str, Any],
+        node_data: Any,
+        runtime_context: ModelRoutingRuntimeContext,
+        allowed_models: set[str] | None,
+        default_model_id: str,
+        fallback_model_id: str | None,
+        strategy_id: str,
+        routing_feature_text: str | None,
+        node_profile: NodeRunProfile | None,
+    ) -> ModelRoutingPolicyDecision:
+        """초기 bootstrap artifact로 난이도를 예측해 tier 모델을 선택한다.
+
+        classifier 오류나 낮은 confidence는 실패가 아니라 builder가 정한 기본 모델로
+        닫는다. 따라서 첫 배포의 routing이 artifact 준비 실패 때문에 중단되지 않는다.
+        """
+        artifact = active_policy.get("classifier_artifact")
+        difficulty_models = active_policy.get("difficulty_models")
+        difficulty_models = (
+            difficulty_models if isinstance(difficulty_models, dict) else {}
+        )
+        catalog_model_ids = cls._bootstrap_catalog_model_ids(active_policy)
+        default_selected = cls._first_available_model(
+            [
+                default_model_id,
+                fallback_model_id,
+                getattr(node_data, "model_id", None),
+                *catalog_model_ids,
+            ],
+            allowed_models,
+        )
+        if not default_selected:
+            raise ModelRoutingUnavailableError(
+                "No bootstrap routing model is currently available to the execution subject."
+            )
+        default_fallback = cls._first_available_model(
+            [
+                fallback_model_id,
+                default_model_id,
+                getattr(node_data, "fallback_model_id", None),
+                getattr(node_data, "model_id", None),
+                *catalog_model_ids,
+            ],
+            allowed_models,
+            exclude=default_selected,
+        )
+        generalization_validation = active_policy.get("generalization_validation")
+        generalization_validation = (
+            generalization_validation
+            if isinstance(generalization_validation, dict)
+            else None
+        )
+        rule_validation = (
+            generalization_validation.get("rules")
+            if isinstance(generalization_validation, dict)
+            else None
+        )
+        rule_validation = rule_validation if isinstance(rule_validation, dict) else {}
+        classifier_validation = (
+            generalization_validation.get("classifier")
+            if isinstance(generalization_validation, dict)
+            else None
+        )
+        classifier_validation = (
+            classifier_validation if isinstance(classifier_validation, dict) else {}
+        )
+        # 새 bootstrap은 holdout에서 개별적으로 검증된 구조 규칙만 먼저 적용한다.
+        # 과거 policy는 ``validated_rule_ids``가 없으므로 기존의 묶음 검증
+        # metadata를 읽어 classifier-first 동작을 유지한다.
+        validated_rule_ids_value = rule_validation.get("validated_rule_ids")
+        has_individual_rule_validation = isinstance(validated_rule_ids_value, list)
+        validated_rule_ids = {
+            str(rule_id).strip()
+            for rule_id in validated_rule_ids_value
+            if str(rule_id).strip()
+        } if has_individual_rule_validation else None
+        # 의미 분류기는 학습 표본과 다른 표현까지 분류하기 위한 주 경로다. holdout을
+        # 통과한 classifier가 있으면 먼저 사용하고, Planner phrase rule은 confidence가
+        # 낮거나 해당 난이도가 아직 검증되지 않았을 때만 보조한다. 그렇지 않으면
+        # ``순서`` 같은 넓은 단어가 고위험 요청을 먼저 가로채 일반화가 무너진다.
+        can_use_planner_rules = (
+            bool(validated_rule_ids)
+            if has_individual_rule_validation
+            else generalization_validation is None
+            or bool(rule_validation.get("passed"))
+        )
+        planner_rule_ids = (
+            validated_rule_ids if has_individual_rule_validation else None
+        )
+        planner_validation_status = (
+            "validated_planner_rule"
+            if generalization_validation is not None
+            else "planner_rule"
+        )
+
+        prediction = None
+        fallback_reason = "bootstrap_classifier_missing"
+        fallback_factors: dict[str, Any] = {"classification_status": "artifact_missing"}
+        classifier_globally_allowed = (
+            generalization_validation is None or bool(classifier_validation.get("passed"))
+        )
+        validated_difficulties = {
+            str(value).strip()
+            for value in classifier_validation.get("validated_difficulties", [])
+            if str(value).strip()
+        }
+        classifier_can_classify_a_tier = (
+            classifier_globally_allowed or bool(validated_difficulties)
+        )
+        classifier_validation_scope: str | None = (
+            "global" if classifier_globally_allowed else None
+        )
+        if isinstance(artifact, dict) and classifier_can_classify_a_tier:
+            feature_text = routing_feature_text or cls._bootstrap_feature_text(
+                inputs,
+                node_data,
+                runtime_context,
+            )
+            try:
+                prediction = MDebertaDifficultyClassifier.predict(artifact, feature_text)
+            except (RuntimeError, ValueError):
+                fallback_reason = "bootstrap_classifier_unavailable"
+                fallback_factors = {"classification_status": "unavailable"}
+        elif isinstance(artifact, dict) and not classifier_can_classify_a_tier:
+            fallback_reason = "bootstrap_classifier_generalization_unverified"
+            fallback_factors = {
+                "classification_status": "generalization_unverified",
+                "generalization_validation": {
+                    "status": classifier_validation.get("status"),
+                    "accuracy": classifier_validation.get("accuracy"),
+                    "total_count": classifier_validation.get("total_count"),
+                },
+            }
+
+        if prediction is not None:
+            if not classifier_globally_allowed:
+                per_difficulty = classifier_validation.get("per_difficulty")
+                per_difficulty = (
+                    per_difficulty if isinstance(per_difficulty, dict) else {}
+                )
+                difficulty_validation = per_difficulty.get(prediction.difficulty)
+                difficulty_validation = (
+                    difficulty_validation
+                    if isinstance(difficulty_validation, dict)
+                    else {}
+                )
+                if prediction.difficulty not in validated_difficulties:
+                    fallback_reason = "bootstrap_classifier_generalization_unverified"
+                    fallback_factors = {
+                        "classification_status": "generalization_unverified",
+                        "difficulty": prediction.difficulty,
+                        "confidence": prediction.confidence,
+                        "generalization_validation": {
+                            "status": classifier_validation.get("status"),
+                            "accuracy": classifier_validation.get("accuracy"),
+                            "total_count": classifier_validation.get("total_count"),
+                            "validated_difficulties": sorted(validated_difficulties),
+                        },
+                    }
+                    prediction = None
+                else:
+                    classifier_validation_scope = "difficulty"
+                    difficulty_minimum_confidence = difficulty_validation.get(
+                        "minimum_confidence"
+                    )
+            else:
+                difficulty_minimum_confidence = None
+
+        if prediction is not None:
+            min_confidence = cls._normalize_confidence(
+                (
+                    difficulty_minimum_confidence
+                    if classifier_validation_scope == "difficulty"
+                    else active_policy.get("minimum_confidence")
+                ),
+                default=0.55,
+            )
+            if prediction.confidence >= min_confidence:
+                global_profile_decision = cls._bootstrap_global_profile_decision(
+                    active_policy,
+                    difficulty=prediction.difficulty,
+                    probabilities=prediction.probabilities,
+                    runtime_context=runtime_context,
+                    node_data=node_data,
+                    allowed_models=allowed_models,
+                    default_model_id=default_model_id,
+                    fallback_model_id=fallback_model_id,
+                    strategy_id=strategy_id,
+                    node_profile=node_profile,
+                    classification_factors={
+                        "classification_status": "matched",
+                        "confidence": prediction.confidence,
+                        "difficulty_score": getattr(
+                            prediction, "difficulty_score", None
+                        ),
+                        "minimum_confidence": min_confidence,
+                        "probabilities": prediction.probabilities,
+                        "classification_validation_scope": classifier_validation_scope,
+                    },
+                )
+                if global_profile_decision is not None:
+                    return global_profile_decision
+
+            selected_model = cls._first_available_model(
+                [difficulty_models.get(prediction.difficulty)],
+                allowed_models,
+            )
+            if selected_model and prediction.confidence >= min_confidence:
+                resolved_fallback = cls._first_available_model(
+                    [fallback_model_id, default_model_id],
+                    allowed_models,
+                    exclude=selected_model,
+                )
+                return ModelRoutingPolicyDecision(
+                    selected_model_id=selected_model,
+                    fallback_model_id=resolved_fallback,
+                    matched_rule_id=f"difficulty-{prediction.difficulty}",
+                    reason_code=f"bootstrap_difficulty_{prediction.difficulty}",
+                    runtime_context=runtime_context,
+                    strategy_id=strategy_id,
+                    decision_factors={
+                        "classification_status": "matched",
+                        "difficulty": prediction.difficulty,
+                        "confidence": prediction.confidence,
+                        "difficulty_score": getattr(
+                            prediction, "difficulty_score", None
+                        ),
+                        "minimum_confidence": min_confidence,
+                        "probabilities": prediction.probabilities,
+                        "classification_validation_scope": classifier_validation_scope,
+                    },
+                )
+            fallback_reason = (
+                "bootstrap_difficulty_low_confidence"
+                if prediction.confidence < min_confidence
+                else "bootstrap_difficulty_model_unavailable"
+            )
+            fallback_factors = {
+                "classification_status": "fallback",
+                "difficulty": prediction.difficulty,
+                "confidence": prediction.confidence,
+                "difficulty_score": getattr(prediction, "difficulty_score", None),
+                "minimum_confidence": min_confidence,
+                "probabilities": prediction.probabilities,
+            }
+
+        # 의미 분류기가 확신을 내지 못하거나 해당 난이도가 holdout 검증 밖인 경우에
+        # 한해, 검증된 Planner phrase rule을 보조 수단으로 쓴다.
+        if can_use_planner_rules:
+            planner_decision = cls._bootstrap_planner_rule_decision(
+                active_policy,
+                runtime_context=runtime_context,
+                allowed_models=allowed_models,
+                default_model_id=default_model_id,
+                fallback_model_id=fallback_model_id,
+                strategy_id=strategy_id,
+                validation_status=planner_validation_status,
+                classifier_fallback_reason=fallback_reason,
+                allowed_rule_ids=planner_rule_ids,
+                node_data=node_data,
+                node_profile=node_profile,
+            )
+            if planner_decision is not None:
+                return planner_decision
+
+        return ModelRoutingPolicyDecision(
+            selected_model_id=default_selected,
+            fallback_model_id=default_fallback,
+            matched_rule_id=None,
+            reason_code=fallback_reason,
+            runtime_context=runtime_context,
+            strategy_id=strategy_id,
+            decision_factors=fallback_factors,
+        )
+
+    @staticmethod
+    def _bootstrap_catalog_model_ids(active_policy: dict[str, Any]) -> list[str]:
+        """새 bootstrap policy가 저장한 전역 후보 ID를 순서 보존해 읽는다."""
+        catalog = active_policy.get("global_profile_catalog")
+        candidates = catalog.get("candidates") if isinstance(catalog, dict) else None
+        if not isinstance(candidates, list):
+            return []
+        values: list[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            model_id = str(candidate.get("model_id") or "").strip()
+            normalized = ModelRouter.normalize_model_id(model_id)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            values.append(normalized)
+        return values
+
+    @classmethod
+    def _bootstrap_global_profile_decision(
+        cls,
+        active_policy: dict[str, Any],
+        *,
+        difficulty: str,
+        probabilities: Any,
+        runtime_context: ModelRoutingRuntimeContext,
+        node_data: Any,
+        allowed_models: set[str] | None,
+        default_model_id: str,
+        fallback_model_id: str | None,
+        strategy_id: str,
+        node_profile: NodeRunProfile | None,
+        classification_factors: dict[str, Any],
+        matched_rule_id: str | None = None,
+        reason_prefix: str = "bootstrap_global_profile",
+    ) -> ModelRoutingPolicyDecision | None:
+        """난이도 결과로 policy snapshot의 모든 후보 모델을 순위화한다.
+
+        ``difficulty_models``는 새 profile snapshot이 없는 과거 정책을 위한
+        호환성 fallback이다. 새 bootstrap policy는 여기에서 현재 credential로
+        사용할 수 있는 모든 모델을 비교한다. 전역 profile은 policy 안에 저장된
+        snapshot을 읽으므로, runtime이 catalog DB나 Planner/Judge를 호출하지 않는다.
+        """
+        catalog_snapshot = active_policy.get("global_profile_catalog")
+        if not isinstance(catalog_snapshot, dict):
+            return None
+        try:
+            from apps.workflow_engine.services.model_routing_global_profiles import (
+                ModelRoutingDifficultyDistribution,
+                ModelRoutingGlobalProfileScorer,
+            )
+
+            probability_mapping = (
+                probabilities if isinstance(probabilities, Mapping) else {}
+            )
+            if not probability_mapping:
+                probability_mapping = {difficulty: 1.0}
+            distribution = ModelRoutingDifficultyDistribution.from_mapping(
+                probability_mapping
+            )
+            input_tokens, output_tokens = cls._bootstrap_runtime_token_estimate(
+                node_data,
+                runtime_context=runtime_context,
+            )
+            result = ModelRoutingGlobalProfileScorer.rank_policy_catalog(
+                catalog_snapshot=catalog_snapshot,
+                available_model_ids=allowed_models,
+                difficulty=distribution,
+                input_profile=runtime_context.input_length_bucket,
+                estimated_input_tokens=input_tokens,
+                estimated_output_tokens=output_tokens,
+                default_model_id=default_model_id,
+                node_profile=node_profile,
+            )
+        except (TypeError, ValueError):
+            return None
+        if result is None:
+            return None
+        selected_score = result.by_model.get(result.selected_model_id)
+        if selected_score is None:
+            return None
+        resolved_fallback = cls._first_available_model(
+            [result.fallback_model_id, fallback_model_id, default_model_id],
+            allowed_models,
+            exclude=result.selected_model_id,
+        )
+        factors = {
+            **classification_factors,
+            "selection_mode": "global_profile_score",
+            "compared_model_count": len(result.ranked_candidates),
+            "quality_floor": result.quality_floor,
+            "selected_quality_lower_bound": selected_score.quality_lower_bound,
+            "selected_expected_cost_usd": selected_score.expected_cost_usd,
+            "selected_expected_latency_ms": selected_score.expected_latency_ms,
+            "selected_expected_fallback_rate": selected_score.expected_fallback_rate,
+            "effective_operational_samples": (
+                selected_score.effective_operational_samples
+            ),
+            "profile_source": selected_score.profile_source,
+            "profile_version": selected_score.profile_version,
+        }
+        return ModelRoutingPolicyDecision(
+            selected_model_id=result.selected_model_id,
+            fallback_model_id=resolved_fallback,
+            matched_rule_id=matched_rule_id or f"difficulty-{difficulty}",
+            reason_code=f"{reason_prefix}_{difficulty}",
+            runtime_context=runtime_context,
+            strategy_id=strategy_id,
+            decision_factors=factors,
+        )
+
+    @staticmethod
+    def _bootstrap_runtime_token_estimate(
+        node_data: Any,
+        *,
+        runtime_context: ModelRoutingRuntimeContext,
+    ) -> tuple[int, int]:
+        """실행 전 알고 있는 입력과 노드 설정으로 비용 비교 token을 추정한다."""
+        input_tokens = max(
+            1,
+            (runtime_context.input_length + runtime_context.prompt_length) // 4,
+        )
+        parameters = getattr(node_data, "parameters", None)
+        parameters = parameters if isinstance(parameters, dict) else {}
+        try:
+            configured_output = int(parameters.get("max_tokens") or 512)
+        except (TypeError, ValueError):
+            configured_output = 512
+        return input_tokens, min(max(configured_output, 64), 8_192)
+
+    @classmethod
+    def _bootstrap_planner_rule_decision(
+        cls,
+        active_policy: dict[str, Any],
+        *,
+        runtime_context: ModelRoutingRuntimeContext,
+        allowed_models: set[str] | None,
+        default_model_id: str,
+        fallback_model_id: str | None,
+        strategy_id: str,
+        validation_status: str,
+        classifier_fallback_reason: str,
+        allowed_rule_ids: set[str] | None = None,
+        node_data: Any,
+        node_profile: NodeRunProfile | None,
+    ) -> ModelRoutingPolicyDecision | None:
+        """저장된 bootstrap 구조 규칙 하나를 runtime decision으로 바꾼다."""
+        planner_rule = cls._match_bootstrap_difficulty_rule(
+            active_policy.get("difficulty_rules"),
+            runtime_context=runtime_context,
+            allowed_rule_ids=allowed_rule_ids,
+        )
+        if planner_rule is None:
+            return None
+        global_profile_decision = cls._bootstrap_global_profile_decision(
+            active_policy,
+            difficulty=planner_rule["difficulty"],
+            probabilities={planner_rule["difficulty"]: 1.0},
+            runtime_context=runtime_context,
+            node_data=node_data,
+            allowed_models=allowed_models,
+            default_model_id=default_model_id,
+            fallback_model_id=fallback_model_id,
+            strategy_id=strategy_id,
+            node_profile=node_profile,
+            matched_rule_id=str(planner_rule["id"]),
+            reason_prefix="bootstrap_planner_global_profile",
+            classification_factors={
+                "classification_status": validation_status,
+                "difficulty": planner_rule["difficulty"],
+                "confidence": planner_rule["confidence"],
+                "minimum_confidence": 0.0,
+                "matched_terms": planner_rule["matched_terms"],
+                "matched_signal_count": len(planner_rule["matched_terms"]),
+                "match_score": planner_rule["match_score"],
+                "planner_reason": planner_rule.get("reason"),
+                "classifier_fallback_reason": classifier_fallback_reason,
+            },
+        )
+        if global_profile_decision is not None:
+            return global_profile_decision
+        difficulty_models = active_policy.get("difficulty_models")
+        difficulty_models = (
+            difficulty_models if isinstance(difficulty_models, dict) else {}
+        )
+        selected_model = cls._first_available_model(
+            [difficulty_models.get(planner_rule["difficulty"])],
+            allowed_models,
+        )
+        if not selected_model:
+            return None
+        resolved_fallback = cls._first_available_model(
+            [fallback_model_id, default_model_id],
+            allowed_models,
+            exclude=selected_model,
+        )
+        return ModelRoutingPolicyDecision(
+            selected_model_id=selected_model,
+            fallback_model_id=resolved_fallback,
+            matched_rule_id=str(planner_rule["id"]),
+            reason_code=f"bootstrap_planner_rule_{planner_rule['difficulty']}",
+            runtime_context=runtime_context,
+            strategy_id=strategy_id,
+            decision_factors={
+                "classification_status": validation_status,
+                "difficulty": planner_rule["difficulty"],
+                "confidence": planner_rule["confidence"],
+                "minimum_confidence": 0.0,
+                "matched_terms": planner_rule["matched_terms"],
+                "matched_signal_count": len(planner_rule["matched_terms"]),
+                "match_score": planner_rule["match_score"],
+                "planner_reason": planner_rule.get("reason"),
+                "classifier_fallback_reason": classifier_fallback_reason,
+            },
+        )
+
+    @classmethod
+    def _match_bootstrap_difficulty_rule(
+        cls,
+        rules: Any,
+        *,
+        runtime_context: ModelRoutingRuntimeContext,
+        allowed_rule_ids: set[str] | None = None,
+    ) -> dict[str, Any] | None:
+        """Planner가 저장한 난이도 신호만 평가한다.
+
+        이 함수에는 업무 도메인 단어가 없다. 입력군이 아니라 bootstrap 시점의
+        Planner가 현재 노드 설정과 안전한 표본을 보고 만든 phrase rule만 읽는다.
+        """
+        if not isinstance(rules, list):
+            return None
+        text = " ".join(str(runtime_context.text or "").casefold().split())
+        if not text:
+            return None
+        text_tokens = cls._routing_text_tokens(text)
+        matches: list[dict[str, Any]] = []
+        for index, rule in enumerate(rules, start=1):
+            if not isinstance(rule, dict):
+                continue
+            rule_id = str(rule.get("id") or "").strip()
+            if allowed_rule_ids is not None and rule_id not in allowed_rule_ids:
+                continue
+            difficulty = str(rule.get("difficulty") or "").strip()
+            if difficulty not in {"economy", "balanced", "advanced"}:
+                continue
+            keyword_any = cls._rule_terms(rule.get("keyword_any"))
+            keyword_all = cls._rule_terms(rule.get("keyword_all"))
+            if not keyword_any and not keyword_all:
+                continue
+            matched_any = cls._bootstrap_rule_signals(
+                keyword_any,
+                text=text,
+                text_tokens=text_tokens,
+            )
+            matched_all = cls._bootstrap_rule_signals(
+                keyword_all,
+                text=text,
+                text_tokens=text_tokens,
+            )
+            if keyword_all and len(matched_all.strong_terms) != len(keyword_all):
+                continue
+            try:
+                minimum_matches = int(rule.get("minimum_matches") or 1)
+            except (TypeError, ValueError):
+                minimum_matches = 1
+            required_matches = max(1, minimum_matches)
+            matched_any_terms = list(matched_any.strong_terms)
+            # 한 단어만 겹친 다단어 phrase는 단독 분기에 쓰지 않는다. 다만
+            # advanced처럼 둘 이상의 독립 근거를 요구한 rule은 서로 다른
+            # phrase의 약한 근거가 함께 있을 때만 복합 판단 신호로 허용한다.
+            if required_matches >= 2:
+                matched_any_terms.extend(matched_any.weak_terms)
+            if keyword_any and len(matched_any_terms) < required_matches:
+                continue
+            matched_terms = [*matched_any_terms, *matched_all.strong_terms]
+            specificity = len(matched_terms) + len(keyword_all)
+            try:
+                priority = int(rule.get("priority") or 0)
+            except (TypeError, ValueError):
+                priority = 0
+            matches.append(
+                {
+                    "id": rule_id or f"planner-{difficulty}-{index}",
+                    "difficulty": difficulty,
+                    "matched_terms": matched_terms,
+                    "reason": str(rule.get("reason") or "").strip() or None,
+                    "priority": priority,
+                    "specificity": specificity,
+                    # 정확한 phrase 일치에는 더 큰 점수를 준다. 나머지는 Planner가
+                    # 만든 phrase 내부의 재사용 가능한 단어 신호를 합산한다.
+                    "match_score": matched_any.score + matched_all.score,
+                    "confidence": min(
+                        0.95,
+                        0.68 + (0.04 * (matched_any.score + matched_all.score)),
+                    ),
+                }
+            )
+        if not matches:
+            return None
+        matches.sort(
+            # advanced 우선순위만으로 generic 단어 한 개가 더 구체적인 economy/
+            # balanced 신호를 덮지 않게, 먼저 실제 매칭 근거의 양을 비교한다.
+            key=lambda item: (
+                -item["match_score"],
+                -item["priority"],
+                -item["specificity"],
+                item["id"],
+            )
+        )
+        return matches[0]
+
+    @staticmethod
+    def _rule_terms(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        terms: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            term = " ".join(str(item or "").casefold().split())
+            if len(term) < 2 or term in seen:
+                continue
+            seen.add(term)
+            terms.append(term)
+        return terms
+
+    @staticmethod
+    def _routing_text_tokens(text: str) -> set[str]:
+        """정책 문구의 조사 차이 정도만 흡수하는 가벼운 token 경계다.
+
+        도메인 단어 목록을 이 함수에 두지 않는다. 예를 들어 Planner가 정책에
+        ``정책이 충돌``을 저장하면 입력의 ``정책은 충돌``도 같은 정책 신호로
+        비교할 수 있도록, 자연어의 종결/조사만 제거한다.
+        """
+        tokens: set[str] = set()
+        for raw_token in re.findall(r"[0-9a-zA-Z가-힣]+", text.casefold()):
+            token = ModelRouter._strip_routing_particle(raw_token)
+            if len(token) >= 2:
+                tokens.add(token)
+        return tokens
+
+    @staticmethod
+    def _strip_routing_particle(token: str) -> str:
+        """한국어 조사/활용형을 최소한으로 제거해 policy phrase를 비교한다."""
+        suffixes = (
+            "에서는",
+            "으로",
+            "에게",
+            "부터",
+            "까지",
+            "처럼",
+            "보다",
+            "하고",
+            "하며",
+            "하면",
+            "하는",
+            "할",
+            "된",
+            "되는",
+            "에서",
+            "은",
+            "는",
+            "이",
+            "가",
+            "을",
+            "를",
+            "에",
+            "와",
+            "과",
+            "의",
+            "만",
+            "도",
+        )
+        for suffix in suffixes:
+            if token.endswith(suffix) and len(token) - len(suffix) >= 2:
+                return token[: -len(suffix)]
+        return token
+
+    @classmethod
+    def _bootstrap_rule_signals(
+        cls,
+        terms: list[str],
+        *,
+        text: str,
+        text_tokens: set[str],
+    ) -> BootstrapRuleSignals:
+        """Planner policy phrase를 exact/핵심 token 신호로 평가한다.
+
+        ``keyword_any``의 각 항목은 데이터베이스에 저장된 policy에서만 온다.
+        즉 여기서는 workflow별 위험/업무 단어를 해석하지 않고, 정책 생성 시
+        Planner가 정한 표현을 재사용할 뿐이다. 다만 조사·정중 표현 같은
+        일반 언어 token은 업무 난이도를 설명하지 못하므로 부분 매칭 근거에서
+        제외한다.
+        """
+        strong_terms: list[str] = []
+        weak_terms: list[str] = []
+        score = 0
+        for term in terms:
+            if term in text:
+                strong_terms.append(term)
+                score += 3
+                continue
+            term_tokens = cls._routing_text_tokens(term)
+            partial_tokens = sorted(
+                token
+                for token in term_tokens
+                if token in text_tokens and token not in ROUTING_LOW_SIGNAL_TOKENS
+            )
+            if not partial_tokens:
+                continue
+            matched_phrase_tokens = [f"{term} ({token})" for token in partial_tokens]
+            # 한 단어 cue는 그 단어 자체가 Planner가 고른 난이도 신호다. 반면
+            # 다단어 cue는 두 개 이상의 의미 단어가 함께 있을 때만 강한 일치다.
+            if len(term_tokens) == 1 or len(partial_tokens) >= 2:
+                strong_terms.extend(matched_phrase_tokens)
+                score += len(partial_tokens)
+            else:
+                weak_terms.extend(matched_phrase_tokens)
+        return BootstrapRuleSignals(
+            strong_terms=tuple(strong_terms),
+            weak_terms=tuple(weak_terms),
+            score=score,
+        )
+
+    @classmethod
+    def _bootstrap_feature_text(
+        cls,
+        inputs: dict[str, Any],
+        node_data: Any,
+        runtime_context: ModelRoutingRuntimeContext,
+    ) -> str:
+        """분류용 입력은 변하는 요청과 구조적 제약만 포함한다.
+
+        한 bootstrap policy는 하나의 LLM node에만 연결된다. 해당 node의 prompt는
+        모든 표본에 공통이므로 feature에 섞으면 질문 간 난이도 차이가 희석된다.
+        """
+        metadata = {
+            "output_format": runtime_context.output_format,
+            "schema_required": runtime_context.schema_required,
+            "knowledge_enabled": runtime_context.knowledge_enabled,
+            "input_length_bucket": runtime_context.input_length_bucket,
+        }
+        return "\n".join(
+            part
+            for part in (
+                cls._flatten_text(inputs),
+                json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+            )
+            if part
+        )
+
+    @classmethod
+    def bootstrap_classifier_feature_text(
+        cls,
+        inputs: dict[str, Any],
+        node_data: Any,
+        *,
+        rendered_prompt_parts: Iterable[str] | None = None,
+        rag_metadata: dict[str, Any] | None = None,
+    ) -> str:
+        """Bootstrap 학습과 runtime이 동일하게 쓰는 난이도 분류 feature 계약이다.
+
+        렌더된 prompt와 실제 RAG 검색 결과는 bootstrap 표본에 존재하지 않는 실행 전용
+        데이터다. 호환성을 위해 인자는 남기지만 분류 feature에 넣지 않는다.
+        """
+        _ = rendered_prompt_parts, rag_metadata
+        runtime_context = cls.infer_runtime_context(inputs, node_data)
+        return cls._bootstrap_feature_text(inputs, node_data, runtime_context)
+
+    @staticmethod
+    def _normalize_confidence(value: Any, *, default: float) -> float:
+        try:
+            return max(0.0, min(1.0, float(value)))
+        except (TypeError, ValueError):
+            return default
 
     @classmethod
     def _decision_factors(
@@ -813,7 +1630,15 @@ class ModelRouter:
 
     @classmethod
     def is_workflow_chat_model(cls, model: Any) -> bool:
-        model_id = cls.normalize_model_id(getattr(model, "model_id_for_api_call", ""))
+        # DB model, ModelCandidate, API model ID 문자열이 같은 경계에서 재사용된다.
+        # 문자열을 getattr로 읽으면 빈 ID가 되어 정상 후보가 전부 탈락하므로 명시적으로 처리한다.
+        raw_model_id = (
+            model
+            if isinstance(model, str)
+            else getattr(model, "model_id_for_api_call", None)
+            or getattr(model, "model_id", "")
+        )
+        model_id = cls.normalize_model_id(raw_model_id)
         model_name = str(getattr(model, "name", "") or "").lower()
         model_type = str(getattr(model, "type", "") or "").lower()
         is_active = bool(getattr(model, "is_active", True))
@@ -847,6 +1672,23 @@ class ModelRouter:
         if any(key not in cls.POLICY_CONDITION_KEYS for key in when):
             return False
         context = runtime_context.as_metadata()
+        keyword_any = cls._rule_terms(when.get("keyword_any"))
+        keyword_all = cls._rule_terms(when.get("keyword_all"))
+        if "keyword_any" in when and not keyword_any:
+            return False
+        if "keyword_all" in when and not keyword_all:
+            return False
+        text = " ".join(str(runtime_context.text or "").casefold().split())
+        matched_any = [term for term in keyword_any if term in text]
+        if keyword_all and any(term not in text for term in keyword_all):
+            return False
+        if keyword_any:
+            try:
+                minimum_matches = int(when.get("minimum_keyword_matches") or 1)
+            except (TypeError, ValueError):
+                minimum_matches = 1
+            if len(matched_any) < max(1, minimum_matches):
+                return False
         for key in (
             "intent",
             "customer_facing",
@@ -898,7 +1740,14 @@ class ModelRouter:
         if isinstance(value, dict):
             for key, item in value.items():
                 key_text = str(key).casefold()
-                if key_text in {"file", "files", "filename", "attachment", "attachments"}:
+                if key_text in {
+                    "file",
+                    "files",
+                    "file_id",
+                    "filename",
+                    "attachment",
+                    "attachments",
+                } and cls._has_meaningful_value(item):
                     return True
                 if cls._has_file_input(item):
                     return True
@@ -906,6 +1755,16 @@ class ModelRouter:
         if isinstance(value, list):
             return any(cls._has_file_input(item) for item in value)
         return False
+
+    @classmethod
+    def _has_meaningful_value(cls, value: Any) -> bool:
+        if value is None or value == "":
+            return False
+        if isinstance(value, dict):
+            return any(cls._has_meaningful_value(item) for item in value.values())
+        if isinstance(value, list):
+            return any(cls._has_meaningful_value(item) for item in value)
+        return True
 
     @classmethod
     def _first_available_model(

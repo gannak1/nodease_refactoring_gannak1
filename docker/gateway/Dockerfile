@@ -17,9 +17,12 @@ RUN apt-get update && apt-get install -y \
 COPY apps/shared /build/apps/shared
 COPY apps/gateway /build/apps/gateway
 COPY apps/workflow_engine /build/apps/workflow_engine
+COPY docker/model-routing-cpu-constraints.txt /build/model-routing-cpu-constraints.txt
 
 # pyproject.toml 기반으로 설치
 RUN pip install --no-cache-dir --prefix=/install \
+    --extra-index-url https://download.pytorch.org/whl/cpu \
+    --constraint /build/model-routing-cpu-constraints.txt \
     /build/apps/shared \
     /build/apps/gateway \
     /build/apps/workflow_engine
@@ -32,6 +35,7 @@ WORKDIR /app
 
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
+ENV HF_HUB_DISABLE_XET=1
 
 # 실행 시 필요한 최소 라이브러리 설치
 RUN apt-get update && apt-get install -y \

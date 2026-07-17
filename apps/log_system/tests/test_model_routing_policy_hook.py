@@ -138,7 +138,17 @@ def test_terminal_workflow_status_is_written_into_successful_llm_trace():
 
     node_run = SimpleNamespace(
         node_type="llmNode",
-        trace_metadata={"llm": {"selected_model": "gpt-4.1-mini"}},
+        trace_metadata={
+            "llm": {
+                "selected_model": "gpt-4.1-mini",
+                "decision_factors": {
+                    "classification_status": "matched",
+                    "difficulty": "balanced",
+                    "confidence": 0.77,
+                    "match_score": 4,
+                },
+            }
+        },
     )
 
     log_tasks._finalize_llm_downstream_status(
@@ -149,3 +159,9 @@ def test_terminal_workflow_status_is_written_into_successful_llm_trace():
 
     assert node_run.trace_metadata["llm"]["selected_model"] == "gpt-4.1-mini"
     assert node_run.trace_metadata["llm"]["downstream_status"] == "failed"
+    assert node_run.trace_metadata["llm"]["decision_factors"] == {
+        "classification_status": "matched",
+        "difficulty": "balanced",
+        "confidence": 0.77,
+        "match_score": 4,
+    }

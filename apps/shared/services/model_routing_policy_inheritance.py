@@ -116,6 +116,11 @@ class ModelRoutingPolicyInheritanceService:
             and node.get("type") == "llmNode"
             and isinstance(node.get("data"), dict)
             and node["data"].get("auto_model_routing") is True
+            # Bootstrap 정책은 workflow/node에 연결된 artifact를 직접 읽어
+            # 새 deployment 정책을 만든다. 이전 deployment의 runtime policy를
+            # 복제하면 새 artifact와 실행 주체 권한 검사가 우회될 수 있다.
+            and node["data"].get("model_routing_strategy")
+            != "bootstrap_mdeberta_difficulty_v1"
             and node.get("id")
         }
 

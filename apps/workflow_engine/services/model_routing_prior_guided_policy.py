@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Iterable, Mapping
 
 from sqlalchemy.orm import Session
 
 from apps.shared.db.models.llm import LLMModel
 from apps.workflow_engine.services.model_router import NodeRunProfile
+from apps.workflow_engine.services.model_routing_global_profiles import (
+    ModelRoutingDifficultyDistribution,
+    ModelRoutingGlobalProfileStore,
+)
 from apps.workflow_engine.services.model_routing_constraint_difficulty import (
     PRIOR_GUIDED_STRATEGY_ID,
     ConstraintDifficultyFeatureExtractor,
@@ -30,14 +34,6 @@ class PriorGuidedPolicyCompileResult:
 class PriorGuidedModelCatalog:
     """Convert provider model rows into safe routing candidates and priors."""
 
-    _LOW_MARKERS = ("nano", "mini", "flash-lite", "haiku", "luna")
-    _HIGH_MARKERS = ("-pro", "opus", "o3", "sol")
-    _DEFAULTS = {
-        "low": (0.78, 0.12, 500),
-        "balanced": (0.88, 0.08, 900),
-        "high": (0.95, 0.05, 1_500),
-    }
-
     @classmethod
     def collect(
         cls,
@@ -49,6 +45,12 @@ class PriorGuidedModelCatalog:
         if not available:
             return (), ()
         rows = db.query(LLMModel).filter(LLMModel.is_active.is_(True)).all()
+        global_profiles = ModelRoutingGlobalProfileStore.resolve_available_profiles(
+            db,
+            available_model_ids=available,
+            materialize_missing=True,
+        )
+        balanced_difficulty = ModelRoutingDifficultyDistribution(balanced=1.0)
         candidates: list[ConstraintModelCandidate] = []
         priors: list[ConstraintModelPrior] = []
         seen: set[str] = set()
@@ -57,16 +59,19 @@ class PriorGuidedModelCatalog:
             if normalized not in available or normalized in seen:
                 continue
             seen.add(normalized)
-            metadata = row.model_metadata if isinstance(row.model_metadata, dict) else {}
-            tier = cls._capability_tier(normalized, metadata)
-            quality, uncertainty, latency = cls._prior_values(tier, metadata)
+            metadata = (
+                row.model_metadata if isinstance(row.model_metadata, dict) else {}
+            )
+            global_profile = global_profiles.get(normalized)
+            if global_profile is None:
+                continue
             candidates.append(
                 ConstraintModelCandidate(
                     model_id=normalized,
                     context_window=max(int(row.context_window or 0), 1),
                     input_price_1k=cls._number(row.input_price_1k),
                     output_price_1k=cls._number(row.output_price_1k),
-                    capability_tier=tier,
+                    capability_tier=global_profile.capability_tier,
                     supports_strict_structured_output=(
                         cls._supports_strict_output(normalized, metadata)
                     ),
@@ -75,53 +80,19 @@ class PriorGuidedModelCatalog:
             priors.append(
                 ConstraintModelPrior(
                     model_id=normalized,
-                    quality_mean=quality,
-                    quality_uncertainty=uncertainty,
-                    expected_latency_ms=latency,
-                    fallback_rate=cls._bounded_number(
-                        metadata.get("routing_fallback_rate"),
-                        default=0.02,
+                    quality_mean=global_profile.expected_quality(
+                        balanced_difficulty
                     ),
-                    prior_strength=max(
-                        cls._number(metadata.get("routing_prior_strength")) or 4.0,
-                        0.1,
+                    quality_uncertainty=global_profile.expected_uncertainty(
+                        balanced_difficulty
                     ),
-                    source=str(
-                        metadata.get("routing_prior_source")
-                        or "model_catalog_family_prior"
-                    ),
+                    expected_latency_ms=global_profile.expected_latency_ms("medium"),
+                    fallback_rate=global_profile.fallback_rate,
+                    prior_strength=global_profile.prior_strength,
+                    source=global_profile.source,
                 )
             )
         return tuple(candidates), tuple(priors)
-
-    @classmethod
-    def _capability_tier(cls, model_id: str, metadata: Mapping[str, Any]) -> str:
-        explicit = str(metadata.get("routing_capability_tier") or "").lower()
-        if explicit in {"low", "balanced", "high"}:
-            return explicit
-        if any(marker in model_id for marker in cls._LOW_MARKERS):
-            return "low"
-        if any(marker in model_id for marker in cls._HIGH_MARKERS):
-            return "high"
-        return "balanced"
-
-    @classmethod
-    def _prior_values(
-        cls,
-        tier: str,
-        metadata: Mapping[str, Any],
-    ) -> tuple[float, float, int]:
-        quality, uncertainty, latency = cls._DEFAULTS[tier]
-        return (
-            cls._bounded_number(
-                metadata.get("routing_quality_prior"), default=quality
-            ),
-            cls._bounded_number(
-                metadata.get("routing_quality_uncertainty"),
-                default=uncertainty,
-            ),
-            max(int(cls._number(metadata.get("routing_latency_prior_ms")) or latency), 1),
-        )
 
     @staticmethod
     def _supports_strict_output(
@@ -144,14 +115,6 @@ class PriorGuidedModelCatalog:
         except (TypeError, ValueError):
             return None
         return parsed if parsed >= 0 else None
-
-    @classmethod
-    def _bounded_number(cls, value: Any, *, default: float) -> float:
-        parsed = cls._number(value)
-        if parsed is None:
-            return default
-        return min(max(parsed, 0.0), 1.0)
-
 
 class PriorGuidedEvidenceAdapter:
     """Project safe operational aggregates into router evidence."""
@@ -229,10 +192,34 @@ class PriorGuidedPolicyCompiler:
             features = ConstraintDifficultyFeatureExtractor.extract(request)
             profile_evidence = supplied_evidence
             if profile is not None:
+                segment = profile.segment_performance.get(profile_name)
+                segment_models = (
+                    segment.get("model_performance")
+                    if isinstance(segment, dict)
+                    and isinstance(segment.get("model_performance"), dict)
+                    else None
+                )
+                if segment_models:
+                    evidence_profile = NodeRunProfile(
+                        operational_usable_runs=sum(
+                            item.run_count for item in segment_models.values()
+                        ),
+                        model_performance=segment_models,
+                    )
+                elif profile.segment_performance:
+                    # 다른 입력 길이에서 얻은 성적을 이 구간의 증거로 재사용하지 않는다.
+                    evidence_profile = NodeRunProfile()
+                else:
+                    # 구형 호출자는 segment 없이 모델 전체 집계만 전달할 수 있다.
+                    evidence_profile = profile
+                profile_priors = cls._priors_with_observed_latency(
+                    prior_rows,
+                    evidence_profile,
+                )
                 profile_evidence = (
                     *profile_evidence,
                     *PriorGuidedEvidenceAdapter.for_signature(
-                        profile,
+                        evidence_profile,
                         signature=features.signature,
                     ),
                 )
@@ -241,7 +228,7 @@ class PriorGuidedPolicyCompiler:
                     request=request,
                     candidates=candidate_rows,
                     evidence=profile_evidence,
-                    priors=prior_rows,
+                    priors=(profile_priors if profile is not None else prior_rows),
                     safe_default_model_id=safe_default_model_id,
                 )
                 selected_model_id = decision.selected_model_id
@@ -302,6 +289,30 @@ class PriorGuidedPolicyCompiler:
                 "judge_called": False,
             },
         )
+
+    @staticmethod
+    def _priors_with_observed_latency(
+        priors: tuple[ConstraintModelPrior, ...],
+        profile: NodeRunProfile,
+    ) -> tuple[ConstraintModelPrior, ...]:
+        """같은 입력 구간의 운영 지연이 있으면 catalog 예상 지연을 보정한다."""
+        adjusted: list[ConstraintModelPrior] = []
+        for prior in priors:
+            performance = profile.model_performance.get(prior.model_id)
+            observed_latency = (
+                performance.avg_latency_ms if performance is not None else None
+            )
+            if observed_latency is None or observed_latency <= 0:
+                adjusted.append(prior)
+                continue
+            adjusted.append(
+                replace(
+                    prior,
+                    expected_latency_ms=max(1, round(observed_latency)),
+                    source=f"{prior.source}+operational_latency",
+                )
+            )
+        return tuple(adjusted)
 
     @staticmethod
     def _downstream_requirements(

@@ -70,6 +70,15 @@ from apps.shared.db.models.mail_processing import (
     MailDraftEffect,
     MailMessageProcessing,
 )
+from apps.shared.db.models.model_routing_policy import (
+    LLMModelRoutingGlobalProfile,
+    LLMNodeModelRoutingBootstrap,
+    LLMNodeModelRoutingBootstrapSample,
+    LLMNodeModelRoutingPerformance,
+    LLMNodeModelRoutingPolicy,
+    LLMNodeModelRoutingPolicyRunEvent,
+    LLMNodeModelRoutingPolicyUpdate,
+)
 from apps.shared.db.models.model_routing_cohort import (
     LLMNodeModelRoutingCohort,
     LLMNodeModelRoutingCohortExample,
@@ -79,11 +88,6 @@ from apps.shared.db.models.model_routing_cohort import (
     LLMNodeModelRoutingValidationBudgetMonth,
     LLMNodeModelRoutingValidationCostEvent,
     LLMNodeModelRoutingValidationItem,
-)
-from apps.shared.db.models.model_routing_policy import (
-    LLMNodeModelRoutingPolicy,
-    LLMNodeModelRoutingPolicyRunEvent,
-    LLMNodeModelRoutingPolicyUpdate,
 )
 from apps.shared.db.models.organization import Organization
 from apps.shared.db.models.organization_membership import (
@@ -201,7 +205,11 @@ __all__ = [
     "MailMessageProcessing",
     "MailDraftEffect",
     "LLMNodeVersion",
+    "LLMModelRoutingGlobalProfile",
     "LLMNodeModelRoutingPolicy",
+    "LLMNodeModelRoutingBootstrap",
+    "LLMNodeModelRoutingBootstrapSample",
+    "LLMNodeModelRoutingPerformance",
     "LLMNodeModelRoutingPolicyRunEvent",
     "LLMNodeModelRoutingPolicyUpdate",
     "LLMNodeModelRoutingCohort",

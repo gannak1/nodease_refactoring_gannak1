@@ -256,6 +256,51 @@ def test_llm_span_metadata_preserves_safe_model_routing_decision_factors_only():
     assert "민감한" not in str(metadata)
 
 
+def test_llm_span_metadata_preserves_safe_bootstrap_difficulty_summary_only():
+    """Bootstrap 난이도 라우팅의 판정값은 보이되, 입력 원문/매칭 문구는 숨긴다."""
+    metadata = TraceMetadataSanitizer.sanitize_span_metadata(
+        "llmNode",
+        {
+            "llm": {
+                "strategy_id": "bootstrap_mdeberta_difficulty_v1",
+                "matched_rule_id": "planner-advanced-policy-conflict",
+                "selected_model": "gpt-5.4",
+                "decision_factors": {
+                    "classification_status": "planner_rule",
+                    "difficulty": "advanced",
+                    "confidence": 0.84,
+                    "minimum_confidence": 0.0,
+                    "matched_signal_count": 2,
+                    "match_score": 4,
+                    "probabilities": {
+                        "economy": 0.05,
+                        "balanced": 0.16,
+                        "advanced": 0.79,
+                    },
+                    "matched_terms": ["개인정보", "충돌"],
+                    "raw_input": "민감한 사용자 문의 원문",
+                },
+            }
+        },
+    )
+
+    assert metadata["llm"]["decision_factors"] == {
+        "classification_status": "planner_rule",
+        "difficulty": "advanced",
+        "confidence": 0.84,
+        "minimum_confidence": 0.0,
+        "matched_signal_count": 2,
+        "match_score": 4,
+        "probabilities": {
+            "economy": 0.05,
+            "balanced": 0.16,
+            "advanced": 0.79,
+        },
+    }
+    assert "개인정보" not in str(metadata)
+    assert "민감한" not in str(metadata)
+
+
 def test_rag_metadata_preserves_payload_reference_and_summarizes_evidence():
     metadata = TraceMetadataSanitizer.sanitize_span_metadata(
         "llmNode",

@@ -10,11 +10,13 @@ from sqlalchemy.orm import Session
 
 from apps.shared.db.models.model_routing_policy import (
     LLMNodeModelRoutingPolicy,
+    LLMNodeModelRoutingBootstrap,
     LLMNodeModelRoutingPolicyRunEvent,
     LLMNodeModelRoutingPolicyUpdate,
 )
 from apps.shared.db.models.model_routing_cohort import LLMNodeModelRoutingCohort
 from apps.shared.db.models.app import App
+from apps.shared.db.models.llm import LLMModel, LLMUsageLog
 from apps.shared.db.models.workflow_deployment import WorkflowDeployment
 from apps.shared.db.models.workflow_run import (
     NodeRunStatus,
@@ -27,6 +29,16 @@ from apps.workflow_engine.services.model_routing_policy_lifecycle import (
 )
 from apps.workflow_engine.services.model_routing_policy_refresh import (
     ModelRoutingPolicyRefreshService,
+)
+from apps.workflow_engine.services.model_router import NodeRunProfile
+from apps.workflow_engine.services.model_routing_prior_guided_policy import (
+    compile_prior_guided_policy_from_db,
+)
+from apps.workflow_engine.services.model_routing_bootstrap import (
+    PersistedModelRoutingBootstrapStore,
+)
+from apps.workflow_engine.services.model_routing_operational_performance import (
+    ModelRoutingOperationalPerformanceService,
 )
 from apps.workflow_engine.services.llm_service import LLMService
 from apps.shared.services.model_routing_cohort_drafts import model_routing_cohort_drafts
@@ -92,9 +104,7 @@ class ModelRoutingPolicyStore:
         이므로, 실제 근거 부족을 뜻하는 ``evidence_sufficient=False``도 함께 확인한다.
         """
         outputs = getattr(node_run, "outputs", None)
-        output_metadata = (
-            outputs.get("metadata") if isinstance(outputs, dict) else None
-        )
+        output_metadata = outputs.get("metadata") if isinstance(outputs, dict) else None
         trace_metadata = getattr(node_run, "trace_metadata", None)
         rag_metadata_candidates = (
             output_metadata.get("rag") if isinstance(output_metadata, dict) else None,
@@ -281,19 +291,92 @@ class ModelRoutingPolicyStore:
         fallback_model_id = available_by_normalized_id.get(
             normalize_model_routing_model_id(node_data.get("fallback_model_id"))
         )
-        bootstrap = ModelRoutingPolicyRefreshService.default_rule_policy(
-            policy_id=str(policy_id),
-            policy_version="bootstrap-preserve-config-v1",
-            default_model_id=configured_model_id,
-            fallback_model_id=fallback_model_id,
-            refresh_every_runs=refresh_every_runs,
-        )
-        bootstrap_active_policy = {
-            **bootstrap["active_policy"],
-            "strategy": "prior_guided_adaptive",
-            "strategy_id": "prior_guided_adaptive_v1",
-            "decision_profiles": [],
-        }
+        bootstrap_id = node_data.get("model_routing_bootstrap_id")
+        bootstrap = None
+        if bootstrap_id:
+            try:
+                bootstrap = db.get(
+                    LLMNodeModelRoutingBootstrap, uuid.UUID(str(bootstrap_id))
+                )
+            except (TypeError, ValueError):
+                bootstrap = None
+
+        if (
+            bootstrap is not None
+            and bootstrap.workflow_id == workflow_id
+            and bootstrap.node_id == node_id
+            and bootstrap.status == "ready"
+            and bootstrap.task_fingerprint
+            == str(node_data.get("model_routing_bootstrap_fingerprint") or "")
+        ):
+            bootstrap_active_policy = (
+                PersistedModelRoutingBootstrapStore.active_policy_for_bootstrap(
+                    bootstrap
+                )
+            )
+            # 배포 실행 주체의 credential은 초안 생성 사용자와 다를 수 있다.
+            # 현재 실행 주체가 쓸 수 없는 난이도 모델은 기본 모델로 닫아
+            # 최초 요청이 credential 오류로 실패하지 않게 한다.
+            for tier, model_id in list(
+                (bootstrap_active_policy.get("difficulty_models") or {}).items()
+            ):
+                if normalize_model_routing_model_id(model_id) not in available_by_normalized_id:
+                    bootstrap_active_policy["difficulty_models"][tier] = configured_model_id
+            if (
+                normalize_model_routing_model_id(
+                    bootstrap_active_policy.get("default_model_id")
+                )
+                not in available_by_normalized_id
+            ):
+                bootstrap_active_policy["default_model_id"] = configured_model_id
+            if (
+                normalize_model_routing_model_id(
+                    bootstrap_active_policy.get("fallback_model_id")
+                )
+                not in available_by_normalized_id
+            ):
+                bootstrap_active_policy["fallback_model_id"] = fallback_model_id
+            policy_version = str(bootstrap_active_policy["policy_version"])
+            update_summary = {
+                "bootstrap_id": str(bootstrap.id),
+                "bootstrap_source": bootstrap.source,
+                "task_fingerprint": bootstrap.task_fingerprint,
+            }
+        else:
+            try:
+                compiled = compile_prior_guided_policy_from_db(
+                    db,
+                    node_data=node_data,
+                    available_model_ids=available_model_ids,
+                    safe_default_model_id=configured_model_id,
+                    profile=NodeRunProfile(),
+                )
+                bootstrap_active_policy = compiled.active_policy
+                policy_version = "deployment-prior-v1"
+                update_summary = compiled.summary
+            except Exception as exc:
+                # 모델 catalog 일부가 비어도 배포 자체를 막지 않는다. 이 경우에만
+                # 사용자가 지정한 기본 모델로 닫힌 안전 정책을 만든다.
+                logger.warning(
+                    "[Model-Routing] deployment policy compile fell back: node_id=%s error_type=%s",
+                    node_id,
+                    type(exc).__name__,
+                )
+                safe_policy = ModelRoutingPolicyRefreshService.default_rule_policy(
+                    policy_id=str(policy_id),
+                    policy_version="deployment-safe-default-v1",
+                    default_model_id=configured_model_id,
+                    fallback_model_id=fallback_model_id,
+                    refresh_every_runs=refresh_every_runs,
+                )
+                bootstrap_active_policy = {
+                    **safe_policy["active_policy"],
+                    "strategy": "prior_guided_adaptive",
+                    "strategy_id": "prior_guided_adaptive_v1",
+                    "decision_profiles": [],
+                }
+                policy_version = "deployment-safe-default-v1"
+                update_summary = {"fallback_reason": type(exc).__name__}
 
         policy = LLMNodeModelRoutingPolicy(
             id=policy_id,
@@ -302,9 +385,11 @@ class ModelRoutingPolicyStore:
             deployment_id=deployment_id,
             node_id=node_id,
             enabled=True,
-            status="collecting",
-            policy_version=bootstrap["policy_version"],
+            status="active",
+            policy_version=policy_version,
             active_policy=bootstrap_active_policy,
+            bootstrap_id=bootstrap.id if bootstrap is not None and bootstrap.status == "ready" else None,
+            performance_checkpoint={},
             refresh_every_runs=refresh_every_runs,
             judge_user_id=execution_subject_user_id,
             execution_subject_user_id=execution_subject_user_id,
@@ -314,6 +399,23 @@ class ModelRoutingPolicyStore:
         try:
             with db.begin_nested():
                 db.add(policy)
+                db.flush()
+                db.add(
+                    LLMNodeModelRoutingPolicyUpdate(
+                        policy_id=policy.id,
+                        trigger="deployment_bootstrap",
+                        status="applied",
+                        eligible_run_count=0,
+                        input_summary={
+                            "available_model_count": len(available_model_ids),
+                        },
+                        output_summary={
+                            "reason": "배포 시점에 첫 실행용 정책을 계산했습니다.",
+                            "bootstrap": update_summary,
+                        },
+                        new_policy_version=policy_version,
+                    )
+                )
                 db.flush()
         except IntegrityError:
             return cls.get_runtime_policy(
@@ -343,10 +445,12 @@ class ModelRoutingPolicyStore:
         if not drafts or user_id is None or policy.organization_id is None:
             return 0
         try:
-            embedding_models = LLMService.get_runtime_available_embedding_model_ids_for_user(
-                db,
-                user_id=user_id,
-                organization_id=policy.organization_id,
+            embedding_models = (
+                LLMService.get_runtime_available_embedding_model_ids_for_user(
+                    db,
+                    user_id=user_id,
+                    organization_id=policy.organization_id,
+                )
             )
             if not embedding_models:
                 return 0
@@ -484,8 +588,11 @@ class ModelRoutingPolicyStore:
             .filter(WorkflowRun.id == uuid.UUID(str(workflow_run_id)))
             .first()
         )
-        if workflow_run is None or not ModelRoutingPolicyLifecycleService.is_eligible_operational_run(
-            workflow_run
+        if (
+            workflow_run is None
+            or not ModelRoutingPolicyLifecycleService.is_eligible_operational_run(
+                workflow_run
+            )
         ):
             return []
 
@@ -528,15 +635,15 @@ class ModelRoutingPolicyStore:
                     "auto-routing node completion logs are not ready"
                 )
 
-        successful_node_runs = [
+        evidence_node_runs = [
             node_run
             for node_run in node_runs
-            if node_run.status == NodeRunStatus.SUCCESS
+            if node_run.status in (NodeRunStatus.SUCCESS, NodeRunStatus.FAILED)
             and cls._is_routing_evidence_eligible_node_run(node_run)
         ]
         scheduled: list[uuid.UUID] = []
         for node_run in sorted(
-            successful_node_runs,
+            evidence_node_runs,
             key=lambda item: str(item.node_id),
         ):
             node_data = node_data_by_id.get(node_run.node_id)
@@ -564,13 +671,61 @@ class ModelRoutingPolicyStore:
             policy = cls._lock_policy_for_update(db, policy_id=policy.id)
             if policy is None:
                 continue
+            performance_changed = False
+            if event_was_created and hasattr(policy, "performance_checkpoint"):
+                usage_row = (
+                    db.query(LLMUsageLog, LLMModel)
+                    .join(LLMModel, LLMModel.id == LLMUsageLog.model_id)
+                    .filter(LLMUsageLog.workflow_run_id == workflow_run.id)
+                    .filter(LLMUsageLog.node_id == node_run.node_id)
+                    .filter(LLMUsageLog.cost_optimizer_candidate_id.is_(None))
+                    .order_by(LLMUsageLog.created_at.desc())
+                    .first()
+                )
+                usage_log = usage_row[0] if usage_row is not None else None
+                usage_model_id = (
+                    usage_row[1].model_id_for_api_call
+                    if usage_row is not None
+                    else None
+                )
+                try:
+                    sample = ModelRoutingOperationalPerformanceService.sample_from_run(
+                        workflow_run=workflow_run,
+                        node_run=node_run,
+                        usage_log=usage_log,
+                        usage_model_id=usage_model_id,
+                    )
+                    ModelRoutingOperationalPerformanceService.record_sample(
+                        db,
+                        policy_id=policy.id,
+                        sample=sample,
+                    )
+                    current_performance = (
+                        ModelRoutingOperationalPerformanceService.checkpoint_snapshot(
+                            db,
+                            policy_id=policy.id,
+                        )
+                    )
+                    performance_changed = (
+                        ModelRoutingOperationalPerformanceService.has_material_change(
+                            policy.performance_checkpoint,
+                            current_performance,
+                        )
+                    )
+                except ValueError:
+                    # provider 호출 전 실패처럼 모델을 식별할 수 없는 실행은
+                    # event 이력만 남기고 모델 성적에는 귀속하지 않는다.
+                    performance_changed = False
             outcome = ModelRoutingPolicyLifecycleService.apply_run_event(
                 policy,
                 event_was_created=event_was_created,
+                performance_changed=performance_changed,
             )
             if outcome.should_enqueue_refresh or (
                 not event_was_created
-                and ModelRoutingPolicyLifecycleService.has_pending_refresh_request(policy)
+                and ModelRoutingPolicyLifecycleService.has_pending_refresh_request(
+                    policy
+                )
             ):
                 scheduled.append(policy.id)
         db.flush()
@@ -593,10 +748,12 @@ class ModelRoutingPolicyStore:
         if user_id is None or policy.organization_id is None:
             return
         try:
-            embedding_models = LLMService.get_runtime_available_embedding_model_ids_for_user(
-                db,
-                user_id=user_id,
-                organization_id=policy.organization_id,
+            embedding_models = (
+                LLMService.get_runtime_available_embedding_model_ids_for_user(
+                    db,
+                    user_id=user_id,
+                    organization_id=policy.organization_id,
+                )
             )
             if not embedding_models:
                 return
