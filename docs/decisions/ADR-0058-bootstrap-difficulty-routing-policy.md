@@ -29,10 +29,11 @@ artifact의 작업 지문은 prompt, 입력 매핑, 출력 schema, RAG 설정, d
 | 1~11건 | 가림 처리한 운영 표본과 부족한 범위의 합성 payload | `hybrid` |
 | 12건 이상 | 최대 24개 대표 운영 표본 | `history` |
 
-Planner는 표본을 `economy`, `balanced`, `advanced` 난이도로 라벨링한다. mDeBERTa
-분류기는 저장된 표본 feature로 난이도별 중심 벡터를 만들고, runtime은 현재 입력과 노드
-작업 지문을 이 분류기에 넣어 난이도 확률을 계산한다. confidence가 기준보다 낮으면 사용자가
-정한 기본 모델을 사용하고, provider 호출이 실패한 경우에만 기본 대체 모델을 한 번 시도한다.
+Planner는 표본을 `economy`, `balanced`, `advanced` 난이도로 라벨링하고, 동시에 prompt,
+출력 계약, RAG, downstream 계약에서 `task_complexity_profile`을 만든다. profile에는 0~100
+점수와 reasoning depth, 지시/예외 복잡도, schema 정밀도, 문서 종합/근거 요구, 출력 생성량,
+모호성이 들어간다. runtime은 현재 입력을 embedding하거나 주제로 분류하지 않고 저장된 profile을
+읽어 후보 catalog 전체를 점수화한다. provider 호출이 실패한 경우에만 기본 대체 모델을 한 번 시도한다.
 
 초기 routing은 후보 모델의 사전 품질 검증을 기다리지 않는다. 실행 주체가 사용할 수 있는
 채팅 모델을 경제형/균형형/고성능형 후보로 분류해 첫 배포부터 routing한다. 모델별 품질·비용
@@ -46,7 +47,8 @@ Planner는 표본을 `economy`, `balanced`, `advanced` 난이도로 라벨링한
   월간 재검증 예산에서 분리한다.
 - 운영 원문 입력과 RAG 원문은 artifact/sample DB에 저장하지 않는다. 안전 요약, feature hash,
   Planner가 부여한 난이도와 근거만 저장한다.
-- mDeBERTa 모델 가중치는 Docker 이미지에 포함되거나 첫 기동 시 model cache에서 준비되어야
-  한다. 준비에 실패하면 runtime은 기본 모델로 닫고 routing 자체가 workflow 실행을 막지 않는다.
-- ADR-0038의 semantic cohort/catalog 중심 initial routing 결정은 이 ADR로 대체한다. 기존
-  cohort table과 호환 API는 삭제 전까지 이력/호환 용도로만 유지한다.
+- runtime은 별도 encoder 모델 가중치나 embedding provider를 필요로 하지 않는다. Planner가
+  profile을 만들지 못하면 구조 기반 안전 기본 profile을 저장하고 routing 자체가 workflow 실행을
+  막지 않는다.
+- ADR-0038의 semantic cohort/catalog 중심 initial routing 결정은 이 ADR로 대체한다.
+  기존 cohort table, embedding matcher, 호환 API는 후속 정리 migration에서 제거한다.
