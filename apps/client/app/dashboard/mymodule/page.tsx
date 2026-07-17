@@ -303,7 +303,7 @@ export default function MyModulePage() {
   const [deploymentFilter, setDeploymentFilter] =
     useState<DeploymentFilter>('all');
   const [runFilter, setRunFilter] = useState<RunFilter>('all');
-  const [viewMode, setViewMode] = useState<OperationsViewMode>('list');
+  const [viewMode, setViewMode] = useState<OperationsViewMode>('grid');
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [editingApp, setEditingApp] = useState<App | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -353,7 +353,7 @@ export default function MyModulePage() {
         setViewMode(savedViewMode);
       }
     } catch {
-      // 저장소를 사용할 수 없는 환경에서는 기본 리스트 보기를 유지한다.
+      // 저장소를 사용할 수 없는 환경에서는 기본 그리드 보기를 유지한다.
     }
   }, []);
 

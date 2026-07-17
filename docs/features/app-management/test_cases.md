@@ -46,7 +46,7 @@ Verified Against: TBD
 
 ### AC-6. 운영 현황 보기 전환 (APP-REQ-050)
 
-- Given 저장된 보기 설정이 없다, When `/dashboard/mymodule`을 연다, Then 운영 현황은 리스트 보기로 표시된다.
+- Given 저장된 보기 설정이 없다, When `/dashboard/mymodule`을 연다, Then 운영 현황은 그리드 보기로 표시된다.
 - Given 사용자가 `그리드 보기`를 선택한다, When 운영 현황이 다시 렌더링된다, Then 같은 operations row가 카드로 표시되고 App/Workflow 이름은 카드의 큰 제목으로 보인다.
 - Given 사용자가 보기 방식을 선택했다, When 같은 브라우저에서 화면을 다시 연다, Then local storage에 저장된 보기 방식을 복원한다.
 - Given 리스트 또는 그리드 보기를 사용한다, When 실행·열기·앱 설정·배포 상태·자동 최적화 관리 작업을 선택한다, Then 기존 권한 조건과 대상 App/Workflow/Deployment를 그대로 사용한다.

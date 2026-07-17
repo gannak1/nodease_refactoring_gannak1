@@ -81,27 +81,29 @@ describe('내 모듈 운영 현황 보기 전환', () => {
     cleanup();
   });
 
-  it('기본 리스트에서 그리드로 전환하고 선택을 저장한다', async () => {
+  it('기본 그리드에서 리스트로 전환하고 선택을 저장한다', async () => {
     render(<MyModulePage />);
 
-    expect(await screen.findByRole('table')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '리스트 보기' })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: '그리드 보기' }));
-
-    expect(screen.queryByRole('table')).not.toBeInTheDocument();
     expect(
-      screen.getByRole('heading', { level: 3, name: '신입사원 온보딩' }),
+      await screen.findByRole('heading', {
+        level: 3,
+        name: '신입사원 온보딩',
+      }),
     ).toHaveClass('text-xl');
     expect(screen.getByRole('button', { name: '그리드 보기' })).toHaveAttribute(
       'aria-pressed',
       'true',
     );
+
+    fireEvent.click(screen.getByRole('button', { name: '리스트 보기' }));
+
+    expect(screen.getByRole('table')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '리스트 보기' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
     expect(window.localStorage.getItem('mymodule:operations-view')).toBe(
-      'grid',
+      'list',
     );
   });
 
