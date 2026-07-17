@@ -82,7 +82,6 @@ class SqlAlchemyDeploymentBrowserAccessRepository:
             output_schema=source.output_schema,
             description=source.description,
             url_slug=app.url_slug,
-            auth_secret=app.auth_secret,
         )
 
     def create_revision(
@@ -140,7 +139,6 @@ class SqlAlchemyDeploymentBrowserAccessRepository:
             is_active=row.is_active,
             browser_access_policy=row.browser_access_policy,
             url_slug=app.url_slug,
-            auth_secret=app.auth_secret,
         )
 
     def get_active_by_slug(

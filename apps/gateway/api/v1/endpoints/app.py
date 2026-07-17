@@ -1,10 +1,20 @@
 from typing import List, Literal
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
+from apps.gateway.core.config import settings
 from apps.gateway.services.organization_context import resolve_active_organization_id
+from apps.gateway.services.app_auth_secret_service import (
+    AppAuthSecretLifecycleUnavailableError,
+    AppAuthSecretNotFoundError,
+    AppAuthSecretPermissionDeniedError,
+    AppAuthSecretService,
+    AppAuthSecretVersionConflictError,
+)
+from apps.gateway.utils.api_errors import raise_api_error
 from apps.gateway.utils.audit import audit
 from apps.shared.audit.actions import AuditAction
 from apps.shared.db.models.app import App
@@ -12,6 +22,9 @@ from apps.shared.db.models.user import User
 from apps.shared.db.session import get_db
 from apps.shared.schemas.app import (
     AppCreateRequest,
+    AppAuthSecretRotateRequest,
+    AppAuthSecretRotateResponse,
+    AppAuthSecretStatusResponse,
     AppOperationsCostSummary,
     AppOperationRow,
     AppResponse,
@@ -41,6 +54,34 @@ def _get_app_or_404(db: Session, app_id: str) -> App:
     if not app:
         raise HTTPException(status_code=404, detail="App not found")
     return app
+
+
+def _raise_app_auth_secret_error(request: Request, error: Exception) -> None:
+    if isinstance(error, AppAuthSecretNotFoundError):
+        raise_api_error(request, 404, "app.not_found", "App not found.")
+    if isinstance(error, AppAuthSecretPermissionDeniedError):
+        raise_api_error(
+            request,
+            403,
+            "permission.denied",
+            "Permission denied.",
+            audit_recorded=True,
+        )
+    if isinstance(error, AppAuthSecretVersionConflictError):
+        raise_api_error(
+            request,
+            409,
+            "app.auth_secret_version_conflict",
+            "App authentication secret version changed.",
+        )
+    if isinstance(error, AppAuthSecretLifecycleUnavailableError):
+        raise_api_error(
+            request,
+            503,
+            "app.auth_secret_lifecycle_unavailable",
+            "App authentication secret lifecycle is temporarily unavailable.",
+        )
+    raise error
 
 
 @router.patch("/{app_id}", response_model=AppResponse)
@@ -209,6 +250,86 @@ def get_app(
 
     app = AppService.get_app(db, app_id, user_id=current_user.id)
     return app
+
+
+@router.get(
+    "/{app_id}/auth-secret/status",
+    response_model=AppAuthSecretStatusResponse,
+)
+def get_app_auth_secret_status(
+    app_id: UUID,
+    request: Request,
+    response: Response,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    response.headers["Cache-Control"] = "no-store, no-cache"
+    response.headers["Pragma"] = "no-cache"
+    organization_id = resolve_active_organization_id(
+        db,
+        request,
+        x_organization_id,
+        current_user.id,
+    )
+    try:
+        return AppAuthSecretService.status(
+            db,
+            app_id=app_id,
+            organization_id=organization_id,
+            actor_user_id=current_user.id,
+            lifecycle_mutations_enabled=(
+                settings.APP_AUTH_SECRET_LIFECYCLE_MODE == "active"
+            ),
+        )
+    except (
+        AppAuthSecretNotFoundError,
+        AppAuthSecretPermissionDeniedError,
+    ) as error:
+        _raise_app_auth_secret_error(request, error)
+
+
+@router.post(
+    "/{app_id}/auth-secret/rotate",
+    response_model=AppAuthSecretRotateResponse,
+)
+def rotate_app_auth_secret(
+    app_id: UUID,
+    request: Request,
+    payload: AppAuthSecretRotateRequest,
+    response: Response,
+    x_organization_id: str | None = Header(default=None, alias="X-Organization-Id"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    organization_id = resolve_active_organization_id(
+        db,
+        request,
+        x_organization_id,
+        current_user.id,
+    )
+    try:
+        result = AppAuthSecretService.rotate(
+            db,
+            app_id=app_id,
+            organization_id=organization_id,
+            actor_user_id=current_user.id,
+            expected_version=payload.expected_version,
+            revoke_previous_immediately=payload.revoke_previous_immediately,
+            lifecycle_mutations_enabled=(
+                settings.APP_AUTH_SECRET_LIFECYCLE_MODE == "active"
+            ),
+        )
+        response.headers["Cache-Control"] = "no-store, no-cache"
+        response.headers["Pragma"] = "no-cache"
+        return result
+    except (
+        AppAuthSecretNotFoundError,
+        AppAuthSecretPermissionDeniedError,
+        AppAuthSecretLifecycleUnavailableError,
+        AppAuthSecretVersionConflictError,
+    ) as error:
+        _raise_app_auth_secret_error(request, error)
 
 
 @router.post("/{app_id}/clone", response_model=AppResponse)

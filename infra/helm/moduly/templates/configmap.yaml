@@ -31,6 +31,10 @@ data:
   S3_BUCKET_NAME: {{ .Values.gateway.env.S3_BUCKET_NAME | quote }}
   {{- end }}
   AWS_REGION: {{ .Values.gateway.env.AWS_REGION | default "ap-northeast-2" | quote }}
+
+  # App authentication secret lifecycle remains disabled until every Gateway
+  # pod is running the verifier-aware revision.
+  APP_AUTH_SECRET_LIFECYCLE_MODE: {{ .Values.gateway.env.APP_AUTH_SECRET_LIFECYCLE_MODE | default "disabled" | quote }}
   
   # CORS configuration
   CORS_ORIGINS: {{ .Values.gateway.env.CORS_ORIGINS | default "http://localhost:3000,http://127.0.0.1:3000" | quote }}

@@ -3,7 +3,7 @@ from typing import Literal, Optional
 from uuid import UUID
 
 from apps.shared.schemas.permission import WorkflowPermissionSource
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
 
 class AppIcon(BaseModel):
@@ -15,6 +15,8 @@ class AppIcon(BaseModel):
 class AppCreateRequest(BaseModel):
     """앱 생성 요청 스키마"""
 
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     description: Optional[str] = None
     icon: AppIcon
@@ -23,6 +25,8 @@ class AppCreateRequest(BaseModel):
 
 class AppUpdateRequest(BaseModel):
     """앱 수정 요청 스키마"""
+
+    model_config = ConfigDict(extra="forbid")
 
     name: Optional[str] = None
     description: Optional[str] = None
@@ -58,13 +62,14 @@ class AppOperationsCostSummary(BaseModel):
 class AppResponse(BaseModel):
     """앱 응답 스키마"""
 
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     name: str
     description: Optional[str]
     icon: AppIcon
     workflow_id: Optional[UUID] = None  # App의 작업실 Workflow
     url_slug: Optional[str] = None  # 첫 배포 시 생성
-    auth_secret: Optional[str] = None  # Webhook 인증용 시크릿
     is_market: bool
     forked_from: Optional[UUID] = None
     active_deployment_id: Optional[UUID] = None
@@ -75,8 +80,29 @@ class AppResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+
+class AppAuthSecretStatusResponse(BaseModel):
+    configured: bool
+    version: int = Field(ge=0)
+    rotation_enabled: bool = False
+    rotated_at: Optional[datetime] = None
+    previous_grace_active: bool
+    previous_valid_until: Optional[datetime] = None
+
+
+class AppAuthSecretRotateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_version: StrictInt = Field(ge=0)
+    revoke_previous_immediately: StrictBool = False
+
+
+class AppAuthSecretRotateResponse(BaseModel):
+    secret: str = Field(repr=False, min_length=1, max_length=512)
+    version: int = Field(ge=1)
+    rotated_at: datetime
+    previous_grace_active: bool
+    previous_valid_until: Optional[datetime] = None
 
 
 class AppOperationAppSummary(BaseModel):

@@ -37,6 +37,7 @@ class AuditAction:
     APP_UPDATE = "app.update"
     APP_CLONE = "app.clone"
     APP_DELETE = "app.delete"
+    APP_AUTH_SECRET_ROTATED = "app.auth_secret.rotated"
 
     WORKFLOW_CREATE = "workflow.create"
     WORKFLOW_UPDATE = "workflow.update"

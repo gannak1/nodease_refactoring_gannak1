@@ -31,6 +31,7 @@ from apps.gateway.middleware.webhook_query_redaction import (
     WEBHOOK_QUERY_TOKEN_PRESENT_STATE_KEY,
     webhook_query_token_present,
 )
+from apps.gateway.services.app_auth_secret_service import AppAuthSecretService
 from apps.gateway.services.workflow_budget_service import WorkflowBudgetService
 from apps.shared.celery_app import celery_app
 from apps.shared.db.models.app import App
@@ -374,7 +375,10 @@ async def receive_webhook(
         request_metadata = _webhook_request_metadata(request)
         ingress_policy.authenticate(
             request_metadata,
-            expected_secret=app.auth_secret,
+            credential_verifier=lambda candidate: AppAuthSecretService.authenticate(
+                app,
+                candidate,
+            ),
         )
         ingress_policy.validate_payload_metadata(request_metadata)
         payload = await _read_webhook_payload(request, ingress_policy)

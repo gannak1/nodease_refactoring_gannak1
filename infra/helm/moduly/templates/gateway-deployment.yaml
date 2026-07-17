@@ -114,6 +114,12 @@ spec:
               key: AUTH_LOGIN_FINGERPRINT_KEYS
 
         {{- include "moduly.scheduleDispatchEnv" . | nindent 8 }}
+
+        - name: APP_AUTH_SECRET_LIFECYCLE_MODE
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "moduly.configMapName" . }}
+              key: APP_AUTH_SECRET_LIFECYCLE_MODE
         
         # CORS and Security
         - name: CORS_ORIGINS

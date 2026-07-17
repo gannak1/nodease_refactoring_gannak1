@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from apps.gateway.auth.dependencies import get_current_user
 from apps.gateway.auth.permissions import ensure_workflow_permission
+from apps.gateway.core.config import settings
 from apps.gateway.application.deployment.browser_access_errors import (
     BrowserAccessPolicyError,
     BrowserAccessResourceHidden,
@@ -187,7 +188,6 @@ def _deployment_response_from_browser_revision(
         is_active=revision.is_active,
         browser_access_policy=revision.browser_access_policy,
         url_slug=revision.url_slug,
-        auth_secret=revision.auth_secret,
     )
 
 
@@ -216,6 +216,9 @@ def create_deployment(
         current_user.id,
         observed_workflow_id=app.workflow_id,
         runtime_policy=runtime_policy,
+        auth_secret_lifecycle_mutations_enabled=(
+            settings.APP_AUTH_SECRET_LIFECYCLE_MODE == "active"
+        ),
     )
 
 
@@ -249,6 +252,9 @@ def preview_deployment_preflight(
         audience_hint=preflight_in.audience,
         is_active=preflight_in.is_active,
         principal_id=current_user.id,
+        auth_secret_lifecycle_mutations_enabled=(
+            settings.APP_AUTH_SECRET_LIFECYCLE_MODE == "active"
+        ),
     )
     result.normalized_browser_access_policy = (
         DeploymentBrowserAccessPolicy.model_validate(
@@ -650,6 +656,9 @@ def toggle_deployment(
             scheduler,
             runtime_policy=runtime_policy,
             user_id=current_user.id,
+            auth_secret_lifecycle_mutations_enabled=(
+                settings.APP_AUTH_SECRET_LIFECYCLE_MODE == "active"
+            ),
         )
     except Exception as e:
         _record_deployment_toggle_audit(

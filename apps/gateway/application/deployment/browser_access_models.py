@@ -44,7 +44,6 @@ class BrowserAccessSourceSnapshot:
     output_schema: dict | None
     description: str | None
     url_slug: str | None
-    auth_secret: str | None
 
 
 @dataclass(frozen=True)
@@ -72,7 +71,6 @@ class BrowserAccessRevision:
     is_active: bool
     browser_access_policy: dict
     url_slug: str | None
-    auth_secret: str | None
 
 
 @dataclass(frozen=True)

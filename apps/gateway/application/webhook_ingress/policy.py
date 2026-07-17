@@ -1,7 +1,6 @@
 import json
 import math
 import re
-import secrets
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -45,7 +44,7 @@ class WebhookIngressPolicy:
         self,
         metadata: WebhookIngressRequestMetadata,
         *,
-        expected_secret: str | None,
+        credential_verifier: Callable[[bytes], bool],
     ) -> None:
         if metadata.query_token_present:
             raise QuerySecretNotSupportedError()
@@ -71,10 +70,13 @@ class WebhookIngressPolicy:
             raw_value,
             is_authorization=bool(authorization),
         )
-        expected = self._expected_secret_bytes(expected_secret)
-        if candidate is None or expected is None:
+        if candidate is None:
             raise AuthenticationFailedError()
-        if not secrets.compare_digest(candidate, expected):
+        try:
+            authenticated = credential_verifier(candidate)
+        except Exception:
+            authenticated = False
+        if not authenticated:
             raise AuthenticationFailedError()
 
     def validate_payload_metadata(
@@ -143,17 +145,6 @@ class WebhookIngressPolicy:
         except UnicodeDecodeError:
             return None
         return candidate
-
-    def _expected_secret_bytes(self, expected_secret: str | None) -> bytes | None:
-        if not isinstance(expected_secret, str):
-            return None
-        try:
-            expected = expected_secret.encode("ascii", errors="strict")
-        except UnicodeEncodeError:
-            return None
-        if not 1 <= len(expected) <= self.limits.max_credential_bytes:
-            return None
-        return expected
 
     def _validate_content_type(self, values: tuple[bytes, ...]) -> None:
         if len(values) != 1:

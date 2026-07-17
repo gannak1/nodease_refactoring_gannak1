@@ -23,6 +23,10 @@ from apps.shared.db.models.workflow_run import (
     WorkflowNodeRun,
     WorkflowRun,
 )
+from apps.shared.domain.app_auth_secret import (
+    APP_AUTH_SECRET_VERIFIER_VERSION,
+    app_auth_secret_verifier,
+)
 from apps.shared.services.password_hashing import hash_password
 from sqlalchemy.orm import Session
 
@@ -678,6 +682,7 @@ def _upsert_dev_app_workflow(
 
     app = db.query(App).filter(App.id == app_id).first()
     if not app:
+        app_secret = f"sk-dev-{key}"
         app = App(
             id=app_id,
             tenant_id=PLACEHOLDER_USER_ID,
@@ -689,7 +694,11 @@ def _upsert_dev_app_workflow(
                 "background_color": "#EFF6FF",
             },
             url_slug=f"dev-{key}-workflow",
-            auth_secret=f"sk-dev-{key}",
+            auth_secret=None,
+            auth_secret_verifier=app_auth_secret_verifier(app_secret),
+            auth_secret_verifier_version=APP_AUTH_SECRET_VERIFIER_VERSION,
+            auth_secret_generation=1,
+            auth_secret_rotated_at=datetime.now(timezone.utc),
             is_market=False,
             created_by=PLACEHOLDER_USER_ID,
         )

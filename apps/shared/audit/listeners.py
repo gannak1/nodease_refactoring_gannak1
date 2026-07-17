@@ -88,7 +88,11 @@ TRACKED_OPS = {
 
 # 모델별 민감 필드(평문 저장 금지)
 SENSITIVE_FIELDS = {
-    App: {"auth_secret"},
+    App: {
+        "auth_secret",
+        "auth_secret_verifier",
+        "auth_secret_previous_verifier",
+    },
     Connection: {
         "database",
         "encrypted_password",

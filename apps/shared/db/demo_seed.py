@@ -91,6 +91,10 @@ from apps.shared.db.models.workflow_run import (
     WorkflowNodeRun,
     WorkflowRun,
 )
+from apps.shared.domain.app_auth_secret import (
+    APP_AUTH_SECRET_VERIFIER_VERSION,
+    app_auth_secret_verifier,
+)
 from apps.shared.services.password_hashing import hash_password
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import or_, text
@@ -3431,6 +3435,7 @@ def _upsert_app_workflow(
     deployed: bool,
     deployment_type: DeploymentType = DeploymentType.API,
 ) -> Workflow:
+    app_secret = f"sk-demo-{key}"
     app = _upsert_by_id(
         db,
         App,
@@ -3445,7 +3450,14 @@ def _upsert_app_workflow(
                 else "📘"
             ),
             "url_slug": f"demo-{key.replace('_', '-')}",
-            "auth_secret": f"sk-demo-{key}",
+            "auth_secret": None,
+            "auth_secret_verifier": app_auth_secret_verifier(app_secret),
+            "auth_secret_verifier_version": APP_AUTH_SECRET_VERIFIER_VERSION,
+            "auth_secret_generation": 1,
+            "auth_secret_previous_verifier": None,
+            "auth_secret_previous_verifier_version": None,
+            "auth_secret_previous_valid_until": None,
+            "auth_secret_rotated_at": _now(),
             "is_api_enabled": True,
             "api_req_per_minute": 60,
             "api_req_per_hour": 3600,
@@ -4419,6 +4431,7 @@ def seed_test_data(db: Session) -> None:
             membership_index += 1
 
     graph = _test_feature_graph()
+    test_app_secret = "sk-test-feature-workflow"
     app = _upsert_by_id(
         db,
         App,
@@ -4429,7 +4442,14 @@ def seed_test_data(db: Session) -> None:
             "description": "팀원이 기능 구현 중 자유롭게 변경해도 되는 테스트 workflow",
             "icon": _icon("🧪"),
             "url_slug": "test-feature-workflow",
-            "auth_secret": "sk-test-feature-workflow",
+            "auth_secret": None,
+            "auth_secret_verifier": app_auth_secret_verifier(test_app_secret),
+            "auth_secret_verifier_version": APP_AUTH_SECRET_VERIFIER_VERSION,
+            "auth_secret_generation": 1,
+            "auth_secret_previous_verifier": None,
+            "auth_secret_previous_verifier_version": None,
+            "auth_secret_previous_valid_until": None,
+            "auth_secret_rotated_at": _now(),
             "is_api_enabled": True,
             "api_req_per_minute": 60,
             "api_req_per_hour": 3600,

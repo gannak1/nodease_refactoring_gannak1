@@ -2,7 +2,6 @@
 
 import hashlib
 import logging
-import secrets
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -10,6 +9,7 @@ from fastapi import HTTPException
 from sqlalchemy import and_, desc, func
 from sqlalchemy.orm import Session
 
+from apps.gateway.services.app_auth_secret_service import AppAuthSecretService
 from apps.gateway.services.app_lifecycle_lock import lock_app_for_lifecycle
 from apps.gateway.services.knowledge_deployment_preflight_service import (
     KnowledgeDeploymentPreflightService,
@@ -64,6 +64,10 @@ _CHATBOT_DEPLOYMENT_TYPES = {
     DeploymentType.CHATBOT,
     DeploymentType.INTERNAL_CHATBOT,
 }
+_AUTH_SECRET_DEPLOYMENT_TYPES = {
+    DeploymentType.API,
+    DeploymentType.WEBHOOK,
+}
 _LEGACY_CONVERSATION_INPUT = "conversation_id"
 _LEGACY_MEMORY_MODE_INPUT = "memory_mode"
 _MAX_LEGACY_CONVERSATION_ID_LENGTH = 255
@@ -105,6 +109,7 @@ class DeploymentService:
         *,
         observed_workflow_id: uuid.UUID,
         runtime_policy: DeploymentRuntimePolicy,
+        auth_secret_lifecycle_mutations_enabled: bool = False,
     ) -> WorkflowDeployment:
         """
         워크플로우를 배포합니다.
@@ -243,16 +248,19 @@ class DeploymentService:
             graph_snapshot,
             require_resolved=False,
         )
+        DeploymentService.ensure_auth_secret_ready_for_activation(
+            app,
+            deployment_type=deployment_in.type,
+            is_active=deployment_in.is_active,
+            lifecycle_mutations_enabled=auth_secret_lifecycle_mutations_enabled,
+        )
 
-        # 5. 첫 배포 시 url_slug, auth_secret 생성. Preflight 실패 시
+        # 5. 첫 배포 시 url_slug 생성. Secret은 lifecycle API에서 발급한다.
         # app 상태가 남지 않도록 active preflight 이후에 수행한다.
         if not app.url_slug:
             from apps.gateway.services.app_service import AppService
 
             app.url_slug = AppService._generate_url_slug(db, app.name)
-
-        if not app.auth_secret:
-            app.auth_secret = secrets.token_urlsafe(32)
 
         db.flush()
 
@@ -279,7 +287,7 @@ class DeploymentService:
             app_id=deployment_in.app_id,
             version=new_version,
             type=deployment_in.type,
-            # url_slug, auth_secret 제거 (App 모델에서 관리)
+            # url_slug는 App 모델에서 관리한다.
             graph_snapshot=graph_snapshot,
             config=deployment_config,
             browser_access_policy=(
@@ -343,10 +351,8 @@ class DeploymentService:
             db.commit()
             db.refresh(db_obj)
 
-            # 응답 객체에 App의 url_slug와 auth_secret 주입 (프론트엔드 표시용)
-            # 모델에는 없지만 Pydantic response schema에는 존재함
+            # 응답에는 public path를 구성하는 slug만 projection한다.
             db_obj.url_slug = app.url_slug
-            db_obj.auth_secret = app.auth_secret
 
             return db_obj
 
@@ -389,8 +395,9 @@ class DeploymentService:
         audience_hint=None,
         is_active: bool = True,
         principal_id: uuid.UUID | None = None,
+        auth_secret_lifecycle_mutations_enabled: bool = False,
     ) -> DeploymentPreflightResponse:
-        return KnowledgeDeploymentPreflightService(
+        result = KnowledgeDeploymentPreflightService(
             db,
             organization_id=app.organization_id,
             principal_id=principal_id,
@@ -401,6 +408,53 @@ class DeploymentService:
             graph_snapshot=graph_snapshot,
             audience_hint=audience_hint,
             is_active=is_active,
+        )
+        if result.status != "blocked":
+            DeploymentService.ensure_auth_secret_ready_for_activation(
+                app,
+                deployment_type=deployment_type,
+                is_active=is_active,
+                lifecycle_mutations_enabled=(
+                    auth_secret_lifecycle_mutations_enabled
+                ),
+            )
+        return result
+
+    @staticmethod
+    def ensure_auth_secret_ready_for_activation(
+        app: App,
+        *,
+        deployment_type: DeploymentType,
+        is_active: bool,
+        lifecycle_mutations_enabled: bool,
+    ) -> None:
+        if (
+            not is_active
+            or deployment_type not in _AUTH_SECRET_DEPLOYMENT_TYPES
+            or AppAuthSecretService.is_configured(app)
+        ):
+            return
+        if not lifecycle_mutations_enabled:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "app.auth_secret_lifecycle_unavailable",
+                    "message": (
+                        "App authentication secret lifecycle is temporarily "
+                        "unavailable."
+                    ),
+                },
+            )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "deployment.app_auth_secret_required",
+                "message": (
+                    "Issue an App authentication secret before activating this "
+                    "deployment."
+                ),
+                "required_actions": ["issue_app_auth_secret"],
+            },
         )
 
     @staticmethod
@@ -790,7 +844,7 @@ class DeploymentService:
             db: 데이터베이스 세션
             url_slug: 앱의 URL slug (예: "my-chat-app")
             user_inputs: 워크플로우 실행 시 사용자 입력 데이터
-            auth_token: 인증 토큰 (Bearer 토큰 또는 API secret) - App의 auth_secret과 비교
+            auth_token: public API Bearer token candidate
             require_auth: 인증 검증 필요 여부 (True: REST API, False: 웹 앱)
 
         Returns:
@@ -832,15 +886,9 @@ class DeploymentService:
         ):
             raise HTTPException(status_code=404, detail="Deployment not found.")
 
-        # 4. 인증 검증 (App의 auth_secret 사용)
+        # 4. 인증 검증은 verifier lifecycle 경계를 사용한다.
         if require_auth:
-            # 인증이 필요한 경우 (REST API 등)
-            if not app.auth_secret:
-                raise HTTPException(
-                    status_code=500,
-                    detail="App has no auth_secret but requires authentication",
-                )
-            if not auth_token or auth_token != app.auth_secret:
+            if not AppAuthSecretService.authenticate(app, auth_token):
                 raise HTTPException(
                     status_code=401, detail="Invalid authentication secret"
                 )
@@ -1379,6 +1427,7 @@ class DeploymentService:
         *,
         runtime_policy: DeploymentRuntimePolicy,
         user_id: uuid.UUID | str | None = None,
+        auth_secret_lifecycle_mutations_enabled: bool = False,
     ) -> WorkflowDeployment:
         """
         배포의 is_active 상태를 토글합니다.
@@ -1482,6 +1531,14 @@ class DeploymentService:
             WorkflowService.validate_external_node_storage_boundaries(
                 deployment.graph_snapshot,
                 require_resolved=False,
+            )
+            DeploymentService.ensure_auth_secret_ready_for_activation(
+                app,
+                deployment_type=deployment.type,
+                is_active=True,
+                lifecycle_mutations_enabled=(
+                    auth_secret_lifecycle_mutations_enabled
+                ),
             )
 
         deployment.is_active = new_state
