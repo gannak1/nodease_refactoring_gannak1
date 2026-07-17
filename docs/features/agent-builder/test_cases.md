@@ -643,7 +643,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 
 - Shared/Gateway/Client canonical enum은 `guided_generate|quick_generate|structure_only`이고 신규 default는 `guided_generate`다.
 - Legacy `configure_and_generate`는 transport parsing, 기존 JSON read와 `legacy-v1` 외부 응답에서만 허용되고 application result, 저장 metadata와 `canonical-v2` 응답에는 나타나지 않는다.
-- Header가 없거나 `legacy-v1`이면 legacy 표현, `canonical-v2`이면 canonical 표현을 반환하고 지원하지 않는 contract는 `unsupported_mode_contract`로 거부한다. Header는 DB에 저장하지 않는다.
+- Request가 없을 때 header가 없거나 `legacy-v1`이면 legacy 표현, `canonical-v2`이면 canonical 표현을 반환하고 지원하지 않는 contract는 `unsupported_mode_contract`로 거부한다. Raw header는 저장하지 않지만 message request에는 normalized `mode_contract_version`을 고정하며 contract가 없는 기존 row는 legacy로 읽는다.
 - `generation_mode_source=default|explicit_control`, `mode_transition_required`, requested/effective mode, transition/proposal id와 monotonic request/proposal version schema가 frontend/backend에서 일치한다.
 - Quick review와 proposal의 persisted safe schema에는 full typed operations, raw graph, parameter 값, hidden resource id, credential 또는 raw prompt가 없다.
 - ADR-0054와 PRD, architecture, data model, glossary, Agent Builder 4종 문서의 mode 이름, 기본값, endpoint와 Legacy Preview 금지가 일치한다.
@@ -654,14 +654,14 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - `explicit_control` mode와 자연어 intent가 충돌하면 UI 선택을 requested mode로 사용하고 planner가 이를 덮어쓰지 않는다. `default` guided 상태에서 명시적인 "한 번에" 자연어 intent가 있으면 requested quick으로 진행하고 intent가 없으면 guided다.
 - Legacy client가 mode를 보내고 source를 생략하면 explicit control로 해석해 기존 동작을 보존한다.
 - 모든 capability/parameter/resource/revision이 안전한 fixture만 quick eligible이다.
-- Credential, 권한 KB/Collection, 외부 target, Condition branch, HTTP/code/egress, unresolved external action, 의미 있는 복수 후보와 stale/hidden resource fixture는 각각 fail-closed reason code를 반환한다.
+- Credential, 권한 KB/Collection, 일반 required parameter에 사용자 요청·기존 graph·selector·안전한 default 값이 없는 경우, 외부 target, Condition branch, HTTP/code/egress, unresolved external action, 의미 있는 복수 후보와 stale/hidden resource fixture는 각각 fail-closed reason code를 반환한다. 일반 값 부재는 `configuration_value_required`다.
 - Eligibility result는 resource id/name, 정확한 후보 수, raw URL/path와 secret을 포함하지 않는다.
 - Initial quick과 `remaining_configuration` scope가 같은 primitive를 사용하되, remaining scope는 completed/skipped/deferred task를 입력 대상에서 제외한다.
 - Mode transition과 remaining quick completion은 planner를 호출하지 않는다.
 
 ### Backend Integration
 
-- Eligible quick message는 `graph_mutation_ready`, effective quick mode, `pending_apply` GraphMutation과 safe summary를 반환하고 parameter group을 만들지 않는다.
+- Eligible quick message는 `graph_mutation_ready`, effective quick mode, `pending_apply` GraphMutation과 safe summary를 반환하고 parameter group을 만들지 않는다. Quick GraphMutation도 `workflow_id`, base/result graph hash, expected workflow `updated_at`, Catalog version, full operations, affected node ids와 completion context를 모두 포함한다.
 - Ineligible quick message는 `mode_transition_required`와 null GraphMutation을 반환하며 workflow graph, request task와 audit의 mutation state를 변경하지 않는다.
 - `continue_guided`는 보존된 structured plan으로 guided GraphMutation/task를 만들고 planner call count를 늘리지 않는다. 취소는 기존 request cancel endpoint로 graph 변경 없이 request를 닫는다.
 - Transition은 client operation id와 expected request version으로 멱등하며 stale/competing 요청은 `mode_transition_conflict`다.
@@ -671,19 +671,21 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - Quick response가 save 전에 유실되면 safe envelope에서 operations를 복원하지 않고 `operation_payload_unavailable`로 닫는다. Save 뒤 acknowledgement 유실은 기존 canonical reconciliation만 사용한다.
 - Remaining quick proposal은 acknowledged graph와 completed task를 보존하고, canonical graph 값과 fingerprint가 일치하는 no-change confirm만 포함한다. 값이 없거나 graph 변경이 필요한 task는 guided 상태로 남긴다.
 - Remaining proposal acknowledgement는 task version, permission, Catalog, canonical graph 값과 recommendation fingerprint를 다시 검증하고 GraphMutation/workflow save를 만들지 않는다.
-- Proposal 생성과 acknowledgement는 parent request row lock에서 expected request/proposal version을 비교하고 성공할 때만 version을 단조 증가시킨다.
-- Remaining proposal cancel은 proposal만 canceled로 전환하고 guided request, graph와 task를 유지한다. 같은 cancel 재시도는 멱등하고 acknowledged/stale proposal은 conflict다.
+- Proposal 생성과 acknowledgement는 parent request row lock에서 expected request/proposal version을 비교한다. Acknowledgement 성공은 request/proposal version을 각각 한 번 증가시키고 응답에 둘 다 반환하며 같은 operation 재시도는 version을 다시 증가시키지 않는다.
+- Remaining proposal cancel은 request/proposal version을 각각 한 번 증가시켜 응답하고 proposal만 canceled로 전환하며 guided request, graph와 task를 유지한다. 같은 cancel 재시도는 같은 두 version을 반환하고 acknowledged/stale proposal은 conflict다.
 - Remaining proposal 일부가 stale이면 전체를 `quick_completion_conflict`로 거부하고 기존 guided graph/task를 유지한다.
 - `structure_only` unresolved graph는 저장할 수 있지만 test, run과 deployment preflight를 계속 차단한다.
 - PostgreSQL 경쟁 테스트에서 같은 transition/proposal operation 재시도는 한 상태 전이만 commit하고 다른 version 요청은 기존 row를 덮어쓰지 않는다. Full operations가 비영속화된 transition replay는 동일 payload 대신 `operation_payload_unavailable`을 반환한다.
-- Mixed-version 계약 테스트는 구형 Client/신형 Gateway에서 legacy 응답, dual-read Client/legacy Gateway에서 legacy fallback, canonical-v2 Client/준비된 Gateway에서 canonical 응답, 지원하지 않는 contract 거부를 각각 검증한다.
+- Mixed-version 계약 테스트는 구형 Client/신형 Gateway에서 legacy 응답, dual-read Client/legacy Gateway에서 legacy fallback, canonical-v2 Client/준비된 Gateway에서 canonical 응답, 지원하지 않는 contract 거부를 각각 검증한다. Canonical-v2 quick request를 만든 뒤 header 누락/legacy session GET은 active payload 대신 `mode_contract_mismatch`를 반환하고, canonical 재조회와 mode-free cancel은 성공해야 한다.
+- Rollback 테스트는 canonical/quick creation gate를 닫은 뒤 active canonical-v2 request를 완료·취소해 0건임을 확인하기 전 legacy-only Client/Gateway 단계로 진행할 수 없고, drain 뒤 기존 legacy request가 계속 복구되는지 검증한다.
 
 ### Frontend Component
 
 - 같은 guided UI 상태가 legacy `configure_and_generate`와 canonical `guided_generate` 응답을 모두 정상 선택 상태로 표시한다. 알 수 없는 mode를 무선택 상태로 대입하지 않는다.
-- Client는 Gateway canonical-v2 gate가 확인되기 전 legacy-write를 유지하고, 협상 성공 뒤에만 canonical mode를 전송한다. 오래 열린 legacy session은 legacy 응답을 계속 처리할 수 있다.
+- Client는 Gateway canonical-v2 gate가 확인되기 전 legacy-write를 유지하고, 협상 성공 뒤에만 canonical mode를 전송한다. Active request의 `mode_contract_version`을 보존해 후속 호출에 재사용하고 mismatch가 지원 contract를 가리키면 같은 GET을 한 번만 재시도한다. 오래 열린 request 없는 legacy session은 legacy 응답을 계속 처리할 수 있다.
 - Mode control은 기본 단계별 생성, 빠른 생성, 고급 구조만 생성 값을 표시하고 pending request 중 새 request mode 변경을 막는다.
 - Quick ineligible 상태는 allowlisted 설명과 `단계별 생성으로 계속`/`취소`를 표시하며 자동 전환 요청을 보내지 않는다.
+- `configuration_value_required`는 hidden resource나 후보 수 없이 `필수 설정값을 확인해야 합니다`로 표시하고 unknown reason은 raw enum을 노출하지 않는다.
 - Quick review는 actual workflow store와 분리된 cloned graph에서 dry-run하고 `생성 적용` 전 nodes, edges, unsaved flag와 history를 변경하지 않는다.
 - `생성 적용` 한 번이 기존 atomic GraphMutation dispatcher와 한 history boundary를 사용한다. Double click과 response retry가 중복 node/edge/history를 만들지 않는다.
 - Quick review UI는 Legacy Preview component/import/route를 사용하지 않고 `Preview Mode` 또는 legacy `적용 및 저장` control을 렌더링하지 않는다.
@@ -698,6 +700,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - Credential 또는 Knowledge 선택이 필요한 quick 요청은 graph를 바꾸지 않고 guided 전환 확인을 표시하며, 확인 뒤 기존 prompt/planner를 재실행하지 않고 단계별 card를 연다.
 - Guided 중 일부 task 완료 뒤 남은 설정 quick completion을 적용하면 기존 완료 값과 history boundary가 유지되고 이미 materialize된 안전한 추천만 batch confirm된다. 값 변경이 필요한 나머지는 guided card에 남는다.
 - Quick review에서 reload하면 full operations를 복구하거나 자동 적용하지 않고 재생성 안내를 표시한다.
+- Canonical-v2 quick review 중 header가 누락된 reload는 legacy projection을 렌더링하지 않고 contract mismatch 뒤 canonical GET으로 복구하며, rollback 시 mode-free cancel 뒤 legacy Client로 전환한다.
 - Structure-only unresolved 결과는 저장 후에도 test, run과 deploy command가 server preflight에서 차단된다.
 
 ### Security And Observability

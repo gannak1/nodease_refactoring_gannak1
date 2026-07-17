@@ -54,24 +54,25 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 
 - Agent Builder의 canonical mode는 `guided_generate`, `quick_generate`, `structure_only`다.
 - 화면 기본값과 mode가 생략된 신규 요청의 기본값은 `guided_generate`다.
-- 기존 `configure_and_generate` 입력과 저장 row는 내부 domain에서 `guided_generate`로 읽기 정규화하고 기존 JSON row를 backfill하지 않는다. 외부 응답은 `X-Agent-Builder-Mode-Contract`가 없거나 `legacy-v1`이면 legacy 표현을, `canonical-v2`이면 canonical 표현을 반환한다.
-- 생성 모드 rollout은 Gateway dual-input/legacy-output, Client dual-read/legacy-write, 전체 Gateway replica와 Client gate 확인 뒤 canonical-v2 응답, Client canonical-write 순서다. 구형 Client가 canonical 응답을 먼저 받게 해서는 안 된다.
+- 기존 `configure_and_generate` 입력과 저장 row는 내부 domain에서 `guided_generate`로 읽기 정규화하고 기존 JSON row를 backfill하지 않는다. Request가 없을 때 외부 응답은 `X-Agent-Builder-Mode-Contract`가 없거나 `legacy-v1`이면 legacy 표현을, `canonical-v2`이면 canonical 표현을 반환한다.
+- Message request 생성 시 정규화한 `mode_contract_version`을 request `response_payload`에 고정한다. Active request의 후속 조회·변경은 같은 contract만 허용하고 불일치하면 request payload를 projection하지 않은 채 `mode_contract_mismatch`를 반환한다. Raw header와 session 전체 contract는 저장하지 않고 값이 없는 기존 request는 `legacy-v1`로 읽는다.
+- 생성 모드 rollout은 Gateway dual-input/legacy-output, Client dual-read/legacy-write, 전체 Gateway replica와 Client gate 확인 뒤 canonical-v2 응답, Client canonical-write 순서다. 구형 Client가 canonical 응답을 먼저 받게 해서는 안 된다. Rollback은 canonical/quick creation을 닫고 active canonical-v2 request를 완료·취소해 0건으로 drain한 뒤 Client를 legacy-write로 전환하며, drain 전에는 dual-contract Gateway를 제거하지 않는다.
 - 사용자는 화면 mode control 또는 명시적인 자연어 요청으로 `quick_generate`를 요청할 수 있다. LLM은 mode 의도를 구조화할 수 있지만 eligibility와 권한을 승인하지 않는다.
 - Client는 초기 화면값과 사용자의 명시적 선택을 `generation_mode_source=default|explicit_control`로 구분한다. 명시적 control 선택, planner가 구조화한 명시적 자연어 mode 의도, 기본 guided 순으로 requested mode를 확정한다. Default guided는 "한 번에 만들어 줘" 같은 명시적 자연어 요청을 막지 않는다.
 - `quick_generate`의 최종 허용 여부는 Gateway application policy가 현재 권한, active organization, Catalog, base graph hash, workflow `updated_at`, resource revision과 미해결 선택을 기준으로 결정론적으로 판정한다.
 - Quick mode는 모든 capability가 지원되고 parameter가 사용자 요청·기존 graph·단일 selector·안전한 Catalog default로 하나의 값으로 확정되며, 권한 resource와 revision이 현재 유효하고 외부 부수효과를 새로 활성화하지 않을 때만 허용한다.
-- Credential, 권한 있는 KB/Collection 선택, 외부 대상, 의미 있는 복수 후보, Condition branch, HTTP/code/egress, unresolved 외부 action 또는 stale/hidden resource가 남으면 quick proposal을 발급하지 않는다.
+- Credential, 권한 있는 KB/Collection 선택, 일반 required parameter의 확정 가능한 값 부재, 외부 대상, 의미 있는 복수 후보, Condition branch, HTTP/code/egress, unresolved 외부 action 또는 stale/hidden resource가 남으면 quick proposal을 발급하지 않는다. 일반 설정값 부재는 `configuration_value_required`로 fail-closed한다.
 - Quick mode가 불가능하면 graph를 변경하지 않고 safe reason code와 `mode_transition_required`를 반환한다. UI는 민감한 resource 존재를 드러내지 않는 설명과 `단계별 생성으로 계속`/`취소`를 제공한다. 사용자 확인 없이 자동 전환하지 않는다.
-- Quick mode가 가능하면 backend는 full typed GraphMutation과 redaction-safe 변경 요약을 일회성 응답으로 반환한다. RequestStatus는 `graph_mutation_ready`, 응답 안의 GraphMutationStatus만 `pending_apply`다. Frontend는 editor clone에 dry-run해 동일 validator를 통과시킨 뒤 추가·변경·삭제 node와 남은 차단 사항을 표시한다. 사용자가 `생성 적용`을 명시적으로 선택한 뒤에만 실제 history boundary에 적용하고 CDS CAS 저장한다.
+- Quick mode가 가능하면 backend는 `workflow_id`, base/result graph hash, expected workflow `updated_at`, Catalog version, full typed operations, affected node ids와 completion context를 모두 포함한 공통 GraphMutation과 redaction-safe 변경 요약을 일회성 응답으로 반환한다. RequestStatus는 `graph_mutation_ready`, 응답 안의 GraphMutationStatus만 `pending_apply`다. Frontend는 editor clone에 dry-run해 동일 validator를 통과시킨 뒤 추가·변경·삭제 node와 남은 차단 사항을 표시한다. 사용자가 `생성 적용`을 명시적으로 선택한 뒤에만 실제 history boundary에 적용하고 CDS CAS 저장한다.
 - Quick review는 Legacy Preview가 아니다. Preview session/API, 별도 draft store 또는 preview 전용 save path를 만들지 않으며 guided mode와 같은 GraphMutation, CAS, acknowledgement와 Undo 경계를 사용한다.
 - Quick response를 적용 전에 잃거나 reload하면 safe envelope에서 full operations를 복원하지 않고 요청을 재생성한다. CAS 저장 뒤 acknowledgement 유실 복구는 ADR-0046을 따른다.
 - `남은 설정 빠르게 완료`는 새 generation mode가 아니라 `guided_generate` request의 범위 축소 명령이다. 이미 acknowledgement된 graph와 완료 task를 보존하고 현재 미완료 task만 현재 권한·Catalog·revision으로 재평가한다. 전체 planner 또는 전체 graph generation을 다시 실행하지 않는다.
 - 남은 task 중 canonical graph에 추천값이 이미 materialize되고 recommendation fingerprint가 일치하는 항목만 한 검토안으로 묶는다. 적용은 parent request row lock 안의 멱등 batch confirm이며 GraphMutation이나 workflow 저장을 만들지 않는다. 값이 없거나 변경이 필요한 항목, credential, 권한 resource, 외부 부수효과, Condition branch와 복수 후보는 단계별 상태로 유지한다.
 - `structure_only`는 parameter task를 시작하지 않는 generation mode다. 빈 workflow의 새 graph는 `initial_graph`, 기존 workflow 부분 변경은 `graph_edit`, 기존 workflow 전체 교체는 `replace_workflow` GraphMutation을 사용하며 mode와 kind는 독립이다.
 - `structure_only` 결과의 unresolved configuration은 저장할 수 있지만 test, run과 deployment preflight가 차단하며 생성 완료 또는 실행 준비 상태로 표시하지 않는다.
-- `generation_mode`, `generation_mode_source`, requested/effective mode, transition status와 safe reason code는 각 request의 기존 `AgentBuilderRequest.response_payload`에만 저장한다. Workflow graph, session 전용 column, 신규 table 또는 별도 영구 column에는 저장하지 않는다.
+- Request-scoped `mode_contract_version`, `generation_mode`, `generation_mode_source`, requested/effective mode, transition status와 safe reason code는 각 request의 기존 `AgentBuilderRequest.response_payload`에만 저장한다. Raw negotiation header, 이 값을 위한 session/전용 column, 신규 table 또는 별도 영구 column은 저장·추가하지 않는다.
 - Mode transition과 빠른 완료 요청은 client-generated operation id와 expected request/task version을 사용한다. Safe 상태만 반환하는 transition/proposal 재시도는 같은 canonical 결과를 반환하고 stale 또는 competing 요청은 graph나 task를 변경하지 않은 채 conflict로 닫는다. Full GraphMutation operations를 발급한 transition 응답이 유실되면 같은 operation id 재시도는 중복 mutation을 만들지 않고 `operation_payload_unavailable`을 반환하며, 사용자가 기존 request 취소 뒤 새 request를 명시적으로 제출해야 한다.
-- Request version은 기존 `response_payload` 안에서 1부터 단조 증가하고 transition/proposal 상태 변경마다 parent request row lock 안에서 갱신한다. Proposal은 별도 monotonic proposal version을 가지며 신규 DB column을 추가하지 않는다.
+- Request version은 기존 `response_payload` 안에서 1부터 단조 증가하고 transition/proposal 상태 변경마다 parent request row lock 안에서 갱신한다. Proposal은 별도 monotonic proposal version을 가지며 `pending -> acknowledged|canceled` 전환 시 request version과 함께 원자적으로 증가해 둘 다 응답에 포함한다. 같은 operation 재시도는 두 version을 다시 증가시키지 않으며 신규 DB column을 추가하지 않는다.
 - Initial quick review와 mode transition 대기의 취소는 기존 request cancel을 사용한다. Guided request 자체는 유지하면서 remaining quick proposal만 닫을 때는 proposal id/version을 검증하는 전용 cancel을 사용하고 graph/task를 변경하지 않는다.
 
 ### DBP-FR-002 Structured Planning
@@ -250,6 +251,7 @@ Agent Builder는 사용자의 자연어 요청을 workflow graph 변경으로 �
 - 원래 mutation 제출 흐름에서 acknowledgement 응답만 유실되면 같은 `operation_id`와 canonical metadata로 acknowledgement를 정확히 한 번 재시도할 수 있다. 두 번째 결과가 불명확해졌거나 복구·수동 확인 경로에서는 acknowledgement를 다시 발급하지 않고 session 조회만 수행한다.
 - 세 번의 자동 확인 뒤에도 applied, unapplied 또는 terminal 상태를 확정하지 못하면 `결과 확인 필요`와 `다시 확인` control을 표시한다. 수동 확인은 같은 session 조회만 다시 시작하며 자연어 요청, planner, GraphMutation 또는 acknowledgement를 새로 발급하지 않는다.
 - local session pointer 제거와 새 direct-edit session 전환은 `stale_protocol`, server가 명시한 session not found 또는 invalid session에만 허용한다.
+- Client는 active request 응답의 `mode_contract_version`을 session pointer와 함께 보존하고 후속 GET/POST에 같은 contract header를 사용한다. `mode_contract_mismatch`를 받으면 지원하는 contract인 경우 같은 GET을 한 번 다시 보내고, 지원하지 않거나 rollback 중이면 mode-free request cancel 또는 운영 drain으로 종료한다. 다른 contract로 active quick state를 임의 projection하지 않는다.
 - 최신 failed/canceled request가 이전 ready mutation을 현재 결과처럼 복구하면 안 된다.
 - 복구된 mutation의 base graph hash 또는 expected `updated_at`이 current workflow와 다르면 stale로 표시하고 자동 적용하지 않는다.
 - client가 이미 적용한 operation id를 다시 받으면 중복 적용하지 않는다.

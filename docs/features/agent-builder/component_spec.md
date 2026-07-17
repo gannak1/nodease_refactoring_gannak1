@@ -64,7 +64,7 @@ Application package는 shared Pydantic request/response contract를 사용할 �
 - requested/effective mode, source, request/proposal version과 transition 상태를 framework-independent result로 반환
 - 사용자 확인 없는 quick-to-guided 전환 금지
 
-Transport adapter는 `X-Agent-Builder-Mode-Contract`를 읽어 legacy/canonical 외부 표현을 application의 canonical result와 양방향 변환한다. 이 협상은 GenerationModePolicy의 domain 판단이나 DB 저장값을 바꾸지 않는다.
+Transport adapter는 `X-Agent-Builder-Mode-Contract`를 읽어 legacy/canonical 외부 표현을 application의 canonical result와 양방향 변환한다. Request가 없을 때는 호출별 표현만 선택하고, message request 생성 시 정규화한 contract를 DB adapter가 기존 request metadata에 고정한다. Active request 후속 호출은 이 값과 같은 contract만 허용하며 불일치는 payload projection 없이 `mode_contract_mismatch`로 반환한다. 이 협상은 GenerationModePolicy의 domain 판단과 canonical mode 저장값을 바꾸지 않는다.
 
 #### QuickGenerationEligibilityPolicy
 
@@ -73,7 +73,7 @@ Transport adapter는 `X-Agent-Builder-Mode-Contract`를 읽어 legacy/canonical 
 책임:
 
 - Catalog capability, unresolved parameter, permission/resource snapshot, graph/resource revision과 side-effect classification을 입력으로 받는 pure fail-closed 판정
-- credential, 권한 resource 선택, 외부 대상, Condition branch, HTTP/code/egress, unresolved external action, 복수 후보와 stale context를 allowlisted safe reason code로 반환
+- credential, 권한 resource 선택, 일반 required parameter의 확정 가능한 값 부재, 외부 대상, Condition branch, HTTP/code/egress, unresolved external action, 복수 후보와 stale context를 allowlisted safe reason code로 반환. 일반 값 부재는 `configuration_value_required`로 분류
 - 대상 resource의 이름, id, 정확한 후보 수 또는 secret을 result에 포함하지 않음
 - initial quick generation과 guided의 remaining quick completion에 같은 primitive를 사용하되 evaluation scope를 구분
 
@@ -500,7 +500,7 @@ applyGraphTransaction(nextNodes, nextEdges, metadata)
 2. Application이 permission, saved workflow context와 requested mode를 확정하고 planner를 정상 한 번 호출한다.
 3. QuickGenerationEligibilityPolicy가 Catalog, 현재 resource snapshot, graph/revision과 side-effect 분류를 fail-closed로 판정한다.
 4. Ineligible이면 graph mutation을 만들지 않고 ModeTransitionPrompt에서 guided 전환 또는 취소를 기다린다. 전환 확인은 보존된 structured plan을 사용하며 planner를 다시 호출하지 않는다.
-5. Eligible이면 GraphMutationBuilder가 validated mutation과 safe summary를 만든다. RequestStatus는 `graph_mutation_ready`, nested GraphMutationStatus만 `pending_apply`다.
+5. Eligible이면 GraphMutationBuilder가 공통 필수 CAS metadata와 full operations를 모두 가진 validated mutation과 safe summary를 만든다. RequestStatus는 `graph_mutation_ready`, nested GraphMutationStatus만 `pending_apply`다.
 6. AgentBuilderEditorAdapter가 cloned graph에 dry-run하고 QuickReviewPresenter가 변경 요약을 표시한다.
 7. 사용자가 `생성 적용`을 선택한 뒤에만 실제 editor history boundary에 mutation을 적용하고 CDS save/acknowledgement를 수행한다.
 8. Acknowledgement가 끝난 뒤 request를 완료한다. 적용 전 응답 유실/reload는 full operations를 복원하지 않고 request 재생성으로 닫는다.
@@ -512,9 +512,9 @@ applyGraphTransaction(nextNodes, nextEdges, metadata)
 3. QuickGenerationEligibilityPolicy가 `remaining_configuration` scope로 각 task를 판정한다. Planner와 전체 GraphMutation planning은 다시 호출하지 않는다.
 4. 안전한 task만 하나의 proposal로 묶고 credential, 권한 resource, 외부 부수효과, Condition branch와 복수 후보 task는 guided 상태로 남긴다.
 5. Client는 confirmable/remaining count와 safe summary를 검토하며 graph mutation dry-run이나 workflow save를 만들지 않는다.
-6. 사용자가 적용하면 recommendation fingerprint, canonical graph 값과 task version을 재검증하고 값 변경 없는 confirm만 request lock 안에서 원자적으로 완료한다.
+6. 사용자가 적용하면 recommendation fingerprint, canonical graph 값과 task version을 재검증하고 값 변경 없는 confirm만 request lock 안에서 원자적으로 완료한다. `request_version`과 `proposal_version`을 각각 증가시켜 둘 다 응답한다.
 7. 일부가 stale하거나 원자적으로 적용할 수 없으면 proposal 전체를 거부하고 기존 guided task 상태를 유지한다.
-8. 사용자가 proposal을 취소하면 proposal만 canceled로 닫고 graph와 guided task를 그대로 유지한다.
+8. 사용자가 proposal을 취소하면 request/proposal version을 같은 lock에서 각각 증가시키고 proposal만 canceled로 닫으며 graph와 guided task를 그대로 유지한다.
 
 ### 6.4 Structure Only
 
@@ -532,7 +532,7 @@ applyGraphTransaction(nextNodes, nextEdges, metadata)
 | GraphMutationStatus | backend | 기존 request safe operation envelope; `pending_apply|pending_save|pending_ack|acknowledged|blocked|reverted` |
 | structured plan | backend | safe metadata only |
 | session protocol | backend | nullable `AgentBuilderSession.protocol_version`; null은 legacy, 신규는 `direct_edit_v1` |
-| canonical/requested/effective generation mode와 source, monotonic request/proposal version, transition/proposal safe state, operation envelope/acknowledgement metadata | backend | 기존 `AgentBuilderRequest.response_payload`; full operations 제외, 새 전체 JSON 객체 재할당 |
+| request-scoped mode contract, canonical/requested/effective generation mode와 source, monotonic request/proposal version, transition/proposal safe state, operation envelope/acknowledgement metadata | backend | 기존 `AgentBuilderRequest.response_payload`; raw header와 full operations 제외, contract 누락 row는 legacy로 읽고 새 전체 JSON 객체 재할당 |
 | actual editor graph와 parameter 값 | workflow store/workflow draft | existing draft save; 재진입 input의 유일한 value source |
 | node `configuration_state` | backend derived policy | Catalog required configuration에서 재계산해 graph에 materialize; client 입력은 비권위 |
 | undo/redo graph history | workflow store | client memory |
@@ -547,6 +547,7 @@ applyGraphTransaction(nextNodes, nextEdges, metadata)
 
 - planner failure: graph를 변경하지 않고 safe failure 표시
 - quick eligibility failure: graph를 변경하지 않고 `mode_transition_required`; 사용자 확인 없는 guided 전환 금지
+- mode contract mismatch: active request body를 다른 표현으로 projection하지 않고 safe required contract만 반환. 지원 Client는 같은 GET을 한 번 재시도하고 rollback/미지원 Client는 mode-free cancel 또는 운영 drain으로 종료
 - quick review 취소: editor/workflow/request graph 상태를 변경하지 않고 request만 canceled 처리
 - quick 또는 `continue_guided` mutation 발급 뒤 apply 전 reload/response loss: 같은 operation 재시도에서 operations를 복원하지 않고 `operation_payload_unavailable`과 safe 상태를 표시한 뒤 기존 request 취소와 명시적 신규 request 재생성 안내
 - remaining quick-completion stale/conflict: proposal 전체를 거부하고 기존 guided task/graph를 유지하며 자동 재적용하지 않음
@@ -579,6 +580,7 @@ applyGraphTransaction(nextNodes, nextEdges, metadata)
 - Knowledge 저장 중에는 card와 선택값을 유지하고 control만 잠근다. 성공 acknowledgement 뒤에만 선택 사용자 메시지를 확정하며, pre-save 실패는 같은 card에서 재시도한다.
 - 자동 추천 출처는 `사용자 요청에서 확인`, `기존 Workflow 설정 사용`, `이전 노드 출력에서 연결`, `기본값 추천`으로 표시한다. 내부 enum, raw value와 secret은 렌더링하지 않는다.
 - Knowledge 추천 사유도 allowlisted 사용자 문구로만 표시하며 알 수 없는 reason enum은 숨긴다.
+- Quick ineligible `configuration_value_required`는 resource 존재나 후보 수를 언급하지 않고 `필수 설정값을 확인해야 합니다`로 표시한다.
 - 후보 resolver가 없는 Slack/GitHub deferred credential을 재편집할 때 disabled empty picker를 열지 않고 안전한 연결 안내와 편집 닫기만 제공한다.
 - completed task 편집은 WorkflowResultGroup의 explicit editing state다. 이 상태에서는 생성 완료 표시를 숨기고 `설정 수정 중`을 표시하며, active task가 없어도 취소/닫기를 제공한다. 저장 실패 시 form 값을 보존하고 acknowledgement 성공 뒤 완료 상태로 돌아간다.
 - 완료 boundary의 첫 Undo는 sensitivity나 node type과 무관하게 최대 `stable_order`의 `completed|skipped|deferred` task를 표시한다. Raw secret과 권한 없는 reference는 hydration하지 않는다.
@@ -595,8 +597,8 @@ applyGraphTransaction(nextNodes, nextEdges, metadata)
 5. CAS 저장/acknowledgement/복구, Agent Builder history boundary persisted Undo/Redo, task 동시성, transaction-bound audit/redaction, unresolved 실행·배포 preflight를 구현하고 검증한다.
 6. Alembic single head, disposable 기존 DB upgrade와 request 없는 null/direct mixed protocol recovery를 검증한다.
 7. Frontend와 Gateway의 무중단 mixed-revision rollout, staged rollback, 배포 gate와 image artifact 검증은 별도 배포 작업으로 넘긴다.
-8. Gateway는 두 mode 입력을 수용하고 내부 canonical로 정규화하되 header가 없거나 legacy인 Client에는 `configure_and_generate` 응답을 유지한다. Client는 두 응답을 읽되 먼저 legacy-write로 배포한다. 모든 Gateway replica와 Client dual-read gate가 확인된 뒤에만 `X-Agent-Builder-Mode-Contract: canonical-v2`와 canonical-write를 순서대로 활성화한다. 기존 request JSON은 backfill하지 않는다.
-9. Quick endpoint, eligibility policy, clone dry-run, transition/remaining-completion integration과 E2E가 함께 준비되고 canonical-v2가 협상된 revision에서만 `빠른 생성` control을 노출한다. Rollback은 quick creation gate만 닫고 기존 guided direct-edit와 structure-only를 유지한다.
+8. Gateway는 두 mode 입력을 수용하고 내부 canonical로 정규화하되 header가 없거나 legacy인 Client에는 `configure_and_generate` 응답을 유지한다. Client는 두 응답을 읽되 먼저 legacy-write로 배포한다. 모든 Gateway replica와 Client dual-read gate가 확인된 뒤에만 `X-Agent-Builder-Mode-Contract: canonical-v2`와 canonical-write를 순서대로 활성화한다. 새 request에는 normalized contract를 고정하고 contract가 없는 기존 request는 legacy로 읽되 JSON을 backfill하지 않는다.
+9. Quick endpoint, eligibility policy, clone dry-run, transition/remaining-completion integration과 E2E가 함께 준비되고 canonical-v2가 협상된 revision에서만 `빠른 생성` control을 노출한다. Rollback은 quick/canonical creation gate를 먼저 닫고 active canonical-v2 request를 완료·mode-free cancel해 0건임을 확인한 뒤 Client를 legacy-write로 전환한다. Drain 전에는 dual-contract Gateway를 제거하지 않는다.
 ## 2026-07-15 Connection Navigation And Completion Correction
 
 - WorkflowResultGroup does not render Slack/GitHub credential tasks. For a generated unresolved Slack/GitHub node it renders per-node external connection guidance and a `연결 설정으로 이동` action. The action focuses the node and opens the existing Editor authentication control without listing credentials, accepting a token, issuing a GraphMutation, saving, or calling the planner.

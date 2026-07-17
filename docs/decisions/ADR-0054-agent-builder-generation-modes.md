@@ -52,12 +52,13 @@ Agent Builder는 다음 세 모드를 제공한다.
 
 - credential 선택 또는 원문 secret 입력이 필요하다.
 - 권한 있는 Knowledge Base 또는 Collection 선택이 필요하다.
+- 일반 required parameter에 사용자 요청·기존 graph·selector·안전한 Catalog default 중 확정 가능한 값이 없다.
 - 외부 대상, 수신자, 저장 위치처럼 부수효과 범위를 정해야 한다.
 - Condition case, HTTP/code/egress 설정 또는 unresolved 외부 action이 있다.
 - 후보가 없거나 둘 이상이고 정책만으로 안전하게 하나를 확정할 수 없다.
 - resource가 삭제, 비활성, 권한 상실 또는 stale 상태다.
 
-이 경우 서버는 graph를 변경하지 않고 safe reason code와 `mode_transition_required`를 반환한다. UI는 단계별 생성으로 전환할 이유를 민감 정보 없이 설명하고 사용자의 명시적 확인을 받는다. 사용자가 취소하면 기존 graph는 그대로 유지한다.
+이 경우 서버는 graph를 변경하지 않고 safe reason code와 `mode_transition_required`를 반환한다. 일반 required parameter 값을 확정할 수 없는 경우에는 `configuration_value_required`를 사용한다. UI는 단계별 생성으로 전환할 이유를 민감 정보 없이 설명하고 사용자의 명시적 확인을 받는다. 사용자가 취소하면 기존 graph는 그대로 유지한다.
 
 ### 4. 빠른 생성 적용 경계
 
@@ -97,12 +98,14 @@ Full typed operations는 기존 계약대로 발급 API 응답에서만 전달�
 - stale graph, stale task 또는 중복 operation은 기존 결과를 덮어쓰지 않고 conflict로 닫는다. 다만 full operations를 저장하지 않는 mutation 발급 응답의 재시도는 같은 payload 반환을 보장하지 않고 `operation_payload_unavailable` 복구 계약을 따른다.
 - 적용 전 취소는 graph를 변경하지 않는다. 적용 중 취소는 이미 acknowledgement된 변경을 자동 롤백하지 않고 기존 Workflow Undo boundary로 복구한다.
 - 한 request에서 Legacy Preview와 direct-edit를 혼용하지 않는다.
-- 외부 generation mode 표현은 선택적 `X-Agent-Builder-Mode-Contract` 요청 헤더로 협상한다. 헤더가 없거나 `legacy-v1`이면 Gateway는 legacy `configure_and_generate` 표현을 반환하고, `canonical-v2`이면 canonical `guided_generate`를 반환한다. 이 값은 representation 협상용이며 DB에 저장하지 않는다.
-- Rollout은 Gateway가 두 입력을 수용하되 legacy 응답을 유지하는 단계, Client가 두 응답을 읽는 단계, 모든 Gateway replica와 Client dual-read gate 확인 뒤 `canonical-v2`를 허용하는 단계, Client가 canonical 값을 쓰는 순서로 진행한다. `quick_generate`는 canonical-v2와 Backend·Frontend 통합 gate가 모두 준비된 경우에만 노출한다.
+- 외부 generation mode 표현은 선택적 `X-Agent-Builder-Mode-Contract` 요청 헤더로 협상한다. 헤더가 없거나 `legacy-v1`이면 Gateway는 legacy `configure_and_generate` 표현을 반환하고, `canonical-v2`이면 canonical 표현을 반환한다.
+- Message request 생성 시 정규화한 `mode_contract_version=legacy-v1|canonical-v2`를 기존 `AgentBuilderRequest.response_payload`에 고정한다. Raw header와 session 전체 계약은 저장하지 않으며 contract 값이 없는 기존 request는 `legacy-v1`로 읽는다. Active request를 조회하거나 변경하는 후속 endpoint는 고정된 contract와 같은 요청만 허용하고 불일치하면 request payload를 projection하지 않은 채 `mode_contract_mismatch`로 닫는다.
+- Request cancel은 generation mode를 포함하지 않는 contract-neutral 응답으로 제공해 고정 contract를 모르는 복구·운영 경로도 같은 인증·권한 아래 request를 종료할 수 있게 한다.
+- Rollout은 Gateway가 두 입력을 수용하되 legacy 응답을 유지하는 단계, Client가 두 응답을 읽는 단계, 모든 Gateway replica와 Client dual-read gate 확인 뒤 `canonical-v2`를 허용하는 단계, Client가 canonical 값을 쓰는 순서로 진행한다. `quick_generate`는 canonical-v2와 Backend·Frontend 통합 gate가 모두 준비된 경우에만 노출한다. Client rollback 전에는 quick/canonical request 생성을 먼저 닫고 active `canonical-v2` request를 완료·취소해 0건임을 확인하며, 이 drain이 끝날 때까지 dual-contract Gateway를 유지한다. Drain count는 `mode_contract_version=canonical-v2`이면서 RequestStatus가 terminal이 아닌 request의 내부 운영 집계이며 request id나 payload를 외부에 노출하지 않는다.
 
 ### 8. 데이터와 보안
 
-- canonical mode, requested mode와 source, effective mode, monotonic request/proposal version, 전환 상태와 safe reason code는 기존 `AgentBuilderRequest.response_payload`의 safe metadata에 저장할 수 있다.
+- canonical mode, requested mode와 source, effective mode, request-scoped `mode_contract_version`, monotonic request/proposal version, 전환 상태와 safe reason code는 기존 `AgentBuilderRequest.response_payload`의 safe metadata에 저장할 수 있다.
 - full operations, raw prompt의 민감 부분, credential 원문, token, API key, hidden resource identifier와 외부 payload는 저장·audit·trace하지 않는다.
 - mode metadata를 위한 신규 table 또는 전용 column을 추가하지 않는다.
 - 빠른 생성 eligibility와 mode 전환은 권한 우회 수단이 아니다. 생성 시점, mutation 발급 시점, CAS 저장 시점과 실행·배포 preflight에서 기존 권한 검사를 유지한다.
