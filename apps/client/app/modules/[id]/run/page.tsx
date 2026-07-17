@@ -21,12 +21,16 @@ import {
 
 import { authApi } from '@/app/features/auth/api/authApi';
 import { workflowApi } from '@/app/features/workflow/api/workflowApi';
+import { CitationList } from '@/app/features/workflow/components/execution/CitationList';
 import { FinalResponseCard } from '@/app/features/workflow/components/execution/FinalResponseCard';
 import type {
   DeploymentRunInfoResponse,
   InputVariable,
 } from '@/app/features/workflow/types/Deployment';
-import { getDeploymentRunFinalPreview } from '@/app/features/workflow/utils/deploymentRunResult';
+import {
+  getDeploymentRunCitations,
+  getDeploymentRunFinalPreview,
+} from '@/app/features/workflow/utils/deploymentRunResult';
 import {
   claimLoginRedirectPath,
   getCurrentAuthReturnPath,
@@ -153,6 +157,10 @@ export default function AuthenticatedDeploymentRunPage() {
   const finalPreview = useMemo(
     () => getDeploymentRunFinalPreview(deployment, runResult),
     [deployment, runResult],
+  );
+  const finalCitations = useMemo(
+    () => getDeploymentRunCitations(runResult),
+    [runResult],
   );
   const chatVariable = useMemo(() => {
     if (
@@ -411,6 +419,9 @@ export default function AuthenticatedDeploymentRunPage() {
                           turn.response,
                         )}
                       />
+                      <CitationList
+                        items={getDeploymentRunCitations(turn.response)}
+                      />
                     </div>
                   </div>
                 ))
@@ -598,6 +609,7 @@ export default function AuthenticatedDeploymentRunPage() {
               ) : runResult !== null ? (
                 <div className="mt-5">
                   <FinalResponseCard preview={finalPreview} />
+                  <CitationList items={finalCitations} />
                 </div>
               ) : (
                 <div className="mt-5 rounded-md border border-dashed border-slate-300 bg-slate-50 px-4 py-12 text-center text-sm text-slate-500">

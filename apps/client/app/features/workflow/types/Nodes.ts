@@ -213,6 +213,7 @@ export interface LLMNodeData extends BaseNodeData {
   retrievedContextMaxChars?: number;
   retrievedContextCompression?: 'off' | 'light' | 'strong';
   answerGroundingCheck?: 'off' | 'basic' | 'strict';
+  citationDisplayMode?: 'hidden' | 'basic' | 'detailed';
 }
 // ============================================================================
 

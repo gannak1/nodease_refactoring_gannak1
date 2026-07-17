@@ -4457,6 +4457,7 @@ class AgentBuilderService:
                 "knowledgeBases": kb_refs,
                 "scoreThreshold": 0.5,
                 "topK": 3,
+                "citationDisplayMode": "basic",
             }
         elif capability == "workflow_call":
             data = {

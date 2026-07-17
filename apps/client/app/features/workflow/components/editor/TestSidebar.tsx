@@ -44,6 +44,8 @@ import {
   getFinalResponsePreview,
   shouldShowFinalResponseCard,
 } from '../../utils/testExecutionFinalResponse';
+import { getDeploymentRunCitations } from '../../utils/deploymentRunResult';
+import { CitationList } from '../execution/CitationList';
 import { FinalResponseCard } from '../execution/FinalResponseCard';
 import { deploymentApiErrorMessage } from '../../utils/deploymentPreflightMessage';
 import { ModelRoutingDecisionDetails } from '../modelRouting/ModelRoutingDecisionDetails';
@@ -764,6 +766,7 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
     nodeResults,
     nodes,
   });
+  const finalResponseCitations = getDeploymentRunCitations(executionResult);
   const showFinalResponseCard = shouldShowFinalResponseCard({
     hasExecutionResult,
     error,
@@ -1649,7 +1652,10 @@ export function TestSidebar({ appendMemoryFlag }: TestSidebarProps) {
               ) : (
                 <div className="space-y-4">
                   {showFinalResponseCard && (
-                    <FinalResponseCard preview={finalResponsePreview} />
+                    <div>
+                      <FinalResponseCard preview={finalResponsePreview} />
+                      <CitationList items={finalResponseCitations} />
+                    </div>
                   )}
                   {renderExecutionTotalSummary()}
                   <h3 className="text-sm font-medium text-gray-900 mb-3 dark:text-gray-200">
