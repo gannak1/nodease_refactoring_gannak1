@@ -36,6 +36,7 @@ from apps.gateway.services.connection_use_service import (
     resolve_connection_use_or_hidden,
 )
 from apps.gateway.services.connection_lifecycle_service import (
+    ConnectionLifecycleBusy,
     ConnectionLifecycleHidden,
     ConnectionLifecycleService,
     ConnectionLifecycleUnavailable,
@@ -646,6 +647,14 @@ def _lock_db_connection_reference_for_registration(
             404,
             "resource.hidden",
             "Resource not found.",
+        )
+    except ConnectionLifecycleBusy:
+        db.rollback()
+        raise_api_error(
+            request,
+            503,
+            "connection.reference_busy",
+            "The DB connection reference is temporarily busy.",
         )
     except ConnectionLifecycleUnavailable:
         db.rollback()

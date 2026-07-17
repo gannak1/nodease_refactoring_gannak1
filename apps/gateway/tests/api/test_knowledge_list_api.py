@@ -1141,11 +1141,12 @@ async def test_db_process_locks_new_connection_reference_before_commit(monkeypat
         chunk_size=800,
         chunk_overlap=80,
         meta_info={},
+        updated_at=None,
     )
 
     class FakeDb:
         def commit(self):
-            events.append("commit")
+            pytest.fail("DB reference commit must use the lifecycle UoW")
 
         def rollback(self):
             events.append("rollback")
@@ -1154,8 +1155,11 @@ async def test_db_process_locks_new_connection_reference_before_commit(monkeypat
         def __init__(self, db):
             assert db is dependency_db
 
-        def lock_owned_connection_for_reference(self, **kwargs):
+        def lock_owned_connection_and_document_for_reference(self, **kwargs):
             events.append(("lock", kwargs))
+
+        def commit_reference_mutation(self):
+            events.append("commit")
 
     class FakeIngestionService:
         def __init__(self, *_args, **_kwargs):
@@ -1219,7 +1223,12 @@ async def test_db_process_locks_new_connection_reference_before_commit(monkeypat
     assert events == [
         (
             "lock",
-            {"connection_id": connection_id, "owner_id": owner_id},
+            {
+                "connection_id": connection_id,
+                "owner_id": owner_id,
+                "document_id": document_id,
+                "expected_document_updated_at": None,
+            },
         ),
         "commit",
     ]
@@ -1231,6 +1240,16 @@ async def test_db_process_locks_new_connection_reference_before_commit(monkeypat
     ("service_error", "expected_status", "expected_code"),
     [
         (knowledge_endpoint.ConnectionLifecycleHidden(), 404, "resource.hidden"),
+        (
+            knowledge_endpoint.ConnectionLifecycleBusy(),
+            503,
+            "connection.reference_busy",
+        ),
+        (
+            knowledge_endpoint.ConnectionLifecycleConflict(),
+            409,
+            "connection.reference_conflict",
+        ),
         (
             knowledge_endpoint.ConnectionLifecycleUnavailable(),
             503,
@@ -1254,7 +1273,7 @@ def test_db_connection_reference_lock_maps_safe_errors(
         def __init__(self, _db):
             pass
 
-        def lock_owned_connection_for_reference(self, **_kwargs):
+        def lock_owned_connection_and_document_for_reference(self, **_kwargs):
             raise service_error
 
     monkeypatch.setattr(
@@ -1267,7 +1286,11 @@ def test_db_connection_reference_lock_maps_safe_errors(
         knowledge_endpoint._lock_db_connection_reference(
             SimpleNamespace(state=SimpleNamespace(request_id="request-id")),
             FakeDb(),
-            document=SimpleNamespace(source_type="DB"),
+            document=SimpleNamespace(
+                id=uuid.uuid4(),
+                source_type="DB",
+                updated_at=None,
+            ),
             owner_id=uuid.uuid4(),
             db_config={"connection_id": str(uuid.uuid4())},
         )
@@ -1275,6 +1298,37 @@ def test_db_connection_reference_lock_maps_safe_errors(
     assert exc_info.value.status_code == expected_status
     assert exc_info.value.detail["error"]["code"] == expected_code
     assert rolled_back == [True]
+
+
+@pytest.mark.parametrize(
+    ("service_error", "expected_code"),
+    [
+        (
+            knowledge_endpoint.ConnectionLifecycleBusy(),
+            "connection.reference_busy",
+        ),
+        (
+            knowledge_endpoint.ConnectionLifecycleUnavailable(),
+            "connection.reference_unavailable",
+        ),
+    ],
+)
+def test_db_connection_reference_commit_maps_safe_errors(
+    service_error,
+    expected_code,
+):
+    class FailingService:
+        def commit_reference_mutation(self):
+            raise service_error
+
+    with pytest.raises(HTTPException) as exc_info:
+        knowledge_endpoint._commit_db_connection_reference(
+            SimpleNamespace(state=SimpleNamespace(request_id="request-id")),
+            FailingService(),
+        )
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail["error"]["code"] == expected_code
 
 
 def test_invalid_db_connection_reference_is_rejected_before_lock(monkeypatch):

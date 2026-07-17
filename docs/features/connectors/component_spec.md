@@ -1,7 +1,7 @@
 # Connectors Component Spec
 
 Status: Draft
-Verified Against: feature/mba-281 @ 29fb9ae845505938f6effad838c6d95d193f5ee2
+Verified Against: feature/mba-302 @ b2d6467002b7becf1daa0badfe6fc155b3edaa57
 
 ## Screens
 
@@ -124,6 +124,41 @@ File/page artifact connector는 egress guard 이후에도 artifact content를 tr
   - KB/Collection 권한, organization membership, HTTP 오류 shape와 DB protocol 정책을 소유하지 않는다.
   - Organization-scoped Connection 권한을 추측하거나 신규 permission을 만들지 않는다.
 
+### `ConnectionRuntimeSnapshotProvider`
+
+- 출처: `apps/shared/services/connection_runtime_snapshot.py`
+- 책임: 주입된 session factory로 독립 session을 열고 `ConnectionUseResolver`의 owner 판정을 재사용해 adapter type과 최소 credential configuration을 immutable snapshot으로 투영한다.
+- 경계:
+  - Password/SSH credential 복호화는 provider 안에서만 수행하고 ORM entity와 encrypted field를 processor에 반환하지 않는다.
+  - PostgreSQL database/username은 공백뿐인 값을 거부하되 저장된 text를 그대로 전달한다. 기존 password-auth SSH row에 encrypted password가 없으면 agent/default-key compatibility를 위해 `password=None`으로 투영하고 복호화를 호출하지 않는다.
+  - Success, hidden, configuration failure와 store failure 모두 transaction을 종료하고 session을 닫은 뒤 caller에 typed result/error를 반환한다.
+  - Connector 생성·dial·query, chunking과 embedding을 호출하지 않는다.
+  - Snapshot DTO는 API/metadata/audit/trace serialization 대상이 아니며 repr에 secret을 포함하지 않는다.
+
+### `ConnectionLifecycleService`
+
+- 출처: `apps/gateway/services/connection_lifecycle_service.py`
+- 책임: Connection reference 저장·교체·삭제를 owner Connection row lock으로 직렬화하고 committed Document reference 및 writer의 expected Document revision을 확인한다.
+- 경계:
+  - PostgreSQL local `lock_timeout=2s`를 적용하고 lock 획득 또는 reference mutation flush/commit의 timeout/deadlock/serialization victim을 retryable `connection.reference_busy`로 정규화한다. 기타 commit/store 오류는 전체 rollback 뒤 `connection.reference_unavailable`로 닫는다.
+  - 전역 lock 순서는 `Connection -> KnowledgeBase -> Document/DocumentVersion`이며 caller는 역순으로 이 service를 호출하지 않는다.
+  - Existing Document reference writer는 Connection 잠금 뒤 Document를 `populate_existing + FOR UPDATE`로 다시 읽고 최초 조회 `updated_at`과 다르면 `connection.reference_conflict`로 전체 rollback한다.
+  - 외부 DB/storage/provider I/O를 수행하지 않고 typed failure 뒤 전체 transaction을 rollback한다.
+  - Lock log/metric은 outcome과 coarse wait/hold bucket만 사용한다. Hold bucket은 실제 SQLAlchemy transaction 종료 시 기록한다.
+
+### Lock Compatibility Matrix
+
+| 작업 | Platform DB transaction/lock | 종료 시점 | 재시도 계약 |
+| --- | --- | --- | --- |
+| Knowledge 설정 preflight | Caller의 짧은 authorization read, row lock 없음 | 설정 검증 직후 | Hidden/configuration은 terminal, store unavailable만 surface 정책에 따라 retryable |
+| Runtime snapshot | Provider 전용 session의 짧은 owner/config read, row lock 없음 | Snapshot DTO 반환 전 commit/rollback과 close | Store unavailable만 retryable |
+| Reference 저장·교체 | Reference UoW가 `Connection`을 먼저 잠그고 이후 `KnowledgeBase -> Document/Version` 순서로 fresh lock/revision compare 후 mutation | Metadata flush/commit 또는 전체 rollback | Stale revision은 terminal `reference_conflict`, busy/store unavailable은 새 session·전체 transaction에서만 retryable |
+| Connection 삭제 | Reference UoW가 `Connection`을 잠그고 committed Document reference를 확인 | Delete commit 또는 전체 rollback | `in_use`는 terminal, busy/store unavailable만 새 요청에서 retryable |
+| 외부 DB schema/fetch | Runtime snapshot session은 닫혀 있고 Connection row lock은 없음. Gateway schema는 request transaction도 종료하며 KC sync의 document lock은 ADR-0048을 따른다. | Connector engine/tunnel 정리 | Partial result를 재사용하지 않으며 caller의 typed policy만 적용 |
+| KC source read/chunk/finalization | ADR-0048의 document advisory/target row lock과 version finalization UoW | Version CAS commit/rollback | Connection lock과 중첩하지 않고 KC item attempt 정책을 사용 |
+
+Reference UoW가 `Connection` lock을 보유한 동안 network/storage/provider 호출을 시작해서는 안 된다. 반대로 KC document/version lock을 보유한 경로는 Connection lock을 뒤늦게 획득하지 않는다.
+
 ## Interactions
 
 ### Connection Test
@@ -169,17 +204,20 @@ Docker demo Gateway는 Connector admission에만 `connector-test-redis` logical 
 
 1. Gateway는 submitted DB config의 Connection reference를 기존 opaque reference와 함께 정규화한다.
 2. Connection Use Resolver가 current user owner 조건을 확인한 뒤 allowlisted table/column/JOIN/chunk 설정만 document metadata에 저장하거나 preview runtime config로 전달한다.
-3. Background `DbProcessor`는 외부 DB dial 직전에 execution subject로 같은 resolver를 다시 호출해 최신 소유권 스냅샷을 확인한다.
-4. Connection 삭제, owner 변경, malformed/non-owner reference 또는 credential 복호화 실패는 connector 호출 전에 safe configuration/resource-hiding failure로 종료한다.
-5. Processor result와 chunk source label은 Connection id/name/host/user/credential을 포함하지 않는다.
+3. Background `DbProcessor`는 외부 DB dial 직전에 `ConnectionRuntimeSnapshotProvider`를 호출한다. Provider는 독립된 짧은 session에서 같은 resolver로 owner를 재검증하고 최소 runtime snapshot을 만든 뒤 session을 닫는다.
+4. Snapshot provider가 종료된 뒤에만 connector를 생성하고 외부 DB를 호출한다. Connection 삭제, owner 변경, malformed/non-owner reference 또는 credential 복호화 실패는 connector 호출 전에 safe configuration/resource-hiding failure로 종료한다.
+5. Runtime PostgreSQL fetch는 connect/statement timeout, batch·row·byte cap을 적용하고 취소/예외에서 adapter resource를 정리한다.
+6. Processor result와 chunk source label은 Connection id/name/host/user/credential을 포함하지 않는다.
 
 ### Schema Selection
 
 1. `DBSchemaSelector`는 `connectionId`를 받으면 `connectorApi.getSchema(connectionId)`를 호출한다.
-2. Gateway는 owner check 후 저장된 secret을 복호화해 schema를 조회한다.
-3. UI는 table/column/FK 정보를 표시한다.
-4. 사용자는 최대 2개 테이블과 필요한 컬럼을 선택한다.
-5. 선택한 컬럼 alias, 민감 컬럼, 자동 청킹, JOIN config는 부모 Knowledge 설정 state로 전달된다.
+2. Gateway는 current user ID를 scalar로 먼저 복사하고 기존 관리 API의 404/403 owner precheck를 짧은 transaction에서 수행한 뒤 rollback한다. Rollback 뒤 request-session ORM user attribute를 다시 읽지 않는다.
+3. 독립 `ConnectionRuntimeSnapshotProvider`가 owner를 다시 확인하고 최소 runtime config를 만든 뒤 session을 닫는다.
+4. PostgreSQL connector는 read-only/statement-timeout 설정으로 schema를 조회한다.
+5. UI는 table/column/FK 정보를 표시한다.
+6. 사용자는 최대 2개 테이블과 필요한 컬럼을 선택한다.
+7. 선택한 컬럼 alias, 민감 컬럼, 자동 청킹, JOIN config는 부모 Knowledge 설정 state로 전달된다.
 
 ### Connection Edit
 

@@ -1,7 +1,7 @@
 # Connectors Test Cases
 
 Status: Draft
-Verified Against: feature/mba-281 @ 29fb9ae845505938f6effad838c6d95d193f5ee2
+Verified Against: feature/mba-302 @ b2d6467002b7becf1daa0badfe6fc155b3edaa57
 
 ## Minimum Failure Rule
 
@@ -49,6 +49,17 @@ Verified Against: feature/mba-281 @ 29fb9ae845505938f6effad838c6d95d193f5ee2
 | CONN-TC-U022 | Credential 복호화 실패는 저장값 fallback 없이 닫혀야 한다. | 암호문을 password/private key로 adapter에 전달한다. | adapter 0회, raw credential/detail 비노출. |
 | CONN-TC-U023 | Connection Use Resolver 저장소 조회 실패는 typed unavailable로 정규화해야 한다. | Raw SQLAlchemy/driver 오류가 Gateway 500, processor result 또는 log에 노출된다. | Gateway는 safe `503 connection.reference_unavailable`, processor는 `source.temporarily_unavailable`, adapter 0회. |
 | CONN-TC-U024 | Resolver는 dial 시작 시점의 최신 owner를 재조회하되 runtime row lock을 소유하지 않아야 한다. | 동일 Session의 stale owner를 재사용하거나 외부 I/O 동안 Connection mutation을 불필요하게 차단한다. | PostgreSQL owner 변경을 다음 resolve가 반영하며 runtime lock protocol은 MBA-302 테스트로 분리. |
+| CONN-TC-U025 | Runtime snapshot provider는 독립 session에서 owner·credential projection을 완료하고 session 종료 뒤에만 adapter를 호출해야 한다. | Caller/request session ORM을 반환하거나 snapshot session active 상태에서 connector를 생성한다. | Adapter 호출 시 snapshot session closed, immutable safe DTO만 전달. |
+| CONN-TC-U026 | Snapshot provider의 hidden/configuration/store failure는 session과 transaction을 남기지 않아야 한다. | Error 뒤 checked-out session 또는 active transaction이 남는다. | Typed safe failure, adapter 0회, session release. |
+| CONN-TC-U027 | Snapshot DTO와 processor result는 repr/serialization에 Connection identity와 credential을 포함하지 않아야 한다. | ID/name/host/username/ciphertext/plaintext 중 하나가 노출된다. | 테스트 실패. |
+| CONN-TC-U028 | Reference lock SQLSTATE는 busy와 unavailable로 구분해야 한다. | Lock timeout/deadlock/serialization victim을 generic unavailable로 축소하거나 raw detail을 반환한다. | `connection.reference_busy`, retryable, 전체 rollback. |
+| CONN-TC-U029 | PostgreSQL runtime connector는 connect/statement timeout과 row/byte cap을 적용해야 한다. | Connect가 무기한 대기하거나 10,000 row/16 MiB 초과를 일부 성공으로 반환한다. | Safe adapter failure와 resource cleanup. |
+| CONN-TC-U030 | Lock 관측 정보는 coarse outcome/wait/hold bucket만 기록해야 한다. | Connection ID/target/SQL/credential 또는 raw driver detail을 label/log에 포함한다. | 테스트 실패. |
+| CONN-TC-U031 | Schema 관리 API는 기존 404/403 precheck transaction을 종료하고 독립 runtime snapshot session까지 닫은 뒤 inspector를 호출해야 한다. | Request ORM session 또는 snapshot session이 외부 schema I/O 동안 active다. | 기존 관리 오류 계약 유지, 외부 호출 시 platform transaction 없음. |
+| CONN-TC-U032 | Existing Document reference writer는 Connection 다음 Document를 잠그고 expected revision을 재검증해야 한다. | Concurrent settings commit을 stale writer가 덮어쓴다. | 전체 rollback과 non-retryable `connection.reference_conflict`. |
+| CONN-TC-U033 | Schema 관리 API는 request-session rollback 전에 current user ID를 scalar로 고정해야 한다. | Rollback 뒤 expired ORM user attribute를 다시 읽어 새 request transaction이 외부 schema I/O 동안 열린다. | User ID 1회 조회, precheck rollback 뒤 독립 snapshot만 사용. |
+| CONN-TC-U034 | Runtime snapshot은 stored PostgreSQL identifier와 passwordless SSH compatibility를 보존해야 한다. | database/username 앞뒤 공백을 trim하거나 `encrypted_ssh_password=NULL`을 복호화·configuration failure로 처리한다. | 공백뿐인 값만 거부하고 stored identifier text 유지, SSH password는 `None`, 불필요한 decrypt 0회. |
+| CONN-TC-U035 | Reference mutation commit 오류는 lifecycle UoW가 rollback하고 typed safe error로 변환해야 한다. | `40001`/`40P01`/`55P03`/`57014` 또는 일반 SQLAlchemy commit 오류가 500/raw detail로 노출된다. | Transient SQLSTATE는 retryable `connection.reference_busy`, 기타는 `connection.reference_unavailable`, 전체 rollback. |
 
 ## API Tests
 
@@ -129,6 +140,17 @@ Verified Against: feature/mba-281 @ 29fb9ae845505938f6effad838c6d95d193f5ee2
 | CONN-TC-X001 | `connectorApi`는 connector create/test 실패 시 raw Axios error 객체를 console에 전달하지 않아야 한다. | Axios error의 request config/data에 DB password, SSH password, private key가 포함된다. | Operation과 status만 safe warning으로 남기고 sentinel은 UI/console에 없음. |
 | CONN-TC-X002 | Secret 원문은 문서, fixture, audit metadata에 남지 않아야 한다. | DB password, SSH password, private key 원문이 문서, 테스트 fixture, audit metadata 중 하나에서 관찰된다. | 테스트 실패. |
 | CONN-TC-X003 | Redis admission은 multi-replica 경쟁에서도 rate/concurrency 상한을 넘지 않아야 한다. | 마지막 slot을 병렬 acquire하거나 wrong owner release, long-running heartbeat, stale lease, clock skew를 만든다. | Redis time/atomic script 기준 정확한 winner, owner-safe renew/release와 process crash/release-failure TTL recovery. |
+
+## MBA-302 PostgreSQL Transaction And Lock Tests
+
+| ID | 검증 조건 | 최소 실패 조건 | 기대 결과 |
+| --- | --- | --- | --- |
+| CONN-TC-PG001 | Writer가 Connection row lock을 보유할 때 contender reference/delete는 bounded wait를 사용해야 한다. | 2초를 넘겨 대기하거나 generic 500으로 끝난다. | `connection.reference_busy`, contender 전체 rollback. |
+| CONN-TC-PG002 | Busy transaction 뒤 새 session은 같은 Connection을 정상 조회·mutation할 수 있어야 한다. | Aborted transaction 또는 pool connection이 재사용된다. | 새 session 정상 동작, stale partial state 없음. |
+| CONN-TC-PG003 | Writer가 reference를 commit한 뒤 delete는 committed reference를 확인해야 한다. | Lock 경합 뒤 dangling reference를 남기며 Connection을 삭제한다. | `connection.in_use`, Connection과 Document reference 유지. |
+| CONN-TC-PG004 | Deadlock victim은 전체 rollback 뒤 새 session에서만 재시도해야 한다. | 같은 session의 partial state를 재사용하거나 raw PostgreSQL detail을 노출한다. | Retryable busy 분류, 새 transaction 정상 동작. |
+| CONN-TC-PG005 | 최초 조회 뒤 다른 session이 Document를 갱신하면 reference writer는 Connection -> Document lock 뒤 stale revision을 감지해야 한다. | 마지막 writer가 먼저 commit된 설정을 조용히 덮어쓴다. | `connection.reference_conflict`, stale transaction rollback, 먼저 commit된 값 유지. |
+| CONN-TC-PG006 | Runtime snapshot provider가 반환된 뒤 외부 fetch가 지연돼도 snapshot session은 반환돼야 한다. | 외부 DB generator가 끝날 때까지 authorization session이 checked out 상태다. | Snapshot session closed, Connection mutation 불필요한 대기 없음. |
 | CONN-TC-X004 | Admission key/member는 opaque해야 한다. | Redis key/hash/zset에 raw organization/user/network ID, host/database/username/password가 관찰된다. | HMAC identity와 random owner token만 존재. |
 | CONN-TC-X005 | Strict probe는 validated IP 한 곳에 선택된 server-owned CA file을 명시한 TLS `verify-full`로 한 번만 연결해야 한다. | Multiple DNS, rebinding, first-attempt failure, plaintext/downgrade, system/local CA 누락 또는 SAN mismatch를 유도한다. | Pinned one-attempt, no fallback/retry, target별 CA와 hostname certificate 검증. CA 누락은 startup 또는 DNS 전에 safe failure. |
 | CONN-TC-X006 | Port allowlist는 배포 관리자만 bounded 설정할 수 있어야 한다. | Empty token, duplicate, non-integer, `0`, `65536`, 17개 port를 설정하거나 request로 allowlist 밖 port를 보낸다. | Invalid 설정은 startup 실패. Request는 safe target-policy 실패이며 admission/DNS/probe 0회. |

@@ -66,6 +66,8 @@ from apps.gateway.services.ingestion.service import (
 )
 from apps.gateway.services.knowledge_candidate_resolver import KnowledgeCandidateResolver
 from apps.gateway.services.connection_lifecycle_service import (
+    ConnectionLifecycleBusy,
+    ConnectionLifecycleConflict,
     ConnectionLifecycleHidden,
     ConnectionLifecycleService,
     ConnectionLifecycleUnavailable,
@@ -2196,13 +2198,13 @@ def _lock_db_connection_reference(
     document: Document,
     owner_id: UUID,
     db_config: dict | None,
-) -> None:
+) -> ConnectionLifecycleService | None:
     if document.source_type != "DB" or not db_config:
-        return
+        return None
 
     raw_connection_id = db_config.get("connection_id")
     if raw_connection_id is None:
-        return
+        return None
     try:
         connection_id = UUID(str(raw_connection_id))
     except (TypeError, ValueError, AttributeError):
@@ -2213,10 +2215,13 @@ def _lock_db_connection_reference(
             "The DB connection reference is invalid.",
         )
 
+    lifecycle_service = ConnectionLifecycleService(db)
     try:
-        ConnectionLifecycleService(db).lock_owned_connection_for_reference(
+        lifecycle_service.lock_owned_connection_and_document_for_reference(
             connection_id=connection_id,
             owner_id=owner_id,
+            document_id=document.id,
+            expected_document_updated_at=document.updated_at,
         )
     except ConnectionLifecycleHidden:
         db.rollback()
@@ -2226,8 +2231,47 @@ def _lock_db_connection_reference(
             "resource.hidden",
             "Connection not found.",
         )
+    except ConnectionLifecycleBusy:
+        db.rollback()
+        raise_api_error(
+            request,
+            503,
+            "connection.reference_busy",
+            "The DB connection reference is temporarily busy.",
+        )
+    except ConnectionLifecycleConflict:
+        db.rollback()
+        raise_api_error(
+            request,
+            409,
+            "connection.reference_conflict",
+            "The DB connection reference changed concurrently.",
+        )
     except ConnectionLifecycleUnavailable:
         db.rollback()
+        raise_api_error(
+            request,
+            503,
+            "connection.reference_unavailable",
+            "The DB connection reference is temporarily unavailable.",
+        )
+    return lifecycle_service
+
+
+def _commit_db_connection_reference(
+    request: Request,
+    lifecycle_service: ConnectionLifecycleService,
+) -> None:
+    try:
+        lifecycle_service.commit_reference_mutation()
+    except ConnectionLifecycleBusy:
+        raise_api_error(
+            request,
+            503,
+            "connection.reference_busy",
+            "The DB connection reference is temporarily busy.",
+        )
+    except ConnectionLifecycleUnavailable:
         raise_api_error(
             request,
             503,
@@ -2275,6 +2319,7 @@ async def process_document(
         raise _chunking_http_exception(exc)
 
     validated_db_config = None
+    connection_reference_lifecycle = None
     if doc.source_type == "DB":
         validated_db_config = _validated_db_source_config_or_error(
             request,
@@ -2289,7 +2334,7 @@ async def process_document(
             raise HTTPException(
                 status_code=400, detail="선택한 테이블 간 FK 관계가 없습니다."
             )
-        _lock_db_connection_reference(
+        connection_reference_lifecycle = _lock_db_connection_reference(
             request,
             db,
             document=doc,
@@ -2328,7 +2373,10 @@ async def process_document(
 
     # 상태 업데이트 (처리 시작 전)
     mark_document_processing_queued(doc)
-    db.commit()
+    if connection_reference_lifecycle is None:
+        db.commit()
+    else:
+        _commit_db_connection_reference(request, connection_reference_lifecycle)
 
     # 3. 백그라운드 작업 시작
     ingestion_service = IngestionService(

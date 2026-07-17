@@ -12,6 +12,7 @@ class ConnectionUseDenied(Exception):
     """Hide whether a Connection exists when the subject cannot use it."""
 
     code = "resource.hidden"
+    retryable = False
 
     def __init__(self) -> None:
         super().__init__("Resource is unavailable.")
@@ -21,6 +22,7 @@ class ConnectionUseUnavailable(Exception):
     """Hide persistence details when Connection authorization cannot be read."""
 
     code = "connection.reference_unavailable"
+    retryable = True
 
     def __init__(self) -> None:
         super().__init__("Connection authorization is temporarily unavailable.")

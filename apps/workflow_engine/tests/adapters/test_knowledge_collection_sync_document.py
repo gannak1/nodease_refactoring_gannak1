@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import ANY, Mock
 
 import pytest
 from sqlalchemy import and_
@@ -17,6 +17,9 @@ from apps.shared.db.models.knowledge import (
     SourceType,
 )
 from apps.shared.domain.knowledge_collection_sync import sync_target_revision
+from apps.shared.services.connection_runtime_snapshot import (
+    ConnectionRuntimeSnapshotProvider,
+)
 from apps.workflow_engine.adapters import knowledge_collection_sync_document as adapter_module
 from apps.workflow_engine.adapters.knowledge_collection_sync_document import (
     SqlAlchemyKnowledgeCollectionSyncDocument,
@@ -166,7 +169,15 @@ def test_document_adapter_finalizes_new_version_without_legacy_replace(
         document_version_id=version.id,
     )
     finalizer.finalize_active_version.assert_called_once_with(version)
-    processor_class.assert_called_once_with(db_session=db, user_id=actor_id)
+    processor_class.assert_called_once_with(
+        db_session=db,
+        user_id=actor_id,
+        connection_snapshot_provider=ANY,
+    )
+    assert isinstance(
+        processor_class.call_args.kwargs["connection_snapshot_provider"],
+        ConnectionRuntimeSnapshotProvider,
+    )
 
 
 @pytest.mark.parametrize(
@@ -333,7 +344,15 @@ def test_connection_authorization_is_delegated_to_processor_with_actor(
     with pytest.raises(SyncTargetConfigurationInvalid):
         SqlAlchemyKnowledgeCollectionSyncDocument(db).sync(item, actor_id=actor_id)
 
-    processor_class.assert_called_once_with(db_session=db, user_id=actor_id)
+    processor_class.assert_called_once_with(
+        db_session=db,
+        user_id=actor_id,
+        connection_snapshot_provider=ANY,
+    )
+    assert isinstance(
+        processor_class.call_args.kwargs["connection_snapshot_provider"],
+        ConnectionRuntimeSnapshotProvider,
+    )
     assert "query:Connection" not in db.events
 
 

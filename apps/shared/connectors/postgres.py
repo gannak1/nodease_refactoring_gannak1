@@ -1,14 +1,10 @@
 # 실제 Postgres(Supabase) 연결 로직
+import json
 import logging
 from io import StringIO
 from typing import Any
 
 import paramiko
-from sqlalchemy import create_engine, inspect, text
-from sqlalchemy.engine import URL
-from sshtunnel import SSHTunnelForwarder
-
-from .base import BaseConnector
 from apps.shared.services.egress_guard import (
     EgressGuardError,
     ensure_db_probe_allowed,
@@ -16,6 +12,11 @@ from apps.shared.services.egress_guard import (
     ensure_ssh_tunnel_allowed,
     safe_db_fetch_batch_size,
 )
+from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.engine import URL
+from sshtunnel import SSHTunnelForwarder
+
+from .base import BaseConnector
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,9 @@ MAX_SCHEMA_TABLES = 100
 MAX_SCHEMA_COLUMNS_PER_TABLE = 100
 MAX_SCHEMA_FOREIGN_KEYS_PER_TABLE = 50
 DB_STATEMENT_TIMEOUT_MS = 5000
+DB_CONNECT_TIMEOUT_SECONDS = 5
 MAX_DB_FETCH_ROWS = 10000
+MAX_DB_FETCH_BYTES = 16 * 1024 * 1024
 
 
 class PostgresConnector(BaseConnector):
@@ -85,7 +88,15 @@ class PostgresConnector(BaseConnector):
                 allowed_ports=self.allowed_db_ports,
             )
 
-        db_query = {"hostaddr": db_hostaddr} if db_hostaddr else {}
+        db_query = {
+            "connect_timeout": str(DB_CONNECT_TIMEOUT_SECONDS),
+            "options": (
+                f"-c statement_timeout={DB_STATEMENT_TIMEOUT_MS} "
+                "-c default_transaction_read_only=on"
+            ),
+        }
+        if db_hostaddr:
+            db_query["hostaddr"] = db_hostaddr
         db_url = URL.create(
             drivername="postgresql+psycopg2",
             username=config["username"],
@@ -196,6 +207,7 @@ class PostgresConnector(BaseConnector):
     def fetch_data(self, config, query, batch_size=1000):
         engine = None
         tunnel = None
+        buffered_rows: list[dict[str, Any]] = []
         try:
             ensure_db_probe_allowed(query)
             safe_batch_size = safe_db_fetch_batch_size(batch_size)
@@ -209,6 +221,7 @@ class PostgresConnector(BaseConnector):
                 # stream_results=True는 실제 사용자 SELECT에만 적용한다.
                 result_proxy = conn.execution_options(stream_results=True).execute(text(query))
                 total_rows = 0
+                total_bytes = 0
 
                 while True:
                     rows = result_proxy.fetchmany(safe_batch_size)
@@ -218,11 +231,25 @@ class PostgresConnector(BaseConnector):
                         raise EgressGuardError("adapter.row_limit_exceeded")
                     total_rows += len(rows)
                     for row in rows:
-                        # Row 객체를 dict로 변환하여 반환
-                        yield dict(row._mapping)
+                        row_dict = dict(row._mapping)
+                        row_bytes = len(
+                            json.dumps(
+                                row_dict,
+                                ensure_ascii=False,
+                                default=str,
+                                separators=(",", ":"),
+                            ).encode("utf-8")
+                        )
+                        if total_bytes + row_bytes > MAX_DB_FETCH_BYTES:
+                            raise EgressGuardError("adapter.byte_limit_exceeded")
+                        total_bytes += row_bytes
+                        buffered_rows.append(row_dict)
 
         finally:
             if engine:
                 engine.dispose()
             if tunnel:
                 tunnel.stop()
+
+        # Cap 검증과 connector cleanup이 끝난 결과만 caller에 전달한다.
+        yield from buffered_rows

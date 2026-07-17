@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from apps.gateway.api.v1.endpoints import rag as rag_endpoint
 from apps.gateway.services.connection_lifecycle_service import (
+    ConnectionLifecycleBusy,
     ConnectionLifecycleHidden,
     ConnectionLifecycleUnavailable,
 )
@@ -531,6 +532,7 @@ def test_upload_route_parses_each_source_type_and_uses_canonical_registration(
     ("error", "status_code", "reason_code"),
     [
         (ConnectionLifecycleHidden(), 404, "resource.hidden"),
+        (ConnectionLifecycleBusy(), 503, "connection.reference_busy"),
         (
             ConnectionLifecycleUnavailable(),
             503,

@@ -72,6 +72,7 @@ ADR 본문은 작성 시점의 결정 과정을 보존하는 기록 문서다. `
 | [ADR-0049](ADR-0049-connector-test-security-boundary.md) | Accepted | Connector 연결 테스트 보안 경계 | `/connectors/test`를 authenticated active-organization capability로 제한하고 Redis 분산 admission, 기본 public PostgreSQL 및 explicit development exact-target TLS/pinning, bounded ingress/timeout과 오류 비노출을 강제한다. Local demo는 TLS-only 최소권한 DB, ephemeral CA signing key와 분리 volume을 사용하며 SSH와 운영 private-network test는 승인 정책 전까지 거부한다. |
 | [ADR-0050](ADR-0050-workflow-generic-http-egress-boundary.md) | Accepted | Workflow Generic HTTP egress 경계 | Generic HTTP를 application outbound port와 공통 guard에 연결하고 검증된 IP로 dial해 DNS rebinding을 차단한다. Redirect는 추적하지 않고 기존 HTTPX/provider 계약을 유지하며, Worker NetworkPolicy는 private·metadata direct egress를 추가로 차단한다. |
 | [ADR-0051](ADR-0051-connection-use-authorization-boundary.md) | Accepted | Connection 사용 권한 경계 | 현재 user-owned Connection은 실행 주체 본인 소유일 때만 Knowledge DB ingestion에 사용할 수 있다. Shared resolver가 설정 저장과 dial 직전에 권한 스냅샷을 재검증하고 non-owner/missing reference를 resource hiding으로 처리한다. Runtime transaction/lock protocol은 MBA-302에서 별도로 결정한다. |
+| [ADR-0053](ADR-0053-connection-transaction-and-lock-boundary.md) | Accepted | Connection transaction과 lock 경계 | Runtime DB use는 독립된 짧은 session에서 immutable credential snapshot을 만든 뒤 session을 닫고 외부 I/O를 시작한다. Reference mutation만 `Connection -> KnowledgeBase -> Document/Version` 순서의 bounded row lock과 stale revision 검사를 사용하며 timeout/deadlock은 safe transient 오류로 처리한다. |
 
 ## 참고 보고서
 

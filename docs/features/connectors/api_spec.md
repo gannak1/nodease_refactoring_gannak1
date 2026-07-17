@@ -1,7 +1,7 @@
 # Connectors API Spec
 
 Status: Draft
-Verified Against: feature/mba-246 @ 8d02b4fb7c15f5737ea5ef16af616f7866329825
+Verified Against: feature/mba-302 @ b2d6467002b7becf1daa0badfe6fc155b3edaa57
 
 기본 경로: `/api/v1`
 
@@ -11,8 +11,9 @@ Verified Against: feature/mba-246 @ 8d02b4fb7c15f5737ea5ef16af616f7866329825
 | --- | --- | --- | --- |
 | POST | `/connectors/test` | 기본 public PostgreSQL 또는 development exact-local PostgreSQL 연결 정보를 저장하지 않고 실제 접속 가능 여부를 테스트한다. | `auth_token`, active `X-Organization-Id` |
 | POST | `/connectors` | DB/SSH 연결을 테스트한 뒤 secret을 암호화해 `connections`에 저장한다. | `auth_token` 쿠키 필요 |
+| DELETE | `/connectors/{connection_id}` | Owner Connection을 잠그고 committed Knowledge document reference가 없을 때 삭제한다. | `auth_token` 쿠키 및 owner |
 | GET | `/connectors/{connection_id}` | 저장된 connection 상세를 조회한다. Secret은 반환하지 않는다. | `auth_token` 쿠키 및 owner |
-| GET | `/connectors/{connection_id}/schema` | 저장된 connection secret을 서버에서 복호화해 DB schema를 조회한다. | `auth_token` 쿠키 및 owner |
+| GET | `/connectors/{connection_id}/schema` | 짧은 owner precheck와 독립 runtime snapshot을 거쳐 저장된 DB schema를 조회한다. | `auth_token` 쿠키 및 owner |
 
 ## Request And Response Models
 
@@ -171,6 +172,21 @@ Host-run demo는 선택적으로 `CONNECTOR_TEST_REDIS_URL`을 loopback-publishe
 
 Client의 `connectorApi.getConnectionDetails`는 이 wire shape를 form용 `DBConfig`로 변환한다. `connection_name`은 `connectionName`, `ssh.auth_type`은 `ssh.authType`으로 바꾸고 응답에 없는 secret 입력은 빈 값으로 둔다.
 
+### `DELETE /connectors/{connection_id}`
+
+요청 본문: 없음.
+
+인증 입력: `auth_token` 쿠키.
+
+동작:
+
+1. 현재 사용자가 owner인 Connection row를 PostgreSQL local 2초 timeout으로 잠근다.
+2. Committed Knowledge Document metadata의 canonical/legacy Connection reference를 재검사한다.
+3. Reference가 없으면 같은 transaction에서 Connection을 삭제한다.
+4. Lock timeout/deadlock/serialization failure는 transaction을 rollback하고 `503 connection.reference_busy`로 닫는다. 같은 transaction의 부분 상태를 재사용하거나 내부에서 자동 재시도하지 않는다.
+
+성공 응답: `204 No Content`.
+
 ### `GET /connectors/{connection_id}/schema`
 
 요청 본문: 없음.
@@ -179,10 +195,9 @@ Client의 `connectorApi.getConnectionDetails`는 이 wire shape를 form용 `DBCo
 
 동작:
 
-1. connection row를 조회한다.
-2. 현재 사용자가 owner인지 확인한다.
-3. DB password와 필요한 SSH secret을 서버에서 복호화한다.
-4. adapter의 schema introspection을 호출한다.
+1. 짧은 request transaction에서 connection 존재와 현재 사용자 owner 여부를 확인해 기존 404/403 관리 계약을 적용하고 transaction을 rollback한다.
+2. 독립 runtime snapshot session에서 owner를 다시 확인하고 DB password와 필요한 SSH secret을 최소 immutable DTO로 복호화한 뒤 session을 닫는다.
+3. Snapshot session 종료 뒤 adapter의 read-only, connect/statement-timeout schema introspection을 호출한다.
 
 성공 응답: `200 OK`.
 
@@ -256,8 +271,14 @@ HTTP 예외는 Gateway 공통 `detail` 응답을 사용하고, 검증 오류는 
 | 400 | `POST /connectors` | `지원하지 않는 DB타입입니다.` | 지원하지 않는 DB 타입이다. |
 | 400 | `POST /connectors` | Safe timeout/connection message 또는 `connector.connection_failed` | 저장 전 접속 테스트가 실패하거나 timeout/adapter 예외가 발생한다. |
 | 500 | `POST /connectors` | `connection_config.encrypt_failed` | secret 암호화에 실패한다. |
+| 404 | `DELETE /connectors/{connection_id}` | `resource.hidden` | Connection이 없거나 current user owner가 아니다. |
+| 409 | `DELETE /connectors/{connection_id}` | `connection.in_use` | Committed Knowledge Document reference가 남아 있다. |
+| 503 | `DELETE /connectors/{connection_id}` | `connection.reference_busy` | Bounded row lock timeout, deadlock victim 또는 serialization failure다. 새 요청/transaction에서만 재시도할 수 있다. |
+| 503 | `DELETE /connectors/{connection_id}` | `connection.delete_unavailable` | 기타 Connection lifecycle 저장소 장애다. |
 | 404 | `GET /connectors/{connection_id}`, `GET /connectors/{connection_id}/schema` | `Connection not found` | connection id를 찾을 수 없다. |
 | 403 | `GET /connectors/{connection_id}`, `GET /connectors/{connection_id}/schema` | `Not authorized` | connection owner가 아니다. |
+| 404 | `GET /connectors/{connection_id}/schema` | `resource.hidden` | 관리 precheck 뒤 owner가 변경·삭제되어 runtime snapshot 재검증이 실패한다. |
+| 503 | `GET /connectors/{connection_id}/schema` | `connection.reference_unavailable` | 관리 precheck 또는 runtime snapshot 저장소 조회가 일시적으로 실패한다. |
 | 500 | `GET /connectors/{connection_id}/schema` | `connection_config.decrypt_failed` | 저장된 secret 복호화에 실패한다. |
 | 400 | `GET /connectors/{connection_id}/schema` | `Unsupported DB type` | 저장된 connection type에 맞는 adapter가 없다. |
 | 400 | `GET /connectors/{connection_id}/schema` | `connector.schema_fetch_failed` | schema introspection이 실패한다. |
@@ -269,6 +290,7 @@ Connector test의 429 `Retry-After`는 Redis state 또는 local busy 정책에�
 
 - `POST /connectors/test`는 `get_current_user`와 active `X-Organization-Id` membership을 요구한다. Active member/manager 모두 test할 수 있다.
 - `POST /connectors`는 `auth_token` 쿠키로 현재 사용자를 식별해야 하며, 생성된 row의 `user_id`는 현재 사용자 ID이다.
+- `DELETE /connectors/{connection_id}`는 current user owner만 허용하고 참조 중인 Connection 삭제를 거부한다.
 - `GET /connectors/{connection_id}`와 `GET /connectors/{connection_id}/schema`는 current user가 `connections.user_id`와 같을 때만 허용한다.
 - 현재 connectors API는 organization/team resource permission table을 사용하지 않는다.
 - 현재 `connections`에는 `organization_id`가 없으므로 workflow/KB 권한이 connection 사용 권한을 자동으로 대체하지 않는다.

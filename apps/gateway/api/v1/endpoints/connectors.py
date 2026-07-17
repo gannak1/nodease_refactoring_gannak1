@@ -6,6 +6,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from pydantic import ValidationError
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.requests import ClientDisconnect
 
@@ -33,6 +34,7 @@ from apps.gateway.middleware.webhook_query_redaction import (
 from apps.gateway.services.organization_context import resolve_active_organization_id
 from apps.gateway.utils.api_errors import error_detail, raise_api_error
 from apps.gateway.services.connection_lifecycle_service import (
+    ConnectionLifecycleBusy,
     ConnectionLifecycleHidden,
     ConnectionLifecycleInUse,
     ConnectionLifecycleService,
@@ -44,12 +46,21 @@ from apps.shared.audit.actions import AuditAction
 from apps.shared.connectors.postgres import PostgresConnector
 from apps.shared.db.models.connection import Connection
 from apps.shared.db.models.user import User
+from apps.shared.db.session import SessionLocal
 from apps.shared.schemas.connector import (
     ConnectorTestRequest,
     DBConnectionTestRequest,
     DBConnectionTestResponse,
 )
 from apps.shared.schemas.connector_detail import DBConnectionDetailResponse
+from apps.shared.services.connection_runtime_snapshot import (
+    ConnectionRuntimeSnapshotConfigurationInvalid,
+    ConnectionRuntimeSnapshotProvider,
+)
+from apps.shared.services.connection_use_resolver import (
+    ConnectionUseDenied,
+    ConnectionUseUnavailable,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -373,6 +384,11 @@ def delete_connection(
             status_code=409,
             detail={"reason_code": "connection.in_use"},
         )
+    except ConnectionLifecycleBusy:
+        raise HTTPException(
+            status_code=503,
+            detail={"reason_code": "connection.reference_busy"},
+        )
     except ConnectionLifecycleUnavailable:
         raise HTTPException(
             status_code=503,
@@ -429,58 +445,41 @@ async def get_connection_schema(
 ) -> Any:
     """
     **DB 스키마 조회 API**
-    저장된 연결 정보를 복호화하여 DB에 접속하고, 테이블 정보를 가져옵니다.
+    독립된 짧은 snapshot transaction에서 연결 정보를 해석한 뒤 DB schema를 조회합니다.
     """
-    connection = db.query(Connection).filter(Connection.id == connection_id).first()
-    if not connection:
-        raise HTTPException(status_code=404, detail="Connection not found")
-    if connection.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not authorized")
-    # 복호화 및 설정 재구성
+    current_user_id = current_user.id
+    normalized_connection_id = _authorize_connection_schema_management(
+        db,
+        connection_id=connection_id,
+        current_user_id=current_user_id,
+    )
     try:
-        password = encryption_manager.decrypt(connection.encrypted_password)
-        ssh_config = None
-        if connection.use_ssh:
-            ssh_password = None
-            ssh_private_key = None
-            if connection.encrypted_ssh_password:
-                ssh_password = encryption_manager.decrypt(
-                    connection.encrypted_ssh_password
-                )
-            if connection.encrypted_ssh_private_key:
-                ssh_private_key = encryption_manager.decrypt(
-                    connection.encrypted_ssh_private_key
-                )
-            ssh_config = {
-                "enabled": True,
-                "host": connection.ssh_host,
-                "port": connection.ssh_port,
-                "username": connection.ssh_username,
-                "auth_type": connection.ssh_auth_type,
-                "password": ssh_password,
-                "private_key": ssh_private_key,
-            }
-        config = {
-            "type": connection.type,
-            "host": connection.host,
-            "port": connection.port,
-            "database": connection.database,
-            "username": connection.username,
-            "password": password,
-            "ssh": ssh_config,
-        }
-    except Exception as e:
-        logger.error("Connection config decryption failed: %s", type(e).__name__)
+        snapshot = ConnectionRuntimeSnapshotProvider(SessionLocal).load(
+            normalized_connection_id,
+            execution_subject_user_id=current_user_id,
+        )
+    except ConnectionUseDenied:
+        raise HTTPException(
+            status_code=404,
+            detail={"reason_code": "resource.hidden"},
+        )
+    except ConnectionUseUnavailable:
+        raise HTTPException(
+            status_code=503,
+            detail={"reason_code": "connection.reference_unavailable"},
+        )
+    except ConnectionRuntimeSnapshotConfigurationInvalid:
         raise HTTPException(
             status_code=500,
             detail={"reason_code": "connection_config.decrypt_failed"},
         )
-    connector_class = CONNECTOR_MAP.get(connection.type)
+
+    connector_class = CONNECTOR_MAP.get(snapshot.adapter_type)
     if not connector_class:
         raise HTTPException(status_code=400, detail="Unsupported DB type")
     try:
         connector = _build_workflow_connector(connector_class)
-        tables = connector.get_schema_info(config)
+        tables = connector.get_schema_info(snapshot.to_connector_config())
         return {"tables": tables}
     except Exception as e:
         logger.error("Schema fetch failed: %s", type(e).__name__)
@@ -488,3 +487,35 @@ async def get_connection_schema(
             status_code=400,
             detail={"reason_code": "connector.schema_fetch_failed"},
         )
+
+
+def _authorize_connection_schema_management(
+    db: Session,
+    *,
+    connection_id: str,
+    current_user_id: UUID,
+) -> UUID:
+    try:
+        normalized_connection_id = UUID(str(connection_id))
+    except (AttributeError, TypeError, ValueError):
+        raise HTTPException(status_code=404, detail="Connection not found") from None
+
+    try:
+        owner_row = (
+            db.query(Connection.user_id)
+            .filter(Connection.id == normalized_connection_id)
+            .one_or_none()
+        )
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(
+            status_code=503,
+            detail={"reason_code": "connection.reference_unavailable"},
+        ) from None
+
+    db.rollback()
+    if owner_row is None:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    if owner_row[0] != current_user_id:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    return normalized_connection_id

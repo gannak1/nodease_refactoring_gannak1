@@ -1,6 +1,7 @@
 import socket
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from cryptography.fernet import Fernet
@@ -795,6 +796,116 @@ def test_postgres_connector_fails_closed_when_row_cap_exceeded(monkeypatch):
     assert exc_info.value.reason_code == "adapter.row_limit_exceeded"
 
 
+def test_postgres_connector_fails_closed_when_byte_cap_exceeded(monkeypatch):
+    class FakeRow:
+        _mapping = {"content": "larger-than-test-cap"}
+
+    class FakeResult:
+        def __init__(self):
+            self.returned = False
+
+        def fetchmany(self, batch_size):
+            if self.returned:
+                return []
+            self.returned = True
+            return [FakeRow()]
+
+    result = FakeResult()
+
+    class FakeConnection:
+        def execution_options(self, **kwargs):
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def execute(self, query):
+            if str(query).startswith("SET "):
+                return SimpleNamespace()
+            return result
+
+    class FakeEngine:
+        def connect(self):
+            return FakeConnection()
+
+        def dispose(self):
+            pass
+
+    connector = PostgresConnector()
+    monkeypatch.setattr("apps.shared.connectors.postgres.MAX_DB_FETCH_BYTES", 8)
+    monkeypatch.setattr(
+        connector,
+        "_create_tunnel_and_engine",
+        lambda config: (FakeEngine(), None),
+    )
+
+    with pytest.raises(EgressGuardError) as exc_info:
+        list(connector.fetch_data({}, "SELECT * FROM users", batch_size=10))
+
+    assert exc_info.value.reason_code == "adapter.byte_limit_exceeded"
+
+
+def test_postgres_connector_cleans_up_before_returning_buffered_rows(monkeypatch):
+    events = []
+
+    class FakeRow:
+        _mapping = {"id": 1}
+
+    class FakeResult:
+        def __init__(self):
+            self.returned = False
+
+        def fetchmany(self, batch_size):
+            if self.returned:
+                return []
+            self.returned = True
+            return [FakeRow()]
+
+    result = FakeResult()
+
+    class FakeConnection:
+        def execution_options(self, **kwargs):
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            events.append("connection_closed")
+
+        def execute(self, query):
+            if str(query).startswith("SET "):
+                return SimpleNamespace()
+            return result
+
+    class FakeEngine:
+        def connect(self):
+            return FakeConnection()
+
+        def dispose(self):
+            events.append("engine_disposed")
+
+    class FakeTunnel:
+        def stop(self):
+            events.append("tunnel_stopped")
+
+    connector = PostgresConnector()
+    monkeypatch.setattr(
+        connector,
+        "_create_tunnel_and_engine",
+        lambda config: (FakeEngine(), FakeTunnel()),
+    )
+
+    generator = connector.fetch_data({}, "SELECT * FROM users", batch_size=10)
+    first_row = next(generator)
+
+    assert first_row == {"id": 1}
+    assert events == ["connection_closed", "engine_disposed", "tunnel_stopped"]
+
+
 def test_postgres_connector_pins_resolved_hostaddr(monkeypatch):
     captured = {}
 
@@ -829,6 +940,10 @@ def test_postgres_connector_pins_resolved_hostaddr(monkeypatch):
     assert engine is not None
     assert captured["url"].host == "db.example.com"
     assert captured["url"].query["hostaddr"] == "8.8.8.8"
+    assert captured["url"].query["connect_timeout"] == "5"
+    assert captured["url"].query["options"] == (
+        "-c statement_timeout=5000 -c default_transaction_read_only=on"
+    )
 
 
 def test_postgres_schema_info_applies_table_column_and_fk_caps(monkeypatch):
@@ -884,31 +999,23 @@ def test_postgres_schema_info_applies_table_column_and_fk_caps(monkeypatch):
 
 
 def test_connector_schema_endpoint_returns_safe_error(monkeypatch):
-    class FakeQuery:
-        def filter(self, *args, **kwargs):
-            return self
+    connection_id = "11111111-1111-1111-1111-111111111111"
 
-        def first(self):
-            return SimpleNamespace(
-                type=connectors_endpoint.SupportedDBType.POSTGRES,
-                user_id="user-id",
-                host="db.example.com",
-                port=5432,
-                database="app",
-                username="user",
-                encrypted_password="encrypted",
-                use_ssh=False,
-                ssh_host=None,
-                ssh_port=None,
-                ssh_username=None,
-                ssh_auth_type=None,
-                encrypted_ssh_password=None,
-                encrypted_ssh_private_key=None,
-            )
+    class FakeSnapshot:
+        adapter_type = "postgres"
 
-    class FakeDb:
-        def query(self, model):
-            return FakeQuery()
+        @staticmethod
+        def to_connector_config():
+            return {"host": "db.example.test", "password": "test-value"}
+
+    class FakeSnapshotProvider:
+        def __init__(self, _session_factory):
+            pass
+
+        def load(self, resolved_connection_id, *, execution_subject_user_id):
+            assert str(resolved_connection_id) == connection_id
+            assert execution_subject_user_id == "user-id"
+            return FakeSnapshot()
 
     class FailingConnector:
         def get_schema_info(self, config):
@@ -920,22 +1027,69 @@ def test_connector_schema_endpoint_returns_safe_error(monkeypatch):
         FailingConnector,
     )
     monkeypatch.setattr(
-        connectors_endpoint.encryption_manager,
-        "decrypt",
-        lambda value: "decrypted",
+        connectors_endpoint,
+        "ConnectionRuntimeSnapshotProvider",
+        FakeSnapshotProvider,
+    )
+    monkeypatch.setattr(
+        connectors_endpoint,
+        "_authorize_connection_schema_management",
+        lambda _db, **_kwargs: connection_id,
     )
 
     with pytest.raises(Exception) as exc_info:
         asyncio.run(
             connectors_endpoint.get_connection_schema(
-                connection_id="11111111-1111-1111-1111-111111111111",
-                db=FakeDb(),
+                connection_id=connection_id,
+                db=SimpleNamespace(),
                 current_user=SimpleNamespace(id="user-id"),
             )
         )
 
     assert getattr(exc_info.value, "status_code", None) == 400
     assert exc_info.value.detail == {"reason_code": "connector.schema_fetch_failed"}
+
+
+def test_connector_schema_endpoint_hides_denied_connection_before_dial(monkeypatch):
+    connector = Mock()
+    connection_id = "11111111-1111-1111-1111-111111111111"
+
+    class DeniedSnapshotProvider:
+        def __init__(self, _session_factory):
+            pass
+
+        def load(self, _connection_id, *, execution_subject_user_id):
+            assert execution_subject_user_id == "user-id"
+            raise connectors_endpoint.ConnectionUseDenied()
+
+    monkeypatch.setattr(
+        connectors_endpoint,
+        "ConnectionRuntimeSnapshotProvider",
+        DeniedSnapshotProvider,
+    )
+    monkeypatch.setattr(
+        connectors_endpoint,
+        "_build_workflow_connector",
+        connector,
+    )
+    monkeypatch.setattr(
+        connectors_endpoint,
+        "_authorize_connection_schema_management",
+        lambda _db, **_kwargs: connection_id,
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        asyncio.run(
+            connectors_endpoint.get_connection_schema(
+                connection_id=connection_id,
+                db=SimpleNamespace(),
+                current_user=SimpleNamespace(id="user-id"),
+            )
+        )
+
+    assert getattr(exc_info.value, "status_code", None) == 404
+    assert exc_info.value.detail == {"reason_code": "resource.hidden"}
+    connector.assert_not_called()
 
 
 def test_create_connection_returns_safe_connection_error(monkeypatch):

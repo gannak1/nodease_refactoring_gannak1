@@ -1,7 +1,7 @@
 # Knowledge API Spec
 
 Status: Draft
-Verified Against: feature/mba-281 @ 29fb9ae845505938f6effad838c6d95d193f5ee2
+Verified Against: feature/mba-302 @ b2d6467002b7becf1daa0badfe6fc155b3edaa57
 이 문서는 Knowledge feature의 현재 API baseline과 목표 KB 통합 API 계약을 함께 기록한다. MBA-105 목표 API는 [ADR-0017](../../decisions/ADR-0017-knowledge-integration-provisional-implementation-baseline.md)의 임시 구현 baseline, Workflow RAG anonymous public-only runtime은 [ADR-0018](../../decisions/ADR-0018-workflow-rag-anonymous-public-only-runtime.md), MCP/API source connector와 incremental sync 경계는 [ADR-0020](../../decisions/ADR-0020-knowledge-mcp-incremental-sync-boundary.md), MBA-231 위임 관리와 KB RBAC cutover는 [ADR-0034](../../decisions/ADR-0034-knowledge-delegated-administration-and-rbac-boundary.md), direct KB와 명시 selected Collection의 internal runtime resolver는 [ADR-0036](../../decisions/ADR-0036-knowledge-runtime-candidate-resolution.md), KC 운영 관리 계약은 [ADR-0044](../../decisions/ADR-0044-knowledge-collection-operational-management-boundary.md), 세부 구현 기준은 [implementation_baseline.md](implementation_baseline.md)를 따른다. Knowledge Skill 관련 API 경계는 [ADR-0015](../../decisions/ADR-0015-knowledge-skill-context-routing-boundary.md)를 따른다.
 KC sync 요청·상태 조회와 durable execution 계약은 [ADR-0048](../../decisions/ADR-0048-knowledge-collection-sync-execution-boundary.md)을 따른다.
 
@@ -15,7 +15,7 @@ KC sync 요청·상태 조회와 durable execution 계약은 [ADR-0048](../../de
 | GET | `/api/v1/knowledge/{kb_id}` | 현재 KB 상세와 문서 상태 | Active organization + KB `read`. Detail capability는 `can_read/use/write/read_content/manage`와 빈 active manual KB에 최초 source를 등록할 수 있는 `can_register_initial_document`를 반환한다 |
 | GET | `/api/v1/knowledge/{kb_id}/documents/{document_id}/edit-config` | Document preview/process 설정 복원 | Active organization + KB `write`. Bounded property/aggregate/serialized-size allowlist만 반환하고 read detail과 encrypted source config를 재사용하지 않는다. 성공 응답은 `Cache-Control: no-store`다 |
 | POST | `/api/v1/knowledge/{kb_id}/documents/{document_id}/preview` | Document 설정 미리보기 | Active organization + KB `write`. DB source는 submitted/fallback opaque Connection reference가 current user 소유인지 확인한 뒤 processor를 호출한다. Resolver 저장소 장애는 `503 connection.reference_unavailable`, processor 직전 재검증의 temporary failure는 `503 source.temporarily_unavailable`로 닫는다 |
-| POST | `/api/v1/knowledge/{kb_id}/documents/{document_id}/process` | Document 설정 저장 및 background ingestion | Active organization + KB `write`. DB source는 Connection owner 검증과 설정 allowlist를 통과한 뒤 owner Connection row를 잠그고 metadata commit까지 유지해 Connector 삭제와 직렬화한다. Background processor는 dial 직전에 같은 owner 정책을 재검증한다. Missing/malformed/other-owner reference는 `404 resource.hidden`, persistence failure는 `503 connection.reference_unavailable`로 닫는다 |
+| POST | `/api/v1/knowledge/{kb_id}/documents/{document_id}/process` | Document 설정 저장 및 background ingestion | Active organization + KB `write`. DB source는 Connection owner 검증과 설정 allowlist를 통과한 뒤 owner Connection row를 잠그고 metadata commit까지 유지해 Connector 삭제와 직렬화한다. Background processor는 dial 직전에 같은 owner 정책을 재검증한다. Missing/malformed/other-owner reference는 `404 resource.hidden`, lock 또는 commit의 transient contention은 `503 connection.reference_busy`, 기타 persistence failure는 `503 connection.reference_unavailable`로 닫는다 |
 | GET | `/api/v1/knowledge/{kb_id}/safe-metadata` | allowlisted KB recommendation metadata 조회 | active organization, KB `manage`; 권한 없는 resource는 404로 숨긴다 |
 | PATCH | `/api/v1/knowledge/{kb_id}/safe-metadata` | `safe_label`, `kb_safe_description`, `kb_safe_topics` 수정 | active organization, KB `manage`, sanitizer, audit. 일반 KB 설정 PATCH와 분리한다 |
 | POST | `/api/v1/knowledge/{kb_id}/archive`, `/restore` | Manual KB lifecycle 전이 | KB `manage` 또는 domain `lifecycle_manage`; source-managed KB는 source-owned로 차단 |
@@ -361,7 +361,10 @@ DB source registration은 같은 Connection row lock을 commit까지 유지해 r
 Connection을 자동 삭제하지 않는다. 기존 DB Document의 process 설정에서 새
 `db_config.connection_id`를 저장할 때도 같은 owner-scoped Connection row lock을 metadata
 commit까지 유지한다. 따라서 delete가 먼저 commit되면 설정 저장은 `404 resource.hidden`,
-설정 저장이 먼저 commit되면 delete는 `409 connection.in_use`로 닫힌다.
+설정 저장이 먼저 commit되면 delete는 `409 connection.in_use`로 닫힌다. 설정 화면의 최초
+조회 뒤 다른 요청이 같은 Document를 먼저 갱신하면 Connection 다음 Document를 잠근 writer가
+`updated_at`을 재검증하고 stale 요청을 `409 connection.reference_conflict`로 전체 rollback한다.
+Reference metadata commit에서 발생한 PostgreSQL `40001`, `40P01`, `55P03`, `57014`도 lock 획득 실패와 같은 `503 connection.reference_busy`로 정규화하고, 기타 SQLAlchemy commit 오류는 `503 connection.reference_unavailable`로 닫는다. 두 경우 모두 background ingestion을 등록하지 않고 전체 transaction을 rollback한다.
 
 Direct resource는 active organization으로 먼저 scope를 고정한다. Unknown,
 cross-organization, deleted 또는 invisible resource는 `404 resource.hidden`,

@@ -6,11 +6,15 @@ from unittest.mock import Mock
 import pytest
 from apps.shared.db.models.connection import Connection
 from apps.shared.db.models.user import User
+from apps.shared.services.connection_runtime_snapshot import (
+    ConnectionRuntimeSnapshot,
+    ConnectionRuntimeSnapshotProvider,
+)
+from apps.shared.services.connection_use_resolver import ConnectionUseUnavailable
 from apps.shared.services.ingestion.processors.db_processor import DbProcessor
 from apps.shared.utils.encryption import encryption_manager
 from sqlalchemy import create_engine, update
-from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 
 @pytest.fixture
@@ -70,6 +74,17 @@ def _source_config(connection_id: object) -> dict[str, object]:
     }
 
 
+def _processor(db_session: Session, *, user_id: uuid.UUID) -> DbProcessor:
+    snapshot_provider = ConnectionRuntimeSnapshotProvider(
+        sessionmaker(bind=db_session.get_bind())
+    )
+    return DbProcessor(
+        db_session=db_session,
+        user_id=user_id,
+        connection_snapshot_provider=snapshot_provider,
+    )
+
+
 def _assert_safe_denial(result) -> None:
     assert result.chunks == []
     assert result.metadata["error_code"] == "configuration_invalid"
@@ -94,7 +109,7 @@ def test_other_users_connection_is_denied_before_adapter_creation(
         connection_id=connection_id,
         owner_id=owner_id,
     )
-    processor = DbProcessor(db_session=db_session, user_id=actor_id)
+    processor = _processor(db_session, user_id=actor_id)
     connector_factory = Mock()
     processor._get_connector = connector_factory
 
@@ -109,7 +124,7 @@ def test_invalid_connection_reference_is_denied_before_adapter_creation(
     db_session: Session,
     connection_reference: object,
 ) -> None:
-    processor = DbProcessor(db_session=db_session, user_id=uuid.uuid4())
+    processor = _processor(db_session, user_id=uuid.uuid4())
     connector_factory = Mock()
     processor._get_connector = connector_factory
 
@@ -120,9 +135,13 @@ def test_invalid_connection_reference_is_denied_before_adapter_creation(
 
 
 def test_connection_lookup_failure_is_safe_and_does_not_create_adapter() -> None:
-    db_session = Mock()
-    db_session.query.side_effect = SQLAlchemyError("sensitive backend detail")
-    processor = DbProcessor(db_session=db_session, user_id=uuid.uuid4())
+    snapshot_provider = Mock()
+    snapshot_provider.load.side_effect = ConnectionUseUnavailable()
+    processor = DbProcessor(
+        db_session=Mock(),
+        user_id=uuid.uuid4(),
+        connection_snapshot_provider=snapshot_provider,
+    )
     connector_factory = Mock()
     processor._get_connector = connector_factory
 
@@ -153,7 +172,7 @@ def test_deleted_connection_is_denied_before_adapter_creation(
         Connection.__table__.delete().where(Connection.id == connection_id)
     )
     db_session.commit()
-    processor = DbProcessor(db_session=db_session, user_id=owner_id)
+    processor = _processor(db_session, user_id=owner_id)
     connector_factory = Mock()
     processor._get_connector = connector_factory
 
@@ -182,7 +201,7 @@ def test_ownership_change_is_denied_before_adapter_creation(
         .values(user_id=new_owner_id)
     )
     db_session.commit()
-    processor = DbProcessor(db_session=db_session, user_id=owner_id)
+    processor = _processor(db_session, user_id=owner_id)
     connector_factory = Mock()
     processor._get_connector = connector_factory
 
@@ -205,7 +224,7 @@ def test_credential_decryption_failure_does_not_dial_adapter(
         owner_id=owner_id,
     )
     connector = Mock()
-    processor = DbProcessor(db_session=db_session, user_id=owner_id)
+    processor = _processor(db_session, user_id=owner_id)
     processor._get_connector = Mock(return_value=connector)
     monkeypatch.setattr(
         encryption_manager,
@@ -239,7 +258,7 @@ def test_owner_path_uses_connection_without_exposing_connection_detail(
     )
     connector = Mock()
     connector.fetch_data.return_value = [{"id": 1}]
-    processor = DbProcessor(db_session=db_session, user_id=owner_id)
+    processor = _processor(db_session, user_id=owner_id)
     processor._get_connector = Mock(return_value=connector)
     monkeypatch.setattr(encryption_manager, "decrypt", Mock(return_value="test-value"))
 
@@ -253,4 +272,42 @@ def test_owner_path_uses_connection_without_exposing_connection_detail(
     assert "db.internal.example" not in serialized
     assert "service-user" not in serialized
     assert "opaque-ciphertext" not in serialized
+    connector.fetch_data.assert_called_once()
+
+
+def test_processor_creates_connector_only_after_snapshot_provider_returns() -> None:
+    state = {"snapshot_complete": False}
+    snapshot = ConnectionRuntimeSnapshot(
+        adapter_type="postgres",
+        host="db.example.test",
+        port=5432,
+        database="application",
+        username="runtime-user",
+        password="test-value",
+    )
+    snapshot_provider = Mock()
+
+    def load_snapshot(*_args, **_kwargs):
+        state["snapshot_complete"] = True
+        return snapshot
+
+    snapshot_provider.load.side_effect = load_snapshot
+    connector = Mock()
+    connector.fetch_data.return_value = []
+    processor = DbProcessor(
+        db_session=Mock(),
+        user_id=uuid.uuid4(),
+        connection_snapshot_provider=snapshot_provider,
+    )
+
+    def build_connector(_adapter_type):
+        assert state["snapshot_complete"] is True
+        return connector
+
+    processor._get_connector = Mock(side_effect=build_connector)
+
+    result = processor.process(_source_config(uuid.uuid4()))
+
+    assert result.metadata == {"source_type": "DB"}
+    processor._get_connector.assert_called_once_with("postgres")
     connector.fetch_data.assert_called_once()
