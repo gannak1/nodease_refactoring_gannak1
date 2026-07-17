@@ -18,7 +18,6 @@ export interface App {
   description?: string;
   icon: AppIcon;
   url_slug?: string;
-  auth_secret?: string;
   is_market: boolean;
   forked_from?: string;
   workflow_id?: string;
@@ -29,6 +28,23 @@ export interface App {
   owner_name?: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface AppAuthSecretStatus {
+  configured: boolean;
+  version: number;
+  rotation_enabled: boolean;
+  rotated_at?: string | null;
+  previous_grace_active: boolean;
+  previous_valid_until?: string | null;
+}
+
+export interface AppAuthSecretRotation {
+  secret: string;
+  version: number;
+  rotated_at: string;
+  previous_grace_active: boolean;
+  previous_valid_until?: string | null;
 }
 
 export interface Deployment {
@@ -75,6 +91,27 @@ export const appApi = {
   // 앱 상세 조회
   getApp: async (appId: string): Promise<App> => {
     const response = await api.get(`/apps/${appId}`);
+    return response.data;
+  },
+
+  getAuthSecretStatus: async (
+    appId: string,
+  ): Promise<AppAuthSecretStatus> => {
+    const response = await api.get(`/apps/${appId}/auth-secret/status`);
+    return response.data;
+  },
+
+  rotateAuthSecret: async (
+    appId: string,
+    data: {
+      expected_version: number;
+      revoke_previous_immediately: boolean;
+    },
+  ): Promise<AppAuthSecretRotation> => {
+    const response = await api.post(
+      `/apps/${appId}/auth-secret/rotate`,
+      data,
+    );
     return response.data;
   },
 

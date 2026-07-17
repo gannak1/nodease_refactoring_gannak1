@@ -16,7 +16,6 @@ export interface DeploymentResult {
   deploymentId?: string;
   appId?: string;
   url_slug?: string | null;
-  auth_secret?: string | null;
   version?: number;
   webAppUrl?: string;
   internalRunUrl?: string;

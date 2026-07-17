@@ -181,7 +181,6 @@ export function useDeployment({
           deploymentId: response.id,
           appId: response.app_id,
           url_slug: response.url_slug ?? null,
-          auth_secret: response.auth_secret ?? null,
           version: response.version,
           input_schema: response.input_schema ?? null,
           output_schema: response.output_schema ?? null,
@@ -214,7 +213,6 @@ export function useDeployment({
           }
         } else if (deploymentType === 'workflow_node') {
           result.isWorkflowNode = true;
-          result.auth_secret = null;
         } else if (deploymentType === 'schedule') {
           // schedule 노드에서 cron expression, timezone 추출
           const scheduleNode = nodes.find((n) => n.type === 'scheduleTrigger');

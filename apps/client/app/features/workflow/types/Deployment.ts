@@ -89,7 +89,6 @@ export interface DeploymentBase {
 export interface DeploymentCreate extends DeploymentBase {
   app_id: string;
   graph_snapshot?: Record<string, any>;
-  auth_secret?: string;
 }
 
 export interface DeploymentPreflightRequest extends DeploymentBase {
@@ -131,7 +130,6 @@ export interface DeploymentResponse extends DeploymentBase {
   id: string;
   app_id: string;
   version: number;
-  auth_secret?: string;
   created_by: string;
   created_at: string;
   graph_snapshot: Record<string, any>;
