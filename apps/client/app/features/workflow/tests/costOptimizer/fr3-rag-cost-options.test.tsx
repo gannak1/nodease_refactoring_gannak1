@@ -101,8 +101,23 @@ describe('FR-003 RAG cost optimization options', () => {
         dedupeRetrievedContext: false,
         retrievedContextMaxChars: undefined,
         retrievedContextCompression: 'off',
-        answerGroundingCheck: 'off',
+        answerGroundingCheck: 'basic',
       }),
+    );
+  });
+
+  it('답변 근거 확인 값이 없는 기존 LLM 노드는 기본을 선택한다', async () => {
+    render(
+      <LLMReferenceSidePanel
+        nodeId="llm-legacy"
+        data={{ ...baseData, answerGroundingCheck: undefined }}
+        onClose={vi.fn()}
+        embedded
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByLabelText('답변 근거 확인')).toHaveValue('basic'),
     );
   });
 

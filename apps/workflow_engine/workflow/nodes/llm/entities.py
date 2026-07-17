@@ -109,7 +109,7 @@ class LLMNodeData(BaseNodeData):
         description="검색 문서 압축 강도",
     )
     answerGroundingCheck: str = Field(
-        default="off",
+        default="basic",
         pattern="^(off|basic|strict)$",
         description="답변 근거 확인 수준",
     )

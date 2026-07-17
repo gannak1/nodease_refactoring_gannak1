@@ -2361,7 +2361,7 @@ def _cost_optimizer_candidate_data_from_node_data(
                 "retrievedContextCompression"
             )
             or "off",
-            "answer_grounding_check": node_data.get("answerGroundingCheck") or "off",
+            "answer_grounding_check": node_data.get("answerGroundingCheck") or "basic",
         },
     }
 

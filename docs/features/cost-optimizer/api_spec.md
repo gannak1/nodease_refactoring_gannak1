@@ -1626,7 +1626,7 @@ Candidate request schema:
 | `candidate.knowledge.dedupe_retrieved_context` | boolean | no | `true`이면 검색된 문서 조각 중 중복 근거를 제거한다. |
 | `candidate.knowledge.retrieved_context_max_chars` | number or null | no | 검색으로 주입되는 Knowledge/RAG context의 최대 글자 수다. `null`이면 제한 없음이며 author prompt는 제한 대상이 아니다. |
 | `candidate.knowledge.retrieved_context_compression` | `off`, `light`, `strong` | no | 검색 문서 압축 강도다. |
-| `candidate.knowledge.answer_grounding_check` | `off`, `basic`, `strict` | no | 답변이 검색 근거로 뒷받침되는지 확인하는 수준이다. |
+| `candidate.knowledge.answer_grounding_check` | `off`, `basic`, `strict` | no | 답변이 검색 근거로 뒷받침되는지 확인하는 수준이다. 생략 시 기본값은 `basic`이다. |
 
 B candidate가 Knowledge/RAG를 사용하면 compare API는 baseline의 과거 retrieval 결과를 재사용하지 않고, request의 `candidate.knowledge` 설정으로 retrieval을 새로 수행한다. Response는 baseline retrieval summary와 candidate retrieval summary를 구분해 반환해야 한다.
 

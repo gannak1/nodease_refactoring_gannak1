@@ -144,7 +144,7 @@ export function LLMReferenceSidePanel({
   const dedupeRetrievedContext = data.dedupeRetrievedContext ?? false;
   const retrievedContextMaxChars = data.retrievedContextMaxChars ?? '';
   const retrievedContextCompression = data.retrievedContextCompression ?? 'off';
-  const answerGroundingCheck = data.answerGroundingCheck ?? 'off';
+  const answerGroundingCheck = data.answerGroundingCheck ?? 'basic';
   const recommendedScoreRange: [number, number] = [0.3, 0.6];
   const recommendedTopKRange: [number, number] = [3, 8];
 
