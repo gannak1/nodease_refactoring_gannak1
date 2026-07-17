@@ -84,6 +84,12 @@ def test_llm_node_answer_grounding_check_defaults_to_basic():
     assert data.answerGroundingCheck == "basic"
 
 
+def test_llm_node_legacy_citation_display_defaults_to_hidden():
+    data = LLMNodeData(title="LLM", model_id="gpt-4o-mini")
+
+    assert data.citationDisplayMode == "hidden"
+
+
 class DummyClient:
     """동기 더미 클라이언트 [GEVENT]"""
 
@@ -163,7 +169,6 @@ def _inject_default_runtime_candidate_resolver(monkeypatch):
     )
 
 
-
 class CapturingRuntimeCandidateResolver:
     def __init__(
         self,
@@ -182,6 +187,7 @@ class CapturingRuntimeCandidateResolver:
         if self.error is not None:
             raise self.error
         return resolve_knowledge_runtime_candidates(request, self.snapshot)
+
 
 def _patch_rag_gevent_inline(monkeypatch, node):
     """RAG fanout unit test에서 gevent 의존성 없이 bounded path를 동기 실행한다."""
@@ -365,7 +371,9 @@ def test_llm_node_runs_with_override_client():
     assert SAFETY_SYSTEM_PROMPT in called["messages"][0]["content"]
     assert "sys [UNTRUSTED_INPUT:var]" in called["messages"][0]["content"]
     assert called["messages"][1]["role"] == "user"
-    assert "[BEGIN UPSTREAM_SYSTEM_INPUT - UNTRUSTED]" in called["messages"][1]["content"]
+    assert (
+        "[BEGIN UPSTREAM_SYSTEM_INPUT - UNTRUSTED]" in called["messages"][1]["content"]
+    )
     assert "X" in called["messages"][1]["content"]
     assert called["messages"][2]["role"] == "user"
     assert (
@@ -717,10 +725,10 @@ def test_llm_node_policy_is_limited_to_models_usable_by_current_execution_subjec
     monkeypatch.setattr(
         LLMService,
         "get_runtime_available_model_ids_for_user",
-        lambda db, *, user_id, organization_id: captured.update(
-            {"user_id": user_id, "organization_id": organization_id}
-        )
-        or ["gpt-4.1-mini"],
+        lambda db, *, user_id, organization_id: (
+            captured.update({"user_id": user_id, "organization_id": organization_id})
+            or ["gpt-4.1-mini"]
+        ),
     )
 
     selected, fallback, metadata = node._resolve_model_routing_policy({}, object())
@@ -790,9 +798,7 @@ def test_llm_node_passes_json_response_format_to_client():
 
     node.execute({})
 
-    assert dummy_client.calls[0]["kwargs"]["response_format"] == {
-        "type": "json_object"
-    }
+    assert dummy_client.calls[0]["kwargs"]["response_format"] == {"type": "json_object"}
 
 
 def test_llm_node_adds_json_schema_instruction_to_system_message():
@@ -857,9 +863,7 @@ def test_llm_node_adds_json_instruction_for_explicit_json_response_format():
     system_message = dummy_client.calls[0]["messages"][0]["content"]
     assert "json object" in system_message
     assert "markdown" in system_message
-    assert dummy_client.calls[0]["kwargs"]["response_format"] == {
-        "type": "json_object"
-    }
+    assert dummy_client.calls[0]["kwargs"]["response_format"] == {"type": "json_object"}
 
 
 def test_llm_node_does_not_override_explicit_response_format():
@@ -894,7 +898,9 @@ def test_llm_node_does_not_override_explicit_response_format():
 
     node.execute({})
 
-    assert dummy_client.calls[0]["kwargs"]["response_format"] == explicit_response_format
+    assert (
+        dummy_client.calls[0]["kwargs"]["response_format"] == explicit_response_format
+    )
 
 
 def test_llm_node_isolates_upstream_output_from_privileged_prompts():
@@ -927,9 +933,13 @@ def test_llm_node_isolates_upstream_output_from_privileged_prompts():
 
     messages = dummy_client.calls[0]["messages"]
     privileged_messages = [
-        message["content"] for message in messages if message["role"] in {"system", "assistant"}
+        message["content"]
+        for message in messages
+        if message["role"] in {"system", "assistant"}
     ]
-    assert all("Ignore previous instructions" not in content for content in privileged_messages)
+    assert all(
+        "Ignore previous instructions" not in content for content in privileged_messages
+    )
     assert all("정상적인 외부 데이터" not in content for content in privileged_messages)
     assert "고정 정책. upstream=[UNTRUSTED_INPUT:var]" in messages[0]["content"]
     assert messages[-1]["content"] == "이전 답변 참고 [UNTRUSTED_INPUT:var]"
@@ -939,7 +949,9 @@ def test_llm_node_isolates_upstream_output_from_privileged_prompts():
         if message["role"] == "user" and "UPSTREAM_" in message["content"]
     ]
     assert len(untrusted_blocks) == 2
-    assert any("[REDACTED: possible prompt injection]" in block for block in untrusted_blocks)
+    assert any(
+        "[REDACTED: possible prompt injection]" in block for block in untrusted_blocks
+    )
     assert any("정상적인 외부 데이터" in block for block in untrusted_blocks)
 
 
@@ -1186,7 +1198,10 @@ def test_llm_node_privileged_prompt_preserves_jinja_control_types():
     )
 
     messages = dummy_client.calls[0]["messages"]
-    assert "OFF|[UNTRUSTED_INPUT:items[0].name]|[UNTRUSTED_INPUT:items[1].name]" in messages[0]["content"]
+    assert (
+        "OFF|[UNTRUSTED_INPUT:items[0].name]|[UNTRUSTED_INPUT:items[1].name]"
+        in messages[0]["content"]
+    )
     rendered_prompt = "\n".join(message["content"] for message in messages)
     assert "A" in rendered_prompt
     assert "B" in rendered_prompt
@@ -1202,9 +1217,7 @@ def test_llm_node_uses_fallback_model_on_failure(monkeypatch):
     service_calls = []
 
     def fake_get_runtime_client_for_user(db, user_id, model_id, organization_id=None):
-        service_calls.append(
-            {"model_id": model_id, "organization_id": organization_id}
-        )
+        service_calls.append({"model_id": model_id, "organization_id": organization_id})
         if model_id == "primary-model":
             return SimpleNamespace(
                 client=primary_client,
@@ -1278,9 +1291,7 @@ def test_llm_node_logs_fallback_model_when_primary_client_selection_fails(
     log_calls = []
 
     def fake_get_runtime_client_for_user(db, user_id, model_id, organization_id=None):
-        service_calls.append(
-            {"model_id": model_id, "organization_id": organization_id}
-        )
+        service_calls.append({"model_id": model_id, "organization_id": organization_id})
         if model_id == "primary-model":
             raise LLMCredentialNotAvailableError(
                 "credential_use_denied",
@@ -1693,9 +1704,10 @@ def test_knowledge_trace_metadata_excludes_chunk_content():
         "nested": {},
     }
     assert metadata["hierarchy_fallback"] is True
-    assert TraceMetadataSanitizer.summarize_rag_metadata([metadata])[
-        "hierarchy_fallback"
-    ] is True
+    assert (
+        TraceMetadataSanitizer.summarize_rag_metadata([metadata])["hierarchy_fallback"]
+        is True
+    )
     assert metadata["hierarchy_path"] == ["Guide", "Intro"]
     assert "content" not in metadata
     assert "filename" not in metadata
@@ -1829,12 +1841,14 @@ def test_llm_node_rag_no_evidence_skips_llm_call(monkeypatch):
     monkeypatch.setattr(
         LLMNode,
         "_execute_knowledge_search",
-        lambda self, query, db_session, *, candidate_resolution=None: WorkflowRAGSearchResult(
-            context="",
-            metadata=[],
-            evidence_decision=decision,
-            should_invoke_llm=False,
-            answer_override="해당 질문에 답변할 수 있는 문서를 찾지 못했습니다.",
+        lambda self, query, db_session, *, candidate_resolution=None: (
+            WorkflowRAGSearchResult(
+                context="",
+                metadata=[],
+                evidence_decision=decision,
+                should_invoke_llm=False,
+                answer_override="해당 질문에 답변할 수 있는 문서를 찾지 못했습니다.",
+            )
         ),
     )
 
@@ -1869,9 +1883,7 @@ def test_llm_node_rag_operational_failure_uses_safe_no_result(monkeypatch):
     client = DummyClient()
     node._client_override = client  # noqa: SLF001 - 테스트용 주입
 
-    def raise_retrieval_error(
-        self, query, db_session, *, candidate_resolution=None
-    ):
+    def raise_retrieval_error(self, query, db_session, *, candidate_resolution=None):
         raise RuntimeError("vector store unavailable")
 
     monkeypatch.setattr(LLMNode, "_execute_knowledge_search", raise_retrieval_error)
@@ -1926,7 +1938,6 @@ def test_llm_node_rag_partial_retrieval_failure_uses_safe_partial_result(
     class FakeDb:
         def query(self, *args, **kwargs):
             return FakeQuery()
-
 
     class FakeRetrievalService:
         def __init__(self, db, user_id, organization_id=None):
@@ -2011,7 +2022,6 @@ def test_llm_node_rag_preserves_explicit_zero_score_threshold(monkeypatch):
         def query(self, *args, **kwargs):
             return FakeQuery()
 
-
     class FakeRetrievalService:
         def __init__(self, db, user_id, organization_id=None):
             pass
@@ -2087,7 +2097,6 @@ def test_llm_node_rag_source_tier_breaks_equal_score_ties(monkeypatch):
         def query(self, *args, **kwargs):
             return FakeQuery()
 
-
     class FakeRetrievalService:
         def __init__(self, db, user_id, organization_id=None):
             pass
@@ -2152,7 +2161,7 @@ def test_llm_node_rag_source_tier_breaks_equal_score_ties(monkeypatch):
 
     result = node._execute_knowledge_search("query", db_session=FakeDb())  # noqa: SLF001
 
-    assert result.context.startswith("[파일: policy.md]")
+    assert result.context.startswith("[참조 문서: 참조 문서]")
     assert "공식 정책 근거" in result.context.split("\n\n", 1)[0]
     assert result.trace_summary["source_tier_policy"] == "tie_break"
 
@@ -2176,7 +2185,6 @@ def test_llm_node_rag_source_tier_policy_off_preserves_score_order(monkeypatch):
     class FakeDb:
         def query(self, *args, **kwargs):
             return FakeQuery()
-
 
     class FakeRetrievalService:
         def __init__(self, db, user_id, organization_id=None):
@@ -2243,7 +2251,7 @@ def test_llm_node_rag_source_tier_policy_off_preserves_score_order(monkeypatch):
 
     result = node._execute_knowledge_search("query", db_session=FakeDb())  # noqa: SLF001
 
-    assert result.context.startswith("[파일: thread.md]")
+    assert result.context.startswith("[참조 문서: 참조 문서]")
     assert result.trace_summary["source_tier_policy"] == "off"
 
 
@@ -2291,7 +2299,6 @@ def test_llm_node_reuses_query_embedding_across_same_model_kbs(monkeypatch):
         def query(self, model):
             return FakeQuery(model)
 
-
     class FakeEmbeddingClient:
         def embed_sync(self, query):
             embedded_queries.append(query)
@@ -2301,7 +2308,9 @@ def test_llm_node_reuses_query_embedding_across_same_model_kbs(monkeypatch):
         def __init__(self, db, user_id, organization_id=None):
             pass
 
-        def search_documents_sync(self, query, *, knowledge_base_id, query_vector=None, **kwargs):
+        def search_documents_sync(
+            self, query, *, knowledge_base_id, query_vector=None, **kwargs
+        ):
             query_vectors.append((knowledge_base_id, query_vector))
             return [
                 _chunk_preview(
@@ -2646,7 +2655,6 @@ def test_llm_node_rag_template_query_rewrite_uses_safe_trace_summary(monkeypatch
         def query(self, *args, **kwargs):
             return FakeQuery()
 
-
     monkeypatch.setattr(
         "apps.workflow_engine.workflow.nodes.llm.llm_node.record_audit",
         lambda **kwargs: None,
@@ -2909,10 +2917,7 @@ def test_llm_node_rag_policy_block_audit_uses_canonical_action(monkeypatch):
         "result": "block",
         "reason_code": "pii_policy_blocked",
     }
-    assert (
-        audit_calls[0]["metadata"]["policy_reason"]
-        == "rag.pii_evidence_detected"
-    )
+    assert audit_calls[0]["metadata"]["policy_reason"] == "rag.pii_evidence_detected"
     assert audit_calls[0]["metadata"]["organization_id"] == str(organization_id)
 
 
@@ -2967,9 +2972,10 @@ def test_system_schedule_rag_audit_does_not_promote_credential_principal(
     assert audit_calls[0]["action"] == expected_action
     assert audit_calls[0]["actor_id"] is None
     assert audit_calls[0]["actor_type"] == "system"
-    assert audit_calls[0]["metadata"]["organization_id"] == node.execution_context[
-        "organization_id"
-    ]
+    assert (
+        audit_calls[0]["metadata"]["organization_id"]
+        == node.execution_context["organization_id"]
+    )
 
 
 def test_interactive_rag_audit_uses_execution_subject_not_credential_principal(
@@ -3159,8 +3165,7 @@ def test_query_vector_precompute_log_uses_only_count_buckets(monkeypatch, caplog
     user_id = uuid.uuid4()
     kb_ids = [uuid.uuid4() for _ in range(3)]
     kb_rows = [
-        SimpleNamespace(id=kb_id, embedding_model="embedding-model")
-        for kb_id in kb_ids
+        SimpleNamespace(id=kb_id, embedding_model="embedding-model") for kb_id in kb_ids
     ]
 
     class Query:
@@ -3336,7 +3341,6 @@ def test_llm_node_rag_partial_retrieval_failure_respects_fail_node_policy(
     class FakeDb:
         def query(self, *args, **kwargs):
             return FakeQuery()
-
 
     class FakeRetrievalService:
         def __init__(self, db, user_id, organization_id=None):
@@ -3533,7 +3537,10 @@ def test_auto_model_routing_uses_active_policy_without_judge_call(monkeypatch):
                     {
                         "id": "low-risk-json-triage",
                         "priority": 10,
-                        "when": {"output_format": "text", "input_length_bucket": "short"},
+                        "when": {
+                            "output_format": "text",
+                            "input_length_bucket": "short",
+                        },
                         "reason_code": "quality_gate_passed_cost_reduction",
                         "selected_model_id": "gpt-4.1-mini",
                     }
@@ -3855,7 +3862,10 @@ def test_test_execution_uses_matching_deployment_policy_without_becoming_deploye
 
     assert selected == "gpt-4.1-mini"
     assert fallback == "gpt-4.1"
-    assert captured["deployment_id"] == node.execution_context["routing_policy_deployment_id"]
+    assert (
+        captured["deployment_id"]
+        == node.execution_context["routing_policy_deployment_id"]
+    )
     assert metadata["decision_source"] == "test_policy_preview"
     assert metadata["policy_source"] == "active_deployment"
     assert metadata["included_in_policy_learning"] is False
@@ -4003,8 +4013,9 @@ def test_workflow_llm_service_uses_relation_priority_before_credential_created_a
     monkeypatch.setattr(
         workflow_llm_service,
         "get_llm_client",
-        lambda **kwargs: client_configs.append(kwargs["credentials"])
-        or SimpleNamespace(),
+        lambda **kwargs: (
+            client_configs.append(kwargs["credentials"]) or SimpleNamespace()
+        ),
     )
 
     runtime = LLMService.get_runtime_client_for_user(
@@ -4073,7 +4084,6 @@ def test_workflow_llm_service_requires_runtime_organization_scope(organization_i
     assert exc.value.reason == "organization_scope_missing"
     assert exc.value.model_id == "gpt-4o-mini"
     assert exc.value.organization_id is None
-
 
 
 def test_runtime_candidate_resolver_receives_authenticated_mixed_request_and_orders_fanout(
@@ -4622,9 +4632,7 @@ def test_malformed_resolver_result_fails_before_retrieval_or_provider():
                 candidates=(
                     KnowledgeRuntimeCandidate(
                         knowledge_base_id=unrelated_kb_id,
-                        provenance=KnowledgeRuntimeCandidateProvenance(
-                            kind="direct"
-                        ),
+                        provenance=KnowledgeRuntimeCandidateProvenance(kind="direct"),
                     ),
                 ),
                 routing_mode="direct",
@@ -4874,7 +4882,8 @@ def test_workflow_llm_node_applies_selected_kb_chunks_to_llm_prompt(monkeypatch)
     assert fake_db.keyword_execute_count == 1
     assert fake_db.closed is False
     assert "KNOWLEDGE" in message_text
-    assert "[파일: refund-policy.md]" in message_text
+    assert "[참조 문서: 참조 문서]" in message_text
+    assert "refund-policy.md" not in message_text
     assert "환불 정책은 결제 후 7일 이내 요청할 수 있다." in message_text
     assert result["metadata"]["knowledge_search"][0]["knowledge_base_id"] == str(kb_id)
     assert result["metadata"]["knowledge_search"][0]["chunk_id"] == str(chunk_id)
@@ -5006,7 +5015,8 @@ def test_workflow_llm_node_wraps_prompt_injection_chunk_as_untrusted_knowledge(
     assert malicious_content not in messages[0]["content"]
     assert len(knowledge_messages) == 1
     assert knowledge_messages[0]["role"] == "user"
-    assert "[파일: external-page.md]" in knowledge_messages[0]["content"]
+    assert "[참조 문서: 참조 문서]" in knowledge_messages[0]["content"]
+    assert "external-page.md" not in knowledge_messages[0]["content"]
     assert malicious_content not in knowledge_messages[0]["content"]
     assert "[REDACTED: possible prompt injection]" in knowledge_messages[0]["content"]
 
@@ -5152,6 +5162,7 @@ def test_knowledge_search_limits_context_chars_across_multiple_kbs(monkeypatch):
             ],
             topK=2,
             retrievedContextMaxChars=15,
+            citationDisplayMode="detailed",
         ),
         execution_context={
             "user_id": str(user_id),
@@ -5169,10 +5180,15 @@ def test_knowledge_search_limits_context_chars_across_multiple_kbs(monkeypatch):
 
     result = node._execute_knowledge_search("query", db_session=fake_db)  # noqa: SLF001
 
-    assert "[파일: first.md]\nAAAAAAAAAA" in result.context
-    assert "[파일: second.md]\nBBBBB" in result.context
+    assert result.context.count("[참조 문서: 참조 문서]") == 2
+    assert "AAAAAAAAAA" in result.context
+    assert "BBBBB" in result.context
     assert "BBBBBB" not in result.context
     assert len(result.metadata) == 2
+    assert [item.content_preview for item in result.user_citations.items] == [
+        "AAAAAAAAAA",
+        "BBBBB",
+    ]
 
 
 def test_workflow_llm_node_embedding_credential_failure_returns_safe_no_result(
@@ -5423,7 +5439,9 @@ def test_knowledge_search_partial_timeout_trace_summary_is_safe(monkeypatch):
             timeout_count=1,
         ),
     )
-    monkeypatch.setattr(node, "_record_rag_retrieve_audit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        node, "_record_rag_retrieve_audit", lambda *args, **kwargs: None
+    )
 
     result = node._execute_knowledge_search("query", db_session=fake_db)  # noqa: SLF001
 
@@ -5609,6 +5627,7 @@ def test_knowledge_search_limits_retrieved_context_chars(monkeypatch):
         user_prompt="이 프롬프트는 제한 대상이 아니다.",
         knowledgeBases=[KnowledgeBaseRef(id=str(kb_id), name="KB")],
         retrievedContextMaxChars=10,
+        citationDisplayMode="detailed",
     )
     node = LLMNode(
         "llm-1",
@@ -5633,13 +5652,17 @@ def test_knowledge_search_limits_retrieved_context_chars(monkeypatch):
     context = rag_result.context
     metadata = rag_result.metadata
     content_lines = [
-        line for line in context.splitlines() if line and not line.startswith("[파일:")
+        line
+        for line in context.splitlines()
+        if line and not line.startswith("[참조 문서:")
     ]
 
-    assert "[파일: long.md]" in context
+    assert "[참조 문서: 참조 문서]" in context
+    assert "long.md" not in context
     assert "".join(content_lines) == "1234567890"
     assert "ABCDEFGHIJ" not in context
     assert len(metadata) == 1
+    assert rag_result.user_citations.items[0].content_preview == "1234567890"
 
 
 def test_knowledge_search_compresses_retrieved_context_by_query(monkeypatch):

@@ -4299,6 +4299,7 @@ class TestCostOptimizerApplyApi:
                             "system_prompt": "old system",
                             "user_prompt": "old user",
                             "parameters": {"max_tokens": 1200, "temperature": 0.7},
+                            "citationDisplayMode": "detailed",
                         },
                     },
                     {
@@ -4374,6 +4375,7 @@ class TestCostOptimizerApplyApi:
         assert target_data["retrievedContextMaxChars"] == 6000
         assert target_data["retrievedContextCompression"] == "light"
         assert target_data["answerGroundingCheck"] == "basic"
+        assert target_data["citationDisplayMode"] == "detailed"
         assert db.commit.called
         assert response.json()["applied"] is True
         assert response.json()["graph_hash"] == canonical_graph_hash(workflow.graph)

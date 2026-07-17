@@ -102,11 +102,12 @@ describe('FR-003 RAG cost optimization options', () => {
         retrievedContextMaxChars: undefined,
         retrievedContextCompression: 'off',
         answerGroundingCheck: 'basic',
+        citationDisplayMode: 'basic',
       }),
     );
   });
 
-  it('답변 근거 확인 값이 없는 기존 LLM 노드는 기본을 선택한다', async () => {
+  it('어휘 일치도 값이 없는 기존 LLM 노드는 기본을 선택한다', async () => {
     render(
       <LLMReferenceSidePanel
         nodeId="llm-legacy"
@@ -117,7 +118,9 @@ describe('FR-003 RAG cost optimization options', () => {
     );
 
     await waitFor(() =>
-      expect(screen.getByLabelText('답변 근거 확인')).toHaveValue('basic'),
+      expect(
+        screen.getByLabelText('답변·검색 문서 어휘 일치도'),
+      ).toHaveValue('basic'),
     );
   });
 
@@ -157,11 +160,18 @@ describe('FR-003 RAG cost optimization options', () => {
       retrievedContextCompression: 'light',
     });
 
-    fireEvent.change(screen.getByLabelText('답변 근거 확인'), {
+    fireEvent.change(screen.getByLabelText('답변·검색 문서 어휘 일치도'), {
       target: { value: 'basic' },
     });
     expect(onDataChange).toHaveBeenCalledWith({
       answerGroundingCheck: 'basic',
+    });
+
+    fireEvent.change(screen.getByLabelText('출처 표시'), {
+      target: { value: 'detailed' },
+    });
+    expect(onDataChange).toHaveBeenCalledWith({
+      citationDisplayMode: 'detailed',
     });
   });
 

@@ -21,7 +21,25 @@ def test_public_run_forwards_injected_runtime_policy_at_fastapi_boundary(
 
     async def run_deployment(**kwargs):
         captured.update(kwargs)
-        return {"status": "success", "results": {"answer": "ok"}}
+        return {
+            "status": "success",
+            "results": {
+                "answer": "ok",
+                "__nodease_citations": {
+                    "version": 1,
+                    "items": [
+                        {
+                            "citation_id": "evidence-1",
+                            "evidence_rank": 1,
+                            "label": "공개 정책",
+                            "page_number": None,
+                            "section": None,
+                            "content_preview": None,
+                        }
+                    ],
+                },
+            },
+        }
 
     monkeypatch.setattr(
         run_endpoint.DeploymentService,
@@ -32,9 +50,9 @@ def test_public_run_forwards_injected_runtime_policy_at_fastapi_boundary(
     app = FastAPI()
     app.include_router(run_endpoint.router)
     app.dependency_overrides[run_endpoint.get_db] = lambda: db
-    app.dependency_overrides[
-        run_endpoint.get_deployment_runtime_policy
-    ] = lambda: injected_policy
+    app.dependency_overrides[run_endpoint.get_deployment_runtime_policy] = lambda: (
+        injected_policy
+    )
 
     response = TestClient(app).post(
         "/run-public/injected-policy-app",
@@ -44,7 +62,22 @@ def test_public_run_forwards_injected_runtime_policy_at_fastapi_boundary(
     assert response.status_code == 200
     assert response.json() == {
         "status": "success",
-        "results": {"answer": "ok"},
+        "results": {
+            "answer": "ok",
+            "__nodease_citations": {
+                "version": 1,
+                "items": [
+                    {
+                        "citation_id": "evidence-1",
+                        "evidence_rank": 1,
+                        "label": "공개 정책",
+                        "page_number": None,
+                        "section": None,
+                        "content_preview": None,
+                    }
+                ],
+            },
+        },
     }
     assert "access-control-allow-origin" not in response.headers
     assert captured == {

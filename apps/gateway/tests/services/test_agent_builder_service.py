@@ -779,6 +779,7 @@ def test_named_existing_node_target_is_resolved_and_only_requested_node_is_splic
         node for node in preview["nodes"] if str(node["id"]).startswith("agent-")
     ]
     assert [node["type"] for node in generated_nodes] == ["llmNode"]
+    assert generated_nodes[0]["data"]["citationDisplayMode"] == "basic"
     assert not any(node["type"] == "startNode" for node in generated_nodes)
     assert not any(node["type"] == "answerNode" for node in generated_nodes)
     generated_llm_id = generated_nodes[0]["id"]
