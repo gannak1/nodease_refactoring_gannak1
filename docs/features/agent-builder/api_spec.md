@@ -52,6 +52,7 @@ X-Agent-Builder-Mode-Contract: legacy-v1 | canonical-v2
 - Request가 아직 없는 `POST /sessions`는 해당 호출의 header로만 응답 표현을 정하고 session에 contract를 고정하지 않는다.
 - `POST /sessions/{session_id}/messages`가 request를 만들 때 정규화한 `mode_contract_version=legacy-v1|canonical-v2`를 기존 request `response_payload`에 고정한다. Raw header는 저장하지 않고 contract 값이 없는 기존 request는 `legacy-v1`로 읽는다.
 - Active request를 조회·전환·acknowledge하는 후속 endpoint는 고정된 contract와 같은 header를 요구한다. 헤더 생략은 `legacy-v1`로 해석하며, 불일치하면 request mode나 payload를 다른 표현으로 projection하지 않고 `409 mode_contract_mismatch`와 safe `request_id`, `required_mode_contract`만 반환한다.
+- Session timeline의 terminal request는 각 request에 저장된 `mode_contract_version`과 mode 의미를 유지한다. Mixed history는 dual-read Client가 request별 contract로 해석하며 canonical quick을 legacy guided로 축소 projection하지 않는다.
 - Request cancel endpoint는 예외적으로 mode-free contract-neutral 응답을 사용해 동일한 인증·권한 아래 contract 불일치 상태에서도 request를 종료할 수 있다.
 - 저장된 mode와 audit mode는 항상 canonical이며 request-scoped contract는 외부 representation 선택에만 사용한다.
 - `quick_generate`는 `canonical-v2`와 Backend·Frontend integration gate가 모두 활성화된 경우에만 허용한다.
@@ -234,6 +235,21 @@ Planner는 KB 선택별 완성 graph 대신 Knowledge가 base topology에 미치
 - `empty_selection_bridge`는 `insert_step`에서만 필요하며 `connect_upstream_to_downstream`만 허용한다. Bridge가 유효한 graph를 만들 수 없으면 validation failure다.
 - 모든 step reference는 같은 structured plan에 존재해야 하고 Knowledge capability와 연결은 Catalog가 검증한다.
 - Planner는 node data, edge 원문, 선택별 graph snapshot 또는 KB id를 만들지 않는다.
+
+### 2.15 Request Aggregate Invariants
+
+`AgentBuilderRequest`는 mode transition, safe GraphMutation envelope, ParameterTask, Knowledge resolution, quick-completion proposal와 operation idempotency result의 aggregate root다. API 구현은 다음 순서를 공통으로 적용한다.
+
+| Operation | Preconditions and fencing | Atomic result |
+| --- | --- | --- |
+| Message submit | Session row lock, 비종료 request 0건 | `planning` request 1건 생성 |
+| Pre-save operation loss recovery | Workflow/request lock, 저장 결과 없음 | envelope `blocked`; request cancel 완료 전 신규 message 거부 |
+| Quick-completion proposal create | Request lock, expected request version, 대상 task current version | request와 대상 task version 증가, pending proposal이 fenced version 예약 |
+| Proposal acknowledge/cancel/stale | Request lock, proposal/fenced task version | proposal terminal; acknowledge만 task completed와 task version 재증가 |
+| Session-scoped cancel | Session lock, 같은 operation result 우선 조회 | 과거 결과 반환 또는 유일한 현재 비종료 request 취소 |
+| Request cancel | `Workflow -> AgentBuilderRequest`; session-scoped이면 Session 선행 | request와 모든 비종료 child를 같은 transaction에서 terminal 처리 |
+
+공통 lock 순서는 `AgentBuilderSession -> Workflow -> AgentBuilderRequest`이며 operation에 필요하지 않은 앞쪽 row만 생략한다. Terminal request 아래에는 pending proposal, `pending|active|invalid` task, 미완료 Knowledge resolution 또는 저장 전 pending envelope가 남을 수 없다. Pending proposal이 예약한 task는 proposal이 terminal이 되기 전 다른 decision을 받지 않는다. 같은 operation id의 persisted result는 현재 active request나 task를 선택하기 전에 조회한다.
 
 ## 3. Model Options
 
@@ -537,7 +553,7 @@ graph를 검증해 계산한 `expected_result_graph_hash`를 포함한 safe enve
 - Client는 actual editor와 분리된 clone에 full operations를 dry-run하고 동일한 graph/Catalog validator를 통과시킨다.
 - 사용자가 `생성 적용`을 선택하기 전에는 editor graph, workflow draft와 request 상태를 변경하지 않는다.
 - 적용 뒤 6절의 CDS save/acknowledgement를 사용하고 acknowledgement가 끝난 뒤에만 request를 `completed`로 전환한다.
-- 적용 전 response 유실 또는 reload는 `operation_payload_unavailable`로 닫고 같은 의도로 새 request를 생성한다. Safe envelope에서 operations를 복원하지 않는다.
+- 적용 전 response 유실 또는 reload는 safe envelope를 `operation_payload_unavailable`로 닫고 operations를 복원하지 않는다. Parent request는 `graph_mutation_ready` 비종료 상태이므로 Client는 먼저 9.2의 contract-neutral cancel을 호출해 terminal `canceled`를 확인한 뒤에만 같은 의도의 새 message request를 생성한다. Cancel 결과가 불명확하면 같은 request cancel을 재시도하거나 canonical session에서 terminal 상태를 확인하며, 그 전에는 재제출하지 않는다.
 
 Quick eligibility가 없으면 다음 형태를 반환한다.
 
@@ -583,7 +599,7 @@ Request:
 - `action`은 `continue_guided`만 허용한다. 취소는 기존 `POST /requests/{request_id}/cancel` 경로 하나를 사용한다.
 - `continue_guided`는 보존된 값 독립 structured plan으로 guided GraphMutation/Knowledge/Parameter 결과를 만들며 planner를 다시 호출하지 않고 성공 응답의 `request_version`을 증가시킨다. `reconfirmation_required` descriptor에 해당하는 실제 값은 GraphMutation에 materialize하지 않고 `resolution_source=null`, `reconfirmation_required=true`인 ParameterTask로 연다. Server는 원 prompt를 재실행하거나 처리 replica 메모리의 값을 사용하지 않으며, 값에 의존하는 graph fragment는 해당 typed task 입력과 후속 GraphMutation 전까지 만들지 않는다.
 - GraphMutation을 포함한 성공 응답의 RequestStatus는 `graph_mutation_ready`이고 nested GraphMutationStatus는 `pending_apply`다. Before-graph Knowledge 선택처럼 mutation을 아직 발급하지 않은 결과는 해당 기존 RequestStatus를 유지한다.
-- 같은 operation/payload 재시도는 상태 전이와 mutation 발급을 반복하지 않는다. 최초 응답에 full operations가 없었던 safe transition 결과는 같은 canonical 결과를 반환할 수 있지만, GraphMutation 발급 뒤 응답이 유실된 재시도는 저장되지 않은 operations를 재구성하지 않고 `409 operation_payload_unavailable`과 현재 safe request/envelope 상태를 반환한다. Client는 기존 request를 취소하고 새 operation id의 신규 message request를 명시적으로 제출한다.
+- 같은 operation/payload 재시도는 상태 전이와 mutation 발급을 반복하지 않는다. 최초 응답에 full operations가 없었던 safe transition 결과는 같은 canonical 결과를 반환할 수 있지만, GraphMutation 발급 뒤 응답이 유실된 재시도는 저장되지 않은 operations를 재구성하지 않고 `409 operation_payload_unavailable`과 현재 safe request/envelope 상태를 반환한다. Client는 기존 request의 contract-neutral cancel 결과가 terminal `canceled`임을 확인한 뒤에만 새 operation id의 신규 message request를 명시적으로 제출한다.
 - 다른 payload, stale request version 또는 이미 처리된 competing transition은 `409 mode_transition_conflict`다.
 - 사용자가 확인하지 않은 transition을 server나 client가 자동 제출하지 않는다.
 
@@ -613,7 +629,9 @@ Response:
   "status": "pending",
   "scope": "remaining_configuration",
   "request_version": 8,
-  "confirmable_task_ids": ["opaque-task-id"],
+  "confirmable_tasks": [
+    {"task_id": "opaque-task-id", "task_version": 4}
+  ],
   "remaining_guided_task_ids": ["opaque-task-id"],
   "summary": {
     "auto_completable_count": 1,
@@ -622,10 +640,11 @@ Response:
 }
 ```
 
-- `confirmable_task_ids`는 canonical graph 값과 recommendation fingerprint가 변하지 않은 멱등 confirm 대상만 포함한다.
+- `confirmable_tasks`는 canonical graph 값과 recommendation fingerprint가 변하지 않은 멱등 confirm 대상의 id와 proposal 생성 transaction에서 증가된 fenced `task_version`을 포함한다.
 - 값이 없거나 graph 변경이 필요한 task, Credential, 권한 resource, 외부 부수효과, Condition branch와 복수 후보 task는 `remaining_guided_task_ids`에 남긴다.
 - Client는 proposal을 별도 검토안으로 표시하고 자동 적용하지 않는다. 이 V1 endpoint는 GraphMutation 또는 workflow save를 반환·호출하지 않는다.
-- Proposal 생성은 parent request row lock과 client operation id로 멱등 처리하고 request version을 증가시킨다. 같은 operation/payload 재시도는 같은 proposal/version을 반환한다.
+- Proposal 생성은 parent request row lock에서 expected request version과 대상 task current version을 확인한다. 성공 transaction은 request version과 각 confirm 대상 task version을 정확히 한 번 증가시키고 증가된 task id/version, recommendation fingerprint와 canonical graph 값을 pending proposal에 저장한다. 같은 operation/payload 재시도는 같은 proposal/request/task version을 반환하고 다시 증가시키지 않는다.
+- Pending proposal은 `confirmable_tasks`를 예약한다. 해당 task의 `confirm|set|defer|skip|previous`는 proposal이 `acknowledged|canceled|stale` 중 하나가 되기 전까지 `409 task_conflict`로 거부한다. `remaining_guided_task_ids`에만 속한 task는 기존 decision 계약으로 계속 진행할 수 있다.
 
 #### POST `/requests/{request_id}/quick-completion-proposals/{proposal_id}/acknowledge`
 
@@ -639,7 +658,7 @@ Request:
 }
 ```
 
-Server는 proposal의 task version, 권한, Catalog, recommendation fingerprint와 canonical graph 값을 다시 확인하고 모든 confirm 대상이 유효할 때만 한 request lock 안에서 완료한다. Stale 또는 일부만 적용 가능한 proposal은 전체 acknowledgement를 `409 quick_completion_conflict`로 거부하고 guided task 상태를 유지한다. 성공 시 `request_version`, `proposal_version`과 완료되는 각 task의 `task_version`을 같은 row lock에서 각각 한 번 증가시키고 다음 응답을 반환한다.
+Server는 proposal의 fenced task version, 권한, Catalog, recommendation fingerprint와 canonical graph 값을 다시 확인하고 모든 confirm 대상이 유효할 때만 한 request lock 안에서 완료한다. 성공 시 `request_version`, `proposal_version`과 완료되는 각 task의 `task_version`을 같은 row lock에서 각각 한 번 증가시키고 다음 응답을 반환한다. Stale 또는 일부만 적용 가능한 proposal은 graph/task 값을 변경하지 않은 채 proposal을 terminal `stale`로 전환하고 request/proposal version을 각각 한 번 증가시켜 예약을 해제한 뒤 `409 quick_completion_conflict`와 canonical stale proposal metadata를 반환한다.
 
 ```json
 {
@@ -648,13 +667,13 @@ Server는 proposal의 task version, 권한, Catalog, recommendation fingerprint�
   "status": "acknowledged",
   "request_version": 9,
   "completed_tasks": [
-    {"task_id": "opaque-task-id", "status": "completed", "task_version": 4}
+    {"task_id": "opaque-task-id", "status": "completed", "task_version": 5}
   ],
   "next_task_id": "opaque-task-id-or-null"
 }
 ```
 
-실제 parameter 값은 반환하지 않는다. 같은 operation/payload 재시도는 새 version을 다시 증가시키지 않고 최초 성공의 `proposal_version=2`, `request_version=9`와 동일한 `completed_tasks` 결과를 반환한다. Proposal 생성 전 task version을 사용한 늦은 `set`은 `409 task_conflict`다. 이 endpoint는 GraphMutation, workflow save 또는 planner 호출을 만들지 않는다.
+실제 parameter 값은 반환하지 않는다. 같은 operation/payload 재시도는 새 version을 다시 증가시키지 않고 최초 성공의 `proposal_version=2`, `request_version=9`와 동일한 `completed_tasks` 결과를 반환한다. Proposal 생성 전 task version을 사용한 늦은 `set`과 pending proposal이 예약한 task에 대한 새 decision은 모두 `409 task_conflict`다. 이 endpoint는 GraphMutation, workflow save 또는 planner 호출을 만들지 않는다.
 
 #### POST `/requests/{request_id}/quick-completion-proposals/{proposal_id}/cancel`
 
@@ -666,7 +685,7 @@ Server는 proposal의 task version, 권한, Catalog, recommendation fingerprint�
 }
 ```
 
-Pending proposal만 `canceled`로 전환하고 request와 proposal version을 같은 row lock에서 각각 증가시킨다.
+Pending proposal만 `canceled`로 전환하고 request와 proposal version을 같은 row lock에서 각각 증가시켜 target task 예약을 해제한다. Proposal 생성 시 증가한 task version은 되돌리거나 다시 증가시키지 않으며 Client는 반환 뒤 canonical task version을 다시 읽는다.
 
 ```json
 {
@@ -1077,7 +1096,9 @@ Request:
 }
 ```
 
-Server는 기존 session 인증, active organization과 workflow write 권한을 확인하고 session row를 잠근 뒤 비종료 request를 조회한다. 같은 session에는 비종료 request가 하나만 존재해야 한다. 정확히 하나면 `Workflow -> AgentBuilderRequest` 순서로 추가 lock을 얻어 9.2의 동일 cancel command를 수행하고 `{"request_id":"uuid","status":"canceled"}`를 반환한다. 같은 operation id 재시도는 저장된 동일 request 결과를 반환하고, 그 사이 새 request가 생겨도 취소하지 않는다. Active row가 없으면 `409 active_request_not_found`, legacy 이상으로 둘 이상이면 `409 active_request_ambiguous`로 닫아 임의 request를 선택하지 않는다.
+Server는 기존 session 인증과 active organization을 확인하고 session row를 잠근다. 그 다음 terminal request를 포함한 해당 session의 safe operation metadata에서 같은 `operation_id`의 session-scoped cancel 결과를 먼저 조회한다. 저장된 결과가 있으면 그 결과가 가리키는 workflow write 권한을 다시 확인하고 `{"request_id":"uuid","status":"canceled"}`를 그대로 반환하며 현재 비종료 request를 조회하거나 변경하지 않는다.
+
+저장된 결과가 없을 때만 비종료 request를 조회한다. 같은 session에는 비종료 request가 하나만 존재해야 하며 정확히 하나면 `Workflow -> AgentBuilderRequest` 순서로 추가 lock을 얻어 상태와 version을 다시 확인한 뒤 9.2의 동일 cancel command를 수행한다. Cancel 결과와 operation id는 canceled request의 safe idempotency metadata에 같은 transaction으로 저장한다. Active row가 없으면 `409 active_request_not_found`, legacy 이상으로 둘 이상이면 `409 active_request_ambiguous`로 닫아 임의 request를 선택하지 않는다. 따라서 응답 유실 뒤 같은 operation id를 재시도해도 과거 결과가 먼저 선택되고 그 사이 생성된 새 request는 취소되지 않는다.
 
 취소 전에 provider 호출이 이미 시작됐다면 네트워크 강제 중단을 보장하지 않는다. 실제 응답의 usage fact는 멱등 완료할 수 있지만 planner 결과는 request에 commit하지 않고, semantic repair를 포함한 다음 attempt 예약 전 request version/status를 재검증해 추가 provider 호출을 차단한다.
 
@@ -1085,7 +1106,15 @@ Server는 기존 session 인증, active organization과 workflow write 권한을
 
 RequestStatus가 `planning|clarification_required|mode_transition_required|graph_mutation_ready|parameter_configuration`인 모든 비종료 request를 취소한다. 이 endpoint는 request에 고정된 mode contract와 무관하게 호출할 수 있고 generation mode를 포함하지 않는 contract-neutral 응답 `{"request_id":"uuid","status":"canceled"}`만 반환한다. 따라서 Client rollback이나 recovery가 `mode_contract_mismatch`를 받은 경우에도 같은 인증·active organization·workflow 권한을 다시 검증한 뒤 request를 종료할 수 있다.
 
-Server는 request에서 workflow id를 안전하게 조회한 뒤 `Workflow` row, parent `AgentBuilderRequest` row 순서로 lock을 얻고 request version을 전진시켜 늦은 planner 결과와 competing clarification/transition/task/save commit을 거부한다. 남은 `pending|active|invalid` ParameterTask와 미완료 Knowledge resolution을 `canceled`로 닫고 safe operation envelope와 CDS 저장 결과를 같은 transaction에서 판정한다. 저장 전 `pending_apply|pending_save` operation은 `blocked`와 safe cancel reason으로 닫고 Client는 local apply를 Undo하며 acknowledgement하지 않는다. `pending_ack|acknowledged`처럼 CDS 저장이 확정된 operation, 완료 task 값과 persisted graph는 유지하고 자동 revert하지 않는다. Guided request 전체를 유지하면서 remaining quick proposal만 닫을 때는 5.3의 proposal cancel을 사용한다.
+Server는 request에서 workflow id를 안전하게 조회한 뒤 `Workflow` row, parent `AgentBuilderRequest` row 순서로 lock을 얻고 request version을 전진시켜 늦은 planner 결과와 competing clarification/transition/task/save commit을 거부한다. 같은 transaction에서 다음 child closure를 수행한다.
+
+- 남은 `pending|active|invalid` ParameterTask를 `canceled`로 닫고 변경되는 각 `task_version`을 정확히 한 번 증가시킨다.
+- 미완료 Knowledge resolution을 `canceled`로 닫는다.
+- `pending` quick-completion proposal을 `canceled`로 닫고 `proposal_version`을 정확히 한 번 증가시켜 target task 예약을 해제한다. 이미 `acknowledged|canceled|stale`인 proposal은 유지한다.
+- 저장 전 `pending_apply|pending_save` operation은 `blocked`와 safe cancel reason으로 닫고 Client는 local apply를 Undo하며 acknowledgement하지 않는다.
+- `pending_ack|acknowledged`처럼 CDS 저장이 확정된 operation, 완료 task 값과 persisted graph는 유지하고 자동 revert하지 않는다.
+
+이 closure가 끝난 뒤에만 parent RequestStatus를 terminal `canceled`로 저장한다. Guided request 전체를 유지하면서 remaining quick proposal만 닫을 때는 5.3의 proposal cancel을 사용한다.
 
 같은 request cancel 재시도는 상태와 audit를 반복하지 않고 같은 mode-free 결과를 반환한다. 이미 `canceled`면 같은 결과를 반환하고, 그 밖의 종료 상태는 변경하지 않고 `409 request_not_cancelable`을 반환한다.
 
@@ -1108,9 +1137,9 @@ Request는 client-generated `operation_id`, 현재 `expected_task_id`와 `expect
 | 409 | `active_request_ambiguous` | legacy 이상으로 비종료 request가 둘 이상이어서 안전하게 선택할 수 없음 |
 | 409 | `stale_graph` | expected base graph hash 또는 workflow `updated_at` 불일치 |
 | 409 | `stale_protocol` | legacy Preview session은 direct-edit mutation을 수행할 수 없음 |
-| 409 | `operation_payload_unavailable` | CDS 저장 전 유실된 full operations를 server가 재생할 수 없어 request 재생성 또는 현재 task 재입력이 필요함 |
+| 409 | `operation_payload_unavailable` | CDS 저장 전 유실된 full operations를 server가 재생할 수 없어 parent request terminal cancel 후 재생성 또는 현재 task 재입력이 필요함 |
 | 409 | `operation_already_applied` | 다른 결과로 operation id를 중복 적용함 |
-| 409 | `task_conflict` | expected task version이 current 상태와 다르거나 다른 decision이 먼저 처리됨 |
+| 409 | `task_conflict` | expected task version이 current 상태와 다르거나 다른 decision이 먼저 처리됐거나 pending proposal이 target task를 예약함 |
 | 409 | `mode_transition_conflict` | mode transition id/version이 stale하거나 competing transition이 먼저 처리됨 |
 | 409 | `quick_completion_conflict` | 남은 설정 proposal의 request/task/graph/resource revision이 달라졌거나 원자적으로 적용할 수 없음 |
 | 409 | `request_not_cancelable` | canceled 이외의 종료 request를 다시 취소하려고 함 |
@@ -1139,9 +1168,9 @@ Request는 client-generated `operation_id`, 현재 `expected_task_id`와 `expect
 7. 생성 모드 전환은 consumer-first로 도입한다. 첫 Gateway revision은 두 mode 이름을 모두 입력으로 수용하고 내부에서는 canonical로 정규화하지만, mode contract header가 없거나 `legacy-v1`인 응답에는 `configure_and_generate`를 유지한다. 새 request에는 정규화한 `mode_contract_version`을 기존 JSON에 고정하고, 값이 없는 기존 request는 `legacy-v1`로 읽으며 backfill하지 않는다.
 8. 다음 Client revision은 `configure_and_generate|guided_generate`를 모두 읽되 모든 Gateway replica가 준비됐다는 배포 gate 전까지 legacy 값을 쓴다. 구형 Client와 신형 Gateway 조합이 canonical 응답을 먼저 받지 않아야 한다.
 9. 모든 Gateway replica가 dual-input과 contract negotiation을 지원하고 Client dual-read gate가 확인된 뒤에만 `X-Agent-Builder-Mode-Contract: canonical-v2`를 허용한다. Request가 없는 오래 열린 session은 호출 header로 표현을 선택하지만 active request가 있으면 고정된 contract와 같은 header만 허용한다.
-10. Client canonical-write 전환은 canonical-v2 협상 성공 뒤에만 수행한다. Rollback은 먼저 canonical/quick creation gate를 닫고 `mode_contract_version=canonical-v2`이면서 RequestStatus가 terminal이 아닌 request를 완료하거나 mode-free cancel로 종료해 내부 운영 aggregate가 0건임을 확인한다. 이 집계는 request id/payload를 노출하지 않는다. 그 뒤 Client를 legacy-write로 돌리며 drain 완료 전에는 Gateway dual-input과 contract-pinning 지원을 제거하지 않는다.
+10. Client canonical-write 전환은 canonical-v2 협상 성공 뒤에만 수행한다. Rollback은 먼저 canonical/quick creation gate를 닫고 `mode_contract_version=canonical-v2`이면서 RequestStatus가 terminal이 아닌 request를 완료하거나 mode-free cancel로 종료해 active aggregate가 0건임을 확인한 뒤 legacy-write로 전환할 수 있다. 그러나 session GET이 반환할 수 있는 보존 기간 내 terminal request까지 포함한 `canonical-v2` retained-history aggregate가 0건이 되기 전에는 Gateway dual-input/contract-pinning, per-request contract 직렬화와 Client dual-read를 제거하거나 legacy-only Client를 배포하지 않는다. Completed quick history를 `configure_and_generate`로 projection하거나 숨기지 않는다. 두 집계는 request id/payload를 외부에 노출하지 않는다.
 11. `quick_generate`, mode transition과 remaining quick completion은 canonical-v2, Gateway·Client·integration/E2E gate가 함께 준비된 revision에서만 노출한다. Client만 먼저 toggle을 노출하거나 Gateway가 미지원 mode를 암묵적으로 guided로 처리하지 않는다.
-12. Quick mode는 Legacy Preview endpoint, payload 또는 저장소에 의존하지 않는다. Rollback 시 quick UI/endpoint creation gate를 먼저 닫고 canonical active request drain 뒤 기존 guided direct-edit와 `structure_only`를 legacy 표현으로 유지한다.
+12. Quick mode는 Legacy Preview endpoint, payload 또는 저장소에 의존하지 않는다. Rollback 시 quick UI/endpoint creation gate를 먼저 닫고 canonical active request drain 뒤 기존 guided direct-edit와 `structure_only` 신규 write를 legacy 표현으로 유지한다. 보존 중 canonical terminal history가 있으면 session timeline은 각 request의 stored contract를 유지하고 dual-read Client만 이를 표시하며, legacy-only cutback은 retained-history aggregate가 0건이 된 뒤에만 허용한다.
 ## 2026-07-15 Direct-Edit Connection And Recovery Correction
 
 - `direct_edit_v1` response does not include a Slack or GitHub `credential_ref` ParameterTask. Those nodes may remain unresolved and must be configured only through the existing Editor connection controls. Mail/Gmail managed credential tasks remain permission-filtered.

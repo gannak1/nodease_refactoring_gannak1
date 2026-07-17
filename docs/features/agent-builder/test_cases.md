@@ -198,7 +198,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - workflow draft CDS save 성공 후 acknowledgement 전 local 상태는 `pending_ack`이고 모든 task는 canonical `pending`이며 frontend와 decision API 모두 입력을 받지 않는다.
 - canonical graph hash/`updated_at`이 확인된 acknowledgement만 parameter group을 `active`로 전환한다.
 - 저장 실패, stale 또는 validation failure는 group을 `blocked`로 유지한다.
-- Full operations 응답이 CDS 저장 전에 유실되면 server가 이를 재생하거나 active mutation으로 반환하지 않고 기존 envelope를 `blocked/operation_payload_unavailable`로 닫는다. Initial/graph-edit/replace는 request 재생성, parameter decision은 같은 task/version의 새 operation id 재입력을 요구한다.
+- Full operations 응답이 CDS 저장 전에 유실되면 server가 이를 재생하거나 active mutation으로 반환하지 않고 기존 envelope를 `blocked/operation_payload_unavailable`로 닫는다. Initial/graph-edit/replace는 parent request의 terminal cancel 확인 후 request 재생성, parameter decision은 같은 parent request와 task/version의 새 operation id 재입력을 요구한다.
 - Session recovery와 CDS save가 경합하면 request row lock 뒤 최신 상태를 다시 읽고 `pending_ack|acknowledged`를 차단 상태로 덮어쓰지 않는다.
 - 차단된 parameter operation은 pending decision을 제거하고 같은 task/version을 다시 active로 열며, 새 입력은 새 operation id로 발급할 수 있다.
 - 저장 성공 후 acknowledgement 응답 유실은 같은 operation id, expected/saved graph hash와 canonical `updated_at`으로 안전하게 복구한다. 원래 mutation 제출 흐름은 동일 payload acknowledgement를 정확히 한 번 재시도할 수 있고, 두 번째 결과까지 유실되면 session recovery가 acknowledgement를 다시 보내지 않고 acknowledged operation과 canonical hash/timestamp를 확인해 client boundary를 완료 상태로 reconcile한다.
@@ -649,7 +649,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - ParameterTask의 `reconfirmation_required` boolean이 Shared/Gateway/Client schema에서 일치하고 true일 때 `resolution_source`와 graph value가 비어 있으며 `confirm` action이 허용되지 않는다.
 - Quick review와 proposal의 persisted safe schema에는 full typed operations, raw graph, parameter 값, 값 의존 graph fragment, hidden resource id, credential 또는 raw prompt가 없다. Quick-to-guided 전환에는 Catalog 검증된 재입력 대상 `step_id`/`parameter_key`만 저장할 수 있다.
 - ADR-0054와 PRD, architecture, data model, glossary, Agent Builder 4종 문서의 mode 이름, 기본값, endpoint와 Legacy Preview 금지가 일치한다.
-- ADR-0054의 contract-before-planning, durable-state-only, every-nonterminal-cancelable, authorize-final-graph-at-save 불변조건이 API 상태표, data model 허용/금지 데이터와 Backend/Frontend 테스트 항목에 각각 연결되어 있다.
+- ADR-0054의 contract-before-planning, durable-state-only, every-nonterminal-cancelable, authorize-final-graph-at-save와 Request aggregate 불변조건이 API 상태표, data model 허용/금지 데이터와 Backend/Frontend 테스트 항목에 각각 연결되어 있다. Terminal parent 아래 pending child 금지, idempotency-result-first 조회, proposal task fencing과 retained canonical history rollback gate를 포함한다.
 
 ### Unit Policy
 
@@ -669,26 +669,26 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - Ineligible quick message는 `mode_transition_required`와 null GraphMutation을 반환하며 workflow graph, request task와 audit의 mutation state를 변경하지 않는다.
 - `continue_guided`는 보존된 값 독립 structured plan으로 guided GraphMutation/task를 만들고 planner call count를 늘리지 않는다. 최초 요청이 일반 parameter 값을 포함했어도 reload 또는 다른 Gateway replica에서 전환하면 그 값이 graph/response metadata에서 복구되지 않고 typed reconfirmation task로 열린다.
 - Transition은 client operation id와 expected request version으로 멱등하며 stale/competing 요청은 `mode_transition_conflict`다.
-- `continue_guided`가 GraphMutation을 발급한 뒤 응답이 유실되면 같은 operation 재시도는 mutation을 다시 만들거나 planner를 호출하지 않고 `operation_payload_unavailable`과 safe 상태를 반환한다. Client는 request 취소 뒤 새 message request를 명시적으로 제출한다.
+- `continue_guided`가 GraphMutation을 발급한 뒤 응답이 유실되면 같은 operation 재시도는 mutation을 다시 만들거나 planner를 호출하지 않고 `operation_payload_unavailable`과 safe 상태를 반환한다. Client는 기존 request의 contract-neutral cancel 결과가 terminal `canceled`임을 확인한 뒤 새 message request를 명시적으로 제출한다.
 - Transition 취소는 별도 mode-transition action을 만들지 않고 기존 request cancel endpoint만 호출한다.
-- Request cancel parameterized test는 `planning|clarification_required|mode_transition_required|graph_mutation_ready|parameter_configuration`를 모두 terminal `canceled`로 전환하고 남은 task/Knowledge resolution을 닫는다. 늦게 도착한 planner/transition/task 결과는 request version 검사로 commit되지 않으며 persisted graph와 완료 task 값은 유지된다. 이미 canceled 재시도는 멱등이고 그 밖의 terminal 상태는 `request_not_cancelable`이다.
+- Request cancel parameterized test는 `planning|clarification_required|mode_transition_required|graph_mutation_ready|parameter_configuration`를 모두 terminal `canceled`로 전환한다. 같은 transaction에서 남은 task와 미완료 Knowledge resolution, pending quick-completion proposal, 저장 전 operation envelope를 각각 `canceled|blocked`로 닫고 변경되는 task/proposal version을 정확히 한 번 증가시킨다. Terminal request 아래 pending child가 남지 않고 늦게 도착한 planner/transition/task/proposal 결과는 commit되지 않으며 persisted graph와 완료 task 값은 유지된다. 이미 canceled 재시도는 멱등이고 그 밖의 terminal 상태는 `request_not_cancelable`이다.
 - `configuration_required`는 terminal 상태로 schema/API/Client가 처리하고 cancel 대상에 포함하지 않는다. Intent model/credential route 선택 뒤에는 기존 request를 재개하지 않고 새 message request를 제출한다.
 - Message submit은 provider 호출 전에 session lock으로 단일 `planning` row와 mode contract/source를 commit한다. 명시적 control과 `legacy-v1` default는 canonical requested/effective mode를 즉시 저장하고, `canonical-v2` default는 두 mode를 미확정으로 유지한 뒤 schema-valid planner의 명시적 intent 또는 guided fallback으로 정확히 한 번 확정한다. Planner 실패·취소 시 미확정 mode를 추측해 채우지 않는다.
-- 동기식 message provider를 barrier로 지연시킨 상태에서 별도 HTTP client가 session-scoped active-request cancel을 호출하면 아직 response에 노출되지 않은 유일한 `planning` request가 terminal `canceled`가 된다. 같은 cancel operation 재시도는 이후 생성된 request를 취소하지 않고 최초 request id/status를 반환한다. Active row 0건은 `active_request_not_found`, legacy fixture의 2건은 `active_request_ambiguous`, competing message submit은 `request_in_progress`다.
+- 동기식 message provider를 barrier로 지연시킨 상태에서 별도 HTTP client가 session-scoped active-request cancel을 호출하면 아직 response에 노출되지 않은 유일한 `planning` request가 terminal `canceled`가 된다. 응답 유실 후 새 request를 만든 fixture에서 같은 cancel operation을 재시도하면 backend가 active row보다 terminal request의 persisted operation result를 먼저 조회해 최초 request id/status를 반환하고 새 request는 유지한다. Persisted 결과가 없을 때만 active row 0건은 `active_request_not_found`, legacy fixture의 2건은 `active_request_ambiguous`, competing message submit은 `request_in_progress`다.
 - Cancel 전에 시작된 provider attempt의 검증 가능한 usage는 정확히 한 번 완료되지만 늦은 planner 결과는 저장되지 않고 semantic repair attempt 2도 예약·호출되지 않는다. Schema-invalid attempt도 usage 기록 여부와 무관하게 repair하지 않는다. Usage 저장 실패는 terminal `failed`와 safe issue code를 사용하고 별도 RequestStatus를 만들지 않는다.
 - Cancel과 CDS save가 경쟁하는 PostgreSQL test는 request/workflow lock 뒤 저장 전 operation이면 graph를 쓰지 않고 blocked/canceled로, 저장이 먼저 확정됐으면 persisted graph를 유지한 canceled request로 결정론적으로 수렴한다.
 - Quick GraphMutation도 기존 CDS row lock, permission, graph hash, `updated_at`, Catalog validation과 acknowledgement를 통과한 뒤에만 completed가 된다. 발급 뒤 저장 전에 workflow write, Catalog `resource_ref`, managed `credential_ref`, Knowledge/Collection 또는 WorkflowNode App/Workflow 권한·lifecycle·relation을 회수/삭제/변경하는 fixture는 final candidate graph에서 reference를 다시 추출해 전체 save/audit를 rollback한다. Unknown field와 managed resolver 누락도 fail-closed한다.
 - Resolver 미구현 기존 Slack/GitHub Editor connection이 base graph와 candidate에서 canonical field 값 및 connection-relevant node data가 같으면 다른 node의 Agent Builder mutation 저장을 허용한다. 같은 legacy field의 추가·교체·삭제, 새 node 복제 또는 connection-relevant data 변경은 전체 save/audit를 rollback한다. Carry-forward 뒤에도 test/run/deployment/runtime의 기존 연결 검증을 통과하지 않으면 외부 호출은 차단된다.
-- Quick response가 save 전에 유실되면 safe envelope에서 operations를 복원하지 않고 `operation_payload_unavailable`로 닫는다. Save 뒤 acknowledgement 유실은 기존 canonical reconciliation만 사용한다.
+- Quick response가 save 전에 유실되면 safe envelope에서 operations를 복원하지 않고 `operation_payload_unavailable`로 닫는다. 기존 request가 여전히 `graph_mutation_ready`일 때 새 message는 `request_in_progress`로 거부되며, Client가 request cancel의 terminal 결과를 확인한 뒤에만 새 operation id로 재제출할 수 있다. Save 뒤 acknowledgement 유실은 기존 canonical reconciliation만 사용한다.
 - Remaining quick proposal은 acknowledged graph와 completed task를 보존하고, canonical graph 값과 fingerprint가 일치하는 no-change confirm만 포함한다. 값이 없거나 graph 변경이 필요한 task는 guided 상태로 남긴다.
-- Remaining proposal acknowledgement는 task version, permission, Catalog, canonical graph 값과 recommendation fingerprint를 다시 검증하고 GraphMutation/workflow save를 만들지 않는다. 완료되는 각 task의 version을 한 번 증가시키고 응답에 task id/version/status를 포함한다.
-- Proposal 생성과 acknowledgement는 parent request row lock에서 expected request/proposal/task version을 비교한다. Acknowledgement 성공은 request/proposal과 각 completed task version을 각각 한 번 증가시키고 응답에 모두 반환한다. 같은 operation 재시도는 어떤 version도 다시 증가시키지 않으며 proposal 이전 task version의 늦은 `set`은 `task_conflict`다.
-- Remaining proposal cancel은 request/proposal version을 각각 한 번 증가시켜 응답하고 proposal만 canceled로 전환하며 guided request, graph와 task를 유지한다. 같은 cancel 재시도는 같은 두 version을 반환하고 acknowledged/stale proposal은 conflict다.
-- Remaining proposal 일부가 stale이면 전체를 `quick_completion_conflict`로 거부하고 기존 guided graph/task를 유지한다.
+- Remaining proposal 생성은 parent request row lock에서 expected request/task version을 비교하고 request와 각 confirm 대상 task version을 정확히 한 번 증가시켜 fenced id/version/fingerprint를 저장한다. 같은 operation 재시도는 어떤 version도 다시 증가시키지 않는다. Proposal 이전 version의 늦은 `set`과 pending proposal target에 대한 최신-version decision도 `task_conflict`이며 remaining guided task는 계속 진행할 수 있다.
+- Remaining proposal acknowledgement는 fenced task version, permission, Catalog, canonical graph 값과 recommendation fingerprint를 다시 검증하고 GraphMutation/workflow save를 만들지 않는다. 성공은 request/proposal과 각 completed task version을 다시 한 번 증가시키고 응답에 task id/version/status를 포함한다.
+- Remaining proposal cancel은 request/proposal version을 각각 한 번 증가시켜 target 예약을 해제하고 proposal만 canceled로 전환하며 guided request, graph와 task 값을 유지한다. 생성 시 증가한 task version은 되돌리지 않는다. 같은 cancel 재시도는 같은 version을 반환하고 acknowledged/stale proposal은 conflict다.
+- Remaining proposal 일부가 stale이면 request/proposal version을 증가시키고 proposal 전체를 terminal `stale`로 전환해 예약을 해제한 뒤 `quick_completion_conflict`를 반환한다. 기존 guided graph/task 값은 유지한다.
 - `structure_only` unresolved graph는 저장할 수 있지만 test, run과 deployment preflight를 계속 차단한다.
 - PostgreSQL 경쟁 테스트에서 같은 transition/proposal operation 재시도는 한 상태 전이만 commit하고 다른 version 요청은 기존 row를 덮어쓰지 않는다. Full operations가 비영속화된 transition replay는 동일 payload 대신 `operation_payload_unavailable`을 반환한다.
 - Mixed-version 계약 테스트는 구형 Client/신형 Gateway에서 legacy 응답, dual-read Client/legacy Gateway에서 legacy fallback, canonical-v2 Client/준비된 Gateway에서 canonical 응답, 지원하지 않는 contract 거부를 각각 검증한다. Canonical-v2 quick request를 만든 뒤 header 누락/legacy session GET은 active payload 대신 `mode_contract_mismatch`를 반환하고, canonical 재조회와 mode-free cancel은 성공해야 한다.
-- Rollback 테스트는 canonical/quick creation gate를 닫은 뒤 active canonical-v2 request를 완료·취소해 0건임을 확인하기 전 legacy-only Client/Gateway 단계로 진행할 수 없고, drain 뒤 기존 legacy request가 계속 복구되는지 검증한다.
+- Rollback 테스트는 canonical/quick creation gate를 닫고 active canonical-v2 request를 완료·취소해 0건이 되면 legacy-write로 전환할 수 있음을 검증한다. 그러나 완료된 quick request가 session 보존 기간에 남은 동안 legacy-only Client/Gateway 단계는 차단되고 dual-read timeline이 stored canonical contract를 그대로 표시해야 한다. Terminal history까지 포함한 retained canonical aggregate가 0건이 된 뒤에만 legacy-only cutback이 가능하며 completed quick을 guided로 projection하거나 숨기지 않는다.
 
 ### Frontend Component
 
@@ -703,6 +703,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - `생성 적용` 한 번이 기존 atomic GraphMutation dispatcher와 한 history boundary를 사용한다. Double click과 response retry가 중복 node/edge/history를 만들지 않는다.
 - Quick review UI는 Legacy Preview component/import/route를 사용하지 않고 `Preview Mode` 또는 legacy `적용 및 저장` control을 렌더링하지 않는다.
 - Guided result의 `남은 설정 빠르게 완료`는 현재 result에만 표시하고 proposal review 중에도 완료된 card/value를 유지한다.
+- Pending remaining proposal의 confirm 대상 task card는 편집을 잠그고 cancel/stale/acknowledge 뒤 canonical task version을 다시 읽는다. 다른 tab의 `task_conflict` 결과를 자동 재적용하지 않는다.
 - Remaining quick conflict는 기존 active task와 input draft를 유지하고 자동 재요청·자동 apply하지 않는다.
 - Remaining quick review 취소는 guided result를 닫지 않고 proposal만 제거하며, initial quick review와 mode-transition 대기 취소는 기존 request cancel을 사용한다.
 
@@ -713,7 +714,7 @@ DB를 사용하는 integration/E2E는 순차 실행한다. pure unit과 frontend
 - Credential 또는 Knowledge 선택이 필요한 quick 요청은 graph를 바꾸지 않고 guided 전환 확인을 표시하며, 확인 뒤 기존 prompt/planner를 재실행하지 않고 단계별 card를 연다.
 - 일반 parameter 값과 credential/resource 확인이 함께 필요한 quick 요청은 reload 뒤 guided 전환해도 원래 parameter 값을 복원하지 않고 해당 typed card에서 재입력을 요구하며, 입력 전 graph에는 그 값과 값 의존 edge/data가 없다.
 - Guided 중 일부 task 완료 뒤 남은 설정 quick completion을 적용하면 기존 완료 값과 history boundary가 유지되고 이미 materialize된 안전한 추천만 batch confirm된다. 값 변경이 필요한 나머지는 guided card에 남는다.
-- Quick review에서 reload하면 full operations를 복구하거나 자동 적용하지 않고 재생성 안내를 표시한다.
+- Quick review에서 reload하면 full operations를 복구하거나 자동 적용하지 않는다. 재생성 control은 기존 request cancel의 terminal 결과를 확인한 뒤에만 새 message를 제출하며 cancel 확인 중에는 비활성이다.
 - Canonical-v2 quick review 중 header가 누락된 reload는 legacy projection을 렌더링하지 않고 contract mismatch 뒤 canonical GET으로 복구하며, rollback 시 mode-free cancel 뒤 legacy Client로 전환한다.
 - Structure-only unresolved 결과는 저장 후에도 test, run과 deploy command가 server preflight에서 차단된다.
 
