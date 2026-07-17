@@ -1,4 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const navigationMock = vi.hoisted(() => ({
@@ -52,7 +54,16 @@ vi.mock('@/app/features/admin/components/AdminSummaryCards', () => ({
   AdminSummaryCards: () => null,
 }));
 
-import AdminConsolePage, { PermissionsTab } from './page';
+import { PermissionsTab } from '@/app/features/admin/components/PermissionsTab';
+import AdminConsolePage from './page';
+
+describe('AdminConsolePage route contract', () => {
+  it('page.tsx에서 테스트용 컴포넌트를 named export하지 않는다', () => {
+    const pageSource = readFileSync(resolve(__dirname, 'page.tsx'), 'utf8');
+
+    expect(pageSource).not.toMatch(/export\s+function\s+PermissionsTab\b/);
+  });
+});
 
 const member = {
   id: 'membership-1',
@@ -346,6 +357,28 @@ describe('PermissionsTab 표 기반 권한 부여', () => {
     ).not.toBeInTheDocument();
     expect(screen.getByText('Enterprise 고객 티켓 처리')).toBeVisible();
   });
+
+  it.each([
+    ['리소스', '리소스 검색'],
+    ['부여 대상', '대상 검색'],
+  ])(
+    '검색으로 선택한 %s가 숨겨지면 권한을 저장하지 않는다',
+    (_selection, searchName) => {
+      const { onGrant } = renderPermissionsTab();
+      fireEvent.click(screen.getByRole('button', { name: '권한 부여' }));
+
+      fireEvent.change(screen.getByRole('searchbox', { name: searchName }), {
+        target: { value: '검색 결과 없음' },
+      });
+
+      const submitButton = screen.getByRole('button', {
+        name: '선택한 권한 부여',
+      });
+      expect(submitButton).toBeDisabled();
+      fireEvent.click(submitButton);
+      expect(onGrant).not.toHaveBeenCalled();
+    },
+  );
 
   it('권한 저장 중에는 모든 닫기 경로와 선택 입력을 잠근다', () => {
     renderPermissionsTab({ actionPending: true });
