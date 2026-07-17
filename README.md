@@ -260,15 +260,10 @@ Host 개발은 PostgreSQL, Redis, pgAdmin과 Sandbox를 Docker로 실행하고 C
 ```bash
 cp dev/.env.example .env
 # .env의 필수 secret과 사용할 provider 설정을 안전한 값으로 구성합니다.
-# Gateway와 worker는 host process이므로 Docker service DNS가 아닌 localhost를 사용합니다.
-REDIS_HOST=localhost
-REDIS_URL=redis://localhost:6379/0
-CELERY_BROKER_URL=redis://localhost:6379/1
-
 ./scripts/setup.sh
 ```
 
-위 Redis 값을 실제 `.env`의 기존 항목에 반영합니다. `redis://redis:6379/...`는 container 내부 DNS용이므로 host에서 실행하는 Gateway의 login limiter와 worker가 연결할 수 없습니다.
+`dev/.env.example`의 Redis 설정은 host process용 `localhost`를 사용합니다. Container 내부 DNS 이름 `redis`가 필요한 통합 Docker 실행은 별도의 `docker/.env.example`과 Compose 설정을 사용합니다.
 
 ### 2. 개발 DB 시작과 Migration
 
