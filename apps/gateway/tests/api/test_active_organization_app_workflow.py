@@ -816,8 +816,8 @@ def test_operation_cost_summary_includes_all_readable_active_workflows(monkeypat
     ]
     db = _FakeDb(apps)
     captured = {}
-    for app in apps:
-        app.active_deployment.app_id = app.id
+    for operation_app in apps:
+        operation_app.active_deployment.app_id = operation_app.id
 
     monkeypatch.setattr(
         app_service,
@@ -875,8 +875,8 @@ def test_operation_cost_summary_batches_non_manager_permission_sources(monkeypat
     ]
     db = _FakeDb(apps)
     captured = {}
-    for app in apps:
-        app.active_deployment.app_id = app.id
+    for operation_app in apps:
+        operation_app.active_deployment.app_id = operation_app.id
 
     monkeypatch.setattr(
         app_service,

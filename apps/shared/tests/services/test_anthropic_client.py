@@ -1,7 +1,6 @@
 import asyncio
 
 import pytest
-
 from apps.shared.services.llm_client.anthropic_client import AnthropicClient
 from apps.shared.services.llm_client.base import LLMResponseValidationError
 
