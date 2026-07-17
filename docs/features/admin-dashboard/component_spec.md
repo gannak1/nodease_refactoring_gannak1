@@ -59,7 +59,7 @@ Verified Against: feature/mba-188 @ 59d1cc51
 - 필터 바: 행위자(기존 `ActiveOrganizationMemberPicker` 재사용), action(canonical action 문자열 입력/선택), 대상 타입/ID, 기간(`startAt`/`endAt`, KST 기준 입력), status. 필터 초기화 버튼을 둔다.
 - 결과 테이블 컬럼: 발생 시각(사용자 로컬 시간대 렌더링), 행위자, action(사용자 친화 라벨 병기 — canonical action에서 파생), 대상, status 배지.
 - 행위자와 대상은 safe display label을 먼저 표시하고 canonical UUID를 보조 text와 복사 가능한 값으로 병기한다. Display가 없으면 UUID만 표시한다.
-- Pagination: Audit 목록은 opaque cursor history를 사용해 이전/다음 이동을 제공한다. 필터를 새로 적용하거나 초기화하면 cursor history를 비우고 첫 페이지부터 조회한다.
+- Pagination: Audit 목록은 opaque cursor history를 사용해 이전/다음 이동을 제공한다. 첫 페이지 응답의 total snapshot을 후속 cursor 페이지에서도 유지하고, 후속 응답의 `total=null`은 기존 값을 덮어쓰지 않는다. 필터를 새로 적용하거나 초기화하면 cursor history를 비우고 첫 페이지부터 조회해 total을 갱신한다.
 - 행 클릭 → `AuditDetailDrawer` 열림.
 - User actor cell은 별도 button으로 렌더링한다. Organization manager가 active/suspended current organization member actor를 선택하면 row click propagation을 중단하고 `ActorAccessDrawer`를 연다.
 - Auditor-only admin page 노출은 기존 후순위 범위를 유지한다. 이후 해당 page가 열리더라도 auditor-only, system/null actor, invited/removed/missing historical actor에는 actor management control을 제공하지 않고 audit row/detail 동작만 유지한다.

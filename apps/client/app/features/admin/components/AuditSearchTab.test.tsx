@@ -228,7 +228,7 @@ describe('AuditSearchTab', () => {
         items: [auditItem],
       })
       .mockResolvedValueOnce({
-        total: 21,
+        total: null,
         next_cursor: null,
         items: [secondPageItem],
       })
@@ -249,6 +249,7 @@ describe('AuditSearchTab', () => {
       }),
     );
     expect(await screen.findByText('workflow.delete')).toBeInTheDocument();
+    expect(screen.getByText('21개 중 page 2/2')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: '이전' }));
     await waitFor(() =>

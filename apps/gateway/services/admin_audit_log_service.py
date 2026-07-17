@@ -281,7 +281,7 @@ class AdminAuditLogService:
         cursor_position = AdminAuditLogService.decode_cursor(cursor) if cursor else None
         filters = filters or AdminAuditLogFilters()
         query = _filtered_query(db, organization_id, filters)
-        total = query.count()
+        total = query.count() if cursor_position is None else None
         if cursor_position:
             cursor_time, cursor_id = cursor_position
             query = query.filter(

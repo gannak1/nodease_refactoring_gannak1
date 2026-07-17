@@ -161,8 +161,9 @@ def test_list_audit_logs_uses_stable_cursor_for_next_page(monkeypatch):
         organization_id=organization_id,
         limit=2,
     )
+    second_db = _AuditLogSession(logs)
     second = AdminAuditLogService.list_audit_logs(
-        _AuditLogSession(logs),
+        second_db,
         current_user=SimpleNamespace(id=uuid4()),
         organization_id=organization_id,
         cursor=first.next_cursor,
@@ -171,8 +172,10 @@ def test_list_audit_logs_uses_stable_cursor_for_next_page(monkeypatch):
 
     assert first.total == 4
     assert first.next_cursor is not None
-    assert second.total == 4
+    assert second.total is None
     assert second.next_cursor is None
+    assert db.query_for(AuditLog).count_calls == 1
+    assert second_db.query_for(AuditLog).count_calls == 0
     assert not ({item.id for item in first.items} & {item.id for item in second.items})
     assert [item.id for item in first.items + second.items] == [
         log.id for log in sorted(logs, key=lambda log: log.id, reverse=True)
@@ -1215,6 +1218,7 @@ class _AuditLogQuery:
         self.logs = list(logs)
         self.offset_value = None
         self.limit_value = None
+        self.count_calls = 0
 
     def filter(self, *conditions):
         self.logs = [
@@ -1237,6 +1241,7 @@ class _AuditLogQuery:
         return self
 
     def count(self):
+        self.count_calls += 1
         return len(self.logs)
 
     def all(self):

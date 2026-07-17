@@ -117,11 +117,15 @@ export function AuditSearchTab({
         limit: PAGE_SIZE,
       });
       setItems(data.items);
-      setTotal(data.total);
+      if (data.total !== null) {
+        setTotal(data.total);
+      }
       setNextCursor(data.next_cursor ?? null);
     } catch (err) {
       setItems([]);
-      setTotal(0);
+      if (pageIndex === 0) {
+        setTotal(0);
+      }
       setNextCursor(null);
       if (isAxiosError(err) && err.response?.status === 403) {
         setError({

@@ -29,7 +29,7 @@ Verified Against: feature/mba-188 @ 59d1cc51
 
 공통 규칙:
 
-- Pagination은 기본적으로 `page`(1-base)와 `limit`을 사용한다. Audit 목록은 예외로 `(occurred_at, id)` 기반 opaque `cursor`와 `limit`을 사용하며 응답에 `next_cursor`를 포함한다.
+- Pagination은 기본적으로 `page`(1-base)와 `limit`을 사용한다. Audit 목록은 예외로 `(occurred_at, id)` 기반 opaque `cursor`와 `limit`을 사용하며 응답에 `next_cursor`를 포함한다. 첫 페이지(`cursor` 없음)만 정확한 `total`을 계산하고 후속 cursor 페이지는 `total=null`로 COUNT를 생략한다.
 - 기간 파라미터 `startAt`/`endAt`은 ISO 8601 datetime이다. timezone offset이 없으면 KST(Asia/Seoul)로 해석하고, 판정은 반개구간 `[startAt, endAt)`이다 (requirements 시간대/경계 규칙). Usage 집계는 기간 미지정 시 이번 달(KST) 기본값을 쓰며, 명시 기간은 `startAt`/`endAt`을 함께 제공해야 한다.
 - 비용 값은 USD이며 JSON number로 반환한다. 표시 자릿수 반올림(집계 2자리, 단건 6자리)은 클라이언트 표시 계층에서 1회만 수행한다.
 
@@ -61,6 +61,8 @@ Response `200`: 기존 user audit 계약을 바꾸지 않는 admin 전용 `Admin
   ]
 }
 ```
+
+첫 페이지의 `total`은 검색 시점 snapshot이다. 후속 cursor 응답은 `total: null`이며 Client는 첫 페이지 값을 유지한다. 새 검색·필터 초기화로 첫 페이지를 다시 요청하면 total을 갱신한다.
 
 정렬은 `occurred_at` 내림차순 고정. 필터는 각각 독립이며 조합(AND)으로 적용된다.
 
